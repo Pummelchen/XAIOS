@@ -1,0 +1,104 @@
+name: Engineering task
+description: Track implementation, refactoring, validation, CI, or release-readiness work.
+title: "[Task]: "
+labels:
+  - type: task
+  - needs: triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for concrete engineering work. Prefer small, reviewable changes with explicit non-goals and validation gates.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences describing the task.
+    validations:
+      required: true
+  - type: textarea
+    id: objective
+    attributes:
+      label: Problem / objective
+      description: What must be changed or verified, and why.
+    validations:
+      required: true
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Relevant subsystem
+      multiple: true
+      options:
+        - boot/UEFI
+        - kernel core
+        - memory management
+        - VirtIO/PCI
+        - filesystem/persistence
+        - networking/SSH
+        - userspace
+        - CPU-AI runtime
+        - model arena
+        - security/sandboxing
+        - CI/gates
+        - docs/contracts
+        - hardware readiness
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checklist defining done.
+      value: |
+        - [ ] Current source/config is inspected before implementation.
+        - [ ] Change is scoped to the stated subsystem and non-goals.
+        - [ ] Relevant validation command is run or skipped with a clear reason.
+    validations:
+      required: true
+  - type: dropdown
+    id: validation
+    attributes:
+      label: Validation command or gate
+      multiple: true
+      options:
+        - make bootstrap
+        - make compile-check
+        - make all
+        - make image
+        - make qemu-smoke
+        - make qemu-abi-contract
+        - make qemu-readiness-gate
+        - make qemu-full-os-rc
+        - make qemu-network-suite
+        - make qemu-ssh-smoke
+        - make intel-desktop-gate
+        - docs-only
+        - manual-review
+    validations:
+      required: true
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk level
+      options:
+        - Low
+        - Medium
+        - High
+        - Security
+        - Hardware
+        - Performance Claim
+        - API/Contract
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies / blockers
+      description: List blockers, sequencing constraints, missing hardware, or required human decisions.
+  - type: textarea
+    id: related
+    attributes:
+      label: Related docs or source files
+      description: Include relevant source, docs, contracts, or scripts.
+    validations:
+      required: true

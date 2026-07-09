@@ -1,0 +1,104 @@
+name: Feature request
+description: Propose a new capability or user-visible behavior for XAIOS.
+title: "[Feature]: "
+labels:
+  - type: feature
+  - needs: design
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for new functionality. Keep scope small enough for one reviewable engineering change or split into design + implementation issues.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences describing the requested feature.
+    validations:
+      required: true
+  - type: textarea
+    id: objective
+    attributes:
+      label: Problem / objective
+      description: What problem this solves, target users/workloads, and expected outcome.
+    validations:
+      required: true
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Relevant subsystem
+      multiple: true
+      options:
+        - boot/UEFI
+        - kernel core
+        - memory management
+        - VirtIO/PCI
+        - filesystem/persistence
+        - networking/SSH
+        - userspace
+        - CPU-AI runtime
+        - model arena
+        - security/sandboxing
+        - CI/gates
+        - docs/contracts
+        - hardware readiness
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checklist defining done.
+      value: |
+        - [ ] Scope is bounded and documented.
+        - [ ] Required source/docs/contracts are updated.
+        - [ ] Relevant validation gate is identified and run or explicitly deferred.
+    validations:
+      required: true
+  - type: dropdown
+    id: validation
+    attributes:
+      label: Validation command or gate
+      multiple: true
+      options:
+        - make bootstrap
+        - make compile-check
+        - make all
+        - make image
+        - make qemu-smoke
+        - make qemu-abi-contract
+        - make qemu-readiness-gate
+        - make qemu-full-os-rc
+        - make qemu-network-suite
+        - make qemu-ssh-smoke
+        - make intel-desktop-gate
+        - docs-only
+        - manual-review
+    validations:
+      required: true
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk level
+      options:
+        - Low
+        - Medium
+        - High
+        - Security
+        - Hardware
+        - Performance Claim
+        - API/Contract
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies / blockers
+      description: List prerequisite design decisions, hardware access, contracts, or related issues.
+  - type: textarea
+    id: related
+    attributes:
+      label: Related docs or source files
+      description: Include relevant source, docs, contracts, or scripts.
+    validations:
+      required: true

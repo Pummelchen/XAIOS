@@ -1,0 +1,108 @@
+name: Documentation / contracts issue
+description: Track documentation, ABI/API contract, hardware-readiness, or roadmap consistency work.
+title: "[Docs/Contracts]: "
+labels:
+  - type: docs
+  - area: docs-contracts
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for documentation, contract, release-candidate evidence, and hardware-readiness alignment work. Do not use QEMU-only results as hardware performance proof.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences describing the docs/contracts problem.
+    validations:
+      required: true
+  - type: textarea
+    id: objective
+    attributes:
+      label: Problem / objective
+      description: What must be clarified, reconciled, or documented.
+    validations:
+      required: true
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Relevant subsystem
+      multiple: true
+      options:
+        - boot/UEFI
+        - kernel core
+        - memory management
+        - VirtIO/PCI
+        - filesystem/persistence
+        - networking/SSH
+        - userspace
+        - CPU-AI runtime
+        - model arena
+        - security/sandboxing
+        - CI/gates
+        - docs/contracts
+        - hardware readiness
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checklist defining done.
+      value: |
+        - [ ] Current source/config is inspected before changing docs or contracts.
+        - [ ] Stale or conflicting claims are reconciled or explicitly marked as unresolved.
+        - [ ] Validation command or docs-only review path is documented.
+    validations:
+      required: true
+  - type: dropdown
+    id: validation
+    attributes:
+      label: Validation command or gate
+      multiple: true
+      options:
+        - make bootstrap
+        - make compile-check
+        - make all
+        - make image
+        - make qemu-smoke
+        - make qemu-abi-contract
+        - make qemu-readiness-gate
+        - make qemu-full-os-rc
+        - make qemu-network-suite
+        - make qemu-ssh-smoke
+        - make intel-desktop-gate
+        - docs-only
+        - manual-review
+    validations:
+      required: true
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk level
+      options:
+        - Low
+        - Medium
+        - High
+        - Security
+        - Hardware
+        - Performance Claim
+        - API/Contract
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies / blockers
+      description: List human decisions, measurements, source changes, or related issues required first.
+  - type: textarea
+    id: related
+    attributes:
+      label: Related docs or source files
+      description: Include relevant source, docs, contracts, or scripts.
+      placeholder: |
+        - docs/API.md
+        - contracts/qemu-rc-v1.json
+        - HARDWARE-READINESS.md
+    validations:
+      required: true
