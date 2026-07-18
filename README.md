@@ -1,3 +1,6 @@
+<img width="1122" height="1402" alt="1" src="https://github.com/user-attachments/assets/cc728c58-8393-483d-8db2-c594b73dd0fc" />
+
+
 # XAI OS
 
 > **AI agents: start here**
