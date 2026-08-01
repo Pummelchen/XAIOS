@@ -10,6 +10,14 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 -->
 # AI onboarding changelog
 
+## 2026-08-02 — QEMU launcher and early spinlock regression fixes
+
+- Made TCG the default AArch64 QEMU accelerator on every host; HVF remains an
+  explicit experimental override with a warning.
+- Added an early single-core `xaios_spin_trylock()` reuse self-test and QEMU
+  smoke marker.
+- Added ABI-gate coverage for the safe launcher default.
+
 ## 2026-08-02 — sampled htop accounting
 
 - Replaced tick-count-only `htop` output with monotonic sampled `%CPU`, resident

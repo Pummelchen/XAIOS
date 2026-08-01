@@ -12,6 +12,7 @@ from qemu_gate_lib import contract, parse_telemetry, validate_telemetry_against_
 
 TARGETS = [
     "exceptions: self-test",
+    "spinlock: early single-core try-lock self-test passed",
     "timer: monotonic self-test passed",
     "smp: per-core registry self-test passed",
     "VMM map/unmap self-test passed",

@@ -39,6 +39,7 @@
 #include <xaios/numa.h>
 #include <xaios/pci.h>
 #include <xaios/smmu.h>
+#include <xaios/spinlock.h>
 #include <xaios/stack_canary.h>
 #include <xaios/syscall.h>
 #include <xaios/telemetry.h>
@@ -53,6 +54,20 @@
 
 static const char g_vmm_rodata_probe[] = "vmm-rodata";
 static uint64_t g_vmm_data_probe;
+
+static void early_spinlock_self_test(void) {
+  xaios_spinlock_t lock = XAIOS_SPINLOCK_INIT;
+  kassert(smp_online_count() <= 1U);
+  kassert(xaios_spin_trylock(&lock) == 1);
+  kassert(xaios_spin_trylock(&lock) == 0);
+  xaios_spin_unlock(&lock);
+  kassert(lock.next_ticket == 0U);
+  kassert(lock.serve == 0U);
+  kassert(lock.guard == 0U);
+  kassert(xaios_spin_trylock(&lock) == 1);
+  xaios_spin_unlock(&lock);
+  klog("spinlock: early single-core try-lock self-test passed\n");
+}
 
 static void run_user_app(const char *path, uint32_t pid, uint64_t capabilities) {
   const xaios_initramfs_file_t *file = 0;
@@ -94,6 +109,7 @@ void kmain(const xaios_boot_info_t *boot) {
 
   exception_init();
   exception_self_test();
+  early_spinlock_self_test();
   timer_init();
   timer_self_test();
   stack_canary_init();

@@ -53,6 +53,18 @@ Evidence:
 - `COMMERCIAL-LICENSE.md`
 - `README.md`
 
+## Resolved: safe default for macOS QEMU correctness gates
+
+The AArch64 launcher now defaults to TCG on all hosts. It no longer auto-selects
+HVF on Apple Silicon, where current QEMU versions can abort in
+`hvf_handle_exception`. HVF remains an explicit experimental override rather
+than a correctness-gate default.
+
+Evidence:
+- `scripts/run-qemu-aarch64.sh`
+- `scripts/qemu-abi-contract.py`
+- `.ai/TESTING.md`
+
 ## Verified implementation gaps
 
 - No official tokenizer importer, real Qwen tensor import, transformer plan, logits
@@ -78,7 +90,6 @@ Evidence:
 - Hardware validation status beyond repository artifacts is unknown; currently
   no qualifying physical artifact is present.
 - Production signing/key-management design is not complete in source comments inspected.
-- Default macOS HVF QEMU aborts in `hvf_handle_exception`; TCG correctness passes.
 - Whether `.qoder/repowiki/` should be removed, ignored, or refreshed is unknown; it was not modified.
 
 ## Ask a human before editing

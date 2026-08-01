@@ -76,6 +76,7 @@ CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` 
 - QEMU gates are correctness evidence only and do not authorize hardware performance claims.
 - The ABI gate requires complete source/contract syscall and capability parity,
   not merely matching listed entries.
-- QEMU smoke uses TCG in Linux CI. On this macOS host, default HVF has a known
-  QEMU assertion failure; use `XAIOS_QEMU_ACCEL=tcg` for the correctness gate.
+- AArch64 QEMU defaults to TCG on every host. Explicit
+  `XAIOS_QEMU_ACCEL=hvf` remains experimental because current QEMU/HVF can abort
+  in exception handling on Apple Silicon.
 - Local QEMU gates require host QEMU/firmware/toolchain availability.

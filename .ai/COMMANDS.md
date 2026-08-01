@@ -63,6 +63,9 @@ only the Python standard library; official importer dependencies remain unknown.
 | Connect to local SSH bridge | `ssh -p 2222 admin@localhost` |
 
 `run-qemu-aarch64.sh` supports environment overrides such as `XAIOS_AAVMF_CODE`, `XAIOS_QEMU_ACCEL`, `XAIOS_QEMU_CPU`, `XAIOS_QEMU_MACHINE`, `XAIOS_QEMU_MEMORY`, `XAIOS_QEMU_SMP`, and `XAIOS_QEMU_HOSTFWD_PORT`.
+The AArch64 launcher defaults to TCG on every host. HVF remains an explicit,
+experimental `XAIOS_QEMU_ACCEL=hvf` override because current QEMU/HVF exception
+handling can abort on Apple Silicon.
 
 ## Test/gates
 

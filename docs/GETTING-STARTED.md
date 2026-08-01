@@ -44,6 +44,9 @@ make qemu         # or: make qemu-aarch64
 ```
 
 This launches QEMU with serial output to the terminal. Press `Ctrl-A X` to quit.
+The AArch64 launcher defaults to TCG, including on Apple Silicon. HVF is an
+explicit experimental override (`XAIOS_QEMU_ACCEL=hvf`) because current
+QEMU/HVF exception handling may abort instead of returning control to the guest.
 
 ### Automated smoke test
 

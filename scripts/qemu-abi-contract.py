@@ -122,6 +122,16 @@ def validate_memory_map_contract(_rc_contract):
     return failures
 
 
+def validate_qemu_launcher_contract(_rc_contract):
+    launcher = (ROOT / "scripts/run-qemu-aarch64.sh").read_text(encoding="utf-8")
+    failures = []
+    if 'accel="${XAIOS_QEMU_ACCEL:-tcg}"' not in launcher:
+        failures.append("AArch64 QEMU launcher must default to TCG")
+    if "AArch64 HVF is experimental" not in launcher:
+        failures.append("AArch64 QEMU launcher must warn on explicit HVF use")
+    return failures
+
+
 def main() -> int:
     rc_contract = contract()
     checks = []
@@ -132,6 +142,7 @@ def main() -> int:
         ("initfs_format", validate_initfs_contract),
         ("cpu_ai_model_format", validate_model_contract),
         ("memory_map", validate_memory_map_contract),
+        ("qemu_launcher", validate_qemu_launcher_contract),
     ]
     for name, validator in validators:
         result_failures = validator(rc_contract)
@@ -143,7 +154,7 @@ def main() -> int:
         "status": status_from_failures(failures),
         "milestone": 54,
         "created_at_unix": now(),
-        "description": "ABI and format contract checks for syscall, telemetry, initfs, AI Cell, persistence, service, and CPU-AI model contracts.",
+        "description": "ABI, format, and QEMU launcher contract checks for syscall, telemetry, initfs, AI Cell, persistence, service, and CPU-AI model contracts.",
         "contract": str(CONTRACT_PATH.relative_to(ROOT)),
         "checks": checks,
         "failures": failures,

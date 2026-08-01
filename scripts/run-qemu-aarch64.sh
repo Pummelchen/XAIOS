@@ -99,14 +99,10 @@ if ! firmware="$(find_aavmf_firmware)"; then
   exit 1
 fi
 
-accel="${XAIOS_QEMU_ACCEL:-}"
-if [ "$accel" = "" ]; then
-  accel_help="$("$qemu" -accel help 2>/dev/null || true)"
-  if printf '%s\n' "$accel_help" | grep -q '^hvf$'; then
-    accel="hvf"
-  else
-    accel="tcg"
-  fi
+accel="${XAIOS_QEMU_ACCEL:-tcg}"
+if [ "$accel" = "hvf" ]; then
+  printf '%s\n' \
+    "warning: AArch64 HVF is experimental for XAIOS and may abort in QEMU exception handling; use XAIOS_QEMU_ACCEL=tcg for correctness gates" >&2
 fi
 
 case "$accel" in
