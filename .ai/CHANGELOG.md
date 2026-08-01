@@ -10,6 +10,17 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 -->
 # AI onboarding changelog
 
+## 2026-08-02 — sampled htop accounting
+
+- Replaced tick-count-only `htop` output with monotonic sampled `%CPU`, resident
+  `%MEM`, cumulative runtime, and per-CPU busy/idle data.
+- Added scheduler switch accounting and process dispatch/exit runtime tracking.
+- Allocated the monitoring registry from the runtime-discovered CPU count and
+  added continuation paging instead of 32/64-core display masks.
+- Removed 32-CPU truncation from scheduler and SMP aggregate scans.
+- Separated managed-memory pressure from detected physical capacity so NUMA
+  bitmap overflow is not counted as used memory.
+
 ## 2026-08-02 — command utilities
 
 - Added bounded, line-oriented `nano` editing commands backed by the mutable

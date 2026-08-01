@@ -8,7 +8,7 @@
 #include <xaios/types.h>
 
 /*
- * Preemptive SMP Scheduler — Hierarchical, 128K-Core Ready
+ * Preemptive SMP Scheduler
  *
  * - Per-CPU runqueues with spinlock protection
  * - Per-CPU task tables (eliminates global lock contention)
@@ -16,7 +16,7 @@
  * - 3-tier priority system with time-slice accounting
  * - NUMA-aware task placement
  * - Periodic load balancing (every 1000 ticks)
- * - Scales from 1 to 131,072 CPUs
+ * - Uses the CPUs admitted by the current SMP platform implementation
  */
 
 #define XAIOS_SCHEDULER_MAX_TASKS 32768U

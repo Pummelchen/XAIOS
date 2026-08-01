@@ -32,6 +32,7 @@ typedef struct xaios_numa_node {
   uint64_t phys_start;
   uint64_t phys_end;
   uint64_t total_pages;
+  uint64_t managed_pages;
   uint64_t free_count;
   uint64_t cpu_mask;
   uint64_t alloc_hint; /* next-fit hint for faster allocation */

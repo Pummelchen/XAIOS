@@ -1,9 +1,12 @@
 #include <xaios/assert.h>
 #include <xaios/context.h>
 #include <xaios/elf_loader.h>
+#include <xaios/kheap.h>
 #include <xaios/klog.h>
 #include <xaios/pmm.h>
 #include <xaios/scheduler.h>
+#include <xaios/smp.h>
+#include <xaios/timer.h>
 #include <xaios/user.h>
 #include <xaios/vmm.h>
 
@@ -26,6 +29,19 @@ static void bytes_copy(void *dst, const void *src, uint64_t size) {
 
 static xaios_user_process_t g_process_table[XAIOS_MAX_USER_PROCESSES];
 static xaios_user_process_t *g_current_process;
+
+typedef struct xaios_cpu_usage_record {
+  uint32_t cpu_id;
+  uint32_t active_pid;
+  uint32_t sequence;
+  uint32_t reserved;
+  uint64_t busy_ns;
+  uint64_t active_since_ns;
+} xaios_cpu_usage_record_t;
+
+static xaios_cpu_usage_record_t *g_cpu_usage;
+static uint32_t g_cpu_usage_count;
+static uint64_t g_cpu_usage_started_ns;
 static uint64_t g_process_transition_count;
 static uint64_t g_process_loaded_count;
 static uint64_t g_process_runnable_count;
@@ -57,6 +73,12 @@ static void copy_process(xaios_user_process_t *dst,
   dst->mapped_low = src->mapped_low;
   dst->mapped_high = src->mapped_high;
   dst->scheduler_ticks = src->scheduler_ticks;
+  dst->started_ns = src->started_ns;
+  dst->runtime_ns = src->runtime_ns;
+  dst->running_since_ns = src->running_since_ns;
+  dst->resident_pages = src->resident_pages;
+  dst->running_cpu_id = src->running_cpu_id;
+  dst->runtime_sequence = src->runtime_sequence;
   bytes_copy(&dst->aspace, &src->aspace, sizeof(xaios_process_aspace_t));
 }
 
@@ -97,7 +119,98 @@ static void reset_process_slot(xaios_user_process_t *process) {
   process->mapped_low = 0;
   process->mapped_high = 0;
   process->scheduler_ticks = 0;
+  process->started_ns = 0;
+  process->runtime_ns = 0;
+  process->running_since_ns = 0;
+  process->resident_pages = 0;
+  process->running_cpu_id = UINT32_MAX;
+  process->runtime_sequence = 0;
   bytes_zero(&process->aspace, sizeof(xaios_process_aspace_t));
+}
+
+static xaios_cpu_usage_record_t *find_cpu_usage(uint32_t cpu_id) {
+  uint32_t low = 0;
+  uint32_t high = g_cpu_usage_count;
+  while (low < high) {
+    uint32_t middle = low + ((high - low) / 2U);
+    uint32_t found = g_cpu_usage[middle].cpu_id;
+    if (found == cpu_id) {
+      return &g_cpu_usage[middle];
+    }
+    if (found < cpu_id) {
+      low = middle + 1U;
+    } else {
+      high = middle;
+    }
+  }
+  return 0;
+}
+
+static void process_runtime_write_begin(xaios_user_process_t *process) {
+  __sync_fetch_and_add(&process->runtime_sequence, 1U);
+  __sync_synchronize();
+}
+
+static void process_runtime_write_end(xaios_user_process_t *process) {
+  __sync_synchronize();
+  __sync_fetch_and_add(&process->runtime_sequence, 1U);
+}
+
+static void cpu_usage_write_begin(xaios_cpu_usage_record_t *usage) {
+  __sync_fetch_and_add(&usage->sequence, 1U);
+  __sync_synchronize();
+}
+
+static void cpu_usage_write_end(xaios_cpu_usage_record_t *usage) {
+  __sync_synchronize();
+  __sync_fetch_and_add(&usage->sequence, 1U);
+}
+
+static uint64_t process_runtime_read(const xaios_user_process_t *process,
+                                     uint64_t now_ns) {
+  uint64_t runtime;
+  uint64_t running_since;
+  uint32_t before;
+  uint32_t after;
+  do {
+    before = __atomic_load_n(&process->runtime_sequence, __ATOMIC_ACQUIRE);
+    if ((before & 1U) != 0U) {
+      continue;
+    }
+    runtime = process->runtime_ns;
+    running_since = process->running_since_ns;
+    after = __atomic_load_n(&process->runtime_sequence, __ATOMIC_ACQUIRE);
+  } while (before != after || (after & 1U) != 0U);
+  if (running_since != 0U && now_ns > running_since) {
+    runtime += now_ns - running_since;
+  }
+  return runtime;
+}
+
+static uint64_t cpu_usage_read(const xaios_cpu_usage_record_t *usage,
+                               uint64_t now_ns, uint32_t *active_pid) {
+  uint64_t busy;
+  uint64_t active_since;
+  uint32_t active;
+  uint32_t before;
+  uint32_t after;
+  do {
+    before = __atomic_load_n(&usage->sequence, __ATOMIC_ACQUIRE);
+    if ((before & 1U) != 0U) {
+      continue;
+    }
+    busy = usage->busy_ns;
+    active_since = usage->active_since_ns;
+    active = usage->active_pid;
+    after = __atomic_load_n(&usage->sequence, __ATOMIC_ACQUIRE);
+  } while (before != after || (after & 1U) != 0U);
+  if (active_since != 0U && now_ns > active_since) {
+    busy += now_ns - active_since;
+  }
+  if (active_pid != 0) {
+    *active_pid = active;
+  }
+  return busy;
 }
 
 static void track_process_mapping(xaios_user_process_t *process, uint64_t start,
@@ -194,7 +307,18 @@ void user_process_table_init(void) {
   g_process_scheduled_count = 0;
   g_process_wait_count = 0;
   g_process_wake_count = 0;
-  klog("user: process table initialized slots=%u\n", XAIOS_MAX_USER_PROCESSES);
+  g_cpu_usage_count = smp_online_count();
+  g_cpu_usage = (xaios_cpu_usage_record_t *)kheap_calloc(
+      (uint64_t)g_cpu_usage_count * sizeof(xaios_cpu_usage_record_t), 64U);
+  kassert(g_cpu_usage_count == 0U || g_cpu_usage != 0);
+  for (uint32_t ordinal = 0; ordinal < g_cpu_usage_count; ++ordinal) {
+    uint32_t cpu_id = 0;
+    kassert(smp_cpu_id_at(ordinal, &cpu_id) == XAIOS_OK);
+    g_cpu_usage[ordinal].cpu_id = cpu_id;
+  }
+  g_cpu_usage_started_ns = timer_now_ns();
+  klog("user: process table initialized slots=%u cpu_usage_records=%u\n",
+       XAIOS_MAX_USER_PROCESSES, g_cpu_usage_count);
 }
 
 void user_process_lifecycle_self_test(void) {
@@ -263,12 +387,101 @@ void user_process_note_syscall(uint32_t rejected) {
 
 uint64_t user_process_note_exit(int exit_code) {
   if (g_current_process != 0) {
+    user_process_runtime_stop(g_current_process->pid, smp_cpu_id(),
+                              timer_now_ns());
     transition_process(g_current_process,
                        exit_code == 0 ? XAIOS_USER_PROCESS_EXITED
                                       : XAIOS_USER_PROCESS_FAILED,
                        exit_code);
   }
   return XAIOS_USER_EXIT_RETURN_MAGIC | ((uint64_t)(uint32_t)exit_code);
+}
+
+void user_process_runtime_start(uint32_t pid, uint32_t cpu_id,
+                                uint64_t now_ns) {
+  if (pid == 0U || pid > XAIOS_MAX_USER_PROCESSES || now_ns == 0U) {
+    return;
+  }
+  xaios_user_process_t *process = &g_process_table[pid - 1U];
+  xaios_cpu_usage_record_t *usage = find_cpu_usage(cpu_id);
+  if (process->pid != pid || usage == 0) {
+    return;
+  }
+
+  process_runtime_write_begin(process);
+  if (process->running_since_ns == 0U) {
+    process->running_since_ns = now_ns;
+    process->running_cpu_id = cpu_id;
+  }
+  process_runtime_write_end(process);
+
+  cpu_usage_write_begin(usage);
+  if (usage->active_pid == 0U) {
+    usage->active_pid = pid;
+    usage->active_since_ns = now_ns;
+  }
+  cpu_usage_write_end(usage);
+}
+
+void user_process_runtime_stop(uint32_t pid, uint32_t cpu_id,
+                               uint64_t now_ns) {
+  if (pid == 0U || pid > XAIOS_MAX_USER_PROCESSES || now_ns == 0U) {
+    return;
+  }
+  xaios_user_process_t *process = &g_process_table[pid - 1U];
+  xaios_cpu_usage_record_t *usage = find_cpu_usage(cpu_id);
+  if (process->pid != pid || usage == 0) {
+    return;
+  }
+
+  process_runtime_write_begin(process);
+  if (process->running_since_ns != 0U && now_ns > process->running_since_ns) {
+    process->runtime_ns += now_ns - process->running_since_ns;
+  }
+  process->running_since_ns = 0U;
+  process->running_cpu_id = cpu_id;
+  process_runtime_write_end(process);
+
+  cpu_usage_write_begin(usage);
+  if (usage->active_pid == pid) {
+    if (usage->active_since_ns != 0U && now_ns > usage->active_since_ns) {
+      usage->busy_ns += now_ns - usage->active_since_ns;
+    }
+    usage->active_pid = 0U;
+    usage->active_since_ns = 0U;
+  }
+  cpu_usage_write_end(usage);
+}
+
+uint32_t user_cpu_usage_count(void) {
+  return g_cpu_usage_count;
+}
+
+xaios_status_t user_cpu_usage_snapshot(
+    uint32_t ordinal, uint64_t now_ns,
+    xaios_cpu_usage_snapshot_t *snapshot) {
+  if (snapshot == 0 || ordinal >= g_cpu_usage_count || now_ns == 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  const xaios_cpu_usage_record_t *usage = &g_cpu_usage[ordinal];
+  snapshot->cpu_id = usage->cpu_id;
+  snapshot->busy_ns = cpu_usage_read(usage, now_ns, &snapshot->active_pid);
+  snapshot->elapsed_ns = now_ns > g_cpu_usage_started_ns
+                             ? now_ns - g_cpu_usage_started_ns
+                             : 0U;
+  return XAIOS_OK;
+}
+
+uint64_t user_cpu_busy_total(uint64_t now_ns) {
+  uint64_t total = 0U;
+  for (uint32_t ordinal = 0; ordinal < g_cpu_usage_count; ++ordinal) {
+    uint64_t busy = cpu_usage_read(&g_cpu_usage[ordinal], now_ns, 0);
+    if (UINT64_MAX - total < busy) {
+      return UINT64_MAX;
+    }
+    total += busy;
+  }
+  return total;
 }
 
 xaios_status_t user_load_process(const xaios_initramfs_file_t *file,
@@ -294,6 +507,7 @@ xaios_status_t user_load_process(const xaios_initramfs_file_t *file,
   process->exit_code = 0;
   process->syscall_count = 0;
   process->rejected_syscall_count = 0;
+  process->started_ns = timer_now_ns();
 
   /* Track mappings from ELF segments */
   for (uint32_t i = 0; i < process->aspace.page_count; ++i) {
@@ -313,6 +527,7 @@ xaios_status_t user_load_process(const xaios_initramfs_file_t *file,
   process->stack_guard_low = guard_low;
   process->stack_guard_high = guard_high;
   track_process_mapping(process, stack, stack + PAGE_SIZE);
+  process->resident_pages = process->aspace.page_count;
 
   xaios_user_process_t *slot = &g_process_table[pid - 1U];
   copy_process(slot, process);
@@ -332,8 +547,10 @@ xaios_status_t user_load_init(const xaios_initramfs_file_t *file,
                            process);
 }
 
-xaios_status_t user_process_snapshot(uint32_t pid, xaios_user_process_t *process) {
-  if (process == 0 || pid == 0 || pid > XAIOS_MAX_USER_PROCESSES) {
+xaios_status_t user_process_snapshot_at(uint32_t pid, uint64_t now_ns,
+                                        xaios_user_process_t *process) {
+  if (process == 0 || pid == 0 || pid > XAIOS_MAX_USER_PROCESSES ||
+      now_ns == 0U) {
     return XAIOS_ERR_INVALID;
   }
 
@@ -343,7 +560,13 @@ xaios_status_t user_process_snapshot(uint32_t pid, xaios_user_process_t *process
   }
 
   copy_process(process, slot);
+  process->runtime_ns = process_runtime_read(slot, now_ns);
   return XAIOS_OK;
+}
+
+xaios_status_t user_process_snapshot(uint32_t pid,
+                                     xaios_user_process_t *process) {
+  return user_process_snapshot_at(pid, timer_now_ns(), process);
 }
 
 xaios_status_t user_process_make_runnable(uint32_t pid, uint32_t parent_pid) {
@@ -410,6 +633,8 @@ int user_process_run(const xaios_user_process_t *process) {
   transition_process(g_current_process, XAIOS_USER_PROCESS_RUNNING, 0);
   ++g_current_process->scheduler_ticks;
   ++g_process_scheduled_count;
+  user_process_runtime_start(g_current_process->pid, smp_cpu_id(),
+                             timer_now_ns());
 
   klog("scheduler: dispatch pid=%u parent=%u name=%s ticks=%lu scheduled=%lu\n",
        g_current_process->pid, g_current_process->parent_pid,
@@ -442,6 +667,8 @@ int user_process_run_concurrent(const xaios_user_process_t *process) {
   uint64_t stack = g_current_process->stack_top;
   transition_process(g_current_process, XAIOS_USER_PROCESS_RUNNING, 0);
   ++g_process_scheduled_count;
+  user_process_runtime_start(g_current_process->pid, smp_cpu_id(),
+                             timer_now_ns());
 
   /* Register with preemptive scheduler */
   kassert(scheduler_register(g_current_process->pid) == XAIOS_OK);
@@ -485,6 +712,10 @@ void user_process_reclaim_address_space(const xaios_user_process_t *process) {
   if (process->aspace.l3_count > 0) {
     elf_loader_reclaim((xaios_process_aspace_t *)&process->aspace,
                        process->mapped_low, process->mapped_high);
+    if (process->pid != 0U && process->pid <= XAIOS_MAX_USER_PROCESSES &&
+        g_process_table[process->pid - 1U].pid == process->pid) {
+      g_process_table[process->pid - 1U].resident_pages = 0U;
+    }
     ++g_process_reclaim_count;
     klog("user: reclaimed aspace pid=%u pages=%u\n",
          process->pid, process->aspace.page_count);

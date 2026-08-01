@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -89,11 +90,21 @@ def main() -> int:
         editor = run_ssh("nano /state/ssh-editor.txt --number")
         if editor != "1  first\n2  inserted\n3  tail\n":
             raise RuntimeError(f"nano edit mismatch: {editor!r}")
-        process_table = run_ssh("htop --all")
-        if "PID PPID STATE TICKS SYSCALLS REJECTS PAGES COMMAND" not in process_table:
+        process_table = run_ssh(
+            "htop --all --sample-ms 10 --cpu-start 0 --cpu-count 2"
+        )
+        if "CPU CPU% BUSY_MS IDLE_MS ACTIVE ROLE" not in process_table:
+            raise RuntimeError(f"missing htop CPU header: {process_table!r}")
+        if not re.search(r"^0 [0-9]+\.[0-9]%", process_table, re.MULTILINE):
+            raise RuntimeError(f"missing htop CPU percentage: {process_table!r}")
+        if "MEM bridge=" not in process_table:
+            raise RuntimeError(f"missing htop memory percentage: {process_table!r}")
+        if "PID PPID S CPU% MEM% TIME_MS RES_KIB CPU SYSCALLS COMMAND" not in process_table:
             raise RuntimeError(f"missing htop header: {process_table!r}")
         if "/bin/xaios-ssh-bridge" not in process_table:
             raise RuntimeError(f"missing htop process row: {process_table!r}")
+        if "cpu_shown=" not in process_table or "cpu_total=" not in process_table:
+            raise RuntimeError(f"missing htop pagination: {process_table!r}")
         run_ssh("rm /state/ssh-editor.txt")
         print("qemu-ssh-smoke: OpenSSH client reached XAIOS remote login")
         return 0

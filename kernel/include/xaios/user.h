@@ -37,8 +37,21 @@ typedef struct xaios_user_process {
   uint64_t mapped_low;
   uint64_t mapped_high;
   uint64_t scheduler_ticks;
+  uint64_t started_ns;
+  uint64_t runtime_ns;
+  uint64_t running_since_ns;
+  uint64_t resident_pages;
+  uint32_t running_cpu_id;
+  uint32_t runtime_sequence;
   xaios_process_aspace_t aspace;
 } xaios_user_process_t;
+
+typedef struct xaios_cpu_usage_snapshot {
+  uint32_t cpu_id;
+  uint32_t active_pid;
+  uint64_t busy_ns;
+  uint64_t elapsed_ns;
+} xaios_cpu_usage_snapshot_t;
 
 void user_process_table_init(void);
 void user_process_lifecycle_self_test(void);
@@ -53,6 +66,14 @@ xaios_status_t user_load_process(const xaios_initramfs_file_t *file,
                                 uint32_t pid, uint64_t capability_mask,
                                 xaios_user_process_t *process);
 xaios_status_t user_process_snapshot(uint32_t pid, xaios_user_process_t *process);
+xaios_status_t user_process_snapshot_at(uint32_t pid, uint64_t now_ns,
+                                        xaios_user_process_t *process);
+void user_process_runtime_start(uint32_t pid, uint32_t cpu_id, uint64_t now_ns);
+void user_process_runtime_stop(uint32_t pid, uint32_t cpu_id, uint64_t now_ns);
+uint32_t user_cpu_usage_count(void);
+xaios_status_t user_cpu_usage_snapshot(uint32_t ordinal, uint64_t now_ns,
+                                       xaios_cpu_usage_snapshot_t *snapshot);
+uint64_t user_cpu_busy_total(uint64_t now_ns);
 xaios_status_t user_process_make_runnable(uint32_t pid, uint32_t parent_pid);
 xaios_status_t user_process_wait(uint32_t pid);
 xaios_status_t user_process_wake(uint32_t pid);

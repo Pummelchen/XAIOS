@@ -8,7 +8,7 @@
 #include <xaios/user.h>
 
 /*
- * Hierarchical SMP Scheduler — 128K-Core Production-Ready
+ * Hierarchical SMP Scheduler
  *
  * Key features:
  * - Per-CPU task tables (eliminates global lock contention)
@@ -464,6 +464,7 @@ void scheduler_unregister(uint32_t pid) {
     xaios_spin_lock(&g_runqueues[assigned].lock);
     rq_remove(&g_runqueues[assigned], pid);
     if (g_runqueues[assigned].current_pid == pid) {
+      user_process_runtime_stop(pid, assigned, timer_now_ns());
       g_runqueues[assigned].current_pid = 0;
     }
     xaios_spin_unlock(&g_runqueues[assigned].lock);
@@ -593,6 +594,9 @@ void scheduler_tick(xaios_context_frame_t *irq_frame) {
   }
 
   if (next_pid == 0) {
+    if (current_pid != 0U) {
+      user_process_runtime_stop(current_pid, cpu, timer_now_ns());
+    }
     ++rq->idle_ticks;
     rq->current_pid = 0;
     __sync_fetch_and_add(&g_sched_stats[cpu].idle_ticks, 1);
@@ -618,6 +622,11 @@ void scheduler_tick(xaios_context_frame_t *irq_frame) {
   next_task->state = XAIOS_TASK_STATE_RUNNING;
   ++next_task->switch_count;
 
+  uint64_t switch_ns = timer_now_ns();
+  if (current_pid != 0U) {
+    user_process_runtime_stop(current_pid, cpu, switch_ns);
+  }
+  user_process_runtime_start(next_pid, cpu, switch_ns);
   rq->current_pid = next_pid;
   ++rq->busy_ticks;
   __sync_fetch_and_add(&g_context_switch_count, 1);
@@ -667,6 +676,11 @@ void scheduler_yield(void) {
       next_task->state = XAIOS_TASK_STATE_RUNNING;
       ++next_task->switch_count;
     }
+    uint64_t switch_ns = timer_now_ns();
+    if (current_pid != 0U) {
+      user_process_runtime_stop(current_pid, cpu, switch_ns);
+    }
+    user_process_runtime_start(next_pid, cpu, switch_ns);
     rq->current_pid = next_pid;
     __sync_fetch_and_add(&g_context_switch_count, 1);
     __sync_fetch_and_add(&g_sched_stats[cpu].context_switch_count, 1);
@@ -697,8 +711,7 @@ uint32_t scheduler_current_pid_on_cpu(uint32_t cpu_id) {
 uint32_t scheduler_runnable_count(void) {
   uint32_t total = 0;
   uint32_t online = smp_online_count();
-  uint32_t limit = online < 32U ? online : 32U; /* cache-line optimization */
-  for (uint32_t cpu = 0; cpu < limit; ++cpu) {
+  for (uint32_t cpu = 0; cpu < online; ++cpu) {
     total += g_runqueues[cpu].count;
   }
   return total;
@@ -713,10 +726,9 @@ void scheduler_get_stats(uint32_t cpu_id, xaios_sched_stats_t *stats) {
 
 void scheduler_dump_stats(void) {
   uint32_t online = smp_online_count();
-  uint32_t limit = online < 32U ? online : 32U;
 
-  klog("scheduler: statistics dump (first %u CPUs)\n", limit);
-  for (uint32_t cpu = 0; cpu < limit; ++cpu) {
+  klog("scheduler: statistics dump (%u online CPUs)\n", online);
+  for (uint32_t cpu = 0; cpu < online; ++cpu) {
     const xaios_sched_stats_t *s = &g_sched_stats[cpu];
     if (s->tick_count > 0) {
       klog("scheduler: cpu%u ticks=%lu switches=%lu yields=%lu "

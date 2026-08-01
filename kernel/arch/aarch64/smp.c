@@ -279,7 +279,6 @@ uint32_t smp_irq_isolated_mask(void) {
 uint64_t smp_total_migration_count(void) {
   uint64_t total = 0;
   uint32_t limit = count_online();
-  if (limit > 32U) limit = 32U; /* cache-line optimization */
   for (uint32_t cpu = 0; cpu < limit; ++cpu) {
     total += g_cpu_states[cpu].migration_count;
   }
@@ -289,7 +288,6 @@ uint64_t smp_total_migration_count(void) {
 uint64_t smp_total_involuntary_context_switch_count(void) {
   uint64_t total = 0;
   uint32_t limit = count_online();
-  if (limit > 32U) limit = 32U;
   for (uint32_t cpu = 0; cpu < limit; ++cpu) {
     total += g_cpu_states[cpu].involuntary_context_switch_count;
   }
@@ -298,6 +296,24 @@ uint64_t smp_total_involuntary_context_switch_count(void) {
 
 uint32_t smp_online_count(void) {
   return count_online();
+}
+
+xaios_status_t smp_cpu_id_at(uint32_t ordinal, uint32_t *cpu_id) {
+  if (cpu_id == 0 || ordinal >= count_online()) {
+    return XAIOS_ERR_INVALID;
+  }
+  uint32_t found = 0;
+  for (uint32_t cpu = 0; cpu < XAIOS_MAX_CPUS; ++cpu) {
+    if (g_cpu_states[cpu].online == 0) {
+      continue;
+    }
+    if (found == ordinal) {
+      *cpu_id = cpu;
+      return XAIOS_OK;
+    }
+    ++found;
+  }
+  return XAIOS_ERR_INVALID;
 }
 
 xaios_status_t smp_run_user_task_set(uint64_t requested_workers,

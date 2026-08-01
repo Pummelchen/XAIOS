@@ -5,6 +5,7 @@
 #include <xaios/spinlock.h>
 
 static uint64_t g_total_pages;
+static uint64_t g_managed_pages;
 static uint64_t g_reserved_pages;
 
 /* FIX-005: Double-free detection */
@@ -25,6 +26,7 @@ void pmm_init(const xaios_boot_info_t *boot) {
    * PMM now delegates to NUMA node free-stacks. */
   (void)boot;
   g_total_pages = 0;
+  g_managed_pages = 0;
   g_reserved_pages = 0;
   xaios_spin_init(&g_pmm_free_lock);
 
@@ -33,16 +35,18 @@ void pmm_init(const xaios_boot_info_t *boot) {
     const xaios_numa_node_t *node = numa_node(i);
     if (node != 0) {
       g_total_pages += node->total_pages;
+      g_managed_pages += node->managed_pages;
     }
   }
 
   uint64_t total_free = pmm_free_pages();
-  if (g_total_pages > total_free) {
-    g_reserved_pages = g_total_pages - total_free;
+  if (g_managed_pages > total_free) {
+    g_reserved_pages = g_managed_pages - total_free;
   }
 
-  klog("PMM total pages=%lu free=%lu reserved=%lu (NUMA nodes=%u)\n",
-       g_total_pages, total_free, g_reserved_pages, ncount);
+  klog("PMM total pages=%lu managed=%lu free=%lu reserved=%lu "
+       "(NUMA nodes=%u)\n",
+       g_total_pages, g_managed_pages, total_free, g_reserved_pages, ncount);
   kassert(total_free != 0);
 }
 
@@ -134,6 +138,10 @@ uint32_t pmm_node_of_page(void *page) {
 
 uint64_t pmm_total_pages(void) {
   return g_total_pages;
+}
+
+uint64_t pmm_managed_pages(void) {
+  return g_managed_pages;
 }
 
 uint64_t pmm_free_pages(void) {

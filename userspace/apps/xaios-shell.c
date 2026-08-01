@@ -115,10 +115,16 @@ int main(void) {
     xaios_log("/bin/xaios-shell: nano edit verification failed\n");
     return 1;
   }
-  if (shell_run("htop --all", output, sizeof(output), &out_size) != 0 ||
+  if (shell_run("htop --all --sample-ms 10 --cpu-count 2", output,
+                sizeof(output), &out_size) != 0 ||
+      text_contains(output, "CPU CPU% BUSY_MS IDLE_MS ACTIVE ROLE") == 0 ||
+      text_contains(output, "0 100.0%") == 0 ||
+      text_contains(output, "MEM managed=") == 0 ||
+      text_contains(output, "physical_pages=") == 0 ||
+      text_contains(output, "cpu_shown=") == 0 ||
       text_contains(
           output,
-          "PID PPID STATE TICKS SYSCALLS REJECTS PAGES COMMAND") == 0 ||
+          "PID PPID S CPU% MEM% TIME_MS RES_KIB CPU SYSCALLS COMMAND") == 0 ||
       text_contains(output, "/bin/xaios-shell") == 0) {
     xaios_log("/bin/xaios-shell: htop process verification failed\n");
     return 1;

@@ -1,9 +1,13 @@
 #include <xaios/assert.h>
+#include <xaios/kheap.h>
 #include <xaios/klog.h>
 #include <xaios/mutable_fs.h>
+#include <xaios/pmm.h>
 #include <xaios/remote_login.h>
 #include <xaios/security.h>
+#include <xaios/smp.h>
 #include <xaios/status.h>
+#include <xaios/timer.h>
 #include <xaios/types.h>
 #include <xaios/user.h>
 
@@ -2527,79 +2531,383 @@ static int htop_state_active(xaios_user_process_state_t state) {
          state == XAIOS_USER_PROCESS_WAITING;
 }
 
+typedef struct htop_process_row {
+  uint32_t pid;
+  uint32_t parent_pid;
+  uint32_t cpu_id;
+  xaios_user_process_state_t state;
+  uint64_t cpu_tenths;
+  uint64_t memory_tenths;
+  uint64_t runtime_ns;
+  uint64_t resident_pages;
+  uint64_t syscall_count;
+  const char *name;
+} htop_process_row_t;
+
+static uint64_t htop_ratio_tenths(uint64_t numerator,
+                                  uint64_t denominator) {
+  if (denominator == 0U || numerator == 0U) {
+    return 0U;
+  }
+  if (numerator > UINT64_MAX / UINT64_C(1000)) {
+    numerator /= UINT64_C(1000);
+    denominator /= UINT64_C(1000);
+    if (denominator == 0U) {
+      return UINT64_C(1000);
+    }
+  }
+  return (numerator * UINT64_C(1000)) / denominator;
+}
+
+static uint64_t htop_capacity_tenths(uint64_t numerator,
+                                     uint64_t denominator) {
+  uint64_t tenths = htop_ratio_tenths(numerator, denominator);
+  return tenths > UINT64_C(1000) ? UINT64_C(1000) : tenths;
+}
+
+static void htop_append_percent(char *output, uint64_t output_capacity,
+                                uint64_t *output_bytes, uint64_t tenths) {
+  output_append_u64(output, output_capacity, output_bytes, tenths / 10U);
+  output_append(output, output_capacity, output_bytes, ".");
+  output_append_u64(output, output_capacity, output_bytes, tenths % 10U);
+  output_append(output, output_capacity, output_bytes, "%");
+}
+
+static const char *htop_cpu_role_name(uint32_t cpu_id) {
+  const xaios_cpu_state_t *state = smp_cpu_state(cpu_id);
+  if (state == 0 || state->online == 0U) {
+    return "offline";
+  }
+  switch (state->role) {
+  case XAIOS_CPU_ROLE_HOUSEKEEPING:
+    return "housekeeping";
+  case XAIOS_CPU_ROLE_SCHEDULING:
+    return "scheduling";
+  case XAIOS_CPU_ROLE_AI_HOT:
+    return "ai-hot";
+  default:
+    return "offline";
+  }
+}
+
+static int htop_row_precedes(const htop_process_row_t *lhs,
+                             const htop_process_row_t *rhs) {
+  if (lhs->cpu_tenths != rhs->cpu_tenths) {
+    return lhs->cpu_tenths > rhs->cpu_tenths;
+  }
+  return lhs->pid < rhs->pid;
+}
+
+static void htop_sort_rows(htop_process_row_t *rows, uint32_t count) {
+  for (uint32_t i = 1U; i < count; ++i) {
+    htop_process_row_t value = rows[i];
+    uint32_t position = i;
+    while (position > 0U && htop_row_precedes(&value, &rows[position - 1U])) {
+      rows[position] = rows[position - 1U];
+      --position;
+    }
+    rows[position] = value;
+  }
+}
+
+static xaios_status_t htop_parse_u32_option(const char *args, uint64_t *index,
+                                            uint32_t *value) {
+  char token[24];
+  uint64_t parsed = 0U;
+  uint64_t consumed = 0U;
+  if (token_next(args, index, token, sizeof(token)) != XAIOS_OK ||
+      parse_u64_token(token, &parsed, &consumed) != XAIOS_OK ||
+      consumed != cstr_len(token) || parsed > UINT32_MAX) {
+    return XAIOS_ERR_INVALID;
+  }
+  *value = (uint32_t)parsed;
+  return XAIOS_OK;
+}
+
+static void htop_sample_wait(uint64_t deadline_ns) {
+  while (timer_now_ns() < deadline_ns) {
+    __asm__ volatile("" ::: "memory");
+  }
+}
+
 static xaios_status_t handle_htop(const char *args, char *output,
                                  uint64_t output_capacity,
                                  uint64_t *output_bytes) {
-  char option[16];
+  char option[24];
   uint64_t index = 0U;
   int show_all = 0;
-  int truncated = 0;
-  uint64_t shown = 0U;
+  int show_cpus = 1;
+  uint32_t cpu_start = 0U;
+  uint32_t cpu_requested = UINT32_MAX;
+  uint32_t sample_ms = 100U;
+  uint32_t cpu_total;
+  uint32_t cpu_shown = 0U;
+  uint32_t process_count = 0U;
+  uint32_t process_shown = 0U;
+  uint32_t process_total = 0U;
+  uint64_t before_ns;
+  uint64_t after_ns;
+  uint64_t elapsed_ns;
+  uint64_t before_busy_total;
+  uint64_t after_busy_total;
+  uint64_t total_pages;
+  uint64_t managed_pages;
+  uint64_t free_pages;
+  uint64_t *before_runtime = 0;
+  uint64_t *before_cpu = 0;
+  htop_process_row_t *rows = 0;
   xaios_user_process_t process;
-  if (token_next(args, &index, option, sizeof(option)) == XAIOS_OK) {
+  while (token_next(args, &index, option, sizeof(option)) == XAIOS_OK) {
     if (string_equal(option, "--all") == 1U) {
       show_all = 1;
-    } else if (string_equal(option, "--active") != 1U) {
+    } else if (string_equal(option, "--active") == 1U) {
+      show_all = 0;
+    } else if (string_equal(option, "--no-cpus") == 1U) {
+      show_cpus = 0;
+    } else if (string_equal(option, "--cpu-start") == 1U) {
+      if (htop_parse_u32_option(args, &index, &cpu_start) != XAIOS_OK) {
+        return command_fail(output, output_capacity, output_bytes,
+                            "htop: invalid --cpu-start");
+      }
+    } else if (string_equal(option, "--cpu-count") == 1U) {
+      if (htop_parse_u32_option(args, &index, &cpu_requested) != XAIOS_OK ||
+          cpu_requested == 0U) {
+        return command_fail(output, output_capacity, output_bytes,
+                            "htop: invalid --cpu-count");
+      }
+    } else if (string_equal(option, "--sample-ms") == 1U) {
+      if (htop_parse_u32_option(args, &index, &sample_ms) != XAIOS_OK ||
+          sample_ms == 0U || sample_ms > 1000U) {
+        return command_fail(output, output_capacity, output_bytes,
+                            "htop: --sample-ms must be 1..1000");
+      }
+    } else if (string_equal(option, "--help") == 1U) {
+      output_append(
+          output, output_capacity, output_bytes,
+          "htop [--active|--all] [--sample-ms 1..1000] [--cpu-start N] "
+          "[--cpu-count N] [--no-cpus]\n");
+      return XAIOS_OK;
+    } else {
       return command_fail(output, output_capacity, output_bytes,
-                          "htop: expected --active or --all");
-    }
-    if (has_more_args(args, index) != 0) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "htop: too many arguments");
+                          "htop: unsupported option; use htop --help");
     }
   }
 
-  output_append(output, output_capacity, output_bytes, "XAIOS htop tasks_active=");
-  output_append_u64(output, output_capacity, output_bytes,
-                    user_process_active_count());
-  output_append(output, output_capacity, output_bytes, " scheduled=");
-  output_append_u64(output, output_capacity, output_bytes,
-                    user_process_scheduled_count());
-  output_append(output, output_capacity, output_bytes, " failed=");
-  output_append_u64(output, output_capacity, output_bytes,
-                    user_process_failed_count());
-  output_append(output, output_capacity, output_bytes,
-                "\nPID PPID STATE TICKS SYSCALLS REJECTS PAGES COMMAND\n");
+  cpu_total = user_cpu_usage_count();
+  if (cpu_start > cpu_total) {
+    return command_fail(output, output_capacity, output_bytes,
+                        "htop: --cpu-start exceeds online CPU count");
+  }
+  uint32_t cpu_available = cpu_total - cpu_start;
+  uint32_t cpu_page_budget = output_capacity > 1024U
+                                 ? (uint32_t)((output_capacity - 1024U) / 72U)
+                                 : 0U;
+  if (cpu_page_budget == 0U && show_cpus != 0 && cpu_available != 0U) {
+    cpu_page_budget = 1U;
+  }
+  cpu_shown = cpu_available;
+  if (cpu_shown > cpu_requested) {
+    cpu_shown = cpu_requested;
+  }
+  if (cpu_shown > cpu_page_budget) {
+    cpu_shown = cpu_page_budget;
+  }
+  if (show_cpus == 0) {
+    cpu_shown = 0U;
+  }
+
+  before_runtime = (uint64_t *)kheap_calloc(
+      (uint64_t)XAIOS_MAX_USER_PROCESSES * sizeof(uint64_t), 16U);
+  rows = (htop_process_row_t *)kheap_calloc(
+      (uint64_t)XAIOS_MAX_USER_PROCESSES * sizeof(htop_process_row_t), 16U);
+  if (cpu_shown != 0U) {
+    before_cpu = (uint64_t *)kheap_calloc(
+        (uint64_t)cpu_shown * sizeof(uint64_t), 16U);
+  }
+  if (before_runtime == 0 || rows == 0 ||
+      (cpu_shown != 0U && before_cpu == 0)) {
+    kheap_free(before_runtime);
+    kheap_free(before_cpu);
+    kheap_free(rows);
+    return command_fail(output, output_capacity, output_bytes,
+                        "htop: accounting allocation failed");
+  }
+
+  before_ns = timer_now_ns();
+  before_busy_total = user_cpu_busy_total(before_ns);
+  for (uint32_t pid = 1U; pid <= XAIOS_MAX_USER_PROCESSES; ++pid) {
+    if (user_process_snapshot_at(pid, before_ns, &process) == XAIOS_OK) {
+      before_runtime[pid - 1U] = process.runtime_ns;
+    }
+  }
+  for (uint32_t offset = 0U; offset < cpu_shown; ++offset) {
+    xaios_cpu_usage_snapshot_t usage;
+    if (user_cpu_usage_snapshot(cpu_start + offset, before_ns, &usage) ==
+        XAIOS_OK) {
+      before_cpu[offset] = usage.busy_ns;
+    }
+  }
+
+  uint64_t sample_ns = (uint64_t)sample_ms * UINT64_C(1000000);
+  uint64_t deadline_ns = before_ns + sample_ns;
+  if (deadline_ns < before_ns) {
+    deadline_ns = UINT64_MAX;
+  }
+  htop_sample_wait(deadline_ns);
+  after_ns = timer_now_ns();
+  elapsed_ns = after_ns > before_ns ? after_ns - before_ns : 1U;
+  after_busy_total = user_cpu_busy_total(after_ns);
+  total_pages = pmm_total_pages();
+  managed_pages = pmm_managed_pages();
+  free_pages = pmm_free_pages();
 
   for (uint32_t pid = 1U; pid <= XAIOS_MAX_USER_PROCESSES; ++pid) {
-    if (user_process_snapshot(pid, &process) != XAIOS_OK ||
+    if (user_process_snapshot_at(pid, after_ns, &process) != XAIOS_OK ||
         (show_all == 0 && htop_state_active(process.state) == 0)) {
       continue;
     }
-    if (*output_bytes + 192U >= output_capacity) {
-      truncated = 1;
+    htop_process_row_t *row = &rows[process_count++];
+    uint64_t delta = process.runtime_ns >= before_runtime[pid - 1U]
+                         ? process.runtime_ns - before_runtime[pid - 1U]
+                         : 0U;
+    row->pid = process.pid;
+    row->parent_pid = process.parent_pid;
+    row->cpu_id = process.running_cpu_id;
+    row->state = process.state;
+    row->cpu_tenths = htop_ratio_tenths(delta, elapsed_ns);
+    row->memory_tenths = htop_ratio_tenths(process.resident_pages, total_pages);
+    row->runtime_ns = process.runtime_ns;
+    row->resident_pages = process.resident_pages;
+    row->syscall_count = process.syscall_count;
+    row->name = process.name == 0 ? "(unknown)" : process.name;
+  }
+  process_total = process_count;
+  htop_sort_rows(rows, process_count);
+
+  output_append(output, output_capacity, output_bytes, "XAIOS htop sample_ms=");
+  output_append_u64(output, output_capacity, output_bytes, sample_ms);
+  output_append(output, output_capacity, output_bytes, " cpus=");
+  output_append_u64(output, output_capacity, output_bytes, cpu_total);
+  output_append(output, output_capacity, output_bytes, " tasks_active=");
+  output_append_u64(output, output_capacity, output_bytes,
+                    user_process_active_count());
+  output_append(output, output_capacity, output_bytes, " failed=");
+  output_append_u64(output, output_capacity, output_bytes,
+                    user_process_failed_count());
+  output_append(output, output_capacity, output_bytes, "\nCPU all=");
+  uint64_t busy_delta = after_busy_total >= before_busy_total
+                            ? after_busy_total - before_busy_total
+                            : 0U;
+  uint64_t capacity_ns = elapsed_ns * (uint64_t)(cpu_total == 0U ? 1U : cpu_total);
+  htop_append_percent(output, output_capacity, output_bytes,
+                      htop_capacity_tenths(busy_delta, capacity_ns));
+  output_append(output, output_capacity, output_bytes, " MEM managed=");
+  uint64_t used_pages = managed_pages >= free_pages
+                            ? managed_pages - free_pages
+                            : 0U;
+  htop_append_percent(output, output_capacity, output_bytes,
+                      htop_capacity_tenths(used_pages, managed_pages));
+  output_append(output, output_capacity, output_bytes, " pages=");
+  output_append_u64(output, output_capacity, output_bytes, used_pages);
+  output_append(output, output_capacity, output_bytes, "/");
+  output_append_u64(output, output_capacity, output_bytes, managed_pages);
+  output_append(output, output_capacity, output_bytes, " physical_pages=");
+  output_append_u64(output, output_capacity, output_bytes, total_pages);
+  output_append(output, output_capacity, output_bytes, "\n");
+
+  if (show_cpus != 0) {
+    output_append(output, output_capacity, output_bytes,
+                  "CPU CPU% BUSY_MS IDLE_MS ACTIVE ROLE\n");
+    for (uint32_t offset = 0U; offset < cpu_shown; ++offset) {
+      xaios_cpu_usage_snapshot_t usage;
+      if (user_cpu_usage_snapshot(cpu_start + offset, after_ns, &usage) !=
+          XAIOS_OK) {
+        continue;
+      }
+      uint64_t cpu_delta = usage.busy_ns >= before_cpu[offset]
+                               ? usage.busy_ns - before_cpu[offset]
+                               : 0U;
+      output_append_u64(output, output_capacity, output_bytes, usage.cpu_id);
+      output_append(output, output_capacity, output_bytes, " ");
+      htop_append_percent(output, output_capacity, output_bytes,
+                          htop_capacity_tenths(cpu_delta, elapsed_ns));
+      output_append(output, output_capacity, output_bytes, " ");
+      output_append_u64(output, output_capacity, output_bytes,
+                        usage.busy_ns / UINT64_C(1000000));
+      output_append(output, output_capacity, output_bytes, " ");
+      uint64_t idle_ns = usage.elapsed_ns >= usage.busy_ns
+                             ? usage.elapsed_ns - usage.busy_ns
+                             : 0U;
+      output_append_u64(output, output_capacity, output_bytes,
+                        idle_ns / UINT64_C(1000000));
+      output_append(output, output_capacity, output_bytes, " ");
+      output_append_u64(output, output_capacity, output_bytes, usage.active_pid);
+      output_append(output, output_capacity, output_bytes, " ");
+      output_append(output, output_capacity, output_bytes,
+                    htop_cpu_role_name(usage.cpu_id));
+      output_append(output, output_capacity, output_bytes, "\n");
+    }
+    output_append(output, output_capacity, output_bytes, "cpu_shown=");
+    output_append_u64(output, output_capacity, output_bytes, cpu_shown);
+    output_append(output, output_capacity, output_bytes, " cpu_total=");
+    output_append_u64(output, output_capacity, output_bytes, cpu_total);
+    if (cpu_start + cpu_shown < cpu_total) {
+      output_append(output, output_capacity, output_bytes, " next_cpu_start=");
+      output_append_u64(output, output_capacity, output_bytes,
+                        cpu_start + cpu_shown);
+    }
+    output_append(output, output_capacity, output_bytes, "\n");
+  }
+
+  output_append(output, output_capacity, output_bytes,
+                "PID PPID S CPU% MEM% TIME_MS RES_KIB CPU SYSCALLS COMMAND\n");
+  for (uint32_t i = 0U; i < process_count; ++i) {
+    if (*output_bytes + 160U >= output_capacity) {
       break;
     }
-    output_append_u64(output, output_capacity, output_bytes, process.pid);
+    const htop_process_row_t *row = &rows[i];
+    output_append_u64(output, output_capacity, output_bytes, row->pid);
     output_append(output, output_capacity, output_bytes, " ");
-    output_append_u64(output, output_capacity, output_bytes, process.parent_pid);
-    output_append(output, output_capacity, output_bytes, " ");
-    output_append(output, output_capacity, output_bytes,
-                  htop_state_name(process.state));
-    output_append(output, output_capacity, output_bytes, " ");
-    output_append_u64(output, output_capacity, output_bytes,
-                      process.scheduler_ticks);
-    output_append(output, output_capacity, output_bytes, " ");
-    output_append_u64(output, output_capacity, output_bytes,
-                      process.syscall_count);
-    output_append(output, output_capacity, output_bytes, " ");
-    output_append_u64(output, output_capacity, output_bytes,
-                      process.rejected_syscall_count);
-    output_append(output, output_capacity, output_bytes, " ");
-    output_append_u64(output, output_capacity, output_bytes,
-                      process.aspace.page_count);
+    output_append_u64(output, output_capacity, output_bytes, row->parent_pid);
     output_append(output, output_capacity, output_bytes, " ");
     output_append(output, output_capacity, output_bytes,
-                  process.name == 0 ? "(unknown)" : process.name);
+                  htop_state_name(row->state));
+    output_append(output, output_capacity, output_bytes, " ");
+    htop_append_percent(output, output_capacity, output_bytes, row->cpu_tenths);
+    output_append(output, output_capacity, output_bytes, " ");
+    htop_append_percent(output, output_capacity, output_bytes,
+                        row->memory_tenths);
+    output_append(output, output_capacity, output_bytes, " ");
+    output_append_u64(output, output_capacity, output_bytes,
+                      row->runtime_ns / UINT64_C(1000000));
+    output_append(output, output_capacity, output_bytes, " ");
+    output_append_u64(output, output_capacity, output_bytes,
+                      row->resident_pages * 4U);
+    output_append(output, output_capacity, output_bytes, " ");
+    if (row->cpu_id == UINT32_MAX) {
+      output_append(output, output_capacity, output_bytes, "-");
+    } else {
+      output_append_u64(output, output_capacity, output_bytes, row->cpu_id);
+    }
+    output_append(output, output_capacity, output_bytes, " ");
+    output_append_u64(output, output_capacity, output_bytes, row->syscall_count);
+    output_append(output, output_capacity, output_bytes, " ");
+    output_append(output, output_capacity, output_bytes, row->name);
     output_append(output, output_capacity, output_bytes, "\n");
-    ++shown;
+    ++process_shown;
   }
-  output_append(output, output_capacity, output_bytes, "shown=");
-  output_append_u64(output, output_capacity, output_bytes, shown);
-  if (truncated != 0) {
+  output_append(output, output_capacity, output_bytes, "process_shown=");
+  output_append_u64(output, output_capacity, output_bytes, process_shown);
+  output_append(output, output_capacity, output_bytes, " process_total=");
+  output_append_u64(output, output_capacity, output_bytes, process_total);
+  if (process_shown < process_total) {
     output_append(output, output_capacity, output_bytes, " truncated=1");
   }
   output_append(output, output_capacity, output_bytes, "\n");
+
+  kheap_free(before_runtime);
+  kheap_free(before_cpu);
+  kheap_free(rows);
   return XAIOS_OK;
 }
 

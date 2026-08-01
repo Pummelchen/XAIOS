@@ -59,6 +59,7 @@ void numa_init(const xaios_boot_info_t *boot) {
     g_numa_nodes[i].phys_start = 0;
     g_numa_nodes[i].phys_end = 0;
     g_numa_nodes[i].total_pages = 0;
+    g_numa_nodes[i].managed_pages = 0;
     g_numa_nodes[i].free_count = 0;
     g_numa_nodes[i].cpu_mask = 0;
     g_numa_nodes[i].alloc_hint = 0;
@@ -111,6 +112,7 @@ void numa_init(const xaios_boot_info_t *boot) {
   }
 
   node->total_pages = 0;
+  node->managed_pages = 0;
   node->free_count = 0;
   uint64_t skipped_overflow = 0;
   offset = 0;
@@ -131,9 +133,12 @@ void numa_init(const xaios_boot_info_t *boot) {
           uint64_t page_index = (page - node->phys_start) / PAGE_SIZE;
           if (page_index >= XAIOS_NUMA_BITMAP_BITS) {
             ++skipped_overflow;
-          } else if (!page_is_reserved(boot, page)) {
-            bitmap_set_free(node, page_index);
-            ++node->free_count;
+          } else {
+            ++node->managed_pages;
+            if (!page_is_reserved(boot, page)) {
+              bitmap_set_free(node, page_index);
+              ++node->free_count;
+            }
           }
         }
         page += PAGE_SIZE;
@@ -145,10 +150,10 @@ void numa_init(const xaios_boot_info_t *boot) {
   g_numa_node_count = 1;
   uint64_t total_bytes = node->total_pages * PAGE_SIZE;
   uint64_t free_bytes = node->free_count * PAGE_SIZE;
-  klog("NUMA: node 0 phys=[0x%lx, 0x%lx) total=%lu (%lu MB) free=%lu (%lu MB) "
-       "overflow=%lu\n",
+  klog("NUMA: node 0 phys=[0x%lx, 0x%lx) total=%lu (%lu MB) managed=%lu "
+       "free=%lu (%lu MB) overflow=%lu\n",
        node->phys_start, node->phys_end, node->total_pages,
-       total_bytes / UINT64_C(1048576), node->free_count,
+       total_bytes / UINT64_C(1048576), node->managed_pages, node->free_count,
        free_bytes / UINT64_C(1048576), skipped_overflow);
   if (skipped_overflow > 0) {
     uint64_t lost_mb = (skipped_overflow * PAGE_SIZE) / UINT64_C(1048576);
@@ -266,6 +271,7 @@ void numa_self_test(void) {
   const xaios_numa_node_t *node0 = numa_node(0);
   kassert(node0 != 0);
   kassert(node0->online == 1);
+  kassert(node0->managed_pages >= node0->free_count);
   kassert(node0->free_count > 0);
   kassert(node0->cpu_mask != 0);
   kassert(node0->phys_start < node0->phys_end);

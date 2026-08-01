@@ -3,10 +3,12 @@ import argparse
 import fnmatch
 import os
 import posixpath
+import resource
 import shlex
 import socket
 import sys
 import threading
+import time
 from pathlib import Path
 
 try:
@@ -243,11 +245,11 @@ def _write_text(channel, text):
         return
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     normalized = normalized.replace("\n", "\r\n")
-    channel.send(normalized.encode("utf-8"))
+    channel.sendall(normalized.encode("utf-8"))
 
 
 def _send_line(channel, text=""):
-    channel.send((text + "\r\n").encode("utf-8"))
+    channel.sendall((text + "\r\n").encode("utf-8"))
 
 
 def _render_ls_listing(entries, directory, long_form=False):
@@ -609,19 +611,113 @@ def _handle_nano_command(args, cwd):
 
 
 def _handle_htop_command(args):
-    if args and args != ["--active"] and args != ["--all"]:
-        return 1, "htop: expected --active or --all\n"
-    rows = [
-        "1 0 running 1 0 0 3 /init",
-        "2 1 waiting 1 0 0 4 /bin/xaios-ssh-bridge",
+    show_all = False
+    show_cpus = True
+    cpu_start = 0
+    cpu_requested = None
+    sample_ms = 100
+    index = 0
+    while index < len(args):
+        option = args[index]
+        index += 1
+        if option == "--all":
+            show_all = True
+        elif option == "--active":
+            show_all = False
+        elif option == "--no-cpus":
+            show_cpus = False
+        elif option == "--help":
+            return 0, (
+                "htop [--active|--all] [--sample-ms 1..1000] "
+                "[--cpu-start N] [--cpu-count N] [--no-cpus]\n"
+            )
+        elif option in ("--sample-ms", "--cpu-start", "--cpu-count"):
+            if index >= len(args):
+                return 1, f"htop: missing value for {option}\n"
+            try:
+                value = int(args[index], 10)
+            except ValueError:
+                return 1, f"htop: invalid {option}\n"
+            index += 1
+            if option == "--sample-ms":
+                if value < 1 or value > 1000:
+                    return 1, "htop: --sample-ms must be 1..1000\n"
+                sample_ms = value
+            elif option == "--cpu-start":
+                if value < 0:
+                    return 1, "htop: invalid --cpu-start\n"
+                cpu_start = value
+            else:
+                if value < 1:
+                    return 1, "htop: invalid --cpu-count\n"
+                cpu_requested = value
+        else:
+            return 1, "htop: unsupported option; use htop --help\n"
+
+    cpu_total = os.cpu_count() or 1
+    if cpu_start > cpu_total:
+        return 1, "htop: --cpu-start exceeds online CPU count\n"
+    cpu_shown = cpu_total - cpu_start
+    if cpu_requested is not None:
+        cpu_shown = min(cpu_shown, cpu_requested)
+    if not show_cpus:
+        cpu_shown = 0
+
+    wall_before = time.monotonic_ns()
+    process_before = time.process_time_ns()
+    time.sleep(sample_ms / 1000.0)
+    wall_after = time.monotonic_ns()
+    process_after = time.process_time_ns()
+    elapsed = max(1, wall_after - wall_before)
+    process_delta = max(0, process_after - process_before)
+    process_cpu = 100.0 * process_delta / elapsed
+    system_cpu = process_cpu / cpu_total
+
+    physical_pages = os.sysconf("SC_PHYS_PAGES")
+    page_size = os.sysconf("SC_PAGE_SIZE")
+    total_bytes = physical_pages * page_size
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if sys.platform == "darwin":
+        rss_bytes = rss
+    else:
+        rss_bytes = rss * 1024
+    memory_percent = 100.0 * rss_bytes / total_bytes if total_bytes else 0.0
+
+    lines = [
+        f"XAIOS htop source=ssh-bridge sample_ms={sample_ms} cpus={cpu_total} "
+        "tasks_active=1 failed=0",
+        f"CPU all={system_cpu:.1f}% MEM bridge={memory_percent:.1f}% "
+        f"bytes={rss_bytes}/{total_bytes}",
     ]
-    return (
-        0,
-        "XAIOS htop source=ssh-bridge tasks_active=2 scheduled=2 failed=0\n"
-        "PID PPID STATE TICKS SYSCALLS REJECTS PAGES COMMAND\n"
-        + "\n".join(rows)
-        + f"\nshown={len(rows)}\n",
+    if show_cpus:
+        lines.append("CPU CPU% BUSY_MS IDLE_MS ACTIVE ROLE")
+        for offset in range(cpu_shown):
+            cpu_id = cpu_start + offset
+            cpu_percent = process_cpu if cpu_id == 0 else 0.0
+            busy_ms = int(process_delta / 1_000_000) if cpu_id == 0 else 0
+            idle_ms = max(0, sample_ms - busy_ms)
+            active = 2 if cpu_id == 0 else 0
+            lines.append(
+                f"{cpu_id} {cpu_percent:.1f}% {busy_ms} {idle_ms} "
+                f"{active} host-proxy"
+            )
+        paging = f"cpu_shown={cpu_shown} cpu_total={cpu_total}"
+        if cpu_start + cpu_shown < cpu_total:
+            paging += f" next_cpu_start={cpu_start + cpu_shown}"
+        lines.append(paging)
+
+    lines.append("PID PPID S CPU% MEM% TIME_MS RES_KIB CPU SYSCALLS COMMAND")
+    lines.append(
+        f"2 1 running {process_cpu:.1f}% {memory_percent:.1f}% "
+        f"{int(process_after / 1_000_000)} {rss_bytes // 1024} 0 0 "
+        "/bin/xaios-ssh-bridge"
     )
+    process_total = 1
+    if show_all:
+        lines.append("1 0 exited 0.0% 0.0% 0 0 0 0 /init")
+        process_total += 1
+    lines.append(f"process_shown={process_total} process_total={process_total}")
+    return 0, "\n".join(lines) + "\n"
 
 
 def xaios_remote_command(command, cwd="/"):
@@ -954,7 +1050,8 @@ def run_exec(channel, command):
     status, output = xaios_remote_command(command, cwd="/")
     _write_text(channel, output)
     channel.send_exit_status(status)
-    channel.close()
+    channel.shutdown_write()
+    time.sleep(0.02)
 
 
 def run_shell(channel, server):

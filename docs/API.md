@@ -117,12 +117,37 @@ Text arguments decode `\n`, `\r`, `\t`, and `\\`. Files must fit within the
 3,071-byte editor capacity; oversized input is rejected without truncation.
 Edits are saved immediately by the modifying commands.
 
-`htop` emits a live kernel process-table snapshot. `htop --active` shows loaded,
-runnable, running, and waiting processes; `htop --all` also includes exited and
-failed process slots. The table reports scheduler ticks and page counts rather
-than estimated CPU percentages. XAIOS does not yet expose a curses/TTY ABI, so
-these utilities use the supported remote command interface rather than a
-full-screen terminal UI.
+`htop` emits a sampled kernel CPU, memory, and process snapshot:
+
+```text
+htop [--active|--all] [--sample-ms 1..1000]
+     [--cpu-start N] [--cpu-count N] [--no-cpus]
+```
+
+The default 100 ms interval reports `%CPU` from monotonic runtime deltas, not
+dispatch counts. Per-CPU utilization uses each CPU's busy-time delta divided by
+the common sample interval. Process utilization uses the process runtime delta;
+it follows the conventional per-core scale, where one fully occupied CPU is
+`100.0%` and a future process running on multiple CPUs may exceed 100%. `%MEM`
+is the process's resident mapped pages divided by detected physical pages.
+The system `MEM managed` percentage is allocator pressure over pages the current
+NUMA allocator can manage; `physical_pages` separately reports detected
+physical capacity, so pages beyond a platform allocator's current tracking
+range are not misreported as used.
+
+CPU rows are paged by runtime CPU ordinal. `cpu_shown`, `cpu_total`, and
+`next_cpu_start` identify continuation pages, so the command has no 32/64-core
+display mask or fixed monitoring-array limit. The output buffer determines the
+number of rows in a page; subsequent invocations can retrieve every CPU exposed
+by platform discovery. This removes limits from the monitoring and display path;
+the current QEMU AArch64 SMP implementation separately admits at most 256 CPUs.
+`--active` shows loaded, runnable, running, and waiting processes; `--all` also
+includes exited and failed slots.
+
+XAIOS does not yet expose a curses/TTY ABI, so these utilities use the supported
+remote command interface rather than a full-screen terminal UI. Output tagged
+`source=ssh-bridge` is a host-proxy compatibility view; native XAIOS output is
+backed by kernel process and per-CPU accounting.
 
 ## Capabilities
 

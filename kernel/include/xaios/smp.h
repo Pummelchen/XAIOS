@@ -5,13 +5,8 @@
 #include <xaios/status.h>
 #include <xaios/types.h>
 
-/*
- * SMP infrastructure — supports up to 131,072 CPUs.
- * Scales from single-core QEMU to hyperscale ARM/Xeon servers.
- * Hardware detection via GIC TYPER / ACPI MADT adapts to actual CPU count.
- * BSS per-CPU: ~0.7 MB total (stacks + states + runqueues) at max scale.
- * Requires >= 1 GB RAM for testing, >= 64 GB for production servers.
- */
+/* Current QEMU AArch64 SMP admission ceiling. Monitoring consumers must use
+ * smp_online_count()/smp_cpu_id_at() and must not introduce smaller masks. */
 #define XAIOS_MAX_CPUS 256U
 
 typedef enum xaios_cpu_role {
@@ -51,6 +46,7 @@ void smp_release_secondary_schedulers(void);
 const xaios_cpu_state_t *smp_cpu_state(uint32_t cpu_id);
 xaios_status_t smp_set_scheduling_enabled(uint32_t cpu_id, uint32_t enabled);
 uint32_t smp_online_count(void);
+xaios_status_t smp_cpu_id_at(uint32_t ordinal, uint32_t *cpu_id);
 uint32_t smp_hot_core_mask(void);
 uint64_t smp_total_migration_count(void);
 uint64_t smp_total_involuntary_context_switch_count(void);
