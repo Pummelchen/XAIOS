@@ -508,6 +508,122 @@ def _handle_cpio_command(args, cwd):
     return 0, ""
 
 
+def _nano_decode(text):
+    decoded = []
+    index = 0
+    escapes = {"n": "\n", "r": "\r", "t": "\t", "\\": "\\"}
+    while index < len(text):
+        if text[index] == "\\" and index + 1 < len(text):
+            escaped = text[index + 1]
+            if escaped in escapes:
+                decoded.append(escapes[escaped])
+                index += 2
+                continue
+        decoded.append(text[index])
+        index += 1
+    return "".join(decoded)
+
+
+def _nano_line_bounds(content, line_number):
+    if line_number < 1:
+        return None
+    current = 1
+    start = 0
+    while True:
+        if current == line_number:
+            end = content.find("\n", start)
+            if end < 0:
+                end = len(content)
+                return start, end, end
+            return start, end, end + 1
+        newline = content.find("\n", start)
+        if newline < 0:
+            return None
+        start = newline + 1
+        current += 1
+
+
+def _handle_nano_command(args, cwd):
+    usage = (
+        "nano PATH [--number|--write TEXT|--append TEXT|--insert LINE TEXT|"
+        "--replace LINE TEXT|--delete LINE]\n"
+        "TEXT escapes: \\n \\r \\t \\\\\n"
+    )
+    if not args or args[0] == "--help":
+        return 0, usage
+
+    path = _normalize_path(cwd, args[0])
+    info = VIRTUAL_FS.stat(path)
+    if info is not None and info["type"] != "file":
+        return 1, "nano: path is not a file\n"
+    content = VIRTUAL_FS.read(path) if info is not None else ""
+
+    if len(args) == 1:
+        suffix = "\n" if info is not None else " [ New File ]\n"
+        body = content
+        if body and not body.endswith("\n"):
+            body += "\n"
+        return 0, f"nano: {path}{suffix}{body}"
+
+    action = args[1]
+    if action == "--number":
+        if len(args) != 2:
+            return 1, "nano: too many arguments\n"
+        lines = content.splitlines()
+        if not lines:
+            lines = [""]
+        return 0, "".join(f"{index}  {line}\n" for index, line in enumerate(lines, 1))
+
+    if action in ("--write", "--append"):
+        text = _nano_decode(" ".join(args[2:]))
+        edited = text if action == "--write" else content + text
+    elif action in ("--insert", "--replace", "--delete"):
+        if len(args) < 3:
+            return 1, "nano: invalid line number\n"
+        try:
+            line_number = int(args[2])
+        except ValueError:
+            return 1, "nano: invalid line number\n"
+        bounds = _nano_line_bounds(content, line_number)
+        if bounds is None:
+            return 1, "nano: invalid line number\n"
+        start, _, next_line = bounds
+        if action == "--delete":
+            if len(args) != 3:
+                return 1, "nano: delete takes only a line number\n"
+            edited = content[:start] + content[next_line:]
+        else:
+            if len(args) < 4:
+                return 1, "nano: missing text\n"
+            text = _nano_decode(" ".join(args[3:]))
+            suffix = start if action == "--insert" else next_line
+            edited = content[:start] + text + "\n" + content[suffix:]
+    else:
+        return 1, "nano: unsupported option; use nano --help\n"
+
+    if len(edited.encode("utf-8")) > 3071:
+        return 1, "nano: text exceeds editor capacity\n"
+    if not VIRTUAL_FS.write(path, edited):
+        return 1, "nano: save failed\n"
+    return 0, f"nano: saved {path} bytes={len(edited.encode('utf-8'))}\n"
+
+
+def _handle_htop_command(args):
+    if args and args != ["--active"] and args != ["--all"]:
+        return 1, "htop: expected --active or --all\n"
+    rows = [
+        "1 0 running 1 0 0 3 /init",
+        "2 1 waiting 1 0 0 4 /bin/xaios-ssh-bridge",
+    ]
+    return (
+        0,
+        "XAIOS htop source=ssh-bridge tasks_active=2 scheduled=2 failed=0\n"
+        "PID PPID STATE TICKS SYSCALLS REJECTS PAGES COMMAND\n"
+        + "\n".join(rows)
+        + f"\nshown={len(rows)}\n",
+    )
+
+
 def xaios_remote_command(command, cwd="/"):
     tokens = _normalize_tokens(command)
     if not tokens:
@@ -520,7 +636,8 @@ def xaios_remote_command(command, cwd="/"):
         return (
             0,
             "XAIOS SSH commands: pwd ls cd mkdir touch cp grep find head tail echo "
-            "l la ll tar cpio cat mv rm rmdir stat write status sysinfo exit quit logout help\n",
+            "l la ll tar cpio cat mv rm rmdir stat write nano htop status sysinfo "
+            "exit quit logout help\n",
         )
 
     if cmd == "pwd":
@@ -628,6 +745,12 @@ def xaios_remote_command(command, cwd="/"):
         if not VIRTUAL_FS.write(path, payload):
             return 1, f"xaios-ssh: write: failed for '{path}'\n"
         return 0, ""
+
+    if cmd == "nano":
+        return _handle_nano_command(args, cwd)
+
+    if cmd == "htop":
+        return _handle_htop_command(args)
 
     if cmd == "cp":
         if len(args) < 2:

@@ -97,9 +97,32 @@ typedef struct xaios_mfs_stat_user {
 
 ### Supported shell commands
 
-`pwd`, `ls` (with `-l`/`-a`), `cd`, `mkdir`, `touch`, `cat`, `cp`, `mv`, `rm`, `rmdir`, `stat`, `write`, `echo`, `grep`, `find`, `head`, `tail`, `sed`, `tar`, `cpio`, `status`, `sysinfo`, `help`, `exit`.
+`pwd`, `ls` (with `-l`/`-a`), `cd`, `mkdir`, `touch`, `cat`, `cp`, `mv`, `rm`, `rmdir`, `stat`, `write`, `echo`, `grep`, `find`, `head`, `tail`, `sed`, `tar`, `cpio`, `nano`, `htop`, `status`, `sysinfo`, `help`, `exit`.
 
 Pipe (`|`) and output redirection (`>`) are supported for chaining commands.
+
+`nano` is a bounded text editor for mutable-filesystem paths:
+
+```text
+nano PATH
+nano PATH --number
+nano PATH --write TEXT
+nano PATH --append TEXT
+nano PATH --insert LINE TEXT
+nano PATH --replace LINE TEXT
+nano PATH --delete LINE
+```
+
+Text arguments decode `\n`, `\r`, `\t`, and `\\`. Files must fit within the
+3,071-byte editor capacity; oversized input is rejected without truncation.
+Edits are saved immediately by the modifying commands.
+
+`htop` emits a live kernel process-table snapshot. `htop --active` shows loaded,
+runnable, running, and waiting processes; `htop --all` also includes exited and
+failed process slots. The table reports scheduler ticks and page counts rather
+than estimated CPU percentages. XAIOS does not yet expose a curses/TTY ABI, so
+these utilities use the supported remote command interface rather than a
+full-screen terminal UI.
 
 ## Capabilities
 

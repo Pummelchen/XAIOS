@@ -5,6 +5,7 @@
 #include <xaios/security.h>
 #include <xaios/status.h>
 #include <xaios/types.h>
+#include <xaios/user.h>
 
 #ifndef XAIOS_REMOTE_LOGIN_LIST_BYTES
 #define XAIOS_REMOTE_LOGIN_LIST_BYTES XAIOS_MFS_MAX_FILE_BYTES
@@ -403,11 +404,16 @@ static xaios_status_t parse_u64_token(const char *text, uint64_t *value,
   *consumed = 0;
   for (uint64_t i = 0; text[i] != '\0'; ++i) {
     char ch = text[i];
+    uint64_t digit;
     if (ch < '0' || ch > '9') {
       *consumed = i;
       return XAIOS_OK;
     }
-    *value = (*value * 10U) + (uint64_t)(ch - '0');
+    digit = (uint64_t)(ch - '0');
+    if (*value > (UINT64_MAX - digit) / 10U) {
+      return XAIOS_ERR_INVALID;
+    }
+    *value = (*value * 10U) + digit;
     *consumed = i + 1U;
   }
   return XAIOS_OK;
@@ -2229,6 +2235,374 @@ static xaios_status_t handle_sed(const char *args, char *output,
   return XAIOS_OK;
 }
 
+static xaios_status_t nano_append_bytes(char *buffer, uint64_t capacity,
+                                       uint64_t *offset, const char *data,
+                                       uint64_t size) {
+  if (buffer == 0 || offset == 0 || (data == 0 && size != 0U)) {
+    return XAIOS_ERR_INVALID;
+  }
+  for (uint64_t i = 0; i < size; ++i) {
+    if (buffer_append_char(buffer, capacity, offset, data[i]) != XAIOS_OK) {
+      return XAIOS_ERR_NO_MEMORY;
+    }
+  }
+  return XAIOS_OK;
+}
+
+static xaios_status_t nano_append_decoded(char *buffer, uint64_t capacity,
+                                         uint64_t *offset,
+                                         const char *text) {
+  if (buffer == 0 || offset == 0 || text == 0) {
+    return XAIOS_ERR_INVALID;
+  }
+  for (uint64_t i = 0; text[i] != '\0'; ++i) {
+    char value = text[i];
+    if (value == '\\' && text[i + 1U] != '\0') {
+      char escaped = text[i + 1U];
+      if (escaped == 'n') {
+        value = '\n';
+        ++i;
+      } else if (escaped == 'r') {
+        value = '\r';
+        ++i;
+      } else if (escaped == 't') {
+        value = '\t';
+        ++i;
+      } else if (escaped == '\\') {
+        value = '\\';
+        ++i;
+      }
+    }
+    if (buffer_append_char(buffer, capacity, offset, value) != XAIOS_OK) {
+      return XAIOS_ERR_NO_MEMORY;
+    }
+  }
+  return XAIOS_OK;
+}
+
+static xaios_status_t nano_find_line(const char *data, uint64_t size,
+                                    uint64_t requested, uint64_t *start,
+                                    uint64_t *end, uint64_t *next) {
+  uint64_t current = 1U;
+  uint64_t line_start = 0U;
+  if (data == 0 || requested == 0U || start == 0 || end == 0 || next == 0) {
+    return XAIOS_ERR_INVALID;
+  }
+  for (;;) {
+    if (current == requested) {
+      uint64_t line_end = line_start;
+      while (line_end < size && data[line_end] != '\n') {
+        ++line_end;
+      }
+      *start = line_start;
+      *end = line_end;
+      *next = line_end < size ? line_end + 1U : line_end;
+      return XAIOS_OK;
+    }
+    while (line_start < size && data[line_start] != '\n') {
+      ++line_start;
+    }
+    if (line_start >= size) {
+      return XAIOS_ERR_NOT_FOUND;
+    }
+    ++line_start;
+    ++current;
+  }
+}
+
+static xaios_status_t nano_render_numbered(const char *data, uint64_t size,
+                                          char *output,
+                                          uint64_t output_capacity,
+                                          uint64_t *output_bytes) {
+  uint64_t line = 1U;
+  uint64_t start = 0U;
+  if (size == 0U) {
+    output_append(output, output_capacity, output_bytes, "1  \n");
+    return XAIOS_OK;
+  }
+  while (start < size) {
+    uint64_t end = start;
+    while (end < size && data[end] != '\n') {
+      ++end;
+    }
+    output_append_u64(output, output_capacity, output_bytes, line);
+    output_append(output, output_capacity, output_bytes, "  ");
+    for (uint64_t i = start; i < end; ++i) {
+      if (output_append_char(output, output_capacity, output_bytes, data[i]) !=
+          XAIOS_OK) {
+        return XAIOS_ERR_NO_MEMORY;
+      }
+    }
+    if (output_append_char(output, output_capacity, output_bytes, '\n') !=
+        XAIOS_OK) {
+      return XAIOS_ERR_NO_MEMORY;
+    }
+    start = end < size ? end + 1U : end;
+    ++line;
+  }
+  return XAIOS_OK;
+}
+
+static xaios_status_t handle_nano(const char *args, char *output,
+                                 uint64_t output_capacity,
+                                 uint64_t *output_bytes) {
+  char path_arg[XAIOS_MFS_PATH_MAX];
+  char action[24];
+  char line_token[24];
+  char resolved[XAIOS_MFS_PATH_MAX];
+  char data[XAIOS_MFS_MAX_FILE_BYTES];
+  char edited[XAIOS_MFS_MAX_FILE_BYTES];
+  uint64_t data_size = 0U;
+  uint64_t edited_size = 0U;
+  uint64_t index = 0U;
+  uint64_t line = 0U;
+  uint64_t consumed = 0U;
+  uint64_t line_start = 0U;
+  uint64_t line_end = 0U;
+  uint64_t line_next = 0U;
+  xaios_mfs_stat_t stat;
+
+  if (token_next(args, &index, path_arg, sizeof(path_arg)) != XAIOS_OK ||
+      string_equal(path_arg, "--help") == 1U) {
+    output_append(
+        output, output_capacity, output_bytes,
+        "nano PATH [--number|--write TEXT|--append TEXT|--insert LINE TEXT|"
+        "--replace LINE TEXT|--delete LINE]\n"
+        "TEXT escapes: \\n \\r \\t \\\\\n");
+    return XAIOS_OK;
+  }
+  if (remote_path_resolve(g_remote_login_cwd, path_arg, resolved,
+                          sizeof(resolved)) != XAIOS_OK) {
+    return command_fail(output, output_capacity, output_bytes,
+                        "nano: invalid path");
+  }
+
+  xaios_status_t stat_status = mutable_fs_stat(resolved, &stat);
+  if (stat_status == XAIOS_OK && stat.type != 2U) {
+    return command_fail(output, output_capacity, output_bytes,
+                        "nano: path is not a file");
+  }
+  if (stat_status == XAIOS_OK) {
+    if (stat.size >= sizeof(data) ||
+        mutable_fs_read(resolved, data, sizeof(data), &data_size) != XAIOS_OK) {
+      return command_fail(output, output_capacity, output_bytes,
+                          "nano: file exceeds editor capacity");
+    }
+  } else {
+    data_size = 0U;
+  }
+  data[data_size] = '\0';
+
+  if (token_next(args, &index, action, sizeof(action)) != XAIOS_OK) {
+    output_append(output, output_capacity, output_bytes, "nano: ");
+    output_append(output, output_capacity, output_bytes, resolved);
+    output_append(output, output_capacity, output_bytes,
+                  stat_status == XAIOS_OK ? "\n" : " [ New File ]\n");
+    if (nano_append_bytes(output, output_capacity, output_bytes, data,
+                          data_size) != XAIOS_OK) {
+      return command_fail(output, output_capacity, output_bytes,
+                          "nano: output buffer too small");
+    }
+    if (data_size != 0U && data[data_size - 1U] != '\n') {
+      (void)output_append_char(output, output_capacity, output_bytes, '\n');
+    }
+    return XAIOS_OK;
+  }
+
+  if (string_equal(action, "--number") == 1U) {
+    if (has_more_args(args, index) != 0) {
+      return command_fail(output, output_capacity, output_bytes,
+                          "nano: too many arguments");
+    }
+    return nano_render_numbered(data, data_size, output, output_capacity,
+                                output_bytes);
+  }
+  if (remote_ensure_parent(resolved) != XAIOS_OK) {
+    return command_fail(output, output_capacity, output_bytes,
+                        "nano: parent directory not found");
+  }
+
+  if (string_equal(action, "--write") == 1U) {
+    const char *text = args + skip_ws(args, index);
+    if (nano_append_decoded(edited, sizeof(edited), &edited_size, text) !=
+        XAIOS_OK) {
+      return command_fail(output, output_capacity, output_bytes,
+                          "nano: text exceeds editor capacity");
+    }
+  } else if (string_equal(action, "--append") == 1U) {
+    const char *text = args + skip_ws(args, index);
+    if (nano_append_bytes(edited, sizeof(edited), &edited_size, data,
+                          data_size) != XAIOS_OK ||
+        nano_append_decoded(edited, sizeof(edited), &edited_size, text) !=
+            XAIOS_OK) {
+      return command_fail(output, output_capacity, output_bytes,
+                          "nano: text exceeds editor capacity");
+    }
+  } else if (string_equal(action, "--insert") == 1U ||
+             string_equal(action, "--replace") == 1U ||
+             string_equal(action, "--delete") == 1U) {
+    if (token_next(args, &index, line_token, sizeof(line_token)) != XAIOS_OK ||
+        parse_u64_token(line_token, &line, &consumed) != XAIOS_OK ||
+        consumed != cstr_len(line_token) || line == 0U ||
+        nano_find_line(data, data_size, line, &line_start, &line_end,
+                       &line_next) != XAIOS_OK) {
+      return command_fail(output, output_capacity, output_bytes,
+                          "nano: invalid line number");
+    }
+    if (string_equal(action, "--delete") == 1U) {
+      if (has_more_args(args, index) != 0) {
+        return command_fail(output, output_capacity, output_bytes,
+                            "nano: delete takes only a line number");
+      }
+      if (nano_append_bytes(edited, sizeof(edited), &edited_size, data,
+                            line_start) != XAIOS_OK ||
+          nano_append_bytes(edited, sizeof(edited), &edited_size,
+                            data + line_next, data_size - line_next) !=
+              XAIOS_OK) {
+        return command_fail(output, output_capacity, output_bytes,
+                            "nano: edit exceeds editor capacity");
+      }
+    } else {
+      const char *text = args + skip_ws(args, index);
+      uint64_t suffix = string_equal(action, "--insert") == 1U
+                            ? line_start
+                            : line_next;
+      if (text[0] == '\0') {
+        return command_fail(output, output_capacity, output_bytes,
+                            "nano: missing text");
+      }
+      if (nano_append_bytes(edited, sizeof(edited), &edited_size, data,
+                            line_start) != XAIOS_OK ||
+          nano_append_decoded(edited, sizeof(edited), &edited_size, text) !=
+              XAIOS_OK ||
+          output_append_char(edited, sizeof(edited), &edited_size, '\n') !=
+              XAIOS_OK ||
+          nano_append_bytes(edited, sizeof(edited), &edited_size, data + suffix,
+                            data_size - suffix) != XAIOS_OK) {
+        return command_fail(output, output_capacity, output_bytes,
+                            "nano: edit exceeds editor capacity");
+      }
+      (void)line_end;
+    }
+  } else {
+    return command_fail(output, output_capacity, output_bytes,
+                        "nano: unsupported option; use nano --help");
+  }
+
+  if (mutable_fs_write(resolved, edited, edited_size) != XAIOS_OK) {
+    return command_fail(output, output_capacity, output_bytes,
+                        "nano: save failed");
+  }
+  output_append(output, output_capacity, output_bytes, "nano: saved ");
+  output_append(output, output_capacity, output_bytes, resolved);
+  output_append(output, output_capacity, output_bytes, " bytes=");
+  output_append_u64(output, output_capacity, output_bytes, edited_size);
+  output_append(output, output_capacity, output_bytes, "\n");
+  return XAIOS_OK;
+}
+
+static const char *htop_state_name(xaios_user_process_state_t state) {
+  switch (state) {
+  case XAIOS_USER_PROCESS_LOADED:
+    return "loaded";
+  case XAIOS_USER_PROCESS_RUNNABLE:
+    return "runnable";
+  case XAIOS_USER_PROCESS_RUNNING:
+    return "running";
+  case XAIOS_USER_PROCESS_WAITING:
+    return "waiting";
+  case XAIOS_USER_PROCESS_EXITED:
+    return "exited";
+  case XAIOS_USER_PROCESS_FAILED:
+    return "failed";
+  default:
+    return "unknown";
+  }
+}
+
+static int htop_state_active(xaios_user_process_state_t state) {
+  return state == XAIOS_USER_PROCESS_LOADED ||
+         state == XAIOS_USER_PROCESS_RUNNABLE ||
+         state == XAIOS_USER_PROCESS_RUNNING ||
+         state == XAIOS_USER_PROCESS_WAITING;
+}
+
+static xaios_status_t handle_htop(const char *args, char *output,
+                                 uint64_t output_capacity,
+                                 uint64_t *output_bytes) {
+  char option[16];
+  uint64_t index = 0U;
+  int show_all = 0;
+  int truncated = 0;
+  uint64_t shown = 0U;
+  xaios_user_process_t process;
+  if (token_next(args, &index, option, sizeof(option)) == XAIOS_OK) {
+    if (string_equal(option, "--all") == 1U) {
+      show_all = 1;
+    } else if (string_equal(option, "--active") != 1U) {
+      return command_fail(output, output_capacity, output_bytes,
+                          "htop: expected --active or --all");
+    }
+    if (has_more_args(args, index) != 0) {
+      return command_fail(output, output_capacity, output_bytes,
+                          "htop: too many arguments");
+    }
+  }
+
+  output_append(output, output_capacity, output_bytes, "XAIOS htop tasks_active=");
+  output_append_u64(output, output_capacity, output_bytes,
+                    user_process_active_count());
+  output_append(output, output_capacity, output_bytes, " scheduled=");
+  output_append_u64(output, output_capacity, output_bytes,
+                    user_process_scheduled_count());
+  output_append(output, output_capacity, output_bytes, " failed=");
+  output_append_u64(output, output_capacity, output_bytes,
+                    user_process_failed_count());
+  output_append(output, output_capacity, output_bytes,
+                "\nPID PPID STATE TICKS SYSCALLS REJECTS PAGES COMMAND\n");
+
+  for (uint32_t pid = 1U; pid <= XAIOS_MAX_USER_PROCESSES; ++pid) {
+    if (user_process_snapshot(pid, &process) != XAIOS_OK ||
+        (show_all == 0 && htop_state_active(process.state) == 0)) {
+      continue;
+    }
+    if (*output_bytes + 192U >= output_capacity) {
+      truncated = 1;
+      break;
+    }
+    output_append_u64(output, output_capacity, output_bytes, process.pid);
+    output_append(output, output_capacity, output_bytes, " ");
+    output_append_u64(output, output_capacity, output_bytes, process.parent_pid);
+    output_append(output, output_capacity, output_bytes, " ");
+    output_append(output, output_capacity, output_bytes,
+                  htop_state_name(process.state));
+    output_append(output, output_capacity, output_bytes, " ");
+    output_append_u64(output, output_capacity, output_bytes,
+                      process.scheduler_ticks);
+    output_append(output, output_capacity, output_bytes, " ");
+    output_append_u64(output, output_capacity, output_bytes,
+                      process.syscall_count);
+    output_append(output, output_capacity, output_bytes, " ");
+    output_append_u64(output, output_capacity, output_bytes,
+                      process.rejected_syscall_count);
+    output_append(output, output_capacity, output_bytes, " ");
+    output_append_u64(output, output_capacity, output_bytes,
+                      process.aspace.page_count);
+    output_append(output, output_capacity, output_bytes, " ");
+    output_append(output, output_capacity, output_bytes,
+                  process.name == 0 ? "(unknown)" : process.name);
+    output_append(output, output_capacity, output_bytes, "\n");
+    ++shown;
+  }
+  output_append(output, output_capacity, output_bytes, "shown=");
+  output_append_u64(output, output_capacity, output_bytes, shown);
+  if (truncated != 0) {
+    output_append(output, output_capacity, output_bytes, " truncated=1");
+  }
+  output_append(output, output_capacity, output_bytes, "\n");
+  return XAIOS_OK;
+}
+
 static xaios_status_t parse_and_execute(const char *command, char *output,
                                       uint64_t output_capacity,
                                       uint64_t *output_bytes) {
@@ -2255,8 +2629,8 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
     output_append(
         output, output_capacity, output_bytes,
         "XAIOS shell: pwd ls l la ll cd mkdir touch cp grep find head tail echo "
-        "tar cpio cat mv rm rmdir stat write sed status sysinfo exit quit "
-        "logout help\n");
+        "tar cpio cat mv rm rmdir stat write sed nano htop status sysinfo exit "
+        "quit logout help\n");
     return XAIOS_OK;
   }
   if (string_equal(cmd, "status") == 1U) {
@@ -2401,6 +2775,12 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
   }
   if (string_equal(cmd, "sed") == 1U) {
     return handle_sed(args, output, output_capacity, output_bytes);
+  }
+  if (string_equal(cmd, "nano") == 1U) {
+    return handle_nano(args, output, output_capacity, output_bytes);
+  }
+  if (string_equal(cmd, "htop") == 1U) {
+    return handle_htop(args, output, output_capacity, output_bytes);
   }
 
   klog("remote-login: command '%s' not recognized with args='%s'\n", cmd, args);

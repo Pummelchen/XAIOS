@@ -10,6 +10,15 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 -->
 # AI onboarding changelog
 
+## 2026-08-02 — command utilities
+
+- Added bounded, line-oriented `nano` editing commands backed by the mutable
+  filesystem, with immediate saves and explicit capacity errors.
+- Added `htop` process snapshots backed by live kernel scheduler/process data.
+- Added QEMU and SSH-bridge coverage for editing and process-table behavior.
+- Documented that XAIOS does not yet provide the TTY ABI needed for full-screen
+  curses interfaces.
+
 ## 2026-08-01 — license resolution
 
 - Replaced the contradictory MIT/to-be-decided text with the standard PolyForm

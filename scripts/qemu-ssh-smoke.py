@@ -81,6 +81,20 @@ def main() -> int:
         sysinfo = run_ssh("sysinfo")
         if "cpu_only_ai=true" not in sysinfo:
             raise RuntimeError(f"missing sysinfo marker: {sysinfo!r}")
+        run_ssh("nano /state/ssh-editor.txt --write 'alpha\\nbeta'")
+        run_ssh("nano /state/ssh-editor.txt --insert 2 inserted")
+        run_ssh("nano /state/ssh-editor.txt --replace 1 first")
+        run_ssh("nano /state/ssh-editor.txt --delete 3")
+        run_ssh("nano /state/ssh-editor.txt --append tail")
+        editor = run_ssh("nano /state/ssh-editor.txt --number")
+        if editor != "1  first\n2  inserted\n3  tail\n":
+            raise RuntimeError(f"nano edit mismatch: {editor!r}")
+        process_table = run_ssh("htop --all")
+        if "PID PPID STATE TICKS SYSCALLS REJECTS PAGES COMMAND" not in process_table:
+            raise RuntimeError(f"missing htop header: {process_table!r}")
+        if "/bin/xaios-ssh-bridge" not in process_table:
+            raise RuntimeError(f"missing htop process row: {process_table!r}")
+        run_ssh("rm /state/ssh-editor.txt")
         print("qemu-ssh-smoke: OpenSSH client reached XAIOS remote login")
         return 0
     finally:

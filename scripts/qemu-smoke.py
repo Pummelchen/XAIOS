@@ -163,6 +163,7 @@ TARGETS = [
     "name=/bin/xaios-worker state=exited exit_code=0",
     "/worker: scheduled child process ran",
     "/bin/xaios-shell: command surface passed 1..15 + ls variants + tar/cpio archive",
+    "/bin/xaios-shell: nano and htop utilities passed",
     "kernel: /bin/xaios-shell returned to kernel exit_code=0",
     "/bin/hello: hello world from C userspace",
     "/bin/hello: C toolchain and EL0 runtime integration passed",
