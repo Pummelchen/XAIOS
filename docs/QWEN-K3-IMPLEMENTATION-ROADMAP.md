@@ -1,7 +1,9 @@
-# Qwen3.6+ and Kimi K3 implementation roadmap
+# Qwen, Kimi, DeepSeek and GLM implementation roadmap
 
 This roadmap is dependency ordered. An interface or fixture is not model
-support, and Kimi K3 text support is not multimodal support.
+support, and Kimi K3 text support is not multimodal support. New model-family
+targets enter only after an immutable official source and architecture contract
+have been verified.
 
 ## Verified baseline, 2026-08-01
 
@@ -82,6 +84,25 @@ support, and Kimi K3 text support is not multimodal support.
 - [ ] Add immutable Apple and Xeon benchmark artifacts under
   `docs/BENCHMARK-CONTRACT.md`.
 
+## Additional architecture targets
+
+These targets reuse the model-v2 package, architecture registry, backend API
+and scalar parity harness. They do not reuse another model's execution plan
+unless official configuration and operator metadata prove that compatibility.
+
+- [ ] **Qwen 3.7 27B:** pin the exact official model/config/tokenizer revision,
+  probe its architecture identifier and derive its layer/state plan before
+  implementation. The requested label is not yet a compatibility claim.
+- [ ] **DeepSeek V4 Flash 0731:** verify the exact official release label and
+  source revision before defining tensor roles, routing/state semantics or
+  quantization support.
+- [ ] **GLM 5.2:** pin the official source revision, then implement and validate
+  a separate adapter for its configured sparse-attention/MoE operations and
+  long-context state.
+- [ ] For every target, pass tokenizer, tensor import, operator/layer, prefill
+  logits, deterministic decode, session-state and physical-hardware gates
+  before changing its status from `Roadmap only`.
+
 ## Official compatibility sources
 
 - [Qwen3.5-0.8B official configuration](https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/config.json)
@@ -89,6 +110,9 @@ support, and Kimi K3 text support is not multimodal support.
 - [Qwen3.6 official repository](https://github.com/QwenLM/Qwen3.6)
 - [Kimi K3 official configuration](https://huggingface.co/moonshotai/Kimi-K3/blob/main/config.json)
 - [Kimi K3 official repository and report](https://github.com/MoonshotAI/Kimi-K3)
+- [GLM 5.2 official model repository](https://huggingface.co/zai-org/GLM-5.2)
 
 Before coding against these sources, record an immutable revision and verify
-that the official architecture/configuration has not changed.
+that the official architecture/configuration has not changed. An authoritative
+source for the exact labels DeepSeek V4 Flash 0731 and Qwen 3.7 27B remains an
+open prerequisite.

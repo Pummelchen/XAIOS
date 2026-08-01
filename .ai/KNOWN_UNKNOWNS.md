@@ -68,6 +68,9 @@ Evidence:
 
 - Exact production Qwen/K3 source revisions for golden compatibility fixtures
   are not pinned yet; verify official configuration at importer implementation time.
+- Exact source revisions for GLM 5.2 and the roadmap labels DeepSeek V4 Flash
+  0731 and Qwen 3.7 27B are not pinned. The latter two exact labels still
+  require authoritative upstream release verification.
 - Hardware validation status beyond repository artifacts is unknown; currently
   no qualifying physical artifact is present.
 - Production signing/key-management design is not complete in source comments inspected.

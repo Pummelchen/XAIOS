@@ -21,6 +21,12 @@
       "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
     },
     {
+      "id": "qwen_3_7_27b",
+      "name": "Qwen 3.7 27B",
+      "status": "Roadmap only",
+      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
+    },
+    {
       "id": "kimi_k3_text",
       "name": "Kimi K3 text",
       "status": "Interface only",
@@ -29,6 +35,18 @@
     {
       "id": "kimi_k3_multimodal",
       "name": "Kimi K3 multimodal",
+      "status": "Roadmap only",
+      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
+    },
+    {
+      "id": "deepseek_v4_flash_0731",
+      "name": "DeepSeek V4 Flash 0731",
+      "status": "Roadmap only",
+      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
+    },
+    {
+      "id": "glm_5_2",
+      "name": "GLM 5.2",
       "status": "Roadmap only",
       "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
     }

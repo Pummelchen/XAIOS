@@ -11,8 +11,11 @@ real-model parity. Model status is checked against `docs/MODEL-SUPPORT.json`:
 | Deterministic QEMU model-v1 path | Fixture only | QEMU correctness and ABI evidence only. |
 | xaios.model.v2 tooling | Interface only | Package structure is tested; no model executes from it. |
 | Qwen3.6+ | Interface only | No physical Qwen logits/token parity artifact. |
+| Qwen 3.7 27B | Roadmap only | No pinned package, implementation or physical execution artifact. |
 | Kimi K3 text | Interface only | No physical K3 text execution artifact. |
 | Kimi K3 multimodal | Roadmap only | No multimodal implementation or artifact. |
+| DeepSeek V4 Flash 0731 | Roadmap only | No verified source revision, implementation or physical execution artifact. |
+| GLM 5.2 | Roadmap only | No importer, adapter, parity result or physical execution artifact. |
 
 The benchmark evidence required for future hardware claims is defined in
 `docs/BENCHMARK-CONTRACT.md`.

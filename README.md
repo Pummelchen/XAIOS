@@ -4,8 +4,8 @@
 
 XAIOS is an experimental operating system and portable inference-engine
 foundation for model-extensible AI serving. The current OS boots under QEMU and
-exercises deterministic kernel/runtime contracts. Real Qwen and Kimi inference
-is under development and is not production supported.
+exercises deterministic kernel/runtime contracts. Real-model inference is
+under development and is not production supported.
 
 AI coding agents should read [`AI_INDEX.md`](./AI_INDEX.md),
 [`AGENTS.md`](./AGENTS.md), and [`.ai/START_HERE.md`](./.ai/START_HERE.md), then
@@ -22,15 +22,19 @@ documentation against it.
 | Deterministic QEMU model-v1 path | Fixture only | Validates model admission, private state, ABI and deterministic dispatch. It is not transformer inference or a hardware benchmark. |
 | xaios.model.v2 tooling | Interface only | Streaming Python writer, Python reader and C parser pass round-trip, checksum, overflow and sparse-file tests. No production importer or executing model uses it yet. |
 | Qwen3.6+ | Interface only | Primary real-model bring-up target. Transformer execution, official tokenizer parity, logits parity and physical-hardware validation remain incomplete. |
+| Qwen 3.7 27B | Roadmap only | Planned Qwen-family target after the scalar correctness path. Its exact official source revision, architecture identifier and operator requirements must be pinned before implementation. |
 | Kimi K3 text | Interface only | Active roadmap target for KDA, Gated MLA, AttnRes, exact top-16 routing, shared experts and native MXFP4. Text inference is not available. |
 | Kimi K3 multimodal | Roadmap only | Vision preprocessing, MoonViT-V2, projection, multimodal positions and golden image cases are a separate milestone. |
+| DeepSeek V4 Flash 0731 | Roadmap only | Planned architecture-adapter target. The exact official release, configuration and tokenizer sources must be verified and pinned before implementation. |
+| GLM 5.2 | Roadmap only | Planned architecture-adapter target. Import, tokenizer, operator, state, logits and physical-hardware parity work has not started. |
 
 XAIOS is designed for multiple official architecture identifiers rather than a
 hard-coded Qwen graph. Qwen3.6+ is the first real-model target. Kimi K3 support
 is actively planned and under development, with text and full multimodal
-support tracked separately. Approximate routing or execution modes, if added,
-will be named, reported and opt-in; exact target-model semantics are the
-default.
+support tracked separately. DeepSeek V4 Flash 0731, GLM 5.2 and Qwen 3.7 27B
+are additional roadmap targets, each requiring its own verified architecture
+adapter and parity gates. Approximate routing or execution modes, if added,
+will be named, reported and opt-in; exact target-model semantics are the default.
 
 ## Current implementation
 
@@ -83,7 +87,7 @@ support.
 
 ## Documentation
 
-- [Qwen/K3 implementation roadmap](./docs/QWEN-K3-IMPLEMENTATION-ROADMAP.md)
+- [Model implementation roadmap](./docs/QWEN-K3-IMPLEMENTATION-ROADMAP.md)
 - [xaios.model.v2 specification](./docs/MODEL-V2-SPECIFICATION.md)
 - [Architecture adapters](./docs/ARCHITECTURE-ADAPTERS.md)
 - [Hardware backends](./docs/HARDWARE-BACKENDS.md)
@@ -100,6 +104,11 @@ Official compatibility sources used for the current design audit:
 - [Qwen3.6 repository](https://github.com/QwenLM/Qwen3.6)
 - [Kimi K3 configuration](https://huggingface.co/moonshotai/Kimi-K3/blob/main/config.json)
 - [Kimi K3 repository and report](https://github.com/MoonshotAI/Kimi-K3)
+- [GLM 5.2 model repository](https://huggingface.co/zai-org/GLM-5.2)
+
+An immutable official source has not yet been pinned for the exact roadmap
+labels DeepSeek V4 Flash 0731 or Qwen 3.7 27B. Their names in this document are
+planning targets, not evidence of compatibility or implementation.
 
 ## Performance evidence
 
