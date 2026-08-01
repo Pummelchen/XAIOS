@@ -90,9 +90,6 @@ These targets reuse the model-v2 package, architecture registry, backend API
 and scalar parity harness. They do not reuse another model's execution plan
 unless official configuration and operator metadata prove that compatibility.
 
-- [ ] **Qwen 3.7 27B:** pin the exact official model/config/tokenizer revision,
-  probe its architecture identifier and derive its layer/state plan before
-  implementation. The requested label is not yet a compatibility claim.
 - [ ] **DeepSeek V4 Flash 0731:** verify the exact official release label and
   source revision before defining tensor roles, routing/state semantics or
   quantization support.
@@ -114,5 +111,4 @@ unless official configuration and operator metadata prove that compatibility.
 
 Before coding against these sources, record an immutable revision and verify
 that the official architecture/configuration has not changed. An authoritative
-source for the exact labels DeepSeek V4 Flash 0731 and Qwen 3.7 27B remains an
-open prerequisite.
+source for the exact label DeepSeek V4 Flash 0731 remains an open prerequisite.

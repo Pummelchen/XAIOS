@@ -15,15 +15,9 @@
       "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
     },
     {
-      "id": "qwen_3_6_plus",
-      "name": "Qwen3.6+",
+      "id": "qwen_3_6_27b",
+      "name": "Qwen 3.6 27B",
       "status": "Interface only",
-      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
-    },
-    {
-      "id": "qwen_3_7_27b",
-      "name": "Qwen 3.7 27B",
-      "status": "Roadmap only",
       "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
     },
     {

@@ -10,8 +10,7 @@ not equivalent to executing-model support.
 |---|---|---|
 | Deterministic QEMU model-v1 path | Fixture only | Remains limited to OS/runtime correctness and ABI gates. |
 | xaios.model.v2 tooling | Interface only | Production importer, tokenizer schema and executing engine integration still required. |
-| Qwen3.6+ | Interface only | Official tokenizer, layer/logit parity, 32-step decode parity and physical execution. |
-| Qwen 3.7 27B | Roadmap only | Pin the official source/config, validate the architecture, then pass tokenizer/logit/decode parity. |
+| Qwen 3.6 27B | Interface only | Official tokenizer, layer/logit parity, 32-step decode parity and physical execution. |
 | Kimi K3 text | Interface only | KDA/MLA/MoE/MXFP4 parity, target-token parity and physical execution. |
 | Kimi K3 multimodal | Roadmap only | Vision preprocessing/tower/projection/position and golden multimodal parity. |
 | DeepSeek V4 Flash 0731 | Roadmap only | Verify and pin the exact official release before defining its adapter and correctness gates. |
@@ -75,7 +74,7 @@ not equivalent to executing-model support.
 ## Additional model architecture targets
 
 - [ ] Pin immutable official source, configuration, tokenizer and tensor-index
-  revisions for Qwen 3.7 27B, DeepSeek V4 Flash 0731 and GLM 5.2.
+  revisions for DeepSeek V4 Flash 0731 and GLM 5.2.
 - [ ] Probe official architecture identifiers and reject unknown configuration
   fields before building execution plans.
 - [ ] Implement each family as a separate architecture adapter rather than
