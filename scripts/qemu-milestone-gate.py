@@ -66,7 +66,7 @@ GATES = {
             "network: queue-backed udp/tcp self-test passed rx=6 tx=6 drops=2 lifecycle=18",
             "network: app udp echo payload=13",
             "network: app tcp connect-close",
-            "virtio-net: rx/tx/reset self-test passed",
+            "virtio-net: queue/tx/parser/reset self-test passed",
         ],
         "minimums": {
             "network_udp_tx": 4,

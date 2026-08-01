@@ -41,7 +41,7 @@ TARGETS = [
     "mutable-fs: self-test passed files=7 directories=12 writes=12 reads=6 deletes=1 commits=1 rollbacks=1 replays=1 rejects=8 checksum_errors=0",
     "update: self-test passed transactions=2 staged=2 committed=1 failed=1 recovered=1 rollbacks=1 boot_fallbacks=1 records=8 rollback_points=2 rejects=2",
     "virtio-net: malformed packet/drop self-test passed",
-    "virtio-net: rx/tx/reset self-test passed",
+    "virtio-net: queue/tx/parser/reset self-test passed",
     "network: stack initialized",
     "network: udp flow id=",
     "expired queue=",
