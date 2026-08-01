@@ -130,7 +130,7 @@ rm -f "$IMAGE_PATH"
 mkdir -p "$(dirname -- "$IMAGE_PATH")"
 
 printf '%s\n' "Creating x86_64 FAT boot image: $IMAGE_PATH"
-dd if=/dev/zero of="$IMAGE_PATH" bs=1m count=64 status=none
+dd if=/dev/zero of="$IMAGE_PATH" bs=1048576 count=64 status=none
 "$MFORMAT" -i "$IMAGE_PATH" -F -v XAIOSX64 ::
 "$MMD" -i "$IMAGE_PATH" ::/EFI
 "$MMD" -i "$IMAGE_PATH" ::/EFI/BOOT
