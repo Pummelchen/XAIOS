@@ -84,6 +84,24 @@ static xaios_status_t allocate_driver(void) {
   return XAIOS_OK;
 }
 
+static xaios_status_t configure_queue(virtio_block_driver_t *drv) {
+  if (virtio_transport_negotiate_no_features(&drv->device) != XAIOS_OK) {
+    return XAIOS_ERR_IO;
+  }
+
+  bytes_zero(drv->desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
+  bytes_zero(drv->avail, sizeof(*drv->avail));
+  bytes_zero(drv->used, sizeof(*drv->used));
+  if (virtio_transport_setup_queue(&drv->device, 0, VIRTQ_SIZE, drv->desc,
+                                   drv->avail, drv->used) != XAIOS_OK) {
+    return XAIOS_ERR_IO;
+  }
+
+  drv->next_avail = 0;
+  virtio_transport_set_driver_ok(&drv->device);
+  return XAIOS_OK;
+}
+
 xaios_status_t virtio_block_init(void) {
   if (allocate_driver() != XAIOS_OK) {
     return XAIOS_ERR_NO_MEMORY;
@@ -94,22 +112,12 @@ xaios_status_t virtio_block_init(void) {
                             &g_blk->device) != XAIOS_OK) {
     return XAIOS_ERR_NOT_FOUND;
   }
-  if (virtio_transport_negotiate_no_features(&g_blk->device) != XAIOS_OK) {
-    return XAIOS_ERR_IO;
-  }
-
-  bytes_zero(g_blk->desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
-  bytes_zero(g_blk->avail, sizeof(*g_blk->avail));
-  bytes_zero(g_blk->used, sizeof(*g_blk->used));
-  if (virtio_transport_setup_queue(&g_blk->device, 0, VIRTQ_SIZE, g_blk->desc,
-                                   g_blk->avail, g_blk->used) != XAIOS_OK) {
+  if (configure_queue(g_blk) != XAIOS_OK) {
     return XAIOS_ERR_IO;
   }
 
   g_blk->capacity_sectors = read_capacity(&g_blk->device);
-  g_blk->next_avail = 0;
   g_blk->initialized = 1;
-  virtio_transport_set_driver_ok(&g_blk->device);
   klog("virtio-blk: capacity_sectors=%lu\n", g_blk->capacity_sectors);
   return XAIOS_OK;
 }
@@ -132,6 +140,14 @@ static xaios_status_t transfer_sector_h(virtio_block_driver_t *drv,
     return XAIOS_ERR_INVALID;
   }
   if (sector >= drv->capacity_sectors) {
+    return XAIOS_ERR_IO;
+  }
+
+  /* This synchronous prototype has one descriptor chain and no descriptor
+   * free-list. Reinitialize its bounded queue before an available-ring slot is
+   * reused; production asynchronous I/O will replace this lifecycle. */
+  if (drv->next_avail == VIRTQ_SIZE && configure_queue(drv) != XAIOS_OK) {
+    klog("virtio-blk: queue recycle failed sector=%lu type=%u\n", sector, type);
     return XAIOS_ERR_IO;
   }
 
@@ -169,10 +185,15 @@ static xaios_status_t transfer_sector_h(virtio_block_driver_t *drv,
   virtio_transport_notify(&drv->device, 0);
 
   if (virtio_transport_wait_used(&drv->used->idx, used_target) != XAIOS_OK) {
+    klog("virtio-blk: completion timeout sector=%lu type=%u avail=%u used=%u "
+         "target=%u\n",
+         sector, type, drv->next_avail, drv->used->idx, used_target);
     return XAIOS_ERR_IO;
   }
   virtio_transport_ack_interrupts(&drv->device);
   if (*drv->status != 0) {
+    klog("virtio-blk: device error sector=%lu type=%u status=%u\n", sector,
+         type, *drv->status);
     return XAIOS_ERR_IO;
   }
 
@@ -228,20 +249,11 @@ xaios_status_t virtio_block_open_slot(uint32_t start_slot,
                                  start_slot, &drv->device) != XAIOS_OK) {
     return XAIOS_ERR_NOT_FOUND;
   }
-  if (virtio_transport_negotiate_no_features(&drv->device) != XAIOS_OK) {
-    return XAIOS_ERR_IO;
-  }
-  bytes_zero(drv->desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
-  bytes_zero(drv->avail, sizeof(*drv->avail));
-  bytes_zero(drv->used, sizeof(*drv->used));
-  if (virtio_transport_setup_queue(&drv->device, 0, VIRTQ_SIZE, drv->desc,
-                                   drv->avail, drv->used) != XAIOS_OK) {
+  if (configure_queue(drv) != XAIOS_OK) {
     return XAIOS_ERR_IO;
   }
   drv->capacity_sectors = read_capacity(&drv->device);
-  drv->next_avail = 0;
   drv->initialized = 1;
-  virtio_transport_set_driver_ok(&drv->device);
   klog("virtio-blk-h: slot=%u capacity_sectors=%lu\n",
        start_slot, drv->capacity_sectors);
   *out_handle = drv;
