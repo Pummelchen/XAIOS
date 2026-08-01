@@ -10,6 +10,14 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 -->
 # AI onboarding changelog
 
+## 2026-08-01 — license resolution
+
+- Replaced the contradictory MIT/to-be-decided text with the standard PolyForm
+  Noncommercial License 1.0.0.
+- Recorded permitted private, educational and noncommercial university research
+  use and the requirement for a separate written commercial license.
+- Added `COMMERCIAL-LICENSE.md` and synchronized README and onboarding status.
+
 ## 2026-06-25 — bootstrap
 
 Indexed commit: `8458ff956831e1b3b44a0cbcb396352ce28e3a01`

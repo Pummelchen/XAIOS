@@ -132,7 +132,8 @@ XAIOS/
 ├── contracts/            — ABI contract (qemu-rc-v1.json)
 ├── docs/                 — Developer documentation
 ├── Makefile              — Build orchestration
-└── LICENSE               — MIT License
+├── LICENSE               — PolyForm Noncommercial 1.0.0
+└── COMMERCIAL-LICENSE.md — Commercial licensing route
 ```
 
 ## Memory Layout

@@ -120,4 +120,13 @@ claims.
 
 ## License
 
-License to be decided.
+XAIOS is source-available under the
+[PolyForm Noncommercial License 1.0.0](./LICENSE). The license permits private,
+personal, educational and noncommercial research use, including use by
+universities and public research organizations. It does not grant commercial
+use.
+
+Commercial use requires a separate written commercial license obtained before
+use. See [`COMMERCIAL-LICENSE.md`](./COMMERCIAL-LICENSE.md) for the licensing
+route. XAIOS is not MIT-licensed because the MIT License permits unrestricted
+commercial use.

@@ -41,4 +41,4 @@ For large tasks, do not load every file at once. Start from the task map in `AI_
 - Cite source file paths in reasoning.
 - Keep QEMU correctness evidence separate from hardware performance claims.
 - Preserve human documentation edits when refreshing onboarding files.
-- Ask a human before resolving license ambiguity, changing security policy, or updating performance claims without measurements.
+- Require explicit human authorization before changing license terms, security policy, or performance claims without measurements.

@@ -90,12 +90,9 @@
   "unknowns": [
     "No qualifying physical Apple or Xeon validation artifact is present.",
     "Official Qwen/Kimi compatibility fixture revisions are not pinned.",
-    "Production signing/key-management status is incomplete from inspected source/comments.",
-    "License status is ambiguous."
+    "Production signing/key-management status is incomplete from inspected source/comments."
   ],
-  "conflicts": [
-    "LICENSE contains MIT text and also says license to be decided."
-  ],
+  "conflicts": [],
   "refresh_policy": {
     "recommended_mode": "event_driven_plus_periodic_check",
     "regenerate_after_relevant_main_merges": true,

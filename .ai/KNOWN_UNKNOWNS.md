@@ -39,14 +39,18 @@ Evidence:
 - `contracts/qemu-rc-v1.json`
 - `scripts/qemu_gate_lib.py`
 
-## Conflicting: license status
+## Resolved: license status
 
-`LICENSE` starts with MIT license text but ends with “License to be decided.” `README.md` also says license is to be decided.
+`LICENSE` contains the standard PolyForm Noncommercial License 1.0.0 with the
+XAIOS required notice. Private, educational and noncommercial research use is
+permitted. Commercial use requires a separate written commercial license as
+described in `COMMERCIAL-LICENSE.md`.
 
-Recommendation: do not alter license language without human approval.
+Do not alter license language without explicit human authorization.
 
 Evidence:
 - `LICENSE`
+- `COMMERCIAL-LICENSE.md`
 - `README.md`
 
 ## Verified implementation gaps
