@@ -40,7 +40,13 @@
       {"number": 25, "name": "remote_login", "capability": "XAIOS_CAP_REMOTE_LOGIN"},
       {"number": 26, "name": "net_external_session", "capability": "XAIOS_CAP_NET"},
       {"number": 27, "name": "thread_group_run", "capability": "XAIOS_CAP_THREADS"},
-      {"number": 28, "name": "ml_run", "capability": "XAIOS_CAP_ML"}
+      {"number": 28, "name": "ml_run", "capability": "XAIOS_CAP_ML"},
+      {"number": 29, "name": "net_listen", "capability": "XAIOS_CAP_NET_SOCKET"},
+      {"number": 30, "name": "net_accept", "capability": "XAIOS_CAP_NET_SOCKET"},
+      {"number": 31, "name": "net_recv", "capability": "XAIOS_CAP_NET_SOCKET"},
+      {"number": 32, "name": "net_send", "capability": "XAIOS_CAP_NET_SOCKET"},
+      {"number": 33, "name": "net_close", "capability": "XAIOS_CAP_NET_SOCKET"},
+      {"number": 34, "name": "agent_dispatch", "capability": "XAIOS_CAP_AGENT"}
     ],
     "capabilities": [
       {"bit": 1, "name": "XAIOS_CAP_LOG"},
@@ -58,7 +64,9 @@
       {"bit": 4096, "name": "XAIOS_CAP_CPU_AI"},
       {"bit": 8192, "name": "XAIOS_CAP_REMOTE_LOGIN"},
       {"bit": 16384, "name": "XAIOS_CAP_THREADS"},
-      {"bit": 32768, "name": "XAIOS_CAP_ML"}
+      {"bit": 32768, "name": "XAIOS_CAP_ML"},
+      {"bit": 65536, "name": "XAIOS_CAP_NET_SOCKET"},
+      {"bit": 131072, "name": "XAIOS_CAP_AGENT"}
     ]
   },
   "telemetry_schema": {
@@ -114,6 +122,7 @@
       "persistence_rollbacks": 7,
       "persistence_disk_writes": 1,
       "persistence_disk_loads": 1,
+      "sandbox_transitions": 7,
       "update_transactions": 2,
       "update_staged": 2,
       "update_committed": 1,
@@ -193,9 +202,9 @@
     "version": 2,
     "header_sector": 1,
     "sector_size": 512,
-    "header_bytes": 2048,
+    "header_bytes": 3584,
     "block_size": 512,
-    "max_files": 16,
+    "max_files": 32,
     "path_max": 64,
     "data_offset": 4096,
     "flags": ["read_only"],
@@ -216,7 +225,7 @@
       "/bin/mltest",
       "/etc/xaios-init.conf",
       "/etc/services/source-index.svc",
-      "/models/cpu-ai-mvp.xaiosmodel"
+      "/models/cpu-ai-v1-fixture.xaiosmodel"
     ],
     "manifest_path": "/etc/xaios-init.conf",
     "manifest_keys": [
@@ -230,16 +239,16 @@
     ]
   },
   "cpu_ai_model_format": {
-    "name": "XAIOS QEMU CPU-AI model image",
+    "name": "XAIOS deterministic QEMU CPU-AI fixture image",
     "magic": "XAIOS_MODEL_MIAI",
     "magic_value": "0x4941494d",
     "version": 1,
     "header_bytes": 80,
-    "path": "/models/cpu-ai-mvp.xaiosmodel",
+    "path": "/models/cpu-ai-v1-fixture.xaiosmodel",
     "quantization": 8,
     "tokenizer": "byte table",
     "tokenizer_bytes": 256,
-    "runtime": "deterministic CPU dispatch",
+    "runtime": "deterministic fixture dispatch; not transformer inference",
     "checksum": "fnv1a64 over weight bytes followed by tokenizer bytes",
     "cpu_only_required": true,
     "gpu_required_rejected": true,
@@ -370,7 +379,7 @@
   "cpu_matrix": {
     "schema": "xaios.qemu.cpu_matrix.v1",
     "arm64_boot_tiers": [
-      {"name": "fast-local-hvf-host", "cpu": "host", "accelerator": "hvf", "validation": "qemu-smoke-default"},
+      {"name": "fast-local-hvf-host", "cpu": "host", "accelerator": "hvf", "required": false, "validation": "qemu-smoke-default"},
       {"name": "baseline-cortex-a53", "cpu": "cortex-a53", "accelerator": "tcg", "validation": "qemu-boot-probe"},
       {"name": "common-cortex-a72", "cpu": "cortex-a72", "accelerator": "tcg", "validation": "qemu-boot-probe"},
       {"name": "modern-cortex-a76", "cpu": "cortex-a76", "accelerator": "tcg", "validation": "qemu-boot-probe"},

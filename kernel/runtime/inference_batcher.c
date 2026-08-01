@@ -115,7 +115,7 @@ xaios_status_t inference_batch_execute(xaios_inference_batch_t *batch,
     uint64_t output_bytes = 0;
     xaios_status_t status = cpu_ai_runtime_run_model(
         cell_id,
-        XAIOS_ML_MODEL_DECODE,
+        XAIOS_ML_MODEL_FIXTURE_DECODE,
         req->input_tokens,
         req->num_input_tokens,
         req->output_buffer,

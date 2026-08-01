@@ -80,8 +80,14 @@ typedef struct xaios_mfs_stat_user {
 
 | Syscall | Number | Wrapper | Description |
 |---------|-------:|---------|-------------|
-| `XAIOS_SYSCALL_CPU_AI_DECODE` | 24 | `xaios_cpu_ai_decode(input, in_size, out, out_size, out_len)` | Run CPU-only AI inference decode. |
-| `XAIOS_SYSCALL_ML_RUN` | 28 | `xaios_ml_run(model_kind, input, in_size, out, out_size, out_len)` | Run ML model. Kinds: `DECODE`=1, `XOR`=2, `SUM`=3, `PARITY`=4. |
+| `XAIOS_SYSCALL_CPU_AI_DECODE` | 24 | `xaios_cpu_ai_decode(input, in_size, out, out_size, out_len)` | Reserved production decode entrypoint. Returns an unsupported error until a real architecture passes its correctness gates. |
+| `XAIOS_SYSCALL_ML_RUN` | 28 | `xaios_ml_run(model_kind, input, in_size, out, out_size, out_len)` | Run deterministic correctness fixtures. Kind 1 is `XAIOS_ML_MODEL_FIXTURE_DECODE`; kinds 2-6 are small math fixtures. These are not model inference. |
+
+## Agent Protocol
+
+| Syscall | Number | Wrapper | Description |
+|---------|-------:|---------|-------------|
+| `XAIOS_SYSCALL_AGENT_DISPATCH` | 34 | `xaios_agent_dispatch(request, response, payload, payload_size)` | Dispatch an agent protocol request subject to `XAIOS_CAP_AGENT`. |
 
 ## Remote Login / Shell
 
@@ -118,6 +124,7 @@ Each process is launched with a capability bitmask. Syscalls are rejected if the
 | `XAIOS_CAP_THREADS` | 16384 | `thread_group_run` |
 | `XAIOS_CAP_ML` | 32768 | `ml_run` |
 | `XAIOS_CAP_NET_SOCKET` | 65536 | Socket API (`listen`, `accept`, `recv`, `send`, `close`) |
+| `XAIOS_CAP_AGENT` | 131072 | `agent_dispatch` |
 
 ## Data Types
 
@@ -139,3 +146,4 @@ Request structures passed by pointer via syscall arguments:
 - `xaios_thread_group_request_t` — thread group parameters
 - `xaios_ml_run_request_t` — ML model kind and I/O buffers
 - `xaios_socket_request_t` — socket fd, port, buffer, byte counts
+- `xaios_agent_dispatch_request_t` — agent protocol request/response buffers

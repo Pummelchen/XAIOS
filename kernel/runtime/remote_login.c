@@ -2108,11 +2108,20 @@ static xaios_status_t handle_sed(const char *args, char *output,
     return command_fail(output, output_capacity, output_bytes,
                         "sed: missing file");
   }
+  uint64_t expr_len = cstr_len(expr);
+  if (expr_len >= 2U &&
+      ((expr[0] == '\'' && expr[expr_len - 1U] == '\'') ||
+       (expr[0] == '"' && expr[expr_len - 1U] == '"'))) {
+    for (uint64_t i = 1U; i + 1U < expr_len; ++i) {
+      expr[i - 1U] = expr[i];
+    }
+    expr_len -= 2U;
+    expr[expr_len] = '\0';
+  }
   if (expr[0] != 's' || expr[1] != '/') {
     return command_fail(output, output_capacity, output_bytes,
                         "sed: only s/// supported");
   }
-  uint64_t expr_len = cstr_len(expr);
   uint64_t slash2 = 0;
   uint64_t slash3 = 0;
   for (uint64_t i = 2; i < expr_len; ++i) {

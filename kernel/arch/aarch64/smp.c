@@ -7,11 +7,13 @@
 
 #define PSCI_0_2_FN64_CPU_ON UINT64_C(0xc4000003)
 #define SECONDARY_STACK_SIZE 4096U
-#define SECONDARY_BOOT_TIMEOUT_MS UINT64_C(1000) /* 1 second */
+#define SECONDARY_BOOT_TIMEOUT_MS UINT64_C(5000)
 
-/* GIC distributor base for early CPU count detection */
-#define QEMU_VIRT_GICD_BASE UINT64_C(0x08000000)
-#define GICD_TYPER 0x0004U
+/* QEMU virt GICv3 redistributor region used for early CPU discovery. */
+#define QEMU_VIRT_GICR_BASE UINT64_C(0x080A0000)
+#define GICR_STRIDE UINT64_C(0x20000)
+#define GICR_TYPER 0x0008U
+#define GICR_TYPER_LAST (UINT64_C(1) << 4U)
 
 extern char aarch64_secondary_entry[];
 
@@ -27,8 +29,8 @@ static uint64_t read_mpidr_el1(void) {
   return value;
 }
 
-static uint32_t mmio_read32(uint64_t base, uint32_t offset) {
-  volatile uint32_t *reg = (volatile uint32_t *)(uintptr_t)(base + offset);
+static uint64_t mmio_read64(uint64_t base, uint32_t offset) {
+  volatile uint64_t *reg = (volatile uint64_t *)(uintptr_t)(base + offset);
   return *reg;
 }
 
@@ -46,6 +48,7 @@ static uint64_t psci_cpu_on(uint64_t mpidr, uint64_t entry, uint64_t context) {
 }
 
 static uint32_t g_online_count; /* cached for O(1) reads */
+static uint32_t g_secondary_scheduler_release;
 
 static uint32_t count_online(void) {
   return g_online_count;
@@ -53,20 +56,18 @@ static uint32_t count_online(void) {
 
 static void bump_online(void) {
   __sync_fetch_and_add(&g_online_count, 1);
+  __asm__ volatile("sev" ::: "memory");
 }
 
-/* Detect available CPU count from GIC distributor TYPER register.
- * GIC TYPER ItLinesNumber is only 3 bits (max 8 CPU hint).
- * For hyperscale systems (>8 CPUs), ACPI MADT or DT parsing is required.
- * On QEMU virt, this reports the -smp N value correctly for N<=8.
- */
+/* QEMU virt exposes one contiguous GICv3 redistributor frame per vCPU. */
 static uint32_t detect_cpu_count(void) {
-  uint32_t typer = mmio_read32(QEMU_VIRT_GICD_BASE, GICD_TYPER);
-  uint32_t cpu_hint = ((typer >> 5U) & 0x7U) + 1U;
-  if (cpu_hint > XAIOS_MAX_CPUS) {
-    cpu_hint = XAIOS_MAX_CPUS;
+  for (uint32_t cpu = 0; cpu < XAIOS_MAX_CPUS; ++cpu) {
+    uint64_t base = QEMU_VIRT_GICR_BASE + (uint64_t)cpu * GICR_STRIDE;
+    if ((mmio_read64(base, GICR_TYPER) & GICR_TYPER_LAST) != 0) {
+      return cpu + 1U;
+    }
   }
-  return cpu_hint;
+  return 1U;
 }
 
 void smp_secondary_main(uint64_t cpu_id) {
@@ -83,6 +84,10 @@ void smp_secondary_main(uint64_t cpu_id) {
     bump_online();
   }
 
+  while (g_secondary_scheduler_release == 0) {
+    __asm__ volatile("wfe");
+  }
+
   /* Initialize this CPU's GIC redistributor and CPU interface */
   gic_secondary_init((uint32_t)cpu_id);
 
@@ -92,6 +97,8 @@ void smp_secondary_main(uint64_t cpu_id) {
   if (cpu_id < XAIOS_MAX_CPUS) {
     g_cpu_states[cpu_id].scheduling_enabled = 1;
   }
+
+  __asm__ volatile("msr daifclr, #2" ::: "memory");
 
   /* Enter idle loop — timer IRQs will invoke scheduler_tick */
   for (;;) {
@@ -119,6 +126,7 @@ void smp_init_qemu_virt(void) {
   }
   xaios_spin_init(&g_smp_lock);
   g_online_count = 0;
+  g_secondary_scheduler_release = 0;
 
   g_cpu_states[0].online = 1;
   g_cpu_states[0].mpidr = read_mpidr_el1();
@@ -151,7 +159,7 @@ void smp_init_qemu_virt(void) {
            count_online(), hw_cpu_count);
       break;
     }
-    __asm__ volatile("yield");
+    __asm__ volatile("wfe");
   }
 
   klog("smp: online cpus=%u/%u (hw detected=%u)\n",
@@ -165,11 +173,33 @@ void smp_init_qemu_virt(void) {
   }
 }
 
+void smp_release_secondary_schedulers(void) {
+  __atomic_store_n(&g_secondary_scheduler_release, 1U, __ATOMIC_RELEASE);
+  __asm__ volatile("sev" ::: "memory");
+}
+
 const xaios_cpu_state_t *smp_cpu_state(uint32_t cpu_id) {
   if (cpu_id >= XAIOS_MAX_CPUS) {
     return 0;
   }
   return &g_cpu_states[cpu_id];
+}
+
+xaios_status_t smp_set_scheduling_enabled(uint32_t cpu_id, uint32_t enabled) {
+  if (cpu_id >= XAIOS_MAX_CPUS || enabled > 1U) {
+    return XAIOS_ERR_INVALID;
+  }
+
+  xaios_spin_lock(&g_smp_lock);
+  if (g_cpu_states[cpu_id].online == 0 ||
+      (g_cpu_states[cpu_id].role != XAIOS_CPU_ROLE_HOUSEKEEPING &&
+       g_cpu_states[cpu_id].role != XAIOS_CPU_ROLE_SCHEDULING)) {
+    xaios_spin_unlock(&g_smp_lock);
+    return XAIOS_ERR_INVALID;
+  }
+  g_cpu_states[cpu_id].scheduling_enabled = enabled;
+  xaios_spin_unlock(&g_smp_lock);
+  return XAIOS_OK;
 }
 
 xaios_status_t smp_mark_core_leased(uint32_t cpu_id, uint32_t owner_id) {
@@ -215,7 +245,7 @@ xaios_status_t smp_release_core_lease(uint32_t cpu_id, uint32_t owner_id) {
   g_cpu_states[cpu_id].lease_owner_id = 0;
   g_cpu_states[cpu_id].irq_routed_away = 0;
   g_cpu_states[cpu_id].tick_suppressed = 0;
-  g_cpu_states[cpu_id].scheduling_enabled = 1;
+  g_cpu_states[cpu_id].scheduling_enabled = g_secondary_scheduler_release;
 
   xaios_spin_unlock(&g_smp_lock);
   klog("smp: cpu%u released owner=%u role=scheduling\n", cpu_id, owner_id);

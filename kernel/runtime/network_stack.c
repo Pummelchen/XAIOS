@@ -2758,8 +2758,21 @@ xaios_status_t network_stack_app_tcp_connect(uint64_t *round_trips) {
   uint8_t ack[NETWORK_BUFFER_SIZE];
   uint8_t rst[NETWORK_BUFFER_SIZE];
   const uint16_t remote_port = 0x6010U;
+  const uint16_t local_port = 22U;
+  int temporary_listener = 0;
+
+  if (!network_stack_has_listener(local_port)) {
+    network_stack_register_listener(local_port, UINT64_MAX);
+    if (!network_stack_has_listener(local_port)) {
+      return XAIOS_ERR_NO_MEMORY;
+    }
+    temporary_listener = 1;
+  }
 
   if (network_stack_bind_queue(cell_id, queue_id, 0x8U) != XAIOS_OK) {
+    if (temporary_listener != 0) {
+      network_stack_unregister_listener(local_port);
+    }
     return XAIOS_ERR_BUSY;
   }
   build_app_tcp_frame(syn, NETWORK_TCP_FLAG_SYN, remote_port);
@@ -2774,6 +2787,9 @@ xaios_status_t network_stack_app_tcp_connect(uint64_t *round_trips) {
     status = network_stack_process_tcp_frame(rst, 58U);
   }
   kassert(network_stack_release_queue(queue_id, cell_id) == XAIOS_OK);
+  if (temporary_listener != 0) {
+    network_stack_unregister_listener(local_port);
+  }
   if (status != XAIOS_OK && status != XAIOS_ERR_INVALID) {
     return status;
   }
@@ -2888,6 +2904,7 @@ void network_stack_self_test(void) {
   kassert(network_stack_bind_queue(1, 2, 0x4U) == XAIOS_OK);
 
   kassert(network_stack_queue_bindings() == 2U);
+  network_stack_register_listener(80U, 1U);
 
   frame_udp[12U] = 0x08;
   frame_udp[13U] = 0x00;

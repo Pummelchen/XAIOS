@@ -8,15 +8,15 @@ REPORT = BUILD / "qemu-milestone-58-cpu-ai-suite.json"
 MARKERS = {
     "model_loader_boundary": [
         "cpu-ai-runtime: model manifest loaded",
-        "cpu-ai-runtime: model file loaded id=2 name=cpu-ai-mvp",
-        "cpu-ai-runtime: model file path=/models/cpu-ai-mvp.xaiosmodel admitted arena=2",
+        "cpu-ai-runtime: model file loaded id=2 name=cpu-ai-v1-fixture",
+        "cpu-ai-runtime: model file path=/models/cpu-ai-v1-fixture.xaiosmodel admitted arena=2",
         "cpu-ai-runtime: model file loader self-test passed file_loads=1 file_rejects=3",
     ],
     "tokenizer_runtime_boundary": [
         "cpu-ai-runtime: tokenizer/runtime boundary self-test passed tokenizer_calls=2 runtime_calls=2",
         "cpu-ai-runtime: tokenizer binding and CPU dispatch self-test passed tokenizer_binds=2 kernel_dispatches=2",
-        "cpu-ai-runtime: deterministic decode fixture input=ABCD output=1B1F2327",
-        "/bin/lstm-xor: cpu-ai runtime decode=",
+        "cpu-ai-runtime: v1 fixture decode input=ABCD output=1B1F2327",
+        "/bin/lstm-xor: cpu-ai fixture decode=",
     ],
     "generic_ml_runtime": [
         "cpu-ai-runtime: generic ml model kind=2",

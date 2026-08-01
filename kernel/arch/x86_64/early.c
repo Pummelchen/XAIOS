@@ -599,21 +599,16 @@ static void build_placement_policy(uint16_t serial_base) {
 
 static void validate_x86_os_contract(uint16_t serial_base) {
   g_contract = (x86_64_contract_state_t){
-      .userspace_contract_ready = 1U,
-      .filesystem_contract_ready = 1U,
-      .networking_contract_ready = g_pci.network_devices > 0U ? 1U : 0U,
-      .ai_cell_contract_ready = g_placement.ai_hot_cpus > 0U ? 1U : 0U,
-      .security_contract_ready = 1U,
-      .telemetry_contract_ready = 1U,
-      .full_os_contract_ready = 1U,
+      .userspace_contract_ready = 0U,
+      .filesystem_contract_ready = 0U,
+      .networking_contract_ready = 0U,
+      .ai_cell_contract_ready = 0U,
+      .security_contract_ready = 0U,
+      .telemetry_contract_ready = 0U,
+      .full_os_contract_ready = 0U,
   };
 
-  if (g_contract.networking_contract_ready == 0U ||
-      g_contract.ai_cell_contract_ready == 0U) {
-    g_contract.full_os_contract_ready = 0U;
-    panic_halt(serial_base, "x86 full OS contract prerequisites missing");
-  }
-
+  serial_puts(serial_base, "x86_64: common kernel/runtime linked=0\n");
   serial_puts(serial_base, "x86_64: OS contract userspace=");
   serial_dec(serial_base, g_contract.userspace_contract_ready);
   serial_puts(serial_base, " filesystem=");
@@ -638,7 +633,7 @@ static void validate_hardware_gate(uint16_t serial_base) {
       .physical_hardware_required = 1U,
       .tuned_linux_bsd_baseline_required = 1U,
       .performance_claims_allowed = 0U,
-      .release_candidate_ready = 1U,
+      .release_candidate_ready = 0U,
   };
 
   serial_puts(serial_base, "x86_64: hardware gate qemu_correctness=");
@@ -649,8 +644,10 @@ static void validate_hardware_gate(uint16_t serial_base) {
   serial_dec(serial_base, g_hardware_gate.tuned_linux_bsd_baseline_required);
   serial_puts(serial_base, " performance_claims_allowed=");
   serial_dec(serial_base, g_hardware_gate.performance_claims_allowed);
+  serial_puts(serial_base, " release_candidate_ready=");
+  serial_dec(serial_base, g_hardware_gate.release_candidate_ready);
   serial_puts(serial_base, "\n");
-  serial_puts(serial_base, "x86_64: Intel Desktop hardware gate release candidate passed\n");
+  serial_puts(serial_base, "x86_64: Intel Desktop hardware gate blocked common-runtime-and-physical-evidence-required\n");
 }
 
 void x86_64_exception_entry(const x86_64_exception_frame_t *frame) {
@@ -715,9 +712,9 @@ void x86_64_kmain(const xaios_boot_info_t *boot) {
   build_placement_policy(serial_base);
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 49 placement policy passed\n");
   validate_x86_os_contract(serial_base);
-  serial_puts(serial_base, "x86_64: Intel Desktop milestone 50 OS contract port passed\n");
+  serial_puts(serial_base, "x86_64: Intel Desktop milestone 50 OS contract port unsupported\n");
   validate_hardware_gate(serial_base);
-  serial_puts(serial_base, "x86_64: Intel Desktop milestone 51 hardware gate passed\n");
+  serial_puts(serial_base, "x86_64: Intel Desktop milestone 51 hardware gate blocked\n");
 
   for (;;) {
     __asm__ volatile("hlt");

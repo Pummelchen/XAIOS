@@ -2,7 +2,7 @@ ENTRY(_start)
 
 SECTIONS
 {
-  . = 0x41000000;
+  . = 0x100000000;
 
   .text : ALIGN(0x1000) {
     *(.text .text.*)
@@ -20,3 +20,5 @@ SECTIONS
     *(.bss .bss.* COMMON)
   }
 }
+
+ASSERT(. < 0x102000000, "Userspace image exceeds the 2 MiB code/data window")

@@ -46,15 +46,25 @@ static inline void xaios_spin_lock(xaios_spinlock_t *lock) {
 
 static inline void xaios_spin_unlock(xaios_spinlock_t *lock) {
   lock->guard = 0;
-  if (smp_online_count() <= 1) {
+  uint32_t current = __atomic_load_n(&lock->serve, __ATOMIC_RELAXED);
+  uint32_t next = __atomic_load_n(&lock->next_ticket, __ATOMIC_RELAXED);
+  if (current == next) {
     __asm__ volatile("dmb ish" ::: "memory");
     return;
   }
-  __atomic_store_n(&lock->serve, lock->serve + 1U, __ATOMIC_RELEASE);
+  __atomic_store_n(&lock->serve, current + 1U, __ATOMIC_RELEASE);
 }
 
 /* Non-blocking try-lock. Returns 1 on success, 0 if already held. */
 static inline int xaios_spin_trylock(xaios_spinlock_t *lock) {
+  if (smp_online_count() <= 1) {
+    if (lock->guard != 0) {
+      return 0;
+    }
+    lock->guard = 1;
+    __asm__ volatile("dmb ish" ::: "memory");
+    return 1;
+  }
   uint32_t current = __atomic_load_n(&lock->serve, __ATOMIC_ACQUIRE);
   uint32_t next = __atomic_load_n(&lock->next_ticket, __ATOMIC_RELAXED);
   if (current != next) {

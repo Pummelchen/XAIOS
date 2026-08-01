@@ -335,6 +335,8 @@ xaios_status_t persistence_rollback(xaios_snapshot_kind_t kind,
   ++g_rollback_count;
   klog("persistence: rollback kind=%u owner=%u generation=%lu label=%s\n",
        (unsigned)kind, owner_id, snapshot->generation, snapshot->label);
+  snapshot->active = 0;
+  snapshot->label[0] = '\0';
   return XAIOS_OK;
 }
 

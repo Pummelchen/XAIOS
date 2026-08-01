@@ -2,7 +2,7 @@
 
 ## Overview
 
-XAIOS benchmarks measure **correctness**, not raw performance. The QEMU environment validates that all subsystems boot, self-test, and produce expected telemetry counters. Performance claims require bare-metal testing with tuned Linux/BSD baselines.
+XAIOS QEMU benchmarks measure **correctness**, not raw performance. The QEMU environment validates that subsystems boot, self-test, and produce expected telemetry counters. Physical performance claims must satisfy [`docs/BENCHMARK-CONTRACT.md`](../docs/BENCHMARK-CONTRACT.md) with a relevant tuned baseline.
 
 ## What We Measure
 
@@ -19,7 +19,7 @@ Every `make qemu-smoke` run validates 330+ boot markers covering:
 - AI cell lifecycle (admission, arena, KV store, conflict detection)
 - Service supervisor (start, crash, restart, cleanup)
 - Userspace process lifecycle (load, run, exit, reclaim)
-- CPU-only AI runtime (model loading, tokenization, inference)
+- CPU-AI deterministic fixture (model-v1 admission, byte-table tokenization and fixture dispatch)
 
 ### Telemetry Metrics (~100 keys)
 
@@ -59,14 +59,14 @@ export XAIOS_LINUX_INITRD=/path/to/initrd.cpio
 make qemu-baseline
 ```
 
-For production-grade comparison (not QEMU-based):
-1. Boot XAIOS on bare-metal ARM with `isolcpus` kernel parameter
-2. Boot tuned Linux (5.x/6.x) on identical hardware with:
+For a physical-hardware comparison:
+1. Boot the same XAIOS executable/model package described by the artifact.
+2. Boot tuned Linux on identical hardware with equivalent isolation, frequency and NUMA placement, for example:
    - `isolcpus=1,2,3` for dedicated AI cores
    - `nohz_full=1,2,3` for tick-less operation
    - CPU governor set to `performance`
    - NUMA pinning via `numactl`
-3. Run identical workloads and measure wall-clock time, latency percentiles (p50/p99/p99.9), and memory footprint
+3. Run identical model revisions, quantization, exactness, prompts and warm/cold states and retain repeated raw measurements.
 
 ## How to Reproduce
 

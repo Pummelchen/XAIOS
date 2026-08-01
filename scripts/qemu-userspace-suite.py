@@ -45,7 +45,7 @@ COMMAND_MARKERS = {
         "/bin/smptest: POSIX-style arbitrary user thread group passed",
         "/bin/nettest: app-callable udp/tcp path passed",
         "/bin/nettest: external host-to-guest tcp/udp session path passed",
-        "/bin/lstm-xor: cpu-ai runtime decode=",
+        "/bin/lstm-xor: cpu-ai fixture decode=",
         "/bin/lstm-xor: xor solve passed predictions=0,1,1,0",
         "/bin/sshtest: interactive remote login command surface passed",
         "/bin/mltest: multi-model CPU-only ML runtime passed",

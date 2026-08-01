@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: all bootstrap test image image-x86_64 qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke intel-desktop-gate qemu-dry-run qemu-smoke qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-cpu-ai-suite qemu-ssh-smoke xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc compile-check qemu-baseline clean clean-persistent
+.PHONY: all bootstrap test image image-x86_64 qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke intel-desktop-gate qemu-dry-run qemu-smoke qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-cpu-ai-suite qemu-ssh-smoke xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc compile-check hosted-test model-v2-test docs-check qemu-baseline clean clean-persistent
 
 all: bootstrap image
 
@@ -138,6 +138,12 @@ compile-check:
 	    -Wall -Wextra -Werror -Ikernel/include -fsyntax-only "$$f" \
 	    || failed=$$((failed + 1)); \
 	done; \
+	for f in $$(find kernel/arch/x86_64 -name '*.c'); do \
+	  clang --target=x86_64-none-elf -std=c99 -ffreestanding \
+	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie -mno-red-zone \
+	    -Wall -Wextra -Werror -Ikernel/include -fsyntax-only "$$f" \
+	    || failed=$$((failed + 1)); \
+	done; \
 	for f in $$(find userspace -name '*.c' ! -name 'crashtest_client.c'); do \
 	  clang --target=aarch64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
@@ -149,6 +155,20 @@ compile-check:
 	  exit 1; \
 	fi; \
 	printf '%s\n' "All C files compiled clean"
+
+hosted-test:
+	@mkdir -p build/hosted
+	clang -std=c99 -Wall -Wextra -Werror -pedantic \
+	  -Iengine/include engine/src/model_v2.c engine/src/sha256.c \
+	  engine/src/architecture.c engine/src/backend_scalar.c \
+	  tests/model_v2/test_engine.c -o build/hosted/test-engine
+	./build/hosted/test-engine
+	PYTHONPATH=tools python3 -m unittest discover -s tests/model_v2 -p 'test_*.py'
+
+model-v2-test: hosted-test
+
+docs-check:
+	python3 scripts/check-model-support.py
 
 qemu-baseline: image
 	python3 ./scripts/benchmark-baseline.py

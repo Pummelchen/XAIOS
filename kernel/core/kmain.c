@@ -119,6 +119,8 @@ void kmain(const xaios_boot_info_t *boot) {
 
   map_mmio_range(boot->uart_base, 4096);
   map_mmio_range(UINT64_C(0x08000000), UINT64_C(0x20000));
+  map_mmio_range(UINT64_C(0x080A0000),
+                 (uint64_t)smp_online_count() * UINT64_C(0x20000));
   map_mmio_range(UINT64_C(0x0a000000), UINT64_C(0x4000));
 
   /* Map ECAM and enumerate PCIe */
@@ -174,8 +176,8 @@ void kmain(const xaios_boot_info_t *boot) {
   virtio_block_self_test();
   persistence_self_test();
   mutable_fs_self_test();
-  /* mount persistent filesystem on 3rd VirtIO block device (slot 2) */
-  xaios_status_t persistent_status = mutable_fs_mount_persistent(2);
+  /* The QEMU runner pins the persistent disk to VirtIO-MMIO slot 1. */
+  xaios_status_t persistent_status = mutable_fs_mount_persistent(1);
   if (persistent_status == XAIOS_OK) {
     xaios_mfs_fsck_result_t fsck = mutable_fs_fsck();
     klog("kernel: persistent fsck valid=%u v%u files=%lu dirs=%lu\n",
@@ -290,6 +292,8 @@ void kmain(const xaios_boot_info_t *boot) {
   /* Initialize preemptive scheduler infrastructure */
   gic_enable_full();
   timer_enable_periodic(XAIOS_SCHEDULER_DEFAULT_TICK_HZ);
+  kassert(smp_set_scheduling_enabled(smp_cpu_id(), 1U) == XAIOS_OK);
+  smp_release_secondary_schedulers();
   klog("kernel: preemptive scheduler infrastructure enabled\n");
 
   for (uint32_t pid = 3; pid <= 5; ++pid) {
@@ -307,6 +311,7 @@ void kmain(const xaios_boot_info_t *boot) {
   }
 
   /* Disable preemptive infrastructure after concurrent workers */
+  kassert(smp_set_scheduling_enabled(smp_cpu_id(), 0U) == XAIOS_OK);
   timer_disable();
   gic_disable_full();
 
@@ -316,10 +321,12 @@ void kmain(const xaios_boot_info_t *boot) {
       XAIOS_CAP_NET | XAIOS_CAP_NET_SOCKET | XAIOS_CAP_REMOTE_LOGIN;
   const uint64_t hello_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT;
   const uint64_t sysinfo_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_TIME;
-  const uint64_t systest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_OSCTL |
-      XAIOS_CAP_SMP | XAIOS_CAP_THREADS;
-  const uint64_t smptest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_SMP;
-  const uint64_t nettest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_NET;
+  const uint64_t systest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT |
+      XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE;
+  const uint64_t smptest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT |
+      XAIOS_CAP_OSCTL | XAIOS_CAP_SMP | XAIOS_CAP_THREADS;
+  const uint64_t nettest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT |
+      XAIOS_CAP_OSCTL | XAIOS_CAP_NET;
   const uint64_t lstm_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_CPU_AI |
       XAIOS_CAP_ML;
   const uint64_t sshtest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_NET |
@@ -327,7 +334,7 @@ void kmain(const xaios_boot_info_t *boot) {
   const uint64_t mltest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_CPU_AI |
       XAIOS_CAP_ML;
   const uint64_t posix_shell_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT |
-      XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE | XAIOS_CAP_TIME;
+      XAIOS_CAP_REMOTE_LOGIN;
   const uint64_t agenttest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_AGENT |
       XAIOS_CAP_CPU_AI | XAIOS_CAP_ML;
 

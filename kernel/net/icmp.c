@@ -62,29 +62,30 @@ void icmp_error_tick(void) {
   }
 }
 
-/* B2: Build ICMP Destination Unreachable message
- * orig_frame must contain the full Ethernet+IPv4 frame that triggered the error.
- * The ICMP error payload includes the IPv4 header + at least 8 bytes of the
- * original datagram payload (per RFC 792). */
-xaios_status_t icmp_build_dest_unreachable(uint8_t *frame, uint64_t *frame_len,
+/* Build an ICMP error containing the original IPv4 header and up to eight bytes
+ * of its payload, as required by RFC 792. */
+static xaios_status_t icmp_build_error(uint8_t *frame, uint64_t *frame_len,
     const uint8_t src_mac[6], const uint8_t dst_mac[6],
     uint32_t src_ip, uint32_t dst_ip,
-    uint8_t code, const uint8_t *orig_frame, uint64_t orig_len) {
+    uint8_t type, uint8_t code, const uint8_t *orig_frame, uint64_t orig_len) {
   if (frame == 0 || frame_len == 0 || src_mac == 0 || dst_mac == 0 ||
       orig_frame == 0 || orig_len < 34U) {
     return XAIOS_ERR_INVALID;
   }
 
-  uint64_t icmp_payload = 8U;
+  uint8_t ip_header_len = (uint8_t)((orig_frame[14] & 0x0fU) * 4U);
   uint16_t ip_total_len = get_be16(orig_frame + 16);
-  if (ip_total_len >= 28U) {
-    icmp_payload = 28U; /* IPv4 hdr + 8 bytes of original payload */
+  if ((orig_frame[14] >> 4U) != 4U || ip_header_len < XAIOS_IPV4_HEADER_SIZE ||
+      ip_total_len < ip_header_len || 14U + ip_total_len > orig_len) {
+    return XAIOS_ERR_INVALID;
   }
 
-  uint64_t total = 14U + XAIOS_IPV4_HEADER_SIZE + icmp_payload;
-  if (total > orig_len && total > 1520U) {
-    return XAIOS_ERR_NO_MEMORY;
+  uint64_t quote_len = (uint64_t)ip_header_len + 8U;
+  if (quote_len > ip_total_len) {
+    quote_len = ip_total_len;
   }
+  uint64_t icmp_len = 8U + quote_len;
+  uint64_t total = 14U + XAIOS_IPV4_HEADER_SIZE + icmp_len;
 
   bytes_zero(frame, total);
 
@@ -95,28 +96,33 @@ xaios_status_t icmp_build_dest_unreachable(uint8_t *frame, uint64_t *frame_len,
   put_be16(frame + 12, 0x0800);
 
   ipv4_build_header(frame + 14,
-                    (uint16_t)(XAIOS_IPV4_HEADER_SIZE + (uint16_t)icmp_payload),
+                    (uint16_t)(XAIOS_IPV4_HEADER_SIZE + icmp_len),
                     XAIOS_IPV4_PROTO_ICMP, src_ip, dst_ip);
 
   uint8_t *icmp = frame + 34U;
-  icmp[0] = XAIOS_ICMP_DEST_UNREACHABLE;
+  icmp[0] = type;
   icmp[1] = code;
   put_be16(icmp + 2, 0);
   put_be16(icmp + 4, 0);
   put_be16(icmp + 6, 0);
 
-  /* Copy original IPv4 header + 8 bytes of payload */
-  uint64_t copy_len = XAIOS_IPV4_HEADER_SIZE + 8U;
-  if (14U + copy_len > orig_len) {
-    copy_len = orig_len - 14U;
-  }
-  bytes_copy(icmp + 8, orig_frame + 14U, copy_len);
+  bytes_copy(icmp + 8, orig_frame + 14U, quote_len);
 
-  uint16_t cksum = ipv4_checksum(icmp, (uint32_t)icmp_payload);
+  uint16_t cksum = ipv4_checksum(icmp, (uint32_t)icmp_len);
   put_be16(icmp + 2, cksum);
 
   *frame_len = total;
   return XAIOS_OK;
+}
+
+/* B2: Build ICMP Destination Unreachable message */
+xaios_status_t icmp_build_dest_unreachable(uint8_t *frame, uint64_t *frame_len,
+    const uint8_t src_mac[6], const uint8_t dst_mac[6],
+    uint32_t src_ip, uint32_t dst_ip,
+    uint8_t code, const uint8_t *orig_frame, uint64_t orig_len) {
+  return icmp_build_error(frame, frame_len, src_mac, dst_mac, src_ip, dst_ip,
+                          XAIOS_ICMP_DEST_UNREACHABLE, code,
+                          orig_frame, orig_len);
 }
 
 /* B2: Build ICMP Time Exceeded message */
@@ -124,10 +130,10 @@ xaios_status_t icmp_build_time_exceeded(uint8_t *frame, uint64_t *frame_len,
     const uint8_t src_mac[6], const uint8_t dst_mac[6],
     uint32_t src_ip, uint32_t dst_ip,
     const uint8_t *orig_frame, uint64_t orig_len) {
-  return icmp_build_dest_unreachable(frame, frame_len, src_mac, dst_mac,
-                                     src_ip, dst_ip,
-                                     XAIOS_ICMP_CODE_TTL_EXCEEDED,
-                                     orig_frame, orig_len);
+  return icmp_build_error(frame, frame_len, src_mac, dst_mac, src_ip, dst_ip,
+                          XAIOS_ICMP_TIME_EXCEEDED,
+                          XAIOS_ICMP_CODE_TTL_EXCEEDED,
+                          orig_frame, orig_len);
 }
 
 xaios_status_t icmp_process_echo_request(const uint8_t *frame,
@@ -242,15 +248,19 @@ void icmp_self_test(void) {
   kassert(icmp_build_dest_unreachable(err_frame, &err_len, dst_mac, src_mac,
       0x0a00020f, 0x0a000202, XAIOS_ICMP_CODE_PORT_UNREACHABLE,
       request, 42) == XAIOS_OK);
-  kassert(err_len > 0);
+  kassert(err_len == 70U);
   kassert(err_frame[34] == XAIOS_ICMP_DEST_UNREACHABLE);
   kassert(err_frame[35] == XAIOS_ICMP_CODE_PORT_UNREACHABLE);
+  kassert(ipv4_checksum(err_frame + 34, 36U) == 0);
 
   /* B2: Test Time Exceeded */
   err_len = 0;
   kassert(icmp_build_time_exceeded(err_frame, &err_len, dst_mac, src_mac,
       0x0a00020f, 0x0a000202, request, 42) == XAIOS_OK);
+  kassert(err_len == 70U);
   kassert(err_frame[34] == XAIOS_ICMP_TIME_EXCEEDED);
+  kassert(err_frame[35] == XAIOS_ICMP_CODE_TTL_EXCEEDED);
+  kassert(ipv4_checksum(err_frame + 34, 36U) == 0);
 
   klog("icmp: self-test passed id=0x%04x seq=%u reply_len=%lu\n", id, seq,
        reply_len);

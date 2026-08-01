@@ -132,7 +132,6 @@ KERNEL_CFLAGS="
   -Wall
   -Wextra
   -Werror
-  -I$ROOT_DIR/kernel/include
 "
 
 case "${XAIOS_FAULT_TEST:-}" in
@@ -145,6 +144,13 @@ case "${XAIOS_FAULT_TEST:-}" in
     exit 2
     ;;
 esac
+
+compile_kernel() {
+  source_path="$1"
+  object_path="$2"
+  "$CLANG" $KERNEL_CFLAGS -I"$ROOT_DIR/kernel/include" \
+    -c "$source_path" -o "$object_path"
+}
 
 KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/entry.o
@@ -219,82 +225,89 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/bpe_tokenizer.o
 "
 
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/arch/aarch64/entry.S" -o "$KERNEL_BUILD_DIR/entry.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/arch/aarch64/secondary.S" -o "$KERNEL_BUILD_DIR/secondary.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/arch/aarch64/vectors.S" -o "$KERNEL_BUILD_DIR/vectors.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/core/kmain.c" -o "$KERNEL_BUILD_DIR/kmain.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/core/klog.c" -o "$KERNEL_BUILD_DIR/klog.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/core/klog_ring.c" -o "$KERNEL_BUILD_DIR/klog_ring.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/core/telemetry.c" -o "$KERNEL_BUILD_DIR/telemetry.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/core/panic.c" -o "$KERNEL_BUILD_DIR/panic.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/core/assert.c" -o "$KERNEL_BUILD_DIR/assert.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/core/stack_canary.c" -o "$KERNEL_BUILD_DIR/stack_canary.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/arch/aarch64/exception.c" -o "$KERNEL_BUILD_DIR/exception.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/arch/aarch64/timer.c" -o "$KERNEL_BUILD_DIR/timer.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/arch/aarch64/rtc.c" -o "$KERNEL_BUILD_DIR/rtc.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/arch/aarch64/watchdog.c" -o "$KERNEL_BUILD_DIR/watchdog.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/arch/aarch64/smmu.c" -o "$KERNEL_BUILD_DIR/smmu.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/arch/aarch64/pci.c" -o "$KERNEL_BUILD_DIR/pci.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/arch/aarch64/gic.c" -o "$KERNEL_BUILD_DIR/gic.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/arch/aarch64/smp.c" -o "$KERNEL_BUILD_DIR/smp.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/arch/aarch64/topology.c" -o "$KERNEL_BUILD_DIR/topology.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/dev/virtio/virtio_transport.c" -o "$KERNEL_BUILD_DIR/virtio_transport.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/dev/virtio/virtio_blk.c" -o "$KERNEL_BUILD_DIR/virtio_blk.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/dev/virtio/virtio_net.c" -o "$KERNEL_BUILD_DIR/virtio_net.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/fs/initramfs.c" -o "$KERNEL_BUILD_DIR/initramfs.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/fs/mutable_fs.c" -o "$KERNEL_BUILD_DIR/mutable_fs.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/user/service.c" -o "$KERNEL_BUILD_DIR/service.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/user/syscall.c" -o "$KERNEL_BUILD_DIR/syscall.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/core_lease.c" -o "$KERNEL_BUILD_DIR/core_lease.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/security.c" -o "$KERNEL_BUILD_DIR/security.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/remote_login.c" -o "$KERNEL_BUILD_DIR/remote_login.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/user/user.c" -o "$KERNEL_BUILD_DIR/user.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/model_arena.c" -o "$KERNEL_BUILD_DIR/model_arena.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/ai_cell.c" -o "$KERNEL_BUILD_DIR/ai_cell.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/cpu_ai_runtime.c" -o "$KERNEL_BUILD_DIR/cpu_ai_runtime.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/ai_kernels.c" -o "$KERNEL_BUILD_DIR/ai_kernels.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/paged_kv_cache.c" -o "$KERNEL_BUILD_DIR/paged_kv_cache.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/inference_batcher.c" -o "$KERNEL_BUILD_DIR/inference_batcher.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/inference_preempt.c" -o "$KERNEL_BUILD_DIR/inference_preempt.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/model_parallel.c" -o "$KERNEL_BUILD_DIR/model_parallel.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/speculative_decoding.c" -o "$KERNEL_BUILD_DIR/speculative_decoding.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/flash_attention.c" -o "$KERNEL_BUILD_DIR/flash_attention.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/model_compilation.c" -o "$KERNEL_BUILD_DIR/model_compilation.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/math_intrinsics.c" -o "$KERNEL_BUILD_DIR/math_intrinsics.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/sandbox.c" -o "$KERNEL_BUILD_DIR/sandbox.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/persistence.c" -o "$KERNEL_BUILD_DIR/persistence.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/update.c" -o "$KERNEL_BUILD_DIR/update.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/sha256.c" -o "$KERNEL_BUILD_DIR/sha256.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/rate_limit.c" -o "$KERNEL_BUILD_DIR/rate_limit.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/source_index.c" -o "$KERNEL_BUILD_DIR/source_index.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/network_stack.c" -o "$KERNEL_BUILD_DIR/network_stack.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/git_workspace.c" -o "$KERNEL_BUILD_DIR/git_workspace.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/agent_protocol.c" -o "$KERNEL_BUILD_DIR/agent_protocol.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/mm/pmm.c" -o "$KERNEL_BUILD_DIR/pmm.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/mm/numa.c" -o "$KERNEL_BUILD_DIR/numa.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/mm/arena.c" -o "$KERNEL_BUILD_DIR/arena.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/mm/kheap.c" -o "$KERNEL_BUILD_DIR/kheap.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/arch/aarch64/mmu.c" -o "$KERNEL_BUILD_DIR/mmu.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/sched/scheduler.c" -o "$KERNEL_BUILD_DIR/scheduler.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/sched/context.S" -o "$KERNEL_BUILD_DIR/context.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/net/arp.c" -o "$KERNEL_BUILD_DIR/arp.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/net/ipv4.c" -o "$KERNEL_BUILD_DIR/ipv4.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/net/icmp.c" -o "$KERNEL_BUILD_DIR/icmp.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/net/ipv6.c" -o "$KERNEL_BUILD_DIR/ipv6.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/net/icmpv6.c" -o "$KERNEL_BUILD_DIR/icmpv6.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/net/ndp.c" -o "$KERNEL_BUILD_DIR/ndp.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/net/socket_buffer.c" -o "$KERNEL_BUILD_DIR/socket_buffer.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/net/routing.c" -o "$KERNEL_BUILD_DIR/routing.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/net/dns.c" -o "$KERNEL_BUILD_DIR/dns.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/mm/elf_loader.c" -o "$KERNEL_BUILD_DIR/elf_loader.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/lib/string.c" -o "$KERNEL_BUILD_DIR/string.o"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/runtime/bpe_tokenizer.c" -o "$KERNEL_BUILD_DIR/bpe_tokenizer.o"
+compile_kernel "$ROOT_DIR/kernel/arch/aarch64/entry.S" "$KERNEL_BUILD_DIR/entry.o"
+compile_kernel "$ROOT_DIR/kernel/arch/aarch64/secondary.S" "$KERNEL_BUILD_DIR/secondary.o"
+compile_kernel "$ROOT_DIR/kernel/arch/aarch64/vectors.S" "$KERNEL_BUILD_DIR/vectors.o"
+compile_kernel "$ROOT_DIR/kernel/core/kmain.c" "$KERNEL_BUILD_DIR/kmain.o"
+compile_kernel "$ROOT_DIR/kernel/core/klog.c" "$KERNEL_BUILD_DIR/klog.o"
+compile_kernel "$ROOT_DIR/kernel/core/klog_ring.c" "$KERNEL_BUILD_DIR/klog_ring.o"
+compile_kernel "$ROOT_DIR/kernel/core/telemetry.c" "$KERNEL_BUILD_DIR/telemetry.o"
+compile_kernel "$ROOT_DIR/kernel/core/panic.c" "$KERNEL_BUILD_DIR/panic.o"
+compile_kernel "$ROOT_DIR/kernel/core/assert.c" "$KERNEL_BUILD_DIR/assert.o"
+compile_kernel "$ROOT_DIR/kernel/core/stack_canary.c" "$KERNEL_BUILD_DIR/stack_canary.o"
+compile_kernel "$ROOT_DIR/kernel/arch/aarch64/exception.c" "$KERNEL_BUILD_DIR/exception.o"
+compile_kernel "$ROOT_DIR/kernel/arch/aarch64/timer.c" "$KERNEL_BUILD_DIR/timer.o"
+compile_kernel "$ROOT_DIR/kernel/arch/aarch64/rtc.c" "$KERNEL_BUILD_DIR/rtc.o"
+compile_kernel "$ROOT_DIR/kernel/arch/aarch64/watchdog.c" "$KERNEL_BUILD_DIR/watchdog.o"
+compile_kernel "$ROOT_DIR/kernel/arch/aarch64/smmu.c" "$KERNEL_BUILD_DIR/smmu.o"
+compile_kernel "$ROOT_DIR/kernel/arch/aarch64/pci.c" "$KERNEL_BUILD_DIR/pci.o"
+compile_kernel "$ROOT_DIR/kernel/arch/aarch64/gic.c" "$KERNEL_BUILD_DIR/gic.o"
+compile_kernel "$ROOT_DIR/kernel/arch/aarch64/smp.c" "$KERNEL_BUILD_DIR/smp.o"
+compile_kernel "$ROOT_DIR/kernel/arch/aarch64/topology.c" "$KERNEL_BUILD_DIR/topology.o"
+compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport.c" "$KERNEL_BUILD_DIR/virtio_transport.o"
+compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_blk.c" "$KERNEL_BUILD_DIR/virtio_blk.o"
+compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_net.c" "$KERNEL_BUILD_DIR/virtio_net.o"
+compile_kernel "$ROOT_DIR/kernel/fs/initramfs.c" "$KERNEL_BUILD_DIR/initramfs.o"
+compile_kernel "$ROOT_DIR/kernel/fs/mutable_fs.c" "$KERNEL_BUILD_DIR/mutable_fs.o"
+compile_kernel "$ROOT_DIR/kernel/user/service.c" "$KERNEL_BUILD_DIR/service.o"
+compile_kernel "$ROOT_DIR/kernel/user/syscall.c" "$KERNEL_BUILD_DIR/syscall.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/core_lease.c" "$KERNEL_BUILD_DIR/core_lease.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/security.c" "$KERNEL_BUILD_DIR/security.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/remote_login.c" "$KERNEL_BUILD_DIR/remote_login.o"
+compile_kernel "$ROOT_DIR/kernel/user/user.c" "$KERNEL_BUILD_DIR/user.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/model_arena.c" "$KERNEL_BUILD_DIR/model_arena.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/ai_cell.c" "$KERNEL_BUILD_DIR/ai_cell.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/cpu_ai_runtime.c" "$KERNEL_BUILD_DIR/cpu_ai_runtime.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/ai_kernels.c" "$KERNEL_BUILD_DIR/ai_kernels.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/paged_kv_cache.c" "$KERNEL_BUILD_DIR/paged_kv_cache.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/inference_batcher.c" "$KERNEL_BUILD_DIR/inference_batcher.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/inference_preempt.c" "$KERNEL_BUILD_DIR/inference_preempt.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/model_parallel.c" "$KERNEL_BUILD_DIR/model_parallel.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/speculative_decoding.c" "$KERNEL_BUILD_DIR/speculative_decoding.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/flash_attention.c" "$KERNEL_BUILD_DIR/flash_attention.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/model_compilation.c" "$KERNEL_BUILD_DIR/model_compilation.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/math_intrinsics.c" "$KERNEL_BUILD_DIR/math_intrinsics.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/sandbox.c" "$KERNEL_BUILD_DIR/sandbox.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/persistence.c" "$KERNEL_BUILD_DIR/persistence.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/update.c" "$KERNEL_BUILD_DIR/update.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/sha256.c" "$KERNEL_BUILD_DIR/sha256.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/rate_limit.c" "$KERNEL_BUILD_DIR/rate_limit.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/source_index.c" "$KERNEL_BUILD_DIR/source_index.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/network_stack.c" "$KERNEL_BUILD_DIR/network_stack.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/git_workspace.c" "$KERNEL_BUILD_DIR/git_workspace.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/agent_protocol.c" "$KERNEL_BUILD_DIR/agent_protocol.o"
+compile_kernel "$ROOT_DIR/kernel/mm/pmm.c" "$KERNEL_BUILD_DIR/pmm.o"
+compile_kernel "$ROOT_DIR/kernel/mm/numa.c" "$KERNEL_BUILD_DIR/numa.o"
+compile_kernel "$ROOT_DIR/kernel/mm/arena.c" "$KERNEL_BUILD_DIR/arena.o"
+compile_kernel "$ROOT_DIR/kernel/mm/kheap.c" "$KERNEL_BUILD_DIR/kheap.o"
+compile_kernel "$ROOT_DIR/kernel/arch/aarch64/mmu.c" "$KERNEL_BUILD_DIR/mmu.o"
+compile_kernel "$ROOT_DIR/kernel/sched/scheduler.c" "$KERNEL_BUILD_DIR/scheduler.o"
+compile_kernel "$ROOT_DIR/kernel/sched/context.S" "$KERNEL_BUILD_DIR/context.o"
+compile_kernel "$ROOT_DIR/kernel/net/arp.c" "$KERNEL_BUILD_DIR/arp.o"
+compile_kernel "$ROOT_DIR/kernel/net/ipv4.c" "$KERNEL_BUILD_DIR/ipv4.o"
+compile_kernel "$ROOT_DIR/kernel/net/icmp.c" "$KERNEL_BUILD_DIR/icmp.o"
+compile_kernel "$ROOT_DIR/kernel/net/ipv6.c" "$KERNEL_BUILD_DIR/ipv6.o"
+compile_kernel "$ROOT_DIR/kernel/net/icmpv6.c" "$KERNEL_BUILD_DIR/icmpv6.o"
+compile_kernel "$ROOT_DIR/kernel/net/ndp.c" "$KERNEL_BUILD_DIR/ndp.o"
+compile_kernel "$ROOT_DIR/kernel/net/socket_buffer.c" "$KERNEL_BUILD_DIR/socket_buffer.o"
+compile_kernel "$ROOT_DIR/kernel/net/routing.c" "$KERNEL_BUILD_DIR/routing.o"
+compile_kernel "$ROOT_DIR/kernel/net/dns.c" "$KERNEL_BUILD_DIR/dns.o"
+compile_kernel "$ROOT_DIR/kernel/mm/elf_loader.c" "$KERNEL_BUILD_DIR/elf_loader.o"
+compile_kernel "$ROOT_DIR/kernel/lib/string.c" "$KERNEL_BUILD_DIR/string.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/bpe_tokenizer.c" "$KERNEL_BUILD_DIR/bpe_tokenizer.o"
+
+KERNEL_RESPONSE_FILE="$KERNEL_BUILD_DIR/objects.rsp"
+printf '%s\n' "$KERNEL_OBJECTS" | while IFS= read -r object_path; do
+  if [ "$object_path" != "" ]; then
+    printf '"%s"\n' "${object_path#  }"
+  fi
+done > "$KERNEL_RESPONSE_FILE"
 
 "$LD_LLD" \
   -nostdlib \
   -T "$ROOT_DIR/kernel/arch/aarch64/linker.ld" \
   -o "$KERNEL_ELF" \
-  $KERNEL_OBJECTS
+  @"$KERNEL_RESPONSE_FILE"
 
 printf '%s\n' "Building userspace /init ELF..."
 "$CLANG" \
@@ -386,7 +399,7 @@ printf '%s\n' "Building userspace C runtime..."
   -c "$ROOT_DIR/userspace/lib/xaios_user.c" \
   -o "$USER_LIB_OBJ"
 
-APP_INITFS_ARGS=""
+set --
 for app in $USER_APPS; do
   app_obj="$INIT_BUILD_DIR/$app.o"
   app_elf="$INIT_BUILD_DIR/$app.elf"
@@ -413,11 +426,12 @@ for app in $USER_APPS; do
     "$USER_START_OBJ" \
     "$USER_LIB_OBJ" \
     "$app_obj"
-  APP_INITFS_ARGS="$APP_INITFS_ARGS /bin/$app=$app_elf"
+  set -- "$@" "/bin/$app=$app_elf"
 done
 
 printf '%s\n' "Building userspace /bin/sshd ELF..."
-SSHD_OBJS=""
+SSHD_RESPONSE_FILE="$INIT_BUILD_DIR/sshd-objects.rsp"
+: > "$SSHD_RESPONSE_FILE"
 for sshd_src in sshd.c ssh_crypto.c ssh_protocol.c ssh_channel.c ssh_host_key.c ssh_connection.c sftp_server.c; do
   sshd_obj="$INIT_BUILD_DIR/sshd-${sshd_src%.c}.o"
   "$CLANG" \
@@ -435,7 +449,7 @@ for sshd_src in sshd.c ssh_crypto.c ssh_protocol.c ssh_channel.c ssh_host_key.c 
     -I"$ROOT_DIR/userspace/sshd" \
     -c "$ROOT_DIR/userspace/sshd/$sshd_src" \
     -o "$sshd_obj"
-  SSHD_OBJS="$SSHD_OBJS $sshd_obj"
+  printf '"%s"\n' "$sshd_obj" >> "$SSHD_RESPONSE_FILE"
 done
 "$LD_LLD" \
   -nostdlib \
@@ -443,8 +457,8 @@ done
   -o "$INIT_BUILD_DIR/sshd.elf" \
   "$USER_START_OBJ" \
   "$USER_LIB_OBJ" \
-  $SSHD_OBJS
-APP_INITFS_ARGS="$APP_INITFS_ARGS /bin/sshd=$INIT_BUILD_DIR/sshd.elf"
+  @"$SSHD_RESPONSE_FILE"
+set -- "$@" "/bin/sshd=$INIT_BUILD_DIR/sshd.elf"
 
 rm -f "$IMAGE_PATH"
 mkdir -p "$(dirname -- "$IMAGE_PATH")"
@@ -471,7 +485,7 @@ printf 'XAIOS-VIRTIO-BLOCK-TEST\n' | dd of="$TEST_BLOCK_IMAGE" bs=512 count=1 co
   "$WORKER_ELF" \
   "$ROOT_DIR/userspace/init/xaios-init.conf" \
   "$ROOT_DIR/userspace/service-manager/source-index.svc" \
-  $APP_INITFS_ARGS
+  "$@"
 printf '%s\n' "Created $TEST_BLOCK_IMAGE"
 
 if [ ! -f "$PERSISTENT_IMAGE" ]; then

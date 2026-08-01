@@ -1,12 +1,12 @@
 {
   "repo_url": "https://github.com/Pummelchen/XAIOS",
-  "indexed_commit": "8458ff956831e1b3b44a0cbcb396352ce28e3a01",
-  "previous_indexed_commit": "",
-  "generated_at": "2026-06-25T09:20:22Z",
+  "indexed_base_commit": "8404c1ec1b76c02157bb08d8a3a9466a93e5c2cb",
+  "previous_indexed_commit": "8458ff956831e1b3b44a0cbcb396352ce28e3a01",
+  "generated_at": "2026-08-01",
   "generator": "generic high-end AI coding agent",
-  "operation_mode": "bootstrap",
+  "operation_mode": "refresh",
   "primary_languages": ["C", "Assembly", "Python", "Shell"],
-  "frameworks": ["freestanding C99 OS", "UEFI", "QEMU", "VirtIO"],
+  "frameworks": ["freestanding C99 OS", "hosted portable C99 engine", "UEFI", "QEMU", "VirtIO"],
   "package_managers": ["pip for Python helper dependencies", "Homebrew or apt for host toolchain"],
   "generated_files": [
     "README.md",
@@ -37,7 +37,7 @@
     "install": ["make bootstrap"],
     "dev": ["make qemu", "make qemu-dry-run", "make xaios-ssh-bridge"],
     "build": ["make all", "make image", "make image-x86_64"],
-    "test": ["make qemu-smoke", "make qemu-regression-suite", "make qemu-readiness-gate", "make qemu-full-os-rc"],
+    "test": ["make hosted-test", "make docs-check", "make qemu-smoke", "make qemu-regression-suite", "make qemu-readiness-gate", "make qemu-full-os-rc"],
     "lint": [],
     "typecheck": ["make compile-check"]
   },
@@ -66,25 +66,34 @@
     "kernel/runtime/security.c",
     "userspace/include/xaios_user.h",
     "tools/convert_gguf_to_xaios.py",
+    "tools/xaios_model_v2.py",
+    "engine/include/xaios_engine/model_v2.h",
+    "engine/include/xaios_engine/architecture.h",
+    "engine/include/xaios_engine/backend.h",
+    "engine/src/model_v2.c",
+    "tests/model_v2/test_engine.c",
+    "tests/model_v2/test_model_v2.py",
+    "docs/MODEL-SUPPORT.json",
+    "docs/MODEL-V2-SPECIFICATION.md",
+    "docs/QWEN-K3-IMPLEMENTATION-ROADMAP.md",
     "contracts/qemu-rc-v1.json"
   ],
-  "changed_files_since_previous_index": [],
-  "refresh_reason": ["initial bootstrap; no previous AI onboarding manifest found"],
+  "changed_files_since_previous_index": ["portable engine and model-v2 foundation", "Phase 0 support/benchmark documentation", "QEMU fixture and correctness contracts", "CI and hosted tests"],
+  "refresh_reason": ["model-v2 and portable-engine foundation", "explicit fixture isolation", "source/ABI/support-status synchronization"],
   "migrated_model_specific_files": [],
   "deprecated_model_specific_files": [],
   "preserved_model_specific_files_requiring_human_review": [],
   "warnings": [
-    "Direct git clone was unavailable in the runtime; inspection and writes used the GitHub connector.",
-    "QEMU results are correctness evidence only, not hardware performance proof."
+    "QEMU results are correctness evidence only, not hardware performance proof.",
+    "The current x86_64 image is early bring-up only and does not contain the common kernel/runtime."
   ],
   "unknowns": [
-    "Hardware validation status beyond repository docs is unknown.",
+    "No qualifying physical Apple or Xeon validation artifact is present.",
+    "Official Qwen/Kimi compatibility fixture revisions are not pinned.",
     "Production signing/key-management status is incomplete from inspected source/comments.",
     "License status is ambiguous."
   ],
   "conflicts": [
-    "Performance claims in README/wiki/tracker conflict with QEMU-correctness-only guidance in HARDWARE-READINESS.md and contracts/qemu-rc-v1.json.",
-    "Syscall source, docs/API.md, and contracts/qemu-rc-v1.json appear out of sync.",
     "LICENSE contains MIT text and also says license to be decided."
   ],
   "refresh_policy": {

@@ -529,6 +529,20 @@ xaios_update_delivery_status_t update_delivery_status(void) {
 }
 
 void update_delivery_self_test(void) {
+  xaios_update_transaction_t saved_update = g_update;
+  xaios_update_delivery_status_t saved_delivery = g_delivery;
+  uint32_t saved_chunk_staging_active = g_chunk_staging_active;
+  uint64_t saved_transactions = g_transactions;
+  uint64_t saved_stages = g_stages;
+  uint64_t saved_commits = g_commits;
+  uint64_t saved_failures = g_failures;
+  uint64_t saved_recoveries = g_recoveries;
+  uint64_t saved_rollbacks = g_rollbacks;
+  uint64_t saved_boot_fallbacks = g_boot_fallbacks;
+  uint64_t saved_records_persisted = g_records_persisted;
+  uint64_t saved_rollback_points = g_rollback_points;
+  uint64_t saved_rejects = g_rejects;
+
   /* Test SHA-256 first */
   sha256_self_test();
 
@@ -555,6 +569,8 @@ void update_delivery_self_test(void) {
   update_runtime_init();
   static const char k_sig_test[] =
       "xaios-update:v1:gen=10:sha256=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad:key=XAIOS-QEMU-DEV-PUBKEY:sig=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+  static const char k_sig_test_11[] =
+      "xaios-update:v1:gen=11:sha256=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad:key=XAIOS-QEMU-DEV-PUBKEY:sig=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
   kassert(update_begin(10, "/system/xaios", k_sig_test) == XAIOS_OK);
   kassert(update_stage_chunk("abc", 3) == XAIOS_OK);
 
@@ -572,10 +588,24 @@ void update_delivery_self_test(void) {
 
   /* Test bad hash rejection */
   update_runtime_init();
-  kassert(update_begin(11, "/system/xaios", k_sig_test) == XAIOS_OK);
+  kassert(update_begin(11, "/system/xaios", k_sig_test_11) == XAIOS_OK);
   kassert(update_stage_chunk("abc", 3) == XAIOS_OK);
   static const uint8_t bad_hash[32] = {0};
   kassert(update_verify_hash(bad_hash) == XAIOS_ERR_INVALID);
+
+  g_update = saved_update;
+  g_delivery = saved_delivery;
+  g_chunk_staging_active = saved_chunk_staging_active;
+  g_transactions = saved_transactions;
+  g_stages = saved_stages;
+  g_commits = saved_commits;
+  g_failures = saved_failures;
+  g_recoveries = saved_recoveries;
+  g_rollbacks = saved_rollbacks;
+  g_boot_fallbacks = saved_boot_fallbacks;
+  g_records_persisted = saved_records_persisted;
+  g_rollback_points = saved_rollback_points;
+  g_rejects = saved_rejects;
 
   klog("update: delivery self-test passed\n");
 }

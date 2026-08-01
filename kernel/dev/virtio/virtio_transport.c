@@ -43,6 +43,11 @@ uint32_t virtio_mmio_read32(uint64_t base, uint32_t offset) {
   return *reg;
 }
 
+uint8_t virtio_mmio_read8(uint64_t base, uint32_t offset) {
+  volatile uint8_t *reg = (volatile uint8_t *)(uintptr_t)(base + offset);
+  return *reg;
+}
+
 void virtio_mmio_write32(uint64_t base, uint32_t offset, uint32_t value) {
   volatile uint32_t *reg = (volatile uint32_t *)(uintptr_t)(base + offset);
   *reg = value;

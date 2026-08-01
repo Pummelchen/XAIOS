@@ -648,8 +648,9 @@ void ai_cell_self_test(void) {
   char output[32];
   uint64_t out = 0;
   const uint8_t piece[] = {'A', 'B', 'C', 'D'};
-  kassert(cpu_ai_runtime_decode_piece(0, piece, sizeof(piece), output,
-                                     sizeof(output), &out) == XAIOS_OK);
+  kassert(cpu_ai_runtime_fixture_decode_piece(0, piece, sizeof(piece), output,
+                                             sizeof(output), &out) ==
+          XAIOS_OK);
   kassert(cpu_ai_runtime_decode_count(0) == 1);
   kassert(output[0] == '1');
   kassert(output[1] == 'B');
@@ -685,8 +686,9 @@ void ai_cell_self_test(void) {
   kassert(ai_cell_create_from_descriptor(&shared) == XAIOS_OK);
   kassert(ai_cell_prepare(3) == XAIOS_OK);
   kassert(ai_cell_start(3) == XAIOS_OK);
-  kassert(cpu_ai_runtime_decode_piece(3, piece, sizeof(piece), output,
-                                     sizeof(output), &out) == XAIOS_OK);
+  kassert(cpu_ai_runtime_fixture_decode_piece(3, piece, sizeof(piece), output,
+                                             sizeof(output), &out) ==
+          XAIOS_OK);
   kassert(str_equal(output, "1B1F2327"));
   kassert(ai_cell_arena_pages_reserved() == 160);
   kassert(ai_cell_arena_bytes_reserved() == 655360);

@@ -21,7 +21,7 @@ typedef enum xaios_cpu_role {
   XAIOS_CPU_ROLE_AI_HOT = 3,       /* leased to AI Cell, exclusive use */
 } xaios_cpu_role_t;
 
-typedef struct xaios_cpu_state {
+typedef struct __attribute__((aligned(16))) xaios_cpu_state {
   uint32_t cpu_id;
   uint32_t online;
   uint64_t mpidr;
@@ -47,7 +47,9 @@ static inline uint32_t smp_cpu_id(void) {
 }
 
 void smp_init_qemu_virt(void);
+void smp_release_secondary_schedulers(void);
 const xaios_cpu_state_t *smp_cpu_state(uint32_t cpu_id);
+xaios_status_t smp_set_scheduling_enabled(uint32_t cpu_id, uint32_t enabled);
 uint32_t smp_online_count(void);
 uint32_t smp_hot_core_mask(void);
 uint64_t smp_total_migration_count(void);

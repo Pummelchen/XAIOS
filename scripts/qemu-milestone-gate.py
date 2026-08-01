@@ -13,7 +13,7 @@ GATES = {
             "mutable-fs: mounted start=3072 metadata=16 journal=2 data=3090 sectors=96 nodes=32 policy=rw",
             "mutable-fs: public API self-test passed list=1 stat=3 rename=1 open=3 close=3",
             "mutable-fs: journal replay self-test passed replays=1 journal_writes=1",
-            "mutable-fs: self-test passed files=7 directories=11 writes=12 reads=6 deletes=1 commits=1 rollbacks=1 replays=1 rejects=8 checksum_errors=0",
+            "mutable-fs: self-test passed files=7 directories=12 writes=12 reads=6 deletes=1 commits=1 rollbacks=1 replays=1 rejects=8 checksum_errors=0",
             "/service-manager: mutable fs syscalls passed",
         ],
         "minimums": {
@@ -64,7 +64,7 @@ GATES = {
             "network: udp flow id=",
             "network: tcp flow id=",
             "network: queue-backed udp/tcp self-test passed rx=6 tx=6 drops=2 lifecycle=18",
-            "network: app udp echo payload=12",
+            "network: app udp echo payload=13",
             "network: app tcp connect-close",
             "virtio-net: rx/tx/reset self-test passed",
         ],
@@ -98,12 +98,12 @@ GATES = {
         "report": "qemu-milestone-65-cpu-ai-runtime-gate.json",
         "name": "cpu_ai_runtime",
         "markers": [
-            "cpu-ai-runtime: model file loaded id=2 name=cpu-ai-mvp",
+            "cpu-ai-runtime: model file loaded id=2 name=cpu-ai-v1-fixture",
             "cpu-ai-runtime: tokenizer/runtime boundary self-test passed tokenizer_calls=2 runtime_calls=2",
             "cpu-ai-runtime: multi-cell shared weights self-test passed loads=2 shared_binds=2 kv_writes=8",
             "cpu-ai-runtime: tokenizer binding and CPU dispatch self-test passed tokenizer_binds=2 kernel_dispatches=2",
             "ai-cell: multi-cell shared model/private kv self-test passed",
-            "/bin/lstm-xor: cpu-ai runtime decode=",
+            "/bin/lstm-xor: cpu-ai fixture decode=",
         ],
         "minimums": {
             "cpu_ai_model_loads": 5,

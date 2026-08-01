@@ -3,6 +3,20 @@
 XAIOS is not ready for Intel Desktop hardware until the QEMU contract is frozen
 and the local QEMU matrix is green.
 
+No current repository artifact proves physical-hardware model performance or
+real-model parity. Model status is checked against `docs/MODEL-SUPPORT.json`:
+
+| Model or path | Status | Hardware meaning |
+|---|---|---|
+| Deterministic QEMU model-v1 path | Fixture only | QEMU correctness and ABI evidence only. |
+| xaios.model.v2 tooling | Interface only | Package structure is tested; no model executes from it. |
+| Qwen3.6+ | Interface only | No physical Qwen logits/token parity artifact. |
+| Kimi K3 text | Interface only | No physical K3 text execution artifact. |
+| Kimi K3 multimodal | Roadmap only | No multimodal implementation or artifact. |
+
+The benchmark evidence required for future hardware claims is defined in
+`docs/BENCHMARK-CONTRACT.md`.
+
 ## Current Gates
 
 The milestone 33 QEMU hardware-readiness gate is:
@@ -73,10 +87,12 @@ Before moving to Intel Desktop bring-up, these contracts must remain stable:
   paths all emit telemetry.
 - Hot AI core telemetry reports zero migration and zero involuntary context
   switches in the QEMU gate.
-- CPU matrix tiers validate the default ARM64 host/HVF smoke path, ARM64 TCG
+- CPU matrix tiers validate the mandatory ARM64 TCG correctness path and TCG
   boot probes for `cortex-a53`, `cortex-a72`, `cortex-a76`, `cortex-a710`,
-  `neoverse-n1`, `neoverse-n2`, `neoverse-v1`, and `max`, plus x86_64
-  Intel, Xeon, Atom server-edge, and AMD smoke-boot profiles.
+  `neoverse-n1`, `neoverse-n2`, `neoverse-v1`, and `max`, plus x86_64 early
+  boot profiles for Intel, Xeon, Atom server-edge, and AMD CPU models.
+- The macOS host/HVF tier is an optional local acceleration check. It is always
+  reported when run but does not replace or block the TCG correctness contract.
 
 ## Out of Scope Before Intel
 
@@ -126,9 +142,9 @@ Intel Desktop work can begin only after:
   gate is `make qemu-x86_64-smoke`.
 - P-core/E-core placement policy metadata: milestone 49 gate is
   `make intel-desktop-gate`.
-- x86_64 OS contract parity marker: milestone 50 gate is
-  `make intel-desktop-gate`.
-- Intel Desktop hardware gate report: milestone 51 gate is
-  `make intel-desktop-gate`.
+- x86_64 common-kernel/runtime parity is not implemented. The milestone 50
+  assessment explicitly reports `unsupported`.
+- The milestone 51 Intel Desktop hardware assessment reports `blocked` until
+  the common runtime and qualifying physical evidence exist.
 - Initial tuned Linux/BSD baseline plan for later measured comparisons remains
   required before hardware performance claims.

@@ -112,11 +112,12 @@ KERNEL_CFLAGS="
   -Wall
   -Wextra
   -Werror
-  -I$ROOT_DIR/kernel/include
 "
 
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/arch/x86_64/entry.S" -o "$KERNEL_ENTRY_OBJ"
-"$CLANG" $KERNEL_CFLAGS -c "$ROOT_DIR/kernel/arch/x86_64/early.c" -o "$KERNEL_EARLY_OBJ"
+"$CLANG" $KERNEL_CFLAGS -I"$ROOT_DIR/kernel/include" \
+  -c "$ROOT_DIR/kernel/arch/x86_64/entry.S" -o "$KERNEL_ENTRY_OBJ"
+"$CLANG" $KERNEL_CFLAGS -I"$ROOT_DIR/kernel/include" \
+  -c "$ROOT_DIR/kernel/arch/x86_64/early.c" -o "$KERNEL_EARLY_OBJ"
 
 "$LD_LLD" \
   -nostdlib \

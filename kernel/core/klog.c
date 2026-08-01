@@ -58,11 +58,16 @@ void klog_write(const char *message, uint64_t length) {
   }
 }
 
-static void klog_u64(uint64_t value, unsigned base) {
+static void klog_u64_width(uint64_t value, unsigned base, unsigned width,
+                           char padding) {
   char buffer[32];
   unsigned index = 0;
 
   if (value == 0) {
+    while (width > 1U) {
+      klog_char(padding);
+      --width;
+    }
     klog_char('0');
     return;
   }
@@ -73,9 +78,29 @@ static void klog_u64(uint64_t value, unsigned base) {
     value /= base;
   }
 
+  while (width > index) {
+    klog_char(padding);
+    --width;
+  }
   while (index != 0) {
     klog_char(buffer[--index]);
   }
+}
+
+static void klog_u64(uint64_t value, unsigned base) {
+  klog_u64_width(value, base, 0, ' ');
+}
+
+static void klog_i64(int64_t value, unsigned width, char padding) {
+  uint64_t magnitude = (uint64_t)value;
+  if (value < 0) {
+    klog_char('-');
+    magnitude = (uint64_t)(-(value + 1)) + 1U;
+    if (width > 0U) {
+      --width;
+    }
+  }
+  klog_u64_width(magnitude, 10, width, padding);
 }
 
 static void klog_vformat(const char *fmt, va_list args) {
@@ -90,13 +115,26 @@ static void klog_vformat(const char *fmt, va_list args) {
       break;
     }
 
+    char padding = ' ';
+    unsigned width = 0;
+    if (*p == '0') {
+      padding = '0';
+      ++p;
+    }
+    while (*p >= '0' && *p <= '9') {
+      width = (width * 10U) + (unsigned)(*p - '0');
+      ++p;
+    }
+
     if (*p == 's') {
       const char *s = va_arg(args, const char *);
       klog_puts(s == 0 ? "(null)" : s);
     } else if (*p == 'u') {
-      klog_u64((uint64_t)va_arg(args, unsigned), 10);
+      klog_u64_width((uint64_t)va_arg(args, unsigned), 10, width, padding);
     } else if (*p == 'x') {
-      klog_u64((uint64_t)va_arg(args, unsigned), 16);
+      klog_u64_width((uint64_t)va_arg(args, unsigned), 16, width, padding);
+    } else if (*p == 'd') {
+      klog_i64((int64_t)va_arg(args, int), width, padding);
     } else if (*p == 'p') {
       klog_puts("0x");
       klog_u64((uint64_t)(uintptr_t)va_arg(args, void *), 16);

@@ -1,8 +1,8 @@
 <!--
 AI onboarding file.
-Mode: bootstrap
-Indexed commit: 8458ff956831e1b3b44a0cbcb396352ce28e3a01
-Last generated: 2026-06-25T09:20:22Z
+Mode: refresh
+Indexed base commit: 8404c1ec1b76c02157bb08d8a3a9466a93e5c2cb
+Last refreshed: 2026-08-01
 Generator: generic high-end AI coding agent
 Purpose: Help future AI sessions understand this repository quickly.
 Audience: Any high-capability AI coding agent, regardless of vendor or model family.
@@ -10,9 +10,11 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 -->
 # Known unknowns and conflicts
 
-## Conflicting: performance claims vs QEMU evidence
+## Resolved in primary status docs: performance claims vs QEMU evidence
 
-README, project tracker, and local wiki pages contain CPU-only performance targets and claims. `HARDWARE-READINESS.md` and `contracts/qemu-rc-v1.json` say QEMU benchmark/gate output is correctness evidence only and does not authorize hardware performance claims.
+README, project tracker, hardware-readiness and benchmark methodology now label
+QEMU as correctness/ABI evidence only. Older local wiki/generated material may
+still contain historical targets and is not an authoritative support source.
 
 Recommendation: treat performance numbers as targets or unverified design claims unless a human provides measured hardware baselines.
 
@@ -23,11 +25,11 @@ Evidence:
 - `HARDWARE-READINESS.md`
 - `contracts/qemu-rc-v1.json`
 
-## Conflicting: syscall/API documentation lag
+## Resolved in current working tree: syscall/API documentation lag
 
-Source defines syscalls through `XAIOS_SYSCALL_AGENT_DISPATCH` number 34, while `docs/API.md` documents through socket close number 33 and `contracts/qemu-rc-v1.json` lists only numbers 1-28. `scripts/qemu_gate_lib.py` validates contract entries against source, but does not obviously require the contract to cover every source syscall.
-
-Recommendation: before changing syscalls, decide whether to update docs/API and contract coverage in the same PR.
+Source, userspace wrappers, `docs/API.md`, and the release-candidate contract now
+cover syscalls 1-34. `scripts/qemu_gate_lib.py` rejects missing or extra source
+syscalls/capabilities.
 
 Evidence:
 - `kernel/include/xaios/syscall.h`
@@ -47,23 +49,35 @@ Evidence:
 - `LICENSE`
 - `README.md`
 
-## Stale or incomplete docs
+## Verified implementation gaps
 
-- `docs/ARCHITECTURE.md` userspace lifecycle omits source-visible `agenttest` PID 16.
-- `PROJECT-TRACKER.md` references commands such as `make sshd` and some milestone commands that were not present in the inspected `Makefile`.
-- `CONTRIBUTING.md` contains duplicate sections and an existing vendor-specific workflow heading; it was preserved because it is human-facing contributor documentation, not a generated AI onboarding file.
+- No official tokenizer importer, real Qwen tensor import, transformer plan, logits
+  parity or 32-token decode parity exists.
+- Kimi K3 is interface/roadmap only; KDA, Gated MLA, exact top-16 MoE, MXFP4,
+  text parity and multimodal execution are absent.
+- INT4/INT6 fixture-era kernels still expand matrices; the INT6 path still leaks
+  temporary storage and worker units remain sequential.
+- Model admission, model arena, NUMA bitmaps, synchronous block I/O, scheduler
+  work dispatch and AI Cell leases remain QEMU-scale prototypes.
+- The x86_64 image still links only early architecture bring-up, not the common
+  kernel or portable inference engine.
+- There is no native macOS process/backend, Metal backend, AVX2/AVX-512/VNNI/AMX
+  backend, physical hardware parity run, or immutable performance artifact.
 
 ## Unknowns
 
-- Exact complete repository file tree could not be cloned in this runtime because direct GitHub DNS resolution failed; inspection used the GitHub connector and targeted source/config/docs reads.
-- Hardware validation status beyond repository docs is unknown.
+- Exact production Qwen/K3 source revisions for golden compatibility fixtures
+  are not pinned yet; verify official configuration at importer implementation time.
+- Hardware validation status beyond repository artifacts is unknown; currently
+  no qualifying physical artifact is present.
 - Production signing/key-management design is not complete in source comments inspected.
+- Default macOS HVF QEMU aborts in `hvf_handle_exception`; TCG correctness passes.
 - Whether `.qoder/repowiki/` should be removed, ignored, or refreshed is unknown; it was not modified.
 
 ## Ask a human before editing
 
 - Licensing text.
-- Hardware performance claims or benchmark methodology.
+- Hardware performance claims that lack benchmark-contract artifacts.
 - Production security model/signing claims.
 - Removal of non-onboarding docs with vendor-specific wording.
 - Any change that relaxes capability checks, credential-material rejection, update authorization, or sandbox path validation.

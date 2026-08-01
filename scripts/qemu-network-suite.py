@@ -9,7 +9,7 @@ MARKERS = {
     "udp_flow_lifecycle": [
         "network: udp flow id=",
         "expired queue=",
-        "network: app udp echo payload=12",
+        "network: app udp echo payload=13",
         "\"network_udp_flows\":2",
         "\"network_udp_flow_hits\":2",
         "\"network_udp_expired\":1",

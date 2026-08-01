@@ -31,8 +31,13 @@ void klog_ring_init(void) {
   g_persist_count = 0;
   g_rotate_count = 0;
 
-  /* Ensure /var/log directory exists */
-  mutable_fs_mkdir("/var/log");
+  /* Ensure the persistent log path exists before enabling the ring. */
+  if (mutable_fs_mkdir("/var") != XAIOS_OK ||
+      mutable_fs_mkdir("/var/log") != XAIOS_OK) {
+    g_ring_initialized = 0;
+    klog("klog_ring: initialization failed; persistent path unavailable\n");
+    return;
+  }
 
   g_ring_initialized = 1;
   klog("klog_ring: initialized size=%u\n", XAIOS_KLOG_RING_SIZE);
@@ -180,16 +185,21 @@ void klog_ring_self_test(void) {
   }
   /* Fill the entire ring buffer + some extra */
   uint32_t total_fill = XAIOS_KLOG_RING_SIZE + 64U;
-  for (uint32_t i = 0; i < total_fill / (uint32_t)sizeof(fill_buf); ++i) {
-    klog_ring_write(fill_buf, (uint32_t)sizeof(fill_buf));
+  uint32_t remaining = total_fill;
+  while (remaining > 0) {
+    uint32_t chunk = remaining < (uint32_t)sizeof(fill_buf)
+                         ? remaining
+                         : (uint32_t)sizeof(fill_buf);
+    klog_ring_write(fill_buf, chunk);
+    remaining -= chunk;
   }
-  kassert(klog_ring_count() <= XAIOS_KLOG_RING_SIZE);
-  kassert(klog_ring_overflow_count() > 0);
+  kassert(klog_ring_count() == XAIOS_KLOG_RING_SIZE);
+  kassert(klog_ring_overflow_count() == 64U);
 
   /* Test flush (should succeed even if MFS not fully ready) */
   klog_ring_clear();
   klog_ring_write("flush-test\n", 11);
-  klog_flush();
+  kassert(klog_flush() == XAIOS_OK);
 
   klog("klog_ring: self-test passed overflow=%u persists=%lu rotates=%lu\n",
        g_ring.overflow, g_persist_count, g_rotate_count);

@@ -55,6 +55,20 @@ static xaios_sched_task_t *find_task_local(uint32_t cpu_id, uint32_t pid) {
   return 0;
 }
 
+static xaios_sched_task_t *find_task_global(uint32_t pid, uint32_t *cpu_out) {
+  uint32_t online = smp_online_count();
+  for (uint32_t cpu = 0; cpu < online; ++cpu) {
+    xaios_sched_task_t *task = find_task_local(cpu, pid);
+    if (task != 0) {
+      if (cpu_out != 0) {
+        *cpu_out = cpu;
+      }
+      return task;
+    }
+  }
+  return 0;
+}
+
 /* Allocate task slot from local CPU's table using atomic bitmap */
 static xaios_sched_task_t *alloc_task_slot(uint32_t cpu_id) {
   if (cpu_id >= XAIOS_MAX_CPUS) {
@@ -399,17 +413,14 @@ void scheduler_init(void) {
        XAIOS_TASK_SLOTS_PER_CPU, XAIOS_SCHEDULER_DEFAULT_TICK_HZ, XAIOS_MAX_CPUS);
 }
 
-xaios_status_t scheduler_register(uint32_t pid) {
-  return scheduler_register_with_priority(pid, XAIOS_PRIORITY_NORMAL);
-}
-
-xaios_status_t scheduler_register_with_priority(uint32_t pid,
-                                                xaios_task_priority_t priority) {
+static xaios_status_t scheduler_register_on_cpu(
+    uint32_t pid, xaios_task_priority_t priority, uint32_t cpu) {
   if (pid == 0 || pid > XAIOS_SCHEDULER_MAX_TASKS) {
     return XAIOS_ERR_INVALID;
   }
-
-  uint32_t cpu = find_least_loaded_cpu();
+  if (cpu >= smp_online_count() || find_task_global(pid, 0) != 0) {
+    return XAIOS_ERR_BUSY;
+  }
   xaios_sched_task_t *slot = alloc_task_slot(cpu);
   if (slot == 0) {
     klog("scheduler: task table full on cpu%u, pid=%u\n", cpu, pid);
@@ -428,9 +439,18 @@ xaios_status_t scheduler_register_with_priority(uint32_t pid,
   return XAIOS_OK;
 }
 
+xaios_status_t scheduler_register(uint32_t pid) {
+  return scheduler_register_with_priority(pid, XAIOS_PRIORITY_NORMAL);
+}
+
+xaios_status_t scheduler_register_with_priority(uint32_t pid,
+                                                xaios_task_priority_t priority) {
+  return scheduler_register_on_cpu(pid, priority, find_least_loaded_cpu());
+}
+
 void scheduler_unregister(uint32_t pid) {
-  uint32_t cpu = smp_cpu_id();
-  xaios_sched_task_t *task = find_task_local(cpu, pid);
+  uint32_t cpu = 0;
+  xaios_sched_task_t *task = find_task_global(pid, &cpu);
   if (task == 0) {
     return;
   }
@@ -452,8 +472,8 @@ void scheduler_unregister(uint32_t pid) {
 }
 
 xaios_status_t scheduler_set_runnable(uint32_t pid) {
-  uint32_t cpu = smp_cpu_id();
-  xaios_sched_task_t *task = find_task_local(cpu, pid);
+  uint32_t cpu = 0;
+  xaios_sched_task_t *task = find_task_global(pid, &cpu);
   if (task == 0) {
     return XAIOS_ERR_INVALID;
   }
@@ -471,8 +491,8 @@ xaios_status_t scheduler_set_runnable(uint32_t pid) {
 }
 
 xaios_status_t scheduler_set_blocked(uint32_t pid) {
-  uint32_t cpu = smp_cpu_id();
-  xaios_sched_task_t *task = find_task_local(cpu, pid);
+  uint32_t cpu = 0;
+  xaios_sched_task_t *task = find_task_global(pid, &cpu);
   if (task == 0) {
     return XAIOS_ERR_INVALID;
   }
@@ -489,8 +509,7 @@ xaios_status_t scheduler_set_blocked(uint32_t pid) {
 }
 
 xaios_context_frame_t *scheduler_task_frame(uint32_t pid) {
-  uint32_t cpu = smp_cpu_id();
-  xaios_sched_task_t *task = find_task_local(cpu, pid);
+  xaios_sched_task_t *task = find_task_global(pid, 0);
   if (task == 0) {
     return 0;
   }
@@ -711,35 +730,40 @@ void scheduler_dump_stats(void) {
 
 void scheduler_self_test(void) {
   kassert(g_initialized != 0);
+  uint32_t cpu = smp_cpu_id();
+  const xaios_cpu_state_t *cpu_state = smp_cpu_state(cpu);
+  kassert(cpu_state != 0);
+  uint32_t scheduling_was_enabled = cpu_state->scheduling_enabled;
+  kassert(smp_set_scheduling_enabled(cpu, 1U) == XAIOS_OK);
 
-  kassert(scheduler_register_with_priority(1, XAIOS_PRIORITY_HIGH) == XAIOS_OK);
-  kassert(scheduler_register_with_priority(2, XAIOS_PRIORITY_NORMAL) == XAIOS_OK);
-  kassert(scheduler_register_with_priority(3, XAIOS_PRIORITY_LOW) == XAIOS_OK);
+  kassert(scheduler_register_on_cpu(1, XAIOS_PRIORITY_HIGH, cpu) == XAIOS_OK);
+  kassert(scheduler_register_on_cpu(2, XAIOS_PRIORITY_NORMAL, cpu) == XAIOS_OK);
+  kassert(scheduler_register_on_cpu(3, XAIOS_PRIORITY_LOW, cpu) == XAIOS_OK);
   kassert(scheduler_set_runnable(1) == XAIOS_OK);
   kassert(scheduler_set_runnable(2) == XAIOS_OK);
   kassert(scheduler_set_runnable(3) == XAIOS_OK);
   kassert(scheduler_runnable_count() == 3);
 
-  xaios_sched_task_t *t1 = find_task_local(0, 1);
-  xaios_sched_task_t *t2 = find_task_local(0, 2);
-  xaios_sched_task_t *t3 = find_task_local(0, 3);
+  xaios_sched_task_t *t1 = find_task_local(cpu, 1);
+  xaios_sched_task_t *t2 = find_task_local(cpu, 2);
+  xaios_sched_task_t *t3 = find_task_local(cpu, 3);
   kassert(t1 != 0 && t1->priority == XAIOS_PRIORITY_HIGH);
   kassert(t2 != 0 && t2->priority == XAIOS_PRIORITY_NORMAL);
   kassert(t3 != 0 && t3->priority == XAIOS_PRIORITY_LOW);
 
-  g_runqueues[0].current_pid = 0;
+  g_runqueues[cpu].current_pid = 0;
   xaios_context_frame_t dummy_frame;
   bytes_zero(&dummy_frame, sizeof(dummy_frame));
   dummy_frame.elr_el1 = 0x1000;
 
   scheduler_tick(&dummy_frame);
-  uint32_t picked = g_runqueues[0].current_pid;
+  uint32_t picked = g_runqueues[cpu].current_pid;
   kassert(picked == 1 || picked == 2 || picked == 3);
 
   scheduler_lock();
-  uint32_t before = g_runqueues[0].current_pid;
+  uint32_t before = g_runqueues[cpu].current_pid;
   scheduler_tick(&dummy_frame);
-  kassert(g_runqueues[0].current_pid == before);
+  kassert(g_runqueues[cpu].current_pid == before);
   scheduler_unlock();
 
   kassert(scheduler_set_blocked(2) == XAIOS_OK);
@@ -748,9 +772,10 @@ void scheduler_self_test(void) {
   scheduler_unregister(1);
   scheduler_unregister(2);
   scheduler_unregister(3);
-  kassert(find_task_local(0, 1) == 0);
-  kassert(find_task_local(0, 2) == 0);
-  kassert(find_task_local(0, 3) == 0);
+  kassert(find_task_local(cpu, 1) == 0);
+  kassert(find_task_local(cpu, 2) == 0);
+  kassert(find_task_local(cpu, 3) == 0);
+  kassert(smp_set_scheduling_enabled(cpu, scheduling_was_enabled) == XAIOS_OK);
 
   klog("scheduler: hierarchical SMP self-test passed ticks=%lu switches=%lu "
        "yields=%lu steals=%lu\n",

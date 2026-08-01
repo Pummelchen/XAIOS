@@ -1,0 +1,36 @@
+{
+  "schema": "xaios.model_support.v1",
+  "updated": "2026-08-01",
+  "entries": [
+    {
+      "id": "qemu_v1_fixture",
+      "name": "Deterministic QEMU model-v1 path",
+      "status": "Fixture only",
+      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
+    },
+    {
+      "id": "model_v2",
+      "name": "xaios.model.v2 tooling",
+      "status": "Interface only",
+      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
+    },
+    {
+      "id": "qwen_3_6_plus",
+      "name": "Qwen3.6+",
+      "status": "Interface only",
+      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
+    },
+    {
+      "id": "kimi_k3_text",
+      "name": "Kimi K3 text",
+      "status": "Interface only",
+      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
+    },
+    {
+      "id": "kimi_k3_multimodal",
+      "name": "Kimi K3 multimodal",
+      "status": "Roadmap only",
+      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
+    }
+  ]
+}

@@ -5,6 +5,8 @@ typedef unsigned long long u64;
 typedef unsigned int u32;
 typedef int s32;
 
+#define XAIOS_ERR_UNSUPPORTED (-6)
+
 #define XAIOS_SYSCALL_LOG 1ULL
 #define XAIOS_SYSCALL_EXIT 2ULL
 #define XAIOS_SYSCALL_OSCTL 3ULL
@@ -35,7 +37,7 @@ typedef int s32;
 
 #define XAIOS_NET_PROTOCOL_UDP 17ULL
 #define XAIOS_NET_PROTOCOL_TCP 6ULL
-#define XAIOS_ML_MODEL_DECODE 1ULL
+#define XAIOS_ML_MODEL_FIXTURE_DECODE 1ULL
 #define XAIOS_ML_MODEL_XOR 2ULL
 #define XAIOS_ML_MODEL_SUM 3ULL
 #define XAIOS_ML_MODEL_PARITY 4ULL

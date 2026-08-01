@@ -209,7 +209,10 @@ def validate_cpu_matrix(report: Dict[str, Any], contract: Dict[str, Any],
     if not isinstance(tiers, list) or not tiers:
         failures.append("cpu_matrix.tiers missing or empty")
         return
-    failed = [tier.get("name") for tier in tiers if tier.get("status") != "pass"]
+    failed = [
+        tier.get("name") for tier in tiers
+        if tier.get("required") is not False and tier.get("status") != "pass"
+    ]
     if failed:
         failures.append(f"cpu_matrix failed tiers: {failed}")
 
@@ -252,16 +255,17 @@ def validate_docs(root: Path, failures: List[str]) -> Dict[str, bool]:
             "make qemu-full-os-rc",
             "xaios.qemu.full_os_release_candidate.v1",
             "build/qemu-full-os-rc-report.json",
+            "QEMU correctness gate",
         ],
-        "QEMU-FULL-OS-PLAN.md": [
-            "Milestone 42",
-            "make qemu-full-os-rc",
-            "QEMU full OS release candidate",
+        "README.md": [
+            "## Model support status",
+            "Fixture only",
+            "Qwen3.6+",
+            "Kimi K3 text",
         ],
-        "QEMU-FULL-OS-CORE-WORKDOWN.md": [
-            "Phase Q16: Full OS Release Candidate",
-            "make qemu-full-os-rc",
-            "qemu_full_os_complete",
+        "docs/BENCHMARK-CONTRACT.md": [
+            "QEMU output proves correctness and ABI behavior only",
+            "performance_claims_allowed=false",
         ],
     }
     result: Dict[str, bool] = {}

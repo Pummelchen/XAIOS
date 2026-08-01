@@ -48,10 +48,12 @@ This launches QEMU with serial output to the terminal. Press `Ctrl-A X` to quit.
 ### Automated smoke test
 
 ```sh
-make qemu-smoke   # Boots and validates 330+ markers
+make qemu-smoke   # Boots and validates the AArch64 QEMU contract
 ```
 
-The smoke test runs is the primary validation: it boots the full OS, executes all self-tests, runs every userspace application, and verifies JSON telemetry output. If it passes, the build is good.
+The smoke test is the primary AArch64 QEMU validation: it boots the prototype,
+executes its self-tests and userspace fixtures, and validates JSON telemetry.
+It is correctness evidence, not production or hardware-performance evidence.
 
 ### Other test targets
 
@@ -63,8 +65,8 @@ The smoke test runs is the primary validation: it boots the full OS, executes al
 | `make qemu-network-suite` | Network stack (UDP/TCP) |
 | `make qemu-cpu-ai-suite` | CPU-only AI runtime |
 | `make qemu-regression-suite` | Full regression suite |
-| `make qemu-benchmark` | Performance telemetry collection |
-| `make qemu-readiness-gate` | Production readiness validation |
+| `make qemu-benchmark` | QEMU correctness telemetry collection |
+| `make qemu-readiness-gate` | QEMU correctness-readiness validation |
 
 ## Writing a Userspace Application
 

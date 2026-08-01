@@ -94,6 +94,8 @@ uint32_t routing_lookup(uint32_t dest_ip) {
 }
 
 void routing_self_test(void) {
+  routing_init();
+
   uint32_t local_host = 0x0a000205U;
   uint32_t next_hop = routing_lookup(local_host);
   kassert(next_hop == local_host);

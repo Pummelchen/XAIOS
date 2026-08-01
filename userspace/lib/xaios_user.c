@@ -170,7 +170,7 @@ int xaios_cpu_ai_decode(const void *input, u64 input_size, char *output,
   request.out_size = (u64)out_size;
   u64 rc = xaios_syscall3(XAIOS_SYSCALL_CPU_AI_DECODE, (u64)&request,
                          sizeof(request), 0);
-  return rc == ~0ULL ? -1 : (int)rc;
+  return rc == ~0ULL ? -1 : (int)(signed long long)rc;
 }
 
 int xaios_remote_login(const char *user, const char *command, char *output,

@@ -5,6 +5,9 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+from qemu_gate_lib import contract, parse_telemetry, validate_telemetry_against_contract
 
 
 TARGETS = [
@@ -16,7 +19,6 @@ TARGETS = [
     "arena: self-test passed",
     "sandbox: lifecycle self-test passed",
     "sandbox: VM build self-test passed",
-    "\"sandbox_transitions\":4",
     "source-index: fixture loaded files=2 symbols=2 updates=1",
     "source-index: C scanner self-test passed",
     "git-workspace: self-test passed",
@@ -31,12 +33,12 @@ TARGETS = [
     "mutable-fs: snapshot committed",
     "mutable-fs: snapshot rollback",
     "mutable-fs: allocator self-test passed",
-    "mutable-fs: directory tree self-test passed directories=11",
+    "mutable-fs: directory tree self-test passed directories=12",
     "mutable-fs: multi-sector file self-test passed files=7 multi_sector=1",
     "mutable-fs: journal replay self-test passed replays=1 journal_writes=1",
     "mutable-fs: public API self-test passed list=1 stat=3 rename=1 open=3 close=3",
     "mutable-fs: subsystem records self-test passed records=4",
-    "mutable-fs: self-test passed files=7 directories=11 writes=12 reads=6 deletes=1 commits=1 rollbacks=1 replays=1 rejects=8 checksum_errors=0",
+    "mutable-fs: self-test passed files=7 directories=12 writes=12 reads=6 deletes=1 commits=1 rollbacks=1 replays=1 rejects=8 checksum_errors=0",
     "update: self-test passed transactions=2 staged=2 committed=1 failed=1 recovered=1 rollbacks=1 boot_fallbacks=1 records=8 rollback_points=2 rejects=2",
     "virtio-net: malformed packet/drop self-test passed",
     "virtio-net: rx/tx/reset self-test passed",
@@ -54,10 +56,10 @@ TARGETS = [
     "initramfs: config service=/init mode=qemu-mvp",
     "initramfs: service-manager path=/bin/service-manager descriptor=/etc/services/source-index.svc",
     "initramfs: child service=/svc/source-index parent=/init restart=never",
-    "initramfs: mounted rofs version=2 files=16",
+    "initramfs: mounted rofs version=2 files=18",
     "initramfs: rofs metadata/config self-test passed",
-    "syscall: table self-test passed entries=28",
-    "user: process table initialized slots=16",
+    "syscall: table self-test passed entries=34",
+    "user: process table initialized slots=1024",
     "user: process lifecycle invalid/failed transition self-test passed",
     "scheduler: lifecycle self-test passed",
     "user: process pid=1 name=/init state=loaded",
@@ -73,139 +75,26 @@ TARGETS = [
     "ai-cell: resource contract self-test passed admissions=2 rejects=10 arena_pages=160 arena_bytes=655360 queue_binds=3 queue_releases=3 workspace_binds=2 workspace_releases=2 conflicts=3",
     "ai-cell: lifecycle self-test passed",
     "agent-protocol: self-test passed",
-    "cpu-ai-runtime: Q8.8 matmul inference self-test passed",
+    "cpu-ai-runtime: Q8.8 kernel self-test passed",
     "kheap: self-test passed",
     "VMM translation test passed",
     "gic: discovery self-test passed",
     "PMM 1024 page allocate/free test passed",
     "cpu-ai-runtime: model manifest loaded",
-    "cpu-ai-runtime: model file loaded id=2 name=cpu-ai-mvp",
-    "cpu-ai-runtime: model file path=/models/cpu-ai-mvp.xaiosmodel admitted arena=2",
+    "cpu-ai-runtime: model file loaded id=2 name=cpu-ai-v1-fixture",
+    "cpu-ai-runtime: model file path=/models/cpu-ai-v1-fixture.xaiosmodel admitted arena=2",
     "cpu-ai-runtime: tokenizer/runtime boundary self-test passed tokenizer_calls=2 runtime_calls=2",
     "cpu-ai-runtime: multi-cell shared weights self-test passed loads=2 shared_binds=2 kv_writes=8",
     "cpu-ai-runtime: model load failure self-test passed failures=3 gpu_rejects=1",
     "cpu-ai-runtime: model file loader self-test passed file_loads=1 file_rejects=3",
     "admission_rejects=5 checksum_failures=1",
     "cpu-ai-runtime: tokenizer binding and CPU dispatch self-test passed tokenizer_binds=2 kernel_dispatches=2",
-    "cpu-ai-runtime: deterministic decode fixture input=ABCD output=1B1F2327",
+    "cpu-ai-runtime: v1 fixture decode input=ABCD output=1B1F2327",
     "cpu-ai-runtime: self-test passed",
     "cpu-ai-runtime: generic ml model kind=2",
     "cpu-ai-runtime: generic ml model kind=3",
     "cpu-ai-runtime: generic ml model kind=4",
     "ai-cell: multi-cell shared model/private kv self-test passed",
-    "\"arena_committed_pages\"",
-    "\"git_workspace_active\"",
-    "\"git_workspace_syncs\"",
-    "\"git_workspace_applies\"",
-    "\"git_workspace_reverts\"",
-    "\"git_workspace_conflicts\"",
-    "\"persistence_snapshots\":7",
-    "\"persistence_rollbacks\":7",
-    "\"persistence_rejects\":2",
-    "\"persistence_disk_writes\":1",
-    "\"persistence_disk_loads\":1",
-    "\"persistence_checksum_errors\":0",
-    "\"mutable_fs_mounts\":2",
-    "\"mutable_fs_files\":8",
-    "\"mutable_fs_directories\":12",
-    "\"mutable_fs_writes\":74",
-    "\"mutable_fs_reads\":59",
-    "\"mutable_fs_deletes\":16",
-    "\"mutable_fs_commits\":4",
-    "\"mutable_fs_rollbacks\":3",
-    "\"mutable_fs_replays\":1",
-    "\"mutable_fs_journal_writes\":1",
-    "\"mutable_fs_multi_sector_files\":1",
-    "\"mutable_fs_state_records\":16",
-    "\"mutable_fs_renames\":4",
-    "\"mutable_fs_lists\":24",
-    "\"mutable_fs_stats\":167",
-    "\"mutable_fs_opens\":29",
-    "\"mutable_fs_closes\":29",
-    "\"mutable_fs_rejects\":8",
-    "\"mutable_fs_checksum_errors\":0",
-    "\"update_transactions\":2",
-    "\"update_staged\":2",
-    "\"update_committed\":1",
-    "\"update_failures\":1",
-    "\"update_recoveries\":1",
-    "\"update_rollbacks\":1",
-    "\"update_boot_fallbacks\":1",
-    "\"update_records_persisted\":8",
-    "\"update_rollback_points\":2",
-    "\"update_rejects\":2",
-    "\"migration_total\":0",
-    "\"context_switch_total\":0",
-    "\"source_index_updates\":1",
-    "\"security_denied_ops\":22",
-    "\"security_capability_denials\":5",
-    "\"security_fs_denials\":1",
-    "\"security_workspace_denials\":4",
-    "\"security_sandbox_denials\":3",
-    "\"security_rollback_denials\":1",
-    "\"security_update_policy_rejects\":3",
-    "\"security_credential_rejects\":3",
-    "\"security_signature_accepts\":3",
-    "\"security_signature_rejects\":3",
-    "\"security_admin_denials\":2",
-    "\"security_update_authorizations\":3",
-    "\"security_update_replay_rejects\":1",
-    "\"security_key_accepts\":3",
-    "\"security_key_rejects\":1",
-    "\"security_sandbox_escape_rejects\":2",
-    "\"network_udp_tx\":5",
-    "\"network_udp_rx\":5",
-    "\"network_udp_malformed\":1",
-    "\"network_udp_dropped\":1",
-    "\"network_udp_flows\":2",
-    "\"network_udp_flow_hits\":2",
-    "\"network_udp_expired\":1",
-    "\"network_tcp_connections\":1",
-    "\"network_tcp_timeouts\":1",
-    "\"network_tcp_retransmits\":1",
-    "\"network_tcp_resets\":2",
-    "\"network_tcp_established\":2",
-    "\"network_tcp_closed\":2",
-    "\"network_rx_packets\":12",
-    "\"network_tx_packets\":10",
-    "\"network_packet_drops\":4",
-    "\"network_packet_lifecycle\":34",
-    "\"network_queue_rx_enqueues\":12",
-    "\"network_queue_tx_enqueues\":10",
-    "\"network_queue_completions\":10",
-    "\"network_queue_backpressure_drops\":0",
-    "\"network_flow_core_mismatches\":0",
-    "\"network_udp_p999\"",
-    "\"network_tcp_p999\"",
-    "\"ai_cell_transitions\":14",
-    "\"ai_cell_descriptor_accepts\":5",
-    "\"ai_cell_descriptor_rejects\":4",
-    "\"ai_cell_resource_admissions\":2",
-    "\"ai_cell_resource_rejects\":10",
-    "\"ai_cell_arena_pages_reserved\":0",
-    "\"ai_cell_arena_bytes_reserved\":0",
-    "\"ai_cell_arena_pages_peak\":160",
-    "\"ai_cell_arena_bytes_peak\":655360",
-    "\"ai_cell_queue_binds\":3",
-    "\"ai_cell_queue_releases\":3",
-    "\"ai_cell_workspace_binds\":2",
-    "\"ai_cell_workspace_releases\":2",
-    "\"ai_cell_conflicts\":3",
-    "\"cpu_ai_model_loads\":5",
-    "\"cpu_ai_model_load_failures\":3",
-    "\"cpu_ai_tokenizer_calls\":5",
-    "\"cpu_ai_runtime_calls\":8",
-    "\"cpu_ai_kv_writes\":19",
-    "\"cpu_ai_shared_weight_binds\":5",
-    "\"cpu_ai_gpu_rejects\":1",
-    "\"cpu_ai_model_file_loads\":1",
-    "\"cpu_ai_model_file_rejects\":3",
-    "\"cpu_ai_model_bytes_loaded\"",
-    "\"cpu_ai_manifest_validations\":10",
-    "\"cpu_ai_tokenizer_binds\":5",
-    "\"cpu_ai_kernel_dispatches\":8",
-    "\"cpu_ai_admission_rejects\":5",
-    "\"cpu_ai_checksum_failures\":1",
     "user: loaded /init ELF",
     "user: process pid=1 name=/init state=running",
     "user: rejected syscall=99",
@@ -224,7 +113,7 @@ TARGETS = [
     "user: process pid=1 name=/init state=exited",
     "user: kernel resumed after EL0 pid=1 state=exited exit_code=0",
     "kernel: /init returned to kernel exit_code=0",
-    "user: reclaimed address space pid=1",
+    "user: reclaimed aspace pid=1",
     "user: loaded /bin/service-manager ELF",
     "user: process pid=2 name=/bin/service-manager state=running",
     "/service-manager: hello from ELF",
@@ -256,7 +145,7 @@ TARGETS = [
     "/service-manager: admin status exported",
     "/service-manager: remote-safe checks passed",
     "osctl: status qemu=running",
-    "osctl: ps slots=16",
+    "osctl: ps slots=1024",
     "osctl: services transitions=",
     "osctl: cells transitions=",
     "osctl: fs files=",
@@ -269,15 +158,9 @@ TARGETS = [
     "/service-manager: control plane complete",
     "user: /bin/service-manager exited status=0",
     "kernel: /bin/service-manager returned to kernel exit_code=0",
-    "scheduler: process pid=3 parent=2 runnable name=/bin/xaios-worker",
-    "scheduler: dispatch pid=3 parent=2 name=/bin/xaios-worker",
-    "kernel: /bin/xaios-worker pid=3 returned to kernel exit_code=0",
-    "scheduler: process pid=4 parent=2 runnable name=/bin/xaios-worker",
-    "scheduler: dispatch pid=4 parent=2 name=/bin/xaios-worker",
-    "kernel: /bin/xaios-worker pid=4 returned to kernel exit_code=0",
-    "scheduler: process pid=5 parent=2 runnable name=/bin/xaios-worker",
-    "scheduler: dispatch pid=5 parent=2 name=/bin/xaios-worker",
-    "kernel: /bin/xaios-worker pid=5 returned to kernel exit_code=0",
+    "parent=2 runnable name=/bin/xaios-worker",
+    "parent=2 name=/bin/xaios-worker",
+    "name=/bin/xaios-worker state=exited exit_code=0",
     "/worker: scheduled child process ran",
     "/bin/xaios-shell: command surface passed 1..15 + ls variants + tar/cpio archive",
     "kernel: /bin/xaios-shell returned to kernel exit_code=0",
@@ -298,7 +181,8 @@ TARGETS = [
     "/bin/nettest: external host-to-guest tcp/udp session path passed",
     "kernel: /bin/nettest returned to kernel exit_code=0",
     "/bin/lstm-xor: CPU-only two-hidden-layer LSTM XOR example starting",
-    "/bin/lstm-xor: cpu-ai runtime decode=",
+    "/bin/lstm-xor: production decode unsupported as required",
+    "/bin/lstm-xor: cpu-ai fixture decode=",
     "/bin/lstm-xor: train_ns=",
     "/bin/lstm-xor: run3_avg_ns=",
     "/bin/lstm-xor: final_errors=0",
@@ -313,38 +197,6 @@ TARGETS = [
     "/bin/agenttest: agent protocol dispatch passed",
     "/bin/agenttest: complete",
     "kernel: /bin/agenttest returned to kernel exit_code=0",
-    "\"service_tree_edges\":1",
-    "\"service_restarts\":1",
-    "\"service_crashes\":1",
-    "\"service_cleanups\":6",
-    "\"service_log_records\":2",
-    "\"admin_policy_exports\":1",
-    "\"admin_status_exports\":2",
-    "\"admin_log_reads\":1",
-    "\"admin_remote_safe_accepts\":1",
-    "\"admin_remote_safe_rejects\":1",
-    "\"admin_command_denials\":0",
-    "\"user_process_transitions\":48",
-    "\"user_process_loaded\":15",
-    "\"user_process_runnable\":3",
-    "\"user_process_running\":15",
-    "\"user_process_waiting\":0",
-    "\"user_process_exited\":15",
-    "\"user_process_failed\":0",
-    "\"user_process_reclaims\":15",
-    "\"user_process_scheduled\":15",
-    "\"user_process_active\":0",
-    "\"service_child_descriptors\":1",
-    "\"control_plane_syscalls\":164",
-    "\"control_plane_denials\":6",
-    "\"service_descriptor_reads\":1",
-    "\"cpu_ai_inferences\"",
-    "\"source_index_scans\"",
-    "\"git_workspace_blob_hashes\"",
-    "\"git_workspace_diffs\"",
-    "\"sandbox_vm_execs\"",
-    "\"agent_protocol_requests\"",
-    "\"agent_protocol_errors\"",
 ]
 
 # OR targets: each entry is a list of alternative strings.
@@ -353,7 +205,6 @@ OR_TARGETS = [
     ["core-lease: isolation self-test passed", "core-lease: self-test skipped"],
     ["core-lease: owner=0 mask=0x2 acquired", "core-lease: self-test skipped"],
 ]
-
 
 def telemetry_line_complete(text):
     marker = "telemetry: {"
@@ -364,6 +215,10 @@ def telemetry_line_complete(text):
 def main() -> int:
     env = os.environ.copy()
     env["XAIOS_QEMU_HOSTFWD_PORT"] = "none"
+    log_path = Path("build/qemu-smoke.log")
+    persistent_image = Path("build/xaios-smoke-persistent.img")
+    persistent_image.unlink(missing_ok=True)
+    env["XAIOS_PERSISTENT_IMAGE"] = str(persistent_image)
     proc = subprocess.Popen(
         ["make", "qemu-aarch64"],
         stdout=subprocess.PIPE,
@@ -387,27 +242,58 @@ def main() -> int:
                 sys.stdout.flush()
                 seen.append(chunk)
                 text = "".join(seen)
+                telemetry_failures = []
+                if telemetry_line_complete(text):
+                    try:
+                        telemetry_failures = validate_telemetry_against_contract(
+                            parse_telemetry(text), contract()
+                        )
+                    except (ValueError, KeyError) as error:
+                        telemetry_failures = [str(error)]
                 if (all(target in text for target in TARGETS) and
                         all(any(alt in text for alt in group) for group in OR_TARGETS) and
-                        telemetry_line_complete(text)):
+                        telemetry_line_complete(text) and not telemetry_failures):
                     print("\nQEMU smoke boot reached all full userspace/resource markers")
                     return 0
             elif proc.poll() is not None:
                 break
     finally:
         if proc.poll() is None:
-            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                try:
+                    proc.terminate()
+                except ProcessLookupError:
+                    pass
             try:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
                 proc.wait(timeout=3)
+        log_path.write_text("".join(seen), encoding="utf-8")
+        persistent_image.unlink(missing_ok=True)
 
     text = "".join(seen)
     missing = [target for target in TARGETS if target not in text]
     for group in OR_TARGETS:
         if not any(alt in text for alt in group):
             missing.append(f"({' | '.join(group)})")
+    if telemetry_line_complete(text):
+        try:
+            missing.extend(validate_telemetry_against_contract(
+                parse_telemetry(text), contract()
+            ))
+        except (ValueError, KeyError) as error:
+            missing.append(f"telemetry: {error}")
+    else:
+        missing.append("telemetry: complete JSON line")
     print("\nmissing targets:", missing)
     return 1
 

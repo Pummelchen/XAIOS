@@ -120,13 +120,22 @@ int main(void) {
   xaios_memzero(cpu_ai_output, sizeof(cpu_ai_output));
   xaios_log("/bin/lstm-xor: CPU-only two-hidden-layer LSTM XOR example starting\n");
   xaios_log("/bin/lstm-xor: model_arenas=shared_weights kv_cache=private no_gpu=true ai_cell_contract=app_local\n");
-  if (xaios_cpu_ai_decode("XOR", 3, cpu_ai_output, sizeof(cpu_ai_output),
-                         &cpu_ai_output_size) < 0 ||
-      cpu_ai_output_size == 0) {
-    xaios_log("/bin/lstm-xor: cpu-ai runtime decode failed\n");
+  cpu_ai_output_size = sizeof(cpu_ai_output);
+  if (xaios_cpu_ai_decode("XOR", 3, cpu_ai_output,
+                          sizeof(cpu_ai_output), &cpu_ai_output_size) !=
+          XAIOS_ERR_UNSUPPORTED ||
+      cpu_ai_output_size != 0) {
+    xaios_log("/bin/lstm-xor: production decode did not fail closed\n");
     return 1;
   }
-  xaios_log("/bin/lstm-xor: cpu-ai runtime decode=");
+  xaios_log("/bin/lstm-xor: production decode unsupported as required\n");
+  if (xaios_ml_run(XAIOS_ML_MODEL_FIXTURE_DECODE, "XOR", 3, cpu_ai_output,
+                   sizeof(cpu_ai_output), &cpu_ai_output_size) < 0 ||
+      cpu_ai_output_size == 0) {
+    xaios_log("/bin/lstm-xor: cpu-ai fixture decode failed\n");
+    return 1;
+  }
+  xaios_log("/bin/lstm-xor: cpu-ai fixture decode=");
   xaios_log(cpu_ai_output);
   xaios_log("\n");
 

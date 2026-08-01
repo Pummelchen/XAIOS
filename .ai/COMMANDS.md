@@ -1,8 +1,8 @@
 <!--
 AI onboarding file.
-Mode: bootstrap
-Indexed commit: 8458ff956831e1b3b44a0cbcb396352ce28e3a01
-Last generated: 2026-06-25T09:20:22Z
+Mode: refresh
+Indexed base commit: 8404c1ec1b76c02157bb08d8a3a9466a93e5c2cb
+Last refreshed: 2026-08-01
 Generator: generic high-end AI coding agent
 Purpose: Help future AI sessions understand this repository quickly.
 Audience: Any high-capability AI coding agent, regardless of vendor or model family.
@@ -35,11 +35,8 @@ Optional Python dev dependency:
 python3 -m pip install -r requirements-dev.txt
 ```
 
-Model converter dependencies, when using `tools/convert_gguf_to_xaios.py`:
-
-```sh
-python3 -m pip install gguf numpy
-```
+The retired GGUF converter now fails closed. The model-v2 writer currently uses
+only the Python standard library; official importer dependencies remain unknown.
 
 ## Build
 
@@ -51,6 +48,9 @@ python3 -m pip install gguf numpy
 | Clean generated outputs | `make clean` |
 | Clean persistent image | `make clean-persistent` |
 | Syntax-only C compile check | `make compile-check` |
+| Hosted engine/model-v2 tests | `make hosted-test` |
+| Model-v2 tests (alias) | `make model-v2-test` |
+| Support-status docs contract | `make docs-check` |
 
 ## Run locally
 
@@ -68,7 +68,7 @@ python3 -m pip install gguf numpy
 
 | Gate | Command | Notes |
 |---|---|---|
-| Primary smoke | `make qemu-smoke` | Boots full OS and scans markers. |
+| Primary smoke | `make qemu-smoke` | Boots with an isolated disposable persistent image, scans functional markers, and validates telemetry JSON. |
 | Process | `make qemu-process-gate` | Process lifecycle/scheduler. |
 | OS control | `make qemu-osctl-gate` | Control-plane telemetry. |
 | Filesystem | `make qemu-filesystem-gate` | Mutable filesystem. |
@@ -84,7 +84,9 @@ python3 -m pip install gguf numpy
 
 ## Format/lint/typecheck
 
-No standalone formatter, linter, or typechecker command was detected beyond C compiler warnings-as-errors and Python gate execution.
+No standalone formatter or linter command exists. `make compile-check` is the
+repository's warnings-as-errors C type/syntax gate. Python syntax can be checked
+with the repo-used command `python3 -m compileall -q scripts tools tests/model_v2`.
 
 ## Database, migrations, Docker, deploy
 

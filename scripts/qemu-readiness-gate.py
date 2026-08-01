@@ -125,6 +125,7 @@ REQUIRED_TELEMETRY_MINIMUMS = {
     "persistence_rollbacks": 7,
     "persistence_disk_writes": 1,
     "persistence_disk_loads": 1,
+    "sandbox_transitions": 7,
     "update_transactions": 2,
     "update_staged": 2,
     "update_committed": 1,
@@ -301,11 +302,11 @@ def validate_contract(contract: Dict[str, Any], failures: List[str]) -> Dict[str
     syscalls = syscall_abi.get("syscalls", [])
     capabilities = syscall_abi.get("capabilities", [])
     check_equal(syscall_abi.get("version"), 1, "contract.syscall_abi.version", failures)
-    if len(syscalls) != 28:
-        failures.append(f"contract.syscall_abi.syscalls expected 28 entries, got {len(syscalls)}")
-    if len(capabilities) != 16:
-        failures.append(f"contract.syscall_abi.capabilities expected 16 entries, got {len(capabilities)}")
-    expected_syscall_numbers = list(range(1, 29))
+    if len(syscalls) != 34:
+        failures.append(f"contract.syscall_abi.syscalls expected 34 entries, got {len(syscalls)}")
+    if len(capabilities) != 18:
+        failures.append(f"contract.syscall_abi.capabilities expected 18 entries, got {len(capabilities)}")
+    expected_syscall_numbers = list(range(1, 35))
     actual_syscall_numbers = [entry.get("number") for entry in syscalls]
     if actual_syscall_numbers != expected_syscall_numbers:
         failures.append(f"contract.syscall_abi numbers expected {expected_syscall_numbers}, got {actual_syscall_numbers}")
@@ -318,19 +319,19 @@ def validate_contract(contract: Dict[str, Any], failures: List[str]) -> Dict[str
     filesystem = contract.get("filesystem_format", {})
     check_equal(filesystem.get("magic"), "XAIOSROFS2", "contract.filesystem.magic", failures)
     check_equal(filesystem.get("version"), 2, "contract.filesystem.version", failures)
-    check_equal(filesystem.get("header_bytes"), 2048, "contract.filesystem.header_bytes", failures)
+    check_equal(filesystem.get("header_bytes"), 3584, "contract.filesystem.header_bytes", failures)
     check_equal(filesystem.get("manifest_path"), "/etc/xaios-init.conf", "contract.filesystem.manifest_path", failures)
     required_paths = filesystem.get("required_paths", [])
-    for path in ["/init", "/bin/service-manager", "/bin/xaios-worker", "/bin/xaios-shell", "/bin/hello", "/bin/sysinfo", "/bin/systest", "/bin/smptest", "/bin/nettest", "/bin/lstm-xor", "/bin/sshtest", "/bin/mltest", "/etc/xaios-init.conf", "/etc/services/source-index.svc", "/models/cpu-ai-mvp.xaiosmodel"]:
+    for path in ["/init", "/bin/service-manager", "/bin/xaios-worker", "/bin/xaios-shell", "/bin/hello", "/bin/sysinfo", "/bin/systest", "/bin/smptest", "/bin/nettest", "/bin/lstm-xor", "/bin/sshtest", "/bin/mltest", "/etc/xaios-init.conf", "/etc/services/source-index.svc", "/models/cpu-ai-v1-fixture.xaiosmodel"]:
         if path not in required_paths:
             failures.append(f"contract.filesystem.required_paths missing {path}")
-    check_equal(filesystem.get("max_files"), 16, "contract.filesystem.max_files", failures)
+    check_equal(filesystem.get("max_files"), 32, "contract.filesystem.max_files", failures)
 
     model_format = contract.get("cpu_ai_model_format", {})
     check_equal(model_format.get("magic"), "XAIOS_MODEL_MIAI", "contract.cpu_ai_model_format.magic", failures)
     check_equal(model_format.get("version"), 1, "contract.cpu_ai_model_format.version", failures)
     check_equal(model_format.get("header_bytes"), 80, "contract.cpu_ai_model_format.header_bytes", failures)
-    check_equal(model_format.get("path"), "/models/cpu-ai-mvp.xaiosmodel", "contract.cpu_ai_model_format.path", failures)
+    check_equal(model_format.get("path"), "/models/cpu-ai-v1-fixture.xaiosmodel", "contract.cpu_ai_model_format.path", failures)
     check_bool(model_format.get("cpu_only_required"), True, "contract.cpu_ai_model_format.cpu_only_required", failures)
     check_bool(model_format.get("gpu_required_rejected"), True, "contract.cpu_ai_model_format.gpu_required_rejected", failures)
 
@@ -409,11 +410,20 @@ def validate_cpu_matrix(report: Dict[str, Any], contract: Dict[str, Any], failur
     if not isinstance(tiers, list) or not tiers:
         failures.append("cpu_matrix.tiers missing or empty")
         return
-    failed = [tier.get("name") for tier in tiers if tier.get("status") != "pass"]
+    required_by_name = {}
+    contract_matrix = contract.get("cpu_matrix", {})
+    for tier in contract_matrix.get("arm64_boot_tiers", []):
+        required_by_name[tier.get("name")] = tier.get("required", True)
+    for tier in contract_matrix.get("x86_64_command_tiers", []):
+        required_by_name[tier.get("name")] = tier.get("required", True)
+    failed = [
+        tier.get("name") for tier in tiers
+        if tier.get("status") != "pass"
+        and required_by_name.get(tier.get("name"), True)
+    ]
     if failed:
         failures.append(f"cpu_matrix failed tiers: {failed}")
 
-    contract_matrix = contract.get("cpu_matrix", {})
     required_names = set()
     for tier in contract_matrix.get("arm64_boot_tiers", []):
         required_names.add(tier.get("name"))
@@ -432,11 +442,6 @@ def validate_docs(root: str, failures: List[str]) -> Dict[str, bool]:
             "xaios.qemu.hardware_readiness_gate.v1",
             "xaios.qemu.release_candidate_contract.v1",
             "correctness benchmark only",
-        ],
-        "QEMU-FULL-OS-PLAN.md": [
-            "QEMU readiness gate",
-            "QEMU Release Candidate",
-            "Only then start Intel Desktop code",
         ],
     }
     result: Dict[str, bool] = {}

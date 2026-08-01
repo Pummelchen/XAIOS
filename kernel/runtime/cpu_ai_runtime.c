@@ -13,7 +13,6 @@
 #define CPU_AI_FLAG_CPU_ONLY UINT32_C(1)
 #define CPU_AI_FLAG_GPU_REQUIRED UINT32_C(1 << 1)
 #define CPU_AI_TOKENIZER_BYTE_TABLE UINT32_C(1)
-#define CPU_AI_TOKENIZER_BPE        UINT32_C(2)  /* BPE tokenizer for modern LLMs */
 #define CPU_AI_RUNTIME_DETERMINISTIC UINT32_C(1)
 #define CPU_AI_MAX_TOKENS 32U
 #define CPU_AI_MIN_WEIGHT_BYTES UINT64_C(2)
@@ -42,15 +41,6 @@ typedef struct {
   uint8_t key;
   uint8_t stride;
   uint8_t reserved1[6];
-  
-  /* Model metadata (appended after original 80 bytes, total 160 bytes) */
-  uint32_t model_type;         /* 1=Qwen3.5, 2=Qwen3.6, 0=unknown */
-  uint32_t parameter_count;    /* Total parameters (e.g., 800000000) */
-  uint32_t num_layers;         /* Transformer layers (e.g., 16 or 48) */
-  uint32_t hidden_size;        /* Hidden dimension (e.g., 1536 or 5120) */
-  uint32_t num_attention_heads;/* Attention heads */
-  uint32_t context_length;     /* Max context length */
-  uint8_t  reserved2[56];      /* Reserved for future fields */
 } cpu_ai_model_manifest_t;
 
 typedef struct {
@@ -79,19 +69,8 @@ typedef struct {
   uint16_t quantization;
   uint8_t key;
   uint8_t stride;
-  xaios_quantization_t quant_format;  /* NEON kernel quantization format */
+  xaios_quantization_t quant_format;
   const char *model_name;
-  
-  /* BPE tokenizer state (for modern LLMs) */
-  xaios_bpe_tokenizer_t bpe_tokenizer;
-  
-  /* Model metadata (from manifest) */
-  uint32_t model_type;
-  uint32_t parameter_count;
-  uint32_t num_layers;
-  uint32_t hidden_size;
-  uint32_t num_attention_heads;
-  uint32_t context_length;
 } xaios_cpu_ai_runtime_cell_t;
 
 static xaios_cpu_ai_runtime_cell_t g_cells[XAIOS_CPU_AI_RUNTIME_MAX_CELLS];
@@ -184,8 +163,7 @@ static xaios_status_t validate_model_image(const void *base, uint64_t size,
     return XAIOS_ERR_INVALID;
   }
   
-  /* Support both 80-byte (legacy) and 160-byte (new) manifests */
-  if (manifest->header_bytes != 80 && manifest->header_bytes != 160) {
+  if (manifest->header_bytes != CPU_AI_HEADER_BYTES) {
     ++g_admission_reject_count;
     return XAIOS_ERR_INVALID;
   }
@@ -196,9 +174,7 @@ static xaios_status_t validate_model_image(const void *base, uint64_t size,
     return XAIOS_ERR_INVALID;
   }
   
-  /* Accept both BYTE_TABLE and BPE tokenizers */
-  if (manifest->tokenizer_id != CPU_AI_TOKENIZER_BYTE_TABLE &&
-      manifest->tokenizer_id != CPU_AI_TOKENIZER_BPE) {
+  if (manifest->tokenizer_id != CPU_AI_TOKENIZER_BYTE_TABLE) {
     ++g_admission_reject_count;
     return XAIOS_ERR_INVALID;
   }
@@ -283,9 +259,7 @@ static xaios_status_t tokenizer_encode(xaios_cpu_ai_runtime_cell_t *cell,
     return XAIOS_ERR_INVALID;
   }
   
-  /* Dispatch based on tokenizer type */
   if (cell->tokenizer_id == CPU_AI_TOKENIZER_BYTE_TABLE) {
-    /* BYTE_TABLE tokenizer (legacy, 256-byte lookup table) */
     if (cell->tokenizer_base == 0 ||
         cell->tokenizer_size < CPU_AI_TOKENIZER_BYTES ||
         piece_bytes > token_capacity) {
@@ -297,34 +271,6 @@ static xaios_status_t tokenizer_encode(xaios_cpu_ai_runtime_cell_t *cell,
       tokens[i].source_byte = piece[i];
     }
     *token_count = piece_bytes;
-    ++g_tokenizer_call_count;
-    return XAIOS_OK;
-    
-  } else if (cell->tokenizer_id == CPU_AI_TOKENIZER_BPE) {
-    /* BPE tokenizer (modern LLMs, variable-length tokens) */
-    if (piece_bytes == 0) {
-      *token_count = 0;
-      return XAIOS_OK;
-    }
-    
-    uint32_t max_tokens = (uint32_t)(token_capacity < UINT32_MAX ? 
-                                     token_capacity : UINT32_MAX);
-    uint32_t token_count_out;
-    
-    xaios_status_t status = ai_bpe_tokenize(
-        &cell->bpe_tokenizer,
-        (const char *)piece,
-        (uint32_t)piece_bytes,
-        (uint32_t *)tokens,
-        &token_count_out,
-        max_tokens
-    );
-    
-    if (status != XAIOS_OK) {
-      return status;
-    }
-    
-    *token_count = token_count_out;
     ++g_tokenizer_call_count;
     return XAIOS_OK;
   }
@@ -466,32 +412,6 @@ xaios_status_t cpu_ai_runtime_load_model_file(uint32_t model_arena_id,
   return status;
 }
 
-/*
- * Calculate KV cache requirements from model metadata
- * 
- * Formula: 2 × num_layers × hidden_size × context_length × sizeof(float)
- * The factor of 2 accounts for both K and V caches.
- */
-static uint64_t calculate_kv_cache_bytes(const cpu_ai_model_manifest_t *manifest,
-                                        uint32_t context_length) {
-  /* If manifest has metadata, use it */
-  if (manifest->header_bytes >= 160 && manifest->num_layers > 0 &&
-      manifest->hidden_size > 0) {
-    uint32_t num_layers = manifest->num_layers;
-    uint32_t hidden_size = manifest->hidden_size;
-    
-    /* Formula: 2 × num_layers × hidden_size × context_length × 4 bytes */
-    uint64_t kv_bytes = 2ULL * num_layers * hidden_size * context_length * 4;
-    
-    klog("cpu-ai-runtime: KV cache calculated: %lu bytes (%.2f MB)\n",
-         kv_bytes, (double)kv_bytes / (1024.0 * 1024.0));
-    return kv_bytes;
-  }
-  
-  /* Fallback: use manifest's pre-calculated value */
-  return manifest->kv_bytes_required;
-}
-
 xaios_status_t cpu_ai_runtime_bind_model(uint32_t cell_id,
                                         uint32_t model_arena_id) {
   return cpu_ai_runtime_bind_model_with_kv(cell_id, model_arena_id,
@@ -524,10 +444,7 @@ xaios_status_t cpu_ai_runtime_bind_model_with_kv(uint32_t cell_id,
     return XAIOS_ERR_INVALID;
   }
   
-  /* Calculate actual KV requirement from metadata */
-  uint32_t context_len = (manifest->header_bytes >= 160 && manifest->context_length > 0) 
-                         ? manifest->context_length : 4096; /* Default fallback */
-  uint64_t kv_required = calculate_kv_cache_bytes(manifest, context_len);
+  const uint64_t kv_required = manifest->kv_bytes_required;
   
   if (kv_base == 0 || kv_bytes < kv_required) {
     ++g_admission_reject_count;
@@ -557,39 +474,7 @@ xaios_status_t cpu_ai_runtime_bind_model_with_kv(uint32_t cell_id,
   cell->stride = manifest->stride;
   cell->model_name = model->name;
   
-  /* Initialize BPE tokenizer if needed */
-  if (manifest->tokenizer_id == CPU_AI_TOKENIZER_BPE) {
-    xaios_status_t status = ai_bpe_tokenizer_init(
-        cell->tokenizer_base,
-        cell->tokenizer_size,
-        &cell->bpe_tokenizer
-    );
-    if (status != XAIOS_OK) {
-      klog("cpu-ai-runtime: failed to init BPE tokenizer cell=%u status=%d\n", cell_id, status);
-      ++g_model_load_failure_count;
-      kassert(model_arena_release(model_arena_id) == XAIOS_OK);
-      return XAIOS_ERR_INVALID;
-    }
-    klog("cpu-ai-runtime: BPE tokenizer loaded cell=%u vocab_size=%u\n",
-         cell_id, ai_bpe_vocab_size(&cell->bpe_tokenizer));
-  }
-  
-  /* Copy model metadata (if available from 160-byte manifest) */
-  if (manifest->header_bytes >= 160) {
-    cell->model_type = manifest->model_type;
-    cell->parameter_count = manifest->parameter_count;
-    cell->num_layers = manifest->num_layers;
-    cell->hidden_size = manifest->hidden_size;
-    cell->num_attention_heads = manifest->num_attention_heads;
-    cell->context_length = manifest->context_length;
-    
-    klog("cpu-ai-runtime: model metadata cell=%u type=%u params=%u layers=%u hidden=%u heads=%u context=%u\n",
-         cell_id, cell->model_type, cell->parameter_count,
-         cell->num_layers, cell->hidden_size, cell->num_attention_heads,
-         cell->context_length);
-  }
-  
-  /* Map manifest quantization to NEON kernel format */
+  /* The v1 fixture uses Q8.8 only. Real model packages use model.v2. */
   if (manifest->quantization == 8) {
     cell->quant_format = XAIOS_QUANT_Q88;  /* Legacy Q8.8 */
   } else {
@@ -634,10 +519,9 @@ xaios_status_t cpu_ai_runtime_unbind_model(uint32_t cell_id) {
   return XAIOS_OK;
 }
 
-xaios_status_t cpu_ai_runtime_decode_piece(uint32_t cell_id, const uint8_t *piece,
-                                         uint64_t piece_bytes, char *output,
-                                         uint64_t output_capacity,
-                                         uint64_t *output_bytes) {
+xaios_status_t cpu_ai_runtime_fixture_decode_piece(
+    uint32_t cell_id, const uint8_t *piece, uint64_t piece_bytes, char *output,
+    uint64_t output_capacity, uint64_t *output_bytes) {
   if (!validate_cell_id(cell_id) || piece == 0 || output == 0 ||
       output_bytes == 0 || output_capacity == 0) {
     return XAIOS_ERR_INVALID;
@@ -679,6 +563,23 @@ xaios_status_t cpu_ai_runtime_decode_piece(uint32_t cell_id, const uint8_t *piec
   klog("cpu-ai-runtime: cell=%u decode piece_len=%lu output_len=%lu\n", cell_id,
        piece_bytes, *output_bytes);
   return XAIOS_OK;
+}
+
+xaios_status_t cpu_ai_runtime_decode_piece(uint32_t cell_id,
+                                         const uint8_t *piece,
+                                         uint64_t piece_bytes, char *output,
+                                         uint64_t output_capacity,
+                                         uint64_t *output_bytes) {
+  (void)cell_id;
+  (void)piece;
+  (void)piece_bytes;
+  if (output != 0 && output_capacity > 0) {
+    output[0] = '\0';
+  }
+  if (output_bytes != 0) {
+    *output_bytes = 0;
+  }
+  return XAIOS_ERR_UNSUPPORTED;
 }
 
 static void runtime_append(char *output, uint64_t capacity, uint64_t *offset,
@@ -726,9 +627,9 @@ xaios_status_t cpu_ai_runtime_run_model(uint32_t cell_id, uint64_t model_kind,
   output[0] = '\0';
   *output_bytes = 0;
 
-  if (model_kind == XAIOS_ML_MODEL_DECODE) {
-    return cpu_ai_runtime_decode_piece(cell_id, input, input_bytes, output,
-                                       output_capacity, output_bytes);
+  if (model_kind == XAIOS_ML_MODEL_FIXTURE_DECODE) {
+    return cpu_ai_runtime_fixture_decode_piece(
+        cell_id, input, input_bytes, output, output_capacity, output_bytes);
   }
 
   ++g_kernel_dispatch_count;
@@ -812,10 +713,15 @@ xaios_status_t cpu_ai_runtime_run_model(uint32_t cell_id, uint64_t model_kind,
         g_cells[cell_id].state == XAIOS_CPU_AI_RUNTIME_STATE_BOUND) {
       fwd_cell = &g_cells[cell_id];
     }
+    uint64_t weight_bytes = (uint64_t)(in_dim * out_dim) * sizeof(int16_t);
+    if ((fwd_cell == 0 || fwd_cell->weights_base == 0 ||
+         fwd_cell->weights_size < weight_bytes + 2U) &&
+        12U + input_mat_bytes + weight_bytes > input_bytes) {
+      return XAIOS_ERR_INVALID;
+    }
     const int16_t *layer_weights =
         (fwd_cell != 0 && fwd_cell->weights_base != 0 &&
-         fwd_cell->weights_size >=
-             (uint64_t)(in_dim * out_dim) * sizeof(int16_t) + 2U)
+         fwd_cell->weights_size >= weight_bytes + 2U)
             ? (const int16_t *)(fwd_cell->weights_base + 2U)
             : (const int16_t *)(input + 12U + input_mat_bytes);
     ai_kernel_forward(input_mat, layer_weights, 0, output,
@@ -949,8 +855,8 @@ void cpu_ai_runtime_self_test(void) {
   cpu_ai_runtime_init();
 
   kassert(sizeof(cpu_ai_model_manifest_t) == CPU_AI_HEADER_BYTES);
-  kassert(cpu_ai_runtime_load_model_file(2, "cpu-ai-mvp",
-                                         "/models/cpu-ai-mvp.xaiosmodel") ==
+  kassert(cpu_ai_runtime_load_model_file(2, "cpu-ai-v1-fixture",
+                                         "/models/cpu-ai-v1-fixture.xaiosmodel") ==
           XAIOS_OK);
   kassert(cpu_ai_runtime_load_model_file(3, "missing-model",
                                          "/models/missing.xaiosmodel") ==
@@ -1001,13 +907,15 @@ void cpu_ai_runtime_self_test(void) {
   char output[32];
   char output1[32];
   uint64_t out = 0;
-  kassert(cpu_ai_runtime_decode_piece(0, piece, sizeof(piece), output,
-                                     sizeof(output), &out) == XAIOS_OK);
+  kassert(cpu_ai_runtime_fixture_decode_piece(0, piece, sizeof(piece), output,
+                                             sizeof(output), &out) ==
+          XAIOS_OK);
   kassert(out == 8);
   kassert(cpu_ai_runtime_decode_count(0) == 1);
   kassert(bytes_equal(output, "1B1F2327"));
-  kassert(cpu_ai_runtime_decode_piece(1, piece, sizeof(piece), output1,
-                                     sizeof(output1), &out) == XAIOS_OK);
+  kassert(cpu_ai_runtime_fixture_decode_piece(1, piece, sizeof(piece), output1,
+                                             sizeof(output1), &out) ==
+          XAIOS_OK);
   kassert(bytes_equal(output1, "1B1F2327"));
   kassert(cpu_ai_runtime_tokenizer_call_count() == 2);
   kassert(cpu_ai_runtime_runtime_call_count() == 2);
@@ -1024,10 +932,16 @@ void cpu_ai_runtime_self_test(void) {
   kassert(cpu_ai_runtime_checksum_failure_count() == 1);
   kassert(cpu_ai_runtime_unbind_model(0) == XAIOS_OK);
   kassert(cpu_ai_runtime_unbind_model(1) == XAIOS_OK);
-  klog("cpu-ai-runtime: deterministic decode fixture input=ABCD output=%s\n",
+  klog("cpu-ai-runtime: v1 fixture decode input=ABCD output=%s\n",
        output);
+  kassert(cpu_ai_runtime_fixture_decode_piece(0, piece, sizeof(piece), output,
+                                             sizeof(output), &out) ==
+          XAIOS_ERR_INVALID);
   kassert(cpu_ai_runtime_decode_piece(0, piece, sizeof(piece), output,
-                                     sizeof(output), &out) == XAIOS_ERR_INVALID);
+                                     sizeof(output), &out) ==
+          XAIOS_ERR_UNSUPPORTED);
+  kassert(out == 0);
+  klog("cpu-ai-runtime: production decode unsupported; fixture path is explicit\n");
   kassert(arena_destroy(5) == XAIOS_OK);
   kassert(arena_destroy(6) == XAIOS_OK);
   klog("cpu-ai-runtime: tokenizer/runtime boundary self-test passed tokenizer_calls=%lu runtime_calls=%lu\n",
@@ -1053,11 +967,12 @@ void cpu_ai_runtime_self_test(void) {
 
   /* Q8.8 matmul test: I_2x2 * I_2x2 = I_2x2 */
   {
-    uint8_t mm[12 + 8];
+    uint8_t mm[12 + 16];
     mm[0] = 2; mm[1] = 2; mm[2] = 2;
     for (uint32_t i = 3; i < 12; ++i) { mm[i] = 0; }
     int16_t *ma = (int16_t *)&mm[12];
     ma[0] = 256; ma[1] = 0; ma[2] = 0; ma[3] = 256;
+    ma[4] = 256; ma[5] = 0; ma[6] = 0; ma[7] = 256;
     char mo[64];
     uint64_t mout = 0;
     kassert(cpu_ai_runtime_run_model(0, XAIOS_ML_MODEL_MATMUL, mm,
@@ -1070,11 +985,12 @@ void cpu_ai_runtime_self_test(void) {
 
   /* Q8.8 forward pass test: I_2x2 with ReLU */
   {
-    uint8_t fp[12 + 8];
+    uint8_t fp[12 + 16];
     fp[0] = 1; fp[1] = 2; fp[2] = 2;
     for (uint32_t i = 3; i < 12; ++i) { fp[i] = 0; }
     int16_t *fi = (int16_t *)&fp[12];
     fi[0] = 256; fi[1] = 256; fi[2] = 0; fi[3] = 256;
+    fi[4] = 256; fi[5] = 0; fi[6] = 0; fi[7] = 256;
     char fo[64];
     uint64_t fout = 0;
     kassert(cpu_ai_runtime_run_model(0, XAIOS_ML_MODEL_FORWARD, fp,
@@ -1083,7 +999,7 @@ void cpu_ai_runtime_self_test(void) {
     kassert(fout == 4);
   }
 
-  klog("cpu-ai-runtime: Q8.8 matmul inference self-test passed inferences=%lu\n",
+  klog("cpu-ai-runtime: Q8.8 kernel self-test passed operations=%lu\n",
        cpu_ai_runtime_inference_count());
   klog("cpu-ai-runtime: self-test passed\n");
 }

@@ -11,7 +11,7 @@
 #define INITFS_PATH_MAX 64U
 #define INITFS_MODE_MAX 32U
 #define SECTOR_SIZE UINT64_C(512)
-#define INITFS_HEADER_BYTES 2048U
+#define INITFS_HEADER_BYTES 3584U
 #define INITFS_DATA_OFFSET UINT64_C(4096)
 #define INITFS_VERSION 2U
 #define INITFS_FLAG_READ_ONLY 1U
@@ -451,7 +451,7 @@ void initramfs_self_test(void) {
   kassert(config != 0);
   kassert(config->manifest == 0);
   kassert(config->executable == 0);
-  kassert(initramfs_lookup("/models/cpu-ai-mvp.xaiosmodel", &config) ==
+  kassert(initramfs_lookup("/models/cpu-ai-v1-fixture.xaiosmodel", &config) ==
           XAIOS_OK);
   kassert(config != 0);
   kassert(config->base != 0);

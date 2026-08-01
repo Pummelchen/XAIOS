@@ -254,18 +254,8 @@ void elf_loader_reclaim(xaios_process_aspace_t *aspace, uint64_t mapped_low,
   }
   aspace->page_count = 0;
 
-  /* Also walk the mapped range to catch any pages not tracked */
-  if (mapped_low != 0 && mapped_high > mapped_low) {
-    for (uint64_t va = mapped_low; va < mapped_high; va += PAGE_SIZE) {
-      uint64_t physical = 0;
-      uint32_t flags = 0;
-      if (vmm_translate(va, &physical, &flags) == XAIOS_OK &&
-          (flags & XAIOS_VMM_USER) != 0) {
-        vmm_unmap_user_page(va, aspace->l3_phys, aspace->l3_count);
-        pmm_free_page((void *)(uintptr_t)physical);
-      }
-    }
-  }
+  (void)mapped_low;
+  (void)mapped_high;
 
   /* Free per-process L3 tables */
   if (aspace->l3_count > 0) {

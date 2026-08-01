@@ -146,7 +146,7 @@ XAIOS/
 | SMMUv3 | `0x09050000–0x0906ffff` | IOMMU (page 0 + page 1) |
 | ECAM | `0x4010000000` | PCIe config space |
 | PL031 RTC | `0x01010000` | Real-time clock |
-| Userspace ELF | `0x41000000` | User processes (per-process L2/L3) |
+| Userspace ELF | `0x100000000` | User processes (per-process L2/L3), outside the first-4-GiB kernel identity map |
 
 ## Userspace Lifecycle
 

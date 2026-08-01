@@ -6,20 +6,20 @@ import time
 
 
 SCENARIOS = [
-    ("qemu-smoke", ["make", "qemu-smoke"], 120),
-    ("qemu-benchmark", ["python3", "./scripts/qemu-benchmark.py"], 120),
-    ("qemu-persistence-reboot", ["make", "qemu-persistence-reboot"], 140),
-    ("qemu-preview", ["make", "qemu-preview"], 120),
-    ("qemu-fault-matrix", ["make", "qemu-fault-matrix"], 180),
-    ("qemu-x86_64-smoke", ["make", "qemu-x86_64-smoke"], 120),
-    ("intel-desktop-gate", ["make", "intel-desktop-gate"], 140),
-    ("qemu-cpu-matrix", ["make", "qemu-cpu-matrix"], 900),
-    ("qemu-dry-run-aarch64", ["./scripts/run-qemu-aarch64.sh", "--dry-run"], 10),
-    ("qemu-dry-run-x86_64", ["./scripts/run-qemu-x86_64.sh", "--dry-run"], 10),
+    ("qemu-smoke", ["make", "qemu-smoke"], 120, 0),
+    ("qemu-benchmark", ["python3", "./scripts/qemu-benchmark.py"], 120, 0),
+    ("qemu-persistence-reboot", ["make", "qemu-persistence-reboot"], 140, 0),
+    ("qemu-preview", ["make", "qemu-preview"], 120, 0),
+    ("qemu-fault-matrix", ["make", "qemu-fault-matrix"], 180, 0),
+    ("qemu-x86_64-smoke", ["make", "qemu-x86_64-smoke"], 120, 0),
+    ("intel-desktop-gate", ["python3", "./scripts/intel-desktop-gate.py"], 140, 1),
+    ("qemu-cpu-matrix", ["make", "qemu-cpu-matrix"], 900, 0),
+    ("qemu-dry-run-aarch64", ["./scripts/run-qemu-aarch64.sh", "--dry-run"], 10, 0),
+    ("qemu-dry-run-x86_64", ["./scripts/run-qemu-x86_64.sh", "--dry-run"], 10, 0),
 ]
 
 
-def run_scenario(name: str, cmd, timeout: int, env) -> int:
+def run_scenario(name: str, cmd, timeout: int, expected_rc: int, env) -> bool:
     print(f"\n[QEMU matrix] running {name}: {' '.join(cmd)}")
     start = time.time()
     proc = subprocess.run(
@@ -32,22 +32,23 @@ def run_scenario(name: str, cmd, timeout: int, env) -> int:
         check=False,
     )
     elapsed = time.time() - start
-    print(f"[QEMU matrix] {name} exit={proc.returncode} elapsed={elapsed:.2f}s")
-    return proc.returncode
+    passed = proc.returncode == expected_rc
+    print(f"[QEMU matrix] {name} exit={proc.returncode} expected={expected_rc} elapsed={elapsed:.2f}s")
+    return passed
 
 
 def main() -> int:
     env = os.environ.copy()
     env.setdefault("XAIOS_QEMU_SMOKE_TIMEOUT", "60")
     failures = []
-    for name, cmd, timeout in SCENARIOS:
-        rc = run_scenario(name, cmd, timeout, env)
-        if rc != 0:
-            failures.append((name, rc))
+    for name, cmd, timeout, expected_rc in SCENARIOS:
+        passed = run_scenario(name, cmd, timeout, expected_rc, env)
+        if not passed:
+            failures.append((name, expected_rc))
     if failures:
         print("\nqemu-matrix: failed scenarios:")
-        for name, rc in failures:
-            print(f"  {name}: rc={rc}")
+        for name, expected_rc in failures:
+            print(f"  {name}: did not return expected rc={expected_rc}")
         return 1
     print("\nqemu-matrix: all scenarios passed")
     return 0

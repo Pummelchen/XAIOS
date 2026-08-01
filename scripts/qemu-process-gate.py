@@ -7,7 +7,7 @@ SCHEMA = "xaios.qemu.process_scheduler_gate.v1"
 REPORT = BUILD / "qemu-milestone-60-process-gate.json"
 
 MARKERS = [
-    "user: process table initialized slots=16",
+    "user: process table initialized slots=1024",
     "scheduler: lifecycle self-test passed",
     "scheduler: process pid=3 parent=2 runnable name=/bin/xaios-worker",
     "scheduler: dispatch pid=3 parent=2 name=/bin/xaios-worker",

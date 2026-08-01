@@ -50,3 +50,4 @@ SECTIONS
 
 /* Assert kernel fits within 16 MB */
 ASSERT(__kernel_end - __kernel_start < 16M, "Kernel too large (max 16 MB)")
+ASSERT(__kernel_end <= 0x100000000, "Kernel overlaps userspace virtual range")

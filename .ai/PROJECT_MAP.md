@@ -1,8 +1,8 @@
 <!--
 AI onboarding file.
-Mode: bootstrap
-Indexed commit: 8458ff956831e1b3b44a0cbcb396352ce28e3a01
-Last generated: 2026-06-25T09:20:22Z
+Mode: refresh
+Indexed base commit: 8404c1ec1b76c02157bb08d8a3a9466a93e5c2cb
+Last refreshed: 2026-08-01
 Generator: generic high-end AI coding agent
 Purpose: Help future AI sessions understand this repository quickly.
 Audience: Any high-capability AI coding agent, regardless of vendor or model family.
@@ -17,6 +17,9 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 | `boot/uefi/` | AArch64 UEFI loader, PE/COFF build, handoff to kernel. |
 | `kernel/` | Freestanding kernel source. |
 | `userspace/` | EL0 runtime, init/service manager, apps, worker, SSH daemon. |
+| `engine/` | Portable hosted C99 inference-engine boundary and model-v2 reader. |
+| `tests/model_v2/` | Hosted C/Python model-v2 and scalar-backend tests. |
+| `tools/` | Model-v2 streaming writer plus explicit v1 fixture tooling. |
 | `scripts/` | Build image, create initfs, run QEMU, smoke/regression/readiness gates. |
 | `contracts/` | QEMU release-candidate contract JSON. |
 | `docs/` | Architecture, getting started, API docs. |
@@ -63,12 +66,16 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 - Primary smoke: `scripts/qemu-smoke.py`
 - ABI gate: `scripts/qemu-abi-contract.py`, `scripts/qemu_gate_lib.py`
 - Model conversion: `tools/convert_gguf_to_xaios.py`
+- Model-v2 writer/reader: `tools/xaios_model_v2.py`
+- Portable engine APIs: `engine/include/xaios_engine/`
+- Hosted engine tests: `tests/model_v2/`
 
 ## External dependencies
 
 - Host toolchain: Clang, LLD, mtools, QEMU, Python 3.
 - Python dev dependency: `paramiko==3.5.1` in `requirements-dev.txt`.
-- Model converter runtime dependencies documented in README/tool: `gguf`, `numpy`.
+- The current model-v2 writer uses the Python standard library. Official
+  SafeTensors/config/tokenizer and GGUF importers are not implemented.
 - No Docker, database, ORM, migration framework, Node package manager, Rust/Cargo, Go module, Java build, or web framework detected in inspected files.
 
 ## Important config/files

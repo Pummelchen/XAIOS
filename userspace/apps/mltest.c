@@ -58,12 +58,13 @@ int main(void) {
   /* Q8.8 matmul test: I_2x2 * I_2x2 = I_2x2 */
   xaios_memzero(output, sizeof(output));
   {
-    unsigned char mm[20];
+    unsigned char mm[28];
     mm[0] = 2; mm[1] = 2; mm[2] = 2;
     for (u64 i = 3; i < 12; ++i) { mm[i] = 0; }
-    /* Q8.8 identity: 256=1.0 */
+    /* Two Q8.8 identity matrices: 256=1.0. */
     short *ma = (short *)&mm[12];
     ma[0] = 256; ma[1] = 0; ma[2] = 0; ma[3] = 256;
+    ma[4] = 256; ma[5] = 0; ma[6] = 0; ma[7] = 256;
     if (xaios_ml_run(XAIOS_ML_MODEL_MATMUL, mm, sizeof(mm), output,
                     sizeof(output), &out) < 0) {
       xaios_log("/bin/mltest: matmul model failed\n");

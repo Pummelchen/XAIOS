@@ -40,6 +40,7 @@ typedef struct virtio_mmio_device {
 } virtio_mmio_device_t;
 
 uint32_t virtio_mmio_read32(uint64_t base, uint32_t offset);
+uint8_t virtio_mmio_read8(uint64_t base, uint32_t offset);
 void virtio_mmio_write32(uint64_t base, uint32_t offset, uint32_t value);
 void virtio_mmio_barrier(void);
 xaios_status_t virtio_transport_find(uint32_t device_id, const char *name,

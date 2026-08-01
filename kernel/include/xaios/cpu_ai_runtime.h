@@ -5,7 +5,7 @@
 #include <xaios/types.h>
 
 #define XAIOS_CPU_AI_RUNTIME_MAX_CELLS 4U
-#define XAIOS_ML_MODEL_DECODE UINT64_C(1)
+#define XAIOS_ML_MODEL_FIXTURE_DECODE UINT64_C(1)
 #define XAIOS_ML_MODEL_XOR UINT64_C(2)
 #define XAIOS_ML_MODEL_SUM UINT64_C(3)
 #define XAIOS_ML_MODEL_PARITY UINT64_C(4)
@@ -23,6 +23,9 @@ xaios_status_t cpu_ai_runtime_bind_model_with_kv(uint32_t cell_id,
                                                 uint64_t kv_base,
                                                 uint64_t kv_bytes);
 xaios_status_t cpu_ai_runtime_unbind_model(uint32_t cell_id);
+xaios_status_t cpu_ai_runtime_fixture_decode_piece(
+    uint32_t cell_id, const uint8_t *piece, uint64_t piece_bytes, char *output,
+    uint64_t output_capacity, uint64_t *output_bytes);
 xaios_status_t cpu_ai_runtime_decode_piece(uint32_t cell_id, const uint8_t *piece,
                                          uint64_t piece_bytes, char *output,
                                          uint64_t output_capacity,

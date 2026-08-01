@@ -11,10 +11,11 @@ SCHEMA = "xaios.intel_desktop.hardware_gate.v1"
 REPORT_PATH = Path("build/intel-desktop-gate-report.json")
 REQUIRED_MARKERS = [
     "x86_64: Intel Desktop milestone 49 placement policy passed",
-    "x86_64: Intel Desktop milestone 50 OS contract port passed",
-    "x86_64: Intel Desktop milestone 51 hardware gate passed",
+    "x86_64: common kernel/runtime linked=0",
+    "x86_64: Intel Desktop milestone 50 OS contract port unsupported",
+    "x86_64: Intel Desktop milestone 51 hardware gate blocked",
     "x86_64: hot-core telemetry migration_total=0 context_switch_total=0",
-    "x86_64: hardware gate qemu_correctness=1 physical_required=1 baseline_required=1 performance_claims_allowed=0",
+    "release_candidate_ready=0",
 ]
 
 
@@ -39,7 +40,8 @@ def main() -> int:
     output = proc.stdout or ""
     sys.stdout.write(output)
     missing = [marker for marker in REQUIRED_MARKERS if marker not in output]
-    status = "pass" if proc.returncode == 0 and not missing else "fail"
+    assessment_complete = proc.returncode == 0 and not missing
+    status = "blocked" if assessment_complete else "fail"
     report = {
         "schema": SCHEMA,
         "status": status,
@@ -47,21 +49,23 @@ def main() -> int:
         "qemu_smoke_exit_code": proc.returncode,
         "milestones": {
             "49_placement_policy": "pass" if REQUIRED_MARKERS[0] in output else "fail",
-            "50_os_contract_port": "pass" if REQUIRED_MARKERS[1] in output else "fail",
-            "51_hardware_gate": "pass" if REQUIRED_MARKERS[2] in output else "fail",
+            "50_os_contract_port": "unsupported" if REQUIRED_MARKERS[2] in output else "unknown",
+            "51_hardware_gate": "blocked" if REQUIRED_MARKERS[3] in output else "unknown",
         },
         "gates": {
-            "qemu_correctness_ready": status == "pass",
-            "hot_core_migration_zero": REQUIRED_MARKERS[3] in output,
+            "assessment_complete": assessment_complete,
+            "qemu_early_boot_ready": proc.returncode == 0,
+            "common_kernel_runtime_linked": False,
+            "hot_core_migration_zero": REQUIRED_MARKERS[4] in output,
             "physical_hardware_required": True,
             "tuned_linux_bsd_baseline_required": True,
             "performance_claims_allowed": False,
+            "release_candidate_ready": False,
         },
         "missing_markers": missing,
         "notes": (
-            "Intel Desktop gate validates QEMU correctness and planning contracts "
-            "only. Hardware performance claims remain forbidden until measured on "
-            "physical hardware against tuned Linux/BSD baselines."
+            "Intel Desktop assessment validates early QEMU bring-up and records "
+            "that the common kernel/runtime and physical evidence are missing."
         ),
     }
 
@@ -69,7 +73,7 @@ def main() -> int:
     REPORT_PATH.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"intel-desktop-gate: report written to {REPORT_PATH}")
     print(f"intel-desktop-gate: status={status}")
-    return 0 if status == "pass" else 1
+    return 1
 
 
 if __name__ == "__main__":

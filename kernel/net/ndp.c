@@ -521,6 +521,11 @@ int ndp_dad_tick(xaios_dad_state_t *dad, uint64_t now_ns) {
     return 1; /* not checking – treat as unique */
   }
 
+  if (g_dad_active &&
+      xaios_ip_addr_equal(&dad->tentative_addr, &g_dad_state.tentative_addr)) {
+    dad->duplicate_found = g_dad_state.duplicate_found;
+  }
+
   /* Check if duplicate was detected by NA processing */
   if (dad->duplicate_found) {
     dad->active = 0;

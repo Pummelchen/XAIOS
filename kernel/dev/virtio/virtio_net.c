@@ -348,7 +348,7 @@ xaios_status_t virtio_net_get_mac(uint8_t mac[6]) {
     return XAIOS_ERR_INVALID;
   }
   for (uint32_t i = 0; i < 6; ++i) {
-    mac[i] = (uint8_t)virtio_mmio_read32(g_net->device.base, 0x100U + i);
+    mac[i] = virtio_mmio_read8(g_net->device.base, 0x100U + i);
   }
   return XAIOS_OK;
 }

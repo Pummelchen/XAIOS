@@ -110,6 +110,28 @@ def validate_syscall_abi(rc_contract: Dict[str, Any]) -> List[str]:
         actual = source_caps.get(name)
         if actual != expected:
             failures.append(f"capability {name} expected {expected}, got {actual}")
+    contract_syscalls = {
+        str(entry.get("name")): entry.get("number")
+        for entry in abi.get("syscalls", [])
+    }
+    if contract_syscalls != source_syscalls:
+        missing = sorted(set(source_syscalls) - set(contract_syscalls))
+        extra = sorted(set(contract_syscalls) - set(source_syscalls))
+        if missing:
+            failures.append(f"contract missing source syscalls: {missing}")
+        if extra:
+            failures.append(f"contract has unknown syscalls: {extra}")
+    contract_caps = {
+        str(entry.get("name")): entry.get("bit")
+        for entry in abi.get("capabilities", [])
+    }
+    if contract_caps != source_caps:
+        missing = sorted(set(source_caps) - set(contract_caps))
+        extra = sorted(set(contract_caps) - set(source_caps))
+        if missing:
+            failures.append(f"contract missing source capabilities: {missing}")
+        if extra:
+            failures.append(f"contract has unknown capabilities: {extra}")
     numbers = sorted(source_syscalls.values())
     if numbers != list(range(1, len(numbers) + 1)):
         failures.append(f"syscall numbers must be contiguous from 1, got {numbers}")

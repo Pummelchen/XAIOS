@@ -447,7 +447,7 @@ xaios_status_t vmm_validate_user_buffer(uint64_t virtual_address, uint64_t size,
 void vmm_self_test(void) {
   void *page = pmm_alloc_page();
   kassert(page != 0);
-  uint64_t va = UINT64_C(0x4e000000);
+  uint64_t va = XAIOS_USER_BASE + L2_BLOCK_SIZE;
   kassert(vmm_map_page(va, (uint64_t)(uintptr_t)page,
                        XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
                            XAIOS_VMM_USER) == XAIOS_OK);
@@ -466,7 +466,10 @@ void vmm_self_test(void) {
 
 /* --- Per-process address space APIs --- */
 
-#define USER_L2_INDEX UINT32_C(8)
+#define USER_CODE_L2_INDEX \
+  ((uint32_t)((XAIOS_USER_BASE >> 21U) & UINT64_C(0x1ff)))
+#define USER_STACK_L2_INDEX \
+  ((uint32_t)(((XAIOS_USER_STACK_TOP - PAGE_SIZE) >> 21U) & UINT64_C(0x1ff)))
 
 void vmm_create_user_aspace(uint64_t l3_tables[], uint32_t max_tables,
                             uint32_t *out_count) {
@@ -503,13 +506,11 @@ xaios_status_t vmm_map_user_page(uint64_t virtual_address,
   uint64_t l2_index = (virtual_address >> 21) & 0x1ffU;
   uint64_t l3_index = (virtual_address >> 12) & 0x1ffU;
 
-  if (l2_index != USER_L2_INDEX) {
+  if (l2_index != USER_CODE_L2_INDEX && l2_index != USER_STACK_L2_INDEX) {
     return XAIOS_ERR_INVALID;
   }
 
-  /* Determine which L3 table to use based on VA region */
-  uint64_t stack_region = XAIOS_USER_STACK_TOP - (3U * PAGE_SIZE);
-  uint32_t l3_slot = (virtual_address >= stack_region) ? 1U : 0U;
+  uint32_t l3_slot = l2_index == USER_STACK_L2_INDEX ? 1U : 0U;
   if (l3_slot >= l3_count || l3_tables[l3_slot] == 0) {
     return XAIOS_ERR_INVALID;
   }
@@ -530,8 +531,8 @@ xaios_status_t vmm_unmap_user_page(uint64_t virtual_address,
   }
 
   uint64_t l3_index = (virtual_address >> 12) & 0x1ffU;
-  uint64_t stack_region = XAIOS_USER_STACK_TOP - (3U * PAGE_SIZE);
-  uint32_t l3_slot = (virtual_address >= stack_region) ? 1U : 0U;
+  uint64_t l2_index = (virtual_address >> 21) & 0x1ffU;
+  uint32_t l3_slot = l2_index == USER_STACK_L2_INDEX ? 1U : 0U;
   if (l3_slot < l3_count && l3_tables[l3_slot] != 0) {
     uint64_t *l3 = (uint64_t *)(uintptr_t)l3_tables[l3_slot];
     l3[l3_index] = 0;
@@ -547,7 +548,6 @@ void vmm_switch_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
   uint64_t user_va = XAIOS_USER_BASE;
   uint64_t l0_index = (user_va >> 39) & 0x1ffU;
   uint64_t l1_index = (user_va >> 30) & 0x1ffU;
-  uint64_t l2_index = (user_va >> 21) & 0x1ffU;
 
   uint64_t l0_desc = g_l0_table[l0_index];
   if ((l0_desc & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE)) {
@@ -561,20 +561,19 @@ void vmm_switch_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
   }
   uint64_t *l2 = (uint64_t *)(uintptr_t)(l1_desc & PTE_ADDR_MASK);
 
-  /* Install per-process L3 tables into the L2 */
+  /* Install the per-process code and stack tables at their actual L2 slots. */
   if (l3_tables != 0 && l3_count > 0) {
-    for (uint32_t i = 0; i < l3_count && i < 2; ++i) {
-      if (l3_tables[i] != 0) {
-        l2[l2_index + i] =
-            table_descriptor((uint64_t *)(uintptr_t)l3_tables[i]);
-      }
+    if (l3_count > 0 && l3_tables[0] != 0) {
+      l2[USER_CODE_L2_INDEX] =
+          table_descriptor((uint64_t *)(uintptr_t)l3_tables[0]);
+    }
+    if (l3_count > 1 && l3_tables[1] != 0) {
+      l2[USER_STACK_L2_INDEX] =
+          table_descriptor((uint64_t *)(uintptr_t)l3_tables[1]);
     }
   } else {
-    /* No user process: clear user L2 entries (restore to identity block
-     * mappings if they existed, or zero) */
-    for (uint32_t i = 0; i < 2; ++i) {
-      l2[l2_index + i] = 0;
-    }
+    l2[USER_CODE_L2_INDEX] = 0;
+    l2[USER_STACK_L2_INDEX] = 0;
   }
 
   /* Full TLB invalidation */

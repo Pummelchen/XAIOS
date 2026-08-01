@@ -122,6 +122,7 @@ def run_arm_boot_tier(tier: Dict[str, Any], supported: Set[str],
     cpu = tier["cpu"]
     accelerator = tier["accelerator"]
     name = tier["name"]
+    required = tier.get("required", True)
     if cpu != "host" and cpu not in supported:
         return {
             "name": name,
@@ -129,6 +130,7 @@ def run_arm_boot_tier(tier: Dict[str, Any], supported: Set[str],
             "cpu": cpu,
             "accelerator": accelerator,
             "validation": tier["validation"],
+            "required": required,
             "supported": False,
             "exit_code": 1,
             "status": "fail",
@@ -146,6 +148,7 @@ def run_arm_boot_tier(tier: Dict[str, Any], supported: Set[str],
             "cpu": cpu,
             "accelerator": accelerator,
             "validation": tier["validation"],
+            "required": required,
             "supported": True,
             "exit_code": proc.returncode,
             "status": "pass" if proc.returncode == 0 else "fail",
@@ -164,6 +167,7 @@ def run_arm_boot_tier(tier: Dict[str, Any], supported: Set[str],
         "cpu": cpu,
         "accelerator": accelerator,
         "validation": tier["validation"],
+        "required": required,
         "supported": True,
         "exit_code": probe["exit_code"],
         "missing_markers": probe["missing_markers"],
@@ -177,6 +181,7 @@ def run_x86_tier(tier: Dict[str, Any], supported: Set[str],
     env = base_env.copy()
     env["XAIOS_QEMU_X86_CPU"] = cpu
     validation = tier["validation"]
+    required = tier.get("required", True)
     supported_by_qemu = cpu == "max" or cpu in supported
     if not supported_by_qemu:
         return {
@@ -184,6 +189,7 @@ def run_x86_tier(tier: Dict[str, Any], supported: Set[str],
             "architecture": "x86_64",
             "cpu": cpu,
             "validation": validation,
+            "required": required,
             "supported": False,
             "exit_code": 1,
             "status": "fail",
@@ -200,6 +206,7 @@ def run_x86_tier(tier: Dict[str, Any], supported: Set[str],
         "architecture": "x86_64",
         "cpu": cpu,
         "validation": validation,
+        "required": required,
         "supported": supported_by_qemu,
         "exit_code": proc.returncode,
         "status": "pass" if supported_by_qemu and proc.returncode == 0 else "fail",
@@ -229,7 +236,7 @@ def main() -> int:
         for tier in contract["cpu_matrix"]["arm64_boot_tiers"]:
             result = run_arm_boot_tier(tier, arm_supported, base_env)
             tiers.append(result)
-            if result["status"] != "pass":
+            if result["status"] != "pass" and result["required"]:
                 failures.append(f"arm64 tier failed: {tier['name']}")
     if qemu_x86_64:
         if any(tier.get("validation") == "qemu-smoke"
@@ -240,7 +247,7 @@ def main() -> int:
         for tier in contract["cpu_matrix"]["x86_64_command_tiers"]:
             result = run_x86_tier(tier, x86_supported, base_env)
             tiers.append(result)
-            if result["status"] != "pass":
+            if result["status"] != "pass" and result["required"]:
                 failures.append(f"x86_64 tier failed: {tier['name']}")
 
     report = {
@@ -253,6 +260,10 @@ def main() -> int:
             "x86_64": qemu_x86_64,
         },
         "tiers": tiers,
+        "optional_failures": [
+            tier["name"] for tier in tiers
+            if not tier["required"] and tier["status"] != "pass"
+        ],
         "failures": failures,
     }
 

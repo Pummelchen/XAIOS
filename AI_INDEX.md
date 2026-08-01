@@ -1,8 +1,8 @@
 <!--
 AI onboarding file.
-Mode: bootstrap
-Indexed commit: 8458ff956831e1b3b44a0cbcb396352ce28e3a01
-Last generated: 2026-06-25T09:20:22Z
+Mode: refresh
+Indexed base commit: 8404c1ec1b76c02157bb08d8a3a9466a93e5c2cb
+Last refreshed: 2026-08-01
 Generator: generic high-end AI coding agent
 Purpose: Help future AI sessions understand this repository quickly.
 Audience: Any high-capability AI coding agent, regardless of vendor or model family.
@@ -15,11 +15,11 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 | Field | Value |
 |---|---|
 | Repository | `Pummelchen/XAIOS` |
-| Indexed commit | `8458ff956831e1b3b44a0cbcb396352ce28e3a01` |
-| Operation mode | `bootstrap` |
+| Indexed base commit | `8404c1ec1b76c02157bb08d8a3a9466a93e5c2cb` plus the current working tree |
+| Operation mode | `refresh` |
 | Default branch | `main` |
 | Primary languages | C99, Assembly, Python, Shell |
-| Runtime target | Freestanding OS, currently AArch64 UEFI on QEMU `virt`; x86_64 and hardware ports are present/planned areas. |
+| Runtime target | AArch64 UEFI/QEMU OS correctness path plus a hosted portable-engine foundation; x86_64 remains early bring-up only. |
 
 ## Read first
 
@@ -34,7 +34,12 @@ Always inspect current source files before editing. These onboarding files are g
 
 ## Verified repository purpose
 
-XAIOS is a freestanding operating-system project for CPU-only AI inference and embedded AI-agent workloads. It builds UEFI boot artifacts, a monolithic kernel, userspace programs, initramfs images, QEMU runners, and Python validation gates.
+XAIOS is an experimental freestanding operating system and portable
+inference-engine foundation. The current OS path validates deterministic
+kernel/runtime fixtures under QEMU; it does not yet execute a real transformer.
+The hosted C99 engine provides model-v2 parsing, architecture/backend
+boundaries, and a scalar projection canary for future native macOS/Linux and
+XAIOS-service builds.
 
 Evidence:
 - `README.md`
@@ -48,6 +53,7 @@ Evidence:
 Boot starts in `boot/uefi/loader_main.c`, which loads `kernel.elf` and passes boot information to `kmain()` in `kernel/core/kmain.c`. `kmain()` initializes exceptions, timers, SMP/topology, NUMA/PMM/VMM, SMMU/PCI/GIC, VirtIO block/network, persistence, mutable filesystem, security, source index, Git workspace, sandboxing, services, syscalls, scheduler, model arena, CPU-AI runtime, AI Cell, agent protocol, telemetry, and then runs userspace programs.
 
 Runtime structure:
+- Portable hosted engine: `engine/`
 - Kernel code: `kernel/`
 - Userspace runtime/apps/daemon: `userspace/`
 - Build and QEMU gates: `scripts/`
@@ -68,6 +74,8 @@ Runtime structure:
 | `kernel/runtime/` | AI Cell, CPU-AI runtime, model arena, security, sandbox, persistence, update, remote login, agent protocol, source index, Git workspace. | Security/AI-runtime sensitive. |
 | `kernel/user/` | Process table, service supervisor, syscall dispatch. | API and capability sensitive. |
 | `userspace/` | EL0 runtime, init, service manager, worker, apps, SSH daemon. | Built into initramfs by `scripts/build-image.sh`. |
+| `engine/` | Portable C99 model-v2, architecture and backend interfaces. | Hosted tests exist; it is not wired to real model execution. |
+| `tests/model_v2/` | C/Python round-trip, malformed-input, sparse >4 GiB and streaming tests. | Run with `make hosted-test`. |
 | `scripts/` | Build scripts, QEMU runners, gates, report generation, initfs creation. | Primary validation surface. |
 | `contracts/` | Machine-readable QEMU release-candidate contract. | May lag newer source. |
 | `.github/workflows/` | CI compile, ABI, build/smoke, regression jobs. | Ubuntu toolchain/QEMU path. |
@@ -86,6 +94,8 @@ Runtime structure:
 | Full readiness gate | `make qemu-readiness-gate` |
 | Full OS release-candidate gate | `make qemu-full-os-rc` |
 | Compile syntax check | `make compile-check` |
+| Hosted engine/model-v2 tests | `make hosted-test` |
+| Support-status docs check | `make docs-check` |
 | SSH bridge | `make xaios-ssh-bridge` |
 
 ## Common task map
@@ -98,7 +108,8 @@ Runtime structure:
 | Userspace app | `userspace/apps/` | `scripts/build-image.sh`, `kernel/core/kmain.c`, `scripts/qemu-smoke.py` |
 | SSH/network | `userspace/sshd/`, `kernel/net/`, `kernel/runtime/network_stack.c` | Socket syscalls and network gates |
 | Security/update | `kernel/runtime/security.c`, `kernel/runtime/update.c` | `SECURITY.md`, `.ai/SECURITY.md`, QEMU security/update gates |
-| CPU-AI/model format | `kernel/runtime/cpu_ai_runtime.c`, `kernel/runtime/model_arena.c`, `tools/convert_gguf_to_xaios.py` | `contracts/qemu-rc-v1.json`, model docs, smoke markers |
+| Production model/engine | `engine/`, `tools/xaios_model_v2.py` | `tests/model_v2/`, model-v2/adapter/backend docs |
+| QEMU model fixture | `kernel/runtime/cpu_ai_runtime.c`, `tools/create_xaios_v1_fixture.py` | `contracts/qemu-rc-v1.json`, smoke markers; never call it real inference |
 | CI/gates | `.github/workflows/ci.yml`, `Makefile`, `scripts/qemu-*.py` | `.ai/TESTING.md`, `HARDWARE-READINESS.md` |
 
 ## Important conventions
@@ -126,13 +137,14 @@ Runtime structure:
 
 ## Known conflicts and unknowns
 
-High-impact items are tracked in `.ai/KNOWN_UNKNOWNS.md`:
-
-- Performance language in README/wiki/tracker conflicts with `HARDWARE-READINESS.md` and `contracts/qemu-rc-v1.json`, which restrict QEMU outputs to correctness evidence.
-- Source declares syscalls through `XAIOS_SYSCALL_AGENT_DISPATCH` number 34, while `docs/API.md` documents through 33 and `contracts/qemu-rc-v1.json` lists through 28.
-- `LICENSE` contains MIT text but also says “License to be decided”; README also says license is undecided.
-- Some docs omit current `agenttest`/agent-dispatch paths visible in source.
+High-impact items are tracked in `.ai/KNOWN_UNKNOWNS.md`. The syscall/API
+contract and primary readiness/support docs are synchronized in the current
+working tree. Remaining material risks include no real Qwen/K3 execution, no
+native optimized backend, fixed-size OS memory/NUMA/storage prototypes, the
+x86 image not linking the common runtime, and ambiguous licensing.
 
 ## What changed since last index
 
-Initial bootstrap. No previous AI onboarding manifest or recognizable generic onboarding file set was found on `main`.
+Refreshed for the model-v2/portable-engine foundation, explicit model-v1
+fixture isolation, independent CI jobs, honest support status, and current ABI
+and QEMU correctness contracts.

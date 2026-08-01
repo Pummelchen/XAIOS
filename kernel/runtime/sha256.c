@@ -157,7 +157,8 @@ void xaios_sha256_final(xaios_sha256_ctx_t *ctx, uint8_t hash[32]) {
     return;
   }
 
-  /* Padding: append 0x80, then zeros, then 64-bit big-endian bit count */
+  /* Padding must encode the message length before padding bytes are added. */
+  uint64_t message_bit_count = ctx->bit_count;
   uint8_t pad = 0x80;
   xaios_sha256_update(ctx, &pad, 1);
 
@@ -169,7 +170,7 @@ void xaios_sha256_final(xaios_sha256_ctx_t *ctx, uint8_t hash[32]) {
   /* Append bit count in big-endian */
   uint8_t count_bytes[8];
   for (uint32_t i = 0; i < 8; ++i) {
-    count_bytes[7 - i] = (uint8_t)(ctx->bit_count >> (i * 8U));
+    count_bytes[7 - i] = (uint8_t)(message_bit_count >> (i * 8U));
   }
   xaios_sha256_update(ctx, count_bytes, 8);
 

@@ -89,7 +89,7 @@ xaios_status_t speculative_generate_draft(
     /* Run draft model */
     xaios_status_t status = cpu_ai_runtime_run_model(
         state->draft_cell_id,
-        XAIOS_ML_MODEL_DECODE,
+        XAIOS_ML_MODEL_FIXTURE_DECODE,
         input_buffer,
         input_size,
         output_buffer,
@@ -147,7 +147,7 @@ xaios_status_t speculative_verify_tokens(
     /* Run target model */
     xaios_status_t status = cpu_ai_runtime_run_model(
         state->target_cell_id,
-        XAIOS_ML_MODEL_DECODE,
+        XAIOS_ML_MODEL_FIXTURE_DECODE,
         input_buffer,
         input_size,
         output_buffer,

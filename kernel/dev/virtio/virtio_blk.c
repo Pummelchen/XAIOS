@@ -88,16 +88,11 @@ xaios_status_t virtio_block_init(void) {
   if (allocate_driver() != XAIOS_OK) {
     return XAIOS_ERR_NO_MEMORY;
   }
-  /* Skip first virtio-blk device (boot FAT image at if=virtio).
-   * The test block image is at -device virtio-blk-device,drive=xaios_test_block.
-   * QEMU assigns MMIO slots in order, so the test block is at slot 1. */
-  if (virtio_transport_find_from(VIRTIO_DEVICE_BLOCK, "virtio-blk",
-                                 1, &g_blk->device) != XAIOS_OK) {
-    /* Fallback: try slot 0 (single-device or non-default config) */
-    if (virtio_transport_find(VIRTIO_DEVICE_BLOCK, "virtio-blk",
-                              &g_blk->device) != XAIOS_OK) {
-      return XAIOS_ERR_NOT_FOUND;
-    }
+  /* The QEMU runner pins the deterministic test disk to MMIO slot 0. The
+   * boot FAT image is a PCI device and is not visible to this transport. */
+  if (virtio_transport_find(VIRTIO_DEVICE_BLOCK, "virtio-blk",
+                            &g_blk->device) != XAIOS_OK) {
+    return XAIOS_ERR_NOT_FOUND;
   }
   if (virtio_transport_negotiate_no_features(&g_blk->device) != XAIOS_OK) {
     return XAIOS_ERR_IO;

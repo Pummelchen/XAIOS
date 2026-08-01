@@ -37,6 +37,7 @@ def validate_contract_shape(rc_contract):
 def validate_initfs_contract(rc_contract):
     failures = []
     create_initfs = (ROOT / "scripts/create-initfs.py").read_text(encoding="utf-8")
+    build_image = (ROOT / "scripts/build-image.sh").read_text(encoding="utf-8")
     fs = rc_contract.get("filesystem_format", {})
     constants = {
         "MAGIC": fs.get("magic"),
@@ -61,9 +62,13 @@ def validate_initfs_contract(rc_contract):
             failures.append(f"create-initfs {name} expected {expected}, got {value}")
 
     required_paths = fs.get("required_paths", [])
+    user_apps_match = re.search(r'^USER_APPS="([^"]*)"', build_image, re.MULTILINE)
+    user_app_paths = set()
+    if user_apps_match:
+        user_app_paths = {f"/bin/{name}" for name in user_apps_match.group(1).split()}
     for path in required_paths:
-        if path not in create_initfs:
-            failures.append(f"create-initfs missing required path {path}")
+        if path not in create_initfs and path not in build_image and path not in user_app_paths:
+            failures.append(f"initfs build inputs missing required path {path}")
     return failures
 
 
@@ -94,6 +99,29 @@ def validate_model_contract(rc_contract):
     return failures
 
 
+def validate_memory_map_contract(_rc_contract):
+    failures = []
+    vmm_header = (ROOT / "kernel/include/xaios/vmm.h").read_text(encoding="utf-8")
+    user_linker = (ROOT / "userspace/init/linker.ld").read_text(encoding="utf-8")
+    kernel_linker = (ROOT / "kernel/arch/aarch64/linker.ld").read_text(
+        encoding="utf-8"
+    )
+    expected = {
+        "XAIOS_USER_BASE": "0x100000000",
+        "XAIOS_USER_LIMIT": "0x140000000",
+        "XAIOS_USER_STACK_TOP": "0x13f000000",
+    }
+    for name, value in expected.items():
+        declaration = f"#define {name} UINT64_C({value})"
+        if declaration not in vmm_header:
+            failures.append(f"memory map missing {declaration}")
+    if ". = 0x100000000;" not in user_linker:
+        failures.append("userspace linker base does not match XAIOS_USER_BASE")
+    if "ASSERT(__kernel_end <= 0x100000000" not in kernel_linker:
+        failures.append("kernel linker does not guard the userspace VA boundary")
+    return failures
+
+
 def main() -> int:
     rc_contract = contract()
     checks = []
@@ -103,6 +131,7 @@ def main() -> int:
         ("syscall_abi", validate_syscall_abi),
         ("initfs_format", validate_initfs_contract),
         ("cpu_ai_model_format", validate_model_contract),
+        ("memory_map", validate_memory_map_contract),
     ]
     for name, validator in validators:
         result_failures = validator(rc_contract)

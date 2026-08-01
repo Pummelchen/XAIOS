@@ -11,11 +11,8 @@
 #define MFS_SECTOR_SIZE UINT64_C(512)
 #define MFS_START_SECTOR UINT64_C(3072)
 #define MFS_METADATA_SECTORS UINT64_C(16)
-#define MFS_JOURNAL_HEADER_SECTOR (MFS_START_SECTOR + MFS_METADATA_SECTORS)
-#define MFS_JOURNAL_DATA_SECTOR (MFS_JOURNAL_HEADER_SECTOR + 1U)
 #define MFS_JOURNAL_SECTORS UINT64_C(2)
-#define MFS_DATA_START_SECTOR \
-  (MFS_START_SECTOR + MFS_METADATA_SECTORS + MFS_JOURNAL_SECTORS)
+#define MFS_CHECKSUM_OFFSET UINT64_C(80)
 #define MFS_DATA_SECTORS 96U
 #define MFS_MAX_NODES 32U
 #define MFS_PATH_MAX 96U
@@ -196,6 +193,18 @@ static void set_active_v3(void) {
   g_active_version = MFS_V3_VERSION;
 }
 
+static uint64_t active_journal_header_sector(void) {
+  return MFS_START_SECTOR + g_active_metadata_sectors;
+}
+
+static uint64_t active_journal_data_sector(void) {
+  return active_journal_header_sector() + 1U;
+}
+
+static uint64_t active_data_start_sector(void) {
+  return active_journal_header_sector() + MFS_JOURNAL_SECTORS;
+}
+
 static xaios_status_t blk_read(uint64_t sector, void *buf, uint64_t sz) {
   if (g_persistent_handle != 0) {
     return virtio_block_read_sector_h(g_persistent_handle, sector, buf, sz);
@@ -318,8 +327,7 @@ static uint64_t mfs_checksum(const void *data, uint64_t size) {
   uint8_t temp[MFS_V3_METADATA_SECTORS * MFS_SECTOR_SIZE];
   uint64_t copy_size = size < sizeof(temp) ? size : sizeof(temp);
   bytes_copy(temp, data, copy_size);
-  /* zero checksum field at offset 72 for 8 bytes */
-  bytes_zero(temp + 72U, 8U);
+  bytes_zero(temp + MFS_CHECKSUM_OFFSET, sizeof(uint64_t));
   return fnv1a64(temp, size);
 }
 
@@ -548,9 +556,9 @@ static xaios_status_t write_metadata(void) {
 static xaios_status_t clear_journal(void) {
   uint8_t sector[MFS_SECTOR_SIZE];
   bytes_zero(sector, sizeof(sector));
-  if (blk_write(MFS_JOURNAL_HEADER_SECTOR, sector,
+  if (blk_write(active_journal_header_sector(), sector,
                                 sizeof(sector)) != XAIOS_OK ||
-      blk_write(MFS_JOURNAL_DATA_SECTOR, sector,
+      blk_write(active_journal_data_sector(), sector,
                                 sizeof(sector)) != XAIOS_OK) {
     ++g_reject_count;
     return XAIOS_ERR_IO;
@@ -559,7 +567,7 @@ static xaios_status_t clear_journal(void) {
 }
 
 static xaios_status_t read_journal(xaios_mfs_journal_t *journal) {
-  if (blk_read(MFS_JOURNAL_HEADER_SECTOR, journal,
+  if (blk_read(active_journal_header_sector(), journal,
                                sizeof(*journal)) != XAIOS_OK) {
     return XAIOS_ERR_IO;
   }
@@ -568,7 +576,7 @@ static xaios_status_t read_journal(xaios_mfs_journal_t *journal) {
 
 static xaios_status_t write_journal(xaios_mfs_journal_t *journal) {
   journal->checksum = journal_checksum(journal);
-  if (blk_write(MFS_JOURNAL_HEADER_SECTOR, journal,
+  if (blk_write(active_journal_header_sector(), journal,
                                 sizeof(*journal)) != XAIOS_OK) {
     ++g_reject_count;
     return XAIOS_ERR_IO;
@@ -578,7 +586,7 @@ static xaios_status_t write_journal(xaios_mfs_journal_t *journal) {
 }
 
 static uint64_t absolute_data_sector(uint16_t block_index) {
-  return MFS_DATA_START_SECTOR + (uint64_t)block_index;
+  return active_data_start_sector() + (uint64_t)block_index;
 }
 
 static xaios_status_t allocate_blocks(uint16_t count,
@@ -625,9 +633,9 @@ static xaios_status_t validate_disk(uint64_t expected_checksum) {
       g_mfs.metadata_sectors != g_active_metadata_sectors ||
       g_mfs.max_nodes != g_active_max_nodes ||
       g_mfs.start_sector != MFS_START_SECTOR ||
-      g_mfs.journal_header_sector != MFS_JOURNAL_HEADER_SECTOR ||
-      g_mfs.journal_data_sector != MFS_JOURNAL_DATA_SECTOR ||
-      g_mfs.data_start_sector != MFS_DATA_START_SECTOR ||
+      g_mfs.journal_header_sector != active_journal_header_sector() ||
+      g_mfs.journal_data_sector != active_journal_data_sector() ||
+      g_mfs.data_start_sector != active_data_start_sector() ||
       g_mfs.data_sectors != g_active_data_sectors) {
     return XAIOS_ERR_INVALID;
   }
@@ -668,9 +676,9 @@ static xaios_status_t format_volume(void) {
   g_mfs.metadata_sectors = g_active_metadata_sectors;
   g_mfs.max_nodes = g_active_max_nodes;
   g_mfs.start_sector = MFS_START_SECTOR;
-  g_mfs.journal_header_sector = MFS_JOURNAL_HEADER_SECTOR;
-  g_mfs.journal_data_sector = MFS_JOURNAL_DATA_SECTOR;
-  g_mfs.data_start_sector = MFS_DATA_START_SECTOR;
+  g_mfs.journal_header_sector = active_journal_header_sector();
+  g_mfs.journal_data_sector = active_journal_data_sector();
+  g_mfs.data_start_sector = active_data_start_sector();
   g_mfs.data_sectors = g_active_data_sectors;
   g_mfs.generation = 1;
   g_mfs.committed_generation = 0;
@@ -708,7 +716,7 @@ static xaios_status_t replay_journal(void) {
   }
 
   uint8_t sector[MFS_SECTOR_SIZE];
-  if (blk_read(MFS_JOURNAL_DATA_SECTOR, sector,
+  if (blk_read(active_journal_data_sector(), sector,
                                sizeof(sector)) != XAIOS_OK) {
     ++g_reject_count;
     return XAIOS_ERR_IO;
@@ -732,8 +740,7 @@ static xaios_status_t replay_journal(void) {
 
 static xaios_status_t mount_volume(uint32_t mount_flags) {
   set_active_v2();
-  if (blk_capacity() <
-      MFS_DATA_START_SECTOR + g_active_data_sectors) {
+  if (blk_capacity() < active_data_start_sector() + g_active_data_sectors) {
     ++g_reject_count;
     return XAIOS_ERR_IO;
   }
@@ -782,7 +789,7 @@ static xaios_status_t mount_volume(uint32_t mount_flags) {
 
   klog("mutable-fs: mounted start=%lu metadata=%lu journal=%lu data=%lu sectors=%u nodes=%u policy=%s\n",
        MFS_START_SECTOR, (uint64_t)g_active_metadata_sectors, MFS_JOURNAL_SECTORS,
-       MFS_DATA_START_SECTOR, g_active_data_sectors, g_active_max_nodes,
+       active_data_start_sector(), g_active_data_sectors, g_active_max_nodes,
        (g_mount_flags & MFS_MOUNT_READ_WRITE) != 0 ? "rw" : "ro");
   return XAIOS_OK;
 }
@@ -829,6 +836,20 @@ static xaios_status_t create_dir(const char *path) {
   klog("mutable-fs: mkdir path=%s generation=%lu\n",
        node->path, node->generation);
   return write_metadata();
+}
+
+static xaios_status_t ensure_base_directories(void) {
+  static const char *const paths[] = {
+      "/", "/etc", "/bin", "/state", "/state/services",
+      "/state/workspaces", "/state/updates", "/config", "/logs",
+      "/workspaces", "/models",
+  };
+  for (uint32_t i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i) {
+    if (create_dir(paths[i]) != XAIOS_OK) {
+      return XAIOS_ERR_IO;
+    }
+  }
+  return XAIOS_OK;
 }
 
 static uint16_t block_count_for_size(uint64_t size) {
@@ -1290,7 +1311,7 @@ static xaios_status_t write_pending_journal_file(const char *path,
   uint8_t sector[MFS_SECTOR_SIZE];
   bytes_zero(sector, sizeof(sector));
   bytes_copy(sector, data, size);
-  if (blk_write(MFS_JOURNAL_DATA_SECTOR, sector,
+  if (blk_write(active_journal_data_sector(), sector,
                                 sizeof(sector)) != XAIOS_OK) {
     ++g_reject_count;
     return XAIOS_ERR_IO;
@@ -1676,16 +1697,17 @@ xaios_status_t mutable_fs_mount_persistent(uint32_t slot) {
     klog("mutable-fs: persistent block device not found at slot=%u\n", slot);
     return status;
   }
+  set_active_v3();
   if (virtio_block_capacity_sectors_h(handle) <
-      MFS_DATA_START_SECTOR + MFS_V3_DATA_SECTORS) {
+      active_data_start_sector() + MFS_V3_DATA_SECTORS) {
     klog("mutable-fs: persistent disk too small capacity=%lu needed=%lu\n",
          virtio_block_capacity_sectors_h(handle),
-         MFS_DATA_START_SECTOR + MFS_V3_DATA_SECTORS);
+         active_data_start_sector() + MFS_V3_DATA_SECTORS);
+    set_active_v2();
     virtio_block_close(handle);
     return XAIOS_ERR_IO;
   }
   g_persistent_handle = handle;
-  set_active_v3();
   g_mounted = 0;
   g_mount_flags = 0;
   if (read_metadata() != XAIOS_OK) {
@@ -1728,6 +1750,12 @@ xaios_status_t mutable_fs_mount_persistent(uint32_t slot) {
       virtio_block_close(handle);
       return XAIOS_ERR_IO;
     }
+  }
+  if (ensure_base_directories() != XAIOS_OK) {
+    g_persistent_handle = 0;
+    set_active_v2();
+    virtio_block_close(handle);
+    return XAIOS_ERR_IO;
   }
   klog("mutable-fs: persistent mounted v3 nodes=%u sectors=%u\n",
        g_active_max_nodes, g_active_data_sectors);
@@ -1800,17 +1828,7 @@ void mutable_fs_self_test(void) {
 
   kassert(mount_volume(MFS_MOUNT_READ_WRITE) == XAIOS_OK);
   kassert(format_volume() == XAIOS_OK);
-
-  kassert(create_dir("/etc") == XAIOS_OK);
-  kassert(create_dir("/bin") == XAIOS_OK);
-  kassert(create_dir("/state") == XAIOS_OK);
-  kassert(create_dir("/state/services") == XAIOS_OK);
-  kassert(create_dir("/state/workspaces") == XAIOS_OK);
-  kassert(create_dir("/state/updates") == XAIOS_OK);
-  kassert(create_dir("/config") == XAIOS_OK);
-  kassert(create_dir("/logs") == XAIOS_OK);
-  kassert(create_dir("/workspaces") == XAIOS_OK);
-  kassert(create_dir("/models") == XAIOS_OK);
+  kassert(ensure_base_directories() == XAIOS_OK);
 
   kassert(mutable_fs_record_service_state("/svc/source-index", "running") ==
           XAIOS_OK);

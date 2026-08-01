@@ -1,8 +1,8 @@
 <!--
 AI onboarding file.
-Mode: bootstrap
-Indexed commit: 8458ff956831e1b3b44a0cbcb396352ce28e3a01
-Last generated: 2026-06-25T09:20:22Z
+Mode: refresh
+Indexed base commit: 8404c1ec1b76c02157bb08d8a3a9466a93e5c2cb
+Last refreshed: 2026-08-01
 Generator: generic high-end AI coding agent
 Purpose: Help future AI sessions understand this repository quickly.
 Audience: Any high-capability AI coding agent, regardless of vendor or model family.
@@ -12,8 +12,9 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 
 ## Test model
 
-No conventional unit-test framework was detected. Validation is based on:
+Validation is based on:
 
+- hosted C assertions and Python `unittest` under `tests/model_v2/`;
 - kernel/userspace self-tests run during boot;
 - Python QEMU gates that search serial output and telemetry markers;
 - ABI/contract Python checks;
@@ -32,6 +33,8 @@ Evidence:
 | Validation | Command | When to use |
 |---|---|---|
 | Syntax-only C check | `make compile-check` | Small C changes; quicker than booting QEMU. |
+| Hosted engine/model-v2 | `make hosted-test` | Every engine, model-v2, adapter or backend change. |
+| Support docs contract | `make docs-check` | README/tracker/readiness support-status changes. |
 | Smoke gate | `make qemu-smoke` | Most code changes. |
 | ABI contract | `python3 scripts/qemu-abi-contract.py` | Syscall, initfs, contract, model format changes. |
 | Regression | `make qemu-regression-suite` | Broader kernel/userspace changes. |
@@ -44,8 +47,9 @@ Evidence:
 
 GitHub Actions workflow `.github/workflows/ci.yml` runs:
 
-- compile-check for kernel C files;
-- compile-check for userspace C files;
+- architecture-correct AArch64/x86_64 kernel and AArch64 userspace compile checks;
+- hosted engine/model-v2 tests;
+- support-status documentation contract;
 - ABI contract validation;
 - `make image` followed by `scripts/qemu-smoke.py`;
 - `make image` followed by `scripts/qemu-regression-suite.py`.
@@ -70,5 +74,8 @@ CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` 
 ## Known testing caveats
 
 - QEMU gates are correctness evidence only and do not authorize hardware performance claims.
-- `contracts/qemu-rc-v1.json` appears behind source for syscalls beyond 28; validate intent before treating contract coverage as complete.
+- The ABI gate requires complete source/contract syscall and capability parity,
+  not merely matching listed entries.
+- QEMU smoke uses TCG in Linux CI. On this macOS host, default HVF has a known
+  QEMU assertion failure; use `XAIOS_QEMU_ACCEL=tcg` for the correctness gate.
 - Local QEMU gates require host QEMU/firmware/toolchain availability.

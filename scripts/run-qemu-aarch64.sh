@@ -150,9 +150,9 @@ set -- "$qemu" \
   -drive "if=pflash,format=raw,readonly=on,file=$firmware" \
   -drive "if=virtio,format=raw,file=$image" \
   -drive "if=none,format=raw,id=xaios_test_block,file=$test_block_image" \
-  -device virtio-blk-device,drive=xaios_test_block \
+  -device virtio-blk-device,drive=xaios_test_block,bus=virtio-mmio-bus.0 \
   -drive "if=none,format=raw,id=xaios_persistent,file=$persistent_image" \
-  -device virtio-blk-device,drive=xaios_persistent
+  -device virtio-blk-device,drive=xaios_persistent,bus=virtio-mmio-bus.1
 
 if [ "$hostfwd_port" = "none" ]; then
   set -- "$@" -netdev user,id=net0

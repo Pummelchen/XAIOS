@@ -8,6 +8,7 @@ typedef enum xaios_status {
   XAIOS_ERR_NOT_FOUND = -3,
   XAIOS_ERR_IO = -4,
   XAIOS_ERR_BUSY = -5,
+  XAIOS_ERR_UNSUPPORTED = -6,
 } xaios_status_t;
 
 #endif
