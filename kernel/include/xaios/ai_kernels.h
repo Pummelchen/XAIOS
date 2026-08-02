@@ -164,10 +164,9 @@ static inline xaios_core_type_t ai_select_core_type(uint64_t compute_intensity,
 }
 
 /*
- * Model Compilation Stub (Future: TVM/XLA-style)
+ * Model Compilation Interface
  *
- * Placeholder for future kernel generation system.
- * Would compile model graphs to optimized NEON kernels at load time.
+ * Implementations may compile model graphs to optimized kernels at load time.
  */
 
 /* Compiled kernel descriptor */
@@ -179,7 +178,7 @@ typedef struct xaios_compiled_kernel {
   void (*execute)(const void *input, void *output);  /* Generated function */
 } xaios_compiled_kernel_t;
 
-/* Compile model to optimized kernel (stub) */
+/* Compile a model graph to an optimized kernel. */
 xaios_status_t ai_compile_model(const char *model_graph,
                                 xaios_compiled_kernel_t *kernel_out);
 

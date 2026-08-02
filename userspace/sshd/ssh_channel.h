@@ -5,6 +5,7 @@
 #include "ssh_protocol.h"
 
 #define SSH_CHANNEL_MAX 4U
+#define SSH_CHANNEL_SFTP_BUFFER_SIZE 32772U
 
 /* Channel request message types */
 #define SSH_MSG_CHANNEL_REQUEST       98U
@@ -19,6 +20,9 @@ typedef struct ssh_channel {
   uint32_t window_size;
   uint32_t remote_window;
   uint32_t bytes_consumed;
+  uint32_t is_sftp;
+  uint32_t sftp_rx_used;
+  uint8_t sftp_rx[SSH_CHANNEL_SFTP_BUFFER_SIZE];
 } ssh_channel_t;
 
 void ssh_channel_init(void);

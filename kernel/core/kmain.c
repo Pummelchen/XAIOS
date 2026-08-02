@@ -353,6 +353,9 @@ void kmain(const xaios_boot_info_t *boot) {
       XAIOS_CAP_REMOTE_LOGIN;
   const uint64_t agenttest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_AGENT |
       XAIOS_CAP_CPU_AI | XAIOS_CAP_ML;
+  const uint64_t sshd_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_FS_READ |
+      XAIOS_CAP_FS_WRITE | XAIOS_CAP_NET_SOCKET | XAIOS_CAP_REMOTE_LOGIN |
+      XAIOS_CAP_TIME;
 
   run_user_app("/bin/xaios-shell", 6, shell_caps);
   run_user_app("/bin/hello", 7, hello_caps);
@@ -367,6 +370,9 @@ void kmain(const xaios_boot_info_t *boot) {
   run_user_app("/bin/agenttest", 16, agenttest_caps);
 
   telemetry_emit_boot_summary();
+
+  klog("kernel: starting persistent /bin/sshd service\n");
+  run_user_app("/bin/sshd", 17, sshd_caps);
 
   for (;;) {
     __asm__ volatile("wfe");

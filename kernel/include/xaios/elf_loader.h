@@ -6,7 +6,7 @@
 #include <xaios/types.h>
 #include <xaios/vmm.h>
 
-#define XAIOS_ELF_LOADER_MAX_PAGES 64U
+#define XAIOS_ELF_LOADER_MAX_PAGES 256U
 #define XAIOS_ELF_LOADER_L3_TABLES 4U
 
 typedef struct xaios_process_aspace {

@@ -5,22 +5,23 @@
 #include <xaios_user.h>
 
 #define SSHD_PORT 22U
+#define SSHD_UDP_ECHO_PORT 2223U
 
 /* Connection limits */
 #define SSHD_MAX_WORKER_THREADS 16
-#define SSHD_MAX_PENDING_CONNECTIONS 1024
 #define SSHD_MAX_CONNECTIONS_PER_IP 10
 
-/* Timeout values (seconds) */
-#define SSHD_TIMEOUT_CONNECT 30
-#define SSHD_TIMEOUT_AUTH 120
-#define SSHD_TIMEOUT_IDLE 300
-#define SSHD_KEEPALIVE_INTERVAL 30
+/* Timeout values in nanoseconds. */
+#define SSHD_TIMEOUT_CONNECT UINT64_C(30000000000)
+#define SSHD_TIMEOUT_AUTH UINT64_C(120000000000)
+#define SSHD_TIMEOUT_IDLE UINT64_C(300000000000)
+#define SSHD_KEEPALIVE_INTERVAL UINT64_C(30000000000)
+#define SSHD_REKEY_INTERVAL UINT64_C(3600000000000)
 
 /* Rate limiting */
 #define SSHD_RATE_LIMIT_MAX_ENTRIES 1024
 #define SSHD_RATE_LIMIT_MAX_FAILURES 10
-#define SSHD_RATE_LIMIT_BAN_DURATION 3600 /* 1 hour */
+#define SSHD_RATE_LIMIT_BAN_DURATION UINT64_C(3600000000000)
 
 /* Authentication */
 #define SSHD_MAX_AUTH_ATTEMPTS 5
@@ -51,14 +52,6 @@ typedef struct {
   uint64_t bytes_sent;
   uint64_t bytes_received;
 } sshd_stats_t;
-
-/* Lock-free connection queue (atomic operations) */
-typedef struct {
-  volatile u64 connections[SSHD_MAX_PENDING_CONNECTIONS];
-  volatile uint32_t head;  /* Atomic: consumers read */
-  volatile uint32_t tail;  /* Atomic: producers write */
-  volatile uint32_t count; /* Atomic: queue size */
-} sshd_queue_t;
 
 /* Active connection tracking for multi-client support */
 typedef struct {

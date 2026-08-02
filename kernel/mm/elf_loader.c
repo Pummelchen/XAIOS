@@ -207,33 +207,36 @@ xaios_status_t elf_loader_map_stack(xaios_process_aspace_t *aspace,
     return XAIOS_ERR_INVALID;
   }
 
-  /* Allocate stack page */
-  void *stack_page = pmm_alloc_page();
-  if (stack_page == 0) {
-    return XAIOS_ERR_NO_MEMORY;
-  }
-  bytes_zero(stack_page, PAGE_SIZE);
-
   /* Unmap guard pages from global tables */
   kassert(vmm_unmap_page(guard_low) == XAIOS_OK);
   kassert(vmm_unmap_page(guard_high) == XAIOS_OK);
 
-  /* Map stack page into per-process aspace AND global tables */
-  if (vmm_map_user_page(stack_va, (uint64_t)(uintptr_t)stack_page,
-                        XAIOS_VMM_PRESENT | XAIOS_VMM_USER |
-                            XAIOS_VMM_WRITABLE | XAIOS_VMM_NG,
-                        aspace->l3_phys, aspace->l3_count) != XAIOS_OK) {
-    pmm_free_page(stack_page);
+  if (stack_va >= guard_high || (stack_va & (PAGE_SIZE - 1U)) != 0U ||
+      (guard_high & (PAGE_SIZE - 1U)) != 0U) {
     return XAIOS_ERR_INVALID;
   }
-  if (track_page(aspace, stack_va, (uint64_t)(uintptr_t)stack_page) !=
-      XAIOS_OK) {
-    pmm_free_page(stack_page);
-    return XAIOS_ERR_NO_MEMORY;
+
+  for (uint64_t va = stack_va; va < guard_high; va += PAGE_SIZE) {
+    void *stack_page = pmm_alloc_page();
+    if (stack_page == 0) {
+      return XAIOS_ERR_NO_MEMORY;
+    }
+    bytes_zero(stack_page, PAGE_SIZE);
+    if (vmm_map_user_page(va, (uint64_t)(uintptr_t)stack_page,
+                          XAIOS_VMM_PRESENT | XAIOS_VMM_USER |
+                              XAIOS_VMM_WRITABLE | XAIOS_VMM_NG,
+                          aspace->l3_phys, aspace->l3_count) != XAIOS_OK) {
+      pmm_free_page(stack_page);
+      return XAIOS_ERR_INVALID;
+    }
+    if (track_page(aspace, va, (uint64_t)(uintptr_t)stack_page) != XAIOS_OK) {
+      pmm_free_page(stack_page);
+      return XAIOS_ERR_NO_MEMORY;
+    }
   }
 
-  klog("elf_loader: stack mapped va=0x%lx guard=[0x%lx,0x%lx]\n", stack_va,
-       guard_low, guard_high);
+  klog("elf_loader: stack mapped va=0x%lx pages=%lu guard=[0x%lx,0x%lx]\n",
+       stack_va, (guard_high - stack_va) / PAGE_SIZE, guard_low, guard_high);
   return XAIOS_OK;
 }
 

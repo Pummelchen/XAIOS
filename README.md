@@ -56,6 +56,10 @@ opt-in; exact target-model semantics are the default.
 
 - AArch64 UEFI/QEMU boot, freestanding kernel, EL0 userspace, VirtIO devices,
   filesystem, network, capability, AI Cell and telemetry fixtures.
+- An experimental freestanding SSH/SFTP service reachable through QEMU host
+  forwarding, plus guest userspace UDP receive/echo and IPv6/TCP receive/send
+  paths. These have Mac-client interoperability tests but are not approved for
+  Internet exposure or production use.
 - A deterministic 80-byte model-v1 fixture path used only by QEMU correctness
   gates. The production decode syscall returns an explicit unsupported error.
 - A hosted C99 engine boundary under `engine/` with on-demand model-v2 parsing,
@@ -110,6 +114,7 @@ support.
 - [Benchmark evidence contract](./docs/BENCHMARK-CONTRACT.md)
 - [OS architecture](./docs/ARCHITECTURE.md)
 - [API](./docs/API.md)
+- [Network and SSH status](./docs/NETWORK-SSH-STATUS.md)
 - [Hardware readiness](./HARDWARE-READINESS.md)
 - [Project tracker](./PROJECT-TRACKER.md)
 - [Live GitHub Wiki](https://github.com/Pummelchen/XAIOS/wiki)

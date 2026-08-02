@@ -11,6 +11,7 @@
 #define VIRTIO_BLK_T_IN UINT32_C(0)
 #define VIRTIO_BLK_T_OUT UINT32_C(1)
 #define SECTOR_SIZE UINT64_C(512)
+#define DMA_ALIGNMENT UINT64_C(4096)
 
 typedef struct virtio_blk_req {
   uint32_t type;
@@ -71,12 +72,17 @@ static xaios_status_t allocate_driver(void) {
   if (g_blk == 0) {
     return XAIOS_ERR_NO_MEMORY;
   }
-  g_blk->desc = (virtq_desc_t *)kheap_calloc(sizeof(virtq_desc_t) * VIRTQ_SIZE, 16);
-  g_blk->avail = (virtq_avail_t *)kheap_calloc(sizeof(virtq_avail_t), 2);
-  g_blk->used = (virtq_used_t *)kheap_calloc(sizeof(virtq_used_t), 4);
-  g_blk->request = (virtio_blk_req_t *)kheap_calloc(sizeof(virtio_blk_req_t), 16);
-  g_blk->dma_sector = (uint8_t *)kheap_calloc(SECTOR_SIZE, 16);
-  g_blk->status = (uint8_t *)kheap_calloc(1, 1);
+  g_blk->desc = (virtq_desc_t *)kheap_calloc(
+      sizeof(virtq_desc_t) * VIRTQ_SIZE, DMA_ALIGNMENT);
+  g_blk->avail = (virtq_avail_t *)kheap_calloc(
+      sizeof(virtq_avail_t), DMA_ALIGNMENT);
+  g_blk->used = (virtq_used_t *)kheap_calloc(
+      sizeof(virtq_used_t), DMA_ALIGNMENT);
+  g_blk->request = (virtio_blk_req_t *)kheap_calloc(
+      sizeof(virtio_blk_req_t), DMA_ALIGNMENT);
+  g_blk->dma_sector =
+      (uint8_t *)kheap_calloc(SECTOR_SIZE, DMA_ALIGNMENT);
+  g_blk->status = (uint8_t *)kheap_calloc(1, DMA_ALIGNMENT);
   if (g_blk->desc == 0 || g_blk->avail == 0 || g_blk->used == 0 ||
       g_blk->request == 0 || g_blk->dma_sector == 0 || g_blk->status == 0) {
     return XAIOS_ERR_NO_MEMORY;
@@ -234,12 +240,17 @@ xaios_status_t virtio_block_open_slot(uint32_t start_slot,
   if (drv == 0) {
     return XAIOS_ERR_NO_MEMORY;
   }
-  drv->desc = (virtq_desc_t *)kheap_calloc(sizeof(virtq_desc_t) * VIRTQ_SIZE, 16);
-  drv->avail = (virtq_avail_t *)kheap_calloc(sizeof(virtq_avail_t), 2);
-  drv->used = (virtq_used_t *)kheap_calloc(sizeof(virtq_used_t), 4);
-  drv->request = (virtio_blk_req_t *)kheap_calloc(sizeof(virtio_blk_req_t), 16);
-  drv->dma_sector = (uint8_t *)kheap_calloc(SECTOR_SIZE, 16);
-  drv->status = (uint8_t *)kheap_calloc(1, 1);
+  drv->desc = (virtq_desc_t *)kheap_calloc(
+      sizeof(virtq_desc_t) * VIRTQ_SIZE, DMA_ALIGNMENT);
+  drv->avail = (virtq_avail_t *)kheap_calloc(
+      sizeof(virtq_avail_t), DMA_ALIGNMENT);
+  drv->used = (virtq_used_t *)kheap_calloc(
+      sizeof(virtq_used_t), DMA_ALIGNMENT);
+  drv->request = (virtio_blk_req_t *)kheap_calloc(
+      sizeof(virtio_blk_req_t), DMA_ALIGNMENT);
+  drv->dma_sector =
+      (uint8_t *)kheap_calloc(SECTOR_SIZE, DMA_ALIGNMENT);
+  drv->status = (uint8_t *)kheap_calloc(1, DMA_ALIGNMENT);
   if (drv->desc == 0 || drv->avail == 0 || drv->used == 0 ||
       drv->request == 0 || drv->dma_sector == 0 || drv->status == 0) {
     return XAIOS_ERR_NO_MEMORY;

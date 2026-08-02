@@ -1,6 +1,7 @@
 #ifndef XAIOS_NETWORK_STACK_H
 #define XAIOS_NETWORK_STACK_H
 
+#include <xaios/ip_addr.h>
 #include <xaios/status.h>
 #include <xaios/types.h>
 
@@ -97,19 +98,28 @@ xaios_status_t network_stack_tcp_send(uint32_t flow_id, const uint8_t *data,
 xaios_status_t network_stack_tcp_close_flow(uint32_t flow_id);
 xaios_status_t network_stack_udp_send(uint32_t flow_id, const uint8_t *data,
                                        uint32_t len, uint32_t *bytes_written);
+uint32_t network_stack_udp_recv(uint64_t sockfd, uint8_t *buffer,
+                                uint32_t buffer_size,
+                                xaios_ip_addr_t *source_addr,
+                                uint16_t *source_port,
+                                uint32_t *flow_id);
 uint32_t network_stack_tcp_recv(uint32_t flow_id, uint8_t *buffer,
                                   uint32_t buffer_size);
+int network_stack_tcp_peer_closed(uint32_t flow_id);
 
 /* Listener registry */
 void network_stack_register_listener(uint16_t port, uint64_t sockfd);
 void network_stack_unregister_listener(uint16_t port);
 int  network_stack_has_listener(uint16_t port);
+void network_stack_register_udp_listener(uint16_t port, uint64_t sockfd);
+void network_stack_unregister_udp_listener(uint16_t port);
 
 /* Accept queue */
 xaios_status_t network_stack_accept_connection(uint16_t listen_port,
                                                 uint32_t *out_flow_id,
                                                 uint32_t *out_peer_ip,
-                                                uint16_t *out_peer_port);
+                                                uint16_t *out_peer_port,
+                                                xaios_ip_addr_t *out_peer_addr);
 
 /* Socket-to-flow mapping */
 typedef struct socket_flow_mapping {

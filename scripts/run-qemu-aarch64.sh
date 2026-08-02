@@ -117,6 +117,8 @@ image="${XAIOS_AARCH64_IMAGE:-build/xaios-aarch64.img}"
 test_block_image="${XAIOS_TEST_BLOCK_IMAGE:-build/xaios-virtio-test.img}"
 persistent_image="${XAIOS_PERSISTENT_IMAGE:-build/xaios-persistent.img}"
 hostfwd_port="${XAIOS_QEMU_HOSTFWD_PORT:-2222}"
+hostfwd_udp_port="${XAIOS_QEMU_HOSTFWD_UDP_PORT:-none}"
+net_socket_port="${XAIOS_QEMU_NET_SOCKET_PORT:-none}"
 
 if [ "$dry_run" -eq 0 ] && [ ! -f "$image" ]; then
   printf '%s\n' "error: missing AArch64 boot image: $image" >&2
@@ -150,16 +152,28 @@ set -- "$qemu" \
   -drive "if=none,format=raw,id=xaios_persistent,file=$persistent_image" \
   -device virtio-blk-device,drive=xaios_persistent,bus=virtio-mmio-bus.1
 
-if [ "$hostfwd_port" = "none" ]; then
-  set -- "$@" -netdev user,id=net0
-else
-  set -- "$@" -netdev "user,id=net0,hostfwd=tcp::${hostfwd_port}-:22"
-fi
-
 set -- "$@" \
-  -device virtio-net-pci,netdev=net0 \
-  -netdev user,id=net1 \
-  -device virtio-net-device,netdev=net1
+  -netdev user,id=net0 \
+  -device virtio-net-pci,netdev=net0
+
+if [ "$net_socket_port" != "none" ]; then
+  net1_options="socket,id=net1,listen=127.0.0.1:${net_socket_port}"
+else
+  net1_options="user,id=net1"
+  if [ "$hostfwd_port" != "none" ]; then
+    net1_options="${net1_options},hostfwd=tcp::${hostfwd_port}-:22"
+  fi
+  if [ "$hostfwd_udp_port" != "none" ]; then
+    net1_options="${net1_options},hostfwd=udp::${hostfwd_udp_port}-:2223"
+  fi
+fi
+set -- "$@" -netdev "$net1_options"
+
+set -- "$@" -device virtio-net-device,netdev=net1,mac=52:54:00:12:34:57
+
+if [ "${XAIOS_QEMU_NET_DUMP:-}" != "" ]; then
+  set -- "$@" -object "filter-dump,id=xaios_net_dump,netdev=net1,file=${XAIOS_QEMU_NET_DUMP}"
+fi
 
 if [ "$dry_run" -eq 1 ]; then
   print_command "$@"

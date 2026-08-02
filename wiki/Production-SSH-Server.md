@@ -9,11 +9,19 @@ physically deployed, audited, production-supported Internet SSH service.
 |---|---|---|
 | Kernel remote-login contract | QEMU fixture | Exercises allowlisted commands, capability checks, password-login rejection, and deterministic telemetry. |
 | Host OpenSSH-compatible bridge | Development tool | `scripts/xaios-ssh-bridge.py` listens on localhost and exposes the QEMU command contract through Paramiko. |
-| Freestanding userspace SSH/SFTP source | Experimental | Protocol, connection, crypto, channel, host-key, server, and SFTP modules compile, but physical-network deployment and security acceptance are not established. |
+| Freestanding userspace SSH/SFTP service | Experimental | macOS OpenSSH authenticated to the QEMU guest and completed remote-command and SFTP put/stat/get tests. Physical-network deployment and security acceptance are not established. |
 
 The bridge is useful for local integration testing with commands such as
 `ssh -p 2222 admin@localhost`. It must not be represented as proof that the
 freestanding userspace server is safe for direct Internet exposure.
+
+The guest service is also reachable locally with QEMU TCP forwarding. It uses a
+built-in development credential, lacks production entropy/key provisioning and
+rekey negotiation, and closes encrypted sessions at the rekey boundary. A
+wrong-password OpenSSH attempt is rejected. It currently admits one active SSH
+connection at a time. UDP userspace delivery and direct
+IPv6/TCP have separate Mac-client checks documented in
+[`docs/NETWORK-SSH-STATUS.md`](https://github.com/Pummelchen/XAIOS/blob/main/docs/NETWORK-SSH-STATUS.md).
 
 ## Required Production Gates
 

@@ -1,6 +1,7 @@
 #include "ssh_protocol.h"
 #include "ssh_crypto.h"
 #include "ssh_connection.h"
+#include "ssh_utils.h"
 #include <xaios_user.h>
 
 uint32_t ssh_read_u32_be(const uint8_t *p) {
@@ -39,6 +40,15 @@ static int recv_all(int sockfd, void *data, uint64_t len) {
     got += n;
   }
   return 0;
+}
+
+static void increment_counter(uint8_t counter[16], uint32_t blocks) {
+  while (blocks-- != 0U) {
+    for (int32_t index = 15; index >= 0; --index) {
+      counter[index]++;
+      if (counter[index] != 0U) break;
+    }
+  }
 }
 
 int ssh_send_version(int sockfd) {
@@ -102,64 +112,63 @@ int ssh_packet_read(int sockfd, ssh_packet_t *pkt) {
   
   /* Shift payload to start */
   for (uint32_t i = 0; i < pkt->len; ++i) {
-    pkt->data[i] = pkt->data[1 + padding + i];
+    pkt->data[i] = pkt->data[1 + i];
   }
   return 0;
 }
 
 int ssh_packet_write(int sockfd, const uint8_t *data, uint32_t len) {
-  uint32_t block_size = 8;
-  uint32_t padding = block_size - ((len + 5) % block_size);
-  if (padding < 4) padding += block_size;
-  if (padding < 4) return -1;
-  uint32_t pkt_len = len + padding + 1;
-  uint8_t header[5];
-  ssh_write_u32_be(header, pkt_len);
-  header[4] = (uint8_t)padding;
-  if (send_all(sockfd, header, 5) != 0) return -1;
-  if (send_all(sockfd, data, len) != 0) return -1;
-  uint8_t pad[256];
-  crypto_random_bytes(pad, padding);
-  if (send_all(sockfd, pad, padding) != 0) return -1;
-  return 0;
+  const uint32_t block_size = 8U;
+  if (len > SSH_MAX_PACKET_SIZE - 16U) return -1;
+  uint32_t padding = block_size - ((len + 5U) % block_size);
+  if (padding < 4U) padding += block_size;
+  uint32_t packet_len = len + padding + 1U;
+  uint32_t wire_len = packet_len + 4U;
+  ssh_connection_scratch_t *scratch = ssh_conn_scratch();
+  uint8_t *packet = scratch->encrypt_packet;
+  ssh_write_u32_be(packet, packet_len);
+  packet[4] = (uint8_t)padding;
+  ssh_mem_copy(packet + 5U, data, len);
+  crypto_random_bytes(packet + 5U + len, padding);
+  return send_all(sockfd, packet, wire_len);
 }
 
 int ssh_packet_write_encrypted(int sockfd, const uint8_t *data, uint32_t len) {
   ssh_connection_t *conn = ssh_conn_find((uint64_t)(uint64_t)sockfd);
   if (!conn || !conn->crypto.enabled) return -1;
 
-  uint32_t block_size = 16; /* AES block size */
-  uint32_t mac_len = 32;    /* HMAC-SHA-256 */
-  uint32_t padding = block_size - ((len + 5) % block_size);
-  if (padding < 4) padding += block_size;
-  uint32_t pkt_len = len + padding + 1;
+  const uint32_t block_size = 16U;
+  const uint32_t mac_len = 32U;
+  if (len > SSH_MAX_PACKET_SIZE - 32U) return -1;
+  uint32_t padding = block_size - ((len + 5U) % block_size);
+  if (padding < 4U) padding += block_size;
+  uint32_t packet_len = len + padding + 1U;
+  uint32_t encrypted_len = 4U + packet_len;
+  if (encrypted_len + mac_len > SSH_MAX_PACKET_SIZE) return -1;
 
-  /* Build: packet_length(4) + padding_length(1) + payload + padding + MAC */
-  uint8_t *pkt = conn->encrypt_packet;
-  ssh_write_u32_be(pkt, pkt_len);
-  pkt[4] = (uint8_t)padding;
-  for (uint32_t i = 0; i < len; ++i) pkt[5 + i] = data[i];
-  crypto_random_bytes(pkt + 5 + len, padding);
+  ssh_connection_scratch_t *scratch = ssh_conn_scratch();
+  uint8_t *plaintext = scratch->encrypt_packet;
+  uint8_t *encrypted = scratch->encrypt_output;
+  ssh_write_u32_be(plaintext, packet_len);
+  plaintext[4] = (uint8_t)padding;
+  for (uint32_t i = 0; i < len; ++i) plaintext[5U + i] = data[i];
+  crypto_random_bytes(plaintext + 5U + len, padding);
 
-  /* Encrypt payload (not length field) with AES-CTR */
-  conn->crypto.encrypt_seq++;
+  /* RFC 4253 MAC input is uint32 sequence number plus plaintext packet. */
+  uint8_t *mac_input = scratch->mac_input;
+  ssh_write_u32_be(mac_input, (uint32_t)conn->crypto.encrypt_seq);
+  ssh_mem_copy(mac_input + 4U, plaintext, encrypted_len);
+  uint8_t mac[32];
+  hmac_sha256(conn->crypto.encrypt_mac_key, 32, mac_input,
+              4U + encrypted_len, mac);
+
   aes128_ctr(&conn->crypto.encrypt_ctx, conn->crypto.encrypt_iv,
-              pkt + 4, pkt + 4, pkt_len);
-
-  /* Compute MAC over seq + encrypted packet */
-  uint64_t seq = conn->crypto.encrypt_seq - 1;
-  uint8_t *mac_input = conn->mac_input;
-  for (uint32_t i = 0; i < 8; ++i) {
-    mac_input[i] = (uint8_t)(seq >> (56 - i * 8));
-  }
-  for (uint32_t i = 0; i < 4 + pkt_len; ++i) {
-    mac_input[8 + i] = pkt[i];
-  }
-  hmac_sha256(conn->crypto.encrypt_mac_key, 32, mac_input, 8 + 4 + pkt_len,
-              pkt + 4 + pkt_len);
-
-  /* Send: length(4) + encrypted_pkt(pkt_len) + MAC(32) */
-  if (send_all(sockfd, pkt, 4 + pkt_len + mac_len) != 0) return -1;
+             plaintext, encrypted, encrypted_len);
+  increment_counter(conn->crypto.encrypt_iv, encrypted_len / block_size);
+  if (send_all(sockfd, encrypted, encrypted_len) != 0) return -1;
+  if (send_all(sockfd, mac, mac_len) != 0) return -1;
+  conn->crypto.encrypt_seq =
+      (uint32_t)(conn->crypto.encrypt_seq + 1U);
   return 0;
 }
 
@@ -167,53 +176,98 @@ int ssh_packet_read_encrypted(int sockfd, ssh_packet_t *out_pkt) {
   ssh_connection_t *conn = ssh_conn_find((uint64_t)(uint64_t)sockfd);
   if (!conn || !conn->crypto.enabled) return -1;
 
-  /* Read encrypted length (first 4 bytes are sent in the clear) */
-  uint8_t len_buf[4];
-  if (recv_all(sockfd, len_buf, 4) != 0) return -1;
-  uint32_t pkt_len = ssh_read_u32_be(len_buf);
-  if (pkt_len > SSH_MAX_PACKET_SIZE) return -1;
-  if (pkt_len < 2) return -1;
+  const uint32_t block_size = 16U;
+  const uint32_t mac_len = 32U;
+  ssh_connection_scratch_t *scratch = ssh_conn_scratch();
+  if (scratch->encrypted_rx_owner != 0 &&
+      scratch->encrypted_rx_owner != (uint64_t)(uint64_t)sockfd) {
+    return 1;
+  }
+  if (scratch->encrypted_rx_owner == 0) {
+    scratch->encrypted_rx_owner = (uint64_t)(uint64_t)sockfd;
+    scratch->encrypted_rx_used = 0;
+    scratch->encrypted_rx_expected = 0;
+  }
+  uint8_t *wire = scratch->encrypted_rx;
 
-  uint32_t mac_len = 32;
+  if (scratch->encrypted_rx_used < block_size) {
+    u64 received = 0;
+    uint32_t needed = block_size - scratch->encrypted_rx_used;
+    if (xaios_net_recv((u64)(uint64_t)sockfd,
+                       wire + scratch->encrypted_rx_used, needed,
+                       &received) != 0) {
+      return -1;
+    }
+    scratch->encrypted_rx_used += (uint32_t)received;
+    if (scratch->encrypted_rx_used < block_size) {
+      return 1;
+    }
+  }
 
-  /* Read the rest: encrypted block + MAC */
-  uint8_t *full = conn->decrypt_full_packet;
-  for (uint32_t i = 0; i < 4; ++i) full[i] = len_buf[i];
-  if (recv_all(sockfd, full + 4, pkt_len + mac_len) != 0) return -1;
-
-  /* Decrypt the packet body */
+  uint8_t first_plaintext[16];
   aes128_ctr(&conn->crypto.decrypt_ctx, conn->crypto.decrypt_iv,
-              full + 4, full + 4, pkt_len);
+             wire, first_plaintext, sizeof(first_plaintext));
+  uint32_t packet_len = ssh_read_u32_be(first_plaintext);
+  uint32_t encrypted_len = 4U + packet_len;
+  if (packet_len < 5U || encrypted_len > SSH_MAX_PACKET_SIZE ||
+      (encrypted_len % block_size) != 0U) return -1;
+  scratch->encrypted_rx_expected = encrypted_len + mac_len;
 
-  /* Verify MAC */
-  uint64_t seq = conn->crypto.decrypt_seq;
-  uint8_t *mac_input = conn->decrypt_mac_input;
-  for (uint32_t i = 0; i < 8; ++i) {
-    mac_input[i] = (uint8_t)(seq >> (56 - i * 8));
+  if (scratch->encrypted_rx_used < scratch->encrypted_rx_expected) {
+    u64 received = 0;
+    uint32_t needed =
+        scratch->encrypted_rx_expected - scratch->encrypted_rx_used;
+    if (xaios_net_recv((u64)(uint64_t)sockfd,
+                       wire + scratch->encrypted_rx_used, needed,
+                       &received) != 0) {
+      return -1;
+    }
+    scratch->encrypted_rx_used += (uint32_t)received;
+    if (scratch->encrypted_rx_used < scratch->encrypted_rx_expected) {
+      return 1;
+    }
   }
-  for (uint32_t i = 0; i < 4 + pkt_len; ++i) {
-    mac_input[8 + i] = full[i];
+
+  uint8_t *full_plaintext = scratch->decrypt_full_packet;
+  ssh_mem_copy(full_plaintext, first_plaintext, sizeof(first_plaintext));
+  uint32_t remaining = encrypted_len - block_size;
+  if (remaining != 0U) {
+    uint8_t continuation_iv[16];
+    ssh_mem_copy(continuation_iv, conn->crypto.decrypt_iv,
+                 sizeof(continuation_iv));
+    increment_counter(continuation_iv, 1U);
+    aes128_ctr(&conn->crypto.decrypt_ctx, continuation_iv,
+               wire + block_size, full_plaintext + block_size,
+               remaining);
   }
+
+  const uint8_t *received_mac = wire + encrypted_len;
+  uint8_t *mac_input = scratch->decrypt_mac_input;
+  ssh_write_u32_be(mac_input, (uint32_t)conn->crypto.decrypt_seq);
+  ssh_mem_copy(mac_input + 4U, full_plaintext, encrypted_len);
   uint8_t computed_mac[32];
-  hmac_sha256(conn->crypto.decrypt_mac_key, 32, mac_input, 8 + 4 + pkt_len,
-              computed_mac);
-  uint8_t *rcvd_mac = full + 4 + pkt_len;
-  uint32_t mac_ok = 1;
-  for (uint32_t i = 0; i < 32 && mac_ok; ++i) {
-    if (computed_mac[i] != rcvd_mac[i]) mac_ok = 0;
+  hmac_sha256(conn->crypto.decrypt_mac_key, 32, mac_input,
+              4U + encrypted_len, computed_mac);
+  uint32_t different = 0;
+  for (uint32_t i = 0; i < mac_len; ++i) {
+    different |= (uint32_t)(computed_mac[i] ^ received_mac[i]);
   }
-  if (!mac_ok) return -1;
+  if (different != 0U) return -1;
 
-  conn->crypto.decrypt_seq++;
-
-  /* Extract payload */
-  uint8_t padding = full[4];
-  uint32_t payload_len = pkt_len - padding - 1;
-  if (payload_len > SSH_MAX_PACKET_SIZE - 5) return -1;
+  uint8_t padding = full_plaintext[4];
+  if (padding < 4U || padding >= packet_len) return -1;
+  uint32_t payload_len = packet_len - padding - 1U;
+  if (payload_len > sizeof(out_pkt->data)) return -1;
 
   out_pkt->len = payload_len;
   for (uint32_t i = 0; i < payload_len; ++i) {
-    out_pkt->data[i] = full[5 + i];
+    out_pkt->data[i] = full_plaintext[5U + i];
   }
+  increment_counter(conn->crypto.decrypt_iv, encrypted_len / block_size);
+  conn->crypto.decrypt_seq =
+      (uint32_t)(conn->crypto.decrypt_seq + 1U);
+  scratch->encrypted_rx_owner = 0;
+  scratch->encrypted_rx_used = 0;
+  scratch->encrypted_rx_expected = 0;
   return 0;
 }

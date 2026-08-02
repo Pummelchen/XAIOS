@@ -204,7 +204,7 @@ xaios_status_t icmpv6_build_dest_unreachable(
   uint8_t *icmpv6 = frame + XAIOS_ICMPV6_OFFSET;
   icmpv6[0] = XAIOS_ICMPV6_DEST_UNREACHABLE; /* type = 1 */
   icmpv6[1] = code;
-  put_be16(icmpv6 + 2, 0); /* checksum placeholder */
+  put_be16(icmpv6 + 2, 0); /* Clear checksum field before calculation. */
   /* Unused (4 bytes) - set to 0 */
   icmpv6[4] = 0;
   icmpv6[5] = 0;

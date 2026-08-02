@@ -2,11 +2,19 @@
 #include "ssh_utils.h"
 
 static ssh_connection_t g_connections[SSH_MAX_CONNECTIONS];
+static ssh_connection_scratch_t g_scratch;
 
 void ssh_conn_pool_init(void) {
   for (uint32_t i = 0; i < SSH_MAX_CONNECTIONS; ++i) {
     g_connections[i].active = 0;
   }
+  g_scratch.encrypted_rx_owner = 0;
+  g_scratch.encrypted_rx_used = 0;
+  g_scratch.encrypted_rx_expected = 0;
+}
+
+ssh_connection_scratch_t *ssh_conn_scratch(void) {
+  return &g_scratch;
 }
 
 ssh_connection_t *ssh_conn_alloc(void) {
@@ -22,6 +30,11 @@ ssh_connection_t *ssh_conn_alloc(void) {
 
 void ssh_conn_free(ssh_connection_t *conn) {
   if (!conn) return;
+  if (g_scratch.encrypted_rx_owner == conn->sockfd) {
+    g_scratch.encrypted_rx_owner = 0;
+    g_scratch.encrypted_rx_used = 0;
+    g_scratch.encrypted_rx_expected = 0;
+  }
   ssh_mem_zero(conn, sizeof(ssh_connection_t));
 }
 

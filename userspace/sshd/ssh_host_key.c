@@ -1,9 +1,10 @@
 #include "ssh_host_key.h"
 #include "ssh_crypto.h"
 #include "ssh_utils.h"
+#include "tweetnacl_subset.h"
 #include <xaios_user.h>
 
-#define HOST_KEY_PATH "/etc/xaios_host_key"
+#define HOST_KEY_PATH "/state/xaios_host_key"
 
 static uint8_t g_host_private_key[32];
 static uint8_t g_host_public_key[32];
@@ -43,20 +44,20 @@ static int hex_to_bin(const char *hex, uint8_t *bin, uint32_t bin_len) {
 
 static void ensure_key(void) {
   if (!g_key_initialized) {
-    /* Try to load persistent key from /etc/xaios_host_key */
+    /* Try to load the persistent host key from mutable state storage. */
     char key_buf[128];
     int ret = xaios_read_file(HOST_KEY_PATH, key_buf, sizeof(key_buf));
 
     if (ret == 0 && hex_to_bin(key_buf, g_host_private_key, 32) == 0) {
       /* Successfully loaded private key, compute public key */
-      curve25519_base(g_host_public_key, g_host_private_key);
+      xaios_ed25519_public_key(g_host_public_key, g_host_private_key);
       g_key_initialized = 1;
       return;
     }
 
     /* Generate new key pair */
     crypto_random_bytes(g_host_private_key, 32);
-    curve25519_base(g_host_public_key, g_host_private_key);
+    xaios_ed25519_public_key(g_host_public_key, g_host_private_key);
 
     /* Save private key to persistent storage */
     char hex_buf[65];

@@ -10,6 +10,7 @@
 #define VIRTIO_NET_PERSISTENT_RX_DESCS 8U
 #define VIRTIO_NET_PERSISTENT_TX_DESCS 4U
 #define VIRTIO_NET_MAX_FRAME 1524U
+#define VIRTIO_DMA_ALIGNMENT 4096U
 
 typedef struct virtio_net_driver {
   virtio_mmio_device_t device;
@@ -65,14 +66,24 @@ static xaios_status_t allocate_driver(void) {
   if (g_net == 0) {
     return XAIOS_ERR_NO_MEMORY;
   }
-  g_net->rx_desc = (virtq_desc_t *)kheap_calloc(sizeof(virtq_desc_t) * VIRTQ_SIZE, 16);
-  g_net->rx_avail = (virtq_avail_t *)kheap_calloc(sizeof(virtq_avail_t), 2);
-  g_net->rx_used = (virtq_used_t *)kheap_calloc(sizeof(virtq_used_t), 4);
-  g_net->tx_desc = (virtq_desc_t *)kheap_calloc(sizeof(virtq_desc_t) * VIRTQ_SIZE, 16);
-  g_net->tx_avail = (virtq_avail_t *)kheap_calloc(sizeof(virtq_avail_t), 2);
-  g_net->tx_used = (virtq_used_t *)kheap_calloc(sizeof(virtq_used_t), 4);
-  g_net->rx_packet = (uint8_t *)kheap_calloc(2048, 16);
-  g_net->tx_packet = (uint8_t *)kheap_calloc(VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME, 16);
+  /* Legacy VirtIO descriptors contain one physical extent. Keep every DMA
+   * object inside one page because kheap virtual pages need not be physically
+   * contiguous. */
+  g_net->rx_desc = (virtq_desc_t *)kheap_calloc(
+      sizeof(virtq_desc_t) * VIRTQ_SIZE, VIRTIO_DMA_ALIGNMENT);
+  g_net->rx_avail = (virtq_avail_t *)kheap_calloc(
+      sizeof(virtq_avail_t), VIRTIO_DMA_ALIGNMENT);
+  g_net->rx_used = (virtq_used_t *)kheap_calloc(
+      sizeof(virtq_used_t), VIRTIO_DMA_ALIGNMENT);
+  g_net->tx_desc = (virtq_desc_t *)kheap_calloc(
+      sizeof(virtq_desc_t) * VIRTQ_SIZE, VIRTIO_DMA_ALIGNMENT);
+  g_net->tx_avail = (virtq_avail_t *)kheap_calloc(
+      sizeof(virtq_avail_t), VIRTIO_DMA_ALIGNMENT);
+  g_net->tx_used = (virtq_used_t *)kheap_calloc(
+      sizeof(virtq_used_t), VIRTIO_DMA_ALIGNMENT);
+  g_net->rx_packet = (uint8_t *)kheap_calloc(2048, VIRTIO_DMA_ALIGNMENT);
+  g_net->tx_packet = (uint8_t *)kheap_calloc(
+      VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME, VIRTIO_DMA_ALIGNMENT);
   if (g_net->rx_desc == 0 || g_net->rx_avail == 0 || g_net->rx_used == 0 ||
       g_net->tx_desc == 0 || g_net->tx_avail == 0 || g_net->tx_used == 0 ||
       g_net->rx_packet == 0 || g_net->tx_packet == 0) {
@@ -236,7 +247,7 @@ xaios_status_t virtio_net_init_persistent(void) {
   /* Allocate and post RX buffers */
   for (uint32_t i = 0; i < VIRTIO_NET_PERSISTENT_RX_DESCS; ++i) {
     g_net->rx_bufs[i] = (uint8_t *)kheap_calloc(
-        VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME, 16);
+        VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME, VIRTIO_DMA_ALIGNMENT);
     if (g_net->rx_bufs[i] == 0) {
       return XAIOS_ERR_NO_MEMORY;
     }
@@ -254,7 +265,7 @@ xaios_status_t virtio_net_init_persistent(void) {
   /* Allocate TX buffers */
   for (uint32_t i = 0; i < VIRTIO_NET_PERSISTENT_TX_DESCS; ++i) {
     g_net->tx_bufs[i] = (uint8_t *)kheap_calloc(
-        VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME, 16);
+        VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME, VIRTIO_DMA_ALIGNMENT);
     if (g_net->tx_bufs[i] == 0) {
       return XAIOS_ERR_NO_MEMORY;
     }
@@ -274,18 +285,21 @@ xaios_status_t virtio_net_tx(const uint8_t *data, uint64_t len) {
     return XAIOS_ERR_INVALID;
   }
 
-  uint16_t desc_idx = g_net->tx_avail_idx % VIRTIO_NET_PERSISTENT_TX_DESCS;
-
-  /* Wait for previous use of this descriptor to complete */
-  if (g_net->tx_avail_idx >= VIRTIO_NET_PERSISTENT_TX_DESCS &&
-      g_net->tx_used->idx <= g_net->tx_last_used) {
+  virtio_mmio_barrier();
+  g_net->tx_last_used = g_net->tx_used->idx;
+  uint16_t outstanding =
+      (uint16_t)(g_net->tx_avail_idx - g_net->tx_last_used);
+  if (outstanding >= VIRTIO_NET_PERSISTENT_TX_DESCS) {
     if (virtio_transport_wait_used(&g_net->tx_used->idx,
                                    (uint16_t)(g_net->tx_last_used + 1)) !=
         XAIOS_OK) {
       return XAIOS_ERR_IO;
     }
-    ++g_net->tx_last_used;
+    virtio_mmio_barrier();
+    g_net->tx_last_used = g_net->tx_used->idx;
   }
+
+  uint16_t desc_idx = g_net->tx_avail_idx % VIRTIO_NET_PERSISTENT_TX_DESCS;
 
   /* Build virtio-net header (10 bytes, all zeros) + frame */
   bytes_zero(g_net->tx_bufs[desc_idx], VIRTIO_NET_HDR_SIZE);
@@ -303,6 +317,12 @@ xaios_status_t virtio_net_tx(const uint8_t *data, uint64_t len) {
   g_net->tx_avail->idx = g_net->tx_avail_idx;
   virtio_transport_notify(&g_net->device, 1);
 
+  if (virtio_transport_wait_used(&g_net->tx_used->idx,
+                                 g_net->tx_avail_idx) != XAIOS_OK) {
+    return XAIOS_ERR_IO;
+  }
+  virtio_mmio_barrier();
+  g_net->tx_last_used = g_net->tx_used->idx;
   return XAIOS_OK;
 }
 

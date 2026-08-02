@@ -71,6 +71,28 @@ It is correctness evidence, not production or hardware-performance evidence.
 | `make qemu-benchmark` | QEMU correctness telemetry collection |
 | `make qemu-readiness-gate` | QEMU correctness-readiness validation |
 
+### Mac client interoperability
+
+The freestanding guest SSH/SFTP and UDP services can be exercised through QEMU
+host forwarding. The built-in `admin` credential is for local QEMU development
+only; do not expose these ports beyond localhost.
+
+```sh
+XAIOS_QEMU_HOSTFWD_PORT=2299 XAIOS_QEMU_HOSTFWD_UDP_PORT=2298 make qemu
+```
+
+From a second terminal, use OpenSSH/SFTP against `127.0.0.1:2299` and send UDP
+to `127.0.0.1:2298`. Direct IPv6/TCP testing uses QEMU's framed socket backend:
+
+```sh
+XAIOS_QEMU_HOSTFWD_PORT=none XAIOS_QEMU_NET_SOCKET_PORT=12345 make qemu
+python3 scripts/qemu-ipv6-tcp-client.py --port 12345
+```
+
+Run the forwarding and framed-socket QEMU configurations separately. See
+[`NETWORK-SSH-STATUS.md`](./NETWORK-SSH-STATUS.md) for exact client commands,
+validated behavior, and remaining protocol boundaries.
+
 ## Writing a Userspace Application
 
 ### 1. Create the source file

@@ -432,7 +432,7 @@ done
 printf '%s\n' "Building userspace /bin/sshd ELF..."
 SSHD_RESPONSE_FILE="$INIT_BUILD_DIR/sshd-objects.rsp"
 : > "$SSHD_RESPONSE_FILE"
-for sshd_src in sshd.c ssh_crypto.c ssh_protocol.c ssh_channel.c ssh_host_key.c ssh_connection.c sftp_server.c; do
+for sshd_src in sshd.c ssh_crypto.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_host_key.c ssh_connection.c sftp_server.c; do
   sshd_obj="$INIT_BUILD_DIR/sshd-${sshd_src%.c}.o"
   "$CLANG" \
     --target=aarch64-none-elf \

@@ -456,7 +456,7 @@ void ipv6_self_test(void) {
     fbuf[14 + 6] = XAIOS_IPV6_NEXT_ICMPV6;
     kassert(ipv6_reassemble_v6(fbuf, &rlen) == XAIOS_OK);
 
-    /* Fragment reassembly stub: should fail */
+    /* Fragmented input is explicitly unsupported. */
     fbuf[14 + 6] = XAIOS_IPV6_NEXT_FRAGMENT;
     kassert(ipv6_reassemble_v6(fbuf, &rlen) == XAIOS_ERR_NO_MEMORY);
 

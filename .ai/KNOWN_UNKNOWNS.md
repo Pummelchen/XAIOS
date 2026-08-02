@@ -95,6 +95,24 @@ and Project status aligned with `docs/MODEL-SUPPORT.json`.
 
 ## Unknowns
 
+- The freestanding SSH/SFTP server interoperates with the macOS OpenSSH client
+  in local QEMU tests, but it has no independent security review, production
+  entropy/key provisioning, rekey implementation, or physical-NIC soak. It
+  closes encrypted sessions at the rekey boundary rather than downgrading.
+- DNS contains an A-record encoder/parser/cache prototype, but `dns_tick()` is
+  not wired into the persistent network poll loop and there is no userspace
+  resolver API. DNS is not an operational service.
+- TCP payload retransmission fields and timeout accounting exist, but sent
+  payloads are not retained and `in_flight`/`last_tx_ns` are not armed by the
+  active send path. Only the existing handshake/timeout fixtures are evidence.
+- IPv4 fragmentation/reassembly helpers have self-tests but are not integrated
+  into the persistent receive/transmit path. IPv6 multi-fragment reassembly is
+  explicitly unimplemented.
+- AArch64 SMMUv3 is still bypass-only. General userspace thread creation is not
+  exposed, although bounded SMP and thread-group work APIs exist.
+- The old bump-only heap limitation is obsolete: `kheap_free()` and free-list
+  reuse are implemented and covered by `kheap_self_test()`.
+
 - Exact production Qwen/K3 source revisions for golden compatibility fixtures
   are not pinned yet; verify official configuration at importer implementation time.
 - Exact source revisions for GLM 5.2 and the roadmap label DeepSeek V4 Flash

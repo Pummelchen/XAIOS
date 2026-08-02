@@ -138,6 +138,7 @@ typedef struct xaios_syscall_socket_request {
   /* IPv6 dual-stack: pointer to xaios_ip_addr_t for bind/peer address */
   uint64_t addr_ptr;
   uint64_t addr_out_ptr;
+  uint64_t protocol;
 } xaios_syscall_socket_request_t;
 
 typedef struct xaios_syscall_agent_dispatch_request {

@@ -63,10 +63,10 @@ typedef struct xaios_mfs_stat_user {
 | `XAIOS_SYSCALL_NET_UDP_ECHO` | 21 | `xaios_net_udp_echo(payload, size, echoed)` | Echo a UDP payload (self-test). |
 | `XAIOS_SYSCALL_NET_TCP_CONNECT` | 22 | `xaios_net_tcp_connect(trips)` | TCP handshake self-test. |
 | `XAIOS_SYSCALL_NET_EXTERNAL_SESSION` | 26 | `xaios_net_external_session(proto, port, ...)` | Open external host session (UDP=17, TCP=6). |
-| `XAIOS_SYSCALL_NET_LISTEN` | 29 | `xaios_net_listen(port, sockfd)` | Listen on a TCP port. Returns socket fd. |
-| `XAIOS_SYSCALL_NET_ACCEPT` | 30 | `xaios_net_accept(sockfd, newfd)` | Accept an incoming TCP connection. |
-| `XAIOS_SYSCALL_NET_RECV` | 31 | `xaios_net_recv(sockfd, buf, size, bytes)` | Receive data from a socket. |
-| `XAIOS_SYSCALL_NET_SEND` | 32 | `xaios_net_send(sockfd, buf, size, bytes)` | Send data on a socket. |
+| `XAIOS_SYSCALL_NET_LISTEN` | 29 | `xaios_net_listen(port, sockfd)` / `xaios_net_bind_udp(port, sockfd)` | Create a TCP listener or bound UDP socket according to the request protocol. |
+| `XAIOS_SYSCALL_NET_ACCEPT` | 30 | `xaios_net_accept(sockfd, newfd)` / `xaios_net_accept_addr(...)` | Accept an incoming TCP connection, optionally returning its peer address and port. |
+| `XAIOS_SYSCALL_NET_RECV` | 31 | `xaios_net_recv(sockfd, buf, size, bytes)` / `xaios_net_recvfrom(...)` | Receive TCP stream data or a queued UDP datagram. |
+| `XAIOS_SYSCALL_NET_SEND` | 32 | `xaios_net_send(sockfd, buf, size, bytes)` / `xaios_net_sendto(...)` | Send TCP stream data or a UDP datagram. |
 | `XAIOS_SYSCALL_NET_CLOSE` | 33 | `xaios_net_close(sockfd)` | Close a socket. |
 
 ## SMP and Threads
@@ -193,5 +193,7 @@ Request structures passed by pointer via syscall arguments:
 - `xaios_net_external_session_request_t` — external session parameters
 - `xaios_thread_group_request_t` — thread group parameters
 - `xaios_ml_run_request_t` — ML model kind and I/O buffers
-- `xaios_socket_request_t` — socket fd, port, buffer, byte counts
+- `xaios_socket_request_t` — socket fd, port, buffer, byte counts, address
+  pointers, and protocol (`XAIOS_NET_PROTOCOL_TCP` or
+  `XAIOS_NET_PROTOCOL_UDP`)
 - `xaios_agent_dispatch_request_t` — agent protocol request/response buffers

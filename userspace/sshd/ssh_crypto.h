@@ -22,6 +22,15 @@ void sha256_hash(const uint8_t *data, uint64_t len, uint8_t digest[32]);
 #define SHA512_DIGEST_SIZE 64U
 #define SHA512_BLOCK_SIZE 128U
 
+typedef struct sha512_ctx {
+  uint64_t state[8];
+  uint64_t count[2];
+  uint8_t buffer[128];
+} sha512_ctx_t;
+
+void sha512_init(sha512_ctx_t *ctx);
+void sha512_update(sha512_ctx_t *ctx, const uint8_t *data, uint64_t len);
+void sha512_final(sha512_ctx_t *ctx, uint8_t digest[64]);
 void sha512_hash(const uint8_t *data, uint64_t len, uint8_t digest[64]);
 
 /* HMAC-SHA-256 (RFC 2104) */
@@ -67,6 +76,6 @@ int ed25519_verify(const uint8_t signature[64], const uint8_t *message,
 void crypto_random_bytes(uint8_t *buf, uint32_t len);
 
 /* Self-test against known vectors */
-void ssh_crypto_self_test(void);
+int ssh_crypto_self_test(void);
 
 #endif

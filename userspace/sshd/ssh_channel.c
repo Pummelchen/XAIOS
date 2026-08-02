@@ -15,6 +15,8 @@ void ssh_channel_init(void) {
     g_channels[i].window_size = 0;
     g_channels[i].remote_window = 0;
     g_channels[i].bytes_consumed = 0;
+    g_channels[i].is_sftp = 0;
+    g_channels[i].sftp_rx_used = 0;
   }
   g_next_local_id = 1;
 }
@@ -25,6 +27,8 @@ static ssh_channel_t *alloc_channel(void) {
       g_channels[i].active = 1;
       g_channels[i].local_id = g_next_local_id++;
       g_channels[i].bytes_consumed = 0;
+      g_channels[i].is_sftp = 0;
+      g_channels[i].sftp_rx_used = 0;
       return &g_channels[i];
     }
   }
@@ -34,6 +38,15 @@ static ssh_channel_t *alloc_channel(void) {
 static ssh_channel_t *find_channel_by_remote(uint32_t remote_id) {
   for (uint32_t i = 0; i < SSH_CHANNEL_MAX; ++i) {
     if (g_channels[i].active && g_channels[i].remote_id == remote_id) {
+      return &g_channels[i];
+    }
+  }
+  return (ssh_channel_t *)0;
+}
+
+static ssh_channel_t *find_channel_by_local(uint32_t local_id) {
+  for (uint32_t i = 0; i < SSH_CHANNEL_MAX; ++i) {
+    if (g_channels[i].active && g_channels[i].local_id == local_id) {
       return &g_channels[i];
     }
   }
@@ -77,28 +90,6 @@ static int send_channel_data(int sockfd, uint32_t remote_id,
   return ssh_packet_write_encrypted(sockfd, reply, 9 + len);
 }
 
-/* Send CHANNEL_EXTENDED_DATA (type 95) for stderr */
-__attribute__((unused)) static int send_channel_extended_data(int sockfd, uint32_t remote_id,
-                                       uint32_t data_type,
-                                       const uint8_t *data, uint32_t len) {
-  uint8_t reply[SSH_MAX_PACKET_SIZE];
-  if (13 + len > SSH_MAX_PACKET_SIZE) return -1;
-  ssh_channel_t *ch = find_channel_by_remote(remote_id);
-  if (ch) {
-    if (len > ch->remote_window) {
-      len = ch->remote_window;
-    }
-    ch->remote_window -= len;
-  }
-  if (len == 0) return 0;
-  reply[0] = SSH_MSG_CHANNEL_EXTENDED_DATA;
-  ssh_write_u32_be(reply + 1, remote_id);
-  ssh_write_u32_be(reply + 5, data_type);
-  ssh_write_u32_be(reply + 9, len);
-  ssh_mem_copy(reply + 13, data, len);
-  return ssh_packet_write_encrypted(sockfd, reply, 13 + len);
-}
-
 /* Send CHANNEL_EOF */
 static void send_channel_eof(int sockfd, uint32_t remote_id) {
   uint8_t eof_msg[5];
@@ -107,13 +98,26 @@ static void send_channel_eof(int sockfd, uint32_t remote_id) {
   ssh_packet_write_encrypted(sockfd, eof_msg, 5);
 }
 
+static void send_channel_exit_status(int sockfd, uint32_t remote_id,
+                                     uint32_t status) {
+  uint8_t message[25];
+  static const char request[] = "exit-status";
+  message[0] = SSH_MSG_CHANNEL_REQUEST;
+  ssh_write_u32_be(message + 1U, remote_id);
+  ssh_write_u32_be(message + 5U, sizeof(request) - 1U);
+  ssh_mem_copy(message + 9U, request, sizeof(request) - 1U);
+  message[20] = 0;
+  ssh_write_u32_be(message + 21U, status);
+  ssh_packet_write_encrypted(sockfd, message, sizeof(message));
+}
+
 /* ---- Handle CHANNEL_REQUEST (type 98) ---- */
 static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
   if (pkt->len < 10) return -1;
 
   /* Parse: uint32 recipient_channel, string request_type, bool want_reply */
-  uint32_t remote_id = ssh_read_u32_be(pkt->data + 1);
-  ssh_channel_t *ch = find_channel_by_remote(remote_id);
+  uint32_t local_id = ssh_read_u32_be(pkt->data + 1);
+  ssh_channel_t *ch = find_channel_by_local(local_id);
   if (!ch) return -1;
 
   uint32_t type_len = ssh_read_string_len(pkt->data + 5);
@@ -133,7 +137,7 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
     /* Parse: string term, uint32 width, uint32 height, uint32 pixwidth, uint32 pixheight, string modes */
     /* Accept and ignore — reply success */
     if (want_reply) {
-      send_channel_reply(sockfd, remote_id, 1);
+      send_channel_reply(sockfd, ch->remote_id, 1);
     }
     return 0;
   }
@@ -141,14 +145,14 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
   if (ssh_str_eq(request_type, "env")) {
     /* Accept and ignore */
     if (want_reply) {
-      send_channel_reply(sockfd, remote_id, 1);
+      send_channel_reply(sockfd, ch->remote_id, 1);
     }
     return 0;
   }
 
   if (ssh_str_eq(request_type, "shell")) {
     if (want_reply) {
-      send_channel_reply(sockfd, remote_id, 1);
+      send_channel_reply(sockfd, ch->remote_id, 1);
     }
     return 0;
   }
@@ -156,12 +160,12 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
   if (ssh_str_eq(request_type, "exec")) {
     /* Parse command string */
     if (data_start + 4 > pkt->len) {
-      if (want_reply) send_channel_reply(sockfd, remote_id, 0);
+      if (want_reply) send_channel_reply(sockfd, ch->remote_id, 0);
       return -1;
     }
     uint32_t cmd_len = ssh_read_string_len(pkt->data + data_start);
     if (data_start + 4 + cmd_len > pkt->len) {
-      if (want_reply) send_channel_reply(sockfd, remote_id, 0);
+      if (want_reply) send_channel_reply(sockfd, ch->remote_id, 0);
       return -1;
     }
     char command[4096];
@@ -170,7 +174,7 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
     command[clamped] = '\0';
 
     if (want_reply) {
-      send_channel_reply(sockfd, remote_id, 1);
+      send_channel_reply(sockfd, ch->remote_id, 1);
     }
 
     /* Execute command */
@@ -178,23 +182,24 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
     u64 out_size = 0;
     int result = xaios_remote_login("admin", command, output, sizeof(output), &out_size);
 
-    if (result != 0) {
+    if (result < 0) {
       const char *err = "Command execution failed\n";
-      send_channel_data(sockfd, remote_id, (const uint8_t *)err, ssh_str_len(err));
+      send_channel_data(sockfd, ch->remote_id, (const uint8_t *)err, ssh_str_len(err));
     } else {
       uint32_t olen = (uint32_t)out_size;
       if (olen == 0) { olen = 1; output[0] = '\n'; }
       if (olen > 0) {
-        send_channel_data(sockfd, remote_id, (const uint8_t *)output, olen);
+        send_channel_data(sockfd, ch->remote_id, (const uint8_t *)output, olen);
       }
     }
 
-    send_channel_eof(sockfd, remote_id);
+    send_channel_exit_status(sockfd, ch->remote_id, result < 0 ? 1U : 0U);
+    send_channel_eof(sockfd, ch->remote_id);
 
     /* Send CHANNEL_CLOSE */
     uint8_t close_msg[5];
     close_msg[0] = SSH_MSG_CHANNEL_CLOSE;
-    ssh_write_u32_be(close_msg + 1, remote_id);
+    ssh_write_u32_be(close_msg + 1, ch->remote_id);
     ssh_packet_write_encrypted(sockfd, close_msg, 5);
     ch->active = 0;
     return 0;
@@ -203,12 +208,12 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
   if (ssh_str_eq(request_type, "subsystem")) {
     /* Parse subsystem name */
     if (data_start + 4 > pkt->len) {
-      if (want_reply) send_channel_reply(sockfd, remote_id, 0);
+      if (want_reply) send_channel_reply(sockfd, ch->remote_id, 0);
       return -1;
     }
     uint32_t name_len = ssh_read_string_len(pkt->data + data_start);
     if (data_start + 4 + name_len > pkt->len) {
-      if (want_reply) send_channel_reply(sockfd, remote_id, 0);
+      if (want_reply) send_channel_reply(sockfd, ch->remote_id, 0);
       return -1;
     }
     char subsystem[64];
@@ -218,24 +223,23 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
 
     if (ssh_str_eq(subsystem, "sftp")) {
       if (want_reply) {
-        send_channel_reply(sockfd, remote_id, 1);
+        send_channel_reply(sockfd, ch->remote_id, 1);
       }
-      /* Start SFTP session */
-      sftp_session_start(sockfd, ch->local_id);
-      ch->active = 0;
+      ch->is_sftp = 1;
+      ch->sftp_rx_used = 0;
       return 0;
     }
 
     /* Unknown subsystem */
     if (want_reply) {
-      send_channel_reply(sockfd, remote_id, 0);
+      send_channel_reply(sockfd, ch->remote_id, 0);
     }
     return 0;
   }
 
   /* Unknown request type */
   if (want_reply) {
-    send_channel_reply(sockfd, remote_id, 0);
+    send_channel_reply(sockfd, ch->remote_id, 0);
   }
   return 0;
 }
@@ -245,11 +249,13 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
   uint8_t msg_type = pkt->data[0];
 
   if (msg_type == SSH_MSG_CHANNEL_OPEN) {
-    ssh_channel_t *ch = alloc_channel();
-    if (!ch) return -1;
     if (pkt->len < 17) return -1;
     uint32_t type_len = ssh_read_string_len(pkt->data + 1);
-    uint32_t off = 5 + type_len;
+    if (type_len > pkt->len - 17U) return -1;
+    uint32_t off = 5U + type_len;
+    if (off + 12U > pkt->len) return -1;
+    ssh_channel_t *ch = alloc_channel();
+    if (!ch) return -1;
     ch->remote_id = ssh_read_u32_be(pkt->data + off);
     ch->window_size = ssh_read_u32_be(pkt->data + off + 4);
     ch->remote_window = 65536;
@@ -266,20 +272,48 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
 
   if (msg_type == SSH_MSG_CHANNEL_DATA) {
     if (pkt->len < 9) return -1;
-    uint32_t remote_id = ssh_read_u32_be(pkt->data + 1);
+    uint32_t local_id = ssh_read_u32_be(pkt->data + 1);
     uint32_t data_len = ssh_read_string_len(pkt->data + 5);
     if (9 + data_len > pkt->len || data_len == 0) return -1;
 
     /* Find channel for window management */
-    ssh_channel_t *ch = find_channel_by_remote(remote_id);
+    ssh_channel_t *ch = find_channel_by_local(local_id);
+    if (!ch) return -1;
     if (ch) {
       ch->bytes_consumed += data_len;
       /* Replenish window when more than 32KB consumed */
       if (ch->bytes_consumed >= 32768) {
-        send_window_adjust(sockfd, remote_id, 65536);
+        send_window_adjust(sockfd, ch->remote_id, 65536);
         ch->window_size += 65536;
         ch->bytes_consumed = 0;
       }
+    }
+
+    if (ch->is_sftp != 0U) {
+      if (data_len > SSH_CHANNEL_SFTP_BUFFER_SIZE - ch->sftp_rx_used) {
+        return -1;
+      }
+      ssh_mem_copy(ch->sftp_rx + ch->sftp_rx_used, pkt->data + 9, data_len);
+      ch->sftp_rx_used += data_len;
+
+      while (ch->sftp_rx_used >= 4U) {
+        uint32_t sftp_len = ssh_read_u32_be(ch->sftp_rx);
+        if (sftp_len == 0U || sftp_len > SSH_CHANNEL_SFTP_BUFFER_SIZE - 4U) {
+          return -1;
+        }
+        if (ch->sftp_rx_used < sftp_len + 4U) break;
+        if (sftp_handle_message(sockfd, ch->remote_id,
+                                ch->sftp_rx + 4U, sftp_len) != 0) {
+          return -1;
+        }
+        uint32_t consumed = sftp_len + 4U;
+        uint32_t remaining = ch->sftp_rx_used - consumed;
+        for (uint32_t i = 0; i < remaining; ++i) {
+          ch->sftp_rx[i] = ch->sftp_rx[consumed + i];
+        }
+        ch->sftp_rx_used = remaining;
+      }
+      return 0;
     }
 
     /* Execute command via remote_login */
@@ -292,12 +326,12 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
     u64 out_size = 0;
     int result = xaios_remote_login("admin", command, output, sizeof(output), &out_size);
 
-    if (result != 0) {
+    if (result < 0) {
       const char *error_msg = "Command execution failed\n";
       uint32_t error_len = ssh_str_len(error_msg);
       uint8_t reply[SSH_MAX_PACKET_SIZE];
       reply[0] = SSH_MSG_CHANNEL_DATA;
-      ssh_write_u32_be(reply + 1, remote_id);
+      ssh_write_u32_be(reply + 1, ch ? ch->remote_id : local_id);
       ssh_write_u32_be(reply + 5, error_len);
       ssh_mem_copy(reply + 9, error_msg, error_len);
       return ssh_packet_write_encrypted(sockfd, reply, 9 + error_len);
@@ -312,7 +346,7 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
 
     uint8_t reply[SSH_MAX_PACKET_SIZE];
     reply[0] = SSH_MSG_CHANNEL_DATA;
-    ssh_write_u32_be(reply + 1, remote_id);
+    ssh_write_u32_be(reply + 1, ch ? ch->remote_id : local_id);
     ssh_write_u32_be(reply + 5, output_len);
     ssh_mem_copy(reply + 9, output, output_len);
 
@@ -325,8 +359,8 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
 
   if (msg_type == SSH_MSG_CHANNEL_EOF || msg_type == SSH_MSG_CHANNEL_CLOSE) {
     if (pkt->len >= 5) {
-      uint32_t remote_id = ssh_read_u32_be(pkt->data + 1);
-      ssh_channel_t *ch = find_channel_by_remote(remote_id);
+      uint32_t local_id = ssh_read_u32_be(pkt->data + 1);
+      ssh_channel_t *ch = find_channel_by_local(local_id);
       if (ch) {
         uint8_t close_msg[5];
         close_msg[0] = SSH_MSG_CHANNEL_CLOSE;
@@ -340,9 +374,9 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
 
   if (msg_type == SSH_MSG_CHANNEL_WINDOW_ADJUST) {
     if (pkt->len >= 9) {
-      uint32_t remote_id = ssh_read_u32_be(pkt->data + 1);
+      uint32_t local_id = ssh_read_u32_be(pkt->data + 1);
       uint32_t bytes_to_add = ssh_read_u32_be(pkt->data + 5);
-      ssh_channel_t *ch = find_channel_by_remote(remote_id);
+      ssh_channel_t *ch = find_channel_by_local(local_id);
       if (ch) {
         ch->remote_window += bytes_to_add;
       }

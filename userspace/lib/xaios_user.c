@@ -235,6 +235,7 @@ int xaios_net_listen(u64 port, u64 *out_sockfd) {
   xaios_memzero(&request, sizeof(request));
   request.port = port;
   request.out_sockfd = (u64)out_sockfd;
+  request.protocol = XAIOS_NET_PROTOCOL_TCP;
   u64 rc = xaios_syscall3(XAIOS_SYSCALL_NET_LISTEN, (u64)&request,
                          sizeof(request), 0);
   return rc == ~0ULL ? -1 : (int)rc;
@@ -247,6 +248,18 @@ int xaios_net_listen_addr(u64 port, const xaios_ip_addr_user_t *bind_addr,
   request.port = port;
   request.out_sockfd = (u64)out_sockfd;
   request.addr_ptr = (u64)bind_addr;
+  request.protocol = XAIOS_NET_PROTOCOL_TCP;
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_NET_LISTEN, (u64)&request,
+                         sizeof(request), 0);
+  return rc == ~0ULL ? -1 : (int)rc;
+}
+
+int xaios_net_bind_udp(u64 port, u64 *out_sockfd) {
+  xaios_socket_request_t request;
+  xaios_memzero(&request, sizeof(request));
+  request.port = port;
+  request.out_sockfd = (u64)out_sockfd;
+  request.protocol = XAIOS_NET_PROTOCOL_UDP;
   u64 rc = xaios_syscall3(XAIOS_SYSCALL_NET_LISTEN, (u64)&request,
                          sizeof(request), 0);
   return rc == ~0ULL ? -1 : (int)rc;

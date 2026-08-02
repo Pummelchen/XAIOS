@@ -15,7 +15,7 @@ typedef struct {
   int is_dir;
 } sftp_file_handle_t;
 
-int sftp_handle_message(int sockfd, const uint8_t *data, uint32_t len);
-int sftp_session_start(int sockfd, uint32_t channel_id);
+int sftp_handle_message(int sockfd, uint32_t remote_channel_id,
+                        const uint8_t *data, uint32_t len);
 
 #endif

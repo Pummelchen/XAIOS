@@ -63,6 +63,10 @@ CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` 
 - Security/update change: run relevant security/update gates plus smoke.
 - Filesystem/persistence change: run filesystem/update/readiness gates.
 - Network/SSH change: run network suite and SSH smoke if environment supports it.
+- Guest interoperability changes: from macOS, validate correct and incorrect
+  SSH credentials, an SFTP put/stat/get byte-for-byte round trip, UDP echo via
+  QEMU host forwarding, and the direct IPv6/TCP framed-socket client documented
+  in `docs/NETWORK-SSH-STATUS.md`.
 - Docs-only change: validate Markdown links, manifest JSON, changed-file scope, and secret-like patterns; source tests may be skipped with explanation.
 
 ## Fixtures and generated reports
@@ -80,3 +84,6 @@ CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` 
   `XAIOS_QEMU_ACCEL=hvf` remains experimental because current QEMU/HVF can abort
   in exception handling on Apple Silicon.
 - Local QEMU gates require host QEMU/firmware/toolchain availability.
+- `make qemu-ssh-smoke` currently covers the host bridge, not the freestanding
+  guest SSH daemon. Do not use that target alone as guest interoperability
+  evidence.

@@ -1601,8 +1601,11 @@ int64_t mutable_fs_read_fd(uint32_t fd, void *buffer, uint64_t size) {
   }
   uint8_t file_buffer[MFS_MAX_FILE_BYTES];
   uint64_t file_size = 0;
-  if (read_file(handle->path, file_buffer, sizeof(file_buffer), &file_size) !=
-      XAIOS_OK) {
+  xaios_status_t read_status =
+      read_file(handle->path, file_buffer, sizeof(file_buffer), &file_size);
+  if (read_status != XAIOS_OK) {
+    klog("mutable-fs: read-fd failed fd=%u path=%s status=%d\n", fd,
+         handle->path, (int)read_status);
     return (int64_t)XAIOS_ERR_IO;
   }
   if (handle->cursor >= file_size) {

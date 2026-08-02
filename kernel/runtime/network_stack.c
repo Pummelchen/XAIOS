@@ -25,10 +25,10 @@
 #define NETWORK_UDP_FLOWS 16U
 #define NETWORK_PACKET_DESCRIPTORS 16U
 #define NETWORK_QUEUE_RING_SIZE 8U
-#define NETWORK_UDP_IDLE_TIMEOUT_NS UINT64_C(2000000)
-#define NETWORK_TCP_RETRANSMIT_NS UINT64_C(500000)
-#define NETWORK_TCP_SYN_TIMEOUT_NS UINT64_C(3000000)  /* FIX-001: Extended to 3 seconds */
-#define NETWORK_TCP_MAX_RETRANSMITS 2U
+#define NETWORK_UDP_IDLE_TIMEOUT_NS UINT64_C(30000000000)
+#define NETWORK_TCP_RETRANSMIT_NS UINT64_C(1000000000)
+#define NETWORK_TCP_SYN_TIMEOUT_NS UINT64_C(10000000000)
+#define NETWORK_TCP_MAX_RETRANSMITS 5U
 
 #define NETWORK_TCP_FLAG_FIN 0x01U
 #define NETWORK_TCP_FLAG_SYN 0x02U
@@ -107,6 +107,8 @@ typedef struct network_udp_flow {
   uint64_t packets_rx;
   uint64_t packets_tx;
   uint64_t last_seen_ns;
+  uint8_t remote_mac[6];
+  uint8_t remote_mac_valid;
   /* Data plane */
   socket_buffer_t *rx_buf;
 } network_udp_flow_t;
@@ -333,11 +335,13 @@ typedef struct listener_accept_entry {
   xaios_ip_addr_t peer_addr; /* full address (IPv4 or IPv6) */
   uint16_t peer_port;
   uint16_t local_port;
+  uint16_t payload_len;
   uint32_t active;
 } listener_accept_entry_t;
 
 typedef struct network_listener_ex {
   uint16_t port;
+  uint8_t protocol;
   uint64_t sockfd;
   uint32_t active;
   listener_accept_entry_t backlog[NETWORK_LISTENER_BACKLOG];
@@ -346,10 +350,23 @@ typedef struct network_listener_ex {
 
 static network_listener_ex_t g_listeners_ex[NETWORK_MAX_LISTENERS];
 
-static network_listener_ex_t *find_listener_ex(uint16_t port) {
+static network_listener_ex_t *find_listener_ex(uint16_t port,
+                                                uint8_t protocol) {
   for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
-    if (g_listeners_ex[i].active && g_listeners_ex[i].port == port)
+    if (g_listeners_ex[i].active && g_listeners_ex[i].port == port &&
+        g_listeners_ex[i].protocol == protocol)
       return &g_listeners_ex[i];
+  }
+  return 0;
+}
+
+static network_listener_ex_t *find_listener_by_socket(uint64_t sockfd,
+                                                       uint8_t protocol) {
+  for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
+    if (g_listeners_ex[i].active && g_listeners_ex[i].sockfd == sockfd &&
+        g_listeners_ex[i].protocol == protocol) {
+      return &g_listeners_ex[i];
+    }
   }
   return 0;
 }
@@ -357,7 +374,7 @@ static network_listener_ex_t *find_listener_ex(uint16_t port) {
 static int listener_enqueue_backlog(uint16_t port, uint32_t flow_id,
                                      uint32_t peer_ip, uint16_t peer_port,
                                      const xaios_ip_addr_t *peer_addr) {
-  network_listener_ex_t *l = find_listener_ex(port);
+  network_listener_ex_t *l = find_listener_ex(port, NETWORK_IP_PROTO_TCP);
   if (!l) return 0;
   if (l->backlog_count >= NETWORK_LISTENER_BACKLOG) return 0;
   listener_accept_entry_t *e = &l->backlog[l->backlog_count++];
@@ -367,23 +384,50 @@ static int listener_enqueue_backlog(uint16_t port, uint32_t flow_id,
   else { xaios_ip_addr_zero(&e->peer_addr); e->peer_addr.family = XAIOS_IP_FAMILY_V4; }
   e->peer_port = peer_port;
   e->local_port = port;
+  e->payload_len = 0;
   e->active = 1;
   return 1;
 }
 
 static int listener_dequeue_backlog(uint16_t port, uint32_t *out_flow_id,
                                      uint32_t *out_peer_ip,
-                                     uint16_t *out_peer_port) {
-  network_listener_ex_t *l = find_listener_ex(port);
+                                     uint16_t *out_peer_port,
+                                     xaios_ip_addr_t *out_peer_addr) {
+  network_listener_ex_t *l = find_listener_ex(port, NETWORK_IP_PROTO_TCP);
   if (!l || l->backlog_count == 0) return 0;
   listener_accept_entry_t *e = &l->backlog[0];
   if (out_flow_id) *out_flow_id = e->flow_id;
   if (out_peer_ip) *out_peer_ip = e->peer_ip;
   if (out_peer_port) *out_peer_port = e->peer_port;
+  if (out_peer_addr) *out_peer_addr = e->peer_addr;
   for (uint32_t i = 1; i < l->backlog_count; ++i)
     l->backlog[i - 1] = l->backlog[i];
   l->backlog_count--;
   return 1;
+}
+
+static void udp_listener_enqueue(uint16_t port, uint32_t flow_id,
+                                 uint16_t peer_port,
+                                 const xaios_ip_addr_t *peer_addr,
+                                 uint16_t payload_len) {
+  network_listener_ex_t *listener =
+      find_listener_ex(port, NETWORK_IP_PROTO_UDP);
+  if (listener == 0) {
+    return;
+  }
+  if (listener->backlog_count >= NETWORK_LISTENER_BACKLOG) {
+    ++g_udp_dropped_count;
+    return;
+  }
+  listener_accept_entry_t *entry =
+      &listener->backlog[listener->backlog_count++];
+  entry->flow_id = flow_id;
+  entry->peer_ip = 0;
+  entry->peer_addr = *peer_addr;
+  entry->peer_port = peer_port;
+  entry->local_port = port;
+  entry->payload_len = payload_len;
+  entry->active = 1;
 }
 
 static uint16_t read_u16_be(const uint8_t *bytes) {
@@ -793,8 +837,8 @@ static int parse_tcp(const uint8_t *frame, uint64_t frame_len, uint16_t *src_por
   }
 
   /* A1: Validate TCP checksum */
-  uint32_t src_ip_be = ip->source;
-  uint32_t dst_ip_be = ip->destination;
+  uint32_t src_ip_be = read_u32_be((const uint8_t *)&ip->source);
+  uint32_t dst_ip_be = read_u32_be((const uint8_t *)&ip->destination);
   uint16_t wire_cksum = read_u16_be((const uint8_t *)&tcp->checksum);
   if (wire_cksum != 0) {
     uint16_t computed = ipv4_pseudo_checksum(src_ip_be, dst_ip_be,
@@ -1019,6 +1063,9 @@ static network_udp_flow_t *alloc_udp_flow(uint32_t queue_id, uint32_t cell_id,
       g_udp_flows[i].packets_tx = 0;
       g_udp_flows[i].rx_buf = sockbuf_alloc();
       g_udp_flows[i].last_seen_ns = now_ns;
+      g_udp_flows[i].remote_mac_valid = 0;
+      xaios_ip_addr_zero(&g_udp_flows[i].local_addr);
+      xaios_ip_addr_zero(&g_udp_flows[i].remote_addr);
       klog("network: udp flow id=%u queue=%u cell=%u local=%u remote=%u\n",
            g_udp_flows[i].flow_id, queue_id, cell_id, local_port, remote_port);
       return &g_udp_flows[i];
@@ -1300,6 +1347,10 @@ xaios_status_t network_stack_process_udp_frame(const uint8_t *frame,
   }
   ++flow->packets_rx;
   ++g_udp_rx_count;
+  for (uint32_t i = 0; i < 6U; ++i) {
+    flow->remote_mac[i] = frame[6U + i];
+  }
+  flow->remote_mac_valid = 1;
   
   /* Deliver UDP payload to flow rx_buf */
   if (flow->rx_buf != 0 && payload_len > 8) {
@@ -1309,6 +1360,16 @@ xaios_status_t network_stack_process_udp_frame(const uint8_t *frame,
     const uint8_t *udp_payload = frame + 14U + ip_hdr_bytes + 8U;
     uint32_t data_len = (uint32_t)(payload_len - 8U);
     sockbuf_write(flow->rx_buf, udp_payload, data_len);
+    xaios_ip_addr_t peer_addr;
+    peer_addr.family = XAIOS_IP_FAMILY_V4;
+    for (uint32_t i = 0; i < 4U; ++i) {
+      peer_addr.addr[i] = frame[26U + i];
+    }
+    for (uint32_t i = 4U; i < 16U; ++i) {
+      peer_addr.addr[i] = 0;
+    }
+    udp_listener_enqueue(dst_port, flow->flow_id, src_port, &peer_addr,
+                         (uint16_t)data_len);
   }
   
   packet_mark_tx(packet);
@@ -1333,6 +1394,7 @@ static xaios_status_t tcp_build_and_send_segment(
   /* Include TCP options only in SYN segments (MSS + window scale) */
   uint32_t tcp_opt_len = 0;
   uint8_t tcp_opts[12];
+  bytes_zero(tcp_opts, sizeof(tcp_opts));
   if ((flags & NETWORK_TCP_FLAG_SYN) != 0 && (flags & NETWORK_TCP_FLAG_ACK) == 0) {
     tcp_opts[0] = TCP_OPT_MSS; tcp_opts[1] = 4;
     write_be16(tcp_opts + 2, NETWORK_TCP_MSS);
@@ -1354,7 +1416,7 @@ static xaios_status_t tcp_build_and_send_segment(
   /* Align options to 4-byte boundary */
   uint32_t opt_padded = (tcp_opt_len + 3U) & ~3U;
   uint8_t tcp_hdr_bytes = (uint8_t)(20U + opt_padded);
-  uint8_t data_offset_val = (uint8_t)(tcp_hdr_bytes >> 2U);
+  uint8_t data_offset_val = (uint8_t)((tcp_hdr_bytes >> 2U) << 4U);
 
   uint8_t frame[NETWORK_BUFFER_SIZE];
   uint64_t frame_len = 14U + 20U + tcp_hdr_bytes + payload_len;
@@ -1377,7 +1439,7 @@ static xaios_status_t tcp_build_and_send_segment(
   tcp[12] = data_offset_val;
   tcp[13] = flags;
   write_be16(tcp + 14, window);
-  write_be16(tcp + 16, 0); /* checksum placeholder */
+  write_be16(tcp + 16, 0);
   write_be16(tcp + 18, 0); /* urgent pointer */
   /* Copy options */
   for (uint32_t i = 0; i < tcp_opt_len; ++i) {
@@ -1432,6 +1494,7 @@ static xaios_status_t tcp_build_and_send_segment_v6(
   /* Include TCP options only in SYN segments (MSS + window scale) */
   uint32_t tcp_opt_len = 0;
   uint8_t tcp_opts[12];
+  bytes_zero(tcp_opts, sizeof(tcp_opts));
   if ((flags & NETWORK_TCP_FLAG_SYN) != 0) {
     tcp_opts[0] = TCP_OPT_MSS; tcp_opts[1] = 4;
     write_be16(tcp_opts + 2, NETWORK_TCP_MSS);
@@ -1442,7 +1505,7 @@ static xaios_status_t tcp_build_and_send_segment_v6(
   }
   uint32_t opt_padded = (tcp_opt_len + 3U) & ~3U;
   uint8_t tcp_hdr_bytes = (uint8_t)(20U + opt_padded);
-  uint8_t data_offset_val = (uint8_t)(tcp_hdr_bytes >> 2U);
+  uint8_t data_offset_val = (uint8_t)((tcp_hdr_bytes >> 2U) << 4U);
 
   uint8_t frame[NETWORK_BUFFER_SIZE];
   uint64_t frame_len = 14U + 40U + tcp_hdr_bytes + payload_len;
@@ -1470,7 +1533,7 @@ static xaios_status_t tcp_build_and_send_segment_v6(
   tcp[12] = data_offset_val;
   tcp[13] = flags;
   write_be16(tcp + 14, window);
-  write_be16(tcp + 16, 0); /* checksum placeholder */
+  write_be16(tcp + 16, 0);
   write_be16(tcp + 18, 0); /* urgent */
   /* Copy options */
   for (uint32_t i = 0; i < tcp_opt_len; ++i) {
@@ -1641,6 +1704,7 @@ void network_stack_register_listener(uint16_t port, uint64_t sockfd) {
   for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
     if (!g_listeners_ex[i].active) {
       g_listeners_ex[i].port = port;
+      g_listeners_ex[i].protocol = NETWORK_IP_PROTO_TCP;
       g_listeners_ex[i].sockfd = sockfd;
       g_listeners_ex[i].active = 1;
       g_listeners_ex[i].backlog_count = 0;
@@ -1650,9 +1714,35 @@ void network_stack_register_listener(uint16_t port, uint64_t sockfd) {
   klog("network: listener registry full (port=%u)\n", port);
 }
 
+void network_stack_register_udp_listener(uint16_t port, uint64_t sockfd) {
+  for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
+    if (!g_listeners_ex[i].active) {
+      g_listeners_ex[i].port = port;
+      g_listeners_ex[i].protocol = NETWORK_IP_PROTO_UDP;
+      g_listeners_ex[i].sockfd = sockfd;
+      g_listeners_ex[i].active = 1;
+      g_listeners_ex[i].backlog_count = 0;
+      return;
+    }
+  }
+  klog("network: UDP listener registry full (port=%u)\n", port);
+}
+
 void network_stack_unregister_listener(uint16_t port) {
   for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
-    if (g_listeners_ex[i].active && g_listeners_ex[i].port == port) {
+    if (g_listeners_ex[i].active && g_listeners_ex[i].port == port &&
+        g_listeners_ex[i].protocol == NETWORK_IP_PROTO_TCP) {
+      g_listeners_ex[i].active = 0;
+      g_listeners_ex[i].backlog_count = 0;
+      return;
+    }
+  }
+}
+
+void network_stack_unregister_udp_listener(uint16_t port) {
+  for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
+    if (g_listeners_ex[i].active && g_listeners_ex[i].port == port &&
+        g_listeners_ex[i].protocol == NETWORK_IP_PROTO_UDP) {
       g_listeners_ex[i].active = 0;
       g_listeners_ex[i].backlog_count = 0;
       return;
@@ -1661,7 +1751,7 @@ void network_stack_unregister_listener(uint16_t port) {
 }
 
 int network_stack_has_listener(uint16_t port) {
-  return find_listener_ex(port) != 0;
+  return find_listener_ex(port, NETWORK_IP_PROTO_TCP) != 0;
 }
 
 /* ---- Accept Queue Functions ---- */
@@ -1675,10 +1765,12 @@ static void accept_queue_enqueue(uint32_t flow_id, uint32_t peer_ip,
 xaios_status_t network_stack_accept_connection(uint16_t listen_port,
                                                 uint32_t *out_flow_id,
                                                 uint32_t *out_peer_ip,
-                                                uint16_t *out_peer_port) {
-  if (!out_flow_id || !out_peer_ip || !out_peer_port)
+                                                uint16_t *out_peer_port,
+                                                xaios_ip_addr_t *out_peer_addr) {
+  if (!out_flow_id || !out_peer_ip || !out_peer_port || !out_peer_addr)
     return XAIOS_ERR_INVALID;
-  if (listener_dequeue_backlog(listen_port, out_flow_id, out_peer_ip, out_peer_port))
+  if (listener_dequeue_backlog(listen_port, out_flow_id, out_peer_ip,
+                               out_peer_port, out_peer_addr))
     return XAIOS_OK;
   return XAIOS_ERR_NOT_FOUND;
 }
@@ -1687,6 +1779,14 @@ xaios_status_t network_stack_accept_connection(uint16_t listen_port,
 
 void network_stack_map_socket(uint64_t sockfd, uint32_t flow_id,
                                 uint8_t protocol) {
+  for (uint32_t i = 0; i < NETWORK_SOCK_FLOW_MAP_SIZE; ++i) {
+    if (g_socket_flow_map[i].active != 0 &&
+        g_socket_flow_map[i].sockfd == sockfd) {
+      g_socket_flow_map[i].flow_id = flow_id;
+      g_socket_flow_map[i].protocol = protocol;
+      return;
+    }
+  }
   for (uint32_t i = 0; i < NETWORK_SOCK_FLOW_MAP_SIZE; ++i) {
     if (g_socket_flow_map[i].active == 0) {
       g_socket_flow_map[i].sockfd = sockfd;
@@ -1764,8 +1864,12 @@ xaios_status_t network_stack_udp_send(uint32_t flow_id, const uint8_t *data,
                             (((g_udp_flows[i].remote_address >> 16U) & 0xFFU) << 8U) |
                             ((g_udp_flows[i].remote_address >> 24U) & 0xFFU);
       uint8_t dst_mac[6];
-      if (!tcp_resolve_mac(dst_ip_be, dst_mac, g_local_mac)) {
-        return XAIOS_ERR_BUSY; /* MAC not resolved yet */
+      if (g_udp_flows[i].remote_mac_valid != 0) {
+        for (uint32_t j = 0; j < 6U; ++j) {
+          dst_mac[j] = g_udp_flows[i].remote_mac[j];
+        }
+      } else if (!tcp_resolve_mac(dst_ip_be, dst_mac, g_local_mac)) {
+        return XAIOS_ERR_BUSY;
       }
       /* Ethernet */
       for (uint32_t j = 0; j < 6; ++j) { frame[j] = dst_mac[j]; }
@@ -1800,6 +1904,60 @@ uint32_t network_stack_tcp_recv(uint32_t flow_id, uint8_t *buffer,
                                             buffer, buffer_size);
       g_tcp_flows[i].window_size =
           (uint16_t)sockbuf_available(g_tcp_flows[i].rx_buf);
+      return bytes_read;
+    }
+  }
+  return 0;
+}
+
+int network_stack_tcp_peer_closed(uint32_t flow_id) {
+  for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
+    if (g_tcp_flows[i].flow_id == flow_id) {
+      return g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_CLOSE_WAIT ||
+             g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_CLOSED ||
+             g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_TIME_WAIT;
+    }
+  }
+  return 1;
+}
+
+uint32_t network_stack_udp_recv(uint64_t sockfd, uint8_t *buffer,
+                                uint32_t buffer_size,
+                                xaios_ip_addr_t *source_addr,
+                                uint16_t *source_port,
+                                uint32_t *flow_id) {
+  network_listener_ex_t *listener =
+      find_listener_by_socket(sockfd, NETWORK_IP_PROTO_UDP);
+  if (listener == 0 || listener->backlog_count == 0 || buffer == 0 ||
+      buffer_size == 0) {
+    return 0;
+  }
+
+  listener_accept_entry_t entry = listener->backlog[0];
+  for (uint32_t i = 1; i < listener->backlog_count; ++i) {
+    listener->backlog[i - 1U] = listener->backlog[i];
+  }
+  --listener->backlog_count;
+
+  for (uint32_t i = 0; i < NETWORK_UDP_FLOWS; ++i) {
+    network_udp_flow_t *udp_flow = &g_udp_flows[i];
+    if (udp_flow->active != 0 && udp_flow->flow_id == entry.flow_id &&
+        udp_flow->rx_buf != 0) {
+      uint32_t read_limit = entry.payload_len;
+      if (read_limit > buffer_size) {
+        read_limit = buffer_size;
+      }
+      uint32_t bytes_read = sockbuf_read(udp_flow->rx_buf, buffer, read_limit);
+      if (source_addr != 0) {
+        *source_addr = entry.peer_addr;
+      }
+      if (source_port != 0) {
+        *source_port = entry.peer_port;
+      }
+      if (flow_id != 0) {
+        *flow_id = entry.flow_id;
+      }
+      network_stack_map_socket(sockfd, entry.flow_id, NETWORK_IP_PROTO_UDP);
       return bytes_read;
     }
   }
@@ -1914,7 +2072,10 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
     flow->pending_fin = 0;
     flow->pending_ack = 0;
     flow->close_requested = 0;
-    flow->remote_mac_valid = 0;
+    for (uint32_t i = 0; i < 6U; ++i) {
+      flow->remote_mac[i] = frame[6U + i];
+    }
+    flow->remote_mac_valid = 1;
     /* Allocate socket buffers */
     flow->rx_buf = sockbuf_alloc();
     flow->tx_buf = sockbuf_alloc();
@@ -1951,6 +2112,7 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
   if (flow != 0 && flow->state == XAIOS_NETWORK_FLOW_SYN_RECV &&
       (flags & NETWORK_TCP_FLAG_ACK) != 0U) {
     flow->state = XAIOS_NETWORK_FLOW_ESTABLISHED;
+    flow->pending_synack = 0;
     flow->local_seq = ack;
     flow->next_send_seq = ack; /* peer confirmed our ISN+1 */
     flow->last_seen_ns = start;
@@ -2165,6 +2327,10 @@ xaios_status_t network_stack_process_udp_frame_v6(const uint8_t *frame,
   ++flow->packets_rx;
   ++g_udp_rx_count;
   ++g_ipv6_rx_count;
+  for (uint32_t i = 0; i < 6U; ++i) {
+    flow->remote_mac[i] = frame[6U + i];
+  }
+  flow->remote_mac_valid = 1;
   
   /* Deliver UDP payload to flow rx_buf */
   if (flow->rx_buf != 0 && payload_len > 8) {
@@ -2172,6 +2338,8 @@ xaios_status_t network_stack_process_udp_frame_v6(const uint8_t *frame,
     const uint8_t *udp_payload = frame + 14U + 40U + 8U;
     uint32_t data_len = (uint32_t)(payload_len - 8U);
     sockbuf_write(flow->rx_buf, udp_payload, data_len);
+    udp_listener_enqueue(dst_port, flow->flow_id, src_port, &src_addr,
+                         (uint16_t)data_len);
   }
   
   packet_mark_tx(packet);
@@ -2283,7 +2451,10 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
     flow->pending_fin = 0;
     flow->pending_ack = 0;
     flow->close_requested = 0;
-    flow->remote_mac_valid = 0;
+    for (uint32_t i = 0; i < 6U; ++i) {
+      flow->remote_mac[i] = frame[6U + i];
+    }
+    flow->remote_mac_valid = 1;
     flow->rx_buf = sockbuf_alloc();
     flow->tx_buf = sockbuf_alloc();
     flow->last_seen_ns = start;
@@ -2303,6 +2474,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
   if (flow != 0 && flow->state == XAIOS_NETWORK_FLOW_SYN_RECV &&
       (flags & NETWORK_TCP_FLAG_ACK) != 0U) {
     flow->state = XAIOS_NETWORK_FLOW_ESTABLISHED;
+    flow->pending_synack = 0;
     flow->local_seq = ack_v;
     flow->next_send_seq = ack_v;
     flow->last_seen_ns = start;
@@ -2408,6 +2580,7 @@ uint64_t network_stack_retransmit_tcp_flows(uint64_t now_ns) {
       ++g_tcp_flows[i].retransmits;
       ++g_tcp_flows[i].packets_tx;
       g_tcp_flows[i].last_seen_ns = now_ns;
+      g_tcp_flows[i].pending_synack = 1;
       ++g_tcp_retransmit_count;
       ++retransmitted;
       klog("network: tcp flow id=%u retransmit=%u queue=%u cell=%u\n",
@@ -2994,6 +3167,14 @@ void network_stack_self_test(void) {
   frame_tcp_syn[45] = 0;
   frame_tcp_syn[46] = 0x60; /* offset 6 words */
   frame_tcp_syn[47] = NETWORK_TCP_FLAG_SYN;
+  {
+    uint16_t tcp_checksum =
+        ipv4_pseudo_checksum(0x0a00020fU, 0x0a000202U,
+                             NETWORK_IP_PROTO_TCP, 24U,
+                             frame_tcp_syn + 34U, 24U);
+    frame_tcp_syn[50] = (uint8_t)(tcp_checksum >> 8U);
+    frame_tcp_syn[51] = (uint8_t)tcp_checksum;
+  }
 
   kassert(network_stack_process_tcp_frame(frame_tcp_syn, 58U) == XAIOS_OK);
   kassert(network_stack_tcp_handshake_count() == 1U);
@@ -3019,6 +3200,8 @@ void network_stack_self_test(void) {
   frame_tcp_syn_ack[45] = 0;
   frame_tcp_syn_ack[46] = 0x60; /* offset 6 words */
   frame_tcp_syn_ack[47] = NETWORK_TCP_FLAG_ACK;
+  frame_tcp_syn_ack[50] = 0;
+  frame_tcp_syn_ack[51] = 0;
 
   kassert(network_stack_process_tcp_frame(frame_tcp_syn_ack, 58U) == XAIOS_OK);
   kassert(network_stack_tcp_connections() == 1U);
@@ -3028,6 +3211,8 @@ void network_stack_self_test(void) {
     frame_tcp_timeout[i] = frame_tcp_syn[i];
   }
   frame_tcp_timeout[35] = 0x91;
+  frame_tcp_timeout[50] = 0;
+  frame_tcp_timeout[51] = 0;
   kassert(network_stack_process_tcp_frame(frame_tcp_timeout, 58U) == XAIOS_OK);
   kassert(network_stack_retransmit_tcp_flows(timer_now_ns() +
                                              NETWORK_TCP_RETRANSMIT_NS + 1U) ==
@@ -3099,8 +3284,33 @@ void network_init_persistent(void) {
   }
   arp_init();
   ndp_init();
+  for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
+    g_tcp_flows[i].state = XAIOS_NETWORK_FLOW_FREE;
+    g_tcp_flows[i].flow_id = 0;
+    g_tcp_flows[i].rx_buf = 0;
+    g_tcp_flows[i].tx_buf = 0;
+    g_tcp_flows[i].pending_synack = 0;
+    g_tcp_flows[i].pending_ack = 0;
+    g_tcp_flows[i].pending_fin = 0;
+  }
+  for (uint32_t i = 0; i < NETWORK_UDP_FLOWS; ++i) {
+    g_udp_flows[i].active = 0;
+    g_udp_flows[i].flow_id = 0;
+    g_udp_flows[i].rx_buf = 0;
+  }
+  for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
+    g_listeners_ex[i].active = 0;
+    g_listeners_ex[i].backlog_count = 0;
+  }
+  for (uint32_t i = 0; i < NETWORK_SOCK_FLOW_MAP_SIZE; ++i) {
+    g_socket_flow_map[i].active = 0;
+  }
+  g_half_open_count = 0;
   sockbuf_pool_init();
   routing_init();
+  if (network_stack_queue_bindings() == 0U) {
+    kassert(network_stack_bind_queue(0, 1, 1U) == XAIOS_OK);
+  }
   ipv6_link_local_from_mac(&g_link_local_v6, g_local_mac);
   g_persistent_initialized = 1;
   g_poll_tick_count = 0;
@@ -3120,6 +3330,8 @@ void network_poll_tick(void) {
   uint32_t frame_len = virtio_net_rx_poll(rx_buf, sizeof(rx_buf));
   if (frame_len == 0) {
     ++g_poll_tick_count;
+    tcp_drain_pending();
+    network_stack_retransmit_tcp_flows(timer_now_ns());
     return;
   }
   ++g_poll_tick_count;
@@ -3167,7 +3379,7 @@ void network_poll_tick(void) {
     } else if (protocol == NETWORK_IP_PROTO_UDP) {
       network_stack_process_udp_frame(rx_buf, frame_len);
     } else if (protocol == NETWORK_IP_PROTO_TCP) {
-      network_stack_process_tcp_frame(rx_buf, frame_len);
+      (void)network_stack_process_tcp_frame(rx_buf, frame_len);
     }
   } else if (ethertype == NETWORK_ETHERTYPE_IPV6) {
     ++g_ipv6_rx_count;
@@ -3219,7 +3431,7 @@ void network_poll_tick(void) {
     } else if (next_header == NETWORK_IP_PROTO_UDP) {
       network_stack_process_udp_frame_v6(rx_buf, frame_len);
     } else if (next_header == NETWORK_IP_PROTO_TCP) {
-      network_stack_process_tcp_frame_v6(rx_buf, frame_len);
+      (void)network_stack_process_tcp_frame_v6(rx_buf, frame_len);
     }
   }
   /* Drain pending TCP transmissions (SYN-ACK, data, ACK, FIN) */

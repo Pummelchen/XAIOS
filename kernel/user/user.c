@@ -11,6 +11,7 @@
 #include <xaios/vmm.h>
 
 #define PAGE_SIZE UINT64_C(4096)
+#define USER_STACK_PAGES UINT64_C(64)
 
 static void bytes_zero(void *buffer, uint64_t size) {
   uint8_t *bytes = (uint8_t *)buffer;
@@ -516,17 +517,17 @@ xaios_status_t user_load_process(const xaios_initramfs_file_t *file,
   }
 
   /* Map stack */
-  uint64_t guard_low = XAIOS_USER_STACK_TOP - (3U * PAGE_SIZE);
-  uint64_t stack = XAIOS_USER_STACK_TOP - (2U * PAGE_SIZE);
   uint64_t guard_high = XAIOS_USER_STACK_TOP - PAGE_SIZE;
+  uint64_t stack = guard_high - (USER_STACK_PAGES * PAGE_SIZE);
+  uint64_t guard_low = stack - PAGE_SIZE;
   if (elf_loader_map_stack(&process->aspace, stack, guard_low,
                            guard_high) != XAIOS_OK) {
     return XAIOS_ERR_INVALID;
   }
-  process->stack_top = stack + PAGE_SIZE;
+  process->stack_top = guard_high;
   process->stack_guard_low = guard_low;
   process->stack_guard_high = guard_high;
-  track_process_mapping(process, stack, stack + PAGE_SIZE);
+  track_process_mapping(process, stack, guard_high);
   process->resident_pages = process->aspace.page_count;
 
   xaios_user_process_t *slot = &g_process_table[pid - 1U];

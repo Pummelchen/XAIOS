@@ -1,5 +1,7 @@
 #include "ssh_crypto.h"
 #include "ssh_utils.h"
+#include "tweetnacl_subset.h"
+#include <xaios_user.h>
 
 /* ---- Utility ---- */
 static uint32_t rotr32(uint32_t x, uint32_t n) {
@@ -113,12 +115,6 @@ void sha256_hash(const uint8_t *data, uint64_t len, uint8_t digest[32]) {
 #define SHA512_DIGEST_SIZE 64U
 #define SHA512_BLOCK_SIZE 128U
 
-typedef struct sha512_ctx {
-  uint64_t state[8];
-  uint64_t count[2];  /* High and low 64 bits */
-  uint8_t buffer[128];
-} sha512_ctx_t;
-
 static const uint64_t sha512_K[80] = {
   0x428a2f98d728ae22ULL, 0x7137449123ef65cdULL, 0xb5c0fbcfec4d3b2fULL, 0xe9b5dba58189dbbcULL,
   0x3956c25bf348b538ULL, 0x59f111f1b605d019ULL, 0x923f82a4af194f9bULL, 0xab1c5ed5da6d8118ULL,
@@ -160,7 +156,7 @@ static void put_be64(uint8_t *p, uint64_t v) {
   p[6] = (uint8_t)(v >> 8);  p[7] = (uint8_t)v;
 }
 
-static void sha512_init(sha512_ctx_t *ctx) {
+void sha512_init(sha512_ctx_t *ctx) {
   ctx->state[0] = 0x6a09e667f3bcc908ULL; ctx->state[1] = 0xbb67ae8584caa73bULL;
   ctx->state[2] = 0x3c6ef372fe94f82bULL; ctx->state[3] = 0xa54ff53a5f1d36f1ULL;
   ctx->state[4] = 0x510e527fade682d1ULL; ctx->state[5] = 0x9b05688c2b3e6c1fULL;
@@ -194,39 +190,39 @@ static void sha512_compress(sha512_ctx_t *ctx, const uint8_t block[128]) {
   ctx->state[6] += g; ctx->state[7] += h;
 }
 
-static void sha512_update(sha512_ctx_t *ctx, const uint8_t *data, uint64_t len) {
+void sha512_update(sha512_ctx_t *ctx, const uint8_t *data, uint64_t len) {
   uint64_t idx = (uint64_t)((ctx->count[1] >> 3) & 0x7F);
   ctx->count[1] += len << 3;
   if (ctx->count[1] < (len << 3)) ctx->count[0]++;
   ctx->count[0] += len >> 61;
   
-  uint64_t p1 = 128 - idx;
-  if (len >= p1) {
-    ssh_mem_copy(ctx->buffer + idx, data, p1);
+  uint64_t consumed = 0;
+  uint64_t first_block = 128U - idx;
+  if (len >= first_block) {
+    ssh_mem_copy(ctx->buffer + idx, data, first_block);
     sha512_compress(ctx, ctx->buffer);
-    for (uint64_t pos = p1; pos + 127 < len; pos += 128) {
-      sha512_compress(ctx, data + pos);
+    consumed = first_block;
+    while (consumed + 128U <= len) {
+      sha512_compress(ctx, data + consumed);
+      consumed += 128U;
     }
     idx = 0;
-  } else {
-    ssh_mem_copy(ctx->buffer + idx, data, len);
-    return;
   }
-  
-  uint64_t remaining = len - ((len - p1) % 128 + p1);
-  if (remaining > 0) {
-    ssh_mem_copy(ctx->buffer + idx, data + (len - remaining), remaining);
+  if (consumed < len) {
+    ssh_mem_copy(ctx->buffer + idx, data + consumed, len - consumed);
   }
 }
 
-static void sha512_final(sha512_ctx_t *ctx, uint8_t digest[64]) {
+void sha512_final(sha512_ctx_t *ctx, uint8_t digest[64]) {
+  uint64_t bit_count_high = ctx->count[0];
+  uint64_t bit_count_low = ctx->count[1];
   uint64_t idx = (ctx->count[1] >> 3) & 0x7F;
   uint64_t pad_len = (idx < 112) ? (112 - idx) : (240 - idx);
   static const uint8_t padding[128] = {0x80};
   
   sha512_update(ctx, padding, pad_len);
-  put_be64(ctx->buffer + 112, ctx->count[0]);
-  put_be64(ctx->buffer + 120, ctx->count[1]);
+  put_be64(ctx->buffer + 112, bit_count_high);
+  put_be64(ctx->buffer + 120, bit_count_low);
   sha512_compress(ctx, ctx->buffer);
   
   for (uint32_t i = 0; i < 8; ++i) put_be64(digest + i * 8, ctx->state[i]);
@@ -501,8 +497,7 @@ static void fe_frombytes(fe_t *r, const uint8_t s[32]) {
 }
 
 static void fe_cswap(fe_t *a, fe_t *b, uint64_t swap) {
-  uint64_t mask = ~(swap - 1); /* swap=1 -> mask=0, swap=0 -> mask=all-ones */
-  mask = ~mask; /* swap=1 -> mask=all-ones */
+  uint64_t mask = 0U - swap;
   for (int i = 0; i < 5; ++i) {
     uint64_t t = mask & (a->v[i] ^ b->v[i]);
     a->v[i] ^= t;
@@ -512,6 +507,7 @@ static void fe_cswap(fe_t *a, fe_t *b, uint64_t swap) {
 
 void curve25519_scalar_mult(uint8_t out[32], const uint8_t scalar[32],
                             const uint8_t point[32]) {
+  if (xaios_x25519(out, scalar, point) == 0) return;
   uint8_t e[32];
   ssh_mem_copy(e, scalar, 32);
   e[0] &= 248; e[31] &= 127; e[31] |= 64; /* clamp */
@@ -559,10 +555,7 @@ void curve25519_scalar_mult(uint8_t out[32], const uint8_t scalar[32],
 }
 
 void curve25519_base(uint8_t out[32], const uint8_t scalar[32]) {
-  uint8_t basepoint[32];
-  ssh_mem_zero(basepoint, 32);
-  basepoint[0] = 9;
-  curve25519_scalar_mult(out, scalar, basepoint);
+  (void)xaios_x25519_base(out, scalar);
 }
 
 /* ---- Secure Random Number Generation (ChaCha20-based DRBG) ---- */
@@ -594,6 +587,7 @@ static void chacha20_block(uint32_t out[16], const uint32_t in[16]) {
 
 static uint32_t g_drbg_state[16];
 static uint32_t g_drbg_calls = 0;
+static uint64_t g_drbg_seed_sequence;
 
 static void drbg_seed(void) {
   /* "expand 32-byte k" constant */
@@ -602,39 +596,19 @@ static void drbg_seed(void) {
   g_drbg_state[2] = 0x79622d32;
   g_drbg_state[3] = 0x6b206574;
   
-  /* Entropy source 1: Virtual Count Timer (CNTVCT_EL0) */
-  volatile uint64_t cntvct = 0;
-  __asm__ volatile("mrs %0, cntvct_el0" : "=r"(cntvct));
-  
-  /* Entropy source 2: Performance Monitor Cycle Counter (PMCCNTR_EL0) */
-  volatile uint64_t pmccntr = 0;
-  __asm__ volatile("mrs %0, pmccntr_el0" : "=r"(pmccntr));
-  
-  /* Entropy source 3: ARM RNDR instruction (FEAT_RNG, optional).
-   * Returns random value and sets PSTATE.NZCV. If RN=0, value is invalid.
-   * Fallback: mix stack pointer address for ASLR entropy. */
-  uint64_t hw_rand = 0;
-  uint64_t rndr_ok = 0;
-  __asm__ volatile(
-    "mrs %0, s3_3_c2_c4_0\n"  /* RNDR */
-    "cset %1, ne\n"             /* check if RN flag set */
-    : "=r"(hw_rand), "=r"(rndr_ok)
-  );
-  if (!rndr_ok) {
-    /* RNDR not available; use stack pointer as additional entropy (ASLR) */
-    __asm__ volatile("mov %0, sp" : "=r"(hw_rand));
-    hw_rand ^= pmccntr;
-  }
-  
-  /* Mix three distinct entropy sources into key */
-  g_drbg_state[4]  = (uint32_t)(cntvct);
-  g_drbg_state[5]  = (uint32_t)(cntvct >> 32);
-  g_drbg_state[6]  = (uint32_t)(pmccntr);
-  g_drbg_state[7]  = (uint32_t)(pmccntr >> 32);
-  g_drbg_state[8]  = (uint32_t)(hw_rand);
-  g_drbg_state[9]  = (uint32_t)(hw_rand >> 32);
-  g_drbg_state[10] = (uint32_t)(cntvct ^ pmccntr ^ hw_rand);
-  g_drbg_state[11] = (uint32_t)((cntvct >> 16) ^ (pmccntr >> 16) ^ (hw_rand >> 16));
+  uint64_t now = xaios_clock_nanos();
+  uint64_t stack_address = (uint64_t)(uintptr_t)&now;
+  uint64_t state_address = (uint64_t)(uintptr_t)g_drbg_state;
+  uint64_t sequence = ++g_drbg_seed_sequence;
+
+  g_drbg_state[4]  = (uint32_t)now;
+  g_drbg_state[5]  = (uint32_t)(now >> 32U);
+  g_drbg_state[6]  = (uint32_t)stack_address;
+  g_drbg_state[7]  = (uint32_t)(stack_address >> 32U);
+  g_drbg_state[8]  = (uint32_t)state_address;
+  g_drbg_state[9]  = (uint32_t)(state_address >> 32U);
+  g_drbg_state[10] = (uint32_t)sequence;
+  g_drbg_state[11] = (uint32_t)(sequence >> 32U) ^ (uint32_t)(now >> 17U);
   
   /* Counter and nonce */
   g_drbg_state[12] = 0;  /* block counter */
@@ -826,6 +800,8 @@ void ed25519_keygen(uint8_t public_key[32], uint8_t private_key[32],
   } else {
     crypto_random_bytes(private_key, 32);
   }
+  xaios_ed25519_public_key(public_key, private_key);
+  return;
   
   /* Hash seed to get scalar and prefix */
   uint8_t hash[64];
@@ -846,6 +822,8 @@ void ed25519_keygen(uint8_t public_key[32], uint8_t private_key[32],
 /* Ed25519 signature (RFC 8032 Section 5.1.6) */
 int ed25519_sign(uint8_t signature[64], const uint8_t *message, uint32_t msg_len,
                  const uint8_t public_key[32], const uint8_t private_key[32]) {
+  return xaios_ed25519_sign(signature, message, msg_len, public_key,
+                           private_key);
   if (!signature || !message || !public_key || !private_key) {
     return -1;
   }
@@ -925,6 +903,7 @@ int ed25519_sign(uint8_t signature[64], const uint8_t *message, uint32_t msg_len
 /* Ed25519 signature verification (RFC 8032 Section 5.1.7) */
 int ed25519_verify(const uint8_t signature[64], const uint8_t *message,
                    uint32_t msg_len, const uint8_t public_key[32]) {
+  return xaios_ed25519_verify(signature, message, msg_len, public_key);
   if (!signature || !message || !public_key) {
     return -1;
   }
@@ -956,30 +935,19 @@ int ed25519_verify(const uint8_t signature[64], const uint8_t *message,
     sha512_final(&ctx, k_buf);
   }
   
-  /* Verify: s * B == R + k * A */
-  /* Stub: Ed25519 point arithmetic (point decompression, addition, scalar_mult_base)
-   * is not yet implemented for the freestanding environment.
-   * Log the verification attempt and fail-closed. */
-  {
-    static int verify_reported = 0;
-    if (!verify_reported) {
-      /* Report once via log - relies on ssh_log from sshd.c being available */
-      verify_reported = 1;
-    }
-  }
   (void)R; (void)s; (void)k_buf;
   return -1;
 }
 
 /* ---- Self-test ---- */
 
-void ssh_crypto_self_test(void) {
+int ssh_crypto_self_test(void) {
   /* SHA-256: NIST test vector "abc" */
   uint8_t digest[32];
   sha256_hash((const uint8_t *)"abc", 3, digest);
   static const uint8_t sha256_abc[32] = {
     0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,
-    0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x11,0x5a,0x31
+    0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad
   };
   /* NIST FIPS 180-4: SHA-256("abc") verified assertion */
   {
@@ -989,8 +957,7 @@ void ssh_crypto_self_test(void) {
       if (digest[i] != sha256_abc[i]) sha_ok = 0;
     }
     if (!sha_ok) {
-      /* SHA-256 self-test failed -- halt */
-      for (;;) { __asm__ volatile("wfe"); }
+      return -1;
     }
   }
   /* AES-128: NIST FIPS 197 test vector */
@@ -1014,7 +981,7 @@ void ssh_crypto_self_test(void) {
       if (aes_out[i] != aes_ct[i]) aes_ok = 0;
     }
     if (!aes_ok) {
-      for (;;) { __asm__ volatile("wfe"); }
+      return -2;
     }
   }
   /* HMAC-SHA-256: RFC 4231 test case 2 */
@@ -1033,7 +1000,55 @@ void ssh_crypto_self_test(void) {
       if (hmac_out[i] != hmac_expected[i]) hmac_ok = 0;
     }
     if (!hmac_ok) {
-      for (;;) { __asm__ volatile("wfe"); }
+      return -3;
     }
   }
+  /* RFC 7748 X25519 Alice public key. */
+  static const uint8_t x25519_private[32] = {
+    0x77,0x07,0x6d,0x0a,0x73,0x18,0xa5,0x7d,0x3c,0x16,0xc1,0x72,0x51,0xb2,0x66,0x45,
+    0xdf,0x4c,0x2f,0x87,0xeb,0xc0,0x99,0x2a,0xb1,0x77,0xfb,0xa5,0x1d,0xb9,0x2c,0x2a
+  };
+  static const uint8_t x25519_public[32] = {
+    0x85,0x20,0xf0,0x09,0x89,0x30,0xa7,0x54,0x74,0x8b,0x7d,0xdc,0xb4,0x3e,0xf7,0x5a,
+    0x0d,0xbf,0x3a,0x0d,0x26,0x38,0x1a,0xf4,0xeb,0xa4,0xa9,0x8e,0xaa,0x9b,0x4e,0x6a
+  };
+  uint8_t x25519_result[32];
+  xaios_x25519_base(x25519_result, x25519_private);
+  for (uint32_t i = 0; i < 32U; ++i) {
+    if (x25519_result[i] != x25519_public[i]) return -4;
+  }
+
+  /* RFC 8032 Ed25519 test vector 1: empty message. */
+  static const uint8_t ed25519_seed[32] = {
+    0x9d,0x61,0xb1,0x9d,0xef,0xfd,0x5a,0x60,0xba,0x84,0x4a,0xf4,0x92,0xec,0x2c,0xc4,
+    0x44,0x49,0xc5,0x69,0x7b,0x32,0x69,0x19,0x70,0x3b,0xac,0x03,0x1c,0xae,0x7f,0x60
+  };
+  static const uint8_t ed25519_public[32] = {
+    0xd7,0x5a,0x98,0x01,0x82,0xb1,0x0a,0xb7,0xd5,0x4b,0xfe,0xd3,0xc9,0x64,0x07,0x3a,
+    0x0e,0xe1,0x72,0xf3,0xda,0xa6,0x23,0x25,0xaf,0x02,0x1a,0x68,0xf7,0x07,0x51,0x1a
+  };
+  static const uint8_t ed25519_signature[64] = {
+    0xe5,0x56,0x43,0x00,0xc3,0x60,0xac,0x72,0x90,0x86,0xe2,0xcc,0x80,0x6e,0x82,0x8a,
+    0x84,0x87,0x7f,0x1e,0xb8,0xe5,0xd9,0x74,0xd8,0x73,0xe0,0x65,0x22,0x49,0x01,0x55,
+    0x5f,0xb8,0x82,0x15,0x90,0xa3,0x3b,0xac,0xc6,0x1e,0x39,0x70,0x1c,0xf9,0xb4,0x6b,
+    0xd2,0x5b,0xf5,0xf0,0x59,0x5b,0xbe,0x24,0x65,0x51,0x41,0x43,0x8e,0x7a,0x10,0x0b
+  };
+  uint8_t ed_public_result[32];
+  uint8_t ed_signature_result[64];
+  uint8_t empty_message = 0;
+  xaios_ed25519_public_key(ed_public_result, ed25519_seed);
+  for (uint32_t i = 0; i < 32U; ++i) {
+    if (ed_public_result[i] != ed25519_public[i]) return -5;
+  }
+  if (xaios_ed25519_sign(ed_signature_result, &empty_message, 0,
+                          ed_public_result, ed25519_seed) != 0) return -6;
+  for (uint32_t i = 0; i < 64U; ++i) {
+    if (ed_signature_result[i] != ed25519_signature[i]) return -7;
+  }
+  if (xaios_ed25519_verify(ed_signature_result, &empty_message, 0,
+                            ed_public_result) != 0) return -8;
+  ed_signature_result[0] ^= 1U;
+  if (xaios_ed25519_verify(ed_signature_result, &empty_message, 0,
+                            ed_public_result) == 0) return -9;
+  return 0;
 }

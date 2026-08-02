@@ -156,6 +156,7 @@ typedef struct xaios_socket_request {
   /* IPv6 dual-stack: pointer to xaios_ip_addr_user_t for bind/peer address */
   u64 addr_ptr;
   u64 addr_out_ptr;
+  u64 protocol;
 } xaios_socket_request_t;
 
 typedef struct xaios_agent_request {
@@ -222,6 +223,7 @@ int xaios_ml_run(u64 model_kind, const void *input, u64 input_size,
 int xaios_net_listen(u64 port, u64 *out_sockfd);
 int xaios_net_listen_addr(u64 port, const xaios_ip_addr_user_t *bind_addr,
                           u64 *out_sockfd);
+int xaios_net_bind_udp(u64 port, u64 *out_sockfd);
 int xaios_net_accept(u64 sockfd, u64 *out_sockfd);
 int xaios_net_accept_addr(u64 sockfd, u64 *out_sockfd,
                           xaios_ip_addr_user_t *peer_addr, u64 *peer_port);

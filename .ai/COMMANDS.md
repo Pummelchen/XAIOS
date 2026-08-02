@@ -62,10 +62,14 @@ only the Python standard library; official importer dependencies remain unknown.
 | SSH bridge | `make xaios-ssh-bridge` |
 | Connect to local SSH bridge | `ssh -p 2222 admin@localhost` |
 
-`run-qemu-aarch64.sh` supports environment overrides such as `XAIOS_AAVMF_CODE`, `XAIOS_QEMU_ACCEL`, `XAIOS_QEMU_CPU`, `XAIOS_QEMU_MACHINE`, `XAIOS_QEMU_MEMORY`, `XAIOS_QEMU_SMP`, and `XAIOS_QEMU_HOSTFWD_PORT`.
+`run-qemu-aarch64.sh` supports environment overrides such as `XAIOS_AAVMF_CODE`, `XAIOS_QEMU_ACCEL`, `XAIOS_QEMU_CPU`, `XAIOS_QEMU_MACHINE`, `XAIOS_QEMU_MEMORY`, `XAIOS_QEMU_SMP`, `XAIOS_QEMU_HOSTFWD_PORT`, `XAIOS_QEMU_HOSTFWD_UDP_PORT`, and `XAIOS_QEMU_NET_SOCKET_PORT`.
 The AArch64 launcher defaults to TCG on every host. HVF remains an explicit,
 experimental `XAIOS_QEMU_ACCEL=hvf` override because current QEMU/HVF exception
 handling can abort on Apple Silicon.
+
+For direct IPv6/TCP from a Mac client, run QEMU with
+`XAIOS_QEMU_HOSTFWD_PORT=none XAIOS_QEMU_NET_SOCKET_PORT=12345` and then run
+`python3 scripts/qemu-ipv6-tcp-client.py --port 12345` in another terminal.
 
 ## Test/gates
 
