@@ -10,6 +10,21 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 -->
 # AI onboarding changelog
 
+## 2026-08-02 — Debian 13 SSH and network interoperability
+
+- Raised the bounded freestanding SSH service from one to four simultaneous
+  connections and made packet assembly, channels, and SFTP handles
+  connection-owned.
+- Added conservative retained-payload TCP retransmission with persistent-loop
+  timeout maintenance, receive-window ACKs, closing-flow reclamation, and
+  unconditional VirtIO RX descriptor recycling.
+- Added an official Debian 13 Docker client gate covering password acceptance
+  and rejection, SFTP transfer/stat, overlapping SFTP sessions, four concurrent
+  SSH sessions, reconnect recycling, UDP echo, and direct IPv6/TCP with a
+  deliberately withheld-ACK retransmission check.
+- Kept physical NIC, adverse-network, rekey, production-key, security-review,
+  and long-soak claims explicitly unresolved.
+
 ## 2026-08-02 — delivery sequencing and Wiki synchronization
 
 - Made XAIOS platform completion the only active workstream and Qwen 3.6 27B

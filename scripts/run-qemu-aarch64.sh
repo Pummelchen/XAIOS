@@ -119,6 +119,7 @@ persistent_image="${XAIOS_PERSISTENT_IMAGE:-build/xaios-persistent.img}"
 hostfwd_port="${XAIOS_QEMU_HOSTFWD_PORT:-2222}"
 hostfwd_udp_port="${XAIOS_QEMU_HOSTFWD_UDP_PORT:-none}"
 net_socket_port="${XAIOS_QEMU_NET_SOCKET_PORT:-none}"
+net_socket_host="${XAIOS_QEMU_NET_SOCKET_HOST:-127.0.0.1}"
 
 if [ "$dry_run" -eq 0 ] && [ ! -f "$image" ]; then
   printf '%s\n' "error: missing AArch64 boot image: $image" >&2
@@ -157,7 +158,7 @@ set -- "$@" \
   -device virtio-net-pci,netdev=net0
 
 if [ "$net_socket_port" != "none" ]; then
-  net1_options="socket,id=net1,listen=127.0.0.1:${net_socket_port}"
+  net1_options="socket,id=net1,listen=${net_socket_host}:${net_socket_port}"
 else
   net1_options="user,id=net1"
   if [ "$hostfwd_port" != "none" ]; then

@@ -341,32 +341,28 @@ uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size) {
       &g_net->rx_used->ring[g_net->rx_last_used % VIRTQ_SIZE];
   uint16_t desc = (uint16_t)elem->id;
   uint32_t rx_len = elem->len;
+  uint32_t frame_len = 0;
 
   if (rx_len > VIRTIO_NET_HDR_SIZE &&
       rx_len - VIRTIO_NET_HDR_SIZE <= buffer_size) {
-    uint32_t frame_len = rx_len - VIRTIO_NET_HDR_SIZE;
+    frame_len = rx_len - VIRTIO_NET_HDR_SIZE;
     for (uint32_t i = 0; i < frame_len; ++i) {
       buffer[i] = g_net->rx_bufs[desc][VIRTIO_NET_HDR_SIZE + i];
     }
-    ++g_net->rx_last_used;
-
-    /* Re-post the RX buffer */
-    g_net->rx_desc[desc].addr = net_dma_address(g_net->rx_bufs[desc]);
-    g_net->rx_desc[desc].len = VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME;
-    g_net->rx_desc[desc].flags = VRING_DESC_F_WRITE;
-    g_net->rx_avail->ring[g_net->rx_avail_idx % VIRTQ_SIZE] = desc;
-    virtio_mmio_barrier();
-    ++g_net->rx_avail_idx;
-    g_net->rx_avail->idx = g_net->rx_avail_idx;
-    virtio_transport_notify(&g_net->device, 0);
-
-    virtio_transport_ack_interrupts(&g_net->device);
-    return frame_len;
   }
 
+  /* Every used entry must be returned, including malformed/oversized input. */
   ++g_net->rx_last_used;
+  g_net->rx_desc[desc].addr = net_dma_address(g_net->rx_bufs[desc]);
+  g_net->rx_desc[desc].len = VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME;
+  g_net->rx_desc[desc].flags = VRING_DESC_F_WRITE;
+  g_net->rx_avail->ring[g_net->rx_avail_idx % VIRTQ_SIZE] = desc;
+  virtio_mmio_barrier();
+  ++g_net->rx_avail_idx;
+  g_net->rx_avail->idx = g_net->rx_avail_idx;
+  virtio_transport_notify(&g_net->device, 0);
   virtio_transport_ack_interrupts(&g_net->device);
-  return 0;
+  return frame_len;
 }
 
 xaios_status_t virtio_net_get_mac(uint8_t mac[6]) {

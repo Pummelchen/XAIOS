@@ -5,7 +5,7 @@
 #include "ssh_protocol.h"
 
 #define SSH_CHANNEL_MAX 4U
-#define SSH_CHANNEL_SFTP_BUFFER_SIZE 32772U
+#define SSH_CHANNEL_SFTP_BUFFER_SIZE 16388U
 
 /* Channel request message types */
 #define SSH_MSG_CHANNEL_REQUEST       98U
@@ -15,6 +15,7 @@
 
 typedef struct ssh_channel {
   uint32_t active;
+  uint64_t owner_sockfd;
   uint32_t local_id;
   uint32_t remote_id;
   uint32_t window_size;
@@ -26,6 +27,7 @@ typedef struct ssh_channel {
 } ssh_channel_t;
 
 void ssh_channel_init(void);
+void ssh_channel_close_connection(int sockfd);
 int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt);
 
 #endif

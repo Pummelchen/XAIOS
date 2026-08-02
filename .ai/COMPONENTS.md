@@ -49,10 +49,11 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 ## Network and SSH
 
 - Responsibility: packet/protocol/socket paths and remote administration surfaces.
-- Key files: `kernel/net/`, `kernel/runtime/network_stack.c`, `userspace/sshd/`, `scripts/run-qemu-aarch64.sh`.
+- Key files: `kernel/net/`, `kernel/runtime/network_stack.c`, `userspace/sshd/`, `scripts/run-qemu-aarch64.sh`, `scripts/qemu-docker-network-suite.py`, `tests/network/`.
 - External dependency: QEMU host forwarding defaults to host port `2222` for guest SSH port 22.
 - Risks: auth/security regressions, socket accounting mismatch.
-- Validate: network suite and SSH smoke if environment supports it.
+- Validate: `make qemu-network-suite`, `make qemu-docker-network-suite`, and the
+  host-bridge SSH smoke where relevant.
 
 ## CPU-AI runtime and AI Cell
 

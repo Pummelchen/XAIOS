@@ -20,24 +20,24 @@ uint32_t ssh_read_string_len(const uint8_t *p) {
 
 static int send_all(int sockfd, const void *data, uint64_t len) {
   uint64_t sent = 0;
+  uint64_t stalled_since = 0;
   while (sent < len) {
     u64 n = 0;
     int r = xaios_net_send((u64)(uint64_t)sockfd,
                           (const uint8_t *)data + sent, len - sent, &n);
-    if (r != 0 || n == 0) return -1;
+    if (r != 0) return -1;
+    if (n == 0) {
+      uint64_t now = xaios_clock_nanos();
+      if (stalled_since == 0U) stalled_since = now;
+      if (now > stalled_since &&
+          now - stalled_since >= UINT64_C(10000000000)) {
+        xaios_log("sshd: transmit queue stalled\n");
+        return -1;
+      }
+      continue;
+    }
+    stalled_since = 0;
     sent += n;
-  }
-  return 0;
-}
-
-static int recv_all(int sockfd, void *data, uint64_t len) {
-  uint64_t got = 0;
-  while (got < len) {
-    u64 n = 0;
-    int r = xaios_net_recv((u64)(uint64_t)sockfd,
-                          (uint8_t *)data + got, len - got, &n);
-    if (r != 0 || n == 0) return -1;
-    got += n;
   }
   return 0;
 }
@@ -82,38 +82,44 @@ int ssh_recv_version(int sockfd, uint8_t *buf, uint32_t buf_size,
 }
 
 int ssh_packet_read(int sockfd, ssh_packet_t *pkt) {
-  /* Read 4-byte packet length */
-  uint8_t len_buf[4];
-  if (recv_all(sockfd, len_buf, 4) != 0) return -1;
-  uint32_t pkt_len = ssh_read_u32_be(len_buf);
-  
-  /* FIX-003: Comprehensive packet size validation */
-  if (pkt_len > SSH_MAX_PACKET_SIZE) {
-    return -1;  /* Packet too large */
+  ssh_connection_t *conn = ssh_conn_find((uint64_t)(uint64_t)sockfd);
+  if (conn == 0 || pkt == 0) return -1;
+  uint8_t *wire = conn->plaintext_rx;
+
+  if (conn->plaintext_rx_used < 4U) {
+    u64 received = 0;
+    uint32_t needed = 4U - conn->plaintext_rx_used;
+    if (xaios_net_recv((u64)(uint64_t)sockfd,
+                       wire + conn->plaintext_rx_used, needed,
+                       &received) != 0) {
+      return -1;
+    }
+    conn->plaintext_rx_used += (uint32_t)received;
+    if (conn->plaintext_rx_used < 4U) return 1;
   }
-  if (pkt_len < 2) {
-    return -1;  /* Packet too small */
+
+  uint32_t packet_len = ssh_read_u32_be(wire);
+  if (packet_len < 5U || packet_len > SSH_PLAINTEXT_PACKET_SIZE) return -1;
+  conn->plaintext_rx_expected = packet_len + 4U;
+  if (conn->plaintext_rx_used < conn->plaintext_rx_expected) {
+    u64 received = 0;
+    uint32_t needed = conn->plaintext_rx_expected - conn->plaintext_rx_used;
+    if (xaios_net_recv((u64)(uint64_t)sockfd,
+                       wire + conn->plaintext_rx_used, needed,
+                       &received) != 0) {
+      return -1;
+    }
+    conn->plaintext_rx_used += (uint32_t)received;
+    if (conn->plaintext_rx_used < conn->plaintext_rx_expected) return 1;
   }
-  
-  if (recv_all(sockfd, pkt->data, pkt_len) != 0) return -1;
-  
-  /* FIX-003: Validate padding length */
-  uint32_t padding = pkt->data[0];
-  if (padding >= pkt_len - 1) {
-    return -1;  /* Invalid padding */
-  }
-  
-  pkt->len = pkt_len - padding - 1;
-  
-  /* FIX-003: Validate payload length */
-  if (pkt->len > SSH_MAX_PACKET_SIZE - 5) {
-    return -1;  /* Payload too large */
-  }
-  
-  /* Shift payload to start */
-  for (uint32_t i = 0; i < pkt->len; ++i) {
-    pkt->data[i] = pkt->data[1 + i];
-  }
+
+  uint32_t padding = wire[4];
+  if (padding < 4U || padding >= packet_len) return -1;
+  pkt->len = packet_len - padding - 1U;
+  if (pkt->len > sizeof(pkt->data)) return -1;
+  ssh_mem_copy(pkt->data, wire + 5U, pkt->len);
+  conn->plaintext_rx_used = 0;
+  conn->plaintext_rx_expected = 0;
   return 0;
 }
 
@@ -179,27 +185,18 @@ int ssh_packet_read_encrypted(int sockfd, ssh_packet_t *out_pkt) {
   const uint32_t block_size = 16U;
   const uint32_t mac_len = 32U;
   ssh_connection_scratch_t *scratch = ssh_conn_scratch();
-  if (scratch->encrypted_rx_owner != 0 &&
-      scratch->encrypted_rx_owner != (uint64_t)(uint64_t)sockfd) {
-    return 1;
-  }
-  if (scratch->encrypted_rx_owner == 0) {
-    scratch->encrypted_rx_owner = (uint64_t)(uint64_t)sockfd;
-    scratch->encrypted_rx_used = 0;
-    scratch->encrypted_rx_expected = 0;
-  }
-  uint8_t *wire = scratch->encrypted_rx;
+  uint8_t *wire = conn->encrypted_rx;
 
-  if (scratch->encrypted_rx_used < block_size) {
+  if (conn->encrypted_rx_used < block_size) {
     u64 received = 0;
-    uint32_t needed = block_size - scratch->encrypted_rx_used;
+    uint32_t needed = block_size - conn->encrypted_rx_used;
     if (xaios_net_recv((u64)(uint64_t)sockfd,
-                       wire + scratch->encrypted_rx_used, needed,
+                       wire + conn->encrypted_rx_used, needed,
                        &received) != 0) {
       return -1;
     }
-    scratch->encrypted_rx_used += (uint32_t)received;
-    if (scratch->encrypted_rx_used < block_size) {
+    conn->encrypted_rx_used += (uint32_t)received;
+    if (conn->encrypted_rx_used < block_size) {
       return 1;
     }
   }
@@ -210,20 +207,23 @@ int ssh_packet_read_encrypted(int sockfd, ssh_packet_t *out_pkt) {
   uint32_t packet_len = ssh_read_u32_be(first_plaintext);
   uint32_t encrypted_len = 4U + packet_len;
   if (packet_len < 5U || encrypted_len > SSH_MAX_PACKET_SIZE ||
-      (encrypted_len % block_size) != 0U) return -1;
-  scratch->encrypted_rx_expected = encrypted_len + mac_len;
+      (encrypted_len % block_size) != 0U) {
+    xaios_log("sshd: rejected invalid encrypted packet length\n");
+    return -1;
+  }
+  conn->encrypted_rx_expected = encrypted_len + mac_len;
 
-  if (scratch->encrypted_rx_used < scratch->encrypted_rx_expected) {
+  if (conn->encrypted_rx_used < conn->encrypted_rx_expected) {
     u64 received = 0;
     uint32_t needed =
-        scratch->encrypted_rx_expected - scratch->encrypted_rx_used;
+        conn->encrypted_rx_expected - conn->encrypted_rx_used;
     if (xaios_net_recv((u64)(uint64_t)sockfd,
-                       wire + scratch->encrypted_rx_used, needed,
+                       wire + conn->encrypted_rx_used, needed,
                        &received) != 0) {
       return -1;
     }
-    scratch->encrypted_rx_used += (uint32_t)received;
-    if (scratch->encrypted_rx_used < scratch->encrypted_rx_expected) {
+    conn->encrypted_rx_used += (uint32_t)received;
+    if (conn->encrypted_rx_used < conn->encrypted_rx_expected) {
       return 1;
     }
   }
@@ -252,10 +252,16 @@ int ssh_packet_read_encrypted(int sockfd, ssh_packet_t *out_pkt) {
   for (uint32_t i = 0; i < mac_len; ++i) {
     different |= (uint32_t)(computed_mac[i] ^ received_mac[i]);
   }
-  if (different != 0U) return -1;
+  if (different != 0U) {
+    xaios_log("sshd: rejected encrypted packet MAC\n");
+    return -1;
+  }
 
   uint8_t padding = full_plaintext[4];
-  if (padding < 4U || padding >= packet_len) return -1;
+  if (padding < 4U || padding >= packet_len) {
+    xaios_log("sshd: rejected encrypted packet padding\n");
+    return -1;
+  }
   uint32_t payload_len = packet_len - padding - 1U;
   if (payload_len > sizeof(out_pkt->data)) return -1;
 
@@ -266,8 +272,7 @@ int ssh_packet_read_encrypted(int sockfd, ssh_packet_t *out_pkt) {
   increment_counter(conn->crypto.decrypt_iv, encrypted_len / block_size);
   conn->crypto.decrypt_seq =
       (uint32_t)(conn->crypto.decrypt_seq + 1U);
-  scratch->encrypted_rx_owner = 0;
-  scratch->encrypted_rx_used = 0;
-  scratch->encrypted_rx_expected = 0;
+  conn->encrypted_rx_used = 0;
+  conn->encrypted_rx_expected = 0;
   return 0;
 }

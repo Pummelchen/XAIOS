@@ -17,6 +17,8 @@ Validation is based on:
 - hosted C assertions and Python `unittest` under `tests/model_v2/`;
 - kernel/userspace self-tests run during boot;
 - Python QEMU gates that search serial output and telemetry markers;
+- an official Debian 13 Docker client interoperability gate for the guest
+  SSH/SFTP, UDP, and direct IPv6/TCP paths;
 - ABI/contract Python checks;
 - CI compile checks and QEMU smoke/regression jobs.
 
@@ -39,6 +41,7 @@ Evidence:
 | ABI contract | `python3 scripts/qemu-abi-contract.py` | Syscall, initfs, contract, model format changes. |
 | Regression | `make qemu-regression-suite` | Broader kernel/userspace changes. |
 | Network suite | `make qemu-network-suite` | Network/socket/SSH-adjacent changes. |
+| Debian 13 network interoperability | `make qemu-docker-network-suite` | Changes to guest SSH/SFTP, TCP lifecycle, socket buffering, UDP, IPv6, or VirtIO net. |
 | CPU-AI suite | `make qemu-cpu-ai-suite` | AI runtime/model changes. |
 | Readiness | `make qemu-readiness-gate` | Changes that may affect QEMU readiness. |
 | Full OS RC | `make qemu-full-os-rc` | Release-candidate or hardware-entry decisions. |
@@ -62,11 +65,12 @@ CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` 
 - Userspace app change: run `make image && make qemu-smoke`; update smoke markers if expected output changes.
 - Security/update change: run relevant security/update gates plus smoke.
 - Filesystem/persistence change: run filesystem/update/readiness gates.
-- Network/SSH change: run network suite and SSH smoke if environment supports it.
-- Guest interoperability changes: from macOS, validate correct and incorrect
-  SSH credentials, an SFTP put/stat/get byte-for-byte round trip, UDP echo via
-  QEMU host forwarding, and the direct IPv6/TCP framed-socket client documented
-  in `docs/NETWORK-SSH-STATUS.md`.
+- Network/SSH change: run `make qemu-network-suite` and
+  `make qemu-docker-network-suite` when Docker is available.
+- The Docker gate validates correct and incorrect SSH credentials, SFTP
+  put/stat/get/remove, two overlapping SFTP sessions, four simultaneous SSH
+  sessions, 20 reconnects, UDP echo, and direct IPv6/TCP. See
+  `docs/NETWORK-SSH-STATUS.md` for the exact evidence boundary.
 - Docs-only change: validate Markdown links, manifest JSON, changed-file scope, and secret-like patterns; source tests may be skipped with explanation.
 
 ## Fixtures and generated reports
@@ -84,6 +88,9 @@ CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` 
   `XAIOS_QEMU_ACCEL=hvf` remains experimental because current QEMU/HVF can abort
   in exception handling on Apple Silicon.
 - Local QEMU gates require host QEMU/firmware/toolchain availability.
+- The Debian 13 interoperability gate additionally requires Docker. Its direct
+  IPv6 phase temporarily exposes the QEMU framed socket on the host so the
+  isolated container can connect; cleanup removes the listener.
 - `make qemu-ssh-smoke` currently covers the host bridge, not the freestanding
   guest SSH daemon. Do not use that target alone as guest interoperability
   evidence.

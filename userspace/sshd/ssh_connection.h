@@ -5,7 +5,8 @@
 #include "ssh_protocol.h"
 #include <xaios_user.h>
 
-#define SSH_MAX_CONNECTIONS 1U
+#define SSH_MAX_CONNECTIONS 4U
+#define SSH_PLAINTEXT_PACKET_SIZE 4096U
 
 #define SSH_STATE_INIT 0
 #define SSH_STATE_KEX 1
@@ -44,6 +45,12 @@ typedef struct {
   uint8_t shared_secret[32];
   uint8_t version_buf[256];
   uint32_t version_len;
+  uint8_t plaintext_rx[SSH_PLAINTEXT_PACKET_SIZE + 4U];
+  uint32_t plaintext_rx_used;
+  uint32_t plaintext_rx_expected;
+  uint8_t encrypted_rx[SSH_MAX_PACKET_SIZE + 32U];
+  uint32_t encrypted_rx_used;
+  uint32_t encrypted_rx_expected;
   uint8_t server_kexinit[512];
   uint32_t server_kexinit_len;
   sha256_ctx_t exchange_hash_ctx;
@@ -61,10 +68,6 @@ typedef struct {
   uint8_t decrypt_rest[SSH_MAX_PACKET_SIZE];
   uint8_t decrypt_mac_input[8 + SSH_MAX_PACKET_SIZE];
   uint8_t decrypt_full_packet[SSH_MAX_PACKET_SIZE];
-  uint8_t encrypted_rx[SSH_MAX_PACKET_SIZE + 32U];
-  uint64_t encrypted_rx_owner;
-  uint32_t encrypted_rx_used;
-  uint32_t encrypted_rx_expected;
   ssh_packet_t pkt;
 } ssh_connection_scratch_t;
 

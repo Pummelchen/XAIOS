@@ -95,16 +95,21 @@ and Project status aligned with `docs/MODEL-SUPPORT.json`.
 
 ## Unknowns
 
-- The freestanding SSH/SFTP server interoperates with the macOS OpenSSH client
-  in local QEMU tests, but it has no independent security review, production
-  entropy/key provisioning, rekey implementation, or physical-NIC soak. It
-  closes encrypted sessions at the rekey boundary rather than downgrading.
+- The freestanding SSH/SFTP server interoperates with Debian 13 OpenSSH in local
+  QEMU tests, including two overlapping SFTP sessions, four simultaneous SSH
+  sessions, and 20 reconnects. Four is the deliberate fixed service limit. The
+  server still has no independent security review, production entropy/key
+  provisioning, rekey implementation, controlled-loss soak, or physical-NIC
+  validation. It closes encrypted sessions at the rekey boundary rather than
+  downgrading.
 - DNS contains an A-record encoder/parser/cache prototype, but `dns_tick()` is
   not wired into the persistent network poll loop and there is no userspace
   resolver API. DNS is not an operational service.
-- TCP payload retransmission fields and timeout accounting exist, but sent
-  payloads are not retained and `in_flight`/`last_tx_ns` are not armed by the
-  active send path. Only the existing handshake/timeout fixtures are evidence.
+- TCP now retains and retransmits one unacknowledged MSS-sized payload segment,
+  with acknowledgement and timeout bookkeeping. Debian 13 interoperability and
+  a direct IPv6 deliberately withheld-ACK retransmission are verified; repeated
+  packet loss, reordering, SACK, multi-segment congestion behavior, and
+  physical-network recovery remain unknown.
 - IPv4 fragmentation/reassembly helpers have self-tests but are not integrated
   into the persistent receive/transmit path. IPv6 multi-fragment reassembly is
   explicitly unimplemented.

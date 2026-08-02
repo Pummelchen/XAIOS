@@ -19,6 +19,7 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 | `userspace/` | EL0 runtime, init/service manager, apps, worker, SSH daemon. |
 | `engine/` | Portable hosted C99 inference-engine boundary and model-v2 reader. |
 | `tests/model_v2/` | Hosted C/Python model-v2 and scalar-backend tests. |
+| `tests/network/` | Disposable Debian 13 client image and SSH/SFTP/UDP interoperability suite. |
 | `tools/` | Model-v2 streaming writer plus explicit v1 fixture tooling. |
 | `scripts/` | Build image, create initfs, run QEMU, smoke/regression/readiness gates. |
 | `contracts/` | QEMU release-candidate contract JSON. |
@@ -76,7 +77,10 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 - Python dev dependency: `paramiko==3.5.1` in `requirements-dev.txt`.
 - The current model-v2 writer uses the Python standard library. Official
   SafeTensors/config/tokenizer and GGUF importers are not implemented.
-- No Docker, database, ORM, migration framework, Node package manager, Rust/Cargo, Go module, Java build, or web framework detected in inspected files.
+- Docker is used only for the disposable Debian 13 network client gate; it is
+  not an XAIOS deployment mechanism. No database, ORM, migration framework,
+  Node package manager, Rust/Cargo, Go module, Java build, or web framework was
+  detected in inspected files.
 
 ## Important config/files
 

@@ -24,13 +24,13 @@ MARKERS = {
         "\"network_tcp_timeouts\":1",
         "\"network_tcp_retransmits\":1",
         "\"network_tcp_resets\":2",
-        "\"network_tcp_established\":2",
-        "\"network_tcp_closed\":2",
+        "\"network_tcp_established\":3",
+        "\"network_tcp_closed\":3",
     ],
     "per_core_queue_ownership": [
-        "\"network_queue_rx_enqueues\":12",
-        "\"network_queue_tx_enqueues\":10",
-        "\"network_queue_completions\":10",
+        "\"network_queue_rx_enqueues\":14",
+        "\"network_queue_tx_enqueues\":12",
+        "\"network_queue_completions\":12",
         "\"network_flow_core_mismatches\":0",
     ],
     "malformed_drop_path": [

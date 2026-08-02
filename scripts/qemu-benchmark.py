@@ -128,6 +128,7 @@ def main() -> int:
         "network_udp_flow_hits",
         "network_udp_expired",
         "network_tcp_connections",
+        "network_tcp_handshakes",
         "network_tcp_timeouts",
         "network_tcp_retransmits",
         "network_tcp_established",
@@ -278,11 +279,12 @@ def main() -> int:
         and telemetry["network_udp_flows"] >= 1
         and telemetry["network_udp_flow_hits"] >= 1
         and telemetry["network_udp_expired"] >= 1,
-        "tcp_path_exercised": telemetry["network_tcp_connections"] >= 1
+        "tcp_path_exercised": telemetry["network_tcp_connections"] == 0
+        and telemetry["network_tcp_handshakes"] >= 7
         and telemetry["network_tcp_timeouts"] >= 1
         and telemetry["network_tcp_retransmits"] >= 1
-        and telemetry["network_tcp_established"] >= 1
-        and telemetry["network_tcp_closed"] >= 1,
+        and telemetry["network_tcp_established"] >= 3
+        and telemetry["network_tcp_closed"] >= 3,
         "queue_backed_packet_flow": telemetry["network_rx_packets"] >= 6
         and telemetry["network_tx_packets"] >= 6
         and telemetry["network_packet_drops"] >= 2

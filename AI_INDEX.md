@@ -91,6 +91,7 @@ Runtime structure:
 | Interactive AArch64 QEMU | `make qemu` or `make qemu-aarch64` |
 | Dry-run QEMU commands | `make qemu-dry-run` |
 | Primary smoke gate | `make qemu-smoke` |
+| Debian 13 SSH/network gate | `make qemu-docker-network-suite` |
 | Full readiness gate | `make qemu-readiness-gate` |
 | Full OS release-candidate gate | `make qemu-full-os-rc` |
 | Compile syntax check | `make compile-check` |
@@ -106,7 +107,7 @@ Runtime structure:
 | Kernel subsystem | Relevant `kernel/*` module | Matching header, `kmain()` init/self-test order, QEMU gate markers |
 | Syscall/API | `kernel/include/xaios/syscall.h` | `kernel/user/syscall.c`, `userspace/include/xaios_user.h`, `docs/API.md`, `contracts/qemu-rc-v1.json`, `scripts/qemu_gate_lib.py` |
 | Userspace app | `userspace/apps/` | `scripts/build-image.sh`, `kernel/core/kmain.c`, `scripts/qemu-smoke.py` |
-| SSH/network | `userspace/sshd/`, `kernel/net/`, `kernel/runtime/network_stack.c` | Socket syscalls and network gates |
+| SSH/network | `userspace/sshd/`, `kernel/net/`, `kernel/runtime/network_stack.c` | Socket syscalls, QEMU network gates, and the Debian 13 Docker client suite |
 | Security/update | `kernel/runtime/security.c`, `kernel/runtime/update.c` | `SECURITY.md`, `.ai/SECURITY.md`, QEMU security/update gates |
 | Production model/engine | `engine/`, `tools/xaios_model_v2.py` | `tests/model_v2/`, model-v2/adapter/backend docs |
 | QEMU model fixture | `kernel/runtime/cpu_ai_runtime.c`, `tools/create_xaios_v1_fixture.py` | `contracts/qemu-rc-v1.json`, smoke markers; never call it real inference |

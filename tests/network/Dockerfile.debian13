@@ -1,0 +1,27 @@
+FROM debian:13
+
+LABEL org.opencontainers.image.title="XAIOS Debian 13 network client"
+LABEL org.opencontainers.image.description="Debian 13 interoperability client for XAIOS network and SSH gates"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        iproute2 \
+        iputils-ping \
+        netcat-openbsd \
+        openssh-client \
+        procps \
+        python3 \
+        sshpass \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY tests/network/debian13-client-suite.sh /usr/local/bin/xaios-network-client-suite
+COPY scripts/qemu-ipv6-tcp-client.py /usr/local/bin/xaios-ipv6-tcp-client
+
+RUN chmod 0755 \
+    /usr/local/bin/xaios-network-client-suite \
+    /usr/local/bin/xaios-ipv6-tcp-client
+
+CMD ["/bin/bash"]

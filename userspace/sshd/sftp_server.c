@@ -94,7 +94,7 @@ static int validate_path(const char *path) {
 }
 
 /* Allocate new handle */
-static sftp_file_handle_t *alloc_handle(void) {
+static sftp_file_handle_t *alloc_handle(int sockfd) {
   for (uint32_t i = 0; i < SFTP_MAX_HANDLES; ++i) {
     if (!g_sftp_handles[i].is_open) {
       g_sftp_handles[i].is_open = 1;
@@ -102,6 +102,8 @@ static sftp_file_handle_t *alloc_handle(void) {
       g_sftp_handles[i].offset = 0;
       g_sftp_handles[i].fd = -1;
       g_sftp_handles[i].is_dir = 0;
+      g_sftp_handles[i].owner_sockfd = (uint64_t)(uint32_t)sockfd;
+      g_sftp_handles[i].owner_channel_id = g_response_channel_id;
       return &g_sftp_handles[i];
     }
   }
@@ -109,13 +111,28 @@ static sftp_file_handle_t *alloc_handle(void) {
 }
 
 /* Find handle by ID */
-static sftp_file_handle_t *find_handle(uint32_t handle_id) {
+static sftp_file_handle_t *find_handle(int sockfd, uint32_t handle_id) {
   for (uint32_t i = 0; i < SFTP_MAX_HANDLES; ++i) {
-    if (g_sftp_handles[i].is_open && g_sftp_handles[i].handle_id == handle_id) {
+    if (g_sftp_handles[i].is_open &&
+        g_sftp_handles[i].owner_sockfd == (uint64_t)(uint32_t)sockfd &&
+        g_sftp_handles[i].owner_channel_id == g_response_channel_id &&
+        g_sftp_handles[i].handle_id == handle_id) {
       return &g_sftp_handles[i];
     }
   }
   return 0;
+}
+
+void sftp_close_channel(int sockfd, uint32_t remote_channel_id) {
+  for (uint32_t i = 0; i < SFTP_MAX_HANDLES; ++i) {
+    sftp_file_handle_t *handle = &g_sftp_handles[i];
+    if (handle->is_open &&
+        handle->owner_sockfd == (uint64_t)(uint32_t)sockfd &&
+        handle->owner_channel_id == remote_channel_id) {
+      if (handle->fd >= 0) xaios_fs_close(handle->fd);
+      ssh_mem_zero(handle, sizeof(*handle));
+    }
+  }
 }
 
 /* ---- Packet Parsing ---- */
@@ -239,7 +256,7 @@ static int handle_open(int sockfd, const uint8_t *data, uint32_t len) {
   if (fs_flags == 0) fs_flags = XAIOS_MFS_OPEN_READ;
   
   /* Allocate handle */
-  sftp_file_handle_t *handle = alloc_handle();
+  sftp_file_handle_t *handle = alloc_handle(sockfd);
   if (handle == 0) {
     return send_status(sockfd, request_id, SSH_FX_FAILURE, "No handles available");
   }
@@ -273,7 +290,7 @@ static int handle_close(int sockfd, const uint8_t *data, uint32_t len) {
   }
   
   uint32_t handle_id = read_u32((const uint8_t *)handle_data);
-  sftp_file_handle_t *handle = find_handle(handle_id);
+  sftp_file_handle_t *handle = find_handle(sockfd, handle_id);
   
   if (handle == 0) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid handle ID");
@@ -311,7 +328,7 @@ static int handle_read(int sockfd, const uint8_t *data, uint32_t len) {
                     read_u32(data + next_offset + 4U);
   uint32_t read_len = read_u32(data + next_offset + 8U);
   
-  sftp_file_handle_t *handle = find_handle(handle_id);
+  sftp_file_handle_t *handle = find_handle(sockfd, handle_id);
   if (handle == 0) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid handle ID");
   }
@@ -371,7 +388,7 @@ static int handle_write(int sockfd, const uint8_t *data, uint32_t len) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid WRITE");
   }
   
-  sftp_file_handle_t *handle = find_handle(handle_id);
+  sftp_file_handle_t *handle = find_handle(sockfd, handle_id);
   if (handle == 0) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid handle ID");
   }
@@ -430,7 +447,7 @@ static int handle_opendir(int sockfd, const uint8_t *data, uint32_t len) {
   }
   
   /* Allocate handle */
-  sftp_file_handle_t *handle = alloc_handle();
+  sftp_file_handle_t *handle = alloc_handle(sockfd);
   if (handle == 0) {
     return send_status(sockfd, request_id, SSH_FX_FAILURE, "No handles available");
   }
@@ -457,7 +474,7 @@ static int handle_readdir(int sockfd, const uint8_t *data, uint32_t len) {
   }
   
   uint32_t handle_id = read_u32((const uint8_t *)handle_data);
-  sftp_file_handle_t *handle = find_handle(handle_id);
+  sftp_file_handle_t *handle = find_handle(sockfd, handle_id);
   
   if (handle == 0) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid handle ID");
@@ -666,7 +683,7 @@ static int handle_fstat(int sockfd, const uint8_t *data, uint32_t len) {
       handle_len != 4U) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid handle");
   }
-  sftp_file_handle_t *handle = find_handle(read_u32(handle_data));
+  sftp_file_handle_t *handle = find_handle(sockfd, read_u32(handle_data));
   if (handle == 0) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid handle ID");
   }

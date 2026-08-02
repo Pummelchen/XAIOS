@@ -4,7 +4,7 @@
 #include <xaios/status.h>
 #include <xaios/types.h>
 
-#define SOCKET_BUFFER_SIZE 4096U
+#define SOCKET_BUFFER_SIZE 16384U
 #define SOCKET_BUFFER_COUNT 32U /* 16 sockets x 2 directions */
 
 /*

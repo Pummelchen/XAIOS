@@ -456,23 +456,21 @@ static int process_connection(ssh_connection_t *conn) {
 
   if (conn->state == SSH_STATE_KEX) {
     /* Receive client version */
-    if (conn->version_len == 0) {
-      uint32_t pos = 0;
-      while (pos < 256) {
+    if (conn->version_len == 0U ||
+        conn->version_buf[conn->version_len - 1U] != '\n') {
+      while (conn->version_len < sizeof(conn->version_buf)) {
         u64 n = 0;
-        int r = xaios_net_recv(conn->sockfd, conn->version_buf + pos, 1, &n);
-        if (r != 0 || n == 0) {
-          /* Not ready yet */
-          return 0;
-        }
-        if (pos > 255) return -1;
-        if (conn->version_buf[pos] == '\n') {
-          conn->version_len = pos + 1;
-          break;
-        }
-        ++pos;
+        int status = xaios_net_recv(conn->sockfd,
+            conn->version_buf + conn->version_len, 1, &n);
+        if (status != 0) return -1;
+        if (n == 0) return 0;
+        conn->version_len += (uint32_t)n;
+        if (conn->version_buf[conn->version_len - 1U] == '\n') break;
       }
-      if (conn->version_len == 0) return 0;
+      if (conn->version_len == sizeof(conn->version_buf) &&
+          conn->version_buf[conn->version_len - 1U] != '\n') {
+        return -1;
+      }
     }
 
     /* Send KEXINIT */
@@ -486,7 +484,9 @@ static int process_connection(ssh_connection_t *conn) {
 
   if (conn->state == SSH_STATE_KEX_SENT) {
     /* Receive client KEXINIT */
-    if (ssh_packet_read(sockfd, pkt) != 0) return 0;
+    int packet_status = ssh_packet_read(sockfd, pkt);
+    if (packet_status > 0) return 0;
+    if (packet_status < 0) return -1;
     if (pkt->len == 0 || pkt->data[0] != 20) return -1;
 
     uint32_t vc_len = conn->version_len;
@@ -510,7 +510,9 @@ static int process_connection(ssh_connection_t *conn) {
 
   if (conn->state == SSH_STATE_NEWKEYS) {
     /* KEXDH_INIT */
-    if (ssh_packet_read(sockfd, pkt) != 0) return 0;
+    int packet_status = ssh_packet_read(sockfd, pkt);
+    if (packet_status > 0) return 0;
+    if (packet_status < 0) return -1;
     if (pkt->len == 0 || pkt->data[0] != 30) return -1;
 
     if (pkt->len < 5) return -1;
@@ -608,7 +610,9 @@ static int process_connection(ssh_connection_t *conn) {
 
   if (conn->state == SSH_STATE_NEWKEYS_SENT) {
     /* Receive NEWKEYS */
-    if (ssh_packet_read(sockfd, pkt) != 0) return 0;
+    int packet_status = ssh_packet_read(sockfd, pkt);
+    if (packet_status > 0) return 0;
+    if (packet_status < 0) return -1;
     if (pkt->len == 0 || pkt->data[0] != 21) return -1;
 
     conn_init_encryption(conn, conn->shared_secret, 32,
@@ -1042,6 +1046,7 @@ close_conn:
           conn_packet_write_encrypted(conn, disconnect_msg, 13);
         }
 
+        ssh_channel_close_connection((int)conn->sockfd);
         xaios_net_close(conn->sockfd);
         __atomic_sub_fetch(&g_server_stats.active_connections, 1,
                            __ATOMIC_RELEASE);

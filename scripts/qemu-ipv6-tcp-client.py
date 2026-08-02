@@ -150,6 +150,16 @@ def main() -> int:
             sock, lambda packet: packet[3].startswith(b"SSH-2.0-XAIOS_"),
             args.timeout, args.verbose,
         )
+        retransmit_started = time.monotonic()
+        retry_seq, _, _, retry_payload = wait_for_tcp(
+            sock,
+            lambda packet: packet[0] == server_seq and packet[3] == payload,
+            args.timeout,
+            args.verbose,
+        )
+        retransmit_seconds = time.monotonic() - retransmit_started
+        if retry_seq != server_seq or retry_payload != payload:
+            raise RuntimeError("guest retransmission did not preserve sequence and payload")
         send_frame(
             sock,
             ethernet_frame(client_seq, server_seq + len(payload), 0x10),
@@ -157,6 +167,7 @@ def main() -> int:
         print(
             "IPv6 TCP transfer passed: "
             f"sent={len(client_banner)} received={len(payload)} "
+            f"retransmit_seconds={retransmit_seconds:.3f} "
             f"guest_banner={payload.decode().strip()}"
         )
     return 0

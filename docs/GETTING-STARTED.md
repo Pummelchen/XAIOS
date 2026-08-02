@@ -66,6 +66,7 @@ It is correctness evidence, not production or hardware-performance evidence.
 | `make qemu-osctl-gate` | Control-plane telemetry |
 | `make qemu-filesystem-gate` | Mutable filesystem operations |
 | `make qemu-network-suite` | Network stack (UDP/TCP) |
+| `make qemu-docker-network-suite` | Debian 13 OpenSSH/SFTP/UDP/IPv6 interoperability |
 | `make qemu-cpu-ai-suite` | CPU-only AI runtime |
 | `make qemu-regression-suite` | Full regression suite |
 | `make qemu-benchmark` | QEMU correctness telemetry collection |
@@ -76,6 +77,18 @@ It is correctness evidence, not production or hardware-performance evidence.
 The freestanding guest SSH/SFTP and UDP services can be exercised through QEMU
 host forwarding. The built-in `admin` credential is for local QEMU development
 only; do not expose these ports beyond localhost.
+
+The recommended automated check uses the official Debian 13 Docker base and
+tests correct and incorrect passwords, SFTP put/stat/get/remove, overlapping
+SFTP sessions, four simultaneous SSH sessions, reconnect recycling, UDP echo,
+and direct IPv6/TCP:
+
+```sh
+make qemu-docker-network-suite
+```
+
+Docker is required for this target. Generated reports, serial logs, and packet
+captures are placed under `build/`.
 
 ```sh
 XAIOS_QEMU_HOSTFWD_PORT=2299 XAIOS_QEMU_HOSTFWD_UDP_PORT=2298 make qemu

@@ -58,8 +58,10 @@ opt-in; exact target-model semantics are the default.
   filesystem, network, capability, AI Cell and telemetry fixtures.
 - An experimental freestanding SSH/SFTP service reachable through QEMU host
   forwarding, plus guest userspace UDP receive/echo and IPv6/TCP receive/send
-  paths. These have Mac-client interoperability tests but are not approved for
-  Internet exposure or production use.
+  paths. An official Debian 13 Docker client on macOS verifies password
+  acceptance/rejection, SFTP transfer and stat, two overlapping SFTP sessions,
+  four simultaneous SSH sessions, 20 reconnects, UDP echo, and direct IPv6/TCP.
+  These QEMU checks do not approve Internet exposure or production use.
 - A deterministic 80-byte model-v1 fixture path used only by QEMU correctness
   gates. The production decode syscall returns an explicit unsupported error.
 - A hosted C99 engine boundary under `engine/` with on-demand model-v2 parsing,
@@ -98,6 +100,7 @@ make hosted-test
 make qemu-abi-contract
 make image
 make qemu-smoke
+make qemu-docker-network-suite
 ```
 
 `make hosted-test` is the foundational model-v2/engine gate. QEMU gates validate
