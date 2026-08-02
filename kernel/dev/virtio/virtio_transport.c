@@ -1,12 +1,14 @@
 #include <xaios/assert.h>
 #include <xaios/klog.h>
+#include <xaios/timer.h>
 #include <xaios/virtio_transport.h>
 #include <xaios/vmm.h>
 
 #define VIRTIO_MMIO_BASE UINT64_C(0x0a000000)
 #define VIRTIO_MMIO_STRIDE UINT64_C(0x200)
 #define VIRTIO_MMIO_SLOTS 32U
-#define VIRTIO_SPIN_LIMIT UINT64_C(10000000)
+#define VIRTIO_WAIT_TIMEOUT_NS UINT64_C(5000000000)
+#define VIRTIO_WAIT_FALLBACK_SPINS UINT64_C(100000000)
 
 #define VIRTIO_MMIO_MAGIC 0x000U
 #define VIRTIO_MMIO_VERSION 0x004U
@@ -209,15 +211,24 @@ void virtio_transport_notify(const virtio_mmio_device_t *device,
 
 xaios_status_t virtio_transport_wait_used(volatile uint16_t *used_idx,
                                          uint16_t expected) {
-  for (uint64_t spin = 0; spin < VIRTIO_SPIN_LIMIT; ++spin) {
+  uint64_t started_ns = timer_now_ns();
+  for (uint64_t spin = 0;; ++spin) {
     if (*used_idx >= expected) {
       /* Device writes to the used ring and request buffers precede idx. */
       virtio_mmio_barrier();
       return XAIOS_OK;
     }
+    if ((spin & UINT64_C(0x3ff)) == 0U) {
+      if (started_ns != 0U) {
+        if (timer_now_ns() - started_ns >= VIRTIO_WAIT_TIMEOUT_NS) {
+          return XAIOS_ERR_IO;
+        }
+      } else if (spin >= VIRTIO_WAIT_FALLBACK_SPINS) {
+        return XAIOS_ERR_IO;
+      }
+    }
     __asm__ volatile("yield");
   }
-  return XAIOS_ERR_IO;
 }
 
 void virtio_transport_ack_interrupts(const virtio_mmio_device_t *device) {
