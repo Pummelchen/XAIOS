@@ -19,6 +19,7 @@ void ssh_channel_init(void) {
     g_channels[i].pending_offset = 0;
     g_channels[i].pending_used = 0;
     g_channels[i].close_after_flush = 0;
+    g_channels[i].close_sent = 0;
     g_channels[i].exit_status = 0;
     g_channels[i].is_sftp = 0;
     g_channels[i].sftp_rx_used = 0;
@@ -43,6 +44,7 @@ static ssh_channel_t *alloc_channel(int sockfd) {
       g_channels[i].pending_offset = 0;
       g_channels[i].pending_used = 0;
       g_channels[i].close_after_flush = 0;
+      g_channels[i].close_sent = 0;
       g_channels[i].is_sftp = 0;
       g_channels[i].sftp_rx_used = 0;
       return &g_channels[i];
@@ -151,6 +153,7 @@ static int send_channel_exit_status(int sockfd, uint32_t remote_id,
 }
 
 static int finish_channel(ssh_channel_t *ch) {
+  if (ch->close_sent != 0U) return 0;
   if (send_channel_exit_status((int)ch->owner_sockfd, ch->remote_id,
                                ch->exit_status) != 0 ||
       send_channel_eof((int)ch->owner_sockfd, ch->remote_id) != 0) {
@@ -162,7 +165,7 @@ static int finish_channel(ssh_channel_t *ch) {
   if (ssh_packet_write_encrypted((int)ch->owner_sockfd, close_msg,
                                  sizeof(close_msg)) != 0) return -1;
   sftp_close_channel((int)ch->owner_sockfd, ch->remote_id);
-  ch->active = 0;
+  ch->close_sent = 1U;
   return 0;
 }
 
@@ -477,7 +480,7 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
     if (pkt->len < 5U) return -1;
     ssh_channel_t *ch = find_channel_by_local(
         sockfd, ssh_read_u32_be(pkt->data + 1U));
-    if (ch == 0) return -1;
+    if (ch == 0 || ch->close_sent != 0U) return 0;
     if (ch->is_sftp != 0U) {
       ch->exit_status = 0U;
       ch->close_after_flush = 1U;
@@ -492,11 +495,14 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
       ssh_channel_t *ch = find_channel_by_local(sockfd, local_id);
       if (ch) {
         sftp_close_channel(sockfd, ch->remote_id);
-        uint8_t close_msg[5];
-        close_msg[0] = SSH_MSG_CHANNEL_CLOSE;
-        ssh_write_u32_be(close_msg + 1, ch->remote_id);
-        ssh_packet_write_encrypted(sockfd, close_msg, 5);
-        ch->active = 0;
+        if (ch->close_sent == 0U) {
+          uint8_t close_msg[5];
+          close_msg[0] = SSH_MSG_CHANNEL_CLOSE;
+          ssh_write_u32_be(close_msg + 1, ch->remote_id);
+          if (ssh_packet_write_encrypted(sockfd, close_msg,
+                                         sizeof(close_msg)) != 0) return -1;
+        }
+        ssh_mem_zero(ch, sizeof(*ch));
       }
     }
     return 0;

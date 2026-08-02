@@ -44,6 +44,19 @@ static void sha256_update_mpint(sha256_ctx_t *context,
 }
 
 static int g_log_fd = -1;
+static uint32_t g_log_bytes = 0;
+
+static int ssh_log_reopen(void) {
+  if (g_log_fd >= 0) {
+    xaios_fs_close(g_log_fd);
+    g_log_fd = -1;
+  }
+  g_log_fd = xaios_fs_open(
+      "/state/sshd.log", XAIOS_MFS_OPEN_WRITE | XAIOS_MFS_OPEN_CREATE |
+                             XAIOS_MFS_OPEN_TRUNCATE);
+  g_log_bytes = 0;
+  return g_log_fd < 0 ? -1 : 0;
+}
 
 static void int_to_str(uint64_t val, char *buf, uint32_t buf_size) {
   if (buf_size == 0) return;
@@ -78,11 +91,6 @@ static void hex_to_str(uint64_t val, char *buf, uint32_t buf_size) {
 }
 
 void ssh_log(int level, const char *fmt, ...) {
-  if (g_log_fd < 0) {
-    g_log_fd = xaios_fs_open("/state/sshd.log",
-                             XAIOS_MFS_OPEN_WRITE | XAIOS_MFS_OPEN_CREATE);
-    if (g_log_fd < 0) return;
-  }
   const char *prefix;
   switch (level) {
     case SSH_LOG_INFO:  prefix = "[INFO]";  break;
@@ -90,8 +98,6 @@ void ssh_log(int level, const char *fmt, ...) {
     case SSH_LOG_ERROR: prefix = "[ERROR]"; break;
     default: prefix = "[UNKNOWN]"; break;
   }
-  xaios_fs_write(g_log_fd, (const void*)prefix, ssh_str_len(prefix));
-  xaios_fs_write(g_log_fd, " ", 1);
   va_list args;
   va_start(args, fmt);
   char buffer[512];
@@ -142,8 +148,28 @@ void ssh_log(int level, const char *fmt, ...) {
   }
   buffer[buf_pos] = '\0';
   va_end(args);
-  xaios_fs_write(g_log_fd, buffer, buf_pos);
-  xaios_fs_write(g_log_fd, "\n", 1);
+
+  while (buf_pos != 0U && buffer[buf_pos - 1U] == '\n') --buf_pos;
+  char line[544];
+  uint32_t line_pos = 0;
+  uint32_t prefix_len = ssh_str_len(prefix);
+  for (uint32_t i = 0; i < prefix_len; ++i) line[line_pos++] = prefix[i];
+  line[line_pos++] = ' ';
+  for (uint32_t i = 0; i < buf_pos; ++i) line[line_pos++] = buffer[i];
+  line[line_pos++] = '\n';
+
+  if (g_log_fd < 0 && ssh_log_reopen() != 0) return;
+  if (g_log_bytes + line_pos > SSHD_LOG_ROTATE_BYTES) {
+    if (ssh_log_reopen() != 0) return;
+    xaios_log("sshd: audit log rotated\n");
+  }
+  int written = xaios_fs_write(g_log_fd, line, line_pos);
+  if (written != (int)line_pos) {
+    if (ssh_log_reopen() != 0) return;
+    written = xaios_fs_write(g_log_fd, line, line_pos);
+    if (written != (int)line_pos) return;
+  }
+  g_log_bytes += line_pos;
 }
 
 static int ip_addr_equal(const xaios_ip_addr_user_t *a,
@@ -1397,8 +1423,11 @@ int sshd_run(void) {
                                          __ATOMIC_ACQUIRE);
       if (active >= SSH_MAX_CONNECTIONS) {
         ssh_log(SSH_LOG_WARN, "Max connections reached\n");
-        __atomic_add_fetch(&g_server_stats.rejected_connections, 1,
-                           __ATOMIC_RELEASE);
+        uint32_t rejected = __atomic_add_fetch(
+            &g_server_stats.rejected_connections, 1, __ATOMIC_RELEASE);
+        if (rejected == 1U) {
+          xaios_log("sshd: connection capacity rejection observed\n");
+        }
         xaios_net_close(conn_fd);
         continue;
       }

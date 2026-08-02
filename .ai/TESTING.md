@@ -19,6 +19,7 @@ Validation is based on:
 - Python QEMU gates that search serial output and telemetry markers;
 - an official Debian 13 Docker client interoperability gate for the guest
   SSH/SFTP, UDP, and direct IPv6/TCP paths;
+- a native macOS plus Debian 13 parallel load gate against one successful guest;
 - ABI/contract Python checks;
 - CI compile checks and QEMU smoke/regression jobs.
 
@@ -42,6 +43,7 @@ Evidence:
 | Regression | `make qemu-regression-suite` | Broader kernel/userspace changes. |
 | Network suite | `make qemu-network-suite` | Network/socket/SSH-adjacent changes. |
 | Debian 13 network interoperability | `make qemu-docker-network-suite` | Changes to guest SSH/SFTP, TCP lifecycle, socket buffering, UDP, IPv6, or VirtIO net. |
+| macOS and Debian parallel network load | `make qemu-parallel-network-load` | Concurrency, capacity, reconnect, or post-load recovery changes; requires macOS and Docker. |
 | CPU-AI suite | `make qemu-cpu-ai-suite` | AI runtime/model changes. |
 | Readiness | `make qemu-readiness-gate` | Changes that may affect QEMU readiness. |
 | Full OS RC | `make qemu-full-os-rc` | Release-candidate or hardware-entry decisions. |
@@ -68,13 +70,17 @@ CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` 
 - Security/update change: run relevant security/update gates plus smoke.
 - Filesystem/persistence change: run filesystem/update/readiness gates.
 - Network/SSH change: run `make qemu-network-suite` and
-  `make qemu-docker-network-suite` when Docker is available.
+  `make qemu-docker-network-suite` when Docker is available. On macOS, also run
+  `make qemu-parallel-network-load` for dual-origin load and recovery evidence.
 - The Docker gate validates Ed25519 and password acceptance/rejection,
   default-disabled and malformed credential handling, entropy failure, host-key
   persistence, SFTP offsets and isolation, shared channels, forced rekey, four
   simultaneous SSH sessions, 20 reconnects, UDP echo, malformed IPv4/IPv6
   transport input, reordering, and TCP retransmission. See
   `docs/NETWORK-SSH-STATUS.md` for the exact evidence boundary.
+- The parallel load gate adds simultaneous native macOS and Debian traffic,
+  strict SFTP status handling, four-connection/eight-channel saturation,
+  over-capacity rejection, 40 combined reconnects, and post-load recovery.
 - Docs-only change: validate Markdown links, manifest JSON, changed-file scope, and secret-like patterns; source tests may be skipped with explanation.
 
 ## Fixtures and generated reports
@@ -95,6 +101,9 @@ CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` 
 - The Debian 13 interoperability gate additionally requires Docker. Its direct
   IPv6 phase temporarily exposes the QEMU framed socket on the host so the
   isolated container can connect; cleanup removes the listener.
+- The parallel load gate requires both macOS and Docker and is therefore not a
+  Linux GitHub Actions job. It uses two framed socket listeners so both raw
+  clients can exercise the same guest while SLIRP carries SSH/SFTP/UDP traffic.
 - `make qemu-ssh-smoke` currently covers the host bridge, not the freestanding
   guest SSH daemon. Do not use that target alone as guest interoperability
   evidence.

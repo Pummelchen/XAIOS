@@ -138,7 +138,7 @@ if ! {
     printf 'rm /tmp/docker-sftp-dir/renamed.bin\n'
     printf 'rmdir /tmp/docker-sftp-dir\n'
     printf 'quit\n'
-  } | sftp "${sftp_options[@]}" "admin@$host" \
+  } | sftp "${sftp_options[@]}" -b - "admin@$host" \
       >"$workdir/sftp.log" 2>&1
 }; then
   cat "$workdir/sftp.log" >&2
@@ -160,7 +160,7 @@ if ! {
     printf 'get /tmp/docker-sftp-rekey.bin %s\n' "$workdir/sftp-rekey.bin"
     printf 'rm /tmp/docker-sftp-rekey.bin\n'
     printf 'quit\n'
-  } | sftp "${sftp_options[@]}" -o RekeyLimit=4K "admin@$host" \
+  } | sftp "${sftp_options[@]}" -b - -o RekeyLimit=4K "admin@$host" \
       >"$workdir/sftp-rekey.log" 2>&1
 }; then
   cat "$workdir/sftp-rekey.log" >&2
@@ -191,7 +191,7 @@ for index in 1 2; do
         "$index" "$workdir/parallel-result-$index.bin"
       printf 'rm /tmp/docker-sftp-%s.bin\n' "$index"
       printf 'quit\n'
-    } | sftp "${sftp_options[@]}" "admin@$host" \
+    } | sftp "${sftp_options[@]}" -b - "admin@$host" \
         >"$workdir/parallel-sftp-$index.log" 2>&1
   ) &
   holder_pids+=("$!")
@@ -232,7 +232,7 @@ test -S "$control_socket" || fail "SSH control socket was not created"
     printf 'pwd\n'
     sleep 6
     printf 'quit\n'
-  } | sftp "${sftp_options[@]}" -o ControlPath="$control_socket" \
+  } | sftp "${sftp_options[@]}" -b - -o ControlPath="$control_socket" \
       "admin@$host" >"$workdir/control-sftp.log" 2>&1
 } &
 control_sftp_pid="$!"

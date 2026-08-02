@@ -5,7 +5,7 @@
 #include <xaios/types.h>
 
 #define SOCKET_BUFFER_SIZE 16384U
-#define SOCKET_BUFFER_COUNT 32U /* 16 sockets x 2 directions */
+#define SOCKET_BUFFER_COUNT 48U /* 16 TCP x 2 directions plus 16 UDP */
 
 /*
  * Circular ring buffer for socket I/O.

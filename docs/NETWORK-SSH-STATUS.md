@@ -7,9 +7,9 @@ expose XAIOS directly to the Internet.
 
 ## QEMU-Tested Surface
 
-The following paths passed from an official Debian 13 Docker client on this
-macOS host on 2026-08-02. The client used Debian OpenSSH 10.0 and Python 3
-against the freestanding AArch64 guest:
+The following paths passed from OpenSSH clients on macOS and in an official
+Debian 13 Docker container on this host on 2026-08-03. Both clients exercised
+the same freestanding AArch64 guest:
 
 - OpenSSH Ed25519 public-key login succeeded and an unauthorized key failed;
 - an explicitly provisioned PBKDF2-HMAC-SHA256 password succeeded and a wrong
@@ -38,6 +38,27 @@ against the freestanding AArch64 guest:
 
 The machine-readable result is `build/qemu-docker-network-suite.json`. Serial
 logs and the direct-network packet capture are also generated under `build/`.
+
+### Dual-origin one-guest load gate
+
+`make qemu-parallel-network-load` adds a local concurrency and recovery gate.
+Its latest passing run used macOS 26.6 and Debian 13 against one successful
+XAIOS guest instance and recorded:
+
+- successful key/password authentication, unauthorized-key/wrong-password
+  rejection, strict batch-mode SFTP, and UDP echo from both client origins;
+- two direct raw TCP clients while SSH, SFTP, and UDP traffic remained active;
+- all four allowed SSH connections saturated concurrently, with two active
+  channels per connection;
+- 40 strict SFTP cycles and 330 UDP round trips during the combined workload;
+- two additional over-capacity connections rejected cleanly;
+- 40 sequential reconnects after saturation; and
+- successful post-load SSH, SFTP, and UDP health checks from both origins.
+
+The machine-readable result is `build/qemu-parallel-network-load.json`; serial,
+client, listener, and packet-capture artifacts are generated under `build/`.
+This is bounded QEMU interoperability and load evidence, not a physical-network
+throughput benchmark or an Internet-exposure approval.
 
 ## Security and Resource Model
 
@@ -70,7 +91,10 @@ and all-zero X25519 shared secrets terminate the connection.
 The service is cooperatively scheduled and intentionally bounded to four
 connections, two channels per connection, and eight channels globally. These
 limits match current fixed freestanding userspace buffers. They are explicit
-resource limits, not claims of unlimited server concurrency.
+resource limits, not claims of unlimited server concurrency. The audit log is
+written atomically and bounded to the mutable filesystem's per-file capacity;
+the service truncates and reopens it before subsequent records would exceed the
+limit.
 
 ## Automated Gate
 
@@ -80,6 +104,7 @@ installs OpenSSH, SFTP, sshpass, and network diagnostics:
 
 ```sh
 make qemu-docker-network-suite
+make qemu-parallel-network-load
 ```
 
 The gate creates disposable credentials, builds the guest, runs forwarded IPv4
@@ -87,6 +112,10 @@ and UDP checks, reboots the persistent image, runs direct framed IPv4/IPv6
 checks, and rebuilds fail-closed image variants. It removes QEMU processes and
 listeners during cleanup. GitHub Actions runs this target as an independent
 job so failures in unrelated jobs cannot silently skip network evidence.
+
+The parallel gate requires a macOS host plus Docker because it verifies native
+macOS and Debian clients at the same time. It is a local release gate and is not
+currently run by Linux GitHub Actions.
 
 ## Provision a Development Image
 

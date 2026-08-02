@@ -58,14 +58,15 @@ opt-in; exact target-model semantics are the default.
   filesystem, network, capability, AI Cell and telemetry fixtures.
 - An experimental freestanding SSH/SFTP service reachable through QEMU host
   forwarding, plus guest userspace UDP receive/echo and IPv6/TCP receive/send
-  paths. An official Debian 13 Docker client on macOS verifies Ed25519 key and
-  provisioned-password authentication, rejection paths, persistent host
-  identity, SFTP file/directory operations and concurrency, shared channels,
-  forced rekey, four simultaneous sessions, reconnect recycling, UDP echo, TCP
-  retransmission and malformed IPv4/IPv6 transport rejection. SSH has no built-in password and
-  fails closed without secure entropy. These QEMU checks complete the declared
-  core-OS correctness gate; they do not approve Internet exposure or physical
-  production deployment.
+  paths. OpenSSH clients on macOS and in an official Debian 13 Docker container
+  verify authentication and rejection paths, persistent host identity, strict
+  SFTP operations, shared channels, forced rekey, four simultaneous sessions,
+  reconnect recycling, UDP echo, TCP retransmission and malformed IPv4/IPv6
+  transport rejection. A dual-origin load gate runs these paths in parallel
+  against one successful guest instance and verifies recovery after saturation.
+  SSH has no built-in password and fails closed without secure entropy. These
+  QEMU checks complete the declared core-OS correctness gate; they do not approve
+  Internet exposure or physical production deployment.
 - A deterministic 80-byte model-v1 fixture path used only by QEMU correctness
   gates. The production decode syscall returns an explicit unsupported error.
 - A hosted C99 engine boundary under `engine/` with on-demand model-v2 parsing,
@@ -105,12 +106,13 @@ make qemu-abi-contract
 make image
 make qemu-smoke
 make qemu-docker-network-suite
+make qemu-parallel-network-load
 ```
 
 `make hosted-test` is the foundational model-v2/engine gate. QEMU gates validate
 OS correctness and ABI behavior only. They do not establish model parity,
 physical-hardware readiness, tokens per second, bandwidth, power, or production
-support.
+support. The parallel network gate additionally requires macOS and Docker.
 
 ## Documentation
 

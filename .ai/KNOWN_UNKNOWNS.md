@@ -96,12 +96,15 @@ and Project status aligned with `docs/MODEL-SUPPORT.json`.
 ## Unknowns
 
 - The freestanding SSH/SFTP server interoperates with Debian 13 OpenSSH in local
-  QEMU tests, including provisioned Ed25519 and PBKDF2 authentication, fail-
-  closed entropy/configuration variants, persistent host identity, shared
-  channels, forced rekey, overlapping SFTP, four simultaneous sessions, and 20
-  reconnects. Four is the deliberate fixed service limit. Independent security
-  review, physical-NIC validation, hostile-network soak, key rotation policy,
-  and side-channel analysis remain non-QEMU gates.
+  QEMU tests, and a native macOS plus Debian 13 load gate exercises the same
+  successful guest. Evidence includes provisioned Ed25519 and PBKDF2
+  authentication, fail-closed entropy/configuration variants, persistent host
+  identity, shared channels, forced rekey, strict and overlapping SFTP, four
+  simultaneous connections with eight active channels, clean over-capacity
+  rejection, 40 combined reconnects, and post-load recovery. Four is the
+  deliberate fixed service limit. Independent security review, physical-NIC
+  validation, hostile-network soak, key rotation policy, and side-channel
+  analysis remain non-QEMU gates.
 - DNS contains an A-record encoder/parser/cache prototype, but `dns_tick()` is
   not wired into the persistent network poll loop and there is no userspace
   resolver API. DNS is not an operational service.

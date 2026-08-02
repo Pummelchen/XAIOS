@@ -78,7 +78,7 @@ static int send_sftp_packet(int sockfd, const uint8_t *payload,
 /* Validate path - prevent directory traversal */
 static int validate_path(const char *path) {
   if (path == 0 || path[0] != '/') return -1;
-  
+
   /* Check for ".." components */
   const char *p = path;
   while (*p) {
@@ -297,10 +297,6 @@ static int handle_close(int sockfd, const uint8_t *data, uint32_t len) {
   
   if (handle == 0) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid handle ID");
-  }
-  if (!handle->is_dir) {
-    return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE,
-                       "Handle is not a directory");
   }
   
   /* Close handle */

@@ -10,6 +10,20 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 -->
 # AI onboarding changelog
 
+## 2026-08-03 - dual-origin single-guest SSH/network load
+
+- Added a macOS plus Debian 13 load gate that drives native OpenSSH/SFTP, UDP,
+  and two framed raw TCP clients concurrently against one successful XAIOS
+  guest instance.
+- Fixed regular-file SFTP CLOSE status, shared-transport channel-close
+  acknowledgement, bounded atomic audit logging, stale address-family state on
+  recycled TCP flows, TIME_WAIT reclamation, and TCP drain fairness.
+- Matched socket-buffer capacity to the configured TCP and UDP flow limits and
+  made the raw clients close their successful flows explicitly.
+- Verified four-connection/eight-channel saturation, clean over-capacity
+  rejection, 40 SFTP cycles, 330 UDP round trips, 40 reconnects, and post-load
+  recovery without claiming physical-network production readiness.
+
 ## 2026-08-02 - SSH and network QEMU completion gate
 
 - Added VirtIO RNG-backed SSH entropy, persistent flushed Ed25519 host keys,

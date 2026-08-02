@@ -62,7 +62,7 @@ only the Python standard library; official importer dependencies remain unknown.
 | SSH bridge | `make xaios-ssh-bridge` |
 | Connect to local SSH bridge | `ssh -p 2222 admin@localhost` |
 
-`run-qemu-aarch64.sh` supports environment overrides such as `XAIOS_AAVMF_CODE`, `XAIOS_QEMU_ACCEL`, `XAIOS_QEMU_CPU`, `XAIOS_QEMU_MACHINE`, `XAIOS_QEMU_MEMORY`, `XAIOS_QEMU_SMP`, `XAIOS_QEMU_HOSTFWD_PORT`, `XAIOS_QEMU_HOSTFWD_UDP_PORT`, `XAIOS_QEMU_NET_SOCKET_HOST`, and `XAIOS_QEMU_NET_SOCKET_PORT`.
+`run-qemu-aarch64.sh` supports environment overrides such as `XAIOS_AAVMF_CODE`, `XAIOS_QEMU_ACCEL`, `XAIOS_QEMU_CPU`, `XAIOS_QEMU_MACHINE`, `XAIOS_QEMU_MEMORY`, `XAIOS_QEMU_SMP`, `XAIOS_QEMU_HOSTFWD_PORT`, `XAIOS_QEMU_HOSTFWD_UDP_PORT`, `XAIOS_QEMU_NET_SOCKET_HOST`, `XAIOS_QEMU_NET_SOCKET_PORT`, and `XAIOS_QEMU_NET_SOCKET_PORT_2`.
 The AArch64 launcher defaults to TCG on every host. HVF remains an explicit,
 experimental `XAIOS_QEMU_ACCEL=hvf` override because current QEMU/HVF exception
 handling can abort on Apple Silicon.
@@ -81,6 +81,7 @@ For direct IPv6/TCP from a Mac client, run QEMU with
 | Filesystem | `make qemu-filesystem-gate` | Mutable filesystem. |
 | Network | `make qemu-network-suite` or `make qemu-network-full-gate` | TCP/UDP/network paths. |
 | Debian 13 network interoperability | `make qemu-docker-network-suite` | Auth policy, entropy failure, host-key persistence, SSH/SFTP channels and rekey, concurrency, UDP, and malformed/reordered/retransmitted TCP from an isolated client. |
+| macOS and Debian parallel network load | `make qemu-parallel-network-load` | Runs native macOS and Debian OpenSSH/SFTP, UDP, and direct TCP concurrently against one successful guest; requires macOS and Docker. |
 | Generate an SSH password record | `python3 scripts/create-sshd-user-config.py --password-file PATH --output PATH` | Produces the strict PBKDF2-HMAC-SHA256 user database consumed by `XAIOS_SSH_USERS_FILE`; plaintext stays outside the image. |
 | CPU-AI | `make qemu-cpu-ai-suite` or `make qemu-cpu-ai-runtime-gate` | CPU-only AI runtime. |
 | AI Cell | `make qemu-ai-cell-gate` | Resource contracts. |
@@ -102,7 +103,7 @@ with the repo-used command `python3 -m compileall -q scripts tools tests/model_v
 No database migration tooling or deploy command was detected. The repository
 has no application container deployment; `tests/network/Dockerfile.debian13`
 builds only a disposable Debian 13 network-interoperability client used by
-`make qemu-docker-network-suite`.
+`make qemu-docker-network-suite` and `make qemu-parallel-network-load`.
 
 ## Release/readiness artifacts
 

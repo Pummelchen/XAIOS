@@ -119,7 +119,13 @@ persistent_image="${XAIOS_PERSISTENT_IMAGE:-build/xaios-persistent.img}"
 hostfwd_port="${XAIOS_QEMU_HOSTFWD_PORT:-2222}"
 hostfwd_udp_port="${XAIOS_QEMU_HOSTFWD_UDP_PORT:-none}"
 net_socket_port="${XAIOS_QEMU_NET_SOCKET_PORT:-none}"
+net_socket_port_2="${XAIOS_QEMU_NET_SOCKET_PORT_2:-none}"
 net_socket_host="${XAIOS_QEMU_NET_SOCKET_HOST:-127.0.0.1}"
+
+if [ "$net_socket_port_2" != "none" ] && [ "$net_socket_port" = "none" ]; then
+  printf '%s\n' "error: XAIOS_QEMU_NET_SOCKET_PORT_2 requires XAIOS_QEMU_NET_SOCKET_PORT" >&2
+  exit 1
+fi
 
 if [ "$dry_run" -eq 0 ] && [ ! -f "$image" ]; then
   printf '%s\n' "error: missing AArch64 boot image: $image" >&2
@@ -157,8 +163,37 @@ set -- "$@" \
   -netdev user,id=net0 \
   -device virtio-net-pci,netdev=net0
 
-if [ "$net_socket_port" != "none" ]; then
+if [ "$net_socket_port" != "none" ] && {
+  [ "$net_socket_port_2" != "none" ] ||
+  [ "$hostfwd_port" != "none" ] ||
+  [ "$hostfwd_udp_port" != "none" ]
+}; then
+  if [ "$hostfwd_port" != "none" ] || [ "$hostfwd_udp_port" != "none" ]; then
+    # Synthetic framed IPv6 clients share this test hub. Keep SLIRP from
+    # interpreting and resetting their frames; host forwarding here is IPv4.
+    net1_user_options="user,id=net1_user,ipv6=off"
+    if [ "$hostfwd_port" != "none" ]; then
+      net1_user_options="${net1_user_options},hostfwd=tcp::${hostfwd_port}-:22"
+    fi
+    if [ "$hostfwd_udp_port" != "none" ]; then
+      net1_user_options="${net1_user_options},hostfwd=udp::${hostfwd_udp_port}-:2223"
+    fi
+    set -- "$@" \
+      -netdev "$net1_user_options" \
+      -netdev "hubport,id=net1_user_hub,hubid=1,netdev=net1_user"
+  fi
+  set -- "$@" \
+    -netdev "socket,id=net1_socket,listen=${net_socket_host}:${net_socket_port}" \
+    -netdev "hubport,id=net1_socket_hub,hubid=1,netdev=net1_socket"
+  if [ "$net_socket_port_2" != "none" ]; then
+    set -- "$@" \
+      -netdev "socket,id=net1_socket_2,listen=${net_socket_host}:${net_socket_port_2}" \
+      -netdev "hubport,id=net1_socket_2_hub,hubid=1,netdev=net1_socket_2"
+  fi
+  set -- "$@" -netdev "hubport,id=net1,hubid=1"
+elif [ "$net_socket_port" != "none" ]; then
   net1_options="socket,id=net1,listen=${net_socket_host}:${net_socket_port}"
+  set -- "$@" -netdev "$net1_options"
 else
   net1_options="user,id=net1"
   if [ "$hostfwd_port" != "none" ]; then
@@ -167,8 +202,8 @@ else
   if [ "$hostfwd_udp_port" != "none" ]; then
     net1_options="${net1_options},hostfwd=udp::${hostfwd_udp_port}-:2223"
   fi
+  set -- "$@" -netdev "$net1_options"
 fi
-set -- "$@" -netdev "$net1_options"
 
 set -- "$@" \
   -device virtio-net-device,netdev=net1,mac=52:54:00:12:34:57,bus=virtio-mmio-bus.2

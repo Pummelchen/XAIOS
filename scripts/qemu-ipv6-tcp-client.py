@@ -209,13 +209,40 @@ def connect_with_retry(host: str, port: int, timeout: float) -> socket.socket:
             time.sleep(0.1)
 
 
+def parse_mac(value: str) -> bytes:
+    compact = value.replace(":", "").replace("-", "")
+    try:
+        result = bytes.fromhex(compact)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("invalid MAC address") from error
+    if len(result) != 6 or (result[0] & 1) != 0:
+        raise argparse.ArgumentTypeError("MAC address must be a 6-byte unicast address")
+    return result
+
+
 def main() -> int:
+    global CLIENT_MAC, CLIENT_IP, CLIENT_IP_V4, CLIENT_PORT
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=12345)
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--client-mac", type=parse_mac, default=CLIENT_MAC)
+    parser.add_argument("--client-ipv6", default="fd00::2")
+    parser.add_argument("--client-ipv4", default="10.0.2.100")
+    parser.add_argument("--client-port", type=int, default=CLIENT_PORT)
     args = parser.parse_args()
+    if not 1 <= args.client_port <= 65535:
+        parser.error("--client-port must be between 1 and 65535")
+    try:
+        client_ip = ipaddress.IPv6Address(args.client_ipv6)
+        client_ip_v4 = ipaddress.IPv4Address(args.client_ipv4)
+    except ipaddress.AddressValueError as error:
+        parser.error(str(error))
+    CLIENT_MAC = args.client_mac
+    CLIENT_IP = client_ip.packed
+    CLIENT_IP_V4 = client_ip_v4.packed
+    CLIENT_PORT = args.client_port
 
     client_seq = 0x10203040
     with connect_with_retry(args.host, args.port, args.timeout) as sock:
@@ -278,13 +305,18 @@ def main() -> int:
             sock,
             ethernet_frame(client_seq, server_seq + len(payload), 0x10),
         )
+        send_frame(
+            sock,
+            ethernet_frame(client_seq, server_seq + len(payload), 0x14),
+        )
+        time.sleep(0.5)
         print(
             "IPv6 TCP transfer passed: "
             f"sent={len(client_banner)} received={len(payload)} "
             f"retransmit_seconds={retransmit_seconds:.3f} "
             "ipv4_bad_header=rejected ipv4_fragment=rejected "
             "zero_checksum=rejected invalid_rst=rejected "
-            "reordered_input=accepted "
+            "reordered_input=accepted valid_rst=closed "
             f"guest_banner={payload.decode().strip()}"
         )
     return 0

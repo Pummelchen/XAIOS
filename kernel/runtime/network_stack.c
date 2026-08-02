@@ -249,6 +249,7 @@ static uint32_t g_half_open_count = 0;
 static uint8_t g_local_mac[6];
 static uint32_t g_persistent_initialized;
 static uint64_t g_poll_tick_count;
+static uint32_t g_tcp_drain_cursor;
 static uint64_t g_icmp_reply_count;
 static uint64_t g_arp_reply_count;
 static uint64_t g_icmpv6_reply_count;
@@ -427,6 +428,15 @@ static void release_tcp_flow(network_tcp_flow_t *flow) {
   flow->state = XAIOS_NETWORK_FLOW_FREE;
 }
 
+static void tcp_enter_time_wait(network_tcp_flow_t *flow, uint64_t now_ns) {
+  if (flow->rx_buf != 0) sockbuf_free(flow->rx_buf);
+  if (flow->tx_buf != 0) sockbuf_free(flow->tx_buf);
+  flow->rx_buf = 0;
+  flow->tx_buf = 0;
+  flow->state = XAIOS_NETWORK_FLOW_TIME_WAIT;
+  flow->last_seen_ns = now_ns;
+}
+
 static void release_udp_flow(network_udp_flow_t *flow) {
   if (flow == 0 || flow->active == 0U) return;
   uint32_t flow_id = flow->flow_id;
@@ -488,8 +498,7 @@ static void tcp_accept_peer_fin(network_tcp_flow_t *flow, uint64_t now_ns) {
   if (flow->state == XAIOS_NETWORK_FLOW_ESTABLISHED) {
     flow->state = XAIOS_NETWORK_FLOW_CLOSE_WAIT;
   } else if (flow->state == XAIOS_NETWORK_FLOW_FIN_WAIT_2) {
-    flow->state = XAIOS_NETWORK_FLOW_TIME_WAIT;
-    flow->last_seen_ns = now_ns;
+    tcp_enter_time_wait(flow, now_ns);
   }
 }
 
@@ -509,10 +518,12 @@ static int acknowledge_tcp_flow(network_tcp_flow_t *flow, uint32_t ack,
       flow->fin_outstanding != 0U &&
       !tcp_seq_before(ack, flow->fin_seq + 1U)) {
     flow->fin_outstanding = 0U;
-    flow->state = flow->peer_fin_received == 0U ?
-                      XAIOS_NETWORK_FLOW_FIN_WAIT_2 :
-                      XAIOS_NETWORK_FLOW_TIME_WAIT;
-    flow->last_seen_ns = now_ns;
+    if (flow->peer_fin_received == 0U) {
+      flow->state = XAIOS_NETWORK_FLOW_FIN_WAIT_2;
+      flow->last_seen_ns = now_ns;
+    } else {
+      tcp_enter_time_wait(flow, now_ns);
+    }
   }
   if (tcp_seq_after(ack, flow->local_seq)) {
     uint32_t newly_acked = ack - flow->local_seq;
@@ -1295,11 +1306,54 @@ static network_udp_flow_t *alloc_udp_flow(uint32_t queue_id, uint32_t cell_id,
   return 0;
 }
 
-static network_tcp_flow_t *alloc_tcp_flow(void) {
+static int tcp_flow_has_remote_tuple(const network_tcp_flow_t *flow,
+                                     uint16_t local_port,
+                                     uint16_t remote_port,
+                                     uint32_t remote_address,
+                                     const xaios_ip_addr_t *remote_addr) {
+  if (flow->local_port != local_port || flow->remote_port != remote_port) {
+    return 0;
+  }
+  if (remote_addr != 0) {
+    return xaios_ip_addr_equal(&flow->remote_addr, remote_addr);
+  }
+  return flow->remote_address == remote_address;
+}
+
+static network_tcp_flow_t *alloc_tcp_flow(
+    uint16_t local_port, uint16_t remote_port, uint32_t remote_address,
+    const xaios_ip_addr_t *remote_addr) {
   /* Limit half-open connections before reserving a flow slot. */
   if (g_half_open_count >= NETWORK_TCP_MAX_HALF_OPEN) {
     klog("network: SYN flood protection: rejecting connection (half-open: %u)\n", g_half_open_count);
     return 0;
+  }
+
+  uint32_t has_free = 0U;
+  for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
+    if (g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_FREE) {
+      has_free = 1U;
+      break;
+    }
+  }
+  if (has_free == 0U) {
+    network_tcp_flow_t *oldest = 0;
+    for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
+      network_tcp_flow_t *candidate = &g_tcp_flows[i];
+      if (candidate->state != XAIOS_NETWORK_FLOW_TIME_WAIT ||
+          tcp_flow_has_remote_tuple(candidate, local_port, remote_port,
+                                    remote_address, remote_addr)) {
+        continue;
+      }
+      if (oldest == 0 || candidate->last_seen_ns < oldest->last_seen_ns) {
+        oldest = candidate;
+      }
+    }
+    if (oldest != 0) {
+      klog("network: recycling TIME_WAIT flow id=%u for new tuple\n",
+           oldest->flow_id);
+      release_tcp_flow(oldest);
+    }
   }
 
   for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
@@ -1319,6 +1373,10 @@ static network_tcp_flow_t *alloc_tcp_flow(void) {
       g_tcp_flows[i].pending_ack = 0;
       g_tcp_flows[i].close_requested = 0;
       g_tcp_flows[i].remote_mac_valid = 0;
+      g_tcp_flows[i].remote_address = 0;
+      g_tcp_flows[i].local_address = 0;
+      xaios_ip_addr_zero(&g_tcp_flows[i].remote_addr);
+      xaios_ip_addr_zero(&g_tcp_flows[i].local_addr);
       /* Retransmission state. */
       g_tcp_flows[i].last_tx_ns = 0;
       g_tcp_flows[i].rto_ns = NETWORK_TCP_RETRANSMIT_NS;
@@ -1372,6 +1430,7 @@ static network_tcp_flow_t *alloc_tcp_flow(void) {
 }
 
 void network_stack_init(void) {
+  g_tcp_drain_cursor = 0U;
   for (uint32_t i = 0; i < XAIOS_NETWORK_MAX_QUEUE_BINDINGS; ++i) {
     g_queue_bindings[i].cell_id = 0;
     g_queue_bindings[i].queue_id = XAIOS_NETWORK_QUEUE_ID_INVALID;
@@ -1828,8 +1887,12 @@ static xaios_status_t tcp_send_flow_segment(network_tcp_flow_t *flow,
 }
 
 static void tcp_drain_pending(void) {
-  for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
-    network_tcp_flow_t *flow = &g_tcp_flows[i];
+  uint32_t start_index = g_tcp_drain_cursor;
+  g_tcp_drain_cursor =
+      (g_tcp_drain_cursor + 1U) % NETWORK_TCP_CONNECTIONS;
+  for (uint32_t offset = 0; offset < NETWORK_TCP_CONNECTIONS; ++offset) {
+    uint32_t index = (start_index + offset) % NETWORK_TCP_CONNECTIONS;
+    network_tcp_flow_t *flow = &g_tcp_flows[index];
     if (flow->state == XAIOS_NETWORK_FLOW_FREE ||
         flow->state == XAIOS_NETWORK_FLOW_CLOSED) {
       continue;
@@ -1856,12 +1919,18 @@ static void tcp_drain_pending(void) {
       }
     }
     uint64_t now_ns = timer_now_ns();
-    if (flow->pending_synack != 0U &&
-        tcp_send_flow_segment(flow, flow->local_seq,
-                              NETWORK_TCP_FLAG_SYN | NETWORK_TCP_FLAG_ACK,
-                              0, 0) == XAIOS_OK) {
-      flow->pending_synack = 0U;
-      ++flow->packets_tx;
+    if (flow->pending_synack != 0U) {
+      xaios_status_t synack_status = tcp_send_flow_segment(
+          flow, flow->local_seq,
+          NETWORK_TCP_FLAG_SYN | NETWORK_TCP_FLAG_ACK, 0, 0);
+      if (synack_status == XAIOS_OK) {
+        flow->pending_synack = 0U;
+        ++flow->packets_tx;
+      } else if (flow->packets_tx == 0U && flow->last_tx_ns == 0U) {
+        flow->last_tx_ns = now_ns;
+        klog("network: tcp flow id=%u SYN-ACK send failed status=%d\n",
+             flow->flow_id, synack_status);
+      }
     }
 
     if (flow->tx_buf != 0 && sockbuf_used(flow->tx_buf) > 0U &&
@@ -2349,7 +2418,7 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
       packet_mark_dropped(packet);
       return XAIOS_ERR_NOT_FOUND;
     }
-    flow = alloc_tcp_flow();
+    flow = alloc_tcp_flow(dst_port, src_port, remote_address, 0);
     if (flow == 0) {
       ++g_tcp_reset_count;
       packet_mark_dropped(packet);
@@ -2769,7 +2838,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
       packet_mark_dropped(packet);
       return XAIOS_ERR_NOT_FOUND;
     }
-    flow = alloc_tcp_flow();
+    flow = alloc_tcp_flow(dst_port, src_port, 0, &src_addr);
     if (flow == 0) {
       ++g_tcp_reset_count;
       packet_mark_dropped(packet);
@@ -3842,6 +3911,7 @@ void network_init_persistent(void) {
     g_socket_flow_map[i].active = 0;
   }
   g_half_open_count = 0;
+  g_tcp_drain_cursor = 0U;
   sockbuf_pool_init();
   routing_init();
   if (network_stack_queue_bindings() == 0U) {

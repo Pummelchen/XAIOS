@@ -22,6 +22,7 @@ typedef struct ssh_channel {
   uint32_t pending_offset;
   uint32_t pending_used;
   uint32_t close_after_flush;
+  uint32_t close_sent;
   uint32_t exit_status;
   uint32_t is_sftp;
   uint32_t sftp_rx_used;

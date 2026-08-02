@@ -23,6 +23,9 @@
 #define SSHD_RATE_LIMIT_MAX_FAILURES 10
 #define SSHD_RATE_LIMIT_BAN_DURATION UINT64_C(3600000000000)
 
+/* The mutable filesystem stores at most 8 KiB per file. */
+#define SSHD_LOG_ROTATE_BYTES 7168U
+
 /* Authentication */
 #define SSHD_MAX_AUTH_ATTEMPTS 5
 #define SSHD_MAX_USERS 100
