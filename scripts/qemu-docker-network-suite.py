@@ -154,6 +154,8 @@ def scan_host_key(key_dir: Path, port: int) -> tuple[str, str]:
             "ssh-keyscan",
             "-T",
             "20",
+            "-t",
+            "ed25519",
             "-p",
             str(port),
             "host.docker.internal",
