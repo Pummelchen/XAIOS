@@ -211,6 +211,8 @@ xaios_status_t virtio_transport_wait_used(volatile uint16_t *used_idx,
                                          uint16_t expected) {
   for (uint64_t spin = 0; spin < VIRTIO_SPIN_LIMIT; ++spin) {
     if (*used_idx >= expected) {
+      /* Device writes to the used ring and request buffers precede idx. */
+      virtio_mmio_barrier();
       return XAIOS_OK;
     }
     __asm__ volatile("yield");

@@ -23,6 +23,8 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 - Verified four-connection/eight-channel saturation, clean over-capacity
   rejection, 40 SFTP cycles, 330 UDP round trips, 40 reconnects, and post-load
   recovery without claiming physical-network production readiness.
+- Made VirtIO completion observation acquire-ordered before drivers consume
+  device-written status or data, and added block-flush failure diagnostics.
 
 ## 2026-08-02 - SSH and network QEMU completion gate
 

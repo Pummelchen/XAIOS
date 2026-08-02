@@ -145,10 +145,16 @@ static xaios_status_t flush_h(virtio_block_driver_t *drv) {
   drv->avail->idx = drv->next_avail;
   virtio_transport_notify(&drv->device, 0U);
   if (virtio_transport_wait_used(&drv->used->idx, used_target) != XAIOS_OK) {
+    klog("virtio-blk: flush completion timeout avail=%u used=%u target=%u\n",
+         drv->next_avail, drv->used->idx, used_target);
     return XAIOS_ERR_IO;
   }
   virtio_transport_ack_interrupts(&drv->device);
-  return *drv->status == 0U ? XAIOS_OK : XAIOS_ERR_IO;
+  if (*drv->status != 0U) {
+    klog("virtio-blk: flush device error status=%u\n", *drv->status);
+    return XAIOS_ERR_IO;
+  }
+  return XAIOS_OK;
 }
 
 xaios_status_t virtio_block_init(void) {
