@@ -174,6 +174,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/virtio_transport.o
   $KERNEL_BUILD_DIR/virtio_blk.o
   $KERNEL_BUILD_DIR/virtio_net.o
+  $KERNEL_BUILD_DIR/virtio_rng.o
   $KERNEL_BUILD_DIR/initramfs.o
   $KERNEL_BUILD_DIR/mutable_fs.o
   $KERNEL_BUILD_DIR/service.o
@@ -247,6 +248,7 @@ compile_kernel "$ROOT_DIR/kernel/arch/aarch64/topology.c" "$KERNEL_BUILD_DIR/top
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport.c" "$KERNEL_BUILD_DIR/virtio_transport.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_blk.c" "$KERNEL_BUILD_DIR/virtio_blk.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_net.c" "$KERNEL_BUILD_DIR/virtio_net.o"
+compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_rng.c" "$KERNEL_BUILD_DIR/virtio_rng.o"
 compile_kernel "$ROOT_DIR/kernel/fs/initramfs.c" "$KERNEL_BUILD_DIR/initramfs.o"
 compile_kernel "$ROOT_DIR/kernel/fs/mutable_fs.c" "$KERNEL_BUILD_DIR/mutable_fs.o"
 compile_kernel "$ROOT_DIR/kernel/user/service.c" "$KERNEL_BUILD_DIR/service.o"
@@ -459,6 +461,20 @@ done
   "$USER_LIB_OBJ" \
   @"$SSHD_RESPONSE_FILE"
 set -- "$@" "/bin/sshd=$INIT_BUILD_DIR/sshd.elf"
+if [ "${XAIOS_AUTHORIZED_KEYS_FILE:-}" != "" ]; then
+  if [ ! -f "$XAIOS_AUTHORIZED_KEYS_FILE" ]; then
+    printf '%s\n' "error: authorized keys file not found: $XAIOS_AUTHORIZED_KEYS_FILE" >&2
+    exit 1
+  fi
+  set -- "$@" "/etc/xaios_authorized_keys=$XAIOS_AUTHORIZED_KEYS_FILE"
+fi
+if [ "${XAIOS_SSH_USERS_FILE:-}" != "" ]; then
+  if [ ! -f "$XAIOS_SSH_USERS_FILE" ]; then
+    printf '%s\n' "error: SSH users file not found: $XAIOS_SSH_USERS_FILE" >&2
+    exit 1
+  fi
+  set -- "$@" "/etc/xaios_sshd_users=$XAIOS_SSH_USERS_FILE"
+fi
 
 rm -f "$IMAGE_PATH"
 mkdir -p "$(dirname -- "$IMAGE_PATH")"

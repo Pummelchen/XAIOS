@@ -219,6 +219,13 @@ static xaios_status_t blk_write(uint64_t sector, const void *buf, uint64_t sz) {
   return virtio_block_write_sector(sector, buf, sz);
 }
 
+static xaios_status_t blk_flush(void) {
+  if (g_persistent_handle != 0) {
+    return virtio_block_flush_h(g_persistent_handle);
+  }
+  return virtio_block_flush();
+}
+
 static uint64_t blk_capacity(void) {
   if (g_persistent_handle != 0) {
     return virtio_block_capacity_sectors_h(g_persistent_handle);
@@ -550,7 +557,7 @@ static xaios_status_t write_metadata(void) {
       return XAIOS_ERR_IO;
     }
   }
-  return XAIOS_OK;
+  return blk_flush();
 }
 
 static xaios_status_t clear_journal(void) {
@@ -1653,6 +1660,16 @@ int64_t mutable_fs_write_fd(uint32_t fd, const void *buffer, uint64_t size) {
   return (int64_t)size;
 }
 
+xaios_status_t mutable_fs_seek(uint32_t fd, uint64_t offset) {
+  xaios_mfs_file_handle_t *handle = handle_for_fd(fd);
+  if (handle == 0 || offset > g_active_max_file_bytes) {
+    ++g_reject_count;
+    return XAIOS_ERR_INVALID;
+  }
+  handle->cursor = offset;
+  return XAIOS_OK;
+}
+
 xaios_status_t mutable_fs_close(uint32_t fd) {
   xaios_mfs_file_handle_t *handle = handle_for_fd(fd);
   if (handle == 0) {
@@ -1877,6 +1894,9 @@ void mutable_fs_self_test(void) {
   kassert(mutable_fs_write_fd((uint32_t)fd, k_fd_payload,
                               sizeof(k_fd_payload)) ==
           (int64_t)sizeof(k_fd_payload));
+  kassert(mutable_fs_seek((uint32_t)fd, 3U) == XAIOS_OK);
+  kassert(handle_for_fd((uint32_t)fd)->cursor == 3U);
+  kassert(mutable_fs_seek((uint32_t)fd, 0U) == XAIOS_OK);
   kassert(mutable_fs_close((uint32_t)fd) == XAIOS_OK);
   fd = mutable_fs_open("/logs/fd-api.log", XAIOS_MFS_OPEN_READ);
   kassert(fd > 0);

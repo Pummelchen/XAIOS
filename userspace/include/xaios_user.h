@@ -34,6 +34,8 @@ typedef int s32;
 #define XAIOS_SYSCALL_NET_SEND 32ULL
 #define XAIOS_SYSCALL_NET_CLOSE 33ULL
 #define XAIOS_SYSCALL_AGENT_DISPATCH 34ULL
+#define XAIOS_SYSCALL_RANDOM 35ULL
+#define XAIOS_SYSCALL_FS_SEEK 36ULL
 
 #define XAIOS_NET_PROTOCOL_UDP 17ULL
 #define XAIOS_NET_PROTOCOL_TCP 6ULL
@@ -195,6 +197,7 @@ void xaios_log(const char *text);
 void xaios_log_u64(const char *prefix, u64 value, const char *suffix);
 void xaios_exit(int code);
 u64 xaios_clock_nanos(void);
+int xaios_random(void *buffer, u64 size);
 int xaios_osctl(const char *command);
 int xaios_fs_mkdir(const char *path);
 int xaios_fs_delete(const char *path);
@@ -203,6 +206,7 @@ int xaios_fs_list(const char *path, char *buffer, u64 buffer_size, u64 *out_size
 int xaios_fs_open(const char *path, u32 flags);
 int xaios_fs_read(int fd, void *buffer, u64 size);
 int xaios_fs_write(int fd, const void *buffer, u64 size);
+int xaios_fs_seek(int fd, u64 offset);
 int xaios_fs_close(int fd);
 int xaios_fs_stat(const char *path, xaios_mfs_stat_user_t *stat);
 int xaios_net_udp_echo(const void *payload, u64 payload_size, u64 *echoed_bytes);

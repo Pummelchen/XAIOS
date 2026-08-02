@@ -109,7 +109,7 @@ qemu-userspace-suite: image
 qemu-network-suite: image
 	python3 ./scripts/qemu-network-suite.py
 
-qemu-docker-network-suite: image
+qemu-docker-network-suite:
 	python3 ./scripts/qemu-docker-network-suite.py
 
 qemu-cpu-ai-suite: image

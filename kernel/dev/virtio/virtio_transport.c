@@ -12,6 +12,7 @@
 #define VIRTIO_MMIO_VERSION 0x004U
 #define VIRTIO_MMIO_DEVICE_ID 0x008U
 #define VIRTIO_MMIO_VENDOR_ID 0x00cU
+#define VIRTIO_MMIO_DEVICE_FEATURES 0x010U
 #define VIRTIO_MMIO_DEVICE_FEATURES_SEL 0x014U
 #define VIRTIO_MMIO_DRIVER_FEATURES 0x020U
 #define VIRTIO_MMIO_DRIVER_FEATURES_SEL 0x024U
@@ -129,6 +130,40 @@ xaios_status_t virtio_transport_negotiate_no_features(
     return XAIOS_ERR_IO;
   }
 
+  return XAIOS_OK;
+}
+
+xaios_status_t virtio_transport_negotiate_features(
+    const virtio_mmio_device_t *device, uint32_t requested_low,
+    uint32_t requested_high, uint32_t *accepted_low,
+    uint32_t *accepted_high) {
+  if (device == 0 || accepted_low == 0 || accepted_high == 0) {
+    return XAIOS_ERR_INVALID;
+  }
+  virtio_transport_reset(device);
+  set_status(device, VIRTIO_STATUS_ACKNOWLEDGE);
+  set_status(device, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
+  virtio_mmio_write32(device->base, VIRTIO_MMIO_DEVICE_FEATURES_SEL, 0U);
+  uint32_t available_low =
+      virtio_mmio_read32(device->base, VIRTIO_MMIO_DEVICE_FEATURES);
+  virtio_mmio_write32(device->base, VIRTIO_MMIO_DEVICE_FEATURES_SEL, 1U);
+  uint32_t available_high =
+      virtio_mmio_read32(device->base, VIRTIO_MMIO_DEVICE_FEATURES);
+  *accepted_low = available_low & requested_low;
+  *accepted_high = available_high & requested_high;
+  virtio_mmio_write32(device->base, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0U);
+  virtio_mmio_write32(device->base, VIRTIO_MMIO_DRIVER_FEATURES,
+                      *accepted_low);
+  virtio_mmio_write32(device->base, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 1U);
+  virtio_mmio_write32(device->base, VIRTIO_MMIO_DRIVER_FEATURES,
+                      *accepted_high);
+  set_status(device, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER |
+                         VIRTIO_STATUS_FEATURES_OK);
+  uint32_t status = virtio_mmio_read32(device->base, VIRTIO_MMIO_STATUS);
+  if ((status & VIRTIO_STATUS_FEATURES_OK) == 0U) {
+    set_status(device, status | VIRTIO_STATUS_FAILED);
+    return XAIOS_ERR_IO;
+  }
   return XAIOS_OK;
 }
 

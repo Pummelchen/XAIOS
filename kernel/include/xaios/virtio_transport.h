@@ -8,6 +8,7 @@
 
 #define VIRTIO_DEVICE_NET UINT32_C(1)
 #define VIRTIO_DEVICE_BLOCK UINT32_C(2)
+#define VIRTIO_DEVICE_RNG UINT32_C(4)
 
 typedef struct virtq_desc {
   uint64_t addr;
@@ -51,6 +52,10 @@ xaios_status_t virtio_transport_find_from(uint32_t device_id, const char *name,
 void virtio_transport_reset(const virtio_mmio_device_t *device);
 xaios_status_t virtio_transport_negotiate_no_features(
     const virtio_mmio_device_t *device);
+xaios_status_t virtio_transport_negotiate_features(
+    const virtio_mmio_device_t *device, uint32_t requested_low,
+    uint32_t requested_high, uint32_t *accepted_low,
+    uint32_t *accepted_high);
 xaios_status_t virtio_transport_setup_queue(const virtio_mmio_device_t *device,
                                            uint32_t queue_index,
                                            uint32_t queue_size,

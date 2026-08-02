@@ -36,6 +36,7 @@ static int send_all(int sockfd, const void *data, uint64_t len) {
       }
       continue;
     }
+    if (n > len - sent) return -1;
     stalled_since = 0;
     sent += n;
   }
@@ -67,7 +68,7 @@ int ssh_recv_version(int sockfd, uint8_t *buf, uint32_t buf_size,
     int r = xaios_net_recv((u64)(uint64_t)sockfd, buf + pos, 1, &n);
     if (r != 0 || n == 0) return -1;
     
-    /* FIX-003: Reject overly long version strings (buffer overflow protection) */
+    /* Reject version lines beyond the transport protocol limit. */
     if (pos > 255) {
       return -1;  /* Version string too long */
     }
@@ -135,7 +136,7 @@ int ssh_packet_write(int sockfd, const uint8_t *data, uint32_t len) {
   ssh_write_u32_be(packet, packet_len);
   packet[4] = (uint8_t)padding;
   ssh_mem_copy(packet + 5U, data, len);
-  crypto_random_bytes(packet + 5U + len, padding);
+  if (crypto_random_bytes(packet + 5U + len, padding) != 0) return -1;
   return send_all(sockfd, packet, wire_len);
 }
 
@@ -158,7 +159,7 @@ int ssh_packet_write_encrypted(int sockfd, const uint8_t *data, uint32_t len) {
   ssh_write_u32_be(plaintext, packet_len);
   plaintext[4] = (uint8_t)padding;
   for (uint32_t i = 0; i < len; ++i) plaintext[5U + i] = data[i];
-  crypto_random_bytes(plaintext + 5U + len, padding);
+  if (crypto_random_bytes(plaintext + 5U + len, padding) != 0) return -1;
 
   /* RFC 4253 MAC input is uint32 sequence number plus plaintext packet. */
   uint8_t *mac_input = scratch->mac_input;
@@ -205,9 +206,15 @@ int ssh_packet_read_encrypted(int sockfd, ssh_packet_t *out_pkt) {
   aes128_ctr(&conn->crypto.decrypt_ctx, conn->crypto.decrypt_iv,
              wire, first_plaintext, sizeof(first_plaintext));
   uint32_t packet_len = ssh_read_u32_be(first_plaintext);
+  if (packet_len < 5U || packet_len > SSH_MAX_PACKET_SIZE - 4U) {
+    ssh_mem_zero(first_plaintext, sizeof(first_plaintext));
+    xaios_log("sshd: rejected invalid encrypted packet length\n");
+    return -1;
+  }
   uint32_t encrypted_len = 4U + packet_len;
-  if (packet_len < 5U || encrypted_len > SSH_MAX_PACKET_SIZE ||
+  if (encrypted_len > SSH_MAX_PACKET_SIZE ||
       (encrypted_len % block_size) != 0U) {
+    ssh_mem_zero(first_plaintext, sizeof(first_plaintext));
     xaios_log("sshd: rejected invalid encrypted packet length\n");
     return -1;
   }
@@ -253,6 +260,9 @@ int ssh_packet_read_encrypted(int sockfd, ssh_packet_t *out_pkt) {
     different |= (uint32_t)(computed_mac[i] ^ received_mac[i]);
   }
   if (different != 0U) {
+    ssh_mem_zero(first_plaintext, sizeof(first_plaintext));
+    ssh_mem_zero(computed_mac, sizeof(computed_mac));
+    ssh_mem_zero(full_plaintext, encrypted_len);
     xaios_log("sshd: rejected encrypted packet MAC\n");
     return -1;
   }
@@ -269,6 +279,9 @@ int ssh_packet_read_encrypted(int sockfd, ssh_packet_t *out_pkt) {
   for (uint32_t i = 0; i < payload_len; ++i) {
     out_pkt->data[i] = full_plaintext[5U + i];
   }
+  ssh_mem_zero(first_plaintext, sizeof(first_plaintext));
+  ssh_mem_zero(computed_mac, sizeof(computed_mac));
+  ssh_mem_zero(full_plaintext, encrypted_len);
   increment_counter(conn->crypto.decrypt_iv, encrypted_len / block_size);
   conn->crypto.decrypt_seq =
       (uint32_t)(conn->crypto.decrypt_seq + 1U);

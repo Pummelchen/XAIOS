@@ -75,13 +75,15 @@ It is correctness evidence, not production or hardware-performance evidence.
 ### Mac client interoperability
 
 The freestanding guest SSH/SFTP and UDP services can be exercised through QEMU
-host forwarding. The built-in `admin` credential is for local QEMU development
-only; do not expose these ports beyond localhost.
+host forwarding. The image has no built-in password or authorized key. Package
+disposable development credentials at build time and do not expose these ports
+beyond localhost.
 
 The recommended automated check uses the official Debian 13 Docker base and
-tests correct and incorrect passwords, SFTP put/stat/get/remove, overlapping
-SFTP sessions, four simultaneous SSH sessions, reconnect recycling, UDP echo,
-and direct IPv6/TCP:
+tests Ed25519 and password acceptance/rejection, default-disabled and malformed
+credential configurations, secure-entropy failure, persistent host identity,
+SFTP offsets, channel sharing, rekey, four simultaneous SSH sessions, reconnect
+recycling, UDP echo, and direct malformed/reordered/retransmitted TCP traffic:
 
 ```sh
 make qemu-docker-network-suite
@@ -89,6 +91,19 @@ make qemu-docker-network-suite
 
 Docker is required for this target. Generated reports, serial logs, and packet
 captures are placed under `build/`.
+
+For a manual key-only image:
+
+```sh
+mkdir -p build/local-ssh
+ssh-keygen -t ed25519 -N '' -f build/local-ssh/admin
+XAIOS_AUTHORIZED_KEYS_FILE=build/local-ssh/admin.pub make image
+```
+
+To test password authentication, generate the strict PBKDF2 record with
+`scripts/create-sshd-user-config.py` and pass it through
+`XAIOS_SSH_USERS_FILE`. See [`NETWORK-SSH-STATUS.md`](./NETWORK-SSH-STATUS.md)
+for the exact commands and security boundary.
 
 ```sh
 XAIOS_QEMU_HOSTFWD_PORT=2299 XAIOS_QEMU_HOSTFWD_UDP_PORT=2298 make qemu

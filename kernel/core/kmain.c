@@ -49,11 +49,25 @@
 #include <xaios/user.h>
 #include <xaios/virtio_blk.h>
 #include <xaios/virtio_net.h>
+#include <xaios/virtio_rng.h>
 #include <xaios/vmm.h>
 #include <xaios/watchdog.h>
 
 static const char g_vmm_rodata_probe[] = "vmm-rodata";
 static uint64_t g_vmm_data_probe;
+
+static void provision_read_only_config(const char *path) {
+  const xaios_initramfs_file_t *file = 0;
+  xaios_status_t status = initramfs_lookup(path, &file);
+  if (status == XAIOS_ERR_NOT_FOUND) return;
+  if (status != XAIOS_OK || file == 0 || file->base == 0 || file->size == 0U ||
+      file->size > XAIOS_MFS_MAX_FILE_BYTES_V3 ||
+      mutable_fs_write(path, file->base, file->size) != XAIOS_OK) {
+    klog("kernel: failed to provision config path=%s\n", path);
+    return;
+  }
+  klog("kernel: provisioned config path=%s bytes=%lu\n", path, file->size);
+}
 
 static void early_spinlock_self_test(void) {
   xaios_spinlock_t lock = XAIOS_SPINLOCK_INIT;
@@ -189,7 +203,9 @@ void kmain(const xaios_boot_info_t *boot) {
   gic_init_qemu_virt();
   gic_self_test();
 
+  virtio_rng_self_test();
   virtio_block_self_test();
+  initramfs_self_test();
   persistence_self_test();
   mutable_fs_self_test();
   /* The QEMU runner pins the persistent disk to VirtIO-MMIO slot 1. */
@@ -198,6 +214,8 @@ void kmain(const xaios_boot_info_t *boot) {
     xaios_mfs_fsck_result_t fsck = mutable_fs_fsck();
     klog("kernel: persistent fsck valid=%u v%u files=%lu dirs=%lu\n",
          fsck.valid, fsck.version, fsck.files, fsck.directories);
+    provision_read_only_config("/etc/xaios_authorized_keys");
+    provision_read_only_config("/etc/xaios_sshd_users");
     /* Initialize persistent log ring buffer */
     klog_ring_init();
     klog_ring_self_test();
@@ -223,7 +241,6 @@ void kmain(const xaios_boot_info_t *boot) {
   sockbuf_self_test();
   routing_self_test();
   network_stack_self_test();
-  initramfs_self_test();
   syscall_self_test();
   user_process_table_init();
   user_process_lifecycle_self_test();
@@ -355,7 +372,7 @@ void kmain(const xaios_boot_info_t *boot) {
       XAIOS_CAP_CPU_AI | XAIOS_CAP_ML;
   const uint64_t sshd_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_FS_READ |
       XAIOS_CAP_FS_WRITE | XAIOS_CAP_NET_SOCKET | XAIOS_CAP_REMOTE_LOGIN |
-      XAIOS_CAP_TIME;
+      XAIOS_CAP_TIME | XAIOS_CAP_RANDOM;
 
   run_user_app("/bin/xaios-shell", 6, shell_caps);
   run_user_app("/bin/hello", 7, hello_caps);

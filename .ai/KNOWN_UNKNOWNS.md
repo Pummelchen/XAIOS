@@ -33,7 +33,7 @@ Evidence:
 ## Resolved in current working tree: syscall/API documentation lag
 
 Source, userspace wrappers, `docs/API.md`, and the release-candidate contract now
-cover syscalls 1-34. `scripts/qemu_gate_lib.py` rejects missing or extra source
+cover syscalls 1-35. `scripts/qemu_gate_lib.py` rejects missing or extra source
 syscalls/capabilities.
 
 Evidence:
@@ -96,23 +96,22 @@ and Project status aligned with `docs/MODEL-SUPPORT.json`.
 ## Unknowns
 
 - The freestanding SSH/SFTP server interoperates with Debian 13 OpenSSH in local
-  QEMU tests, including two overlapping SFTP sessions, four simultaneous SSH
-  sessions, and 20 reconnects. Four is the deliberate fixed service limit. The
-  server still has no independent security review, production entropy/key
-  provisioning, rekey implementation, controlled-loss soak, or physical-NIC
-  validation. It closes encrypted sessions at the rekey boundary rather than
-  downgrading.
+  QEMU tests, including provisioned Ed25519 and PBKDF2 authentication, fail-
+  closed entropy/configuration variants, persistent host identity, shared
+  channels, forced rekey, overlapping SFTP, four simultaneous sessions, and 20
+  reconnects. Four is the deliberate fixed service limit. Independent security
+  review, physical-NIC validation, hostile-network soak, key rotation policy,
+  and side-channel analysis remain non-QEMU gates.
 - DNS contains an A-record encoder/parser/cache prototype, but `dns_tick()` is
   not wired into the persistent network poll loop and there is no userspace
   resolver API. DNS is not an operational service.
-- TCP now retains and retransmits one unacknowledged MSS-sized payload segment,
-  with acknowledgement and timeout bookkeeping. Debian 13 interoperability and
-  a direct IPv6 deliberately withheld-ACK retransmission are verified; repeated
-  packet loss, reordering, SACK, multi-segment congestion behavior, and
+- TCP retains and retransmits one unacknowledged MSS-sized payload segment with
+  RTT/RTO, ACK/window, bounded reordering, keepalive, and FIN bookkeeping.
+  Direct malformed-checksum, fragment-rejection, reordered-input, and withheld-
+  ACK cases pass. Repeated-loss soak, SACK, multi-segment congestion tuning, and
   physical-network recovery remain unknown.
-- IPv4 fragmentation/reassembly helpers have self-tests but are not integrated
-  into the persistent receive/transmit path. IPv6 multi-fragment reassembly is
-  explicitly unimplemented.
+- Active IPv4/IPv6 transport paths reject fragments. End-to-end fragment
+  reassembly is not integrated.
 - AArch64 SMMUv3 is still bypass-only. General userspace thread creation is not
   exposed, although bounded SMP and thread-group work APIs exist.
 - The old bump-only heap limitation is obsolete: `kheap_free()` and free-list

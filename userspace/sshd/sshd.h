@@ -19,7 +19,7 @@
 #define SSHD_REKEY_INTERVAL UINT64_C(3600000000000)
 
 /* Rate limiting */
-#define SSHD_RATE_LIMIT_MAX_ENTRIES 1024
+#define SSHD_RATE_LIMIT_MAX_ENTRIES 256
 #define SSHD_RATE_LIMIT_MAX_FAILURES 10
 #define SSHD_RATE_LIMIT_BAN_DURATION UINT64_C(3600000000000)
 
@@ -28,10 +28,16 @@
 #define SSHD_MAX_USERS 100
 #define SSHD_USERNAME_MAX 64
 #define SSHD_PASSWORD_HASH_SIZE 32
+#define SSHD_PASSWORD_SALT_MAX 32
+#define SSHD_PASSWORD_ITERATIONS_MIN 100000U
+#define SSHD_PASSWORD_ITERATIONS_MAX 1000000U
 
 /* User database entry */
 typedef struct {
   char username[SSHD_USERNAME_MAX];
+  uint8_t password_salt[SSHD_PASSWORD_SALT_MAX];
+  uint32_t password_salt_len;
+  uint32_t password_iterations;
   uint8_t password_hash[SSHD_PASSWORD_HASH_SIZE];
   int active;
 } sshd_user_t;

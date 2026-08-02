@@ -56,6 +56,8 @@ GitHub Actions workflow `.github/workflows/ci.yml` runs:
 - ABI contract validation;
 - `make image` followed by `scripts/qemu-smoke.py`;
 - `make image` followed by `scripts/qemu-regression-suite.py`.
+- the independent `make qemu-docker-network-suite` Debian interoperability
+  job, with logs, JSON, and packet capture uploaded even on failure.
 
 CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` for QEMU smoke/regression jobs.
 
@@ -67,9 +69,11 @@ CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` 
 - Filesystem/persistence change: run filesystem/update/readiness gates.
 - Network/SSH change: run `make qemu-network-suite` and
   `make qemu-docker-network-suite` when Docker is available.
-- The Docker gate validates correct and incorrect SSH credentials, SFTP
-  put/stat/get/remove, two overlapping SFTP sessions, four simultaneous SSH
-  sessions, 20 reconnects, UDP echo, and direct IPv6/TCP. See
+- The Docker gate validates Ed25519 and password acceptance/rejection,
+  default-disabled and malformed credential handling, entropy failure, host-key
+  persistence, SFTP offsets and isolation, shared channels, forced rekey, four
+  simultaneous SSH sessions, 20 reconnects, UDP echo, malformed IPv4/IPv6
+  transport input, reordering, and TCP retransmission. See
   `docs/NETWORK-SSH-STATUS.md` for the exact evidence boundary.
 - Docs-only change: validate Markdown links, manifest JSON, changed-file scope, and secret-like patterns; source tests may be skipped with explanation.
 

@@ -22,6 +22,7 @@ typedef struct socket_buffer {
 void sockbuf_init(socket_buffer_t *buf);
 uint32_t sockbuf_write(socket_buffer_t *buf, const uint8_t *data, uint32_t len);
 uint32_t sockbuf_read(socket_buffer_t *buf, uint8_t *data, uint32_t len);
+uint32_t sockbuf_discard(socket_buffer_t *buf, uint32_t len);
 uint32_t sockbuf_available(const socket_buffer_t *buf);
 uint32_t sockbuf_used(const socket_buffer_t *buf);
 

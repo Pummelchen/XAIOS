@@ -36,6 +36,9 @@ void sha512_hash(const uint8_t *data, uint64_t len, uint8_t digest[64]);
 /* HMAC-SHA-256 (RFC 2104) */
 void hmac_sha256(const uint8_t *key, uint64_t key_len, const uint8_t *data,
                  uint64_t data_len, uint8_t mac[32]);
+int pbkdf2_hmac_sha256(const uint8_t *password, uint32_t password_len,
+                       const uint8_t *salt, uint32_t salt_len,
+                       uint32_t iterations, uint8_t output[32]);
 
 /* AES-128-CTR (FIPS 197 + NIST SP 800-38A) */
 #define AES128_KEY_SIZE 16U
@@ -72,8 +75,9 @@ int ed25519_sign(uint8_t signature[64], const uint8_t *message, uint32_t msg_len
 int ed25519_verify(const uint8_t signature[64], const uint8_t *message,
                    uint32_t msg_len, const uint8_t public_key[32]);
 
-/* Secure Random Number Generation */
-void crypto_random_bytes(uint8_t *buf, uint32_t len);
+/* Hardware-seeded ChaCha20 DRBG. Initialization and reads fail closed. */
+int crypto_random_init(void);
+int crypto_random_bytes(uint8_t *buf, uint32_t len);
 
 /* Self-test against known vectors */
 int ssh_crypto_self_test(void);

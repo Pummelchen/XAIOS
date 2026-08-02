@@ -260,6 +260,81 @@ void hmac_sha256(const uint8_t *key, uint64_t key_len, const uint8_t *data,
   sha256_update(&ctx, k_pad, 64);
   sha256_update(&ctx, inner, 32);
   sha256_final(&ctx, mac);
+  ssh_mem_zero(k_pad, sizeof(k_pad));
+  ssh_mem_zero(tk, sizeof(tk));
+  ssh_mem_zero(inner, sizeof(inner));
+  ssh_mem_zero(&ctx, sizeof(ctx));
+}
+
+typedef struct {
+  sha256_ctx_t inner;
+  sha256_ctx_t outer;
+} hmac_sha256_precomputed_t;
+
+static void hmac_sha256_precompute(const uint8_t *key, uint32_t key_len,
+                                   hmac_sha256_precomputed_t *precomputed) {
+  uint8_t key_block[64];
+  uint8_t long_key[32];
+  if (key_len > sizeof(key_block)) {
+    sha256_hash(key, key_len, long_key);
+    key = long_key;
+    key_len = sizeof(long_key);
+  }
+  ssh_mem_zero(key_block, sizeof(key_block));
+  ssh_mem_copy(key_block, key, key_len);
+  for (uint32_t i = 0; i < sizeof(key_block); ++i) key_block[i] ^= 0x36U;
+  sha256_init(&precomputed->inner);
+  sha256_update(&precomputed->inner, key_block, sizeof(key_block));
+  for (uint32_t i = 0; i < sizeof(key_block); ++i) {
+    key_block[i] ^= 0x36U ^ 0x5cU;
+  }
+  sha256_init(&precomputed->outer);
+  sha256_update(&precomputed->outer, key_block, sizeof(key_block));
+  ssh_mem_zero(key_block, sizeof(key_block));
+  ssh_mem_zero(long_key, sizeof(long_key));
+}
+
+static void hmac_sha256_precomputed(
+    const hmac_sha256_precomputed_t *precomputed, const uint8_t *data,
+    uint32_t data_len, uint8_t mac[32]) {
+  sha256_ctx_t inner = precomputed->inner;
+  sha256_ctx_t outer = precomputed->outer;
+  uint8_t digest[32];
+  sha256_update(&inner, data, data_len);
+  sha256_final(&inner, digest);
+  sha256_update(&outer, digest, sizeof(digest));
+  sha256_final(&outer, mac);
+  ssh_mem_zero(digest, sizeof(digest));
+  ssh_mem_zero(&inner, sizeof(inner));
+  ssh_mem_zero(&outer, sizeof(outer));
+}
+
+int pbkdf2_hmac_sha256(const uint8_t *password, uint32_t password_len,
+                       const uint8_t *salt, uint32_t salt_len,
+                       uint32_t iterations, uint8_t output[32]) {
+  uint8_t salt_block[36];
+  uint8_t u[32];
+  hmac_sha256_precomputed_t precomputed;
+  if (password == 0 || salt == 0 || output == 0 || salt_len == 0U ||
+      salt_len > 32U || iterations == 0U) {
+    return -1;
+  }
+  ssh_mem_copy(salt_block, salt, salt_len);
+  salt_block[salt_len] = 0U;
+  salt_block[salt_len + 1U] = 0U;
+  salt_block[salt_len + 2U] = 0U;
+  salt_block[salt_len + 3U] = 1U;
+  hmac_sha256_precompute(password, password_len, &precomputed);
+  hmac_sha256_precomputed(&precomputed, salt_block, salt_len + 4U, u);
+  ssh_mem_copy(output, u, sizeof(u));
+  for (uint32_t round = 1U; round < iterations; ++round) {
+    hmac_sha256_precomputed(&precomputed, u, sizeof(u), u);
+    for (uint32_t i = 0; i < sizeof(u); ++i) output[i] ^= u[i];
+  }
+  ssh_mem_zero(salt_block, sizeof(salt_block));
+  ssh_mem_zero(u, sizeof(u));
+  ssh_mem_zero(&precomputed, sizeof(precomputed));
+  return 0;
 }
 
 /* ---- AES-128 ---- */
@@ -586,70 +661,73 @@ static void chacha20_block(uint32_t out[16], const uint32_t in[16]) {
 }
 
 static uint32_t g_drbg_state[16];
-static uint32_t g_drbg_calls = 0;
-static uint64_t g_drbg_seed_sequence;
+static uint32_t g_drbg_blocks;
+static uint32_t g_drbg_ready;
 
-static void drbg_seed(void) {
+static uint32_t load_le32(const uint8_t *bytes) {
+  return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8U) |
+         ((uint32_t)bytes[2] << 16U) | ((uint32_t)bytes[3] << 24U);
+}
+
+static int drbg_seed(void) {
+  uint8_t seed[48];
+  if (xaios_random(seed, sizeof(seed)) != 0) {
+    ssh_mem_zero(seed, sizeof(seed));
+    g_drbg_ready = 0U;
+    return -1;
+  }
   /* "expand 32-byte k" constant */
   g_drbg_state[0] = 0x61707865;
   g_drbg_state[1] = 0x3320646e;
   g_drbg_state[2] = 0x79622d32;
   g_drbg_state[3] = 0x6b206574;
-  
-  uint64_t now = xaios_clock_nanos();
-  uint64_t stack_address = (uint64_t)(uintptr_t)&now;
-  uint64_t state_address = (uint64_t)(uintptr_t)g_drbg_state;
-  uint64_t sequence = ++g_drbg_seed_sequence;
-
-  g_drbg_state[4]  = (uint32_t)now;
-  g_drbg_state[5]  = (uint32_t)(now >> 32U);
-  g_drbg_state[6]  = (uint32_t)stack_address;
-  g_drbg_state[7]  = (uint32_t)(stack_address >> 32U);
-  g_drbg_state[8]  = (uint32_t)state_address;
-  g_drbg_state[9]  = (uint32_t)(state_address >> 32U);
-  g_drbg_state[10] = (uint32_t)sequence;
-  g_drbg_state[11] = (uint32_t)(sequence >> 32U) ^ (uint32_t)(now >> 17U);
-  
-  /* Counter and nonce */
-  g_drbg_state[12] = 0;  /* block counter */
-  g_drbg_state[13] = 0;
-  g_drbg_state[14] = 0;
-  g_drbg_state[15] = 0;
-  
-  g_drbg_calls = 0;
+  for (uint32_t i = 0; i < 8U; ++i) {
+    g_drbg_state[4U + i] = load_le32(seed + i * 4U);
+  }
+  g_drbg_state[12] = load_le32(seed + 32U);
+  g_drbg_state[13] = load_le32(seed + 36U);
+  g_drbg_state[14] = load_le32(seed + 40U);
+  g_drbg_state[15] = load_le32(seed + 44U);
+  g_drbg_blocks = 0U;
+  g_drbg_ready = 1U;
+  ssh_mem_zero(seed, sizeof(seed));
+  return 0;
 }
 
-void crypto_random_bytes(uint8_t *buf, uint32_t len) {
-  if (g_drbg_state[0] == 0) {
-    drbg_seed();
+int crypto_random_init(void) {
+  ssh_mem_zero(g_drbg_state, sizeof(g_drbg_state));
+  g_drbg_ready = 0U;
+  return drbg_seed();
+}
+
+int crypto_random_bytes(uint8_t *buf, uint32_t len) {
+  if (buf == 0 || len == 0U || g_drbg_ready == 0U) {
+    return -1;
   }
-  
-  /* Re-seed every 256 blocks for forward secrecy */
-  if (g_drbg_calls >= 256) {
-    /* Generate 32 bytes of current output as new key material */
-    uint32_t block[16];
-    chacha20_block(block, g_drbg_state);
-    for (int i = 0; i < 8; ++i) {
-      g_drbg_state[4 + i] = block[i];
-    }
-    g_drbg_state[12] = 0;
-    g_drbg_calls = 0;
+  if (g_drbg_blocks >= 16384U && drbg_seed() != 0) {
+    ssh_mem_zero(buf, len);
+    return -1;
   }
-  
+
   uint32_t pos = 0;
   while (pos < len) {
     uint32_t block[16];
     chacha20_block(block, g_drbg_state);
-    g_drbg_state[12]++;  /* increment counter */
-    g_drbg_calls++;
-    
+    ++g_drbg_state[12];
+    if (g_drbg_state[12] == 0U) {
+      ++g_drbg_state[13];
+    }
+    ++g_drbg_blocks;
+
     uint32_t remaining = len - pos;
     uint32_t copy = remaining < 64 ? remaining : 64;
     for (uint32_t i = 0; i < copy; ++i) {
       buf[pos + i] = (uint8_t)(block[i / 4] >> ((i % 4) * 8));
     }
+    ssh_mem_zero(block, sizeof(block));
     pos += copy;
   }
+  return 0;
 }
 
 /* ---- Ed25519 Digital Signatures (RFC 8032) - FULL IMPLEMENTATION ---- */
@@ -798,7 +876,11 @@ void ed25519_keygen(uint8_t public_key[32], uint8_t private_key[32],
   if (seed) {
     ssh_mem_copy(private_key, seed, 32);
   } else {
-    crypto_random_bytes(private_key, 32);
+    if (crypto_random_bytes(private_key, 32) != 0) {
+      ssh_mem_zero(private_key, 32);
+      ssh_mem_zero(public_key, 32);
+      return;
+    }
   }
   xaios_ed25519_public_key(public_key, private_key);
   return;
@@ -1003,6 +1085,18 @@ int ssh_crypto_self_test(void) {
       return -3;
     }
   }
+  /* PBKDF2-HMAC-SHA-256 known-answer vector. */
+  static const uint8_t pbkdf2_expected[32] = {
+    0xae,0x4d,0x0c,0x95,0xaf,0x6b,0x46,0xd3,0x2d,0x0a,0xdf,0xf9,0x28,0xf0,0x6d,0xd0,
+    0x2a,0x30,0x3f,0x8e,0xf3,0xc2,0x51,0xdf,0xd6,0xe2,0xd8,0x5a,0x95,0x47,0x4c,0x43
+  };
+  uint8_t pbkdf2_result[32];
+  if (pbkdf2_hmac_sha256((const uint8_t *)"password", 8U,
+                         (const uint8_t *)"salt", 4U, 2U,
+                         pbkdf2_result) != 0) return -4;
+  for (uint32_t i = 0; i < sizeof(pbkdf2_result); ++i) {
+    if (pbkdf2_result[i] != pbkdf2_expected[i]) return -4;
+  }
   /* RFC 7748 X25519 Alice public key. */
   static const uint8_t x25519_private[32] = {
     0x77,0x07,0x6d,0x0a,0x73,0x18,0xa5,0x7d,0x3c,0x16,0xc1,0x72,0x51,0xb2,0x66,0x45,
@@ -1015,7 +1109,7 @@ int ssh_crypto_self_test(void) {
   uint8_t x25519_result[32];
   xaios_x25519_base(x25519_result, x25519_private);
   for (uint32_t i = 0; i < 32U; ++i) {
-    if (x25519_result[i] != x25519_public[i]) return -4;
+    if (x25519_result[i] != x25519_public[i]) return -5;
   }
 
   /* RFC 8032 Ed25519 test vector 1: empty message. */
@@ -1038,17 +1132,17 @@ int ssh_crypto_self_test(void) {
   uint8_t empty_message = 0;
   xaios_ed25519_public_key(ed_public_result, ed25519_seed);
   for (uint32_t i = 0; i < 32U; ++i) {
-    if (ed_public_result[i] != ed25519_public[i]) return -5;
+    if (ed_public_result[i] != ed25519_public[i]) return -6;
   }
   if (xaios_ed25519_sign(ed_signature_result, &empty_message, 0,
-                          ed_public_result, ed25519_seed) != 0) return -6;
+                          ed_public_result, ed25519_seed) != 0) return -7;
   for (uint32_t i = 0; i < 64U; ++i) {
-    if (ed_signature_result[i] != ed25519_signature[i]) return -7;
+    if (ed_signature_result[i] != ed25519_signature[i]) return -8;
   }
   if (xaios_ed25519_verify(ed_signature_result, &empty_message, 0,
-                            ed_public_result) != 0) return -8;
+                            ed_public_result) != 0) return -9;
   ed_signature_result[0] ^= 1U;
   if (xaios_ed25519_verify(ed_signature_result, &empty_message, 0,
-                            ed_public_result) == 0) return -9;
+                            ed_public_result) == 0) return -10;
   return 0;
 }

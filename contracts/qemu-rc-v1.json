@@ -46,7 +46,9 @@
       {"number": 31, "name": "net_recv", "capability": "XAIOS_CAP_NET_SOCKET"},
       {"number": 32, "name": "net_send", "capability": "XAIOS_CAP_NET_SOCKET"},
       {"number": 33, "name": "net_close", "capability": "XAIOS_CAP_NET_SOCKET"},
-      {"number": 34, "name": "agent_dispatch", "capability": "XAIOS_CAP_AGENT"}
+      {"number": 34, "name": "agent_dispatch", "capability": "XAIOS_CAP_AGENT"},
+      {"number": 35, "name": "random", "capability": "XAIOS_CAP_RANDOM"},
+      {"number": 36, "name": "fs_seek", "capability": "XAIOS_CAP_FS_READ"}
     ],
     "capabilities": [
       {"bit": 1, "name": "XAIOS_CAP_LOG"},
@@ -66,7 +68,8 @@
       {"bit": 16384, "name": "XAIOS_CAP_THREADS"},
       {"bit": 32768, "name": "XAIOS_CAP_ML"},
       {"bit": 65536, "name": "XAIOS_CAP_NET_SOCKET"},
-      {"bit": 131072, "name": "XAIOS_CAP_AGENT"}
+      {"bit": 131072, "name": "XAIOS_CAP_AGENT"},
+      {"bit": 262144, "name": "XAIOS_CAP_RANDOM"}
     ]
   },
   "telemetry_schema": {

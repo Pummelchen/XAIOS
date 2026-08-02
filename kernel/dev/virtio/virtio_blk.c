@@ -10,6 +10,9 @@
 #define VRING_DESC_F_WRITE UINT16_C(2)
 #define VIRTIO_BLK_T_IN UINT32_C(0)
 #define VIRTIO_BLK_T_OUT UINT32_C(1)
+#define VIRTIO_BLK_T_FLUSH UINT32_C(4)
+#define VIRTIO_BLK_F_FLUSH (UINT32_C(1) << 9U)
+#define VIRTIO_F_VERSION_1_HIGH UINT32_C(1)
 #define SECTOR_SIZE UINT64_C(512)
 #define DMA_ALIGNMENT UINT64_C(4096)
 
@@ -29,6 +32,7 @@ typedef struct virtio_block_driver {
   uint8_t *status;
   uint16_t next_avail;
   uint64_t capacity_sectors;
+  uint32_t supports_flush;
   uint32_t initialized;
 } virtio_block_driver_t;
 
@@ -91,9 +95,15 @@ static xaios_status_t allocate_driver(void) {
 }
 
 static xaios_status_t configure_queue(virtio_block_driver_t *drv) {
-  if (virtio_transport_negotiate_no_features(&drv->device) != XAIOS_OK) {
+  uint32_t accepted_low = 0U;
+  uint32_t accepted_high = 0U;
+  if (virtio_transport_negotiate_features(
+          &drv->device, VIRTIO_BLK_F_FLUSH, VIRTIO_F_VERSION_1_HIGH,
+          &accepted_low, &accepted_high) != XAIOS_OK ||
+      (accepted_high & VIRTIO_F_VERSION_1_HIGH) == 0U) {
     return XAIOS_ERR_IO;
   }
+  drv->supports_flush = (accepted_low & VIRTIO_BLK_F_FLUSH) != 0U;
 
   bytes_zero(drv->desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
   bytes_zero(drv->avail, sizeof(*drv->avail));
@@ -106,6 +116,39 @@ static xaios_status_t configure_queue(virtio_block_driver_t *drv) {
   drv->next_avail = 0;
   virtio_transport_set_driver_ok(&drv->device);
   return XAIOS_OK;
+}
+
+static xaios_status_t flush_h(virtio_block_driver_t *drv) {
+  if (drv == 0 || drv->initialized == 0 || drv->supports_flush == 0U) {
+    return XAIOS_ERR_UNSUPPORTED;
+  }
+  if (drv->next_avail == VIRTQ_SIZE && configure_queue(drv) != XAIOS_OK) {
+    return XAIOS_ERR_IO;
+  }
+  bytes_zero(drv->desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
+  *drv->status = 0xffU;
+  drv->request->type = VIRTIO_BLK_T_FLUSH;
+  drv->request->reserved = 0U;
+  drv->request->sector = 0U;
+  drv->desc[0].addr = dma_address(drv->request);
+  drv->desc[0].len = sizeof(*drv->request);
+  drv->desc[0].flags = VRING_DESC_F_NEXT;
+  drv->desc[0].next = 1U;
+  drv->desc[1].addr = dma_address(drv->status);
+  drv->desc[1].len = 1U;
+  drv->desc[1].flags = VRING_DESC_F_WRITE;
+  drv->desc[1].next = 0U;
+  uint16_t used_target = (uint16_t)(drv->used->idx + 1U);
+  drv->avail->ring[drv->next_avail % VIRTQ_SIZE] = 0U;
+  virtio_mmio_barrier();
+  ++drv->next_avail;
+  drv->avail->idx = drv->next_avail;
+  virtio_transport_notify(&drv->device, 0U);
+  if (virtio_transport_wait_used(&drv->used->idx, used_target) != XAIOS_OK) {
+    return XAIOS_ERR_IO;
+  }
+  virtio_transport_ack_interrupts(&drv->device);
+  return *drv->status == 0U ? XAIOS_OK : XAIOS_ERR_IO;
 }
 
 xaios_status_t virtio_block_init(void) {
@@ -230,6 +273,10 @@ xaios_status_t virtio_block_write_sector(uint64_t sector, const void *buffer,
                                       VIRTIO_BLK_T_OUT);
 }
 
+xaios_status_t virtio_block_flush(void) {
+  return flush_h(g_blk);
+}
+
 xaios_status_t virtio_block_open_slot(uint32_t start_slot,
                                      virtio_block_handle_t **out_handle) {
   if (out_handle == 0) {
@@ -284,6 +331,10 @@ xaios_status_t virtio_block_write_sector_h(virtio_block_handle_t *handle,
                            VIRTIO_BLK_T_OUT);
 }
 
+xaios_status_t virtio_block_flush_h(virtio_block_handle_t *handle) {
+  return flush_h(handle);
+}
+
 uint64_t virtio_block_capacity_sectors_h(virtio_block_handle_t *handle) {
   if (handle == 0 || handle->initialized == 0) {
     return 0;
@@ -318,6 +369,7 @@ void virtio_block_self_test(void) {
   uint64_t write_test_sector = virtio_block_capacity_sectors() - 2U;
   kassert(virtio_block_write_sector(write_test_sector, write_sector,
                                     SECTOR_SIZE) == XAIOS_OK);
+  kassert(virtio_block_flush() == XAIOS_OK);
   bytes_zero(sector, SECTOR_SIZE);
   kassert(virtio_block_read_sector(write_test_sector, sector, SECTOR_SIZE) ==
           XAIOS_OK);

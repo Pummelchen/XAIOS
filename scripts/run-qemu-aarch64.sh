@@ -170,7 +170,14 @@ else
 fi
 set -- "$@" -netdev "$net1_options"
 
-set -- "$@" -device virtio-net-device,netdev=net1,mac=52:54:00:12:34:57
+set -- "$@" \
+  -device virtio-net-device,netdev=net1,mac=52:54:00:12:34:57,bus=virtio-mmio-bus.2
+
+if [ "${XAIOS_QEMU_RNG:-virtio}" != "none" ]; then
+  set -- "$@" \
+    -object rng-random,filename=/dev/urandom,id=xaios_rng \
+    -device virtio-rng-device,rng=xaios_rng,bus=virtio-mmio-bus.3
+fi
 
 if [ "${XAIOS_QEMU_NET_DUMP:-}" != "" ]; then
   set -- "$@" -object "filter-dump,id=xaios_net_dump,netdev=net1,file=${XAIOS_QEMU_NET_DUMP}"

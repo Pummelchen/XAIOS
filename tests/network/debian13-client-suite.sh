@@ -5,6 +5,8 @@ host="${1:-host.docker.internal}"
 ssh_port="${2:-2222}"
 udp_port="${3:-2223}"
 password="${XAIOS_SSH_PASSWORD:-admin}"
+authorized_key="${XAIOS_SSH_AUTHORIZED_KEY:-/keys/authorized}"
+unauthorized_key="${XAIOS_SSH_UNAUTHORIZED_KEY:-/keys/unauthorized}"
 workdir="$(mktemp -d)"
 holder_pids=()
 
@@ -24,16 +26,29 @@ ssh_options=(
   -o PubkeyAuthentication=no
   -o NumberOfPasswordPrompts=1
   -o ConnectTimeout=20
+  -o ServerAliveInterval=5
+  -o ServerAliveCountMax=36
+  -p "$ssh_port"
+)
+key_ssh_options=(
+  -i "$authorized_key"
+  -o IdentitiesOnly=yes
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+  -o PreferredAuthentications=publickey
+  -o PasswordAuthentication=no
+  -o ConnectTimeout=20
   -o ServerAliveInterval=2
   -o ServerAliveCountMax=5
   -p "$ssh_port"
 )
 sftp_options=(
+  -i "$authorized_key"
+  -o IdentitiesOnly=yes
   -o StrictHostKeyChecking=no
   -o UserKnownHostsFile=/dev/null
-  -o PreferredAuthentications=password
-  -o PubkeyAuthentication=no
-  -o NumberOfPasswordPrompts=1
+  -o PreferredAuthentications=publickey
+  -o PasswordAuthentication=no
   -o ConnectTimeout=20
   -o ServerAliveInterval=2
   -o ServerAliveCountMax=5
@@ -46,6 +61,10 @@ fail() {
 }
 
 run_ssh() {
+  ssh "${key_ssh_options[@]}" "admin@$host" "$@"
+}
+
+run_password_ssh() {
   sshpass -p "$password" ssh "${ssh_options[@]}" "admin@$host" "$@"
 }
 
@@ -53,7 +72,37 @@ printf 'Debian client: '
 . /etc/os-release
 printf '%s %s (%s)\n' "$PRETTY_NAME" "$(dpkg --print-architecture)" "$(ssh -V 2>&1)"
 
-auth_output="$(run_ssh 'echo docker-auth-ok')"
+public_key_output="$(ssh \
+  -i "$authorized_key" \
+  -o IdentitiesOnly=yes \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null \
+  -o PreferredAuthentications=publickey \
+  -o PasswordAuthentication=no \
+  -o ConnectTimeout=20 \
+  -p "$ssh_port" \
+  "admin@$host" 'echo public-key-auth-ok')"
+test "$public_key_output" = "public-key-auth-ok" \
+  || fail "authorized Ed25519 key returned '$public_key_output'"
+printf 'PASS: standard OpenSSH Ed25519 public-key authentication\n'
+
+if ssh \
+    -i "$unauthorized_key" \
+    -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o PreferredAuthentications=publickey \
+    -o PasswordAuthentication=no \
+    -o ConnectTimeout=20 \
+    -p "$ssh_port" \
+    "admin@$host" 'echo unauthorized-key-must-not-run' \
+    >"$workdir/unauthorized-key.stdout" \
+    2>"$workdir/unauthorized-key.stderr"; then
+  fail "unauthorized Ed25519 key was accepted"
+fi
+printf 'PASS: unauthorized Ed25519 key rejected\n'
+
+auth_output="$(run_password_ssh 'echo docker-auth-ok')"
 test "$auth_output" = "docker-auth-ok" || fail "correct-password SSH command returned '$auth_output'"
 printf 'PASS: correct SSH password accepted\n'
 
@@ -81,8 +130,15 @@ if ! {
     printf 'ls -l /tmp/docker-sftp.bin\n'
     printf 'get /tmp/docker-sftp.bin %s\n' "$workdir/sftp-result.bin"
     printf 'rm /tmp/docker-sftp.bin\n'
+    printf 'mkdir /tmp/docker-sftp-dir\n'
+    printf 'put %s /tmp/docker-sftp-dir/original.bin\n' "$workdir/sftp-source.bin"
+    printf 'ls -l /tmp/docker-sftp-dir\n'
+    printf 'rename /tmp/docker-sftp-dir/original.bin /tmp/docker-sftp-dir/renamed.bin\n'
+    printf 'get /tmp/docker-sftp-dir/renamed.bin %s\n' "$workdir/sftp-renamed.bin"
+    printf 'rm /tmp/docker-sftp-dir/renamed.bin\n'
+    printf 'rmdir /tmp/docker-sftp-dir\n'
     printf 'quit\n'
-  } | sshpass -p "$password" sftp "${sftp_options[@]}" "admin@$host" \
+  } | sftp "${sftp_options[@]}" "admin@$host" \
       >"$workdir/sftp.log" 2>&1
 }; then
   cat "$workdir/sftp.log" >&2
@@ -90,9 +146,29 @@ if ! {
 fi
 cmp "$workdir/sftp-source.bin" "$workdir/sftp-result.bin" \
   || fail "SFTP round-trip payload differs"
+cmp "$workdir/sftp-source.bin" "$workdir/sftp-renamed.bin" \
+  || fail "SFTP renamed file payload differs"
 grep -Eq -- '[[:space:]]8170[[:space:]]+.*/tmp/docker-sftp.bin' "$workdir/sftp.log" \
   || fail "SFTP stat output did not report the 8170-byte file"
-printf 'PASS: SFTP write/read/stat/remove round trip\n'
+grep -q 'original.bin' "$workdir/sftp.log" \
+  || fail "SFTP directory listing omitted the uploaded file"
+printf 'PASS: SFTP file and directory read/write/stat/list/rename/remove round trip\n'
+
+if ! {
+  {
+    printf 'put %s /tmp/docker-sftp-rekey.bin\n' "$workdir/sftp-source.bin"
+    printf 'get /tmp/docker-sftp-rekey.bin %s\n' "$workdir/sftp-rekey.bin"
+    printf 'rm /tmp/docker-sftp-rekey.bin\n'
+    printf 'quit\n'
+  } | sftp "${sftp_options[@]}" -o RekeyLimit=4K "admin@$host" \
+      >"$workdir/sftp-rekey.log" 2>&1
+}; then
+  cat "$workdir/sftp-rekey.log" >&2
+  fail "SFTP transfer across an OpenSSH-forced rekey failed"
+fi
+cmp "$workdir/sftp-source.bin" "$workdir/sftp-rekey.bin" \
+  || fail "SFTP payload changed across rekey"
+printf 'PASS: client-initiated SSH rekey preserved SFTP transfer\n'
 
 python3 - "$workdir" <<'PY'
 import pathlib
@@ -115,7 +191,7 @@ for index in 1 2; do
         "$index" "$workdir/parallel-result-$index.bin"
       printf 'rm /tmp/docker-sftp-%s.bin\n' "$index"
       printf 'quit\n'
-    } | sshpass -p "$password" sftp "${sftp_options[@]}" "admin@$host" \
+    } | sftp "${sftp_options[@]}" "admin@$host" \
         >"$workdir/parallel-sftp-$index.log" 2>&1
   ) &
   holder_pids+=("$!")
@@ -141,8 +217,42 @@ for index in 1 2; do
 done
 printf 'PASS: two overlapping SFTP sessions retained isolated handles\n'
 
+control_socket="$workdir/control-master.sock"
+ssh "${key_ssh_options[@]}" -M -S "$control_socket" -N "admin@$host" \
+  >"$workdir/control-master.log" 2>&1 &
+master_pid="$!"
+for _ in $(seq 1 20); do
+  test -S "$control_socket" && break
+  kill -0 "$master_pid" 2>/dev/null || fail "SSH control master exited early"
+  sleep 1
+done
+test -S "$control_socket" || fail "SSH control socket was not created"
+{
+  {
+    printf 'pwd\n'
+    sleep 6
+    printf 'quit\n'
+  } | sftp "${sftp_options[@]}" -o ControlPath="$control_socket" \
+      "admin@$host" >"$workdir/control-sftp.log" 2>&1
+} &
+control_sftp_pid="$!"
+sleep 2
+control_output="$(ssh "${key_ssh_options[@]}" \
+  -o ControlPath="$control_socket" "admin@$host" \
+  'echo shared-transport-ok')"
+test "$control_output" = "shared-transport-ok" \
+  || fail "second channel on shared SSH transport failed"
+wait "$control_sftp_pid" || {
+  cat "$workdir/control-sftp.log" >&2
+  fail "SFTP channel on shared SSH transport failed"
+}
+ssh "${key_ssh_options[@]}" -S "$control_socket" -O exit \
+  "admin@$host" >/dev/null 2>&1 || true
+wait "$master_pid" 2>/dev/null || true
+printf 'PASS: exec and SFTP channels shared one SSH transport\n'
+
 for index in 1 2 3; do
-  sshpass -p "$password" ssh "${ssh_options[@]}" -N "admin@$host" \
+  ssh "${key_ssh_options[@]}" -N "admin@$host" \
     >"$workdir/holder-$index.log" 2>&1 &
   holder_pids+=("$!")
 done
@@ -162,8 +272,8 @@ holder_pids=()
 sleep 2
 
 for index in $(seq 1 20); do
-  if ! reconnect_output="$(sshpass -p "$password" ssh -vvv \
-      "${ssh_options[@]}" "admin@$host" \
+  if ! reconnect_output="$(ssh -vvv \
+      "${key_ssh_options[@]}" "admin@$host" \
       "echo reconnect-$index" 2>"$workdir/reconnect-$index.log")"; then
     cat "$workdir/reconnect-$index.log" >&2
     fail "SSH reconnect $index failed"

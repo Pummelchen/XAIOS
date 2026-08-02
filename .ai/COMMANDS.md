@@ -80,7 +80,8 @@ For direct IPv6/TCP from a Mac client, run QEMU with
 | OS control | `make qemu-osctl-gate` | Control-plane telemetry. |
 | Filesystem | `make qemu-filesystem-gate` | Mutable filesystem. |
 | Network | `make qemu-network-suite` or `make qemu-network-full-gate` | TCP/UDP/network paths. |
-| Debian 13 network interoperability | `make qemu-docker-network-suite` | Freestanding SSH/SFTP concurrency, reconnects, UDP echo, and direct IPv6/TCP from an isolated Docker client. |
+| Debian 13 network interoperability | `make qemu-docker-network-suite` | Auth policy, entropy failure, host-key persistence, SSH/SFTP channels and rekey, concurrency, UDP, and malformed/reordered/retransmitted TCP from an isolated client. |
+| Generate an SSH password record | `python3 scripts/create-sshd-user-config.py --password-file PATH --output PATH` | Produces the strict PBKDF2-HMAC-SHA256 user database consumed by `XAIOS_SSH_USERS_FILE`; plaintext stays outside the image. |
 | CPU-AI | `make qemu-cpu-ai-suite` or `make qemu-cpu-ai-runtime-gate` | CPU-only AI runtime. |
 | AI Cell | `make qemu-ai-cell-gate` | Resource contracts. |
 | Security | `make qemu-security-gate` | Security policy markers. |

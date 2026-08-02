@@ -11,6 +11,7 @@ xaios_status_t virtio_block_read_sector(uint64_t sector, void *buffer,
                                        uint64_t buffer_size);
 xaios_status_t virtio_block_write_sector(uint64_t sector, const void *buffer,
                                         uint64_t buffer_size);
+xaios_status_t virtio_block_flush(void);
 uint64_t virtio_block_capacity_sectors(void);
 void virtio_block_self_test(void);
 
@@ -22,6 +23,7 @@ xaios_status_t virtio_block_read_sector_h(virtio_block_handle_t *handle,
 xaios_status_t virtio_block_write_sector_h(virtio_block_handle_t *handle,
                                           uint64_t sector, const void *buffer,
                                           uint64_t buffer_size);
+xaios_status_t virtio_block_flush_h(virtio_block_handle_t *handle);
 uint64_t virtio_block_capacity_sectors_h(virtio_block_handle_t *handle);
 void virtio_block_close(virtio_block_handle_t *handle);
 

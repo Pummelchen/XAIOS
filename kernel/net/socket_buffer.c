@@ -49,6 +49,14 @@ uint32_t sockbuf_read(socket_buffer_t *buf, uint8_t *data, uint32_t len) {
   return to_read;
 }
 
+uint32_t sockbuf_discard(socket_buffer_t *buf, uint32_t len) {
+  if (buf == 0 || len == 0U) return 0;
+  uint32_t to_discard = len < buf->count ? len : buf->count;
+  buf->tail = (buf->tail + to_discard) % SOCKET_BUFFER_SIZE;
+  buf->count -= to_discard;
+  return to_discard;
+}
+
 uint32_t sockbuf_available(const socket_buffer_t *buf) {
   if (buf == 0) {
     return 0;
@@ -124,6 +132,13 @@ void sockbuf_self_test(void) {
   for (uint32_t i = 0; i < 16; ++i) {
     kassert(rdata[i] == (uint8_t)(i & 0xFF));
   }
+
+  written = sockbuf_write(&test_buf, wdata, 16U);
+  kassert(written == 16U);
+  kassert(sockbuf_discard(&test_buf, 7U) == 7U);
+  kassert(sockbuf_used(&test_buf) == 9U);
+  kassert(sockbuf_discard(&test_buf, 32U) == 9U);
+  kassert(sockbuf_used(&test_buf) == 0U);
 
   /* Wrap-around: fill near capacity, read some, write more */
   uint8_t big[4090];

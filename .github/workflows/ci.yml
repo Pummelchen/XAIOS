@@ -106,3 +106,29 @@ jobs:
         run: python3 scripts/qemu-regression-suite.py
         env:
           XAIOS_QEMU_SMOKE_TIMEOUT: "120"
+
+  network-interoperability:
+    name: Debian 13 Network Interoperability
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld qemu-system-arm qemu-efi-aarch64 mtools python3
+
+      - name: Run SSH, SFTP, UDP, and IPv6/TCP gate
+        run: make qemu-docker-network-suite
+
+      - name: Upload network evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-network-evidence
+          path: |
+            build/qemu-docker-network-suite.json
+            build/qemu-docker-network-suite.pcap
+            build/qemu-docker-*.log
+          retention-days: 14

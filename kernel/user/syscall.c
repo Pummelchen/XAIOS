@@ -15,6 +15,7 @@
 #include <xaios/timer.h>
 #include <xaios/user.h>
 #include <xaios/vmm.h>
+#include <xaios/virtio_rng.h>
 
 typedef struct xaios_syscall_entry {
   uint64_t number;
@@ -61,6 +62,8 @@ static const xaios_syscall_entry_t g_syscall_table[] = {
     {XAIOS_SYSCALL_NET_SEND, "net_send", XAIOS_CAP_NET_SOCKET},
     {XAIOS_SYSCALL_NET_CLOSE, "net_close", XAIOS_CAP_NET_SOCKET},
     {XAIOS_SYSCALL_AGENT_DISPATCH, "agent_dispatch", XAIOS_CAP_AGENT},
+    {XAIOS_SYSCALL_RANDOM, "random", XAIOS_CAP_RANDOM},
+    {XAIOS_SYSCALL_FS_SEEK, "fs_seek", XAIOS_CAP_FS_READ},
 };
 
 static uint64_t g_control_plane_syscall_count;
@@ -74,7 +77,7 @@ static uint32_t g_cpu_ai_app_bound;
 #define KERNEL_SOCK_DATAGRAM UINT32_C(3)
 #define KERNEL_SOCK_MAX UINT32_C(16)
 
-/* FIX-007: Socket connection limits */
+/* Socket connection accounting bounds kernel flow resources. */
 #define KERNEL_SOCK_MAX_PER_PORT UINT32_C(8)
 #define KERNEL_SOCK_MAX_TOTAL UINT32_C(64)
 
@@ -91,16 +94,16 @@ typedef struct kernel_socket {
 
 static kernel_socket_t g_kernel_sockets[KERNEL_SOCK_MAX];
 static uint64_t g_socket_next_id = 1;
-static uint32_t g_total_connections = 0;  /* FIX-007: Track total connections */
+static uint32_t g_total_connections = 0;
 
 static uint64_t kernel_socket_alloc(uint32_t type, uint16_t port) {
-  /* FIX-007: Enforce total connection limit */
+  /* Enforce the global connection limit. */
   if (g_total_connections >= KERNEL_SOCK_MAX_TOTAL) {
     klog("syscall: socket allocation denied (max connections reached: %u)\n", g_total_connections);
     return 0;
   }
 
-  /* FIX-007: Enforce per-port connection limit for connected sockets */
+  /* Enforce the per-port limit for connected sockets. */
   if (type == KERNEL_SOCK_CONNECTED) {
     uint32_t port_count = 0;
     for (uint32_t i = 0; i < KERNEL_SOCK_MAX; ++i) {
@@ -141,7 +144,7 @@ static void kernel_socket_free(uint64_t sockfd) {
         g_kernel_sockets[i].bind_addr[j] = 0;
         g_kernel_sockets[i].peer_addr[j] = 0;
       }
-      /* FIX-007: Decrement connection counter */
+      /* Release the global connection slot. */
       if (g_total_connections > 0) {
         g_total_connections--;
       }
@@ -185,7 +188,7 @@ static void bytes_copy(void *dst, const void *src, uint64_t size) {
 static int is_control_plane_syscall(uint64_t syscall) {
   return syscall == XAIOS_SYSCALL_OSCTL ||
          (syscall >= XAIOS_SYSCALL_READ_SERVICE_DESCRIPTOR &&
-          syscall <= XAIOS_SYSCALL_AGENT_DISPATCH);
+          syscall <= XAIOS_SYSCALL_FS_SEEK);
 }
 
 static uint64_t reject_syscall(uint64_t syscall, uint64_t arg0, uint64_t arg1,
@@ -272,6 +275,18 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
 
   if (syscall == XAIOS_SYSCALL_CLOCK_NANOS) {
     return complete_control_syscall(timer_now_ns());
+  }
+
+  if (syscall == XAIOS_SYSCALL_RANDOM) {
+    if (arg1 == 0U || arg1 > 4096U ||
+        vmm_validate_user_buffer(arg0, arg1, XAIOS_VMM_WRITABLE) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "bad-random-buffer");
+    }
+    if (virtio_rng_read((void *)(uintptr_t)arg0, arg1) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "entropy-unavailable");
+    }
+    user_process_note_syscall(0);
+    return arg1;
   }
 
   if (syscall == XAIOS_SYSCALL_READ_SERVICE_DESCRIPTOR) {
@@ -403,6 +418,13 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     return complete_control_syscall((uint64_t)bytes);
   }
 
+  if (syscall == XAIOS_SYSCALL_FS_SEEK) {
+    if (mutable_fs_seek((uint32_t)arg0, arg1) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "fs-seek-denied");
+    }
+    return complete_control_syscall(arg1);
+  }
+
   if (syscall == XAIOS_SYSCALL_FS_CLOSE) {
     if (mutable_fs_close((uint32_t)arg0) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-close-denied");
@@ -479,7 +501,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1, "bad-fs-list-request");
     }
     bytes_copy(&request, (const void *)(uintptr_t)arg2, sizeof(request));
-    if (request.buffer_size == 0 ||
+    if (request.buffer_size == 0 || request.buffer_size > UINT32_MAX ||
         vmm_validate_user_buffer(request.buffer, request.buffer_size,
                                  XAIOS_VMM_WRITABLE) != XAIOS_OK ||
         vmm_validate_user_buffer(request.out_size, sizeof(out_size),
@@ -941,7 +963,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1, "bad-net-send-request");
     }
     bytes_copy(&request, (const void *)(uintptr_t)arg0, sizeof(request));
-    if (request.buffer_size == 0 ||
+    if (request.buffer_size == 0 || request.buffer_size > UINT32_MAX ||
         vmm_validate_user_buffer(request.buffer, request.buffer_size, 0) !=
             XAIOS_OK ||
         vmm_validate_user_buffer(request.out_bytes, sizeof(out_bytes),
@@ -1092,6 +1114,8 @@ void syscall_self_test(void) {
   kassert(lookup_syscall(XAIOS_SYSCALL_NET_SEND) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_NET_CLOSE) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_AGENT_DISPATCH) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_RANDOM) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_FS_SEEK) != 0);
   kassert(lookup_syscall(99) == 0);
   klog("syscall: table self-test passed entries=%lu\n",
        (uint64_t)(sizeof(g_syscall_table) / sizeof(g_syscall_table[0])));

@@ -58,10 +58,14 @@ opt-in; exact target-model semantics are the default.
   filesystem, network, capability, AI Cell and telemetry fixtures.
 - An experimental freestanding SSH/SFTP service reachable through QEMU host
   forwarding, plus guest userspace UDP receive/echo and IPv6/TCP receive/send
-  paths. An official Debian 13 Docker client on macOS verifies password
-  acceptance/rejection, SFTP transfer and stat, two overlapping SFTP sessions,
-  four simultaneous SSH sessions, 20 reconnects, UDP echo, and direct IPv6/TCP.
-  These QEMU checks do not approve Internet exposure or production use.
+  paths. An official Debian 13 Docker client on macOS verifies Ed25519 key and
+  provisioned-password authentication, rejection paths, persistent host
+  identity, SFTP file/directory operations and concurrency, shared channels,
+  forced rekey, four simultaneous sessions, reconnect recycling, UDP echo, TCP
+  retransmission and malformed IPv4/IPv6 transport rejection. SSH has no built-in password and
+  fails closed without secure entropy. These QEMU checks complete the declared
+  core-OS correctness gate; they do not approve Internet exposure or physical
+  production deployment.
 - A deterministic 80-byte model-v1 fixture path used only by QEMU correctness
   gates. The production decode syscall returns an explicit unsupported error.
 - A hosted C99 engine boundary under `engine/` with on-demand model-v2 parsing,

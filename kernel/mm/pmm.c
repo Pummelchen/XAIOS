@@ -2,24 +2,10 @@
 #include <xaios/klog.h>
 #include <xaios/numa.h>
 #include <xaios/pmm.h>
-#include <xaios/spinlock.h>
 
 static uint64_t g_total_pages;
 static uint64_t g_managed_pages;
 static uint64_t g_reserved_pages;
-
-/* FIX-005: Double-free detection */
-#define PMM_FREE_MAGIC UINT64_C(0xDEADBEEFCAFEBABE)
-#define PMM_MAX_FREED_TRACK 64
-
-typedef struct pmm_freed_entry {
-  uint64_t page_addr;
-  uint64_t freed_count;
-} pmm_freed_entry_t;
-
-static pmm_freed_entry_t g_freed_pages[PMM_MAX_FREED_TRACK];
-static uint32_t g_freed_count = 0;
-static xaios_spinlock_t g_pmm_free_lock;
 
 void pmm_init(const xaios_boot_info_t *boot) {
   /* numa_init(boot) must be called before pmm_init().
@@ -28,7 +14,6 @@ void pmm_init(const xaios_boot_info_t *boot) {
   g_total_pages = 0;
   g_managed_pages = 0;
   g_reserved_pages = 0;
-  xaios_spin_init(&g_pmm_free_lock);
 
   uint32_t ncount = numa_node_count();
   for (uint32_t i = 0; i < ncount; ++i) {
@@ -95,38 +80,10 @@ void pmm_free_page(void *page) {
     return;
   }
 
-  xaios_spin_lock(&g_pmm_free_lock);
-
-  /* FIX-005: Check for double-free */
-  uint64_t page_addr = (uint64_t)(uintptr_t)page;
-  for (uint32_t i = 0; i < g_freed_count && i < PMM_MAX_FREED_TRACK; ++i) {
-    if (g_freed_pages[i].page_addr == page_addr) {
-      klog("pmm: CRITICAL: double-free detected at page 0x%lx (freed %lu times)\n",
-           page_addr, g_freed_pages[i].freed_count);
-      g_freed_pages[i].freed_count++;
-      xaios_spin_unlock(&g_pmm_free_lock);
-      return;  /* Reject double-free */
-    }
+  if (!numa_free_page(page)) {
+    klog("pmm: CRITICAL: rejected invalid or double free at page 0x%lx\n",
+         (uint64_t)(uintptr_t)page);
   }
-
-  /* Track this freed page */
-  if (g_freed_count < PMM_MAX_FREED_TRACK) {
-    g_freed_pages[g_freed_count].page_addr = page_addr;
-    g_freed_pages[g_freed_count].freed_count = 1;
-    g_freed_count++;
-  }
-
-  /* Return page to NUMA allocator BEFORE writing magic,
-   * preventing a race where another CPU allocates the same
-   * page and reads stale magic data. */
-  numa_free_page(page);
-
-  /* Mark page with magic number for after-free detection */
-  uint64_t *page_ptr = (uint64_t *)page;
-  page_ptr[0] = PMM_FREE_MAGIC;
-  page_ptr[1] = PMM_FREE_MAGIC;
-
-  xaios_spin_unlock(&g_pmm_free_lock);
 }
 
 uint32_t pmm_node_of_page(void *page) {

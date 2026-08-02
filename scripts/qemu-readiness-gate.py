@@ -302,11 +302,11 @@ def validate_contract(contract: Dict[str, Any], failures: List[str]) -> Dict[str
     syscalls = syscall_abi.get("syscalls", [])
     capabilities = syscall_abi.get("capabilities", [])
     check_equal(syscall_abi.get("version"), 1, "contract.syscall_abi.version", failures)
-    if len(syscalls) != 34:
-        failures.append(f"contract.syscall_abi.syscalls expected 34 entries, got {len(syscalls)}")
-    if len(capabilities) != 18:
-        failures.append(f"contract.syscall_abi.capabilities expected 18 entries, got {len(capabilities)}")
-    expected_syscall_numbers = list(range(1, 35))
+    if len(syscalls) != 36:
+        failures.append(f"contract.syscall_abi.syscalls expected 36 entries, got {len(syscalls)}")
+    if len(capabilities) != 19:
+        failures.append(f"contract.syscall_abi.capabilities expected 19 entries, got {len(capabilities)}")
+    expected_syscall_numbers = list(range(1, len(syscalls) + 1))
     actual_syscall_numbers = [entry.get("number") for entry in syscalls]
     if actual_syscall_numbers != expected_syscall_numbers:
         failures.append(f"contract.syscall_abi numbers expected {expected_syscall_numbers}, got {actual_syscall_numbers}")

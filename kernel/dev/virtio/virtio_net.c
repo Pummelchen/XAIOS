@@ -6,7 +6,9 @@
 #include <xaios/vmm.h>
 
 #define VRING_DESC_F_WRITE UINT16_C(2)
-#define VIRTIO_NET_HDR_SIZE 10U
+/* QEMU's modern VirtIO-MMIO net transport uses virtio_net_hdr_mrg_rxbuf,
+ * including the trailing num_buffers field. */
+#define VIRTIO_NET_HDR_SIZE 12U
 #define VIRTIO_NET_PERSISTENT_RX_DESCS 8U
 #define VIRTIO_NET_PERSISTENT_TX_DESCS 4U
 #define VIRTIO_NET_MAX_FRAME 1524U

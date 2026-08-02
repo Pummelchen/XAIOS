@@ -10,6 +10,27 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 -->
 # AI onboarding changelog
 
+## 2026-08-02 - SSH and network QEMU completion gate
+
+- Added VirtIO RNG-backed SSH entropy, persistent flushed Ed25519 host keys,
+  authorized-key authentication, strict PBKDF2 user records, and fail-closed
+  entropy/default/malformed configuration tests.
+- Added SSH rekey, per-connection channels and SFTP handles, flow-controlled
+  channel output, absolute SFTP offsets, and cooperative four-session service.
+- Added TCP checksum/sequence/window validation, retained-segment and FIN
+  retransmission, RTT/RTO tracking, bounded reordered receive, keepalive, and
+  IPv4 fragment rejection on the active path.
+- Expanded the Debian 13 gate with host-key reboot, forced rekey, shared-channel,
+  malformed packet, reorder, retransmission, and negative image variants; made
+  it an independent CI job.
+- Replaced stale-address PMM double-free tracking with lock-protected NUMA
+  allocation ownership, eliminating false rejections of reused pages and the
+  post-release page write; added boot-time double-free and reuse assertions.
+- Hardened SSH packet/version/authentication length validation, closed SFTP
+  handles on every channel completion, and made READDIR bounded and stateful.
+- Added UDP checksum generation/validation, atomic datagram boundaries and flow
+  buffer reclamation; hardened TCP reset, allocation, and accept-backlog paths.
+
 ## 2026-08-02 — Debian 13 SSH and network interoperability
 
 - Raised the bounded freestanding SSH service from one to four simultaneous

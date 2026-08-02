@@ -158,21 +158,23 @@ static int ip_addr_equal(const xaios_ip_addr_user_t *a,
 
 /* ---- Per-connection encryption (replaces globals) ---- */
 
-static void conn_init_encryption(ssh_connection_t *conn,
-                                  const uint8_t *shared_secret,
-                                  uint32_t secret_len,
-                                  const uint8_t *exchange_hash,
-                                  uint32_t hash_len) {
-  ssh_connection_crypto_t *c = &conn->crypto;
+static int derive_connection_crypto(ssh_connection_crypto_t *c,
+                                    const uint8_t *shared_secret,
+                                    uint32_t secret_len,
+                                    const uint8_t *exchange_hash,
+                                    uint32_t hash_len,
+                                    const uint8_t session_id[32]) {
   uint8_t derive_buf[128];
   sha256_ctx_t ctx;
 
+  if (c == 0 || shared_secret == 0 || exchange_hash == 0 ||
+      session_id == 0 || secret_len != 32U || hash_len != 32U) return -1;
+  ssh_mem_zero(c, sizeof(*c));
   sha256_init(&ctx);
-  if (secret_len != 32U) return;
   sha256_update_mpint(&ctx, shared_secret);
   sha256_update(&ctx, exchange_hash, hash_len);
   sha256_update(&ctx, (const uint8_t*)"A", 1);
-  sha256_update(&ctx, exchange_hash, hash_len);
+  sha256_update(&ctx, session_id, 32U);
   sha256_final(&ctx, derive_buf);
   ssh_mem_copy(c->decrypt_iv, derive_buf, 16);
 
@@ -180,7 +182,7 @@ static void conn_init_encryption(ssh_connection_t *conn,
   sha256_update_mpint(&ctx, shared_secret);
   sha256_update(&ctx, exchange_hash, hash_len);
   sha256_update(&ctx, (const uint8_t*)"B", 1);
-  sha256_update(&ctx, exchange_hash, hash_len);
+  sha256_update(&ctx, session_id, 32U);
   sha256_final(&ctx, derive_buf);
   ssh_mem_copy(c->encrypt_iv, derive_buf, 16);
 
@@ -188,7 +190,7 @@ static void conn_init_encryption(ssh_connection_t *conn,
   sha256_update_mpint(&ctx, shared_secret);
   sha256_update(&ctx, exchange_hash, hash_len);
   sha256_update(&ctx, (const uint8_t*)"C", 1);
-  sha256_update(&ctx, exchange_hash, hash_len);
+  sha256_update(&ctx, session_id, 32U);
   sha256_final(&ctx, derive_buf);
   aes128_init(&c->decrypt_ctx, derive_buf);
 
@@ -196,7 +198,7 @@ static void conn_init_encryption(ssh_connection_t *conn,
   sha256_update_mpint(&ctx, shared_secret);
   sha256_update(&ctx, exchange_hash, hash_len);
   sha256_update(&ctx, (const uint8_t*)"D", 1);
-  sha256_update(&ctx, exchange_hash, hash_len);
+  sha256_update(&ctx, session_id, 32U);
   sha256_final(&ctx, derive_buf);
   aes128_init(&c->encrypt_ctx, derive_buf);
 
@@ -204,7 +206,7 @@ static void conn_init_encryption(ssh_connection_t *conn,
   sha256_update_mpint(&ctx, shared_secret);
   sha256_update(&ctx, exchange_hash, hash_len);
   sha256_update(&ctx, (const uint8_t*)"E", 1);
-  sha256_update(&ctx, exchange_hash, hash_len);
+  sha256_update(&ctx, session_id, 32U);
   sha256_final(&ctx, derive_buf);
   ssh_mem_copy(c->decrypt_mac_key, derive_buf, 32);
 
@@ -212,16 +214,25 @@ static void conn_init_encryption(ssh_connection_t *conn,
   sha256_update_mpint(&ctx, shared_secret);
   sha256_update(&ctx, exchange_hash, hash_len);
   sha256_update(&ctx, (const uint8_t*)"F", 1);
-  sha256_update(&ctx, exchange_hash, hash_len);
+  sha256_update(&ctx, session_id, 32U);
   sha256_final(&ctx, derive_buf);
   ssh_mem_copy(c->encrypt_mac_key, derive_buf, 32);
 
-  /* Packet sequence numbers start at the first KEXINIT packet and do not
-   * reset when NEWKEYS activates encryption. This initial exchange has sent
-   * and received KEXINIT, KEXDH_INIT/REPLY, and NEWKEYS. */
-  c->encrypt_seq = 3;
-  c->decrypt_seq = 3;
   c->enabled = 1;
+  ssh_mem_zero(derive_buf, sizeof(derive_buf));
+  ssh_mem_zero(&ctx, sizeof(ctx));
+  return 0;
+}
+
+static int conn_init_encryption(ssh_connection_t *conn) {
+  if (derive_connection_crypto(&conn->crypto, conn->shared_secret, 32U,
+                               conn->exchange_hash, 32U,
+                               conn->session_id) != 0) return -1;
+  /* Three packets in each direction precede the first encrypted packet. */
+  conn->crypto.encrypt_seq = 3U;
+  conn->crypto.decrypt_seq = 3U;
+  conn->rekey_encrypt_base = conn->crypto.encrypt_seq;
+  return 0;
 }
 
 static int conn_packet_write_encrypted(ssh_connection_t *conn,
@@ -240,36 +251,161 @@ static uint64_t timer_now(void) {
 }
 
 /* ---- User Database ---- */
-static int load_user_database(void) {
-  if (g_user_count == 0) {
-    ssh_mem_copy(g_users[0].username, "admin", 6);
-    static const uint8_t admin_hash[32] = {
-      0x8c, 0x69, 0x76, 0xe5, 0xb5, 0x41, 0x04, 0x15,
-      0xbd, 0xe9, 0x08, 0xbd, 0x4d, 0xee, 0x15, 0xdf,
-      0xb1, 0x67, 0xa9, 0xc8, 0x73, 0xfc, 0x4b, 0xb8,
-      0xa8, 0x1f, 0x6f, 0x2a, 0xb4, 0x48, 0xa9, 0x18
-    };
-    ssh_mem_copy(g_users[0].password_hash, admin_hash, 32);
-    g_users[0].active = 1;
-    g_user_count = 1;
-    ssh_log(SSH_LOG_INFO, "Loaded default admin user\n");
+#define SSHD_USERS_PATH "/etc/xaios_sshd_users"
+
+static int parse_decimal_u32(const char *text, uint32_t text_len,
+                             uint32_t *value) {
+  uint32_t result = 0;
+  if (text_len == 0U || value == 0) return -1;
+  for (uint32_t i = 0; i < text_len; ++i) {
+    if (text[i] < '0' || text[i] > '9') return -1;
+    uint32_t digit = (uint32_t)(text[i] - '0');
+    if (result > (UINT32_MAX - digit) / 10U) return -1;
+    result = result * 10U + digit;
   }
+  *value = result;
+  return 0;
+}
+
+static int hex_nibble(char value) {
+  if (value >= '0' && value <= '9') return value - '0';
+  if (value >= 'a' && value <= 'f') return 10 + value - 'a';
+  if (value >= 'A' && value <= 'F') return 10 + value - 'A';
+  return -1;
+}
+
+static int parse_hex_bytes(const char *text, uint32_t text_len,
+                           uint8_t *output, uint32_t output_capacity,
+                           uint32_t *output_len) {
+  if (text == 0 || output == 0 || output_len == 0 || text_len == 0U ||
+      (text_len & 1U) != 0U || text_len / 2U > output_capacity) {
+    return -1;
+  }
+  for (uint32_t i = 0; i < text_len / 2U; ++i) {
+    int high = hex_nibble(text[i * 2U]);
+    int low = hex_nibble(text[i * 2U + 1U]);
+    if (high < 0 || low < 0) return -1;
+    output[i] = (uint8_t)(((uint32_t)high << 4U) | (uint32_t)low);
+  }
+  *output_len = text_len / 2U;
+  return 0;
+}
+
+static int parse_user_line(const char *line, uint32_t line_len,
+                           sshd_user_t *user) {
+  uint32_t separator[4];
+  uint32_t separator_count = 0;
+  while (line_len > 0U && line[line_len - 1U] == '\r') --line_len;
+  if (line_len == 0U || line[0] == '#') return 1;
+  for (uint32_t i = 0; i < line_len; ++i) {
+    if (line[i] == ':') {
+      if (separator_count >= 4U) return -1;
+      separator[separator_count++] = i;
+    }
+  }
+  if (separator_count != 4U || separator[0] == 0U ||
+      separator[0] >= SSHD_USERNAME_MAX) return -1;
+  if (separator[0] != 5U) return -1;
+  static const char admin_name[] = "admin";
+  for (uint32_t i = 0; i < sizeof(admin_name) - 1U; ++i) {
+    if (line[i] != admin_name[i]) return -1;
+  }
+  static const char scheme[] = "pbkdf2-sha256";
+  uint32_t scheme_start = separator[0] + 1U;
+  uint32_t scheme_len = separator[1] - scheme_start;
+  if (scheme_len != sizeof(scheme) - 1U) return -1;
+  for (uint32_t i = 0; i < scheme_len; ++i) {
+    if (line[scheme_start + i] != scheme[i]) return -1;
+  }
+  uint32_t iterations = 0;
+  if (parse_decimal_u32(line + separator[1] + 1U,
+                        separator[2] - separator[1] - 1U,
+                        &iterations) != 0 ||
+      iterations < SSHD_PASSWORD_ITERATIONS_MIN ||
+      iterations > SSHD_PASSWORD_ITERATIONS_MAX) return -1;
+  uint32_t salt_len = 0;
+  if (parse_hex_bytes(line + separator[2] + 1U,
+                      separator[3] - separator[2] - 1U,
+                      user->password_salt, sizeof(user->password_salt),
+                      &salt_len) != 0 || salt_len < 16U) return -1;
+  uint32_t hash_len = 0;
+  if (parse_hex_bytes(line + separator[3] + 1U,
+                      line_len - separator[3] - 1U,
+                      user->password_hash, sizeof(user->password_hash),
+                      &hash_len) != 0 || hash_len != SSHD_PASSWORD_HASH_SIZE) {
+    return -1;
+  }
+  ssh_mem_copy(user->username, admin_name, sizeof(admin_name));
+  user->password_salt_len = salt_len;
+  user->password_iterations = iterations;
+  user->active = 1;
+  return 0;
+}
+
+static int load_user_database(void) {
+  char buffer[4096];
+  int result = xaios_read_file(SSHD_USERS_PATH, buffer, sizeof(buffer));
+  ssh_mem_zero(g_users, sizeof(g_users));
+  g_user_count = 0;
+  if (result < 0) {
+    ssh_log(SSH_LOG_INFO, "Password authentication disabled\n");
+    return 0;
+  }
+  uint32_t line_start = 0;
+  for (uint32_t i = 0; i <= (uint32_t)result; ++i) {
+    if (i == (uint32_t)result || buffer[i] == '\n') {
+      sshd_user_t parsed;
+      ssh_mem_zero(&parsed, sizeof(parsed));
+      int line_result = parse_user_line(buffer + line_start, i - line_start,
+                                        &parsed);
+      if (line_result < 0 ||
+          (line_result == 0 && g_user_count != 0U) ||
+          (line_result == 0 && g_user_count >= SSHD_MAX_USERS)) {
+        ssh_mem_zero(buffer, sizeof(buffer));
+        ssh_mem_zero(g_users, sizeof(g_users));
+        g_user_count = 0;
+        ssh_log(SSH_LOG_ERROR, "Invalid SSH user database\n");
+        return -1;
+      }
+      if (line_result == 0) g_users[g_user_count++] = parsed;
+      line_start = i + 1U;
+    }
+  }
+  ssh_mem_zero(buffer, sizeof(buffer));
+  if (g_user_count == 0U) return -1;
+  ssh_log(SSH_LOG_INFO, "Loaded %u SSH password users\n", g_user_count);
   return 0;
 }
 
 static int authenticate_password(const char *username, const char *password) {
+  static const uint8_t dummy_salt[16] = {
+    0x58,0x41,0x49,0x4f,0x53,0x2d,0x53,0x53,
+    0x48,0x2d,0x44,0x55,0x4d,0x4d,0x59,0x31
+  };
+  static const uint8_t dummy_hash[32] = {0};
+  const uint8_t *salt = dummy_salt;
+  const uint8_t *expected = dummy_hash;
+  uint32_t salt_len = sizeof(dummy_salt);
+  uint32_t iterations = SSHD_PASSWORD_ITERATIONS_MIN;
+  int found = 0;
   for (uint32_t i = 0; i < g_user_count; ++i) {
     if (!g_users[i].active) continue;
     if (!ssh_str_eq(g_users[i].username, username)) continue;
-    uint8_t hash[32];
-    sha256_hash((const uint8_t *)password, ssh_str_len(password), hash);
-    uint8_t diff = 0;
-    for (uint32_t j = 0; j < 32; ++j) diff |= hash[j] ^ g_users[i].password_hash[j];
-    if (diff != 0) { ssh_mem_zero(hash, 32); return -1; }
-    ssh_mem_zero(hash, 32);
-    return 0;
+    salt = g_users[i].password_salt;
+    salt_len = g_users[i].password_salt_len;
+    expected = g_users[i].password_hash;
+    iterations = g_users[i].password_iterations;
+    found = 1;
+    break;
   }
-  return -1;
+  uint8_t hash[32];
+  if (pbkdf2_hmac_sha256((const uint8_t *)password,
+                         ssh_str_len(password), salt, salt_len,
+                         iterations, hash) != 0) return -1;
+  uint8_t diff = (uint8_t)(found == 0);
+  for (uint32_t i = 0; i < sizeof(hash); ++i) diff |= hash[i] ^ expected[i];
+  ssh_mem_zero(hash, sizeof(hash));
+  return diff == 0U ? 0 : -1;
 }
 
 /* ---- Authorized Keys for Public Key Auth ---- */
@@ -284,53 +420,148 @@ typedef struct {
 static authorized_key_t g_authorized_keys[MAX_AUTHORIZED_KEYS];
 static uint32_t g_authorized_key_count = 0;
 
-static int hex_to_key(const char *hex, uint8_t *key) {
-  uint32_t len = 0;
-  while (hex[len]) ++len;
-  if (len != 64) return -1;
-  for (uint32_t i = 0; i < 32; ++i) {
-    int hi = 0, lo = 0;
-    char c = hex[i * 2];
-    if (c >= '0' && c <= '9') hi = c - '0';
-    else if (c >= 'a' && c <= 'f') hi = 10 + (c - 'a');
-    else if (c >= 'A' && c <= 'F') hi = 10 + (c - 'A');
-    else return -1;
-    c = hex[i * 2 + 1];
-    if (c >= '0' && c <= '9') lo = c - '0';
-    else if (c >= 'a' && c <= 'f') lo = 10 + (c - 'a');
-    else if (c >= 'A' && c <= 'F') lo = 10 + (c - 'A');
-    else return -1;
-    key[i] = (uint8_t)((hi << 4) | lo);
+static int bytes_equal(const uint8_t *left, const uint8_t *right,
+                       uint32_t size) {
+  uint8_t difference = 0;
+  for (uint32_t i = 0; i < size; ++i) difference |= left[i] ^ right[i];
+  return difference == 0U;
+}
+
+static int bytes_have_zero(const uint8_t *data, uint32_t size) {
+  for (uint32_t i = 0; i < size; ++i) {
+    if (data[i] == 0U) return 1;
   }
   return 0;
+}
+
+static int valid_client_version(const uint8_t *version, uint32_t length) {
+  static const uint8_t prefix[] = "SSH-2.0-";
+  if (version == 0 || length < sizeof(prefix) || version[length - 1U] != '\n') {
+    return 0;
+  }
+  uint32_t text_length = length - 1U;
+  if (text_length != 0U && version[text_length - 1U] == '\r') --text_length;
+  if (text_length < sizeof(prefix) ||
+      !bytes_equal(version, prefix, sizeof(prefix) - 1U)) {
+    return 0;
+  }
+  for (uint32_t i = 0; i < text_length; ++i) {
+    if (version[i] < 32U || version[i] > 126U) return 0;
+  }
+  return 1;
+}
+
+static int parse_ed25519_key_blob(const uint8_t *blob, uint32_t blob_len,
+                                  uint8_t key[32]) {
+  static const uint8_t algorithm[] = "ssh-ed25519";
+  if (blob == 0 || blob_len != 51U || ssh_read_u32_be(blob) != 11U ||
+      !bytes_equal(blob + 4U, algorithm, 11U) ||
+      ssh_read_u32_be(blob + 15U) != 32U) {
+    return -1;
+  }
+  ssh_mem_copy(key, blob + 19U, 32U);
+  return 0;
+}
+
+static int base64_value(char value) {
+  if (value >= 'A' && value <= 'Z') return value - 'A';
+  if (value >= 'a' && value <= 'z') return 26 + value - 'a';
+  if (value >= '0' && value <= '9') return 52 + value - '0';
+  if (value == '+') return 62;
+  if (value == '/') return 63;
+  return -1;
+}
+
+static int decode_base64(const char *text, uint32_t text_len, uint8_t *output,
+                         uint32_t output_capacity, uint32_t *output_len) {
+  uint32_t accumulator = 0;
+  uint32_t bits = 0;
+  uint32_t written = 0;
+  if (text_len == 0U || (text_len & 3U) != 0U) return -1;
+  for (uint32_t i = 0; i < text_len; ++i) {
+    char value = text[i];
+    if (value == '=') {
+      if (i < text_len - 2U ||
+          (i == text_len - 2U && text[i + 1U] != '=')) return -1;
+      continue;
+    }
+    if (i > 0U && text[i - 1U] == '=') return -1;
+    int decoded = base64_value(value);
+    if (decoded < 0) return -1;
+    accumulator = (accumulator << 6U) | (uint32_t)decoded;
+    bits += 6U;
+    if (bits >= 8U) {
+      bits -= 8U;
+      if (written >= output_capacity) return -1;
+      output[written++] = (uint8_t)(accumulator >> bits);
+      if (bits != 0U) accumulator &= (UINT32_C(1) << bits) - 1U;
+      else accumulator = 0U;
+    }
+  }
+  *output_len = written;
+  return 0;
+}
+
+static int parse_authorized_key_line(const char *line, uint32_t line_len,
+                                     uint8_t key[32]) {
+  static const char algorithm[] = "ssh-ed25519";
+  uint32_t position = 0;
+  while (position < line_len) {
+    while (position < line_len &&
+           (line[position] == ' ' || line[position] == '\t')) ++position;
+    if (position == line_len || line[position] == '#') return -1;
+    uint32_t token_start = position;
+    while (position < line_len && line[position] != ' ' &&
+           line[position] != '\t' && line[position] != '\r') ++position;
+    uint32_t token_len = position - token_start;
+    if (token_len == sizeof(algorithm) - 1U &&
+        bytes_equal((const uint8_t *)line + token_start,
+                    (const uint8_t *)algorithm, token_len)) {
+      while (position < line_len &&
+             (line[position] == ' ' || line[position] == '\t')) ++position;
+      uint32_t key_start = position;
+      while (position < line_len && line[position] != ' ' &&
+             line[position] != '\t' && line[position] != '\r') ++position;
+      uint8_t blob[96];
+      uint32_t blob_len = 0;
+      if (decode_base64(line + key_start, position - key_start, blob,
+                        sizeof(blob), &blob_len) != 0) return -1;
+      int result = parse_ed25519_key_blob(blob, blob_len, key);
+      ssh_mem_zero(blob, sizeof(blob));
+      return result;
+    }
+  }
+  return -1;
 }
 
 static int load_authorized_keys(void) {
   if (g_authorized_key_count > 0) return 0;
   char buf[4096];
   int ret = xaios_read_file(AUTHORIZED_KEYS_PATH, buf, sizeof(buf));
-  if (ret != 0) {
+  if (ret < 0) {
     ssh_log(SSH_LOG_INFO, "No authorized keys file\n");
     return -1;
   }
+  if (ret <= 0) return -1;
+  ssh_mem_zero(g_authorized_keys, sizeof(g_authorized_keys));
   uint32_t line_start = 0;
   uint32_t key_idx = 0;
-  for (uint32_t i = 0; buf[i] && key_idx < MAX_AUTHORIZED_KEYS; ++i) {
-    if (buf[i] == '\n' || buf[i] == '\0') {
+  for (uint32_t i = 0; i <= (uint32_t)ret && key_idx < MAX_AUTHORIZED_KEYS;
+       ++i) {
+    if (i == (uint32_t)ret || buf[i] == '\n') {
       uint32_t line_len = i - line_start;
-      if (line_len == 64) {
-        char hex[65];
-        ssh_mem_copy(hex, buf + line_start, 64);
-        hex[64] = '\0';
-        if (hex_to_key(hex, g_authorized_keys[key_idx].key) == 0) {
-          g_authorized_keys[key_idx].active = 1;
-          key_idx++;
-        }
+      if (parse_authorized_key_line(buf + line_start, line_len,
+                                    g_authorized_keys[key_idx].key) == 0) {
+        g_authorized_keys[key_idx].active = 1;
+        ++key_idx;
       }
       line_start = i + 1;
     }
   }
   g_authorized_key_count = key_idx;
+  if (g_authorized_key_count != 0U) {
+    xaios_log("sshd: authorized key parser accepted input\n");
+  }
   ssh_log(SSH_LOG_INFO, "Loaded %u authorized keys\n", g_authorized_key_count);
   return (g_authorized_key_count > 0) ? 0 : -1;
 }
@@ -338,11 +569,7 @@ static int load_authorized_keys(void) {
 static int check_authorized_key(const uint8_t *pubkey) {
   for (uint32_t i = 0; i < g_authorized_key_count; ++i) {
     if (!g_authorized_keys[i].active) continue;
-    int match = 1;
-    for (uint32_t j = 0; j < 32; ++j) {
-      if (g_authorized_keys[i].key[j] != pubkey[j]) { match = 0; break; }
-    }
-    if (match) return 0;
+    if (bytes_equal(g_authorized_keys[i].key, pubkey, 32U)) return 0;
   }
   return -1;
 }
@@ -376,10 +603,23 @@ static void record_auth_failure(const xaios_ip_addr_user_t *client_addr) {
   if (entry == 0) {
     if (g_rate_limit_count < SSHD_RATE_LIMIT_MAX_ENTRIES) {
       entry = &g_rate_limits[g_rate_limit_count++];
+    } else {
+      uint32_t oldest = 0;
+      for (uint32_t i = 1; i < g_rate_limit_count; ++i) {
+        if (g_rate_limits[i].ban_until <= now &&
+            (g_rate_limits[oldest].ban_until > now ||
+             g_rate_limits[i].last_attempt_time <
+                 g_rate_limits[oldest].last_attempt_time)) {
+          oldest = i;
+        }
+      }
+      if (g_rate_limits[oldest].ban_until <= now) entry = &g_rate_limits[oldest];
+    }
+    if (entry != 0) {
+      ssh_mem_zero(entry, sizeof(*entry));
       entry->ip_address = *client_addr;
       entry->last_attempt_time = now;
-      entry->failure_count = 1;
-      entry->ban_until = 0;
+      entry->failure_count = 1U;
     }
   } else {
     entry->last_attempt_time = now;
@@ -395,11 +635,23 @@ static void record_auth_success(const xaios_ip_addr_user_t *client_addr) {
   if (entry) { entry->failure_count = 0; entry->ban_until = 0; }
 }
 
+static int send_auth_failure(ssh_connection_t *conn) {
+  uint8_t reject[64];
+  const char *methods = g_user_count == 0U ? "publickey" :
+                                               "publickey,password";
+  uint32_t methods_len = ssh_str_len(methods);
+  reject[0] = SSH_MSG_USERAUTH_FAILURE;
+  ssh_write_u32_be(reject + 1U, methods_len);
+  ssh_mem_copy(reject + 5U, methods, methods_len);
+  reject[5U + methods_len] = 0U;
+  return conn_packet_write_encrypted(conn, reject, 6U + methods_len);
+}
+
 /* ---- Build KEXINIT Packet ---- */
-static uint32_t build_kexinit(uint8_t *buf) {
+static int build_kexinit(uint8_t *buf, uint32_t *out_len) {
   uint32_t pos = 0;
   buf[pos++] = 20;
-  crypto_random_bytes(buf + pos, 16);
+  if (crypto_random_bytes(buf + pos, 16) != 0) return -1;
   pos += 16;
   const char *kex = "curve25519-sha256";
   uint32_t kex_len = ssh_str_len(kex);
@@ -431,7 +683,206 @@ static uint32_t build_kexinit(uint8_t *buf) {
   ssh_write_u32_be(buf + pos, 0); pos += 4;
   buf[pos++] = 0;
   ssh_write_u32_be(buf + pos, 0); pos += 4;
-  return pos;
+  *out_len = pos;
+  return 0;
+}
+
+static int name_list_contains(const uint8_t *list, uint32_t list_len,
+                              const char *required) {
+  uint32_t required_len = ssh_str_len(required);
+  uint32_t start = 0U;
+  for (uint32_t i = 0U; i <= list_len; ++i) {
+    if (i == list_len || list[i] == ',') {
+      if (i - start == required_len &&
+          bytes_equal(list + start, (const uint8_t *)required,
+                      required_len)) return 1;
+      start = i + 1U;
+    }
+  }
+  return 0;
+}
+
+static int consume_required_name_list(const ssh_packet_t *pkt,
+                                      uint32_t *offset,
+                                      const char *required) {
+  if (*offset + 4U > pkt->len) return -1;
+  uint32_t length = ssh_read_u32_be(pkt->data + *offset);
+  *offset += 4U;
+  if (length > pkt->len - *offset ||
+      !name_list_contains(pkt->data + *offset, length, required)) return -1;
+  *offset += length;
+  return 0;
+}
+
+static int consume_name_list(const ssh_packet_t *pkt, uint32_t *offset) {
+  if (*offset + 4U > pkt->len) return -1;
+  uint32_t length = ssh_read_u32_be(pkt->data + *offset);
+  *offset += 4U;
+  if (length > pkt->len - *offset) return -1;
+  *offset += length;
+  return 0;
+}
+
+static int validate_client_kexinit(const ssh_packet_t *pkt) {
+  if (pkt == 0 || pkt->len < 21U || pkt->data[0] != SSH_MSG_KEXINIT) {
+    return -1;
+  }
+  uint32_t offset = 17U;
+  if (consume_required_name_list(pkt, &offset, "curve25519-sha256") != 0 ||
+      consume_required_name_list(pkt, &offset, "ssh-ed25519") != 0 ||
+      consume_required_name_list(pkt, &offset, "aes128-ctr") != 0 ||
+      consume_required_name_list(pkt, &offset, "aes128-ctr") != 0 ||
+      consume_required_name_list(pkt, &offset, "hmac-sha2-256") != 0 ||
+      consume_required_name_list(pkt, &offset, "hmac-sha2-256") != 0 ||
+      consume_required_name_list(pkt, &offset, "none") != 0 ||
+      consume_required_name_list(pkt, &offset, "none") != 0 ||
+      consume_name_list(pkt, &offset) != 0 ||
+      consume_name_list(pkt, &offset) != 0 || offset + 5U != pkt->len ||
+      pkt->data[offset] != 0U) return -1;
+  return 0;
+}
+
+static void init_exchange_hash(ssh_connection_t *conn,
+                               const ssh_packet_t *client_kexinit) {
+  uint32_t client_version_len = conn->version_len;
+  while (client_version_len > 0U &&
+         (conn->version_buf[client_version_len - 1U] == '\r' ||
+          conn->version_buf[client_version_len - 1U] == '\n')) {
+    --client_version_len;
+  }
+  sha256_init(&conn->exchange_hash_ctx);
+  sha256_update_string(&conn->exchange_hash_ctx, conn->version_buf,
+                       client_version_len);
+  static const uint8_t server_version[] = "SSH-2.0-XAIOS_1.0";
+  sha256_update_string(&conn->exchange_hash_ctx, server_version,
+                       sizeof(server_version) - 1U);
+  sha256_update_string(&conn->exchange_hash_ctx, client_kexinit->data,
+                       client_kexinit->len);
+  sha256_update_string(&conn->exchange_hash_ctx, conn->server_kexinit,
+                       conn->server_kexinit_len);
+}
+
+static int send_server_kexinit(ssh_connection_t *conn, int encrypted) {
+  if (build_kexinit(conn->server_kexinit,
+                    &conn->server_kexinit_len) != 0) return -1;
+  if (encrypted != 0) {
+    return conn_packet_write_encrypted(conn, conn->server_kexinit,
+                                       conn->server_kexinit_len);
+  }
+  return ssh_packet_write((int)conn->sockfd, conn->server_kexinit,
+                          conn->server_kexinit_len);
+}
+
+static int send_kex_packet(ssh_connection_t *conn, int encrypted,
+                           const uint8_t *packet, uint32_t packet_len) {
+  if (encrypted != 0) {
+    return conn_packet_write_encrypted(conn, packet, packet_len);
+  }
+  return ssh_packet_write((int)conn->sockfd, packet, packet_len);
+}
+
+static int handle_kexdh_init(ssh_connection_t *conn,
+                             const ssh_packet_t *pkt, int encrypted) {
+  if (pkt == 0 || pkt->len != 37U || pkt->data[0] != SSH_MSG_KEXDH_INIT ||
+      ssh_read_string_len(pkt->data + 1U) != 32U) return -1;
+  ssh_mem_copy(conn->client_ephemeral_pub, pkt->data + 5U, 32U);
+  if (crypto_random_bytes(conn->server_ephemeral_priv, 32U) != 0) return -1;
+  xaios_x25519_base(conn->server_ephemeral_pub,
+                    conn->server_ephemeral_priv);
+  xaios_x25519(conn->shared_secret, conn->server_ephemeral_priv,
+               conn->client_ephemeral_pub);
+  uint8_t shared_nonzero = 0U;
+  for (uint32_t i = 0; i < sizeof(conn->shared_secret); ++i) {
+    shared_nonzero |= conn->shared_secret[i];
+  }
+  if (shared_nonzero == 0U) return -1;
+
+  sha256_ctx_t hash_ctx = conn->exchange_hash_ctx;
+  uint8_t host_pub[32];
+  if (ssh_host_key_get_public(host_pub) != 0) return -1;
+  uint8_t host_key_blob[64];
+  uint32_t host_key_blob_pos = 0U;
+  ssh_write_u32_be(host_key_blob + host_key_blob_pos, 4U + 11U + 4U + 32U);
+  host_key_blob_pos += 4U;
+  ssh_write_u32_be(host_key_blob + host_key_blob_pos, 11U);
+  host_key_blob_pos += 4U;
+  ssh_mem_copy(host_key_blob + host_key_blob_pos, "ssh-ed25519", 11U);
+  host_key_blob_pos += 11U;
+  ssh_write_u32_be(host_key_blob + host_key_blob_pos, 32U);
+  host_key_blob_pos += 4U;
+  ssh_mem_copy(host_key_blob + host_key_blob_pos, host_pub, 32U);
+  host_key_blob_pos += 32U;
+  sha256_update(&hash_ctx, host_key_blob, host_key_blob_pos);
+  sha256_update_string(&hash_ctx, conn->client_ephemeral_pub, 32U);
+  sha256_update_string(&hash_ctx, conn->server_ephemeral_pub, 32U);
+  sha256_update_mpint(&hash_ctx, conn->shared_secret);
+  sha256_final(&hash_ctx, conn->exchange_hash);
+  if (encrypted == 0) {
+    ssh_mem_copy(conn->session_id, conn->exchange_hash,
+                 sizeof(conn->session_id));
+  }
+
+  uint8_t reply[512];
+  uint32_t position = 0U;
+  reply[position++] = SSH_MSG_KEXDH_REPLY;
+  ssh_write_u32_be(reply + position, host_key_blob_pos - 4U);
+  position += 4U;
+  ssh_mem_copy(reply + position, host_key_blob + 4U,
+               host_key_blob_pos - 4U);
+  position += host_key_blob_pos - 4U;
+  ssh_write_u32_be(reply + position, 32U);
+  position += 4U;
+  ssh_mem_copy(reply + position, conn->server_ephemeral_pub, 32U);
+  position += 32U;
+
+  uint8_t signature[64];
+  uint8_t host_priv[32];
+  if (ssh_host_key_get_private(host_priv) != 0) return -1;
+  xaios_ed25519_sign(signature, conn->exchange_hash, 32U, host_pub,
+                     host_priv);
+  ssh_mem_zero(host_priv, sizeof(host_priv));
+  ssh_write_u32_be(reply + position, 4U + 11U + 4U + 64U);
+  position += 4U;
+  ssh_write_u32_be(reply + position, 11U);
+  position += 4U;
+  ssh_mem_copy(reply + position, "ssh-ed25519", 11U);
+  position += 11U;
+  ssh_write_u32_be(reply + position, 64U);
+  position += 4U;
+  ssh_mem_copy(reply + position, signature, sizeof(signature));
+  position += sizeof(signature);
+
+  if (send_kex_packet(conn, encrypted, reply, position) != 0) return -1;
+  uint8_t newkeys = SSH_MSG_NEWKEYS;
+  if (send_kex_packet(conn, encrypted, &newkeys, 1U) != 0) return -1;
+  if (encrypted != 0 &&
+      derive_connection_crypto(&conn->pending_crypto, conn->shared_secret,
+                               32U, conn->exchange_hash, 32U,
+                               conn->session_id) != 0) return -1;
+  ssh_mem_zero(signature, sizeof(signature));
+  ssh_mem_zero(&hash_ctx, sizeof(hash_ctx));
+  return 0;
+}
+
+static int begin_client_rekey(ssh_connection_t *conn,
+                              const ssh_packet_t *client_kexinit,
+                              int resume_state, uint64_t now) {
+  if (validate_client_kexinit(client_kexinit) != 0 ||
+      send_server_kexinit(conn, 1) != 0) return -1;
+  init_exchange_hash(conn, client_kexinit);
+  conn->rekey_resume_state = resume_state;
+  conn->kex_start_time = now;
+  conn->state = SSH_STATE_REKEY_DH;
+  return 0;
+}
+
+static int begin_server_rekey(ssh_connection_t *conn, int resume_state,
+                              uint64_t now) {
+  if (send_server_kexinit(conn, 1) != 0) return -1;
+  conn->rekey_resume_state = resume_state;
+  conn->kex_start_time = now;
+  conn->state = SSH_STATE_REKEY_KEXINIT;
+  return 0;
 }
 
 /* ---- Connection State Machine Processor ---- */
@@ -472,12 +923,12 @@ static int process_connection(ssh_connection_t *conn) {
         return -1;
       }
     }
-
-    /* Send KEXINIT */
-    conn->server_kexinit_len = build_kexinit(conn->server_kexinit);
-    if (ssh_packet_write(sockfd, conn->server_kexinit, conn->server_kexinit_len) != 0) {
+    if (!valid_client_version(conn->version_buf, conn->version_len)) {
+      ssh_log(SSH_LOG_WARN, "Rejected invalid SSH client version");
       return -1;
     }
+
+    if (send_server_kexinit(conn, 0) != 0) return -1;
     conn->state = SSH_STATE_KEX_SENT;
     return 0;
   }
@@ -487,23 +938,8 @@ static int process_connection(ssh_connection_t *conn) {
     int packet_status = ssh_packet_read(sockfd, pkt);
     if (packet_status > 0) return 0;
     if (packet_status < 0) return -1;
-    if (pkt->len == 0 || pkt->data[0] != 20) return -1;
-
-    uint32_t vc_len = conn->version_len;
-    while (vc_len > 0 && (conn->version_buf[vc_len - 1U] == '\r' ||
-           conn->version_buf[vc_len - 1U] == '\n')) {
-      --vc_len;
-    }
-    sha256_init(&conn->exchange_hash_ctx);
-    sha256_update_string(&conn->exchange_hash_ctx, conn->version_buf, vc_len);
-
-    const char *server_version = "SSH-2.0-XAIOS_1.0";
-    uint32_t vs_len = ssh_str_len(server_version);
-    sha256_update_string(&conn->exchange_hash_ctx,
-                         (const uint8_t *)server_version, vs_len);
-    sha256_update_string(&conn->exchange_hash_ctx, pkt->data, pkt->len);
-    sha256_update_string(&conn->exchange_hash_ctx, conn->server_kexinit,
-                         conn->server_kexinit_len);
+    if (validate_client_kexinit(pkt) != 0) return -1;
+    init_exchange_hash(conn, pkt);
     conn->state = SSH_STATE_NEWKEYS;
     return 0;
   }
@@ -513,97 +949,7 @@ static int process_connection(ssh_connection_t *conn) {
     int packet_status = ssh_packet_read(sockfd, pkt);
     if (packet_status > 0) return 0;
     if (packet_status < 0) return -1;
-    if (pkt->len == 0 || pkt->data[0] != 30) return -1;
-
-    if (pkt->len < 5) return -1;
-    uint32_t client_pub_len = ssh_read_string_len(pkt->data + 1);
-    if (client_pub_len != 32 || pkt->len < 5 + 32) return -1;
-    ssh_mem_copy(conn->client_ephemeral_pub, pkt->data + 5, 32);
-
-    /* Generate server ephemeral key pair */
-    crypto_random_bytes(conn->server_ephemeral_priv, 32);
-    xaios_x25519_base(conn->server_ephemeral_pub,
-                      conn->server_ephemeral_priv);
-
-    /* Compute shared secret */
-    xaios_x25519(conn->shared_secret, conn->server_ephemeral_priv,
-                 conn->client_ephemeral_pub);
-
-    /* Build exchange hash */
-    sha256_ctx_t hash_ctx = conn->exchange_hash_ctx;
-
-    /* K_S: host key blob */
-    uint8_t host_pub[32];
-    ssh_host_key_get_public(host_pub);
-    uint8_t host_key_blob[64];
-    uint32_t host_key_blob_pos = 0;
-    ssh_write_u32_be(host_key_blob + host_key_blob_pos, 4 + 11 + 4 + 32);
-    host_key_blob_pos += 4;
-    ssh_write_u32_be(host_key_blob + host_key_blob_pos, 11);
-    host_key_blob_pos += 4;
-    ssh_mem_copy(host_key_blob + host_key_blob_pos, "ssh-ed25519", 11);
-    host_key_blob_pos += 11;
-    ssh_write_u32_be(host_key_blob + host_key_blob_pos, 32);
-    host_key_blob_pos += 4;
-    ssh_mem_copy(host_key_blob + host_key_blob_pos, host_pub, 32);
-    host_key_blob_pos += 32;
-    sha256_update(&hash_ctx, host_key_blob, host_key_blob_pos);
-
-    /* e: client ephemeral */
-    uint8_t client_pub_blob[36];
-    ssh_write_u32_be(client_pub_blob, 32);
-    ssh_mem_copy(client_pub_blob + 4, conn->client_ephemeral_pub, 32);
-    sha256_update(&hash_ctx, client_pub_blob, 36);
-
-    /* f: server ephemeral */
-    uint8_t server_pub_blob[36];
-    ssh_write_u32_be(server_pub_blob, 32);
-    ssh_mem_copy(server_pub_blob + 4, conn->server_ephemeral_pub, 32);
-    sha256_update(&hash_ctx, server_pub_blob, 36);
-
-    /* K: shared secret encoded as an SSH positive mpint. */
-    sha256_update_mpint(&hash_ctx, conn->shared_secret);
-
-    sha256_final(&hash_ctx, conn->exchange_hash);
-    ssh_mem_copy(conn->session_id, conn->exchange_hash,
-                 sizeof(conn->session_id));
-
-    /* Build KEXDH_REPLY */
-    uint8_t reply[512];
-    uint32_t rpos = 0;
-    reply[rpos++] = 31;
-
-    /* host key */
-    uint32_t host_key_blob_len = 4 + 11 + 4 + 32;
-    ssh_write_u32_be(reply + rpos, host_key_blob_len); rpos += 4;
-    ssh_write_u32_be(reply + rpos, 11); rpos += 4;
-    ssh_mem_copy(reply + rpos, "ssh-ed25519", 11); rpos += 11;
-    ssh_write_u32_be(reply + rpos, 32); rpos += 4;
-    ssh_mem_copy(reply + rpos, host_pub, 32); rpos += 32;
-
-    /* f (server public) */
-    ssh_write_u32_be(reply + rpos, 32); rpos += 4;
-    ssh_mem_copy(reply + rpos, conn->server_ephemeral_pub, 32); rpos += 32;
-
-    /* Signature */
-    uint8_t signature[64];
-    uint8_t host_priv[32];
-    ssh_host_key_get_private(host_priv);
-    xaios_ed25519_sign(signature, conn->exchange_hash, 32, host_pub,
-                       host_priv);
-
-    ssh_write_u32_be(reply + rpos, 4 + 11 + 4 + 64); rpos += 4;
-    ssh_write_u32_be(reply + rpos, 11); rpos += 4;
-    ssh_mem_copy(reply + rpos, "ssh-ed25519", 11); rpos += 11;
-    ssh_write_u32_be(reply + rpos, 64); rpos += 4;
-    ssh_mem_copy(reply + rpos, signature, 64); rpos += 64;
-
-    if (ssh_packet_write(sockfd, reply, rpos) != 0) return -1;
-
-    /* Send NEWKEYS */
-    uint8_t newkeys = 21;
-    if (ssh_packet_write(sockfd, &newkeys, 1) != 0) return -1;
-
+    if (handle_kexdh_init(conn, pkt, 0) != 0) return -1;
     conn->state = SSH_STATE_NEWKEYS_SENT;
     return 0;
   }
@@ -615,11 +961,47 @@ static int process_connection(ssh_connection_t *conn) {
     if (packet_status < 0) return -1;
     if (pkt->len == 0 || pkt->data[0] != 21) return -1;
 
-    conn_init_encryption(conn, conn->shared_secret, 32,
-                         conn->exchange_hash, 32);
+    if (conn_init_encryption(conn) != 0) return -1;
 
     ssh_log(SSH_LOG_INFO, "KEX completed for connection %llx\n", conn->sockfd);
+    conn->kex_start_time = now;
     conn->state = SSH_STATE_AUTH;
+    return 0;
+  }
+
+  if (conn->state == SSH_STATE_REKEY_KEXINIT) {
+    int packet_status = conn_packet_read_encrypted(conn, pkt);
+    if (packet_status > 0) return 0;
+    if (packet_status < 0 || validate_client_kexinit(pkt) != 0) return -1;
+    init_exchange_hash(conn, pkt);
+    conn->state = SSH_STATE_REKEY_DH;
+    return 0;
+  }
+
+  if (conn->state == SSH_STATE_REKEY_DH) {
+    int packet_status = conn_packet_read_encrypted(conn, pkt);
+    if (packet_status > 0) return 0;
+    if (packet_status < 0 || handle_kexdh_init(conn, pkt, 1) != 0) return -1;
+    conn->state = SSH_STATE_REKEY_NEWKEYS;
+    return 0;
+  }
+
+  if (conn->state == SSH_STATE_REKEY_NEWKEYS) {
+    int packet_status = conn_packet_read_encrypted(conn, pkt);
+    if (packet_status > 0) return 0;
+    if (packet_status < 0 || pkt->len != 1U ||
+        pkt->data[0] != SSH_MSG_NEWKEYS) return -1;
+    uint64_t encrypt_seq = conn->crypto.encrypt_seq;
+    uint64_t decrypt_seq = conn->crypto.decrypt_seq;
+    conn->crypto = conn->pending_crypto;
+    conn->crypto.encrypt_seq = encrypt_seq;
+    conn->crypto.decrypt_seq = decrypt_seq;
+    ssh_mem_zero(&conn->pending_crypto, sizeof(conn->pending_crypto));
+    conn->rekey_encrypt_base = encrypt_seq;
+    conn->kex_start_time = now;
+    conn->state = conn->rekey_resume_state;
+    ssh_log(SSH_LOG_INFO, "Rekey completed for connection %llx\n",
+            conn->sockfd);
     return 0;
   }
 
@@ -630,10 +1012,23 @@ static int process_connection(ssh_connection_t *conn) {
     if (pkt->len == 0) return 0;
     uint8_t msg = pkt->data[0];
 
+    if (msg == SSH_MSG_KEXINIT) {
+      return begin_client_rekey(conn, pkt, SSH_STATE_AUTH, now);
+    }
+
     if (msg == SSH_MSG_SERVICE_REQUEST) {
+      if (pkt->len < 5U) return -1;
+      uint32_t requested_len = ssh_read_u32_be(pkt->data + 1U);
+      static const char requested_service[] = "ssh-userauth";
+      if (requested_len != sizeof(requested_service) - 1U ||
+          pkt->len != 5U + requested_len ||
+          !bytes_equal(pkt->data + 5U,
+                       (const uint8_t *)requested_service, requested_len)) {
+        return -1;
+      }
       uint8_t sa[32];
       sa[0] = SSH_MSG_SERVICE_ACCEPT;
-      const char *svc = "ssh-userauth";
+      const char *svc = requested_service;
       uint32_t svc_len = ssh_str_len(svc);
       ssh_write_u32_be(sa + 1, svc_len);
       ssh_mem_copy(sa + 5, svc, svc_len);
@@ -646,7 +1041,8 @@ static int process_connection(ssh_connection_t *conn) {
       if (offset + 4U > pkt->len) return 0;
       uint32_t user_len = ssh_read_string_len(pkt->data + offset);
       offset += 4U;
-      if (user_len > 64U || offset + user_len > pkt->len) return 0;
+      if (user_len > 64U || offset + user_len > pkt->len ||
+          bytes_have_zero(pkt->data + offset, user_len)) return -1;
       char username[65];
       ssh_mem_copy(username, pkt->data + offset, user_len);
       username[user_len] = '\0';
@@ -655,7 +1051,8 @@ static int process_connection(ssh_connection_t *conn) {
       if (offset + 4U > pkt->len) return 0;
       uint32_t service_len = ssh_read_string_len(pkt->data + offset);
       offset += 4U;
-      if (service_len > 64U || offset + service_len > pkt->len) return 0;
+      if (service_len > 64U || offset + service_len > pkt->len ||
+          bytes_have_zero(pkt->data + offset, service_len)) return -1;
       char service[65];
       ssh_mem_copy(service, pkt->data + offset, service_len);
       service[service_len] = '\0';
@@ -665,7 +1062,8 @@ static int process_connection(ssh_connection_t *conn) {
       if (offset + 4U > pkt->len) return 0;
       uint32_t method_len = ssh_read_string_len(pkt->data + offset);
       offset += 4U;
-      if (method_len > 64U || offset + method_len > pkt->len) return 0;
+      if (method_len > 64U || offset + method_len > pkt->len ||
+          bytes_have_zero(pkt->data + offset, method_len)) return -1;
       char method[65];
       ssh_mem_copy(method, pkt->data + offset, method_len);
       method[method_len] = '\0';
@@ -673,45 +1071,43 @@ static int process_connection(ssh_connection_t *conn) {
       uint32_t auth_data_offset = offset;
 
       if (check_rate_limit(&conn->client_addr) != 0) {
-        uint8_t reject[64];
-        reject[0] = SSH_MSG_USERAUTH_FAILURE;
-        const char *methods = "password,publickey";
-        uint32_t mlen = ssh_str_len(methods);
-        ssh_write_u32_be(reject + 1, mlen);
-        ssh_mem_copy(reject + 5, methods, mlen);
-        reject[5 + mlen] = 0;
-        conn_packet_write_encrypted(conn, reject, 6 + mlen);
+        if (send_auth_failure(conn) != 0) return -1;
         return 0;
       }
 
       if (conn->auth_attempts >= SSHD_MAX_AUTH_ATTEMPTS) {
         record_auth_failure(&conn->client_addr);
-        uint8_t reject[64];
-        reject[0] = SSH_MSG_USERAUTH_FAILURE;
-        const char *methods = "password,publickey";
-        uint32_t mlen = ssh_str_len(methods);
-        ssh_write_u32_be(reject + 1, mlen);
-        ssh_mem_copy(reject + 5, methods, mlen);
-        reject[5 + mlen] = 0;
-        conn_packet_write_encrypted(conn, reject, 6 + mlen);
+        if (send_auth_failure(conn) != 0) return -1;
         return 0;
       }
 
       /* ---- "password" method ---- */
       if (ssh_str_eq(method, "password")) {
+        if (g_user_count == 0U) {
+          conn->auth_attempts++;
+          record_auth_failure(&conn->client_addr);
+          if (send_auth_failure(conn) != 0) return -1;
+          return 0;
+        }
         uint32_t password_offset = auth_data_offset;
         if (password_offset + 5U > pkt->len) return 0;
         if (pkt->data[password_offset] != 0U) return 0;
         password_offset += 1U;
         uint32_t pass_len = ssh_read_string_len(pkt->data + password_offset);
-        if (pass_len > 128U || password_offset + 4U + pass_len > pkt->len) return 0;
+        if (pass_len > 128U || password_offset + 4U + pass_len > pkt->len ||
+            bytes_have_zero(pkt->data + password_offset + 4U, pass_len)) {
+          return -1;
+        }
         char password[129];
         ssh_mem_copy(password, pkt->data + password_offset + 4U, pass_len);
         password[pass_len] = '\0';
 
-        if (authenticate_password(username, password) == 0) {
+        int authenticated = authenticate_password(username, password);
+        ssh_mem_zero(password, sizeof(password));
+        if (authenticated == 0) {
           uint8_t auth_reply[1] = {SSH_MSG_USERAUTH_SUCCESS};
-          conn_packet_write_encrypted(conn, auth_reply, 1);
+          if (conn_packet_write_encrypted(conn, auth_reply,
+                                          sizeof(auth_reply)) != 0) return -1;
           conn->auth_attempts = 0;
           record_auth_success(&conn->client_addr);
           ssh_log(SSH_LOG_INFO, "Password auth success: '%s'\n", username);
@@ -719,14 +1115,7 @@ static int process_connection(ssh_connection_t *conn) {
         } else {
           conn->auth_attempts++;
           record_auth_failure(&conn->client_addr);
-          uint8_t reject[64];
-          reject[0] = SSH_MSG_USERAUTH_FAILURE;
-          const char *methods = "password,publickey";
-          uint32_t mlen = ssh_str_len(methods);
-          ssh_write_u32_be(reject + 1, mlen);
-          ssh_mem_copy(reject + 5, methods, mlen);
-          reject[5 + mlen] = 0;
-          conn_packet_write_encrypted(conn, reject, 6 + mlen);
+          if (send_auth_failure(conn) != 0) return -1;
           ssh_log(SSH_LOG_WARN, "Password auth failed: '%s'\n", username);
         }
         return 0;
@@ -734,118 +1123,122 @@ static int process_connection(ssh_connection_t *conn) {
 
       /* ---- "publickey" method (RFC 4252 Section 7) ---- */
       if (ssh_str_eq(method, "publickey")) {
+        if (!ssh_str_eq(username, "admin")) {
+          conn->auth_attempts++;
+          record_auth_failure(&conn->client_addr);
+          if (send_auth_failure(conn) != 0) return -1;
+          return 0;
+        }
         offset = auth_data_offset;
-        if (offset + 1 > pkt->len) return 0;
+        if (offset >= pkt->len) return 0;
         uint8_t has_signature = pkt->data[offset];
+        if (has_signature > 1U) return 0;
         offset += 1;
 
         /* Read public key algorithm */
-        if (offset + 4 > pkt->len) return 0;
+        if (offset > pkt->len || pkt->len - offset < 4U) return 0;
         uint32_t algo_len = ssh_read_string_len(pkt->data + offset);
         offset += 4;
-        if (offset + algo_len > pkt->len) return 0;
+        if (algo_len > pkt->len - offset) return 0;
+        const uint8_t *algorithm = pkt->data + offset;
+        if (algo_len != 11U ||
+            !bytes_equal(algorithm, (const uint8_t *)"ssh-ed25519", 11U)) {
+          return 0;
+        }
         offset += algo_len;
 
         /* Read public key blob */
-        if (offset + 4 > pkt->len) return 0;
+        if (pkt->len - offset < 4U) return 0;
         uint32_t pubkey_len = ssh_read_string_len(pkt->data + offset);
         offset += 4;
-        if (pubkey_len != 32 || offset + 32 > pkt->len) return 0;
+        if (pubkey_len > pkt->len - offset) return 0;
+        const uint8_t *pubkey_blob = pkt->data + offset;
         uint8_t client_pubkey[32];
-        ssh_mem_copy(client_pubkey, pkt->data + offset, 32);
-        offset += 32;
+        if (parse_ed25519_key_blob(pubkey_blob, pubkey_len,
+                                   client_pubkey) != 0) return 0;
+        offset += pubkey_len;
+        uint32_t signed_request_len = offset;
 
         load_authorized_keys();
 
         if (check_authorized_key(client_pubkey) != 0) {
+          xaios_log("sshd: presented public key was not authorized\n");
           ssh_log(SSH_LOG_WARN, "Public key not authorized\n");
-          uint8_t reject[64];
-          reject[0] = SSH_MSG_USERAUTH_FAILURE;
-          const char *methods = "password,publickey";
-          uint32_t mlen = ssh_str_len(methods);
-          ssh_write_u32_be(reject + 1, mlen);
-          ssh_mem_copy(reject + 5, methods, mlen);
-          reject[5 + mlen] = 0;
-          conn_packet_write_encrypted(conn, reject, 6 + mlen);
+          conn->auth_attempts++;
+          record_auth_failure(&conn->client_addr);
+          if (send_auth_failure(conn) != 0) return -1;
           return 0;
         }
 
         if (!has_signature) {
           /* Test request: public key is acceptable */
-          uint8_t pk_ok[64];
+          uint8_t pk_ok[96];
           pk_ok[0] = SSH_MSG_USERAUTH_PK_OK;
           uint32_t poff = 1;
           ssh_write_u32_be(pk_ok + poff, algo_len); poff += 4;
-          ssh_mem_copy(pk_ok + poff, pkt->data + offset - 32 - 4, algo_len);
+          ssh_mem_copy(pk_ok + poff, algorithm, algo_len);
           poff += algo_len;
-          ssh_write_u32_be(pk_ok + poff, 32); poff += 4;
-          ssh_mem_copy(pk_ok + poff, client_pubkey, 32); poff += 32;
-          conn_packet_write_encrypted(conn, pk_ok, poff);
+          ssh_write_u32_be(pk_ok + poff, pubkey_len); poff += 4;
+          ssh_mem_copy(pk_ok + poff, pubkey_blob, pubkey_len);
+          poff += pubkey_len;
+          if (conn_packet_write_encrypted(conn, pk_ok, poff) != 0) return -1;
           return 0;
         }
 
         /* Read signature blob */
-        if (offset + 4 > pkt->len) return 0;
+        if (pkt->len - offset < 4U) return 0;
         uint32_t sig_len = ssh_read_string_len(pkt->data + offset);
         offset += 4;
-        if (offset + sig_len > pkt->len) return 0;
+        if (sig_len != pkt->len - offset) return 0;
         uint8_t *sig_blob = pkt->data + offset;
 
         /* Parse signature: string algorithm + string (R,s) */
+        if (sig_len < 4U) return 0;
         uint32_t sig_algo_len = ssh_read_string_len(sig_blob);
-        uint32_t sig_data_off = 4 + sig_algo_len;
-        if (sig_data_off + 4 > sig_len) return 0;
+        if (sig_algo_len != 11U || sig_algo_len > sig_len - 4U ||
+            !bytes_equal(sig_blob + 4U,
+                         (const uint8_t *)"ssh-ed25519", 11U)) return 0;
+        uint32_t sig_data_off = 4U + sig_algo_len;
+        if (sig_data_off > sig_len || sig_len - sig_data_off < 4U) return 0;
         uint32_t sig_data_len = ssh_read_string_len(sig_blob + sig_data_off);
-        if (sig_data_off + 4 + sig_data_len > sig_len) return 0;
+        if (sig_data_len != sig_len - sig_data_off - 4U) return 0;
         uint8_t *sig_data = sig_blob + sig_data_off + 4;
         if (sig_data_len != 64) return 0;
 
-        /* Build data to verify: session_id || SSH_MSG_USERAUTH_REQUEST packet */
-        uint8_t verify_buf[1024];
+        /* RFC 4252 signs string(session_id) followed by the request through
+         * the public-key blob, excluding the signature field. */
+        uint8_t verify_buf[SSH_PLAINTEXT_PACKET_SIZE + 36U];
         uint32_t vpos = 0;
         ssh_write_u32_be(verify_buf + vpos, 32U);
         vpos += 4U;
         ssh_mem_copy(verify_buf + vpos, conn->session_id, 32U);
         vpos += 32U;
-        ssh_mem_copy(verify_buf + vpos, pkt->data, pkt->len);
-        vpos += pkt->len;
+        if (signed_request_len > SSH_PLAINTEXT_PACKET_SIZE) return 0;
+        ssh_mem_copy(verify_buf + vpos, pkt->data, signed_request_len);
+        vpos += signed_request_len;
 
         int verify_result = xaios_ed25519_verify(sig_data, verify_buf, vpos,
                                                   client_pubkey);
         if (verify_result == 0) {
           uint8_t auth_reply[1] = {SSH_MSG_USERAUTH_SUCCESS};
-          conn_packet_write_encrypted(conn, auth_reply, 1);
+          if (conn_packet_write_encrypted(conn, auth_reply,
+                                          sizeof(auth_reply)) != 0) return -1;
           conn->auth_attempts = 0;
           record_auth_success(&conn->client_addr);
           ssh_log(SSH_LOG_INFO, "Public key auth success\n");
           conn->state = SSH_STATE_AUTHENTICATED;
         } else {
+          xaios_log("sshd: public key signature verification failed\n");
           conn->auth_attempts++;
           record_auth_failure(&conn->client_addr);
-          uint8_t reject[64];
-          reject[0] = SSH_MSG_USERAUTH_FAILURE;
-          const char *methods = "password,publickey";
-          uint32_t mlen = ssh_str_len(methods);
-          ssh_write_u32_be(reject + 1, mlen);
-          ssh_mem_copy(reject + 5, methods, mlen);
-          reject[5 + mlen] = 0;
-          conn_packet_write_encrypted(conn, reject, 6 + mlen);
+          if (send_auth_failure(conn) != 0) return -1;
           ssh_log(SSH_LOG_WARN, "Public key auth failed (verify)\n");
         }
         return 0;
       }
 
       /* Unknown auth method */
-      {
-        uint8_t reject[64];
-        reject[0] = SSH_MSG_USERAUTH_FAILURE;
-        const char *methods = "password,publickey";
-        uint32_t mlen = ssh_str_len(methods);
-        ssh_write_u32_be(reject + 1, mlen);
-        ssh_mem_copy(reject + 5, methods, mlen);
-        reject[5 + mlen] = 0;
-        conn_packet_write_encrypted(conn, reject, 6 + mlen);
-      }
+      if (send_auth_failure(conn) != 0) return -1;
       return 0;
     }
 
@@ -856,12 +1249,11 @@ static int process_connection(ssh_connection_t *conn) {
       conn->state == SSH_STATE_CHANNEL) {
     conn->state = SSH_STATE_CHANNEL;
 
-    /* Rekey negotiation is not implemented; expire the encrypted session. */
-    uint64_t total_sent = conn->crypto.encrypt_seq;
+    uint64_t packets_since_rekey =
+        conn->crypto.encrypt_seq - conn->rekey_encrypt_base;
     uint64_t elapsed = now - conn->kex_start_time;
-    if (total_sent >= 1048576 || elapsed >= SSHD_REKEY_INTERVAL) {
-      ssh_log(SSH_LOG_INFO, "Closing session at re-key boundary\n");
-      return -1;
+    if (packets_since_rekey >= 1048576U || elapsed >= SSHD_REKEY_INTERVAL) {
+      return begin_server_rekey(conn, SSH_STATE_CHANNEL, now);
     }
 
     /* Check keepalive */
@@ -890,7 +1282,19 @@ static int process_connection(ssh_connection_t *conn) {
     conn->last_activity = now;
     uint8_t msg = pkt->data[0];
 
+    if (msg == SSH_MSG_KEXINIT) {
+      return begin_client_rekey(conn, pkt, SSH_STATE_CHANNEL, now);
+    }
+
     if (msg == SSH_MSG_GLOBAL_REQUEST) {
+      if (pkt->len < 6U) return -1;
+      uint32_t request_len = ssh_read_u32_be(pkt->data + 1U);
+      if (request_len > pkt->len - 6U) return -1;
+      uint8_t want_reply = pkt->data[5U + request_len];
+      if (want_reply != 0U) {
+        uint8_t failure = SSH_MSG_REQUEST_FAILURE;
+        if (conn_packet_write_encrypted(conn, &failure, 1U) != 0) return -1;
+      }
       return 0;
     }
 
@@ -913,6 +1317,14 @@ static int process_connection(ssh_connection_t *conn) {
 
 /* ---- Cooperative Polling Main Loop ---- */
 int sshd_run(void) {
+  if (crypto_random_init() != 0) {
+    ssh_log(SSH_LOG_ERROR, "Secure entropy unavailable; refusing SSH startup\n");
+    return -1;
+  }
+  if (ssh_host_key_init() != 0) {
+    ssh_log(SSH_LOG_ERROR, "Persistent SSH host key unavailable\n");
+    return -1;
+  }
   int crypto_status = ssh_crypto_self_test();
   if (crypto_status != 0) {
     ssh_log(SSH_LOG_ERROR, "SSH crypto self-test failed check=%u\n",
@@ -921,7 +1333,10 @@ int sshd_run(void) {
   }
   ssh_log(SSH_LOG_INFO, "SSH crypto self-test passed\n");
 
-  load_user_database();
+  if (load_user_database() != 0) {
+    ssh_log(SSH_LOG_ERROR, "SSH user database rejected\n");
+    return -1;
+  }
   load_authorized_keys();
 
   ssh_mem_zero(&g_server_stats, sizeof(g_server_stats));
@@ -1019,8 +1434,13 @@ int sshd_run(void) {
       uint64_t now = timer_now();
       if (conn->state == SSH_STATE_INIT || conn->state == SSH_STATE_KEX ||
           conn->state == SSH_STATE_KEX_SENT || conn->state == SSH_STATE_NEWKEYS ||
-          conn->state == SSH_STATE_NEWKEYS_SENT) {
-        if (now - conn->connect_time > SSHD_TIMEOUT_CONNECT) {
+          conn->state == SSH_STATE_NEWKEYS_SENT ||
+          conn->state == SSH_STATE_REKEY_KEXINIT ||
+          conn->state == SSH_STATE_REKEY_DH ||
+          conn->state == SSH_STATE_REKEY_NEWKEYS) {
+        uint64_t exchange_start = conn->state >= SSH_STATE_REKEY_KEXINIT ?
+                                      conn->kex_start_time : conn->connect_time;
+        if (now - exchange_start > SSHD_TIMEOUT_CONNECT) {
           ssh_log(SSH_LOG_WARN, "Connect timeout\n");
           goto close_conn;
         }

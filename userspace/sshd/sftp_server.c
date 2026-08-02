@@ -1,11 +1,12 @@
 #include "ssh_protocol.h"
+#include "ssh_channel.h"
 #include "ssh_utils.h"
 #include "sftp_server.h"
 #include <xaios_user.h>
 
 /* SFTP Protocol Constants */
 #define SFTP_VERSION 3
-#define SFTP_MAX_PACKET_SIZE 32768
+#define SFTP_MAX_PACKET_SIZE SSH_CHANNEL_SFTP_BUFFER_SIZE
 #define SFTP_MAX_HANDLES 64
 
 /* SFTP Message Types */
@@ -64,17 +65,14 @@ static uint8_t g_sftp_wire_buf[SSH_MAX_PACKET_SIZE];
 
 static int send_sftp_packet(int sockfd, const uint8_t *payload,
                             uint32_t payload_len) {
-  uint32_t channel_data_len = payload_len + 4U;
-  if (payload == 0 || channel_data_len + 9U > sizeof(g_sftp_wire_buf)) {
+  if (payload == 0 || payload_len > sizeof(g_sftp_wire_buf) - 4U) {
     return -1;
   }
-  g_sftp_wire_buf[0] = SSH_MSG_CHANNEL_DATA;
-  ssh_write_u32_be(g_sftp_wire_buf + 1U, g_response_channel_id);
-  ssh_write_u32_be(g_sftp_wire_buf + 5U, channel_data_len);
-  ssh_write_u32_be(g_sftp_wire_buf + 9U, payload_len);
-  ssh_mem_copy(g_sftp_wire_buf + 13U, payload, payload_len);
-  return ssh_packet_write_encrypted(sockfd, g_sftp_wire_buf,
-                                    payload_len + 13U);
+  uint32_t channel_data_len = payload_len + 4U;
+  ssh_write_u32_be(g_sftp_wire_buf, payload_len);
+  ssh_mem_copy(g_sftp_wire_buf + 4U, payload, payload_len);
+  return ssh_channel_send_data(sockfd, g_response_channel_id,
+                               g_sftp_wire_buf, channel_data_len);
 }
 
 /* Validate path - prevent directory traversal */
@@ -242,12 +240,17 @@ static int handle_open(int sockfd, const uint8_t *data, uint32_t len) {
   ssh_mem_copy(local_path, path_data, path_len);
   local_path[path_len] = '\0';
   
-  if (validate_path(local_path) != 0) {
+  if (ssh_str_len(local_path) != path_len || validate_path(local_path) != 0) {
     return send_status(sockfd, request_id, SSH_FX_PERMISSION_DENIED, "Invalid path");
   }
   
   /* Parse flags */
   uint32_t flags = read_u32(data + next_offset);
+  if ((flags & ~(SSH_FXF_READ | SSH_FXF_WRITE | SSH_FXF_CREAT |
+                 SSH_FXF_TRUNC)) != 0U) {
+    return send_status(sockfd, request_id, SSH_FX_OP_UNSUPPORTED,
+                       "Unsupported open flags");
+  }
   int fs_flags = 0;
   if ((flags & SSH_FXF_READ) != 0)  fs_flags |= XAIOS_MFS_OPEN_READ;
   if ((flags & SSH_FXF_WRITE) != 0) fs_flags |= XAIOS_MFS_OPEN_WRITE;
@@ -295,6 +298,10 @@ static int handle_close(int sockfd, const uint8_t *data, uint32_t len) {
   if (handle == 0) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid handle ID");
   }
+  if (!handle->is_dir) {
+    return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE,
+                       "Handle is not a directory");
+  }
   
   /* Close handle */
   if (handle->fd >= 0) {
@@ -335,23 +342,16 @@ static int handle_read(int sockfd, const uint8_t *data, uint32_t len) {
   
   /* Read file data via userspace FS API */
   uint8_t *file_data = g_sftp_read_buf;
-  uint32_t clamped_len = read_len < SFTP_MAX_PACKET_SIZE ? read_len : SFTP_MAX_PACKET_SIZE;
+  uint32_t response_limit = SSH_CHANNEL_PENDING_SIZE - 13U;
+  uint32_t clamped_len = read_len < response_limit ? read_len : response_limit;
 
   int fd = handle->fd;
   if (fd < 0) {
     return send_status(sockfd, request_id, SSH_FX_FAILURE, "Handle not open");
   }
 
-  /* Seek to offset by reading and discarding */
-  if (offset > 0) {
-    uint8_t discard[256];
-    uint64_t remaining_offset = offset;
-    while (remaining_offset > 0) {
-      uint64_t skip = remaining_offset < 256 ? remaining_offset : 256;
-      int got = xaios_fs_read(fd, discard, skip);
-      if (got <= 0) break;
-      remaining_offset -= (uint64_t)got;
-    }
+  if (xaios_fs_seek(fd, offset) != 0) {
+    return send_status(sockfd, request_id, SSH_FX_FAILURE, "Invalid offset");
   }
 
   int bytes_read = xaios_fs_read(fd, file_data, clamped_len);
@@ -395,28 +395,23 @@ static int handle_write(int sockfd, const uint8_t *data, uint32_t len) {
   
   /* Write file data via userspace FS API */
   const uint8_t *write_data = data + next_offset;
-  uint32_t clamped_len = write_len < (SFTP_MAX_PACKET_SIZE - 32) ? write_len : (SFTP_MAX_PACKET_SIZE - 32);
+  if (write_len > SFTP_MAX_PACKET_SIZE - 32U) {
+    return send_status(sockfd, request_id, SSH_FX_FAILURE,
+                       "Write request too large");
+  }
 
   int fd = handle->fd;
   if (fd < 0) {
     return send_status(sockfd, request_id, SSH_FX_FAILURE, "Handle not open");
   }
 
-  /* Seek to offset if non-zero */
-  if (offset > 0) {
-    uint8_t discard[256];
-    uint64_t rem = offset;
-    while (rem > 0) {
-      uint64_t skip = rem < 256 ? rem : 256;
-      int got = xaios_fs_read(fd, discard, skip);
-      if (got <= 0) break;
-      rem -= (uint64_t)got;
-    }
+  if (xaios_fs_seek(fd, offset) != 0) {
+    return send_status(sockfd, request_id, SSH_FX_FAILURE, "Invalid offset");
   }
 
-  int written = xaios_fs_write(fd, write_data, clamped_len);
+  int written = xaios_fs_write(fd, write_data, write_len);
   
-  if (written < 0) {
+  if (written < 0 || (uint32_t)written != write_len) {
     return send_status(sockfd, request_id, SSH_FX_FAILURE, "Write failed");
   }
   
@@ -442,7 +437,7 @@ static int handle_opendir(int sockfd, const uint8_t *data, uint32_t len) {
   ssh_mem_copy(local_path, path, path_len);
   local_path[path_len] = '\0';
   
-  if (validate_path(local_path) != 0) {
+  if (ssh_str_len(local_path) != path_len || validate_path(local_path) != 0) {
     return send_status(sockfd, request_id, SSH_FX_PERMISSION_DENIED, "Invalid path");
   }
   
@@ -486,41 +481,47 @@ static int handle_readdir(int sockfd, const uint8_t *data, uint32_t len) {
   int fs_status = xaios_fs_list(handle->path, list_buf,
       sizeof(list_buf), &list_size);
   
-  if (fs_status != 0 || list_size == 0) {
+  if (fs_status != 0 || list_size == 0 || handle->offset >= list_size) {
     return send_status(sockfd, request_id, SSH_FX_EOF, "End of directory");
   }
   
-  /* Build SSH_FXP_NAME response */
-  uint8_t resp_buf[4096 + 4096 + 256]; /* 2x list_buf + overhead for name encoding */
+  /* Build a bounded SSH_FXP_NAME page. The next READDIR resumes at offset. */
+  uint8_t resp_buf[4096];
   uint32_t rpos = 0;
   resp_buf[rpos++] = SSH_FXP_NAME;
   write_u32(resp_buf + rpos, request_id); rpos += 4;
-  
-  /* Count entries (newline-separated) */
+  uint32_t count_offset = rpos;
+  write_u32(resp_buf + rpos, 0U); rpos += 4;
   uint32_t entry_count = 0;
-  for (uint64_t i = 0; i < list_size; ++i) {
-    if (list_buf[i] == '\n' || i == list_size - 1) entry_count++;
-  }
-  write_u32(resp_buf + rpos, entry_count); rpos += 4;
-  
-  /* Encode each entry as (name, longname, attrs) */
-  uint64_t name_start = 0;
-  for (uint64_t i = 0; i < list_size; ++i) {
-    if (list_buf[i] == '\n' || i == list_size - 1) {
-      uint32_t name_len = (uint32_t)(i - name_start);
-      if (list_buf[i] == '\n' && name_len == 0) { name_start = i + 1; continue; }
-      /* filename */
-      write_u32(resp_buf + rpos, name_len); rpos += 4;
-      ssh_mem_copy(resp_buf + rpos, list_buf + name_start, name_len); rpos += name_len;
-      /* longname (same as filename for simplicity) */
-      write_u32(resp_buf + rpos, name_len); rpos += 4;
-      ssh_mem_copy(resp_buf + rpos, list_buf + name_start, name_len); rpos += name_len;
-      /* attrs: flags=0 (no attributes) */
-      write_u32(resp_buf + rpos, 0); rpos += 4;
-      name_start = i + 1;
+  uint64_t cursor = handle->offset;
+  while (cursor < list_size) {
+    uint64_t name_start = cursor;
+    while (cursor < list_size && list_buf[cursor] != '\n') ++cursor;
+    uint32_t name_len = (uint32_t)(cursor - name_start);
+    uint64_t next_cursor = cursor < list_size ? cursor + 1U : cursor;
+    if (name_len == 0U) {
+      cursor = next_cursor;
+      handle->offset = cursor;
+      continue;
     }
+    uint32_t encoded_len = 12U + (2U * name_len);
+    if (encoded_len > sizeof(resp_buf) - rpos) break;
+    write_u32(resp_buf + rpos, name_len); rpos += 4U;
+    ssh_mem_copy(resp_buf + rpos, list_buf + name_start, name_len);
+    rpos += name_len;
+    write_u32(resp_buf + rpos, name_len); rpos += 4U;
+    ssh_mem_copy(resp_buf + rpos, list_buf + name_start, name_len);
+    rpos += name_len;
+    write_u32(resp_buf + rpos, 0U); rpos += 4U;
+    ++entry_count;
+    cursor = next_cursor;
+    handle->offset = cursor;
   }
-  
+  if (entry_count == 0U) {
+    return send_status(sockfd, request_id, SSH_FX_FAILURE,
+                       "Directory entry exceeds response limit");
+  }
+  write_u32(resp_buf + count_offset, entry_count);
   return send_sftp_packet(sockfd, resp_buf, rpos);
 }
 
@@ -543,7 +544,7 @@ static int handle_mkdir(int sockfd, const uint8_t *data, uint32_t len) {
   ssh_mem_copy(local_path, path, path_len);
   local_path[path_len] = '\0';
   
-  if (validate_path(local_path) != 0) {
+  if (ssh_str_len(local_path) != path_len || validate_path(local_path) != 0) {
     return send_status(sockfd, request_id, SSH_FX_PERMISSION_DENIED, "Invalid path");
   }
   
@@ -574,7 +575,7 @@ static int handle_remove(int sockfd, const uint8_t *data, uint32_t len) {
   ssh_mem_copy(local_path, path, path_len);
   local_path[path_len] = '\0';
   
-  if (validate_path(local_path) != 0) {
+  if (ssh_str_len(local_path) != path_len || validate_path(local_path) != 0) {
     return send_status(sockfd, request_id, SSH_FX_PERMISSION_DENIED, "Invalid path");
   }
   
@@ -617,7 +618,9 @@ static int handle_rename(int sockfd, const uint8_t *data, uint32_t len) {
   ssh_mem_copy(new_local, new_path, new_len);
   new_local[new_len] = '\0';
   
-  if (validate_path(old_local) != 0 || validate_path(new_local) != 0) {
+  if (ssh_str_len(old_local) != old_len ||
+      ssh_str_len(new_local) != new_len ||
+      validate_path(old_local) != 0 || validate_path(new_local) != 0) {
     return send_status(sockfd, request_id, SSH_FX_PERMISSION_DENIED, "Invalid path");
   }
   
@@ -648,7 +651,7 @@ static int handle_stat(int sockfd, const uint8_t *data, uint32_t len) {
   ssh_mem_copy(local_path, path, path_len);
   local_path[path_len] = '\0';
   
-  if (validate_path(local_path) != 0) {
+  if (ssh_str_len(local_path) != path_len || validate_path(local_path) != 0) {
     return send_status(sockfd, request_id, SSH_FX_NO_SUCH_FILE, "File not found");
   }
   
@@ -727,7 +730,7 @@ static int handle_realpath(int sockfd, const uint8_t *data, uint32_t len) {
     path_len += prefix;
     path[path_len] = '\0';
   }
-  if (validate_path(path) != 0) {
+  if (ssh_str_len(path) != path_len || validate_path(path) != 0) {
     return send_status(sockfd, request_id, SSH_FX_PERMISSION_DENIED,
                        "Invalid path");
   }
@@ -782,6 +785,9 @@ int sftp_handle_message(int sockfd, uint32_t remote_channel_id,
       return handle_readdir(sockfd, data + 1, len - 1);
     
     case SSH_FXP_REMOVE:
+      return handle_remove(sockfd, data + 1, len - 1);
+
+    case SSH_FXP_RMDIR:
       return handle_remove(sockfd, data + 1, len - 1);
     
     case SSH_FXP_MKDIR:

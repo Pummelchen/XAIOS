@@ -20,6 +20,8 @@ All wrapper functions below are built on this primitive.
 | `XAIOS_SYSCALL_EXIT` | 2 | `xaios_exit(code)` | Terminate the current process. |
 | `XAIOS_SYSCALL_OSCTL` | 3 | `xaios_osctl(command)` | Send a control-plane command (JSON telemetry query). |
 | `XAIOS_SYSCALL_CLOCK_NANOS` | 20 | `xaios_clock_nanos()` | Return monotonic wall-clock nanoseconds since boot. |
+| `XAIOS_SYSCALL_RANDOM` | 35 | `xaios_random(buffer, size)` | Fill up to 4096 bytes from the kernel's hardware-backed entropy source. Fails when secure entropy is unavailable. |
+| `XAIOS_SYSCALL_FS_SEEK` | 36 | `xaios_fs_seek(fd, offset)` | Set an open mutable-file descriptor to an absolute byte offset. |
 
 ## Filesystem
 
@@ -173,6 +175,7 @@ Each process is launched with a capability bitmask. Syscalls are rejected if the
 | `XAIOS_CAP_ML` | 32768 | `ml_run` |
 | `XAIOS_CAP_NET_SOCKET` | 65536 | Socket API (`listen`, `accept`, `recv`, `send`, `close`) |
 | `XAIOS_CAP_AGENT` | 131072 | `agent_dispatch` |
+| `XAIOS_CAP_RANDOM` | 262144 | `random` |
 
 ## Data Types
 

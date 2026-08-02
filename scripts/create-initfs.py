@@ -107,7 +107,8 @@ def main() -> int:
         path, host_file = spec.split("=", 1)
         if not path.startswith("/"):
             raise SystemExit(f"initfs path must be absolute: {path}")
-        files.append((path, pathlib.Path(host_file).read_bytes(), ENTRY_FLAG_EXECUTABLE))
+        flags = ENTRY_FLAG_EXECUTABLE if path.startswith("/bin/") else 0
+        files.append((path, pathlib.Path(host_file).read_bytes(), flags))
     if len(files) > MAX_FILES:
         raise SystemExit("too many initfs files")
 

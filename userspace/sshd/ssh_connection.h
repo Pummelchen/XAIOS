@@ -17,6 +17,9 @@
 #define SSH_STATE_AUTHENTICATED 6
 #define SSH_STATE_CHANNEL 7
 #define SSH_STATE_CLOSED 8
+#define SSH_STATE_REKEY_KEXINIT 9
+#define SSH_STATE_REKEY_DH 10
+#define SSH_STATE_REKEY_NEWKEYS 11
 
 typedef struct {
   int enabled;
@@ -34,6 +37,7 @@ typedef struct {
   int active;
   uint64_t sockfd;
   ssh_connection_crypto_t crypto;
+  ssh_connection_crypto_t pending_crypto;
   uint64_t last_activity;
   uint64_t last_keepalive;
   xaios_ip_addr_user_t client_addr;
@@ -59,6 +63,8 @@ typedef struct {
   uint8_t client_ephemeral_pub[32];
   uint64_t connect_time;
   uint64_t kex_start_time;
+  uint64_t rekey_encrypt_base;
+  int rekey_resume_state;
 } ssh_connection_t;
 
 typedef struct {

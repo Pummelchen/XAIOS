@@ -62,6 +62,11 @@ u64 xaios_clock_nanos(void) {
   return xaios_syscall3(XAIOS_SYSCALL_CLOCK_NANOS, 0, 0, 0);
 }
 
+int xaios_random(void *buffer, u64 size) {
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_RANDOM, (u64)buffer, size, 0);
+  return rc == size ? 0 : -1;
+}
+
 int xaios_osctl(const char *command) {
   u64 rc = xaios_syscall3(XAIOS_SYSCALL_OSCTL, (u64)command,
                          xaios_strlen(command), 0);
@@ -114,6 +119,11 @@ int xaios_fs_read(int fd, void *buffer, u64 size) {
 int xaios_fs_write(int fd, const void *buffer, u64 size) {
   u64 rc = xaios_syscall3(XAIOS_SYSCALL_FS_WRITE, (u64)(u32)fd, (u64)buffer, size);
   return rc == ~0ULL ? -1 : (int)rc;
+}
+
+int xaios_fs_seek(int fd, u64 offset) {
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_FS_SEEK, (u64)(u32)fd, offset, 0);
+  return rc == ~0ULL ? -1 : 0;
 }
 
 int xaios_fs_close(int fd) {

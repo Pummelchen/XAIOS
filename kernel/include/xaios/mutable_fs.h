@@ -72,6 +72,7 @@ xaios_status_t mutable_fs_list(const char *path, char *buffer,
 int64_t mutable_fs_open(const char *path, uint32_t flags);
 int64_t mutable_fs_read_fd(uint32_t fd, void *buffer, uint64_t size);
 int64_t mutable_fs_write_fd(uint32_t fd, const void *buffer, uint64_t size);
+xaios_status_t mutable_fs_seek(uint32_t fd, uint64_t offset);
 xaios_status_t mutable_fs_close(uint32_t fd);
 
 xaios_status_t mutable_fs_record_service_state(const char *name,
