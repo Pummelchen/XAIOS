@@ -1,48 +1,87 @@
 {
   "schema": "xaios.model_support.v1",
-  "updated": "2026-08-01",
+  "updated": "2026-08-02",
+  "delivery_sequence": [
+    {
+      "order": "1",
+      "workstream": "XAIOS",
+      "status": "In Progress",
+      "gate": "Finish the platform milestone before model-family implementation begins."
+    },
+    {
+      "order": "2",
+      "workstream": "Qwen 3.6 27B Support",
+      "status": "Blocked",
+      "gate": "Next workstream; starts only after the XAIOS completion gate."
+    },
+    {
+      "order": "Later",
+      "workstream": "Kimi K3 Support",
+      "status": "Backlog",
+      "gate": "Queued behind XAIOS and Qwen unless explicitly reprioritized."
+    },
+    {
+      "order": "Later",
+      "workstream": "DeepSeek V4 Flash 0731 Support",
+      "status": "Blocked",
+      "gate": "Also blocked on authoritative release and source verification."
+    },
+    {
+      "order": "Later",
+      "workstream": "GLM 5.2 Support",
+      "status": "Backlog",
+      "gate": "Queued behind XAIOS and Qwen unless explicitly reprioritized."
+    }
+  ],
+  "delivery_documents": [
+    "README.md",
+    "PROJECT-TRACKER.md",
+    "docs/QWEN-K3-IMPLEMENTATION-ROADMAP.md",
+    "wiki/Home.md",
+    "wiki/Model-Support-Roadmap.md"
+  ],
   "entries": [
     {
       "id": "qemu_v1_fixture",
       "name": "Deterministic QEMU model-v1 path",
       "status": "Fixture only",
-      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
+      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md", "wiki/Model-Support-Roadmap.md"]
     },
     {
       "id": "model_v2",
       "name": "xaios.model.v2 tooling",
       "status": "Interface only",
-      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
+      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md", "wiki/Model-Support-Roadmap.md"]
     },
     {
       "id": "qwen_3_6_27b",
       "name": "Qwen 3.6 27B",
       "status": "Interface only",
-      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
+      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md", "wiki/Model-Support-Roadmap.md"]
     },
     {
       "id": "kimi_k3_text",
       "name": "Kimi K3 text",
       "status": "Interface only",
-      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
+      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md", "wiki/Model-Support-Roadmap.md"]
     },
     {
       "id": "kimi_k3_multimodal",
       "name": "Kimi K3 multimodal",
       "status": "Roadmap only",
-      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
+      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md", "wiki/Model-Support-Roadmap.md"]
     },
     {
       "id": "deepseek_v4_flash_0731",
       "name": "DeepSeek V4 Flash 0731",
       "status": "Roadmap only",
-      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
+      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md", "wiki/Model-Support-Roadmap.md"]
     },
     {
       "id": "glm_5_2",
       "name": "GLM 5.2",
       "status": "Roadmap only",
-      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md"]
+      "documents": ["README.md", "PROJECT-TRACKER.md", "HARDWARE-READINESS.md", "wiki/Model-Support-Roadmap.md"]
     }
   ]
 }

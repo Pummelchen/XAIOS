@@ -1,9 +1,21 @@
 # Qwen, Kimi, DeepSeek and GLM implementation roadmap
 
-This roadmap is dependency ordered. An interface or fixture is not model
-support, and Kimi K3 text support is not multimodal support. New model-family
-targets enter only after an immutable official source and architecture contract
-have been verified.
+This roadmap is dependency ordered. XAIOS platform completion is workstream 1;
+Qwen 3.6 27B correctness is workstream 2 and does not begin until that platform
+gate passes. An interface or fixture is not model support, and Kimi K3 text
+support is not multimodal support. Later model-family targets enter only after
+the XAIOS and Qwen gates, plus their own immutable official source and
+architecture-contract prerequisites.
+
+## Delivery sequence
+
+| Order | Workstream | Project status | Entry gate |
+|---|---|---|---|
+| 1 | XAIOS | In Progress | Finish the core OS, portable engine, model-v2 integration, platform services, hardware readiness, and release gates. |
+| 2 | Qwen 3.6 27B Support | Blocked | Starts only after the XAIOS completion gate. |
+| Later | Kimi K3 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
+| Later | DeepSeek V4 Flash 0731 Support | Blocked | Also blocked on authoritative release and source verification. |
+| Later | GLM 5.2 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
 
 ## Verified baseline, 2026-08-01
 
@@ -33,7 +45,17 @@ have been verified.
 - [x] Architecture-adapter/backend interfaces and scalar dense-projection
   canary.
 
-## Next smallest testable tranche: Qwen config and tokenizer
+## Workstream 1: XAIOS completion gate
+
+- [ ] Integrate the portable engine through a stable XAIOS service boundary.
+- [ ] Replace fixed-size and QEMU-scale model, memory, NUMA, storage and worker
+  paths with production-width ownership and error handling.
+- [ ] Link the common kernel/runtime into the x86_64 image.
+- [ ] Complete reusable session-state, batching and asynchronous I/O
+  foundations needed by real-model execution.
+- [ ] Pass release/security gates and record physical-hardware entry evidence.
+
+## Workstream 2: Qwen config and tokenizer (blocked on XAIOS)
 
 - [ ] Add a SafeTensors/config/tokenizer importer that streams tensor payloads.
 - [ ] Pin immutable official Qwen3.5-0.8B files and preserve unknown config
@@ -45,7 +67,7 @@ have been verified.
   reference parity.
 - [ ] Add conversion RSS evidence showing payload-size-independent memory.
 
-## Qwen scalar correctness
+## Qwen scalar correctness (workstream 2)
 
 - [ ] Implement full and linear attention, convolution/recurrent state,
   grouped-query attention, causal masking, configured mRoPE, SwiGLU, residuals,
@@ -54,7 +76,7 @@ have been verified.
 - [ ] Pass tokenizer, embedding, complete-layer, prefill-logit and 32-step
   deterministic decode golden gates, including save/reload continuity.
 
-## Packed backends and serving state
+## Qwen packed backends and serving state (workstream 2)
 
 - [ ] No-expand scalar/NEON/AVX2 kernels with differential/tail tests.
 - [ ] Native macOS process and optional Metal backend.
@@ -63,7 +85,7 @@ have been verified.
 - [ ] Typed paged state with prefix COW, branching/rollback, ragged continuous
   batching and exact speculative equivalence.
 
-## Kimi K3 text
+## Later backlog: Kimi K3 text
 
 - [ ] Implement a separate `kimi_k3` adapter from an immutable official config.
 - [ ] Add KDA, Gated MLA, AttnRes, exact top-16 Stable LatentMoE routing, shared
@@ -75,7 +97,7 @@ have been verified.
 - [ ] Pass tokenizer, operator, router/expert, target-token and production-width
   checkpoint metadata gates on physical hardware.
 
-## Kimi K3 multimodal and scale-out
+## Later backlog: Kimi K3 multimodal and scale-out
 
 - [ ] Validate MoonViT-V2 preprocessing, projection, multimodal positions,
   placeholders/chat template and golden image cases as a separate milestone.
@@ -84,7 +106,7 @@ have been verified.
 - [ ] Add immutable Apple and Xeon benchmark artifacts under
   `docs/BENCHMARK-CONTRACT.md`.
 
-## Additional architecture targets
+## Later backlog: additional architecture targets
 
 These targets reuse the model-v2 package, architecture registry, backend API
 and scalar parity harness. They do not reuse another model's execution plan

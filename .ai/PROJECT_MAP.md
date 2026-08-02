@@ -23,7 +23,7 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 | `scripts/` | Build image, create initfs, run QEMU, smoke/regression/readiness gates. |
 | `contracts/` | QEMU release-candidate contract JSON. |
 | `docs/` | Architecture, getting started, API docs. |
-| `wiki/` | Local copies of selected design docs. |
+| `wiki/` | Local mirrors of selected live Wiki status/design pages; model support and delivery rows are checked by `make docs-check`. |
 | `.github/workflows/` | CI. |
 | `benchmarks/` | Benchmark methodology. |
 | `.qoder/repowiki/` | Generated repo-wiki material; non-authoritative for this onboarding system. |

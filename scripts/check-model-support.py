@@ -14,6 +14,24 @@ def main() -> int:
     failures = []
     if status.get("schema") != "xaios.model_support.v1":
         failures.append("model support schema mismatch")
+    delivery_documents = status.get("delivery_documents", [])
+    delivery_sequence = status.get("delivery_sequence", [])
+    if not delivery_documents or not delivery_sequence:
+        failures.append("delivery sequence or synchronized documents missing")
+    for entry in delivery_sequence:
+        row = (
+            f"| {entry['order']} | {entry['workstream']} | "
+            f"{entry['status']} |"
+        )
+        for relative_path in delivery_documents:
+            path = ROOT / relative_path
+            if not path.is_file():
+                failures.append(f"missing delivery-sequence document: {relative_path}")
+                continue
+            if row not in path.read_text(encoding="utf-8"):
+                failures.append(
+                    f"{relative_path} missing authoritative delivery row: {row}"
+                )
     for entry in status.get("entries", []):
         row = f"| {entry['name']} | {entry['status']} |"
         for relative_path in entry.get("documents", []):
@@ -27,7 +45,7 @@ def main() -> int:
         for failure in failures:
             print(f"model-support: {failure}")
         return 1
-    print("model-support: README, tracker, and readiness status tables agree")
+    print("model-support: README, tracker, roadmap, wiki, and readiness status agree")
     return 0
 
 

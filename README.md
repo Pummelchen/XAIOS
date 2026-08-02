@@ -15,26 +15,42 @@ verify their claims against current source.
 ## Model support status
 
 [`docs/MODEL-SUPPORT.json`](./docs/MODEL-SUPPORT.json) is the authoritative
-status source; CI checks this table, the project tracker, and hardware-readiness
-documentation against it.
+status and delivery-sequence source. CI checks the README, project tracker,
+implementation roadmap, hardware-readiness document, and selected Wiki mirrors
+against it.
 
 | Model or path | Status | Current evidence and boundary |
 |---|---|---|
 | Deterministic QEMU model-v1 path | Fixture only | Validates model admission, private state, ABI and deterministic dispatch. It is not transformer inference or a hardware benchmark. |
 | xaios.model.v2 tooling | Interface only | Streaming Python writer, Python reader and C parser pass round-trip, checksum, overflow and sparse-file tests. No production importer or executing model uses it yet. |
-| Qwen 3.6 27B | Interface only | Primary real-model bring-up target. Transformer execution, official tokenizer parity, logits parity and physical-hardware validation remain incomplete. |
-| Kimi K3 text | Interface only | Active roadmap target for KDA, Gated MLA, AttnRes, exact top-16 routing, shared experts and native MXFP4. Text inference is not available. |
+| Qwen 3.6 27B | Interface only | Next real-model bring-up target after XAIOS platform completion. Transformer execution, official tokenizer parity, logits parity and physical-hardware validation remain incomplete. |
+| Kimi K3 text | Interface only | Queued behind XAIOS and Qwen for KDA, Gated MLA, AttnRes, exact top-16 routing, shared experts and native MXFP4. Text inference is not available. |
 | Kimi K3 multimodal | Roadmap only | Vision preprocessing, MoonViT-V2, projection, multimodal positions and golden image cases are a separate milestone. |
 | DeepSeek V4 Flash 0731 | Roadmap only | Planned architecture-adapter target. The exact official release, configuration and tokenizer sources must be verified and pinned before implementation. |
 | GLM 5.2 | Roadmap only | Planned architecture-adapter target. Import, tokenizer, operator, state, logits and physical-hardware parity work has not started. |
 
+## Delivery sequence
+
+This order is authoritative for current execution planning. Only XAIOS is
+active. Qwen is the next workstream, but remains blocked until the XAIOS
+platform milestone is complete. No relative order is assigned to the later
+model workstreams unless the maintainer explicitly reprioritizes them.
+
+| Order | Workstream | Project status | Entry gate |
+|---|---|---|---|
+| 1 | XAIOS | In Progress | Finish the core OS, portable engine, model-v2 integration, platform services, hardware readiness, and release gates. |
+| 2 | Qwen 3.6 27B Support | Blocked | Starts only after the XAIOS completion gate. |
+| Later | Kimi K3 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
+| Later | DeepSeek V4 Flash 0731 Support | Blocked | Also blocked on authoritative release and source verification. |
+| Later | GLM 5.2 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
+
 XAIOS is designed for multiple official architecture identifiers rather than a
-hard-coded Qwen graph. Qwen 3.6 27B is the first real-model target. Kimi K3
-support is actively planned and under development, with text and full
-multimodal support tracked separately. DeepSeek V4 Flash 0731 and GLM 5.2 are
-additional roadmap targets, each requiring its own verified architecture
-adapter and parity gates. Approximate routing or execution modes, if added,
-will be named, reported and opt-in; exact target-model semantics are the default.
+hard-coded Qwen graph. Qwen 3.6 27B remains the first real-model target after
+the platform completion gate. Kimi K3 text and multimodal support are separate
+later milestones. DeepSeek V4 Flash 0731 and GLM 5.2 are additional roadmap
+targets, each requiring its own verified architecture adapter and parity gates.
+Approximate routing or execution modes, if added, will be named, reported and
+opt-in; exact target-model semantics are the default.
 
 ## Current implementation
 
@@ -96,6 +112,8 @@ support.
 - [API](./docs/API.md)
 - [Hardware readiness](./HARDWARE-READINESS.md)
 - [Project tracker](./PROJECT-TRACKER.md)
+- [Live GitHub Wiki](https://github.com/Pummelchen/XAIOS/wiki)
+- [Live model support roadmap](https://github.com/Pummelchen/XAIOS/wiki/Model-Support-Roadmap)
 
 Official compatibility sources used for the current design audit:
 

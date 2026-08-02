@@ -12,16 +12,21 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 
 ## Resolved in primary status docs: performance claims vs QEMU evidence
 
-README, project tracker, hardware-readiness and benchmark methodology now label
-QEMU as correctness/ABI evidence only. Older local wiki/generated material may
-still contain historical targets and is not an authoritative support source.
+README, project tracker, hardware-readiness, benchmark methodology, and the
+selected local/live Wiki status pages now label QEMU as correctness/ABI
+evidence only. The support table and delivery sequence are checked from
+`docs/MODEL-SUPPORT.json`; generated `.qoder/repowiki/` material remains
+non-authoritative and may still contain historical wording.
 
 Recommendation: treat performance numbers as targets or unverified design claims unless a human provides measured hardware baselines.
 
 Evidence:
 - `README.md`
 - `PROJECT-TRACKER.md`
+- `wiki/Home.md`
+- `wiki/Model-Support-Roadmap.md`
 - `wiki/Qwen3.6-INT6-Support.md`
+- `wiki/Production-SSH-Server.md`
 - `HARDWARE-READINESS.md`
 - `contracts/qemu-rc-v1.json`
 
@@ -79,6 +84,14 @@ Evidence:
   kernel or portable inference engine.
 - There is no native macOS process/backend, Metal backend, AVX2/AVX-512/VNNI/AMX
   backend, physical hardware parity run, or immutable performance artifact.
+
+## Delivery order
+
+XAIOS platform completion is the only active workstream. Qwen 3.6 27B is next
+but blocked until the platform gate passes. Kimi K3 and GLM 5.2 are backlog;
+DeepSeek V4 Flash 0731 is blocked by sequencing and authoritative source
+verification. Keep README, tracker, roadmap, Wiki mirrors, GitHub milestones,
+and Project status aligned with `docs/MODEL-SUPPORT.json`.
 
 ## Unknowns
 

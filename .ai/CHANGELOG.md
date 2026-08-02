@@ -10,6 +10,18 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 -->
 # AI onboarding changelog
 
+## 2026-08-02 — delivery sequencing and Wiki synchronization
+
+- Made XAIOS platform completion the only active workstream and Qwen 3.6 27B
+  the next gated workstream.
+- Added a machine-checked delivery sequence to the authoritative model-support
+  source, README, project tracker, implementation roadmap, and local Wiki
+  mirrors.
+- Replaced stale Qwen and SSH production/performance claims with current
+  fixture, interface, and physical-evidence boundaries.
+- Synchronized the live GitHub Project, milestones, tracker issues, and Wiki
+  status pages with the same order.
+
 ## 2026-08-02 — QEMU launcher and early spinlock regression fixes
 
 - Made TCG the default AArch64 QEMU accelerator on every host; HVF remains an

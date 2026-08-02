@@ -1,6 +1,6 @@
 # XAIOS project tracker
 
-Last updated: 2026-08-01. Status labels are checked against
+Last updated: 2026-08-02. Status labels and delivery order are checked against
 [`docs/MODEL-SUPPORT.json`](./docs/MODEL-SUPPORT.json). A checked interface is
 not equivalent to executing-model support.
 
@@ -15,6 +15,16 @@ not equivalent to executing-model support.
 | Kimi K3 multimodal | Roadmap only | Vision preprocessing/tower/projection/position and golden multimodal parity. |
 | DeepSeek V4 Flash 0731 | Roadmap only | Verify and pin the exact official release before defining its adapter and correctness gates. |
 | GLM 5.2 | Roadmap only | Pin official sources, implement a separate adapter, and pass tokenizer/operator/logit parity. |
+
+## Delivery sequence
+
+| Order | Workstream | Project status | Entry gate |
+|---|---|---|---|
+| 1 | XAIOS | In Progress | Finish the core OS, portable engine, model-v2 integration, platform services, hardware readiness, and release gates. |
+| 2 | Qwen 3.6 27B Support | Blocked | Starts only after the XAIOS completion gate. |
+| Later | Kimi K3 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
+| Later | DeepSeek V4 Flash 0731 Support | Blocked | Also blocked on authoritative release and source verification. |
+| Later | GLM 5.2 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
 
 ## Completed foundation
 
@@ -32,7 +42,19 @@ not equivalent to executing-model support.
 - [x] Portable architecture/backend interfaces and scalar projection canary.
 - [x] Benchmark evidence contract and removal of unevidenced throughput claims.
 
-## Active: Qwen correctness MVP
+## Workstream 1: active XAIOS completion
+
+- [ ] Complete the portable engine/service integration boundary.
+- [ ] Replace QEMU-scale memory, NUMA, storage, worker-dispatch, batching and
+  session-state prototypes with production-width implementations.
+- [ ] Link and validate the common kernel/runtime on x86_64.
+- [ ] Complete security, release-readiness and physical-hardware entry gates.
+- [ ] Keep QEMU evidence limited to correctness and ABI claims.
+
+Qwen and every other model-family implementation remain gated until these
+platform criteria and the XAIOS GitHub milestone are complete.
+
+## Workstream 2: Qwen correctness MVP (blocked on XAIOS)
 
 - [ ] Pin immutable Qwen3.5-0.8B config, tokenizer and SafeTensors fixtures.
 - [ ] Implement streaming SafeTensors/config/tokenizer importer.
@@ -44,7 +66,7 @@ not equivalent to executing-model support.
 - [ ] Pass embedding, complete-layer, prefill-logit, 32-step decode and session
   reload golden gates.
 
-## Next: packed hardware backends and sessions
+## Qwen follow-on: packed hardware backends and sessions
 
 - [ ] Replace full-matrix INT4/INT6 expansion with fused packed kernels.
 - [ ] Add scalar differential and randomized tail tests before SIMD enablement.
@@ -54,7 +76,7 @@ not equivalent to executing-model support.
 - [ ] Replace prototype state/batching/speculation with typed state, prefix COW,
   branch/commit/rollback, ragged batching and exact target verification.
 
-## Kimi K3 text
+## Later backlog: Kimi K3 text
 
 - [ ] Implement the separate `kimi_k3` architecture adapter.
 - [ ] Preserve exact top-16 routing; predictive routing may affect prefetch only.
@@ -64,14 +86,14 @@ not equivalent to executing-model support.
 - [ ] Pass a miniature K3 metadata/operator/router/expert/reduction fixture.
 - [ ] Pass real checkpoint tokenizer and target-token parity on physical hardware.
 
-## Kimi K3 multimodal
+## Later backlog: Kimi K3 multimodal
 
 - [ ] Implement MoonViT-V2 preprocessing and vision tower.
 - [ ] Implement vision-language projection and multimodal positions.
 - [ ] Match official special-token and chat-template behavior.
 - [ ] Pass separate golden image/text cases before advertising full K3 support.
 
-## Additional model architecture targets
+## Later backlog: additional model architecture targets
 
 - [ ] Pin immutable official source, configuration, tokenizer and tensor-index
   revisions for DeepSeek V4 Flash 0731 and GLM 5.2.
