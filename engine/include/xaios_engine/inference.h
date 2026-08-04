@@ -5,5 +5,6 @@
 #include <xaios_engine/backend.h>
 #include <xaios_engine/model_v2.h>
 #include <xaios_engine/packed.h>
+#include <xaios_engine/service.h>
 
 #endif

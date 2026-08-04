@@ -25,7 +25,7 @@
 /* GIC CPU interface system register encodings */
 #define ICC_IAR1_EL1  "S3_0_C12_C12_0"
 #define ICC_EOIR1_EL1 "S3_0_C12_C12_1"
-#define TIMER_PPI_INTID 30U
+#define TIMER_PPI_INTID 27U
 
 /* DFSC for Synchronous External Abort (SEA) */
 #define DFSC_SYNC_EXT_ABORT UINT64_C(0x10)
@@ -137,11 +137,14 @@ void exception_self_test(void) {
   }
 }
 
+volatile uint64_t g_aarch64_irq_count;
+
 xaios_context_frame_t *aarch64_irq_handler(xaios_context_frame_t *frame) {
   /* Read interrupt ID from GIC CPU interface */
   uint64_t iar = 0;
   __asm__ volatile("mrs %[iar], " ICC_IAR1_EL1 : [iar] "=r"(iar));
   uint32_t intid = (uint32_t)(iar & 0xffffffU);
+  if (intid < 1020U) ++g_aarch64_irq_count;
 
   if (intid == TIMER_PPI_INTID) {
     /* Timer interrupt: rearm and call scheduler tick */

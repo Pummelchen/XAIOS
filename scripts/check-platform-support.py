@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Validate the authoritative 20-item platform recommendation status."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+STATUS_PATH = ROOT / "docs/PLATFORM-SUPPORT.json"
+SYNC_DOCUMENTS = (
+    "README.md",
+    "PROJECT-TRACKER.md",
+    "HARDWARE-READINESS.md",
+    "docs/HARDWARE-BACKENDS.md",
+    "docs/DISTRIBUTED-AI-SERVER-PLAN.md",
+    ".ai/ARCHITECTURE.md",
+    ".ai/KNOWN_UNKNOWNS.md",
+    "wiki/Home.md",
+    "wiki/Platform-Support.md",
+)
+ALLOWED_STATUSES = {
+    "implemented-awaiting-ci",
+    "qemu-tested",
+    "macos-tested",
+    "physical-gate",
+    "scope-defined",
+    "interface-only",
+    "partial",
+    "pending",
+    "parser-tested",
+    "hosted-tested",
+    "interface-tested",
+    "synchronized",
+    "pending-push",
+}
+REQUIRED_MARKERS = {
+    "README.md": (
+        "FP/SIMD interrupt context",
+        "MADT/SRAT/SLIT/HMAT",
+        "VirtIO block DMA",
+        "Full x86 service parity remains open",
+    ),
+    "PROJECT-TRACKER.md": (
+        "all MADT-discovered x86 APs",
+        "ring-3 `int 0x80`",
+        "complete ARM EL0 process/thread ABI",
+    ),
+    "HARDWARE-READINESS.md": (
+        "AP trampoline",
+        "XSAVE/XRSTOR",
+        "full ARM userspace/service stack",
+    ),
+    "wiki/Home.md": (
+        "MADT-discovered application processors",
+        "Full ARM-service parity on x86 remains open",
+    ),
+}
+
+
+def main() -> int:
+    failures: list[str] = []
+    status = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
+    if status.get("schema") != "xaios.platform-support.v1":
+        failures.append("platform support schema mismatch")
+    recommendations = status.get("recommendations", [])
+    ids = [entry.get("id") for entry in recommendations]
+    if ids != list(range(1, 21)):
+        failures.append("recommendation IDs must be exactly 1 through 20")
+    for entry in recommendations:
+        if entry.get("status") not in ALLOWED_STATUSES:
+            failures.append(
+                f"recommendation {entry.get('id')} has unknown status "
+                f"{entry.get('status')!r}"
+            )
+        if not entry.get("name") or not entry.get("evidence"):
+            failures.append(
+                f"recommendation {entry.get('id')} lacks name or evidence"
+            )
+
+    for relative in SYNC_DOCUMENTS:
+        path = ROOT / relative
+        if not path.is_file():
+            failures.append(f"missing synchronized document: {relative}")
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "PLATFORM-SUPPORT" not in text:
+            failures.append(
+                f"{relative}: missing authoritative platform-status link"
+            )
+        for marker in REQUIRED_MARKERS.get(relative, ()):
+            if marker not in text:
+                failures.append(f"{relative}: missing status marker: {marker}")
+
+    if failures:
+        print("platform-support: failed")
+        for failure in failures:
+            print(f"  - {failure}")
+        return 1
+    print("platform-support: 20 recommendations and synchronized documents agree")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

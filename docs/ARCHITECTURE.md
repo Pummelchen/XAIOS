@@ -6,8 +6,11 @@ XAIOS combines a freestanding AArch64 operating-system prototype with a
 portable C99 inference-engine foundation. The current complete OS correctness
 path boots through UEFI on QEMU virt. The x86_64 image boots and executes the
 real shared CRC, block, VFS, architecture-registry, scalar-backend and packed
-engine modules; x86 platform services and full userspace parity remain
-incomplete. Kernel and userspace code are freestanding C99 without libc.
+engine modules. It starts MADT-discovered APs, validates ring-3 syscall and
+XSAVE state transitions, parses ACPI topology, and operates modern VirtIO block
+DMA/MSI-X plus network TX; x86 platform services and full userspace parity
+remain incomplete. Kernel and userspace code are freestanding C99 without libc.
+The authoritative 20-item status is `docs/PLATFORM-SUPPORT.json`.
 
 ## Boot Flow
 
@@ -51,7 +54,7 @@ UEFI firmware (AAVMF)
 23. initramfs / syscall       — Process loading infrastructure
 24. scheduler / worker thread — Preemptive process state and CPU-assigned jobs
 25. service_supervisor        — Service tree management
-26. model_arena / cpu_ai      — Fixture runtime and model arena
+26. model_arena / cpu_ai      — Fixture runtime plus immutable model mappings
 27. ai_cell                   — AI cell resource management
 28. admin/control_protocol    — Persistent role-based administration service
 29. telemetry_emit()          — Boot summary JSON
@@ -113,11 +116,11 @@ XAIOS/
 │   ├── user/             — Userspace management
 │   │   ├── user.c        — Process table, ELF loading, address space
 │   │   ├── service.c     — Service supervisor (tree, restart policies)
-│   │   └── syscall.c     — Syscall dispatch table (41 syscalls)
+│   │   └── syscall.c     — Syscall dispatch table (46 syscalls)
 │   ├── runtime/          — Kernel runtime services
 │   │   ├── ai_cell.c     — AI cell lifecycle and resource management
 │   │   ├── cpu_ai_runtime.c — Deterministic fixture runtime; production decode unsupported
-│   │   ├── model_arena.c — Shared read-only model arena
+│   │   ├── model_arena.c — Fixture-copy arena and no-copy immutable mappings
 │   │   ├── network_stack.c — UDP/TCP flow management
 │   │   ├── remote_login.c — Per-session shell command interpreter
 │   │   ├── admin_control.c — Persistent config, keys, revocation and audit

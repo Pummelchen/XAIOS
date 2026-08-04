@@ -2,7 +2,7 @@ SHELL := /bin/sh
 HOST_CC ?= clang
 HOST_CFLAGS ?= -std=c99 -Wall -Wextra -Werror -pedantic
 
-.PHONY: all bootstrap test image image-x86_64 qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-dry-run qemu-smoke qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-parallel-network-load qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test docs-check production-source-audit qemu-baseline clean clean-persistent
+.PHONY: all bootstrap test image image-x86_64 engine-cli qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-dry-run qemu-smoke qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-parallel-network-load qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test docs-check production-source-audit qemu-baseline clean clean-persistent
 
 all: bootstrap image
 
@@ -16,6 +16,14 @@ image:
 
 image-x86_64:
 	./scripts/build-image-x86_64.sh
+
+engine-cli:
+	@mkdir -p build/hosted
+	$(HOST_CC) $(HOST_CFLAGS) -Iengine/include \
+	  engine/src/model_v2.c engine/src/sha256.c engine/src/architecture.c \
+	  engine/src/service.c engine/src/backend_scalar.c \
+	  engine/src/backend_neon.c engine/src/backend_avx2.c engine/src/packed.c \
+	  tools/xaios_engine_cli.c -o build/hosted/xaios-engine
 
 qemu:
 	./scripts/run-qemu-aarch64.sh
@@ -196,15 +204,20 @@ compile-check:
 	fi; \
 	printf '%s\n' "All C files compiled clean"
 
-hosted-test:
+hosted-test: engine-cli
 	@mkdir -p build/hosted
+	./build/hosted/xaios-engine probe
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Ikernel/include tests/system/test_cpuset.c \
 	  -o build/hosted/test-cpuset
 	./build/hosted/test-cpuset
+	$(HOST_CC) $(HOST_CFLAGS) -Ikernel/include \
+	  kernel/arch/x86_64/acpi.c tests/system/test_x86_acpi.c \
+	  -o build/hosted/test-x86-acpi
+	./build/hosted/test-x86-acpi
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Iengine/include engine/src/model_v2.c engine/src/sha256.c \
-	  engine/src/architecture.c engine/src/backend_scalar.c \
+	  engine/src/architecture.c engine/src/service.c engine/src/backend_scalar.c \
 	  engine/src/backend_neon.c engine/src/backend_avx2.c engine/src/packed.c \
 	  tests/model_v2/test_engine.c -o build/hosted/test-engine
 	./build/hosted/test-engine
@@ -289,6 +302,7 @@ model-v2-test: hosted-test
 
 docs-check:
 	python3 scripts/check-model-support.py
+	python3 scripts/check-platform-support.py
 	python3 scripts/check-core-os-status.py
 
 production-source-audit:

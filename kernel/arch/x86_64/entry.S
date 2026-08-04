@@ -78,7 +78,145 @@ x86_64_irq_\vector:
 .endm
 
 XAIOS_IRQ_NOERR 32
+XAIOS_IRQ_NOERR 33
+XAIOS_IRQ_NOERR 34
+XAIOS_IRQ_NOERR 128
 XAIOS_IRQ_NOERR 255
+
+.global x86_64_load_gdt
+.type x86_64_load_gdt, @function
+x86_64_load_gdt:
+  lgdt (%rdi)
+  pushq $0x08
+  leaq 1f(%rip), %rax
+  pushq %rax
+  lretq
+1:
+  movw $0x10, %ax
+  movw %ax, %ds
+  movw %ax, %es
+  movw %ax, %ss
+  xor %eax, %eax
+  movw %ax, %fs
+  movw %ax, %gs
+  ret
+
+.global x86_64_load_tss
+.type x86_64_load_tss, @function
+x86_64_load_tss:
+  movw $0x28, %ax
+  ltr %ax
+  ret
+
+.global x86_64_enter_ring3
+.type x86_64_enter_ring3, @function
+x86_64_enter_ring3:
+  movq %rsp, x86_64_ring0_resume_rsp(%rip)
+  pushq $0x1b
+  pushq %rsi
+  pushfq
+  popq %rax
+  andq $~0x200, %rax
+  pushq %rax
+  pushq $0x23
+  pushq %rdi
+  iretq
+
+.global x86_64_ring3_resume
+.type x86_64_ring3_resume, @function
+x86_64_ring3_resume:
+  movq x86_64_ring0_resume_rsp(%rip), %rsp
+  ret
+
+.section .bss, "aw", @nobits
+.align 8
+x86_64_ring0_resume_rsp:
+  .quad 0
+
+.section .ap_trampoline, "ax"
+.code16
+.global x86_64_ap_trampoline_start
+x86_64_ap_trampoline_start:
+  cli
+  cld
+  movw %cs, %ax
+  movw %ax, %ds
+  movw %ax, %es
+  movw %ax, %ss
+  lgdtw (x86_64_ap_trampoline_gdtr - x86_64_ap_trampoline_start)
+  movl %cr0, %eax
+  orl $0x1, %eax
+  movl %eax, %cr0
+  movl %cr4, %eax
+  orl $0x20, %eax
+  movl %eax, %cr4
+  movl (x86_64_ap_trampoline_cr3 - x86_64_ap_trampoline_start), %eax
+  movl %eax, %cr3
+  movl $0xc0000080, %ecx
+  rdmsr
+  orl $0x900, %eax
+  wrmsr
+  movl %cr0, %eax
+  orl $0x80010001, %eax
+  movl %eax, %cr0
+  ljmpl *(x86_64_ap_trampoline_far - x86_64_ap_trampoline_start)
+
+.align 8
+.global x86_64_ap_trampoline_cr3
+x86_64_ap_trampoline_cr3:
+  .long 0
+x86_64_ap_trampoline_gdtr:
+  .word 23
+.global x86_64_ap_trampoline_gdt_base
+x86_64_ap_trampoline_gdt_base:
+  .long 0
+x86_64_ap_trampoline_far:
+.global x86_64_ap_trampoline_long_ip
+x86_64_ap_trampoline_long_ip:
+  .long 0
+  .word 0x08
+.align 8
+x86_64_ap_trampoline_gdt:
+  .quad 0x0000000000000000
+  .quad 0x00af9a000000ffff
+  .quad 0x00cf92000000ffff
+
+.code64
+x86_64_ap_trampoline_long:
+  movw $0x10, %ax
+  movw %ax, %ds
+  movw %ax, %es
+  movw %ax, %ss
+  movw %ax, %fs
+  movw %ax, %gs
+  .byte 0x48, 0xbc
+.global x86_64_ap_trampoline_stack
+x86_64_ap_trampoline_stack:
+  .quad 0
+  .byte 0xbf
+.global x86_64_ap_trampoline_ordinal
+x86_64_ap_trampoline_ordinal:
+  .long 0
+  .byte 0x48, 0xb8
+.global x86_64_ap_trampoline_entry
+x86_64_ap_trampoline_entry:
+  .quad 0
+  call *%rax
+1:
+  cli
+  hlt
+  jmp 1b
+
+.global x86_64_ap_trampoline_long_offset
+.set x86_64_ap_trampoline_long_offset, \
+     x86_64_ap_trampoline_long - x86_64_ap_trampoline_start
+.global x86_64_ap_trampoline_gdt_offset
+.set x86_64_ap_trampoline_gdt_offset, \
+     x86_64_ap_trampoline_gdt - x86_64_ap_trampoline_start
+.global x86_64_ap_trampoline_end
+x86_64_ap_trampoline_end:
+
+.section .text, "ax"
 
 .global x86_64_isr_common
 .type x86_64_isr_common, @function
@@ -126,6 +264,8 @@ x86_64_irq_common:
   pushq %r11
   movq %rsp, %rdi
   call x86_64_interrupt_entry
+  testq %rax, %rax
+  jnz 1f
   popq %r11
   popq %r10
   popq %r9
@@ -139,3 +279,5 @@ x86_64_irq_common:
   popq %rax
   addq $16, %rsp
   iretq
+1:
+  jmp *%rax

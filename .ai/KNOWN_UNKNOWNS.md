@@ -108,17 +108,23 @@ Evidence:
   tiled GEMM and inference-specific persistent worker gangs do not exist.
 - Runtime-sized NUMA metadata, CPU registry/cpusets/core leases and CPU-assigned
   joinable kernel workers replace their former fixed/sequential forms. Legacy
-  model-v1 admission, model arena, inference batching and AI Cell compute
-  dispatch remain QEMU-scale prototypes.
+  copied model-v1 admission is fixture-only. Production model mappings are
+  no-copy, immutable-checked and 64-bit; typed model state, inference batching
+  and AI Cell compute dispatch remain incomplete.
 - The x86_64 image boots and executes shared CRC/block/VFS/architecture/scalar/
   packed-engine probes, a controlled INT3 round trip, a local-APIC timer
-  interrupt, and modern VirtIO/MSI/MSI-X capability discovery. EL0, AP startup
-  and scheduling, PCI VirtIO drivers, security and telemetry platform
-  integration remain absent.
-- There is no complete native macOS inference process, Metal backend,
+  interrupt, MADT-discovered AP startup and IPI work, ring-3 syscall round trip,
+  runtime-sized XSAVE, modern VirtIO block DMA/MSI-X and network TX. The full
+  ARM EL0/thread ABI, receive network stack, mounted filesystems, SSH/control,
+  x86 NVMe operation, security, AI Cell and telemetry integration remain absent.
+- A native macOS/Linux engine CLI and caller-owned service boundary exist, but
+  there is no complete model-executing macOS inference process, Metal backend,
   AVX-512/VNNI/AMX backend, physical model-parity run, or immutable performance
   artifact. The native-hosted experimental NEON and QEMU-tested AVX2 backends
   exist only at the microkernel correctness level.
+
+Repository, tracker, readiness, backend and selected Wiki platform claims are
+checked against `docs/PLATFORM-SUPPORT.json`.
 
 ## Delivery order
 

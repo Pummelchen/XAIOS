@@ -20,6 +20,9 @@ void vmm_init(const xaios_boot_info_t *boot);
 void vmm_activate_kernel(void);
 xaios_status_t vmm_translate(uint64_t virtual_address, uint64_t *physical_address,
                             uint32_t *flags);
+xaios_status_t vmm_validate_range_flags(uint64_t virtual_address, uint64_t size,
+                                        uint32_t required_flags,
+                                        uint32_t forbidden_flags);
 xaios_status_t vmm_map_page(uint64_t virtual_address, uint64_t physical_address,
                            uint32_t flags);
 xaios_status_t vmm_unmap_page(uint64_t virtual_address);

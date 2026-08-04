@@ -56,6 +56,12 @@ AARCH64_CAPABILITIES = {
     "userspace_dns": [
         "/bin/nettest: userspace DNS resolve/cache path passed",
     ],
+    "arm_fp_neon_context": [
+        "scheduler: AArch64 SIMD/FP interrupt preservation passed regs=32",
+    ],
+    "immutable_model_mapping": [
+        "model-arena: shared read-only arena self-test passed fixture_copy=1 immutable_mapping=1 copy=0",
+    ],
 }
 
 X86_CAPABILITIES = {
@@ -75,6 +81,39 @@ X86_CAPABILITIES = {
         "x86_64: placement policy logical_cpus=",
         "threads_per_core=",
         "topology_leaf=",
+    ],
+    "x86_acpi_topology": [
+        "x86_64: ACPI topology and NUMA tables validated",
+    ],
+    "x86_ap_startup": [
+        "x86_64: SMP AP startup passed online=",
+        "dynamic_records=1",
+        "x86_64: SMP IPI worker dispatch passed workers=",
+    ],
+    "x86_ring3_syscall": [
+        "x86_64: ring3 int80 syscall round-trip passed calls=2",
+    ],
+    "x86_xsave_state": [
+        "x86_64: XSAVE/XRSTOR canary passed bytes=",
+    ],
+    "x86_virtio_dma": [
+        "x86_64: modern VirtIO block DMA read passed sector=0 bytes=512",
+        "x86_64: modern VirtIO network DMA TX passed bytes=42",
+    ],
+    "x86_msix_completion": [
+        "x86_64: VirtIO block MSI-X completion interrupt passed vector=34",
+    ],
+}
+
+HOSTED_CAPABILITIES = {
+    "engine_service_boundary": [
+        "hosted engine: scalar, registry, async I/O, and session lifecycle passed",
+    ],
+    "async_model_range_io": [
+        "hosted engine: scalar, registry, async I/O, and session lifecycle passed",
+    ],
+    "session_lifecycle_metadata": [
+        "hosted engine: scalar, registry, async I/O, and session lifecycle passed",
     ],
 }
 
@@ -157,6 +196,10 @@ def main() -> int:
         missing = check_markers(outputs.get("x86_64", ""), markers)
         capabilities[name] = {"passed": not missing, "missing": missing}
         failures.extend(f"{name}: missing marker: {marker}" for marker in missing)
+    for name, markers in HOSTED_CAPABILITIES.items():
+        missing = check_markers(outputs.get("hosted", ""), markers)
+        capabilities[name] = {"passed": not missing, "missing": missing}
+        failures.extend(f"{name}: missing marker: {marker}" for marker in missing)
     for name, (output_name, markers) in SPECIAL_CAPABILITIES.items():
         missing = check_markers(outputs.get(output_name, ""), markers)
         capabilities[name] = {"passed": not missing, "missing": missing}
@@ -179,10 +222,10 @@ def main() -> int:
         "capabilities": capabilities,
         "x86_full_platform_parity": False,
         "x86_pending": [
-            "EL0 userspace and syscall entry",
-            "SMP application-processor startup and scheduling",
-            "PCI VirtIO block/network drivers",
-            "security, telemetry, and AI Cell platform integration",
+            "complete ARM EL0 process and thread ABI",
+            "receive networking and SSH/control services",
+            "mounted filesystem and x86 NVMe operation",
+            "security, telemetry, and AI Cell service integration",
         ],
         "failures": failures,
     }

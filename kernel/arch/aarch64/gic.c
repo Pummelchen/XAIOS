@@ -24,17 +24,19 @@
 #define GICR_IIDR         0x0004U
 #define GICR_TYPER        0x0008U
 #define GICR_WAKER        0x0014U
-#define GICR_ISENABLER0   0x0100U
-#define GICR_ICENABLER0   0x0180U
-#define GICR_IPRIORITYR0  0x0400U
+#define GICR_SGI_BASE      0x10000U
+#define GICR_IGROUPR0      (GICR_SGI_BASE + 0x0080U)
+#define GICR_ISENABLER0    (GICR_SGI_BASE + 0x0100U)
+#define GICR_ICENABLER0    (GICR_SGI_BASE + 0x0180U)
+#define GICR_IPRIORITYR0   (GICR_SGI_BASE + 0x0400U)
 
 /* GIC CPU Interface system registers */
 #define ICC_CTLR_EL1   "S3_0_C12_C12_4"
 #define ICC_PMR_EL1    "S3_0_C4_C6_0"
 #define ICC_IGRPEN1_EL1 "S3_0_C12_C12_7"
 
-/* Physical timer INTID (PPI 14) */
-#define TIMER_PPI_INTID 30U
+/* EL1 virtual timer INTID (PPI 11). */
+#define TIMER_PPI_INTID 27U
 
 static xaios_gic_info_t g_gic_info;
 static uint32_t g_gic_full_init;
@@ -141,23 +143,14 @@ void gic_enable_full(void) {
     return;
   }
 
-  /* Route timer PPI (INTID 30) to Group 1 */
-  uint32_t igroupr = mmio_read32(QEMU_VIRT_GICD_BASE, GICD_IGROUPR0);
-  igroupr |= (1U << TIMER_PPI_INTID);
-  mmio_write32(QEMU_VIRT_GICD_BASE, GICD_IGROUPR0, igroupr);
+  /* SGIs and PPIs are configured in the local redistributor, not GICD. */
+  uint32_t timer_priority_offset = TIMER_PPI_INTID & ~UINT32_C(3);
+  uint32_t timer_priority_shift = (TIMER_PPI_INTID % 4U) * 8U;
 
-  /* Set priority for timer INTID 30 (byte offset = (30 % 4) * 8 = 24) */
-  uint32_t ipr7 = mmio_read32(QEMU_VIRT_GICD_BASE, GICD_IPRIORITYR0 + 28U);
-  ipr7 &= ~(0xffU << 24U);
-  ipr7 |= (0xa0U << 24U);
-  mmio_write32(QEMU_VIRT_GICD_BASE, GICD_IPRIORITYR0 + 28U, ipr7);
-
-  /* Enable timer INTID 30 in distributor */
-  mmio_write32(QEMU_VIRT_GICD_BASE, GICD_ISENABLER0, (1U << TIMER_PPI_INTID));
-
-  /* Enable distributor Group 1 */
+  /* Enable Group 1 non-secure delivery. Keep Group 0 unchanged because
+   * firmware may have configured it for secure-world use. */
   uint32_t ctlr = mmio_read32(QEMU_VIRT_GICD_BASE, GICD_CTLR);
-  ctlr |= 1U;
+  ctlr |= UINT32_C(1) << 1U;
   mmio_write32(QEMU_VIRT_GICD_BASE, GICD_CTLR, ctlr);
 
   /* Configure redistributor for CPU 0 */
@@ -166,13 +159,19 @@ void gic_enable_full(void) {
   mmio_write32(QEMU_VIRT_GICR_BASE, GICR_WAKER, gicr_waker);
 
   /* Set redistributor priority for timer */
-  uint32_t gicr_ipr7 = mmio_read32(QEMU_VIRT_GICR_BASE, GICR_IPRIORITYR0 + 28U);
-  gicr_ipr7 &= ~(0xffU << 24U);
-  gicr_ipr7 |= (0xa0U << 24U);
-  mmio_write32(QEMU_VIRT_GICR_BASE, GICR_IPRIORITYR0 + 28U, gicr_ipr7);
+  uint32_t gicr_group = mmio_read32(QEMU_VIRT_GICR_BASE, GICR_IGROUPR0);
+  mmio_write32(QEMU_VIRT_GICR_BASE, GICR_IGROUPR0,
+               gicr_group | (UINT32_C(1) << TIMER_PPI_INTID));
+  uint32_t gicr_ipr7 = mmio_read32(
+      QEMU_VIRT_GICR_BASE, GICR_IPRIORITYR0 + timer_priority_offset);
+  gicr_ipr7 &= ~(UINT32_C(0xff) << timer_priority_shift);
+  gicr_ipr7 |= UINT32_C(0xa0) << timer_priority_shift;
+  mmio_write32(QEMU_VIRT_GICR_BASE,
+               GICR_IPRIORITYR0 + timer_priority_offset, gicr_ipr7);
 
-  /* Enable redistributor PPI 30 */
+  /* Enable the EL1 virtual timer PPI. */
   mmio_write32(QEMU_VIRT_GICR_BASE, GICR_ISENABLER0, (1U << TIMER_PPI_INTID));
+  __asm__ volatile("dsb sy\n\tisb" ::: "memory");
 
   /* Enable CPU interface: set priority mask to allow all priorities */
   __asm__ volatile("msr " ICC_PMR_EL1 ", %0" : : "r"((uint64_t)0xffU));
@@ -197,13 +196,20 @@ void gic_secondary_init(uint32_t cpu_id) {
   mmio_write32(gicr_base, GICR_WAKER, gicr_waker);
 
   /* Set redistributor priority for timer PPI */
-  uint32_t gicr_ipr7 = mmio_read32(gicr_base, GICR_IPRIORITYR0 + 28U);
-  gicr_ipr7 &= ~(0xffU << 24U);
-  gicr_ipr7 |= (0xa0U << 24U);
-  mmio_write32(gicr_base, GICR_IPRIORITYR0 + 28U, gicr_ipr7);
+  uint32_t gicr_group = mmio_read32(gicr_base, GICR_IGROUPR0);
+  mmio_write32(gicr_base, GICR_IGROUPR0,
+               gicr_group | (UINT32_C(1) << TIMER_PPI_INTID));
+  uint32_t priority_offset = TIMER_PPI_INTID & ~UINT32_C(3);
+  uint32_t priority_shift = (TIMER_PPI_INTID % 4U) * 8U;
+  uint32_t gicr_ipr7 =
+      mmio_read32(gicr_base, GICR_IPRIORITYR0 + priority_offset);
+  gicr_ipr7 &= ~(UINT32_C(0xff) << priority_shift);
+  gicr_ipr7 |= UINT32_C(0xa0) << priority_shift;
+  mmio_write32(gicr_base, GICR_IPRIORITYR0 + priority_offset, gicr_ipr7);
 
-  /* Enable redistributor PPI 30 (timer) */
+  /* Enable the EL1 virtual timer PPI. */
   mmio_write32(gicr_base, GICR_ISENABLER0, (1U << TIMER_PPI_INTID));
+  __asm__ volatile("dsb sy\n\tisb" ::: "memory");
 
   /* Enable CPU interface: priority mask + Group 1 */
   __asm__ volatile("msr " ICC_PMR_EL1 ", %0" : : "r"((uint64_t)0xffU));
@@ -218,8 +224,6 @@ void gic_disable_full(void) {
   if (g_gic_full_init == 0) {
     return;
   }
-  /* Disable timer interrupt in distributor */
-  mmio_write32(QEMU_VIRT_GICD_BASE, GICD_ICENABLER0, (1U << TIMER_PPI_INTID));
   /* Disable redistributor PPI */
   mmio_write32(QEMU_VIRT_GICR_BASE, GICR_ICENABLER0, (1U << TIMER_PPI_INTID));
   if (g_registered_interrupts == 0U) {

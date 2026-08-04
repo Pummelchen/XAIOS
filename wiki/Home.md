@@ -1,8 +1,8 @@
 # XAIOS Wiki
 
 This directory mirrors selected pages from the live GitHub Wiki. Current source,
-build/test configuration, and `docs/MODEL-SUPPORT.json` take precedence over
-older Wiki revisions.
+build/test configuration, `docs/MODEL-SUPPORT.json`, and
+`docs/PLATFORM-SUPPORT.json` take precedence over older Wiki revisions.
 
 XAIOS is an experimental operating system and portable inference-engine
 foundation. Its current QEMU paths validate deterministic OS/runtime contracts;
@@ -44,14 +44,19 @@ unless the maintainer explicitly reprioritizes them.
   a focused TCG gate validates SMP and NUMA metadata with 130 emulated CPUs,
   while hosted cpuset tests cover 4,097 CPU IDs. EL0 create/join/cancel/exit,
   asynchronous DNS, IPv4/IPv6 reassembly, and SACK-aware TCP pass QEMU gates.
-- x86_64 executes shared CRC/block/VFS/engine probes, controlled exception and
-  local-APIC timer interrupts, plus modern VirtIO/MSI/MSI-X discovery. Full x86
-  userspace, AP startup, PCI VirtIO, security and telemetry parity remain open.
+- x86_64 starts MADT-discovered application processors, dispatches IPI work,
+  validates controlled exception and local-APIC timer interrupts, performs a
+  ring-3 syscall round trip, validates runtime-sized XSAVE and ACPI parsing, and
+  operates modern VirtIO block DMA/MSI-X plus network TX.
+  Full ARM-service parity on x86 remains open: complete userspace/thread services,
+  receive networking/SSH, mounted filesystems, x86 NVMe, security, AI Cell and
+  telemetry are not yet integrated.
 - Model loading, cluster and inference-service administration remains gated.
 
 ## Start Here
 
 - [[Model Support Roadmap|Model-Support-Roadmap]]
+- [[Platform Support|Platform-Support]]
 - [[Qwen CPU Inference Status|Qwen3.6-INT6-Support]]
 - [[SSH Status|Production-SSH-Server]]
 - [Repository README](https://github.com/Pummelchen/XAIOS/blob/main/README.md)

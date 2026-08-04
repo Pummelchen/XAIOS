@@ -237,7 +237,8 @@ static xaios_status_t register_model_bytes(uint32_t model_arena_id,
     ++g_model_file_reject_count;
     return XAIOS_ERR_INVALID;
   }
-  if (model_arena_register(model_arena_id, name, base, size) != XAIOS_OK) {
+  if (model_arena_register_fixture_copy(model_arena_id, name, base, size) !=
+      XAIOS_OK) {
     ++g_model_file_reject_count;
     return XAIOS_ERR_INVALID;
   }
@@ -877,8 +878,9 @@ void cpu_ai_runtime_self_test(void) {
   kassert(register_model_bytes(3, "bad-tokenizer-model", &bad_tokenizer_image,
                                sizeof(bad_tokenizer_image)) ==
           XAIOS_ERR_INVALID);
-  kassert(model_arena_register(3, "gpu-rejected-model", &gpu_model_image,
-                               sizeof(gpu_model_image)) == XAIOS_OK);
+  kassert(model_arena_register_fixture_copy(
+              3, "gpu-rejected-model", &gpu_model_image,
+              sizeof(gpu_model_image)) == XAIOS_OK);
 
   const xaios_arena_t *kv0 = 0;
   const xaios_arena_t *kv1 = 0;

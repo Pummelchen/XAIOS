@@ -14,6 +14,7 @@ LOADER_TWEETNACL_OBJ="$EFI_BUILD_DIR/tweetnacl_subset.obj"
 LOADER_EFI="$EFI_BUILD_DIR/BOOTX64.EFI"
 KERNEL_ENTRY_OBJ="$KERNEL_BUILD_DIR/entry.o"
 KERNEL_EARLY_OBJ="$KERNEL_BUILD_DIR/early.o"
+KERNEL_ACPI_OBJ="$KERNEL_BUILD_DIR/acpi.o"
 KERNEL_PACKED_OBJ="$KERNEL_BUILD_DIR/packed.o"
 KERNEL_STRING_OBJ="$KERNEL_BUILD_DIR/string.o"
 KERNEL_CRC32_OBJ="$KERNEL_BUILD_DIR/crc32.o"
@@ -172,6 +173,8 @@ KERNEL_CFLAGS="
 "$CLANG" $KERNEL_CFLAGS -I"$ROOT_DIR/kernel/include" \
   -I"$ROOT_DIR/engine/include" \
   -c "$ROOT_DIR/kernel/arch/x86_64/early.c" -o "$KERNEL_EARLY_OBJ"
+"$CLANG" $KERNEL_CFLAGS -I"$ROOT_DIR/kernel/include" \
+  -c "$ROOT_DIR/kernel/arch/x86_64/acpi.c" -o "$KERNEL_ACPI_OBJ"
 "$CLANG" $KERNEL_CFLAGS -I"$ROOT_DIR/engine/include" \
   -c "$ROOT_DIR/engine/src/packed.c" -o "$KERNEL_PACKED_OBJ"
 for common_source in \
@@ -197,6 +200,7 @@ done
   -o "$KERNEL_ELF" \
   "$KERNEL_ENTRY_OBJ" \
   "$KERNEL_EARLY_OBJ" \
+  "$KERNEL_ACPI_OBJ" \
   "$KERNEL_PACKED_OBJ" \
   "$KERNEL_STRING_OBJ" \
   "$KERNEL_CRC32_OBJ" \

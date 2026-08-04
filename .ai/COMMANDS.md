@@ -46,13 +46,14 @@ the `cryptography` package, installed by the QEMU CI jobs.
 | Default build | `make all` |
 | AArch64 image | `make image` |
 | x86_64 image | `make image-x86_64` |
+| Native engine CLI | `make engine-cli` |
 | Clean generated outputs | `make clean` |
 | Clean persistent image | `make clean-persistent` |
 | Syntax-only C compile check | `make compile-check` |
 | Hosted engine/model-v2/storage tests | `make hosted-test` |
 | Hosted ASan/UBSan tests | `make hosted-sanitizer-test` |
 | Model-v2 tests (alias) | `make model-v2-test` |
-| Support-status docs contract | `make docs-check` |
+| Model/platform support docs contract | `make docs-check` |
 | Production unfinished-marker audit | `make production-source-audit` |
 
 ModelFS host administration starts with:
@@ -107,7 +108,7 @@ For direct IPv6/TCP from a Mac client, run QEMU with
 | Regression | `make qemu-regression-suite` | Broader regression suite. |
 | ABI contract | `make qemu-abi-contract` or `python3 scripts/qemu-abi-contract.py` | Contract/source validation. |
 | x86 CPU compatibility matrix | `make qemu-x86_64-cpu-matrix` | Runs every contract-defined x86 CPU profile without requiring AArch64 QEMU; writes `build/qemu-x86_64-cpu-matrix-report.json`. |
-| x86 platform matrix | `make qemu-x86_64-platform-matrix` | Boots q35/pc, 1/2/4/8/128/256-vCPU, xAPIC/x2APIC, 512 MiB-4 GiB, TCG single/multi-thread, and opt-in NVMe inventory scenarios; writes `build/qemu-x86_64-platform-matrix-report.json`. |
+| x86 platform matrix | `make qemu-x86_64-platform-matrix` | Boots q35/pc, 1/2/4/8/128/256-vCPU, xAPIC/x2APIC, 512 MiB-4 GiB, TCG single/multi-thread, AP/ring-3/XSAVE/modern-VirtIO checks, and opt-in NVMe inventory; writes `build/qemu-x86_64-platform-matrix-report.json`. |
 | x86 repeated boot | `make qemu-x86_64-repeat-boot` | Runs 20 x86 smoke boots by default and writes per-boot logs plus `build/qemu-x86_64-repeat-boot-report.json`; set `XAIOS_QEMU_X86_REPEAT_COUNT` to 1-1000. |
 | Readiness | `make qemu-readiness-gate` | Full local QEMU readiness. |
 | Full OS RC | `make qemu-full-os-rc` | Release-candidate gate. |

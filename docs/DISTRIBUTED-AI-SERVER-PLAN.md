@@ -6,6 +6,9 @@ administrative control plane. A separate authenticated service is required for
 production inference traffic. QEMU results are correctness and ABI evidence,
 not physical-hardware or performance evidence.
 
+The current 20-item platform boundary is authoritative in
+[`PLATFORM-SUPPORT.json`](./PLATFORM-SUPPORT.json).
+
 ## Status labels
 
 Only these evidence levels are used: `planned`, `interface-only`,
@@ -21,7 +24,7 @@ dependency is blocked; dependency state is recorded separately.
 | 2. Administrative security | fixture-tested | Phase 1 | Role-mapped keys, revocation, config transactions, audit operations, host-key rotation and secret-redaction tests pass through Debian 13 OpenSSH against QEMU. |
 | 3. Large model volume and packer | fixture-tested | Phase 2 mutation/audit rules and model-v2 | Immutable 64-bit volume, signed registration/activation, recovery, logical 100 GB sparse tests, resumable SFTP, cleanup/reuse, scrub and trim pass. Physical storage remains open. |
 | 4. Model management | interface-only | Phase 3 | Transactional register/verify/activate/cleanup are implemented; execution load/unload/pin/evict/cache operations remain planned. |
-| 5. Local inference | interface-only | Phases 3-4 and real Qwen correctness | Golden logits/tokens, bounded scheduling, cancellation, backpressure, KV ownership and real metrics. |
+| 5. Local inference | interface-only | Phases 3-4 and real Qwen correctness | The native service owns immutable package readers, async range I/O and transactional session metadata; golden logits/tokens, typed state, bounded scheduling, cancellation, backpressure and real metrics remain. |
 | 6. Authenticated cluster control | planned | Phases 2 and 5 | Dedicated mutually authenticated protocol and three-node join/partition/replay tests. |
 | 7. Distributed placement/execution | planned | Phase 6 | Transactional dense/MoE placement, deterministic routing and defined node-loss behavior. |
 | 8. Benchmarks/diagnostics | planned | Phases 5 and 7 | Reproducible metadata-rich measurements and redacted support bundles. |
@@ -110,6 +113,14 @@ per-session state ownership and measured TTFT/prefill/decode metrics.
 The deterministic model-v1 path remains a fixture and production decode must
 continue returning unsupported until these gates pass.
 
+The portable service API is now executable in native macOS/Linux builds and
+uses caller-owned model/session registries. Model admission retains an immutable
+reader rather than copying a package. Aligned asynchronous reads target final
+caller buffers and expose completion/cancellation. Session metadata supports
+64-bit append, fork, commit, rollback and safe destruction. This is lifecycle
+infrastructure only: architecture-specific KV/recurrent state, ragged batching,
+speculation and transformer execution remain unsupported.
+
 ## Phases 6-7: cluster and placement
 
 Use a dedicated bounded binary cluster protocol, not SSH fan-out. Start with
@@ -145,8 +156,13 @@ Kimi K3 multimodal support remains separate from K3 text support.
 - No real Qwen checkpoint has tokenizer/logits/decode parity.
 - ModelFS has a fixture-tested transactional implementation, but no physical
   storage validation, asynchronous hardware backend or production qualification.
-- The x86_64 image does not yet link the common kernel/runtime.
-- No native macOS, Metal, AVX2, AVX-512/VNNI or AMX execution backend exists.
+- The x86_64 image links the portable common subset, starts MADT APs, proves
+  ring-3/syscall and XSAVE transitions, and operates modern VirtIO block/MSI-X
+  plus network TX. It does not yet host the complete ARM userspace, SSH,
+  filesystem, security, AI Cell or telemetry service set.
+- A native macOS/Linux engine executable, experimental NEON, and experimental
+  AVX2 packed kernels exist. Metal, SVE/SVE2, AVX-512/VNNI and AMX execution
+  backends do not.
 - No authenticated cluster protocol, placement engine or inference service
   exists.
 - No qualifying physical Apple or Intel/Xeon benchmark artifact exists.

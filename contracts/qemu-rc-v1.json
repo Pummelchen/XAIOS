@@ -480,8 +480,19 @@
       "translated_smmuv3_isolation",
       "emulated_nvme_io",
       "high_core_dynamic_capacity",
+      "arm_fp_neon_context",
       "x86_interrupt_delivery",
-      "x86_modern_pci_inventory"
+      "x86_modern_pci_inventory",
+      "x86_acpi_topology",
+      "x86_ap_startup",
+      "x86_ring3_syscall",
+      "x86_xsave_state",
+      "x86_virtio_dma",
+      "x86_msix_completion",
+      "engine_service_boundary",
+      "immutable_model_mapping",
+      "async_model_range_io",
+      "session_lifecycle_metadata"
     ],
     "independent_gates": [
       {"name": "fault_injection", "command": "make qemu-fault-injection"},
@@ -530,7 +541,7 @@
   "out_of_scope_before_intel": [
     "performance claims against Linux or BSD",
     "x86_64 physical hardware performance evidence",
-    "complete x86 SMP startup, interrupt routing, PCIe, NVMe, and NIC hardware drivers",
+    "complete x86 ARM-service parity, receive networking, SSH, mounted filesystems, NVMe operation, security, AI Cell, and telemetry integration",
     "production update signing and key management",
     "production filesystem with mutable POSIX-like semantics",
     "production tokenizer/model runtimes beyond the QEMU CPU-only deterministic model format",

@@ -31,8 +31,9 @@ architecture-contract prerequisites.
 - Model admission copies the complete image and inference session/batching paths
   remain QEMU-scale prototypes. The x86_64 image executes shared CRC/block/VFS/
   engine probes, while EL0, interrupts/SMP, PCI VirtIO and full parity remain open.
-- Apple support is QEMU hosted by macOS. There is no native macOS engine or
-  Metal backend.
+- A native macOS/Linux engine CLI and caller-owned service boundary exist. No
+  complete model executes through the Apple CPU path, and no Metal backend
+  exists.
 
 ## Completed foundation
 
@@ -54,18 +55,22 @@ architecture-contract prerequisites.
 
 ## Workstream 1: XAIOS completion gate
 
-- [ ] Integrate the portable engine through a stable XAIOS service boundary.
+- [x] Add the portable caller-owned engine/service boundary, immutable reader
+  admission, direct async range I/O and native macOS/Linux CLI.
 - [x] Replace fixed RAM/CPU bitmap and worker-dispatch limits with runtime-sized
   NUMA/CPU/cpuset state and CPU-assigned joinable worker threads.
 - [x] Link portable common CRC/block/VFS/engine components into x86_64.
 - [x] Prove x86 controlled exception and local-APIC timer interrupt delivery
   plus modern VirtIO/MSI/MSI-X capability discovery under QEMU.
-- [ ] Complete x86 EL0, AP startup/scheduling, PCI VirtIO drivers and
-  security/telemetry parity.
-- [ ] Replace model admission, inference batching and session state with
-  production-width ownership and error handling.
-- [ ] Complete reusable session-state, batching and asynchronous I/O
-  foundations needed by real-model execution.
+- [x] Start MADT-discovered x86 APs, dispatch IPI work, validate GDT/TSS ring-3
+  syscall entry and XSAVE/FXSAVE state, and operate modern VirtIO block DMA,
+  MSI-X completion and network TX.
+- [ ] Port the complete ARM EL0/thread ABI, receive networking/SSH, mounted
+  filesystems, x86 NVMe operation, security, AI Cell and telemetry services.
+- [x] Replace copied production model admission with no-copy immutable 64-bit
+  mappings and add lifecycle-safe 64-bit session metadata.
+- [ ] Complete typed reusable model state, prefix COW, ragged batching and exact
+  target-authoritative speculation.
 - [ ] Pass release/security gates and record physical-hardware entry evidence.
 
 ## Workstream 2: Qwen config and tokenizer (blocked on XAIOS)

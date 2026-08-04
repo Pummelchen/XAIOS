@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define XAIOS_BOOT_INFO_MAGIC UINT64_C(0x4f534149424f4f54)
-#define XAIOS_BOOT_INFO_VERSION UINT32_C(3)
+#define XAIOS_BOOT_INFO_VERSION UINT32_C(4)
 
 #define XAIOS_BOOT_PLATFORM_SMMUV3 UINT32_C(1)
 
@@ -33,6 +33,9 @@ typedef struct xaios_boot_info {
   uint32_t system_volume_present;
   uint32_t system_slot;
   uint64_t system_generation;
+  uint64_t acpi_rsdp;
+  uint64_t device_tree;
+  uint64_t ap_trampoline;
 } xaios_boot_info_t;
 
 #endif

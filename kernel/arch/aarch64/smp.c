@@ -8,7 +8,7 @@
 #include <xaios/vmm.h>
 
 #define PSCI_0_2_FN64_CPU_ON UINT64_C(0xc4000003)
-#define SECONDARY_STACK_SIZE 4096U
+#define SECONDARY_STACK_SIZE 16384U
 #define SECONDARY_BOOT_BASE_TIMEOUT_MS UINT64_C(5000)
 
 /* QEMU virt GICv3 redistributor region used for early CPU discovery. */

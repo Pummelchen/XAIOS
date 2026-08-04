@@ -19,7 +19,7 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 | Operation mode | `refresh` |
 | Default branch | `main` |
 | Primary languages | C99, Assembly, Python, Shell |
-| Runtime target | AArch64 UEFI/QEMU OS correctness path plus a hosted portable-engine foundation; x86_64 has interrupt-capable early bring-up but not OS parity. |
+| Runtime target | AArch64 UEFI/QEMU OS correctness path plus a native hosted portable-engine/service foundation; x86_64 has AP/ring-3/XSAVE/ACPI/modern-VirtIO bring-up but not full OS-service parity. |
 
 ## Read first
 
@@ -38,9 +38,10 @@ XAIOS is an experimental freestanding operating system and portable
 inference-engine foundation. The current OS path validates deterministic
 kernel/runtime fixtures under QEMU; it does not yet execute a real transformer.
 The hosted C99 engine provides model-v2 parsing, architecture/backend
-boundaries, scalar packed INT4/INT6 correctness kernels, and an experimental
+boundaries, caller-owned service/model/session lifecycle, direct async range
+I/O, scalar packed INT4/INT6 correctness kernels, and an experimental
 canary-gated AArch64 NEON backend plus an x86 AVX2 QEMU correctness path for
-future native macOS/Linux and XAIOS-service builds. The freestanding OS also
+native macOS/Linux and future XAIOS-service builds. The freestanding OS also
 exposes the QEMU/OpenSSH-tested
 Phase 2 `xaios.control.v1`/`xaiosctl` administration surface: persistent
 role-mapped keys/revocation, strict config transactions, host-key rotation and
@@ -73,7 +74,8 @@ Runtime structure:
 | Path | Responsibility | Notes |
 |---|---|---|
 | `boot/uefi/` | AArch64/x86_64 UEFI loader and linker scripts. | Earliest boot code. |
-| `kernel/arch/aarch64/` | EL1 entry, vectors, timer, GIC, MMU, SMP, SMMU, PCI, RTC, watchdog. | Hardware-sensitive. |
+| `kernel/arch/aarch64/` | EL1 entry, FP/SIMD-preserving vectors, timer, GIC, MMU, SMP, SMMU, PCI, RTC, watchdog. | Hardware-sensitive. |
+| `kernel/arch/x86_64/` | ACPI, AP trampoline/IPI work, GDT/TSS/ring-3, XSAVE, local APIC and focused modern VirtIO/MSI-X operation. | QEMU bring-up; full services remain open. |
 | `kernel/core/` | `kmain`, logging, telemetry, panic/assert, stack canaries. | `kmain.c` is the central init map. |
 | `kernel/mm/` | PMM, NUMA, VMM support, heap/arena, ELF loading. | Boot and process-loader sensitive. |
 | `kernel/dev/virtio/`, `kernel/dev/nvme.c`, `kernel/dev/block_device.c` | Queued VirtIO, focused QEMU NVMe, and generic 64-bit block API. | QEMU correctness only; production NVMe and physical durability remain open. |
@@ -83,7 +85,7 @@ Runtime structure:
 | `kernel/runtime/` | AI Cell, CPU-AI runtime, model arena, security, sandbox, persistence, update, remote login, control protocol, agent protocol, source index, Git workspace. | Security/AI-runtime sensitive. |
 | `kernel/user/` | Process table, service supervisor, syscall dispatch. | API and capability sensitive. |
 | `userspace/` | EL0 runtime, init, service manager, worker, apps, SSH daemon. | Built into initramfs by `scripts/build-image.sh`. |
-| `engine/` | Portable C99 model-v2, ModelFS/model-file, architecture and backend interfaces. | Hosted tests exist; it is not wired to real model execution. |
+| `engine/` | Portable C99 model-v2, ModelFS/model-file, architecture/backend and caller-owned service interfaces. | Native hosted tests exist; it is not wired to real model execution. |
 | `tests/model_v2/`, `tests/model_volume/`, `tests/storage/` | Model/package round trips, malformed input, sparse large files, block/GPT/VFS/SFTP tests. | Run with `make hosted-test`. |
 | `scripts/` | Build scripts, QEMU runners, gates, report generation, initfs creation. | Primary validation surface. |
 | `contracts/` | Machine-readable QEMU release-candidate contract. | May lag newer source. |
@@ -97,6 +99,7 @@ Runtime structure:
 | Default build | `make all` |
 | Build AArch64 image | `make image` |
 | Build x86_64 image | `make image-x86_64` |
+| Build native engine CLI | `make engine-cli` |
 | Interactive AArch64 QEMU | `make qemu` or `make qemu-aarch64` |
 | Dry-run QEMU commands | `make qemu-dry-run` |
 | Primary smoke gate | `make qemu-smoke` |
@@ -156,8 +159,10 @@ Runtime structure:
 High-impact items are tracked in `.ai/KNOWN_UNKNOWNS.md`. The syscall/API
 contract and primary readiness/support docs are synchronized in the current
 working tree. Remaining material risks include no real Qwen/K3 execution, no
-native production backend, production NVMe/physical-device evidence, incomplete
-x86 EL0/AP/PCI-driver parity, and no production model/cluster service.
+model-executing native backend, production NVMe/physical-device evidence,
+incomplete x86 EL0/network/SSH/filesystem/security service parity, and no
+production model/cluster data plane. Platform status is authoritative in
+`docs/PLATFORM-SUPPORT.json`.
 Licensing is defined by `LICENSE` and `COMMERCIAL-LICENSE.md`.
 
 ## What changed since last index

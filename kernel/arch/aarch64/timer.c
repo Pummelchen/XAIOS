@@ -17,17 +17,20 @@ static uint64_t read_cntfrq_el0(void) {
   return value;
 }
 
-static void write_cntp_cval_el0(uint64_t value) {
-  __asm__ volatile("msr cntp_cval_el0, %[value]" : : [value] "r"(value));
+static void write_cntv_cval_el0(uint64_t value) {
+  __asm__ volatile("msr cntv_cval_el0, %[value]" : : [value] "r"(value));
 }
 
-static void write_cntp_ctl_el0(uint64_t value) {
-  __asm__ volatile("msr cntp_ctl_el0, %[value]" : : [value] "r"(value));
+static void write_cntv_ctl_el0(uint64_t value) {
+  __asm__ volatile("msr cntv_ctl_el0, %[value]\n\tisb"
+                   :
+                   : [value] "r"(value)
+                   : "memory");
 }
 
 uint64_t timer_counter(void) {
   uint64_t value = 0;
-  __asm__ volatile("isb\nmrs %[value], cntpct_el0" : [value] "=r"(value));
+  __asm__ volatile("isb\nmrs %[value], cntvct_el0" : [value] "=r"(value));
   return value;
 }
 
@@ -60,29 +63,35 @@ void timer_enable_periodic(uint32_t hz) {
   if (g_timer_interval == 0) {
     g_timer_interval = 1;
   }
-  /* Enable timer: ENABLE=1, IMASK=0 */
-  write_cntp_ctl_el0(1);
   /* Set first compare value = now + interval */
   uint64_t now = timer_counter();
-  write_cntp_cval_el0(now + g_timer_interval);
+  write_cntv_cval_el0(now + g_timer_interval);
+  /* Enable timer: ENABLE=1, IMASK=0 */
+  write_cntv_ctl_el0(1);
   g_timer_periodic_active = 1;
   klog("timer: periodic enabled hz=%u interval=%lu\n", hz, g_timer_interval);
 }
 
 void timer_disable(void) {
   /* Disable timer: ENABLE=0, IMASK=1 */
-  write_cntp_ctl_el0(2);
+  write_cntv_ctl_el0(2);
   g_timer_periodic_active = 0;
   klog("timer: periodic disabled\n");
 }
 
 void timer_rearm(void) {
-  if (g_timer_periodic_active == 0 || g_timer_interval == 0) {
+  if (g_timer_periodic_active == 0) {
+    /* The enable register is banked per CPU. Mask a secondary's expired
+     * timer after the boot CPU stops the shared periodic scheduler. */
+    write_cntv_ctl_el0(2);
+    return;
+  }
+  if (g_timer_interval == 0) {
     return;
   }
   /* Set next compare value = now + interval */
   uint64_t now = timer_counter();
-  write_cntp_cval_el0(now + g_timer_interval);
+  write_cntv_cval_el0(now + g_timer_interval);
 }
 
 void wall_time_calibrate(void) {

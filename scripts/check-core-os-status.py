@@ -69,8 +69,19 @@ CONTRACT_CAPABILITIES = {
     "translated_smmuv3_isolation",
     "emulated_nvme_io",
     "high_core_dynamic_capacity",
+    "arm_fp_neon_context",
     "x86_interrupt_delivery",
     "x86_modern_pci_inventory",
+    "x86_acpi_topology",
+    "x86_ap_startup",
+    "x86_ring3_syscall",
+    "x86_xsave_state",
+    "x86_virtio_dma",
+    "x86_msix_completion",
+    "engine_service_boundary",
+    "immutable_model_mapping",
+    "async_model_range_io",
+    "session_lifecycle_metadata",
 }
 
 

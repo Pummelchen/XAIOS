@@ -13,7 +13,7 @@ aarch64_secondary_entry:
   isb
   ldr x1, =g_secondary_stacks
   ldr x1, [x1]
-  mov x2, #4096
+  mov x2, #16384
   madd x1, x0, x2, x1
   add x1, x1, x2
   mov sp, x1

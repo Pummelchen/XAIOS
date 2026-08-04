@@ -73,6 +73,18 @@ static const efi_guid_t EFI_DTB_TABLE_GUID = {
     0x41a5U,
     {0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0}};
 
+static const efi_guid_t EFI_ACPI_TABLE_GUID = {
+    0xeb9d2d30U,
+    0x2d88U,
+    0x11d3U,
+    {0x9a, 0x16, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d}};
+
+static const efi_guid_t EFI_ACPI_20_TABLE_GUID = {
+    0x8868e871U,
+    0xe4f1U,
+    0x11d3U,
+    {0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81}};
+
 static xaios_boot_info_t g_boot_info;
 
 static void *mem_copy(void *dst, const void *src, uint64_t size) {
@@ -153,6 +165,27 @@ static uint32_t platform_flags(const efi_system_table_t *system_table) {
     }
   }
   return 0U;
+}
+
+static uint64_t configuration_table_pointer(
+    const efi_system_table_t *system_table, const efi_guid_t *preferred,
+    const efi_guid_t *fallback) {
+  uint64_t fallback_pointer = 0U;
+  if (system_table == 0 || system_table->configuration_table == 0 ||
+      system_table->number_of_table_entries > UINT64_C(4096)) {
+    return 0U;
+  }
+  for (uint64_t i = 0U; i < system_table->number_of_table_entries; ++i) {
+    const efi_configuration_table_t *entry =
+        &system_table->configuration_table[i];
+    if (guid_equal(&entry->vendor_guid, preferred)) {
+      return (uint64_t)(uintptr_t)entry->vendor_table;
+    }
+    if (fallback != 0 && guid_equal(&entry->vendor_guid, fallback)) {
+      fallback_pointer = (uint64_t)(uintptr_t)entry->vendor_table;
+    }
+  }
+  return fallback_pointer;
 }
 
 static efi_status_t open_root(efi_handle_t image_handle,
@@ -382,6 +415,23 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
 
   loader_puts(system_table, u"XAIOS loader exiting boot services\r\n");
 
+  uint64_t acpi_rsdp = configuration_table_pointer(
+      system_table, &EFI_ACPI_20_TABLE_GUID, &EFI_ACPI_TABLE_GUID);
+  uint64_t device_tree = configuration_table_pointer(
+      system_table, &EFI_DTB_TABLE_GUID, 0);
+  uint64_t ap_trampoline = 0U;
+#if defined(XAIOS_UEFI_TARGET_X86_64)
+  efi_physical_address_t trampoline_page = UINT64_C(0x8000);
+  status = system_table->boot_services->allocate_pages(
+      EFI_ALLOCATE_ADDRESS, EFI_LOADER_DATA, 1U, &trampoline_page);
+  if (is_error(status)) {
+    loader_puts(system_table,
+                u"XAIOS loader error: AP trampoline page unavailable\r\n");
+    return status;
+  }
+  ap_trampoline = trampoline_page;
+#endif
+
   void *memory_map = 0;
   uint64_t memory_map_size = 0;
   uint64_t map_key = 0;
@@ -408,6 +458,9 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
       system_slot == XAIOS_SYSTEM_SLOT_NONE ? 0U : 1U;
   g_boot_info.system_slot = system_slot;
   g_boot_info.system_generation = system_generation;
+  g_boot_info.acpi_rsdp = acpi_rsdp;
+  g_boot_info.device_tree = device_tree;
+  g_boot_info.ap_trampoline = ap_trampoline;
 
   status = system_table->boot_services->exit_boot_services(image_handle, map_key);
   if (is_error(status)) {

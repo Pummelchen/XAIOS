@@ -96,6 +96,10 @@ does not remove that backend's capacity limit.
 |---------|-------:|---------|-------------|
 | `XAIOS_SYSCALL_SMP_RUN` | 23 | `xaios_smp_run(workers, iters, ran, cksum)` | Dispatch work to secondary CPU cores. |
 | `XAIOS_SYSCALL_THREAD_GROUP_RUN` | 27 | `xaios_thread_group_run(threads, iters, ran, cksum)` | Run a bounded worker group concurrently across online CPUs. |
+| `XAIOS_SYSCALL_THREAD_CREATE` | 42 | `xaios_thread_create(entry, argument, stack, stack_size, preferred_cpu, thread_id)` | Create an EL0 thread using caller-owned stack memory and an optional runtime CPU ordinal. |
+| `XAIOS_SYSCALL_THREAD_JOIN` | 43 | `xaios_thread_join(thread_id, timeout_ns, result)` | Wait for a thread and retrieve its 64-bit result, with a bounded timeout. |
+| `XAIOS_SYSCALL_THREAD_CANCEL` | 44 | `xaios_thread_cancel(thread_id)` | Request cancellation of a live thread. |
+| `XAIOS_SYSCALL_THREAD_EXIT` | 45 | return trampoline | Exit the current thread and publish its result through the userspace return trampoline. |
 
 ## AI / ML Runtime
 

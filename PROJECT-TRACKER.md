@@ -2,7 +2,8 @@
 
 Last updated: 2026-08-04. Status labels and delivery order are checked against
 [`docs/MODEL-SUPPORT.json`](./docs/MODEL-SUPPORT.json). A checked interface is
-not equivalent to executing-model support.
+not equivalent to executing-model support. Platform recommendation status is
+authoritative in [`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json).
 
 ## Support status
 
@@ -79,16 +80,30 @@ not equivalent to executing-model support.
   write/flush/read plus backing-image bytes.
 - [ ] Add production NVMe multiqueue, PRP/SGL, interrupt affinity, direct
   final-buffer reads and physical durability/discard validation.
-- [ ] Complete the portable engine/service integration boundary.
+- [x] Add a caller-owned portable engine/service boundary with native macOS and
+  Linux CLI entrypoints, immutable reader-backed model admission, explicit
+  backend/adapter selection and fail-closed unsupported execution.
 - [x] Replace fixed RAM/CPU bitmap ceilings with runtime-sized NUMA metadata,
   CPU registries, cpusets/core leases and CPU-assigned joinable worker threads;
   hosted cpusets cover 4,097 CPU IDs and the focused QEMU gate boots 130 CPUs.
-- [ ] Replace model, inference batching and session-state prototypes with
-  production-width implementations.
+- [x] Replace copied four-slot model admission with dynamically registered,
+  immutable, no-copy 64-bit mappings; retain copied admission only for the
+  explicitly named model-v1 fixture.
+- [x] Add 64-bit lifecycle-safe session metadata with append, fork, commit,
+  rollback, snapshot and reference-safe destruction tests.
+- [ ] Replace fixture batching and session metadata with typed model state,
+  prefix COW, ragged batching and exact target-authoritative speculation.
 - [x] Link and execute portable common CRC/block/VFS/engine components on x86_64.
 - [x] Validate x86 controlled exception delivery, a real local-APIC timer
   interrupt, and modern VirtIO/MSI/MSI-X PCI capability discovery under QEMU.
-- [ ] Port EL0, AP startup/scheduling, PCI VirtIO drivers, security and telemetry for full
+- [x] Start all MADT-discovered x86 APs through an OS-owned trampoline and
+  dispatch deterministic IPI work with dynamically sized CPU records.
+- [x] Add an OS-owned x86 GDT/TSS, a user-only mapping and a ring-3 `int 0x80`
+  syscall/exit round trip.
+- [x] Execute modern PCI VirtIO block DMA, MSI-X completion delivery and
+  VirtIO-network DMA transmit under x86 QEMU.
+- [ ] Port the complete ARM EL0 process/thread ABI, receive-side networking,
+  filesystems, SSH/control/security, AI Cell and telemetry services for full
   x86_64 OS parity.
 - [x] Add cumulative/partial ACK TCP sliding-window transmit with up to eight
   retained segments, SACK, fast retransmit, zero-window handling, bounded
@@ -131,7 +146,9 @@ platform criteria and the XAIOS GitHub milestone are complete.
 - [ ] Physically validate AVX2 differentials; add tiled prefill/verification
   kernels, persistent worker pools, bandwidth autotuning, and production
   model-layout integration.
-- [ ] Add native macOS process with Apple CPU and optional Metal backends.
+- [x] Build a native macOS/Linux engine CLI and caller-owned service boundary.
+- [ ] Execute real model plans through the Apple CPU backend and add the
+  optional Metal backend.
 - [ ] Add AVX-512/VNNI and AMX capability canaries.
 - [ ] Add persistent NUMA-aware worker gangs and bandwidth-knee autotuning.
 - [ ] Replace prototype state/batching/speculation with typed state, prefix COW,
@@ -170,7 +187,10 @@ platform criteria and the XAIOS GitHub milestone are complete.
 - [x] Link and execute the portable common-runtime subset in the x86_64 image.
 - [ ] Replace fixed-size physical/virtual/model allocators with sparse,
   multi-terabyte-capable structures and large pages.
-- [ ] Parse x86 MADT/SRAT/SLIT/HMAT and track local/remote bytes.
+- [x] Parse and checksum x86 MADT/SRAT/SLIT/HMAT with dynamic xAPIC/x2APIC and
+  64-bit memory-affinity records; QEMU exposes only the available subset.
+- [ ] Apply SRAT/SLIT/HMAT policy to production allocators and track local and
+  remote inference bytes.
 - [ ] Add asynchronous NVMe multiqueue and direct final-buffer reads.
 - [ ] Dispatch real inference work to secondary CPUs and AI Cell leases.
 - [ ] Add NUMA/machine expert ownership, stable reduction and failure handling.

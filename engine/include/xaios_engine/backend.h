@@ -14,6 +14,8 @@
 #define XAIOS_BACKEND_CAP_VNNI (UINT64_C(1) << 4)
 #define XAIOS_BACKEND_CAP_AMX (UINT64_C(1) << 5)
 #define XAIOS_BACKEND_CAP_METAL (UINT64_C(1) << 6)
+#define XAIOS_BACKEND_CAP_SVE (UINT64_C(1) << 7)
+#define XAIOS_BACKEND_CAP_SVE2 (UINT64_C(1) << 8)
 
 typedef struct xaios_backend_context xaios_backend_context_t;
 

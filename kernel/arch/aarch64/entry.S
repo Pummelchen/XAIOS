@@ -8,6 +8,10 @@
 
 kernel_entry:
   msr daifset, #0xf
+  mrs x1, cpacr_el1
+  orr x1, x1, #0x300000
+  msr cpacr_el1, x1
+  isb
   /* Set VBAR_EL1 to kernel exception vectors immediately, before any
    * C code runs. This ensures HVF (Apple Hypervisor.framework) can
    * properly decode exception syndrome information from the very

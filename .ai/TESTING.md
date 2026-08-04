@@ -41,7 +41,7 @@ Evidence:
 | Hosted engine/model-v2/storage | `make hosted-test` | Every engine, model-v2, ModelFS, block, GPT, VFS, SFTP, adapter or backend change. |
 | Hosted sanitizers | `make hosted-sanitizer-test` | Hosted C ownership, parser, storage, and packed-kernel changes. |
 | Production source audit | `make production-source-audit` | Reject unfinished implementation markers in boot, engine, kernel, and userspace source. |
-| Support docs contract | `make docs-check` | README/tracker/readiness support-status changes. |
+| Support docs contract | `make docs-check` | README/tracker/readiness/Wiki model or 20-item platform-status changes. |
 | Smoke gate | `make qemu-smoke` | Most code changes. |
 | ABI contract | `python3 scripts/qemu-abi-contract.py` | Syscall, initfs, contract, model format changes. |
 | Regression | `make qemu-regression-suite` | Broader kernel/userspace changes. |
@@ -52,7 +52,7 @@ Evidence:
 | CPU-AI suite | `make qemu-cpu-ai-suite` | AI runtime/model changes. |
 | Readiness | `make qemu-readiness-gate` | Changes that may affect QEMU readiness. |
 | Full OS RC | `make qemu-full-os-rc` | Release-candidate or hardware-entry decisions. |
-| Core OS aggregate RC | `make qemu-core-os-rc` | All independent hosted and QEMU-testable core gates, including storage crash recovery, SMMUv3 isolation, emulated NVMe, high-core capacity and x86 interrupt delivery. |
+| Core OS aggregate RC | `make qemu-core-os-rc` | All independent hosted and QEMU-testable core gates, including storage crash recovery, SMMUv3 isolation, emulated NVMe, high-core capacity and x86 AP/ring-3/XSAVE/modern-VirtIO bring-up. |
 | High-core capacity | `make qemu-high-core-gate` | Dynamic SMP registry or NUMA CPU-set changes; stops after the >128-CPU capacity invariants to avoid conflating slow TCG late boot with failure. |
 | SMMUv3 isolation | `make qemu-smmu-gate` | DMA mapping, translation fault, revocation, or stream teardown changes. |
 | Emulated NVMe | `make qemu-nvme-gate` | NVMe queue, BAR mapping, command, or block-I/O changes. |
@@ -125,8 +125,9 @@ CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` 
   preserves the combined matrix report by writing a separate x86 report.
 - Future CPU models absent from the installed QEMU are recorded as optional
   skips; every listed model that QEMU provides must pass its boot markers.
-- `make qemu-x86_64-platform-matrix` validates x86 CPU-count reporting across
-  q35/pc, 1-256 vCPUs, xAPIC/x2APIC, constrained/large memory, TCG thread
+- `make qemu-x86_64-platform-matrix` validates x86 CPU-count reporting, AP
+  startup/work, ring-3 syscall entry, XSAVE and focused modern VirtIO operation
+  across q35/pc, 1-256 vCPUs, xAPIC/x2APIC, constrained/large memory, TCG thread
   modes and an opt-in QEMU NVMe PCI inventory.
 - `make qemu-x86_64-repeat-boot` performs bounded repeated x86 smoke boots and
   retains each serial log for nondeterministic-failure diagnosis.

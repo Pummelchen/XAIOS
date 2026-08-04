@@ -75,6 +75,7 @@ TARGETS = [
     "remote-login: self-test passed sessions=6 commands=6 denials=4",
     "threads: runtime initialized capacity=",
     "threads: concurrent scheduler self-test passed threads=",
+    "scheduler: AArch64 SIMD/FP interrupt preservation passed regs=32",
     "model-arena: shared read-only arena self-test passed",
     "ai-kernel: packed no-expand tail self-test passed int4=6 int6=2",
     "nic-conflict-agent",

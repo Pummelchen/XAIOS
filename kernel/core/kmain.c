@@ -385,9 +385,16 @@ void kmain(const xaios_boot_info_t *boot) {
   }
 
   /* Initialize preemptive scheduler infrastructure */
+  scheduler_lock();
   gic_enable_full();
   timer_enable_periodic(XAIOS_SCHEDULER_DEFAULT_TICK_HZ);
   kassert(smp_set_scheduling_enabled(smp_cpu_id(), 1U) == XAIOS_OK);
+  uint64_t simd_irq_status = aarch64_simd_irq_self_test();
+  klog("scheduler: AArch64 SIMD/FP interrupt canary status=%lu\n",
+       simd_irq_status);
+  kassert(simd_irq_status == 1U);
+  scheduler_unlock();
+  klog("scheduler: AArch64 SIMD/FP interrupt preservation passed regs=32\n");
   smp_release_secondary_schedulers();
   xaios_thread_self_test();
   klog("kernel: preemptive scheduler infrastructure enabled\n");

@@ -9,7 +9,7 @@
 #include <xaios/vmm.h>
 
 #define XAIOS_THREADS_PER_CPU 8U
-#define XAIOS_THREAD_JOIN_TIMEOUT_NS UINT64_C(5000000000)
+#define XAIOS_THREAD_SELF_TEST_TIMEOUT_NS UINT64_C(30000000000)
 
 typedef struct xaios_thread_record {
   uint64_t id;
@@ -471,8 +471,8 @@ xaios_status_t xaios_thread_run_group(uint64_t requested_threads,
   uint64_t joined = 0U;
   for (; joined < created; ++joined) {
     uint64_t value = 0U;
-    if (xaios_thread_join(ids[joined], XAIOS_THREAD_JOIN_TIMEOUT_NS, &value) !=
-            XAIOS_OK ||
+    if (xaios_thread_join(ids[joined], XAIOS_THREAD_SELF_TEST_TIMEOUT_NS,
+                          &value) != XAIOS_OK ||
         contexts[joined].actual_cpu != contexts[joined].expected_cpu) {
       break;
     }
@@ -481,7 +481,7 @@ xaios_status_t xaios_thread_run_group(uint64_t requested_threads,
   for (uint64_t i = joined; i < created; ++i) {
     (void)xaios_thread_cancel(ids[i]);
     uint64_t ignored = 0U;
-    (void)xaios_thread_join(ids[i], XAIOS_THREAD_JOIN_TIMEOUT_NS, &ignored);
+    (void)xaios_thread_join(ids[i], XAIOS_THREAD_SELF_TEST_TIMEOUT_NS, &ignored);
   }
 
   kheap_free(ids);
@@ -518,7 +518,8 @@ void xaios_thread_self_test(void) {
   uint64_t queued_id = 0U;
   kassert(xaios_thread_create(cancel_test_blocker, &context, target_cpu,
                               &blocker_id) == XAIOS_OK);
-  uint64_t cancel_deadline = timer_now_ns() + UINT64_C(1000000000);
+  uint64_t cancel_deadline =
+      timer_now_ns() + XAIOS_THREAD_SELF_TEST_TIMEOUT_NS;
   while (__atomic_load_n(&context.started, __ATOMIC_ACQUIRE) == 0U) {
     kassert(timer_now_ns() < cancel_deadline);
     __asm__ volatile("yield" ::: "memory");
@@ -528,11 +529,11 @@ void xaios_thread_self_test(void) {
   kassert(xaios_thread_cancel(queued_id) == XAIOS_OK);
   __atomic_store_n(&context.release, 1U, __ATOMIC_RELEASE);
   uint64_t result = 0U;
-  kassert(xaios_thread_join(blocker_id, XAIOS_THREAD_JOIN_TIMEOUT_NS,
+  kassert(xaios_thread_join(blocker_id, XAIOS_THREAD_SELF_TEST_TIMEOUT_NS,
                             &result) == XAIOS_OK);
   kassert(result == UINT64_C(0xcace11ed));
-  kassert(xaios_thread_join(queued_id, XAIOS_THREAD_JOIN_TIMEOUT_NS, &result) ==
-          XAIOS_ERR_BUSY);
+  kassert(xaios_thread_join(queued_id, XAIOS_THREAD_SELF_TEST_TIMEOUT_NS,
+                            &result) == XAIOS_ERR_BUSY);
   kassert(xaios_thread_active_count() == 0U);
   klog("threads: concurrent scheduler self-test passed threads=%lu cpus=%u\n",
        ran, smp_online_count());

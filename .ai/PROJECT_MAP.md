@@ -14,10 +14,10 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 
 | Path | Role |
 |---|---|
-| `boot/uefi/` | AArch64 UEFI loader, PE/COFF build, handoff to kernel. |
+| `boot/uefi/` | AArch64/x86_64 UEFI loader, PE/COFF builds, ACPI/DT handoff and x86 AP-trampoline reservation. |
 | `kernel/` | Freestanding kernel source. |
 | `userspace/` | EL0 runtime, init/service manager, apps, worker, SSH daemon. |
-| `engine/` | Portable C99 inference boundary, model-v2 reader, signed ModelFS reader and model-file streaming API. |
+| `engine/` | Portable C99 inference/service boundary, model-v2 reader, signed ModelFS reader, immutable model/session ownership and direct asynchronous range-I/O API. |
 | `tests/model_v2/` | Hosted C/Python model-v2 and scalar-backend tests. |
 | `tests/model_volume/` | ModelFS lifecycle, recovery, corruption, sparse >100 GiB, and Python-writer/C-reader tests. |
 | `tests/storage/` | Hosted block, GPT, VFS, and 64-bit SFTP packet tests. |
@@ -36,7 +36,8 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 
 | Path | Main responsibility |
 |---|---|
-| `kernel/arch/aarch64/` | Assembly entry, exception vectors, timer, GIC, MMU, SMP, PCI/SMMU/RTC/watchdog. |
+| `kernel/arch/aarch64/` | Assembly entry, FP/SIMD-preserving exception vectors, virtual timer, GIC, MMU, SMP, PCI/SMMU/RTC/watchdog. |
+| `kernel/arch/x86_64/` | UEFI entry, ACPI topology, GDT/TSS/ring-3 transition, AP trampoline/IPI work, XSAVE, local APIC and focused modern VirtIO/MSI-X operation. |
 | `kernel/core/` | `kmain()`, logging, telemetry, panic/assert, stack canaries. |
 | `kernel/mm/` | PMM, NUMA, VMM support, heap/arena, ELF loader. |
 | `kernel/dev/virtio/`, `kernel/dev/nvme.c`, `kernel/dev/block_device.c` | VirtIO transport/drivers, focused QEMU NVMe path, and backend-neutral 64-bit block registry. |
@@ -80,6 +81,7 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 - ModelFS administrator: `tools/xaios_model_volume.py`
 - ModelFS guest interoperability: `scripts/qemu-model-sftp-gate.py`
 - Portable engine APIs: `engine/include/xaios_engine/`
+- Native engine CLI: `tools/xaios_engine_cli.c`, `make engine-cli`
 - Hosted engine/storage tests: `tests/model_v2/`, `tests/model_volume/`, `tests/storage/`
 
 ## External dependencies

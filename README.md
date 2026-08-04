@@ -56,7 +56,11 @@ opt-in; exact target-model semantics are the default.
 ## Current implementation
 
 - AArch64 UEFI/QEMU boot, freestanding kernel, EL0 userspace, VirtIO devices,
-  filesystem, network, capability, AI Cell and telemetry fixtures.
+  filesystem, network, capability, AI Cell and telemetry fixtures. Runtime CPU
+  discovery has no project-level core-count ceiling. Live timer interrupts
+  preserve q0-q31 plus FPCR/FPSR through the FP/SIMD interrupt context, and
+  joinable worker groups run on secondary CPUs. This is emulator correctness
+  evidence, not ARM server scalability.
 - Signed redundant A/B system-volume metadata, streamed update delivery,
   activation, failed-boot fallback and rollback correctness gates. Production
   key custody and physical power-loss testing remain separate requirements.
@@ -94,7 +98,11 @@ opt-in; exact target-model semantics are the default.
   experimental AArch64 NEON backend is selected only after a known-answer
   canary and passes native scalar differential/tail tests. An experimental
   x86 AVX2 path passes INT4/INT6 known-answer execution under QEMU TCG; physical
-  x86 validation is still required.
+  x86 validation is still required. `make engine-cli` builds the same boundary
+  as native macOS/Linux `build/hosted/xaios-engine` with `probe`, `inspect`, and
+  fail-closed `serve` commands. Caller-owned service registries provide
+  immutable reader-backed admission, direct async range I/O and 64-bit session
+  append/fork/commit/rollback; transformer execution remains unsupported.
 - A streaming model-v2 writer under `tools/xaios_model_v2.py` that does not keep
   weight payloads proportional to package size in memory.
 - A versioned `xaios.control.v1` boundary and shared `xaiosctl` client for
@@ -124,11 +132,18 @@ opt-in; exact target-model semantics are the default.
   100+ GiB transfer, trusted-replica repair, and physical-device
   durability/performance validation remain incomplete.
 - The x86_64 QEMU image links and executes shared CRC, block-device, VFS,
-  architecture-registry, scalar-backend and packed-engine code. Its gate now
-  proves a controlled exception round trip, actual local-APIC timer interrupt,
-  and modern VirtIO/MSI/MSI-X PCI capability discovery. EL0 userspace, AP
-  startup and scheduling, PCI VirtIO drivers, security/telemetry integration,
-  and full OS parity remain pending and are reported as such by the x86 gate.
+  architecture-registry, scalar-backend and packed-engine code. It owns its
+  GDT/TSS and AP trampoline, passes a controlled exception round trip and a
+  real local-APIC timer interrupt, starts all enabled MADT CPUs with dynamic
+  records and stacks, dispatches IPI worker jobs, completes a ring-3 `int 0x80`
+  round trip, and validates XSAVE/XRSTOR. ACPI parsing covers
+  MADT/SRAT/SLIT/HMAT.
+  The PCI path maps QEMU's high MMIO aperture, reads the boot disk through a
+  modern VirtIO block DMA queue, receives MSI-X completion, and completes
+  network TX. Full x86 service parity remains open: userspace/thread ABI parity,
+  RX networking and SSH, mounted filesystems, x86 NVMe operation, security, AI
+  Cell and telemetry remain pending; the x86 gate continues to report full
+  parity as false.
 
 The retired GGUF converter emitted packages incompatible with the model-v1
 reader and has been made fail-closed. `tools/create_xaios_v1_fixture.py` exists
@@ -197,11 +212,14 @@ telemetry and AI Cell admission. The portable engine owns package parsing,
 tokenizers/templates, architecture adapters, execution plans, sampling,
 session state, batching, expert residency, speculation and backend selection.
 
-The same engine is intended to run as an XAIOS service and as native macOS and
-Linux processes. Scalar packed kernels and an experimental Apple CPU/NEON
+The same engine boundary builds as an XAIOS component and as a native macOS or
+Linux process. Scalar packed kernels and an experimental Apple CPU/NEON
 kernel backend plus an experimental x86 AVX2 path now exist; they do not execute
 a complete model and have no performance artifact. Metal and Xeon
-AVX-512/VNNI/AMX with NUMA-aware expert placement remain unimplemented.
+AVX-512/VNNI/AMX with NUMA-aware expert placement remain unimplemented. Generic
+ARM server scope is UEFI plus an SBSA-style PSCI/GICv3 platform with discovered
+topology; only QEMU `virt` executes today. SVE/SVE2 are fail-closed capability
+IDs and roadmap targets, not implemented backends.
 
 ## Build and validation
 
@@ -210,6 +228,7 @@ firmware. See [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md).
 
 ```sh
 make bootstrap
+make engine-cli
 make compile-check
 make hosted-test
 make hosted-sanitizer-test
@@ -236,6 +255,10 @@ has the same host requirements. The focused high-core gate boots 130 emulated
 CPUs only far enough to verify runtime-sized SMP and NUMA metadata; it is not a
 scalability or performance benchmark.
 
+The authoritative 20-item platform parity status, including physical-only
+Apple and Intel gates, is
+[`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json).
+
 ## Documentation
 
 - [Model implementation roadmap](./docs/QWEN-K3-IMPLEMENTATION-ROADMAP.md)
@@ -245,6 +268,7 @@ scalability or performance benchmark.
 - [xaios.model.v2 specification](./docs/MODEL-V2-SPECIFICATION.md)
 - [Architecture adapters](./docs/ARCHITECTURE-ADAPTERS.md)
 - [Hardware backends](./docs/HARDWARE-BACKENDS.md)
+- [Portable engine service](./docs/ENGINE-SERVICE.md)
 - [Benchmark evidence contract](./docs/BENCHMARK-CONTRACT.md)
 - [OS architecture](./docs/ARCHITECTURE.md)
 - [API](./docs/API.md)

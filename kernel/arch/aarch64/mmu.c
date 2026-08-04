@@ -441,6 +441,30 @@ xaios_status_t vmm_translate(uint64_t virtual_address, uint64_t *physical_addres
   return descriptor_to_flags(virtual_address, l3_desc, flags);
 }
 
+xaios_status_t vmm_validate_range_flags(uint64_t virtual_address, uint64_t size,
+                                        uint32_t required_flags,
+                                        uint32_t forbidden_flags) {
+  if (size == 0U || size - 1U > UINT64_MAX - virtual_address) {
+    return XAIOS_ERR_INVALID;
+  }
+  uint64_t page = align_down(virtual_address, PAGE_SIZE);
+  uint64_t last = align_down(virtual_address + size - 1U, PAGE_SIZE);
+  for (;;) {
+    uint64_t physical = 0U;
+    uint32_t flags = 0U;
+    if (vmm_translate(page, &physical, &flags) != XAIOS_OK ||
+        (flags & required_flags) != required_flags ||
+        (flags & forbidden_flags) != 0U) {
+      return XAIOS_ERR_INVALID;
+    }
+    (void)physical;
+    if (page == last) break;
+    if (page > UINT64_MAX - PAGE_SIZE) return XAIOS_ERR_INVALID;
+    page += PAGE_SIZE;
+  }
+  return XAIOS_OK;
+}
+
 xaios_status_t vmm_map_page(uint64_t virtual_address, uint64_t physical_address,
                            uint32_t flags) {
   if ((virtual_address & (PAGE_SIZE - 1)) != 0 ||
@@ -506,6 +530,10 @@ void vmm_self_test(void) {
   kassert(translated == (uint64_t)(uintptr_t)page);
   kassert((flags & XAIOS_VMM_USER) != 0);
   kassert((flags & XAIOS_VMM_WRITABLE) != 0);
+  kassert(vmm_validate_range_flags(
+              va, 16U, XAIOS_VMM_PRESENT | XAIOS_VMM_USER, 0U) == XAIOS_OK);
+  kassert(vmm_validate_range_flags(va, 16U, XAIOS_VMM_PRESENT,
+                                   XAIOS_VMM_WRITABLE) == XAIOS_ERR_INVALID);
   kassert(vmm_validate_user_buffer(va, 16, XAIOS_VMM_WRITABLE) == XAIOS_OK);
   kassert(vmm_unmap_page(va) == XAIOS_OK);
   kassert(vmm_translate(va, &translated, &flags) == XAIOS_ERR_INVALID);

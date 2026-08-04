@@ -88,6 +88,42 @@ jobs:
             build/uefi/BOOTAA64.EFI
           retention-days: 7
 
+  x86-bring-up:
+    name: x86_64 Bring-up
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install x86_64 QEMU dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld qemu-system-x86 ovmf mtools python3
+
+      - name: Run SMP x86_64 smoke
+        run: make qemu-x86_64-smoke
+        env:
+          XAIOS_QEMU_X86_SMOKE_TIMEOUT: "120"
+
+      - name: Run conservative FXSAVE fallback
+        run: python3 scripts/qemu-x86_64-smoke.py
+        env:
+          XAIOS_QEMU_X86_CPU: qemu64
+          XAIOS_QEMU_X86_SMP: "1"
+          XAIOS_QEMU_X86_MEMORY: 512M
+          XAIOS_QEMU_X86_SMOKE_TIMEOUT: "120"
+
+      - name: Upload x86_64 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: x86_64-bring-up-artifacts
+          path: |
+            build/xaios-x86_64.img
+            build/kernel-x86_64/kernel.elf
+            build/uefi-x86_64/BOOTX64.EFI
+          if-no-files-found: ignore
+          retention-days: 7
+
   core-os-release-candidate:
     name: Core OS Aggregate RC
     runs-on: ubuntu-latest

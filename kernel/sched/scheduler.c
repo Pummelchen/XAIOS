@@ -388,6 +388,7 @@ static void periodic_load_balance(uint32_t this_cpu) {
 }
 
 void scheduler_init(void) {
+  kassert(sizeof(xaios_context_frame_t) == XAIOS_CONTEXT_FRAME_SIZE);
   /* Initialize per-CPU task tables */
   uint32_t online = smp_online_count();
   g_cpu_capacity = smp_capacity();

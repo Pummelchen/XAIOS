@@ -1,6 +1,6 @@
 # Model Support Roadmap
 
-Last updated: 2026-08-02.
+Last updated: 2026-08-04.
 
 This page mirrors the repository roadmap. The authoritative status and delivery
 sequence source is
@@ -38,9 +38,13 @@ physical-hardware gates pass.
 
 ### XAIOS
 
-Complete the portable service boundary, production-width memory/NUMA/storage
-paths, worker dispatch, session state, x86_64 common runtime, release/security
-gates, and physical-hardware entry evidence before model implementation begins.
+Complete the production-width memory/NUMA/storage paths, typed model state,
+full x86_64 service parity, release/security gates, and physical-hardware entry
+evidence before model implementation begins. The portable service boundary,
+no-copy model mappings, direct range I/O, ARM worker and FP/SIMD context gates,
+and x86 AP/ring-3/XSAVE/modern-VirtIO foundations are implemented at their
+documented QEMU/hosted boundary. See
+[`docs/PLATFORM-SUPPORT.json`](https://github.com/Pummelchen/XAIOS/blob/main/docs/PLATFORM-SUPPORT.json).
 
 ### Qwen 3.6 27B
 

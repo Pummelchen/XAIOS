@@ -19,7 +19,10 @@ typedef enum xaios_engine_status {
   XAIOS_ENGINE_ERR_UNSUPPORTED = -3,
   XAIOS_ENGINE_ERR_CHECKSUM = -4,
   XAIOS_ENGINE_ERR_OVERFLOW = -5,
-  XAIOS_ENGINE_ERR_CAPABILITY = -6
+  XAIOS_ENGINE_ERR_CAPABILITY = -6,
+  XAIOS_ENGINE_ERR_NOT_FOUND = -7,
+  XAIOS_ENGINE_ERR_BUSY = -8,
+  XAIOS_ENGINE_ERR_CANCELLED = -9
 } xaios_engine_status_t;
 
 typedef enum xaios_model_v2_hash_algorithm {

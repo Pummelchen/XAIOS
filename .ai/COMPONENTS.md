@@ -85,9 +85,15 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 ## CPU-AI runtime and AI Cell
 
 - Responsibility: CPU-only inference runtime/model handling and resource isolation.
-- Key files: `kernel/runtime/cpu_ai_runtime.c`, `kernel/runtime/model_arena.c`, `kernel/runtime/ai_cell.c`, `tools/convert_gguf_to_xaios.py`.
-- Risks: model format mismatch, unsupported hardware-performance claims, arena/KV-cache accounting bugs.
-- Validate: CPU-AI suite, AI Cell gate, smoke.
+- Key files: `kernel/runtime/cpu_ai_runtime.c`, `kernel/runtime/model_arena.c`,
+  `kernel/runtime/ai_cell.c`, `engine/include/xaios_engine/service.h`,
+  `engine/src/service.c`, `tools/convert_gguf_to_xaios.py`.
+- Current boundary: copied admission is model-v1 fixture-only; production
+  mappings/readers are immutable, no-copy and 64-bit. Hosted session lifecycle
+  metadata and direct async range I/O do not yet implement typed model state.
+- Risks: model format mismatch, unsupported hardware-performance claims,
+  mapping/session lifetime and KV/cache accounting bugs.
+- Validate: hosted tests and sanitizers, CPU-AI suite, AI Cell gate, smoke.
 
 ## Build/gate system
 
