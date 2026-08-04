@@ -140,7 +140,20 @@ jobs:
       - name: Install AArch64 and x86_64 test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld qemu-system-arm qemu-system-x86 qemu-efi-aarch64 ovmf mtools python3 python3-cryptography
+          sudo apt-get install -y build-essential clang git libfdt-dev libglib2.0-dev libpixman-1-dev libslirp-dev lld ninja-build ovmf mtools pkg-config python3 python3-cryptography python3-venv qemu-efi-aarch64 qemu-system-arm qemu-system-x86 zlib1g-dev
+
+      - name: Restore pinned SMMUv3 test QEMU
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/xaios-qemu-smmu
+          key: qemu-iommu-testdev-${{ runner.os }}-${{ runner.arch }}-6ce361b02c825b4a12a9684c47342859ee967cb2-v1
+
+      - name: Provision SMMUv3 test QEMU
+        run: |
+          scripts/provision-qemu-smmu-testdev.sh
+          echo "XAIOS_QEMU_SMMU=${XAIOS_QEMU_SMMU_ROOT}/6ce361b02c825b4a12a9684c47342859ee967cb2/build/qemu-system-aarch64" >> "$GITHUB_ENV"
+        env:
+          XAIOS_QEMU_SMMU_ROOT: ${{ runner.temp }}/xaios-qemu-smmu
 
       - name: Run aggregate core OS gate
         run: make qemu-core-os-rc

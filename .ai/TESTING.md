@@ -73,7 +73,7 @@ GitHub Actions workflow `.github/workflows/ci.yml` runs:
 - the independent `make qemu-docker-network-suite` Debian interoperability
   job, with logs, JSON, and packet capture uploaded even on failure.
 
-CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` for QEMU smoke/regression jobs.
+CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` for QEMU smoke/regression jobs. The aggregate core-OS job additionally builds upstream QEMU commit `6ce361b02c825b4a12a9684c47342859ee967cb2` and verifies its test-only `iommu-testdev`, because current Ubuntu and Debian distro QEMU builds do not provide the device required by the translated SMMUv3 isolation gate. `XAIOS_QEMU_SMMU` limits this override to that focused gate; other aggregate scenarios use the distro emulator. The exact-key Actions cache avoids rebuilding the pinned emulator after a successful provision.
 
 ## Focused testing guidance
 

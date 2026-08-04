@@ -79,7 +79,7 @@ ID; destructive target operations also require exact confirmation.
 | SSH bridge | `make xaios-ssh-bridge` |
 | Connect to local SSH bridge | `ssh -p 2222 admin@localhost` |
 
-`run-qemu-aarch64.sh` supports environment overrides such as `XAIOS_AAVMF_CODE`, `XAIOS_QEMU_ACCEL`, `XAIOS_QEMU_CPU`, `XAIOS_QEMU_MACHINE`, `XAIOS_QEMU_MEMORY`, `XAIOS_QEMU_SMP`, `XAIOS_QEMU_HOSTFWD_PORT`, `XAIOS_QEMU_HOSTFWD_UDP_PORT`, `XAIOS_QEMU_NET_SOCKET_HOST`, `XAIOS_QEMU_NET_SOCKET_PORT`, and `XAIOS_QEMU_NET_SOCKET_PORT_2`.
+`run-qemu-aarch64.sh` supports environment overrides such as `XAIOS_QEMU`, `XAIOS_AAVMF_CODE`, `XAIOS_QEMU_ACCEL`, `XAIOS_QEMU_CPU`, `XAIOS_QEMU_MACHINE`, `XAIOS_QEMU_MEMORY`, `XAIOS_QEMU_SMP`, `XAIOS_QEMU_HOSTFWD_PORT`, `XAIOS_QEMU_HOSTFWD_UDP_PORT`, `XAIOS_QEMU_NET_SOCKET_HOST`, `XAIOS_QEMU_NET_SOCKET_PORT`, and `XAIOS_QEMU_NET_SOCKET_PORT_2`.
 The AArch64 launcher defaults to TCG on every host. HVF remains an explicit,
 experimental `XAIOS_QEMU_ACCEL=hvf` override because current QEMU/HVF exception
 handling can abort on Apple Silicon.
@@ -117,6 +117,15 @@ For direct IPv6/TCP from a Mac client, run QEMU with
 | SMMUv3 isolation | `make qemu-smmu-gate` | QEMU translated DMA, fault, revocation and teardown correctness. |
 | Emulated NVMe | `make qemu-nvme-gate` | QEMU admin/I/O queue identify, write, flush, read and host backing-byte verification. |
 | System metadata crash recovery | `make qemu-storage-crash-test` | Kills QEMU at both redundant metadata write points and verifies recovery after reboot. |
+
+The translated SMMUv3 gate requires QEMU's test-only `iommu-testdev`, introduced
+by upstream commit `6ce361b02c825b4a12a9684c47342859ee967cb2`. CI runs
+`scripts/provision-qemu-smmu-testdev.sh` to build and verify that exact revision;
+ordinary distro QEMU packages remain selected for gates that do not require this
+device. The provisioner needs Git, Ninja, a C build toolchain, Python virtual
+environment support, GLib, Pixman, libfdt, libslirp and zlib development
+packages. `XAIOS_QEMU_SMMU` selects the focused gate binary without replacing
+the distro emulator used by the aggregate gate's other scenarios.
 
 ## Format/lint/typecheck
 

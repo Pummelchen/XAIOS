@@ -255,6 +255,12 @@ has the same host requirements. The focused high-core gate boots 130 emulated
 CPUs only far enough to verify runtime-sized SMP and NUMA metadata; it is not a
 scalability or performance benchmark.
 
+The translated SMMUv3 isolation gate requires QEMU's test-only
+`iommu-testdev`. Aggregate CI builds and caches the exact upstream QEMU commit
+`6ce361b02c825b4a12a9684c47342859ee967cb2` through
+`scripts/provision-qemu-smmu-testdev.sh`; it does not silently skip this gate
+when the distro emulator lacks the device.
+
 The authoritative 20-item platform parity status, including physical-only
 Apple and Intel gates, is
 [`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json).

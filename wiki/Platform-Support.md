@@ -23,6 +23,10 @@ and ABI evidence only.
 - Production model registration retains immutable readers or no-copy 64-bit
   mappings. Direct aligned range I/O and lifecycle-safe 64-bit session metadata
   pass hosted tests. The copied model arena remains fixture-only.
+- Aggregate CI pins upstream QEMU commit
+  `6ce361b02c825b4a12a9684c47342859ee967cb2` for the translated SMMUv3 gate,
+  verifies its test-only `iommu-testdev`, and fails rather than skipping when
+  that device is unavailable.
 
 ## Deliberate Open Boundaries
 

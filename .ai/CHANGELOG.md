@@ -12,6 +12,11 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 
 ## 2026-08-04 - remaining QEMU core-OS tranche
 
+- Pinned the aggregate CI SMMUv3 gate to upstream QEMU commit
+  `6ce361b02c825b4a12a9684c47342859ee967cb2`, added a fail-closed provisioner
+  for its test-only `iommu-testdev`, and made the AArch64 launcher honor an
+  explicit validated `XAIOS_QEMU` binary override.
+
 - Expanded VirtIO block to eight queued requests and negotiated event-index and
   indirect descriptors for block/network; the modern net header is 12 bytes.
 - Added emulated-NVMe admin/I/O queue, SMMUv3 translated-DMA/revocation,

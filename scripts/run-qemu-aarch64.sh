@@ -83,15 +83,23 @@ print_command() {
   printf '\n'
 }
 
-QEMU_PREFIX="$(brew_prefix qemu)"
-QEMU_BIN=""
-if [ "$QEMU_PREFIX" != "" ]; then
-  QEMU_BIN="$QEMU_PREFIX/bin"
-fi
+if [ "${XAIOS_QEMU:-}" != "" ]; then
+  if [ ! -x "$XAIOS_QEMU" ]; then
+    printf '%s\n' "error: XAIOS_QEMU is not executable: $XAIOS_QEMU" >&2
+    exit 1
+  fi
+  qemu="$XAIOS_QEMU"
+else
+  QEMU_PREFIX="$(brew_prefix qemu)"
+  QEMU_BIN=""
+  if [ "$QEMU_PREFIX" != "" ]; then
+    QEMU_BIN="$QEMU_PREFIX/bin"
+  fi
 
-if ! qemu="$(find_tool qemu-system-aarch64 "$QEMU_BIN/qemu-system-aarch64")"; then
-  printf '%s\n' "error: qemu-system-aarch64 not found. Install with: brew install qemu" >&2
-  exit 1
+  if ! qemu="$(find_tool qemu-system-aarch64 "$QEMU_BIN/qemu-system-aarch64")"; then
+    printf '%s\n' "error: qemu-system-aarch64 not found. Install with: brew install qemu" >&2
+    exit 1
+  fi
 fi
 
 if ! firmware="$(find_aavmf_firmware)"; then
@@ -139,6 +147,20 @@ case "$iommu" in
     exit 2
     ;;
 esac
+
+if [ "$iommu" = "smmuv3" ]; then
+  if ! qemu_devices="$("$qemu" -device help 2>&1)"; then
+    printf '%s\n' "error: selected QEMU could not run the SMMUv3 device probe" >&2
+    printf '%s\n' "$qemu_devices" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$qemu_devices" |
+       grep -F 'name "iommu-testdev"' >/dev/null; then
+    printf '%s\n' \
+      "error: selected QEMU does not provide iommu-testdev required by the SMMUv3 gate" >&2
+    exit 1
+  fi
+fi
 
 if [ "$net_socket_port_2" != "none" ] && [ "$net_socket_port" = "none" ]; then
   printf '%s\n' "error: XAIOS_QEMU_NET_SOCKET_PORT_2 requires XAIOS_QEMU_NET_SOCKET_PORT" >&2

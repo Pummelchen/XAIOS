@@ -42,7 +42,10 @@ def stop_process_group(process: subprocess.Popen[bytes]) -> None:
 
 
 def qemu_version() -> str:
-    qemu = os.environ.get("XAIOS_QEMU", "qemu-system-aarch64")
+    qemu = os.environ.get(
+        "XAIOS_QEMU_SMMU",
+        os.environ.get("XAIOS_QEMU", "qemu-system-aarch64"),
+    )
     try:
         result = subprocess.run(
             [qemu, "--version"], capture_output=True, text=True, timeout=5,
@@ -61,6 +64,9 @@ def main() -> int:
     persistent_image.unlink(missing_ok=True)
 
     env = os.environ.copy()
+    smmu_qemu = env.get("XAIOS_QEMU_SMMU")
+    if smmu_qemu:
+        env["XAIOS_QEMU"] = smmu_qemu
     env.update(
         {
             "XAIOS_QEMU_ACCEL": "tcg",

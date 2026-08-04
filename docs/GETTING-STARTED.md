@@ -48,6 +48,12 @@ The AArch64 launcher defaults to TCG, including on Apple Silicon. HVF is an
 explicit experimental override (`XAIOS_QEMU_ACCEL=hvf`) because current
 QEMU/HVF exception handling may abort instead of returning control to the guest.
 
+`make qemu-smmu-gate` additionally needs the test-only `iommu-testdev` from
+upstream QEMU commit `6ce361b02c825b4a12a9684c47342859ee967cb2`.
+`scripts/provision-qemu-smmu-testdev.sh` builds and verifies that exact revision;
+set `XAIOS_QEMU_SMMU` to its `qemu-system-aarch64` output. Aggregate CI performs
+this provision automatically and keeps the gate mandatory.
+
 ### Automated smoke test
 
 ```sh
