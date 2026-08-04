@@ -52,7 +52,10 @@ find_ovmf_firmware() {
     /usr/local/share/qemu/OVMF_CODE.fd \
     /usr/local/share/edk2/x64/OVMF_CODE.fd \
     /usr/share/qemu/edk2-x86_64-code.fd \
+    /usr/share/OVMF/OVMF_CODE_4M.fd \
     /usr/share/OVMF/OVMF_CODE.fd \
+    /usr/share/ovmf/OVMF.fd \
+    /usr/share/qemu/OVMF.fd \
     /usr/share/edk2/ovmf/OVMF_CODE.fd
   do
     if [ -f "$candidate" ]; then
