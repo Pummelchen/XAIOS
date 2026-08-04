@@ -9,7 +9,9 @@ from typing import Any, Dict, List, Optional, Set
 
 
 CONTRACT_PATH = "contracts/qemu-rc-v1.json"
-REPORT_PATH = "build/qemu-cpu-matrix-report.json"
+REPORT_PATH = os.environ.get(
+    "XAIOS_QEMU_CPU_MATRIX_REPORT", "build/qemu-cpu-matrix-report.json"
+)
 SCHEMA = "xaios.qemu.cpu_matrix.v1"
 BOOT_PROBE_MARKERS = [
     "XAIOS kernel starting",
@@ -229,15 +231,23 @@ def run_x86_tier(tier: Dict[str, Any], supported: Set[str],
 
 def main() -> int:
     os.makedirs("build", exist_ok=True)
+    architecture_filter = os.environ.get("XAIOS_QEMU_CPU_MATRIX_ARCH", "all")
+    if architecture_filter not in {"all", "aarch64", "x86_64"}:
+        print("qemu-cpu-matrix: XAIOS_QEMU_CPU_MATRIX_ARCH must be "
+              "all, aarch64, or x86_64")
+        return 2
+    run_aarch64 = architecture_filter in {"all", "aarch64"}
+    run_x86_64 = architecture_filter in {"all", "x86_64"}
+
     with open(CONTRACT_PATH, "r", encoding="utf-8") as handle:
         contract = json.load(handle)
 
-    qemu_aarch64 = find_qemu("qemu-system-aarch64")
-    qemu_x86_64 = find_qemu("qemu-system-x86_64")
+    qemu_aarch64 = find_qemu("qemu-system-aarch64") if run_aarch64 else None
+    qemu_x86_64 = find_qemu("qemu-system-x86_64") if run_x86_64 else None
     failures: List[str] = []
-    if qemu_aarch64 is None:
+    if run_aarch64 and qemu_aarch64 is None:
         failures.append("qemu-system-aarch64 not found")
-    if qemu_x86_64 is None:
+    if run_x86_64 and qemu_x86_64 is None:
         failures.append("qemu-system-x86_64 not found")
 
     arm_supported = cpu_help_set(qemu_aarch64) if qemu_aarch64 else set()
@@ -273,6 +283,7 @@ def main() -> int:
         "created_unix": int(time.time()),
         "status": "fail" if failures else "pass",
         "contract": CONTRACT_PATH,
+        "architecture_filter": architecture_filter,
         "qemu": {
             "aarch64": qemu_aarch64,
             "x86_64": qemu_x86_64,
