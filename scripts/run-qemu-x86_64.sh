@@ -113,7 +113,8 @@ if [ "$dry_run" -eq 0 ] && [ ! -f "$image" ]; then
 fi
 
 set -- "$qemu" \
-  -machine "$machine,accel=$accel" \
+  -machine "$machine" \
+  -accel "$accel" \
   -cpu "$cpu" \
   -m "$memory" \
   -smp "$smp" \
