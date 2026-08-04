@@ -104,7 +104,7 @@ authoritative in [`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json).
   VirtIO-network DMA transmit under x86 QEMU.
 - [ ] Port the complete ARM EL0 process/thread ABI, receive-side networking,
   filesystems, SSH/control/security, AI Cell and telemetry services for full
-  x86_64 OS parity.
+  x86_64 OS parity ([issue #18](https://github.com/Pummelchen/XAIOS/issues/18)).
 - [x] Add cumulative/partial ACK TCP sliding-window transmit with up to eight
   retained segments, SACK, fast retransmit, zero-window handling, bounded
   reordering and RTO backoff.
@@ -119,7 +119,9 @@ authoritative in [`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json).
 - [x] Add `make qemu-core-os-rc` as a non-skipping aggregate evidence gate.
 - [x] Add `make qemu-high-core-gate` for >128-CPU SMP/NUMA capacity evidence
   without treating TCG duration as physical scalability evidence.
-- [ ] Complete security, release-readiness and physical-hardware entry gates.
+- [ ] Complete security, release-readiness and physical-hardware entry gates
+  ([issue #8](https://github.com/Pummelchen/XAIOS/issues/8) and
+  [issue #19](https://github.com/Pummelchen/XAIOS/issues/19)).
 - [x] Keep QEMU evidence limited to correctness and ABI claims.
 
 Qwen and every other model-family implementation remain gated until these
@@ -203,6 +205,14 @@ platform criteria and the XAIOS GitHub milestone are complete.
 - `make qemu-abi-contract`
 - `make qemu-smoke`
 - `make qemu-regression-suite`
+- `make qemu-x86_64-platform-matrix`
+- `make qemu-smmu-gate`
+- `make qemu-core-os-rc`
+
+All ten independent jobs passed in GitHub Actions run
+[`30886171942`](https://github.com/Pummelchen/XAIOS/actions/runs/30886171942).
+That is the current repository CI baseline, not evidence of physical hardware
+or full x86 service parity.
 
 QEMU gates are correctness evidence only. Physical performance claims require
 immutable artifacts satisfying

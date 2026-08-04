@@ -109,7 +109,8 @@ The QEMU release-candidate gate intentionally does not claim:
 - full x86 ARM-parity services, including the complete userspace/thread ABI,
   RX networking and SSH, mounted filesystems, x86 NVMe operation, security,
   AI Cell and telemetry integration; equivalently, the full ARM
-  userspace/service stack is not yet present in the x86 image;
+  userspace/service stack is not yet present in the x86 image (tracked in
+  [issue #18](https://github.com/Pummelchen/XAIOS/issues/18));
 - production update signing and key management;
 - a production mutable filesystem;
 - production tokenizer/model runtimes beyond the QEMU CPU-only deterministic
@@ -136,6 +137,9 @@ Intel Desktop work can begin only after:
   remains frozen.
 - No QEMU benchmark result is represented as a hardware performance claim.
 - The GitHub Wiki platform pages are updated for the current gate.
+- Physical Apple, ARM server, Intel and Xeon execution evidence is captured
+  under [issue #19](https://github.com/Pummelchen/XAIOS/issues/19); QEMU cannot
+  satisfy that issue.
 
 ## Intel QEMU Deliverables
 

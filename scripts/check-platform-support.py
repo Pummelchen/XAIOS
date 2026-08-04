@@ -21,6 +21,7 @@ SYNC_DOCUMENTS = (
     "wiki/Platform-Support.md",
 )
 ALLOWED_STATUSES = {
+    "ci-tested",
     "implemented-awaiting-ci",
     "qemu-tested",
     "macos-tested",
@@ -92,6 +93,14 @@ def main() -> int:
         for marker in REQUIRED_MARKERS.get(relative, ()):
             if marker not in text:
                 failures.append(f"{relative}: missing status marker: {marker}")
+
+    wiki_status = (ROOT / "wiki/Platform-Support.md").read_text(encoding="utf-8")
+    for entry in recommendations:
+        row = f"| {entry['id']} | {entry['name']} | `{entry['status']}` |"
+        if row not in wiki_status:
+            failures.append(
+                "wiki/Platform-Support.md: missing authoritative row: " + row
+            )
 
     if failures:
         print("platform-support: failed")

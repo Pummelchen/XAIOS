@@ -2,7 +2,7 @@
   "schema": "xaios.platform-support.v1",
   "updated": "2026-08-04",
   "recommendations": [
-    {"id": 1, "name": "Restore green CI", "status": "implemented-awaiting-ci", "evidence": "ARM thread timeout root cause fixed; full local gates must pass before push."},
+    {"id": 1, "name": "Restore green CI", "status": "ci-tested", "evidence": "All ten independent jobs passed in GitHub Actions run 30886171942 after the ARM worker and SMMUv3 gate fixes."},
     {"id": 2, "name": "ARM SMP worker dispatch", "status": "qemu-tested", "evidence": "Joinable worker groups execute on runtime-discovered CPUs; high-core capacity remains correctness-only."},
     {"id": 3, "name": "ARM FP and NEON context preservation", "status": "qemu-tested", "evidence": "IRQ frames preserve q0-q31, FPCR and FPSR; a live virtual-timer canary passes."},
     {"id": 4, "name": "Native macOS and Linux engine executable", "status": "hosted-tested", "evidence": "build/hosted/xaios-engine provides probe, inspect and fail-closed serve commands; the full hosted suite passes on macOS and Debian 13 AArch64."},
@@ -21,6 +21,6 @@
     {"id": 17, "name": "Async direct model range I/O", "status": "hosted-tested", "evidence": "The service submits aligned ranges directly into final caller buffers with completion and cancellation callbacks."},
     {"id": 18, "name": "Lifecycle-safe sessions", "status": "interface-tested", "evidence": "64-bit append, fork, commit, rollback and destruction metadata pass; typed model state, batching and exact speculation await Qwen."},
     {"id": 19, "name": "Documentation reconciliation", "status": "synchronized", "evidence": "README, tracker, readiness, backend and distributed-server documents use this status boundary."},
-    {"id": 20, "name": "GitHub milestone reconciliation", "status": "pending-push", "evidence": "Repository and Wiki text are prepared; live milestone and issue updates occur after validation and push."}
+    {"id": 20, "name": "GitHub milestone reconciliation", "status": "synchronized", "evidence": "The live Project, five milestones, tracker issues, README and Wiki use the same delivery order and explicit parity blockers."}
   ]
 }

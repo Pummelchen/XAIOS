@@ -11,7 +11,7 @@ jobs:
     name: Compile Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install toolchain
         run: |
@@ -25,7 +25,7 @@ jobs:
     name: Hosted Engine & Model v2
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install toolchain
         run: |
@@ -39,7 +39,7 @@ jobs:
     name: Documentation Contract
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Check documentation and contract synchronization
         run: make docs-check
@@ -48,7 +48,7 @@ jobs:
     name: ABI Contract Validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Python 3
         run: |
@@ -62,7 +62,7 @@ jobs:
     name: Build & QEMU Smoke Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install toolchain
         run: |
@@ -79,7 +79,7 @@ jobs:
 
       - name: Upload build artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-artifacts
           path: |
@@ -92,7 +92,7 @@ jobs:
     name: x86_64 Bring-up
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install x86_64 QEMU dependencies
         run: |
@@ -120,7 +120,7 @@ jobs:
 
       - name: Upload x86_64 artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: x86_64-bring-up-artifacts
           path: |
@@ -135,7 +135,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 50
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install AArch64 and x86_64 test dependencies
         run: |
@@ -143,7 +143,7 @@ jobs:
           sudo apt-get install -y build-essential clang git libfdt-dev libglib2.0-dev libpixman-1-dev libslirp-dev lld ninja-build ovmf mtools pkg-config python3 python3-cryptography python3-venv qemu-efi-aarch64 qemu-system-arm qemu-system-x86 zlib1g-dev
 
       - name: Restore pinned SMMUv3 test QEMU
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}/xaios-qemu-smmu
           key: qemu-iommu-testdev-${{ runner.os }}-${{ runner.arch }}-6ce361b02c825b4a12a9684c47342859ee967cb2-v1
@@ -162,7 +162,7 @@ jobs:
 
       - name: Upload aggregate evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: core-os-rc-evidence
           path: |
@@ -182,7 +182,7 @@ jobs:
     name: Regression Suite
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install toolchain
         run: |
@@ -202,7 +202,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install QEMU and OpenSSH dependencies
         run: |
@@ -214,7 +214,7 @@ jobs:
 
       - name: Upload ModelFS evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: qemu-model-sftp-evidence
           path: |
@@ -228,7 +228,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install QEMU build dependencies
         run: |
@@ -240,7 +240,7 @@ jobs:
 
       - name: Upload network evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: qemu-network-evidence
           path: |

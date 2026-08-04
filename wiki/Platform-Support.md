@@ -8,6 +8,33 @@ recommendations is
 This page summarizes that machine-checked source. QEMU results are correctness
 and ABI evidence only.
 
+## Recommendation Status
+
+| # | Recommendation | Status |
+|---:|---|---|
+| 1 | Restore green CI | `ci-tested` |
+| 2 | ARM SMP worker dispatch | `qemu-tested` |
+| 3 | ARM FP and NEON context preservation | `qemu-tested` |
+| 4 | Native macOS and Linux engine executable | `hosted-tested` |
+| 5 | Physical Apple NEON evidence | `physical-gate` |
+| 6 | Generic ARM server scope | `scope-defined` |
+| 7 | SVE and SVE2 | `interface-only` |
+| 8 | x86 AP startup and worker participation | `qemu-tested` |
+| 9 | x86 ring 3, syscalls and user threads | `partial` |
+| 10 | x86 PCI storage, network, NVMe and interrupts | `partial` |
+| 11 | x86 full platform services | `pending` |
+| 12 | MADT, SRAT, SLIT and HMAT | `parser-tested` |
+| 13 | XSAVE and XRSTOR state management | `qemu-tested` |
+| 14 | Physical Intel and Xeon evidence | `physical-gate` |
+| 15 | Inference engine service ownership boundary | `hosted-tested` |
+| 16 | Immutable 64-bit model mappings | `qemu-tested` |
+| 17 | Async direct model range I/O | `hosted-tested` |
+| 18 | Lifecycle-safe sessions | `interface-tested` |
+| 19 | Documentation reconciliation | `synchronized` |
+| 20 | GitHub milestone reconciliation | `synchronized` |
+
+The exact evidence for each row remains in the authoritative JSON source.
+
 ## Implemented QEMU And Hosted Foundations
 
 - AArch64 starts runtime-discovered CPUs, dispatches joinable workers, and
@@ -42,3 +69,8 @@ and ABI evidence only.
 
 The repository tracker and hardware-readiness document retain these open items;
 an interface, parser, or QEMU canary is not a production-support claim.
+
+The remaining implementation blocker for full x86 service parity is tracked in
+[issue #18](https://github.com/Pummelchen/XAIOS/issues/18). Physical Apple, ARM,
+Intel and Xeon validation is tracked separately in
+[issue #19](https://github.com/Pummelchen/XAIOS/issues/19).
