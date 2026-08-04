@@ -42,7 +42,7 @@ static void store_be32(uint8_t *bytes, uint32_t value) {
   bytes[3] = (uint8_t)value;
 }
 
-static void transform(xaios_sha256_context_t *context,
+static void transform(xaios_engine_sha256_context_t *context,
                       const uint8_t block[64]) {
   uint32_t words[64];
   for (uint32_t i = 0; i < 16U; ++i) {
@@ -96,7 +96,7 @@ static void transform(xaios_sha256_context_t *context,
   context->state[7] += h;
 }
 
-void xaios_sha256_init(xaios_sha256_context_t *context) {
+void xaios_engine_sha256_init(xaios_engine_sha256_context_t *context) {
   static const uint32_t initial[8] = {
       UINT32_C(0x6a09e667), UINT32_C(0xbb67ae85), UINT32_C(0x3c6ef372),
       UINT32_C(0xa54ff53a), UINT32_C(0x510e527f), UINT32_C(0x9b05688c),
@@ -106,7 +106,7 @@ void xaios_sha256_init(xaios_sha256_context_t *context) {
   context->block_size = 0;
 }
 
-void xaios_sha256_update(xaios_sha256_context_t *context, const void *data,
+void xaios_engine_sha256_update(xaios_engine_sha256_context_t *context, const void *data,
                          size_t length) {
   const uint8_t *bytes = (const uint8_t *)data;
   context->total_bytes += (uint64_t)length;
@@ -124,19 +124,19 @@ void xaios_sha256_update(xaios_sha256_context_t *context, const void *data,
   }
 }
 
-void xaios_sha256_final(xaios_sha256_context_t *context, uint8_t digest[32]) {
+void xaios_engine_sha256_final(xaios_engine_sha256_context_t *context, uint8_t digest[32]) {
   uint64_t bit_length = context->total_bytes * UINT64_C(8);
   uint8_t one = UINT8_C(0x80);
   uint8_t zero = 0;
-  xaios_sha256_update(context, &one, 1U);
+  xaios_engine_sha256_update(context, &one, 1U);
   while (context->block_size != 56U) {
-    xaios_sha256_update(context, &zero, 1U);
+    xaios_engine_sha256_update(context, &zero, 1U);
   }
   uint8_t length_bytes[8];
   for (uint32_t i = 0; i < 8U; ++i) {
     length_bytes[7U - i] = (uint8_t)(bit_length >> (i * 8U));
   }
-  xaios_sha256_update(context, length_bytes, sizeof(length_bytes));
+  xaios_engine_sha256_update(context, length_bytes, sizeof(length_bytes));
   for (uint32_t i = 0; i < 8U; ++i) {
     store_be32(digest + (i * 4U), context->state[i]);
   }

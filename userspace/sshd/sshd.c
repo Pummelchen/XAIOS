@@ -9,6 +9,10 @@
 #include <xaios_user.h>
 #include <stdarg.h>
 
+#ifndef XAIOS_PASSWORD_AUTH_AVAILABLE
+#define XAIOS_PASSWORD_AUTH_AVAILABLE 0
+#endif
+
 static sshd_user_t g_users[SSHD_MAX_USERS];
 static uint32_t g_user_count = 0;
 
@@ -16,6 +20,82 @@ static sshd_rate_limit_entry_t g_rate_limits[SSHD_RATE_LIMIT_MAX_ENTRIES];
 static uint32_t g_rate_limit_count = 0;
 
 static sshd_stats_t g_server_stats;
+static xaios_admin_config_user_t g_runtime_config;
+static uint32_t g_password_auth_enabled;
+
+static uint64_t fnv1a64_zero_range(const void *data, uint64_t size,
+                                   uint64_t zero_offset,
+                                   uint64_t zero_size) {
+  const uint8_t *bytes = (const uint8_t *)data;
+  uint64_t hash = UINT64_C(1469598103934665603);
+  for (uint64_t i = 0U; i < size; ++i) {
+    uint8_t value = i >= zero_offset && i - zero_offset < zero_size
+                        ? 0U
+                        : bytes[i];
+    hash ^= value;
+    hash *= UINT64_C(1099511628211);
+  }
+  return hash;
+}
+
+static int read_exact_file(const char *path, void *buffer, uint64_t size) {
+  xaios_mfs_stat_user_t stat;
+  if (path == 0 || buffer == 0 || size == 0U ||
+      xaios_fs_stat(path, &stat) != 0 || stat.size != size) {
+    return -1;
+  }
+  int fd = xaios_fs_open(path, XAIOS_MFS_OPEN_READ);
+  if (fd < 0) return -1;
+  int bytes = xaios_fs_read(fd, buffer, size);
+  int close_result = xaios_fs_close(fd);
+  return bytes == (int)size && close_result == 0 ? 0 : -1;
+}
+
+static int config_record_valid(const xaios_admin_config_user_t *config) {
+  uint64_t checksum_offset =
+      (uint64_t)((const uint8_t *)&config->checksum -
+                 (const uint8_t *)config);
+  return config->magic == XAIOS_ADMIN_CONFIG_MAGIC &&
+         config->version == XAIOS_ADMIN_SCHEMA_VERSION &&
+         config->size == sizeof(*config) && config->generation != 0U &&
+         config->max_connections >= 1U &&
+         config->max_connections <= SSH_MAX_CONNECTIONS &&
+         config->max_channels_per_connection >= 1U &&
+         config->max_channels_per_connection <= SSH_CHANNELS_PER_CONNECTION &&
+         config->max_auth_attempts >= 1U &&
+         config->max_auth_attempts <= SSHD_MAX_AUTH_ATTEMPTS &&
+         config->command_rate_per_minute >= 1U &&
+         config->command_rate_per_minute <= 120U &&
+         config->password_auth <= XAIOS_ADMIN_PASSWORD_DEVELOPMENT &&
+         (config->password_auth == XAIOS_ADMIN_PASSWORD_DISABLED ||
+          XAIOS_PASSWORD_AUTH_AVAILABLE != 0) &&
+         config->reserved == 0U &&
+         config->checksum ==
+             fnv1a64_zero_range(config, sizeof(*config), checksum_offset,
+                                sizeof(config->checksum));
+}
+
+static int load_runtime_config(void) {
+  xaios_admin_config_user_t config;
+  if (read_exact_file(XAIOS_ADMIN_CONFIG_PATH, &config, sizeof(config)) != 0 ||
+      !config_record_valid(&config)) {
+    ssh_mem_zero(&config, sizeof(config));
+    return -1;
+  }
+  g_runtime_config = config;
+  g_password_auth_enabled =
+      XAIOS_PASSWORD_AUTH_AVAILABLE != 0 &&
+      config.password_auth == XAIOS_ADMIN_PASSWORD_DEVELOPMENT;
+  return 0;
+}
+
+uint32_t sshd_max_channels_per_connection(void) {
+  return g_runtime_config.max_channels_per_connection;
+}
+
+uint32_t sshd_command_rate_per_minute(void) {
+  return g_runtime_config.command_rate_per_minute;
+}
 
 static void sha256_update_u32(sha256_ctx_t *context, uint32_t value) {
   uint8_t encoded[4];
@@ -370,6 +450,18 @@ static int parse_user_line(const char *line, uint32_t line_len,
 
 static int load_user_database(void) {
   char buffer[4096];
+#if XAIOS_PASSWORD_AUTH_AVAILABLE == 0
+  ssh_mem_zero(g_users, sizeof(g_users));
+  g_user_count = 0U;
+  ssh_log(SSH_LOG_INFO, "Password authentication unavailable in this build\n");
+  return 0;
+#endif
+  if (g_password_auth_enabled == 0U) {
+    ssh_mem_zero(g_users, sizeof(g_users));
+    g_user_count = 0U;
+    ssh_log(SSH_LOG_INFO, "Password authentication disabled by configuration\n");
+    return 0;
+  }
   int result = xaios_read_file(SSHD_USERS_PATH, buffer, sizeof(buffer));
   ssh_mem_zero(g_users, sizeof(g_users));
   g_user_count = 0;
@@ -440,11 +532,15 @@ static int authenticate_password(const char *username, const char *password) {
 
 typedef struct {
   uint8_t key[32];
+  uint8_t fingerprint[32];
+  char principal[XAIOS_ADMIN_PRINCIPAL_MAX];
+  uint32_t role;
   int active;
 } authorized_key_t;
 
 static authorized_key_t g_authorized_keys[MAX_AUTHORIZED_KEYS];
 static uint32_t g_authorized_key_count = 0;
+static uint32_t g_authorized_database_invalid;
 
 static int bytes_equal(const uint8_t *left, const uint8_t *right,
                        uint32_t size) {
@@ -560,8 +656,79 @@ static int parse_authorized_key_line(const char *line, uint32_t line_len,
   return -1;
 }
 
+static int managed_auth_database_valid(
+    const xaios_admin_auth_database_user_t *database) {
+  uint64_t checksum_offset =
+      (uint64_t)((const uint8_t *)&database->checksum -
+                 (const uint8_t *)database);
+  if (database->magic != XAIOS_ADMIN_AUTH_MAGIC ||
+      database->version != XAIOS_ADMIN_SCHEMA_VERSION ||
+      database->header_size !=
+          sizeof(*database) - sizeof(database->keys) -
+              sizeof(database->revoked) ||
+      database->generation == 0U ||
+      database->key_count > XAIOS_ADMIN_MAX_KEYS ||
+      database->revoked_count > XAIOS_ADMIN_MAX_REVOKED_KEYS ||
+      database->checksum !=
+          fnv1a64_zero_range(database, sizeof(*database), checksum_offset,
+                             sizeof(database->checksum))) {
+    return 0;
+  }
+  for (uint32_t i = 0U; i < database->key_count; ++i) {
+    const xaios_admin_key_record_user_t *record = &database->keys[i];
+    uint32_t terminated = 0U;
+    for (uint32_t j = 0U; j < sizeof(record->principal); ++j) {
+      if (record->principal[j] == '\0') {
+        terminated = j != 0U;
+        break;
+      }
+    }
+    uint8_t fingerprint[32];
+    sha256_hash(record->public_key, sizeof(record->public_key), fingerprint);
+    int fingerprint_valid =
+        bytes_equal(fingerprint, record->fingerprint, sizeof(fingerprint));
+    ssh_mem_zero(fingerprint, sizeof(fingerprint));
+    if (terminated == 0U || fingerprint_valid == 0 ||
+        record->role < XAIOS_CONTROL_ROLE_OBSERVER ||
+        record->role > XAIOS_CONTROL_ROLE_ADMIN || record->reserved != 0U) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
 static int load_authorized_keys(void) {
-  if (g_authorized_key_count > 0) return 0;
+  xaios_mfs_stat_user_t stat;
+  ssh_mem_zero(g_authorized_keys, sizeof(g_authorized_keys));
+  g_authorized_key_count = 0U;
+  g_authorized_database_invalid = 0U;
+  if (xaios_fs_stat(XAIOS_ADMIN_AUTH_PATH, &stat) == 0) {
+    xaios_admin_auth_database_user_t database;
+    if (stat.size != sizeof(database) ||
+        read_exact_file(XAIOS_ADMIN_AUTH_PATH, &database, sizeof(database)) !=
+            0 ||
+        !managed_auth_database_valid(&database)) {
+      ssh_mem_zero(&database, sizeof(database));
+      g_authorized_database_invalid = 1U;
+      ssh_log(SSH_LOG_ERROR, "Managed authorized-key database rejected\n");
+      return -1;
+    }
+    for (uint32_t i = 0U; i < database.key_count; ++i) {
+      authorized_key_t *key = &g_authorized_keys[i];
+      ssh_mem_copy(key->key, database.keys[i].public_key, sizeof(key->key));
+      ssh_mem_copy(key->fingerprint, database.keys[i].fingerprint,
+                   sizeof(key->fingerprint));
+      ssh_mem_copy(key->principal, database.keys[i].principal,
+                   sizeof(key->principal));
+      key->role = database.keys[i].role;
+      key->active = 1;
+    }
+    g_authorized_key_count = database.key_count;
+    ssh_mem_zero(&database, sizeof(database));
+    ssh_log(SSH_LOG_INFO, "Loaded %u managed authorized keys\n",
+            g_authorized_key_count);
+    return g_authorized_key_count != 0U ? 0 : -1;
+  }
   char buf[4096];
   int ret = xaios_read_file(AUTHORIZED_KEYS_PATH, buf, sizeof(buf));
   if (ret < 0) {
@@ -569,7 +736,6 @@ static int load_authorized_keys(void) {
     return -1;
   }
   if (ret <= 0) return -1;
-  ssh_mem_zero(g_authorized_keys, sizeof(g_authorized_keys));
   uint32_t line_start = 0;
   uint32_t key_idx = 0;
   for (uint32_t i = 0; i <= (uint32_t)ret && key_idx < MAX_AUTHORIZED_KEYS;
@@ -579,6 +745,25 @@ static int load_authorized_keys(void) {
       if (parse_authorized_key_line(buf + line_start, line_len,
                                     g_authorized_keys[key_idx].key) == 0) {
         g_authorized_keys[key_idx].active = 1;
+        sha256_hash(g_authorized_keys[key_idx].key,
+                    sizeof(g_authorized_keys[key_idx].key),
+                    g_authorized_keys[key_idx].fingerprint);
+        static const char bootstrap[] = "bootstrap-admin";
+        uint32_t principal_length = sizeof(bootstrap) - 1U;
+        ssh_mem_copy(g_authorized_keys[key_idx].principal, bootstrap,
+                     principal_length);
+        if (key_idx != 0U) {
+          uint32_t number = key_idx + 1U;
+          g_authorized_keys[key_idx].principal[principal_length++] = '-';
+          if (number >= 10U) {
+            g_authorized_keys[key_idx].principal[principal_length++] =
+                (char)('0' + number / 10U);
+          }
+          g_authorized_keys[key_idx].principal[principal_length++] =
+              (char)('0' + number % 10U);
+        }
+        g_authorized_keys[key_idx].principal[principal_length] = '\0';
+        g_authorized_keys[key_idx].role = XAIOS_CONTROL_ROLE_ADMIN;
         ++key_idx;
       }
       line_start = i + 1;
@@ -592,12 +777,44 @@ static int load_authorized_keys(void) {
   return (g_authorized_key_count > 0) ? 0 : -1;
 }
 
-static int check_authorized_key(const uint8_t *pubkey) {
+static const authorized_key_t *check_authorized_key(const uint8_t *pubkey) {
   for (uint32_t i = 0; i < g_authorized_key_count; ++i) {
     if (!g_authorized_keys[i].active) continue;
-    if (bytes_equal(g_authorized_keys[i].key, pubkey, 32U)) return 0;
+    if (bytes_equal(g_authorized_keys[i].key, pubkey, 32U)) {
+      return &g_authorized_keys[i];
+    }
   }
-  return -1;
+  return 0;
+}
+
+static int command_starts_with(const char *command, const char *prefix) {
+  uint32_t i = 0U;
+  if (command == 0 || prefix == 0) return 0;
+  while (prefix[i] != '\0') {
+    if (command[i] != prefix[i]) return 0;
+    ++i;
+  }
+  return 1;
+}
+
+int sshd_reload_control_state(const char *command) {
+  if (command_starts_with(command, "xaiosctl config apply ")) {
+    if (load_runtime_config() != 0) return -1;
+    if (load_user_database() != 0) return -1;
+    ssh_log(SSH_LOG_INFO, "Applied SSH runtime configuration generation=%u\n",
+            g_runtime_config.generation);
+  } else if (command_starts_with(command, "xaiosctl auth key add ") ||
+             command_starts_with(command, "xaiosctl auth key remove ")) {
+    if (load_authorized_keys() != 0) return -1;
+  } else if (command_starts_with(command,
+                                 "xaiosctl auth host-key rotate")) {
+    if (ssh_host_key_reload() != 0) return -1;
+    for (uint32_t i = 0U; i < SSH_MAX_CONNECTIONS; ++i) {
+      ssh_connection_t *connection = ssh_conn_by_index(i);
+      if (connection != 0) connection->close_requested = 1U;
+    }
+  }
+  return 0;
 }
 
 /* ---- Rate Limiting ---- */
@@ -608,6 +825,50 @@ static sshd_rate_limit_entry_t *find_rate_limit_entry(
       return &g_rate_limits[i];
     }
   }
+  return 0;
+}
+
+static sshd_rate_limit_entry_t *allocate_rate_limit_entry(
+    const xaios_ip_addr_user_t *client_addr, uint64_t now) {
+  sshd_rate_limit_entry_t *entry = find_rate_limit_entry(client_addr);
+  if (entry != 0) return entry;
+  if (g_rate_limit_count < SSHD_RATE_LIMIT_MAX_ENTRIES) {
+    entry = &g_rate_limits[g_rate_limit_count++];
+  } else {
+    uint32_t oldest = 0U;
+    for (uint32_t i = 1U; i < g_rate_limit_count; ++i) {
+      if (g_rate_limits[i].ban_until <= now &&
+          (g_rate_limits[oldest].ban_until > now ||
+           g_rate_limits[i].last_attempt_time <
+               g_rate_limits[oldest].last_attempt_time)) {
+        oldest = i;
+      }
+    }
+    if (g_rate_limits[oldest].ban_until <= now) {
+      entry = &g_rate_limits[oldest];
+    }
+  }
+  if (entry != 0) {
+    ssh_mem_zero(entry, sizeof(*entry));
+    entry->ip_address = *client_addr;
+  }
+  return entry;
+}
+
+static int record_connection_attempt(
+    const xaios_ip_addr_user_t *client_addr) {
+  uint64_t now = timer_now();
+  sshd_rate_limit_entry_t *entry =
+      allocate_rate_limit_entry(client_addr, now);
+  if (entry == 0) return -1;
+  if (entry->connection_window_start == 0U ||
+      now - entry->connection_window_start >= SSHD_CONNECTION_RATE_WINDOW) {
+    entry->connection_window_start = now;
+    entry->connection_count = 0U;
+  }
+  if (entry->connection_count >= SSHD_CONNECTION_RATE_LIMIT) return -1;
+  ++entry->connection_count;
+  entry->last_attempt_time = now;
   return 0;
 }
 
@@ -624,30 +885,10 @@ static int check_rate_limit(const xaios_ip_addr_user_t *client_addr) {
 }
 
 static void record_auth_failure(const xaios_ip_addr_user_t *client_addr) {
-  sshd_rate_limit_entry_t *entry = find_rate_limit_entry(client_addr);
   uint64_t now = timer_now();
-  if (entry == 0) {
-    if (g_rate_limit_count < SSHD_RATE_LIMIT_MAX_ENTRIES) {
-      entry = &g_rate_limits[g_rate_limit_count++];
-    } else {
-      uint32_t oldest = 0;
-      for (uint32_t i = 1; i < g_rate_limit_count; ++i) {
-        if (g_rate_limits[i].ban_until <= now &&
-            (g_rate_limits[oldest].ban_until > now ||
-             g_rate_limits[i].last_attempt_time <
-                 g_rate_limits[oldest].last_attempt_time)) {
-          oldest = i;
-        }
-      }
-      if (g_rate_limits[oldest].ban_until <= now) entry = &g_rate_limits[oldest];
-    }
-    if (entry != 0) {
-      ssh_mem_zero(entry, sizeof(*entry));
-      entry->ip_address = *client_addr;
-      entry->last_attempt_time = now;
-      entry->failure_count = 1U;
-    }
-  } else {
+  sshd_rate_limit_entry_t *entry =
+      allocate_rate_limit_entry(client_addr, now);
+  if (entry != 0) {
     entry->last_attempt_time = now;
     entry->failure_count++;
     if (entry->failure_count >= SSHD_RATE_LIMIT_MAX_FAILURES) {
@@ -663,8 +904,8 @@ static void record_auth_success(const xaios_ip_addr_user_t *client_addr) {
 
 static int send_auth_failure(ssh_connection_t *conn) {
   uint8_t reject[64];
-  const char *methods = g_user_count == 0U ? "publickey" :
-                                               "publickey,password";
+  const char *methods = g_password_auth_enabled == 0U ? "publickey" :
+                                                        "publickey,password";
   uint32_t methods_len = ssh_str_len(methods);
   reject[0] = SSH_MSG_USERAUTH_FAILURE;
   ssh_write_u32_be(reject + 1U, methods_len);
@@ -1101,7 +1342,7 @@ static int process_connection(ssh_connection_t *conn) {
         return 0;
       }
 
-      if (conn->auth_attempts >= SSHD_MAX_AUTH_ATTEMPTS) {
+      if (conn->auth_attempts >= g_runtime_config.max_auth_attempts) {
         record_auth_failure(&conn->client_addr);
         if (send_auth_failure(conn) != 0) return -1;
         return 0;
@@ -1109,7 +1350,7 @@ static int process_connection(ssh_connection_t *conn) {
 
       /* ---- "password" method ---- */
       if (ssh_str_eq(method, "password")) {
-        if (g_user_count == 0U) {
+        if (g_password_auth_enabled == 0U || g_user_count == 0U) {
           conn->auth_attempts++;
           record_auth_failure(&conn->client_addr);
           if (send_auth_failure(conn) != 0) return -1;
@@ -1137,6 +1378,9 @@ static int process_connection(ssh_connection_t *conn) {
           conn->auth_attempts = 0;
           record_auth_success(&conn->client_addr);
           ssh_log(SSH_LOG_INFO, "Password auth success: '%s'\n", username);
+          conn->principal_role = XAIOS_CONTROL_ROLE_ADMIN;
+          ssh_mem_copy(conn->principal, "password-admin",
+                       sizeof("password-admin"));
           conn->state = SSH_STATE_AUTHENTICATED;
         } else {
           conn->auth_attempts++;
@@ -1185,9 +1429,11 @@ static int process_connection(ssh_connection_t *conn) {
         offset += pubkey_len;
         uint32_t signed_request_len = offset;
 
-        load_authorized_keys();
-
-        if (check_authorized_key(client_pubkey) != 0) {
+        const authorized_key_t *authorized = 0;
+        if (load_authorized_keys() == 0) {
+          authorized = check_authorized_key(client_pubkey);
+        }
+        if (authorized == 0) {
           xaios_log("sshd: presented public key was not authorized\n");
           ssh_log(SSH_LOG_WARN, "Public key not authorized\n");
           conn->auth_attempts++;
@@ -1251,7 +1497,13 @@ static int process_connection(ssh_connection_t *conn) {
                                           sizeof(auth_reply)) != 0) return -1;
           conn->auth_attempts = 0;
           record_auth_success(&conn->client_addr);
-          ssh_log(SSH_LOG_INFO, "Public key auth success\n");
+          conn->principal_role = authorized->role;
+          ssh_mem_copy(conn->principal, authorized->principal,
+                       sizeof(conn->principal));
+          ssh_mem_copy(conn->principal_fingerprint, authorized->fingerprint,
+                       sizeof(conn->principal_fingerprint));
+          ssh_log(SSH_LOG_INFO, "Public key auth success principal=%s role=%u\n",
+                  conn->principal, (uint64_t)conn->principal_role);
           conn->state = SSH_STATE_AUTHENTICATED;
         } else {
           xaios_log("sshd: public key signature verification failed\n");
@@ -1359,11 +1611,17 @@ int sshd_run(void) {
   }
   ssh_log(SSH_LOG_INFO, "SSH crypto self-test passed\n");
 
+  if (load_runtime_config() != 0) {
+    ssh_log(SSH_LOG_ERROR, "SSH runtime configuration rejected\n");
+    return -1;
+  }
+
   if (load_user_database() != 0) {
     ssh_log(SSH_LOG_ERROR, "SSH user database rejected\n");
     return -1;
   }
-  load_authorized_keys();
+  (void)load_authorized_keys();
+  if (g_authorized_database_invalid != 0U) return -1;
 
   ssh_mem_zero(&g_server_stats, sizeof(g_server_stats));
 
@@ -1388,6 +1646,7 @@ int sshd_run(void) {
           (uint64_t)SSH_MAX_CONNECTIONS);
 
   ssh_channel_init();
+  xaios_log("sshd: Phase 2 runtime ready\n");
 
   for (;;) {
     for (uint32_t i = 0; i < 4U; ++i) {
@@ -1419,9 +1678,15 @@ int sshd_run(void) {
         break;
       }
 
+      if (record_connection_attempt(&peer_addr) != 0) {
+        ssh_log(SSH_LOG_WARN, "Connection rate limit reached\n");
+        xaios_net_close(conn_fd);
+        continue;
+      }
+
       uint32_t active = __atomic_load_n(&g_server_stats.active_connections,
                                          __ATOMIC_ACQUIRE);
-      if (active >= SSH_MAX_CONNECTIONS) {
+      if (active >= g_runtime_config.max_connections) {
         ssh_log(SSH_LOG_WARN, "Max connections reached\n");
         uint32_t rejected = __atomic_add_fetch(
             &g_server_stats.rejected_connections, 1, __ATOMIC_RELEASE);
@@ -1481,7 +1746,7 @@ int sshd_run(void) {
         }
       }
 
-      int result = process_connection(conn);
+      int result = conn->close_requested != 0U ? -1 : process_connection(conn);
       if (result != 0) {
 close_conn:
         /* Send disconnect message if encrypted */

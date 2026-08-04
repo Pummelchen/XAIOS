@@ -18,13 +18,28 @@
 /* Configure DNS server IP (default 8.8.8.8) */
 void dns_configure(uint32_t server_ip);
 
-/* Resolve hostname to IPv4 address. Returns XAIOS_OK on cache hit or
- * successful query. out_ip is in host byte order. */
+/* Reset cache, pending-query state, identifiers, and counters. */
+void dns_init(void);
+
+/* Resolve hostname to IPv4 address. Returns XAIOS_OK only on a cache hit.
+ * XAIOS_ERR_BUSY means that a bounded asynchronous query is pending.
+ * out_ip is in host byte order. */
 xaios_status_t dns_resolve(const char *hostname, uint32_t *out_ip);
 
 /* DNS background tick: send pending queries, process responses.
  * Call from network_poll_tick(). */
 void dns_tick(uint64_t now_ns);
+
+/* Consume an IPv4/UDP DNS response already received by the network poller. */
+xaios_status_t dns_process_ipv4_frame(const uint8_t *frame,
+                                      uint32_t frame_len,
+                                      uint64_t now_ns);
+
+uint64_t dns_query_count(void);
+uint64_t dns_response_count(void);
+uint64_t dns_reject_count(void);
+uint64_t dns_timeout_count(void);
+uint32_t dns_pending_count(void);
 
 /* Encode a DNS name (e.g., "www.google.com" -> 3www6google3com0) */
 uint32_t dns_encode_name(uint8_t *buf, uint32_t buf_size, const char *name);

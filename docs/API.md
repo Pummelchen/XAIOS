@@ -22,17 +22,30 @@ All wrapper functions below are built on this primitive.
 | `XAIOS_SYSCALL_CLOCK_NANOS` | 20 | `xaios_clock_nanos()` | Return monotonic wall-clock nanoseconds since boot. |
 | `XAIOS_SYSCALL_RANDOM` | 35 | `xaios_random(buffer, size)` | Fill up to 4096 bytes from the kernel's hardware-backed entropy source. Fails when secure entropy is unavailable. |
 | `XAIOS_SYSCALL_FS_SEEK` | 36 | `xaios_fs_seek(fd, offset)` | Set an open mutable-file descriptor to an absolute byte offset. |
+| `XAIOS_SYSCALL_CONTROL_QUERY` | 37 | `xaios_control_query(request, request_size, response, response_size, out_size)` | Submit a bounded `xaios.control.v1` operation. Read access requires `XAIOS_CAP_CONTROL_QUERY`; administrator operations additionally require `XAIOS_CAP_CONTROL_ADMIN`. |
+| `XAIOS_SYSCALL_REMOTE_LOGIN_SESSION` | 38 | `xaios_remote_login_session(request)` | Execute in (lazily creating) or close a bounded per-connection shell session. Requires `XAIOS_CAP_REMOTE_LOGIN`. |
+| `XAIOS_SYSCALL_FS_PREAD` | 39 | `xaios_fs_pread(fd, buffer, size, offset)` | Read at an unsigned 64-bit offset without changing the handle cursor. |
+| `XAIOS_SYSCALL_FS_PWRITE` | 40 | `xaios_fs_pwrite(fd, buffer, size, offset)` | Write at an unsigned 64-bit offset without changing the handle cursor. |
+| `XAIOS_SYSCALL_FS_FSYNC` | 41 | `xaios_fs_fsync(fd)` | Request backend durability for writes completed through the handle. |
 
 ## Filesystem
 
-All filesystem operations target the mutable filesystem (`mutable_fs`). Paths are absolute, rooted at `/`.
+Filesystem operations route through the VFS. MutableFS is mounted at `/` for
+small mutable state. When the dedicated model volume is present, ModelFS is
+mounted at `/models`; active signed packages appear as
+`/models/<64-hex-package-id>` and are immutable. Signed staging packages appear
+under `/models/.staging` after authenticated `model register` allocates their
+extents; they accept only bounded positional writes for their declared logical
+size. Generic create, truncate, delete and rename remain unsupported. Lifecycle
+mutation uses typed control operations. Paths are absolute and mount routing
+uses the longest matching component.
 
 | Syscall | Number | Wrapper | Description |
 |---------|-------:|---------|-------------|
 | `XAIOS_SYSCALL_FS_OPEN` | 11 | `xaios_fs_open(path, flags)` | Open a file. Flags: `XAIOS_MFS_OPEN_READ` (1), `XAIOS_MFS_OPEN_WRITE` (2), `XAIOS_MFS_OPEN_CREATE` (4), `XAIOS_MFS_OPEN_TRUNCATE` (8). Returns fd >= 0 on success. |
 | `XAIOS_SYSCALL_FS_READ` | 12 | `xaios_fs_read(fd, buf, size)` | Read up to `size` bytes from `fd` into `buf`. Returns bytes read. |
 | `XAIOS_SYSCALL_FS_WRITE` | 13 | `xaios_fs_write(fd, buf, size)` | Write `size` bytes from `buf` to `fd`. Returns bytes written. |
-| `XAIOS_SYSCALL_FS_CLOSE` | 14 | `xaios_fs_close(fd)` | Close an open file descriptor. |
+| `XAIOS_SYSCALL_FS_CLOSE` | 14 | `xaios_fs_close(fd)` | Durably close an open writable handle according to the mounted backend. |
 | `XAIOS_SYSCALL_FS_STAT` | 15 | `xaios_fs_stat(path, stat)` | Populate `xaios_mfs_stat_user_t` with file metadata. |
 | `XAIOS_SYSCALL_FS_MKDIR` | 16 | `xaios_fs_mkdir(path)` | Create a directory. |
 | `XAIOS_SYSCALL_FS_DELETE` | 17 | `xaios_fs_delete(path)` | Delete a file or empty directory. |
@@ -58,6 +71,11 @@ typedef struct xaios_mfs_stat_user {
 } xaios_mfs_stat_user_t;
 ```
 
+`XAIOS_FS_TYPE_FILE` and `XAIOS_FS_TYPE_DIRECTORY` are the public stat type
+constants. File sizes and positional offsets are unsigned 64-bit values. The
+legacy MutableFS backend remains limited to small state files; 64-bit API width
+does not remove that backend's capacity limit.
+
 ## Networking
 
 | Syscall | Number | Wrapper | Description |
@@ -70,13 +88,14 @@ typedef struct xaios_mfs_stat_user {
 | `XAIOS_SYSCALL_NET_RECV` | 31 | `xaios_net_recv(sockfd, buf, size, bytes)` / `xaios_net_recvfrom(...)` | Receive TCP stream data or a queued UDP datagram. |
 | `XAIOS_SYSCALL_NET_SEND` | 32 | `xaios_net_send(sockfd, buf, size, bytes)` / `xaios_net_sendto(...)` | Send TCP stream data or a UDP datagram. |
 | `XAIOS_SYSCALL_NET_CLOSE` | 33 | `xaios_net_close(sockfd)` | Close a socket. |
+| `XAIOS_SYSCALL_NET_RESOLVE` | 46 | `xaios_net_resolve(hostname, ipv4)` | Poll or start a bounded asynchronous A-record lookup. Returns `XAIOS_ERR_BUSY` while pending and uses a TTL cache. |
 
 ## SMP and Threads
 
 | Syscall | Number | Wrapper | Description |
 |---------|-------:|---------|-------------|
 | `XAIOS_SYSCALL_SMP_RUN` | 23 | `xaios_smp_run(workers, iters, ran, cksum)` | Dispatch work to secondary CPU cores. |
-| `XAIOS_SYSCALL_THREAD_GROUP_RUN` | 27 | `xaios_thread_group_run(threads, iters, ran, cksum)` | Run a thread group on CPU 0. |
+| `XAIOS_SYSCALL_THREAD_GROUP_RUN` | 27 | `xaios_thread_group_run(threads, iters, ran, cksum)` | Run a bounded worker group concurrently across online CPUs. |
 
 ## AI / ML Runtime
 
@@ -96,10 +115,28 @@ typedef struct xaios_mfs_stat_user {
 | Syscall | Number | Wrapper | Description |
 |---------|-------:|---------|-------------|
 | `XAIOS_SYSCALL_REMOTE_LOGIN` | 25 | `xaios_remote_login(user, cmd, out, cap, out_size)` | Execute a shell command as a user. Returns command output. |
+| `XAIOS_SYSCALL_REMOTE_LOGIN_SESSION` | 38 | `xaios_remote_login_session_open/execute/close(...)` | Manage a session with an independent current directory and parser state. At most 16 kernel session contexts exist. |
 
 ### Supported shell commands
 
-`pwd`, `ls` (with `-l`/`-a`), `cd`, `mkdir`, `touch`, `cat`, `cp`, `mv`, `rm`, `rmdir`, `stat`, `write`, `echo`, `grep`, `find`, `head`, `tail`, `sed`, `tar`, `cpio`, `nano`, `htop`, `status`, `sysinfo`, `help`, `exit`.
+`pwd`, `ls` (with `-l`/`-a`), `cd`, `mkdir`, `touch`, `cat`, `cp`, `mv`, `rm`, `rmdir`, `stat`, `write`, `echo`, `grep`, `find`, `head`, `tail`, `sed`, `tar`, `cpio`, `nano`, `htop`, `xaiosctl`, `status`, `sysinfo`, `help`, `exit`.
+
+`xaiosctl` is the structured administrative entrypoint. The SSH
+daemon recognizes only the exact `xaiosctl` command prefix and calls the shared
+client library; it does not provide general executable launch. Authenticated
+Ed25519 keys map to observer, operator or administrator roles, and the kernel
+rechecks capability and requested role for every control operation. Legacy
+`status` and `sysinfo` remain compatibility commands but direct callers to
+measured `xaiosctl status` and `xaiosctl hardware` output.
+
+Remote shell and SFTP access deny the private host key, password database,
+legacy authorized-key source and `/state/control` subtree. This path guard
+applies even to administrators. See [`XAIOSCTL.md`](./XAIOSCTL.md) for the
+command and role matrix.
+
+The service-manager `osctl status` action is also a legacy test/control marker.
+It reports measured process, service-transition and AI-cell counters without
+claiming a host platform; operators should use `xaiosctl status`.
 
 Pipe (`|`) and output redirection (`>`) are supported for chaining commands.
 
@@ -176,6 +213,17 @@ Each process is launched with a capability bitmask. Syscalls are rejected if the
 | `XAIOS_CAP_NET_SOCKET` | 65536 | Socket API (`listen`, `accept`, `recv`, `send`, `close`) |
 | `XAIOS_CAP_AGENT` | 131072 | `agent_dispatch` |
 | `XAIOS_CAP_RANDOM` | 262144 | `random` |
+| `XAIOS_CAP_CONTROL_QUERY` | 524288 | Bounded read operations in `control_query` |
+| `XAIOS_CAP_CONTROL_ADMIN` | 1048576 | Permit administrator control operations when the request's authenticated role also authorizes them |
+| `XAIOS_CAP_STORAGE_READ` | 2097152 | Storage device, partition and filesystem inspection plus read-only checks |
+| `XAIOS_CAP_STORAGE_MOUNT` | 4194304 | ModelFS mount and unmount |
+| `XAIOS_CAP_STORAGE_FORMAT` | 8388608 | ModelFS format planning and confirmed format |
+| `XAIOS_CAP_STORAGE_PARTITION` | 16777216 | GPT planning, mutation and repair |
+| `XAIOS_CAP_STORAGE_REPAIR` | 33554432 | ModelFS repair and online scrub lifecycle |
+| `XAIOS_CAP_STORAGE_RESIZE` | 67108864 | Grow-only ModelFS resize |
+| `XAIOS_CAP_STORAGE_TRIM` | 134217728 | Free-space trim/discard lifecycle |
+| `XAIOS_CAP_MODEL_STAGE` | 268435456 | ModelFS registration, staging cleanup and package verification |
+| `XAIOS_CAP_MODEL_ACTIVATE` | 536870912 | Verified package activation |
 
 ## Data Types
 
@@ -193,6 +241,8 @@ Request structures passed by pointer via syscall arguments:
 - `xaios_smp_request_t` — SMP worker parameters
 - `xaios_cpu_ai_decode_request_t` — AI decode input/output buffers
 - `xaios_remote_login_request_t` — user/command/output buffers
+- `xaios_remote_login_session_request_t` — open/execute/close operation,
+  session ID and bounded user/command/output buffers
 - `xaios_net_external_session_request_t` — external session parameters
 - `xaios_thread_group_request_t` — thread group parameters
 - `xaios_ml_run_request_t` — ML model kind and I/O buffers
@@ -200,3 +250,21 @@ Request structures passed by pointer via syscall arguments:
   pointers, and protocol (`XAIOS_NET_PROTOCOL_TCP` or
   `XAIOS_NET_PROTOCOL_UDP`)
 - `xaios_agent_dispatch_request_t` — agent protocol request/response buffers
+- `xaios_control_query_request_t` — bounded control request/response buffers
+
+## Structured Control Protocol
+
+`xaios.control.v1` uses a 48-byte request header and 40-byte response header,
+with magic, version, operation, flags, request ID, role, node, timeout, status,
+payload type and 64-bit payload length fields. Requests are limited to 512
+bytes and responses to 8,192 bytes. Operations 1-49 cover measured queries,
+configuration/authentication/audit, ModelFS registration/verification/
+activation/cleanup, block/GPT/filesystem lifecycle, persisted scrub and safe
+trim/discard administration.
+
+The kernel validates request framing and user buffers, derives the maximum role
+from the caller's capability mask, and rejects privilege elevation, role
+mismatch or unknown nodes. Mutations also require a nonzero operation ID and
+are persisted with payload-redacted audit metadata. See
+[`CONTROL-PROTOCOL.md`](./CONTROL-PROTOCOL.md) for the frozen ABI and
+[`XAIOSCTL.md`](./XAIOSCTL.md) for command/output semantics.

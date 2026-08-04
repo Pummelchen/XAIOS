@@ -13,6 +13,7 @@ typedef struct {
   int fd;
   int is_open;
   int is_dir;
+  int is_append;
   uint64_t owner_sockfd;
   uint32_t owner_channel_id;
 } sftp_file_handle_t;

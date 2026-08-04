@@ -22,6 +22,8 @@
 #define SSHD_RATE_LIMIT_MAX_ENTRIES 256
 #define SSHD_RATE_LIMIT_MAX_FAILURES 10
 #define SSHD_RATE_LIMIT_BAN_DURATION UINT64_C(3600000000000)
+#define SSHD_CONNECTION_RATE_WINDOW UINT64_C(60000000000)
+#define SSHD_CONNECTION_RATE_LIMIT 120U
 
 /* The mutable filesystem stores at most 8 KiB per file. */
 #define SSHD_LOG_ROTATE_BYTES 7168U
@@ -51,6 +53,8 @@ typedef struct {
   uint64_t last_attempt_time;
   uint32_t failure_count;
   uint64_t ban_until;
+  uint64_t connection_window_start;
+  uint32_t connection_count;
 } sshd_rate_limit_entry_t;
 
 /* Connection statistics */
@@ -79,5 +83,8 @@ typedef struct {
 
 void ssh_log(int level, const char *fmt, ...);
 int sshd_run(void);
+uint32_t sshd_max_channels_per_connection(void);
+uint32_t sshd_command_rate_per_minute(void);
+int sshd_reload_control_state(const char *command);
 
 #endif

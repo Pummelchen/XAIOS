@@ -6,35 +6,35 @@
 
 #define XAIOS_SMMU_MMIO_BASE UINT64_C(0x09050000)
 #define XAIOS_SMMU_MMIO_PAGE1 UINT64_C(0x09060000)
-#define XAIOS_SMMU_MAX_STREAMS 32U
-#define XAIOS_SMMU_STREAM_TABLE_BYTES (XAIOS_SMMU_MAX_STREAMS * 64)
-#define XAIOS_SMMU_CMDQ_ENTRIES 128U
-#define XAIOS_SMMU_CMDQ_BYTES (XAIOS_SMMU_CMDQ_ENTRIES * 16)
+#define XAIOS_SMMU_MAX_STREAMS 256U
 
 /* Page 0 register offsets */
 #define SMMU_IDR0 UINT32_C(0x0000)
 #define SMMU_IDR1 UINT32_C(0x0004)
 #define SMMU_CR0 UINT32_C(0x0020)
 #define SMMU_CR0ACK UINT32_C(0x0024)
+#define SMMU_CR1 UINT32_C(0x0028)
 #define SMMU_GBPA UINT32_C(0x0044)
 #define SMMU_ACR UINT32_C(0x004C)
 #define SMMU_GERROR UINT32_C(0x0060)
 
-/* Page 1 register offsets */
-#define SMMU_STBASE_LO UINT32_C(0x0020)
-#define SMMU_STBASE_HI UINT32_C(0x0024)
-#define SMMU_STRTAB_CFG UINT32_C(0x0028)
-#define SMMU_CMDQ_BASE_LO UINT32_C(0x0040)
-#define SMMU_CMDQ_BASE_HI UINT32_C(0x0044)
-#define SMMU_CMDQ_PROD UINT32_C(0x0048)
-#define SMMU_CMDQ_CONS UINT32_C(0x004C)
+#define SMMU_STRTAB_BASE UINT32_C(0x0080)
+#define SMMU_STRTAB_BASE_CFG UINT32_C(0x0088)
+#define SMMU_CMDQ_BASE UINT32_C(0x0090)
+#define SMMU_CMDQ_PROD UINT32_C(0x0098)
+#define SMMU_CMDQ_CONS UINT32_C(0x009c)
+#define SMMU_EVENTQ_BASE UINT32_C(0x00a0)
+#define SMMU_EVENTQ_PROD UINT32_C(0x00a8)
+#define SMMU_EVENTQ_CONS UINT32_C(0x00ac)
 
 /* CR0 bits */
 #define SMMU_CR0_SMMUEN (UINT32_C(1) << 0)
+#define SMMU_CR0_EVENTQEN (UINT32_C(1) << 2)
+#define SMMU_CR0_CMDQEN (UINT32_C(1) << 3)
 
 /* GBPA bits */
-#define SMMU_GBPA_UPDATE (UINT32_C(1) << 20)
-#define SMMU_GBPA_ABORT (UINT32_C(1) << 17)
+#define SMMU_GBPA_UPDATE (UINT32_C(1) << 31)
+#define SMMU_GBPA_ABORT (UINT32_C(1) << 20)
 
 /* STRTAB_CFG format */
 #define SMMU_STRTAB_CFG_LINEAR UINT32_C(0)
@@ -50,7 +50,8 @@ typedef struct xaios_smmu_stream {
   uint32_t device_type;
 } xaios_smmu_stream_t;
 
-void smmu_init(void);
+struct xaios_boot_info;
+void smmu_init(const struct xaios_boot_info *boot);
 uint32_t smmu_initialized(void);
 uint32_t smmu_idr0_value(void);
 xaios_status_t smmu_register_stream(uint32_t stream_id, uint32_t device_type);

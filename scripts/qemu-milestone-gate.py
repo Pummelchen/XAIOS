@@ -156,7 +156,7 @@ GATES = {
         "report": "qemu-milestone-67-security-gate.json",
         "name": "security",
         "markers": [
-            "security: self-test passed denied=13",
+            "security: self-test passed denied=15",
             "/init: bad syscall tests passed",
             "/service-manager: missing capability tests passed",
             "admin: remote-safe command=shell rejected",

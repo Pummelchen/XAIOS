@@ -3,9 +3,14 @@
 
 typedef unsigned long long u64;
 typedef unsigned int u32;
+typedef unsigned short u16;
 typedef int s32;
+typedef long long s64;
+
+#include <xaios_control.h>
 
 #define XAIOS_ERR_UNSUPPORTED (-6)
+#define XAIOS_ERR_BUSY (-5)
 
 #define XAIOS_SYSCALL_LOG 1ULL
 #define XAIOS_SYSCALL_EXIT 2ULL
@@ -36,6 +41,30 @@ typedef int s32;
 #define XAIOS_SYSCALL_AGENT_DISPATCH 34ULL
 #define XAIOS_SYSCALL_RANDOM 35ULL
 #define XAIOS_SYSCALL_FS_SEEK 36ULL
+#define XAIOS_SYSCALL_CONTROL_QUERY 37ULL
+#define XAIOS_SYSCALL_REMOTE_LOGIN_SESSION 38ULL
+#define XAIOS_SYSCALL_FS_PREAD 39ULL
+#define XAIOS_SYSCALL_FS_PWRITE 40ULL
+#define XAIOS_SYSCALL_FS_FSYNC 41ULL
+#define XAIOS_SYSCALL_THREAD_CREATE 42ULL
+#define XAIOS_SYSCALL_THREAD_JOIN 43ULL
+#define XAIOS_SYSCALL_THREAD_CANCEL 44ULL
+#define XAIOS_SYSCALL_THREAD_EXIT 45ULL
+#define XAIOS_SYSCALL_NET_RESOLVE 46ULL
+#define XAIOS_THREAD_CPU_ANY (~0ULL)
+
+#define XAIOS_REMOTE_LOGIN_SESSION_EXECUTE 1ULL
+#define XAIOS_REMOTE_LOGIN_SESSION_CLOSE 2ULL
+
+#define XAIOS_CAP_STORAGE_READ 2097152ULL
+#define XAIOS_CAP_STORAGE_MOUNT 4194304ULL
+#define XAIOS_CAP_STORAGE_FORMAT 8388608ULL
+#define XAIOS_CAP_STORAGE_PARTITION 16777216ULL
+#define XAIOS_CAP_STORAGE_REPAIR 33554432ULL
+#define XAIOS_CAP_STORAGE_RESIZE 67108864ULL
+#define XAIOS_CAP_STORAGE_TRIM 134217728ULL
+#define XAIOS_CAP_MODEL_STAGE 268435456ULL
+#define XAIOS_CAP_MODEL_ACTIVATE 536870912ULL
 
 #define XAIOS_NET_PROTOCOL_UDP 17ULL
 #define XAIOS_NET_PROTOCOL_TCP 6ULL
@@ -63,6 +92,8 @@ typedef int s32;
 #define XAIOS_MFS_OPEN_WRITE 2U
 #define XAIOS_MFS_OPEN_CREATE 4U
 #define XAIOS_MFS_OPEN_TRUNCATE 8U
+#define XAIOS_FS_TYPE_DIRECTORY 1U
+#define XAIOS_FS_TYPE_FILE 2U
 
 typedef struct xaios_mfs_stat_user {
   u32 type;
@@ -84,6 +115,13 @@ typedef struct xaios_list_request {
   u64 buffer_size;
   u64 out_size;
 } xaios_list_request_t;
+
+typedef struct xaios_positional_io_request {
+  u64 fd;
+  u64 buffer;
+  u64 size;
+  u64 offset;
+} xaios_positional_io_request_t;
 
 typedef struct xaios_net_request {
   u64 payload;
@@ -116,6 +154,18 @@ typedef struct xaios_remote_login_request {
   u64 out_size;
 } xaios_remote_login_request_t;
 
+typedef struct xaios_remote_login_session_request {
+  u64 session_id;
+  u64 action;
+  u64 user;
+  u64 user_size;
+  u64 command;
+  u64 command_size;
+  u64 output;
+  u64 output_size;
+  u64 out_size;
+} xaios_remote_login_session_request_t;
+
 typedef struct xaios_net_external_session_request {
   u64 protocol;
   u64 port;
@@ -132,6 +182,24 @@ typedef struct xaios_thread_group_request {
   u64 out_threads;
   u64 out_checksum;
 } xaios_thread_group_request_t;
+
+typedef u64 (*xaios_thread_entry_t)(void *argument);
+
+typedef struct xaios_thread_create_request {
+  u64 entry;
+  u64 argument;
+  u64 stack;
+  u64 stack_size;
+  u64 return_address;
+  u64 preferred_cpu;
+  u64 out_thread_id;
+} xaios_thread_create_request_t;
+
+typedef struct xaios_thread_join_request {
+  u64 thread_id;
+  u64 timeout_ns;
+  u64 out_result;
+} xaios_thread_join_request_t;
 
 typedef struct xaios_ml_run_request {
   u64 model_kind;
@@ -160,6 +228,12 @@ typedef struct xaios_socket_request {
   u64 addr_out_ptr;
   u64 protocol;
 } xaios_socket_request_t;
+
+typedef struct xaios_net_resolve_request {
+  u64 hostname;
+  u64 hostname_size;
+  u64 out_ipv4;
+} xaios_net_resolve_request_t;
 
 typedef struct xaios_agent_request {
   u32 magic;
@@ -191,6 +265,14 @@ typedef struct xaios_agent_dispatch_request {
   u64 out_size;
 } xaios_agent_dispatch_request_t;
 
+typedef struct xaios_control_query_request {
+  u64 request;
+  u64 request_size;
+  u64 response;
+  u64 response_size;
+  u64 out_size;
+} xaios_control_query_request_t;
+
 u64 xaios_syscall3(u64 number, u64 arg0, u64 arg1, u64 arg2);
 u64 xaios_strlen(const char *text);
 void xaios_log(const char *text);
@@ -206,6 +288,9 @@ int xaios_fs_list(const char *path, char *buffer, u64 buffer_size, u64 *out_size
 int xaios_fs_open(const char *path, u32 flags);
 int xaios_fs_read(int fd, void *buffer, u64 size);
 int xaios_fs_write(int fd, const void *buffer, u64 size);
+s64 xaios_fs_pread(int fd, void *buffer, u64 size, u64 offset);
+s64 xaios_fs_pwrite(int fd, const void *buffer, u64 size, u64 offset);
+int xaios_fs_fsync(int fd);
 int xaios_fs_seek(int fd, u64 offset);
 int xaios_fs_close(int fd);
 int xaios_fs_stat(const char *path, xaios_mfs_stat_user_t *stat);
@@ -217,11 +302,20 @@ int xaios_cpu_ai_decode(const void *input, u64 input_size, char *output,
                        u64 output_size, u64 *out_size);
 int xaios_remote_login(const char *user, const char *command, char *output,
                       u64 output_size, u64 *out_size);
+int xaios_remote_login_session(u64 session_id, const char *user,
+                               const char *command, char *output,
+                               u64 output_size, u64 *out_size);
+int xaios_remote_login_session_close(u64 session_id);
 int xaios_net_external_session(u64 protocol, u64 port, const void *payload,
                               u64 payload_size, char *output,
                               u64 output_size, u64 *out_size);
 int xaios_thread_group_run(u64 thread_count, u64 iterations, u64 *ran_threads,
                           u64 *checksum);
+int xaios_thread_create(xaios_thread_entry_t entry, void *argument,
+                        void *stack, u64 stack_size, u64 preferred_cpu,
+                        u64 *thread_id);
+int xaios_thread_join(u64 thread_id, u64 timeout_ns, u64 *result);
+int xaios_thread_cancel(u64 thread_id);
 int xaios_ml_run(u64 model_kind, const void *input, u64 input_size,
                 char *output, u64 output_size, u64 *out_size);
 int xaios_net_listen(u64 port, u64 *out_sockfd);
@@ -239,6 +333,7 @@ int xaios_net_send(u64 sockfd, const void *buffer, u64 buffer_size,
 int xaios_net_sendto(u64 sockfd, const void *buffer, u64 buffer_size,
                      u64 *out_bytes, const xaios_ip_addr_user_t *dst_addr);
 int xaios_net_close(u64 sockfd);
+int xaios_net_resolve(const char *hostname, u32 *out_ipv4);
 int xaios_write_file(const char *path, const char *content);
 int xaios_read_file(const char *path, char *buffer, u64 buffer_size);
 void xaios_memzero(void *buffer, u64 size);
@@ -248,5 +343,7 @@ int xaios_agent_dispatch(const xaios_agent_request_t *request,
                         xaios_agent_response_t *response,
                         const void *payload, u64 payload_size,
                         char *output, u64 output_size, u64 *out_size);
+int xaios_control_query(const void *request, u64 request_size, void *response,
+                        u64 response_size, u64 *out_size);
 
 #endif

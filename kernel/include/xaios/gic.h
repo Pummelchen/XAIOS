@@ -2,6 +2,9 @@
 #define XAIOS_GIC_H
 
 #include <xaios/types.h>
+#include <xaios/status.h>
+
+typedef void (*xaios_irq_handler_t)(uint32_t intid, void *context);
 
 typedef struct xaios_gic_info {
   uint64_t distributor_base;
@@ -15,6 +18,13 @@ void gic_init_qemu_virt(void);
 void gic_enable_full(void);
 void gic_disable_full(void);
 void gic_secondary_init(uint32_t cpu_id);
+xaios_status_t gic_register_interrupt(uint32_t intid,
+                                      xaios_irq_handler_t handler,
+                                      void *context);
+xaios_status_t gic_unregister_interrupt(uint32_t intid,
+                                        xaios_irq_handler_t handler,
+                                        void *context);
+int gic_dispatch_interrupt(uint32_t intid);
 const xaios_gic_info_t *gic_info(void);
 void gic_self_test(void);
 

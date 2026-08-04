@@ -1,8 +1,14 @@
 #include "ssh_channel.h"
+#include "ssh_connection.h"
 #include "ssh_protocol.h"
 #include "ssh_utils.h"
 #include "sftp_server.h"
+#include "sshd.h"
+#include <xaios_control_client.h>
 #include <xaios_user.h>
+
+#define SFTP_REQUEST_READ 5U
+#define SFTP_REQUEST_WRITE 6U
 
 static ssh_channel_t g_channels[SSH_CHANNEL_MAX];
 static uint32_t g_next_local_id = 1;
@@ -35,7 +41,7 @@ static ssh_channel_t *alloc_channel(int sockfd) {
       ++owned;
     }
   }
-  if (owned >= SSH_CHANNELS_PER_CONNECTION) return (ssh_channel_t *)0;
+  if (owned >= sshd_max_channels_per_connection()) return (ssh_channel_t *)0;
   for (uint32_t i = 0; i < SSH_CHANNEL_MAX; ++i) {
     if (!g_channels[i].active) {
       g_channels[i].active = 1;
@@ -92,13 +98,69 @@ static int packet_has_zero(const uint8_t *value, uint32_t value_len) {
   return 0;
 }
 
+static int command_rate_allowed(ssh_connection_t *connection) {
+  static const u64 window_ns = 60000000000ULL;
+  u64 now;
+  if (connection == 0) return 0;
+  now = xaios_clock_nanos();
+  if (connection->command_window_start == 0ULL ||
+      now - connection->command_window_start >= window_ns) {
+    connection->command_window_start = now;
+    connection->command_count = 0U;
+  }
+  if (connection->command_count >= sshd_command_rate_per_minute()) return 0;
+  ++connection->command_count;
+  return 1;
+}
+
+static int write_command_denial(char *output, u64 output_capacity,
+                                u64 *out_size, const char *message) {
+  u64 length = xaios_strlen(message);
+  if (length + 1ULL > output_capacity) return -1;
+  ssh_mem_copy(output, message, (uint32_t)length + 1U);
+  *out_size = length;
+  return -1;
+}
+
+static int execute_admin_command(int sockfd, const char *command, char *output,
+                                 u64 output_capacity, u64 *out_size) {
+  ssh_connection_t *connection = ssh_conn_find((u64)(uint32_t)sockfd);
+  if (connection == 0 || command_rate_allowed(connection) == 0) {
+    return write_command_denial(output, output_capacity, out_size,
+                                "Command rate limit exceeded\n");
+  }
+  if (xaios_control_is_command(command)) {
+    int result = xaios_control_run_as(
+        command, connection->principal_role, connection->principal, output,
+        output_capacity, out_size);
+    if (result == 0 && sshd_reload_control_state(command) != 0) {
+      return write_command_denial(output, output_capacity, out_size,
+                                  "Control state reload failed\n");
+    }
+    return result;
+  }
+  if (connection->principal_role != XAIOS_CONTROL_ROLE_ADMIN) {
+    return write_command_denial(output, output_capacity, out_size,
+                                "Permission denied\n");
+  }
+  int result = xaios_remote_login_session(
+      connection->sockfd, "admin", command, output, output_capacity, out_size);
+  if (result >= 0) connection->remote_login_session_active = 1U;
+  return result < 0 ? -1 : 0;
+}
+
 void ssh_channel_close_connection(int sockfd) {
+  ssh_connection_t *connection = ssh_conn_find((u64)(uint32_t)sockfd);
   for (uint32_t i = 0; i < SSH_CHANNEL_MAX; ++i) {
     if (g_channels[i].active &&
         g_channels[i].owner_sockfd == (uint64_t)(uint32_t)sockfd) {
       sftp_close_channel(sockfd, g_channels[i].remote_id);
       ssh_mem_zero(&g_channels[i], sizeof(g_channels[i]));
     }
+  }
+  if (connection != 0 && connection->remote_login_session_active != 0U) {
+    (void)xaios_remote_login_session_close(connection->sockfd);
+    connection->remote_login_session_active = 0U;
   }
 }
 
@@ -280,9 +342,10 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
     /* Execute command */
     char output[8192];
     u64 out_size = 0;
-    int result = xaios_remote_login("admin", command, output, sizeof(output), &out_size);
+    int result = execute_admin_command(sockfd, command, output, sizeof(output),
+                                       &out_size);
 
-    if (result < 0) {
+    if (result < 0 && out_size == 0U) {
       const char *err = "Command execution failed\n";
       if (ssh_channel_send_data(sockfd, ch->remote_id,
                                 (const uint8_t *)err,
@@ -297,7 +360,7 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
         }
       }
     }
-    ch->exit_status = result < 0 ? 1U : 0U;
+    ch->exit_status = result == 0 ? 0U : 1U;
     ch->close_after_flush = 1U;
     return flush_channel(ch);
   }
@@ -324,6 +387,14 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
     subsystem[name_len] = '\0';
 
     if (ssh_str_eq(subsystem, "sftp")) {
+      ssh_connection_t *connection =
+          ssh_conn_find((u64)(uint32_t)sockfd);
+      if (connection == 0 ||
+          connection->principal_role != XAIOS_CONTROL_ROLE_ADMIN) {
+        if (want_reply &&
+            send_channel_reply(sockfd, ch->remote_id, 0) != 0) return -1;
+        return 0;
+      }
       if (want_reply) {
         if (send_channel_reply(sockfd, ch->remote_id, 1) != 0) return -1;
       }
@@ -423,7 +494,8 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
 
       while (ch->sftp_rx_used >= 4U) {
         uint32_t sftp_len = ssh_read_u32_be(ch->sftp_rx);
-        if (sftp_len == 0U || sftp_len > SSH_CHANNEL_SFTP_BUFFER_SIZE - 4U) {
+        if (sftp_len == 0U ||
+            sftp_len > SSH_CHANNEL_SFTP_REQUEST_MAX - 4U) {
           xaios_log("sshd: rejected invalid SFTP packet length\n");
           return -1;
         }
@@ -452,9 +524,10 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
 
     char output[8192];
     u64 out_size = 0;
-    int result = xaios_remote_login("admin", command, output, sizeof(output), &out_size);
+    int result = execute_admin_command(sockfd, command, output, sizeof(output),
+                                       &out_size);
 
-    if (result < 0) {
+    if (result < 0 && out_size == 0U) {
       const char *error_msg = "Command execution failed\n";
       uint32_t error_len = ssh_str_len(error_msg);
       return ssh_channel_send_data(sockfd, ch->remote_id,

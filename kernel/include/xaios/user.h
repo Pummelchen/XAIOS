@@ -57,6 +57,8 @@ void user_process_table_init(void);
 void user_process_lifecycle_self_test(void);
 void user_scheduler_self_test(void);
 const xaios_user_process_t *user_current_process(void);
+xaios_status_t user_bind_current_process(uint32_t pid);
+void user_clear_current_process(void);
 xaios_status_t user_process_has_capability(uint64_t capability);
 void user_process_note_syscall(uint32_t rejected);
 uint64_t user_process_note_exit(int exit_code);
@@ -70,6 +72,10 @@ xaios_status_t user_process_snapshot_at(uint32_t pid, uint64_t now_ns,
                                         xaios_user_process_t *process);
 void user_process_runtime_start(uint32_t pid, uint32_t cpu_id, uint64_t now_ns);
 void user_process_runtime_stop(uint32_t pid, uint32_t cpu_id, uint64_t now_ns);
+void user_thread_runtime_start(uint32_t pid, uint32_t cpu_id,
+                               uint64_t now_ns);
+void user_thread_runtime_stop(uint32_t pid, uint32_t cpu_id,
+                              uint64_t started_ns, uint64_t now_ns);
 uint32_t user_cpu_usage_count(void);
 xaios_status_t user_cpu_usage_snapshot(uint32_t ordinal, uint64_t now_ns,
                                        xaios_cpu_usage_snapshot_t *snapshot);

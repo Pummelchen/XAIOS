@@ -10,6 +10,122 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 -->
 # AI onboarding changelog
 
+## 2026-08-04 - remaining QEMU core-OS tranche
+
+- Expanded VirtIO block to eight queued requests and negotiated event-index and
+  indirect descriptors for block/network; the modern net header is 12 bytes.
+- Added emulated-NVMe admin/I/O queue, SMMUv3 translated-DMA/revocation,
+  redundant-metadata crash, and >128-CPU focused gates.
+- Added general EL0 threads, asynchronous userspace DNS, IPv4/IPv6 fragment
+  reassembly, and SACK/zero-window/reordering/RTO TCP correctness paths.
+- Added x86 controlled exception and local-APIC timer interrupt delivery plus
+  modern VirtIO/MSI/MSI-X capability discovery while retaining parity blockers.
+- Expanded `make qemu-core-os-rc` into an independent, non-skipping aggregate
+  gate and added a production-source unfinished-marker audit.
+
+## 2026-08-03 - core OS capability tranche
+
+- Added signed redundant A/B system-slot loading, streamed delivery, activation,
+  fallback and rollback correctness coverage.
+- Replaced fixed RAM/CPU bitmap ceilings with runtime-sized NUMA, CPU registry,
+  cpuset and core-lease state.
+- Added GIC-dispatched VirtIO block/network interrupts, two concurrent block
+  requests, direct-or-bounce DMA and batched multi-sector backend transfers.
+- Added CPU-assigned joinable kernel workers and routed the userspace thread-group
+  contract through real secondary-CPU execution.
+- Added an eight-segment TCP transmit window with cumulative/partial ACK release,
+  fast retransmit and RTO recovery.
+- Linked common CRC/block/VFS/architecture/scalar/packed modules into x86_64 and
+  retained explicit full-platform-parity blockers.
+- Added `make qemu-core-os-rc` and an independent CI evidence job.
+- Added hosted 4,097-CPU cpuset coverage and a focused 130-vCPU QEMU capacity
+  gate with a machine-readable correctness-only report.
+- Corrected the worker-group smoke marker so it no longer claims an arbitrary
+  EL0/POSIX thread ABI.
+- Made the known-unstable macOS HVF CPU-matrix tier opt-in and replaced a stale
+  fixed capability-count readiness assertion with structural ABI validation.
+
+## 2026-08-03 - final storage/network acceptance fixes
+
+- Corrected the VirtIO network receive header to the 10-byte base layout used
+  when `VIRTIO_NET_F_MRG_RXBUF` is not negotiated; the former 12-byte strip
+  discarded the first two Ethernet bytes and prevented forwarded SSH traffic.
+- Made MutableFS fsck validate current and snapshot files independently,
+  including files deleted after a snapshot, so read-only filesystem usage
+  queries no longer report valid retained blocks as leaked.
+- Added live storage device/filesystem JSON assertions to the native macOS and
+  Debian 13 OpenSSH gates and checked ModelFS staging/active accounting across
+  audited activation.
+- Moved the SSH readiness marker after channel initialization and removed
+  per-send UART logging from the network hot path.
+
+## 2026-08-03 - guest storage discovery
+
+- Added observer-safe `xaiosctl storage` device/filesystem discovery and usage
+  operations with bounded typed records and explicit truncation reporting.
+
+## 2026-08-03 - resumable guest ModelFS lifecycle
+
+- Added signed pre-registered ModelFS staging writes with chunk verification,
+  copy-on-write catalog publication and crash-consistent fsync ordering.
+- Added administrator-only `xaiosctl model verify` and replay-protected,
+  audited atomic activation while preserving immutable active packages.
+- Added a native OpenSSH gate that uploads 2 MiB, resumes the final 64 KiB,
+  verifies, activates, checks audit and compares the immutable download against
+  one QEMU guest.
+- Kept dynamic package registration, async I/O, physical 100+ GiB transfer and
+  physical storage evidence explicitly pending.
+
+## 2026-08-03 - storage and ModelFS foundation
+
+- Added a generic 64-bit block API, redundant GPT parser/writer, bounded
+  partition devices, VFS mount routing, and MutableFS compatibility adapter.
+- Added signed crash-consistent ModelFS v1 host lifecycle/fsck/scrub/grow/trim
+  tooling and a read-only kernel mount at `/models`.
+- Added 64-bit SFTP positional I/O/fsync hardening and a portable model-file API
+  with verified range reads, extent/prefetch metadata, aligned arena streaming,
+  and sparse package tests above 100 GiB.
+- Documented that guest ModelFS writes, online administration, asynchronous
+  storage, real model execution, and physical performance evidence remain
+  pending.
+
+## 2026-08-03 - packed scalar, NEON and AVX2 kernel correctness
+
+- Added a portable signed INT4/INT6 group-scale matrix contract with no-expand
+  scalar GEMV/GEMM and an experimental AArch64 NEON backend.
+- Added startup known-answer validation plus randomized scalar/NEON
+  differential tests across every packing and vector tail.
+- Added an experimental AVX2 backend with XCR0 capability gating and INT4/INT6
+  known-answer execution in the freestanding x86 QEMU gate.
+- Removed full-matrix INT4/INT6 expansion and the leaked temporary buffers from
+  the legacy kernel, fixed packed work-unit offsets, and labeled sequential
+  compatibility dispatch accurately.
+
+## 2026-08-03 - Phase 2 administrative security
+
+- Extended `xaios.control.v1` to 16 typed operations with strict config
+  transactions, persistent observer/operator/administrator Ed25519 keys,
+  revocation, host-key rotation and payload-redacted audit.
+- Added the control-admin capability, syscall 38 per-connection shell contexts,
+  sensitive remote-path denial and default-disabled/development-only password
+  build policy.
+- Replaced fixed userspace ELF page tracking with validated dynamic ownership
+  and rollback.
+- Added hosted, QEMU and Debian 13 OpenSSH acceptance cases for roles, valid and
+  invalid/revoked keys, config rollback/replay, cwd isolation, rate limits,
+  rekey, persistence/rotation and secret redaction.
+
+## 2026-08-03 - Phase 1 administrative control
+
+- Added the bounded `xaios.control.v1` protocol, syscall 37 and the
+  `XAIOS_CAP_CONTROL_QUERY` capability.
+- Added `/bin/xaiosctl` and shared local/SSH parsing/rendering for seven
+  read-only measured commands with deterministic JSON and stable errors.
+- Replaced hardcoded legacy status/platform claims, added log cursors and
+  sensitive-line redaction, and froze protocol constants in the QEMU ABI.
+- Added hosted, QEMU and Debian OpenSSH tests plus the ten-phase distributed
+  server dependency plan.
+
 ## 2026-08-03 - dual-origin single-guest SSH/network load
 
 - Added a macOS plus Debian 13 load gate that drives native OpenSSH/SFTP, UDP,

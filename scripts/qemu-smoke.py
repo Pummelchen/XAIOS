@@ -13,6 +13,7 @@ from qemu_gate_lib import contract, parse_telemetry, validate_telemetry_against_
 TARGETS = [
     "exceptions: self-test",
     "spinlock: early single-core try-lock self-test passed",
+    "SMMU: self-test bypass mode streams=0 invalidations=1",
     "timer: monotonic self-test passed",
     "smp: per-core registry self-test passed",
     "VMM map/unmap self-test passed",
@@ -40,10 +41,14 @@ TARGETS = [
     "mutable-fs: public API self-test passed list=1 stat=3 rename=1 open=3 close=3",
     "mutable-fs: subsystem records self-test passed records=4",
     "mutable-fs: self-test passed files=7 directories=12 writes=12 reads=6 deletes=1 commits=1 rollbacks=1 replays=1 rejects=8 checksum_errors=0",
+    "modelfs: mounted /models device=/dev/vblk4 generation=",
+    "modelfs: signed active read and crash-consistent staging write self-test passed active_bytes=8192 staging_bytes=4096",
     "update: self-test passed transactions=2 staged=2 committed=1 failed=1 recovered=1 rollbacks=1 boot_fallbacks=1 records=8 rollback_points=2 rejects=2",
     "virtio-net: malformed packet/drop self-test passed",
     "virtio-net: queue/tx/parser/reset self-test passed",
     "network: stack initialized",
+    "ipv4: fragmentation/reassembly self-test passed",
+    "ipv6: fragmentation/reassembly passed",
     "network: udp flow id=",
     "expired queue=",
     "retransmit=1",
@@ -57,19 +62,21 @@ TARGETS = [
     "initramfs: config service=/init mode=qemu-mvp",
     "initramfs: service-manager path=/bin/service-manager descriptor=/etc/services/source-index.svc",
     "initramfs: child service=/svc/source-index parent=/init restart=never",
-    "initramfs: mounted rofs version=2 files=18",
+    "initramfs: mounted rofs version=2 files=19",
     "initramfs: rofs metadata/config self-test passed",
-    "syscall: table self-test passed entries=36",
+    "syscall: table self-test passed entries=46",
     "virtio-rng: entropy delivery self-test passed",
     "user: process table initialized slots=1024",
     "user: process lifecycle invalid/failed transition self-test passed",
     "scheduler: lifecycle self-test passed",
     "user: process pid=1 name=/init state=loaded",
-    "security: self-test passed denied=13 capability_denials=3 fs_denials=1 workspace_denials=1 sandbox_denials=1 rollback_denials=1 update_policy_rejects=3 credential_rejects=2 signature_accepts=1 signature_rejects=3 admin_denials=2 update_authorizations=1 update_replay_rejects=1 key_accepts=1 key_rejects=1 sandbox_escape_rejects=1",
-    "remote-login: self-test passed sessions=2 commands=2 denials=2",
-    "threads: user thread group started threads=2 iterations=8",
-    "threads: user thread group complete threads=2",
+    "security: self-test passed denied=15 capability_denials=3 fs_denials=2 workspace_denials=1 sandbox_denials=1 rollback_denials=1 update_policy_rejects=4 credential_rejects=2 signature_accepts=1 signature_rejects=4 admin_denials=2 update_authorizations=1 update_replay_rejects=1 key_accepts=1 key_rejects=1 sandbox_escape_rejects=1",
+    "remote-login: isolated session cwd self-test passed",
+    "remote-login: self-test passed sessions=6 commands=6 denials=4",
+    "threads: runtime initialized capacity=",
+    "threads: concurrent scheduler self-test passed threads=",
     "model-arena: shared read-only arena self-test passed",
+    "ai-kernel: packed no-expand tail self-test passed int4=6 int6=2",
     "nic-conflict-agent",
     "core-conflict-agent",
     "workspace-conflict-agent",
@@ -77,10 +84,14 @@ TARGETS = [
     "ai-cell: resource contract self-test passed admissions=2 rejects=10 arena_pages=160 arena_bytes=655360 queue_binds=3 queue_releases=3 workspace_binds=2 workspace_releases=2 conflicts=3",
     "ai-cell: lifecycle self-test passed",
     "agent-protocol: self-test passed",
+    "control: protocol self-test passed version=1 malformed=5 denied=1 redaction=1",
+    "admin-control: self-test passed schema=1 invalid=1 principal=2 transactional=1",
+    "elf_loader: self-test passed dynamic_page_capacity=513",
     "cpu-ai-runtime: Q8.8 kernel self-test passed",
     "kheap: self-test passed",
     "VMM translation test passed",
     "gic: discovery self-test passed",
+    "nvme: self-test skipped no PCI NVMe controller",
     "PMM 1024 page allocate/free test passed",
     "cpu-ai-runtime: model manifest loaded",
     "cpu-ai-runtime: model file loaded id=2 name=cpu-ai-v1-fixture",
@@ -146,7 +157,7 @@ TARGETS = [
     "admin: remote-safe command=shell rejected rejects=1",
     "/service-manager: admin status exported",
     "/service-manager: remote-safe checks passed",
-    "osctl: status qemu=running",
+    "osctl: status legacy=1 processes=",
     "osctl: ps slots=1024",
     "osctl: services transitions=",
     "osctl: cells transitions=",
@@ -167,21 +178,26 @@ TARGETS = [
     "/bin/xaios-shell: command surface passed 1..15 + ls variants + tar/cpio archive",
     "/bin/xaios-shell: nano and htop utilities passed",
     "kernel: /bin/xaios-shell returned to kernel exit_code=0",
+    "/bin/xaiosctl: control commands passed human=14 json=14",
+    "/bin/xaiosctl: negative tests passed malformed=1 authorization=1 node=1",
+    "kernel: /bin/xaiosctl returned to kernel exit_code=0",
     "/bin/hello: hello world from C userspace",
     "/bin/hello: C toolchain and EL0 runtime integration passed",
     "kernel: /bin/hello returned to kernel exit_code=0",
-    "/bin/sysinfo: XAIOS qemu-macos-aarch64 dev build",
+    "/bin/sysinfo: legacy utility; use xaiosctl status and xaiosctl hardware for measured state",
     "/bin/sysinfo: complete",
     "kernel: /bin/sysinfo returned to kernel exit_code=0",
     "/bin/systest: syscall and filesystem suite passed",
     "kernel: /bin/systest returned to kernel exit_code=0",
     "/bin/smptest: complete",
     "/bin/smptest: app-requested SMP worker set passed",
-    "/bin/smptest: POSIX-style arbitrary user thread group passed",
+    "/bin/smptest: concurrent kernel-dispatched worker group passed",
+    "/bin/smptest: general EL0 create/join threads passed",
     "kernel: /bin/smptest returned to kernel exit_code=0",
     "/bin/nettest: complete",
     "/bin/nettest: app-callable udp/tcp path passed",
     "/bin/nettest: external host-to-guest tcp/udp session path passed",
+    "/bin/nettest: userspace DNS resolve/cache path passed",
     "kernel: /bin/nettest returned to kernel exit_code=0",
     "/bin/lstm-xor: CPU-only two-hidden-layer LSTM XOR example starting",
     "/bin/lstm-xor: production decode unsupported as required",
@@ -200,19 +216,28 @@ TARGETS = [
     "/bin/agenttest: agent protocol dispatch passed",
     "/bin/agenttest: complete",
     "kernel: /bin/agenttest returned to kernel exit_code=0",
+    "sshd: Phase 2 runtime ready",
 ]
 
 # OR targets: each entry is a list of alternative strings.
 # At least one string from each group must appear in the output.
 OR_TARGETS = [
-    ["core-lease: isolation self-test passed", "core-lease: self-test skipped"],
-    ["core-lease: owner=0 mask=0x2 acquired", "core-lease: self-test skipped"],
+    ["core-lease: dynamic isolation self-test passed", "core-lease: self-test skipped"],
+    ["core-lease: owner=0 cpus=1 acquired", "core-lease: self-test skipped"],
 ]
 
 def telemetry_line_complete(text):
     marker = "telemetry: {"
     start = text.rfind(marker)
     return start >= 0 and "\n" in text[start:]
+
+
+def echo_best_effort(text: str) -> None:
+    """Mirror serial diagnostics without making stdout backpressure fail a gate."""
+    try:
+        os.write(sys.stdout.fileno(), text.encode("utf-8", errors="replace"))
+    except (BlockingIOError, BrokenPipeError, OSError):
+        pass
 
 
 def main() -> int:
@@ -241,8 +266,7 @@ def main() -> int:
                 chunk = os.read(fd, 4096).decode("utf-8", errors="replace")
                 if not chunk:
                     break
-                sys.stdout.write(chunk)
-                sys.stdout.flush()
+                echo_best_effort(chunk)
                 seen.append(chunk)
                 text = "".join(seen)
                 telemetry_failures = []
@@ -256,7 +280,9 @@ def main() -> int:
                 if (all(target in text for target in TARGETS) and
                         all(any(alt in text for alt in group) for group in OR_TARGETS) and
                         telemetry_line_complete(text) and not telemetry_failures):
-                    print("\nQEMU smoke boot reached all full userspace/resource markers")
+                    echo_best_effort(
+                        "\nQEMU smoke boot reached all full userspace/resource markers\n"
+                    )
                     return 0
             elif proc.poll() is not None:
                 break
@@ -297,7 +323,7 @@ def main() -> int:
             missing.append(f"telemetry: {error}")
     else:
         missing.append("telemetry: complete JSON line")
-    print("\nmissing targets:", missing)
+    echo_best_effort(f"\nmissing targets: {missing}\n")
     return 1
 
 

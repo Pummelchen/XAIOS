@@ -6,7 +6,7 @@
 
 /* SFTP Protocol Constants */
 #define SFTP_VERSION 3
-#define SFTP_MAX_PACKET_SIZE SSH_CHANNEL_SFTP_BUFFER_SIZE
+#define SFTP_MAX_PACKET_SIZE SSH_CHANNEL_SFTP_REQUEST_MAX
 #define SFTP_MAX_HANDLES 64
 
 /* SFTP Message Types */
@@ -30,6 +30,7 @@
 #define SSH_FXP_RENAME     18
 #define SSH_FXP_READLINK   19
 #define SSH_FXP_SYMLINK    20
+#define SSH_FXP_EXTENDED  200
 
 /* SFTP Response Types */
 #define SSH_FXP_STATUS      101
@@ -57,6 +58,12 @@
 #define SSH_FXF_TRUNC   0x00000010
 #define SSH_FXF_EXCL    0x00000020
 
+#define SSH_FILEXFER_ATTR_SIZE        0x00000001
+#define SSH_FILEXFER_ATTR_UIDGID      0x00000002
+#define SSH_FILEXFER_ATTR_PERMISSIONS 0x00000004
+#define SSH_FILEXFER_ATTR_ACMODTIME    0x00000008
+#define SSH_FILEXFER_ATTR_EXTENDED    0x80000000
+
 /* Global State */
 static sftp_file_handle_t g_sftp_handles[SFTP_MAX_HANDLES];
 static uint32_t g_next_handle_id = 1;
@@ -77,15 +84,46 @@ static int send_sftp_packet(int sockfd, const uint8_t *payload,
 
 /* Validate path - prevent directory traversal */
 static int validate_path(const char *path) {
+  static const char control_prefix[] = "/state/control";
+  static const char host_key[] = "/state/xaios_host_key";
+  static const char password_users[] = "/etc/xaios_sshd_users";
+  static const char authorized_keys[] = "/etc/xaios_authorized_keys";
   if (path == 0 || path[0] != '/') return -1;
 
-  /* Check for ".." components */
-  const char *p = path;
-  while (*p) {
-    if (p[0] == '.' && p[1] == '.' && (p[2] == '/' || p[2] == '\0')) {
-      return -1; /* Directory traversal attempt */
+  if (ssh_str_eq(path, host_key) || ssh_str_eq(path, password_users) ||
+      ssh_str_eq(path, authorized_keys)) {
+    return -1;
+  }
+  uint32_t control_length = sizeof(control_prefix) - 1U;
+  uint32_t path_length = ssh_str_len(path);
+  if (path_length >= control_length) {
+    uint32_t matches = 1U;
+    for (uint32_t i = 0U; i < control_length; ++i) {
+      if (path[i] != control_prefix[i]) {
+        matches = 0U;
+        break;
+      }
     }
-    p++;
+    if (matches != 0U &&
+        (path[control_length] == '\0' || path[control_length] == '/')) {
+      return -1;
+    }
+  }
+
+  /* Require canonical absolute components before applying mount policies. */
+  if (path[1] == '\0') return 0;
+  uint32_t component_start = 1U;
+  for (uint32_t index = 1U;; ++index) {
+    if (path[index] != '/' && path[index] != '\0') continue;
+    uint32_t length = index - component_start;
+    if (length == 0U ||
+        (length == 1U && path[component_start] == '.') ||
+        (length == 2U && path[component_start] == '.' &&
+         path[component_start + 1U] == '.')) {
+      return -1;
+    }
+    if (path[index] == '\0') break;
+    component_start = index + 1U;
   }
   
   return 0;
@@ -127,7 +165,9 @@ void sftp_close_channel(int sockfd, uint32_t remote_channel_id) {
     if (handle->is_open &&
         handle->owner_sockfd == (uint64_t)(uint32_t)sockfd &&
         handle->owner_channel_id == remote_channel_id) {
-      if (handle->fd >= 0) xaios_fs_close(handle->fd);
+      if (handle->fd >= 0) {
+        (void)xaios_fs_close(handle->fd);
+      }
       ssh_mem_zero(handle, sizeof(*handle));
     }
   }
@@ -204,6 +244,24 @@ static int send_handle(int sockfd, uint32_t request_id, uint32_t handle_id) {
 static uint8_t g_sftp_send_buf[SFTP_MAX_PACKET_SIZE];
 static uint8_t g_sftp_read_buf[SFTP_MAX_PACKET_SIZE];
 
+static int validate_open_attributes(const uint8_t *data, uint32_t length,
+                                    uint32_t offset) {
+  if (offset > length || length - offset < 4U) return -1;
+  uint32_t flags = read_u32(data + offset);
+  if ((flags & (SSH_FILEXFER_ATTR_SIZE | SSH_FILEXFER_ATTR_UIDGID |
+                SSH_FILEXFER_ATTR_EXTENDED)) != 0U ||
+      (flags & ~(SSH_FILEXFER_ATTR_SIZE | SSH_FILEXFER_ATTR_UIDGID |
+                 SSH_FILEXFER_ATTR_PERMISSIONS |
+                 SSH_FILEXFER_ATTR_ACMODTIME |
+                 SSH_FILEXFER_ATTR_EXTENDED)) != 0U) {
+    return 1;
+  }
+  uint32_t required = 4U;
+  if ((flags & SSH_FILEXFER_ATTR_PERMISSIONS) != 0U) required += 4U;
+  if ((flags & SSH_FILEXFER_ATTR_ACMODTIME) != 0U) required += 8U;
+  return length - offset == required ? 0 : -1;
+}
+
 static int send_data(int sockfd, uint32_t request_id, const uint8_t *data,
                      uint32_t data_len) {
   if (data_len + 9 > SFTP_MAX_PACKET_SIZE) return -1;
@@ -227,7 +285,7 @@ static int handle_open(int sockfd, const uint8_t *data, uint32_t len) {
   const uint8_t *path_data;
   uint32_t next_offset;
   if (read_string_at(data, len, 4U, &path_data, &path_len, &next_offset) != 0 ||
-      len - next_offset < 4U) {
+      len - next_offset < 8U) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid OPEN");
   }
   
@@ -246,10 +304,25 @@ static int handle_open(int sockfd, const uint8_t *data, uint32_t len) {
   
   /* Parse flags */
   uint32_t flags = read_u32(data + next_offset);
-  if ((flags & ~(SSH_FXF_READ | SSH_FXF_WRITE | SSH_FXF_CREAT |
-                 SSH_FXF_TRUNC)) != 0U) {
+  int attribute_status =
+      validate_open_attributes(data, len, next_offset + 4U);
+  if ((flags & ~(SSH_FXF_READ | SSH_FXF_WRITE | SSH_FXF_APPEND |
+                 SSH_FXF_CREAT | SSH_FXF_TRUNC)) != 0U ||
+      attribute_status > 0) {
     return send_status(sockfd, request_id, SSH_FX_OP_UNSUPPORTED,
                        "Unsupported open flags");
+  }
+  if (attribute_status < 0) {
+    return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE,
+                       "Invalid open attributes");
+  }
+  if ((flags & (SSH_FXF_READ | SSH_FXF_WRITE)) == 0U ||
+      ((flags & (SSH_FXF_CREAT | SSH_FXF_TRUNC)) != 0U &&
+       (flags & SSH_FXF_WRITE) == 0U) ||
+      ((flags & SSH_FXF_APPEND) != 0U &&
+       (flags & SSH_FXF_WRITE) == 0U)) {
+    return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE,
+                       "Invalid open flags");
   }
   int fs_flags = 0;
   if ((flags & SSH_FXF_READ) != 0)  fs_flags |= XAIOS_MFS_OPEN_READ;
@@ -266,12 +339,24 @@ static int handle_open(int sockfd, const uint8_t *data, uint32_t len) {
 
   ssh_mem_copy(handle->path, local_path, path_len + 1);
   handle->open_flags = fs_flags;
+  handle->is_append = (flags & SSH_FXF_APPEND) != 0U;
 
   /* Actually open the file now */
   handle->fd = xaios_fs_open(handle->path, fs_flags);
   if (handle->fd < 0) {
     handle->is_open = 0;
     return send_status(sockfd, request_id, SSH_FX_FAILURE, "Open failed");
+  }
+  if (handle->is_append != 0) {
+    xaios_mfs_stat_user_t file_stat;
+    if (xaios_fs_stat(handle->path, &file_stat) != 0 ||
+        file_stat.type != XAIOS_FS_TYPE_FILE) {
+      (void)xaios_fs_close(handle->fd);
+      ssh_mem_zero(handle, sizeof(*handle));
+      return send_status(sockfd, request_id, SSH_FX_FAILURE,
+                         "Append stat failed");
+    }
+    handle->offset = file_stat.size;
   }
 
   return send_handle(sockfd, request_id, handle->handle_id);
@@ -300,14 +385,19 @@ static int handle_close(int sockfd, const uint8_t *data, uint32_t len) {
   }
   
   /* Close handle */
+  int close_failed = 0;
   if (handle->fd >= 0) {
-    xaios_fs_close(handle->fd);
+    /* The VFS backend owns durable-close semantics. ModelFS commits pending
+     * chunks from close(), while MutableFS persists each mutation eagerly. */
+    if (xaios_fs_close(handle->fd) != 0) close_failed = 1;
     handle->fd = -1;
   }
   handle->is_open = 0;
   ssh_mem_zero(handle, sizeof(sftp_file_handle_t));
   
-  return send_status(sockfd, request_id, SSH_FX_OK, "Success");
+  return send_status(sockfd, request_id,
+                     close_failed ? SSH_FX_FAILURE : SSH_FX_OK,
+                     close_failed ? "Durable close failed" : "Success");
 }
 
 static int handle_read(int sockfd, const uint8_t *data, uint32_t len) {
@@ -318,7 +408,7 @@ static int handle_read(int sockfd, const uint8_t *data, uint32_t len) {
   const uint8_t *handle_data;
   uint32_t next_offset;
   if (read_string_at(data, len, 4U, &handle_data, &handle_len, &next_offset) != 0 ||
-      len - next_offset < 12U) {
+      len - next_offset != 12U) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid READ");
   }
   
@@ -332,7 +422,7 @@ static int handle_read(int sockfd, const uint8_t *data, uint32_t len) {
   uint32_t read_len = read_u32(data + next_offset + 8U);
   
   sftp_file_handle_t *handle = find_handle(sockfd, handle_id);
-  if (handle == 0) {
+  if (handle == 0 || handle->is_dir != 0) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid handle ID");
   }
   
@@ -346,13 +436,12 @@ static int handle_read(int sockfd, const uint8_t *data, uint32_t len) {
     return send_status(sockfd, request_id, SSH_FX_FAILURE, "Handle not open");
   }
 
-  if (xaios_fs_seek(fd, offset) != 0) {
-    return send_status(sockfd, request_id, SSH_FX_FAILURE, "Invalid offset");
-  }
-
-  int bytes_read = xaios_fs_read(fd, file_data, clamped_len);
+  s64 bytes_read = xaios_fs_pread(fd, file_data, clamped_len, offset);
   
-  if (bytes_read <= 0) {
+  if (bytes_read < 0) {
+    return send_status(sockfd, request_id, SSH_FX_FAILURE, "Read failed");
+  }
+  if (bytes_read == 0) {
     return send_status(sockfd, request_id, SSH_FX_EOF, "End of file");
   }
   
@@ -380,16 +469,17 @@ static int handle_write(int sockfd, const uint8_t *data, uint32_t len) {
                     read_u32(data + next_offset + 4U);
   uint32_t write_len = read_u32(data + next_offset + 8U);
   next_offset += 12U;
-  if (write_len > len - next_offset) {
+  if (write_len != len - next_offset || offset > UINT64_MAX - write_len) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid WRITE");
   }
   
   sftp_file_handle_t *handle = find_handle(sockfd, handle_id);
-  if (handle == 0) {
+  if (handle == 0 || handle->is_dir != 0) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid handle ID");
   }
   
   /* Write file data via userspace FS API */
+  if (handle->is_append != 0) offset = handle->offset;
   const uint8_t *write_data = data + next_offset;
   if (write_len > SFTP_MAX_PACKET_SIZE - 32U) {
     return send_status(sockfd, request_id, SSH_FX_FAILURE,
@@ -401,15 +491,16 @@ static int handle_write(int sockfd, const uint8_t *data, uint32_t len) {
     return send_status(sockfd, request_id, SSH_FX_FAILURE, "Handle not open");
   }
 
-  if (xaios_fs_seek(fd, offset) != 0) {
-    return send_status(sockfd, request_id, SSH_FX_FAILURE, "Invalid offset");
+  uint32_t completed = 0U;
+  while (completed < write_len) {
+    s64 written = xaios_fs_pwrite(fd, write_data + completed,
+                                  write_len - completed, offset + completed);
+    if (written <= 0 || (u64)written > write_len - completed) {
+      return send_status(sockfd, request_id, SSH_FX_FAILURE, "Write failed");
+    }
+    completed += (uint32_t)written;
   }
-
-  int written = xaios_fs_write(fd, write_data, write_len);
-  
-  if (written < 0 || (uint32_t)written != write_len) {
-    return send_status(sockfd, request_id, SSH_FX_FAILURE, "Write failed");
-  }
+  if (handle->is_append != 0) handle->offset = offset + completed;
   
   return send_status(sockfd, request_id, SSH_FX_OK, "Success");
 }
@@ -445,6 +536,13 @@ static int handle_opendir(int sockfd, const uint8_t *data, uint32_t len) {
   
   ssh_mem_copy(handle->path, local_path, path_len + 1);
   handle->is_dir = 1;
+  xaios_mfs_stat_user_t directory_stat;
+  if (xaios_fs_stat(local_path, &directory_stat) != 0 ||
+      directory_stat.type != XAIOS_FS_TYPE_DIRECTORY) {
+    ssh_mem_zero(handle, sizeof(*handle));
+    return send_status(sockfd, request_id, SSH_FX_NO_SUCH_FILE,
+                       "Directory not found");
+  }
   
   return send_handle(sockfd, request_id, handle->handle_id);
 }
@@ -467,7 +565,7 @@ static int handle_readdir(int sockfd, const uint8_t *data, uint32_t len) {
   uint32_t handle_id = read_u32((const uint8_t *)handle_data);
   sftp_file_handle_t *handle = find_handle(sockfd, handle_id);
   
-  if (handle == 0) {
+  if (handle == 0 || handle->is_dir == 0) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid handle ID");
   }
   
@@ -744,6 +842,47 @@ static int handle_realpath(int sockfd, const uint8_t *data, uint32_t len) {
   return send_sftp_packet(sockfd, response, pos);
 }
 
+static int handle_extended(int sockfd, const uint8_t *data, uint32_t len) {
+  if (len < 4U) {
+    return send_status(sockfd, 0, SSH_FX_BAD_MESSAGE, "Invalid EXTENDED");
+  }
+  uint32_t request_id = read_u32(data);
+  const uint8_t *name;
+  uint32_t name_len;
+  uint32_t next_offset;
+  if (read_string_at(data, len, 4U, &name, &name_len, &next_offset) != 0 ||
+      name_len != sizeof("fsync@openssh.com") - 1U ||
+      next_offset > len) {
+    return send_status(sockfd, request_id, SSH_FX_OP_UNSUPPORTED,
+                       "Unsupported extension");
+  }
+  static const uint8_t fsync_name[] = "fsync@openssh.com";
+  for (uint32_t i = 0U; i < name_len; ++i) {
+    if (name[i] != fsync_name[i]) {
+      return send_status(sockfd, request_id, SSH_FX_OP_UNSUPPORTED,
+                         "Unsupported extension");
+    }
+  }
+  const uint8_t *handle_data;
+  uint32_t handle_len;
+  uint32_t end_offset;
+  if (read_string_at(data, len, next_offset, &handle_data, &handle_len,
+                     &end_offset) != 0 ||
+      handle_len != 4U || end_offset != len) {
+    return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE,
+                       "Invalid fsync request");
+  }
+  sftp_file_handle_t *handle = find_handle(sockfd, read_u32(handle_data));
+  if (handle == 0 || handle->fd < 0) {
+    return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE,
+                       "Invalid handle ID");
+  }
+  if (xaios_fs_fsync(handle->fd) != 0) {
+    return send_status(sockfd, request_id, SSH_FX_FAILURE, "fsync failed");
+  }
+  return send_status(sockfd, request_id, SSH_FX_OK, "Success");
+}
+
 /* ---- Main SFTP Message Handler ---- */
 int sftp_handle_message(int sockfd, uint32_t remote_channel_id,
                         const uint8_t *data, uint32_t len) {
@@ -756,10 +895,17 @@ int sftp_handle_message(int sockfd, uint32_t remote_channel_id,
     case SSH_FXP_INIT:
       /* Client sends version, we reply with our version */
       {
-        uint8_t buf[16];
-        buf[0] = SSH_FXP_VERSION;
-        write_u32(buf + 1, SFTP_VERSION);
-        return send_sftp_packet(sockfd, buf, 5);
+        static const char extension[] = "fsync@openssh.com";
+        uint8_t buf[64];
+        uint32_t pos = 0U;
+        buf[pos++] = SSH_FXP_VERSION;
+        write_u32(buf + pos, SFTP_VERSION); pos += 4U;
+        write_u32(buf + pos, sizeof(extension) - 1U); pos += 4U;
+        ssh_mem_copy(buf + pos, extension, sizeof(extension) - 1U);
+        pos += sizeof(extension) - 1U;
+        write_u32(buf + pos, 1U); pos += 4U;
+        buf[pos++] = '1';
+        return send_sftp_packet(sockfd, buf, pos);
       }
     
     case SSH_FXP_OPEN:
@@ -801,6 +947,9 @@ int sftp_handle_message(int sockfd, uint32_t remote_channel_id,
 
     case SSH_FXP_REALPATH:
       return handle_realpath(sockfd, data + 1, len - 1);
+
+    case SSH_FXP_EXTENDED:
+      return handle_extended(sockfd, data + 1, len - 1);
     
     default:
       /* Unsupported operation */

@@ -1,8 +1,8 @@
 <!--
 AI onboarding file.
 Mode: refresh
-Indexed base commit: 8404c1ec1b76c02157bb08d8a3a9466a93e5c2cb
-Last refreshed: 2026-08-01
+Indexed base commit: 8ddefb26f3dbc366dc4402677a156cf235daed82
+Last refreshed: 2026-08-04
 Generator: generic high-end AI coding agent
 Purpose: Help future AI sessions understand this repository quickly.
 Audience: Any high-capability AI coding agent, regardless of vendor or model family.
@@ -17,10 +17,13 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 | `boot/uefi/` | AArch64 UEFI loader, PE/COFF build, handoff to kernel. |
 | `kernel/` | Freestanding kernel source. |
 | `userspace/` | EL0 runtime, init/service manager, apps, worker, SSH daemon. |
-| `engine/` | Portable hosted C99 inference-engine boundary and model-v2 reader. |
+| `engine/` | Portable C99 inference boundary, model-v2 reader, signed ModelFS reader and model-file streaming API. |
 | `tests/model_v2/` | Hosted C/Python model-v2 and scalar-backend tests. |
+| `tests/model_volume/` | ModelFS lifecycle, recovery, corruption, sparse >100 GiB, and Python-writer/C-reader tests. |
+| `tests/storage/` | Hosted block, GPT, VFS, and 64-bit SFTP packet tests. |
+| `tests/control/` | Hosted deterministic `xaiosctl` parser/renderer/protocol tests. |
 | `tests/network/` | Disposable Debian 13 client image and SSH/SFTP/UDP interoperability suite. |
-| `tools/` | Model-v2 streaming writer plus explicit v1 fixture tooling. |
+| `tools/` | Model-v2 streaming writer, ModelFS host administrator, plus explicit model-v1 fixture tooling. |
 | `scripts/` | Build image, create initfs, run QEMU, smoke/regression/readiness gates. |
 | `contracts/` | QEMU release-candidate contract JSON. |
 | `docs/` | Architecture, getting started, API docs. |
@@ -36,11 +39,12 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 | `kernel/arch/aarch64/` | Assembly entry, exception vectors, timer, GIC, MMU, SMP, PCI/SMMU/RTC/watchdog. |
 | `kernel/core/` | `kmain()`, logging, telemetry, panic/assert, stack canaries. |
 | `kernel/mm/` | PMM, NUMA, VMM support, heap/arena, ELF loader. |
-| `kernel/dev/virtio/` | VirtIO transport, block, net drivers. |
-| `kernel/fs/` | Initramfs and mutable filesystem. |
+| `kernel/dev/virtio/`, `kernel/dev/nvme.c`, `kernel/dev/block_device.c` | VirtIO transport/drivers, focused QEMU NVMe path, and backend-neutral 64-bit block registry. |
+| `kernel/storage/` | GPT parser/writer and bounded partition block device. |
+| `kernel/fs/` | Initramfs, VFS, MutableFS adapter, immutable ModelFS reads, and bounded staging writes/activation. |
 | `kernel/net/` | ARP, IPv4/IPv6, ICMP/ICMPv6, NDP, routing, DNS, socket buffers. |
-| `kernel/runtime/` | AI Cell, CPU-AI runtime, model arena, security, sandbox, update, persistence, remote login, source index, Git workspace, agent protocol. |
-| `kernel/sched/` | Scheduler and AArch64 context switch. |
+| `kernel/runtime/` | AI Cell, CPU-AI runtime, model arena, security, sandbox, update, persistence, per-session remote login, persistent admin control, typed control protocol, source index, Git workspace, agent protocol. |
+| `kernel/sched/` | Scheduler, general thread runtime, and AArch64 context switch. |
 | `kernel/user/` | Process lifecycle, service supervisor, syscall dispatch. |
 | `kernel/include/xaios/` | Kernel public/internal headers. |
 
@@ -49,11 +53,11 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 | Path | Role |
 |---|---|
 | `userspace/include/xaios_user.h` | Userspace syscall numbers, wrappers, data structures. |
-| `userspace/lib/` | Userspace start and support library. |
+| `userspace/lib/` | Userspace start, syscall support and shared `xaiosctl` client library. |
 | `userspace/init/` | `/init` and init config. |
 | `userspace/service-manager/` | Service manager and service descriptor. |
 | `userspace/worker/` | Worker process used for lifecycle/scheduler validation. |
-| `userspace/apps/` | Shell, tests, ML/network/system apps, `agenttest`. |
+| `userspace/apps/` | Shell, `xaiosctl`, tests, ML/network/system apps and `agenttest`. |
 | `userspace/sshd/` | SSH/SFTP daemon implementation. |
 
 ## Entrypoints
@@ -65,11 +69,18 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 - Build image: `scripts/build-image.sh`
 - QEMU run: `scripts/run-qemu-aarch64.sh`, `scripts/run-qemu-x86_64.sh`
 - Primary smoke: `scripts/qemu-smoke.py`
+- Aggregate core-OS gate: `scripts/qemu-core-os-rc.py`
+- Focused device/capacity gates: `scripts/qemu-smmu-gate.py`,
+  `scripts/qemu-nvme-gate.py`, `scripts/qemu-high-core-gate.py`, and
+  `scripts/qemu-storage-crash-test.py`
 - ABI gate: `scripts/qemu-abi-contract.py`, `scripts/qemu_gate_lib.py`
+- Control service: `kernel/runtime/admin_control.c`, `kernel/runtime/control_protocol.c`, `userspace/lib/xaios_control_client.c`
 - Model conversion: `tools/convert_gguf_to_xaios.py`
 - Model-v2 writer/reader: `tools/xaios_model_v2.py`
+- ModelFS administrator: `tools/xaios_model_volume.py`
+- ModelFS guest interoperability: `scripts/qemu-model-sftp-gate.py`
 - Portable engine APIs: `engine/include/xaios_engine/`
-- Hosted engine tests: `tests/model_v2/`
+- Hosted engine/storage tests: `tests/model_v2/`, `tests/model_volume/`, `tests/storage/`
 
 ## External dependencies
 

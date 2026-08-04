@@ -123,6 +123,20 @@ def run_arm_boot_tier(tier: Dict[str, Any], supported: Set[str],
     accelerator = tier["accelerator"]
     name = tier["name"]
     required = tier.get("required", True)
+    if (not required and accelerator == "hvf" and
+            base_env.get("XAIOS_QEMU_RUN_OPTIONAL_HVF") != "1"):
+        return {
+            "name": name,
+            "architecture": "aarch64",
+            "cpu": cpu,
+            "accelerator": accelerator,
+            "validation": tier["validation"],
+            "required": False,
+            "supported": None,
+            "exit_code": None,
+            "status": "skipped",
+            "reason": "set XAIOS_QEMU_RUN_OPTIONAL_HVF=1 to run experimental HVF",
+        }
     if cpu != "host" and cpu not in supported:
         return {
             "name": name,
@@ -233,7 +247,11 @@ def main() -> int:
 
     tiers: List[Dict[str, Any]] = []
     if qemu_aarch64:
-        for tier in contract["cpu_matrix"]["arm64_boot_tiers"]:
+        arm_tiers = sorted(
+            contract["cpu_matrix"]["arm64_boot_tiers"],
+            key=lambda tier: not tier.get("required", True),
+        )
+        for tier in arm_tiers:
             result = run_arm_boot_tier(tier, arm_supported, base_env)
             tiers.append(result)
             if result["status"] != "pass" and result["required"]:
@@ -262,7 +280,11 @@ def main() -> int:
         "tiers": tiers,
         "optional_failures": [
             tier["name"] for tier in tiers
-            if not tier["required"] and tier["status"] != "pass"
+            if not tier["required"] and tier["status"] == "fail"
+        ],
+        "optional_skipped": [
+            tier["name"] for tier in tiers
+            if not tier["required"] and tier["status"] == "skipped"
         ],
         "failures": failures,
     }

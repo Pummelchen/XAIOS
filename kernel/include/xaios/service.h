@@ -60,6 +60,7 @@ typedef struct xaios_service {
 void service_supervisor_init(void);
 xaios_status_t service_start_init(void);
 xaios_status_t service_status(const char *name);
+xaios_status_t service_snapshot(const char *name, xaios_service_t *snapshot);
 xaios_status_t service_start(const char *name);
 xaios_status_t service_stop(const char *name);
 xaios_status_t service_restart(const char *name);

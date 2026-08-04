@@ -17,6 +17,7 @@ def validate_contract_shape(rc_contract):
         failures.append("release candidate contract is not frozen")
     required_sections = [
         "syscall_abi",
+        "control_protocol",
         "telemetry_schema",
         "filesystem_format",
         "cpu_ai_model_format",
@@ -26,6 +27,7 @@ def validate_contract_shape(rc_contract):
         "security_policy",
         "update_system",
         "admin_control_plane",
+        "core_os_capability_contract",
         "cpu_matrix",
     ]
     for section in required_sections:
@@ -99,6 +101,65 @@ def validate_model_contract(rc_contract):
     return failures
 
 
+def validate_control_protocol_contract(rc_contract):
+    failures = []
+    control = rc_contract.get("control_protocol", {})
+    kernel = (ROOT / "kernel/include/xaios/control_protocol.h").read_text(
+        encoding="utf-8"
+    )
+    userspace = (ROOT / "userspace/include/xaios_control.h").read_text(
+        encoding="utf-8"
+    )
+    expected_literals = {
+        "XAIOS_CONTROL_MAGIC": "0x58414350",
+        "XAIOS_CONTROL_VERSION": "1",
+        "XAIOS_CONTROL_MAX_REQUEST_BYTES": "512",
+        "XAIOS_CONTROL_MAX_RESPONSE_BYTES": "8192",
+    }
+    contract_values = {
+        "XAIOS_CONTROL_MAGIC": str(control.get("magic", "")),
+        "XAIOS_CONTROL_VERSION": str(control.get("version", "")),
+        "XAIOS_CONTROL_MAX_REQUEST_BYTES": str(control.get("max_request_bytes", "")),
+        "XAIOS_CONTROL_MAX_RESPONSE_BYTES": str(control.get("max_response_bytes", "")),
+    }
+    for name, expected in expected_literals.items():
+        if expected.lower() not in contract_values[name].lower():
+            failures.append(f"control protocol contract {name} expected {expected}")
+        if name not in kernel or expected.lower() not in kernel.lower():
+            failures.append(f"kernel control protocol missing {name}={expected}")
+        if name not in userspace or expected.lower() not in userspace.lower():
+            failures.append(f"userspace control protocol missing {name}={expected}")
+    if control.get("request_header_bytes") != 48:
+        failures.append("control request header must be 48 bytes")
+    if control.get("response_header_bytes") != 40:
+        failures.append("control response header must be 40 bytes")
+    for declaration in ["must_be_48_bytes", "must_be_40_bytes"]:
+        if declaration not in kernel or declaration not in userspace:
+            failures.append(f"control ABI lacks compile-time {declaration} assertion")
+    expected_operations = [
+        "version", "status", "health", "capabilities", "hardware", "metrics",
+        "logs", "config show", "config validate", "config diff", "config apply",
+        "auth key list", "auth key add", "auth key remove",
+        "auth host-key rotate", "audit show", "model verify", "model activate",
+        "storage device list", "storage device show", "storage filesystem list",
+        "storage filesystem show", "storage partition list",
+        "storage partition verify", "storage partition plan-create",
+        "storage partition create", "storage partition plan-delete",
+        "storage partition delete", "storage partition plan-resize",
+        "storage partition resize", "storage partition repair",
+        "storage format-plan", "storage format", "storage mount",
+        "storage unmount", "storage fsck", "storage fs-repair",
+        "storage resize-plan", "storage resize", "model register",
+        "storage scrub-start", "storage scrub-status",
+        "storage scrub-pause", "storage scrub-resume",
+        "storage scrub-cancel", "storage trim-start",
+        "storage trim-status", "storage trim-cancel", "model cleanup"
+    ]
+    if control.get("operations") != expected_operations:
+        failures.append("control protocol operation list mismatch")
+    return failures
+
+
 def validate_memory_map_contract(_rc_contract):
     failures = []
     vmm_header = (ROOT / "kernel/include/xaios/vmm.h").read_text(encoding="utf-8")
@@ -132,6 +193,27 @@ def validate_qemu_launcher_contract(_rc_contract):
     return failures
 
 
+def validate_core_os_gate_contract(rc_contract):
+    failures = []
+    gate = rc_contract.get("core_os_capability_contract", {})
+    gate_source = (ROOT / "scripts/qemu-core-os-rc.py").read_text(encoding="utf-8")
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    if gate.get("schema") != "xaios.qemu.core_os_release_candidate.v1":
+        failures.append("core OS gate schema mismatch")
+    if gate.get("command") != "make qemu-core-os-rc":
+        failures.append("core OS gate command mismatch")
+    if gate.get("correctness_only") is not True:
+        failures.append("core OS gate must remain correctness-only")
+    if gate.get("x86_full_platform_parity") is not False:
+        failures.append("core OS gate must not claim x86 full platform parity")
+    for capability in gate.get("required_capabilities", []):
+        if capability not in gate_source:
+            failures.append(f"core OS gate source missing capability {capability}")
+    if "qemu-core-os-rc:" not in makefile:
+        failures.append("Makefile missing qemu-core-os-rc target")
+    return failures
+
+
 def main() -> int:
     rc_contract = contract()
     checks = []
@@ -141,8 +223,10 @@ def main() -> int:
         ("syscall_abi", validate_syscall_abi),
         ("initfs_format", validate_initfs_contract),
         ("cpu_ai_model_format", validate_model_contract),
+        ("control_protocol", validate_control_protocol_contract),
         ("memory_map", validate_memory_map_contract),
         ("qemu_launcher", validate_qemu_launcher_contract),
+        ("core_os_gate", validate_core_os_gate_contract),
     ]
     for name, validator in validators:
         result_failures = validator(rc_contract)

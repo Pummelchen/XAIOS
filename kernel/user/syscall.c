@@ -2,7 +2,10 @@
 #include <xaios/arena.h>
 #include <xaios/assert.h>
 #include <xaios/cpu_ai_runtime.h>
+#include <xaios/control_protocol.h>
+#include <xaios/dns.h>
 #include <xaios/initramfs.h>
+#include <xaios/kheap.h>
 #include <xaios/klog.h>
 #include <xaios/mutable_fs.h>
 #include <xaios/network_stack.h>
@@ -13,7 +16,9 @@
 #include <xaios/socket_buffer.h>
 #include <xaios/syscall.h>
 #include <xaios/timer.h>
+#include <xaios/thread.h>
 #include <xaios/user.h>
+#include <xaios/vfs.h>
 #include <xaios/vmm.h>
 #include <xaios/virtio_rng.h>
 
@@ -64,7 +69,78 @@ static const xaios_syscall_entry_t g_syscall_table[] = {
     {XAIOS_SYSCALL_AGENT_DISPATCH, "agent_dispatch", XAIOS_CAP_AGENT},
     {XAIOS_SYSCALL_RANDOM, "random", XAIOS_CAP_RANDOM},
     {XAIOS_SYSCALL_FS_SEEK, "fs_seek", XAIOS_CAP_FS_READ},
+    {XAIOS_SYSCALL_CONTROL_QUERY, "control_query", XAIOS_CAP_CONTROL_QUERY},
+    {XAIOS_SYSCALL_REMOTE_LOGIN_SESSION, "remote_login_session",
+     XAIOS_CAP_REMOTE_LOGIN},
+    {XAIOS_SYSCALL_FS_PREAD, "fs_pread", XAIOS_CAP_FS_READ},
+    {XAIOS_SYSCALL_FS_PWRITE, "fs_pwrite", XAIOS_CAP_FS_WRITE},
+    {XAIOS_SYSCALL_FS_FSYNC, "fs_fsync", XAIOS_CAP_FS_WRITE},
+    {XAIOS_SYSCALL_THREAD_CREATE, "thread_create", XAIOS_CAP_THREADS},
+    {XAIOS_SYSCALL_THREAD_JOIN, "thread_join", XAIOS_CAP_THREADS},
+    {XAIOS_SYSCALL_THREAD_CANCEL, "thread_cancel", XAIOS_CAP_THREADS},
+    {XAIOS_SYSCALL_THREAD_EXIT, "thread_exit", XAIOS_CAP_THREADS},
+    {XAIOS_SYSCALL_NET_RESOLVE, "net_resolve", XAIOS_CAP_NET},
 };
+
+static uint64_t control_operation_capability(uint16_t operation) {
+  if (operation == XAIOS_CONTROL_OP_MODEL_VERIFY ||
+      operation == XAIOS_CONTROL_OP_MODEL_REGISTER ||
+      operation == XAIOS_CONTROL_OP_MODEL_CLEANUP) {
+    return XAIOS_CAP_MODEL_STAGE;
+  }
+  if (operation == XAIOS_CONTROL_OP_MODEL_ACTIVATE) {
+    return XAIOS_CAP_MODEL_ACTIVATE;
+  }
+  if ((operation >= XAIOS_CONTROL_OP_STORAGE_DEVICE_LIST &&
+       operation <= XAIOS_CONTROL_OP_STORAGE_PARTITION_PLAN_CREATE) ||
+      operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_PLAN_DELETE ||
+      operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_PLAN_RESIZE) {
+    return XAIOS_CAP_STORAGE_READ;
+  }
+  if (operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_CREATE ||
+      operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_DELETE) {
+    return XAIOS_CAP_STORAGE_PARTITION;
+  }
+  if (operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_RESIZE) {
+    return XAIOS_CAP_STORAGE_PARTITION | XAIOS_CAP_STORAGE_RESIZE;
+  }
+  if (operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_REPAIR) {
+    return XAIOS_CAP_STORAGE_PARTITION | XAIOS_CAP_STORAGE_REPAIR;
+  }
+  if (operation == XAIOS_CONTROL_OP_STORAGE_FORMAT_PLAN ||
+      operation == XAIOS_CONTROL_OP_STORAGE_FSCK ||
+      operation == XAIOS_CONTROL_OP_STORAGE_FS_RESIZE_PLAN) {
+    return XAIOS_CAP_STORAGE_READ;
+  }
+  if (operation == XAIOS_CONTROL_OP_STORAGE_FORMAT) {
+    return XAIOS_CAP_STORAGE_FORMAT;
+  }
+  if (operation == XAIOS_CONTROL_OP_STORAGE_MOUNT ||
+      operation == XAIOS_CONTROL_OP_STORAGE_UNMOUNT) {
+    return XAIOS_CAP_STORAGE_MOUNT;
+  }
+  if (operation == XAIOS_CONTROL_OP_STORAGE_FS_REPAIR) {
+    return XAIOS_CAP_STORAGE_REPAIR;
+  }
+  if (operation == XAIOS_CONTROL_OP_STORAGE_FS_RESIZE) {
+    return XAIOS_CAP_STORAGE_RESIZE;
+  }
+  if (operation == XAIOS_CONTROL_OP_STORAGE_SCRUB_STATUS) {
+    return XAIOS_CAP_STORAGE_READ;
+  }
+  if (operation >= XAIOS_CONTROL_OP_STORAGE_SCRUB_START &&
+      operation <= XAIOS_CONTROL_OP_STORAGE_SCRUB_CANCEL) {
+    return XAIOS_CAP_STORAGE_REPAIR;
+  }
+  if (operation == XAIOS_CONTROL_OP_STORAGE_TRIM_STATUS) {
+    return XAIOS_CAP_STORAGE_READ;
+  }
+  if (operation == XAIOS_CONTROL_OP_STORAGE_TRIM_START ||
+      operation == XAIOS_CONTROL_OP_STORAGE_TRIM_CANCEL) {
+    return XAIOS_CAP_STORAGE_TRIM;
+  }
+  return 0U;
+}
 
 static uint64_t g_control_plane_syscall_count;
 static uint64_t g_control_plane_denial_count;
@@ -188,7 +264,7 @@ static void bytes_copy(void *dst, const void *src, uint64_t size) {
 static int is_control_plane_syscall(uint64_t syscall) {
   return syscall == XAIOS_SYSCALL_OSCTL ||
          (syscall >= XAIOS_SYSCALL_READ_SERVICE_DESCRIPTOR &&
-          syscall <= XAIOS_SYSCALL_FS_SEEK);
+          syscall <= XAIOS_SYSCALL_FS_FSYNC);
 }
 
 static uint64_t reject_syscall(uint64_t syscall, uint64_t arg0, uint64_t arg1,
@@ -324,6 +400,64 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     return complete_control_syscall(0);
   }
 
+  if (syscall == XAIOS_SYSCALL_CONTROL_QUERY) {
+    xaios_syscall_control_query_request_t query;
+    uint8_t request[XAIOS_CONTROL_MAX_REQUEST_BYTES];
+    uint8_t *response = 0;
+    uint64_t response_bytes = 0U;
+    if (arg1 != sizeof(query) ||
+        vmm_validate_user_buffer(arg0, sizeof(query), 0) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1,
+                            "bad-control-query-request");
+    }
+    bytes_copy(&query, (const void *)(uintptr_t)arg0, sizeof(query));
+    if (query.request_size < sizeof(xaios_control_request_header_t) ||
+        query.request_size > sizeof(request) ||
+        query.response_size < sizeof(xaios_control_response_header_t) ||
+        query.response_size > XAIOS_CONTROL_MAX_RESPONSE_BYTES ||
+        vmm_validate_user_buffer(query.request, query.request_size, 0) !=
+            XAIOS_OK ||
+        vmm_validate_user_buffer(query.response, query.response_size,
+                                 XAIOS_VMM_WRITABLE) != XAIOS_OK ||
+        vmm_validate_user_buffer(query.out_size, sizeof(response_bytes),
+                                 XAIOS_VMM_WRITABLE) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "control-query-denied");
+    }
+    bytes_copy(request, (const void *)(uintptr_t)query.request,
+               query.request_size);
+    const xaios_control_request_header_t *control_request =
+        (const xaios_control_request_header_t *)(const void *)request;
+    uint64_t operation_capability =
+        control_operation_capability(control_request->operation);
+    if (operation_capability != 0U &&
+        user_process_has_capability(operation_capability) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1,
+                            "control-operation-capability-denied");
+    }
+    response = (uint8_t *)kheap_calloc(query.response_size, 16U);
+    if (response == 0) {
+      return reject_syscall(syscall, arg0, arg1,
+                            "control-query-no-memory");
+    }
+    xaios_control_role_t role =
+        user_process_has_capability(XAIOS_CAP_CONTROL_ADMIN) == XAIOS_OK
+            ? XAIOS_CONTROL_ROLE_ADMIN
+            : XAIOS_CONTROL_ROLE_OBSERVER;
+    xaios_status_t status = control_protocol_dispatch(
+        request, query.request_size, response, query.response_size,
+        &response_bytes, role);
+    if (status != XAIOS_OK || response_bytes > query.response_size) {
+      kheap_free(response);
+      return reject_syscall(syscall, arg0, arg1,
+                            "control-query-dispatch-failed");
+    }
+    bytes_copy((void *)(uintptr_t)query.response, response, response_bytes);
+    bytes_copy((void *)(uintptr_t)query.out_size, &response_bytes,
+               sizeof(response_bytes));
+    kheap_free(response);
+    return complete_control_syscall(response_bytes);
+  }
+
   if (syscall >= XAIOS_SYSCALL_SERVICE_STATUS &&
       syscall <= XAIOS_SYSCALL_SERVICE_ROLLBACK) {
     char service_name[64];
@@ -383,7 +517,9 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
         security_authorize_fs_read(path) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-open-read-denied");
     }
-    int64_t fd = mutable_fs_open(path, (uint32_t)arg2);
+    const xaios_user_process_t *current = user_current_process();
+    uint32_t owner_id = current != 0 ? current->pid : 0U;
+    int64_t fd = vfs_open(path, (uint32_t)arg2, owner_id);
     if (fd < 0) {
       return reject_syscall(syscall, arg0, arg1, "fs-open-denied");
     }
@@ -394,8 +530,10 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     if (vmm_validate_user_buffer(arg1, arg2, XAIOS_VMM_WRITABLE) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "bad-fs-read-buffer");
     }
-    int64_t bytes = mutable_fs_read_fd((uint32_t)arg0,
-                                       (void *)(uintptr_t)arg1, arg2);
+    const xaios_user_process_t *current = user_current_process();
+    uint32_t owner_id = current != 0 ? current->pid : 0U;
+    int64_t bytes = vfs_read((uint32_t)arg0, owner_id,
+                             (void *)(uintptr_t)arg1, arg2);
     if (bytes < 0) {
       return reject_syscall(syscall, arg0, arg1, "fs-read-denied");
     }
@@ -410,23 +548,78 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
                                                    arg2) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-write-secret-denied");
     }
-    int64_t bytes = mutable_fs_write_fd((uint32_t)arg0,
-                                        (const void *)(uintptr_t)arg1, arg2);
+    const xaios_user_process_t *current = user_current_process();
+    uint32_t owner_id = current != 0 ? current->pid : 0U;
+    int64_t bytes = vfs_write((uint32_t)arg0, owner_id,
+                              (const void *)(uintptr_t)arg1, arg2);
     if (bytes < 0) {
       return reject_syscall(syscall, arg0, arg1, "fs-write-denied");
     }
     return complete_control_syscall((uint64_t)bytes);
   }
 
+  if (syscall == XAIOS_SYSCALL_FS_PREAD ||
+      syscall == XAIOS_SYSCALL_FS_PWRITE) {
+    xaios_syscall_positional_io_request_t request;
+    if (arg1 != sizeof(request) ||
+        vmm_validate_user_buffer(arg0, sizeof(request), 0) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "bad-fs-positional-request");
+    }
+    bytes_copy(&request, (const void *)(uintptr_t)arg0, sizeof(request));
+    if (request.fd > UINT32_MAX || request.size == 0U ||
+        vmm_validate_user_buffer(
+            request.buffer, request.size,
+            syscall == XAIOS_SYSCALL_FS_PREAD ? XAIOS_VMM_WRITABLE : 0U) !=
+            XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "bad-fs-positional-buffer");
+    }
+    if (syscall == XAIOS_SYSCALL_FS_PWRITE &&
+        security_reject_credential_material_buffer(
+            (const char *)(uintptr_t)request.buffer, request.size) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1,
+                            "fs-positional-write-secret-denied");
+    }
+    const xaios_user_process_t *current = user_current_process();
+    uint32_t owner_id = current != 0 ? current->pid : 0U;
+    int64_t bytes = syscall == XAIOS_SYSCALL_FS_PREAD
+                        ? vfs_pread((uint32_t)request.fd, owner_id,
+                                    (void *)(uintptr_t)request.buffer,
+                                    request.size, request.offset)
+                        : vfs_pwrite((uint32_t)request.fd, owner_id,
+                                     (const void *)(uintptr_t)request.buffer,
+                                     request.size, request.offset);
+    if (bytes < 0) {
+      return reject_syscall(syscall, arg0, arg1,
+                            syscall == XAIOS_SYSCALL_FS_PREAD
+                                ? "fs-pread-denied"
+                                : "fs-pwrite-denied");
+    }
+    return complete_control_syscall((uint64_t)bytes);
+  }
+
+  if (syscall == XAIOS_SYSCALL_FS_FSYNC) {
+    const xaios_user_process_t *current = user_current_process();
+    uint32_t owner_id = current != 0 ? current->pid : 0U;
+    if (arg0 > UINT32_MAX ||
+        vfs_fsync((uint32_t)arg0, owner_id) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "fs-fsync-denied");
+    }
+    return complete_control_syscall(0U);
+  }
+
   if (syscall == XAIOS_SYSCALL_FS_SEEK) {
-    if (mutable_fs_seek((uint32_t)arg0, arg1) != XAIOS_OK) {
+    const xaios_user_process_t *current = user_current_process();
+    uint32_t owner_id = current != 0 ? current->pid : 0U;
+    if (vfs_seek((uint32_t)arg0, owner_id, arg1) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-seek-denied");
     }
     return complete_control_syscall(arg1);
   }
 
   if (syscall == XAIOS_SYSCALL_FS_CLOSE) {
-    if (mutable_fs_close((uint32_t)arg0) != XAIOS_OK) {
+    const xaios_user_process_t *current = user_current_process();
+    uint32_t owner_id = current != 0 ? current->pid : 0U;
+    if (vfs_close((uint32_t)arg0, owner_id) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-close-denied");
     }
     return complete_control_syscall(0);
@@ -439,9 +632,16 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
                                  XAIOS_VMM_WRITABLE) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "bad-fs-stat");
     }
-    if (mutable_fs_stat(path, (xaios_mfs_stat_t *)(uintptr_t)arg2) != XAIOS_OK) {
+    xaios_vfs_stat_t vfs_value;
+    if (vfs_stat(path, &vfs_value) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-stat-denied");
     }
+    xaios_mfs_stat_t *value = (xaios_mfs_stat_t *)(uintptr_t)arg2;
+    value->type = vfs_value.type;
+    value->block_count = vfs_value.block_count;
+    value->size = vfs_value.size;
+    value->generation = vfs_value.generation;
+    value->content_hash = vfs_value.content_hash;
     return complete_control_syscall(sizeof(xaios_mfs_stat_t));
   }
 
@@ -451,7 +651,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
         security_authorize_fs_write(path) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-mkdir-denied");
     }
-    if (mutable_fs_mkdir(path) != XAIOS_OK) {
+    if (vfs_mkdir(path) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-mkdir-failed");
     }
     return complete_control_syscall(0);
@@ -463,7 +663,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
         security_authorize_fs_write(path) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-delete-denied");
     }
-    if (mutable_fs_delete(path) != XAIOS_OK) {
+    if (vfs_delete(path) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-delete-failed");
     }
     return complete_control_syscall(0);
@@ -486,7 +686,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
         security_authorize_fs_write(new_path) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-rename-denied");
     }
-    if (mutable_fs_rename(old_path, new_path) != XAIOS_OK) {
+    if (vfs_rename(old_path, new_path) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-rename-failed");
     }
     return complete_control_syscall(0);
@@ -509,8 +709,8 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
         security_authorize_fs_read(path) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-list-denied");
     }
-    if (mutable_fs_list(path, (char *)(uintptr_t)request.buffer,
-                        request.buffer_size, &out_size) != XAIOS_OK) {
+    if (vfs_list(path, (char *)(uintptr_t)request.buffer,
+                 request.buffer_size, &out_size) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-list-failed");
     }
     bytes_copy((void *)(uintptr_t)request.out_size, &out_size,
@@ -653,7 +853,62 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     }
     if (remote_login_execute(user, command, (char *)(uintptr_t)request.output,
                              request.output_size, &out_size) != XAIOS_OK) {
+      bytes_copy((void *)(uintptr_t)request.out_size, &out_size,
+                 sizeof(out_size));
       return reject_syscall(syscall, arg0, arg1, "remote-login-failed");
+    }
+    bytes_copy((void *)(uintptr_t)request.out_size, &out_size,
+               sizeof(out_size));
+    return complete_control_syscall(out_size);
+  }
+
+  if (syscall == XAIOS_SYSCALL_REMOTE_LOGIN_SESSION) {
+    xaios_syscall_remote_login_session_request_t request;
+    char user[32];
+    char command[96];
+    uint64_t out_size = 0U;
+    if (arg1 != sizeof(request) ||
+        vmm_validate_user_buffer(arg0, sizeof(request), 0) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1,
+                            "bad-remote-login-session-request");
+    }
+    bytes_copy(&request, (const void *)(uintptr_t)arg0, sizeof(request));
+    if (request.session_id == 0U) {
+      return reject_syscall(syscall, arg0, arg1,
+                            "remote-login-session-id-invalid");
+    }
+    if (request.action == XAIOS_REMOTE_LOGIN_SESSION_CLOSE) {
+      if (request.user != 0U || request.user_size != 0U ||
+          request.command != 0U || request.command_size != 0U ||
+          request.output != 0U || request.output_size != 0U ||
+          request.out_size != 0U ||
+          remote_login_close_session(request.session_id) != XAIOS_OK) {
+        return reject_syscall(syscall, arg0, arg1,
+                              "remote-login-session-close-failed");
+      }
+      return complete_control_syscall(0U);
+    }
+    if (request.action != XAIOS_REMOTE_LOGIN_SESSION_EXECUTE ||
+        copy_user_string(request.user, request.user_size, user,
+                         sizeof(user)) != XAIOS_OK ||
+        copy_user_string(request.command, request.command_size, command,
+                         sizeof(command)) != XAIOS_OK ||
+        request.output_size == 0U ||
+        vmm_validate_user_buffer(request.output, request.output_size,
+                                 XAIOS_VMM_WRITABLE) != XAIOS_OK ||
+        vmm_validate_user_buffer(request.out_size, sizeof(out_size),
+                                 XAIOS_VMM_WRITABLE) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1,
+                            "remote-login-session-denied");
+    }
+    if (remote_login_execute_session(
+            request.session_id, user, command,
+            (char *)(uintptr_t)request.output, request.output_size,
+            &out_size) != XAIOS_OK) {
+      bytes_copy((void *)(uintptr_t)request.out_size, &out_size,
+                 sizeof(out_size));
+      return reject_syscall(syscall, arg0, arg1,
+                            "remote-login-session-failed");
     }
     bytes_copy((void *)(uintptr_t)request.out_size, &out_size,
                sizeof(out_size));
@@ -716,6 +971,89 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     bytes_copy((void *)(uintptr_t)request.out_checksum, &checksum,
                sizeof(checksum));
     return complete_control_syscall(ran_threads);
+  }
+
+  if (syscall == XAIOS_SYSCALL_THREAD_CREATE) {
+    xaios_syscall_thread_create_request_t request;
+    uint64_t thread_id = 0U;
+    const xaios_user_process_t *process = user_current_process();
+    if (arg1 != sizeof(request) || process == 0 ||
+        vmm_validate_user_buffer(arg0, sizeof(request), 0) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "bad-thread-create-request");
+    }
+    bytes_copy(&request, (const void *)(uintptr_t)arg0, sizeof(request));
+    xaios_status_t entry_status =
+        vmm_validate_user_buffer(request.entry, 4U, XAIOS_VMM_EXECUTABLE);
+    xaios_status_t return_status = vmm_validate_user_buffer(
+        request.return_address, 4U, XAIOS_VMM_EXECUTABLE);
+    xaios_status_t stack_status = vmm_validate_user_buffer(
+        request.stack, request.stack_size, XAIOS_VMM_WRITABLE);
+    xaios_status_t output_status = vmm_validate_user_buffer(
+        request.out_thread_id, sizeof(thread_id), XAIOS_VMM_WRITABLE);
+    if (request.stack_size < 4096U || request.stack_size > 1048576U ||
+        request.stack + request.stack_size < request.stack ||
+        request.out_thread_id == 0U ||
+        entry_status != XAIOS_OK || return_status != XAIOS_OK ||
+        stack_status != XAIOS_OK || output_status != XAIOS_OK ||
+        (request.preferred_cpu != UINT64_MAX &&
+         request.preferred_cpu > UINT32_MAX)) {
+      return reject_syscall(syscall, arg0, arg1, "thread-create-denied");
+    }
+    uint64_t stack_top =
+        (request.stack + request.stack_size) & ~UINT64_C(15);
+    uint32_t preferred = request.preferred_cpu == UINT64_MAX
+                             ? XAIOS_THREAD_CPU_ANY
+                             : (uint32_t)request.preferred_cpu;
+    if (stack_top <= request.stack ||
+        xaios_user_thread_create(request.entry, request.argument, stack_top,
+                                 request.return_address, preferred,
+                                 process->pid, &thread_id) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "thread-create-failed");
+    }
+    bytes_copy((void *)(uintptr_t)request.out_thread_id, &thread_id,
+               sizeof(thread_id));
+    user_process_note_syscall(0);
+    return thread_id;
+  }
+
+  if (syscall == XAIOS_SYSCALL_THREAD_JOIN) {
+    xaios_syscall_thread_join_request_t request;
+    uint64_t result = 0U;
+    const xaios_user_process_t *process = user_current_process();
+    if (arg1 != sizeof(request) || process == 0 ||
+        vmm_validate_user_buffer(arg0, sizeof(request), 0) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "bad-thread-join-request");
+    }
+    bytes_copy(&request, (const void *)(uintptr_t)arg0, sizeof(request));
+    if (request.timeout_ns > UINT64_C(60000000000) ||
+        vmm_validate_user_buffer(request.out_result, sizeof(result),
+                                 XAIOS_VMM_WRITABLE) != XAIOS_OK ||
+        xaios_user_thread_join(request.thread_id, process->pid,
+                               request.timeout_ns, &result) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "thread-join-failed");
+    }
+    bytes_copy((void *)(uintptr_t)request.out_result, &result, sizeof(result));
+    user_process_note_syscall(0);
+    return 0U;
+  }
+
+  if (syscall == XAIOS_SYSCALL_THREAD_CANCEL) {
+    const xaios_user_process_t *process = user_current_process();
+    if (process == 0 ||
+        xaios_user_thread_cancel(arg0, process->pid) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "thread-cancel-failed");
+    }
+    user_process_note_syscall(0);
+    return 0U;
+  }
+
+  if (syscall == XAIOS_SYSCALL_THREAD_EXIT) {
+    user_process_note_syscall(0);
+    uint64_t encoded = xaios_user_thread_exit(arg0);
+    if (encoded == UINT64_MAX) {
+      return reject_syscall(syscall, arg0, arg1, "thread-exit-outside-thread");
+    }
+    return encoded;
   }
 
   if (syscall == XAIOS_SYSCALL_ML_RUN) {
@@ -992,8 +1330,6 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1, "net-send-failed");
     }
     *(uint64_t *)(uintptr_t)request.out_bytes = bytes_written;
-    klog("syscall: net_send sockfd=%lu len=%lu written=%u\n",
-         request.sockfd, request.buffer_size, bytes_written);
     return XAIOS_OK;
   }
 
@@ -1021,6 +1357,37 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     kernel_socket_free(arg0);
     klog("syscall: net_close sockfd=%lu\n", arg0);
     return XAIOS_OK;
+  }
+
+  if (syscall == XAIOS_SYSCALL_NET_RESOLVE) {
+    xaios_syscall_net_resolve_request_t request;
+    char hostname[64];
+    uint32_t address = 0U;
+    if (arg1 != sizeof(request) ||
+        vmm_validate_user_buffer(arg0, sizeof(request), 0) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "bad-net-resolve-request");
+    }
+    bytes_copy(&request, (const void *)(uintptr_t)arg0, sizeof(request));
+    if (copy_user_string(request.hostname, request.hostname_size, hostname,
+                         sizeof(hostname)) != XAIOS_OK ||
+        vmm_validate_user_buffer(request.out_ipv4, sizeof(address),
+                                 XAIOS_VMM_WRITABLE) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "net-resolve-denied");
+    }
+    for (uint64_t i = 0U; i < request.hostname_size; ++i) {
+      if (hostname[i] == '\0') {
+        return reject_syscall(syscall, arg0, arg1,
+                              "net-resolve-embedded-nul");
+      }
+    }
+    network_poll_tick();
+    xaios_status_t status = dns_resolve(hostname, &address);
+    if (status == XAIOS_OK) {
+      bytes_copy((void *)(uintptr_t)request.out_ipv4, &address,
+                 sizeof(address));
+    }
+    user_process_note_syscall(0);
+    return (uint64_t)(int64_t)status;
   }
 
   if (syscall == XAIOS_SYSCALL_AGENT_DISPATCH) {
@@ -1116,6 +1483,16 @@ void syscall_self_test(void) {
   kassert(lookup_syscall(XAIOS_SYSCALL_AGENT_DISPATCH) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_RANDOM) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_FS_SEEK) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_CONTROL_QUERY) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_REMOTE_LOGIN_SESSION) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_FS_PREAD) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_FS_PWRITE) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_FS_FSYNC) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_THREAD_CREATE) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_THREAD_JOIN) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_THREAD_CANCEL) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_THREAD_EXIT) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_NET_RESOLVE) != 0);
   kassert(lookup_syscall(99) == 0);
   klog("syscall: table self-test passed entries=%lu\n",
        (uint64_t)(sizeof(g_syscall_table) / sizeof(g_syscall_table[0])));

@@ -1,8 +1,8 @@
 <!--
 AI onboarding file.
 Mode: refresh
-Indexed base commit: 8404c1ec1b76c02157bb08d8a3a9466a93e5c2cb
-Last refreshed: 2026-08-01
+Indexed base commit: 8ddefb26f3dbc366dc4402677a156cf235daed82
+Last refreshed: 2026-08-04
 Generator: generic high-end AI coding agent
 Purpose: Help future AI sessions understand this repository quickly.
 Audience: Any high-capability AI coding agent, regardless of vendor or model family.
@@ -33,7 +33,7 @@ Evidence:
 ## Resolved in current working tree: syscall/API documentation lag
 
 Source, userspace wrappers, `docs/API.md`, and the release-candidate contract now
-cover syscalls 1-35. `scripts/qemu_gate_lib.py` rejects missing or extra source
+cover syscalls 1-41 and all 21 capabilities. `scripts/qemu_gate_lib.py` rejects missing or extra source
 syscalls/capabilities.
 
 Evidence:
@@ -72,18 +72,53 @@ Evidence:
 
 ## Verified implementation gaps
 
+- `xaios.control.v1` operations 1-49, persistent config/key/revocation/audit
+  state, observer/operator/administrator roles, and ModelFS/storage lifecycle are
+  QEMU/OpenSSH-tested. Model-v2 execution loading, cluster control and the
+  inference data plane remain absent.
+- The former fixed 256-page ELF tracking ceiling is replaced by a dynamically
+  sized, checked tracker with partial-load rollback and a 513-page self-test.
+- A 64-bit block/GPT/VFS foundation and signed ModelFS v1 now exist. Dynamic
+  staging registration/allocation, resumable SFTP, cleanup/reuse, verification,
+  audited activation, immutable retrieval, format/mount/grow/fsck, persistent
+  scrub/quarantine and free-only trim pass hosted and QEMU gates. The portable
+  model-file API passes sparse >100 GiB logical tests.
+- QEMU VirtIO-MMIO block/network completions are interrupt-driven with
+  event-index suppression and indirect descriptors; block has eight concurrent
+  direct-or-bounce slots and batched multi-sector transfers. An emulated NVMe
+  admin/I/O queue gate verifies identify, write, flush, read and host backing
+  bytes. Production NVMe multiqueue/affinity, physical durability/performance,
+  trusted-replica repair and model-v2 execution admission remain absent.
+- ModelFS activation and MutableFS audit persistence are separate durability
+  domains. A post-publication audit failure is logged but cannot roll back the
+  active ModelFS generation.
+- Phase 2 remains intentionally bounded to 16 active keys, 16 revoked
+  fingerprints, 64 audit/replay records, 16 shell contexts, four live SSH
+  transports and two channels each. Fleet-scale identity/audit/replay policy is
+  unresolved.
+
 - No official tokenizer importer, real Qwen tensor import, transformer plan, logits
   parity or 32-token decode parity exists.
 - Kimi K3 is interface/roadmap only; KDA, Gated MLA, exact top-16 MoE, MXFP4,
   text parity and multimodal execution are absent.
-- INT4/INT6 fixture-era kernels still expand matrices; the INT6 path still leaks
-  temporary storage and worker units remain sequential.
-- Model admission, model arena, NUMA bitmaps, synchronous block I/O, scheduler
-  work dispatch and AI Cell leases remain QEMU-scale prototypes.
-- The x86_64 image still links only early architecture bring-up, not the common
-  kernel or portable inference engine.
-- There is no native macOS process/backend, Metal backend, AVX2/AVX-512/VNNI/AMX
-  backend, physical hardware parity run, or immutable performance artifact.
+- INT4/INT6 fixture-era full-matrix expansion and the INT6 temporary leak are
+  removed. Portable scalar and experimental NEON packed kernels pass
+  differential/tail tests, and the experimental AVX2 path passes INT4/INT6
+  known-answer execution under QEMU TCG. Physical AVX2 differential validation,
+  tiled GEMM and inference-specific persistent worker gangs do not exist.
+- Runtime-sized NUMA metadata, CPU registry/cpusets/core leases and CPU-assigned
+  joinable kernel workers replace their former fixed/sequential forms. Legacy
+  model-v1 admission, model arena, inference batching and AI Cell compute
+  dispatch remain QEMU-scale prototypes.
+- The x86_64 image boots and executes shared CRC/block/VFS/architecture/scalar/
+  packed-engine probes, a controlled INT3 round trip, a local-APIC timer
+  interrupt, and modern VirtIO/MSI/MSI-X capability discovery. EL0, AP startup
+  and scheduling, PCI VirtIO drivers, security and telemetry platform
+  integration remain absent.
+- There is no complete native macOS inference process, Metal backend,
+  AVX-512/VNNI/AMX backend, physical model-parity run, or immutable performance
+  artifact. The native-hosted experimental NEON and QEMU-tested AVX2 backends
+  exist only at the microkernel correctness level.
 
 ## Delivery order
 
@@ -103,20 +138,26 @@ and Project status aligned with `docs/MODEL-SUPPORT.json`.
   simultaneous connections with eight active channels, clean over-capacity
   rejection, 40 combined reconnects, and post-load recovery. Four is the
   deliberate fixed service limit. Independent security review, physical-NIC
-  validation, hostile-network soak, key rotation policy, and side-channel
-  analysis remain non-QEMU gates.
-- DNS contains an A-record encoder/parser/cache prototype, but `dns_tick()` is
-  not wired into the persistent network poll loop and there is no userspace
-  resolver API. DNS is not an operational service.
-- TCP retains and retransmits one unacknowledged MSS-sized payload segment with
-  RTT/RTO, ACK/window, bounded reordering, keepalive, and FIN bookkeeping.
-  Direct malformed-checksum, fragment-rejection, reordered-input, and withheld-
-  ACK cases pass. Repeated-loss soak, SACK, multi-segment congestion tuning, and
-  physical-network recovery remain unknown.
-- Active IPv4/IPv6 transport paths reject fragments. End-to-end fragment
-  reassembly is not integrated.
-- AArch64 SMMUv3 is still bypass-only. General userspace thread creation is not
-  exposed, although bounded SMP and thread-group work APIs exist.
+  validation, hostile-network soak, fleet key/audit policy, and side-channel
+  analysis remain non-QEMU gates. Phase 2 host-key rotation and user-key
+  revocation pass only within the bounded QEMU acceptance scope.
+- DNS has an asynchronous resolver syscall, bounded cache, timeout/retry path,
+  and persistent-loop integration. QEMU verifies external A-record resolution
+  and a cache hit. DNSSEC, TCP fallback, AAAA application results, and
+  deployment resolver policy remain absent.
+- TCP retains up to eight unacknowledged MSS-sized payload segments with
+  cumulative/partial ACK release, RTT/RTO backoff, SACK, fast retransmit,
+  zero-window handling, bounded reordering, keepalive, and FIN bookkeeping.
+  Direct malformed-checksum, out-of-order IPv4/IPv6 fragment reassembly,
+  reordered-input, and withheld-ACK cases pass. Repeated-loss soak,
+  congestion-control tuning, and physical-network recovery remain unknown.
+- Bounded IPv4/IPv6 fragment reassembly is integrated and dual-client QEMU load
+  verifies fragmented TCP SYN handling. Broad hostile-fragment fuzzing remains
+  incomplete.
+- A focused QEMU SMMUv3 gate proves translated authorized DMA, forbidden-DMA
+  faults, and stale-map rejection; physical Stage 1 policy remains unknown.
+  General EL0 create/join/cancel/exit syscalls now use runtime-sized thread and
+  CPU metadata, but physical many-core scheduling remains unverified.
 - The old bump-only heap limitation is obsolete: `kheap_free()` and free-list
   reuse are implemented and covered by `kheap_self_test()`.
 

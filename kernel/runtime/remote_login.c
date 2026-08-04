@@ -18,7 +18,16 @@
 static uint64_t g_remote_login_sessions;
 static uint64_t g_remote_login_commands;
 static uint64_t g_remote_login_denials;
-static char g_remote_login_cwd[XAIOS_MFS_PATH_MAX] = "/";
+#define XAIOS_REMOTE_LOGIN_MAX_SESSIONS 16U
+typedef struct remote_login_context {
+  uint64_t session_id;
+  char cwd[XAIOS_MFS_PATH_MAX];
+  uint32_t active;
+} remote_login_context_t;
+static remote_login_context_t
+    g_remote_login_contexts[XAIOS_REMOTE_LOGIN_MAX_SESSIONS];
+static char g_remote_login_default_cwd[XAIOS_MFS_PATH_MAX] = "/";
+static char *g_remote_login_cwd = g_remote_login_default_cwd;
 static const char g_remote_login_archive_magic[] = "XAIOSARCHIVE\n";
 static xaios_status_t path_join(char *out, uint64_t out_capacity, const char *base,
                               const char *name);
@@ -156,6 +165,23 @@ static xaios_status_t token_next(const char *text, uint64_t *index, char *token,
   return XAIOS_OK;
 }
 
+static int remote_path_is_sensitive(const char *path) {
+  static const char control_prefix[] = "/state/control";
+  static const char host_key[] = "/state/xaios_host_key";
+  static const char password_users[] = "/etc/xaios_sshd_users";
+  static const char authorized_keys[] = "/etc/xaios_authorized_keys";
+  uint64_t control_length = sizeof(control_prefix) - 1U;
+  if (path == 0) return 1;
+  if (string_equal(path, host_key) || string_equal(path, password_users) ||
+      string_equal(path, authorized_keys)) {
+    return 1;
+  }
+  for (uint64_t i = 0U; i < control_length; ++i) {
+    if (path[i] != control_prefix[i]) return 0;
+  }
+  return path[control_length] == '\0' || path[control_length] == '/';
+}
+
 static xaios_status_t remote_path_resolve(const char *cwd, const char *path,
                                         char *resolved,
                                         uint64_t resolved_capacity) {
@@ -253,6 +279,9 @@ static xaios_status_t remote_path_resolve(const char *cwd, const char *path,
     resolved_len = 1U;
   }
   resolved[resolved_len] = '\0';
+  if (remote_path_is_sensitive(resolved)) {
+    return XAIOS_ERR_INVALID;
+  }
   return XAIOS_OK;
 }
 
@@ -333,12 +362,12 @@ static void copy_remainder(const char *text, uint64_t index, char *out,
   out[i] = '\0';
 }
 
-static void remote_login_log_failure(const char *command, const char *reason,
+static void remote_login_log_failure(const char *operation, const char *reason,
                                    xaios_status_t status) {
-  if (command == 0) {
+  if (operation == 0) {
     return;
   }
-  klog("remote-login: command failed command='%s' reason=%s rc=%lu\n", command,
+  klog("remote-login: operation=%s failed reason=%s rc=%lu\n", operation,
        reason == 0 ? "unknown" : reason, status);
 }
 
@@ -1534,7 +1563,7 @@ static xaios_status_t handle_cd(const char *arg, char *output,
     return command_fail(output, output_capacity, output_bytes, "cd: invalid path");
   }
   if (string_equal(resolved, "/") == 1U) {
-    if (copy_cstr(g_remote_login_cwd, sizeof(g_remote_login_cwd), resolved) !=
+    if (copy_cstr(g_remote_login_cwd, XAIOS_MFS_PATH_MAX, resolved) !=
         XAIOS_OK) {
       return command_fail(output, output_capacity, output_bytes,
                           "cd: path too long");
@@ -1547,7 +1576,7 @@ static xaios_status_t handle_cd(const char *arg, char *output,
     return command_fail(output, output_capacity, output_bytes,
                         "cd: not a directory");
   }
-  if (copy_cstr(g_remote_login_cwd, sizeof(g_remote_login_cwd), resolved) !=
+  if (copy_cstr(g_remote_login_cwd, XAIOS_MFS_PATH_MAX, resolved) !=
       XAIOS_OK) {
     return command_fail(output, output_capacity, output_bytes,
                         "cd: path too long");
@@ -2923,8 +2952,7 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
   uint64_t arg_index = 0;
 
   if (token_next(command, &index, cmd, sizeof(cmd)) != XAIOS_OK) {
-    remote_login_log_failure(command == 0 ? "(null)" : command,
-                            "missing-command", XAIOS_ERR_INVALID);
+    remote_login_log_failure("parse", "missing-command", XAIOS_ERR_INVALID);
     return XAIOS_ERR_INVALID;
   }
   copy_remainder(command, index, args, sizeof(args));
@@ -2937,18 +2965,21 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
     output_append(
         output, output_capacity, output_bytes,
         "XAIOS shell: pwd ls l la ll cd mkdir touch cp grep find head tail echo "
-        "tar cpio cat mv rm rmdir stat write sed nano htop status sysinfo exit "
+        "tar cpio cat mv rm rmdir stat write sed nano htop status sysinfo "
+        "xaiosctl exit "
         "quit logout help\n");
     return XAIOS_OK;
   }
   if (string_equal(cmd, "status") == 1U) {
     output_append(output, output_capacity, output_bytes,
-                  "xaios qemu session=running ssh_only=true password_login=false\n");
+                  "status: legacy command; use xaiosctl status for measured "
+                  "state\n");
     return XAIOS_OK;
   }
   if (string_equal(cmd, "sysinfo") == 1U) {
     output_append(output, output_capacity, output_bytes,
-                  "arch=aarch64 platform=qemu-macos cpu_only_ai=true\n");
+                  "sysinfo: legacy command; use xaiosctl hardware for "
+                  "discovered state\n");
     return XAIOS_OK;
   }
   if (string_equal(cmd, "pwd") == 1U) {
@@ -3091,7 +3122,7 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
     return handle_htop(args, output, output_capacity, output_bytes);
   }
 
-  klog("remote-login: command '%s' not recognized with args='%s'\n", cmd, args);
+  klog("remote-login: command rejected reason=not-allowlisted\n");
   return command_fail(output, output_capacity, output_bytes,
                       "xaios-ssh: command not allowlisted");
 }
@@ -3221,7 +3252,7 @@ xaios_status_t remote_login_execute(const char *user, const char *command,
   }
   if (!string_equal(user, "admin")) {
     ++g_remote_login_denials;
-    klog("remote-login: denied user=%s reason=unknown-user\n", user);
+    klog("remote-login: denied reason=unknown-user\n");
     return XAIOS_ERR_INVALID;
   }
   if (security_reject_credential_material(command) != XAIOS_OK) {
@@ -3235,12 +3266,12 @@ xaios_status_t remote_login_execute(const char *user, const char *command,
   ++g_remote_login_sessions;
   ++g_remote_login_commands;
   klog("remote-login: ssh-compatible session opened user=%s\n", user);
-  klog("remote-login: command='%s'\n", command);
+  klog("remote-login: command dispatch started\n");
 
   if (parse_and_execute_pipeline(command, output, output_capacity, &offset) !=
       XAIOS_OK) {
-    klog("remote-login: command='%s' parse-and-execute failed offset=%lu\n", command,
-         offset);
+    *output_bytes = offset;
+    klog("remote-login: command dispatch failed offset=%lu\n", offset);
     ++g_remote_login_denials;
     return XAIOS_ERR_INVALID;
   }
@@ -3248,6 +3279,55 @@ xaios_status_t remote_login_execute(const char *user, const char *command,
   *output_bytes = offset;
   klog("remote-login: session complete authenticated=1 commands=1 bytes=%lu\n",
        offset);
+  return XAIOS_OK;
+}
+
+static remote_login_context_t *remote_login_context_find(uint64_t session_id) {
+  for (uint32_t i = 0U; i < XAIOS_REMOTE_LOGIN_MAX_SESSIONS; ++i) {
+    if (g_remote_login_contexts[i].active != 0U &&
+        g_remote_login_contexts[i].session_id == session_id) {
+      return &g_remote_login_contexts[i];
+    }
+  }
+  return 0;
+}
+
+static remote_login_context_t *remote_login_context_get(uint64_t session_id) {
+  remote_login_context_t *context = remote_login_context_find(session_id);
+  if (context != 0) return context;
+  for (uint32_t i = 0U; i < XAIOS_REMOTE_LOGIN_MAX_SESSIONS; ++i) {
+    if (g_remote_login_contexts[i].active == 0U) {
+      context = &g_remote_login_contexts[i];
+      context->session_id = session_id;
+      context->active = 1U;
+      context->cwd[0] = '/';
+      context->cwd[1] = '\0';
+      return context;
+    }
+  }
+  return 0;
+}
+
+xaios_status_t remote_login_execute_session(
+    uint64_t session_id, const char *user, const char *command, char *output,
+    uint64_t output_capacity, uint64_t *output_bytes) {
+  if (session_id == 0U) return XAIOS_ERR_INVALID;
+  remote_login_context_t *context = remote_login_context_get(session_id);
+  if (context == 0) return XAIOS_ERR_NO_MEMORY;
+  char *previous_cwd = g_remote_login_cwd;
+  g_remote_login_cwd = context->cwd;
+  xaios_status_t status = remote_login_execute(
+      user, command, output, output_capacity, output_bytes);
+  g_remote_login_cwd = previous_cwd;
+  return status;
+}
+
+xaios_status_t remote_login_close_session(uint64_t session_id) {
+  remote_login_context_t *context = remote_login_context_find(session_id);
+  if (session_id == 0U || context == 0) return XAIOS_ERR_NOT_FOUND;
+  for (uint64_t i = 0U; i < sizeof(*context); ++i) {
+    ((uint8_t *)context)[i] = 0U;
+  }
   return XAIOS_OK;
 }
 
@@ -3272,9 +3352,30 @@ void remote_login_self_test(void) {
   g_remote_login_sessions = 0U;
   g_remote_login_commands = 0U;
   g_remote_login_denials = 0U;
+  for (uint32_t i = 0U; i < XAIOS_REMOTE_LOGIN_MAX_SESSIONS; ++i) {
+    g_remote_login_contexts[i].active = 0U;
+  }
 
   kassert(remote_login_execute("admin", "shell", output, sizeof(output),
                                &out) == XAIOS_ERR_INVALID);
+  remote_login_context_t *first = remote_login_context_get(101U);
+  kassert(first != 0);
+  kassert(copy_cstr(first->cwd, sizeof(first->cwd), "/state") == XAIOS_OK);
+  kassert(remote_login_execute_session(101U, "admin", "pwd", output,
+                                       sizeof(output), &out) == XAIOS_OK);
+  kassert(out >= 7U && output[0] == '/' && output[1] == 's');
+  kassert(remote_login_execute_session(202U, "admin", "pwd", output,
+                                       sizeof(output), &out) == XAIOS_OK);
+  kassert(out == 2U && output[0] == '/' && output[1] == '\n');
+  kassert(remote_login_close_session(101U) == XAIOS_OK);
+  kassert(remote_login_close_session(202U) == XAIOS_OK);
+  kassert(remote_login_close_session(202U) == XAIOS_ERR_NOT_FOUND);
+  klog("remote-login: isolated session cwd self-test passed\n");
+  kassert(remote_login_execute("admin", "cat /state/xaios_host_key", output,
+                               sizeof(output), &out) == XAIOS_ERR_INVALID);
+  kassert(remote_login_execute("admin", "cat /state/control/config.bin", output,
+                               sizeof(output), &out) == XAIOS_ERR_INVALID);
+  klog("remote-login: sensitive administrative paths denied\n");
   kassert(remote_login_execute("admin", "shell", output, sizeof(output),
                                &out) == XAIOS_ERR_INVALID);
   klog("remote-login: self-test passed sessions=%lu commands=%lu denials=%lu\n",

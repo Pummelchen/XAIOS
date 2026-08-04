@@ -6,15 +6,19 @@
 #include <xaios/types.h>
 #include <xaios/vmm.h>
 
-#define XAIOS_ELF_LOADER_MAX_PAGES 256U
 #define XAIOS_ELF_LOADER_L3_TABLES 4U
+
+typedef struct xaios_process_page_mapping {
+  uint64_t va;
+  uint64_t pa;
+} xaios_process_page_mapping_t;
 
 typedef struct xaios_process_aspace {
   uint64_t l3_phys[XAIOS_ELF_LOADER_L3_TABLES];
   uint32_t l3_count;
-  uint64_t page_va[XAIOS_ELF_LOADER_MAX_PAGES];
-  uint64_t page_pa[XAIOS_ELF_LOADER_MAX_PAGES];
+  xaios_process_page_mapping_t *pages;
   uint32_t page_count;
+  uint32_t page_capacity;
 } xaios_process_aspace_t;
 
 xaios_status_t elf_loader_load(const xaios_initramfs_file_t *file,

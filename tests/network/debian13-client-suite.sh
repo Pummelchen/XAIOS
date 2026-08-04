@@ -116,6 +116,155 @@ if grep -q 'authentication-must-not-run' "$workdir/wrong-password.stdout"; then
 fi
 printf 'PASS: wrong SSH password rejected\n'
 
+run_ssh 'xaiosctl version --json --node local --timeout 5s' \
+  >"$workdir/xaiosctl-version.json"
+run_ssh 'xaiosctl status --json' >"$workdir/xaiosctl-status.json"
+run_ssh 'xaiosctl capabilities --json' \
+  >"$workdir/xaiosctl-capabilities.json"
+run_ssh 'xaiosctl hardware --json' >"$workdir/xaiosctl-hardware.json"
+run_ssh 'xaiosctl metrics --json' >"$workdir/xaiosctl-metrics.json"
+run_ssh 'xaiosctl logs --json --since 0 --limit 2' \
+  >"$workdir/xaiosctl-logs.json"
+run_ssh 'xaiosctl storage device list --json' \
+  >"$workdir/xaiosctl-storage-devices.json"
+run_ssh 'xaiosctl storage device show /dev/vblk4 --json' \
+  >"$workdir/xaiosctl-storage-device.json"
+run_ssh 'xaiosctl storage filesystem list --json' \
+  >"$workdir/xaiosctl-storage-filesystems.json"
+run_ssh 'xaiosctl storage usage /models --json' \
+  >"$workdir/xaiosctl-storage-usage.json"
+if run_ssh 'xaiosctl health --json' >"$workdir/xaiosctl-health.json"; then
+  fail "xaiosctl health reported ready before production inference exists"
+else
+  health_status=$?
+fi
+test "$health_status" -eq 1 \
+  || fail "xaiosctl health returned SSH status $health_status instead of 1"
+if run_ssh 'xaiosctl unsupported --json' \
+    >"$workdir/xaiosctl-error.json"; then
+  fail "unsupported xaiosctl operation returned success"
+fi
+
+python3 - "$workdir" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+
+
+def load(name):
+    value = json.loads((root / f"xaiosctl-{name}.json").read_text())
+    if list(value) != ["schema_version", "request_id", "status", "data"]:
+        raise SystemExit(f"{name}: unstable JSON envelope keys: {list(value)}")
+    if value["schema_version"] != 1 or value["status"] != "ok":
+        raise SystemExit(f"{name}: invalid JSON envelope: {value}")
+    if not value["request_id"].isdigit():
+        raise SystemExit(f"{name}: request ID is not a decimal string")
+    return value["data"]
+
+
+version = load("version")
+if version["control_protocol_version"] != 1:
+    raise SystemExit("version: unexpected control protocol version")
+if version["kernel_abi_version"] != 1 or version["model_package_version"] != 2:
+    raise SystemExit("version: unexpected kernel/model ABI versions")
+if len(version["git_commit"]) != 40 or version["architecture"] != "aarch64":
+    raise SystemExit("version: build identity is not the current AArch64 image")
+if version["build_identifier"] not in (
+    "xaios-admin-control", "xaios-admin-control-dirty"
+):
+    raise SystemExit("version: build identifier does not disclose source state")
+if version["model_volume_version"] != 1:
+    raise SystemExit("version: ModelFS volume version must be 1")
+
+status = load("status")
+for field in ("uptime_ns", "online_cpus", "physical_pages", "managed_pages", "free_pages"):
+    if not isinstance(status[field], int) or status[field] <= 0:
+        raise SystemExit(f"status: {field} is not measured")
+if status["queue_depth"] is not None or status["active_requests"] is not None:
+    raise SystemExit("status: unavailable inference queue values must be null")
+if status["readiness"] != "degraded" or status["model"] != "fixture-only":
+    raise SystemExit("status: fixture-only readiness was overstated")
+
+capabilities = load("capabilities")
+if capabilities["ssh"] != "available" or capabilities["sftp"] != "available":
+    raise SystemExit("capabilities: SSH/SFTP not reported available")
+if capabilities["model_v2"] != "interface-only":
+    raise SystemExit("capabilities: model-v2 status was overstated")
+if capabilities["real_model_inference"] != "unsupported":
+    raise SystemExit("capabilities: real inference status was overstated")
+
+hardware = load("hardware")
+if hardware["core_count"] <= 0 or hardware["free_pages"] <= 0:
+    raise SystemExit("hardware: discovered CPU/memory values are invalid")
+if hardware["cpu_vendor"] != "unknown" or hardware["avx2"] != "unknown":
+    raise SystemExit("hardware: undiscovered CPU/ISA values must be unknown")
+
+metrics = load("metrics")
+if metrics["control_requests"] <= 0 or metrics["network_rx_packets"] <= 0:
+    raise SystemExit("metrics: measured control/network counters are invalid")
+if metrics["tokens_generated"] is not None:
+    raise SystemExit("metrics: unavailable token count must be null")
+
+logs = load("logs")
+if logs["record_count"] > 2 or logs["next_cursor"] < logs["start_cursor"]:
+    raise SystemExit("logs: cursor or limit contract violated")
+if not isinstance(logs["records"], str):
+    raise SystemExit("logs: records must be a bounded string")
+
+devices = load("storage-devices")
+if devices["record_count"] > devices["total_count"] or devices["truncated"] not in (0, 1):
+    raise SystemExit("storage devices: invalid bounded-list metadata")
+model_devices = [
+    device for device in devices["devices"]
+    if device["identifier"] == "/dev/vblk4"
+]
+if len(model_devices) != 1:
+    raise SystemExit("storage devices: /dev/vblk4 is absent or duplicated")
+
+device = load("storage-device")
+if len(device["devices"]) != 1:
+    raise SystemExit("storage device: exact lookup did not return one record")
+device = device["devices"][0]
+if (device["identifier"] != "/dev/vblk4" or
+        device["logical_sector_size"] != 512 or
+        device["capacity_bytes"] <= 0 or
+        device["capacity_logical_sectors"] * 512 != device["capacity_bytes"] or
+        device["read_only"] != 0):
+    raise SystemExit("storage device: invalid ModelFS device geometry")
+
+filesystems = load("storage-filesystems")
+mounts = {record["mount_path"]: record for record in filesystems["filesystems"]}
+if mounts.get("/", {}).get("filesystem") != "MutableFS":
+    raise SystemExit("storage filesystems: MutableFS root is absent")
+if (mounts.get("/models", {}).get("filesystem") != "ModelFS" or
+        mounts["/models"]["device_identifier"] != "/dev/vblk4" or
+        mounts["/models"]["staging_writable"] != 1):
+    raise SystemExit("storage filesystems: ModelFS mount identity/policy is invalid")
+
+usage = load("storage-usage")
+if len(usage["filesystems"]) != 1:
+    raise SystemExit("storage usage: exact lookup did not return one record")
+usage = usage["filesystems"][0]
+if (usage["mount_path"] != "/models" or usage["format_version"] != 1 or
+        usage["allocated_bytes"] > usage["total_bytes"] or
+        usage["free_bytes"] > usage["total_bytes"]):
+    raise SystemExit("storage usage: invalid ModelFS accounting")
+
+health = load("health")
+if health["overall"] != "degraded" or health["fatal"] != 0:
+    raise SystemExit("health: nonfatal fixture-only state must be degraded")
+
+error = json.loads((root / "xaiosctl-error.json").read_text())
+if list(error) != ["schema_version", "request_id", "status", "data", "error"]:
+    raise SystemExit("error: unstable JSON envelope")
+if (error["status"] != "error" or error["data"] is not None or
+        error["error"]["code"] != "unknown_operation"):
+    raise SystemExit("error: unsupported operation did not return stable code")
+PY
+printf 'PASS: xaiosctl typed control and storage inventory over SSH\n'
+
 python3 - "$workdir/sftp-source.bin" <<'PY'
 import pathlib
 import sys

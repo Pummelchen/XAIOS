@@ -121,6 +121,33 @@ int xaios_fs_write(int fd, const void *buffer, u64 size) {
   return rc == ~0ULL ? -1 : (int)rc;
 }
 
+s64 xaios_fs_pread(int fd, void *buffer, u64 size, u64 offset) {
+  xaios_positional_io_request_t request;
+  request.fd = (u64)(u32)fd;
+  request.buffer = (u64)buffer;
+  request.size = size;
+  request.offset = offset;
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_FS_PREAD, (u64)&request,
+                          sizeof(request), 0);
+  return rc == ~0ULL ? -1 : (s64)rc;
+}
+
+s64 xaios_fs_pwrite(int fd, const void *buffer, u64 size, u64 offset) {
+  xaios_positional_io_request_t request;
+  request.fd = (u64)(u32)fd;
+  request.buffer = (u64)buffer;
+  request.size = size;
+  request.offset = offset;
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_FS_PWRITE, (u64)&request,
+                          sizeof(request), 0);
+  return rc == ~0ULL ? -1 : (s64)rc;
+}
+
+int xaios_fs_fsync(int fd) {
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_FS_FSYNC, (u64)(u32)fd, 0, 0);
+  return rc == ~0ULL ? -1 : 0;
+}
+
 int xaios_fs_seek(int fd, u64 offset) {
   u64 rc = xaios_syscall3(XAIOS_SYSCALL_FS_SEEK, (u64)(u32)fd, offset, 0);
   return rc == ~0ULL ? -1 : 0;
@@ -198,6 +225,34 @@ int xaios_remote_login(const char *user, const char *command, char *output,
   return rc == ~0ULL ? -1 : (int)rc;
 }
 
+int xaios_remote_login_session(u64 session_id, const char *user,
+                               const char *command, char *output,
+                               u64 output_size, u64 *out_size) {
+  xaios_remote_login_session_request_t request;
+  request.session_id = session_id;
+  request.action = XAIOS_REMOTE_LOGIN_SESSION_EXECUTE;
+  request.user = (u64)user;
+  request.user_size = xaios_strlen(user);
+  request.command = (u64)command;
+  request.command_size = xaios_strlen(command);
+  request.output = (u64)output;
+  request.output_size = output_size;
+  request.out_size = (u64)out_size;
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_REMOTE_LOGIN_SESSION, (u64)&request,
+                          sizeof(request), 0);
+  return rc == ~0ULL ? -1 : (int)(signed long long)rc;
+}
+
+int xaios_remote_login_session_close(u64 session_id) {
+  xaios_remote_login_session_request_t request;
+  xaios_memzero(&request, sizeof(request));
+  request.session_id = session_id;
+  request.action = XAIOS_REMOTE_LOGIN_SESSION_CLOSE;
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_REMOTE_LOGIN_SESSION, (u64)&request,
+                          sizeof(request), 0);
+  return rc == ~0ULL ? -1 : (int)(signed long long)rc;
+}
+
 int xaios_net_external_session(u64 protocol, u64 port, const void *payload,
                               u64 payload_size, char *output,
                               u64 output_size, u64 *out_size) {
@@ -224,6 +279,39 @@ int xaios_thread_group_run(u64 thread_count, u64 iterations, u64 *ran_threads,
   u64 rc = xaios_syscall3(XAIOS_SYSCALL_THREAD_GROUP_RUN, (u64)&request,
                          sizeof(request), 0);
   return rc == ~0ULL ? -1 : (int)rc;
+}
+
+extern void xaios_thread_return_trampoline(void);
+
+int xaios_thread_create(xaios_thread_entry_t entry, void *argument,
+                        void *stack, u64 stack_size, u64 preferred_cpu,
+                        u64 *thread_id) {
+  xaios_thread_create_request_t request;
+  request.entry = (u64)entry;
+  request.argument = (u64)argument;
+  request.stack = (u64)stack;
+  request.stack_size = stack_size;
+  request.return_address = (u64)xaios_thread_return_trampoline;
+  request.preferred_cpu = preferred_cpu;
+  request.out_thread_id = (u64)thread_id;
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_THREAD_CREATE, (u64)&request,
+                          sizeof(request), 0);
+  return rc == ~0ULL ? -1 : 0;
+}
+
+int xaios_thread_join(u64 thread_id, u64 timeout_ns, u64 *result) {
+  xaios_thread_join_request_t request;
+  request.thread_id = thread_id;
+  request.timeout_ns = timeout_ns;
+  request.out_result = (u64)result;
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_THREAD_JOIN, (u64)&request,
+                          sizeof(request), 0);
+  return rc == ~0ULL ? -1 : 0;
+}
+
+int xaios_thread_cancel(u64 thread_id) {
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_THREAD_CANCEL, thread_id, 0, 0);
+  return rc == ~0ULL ? -1 : 0;
 }
 
 int xaios_ml_run(u64 model_kind, const void *input, u64 input_size,
@@ -357,6 +445,16 @@ int xaios_net_close(u64 sockfd) {
   return rc == ~0ULL ? -1 : 0;
 }
 
+int xaios_net_resolve(const char *hostname, u32 *out_ipv4) {
+  xaios_net_resolve_request_t request;
+  request.hostname = (u64)hostname;
+  request.hostname_size = xaios_strlen(hostname);
+  request.out_ipv4 = (u64)out_ipv4;
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_NET_RESOLVE, (u64)&request,
+                          sizeof(request), 0);
+  return (int)(s64)rc;
+}
+
 int xaios_write_file(const char *path, const char *content) {
   int fd = xaios_fs_open(path, XAIOS_MFS_OPEN_WRITE | XAIOS_MFS_OPEN_CREATE |
                                   XAIOS_MFS_OPEN_TRUNCATE);
@@ -443,6 +541,19 @@ int xaios_agent_dispatch(const xaios_agent_request_t *request,
   u64 rc = xaios_syscall3(XAIOS_SYSCALL_AGENT_DISPATCH, (u64)&req,
                          sizeof(req), 0);
   return rc == ~0ULL ? -1 : (int)rc;
+}
+
+int xaios_control_query(const void *request, u64 request_size, void *response,
+                        u64 response_size, u64 *out_size) {
+  xaios_control_query_request_t query;
+  query.request = (u64)request;
+  query.request_size = request_size;
+  query.response = (u64)response;
+  query.response_size = response_size;
+  query.out_size = (u64)out_size;
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_CONTROL_QUERY, (u64)&query,
+                         sizeof(query), 0);
+  return rc == ~0ULL ? -1 : 0;
 }
 
 void xaios_log_u64(const char *prefix, u64 value, const char *suffix) {

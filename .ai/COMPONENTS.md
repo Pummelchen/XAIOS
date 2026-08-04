@@ -1,8 +1,8 @@
 <!--
 AI onboarding file.
-Mode: bootstrap
-Indexed commit: 8458ff956831e1b3b44a0cbcb396352ce28e3a01
-Last generated: 2026-06-25T09:20:22Z
+Mode: refresh
+Indexed base commit: 8ddefb26f3dbc366dc4402677a156cf235daed82
+Last refreshed: 2026-08-04
 Generator: generic high-end AI coding agent
 Purpose: Help future AI sessions understand this repository quickly.
 Audience: Any high-capability AI coding agent, regardless of vendor or model family.
@@ -41,10 +41,23 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 
 ## Filesystem, persistence, update
 
-- Responsibility: initramfs, mutable filesystem, persistent state, update/rollback.
-- Key files: `kernel/fs/`, `kernel/runtime/persistence.c`, `kernel/runtime/update.c`, `scripts/create-initfs.py`, `contracts/qemu-rc-v1.json`.
-- Risks: data loss, rollback/auth bypass, contract mismatch.
-- Validate: filesystem/update/readiness gates.
+- Responsibility: initramfs, VFS, MutableFS small state, signed ModelFS package
+  reads, persistent state, update/rollback, and portable model streaming.
+- Key files: `kernel/dev/block_device.c`, `kernel/dev/nvme.c`,
+  `kernel/dev/virtio/`, `kernel/storage/`, `kernel/fs/`,
+  `engine/src/model_volume.c`, `engine/src/model_file.c`,
+  `tools/xaios_model_volume.py`, `scripts/create-initfs.py`.
+- Invariants: all ranges are checked 64-bit; partitions cannot escape parents;
+  active packages are immutable; signatures and touched chunk hashes validate
+  before delivery; signed registration, cleanup/reuse, activation, scrub and
+  trim are capability-gated, replay-protected and audited.
+- Risks: data loss, rollback/auth bypass, corrupt metadata, cross-filesystem
+  activation/audit atomicity, no production NVMe multiqueue/affinity, no
+  trusted-replica repair, and no physical-device evidence.
+- Validate: `make hosted-test`, `make compile-check`, `make qemu-abi-contract`,
+  `make qemu-smoke`, `make qemu-storage-crash-test`, `make qemu-nvme-gate`,
+  `make qemu-model-sftp-gate`, then
+  filesystem/update/readiness gates as appropriate.
 
 ## Network and SSH
 
@@ -54,6 +67,20 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 - Risks: auth/security regressions, socket accounting mismatch.
 - Validate: `make qemu-network-suite`, `make qemu-docker-network-suite`, and the
   host-bridge SSH smoke where relevant.
+
+## Administrative control
+
+- Responsibility: bounded measured queries, role-authorized persistent
+  config/key mutations, revocation, audit and deterministic human/JSON output.
+- Key files: `kernel/runtime/admin_control.c`,
+  `kernel/include/xaios/admin_control.h`, `kernel/runtime/control_protocol.c`,
+  `kernel/include/xaios/control_protocol.h`,
+  `userspace/lib/xaios_control_client.c`, `userspace/apps/xaiosctl.c`.
+- Invariants: exact protocol version/length checks, trusted maximum role from
+  capabilities, replay IDs and failure-atomic config, no secret payloads in
+  audit/logs, unknown values explicit, no arbitrary SSH execution.
+- Validate: `make hosted-test`, `make qemu-abi-contract`, `make qemu-smoke`,
+  `make qemu-docker-network-suite`.
 
 ## CPU-AI runtime and AI Cell
 

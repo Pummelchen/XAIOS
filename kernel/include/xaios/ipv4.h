@@ -17,7 +17,7 @@
 
 /* B1: IP fragmentation/reassembly */
 #define XAIOS_IPV4_FRAG_TIMEOUT_NS UINT64_C(30000000000)
-#define XAIOS_IPV4_MAX_FRAG 16
+#define XAIOS_IPV4_MAX_REASSEMBLED_PAYLOAD 1480U
 
 /* IP flag bits */
 #define XAIOS_IPV4_FLAG_MF    0x2000U  /* more fragments */
@@ -28,13 +28,17 @@
 typedef struct ipv4_frag_bucket {
   uint32_t active;
   uint32_t src_ip;
+  uint32_t dst_ip;
   uint16_t id;
+  uint8_t protocol;
+  uint8_t have_first;
   uint64_t first_arrival_ns;
   uint32_t total_len;
-  uint8_t  frags[XAIOS_IPV4_MAX_FRAG][1520];
-  uint16_t frag_offsets[XAIOS_IPV4_MAX_FRAG];
-  uint16_t frag_lens[XAIOS_IPV4_MAX_FRAG];
-  uint32_t frag_count;
+  uint32_t received_count;
+  uint8_t ethernet_header[14];
+  uint8_t ip_header[XAIOS_IPV4_HEADER_SIZE];
+  uint8_t payload[XAIOS_IPV4_MAX_REASSEMBLED_PAYLOAD];
+  uint8_t received[XAIOS_IPV4_MAX_REASSEMBLED_PAYLOAD];
 } ipv4_frag_bucket_t;
 
 void ipv4_build_header(uint8_t *hdr, uint16_t total_length, uint8_t protocol,

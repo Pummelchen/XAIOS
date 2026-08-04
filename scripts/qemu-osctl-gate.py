@@ -8,7 +8,7 @@ REPORT = BUILD / "qemu-milestone-61-osctl-gate.json"
 
 MARKERS = [
     "user: osctl command='osctl status'",
-    "osctl: status qemu=running",
+    "osctl: status legacy=1 processes=",
     "user: osctl command='osctl ps'",
     "osctl: ps slots=1024",
     "user: osctl command='osctl services'",

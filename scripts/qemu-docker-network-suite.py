@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import base64
+import hashlib
 import shutil
 import socket
 import subprocess
@@ -173,6 +175,34 @@ def scan_host_key(key_dir: Path, port: int) -> tuple[str, str]:
     raise RuntimeError("ssh-keyscan did not return an Ed25519 host key")
 
 
+def ed25519_raw_fingerprint(public_key_path: Path) -> str:
+    fields = public_key_path.read_text(encoding="ascii").split()
+    if len(fields) < 2 or fields[0] != "ssh-ed25519":
+        raise RuntimeError(f"invalid Ed25519 public key: {public_key_path}")
+    blob = base64.b64decode(fields[1], validate=True)
+    if len(blob) != 51 or blob[:4] != b"\x00\x00\x00\x0b" or blob[4:15] != b"ssh-ed25519":
+        raise RuntimeError(f"invalid Ed25519 key blob: {public_key_path}")
+    if blob[15:19] != b"\x00\x00\x00\x20":
+        raise RuntimeError(f"invalid Ed25519 key width: {public_key_path}")
+    return hashlib.sha256(blob[19:51]).hexdigest()
+
+
+def require_rejected_build(env: dict[str, str], marker: str) -> None:
+    completed = subprocess.run(
+        ["make", "image"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    output = completed.stdout + completed.stderr
+    if completed.returncode == 0 or marker not in output:
+        raise RuntimeError(
+            f"build profile was not rejected as expected: rc={completed.returncode}\n{output}"
+        )
+
+
 def main() -> int:
     if shutil.which("docker") is None:
         raise SystemExit("error: Docker CLI is required")
@@ -205,7 +235,7 @@ def main() -> int:
     if key_dir.exists():
         shutil.rmtree(key_dir)
     key_dir.mkdir(mode=0o700)
-    for name in ("authorized", "unauthorized"):
+    for name in ("authorized", "unauthorized", "observer", "operator"):
         run_checked(
             [
                 "ssh-keygen",
@@ -221,6 +251,37 @@ def main() -> int:
             ],
             30,
         )
+    (key_dir / "operator.fingerprint").write_text(
+        ed25519_raw_fingerprint(key_dir / "operator.pub") + "\n",
+        encoding="ascii",
+    )
+    (key_dir / "config-high.conf").write_text(
+        "schema=xaios.config.v1\n"
+        "ssh.max_connections=4\n"
+        "ssh.max_channels_per_connection=2\n"
+        "ssh.max_auth_attempts=5\n"
+        "ssh.command_rate_per_minute=120\n"
+        "ssh.password_auth=development\n",
+        encoding="ascii",
+    )
+    (key_dir / "config-low.conf").write_text(
+        "schema=xaios.config.v1\n"
+        "ssh.max_connections=4\n"
+        "ssh.max_channels_per_connection=2\n"
+        "ssh.max_auth_attempts=5\n"
+        "ssh.command_rate_per_minute=2\n"
+        "ssh.password_auth=development\n",
+        encoding="ascii",
+    )
+    (key_dir / "config-invalid.conf").write_text(
+        "schema=xaios.config.v1\n"
+        "ssh.max_connections=5\n"
+        "ssh.max_channels_per_connection=2\n"
+        "ssh.max_auth_attempts=5\n"
+        "ssh.command_rate_per_minute=120\n"
+        "ssh.password_auth=development\n",
+        encoding="ascii",
+    )
     password_file = key_dir / "password"
     password_file.write_text("admin\n", encoding="ascii")
     password_file.chmod(0o600)
@@ -241,6 +302,18 @@ def main() -> int:
     build_env = os.environ.copy()
     build_env["XAIOS_AUTHORIZED_KEYS_FILE"] = str(key_dir / "authorized.pub")
     build_env["XAIOS_SSH_USERS_FILE"] = str(users_file)
+    build_env["XAIOS_SSH_PASSWORD_AUTH"] = "1"
+    missing_opt_in_env = build_env.copy()
+    missing_opt_in_env.pop("XAIOS_SSH_PASSWORD_AUTH")
+    require_rejected_build(
+        missing_opt_in_env,
+        "password credentials require XAIOS_SSH_PASSWORD_AUTH=1",
+    )
+    release_env = build_env.copy()
+    release_env["XAIOS_BUILD_MODE"] = "release"
+    require_rejected_build(
+        release_env, "password authentication is forbidden in release builds"
+    )
     run_checked(["make", "image"], 180, build_env)
 
     results: dict[str, object] = {"debian_version": version, "image": IMAGE}
@@ -259,6 +332,7 @@ def main() -> int:
         SSH_READY_MARKER,
     )
     try:
+        initial_host_key = scan_host_key(key_dir, ssh_port)
         run_checked(
             docker_command(
                 key_dir,
@@ -269,17 +343,37 @@ def main() -> int:
             ),
             CLIENT_TIMEOUT_SECONDS,
         )
+        run_checked(
+            docker_command(
+                key_dir,
+                "/usr/local/bin/xaios-phase2-client-suite",
+                "host.docker.internal",
+                str(ssh_port),
+            ),
+            CLIENT_TIMEOUT_SECONDS,
+        )
         if qemu.poll() is not None:
             raise RuntimeError(f"QEMU exited unexpectedly with status {qemu.returncode}")
         results["ipv4_ssh_sftp_udp"] = "passed"
+        results["xaiosctl_control_surface"] = "passed"
         results["sftp_file_directory_operations"] = "passed"
         results["ssh_rekey"] = "passed"
         results["ssh_shared_transport_channels"] = "passed"
         results["ssh_port"] = ssh_port
         results["udp_port"] = udp_port
         results["packet_capture"] = str(packet_capture)
-        first_host_key = scan_host_key(key_dir, ssh_port)
+        rotated_host_key = scan_host_key(key_dir, ssh_port)
+        if initial_host_key == rotated_host_key:
+            raise RuntimeError("SSH host-key rotation did not change the public key")
         results["public_key_auth"] = "passed"
+        results["phase2_admin_control"] = "passed"
+        results["role_authorization"] = "passed"
+        results["config_transaction_rollback"] = "passed"
+        results["key_revocation"] = "passed"
+        results["host_key_rotation"] = "passed"
+        results["sensitive_state_remote_denial"] = "passed"
+        results["log_secret_redaction"] = "passed"
+        results["password_build_profiles"] = "passed"
     finally:
         stop_qemu(qemu)
         log_file.close()
@@ -293,8 +387,8 @@ def main() -> int:
     )
     try:
         second_host_key = scan_host_key(key_dir, ssh_port)
-        if first_host_key != second_host_key:
-            raise RuntimeError("SSH host key changed across persistent reboot")
+        if rotated_host_key != second_host_key:
+            raise RuntimeError("rotated SSH host key changed across persistent reboot")
         run_checked(
             docker_command(
                 key_dir,
@@ -314,7 +408,51 @@ def main() -> int:
             ),
             60,
         )
+        observer_config = subprocess.run(
+            docker_command(
+                key_dir,
+                "ssh",
+                "-i", "/keys/observer",
+                "-o", "IdentitiesOnly=yes",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", "PasswordAuthentication=no",
+                "-p", str(ssh_port),
+                "admin@host.docker.internal",
+                "xaiosctl config show --json",
+            ),
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout
+        config_data = json.loads(observer_config)["data"]
+        if config_data["command_rate_per_minute"] != 120:
+            raise RuntimeError("applied config did not persist across reboot")
+        revoked_attempt = subprocess.run(
+            docker_command(
+                key_dir,
+                "ssh",
+                "-i", "/keys/operator",
+                "-o", "IdentitiesOnly=yes",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", "PasswordAuthentication=no",
+                "-o", "BatchMode=yes",
+                "-p", str(ssh_port),
+                "admin@host.docker.internal",
+                "xaiosctl status --json",
+            ),
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if revoked_attempt.returncode == 0:
+            raise RuntimeError("revoked operator key became valid after reboot")
         results["host_key_persistence"] = "passed"
+        results["admin_state_persistence"] = "passed"
     finally:
         stop_qemu(reboot_qemu)
         reboot_log_file.close()
@@ -438,6 +576,7 @@ def main() -> int:
     invalid_users.write_text("admin:plaintext:admin\n", encoding="ascii")
     invalid_env = key_only_env.copy()
     invalid_env["XAIOS_SSH_USERS_FILE"] = str(invalid_users)
+    invalid_env["XAIOS_SSH_PASSWORD_AUTH"] = "1"
     run_checked(["make", "image"], 180, invalid_env)
     invalid_port = reserve_port(socket.SOCK_STREAM)
     qemu, log_file, invalid_log_path, persistent_path = start_qemu_ready(

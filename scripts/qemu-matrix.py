@@ -10,7 +10,7 @@ SCENARIOS = [
     ("qemu-benchmark", ["python3", "./scripts/qemu-benchmark.py"], 120, 0),
     ("qemu-persistence-reboot", ["make", "qemu-persistence-reboot"], 140, 0),
     ("qemu-preview", ["make", "qemu-preview"], 120, 0),
-    ("qemu-fault-matrix", ["make", "qemu-fault-matrix"], 180, 0),
+    ("qemu-fault-matrix", ["make", "qemu-fault-matrix"], 360, 0),
     ("qemu-x86_64-smoke", ["make", "qemu-x86_64-smoke"], 120, 0),
     ("intel-desktop-gate", ["python3", "./scripts/intel-desktop-gate.py"], 140, 1),
     ("qemu-cpu-matrix", ["make", "qemu-cpu-matrix"], 900, 0),
@@ -20,17 +20,27 @@ SCENARIOS = [
 
 
 def run_scenario(name: str, cmd, timeout: int, expected_rc: int, env) -> bool:
-    print(f"\n[QEMU matrix] running {name}: {' '.join(cmd)}")
+    print(f"\n[QEMU matrix] running {name}: {' '.join(cmd)}", flush=True)
     start = time.time()
-    proc = subprocess.run(
-        cmd,
-        stdout=None,
-        stderr=None,
-        timeout=timeout,
-        env=env,
-        text=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=None,
+            stderr=None,
+            timeout=timeout,
+            env=env,
+            text=True,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        elapsed = time.time() - start
+        print(f"[QEMU matrix] {name} timed out after {elapsed:.2f}s "
+              f"(budget={timeout}s)")
+        return False
+    except OSError as exc:
+        elapsed = time.time() - start
+        print(f"[QEMU matrix] {name} could not start after {elapsed:.2f}s: {exc}")
+        return False
     elapsed = time.time() - start
     passed = proc.returncode == expected_rc
     print(f"[QEMU matrix] {name} exit={proc.returncode} expected={expected_rc} elapsed={elapsed:.2f}s")

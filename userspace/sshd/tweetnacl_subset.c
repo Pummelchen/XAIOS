@@ -52,7 +52,7 @@ static void tn_carry(tn_gf value) {
     tn_i64 carry = value[index] >> 16;
     uint32_t next = (index + 1U) * (index < 15U);
     value[next] += carry - 1 + 37 * (carry - 1) * (index == 15U);
-    value[index] -= carry << 16;
+    value[index] -= carry * INT64_C(65536);
   }
 }
 
@@ -280,7 +280,7 @@ static void tn_mod_l(uint8_t out[32], tn_i64 value[64]) {
     for (inner = index - 32; inner < index - 12; ++inner) {
       value[inner] += carry - 16 * value[index] * tn_l[inner - (index - 32)];
       carry = (value[inner] + 128) >> 8;
-      value[inner] -= carry << 8;
+      value[inner] -= carry * INT64_C(256);
     }
     value[inner] += carry;
     value[index] = 0;

@@ -1,5 +1,7 @@
 #include "boot_info.h"
 #include "include/uefi_min.h"
+#include "system_volume_loader.h"
+#include <xaios/system_slot.h>
 
 #define EI_NIDENT 16
 #define PT_LOAD 1
@@ -65,6 +67,12 @@ static const efi_guid_t EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID = {
     0x11d2U,
     {0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b}};
 
+static const efi_guid_t EFI_DTB_TABLE_GUID = {
+    0xb1b621d5U,
+    0xf19cU,
+    0x41a5U,
+    {0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0}};
+
 static xaios_boot_info_t g_boot_info;
 
 static void *mem_copy(void *dst, const void *src, uint64_t size) {
@@ -96,6 +104,55 @@ static void loader_puts(efi_system_table_t *system_table,
 
 static int is_error(efi_status_t status) {
   return (status & (1ULL << 63)) != 0;
+}
+
+static uint32_t read_be32(const unsigned char *value) {
+  return ((uint32_t)value[0] << 24U) | ((uint32_t)value[1] << 16U) |
+         ((uint32_t)value[2] << 8U) | value[3];
+}
+
+static int guid_equal(const efi_guid_t *left, const efi_guid_t *right) {
+  const unsigned char *a = (const unsigned char *)left;
+  const unsigned char *b = (const unsigned char *)right;
+  for (uint64_t i = 0U; i < sizeof(*left); ++i) {
+    if (a[i] != b[i]) return 0;
+  }
+  return 1;
+}
+
+static int fdt_contains_smmuv3(const void *table) {
+  static const unsigned char compatible[] = "arm,smmu-v3";
+  const unsigned char *blob = (const unsigned char *)table;
+  if (blob == 0 || read_be32(blob) != UINT32_C(0xd00dfeed)) return 0;
+  uint32_t total = read_be32(blob + 4U);
+  if (total < 40U || total > UINT32_C(16 * 1024 * 1024)) return 0;
+  for (uint32_t i = 0U; i + sizeof(compatible) <= total; ++i) {
+    uint32_t matched = 1U;
+    for (uint32_t j = 0U; j < sizeof(compatible); ++j) {
+      if (blob[i + j] != compatible[j]) {
+        matched = 0U;
+        break;
+      }
+    }
+    if (matched != 0U) return 1;
+  }
+  return 0;
+}
+
+static uint32_t platform_flags(const efi_system_table_t *system_table) {
+  if (system_table == 0 || system_table->configuration_table == 0 ||
+      system_table->number_of_table_entries > UINT64_C(4096)) {
+    return 0U;
+  }
+  for (uint64_t i = 0U; i < system_table->number_of_table_entries; ++i) {
+    const efi_configuration_table_t *entry =
+        &system_table->configuration_table[i];
+    if (guid_equal(&entry->vendor_guid, &EFI_DTB_TABLE_GUID) &&
+        fdt_contains_smmuv3(entry->vendor_table)) {
+      return XAIOS_BOOT_PLATFORM_SMMUV3;
+    }
+  }
+  return 0U;
 }
 
 static efi_status_t open_root(efi_handle_t image_handle,
@@ -275,21 +332,36 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
   loader_puts(system_table, u"XAIOS loader starting\r\n");
   loader_puts(system_table, XAIOS_LOADER_TARGET_MESSAGE);
 
-  efi_file_protocol_t *root = 0;
-  efi_status_t status = open_root(image_handle, system_table, &root);
-  if (is_error(status)) {
-    loader_puts(system_table, u"XAIOS loader error: could not open boot volume\r\n");
-    return status;
-  }
-
   void *kernel_buffer = 0;
   uint64_t kernel_size = 0;
-  status = read_kernel_file(system_table, root, &kernel_buffer, &kernel_size);
-  if (is_error(status)) {
-    loader_puts(system_table, u"XAIOS loader error: missing kernel.elf\r\n");
-    return status;
+  uint32_t system_slot = XAIOS_SYSTEM_SLOT_NONE;
+  uint64_t system_generation = 0U;
+  uint32_t rollback_performed = 0U;
+  efi_status_t status = system_volume_read_kernel(
+      image_handle, system_table, &kernel_buffer, &kernel_size, &system_slot,
+      &system_generation, &rollback_performed);
+  if (!is_error(status)) {
+    if (rollback_performed != 0U) {
+      loader_puts(system_table,
+                  u"XAIOS loader rolled back an unconfirmed system slot\r\n");
+    }
+    loader_puts(system_table,
+                u"XAIOS loader loaded verified A/B system slot\r\n");
+  } else {
+    efi_file_protocol_t *root = 0;
+    status = open_root(image_handle, system_table, &root);
+    if (is_error(status)) {
+      loader_puts(system_table,
+                  u"XAIOS loader error: could not open boot volume\r\n");
+      return status;
+    }
+    status = read_kernel_file(system_table, root, &kernel_buffer, &kernel_size);
+    if (is_error(status)) {
+      loader_puts(system_table, u"XAIOS loader error: missing kernel.elf\r\n");
+      return status;
+    }
+    loader_puts(system_table, u"XAIOS loader loaded kernel.elf fallback\r\n");
   }
-  loader_puts(system_table, u"XAIOS loader loaded kernel.elf\r\n");
 
   const elf64_ehdr_t *ehdr = 0;
   if (!validate_elf(kernel_buffer, kernel_size, &ehdr)) {
@@ -324,7 +396,7 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
 
   g_boot_info.magic = XAIOS_BOOT_INFO_MAGIC;
   g_boot_info.version = XAIOS_BOOT_INFO_VERSION;
-  g_boot_info.reserved = 0;
+  g_boot_info.platform_flags = platform_flags(system_table);
   g_boot_info.memory_map = (uint64_t)memory_map;
   g_boot_info.memory_map_size = memory_map_size;
   g_boot_info.memory_descriptor_size = descriptor_size;
@@ -332,6 +404,10 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
   g_boot_info.kernel_phys_base = kernel_base;
   g_boot_info.kernel_phys_end = kernel_end;
   g_boot_info.uart_base = XAIOS_LOADER_UART_BASE;
+  g_boot_info.system_volume_present =
+      system_slot == XAIOS_SYSTEM_SLOT_NONE ? 0U : 1U;
+  g_boot_info.system_slot = system_slot;
+  g_boot_info.system_generation = system_generation;
 
   status = system_table->boot_services->exit_boot_services(image_handle, map_key);
   if (is_error(status)) {

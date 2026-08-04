@@ -5,13 +5,14 @@
 #include <xaios/types.h>
 
 /*
- * Optimized AI Compute Kernels for AArch64
+ * AI compute kernels for AArch64
  *
- * - NEON SIMD vectorization (8-16× speedup)
- * - Multi-threaded matrix multiplication
+ * - NEON SIMD where a path has a correctness canary
+ * - Deterministic bounded matrix work units
  * - Multiple quantization formats (FP32, FP16, INT8, INT4, Q8.8)
  *
- * All kernels are optimized for ARM NEON and scale across multiple cores.
+ * Packed INT4/INT6 paths unpack in the dot-product loop and never expand a
+ * complete matrix. Persistent worker-pool dispatch is not implemented here.
  */
 
 /* Quantization formats */
@@ -21,7 +22,7 @@ typedef enum xaios_quantization {
   XAIOS_QUANT_INT8 = 2,   /* 8-bit integer, 1 byte/param */
   XAIOS_QUANT_INT4 = 3,   /* 4-bit integer, 0.5 bytes/param */
   XAIOS_QUANT_Q88 = 4,    /* Q8.8 fixed-point, 2 bytes/param (legacy) */
-  XAIOS_QUANT_INT6 = 5,   /* 6-bit integer, 0.75 bytes/param (Qwen optimized) */
+  XAIOS_QUANT_INT6 = 5,   /* Signed packed 6-bit, 0.75 bytes/parameter */
 } xaios_quantization_t;
 
 /* Work unit for multi-threaded matmul */
@@ -45,25 +46,27 @@ typedef enum xaios_activation {
 } xaios_activation_t;
 
 /*
- * NEON-optimized matrix multiplication
+ * Matrix multiplication dispatcher
  *
  * Computes: result = mat_a @ mat_b
  * Dimensions: (rows_a × cols_a) @ (cols_a × cols_b) → (rows_a × cols_b)
  *
- * Automatically selects optimized kernel based on quantization format.
+ * Selects the implemented kernel based on quantization format.
  */
 void ai_kernel_matmul(const void *mat_a, const void *mat_b, void *result,
                      uint32_t rows_a, uint32_t cols_a, uint32_t cols_b,
                      xaios_quantization_t quant);
 
 /*
- * Multi-threaded matrix multiplication
+ * Matrix work-unit compatibility entrypoint
  *
- * Splits work across num_threads cores. Each thread processes a row range.
- * Caller must ensure thread safety and synchronization.
+ * Executes caller-provided row ranges deterministically. The current function
+ * is sequential; it must not be used as evidence of multi-core execution.
  */
 void ai_kernel_matmul_multithread(const xaios_matmul_work_t *work_units,
                                   uint32_t num_threads);
+
+void ai_kernel_self_test(void);
 
 /*
  * Forward pass with activation

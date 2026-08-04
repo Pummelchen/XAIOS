@@ -68,6 +68,18 @@ XAIOS_ISR_ERR 29
 XAIOS_ISR_ERR 30
 XAIOS_ISR_NOERR 31
 
+.macro XAIOS_IRQ_NOERR vector
+.global x86_64_irq_\vector
+.type x86_64_irq_\vector, @function
+x86_64_irq_\vector:
+  pushq $0
+  pushq $\vector
+  jmp x86_64_irq_common
+.endm
+
+XAIOS_IRQ_NOERR 32
+XAIOS_IRQ_NOERR 255
+
 .global x86_64_isr_common
 .type x86_64_isr_common, @function
 x86_64_isr_common:
@@ -84,6 +96,36 @@ x86_64_isr_common:
   pushq %r11
   movq %rsp, %rdi
   call x86_64_exception_entry
+  popq %r11
+  popq %r10
+  popq %r9
+  popq %r8
+  popq %rbp
+  popq %rdi
+  popq %rsi
+  popq %rdx
+  popq %rcx
+  popq %rbx
+  popq %rax
+  addq $16, %rsp
+  iretq
+
+.global x86_64_irq_common
+.type x86_64_irq_common, @function
+x86_64_irq_common:
+  pushq %rax
+  pushq %rbx
+  pushq %rcx
+  pushq %rdx
+  pushq %rsi
+  pushq %rdi
+  pushq %rbp
+  pushq %r8
+  pushq %r9
+  pushq %r10
+  pushq %r11
+  movq %rsp, %rdi
+  call x86_64_interrupt_entry
   popq %r11
   popq %r10
   popq %r9

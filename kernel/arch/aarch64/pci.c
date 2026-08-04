@@ -39,6 +39,14 @@ static uint8_t ecam_read8(uint8_t bus, uint8_t dev, uint8_t func,
   return *ecam_addr(bus, dev, func, offset);
 }
 
+static void ecam_write16(uint8_t bus, uint8_t dev, uint8_t func,
+                         uint16_t offset, uint16_t value) {
+  volatile uint16_t *p =
+      (volatile uint16_t *)(uintptr_t)ecam_addr(bus, dev, func, offset);
+  *p = value;
+  __asm__ volatile("dsb sy" ::: "memory");
+}
+
 static void map_ecam_bus0(void) {
   uint64_t page = 0;
   while (page < XAIOS_PCI_ECAM_BUS0_SIZE) {
@@ -230,6 +238,41 @@ uint32_t pci_find_device(uint16_t vendor_id, uint16_t device_id) {
     }
   }
   return UINT32_C(0xFFFFFFFF);
+}
+
+xaios_status_t pci_enable_device(uint32_t index) {
+  const xaios_pci_device_t *device = pci_device(index);
+  if (device == 0) return XAIOS_ERR_INVALID;
+  uint16_t command = ecam_read16(device->bus, device->device,
+                                 device->function, XAIOS_PCI_COMMAND);
+  command |= UINT16_C(0x0006); /* memory space and bus mastering */
+  ecam_write16(device->bus, device->device, device->function,
+               XAIOS_PCI_COMMAND, command);
+  return (ecam_read16(device->bus, device->device, device->function,
+                      XAIOS_PCI_COMMAND) & UINT16_C(0x0006)) ==
+                 UINT16_C(0x0006)
+             ? XAIOS_OK
+             : XAIOS_ERR_IO;
+}
+
+uint64_t pci_bar_address(uint32_t index, uint32_t bar_index) {
+  const xaios_pci_device_t *device = pci_device(index);
+  if (device == 0 || bar_index >= XAIOS_PCI_MAX_BARS) return 0U;
+  uint32_t low = device->bars[bar_index];
+  if ((low & 1U) != 0U) return 0U;
+  uint64_t address = (uint64_t)(low & UINT32_C(0xfffffff0));
+  if ((low & UINT32_C(0x6)) == UINT32_C(0x4)) {
+    if (bar_index + 1U >= XAIOS_PCI_MAX_BARS) return 0U;
+    address |= (uint64_t)device->bars[bar_index + 1U] << 32U;
+  }
+  return address;
+}
+
+uint32_t pci_stream_id(uint32_t index) {
+  const xaios_pci_device_t *device = pci_device(index);
+  if (device == 0) return UINT32_MAX;
+  return ((uint32_t)device->bus << 8U) |
+         ((uint32_t)device->device << 3U) | device->function;
 }
 
 void pci_self_test(void) {

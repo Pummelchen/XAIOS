@@ -43,6 +43,13 @@ typedef struct {
   xaios_ip_addr_user_t client_addr;
   uint16_t client_port;
   uint32_t auth_attempts;
+  uint32_t principal_role;
+  char principal[XAIOS_ADMIN_PRINCIPAL_MAX];
+  uint8_t principal_fingerprint[32];
+  uint64_t command_window_start;
+  uint32_t command_count;
+  uint32_t close_requested;
+  uint32_t remote_login_session_active;
   int state;
   uint8_t session_id[32];
   uint8_t exchange_hash[32];

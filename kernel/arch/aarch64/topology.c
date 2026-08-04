@@ -1,5 +1,6 @@
 #include <xaios/assert.h>
 #include <xaios/klog.h>
+#include <xaios/kheap.h>
 #include <xaios/smp.h>
 #include <xaios/topology.h>
 
@@ -14,22 +15,15 @@
  *   - Level 3: System domain (all CPUs)
  */
 
-#define TOPOLOGY_MAX_DOMAINS 8192U
-
-static xaios_cpu_topology_t g_cpu_topology[XAIOS_MAX_CPUS];
-static xaios_sched_domain_t g_sched_domains[TOPOLOGY_MAX_DOMAINS];
+static xaios_cpu_topology_t *g_cpu_topology;
+static xaios_sched_domain_t *g_sched_domains;
 static uint32_t g_domain_count;
+static uint32_t g_domain_capacity;
+static uint32_t g_cpu_capacity;
 static uint32_t g_topology_initialized;
 
-static void bytes_zero(void *buffer, uint64_t size) {
-  uint8_t *bytes = (uint8_t *)buffer;
-  for (uint64_t i = 0; i < size; ++i) {
-    bytes[i] = 0;
-  }
-}
-
 static uint32_t next_domain_id(void) {
-  if (g_domain_count >= TOPOLOGY_MAX_DOMAINS) {
+  if (g_domain_count >= g_domain_capacity) {
     return UINT32_MAX; /* overflow */
   }
   return g_domain_count++;
@@ -42,8 +36,14 @@ void topology_init(void) {
     return;
   }
 
-  bytes_zero(g_cpu_topology, sizeof(g_cpu_topology));
-  bytes_zero(g_sched_domains, sizeof(g_sched_domains));
+  g_cpu_capacity = smp_capacity();
+  uint32_t core_domains = (online + 15U) / 16U;
+  g_domain_capacity = core_domains + 3U;
+  g_cpu_topology = (xaios_cpu_topology_t *)kheap_calloc(
+      (uint64_t)g_cpu_capacity * sizeof(*g_cpu_topology), 16U);
+  g_sched_domains = (xaios_sched_domain_t *)kheap_calloc(
+      (uint64_t)g_domain_capacity * sizeof(*g_sched_domains), 16U);
+  kassert(g_cpu_topology != 0 && g_sched_domains != 0);
   g_domain_count = 0;
 
   /* QEMU virt assumptions:
@@ -131,38 +131,38 @@ void topology_init(void) {
 }
 
 uint32_t topology_get_core_domain(uint32_t cpu_id) {
-  if (cpu_id >= XAIOS_MAX_CPUS || !g_topology_initialized) {
+  if (cpu_id >= g_cpu_capacity || !g_topology_initialized) {
     return UINT32_MAX;
   }
   return g_cpu_topology[cpu_id].sched_domain_id;
 }
 
 uint32_t topology_get_socket_domain(uint32_t cpu_id) {
-  if (cpu_id >= XAIOS_MAX_CPUS || !g_topology_initialized) {
+  if (cpu_id >= g_cpu_capacity || !g_topology_initialized) {
     return UINT32_MAX;
   }
 
   uint32_t core_domain = g_cpu_topology[cpu_id].sched_domain_id;
-  if (core_domain >= TOPOLOGY_MAX_DOMAINS) {
+  if (core_domain >= g_domain_count) {
     return UINT32_MAX;
   }
 
   uint32_t socket_domain = g_sched_domains[core_domain].parent_domain;
-  if (socket_domain >= TOPOLOGY_MAX_DOMAINS) {
+  if (socket_domain >= g_domain_count) {
     return UINT32_MAX;
   }
 
-  return g_sched_domains[socket_domain].parent_domain; /* NUMA domain's parent = socket */
+  return socket_domain;
 }
 
 uint32_t topology_get_numa_domain(uint32_t cpu_id) {
-  if (cpu_id >= XAIOS_MAX_CPUS || !g_topology_initialized) {
+  if (cpu_id >= g_cpu_capacity || !g_topology_initialized) {
     return UINT32_MAX;
   }
 
   uint32_t dom_id = g_cpu_topology[cpu_id].sched_domain_id;
   /* Walk up the domain hierarchy until we find a level-2 (NUMA) domain */
-  for (uint32_t depth = 0; depth < 4 && dom_id < TOPOLOGY_MAX_DOMAINS; ++depth) {
+  for (uint32_t depth = 0; depth < 4 && dom_id < g_domain_count; ++depth) {
     if (g_sched_domains[dom_id].level == 2) {
       return dom_id;
     }
@@ -175,21 +175,21 @@ uint32_t topology_get_numa_domain(uint32_t cpu_id) {
 }
 
 const xaios_sched_domain_t *topology_get_domain(uint32_t domain_id) {
-  if (domain_id >= TOPOLOGY_MAX_DOMAINS || !g_topology_initialized) {
+  if (domain_id >= g_domain_count || !g_topology_initialized) {
     return 0;
   }
   return &g_sched_domains[domain_id];
 }
 
 const xaios_cpu_topology_t *topology_get_cpu(uint32_t cpu_id) {
-  if (cpu_id >= XAIOS_MAX_CPUS || !g_topology_initialized) {
+  if (cpu_id >= g_cpu_capacity || !g_topology_initialized) {
     return 0;
   }
   return &g_cpu_topology[cpu_id];
 }
 
 uint32_t topology_get_numa_node_for_cpu(uint32_t cpu_id) {
-  if (cpu_id >= XAIOS_MAX_CPUS || !g_topology_initialized) {
+  if (cpu_id >= g_cpu_capacity || !g_topology_initialized) {
     return UINT32_MAX;
   }
   return g_cpu_topology[cpu_id].numa_node;

@@ -235,6 +235,7 @@ void sha512_hash(const uint8_t *data, uint64_t len, uint8_t digest[64]) {
   sha512_final(&ctx, digest);
 }
 
+#if !defined(XAIOS_CRYPTO_HASHES_ONLY)
 /* ---- HMAC-SHA-256 ---- */
 void hmac_sha256(const uint8_t *key, uint64_t key_len, const uint8_t *data,
                  uint64_t data_len, uint8_t mac[32]) {
@@ -1146,3 +1147,4 @@ int ssh_crypto_self_test(void) {
                             ed_public_result) == 0) return -10;
   return 0;
 }
+#endif

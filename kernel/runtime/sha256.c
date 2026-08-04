@@ -1,5 +1,7 @@
+#if !defined(XAIOS_SHA256_NO_SELF_TEST)
 #include <xaios/assert.h>
 #include <xaios/klog.h>
+#endif
 #include <xaios/sha256.h>
 
 /* SHA-256 round constants (FIPS 180-4 Section 4.2.2) */
@@ -187,6 +189,7 @@ void xaios_sha256(const void *data, uint64_t len, uint8_t hash[32]) {
   xaios_sha256_final(&ctx, hash);
 }
 
+#if !defined(XAIOS_SHA256_NO_SELF_TEST)
 void sha256_self_test(void) {
   /* NIST test vector: SHA-256("abc") */
   static const uint8_t expected_abc[32] = {
@@ -214,3 +217,4 @@ void sha256_self_test(void) {
 
   klog("sha256: self-test passed (abc + empty vectors verified)\n");
 }
+#endif

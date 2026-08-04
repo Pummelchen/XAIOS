@@ -18,11 +18,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY tests/network/debian13-client-suite.sh /usr/local/bin/xaios-network-client-suite
+COPY tests/network/debian13-phase2-client-suite.sh /usr/local/bin/xaios-phase2-client-suite
 COPY tests/network/parallel-client-load.py /usr/local/bin/xaios-parallel-network-client
 COPY scripts/qemu-ipv6-tcp-client.py /usr/local/bin/xaios-ipv6-tcp-client
 
 RUN chmod 0755 \
     /usr/local/bin/xaios-network-client-suite \
+    /usr/local/bin/xaios-phase2-client-suite \
     /usr/local/bin/xaios-parallel-network-client \
     /usr/local/bin/xaios-ipv6-tcp-client
 

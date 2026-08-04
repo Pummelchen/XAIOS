@@ -860,6 +860,15 @@ xaios_status_t service_status(const char *name) {
   return handle_status(name);
 }
 
+xaios_status_t service_snapshot(const char *name, xaios_service_t *snapshot) {
+  xaios_service_t *service = find_service(name);
+  if (service == 0 || snapshot == 0) {
+    return XAIOS_ERR_NOT_FOUND;
+  }
+  *snapshot = *service;
+  return XAIOS_OK;
+}
+
 xaios_status_t service_start(const char *name) {
   xaios_service_t *service = find_service(name);
   if (service == 0) {
@@ -937,7 +946,7 @@ static xaios_status_t handle_osctl_command(const char *action,
   }
 
   if (str_eq(action, "status")) {
-    klog("osctl: status qemu=running processes=%lu services=%lu ai_cells=%lu\n",
+    klog("osctl: status legacy=1 processes=%lu services=%lu ai_cells=%lu\n",
          user_process_active_count(), service_transition_count(),
          ai_cell_transition_count());
     return XAIOS_OK;

@@ -19,6 +19,7 @@ TARGETS = [
     "x86_64: Intel Desktop milestone 43 boot path passed",
     "x86_64: IDT installed vectors=32",
     "x86_64: early exception path online",
+    "x86_64: controlled INT3 exception round-trip passed count=1",
     "x86_64: Intel Desktop milestone 44 early exceptions passed",
     "x86_64: PMM parsed descriptors=",
     "x86_64: Intel Desktop milestone 45 memory map passed",
@@ -27,27 +28,36 @@ TARGETS = [
     "x86_64: Intel Desktop milestone 46 page tables passed",
     "x86_64: APIC discovery supported=",
     "x86_64: timer discovery tsc=",
+    "x86_64: local APIC timer interrupt passed id=",
     "x86_64: Intel Desktop milestone 47 timers APIC passed",
     "x86_64: PCI discovery devices=",
+    "modern_virtio=2",
     "x86_64: Intel Desktop milestone 48 PCI discovery passed",
     "x86_64: placement policy logical_cpus=",
     "x86_64: SMT policy disabled_by_default=1",
     "x86_64: hot-core telemetry migration_total=0 context_switch_total=0",
     "x86_64: Intel Desktop milestone 49 placement policy passed",
-    "x86_64: common kernel/runtime linked=0",
-    "x86_64: OS contract userspace=0 filesystem=0 networking=0 ai_cell=0 security=0 telemetry=0",
+    "x86_64: common kernel/runtime linked=1 probe=0x000000000000000f expected=0x000000000000000f",
+    "x86_64: OS contract userspace=0 filesystem=1 networking=0 ai_cell=0 security=0 telemetry=0",
     "x86_64: full OS contract parity marker ready=0",
-    "x86_64: Intel Desktop milestone 50 OS contract port unsupported",
+    "x86_64: Intel Desktop milestone 50 portable common runtime passed platform services pending",
     "x86_64: hardware gate qemu_correctness=1 physical_required=1 baseline_required=1 performance_claims_allowed=0 release_candidate_ready=0",
-    "x86_64: Intel Desktop hardware gate blocked common-runtime-and-physical-evidence-required",
+    "x86_64: Intel Desktop hardware gate blocked platform-parity-and-physical-evidence-required",
     "x86_64: Intel Desktop milestone 51 hardware gate blocked",
+]
+
+OR_TARGETS = [
+    [
+        "x86_64: AVX2 packed no-expand known-answer canary passed",
+        "x86_64: AVX2 packed canary unsupported on selected CPU",
+    ],
 ]
 
 
 def main() -> int:
     env = os.environ.copy()
     env.setdefault("XAIOS_QEMU_X86_ACCEL", "tcg")
-    env.setdefault("XAIOS_QEMU_X86_CPU", "Skylake-Client")
+    env.setdefault("XAIOS_QEMU_X86_CPU", "max")
     timeout = int(env.get("XAIOS_QEMU_X86_SMOKE_TIMEOUT", "45"))
 
     proc = subprocess.Popen(
@@ -74,10 +84,16 @@ def main() -> int:
                 sys.stdout.flush()
                 seen.append(chunk)
                 text = "".join(seen)
-                if all(target in text for target in TARGETS):
+                if (
+                    all(target in text for target in TARGETS)
+                    and all(
+                        any(target in text for target in alternatives)
+                        for alternatives in OR_TARGETS
+                    )
+                ):
                     print(
                         "qemu-x86_64-smoke: x86_64 boot reached all "
-                        "early bring-up and explicit unsupported markers"
+                        "early bring-up and portable-runtime markers"
                     )
                     return 0
             elif proc.poll() is not None:
@@ -93,6 +109,11 @@ def main() -> int:
 
     text = "".join(seen)
     missing = [target for target in TARGETS if target not in text]
+    missing.extend(
+        " | ".join(alternatives)
+        for alternatives in OR_TARGETS
+        if not any(target in text for target in alternatives)
+    )
     print("\nqemu-x86_64-smoke: missing markers:")
     for marker in missing:
         print(f"  - {marker}")

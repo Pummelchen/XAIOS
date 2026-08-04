@@ -1,18 +1,27 @@
 #include <xaios/assert.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
+#include <xaios/spinlock.h>
+#include <xaios/timer.h>
 #include <xaios/virtio_net.h>
 #include <xaios/virtio_transport.h>
 #include <xaios/vmm.h>
 
 #define VRING_DESC_F_WRITE UINT16_C(2)
-/* QEMU's modern VirtIO-MMIO net transport uses virtio_net_hdr_mrg_rxbuf,
- * including the trailing num_buffers field. */
+#define VRING_DESC_F_NEXT UINT16_C(1)
+#define VRING_DESC_F_INDIRECT UINT16_C(4)
+/* VirtIO 1.0 devices use virtio_net_hdr_v1, including num_buffers, even when
+ * mergeable receive buffers are not negotiated. */
 #define VIRTIO_NET_HDR_SIZE 12U
 #define VIRTIO_NET_PERSISTENT_RX_DESCS 8U
 #define VIRTIO_NET_PERSISTENT_TX_DESCS 4U
 #define VIRTIO_NET_MAX_FRAME 1524U
 #define VIRTIO_DMA_ALIGNMENT 4096U
+#define VIRTIO_NET_F_MAC (UINT32_C(1) << 5U)
+#define VIRTIO_F_RING_INDIRECT_DESC (UINT32_C(1) << 28U)
+#define VIRTIO_F_RING_EVENT_IDX (UINT32_C(1) << 29U)
+#define VIRTIO_F_VERSION_1_HIGH UINT32_C(1)
+#define VIRTIO_NET_MAX_TX_FRAGMENTS 4U
 
 typedef struct virtio_net_driver {
   virtio_mmio_device_t device;
@@ -30,11 +39,48 @@ typedef struct virtio_net_driver {
   uint16_t rx_last_used;
   uint16_t tx_avail_idx;
   uint16_t tx_last_used;
+  uint64_t interrupt_count;
+  uint64_t tx_completion_count;
+  uint32_t event_idx;
+  uint32_t indirect_desc;
+  uint64_t scatter_gather_submissions;
+  uint64_t copy_fallbacks;
+  xaios_spinlock_t tx_lock;
   uint8_t *rx_bufs[VIRTIO_NET_PERSISTENT_RX_DESCS];
   uint8_t *tx_bufs[VIRTIO_NET_PERSISTENT_TX_DESCS];
+  virtq_desc_t *tx_indirect[VIRTIO_NET_PERSISTENT_TX_DESCS];
 } virtio_net_driver_t;
 
 static virtio_net_driver_t *g_net;
+
+static uint32_t drain_tx_completions_locked(void) {
+  if (g_net == 0 || g_net->persistent == 0U) return 0U;
+  virtio_mmio_barrier();
+  uint16_t used = *(volatile uint16_t *)(void *)&g_net->tx_used->idx;
+  uint32_t completed = (uint16_t)(used - g_net->tx_last_used);
+  g_net->tx_last_used = used;
+  if (g_net->event_idx != 0U) {
+    g_net->tx_avail->used_event = used;
+  }
+  g_net->tx_completion_count += completed;
+  return completed;
+}
+
+static uint32_t virtio_net_drain_tx_completions(void) {
+  if (g_net == 0 || xaios_spin_trylock(&g_net->tx_lock) == 0) return 0U;
+  uint32_t completed = drain_tx_completions_locked();
+  xaios_spin_unlock(&g_net->tx_lock);
+  return completed;
+}
+
+static void virtio_net_interrupt(uint32_t intid, void *context) {
+  virtio_net_driver_t *driver = (virtio_net_driver_t *)context;
+  (void)intid;
+  if (driver == 0 || driver != g_net) return;
+  ++driver->interrupt_count;
+  (void)virtio_net_drain_tx_completions();
+  virtio_transport_ack_interrupts(&driver->device);
+}
 
 static void bytes_zero(void *buffer, uint64_t size) {
   uint8_t *bytes = (uint8_t *)buffer;
@@ -56,6 +102,25 @@ static uint64_t dma_address(const void *ptr) {
   return physical;
 }
 
+static int dma_range(const void *ptr, uint64_t length, uint64_t *physical) {
+  if (ptr == 0 || length == 0U || physical == 0) return 0;
+  uint64_t start = (uint64_t)(uintptr_t)ptr;
+  if (start + length < start) return 0;
+  uint64_t first = 0U;
+  uint64_t last = 0U;
+  uint32_t first_flags = 0U;
+  uint32_t last_flags = 0U;
+  if (vmm_translate(start, &first, &first_flags) != XAIOS_OK ||
+      vmm_translate(start + length - 1U, &last, &last_flags) != XAIOS_OK ||
+      (first_flags & XAIOS_VMM_PRESENT) == 0U ||
+      (last_flags & XAIOS_VMM_PRESENT) == 0U ||
+      last != first + length - 1U) {
+    return 0;
+  }
+  *physical = first;
+  return 1;
+}
+
 static uint16_t get_be16(const uint8_t *src) {
   return (uint16_t)(((uint16_t)src[0] << 8U) | src[1]);
 }
@@ -68,6 +133,7 @@ static xaios_status_t allocate_driver(void) {
   if (g_net == 0) {
     return XAIOS_ERR_NO_MEMORY;
   }
+  xaios_spin_init(&g_net->tx_lock);
   /* Legacy VirtIO descriptors contain one physical extent. Keep every DMA
    * object inside one page because kheap virtual pages need not be physically
    * contiguous. */
@@ -91,16 +157,42 @@ static xaios_status_t allocate_driver(void) {
       g_net->rx_packet == 0 || g_net->tx_packet == 0) {
     return XAIOS_ERR_NO_MEMORY;
   }
+  for (uint32_t i = 0U; i < VIRTIO_NET_PERSISTENT_TX_DESCS; ++i) {
+    g_net->tx_indirect[i] = (virtq_desc_t *)kheap_calloc(
+        sizeof(virtq_desc_t) * (VIRTIO_NET_MAX_TX_FRAGMENTS + 1U),
+        VIRTIO_DMA_ALIGNMENT);
+    if (g_net->tx_indirect[i] == 0) return XAIOS_ERR_NO_MEMORY;
+  }
+  return XAIOS_OK;
+}
+
+static xaios_status_t negotiate_net_features(virtio_net_driver_t *driver) {
+  uint32_t accepted_low = 0U;
+  uint32_t accepted_high = 0U;
+  xaios_status_t status = virtio_transport_negotiate_features(
+      &driver->device,
+      VIRTIO_NET_F_MAC | VIRTIO_F_RING_INDIRECT_DESC |
+          VIRTIO_F_RING_EVENT_IDX,
+      VIRTIO_F_VERSION_1_HIGH, &accepted_low, &accepted_high);
+  if (status != XAIOS_OK ||
+      (accepted_high & VIRTIO_F_VERSION_1_HIGH) == 0U) {
+    return XAIOS_ERR_IO;
+  }
+  driver->event_idx =
+      (accepted_low & VIRTIO_F_RING_EVENT_IDX) != 0U ? 1U : 0U;
+  driver->indirect_desc =
+      (accepted_low & VIRTIO_F_RING_INDIRECT_DESC) != 0U ? 1U : 0U;
   return XAIOS_OK;
 }
 
 static void build_arp_request(uint8_t *packet, uint64_t *packet_len) {
-  static const uint8_t src_mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x15};
   static const uint8_t src_ip[4] = {10, 0, 2, 15};
   static const uint8_t target_ip[4] = {10, 0, 2, 2};
-  uint8_t *frame = packet + 10;
+  uint8_t src_mac[6];
+  uint8_t *frame = packet + VIRTIO_NET_HDR_SIZE;
 
-  bytes_zero(packet, 10 + 42);
+  kassert(virtio_net_get_mac(src_mac) == XAIOS_OK);
+  bytes_zero(packet, VIRTIO_NET_HDR_SIZE + 42U);
   for (uint32_t i = 0; i < 6; ++i) {
     frame[i] = 0xff;
     frame[6 + i] = src_mac[i];
@@ -118,15 +210,15 @@ static void build_arp_request(uint8_t *packet, uint64_t *packet_len) {
     frame[28 + i] = src_ip[i];
     frame[38 + i] = target_ip[i];
   }
-  *packet_len = 10 + 42;
+  *packet_len = VIRTIO_NET_HDR_SIZE + 42U;
 }
 
 static int is_expected_arp_reply(const uint8_t *packet, uint32_t len) {
-  if (len < 10 + 42) {
+  if (len < VIRTIO_NET_HDR_SIZE + 42U) {
     return 0;
   }
 
-  const uint8_t *frame = packet + 10;
+  const uint8_t *frame = packet + VIRTIO_NET_HDR_SIZE;
   if (get_be16(frame + 12) != 0x0806) {
     return 0;
   }
@@ -148,7 +240,7 @@ static void malformed_packet_self_test(void) {
   uint64_t len = 0;
   build_arp_request(packet, &len);
   kassert(is_expected_arp_reply(packet, 8) == 0);
-  put_be16(packet + 10 + 12, 0x0800);
+  put_be16(packet + VIRTIO_NET_HDR_SIZE + 12U, 0x0800);
   kassert(is_expected_arp_reply(packet, (uint32_t)len) == 0);
   klog("virtio-net: malformed packet/drop self-test passed\n");
 }
@@ -157,7 +249,7 @@ void virtio_net_self_test(void) {
   kassert(allocate_driver() == XAIOS_OK);
   kassert(virtio_transport_find(VIRTIO_DEVICE_NET, "virtio-net",
                                 &g_net->device) == XAIOS_OK);
-  kassert(virtio_transport_negotiate_no_features(&g_net->device) == XAIOS_OK);
+  kassert(negotiate_net_features(g_net) == XAIOS_OK);
 
   bytes_zero(g_net->rx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
   bytes_zero(g_net->rx_avail, sizeof(*g_net->rx_avail));
@@ -165,6 +257,10 @@ void virtio_net_self_test(void) {
   bytes_zero(g_net->tx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
   bytes_zero(g_net->tx_avail, sizeof(*g_net->tx_avail));
   bytes_zero(g_net->tx_used, sizeof(*g_net->tx_used));
+  if (g_net->event_idx != 0U) {
+    g_net->rx_avail->used_event = 0U;
+    g_net->tx_avail->used_event = 0U;
+  }
   bytes_zero(g_net->rx_packet, 2048);
   bytes_zero(g_net->tx_packet, 128);
 
@@ -186,9 +282,29 @@ void virtio_net_self_test(void) {
 
   uint64_t tx_len = 0;
   build_arp_request(g_net->tx_packet, &tx_len);
-  g_net->tx_desc[0].addr = dma_address(g_net->tx_packet);
-  g_net->tx_desc[0].len = (uint32_t)tx_len;
-  g_net->tx_desc[0].flags = 0;
+  if (g_net->indirect_desc != 0U) {
+    virtq_desc_t *indirect = g_net->tx_indirect[0];
+    indirect[0].addr = dma_address(g_net->tx_packet);
+    indirect[0].len = VIRTIO_NET_HDR_SIZE;
+    indirect[0].flags = VRING_DESC_F_NEXT;
+    indirect[0].next = 1U;
+    indirect[1].addr = dma_address(g_net->tx_packet + VIRTIO_NET_HDR_SIZE);
+    indirect[1].len = 21U;
+    indirect[1].flags = VRING_DESC_F_NEXT;
+    indirect[1].next = 2U;
+    indirect[2].addr =
+        dma_address(g_net->tx_packet + VIRTIO_NET_HDR_SIZE + 21U);
+    indirect[2].len = 21U;
+    indirect[2].flags = 0U;
+    indirect[2].next = 0U;
+    g_net->tx_desc[0].addr = dma_address(indirect);
+    g_net->tx_desc[0].len = 3U * sizeof(virtq_desc_t);
+    g_net->tx_desc[0].flags = VRING_DESC_F_INDIRECT;
+  } else {
+    g_net->tx_desc[0].addr = dma_address(g_net->tx_packet);
+    g_net->tx_desc[0].len = (uint32_t)tx_len;
+    g_net->tx_desc[0].flags = 0U;
+  }
   g_net->tx_avail->ring[0] = 0;
   virtio_mmio_barrier();
   g_net->tx_avail->idx = 1;
@@ -209,7 +325,8 @@ void virtio_net_self_test(void) {
   }
   malformed_packet_self_test();
   virtio_transport_reset(&g_net->device);
-  klog("virtio-net: queue/tx/parser/reset self-test passed\n");
+  klog("virtio-net: queue/tx/parser/reset self-test passed event_idx=%u indirect_sg=%u\n",
+       g_net->event_idx, g_net->indirect_desc);
 }
 
 static uint64_t net_dma_address(const void *ptr) {
@@ -229,7 +346,7 @@ xaios_status_t virtio_net_init_persistent(void) {
 
   kassert(virtio_transport_find(VIRTIO_DEVICE_NET, "virtio-net-persist",
                                 &g_net->device) == XAIOS_OK);
-  kassert(virtio_transport_negotiate_no_features(&g_net->device) == XAIOS_OK);
+  kassert(negotiate_net_features(g_net) == XAIOS_OK);
 
   bytes_zero(g_net->rx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
   bytes_zero(g_net->rx_avail, sizeof(*g_net->rx_avail));
@@ -237,6 +354,10 @@ xaios_status_t virtio_net_init_persistent(void) {
   bytes_zero(g_net->tx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
   bytes_zero(g_net->tx_avail, sizeof(*g_net->tx_avail));
   bytes_zero(g_net->tx_used, sizeof(*g_net->tx_used));
+  if (g_net->event_idx != 0U) {
+    g_net->rx_avail->used_event = 0U;
+    g_net->tx_avail->used_event = 0U;
+  }
 
   kassert(virtio_transport_setup_queue(&g_net->device, 0, VIRTQ_SIZE,
                                        g_net->rx_desc, g_net->rx_avail,
@@ -275,57 +396,144 @@ xaios_status_t virtio_net_init_persistent(void) {
   g_net->tx_avail_idx = 0;
   g_net->tx_last_used = 0;
   g_net->persistent = 1;
+  g_net->interrupt_count = 0U;
+  g_net->tx_completion_count = 0U;
+  g_net->scatter_gather_submissions = 0U;
+  g_net->copy_fallbacks = 0U;
+  kassert(virtio_transport_register_interrupt(
+              &g_net->device, virtio_net_interrupt, g_net) == XAIOS_OK);
 
-  klog("virtio-net: persistent mode initialized rx=%u tx=%u\n",
-       VIRTIO_NET_PERSISTENT_RX_DESCS, VIRTIO_NET_PERSISTENT_TX_DESCS);
+  klog("virtio-net: persistent mode initialized rx=%u tx=%u event_idx=%u indirect_sg=%u\n",
+       VIRTIO_NET_PERSISTENT_RX_DESCS, VIRTIO_NET_PERSISTENT_TX_DESCS,
+       g_net->event_idx, g_net->indirect_desc);
   return XAIOS_OK;
 }
 
-xaios_status_t virtio_net_tx(const uint8_t *data, uint64_t len) {
-  if (g_net == 0 || g_net->persistent == 0 || data == 0 ||
-      len == 0 || len > VIRTIO_NET_MAX_FRAME) {
+static xaios_status_t tx_submit_vectors(const xaios_net_iovec_t *vectors,
+                                        uint32_t vector_count,
+                                        uint32_t allow_direct,
+                                        uint64_t *token) {
+  if (g_net == 0 || g_net->persistent == 0U || vectors == 0 ||
+      vector_count == 0U || vector_count > VIRTIO_NET_MAX_TX_FRAGMENTS ||
+      token == 0) {
     return XAIOS_ERR_INVALID;
   }
+  uint64_t total_payload = 0U;
+  for (uint32_t i = 0U; i < vector_count; ++i) {
+    if (vectors[i].base == 0 || vectors[i].length == 0U ||
+        total_payload + vectors[i].length < total_payload) {
+      return XAIOS_ERR_INVALID;
+    }
+    total_payload += vectors[i].length;
+  }
+  if (total_payload > VIRTIO_NET_MAX_FRAME) return XAIOS_ERR_INVALID;
 
-  virtio_mmio_barrier();
-  g_net->tx_last_used = g_net->tx_used->idx;
+  xaios_spin_lock(&g_net->tx_lock);
+  (void)drain_tx_completions_locked();
   uint16_t outstanding =
       (uint16_t)(g_net->tx_avail_idx - g_net->tx_last_used);
   if (outstanding >= VIRTIO_NET_PERSISTENT_TX_DESCS) {
-    if (virtio_transport_wait_used(&g_net->tx_used->idx,
-                                   (uint16_t)(g_net->tx_last_used + 1)) !=
-        XAIOS_OK) {
-      return XAIOS_ERR_IO;
-    }
-    virtio_mmio_barrier();
-    g_net->tx_last_used = g_net->tx_used->idx;
+    xaios_spin_unlock(&g_net->tx_lock);
+    return XAIOS_ERR_BUSY;
   }
-
-  uint16_t desc_idx = g_net->tx_avail_idx % VIRTIO_NET_PERSISTENT_TX_DESCS;
-
-  /* Build virtio-net header (10 bytes, all zeros) + frame */
+  uint16_t desc_idx =
+      g_net->tx_avail_idx % VIRTIO_NET_PERSISTENT_TX_DESCS;
   bytes_zero(g_net->tx_bufs[desc_idx], VIRTIO_NET_HDR_SIZE);
-  for (uint64_t i = 0; i < len; ++i) {
-    g_net->tx_bufs[desc_idx][VIRTIO_NET_HDR_SIZE + i] = data[i];
-  }
 
-  uint64_t total = VIRTIO_NET_HDR_SIZE + len;
-  g_net->tx_desc[desc_idx].addr = net_dma_address(g_net->tx_bufs[desc_idx]);
-  g_net->tx_desc[desc_idx].len = (uint32_t)total;
-  g_net->tx_desc[desc_idx].flags = 0;
+  uint64_t fragment_physical[VIRTIO_NET_MAX_TX_FRAGMENTS];
+  uint32_t direct = allow_direct != 0U && g_net->indirect_desc != 0U;
+  for (uint32_t i = 0U; i < vector_count && direct != 0U; ++i) {
+    if (!dma_range(vectors[i].base, vectors[i].length,
+                   &fragment_physical[i])) {
+      direct = 0U;
+    }
+  }
+  if (direct != 0U) {
+    virtq_desc_t *indirect = g_net->tx_indirect[desc_idx];
+    indirect[0].addr = net_dma_address(g_net->tx_bufs[desc_idx]);
+    indirect[0].len = VIRTIO_NET_HDR_SIZE;
+    indirect[0].flags = VRING_DESC_F_NEXT;
+    indirect[0].next = 1U;
+    for (uint32_t i = 0U; i < vector_count; ++i) {
+      uint32_t entry = i + 1U;
+      indirect[entry].addr = fragment_physical[i];
+      indirect[entry].len = (uint32_t)vectors[i].length;
+      indirect[entry].flags =
+          i + 1U < vector_count ? VRING_DESC_F_NEXT : 0U;
+      indirect[entry].next = (uint16_t)(entry + 1U);
+    }
+    g_net->tx_desc[desc_idx].addr = net_dma_address(indirect);
+    g_net->tx_desc[desc_idx].len =
+        (vector_count + 1U) * sizeof(virtq_desc_t);
+    g_net->tx_desc[desc_idx].flags = VRING_DESC_F_INDIRECT;
+    ++g_net->scatter_gather_submissions;
+  } else {
+    uint64_t offset = VIRTIO_NET_HDR_SIZE;
+    for (uint32_t i = 0U; i < vector_count; ++i) {
+      const uint8_t *source = (const uint8_t *)vectors[i].base;
+      for (uint64_t j = 0U; j < vectors[i].length; ++j) {
+        g_net->tx_bufs[desc_idx][offset++] = source[j];
+      }
+    }
+    g_net->tx_desc[desc_idx].addr = net_dma_address(g_net->tx_bufs[desc_idx]);
+    g_net->tx_desc[desc_idx].len =
+        (uint32_t)(VIRTIO_NET_HDR_SIZE + total_payload);
+    g_net->tx_desc[desc_idx].flags = 0U;
+    ++g_net->copy_fallbacks;
+  }
   g_net->tx_avail->ring[g_net->tx_avail_idx % VIRTQ_SIZE] = desc_idx;
   virtio_mmio_barrier();
   ++g_net->tx_avail_idx;
   g_net->tx_avail->idx = g_net->tx_avail_idx;
-  virtio_transport_notify(&g_net->device, 1);
-
-  if (virtio_transport_wait_used(&g_net->tx_used->idx,
-                                 g_net->tx_avail_idx) != XAIOS_OK) {
-    return XAIOS_ERR_IO;
-  }
-  virtio_mmio_barrier();
-  g_net->tx_last_used = g_net->tx_used->idx;
+  *token = g_net->tx_avail_idx;
+  virtio_transport_notify(&g_net->device, 1U);
+  xaios_spin_unlock(&g_net->tx_lock);
   return XAIOS_OK;
+}
+
+xaios_status_t virtio_net_tx_submit(const uint8_t *data, uint64_t len,
+                                    uint64_t *token) {
+  xaios_net_iovec_t vector = {data, len};
+  return tx_submit_vectors(&vector, 1U, 0U, token);
+}
+
+static xaios_status_t wait_tx_token(uint64_t token, uint64_t started) {
+  while ((uint16_t)(__atomic_load_n(&g_net->tx_last_used, __ATOMIC_ACQUIRE) -
+                    (uint16_t)token) >= UINT16_C(0x8000)) {
+    (void)virtio_net_drain_tx_completions();
+    if (timer_now_ns() - started >= UINT64_C(5000000000)) {
+      return XAIOS_ERR_IO;
+    }
+    __asm__ volatile("yield");
+  }
+  return XAIOS_OK;
+}
+
+xaios_status_t virtio_net_tx(const uint8_t *data, uint64_t len) {
+  xaios_net_iovec_t vector = {data, len};
+  return virtio_net_txv(&vector, 1U);
+}
+
+xaios_status_t virtio_net_txv(const xaios_net_iovec_t *vectors,
+                              uint32_t vector_count) {
+  uint64_t started = timer_now_ns();
+  uint64_t token = 0U;
+  for (;;) {
+    xaios_status_t status =
+        tx_submit_vectors(vectors, vector_count, 1U, &token);
+    if (status == XAIOS_OK) break;
+    if (status != XAIOS_ERR_BUSY) return status;
+    (void)virtio_net_drain_tx_completions();
+    if (timer_now_ns() - started >= UINT64_C(5000000000)) {
+      return XAIOS_ERR_IO;
+    }
+    __asm__ volatile("yield");
+  }
+  return wait_tx_token(token, started);
+}
+
+uint32_t virtio_net_tx_poll_completions(void) {
+  return virtio_net_drain_tx_completions();
 }
 
 uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size) {
@@ -334,10 +542,16 @@ uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size) {
     return 0;
   }
 
-  if (g_net->rx_used->idx == g_net->rx_last_used) {
+  /* The device publishes used-ring entries before updating idx. Force a fresh
+   * device-owned index load, then order the entry reads after it. */
+  virtio_mmio_barrier();
+  uint16_t used_idx =
+      *(volatile uint16_t *)(void *)&g_net->rx_used->idx;
+  if (used_idx == g_net->rx_last_used) {
     virtio_transport_ack_interrupts(&g_net->device);
     return 0;
   }
+  virtio_mmio_barrier();
 
   virtq_used_elem_t *elem =
       &g_net->rx_used->ring[g_net->rx_last_used % VIRTQ_SIZE];
@@ -355,6 +569,9 @@ uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size) {
 
   /* Every used entry must be returned, including malformed/oversized input. */
   ++g_net->rx_last_used;
+  if (g_net->event_idx != 0U) {
+    g_net->rx_avail->used_event = g_net->rx_last_used;
+  }
   g_net->rx_desc[desc].addr = net_dma_address(g_net->rx_bufs[desc]);
   g_net->rx_desc[desc].len = VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME;
   g_net->rx_desc[desc].flags = VRING_DESC_F_WRITE;
@@ -375,4 +592,12 @@ xaios_status_t virtio_net_get_mac(uint8_t mac[6]) {
     mac[i] = virtio_mmio_read8(g_net->device.base, 0x100U + i);
   }
   return XAIOS_OK;
+}
+
+uint64_t virtio_net_interrupt_count(void) {
+  return g_net == 0 ? 0U : g_net->interrupt_count;
+}
+
+uint64_t virtio_net_tx_completion_count(void) {
+  return g_net == 0 ? 0U : g_net->tx_completion_count;
 }

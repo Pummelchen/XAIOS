@@ -7,6 +7,10 @@
 xaios_status_t remote_login_execute(const char *user, const char *command,
                                    char *output, uint64_t output_capacity,
                                    uint64_t *output_bytes);
+xaios_status_t remote_login_execute_session(
+    uint64_t session_id, const char *user, const char *command, char *output,
+    uint64_t output_capacity, uint64_t *output_bytes);
+xaios_status_t remote_login_close_session(uint64_t session_id);
 uint64_t remote_login_session_count(void);
 uint64_t remote_login_command_count(void);
 uint64_t remote_login_denial_count(void);

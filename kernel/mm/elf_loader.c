@@ -1,5 +1,6 @@
 #include <xaios/assert.h>
 #include <xaios/elf_loader.h>
+#include <xaios/kheap.h>
 #include <xaios/klog.h>
 #include <xaios/pmm.h>
 #include <xaios/vmm.h>
@@ -104,13 +105,50 @@ static uint32_t vmm_flags_from_phdr(const elf64_phdr_t *phdr) {
   return flags;
 }
 
-static xaios_status_t track_page(xaios_process_aspace_t *aspace, uint64_t va,
-                                uint64_t pa) {
-  if (aspace->page_count >= XAIOS_ELF_LOADER_MAX_PAGES) {
+static xaios_status_t reserve_page_mappings(xaios_process_aspace_t *aspace,
+                                            uint32_t required) {
+  uint32_t capacity = aspace->page_capacity;
+  if (required <= capacity) {
+    return XAIOS_OK;
+  }
+  if (capacity == 0U) {
+    capacity = 64U;
+  }
+  while (capacity < required) {
+    if (capacity > UINT32_MAX / 2U) {
+      return XAIOS_ERR_NO_MEMORY;
+    }
+    capacity *= 2U;
+  }
+  if ((uint64_t)capacity >
+      UINT64_MAX / sizeof(xaios_process_page_mapping_t)) {
     return XAIOS_ERR_NO_MEMORY;
   }
-  aspace->page_va[aspace->page_count] = va;
-  aspace->page_pa[aspace->page_count] = pa;
+  uint64_t bytes =
+      (uint64_t)capacity * sizeof(xaios_process_page_mapping_t);
+  xaios_process_page_mapping_t *pages =
+      (xaios_process_page_mapping_t *)kheap_calloc(bytes, 16U);
+  if (pages == 0) {
+    return XAIOS_ERR_NO_MEMORY;
+  }
+  if (aspace->pages != 0 && aspace->page_count != 0U) {
+    bytes_copy(pages, aspace->pages,
+               (uint64_t)aspace->page_count * sizeof(*pages));
+  }
+  kheap_free(aspace->pages);
+  aspace->pages = pages;
+  aspace->page_capacity = capacity;
+  return XAIOS_OK;
+}
+
+static xaios_status_t track_page(xaios_process_aspace_t *aspace, uint64_t va,
+                                uint64_t pa) {
+  if (aspace->page_count == UINT32_MAX ||
+      reserve_page_mappings(aspace, aspace->page_count + 1U) != XAIOS_OK) {
+    return XAIOS_ERR_NO_MEMORY;
+  }
+  aspace->pages[aspace->page_count].va = va;
+  aspace->pages[aspace->page_count].pa = pa;
   ++aspace->page_count;
   return XAIOS_OK;
 }
@@ -157,6 +195,7 @@ static xaios_status_t load_segment(const xaios_initramfs_file_t *file,
       return XAIOS_ERR_INVALID;
     }
     if (track_page(aspace, va, (uint64_t)(uintptr_t)page) != XAIOS_OK) {
+      (void)vmm_unmap_user_page(va, aspace->l3_phys, aspace->l3_count);
       pmm_free_page(page);
       return XAIOS_ERR_NO_MEMORY;
     }
@@ -189,6 +228,7 @@ xaios_status_t elf_loader_load(const xaios_initramfs_file_t *file,
                                              ((uint64_t)i * ehdr->phentsize));
     if (phdr->type == PT_LOAD) {
       if (load_segment(file, phdr, aspace) != XAIOS_OK) {
+        elf_loader_reclaim(aspace, 0U, 0U);
         return XAIOS_ERR_INVALID;
       }
     }
@@ -230,6 +270,7 @@ xaios_status_t elf_loader_map_stack(xaios_process_aspace_t *aspace,
       return XAIOS_ERR_INVALID;
     }
     if (track_page(aspace, va, (uint64_t)(uintptr_t)stack_page) != XAIOS_OK) {
+      (void)vmm_unmap_user_page(va, aspace->l3_phys, aspace->l3_count);
       pmm_free_page(stack_page);
       return XAIOS_ERR_NO_MEMORY;
     }
@@ -248,14 +289,17 @@ void elf_loader_reclaim(xaios_process_aspace_t *aspace, uint64_t mapped_low,
 
   /* Free all tracked pages (unmap from both per-process and global tables) */
   for (uint32_t i = 0; i < aspace->page_count; ++i) {
-    uint64_t va = aspace->page_va[i];
-    uint64_t pa = aspace->page_pa[i];
+    uint64_t va = aspace->pages[i].va;
+    uint64_t pa = aspace->pages[i].pa;
     if (pa != 0) {
       vmm_unmap_user_page(va, aspace->l3_phys, aspace->l3_count);
       pmm_free_page((void *)(uintptr_t)pa);
     }
   }
   aspace->page_count = 0;
+  kheap_free(aspace->pages);
+  aspace->pages = 0;
+  aspace->page_capacity = 0U;
 
   (void)mapped_low;
   (void)mapped_high;
@@ -280,5 +324,10 @@ void elf_loader_self_test(void) {
   kassert(elf_loader_load(&bad_file, &test_aspace, &entry) == XAIOS_ERR_INVALID);
   kassert(elf_loader_load(0, &test_aspace, &entry) == XAIOS_ERR_INVALID);
   kassert(elf_loader_load(&bad_file, 0, &entry) == XAIOS_ERR_INVALID);
-  klog("elf_loader: self-test passed\n");
+  kassert(reserve_page_mappings(&test_aspace, 513U) == XAIOS_OK);
+  kassert(test_aspace.page_capacity >= 513U);
+  kheap_free(test_aspace.pages);
+  test_aspace.pages = 0;
+  test_aspace.page_capacity = 0U;
+  klog("elf_loader: self-test passed dynamic_page_capacity=513\n");
 }

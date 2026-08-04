@@ -1,6 +1,6 @@
 # XAIOS project tracker
 
-Last updated: 2026-08-02. Status labels and delivery order are checked against
+Last updated: 2026-08-04. Status labels and delivery order are checked against
 [`docs/MODEL-SUPPORT.json`](./docs/MODEL-SUPPORT.json). A checked interface is
 not equivalent to executing-model support.
 
@@ -32,7 +32,7 @@ not equivalent to executing-model support.
 - [x] Architecture-correct compile checks for AArch64 and x86_64 source.
 - [x] Independent CI jobs so ABI, hosted engine, docs, smoke and regression
   results are visible even when another job fails.
-- [x] Frozen QEMU contract synchronized through syscall 34 and current initfs
+- [x] QEMU contract synchronized through syscall 46 and current initfs
   capacity/paths.
 - [x] Production decode fails with an unsupported error; deterministic decode
   is explicitly selected as `XAIOS_ML_MODEL_FIXTURE_DECODE`.
@@ -41,15 +41,71 @@ not equivalent to executing-model support.
   corruption, malformed-range and overflow tests.
 - [x] Portable architecture/backend interfaces and scalar projection canary.
 - [x] Benchmark evidence contract and removal of unevidenced throughput claims.
+- [x] Phase 1 `xaiosctl` read-only administration foundation: versioned bounded
+  protocol, capability/role gate, deterministic JSON, measured state, log
+  cursors/redaction, exact SSH allowlist and Debian OpenSSH coverage.
+- [x] Phase 2 fixture-tested administrative security: observer/operator/admin
+  Ed25519 principals, persistent revocation, strict configuration transactions,
+  replay-protected mutations, host-key rotation, redacted audit, per-connection
+  session state and Debian 13 OpenSSH/QEMU acceptance coverage.
+- [x] Replace the fixed 256-page userspace image tracker with dynamically sized,
+  overflow-checked mapping ownership and cleanup.
 
 ## Workstream 1: active XAIOS completion
 
+- [x] Complete distributed-server Phase 1 (`xaiosctl` foundation).
+- [x] Complete Phase 2 administrative roles, configuration transactions, key
+  management and audit commands at the QEMU fixture-tested evidence level.
+- [x] Add a separate signed immutable large-model volume with hosted lifecycle,
+  fsck/scrub/grow/trim tools, immutable QEMU reads, and sparse >100 GiB reader
+  gates.
+- [x] Add authenticated dynamic ModelFS registration, resumable SFTP staging,
+  complete verification, replay-protected activation, cleanup/reuse and
+  immutable concurrent macOS/Debian download coverage against one QEMU guest.
+- [x] Add bounded typed guest block-device and mounted-filesystem list/show,
+  mount-status and usage queries with stable human/JSON rendering.
+- [x] Add scalar and experimental AArch64 NEON no-expand INT4/INT6 GEMV/GEMM
+  with startup canaries and randomized differential/tail tests.
+- [x] Add capability-gated experimental AVX2 no-expand GEMV/GEMM and execute
+  INT4/INT6 startup canaries under x86 QEMU TCG.
+- [x] Add QEMU-testable online GPT/ModelFS lifecycle, dynamic staging allocation,
+  fsck/repair, grow, persisted scrub/quarantine, free-only trim/discard, and
+  staged-extent reclamation.
+- [x] Replace the single outstanding QEMU VirtIO path with interrupt-dispatched
+  block/network completions, event-index suppression, indirect descriptors,
+  eight concurrent direct-or-bounce block requests, scatter/gather network
+  transmit and batched multi-sector backend transfers.
+- [x] Add a focused QEMU NVMe admin/I/O queue path and validate identify,
+  write/flush/read plus backing-image bytes.
+- [ ] Add production NVMe multiqueue, PRP/SGL, interrupt affinity, direct
+  final-buffer reads and physical durability/discard validation.
 - [ ] Complete the portable engine/service integration boundary.
-- [ ] Replace QEMU-scale memory, NUMA, storage, worker-dispatch, batching and
-  session-state prototypes with production-width implementations.
-- [ ] Link and validate the common kernel/runtime on x86_64.
+- [x] Replace fixed RAM/CPU bitmap ceilings with runtime-sized NUMA metadata,
+  CPU registries, cpusets/core leases and CPU-assigned joinable worker threads;
+  hosted cpusets cover 4,097 CPU IDs and the focused QEMU gate boots 130 CPUs.
+- [ ] Replace model, inference batching and session-state prototypes with
+  production-width implementations.
+- [x] Link and execute portable common CRC/block/VFS/engine components on x86_64.
+- [x] Validate x86 controlled exception delivery, a real local-APIC timer
+  interrupt, and modern VirtIO/MSI/MSI-X PCI capability discovery under QEMU.
+- [ ] Port EL0, AP startup/scheduling, PCI VirtIO drivers, security and telemetry for full
+  x86_64 OS parity.
+- [x] Add cumulative/partial ACK TCP sliding-window transmit with up to eight
+  retained segments, SACK, fast retransmit, zero-window handling, bounded
+  reordering and RTO backoff.
+- [x] Add bounded out-of-order IPv4/IPv6 fragment reassembly and exercise it
+  from macOS and Debian clients during concurrent SSH/SFTP/UDP load.
+- [x] Wire asynchronous DNS retry/cache behavior to an EL0 resolver syscall.
+- [x] Add EL0 thread create/join/cancel/exit over runtime-sized CPU metadata.
+- [x] Add focused QEMU SMMUv3 translated-DMA authorization, fault and stale-map
+  revocation evidence.
+- [x] Add kill/reboot crash-consistency gates for both redundant system-slot
+  metadata write points.
+- [x] Add `make qemu-core-os-rc` as a non-skipping aggregate evidence gate.
+- [x] Add `make qemu-high-core-gate` for >128-CPU SMP/NUMA capacity evidence
+  without treating TCG duration as physical scalability evidence.
 - [ ] Complete security, release-readiness and physical-hardware entry gates.
-- [ ] Keep QEMU evidence limited to correctness and ABI claims.
+- [x] Keep QEMU evidence limited to correctness and ABI claims.
 
 Qwen and every other model-family implementation remain gated until these
 platform criteria and the XAIOS GitHub milestone are complete.
@@ -68,10 +124,15 @@ platform criteria and the XAIOS GitHub milestone are complete.
 
 ## Qwen follow-on: packed hardware backends and sessions
 
-- [ ] Replace full-matrix INT4/INT6 expansion with fused packed kernels.
-- [ ] Add scalar differential and randomized tail tests before SIMD enablement.
+- [x] Replace full-matrix INT4/INT6 expansion with direct packed scalar/NEON
+  kernels for the implemented GEMV/GEMM correctness boundary.
+- [x] Add scalar differential and randomized packing-tail tests before NEON
+  selection.
+- [ ] Physically validate AVX2 differentials; add tiled prefill/verification
+  kernels, persistent worker pools, bandwidth autotuning, and production
+  model-layout integration.
 - [ ] Add native macOS process with Apple CPU and optional Metal backends.
-- [ ] Add AVX2, AVX-512/VNNI and AMX capability canaries.
+- [ ] Add AVX-512/VNNI and AMX capability canaries.
 - [ ] Add persistent NUMA-aware worker gangs and bandwidth-knee autotuning.
 - [ ] Replace prototype state/batching/speculation with typed state, prefix COW,
   branch/commit/rollback, ragged batching and exact target verification.
@@ -106,7 +167,7 @@ platform criteria and the XAIOS GitHub milestone are complete.
 
 ## OS and scale-out dependencies
 
-- [ ] Link the common kernel/runtime into the x86_64 image.
+- [x] Link and execute the portable common-runtime subset in the x86_64 image.
 - [ ] Replace fixed-size physical/virtual/model allocators with sparse,
   multi-terabyte-capable structures and large pages.
 - [ ] Parse x86 MADT/SRAT/SLIT/HMAT and track local/remote bytes.
@@ -129,3 +190,5 @@ immutable artifacts satisfying
 
 Detailed dependency order and official source links are in
 [`docs/QWEN-K3-IMPLEMENTATION-ROADMAP.md`](./docs/QWEN-K3-IMPLEMENTATION-ROADMAP.md).
+The OS/control/storage/cluster sequence is tracked in
+[`docs/DISTRIBUTED-AI-SERVER-PLAN.md`](./docs/DISTRIBUTED-AI-SERVER-PLAN.md).

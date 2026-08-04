@@ -102,8 +102,11 @@ XAIOS_AUTHORIZED_KEYS_FILE=build/local-ssh/admin.pub make image
 
 To test password authentication, generate the strict PBKDF2 record with
 `scripts/create-sshd-user-config.py` and pass it through
-`XAIOS_SSH_USERS_FILE`. See [`NETWORK-SSH-STATUS.md`](./NETWORK-SSH-STATUS.md)
-for the exact commands and security boundary.
+`XAIOS_SSH_USERS_FILE` together with the explicit
+`XAIOS_SSH_PASSWORD_AUTH=1` development opt-in. `XAIOS_BUILD_MODE=release`
+rejects password-enabled images. See
+[`NETWORK-SSH-STATUS.md`](./NETWORK-SSH-STATUS.md) for the exact commands and
+security boundary.
 
 ```sh
 XAIOS_QEMU_HOSTFWD_PORT=2299 XAIOS_QEMU_HOSTFWD_UDP_PORT=2298 make qemu
@@ -161,7 +164,7 @@ int main(void) {
 Edit `scripts/build-image.sh`, line 23. Add your app name to `USER_APPS`:
 
 ```sh
-USER_APPS="xaios-shell hello sysinfo systest smptest nettest lstm-xor sshtest mltest myapp"
+USER_APPS="xaios-shell xaiosctl hello sysinfo systest smptest nettest lstm-xor sshtest mltest posix-shell agenttest myapp"
 ```
 
 ### 3. Register the app in kmain

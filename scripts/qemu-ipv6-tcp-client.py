@@ -57,15 +57,23 @@ def ethernet_frame(
     return GUEST_MAC + CLIENT_MAC + struct.pack("!H", 0x86DD) + ipv6 + tcp
 
 
-def ipv4_tcp_frame(*, valid_ip_checksum: bool, fragment: bool = False) -> bytes:
+def ipv4_tcp_frame(
+    *,
+    valid_ip_checksum: bool,
+    fragment: bool = False,
+    seq: int = 0x55667788,
+    ack: int = 0,
+    flags: int = 0x02,
+    identification: int = 0x1234,
+) -> bytes:
     header = struct.pack(
         "!HHIIBBHHH",
         CLIENT_PORT,
         GUEST_PORT,
-        0x55667788,
-        0,
+        seq,
+        ack,
         5 << 4,
-        0x02,
+        flags,
         65535,
         0,
         0,
@@ -79,7 +87,7 @@ def ipv4_tcp_frame(*, valid_ip_checksum: bool, fragment: bool = False) -> bytes:
         0x45,
         0,
         20 + len(tcp),
-        0x1234,
+        identification,
         flags_offset,
         64,
         6,
@@ -90,6 +98,53 @@ def ipv4_tcp_frame(*, valid_ip_checksum: bool, fragment: bool = False) -> bytes:
     ip_checksum = checksum(ip) if valid_ip_checksum else 0
     ip = ip[:10] + struct.pack("!H", ip_checksum) + ip[12:]
     return GUEST_MAC + CLIENT_MAC + struct.pack("!H", 0x0800) + ip + tcp
+
+
+def ipv4_tcp_fragments(seq: int, identification: int) -> list[bytes]:
+    whole = ipv4_tcp_frame(
+        valid_ip_checksum=True, seq=seq, identification=identification
+    )
+    ethernet = whole[:14]
+    ip = whole[14:34]
+    tcp = whole[34:]
+    fragments = []
+    for offset, payload, more in ((0, tcp[:8], True), (8, tcp[8:], False)):
+        fragment_ip = bytearray(ip)
+        fragment_ip[2:4] = struct.pack("!H", 20 + len(payload))
+        fragment_ip[6:8] = struct.pack(
+            "!H", (0x2000 if more else 0) | (offset // 8)
+        )
+        fragment_ip[10:12] = b"\0\0"
+        fragment_ip[10:12] = struct.pack("!H", checksum(bytes(fragment_ip)))
+        fragments.append(ethernet + bytes(fragment_ip) + payload)
+    return fragments
+
+
+def ipv6_tcp_fragments(seq: int, identification: int) -> list[bytes]:
+    tcp = tcp_segment(seq, 0, 0x02)
+    fragments = []
+    for offset, payload, more in ((0, tcp[:8], True), (8, tcp[8:], False)):
+        fragment_header = struct.pack(
+            "!BBHI", 6, 0, (offset & 0xFFF8) | (1 if more else 0), identification
+        )
+        ipv6 = struct.pack(
+            "!IHBB16s16s",
+            6 << 28,
+            len(fragment_header) + len(payload),
+            44,
+            64,
+            CLIENT_IP,
+            GUEST_IP,
+        )
+        fragments.append(
+            GUEST_MAC
+            + CLIENT_MAC
+            + struct.pack("!H", 0x86DD)
+            + ipv6
+            + fragment_header
+            + payload
+        )
+    return fragments
 
 
 def send_frame(sock: socket.socket, frame: bytes) -> None:
@@ -180,6 +235,21 @@ def wait_for_tcp(sock: socket.socket, predicate, timeout: float, verbose: bool):
     raise TimeoutError("timed out waiting for guest IPv6/TCP response")
 
 
+def wait_for_tcp_v4(sock: socket.socket, predicate, timeout: float, verbose: bool):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            frame = recv_frame(sock)
+        except socket.timeout:
+            continue
+        if verbose:
+            print(f"received Ethernet frame bytes={len(frame)} hex={frame[:96].hex()}")
+        parsed = parse_guest_tcp_v4(frame)
+        if parsed is not None and predicate(parsed):
+            return parsed
+    raise TimeoutError("timed out waiting for guest IPv4/TCP response")
+
+
 def assert_no_tcp(sock: socket.socket, predicate, duration: float) -> None:
     deadline = time.monotonic() + duration
     previous_timeout = sock.gettimeout()
@@ -250,6 +320,49 @@ def main() -> int:
         assert_no_tcp(sock, lambda packet: packet[2] & 0x12 == 0x12, 0.5)
         send_frame(sock, ipv4_tcp_frame(valid_ip_checksum=True, fragment=True))
         assert_no_tcp(sock, lambda packet: packet[2] & 0x12 == 0x12, 0.5)
+
+        ipv4_fragment_seq = 0x55667900
+        ipv4_fragments = ipv4_tcp_fragments(ipv4_fragment_seq, 0x1235)
+        send_frame(sock, ipv4_fragments[1])
+        send_frame(sock, ipv4_fragments[0])
+        ipv4_server_seq, ipv4_ack, _, _ = wait_for_tcp_v4(
+            sock,
+            lambda packet: packet[2] & 0x12 == 0x12,
+            args.timeout,
+            args.verbose,
+        )
+        if ipv4_ack != ipv4_fragment_seq + 1:
+            raise RuntimeError("fragmented IPv4 SYN was acknowledged incorrectly")
+        send_frame(
+            sock,
+            ipv4_tcp_frame(
+                valid_ip_checksum=True,
+                seq=ipv4_fragment_seq + 1,
+                ack=ipv4_server_seq + 1,
+                flags=0x14,
+                identification=0x1236,
+            ),
+        )
+
+        ipv6_fragment_seq = client_seq - 0x100
+        ipv6_fragments = ipv6_tcp_fragments(ipv6_fragment_seq, 0xA1B2C3D4)
+        send_frame(sock, ipv6_fragments[1])
+        send_frame(sock, ipv6_fragments[0])
+        ipv6_server_seq, ipv6_ack, _, _ = wait_for_tcp(
+            sock,
+            lambda packet: packet[2] & 0x12 == 0x12,
+            args.timeout,
+            args.verbose,
+        )
+        if ipv6_ack != ipv6_fragment_seq + 1:
+            raise RuntimeError("fragmented IPv6 SYN was acknowledged incorrectly")
+        send_frame(
+            sock,
+            ethernet_frame(
+                ipv6_fragment_seq + 1, ipv6_server_seq + 1, 0x14
+            ),
+        )
+
         send_frame(
             sock,
             ethernet_frame(client_seq, 0, 0x02, valid_checksum=False),
@@ -314,7 +427,8 @@ def main() -> int:
             "IPv6 TCP transfer passed: "
             f"sent={len(client_banner)} received={len(payload)} "
             f"retransmit_seconds={retransmit_seconds:.3f} "
-            "ipv4_bad_header=rejected ipv4_fragment=rejected "
+            "ipv4_bad_header=rejected incomplete_fragment=held "
+            "ipv4_fragments=reassembled ipv6_fragments=reassembled "
             "zero_checksum=rejected invalid_rst=rejected "
             "reordered_input=accepted valid_rst=closed "
             f"guest_banner={payload.decode().strip()}"

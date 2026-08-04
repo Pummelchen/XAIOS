@@ -41,34 +41,40 @@ kernel_entry:
   b 3b
 
 aarch64_enter_user:
-  ldr x2, =aarch64_user_saved_sp
-  mov x3, sp
-  str x3, [x2]
-  ldr x2, =aarch64_user_saved_fp
-  str x29, [x2]
-  ldr x2, =aarch64_user_saved_lr
-  str x30, [x2]
+  sub sp, sp, #32
+  stp x29, x30, [sp]
+  mrs x3, tpidr_el1
+  str x3, [sp, #16]
+  mov x9, sp
+  msr tpidr_el1, x9
   mov x2, #0
   msr sp_el0, x1
   msr elr_el1, x0
   msr spsr_el1, x2
   eret
 
-aarch64_return_from_user_exit:
-  ldr x1, =aarch64_user_saved_sp
-  ldr x1, [x1]
-  mov sp, x1
-  ldr x1, =aarch64_user_saved_fp
-  ldr x29, [x1]
-  ldr x1, =aarch64_user_saved_lr
-  ldr x30, [x1]
-  ret
+.global aarch64_enter_user_thread
+.type aarch64_enter_user_thread, %function
+aarch64_enter_user_thread:
+  sub sp, sp, #32
+  stp x29, x30, [sp]
+  mrs x9, tpidr_el1
+  str x9, [sp, #16]
+  mov x10, sp
+  msr tpidr_el1, x10
+  msr sp_el0, x1
+  msr elr_el1, x0
+  mov x0, x2
+  mov x30, x3
+  mov x9, #0
+  msr spsr_el1, x9
+  eret
 
-.section .bss, "aw", %nobits
-.balign 8
-aarch64_user_saved_sp:
-  .quad 0
-aarch64_user_saved_fp:
-  .quad 0
-aarch64_user_saved_lr:
-  .quad 0
+aarch64_return_from_user_exit:
+  mrs x9, tpidr_el1
+  mov sp, x9
+  ldr x10, [sp, #16]
+  ldp x29, x30, [sp]
+  add sp, sp, #32
+  msr tpidr_el1, x10
+  ret

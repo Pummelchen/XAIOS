@@ -74,13 +74,13 @@ def main() -> int:
                 f"xaios ssh bridge exited before smoke test rc={bridge.returncode}\n{output}"
             )
         status = run_ssh("status")
-        if "xaios qemu session=running" not in status:
+        if "legacy status command" not in status:
             raise RuntimeError(f"missing status marker: {status!r}")
         listing = run_ssh("ls /")
         if "bin\n" not in listing or "state\n" not in listing:
             raise RuntimeError(f"missing ls marker: {listing!r}")
         sysinfo = run_ssh("sysinfo")
-        if "cpu_only_ai=true" not in sysinfo:
+        if "legacy sysinfo command" not in sysinfo:
             raise RuntimeError(f"missing sysinfo marker: {sysinfo!r}")
         run_ssh("nano /state/ssh-editor.txt --write 'alpha\\nbeta'")
         run_ssh("nano /state/ssh-editor.txt --insert 2 inserted")

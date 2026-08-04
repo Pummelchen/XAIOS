@@ -8,12 +8,21 @@ expose XAIOS directly to the Internet.
 ## QEMU-Tested Surface
 
 The following paths passed from OpenSSH clients on macOS and in an official
-Debian 13 Docker container on this host on 2026-08-03. Both clients exercised
+Debian 13 Docker container on this host on 2026-08-04. Both clients exercised
 the same freestanding AArch64 guest:
 
 - OpenSSH Ed25519 public-key login succeeded and an unauthorized key failed;
 - an explicitly provisioned PBKDF2-HMAC-SHA256 password succeeded and a wrong
   password failed;
+- the typed `xaios.control.v1` administration surface was exercised through the shared
+  `xaiosctl` parser, including strict config show/validate/diff/apply,
+  role-mapped key list/add/remove, host-key rotation, audit reads, ModelFS
+  lifecycle and storage device/filesystem administration;
+- observer/operator/administrator permissions, mutation replay rejection,
+  failed-config rollback, key revocation, per-connection cwd isolation,
+  command-rate rejection and sensitive-state denial were verified;
+- operational and administrative log queries were checked for submitted key,
+  password and private-key material;
 - password login remained disabled when no user database was packaged, and a
   malformed user database made the SSH service fail closed;
 - the SSH service refused to start when the VirtIO RNG device was removed;
@@ -27,14 +36,20 @@ the same freestanding AArch64 guest:
 - client-initiated rekey at a 4 KiB OpenSSH `RekeyLimit` completed without
   interrupting SFTP;
 - four simultaneous SSH connections and 20 sequential reconnects completed;
+- storage discovery reported the expected writable `/dev/vblk4` ModelFS
+  device, the MutableFS root, the `/models` mount, and consistent staging/active
+  package accounting before and after activation;
 - a 24-byte UDP payload reached the guest application buffer and was echoed
   byte-for-byte; kernel self-tests also verify that a short receive discards the
   remainder of that datagram without contaminating the next one;
 - direct IPv6/TCP accepted reordered input, rejected a zero TCP checksum and an
   out-of-window reset, and retransmitted an identical guest segment after its
   ACK was withheld;
-- the direct framed receive path rejected an IPv4 header with a bad checksum
-  and rejected an IPv4 fragment before transport processing.
+- the direct framed receive path rejected malformed IPv4 checksums, retained
+  incomplete fragments without exposing them to TCP, and reassembled complete
+  out-of-order IPv4 and IPv6 fragment pairs before processing their TCP SYNs;
+- guest userspace resolved `example.com` through the asynchronous DNS syscall,
+  then completed an immediate cache hit.
 
 The machine-readable result is `build/qemu-docker-network-suite.json`. Serial
 logs and the direct-network packet capture are also generated under `build/`.
@@ -47,7 +62,9 @@ XAIOS guest instance and recorded:
 
 - successful key/password authentication, unauthorized-key/wrong-password
   rejection, strict batch-mode SFTP, and UDP echo from both client origins;
-- two direct raw TCP clients while SSH, SFTP, and UDP traffic remained active;
+- two direct raw TCP clients while SSH, SFTP, and UDP traffic remained active,
+  including malformed/incomplete fragment rejection and complete out-of-order
+  IPv4/IPv6 fragment reassembly from both client origins;
 - all four allowed SSH connections saturated concurrently, with two active
   channels per connection;
 - 40 strict SFTP cycles and 330 UDP round trips during the combined workload;
@@ -83,18 +100,34 @@ stored on the persistent mutable filesystem, flushed to the block device, and
 reused on reboot. Rekey works in both protocol directions; the Debian gate
 forces the client-initiated path.
 
+The SSH command boundary recognizes an exact `xaiosctl` prefix and invokes the
+shared userspace control client. It does not launch arbitrary guest
+executables. Ed25519 keys map to observer, operator or administrator roles.
+Read operations require `XAIOS_CAP_CONTROL_QUERY`; administrator operations
+also require `XAIOS_CAP_CONTROL_ADMIN`, and the kernel rejects a requested role
+above the process's trusted capability role. Operators may apply strict
+versioned configs; only administrators may mutate keys or rotate host identity.
+
+Configuration, active/revoked keys and audit records are checksummed and
+persistent. Mutations require nonzero replay IDs and are payload-redacted.
+Operational remote-login records omit user-supplied command text and arguments.
+The shell and SFTP deny the host private key, password database, legacy key
+source and `/state/control` subtree. The current stores are intentionally
+bounded to 16 keys, 16 revoked fingerprints and 64 audit records.
+
 SSH identification, packet, authentication, channel, and SFTP lengths are
 validated before arithmetic or copying. Invalid encrypted lengths, MACs,
 padding, embedded NULs, unsupported service names, malformed client versions,
 and all-zero X25519 shared secrets terminate the connection.
 
 The service is cooperatively scheduled and intentionally bounded to four
-connections, two channels per connection, and eight channels globally. These
-limits match current fixed freestanding userspace buffers. They are explicit
-resource limits, not claims of unlimited server concurrency. The audit log is
-written atomically and bounded to the mutable filesystem's per-file capacity;
-the service truncates and reopens it before subsequent records would exceed the
-limit.
+connections, two channels per connection, and eight channels globally. Each
+connection has independent shell cwd/parser state. These limits match current
+fixed freestanding userspace buffers. They are explicit resource limits, not
+claims of unlimited server concurrency. Connection/authentication and
+shell/control command rates are independently bounded. SFTP protocol packets do
+not consume the shell-command quota; they remain bounded by connection/channel
+limits, SSH/SFTP packet sizes, flow-control windows and filesystem policy.
 
 ## Automated Gate
 
@@ -105,17 +138,25 @@ installs OpenSSH, SFTP, sshpass, and network diagnostics:
 ```sh
 make qemu-docker-network-suite
 make qemu-parallel-network-load
+make qemu-model-sftp-gate
 ```
 
-The gate creates disposable credentials, builds the guest, runs forwarded IPv4
-and UDP checks, reboots the persistent image, runs direct framed IPv4/IPv6
-checks, and rebuilds fail-closed image variants. It removes QEMU processes and
-listeners during cleanup. GitHub Actions runs this target as an independent
-job so failures in unrelated jobs cannot silently skip network evidence.
+The gate creates disposable credentials, builds the guest, runs the complete
+control and read-only storage inventory over forwarded IPv4, exercises UDP,
+reboots the persistent image, runs direct framed IPv4/IPv6 checks, and rebuilds
+fail-closed image variants. It removes QEMU processes and listeners during
+cleanup. GitHub Actions runs this target as an independent job so failures in
+unrelated jobs cannot silently skip network evidence.
 
 The parallel gate requires a macOS host plus Docker because it verifies native
 macOS and Debian clients at the same time. It is a local release gate and is not
 currently run by Linux GitHub Actions.
+
+The ModelFS gate also requires macOS plus Docker. Against one XAIOS instance it
+runs concurrent native macOS and Debian 13 SFTP upload/download, exact byte
+comparison, dynamic package lifecycle, abandoned-staging cleanup and reuse,
+online scrub, free-space trim and VirtIO discard accounting. Its transfer rate
+under TCG is not physical network or storage performance evidence.
 
 ## Provision a Development Image
 
@@ -131,7 +172,8 @@ python3 scripts/create-sshd-user-config.py \
   --password-file build/local-ssh/password \
   --output build/local-ssh/users
 XAIOS_AUTHORIZED_KEYS_FILE=build/local-ssh/admin.pub \
-XAIOS_SSH_USERS_FILE=build/local-ssh/users make image
+XAIOS_SSH_USERS_FILE=build/local-ssh/users \
+XAIOS_SSH_PASSWORD_AUTH=1 make image
 XAIOS_QEMU_HOSTFWD_PORT=2299 XAIOS_QEMU_HOSTFWD_UDP_PORT=2298 make qemu
 ```
 
@@ -152,13 +194,15 @@ The mutable filesystem currently limits each file to 8,192 bytes.
 |---|---|
 | Physical networking | No physical NIC driver interoperability, cable/link recovery, DHCP deployment, firewall, or hostile-Internet soak has been established. |
 | Security assurance | The freestanding SSH implementation and bundled cryptographic code need independent review, fuzzing, side-channel analysis, and long-duration adversarial testing. |
-| TCP throughput | Correct ACK/reset validation, checksums, retained-segment retransmission, RTT/RTO tracking, fast retransmit, receive-window handling, bounded reordering, keepalive, and FIN state exist. Sending is intentionally one outstanding segment at a time; SACK, a production congestion controller, and high-bandwidth/lossy-link tuning remain outside the QEMU release gate. |
+| Administrative scale | Phase 2's config, key/revocation, replay/audit and session stores are bounded QEMU fixtures. Fleet identity integration, long-lived audit export and production replay retention are not implemented. |
+| TCP throughput | Correct ACK/reset validation, checksums, an eight-segment transmit window, cumulative and partial ACK release, retained-segment RTT/RTO tracking, SACK parsing/emission, fast retransmit, zero-window handling, bounded reordering, keepalive, FIN state, and RTO backoff exist. A production congestion controller and high-bandwidth/lossy-link tuning remain outside the QEMU release gate. |
 | UDP service | IPv4 and IPv6 checksums, bounded atomic datagram delivery, truncation semantics, flow expiry, and buffer reclamation are implemented. QEMU evidence covers IPv4 application echo and kernel-level IPv4/IPv6 parsing; physical lossy-link behavior remains untested. |
-| Fragmentation | Active IPv4/IPv6 transport paths reject fragments. End-to-end reassembly is not provided. The normal 1,500-byte MTU path is the current scope. |
-| DNS | A-record parsing/cache code exists, but there is no wired userspace resolver service. Applications must use addresses. |
-| General threads | No general `xaios_thread_create()` API exists. SSH concurrency uses one cooperative service loop; kernel SMP worker facilities are separate. |
-| SMMU | AArch64 remains bypass-only; Stage 1 translation is a physical-platform milestone. |
+| Fragmentation | Bounded IPv4 and IPv6 reassembly accepts complete out-of-order fragment sets, rejects malformed overlaps/checksums, and expires incomplete sets. The dual-client gate verifies fragmented TCP SYNs under concurrent SSH/SFTP/UDP load. Broad hostile-fragment fuzzing and physical lossy-link behavior remain open. |
+| DNS | The asynchronous resolver syscall, A-record parser, timeout/retry path, and bounded cache are wired into the persistent network loop. QEMU smoke verifies an external resolution and cache hit. DNSSEC, TCP fallback, AAAA application results, and production resolver policy are not implemented. |
+| General threads | EL0 create/join/cancel/exit syscalls dispatch general workers across the runtime-sized online CPU set and pass QEMU concurrency tests. Physical many-core scheduling, fairness, and long-duration stress remain unverified. |
+| SMMU | The focused QEMU SMMUv3 gate proves translated authorized DMA, a translation fault for forbidden DMA, and stale-mapping rejection after teardown. Default QEMU boot remains bypass-compatible; physical-platform Stage 1 policy and performance remain unverified. |
 
 Within these declared boundaries, the repository now has automated QEMU
-correctness evidence for the core SSH, SFTP, IPv4/IPv6 TCP, and UDP paths. A
-physical production release still requires the non-QEMU gates above.
+correctness evidence for the Phase 2 administration surface and core SSH,
+SFTP, IPv4/IPv6 TCP, and UDP paths. A physical production release still
+requires the non-QEMU gates above.

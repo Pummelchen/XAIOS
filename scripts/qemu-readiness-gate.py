@@ -5,6 +5,8 @@ import subprocess
 import time
 from typing import Any, Dict, List
 
+from qemu_gate_lib import validate_syscall_abi
+
 
 REPORT_SCHEMA = "xaios.qemu.hardware_readiness_gate.v1"
 BENCHMARK_SCHEMA = "xaios.qemu.correctness_benchmark.v1"
@@ -302,10 +304,20 @@ def validate_contract(contract: Dict[str, Any], failures: List[str]) -> Dict[str
     syscalls = syscall_abi.get("syscalls", [])
     capabilities = syscall_abi.get("capabilities", [])
     check_equal(syscall_abi.get("version"), 1, "contract.syscall_abi.version", failures)
-    if len(syscalls) != 36:
-        failures.append(f"contract.syscall_abi.syscalls expected 36 entries, got {len(syscalls)}")
-    if len(capabilities) != 19:
-        failures.append(f"contract.syscall_abi.capabilities expected 19 entries, got {len(capabilities)}")
+    failures.extend(validate_syscall_abi(contract))
+    capability_names = [entry.get("name") for entry in capabilities]
+    capability_bits = [entry.get("bit") for entry in capabilities]
+    if not capabilities:
+        failures.append("contract.syscall_abi.capabilities is empty")
+    if len(set(capability_names)) != len(capability_names):
+        failures.append("contract.syscall_abi.capability names are not unique")
+    if len(set(capability_bits)) != len(capability_bits):
+        failures.append("contract.syscall_abi.capability bits are not unique")
+    for name, bit in zip(capability_names, capability_bits):
+        if not isinstance(name, str) or not name.startswith("XAIOS_CAP_"):
+            failures.append(f"contract syscall capability has invalid name {name!r}")
+        if not isinstance(bit, int) or bit <= 0 or bit & (bit - 1) != 0:
+            failures.append(f"contract syscall capability {name!r} has invalid bit {bit!r}")
     expected_syscall_numbers = list(range(1, len(syscalls) + 1))
     actual_syscall_numbers = [entry.get("number") for entry in syscalls]
     if actual_syscall_numbers != expected_syscall_numbers:
@@ -322,7 +334,7 @@ def validate_contract(contract: Dict[str, Any], failures: List[str]) -> Dict[str
     check_equal(filesystem.get("header_bytes"), 3584, "contract.filesystem.header_bytes", failures)
     check_equal(filesystem.get("manifest_path"), "/etc/xaios-init.conf", "contract.filesystem.manifest_path", failures)
     required_paths = filesystem.get("required_paths", [])
-    for path in ["/init", "/bin/service-manager", "/bin/xaios-worker", "/bin/xaios-shell", "/bin/hello", "/bin/sysinfo", "/bin/systest", "/bin/smptest", "/bin/nettest", "/bin/lstm-xor", "/bin/sshtest", "/bin/mltest", "/etc/xaios-init.conf", "/etc/services/source-index.svc", "/models/cpu-ai-v1-fixture.xaiosmodel"]:
+    for path in ["/init", "/bin/service-manager", "/bin/xaios-worker", "/bin/xaios-shell", "/bin/xaiosctl", "/bin/hello", "/bin/sysinfo", "/bin/systest", "/bin/smptest", "/bin/nettest", "/bin/lstm-xor", "/bin/sshtest", "/bin/mltest", "/etc/xaios-init.conf", "/etc/services/source-index.svc", "/models/cpu-ai-v1-fixture.xaiosmodel"]:
         if path not in required_paths:
             failures.append(f"contract.filesystem.required_paths missing {path}")
     check_equal(filesystem.get("max_files"), 32, "contract.filesystem.max_files", failures)

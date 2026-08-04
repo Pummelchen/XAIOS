@@ -5,6 +5,7 @@
 #include <xaios/security.h>
 #include <xaios/sha256.h>
 #include <xaios/syscall.h>
+#include <xaios/system_slot.h>
 #include <xaios/update.h>
 
 #define UPDATE_TARGET_MAX 32U
@@ -26,6 +27,8 @@ typedef struct xaios_update_transaction {
   xaios_update_state_t state;
   char target[UPDATE_TARGET_MAX];
   char rollback_label[UPDATE_LABEL_MAX];
+  uint8_t expected_hash[32];
+  char signature[XAIOS_SYSTEM_SIGNATURE_MAX];
 } xaios_update_transaction_t;
 
 static xaios_update_transaction_t g_update;
@@ -97,6 +100,20 @@ static int target_valid(const char *target) {
   return 1;
 }
 
+static int target_equal(const char *left, const char *right) {
+  uint64_t index = 0U;
+  if (left == 0 || right == 0) return 0;
+  while (left[index] != '\0' && right[index] != '\0') {
+    if (left[index] != right[index]) return 0;
+    ++index;
+  }
+  return left[index] == right[index];
+}
+
+static int system_target(void) {
+  return target_equal(g_update.target, "/system/xaios");
+}
+
 static void reset_transaction(void) { bytes_zero(&g_update, sizeof(g_update)); }
 
 static void copy_token(char *dst, uint64_t capacity, const char *src) {
@@ -165,8 +182,9 @@ xaios_status_t update_begin(uint32_t generation, const char *target,
                            const char *signature) {
   if (g_update.active != 0 || generation == 0 ||
       !target_valid(target) ||
-      security_authorize_update_signature(
-          signature, XAIOS_CAP_UPDATE | XAIOS_CAP_ADMIN) != XAIOS_OK) {
+      security_authorize_update_signature_for_generation(
+          signature, XAIOS_CAP_UPDATE | XAIOS_CAP_ADMIN, generation,
+          g_update.expected_hash) != XAIOS_OK) {
     ++g_rejects;
     return XAIOS_ERR_INVALID;
   }
@@ -175,6 +193,7 @@ xaios_status_t update_begin(uint32_t generation, const char *target,
   g_update.generation = generation;
   g_update.state = XAIOS_UPDATE_PENDING;
   copy_token(g_update.target, sizeof(g_update.target), target);
+  copy_token(g_update.signature, sizeof(g_update.signature), signature);
   copy_token(g_update.rollback_label, sizeof(g_update.rollback_label),
              "update-rp");
   if (persistence_snapshot_create(XAIOS_SNAPSHOT_UPDATE, 0,
@@ -217,6 +236,10 @@ xaios_status_t update_commit(void) {
     ++g_rejects;
     return XAIOS_ERR_INVALID;
   }
+  if (system_target() && system_slot_activate() != XAIOS_OK) {
+    ++g_rejects;
+    return XAIOS_ERR_IO;
+  }
   g_update.state = XAIOS_UPDATE_COMMITTED;
   if (persist_update_state() != XAIOS_OK ||
       mutable_fs_commit("update-commit") != XAIOS_OK) {
@@ -235,6 +258,7 @@ xaios_status_t update_fail(void) {
     return XAIOS_ERR_INVALID;
   }
   g_update.state = XAIOS_UPDATE_FAILED;
+  if (system_target()) (void)system_slot_cancel_pending();
   if (persist_update_state() != XAIOS_OK) {
     ++g_rejects;
     return XAIOS_ERR_IO;
@@ -273,6 +297,10 @@ xaios_status_t update_rollback(void) {
       security_authorize_rollback(g_update.target, 1) != XAIOS_OK) {
     ++g_rejects;
     return XAIOS_ERR_INVALID;
+  }
+  if (system_target() && system_slot_cancel_pending() != XAIOS_OK) {
+    ++g_rejects;
+    return XAIOS_ERR_IO;
   }
   if (persistence_rollback(XAIOS_SNAPSHOT_UPDATE, 0) != XAIOS_OK ||
       mutable_fs_rollback() != XAIOS_OK) {
@@ -322,21 +350,46 @@ xaios_status_t update_stage_chunk(const void *data, uint32_t size) {
     return XAIOS_ERR_INVALID;
   }
 
-  /* Initialize hash context on first chunk */
+  /* Initialize hash context and the inactive system slot on first chunk. */
   if (g_chunk_staging_active == 0) {
+    if (system_target() &&
+        (g_delivery.bytes_expected == 0U ||
+         system_slot_begin(g_update.generation, g_delivery.bytes_expected,
+                           g_update.expected_hash,
+                           g_update.signature) != XAIOS_OK)) {
+      ++g_rejects;
+      g_delivery.last_error = XAIOS_ERR_INVALID;
+      return XAIOS_ERR_INVALID;
+    }
     xaios_sha256_init(&g_chunk_hash_ctx);
     g_chunk_staging_active = 1;
   }
 
-  /* Append chunk to staging file */
-  int64_t fd = mutable_fs_open(XAIOS_UPDATE_STAGING_PATH,
-                                XAIOS_MFS_OPEN_WRITE | XAIOS_MFS_OPEN_CREATE);
+  if (system_target()) {
+    if (system_slot_write(g_delivery.bytes_received, data, size) != XAIOS_OK) {
+      ++g_rejects;
+      g_delivery.last_error = XAIOS_ERR_IO;
+      return XAIOS_ERR_IO;
+    }
+  } else {
+  /* Append fixture/non-system chunks to MutableFS. */
+  uint32_t open_flags = XAIOS_MFS_OPEN_WRITE | XAIOS_MFS_OPEN_CREATE;
+  if (g_delivery.bytes_received == 0U) {
+    open_flags |= XAIOS_MFS_OPEN_TRUNCATE;
+  }
+  int64_t fd = mutable_fs_open(XAIOS_UPDATE_STAGING_PATH, open_flags);
   if (fd < 0) {
     ++g_rejects;
     g_delivery.last_error = XAIOS_ERR_IO;
     return XAIOS_ERR_IO;
   }
 
+  if (mutable_fs_seek((uint32_t)fd, g_delivery.bytes_received) != XAIOS_OK) {
+    mutable_fs_close((uint32_t)fd);
+    ++g_rejects;
+    g_delivery.last_error = XAIOS_ERR_IO;
+    return XAIOS_ERR_IO;
+  }
   int64_t written = mutable_fs_write_fd((uint32_t)fd, data, size);
   mutable_fs_close((uint32_t)fd);
 
@@ -344,6 +397,7 @@ xaios_status_t update_stage_chunk(const void *data, uint32_t size) {
     ++g_rejects;
     g_delivery.last_error = XAIOS_ERR_IO;
     return XAIOS_ERR_IO;
+  }
   }
 
   /* Update running hash */
@@ -368,9 +422,11 @@ xaios_status_t update_verify_hash(const uint8_t expected_hash[32]) {
   xaios_sha256_final(&g_chunk_hash_ctx, computed);
   g_chunk_staging_active = 0;
 
-  int match = 1;
+  int match = g_delivery.bytes_expected == 0U ||
+              g_delivery.bytes_received == g_delivery.bytes_expected;
   for (uint32_t i = 0; i < 32; ++i) {
-    if (computed[i] != expected_hash[i]) {
+    if (computed[i] != expected_hash[i] ||
+        expected_hash[i] != g_update.expected_hash[i]) {
       match = 0;
       break;
     }
@@ -384,6 +440,15 @@ xaios_status_t update_verify_hash(const uint8_t expected_hash[32]) {
     ++g_rejects;
     klog("update: hash verification FAILED\n");
     return XAIOS_ERR_INVALID;
+  }
+
+  if (system_target() && system_slot_finish() != XAIOS_OK) {
+    g_delivery.hash_verified = 0;
+    g_delivery.last_error = XAIOS_ERR_IO;
+    g_update.state = XAIOS_UPDATE_FAILED;
+    (void)persist_update_state();
+    ++g_rejects;
+    return XAIOS_ERR_IO;
   }
 
   g_delivery.hash_verified = 1;
@@ -568,11 +633,12 @@ void update_delivery_self_test(void) {
   /* Test chunked staging + hash verification */
   update_runtime_init();
   static const char k_sig_test[] =
-      "xaios-update:v1:gen=10:sha256=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad:key=XAIOS-QEMU-DEV-PUBKEY:sig=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+      "xaios-update:v2:gen=10:sha256=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad:key=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a:sig=376af08bf94b0642df5e321a0ca9ff5ed411c7cd3a1cee4fd1cbde041f8d3da1712e8377d0b6e512d3d984b697eef101657d45f2c8397bbdfc011b4698b50b09";
   static const char k_sig_test_11[] =
-      "xaios-update:v1:gen=11:sha256=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad:key=XAIOS-QEMU-DEV-PUBKEY:sig=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-  kassert(update_begin(10, "/system/xaios", k_sig_test) == XAIOS_OK);
-  kassert(update_stage_chunk("abc", 3) == XAIOS_OK);
+      "xaios-update:v2:gen=11:sha256=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad:key=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a:sig=5847d54245b962f813875984c61f23baadad3ab5206f37725ddc8192b658ba0d257eea200f862e1e769848e32c684e6f9da16d3d515e66d1037e06566cd58604";
+  kassert(update_begin(10, "/fixture/delivery", k_sig_test) == XAIOS_OK);
+  kassert(update_stage_chunk("ab", 2) == XAIOS_OK);
+  kassert(update_stage_chunk("c", 1) == XAIOS_OK);
 
   /* Verify with correct hash */
   static const uint8_t correct_hash[32] = {
@@ -583,12 +649,21 @@ void update_delivery_self_test(void) {
 
   xaios_update_delivery_status_t status = update_delivery_status();
   kassert(status.bytes_received == 3);
-  kassert(status.chunks_written == 1);
+  kassert(status.chunks_written == 2);
   kassert(status.hash_verified == 1);
+  int64_t staged_fd = mutable_fs_open(XAIOS_UPDATE_STAGING_PATH,
+                                      XAIOS_MFS_OPEN_READ);
+  char staged_bytes[3] = {0, 0, 0};
+  kassert(staged_fd > 0);
+  kassert(mutable_fs_read_fd((uint32_t)staged_fd, staged_bytes,
+                             sizeof(staged_bytes)) == 3);
+  kassert(mutable_fs_close((uint32_t)staged_fd) == XAIOS_OK);
+  kassert(staged_bytes[0] == 'a' && staged_bytes[1] == 'b' &&
+          staged_bytes[2] == 'c');
 
   /* Test bad hash rejection */
   update_runtime_init();
-  kassert(update_begin(11, "/system/xaios", k_sig_test_11) == XAIOS_OK);
+  kassert(update_begin(11, "/fixture/delivery", k_sig_test_11) == XAIOS_OK);
   kassert(update_stage_chunk("abc", 3) == XAIOS_OK);
   static const uint8_t bad_hash[32] = {0};
   kassert(update_verify_hash(bad_hash) == XAIOS_ERR_INVALID);
@@ -612,18 +687,18 @@ void update_delivery_self_test(void) {
 
 void update_self_test(void) {
   static const char k_sig2[] =
-      "xaios-update:v1:gen=2:sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:key=XAIOS-QEMU-DEV-PUBKEY:sig=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+      "xaios-update:v2:gen=2:sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:key=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a:sig=2109de7470806ae4bea29d412e467ff0958f00971825b8303782f10794be21c50ffbe4fa3e26664dd63946c03095c75a72512239cbeb9a462b6a98108468490b";
   static const char k_sig3[] =
-      "xaios-update:v1:gen=3:sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:key=XAIOS-QEMU-DEV-PUBKEY:sig=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+      "xaios-update:v2:gen=3:sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:key=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a:sig=28273854fc11ce45725079471d80bba69381ad8167193c60eed0b11267cf548b868dec6f2283ae36ada9bb4f6e092098d700387461a294f10cc40ed3bfaa280a";
 
   update_runtime_init();
   kassert(update_stage() == XAIOS_ERR_INVALID);
   kassert(update_begin(2, "/", k_sig2) == XAIOS_ERR_INVALID);
-  kassert(update_begin(2, "/system/xaios", k_sig2) == XAIOS_OK);
+  kassert(update_begin(2, "/fixture/xaios", k_sig2) == XAIOS_OK);
   kassert(update_stage() == XAIOS_OK);
   kassert(update_fail() == XAIOS_OK);
   kassert(update_recover_boot() == XAIOS_OK);
-  kassert(update_begin(3, "/system/xaios", k_sig3) == XAIOS_OK);
+  kassert(update_begin(3, "/fixture/xaios", k_sig3) == XAIOS_OK);
   kassert(update_stage() == XAIOS_OK);
   kassert(update_commit() == XAIOS_OK);
   kassert(update_rollback() == XAIOS_OK);

@@ -1,8 +1,8 @@
 <!--
 AI onboarding file.
 Mode: refresh
-Indexed base commit: 8404c1ec1b76c02157bb08d8a3a9466a93e5c2cb
-Last refreshed: 2026-08-01
+Indexed base commit: 8ddefb26f3dbc366dc4402677a156cf235daed82
+Last refreshed: 2026-08-04
 Generator: generic high-end AI coding agent
 Purpose: Help future AI sessions understand this repository quickly.
 Audience: Any high-capability AI coding agent, regardless of vendor or model family.
@@ -15,11 +15,11 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 | Field | Value |
 |---|---|
 | Repository | `Pummelchen/XAIOS` |
-| Indexed base commit | `8404c1ec1b76c02157bb08d8a3a9466a93e5c2cb` plus the current working tree |
+| Indexed base commit | `8ddefb26f3dbc366dc4402677a156cf235daed82` plus the current working tree |
 | Operation mode | `refresh` |
 | Default branch | `main` |
 | Primary languages | C99, Assembly, Python, Shell |
-| Runtime target | AArch64 UEFI/QEMU OS correctness path plus a hosted portable-engine foundation; x86_64 remains early bring-up only. |
+| Runtime target | AArch64 UEFI/QEMU OS correctness path plus a hosted portable-engine foundation; x86_64 has interrupt-capable early bring-up but not OS parity. |
 
 ## Read first
 
@@ -38,8 +38,16 @@ XAIOS is an experimental freestanding operating system and portable
 inference-engine foundation. The current OS path validates deterministic
 kernel/runtime fixtures under QEMU; it does not yet execute a real transformer.
 The hosted C99 engine provides model-v2 parsing, architecture/backend
-boundaries, and a scalar projection canary for future native macOS/Linux and
-XAIOS-service builds.
+boundaries, scalar packed INT4/INT6 correctness kernels, and an experimental
+canary-gated AArch64 NEON backend plus an x86 AVX2 QEMU correctness path for
+future native macOS/Linux and XAIOS-service builds. The freestanding OS also
+exposes the QEMU/OpenSSH-tested
+Phase 2 `xaios.control.v1`/`xaiosctl` administration surface: persistent
+role-mapped keys/revocation, strict config transactions, host-key rotation and
+redacted audit. ModelFS additionally supports signed online registration,
+resumable SFTP, cleanup/reuse, verified activation, scrub/quarantine and safe
+trim. Model-v2 execution loading, cluster control and an inference data plane do
+not yet exist.
 
 Evidence:
 - `README.md`
@@ -64,18 +72,19 @@ Runtime structure:
 
 | Path | Responsibility | Notes |
 |---|---|---|
-| `boot/uefi/` | AArch64 UEFI loader and linker script. | Earliest boot code. |
+| `boot/uefi/` | AArch64/x86_64 UEFI loader and linker scripts. | Earliest boot code. |
 | `kernel/arch/aarch64/` | EL1 entry, vectors, timer, GIC, MMU, SMP, SMMU, PCI, RTC, watchdog. | Hardware-sensitive. |
 | `kernel/core/` | `kmain`, logging, telemetry, panic/assert, stack canaries. | `kmain.c` is the central init map. |
 | `kernel/mm/` | PMM, NUMA, VMM support, heap/arena, ELF loading. | Boot and process-loader sensitive. |
-| `kernel/dev/virtio/` | VirtIO transport, block, network drivers. | Recent HEAD changes block-device selection. |
-| `kernel/fs/` | Initramfs and mutable persistent filesystem. | Coupled to `scripts/create-initfs.py` and contract JSON. |
+| `kernel/dev/virtio/`, `kernel/dev/nvme.c`, `kernel/dev/block_device.c` | Queued VirtIO, focused QEMU NVMe, and generic 64-bit block API. | QEMU correctness only; production NVMe and physical durability remain open. |
+| `kernel/storage/` | GPT primary/backup parser/writer and bounded partition devices. | Hosted- and QEMU-administration tested. |
+| `kernel/fs/` | Initramfs, VFS, MutableFS root, immutable ModelFS reads, dynamic staging lifecycle, scrub and trim. | ModelFS is dedicated VirtIO slot 4 in QEMU. |
 | `kernel/net/` | ARP, IPv4/IPv6, ICMP/ICMPv6, NDP, DNS, routing, socket buffers. | Validate with network gates. |
-| `kernel/runtime/` | AI Cell, CPU-AI runtime, model arena, security, sandbox, persistence, update, remote login, agent protocol, source index, Git workspace. | Security/AI-runtime sensitive. |
+| `kernel/runtime/` | AI Cell, CPU-AI runtime, model arena, security, sandbox, persistence, update, remote login, control protocol, agent protocol, source index, Git workspace. | Security/AI-runtime sensitive. |
 | `kernel/user/` | Process table, service supervisor, syscall dispatch. | API and capability sensitive. |
 | `userspace/` | EL0 runtime, init, service manager, worker, apps, SSH daemon. | Built into initramfs by `scripts/build-image.sh`. |
-| `engine/` | Portable C99 model-v2, architecture and backend interfaces. | Hosted tests exist; it is not wired to real model execution. |
-| `tests/model_v2/` | C/Python round-trip, malformed-input, sparse >4 GiB and streaming tests. | Run with `make hosted-test`. |
+| `engine/` | Portable C99 model-v2, ModelFS/model-file, architecture and backend interfaces. | Hosted tests exist; it is not wired to real model execution. |
+| `tests/model_v2/`, `tests/model_volume/`, `tests/storage/` | Model/package round trips, malformed input, sparse large files, block/GPT/VFS/SFTP tests. | Run with `make hosted-test`. |
 | `scripts/` | Build scripts, QEMU runners, gates, report generation, initfs creation. | Primary validation surface. |
 | `contracts/` | Machine-readable QEMU release-candidate contract. | May lag newer source. |
 | `.github/workflows/` | CI compile, ABI, build/smoke, regression jobs. | Ubuntu toolchain/QEMU path. |
@@ -92,10 +101,14 @@ Runtime structure:
 | Dry-run QEMU commands | `make qemu-dry-run` |
 | Primary smoke gate | `make qemu-smoke` |
 | Debian 13 SSH/network gate | `make qemu-docker-network-suite` |
+| ModelFS SFTP gate | `make qemu-model-sftp-gate` |
 | Full readiness gate | `make qemu-readiness-gate` |
 | Full OS release-candidate gate | `make qemu-full-os-rc` |
+| Aggregate core-OS gate | `make qemu-core-os-rc` |
+| SMMUv3/NVMe/high-core gates | `make qemu-smmu-gate`, `make qemu-nvme-gate`, `make qemu-high-core-gate` |
 | Compile syntax check | `make compile-check` |
 | Hosted engine/model-v2 tests | `make hosted-test` |
+| Hosted sanitizers/source audit | `make hosted-sanitizer-test`, `make production-source-audit` |
 | Support-status docs check | `make docs-check` |
 | SSH bridge | `make xaios-ssh-bridge` |
 
@@ -108,8 +121,10 @@ Runtime structure:
 | Syscall/API | `kernel/include/xaios/syscall.h` | `kernel/user/syscall.c`, `userspace/include/xaios_user.h`, `docs/API.md`, `contracts/qemu-rc-v1.json`, `scripts/qemu_gate_lib.py` |
 | Userspace app | `userspace/apps/` | `scripts/build-image.sh`, `kernel/core/kmain.c`, `scripts/qemu-smoke.py` |
 | SSH/network | `userspace/sshd/`, `kernel/net/`, `kernel/runtime/network_stack.c` | Socket syscalls, QEMU network gates, and the Debian 13 Docker client suite |
+| Administration/control | `kernel/runtime/admin_control.c`, `kernel/runtime/control_protocol.c`, `userspace/lib/xaios_control_client.c` | Persistent schema/key/audit state, protocol mirrors, syscall/capabilities, `docs/XAIOSCTL.md`, ABI contract and SSH tests |
 | Security/update | `kernel/runtime/security.c`, `kernel/runtime/update.c` | `SECURITY.md`, `.ai/SECURITY.md`, QEMU security/update gates |
 | Production model/engine | `engine/`, `tools/xaios_model_v2.py` | `tests/model_v2/`, model-v2/adapter/backend docs |
+| Storage/ModelFS | `kernel/dev/block_device.c`, `kernel/storage/`, `kernel/fs/vfs*.c`, `tools/xaios_model_volume.py` | `engine/src/model_volume.c`, `engine/src/model_file.c`, `tests/storage/`, `tests/model_volume/`, storage docs |
 | QEMU model fixture | `kernel/runtime/cpu_ai_runtime.c`, `tools/create_xaios_v1_fixture.py` | `contracts/qemu-rc-v1.json`, smoke markers; never call it real inference |
 | CI/gates | `.github/workflows/ci.yml`, `Makefile`, `scripts/qemu-*.py` | `.ai/TESTING.md`, `HARDWARE-READINESS.md` |
 
@@ -141,11 +156,12 @@ Runtime structure:
 High-impact items are tracked in `.ai/KNOWN_UNKNOWNS.md`. The syscall/API
 contract and primary readiness/support docs are synchronized in the current
 working tree. Remaining material risks include no real Qwen/K3 execution, no
-native optimized backend, fixed-size OS memory/NUMA/storage prototypes, the
-x86 image not linking the common runtime, and ambiguous licensing.
+native production backend, production NVMe/physical-device evidence, incomplete
+x86 EL0/AP/PCI-driver parity, and no production model/cluster service.
+Licensing is defined by `LICENSE` and `COMMERCIAL-LICENSE.md`.
 
 ## What changed since last index
 
-Refreshed for the model-v2/portable-engine foundation, explicit model-v1
-fixture isolation, independent CI jobs, honest support status, and current ABI
-and QEMU correctness contracts.
+Refreshed for queued VirtIO and emulated NVMe, translated SMMUv3, crash
+recovery, runtime-sized EL0 threads/high-core metadata, DNS/fragment/TCP
+hardening, x86 interrupt delivery, and the expanded aggregate core-OS gate.

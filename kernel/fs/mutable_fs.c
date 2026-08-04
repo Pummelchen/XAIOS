@@ -1782,28 +1782,51 @@ xaios_status_t mutable_fs_mount_persistent(uint32_t slot) {
   return XAIOS_OK;
 }
 
+static void fsck_count_file_blocks(
+    uint16_t block_count, const uint16_t blocks[MFS_FILE_MAX_BLOCKS],
+    uint8_t references[MFS_V3_DATA_SECTORS],
+    xaios_mfs_fsck_result_t *result) {
+  if (block_count > g_active_file_max_blocks) {
+    ++result->errors;
+    return;
+  }
+  for (uint16_t b = 0; b < block_count; ++b) {
+    uint16_t block = blocks[b];
+    if (block >= g_active_data_sectors || references[block] != 0U) {
+      ++result->errors;
+    } else {
+      references[block] = 1U;
+    }
+  }
+}
+
 xaios_mfs_fsck_result_t mutable_fs_fsck(void) {
   xaios_mfs_fsck_result_t result;
+  uint8_t references[MFS_V3_DATA_SECTORS];
   bytes_zero(&result, sizeof(result));
+  bytes_zero(references, sizeof(references));
   result.version = g_active_version;
   result.files = node_count_by_type(MFS_NODE_FILE);
   result.directories = node_count_by_type(MFS_NODE_DIR);
   result.blocks_used = block_count_used();
   result.errors = 0;
-  /* verify bitmap consistency */
+
+  for (uint32_t n = 0; n < g_active_max_nodes; ++n) {
+    xaios_mfs_node_t *node = &g_mfs.nodes[n];
+    if (node->active != 0 && node->type == MFS_NODE_FILE) {
+      fsck_count_file_blocks(node->block_count, node->blocks, references,
+                             &result);
+    }
+    if (node->snapshot_active != 0 &&
+        node->snapshot_type == MFS_NODE_FILE) {
+      fsck_count_file_blocks(node->snapshot_block_count,
+                             node->snapshot_blocks, references, &result);
+    }
+  }
+
   for (uint32_t i = 0; i < g_active_data_sectors; ++i) {
     int in_use = g_mfs.block_bitmap[i] != 0;
-    int referenced = 0;
-    for (uint32_t n = 0; n < g_active_max_nodes; ++n) {
-      xaios_mfs_node_t *node = &g_mfs.nodes[n];
-      if (node->active != 0 && node->type == MFS_NODE_FILE) {
-        for (uint16_t b = 0; b < node->block_count; ++b) {
-          if (node->blocks[b] == i) {
-            referenced = 1;
-          }
-        }
-      }
-    }
+    int referenced = references[i] != 0U;
     if (in_use != referenced) {
       ++result.errors;
     }
@@ -1930,6 +1953,8 @@ void mutable_fs_self_test(void) {
                     &size) == XAIOS_OK);
   kassert(size == sizeof(k_replayed_state));
   kassert(bytes_eq(buffer, k_replayed_state, sizeof(k_replayed_state)) != 0);
+  xaios_mfs_fsck_result_t snapshot_fsck = mutable_fs_fsck();
+  kassert(snapshot_fsck.valid != 0);
 
   kassert(rollback_snapshot() == XAIOS_OK);
   kassert(read_file("/state/services/source-index.state", buffer,

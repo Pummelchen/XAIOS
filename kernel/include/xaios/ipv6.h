@@ -46,6 +46,8 @@
 #define XAIOS_IPV6_MIN_MTU 1280U
 /* Max extension headers to walk before giving up */
 #define XAIOS_IPV6_MAX_EXTENSION_CHAIN_DEPTH 16U
+#define XAIOS_IPV6_FRAG_TIMEOUT_NS UINT64_C(60000000000)
+#define XAIOS_IPV6_MAX_REASSEMBLED_PAYLOAD 1460U
 
 /* Threshold for ICMPv6 error generation rate limit (shared with IPv4) */
 #define XAIOS_ICMPV6_RATE_LIMIT_MAX_PER_SECOND 100U
@@ -101,6 +103,7 @@ xaios_status_t ipv6_fragment_v6(const uint8_t *frame, uint64_t frame_len,
  * Returns XAIOS_OK on success, XAIOS_ERR_INVALID on parse error.
  */
 xaios_status_t ipv6_reassemble_v6(uint8_t *frame, uint64_t *frame_len);
+void ipv6_frag_init(void);
 
 /* ---- Self-test ---- */
 void ipv6_self_test(void);

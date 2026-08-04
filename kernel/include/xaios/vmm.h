@@ -17,6 +17,7 @@
 #define XAIOS_USER_STACK_TOP UINT64_C(0x13f000000)
 
 void vmm_init(const xaios_boot_info_t *boot);
+void vmm_activate_kernel(void);
 xaios_status_t vmm_translate(uint64_t virtual_address, uint64_t *physical_address,
                             uint32_t *flags);
 xaios_status_t vmm_map_page(uint64_t virtual_address, uint64_t physical_address,

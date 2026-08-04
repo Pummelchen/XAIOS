@@ -50,7 +50,10 @@ find_ovmf_firmware() {
     /opt/homebrew/share/edk2/x64/OVMF_CODE.fd \
     /usr/local/share/qemu/edk2-x86_64-code.fd \
     /usr/local/share/qemu/OVMF_CODE.fd \
-    /usr/local/share/edk2/x64/OVMF_CODE.fd
+    /usr/local/share/edk2/x64/OVMF_CODE.fd \
+    /usr/share/qemu/edk2-x86_64-code.fd \
+    /usr/share/OVMF/OVMF_CODE.fd \
+    /usr/share/edk2/ovmf/OVMF_CODE.fd
   do
     if [ -f "$candidate" ]; then
       printf '%s\n' "$candidate"
@@ -114,9 +117,10 @@ set -- "$qemu" \
   -nographic \
   -serial mon:stdio \
   -drive "if=pflash,format=raw,readonly=on,file=$firmware" \
-  -drive "if=virtio,format=raw,file=$image" \
+  -drive "if=none,format=raw,id=xaios_x86_boot,file=$image" \
+  -device virtio-blk-pci,drive=xaios_x86_boot,bootindex=0,disable-legacy=on \
   -netdev user,id=net0,hostfwd=tcp::2223-:22 \
-  -device virtio-net-pci,netdev=net0
+  -device virtio-net-pci,netdev=net0,disable-legacy=on,mq=on
 
 if [ "$dry_run" -eq 1 ]; then
   print_command "$@"

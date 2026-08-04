@@ -1,15 +1,14 @@
 #include <xaios/ai_kernels.h>
 #include <xaios/assert.h>
-#include <xaios/kheap.h>
 #include <xaios/klog.h>
 #include <xaios/math_intrinsics.h>
 
 /*
- * Optimized AI Compute Kernels for AArch64 with NEON SIMD
+ * AI compute kernels for AArch64 with NEON SIMD where validated.
  *
  * Implements:
- * - NEON vectorized matrix multiplication (8-16× speedup)
- * - Multi-threaded work distribution
+ * - NEON vectorized matrix multiplication
+ * - Bounded work-unit distribution
  * - Multiple quantization formats (FP32, FP16, INT8, INT4, Q8.8)
  */
 
@@ -26,8 +25,8 @@ static void bytes_zero(void *buffer, uint64_t size) {
 /*
  * NEON-optimized INT8 matrix multiplication
  *
- * Processes 8 elements per iteration using int8x8_t vectors.
- * Speedup: ~8× over scalar implementation.
+ * Processes up to 8 output columns per iteration. Tail lanes are copied to a
+ * bounded local vector so no input or output access crosses the matrix edge.
  */
 static void matmul_int8_neon(const int8_t *mat_a, const int8_t *mat_b,
                              int32_t *result, uint32_t rows_a,
@@ -42,8 +41,11 @@ static void matmul_int8_neon(const int8_t *mat_a, const int8_t *mat_b,
       int32x4_t acc_high = vdupq_n_s32(0);
 
       for (uint32_t k = 0; k < cols_a; ++k) {
-        /* Load 8 elements from mat_b */
-        int8x8_t b_vec = vld1_s8(&mat_b[k * cols_b + j]);
+        int8_t b_lanes[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        for (uint32_t lane = 0U; lane < process; ++lane) {
+          b_lanes[lane] = mat_b[(uint64_t)k * cols_b + j + lane];
+        }
+        int8x8_t b_vec = vld1_s8(b_lanes);
 
         /* Broadcast element from mat_a */
         int8_t a_val = mat_a[i * cols_a + k];
@@ -57,16 +59,11 @@ static void matmul_int8_neon(const int8_t *mat_a, const int8_t *mat_b,
         acc_high = vaddw_high_s16(acc_high, prod);
       }
 
-      /* Store results */
-      if (process >= 4) {
-        vst1q_s32(&result[i * cols_b + j], acc_low);
-      }
-      if (process > 4) {
-        int32x2_t acc_high_low = vget_low_s32(acc_high);
-        vst1_lane_s32(&result[i * cols_b + j + 4], acc_high_low, 0);
-        if (process > 5) {
-          vst1_lane_s32(&result[i * cols_b + j + 5], acc_high_low, 1);
-        }
+      int32_t lanes[8];
+      vst1q_s32(lanes, acc_low);
+      vst1q_s32(lanes + 4U, acc_high);
+      for (uint32_t lane = 0U; lane < process; ++lane) {
+        result[(uint64_t)i * cols_b + j + lane] = lanes[lane];
       }
     }
   }
@@ -75,8 +72,7 @@ static void matmul_int8_neon(const int8_t *mat_a, const int8_t *mat_b,
 /*
  * NEON-optimized FP16 matrix multiplication
  *
- * Processes 8 elements per iteration using float16x8_t vectors.
- * Speedup: ~8× over scalar FP32.
+ * Processes up to 8 output columns per iteration.
  */
 __attribute__((target("+fullfp16")))
 static void matmul_fp16_neon(const uint16_t *mat_a, const uint16_t *mat_b,
@@ -90,9 +86,12 @@ static void matmul_fp16_neon(const uint16_t *mat_a, const uint16_t *mat_b,
       float16x8_t acc = vdupq_n_f16(0.0f);
 
       for (uint32_t k = 0; k < cols_a; ++k) {
-        /* Load 8 FP16 elements from mat_b */
-        const __fp16 *b_ptr = (const __fp16 *)&mat_b[k * cols_b + j];
-        float16x8_t b_vec = vld1q_f16(b_ptr);
+        __fp16 b_lanes[8] = {0};
+        for (uint32_t lane = 0U; lane < process; ++lane) {
+          b_lanes[lane] =
+              *(const __fp16 *)&mat_b[(uint64_t)k * cols_b + j + lane];
+        }
+        float16x8_t b_vec = vld1q_f16(b_lanes);
 
         /* Broadcast FP16 element from mat_a */
         __fp16 a_val = *(const __fp16 *)&mat_a[i * cols_a + k];
@@ -119,97 +118,69 @@ static void matmul_fp16_neon(const uint16_t *mat_a, const uint16_t *mat_b,
 }
 
 /*
- * NEON-optimized INT6 matrix multiplication (bit-packed)
- *
- * Processes 4 INT6 values from 3 bytes (24 bits = 4 × 6 bits).
- * Uses NEON for fast unpacking and accumulation.
- * Speedup: ~12× over scalar.
+ * Signed packed helpers. Values are unpacked only while resident in the inner
+ * dot product; complete matrices are never expanded into temporary buffers.
  */
-static void matmul_int6_neon(const int8_t *mat_a_packed,
-                             const int8_t *mat_b_packed,
-                             int32_t *result, uint32_t rows_a,
-                             uint32_t cols_a, uint32_t cols_b) {
-  /* INT6 packing: 4 values per 3 bytes */
-  /* Unpack to INT8, then use INT8 NEON kernel */
-  
-  uint64_t mat_a_bytes = (uint64_t)rows_a * cols_a;
-  uint64_t mat_b_bytes = (uint64_t)cols_a * cols_b;
-  /* Guard against unreasonable sizes */
-  if (mat_a_bytes == 0 || mat_b_bytes == 0) return;
-  
-  int8_t *mat_a = (int8_t *)kheap_alloc(mat_a_bytes, 64);
-  int8_t *mat_b = (int8_t *)kheap_alloc(mat_b_bytes, 64);
-  if (mat_a == 0 || mat_b == 0) {
-    klog("ai-kernel: INT6 matmul allocation failed (a=%lu b=%lu)\n",
-         mat_a_bytes, mat_b_bytes);
-    return;
-  }
-  
-  /* Unpack mat_a: 4 INT6 values per 3 bytes */
-  for (uint64_t i = 0; i < rows_a * cols_a / 4; ++i) {
-    uint32_t packed = (uint32_t)mat_a_packed[i * 3] |
-                     ((uint32_t)mat_a_packed[i * 3 + 1] << 8) |
-                     ((uint32_t)mat_a_packed[i * 3 + 2] << 16);
-    
-    /* Extract 4× 6-bit values, sign-extend to 8 bits */
-    mat_a[i * 4] = (int8_t)((int32_t)(packed << 26) >> 26);  /* Bits 0-5 */
-    mat_a[i * 4 + 1] = (int8_t)((int32_t)(packed << 20) >> 26);  /* Bits 6-11 */
-    mat_a[i * 4 + 2] = (int8_t)((int32_t)(packed << 14) >> 26);  /* Bits 12-17 */
-    mat_a[i * 4 + 3] = (int8_t)((int32_t)(packed << 8) >> 26);   /* Bits 18-23 */
-  }
-  
-  /* Unpack mat_b */
-  for (uint64_t i = 0; i < cols_a * cols_b / 4; ++i) {
-    uint32_t packed = (uint32_t)mat_b_packed[i * 3] |
-                     ((uint32_t)mat_b_packed[i * 3 + 1] << 8) |
-                     ((uint32_t)mat_b_packed[i * 3 + 2] << 16);
-    
-    mat_b[i * 4] = (int8_t)((int32_t)(packed << 26) >> 26);
-    mat_b[i * 4 + 1] = (int8_t)((int32_t)(packed << 20) >> 26);
-    mat_b[i * 4 + 2] = (int8_t)((int32_t)(packed << 14) >> 26);
-    mat_b[i * 4 + 3] = (int8_t)((int32_t)(packed << 8) >> 26);
-  }
-  
-  /* Use INT8 NEON kernel */
-  matmul_int8_neon(mat_a, mat_b, result, rows_a, cols_a, cols_b);
-  
-  /* Note: kheap_alloc buffers are not freed here; caller manages lifecycle.
-   * In production, these would use arena allocation scoped to the inference. */
+static int8_t unpack_int4(const uint8_t *packed, uint64_t index) {
+  uint8_t value =
+      (packed[index / 2U] >> ((index & 1U) * 4U)) & UINT8_C(0x0f);
+  return (int8_t)(value >= 8U ? (int32_t)value - 16 : value);
 }
 
-/*
- * NEON-optimized INT4 matrix multiplication (bit-packed)
- *
- * Processes 2 INT4 values per byte (low nibble, high nibble).
- * Speedup: ~16× over scalar.
- */
-static void matmul_int4_neon(const int8_t *mat_a_packed,
-                             const int8_t *mat_b_packed,
-                             int32_t *result, uint32_t rows_a,
-                             uint32_t cols_a, uint32_t cols_b) {
-  uint64_t mat_a_bytes = (uint64_t)rows_a * cols_a;
-  uint64_t mat_b_bytes = (uint64_t)cols_a * cols_b;
-  if (mat_a_bytes == 0 || mat_b_bytes == 0) return;
-  
-  int8_t *mat_a = (int8_t *)kheap_alloc(mat_a_bytes, 64);
-  int8_t *mat_b = (int8_t *)kheap_alloc(mat_b_bytes, 64);
-  if (mat_a == 0 || mat_b == 0) {
-    klog("ai-kernel: INT4 matmul allocation failed (a=%lu b=%lu)\n",
-         mat_a_bytes, mat_b_bytes);
-    return;
+static int8_t unpack_int6(const uint8_t *packed, uint64_t index) {
+  uint64_t block = index / 4U;
+  uint32_t word = (uint32_t)packed[block * 3U] |
+                  ((uint32_t)packed[block * 3U + 1U] << 8U) |
+                  ((uint32_t)packed[block * 3U + 2U] << 16U);
+  uint8_t value =
+      (uint8_t)((word >> ((index & 3U) * 6U)) & UINT32_C(0x3f));
+  return (int8_t)(value >= 32U ? (int32_t)value - 64 : value);
+}
+
+static int32_t narrow_accumulator(int64_t value) {
+  if (value > INT32_MAX) return INT32_MAX;
+  if (value < INT32_MIN) return INT32_MIN;
+  return (int32_t)value;
+}
+
+static void matmul_int4_packed_rows(const uint8_t *mat_a,
+                                    const uint8_t *mat_b, int32_t *result,
+                                    uint32_t row_start, uint32_t row_count,
+                                    uint32_t cols_a, uint32_t cols_b) {
+  for (uint32_t local_row = 0U; local_row < row_count; ++local_row) {
+    uint64_t row = (uint64_t)row_start + local_row;
+    for (uint32_t column = 0U; column < cols_b; ++column) {
+      int64_t accumulator = 0;
+      for (uint32_t inner = 0U; inner < cols_a; ++inner) {
+        int8_t left = unpack_int4(mat_a, row * cols_a + inner);
+        int8_t right =
+            unpack_int4(mat_b, (uint64_t)inner * cols_b + column);
+        accumulator += (int32_t)left * (int32_t)right;
+      }
+      result[(uint64_t)local_row * cols_b + column] =
+          narrow_accumulator(accumulator);
+    }
   }
-  
-  for (uint32_t i = 0; i < rows_a * cols_a / 2; ++i) {
-    mat_a[i * 2] = (int8_t)((mat_a_packed[i] << 4) >> 4);
-    mat_a[i * 2 + 1] = (int8_t)(mat_a_packed[i] >> 4);
+}
+
+static void matmul_int6_packed_rows(const uint8_t *mat_a,
+                                    const uint8_t *mat_b, int32_t *result,
+                                    uint32_t row_start, uint32_t row_count,
+                                    uint32_t cols_a, uint32_t cols_b) {
+  for (uint32_t local_row = 0U; local_row < row_count; ++local_row) {
+    uint64_t row = (uint64_t)row_start + local_row;
+    for (uint32_t column = 0U; column < cols_b; ++column) {
+      int64_t accumulator = 0;
+      for (uint32_t inner = 0U; inner < cols_a; ++inner) {
+        int8_t left = unpack_int6(mat_a, row * cols_a + inner);
+        int8_t right =
+            unpack_int6(mat_b, (uint64_t)inner * cols_b + column);
+        accumulator += (int32_t)left * (int32_t)right;
+      }
+      result[(uint64_t)local_row * cols_b + column] =
+          narrow_accumulator(accumulator);
+    }
   }
-  
-  for (uint32_t i = 0; i < cols_a * cols_b / 2; ++i) {
-    mat_b[i * 2] = (int8_t)((mat_b_packed[i] << 4) >> 4);
-    mat_b[i * 2 + 1] = (int8_t)(mat_b_packed[i] >> 4);
-  }
-  
-  matmul_int8_neon(mat_a, mat_b, result, rows_a, cols_a, cols_b);
 }
 
 /*
@@ -245,8 +216,9 @@ void ai_kernel_matmul(const void *mat_a, const void *mat_b, void *result,
       break;
 
     case XAIOS_QUANT_INT6:
-      matmul_int6_neon((const int8_t *)mat_a, (const int8_t *)mat_b,
-                      (int32_t *)result, rows_a, cols_a, cols_b);
+      matmul_int6_packed_rows((const uint8_t *)mat_a,
+                              (const uint8_t *)mat_b, (int32_t *)result, 0U,
+                              rows_a, cols_a, cols_b);
       break;
 
     case XAIOS_QUANT_FP16:
@@ -255,8 +227,9 @@ void ai_kernel_matmul(const void *mat_a, const void *mat_b, void *result,
       break;
 
     case XAIOS_QUANT_INT4:
-      matmul_int4_neon((const int8_t *)mat_a, (const int8_t *)mat_b,
-                      (int32_t *)result, rows_a, cols_a, cols_b);
+      matmul_int4_packed_rows((const uint8_t *)mat_a,
+                              (const uint8_t *)mat_b, (int32_t *)result, 0U,
+                              rows_a, cols_a, cols_b);
       break;
 
     case XAIOS_QUANT_Q88:
@@ -265,9 +238,7 @@ void ai_kernel_matmul(const void *mat_a, const void *mat_b, void *result,
       break;
 
     case XAIOS_QUANT_FP32:
-    default:
-      /* FP32 fallback: convert to scalar implementation */
-      klog("ai-kernel: FP32 matmul not yet NEON-optimized, using scalar\n");
+    default: {
       const float *a = (const float *)mat_a;
       const float *b = (const float *)mat_b;
       float *r = (float *)result;
@@ -281,6 +252,7 @@ void ai_kernel_matmul(const void *mat_a, const void *mat_b, void *result,
         }
       }
       break;
+    }
   }
 }
 
@@ -289,22 +261,46 @@ void ai_kernel_matmul(const void *mat_a, const void *mat_b, void *result,
  */
 static void matmul_work_thread(void *arg) {
   xaios_matmul_work_t *work = (xaios_matmul_work_t *)arg;
-
-  /* Process assigned row range */
   uint32_t rows = work->row_end - work->row_start;
-
-  ai_kernel_matmul((const uint8_t *)work->mat_a + work->row_start * work->cols_a,
-                   work->mat_b,
-                   (uint8_t *)work->result + work->row_start * work->cols_b,
-                   rows, work->cols_a, work->cols_b,
-                   work->quant);
+  uint64_t input_index = (uint64_t)work->row_start * work->cols_a;
+  uint64_t output_index = (uint64_t)work->row_start * work->cols_b;
+  if (work->quant == XAIOS_QUANT_INT4) {
+    matmul_int4_packed_rows((const uint8_t *)work->mat_a,
+                            (const uint8_t *)work->mat_b,
+                            (int32_t *)work->result + output_index,
+                            work->row_start, rows, work->cols_a,
+                            work->cols_b);
+  } else if (work->quant == XAIOS_QUANT_INT6) {
+    matmul_int6_packed_rows((const uint8_t *)work->mat_a,
+                            (const uint8_t *)work->mat_b,
+                            (int32_t *)work->result + output_index,
+                            work->row_start, rows, work->cols_a,
+                            work->cols_b);
+  } else if (work->quant == XAIOS_QUANT_INT8) {
+    ai_kernel_matmul((const int8_t *)work->mat_a + input_index, work->mat_b,
+                     (int32_t *)work->result + output_index, rows,
+                     work->cols_a, work->cols_b, work->quant);
+  } else if (work->quant == XAIOS_QUANT_FP16) {
+    ai_kernel_matmul((const uint16_t *)work->mat_a + input_index, work->mat_b,
+                     (uint16_t *)work->result + output_index, rows,
+                     work->cols_a, work->cols_b, work->quant);
+  } else if (work->quant == XAIOS_QUANT_Q88) {
+    ai_kernel_matmul((const int16_t *)work->mat_a + input_index, work->mat_b,
+                     (int16_t *)work->result + output_index, rows,
+                     work->cols_a, work->cols_b, work->quant);
+  } else {
+    ai_kernel_matmul((const float *)work->mat_a + input_index, work->mat_b,
+                     (float *)work->result + output_index, rows, work->cols_a,
+                     work->cols_b, work->quant);
+  }
 }
 
 void ai_kernel_matmul_multithread(const xaios_matmul_work_t *work_units,
                                   uint32_t num_threads) {
   kassert(work_units != 0 && num_threads > 0);
 
-  /* Execute work units sequentially (scheduler integration comes later) */
+  /* Work units are deterministic and bounded; persistent pool dispatch is not
+   * yet integrated, so this compatibility entrypoint remains sequential. */
   for (uint32_t t = 0; t < num_threads; ++t) {
     matmul_work_thread((void *)&work_units[t]);
   }
@@ -390,31 +386,32 @@ xaios_status_t ai_kernel_quantize_fp32_to_int8(const float *fp32, int8_t *int8,
   /* Compute scale factor */
   *scales = max_val / 127.0f;
 
-  /* Quantize with NEON */
   float scale = *scales;
   float inv_scale = 1.0f / scale;
 
-  for (uint32_t i = 0; i < count; i += 8) {
+  for (uint32_t i = 0; i < count; i += 4) {
     uint32_t remaining = count - i;
-    uint32_t process = remaining < 8 ? remaining : 8;
-
-    float32x4_t inv_scale_vec = vdupq_n_f32(inv_scale);
-
-    if (process >= 4) {
+    uint32_t process = remaining < 4U ? remaining : 4U;
+    if (process >= 4U) {
+      float32x4_t inv_scale_vec = vdupq_n_f32(inv_scale);
       float32x4_t vals = vld1q_f32(&fp32[i]);
       float32x4_t scaled = vmulq_f32(vals, inv_scale_vec);
       int32x4_t rounded = vcvtnq_s32_f32(scaled);
-      int16x4_t narrowed = vmovn_s32(rounded);
-      int8x8_t result = vmovn_s16(vcombine_s16(narrowed, narrowed));
-
-      int8_t out[8];
-      vst1_s8(out, result);
-
-      for (uint32_t j = 0; j < process; ++j) {
-        int8_t val = out[j];
-        if (val < -127) val = -127;
-        if (val > 127) val = 127;
-        int8[i + j] = val;
+      int32_t out[4];
+      vst1q_s32(out, rounded);
+      for (uint32_t j = 0U; j < 4U; ++j) {
+        if (out[j] < -127) out[j] = -127;
+        if (out[j] > 127) out[j] = 127;
+        int8[i + j] = (int8_t)out[j];
+      }
+    } else {
+      for (uint32_t j = 0U; j < process; ++j) {
+        float scaled = fp32[i + j] * inv_scale;
+        int32_t rounded =
+            (int32_t)(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
+        if (rounded < -127) rounded = -127;
+        if (rounded > 127) rounded = 127;
+        int8[i + j] = (int8_t)rounded;
       }
     }
   }
@@ -440,7 +437,7 @@ xaios_status_t ai_kernel_quantize_fp32_to_int4(const float *fp32, int8_t *int4,
 
   if (max_val == 0.0f) {
     *scales = 1.0f;
-    bytes_zero(int4, count / 2);
+    bytes_zero(int4, (count + 1U) / 2U);
     return XAIOS_OK;
   }
 
@@ -480,7 +477,7 @@ xaios_status_t ai_kernel_dequantize_int8_to_fp32(const int8_t *int8,
     uint32_t remaining = count - i;
     uint32_t process = remaining < 4 ? remaining : 4;
 
-    int8_t vals[4];
+    int8_t vals[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     for (uint32_t j = 0; j < process; ++j) {
       vals[j] = int8[i + j];
     }
@@ -774,4 +771,71 @@ void ai_kernel_rope_apply(float *query, float *key,
       }
     }
   }
+}
+
+static void pack_int4_fixture(const int8_t *values, uint32_t count,
+                              uint8_t *packed) {
+  bytes_zero(packed, (count + 1U) / 2U);
+  for (uint32_t index = 0U; index < count; ++index) {
+    packed[index / 2U] |=
+        ((uint8_t)values[index] & UINT8_C(0x0f))
+        << ((index & 1U) * 4U);
+  }
+}
+
+static void pack_int6_fixture(const int8_t *values, uint32_t count,
+                              uint8_t *packed) {
+  bytes_zero(packed, ((count + 3U) / 4U) * 3U);
+  for (uint32_t index = 0U; index < count; ++index) {
+    uint32_t value = (uint8_t)values[index] & UINT32_C(0x3f);
+    uint32_t block = index / 4U;
+    uint32_t shift = (index & 3U) * 6U;
+    uint32_t word = (uint32_t)packed[block * 3U] |
+                    ((uint32_t)packed[block * 3U + 1U] << 8U) |
+                    ((uint32_t)packed[block * 3U + 2U] << 16U);
+    word |= value << shift;
+    packed[block * 3U] = (uint8_t)word;
+    packed[block * 3U + 1U] = (uint8_t)(word >> 8U);
+    packed[block * 3U + 2U] = (uint8_t)(word >> 16U);
+  }
+}
+
+void ai_kernel_self_test(void) {
+  static const int8_t int4_a[10] = {1, -2, 3, -4, 5,
+                                    -1, 2, -3, 4, -5};
+  static const int8_t int4_b[15] = {1, 2, 3, -1, 0, 1, 2, -2,
+                                    1, 0, 1, -1, 3, 2, -2};
+  uint8_t packed4_a[5];
+  uint8_t packed4_b[8];
+  int32_t result4[6];
+  pack_int4_fixture(int4_a, 10U, packed4_a);
+  pack_int4_fixture(int4_b, 15U, packed4_b);
+  ai_kernel_matmul(packed4_a, packed4_b, result4, 2U, 5U, 3U,
+                   XAIOS_QUANT_INT4);
+  static const int32_t expected4[6] = {24, 2, -2, -24, -2, 2};
+  for (uint32_t index = 0U; index < 6U; ++index) {
+    kassert(result4[index] == expected4[index]);
+  }
+
+  static const int8_t int6_a[5] = {-32, -1, 0, 1, 31};
+  static const int8_t int6_b[10] = {1, -1, 2, -2, 3,
+                                    -3, 4, -4, 5, -5};
+  uint8_t packed6_a[6];
+  uint8_t packed6_b[9];
+  int32_t result6[2];
+  pack_int6_fixture(int6_a, 5U, packed6_a);
+  pack_int6_fixture(int6_b, 10U, packed6_b);
+  ai_kernel_matmul(packed6_a, packed6_b, result6, 1U, 5U, 2U,
+                   XAIOS_QUANT_INT6);
+  kassert(result6[0] == 125 && result6[1] == -125);
+
+  int32_t work_result[6] = {0, 0, 0, 0, 0, 0};
+  xaios_matmul_work_t work = {packed4_a, packed4_b, work_result,
+                              1U,        2U,        5U,
+                              3U,        XAIOS_QUANT_INT4};
+  ai_kernel_matmul_multithread(&work, 1U);
+  kassert(work_result[0] == 0 && work_result[1] == 0 &&
+          work_result[2] == 0 && work_result[3] == -24 &&
+          work_result[4] == -2 && work_result[5] == 2);
+  klog("ai-kernel: packed no-expand tail self-test passed int4=6 int6=2\n");
 }

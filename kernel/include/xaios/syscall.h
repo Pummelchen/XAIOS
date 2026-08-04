@@ -40,6 +40,16 @@
 #define XAIOS_SYSCALL_AGENT_DISPATCH UINT64_C(34)
 #define XAIOS_SYSCALL_RANDOM UINT64_C(35)
 #define XAIOS_SYSCALL_FS_SEEK UINT64_C(36)
+#define XAIOS_SYSCALL_CONTROL_QUERY UINT64_C(37)
+#define XAIOS_SYSCALL_REMOTE_LOGIN_SESSION UINT64_C(38)
+#define XAIOS_SYSCALL_FS_PREAD UINT64_C(39)
+#define XAIOS_SYSCALL_FS_PWRITE UINT64_C(40)
+#define XAIOS_SYSCALL_FS_FSYNC UINT64_C(41)
+#define XAIOS_SYSCALL_THREAD_CREATE UINT64_C(42)
+#define XAIOS_SYSCALL_THREAD_JOIN UINT64_C(43)
+#define XAIOS_SYSCALL_THREAD_CANCEL UINT64_C(44)
+#define XAIOS_SYSCALL_THREAD_EXIT UINT64_C(45)
+#define XAIOS_SYSCALL_NET_RESOLVE UINT64_C(46)
 
 #define XAIOS_CAP_LOG UINT64_C(1)
 #define XAIOS_CAP_EXIT UINT64_C(2)
@@ -60,6 +70,20 @@
 #define XAIOS_CAP_NET_SOCKET UINT64_C(65536)
 #define XAIOS_CAP_AGENT UINT64_C(131072)
 #define XAIOS_CAP_RANDOM UINT64_C(262144)
+#define XAIOS_CAP_CONTROL_QUERY UINT64_C(524288)
+#define XAIOS_CAP_CONTROL_ADMIN UINT64_C(1048576)
+#define XAIOS_CAP_STORAGE_READ UINT64_C(2097152)
+#define XAIOS_CAP_STORAGE_MOUNT UINT64_C(4194304)
+#define XAIOS_CAP_STORAGE_FORMAT UINT64_C(8388608)
+#define XAIOS_CAP_STORAGE_PARTITION UINT64_C(16777216)
+#define XAIOS_CAP_STORAGE_REPAIR UINT64_C(33554432)
+#define XAIOS_CAP_STORAGE_RESIZE UINT64_C(67108864)
+#define XAIOS_CAP_STORAGE_TRIM UINT64_C(134217728)
+#define XAIOS_CAP_MODEL_STAGE UINT64_C(268435456)
+#define XAIOS_CAP_MODEL_ACTIVATE UINT64_C(536870912)
+
+#define XAIOS_REMOTE_LOGIN_SESSION_EXECUTE UINT64_C(1)
+#define XAIOS_REMOTE_LOGIN_SESSION_CLOSE UINT64_C(2)
 
 typedef struct xaios_syscall_rename_request {
   uint64_t old_path;
@@ -73,6 +97,13 @@ typedef struct xaios_syscall_list_request {
   uint64_t buffer_size;
   uint64_t out_size;
 } xaios_syscall_list_request_t;
+
+typedef struct xaios_syscall_positional_io_request {
+  uint64_t fd;
+  uint64_t buffer;
+  uint64_t size;
+  uint64_t offset;
+} xaios_syscall_positional_io_request_t;
 
 typedef struct xaios_syscall_net_request {
   uint64_t payload;
@@ -105,6 +136,18 @@ typedef struct xaios_syscall_remote_login_request {
   uint64_t out_size;
 } xaios_syscall_remote_login_request_t;
 
+typedef struct xaios_syscall_remote_login_session_request {
+  uint64_t session_id;
+  uint64_t action;
+  uint64_t user;
+  uint64_t user_size;
+  uint64_t command;
+  uint64_t command_size;
+  uint64_t output;
+  uint64_t output_size;
+  uint64_t out_size;
+} xaios_syscall_remote_login_session_request_t;
+
 typedef struct xaios_syscall_net_external_session_request {
   uint64_t protocol;
   uint64_t port;
@@ -121,6 +164,22 @@ typedef struct xaios_syscall_thread_group_request {
   uint64_t out_threads;
   uint64_t out_checksum;
 } xaios_syscall_thread_group_request_t;
+
+typedef struct xaios_syscall_thread_create_request {
+  uint64_t entry;
+  uint64_t argument;
+  uint64_t stack;
+  uint64_t stack_size;
+  uint64_t return_address;
+  uint64_t preferred_cpu;
+  uint64_t out_thread_id;
+} xaios_syscall_thread_create_request_t;
+
+typedef struct xaios_syscall_thread_join_request {
+  uint64_t thread_id;
+  uint64_t timeout_ns;
+  uint64_t out_result;
+} xaios_syscall_thread_join_request_t;
 
 typedef struct xaios_syscall_ml_run_request {
   uint64_t model_kind;
@@ -144,6 +203,12 @@ typedef struct xaios_syscall_socket_request {
   uint64_t protocol;
 } xaios_syscall_socket_request_t;
 
+typedef struct xaios_syscall_net_resolve_request {
+  uint64_t hostname;
+  uint64_t hostname_size;
+  uint64_t out_ipv4;
+} xaios_syscall_net_resolve_request_t;
+
 typedef struct xaios_syscall_agent_dispatch_request {
   uint64_t request;
   uint64_t request_size;
@@ -155,6 +220,14 @@ typedef struct xaios_syscall_agent_dispatch_request {
   uint64_t output_size;
   uint64_t out_size;
 } xaios_syscall_agent_dispatch_request_t;
+
+typedef struct xaios_syscall_control_query_request {
+  uint64_t request;
+  uint64_t request_size;
+  uint64_t response;
+  uint64_t response_size;
+  uint64_t out_size;
+} xaios_syscall_control_query_request_t;
 
 uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
                           uint64_t arg2);

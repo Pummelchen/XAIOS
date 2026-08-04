@@ -9,6 +9,8 @@
 #define EFI_BUFFER_TOO_SMALL ((efi_status_t)(EFI_ERROR_BIT | 5))
 #define EFI_LOAD_ERROR ((efi_status_t)(EFI_ERROR_BIT | 1))
 #define EFI_NOT_FOUND ((efi_status_t)(EFI_ERROR_BIT | 14))
+#define EFI_DEVICE_ERROR ((efi_status_t)(EFI_ERROR_BIT | 7))
+#define EFI_WRITE_PROTECTED ((efi_status_t)(EFI_ERROR_BIT | 8))
 #define EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL 0x00000001U
 #define EFI_FILE_MODE_READ UINT64_C(0x0000000000000001)
 #define EFI_ALLOCATE_ANY_PAGES 0
@@ -42,7 +44,12 @@ typedef struct efi_runtime_services efi_runtime_services_t;
 typedef struct efi_loaded_image_protocol efi_loaded_image_protocol_t;
 typedef struct efi_simple_file_system_protocol efi_simple_file_system_protocol_t;
 typedef struct efi_file_protocol efi_file_protocol_t;
+typedef struct efi_block_io_protocol efi_block_io_protocol_t;
+typedef struct efi_block_io_media efi_block_io_media_t;
 typedef struct efi_system_table efi_system_table_t;
+typedef struct efi_configuration_table efi_configuration_table_t;
+
+#define EFI_LOCATE_BY_PROTOCOL 2
 
 struct efi_simple_text_output_protocol {
   void *reset;
@@ -101,6 +108,19 @@ struct efi_boot_services {
                                       efi_handle_t agent_handle,
                                       efi_handle_t controller_handle,
                                       uint32_t attributes);
+  void *close_protocol;
+  void *open_protocol_information;
+  void *protocols_per_handle;
+  efi_status_t(EFIAPI *locate_handle_buffer)(
+      int search_type, efi_guid_t *protocol, void *search_key,
+      uint64_t *handle_count, efi_handle_t **handles);
+  void *locate_protocol;
+  void *install_multiple_protocol_interfaces;
+  void *uninstall_multiple_protocol_interfaces;
+  void *calculate_crc32;
+  void *copy_mem;
+  void *set_mem;
+  void *create_event_ex;
 };
 
 struct efi_loaded_image_protocol {
@@ -131,6 +151,36 @@ struct efi_file_protocol {
                              void *buffer);
 };
 
+struct efi_block_io_media {
+  uint32_t media_id;
+  uint8_t removable_media;
+  uint8_t media_present;
+  uint8_t logical_partition;
+  uint8_t read_only;
+  uint8_t write_caching;
+  uint8_t pad[3];
+  uint32_t block_size;
+  uint32_t io_align;
+  uint64_t last_block;
+  uint64_t lowest_aligned_lba;
+  uint32_t logical_blocks_per_physical_block;
+  uint32_t optimal_transfer_length_granularity;
+};
+
+struct efi_block_io_protocol {
+  uint64_t revision;
+  efi_block_io_media_t *media;
+  efi_status_t(EFIAPI *reset)(efi_block_io_protocol_t *self,
+                              uint8_t extended_verification);
+  efi_status_t(EFIAPI *read_blocks)(efi_block_io_protocol_t *self,
+                                    uint32_t media_id, uint64_t lba,
+                                    uint64_t buffer_size, void *buffer);
+  efi_status_t(EFIAPI *write_blocks)(efi_block_io_protocol_t *self,
+                                     uint32_t media_id, uint64_t lba,
+                                     uint64_t buffer_size, const void *buffer);
+  efi_status_t(EFIAPI *flush_blocks)(efi_block_io_protocol_t *self);
+};
+
 struct efi_system_table {
   efi_table_header_t hdr;
   efi_char16_t *firmware_vendor;
@@ -144,6 +194,13 @@ struct efi_system_table {
   efi_simple_text_output_protocol_t *std_err;
   efi_runtime_services_t *runtime_services;
   efi_boot_services_t *boot_services;
+  uint64_t number_of_table_entries;
+  efi_configuration_table_t *configuration_table;
+};
+
+struct efi_configuration_table {
+  efi_guid_t vendor_guid;
+  void *vendor_table;
 };
 
 #endif

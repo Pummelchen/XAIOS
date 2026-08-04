@@ -55,6 +55,19 @@ static xaios_engine_status_t scalar_dense_projection(
   return XAIOS_ENGINE_OK;
 }
 
+static xaios_engine_status_t scalar_packed_gemv(
+    const xaios_packed_matrix_t *matrix, const float *input, float *output) {
+  return xaios_packed_gemv_scalar(matrix, input, output);
+}
+
+static xaios_engine_status_t scalar_packed_gemm(
+    const xaios_packed_matrix_t *matrix, const float *input,
+    uint64_t input_rows, uint64_t input_stride, float *output,
+    uint64_t output_stride) {
+  return xaios_packed_gemm_scalar(matrix, input, input_rows, input_stride,
+                                  output, output_stride);
+}
+
 static uint64_t scalar_scratch_size(
     const xaios_model_v2_package_t *package) {
   (void)package;
@@ -98,6 +111,8 @@ static const xaios_backend_t k_scalar_backend = {
     unsupported_execute,
     unsupported_verify,
     scalar_dense_projection,
+    scalar_packed_gemv,
+    scalar_packed_gemm,
     unsupported_execute,
     unsupported_execute,
     unsupported_execute,
@@ -111,8 +126,19 @@ const xaios_backend_t *xaios_backend_scalar(void) {
 }
 
 const xaios_backend_t *xaios_backend_select(uint64_t required_capabilities) {
-  if ((required_capabilities & ~XAIOS_BACKEND_CAP_SCALAR) != 0U) {
+  const uint64_t available = XAIOS_BACKEND_CAP_SCALAR |
+                             XAIOS_BACKEND_CAP_NEON |
+                             XAIOS_BACKEND_CAP_AVX2;
+  if ((required_capabilities & ~available) != 0U) {
     return NULL;
+  }
+  if ((required_capabilities & XAIOS_BACKEND_CAP_NEON) != 0U) {
+    const xaios_backend_t *neon = xaios_backend_neon();
+    return neon != NULL && neon->validate() == XAIOS_ENGINE_OK ? neon : NULL;
+  }
+  if ((required_capabilities & XAIOS_BACKEND_CAP_AVX2) != 0U) {
+    const xaios_backend_t *avx2 = xaios_backend_avx2();
+    return avx2 != NULL && avx2->validate() == XAIOS_ENGINE_OK ? avx2 : NULL;
   }
   return scalar_validate() == XAIOS_ENGINE_OK ? &k_scalar_backend : NULL;
 }

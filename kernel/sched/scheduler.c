@@ -1,6 +1,7 @@
 #include <xaios/assert.h>
 #include <xaios/context.h>
 #include <xaios/klog.h>
+#include <xaios/kheap.h>
 #include <xaios/scheduler.h>
 #include <xaios/smp.h>
 #include <xaios/timer.h>
@@ -18,16 +19,17 @@
  * - Per-CPU statistics for telemetry
  */
 
-static xaios_cpu_task_table_t g_cpu_tasks[XAIOS_MAX_CPUS];
-static xaios_runqueue_t g_runqueues[XAIOS_MAX_CPUS];
-static xaios_sched_stats_t g_sched_stats[XAIOS_MAX_CPUS];
+static xaios_cpu_task_table_t *g_cpu_tasks;
+static xaios_runqueue_t *g_runqueues;
+static xaios_sched_stats_t *g_sched_stats;
+static uint32_t g_cpu_capacity;
 
 static uint64_t g_tick_count;
 static uint64_t g_context_switch_count;
 static uint64_t g_yield_count;
 static uint64_t g_steal_count;
 static uint32_t g_initialized;
-static uint32_t g_lock_depth_per_cpu[XAIOS_MAX_CPUS];
+static uint32_t *g_lock_depth_per_cpu;
 
 /* Periodic load balancing counter */
 static uint32_t g_balance_counter;
@@ -41,7 +43,7 @@ static void bytes_zero(void *buffer, uint64_t size) {
 
 /* Find task in local CPU's task table (O(128) max, not O(32K)) */
 static xaios_sched_task_t *find_task_local(uint32_t cpu_id, uint32_t pid) {
-  if (cpu_id >= XAIOS_MAX_CPUS) {
+  if (cpu_id >= g_cpu_capacity) {
     return 0;
   }
 
@@ -71,7 +73,7 @@ static xaios_sched_task_t *find_task_global(uint32_t pid, uint32_t *cpu_out) {
 
 /* Allocate task slot from local CPU's table using atomic bitmap */
 static xaios_sched_task_t *alloc_task_slot(uint32_t cpu_id) {
-  if (cpu_id >= XAIOS_MAX_CPUS) {
+  if (cpu_id >= g_cpu_capacity) {
     return 0;
   }
 
@@ -106,7 +108,7 @@ static xaios_sched_task_t *alloc_task_slot(uint32_t cpu_id) {
 
 /* Free task slot */
 static void free_task_slot(uint32_t cpu_id, xaios_sched_task_t *task) {
-  if (cpu_id >= XAIOS_MAX_CPUS || task == 0) {
+  if (cpu_id >= g_cpu_capacity || task == 0) {
     return;
   }
 
@@ -388,6 +390,17 @@ static void periodic_load_balance(uint32_t this_cpu) {
 void scheduler_init(void) {
   /* Initialize per-CPU task tables */
   uint32_t online = smp_online_count();
+  g_cpu_capacity = smp_capacity();
+  g_cpu_tasks = (xaios_cpu_task_table_t *)kheap_calloc(
+      (uint64_t)g_cpu_capacity * sizeof(*g_cpu_tasks), 16U);
+  g_runqueues = (xaios_runqueue_t *)kheap_calloc(
+      (uint64_t)g_cpu_capacity * sizeof(*g_runqueues), 16U);
+  g_sched_stats = (xaios_sched_stats_t *)kheap_calloc(
+      (uint64_t)g_cpu_capacity * sizeof(*g_sched_stats), 16U);
+  g_lock_depth_per_cpu = (uint32_t *)kheap_calloc(
+      (uint64_t)g_cpu_capacity * sizeof(*g_lock_depth_per_cpu), 16U);
+  kassert(g_cpu_tasks != 0 && g_runqueues != 0 && g_sched_stats != 0 &&
+          g_lock_depth_per_cpu != 0);
   for (uint32_t cpu = 0; cpu < online; ++cpu) {
     bytes_zero(&g_cpu_tasks[cpu], sizeof(xaios_cpu_task_table_t));
     xaios_spin_init(&g_runqueues[cpu].lock);
@@ -404,13 +417,13 @@ void scheduler_init(void) {
   g_yield_count = 0;
   g_steal_count = 0;
   g_balance_counter = 0;
-  for (uint32_t i = 0; i < XAIOS_MAX_CPUS; ++i) { g_lock_depth_per_cpu[i] = 0; }
   g_initialized = 1;
 
   klog("scheduler: hierarchical SMP initialized max_tasks=%u per_cpu_rq=%u "
-       "per_cpu_slots=%u tick_hz=%u max_cpus=%u\n",
+       "per_cpu_slots=%u tick_hz=%u cpu_capacity=%u\n",
        XAIOS_SCHEDULER_MAX_TASKS, XAIOS_SCHEDULER_PER_CPU_RUNQUEUE,
-       XAIOS_TASK_SLOTS_PER_CPU, XAIOS_SCHEDULER_DEFAULT_TICK_HZ, XAIOS_MAX_CPUS);
+       XAIOS_TASK_SLOTS_PER_CPU, XAIOS_SCHEDULER_DEFAULT_TICK_HZ,
+       g_cpu_capacity);
 }
 
 static xaios_status_t scheduler_register_on_cpu(
@@ -460,7 +473,7 @@ void scheduler_unregister(uint32_t pid) {
   task->state = XAIOS_TASK_STATE_UNUSED;
   free_task_slot(cpu, task);
 
-  if (assigned < XAIOS_MAX_CPUS) {
+  if (assigned < g_cpu_capacity) {
     xaios_spin_lock(&g_runqueues[assigned].lock);
     rq_remove(&g_runqueues[assigned], pid);
     if (g_runqueues[assigned].current_pid == pid) {
@@ -483,7 +496,7 @@ xaios_status_t scheduler_set_runnable(uint32_t pid) {
   task->remaining_ticks = priority_slice(task->priority);
   uint32_t assigned = task->assigned_cpu;
 
-  if (assigned < XAIOS_MAX_CPUS) {
+  if (assigned < g_cpu_capacity) {
     xaios_spin_lock(&g_runqueues[assigned].lock);
     rq_add(&g_runqueues[assigned], pid);
     xaios_spin_unlock(&g_runqueues[assigned].lock);
@@ -501,7 +514,7 @@ xaios_status_t scheduler_set_blocked(uint32_t pid) {
   task->state = XAIOS_TASK_STATE_BLOCKED;
   uint32_t assigned = task->assigned_cpu;
 
-  if (assigned < XAIOS_MAX_CPUS) {
+  if (assigned < g_cpu_capacity) {
     xaios_spin_lock(&g_runqueues[assigned].lock);
     rq_remove(&g_runqueues[assigned], pid);
     xaios_spin_unlock(&g_runqueues[assigned].lock);
@@ -519,12 +532,12 @@ xaios_context_frame_t *scheduler_task_frame(uint32_t pid) {
 
 void scheduler_lock(void) {
   uint32_t cpu = smp_cpu_id();
-  if (cpu < XAIOS_MAX_CPUS) { ++g_lock_depth_per_cpu[cpu]; }
+  if (cpu < g_cpu_capacity) { ++g_lock_depth_per_cpu[cpu]; }
 }
 
 void scheduler_unlock(void) {
   uint32_t cpu = smp_cpu_id();
-  if (cpu < XAIOS_MAX_CPUS && g_lock_depth_per_cpu[cpu] > 0) {
+  if (cpu < g_cpu_capacity && g_lock_depth_per_cpu[cpu] > 0) {
     --g_lock_depth_per_cpu[cpu];
   }
 }
@@ -534,7 +547,7 @@ void scheduler_tick(xaios_context_frame_t *irq_frame) {
     return;
   }
   uint32_t cpu = smp_cpu_id();
-  if (cpu >= XAIOS_MAX_CPUS || g_lock_depth_per_cpu[cpu] > 0) {
+  if (cpu >= g_cpu_capacity || g_lock_depth_per_cpu[cpu] > 0) {
     return;
   }
 
@@ -649,7 +662,7 @@ void scheduler_yield(void) {
   ++g_yield_count;
 
   uint32_t cpu = smp_cpu_id();
-  if (cpu >= XAIOS_MAX_CPUS) {
+  if (cpu >= g_cpu_capacity) {
     return;
   }
 
@@ -695,14 +708,14 @@ uint64_t scheduler_yield_count(void) { return g_yield_count; }
 
 uint32_t scheduler_current_pid(void) {
   uint32_t cpu = smp_cpu_id();
-  if (cpu >= XAIOS_MAX_CPUS) {
+  if (cpu >= g_cpu_capacity) {
     return 0;
   }
   return g_runqueues[cpu].current_pid;
 }
 
 uint32_t scheduler_current_pid_on_cpu(uint32_t cpu_id) {
-  if (cpu_id >= XAIOS_MAX_CPUS) {
+  if (cpu_id >= g_cpu_capacity) {
     return 0;
   }
   return g_runqueues[cpu_id].current_pid;
@@ -718,7 +731,7 @@ uint32_t scheduler_runnable_count(void) {
 }
 
 void scheduler_get_stats(uint32_t cpu_id, xaios_sched_stats_t *stats) {
-  if (cpu_id >= XAIOS_MAX_CPUS || stats == 0) {
+  if (cpu_id >= g_cpu_capacity || stats == 0) {
     return;
   }
   *stats = g_sched_stats[cpu_id];

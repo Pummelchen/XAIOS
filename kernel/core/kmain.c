@@ -1,10 +1,14 @@
 #include <xaios/assert.h>
+#include <xaios/admin_control.h>
 #include <xaios/agent_protocol.h>
 #include <xaios/ai_cell.h>
+#include <xaios/ai_kernels.h>
 #include <xaios/arena.h>
 #include <xaios/arp.h>
 #include <xaios/boot_info.h>
 #include <xaios/core_lease.h>
+#include <xaios/control_protocol.h>
+#include <xaios/dns.h>
 #include <xaios/elf_loader.h>
 #include <xaios/exception.h>
 #include <xaios/gic.h>
@@ -33,10 +37,13 @@
 #include <xaios/security.h>
 #include <xaios/sha256.h>
 #include <xaios/source_index.h>
+#include <xaios/storage_admin.h>
+#include <xaios/system_slot.h>
 #include <xaios/service.h>
 #include <xaios/smp.h>
 #include <xaios/network_stack.h>
 #include <xaios/numa.h>
+#include <xaios/nvme.h>
 #include <xaios/pci.h>
 #include <xaios/smmu.h>
 #include <xaios/spinlock.h>
@@ -45,19 +52,29 @@
 #include <xaios/telemetry.h>
 #include <xaios/timer.h>
 #include <xaios/topology.h>
+#include <xaios/thread.h>
 #include <xaios/update.h>
 #include <xaios/user.h>
 #include <xaios/virtio_blk.h>
 #include <xaios/virtio_net.h>
 #include <xaios/virtio_rng.h>
+#include <xaios/vfs_mutable.h>
+#include <xaios/vfs_model.h>
 #include <xaios/vmm.h>
 #include <xaios/watchdog.h>
 
 static const char g_vmm_rodata_probe[] = "vmm-rodata";
 static uint64_t g_vmm_data_probe;
+static virtio_block_handle_t *g_storage_admin_handle;
 
 static void provision_read_only_config(const char *path) {
   const xaios_initramfs_file_t *file = 0;
+  xaios_mfs_stat_t existing;
+  if (mutable_fs_stat(path, &existing) == XAIOS_OK) {
+    klog("kernel: preserved persistent config path=%s bytes=%lu\n", path,
+         existing.size);
+    return;
+  }
   xaios_status_t status = initramfs_lookup(path, &file);
   if (status == XAIOS_ERR_NOT_FOUND) return;
   if (status != XAIOS_OK || file == 0 || file->base == 0 || file->size == 0U ||
@@ -128,11 +145,8 @@ void kmain(const xaios_boot_info_t *boot) {
   timer_self_test();
   stack_canary_init();
   stack_canary_self_test();
-  smp_init_qemu_virt();
+  smp_init_qemu_virt(boot);
   smp_self_test();
-
-  topology_init();          /* Build CPU hierarchy for hierarchical scheduler */
-  topology_self_test();
 
   numa_init(boot);
   numa_self_test();
@@ -144,18 +158,25 @@ void kmain(const xaios_boot_info_t *boot) {
   /* Map SMMU MMIO and initialize */
   map_mmio_range(XAIOS_SMMU_MMIO_BASE, 0x10000);
   map_mmio_range(XAIOS_SMMU_MMIO_PAGE1, 0x10000);
-  smmu_init();
-  smmu_self_test();
+  smmu_init(boot);
 
   map_mmio_range(boot->uart_base, 4096);
   map_mmio_range(UINT64_C(0x08000000), UINT64_C(0x20000));
+  uint32_t low_redistributors =
+      smp_capacity() < 123U ? smp_capacity() : 123U;
   map_mmio_range(UINT64_C(0x080A0000),
-                 (uint64_t)smp_online_count() * UINT64_C(0x20000));
+                 (uint64_t)low_redistributors * UINT64_C(0x20000));
+  if (smp_capacity() > low_redistributors) {
+    map_mmio_range(UINT64_C(0x4000000000),
+                   (uint64_t)(smp_capacity() - low_redistributors) *
+                       UINT64_C(0x20000));
+  }
   map_mmio_range(UINT64_C(0x0a000000), UINT64_C(0x4000));
 
   /* Map ECAM and enumerate PCIe */
   pci_init();
   pci_self_test();
+  smmu_self_test();
 
   /* Map RTC MMIO and initialize real-time clock */
   map_mmio_range(XAIOS_PL031_RTC_BASE, 4096);
@@ -169,6 +190,8 @@ void kmain(const xaios_boot_info_t *boot) {
 
   klog("VMM MMIO device mappings installed\n");
   kheap_self_test();
+  topology_init();
+  topology_self_test();
   arena_manager_init();
   arena_self_test();
   rate_limit_init();
@@ -203,6 +226,12 @@ void kmain(const xaios_boot_info_t *boot) {
   gic_init_qemu_virt();
   gic_self_test();
 
+  xaios_nvme_self_test_result_t nvme_result;
+  xaios_status_t nvme_status = nvme_self_test(&nvme_result);
+  if (nvme_status != XAIOS_OK && nvme_status != XAIOS_ERR_NOT_FOUND) {
+    klog("nvme: self-test failed status=%d\n", (int)nvme_status);
+  }
+
   virtio_rng_self_test();
   virtio_block_self_test();
   initramfs_self_test();
@@ -216,6 +245,8 @@ void kmain(const xaios_boot_info_t *boot) {
          fsck.valid, fsck.version, fsck.files, fsck.directories);
     provision_read_only_config("/etc/xaios_authorized_keys");
     provision_read_only_config("/etc/xaios_sshd_users");
+    admin_control_init();
+    admin_control_self_test();
     /* Initialize persistent log ring buffer */
     klog_ring_init();
     klog_ring_self_test();
@@ -229,6 +260,31 @@ void kmain(const xaios_boot_info_t *boot) {
   } else {
     klog("kernel: persistent mount skipped status=%d\n", (int)persistent_status);
   }
+  kassert(vfs_mount_mutable_root() == XAIOS_OK);
+  klog("vfs: MutableFS mounted at /\n");
+  xaios_status_t model_volume_status = vfs_mount_model_volume(4U);
+  if (model_volume_status == XAIOS_OK) {
+    vfs_model_self_test();
+  } else {
+    klog("modelfs: mount skipped status=%d\n", (int)model_volume_status);
+  }
+  xaios_status_t storage_admin_status =
+      virtio_block_open_slot(5U, &g_storage_admin_handle);
+  if (storage_admin_status == XAIOS_OK) {
+    storage_admin_status = storage_admin_attach(
+        virtio_block_device_h(g_storage_admin_handle), 1U);
+  }
+  if (storage_admin_status == XAIOS_OK) {
+    klog("storage-admin: scratch device attached slot=5 mutation=enabled\n");
+  } else {
+    klog("storage-admin: scratch device unavailable status=%d\n",
+         (int)storage_admin_status);
+  }
+  xaios_status_t system_slot_status = system_slot_init(boot);
+  if (system_slot_status != XAIOS_OK) {
+    klog("system-slot: unavailable status=%d\n", (int)system_slot_status);
+  }
+  system_slot_self_test();
   update_self_test();
   update_delivery_self_test();
   virtio_net_self_test();
@@ -240,6 +296,7 @@ void kmain(const xaios_boot_info_t *boot) {
   ndp_self_test();
   sockbuf_self_test();
   routing_self_test();
+  dns_self_test();
   network_stack_self_test();
   syscall_self_test();
   user_process_table_init();
@@ -247,12 +304,15 @@ void kmain(const xaios_boot_info_t *boot) {
   user_scheduler_self_test();
   scheduler_init();
   scheduler_self_test();
+  xaios_thread_runtime_init();
   elf_loader_self_test();
   service_supervisor_init();
   model_arena_self_test();
+  ai_kernel_self_test();
   cpu_ai_runtime_self_test();
   ai_cell_self_test();
   agent_protocol_self_test();
+  control_protocol_self_test();
   telemetry_emit_boot_summary();
 
   /* Flush logs to persistent storage */
@@ -317,6 +377,8 @@ void kmain(const xaios_boot_info_t *boot) {
   /* Initialize persistent network for real TX/RX */
   if (virtio_net_init_persistent() == XAIOS_OK) {
     network_init_persistent();
+    dns_init();
+    dns_configure(UINT32_C(0x08080808));
     klog("kernel: persistent network stack enabled\n");
   } else {
     klog("kernel: persistent network init skipped\n");
@@ -327,6 +389,7 @@ void kmain(const xaios_boot_info_t *boot) {
   timer_enable_periodic(XAIOS_SCHEDULER_DEFAULT_TICK_HZ);
   kassert(smp_set_scheduling_enabled(smp_cpu_id(), 1U) == XAIOS_OK);
   smp_release_secondary_schedulers();
+  xaios_thread_self_test();
   klog("kernel: preemptive scheduler infrastructure enabled\n");
 
   for (uint32_t pid = 3; pid <= 5; ++pid) {
@@ -353,13 +416,15 @@ void kmain(const xaios_boot_info_t *boot) {
       XAIOS_CAP_FS_WRITE | XAIOS_CAP_OSCTL | XAIOS_CAP_TIME |
       XAIOS_CAP_NET | XAIOS_CAP_NET_SOCKET | XAIOS_CAP_REMOTE_LOGIN;
   const uint64_t hello_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT;
+  const uint64_t xaiosctl_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT |
+      XAIOS_CAP_TIME | XAIOS_CAP_CONTROL_QUERY | XAIOS_CAP_STORAGE_READ;
   const uint64_t sysinfo_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_TIME;
   const uint64_t systest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT |
       XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE;
   const uint64_t smptest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT |
       XAIOS_CAP_OSCTL | XAIOS_CAP_SMP | XAIOS_CAP_THREADS;
   const uint64_t nettest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT |
-      XAIOS_CAP_OSCTL | XAIOS_CAP_NET;
+      XAIOS_CAP_OSCTL | XAIOS_CAP_NET | XAIOS_CAP_TIME;
   const uint64_t lstm_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_CPU_AI |
       XAIOS_CAP_ML;
   const uint64_t sshtest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_NET |
@@ -372,24 +437,34 @@ void kmain(const xaios_boot_info_t *boot) {
       XAIOS_CAP_CPU_AI | XAIOS_CAP_ML;
   const uint64_t sshd_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_FS_READ |
       XAIOS_CAP_FS_WRITE | XAIOS_CAP_NET_SOCKET | XAIOS_CAP_REMOTE_LOGIN |
-      XAIOS_CAP_TIME | XAIOS_CAP_RANDOM;
+      XAIOS_CAP_TIME | XAIOS_CAP_RANDOM | XAIOS_CAP_CONTROL_QUERY |
+      XAIOS_CAP_CONTROL_ADMIN | XAIOS_CAP_STORAGE_READ |
+      XAIOS_CAP_STORAGE_MOUNT | XAIOS_CAP_STORAGE_FORMAT |
+      XAIOS_CAP_STORAGE_PARTITION | XAIOS_CAP_STORAGE_REPAIR |
+      XAIOS_CAP_STORAGE_RESIZE | XAIOS_CAP_STORAGE_TRIM |
+      XAIOS_CAP_MODEL_STAGE | XAIOS_CAP_MODEL_ACTIVATE;
 
   run_user_app("/bin/xaios-shell", 6, shell_caps);
-  run_user_app("/bin/hello", 7, hello_caps);
-  run_user_app("/bin/sysinfo", 8, sysinfo_caps);
-  run_user_app("/bin/systest", 9, systest_caps);
-  run_user_app("/bin/smptest", 10, smptest_caps);
-  run_user_app("/bin/nettest", 11, nettest_caps);
-  run_user_app("/bin/lstm-xor", 12, lstm_caps);
-  run_user_app("/bin/sshtest", 13, sshtest_caps);
-  run_user_app("/bin/mltest", 14, mltest_caps);
-  run_user_app("/bin/posix-shell", 15, posix_shell_caps);
-  run_user_app("/bin/agenttest", 16, agenttest_caps);
+  run_user_app("/bin/xaiosctl", 7, xaiosctl_caps);
+  run_user_app("/bin/hello", 8, hello_caps);
+  run_user_app("/bin/sysinfo", 9, sysinfo_caps);
+  run_user_app("/bin/systest", 10, systest_caps);
+  run_user_app("/bin/smptest", 11, smptest_caps);
+  run_user_app("/bin/nettest", 12, nettest_caps);
+  run_user_app("/bin/lstm-xor", 13, lstm_caps);
+  run_user_app("/bin/sshtest", 14, sshtest_caps);
+  run_user_app("/bin/mltest", 15, mltest_caps);
+  run_user_app("/bin/posix-shell", 16, posix_shell_caps);
+  run_user_app("/bin/agenttest", 17, agenttest_caps);
 
   telemetry_emit_boot_summary();
 
+  if (system_slot_available() != 0U) {
+    kassert(system_slot_mark_boot_success(boot) == XAIOS_OK);
+  }
+
   klog("kernel: starting persistent /bin/sshd service\n");
-  run_user_app("/bin/sshd", 17, sshd_caps);
+  run_user_app("/bin/sshd", 18, sshd_caps);
 
   for (;;) {
     __asm__ volatile("wfe");

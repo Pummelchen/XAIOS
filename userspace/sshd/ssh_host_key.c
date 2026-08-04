@@ -82,6 +82,13 @@ int ssh_host_key_init(void) {
   return ensure_key();
 }
 
+int ssh_host_key_reload(void) {
+  ssh_mem_zero(g_host_private_key, sizeof(g_host_private_key));
+  ssh_mem_zero(g_host_public_key, sizeof(g_host_public_key));
+  g_key_initialized = 0U;
+  return ensure_key();
+}
+
 int ssh_host_key_get_private(uint8_t priv[32]) {
   if (ensure_key() != 0) return -1;
   for (uint32_t i = 0; i < 32; ++i) priv[i] = g_host_private_key[i];

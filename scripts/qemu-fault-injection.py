@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-from qemu_gate_lib import BUILD, check_markers, now, result, run, status_from_failures, write_report
+from qemu_gate_lib import (BUILD, check_markers, now, parse_telemetry, result,
+                           run, status_from_failures, write_report)
 
 
 SCHEMA = "xaios.qemu.fault_injection.v1"
@@ -22,10 +23,9 @@ SMOKE_FAILURE_MARKERS = {
     "block_read_error_reset": [
         "virtio-blk: read/write/error/reset self-test passed",
     ],
-    "corrupt_state_rejection": [
+    "corrupt_state_integrity": [
         "\"persistence_checksum_errors\":0",
         "\"mutable_fs_checksum_errors\":0",
-        "\"mutable_fs_rejects\":8",
     ],
     "failed_update_and_rollback": [
         "update: self-test passed transactions=2 staged=2 committed=1 failed=1 recovered=1 rollbacks=1",
@@ -57,6 +57,21 @@ def main() -> int:
         missing = check_markers(smoke_proc.stdout, markers)
         checks.append(result(name, not missing, missing_markers=missing))
         failures.extend(f"{name} missing marker: {marker}" for marker in missing)
+
+    telemetry = {}
+    if smoke_proc.returncode == 0:
+        try:
+            telemetry = parse_telemetry(smoke_proc.stdout)
+        except ValueError as exc:
+            failures.append(str(exc))
+    mutable_rejects = telemetry.get("mutable_fs_rejects")
+    rejection_ok = isinstance(mutable_rejects, int) and mutable_rejects >= 8
+    checks.append(result("corrupt_state_rejection", rejection_ok,
+                         mutable_fs_rejects=mutable_rejects, minimum=8))
+    if not rejection_ok:
+        failures.append(
+            f"mutable_fs_rejects expected >= 8, got {mutable_rejects!r}"
+        )
 
     report = {
         "schema": SCHEMA,

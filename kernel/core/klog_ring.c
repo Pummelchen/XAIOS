@@ -2,6 +2,7 @@
 #include <xaios/klog.h>
 #include <xaios/klog_ring.h>
 #include <xaios/mutable_fs.h>
+#include <xaios/spinlock.h>
 #include <xaios/timer.h>
 
 #define KLOG_PATH "/var/log/kern.log"
@@ -13,6 +14,8 @@ typedef struct xaios_klog_ring {
   uint32_t read_pos;
   uint32_t count;
   uint32_t overflow;
+  uint64_t total_written;
+  xaios_spinlock_t lock;
 } xaios_klog_ring_t;
 
 static xaios_klog_ring_t g_ring;
@@ -21,6 +24,7 @@ static uint64_t g_persist_count;
 static uint64_t g_rotate_count;
 
 void klog_ring_init(void) {
+  xaios_spin_init(&g_ring.lock);
   for (uint32_t i = 0; i < XAIOS_KLOG_RING_SIZE; ++i) {
     g_ring.buffer[i] = 0;
   }
@@ -28,6 +32,7 @@ void klog_ring_init(void) {
   g_ring.read_pos = 0;
   g_ring.count = 0;
   g_ring.overflow = 0;
+  g_ring.total_written = 0;
   g_persist_count = 0;
   g_rotate_count = 0;
 
@@ -48,6 +53,7 @@ void klog_ring_write(const char *data, uint32_t length) {
     return;
   }
 
+  xaios_spin_lock(&g_ring.lock);
   for (uint32_t i = 0; i < length; ++i) {
     if (g_ring.count >= XAIOS_KLOG_RING_SIZE) {
       /* Buffer full: drop oldest byte */
@@ -58,7 +64,9 @@ void klog_ring_write(const char *data, uint32_t length) {
     g_ring.buffer[g_ring.write_pos] = data[i];
     g_ring.write_pos = (g_ring.write_pos + 1U) % XAIOS_KLOG_RING_SIZE;
     ++g_ring.count;
+    ++g_ring.total_written;
   }
+  xaios_spin_unlock(&g_ring.lock);
 }
 
 uint32_t klog_ring_read(char *out, uint32_t max_len) {
@@ -66,27 +74,85 @@ uint32_t klog_ring_read(char *out, uint32_t max_len) {
     return 0;
   }
 
+  xaios_spin_lock(&g_ring.lock);
   uint32_t to_read = g_ring.count < max_len ? g_ring.count : max_len;
   for (uint32_t i = 0; i < to_read; ++i) {
     out[i] = g_ring.buffer[g_ring.read_pos];
     g_ring.read_pos = (g_ring.read_pos + 1U) % XAIOS_KLOG_RING_SIZE;
   }
   g_ring.count -= to_read;
+  xaios_spin_unlock(&g_ring.lock);
   return to_read;
 }
 
+uint32_t klog_ring_snapshot(char *out, uint32_t max_len,
+                            uint64_t since_cursor, uint64_t *start_cursor,
+                            uint64_t *next_cursor, uint64_t *latest_cursor) {
+  if (g_ring_initialized == 0 || out == 0 || max_len == 0 ||
+      start_cursor == 0 || next_cursor == 0 || latest_cursor == 0) {
+    return 0;
+  }
+
+  xaios_spin_lock(&g_ring.lock);
+  uint64_t oldest = g_ring.total_written - g_ring.count;
+  uint64_t start = since_cursor < oldest ? oldest : since_cursor;
+  if (start > g_ring.total_written) {
+    start = g_ring.total_written;
+  }
+  uint64_t available = g_ring.total_written - start;
+  uint32_t copied = available < max_len ? (uint32_t)available : max_len;
+  uint32_t offset = (uint32_t)(start - oldest);
+  uint32_t position = (g_ring.read_pos + offset) % XAIOS_KLOG_RING_SIZE;
+  for (uint32_t i = 0; i < copied; ++i) {
+    out[i] = g_ring.buffer[position];
+    position = (position + 1U) % XAIOS_KLOG_RING_SIZE;
+  }
+  *start_cursor = start;
+  *next_cursor = start + copied;
+  *latest_cursor = g_ring.total_written;
+  xaios_spin_unlock(&g_ring.lock);
+  return copied;
+}
+
 void klog_ring_clear(void) {
+  if (g_ring_initialized == 0) {
+    return;
+  }
+  xaios_spin_lock(&g_ring.lock);
   g_ring.write_pos = 0;
   g_ring.read_pos = 0;
   g_ring.count = 0;
+  xaios_spin_unlock(&g_ring.lock);
 }
 
 uint32_t klog_ring_count(void) {
-  return g_ring.count;
+  if (g_ring_initialized == 0) {
+    return 0;
+  }
+  xaios_spin_lock(&g_ring.lock);
+  uint32_t count = g_ring.count;
+  xaios_spin_unlock(&g_ring.lock);
+  return count;
 }
 
 uint32_t klog_ring_overflow_count(void) {
-  return g_ring.overflow;
+  if (g_ring_initialized == 0) {
+    return 0;
+  }
+  xaios_spin_lock(&g_ring.lock);
+  uint32_t overflow = g_ring.overflow;
+  xaios_spin_unlock(&g_ring.lock);
+  return overflow;
+}
+
+uint64_t klog_ring_total_written(void) {
+  if (g_ring_initialized == 0) {
+    return 0;
+  }
+  xaios_spin_lock(&g_ring.lock);
+  uint64_t total = g_ring.total_written;
+  xaios_spin_unlock(&g_ring.lock);
+  return total;
 }
 
 xaios_status_t klog_rotate(void) {
@@ -167,6 +233,18 @@ void klog_ring_self_test(void) {
     ++test_len;
   }
   klog_ring_write(test_msg, test_len);
+  kassert(klog_ring_count() == test_len);
+
+  char snapshot_buf[64];
+  uint64_t snapshot_start = 0;
+  uint64_t snapshot_next = 0;
+  uint64_t snapshot_latest = 0;
+  uint32_t snapshot_bytes =
+      klog_ring_snapshot(snapshot_buf, sizeof(snapshot_buf), 0,
+                         &snapshot_start, &snapshot_next, &snapshot_latest);
+  kassert(snapshot_bytes == test_len);
+  kassert(snapshot_start + snapshot_bytes == snapshot_next);
+  kassert(snapshot_next == snapshot_latest);
   kassert(klog_ring_count() == test_len);
 
   char read_buf[64];

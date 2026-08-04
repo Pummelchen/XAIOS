@@ -1,5 +1,7 @@
 #include <xaios/boot_info.h>
+#include <xaios/common_runtime.h>
 #include <xaios/types.h>
+#include <xaios_engine/packed.h>
 
 #define COM1_PORT UINT16_C(0x3f8)
 #define UART_DATA 0U
@@ -13,7 +15,18 @@
 #define LARGE_PAGE_SIZE UINT64_C(0x200000)
 #define EARLY_IDENTITY_LIMIT UINT64_C(0x100000000)
 #define X86_EFLAGS_ID UINT64_C(1 << 21)
+#define X86_CR4_OSXSAVE UINT64_C(1 << 18)
 #define MSR_IA32_APIC_BASE UINT32_C(0x1b)
+#define APIC_BASE_ENABLE UINT64_C(1 << 11)
+#define APIC_BASE_X2APIC UINT64_C(1 << 10)
+#define APIC_ID UINT32_C(0x020)
+#define APIC_VERSION UINT32_C(0x030)
+#define APIC_EOI UINT32_C(0x0b0)
+#define APIC_SPURIOUS UINT32_C(0x0f0)
+#define APIC_LVT_TIMER UINT32_C(0x320)
+#define APIC_TIMER_INITIAL UINT32_C(0x380)
+#define APIC_TIMER_CURRENT UINT32_C(0x390)
+#define APIC_TIMER_DIVIDE UINT32_C(0x3e0)
 #define MSR_IA32_EFER UINT32_C(0xc0000080)
 #define EFER_NXE UINT64_C(1 << 11)
 #define PTE_PRESENT UINT64_C(1)
@@ -25,7 +38,6 @@
 #define IDT_INTERRUPT_GATE UINT8_C(0x0e)
 #define PCI_CONFIG_ADDRESS UINT16_C(0x0cf8)
 #define PCI_CONFIG_DATA UINT16_C(0x0cfc)
-#define X86_PLACEMENT_MAX_CPUS 64U
 
 typedef enum x86_64_core_role {
   X86_64_CORE_HOUSEKEEPING = 1,
@@ -84,6 +96,10 @@ typedef struct x86_64_pci_state {
   uint32_t virtio_devices;
   uint32_t network_devices;
   uint32_t nvme_devices;
+  uint32_t pcie_devices;
+  uint32_t msi_devices;
+  uint32_t msix_devices;
+  uint32_t modern_virtio_devices;
 } x86_64_pci_state_t;
 
 typedef struct x86_64_placement_state {
@@ -94,9 +110,8 @@ typedef struct x86_64_placement_state {
   uint32_t smt_disabled_by_default;
   uint32_t p_core_policy_ready;
   uint32_t e_core_policy_ready;
-  uint64_t hot_core_mask;
-  uint64_t housekeeping_mask;
-  uint64_t background_mask;
+  uint32_t threads_per_core;
+  uint32_t topology_leaf;
   uint64_t migration_total;
   uint64_t context_switch_total;
 } x86_64_placement_state_t;
@@ -151,6 +166,8 @@ extern void x86_64_isr_28(void);
 extern void x86_64_isr_29(void);
 extern void x86_64_isr_30(void);
 extern void x86_64_isr_31(void);
+extern void x86_64_irq_32(void);
+extern void x86_64_irq_255(void);
 
 static x86_64_idt_entry_t g_idt[256] __attribute__((aligned(16)));
 static uint64_t g_pml4[512] __attribute__((aligned(PAGE_SIZE)));
@@ -162,24 +179,12 @@ static x86_64_placement_state_t g_placement;
 static x86_64_contract_state_t g_contract;
 static x86_64_hardware_gate_state_t g_hardware_gate;
 static uint32_t g_exception_vectors_installed;
+static volatile uint32_t g_expected_exception_vector = UINT32_MAX;
+static volatile uint64_t g_exception_test_count;
 static uint32_t g_page_tables_loaded;
-
-void *memset(void *dst, int value, uint64_t size) {
-  uint8_t *bytes = (uint8_t *)dst;
-  for (uint64_t i = 0; i < size; ++i) {
-    bytes[i] = (uint8_t)value;
-  }
-  return dst;
-}
-
-void *memcpy(void *dst, const void *src, uint64_t size) {
-  uint8_t *out = (uint8_t *)dst;
-  const uint8_t *in = (const uint8_t *)src;
-  for (uint64_t i = 0; i < size; ++i) {
-    out[i] = in[i];
-  }
-  return dst;
-}
+static uint16_t g_code_selector;
+static volatile uint32_t *g_lapic;
+static volatile uint64_t g_lapic_timer_interrupts;
 
 static inline void outb(uint16_t port, uint8_t value) {
   __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port) : "memory");
@@ -213,6 +218,22 @@ static inline uint64_t read_cr3(void) {
   return value;
 }
 
+static inline uint64_t read_cr4(void) {
+  uint64_t value = 0U;
+  __asm__ volatile("mov %%cr4, %0" : "=r"(value));
+  return value;
+}
+
+static inline void write_cr4(uint64_t value) {
+  __asm__ volatile("mov %0, %%cr4" : : "r"(value) : "memory");
+}
+
+static inline void write_xcr0(uint64_t value) {
+  uint32_t low = (uint32_t)value;
+  uint32_t high = (uint32_t)(value >> 32U);
+  __asm__ volatile("xsetbv" : : "a"(low), "d"(high), "c"(0U) : "memory");
+}
+
 static inline void write_cr3(uint64_t value) {
   __asm__ volatile("mov %0, %%cr3" : : "r"(value) : "memory");
 }
@@ -222,6 +243,13 @@ static inline uint64_t rdmsr(uint32_t msr) {
   uint32_t high = 0;
   __asm__ volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
   return ((uint64_t)high << 32) | low;
+}
+
+static inline uint64_t rdtsc(void) {
+  uint32_t low = 0U;
+  uint32_t high = 0U;
+  __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
+  return ((uint64_t)high << 32U) | low;
 }
 
 static inline void wrmsr(uint32_t msr, uint64_t value) {
@@ -315,7 +343,7 @@ static void panic_halt(uint16_t serial_base, const char *message) {
 static void idt_set_gate(uint8_t vector, void (*handler)(void)) {
   uint64_t address = (uint64_t)(uintptr_t)handler;
   g_idt[vector].offset_low = (uint16_t)(address & UINT64_C(0xffff));
-  g_idt[vector].selector = 0x08;
+  g_idt[vector].selector = g_code_selector;
   g_idt[vector].ist = 0;
   g_idt[vector].type_attr = IDT_PRESENT | IDT_INTERRUPT_GATE;
   g_idt[vector].offset_mid = (uint16_t)((address >> 16) & UINT64_C(0xffff));
@@ -334,12 +362,15 @@ static void install_idt(uint16_t serial_base) {
       x86_64_isr_24, x86_64_isr_25, x86_64_isr_26, x86_64_isr_27,
       x86_64_isr_28, x86_64_isr_29, x86_64_isr_30, x86_64_isr_31};
 
+  __asm__ volatile("mov %%cs, %0" : "=r"(g_code_selector));
   for (uint32_t i = 0; i < 256; ++i) {
     g_idt[i] = (x86_64_idt_entry_t){0};
   }
   for (uint8_t i = 0; i < 32; ++i) {
     idt_set_gate(i, handlers[i]);
   }
+  idt_set_gate(32U, x86_64_irq_32);
+  idt_set_gate(255U, x86_64_irq_255);
 
   x86_64_idtr_t idtr = {
       .limit = (uint16_t)(sizeof(g_idt) - 1U),
@@ -349,8 +380,30 @@ static void install_idt(uint16_t serial_base) {
   g_exception_vectors_installed = 32;
   serial_puts(serial_base, "x86_64: IDT installed vectors=");
   serial_dec(serial_base, g_exception_vectors_installed);
+  serial_puts(serial_base, " code_selector=");
+  serial_hex64(serial_base, g_code_selector);
   serial_puts(serial_base, "\n");
   serial_puts(serial_base, "x86_64: early exception path online\n");
+  serial_puts(serial_base, "x86_64: IRQ vector 32 installed\n");
+}
+
+static uint32_t lapic_read(uint32_t offset) {
+  return g_lapic[offset / sizeof(uint32_t)];
+}
+
+static void lapic_write(uint32_t offset, uint32_t value) {
+  g_lapic[offset / sizeof(uint32_t)] = value;
+  (void)g_lapic[APIC_ID / sizeof(uint32_t)];
+}
+
+void x86_64_interrupt_entry(const x86_64_exception_frame_t *frame) {
+  if (frame != 0 && frame->vector == 32U && g_lapic != 0) {
+    ++g_lapic_timer_interrupts;
+    lapic_write(APIC_EOI, 0U);
+    return;
+  }
+  if (frame != 0 && frame->vector == 255U) return;
+  panic_halt(COM1_PORT, "unexpected external interrupt");
 }
 
 static void parse_memory_map(uint16_t serial_base, const xaios_boot_info_t *boot) {
@@ -468,6 +521,40 @@ static void discover_timer_apic(uint16_t serial_base) {
   serial_puts(serial_base, "\n");
 }
 
+static void validate_lapic_timer_interrupt(uint16_t serial_base) {
+  uint64_t apic_msr = rdmsr(MSR_IA32_APIC_BASE);
+  if ((apic_msr & APIC_BASE_ENABLE) == 0U ||
+      (apic_msr & APIC_BASE_X2APIC) != 0U) {
+    panic_halt(serial_base, "xAPIC MMIO mode unavailable");
+  }
+  g_lapic = (volatile uint32_t *)(uintptr_t)(apic_msr &
+                                              UINT64_C(0xfffff000));
+  uint32_t apic_id = lapic_read(APIC_ID) >> 24U;
+  uint32_t version = lapic_read(APIC_VERSION) & UINT32_C(0xff);
+  lapic_write(APIC_SPURIOUS, UINT32_C(0x100) | UINT32_C(0xff));
+  lapic_write(APIC_LVT_TIMER, 32U);
+  lapic_write(APIC_TIMER_DIVIDE, UINT32_C(0x0b));
+  g_lapic_timer_interrupts = 0U;
+  uint64_t started_tsc = rdtsc();
+  lapic_write(APIC_TIMER_INITIAL, UINT32_C(100000));
+  __asm__ volatile("sti; hlt; cli" ::: "memory");
+  uint64_t elapsed_tsc = rdtsc() - started_tsc;
+  lapic_write(APIC_LVT_TIMER, UINT32_C(1 << 16) | 32U);
+  if (g_lapic_timer_interrupts != 1U ||
+      lapic_read(APIC_TIMER_CURRENT) != 0U) {
+    panic_halt(serial_base, "local APIC timer interrupt failed");
+  }
+  serial_puts(serial_base, "x86_64: local APIC timer interrupt passed id=");
+  serial_dec(serial_base, apic_id);
+  serial_puts(serial_base, " version=");
+  serial_dec(serial_base, version);
+  serial_puts(serial_base, " interrupts=");
+  serial_dec(serial_base, g_lapic_timer_interrupts);
+  serial_puts(serial_base, " elapsed_tsc=");
+  serial_dec(serial_base, elapsed_tsc);
+  serial_puts(serial_base, "\n");
+}
+
 static uint32_t pci_read_config(uint8_t bus, uint8_t device, uint8_t function,
                                 uint8_t offset) {
   uint32_t address = UINT32_C(0x80000000) | ((uint32_t)bus << 16) |
@@ -475,6 +562,31 @@ static uint32_t pci_read_config(uint8_t bus, uint8_t device, uint8_t function,
                      ((uint32_t)offset & UINT32_C(0xfc));
   outl(PCI_CONFIG_ADDRESS, address);
   return inl(PCI_CONFIG_DATA);
+}
+
+static uint8_t pci_read_config8(uint8_t bus, uint8_t device, uint8_t function,
+                                uint8_t offset) {
+  uint32_t value = pci_read_config(bus, device, function, offset);
+  return (uint8_t)(value >> ((offset & 3U) * 8U));
+}
+
+static void inspect_pci_capabilities(uint8_t bus, uint8_t device,
+                                     uint8_t function) {
+  uint32_t status_command = pci_read_config(bus, device, function, 0x04U);
+  if ((status_command & UINT32_C(1 << 20)) == 0U) return;
+  uint8_t pointer = pci_read_config8(bus, device, function, 0x34U) & 0xfcU;
+  uint32_t visited = 0U;
+  while (pointer >= 0x40U && pointer <= 0xfcU && visited++ < 48U) {
+    uint8_t capability = pci_read_config8(bus, device, function, pointer);
+    if (capability == 0x05U) ++g_pci.msi_devices;
+    if (capability == 0x10U) ++g_pci.pcie_devices;
+    if (capability == 0x11U) ++g_pci.msix_devices;
+    uint8_t next =
+        pci_read_config8(bus, device, function, (uint8_t)(pointer + 1U)) &
+        0xfcU;
+    if (next == pointer) break;
+    pointer = next;
+  }
 }
 
 static void discover_pci(uint16_t serial_base) {
@@ -508,6 +620,9 @@ static void discover_pci(uint16_t serial_base) {
         }
         if (vendor == 0x1af4U) {
           g_pci.virtio_devices++;
+          if (device_id >= 0x1040U && device_id <= 0x107fU) {
+            ++g_pci.modern_virtio_devices;
+          }
         }
         if (class_code == 0x02U) {
           g_pci.network_devices++;
@@ -515,7 +630,7 @@ static void discover_pci(uint16_t serial_base) {
         if (class_code == 0x01U && subclass == 0x08U) {
           g_pci.nvme_devices++;
         }
-        (void)device_id;
+        inspect_pci_capabilities((uint8_t)bus, device, function);
       }
     }
   }
@@ -534,6 +649,14 @@ static void discover_pci(uint16_t serial_base) {
   serial_dec(serial_base, g_pci.network_devices);
   serial_puts(serial_base, " nvme=");
   serial_dec(serial_base, g_pci.nvme_devices);
+  serial_puts(serial_base, " pcie=");
+  serial_dec(serial_base, g_pci.pcie_devices);
+  serial_puts(serial_base, " msi=");
+  serial_dec(serial_base, g_pci.msi_devices);
+  serial_puts(serial_base, " msix=");
+  serial_dec(serial_base, g_pci.msix_devices);
+  serial_puts(serial_base, " modern_virtio=");
+  serial_dec(serial_base, g_pci.modern_virtio_devices);
   serial_puts(serial_base, "\n");
 }
 
@@ -542,10 +665,26 @@ static void build_placement_policy(uint16_t serial_base) {
   uint32_t ebx = 0;
   uint32_t ecx = 0;
   uint32_t edx = 0;
-  cpuid(1, 0, &eax, &ebx, &ecx, &edx);
-  uint32_t logical_cpus = (ebx >> 16) & 0xffU;
-  if (logical_cpus == 0U || logical_cpus > X86_PLACEMENT_MAX_CPUS) {
-    logical_cpus = 1U;
+  cpuid(0, 0, &eax, &ebx, &ecx, &edx);
+  uint32_t max_leaf = eax;
+  uint32_t topology_leaf = max_leaf >= 0x1fU ? 0x1fU :
+                           (max_leaf >= 0x0bU ? 0x0bU : 0U);
+  uint32_t logical_cpus = 0U;
+  uint32_t threads_per_core = 1U;
+  if (topology_leaf != 0U) {
+    for (uint32_t level = 0U; level < 32U; ++level) {
+      cpuid(topology_leaf, level, &eax, &ebx, &ecx, &edx);
+      uint32_t level_type = (ecx >> 8U) & 0xffU;
+      uint32_t count = ebx & UINT32_C(0xffff);
+      if (count == 0U || level_type == 0U) break;
+      if (level_type == 1U) threads_per_core = count;
+      if (count > logical_cpus) logical_cpus = count;
+    }
+  }
+  if (logical_cpus == 0U) {
+    cpuid(1, 0, &eax, &ebx, &ecx, &edx);
+    logical_cpus = (ebx >> 16) & 0xffU;
+    if (logical_cpus == 0U) logical_cpus = 1U;
   }
 
   g_placement = (x86_64_placement_state_t){0};
@@ -562,26 +701,25 @@ static void build_placement_policy(uint16_t serial_base) {
     g_placement.background_cpus = 0U;
   }
   g_placement.smt_disabled_by_default = 1U;
-  g_placement.p_core_policy_ready = 1U;
-  g_placement.e_core_policy_ready = 1U;
-  g_placement.housekeeping_mask = UINT64_C(1);
-  for (uint32_t cpu = 1U; cpu < logical_cpus && cpu <= g_placement.ai_hot_cpus; ++cpu) {
-    g_placement.hot_core_mask |= UINT64_C(1) << cpu;
-  }
-  for (uint32_t cpu = 1U + g_placement.ai_hot_cpus; cpu < logical_cpus; ++cpu) {
-    g_placement.background_mask |= UINT64_C(1) << cpu;
-  }
+  g_placement.p_core_policy_ready = max_leaf >= 0x1aU ? 1U : 0U;
+  g_placement.e_core_policy_ready = max_leaf >= 0x1aU ? 1U : 0U;
+  g_placement.threads_per_core = threads_per_core;
+  g_placement.topology_leaf = topology_leaf;
   g_placement.migration_total = 0;
   g_placement.context_switch_total = 0;
 
   serial_puts(serial_base, "x86_64: placement policy logical_cpus=");
   serial_dec(serial_base, g_placement.logical_cpus);
-  serial_puts(serial_base, " hot_mask=");
-  serial_hex64(serial_base, g_placement.hot_core_mask);
-  serial_puts(serial_base, " housekeeping_mask=");
-  serial_hex64(serial_base, g_placement.housekeeping_mask);
-  serial_puts(serial_base, " background_mask=");
-  serial_hex64(serial_base, g_placement.background_mask);
+  serial_puts(serial_base, " housekeeping=");
+  serial_dec(serial_base, g_placement.housekeeping_cpus);
+  serial_puts(serial_base, " ai_hot=");
+  serial_dec(serial_base, g_placement.ai_hot_cpus);
+  serial_puts(serial_base, " background=");
+  serial_dec(serial_base, g_placement.background_cpus);
+  serial_puts(serial_base, " threads_per_core=");
+  serial_dec(serial_base, g_placement.threads_per_core);
+  serial_puts(serial_base, " topology_leaf=");
+  serial_hex64(serial_base, g_placement.topology_leaf);
   serial_puts(serial_base, "\n");
   serial_puts(serial_base, "x86_64: SMT policy disabled_by_default=");
   serial_dec(serial_base, g_placement.smt_disabled_by_default);
@@ -598,9 +736,13 @@ static void build_placement_policy(uint16_t serial_base) {
 }
 
 static void validate_x86_os_contract(uint16_t serial_base) {
+  uint32_t portable = xaios_common_runtime_probe();
+  uint32_t storage_ready =
+      (portable & (XAIOS_COMMON_RUNTIME_BLOCK | XAIOS_COMMON_RUNTIME_VFS)) ==
+      (XAIOS_COMMON_RUNTIME_BLOCK | XAIOS_COMMON_RUNTIME_VFS);
   g_contract = (x86_64_contract_state_t){
       .userspace_contract_ready = 0U,
-      .filesystem_contract_ready = 0U,
+      .filesystem_contract_ready = storage_ready,
       .networking_contract_ready = 0U,
       .ai_cell_contract_ready = 0U,
       .security_contract_ready = 0U,
@@ -608,7 +750,9 @@ static void validate_x86_os_contract(uint16_t serial_base) {
       .full_os_contract_ready = 0U,
   };
 
-  serial_puts(serial_base, "x86_64: common kernel/runtime linked=0\n");
+  serial_puts(serial_base, "x86_64: common kernel/runtime linked=1 probe=");
+  serial_hex64(serial_base, portable);
+  serial_puts(serial_base, " expected=0x000000000000000f\n");
   serial_puts(serial_base, "x86_64: OS contract userspace=");
   serial_dec(serial_base, g_contract.userspace_contract_ready);
   serial_puts(serial_base, " filesystem=");
@@ -647,12 +791,17 @@ static void validate_hardware_gate(uint16_t serial_base) {
   serial_puts(serial_base, " release_candidate_ready=");
   serial_dec(serial_base, g_hardware_gate.release_candidate_ready);
   serial_puts(serial_base, "\n");
-  serial_puts(serial_base, "x86_64: Intel Desktop hardware gate blocked common-runtime-and-physical-evidence-required\n");
+  serial_puts(serial_base, "x86_64: Intel Desktop hardware gate blocked platform-parity-and-physical-evidence-required\n");
 }
 
 void x86_64_exception_entry(const x86_64_exception_frame_t *frame) {
   uint16_t serial_base = COM1_PORT;
   serial_init(serial_base);
+  if (frame != 0 && frame->vector == g_expected_exception_vector) {
+    ++g_exception_test_count;
+    g_expected_exception_vector = UINT32_MAX;
+    return;
+  }
   serial_puts(serial_base, "\nEXCEPTION x86_64 vector=");
   serial_dec(serial_base, frame->vector);
   serial_puts(serial_base, " error=");
@@ -665,6 +814,18 @@ void x86_64_exception_entry(const x86_64_exception_frame_t *frame) {
   }
   serial_puts(serial_base, "\n");
   panic_halt(serial_base, "controlled x86_64 exception reported");
+}
+
+static void validate_exception_round_trip(uint16_t serial_base) {
+  g_exception_test_count = 0U;
+  g_expected_exception_vector = 3U;
+  __asm__ volatile("int3" ::: "memory");
+  if (g_exception_test_count != 1U ||
+      g_expected_exception_vector != UINT32_MAX) {
+    panic_halt(serial_base, "controlled INT3 exception failed");
+  }
+  serial_puts(serial_base,
+              "x86_64: controlled INT3 exception round-trip passed count=1\n");
 }
 
 void x86_64_kmain(const xaios_boot_info_t *boot) {
@@ -696,7 +857,25 @@ void x86_64_kmain(const xaios_boot_info_t *boot) {
   serial_puts(serial_base, "\n");
   serial_puts(serial_base, "x86_64: COM1 serial online\n");
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 43 boot path passed\n");
+  uint32_t avx_eax = 0U;
+  uint32_t avx_ebx = 0U;
+  uint32_t avx_ecx = 0U;
+  uint32_t avx_edx = 0U;
+  cpuid(1U, 0U, &avx_eax, &avx_ebx, &avx_ecx, &avx_edx);
+  if ((avx_ecx & (UINT32_C(1) << 26U)) != 0U &&
+      (avx_ecx & (UINT32_C(1) << 28U)) != 0U) {
+    write_cr4(read_cr4() | X86_CR4_OSXSAVE);
+    write_xcr0(UINT64_C(7));
+  }
+  if (xaios_packed_avx2_available()) {
+    serial_puts(serial_base,
+                "x86_64: AVX2 packed no-expand known-answer canary passed\n");
+  } else {
+    serial_puts(serial_base,
+                "x86_64: AVX2 packed canary unsupported on selected CPU\n");
+  }
   install_idt(serial_base);
+  validate_exception_round_trip(serial_base);
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 44 early exceptions passed\n");
   parse_memory_map(serial_base, boot);
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 45 memory map passed\n");
@@ -706,13 +885,14 @@ void x86_64_kmain(const xaios_boot_info_t *boot) {
   }
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 46 page tables passed\n");
   discover_timer_apic(serial_base);
+  validate_lapic_timer_interrupt(serial_base);
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 47 timers APIC passed\n");
   discover_pci(serial_base);
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 48 PCI discovery passed\n");
   build_placement_policy(serial_base);
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 49 placement policy passed\n");
   validate_x86_os_contract(serial_base);
-  serial_puts(serial_base, "x86_64: Intel Desktop milestone 50 OS contract port unsupported\n");
+  serial_puts(serial_base, "x86_64: Intel Desktop milestone 50 portable common runtime passed platform services pending\n");
   validate_hardware_gate(serial_base);
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 51 hardware gate blocked\n");
 

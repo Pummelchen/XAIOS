@@ -19,9 +19,13 @@ typedef enum xaios_log_level {
 void klog_ring_init(void);
 void klog_ring_write(const char *data, uint32_t length);
 uint32_t klog_ring_read(char *out, uint32_t max_len);
+uint32_t klog_ring_snapshot(char *out, uint32_t max_len,
+                            uint64_t since_cursor, uint64_t *start_cursor,
+                            uint64_t *next_cursor, uint64_t *latest_cursor);
 void klog_ring_clear(void);
 uint32_t klog_ring_count(void);
 uint32_t klog_ring_overflow_count(void);
+uint64_t klog_ring_total_written(void);
 
 xaios_status_t klog_flush(void);
 xaios_status_t klog_rotate(void);

@@ -25,10 +25,12 @@ architecture-contract prerequisites.
   quantization, tokenizer and checksum semantics. Conversion now fails closed.
 - BPE state is global and capped at 32,768 tokens/8,192 rules, below the
   official Qwen3.5/3.6 and Kimi K3 vocabularies.
-- INT4/INT6 kernel paths expand full matrices; INT6 allocations leak; the
-  multithread entrypoint runs work sequentially.
-- Model admission copies the complete image; arena/NUMA/storage/SMP paths are
-  QEMU-scale prototypes. The x86_64 image still links only early bring-up code.
+- The former INT4/INT6 kernel paths expanded full matrices and leaked INT6
+  allocations. Current source uses no-expand packed loops and correct tail/row
+  addressing; its compatibility work-unit entrypoint remains sequential.
+- Model admission copies the complete image and inference session/batching paths
+  remain QEMU-scale prototypes. The x86_64 image executes shared CRC/block/VFS/
+  engine probes, while EL0, interrupts/SMP, PCI VirtIO and full parity remain open.
 - Apple support is QEMU hosted by macOS. There is no native macOS engine or
   Metal backend.
 
@@ -44,13 +46,24 @@ architecture-contract prerequisites.
 - [x] Streaming Python package writer and C reader round trip.
 - [x] Architecture-adapter/backend interfaces and scalar dense-projection
   canary.
+- [x] Portable group-scaled INT4/INT6 no-expand scalar GEMV/GEMM plus
+  experimental AArch64 NEON backend, startup canary, randomized differential
+  tests, and every packing tail. Experimental AVX2 known-answer execution also
+  passes under x86 QEMU TCG. This is microkernel correctness, not model parity
+  or physical performance evidence.
 
 ## Workstream 1: XAIOS completion gate
 
 - [ ] Integrate the portable engine through a stable XAIOS service boundary.
-- [ ] Replace fixed-size and QEMU-scale model, memory, NUMA, storage and worker
-  paths with production-width ownership and error handling.
-- [ ] Link the common kernel/runtime into the x86_64 image.
+- [x] Replace fixed RAM/CPU bitmap and worker-dispatch limits with runtime-sized
+  NUMA/CPU/cpuset state and CPU-assigned joinable worker threads.
+- [x] Link portable common CRC/block/VFS/engine components into x86_64.
+- [x] Prove x86 controlled exception and local-APIC timer interrupt delivery
+  plus modern VirtIO/MSI/MSI-X capability discovery under QEMU.
+- [ ] Complete x86 EL0, AP startup/scheduling, PCI VirtIO drivers and
+  security/telemetry parity.
+- [ ] Replace model admission, inference batching and session state with
+  production-width ownership and error handling.
 - [ ] Complete reusable session-state, batching and asynchronous I/O
   foundations needed by real-model execution.
 - [ ] Pass release/security gates and record physical-hardware entry evidence.
@@ -78,7 +91,10 @@ architecture-contract prerequisites.
 
 ## Qwen packed backends and serving state (workstream 2)
 
-- [ ] No-expand scalar/NEON/AVX2 kernels with differential/tail tests.
+- [x] No-expand scalar and AArch64 NEON INT4/INT6 GEMV/GEMM with
+  differential/tail tests, plus an experimental AVX2 QEMU canary path.
+- [ ] Physical AVX2 differential validation and tiled prefill/verification
+  GEMM.
 - [ ] Native macOS process and optional Metal backend.
 - [ ] AVX-512/VNNI/AMX capability canaries, persistent worker gangs and NUMA
   placement.

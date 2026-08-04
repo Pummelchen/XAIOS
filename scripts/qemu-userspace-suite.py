@@ -42,7 +42,7 @@ COMMAND_MARKERS = {
         "/bin/sshtest: complete",
         "/bin/mltest: complete",
         "/bin/smptest: app-requested SMP worker set passed",
-        "/bin/smptest: POSIX-style arbitrary user thread group passed",
+        "/bin/smptest: concurrent kernel-dispatched worker group passed",
         "/bin/nettest: app-callable udp/tcp path passed",
         "/bin/nettest: external host-to-guest tcp/udp session path passed",
         "/bin/lstm-xor: cpu-ai fixture decode=",

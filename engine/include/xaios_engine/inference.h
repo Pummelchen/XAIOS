@@ -4,5 +4,6 @@
 #include <xaios_engine/architecture.h>
 #include <xaios_engine/backend.h>
 #include <xaios_engine/model_v2.h>
+#include <xaios_engine/packed.h>
 
 #endif

@@ -739,9 +739,9 @@ def xaios_remote_command(command, cwd="/"):
     if cmd == "pwd":
         return 0, f"{cwd}\n"
     if cmd == "status":
-        return 0, "xaios qemu session=running ssh_only=true password_login=false\n"
+        return 0, "legacy status command; use xaiosctl status on the freestanding XAIOS guest\n"
     if cmd == "sysinfo":
-        return 0, "arch=aarch64 platform=qemu-macos cpu_only_ai=true\n"
+        return 0, "legacy sysinfo command; use xaiosctl hardware on the freestanding XAIOS guest\n"
 
     if cmd == "ls":
         show_hidden = False

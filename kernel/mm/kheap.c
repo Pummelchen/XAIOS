@@ -6,8 +6,8 @@
 #include <xaios/vmm.h>
 
 #define PAGE_SIZE UINT64_C(4096)
-#define KHEAP_BASE UINT64_C(0x4a000000)
-#define KHEAP_SIZE UINT64_C(0x01000000)
+#define KHEAP_BASE UINT64_C(0x200000000)
+#define KHEAP_SIZE UINT64_C(0x40000000)
 #define KHEAP_LIMIT (KHEAP_BASE + KHEAP_SIZE)
 
 /* Free-list header: 16 bytes per allocation */

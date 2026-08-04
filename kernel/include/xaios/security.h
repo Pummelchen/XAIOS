@@ -24,6 +24,9 @@ xaios_status_t security_authorize_admin(const char *operation,
                                        uint64_t granted);
 xaios_status_t security_authorize_update_signature(const char *signature,
                                                   uint64_t granted);
+xaios_status_t security_authorize_update_signature_for_generation(
+    const char *signature, uint64_t granted, uint64_t expected_generation,
+    uint8_t expected_hash[32]);
 xaios_status_t security_validate_update_signature(const char *signature);
 xaios_status_t security_validate_sandbox_path(const char *path);
 xaios_status_t security_reject_credential_material(const char *text);

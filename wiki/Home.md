@@ -30,6 +30,24 @@ unless the maintainer explicitly reprioritizes them.
   physical-hardware acceptance gates.
 - QEMU is correctness and ABI evidence only.
 - Performance claims require immutable artifacts under the benchmark contract.
+- `xaiosctl` Phase 2 is QEMU/OpenSSH fixture-tested with role-mapped keys,
+  revocation, config transactions, host-key rotation, redacted audit and typed
+  storage lifecycle administration.
+- Signed ModelFS supports dynamic registration, resumable SFTP, cleanup/reuse,
+  verification, atomic activation, scrub/quarantine and free-only trim under
+  QEMU. Concurrent macOS/Debian clients pass against one guest. QEMU VirtIO uses
+  interrupt-driven block/network completions, event-index suppression, indirect
+  descriptors and eight-request block batching. A focused emulated-NVMe gate
+  verifies identify/write/flush/read and host backing bytes; production
+  multiqueue and physical storage validation remain open.
+- Runtime-sized NUMA/CPU/cpuset state and CPU-assigned worker threads pass QEMU;
+  a focused TCG gate validates SMP and NUMA metadata with 130 emulated CPUs,
+  while hosted cpuset tests cover 4,097 CPU IDs. EL0 create/join/cancel/exit,
+  asynchronous DNS, IPv4/IPv6 reassembly, and SACK-aware TCP pass QEMU gates.
+- x86_64 executes shared CRC/block/VFS/engine probes, controlled exception and
+  local-APIC timer interrupts, plus modern VirtIO/MSI/MSI-X discovery. Full x86
+  userspace, AP startup, PCI VirtIO, security and telemetry parity remain open.
+- Model loading, cluster and inference-service administration remains gated.
 
 ## Start Here
 
@@ -38,5 +56,8 @@ unless the maintainer explicitly reprioritizes them.
 - [[SSH Status|Production-SSH-Server]]
 - [Repository README](https://github.com/Pummelchen/XAIOS/blob/main/README.md)
 - [Implementation roadmap](https://github.com/Pummelchen/XAIOS/blob/main/docs/QWEN-K3-IMPLEMENTATION-ROADMAP.md)
+- [Distributed server plan](https://github.com/Pummelchen/XAIOS/blob/main/docs/DISTRIBUTED-AI-SERVER-PLAN.md)
+- [xaiosctl reference](https://github.com/Pummelchen/XAIOS/blob/main/docs/XAIOSCTL.md)
+- [Large-model upload status](https://github.com/Pummelchen/XAIOS/blob/main/docs/LARGE-MODEL-UPLOAD.md)
 - [Benchmark contract](https://github.com/Pummelchen/XAIOS/blob/main/docs/BENCHMARK-CONTRACT.md)
 - [GitHub Project](https://github.com/users/Pummelchen/projects/5)

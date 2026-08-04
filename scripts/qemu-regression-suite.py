@@ -35,7 +35,7 @@ MARKER_GROUPS = {
         "network: queue-backed udp/tcp self-test passed",
     ],
     "security_denials": [
-        "security: self-test passed denied=13",
+        "security: self-test passed denied=15",
         "/init: bad syscall tests passed",
         "/service-manager: missing capability tests passed",
         "admin: remote-safe command=shell rejected",

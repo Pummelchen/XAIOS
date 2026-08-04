@@ -19,10 +19,12 @@
 #define PTE_SH_INNER UINT64_C(3 << 8)
 #define PTE_AF UINT64_C(1 << 10)
 #define PTE_NG UINT64_C(1 << 11)
-#define PTE_PXN UINT64_C(1) << 53
-#define PTE_UXN UINT64_C(1) << 54
+#define PTE_PXN (UINT64_C(1) << 53)
+#define PTE_UXN (UINT64_C(1) << 54)
 #define PTE_ADDR_MASK UINT64_C(0x0000fffffffff000)
 #define PTE_BLOCK_L2_ADDR_MASK UINT64_C(0x0000ffffffe00000)
+#define PTE_BLOCK_L1_ADDR_MASK UINT64_C(0x0000ffffc0000000)
+#define L0_SPAN UINT64_C(0x8000000000)
 
 #define MAIR_NORMAL_WB UINT64_C(0xff)
 #define MAIR_DEVICE_NGNRE UINT64_C(0x04)
@@ -75,6 +77,12 @@ static uint64_t page_descriptor(uint64_t physical_address, uint64_t attrs) {
 
 static uint64_t block_descriptor(uint64_t physical_address, uint64_t attrs) {
   return (physical_address & PTE_BLOCK_L2_ADDR_MASK) | attrs | PTE_VALID | PTE_AF;
+}
+
+static uint64_t l1_block_descriptor(uint64_t physical_address,
+                                    uint64_t attrs) {
+  return (physical_address & PTE_BLOCK_L1_ADDR_MASK) | attrs | PTE_VALID |
+         PTE_AF;
 }
 
 static uint64_t normal_rw_nx_attrs(void) {
@@ -218,8 +226,16 @@ static uint64_t *ensure_l3_table(uint64_t virtual_address) {
   if ((l1_desc & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE)) {
     uint64_t *new_l2 = (uint64_t *)pmm_alloc_page();
     kassert(new_l2 != 0);
-    for (uint64_t i = 0; i < 512; ++i) {
-      new_l2[i] = 0;
+    if ((l1_desc & PTE_VALID) != 0U && (l1_desc & PTE_TABLE) == 0U) {
+      uint64_t block_base = l1_desc & PTE_BLOCK_L1_ADDR_MASK;
+      uint64_t attrs = l1_desc & ~PTE_BLOCK_L1_ADDR_MASK;
+      for (uint64_t i = 0; i < 512; ++i) {
+        new_l2[i] = block_descriptor(block_base + i * L2_BLOCK_SIZE, attrs);
+      }
+    } else {
+      for (uint64_t i = 0; i < 512; ++i) {
+        new_l2[i] = 0;
+      }
     }
     g_l1_table[l1_index] = table_descriptor(new_l2);
   }
@@ -277,6 +293,30 @@ static void build_tables(const xaios_boot_info_t *boot) {
   }
 
   map_identity_l2_blocks(0, EARLY_IDENTITY_SIZE, normal_rw_nx_attrs());
+  uint64_t highest_physical = EARLY_IDENTITY_SIZE;
+  for (uint64_t offset = 0U;
+       offset + sizeof(xaios_memory_descriptor_t) <= boot->memory_map_size;
+       offset += boot->memory_descriptor_size) {
+    const xaios_memory_descriptor_t *descriptor =
+        (const xaios_memory_descriptor_t *)(uintptr_t)(boot->memory_map +
+                                                       offset);
+    if (descriptor->type != XAIOS_MEMORY_TYPE_CONVENTIONAL ||
+        descriptor->number_of_pages > UINT64_MAX / PAGE_SIZE) {
+      continue;
+    }
+    uint64_t bytes = descriptor->number_of_pages * PAGE_SIZE;
+    if (descriptor->physical_start <= UINT64_MAX - bytes &&
+        descriptor->physical_start + bytes > highest_physical) {
+      highest_physical = descriptor->physical_start + bytes;
+    }
+  }
+  if (highest_physical > L0_SPAN) highest_physical = L0_SPAN;
+  uint64_t l1_limit = align_up(highest_physical, L1_BLOCK_SIZE);
+  for (uint64_t address = EARLY_IDENTITY_SIZE; address < l1_limit;
+       address += L1_BLOCK_SIZE) {
+    g_l1_table[address / L1_BLOCK_SIZE] =
+        l1_block_descriptor(address, normal_rw_nx_attrs());
+  }
   g_mmio_start = align_down(boot->uart_base, L2_BLOCK_SIZE);
   g_mmio_end = align_up(boot->uart_base + PAGE_SIZE, L2_BLOCK_SIZE);
   /* Keep early PL011 serial stable until XAIOS owns exception vectors. */
@@ -326,7 +366,7 @@ static xaios_status_t descriptor_to_flags(uint64_t virtual_address,
   if ((descriptor & PTE_AP_RO) == 0) {
     out |= XAIOS_VMM_WRITABLE;
   }
-  if ((descriptor & PTE_PXN) == 0) {
+  if ((descriptor & PTE_UXN) == 0 || (descriptor & PTE_PXN) == 0) {
     out |= XAIOS_VMM_EXECUTABLE;
   }
   if ((descriptor & PTE_AP_EL0) != 0) {
@@ -352,6 +392,10 @@ void vmm_init(const xaios_boot_info_t *boot) {
   }
 }
 
+void vmm_activate_kernel(void) {
+  aarch64_enable_mmu((uint64_t)(uintptr_t)g_l0_table);
+}
+
 xaios_status_t vmm_translate(uint64_t virtual_address, uint64_t *physical_address,
                             uint32_t *flags) {
   uint64_t l0_index = (virtual_address >> 39) & 0x1ffU;
@@ -360,6 +404,7 @@ xaios_status_t vmm_translate(uint64_t virtual_address, uint64_t *physical_addres
   uint64_t l3_index = (virtual_address >> 12) & 0x1ffU;
   uint64_t page_offset = virtual_address & UINT64_C(0xfff);
   uint64_t l2_offset = virtual_address & (L2_BLOCK_SIZE - 1);
+  uint64_t l1_offset = virtual_address & (L1_BLOCK_SIZE - 1);
 
   uint64_t l0_desc = g_l0_table[l0_index];
   if ((l0_desc & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE)) {
@@ -368,8 +413,12 @@ xaios_status_t vmm_translate(uint64_t virtual_address, uint64_t *physical_addres
   const uint64_t *l1 = (const uint64_t *)(uintptr_t)(l0_desc & PTE_ADDR_MASK);
 
   uint64_t l1_desc = l1[l1_index];
-  if ((l1_desc & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE)) {
+  if ((l1_desc & PTE_VALID) == 0U) {
     return XAIOS_ERR_INVALID;
+  }
+  if ((l1_desc & PTE_TABLE) == 0U) {
+    *physical_address = (l1_desc & PTE_BLOCK_L1_ADDR_MASK) + l1_offset;
+    return descriptor_to_flags(virtual_address, l1_desc, flags);
   }
   const uint64_t *l2 = (const uint64_t *)(uintptr_t)(l1_desc & PTE_ADDR_MASK);
 

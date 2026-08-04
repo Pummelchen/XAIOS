@@ -9,11 +9,11 @@ typedef struct xaios_sha256_context {
   uint64_t total_bytes;
   uint8_t block[64];
   size_t block_size;
-} xaios_sha256_context_t;
+} xaios_engine_sha256_context_t;
 
-void xaios_sha256_init(xaios_sha256_context_t *context);
-void xaios_sha256_update(xaios_sha256_context_t *context,
+void xaios_engine_sha256_init(xaios_engine_sha256_context_t *context);
+void xaios_engine_sha256_update(xaios_engine_sha256_context_t *context,
                          const void *data, size_t length);
-void xaios_sha256_final(xaios_sha256_context_t *context, uint8_t digest[32]);
+void xaios_engine_sha256_final(xaios_engine_sha256_context_t *context, uint8_t digest[32]);
 
 #endif

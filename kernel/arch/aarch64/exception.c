@@ -1,6 +1,7 @@
 #include <xaios/assert.h>
 #include <xaios/context.h>
 #include <xaios/exception.h>
+#include <xaios/gic.h>
 #include <xaios/klog.h>
 #include <xaios/panic.h>
 #include <xaios/scheduler.h>
@@ -147,7 +148,9 @@ xaios_context_frame_t *aarch64_irq_handler(xaios_context_frame_t *frame) {
     timer_rearm();
     scheduler_tick(frame);
   } else if (intid < 1020U) {
-    klog("irq: spurious intid=%u\n", intid);
+    if (gic_dispatch_interrupt(intid) == 0) {
+      klog("irq: unhandled intid=%u\n", intid);
+    }
   }
   /* else: spurious interrupt (1023) */
 

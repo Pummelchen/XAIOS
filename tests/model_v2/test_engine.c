@@ -36,7 +36,10 @@ static int test_interfaces(void) {
   const xaios_backend_t *backend = xaios_backend_select(0);
   if (backend == NULL || backend->validate() != XAIOS_ENGINE_OK ||
       backend->probe_capabilities() != XAIOS_BACKEND_CAP_SCALAR ||
-      xaios_backend_select(XAIOS_BACKEND_CAP_AVX2) != NULL) {
+      ((xaios_backend_select(XAIOS_BACKEND_CAP_AVX2) != NULL) !=
+       (xaios_packed_avx2_available() != 0)) ||
+      ((xaios_backend_select(XAIOS_BACKEND_CAP_NEON) != NULL) !=
+       (xaios_packed_neon_available() != 0))) {
     return 1;
   }
   const float input[2] = {2.0f, 3.0f};

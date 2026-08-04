@@ -56,6 +56,9 @@ uint32_t pci_virtio_count(void);
 uint32_t pci_network_count(void);
 uint32_t pci_bridge_count(void);
 uint32_t pci_find_device(uint16_t vendor_id, uint16_t device_id);
+xaios_status_t pci_enable_device(uint32_t index);
+uint64_t pci_bar_address(uint32_t index, uint32_t bar_index);
+uint32_t pci_stream_id(uint32_t index);
 void pci_self_test(void);
 
 #endif

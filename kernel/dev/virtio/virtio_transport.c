@@ -1,4 +1,5 @@
 #include <xaios/assert.h>
+#include <xaios/gic.h>
 #include <xaios/klog.h>
 #include <xaios/timer.h>
 #include <xaios/virtio_transport.h>
@@ -7,8 +8,10 @@
 #define VIRTIO_MMIO_BASE UINT64_C(0x0a000000)
 #define VIRTIO_MMIO_STRIDE UINT64_C(0x200)
 #define VIRTIO_MMIO_SLOTS 32U
+#define VIRTIO_MMIO_FIRST_INTID 48U
 #define VIRTIO_WAIT_TIMEOUT_NS UINT64_C(5000000000)
 #define VIRTIO_WAIT_FALLBACK_SPINS UINT64_C(100000000)
+#define VIRTIO_RESET_TIMEOUT_NS UINT64_C(1000000000)
 
 #define VIRTIO_MMIO_MAGIC 0x000U
 #define VIRTIO_MMIO_VERSION 0x004U
@@ -111,13 +114,54 @@ xaios_status_t virtio_transport_find_from(uint32_t device_id, const char *name,
   return XAIOS_ERR_NOT_FOUND;
 }
 
+xaios_status_t virtio_transport_find_at(uint32_t device_id, const char *name,
+                                       uint32_t slot,
+                                       virtio_mmio_device_t *device) {
+  if (device == 0 || name == 0 || slot >= VIRTIO_MMIO_SLOTS) {
+    return XAIOS_ERR_INVALID;
+  }
+  uint64_t base = VIRTIO_MMIO_BASE + (slot * VIRTIO_MMIO_STRIDE);
+  uint32_t magic = virtio_mmio_read32(base, VIRTIO_MMIO_MAGIC);
+  uint32_t version = virtio_mmio_read32(base, VIRTIO_MMIO_VERSION);
+  uint32_t found_id = virtio_mmio_read32(base, VIRTIO_MMIO_DEVICE_ID);
+  if (magic != VIRTIO_MAGIC || version < 2U || found_id != device_id) {
+    return XAIOS_ERR_NOT_FOUND;
+  }
+  device->base = base;
+  device->device_id = device_id;
+  device->name = name;
+  klog("%s: mmio slot=%u base=0x%lx version=%u vendor=0x%x\n", name, slot,
+       base, version, virtio_mmio_read32(base, VIRTIO_MMIO_VENDOR_ID));
+  return XAIOS_OK;
+}
+
 void virtio_transport_reset(const virtio_mmio_device_t *device) {
-  set_status(device, 0);
+  (void)virtio_transport_reset_checked(device);
+}
+
+xaios_status_t virtio_transport_reset_checked(
+    const virtio_mmio_device_t *device) {
+  if (device == 0 || device->base == 0U) return XAIOS_ERR_INVALID;
+  set_status(device, 0U);
+  uint64_t started = timer_now_ns();
+  for (uint64_t spins = 0U;; ++spins) {
+    if (virtio_mmio_read32(device->base, VIRTIO_MMIO_STATUS) == 0U) {
+      return XAIOS_OK;
+    }
+    if ((spins & UINT64_C(0x3ff)) == 0U &&
+        ((started != 0U && timer_now_ns() - started >= VIRTIO_RESET_TIMEOUT_NS) ||
+         (started == 0U && spins >= VIRTIO_WAIT_FALLBACK_SPINS))) {
+      return XAIOS_ERR_IO;
+    }
+    __asm__ volatile("yield" ::: "memory");
+  }
 }
 
 xaios_status_t virtio_transport_negotiate_no_features(
     const virtio_mmio_device_t *device) {
-  virtio_transport_reset(device);
+  if (virtio_transport_reset_checked(device) != XAIOS_OK) {
+    return XAIOS_ERR_IO;
+  }
   set_status(device, VIRTIO_STATUS_ACKNOWLEDGE);
   set_status(device, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
 
@@ -142,7 +186,9 @@ xaios_status_t virtio_transport_negotiate_features(
   if (device == 0 || accepted_low == 0 || accepted_high == 0) {
     return XAIOS_ERR_INVALID;
   }
-  virtio_transport_reset(device);
+  if (virtio_transport_reset_checked(device) != XAIOS_OK) {
+    return XAIOS_ERR_IO;
+  }
   set_status(device, VIRTIO_STATUS_ACKNOWLEDGE);
   set_status(device, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
   virtio_mmio_write32(device->base, VIRTIO_MMIO_DEVICE_FEATURES_SEL, 0U);
@@ -175,7 +221,8 @@ xaios_status_t virtio_transport_setup_queue(const virtio_mmio_device_t *device,
                                            virtq_desc_t *desc,
                                            virtq_avail_t *avail,
                                            virtq_used_t *used) {
-  if (queue_size == 0 || queue_size > VIRTQ_SIZE || desc == 0 || avail == 0 ||
+  if (device == 0 || queue_size == 0 || queue_size > VIRTQ_SIZE ||
+      (queue_size & (queue_size - 1U)) != 0U || desc == 0 || avail == 0 ||
       used == 0) {
     return XAIOS_ERR_INVALID;
   }
@@ -183,7 +230,8 @@ xaios_status_t virtio_transport_setup_queue(const virtio_mmio_device_t *device,
   virtio_mmio_write32(device->base, VIRTIO_MMIO_QUEUE_SEL, queue_index);
   uint32_t queue_max = virtio_mmio_read32(device->base,
                                           VIRTIO_MMIO_QUEUE_NUM_MAX);
-  if (queue_max < queue_size) {
+  if (queue_max < queue_size ||
+      virtio_mmio_read32(device->base, VIRTIO_MMIO_QUEUE_READY) != 0U) {
     return XAIOS_ERR_INVALID;
   }
 
@@ -195,12 +243,26 @@ xaios_status_t virtio_transport_setup_queue(const virtio_mmio_device_t *device,
   write_addr_pair(device->base, VIRTIO_MMIO_QUEUE_DEVICE_LOW,
                   VIRTIO_MMIO_QUEUE_DEVICE_HIGH, dma_address(used));
   virtio_mmio_write32(device->base, VIRTIO_MMIO_QUEUE_READY, 1);
-  return XAIOS_OK;
+  virtio_mmio_barrier();
+  return virtio_mmio_read32(device->base, VIRTIO_MMIO_QUEUE_READY) == 1U
+             ? XAIOS_OK
+             : XAIOS_ERR_IO;
 }
 
 void virtio_transport_set_driver_ok(const virtio_mmio_device_t *device) {
+  (void)virtio_transport_set_driver_ok_checked(device);
+}
+
+xaios_status_t virtio_transport_set_driver_ok_checked(
+    const virtio_mmio_device_t *device) {
+  if (device == 0) return XAIOS_ERR_INVALID;
   set_status(device, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER |
                          VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK);
+  uint32_t status = virtio_mmio_read32(device->base, VIRTIO_MMIO_STATUS);
+  return (status & (VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK)) ==
+                 (VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK)
+             ? XAIOS_OK
+             : XAIOS_ERR_IO;
 }
 
 void virtio_transport_notify(const virtio_mmio_device_t *device,
@@ -238,4 +300,30 @@ void virtio_transport_ack_interrupts(const virtio_mmio_device_t *device) {
     virtio_mmio_write32(device->base, VIRTIO_MMIO_INTERRUPT_ACK,
                         interrupt_status);
   }
+}
+
+uint32_t virtio_transport_interrupt_id(const virtio_mmio_device_t *device) {
+  if (device == 0 || device->base < VIRTIO_MMIO_BASE ||
+      (device->base - VIRTIO_MMIO_BASE) % VIRTIO_MMIO_STRIDE != 0U) {
+    return UINT32_MAX;
+  }
+  uint64_t slot = (device->base - VIRTIO_MMIO_BASE) / VIRTIO_MMIO_STRIDE;
+  if (slot >= VIRTIO_MMIO_SLOTS) return UINT32_MAX;
+  return VIRTIO_MMIO_FIRST_INTID + (uint32_t)slot;
+}
+
+xaios_status_t virtio_transport_register_interrupt(
+    const virtio_mmio_device_t *device, virtio_interrupt_handler_t handler,
+    void *context) {
+  uint32_t intid = virtio_transport_interrupt_id(device);
+  if (intid == UINT32_MAX) return XAIOS_ERR_INVALID;
+  return gic_register_interrupt(intid, handler, context);
+}
+
+xaios_status_t virtio_transport_unregister_interrupt(
+    const virtio_mmio_device_t *device, virtio_interrupt_handler_t handler,
+    void *context) {
+  uint32_t intid = virtio_transport_interrupt_id(device);
+  if (intid == UINT32_MAX) return XAIOS_ERR_INVALID;
+  return gic_unregister_interrupt(intid, handler, context);
 }

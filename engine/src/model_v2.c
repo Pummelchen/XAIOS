@@ -206,10 +206,10 @@ xaios_engine_status_t xaios_model_v2_open(
 
   memcpy(hash_input, raw, sizeof(hash_input));
   memset(hash_input + HEADER_HASH_OFFSET, 0, HEADER_HASH_LENGTH);
-  xaios_sha256_context_t hash_context;
-  xaios_sha256_init(&hash_context);
-  xaios_sha256_update(&hash_context, hash_input, sizeof(hash_input));
-  xaios_sha256_final(&hash_context, calculated_hash);
+  xaios_engine_sha256_context_t hash_context;
+  xaios_engine_sha256_init(&hash_context);
+  xaios_engine_sha256_update(&hash_context, hash_input, sizeof(hash_input));
+  xaios_engine_sha256_final(&hash_context, calculated_hash);
   if (memcmp(calculated_hash, package->header.header_hash,
              sizeof(calculated_hash)) != 0) {
     return XAIOS_ENGINE_ERR_CHECKSUM;
@@ -412,8 +412,8 @@ xaios_engine_status_t xaios_model_v2_verify_section(
     return XAIOS_ENGINE_ERR_INVALID;
   }
 
-  xaios_sha256_context_t hash_context;
-  xaios_sha256_init(&hash_context);
+  xaios_engine_sha256_context_t hash_context;
+  xaios_engine_sha256_init(&hash_context);
   uint64_t cursor = 0;
   while (cursor < section->length) {
     uint64_t remaining = section->length - cursor;
@@ -425,11 +425,11 @@ xaios_engine_status_t xaios_model_v2_verify_section(
     if (status != XAIOS_ENGINE_OK) {
       return status;
     }
-    xaios_sha256_update(&hash_context, scratch, count);
+    xaios_engine_sha256_update(&hash_context, scratch, count);
     cursor += (uint64_t)count;
   }
   uint8_t calculated[32];
-  xaios_sha256_final(&hash_context, calculated);
+  xaios_engine_sha256_final(&hash_context, calculated);
   return memcmp(calculated, section->checksum, sizeof(calculated)) == 0
              ? XAIOS_ENGINE_OK
              : XAIOS_ENGINE_ERR_CHECKSUM;

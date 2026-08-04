@@ -416,6 +416,7 @@ def main() -> int:
     build_env = os.environ.copy()
     build_env["XAIOS_AUTHORIZED_KEYS_FILE"] = str(key_dir / "authorized.pub")
     build_env["XAIOS_SSH_USERS_FILE"] = str(users_file)
+    build_env["XAIOS_SSH_PASSWORD_AUTH"] = "1"
     run_checked(["make", "image"], 180, build_env)
 
     ssh_port = reserve_port(socket.SOCK_STREAM)
@@ -473,6 +474,7 @@ def main() -> int:
             raise
         assert_qemu_healthy(qemu, qemu_log_path)
         phases["raw_tcp_under_ssh_sftp_udp_load"] = "passed"
+        phases["ipv4_ipv6_fragment_reassembly_under_load"] = "passed"
 
         saturation, _, saturation_start = start_stress_clients(
             "saturation", key_dir, coord_dir, ssh_port, udp_port,
@@ -551,6 +553,8 @@ def main() -> int:
                 "over_capacity_rejections": 2,
                 "guest_capacity_markers": capacity_markers,
                 "raw_tcp_clients": 2,
+                "fragmented_ipv4_clients": 2,
+                "fragmented_ipv6_clients": 2,
             },
             "artifacts": {
                 "qemu_log": str(qemu_log_path),

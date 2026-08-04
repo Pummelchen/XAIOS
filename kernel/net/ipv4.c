@@ -1,6 +1,7 @@
 #include <xaios/assert.h>
 #include <xaios/ipv4.h>
 #include <xaios/klog.h>
+#include <xaios/timer.h>
 
 #define XAIOS_IPV4_FRAG_BUCKETS 8U
 
@@ -31,6 +32,11 @@ static void bytes_copy(void *dst, const void *src, uint64_t n) {
   uint8_t *d = (uint8_t *)dst;
   const uint8_t *s = (const uint8_t *)src;
   for (uint64_t i = 0; i < n; ++i) { d[i] = s[i]; }
+}
+
+static void bytes_zero(void *dst, uint64_t n) {
+  uint8_t *d = (uint8_t *)dst;
+  for (uint64_t i = 0; i < n; ++i) d[i] = 0U;
 }
 
 uint16_t ipv4_checksum(const uint8_t *data, uint32_t length) {
@@ -103,27 +109,34 @@ int ipv4_validate_incoming(const uint8_t *frame, uint64_t frame_len) {
   return 1;
 }
 
-/* B1: Fragment an outgoing IPv4 frame into 1400-byte payload chunks */
+/* Fragment an outgoing IPv4 frame into concatenated Ethernet frames. */
 xaios_status_t ipv4_fragment(const uint8_t *frame, uint64_t frame_len,
                               uint8_t *out_buf, uint64_t *out_len,
                               uint64_t out_capacity) {
-  if (frame == 0 || out_buf == 0 || out_len == 0 || frame_len < 34U) {
+  if (frame == 0 || out_buf == 0 || out_len == 0 || frame_len < 34U ||
+      get_be16(frame + 12U) != UINT16_C(0x0800) ||
+      frame[14U] != XAIOS_IPV4_VERSION_IHL) {
     return XAIOS_ERR_INVALID;
   }
 
-  uint16_t total_len = get_be16(frame + 16);
+  uint16_t total_len = get_be16(frame + 16U);
+  if (total_len < XAIOS_IPV4_HEADER_SIZE ||
+      14U + (uint64_t)total_len > frame_len) {
+    return XAIOS_ERR_INVALID;
+  }
   uint64_t payload_len = (uint64_t)total_len - XAIOS_IPV4_HEADER_SIZE;
 
   if (payload_len <= 1400U) {
-    if (out_capacity < frame_len) { return XAIOS_ERR_NO_MEMORY; }
-    bytes_copy(out_buf, frame, frame_len);
-    *out_len = frame_len;
+    uint64_t exact_len = 14U + total_len;
+    if (out_capacity < exact_len) return XAIOS_ERR_NO_MEMORY;
+    bytes_copy(out_buf, frame, exact_len);
+    *out_len = exact_len;
     return XAIOS_OK;
   }
 
-  uint16_t id = get_be16(frame + 18);
-  uint32_t src_ip = get_be32(frame + 12);
-  uint32_t dst_ip = get_be32(frame + 16);
+  uint16_t id = get_be16(frame + 18U);
+  uint32_t src_ip = get_be32(frame + 26U);
+  uint32_t dst_ip = get_be32(frame + 30U);
   uint8_t protocol = frame[23];
 
   uint64_t per_frag = 1392U; /* multiple of 8, leaves room for headers */
@@ -136,21 +149,15 @@ xaios_status_t ipv4_fragment(const uint8_t *frame, uint64_t frame_len,
     uint64_t frag_total = 14U + XAIOS_IPV4_HEADER_SIZE + this_frag;
     if (written + frag_total > out_capacity) { return XAIOS_ERR_NO_MEMORY; }
 
-    for (uint32_t i = 0; i < 6; ++i) {
-      out_buf[written + i] = frame[i];
-      out_buf[written + 6 + i] = frame[6 + i];
-    }
-    put_be16(out_buf + written + 12, 0x0800);
+    bytes_copy(out_buf + written, frame, 14U);
 
     uint8_t *frag_ip = out_buf + written + 14U;
-    frag_ip[0] = XAIOS_IPV4_VERSION_IHL;
-    frag_ip[1] = 0;
+    bytes_copy(frag_ip, frame + 14U, XAIOS_IPV4_HEADER_SIZE);
     put_be16(frag_ip + 2, (uint16_t)(XAIOS_IPV4_HEADER_SIZE + this_frag));
     put_be16(frag_ip + 4, id);
     uint16_t off_val = (uint16_t)(offset / 8U);
     int more = (offset + this_frag < payload_len) ? 1 : 0;
     put_be16(frag_ip + 6, (uint16_t)((more ? XAIOS_IPV4_FLAG_MF : 0) | off_val));
-    frag_ip[8] = 64;
     frag_ip[9] = protocol;
     put_be16(frag_ip + 10, 0);
     put_be32(frag_ip + 12, src_ip);
@@ -160,11 +167,11 @@ xaios_status_t ipv4_fragment(const uint8_t *frame, uint64_t frame_len,
 
     bytes_copy(out_buf + written + 34U,
                frame + 14U + XAIOS_IPV4_HEADER_SIZE + offset, this_frag);
-    *out_len = written + frag_total;
     written += frag_total;
     offset += this_frag;
   }
 
+  *out_len = written;
   return XAIOS_OK;
 }
 
@@ -179,123 +186,169 @@ int ipv4_is_fragment(const uint8_t *frame, uint64_t frame_len) {
   return 0;
 }
 
-/* B1: Reassemble fragments — stores fragment data, returns OK when complete */
+static void clear_bucket(ipv4_frag_bucket_t *bucket) {
+  bytes_zero(bucket, sizeof(*bucket));
+}
+
+static ipv4_frag_bucket_t *find_or_allocate_bucket(
+    uint32_t src_ip, uint32_t dst_ip, uint16_t id, uint8_t protocol,
+    uint64_t now_ns) {
+  ipv4_frag_bucket_t *free_bucket = 0;
+  ipv4_frag_bucket_t *oldest = 0;
+  for (uint32_t i = 0U; i < XAIOS_IPV4_FRAG_BUCKETS; ++i) {
+    ipv4_frag_bucket_t *bucket = &g_frag_buckets[i];
+    if (bucket->active != 0U && now_ns != 0U &&
+        now_ns - bucket->first_arrival_ns >= XAIOS_IPV4_FRAG_TIMEOUT_NS) {
+      clear_bucket(bucket);
+    }
+    if (bucket->active != 0U && bucket->src_ip == src_ip &&
+        bucket->dst_ip == dst_ip && bucket->id == id &&
+        bucket->protocol == protocol) {
+      return bucket;
+    }
+    if (bucket->active == 0U && free_bucket == 0) free_bucket = bucket;
+    if (bucket->active != 0U &&
+        (oldest == 0 || bucket->first_arrival_ns < oldest->first_arrival_ns)) {
+      oldest = bucket;
+    }
+  }
+  ipv4_frag_bucket_t *bucket = free_bucket != 0 ? free_bucket : oldest;
+  if (bucket == 0) return 0;
+  clear_bucket(bucket);
+  bucket->active = 1U;
+  bucket->src_ip = src_ip;
+  bucket->dst_ip = dst_ip;
+  bucket->id = id;
+  bucket->protocol = protocol;
+  bucket->first_arrival_ns = now_ns;
+  return bucket;
+}
+
+/* Store one fragment and reconstruct the frame only when every byte exists. */
 xaios_status_t ipv4_reassemble(uint8_t *frame, uint64_t *frame_len) {
   if (frame == 0 || frame_len == 0 || *frame_len < 34U) {
     return XAIOS_ERR_INVALID;
   }
-
+  if (!ipv4_validate_incoming(frame, *frame_len) ||
+      get_be16(frame + 12U) != UINT16_C(0x0800)) {
+    return XAIOS_ERR_INVALID;
+  }
   uint8_t *ip = frame + 14U;
-  uint16_t id = get_be16(frame + 18);
-  uint32_t src_ip = get_be32(frame + 12);
   uint8_t ihl = (uint8_t)(ip[0] & 0x0FU);
+  if (ihl != 5U) return XAIOS_ERR_UNSUPPORTED;
   uint64_t ip_hdr_bytes = (uint64_t)ihl * 4U;
-  uint16_t flags_off = get_be16(frame + 20);
-  uint16_t offset = (uint16_t)(flags_off & XAIOS_IPV4_OFFSET_MASK);
-  int mf = ((flags_off & XAIOS_IPV4_FLAG_MF) != 0) ? 1 : 0;
-  uint16_t frag_data_len = (uint16_t)(*frame_len - 14U - ip_hdr_bytes);
+  uint16_t ip_total = get_be16(ip + 2U);
+  uint16_t flags_off = get_be16(ip + 6U);
+  uint32_t offset = (uint32_t)(flags_off & XAIOS_IPV4_OFFSET_MASK) * 8U;
+  uint32_t frag_data_len = (uint32_t)ip_total - (uint32_t)ip_hdr_bytes;
+  uint32_t end = offset + frag_data_len;
+  uint32_t more = (flags_off & XAIOS_IPV4_FLAG_MF) != 0U;
+  if ((flags_off & XAIOS_IPV4_FLAG_DF) != 0U || frag_data_len == 0U ||
+      (more != 0U && (frag_data_len & 7U) != 0U) || end < offset ||
+      end > XAIOS_IPV4_MAX_REASSEMBLED_PAYLOAD) {
+    return XAIOS_ERR_INVALID;
+  }
 
-  int bucket_idx = -1;
-  int free_slot = -1;
-  for (uint32_t i = 0; i < XAIOS_IPV4_FRAG_BUCKETS; ++i) {
-    if (g_frag_buckets[i].active != 0 &&
-        g_frag_buckets[i].id == id &&
-        g_frag_buckets[i].src_ip == src_ip) {
-      bucket_idx = (int)i;
-      break;
+  uint64_t now_ns = timer_now_ns();
+  ipv4_frag_bucket_t *bucket = find_or_allocate_bucket(
+      get_be32(ip + 12U), get_be32(ip + 16U), get_be16(ip + 4U), ip[9U],
+      now_ns);
+  if (bucket == 0) return XAIOS_ERR_NO_MEMORY;
+  if (more == 0U) {
+    if (bucket->total_len != 0U && bucket->total_len != end) {
+      clear_bucket(bucket);
+      return XAIOS_ERR_INVALID;
     }
-    if (g_frag_buckets[i].active == 0 && free_slot < 0) {
-      free_slot = (int)i;
+    bucket->total_len = end;
+  }
+  if (bucket->total_len != 0U && end > bucket->total_len) {
+    clear_bucket(bucket);
+    return XAIOS_ERR_INVALID;
+  }
+
+  const uint8_t *fragment_data = ip + ip_hdr_bytes;
+  for (uint32_t i = 0U; i < frag_data_len; ++i) {
+    uint32_t position = offset + i;
+    if (bucket->received[position] != 0U &&
+        bucket->payload[position] != fragment_data[i]) {
+      clear_bucket(bucket);
+      return XAIOS_ERR_INVALID;
     }
   }
-
-  if (bucket_idx < 0) {
-    if (free_slot < 0) {
-      uint64_t oldest = UINT64_MAX;
-      uint32_t oldest_i = 0;
-      for (uint32_t i = 0; i < XAIOS_IPV4_FRAG_BUCKETS; ++i) {
-        if (g_frag_buckets[i].active != 0 &&
-            g_frag_buckets[i].first_arrival_ns < oldest) {
-          oldest = g_frag_buckets[i].first_arrival_ns;
-          oldest_i = i;
-        }
-      }
-      g_frag_buckets[oldest_i].active = 0;
-      bucket_idx = (int)oldest_i;
-    } else {
-      bucket_idx = free_slot;
+  for (uint32_t i = 0U; i < frag_data_len; ++i) {
+    uint32_t position = offset + i;
+    if (bucket->received[position] == 0U) {
+      bucket->received[position] = 1U;
+      bucket->payload[position] = fragment_data[i];
+      ++bucket->received_count;
     }
-    g_frag_buckets[bucket_idx].active = 1;
-    g_frag_buckets[bucket_idx].src_ip = src_ip;
-    g_frag_buckets[bucket_idx].id = id;
-    g_frag_buckets[bucket_idx].frag_count = 0;
-    g_frag_buckets[bucket_idx].total_len = 0;
+  }
+  if (offset == 0U) {
+    bytes_copy(bucket->ethernet_header, frame, 14U);
+    bytes_copy(bucket->ip_header, ip, XAIOS_IPV4_HEADER_SIZE);
+    bucket->have_first = 1U;
+  }
+  if (bucket->total_len == 0U || bucket->have_first == 0U ||
+      bucket->received_count < bucket->total_len) {
+    return XAIOS_ERR_BUSY;
+  }
+  for (uint32_t i = 0U; i < bucket->total_len; ++i) {
+    if (bucket->received[i] == 0U) return XAIOS_ERR_BUSY;
   }
 
-  ipv4_frag_bucket_t *b = &g_frag_buckets[bucket_idx];
-  if (b->frag_count >= XAIOS_IPV4_MAX_FRAG) {
-    return XAIOS_ERR_NO_MEMORY;
-  }
-
-  uint32_t slot = b->frag_count;
-  b->frag_offsets[slot] = offset;
-  b->frag_lens[slot] = frag_data_len;
-  bytes_copy(b->frags[slot], ip + ip_hdr_bytes, (uint64_t)frag_data_len);
-  b->frag_count++;
-  if (!mf) {
-    b->total_len = (uint32_t)(offset + frag_data_len);
-  }
-
-  uint32_t max_off = 0;
-  int have_last = 0;
-  for (uint32_t i = 0; i < b->frag_count; ++i) {
-    uint32_t end = (uint32_t)b->frag_offsets[i] + (uint32_t)b->frag_lens[i];
-    if (end > max_off) { max_off = end; }
-  }
-  if (b->total_len > 0 && max_off >= b->total_len) {
-    have_last = 1;
-  }
-
-  if (have_last && (uint32_t)max_off <= 1500U) {
-    uint32_t reasm_len = (uint32_t)max_off;
-    if (reasm_len > 1480U) { reasm_len = 1480U; }
-
-    bytes_copy(frame + 14, ip, XAIOS_IPV4_HEADER_SIZE);
-    put_be16(frame + 16, (uint16_t)(XAIOS_IPV4_HEADER_SIZE + (uint16_t)reasm_len));
-    put_be16(frame + 18, id);
-    put_be16(frame + 20, 0);
-    uint8_t *reasm_data = frame + 14U + XAIOS_IPV4_HEADER_SIZE;
-
-    for (uint32_t i = 0; i < b->frag_count; ++i) {
-      uint32_t off = b->frag_offsets[i];
-      bytes_copy(reasm_data + off, b->frags[i], (uint64_t)b->frag_lens[i]);
-    }
-
-    *frame_len = (uint64_t)(14U + XAIOS_IPV4_HEADER_SIZE + (uint64_t)reasm_len);
-    b->active = 0;
-    return XAIOS_OK;
-  }
-
-  return XAIOS_ERR_INVALID;
+  bytes_copy(frame, bucket->ethernet_header, 14U);
+  bytes_copy(frame + 14U, bucket->ip_header, XAIOS_IPV4_HEADER_SIZE);
+  put_be16(frame + 16U,
+           (uint16_t)(XAIOS_IPV4_HEADER_SIZE + bucket->total_len));
+  put_be16(frame + 20U, 0U);
+  put_be16(frame + 24U, 0U);
+  put_be16(frame + 24U,
+           ipv4_checksum(frame + 14U, XAIOS_IPV4_HEADER_SIZE));
+  bytes_copy(frame + 34U, bucket->payload, bucket->total_len);
+  *frame_len = 34U + bucket->total_len;
+  clear_bucket(bucket);
+  return XAIOS_OK;
 }
+
+void ipv4_frag_init(void) { bytes_zero(g_frag_buckets, sizeof(g_frag_buckets)); }
 
 void ipv4_frag_self_test(void) {
   uint8_t frame[1520];
-  uint64_t flen = 0;
-  uint8_t src_mac[6] = {0x02,0x00,0x00,0x00,0x00,0x01};
-  uint8_t dst_mac[6] = {0x52,0x54,0x00,0x12,0x35,0x02};
-  for (uint32_t i = 0; i < 6; ++i) { frame[i] = dst_mac[i]; frame[6+i] = src_mac[i]; }
-  put_be16(frame + 12, 0x0800);
-  ipv4_build_header(frame + 14, XAIOS_IPV4_HEADER_SIZE + 2000, 17, 0x0a00020f, 0x0a000202);
-  put_be16(frame + 16, XAIOS_IPV4_HEADER_SIZE + 2000);
-  for (uint32_t i = 34; i < 2034; ++i) frame[i] = (uint8_t)(i & 0xFF);
-  flen = 2034;
-  uint8_t out[2048];
+  bytes_zero(frame, sizeof(frame));
+  for (uint32_t i = 0; i < 6; ++i) {
+    frame[i] = (uint8_t)(0x50U + i);
+    frame[6U + i] = (uint8_t)(0x20U + i);
+  }
+  put_be16(frame + 12U, UINT16_C(0x0800));
+  const uint32_t payload_len = 1450U;
+  ipv4_build_header(frame + 14U,
+                    (uint16_t)(XAIOS_IPV4_HEADER_SIZE + payload_len),
+                    XAIOS_IPV4_PROTO_UDP, XAIOS_IPV4_GUEST_IP,
+                    XAIOS_IPV4_GATEWAY);
+  put_be16(frame + 18U, UINT16_C(0x1234));
+  put_be16(frame + 24U, 0U);
+  put_be16(frame + 24U, ipv4_checksum(frame + 14U, XAIOS_IPV4_HEADER_SIZE));
+  for (uint32_t i = 0; i < payload_len; ++i) frame[34U + i] = (uint8_t)i;
+  uint64_t flen = 34U + payload_len;
+  uint8_t out[4096];
   uint64_t out_len = 0;
-  xaios_status_t s = ipv4_fragment(frame, flen, out, &out_len, sizeof(out));
-  kassert(s == XAIOS_OK);
-  kassert(out_len > 0);
-  klog("ipv4: frag self-test passed (fragmented %lu bytes into %lu)\n", flen, out_len);
+  kassert(ipv4_fragment(frame, flen, out, &out_len, sizeof(out)) == XAIOS_OK);
+  uint64_t first_len = 14U + get_be16(out + 16U);
+  kassert(first_len < out_len);
+  uint64_t second_len = out_len - first_len;
+  uint8_t reassembled[1520];
+  bytes_copy(reassembled, out + first_len, second_len);
+  uint64_t reassembled_len = second_len;
+  kassert(ipv4_reassemble(reassembled, &reassembled_len) == XAIOS_ERR_BUSY);
+  bytes_copy(reassembled, out, first_len);
+  reassembled_len = first_len;
+  kassert(ipv4_reassemble(reassembled, &reassembled_len) == XAIOS_OK);
+  kassert(reassembled_len == flen);
+  for (uint32_t i = 0U; i < payload_len; ++i) {
+    kassert(reassembled[34U + i] == (uint8_t)i);
+  }
+  klog("ipv4: fragmentation/reassembly self-test passed frame=%lu wire=%lu out_of_order=1\n",
+       flen, out_len);
 }
 
 void ipv4_self_test(void) {
@@ -312,4 +365,6 @@ void ipv4_self_test(void) {
   kassert(cksum != 0);
   klog("ipv4: self-test passed header_cksum=0x%04x pseudo_cksum=0x%04x\n",
        0, cksum);
+  ipv4_frag_init();
+  ipv4_frag_self_test();
 }

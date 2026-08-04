@@ -111,16 +111,34 @@ case "$accel" in
 esac
 
 machine="${XAIOS_QEMU_MACHINE:-virt}"
+iommu="${XAIOS_QEMU_IOMMU:-none}"
 memory="${XAIOS_QEMU_MEMORY:-2G}"
 smp="${XAIOS_QEMU_SMP:-4}"
 image="${XAIOS_AARCH64_IMAGE:-build/xaios-aarch64.img}"
 test_block_image="${XAIOS_TEST_BLOCK_IMAGE:-build/xaios-virtio-test.img}"
 persistent_image="${XAIOS_PERSISTENT_IMAGE:-build/xaios-persistent.img}"
+model_volume_image="${XAIOS_MODEL_VOLUME_IMAGE:-build/xaios-model-volume.img}"
+system_volume_image="${XAIOS_SYSTEM_VOLUME_IMAGE:-build/xaios-system.img}"
+model_volume_discard="${XAIOS_QEMU_MODEL_DISCARD:-none}"
+storage_admin_image="${XAIOS_STORAGE_ADMIN_IMAGE:-none}"
+nvme_image="${XAIOS_NVME_IMAGE:-none}"
 hostfwd_port="${XAIOS_QEMU_HOSTFWD_PORT:-2222}"
 hostfwd_udp_port="${XAIOS_QEMU_HOSTFWD_UDP_PORT:-none}"
 net_socket_port="${XAIOS_QEMU_NET_SOCKET_PORT:-none}"
 net_socket_port_2="${XAIOS_QEMU_NET_SOCKET_PORT_2:-none}"
 net_socket_host="${XAIOS_QEMU_NET_SOCKET_HOST:-127.0.0.1}"
+pcap_file="${XAIOS_QEMU_PCAP:-none}"
+
+case "$iommu" in
+  none) machine_options="$machine,accel=$accel,gic-version=3" ;;
+  smmuv3)
+    machine_options="$machine,accel=$accel,gic-version=3,iommu=smmuv3,acpi=off"
+    ;;
+  *)
+    printf '%s\n' "error: XAIOS_QEMU_IOMMU must be none or smmuv3" >&2
+    exit 2
+    ;;
+esac
 
 if [ "$net_socket_port_2" != "none" ] && [ "$net_socket_port" = "none" ]; then
   printf '%s\n' "error: XAIOS_QEMU_NET_SOCKET_PORT_2 requires XAIOS_QEMU_NET_SOCKET_PORT" >&2
@@ -144,8 +162,41 @@ if [ "$dry_run" -eq 0 ] && [ ! -f "$persistent_image" ]; then
   dd if=/dev/zero of="$persistent_image" bs=512 count=8192 status=none
 fi
 
+if [ "$dry_run" -eq 0 ] && [ ! -f "$model_volume_image" ]; then
+  printf '%s\n' "error: missing ModelFS image: $model_volume_image" >&2
+  printf '%s\n' "       Run make image first, or set XAIOS_MODEL_VOLUME_IMAGE=/path/to/image.img." >&2
+  exit 1
+fi
+
+if [ "$dry_run" -eq 0 ] && [ ! -f "$system_volume_image" ]; then
+  printf '%s\n' "error: missing A/B system volume: $system_volume_image" >&2
+  printf '%s\n' "       Run make image first, or set XAIOS_SYSTEM_VOLUME_IMAGE=/path/to/image.img." >&2
+  exit 1
+fi
+
+if [ "$storage_admin_image" != "none" ] && [ "$dry_run" -eq 0 ] &&
+   [ ! -f "$storage_admin_image" ]; then
+  printf '%s\n' "error: missing storage administration image: $storage_admin_image" >&2
+  exit 1
+fi
+
+if [ "$nvme_image" != "none" ] && [ "$dry_run" -eq 0 ] &&
+   [ ! -f "$nvme_image" ]; then
+  printf '%s\n' "error: missing NVMe test image: $nvme_image" >&2
+  exit 1
+fi
+
+case "$model_volume_discard" in
+  none) model_drive_options="" ;;
+  unmap) model_drive_options=",discard=unmap,detect-zeroes=unmap" ;;
+  *)
+    printf '%s\n' "error: XAIOS_QEMU_MODEL_DISCARD must be none or unmap" >&2
+    exit 2
+    ;;
+esac
+
 set -- "$qemu" \
-  -machine "$machine,accel=$accel,gic-version=3" \
+  -machine "$machine_options" \
   -cpu "$cpu" \
   -m "$memory" \
   -smp "$smp" \
@@ -153,11 +204,36 @@ set -- "$qemu" \
   -nographic \
   -serial mon:stdio \
   -drive "if=pflash,format=raw,readonly=on,file=$firmware" \
-  -drive "if=virtio,format=raw,file=$image" \
+  -drive "if=none,format=raw,id=xaios_boot,file=$image" \
+  -device virtio-blk-pci,drive=xaios_boot,bootindex=0 \
   -drive "if=none,format=raw,id=xaios_test_block,file=$test_block_image" \
   -device virtio-blk-device,drive=xaios_test_block,bus=virtio-mmio-bus.0 \
   -drive "if=none,format=raw,id=xaios_persistent,file=$persistent_image" \
-  -device virtio-blk-device,drive=xaios_persistent,bus=virtio-mmio-bus.1
+  -device virtio-blk-device,drive=xaios_persistent,bus=virtio-mmio-bus.1 \
+  -drive "if=none,format=raw,id=xaios_models,file=$model_volume_image$model_drive_options" \
+  -device virtio-blk-device,drive=xaios_models,bus=virtio-mmio-bus.4 \
+  -blockdev "driver=file,node-name=xaios_system_uefi_file,filename=$system_volume_image,locking=off,cache.direct=on" \
+  -blockdev driver=raw,node-name=xaios_system_uefi,file=xaios_system_uefi_file \
+  -device virtio-blk-pci,drive=xaios_system_uefi,bootindex=1 \
+  -blockdev "driver=file,node-name=xaios_system_kernel_file,filename=$system_volume_image,locking=off,cache.direct=on" \
+  -blockdev driver=raw,node-name=xaios_system_kernel,file=xaios_system_kernel_file \
+  -device virtio-blk-device,drive=xaios_system_kernel,bus=virtio-mmio-bus.6
+
+if [ "$iommu" = "smmuv3" ]; then
+  set -- "$@" -device iommu-testdev,addr=06.0
+fi
+
+if [ "$storage_admin_image" != "none" ]; then
+  set -- "$@" \
+    -drive "if=none,format=raw,discard=unmap,detect-zeroes=unmap,id=xaios_storage_admin,file=$storage_admin_image" \
+    -device virtio-blk-device,drive=xaios_storage_admin,bus=virtio-mmio-bus.5
+fi
+
+if [ "$nvme_image" != "none" ]; then
+  set -- "$@" \
+    -drive "if=none,format=raw,id=xaios_nvme,file=$nvme_image" \
+    -device nvme,serial=XAIOSNVME,drive=xaios_nvme
+fi
 
 set -- "$@" \
   -netdev user,id=net0 \
@@ -208,6 +284,11 @@ fi
 set -- "$@" \
   -device virtio-net-device,netdev=net1,mac=52:54:00:12:34:57,bus=virtio-mmio-bus.2
 
+if [ "$pcap_file" != "none" ]; then
+  set -- "$@" \
+    -object "filter-dump,id=xaios_net1_capture,netdev=net1,file=$pcap_file"
+fi
+
 if [ "${XAIOS_QEMU_RNG:-virtio}" != "none" ]; then
   set -- "$@" \
     -object rng-random,filename=/dev/urandom,id=xaios_rng \
@@ -216,6 +297,10 @@ fi
 
 if [ "${XAIOS_QEMU_NET_DUMP:-}" != "" ]; then
   set -- "$@" -object "filter-dump,id=xaios_net_dump,netdev=net1,file=${XAIOS_QEMU_NET_DUMP}"
+fi
+
+if [ "${XAIOS_QEMU_DEBUG:-}" != "" ]; then
+  set -- "$@" -d "$XAIOS_QEMU_DEBUG"
 fi
 
 if [ "$dry_run" -eq 1 ]; then

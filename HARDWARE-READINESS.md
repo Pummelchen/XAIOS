@@ -93,8 +93,9 @@ Before moving to Intel Desktop bring-up, these contracts must remain stable:
   boot probes for `cortex-a53`, `cortex-a72`, `cortex-a76`, `cortex-a710`,
   `neoverse-n1`, `neoverse-n2`, `neoverse-v1`, and `max`, plus x86_64 early
   boot profiles for Intel, Xeon, Atom server-edge, and AMD CPU models.
-- The macOS host/HVF tier is an optional local acceleration check. It is always
-  reported when run but does not replace or block the TCG correctness contract.
+- The macOS host/HVF tier is an optional local acceleration check. It runs only
+  with `XAIOS_QEMU_RUN_OPTIONAL_HVF=1`, is reported as skipped otherwise, and
+  never replaces or blocks the TCG correctness contract.
 
 ## Out of Scope Before Intel
 
@@ -103,8 +104,8 @@ The QEMU release-candidate gate intentionally does not claim:
 - performance wins against Linux or BSD;
 - measured x86_64 hardware performance evidence beyond the milestone 43-51
   QEMU correctness gate;
-- Intel APIC interrupt routing, HPET, TSC-deadline timers, PCIe, NVMe, and
-  NIC hardware drivers;
+- complete x86 SMP startup, external interrupt routing, HPET/TSC-deadline
+  policy, and PCIe NVMe/NIC hardware drivers;
 - production update signing and key management;
 - a production mutable filesystem;
 - production tokenizer/model runtimes beyond the QEMU CPU-only deterministic
@@ -139,13 +140,18 @@ Intel Desktop work can begin only after:
   `make qemu-x86_64-smoke`.
 - PMM/VMM initialization from the x86_64 firmware memory map: milestones 45
   and 46 gate through `make qemu-x86_64-smoke`.
-- APIC/timer discovery: milestone 47 gate is `make qemu-x86_64-smoke`.
-- PCI discovery sufficient for NVMe and NIC bring-up planning: milestone 48
-  gate is `make qemu-x86_64-smoke`.
+- Controlled exception delivery and a real local-APIC one-shot timer interrupt:
+  milestone 47 gate is `make qemu-x86_64-smoke`. AP startup, external IRQ
+  routing and hardware timer selection remain incomplete.
+- PCI discovery including MSI, MSI-X and modern VirtIO capabilities, sufficient
+  for NVMe and NIC driver planning: milestone 48 gate is
+  `make qemu-x86_64-smoke`.
 - P-core/E-core placement policy metadata: milestone 49 gate is
   `make intel-desktop-gate`.
-- x86_64 common-kernel/runtime parity is not implemented. The milestone 50
-  assessment explicitly reports `unsupported`.
+- x86_64 links and executes a portable common-runtime subset, while its emitted
+  OS contract explicitly reports EL0, networking, AI Cell, security and
+  telemetry parity as unavailable. Milestone 50 remains incomplete rather than
+  treating linked shared code as full platform support.
 - The milestone 51 Intel Desktop hardware assessment reports `blocked` until
   the common runtime and qualifying physical evidence exist.
 - Initial tuned Linux/BSD baseline plan for later measured comparisons remains

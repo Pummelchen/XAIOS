@@ -2,7 +2,12 @@
 
 ## Overview
 
-XAIOS is a freestanding AArch64 operating system designed for CPU-only embedded AI agents. It boots via UEFI, runs on QEMU virt (macOS host), and targets Intel Desktop/Xeon and ARM N1X-class SoCs. The kernel is single-binary, monolithic, and written in C99 with no libc dependency.
+XAIOS combines a freestanding AArch64 operating-system prototype with a
+portable C99 inference-engine foundation. The current complete OS correctness
+path boots through UEFI on QEMU virt. The x86_64 image boots and executes the
+real shared CRC, block, VFS, architecture-registry, scalar-backend and packed
+engine modules; x86 platform services and full userspace parity remain
+incomplete. Kernel and userspace code are freestanding C99 without libc.
 
 ## Boot Flow
 
@@ -38,19 +43,23 @@ UEFI firmware (AAVMF)
 15. source_index / git_ws     — AI agent source indexing
 16. sandbox / core_lease      — Isolation primitives
 17. gic_init()                — GICv3 interrupt controller
-18. virtio_blk / persistence  — Block device and mutable filesystem
-19. klog_ring / boot_counter  — Persistent logging and crash recovery
-20. update_self_test()        — Package delivery with SHA-256
-21. virtio_net / ARP / IPv4   — Network stack
-22. initramfs / syscall       — Process loading infrastructure
-23. scheduler / ELF loader    — Preemptive scheduling and process exec
-24. service_supervisor        — Service tree management
-25. model_arena / cpu_ai      — AI runtime and model loading
-26. ai_cell                   — AI cell resource management
-27. telemetry_emit()          — Boot summary JSON
+18. virtio_blk / persistence  — Generic block devices and MutableFS
+19. VFS / ModelFS             — Mutable root, immutable models, bounded staging
+20. klog_ring / boot_counter  — Persistent logging and crash recovery
+21. update_self_test()        — Package delivery with SHA-256
+22. virtio_net / ARP / IPv4   — Network stack
+23. initramfs / syscall       — Process loading infrastructure
+24. scheduler / worker thread — Preemptive process state and CPU-assigned jobs
+25. service_supervisor        — Service tree management
+26. model_arena / cpu_ai      — Fixture runtime and model arena
+27. ai_cell                   — AI cell resource management
+28. admin/control_protocol    — Persistent role-based administration service
+29. telemetry_emit()          — Boot summary JSON
 ```
 
-After initialization, the kernel runs userspace processes sequentially, then enters an infinite `wfe` loop.
+After self-tests, the kernel exercises bounded workers and userspace apps, then
+runs the persistent SSH service before its idle loop. This boot sequence is a
+QEMU correctness harness, not the final service-process architecture.
 
 ## Directory Layout
 
@@ -88,14 +97,13 @@ XAIOS/
 │   │   ├── kheap.c       — Kernel heap allocator
 │   │   ├── arena.c       — Arena allocator for model weights
 │   │   └── elf_loader.c  — ELF64 parser and process loader
-│   ├── fs/               — Filesystems
-│   │   ├── initramfs.c   — Read-only init filesystem (FAT-based)
-│   │   └── mutable_fs.c  — Writable persistent filesystem (MFS v3)
+│   ├── fs/               — Initramfs, VFS, MutableFS and ModelFS adapters
+│   ├── storage/          — GPT and bounded partition devices
 │   ├── net/              — Network protocols
 │   │   ├── arp.c         — ARP cache and resolution
 │   │   ├── ipv4.c        — IPv4 header construction
 │   │   └── icmp.c        — ICMP echo reply
-│   ├── dev/virtio/       — VirtIO device drivers
+│   ├── dev/              — Generic block API and VirtIO device drivers
 │   │   ├── virtio_transport.c — MMIO transport layer
 │   │   ├── virtio_blk.c  — Block device driver
 │   │   └── virtio_net.c  — Network device driver
@@ -105,13 +113,15 @@ XAIOS/
 │   ├── user/             — Userspace management
 │   │   ├── user.c        — Process table, ELF loading, address space
 │   │   ├── service.c     — Service supervisor (tree, restart policies)
-│   │   └── syscall.c     — Syscall dispatch table (33 syscalls)
+│   │   └── syscall.c     — Syscall dispatch table (41 syscalls)
 │   ├── runtime/          — Kernel runtime services
 │   │   ├── ai_cell.c     — AI cell lifecycle and resource management
-│   │   ├── cpu_ai_runtime.c — CPU-only ML inference engine
+│   │   ├── cpu_ai_runtime.c — Deterministic fixture runtime; production decode unsupported
 │   │   ├── model_arena.c — Shared read-only model arena
 │   │   ├── network_stack.c — UDP/TCP flow management
-│   │   ├── remote_login.c — Shell command interpreter
+│   │   ├── remote_login.c — Per-session shell command interpreter
+│   │   ├── admin_control.c — Persistent config, keys, revocation and audit
+│   │   ├── control_protocol.c — Typed measured and mutation administration
 │   │   ├── security.c    — Capability-based security policy
 │   │   ├── sandbox.c     — Process sandbox
 │   │   ├── core_lease.c  — CPU core lease management
@@ -128,6 +138,9 @@ XAIOS/
 │   ├── init/             — /init process, service-manager, worker
 │   ├── apps/             — User applications (hello, systest, etc.)
 │   └── sshd/             — Userspace SSH daemon
+├── engine/               — Portable model-v2, ModelFS, adapter and backend APIs
+├── tests/storage/        — Hosted block/GPT/VFS/SFTP tests
+├── tests/model_volume/   — ModelFS lifecycle and portable reader tests
 ├── scripts/              — Build, test, and gate scripts
 ├── contracts/            — ABI contract (qemu-rc-v1.json)
 ├── docs/                 — Developer documentation
@@ -155,14 +168,17 @@ XAIOS/
 2. Kernel loads `/bin/service-manager` → PID 2, supervises child services
 3. Service manager loads `/svc/source-index` → PID 3, crash/restart tested
 4. Workers (PIDs 3-5) run via scheduler for concurrent execution testing
-5. User apps (PIDs 6-15) run sequentially: shell, hello, sysinfo, systest, smptest, nettest, lstm-xor, sshtest, mltest, posix-shell
-6. Kernel enters idle loop (`wfe`)
+5. User apps (PIDs 6-17) run sequentially: shell, xaiosctl, hello, sysinfo, systest, smptest, nettest, lstm-xor, sshtest, mltest, posix-shell, agenttest
+6. Persistent `/bin/sshd` runs as PID 18 with control-query/admin capabilities;
+   authenticated key roles remain the per-request authority
+7. Kernel enters idle loop (`wfe`) after the service returns
 
 ## Security Model
 
 - **Capability-based**: Each process has a bitmask of allowed syscalls
 - **Sandbox**: Processes cannot escape their address space (nG bit on user PTEs)
-- **Core isolation**: CPUs 1-3 are "leased" to AI workloads, no migration
+- **Core isolation**: topology-aware lease interfaces exist, but production
+  inference dispatch and isolation remain incomplete
 - **Stack canaries**: SP-XOR canaries detect stack buffer overflows
 - **SMMU**: IOMMU enforcement for device DMA (when available)
 
@@ -173,6 +189,8 @@ make bootstrap   — Install toolchain (macOS: brew install llvm lld qemu mtools
 make image       — Build UEFI loader + kernel ELF + userspace → disk image
 make qemu        — Boot in QEMU (interactive)
 make qemu-smoke  — Automated smoke test (330+ boot markers)
+make hosted-test — Portable engine, ModelFS and storage correctness tests
+make qemu-core-os-rc — Aggregate cross-architecture core correctness gate
 make test        — bootstrap + image + dry-run
 ```
 
