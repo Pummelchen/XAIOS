@@ -123,6 +123,8 @@ CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` 
   `XAIOS_QEMU_RUN_OPTIONAL_HVF=1` is explicitly set.
 - `make qemu-x86_64-cpu-matrix` runs only the contract-defined x86 tiers and
   preserves the combined matrix report by writing a separate x86 report.
+- Future CPU models absent from the installed QEMU are recorded as optional
+  skips; every listed model that QEMU provides must pass its boot markers.
 - Local QEMU gates require host QEMU/firmware/toolchain availability.
 - The Debian 13 interoperability gate additionally requires Docker. Its direct
   IPv6 phase temporarily exposes the QEMU framed socket on the host so the

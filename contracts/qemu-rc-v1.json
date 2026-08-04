@@ -515,7 +515,7 @@
       {"name": "intel-server-icelake", "cpu": "Icelake-Server", "validation": "qemu-smoke"},
       {"name": "intel-server-sapphirerapids", "cpu": "SapphireRapids", "validation": "qemu-smoke"},
       {"name": "intel-server-graniterapids", "cpu": "GraniteRapids", "validation": "qemu-smoke"},
-      {"name": "intel-server-diamondrapids", "cpu": "DiamondRapids", "validation": "qemu-smoke"},
+      {"name": "intel-server-diamondrapids", "cpu": "DiamondRapids", "required": false, "validation": "qemu-smoke"},
       {"name": "intel-server-sierraforest", "cpu": "SierraForest", "validation": "qemu-smoke"},
       {"name": "intel-server-clearwaterforest", "cpu": "ClearwaterForest", "validation": "qemu-smoke"},
       {"name": "intel-server-edge-denverton", "cpu": "Denverton", "validation": "qemu-smoke"},
@@ -524,7 +524,7 @@
       {"name": "amd-epyc-rome", "cpu": "EPYC-Rome", "validation": "qemu-smoke"},
       {"name": "amd-epyc-milan", "cpu": "EPYC-Milan", "validation": "qemu-smoke"},
       {"name": "amd-epyc-genoa", "cpu": "EPYC-Genoa", "validation": "qemu-smoke"},
-      {"name": "amd-epyc-turin", "cpu": "EPYC-Turin", "validation": "qemu-smoke"}
+      {"name": "amd-epyc-turin", "cpu": "EPYC-Turin", "required": false, "validation": "qemu-smoke"}
     ]
   },
   "out_of_scope_before_intel": [

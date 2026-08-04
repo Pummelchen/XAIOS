@@ -148,8 +148,8 @@ def run_arm_boot_tier(tier: Dict[str, Any], supported: Set[str],
             "validation": tier["validation"],
             "required": required,
             "supported": False,
-            "exit_code": 1,
-            "status": "fail",
+            "exit_code": 1 if required else None,
+            "status": "fail" if required else "skipped",
             "error": "cpu model not listed by qemu-system-aarch64 -cpu help",
         }
 
@@ -207,8 +207,8 @@ def run_x86_tier(tier: Dict[str, Any], supported: Set[str],
             "validation": validation,
             "required": required,
             "supported": False,
-            "exit_code": 1,
-            "status": "fail",
+            "exit_code": 1 if required else None,
+            "status": "fail" if required else "skipped",
             "error": "cpu model not listed by qemu-system-x86_64 -cpu help",
         }
 
