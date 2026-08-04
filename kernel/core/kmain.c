@@ -395,7 +395,7 @@ void kmain(const xaios_boot_info_t *boot) {
   kassert(simd_irq_status == 1U);
   scheduler_unlock();
   klog("scheduler: AArch64 SIMD/FP interrupt preservation passed regs=32\n");
-  smp_release_secondary_schedulers();
+  kassert(smp_release_secondary_schedulers() == XAIOS_OK);
   xaios_thread_self_test();
   klog("kernel: preemptive scheduler infrastructure enabled\n");
 

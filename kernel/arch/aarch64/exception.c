@@ -26,6 +26,7 @@
 #define ICC_IAR1_EL1  "S3_0_C12_C12_0"
 #define ICC_EOIR1_EL1 "S3_0_C12_C12_1"
 #define TIMER_PPI_INTID 27U
+#define WORKER_SGI_INTID 1U
 
 /* DFSC for Synchronous External Abort (SEA) */
 #define DFSC_SYNC_EXT_ABORT UINT64_C(0x10)
@@ -150,6 +151,9 @@ xaios_context_frame_t *aarch64_irq_handler(xaios_context_frame_t *frame) {
     /* Timer interrupt: rearm and call scheduler tick */
     timer_rearm();
     scheduler_tick(frame);
+  } else if (intid == WORKER_SGI_INTID) {
+    /* The interrupt only provides an architectural wake-up for the worker
+     * loop; pending work is claimed after exception return. */
   } else if (intid < 1020U) {
     if (gic_dispatch_interrupt(intid) == 0) {
       klog("irq: unhandled intid=%u\n", intid);

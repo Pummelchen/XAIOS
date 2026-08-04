@@ -24,14 +24,15 @@ typedef struct __attribute__((aligned(16))) xaios_cpu_state {
   uint64_t migration_count;
   uint64_t involuntary_context_switch_count;
   /* SMP scheduler fields */
-  uint32_t scheduling_enabled; /* 1 when timer+GIC active for scheduling */
+  uint32_t scheduling_enabled; /* 1 when the CPU can accept scheduled work */
   uint32_t steal_count;        /* work-stealing events on this CPU */
 } xaios_cpu_state_t;
 
 uint32_t smp_cpu_id(void);
+xaios_status_t smp_wake_cpu(uint32_t cpu_id);
 
 void smp_init_qemu_virt(const xaios_boot_info_t *boot);
-void smp_release_secondary_schedulers(void);
+xaios_status_t smp_release_secondary_schedulers(void);
 const xaios_cpu_state_t *smp_cpu_state(uint32_t cpu_id);
 xaios_status_t smp_set_scheduling_enabled(uint32_t cpu_id, uint32_t enabled);
 uint32_t smp_online_count(void);

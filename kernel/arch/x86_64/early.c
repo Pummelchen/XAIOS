@@ -1381,11 +1381,18 @@ static int map_high_mmio_gib(uint64_t address) {
   if (g_mmio_gib_base != 0U) return g_mmio_gib_base == base;
   uint32_t pml4_index = (uint32_t)((base >> 39U) & UINT64_C(0x1ff));
   uint32_t pdpt_index = (uint32_t)((base >> 30U) & UINT64_C(0x1ff));
-  if (pml4_index == 0U) return 0;
   for (uint32_t i = 0U; i < 512U; ++i) {
     g_mmio_pdpt[i] = 0U;
     g_mmio_pd[i] = (base + (uint64_t)i * LARGE_PAGE_SIZE) | PTE_PRESENT |
                    PTE_WRITABLE | PTE_LARGE | PTE_NX;
+  }
+  if (pml4_index == 0U) {
+    if (g_pdpt[pdpt_index] != 0U) return 0;
+    g_pdpt[pdpt_index] = (uint64_t)(uintptr_t)g_mmio_pd | PTE_PRESENT |
+                         PTE_WRITABLE;
+    g_mmio_gib_base = base;
+    write_cr3(read_cr3());
+    return 1;
   }
   g_mmio_pdpt[pdpt_index] = (uint64_t)(uintptr_t)g_mmio_pd | PTE_PRESENT |
                             PTE_WRITABLE;

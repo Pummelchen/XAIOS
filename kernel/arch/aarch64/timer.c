@@ -72,9 +72,14 @@ void timer_enable_periodic(uint32_t hz) {
   klog("timer: periodic enabled hz=%u interval=%lu\n", hz, g_timer_interval);
 }
 
+void timer_mask_local(void) {
+  /* CNTV_CTL_EL0 is banked per CPU; do not alter the boot CPU's policy. */
+  write_cntv_ctl_el0(2);
+}
+
 void timer_disable(void) {
   /* Disable timer: ENABLE=0, IMASK=1 */
-  write_cntv_ctl_el0(2);
+  timer_mask_local();
   g_timer_periodic_active = 0;
   klog("timer: periodic disabled\n");
 }

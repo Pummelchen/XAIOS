@@ -8,8 +8,10 @@
 #include <xaios/vmm.h>
 
 #define PSCI_0_2_FN64_CPU_ON UINT64_C(0xc4000003)
+#define WORKER_SGI_INTID UINT64_C(1)
 #define SECONDARY_STACK_SIZE 16384U
 #define SECONDARY_BOOT_BASE_TIMEOUT_MS UINT64_C(5000)
+#define SECONDARY_WORKER_READY_TIMEOUT_MS UINT64_C(30000)
 
 /* QEMU virt GICv3 redistributor region used for early CPU discovery. */
 #define QEMU_VIRT_GICR_BASE UINT64_C(0x080A0000)
@@ -99,6 +101,27 @@ uint32_t smp_cpu_id(void) {
   return UINT32_MAX;
 }
 
+xaios_status_t smp_wake_cpu(uint32_t cpu_id) {
+  if (cpu_id >= g_cpu_capacity || g_cpu_states[cpu_id].online == 0U ||
+      __atomic_load_n(&g_cpu_states[cpu_id].scheduling_enabled,
+                      __ATOMIC_ACQUIRE) == 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  uint64_t mpidr = g_cpu_states[cpu_id].mpidr;
+  uint32_t aff0 = (uint32_t)(mpidr & UINT64_C(0xff));
+  if (aff0 >= 16U) return XAIOS_ERR_UNSUPPORTED;
+  uint64_t sgi = UINT64_C(1) << aff0;
+  sgi |= ((mpidr >> 8U) & UINT64_C(0xff)) << 16U;
+  sgi |= WORKER_SGI_INTID << 24U;
+  sgi |= ((mpidr >> 16U) & UINT64_C(0xff)) << 32U;
+  sgi |= ((mpidr >> 32U) & UINT64_C(0xff)) << 48U;
+  __asm__ volatile("dsb ishst\n\tmsr S3_0_C12_C11_5, %[sgi]\n\tisb"
+                   :
+                   : [sgi] "r"(sgi)
+                   : "memory");
+  return XAIOS_OK;
+}
+
 static uint64_t align_up(uint64_t value, uint64_t alignment) {
   return (value + alignment - 1U) & ~(alignment - 1U);
 }
@@ -164,8 +187,11 @@ void smp_secondary_main(uint64_t cpu_id) {
     bump_online();
   }
 
-  while (g_secondary_scheduler_release == 0) {
-    __asm__ volatile("wfe");
+  while (__atomic_load_n(&g_secondary_scheduler_release, __ATOMIC_ACQUIRE) ==
+         0U) {
+    /* QEMU 8.2 can lose a long-lived pre-GIC WFE event. This startup-only
+     * rendezvous must observe release without depending on an event latch. */
+    __asm__ volatile("yield" ::: "memory");
   }
 
   /* Secondary CPUs start on the firmware/bootstrap translation tables. */
@@ -174,11 +200,13 @@ void smp_secondary_main(uint64_t cpu_id) {
   /* Initialize this CPU's GIC redistributor and CPU interface */
   gic_secondary_init((uint32_t)cpu_id);
 
-  /* Enable per-CPU timer for preemptive scheduling */
-  timer_enable_periodic(XAIOS_SCHEDULER_DEFAULT_TICK_HZ);
+  /* Kernel workers are event-driven. Keep the local scheduler timer masked
+   * until this CPU owns a preemptible userspace run queue. */
+  timer_mask_local();
 
   if (cpu_id < g_cpu_capacity) {
-    g_cpu_states[cpu_id].scheduling_enabled = 1;
+    __atomic_store_n(&g_cpu_states[cpu_id].scheduling_enabled, 1U,
+                     __ATOMIC_RELEASE);
   }
 
   __asm__ volatile("msr daifclr, #2" ::: "memory");
@@ -274,9 +302,32 @@ void smp_init_qemu_virt(const xaios_boot_info_t *boot) {
   }
 }
 
-void smp_release_secondary_schedulers(void) {
+xaios_status_t smp_release_secondary_schedulers(void) {
   __atomic_store_n(&g_secondary_scheduler_release, 1U, __ATOMIC_RELEASE);
   __asm__ volatile("sev" ::: "memory");
+  uint64_t started = timer_counter();
+  uint64_t timeout = timer_frequency_hz() *
+                     SECONDARY_WORKER_READY_TIMEOUT_MS / UINT64_C(1000);
+  for (;;) {
+    uint32_t ready = 1U;
+    for (uint32_t cpu = 1U; cpu < g_cpu_capacity; ++cpu) {
+      if (g_cpu_states[cpu].online != 0U &&
+          __atomic_load_n(&g_cpu_states[cpu].scheduling_enabled,
+                          __ATOMIC_ACQUIRE) != 0U) {
+        ++ready;
+      }
+    }
+    if (ready == count_online()) {
+      klog("smp: secondary worker barrier passed ready=%u\n", ready);
+      return XAIOS_OK;
+    }
+    __asm__ volatile("sev\n\tyield" ::: "memory");
+    if (timer_counter() - started >= timeout) {
+      klog("smp: secondary worker barrier timed out ready=%u online=%u\n",
+           ready, count_online());
+      return XAIOS_ERR_BUSY;
+    }
+  }
 }
 
 const xaios_cpu_state_t *smp_cpu_state(uint32_t cpu_id) {

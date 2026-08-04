@@ -127,6 +127,7 @@ static xaios_status_t thread_create_on_cpu(
   __atomic_store_n(&slot->state, XAIOS_THREAD_PENDING, __ATOMIC_RELEASE);
   *thread_id = id;
   xaios_spin_unlock(&g_thread_lock);
+  if (target_cpu != smp_cpu_id()) (void)smp_wake_cpu(target_cpu);
   __asm__ volatile("sev" ::: "memory");
   return XAIOS_OK;
 }
@@ -474,6 +475,21 @@ xaios_status_t xaios_thread_run_group(uint64_t requested_threads,
     if (xaios_thread_join(ids[joined], XAIOS_THREAD_SELF_TEST_TIMEOUT_NS,
                           &value) != XAIOS_OK ||
         contexts[joined].actual_cpu != contexts[joined].expected_cpu) {
+      klog("threads: group join timed out joined=%lu created=%lu id=%lu "
+           "expected_cpu=%u actual_cpu=%u\n",
+           joined, created, ids[joined], contexts[joined].expected_cpu,
+           contexts[joined].actual_cpu);
+      for (uint64_t i = joined; i < created; ++i) {
+        xaios_spin_lock(&g_thread_lock);
+        xaios_thread_record_t *thread = find_thread_locked(ids[i]);
+        if (thread != 0) {
+          klog("threads: stalled id=%lu state=%u target_cpu=%u "
+               "running_cpu=%u actual_cpu=%u\n",
+               ids[i], (uint32_t)thread->state, thread->target_cpu,
+               thread->running_cpu, contexts[i].actual_cpu);
+        }
+        xaios_spin_unlock(&g_thread_lock);
+      }
       break;
     }
     total ^= value;
