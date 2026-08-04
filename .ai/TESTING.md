@@ -128,6 +128,8 @@ CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` 
 - `make qemu-x86_64-platform-matrix` validates x86 CPU-count reporting across
   q35/pc, 1-256 vCPUs, xAPIC/x2APIC, constrained/large memory, TCG thread
   modes and an opt-in QEMU NVMe PCI inventory.
+- `make qemu-x86_64-repeat-boot` performs bounded repeated x86 smoke boots and
+  retains each serial log for nondeterministic-failure diagnosis.
 - Local QEMU gates require host QEMU/firmware/toolchain availability.
 - The Debian 13 interoperability gate additionally requires Docker. Its direct
   IPv6 phase temporarily exposes the QEMU framed socket on the host so the
