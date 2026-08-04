@@ -27,6 +27,7 @@
 #define APIC_TIMER_INITIAL UINT32_C(0x380)
 #define APIC_TIMER_CURRENT UINT32_C(0x390)
 #define APIC_TIMER_DIVIDE UINT32_C(0x3e0)
+#define X2APIC_MSR_BASE UINT32_C(0x800)
 #define MSR_IA32_EFER UINT32_C(0xc0000080)
 #define EFER_NXE UINT64_C(1 << 11)
 #define PTE_PRESENT UINT64_C(1)
@@ -184,6 +185,8 @@ static volatile uint64_t g_exception_test_count;
 static uint32_t g_page_tables_loaded;
 static uint16_t g_code_selector;
 static volatile uint32_t *g_lapic;
+static uint32_t g_lapic_ready;
+static uint32_t g_lapic_x2apic;
 static volatile uint64_t g_lapic_timer_interrupts;
 
 static inline void outb(uint16_t port, uint8_t value) {
@@ -388,16 +391,23 @@ static void install_idt(uint16_t serial_base) {
 }
 
 static uint32_t lapic_read(uint32_t offset) {
+  if (g_lapic_x2apic != 0U) {
+    return (uint32_t)rdmsr(X2APIC_MSR_BASE + (offset >> 4U));
+  }
   return g_lapic[offset / sizeof(uint32_t)];
 }
 
 static void lapic_write(uint32_t offset, uint32_t value) {
+  if (g_lapic_x2apic != 0U) {
+    wrmsr(X2APIC_MSR_BASE + (offset >> 4U), value);
+    return;
+  }
   g_lapic[offset / sizeof(uint32_t)] = value;
   (void)g_lapic[APIC_ID / sizeof(uint32_t)];
 }
 
 void x86_64_interrupt_entry(const x86_64_exception_frame_t *frame) {
-  if (frame != 0 && frame->vector == 32U && g_lapic != 0) {
+  if (frame != 0 && frame->vector == 32U && g_lapic_ready != 0U) {
     ++g_lapic_timer_interrupts;
     lapic_write(APIC_EOI, 0U);
     return;
@@ -523,13 +533,20 @@ static void discover_timer_apic(uint16_t serial_base) {
 
 static void validate_lapic_timer_interrupt(uint16_t serial_base) {
   uint64_t apic_msr = rdmsr(MSR_IA32_APIC_BASE);
-  if ((apic_msr & APIC_BASE_ENABLE) == 0U ||
-      (apic_msr & APIC_BASE_X2APIC) != 0U) {
-    panic_halt(serial_base, "xAPIC MMIO mode unavailable");
+  if ((apic_msr & APIC_BASE_ENABLE) == 0U) {
+    panic_halt(serial_base, "local APIC unavailable");
   }
-  g_lapic = (volatile uint32_t *)(uintptr_t)(apic_msr &
-                                              UINT64_C(0xfffff000));
-  uint32_t apic_id = lapic_read(APIC_ID) >> 24U;
+  g_lapic_x2apic =
+      (apic_msr & APIC_BASE_X2APIC) != 0U ? UINT32_C(1) : UINT32_C(0);
+  if (g_lapic_x2apic != 0U) {
+    g_lapic = 0;
+  } else {
+    g_lapic = (volatile uint32_t *)(uintptr_t)(apic_msr &
+                                                UINT64_C(0xfffff000));
+  }
+  g_lapic_ready = 1U;
+  uint32_t apic_id = lapic_read(APIC_ID);
+  if (g_lapic_x2apic == 0U) apic_id >>= 24U;
   uint32_t version = lapic_read(APIC_VERSION) & UINT32_C(0xff);
   lapic_write(APIC_SPURIOUS, UINT32_C(0x100) | UINT32_C(0xff));
   lapic_write(APIC_LVT_TIMER, 32U);
@@ -550,6 +567,9 @@ static void validate_lapic_timer_interrupt(uint16_t serial_base) {
   serial_dec(serial_base, version);
   serial_puts(serial_base, " interrupts=");
   serial_dec(serial_base, g_lapic_timer_interrupts);
+  serial_puts(serial_base, " mode=");
+  serial_puts(serial_base,
+              g_lapic_x2apic != 0U ? "x2apic" : "xapic");
   serial_puts(serial_base, " elapsed_tsc=");
   serial_dec(serial_base, elapsed_tsc);
   serial_puts(serial_base, "\n");

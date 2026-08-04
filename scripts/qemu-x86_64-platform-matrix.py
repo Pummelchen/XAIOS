@@ -46,6 +46,15 @@ SCENARIOS = [
         "accelerator": "tcg,thread=multi",
     },
     {
+        "name": "q35-high-core-256-x2apic",
+        "machine": "q35",
+        "cpu": "max",
+        "smp": 256,
+        "memory": "4G",
+        "accelerator": "tcg,thread=multi",
+        "apic_mode": "x2apic",
+    },
+    {
         "name": "pc-compatibility",
         "machine": "pc",
         "cpu": "max",
@@ -132,6 +141,8 @@ def run_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
     ]
     if scenario.get("nvme"):
         required_markers.append("nvme=1")
+    if scenario.get("apic_mode"):
+        required_markers.append(f"mode={scenario['apic_mode']}")
     missing_markers = [marker for marker in required_markers
                        if marker not in output]
     passed = exit_code == 0 and not missing_markers and not timed_out
