@@ -105,6 +105,7 @@ cpu="${XAIOS_QEMU_X86_CPU:-max}"
 memory="${XAIOS_QEMU_X86_MEMORY:-2G}"
 smp="${XAIOS_QEMU_X86_SMP:-4}"
 image="${XAIOS_X86_64_IMAGE:-build/xaios-x86_64.img}"
+nvme_image="${XAIOS_QEMU_X86_NVME_IMAGE:-}"
 
 if [ "$dry_run" -eq 0 ] && [ ! -f "$image" ]; then
   printf '%s\n' "error: missing x86_64 boot image: $image" >&2
@@ -125,6 +126,16 @@ set -- "$qemu" \
   -device virtio-blk-pci,drive=xaios_x86_boot,bootindex=0,disable-legacy=on \
   -netdev user,id=net0,hostfwd=tcp::2223-:22 \
   -device virtio-net-pci,netdev=net0,disable-legacy=on,mq=on
+
+if [ "$nvme_image" != "" ]; then
+  if [ "$dry_run" -eq 0 ] && [ ! -f "$nvme_image" ]; then
+    printf '%s\n' "error: missing x86_64 NVMe image: $nvme_image" >&2
+    exit 1
+  fi
+  set -- "$@" \
+    -drive "if=none,format=raw,id=xaios_x86_nvme,file=$nvme_image" \
+    -device nvme,drive=xaios_x86_nvme,serial=XAIOSNVME
+fi
 
 if [ "$dry_run" -eq 1 ]; then
   print_command "$@"

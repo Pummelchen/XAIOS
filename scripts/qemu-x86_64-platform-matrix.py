@@ -54,6 +54,15 @@ SCENARIOS = [
         "accelerator": "tcg",
     },
     {
+        "name": "q35-nvme-inventory",
+        "machine": "q35",
+        "cpu": "max",
+        "smp": 4,
+        "memory": "2G",
+        "accelerator": "tcg",
+        "nvme": True,
+    },
+    {
         "name": "q35-tcg-single-thread",
         "machine": "q35",
         "cpu": "max",
@@ -91,6 +100,10 @@ def run_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
         "XAIOS_QEMU_X86_SMP": str(scenario["smp"]),
         "XAIOS_QEMU_X86_SMOKE_TIMEOUT": "180",
     })
+    if scenario.get("nvme"):
+        env["XAIOS_QEMU_X86_NVME_IMAGE"] = str(
+            BUILD / "qemu-x86_64-platform-nvme.img"
+        )
     started = time.monotonic()
     timed_out = False
     try:
@@ -114,11 +127,14 @@ def run_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
         timed_out = True
 
     log_path.write_text(output, encoding="utf-8")
-    topology_marker = (
+    required_markers = [
         f"x86_64: placement policy logical_cpus={scenario['smp']}"
-    )
-    marker_present = topology_marker in output
-    passed = exit_code == 0 and marker_present and not timed_out
+    ]
+    if scenario.get("nvme"):
+        required_markers.append("nvme=1")
+    missing_markers = [marker for marker in required_markers
+                       if marker not in output]
+    passed = exit_code == 0 and not missing_markers and not timed_out
     if not passed:
         print(f"qemu-x86_64-platform-matrix: {name} failed")
         print(output[-4000:])
@@ -129,8 +145,8 @@ def run_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
         "status": "pass" if passed else "fail",
         "exit_code": exit_code,
         "timed_out": timed_out,
-        "topology_marker": topology_marker,
-        "topology_marker_present": marker_present,
+        "required_markers": required_markers,
+        "missing_markers": missing_markers,
         "elapsed_seconds": round(time.monotonic() - started, 3),
         "log": str(log_path.relative_to(ROOT)),
     }
@@ -138,6 +154,9 @@ def run_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
 
 def main() -> int:
     BUILD.mkdir(parents=True, exist_ok=True)
+    nvme_image = BUILD / "qemu-x86_64-platform-nvme.img"
+    with nvme_image.open("wb") as stream:
+        stream.truncate(64 * 1024 * 1024)
     results: List[Dict[str, Any]] = [
         run_scenario(scenario) for scenario in SCENARIOS
     ]
