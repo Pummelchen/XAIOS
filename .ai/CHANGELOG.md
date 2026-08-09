@@ -10,6 +10,15 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 -->
 # AI onboarding changelog
 
+## 2026-08-10 - FreeBSD Unix-reference interoperability
+
+- Added a checksum-pinned official FreeBSD 15.1 AArch64 QEMU client gate for
+  SSH key acceptance/rejection, `xaiosctl`, SFTP, PTY ANSI `htop`, and UDP.
+- Defined FreeBSD as the external Unix behavioral reference while explicitly
+  rejecting implied FreeBSD or Linux binary ABI compatibility.
+- Retained Debian 13 as an independent Linux/OpenSSH cross-client and made both
+  gates separate CI jobs.
+
 ## 2026-08-10 - native SSH PTY htop dashboard
 
 - Added validated per-channel SSH PTY dimensions and resize handling.

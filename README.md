@@ -3,7 +3,7 @@
 
 # XAIOS
 
-XAIOS is an experimental operating system and portable inference-engine
+XAIOS is an experimental freestanding Unix-like operating system and portable inference-engine
 foundation being developed as an SSH-administered distributed CPU AI model
 server. The current OS boots under QEMU and exercises deterministic
 kernel/runtime contracts. Real-model inference and the dedicated inference
@@ -12,6 +12,17 @@ network service are under development and are not production supported.
 AI coding agents should read [`AI_INDEX.md`](./AI_INDEX.md),
 [`AGENTS.md`](./AGENTS.md), and [`.ai/START_HERE.md`](./.ai/START_HERE.md), then
 verify their claims against current source.
+
+## Unix compatibility boundary
+
+FreeBSD is the primary external behavioral reference for portable command,
+SSH/SFTP and network interoperability work. XAIOS is not FreeBSD-derived and
+does not provide a FreeBSD or Linux binary ABI: guest programs use native XAIOS
+syscalls, and passing host-client tests proves wire behavior only. The official
+FreeBSD 15.1 AArch64 QEMU gate covers public-key acceptance/rejection,
+`xaiosctl`, SFTP, PTY ANSI `htop`, and UDP echo. The Debian 13 client remains an
+independent Linux/OpenSSH cross-family gate with broader administration and
+load coverage. See [Unix compatibility](./docs/UNIX-COMPATIBILITY.md).
 
 ## Model support status
 
@@ -78,8 +89,9 @@ opt-in; exact target-model semantics are the default.
   remain unimplemented.
 - An experimental freestanding SSH/SFTP service reachable through QEMU host
   forwarding, plus guest userspace UDP receive/echo and IPv6/TCP receive/send
-  paths. OpenSSH clients on macOS and in an official Debian 13 Docker container
-  verify authentication and rejection paths, persistent host identity, strict
+  paths. OpenSSH clients on FreeBSD 15.1, macOS and in an official Debian 13
+  Docker container verify authentication and rejection paths, with the broader
+  Linux/macOS gates covering persistent host identity, strict
   SFTP operations, shared channels, forced rekey, four simultaneous sessions,
   reconnect recycling, userspace DNS, UDP echo, IPv4/IPv6 fragment reassembly,
   TCP reordering/retransmission and malformed transport rejection. TCP transmit
@@ -247,6 +259,7 @@ make qemu-storage-crash-test
 make qemu-smmu-gate
 make qemu-nvme-gate
 make qemu-model-sftp-gate
+make qemu-freebsd-network-suite
 make qemu-docker-network-suite
 make qemu-parallel-network-load
 make qemu-core-os-rc
@@ -310,6 +323,7 @@ for the complete VirtIO, networking, SSH/SFTP, persistence and SMP suites. See
 - [OS architecture](./docs/ARCHITECTURE.md)
 - [API](./docs/API.md)
 - [Network and SSH status](./docs/NETWORK-SSH-STATUS.md)
+- [Unix compatibility boundary](./docs/UNIX-COMPATIBILITY.md)
 - [Storage architecture and status](./docs/STORAGE-ARCHITECTURE.md)
 - [ModelFS v1 format](./docs/MODELFS-FORMAT.md)
 - [ModelFS recovery](./docs/MODELFS-RECOVERY.md)

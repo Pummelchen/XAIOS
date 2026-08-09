@@ -36,6 +36,9 @@ unless the maintainer explicitly reprioritizes them.
 - `xaiosctl` Phase 2 is QEMU/OpenSSH fixture-tested with role-mapped keys,
   revocation, config transactions, host-key rotation, redacted audit and typed
   storage lifecycle administration.
+- XAIOS uses a native freestanding ABI. FreeBSD is the primary external Unix
+  behavioral reference, with a real FreeBSD 15.1 OpenSSH/SFTP/UDP QEMU gate;
+  neither FreeBSD nor Linux binary ABI compatibility is claimed.
 - Signed ModelFS supports dynamic registration, resumable SFTP, cleanup/reuse,
   verification, atomic activation, scrub/quarantine and free-only trim under
   QEMU. Concurrent macOS/Debian clients pass against one guest. QEMU VirtIO uses
@@ -65,6 +68,7 @@ unless the maintainer explicitly reprioritizes them.
 - [[VMware Fusion|VMware-Fusion]]
 - [[Qwen CPU Inference Status|Qwen3.6-INT6-Support]]
 - [[SSH Status|Production-SSH-Server]]
+- [[Unix Compatibility|Unix-Compatibility]]
 - [Repository README](https://github.com/Pummelchen/XAIOS/blob/main/README.md)
 - [Implementation roadmap](https://github.com/Pummelchen/XAIOS/blob/main/docs/QWEN-K3-IMPLEMENTATION-ROADMAP.md)
 - [Distributed server plan](https://github.com/Pummelchen/XAIOS/blob/main/docs/DISTRIBUTED-AI-SERVER-PLAN.md)

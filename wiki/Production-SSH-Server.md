@@ -9,7 +9,7 @@ physically deployed, audited, production-supported Internet SSH service.
 |---|---|---|
 | Kernel remote-login contract | QEMU fixture | Exercises allowlisted commands, capability checks, password-login rejection, and deterministic telemetry. |
 | Host OpenSSH-compatible bridge | Development tool | `scripts/xaios-ssh-bridge.py` listens on localhost and exposes the QEMU command contract through Paramiko. |
-| Freestanding userspace SSH/SFTP service | Experimental | Native macOS and Debian 13 OpenSSH clients authenticated to one QEMU guest and completed remote-command, strict SFTP, four-connection/eight-channel saturation, over-capacity rejection, reconnect, UDP, and direct TCP tests in parallel. Physical-network deployment and security acceptance are not established. |
+| Freestanding userspace SSH/SFTP service | Experimental | FreeBSD 15.1, native macOS and Debian 13 OpenSSH clients authenticate to QEMU guests. FreeBSD covers the Unix-reference key/SFTP/PTY/UDP subset; macOS and Debian cover the broader parallel administration, saturation, recovery and direct-TCP suite. Physical-network deployment and security acceptance are not established. |
 | Phase 2 `xaiosctl` administration | QEMU-tested | Forty-nine typed operations cover measured queries, strict config transactions, role-mapped key lifecycle/revocation, host-key rotation, payload-redacted audit, GPT/ModelFS lifecycle, dynamic staging, scrub and trim. Role, replay, rollback, persistence and secret-exposure checks pass through OpenSSH gates. Cluster control is not implemented. |
 
 The bridge is useful for local integration testing with commands such as
@@ -57,6 +57,7 @@ release builds.
 
 ```sh
 make qemu-network-suite
+make qemu-freebsd-network-suite
 make qemu-docker-network-suite
 make qemu-parallel-network-load
 make qemu-model-sftp-gate
@@ -78,6 +79,7 @@ and [control protocol](https://github.com/Pummelchen/XAIOS/blob/main/docs/CONTRO
 - `scripts/xaios-ssh-bridge.py`
 - `scripts/qemu-ssh-smoke.py`
 - `scripts/qemu-docker-network-suite.py`
+- `scripts/qemu-freebsd-network-suite.py`
 - `scripts/qemu-parallel-network-load.py`
 - `scripts/qemu-model-sftp-gate.py`
 - `tests/network/`

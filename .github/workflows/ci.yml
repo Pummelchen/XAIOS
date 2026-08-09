@@ -224,7 +224,7 @@ jobs:
           retention-days: 14
 
   network-interoperability:
-    name: Debian 13 Network Interoperability
+    name: Linux OpenSSH Interoperability (Debian 13)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -247,4 +247,39 @@ jobs:
             build/qemu-docker-network-suite.json
             build/qemu-docker-network-suite.pcap
             build/qemu-docker-*.log
+          retention-days: 14
+
+  freebsd-network-interoperability:
+    name: FreeBSD 15.1 Unix Interoperability
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install QEMU build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld qemu-system-arm qemu-utils qemu-efi-aarch64 mtools python3 python3-cryptography xz-utils genisoimage
+
+      - name: Cache pinned FreeBSD client image
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/xaios/freebsd
+          key: freebsd-15.1-release-aarch64-cloudinit-9722aea499610802
+
+      - name: Run FreeBSD OpenSSH, SFTP, PTY, and UDP gate
+        run: make qemu-freebsd-network-suite
+        env:
+          XAIOS_FREEBSD_TIMEOUT: "900"
+
+      - name: Upload FreeBSD interoperability evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qemu-freebsd-network-evidence
+          path: |
+            build/qemu-freebsd-network-suite.json
+            build/qemu-freebsd-client.log
+            build/qemu-freebsd-xaios.log
+          if-no-files-found: ignore
           retention-days: 14

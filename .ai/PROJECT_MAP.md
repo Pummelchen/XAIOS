@@ -22,7 +22,7 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 | `tests/model_volume/` | ModelFS lifecycle, recovery, corruption, sparse >100 GiB, and Python-writer/C-reader tests. |
 | `tests/storage/` | Hosted block, GPT, VFS, and 64-bit SFTP packet tests. |
 | `tests/control/` | Hosted deterministic `xaiosctl` parser/renderer/protocol tests. |
-| `tests/network/` | Disposable Debian 13 client image and SSH/SFTP/UDP interoperability suite. |
+| `tests/network/` | Linux/OpenSSH cross-client image and SSH/SFTP/UDP interoperability suite; the FreeBSD VM client gate is orchestrated from `scripts/`. |
 | `tools/` | Model-v2 streaming writer, ModelFS host administrator, plus explicit model-v1 fixture tooling. |
 | `scripts/` | Build image, create initfs, run QEMU, smoke/regression/readiness gates. |
 | `platform/vmware-fusion/` | Debian 13 ARM64 GRUB compatibility build and generated Fusion VM template. |
@@ -83,6 +83,7 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 - Model-v2 writer/reader: `tools/xaios_model_v2.py`
 - ModelFS administrator: `tools/xaios_model_volume.py`
 - ModelFS guest interoperability: `scripts/qemu-model-sftp-gate.py`
+- FreeBSD Unix-reference interoperability: `scripts/qemu-freebsd-network-suite.py`
 - Portable engine APIs: `engine/include/xaios_engine/`
 - Native engine CLI: `tools/xaios_engine_cli.c`, `make engine-cli`
 - Hosted engine/storage tests: `tests/model_v2/`, `tests/model_volume/`, `tests/storage/`
@@ -94,7 +95,7 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 - Python dev dependency: `paramiko==3.5.1` in `requirements-dev.txt`.
 - The current model-v2 writer uses the Python standard library. Official
   SafeTensors/config/tokenizer and GGUF importers are not implemented.
-- Docker is used only for the disposable Debian 13 network client gate; it is
+- Docker is used only for the disposable Linux/OpenSSH cross-client gate; it is
   not an XAIOS deployment mechanism. No database, ORM, migration framework,
   Node package manager, Rust/Cargo, Go module, Java build, or web framework was
   detected in inspected files.

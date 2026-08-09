@@ -102,7 +102,8 @@ For direct IPv6/TCP from a Mac client, run QEMU with
 | Filesystem | `make qemu-filesystem-gate` | Mutable filesystem. |
 | ModelFS SFTP interoperability | `make qemu-model-sftp-gate` | Concurrent native macOS/Debian 13 dynamic registration, resumable upload/download, byte comparison, cleanup/reuse, activation, scrub and VirtIO discard against one QEMU guest. |
 | Network | `make qemu-network-suite` or `make qemu-network-full-gate` | TCP/UDP/network paths. |
-| Debian 13 network interoperability | `make qemu-docker-network-suite` | Phase 2 roles/config/key/revocation/audit/rotation, password policy, secret redaction, persistence, SSH/SFTP sessions and rekey, UDP, and malformed/reordered/retransmitted TCP from an isolated client. |
+| FreeBSD Unix-reference interoperability | `make qemu-freebsd-network-suite` | Checksum-pinned FreeBSD 15.1 OpenSSH/SFTP client validates key acceptance/rejection, `xaiosctl`, SFTP, PTY ANSI `htop`, and UDP against one XAIOS guest. |
+| Linux/OpenSSH cross-client interoperability | `make qemu-docker-network-suite` | Debian 13 exercises Phase 2 roles/config/key/revocation/audit/rotation, password policy, secret redaction, persistence, SSH/SFTP sessions and rekey, UDP, and malformed/reordered/retransmitted TCP. |
 | macOS and Debian parallel network load | `make qemu-parallel-network-load` | Runs native macOS and Debian OpenSSH/SFTP, UDP, and direct TCP concurrently against one successful guest; requires macOS and Docker. |
 | Generate an SSH password record | `python3 scripts/create-sshd-user-config.py --password-file PATH --output PATH` | Produces the strict PBKDF2-HMAC-SHA256 database; building it requires `XAIOS_SSH_USERS_FILE=PATH XAIOS_SSH_PASSWORD_AUTH=1`, and release mode rejects it. |
 | CPU-AI | `make qemu-cpu-ai-suite` or `make qemu-cpu-ai-runtime-gate` | CPU-only AI runtime. |
@@ -141,8 +142,10 @@ with the repo-used command `python3 -m compileall -q scripts tools tests`.
 
 No database migration tooling or deploy command was detected. The repository
 has no application container deployment; `tests/network/Dockerfile.debian13`
-builds only a disposable Debian 13 network-interoperability client used by
+builds only a disposable Linux/OpenSSH cross-client used by
 `make qemu-docker-network-suite` and `make qemu-parallel-network-load`.
+The FreeBSD Unix-reference gate uses an official checksum-pinned QEMU image,
+not Docker.
 
 ## Release/readiness artifacts
 

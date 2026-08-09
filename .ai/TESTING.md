@@ -18,7 +18,9 @@ Validation is based on:
   C/Python model tests under `tests/model_v2/` and `tests/model_volume/`;
 - kernel/userspace self-tests run during boot;
 - Python QEMU gates that search serial output and telemetry markers;
-- an official Debian 13 Docker client interoperability gate for the guest
+- an official FreeBSD 15.1 VM client gate for the portable Unix-reference
+  SSH/SFTP, PTY, and UDP surface;
+- an official Debian 13 Docker cross-client gate for the broader guest
   SSH/SFTP, UDP, and direct IPv6/TCP paths;
 - a concurrent native macOS/Debian 13 ModelFS lifecycle and discard gate;
 - a native macOS plus Debian 13 parallel load gate against one successful guest;
@@ -46,7 +48,8 @@ Evidence:
 | ABI contract | `python3 scripts/qemu-abi-contract.py` | Syscall, initfs, contract, model format changes. |
 | Regression | `make qemu-regression-suite` | Broader kernel/userspace changes. |
 | Network suite | `make qemu-network-suite` | Network/socket/SSH-adjacent changes. |
-| Debian 13 network interoperability | `make qemu-docker-network-suite` | Changes to guest SSH/SFTP, TCP lifecycle, socket buffering, UDP, IPv6, or VirtIO net. |
+| FreeBSD Unix-reference interoperability | `make qemu-freebsd-network-suite` | Changes to portable guest SSH/SFTP, PTY output, UDP, or client-facing Unix behavior. |
+| Linux/OpenSSH cross-client interoperability | `make qemu-docker-network-suite` | Changes to guest SSH/SFTP, TCP lifecycle, socket buffering, UDP, IPv6, or VirtIO net. |
 | ModelFS SFTP interoperability | `make qemu-model-sftp-gate` | Dynamic registration, concurrent macOS/Debian SFTP, cleanup/reuse, verification, activation, scrub, trim and VirtIO discard. |
 | macOS and Debian parallel network load | `make qemu-parallel-network-load` | Concurrency, capacity, reconnect, or post-load recovery changes; requires macOS and Docker. |
 | CPU-AI suite | `make qemu-cpu-ai-suite` | AI runtime/model changes. |
@@ -72,6 +75,8 @@ GitHub Actions workflow `.github/workflows/ci.yml` runs:
   guest serial log uploaded even on failure;
 - the independent `make qemu-docker-network-suite` Debian interoperability
   job, with logs, JSON, and packet capture uploaded even on failure.
+- the independent `make qemu-freebsd-network-suite` FreeBSD Unix-reference
+  job, with checksum-pinned image caching and both VM serial logs uploaded.
 
 CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` for QEMU smoke/regression jobs. The aggregate core-OS job additionally builds upstream QEMU commit `6ce361b02c825b4a12a9684c47342859ee967cb2` and verifies its test-only `iommu-testdev`, because current Ubuntu and Debian distro QEMU builds do not provide the device required by the translated SMMUv3 isolation gate. `XAIOS_QEMU_SMMU` limits this override to that focused gate; other aggregate scenarios use the distro emulator. The exact-key Actions cache avoids rebuilding the pinned emulator after a successful provision.
 
@@ -136,6 +141,9 @@ CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` 
 - `make qemu-x86_64-repeat-boot` performs bounded repeated x86 smoke boots and
   retains each serial log for nondeterministic-failure diagnosis.
 - Local QEMU gates require host QEMU/firmware/toolchain availability.
+- The FreeBSD 15.1 gate additionally requires `qemu-img`, `xz`, an ISO creator,
+  and roughly 3 GiB for the verified compressed and uncompressed cached image.
+  It uses a disposable overlay and does not modify the vendor image.
 - The Debian 13 interoperability gate additionally requires Docker. Its direct
   IPv6 phase temporarily exposes the QEMU framed socket on the host so the
   isolated container can connect; cleanup removes the listener.

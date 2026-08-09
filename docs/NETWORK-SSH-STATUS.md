@@ -9,7 +9,8 @@ expose XAIOS directly to the Internet.
 
 The following paths passed from OpenSSH clients on macOS and in an official
 Debian 13 Docker container on this host on 2026-08-04. Both clients exercised
-the same freestanding AArch64 guest:
+the same freestanding AArch64 guest. An official FreeBSD 15.1 AArch64 client
+subsequently passed the explicitly identified subset below on 2026-08-10:
 
 - OpenSSH Ed25519 public-key login succeeded and an unauthorized key failed;
 - an explicitly provisioned PBKDF2-HMAC-SHA256 password succeeded and a wrong
@@ -53,6 +54,20 @@ the same freestanding AArch64 guest:
 - a Debian 13 OpenSSH PTY received the native guest-generated ANSI `htop`
   dashboard with CPU/memory meters and process framing, while a non-PTY command
   retained the plain automation format.
+
+### FreeBSD Unix-reference gate
+
+`make qemu-freebsd-network-suite` boots the checksum-pinned official FreeBSD
+15.1 AArch64 cloud image beside one XAIOS guest. FreeBSD base-system OpenSSH
+10.0p2 and SFTP passed authorized login, unauthorized-key rejection, a typed
+`xaiosctl version` query, SFTP write/stat/read/rename/remove with exact byte
+comparison, PTY ANSI `htop`, and UDP echo. The passing report is
+`build/qemu-freebsd-network-suite.json`.
+
+This is the primary external Unix behavioral-reference gate. It does not prove
+FreeBSD binary ABI compatibility, and it does not replace the broader Debian
+and macOS administration, concurrency, persistence, rekey and malformed-packet
+coverage. See [`UNIX-COMPATIBILITY.md`](./UNIX-COMPATIBILITY.md).
 
 The machine-readable result is `build/qemu-docker-network-suite.json`. Serial
 logs and the direct-network packet capture are also generated under `build/`.
@@ -135,6 +150,18 @@ not consume the shell-command quota; they remain bounded by connection/channel
 limits, SSH/SFTP packet sizes, flow-control windows and filesystem policy.
 
 ## Automated Gate
+
+The FreeBSD gate uses a real QEMU VM because Docker containers share a Linux
+kernel and cannot provide FreeBSD kernel/userland behavior:
+
+```sh
+make qemu-freebsd-network-suite
+```
+
+It verifies the official compressed image SHA-256, caches the immutable base,
+uses a disposable QCOW2 overlay and disables vendor first-boot updating in the
+overlay to keep the test bounded. GitHub Actions runs it independently from the
+Linux client gate.
 
 Docker does not publish a separate Debian server-edition image. The repository
 therefore builds a disposable client from the official `debian:13` image and

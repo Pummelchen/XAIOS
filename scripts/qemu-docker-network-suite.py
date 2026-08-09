@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Debian 13 SSH/SFTP/UDP and direct IPv6 tests against XAIOS."""
+"""Run the Linux/OpenSSH cross-client gate from Debian 13 against XAIOS."""
 
 from __future__ import annotations
 

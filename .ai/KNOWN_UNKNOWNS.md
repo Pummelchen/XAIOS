@@ -144,8 +144,9 @@ and Project status aligned with `docs/MODEL-SUPPORT.json`.
 
 ## Unknowns
 
-- The freestanding SSH/SFTP server interoperates with Debian 13 OpenSSH in local
-  QEMU tests, and a native macOS plus Debian 13 load gate exercises the same
+- The freestanding SSH/SFTP server interoperates with FreeBSD 15.1 and Debian
+  13 OpenSSH in local QEMU tests. FreeBSD is the bounded Unix-reference subset;
+  a native macOS plus Debian 13 load gate exercises the same
   successful guest. Evidence includes provisioned Ed25519 and PBKDF2
   authentication, fail-closed entropy/configuration variants, persistent host
   identity, shared channels, forced rekey, strict and overlapping SFTP, four

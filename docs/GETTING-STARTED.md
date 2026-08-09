@@ -87,7 +87,8 @@ evidence. See [`VMWARE-FUSION.md`](./VMWARE-FUSION.md).
 | `make qemu-osctl-gate` | Control-plane telemetry |
 | `make qemu-filesystem-gate` | Mutable filesystem operations |
 | `make qemu-network-suite` | Network stack (UDP/TCP) |
-| `make qemu-docker-network-suite` | Debian 13 OpenSSH/SFTP/UDP/IPv6 interoperability |
+| `make qemu-freebsd-network-suite` | FreeBSD 15.1 OpenSSH/SFTP/UDP Unix-reference interoperability |
+| `make qemu-docker-network-suite` | Linux OpenSSH/SFTP/UDP/IPv6 interoperability through Debian 13 |
 | `make qemu-cpu-ai-suite` | CPU-only AI runtime |
 | `make qemu-regression-suite` | Full regression suite |
 | `make qemu-benchmark` | QEMU correctness telemetry collection |
@@ -101,8 +102,18 @@ host forwarding. The image has no built-in password or authorized key. Package
 disposable development credentials at build time and do not expose these ports
 beyond localhost.
 
-The recommended automated check uses the official Debian 13 Docker base and
-tests Ed25519 and password acceptance/rejection, default-disabled and malformed
+The primary external Unix-reference check boots an official, checksum-pinned
+FreeBSD 15.1 AArch64 VM beside XAIOS:
+
+```sh
+make qemu-freebsd-network-suite
+```
+
+The first run downloads approximately 600 MiB into `~/.cache/xaios/freebsd`.
+It requires QEMU, `qemu-img`, `xz`, and an ISO creator (`hdiutil`, `xorrisofs`,
+`genisoimage`, or `mkisofs`). The separate Linux cross-client check uses the
+official Debian 13 Docker base and tests Ed25519 and password
+acceptance/rejection, default-disabled and malformed
 credential configurations, secure-entropy failure, persistent host identity,
 SFTP offsets, channel sharing, rekey, four simultaneous SSH sessions, reconnect
 recycling, UDP echo, and direct malformed/reordered/retransmitted TCP traffic:
