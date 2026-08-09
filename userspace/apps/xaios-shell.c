@@ -129,17 +129,44 @@ int main(void) {
     xaios_log("/bin/xaios-shell: htop process verification failed\n");
     return 1;
   }
+  if (shell_run("htop --all --sample-ms 10 --cpu-count 2 --sort mem "
+                "--reverse --filter xaios-shell --process-start 0",
+                output, sizeof(output), &out_size) != 0 ||
+      text_contains(output, "sort=mem reverse=1 filter=xaios-shell") == 0 ||
+      text_contains(output, "/bin/xaios-shell") == 0 ||
+      text_contains(output, "process_start=0") == 0) {
+    xaios_log("/bin/xaios-shell: htop sort/filter verification failed\n");
+    return 1;
+  }
   if (shell_run("htop --all --sample-ms 10 --cpu-count 2 --color "
-                "--columns 40 --rows 12",
+                "--interactive --sort syscalls --columns 40 --rows 12",
                 output, sizeof(output), &out_size) != 0 ||
       text_contains(output, "\033[2J\033[H") == 0 ||
+      text_contains(output, "\033[?25l") == 0 ||
       text_contains(output, "\033[42;30m") == 0 ||
       text_contains(output, "Tasks:") == 0 ||
       text_contains(output, "Mem") == 0 ||
+      text_contains(output, "View: ") == 0 ||
+      text_contains(output, "Sort: ") == 0 ||
+      text_contains(output, "syscalls") == 0 ||
       text_contains(output, "[Main]") == 0 ||
       text_contains(output, " PID S   CPU%   MEM% COMMAND") == 0 ||
-      text_contains(output, "CPUs:") == 0) {
+      text_contains(output, "CPUs:") == 0 ||
+      text_contains(output, "F10Quit") == 0) {
     xaios_log("/bin/xaios-shell: htop ANSI dashboard verification failed\n");
+    return 1;
+  }
+  if (shell_run("htop --all --sample-ms 10 --no-cpus --color --tree "
+                "--columns 120 --rows 20",
+                output, sizeof(output), &out_size) != 0 ||
+      text_contains(output, "Sort: \033[32mparent") == 0 ||
+      text_contains(output, "|- /bin/xaios-worker") == 0) {
+    xaios_log("/bin/xaios-shell: htop tree verification failed\n");
+    return 1;
+  }
+  if (shell_run("htop --sort invalid", output, sizeof(output), &out_size) == 0 ||
+      text_contains(output, "htop: invalid --sort key") == 0) {
+    xaios_log("/bin/xaios-shell: htop option validation failed\n");
     return 1;
   }
   if (shell_run("rm /state/remote-shell-test/editor.txt", output,

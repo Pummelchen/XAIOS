@@ -958,7 +958,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
   if (syscall == XAIOS_SYSCALL_REMOTE_LOGIN) {
     xaios_syscall_remote_login_request_t request;
     char user[32];
-    char command[96];
+    char command[256];
     uint64_t out_size = 0;
     if (arg1 != sizeof(request) ||
         vmm_validate_user_buffer(arg0, sizeof(request), 0) != XAIOS_OK) {
@@ -990,7 +990,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
   if (syscall == XAIOS_SYSCALL_REMOTE_LOGIN_SESSION) {
     xaios_syscall_remote_login_session_request_t request;
     char user[32];
-    char command[96];
+    char command[256];
     uint64_t out_size = 0U;
     if (arg1 != sizeof(request) ||
         vmm_validate_user_buffer(arg0, sizeof(request), 0) != XAIOS_OK) {

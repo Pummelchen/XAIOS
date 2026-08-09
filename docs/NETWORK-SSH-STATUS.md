@@ -51,7 +51,8 @@ subsequently passed the explicitly identified subset below on 2026-08-10:
   out-of-order IPv4 and IPv6 fragment pairs before processing their TCP SYNs;
 - guest userspace resolved `example.com` through the asynchronous DNS syscall,
   then completed an immediate cache hit.
-- a Debian 13 OpenSSH PTY received the native guest-generated ANSI `htop`
+- a Debian 13 OpenSSH PTY drove the native guest-generated live ANSI `htop`,
+  including sort, filter, help and clean cursor-restoring exit
   dashboard with CPU/memory meters and process framing, while a non-PTY command
   retained the plain automation format.
 
@@ -61,7 +62,7 @@ subsequently passed the explicitly identified subset below on 2026-08-10:
 15.1 AArch64 cloud image beside one XAIOS guest. FreeBSD base-system OpenSSH
 10.0p2 and SFTP passed authorized login, unauthorized-key rejection, a typed
 `xaiosctl version` query, SFTP write/stat/read/rename/remove with exact byte
-comparison, PTY ANSI `htop`, and UDP echo. The passing report is
+comparison, interactive PTY ANSI `htop`, and UDP echo. The passing report is
 `build/qemu-freebsd-network-suite.json`.
 
 This is the primary external Unix behavioral-reference gate. It does not prove

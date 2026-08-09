@@ -2570,8 +2570,50 @@ typedef struct htop_process_row {
   uint64_t runtime_ns;
   uint64_t resident_pages;
   uint64_t syscall_count;
+  uint32_t tree_depth;
   const char *name;
 } htop_process_row_t;
+
+typedef enum htop_sort_key {
+  HTOP_SORT_CPU = 0,
+  HTOP_SORT_MEMORY,
+  HTOP_SORT_TIME,
+  HTOP_SORT_PID,
+  HTOP_SORT_STATE,
+  HTOP_SORT_SYSCALLS,
+  HTOP_SORT_COMMAND,
+  HTOP_SORT_PARENT
+} htop_sort_key_t;
+
+static const char *htop_sort_name(htop_sort_key_t key) {
+  switch (key) {
+  case HTOP_SORT_MEMORY:
+    return "mem";
+  case HTOP_SORT_TIME:
+    return "time";
+  case HTOP_SORT_PID:
+    return "pid";
+  case HTOP_SORT_STATE:
+    return "state";
+  case HTOP_SORT_SYSCALLS:
+    return "syscalls";
+  case HTOP_SORT_COMMAND:
+    return "command";
+  case HTOP_SORT_PARENT:
+    return "parent";
+  default:
+    return "cpu";
+  }
+}
+
+static int htop_name_compare(const char *lhs, const char *rhs) {
+  uint32_t index = 0U;
+  while (lhs[index] != '\0' && rhs[index] != '\0' &&
+         lhs[index] == rhs[index]) {
+    ++index;
+  }
+  return (int)(uint8_t)lhs[index] - (int)(uint8_t)rhs[index];
+}
 
 static uint64_t htop_ratio_tenths(uint64_t numerator,
                                   uint64_t denominator) {
@@ -2769,23 +2811,139 @@ static const char *htop_cpu_role_name(uint32_t cpu_id) {
 }
 
 static int htop_row_precedes(const htop_process_row_t *lhs,
-                             const htop_process_row_t *rhs) {
-  if (lhs->cpu_tenths != rhs->cpu_tenths) {
-    return lhs->cpu_tenths > rhs->cpu_tenths;
+                             const htop_process_row_t *rhs,
+                             htop_sort_key_t key, int reverse) {
+  int precedes = 0;
+  int differs = 1;
+  switch (key) {
+  case HTOP_SORT_MEMORY:
+    precedes = lhs->resident_pages > rhs->resident_pages;
+    differs = lhs->resident_pages != rhs->resident_pages;
+    break;
+  case HTOP_SORT_TIME:
+    precedes = lhs->runtime_ns > rhs->runtime_ns;
+    differs = lhs->runtime_ns != rhs->runtime_ns;
+    break;
+  case HTOP_SORT_PID:
+    precedes = lhs->pid < rhs->pid;
+    differs = lhs->pid != rhs->pid;
+    break;
+  case HTOP_SORT_STATE:
+    precedes = lhs->state < rhs->state;
+    differs = lhs->state != rhs->state;
+    break;
+  case HTOP_SORT_SYSCALLS:
+    precedes = lhs->syscall_count > rhs->syscall_count;
+    differs = lhs->syscall_count != rhs->syscall_count;
+    break;
+  case HTOP_SORT_COMMAND: {
+    int comparison = htop_name_compare(lhs->name, rhs->name);
+    precedes = comparison < 0;
+    differs = comparison != 0;
+    break;
   }
-  return lhs->pid < rhs->pid;
+  case HTOP_SORT_PARENT:
+    if (lhs->parent_pid != rhs->parent_pid) {
+      precedes = lhs->parent_pid < rhs->parent_pid;
+    } else {
+      precedes = lhs->pid < rhs->pid;
+    }
+    differs = lhs->parent_pid != rhs->parent_pid || lhs->pid != rhs->pid;
+    break;
+  default:
+    precedes = lhs->cpu_tenths > rhs->cpu_tenths;
+    differs = lhs->cpu_tenths != rhs->cpu_tenths;
+    break;
+  }
+  if (differs == 0) return lhs->pid < rhs->pid;
+  return reverse != 0 ? !precedes : precedes;
 }
 
-static void htop_sort_rows(htop_process_row_t *rows, uint32_t count) {
+static void htop_sort_rows(htop_process_row_t *rows, uint32_t count,
+                           htop_sort_key_t key, int reverse) {
   for (uint32_t i = 1U; i < count; ++i) {
     htop_process_row_t value = rows[i];
     uint32_t position = i;
-    while (position > 0U && htop_row_precedes(&value, &rows[position - 1U])) {
+    while (position > 0U &&
+           htop_row_precedes(&value, &rows[position - 1U], key, reverse)) {
       rows[position] = rows[position - 1U];
       --position;
     }
     rows[position] = value;
   }
+}
+
+static int htop_tree_parent_present(const htop_process_row_t *rows,
+                                    uint32_t count, uint32_t parent_pid) {
+  if (parent_pid == 0U) return 0;
+  for (uint32_t i = 0U; i < count; ++i) {
+    if (rows[i].pid == parent_pid) return 1;
+  }
+  return 0;
+}
+
+static int htop_arrange_tree(htop_process_row_t *rows, uint32_t count) {
+  htop_process_row_t *ordered;
+  uint32_t *stack_index;
+  uint32_t *stack_depth;
+  uint8_t *emitted;
+  uint32_t output_count = 0U;
+  if (count == 0U) return 0;
+  ordered = (htop_process_row_t *)kheap_calloc(
+      (uint64_t)count * sizeof(*ordered), 16U);
+  stack_index = (uint32_t *)kheap_calloc(
+      (uint64_t)count * sizeof(*stack_index), 16U);
+  stack_depth = (uint32_t *)kheap_calloc(
+      (uint64_t)count * sizeof(*stack_depth), 16U);
+  emitted = (uint8_t *)kheap_calloc(count, 16U);
+  if (ordered == 0 || stack_index == 0 || stack_depth == 0 || emitted == 0) {
+    kheap_free(ordered);
+    kheap_free(stack_index);
+    kheap_free(stack_depth);
+    kheap_free(emitted);
+    return -1;
+  }
+
+  for (uint32_t root_pass = 0U; root_pass < 2U; ++root_pass) {
+    for (uint32_t root = 0U; root < count; ++root) {
+      int natural_root = rows[root].parent_pid == 0U ||
+                         htop_tree_parent_present(rows, count,
+                                                  rows[root].parent_pid) == 0;
+      if (emitted[root] != 0U ||
+          (root_pass == 0U && natural_root == 0) ||
+          (root_pass != 0U && natural_root != 0)) {
+        continue;
+      }
+      uint32_t stack_count = 0U;
+      stack_index[stack_count] = root;
+      stack_depth[stack_count++] = 0U;
+      while (stack_count != 0U) {
+        --stack_count;
+        uint32_t index = stack_index[stack_count];
+        uint32_t depth = stack_depth[stack_count];
+        if (emitted[index] != 0U) continue;
+        emitted[index] = 1U;
+        ordered[output_count] = rows[index];
+        ordered[output_count++].tree_depth = depth;
+        for (uint32_t child = count; child != 0U; --child) {
+          uint32_t child_index = child - 1U;
+          if (emitted[child_index] == 0U &&
+              rows[child_index].parent_pid == rows[index].pid &&
+              stack_count < count) {
+            stack_index[stack_count] = child_index;
+            stack_depth[stack_count++] =
+                depth == UINT32_MAX ? UINT32_MAX : depth + 1U;
+          }
+        }
+      }
+    }
+  }
+  for (uint32_t i = 0U; i < output_count; ++i) rows[i] = ordered[i];
+  kheap_free(ordered);
+  kheap_free(stack_index);
+  kheap_free(stack_depth);
+  kheap_free(emitted);
+  return output_count == count ? 0 : -1;
 }
 
 static uint32_t htop_render_color(
@@ -2794,10 +2952,12 @@ static uint32_t htop_render_color(
     uint32_t cpu_shown, uint32_t cpu_total, const uint64_t *before_cpu,
     uint64_t after_ns, uint64_t elapsed_ns, uint64_t managed_pages,
     uint64_t free_pages, uint32_t active_tasks, uint32_t failed_tasks,
-    const htop_process_row_t *process_rows, uint32_t process_count) {
+    const htop_process_row_t *process_rows, uint32_t process_count,
+    uint32_t process_start, uint32_t selected, htop_sort_key_t sort_key,
+    int reverse, int interactive, const char *filter) {
   uint32_t process_shown = 0U;
   uint32_t cpu_line_count = (cpu_shown + 1U) / 2U;
-  uint32_t fixed_lines = 9U;
+  uint32_t fixed_lines = 10U;
   uint32_t process_budget = terminal_rows > cpu_line_count + fixed_lines
                                 ? terminal_rows - cpu_line_count - fixed_lines
                                 : 1U;
@@ -2809,7 +2969,8 @@ static uint32_t htop_render_color(
   uint64_t memory_tenths = htop_capacity_tenths(used_pages, managed_pages);
 
   output_append(output, output_capacity, output_bytes,
-                "\033[2J\033[H\033[?25h");
+                interactive != 0 ? "\033[2J\033[H\033[?25l"
+                                 : "\033[2J\033[H\033[?25h");
   htop_append_ansi_line(output, output_capacity, output_bytes,
                         "\033[44;97m",
                         " XAIOS htop | sampled kernel process monitor",
@@ -2888,9 +3049,26 @@ static uint32_t htop_render_color(
   }
   output_append(output, output_capacity, output_bytes, "\033[0m\r\n");
   output_append(output, output_capacity, output_bytes,
+                "\033[36mView: \033[32m");
+  output_append(output, output_capacity, output_bytes,
+                interactive != 0 ? "live" : "snapshot");
+  output_append(output, output_capacity, output_bytes,
+                "\033[36m  Sort: \033[32m");
+  output_append(output, output_capacity, output_bytes, htop_sort_name(sort_key));
+  if (reverse != 0) {
+    output_append(output, output_capacity, output_bytes, " ascending");
+  }
+  if (filter[0] != '\0') {
+    output_append(output, output_capacity, output_bytes,
+                  "\033[36m  Filter: \033[33m");
+    htop_append_bounded(output, output_capacity, output_bytes, filter,
+                        columns > 40U ? columns - 40U : 1U);
+  }
+  output_append(output, output_capacity, output_bytes, "\033[0m\r\n\r\n");
+  output_append(output, output_capacity, output_bytes,
                 "\033[36mUptime: \033[32m");
   htop_append_uptime(output, output_capacity, output_bytes, after_ns);
-  output_append(output, output_capacity, output_bytes, "\033[0m\r\n\r\n");
+  output_append(output, output_capacity, output_bytes, "\033[0m\r\n");
 
   htop_append_ansi_line(output, output_capacity, output_bytes,
                         "\033[44;97m", "[Main]", columns);
@@ -2898,10 +3076,13 @@ static uint32_t htop_render_color(
                         "\033[42;30m",
                         columns < 60U
                             ? " PID S   CPU%   MEM% COMMAND"
-                            : "  PID  PPID S   CPU%   MEM%    TIME+ RES_KIB CPU COMMAND",
+                            : (columns < 100U
+                                   ? "  PID  PPID S   CPU%   MEM%    TIME+ RES_KIB CPU COMMAND"
+                                   : "  PID  PPID S   CPU%   MEM%    TIME+ RES_KIB CPU  SYSCALLS COMMAND"),
                         columns);
 
-  for (uint32_t i = 0U; i < process_count && process_shown < process_budget;
+  for (uint32_t i = process_start;
+       i < process_count && process_shown < process_budget;
        ++i) {
     uint64_t row_and_footer = ((uint64_t)columns + 64U) * 2U;
     if (*output_bytes >= output_capacity ||
@@ -2909,8 +3090,8 @@ static uint32_t htop_render_color(
       break;
     }
     const htop_process_row_t *row = &process_rows[i];
-    if (i == 0U) output_append(output, output_capacity, output_bytes,
-                               "\033[46;30m");
+    if (i == selected) output_append(output, output_capacity, output_bytes,
+                                    "\033[46;30m");
     else output_append(output, output_capacity, output_bytes, "\033[36m");
     uint32_t fixed_visible;
     if (columns < 60U) {
@@ -2957,28 +3138,60 @@ static uint32_t htop_render_color(
       }
       output_append(output, output_capacity, output_bytes, " ");
       fixed_visible = 49U;
+      if (columns >= 100U) {
+        htop_append_u64_width(output, output_capacity, output_bytes,
+                              row->syscall_count, 9U);
+        output_append(output, output_capacity, output_bytes, " ");
+        fixed_visible += 10U;
+      }
     }
     uint32_t command_width = columns > fixed_visible
                                  ? columns - fixed_visible
                                  : 0U;
+    uint32_t prefix_length = 0U;
+    if (sort_key == HTOP_SORT_PARENT && row->tree_depth != 0U) {
+      uint32_t indent = row->tree_depth > 8U ? 14U
+                                             : (row->tree_depth - 1U) * 2U;
+      prefix_length = indent + 3U;
+      if (prefix_length <= command_width) {
+        htop_append_repeat(output, output_capacity, output_bytes, ' ', indent);
+      } else {
+        prefix_length = 0U;
+      }
+    }
+    if (prefix_length != 0U && command_width >= prefix_length) {
+      output_append(output, output_capacity, output_bytes, "|- ");
+    }
+    uint32_t name_width = command_width > prefix_length
+                              ? command_width - prefix_length : 0U;
     htop_append_bounded(output, output_capacity, output_bytes, row->name,
-                        command_width);
+                        name_width);
     uint32_t command_length = (uint32_t)cstr_len(row->name);
-    if (command_length < command_width) {
+    if (command_length < name_width) {
       htop_append_repeat(output, output_capacity, output_bytes, ' ',
-                         command_width - command_length);
+                         name_width - command_length);
     }
     output_append(output, output_capacity, output_bytes, "\033[0m\r\n");
     ++process_shown;
   }
 
-  htop_append_ansi_line(
-      output, output_capacity, output_bytes, "\033[42;30m",
-      columns < 60U
-          ? " --active --all --cpu-start N --plain"
-          : " --active  --all  --cpu-start N  --cpu-count N  --plain",
-      columns);
-  output_append(output, output_capacity, output_bytes, "\033[0m\033[?25h");
+  if (interactive != 0) {
+    htop_append_ansi_line(
+        output, output_capacity, output_bytes, "\033[42;30m",
+        columns < 80U
+            ? " F1Help F3Find F4Filter F5Tree F10Quit"
+            : " F1 Help  F3 Search  F4 Filter  F5 Tree  F6 Sort  I Reverse  [/] CPUs  F10 Quit",
+        columns);
+    output_append(output, output_capacity, output_bytes, "\033[0m\033[?25l");
+  } else {
+    htop_append_ansi_line(
+        output, output_capacity, output_bytes, "\033[42;30m",
+        columns < 60U
+            ? " --active --all --sort KEY --plain"
+            : " --active  --all  --sort KEY  --filter TEXT  --cpu-start N  --plain",
+        columns);
+    output_append(output, output_capacity, output_bytes, "\033[0m\033[?25h");
+  }
   return process_shown;
 }
 
@@ -2996,6 +3209,24 @@ static xaios_status_t htop_parse_u32_option(const char *args, uint64_t *index,
   return XAIOS_OK;
 }
 
+static xaios_status_t htop_parse_sort_option(const char *args, uint64_t *index,
+                                             htop_sort_key_t *key) {
+  char value[24];
+  if (token_next(args, index, value, sizeof(value)) != XAIOS_OK) {
+    return XAIOS_ERR_INVALID;
+  }
+  if (string_equal(value, "cpu") == 1U) *key = HTOP_SORT_CPU;
+  else if (string_equal(value, "mem") == 1U) *key = HTOP_SORT_MEMORY;
+  else if (string_equal(value, "time") == 1U) *key = HTOP_SORT_TIME;
+  else if (string_equal(value, "pid") == 1U) *key = HTOP_SORT_PID;
+  else if (string_equal(value, "state") == 1U) *key = HTOP_SORT_STATE;
+  else if (string_equal(value, "syscalls") == 1U) *key = HTOP_SORT_SYSCALLS;
+  else if (string_equal(value, "command") == 1U) *key = HTOP_SORT_COMMAND;
+  else if (string_equal(value, "parent") == 1U) *key = HTOP_SORT_PARENT;
+  else return XAIOS_ERR_INVALID;
+  return XAIOS_OK;
+}
+
 static void htop_sample_wait(uint64_t deadline_ns) {
   while (timer_now_ns() < deadline_ns) {
     __asm__ volatile("" ::: "memory");
@@ -3010,8 +3241,14 @@ static xaios_status_t handle_htop(const char *args, char *output,
   int show_all = 0;
   int show_cpus = 1;
   int color_output = 0;
+  int reverse = 0;
+  int interactive = 0;
+  char filter[32];
+  htop_sort_key_t sort_key = HTOP_SORT_CPU;
   uint32_t cpu_start = 0U;
   uint32_t cpu_requested = UINT32_MAX;
+  uint32_t process_start = 0U;
+  uint32_t selected = 0U;
   uint32_t sample_ms = 100U;
   uint32_t terminal_columns = 120U;
   uint32_t terminal_rows = 40U;
@@ -3032,6 +3269,7 @@ static xaios_status_t handle_htop(const char *args, char *output,
   uint64_t *before_cpu = 0;
   htop_process_row_t *rows = 0;
   xaios_user_process_t process;
+  filter[0] = '\0';
   while (token_next(args, &index, option, sizeof(option)) == XAIOS_OK) {
     if (string_equal(option, "--all") == 1U) {
       show_all = 1;
@@ -3043,6 +3281,33 @@ static xaios_status_t handle_htop(const char *args, char *output,
       color_output = 1;
     } else if (string_equal(option, "--plain") == 1U) {
       color_output = 0;
+    } else if (string_equal(option, "--interactive") == 1U) {
+      interactive = 1;
+      color_output = 1;
+    } else if (string_equal(option, "--reverse") == 1U) {
+      reverse = 1;
+    } else if (string_equal(option, "--tree") == 1U) {
+      sort_key = HTOP_SORT_PARENT;
+    } else if (string_equal(option, "--sort") == 1U) {
+      if (htop_parse_sort_option(args, &index, &sort_key) != XAIOS_OK) {
+        return command_fail(output, output_capacity, output_bytes,
+                            "htop: invalid --sort key");
+      }
+    } else if (string_equal(option, "--filter") == 1U) {
+      if (token_next(args, &index, filter, sizeof(filter)) != XAIOS_OK) {
+        return command_fail(output, output_capacity, output_bytes,
+                            "htop: invalid --filter");
+      }
+    } else if (string_equal(option, "--process-start") == 1U) {
+      if (htop_parse_u32_option(args, &index, &process_start) != XAIOS_OK) {
+        return command_fail(output, output_capacity, output_bytes,
+                            "htop: invalid --process-start");
+      }
+    } else if (string_equal(option, "--selected") == 1U) {
+      if (htop_parse_u32_option(args, &index, &selected) != XAIOS_OK) {
+        return command_fail(output, output_capacity, output_bytes,
+                            "htop: invalid --selected");
+      }
     } else if (string_equal(option, "--columns") == 1U) {
       if (htop_parse_u32_option(args, &index, &terminal_columns) != XAIOS_OK ||
           terminal_columns < 40U || terminal_columns > 240U) {
@@ -3077,7 +3342,10 @@ static xaios_status_t handle_htop(const char *args, char *output,
           output, output_capacity, output_bytes,
           "htop [--active|--all] [--sample-ms 1..1000] [--cpu-start N] "
           "[--cpu-count N] [--no-cpus] [--color|--plain] "
-          "[--columns 40..240] [--rows 12..100]\n");
+          "[--columns 40..240] [--rows 12..100] "
+          "[--sort cpu|mem|time|pid|state|syscalls|command|parent] "
+          "[--reverse] [--tree] [--filter TEXT] [--process-start N] "
+          "[--selected N]\n");
       return XAIOS_OK;
     } else {
       return command_fail(output, output_capacity, output_bytes,
@@ -3087,8 +3355,7 @@ static xaios_status_t handle_htop(const char *args, char *output,
 
   cpu_total = user_cpu_usage_count();
   if (cpu_start > cpu_total) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "htop: --cpu-start exceeds online CPU count");
+    cpu_start = cpu_total;
   }
   uint32_t cpu_available = cpu_total - cpu_start;
   uint32_t cpu_page_budget = output_capacity > 1024U
@@ -3172,7 +3439,10 @@ static xaios_status_t handle_htop(const char *args, char *output,
 
   for (uint32_t pid = 1U; pid <= XAIOS_MAX_USER_PROCESSES; ++pid) {
     if (user_process_snapshot_at(pid, after_ns, &process) != XAIOS_OK ||
-        (show_all == 0 && htop_state_active(process.state) == 0)) {
+        (show_all == 0 && htop_state_active(process.state) == 0) ||
+        (filter[0] != '\0' &&
+         contains_substring(process.name == 0 ? "(unknown)" : process.name,
+                            filter) == 0)) {
       continue;
     }
     htop_process_row_t *row = &rows[process_count++];
@@ -3191,14 +3461,25 @@ static xaios_status_t handle_htop(const char *args, char *output,
     row->name = process.name == 0 ? "(unknown)" : process.name;
   }
   process_total = process_count;
-  htop_sort_rows(rows, process_count);
+  if (sort_key == HTOP_SORT_PARENT) {
+    htop_sort_rows(rows, process_count, HTOP_SORT_PID, reverse);
+    if (htop_arrange_tree(rows, process_count) != 0) {
+      htop_sort_rows(rows, process_count, HTOP_SORT_PARENT, reverse);
+    }
+  } else {
+    htop_sort_rows(rows, process_count, sort_key, reverse);
+  }
+  if (process_start > process_count) process_start = process_count;
+  if (process_count == 0U) selected = 0U;
+  else if (selected >= process_count) selected = process_count - 1U;
 
   if (color_output != 0) {
     process_shown = htop_render_color(
         output, output_capacity, output_bytes, terminal_columns, terminal_rows,
         cpu_start, cpu_shown, cpu_total, before_cpu, after_ns, elapsed_ns,
         managed_pages, free_pages, user_process_active_count(),
-        user_process_failed_count(), rows, process_count);
+        user_process_failed_count(), rows, process_count, process_start,
+        selected, sort_key, reverse, interactive, filter);
     (void)process_shown;
     kheap_free(before_runtime);
     kheap_free(before_cpu);
@@ -3216,6 +3497,15 @@ static xaios_status_t handle_htop(const char *args, char *output,
   output_append(output, output_capacity, output_bytes, " failed=");
   output_append_u64(output, output_capacity, output_bytes,
                     user_process_failed_count());
+  output_append(output, output_capacity, output_bytes, " sort=");
+  output_append(output, output_capacity, output_bytes, htop_sort_name(sort_key));
+  output_append(output, output_capacity, output_bytes, " reverse=");
+  output_append_u64(output, output_capacity, output_bytes,
+                    reverse != 0 ? 1U : 0U);
+  if (filter[0] != '\0') {
+    output_append(output, output_capacity, output_bytes, " filter=");
+    output_append(output, output_capacity, output_bytes, filter);
+  }
   output_append(output, output_capacity, output_bytes, "\nCPU all=");
   uint64_t busy_delta = after_busy_total >= before_busy_total
                             ? after_busy_total - before_busy_total
@@ -3286,7 +3576,7 @@ static xaios_status_t handle_htop(const char *args, char *output,
 
   output_append(output, output_capacity, output_bytes,
                 "PID PPID S CPU% MEM% TIME_MS RES_KIB CPU SYSCALLS COMMAND\n");
-  for (uint32_t i = 0U; i < process_count; ++i) {
+  for (uint32_t i = process_start; i < process_count; ++i) {
     if (*output_bytes + 160U >= output_capacity) {
       break;
     }
@@ -3325,7 +3615,9 @@ static xaios_status_t handle_htop(const char *args, char *output,
   output_append_u64(output, output_capacity, output_bytes, process_shown);
   output_append(output, output_capacity, output_bytes, " process_total=");
   output_append_u64(output, output_capacity, output_bytes, process_total);
-  if (process_shown < process_total) {
+  output_append(output, output_capacity, output_bytes, " process_start=");
+  output_append_u64(output, output_capacity, output_bytes, process_start);
+  if (process_start + process_shown < process_total) {
     output_append(output, output_capacity, output_bytes, " truncated=1");
   }
   output_append(output, output_capacity, output_bytes, "\n");

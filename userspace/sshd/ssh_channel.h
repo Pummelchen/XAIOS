@@ -30,6 +30,21 @@ typedef struct ssh_channel {
   uint32_t pty_requested;
   uint32_t terminal_columns;
   uint32_t terminal_rows;
+  uint32_t htop_active;
+  uint32_t htop_show_all;
+  uint32_t htop_show_cpus;
+  uint32_t htop_sort_key;
+  uint32_t htop_reverse;
+  uint32_t htop_cpu_start;
+  uint32_t htop_cpu_count;
+  uint32_t htop_process_start;
+  uint32_t htop_selected;
+  uint32_t htop_refresh_ms;
+  uint32_t htop_filter_mode;
+  uint32_t htop_help;
+  uint32_t htop_filter_length;
+  uint64_t htop_next_refresh_ns;
+  char htop_filter[32];
   uint32_t sftp_rx_used;
   uint8_t sftp_rx[SSH_CHANNEL_SFTP_BUFFER_SIZE];
   uint8_t pending[SSH_CHANNEL_PENDING_SIZE];
@@ -38,6 +53,7 @@ typedef struct ssh_channel {
 void ssh_channel_init(void);
 void ssh_channel_close_connection(int sockfd);
 int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt);
+int ssh_channel_tick(uint64_t now_ns);
 int ssh_channel_send_data(int sockfd, uint32_t remote_id,
                           const uint8_t *data, uint32_t len);
 

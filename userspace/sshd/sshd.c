@@ -1768,6 +1768,9 @@ close_conn:
         ssh_log(SSH_LOG_INFO, "Connection closed\n");
       }
     }
+    if (ssh_channel_tick(timer_now()) != 0) {
+      ssh_log(SSH_LOG_WARN, "Interactive channel refresh failed\n");
+    }
   }
 
   return 0;

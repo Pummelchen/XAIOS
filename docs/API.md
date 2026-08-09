@@ -166,6 +166,8 @@ Edits are saved immediately by the modifying commands.
 htop [--active|--all] [--sample-ms 1..1000]
      [--cpu-start N] [--cpu-count N] [--no-cpus]
      [--color|--plain] [--columns 40..240] [--rows 12..100]
+     [--sort cpu|mem|time|pid|state|syscalls|command|parent]
+     [--reverse] [--tree] [--filter TEXT] [--process-start N] [--selected N]
 ```
 
 The default 100 ms interval reports `%CPU` from monotonic runtime deltas, not
@@ -190,16 +192,25 @@ includes exited and failed slots.
 
 The native SSH daemon validates `pty-req` and `window-change` dimensions. An
 exact `htop` command on a PTY channel automatically selects the guest-generated
-ANSI dashboard and uses the reported terminal size. It includes colored CPU,
-managed-memory and zero-capacity swap meters, task and uptime state, a process
-table, and honest command-option hints. CPU pagination remains dynamic on
-many-core systems. `--plain` explicitly disables ANSI; non-PTY invocations are
-plain by default for scripts.
+live ANSI monitor and uses the reported terminal size. It includes colored CPU,
+managed-memory and zero-capacity swap meters, task and uptime state, process
+selection, process/CPU paging, sorting, filtering and an in-terminal help view.
+Resize requests trigger a new bounded frame. Each PTY channel owns independent
+view state and refreshes only after its previous output has drained.
 
-This is a terminal-formatted snapshot, not a curses event loop: it samples once,
-writes one bounded screen, and returns. Output tagged `source=ssh-bridge` is a
-host-proxy compatibility view; native SSH output is generated inside XAIOS and
-is backed by kernel process and per-CPU accounting.
+Interactive keys include arrows or `j`/`k`, Page Up/Page Down, `P`/`M`/`T`/`N`/
+`S`/`C` sorting, `F6` sort cycling, `I` reverse order, `F3` or `/` filtering,
+`F4` filter clearing, `F5` or `t` process-tree view, `a` active/all tasks,
+`1` CPU-meter visibility, `[`/`]` CPU pages, `+`/`-` refresh speed, `r` refresh,
+`F1` help, and `F10`, `q` or Control-C to quit. Refresh delay is bounded to
+250..5000 ms; each frame uses a short 10 ms accounting sample.
+
+`--plain` explicitly disables ANSI and interaction. Non-PTY invocations remain
+one-shot plain snapshots for scripts. Generic process kill and priority changes
+are intentionally absent because XAIOS does not yet expose a safe general
+process-control ABI. Output tagged `source=ssh-bridge` is a host-proxy
+compatibility view; native SSH output is generated inside XAIOS and is backed by
+kernel process and per-CPU accounting.
 
 ## Capabilities
 

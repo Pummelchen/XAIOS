@@ -30,10 +30,12 @@ IPv4/IPv6 fragment reassembly are in
 [`docs/NETWORK-SSH-STATUS.md`](https://github.com/Pummelchen/XAIOS/blob/main/docs/NETWORK-SSH-STATUS.md).
 
 The guest validates SSH PTY and resize dimensions. Running `htop` on a PTY
-selects a native XAIOS-generated ANSI dashboard with sampled CPU/memory meters,
-process framing, and dynamic many-core paging. Non-PTY calls remain plain for
-automation. The command produces one terminal-formatted snapshot and returns;
-it is not a curses event loop.
+selects a native XAIOS-generated live ANSI monitor with sampled CPU/memory
+meters, process selection and paging, CPU paging, sorting, filtering, help and
+resize-aware rerendering. Each SSH channel has independent monitor state and
+bounded refresh/backpressure behavior. Non-PTY calls remain one-shot plain
+snapshots for automation. Process kill and priority controls are not offered
+until XAIOS has a safe generic process-control ABI.
 
 Ed25519 principals are assigned observer, operator or administrator roles.
 Administrative audit entries and operational remote-login records omit command

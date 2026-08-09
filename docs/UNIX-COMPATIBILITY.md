@@ -11,7 +11,7 @@ that XAIOS is derived from FreeBSD or implements the FreeBSD kernel ABI.
 |---|---|---|
 | XAIOS kernel and userspace | Native freestanding ABI | C99 code uses XAIOS syscalls and services. It does not depend on glibc, Linux syscalls, FreeBSD libc or either host kernel. |
 | Unix command behavior | Partial, QEMU-tested | The bounded shell and image utilities exercise composable command, pipe and redirection behavior. XAIOS is not POSIX-certified and does not provide a general POSIX process environment. |
-| FreeBSD client interoperability | QEMU-tested subset | An official FreeBSD 15.1 AArch64 VM uses base-system OpenSSH/SFTP and `nc` to test XAIOS public-key login/rejection, `xaiosctl`, SFTP operations, PTY ANSI `htop`, and UDP echo. |
+| FreeBSD client interoperability | QEMU-tested subset | An official FreeBSD 15.1 AArch64 VM uses base-system OpenSSH/SFTP and `nc` to test XAIOS public-key login/rejection, `xaiosctl`, SFTP operations, interactive PTY ANSI `htop`, and UDP echo. |
 | Linux client interoperability | QEMU-tested subset | A disposable Debian 13 container remains an independent OpenSSH/SFTP/network client and exercises the broader administration, password, rekey, concurrency and malformed-traffic suite. |
 | Linux binary ABI | Not implemented | XAIOS does not run Linux ELF programs or implement Linux syscalls, procfs, namespaces, cgroups or distribution package semantics. |
 | FreeBSD binary ABI | Not implemented | XAIOS does not run FreeBSD ELF programs or implement FreeBSD syscalls, jails, rc.d, ports/pkg or kernel interfaces. |

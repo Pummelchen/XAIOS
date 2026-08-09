@@ -268,11 +268,13 @@ cmp /tmp/sftp-source /tmp/sftp-renamed-result || fail "SFTP rename round trip di
 grep -q '/tmp/freebsd-sftp' /tmp/sftp.log || fail "SFTP stat/list output missing"
 echo "XAIOS_FREEBSD_INTEROP: SFTP read/write/stat/rename/remove PASS"
 
-TERM=xterm ssh -tt $ssh_base admin@$host 'htop --all --sample-ms 10 --cpu-count 4' </dev/null >/tmp/htop.ansi 2>/tmp/htop.err || fail "PTY htop failed"
+printf 'M/sshd\nhhq' | TERM=xterm ssh -tt $ssh_base admin@$host 'htop --all --sample-ms 10 --cpu-count 4' >/tmp/htop.ansi 2>/tmp/htop.err || fail "PTY htop failed"
 printf '\\033[2J\\033[H' >/tmp/clear-sequence
 grep -F -f /tmp/clear-sequence /tmp/htop.ansi >/dev/null || fail "PTY htop lacked ANSI clear sequence"
 grep -q 'Tasks:' /tmp/htop.ansi || fail "PTY htop lacked task meter"
-echo "XAIOS_FREEBSD_INTEROP: SSH PTY ANSI htop PASS"
+grep -q 'Filter:' /tmp/htop.ansi || fail "PTY htop lacked interactive filter"
+grep -q 'XAIOS htop help' /tmp/htop.ansi || fail "PTY htop lacked help screen"
+echo "XAIOS_FREEBSD_INTEROP: SSH PTY interactive htop PASS"
 
 payload='freebsd-udp-echo'
 reply="$(printf '%s' "$payload" | nc -u -w 5 "$host" {udp_port})" || fail "UDP echo failed"

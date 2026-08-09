@@ -25,7 +25,9 @@ CLIENT_TIMEOUT_SECONDS = 600.0
 
 def reserve_port(socket_type: int) -> int:
     with socket.socket(socket.AF_INET, socket_type) as sock:
-        sock.bind(("127.0.0.1", 0))
+        # QEMU user-mode host forwarding binds all host interfaces. Check the
+        # same address scope so a port used outside loopback is not selected.
+        sock.bind(("0.0.0.0", 0))
         return int(sock.getsockname()[1])
 
 
@@ -140,6 +142,7 @@ def docker_command(key_dir: Path, *command: str) -> list[str]:
         "docker",
         "run",
         "--rm",
+        "--interactive",
         "--add-host",
         "host.docker.internal:host-gateway",
         "--volume",
@@ -207,6 +210,7 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
             "htop --all --sample-ms 10 --cpu-count 4",
         ),
         cwd=ROOT,
+        input=b"M/sshd\nhhq",
         capture_output=True,
         timeout=60,
     )
@@ -221,7 +225,15 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
         b"Tasks:",
         b"Mem",
         b"[Main]",
-        b"--plain",
+        b"View: ",
+        b"live",
+        b"Sort: ",
+        b"mem",
+        b"Filter: ",
+        b"sshd",
+        b"XAIOS htop help",
+        b"F10 Quit",
+        b"\x1b[?25h",
     )
     missing = [marker for marker in required if marker not in colored.stdout]
     if missing:
@@ -244,6 +256,22 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
         )
     if b"\x1b[" in plain.stdout or b"CPU CPU% BUSY_MS" not in plain.stdout:
         raise RuntimeError("native htop non-PTY output did not remain plain text")
+
+    invalid = subprocess.run(
+        docker_command(
+            key_dir,
+            *ssh_base[:1],
+            "-tt",
+            *ssh_base[1:],
+            "htop --sort invalid",
+        ),
+        cwd=ROOT,
+        capture_output=True,
+        timeout=60,
+    )
+    invalid_output = invalid.stdout + invalid.stderr
+    if invalid.returncode == 0 or b"htop: invalid --sort key" not in invalid_output:
+        raise RuntimeError("native htop PTY accepted an invalid sort key")
 
 
 def require_rejected_build(env: dict[str, str], marker: str) -> None:
@@ -421,6 +449,7 @@ def main() -> int:
         results["ssh_shared_transport_channels"] = "passed"
         results["native_htop_pty_ansi"] = "passed"
         results["native_htop_non_pty_plain"] = "passed"
+        results["native_htop_invalid_option_rejected"] = "passed"
         results["ssh_port"] = ssh_port
         results["udp_port"] = udp_port
         results["packet_capture"] = str(packet_capture)

@@ -101,8 +101,9 @@ opt-in; exact target-model semantics are the default.
   runs these paths in parallel against one successful guest instance and
   verifies fragmented TCP traffic and recovery after saturation.
   The native guest also turns an SSH PTY `htop` command into a terminal-sized
-  ANSI dashboard with sampled CPU/memory percentages and dynamic many-core
-  paging; non-PTY output stays plain for automation.
+  live ANSI monitor with sampled CPU/memory percentages, process selection,
+  sorting, filtering, help, resize handling and dynamic many-core paging;
+  non-PTY output stays a plain one-shot snapshot for automation.
   SSH has no built-in password and fails closed without secure entropy. These
   QEMU checks complete the declared core-OS correctness gate; they do not approve
   Internet exposure or physical production deployment.

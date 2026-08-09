@@ -3,6 +3,17 @@
 This page summarizes significant implementation and validation changes. Git
 commits, source code, and machine-readable test artifacts remain authoritative.
 
+## 2026-08-10 - interactive XAIOS htop
+
+- Converted PTY `htop` from a one-shot ANSI screen into a persistent live SSH
+  application with periodic sampled refresh and output-window backpressure.
+- Added selection, process paging, CPU paging, terminal resize, active/all
+  views, sorting, reverse order, filtering, help and process-tree display.
+- Kept non-PTY output machine-readable and one-shot, retained runtime-sized CPU
+  accounting, and documented that kill/nice await a safe process-control ABI.
+- Extended the Debian 13 and FreeBSD interoperability gates to send keys, verify
+  interactive frames and help/filter state, quit cleanly and restore the cursor.
+
 ## 2026-08-10 - FreeBSD Unix-reference interoperability
 
 - Added a checksum-pinned official FreeBSD 15.1 AArch64 QEMU client gate for
@@ -15,7 +26,7 @@ commits, source code, and machine-readable test artifacts remain authoritative.
 ## 2026-08-10 - native SSH PTY htop dashboard
 
 - Added validated per-channel SSH PTY dimensions and resize handling.
-- Added a guest-generated ANSI `htop` snapshot with colored CPU/memory meters,
+- Added the initial guest-generated ANSI `htop` snapshot with colored CPU/memory meters,
   process framing, terminal-bounded rows, and runtime-sized CPU pagination.
 - Preserved plain non-PTY output for automation and added QEMU plus Debian 13
   OpenSSH coverage for both output modes.
