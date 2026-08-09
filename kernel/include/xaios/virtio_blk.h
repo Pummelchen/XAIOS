@@ -11,6 +11,7 @@ typedef void (*virtio_block_completion_t)(uint64_t token,
                                           void *context);
 
 xaios_status_t virtio_block_init(void);
+xaios_status_t virtio_block_set_boot_memory(void *base, uint64_t size);
 xaios_status_t virtio_block_read_sector(uint64_t sector, void *buffer,
                                        uint64_t buffer_size);
 xaios_status_t virtio_block_write_sector(uint64_t sector, const void *buffer,

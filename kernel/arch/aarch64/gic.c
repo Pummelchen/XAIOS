@@ -78,6 +78,13 @@ void gic_init_qemu_virt(void) {
   (void)mmio_read32(QEMU_VIRT_GICD_BASE, GICD_CTLR);
   g_gic_info.typer = mmio_read32(QEMU_VIRT_GICD_BASE, GICD_TYPER);
   g_gic_info.iidr = mmio_read32(QEMU_VIRT_GICD_BASE, GICD_IIDR);
+  if (g_gic_info.typer == UINT32_MAX || g_gic_info.iidr == UINT32_MAX) {
+    g_gic_info.distributor_base = 0U;
+    g_gic_info.interrupt_lines = 0U;
+    g_gic_info.cpu_count_hint = 0U;
+    klog("gic: QEMU fixed-address controller unavailable\n");
+    return;
+  }
   g_gic_info.interrupt_lines = ((g_gic_info.typer & 0x1fU) + 1U) * 32U;
   g_gic_info.cpu_count_hint = ((g_gic_info.typer >> 5U) & 0x7U) + 1U;
 
@@ -89,7 +96,8 @@ void gic_init_qemu_virt(void) {
 xaios_status_t gic_register_interrupt(uint32_t intid,
                                       xaios_irq_handler_t handler,
                                       void *context) {
-  if (intid < 32U || intid >= GIC_MAX_INTIDS || handler == 0 ||
+  if (g_gic_info.distributor_base == 0U || intid < 32U ||
+      intid >= GIC_MAX_INTIDS || handler == 0 ||
       intid >= g_gic_info.interrupt_lines) {
     return XAIOS_ERR_INVALID;
   }
@@ -140,7 +148,7 @@ int gic_dispatch_interrupt(uint32_t intid) {
 }
 
 void gic_enable_full(void) {
-  if (g_gic_full_init != 0) {
+  if (g_gic_info.distributor_base == 0U || g_gic_full_init != 0) {
     return;
   }
 
@@ -197,6 +205,7 @@ void gic_enable_full(void) {
 
 /* Initialize GIC redistributor and CPU interface for a secondary CPU */
 void gic_secondary_init(uint32_t cpu_id) {
+  if (g_gic_info.distributor_base == 0U) return;
   uint64_t gicr_base = redistributor_base(cpu_id);
 
   /* Wake redistributor: clear ProcessorSleep */
@@ -261,6 +270,10 @@ const xaios_gic_info_t *gic_info(void) {
 }
 
 void gic_self_test(void) {
+  if (g_gic_info.distributor_base == 0U) {
+    klog("gic: discovery self-test skipped no compatible controller\n");
+    return;
+  }
   kassert(g_gic_info.distributor_base == QEMU_VIRT_GICD_BASE);
   kassert(g_gic_info.interrupt_lines >= 32);
   klog("gic: discovery self-test passed\n");

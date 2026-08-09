@@ -106,6 +106,10 @@ CI installs toolchain packages with apt and sets `XAIOS_QEMU_SMOKE_TIMEOUT=120` 
 ## Fixtures and generated reports
 
 - QEMU marker lists live in scripts such as `scripts/qemu-smoke.py`.
+- `make vmware-fusion-smoke` is an Apple Silicon macOS-only virtual ARM64 gate.
+  It verifies UEFI, SPCR serial, boot-info/initfs, PAN-safe syscalls and `/init`,
+  then stops the VM. It does not cover VMware NIC/storage, SMP, SSH or physical
+  performance; see `docs/VMWARE-FUSION.md`.
 - Contract data lives in `contracts/qemu-rc-v1.json`.
 - ModelFS test images are generated under `build/hosted`; the 128 GiB logical
   fixture is sparse and must not be copied by a tool that materializes holes.

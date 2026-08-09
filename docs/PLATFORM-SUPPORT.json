@@ -1,13 +1,13 @@
 {
   "schema": "xaios.platform-support.v1",
-  "updated": "2026-08-09",
+  "updated": "2026-08-10",
   "recommendations": [
     {"id": 1, "name": "Restore green CI", "status": "ci-tested", "evidence": "All ten independent jobs passed in GitHub Actions run 30886171942 after the ARM worker and SMMUv3 gate fixes."},
     {"id": 2, "name": "ARM SMP worker dispatch", "status": "qemu-tested", "evidence": "Joinable worker groups execute on runtime-discovered CPUs; high-core capacity remains correctness-only."},
     {"id": 3, "name": "ARM FP and NEON context preservation", "status": "qemu-tested", "evidence": "IRQ frames preserve q0-q31, FPCR and FPSR; a live virtual-timer canary passes."},
     {"id": 4, "name": "Native macOS and Linux engine executable", "status": "hosted-tested", "evidence": "build/hosted/xaios-engine provides probe, inspect and fail-closed serve commands; the full hosted suite passes on macOS and Debian 13 AArch64."},
     {"id": 5, "name": "Physical Apple NEON evidence", "status": "physical-gate", "evidence": "Cannot be established by QEMU; immutable physical-hardware evidence remains required."},
-    {"id": 6, "name": "Generic ARM server scope", "status": "scope-defined", "evidence": "The target is UEFI plus SBSA-style AArch64 with PSCI, GICv3 and discoverable topology; current execution is QEMU virt only."},
+    {"id": 6, "name": "Generic ARM server scope", "status": "scope-defined", "evidence": "The target is UEFI plus SBSA-style AArch64 with PSCI, GICv3 and discoverable topology. QEMU virt remains the full device/service correctness target. VMware Fusion 25.0.1 on Apple Silicon reaches /init through a limited ARM64 compatibility path; ACPI GIC/SMP/RTC discovery and VMware storage/network drivers remain open."},
     {"id": 7, "name": "SVE and SVE2", "status": "interface-only", "evidence": "Capability IDs exist and fail closed; no SVE kernel backend is advertised."},
     {"id": 8, "name": "x86 AP startup and worker participation", "status": "qemu-tested", "evidence": "MADT-discovered APs start through an OS-owned trampoline and complete IPI-dispatched work using dynamic records; the platform matrix passes 1, 4, 8, 128 and 256 vCPUs including x2APIC."},
     {"id": 9, "name": "x86 ring 3, syscalls and user threads", "status": "partial", "evidence": "OS-owned GDT/TSS loads a real x86_64 /bin/hello ELF built from the shared userspace runtime and completes LOG/EXIT through int80; process loading, scheduling and the complete thread ABI are not ported."},

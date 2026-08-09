@@ -18,6 +18,13 @@ void rtc_init(void) {
 
   /* Ensure RTC is enabled (bit 0 of RTCCR) */
   uint32_t cr = g_rtc_base[PL031_RTCCR / 4];
+  uint32_t epoch = rtc_read_epoch();
+  if (cr == UINT32_MAX || epoch == UINT32_MAX) {
+    g_rtc_base = 0;
+    g_rtc_initialized = 0U;
+    klog("rtc: QEMU fixed-address PL031 unavailable\n");
+    return;
+  }
   if ((cr & 1U) == 0) {
     g_rtc_base[PL031_RTCCR / 4] = 1U;
   }
@@ -26,7 +33,6 @@ void rtc_init(void) {
   g_rtc_base[PL031_RTCIMSC / 4] = 0U;
 
   g_rtc_initialized = 1;
-  uint32_t epoch = rtc_read_epoch();
   klog("rtc: PL031 initialized epoch=%u\n", epoch);
 }
 
@@ -38,7 +44,10 @@ uint32_t rtc_read_epoch(void) {
 }
 
 void rtc_self_test(void) {
-  kassert(g_rtc_initialized != 0);
+  if (g_rtc_initialized == 0U) {
+    klog("rtc: self-test skipped no compatible clock\n");
+    return;
+  }
 
   uint32_t epoch0 = rtc_read_epoch();
   if (epoch0 == 0) {

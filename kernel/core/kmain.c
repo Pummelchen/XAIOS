@@ -237,6 +237,11 @@ void kmain(const xaios_boot_info_t *boot) {
   }
 
   virtio_rng_self_test();
+  if (boot->boot_image_size != 0U) {
+    kassert(virtio_block_set_boot_memory(
+                (void *)(uintptr_t)boot->boot_image_base,
+                boot->boot_image_size) == XAIOS_OK);
+  }
   virtio_block_self_test();
   initramfs_self_test();
   persistence_self_test();

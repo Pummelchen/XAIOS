@@ -220,8 +220,10 @@ kernel backend plus an experimental x86 AVX2 path now exist; they do not execute
 a complete model and have no performance artifact. Metal and Xeon
 AVX-512/VNNI/AMX with NUMA-aware expert placement remain unimplemented. Generic
 ARM server scope is UEFI plus an SBSA-style PSCI/GICv3 platform with discovered
-topology; only QEMU `virt` executes today. SVE/SVE2 are fail-closed capability
-IDs and roadmap targets, not implemented backends.
+topology. QEMU `virt` remains the full device/service correctness target;
+VMware Fusion on Apple Silicon now reaches `/init` through a limited ARM64
+compatibility path. SVE/SVE2 are fail-closed capability IDs and roadmap targets,
+not implemented backends.
 
 ## Build and validation
 
@@ -246,6 +248,7 @@ make qemu-docker-network-suite
 make qemu-parallel-network-load
 make qemu-core-os-rc
 make qemu-high-core-gate
+make vmware-fusion-smoke
 ```
 
 `make hosted-test` is the foundational model-v2/engine gate. QEMU gates validate
@@ -266,6 +269,29 @@ when the distro emulator lacks the device.
 The authoritative 20-item platform parity status, including physical-only
 Apple and Intel gates, is
 [`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json).
+
+### VMware Fusion on Apple Silicon
+
+VMware Fusion 25.0.1 on an M3 Mac has passed the repository smoke gate. The
+generated ARM64 VM uses a Debian 13-built GRUB UEFI compatibility stage,
+chainloads the XAIOS loader, obtains serial configuration from ACPI SPCR, loads
+the deterministic initfs into firmware-owned memory, and reaches a successful
+`/init` return. ARM PAN is enforced during this run, so the gate also exercises
+PAN-safe syscall user-buffer access.
+
+```sh
+make vmware-fusion-image
+make vmware-fusion-smoke
+make vmware-fusion
+```
+
+This is virtual ARM64 correctness evidence, not native Apple hardware or
+performance evidence. Fusion on Apple Silicon does not run the x86_64 XAIOS
+image. The current VM deliberately has no virtual NIC; VMware storage/network
+drivers, persistent disks, ACPI GIC/SMP/RTC discovery, multi-vCPU execution and
+the later scheduler/application/SSH gates remain open. QEMU is still required
+for the complete VirtIO, networking, SSH/SFTP, persistence and SMP suites. See
+[`docs/VMWARE-FUSION.md`](./docs/VMWARE-FUSION.md).
 
 ## Documentation
 
@@ -289,6 +315,7 @@ Apple and Intel gates, is
 - [Storage security](./docs/STORAGE-SECURITY.md)
 - [Storage benchmarking](./docs/STORAGE-BENCHMARKING.md)
 - [Hardware readiness](./HARDWARE-READINESS.md)
+- [VMware Fusion](./docs/VMWARE-FUSION.md)
 - [Project tracker](./PROJECT-TRACKER.md)
 - [Live GitHub Wiki](https://github.com/Pummelchen/XAIOS/wiki)
 - [Live model support roadmap](https://github.com/Pummelchen/XAIOS/wiki/Model-Support-Roadmap)

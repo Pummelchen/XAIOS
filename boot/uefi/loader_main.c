@@ -11,19 +11,25 @@
 #define EM_AARCH64 183
 #define ET_EXEC 2
 #define KERNEL_MAX_SIZE (16ULL * 1024ULL * 1024ULL)
+#define BOOT_IMAGE_MAX_SIZE (8ULL * 1024ULL * 1024ULL)
 
 #if defined(XAIOS_UEFI_TARGET_X86_64)
 #define XAIOS_LOADER_TARGET_MESSAGE u"XAIOS loader target: x86_64 UEFI\r\n"
 #define XAIOS_LOADER_INVALID_MESSAGE u"XAIOS loader error: invalid x86_64 ELF64 kernel\r\n"
 #define XAIOS_LOADER_EXPECTED_MACHINE EM_X86_64
 #define XAIOS_LOADER_UART_BASE UINT64_C(0x000003f8)
+#define XAIOS_LOADER_UART_KIND XAIOS_UART_16550_IO
 #else
 #define XAIOS_LOADER_TARGET_MESSAGE u"XAIOS loader target: AArch64 UEFI\r\n"
 #define XAIOS_LOADER_INVALID_MESSAGE u"XAIOS loader error: invalid AArch64 ELF64 kernel\r\n"
 #define XAIOS_LOADER_EXPECTED_MACHINE EM_AARCH64
 #define QEMU_VIRT_PL011_UART0_BASE UINT64_C(0x09000000)
 #define XAIOS_LOADER_UART_BASE QEMU_VIRT_PL011_UART0_BASE
+#define XAIOS_LOADER_UART_KIND XAIOS_UART_PL011
 #endif
+
+#define ACPI_HEADER_SIZE UINT32_C(36)
+#define ACPI_MAX_TABLE_SIZE UINT32_C(0x01000000)
 
 typedef struct elf64_ehdr {
   unsigned char e_ident[EI_NIDENT];
@@ -86,6 +92,8 @@ static const efi_guid_t EFI_ACPI_20_TABLE_GUID = {
     {0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81}};
 
 static xaios_boot_info_t g_boot_info;
+/* UEFI loaders must remain relocatable even when all code/data references are PC-relative. */
+static void *g_image_relocation_anchor = &g_image_relocation_anchor;
 
 static void *mem_copy(void *dst, const void *src, uint64_t size) {
   unsigned char *d = (unsigned char *)dst;
@@ -122,6 +130,101 @@ static uint32_t read_be32(const unsigned char *value) {
   return ((uint32_t)value[0] << 24U) | ((uint32_t)value[1] << 16U) |
          ((uint32_t)value[2] << 8U) | value[3];
 }
+
+#if !defined(XAIOS_UEFI_TARGET_X86_64)
+static uint32_t read_le32(const unsigned char *value) {
+  return (uint32_t)value[0] | ((uint32_t)value[1] << 8U) |
+         ((uint32_t)value[2] << 16U) | ((uint32_t)value[3] << 24U);
+}
+
+static uint64_t read_le64(const unsigned char *value) {
+  return (uint64_t)read_le32(value) |
+         ((uint64_t)read_le32(value + 4U) << 32U);
+}
+
+static int bytes_equal(const unsigned char *left, const char *right,
+                       uint32_t length) {
+  for (uint32_t i = 0U; i < length; ++i) {
+    if (left[i] != (unsigned char)right[i]) return 0;
+  }
+  return 1;
+}
+
+static int checksum_valid(const unsigned char *bytes, uint32_t length) {
+  uint8_t sum = 0U;
+  for (uint32_t i = 0U; i < length; ++i) sum = (uint8_t)(sum + bytes[i]);
+  return sum == 0U;
+}
+
+static const unsigned char *acpi_find_table(uint64_t rsdp_address,
+                                            const char signature[4]) {
+  const unsigned char *rsdp =
+      (const unsigned char *)(uintptr_t)rsdp_address;
+  if (rsdp == 0 || !bytes_equal(rsdp, "RSD PTR ", 8U) ||
+      !checksum_valid(rsdp, 20U)) {
+    return 0;
+  }
+
+  uint64_t root_address = read_le32(rsdp + 16U);
+  uint32_t entry_size = 4U;
+  if (rsdp[15] >= 2U && read_le32(rsdp + 20U) >= 36U &&
+      checksum_valid(rsdp, 36U) && read_le64(rsdp + 24U) != 0U) {
+    root_address = read_le64(rsdp + 24U);
+    entry_size = 8U;
+  }
+  const unsigned char *root = (const unsigned char *)(uintptr_t)root_address;
+  if (root == 0) return 0;
+  uint32_t root_length = read_le32(root + 4U);
+  if (root_length < ACPI_HEADER_SIZE || root_length > ACPI_MAX_TABLE_SIZE ||
+      !checksum_valid(root, root_length)) {
+    return 0;
+  }
+  uint32_t entry_bytes = root_length - ACPI_HEADER_SIZE;
+  if (entry_bytes % entry_size != 0U) return 0;
+
+  for (uint32_t offset = ACPI_HEADER_SIZE; offset < root_length;
+       offset += entry_size) {
+    uint64_t table_address = entry_size == 8U
+                                 ? read_le64(root + offset)
+                                 : read_le32(root + offset);
+    const unsigned char *table =
+        (const unsigned char *)(uintptr_t)table_address;
+    if (table == 0) continue;
+    uint32_t table_length = read_le32(table + 4U);
+    if (table_length < ACPI_HEADER_SIZE ||
+        table_length > ACPI_MAX_TABLE_SIZE ||
+        !checksum_valid(table, table_length)) {
+      continue;
+    }
+    if (bytes_equal(table, signature, 4U)) return table;
+  }
+  return 0;
+}
+
+static void discover_uart(uint64_t acpi_rsdp, uint64_t *base,
+                          uint32_t *kind, uint32_t *reg_shift) {
+  const unsigned char *spcr = acpi_find_table(acpi_rsdp, "SPCR");
+  if (spcr == 0 || read_le32(spcr + 4U) < 52U || spcr[40] != 0U) return;
+
+  uint8_t interface_type = spcr[36];
+  uint64_t discovered_base = read_le64(spcr + 44U);
+  if (discovered_base == 0U) return;
+  if (interface_type == 3U || interface_type == 0x0dU ||
+      interface_type == 0x0eU) {
+    *base = discovered_base;
+    *kind = XAIOS_UART_PL011;
+    *reg_shift = 2U;
+  } else if (interface_type == 0U || interface_type == 1U ||
+             interface_type == 2U || interface_type == 0x12U) {
+    uint8_t access_size = spcr[43];
+    *base = discovered_base;
+    *kind = XAIOS_UART_16550_MMIO;
+    *reg_shift = access_size >= 1U && access_size <= 4U
+                     ? (uint32_t)(access_size - 1U)
+                     : 0U;
+  }
+}
+#endif
 
 static int guid_equal(const efi_guid_t *left, const efi_guid_t *right) {
   const unsigned char *a = (const unsigned char *)left;
@@ -198,19 +301,61 @@ static efi_status_t open_root(efi_handle_t image_handle,
   efi_status_t status = bs->handle_protocol(
       image_handle, (efi_guid_t *)&EFI_LOADED_IMAGE_PROTOCOL_GUID,
       (void **)&loaded_image);
-  if (is_error(status)) {
-    return status;
+  if (!is_error(status) && loaded_image != 0 &&
+      loaded_image->device_handle != 0) {
+    status = bs->handle_protocol(
+        loaded_image->device_handle,
+        (efi_guid_t *)&EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
+        (void **)&file_system);
+    if (!is_error(status)) {
+      status = file_system->open_volume(file_system, root);
+      if (!is_error(status)) {
+        return status;
+      }
+    }
   }
 
-  status = bs->handle_protocol(
-      loaded_image->device_handle,
-      (efi_guid_t *)&EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
-      (void **)&file_system);
-  if (is_error(status)) {
+  uint64_t handle_count = 0U;
+  efi_handle_t *handles = 0;
+  status = bs->locate_handle_buffer(
+      EFI_LOCATE_BY_PROTOCOL,
+      (efi_guid_t *)&EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, 0,
+      &handle_count, &handles);
+  if (is_error(status) || handles == 0) {
     return status;
   }
+  if (handle_count > UINT64_C(4096)) {
+    (void)bs->free_pool(handles);
+    return EFI_LOAD_ERROR;
+  }
 
-  return file_system->open_volume(file_system, root);
+  for (uint64_t i = 0U; i < handle_count; ++i) {
+    efi_file_protocol_t *candidate_root = 0;
+    efi_file_protocol_t *kernel_file = 0;
+    status = bs->handle_protocol(
+        handles[i], (efi_guid_t *)&EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
+        (void **)&file_system);
+    if (is_error(status)) {
+      continue;
+    }
+    status = file_system->open_volume(file_system, &candidate_root);
+    if (is_error(status) || candidate_root == 0) {
+      continue;
+    }
+    status = candidate_root->open(candidate_root, &kernel_file,
+                                  u"\\EFI\\XAIOS\\kernel.elf",
+                                  EFI_FILE_MODE_READ, 0);
+    if (!is_error(status)) {
+      (void)kernel_file->close(kernel_file);
+      *root = candidate_root;
+      (void)bs->free_pool(handles);
+      return EFI_SUCCESS;
+    }
+    (void)candidate_root->close(candidate_root);
+  }
+
+  (void)bs->free_pool(handles);
+  return EFI_NOT_FOUND;
 }
 
 static efi_status_t read_kernel_file(efi_system_table_t *system_table,
@@ -240,11 +385,54 @@ static efi_status_t read_kernel_file(efi_system_table_t *system_table,
   status = kernel_file->read(kernel_file, &read_size, (void *)kernel_storage);
   (void)kernel_file->close(kernel_file);
   if (is_error(status)) {
+    (void)bs->free_pages(kernel_storage,
+                         EFI_SIZE_TO_PAGES(KERNEL_MAX_SIZE));
     return status;
   }
 
   *kernel_buffer = (void *)kernel_storage;
   *kernel_size = read_size;
+  return EFI_SUCCESS;
+}
+
+static efi_status_t read_optional_boot_image(
+    efi_system_table_t *system_table, efi_file_protocol_t *root,
+    uint64_t *image_base, uint64_t *image_size) {
+  efi_boot_services_t *bs = system_table->boot_services;
+  efi_file_protocol_t *image_file = 0;
+  efi_physical_address_t image_storage = 0U;
+  uint64_t read_size = BOOT_IMAGE_MAX_SIZE;
+
+  *image_base = 0U;
+  *image_size = 0U;
+  efi_status_t status = root->open(root, &image_file,
+                                   u"\\EFI\\XAIOS\\initfs.img",
+                                   EFI_FILE_MODE_READ, 0);
+  if (status == EFI_NOT_FOUND) return EFI_SUCCESS;
+  if (is_error(status)) return status;
+
+  status = bs->allocate_pages(EFI_ALLOCATE_ANY_PAGES, EFI_LOADER_DATA,
+                              EFI_SIZE_TO_PAGES(BOOT_IMAGE_MAX_SIZE),
+                              &image_storage);
+  if (is_error(status)) {
+    (void)image_file->close(image_file);
+    return status;
+  }
+  status = image_file->read(image_file, &read_size, (void *)image_storage);
+  uint8_t overflow_probe = 0U;
+  uint64_t overflow_size = read_size == BOOT_IMAGE_MAX_SIZE ? 1U : 0U;
+  if (!is_error(status) && overflow_size != 0U) {
+    status = image_file->read(image_file, &overflow_size, &overflow_probe);
+  }
+  (void)image_file->close(image_file);
+  if (is_error(status) || overflow_size != 0U || read_size == 0U ||
+      read_size % UINT64_C(512) != 0U) {
+    (void)bs->free_pages(image_storage,
+                         EFI_SIZE_TO_PAGES(BOOT_IMAGE_MAX_SIZE));
+    return is_error(status) ? status : EFI_LOAD_ERROR;
+  }
+  *image_base = image_storage;
+  *image_size = read_size;
   return EFI_SUCCESS;
 }
 
@@ -362,11 +550,15 @@ static efi_status_t get_memory_map(efi_system_table_t *system_table,
 
 efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
                              efi_system_table_t *system_table) {
+  if (g_image_relocation_anchor == 0) {
+    return EFI_LOAD_ERROR;
+  }
   loader_puts(system_table, u"XAIOS loader starting\r\n");
   loader_puts(system_table, XAIOS_LOADER_TARGET_MESSAGE);
 
   void *kernel_buffer = 0;
   uint64_t kernel_size = 0;
+  efi_file_protocol_t *root = 0;
   uint32_t system_slot = XAIOS_SYSTEM_SLOT_NONE;
   uint64_t system_generation = 0U;
   uint32_t rollback_performed = 0U;
@@ -381,7 +573,6 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
     loader_puts(system_table,
                 u"XAIOS loader loaded verified A/B system slot\r\n");
   } else {
-    efi_file_protocol_t *root = 0;
     status = open_root(image_handle, system_table, &root);
     if (is_error(status)) {
       loader_puts(system_table,
@@ -394,6 +585,24 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
       return status;
     }
     loader_puts(system_table, u"XAIOS loader loaded kernel.elf fallback\r\n");
+  }
+
+  uint64_t boot_image_base = 0U;
+  uint64_t boot_image_size = 0U;
+  if (root == 0) {
+    status = open_root(image_handle, system_table, &root);
+    if (is_error(status)) return status;
+  }
+  status = read_optional_boot_image(system_table, root, &boot_image_base,
+                                    &boot_image_size);
+  (void)root->close(root);
+  if (is_error(status)) {
+    loader_puts(system_table,
+                u"XAIOS loader error: invalid initfs boot image\r\n");
+    return status;
+  }
+  if (boot_image_size != 0U) {
+    loader_puts(system_table, u"XAIOS loader loaded initfs boot image\r\n");
   }
 
   const elf64_ehdr_t *ehdr = 0;
@@ -420,6 +629,12 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
   uint64_t device_tree = configuration_table_pointer(
       system_table, &EFI_DTB_TABLE_GUID, 0);
   uint64_t ap_trampoline = 0U;
+  uint64_t uart_base = XAIOS_LOADER_UART_BASE;
+  uint32_t uart_kind = XAIOS_LOADER_UART_KIND;
+  uint32_t uart_reg_shift = 0U;
+#if !defined(XAIOS_UEFI_TARGET_X86_64)
+  discover_uart(acpi_rsdp, &uart_base, &uart_kind, &uart_reg_shift);
+#endif
 #if defined(XAIOS_UEFI_TARGET_X86_64)
   efi_physical_address_t trampoline_page = UINT64_C(0x8000);
   status = system_table->boot_services->allocate_pages(
@@ -453,7 +668,9 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
   g_boot_info.memory_descriptor_version = descriptor_version;
   g_boot_info.kernel_phys_base = kernel_base;
   g_boot_info.kernel_phys_end = kernel_end;
-  g_boot_info.uart_base = XAIOS_LOADER_UART_BASE;
+  g_boot_info.uart_base = uart_base;
+  g_boot_info.uart_kind = uart_kind;
+  g_boot_info.uart_reg_shift = uart_reg_shift;
   g_boot_info.system_volume_present =
       system_slot == XAIOS_SYSTEM_SLOT_NONE ? 0U : 1U;
   g_boot_info.system_slot = system_slot;
@@ -461,6 +678,8 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
   g_boot_info.acpi_rsdp = acpi_rsdp;
   g_boot_info.device_tree = device_tree;
   g_boot_info.ap_trampoline = ap_trampoline;
+  g_boot_info.boot_image_base = boot_image_base;
+  g_boot_info.boot_image_size = boot_image_size;
 
   status = system_table->boot_services->exit_boot_services(image_handle, map_key);
   if (is_error(status)) {

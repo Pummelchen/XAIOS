@@ -8,8 +8,15 @@
 #include <xaios/types.h>
 
 #define PL011_UARTDR 0x00U
+#define PL011_UARTFR 0x18U
+#define PL011_UARTFR_TXFF UINT32_C(0x20)
+#define UART_16550_THR UINT32_C(0)
+#define UART_16550_LSR UINT32_C(5)
+#define UART_16550_LSR_THRE UINT8_C(0x20)
 
 static volatile uint32_t *g_uart_base;
+static uint32_t g_uart_kind;
+static uint32_t g_uart_reg_shift;
 static xaios_spinlock_t g_klog_lock;
 
 /* Line buffer for ring capture */
@@ -22,7 +29,20 @@ static void uart_putc(char c) {
   }
 
 #if defined(__aarch64__)
-  g_uart_base[PL011_UARTDR / 4] = (uint32_t)c;
+  if (g_uart_kind == XAIOS_UART_PL011) {
+    for (uint32_t spin = 0U; spin < UINT32_C(1000000); ++spin) {
+      if ((g_uart_base[PL011_UARTFR / 4] & PL011_UARTFR_TXFF) == 0U) break;
+    }
+    g_uart_base[PL011_UARTDR / 4] = (uint32_t)c;
+  } else if (g_uart_kind == XAIOS_UART_16550_MMIO) {
+    volatile uint8_t *base = (volatile uint8_t *)(uintptr_t)g_uart_base;
+    uint32_t lsr_offset = UART_16550_LSR << g_uart_reg_shift;
+    uint32_t thr_offset = UART_16550_THR << g_uart_reg_shift;
+    for (uint32_t spin = 0U; spin < UINT32_C(1000000); ++spin) {
+      if ((base[lsr_offset] & UART_16550_LSR_THRE) != 0U) break;
+    }
+    base[thr_offset] = (uint8_t)c;
+  }
 #elif defined(__x86_64__)
   uint16_t base = (uint16_t)(uintptr_t)g_uart_base;
   uint8_t ready;
@@ -58,6 +78,8 @@ static void klog_line_flush(void) {
 
 void klog_init(const xaios_boot_info_t *boot) {
   g_uart_base = (volatile uint32_t *)(uintptr_t)boot->uart_base;
+  g_uart_kind = boot->uart_kind;
+  g_uart_reg_shift = boot->uart_reg_shift;
   xaios_spin_init(&g_klog_lock);
 }
 

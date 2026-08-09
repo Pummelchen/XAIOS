@@ -1,7 +1,8 @@
 # Hardware Readiness Gate
 
 XAIOS is not ready for physical Apple, Intel Desktop, or Xeon deployment. QEMU
-gates establish architecture and ABI correctness only. The current 20-item
+gates and the limited VMware Fusion ARM64 gate establish virtual architecture
+and ABI correctness only. The current 20-item
 platform status is authoritative in `docs/PLATFORM-SUPPORT.json`.
 
 No current repository artifact proves physical-hardware model performance or
@@ -21,6 +22,16 @@ The benchmark evidence required for future hardware claims is defined in
 `docs/BENCHMARK-CONTRACT.md`.
 
 ## Current Gates
+
+The Apple Silicon VMware Fusion gate is:
+
+- `make vmware-fusion-smoke`
+
+It reaches `/init` under Fusion 25.0.1 and records
+`build/vmware-fusion/fusion-smoke-evidence.json`. It does not validate VMware
+networking, persistent storage, multiple CPUs, full userspace applications,
+SSH/SFTP, physical performance, or x86 execution. See
+`docs/VMWARE-FUSION.md`.
 
 The milestone 33 QEMU hardware-readiness gate is:
 

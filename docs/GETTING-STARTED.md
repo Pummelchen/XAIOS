@@ -7,7 +7,7 @@ This guide covers setting up a development environment, building XAIOS, running 
 ### macOS (primary development platform)
 
 ```sh
-brew install llvm lld qemu mtools python3
+brew install llvm lld qemu mtools python3 xorriso
 ```
 
 The build system auto-detects Homebrew LLVM/L LD paths. System clang on macOS is **not** sufficient — you need the Homebrew `llvm` package for AArch64 cross-compilation support.
@@ -64,6 +64,21 @@ The smoke test is the primary AArch64 QEMU validation: it boots the prototype,
 executes its self-tests and userspace fixtures, and validates JSON telemetry.
 It is correctness evidence, not production or hardware-performance evidence.
 
+### VMware Fusion on Apple Silicon
+
+VMware Fusion 25.0.1 is an additional limited ARM64 boot target. Docker builds
+the reproducible Debian 13 ARM64 GRUB compatibility stage.
+
+```sh
+make vmware-fusion-image
+make vmware-fusion-smoke
+make vmware-fusion
+```
+
+The smoke reaches `/init`; it does not provide VMware networking, persistent
+storage, multi-vCPU discovery, x86 virtualization, or physical-performance
+evidence. See [`VMWARE-FUSION.md`](./VMWARE-FUSION.md).
+
 ### Other test targets
 
 | Target | What it tests |
@@ -77,6 +92,7 @@ It is correctness evidence, not production or hardware-performance evidence.
 | `make qemu-regression-suite` | Full regression suite |
 | `make qemu-benchmark` | QEMU correctness telemetry collection |
 | `make qemu-readiness-gate` | QEMU correctness-readiness validation |
+| `make vmware-fusion-smoke` | Limited ARM64 Fusion UEFI/kernel/initfs/`/init` correctness |
 
 ### Mac client interoperability
 

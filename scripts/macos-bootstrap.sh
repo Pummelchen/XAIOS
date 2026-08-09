@@ -220,6 +220,18 @@ check_optional_tool "mtools mmd" "mmd" \
   "Install with: brew install mtools if FAT image editing scripts choose mtools" \
   /opt/homebrew/bin/mmd /usr/local/bin/mmd
 
+check_optional_tool "xorriso" "xorriso" \
+  "Install with: brew install xorriso for VMware Fusion packaging" \
+  /opt/homebrew/bin/xorriso /usr/local/bin/xorriso
+
+check_optional_tool "Docker" "docker" \
+  "Install Docker Desktop for the VMware Fusion GRUB build and Debian gates" \
+  /usr/local/bin/docker /opt/homebrew/bin/docker
+
+check_optional_tool "VMware Fusion vmrun" "vmrun" \
+  "Install VMware Fusion to use the optional ARM64 Fusion gate" \
+  "/Applications/VMware Fusion.app/Contents/Library/vmrun"
+
 if qemu_path="$(find_tool qemu-system-aarch64 "$QEMU_BIN/qemu-system-aarch64")"; then
   accel_output="$("$qemu_path" -accel help 2>/dev/null || true)"
   machine_output="$("$qemu_path" -machine help 2>/dev/null || true)"

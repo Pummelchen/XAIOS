@@ -29,6 +29,9 @@ unless the maintainer explicitly reprioritizes them.
 - No listed real model has passed tokenizer, logits, deterministic decode, and
   physical-hardware acceptance gates.
 - QEMU is correctness and ABI evidence only.
+- VMware Fusion 25.0.1 on Apple Silicon reaches `/init` through the limited
+  ARM64 compatibility path. It has no VMware NIC/persistent-disk driver or
+  multi-vCPU discovery and is not physical-hardware evidence.
 - Performance claims require immutable artifacts under the benchmark contract.
 - `xaiosctl` Phase 2 is QEMU/OpenSSH fixture-tested with role-mapped keys,
   revocation, config transactions, host-key rotation, redacted audit and typed
@@ -59,6 +62,7 @@ unless the maintainer explicitly reprioritizes them.
 
 - [[Model Support Roadmap|Model-Support-Roadmap]]
 - [[Platform Support|Platform-Support]]
+- [[VMware Fusion|VMware-Fusion]]
 - [[Qwen CPU Inference Status|Qwen3.6-INT6-Support]]
 - [[SSH Status|Production-SSH-Server]]
 - [Repository README](https://github.com/Pummelchen/XAIOS/blob/main/README.md)

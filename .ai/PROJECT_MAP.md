@@ -25,6 +25,7 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 | `tests/network/` | Disposable Debian 13 client image and SSH/SFTP/UDP interoperability suite. |
 | `tools/` | Model-v2 streaming writer, ModelFS host administrator, plus explicit model-v1 fixture tooling. |
 | `scripts/` | Build image, create initfs, run QEMU, smoke/regression/readiness gates. |
+| `platform/vmware-fusion/` | Debian 13 ARM64 GRUB compatibility build and generated Fusion VM template. |
 | `contracts/` | QEMU release-candidate contract JSON. |
 | `docs/` | Architecture, getting started, API docs. |
 | `wiki/` | Local mirrors of selected live Wiki status/design pages; model support and delivery rows are checked by `make docs-check`. |
@@ -69,6 +70,8 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 - Userspace API: `userspace/include/xaios_user.h`, `userspace/lib/xaios_user.c`
 - Build image: `scripts/build-image.sh`
 - QEMU run: `scripts/run-qemu-aarch64.sh`, `scripts/run-qemu-x86_64.sh`
+- VMware Fusion: `scripts/build-vmware-fusion.sh`,
+  `scripts/run-vmware-fusion.sh`, `scripts/vmware-fusion-smoke.py`
 - Primary smoke: `scripts/qemu-smoke.py`
 - Aggregate core-OS gate: `scripts/qemu-core-os-rc.py`
 - Focused device/capacity gates: `scripts/qemu-smmu-gate.py`,
@@ -86,7 +89,8 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 
 ## External dependencies
 
-- Host toolchain: Clang, LLD, mtools, QEMU, Python 3.
+- Host toolchain: Clang, LLD, mtools, QEMU, Python 3; optional Fusion packaging
+  also requires Apple Silicon macOS, VMware Fusion, Docker and xorriso.
 - Python dev dependency: `paramiko==3.5.1` in `requirements-dev.txt`.
 - The current model-v2 writer uses the Python standard library. Official
   SafeTensors/config/tokenizer and GGUF importers are not implemented.

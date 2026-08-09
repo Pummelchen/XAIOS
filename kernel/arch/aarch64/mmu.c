@@ -310,6 +310,11 @@ static void build_tables(const xaios_boot_info_t *boot) {
       highest_physical = descriptor->physical_start + bytes;
     }
   }
+  if (boot->boot_image_size != 0U &&
+      boot->boot_image_base <= UINT64_MAX - boot->boot_image_size &&
+      boot->boot_image_base + boot->boot_image_size > highest_physical) {
+    highest_physical = boot->boot_image_base + boot->boot_image_size;
+  }
   if (highest_physical > L0_SPAN) highest_physical = L0_SPAN;
   uint64_t l1_limit = align_up(highest_physical, L1_BLOCK_SIZE);
   for (uint64_t address = EARLY_IDENTITY_SIZE; address < l1_limit;

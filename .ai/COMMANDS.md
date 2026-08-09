@@ -46,6 +46,7 @@ the `cryptography` package, installed by the QEMU CI jobs.
 | Default build | `make all` |
 | AArch64 image | `make image` |
 | x86_64 image | `make image-x86_64` |
+| VMware Fusion ARM64 bundle | `make vmware-fusion-image` |
 | Native engine CLI | `make engine-cli` |
 | Clean generated outputs | `make clean` |
 | Clean persistent image | `make clean-persistent` |
@@ -76,6 +77,9 @@ ID; destructive target operations also require exact confirmation.
 | AArch64 QEMU | `make qemu` or `make qemu-aarch64` |
 | x86_64 QEMU | `make qemu-x86_64` |
 | Dry-run QEMU command lines | `make qemu-dry-run` |
+| VMware Fusion GUI | `make vmware-fusion` |
+| VMware Fusion dry run | `make vmware-fusion-dry-run` |
+| VMware Fusion smoke | `make vmware-fusion-smoke` |
 | SSH bridge | `make xaios-ssh-bridge` |
 | Connect to local SSH bridge | `ssh -p 2222 admin@localhost` |
 

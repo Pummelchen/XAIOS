@@ -6,6 +6,7 @@
 #include <xaios/klog.h>
 #include <xaios/model_arena.h>
 #include <xaios/network_stack.h>
+#include <xaios/smp.h>
 
 #define MAX_AI_CELLS 5U
 #define MAX_NIC_QUEUES 4U
@@ -598,6 +599,10 @@ static void copy_descriptor(xaios_ai_cell_descriptor_v1_t *dst,
 
 void ai_cell_self_test(void) {
   ai_cell_runtime_init();
+  if (smp_online_count() < 2U) {
+    klog("ai-cell: lifecycle self-test skipped (no leasable worker core)\n");
+    return;
+  }
   xaios_ai_cell_manifest_t invalid;
   invalid.name = "invalid";
   invalid.core_mask = 0;

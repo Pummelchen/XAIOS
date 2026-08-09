@@ -100,10 +100,15 @@ typedef struct virtio_block_driver {
   uint32_t max_write_zeroes_sectors;
   uint32_t initialized;
   uint32_t block_registered;
+  uint32_t memory_backed;
+  uint8_t *memory_base;
+  uint64_t memory_size;
   xaios_block_device_t block_device;
 } virtio_block_driver_t;
 
 static virtio_block_driver_t *g_blk;
+static uint8_t *g_boot_memory_base;
+static uint64_t g_boot_memory_size;
 
 static xaios_status_t block_backend_read(void *context, uint64_t byte_offset,
                                          void *buffer, uint64_t length);
@@ -358,6 +363,19 @@ static xaios_status_t submit_sector_h(
     return XAIOS_ERR_INVALID;
   }
 
+  if (drv->memory_backed != 0U) {
+    uint64_t offset = sector * SECTOR_SIZE;
+    if (type == VIRTIO_BLK_T_IN) {
+      bytes_copy(buffer, drv->memory_base + offset, SECTOR_SIZE);
+    } else {
+      bytes_copy(drv->memory_base + offset, buffer, SECTOR_SIZE);
+    }
+    *token = ++drv->next_token;
+    if (*token == 0U) *token = ++drv->next_token;
+    completion(*token, XAIOS_OK, context);
+    return XAIOS_OK;
+  }
+
   xaios_spin_lock(&drv->queue_lock);
   if (drv->special_active != 0U) {
     xaios_spin_unlock(&drv->queue_lock);
@@ -441,6 +459,7 @@ static xaios_status_t submit_sector_h(
 
 uint32_t virtio_block_poll_h(virtio_block_handle_t *handle) {
   virtio_block_driver_t *drv = handle;
+  if (drv != 0 && drv->memory_backed != 0U) return 0U;
   if (drv == 0 || drv->initialized == 0U ||
       xaios_spin_trylock(&drv->queue_lock) == 0) {
     return 0U;
@@ -505,6 +524,10 @@ uint64_t virtio_block_interrupt_count_h(const virtio_block_handle_t *handle) {
 
 static xaios_status_t recover_queue(virtio_block_driver_t *drv) {
   if (drv == 0) return XAIOS_ERR_INVALID;
+  if (drv->memory_backed != 0U) {
+    ++drv->reset_count;
+    return XAIOS_OK;
+  }
   virtio_block_completion_t callbacks[VIRTIO_BLK_MAX_ASYNC_DEPTH];
   void *contexts[VIRTIO_BLK_MAX_ASYNC_DEPTH];
   uint64_t tokens[VIRTIO_BLK_MAX_ASYNC_DEPTH];
@@ -588,6 +611,7 @@ static xaios_status_t flush_h(virtio_block_driver_t *drv) {
   if (drv == 0 || drv->initialized == 0 || drv->supports_flush == 0U) {
     return XAIOS_ERR_UNSUPPORTED;
   }
+  if (drv->memory_backed != 0U) return XAIOS_OK;
   if (wait_idle(drv) != XAIOS_OK) return XAIOS_ERR_BUSY;
   xaios_spin_lock(&drv->queue_lock);
   if (drv->special_active != 0U || drv->outstanding != 0U) {
@@ -715,13 +739,18 @@ static xaios_status_t register_block_device(virtio_block_driver_t *drv) {
       capacity_bytes % drv->logical_sector_size != 0U) {
     return XAIOS_ERR_INVALID;
   }
-  uint32_t slot = physical_slot(&drv->device);
+  uint32_t slot = drv->memory_backed != 0U ? 0U : physical_slot(&drv->device);
   if (slot == UINT32_MAX) return XAIOS_ERR_INVALID;
   xaios_block_device_info_t info;
   bytes_zero(&info, sizeof(info));
   set_device_identifier(info.identifier, sizeof(info.identifier), slot);
-  static const char backend[] = "virtio-blk";
-  bytes_copy(info.backend, backend, sizeof(backend));
+  if (drv->memory_backed != 0U) {
+    static const char backend[] = "boot-memory";
+    bytes_copy(info.backend, backend, sizeof(backend));
+  } else {
+    static const char backend[] = "virtio-blk";
+    bytes_copy(info.backend, backend, sizeof(backend));
+  }
   info.capacity_bytes = capacity_bytes;
   info.capacity_logical_sectors = capacity_bytes / drv->logical_sector_size;
   info.logical_sector_size = drv->logical_sector_size;
@@ -762,6 +791,24 @@ xaios_status_t virtio_block_init(void) {
   if (allocate_driver() != XAIOS_OK) {
     return XAIOS_ERR_NO_MEMORY;
   }
+  if (g_boot_memory_base != 0 && g_boot_memory_size != 0U) {
+    g_blk->memory_backed = 1U;
+    g_blk->memory_base = g_boot_memory_base;
+    g_blk->memory_size = g_boot_memory_size;
+    g_blk->capacity_sectors = g_boot_memory_size / SECTOR_SIZE;
+    g_blk->logical_sector_size = SECTOR_SIZE;
+    g_blk->physical_block_size = SECTOR_SIZE;
+    g_blk->queue_depth = 1U;
+    g_blk->supports_flush = 1U;
+    g_blk->initialized = 1U;
+    if (register_block_device(g_blk) != XAIOS_OK) {
+      g_blk->initialized = 0U;
+      return XAIOS_ERR_INVALID;
+    }
+    klog("boot-memory: capacity_sectors=%lu source=uefi-initfs\n",
+         g_blk->capacity_sectors);
+    return XAIOS_OK;
+  }
   /* The QEMU runner pins the deterministic test disk to MMIO slot 0. The
    * boot FAT image is a PCI device and is not visible to this transport. */
   if (virtio_transport_find(VIRTIO_DEVICE_BLOCK, "virtio-blk",
@@ -785,6 +832,17 @@ xaios_status_t virtio_block_init(void) {
     return XAIOS_ERR_INVALID;
   }
   klog("virtio-blk: capacity_sectors=%lu\n", g_blk->capacity_sectors);
+  return XAIOS_OK;
+}
+
+xaios_status_t virtio_block_set_boot_memory(void *base, uint64_t size) {
+  if (g_blk != 0 || base == 0 || size < SECTOR_SIZE * UINT64_C(4) ||
+      size % SECTOR_SIZE != 0U ||
+      (uint64_t)(uintptr_t)base > UINT64_MAX - size) {
+    return XAIOS_ERR_INVALID;
+  }
+  g_boot_memory_base = (uint8_t *)base;
+  g_boot_memory_size = size;
   return XAIOS_OK;
 }
 
@@ -959,9 +1017,11 @@ void virtio_block_close(virtio_block_handle_t *handle) {
         block_device_unregister(&handle->block_device) == XAIOS_OK) {
       handle->block_registered = 0U;
     }
-    (void)virtio_transport_unregister_interrupt(
-        &handle->device, virtio_block_interrupt, handle);
-    virtio_transport_reset(&handle->device);
+    if (handle->memory_backed == 0U) {
+      (void)virtio_transport_unregister_interrupt(
+          &handle->device, virtio_block_interrupt, handle);
+      virtio_transport_reset(&handle->device);
+    }
     handle->initialized = 0;
   }
 }
@@ -1092,6 +1152,26 @@ void virtio_block_self_test(void) {
           XAIOS_OK);
   for (uint64_t i = 0; i < SECTOR_SIZE; ++i) {
     kassert(sector[i] == (uint8_t)(i & 0xffU));
+  }
+  if (g_blk->memory_backed != 0U) {
+    virtio_block_sync_wait_t wait = {0U, XAIOS_ERR_IO};
+    uint64_t token = 0U;
+    bytes_zero(sector, SECTOR_SIZE);
+    kassert(virtio_block_submit_read_h(
+                g_blk, 0U, sector, SECTOR_SIZE, sync_completion, &wait,
+                &token) == XAIOS_OK);
+    kassert(token != 0U && wait.complete != 0U && wait.status == XAIOS_OK);
+    kassert(sector[0] == 'X' && sector[1] == 'A');
+    xaios_block_device_t *block = 0;
+    xaios_block_device_info_t info;
+    kassert(block_device_open("/dev/vblk0", &block) == XAIOS_OK);
+    kassert(block_device_info(block, &info) == XAIOS_OK);
+    kassert(info.capacity_bytes == g_blk->memory_size);
+    kassert(info.flush_supported != 0U);
+    kassert(block_device_close(block) == XAIOS_OK);
+    klog("boot-memory: read/write/async/flush self-test passed capacity_sectors=%lu\n",
+         g_blk->capacity_sectors);
+    return;
   }
   kassert(g_blk->uses_indirect != 0U);
   kassert(virtio_block_queue_depth_h(g_blk) ==

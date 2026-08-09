@@ -4,7 +4,9 @@
 
 XAIOS combines a freestanding AArch64 operating-system prototype with a
 portable C99 inference-engine foundation. The current complete OS correctness
-path boots through UEFI on QEMU virt. The x86_64 image boots and executes the
+path boots through UEFI on QEMU virt. A limited VMware Fusion ARM64 path on
+Apple Silicon reaches `/init`; `docs/VMWARE-FUSION.md` records its narrower
+device/platform boundary. The x86_64 image boots and executes the
 real shared CRC, block, VFS, architecture-registry, scalar-backend and packed
 engine modules. It starts MADT-discovered APs, validates ring-3 syscall and
 XSAVE state transitions, parses ACPI topology, and operates modern VirtIO block
@@ -15,14 +17,16 @@ The authoritative 20-item status is `docs/PLATFORM-SUPPORT.json`.
 ## Boot Flow
 
 ```
-UEFI firmware (AAVMF)
+UEFI firmware (AAVMF or Fusion through GRUB chainload)
   └─ BOOTAA64.EFI (loader_main.c)
        └─ Loads kernel.elf from FAT partition
-       └─ Passes xaios_boot_info_t (memory map, UART base, kernel phys range)
+       └─ Passes boot-info v6 (memory map, UART, kernel and optional initfs)
             └─ kmain(boot_info)
 ```
 
-**Boot contract**: The UEFI loader validates the ELF, sets up page tables for the kernel's identity-mapped region, and jumps to `kmain` at EL1.
+**Boot contract**: The UEFI loader validates the ELF, loads its fixed physical
+segments, captures firmware tables and optional boot-image extent, exits boot
+services, and jumps to `kmain`. The kernel establishes its own page tables.
 
 ## Kernel Initialization Order
 
@@ -69,7 +73,7 @@ QEMU correctness harness, not the final service-process architecture.
 ```
 XAIOS/
 ├── boot/uefi/            — UEFI bootloader (PE/COFF, AArch64)
-│   ├── loader_main.c     — EFI entry, ELF loader, page table setup
+│   ├── loader_main.c     — EFI entry, ELF loader, firmware/boot-image handoff
 │   └── linker.ld         — PE section layout
 ├── kernel/
 │   ├── arch/aarch64/     — Architecture-specific code
@@ -145,6 +149,7 @@ XAIOS/
 ├── tests/storage/        — Hosted block/GPT/VFS/SFTP tests
 ├── tests/model_volume/   — ModelFS lifecycle and portable reader tests
 ├── scripts/              — Build, test, and gate scripts
+├── platform/vmware-fusion/ — Generated-VM inputs and GRUB build definition
 ├── contracts/            — ABI contract (qemu-rc-v1.json)
 ├── docs/                 — Developer documentation
 ├── Makefile              — Build orchestration
@@ -156,7 +161,7 @@ XAIOS/
 
 | Region | Physical Address | Description |
 |--------|-----------------|-------------|
-| Kernel ELF | `0x40100000` (loaded by UEFI) | Text, rodata, data, BSS |
+| Kernel ELF | `0x90000000` (loaded by UEFI) | Text, rodata, data, BSS; fits QEMU and Fusion firmware maps |
 | UART0 | `0x09000000` | PL011 serial console |
 | VirtIO MMIO | `0x0a000000–0x0a003fff` | Block + net devices |
 | GICv3 | `0x08000000–0x0801ffff` | Interrupt controller |
@@ -194,6 +199,7 @@ make qemu        — Boot in QEMU (interactive)
 make qemu-smoke  — Automated smoke test (330+ boot markers)
 make hosted-test — Portable engine, ModelFS and storage correctness tests
 make qemu-core-os-rc — Aggregate cross-architecture core correctness gate
+make vmware-fusion-smoke — Limited Apple Silicon Fusion boot through /init
 make test        — bootstrap + image + dry-run
 ```
 

@@ -39,6 +39,32 @@ extern char __exception_vectors[];
 static volatile int g_mmio_probe_active = 0;
 static volatile int g_mmio_probe_faulted = 0;
 
+static int pan_supported(void) {
+  uint64_t features = 0U;
+  __asm__ volatile("mrs %0, id_aa64mmfr1_el1" : "=r"(features));
+  return ((features >> 20U) & UINT64_C(0xf)) != 0U;
+}
+
+static void user_access_enable(void) {
+  if (pan_supported()) {
+    __asm__ volatile(".inst 0xd500409f\n" /* msr PAN, #0 */
+                     "isb\n"
+                     :
+                     :
+                     : "memory");
+  }
+}
+
+static void user_access_disable(void) {
+  if (pan_supported()) {
+    __asm__ volatile(".inst 0xd500419f\n" /* msr PAN, #1 */
+                     "isb\n"
+                     :
+                     :
+                     : "memory");
+  }
+}
+
 void exception_mmio_probe_begin(void) {
   g_mmio_probe_faulted = 0;
   g_mmio_probe_active = 1;
@@ -200,7 +226,10 @@ uint64_t aarch64_exception_entry(uint64_t kind, uint64_t esr, uint64_t elr,
   }
 
   if (kind == XAIOS_EXCEPTION_LOWER_A64_SYNC && ec == ESR_EC_SVC_A64) {
-    return syscall_dispatch(syscall, arg0, arg1, arg2);
+    user_access_enable();
+    uint64_t result = syscall_dispatch(syscall, arg0, arg1, arg2);
+    user_access_disable();
+    return result;
   }
 
   klog("\nEXCEPTION: kind=%s class=%s ec=0x%lx iss=0x%lx\n",

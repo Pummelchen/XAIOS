@@ -1,6 +1,6 @@
 # XAIOS project tracker
 
-Last updated: 2026-08-09. Status labels and delivery order are checked against
+Last updated: 2026-08-10. Status labels and delivery order are checked against
 [`docs/MODEL-SUPPORT.json`](./docs/MODEL-SUPPORT.json). A checked interface is
 not equivalent to executing-model support. Platform recommendation status is
 authoritative in [`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json).
@@ -30,6 +30,9 @@ authoritative in [`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json).
 ## Completed foundation
 
 - [x] AArch64 UEFI/QEMU OS bring-up and deterministic system fixtures.
+- [x] Add a reproducible Apple Silicon VMware Fusion ARM64 package and smoke
+  gate through kernel/initfs and `/init`, including ACPI SPCR serial and
+  PAN-safe syscall user access.
 - [x] Architecture-correct compile checks for AArch64 and x86_64 source.
 - [x] Independent CI jobs so ABI, hosted engine, docs, smoke and regression
   results are visible even when another job fails.
@@ -84,6 +87,10 @@ authoritative in [`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json).
   write/flush/read plus backing-image bytes.
 - [ ] Add production NVMe multiqueue, PRP/SGL, interrupt affinity, direct
   final-buffer reads and physical durability/discard validation.
+- [ ] Complete VMware Fusion ARM64 platform parity: discover GICv3, CPUs and
+  clock sources from ACPI, bring all configured vCPUs online, and add supported
+  VMware persistent-storage and network drivers before claiming SSH/service
+  parity outside QEMU.
 - [x] Add a caller-owned portable engine/service boundary with native macOS and
   Linux CLI entrypoints, immutable reader-backed model admission, explicit
   backend/adapter selection and fail-closed unsupported execution.

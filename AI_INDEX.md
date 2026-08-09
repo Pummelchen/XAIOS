@@ -19,7 +19,7 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 | Operation mode | `refresh` |
 | Default branch | `main` |
 | Primary languages | C99, Assembly, Python, Shell |
-| Runtime target | AArch64 UEFI/QEMU OS correctness path plus a native hosted portable-engine/service foundation; x86_64 executes a real shared-runtime hello ELF plus AP/ring-3/XSAVE/ACPI/modern-VirtIO bring-up, but not full OS-service parity. |
+| Runtime target | AArch64 UEFI/QEMU OS correctness path, limited Apple Silicon VMware Fusion boot through `/init`, and a native hosted portable-engine/service foundation; x86_64 executes a real shared-runtime hello ELF plus AP/ring-3/XSAVE/ACPI/modern-VirtIO bring-up, but not full OS-service parity. |
 
 ## Read first
 
@@ -88,6 +88,7 @@ Runtime structure:
 | `engine/` | Portable C99 model-v2, ModelFS/model-file, architecture/backend and caller-owned service interfaces. | Native hosted tests exist; it is not wired to real model execution. |
 | `tests/model_v2/`, `tests/model_volume/`, `tests/storage/` | Model/package round trips, malformed input, sparse large files, block/GPT/VFS/SFTP tests. | Run with `make hosted-test`. |
 | `scripts/` | Build scripts, QEMU runners, gates, report generation, initfs creation. | Primary validation surface. |
+| `platform/vmware-fusion/` | GRUB compatibility-stage container/config and generated VM template. | Apple Silicon Fusion only; limited platform scope. |
 | `contracts/` | Machine-readable QEMU release-candidate contract. | May lag newer source. |
 | `.github/workflows/` | CI compile, ABI, build/smoke, regression jobs. | Ubuntu toolchain/QEMU path. |
 
@@ -101,6 +102,7 @@ Runtime structure:
 | Build x86_64 image | `make image-x86_64` |
 | Build native engine CLI | `make engine-cli` |
 | Interactive AArch64 QEMU | `make qemu` or `make qemu-aarch64` |
+| VMware Fusion ARM64 package/smoke | `make vmware-fusion-image`, `make vmware-fusion-smoke` |
 | Dry-run QEMU commands | `make qemu-dry-run` |
 | Primary smoke gate | `make qemu-smoke` |
 | Debian 13 SSH/network gate | `make qemu-docker-network-suite` |
@@ -119,7 +121,7 @@ Runtime structure:
 
 | Change type | Start with | Also inspect/update |
 |---|---|---|
-| Boot/UEFI | `boot/uefi/`, `scripts/build-image.sh` | `kernel/core/kmain.c`, `docs/ARCHITECTURE.md` |
+| Boot/UEFI | `boot/uefi/`, `scripts/build-image.sh`, `platform/vmware-fusion/` | `kernel/core/kmain.c`, `docs/ARCHITECTURE.md`, `docs/VMWARE-FUSION.md` |
 | Kernel subsystem | Relevant `kernel/*` module | Matching header, `kmain()` init/self-test order, QEMU gate markers |
 | Syscall/API | `kernel/include/xaios/syscall.h` | `kernel/user/syscall.c`, `userspace/include/xaios_user.h`, `docs/API.md`, `contracts/qemu-rc-v1.json`, `scripts/qemu_gate_lib.py` |
 | Userspace app | `userspace/apps/` | `scripts/build-image.sh`, `kernel/core/kmain.c`, `scripts/qemu-smoke.py` |

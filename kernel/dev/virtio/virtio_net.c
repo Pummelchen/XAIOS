@@ -44,6 +44,7 @@ typedef struct virtio_net_driver {
   uint64_t tx_completion_count;
   uint32_t event_idx;
   uint32_t indirect_desc;
+  uint32_t device_present;
   uint64_t scatter_gather_submissions;
   uint64_t copy_fallbacks;
   xaios_spinlock_t tx_lock;
@@ -248,8 +249,14 @@ static void malformed_packet_self_test(void) {
 
 void virtio_net_self_test(void) {
   kassert(allocate_driver() == XAIOS_OK);
-  kassert(virtio_transport_find(VIRTIO_DEVICE_NET, "virtio-net",
-                                &g_net->device) == XAIOS_OK);
+  xaios_status_t status = virtio_transport_find(
+      VIRTIO_DEVICE_NET, "virtio-net", &g_net->device);
+  if (status == XAIOS_ERR_NOT_FOUND) {
+    klog("virtio-net: self-test skipped no VirtIO network device\n");
+    return;
+  }
+  kassert(status == XAIOS_OK);
+  g_net->device_present = 1U;
   kassert(negotiate_net_features(g_net) == XAIOS_OK);
 
   bytes_zero(g_net->rx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
@@ -339,15 +346,19 @@ static uint64_t net_dma_address(const void *ptr) {
 }
 
 xaios_status_t virtio_net_init_persistent(void) {
-  kassert(allocate_driver() == XAIOS_OK);
+  xaios_status_t status = allocate_driver();
+  if (status != XAIOS_OK) return status;
 
   if (g_net->persistent != 0) {
     return XAIOS_OK;
   }
 
-  kassert(virtio_transport_find(VIRTIO_DEVICE_NET, "virtio-net-persist",
-                                &g_net->device) == XAIOS_OK);
-  kassert(negotiate_net_features(g_net) == XAIOS_OK);
+  status = virtio_transport_find(VIRTIO_DEVICE_NET, "virtio-net-persist",
+                                 &g_net->device);
+  if (status != XAIOS_OK) return status;
+  g_net->device_present = 1U;
+  status = negotiate_net_features(g_net);
+  if (status != XAIOS_OK) return status;
 
   bytes_zero(g_net->rx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
   bytes_zero(g_net->rx_avail, sizeof(*g_net->rx_avail));
@@ -360,12 +371,14 @@ xaios_status_t virtio_net_init_persistent(void) {
     g_net->tx_avail->used_event = 0U;
   }
 
-  kassert(virtio_transport_setup_queue(&g_net->device, 0, VIRTQ_SIZE,
-                                       g_net->rx_desc, g_net->rx_avail,
-                                       g_net->rx_used) == XAIOS_OK);
-  kassert(virtio_transport_setup_queue(&g_net->device, 1, VIRTQ_SIZE,
-                                       g_net->tx_desc, g_net->tx_avail,
-                                       g_net->tx_used) == XAIOS_OK);
+  status = virtio_transport_setup_queue(&g_net->device, 0, VIRTQ_SIZE,
+                                        g_net->rx_desc, g_net->rx_avail,
+                                        g_net->rx_used);
+  if (status != XAIOS_OK) return status;
+  status = virtio_transport_setup_queue(&g_net->device, 1, VIRTQ_SIZE,
+                                        g_net->tx_desc, g_net->tx_avail,
+                                        g_net->tx_used);
+  if (status != XAIOS_OK) return status;
   virtio_transport_set_driver_ok(&g_net->device);
 
   /* Allocate and post RX buffers */
@@ -401,8 +414,12 @@ xaios_status_t virtio_net_init_persistent(void) {
   g_net->tx_completion_count = 0U;
   g_net->scatter_gather_submissions = 0U;
   g_net->copy_fallbacks = 0U;
-  kassert(virtio_transport_register_interrupt(
-              &g_net->device, virtio_net_interrupt, g_net) == XAIOS_OK);
+  status = virtio_transport_register_interrupt(
+      &g_net->device, virtio_net_interrupt, g_net);
+  if (status != XAIOS_OK) {
+    g_net->persistent = 0U;
+    return status;
+  }
 
   klog("virtio-net: persistent mode initialized rx=%u tx=%u event_idx=%u indirect_sg=%u\n",
        VIRTIO_NET_PERSISTENT_RX_DESCS, VIRTIO_NET_PERSISTENT_TX_DESCS,
@@ -586,7 +603,7 @@ uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size) {
 }
 
 xaios_status_t virtio_net_get_mac(uint8_t mac[6]) {
-  if (g_net == 0 || mac == 0) {
+  if (g_net == 0 || mac == 0 || g_net->device_present == 0U) {
     return XAIOS_ERR_INVALID;
   }
   for (uint32_t i = 0; i < 6; ++i) {

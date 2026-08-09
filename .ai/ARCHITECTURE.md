@@ -13,8 +13,9 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 ## Verified high-level architecture
 
 XAIOS contains both a freestanding OS and a portable hosted C99 inference-engine
-foundation. The current source builds an AArch64 UEFI/QEMU path, kernel and
-userspace ELFs, storage images, and hosted model-v2/engine tests. The x86_64
+foundation. The current source builds an AArch64 UEFI/QEMU path, a limited
+Apple Silicon VMware Fusion path through `/init`, kernel and userspace ELFs,
+storage images, and hosted model-v2/engine tests. The x86_64
 image boots a platform bring-up kernel and executes shared CRC, block, VFS,
 architecture-registry, scalar-backend and packed-engine code. It also starts
 MADT-discovered APs, executes a ring-3 syscall round trip, preserves runtime-
@@ -30,8 +31,10 @@ Evidence:
 
 ## Boot/runtime flow
 
-1. UEFI firmware loads `BOOTAA64.EFI` from the FAT image.
-2. `boot/uefi/loader_main.c` loads `kernel.elf` and passes `xaios_boot_info_t`.
+1. UEFI firmware loads `BOOTAA64.EFI`; Fusion first uses the generated GRUB
+   compatibility chainloader.
+2. `boot/uefi/loader_main.c` loads `kernel.elf` and passes boot-info v6,
+   including the optional firmware-loaded initfs extent.
 3. `kernel/core/kmain.c` initializes architecture, memory, device, filesystem, security, network, process, AI runtime, and telemetry subsystems.
 4. The kernel loads `/init`, `/bin/service-manager`, workers, and userspace apps from initramfs.
 5. The kernel emits telemetry and enters an idle `wfe` loop.
@@ -60,6 +63,8 @@ Evidence:
 - Filesystem access is constrained by security policy in `kernel/runtime/security.c`.
 - Mutable state and updates cross persistence/update boundaries in `kernel/fs/`, `kernel/runtime/persistence.c`, and `kernel/runtime/update.c`.
 - Network/SSH paths cross from QEMU host forwarding into socket and SSH code.
+- Fusion currently crosses only UEFI/serial/initfs and `/init`; VMware device
+  networking/persistence and ACPI multi-vCPU/GIC discovery remain absent.
 - Model-v2 writing streams caller-provided section sources to positional package
   extents. Official model import is not yet implemented.
 - Production model admission retains immutable readers and no-copy 64-bit kernel

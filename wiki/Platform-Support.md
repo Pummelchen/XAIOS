@@ -1,6 +1,6 @@
 # Platform Support
 
-Last updated: 2026-08-09.
+Last updated: 2026-08-10.
 
 The authoritative status for the 20 ARM, Intel and portable-engine
 recommendations is
@@ -39,6 +39,9 @@ The exact evidence for each row remains in the authoritative JSON source.
 
 - AArch64 starts runtime-discovered CPUs, dispatches joinable workers, and
   preserves q0-q31, FPCR and FPSR across live timer interrupts.
+- VMware Fusion 25.0.1 on Apple Silicon boots the ARM64 package through a GRUB
+  UEFI compatibility stage and reaches `/init`; this limited gate has no VMware
+  NIC/persistent-disk driver or multi-vCPU platform discovery.
 - The native macOS/Linux engine executable exposes probe/inspect and a
   fail-closed serve command through caller-owned model/session registries.
 - x86 starts all MADT-discovered application processors through an OS-owned
@@ -68,6 +71,8 @@ The exact evidence for each row remains in the authoritative JSON source.
   logits parity and real-model decode are not implemented.
 - Physical Apple, Intel Desktop and Xeon validation cannot be established by
   QEMU and remains a separate required gate.
+- VMware Fusion is virtual ARM64 correctness evidence only. See
+  [[VMware Fusion|VMware-Fusion]] for the exact scope and commands.
 
 The repository tracker and hardware-readiness document retain these open items;
 an interface, parser, or QEMU canary is not a production-support claim.

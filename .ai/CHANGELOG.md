@@ -10,6 +10,18 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 -->
 # AI onboarding changelog
 
+## 2026-08-10 - VMware Fusion ARM64 bring-up
+
+- Added a reproducible Debian 13 GRUB UEFI compatibility stage, El Torito VM
+  bundle generator, GUI runner and serial-marker Fusion smoke gate.
+- Added boot-info v6 optional initfs extents and an explicitly volatile
+  `boot-memory` compatibility device while retaining QEMU VirtIO behavior.
+- Added ACPI SPCR serial discovery, ARM PAN-safe syscall user access, and
+  fail-closed handling for absent fixed-address GIC/PL031/VirtIO-net devices.
+- Verified Fusion 25.0.1 on an M3 Mac through a successful `/init` return and
+  retained VMware networking, persistent storage, SMP/GIC/clock discovery and
+  physical-performance boundaries as open.
+
 ## 2026-08-09 — portable compile, x86 ELF, and syscall hardening
 
 - Added architecture-neutral CPU primitives and made all common kernel and

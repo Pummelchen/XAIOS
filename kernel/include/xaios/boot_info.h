@@ -4,9 +4,14 @@
 #include <stdint.h>
 
 #define XAIOS_BOOT_INFO_MAGIC UINT64_C(0x4f534149424f4f54)
-#define XAIOS_BOOT_INFO_VERSION UINT32_C(4)
+#define XAIOS_BOOT_INFO_VERSION UINT32_C(6)
 
 #define XAIOS_BOOT_PLATFORM_SMMUV3 UINT32_C(1)
+
+#define XAIOS_UART_NONE UINT32_C(0)
+#define XAIOS_UART_PL011 UINT32_C(1)
+#define XAIOS_UART_16550_MMIO UINT32_C(2)
+#define XAIOS_UART_16550_IO UINT32_C(3)
 
 #define XAIOS_MEMORY_TYPE_CONVENTIONAL UINT32_C(7)
 
@@ -30,12 +35,16 @@ typedef struct xaios_boot_info {
   uint64_t kernel_phys_base;
   uint64_t kernel_phys_end;
   uint64_t uart_base;
+  uint32_t uart_kind;
+  uint32_t uart_reg_shift;
   uint32_t system_volume_present;
   uint32_t system_slot;
   uint64_t system_generation;
   uint64_t acpi_rsdp;
   uint64_t device_tree;
   uint64_t ap_trampoline;
+  uint64_t boot_image_base;
+  uint64_t boot_image_size;
 } xaios_boot_info_t;
 
 #endif

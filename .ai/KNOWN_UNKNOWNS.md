@@ -72,6 +72,12 @@ Evidence:
 
 ## Verified implementation gaps
 
+- VMware Fusion 25.0.1 on Apple Silicon reaches `/init` through a generated
+  GRUB UEFI compatibility stage and firmware-loaded `boot-memory` initfs. ACPI
+  GIC/SMP/clock discovery, multiple online CPUs, VMware networking/persistent
+  storage and the later scheduler/application/SSH gates remain absent. This is
+  virtual ARM64 correctness evidence, not physical Apple evidence.
+
 - `xaios.control.v1` operations 1-49, persistent config/key/revocation/audit
   state, observer/operator/administrator roles, and ModelFS/storage lifecycle are
   QEMU/OpenSSH-tested. Model-v2 execution loading, cluster control and the
