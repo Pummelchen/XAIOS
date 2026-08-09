@@ -34,7 +34,7 @@ REQUIRED = {
         "interrupt-dispatched with eight request slots",
         "emulated-NVMe gate exercises admin and I/O queues",
     ],
-    ".ai/KNOWN_UNKNOWNS.md": [
+    "wiki/Current-Limitations.md": [
         "external A-record resolution",
         "controlled INT3 round trip",
     ],
@@ -117,8 +117,8 @@ def main() -> int:
             print(f"  - {failure}")
         return 1
     print(
-        "core-os-status-check: README, tracker, readiness, docs, onboarding, "
-        "wiki and contract are synchronized"
+        "core-os-status-check: README, tracker, readiness, docs, Wiki, and "
+        "contract are synchronized"
     )
     return 0
 

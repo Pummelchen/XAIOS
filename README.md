@@ -9,9 +9,10 @@ server. The current OS boots under QEMU and exercises deterministic
 kernel/runtime contracts. Real-model inference and the dedicated inference
 network service are under development and are not production supported.
 
-AI coding agents should read [`AI_INDEX.md`](./AI_INDEX.md),
-[`AGENTS.md`](./AGENTS.md), and [`.ai/START_HERE.md`](./.ai/START_HERE.md), then
-verify their claims against current source.
+Human-facing project documentation is maintained in the
+[XAIOS Wiki](https://github.com/Pummelchen/XAIOS/wiki). The repository keeps
+selected Wiki pages under [`wiki/`](./wiki/) so architecture, development,
+testing, security, and status claims can be checked with the source.
 
 ## Unix compatibility boundary
 
@@ -311,6 +312,9 @@ for the complete VirtIO, networking, SSH/SFTP, persistence and SMP suites. See
 
 ## Documentation
 
+- [Wiki home and documentation index](https://github.com/Pummelchen/XAIOS/wiki)
+- [Developer guide](https://github.com/Pummelchen/XAIOS/wiki/Developer-Guide)
+- [Current limitations](https://github.com/Pummelchen/XAIOS/wiki/Current-Limitations)
 - [Model implementation roadmap](./docs/QWEN-K3-IMPLEMENTATION-ROADMAP.md)
 - [Distributed AI server plan](./docs/DISTRIBUTED-AI-SERVER-PLAN.md)
 - [`xaiosctl` command reference](./docs/XAIOSCTL.md)

@@ -15,8 +15,8 @@ SYNC_DOCUMENTS = (
     "HARDWARE-READINESS.md",
     "docs/HARDWARE-BACKENDS.md",
     "docs/DISTRIBUTED-AI-SERVER-PLAN.md",
-    ".ai/ARCHITECTURE.md",
-    ".ai/KNOWN_UNKNOWNS.md",
+    "wiki/Architecture.md",
+    "wiki/Current-Limitations.md",
     "wiki/Home.md",
     "wiki/Platform-Support.md",
 )

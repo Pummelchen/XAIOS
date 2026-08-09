@@ -1,0 +1,125 @@
+# Architecture
+
+XAIOS combines a freestanding operating system with a portable C99 inference
+engine. The operating system owns hardware resources, isolation, persistence,
+networking, and service lifecycle. The portable engine owns model packages,
+architecture plans, backends, sessions, and future inference execution.
+
+The authoritative platform boundary is recorded in
+`docs/PLATFORM-SUPPORT.json`. QEMU results prove correctness and ABI behavior;
+they do not prove physical performance or production readiness.
+
+## Boot and runtime flow
+
+1. UEFI firmware loads the XAIOS loader. VMware Fusion uses a generated GRUB
+   compatibility chainloader before the same XAIOS loader.
+2. `boot/uefi/loader_main.c` validates and loads `kernel.elf`, builds the boot
+   information structure, and transfers control to the architecture entry.
+3. The AArch64 path enters `kernel/core/kmain.c`. The x86_64 path currently
+   uses its focused bring-up entry under `kernel/arch/x86_64/`.
+4. The kernel initializes architecture services, memory, devices, storage,
+   filesystems, security, networking, processes, runtime services, and
+   telemetry in dependency order.
+5. The AArch64 image loads `/init`, the service manager, workers, applications,
+   and SSH/SFTP from initramfs before entering its persistent service loop.
+
+## Major components
+
+| Component | Main source | Responsibility |
+|---|---|---|
+| UEFI loader | `boot/uefi/` | Firmware entry, ELF loading, and boot handoff. |
+| Architecture ports | `kernel/arch/aarch64/`, `kernel/arch/x86_64/` | Exceptions, timers, interrupts, CPU startup, page tables, and platform discovery. |
+| Kernel core | `kernel/core/` | Initialization, logging, telemetry, panic handling, and self-test sequencing. |
+| Memory | `kernel/mm/` | Physical and virtual memory, NUMA metadata, heaps, arenas, and ELF ownership. |
+| Devices and storage | `kernel/dev/`, `kernel/storage/` | VirtIO, focused NVMe, block devices, GPT, and partitions. |
+| Filesystems | `kernel/fs/` | Initramfs, VFS, MutableFS, and immutable active ModelFS packages. |
+| Processes and ABI | `kernel/user/`, `userspace/` | Process ownership, service supervision, syscalls, applications, and SSH/SFTP. |
+| Network | `kernel/net/`, `kernel/runtime/network_stack.c` | IPv4/IPv6, TCP/UDP, DNS, routing, and socket state. |
+| Administration | `kernel/runtime/admin_control.c`, `kernel/runtime/control_protocol.c` | Typed role-based configuration, key, audit, storage, and model operations. |
+| Portable engine | `engine/` | Model-v2 and ModelFS parsing, adapters, backends, model/session ownership, and asynchronous range I/O. |
+
+## Trust boundaries
+
+- EL0 code crosses into the kernel only through validated syscall dispatch.
+- Every syscall is associated with a process capability and validates user
+  buffers before dereference.
+- VFS descriptors and network sockets are process-owned and reclaimed with the
+  owning address space.
+- Administrative mutations are role- and capability-gated, replay-protected,
+  audited, and bounded.
+- Active ModelFS packages are immutable. Registration, staging, verification,
+  activation, scrub, quarantine, and trim use explicit typed operations.
+- QEMU host forwarding and external OpenSSH/SFTP clients cross the network
+  trust boundary; FreeBSD is the primary Unix behavioral reference.
+- Model-v1 is a deterministic fixture boundary. Production decode must fail
+  explicitly until a real architecture plan executes.
+
+## Main data flows
+
+### Build
+
+```text
+make image
+  -> scripts/build-image.sh
+  -> Clang/LLD and image tools
+  -> UEFI loader, kernel, userspace, initramfs, and QEMU disk images
+```
+
+### Boot validation
+
+```text
+make qemu-smoke
+  -> build image
+  -> boot isolated QEMU guest
+  -> collect serial markers and telemetry
+  -> validate the release-candidate contract
+```
+
+### Administrative command
+
+```text
+local or SSH xaiosctl
+  -> shared command parser
+  -> authenticated principal and role
+  -> capability-gated syscall
+  -> typed query or replay-protected mutation
+  -> persistent audit record
+  -> shared text or JSON renderer
+```
+
+### Model package access
+
+```text
+block device
+  -> optional GPT partition
+  -> ModelFS volume
+  -> immutable package extent
+  -> verified range read
+  -> caller-owned engine buffer or arena
+```
+
+## Platform status
+
+The AArch64 QEMU path provides the broadest OS-service coverage. VMware Fusion
+on Apple Silicon reaches `/init` through a limited ARM64 compatibility path but
+does not yet have VMware networking, persistent storage, or multi-vCPU
+discovery.
+
+The x86_64 image starts MADT-discovered application processors, executes a real
+shared-runtime ring-3 ELF syscall round trip, validates runtime-sized XSAVE and
+ACPI topology, and exercises modern VirtIO block DMA/MSI-X plus network TX.
+Full AArch64 service parity remains open, including complete userspace/thread
+services, receive networking and SSH, mounted filesystems, x86 NVMe operation,
+security services, AI Cell integration, and telemetry.
+
+## Inference boundary
+
+The portable engine already supplies model-v2 parsing, architecture and backend
+registries, scalar packed INT4/INT6 correctness kernels, immutable model
+readers, sessions, and a caller-owned service API. It does not yet import or
+execute a real Qwen checkpoint. Qwen 3.6 27B is the next model workstream after
+the XAIOS platform completion gate; Kimi K3 and the other model families remain
+later roadmap items.
+
+See [[Current Limitations|Current-Limitations]], [[Platform Support|Platform-Support]],
+and [[Developer Guide|Developer-Guide]].

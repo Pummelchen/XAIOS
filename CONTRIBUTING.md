@@ -1,16 +1,22 @@
 # Contributing to XAIOS
 
-XAIOS is a freestanding AArch64 operating system for CPU-only embedded AI agents. Keep changes small, reviewable, and tied to the current implementation plan.
+XAIOS is an experimental freestanding operating system and portable inference
+engine. Keep changes focused, reviewable, and tied to the current project
+tracker.
 
 ## Getting Started
 
-See [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) for toolchain setup, building, and running.
+See [Getting Started](docs/GETTING-STARTED.md) for toolchain setup, building,
+and running. The [Developer Guide](https://github.com/Pummelchen/XAIOS/wiki/Developer-Guide)
+contains the repository map, change procedures, and validation matrix.
 
 ## Documentation
 
-- **[docs/API.md](docs/API.md)** — Userspace syscall API reference (33 syscalls, capabilities, data types)
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — System architecture, boot flow, memory layout, directory map
-- **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)** — Prerequisites, build instructions, app development guide
+- [XAIOS Wiki](https://github.com/Pummelchen/XAIOS/wiki) - human-facing project documentation
+- [API](docs/API.md) - userspace syscall and capability reference
+- [Architecture](docs/ARCHITECTURE.md) - detailed system architecture and boot flow
+- [Getting Started](docs/GETTING-STARTED.md) - prerequisites, builds, and app development
+- [Current Limitations](https://github.com/Pummelchen/XAIOS/wiki/Current-Limitations) - verified gaps and non-claims
 
 ## Development Environment
 
@@ -25,19 +31,28 @@ Build and smoke test:
 make image && make qemu-smoke
 ```
 
-The smoke test boots the full OS, runs all self-tests, executes every userspace app, and verifies JSON telemetry. It is the primary acceptance criterion for any change.
+The smoke test boots the AArch64 QEMU image, runs its self-tests and userspace
+fixtures, and verifies JSON telemetry. Broader changes require the focused gates
+listed in the Wiki testing guide.
 
 ## Code Style
 
 All C code is freestanding C99 compiled with `-Wall -Wextra -Werror`:
 
-- **No libc.** Kernel uses `kernel/include/xaios/` headers. Userspace uses `userspace/include/xaios_user.h`.
-- **Naming**: `snake_case` for functions/types, `UPPER_SNAKE` for macros/constants.
-- **Prefixes**: Kernel functions use module prefix (`pmm_alloc_page`, `vmm_map_page`, `smmu_init`). Userspace wrappers use `xaios_` prefix.
-- **Types**: Use `uint64_t`/`uint32_t` in kernel, `u64`/`u32` in userspace.
-- **Error handling**: Return `xaios_status_t` (0 = `XAIOS_OK`). Use `kassert()` for invariants that must hold.
-- **No dynamic allocation in userspace.** Stack buffers and fixed-size arrays only.
-- **Self-tests**: Every kernel module has a `*_self_test()` function called during `kmain()` init. New modules must include one.
+- **No libc.** Kernel code uses `kernel/include/xaios/`; userspace uses
+  `userspace/include/xaios_user.h`.
+- **Naming.** Use `snake_case` for functions and types and `UPPER_SNAKE` for
+  constants and macros.
+- **Prefixes.** Kernel APIs use a module prefix such as `pmm_`, `vmm_`, or
+  `smmu_`; userspace wrappers use `xaios_`.
+- **Types.** Use the fixed-width types already established in the surrounding
+  kernel or userspace module.
+- **Error handling.** Return `xaios_status_t` for recoverable failures and use
+  `kassert()` only for invariants that cannot be recovered safely.
+- **Userspace allocation.** The freestanding userspace runtime has no general
+  `malloc`; use bounded buffers or an existing owned arena.
+- **Self-tests.** New kernel modules require focused `*_self_test()` coverage
+  and correct initialization order in `kernel/core/kmain.c`.
 
 ## Contribution Rules
 
@@ -50,38 +65,20 @@ All C code is freestanding C99 compiled with `-Wall -Wextra -Werror`:
 
 ## Adding a Userspace App
 
-1. Create `userspace/apps/myapp.c` using `#include <xaios_user.h>`
-2. Add the app name to `USER_APPS` in `scripts/build-image.sh`
-3. Add `run_user_app("/bin/myapp", PID, app_caps)` in `kernel/core/kmain.c`
-4. Add expected output markers to `TARGETS` in `scripts/qemu-smoke.py`
-5. Verify with `make image && make qemu-smoke`
+1. Create `userspace/apps/myapp.c` using `#include <xaios_user.h>`.
+2. Add the app to `USER_APPS` in `scripts/build-image.sh`.
+3. Register its launch and capability mask in `kernel/core/kmain.c`.
+4. Add a functional smoke marker when the app participates in boot validation.
+5. Verify with `make image && make qemu-smoke`.
 
 See [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) for a complete example.
 
 ## Adding a Kernel Module
 
-1. Create header in `kernel/include/xaios/module.h` and source in the appropriate subdirectory
-2. Add a `module_self_test()` function
-3. Add the `.o` to `KERNEL_OBJECTS` in `scripts/build-image.sh`
-4. Add init call and self-test call in `kernel/core/kmain.c` (respect init ordering)
-5. Verify all files compile: `clang --target=aarch64-none-elf -std=c99 -ffreestanding -Wall -Wextra -Werror -Ikernel/include -fsyntax-only kernel/.../*.c`
-
-## Codex Workflow
-
-Future Codex sessions should use the [Codex Work Packages](https://github.com/Pummelchen/XAIOS/wiki/Codex-Work-Packages) wiki page as the operational task list. Complete one package at a time, run the stated checks, and keep commits focused.
-# Contributing to XAIOS
-
-XAIOS is a design-stage operating system project. Keep changes small, reviewable, and tied to the current implementation plan.
-
-## Contribution Rules
-
-- Use one task per commit or pull request.
-- Run the relevant tests, build checks, or QEMU boot command before submitting.
-- Keep boot logs and benchmark outputs when they support the change.
-- Update the GitHub Wiki or repository notes when code changes alter architecture, build steps, APIs, or benchmark methodology.
-- Do not make benchmark claims without measured data and a documented baseline.
-- Do not commit credentials, GitHub tokens, private keys, SSH keys, passwords, or secret benchmark data.
-
-## Codex Workflow
-
-Future Codex sessions should use the [Codex Work Packages](https://github.com/Pummelchen/XAIOS/wiki/Codex-Work-Packages) wiki page as the operational task list. Complete one package at a time, run the stated checks, and keep commits focused.
+1. Add the header and source under the established subsystem directories.
+2. Add focused `module_self_test()` coverage.
+3. Add the object to the relevant architecture build list.
+4. Register initialization and self-test calls in `kernel/core/kmain.c`,
+   respecting dependency order.
+5. Run `make compile-check` followed by the focused QEMU gate and
+   `make qemu-smoke`.
