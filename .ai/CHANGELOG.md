@@ -10,6 +10,23 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 -->
 # AI onboarding changelog
 
+## 2026-08-09 — portable compile, x86 ELF, and syscall hardening
+
+- Added architecture-neutral CPU primitives and made all common kernel and
+  userspace C compile as real AArch64 and x86_64 objects.
+- Replaced the synthetic x86 ring-3 byte canary with a real `/bin/hello` ELF
+  built from the shared userspace startup/runtime and LOG/EXIT syscall ABI.
+- Executed shared security and scalar packed-kernel self-tests in the x86 image.
+- Audited syscall capability and user-buffer paths; added process-owned dynamic
+  sockets, process-reclaim cleanup for sockets and VFS handles, bounded I/O,
+  descriptor narrowing checks, and kernel-owned snapshots for mutable
+  log/write/send payloads.
+- Enforced valid connected/TCP and datagram/UDP send-state pairs without
+  blocking UDP replies; one guest passed the simultaneous macOS and Debian 13
+  SSH, SFTP, IPv4/IPv6 TCP, UDP and reconnect load gate.
+- Kept full x86 service integration and all physical-hardware evidence marked
+  incomplete.
+
 ## 2026-08-04 - remaining QEMU core-OS tranche
 
 - Pinned the aggregate CI SMMUv3 gate to upstream QEMU commit

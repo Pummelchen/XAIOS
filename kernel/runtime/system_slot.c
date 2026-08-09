@@ -1,3 +1,4 @@
+#include <xaios/arch_cpu.h>
 #include <xaios/assert.h>
 #include <xaios/klog.h>
 #include <xaios/sha256.h>
@@ -19,7 +20,7 @@ static uint64_t g_staging_written;
     defined(XAIOS_STORAGE_CRASH_AFTER_SYSTEM_PRIMARY)
 static void storage_crash_point(const char *name) {
   klog("storage-crash: reached point=%s\n", name);
-  for (;;) __asm__ volatile("wfe");
+  for (;;) xaios_cpu_wait();
 }
 #endif
 

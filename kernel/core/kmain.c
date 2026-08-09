@@ -2,6 +2,7 @@
 #include <xaios/admin_control.h>
 #include <xaios/agent_protocol.h>
 #include <xaios/ai_cell.h>
+#include <xaios/arch_cpu.h>
 #include <xaios/ai_kernels.h>
 #include <xaios/arena.h>
 #include <xaios/arp.h>
@@ -90,12 +91,15 @@ static void early_spinlock_self_test(void) {
   xaios_spinlock_t lock = XAIOS_SPINLOCK_INIT;
   kassert(smp_online_count() <= 1U);
   kassert(xaios_spin_trylock(&lock) == 1);
+  kassert(xaios_spin_held(&lock) == 1);
   kassert(xaios_spin_trylock(&lock) == 0);
   xaios_spin_unlock(&lock);
+  kassert(xaios_spin_held(&lock) == 0);
   kassert(lock.next_ticket == 0U);
   kassert(lock.serve == 0U);
   kassert(lock.guard == 0U);
   kassert(xaios_spin_trylock(&lock) == 1);
+  kassert(xaios_spin_held(&lock) == 1);
   xaios_spin_unlock(&lock);
   klog("spinlock: early single-core try-lock self-test passed\n");
 }
@@ -474,6 +478,6 @@ void kmain(const xaios_boot_info_t *boot) {
   run_user_app("/bin/sshd", 18, sshd_caps);
 
   for (;;) {
-    __asm__ volatile("wfe");
+    xaios_cpu_wait();
   }
 }

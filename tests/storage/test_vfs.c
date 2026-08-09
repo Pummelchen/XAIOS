@@ -213,6 +213,16 @@ int main(void) {
   assert(vfs_read((uint32_t)model_fd, 20U, result, 2U) == 2);
   assert(memcmp(result, "cd", 2U) == 0);
 
+  int64_t orphan_one = vfs_open("/models/orphan-one",
+                                XAIOS_VFS_OPEN_READ, 21U);
+  int64_t orphan_two = vfs_open("/models/orphan-two",
+                                XAIOS_VFS_OPEN_READ, 21U);
+  assert(orphan_one > 0 && orphan_two > 0);
+  assert(vfs_release_owner(0U) == XAIOS_ERR_INVALID);
+  assert(vfs_release_owner(21U) == XAIOS_OK);
+  assert(vfs_close((uint32_t)orphan_one, 21U) == XAIOS_ERR_INVALID);
+  assert(vfs_close((uint32_t)orphan_two, 21U) == XAIOS_ERR_INVALID);
+
   models.max_io = 3U;
   assert(vfs_seek((uint32_t)model_fd, 20U, 8192U) == XAIOS_OK);
   assert(vfs_write((uint32_t)model_fd, 20U, sequence, 6U) == 3);

@@ -24,8 +24,8 @@ All wrapper functions below are built on this primitive.
 | `XAIOS_SYSCALL_FS_SEEK` | 36 | `xaios_fs_seek(fd, offset)` | Set an open mutable-file descriptor to an absolute byte offset. |
 | `XAIOS_SYSCALL_CONTROL_QUERY` | 37 | `xaios_control_query(request, request_size, response, response_size, out_size)` | Submit a bounded `xaios.control.v1` operation. Read access requires `XAIOS_CAP_CONTROL_QUERY`; administrator operations additionally require `XAIOS_CAP_CONTROL_ADMIN`. |
 | `XAIOS_SYSCALL_REMOTE_LOGIN_SESSION` | 38 | `xaios_remote_login_session(request)` | Execute in (lazily creating) or close a bounded per-connection shell session. Requires `XAIOS_CAP_REMOTE_LOGIN`. |
-| `XAIOS_SYSCALL_FS_PREAD` | 39 | `xaios_fs_pread(fd, buffer, size, offset)` | Read at an unsigned 64-bit offset without changing the handle cursor. |
-| `XAIOS_SYSCALL_FS_PWRITE` | 40 | `xaios_fs_pwrite(fd, buffer, size, offset)` | Write at an unsigned 64-bit offset without changing the handle cursor. |
+| `XAIOS_SYSCALL_FS_PREAD` | 39 | `xaios_fs_pread(fd, buffer, size, offset)` | Read at an unsigned 64-bit offset without changing the handle cursor. One call is limited to 65,536 bytes. |
+| `XAIOS_SYSCALL_FS_PWRITE` | 40 | `xaios_fs_pwrite(fd, buffer, size, offset)` | Write at an unsigned 64-bit offset without changing the handle cursor. One call is limited to 65,536 bytes. |
 | `XAIOS_SYSCALL_FS_FSYNC` | 41 | `xaios_fs_fsync(fd)` | Request backend durability for writes completed through the handle. |
 
 ## Filesystem
@@ -43,8 +43,8 @@ uses the longest matching component.
 | Syscall | Number | Wrapper | Description |
 |---------|-------:|---------|-------------|
 | `XAIOS_SYSCALL_FS_OPEN` | 11 | `xaios_fs_open(path, flags)` | Open a file. Flags: `XAIOS_MFS_OPEN_READ` (1), `XAIOS_MFS_OPEN_WRITE` (2), `XAIOS_MFS_OPEN_CREATE` (4), `XAIOS_MFS_OPEN_TRUNCATE` (8). Returns fd >= 0 on success. |
-| `XAIOS_SYSCALL_FS_READ` | 12 | `xaios_fs_read(fd, buf, size)` | Read up to `size` bytes from `fd` into `buf`. Returns bytes read. |
-| `XAIOS_SYSCALL_FS_WRITE` | 13 | `xaios_fs_write(fd, buf, size)` | Write `size` bytes from `buf` to `fd`. Returns bytes written. |
+| `XAIOS_SYSCALL_FS_READ` | 12 | `xaios_fs_read(fd, buf, size)` | Read up to `size` bytes from `fd` into `buf`. Returns bytes read. One call is limited to 65,536 bytes. |
+| `XAIOS_SYSCALL_FS_WRITE` | 13 | `xaios_fs_write(fd, buf, size)` | Write `size` bytes from `buf` to `fd`. Returns bytes written. One call is limited to 65,536 bytes. |
 | `XAIOS_SYSCALL_FS_CLOSE` | 14 | `xaios_fs_close(fd)` | Durably close an open writable handle according to the mounted backend. |
 | `XAIOS_SYSCALL_FS_STAT` | 15 | `xaios_fs_stat(path, stat)` | Populate `xaios_mfs_stat_user_t` with file metadata. |
 | `XAIOS_SYSCALL_FS_MKDIR` | 16 | `xaios_fs_mkdir(path)` | Create a directory. |
@@ -85,8 +85,8 @@ does not remove that backend's capacity limit.
 | `XAIOS_SYSCALL_NET_EXTERNAL_SESSION` | 26 | `xaios_net_external_session(proto, port, ...)` | Open external host session (UDP=17, TCP=6). |
 | `XAIOS_SYSCALL_NET_LISTEN` | 29 | `xaios_net_listen(port, sockfd)` / `xaios_net_bind_udp(port, sockfd)` | Create a TCP listener or bound UDP socket according to the request protocol. |
 | `XAIOS_SYSCALL_NET_ACCEPT` | 30 | `xaios_net_accept(sockfd, newfd)` / `xaios_net_accept_addr(...)` | Accept an incoming TCP connection, optionally returning its peer address and port. |
-| `XAIOS_SYSCALL_NET_RECV` | 31 | `xaios_net_recv(sockfd, buf, size, bytes)` / `xaios_net_recvfrom(...)` | Receive TCP stream data or a queued UDP datagram. |
-| `XAIOS_SYSCALL_NET_SEND` | 32 | `xaios_net_send(sockfd, buf, size, bytes)` / `xaios_net_sendto(...)` | Send TCP stream data or a UDP datagram. |
+| `XAIOS_SYSCALL_NET_RECV` | 31 | `xaios_net_recv(sockfd, buf, size, bytes)` / `xaios_net_recvfrom(...)` | Receive TCP stream data or a queued UDP datagram. One call is limited to 16,384 bytes. |
+| `XAIOS_SYSCALL_NET_SEND` | 32 | `xaios_net_send(sockfd, buf, size, bytes)` / `xaios_net_sendto(...)` | Send TCP stream data or a UDP datagram. One call is limited to 16,384 bytes; the kernel snapshots the payload before use. |
 | `XAIOS_SYSCALL_NET_CLOSE` | 33 | `xaios_net_close(sockfd)` | Close a socket. |
 | `XAIOS_SYSCALL_NET_RESOLVE` | 46 | `xaios_net_resolve(hostname, ipv4)` | Poll or start a bounded asynchronous A-record lookup. Returns `XAIOS_ERR_BUSY` while pending and uses a TTL cache. |
 

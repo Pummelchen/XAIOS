@@ -1,3 +1,4 @@
+#include <xaios/arch_cpu.h>
 #include <xaios/assert.h>
 #include <xaios/gic.h>
 #include <xaios/klog.h>
@@ -60,7 +61,7 @@ void virtio_mmio_write32(uint64_t base, uint32_t offset, uint32_t value) {
 }
 
 void virtio_mmio_barrier(void) {
-  __asm__ volatile("dsb sy" ::: "memory");
+  xaios_cpu_io_barrier();
 }
 
 static void write_addr_pair(uint64_t base, uint32_t low_offset,
@@ -153,7 +154,7 @@ xaios_status_t virtio_transport_reset_checked(
          (started == 0U && spins >= VIRTIO_WAIT_FALLBACK_SPINS))) {
       return XAIOS_ERR_IO;
     }
-    __asm__ volatile("yield" ::: "memory");
+    xaios_cpu_relax();
   }
 }
 
@@ -289,7 +290,7 @@ xaios_status_t virtio_transport_wait_used(volatile uint16_t *used_idx,
         return XAIOS_ERR_IO;
       }
     }
-    __asm__ volatile("yield");
+    xaios_cpu_relax();
   }
 }
 

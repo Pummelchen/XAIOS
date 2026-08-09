@@ -25,7 +25,20 @@ KERNEL_ARCHITECTURE_OBJ="$KERNEL_BUILD_DIR/architecture.o"
 KERNEL_BACKEND_SCALAR_OBJ="$KERNEL_BUILD_DIR/backend_scalar.o"
 KERNEL_BACKEND_NEON_OBJ="$KERNEL_BUILD_DIR/backend_neon.o"
 KERNEL_BACKEND_AVX2_OBJ="$KERNEL_BUILD_DIR/backend_avx2.o"
+KERNEL_KLOG_OBJ="$KERNEL_BUILD_DIR/klog.o"
+KERNEL_SECURITY_OBJ="$KERNEL_BUILD_DIR/security.o"
+KERNEL_AI_KERNELS_OBJ="$KERNEL_BUILD_DIR/ai_kernels.o"
+KERNEL_MATH_INTRINSICS_OBJ="$KERNEL_BUILD_DIR/math_intrinsics.o"
+KERNEL_CRYPTO_OBJ="$KERNEL_BUILD_DIR/kernel_ssh_crypto.o"
+KERNEL_TWEETNACL_OBJ="$KERNEL_BUILD_DIR/kernel_tweetnacl_subset.o"
 KERNEL_ELF="$KERNEL_BUILD_DIR/kernel.elf"
+USER_BUILD_DIR="$BUILD_DIR/userspace-x86_64"
+USER_START_OBJ="$USER_BUILD_DIR/start.o"
+USER_LIB_OBJ="$USER_BUILD_DIR/xaios_user.o"
+USER_HELLO_OBJ="$USER_BUILD_DIR/hello.o"
+USER_HELLO_ELF="$USER_BUILD_DIR/hello.elf"
+USER_HELLO_BIN="$USER_BUILD_DIR/hello.bin"
+USER_HELLO_BLOB_OBJ="$USER_BUILD_DIR/hello_blob.o"
 
 find_tool() {
   tool_name="$1"
@@ -84,11 +97,44 @@ fi
 CLANG="$(require_tool "Clang" clang "Install with: brew install llvm" "$LLVM_BIN/clang" /usr/bin/clang)"
 LLD_LINK="$(require_tool "LLD COFF linker" lld-link "Install with: brew install lld" "$LLD_BIN/lld-link" "$LLVM_BIN/lld-link")"
 LD_LLD="$(require_tool "LLD ELF linker" ld.lld "Install with: brew install lld" "$LLD_BIN/ld.lld" "$LLVM_BIN/ld.lld")"
+OBJCOPY="$(require_tool "objcopy" llvm-objcopy "Install LLVM or GNU binutils" \
+  "$LLVM_BIN/llvm-objcopy" /usr/bin/llvm-objcopy /usr/bin/objcopy)"
 MFORMAT="$(require_tool "mtools mformat" mformat "Install with: brew install mtools" /opt/homebrew/bin/mformat /usr/local/bin/mformat)"
 MMD="$(require_tool "mtools mmd" mmd "Install with: brew install mtools" /opt/homebrew/bin/mmd /usr/local/bin/mmd)"
 MCOPY="$(require_tool "mtools mcopy" mcopy "Install with: brew install mtools" /opt/homebrew/bin/mcopy /usr/local/bin/mcopy)"
 
-mkdir -p "$EFI_BUILD_DIR" "$KERNEL_BUILD_DIR"
+mkdir -p "$EFI_BUILD_DIR" "$KERNEL_BUILD_DIR" "$USER_BUILD_DIR"
+
+printf '%s\n' "Building x86_64 userspace /bin/hello ELF..."
+USER_CFLAGS="
+  --target=x86_64-none-elf
+  -std=c99
+  -ffreestanding
+  -fno-stack-protector
+  -fno-builtin
+  -fno-pic
+  -fno-pie
+  -mno-red-zone
+  -ffunction-sections
+  -fdata-sections
+  -Wall
+  -Wextra
+  -Werror
+"
+"$CLANG" $USER_CFLAGS -I"$ROOT_DIR/userspace/include" \
+  -c "$ROOT_DIR/userspace/lib/start.S" -o "$USER_START_OBJ"
+"$CLANG" $USER_CFLAGS -I"$ROOT_DIR/userspace/include" \
+  -c "$ROOT_DIR/userspace/lib/xaios_user.c" -o "$USER_LIB_OBJ"
+"$CLANG" $USER_CFLAGS -I"$ROOT_DIR/userspace/include" \
+  -c "$ROOT_DIR/userspace/apps/hello.c" -o "$USER_HELLO_OBJ"
+"$LD_LLD" -nostdlib --gc-sections -T "$ROOT_DIR/userspace/init/linker.ld" \
+  -o "$USER_HELLO_ELF" "$USER_START_OBJ" "$USER_LIB_OBJ" "$USER_HELLO_OBJ"
+"$OBJCOPY" -O binary "$USER_HELLO_ELF" "$USER_HELLO_BIN"
+(
+  cd "$USER_BUILD_DIR"
+  "$OBJCOPY" -I binary -O elf64-x86-64 -B i386:x86-64 \
+    hello.bin hello_blob.o
+)
 
 printf '%s\n' "Building x86_64 UEFI loader..."
 "$CLANG" \
@@ -163,6 +209,8 @@ KERNEL_CFLAGS="
   -fno-pic
   -fno-pie
   -mno-red-zone
+  -ffunction-sections
+  -fdata-sections
   -Wall
   -Wextra
   -Werror
@@ -186,16 +234,25 @@ for common_source in \
   "engine/src/architecture.c:$KERNEL_ARCHITECTURE_OBJ" \
   "engine/src/backend_scalar.c:$KERNEL_BACKEND_SCALAR_OBJ" \
   "engine/src/backend_neon.c:$KERNEL_BACKEND_NEON_OBJ" \
-  "engine/src/backend_avx2.c:$KERNEL_BACKEND_AVX2_OBJ"
+  "engine/src/backend_avx2.c:$KERNEL_BACKEND_AVX2_OBJ" \
+  "kernel/core/klog.c:$KERNEL_KLOG_OBJ" \
+  "kernel/runtime/security.c:$KERNEL_SECURITY_OBJ" \
+  "kernel/runtime/ai_kernels.c:$KERNEL_AI_KERNELS_OBJ" \
+  "kernel/runtime/math_intrinsics.c:$KERNEL_MATH_INTRINSICS_OBJ" \
+  "userspace/sshd/ssh_crypto.c:$KERNEL_CRYPTO_OBJ" \
+  "userspace/sshd/tweetnacl_subset.c:$KERNEL_TWEETNACL_OBJ"
 do
   source_path=${common_source%%:*}
   object_path=${common_source#*:}
   "$CLANG" $KERNEL_CFLAGS -I"$ROOT_DIR/kernel/include" \
-    -I"$ROOT_DIR/engine/include" -c "$ROOT_DIR/$source_path" -o "$object_path"
+    -I"$ROOT_DIR/engine/include" -I"$ROOT_DIR/engine/src" \
+    -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/sshd" \
+    -c "$ROOT_DIR/$source_path" -o "$object_path"
 done
 
 "$LD_LLD" \
   -nostdlib \
+  --gc-sections \
   -T "$ROOT_DIR/kernel/arch/x86_64/linker.ld" \
   -o "$KERNEL_ELF" \
   "$KERNEL_ENTRY_OBJ" \
@@ -210,7 +267,14 @@ done
   "$KERNEL_ARCHITECTURE_OBJ" \
   "$KERNEL_BACKEND_SCALAR_OBJ" \
   "$KERNEL_BACKEND_NEON_OBJ" \
-  "$KERNEL_BACKEND_AVX2_OBJ"
+  "$KERNEL_BACKEND_AVX2_OBJ" \
+  "$KERNEL_KLOG_OBJ" \
+  "$KERNEL_SECURITY_OBJ" \
+  "$KERNEL_AI_KERNELS_OBJ" \
+  "$KERNEL_MATH_INTRINSICS_OBJ" \
+  "$KERNEL_CRYPTO_OBJ" \
+  "$KERNEL_TWEETNACL_OBJ" \
+  "$USER_HELLO_BLOB_OBJ"
 
 rm -f "$IMAGE_PATH"
 mkdir -p "$(dirname -- "$IMAGE_PATH")"

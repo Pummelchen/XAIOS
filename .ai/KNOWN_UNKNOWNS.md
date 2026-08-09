@@ -111,12 +111,14 @@ Evidence:
   copied model-v1 admission is fixture-only. Production model mappings are
   no-copy, immutable-checked and 64-bit; typed model state, inference batching
   and AI Cell compute dispatch remain incomplete.
-- The x86_64 image boots and executes shared CRC/block/VFS/architecture/scalar/
-  packed-engine probes, a controlled INT3 round trip, a local-APIC timer
+- The x86_64 image boots a real shared-runtime `/bin/hello` ELF and executes
+  shared CRC, block, VFS, architecture, scalar, security and packed-engine
+  probes, a controlled INT3 round trip, a local-APIC timer
   interrupt, MADT-discovered AP startup and IPI work, ring-3 syscall round trip,
   runtime-sized XSAVE, modern VirtIO block DMA/MSI-X and network TX. The full
   ARM EL0/thread ABI, receive network stack, mounted filesystems, SSH/control,
-  x86 NVMe operation, security, AI Cell and telemetry integration remain absent.
+  x86 NVMe operation, process-owned security services, AI Cell and telemetry
+  integration remain absent.
 - A native macOS/Linux engine CLI and caller-owned service boundary exist, but
   there is no complete model-executing macOS inference process, Metal backend,
   AVX-512/VNNI/AMX backend, physical model-parity run, or immutable performance

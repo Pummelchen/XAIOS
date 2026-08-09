@@ -12,8 +12,90 @@
  * - Multiple quantization formats (FP32, FP16, INT8, INT4, Q8.8)
  */
 
-/* NEON SIMD support (always available on AArch64) */
+/* NEON SIMD support is selected only for AArch64 builds. */
+#if defined(__aarch64__)
 #include <arm_neon.h>
+#elif !defined(__x86_64__)
+#error "Unsupported XAIOS AI-kernel architecture"
+#endif
+
+typedef union xaios_float32_bits {
+  uint32_t bits;
+  float value;
+} xaios_float32_bits_t;
+
+static float fp16_from_bits(uint16_t bits) {
+  uint32_t sign = ((uint32_t)bits & UINT32_C(0x8000)) << 16U;
+  uint32_t exponent = ((uint32_t)bits >> 10U) & UINT32_C(0x1f);
+  uint32_t mantissa = (uint32_t)bits & UINT32_C(0x3ff);
+  uint32_t converted;
+  if (exponent == 0U) {
+    if (mantissa == 0U) {
+      converted = sign;
+    } else {
+      uint32_t normalized_exponent = 113U;
+      while ((mantissa & UINT32_C(0x400)) == 0U) {
+        mantissa <<= 1U;
+        --normalized_exponent;
+      }
+      mantissa &= UINT32_C(0x3ff);
+      converted = sign | (normalized_exponent << 23U) | (mantissa << 13U);
+    }
+  } else if (exponent == UINT32_C(0x1f)) {
+    converted = sign | UINT32_C(0x7f800000) | (mantissa << 13U);
+  } else {
+    converted = sign | ((exponent + 112U) << 23U) | (mantissa << 13U);
+  }
+  xaios_float32_bits_t result = {.bits = converted};
+  return result.value;
+}
+
+static uint16_t fp16_to_bits(float value) {
+  xaios_float32_bits_t source = {.value = value};
+  uint32_t sign = (source.bits >> 16U) & UINT32_C(0x8000);
+  uint32_t exponent = (source.bits >> 23U) & UINT32_C(0xff);
+  uint32_t mantissa = source.bits & UINT32_C(0x7fffff);
+  if (exponent == UINT32_C(0xff)) {
+    uint16_t payload = (uint16_t)(mantissa >> 13U);
+    if (mantissa != 0U && payload == 0U) payload = 1U;
+    return (uint16_t)(sign | UINT32_C(0x7c00) | payload);
+  }
+
+  int32_t half_exponent = (int32_t)exponent - 112;
+  if (half_exponent >= 31) return (uint16_t)(sign | UINT32_C(0x7c00));
+  if (half_exponent <= 0) {
+    if (half_exponent < -10) return (uint16_t)sign;
+    mantissa |= UINT32_C(0x800000);
+    uint32_t shift = (uint32_t)(14 - half_exponent);
+    uint32_t half_mantissa = mantissa >> shift;
+    uint32_t remainder_mask = (UINT32_C(1) << shift) - 1U;
+    uint32_t remainder = mantissa & remainder_mask;
+    uint32_t halfway = UINT32_C(1) << (shift - 1U);
+    if (remainder > halfway ||
+        (remainder == halfway && (half_mantissa & 1U) != 0U)) {
+      ++half_mantissa;
+    }
+    return (uint16_t)(sign | half_mantissa);
+  }
+
+  uint32_t half_mantissa = mantissa >> 13U;
+  uint32_t remainder = mantissa & UINT32_C(0x1fff);
+  if (remainder > UINT32_C(0x1000) ||
+      (remainder == UINT32_C(0x1000) && (half_mantissa & 1U) != 0U)) {
+    ++half_mantissa;
+    if (half_mantissa == UINT32_C(0x400)) {
+      half_mantissa = 0U;
+      ++half_exponent;
+      if (half_exponent >= 31) {
+        return (uint16_t)(sign | UINT32_C(0x7c00));
+      }
+    }
+  }
+  return (uint16_t)(sign | ((uint32_t)half_exponent << 10U) |
+                    half_mantissa);
+}
+
+static int32_t narrow_accumulator(int64_t value);
 
 static void bytes_zero(void *buffer, uint64_t size) {
   uint8_t *bytes = (uint8_t *)buffer;
@@ -28,7 +110,8 @@ static void bytes_zero(void *buffer, uint64_t size) {
  * Processes up to 8 output columns per iteration. Tail lanes are copied to a
  * bounded local vector so no input or output access crosses the matrix edge.
  */
-static void matmul_int8_neon(const int8_t *mat_a, const int8_t *mat_b,
+#if defined(__aarch64__)
+static void matmul_int8_native(const int8_t *mat_a, const int8_t *mat_b,
                              int32_t *result, uint32_t rows_a,
                              uint32_t cols_a, uint32_t cols_b) {
   for (uint32_t i = 0; i < rows_a; ++i) {
@@ -75,7 +158,7 @@ static void matmul_int8_neon(const int8_t *mat_a, const int8_t *mat_b,
  * Processes up to 8 output columns per iteration.
  */
 __attribute__((target("+fullfp16")))
-static void matmul_fp16_neon(const uint16_t *mat_a, const uint16_t *mat_b,
+static void matmul_fp16_native(const uint16_t *mat_a, const uint16_t *mat_b,
                              uint16_t *result, uint32_t rows_a,
                              uint32_t cols_a, uint32_t cols_b) {
   for (uint32_t i = 0; i < rows_a; ++i) {
@@ -116,6 +199,40 @@ static void matmul_fp16_neon(const uint16_t *mat_a, const uint16_t *mat_b,
     }
   }
 }
+#else
+static void matmul_int8_native(const int8_t *mat_a, const int8_t *mat_b,
+                              int32_t *result, uint32_t rows_a,
+                              uint32_t cols_a, uint32_t cols_b) {
+  for (uint32_t row = 0U; row < rows_a; ++row) {
+    for (uint32_t column = 0U; column < cols_b; ++column) {
+      int64_t accumulator = 0;
+      for (uint32_t inner = 0U; inner < cols_a; ++inner) {
+        accumulator += (int32_t)mat_a[(uint64_t)row * cols_a + inner] *
+                       (int32_t)mat_b[(uint64_t)inner * cols_b + column];
+      }
+      result[(uint64_t)row * cols_b + column] =
+          narrow_accumulator(accumulator);
+    }
+  }
+}
+
+static void matmul_fp16_native(const uint16_t *mat_a, const uint16_t *mat_b,
+                              uint16_t *result, uint32_t rows_a,
+                              uint32_t cols_a, uint32_t cols_b) {
+  for (uint32_t row = 0U; row < rows_a; ++row) {
+    for (uint32_t column = 0U; column < cols_b; ++column) {
+      float accumulator = 0.0f;
+      for (uint32_t inner = 0U; inner < cols_a; ++inner) {
+        accumulator +=
+            fp16_from_bits(mat_a[(uint64_t)row * cols_a + inner]) *
+            fp16_from_bits(mat_b[(uint64_t)inner * cols_b + column]);
+      }
+      result[(uint64_t)row * cols_b + column] =
+          fp16_to_bits(accumulator);
+    }
+  }
+}
+#endif
 
 /*
  * Signed packed helpers. Values are unpacked only while resident in the inner
@@ -211,7 +328,7 @@ void ai_kernel_matmul(const void *mat_a, const void *mat_b, void *result,
 
   switch (quant) {
     case XAIOS_QUANT_INT8:
-      matmul_int8_neon((const int8_t *)mat_a, (const int8_t *)mat_b,
+      matmul_int8_native((const int8_t *)mat_a, (const int8_t *)mat_b,
                       (int32_t *)result, rows_a, cols_a, cols_b);
       break;
 
@@ -222,7 +339,7 @@ void ai_kernel_matmul(const void *mat_a, const void *mat_b, void *result,
       break;
 
     case XAIOS_QUANT_FP16:
-      matmul_fp16_neon((const uint16_t *)mat_a, (const uint16_t *)mat_b,
+      matmul_fp16_native((const uint16_t *)mat_a, (const uint16_t *)mat_b,
                       (uint16_t *)result, rows_a, cols_a, cols_b);
       break;
 
@@ -333,9 +450,9 @@ void ai_kernel_forward(const void *input, const void *weights,
       const uint16_t *b = (const uint16_t *)bias;
       for (uint32_t i = 0; i < batch; ++i) {
         for (uint32_t j = 0; j < out_dim; ++j) {
-          float val = (float)*(const float16_t *)&out[i * out_dim + j] +
-                     (float)*(const float16_t *)&b[j];
-          out[i * out_dim + j] = *(const uint16_t *)&val;
+          float val = fp16_from_bits(out[i * out_dim + j]) +
+                      fp16_from_bits(b[j]);
+          out[i * out_dim + j] = fp16_to_bits(val);
         }
       }
     }
@@ -351,7 +468,7 @@ void ai_kernel_forward(const void *input, const void *weights,
     } else if (quant == XAIOS_QUANT_FP16) {
       uint16_t *out = (uint16_t *)output;
       for (uint32_t i = 0; i < batch * out_dim; ++i) {
-        float val = (float)*(const float16_t *)&out[i];
+        float val = fp16_from_bits(out[i]);
         if (val < 0.0f) {
           uint16_t zero = 0;
           out[i] = zero;
@@ -393,6 +510,7 @@ xaios_status_t ai_kernel_quantize_fp32_to_int8(const float *fp32, int8_t *int8,
     uint32_t remaining = count - i;
     uint32_t process = remaining < 4U ? remaining : 4U;
     if (process >= 4U) {
+#if defined(__aarch64__)
       float32x4_t inv_scale_vec = vdupq_n_f32(inv_scale);
       float32x4_t vals = vld1q_f32(&fp32[i]);
       float32x4_t scaled = vmulq_f32(vals, inv_scale_vec);
@@ -404,6 +522,16 @@ xaios_status_t ai_kernel_quantize_fp32_to_int8(const float *fp32, int8_t *int8,
         if (out[j] > 127) out[j] = 127;
         int8[i + j] = (int8_t)out[j];
       }
+#else
+      for (uint32_t j = 0U; j < 4U; ++j) {
+        float scaled = fp32[i + j] * inv_scale;
+        int32_t rounded =
+            (int32_t)(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
+        if (rounded < -127) rounded = -127;
+        if (rounded > 127) rounded = 127;
+        int8[i + j] = (int8_t)rounded;
+      }
+#endif
     } else {
       for (uint32_t j = 0U; j < process; ++j) {
         float scaled = fp32[i + j] * inv_scale;
@@ -471,12 +599,15 @@ xaios_status_t ai_kernel_dequantize_int8_to_fp32(const int8_t *int8,
   kassert(int8 != 0 && scales != 0 && fp32 != 0);
 
   float scale = *scales;
+#if defined(__aarch64__)
   float32x4_t scale_vec = vdupq_n_f32(scale);
+#endif
 
   for (uint32_t i = 0; i < count; i += 4) {
     uint32_t remaining = count - i;
     uint32_t process = remaining < 4 ? remaining : 4;
 
+#if defined(__aarch64__)
     int8_t vals[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     for (uint32_t j = 0; j < process; ++j) {
       vals[j] = int8[i + j];
@@ -494,6 +625,11 @@ xaios_status_t ai_kernel_dequantize_int8_to_fp32(const int8_t *int8,
     for (uint32_t j = 0; j < process; ++j) {
       fp32[i + j] = out[j];
     }
+#else
+    for (uint32_t j = 0U; j < process; ++j) {
+      fp32[i + j] = (float)int8[i + j] * scale;
+    }
+#endif
   }
 
   return XAIOS_OK;
@@ -801,6 +937,18 @@ static void pack_int6_fixture(const int8_t *values, uint32_t count,
 }
 
 void ai_kernel_self_test(void) {
+  static const uint16_t fp16_finite_cases[] = {
+      UINT16_C(0x0000), UINT16_C(0x8000), UINT16_C(0x0001),
+      UINT16_C(0x03ff), UINT16_C(0x0400), UINT16_C(0x3c00),
+      UINT16_C(0xc000), UINT16_C(0x7bff), UINT16_C(0x7c00),
+      UINT16_C(0xfc00)};
+  for (uint32_t index = 0U;
+       index < sizeof(fp16_finite_cases) / sizeof(fp16_finite_cases[0]);
+       ++index) {
+    uint16_t bits = fp16_finite_cases[index];
+    kassert(fp16_to_bits(fp16_from_bits(bits)) == bits);
+  }
+
   static const int8_t int4_a[10] = {1, -2, 3, -4, 5,
                                     -1, 2, -3, 4, -5};
   static const int8_t int4_b[15] = {1, 2, 3, -1, 0, 1, 2, -2,
@@ -837,5 +985,5 @@ void ai_kernel_self_test(void) {
   kassert(work_result[0] == 0 && work_result[1] == 0 &&
           work_result[2] == 0 && work_result[3] == -24 &&
           work_result[4] == -2 && work_result[5] == 2);
-  klog("ai-kernel: packed no-expand tail self-test passed int4=6 int6=2\n");
+  klog("ai-kernel: scalar fp16 and packed no-expand self-test passed fp16=10 int4=6 int6=2\n");
 }

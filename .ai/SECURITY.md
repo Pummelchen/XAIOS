@@ -1,8 +1,8 @@
 <!--
 AI onboarding file.
 Mode: refresh
-Indexed base commit: 8ddefb26f3dbc366dc4402677a156cf235daed82
-Last refreshed: 2026-08-03
+Indexed base commit: 54232df4d272621b339dcd583415a8e98977ac4d
+Last refreshed: 2026-08-09
 Generator: generic high-end AI coding agent
 Purpose: Help future AI sessions understand this repository quickly.
 Audience: Any high-capability AI coding agent, regardless of vendor or model family.
@@ -14,7 +14,7 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 
 | Area | Files | Notes |
 |---|---|---|
-| Capability model | `kernel/include/xaios/syscall.h`, `kernel/user/syscall.c` | Syscalls map to required capabilities. |
+| Capability and ownership model | `kernel/include/xaios/syscall.h`, `kernel/user/syscall.c`, `kernel/user/user.c` | Syscalls map to required capabilities; filesystem descriptors and dynamically sized sockets are process-owned and sockets are reclaimed with the process. |
 | Credential-material rejection | `kernel/runtime/security.c` | Rejects selected credential/private-key/password/token/secret patterns in inputs and log buffers. |
 | Filesystem/storage policy | `kernel/runtime/security.c`, `kernel/dev/block_device.c`, `kernel/storage/`, `kernel/fs/`, `engine/src/model_volume.c` | Checked ranges, bounded partitions, VFS ownership, immutable active ModelFS, signed registration/staging, cleanup/reuse, scrub/trim, verification and audited activation. |
 | Sandbox/Git workspace | `kernel/runtime/sandbox.c`, `kernel/runtime/git_workspace.c`, `kernel/runtime/security.c` | Ownership and path checks. |
@@ -45,7 +45,10 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 ## Sensitive implementation details
 
 - `kernel/runtime/security.c` includes counters for denied operations, capability denials, filesystem denials, workspace/sandbox denials, rollback denials, update policy rejects, signature/key accepts/rejects, credential rejects, admin denials, and sandbox escape rejects.
-- `kernel/user/syscall.c` validates syscall numbers, capabilities, and selected user buffers.
+- `kernel/user/syscall.c` validates syscall numbers, capabilities, request and
+  nested user buffers. Mutable log/write/send inputs use bounded kernel-owned
+  snapshots; filesystem descriptor narrowing and per-call filesystem/network
+  transfer bounds fail closed.
 - `userspace/sshd/` is security-sensitive because it implements remote access,
   role mapping, state reload, rate limits, transport rekey and SFTP.
 - `scripts/run-qemu-aarch64.sh` may expose local service ports through QEMU user networking.

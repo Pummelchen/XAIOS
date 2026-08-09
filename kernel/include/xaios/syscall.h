@@ -232,6 +232,7 @@ typedef struct xaios_syscall_control_query_request {
 uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
                           uint64_t arg2);
 void syscall_self_test(void);
+void syscall_release_process_resources(uint32_t owner_pid);
 uint64_t syscall_control_plane_count(void);
 uint64_t syscall_control_plane_denial_count(void);
 uint64_t syscall_service_descriptor_read_count(void);

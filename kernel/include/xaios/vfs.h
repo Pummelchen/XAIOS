@@ -81,6 +81,7 @@ xaios_status_t vfs_resolve(const char *path,
                            xaios_vfs_resolution_t *resolution);
 int64_t vfs_open(const char *path, uint32_t flags, uint32_t owner_id);
 xaios_status_t vfs_close(uint32_t fd, uint32_t owner_id);
+xaios_status_t vfs_release_owner(uint32_t owner_id);
 int64_t vfs_pread(uint32_t fd, uint32_t owner_id, void *buffer,
                   uint64_t length, uint64_t offset);
 int64_t vfs_pwrite(uint32_t fd, uint32_t owner_id, const void *buffer,

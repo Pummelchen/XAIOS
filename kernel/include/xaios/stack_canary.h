@@ -1,6 +1,7 @@
 #ifndef XAIOS_STACK_CANARY_H
 #define XAIOS_STACK_CANARY_H
 
+#include <xaios/arch_cpu.h>
 #include <xaios/types.h>
 
 #define XAIOS_CANARY_MAGIC UINT64_C(0x5841494F535F4341) /* "XAIOS_CA" */
@@ -27,14 +28,14 @@ void stack_canary_self_test(void);
 #define XAIOS_STACK_PROTECT_BEGIN(saved_var)                     \
   do {                                                          \
     uint64_t __sp_val;                                          \
-    __asm__ volatile("mov %0, sp" : "=r"(__sp_val));           \
+    __sp_val = xaios_cpu_stack_pointer();                       \
     (saved_var) = g_stack_canary ^ __sp_val;                   \
   } while (0)
 
 #define XAIOS_STACK_PROTECT_END(saved_var, func_name)            \
   do {                                                          \
     uint64_t __sp_val;                                          \
-    __asm__ volatile("mov %0, sp" : "=r"(__sp_val));           \
+    __sp_val = xaios_cpu_stack_pointer();                       \
     uint64_t __expected = g_stack_canary ^ __sp_val;           \
     if ((saved_var) != __expected) {                            \
       stack_canary_check((saved_var), (func_name));             \

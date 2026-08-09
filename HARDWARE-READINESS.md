@@ -149,7 +149,8 @@ Intel Desktop work can begin only after:
 - PMM/VMM initialization from the x86_64 firmware memory map: milestones 45
   and 46 gate through `make qemu-x86_64-smoke`.
 - Controlled exception delivery, a real local-APIC one-shot timer interrupt,
-  OS-owned GDT/TSS, ring-3 syscall transition, runtime-sized XSAVE/XRSTOR, and
+  OS-owned GDT/TSS, a real shared-runtime `/bin/hello` ELF using LOG/EXIT through
+  the ring-3 syscall transition, runtime-sized XSAVE/XRSTOR, and
   MADT-driven AP startup with IPI worker dispatch pass. The x86 AP trampoline
   is reserved by UEFI and owned by the kernel; these paths pass
   `make qemu-x86_64-smoke`.
@@ -159,10 +160,11 @@ Intel Desktop work can begin only after:
   Full RX/network-stack integration and x86 NVMe operation remain incomplete.
 - P-core/E-core placement policy metadata: milestone 49 gate is
   `make intel-desktop-gate`.
-- x86_64 links and executes a portable common-runtime subset, while its emitted
-  OS contract explicitly reports EL0, networking, AI Cell, security and
-  telemetry parity as unavailable. Milestone 50 remains incomplete rather than
-  treating linked shared code as full platform support. The full ARM userspace/service stack is not yet linked into the x86 image.
+- x86_64 links and executes a portable common-runtime subset plus common
+  security and scalar-kernel self-tests, while its emitted OS contract
+  explicitly reports complete userspace, networking, AI Cell, security-service
+  and telemetry parity as unavailable. Milestone 50 remains incomplete rather
+  than treating linked shared code as full platform support. The full ARM userspace/service stack is not yet linked into the x86 image.
 - Hosted tests validate MADT/SRAT/SLIT/HMAT checksums, malformed data, dynamic
   CPU counts and xAPIC/x2APIC identifiers; the default QEMU machine exposes
   MADT but does not expose SRAT, SLIT or HMAT.

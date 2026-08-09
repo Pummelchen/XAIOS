@@ -20,7 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build"
-READY_MARKER = "syscall: net_listen protocol=17 port=2223 sockfd=2"
+READY_MARKER = "syscall: net_listen protocol=17 port=2223 sockfd="
 MODEL_CHUNK_SIZE = 2 * 1024 * 1024
 sys.path.insert(0, str(ROOT / "tools"))
 

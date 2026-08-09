@@ -1,5 +1,8 @@
 #include <xaios/boot_info.h>
+#include <xaios/ai_kernels.h>
 #include <xaios/common_runtime.h>
+#include <xaios/klog.h>
+#include <xaios/security.h>
 #include <xaios/types.h>
 #include <xaios_engine/packed.h>
 
@@ -48,6 +51,9 @@
 #define PTE_LARGE UINT64_C(1 << 7)
 #define PTE_GLOBAL UINT64_C(1 << 8)
 #define PTE_NX (UINT64_C(1) << 63)
+#define X86_USER_BASE UINT64_C(0x100000000)
+#define X86_USER_WINDOW_SIZE UINT64_C(0x200000)
+#define X86_USER_LOG_MAX UINT64_C(4096)
 #define IDT_PRESENT UINT8_C(0x80)
 #define IDT_INTERRUPT_GATE UINT8_C(0x0e)
 #define PCI_CONFIG_ADDRESS UINT16_C(0x0cf8)
@@ -245,6 +251,7 @@ static x86_64_idt_entry_t g_idt[256] __attribute__((aligned(16)));
 static uint64_t g_pml4[512] __attribute__((aligned(PAGE_SIZE)));
 static uint64_t g_pdpt[512] __attribute__((aligned(PAGE_SIZE)));
 static uint64_t g_pd[4][512] __attribute__((aligned(PAGE_SIZE)));
+static uint64_t g_user_pd[512] __attribute__((aligned(PAGE_SIZE)));
 static uint64_t g_mmio_pdpt[512] __attribute__((aligned(PAGE_SIZE)));
 static uint64_t g_mmio_pd[512] __attribute__((aligned(PAGE_SIZE)));
 static uint64_t g_mmio_gib_base;
@@ -268,6 +275,7 @@ static uint32_t g_lapic_ready;
 static uint32_t g_lapic_x2apic;
 static volatile uint64_t g_lapic_timer_interrupts;
 static volatile uint64_t g_ring3_syscalls;
+static volatile uint64_t g_ring3_exit_code;
 static x86_64_acpi_info_t g_acpi;
 static xaios_boot_info_t g_boot_info_copy;
 static uint8_t g_xsave_original[UINT32_C(65536)] __attribute__((aligned(64)));
@@ -279,6 +287,20 @@ static uint64_t g_early_alloc_end;
 static uint64_t g_xsave_enabled;
 static volatile uint64_t g_virtio_msix_interrupts;
 static uint64_t g_virtio_msix_isr;
+
+extern const uint8_t _binary_hello_bin_start[];
+extern const uint8_t _binary_hello_bin_end[];
+
+uint32_t smp_online_count(void) {
+  if (g_cpu_records == 0 || g_cpu_record_count == 0U) return 1U;
+  uint32_t online = 0U;
+  for (uint32_t i = 0U; i < g_cpu_record_count; ++i) {
+    if (__atomic_load_n(&g_cpu_records[i].online, __ATOMIC_ACQUIRE) != 0U) {
+      ++online;
+    }
+  }
+  return online == 0U ? 1U : online;
+}
 
 static uint8_t mmio_read8(uint64_t address);
 
@@ -486,6 +508,12 @@ static void panic_halt(uint16_t serial_base, const char *message) {
   }
 }
 
+void panic_at(const char *file, int line, const char *fmt, ...) {
+  (void)file;
+  (void)line;
+  panic_halt(COM1_PORT, fmt != 0 ? fmt : "kernel panic");
+}
+
 static void idt_set_gate(uint8_t vector, void (*handler)(void)) {
   uint64_t address = (uint64_t)(uintptr_t)handler;
   g_idt[vector].offset_low = (uint16_t)(address & UINT64_C(0xffff));
@@ -614,11 +642,24 @@ uint64_t x86_64_interrupt_entry(x86_64_exception_frame_t *frame) {
   if (frame != 0 && frame->vector == 128U) {
     if ((frame->cs & 3U) != 3U) panic_halt(COM1_PORT, "ring3 syscall CPL");
     ++g_ring3_syscalls;
-    if (frame->rax == 0U) {
-      frame->rax = UINT64_C(0x12345678);
+    if (frame->rax == 1U) {
+      uint64_t address = frame->rdi;
+      uint64_t length = frame->rsi;
+      if (length == 0U || length > X86_USER_LOG_MAX ||
+          address < X86_USER_BASE ||
+          address > X86_USER_BASE + X86_USER_WINDOW_SIZE - length) {
+        panic_halt(COM1_PORT, "ring3 log buffer");
+      }
+      const char *text = (const char *)(uintptr_t)address;
+      for (uint64_t i = 0U; i < length; ++i) {
+        if (text[i] == '\n') serial_putc(COM1_PORT, '\r');
+        serial_putc(COM1_PORT, text[i]);
+      }
+      frame->rax = 0U;
       return 0U;
     }
-    if (frame->rax == 1U) {
+    if (frame->rax == 2U) {
+      g_ring3_exit_code = frame->rdi;
       return (uint64_t)(uintptr_t)x86_64_ring3_resume;
     }
     panic_halt(COM1_PORT, "ring3 syscall number");
@@ -836,13 +877,13 @@ static void install_page_tables(uint16_t serial_base) {
     g_pdpt[table] = ((uint64_t)(uintptr_t)g_pd[table]) | PTE_PRESENT |
                     PTE_WRITABLE;
   }
-  uint64_t user_address = (uint64_t)(uintptr_t)g_user_test_page;
-  uint32_t user_pdpt = (uint32_t)((user_address >> 30U) & UINT64_C(0x1ff));
-  uint32_t user_pd = (uint32_t)((user_address >> 21U) & UINT64_C(0x1ff));
-  if (user_pdpt >= 4U) panic_halt(serial_base, "ring3 test page out of range");
-  g_pd[user_pdpt][user_pd] =
-      (g_pd[user_pdpt][user_pd] | PTE_USER) & ~PTE_NX;
-  g_pdpt[user_pdpt] |= PTE_USER;
+  for (uint32_t index = 0; index < 512; ++index) g_user_pd[index] = 0U;
+  uint32_t user_pdpt = (uint32_t)((X86_USER_BASE >> 30U) & UINT64_C(0x1ff));
+  uint32_t user_pd = (uint32_t)((X86_USER_BASE >> 21U) & UINT64_C(0x1ff));
+  g_user_pd[user_pd] = ((uint64_t)(uintptr_t)g_user_test_page) |
+                       PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_LARGE;
+  g_pdpt[user_pdpt] = ((uint64_t)(uintptr_t)g_user_pd) | PTE_PRESENT |
+                      PTE_WRITABLE | PTE_USER;
   g_pml4[0] = ((uint64_t)(uintptr_t)g_pdpt) | PTE_PRESENT | PTE_WRITABLE |
               PTE_USER;
 
@@ -860,24 +901,25 @@ static void install_page_tables(uint16_t serial_base) {
 }
 
 static void validate_ring3_syscall(uint16_t serial_base) {
-  static const uint8_t program[] = {
-      0xb8U, 0x00U, 0x00U, 0x00U, 0x00U,       /* mov eax, 0 */
-      0xcdU, 0x80U,                             /* int 0x80 */
-      0x48U, 0x3dU, 0x78U, 0x56U, 0x34U, 0x12U, /* cmp rax, value */
-      0x75U, 0x07U,                             /* jne failure ud2 */
-      0xb8U, 0x01U, 0x00U, 0x00U, 0x00U,       /* mov eax, 1 */
-      0xcdU, 0x80U,                             /* int 0x80 */
-      0x0fU, 0x0bU,                             /* unreachable ud2 */
-      0x0fU, 0x0bU,                             /* failure ud2 */
-  };
-  for (uint32_t i = 0U; i < sizeof(program); ++i) g_user_test_page[i] = program[i];
+  uint64_t image_size =
+      (uint64_t)(_binary_hello_bin_end - _binary_hello_bin_start);
+  if (image_size == 0U || image_size > sizeof(g_user_test_page)) {
+    panic_halt(serial_base, "userspace hello image size");
+  }
+  for (uint64_t i = 0U; i < sizeof(g_user_test_page); ++i) {
+    g_user_test_page[i] = 0U;
+  }
+  for (uint64_t i = 0U; i < image_size; ++i) {
+    g_user_test_page[i] = _binary_hello_bin_start[i];
+  }
   g_ring3_syscalls = 0U;
-  x86_64_enter_ring3((uint64_t)(uintptr_t)g_user_test_page,
-                     (uint64_t)(uintptr_t)(g_user_test_page +
-                                           sizeof(g_user_test_page) - 16U));
-  if (g_ring3_syscalls != 2U) panic_halt(serial_base, "ring3 syscall count");
+  g_ring3_exit_code = UINT64_MAX;
+  x86_64_enter_ring3(X86_USER_BASE,
+                     X86_USER_BASE + X86_USER_WINDOW_SIZE - 16U);
+  if (g_ring3_syscalls != 3U) panic_halt(serial_base, "ring3 syscall count");
+  if (g_ring3_exit_code != 0U) panic_halt(serial_base, "ring3 exit code");
   serial_puts(serial_base,
-              "x86_64: ring3 int80 syscall round-trip passed calls=2\n");
+              "x86_64: real /bin/hello ELF syscall ABI passed calls=3 exit=0\n");
 }
 
 static void discover_timer_apic(uint16_t serial_base) {
@@ -1812,6 +1854,13 @@ void x86_64_kmain(const xaios_boot_info_t *boot) {
   validate_lapic_timer_interrupt(serial_base);
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 47 timers APIC passed\n");
   start_application_processors(serial_base, boot);
+  klog_init(boot);
+  security_self_test();
+  serial_puts(serial_base,
+              "x86_64: common security policy self-test passed\n");
+  ai_kernel_self_test();
+  serial_puts(serial_base,
+              "x86_64: scalar AI kernel self-test passed\n");
   discover_pci(serial_base);
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 48 PCI discovery passed\n");
   validate_virtio_block_operation(serial_base);

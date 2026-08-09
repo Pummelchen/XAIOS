@@ -1,3 +1,4 @@
+#include <xaios/arch_cpu.h>
 #include <xaios/assert.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
@@ -504,7 +505,7 @@ static xaios_status_t wait_tx_token(uint64_t token, uint64_t started) {
     if (timer_now_ns() - started >= UINT64_C(5000000000)) {
       return XAIOS_ERR_IO;
     }
-    __asm__ volatile("yield");
+    xaios_cpu_relax();
   }
   return XAIOS_OK;
 }
@@ -527,7 +528,7 @@ xaios_status_t virtio_net_txv(const xaios_net_iovec_t *vectors,
     if (timer_now_ns() - started >= UINT64_C(5000000000)) {
       return XAIOS_ERR_IO;
     }
-    __asm__ volatile("yield");
+    xaios_cpu_relax();
   }
   return wait_tx_token(token, started);
 }

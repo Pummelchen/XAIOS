@@ -77,7 +77,7 @@ TARGETS = [
     "threads: concurrent scheduler self-test passed threads=",
     "scheduler: AArch64 SIMD/FP interrupt preservation passed regs=32",
     "model-arena: shared read-only arena self-test passed",
-    "ai-kernel: packed no-expand tail self-test passed int4=6 int6=2",
+    "ai-kernel: scalar fp16 and packed no-expand self-test passed fp16=10 int4=6 int6=2",
     "nic-conflict-agent",
     "core-conflict-agent",
     "workspace-conflict-agent",

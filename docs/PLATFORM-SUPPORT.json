@@ -1,6 +1,6 @@
 {
   "schema": "xaios.platform-support.v1",
-  "updated": "2026-08-04",
+  "updated": "2026-08-09",
   "recommendations": [
     {"id": 1, "name": "Restore green CI", "status": "ci-tested", "evidence": "All ten independent jobs passed in GitHub Actions run 30886171942 after the ARM worker and SMMUv3 gate fixes."},
     {"id": 2, "name": "ARM SMP worker dispatch", "status": "qemu-tested", "evidence": "Joinable worker groups execute on runtime-discovered CPUs; high-core capacity remains correctness-only."},
@@ -10,9 +10,9 @@
     {"id": 6, "name": "Generic ARM server scope", "status": "scope-defined", "evidence": "The target is UEFI plus SBSA-style AArch64 with PSCI, GICv3 and discoverable topology; current execution is QEMU virt only."},
     {"id": 7, "name": "SVE and SVE2", "status": "interface-only", "evidence": "Capability IDs exist and fail closed; no SVE kernel backend is advertised."},
     {"id": 8, "name": "x86 AP startup and worker participation", "status": "qemu-tested", "evidence": "MADT-discovered APs start through an OS-owned trampoline and complete IPI-dispatched work using dynamic records; the platform matrix passes 1, 4, 8, 128 and 256 vCPUs including x2APIC."},
-    {"id": 9, "name": "x86 ring 3, syscalls and user threads", "status": "partial", "evidence": "OS-owned GDT/TSS and a ring-3 int80 round trip pass; the full ARM userspace and thread ABI is not ported."},
+    {"id": 9, "name": "x86 ring 3, syscalls and user threads", "status": "partial", "evidence": "OS-owned GDT/TSS loads a real x86_64 /bin/hello ELF built from the shared userspace runtime and completes LOG/EXIT through int80; process loading, scheduling and the complete thread ABI are not ported."},
     {"id": 10, "name": "x86 PCI storage, network, NVMe and interrupts", "status": "partial", "evidence": "Modern VirtIO block DMA, MSI-X completion and network TX pass; x86 NVMe operation and production queues remain open."},
-    {"id": 11, "name": "x86 full platform services", "status": "pending", "evidence": "Networking, SSH, mutable filesystems, security, AI Cell and telemetry are not yet linked as a full x86 OS image."},
+    {"id": 11, "name": "x86 full platform services", "status": "pending", "evidence": "Shared security and scalar-kernel self-tests execute in the x86 image, but RX networking, SSH, mutable filesystems, process-owned security services, AI Cell and telemetry are not integrated as a full x86 OS image."},
     {"id": 12, "name": "MADT, SRAT, SLIT and HMAT", "status": "parser-tested", "evidence": "QEMU validates MADT; hosted checksum/range tests validate all four tables and dynamic xAPIC/x2APIC IDs."},
     {"id": 13, "name": "XSAVE and XRSTOR state management", "status": "qemu-tested", "evidence": "Runtime-sized XSAVE/XRSTOR and AP XCR0 setup pass when available; conservative CPUs pass an FXSAVE/FXRSTOR fallback; ZMM/opmask/AMX remain capability-gated."},
     {"id": 14, "name": "Physical Intel and Xeon evidence", "status": "physical-gate", "evidence": "Cannot be established by QEMU; physical AVX2/AVX-512/VNNI/AMX and NUMA evidence remains required."},

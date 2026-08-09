@@ -1,3 +1,4 @@
+#include <xaios/arch_cpu.h>
 #include <xaios/assert.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
@@ -128,7 +129,7 @@ static xaios_status_t thread_create_on_cpu(
   *thread_id = id;
   xaios_spin_unlock(&g_thread_lock);
   if (target_cpu != smp_cpu_id()) (void)smp_wake_cpu(target_cpu);
-  __asm__ volatile("sev" ::: "memory");
+  xaios_cpu_notify();
   return XAIOS_OK;
 }
 
@@ -255,7 +256,7 @@ uint32_t xaios_thread_run_pending(uint32_t cpu_id) {
   uint64_t result = claimed->entry(claimed->context);
   claimed->result = result;
   __atomic_store_n(&claimed->state, XAIOS_THREAD_COMPLETE, __ATOMIC_RELEASE);
-  __asm__ volatile("sev" ::: "memory");
+  xaios_cpu_notify();
   return 1U;
 }
 
@@ -295,7 +296,7 @@ static xaios_status_t thread_join_owned(uint64_t thread_id, uint64_t timeout_ns,
     if (timeout_ns != 0U && timer_now_ns() - start >= timeout_ns) {
       return XAIOS_ERR_BUSY;
     }
-    __asm__ volatile("yield" ::: "memory");
+    xaios_cpu_relax();
   }
 }
 
@@ -328,7 +329,7 @@ static xaios_status_t thread_cancel_owned(uint64_t thread_id,
   }
   __atomic_store_n(&thread->state, XAIOS_THREAD_CANCELLED, __ATOMIC_RELEASE);
   xaios_spin_unlock(&g_thread_lock);
-  __asm__ volatile("sev" ::: "memory");
+  xaios_cpu_notify();
   return XAIOS_OK;
 }
 
@@ -375,7 +376,7 @@ xaios_status_t xaios_user_thread_drain(uint32_t owner_pid,
     if (timeout_ns != 0U && timer_now_ns() - started >= timeout_ns) {
       return XAIOS_ERR_BUSY;
     }
-    __asm__ volatile("yield" ::: "memory");
+    xaios_cpu_relax();
   }
 }
 
@@ -422,7 +423,7 @@ static uint64_t cancel_test_blocker(void *opaque) {
       (xaios_cancel_test_context_t *)opaque;
   __atomic_store_n(&context->started, 1U, __ATOMIC_RELEASE);
   while (__atomic_load_n(&context->release, __ATOMIC_ACQUIRE) == 0U) {
-    __asm__ volatile("yield" ::: "memory");
+    xaios_cpu_relax();
   }
   return UINT64_C(0xcace11ed);
 }
@@ -538,7 +539,7 @@ void xaios_thread_self_test(void) {
       timer_now_ns() + XAIOS_THREAD_SELF_TEST_TIMEOUT_NS;
   while (__atomic_load_n(&context.started, __ATOMIC_ACQUIRE) == 0U) {
     kassert(timer_now_ns() < cancel_deadline);
-    __asm__ volatile("yield" ::: "memory");
+    xaios_cpu_relax();
   }
   kassert(xaios_thread_create(cancel_test_queued, 0, target_cpu, &queued_id) ==
           XAIOS_OK);

@@ -135,8 +135,10 @@ opt-in; exact target-model semantics are the default.
   architecture-registry, scalar-backend and packed-engine code. It owns its
   GDT/TSS and AP trampoline, passes a controlled exception round trip and a
   real local-APIC timer interrupt, starts all enabled MADT CPUs with dynamic
-  records and stacks, dispatches IPI worker jobs, completes a ring-3 `int 0x80`
-  round trip, and validates XSAVE/XRSTOR. ACPI parsing covers
+  records and stacks, dispatches IPI worker jobs, executes a real x86_64
+  `/bin/hello` ELF from the shared userspace runtime through LOG/EXIT `int 0x80`
+  calls, executes common security/scalar-kernel self-tests, and validates
+  XSAVE/XRSTOR. ACPI parsing covers
   MADT/SRAT/SLIT/HMAT.
   The PCI path maps QEMU's high MMIO aperture, reads the boot disk through a
   modern VirtIO block DMA queue, receives MSI-X completion, and completes

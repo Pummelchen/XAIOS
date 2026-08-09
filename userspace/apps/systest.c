@@ -18,6 +18,12 @@ int main(void) {
   xaios_memzero(&stat, sizeof(stat));
 
   xaios_log("/bin/systest: starting syscall and filesystem suite\n");
+  if (xaios_syscall3(XAIOS_SYSCALL_FS_READ, 1ULL << 32U,
+                     (u64)read_buffer, 1U) != ~0ULL ||
+      xaios_syscall3(XAIOS_SYSCALL_FS_CLOSE, 1ULL << 32U, 0U, 0U) != ~0ULL) {
+    xaios_log("/bin/systest: high-bit fd rejection failed\n");
+    return 1;
+  }
   if (expect_ok(xaios_fs_mkdir("/tmp"), "/bin/systest: mkdir /tmp failed\n") != 0) {
     return 1;
   }

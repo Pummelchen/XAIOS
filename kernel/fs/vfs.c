@@ -317,6 +317,37 @@ xaios_status_t vfs_close(uint32_t fd, uint32_t owner_id) {
   return XAIOS_OK;
 }
 
+xaios_status_t vfs_release_owner(uint32_t owner_id) {
+  if (owner_id == 0U) return XAIOS_ERR_INVALID;
+  xaios_status_t result = XAIOS_OK;
+  for (uint32_t index = 0U; index < XAIOS_VFS_MAX_HANDLES; ++index) {
+    vfs_handle_record_t *handle = &g_handles[index];
+    if (handle->active == 0U || handle->owner_id != owner_id) continue;
+    if (handle->mount_index >= XAIOS_VFS_MAX_MOUNTS) {
+      bytes_zero(handle, sizeof(*handle));
+      result = XAIOS_ERR_INVALID;
+      continue;
+    }
+    vfs_mount_record_t *mount = &g_mounts[handle->mount_index];
+    if (mount->active == 0U ||
+        mount->generation != handle->mount_generation) {
+      bytes_zero(handle, sizeof(*handle));
+      result = XAIOS_ERR_INVALID;
+      continue;
+    }
+    if (mount->ops->close(mount->context, handle->backend_handle) != XAIOS_OK) {
+      result = XAIOS_ERR_IO;
+    }
+    if (mount->open_handles == 0U) {
+      result = XAIOS_ERR_INVALID;
+    } else {
+      --mount->open_handles;
+    }
+    bytes_zero(handle, sizeof(*handle));
+  }
+  return result;
+}
+
 int64_t vfs_pread(uint32_t fd, uint32_t owner_id, void *buffer,
                   uint64_t length, uint64_t offset) {
   vfs_handle_record_t *handle = find_handle(fd, owner_id);

@@ -15,11 +15,11 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 | Field | Value |
 |---|---|
 | Repository | `Pummelchen/XAIOS` |
-| Indexed base commit | `8ddefb26f3dbc366dc4402677a156cf235daed82` plus the current working tree |
+| Indexed base commit | `54232df4d272621b339dcd583415a8e98977ac4d` plus the current working tree |
 | Operation mode | `refresh` |
 | Default branch | `main` |
 | Primary languages | C99, Assembly, Python, Shell |
-| Runtime target | AArch64 UEFI/QEMU OS correctness path plus a native hosted portable-engine/service foundation; x86_64 has AP/ring-3/XSAVE/ACPI/modern-VirtIO bring-up but not full OS-service parity. |
+| Runtime target | AArch64 UEFI/QEMU OS correctness path plus a native hosted portable-engine/service foundation; x86_64 executes a real shared-runtime hello ELF plus AP/ring-3/XSAVE/ACPI/modern-VirtIO bring-up, but not full OS-service parity. |
 
 ## Read first
 

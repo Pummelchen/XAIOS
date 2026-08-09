@@ -46,8 +46,10 @@ unless the maintainer explicitly reprioritizes them.
   asynchronous DNS, IPv4/IPv6 reassembly, and SACK-aware TCP pass QEMU gates.
 - x86_64 starts MADT-discovered application processors, dispatches IPI work,
   validates controlled exception and local-APIC timer interrupts, performs a
-  ring-3 syscall round trip, validates runtime-sized XSAVE and ACPI parsing, and
-  operates modern VirtIO block DMA/MSI-X plus network TX.
+  real shared-runtime `/bin/hello` ELF LOG/EXIT ring-3 syscall round trip,
+  executes common security/scalar-kernel self-tests, validates runtime-sized
+  XSAVE and ACPI parsing, and operates modern VirtIO block DMA/MSI-X plus
+  network TX.
   Full ARM-service parity on x86 remains open: complete userspace/thread services,
   receive networking/SSH, mounted filesystems, x86 NVMe, security, AI Cell and
   telemetry are not yet integrated.

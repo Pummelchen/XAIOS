@@ -1,5 +1,6 @@
 #include <stdarg.h>
 #include <xaios/klog.h>
+#include <xaios/arch_cpu.h>
 #include <xaios/panic.h>
 #include <xaios/pmm.h>
 #include <xaios/smp.h>
@@ -14,6 +15,7 @@
 
 #define XAIOS_PANIC_MAX_STACK 16U
 
+#if defined(__aarch64__)
 /* System register encodings for AArch64 mrs (S<op0>_<op1>_<Cn>_<Cm>_<op2>) */
 #define SYS_CurrentEL "s3_0_c4_c0_0"
 #define SYS_ELR_EL1   "s3_0_c4_c0_1"
@@ -21,6 +23,7 @@
 #define SYS_FAR_EL1   "s3_0_c6_c0_0"
 #define SYS_SPSR_EL1  "s3_0_c4_c0_0"
 #define SYS_SP_EL0    "s3_0_c4_c1_0"
+#endif
 
 /* ---- helpers ---- */
 
@@ -90,13 +93,18 @@ static void panic_u32(unsigned v) {
 }
 
 static int panic_valid_addr(uint64_t addr) {
+#if defined(__x86_64__)
+  return addr >= UINT64_C(0x1000) && (addr & 7U) == 0U;
+#else
   /* Must be above typical peripheral space and page-aligned-ish */
   return addr >= UINT64_C(0x40000000) && (addr & 3U) == 0;
+#endif
 }
 
 /* ---- register capture ---- */
 
 static void capture_gp_regs(uint64_t *r) {
+#if defined(__aarch64__)
   /* r[0..30] = x0..x30, r[31] = SP */
   __asm__ volatile(
     "stp x0,  x1,  [%[b], #0]\n"
@@ -120,11 +128,33 @@ static void capture_gp_regs(uint64_t *r) {
     :
     : [b] "r"(r)
     : "x9", "memory");
+#elif defined(__x86_64__)
+  for (uint32_t i = 0U; i < 32U; ++i) r[i] = 0U;
+  __asm__ volatile("mov %%rax, %0" : "=m"(r[0]));
+  __asm__ volatile("mov %%rbx, %0" : "=m"(r[1]));
+  __asm__ volatile("mov %%rcx, %0" : "=m"(r[2]));
+  __asm__ volatile("mov %%rdx, %0" : "=m"(r[3]));
+  __asm__ volatile("mov %%rsi, %0" : "=m"(r[4]));
+  __asm__ volatile("mov %%rdi, %0" : "=m"(r[5]));
+  __asm__ volatile("mov %%rbp, %0" : "=m"(r[6]));
+  __asm__ volatile("mov %%r8, %0" : "=m"(r[7]));
+  __asm__ volatile("mov %%r9, %0" : "=m"(r[8]));
+  __asm__ volatile("mov %%r10, %0" : "=m"(r[9]));
+  __asm__ volatile("mov %%r11, %0" : "=m"(r[10]));
+  __asm__ volatile("mov %%r12, %0" : "=m"(r[11]));
+  __asm__ volatile("mov %%r13, %0" : "=m"(r[12]));
+  __asm__ volatile("mov %%r14, %0" : "=m"(r[13]));
+  __asm__ volatile("mov %%r15, %0" : "=m"(r[14]));
+  __asm__ volatile("mov %%rsp, %0" : "=m"(r[31]));
+#else
+#error "Unsupported XAIOS panic architecture"
+#endif
 }
 
 static void capture_sys_regs(uint64_t *elr, uint64_t *esr, uint64_t *far,
                               uint64_t *spsr, uint64_t *sp_el0,
                               uint64_t *current_el) {
+#if defined(__aarch64__)
   __asm__ volatile(
     "mrs %[elr], " SYS_ELR_EL1 "\n"
     "mrs %[esr], " SYS_ESR_EL1 "\n"
@@ -134,6 +164,16 @@ static void capture_sys_regs(uint64_t *elr, uint64_t *esr, uint64_t *far,
     "mrs %[cel], " SYS_CurrentEL "\n"
     : [elr] "=r"(*elr), [esr] "=r"(*esr), [far] "=r"(*far),
       [spsr] "=r"(*spsr), [sp0] "=r"(*sp_el0), [cel] "=r"(*current_el));
+#elif defined(__x86_64__)
+  *elr = (uint64_t)(uintptr_t)__builtin_return_address(0);
+  *esr = 0U;
+  __asm__ volatile("mov %%cr2, %0" : "=r"(*far));
+  __asm__ volatile("pushfq; popq %0" : "=r"(*spsr));
+  __asm__ volatile("mov %%rsp, %0" : "=r"(*sp_el0));
+  *current_el = 0U;
+#else
+#error "Unsupported XAIOS panic architecture"
+#endif
 }
 
 /* ---- stack backtrace via frame pointer ---- */
@@ -227,6 +267,18 @@ static void render_cpu_info(void) {
 
 static void render_gp_regs(const uint64_t *r) {
   panic_puts("  --- General Purpose Registers ---\r\n");
+#if defined(__x86_64__)
+  static const char *names[] = {"RAX", "RBX", "RCX", "RDX", "RSI",
+                                "RDI", "RBP", "R8 ", "R9 ", "R10",
+                                "R11", "R12", "R13", "R14", "R15"};
+  for (uint32_t i = 0U; i < 15U; ++i) {
+    panic_puts("  ");
+    panic_puts(names[i]);
+    panic_puts(" = ");
+    panic_u64_hex(r[i]);
+    panic_puts("\r\n");
+  }
+#else
   for (uint32_t i = 0; i < 31; i += 2) {
     panic_puts("  x");
     panic_u32(i);
@@ -244,6 +296,7 @@ static void render_gp_regs(const uint64_t *r) {
     panic_u64_hex(r[i + 1]);
     panic_puts("\r\n");
   }
+#endif
   panic_puts("  SP   = ");
   panic_u64_hex(r[31]);
   panic_puts("\r\n\r\n");
@@ -253,6 +306,19 @@ static void render_sys_regs(uint64_t elr, uint64_t esr, uint64_t far,
                               uint64_t spsr, uint64_t sp_el0,
                               uint64_t current_el) {
   panic_puts("  --- System Registers ---\r\n");
+#if defined(__x86_64__)
+  (void)esr;
+  (void)current_el;
+  panic_puts("  RIP      = ");
+  panic_u64_hex(elr);
+  panic_puts("\r\n  CR2      = ");
+  panic_u64_hex(far);
+  panic_puts("\r\n  RFLAGS   = ");
+  panic_u64_hex(spsr);
+  panic_puts("\r\n  RSP      = ");
+  panic_u64_hex(sp_el0);
+  panic_puts("\r\n\r\n");
+#else
   panic_puts("  ELR_EL1  = ");
   panic_u64_hex(elr);
   panic_puts("\r\n  ESR_EL1  = ");
@@ -268,6 +334,7 @@ static void render_sys_regs(uint64_t elr, uint64_t esr, uint64_t far,
   panic_puts(" (EL");
   panic_u32((unsigned)(current_el >> 2U));
   panic_puts(")\r\n\r\n");
+#endif
 }
 
 static void render_backtrace(const uint64_t *trace, uint32_t depth) {
@@ -293,7 +360,11 @@ static void render_halt(void) {
 
 void panic_at(const char *file, int line, const char *fmt, ...) {
   /* Disable all interrupts immediately */
+#if defined(__aarch64__)
   __asm__ volatile("msr daifset, #0xf" ::: "memory");
+#elif defined(__x86_64__)
+  __asm__ volatile("cli" ::: "memory");
+#endif
 
   /* Capture GP registers */
   uint64_t gp_regs[32];
@@ -322,7 +393,5 @@ void panic_at(const char *file, int line, const char *fmt, ...) {
   render_halt();
 
   /* Halt forever — no auto-reboot so the operator can read diagnostics */
-  for (;;) {
-    __asm__ volatile("wfe");
-  }
+  for (;;) xaios_cpu_wait();
 }

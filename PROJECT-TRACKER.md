@@ -1,6 +1,6 @@
 # XAIOS project tracker
 
-Last updated: 2026-08-04. Status labels and delivery order are checked against
+Last updated: 2026-08-09. Status labels and delivery order are checked against
 [`docs/MODEL-SUPPORT.json`](./docs/MODEL-SUPPORT.json). A checked interface is
 not equivalent to executing-model support. Platform recommendation status is
 authoritative in [`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json).
@@ -51,6 +51,10 @@ authoritative in [`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json).
   session state and Debian 13 OpenSSH/QEMU acceptance coverage.
 - [x] Replace the fixed 256-page userspace image tracker with dynamically sized,
   overflow-checked mapping ownership and cleanup.
+- [x] Audit syscall capability/user-buffer boundaries; add process-owned dynamic
+  sockets, socket/VFS cleanup on process reclamation, 64-bit descriptor
+  narrowing checks, bounded per-call I/O and kernel snapshots for mutable
+  write/send payloads.
 
 ## Workstream 1: active XAIOS completion
 
@@ -98,8 +102,9 @@ authoritative in [`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json).
   interrupt, and modern VirtIO/MSI/MSI-X PCI capability discovery under QEMU.
 - [x] Start all MADT-discovered x86 APs through an OS-owned trampoline and
   dispatch deterministic IPI work with dynamically sized CPU records.
-- [x] Add an OS-owned x86 GDT/TSS, a user-only mapping and a ring-3 `int 0x80`
-  syscall/exit round trip.
+- [x] Add an OS-owned x86 GDT/TSS, a user-only mapping and a real x86_64
+  `/bin/hello` ELF built from the shared userspace runtime that completes LOG
+  and EXIT through ring-3 `int 0x80`.
 - [x] Execute modern PCI VirtIO block DMA, MSI-X completion delivery and
   VirtIO-network DMA transmit under x86 QEMU.
 - [ ] Port the complete ARM EL0 process/thread ABI, receive-side networking,
@@ -119,8 +124,10 @@ authoritative in [`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json).
 - [x] Add `make qemu-core-os-rc` as a non-skipping aggregate evidence gate.
 - [x] Add `make qemu-high-core-gate` for >128-CPU SMP/NUMA capacity evidence
   without treating TCG duration as physical scalability evidence.
-- [ ] Complete security, release-readiness and physical-hardware entry gates
-  ([issue #8](https://github.com/Pummelchen/XAIOS/issues/8) and
+- [x] Complete the focused security-sensitive syscall/user-buffer audit and
+  QEMU security gate ([issue #8](https://github.com/Pummelchen/XAIOS/issues/8)).
+- [ ] Complete x86 full-service and physical-hardware entry gates
+  ([issue #18](https://github.com/Pummelchen/XAIOS/issues/18) and
   [issue #19](https://github.com/Pummelchen/XAIOS/issues/19)).
 - [x] Keep QEMU evidence limited to correctness and ABI claims.
 

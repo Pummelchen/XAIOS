@@ -176,6 +176,7 @@ qemu-full-os-rc:
 	python3 ./scripts/qemu-full-os-rc.py
 
 compile-check:
+	@mkdir -p build/compile-check/x86-kernel build/compile-check/x86-userspace
 	@failed=0; \
 	for f in $$(find kernel -name '*.c' ! -path '*/x86_64/*'); do \
 	  clang --target=aarch64-none-elf -std=c99 -ffreestanding \
@@ -192,10 +193,28 @@ compile-check:
 	    -fsyntax-only "$$f" \
 	    || failed=$$((failed + 1)); \
 	done; \
+	for f in $$(find kernel -name '*.c' ! -path '*/arch/aarch64/*' \
+	    ! -path '*/arch/x86_64/*'); do \
+	  object=build/compile-check/x86-kernel/$$(printf '%s' "$$f" | tr / _).o; \
+	  clang --target=x86_64-none-elf -std=c99 -ffreestanding \
+	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie -mno-red-zone \
+	    -Wall -Wextra -Werror -Ikernel/include -Iengine/include \
+	    -Iengine/src -Iuserspace/include -Iuserspace/sshd \
+	    -c "$$f" -o "$$object" \
+	    || failed=$$((failed + 1)); \
+	done; \
 	for f in $$(find userspace -name '*.c'); do \
 	  clang --target=aarch64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
 	    -Wall -Wextra -Werror -Iuserspace/include -Itests -fsyntax-only "$$f" \
+	    || failed=$$((failed + 1)); \
+	done; \
+	for f in $$(find userspace -name '*.c'); do \
+	  object=build/compile-check/x86-userspace/$$(printf '%s' "$$f" | tr / _).o; \
+	  clang --target=x86_64-none-elf -std=c99 -ffreestanding \
+	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie -mno-red-zone \
+	    -Wall -Wextra -Werror -Iuserspace/include -Itests \
+	    -c "$$f" -o "$$object" \
 	    || failed=$$((failed + 1)); \
 	done; \
 	if [ "$$failed" -ne 0 ]; then \

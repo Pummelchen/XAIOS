@@ -1,3 +1,4 @@
+#include <xaios/arch_cpu.h>
 #include <xaios/assert.h>
 #include <xaios/block_device.h>
 #include <xaios/kheap.h>
@@ -565,7 +566,7 @@ static xaios_status_t wait_sync(virtio_block_driver_t *drv,
       (void)recover_queue(drv);
       return XAIOS_ERR_IO;
     }
-    __asm__ volatile("yield");
+    xaios_cpu_relax();
   }
   return wait->status;
 }
@@ -578,7 +579,7 @@ static xaios_status_t wait_idle(virtio_block_driver_t *drv) {
       (void)recover_queue(drv);
       return XAIOS_ERR_IO;
     }
-    __asm__ volatile("yield");
+    xaios_cpu_relax();
   }
   return XAIOS_OK;
 }

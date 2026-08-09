@@ -6,6 +6,7 @@
 #include <xaios/pmm.h>
 #include <xaios/scheduler.h>
 #include <xaios/smp.h>
+#include <xaios/syscall.h>
 #include <xaios/timer.h>
 #include <xaios/thread.h>
 #include <xaios/user.h>
@@ -789,6 +790,7 @@ void user_process_reclaim_address_space(const xaios_user_process_t *process) {
          process->pid);
     return;
   }
+  syscall_release_process_resources(process->pid);
 
   /* Use ELF loader reclaim for processes with per-process address spaces */
   if (process->aspace.l3_count > 0) {

@@ -14,9 +14,7 @@ void stack_canary_init(void) {
   /* If entry.S didn't seed the canary (e.g., test environment),
    * generate one from the timer counter here */
   if (g_stack_canary == 0) {
-    uint64_t counter;
-    __asm__ volatile("isb\n\tmrs %0, cntvct_el0" : "=r"(counter));
-    g_stack_canary = counter ^ XAIOS_CANARY_MAGIC;
+    g_stack_canary = xaios_cpu_counter() ^ XAIOS_CANARY_MAGIC;
   }
   g_canary_initialized = 1;
   g_corruption_count = 0;
@@ -29,8 +27,7 @@ uint64_t stack_canary_value(void) {
 }
 
 void stack_canary_check(uint64_t saved, const char *func) {
-  uint64_t sp_val;
-  __asm__ volatile("mov %0, sp" : "=r"(sp_val));
+  uint64_t sp_val = xaios_cpu_stack_pointer();
   uint64_t expected = g_stack_canary ^ sp_val;
   if (saved != expected) {
     ++g_corruption_count;

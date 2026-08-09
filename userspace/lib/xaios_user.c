@@ -1,6 +1,7 @@
 #include <xaios_user.h>
 
 u64 xaios_syscall3(u64 number, u64 arg0, u64 arg1, u64 arg2) {
+#if defined(__aarch64__)
   register u64 x0 __asm__("x0") = arg0;
   register u64 x1 __asm__("x1") = arg1;
   register u64 x2 __asm__("x2") = arg2;
@@ -10,6 +11,19 @@ u64 xaios_syscall3(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                    : "r"(x1), "r"(x2), "r"(x8)
                    : "memory");
   return x0;
+#elif defined(__x86_64__)
+  register u64 rax __asm__("rax") = number;
+  register u64 rdi __asm__("rdi") = arg0;
+  register u64 rsi __asm__("rsi") = arg1;
+  register u64 rdx __asm__("rdx") = arg2;
+  __asm__ volatile("int $0x80"
+                   : "+a"(rax)
+                   : "D"(rdi), "S"(rsi), "d"(rdx)
+                   : "rcx", "r11", "memory");
+  return rax;
+#else
+#error "Unsupported XAIOS userspace architecture"
+#endif
 }
 
 u64 xaios_strlen(const char *text) {
@@ -54,7 +68,13 @@ void xaios_log(const char *text) {
 void xaios_exit(int code) {
   (void)xaios_syscall3(XAIOS_SYSCALL_EXIT, (u64)(u32)code, 0, 0);
   for (;;) {
+#if defined(__aarch64__)
     __asm__ volatile("wfe");
+#elif defined(__x86_64__)
+    __asm__ volatile("pause");
+#else
+#error "Unsupported XAIOS userspace architecture"
+#endif
   }
 }
 

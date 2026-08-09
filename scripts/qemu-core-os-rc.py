@@ -91,7 +91,9 @@ X86_CAPABILITIES = {
         "x86_64: SMP IPI worker dispatch passed workers=",
     ],
     "x86_ring3_syscall": [
-        "x86_64: ring3 int80 syscall round-trip passed calls=2",
+        "/bin/hello: hello world from C userspace",
+        "/bin/hello: C toolchain and EL0 runtime integration passed",
+        "x86_64: real /bin/hello ELF syscall ABI passed calls=3 exit=0",
     ],
     "x86_xsave_state": [
         "x86_64: XSAVE/XRSTOR canary passed bytes=",
@@ -175,6 +177,7 @@ def main() -> int:
             output = f"qemu-core-os-rc: command failed to start: {exc}\n"
             exit_code = 127
         outputs[name] = output
+        BUILD.mkdir(parents=True, exist_ok=True)
         (BUILD / f"qemu-core-os-rc-{name}.log").write_text(
             output, encoding="utf-8"
         )

@@ -1,6 +1,7 @@
 #ifndef XAIOS_SPINLOCK_H
 #define XAIOS_SPINLOCK_H
 
+#include <xaios/arch_cpu.h>
 #include <xaios/types.h>
 
 /*
@@ -34,12 +35,12 @@ static inline void xaios_spin_lock(xaios_spinlock_t *lock) {
   if (smp_online_count() <= 1) {
     /* Single-core: use plain memory ops — no exclusive monitors needed */
     lock->guard = 1;
-    __asm__ volatile("dmb ish" ::: "memory");
+    xaios_cpu_memory_barrier();
     return;
   }
   uint32_t ticket = __sync_fetch_and_add(&lock->next_ticket, 1U);
   while (__atomic_load_n(&lock->serve, __ATOMIC_ACQUIRE) != ticket) {
-    __asm__ volatile("yield");
+    xaios_cpu_relax();
   }
   lock->guard = 1;
 }
@@ -49,7 +50,7 @@ static inline void xaios_spin_unlock(xaios_spinlock_t *lock) {
   uint32_t current = __atomic_load_n(&lock->serve, __ATOMIC_RELAXED);
   uint32_t next = __atomic_load_n(&lock->next_ticket, __ATOMIC_RELAXED);
   if (current == next) {
-    __asm__ volatile("dmb ish" ::: "memory");
+    xaios_cpu_memory_barrier();
     return;
   }
   __atomic_store_n(&lock->serve, current + 1U, __ATOMIC_RELEASE);
@@ -62,7 +63,7 @@ static inline int xaios_spin_trylock(xaios_spinlock_t *lock) {
       return 0;
     }
     lock->guard = 1;
-    __asm__ volatile("dmb ish" ::: "memory");
+    xaios_cpu_memory_barrier();
     return 1;
   }
   uint32_t current = __atomic_load_n(&lock->serve, __ATOMIC_ACQUIRE);
@@ -92,6 +93,9 @@ static inline void xaios_spin_unlock_guard(xaios_spinlock_t *lock) {
 }
 
 static inline int xaios_spin_held(xaios_spinlock_t *lock) {
+  if (smp_online_count() <= 1) {
+    return __atomic_load_n(&lock->guard, __ATOMIC_RELAXED) != 0U;
+  }
   return __atomic_load_n(&lock->serve, __ATOMIC_RELAXED) !=
          __atomic_load_n(&lock->next_ticket, __ATOMIC_RELAXED);
 }

@@ -1,6 +1,6 @@
 # Platform Support
 
-Last updated: 2026-08-04.
+Last updated: 2026-08-09.
 
 The authoritative status for the 20 ARM, Intel and portable-engine
 recommendations is
@@ -44,7 +44,9 @@ The exact evidence for each row remains in the authoritative JSON source.
 - x86 starts all MADT-discovered application processors through an OS-owned
   trampoline and dispatches deterministic IPI work without a project-level CPU
   count limit.
-- x86 validates GDT/TSS ring-3 syscall entry, runtime-sized XSAVE/XRSTOR with
+- x86 validates GDT/TSS ring-3 syscall entry by executing a real `/bin/hello`
+  ELF built from the shared userspace runtime, plus common security and scalar
+  kernel self-tests. It also validates runtime-sized XSAVE/XRSTOR with
   FXSAVE/FXRSTOR fallback, ACPI MADT/SRAT/SLIT/HMAT parsing, modern VirtIO block
   DMA, MSI-X completion, and VirtIO network TX.
 - Production model registration retains immutable readers or no-copy 64-bit

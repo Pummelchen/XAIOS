@@ -1,3 +1,4 @@
+#include <xaios/arch_cpu.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
 #include <xaios/nvme.h>
@@ -104,7 +105,7 @@ static uint64_t mmio_read64(const nvme_controller_t *controller,
 static void mmio_write32(const nvme_controller_t *controller, uint32_t offset,
                          uint32_t value) {
   *(volatile uint32_t *)(void *)(controller->bar + offset) = value;
-  __asm__ volatile("dsb sy" ::: "memory");
+  xaios_cpu_io_barrier();
 }
 
 static void mmio_write64(const nvme_controller_t *controller, uint32_t offset,
@@ -131,7 +132,7 @@ static xaios_status_t wait_ready(const nvme_controller_t *controller,
     if ((status & NVME_CSTS_FATAL) != 0U) return XAIOS_ERR_IO;
     if ((status & NVME_CSTS_READY) == expected) return XAIOS_OK;
     if (timer_now_ns() - started >= NVME_TIMEOUT_NS) return XAIOS_ERR_IO;
-    __asm__ volatile("yield" ::: "memory");
+    xaios_cpu_relax();
   }
 }
 
@@ -148,7 +149,7 @@ static xaios_status_t submit(nvme_controller_t *controller,
   nvme_command_t staged = *command;
   staged.cid = ++controller->next_cid;
   queue->sq[queue->sq_tail] = staged;
-  __asm__ volatile("dsb sy" ::: "memory");
+  xaios_cpu_io_barrier();
   queue->sq_tail = (uint16_t)((queue->sq_tail + 1U) % NVME_QUEUE_DEPTH);
   mmio_write32(controller, doorbell_offset(controller, queue->qid, 0U),
                queue->sq_tail);
@@ -156,11 +157,11 @@ static xaios_status_t submit(nvme_controller_t *controller,
   uint64_t started = timer_now_ns();
   nvme_completion_t completion;
   for (;;) {
-    __asm__ volatile("dsb sy" ::: "memory");
+    xaios_cpu_io_barrier();
     completion = queue->cq[queue->cq_head];
     if ((completion.status & 1U) == queue->phase) break;
     if (timer_now_ns() - started >= NVME_TIMEOUT_NS) return XAIOS_ERR_IO;
-    __asm__ volatile("yield" ::: "memory");
+    xaios_cpu_relax();
   }
   if (completion.cid != staged.cid ||
       ((completion.status >> 1U) & UINT16_C(0x7ff)) != 0U) {

@@ -1,6 +1,8 @@
 #include <stdarg.h>
 #include <xaios/klog.h>
+#if defined(__aarch64__)
 #include <xaios/klog_ring.h>
+#endif
 #include <xaios/spinlock.h>
 #include <xaios/timer.h>
 #include <xaios/types.h>
@@ -19,7 +21,18 @@ static void uart_putc(char c) {
     return;
   }
 
+#if defined(__aarch64__)
   g_uart_base[PL011_UARTDR / 4] = (uint32_t)c;
+#elif defined(__x86_64__)
+  uint16_t base = (uint16_t)(uintptr_t)g_uart_base;
+  uint8_t ready;
+  do {
+    __asm__ volatile("inb %1, %0" : "=a"(ready) : "Nd"((uint16_t)(base + 5U)));
+  } while ((ready & UINT8_C(0x20)) == 0U);
+  __asm__ volatile("outb %0, %1" : : "a"((uint8_t)c), "Nd"(base));
+#else
+#error "Unsupported XAIOS logging architecture"
+#endif
 }
 
 static void klog_char(char c) {
@@ -36,7 +49,9 @@ static void klog_char(char c) {
 
 static void klog_line_flush(void) {
   if (g_klog_line_pos > 0) {
+#if defined(__aarch64__)
     klog_ring_write(g_klog_line, g_klog_line_pos);
+#endif
     g_klog_line_pos = 0;
   }
 }
@@ -196,6 +211,8 @@ void klog_level(xaios_log_level_t level, const char *fmt, ...) {
 
   /* Flush ring immediately on panic */
   if (level == XAIOS_LOG_PANIC) {
+#if defined(__aarch64__)
     klog_flush();
+#endif
   }
 }
