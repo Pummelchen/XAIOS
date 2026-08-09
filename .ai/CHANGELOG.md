@@ -10,6 +10,14 @@ Human edits are allowed. Future refreshes should preserve valid human edits.
 -->
 # AI onboarding changelog
 
+## 2026-08-10 - native SSH PTY htop dashboard
+
+- Added validated per-channel SSH PTY dimensions and resize handling.
+- Added a guest-generated ANSI `htop` snapshot with colored CPU/memory meters,
+  process framing, terminal-bounded rows, and runtime-sized CPU pagination.
+- Preserved plain non-PTY output for automation and added QEMU plus Debian 13
+  OpenSSH coverage for both output modes.
+
 ## 2026-08-10 - VMware Fusion ARM64 bring-up
 
 - Added a reproducible Debian 13 GRUB UEFI compatibility stage, El Torito VM

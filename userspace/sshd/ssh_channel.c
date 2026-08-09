@@ -9,6 +9,12 @@
 
 #define SFTP_REQUEST_READ 5U
 #define SFTP_REQUEST_WRITE 6U
+#define SSH_PTY_DEFAULT_COLUMNS 120U
+#define SSH_PTY_DEFAULT_ROWS 40U
+#define SSH_PTY_MIN_COLUMNS 40U
+#define SSH_PTY_MAX_COLUMNS 240U
+#define SSH_PTY_MIN_ROWS 12U
+#define SSH_PTY_MAX_ROWS 100U
 
 static ssh_channel_t g_channels[SSH_CHANNEL_MAX];
 static uint32_t g_next_local_id = 1;
@@ -28,6 +34,9 @@ void ssh_channel_init(void) {
     g_channels[i].close_sent = 0;
     g_channels[i].exit_status = 0;
     g_channels[i].is_sftp = 0;
+    g_channels[i].pty_requested = 0;
+    g_channels[i].terminal_columns = 0;
+    g_channels[i].terminal_rows = 0;
     g_channels[i].sftp_rx_used = 0;
   }
   g_next_local_id = 1;
@@ -51,7 +60,11 @@ static ssh_channel_t *alloc_channel(int sockfd) {
       g_channels[i].pending_used = 0;
       g_channels[i].close_after_flush = 0;
       g_channels[i].close_sent = 0;
+      g_channels[i].exit_status = 0;
       g_channels[i].is_sftp = 0;
+      g_channels[i].pty_requested = 0;
+      g_channels[i].terminal_columns = 0;
+      g_channels[i].terminal_rows = 0;
       g_channels[i].sftp_rx_used = 0;
       return &g_channels[i];
     }
@@ -94,6 +107,155 @@ static int packet_string_equal(const uint8_t *value, uint32_t value_len,
 static int packet_has_zero(const uint8_t *value, uint32_t value_len) {
   for (uint32_t i = 0; i < value_len; ++i) {
     if (value[i] == 0U) return 1;
+  }
+  return 0;
+}
+
+static uint32_t clamp_terminal_dimension(uint32_t value, uint32_t fallback,
+                                         uint32_t minimum,
+                                         uint32_t maximum) {
+  if (value == 0U) value = fallback;
+  if (value < minimum) return minimum;
+  if (value > maximum) return maximum;
+  return value;
+}
+
+static int parse_pty_request(ssh_channel_t *ch, const ssh_packet_t *pkt,
+                             uint32_t data_start) {
+  uint32_t cursor;
+  uint32_t term_len;
+  uint32_t modes_len;
+  uint32_t columns;
+  uint32_t rows;
+  if (ch == 0 || pkt == 0 || data_start > pkt->len ||
+      pkt->len - data_start < 24U) {
+    return -1;
+  }
+  term_len = ssh_read_u32_be(pkt->data + data_start);
+  cursor = data_start + 4U;
+  if (term_len >= 64U || term_len > pkt->len - cursor ||
+      packet_has_zero(pkt->data + cursor, term_len)) {
+    return -1;
+  }
+  cursor += term_len;
+  if (pkt->len - cursor < 20U) return -1;
+  columns = clamp_terminal_dimension(
+      ssh_read_u32_be(pkt->data + cursor), SSH_PTY_DEFAULT_COLUMNS,
+      SSH_PTY_MIN_COLUMNS, SSH_PTY_MAX_COLUMNS);
+  rows = clamp_terminal_dimension(
+      ssh_read_u32_be(pkt->data + cursor + 4U), SSH_PTY_DEFAULT_ROWS,
+      SSH_PTY_MIN_ROWS, SSH_PTY_MAX_ROWS);
+  cursor += 16U;
+  modes_len = ssh_read_u32_be(pkt->data + cursor);
+  cursor += 4U;
+  if (modes_len != pkt->len - cursor) return -1;
+  ch->terminal_columns = columns;
+  ch->terminal_rows = rows;
+  ch->pty_requested = 1U;
+  return 0;
+}
+
+static int parse_window_change(ssh_channel_t *ch, const ssh_packet_t *pkt,
+                               uint32_t data_start) {
+  if (ch == 0 || pkt == 0 || ch->pty_requested == 0U ||
+      data_start > pkt->len || pkt->len - data_start != 16U) {
+    return -1;
+  }
+  ch->terminal_columns = clamp_terminal_dimension(
+      ssh_read_u32_be(pkt->data + data_start), SSH_PTY_DEFAULT_COLUMNS,
+      SSH_PTY_MIN_COLUMNS, SSH_PTY_MAX_COLUMNS);
+  ch->terminal_rows = clamp_terminal_dimension(
+      ssh_read_u32_be(pkt->data + data_start + 4U), SSH_PTY_DEFAULT_ROWS,
+      SSH_PTY_MIN_ROWS, SSH_PTY_MAX_ROWS);
+  return 0;
+}
+
+static int command_token_equal(const char *command, const char *expected) {
+  uint32_t index = 0U;
+  uint32_t command_len = ssh_str_len(command);
+  uint32_t expected_len = ssh_str_len(expected);
+  while (command[index] == ' ' || command[index] == '\t' ||
+         command[index] == '\r' || command[index] == '\n') {
+    ++index;
+  }
+  if (index > command_len || expected_len > command_len - index) return 0;
+  for (uint32_t i = 0U; i < expected_len; ++i) {
+    if (command[index + i] != expected[i]) return 0;
+  }
+  index += expected_len;
+  return command[index] == '\0' || command[index] == ' ' ||
+         command[index] == '\t' || command[index] == '\r' ||
+         command[index] == '\n';
+}
+
+static int command_has_option(const char *command, const char *option) {
+  uint32_t option_len = ssh_str_len(option);
+  for (uint32_t i = 0U; command[i] != '\0';) {
+    while (command[i] == ' ' || command[i] == '\t' ||
+           command[i] == '\r' || command[i] == '\n') {
+      ++i;
+    }
+    uint32_t start = i;
+    while (command[i] != '\0' && command[i] != ' ' &&
+           command[i] != '\t' && command[i] != '\r' &&
+           command[i] != '\n') {
+      ++i;
+    }
+    if (i - start == option_len &&
+        packet_string_equal((const uint8_t *)command + start, option_len,
+                            option)) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int append_command_text(char *command, uint32_t capacity,
+                               const char *text) {
+  uint32_t used = ssh_str_len(command);
+  uint32_t length = ssh_str_len(text);
+  if (used + length + 1U > capacity) return -1;
+  ssh_mem_copy(command + used, text, length + 1U);
+  return 0;
+}
+
+static int append_command_u32(char *command, uint32_t capacity,
+                              uint32_t value) {
+  char digits[11];
+  uint32_t count = 0U;
+  do {
+    digits[count++] = (char)('0' + value % 10U);
+    value /= 10U;
+  } while (value != 0U);
+  uint32_t used = ssh_str_len(command);
+  if (used + count + 1U > capacity) return -1;
+  for (uint32_t i = 0U; i < count; ++i) {
+    command[used + i] = digits[count - i - 1U];
+  }
+  command[used + count] = '\0';
+  return 0;
+}
+
+static int prepare_terminal_command(const ssh_channel_t *ch, char *command,
+                                    uint32_t capacity) {
+  if (ch == 0 || command == 0 || ch->pty_requested == 0U ||
+      command_token_equal(command, "htop") == 0 ||
+      command_has_option(command, "--plain") != 0) {
+    return 0;
+  }
+  if (command_has_option(command, "--color") == 0 &&
+      append_command_text(command, capacity, " --color") != 0) {
+    return -1;
+  }
+  if (command_has_option(command, "--columns") == 0 &&
+      (append_command_text(command, capacity, " --columns ") != 0 ||
+       append_command_u32(command, capacity, ch->terminal_columns) != 0)) {
+    return -1;
+  }
+  if (command_has_option(command, "--rows") == 0 &&
+      (append_command_text(command, capacity, " --rows ") != 0 ||
+       append_command_u32(command, capacity, ch->terminal_rows) != 0)) {
+    return -1;
   }
   return 0;
 }
@@ -292,12 +454,19 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
   uint32_t data_start = type_end + 1;
 
   if (ssh_str_eq(request_type, "pty-req")) {
-    /* Parse: string term, uint32 width, uint32 height, uint32 pixwidth, uint32 pixheight, string modes */
-    /* Accept and ignore — reply success */
+    int valid = parse_pty_request(ch, pkt, data_start) == 0;
     if (want_reply) {
-      if (send_channel_reply(sockfd, ch->remote_id, 1) != 0) return -1;
+      if (send_channel_reply(sockfd, ch->remote_id, valid) != 0) return -1;
     }
-    return 0;
+    return valid ? 0 : -1;
+  }
+
+  if (ssh_str_eq(request_type, "window-change")) {
+    int valid = parse_window_change(ch, pkt, data_start) == 0;
+    if (want_reply) {
+      if (send_channel_reply(sockfd, ch->remote_id, valid) != 0) return -1;
+    }
+    return valid ? 0 : -1;
   }
 
   if (ssh_str_eq(request_type, "env")) {
@@ -334,6 +503,12 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
     char command[4096];
     ssh_mem_copy(command, pkt->data + data_start + 4, cmd_len);
     command[cmd_len] = '\0';
+    if (prepare_terminal_command(ch, command, sizeof(command)) != 0) {
+      if (want_reply && send_channel_reply(sockfd, ch->remote_id, 0) != 0) {
+        return -1;
+      }
+      return -1;
+    }
 
     if (want_reply) {
       if (send_channel_reply(sockfd, ch->remote_id, 1) != 0) return -1;
@@ -521,6 +696,7 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
         packet_has_zero(pkt->data + 9U, data_len)) return -1;
     ssh_mem_copy(command, pkt->data + 9, data_len);
     command[data_len] = '\0';
+    if (prepare_terminal_command(ch, command, sizeof(command)) != 0) return -1;
 
     char output[8192];
     u64 out_size = 0;

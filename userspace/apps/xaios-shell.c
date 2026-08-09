@@ -129,6 +129,19 @@ int main(void) {
     xaios_log("/bin/xaios-shell: htop process verification failed\n");
     return 1;
   }
+  if (shell_run("htop --all --sample-ms 10 --cpu-count 2 --color "
+                "--columns 40 --rows 12",
+                output, sizeof(output), &out_size) != 0 ||
+      text_contains(output, "\033[2J\033[H") == 0 ||
+      text_contains(output, "\033[42;30m") == 0 ||
+      text_contains(output, "Tasks:") == 0 ||
+      text_contains(output, "Mem") == 0 ||
+      text_contains(output, "[Main]") == 0 ||
+      text_contains(output, " PID S   CPU%   MEM% COMMAND") == 0 ||
+      text_contains(output, "CPUs:") == 0) {
+    xaios_log("/bin/xaios-shell: htop ANSI dashboard verification failed\n");
+    return 1;
+  }
   if (shell_run("rm /state/remote-shell-test/editor.txt", output,
                 sizeof(output), &out_size) != 0) {
     xaios_log("/bin/xaios-shell: nano cleanup failed\n");

@@ -165,6 +165,7 @@ Edits are saved immediately by the modifying commands.
 ```text
 htop [--active|--all] [--sample-ms 1..1000]
      [--cpu-start N] [--cpu-count N] [--no-cpus]
+     [--color|--plain] [--columns 40..240] [--rows 12..100]
 ```
 
 The default 100 ms interval reports `%CPU` from monotonic runtime deltas, not
@@ -187,10 +188,18 @@ the current QEMU AArch64 SMP implementation separately admits at most 256 CPUs.
 `--active` shows loaded, runnable, running, and waiting processes; `--all` also
 includes exited and failed slots.
 
-XAIOS does not yet expose a curses/TTY ABI, so these utilities use the supported
-remote command interface rather than a full-screen terminal UI. Output tagged
-`source=ssh-bridge` is a host-proxy compatibility view; native XAIOS output is
-backed by kernel process and per-CPU accounting.
+The native SSH daemon validates `pty-req` and `window-change` dimensions. An
+exact `htop` command on a PTY channel automatically selects the guest-generated
+ANSI dashboard and uses the reported terminal size. It includes colored CPU,
+managed-memory and zero-capacity swap meters, task and uptime state, a process
+table, and honest command-option hints. CPU pagination remains dynamic on
+many-core systems. `--plain` explicitly disables ANSI; non-PTY invocations are
+plain by default for scripts.
+
+This is a terminal-formatted snapshot, not a curses event loop: it samples once,
+writes one bounded screen, and returns. Output tagged `source=ssh-bridge` is a
+host-proxy compatibility view; native SSH output is generated inside XAIOS and
+is backed by kernel process and per-CPU accounting.
 
 ## Capabilities
 

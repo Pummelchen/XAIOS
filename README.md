@@ -87,6 +87,9 @@ opt-in; exact target-model semantics are the default.
   fast retransmit, zero-window handling, and RTO backoff. A dual-origin load gate
   runs these paths in parallel against one successful guest instance and
   verifies fragmented TCP traffic and recovery after saturation.
+  The native guest also turns an SSH PTY `htop` command into a terminal-sized
+  ANSI dashboard with sampled CPU/memory percentages and dynamic many-core
+  paging; non-PTY output stays plain for automation.
   SSH has no built-in password and fails closed without secure entropy. These
   QEMU checks complete the declared core-OS correctness gate; they do not approve
   Internet exposure or physical production deployment.

@@ -187,6 +187,65 @@ def ed25519_raw_fingerprint(public_key_path: Path) -> str:
     return hashlib.sha256(blob[19:51]).hexdigest()
 
 
+def verify_native_htop_pty(key_dir: Path, port: int) -> None:
+    ssh_base = [
+        "ssh",
+        "-i", "/keys/authorized",
+        "-o", "IdentitiesOnly=yes",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "PasswordAuthentication=no",
+        "-p", str(port),
+        "admin@host.docker.internal",
+    ]
+    colored = subprocess.run(
+        docker_command(
+            key_dir,
+            *ssh_base[:1],
+            "-tt",
+            *ssh_base[1:],
+            "htop --all --sample-ms 10 --cpu-count 4",
+        ),
+        cwd=ROOT,
+        capture_output=True,
+        timeout=60,
+    )
+    if colored.returncode != 0:
+        raise RuntimeError(
+            "native htop PTY command failed: "
+            + colored.stderr.decode(errors="replace")
+        )
+    required = (
+        b"\x1b[2J\x1b[H",
+        b"\x1b[42;30m",
+        b"Tasks:",
+        b"Mem",
+        b"[Main]",
+        b"--plain",
+    )
+    missing = [marker for marker in required if marker not in colored.stdout]
+    if missing:
+        raise RuntimeError(f"native htop PTY output missing markers: {missing!r}")
+
+    plain = subprocess.run(
+        docker_command(
+            key_dir,
+            *ssh_base,
+            "htop --all --sample-ms 10 --cpu-count 2 --plain",
+        ),
+        cwd=ROOT,
+        capture_output=True,
+        timeout=60,
+    )
+    if plain.returncode != 0:
+        raise RuntimeError(
+            "native htop plain command failed: "
+            + plain.stderr.decode(errors="replace")
+        )
+    if b"\x1b[" in plain.stdout or b"CPU CPU% BUSY_MS" not in plain.stdout:
+        raise RuntimeError("native htop non-PTY output did not remain plain text")
+
+
 def require_rejected_build(env: dict[str, str], marker: str) -> None:
     completed = subprocess.run(
         ["make", "image"],
@@ -343,6 +402,7 @@ def main() -> int:
             ),
             CLIENT_TIMEOUT_SECONDS,
         )
+        verify_native_htop_pty(key_dir, ssh_port)
         run_checked(
             docker_command(
                 key_dir,
@@ -359,6 +419,8 @@ def main() -> int:
         results["sftp_file_directory_operations"] = "passed"
         results["ssh_rekey"] = "passed"
         results["ssh_shared_transport_channels"] = "passed"
+        results["native_htop_pty_ansi"] = "passed"
+        results["native_htop_non_pty_plain"] = "passed"
         results["ssh_port"] = ssh_port
         results["udp_port"] = udp_port
         results["packet_capture"] = str(packet_capture)

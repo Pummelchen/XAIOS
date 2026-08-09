@@ -29,6 +29,12 @@ asynchronous DNS, malformed/reset/reordered/retransmitted TCP, and out-of-order
 IPv4/IPv6 fragment reassembly are in
 [`docs/NETWORK-SSH-STATUS.md`](https://github.com/Pummelchen/XAIOS/blob/main/docs/NETWORK-SSH-STATUS.md).
 
+The guest validates SSH PTY and resize dimensions. Running `htop` on a PTY
+selects a native XAIOS-generated ANSI dashboard with sampled CPU/memory meters,
+process framing, and dynamic many-core paging. Non-PTY calls remain plain for
+automation. The command produces one terminal-formatted snapshot and returns;
+it is not a curses event loop.
+
 Ed25519 principals are assigned observer, operator or administrator roles.
 Administrative audit entries and operational remote-login records omit command
 payloads and authentication material.

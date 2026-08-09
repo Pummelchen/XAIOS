@@ -50,6 +50,9 @@ the same freestanding AArch64 guest:
   out-of-order IPv4 and IPv6 fragment pairs before processing their TCP SYNs;
 - guest userspace resolved `example.com` through the asynchronous DNS syscall,
   then completed an immediate cache hit.
+- a Debian 13 OpenSSH PTY received the native guest-generated ANSI `htop`
+  dashboard with CPU/memory meters and process framing, while a non-PTY command
+  retained the plain automation format.
 
 The machine-readable result is `build/qemu-docker-network-suite.json`. Serial
 logs and the direct-network packet capture are also generated under `build/`.
@@ -118,7 +121,9 @@ bounded to 16 keys, 16 revoked fingerprints and 64 audit records.
 SSH identification, packet, authentication, channel, and SFTP lengths are
 validated before arithmetic or copying. Invalid encrypted lengths, MACs,
 padding, embedded NULs, unsupported service names, malformed client versions,
-and all-zero X25519 shared secrets terminate the connection.
+all-zero X25519 shared secrets, and malformed PTY or resize payloads terminate
+the connection. Valid PTY dimensions are retained per channel and bounded to
+the native dashboard's supported terminal range.
 
 The service is cooperatively scheduled and intentionally bounded to four
 connections, two channels per connection, and eight channels globally. Each
