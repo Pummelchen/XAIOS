@@ -153,7 +153,9 @@ Internet destinations or physical networks are production-ready.
   build a separate fixture profile that runs these applications once to retain
   deterministic correctness markers.
   `scripts/ssh-xaios-qemu.sh` provides a quiet local QEMU client with persistent
-  host-key checking for interactive commands such as `htop`. The server still
+  host-key checking for interactive commands such as `htop`. Both architecture
+  launchers forward host TCP port `7788` to guest SSH port `22` by default;
+  connect with `ssh -p 7788 admin@127.0.0.1`. The server still
   negotiates classical `curve25519-sha256`; hybrid post-quantum SSH key exchange
   remains a production security gate.
   SSH has no built-in password and fails closed without secure entropy. These

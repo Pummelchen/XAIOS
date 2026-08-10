@@ -87,6 +87,10 @@ experimental override because current QEMU/HVF exception handling can abort on
 Apple Silicon. QEMU and VMware results are correctness evidence, not physical
 performance evidence.
 
+Both architecture launchers forward host TCP port `7788` to guest SSH port
+`22` by default. Use `ssh -p 7788 admin@127.0.0.1` from the host, or override
+the forwarding port with `XAIOS_QEMU_HOSTFWD_PORT`.
+
 ## Core validation commands
 
 | Scope | Command |

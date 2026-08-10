@@ -3,7 +3,7 @@ set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 host="${XAIOS_SSH_HOST:-127.0.0.1}"
-port="${XAIOS_SSH_PORT:-2299}"
+port="${XAIOS_SSH_PORT:-7788}"
 user="${XAIOS_SSH_USER:-admin}"
 identity="${XAIOS_SSH_IDENTITY:-$ROOT_DIR/build/local-ssh/admin}"
 known_hosts="${XAIOS_SSH_KNOWN_HOSTS:-$ROOT_DIR/build/local-ssh/known_hosts}"

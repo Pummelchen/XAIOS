@@ -29,6 +29,12 @@ asynchronous DNS, malformed/reset/reordered/retransmitted TCP, and out-of-order
 IPv4/IPv6 fragment reassembly are in
 [`docs/NETWORK-SSH-STATUS.md`](https://github.com/Pummelchen/XAIOS/blob/main/docs/NETWORK-SSH-STATUS.md).
 
+Both AArch64 and x86_64 QEMU launchers forward host TCP port `7788` to guest
+SSH port `22` by default. Connect with `ssh -p 7788 admin@127.0.0.1`, or with
+`ssh ssh://admin@127.0.0.1:7788` on OpenSSH versions that support SSH URIs.
+The bare form `ssh admin@127.0.0.1:7788` is not valid OpenSSH syntax. Set
+`XAIOS_QEMU_HOSTFWD_PORT` to override the host-side port.
+
 On normal boot, the service first requires an external IPv4 A-record response.
 It does not open TCP port 22 until that check and all SSH initialization stages
 succeed. The final serial screen prints the configured guest IPv4 and a verified

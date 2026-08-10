@@ -240,7 +240,7 @@ python3 scripts/create-sshd-user-config.py \
 XAIOS_AUTHORIZED_KEYS_FILE=build/local-ssh/admin.pub \
 XAIOS_SSH_USERS_FILE=build/local-ssh/users \
 XAIOS_SSH_PASSWORD_AUTH=1 make image
-XAIOS_QEMU_HOSTFWD_PORT=2299 XAIOS_QEMU_HOSTFWD_UDP_PORT=2298 make qemu
+XAIOS_QEMU_HOSTFWD_UDP_PORT=2298 make qemu
 ```
 
 Connect from a second terminal. The launcher uses
@@ -251,8 +251,15 @@ OpenSSH-version-gated `WarnWeakCrypto=no`; it does not discard host identity via
 ```sh
 scripts/ssh-xaios-qemu.sh
 scripts/ssh-xaios-qemu.sh -- htop
-sftp -i build/local-ssh/admin -o IdentitiesOnly=yes -P 2299 admin@127.0.0.1
+ssh -p 7788 admin@127.0.0.1
+sftp -i build/local-ssh/admin -o IdentitiesOnly=yes -P 7788 admin@127.0.0.1
 ```
+
+Both QEMU architecture launchers use host TCP port `7788` by default and
+forward it to guest TCP port `22`. Override it with
+`XAIOS_QEMU_HOSTFWD_PORT`. OpenSSH uses `-p 7788`, not a bare
+`admin@127.0.0.1:7788` destination; clients that implement SSH URI syntax may
+instead use `ssh ssh://admin@127.0.0.1:7788`.
 
 Pass a non-default key with `--identity`, for example
 `scripts/ssh-xaios-qemu.sh --identity /tmp/xaios-htop-key -- htop`.

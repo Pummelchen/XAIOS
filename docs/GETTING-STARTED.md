@@ -162,8 +162,14 @@ rejects password-enabled images. See
 security boundary.
 
 ```sh
-XAIOS_QEMU_HOSTFWD_PORT=2299 XAIOS_QEMU_HOSTFWD_UDP_PORT=2298 make qemu
+XAIOS_QEMU_HOSTFWD_UDP_PORT=2298 make qemu
 ```
+
+The QEMU launchers forward host TCP port `7788` to guest SSH port `22` by
+default. OpenSSH's standard explicit-port syntax is
+`ssh -p 7788 admin@127.0.0.1`; `admin@127.0.0.1:7788` is not valid OpenSSH
+destination syntax. Recent OpenSSH clients also accept
+`ssh ssh://admin@127.0.0.1:7788`.
 
 From a second terminal, use the repository launcher for a quiet OpenSSH session
 with persistent host-key checking. It accepts a remote command after `--`:
@@ -172,7 +178,7 @@ with persistent host-key checking. It accepts a remote command after `--`:
 scripts/ssh-xaios-qemu.sh -- htop
 ```
 
-Use SFTP against `127.0.0.1:2299` and send UDP to `127.0.0.1:2298`. Direct
+Use SFTP against `127.0.0.1:7788` and send UDP to `127.0.0.1:2298`. Direct
 IPv6/TCP testing uses QEMU's framed socket backend:
 
 ```sh
