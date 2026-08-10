@@ -20,6 +20,7 @@ typedef enum xaios_network_flow_state {
   XAIOS_NETWORK_FLOW_CLOSE_WAIT = 5,
   XAIOS_NETWORK_FLOW_LAST_ACK = 6,
   XAIOS_NETWORK_FLOW_TIME_WAIT = 7,
+  XAIOS_NETWORK_FLOW_SYN_SENT = 9,
 } xaios_network_flow_state_t;
 
 void network_stack_init(void);
@@ -38,6 +39,12 @@ xaios_status_t network_stack_app_udp_echo(const uint8_t *payload,
                                          uint64_t payload_len,
                                          uint64_t *echoed_bytes);
 xaios_status_t network_stack_app_tcp_connect(uint64_t *round_trips);
+xaios_status_t network_stack_tcp_open(const xaios_ip_addr_t *remote_addr,
+                                      uint16_t remote_port,
+                                      uint16_t local_port,
+                                      uint32_t *out_flow_id);
+xaios_status_t network_stack_tcp_open_status(uint32_t flow_id);
+xaios_status_t network_stack_tcp_abort_flow(uint32_t flow_id);
 xaios_status_t network_stack_external_session(uint64_t protocol, uint64_t port,
                                              const uint8_t *payload,
                                              uint64_t payload_len,

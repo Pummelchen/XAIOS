@@ -81,10 +81,20 @@ A bare SSH PTY starts a stateful line-edited shell rather than a one-command
 facade. Its cwd and colored `admin@xaios:<cwd>$` prompt are isolated per
 connection, unknown commands produce a Unix-style diagnostic and nonzero exit
 status, and `exit`/`logout` close the channel cleanly. Basic file and directory
-commands include recursive tree rename/removal. `nano PATH` provides an
-alternate-screen editor with cursor movement, scrolling, insertion/deletion,
-save and dirty-exit confirmation. MutableFS v4 permits 128 KiB state files;
-interactive nano remains intentionally bounded to 32 KiB.
+commands include recursive tree rename/removal, portable process/storage views,
+standard ustar/ZIP exchange, and an alternate-screen `less` pager. `nano PATH`
+provides an alternate-screen editor with cursor movement, scrolling,
+insertion/deletion, save and dirty-exit confirmation. MutableFS v4 permits
+128 KiB state files; interactive nano remains intentionally bounded to 32 KiB.
+
+The PTY shell also owns a bounded outbound SSHv2 client. `ssh [-p PORT]
+user@host [command]` provides an interactive shell or remote exec, while
+`scp [-r] [-P PORT]` transfers files and directory trees through SFTP v3.
+Host Ed25519 signatures are verified and a persistent TOFU known-host entry is
+required after first contact; changed keys fail closed. Current client
+authentication is password-only, and active opens are IPv4/DNS-A only. Client
+public-key authentication, IPv6 active open, forwarding, agents and jump hosts
+remain unsupported.
 
 Normal images start only `/init`, `/bin/service-manager`, and persistent
 `/bin/sshd`. They do not pre-run `hello`, `sysinfo`, `lstm-xor`, or the other

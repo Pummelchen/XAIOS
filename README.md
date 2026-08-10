@@ -144,6 +144,19 @@ Internet destinations or physical networks are production-ready.
   console and SSH PTYs, with cursor movement, scrolling, insert/delete,
   save and dirty-exit confirmation. Its editable buffer is intentionally
   limited to 32 KiB even though the filesystem accepts larger state files.
+  The shell also provides bounded FreeBSD-style core utilities: `ls`, `cd`,
+  `pwd`, `mkdir`, `rm`, `cp`, `mv`, `cat`, interactive `less`, `grep`, `find`,
+  `ps`, `df`, `du`, POSIX ustar `tar`, and standard `zip`/`unzip`. Tar reads
+  ustar, POSIX PAX, GNU long-name and gzip-wrapped archives; ZIP reads stored
+  and Deflate entries. Archive paths, checksums and size arithmetic are
+  validated before extraction. These tools follow documented portable subsets,
+  not a claim of complete FreeBSD or POSIX userland compatibility.
+  The SSH PTY includes an outbound SSHv2/SFTP client: `ssh [-p PORT]
+  user@host [command]` and `scp [-r] [-P PORT] SOURCE DESTINATION` interoperate
+  with OpenSSH using password authentication, verified Ed25519 host keys and a
+  persistent fail-closed known-hosts file. IPv4 and A-record destinations are
+  supported; public-key client authentication and IPv6 active opens remain
+  explicit follow-up work.
   Normal images start only `/init`, `/bin/service-manager`, and the persistent
   `/bin/sshd`; diagnostic applications are not run during boot. An administrator
   can invoke `hello`, `sysinfo`, `systest`, `smptest`, `nettest`, `lstm-xor`,

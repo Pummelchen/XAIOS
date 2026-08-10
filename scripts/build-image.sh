@@ -411,6 +411,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/system_slot.o
   $KERNEL_BUILD_DIR/sha256.o
   $KERNEL_BUILD_DIR/crc32.o
+  $KERNEL_BUILD_DIR/inflate.o
   $KERNEL_BUILD_DIR/gpt.o
   $KERNEL_BUILD_DIR/partition_device.o
   $KERNEL_BUILD_DIR/storage_admin.o
@@ -523,6 +524,7 @@ compile_kernel "$ROOT_DIR/kernel/runtime/update.c" "$KERNEL_BUILD_DIR/update.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/system_slot.c" "$KERNEL_BUILD_DIR/system_slot.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/sha256.c" "$KERNEL_BUILD_DIR/sha256.o"
 compile_kernel "$ROOT_DIR/kernel/lib/crc32.c" "$KERNEL_BUILD_DIR/crc32.o"
+compile_kernel "$ROOT_DIR/kernel/lib/inflate.c" "$KERNEL_BUILD_DIR/inflate.o"
 compile_kernel "$ROOT_DIR/kernel/storage/gpt.c" "$KERNEL_BUILD_DIR/gpt.o"
 compile_kernel "$ROOT_DIR/kernel/storage/partition_device.c" "$KERNEL_BUILD_DIR/partition_device.o"
 compile_kernel "$ROOT_DIR/kernel/storage/storage_admin.c" "$KERNEL_BUILD_DIR/storage_admin.o"
@@ -733,7 +735,7 @@ done
 printf '%s\n' "Building userspace /bin/sshd ELF..."
 SSHD_RESPONSE_FILE="$INIT_BUILD_DIR/sshd-objects.rsp"
 : > "$SSHD_RESPONSE_FILE"
-for sshd_src in sshd.c ssh_crypto.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_host_key.c ssh_connection.c sftp_server.c nano_editor.c; do
+for sshd_src in sshd.c ssh_crypto.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_client.c ssh_host_key.c ssh_connection.c sftp_server.c nano_editor.c less_pager.c; do
   sshd_obj="$INIT_BUILD_DIR/sshd-${sshd_src%.c}.o"
   sshd_opt=""
   if [ "$sshd_src" = "sshd.c" ]; then

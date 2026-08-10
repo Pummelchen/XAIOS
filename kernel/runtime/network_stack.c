@@ -142,6 +142,7 @@ typedef struct network_tcp_flow {
   uint32_t next_send_seq;     /* next seq we send */
   uint16_t window_size;        /* advertised receive window */
   uint8_t  pending_synack;     /* SYN-ACK needs to be sent */
+  uint8_t  pending_syn;        /* active-open SYN needs to be sent */
   uint8_t  pending_fin;        /* FIN needs to be sent */
   uint8_t  pending_ack;        /* ACK needs to be sent */
   uint8_t  close_requested;    /* local side called close */
@@ -431,6 +432,7 @@ static void release_tcp_flow(network_tcp_flow_t *flow) {
   flow->tx_buf = 0;
   flow->flow_id = 0;
   flow->pending_synack = 0;
+  flow->pending_syn = 0;
   flow->pending_fin = 0;
   flow->pending_ack = 0;
   flow->close_requested = 0;
@@ -1563,6 +1565,7 @@ static network_tcp_flow_t *alloc_tcp_flow(
       g_tcp_flows[i].next_send_seq = 0;
       g_tcp_flows[i].window_size = 0;
       g_tcp_flows[i].pending_synack = 0;
+      g_tcp_flows[i].pending_syn = 0;
       g_tcp_flows[i].pending_fin = 0;
       g_tcp_flows[i].pending_ack = 0;
       g_tcp_flows[i].close_requested = 0;
@@ -1625,6 +1628,88 @@ static network_tcp_flow_t *alloc_tcp_flow(
     }
   }
   return 0;
+}
+
+xaios_status_t network_stack_tcp_open(const xaios_ip_addr_t *remote_addr,
+                                      uint16_t remote_port,
+                                      uint16_t local_port,
+                                      uint32_t *out_flow_id) {
+  if (remote_addr == 0 || out_flow_id == 0 || remote_port == 0U ||
+      local_port == 0U || remote_addr->family != XAIOS_IP_FAMILY_V4)
+    return XAIOS_ERR_INVALID;
+  uint32_t remote_address = (uint32_t)remote_addr->addr[0] |
+                            ((uint32_t)remote_addr->addr[1] << 8U) |
+                            ((uint32_t)remote_addr->addr[2] << 16U) |
+                            ((uint32_t)remote_addr->addr[3] << 24U);
+  uint32_t local_address = UINT32_C(10) | (UINT32_C(2) << 16U) |
+                           (UINT32_C(15) << 24U);
+  if (find_flow_by_ports(local_port, remote_port, remote_address) != 0)
+    return XAIOS_ERR_BUSY;
+  network_queue_binding_t *binding = select_binding_for_flow(
+      local_port, remote_port, local_address, remote_address);
+  if (binding == 0) return XAIOS_ERR_NOT_FOUND;
+  network_tcp_flow_t *flow = alloc_tcp_flow(local_port, remote_port,
+                                            remote_address, remote_addr);
+  if (flow == 0) return XAIOS_ERR_NO_MEMORY;
+  flow->flow_id = (uint32_t)(g_next_flow_id++);
+  if (flow->flow_id == 0U) {
+    flow->flow_id = 1U;
+    g_next_flow_id = 2U;
+  }
+  flow->local_port = local_port;
+  flow->remote_port = remote_port;
+  flow->queue_id = binding->queue_id;
+  flow->cell_id = binding->cell_id;
+  flow->remote_address = remote_address;
+  flow->local_address = local_address;
+  flow->remote_addr = *remote_addr;
+  flow->local_addr = xaios_ip_addr_from_ipv4(XAIOS_IPV4_GUEST_IP);
+  flow->local_seq = tcp_generate_isn(flow->flow_id);
+  flow->next_send_seq = flow->local_seq + 1U;
+  flow->expected_seq = 0U;
+  flow->window_size = (uint16_t)SOCKET_BUFFER_SIZE;
+  flow->pending_syn = 1U;
+  flow->last_seen_ns = timer_now_ns();
+  flow->rx_buf = sockbuf_alloc();
+  flow->tx_buf = sockbuf_alloc();
+  if (flow->rx_buf == 0 || flow->tx_buf == 0) {
+    if (g_half_open_count > 0U) --g_half_open_count;
+    release_tcp_flow(flow);
+    return XAIOS_ERR_NO_MEMORY;
+  }
+  flow->state = XAIOS_NETWORK_FLOW_SYN_SENT;
+  *out_flow_id = flow->flow_id;
+  klog("network: active TCP open flow=%u local=%u remote=%u\n",
+       flow->flow_id, local_port, remote_port);
+  return XAIOS_OK;
+}
+
+xaios_status_t network_stack_tcp_open_status(uint32_t flow_id) {
+  for (uint32_t i = 0U; i < NETWORK_TCP_CONNECTIONS; ++i) {
+    if (g_tcp_flows[i].flow_id != flow_id) continue;
+    if (g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_ESTABLISHED)
+      return XAIOS_OK;
+    if (g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_SYN_SENT)
+      return XAIOS_ERR_BUSY;
+    return XAIOS_ERR_IO;
+  }
+  return XAIOS_ERR_NOT_FOUND;
+}
+
+xaios_status_t network_stack_tcp_abort_flow(uint32_t flow_id) {
+  for (uint32_t i = 0U; i < NETWORK_TCP_CONNECTIONS; ++i) {
+    network_tcp_flow_t *flow = &g_tcp_flows[i];
+    if (flow->flow_id != flow_id) continue;
+    if ((flow->state == XAIOS_NETWORK_FLOW_SYN_RECV ||
+         flow->state == XAIOS_NETWORK_FLOW_SYN_SENT) &&
+        g_half_open_count > 0U) {
+      --g_half_open_count;
+    }
+    ++g_tcp_closed_count;
+    release_tcp_flow(flow);
+    return XAIOS_OK;
+  }
+  return XAIOS_ERR_NOT_FOUND;
 }
 
 void network_stack_init(void) {
@@ -2089,6 +2174,17 @@ static void tcp_drain_pending(void) {
       }
     }
     uint64_t now_ns = timer_now_ns();
+    if (flow->pending_syn != 0U) {
+      xaios_status_t syn_status = tcp_send_flow_segment(
+          flow, flow->local_seq, NETWORK_TCP_FLAG_SYN, 0, 0);
+      if (syn_status == XAIOS_OK) {
+        flow->pending_syn = 0U;
+        ++flow->packets_tx;
+      } else if (flow->packets_tx == 0U) {
+        klog("network: active TCP flow id=%u SYN send failed status=%d\n",
+             flow->flow_id, syn_status);
+      }
+    }
     if (flow->pending_synack != 0U) {
       xaios_status_t synack_status = tcp_send_flow_segment(
           flow, flow->local_seq,
@@ -2310,6 +2406,10 @@ xaios_status_t network_stack_tcp_send(uint32_t flow_id, const uint8_t *data,
 xaios_status_t network_stack_tcp_close_flow(uint32_t flow_id) {
   for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
     if (g_tcp_flows[i].flow_id == flow_id) {
+      if (g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_SYN_RECV ||
+          g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_SYN_SENT) {
+        return network_stack_tcp_abort_flow(flow_id);
+      }
       g_tcp_flows[i].close_requested = 1;
       g_tcp_flows[i].pending_fin = 1;
       return XAIOS_OK;
@@ -2542,6 +2642,50 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
   packet->src_address = remote_address;
   packet->dst_address = local_address;
 
+  if (flow != 0 && flow->state == XAIOS_NETWORK_FLOW_SYN_SENT &&
+      (flags & (NETWORK_TCP_FLAG_SYN | NETWORK_TCP_FLAG_ACK)) ==
+          (NETWORK_TCP_FLAG_SYN | NETWORK_TCP_FLAG_ACK) &&
+      (flags & (NETWORK_TCP_FLAG_FIN | NETWORK_TCP_FLAG_RST)) == 0U) {
+    if (ack != flow->next_send_seq) {
+      packet_mark_dropped(packet);
+      return XAIOS_ERR_INVALID;
+    }
+    uint32_t tcp_header_bytes = (uint32_t)(parsed_tcp_header[12U] >> 4U) * 4U;
+    tcp_parsed_options_t options;
+    if (!parse_tcp_options(parsed_tcp_header, tcp_header_bytes, &options)) {
+      packet_mark_dropped(packet);
+      return XAIOS_ERR_INVALID;
+    }
+    flow->remote_seq = seq;
+    flow->expected_seq = seq + 1U;
+    flow->local_seq = ack;
+    flow->next_send_seq = ack;
+    flow->peer_mss = options.mss > 0U && options.mss < NETWORK_TCP_MSS
+                         ? options.mss
+                         : NETWORK_TCP_MSS;
+    flow->mss_parsed = 1U;
+    flow->peer_ws = options.window_scale;
+    flow->ws_parsed = options.window_scale > 0U ? 1U : 0U;
+    flow->peer_sack_permitted = options.sack_permitted;
+    flow->peer_window = tcp_scaled_window(peer_window_raw, flow->peer_ws);
+    for (uint32_t i = 0U; i < 6U; ++i) flow->remote_mac[i] = frame[6U + i];
+    flow->remote_mac_valid = 1U;
+    flow->pending_syn = 0U;
+    flow->pending_ack = 1U;
+    flow->state = XAIOS_NETWORK_FLOW_ESTABLISHED;
+    flow->last_seen_ns = start;
+    flow->keepalive_last_rx_ns = start;
+    if (g_half_open_count > 0U) --g_half_open_count;
+    ++flow->packets_rx;
+    ++g_tcp_handshake_count;
+    ++g_tcp_established_count;
+    packet_mark_tx(packet);
+    packet_mark_complete(packet);
+    record_latency(g_tcp_latency_samples, &g_tcp_latency_count,
+                   timer_now_ns() - start);
+    return XAIOS_OK;
+  }
+
   if ((flags & NETWORK_TCP_FLAG_RST) != 0U) {
     if (flow != 0) {
       if (seq != flow->expected_seq) {
@@ -2551,7 +2695,9 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
       xaios_network_flow_state_t prev_state = flow->state;
       ++g_tcp_reset_count;
       ++g_tcp_closed_count;
-      if (prev_state == XAIOS_NETWORK_FLOW_SYN_RECV && g_half_open_count > 0) {
+      if ((prev_state == XAIOS_NETWORK_FLOW_SYN_RECV ||
+           prev_state == XAIOS_NETWORK_FLOW_SYN_SENT) &&
+          g_half_open_count > 0) {
         g_half_open_count--;
       }
       release_tcp_flow(flow);
@@ -3238,14 +3384,18 @@ uint64_t network_stack_expire_udp_flows(uint64_t now_ns) {
 uint64_t network_stack_retransmit_tcp_flows(uint64_t now_ns) {
   uint64_t retransmitted = 0;
   for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
-    if (g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_SYN_RECV &&
+    if ((g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_SYN_RECV ||
+         g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_SYN_SENT) &&
         now_ns > g_tcp_flows[i].last_seen_ns &&
         now_ns - g_tcp_flows[i].last_seen_ns >= NETWORK_TCP_RETRANSMIT_NS &&
         g_tcp_flows[i].retransmits < NETWORK_TCP_MAX_RETRANSMITS) {
       ++g_tcp_flows[i].retransmits;
       ++g_tcp_flows[i].packets_tx;
       g_tcp_flows[i].last_seen_ns = now_ns;
-      g_tcp_flows[i].pending_synack = 1;
+      if (g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_SYN_SENT)
+        g_tcp_flows[i].pending_syn = 1U;
+      else
+        g_tcp_flows[i].pending_synack = 1U;
       ++g_tcp_retransmit_count;
       ++retransmitted;
       klog("network: tcp flow id=%u retransmit=%u queue=%u cell=%u\n",
@@ -3285,8 +3435,9 @@ uint64_t network_stack_expire_tcp_flows(uint64_t now_ns) {
       continue;
     }
 
-    /* SYN_RECV timeout */
-    if (flow->state == XAIOS_NETWORK_FLOW_SYN_RECV &&
+    /* Passive and active handshake timeout. */
+    if ((flow->state == XAIOS_NETWORK_FLOW_SYN_RECV ||
+         flow->state == XAIOS_NETWORK_FLOW_SYN_SENT) &&
         now_ns > flow->last_seen_ns &&
         now_ns - flow->last_seen_ns >= NETWORK_TCP_SYN_TIMEOUT_NS) {
       ++g_tcp_timeout_count;

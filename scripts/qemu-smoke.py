@@ -64,7 +64,7 @@ TARGETS = [
     "initramfs: child service=/svc/source-index parent=/init restart=never",
     "initramfs: mounted rofs version=2 files=19",
     "initramfs: rofs metadata/config self-test passed",
-    "syscall: table self-test passed entries=49",
+    "syscall: table self-test passed entries=50",
     "virtio-rng: entropy delivery self-test passed",
     "user: process table initialized slots=1024",
     "user: process lifecycle invalid/failed transition self-test passed",

@@ -373,6 +373,19 @@ int xaios_net_listen(u64 port, u64 *out_sockfd) {
   return rc == ~0ULL ? -1 : (int)rc;
 }
 
+int xaios_net_connect(const xaios_ip_addr_user_t *remote_addr, u64 port,
+                      u64 *out_sockfd) {
+  xaios_socket_request_t request;
+  xaios_memzero(&request, sizeof(request));
+  request.port = port;
+  request.out_sockfd = (u64)out_sockfd;
+  request.addr_ptr = (u64)remote_addr;
+  request.protocol = XAIOS_NET_PROTOCOL_TCP;
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_NET_CONNECT, (u64)&request,
+                          sizeof(request), 0);
+  return rc == ~0ULL ? -1 : (int)rc;
+}
+
 int xaios_net_listen_addr(u64 port, const xaios_ip_addr_user_t *bind_addr,
                           u64 *out_sockfd) {
   xaios_socket_request_t request;

@@ -97,6 +97,7 @@ limits; the 64-bit API and separate ModelFS are used for large model packages.
 | `XAIOS_SYSCALL_NET_CLOSE` | 33 | `xaios_net_close(sockfd)` | Close a socket. |
 | `XAIOS_SYSCALL_NET_RESOLVE` | 46 | `xaios_net_resolve(hostname, ipv4)` | Poll or start a bounded asynchronous A-record lookup. Returns `XAIOS_ERR_BUSY` while pending and uses a TTL cache. |
 | `XAIOS_SYSCALL_NET_LOCAL_IPV4` | 49 | `xaios_net_local_ipv4()` | Return the configured local IPv4 address in network byte order. |
+| `XAIOS_SYSCALL_NET_CONNECT` | 50 | `xaios_net_connect(address, port, sockfd)` | Perform a bounded IPv4 TCP active open and return a connected stream socket. |
 
 ## SMP and Threads
 
@@ -131,7 +132,13 @@ limits; the 64-bit API and separate ModelFS are used for large model packages.
 
 ### Supported shell commands
 
-`pwd`, `ls` (with `-l`/`-a`), `cd`, `mkdir`, `touch`, `cat`, `cp`, `mv`, `rm`, `rmdir`, `stat`, `write`, `echo`, `grep`, `find`, `head`, `tail`, `sed`, `tar`, `cpio`, `nano`, `htop`, `xaiosctl`, `status`, `hello`, `sysinfo`, `systest`, `smptest`, `nettest`, `lstm-xor`, `mltest`, `posix-shell`, `agenttest`, `help`, `exit`.
+`pwd`, `ls` (with `-l`/`-a`), `cd`, `mkdir`, `touch`, `cat`, `less`,
+`cp`, `mv`, `rm`, `rmdir`, `stat`, `write`, `echo`, `grep`, `find`, `head`,
+`tail`, `sed`, `tar`, `zip`, `unzip`, fixture-only `cpio`, outbound `ssh` and
+`scp`, `nano`, `htop`, `xaiosctl`, `status`, `hello`, `sysinfo`, `systest`,
+`smptest`, `nettest`, `lstm-xor`, `mltest`, `posix-shell`, `agenttest`, `help`,
+and `exit`. Exact options and storage/archive limits are specified in
+[`UNIX-COMPATIBILITY.md`](./UNIX-COMPATIBILITY.md).
 
 `xaiosctl` is the structured administrative entrypoint. The SSH
 daemon recognizes only the exact `xaiosctl` command prefix and calls the shared
@@ -162,6 +169,13 @@ It reports measured process, service-transition and AI-cell counters without
 claiming a host platform; operators should use `xaiosctl status`.
 
 Pipe (`|`) and output redirection (`>`) are supported for chaining commands.
+
+On a PTY, `less [-N] FILE` is an alternate-screen pager with line and page
+movement, start/end navigation, forward search, resize handling, and terminal
+restoration. Non-PTY use emits bounded file content for automation. Outbound
+`ssh`/`scp` are implemented in the persistent SSH userspace service and use the
+`XAIOS_SYSCALL_NET_CONNECT` active-open boundary; they are not kernel shell
+implementations.
 
 `nano` is a bounded text editor for mutable-filesystem paths. On an SSH PTY or
 the authenticated local console, `nano PATH` opens an alternate-screen editor

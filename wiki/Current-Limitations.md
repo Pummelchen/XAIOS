@@ -41,6 +41,10 @@ documents, and the QEMU release-candidate contract.
   key exchange, OpenSSH interoperability and downgrade-policy review remain
   production security gates; the quiet local QEMU launcher only suppresses the
   OpenSSH 10 client notice for that development connection.
+- The outbound guest SSH/SCP client uses the same classical crypto suite,
+  verifies Ed25519 host keys through persistent TOFU, and currently authenticates
+  with passwords over IPv4 or DNS A records. Public-key client authentication,
+  IPv6 active opens, forwarding, agents and jump hosts are not implemented.
 - DNS performs asynchronous external A-record resolution with timeout, retry,
   cache, and a QEMU-verified cache hit. DNSSEC, TCP fallback, complete AAAA
   application results, and deployment resolver policy remain absent.
@@ -72,6 +76,10 @@ documents, and the QEMU release-candidate contract.
   files and 2 MiB of data space. Interactive `nano` is further bounded to a
   32 KiB editing buffer. This is suitable for OS state and small user files,
   not general bulk storage or model weights.
+- Tar/ZIP exchange is bounded by that 128 KiB file limit. Tar extraction accepts
+  ustar, PAX paths, GNU long names and one gzip member; ZIP accepts stored and
+  Deflate entries. Symlinks, device nodes, encrypted ZIP, ZIP64, multi-member
+  gzip and gzip creation are explicitly unsupported.
 
 ## Administration and security
 

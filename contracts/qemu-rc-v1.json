@@ -61,7 +61,8 @@
       {"number": 46, "name": "net_resolve", "capability": "XAIOS_CAP_NET"},
       {"number": 47, "name": "console_read", "capability": "XAIOS_CAP_CONSOLE"},
       {"number": 48, "name": "console_write", "capability": "XAIOS_CAP_CONSOLE"},
-      {"number": 49, "name": "net_local_ipv4", "capability": "XAIOS_CAP_NET"}
+      {"number": 49, "name": "net_local_ipv4", "capability": "XAIOS_CAP_NET"},
+      {"number": 50, "name": "net_connect", "capability": "XAIOS_CAP_NET_SOCKET"}
     ],
     "capabilities": [
       {"bit": 1, "name": "XAIOS_CAP_LOG"},

@@ -72,6 +72,32 @@ client passed the explicitly identified subset below on 2026-08-10:
   including sort, filter, help, CPU/memory meters, process framing, a hard
   60-frame-per-second render cap and clean cursor-restoring exit, while a
   non-PTY command retained the plain automation format.
+- the guest outbound SSH client completed password-authenticated remote exec
+  against Debian 13 OpenSSH through QEMU SLIRP, verified and persisted the
+  server's Ed25519 host key, and returned remote output to the originating PTY;
+- SFTP-backed outbound `scp` transferred regular files and recursive directory
+  trees in both directions with byte-identical nested content.
+
+### Outbound guest client
+
+The persistent SSH service owns the guest's bounded outbound client state; the
+kernel only provides checked IPv4 TCP active-open and stream syscalls. From an
+XAIOS SSH PTY:
+
+```sh
+ssh [-p PORT] user@host [command]
+scp [-r] [-P PORT] SOURCE user@host:PATH
+scp [-r] [-P PORT] user@host:PATH DESTINATION
+```
+
+It negotiates `curve25519-sha256`, `ssh-ed25519`, `aes128-ctr`, and
+`hmac-sha2-256`, requests a shell or exec channel, and uses SFTP v3 for file
+operations. Password input is not echoed. First contact persists an Ed25519
+known-host record under `/home/admin/.ssh`; a changed host key fails closed.
+DNS A records and IPv4 literals are accepted. The current client does not yet
+support public-key authentication, IPv6 active opens, encrypted private keys,
+agent/port forwarding, jump hosts, proxy commands, or the wider OpenSSH
+algorithm matrix.
 
 ### FreeBSD Unix-reference gate
 

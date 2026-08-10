@@ -2,6 +2,7 @@
 #define SSH_CHANNEL_H
 
 #include <xaios/types.h>
+#include "less_pager.h"
 #include "nano_editor.h"
 #include "ssh_protocol.h"
 
@@ -48,12 +49,14 @@ typedef struct ssh_channel {
   uint32_t shell_active;
   uint32_t shell_line_length;
   uint32_t shell_ignore_lf;
+  uint32_t ssh_client_slot;
   uint32_t interactive_returns_to_shell;
   uint64_t htop_last_frame_ns;
   uint64_t htop_next_refresh_ns;
   char htop_filter[32];
   char shell_line[SSH_CHANNEL_SHELL_LINE_SIZE];
   nano_editor_t nano;
+  less_pager_t less;
   uint32_t sftp_rx_used;
   uint8_t sftp_rx[SSH_CHANNEL_SFTP_BUFFER_SIZE];
   uint8_t pending[SSH_CHANNEL_PENDING_SIZE];

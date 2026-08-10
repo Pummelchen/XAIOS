@@ -6,6 +6,7 @@
 #include <xaios_user.h>
 
 #define SSH_MAX_CONNECTIONS 4U
+#define SSH_MAX_CLIENT_CONNECTIONS 2U
 #define SSH_PLAINTEXT_PACKET_SIZE 4096U
 
 #define SSH_STATE_INIT 0
@@ -85,6 +86,7 @@ typedef struct {
 } ssh_connection_scratch_t;
 
 ssh_connection_t *ssh_conn_alloc(void);
+ssh_connection_t *ssh_conn_client_alloc(void);
 void ssh_conn_free(ssh_connection_t *conn);
 ssh_connection_t *ssh_conn_find(uint64_t sockfd);
 ssh_connection_t *ssh_conn_by_index(uint32_t idx);

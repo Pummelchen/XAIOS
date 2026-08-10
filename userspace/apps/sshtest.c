@@ -11,7 +11,7 @@ static int check_result(const char *command, const char *label, char *output,
 }
 
 int main(void) {
-  char output[320];
+  char output[4096];
   xaios_memzero(output, sizeof(output));
 
   xaios_log("/bin/sshtest: validating ssh-compatible remote login command surface\n");
@@ -94,16 +94,38 @@ int main(void) {
                    output, sizeof(output)) != 0) {
     return 1;
   }
+  if (check_result("mkdir -p nested/child",
+                   "/bin/sshtest: mkdir -p failed\n", output,
+                   sizeof(output)) != 0 ||
+      check_result("write nested/child/item.txt nested payload",
+                   "/bin/sshtest: nested write failed\n", output,
+                   sizeof(output)) != 0 ||
+      check_result("cp -R nested nested-copy",
+                   "/bin/sshtest: recursive cp failed\n", output,
+                   sizeof(output)) != 0 ||
+      check_result("cat nested-copy/child/item.txt",
+                   "/bin/sshtest: recursive cp content failed\n", output,
+                   sizeof(output)) != 0) {
+    return 1;
+  }
   if (check_result("ls", "/bin/sshtest: ls failed\n", output, sizeof(output)) !=
       0) {
     return 1;
   }
-  if (check_result("grep readme readme.txt",
+  if (check_result("grep hello readme.txt",
                    "/bin/sshtest: grep failed\n", output, sizeof(output)) != 0) {
     return 1;
   }
-  if (check_result("grep readme /state/remote-login-test/readme.txt",
+  if (check_result("grep hello /state/remote-login-test/readme.txt",
                    "/bin/sshtest: grep absolute path failed\n", output,
+                   sizeof(output)) != 0) {
+    return 1;
+  }
+  if (check_result("grep -in HELLO readme.txt",
+                   "/bin/sshtest: grep flags failed\n", output,
+                   sizeof(output)) != 0 ||
+      check_result("less -N readme.txt",
+                   "/bin/sshtest: less fallback failed\n", output,
                    sizeof(output)) != 0) {
     return 1;
   }
@@ -138,6 +160,14 @@ int main(void) {
                    sizeof(output)) != 0) {
     return 1;
   }
+  if (check_result("ps", "/bin/sshtest: ps failed\n", output,
+                   sizeof(output)) != 0 ||
+      check_result("df -h", "/bin/sshtest: df failed\n", output,
+                   sizeof(output)) != 0 ||
+      check_result("du -sh nested", "/bin/sshtest: du failed\n", output,
+                   sizeof(output)) != 0) {
+    return 1;
+  }
   if (check_result("echo shell command surface check",
                    "/bin/sshtest: echo failed\n", output, sizeof(output)) != 0) {
     return 1;
@@ -153,6 +183,23 @@ int main(void) {
   }
   if (check_result("tar -tf backup.tar",
                    "/bin/sshtest: tar list failed\n", output,
+                   sizeof(output)) != 0) {
+    return 1;
+  }
+  if (check_result("zip -r backup.zip nested",
+                   "/bin/sshtest: zip create failed\n", output,
+                   sizeof(output)) != 0 ||
+      check_result("unzip -l backup.zip",
+                   "/bin/sshtest: zip list failed\n", output,
+                   sizeof(output)) != 0 ||
+      check_result("mkdir extracted",
+                   "/bin/sshtest: zip destination failed\n", output,
+                   sizeof(output)) != 0 ||
+      check_result("unzip backup.zip -d extracted",
+                   "/bin/sshtest: zip extract failed\n", output,
+                   sizeof(output)) != 0 ||
+      check_result("cat extracted/nested/child/item.txt",
+                   "/bin/sshtest: zip content failed\n", output,
                    sizeof(output)) != 0) {
     return 1;
   }
@@ -189,6 +236,13 @@ int main(void) {
     return 1;
   }
   if (check_result("rm backup.tar", "/bin/sshtest: rm backup.tar failed\n", output,
+                   sizeof(output)) != 0) {
+    return 1;
+  }
+  if (check_result("rm backup.zip", "/bin/sshtest: rm backup.zip failed\n",
+                   output, sizeof(output)) != 0 ||
+      check_result("rm -rf nested nested-copy extracted",
+                   "/bin/sshtest: recursive cleanup failed\n", output,
                    sizeof(output)) != 0) {
     return 1;
   }

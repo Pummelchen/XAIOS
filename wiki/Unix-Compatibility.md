@@ -16,6 +16,18 @@ gate establishes only the tested command or wire behavior.
 | macOS | Native OpenSSH/SFTP administration and one-guest parallel load coverage. |
 | Debian 13 | Independent Linux/OpenSSH cross-client coverage for password policy, stateful shell prompts, interactive `nano`, recursive filesystem operations, command errors, rekey, administration, persistence, concurrency, interactive PTY `htop` and malformed network traffic. |
 
+The core command subset now includes `ls`, `cd`, `pwd`, `mkdir`, `rm`, `cp`,
+`mv`, `cat`, alternate-screen `less`, `grep`, `find`, `ps`, `df`, `du`, `tar`,
+`zip`, `unzip`, outbound `ssh`, and recursive `scp`. POSIX ustar/PAX, GNU
+long-name tar, gzip-wrapped tar, stored/Deflate ZIP and Unix/Windows ZIP origin
+metadata are validated within MutableFS limits. XAIOS-created archives pass
+macOS and Debian readers. Recursive SFTP-backed `scp` passes in both directions
+against Debian OpenSSH.
+
+This is a documented portable subset, not a complete FreeBSD base system. See
+the repository document below for exact options, limits, unsupported archive
+features, and outbound SSH authentication constraints.
+
 Run the FreeBSD reference gate with:
 
 ```sh

@@ -1,5 +1,21 @@
 # Development History
 
+## 2026-08-11 - portable commands, archives and outbound SSH
+
+- Expanded the native shell's FreeBSD-oriented command subset with multi-source
+  and recursive file operations, basic regular-expression search, recursive
+  find, process/storage views, and an interactive alternate-screen pager.
+- Replaced the private tar fixture behavior with POSIX ustar create/list/extract
+  plus checked PAX paths, GNU long names and gzip/DEFLATE input; added standard
+  stored ZIP creation and stored/Deflate ZIP extraction with CRC and path checks.
+- Added checked IPv4 TCP active open and a bounded userspace SSHv2/SFTP client
+  for password-authenticated interactive/exec sessions and recursive `scp`,
+  including persistent fail-closed Ed25519 known-host verification.
+- Passed hosted tests, AArch64 and x86_64 QEMU smoke, macOS/Debian archive
+  readers, macOS PAX and Debian GNU tar input, Windows-origin ZIP input, and
+  bidirectional recursive transfers against Debian 13 OpenSSH. Public-key
+  client authentication and physical Windows testing remain explicit gaps.
+
 ## 2026-08-10 - authenticated shells, nano and MutableFS v4
 
 - Replaced the SSH shell request facade with a stateful PTY shell whose prompt,

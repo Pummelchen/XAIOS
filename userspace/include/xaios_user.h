@@ -54,6 +54,7 @@ typedef long long s64;
 #define XAIOS_SYSCALL_CONSOLE_READ 47ULL
 #define XAIOS_SYSCALL_CONSOLE_WRITE 48ULL
 #define XAIOS_SYSCALL_NET_LOCAL_IPV4 49ULL
+#define XAIOS_SYSCALL_NET_CONNECT 50ULL
 #define XAIOS_THREAD_CPU_ANY (~0ULL)
 
 #define XAIOS_REMOTE_LOGIN_SESSION_EXECUTE 1ULL
@@ -326,6 +327,8 @@ int xaios_thread_cancel(u64 thread_id);
 int xaios_ml_run(u64 model_kind, const void *input, u64 input_size,
                 char *output, u64 output_size, u64 *out_size);
 int xaios_net_listen(u64 port, u64 *out_sockfd);
+int xaios_net_connect(const xaios_ip_addr_user_t *remote_addr, u64 port,
+                      u64 *out_sockfd);
 int xaios_net_listen_addr(u64 port, const xaios_ip_addr_user_t *bind_addr,
                           u64 *out_sockfd);
 int xaios_net_bind_udp(u64 port, u64 *out_sockfd);

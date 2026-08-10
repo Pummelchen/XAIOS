@@ -85,6 +85,7 @@ static const xaios_syscall_entry_t g_syscall_table[] = {
     {XAIOS_SYSCALL_CONSOLE_READ, "console_read", XAIOS_CAP_CONSOLE},
     {XAIOS_SYSCALL_CONSOLE_WRITE, "console_write", XAIOS_CAP_CONSOLE},
     {XAIOS_SYSCALL_NET_LOCAL_IPV4, "net_local_ipv4", XAIOS_CAP_NET},
+    {XAIOS_SYSCALL_NET_CONNECT, "net_connect", XAIOS_CAP_NET_SOCKET},
 };
 
 static uint64_t control_operation_capability(uint16_t operation) {
@@ -180,6 +181,7 @@ static kernel_socket_t *g_kernel_sockets;
 static uint32_t g_kernel_socket_capacity;
 static uint32_t g_kernel_socket_per_port_limit;
 static uint64_t g_socket_next_id = 1;
+static uint16_t g_next_ephemeral_port = UINT16_C(49152);
 static uint32_t g_total_connections = 0;
 static xaios_spinlock_t g_kernel_socket_lock = XAIOS_SPINLOCK_INIT;
 
@@ -1250,6 +1252,82 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     return complete_control_syscall(out_size);
   }
 
+  if (syscall == XAIOS_SYSCALL_NET_CONNECT) {
+    xaios_syscall_socket_request_t request;
+    xaios_ip_addr_t remote_addr;
+    uint64_t out_sockfd = 0U;
+    if (arg1 != sizeof(request) ||
+        vmm_validate_user_buffer(arg0, sizeof(request), 0) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1,
+                            "bad-net-connect-request");
+    }
+    bytes_copy(&request, (const void *)(uintptr_t)arg0, sizeof(request));
+    if (request.protocol != XAIOS_NETWORK_PROTOCOL_TCP || request.port == 0U ||
+        request.port > UINT16_MAX || request.addr_ptr == 0U ||
+        vmm_validate_user_buffer(request.addr_ptr, sizeof(remote_addr), 0) !=
+            XAIOS_OK ||
+        vmm_validate_user_buffer(request.out_sockfd, sizeof(out_sockfd),
+                                 XAIOS_VMM_WRITABLE) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "net-connect-denied");
+    }
+    bytes_copy(&remote_addr, (const void *)(uintptr_t)request.addr_ptr,
+               sizeof(remote_addr));
+    if (remote_addr.family != XAIOS_IP_FAMILY_V4) {
+      return reject_syscall(syscall, arg0, arg1,
+                            "net-connect-family-unsupported");
+    }
+    uint32_t flow_id = 0U;
+    xaios_status_t open_status = XAIOS_ERR_BUSY;
+    for (uint32_t attempt = 0U; attempt < 16U; ++attempt) {
+      uint16_t local_port = g_next_ephemeral_port++;
+      if (g_next_ephemeral_port < 49152U) g_next_ephemeral_port = 49152U;
+      open_status = network_stack_tcp_open(
+          &remote_addr, (uint16_t)request.port, local_port, &flow_id);
+      if (open_status == XAIOS_OK) break;
+      if (open_status != XAIOS_ERR_BUSY) break;
+    }
+    if (open_status != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "net-connect-open-failed");
+    }
+    uint64_t start = timer_now_ns();
+    uint64_t deadline = start + UINT64_C(10000000000);
+    do {
+      network_poll_tick();
+      open_status = network_stack_tcp_open_status(flow_id);
+      if (open_status != XAIOS_ERR_BUSY) break;
+    } while (timer_now_ns() < deadline);
+    if (open_status != XAIOS_OK) {
+      (void)network_stack_tcp_abort_flow(flow_id);
+      return reject_syscall(syscall, arg0, arg1,
+                            "net-connect-handshake-failed");
+    }
+    const xaios_user_process_t *process = user_current_process();
+    uint32_t owner_pid = process != 0 ? process->pid : 0U;
+    uint64_t sockfd = kernel_socket_alloc(KERNEL_SOCK_CONNECTED,
+                                          (uint16_t)request.port, owner_pid);
+    if (sockfd == 0U) {
+      (void)network_stack_tcp_abort_flow(flow_id);
+      return reject_syscall(syscall, arg0, arg1,
+                            "net-connect-socket-failed");
+    }
+    xaios_spin_lock(&g_kernel_socket_lock);
+    kernel_socket_t *socket =
+        kernel_socket_find_owned_locked(sockfd, owner_pid);
+    kassert(socket != 0);
+    socket->protocol = XAIOS_NETWORK_PROTOCOL_TCP;
+    socket->family = remote_addr.family;
+    socket->peer_port = (uint16_t)request.port;
+    for (uint32_t i = 0U; i < 16U; ++i)
+      socket->peer_addr[i] = remote_addr.addr[i];
+    xaios_spin_unlock(&g_kernel_socket_lock);
+    network_stack_map_socket(sockfd, flow_id, XAIOS_NETWORK_PROTOCOL_TCP);
+    bytes_copy((void *)(uintptr_t)request.out_sockfd, &sockfd, sizeof(sockfd));
+    klog("syscall: net_connect port=%lu sockfd=%lu flow=%u\n", request.port,
+         sockfd, flow_id);
+    user_process_note_syscall(0);
+    return 0U;
+  }
+
   if (syscall == XAIOS_SYSCALL_NET_LISTEN) {
     xaios_syscall_socket_request_t request;
     uint64_t out_sockfd = 0;
@@ -1697,6 +1775,7 @@ void syscall_self_test(void) {
   kassert(lookup_syscall(XAIOS_SYSCALL_NET_RECV) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_NET_SEND) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_NET_CLOSE) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_NET_CONNECT) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_AGENT_DISPATCH) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_RANDOM) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_FS_SEEK) != 0);

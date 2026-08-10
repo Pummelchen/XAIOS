@@ -313,6 +313,10 @@ hosted-test: engine-cli
 	  -Ikernel/include kernel/net/dns.c kernel/net/ipv4.c \
 	  tests/crashtest/test_dns.c -o build/hosted/test-dns
 	./build/hosted/test-dns
+	$(HOST_CC) $(HOST_CFLAGS) -Ikernel/include \
+	  kernel/lib/inflate.c tests/system/test_inflate.c -lz \
+	  -o build/hosted/test-inflate
+	./build/hosted/test-inflate
 	PYTHONPATH=. python3 -m unittest discover -s tests/system -p 'test_*.py'
 	PYTHONPATH=tools python3 -m unittest discover -s tests/model_v2 -p 'test_*.py'
 	PYTHONPATH=tools python3 -m unittest discover -s tests/model_volume -p 'test_*.py'
