@@ -7,6 +7,7 @@
 #include "ssh_utils.h"
 #include "tweetnacl_subset.h"
 #include "nano_editor.h"
+#include "pong_game.h"
 #include <xaios_user.h>
 #include <stdarg.h>
 
@@ -27,6 +28,7 @@ static uint32_t g_password_auth_enabled;
 #define SSHD_CONSOLE_SESSION_ID UINT64_C(0xfffffffffffffffe)
 #define SSHD_CONSOLE_COMMAND_MAX UINT32_C(256)
 #define SSHD_CONSOLE_OUTPUT_MAX UINT32_C(32768)
+#define SSHD_CONSOLE_WRITE_MAX UINT32_C(4096)
 #define SSHD_IPV4_CHECK_TIMEOUT_NS UINT64_C(15000000000)
 
 static char g_console_command[SSHD_CONSOLE_COMMAND_MAX];
@@ -37,6 +39,7 @@ static uint32_t g_console_ipv4;
 static uint32_t g_console_ssh_ready;
 static int32_t g_console_boot_error;
 static nano_editor_t g_console_nano;
+static pong_game_t g_console_pong;
 static uint32_t g_console_auth_state;
 static uint32_t g_console_auth_failures;
 
@@ -382,10 +385,20 @@ static uint64_t timer_now(void) {
   return xaios_clock_nanos();
 }
 
-static void console_write(const char *text) {
-  if (text != 0) {
-    (void)xaios_console_write(text, xaios_strlen(text));
+static int console_write_bytes(const char *data, u64 size) {
+  u64 offset = 0U;
+  if (data == 0) return -1;
+  while (offset < size) {
+    u64 chunk = size - offset;
+    if (chunk > SSHD_CONSOLE_WRITE_MAX) chunk = SSHD_CONSOLE_WRITE_MAX;
+    if (xaios_console_write(data + offset, chunk) != (int)chunk) return -1;
+    offset += chunk;
   }
+  return 0;
+}
+
+static void console_write(const char *text) {
+  if (text != 0) (void)console_write_bytes(text, xaios_strlen(text));
 }
 
 static void console_write_ipv4(uint32_t address) {
@@ -498,8 +511,42 @@ static int console_start_nano(const char *command) {
     return -1;
   }
   console_write("\033[?1049h");
-  (void)xaios_console_write(g_console_output, frame_size);
+  (void)console_write_bytes(g_console_output, frame_size);
   return 0;
+}
+
+static int console_render_pong(uint64_t now_ns) {
+  uint32_t frame_size = 0U;
+  if (pong_game_render(&g_console_pong, g_console_output,
+                       sizeof(g_console_output), &frame_size, now_ns) != 0 ||
+      frame_size == 0U)
+    return -1;
+  return console_write_bytes(g_console_output, frame_size);
+}
+
+static int console_start_pong(void) {
+  uint64_t now_ns = xaios_clock_nanos();
+  pong_game_start(&g_console_pong, 120U, 40U, now_ns);
+  console_write("\033[?1049h\033[?25l");
+  if (console_render_pong(now_ns) != 0) {
+    g_console_pong.active = 0U;
+    console_write("\033[0m\033[?25h\033[?1049l");
+    return -1;
+  }
+  return 0;
+}
+
+static void console_finish_pong(void) {
+  g_console_pong.active = 0U;
+  console_write("\033[0m\033[?25h\033[?1049l\033[0m\033[?25h\r");
+  console_prompt();
+}
+
+static void console_service_pong(uint64_t now_ns) {
+  if (g_console_pong.active != 0U &&
+      pong_game_tick(&g_console_pong, now_ns) != 0 &&
+      console_render_pong(now_ns) != 0)
+    console_finish_pong();
 }
 
 static void console_render_boot_status(void) {
@@ -553,6 +600,8 @@ static void console_execute_command(void) {
   if (console_nano_argument(g_console_command, nano_argument,
                             sizeof(nano_argument)) == 0) {
     (void)console_start_nano(g_console_command);
+  } else if (ssh_str_eq(g_console_command, "pong")) {
+    (void)console_start_pong();
   } else if (ssh_str_eq(g_console_command, "clear")) {
     console_write("\x1b[2J\x1b[H");
   } else if (ssh_str_eq(g_console_command, "exit") ||
@@ -571,7 +620,7 @@ static void console_execute_command(void) {
         SSHD_CONSOLE_SESSION_ID, "admin", g_console_command, g_console_output,
         sizeof(g_console_output), &output_bytes);
     if (output_bytes != 0U) {
-      (void)xaios_console_write(g_console_output, output_bytes);
+      (void)console_write_bytes(g_console_output, output_bytes);
       if (g_console_output[output_bytes - 1U] != '\n') console_write("\n");
     }
     if (status < 0 && output_bytes == 0U) {
@@ -581,7 +630,8 @@ static void console_execute_command(void) {
     }
   }
   g_console_command_length = 0U;
-  if (g_console_nano.active == 0U) console_prompt();
+  if (g_console_nano.active == 0U && g_console_pong.active == 0U)
+    console_prompt();
 }
 
 static void console_submit_auth(void) {
@@ -631,7 +681,19 @@ static void console_tick(void) {
       } else if (nano_editor_render(&g_console_nano, g_console_output,
                                     sizeof(g_console_output),
                                     &frame_size) == 0) {
-        (void)xaios_console_write(g_console_output, frame_size);
+        (void)console_write_bytes(g_console_output, frame_size);
+      }
+      continue;
+    }
+    if (g_console_pong.active != 0U) {
+      uint32_t should_exit = 0U;
+      uint64_t now_ns = xaios_clock_nanos();
+      if (pong_game_input(&g_console_pong, (const uint8_t *)&value, 1U,
+                          &should_exit, now_ns) != 0 ||
+          should_exit != 0U) {
+        console_finish_pong();
+      } else if (console_render_pong(now_ns) != 0) {
+        console_finish_pong();
       }
       continue;
     }
@@ -2001,6 +2063,7 @@ int sshd_run(void) {
 service_loop:
   console_render_boot_status();
   for (;;) {
+    console_service_pong(timer_now());
     console_tick();
     for (uint32_t i = 0; g_console_ssh_ready != 0U && i < 4U; ++i) {
       uint8_t udp_buffer[1400];

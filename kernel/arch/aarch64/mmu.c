@@ -9,6 +9,7 @@
 #define EARLY_IDENTITY_SIZE UINT64_C(0x100000000)
 #define EARLY_L1_TABLES 4
 #define EARLY_KERNEL_L3_TABLES 16
+#define USER_ASPACE_L3_TABLES 3U
 
 #define PTE_VALID UINT64_C(1)
 #define PTE_TABLE UINT64_C(1 << 1)
@@ -51,6 +52,12 @@ static uint64_t g_kernel_l3_tables[EARLY_KERNEL_L3_TABLES][512]
     __attribute__((aligned(PAGE_SIZE)));
 static uint64_t g_mmio_start;
 static uint64_t g_mmio_end;
+
+#define USER_CODE_L2_INDEX \
+  ((uint32_t)((XAIOS_USER_BASE >> 21U) & UINT64_C(0x1ff)))
+#define USER_CODE_SECOND_L2_INDEX (USER_CODE_L2_INDEX + 1U)
+#define USER_STACK_L2_INDEX \
+  ((uint32_t)(((XAIOS_USER_STACK_TOP - PAGE_SIZE) >> 21U) & UINT64_C(0x1ff)))
 
 static uint64_t align_down(uint64_t value, uint64_t align) {
   return value & ~(align - 1);
@@ -543,24 +550,61 @@ void vmm_self_test(void) {
   kassert(vmm_unmap_page(va) == XAIOS_OK);
   kassert(vmm_translate(va, &translated, &flags) == XAIOS_ERR_INVALID);
   pmm_free_page(page);
+
+  uint64_t process_tables[USER_ASPACE_L3_TABLES];
+  uint32_t process_table_count = 0U;
+  vmm_create_user_aspace(process_tables, USER_ASPACE_L3_TABLES,
+                         &process_table_count);
+  kassert(process_table_count == USER_ASPACE_L3_TABLES);
+  void *boundary_page = pmm_alloc_page();
+  kassert(boundary_page != 0);
+  uint64_t boundary_va = XAIOS_USER_BASE + L2_BLOCK_SIZE;
+  kassert(vmm_map_user_page(boundary_va,
+                            (uint64_t)(uintptr_t)boundary_page,
+                            XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
+                                XAIOS_VMM_USER,
+                            process_tables, process_table_count) == XAIOS_OK);
+  uint64_t *second_code_table =
+      (uint64_t *)(uintptr_t)process_tables[1];
+  kassert((second_code_table[0] & PTE_VALID) != 0U);
+  kassert(vmm_unmap_user_page(boundary_va, process_tables,
+                              process_table_count) == XAIOS_OK);
+  kassert(second_code_table[0] == 0U);
+  pmm_free_page(boundary_page);
+  vmm_destroy_user_aspace(process_tables, process_table_count);
   klog("VMM map/unmap self-test passed\n");
 }
 
 /* --- Per-process address space APIs --- */
 
-#define USER_CODE_L2_INDEX \
-  ((uint32_t)((XAIOS_USER_BASE >> 21U) & UINT64_C(0x1ff)))
-#define USER_STACK_L2_INDEX \
-  ((uint32_t)(((XAIOS_USER_STACK_TOP - PAGE_SIZE) >> 21U) & UINT64_C(0x1ff)))
+static xaios_status_t user_l3_slot(uint64_t virtual_address,
+                                   uint32_t *out_slot) {
+  uint32_t l2_index =
+      (uint32_t)((virtual_address >> 21U) & UINT64_C(0x1ff));
+  if (l2_index == USER_CODE_L2_INDEX) {
+    *out_slot = 0U;
+    return XAIOS_OK;
+  }
+  if (l2_index == USER_CODE_SECOND_L2_INDEX) {
+    *out_slot = 1U;
+    return XAIOS_OK;
+  }
+  if (l2_index == USER_STACK_L2_INDEX) {
+    *out_slot = 2U;
+    return XAIOS_OK;
+  }
+  return XAIOS_ERR_INVALID;
+}
 
 void vmm_create_user_aspace(uint64_t l3_tables[], uint32_t max_tables,
                             uint32_t *out_count) {
-  kassert(l3_tables != 0 && out_count != 0 && max_tables >= 2);
+  kassert(l3_tables != 0 && out_count != 0 &&
+          max_tables >= USER_ASPACE_L3_TABLES);
   for (uint32_t i = 0; i < max_tables; ++i) {
     l3_tables[i] = 0;
   }
-  /* Allocate 2 L3 tables: one for low user VA (code/data), one for stack */
-  for (uint32_t i = 0; i < 2; ++i) {
+  /* Two 2 MiB code/data spans and one independent stack span. */
+  for (uint32_t i = 0; i < USER_ASPACE_L3_TABLES; ++i) {
     void *page = pmm_alloc_page();
     kassert(page != 0);
     uint64_t *table = (uint64_t *)page;
@@ -569,7 +613,7 @@ void vmm_create_user_aspace(uint64_t l3_tables[], uint32_t max_tables,
     }
     l3_tables[i] = (uint64_t)(uintptr_t)page;
   }
-  *out_count = 2;
+  *out_count = USER_ASPACE_L3_TABLES;
   klog("vmm: created user aspace l3_count=%u\n", *out_count);
 }
 
@@ -585,14 +629,11 @@ xaios_status_t vmm_map_user_page(uint64_t virtual_address,
     return XAIOS_ERR_INVALID;
   }
 
-  uint64_t l2_index = (virtual_address >> 21) & 0x1ffU;
   uint64_t l3_index = (virtual_address >> 12) & 0x1ffU;
-
-  if (l2_index != USER_CODE_L2_INDEX && l2_index != USER_STACK_L2_INDEX) {
+  uint32_t l3_slot = 0U;
+  if (user_l3_slot(virtual_address, &l3_slot) != XAIOS_OK) {
     return XAIOS_ERR_INVALID;
   }
-
-  uint32_t l3_slot = l2_index == USER_STACK_L2_INDEX ? 1U : 0U;
   if (l3_slot >= l3_count || l3_tables[l3_slot] == 0) {
     return XAIOS_ERR_INVALID;
   }
@@ -609,8 +650,10 @@ xaios_status_t vmm_unmap_user_page(uint64_t virtual_address,
   }
 
   uint64_t l3_index = (virtual_address >> 12) & 0x1ffU;
-  uint64_t l2_index = (virtual_address >> 21) & 0x1ffU;
-  uint32_t l3_slot = l2_index == USER_STACK_L2_INDEX ? 1U : 0U;
+  uint32_t l3_slot = 0U;
+  if (user_l3_slot(virtual_address, &l3_slot) != XAIOS_OK) {
+    return XAIOS_ERR_INVALID;
+  }
   if (l3_slot < l3_count && l3_tables[l3_slot] != 0) {
     uint64_t *l3 = (uint64_t *)(uintptr_t)l3_tables[l3_slot];
     l3[l3_index] = 0;
@@ -637,19 +680,23 @@ void vmm_switch_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
   }
   uint64_t *l2 = (uint64_t *)(uintptr_t)(l1_desc & PTE_ADDR_MASK);
 
-  /* Install the per-process code and stack tables at their actual L2 slots. */
-  if (l3_tables != 0 && l3_count > 0) {
-    if (l3_count > 0 && l3_tables[0] != 0) {
+  /* Clear every owned slot before installing the next process. */
+  l2[USER_CODE_L2_INDEX] = 0;
+  l2[USER_CODE_SECOND_L2_INDEX] = 0;
+  l2[USER_STACK_L2_INDEX] = 0;
+  if (l3_tables != 0 && l3_count >= USER_ASPACE_L3_TABLES) {
+    if (l3_tables[0] != 0) {
       l2[USER_CODE_L2_INDEX] =
           table_descriptor((uint64_t *)(uintptr_t)l3_tables[0]);
     }
-    if (l3_count > 1 && l3_tables[1] != 0) {
-      l2[USER_STACK_L2_INDEX] =
+    if (l3_tables[1] != 0) {
+      l2[USER_CODE_SECOND_L2_INDEX] =
           table_descriptor((uint64_t *)(uintptr_t)l3_tables[1]);
     }
-  } else {
-    l2[USER_CODE_L2_INDEX] = 0;
-    l2[USER_STACK_L2_INDEX] = 0;
+    if (l3_tables[2] != 0) {
+      l2[USER_STACK_L2_INDEX] =
+          table_descriptor((uint64_t *)(uintptr_t)l3_tables[2]);
+    }
   }
 
   /* Full TLB invalidation */

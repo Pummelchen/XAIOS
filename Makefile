@@ -317,6 +317,10 @@ hosted-test: engine-cli
 	  kernel/lib/inflate.c tests/system/test_inflate.c -lz \
 	  -o build/hosted/test-inflate
 	./build/hosted/test-inflate
+	$(HOST_CC) $(HOST_CFLAGS) -Iuserspace/include -Iuserspace/sshd \
+	  userspace/sshd/pong_game.c tests/system/test_pong_game.c \
+	  -o build/hosted/test-pong-game
+	./build/hosted/test-pong-game
 	PYTHONPATH=. python3 -m unittest discover -s tests/system -p 'test_*.py'
 	PYTHONPATH=tools python3 -m unittest discover -s tests/model_v2 -p 'test_*.py'
 	PYTHONPATH=tools python3 -m unittest discover -s tests/model_volume -p 'test_*.py'

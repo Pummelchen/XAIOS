@@ -135,7 +135,7 @@ limits; the 64-bit API and separate ModelFS are used for large model packages.
 `pwd`, `ls` (with `-l`/`-a`), `cd`, `mkdir`, `touch`, `cat`, `less`,
 `cp`, `mv`, `rm`, `rmdir`, `stat`, `write`, `echo`, `grep`, `find`, `head`,
 `tail`, `sed`, `tar`, `zip`, `unzip`, fixture-only `cpio`, outbound `ssh` and
-`scp`, `nano`, `htop`, `xaiosctl`, `status`, `hello`, `sysinfo`, `systest`,
+`scp`, `nano`, `htop`, `pong`, `xaiosctl`, `status`, `hello`, `sysinfo`, `systest`,
 `smptest`, `nettest`, `lstm-xor`, `mltest`, `posix-shell`, `agenttest`, `help`,
 and `exit`. Exact options and storage/archive limits are specified in
 [`UNIX-COMPATIBILITY.md`](./UNIX-COMPATIBILITY.md).
@@ -277,6 +277,32 @@ are intentionally absent because XAIOS does not yet expose a safe general
 process-control ABI. Output tagged `source=ssh-bridge` is a host-proxy
 compatibility view; native SSH output is generated inside XAIOS and is backed by
 kernel process and per-CPU accounting.
+
+### Pong
+
+`pong` starts a native alternate-screen terminal game on an authenticated local
+console or SSH PTY. It requires an interactive terminal; non-PTY execution
+returns an explicit error. Each local or SSH session owns its own match state.
+
+| Key | Action |
+|---|---|
+| `W` / `S` | Move the human paddle up or down. |
+| `P` or Space | Pause or resume. |
+| `R` | Reset both counters and ball speed. |
+| `Q` or Control-C | Quit and restore the previous screen and prompt. |
+
+The right paddle uses a bounded predictive controller with reaction delay,
+movement-rate limits and deterministic aiming variation. Play never stops at a
+score threshold. Human and computer win counters saturate rather than wrapping.
+After each human point, current ball speed is multiplied by 1.01; after each
+computer point it is multiplied by 0.99. The effective scale is clamped to
+40%-300% so an unlimited match cannot underflow into a stationary ball or
+overflow its fixed-point arithmetic. The initial 100% horizontal speed crosses
+the current court in approximately six seconds. Physics use monotonic fixed-
+point time and do not require floating point. SSH resize events rescale the
+court and live state. Rendering is bounded to 40x12 through 240x100 terminals
+and refreshes at no more than 30 frames per second after prior channel output
+has drained.
 
 ## Capabilities
 

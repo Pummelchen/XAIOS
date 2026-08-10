@@ -212,9 +212,9 @@ admin 'xaiosctl config apply /tmp/phase2-high.conf --operation-id 2008 --json' \
   >"$workdir/rate-restore.json"
 printf 'PASS: per-connection command rate limit enforced and recoverable\n'
 
-expect_failure "$admin_key" 'cat /state/xaios_host_key' 'invalid path' \
+expect_failure "$admin_key" 'cat /state/xaios_host_key' 'cat: cannot read file' \
   'remote host-key read'
-expect_failure "$admin_key" 'cat /state/control/config.bin' 'invalid path' \
+expect_failure "$admin_key" 'cat /state/control/config.bin' 'cat: cannot read file' \
   'remote control-state read'
 if printf 'get /state/xaios_host_key %s\nquit\n' \
     "$workdir/host-key-copy" | sftp "${sftp_options[@]}" -b - \

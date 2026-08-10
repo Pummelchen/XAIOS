@@ -30,6 +30,9 @@ they do not prove physical performance or production readiness.
    separate transient address spaces only when invoked over SSH, then reaped.
    QEMU correctness gates use an explicit profile that runs workers and
    diagnostics during boot to retain deterministic fixture markers.
+   AArch64 and x86-64 process spaces each provide two adjacent 2 MiB code/data
+   page-table spans plus a separate stack span. Switches clear all owned entries
+   before installing the next process, preventing stale cross-process mappings.
 
 ## Major components
 

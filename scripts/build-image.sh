@@ -735,10 +735,10 @@ done
 printf '%s\n' "Building userspace /bin/sshd ELF..."
 SSHD_RESPONSE_FILE="$INIT_BUILD_DIR/sshd-objects.rsp"
 : > "$SSHD_RESPONSE_FILE"
-for sshd_src in sshd.c ssh_crypto.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_client.c ssh_host_key.c ssh_connection.c sftp_server.c nano_editor.c less_pager.c; do
+for sshd_src in sshd.c ssh_crypto.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_client.c ssh_host_key.c ssh_connection.c sftp_server.c nano_editor.c less_pager.c pong_game.c; do
   sshd_obj="$INIT_BUILD_DIR/sshd-${sshd_src%.c}.o"
   sshd_opt=""
-  if [ "$sshd_src" = "sshd.c" ]; then
+  if [ "$sshd_src" = "sshd.c" ] || [ "$sshd_src" = "pong_game.c" ]; then
     sshd_opt="-Os"
   fi
   "$CLANG" \

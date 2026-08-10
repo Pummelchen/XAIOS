@@ -67,6 +67,10 @@ After self-tests, a normal image runs `/init`, `/bin/service-manager`, and the
 persistent SSH service. Diagnostic applications are loaded into independent
 address spaces only when an administrator invokes their exact allowlisted name
 over SSH; the kernel reclaims their pages and process-table slot after exit.
+On both AArch64 and x86-64, each process address space owns two adjacent 2 MiB
+page-table spans for a bounded 4 MiB ELF code/data window plus an independent
+stack span. Address-space switches clear all three owned entries before
+installing the next process, and mappings outside those spans fail closed.
 QEMU gates use a separate build profile that exercises bounded workers and all
 diagnostic applications during boot to preserve deterministic fixture markers.
 

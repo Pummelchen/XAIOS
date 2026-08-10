@@ -24,8 +24,8 @@ and `2302` the companion UDP service. No SSH-ready message is emitted on these
 paths.
 
 The following paths passed from OpenSSH clients on macOS and in an official
-Debian 13 Docker container. The broad Debian suite passes against both the
-freestanding AArch64 and x86_64 QEMU guests; the x86 report is
+Debian 13 Docker container as of 2026-08-11. The broad Debian suite passes
+against both the freestanding AArch64 and x86_64 QEMU guests; the x86 report is
 `build/qemu-docker-network-suite-x86_64.json`. An official FreeBSD 15.1 AArch64
 client passed the explicitly identified subset below on 2026-08-10:
 
@@ -77,6 +77,10 @@ client passed the explicitly identified subset below on 2026-08-10:
   server's Ed25519 host key, and returned remote output to the originating PTY;
 - SFTP-backed outbound `scp` transferred regular files and recursive directory
   trees in both directions with byte-identical nested content.
+- the native `pong` terminal game rendered through an OpenSSH PTY, accepted
+  movement/pause/quit input, retained independent session state, and restored
+  the host terminal; the authenticated local-console gate exercises the same
+  fixed-point game engine.
 
 ### Outbound guest client
 

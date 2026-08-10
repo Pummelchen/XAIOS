@@ -134,6 +134,13 @@ Internet destinations or physical networks are production-ready.
   non-PTY output stays a plain one-shot snapshot for automation. The htop sample
   interval uses an interrupt-backed idle wait that is not charged as artificial
   100% housekeeping-core load.
+  Running `pong` from an authenticated local console or SSH PTY starts a native
+  terminal game against a predictive, rate-limited computer paddle. The human
+  uses `W`/`S`; scores continue without a match limit. A human point multiplies
+  ball speed by 1.01 and a computer point multiplies it by 0.99, with bounded
+  40%-300% safety limits so very long sessions remain playable. Each session
+  owns independent scores and game state, responds to SSH terminal resize, and
+  restores the original screen and prompt on exit.
   A bare SSH PTY opens a stateful, line-edited shell with a per-connection cwd,
   Unix-style prompt, useful command-not-found diagnostics, and nonzero command
   status. MutableFS v4 provides files and directory trees with atomic recursive

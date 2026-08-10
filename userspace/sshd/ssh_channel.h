@@ -4,6 +4,7 @@
 #include <xaios/types.h>
 #include "less_pager.h"
 #include "nano_editor.h"
+#include "pong_game.h"
 #include "ssh_protocol.h"
 
 #define SSH_CHANNELS_PER_CONNECTION 2U
@@ -57,6 +58,7 @@ typedef struct ssh_channel {
   char shell_line[SSH_CHANNEL_SHELL_LINE_SIZE];
   nano_editor_t nano;
   less_pager_t less;
+  pong_game_t pong;
   uint32_t sftp_rx_used;
   uint8_t sftp_rx[SSH_CHANNEL_SFTP_BUFFER_SIZE];
   uint8_t pending[SSH_CHANNEL_PENDING_SIZE];

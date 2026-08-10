@@ -49,6 +49,8 @@ model workstreams are not active unless the maintainer reprioritizes them.
   alternate-screen `less`. POSIX ustar/PAX and stored/Deflate ZIP exchange is
   interoperable with macOS and Debian readers; the bounded outbound SSH/SCP
   client interoperates with Debian OpenSSH using password authentication.
+  Native `pong` runs on authenticated local and SSH terminals with independent
+  continuous scores, adaptive ball speed and a predictive computer player.
   MutableFS v4 supports recursive trees and 128 KiB state files; it is not a
   replacement for ModelFS or general bulk storage.
 - XAIOS uses a native freestanding ABI. FreeBSD is the primary external Unix

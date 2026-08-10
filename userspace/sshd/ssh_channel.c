@@ -5,6 +5,7 @@
 #include "sftp_server.h"
 #include "ssh_client.h"
 #include "nano_editor.h"
+#include "pong_game.h"
 #include "sshd.h"
 #include <xaios_control_client.h>
 #include <xaios_user.h>
@@ -226,6 +227,18 @@ static int command_token_equal(const char *command, const char *expected) {
   return command[index] == '\0' || command[index] == ' ' ||
          command[index] == '\t' || command[index] == '\r' ||
          command[index] == '\n';
+}
+
+static int pong_command_exact(const char *command) {
+  uint32_t index = 0U;
+  static const char name[] = "pong";
+  while (command[index] == ' ' || command[index] == '\t' ||
+         command[index] == '\r' || command[index] == '\n') ++index;
+  for (uint32_t i = 0U; i < sizeof(name) - 1U; ++i)
+    if (command[index++] != name[i]) return 0;
+  while (command[index] == ' ' || command[index] == '\t' ||
+         command[index] == '\r' || command[index] == '\n') ++index;
+  return command[index] == '\0';
 }
 
 static int command_has_option(const char *command, const char *option) {
@@ -1209,6 +1222,66 @@ static int less_handle_input(ssh_channel_t *ch, const uint8_t *data,
   return less_render_frame(ch);
 }
 
+static int pong_render_frame(ssh_channel_t *ch, uint64_t now_ns) {
+  uint32_t frame_size = 0U;
+  if (pong_game_render(&ch->pong, g_nano_frame, sizeof(g_nano_frame),
+                       &frame_size, now_ns) != 0 || frame_size == 0U)
+    return -1;
+  return ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                               (const uint8_t *)g_nano_frame, frame_size);
+}
+
+static int pong_finish(ssh_channel_t *ch, uint32_t status) {
+  static const char restore[] =
+      "\033[0m\033[?25h\033[?1049l\033[0m\033[?25h\r";
+  ch->pong.active = 0U;
+  ch->exit_status = status;
+  if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                            (const uint8_t *)restore,
+                            (uint32_t)(sizeof(restore) - 1U)) != 0)
+    return -1;
+  if (ch->interactive_returns_to_shell != 0U && ch->shell_active != 0U) {
+    ch->interactive_returns_to_shell = 0U;
+    return shell_send_prompt(ch);
+  }
+  ch->close_after_flush = 1U;
+  return flush_channel(ch);
+}
+
+static int pong_start(ssh_channel_t *ch, const char *command,
+                      uint32_t return_to_shell) {
+  static const char enter[] = "\033[?1049h\033[?25l";
+  if (pong_command_exact(command) == 0) {
+    static const char usage[] = "pong: usage: pong\r\n";
+    if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                              (const uint8_t *)usage,
+                              (uint32_t)(sizeof(usage) - 1U)) != 0)
+      return -1;
+    if (return_to_shell != 0U) return shell_send_prompt(ch);
+    ch->exit_status = 1U;
+    ch->close_after_flush = 1U;
+    return flush_channel(ch);
+  }
+  uint64_t now_ns = xaios_clock_nanos();
+  pong_game_start(&ch->pong, ch->terminal_columns, ch->terminal_rows, now_ns);
+  ch->interactive_returns_to_shell = return_to_shell;
+  if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                            (const uint8_t *)enter,
+                            (uint32_t)(sizeof(enter) - 1U)) != 0)
+    return -1;
+  return pong_render_frame(ch, now_ns);
+}
+
+static int pong_handle_input(ssh_channel_t *ch, const uint8_t *data,
+                             uint32_t length) {
+  uint32_t should_exit = 0U;
+  uint64_t now_ns = xaios_clock_nanos();
+  if (pong_game_input(&ch->pong, data, length, &should_exit, now_ns) != 0)
+    return -1;
+  if (should_exit != 0U) return pong_finish(ch, 0U);
+  return ch->pending_used == 0U ? pong_render_frame(ch, now_ns) : 0;
+}
+
 static int shell_execute_line(ssh_channel_t *ch) {
   char output[8192];
   u64 out_size = 0U;
@@ -1239,6 +1312,10 @@ static int shell_execute_line(ssh_channel_t *ch) {
   if (command_token_equal(ch->shell_line, "less") != 0) {
     ch->shell_line_length = 0U;
     return less_start(ch, ch->shell_line, 1U);
+  }
+  if (command_token_equal(ch->shell_line, "pong") != 0) {
+    ch->shell_line_length = 0U;
+    return pong_start(ch, ch->shell_line, 1U);
   }
   {
     int client_result = ssh_client_prepare(ch, ch->shell_line);
@@ -1301,6 +1378,11 @@ static int shell_handle_input(ssh_channel_t *ch, const uint8_t *data,
                    ? less_handle_input(ch, data + i + 1U, length - i - 1U)
                    : 0;
       }
+      if (ch->pong.active != 0U) {
+        return i + 1U < length
+                   ? pong_handle_input(ch, data + i + 1U, length - i - 1U)
+                   : 0;
+      }
     } else if (value == 8U || value == 127U) {
       if (ch->shell_line_length != 0U) {
         --ch->shell_line_length;
@@ -1342,6 +1424,12 @@ int ssh_channel_tick(uint64_t now_ns) {
       if (client_result < 0) return -1;
       if (client_result > 0 && ch->shell_active != 0U &&
           shell_send_prompt(ch) != 0) return -1;
+    }
+    if (ch->active != 0U && ch->pong.active != 0U &&
+        ch->pending_used == 0U && pong_game_tick(&ch->pong, now_ns) != 0 &&
+        pong_render_frame(ch, now_ns) != 0) {
+      ch->exit_status = 1U;
+      if (pong_finish(ch, 1U) != 0) return -1;
     }
     if (ch->active == 0U || ch->htop_active == 0U ||
         ch->pending_used != 0U ||
@@ -1406,6 +1494,10 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
       less_pager_resize(&ch->less, ch->terminal_columns, ch->terminal_rows);
       if (less_render_frame(ch) != 0) return -1;
     }
+    if (valid && ch->pong.active != 0U) {
+      pong_game_resize(&ch->pong, ch->terminal_columns, ch->terminal_rows);
+      if (pong_render_frame(ch, xaios_clock_nanos()) != 0) return -1;
+    }
     if (want_reply) {
       if (send_channel_reply(sockfd, ch->remote_id, valid) != 0) return -1;
     }
@@ -1461,6 +1553,8 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
                               sizeof(nano_argument)) == 0;
     int interactive_less = ch->pty_requested != 0U &&
                            command_token_equal(command, "less") != 0;
+    int interactive_pong = ch->pty_requested != 0U &&
+                           pong_command_exact(command) != 0;
     if (prepare_terminal_command(ch, command, sizeof(command)) != 0) {
       if (want_reply && send_channel_reply(sockfd, ch->remote_id, 0) != 0) {
         return -1;
@@ -1477,6 +1571,8 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
     }
 
     if (interactive_less != 0) return less_start(ch, command, 0U);
+
+    if (interactive_pong != 0) return pong_start(ch, command, 0U);
 
     if (interactive_htop != 0) {
       static const char enter_screen[] = "\033[?1049h";
@@ -1707,6 +1803,10 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
       return less_handle_input(ch, pkt->data + 9U, data_len);
     }
 
+    if (ch->pong.active != 0U) {
+      return pong_handle_input(ch, pkt->data + 9U, data_len);
+    }
+
     if (ssh_client_is_prompting(ch)) {
       int result = ssh_client_password_input(ch, pkt->data + 9U, data_len);
       return result > 0 ? shell_send_prompt(ch) : result;
@@ -1768,6 +1868,7 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
     if (ch->htop_active != 0U) return htop_finish(ch);
     if (ch->nano.active != 0U) return nano_finish(ch, 0U);
     if (ch->less.active != 0U) return less_finish(ch, 0U);
+    if (ch->pong.active != 0U) return pong_finish(ch, 0U);
     if (ssh_client_is_prompting(ch) || ssh_client_is_active(ch)) {
       ssh_client_close(ch);
     }

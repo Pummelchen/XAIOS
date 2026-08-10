@@ -5618,7 +5618,7 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
     output_append(
         output, output_capacity, output_bytes,
         "XAIOS shell: pwd ls l la ll cd mkdir touch cp grep find head tail echo "
-        "tar zip unzip cpio cat less mv rm rmdir stat df du ps write sed nano htop "
+        "tar zip unzip cpio cat less mv rm rmdir stat df du ps write sed nano htop pong "
         "ssh scp status sysinfo "
         "hello systest smptest nettest lstm-xor mltest posix-shell agenttest "
         "xaiosctl exit "
@@ -5768,6 +5768,13 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
   }
   if (string_equal(cmd, "htop") == 1U) {
     return handle_htop(args, output, output_capacity, output_bytes);
+  }
+  if (string_equal(cmd, "pong") == 1U) {
+    if (args[0] != '\0')
+      return command_fail(output, output_capacity, output_bytes,
+                          "pong: usage: pong");
+    return command_fail(output, output_capacity, output_bytes,
+                        "pong: interactive terminal required");
   }
   if (string_equal(cmd, "ps") == 1U) {
     return handle_ps(args, output, output_capacity, output_bytes);
@@ -6030,6 +6037,13 @@ void remote_login_self_test(void) {
 
   kassert(remote_login_execute("admin", "shell", output, sizeof(output),
                                &out) == XAIOS_ERR_INVALID);
+  out = 0U;
+  output[0] = '\0';
+  kassert(parse_and_execute("pong", output, sizeof(output),
+                            &out) == XAIOS_ERR_INVALID);
+  kassert(contains_substring(output,
+                            "pong: interactive terminal required") == 1);
+  klog("remote-login: Pong requires an interactive terminal\n");
   remote_login_context_t *first = remote_login_context_get(101U);
   kassert(first != 0);
   kassert(copy_cstr(first->cwd, sizeof(first->cwd), "/state") == XAIOS_OK);

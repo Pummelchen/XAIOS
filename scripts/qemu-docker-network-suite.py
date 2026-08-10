@@ -651,6 +651,72 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
     if invalid.returncode == 0 or b"htop: invalid --sort key" not in invalid_output:
         raise RuntimeError("native htop PTY accepted an invalid sort key")
 
+    pong = subprocess.Popen(
+        docker_command(
+            key_dir,
+            *ssh_base[:1],
+            "-tt",
+            *ssh_base[1:],
+            "pong",
+        ),
+        cwd=ROOT,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    pong_stdout = bytearray()
+    pong_stderr = bytearray()
+    pong_ready = threading.Event()
+
+    def drain_pong(stream: object, output: bytearray,
+                   inspect: bool = False) -> None:
+        while True:
+            chunk = stream.read1(4096)  # type: ignore[union-attr]
+            if not chunk:
+                return
+            output.extend(chunk)
+            if inspect and b"PONG  Human wins: 0  Computer wins: 0" in output:
+                pong_ready.set()
+
+    pong_stdout_thread = threading.Thread(
+        target=drain_pong, args=(pong.stdout, pong_stdout, True), daemon=True
+    )
+    pong_stderr_thread = threading.Thread(
+        target=drain_pong, args=(pong.stderr, pong_stderr), daemon=True
+    )
+    pong_stdout_thread.start()
+    pong_stderr_thread.start()
+    if not pong_ready.wait(30):
+        pong.kill()
+        pong.wait(timeout=5)
+        raise RuntimeError("native Pong PTY did not render its initial frame")
+    assert pong.stdin is not None
+    pong.stdin.write(b"wsppq")
+    pong.stdin.flush()
+    pong.stdin.close()
+    pong_returncode = pong.wait(timeout=30)
+    pong_stdout_thread.join(timeout=5)
+    pong_stderr_thread.join(timeout=5)
+    if pong_returncode != 0:
+        raise RuntimeError(
+            "native Pong PTY command failed: "
+            + bytes(pong_stderr).decode(errors="replace")
+        )
+    pong_required = (
+        b"\x1b[?1049h",
+        b"PONG  Human wins: 0  Computer wins: 0",
+        b"Speed: 100.00%",
+        b"W/S move",
+        b"Computer wins",
+        b"\x1b[?1049l",
+        b"\x1b[?25h",
+    )
+    pong_missing = [marker for marker in pong_required if marker not in pong_stdout]
+    if pong_missing:
+        raise RuntimeError(
+            f"native Pong PTY output missing markers: {pong_missing!r}"
+        )
+
 
 def require_rejected_build(env: dict[str, str], marker: str) -> None:
     completed = subprocess.run(
@@ -882,6 +948,7 @@ def main() -> int:
         results["native_htop_shell_restore"] = "passed"
         results["native_htop_non_pty_plain"] = "passed"
         results["native_htop_invalid_option_rejected"] = "passed"
+        results["native_pong_pty"] = "passed"
         results["native_transient_apps_on_demand"] = "passed"
         results["ssh_port"] = ssh_port
         results["udp_port"] = udp_port

@@ -1,5 +1,22 @@
 # Development History
 
+## 2026-08-11 - native local and SSH Pong
+
+- Added a deterministic fixed-point Pong engine with continuous human/computer
+  scoring, predictive rate-limited computer movement and monotonic-time physics.
+- Made each human point increase ball speed by 1% and each computer point reduce
+  it by 1%, with explicit long-session safety bounds and saturating counters.
+- Integrated alternate-screen play, `W`/`S` input, pause/reset/quit, resize and
+  terminal restoration into independent SSH PTY and authenticated local-console
+  sessions.
+- Added hosted physics/render checks plus native OpenSSH PTY and local-console
+  QEMU acceptance coverage.
+- Expanded the per-process code/data mapping from 2 MiB to 4 MiB on both
+  AArch64 and x86-64 after the password-enabled SSH image crossed the original
+  boundary, with boundary mapping and stale-entry regression assertions.
+- Made local-console output honor the 4096-byte syscall contract by chunking
+  larger Pong, nano and shell frames.
+
 ## 2026-08-11 - portable commands, archives and outbound SSH
 
 - Expanded the native shell's FreeBSD-oriented command subset with multi-source

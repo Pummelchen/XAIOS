@@ -172,6 +172,17 @@ def main() -> int:
         console.wait_since(checkpoint, b"admin@xaios", STEP_TIMEOUT_SECONDS)
 
         checkpoint = console.checkpoint()
+        console.send(b"pong\r")
+        console.wait_since(
+            checkpoint, b"PONG  Human wins: 0  Computer wins: 0",
+            STEP_TIMEOUT_SECONDS,
+        )
+        console.wait_since(checkpoint, b"Speed: 100.00%", STEP_TIMEOUT_SECONDS)
+        console.send(b"wsppq")
+        console.wait_since(checkpoint, b"\x1b[?1049l", STEP_TIMEOUT_SECONDS)
+        console.wait_since(checkpoint, b"admin@xaios", STEP_TIMEOUT_SECONDS)
+
+        checkpoint = console.checkpoint()
         console.send(
             b"mkdir /state/local-console\r"
             b"cd /state/local-console\r"

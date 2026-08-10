@@ -11,6 +11,7 @@
 #define HUGE_PAGE_SIZE UINT64_C(0x40000000)
 #define EARLY_IDENTITY_SIZE UINT64_C(0x100000000)
 #define EARLY_KERNEL_TABLES 32U
+#define USER_ASPACE_L3_TABLES 3U
 #define PTE_PRESENT UINT64_C(1)
 #define PTE_WRITABLE (UINT64_C(1) << 1)
 #define PTE_USER (UINT64_C(1) << 2)
@@ -27,6 +28,7 @@
 
 #define USER_CODE_PD_INDEX \
   ((uint32_t)((XAIOS_USER_BASE >> 21U) & UINT64_C(0x1ff)))
+#define USER_CODE_SECOND_PD_INDEX (USER_CODE_PD_INDEX + 1U)
 #define USER_STACK_PD_INDEX \
   ((uint32_t)(((XAIOS_USER_STACK_TOP - PAGE_SIZE) >> 21U) & \
               UINT64_C(0x1ff)))
@@ -437,19 +439,61 @@ void vmm_self_test(void) {
           (XAIOS_VMM_USER | XAIOS_VMM_WRITABLE));
   kassert(vmm_unmap_page(address) == XAIOS_OK);
   pmm_free_page(page);
+
+  uint64_t process_tables[USER_ASPACE_L3_TABLES];
+  uint32_t process_table_count = 0U;
+  vmm_create_user_aspace(process_tables, USER_ASPACE_L3_TABLES,
+                         &process_table_count);
+  kassert(process_table_count == USER_ASPACE_L3_TABLES);
+  void *boundary_page = pmm_alloc_page();
+  kassert(boundary_page != 0);
+  uint64_t boundary_address = XAIOS_USER_BASE + LARGE_PAGE_SIZE;
+  kassert(vmm_map_user_page(boundary_address,
+                            (uint64_t)(uintptr_t)boundary_page,
+                            XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
+                                XAIOS_VMM_USER,
+                            process_tables, process_table_count) == XAIOS_OK);
+  uint64_t *second_code_table =
+      (uint64_t *)(uintptr_t)process_tables[1];
+  kassert((second_code_table[0] & PTE_PRESENT) != 0U);
+  kassert(vmm_unmap_user_page(boundary_address, process_tables,
+                              process_table_count) == XAIOS_OK);
+  kassert(second_code_table[0] == 0U);
+  pmm_free_page(boundary_page);
+  vmm_destroy_user_aspace(process_tables, process_table_count);
   klog("VMM: x86 map/unmap self-test passed\n");
 }
 
 void vmm_create_user_aspace(uint64_t l3_tables[], uint32_t max_tables,
                             uint32_t *out_count) {
-  kassert(l3_tables != 0 && out_count != 0 && max_tables >= 2U);
+  kassert(l3_tables != 0 && out_count != 0 &&
+          max_tables >= USER_ASPACE_L3_TABLES);
   for (uint32_t index = 0U; index < max_tables; ++index) l3_tables[index] = 0U;
-  for (uint32_t index = 0U; index < 2U; ++index) {
+  for (uint32_t index = 0U; index < USER_ASPACE_L3_TABLES; ++index) {
     uint64_t *pt = allocate_table();
     kassert(pt != 0);
     l3_tables[index] = (uint64_t)(uintptr_t)pt;
   }
-  *out_count = 2U;
+  *out_count = USER_ASPACE_L3_TABLES;
+}
+
+static xaios_status_t user_l3_slot(uint64_t virtual_address,
+                                   uint32_t *out_slot) {
+  uint32_t pd_index =
+      (uint32_t)((virtual_address >> 21U) & UINT64_C(0x1ff));
+  if (pd_index == USER_CODE_PD_INDEX) {
+    *out_slot = 0U;
+    return XAIOS_OK;
+  }
+  if (pd_index == USER_CODE_SECOND_PD_INDEX) {
+    *out_slot = 1U;
+    return XAIOS_OK;
+  }
+  if (pd_index == USER_STACK_PD_INDEX) {
+    *out_slot = 2U;
+    return XAIOS_OK;
+  }
+  return XAIOS_ERR_INVALID;
 }
 
 xaios_status_t vmm_map_user_page(uint64_t virtual_address,
@@ -461,9 +505,8 @@ xaios_status_t vmm_map_user_page(uint64_t virtual_address,
       (flags & XAIOS_VMM_PRESENT) == 0U || l3_tables == 0) {
     return XAIOS_ERR_INVALID;
   }
-  uint32_t pd_index = (uint32_t)((virtual_address >> 21U) & 0x1ffU);
-  uint32_t slot = pd_index == USER_STACK_PD_INDEX ? 1U : 0U;
-  if ((pd_index != USER_CODE_PD_INDEX && pd_index != USER_STACK_PD_INDEX) ||
+  uint32_t slot = 0U;
+  if (user_l3_slot(virtual_address, &slot) != XAIOS_OK ||
       slot >= l3_count || l3_tables[slot] == 0U) {
     return XAIOS_ERR_INVALID;
   }
@@ -478,8 +521,10 @@ xaios_status_t vmm_unmap_user_page(uint64_t virtual_address,
   if ((virtual_address & (PAGE_SIZE - 1U)) != 0U || l3_tables == 0) {
     return XAIOS_ERR_INVALID;
   }
-  uint32_t pd_index = (uint32_t)((virtual_address >> 21U) & 0x1ffU);
-  uint32_t slot = pd_index == USER_STACK_PD_INDEX ? 1U : 0U;
+  uint32_t slot = 0U;
+  if (user_l3_slot(virtual_address, &slot) != XAIOS_OK) {
+    return XAIOS_ERR_INVALID;
+  }
   if (slot < l3_count && l3_tables[slot] != 0U) {
     uint64_t *pt = (uint64_t *)(uintptr_t)l3_tables[slot];
     pt[(virtual_address >> 12U) & 0x1ffU] = 0U;
@@ -491,15 +536,20 @@ void vmm_switch_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
   uint64_t *user_directory = current_user_directory();
   kassert(user_directory != 0);
   user_directory[USER_CODE_PD_INDEX] = 0U;
+  user_directory[USER_CODE_SECOND_PD_INDEX] = 0U;
   user_directory[USER_STACK_PD_INDEX] = 0U;
-  if (l3_tables != 0 && l3_count >= 2U) {
+  if (l3_tables != 0 && l3_count >= USER_ASPACE_L3_TABLES) {
     if (l3_tables[0] != 0U) {
       user_directory[USER_CODE_PD_INDEX] =
           table_entry((uint64_t *)(uintptr_t)l3_tables[0], PTE_USER);
     }
     if (l3_tables[1] != 0U) {
-      user_directory[USER_STACK_PD_INDEX] =
+      user_directory[USER_CODE_SECOND_PD_INDEX] =
           table_entry((uint64_t *)(uintptr_t)l3_tables[1], PTE_USER);
+    }
+    if (l3_tables[2] != 0U) {
+      user_directory[USER_STACK_PD_INDEX] =
+          table_entry((uint64_t *)(uintptr_t)l3_tables[2], PTE_USER);
     }
   }
   flush_tlb();
