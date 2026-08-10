@@ -12,6 +12,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 
@@ -201,7 +202,7 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
         "-p", str(port),
         "admin@host.docker.internal",
     ]
-    colored = subprocess.run(
+    colored = subprocess.Popen(
         docker_command(
             key_dir,
             *ssh_base[:1],
@@ -210,14 +211,48 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
             "htop --all --sample-ms 10 --cpu-count 4",
         ),
         cwd=ROOT,
-        input=b"M/sshd\nhhq",
-        capture_output=True,
-        timeout=60,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
-    if colored.returncode != 0:
+    colored_stdout = bytearray()
+    colored_stderr = bytearray()
+    dashboard_ready = threading.Event()
+
+    def drain(stream: object, output: bytearray, ready: bool = False) -> None:
+        while True:
+            chunk = stream.read1(4096)  # type: ignore[union-attr]
+            if not chunk:
+                return
+            output.extend(chunk)
+            if ready and b"[Main]" in output:
+                dashboard_ready.set()
+
+    stdout_thread = threading.Thread(
+        target=drain, args=(colored.stdout, colored_stdout, True), daemon=True
+    )
+    stderr_thread = threading.Thread(
+        target=drain, args=(colored.stderr, colored_stderr), daemon=True
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+    if not dashboard_ready.wait(30):
+        colored.kill()
+        colored.wait(timeout=5)
+        raise RuntimeError("native htop PTY did not render its initial dashboard")
+    assert colored.stdin is not None
+    for keys in (b"M", b"/sshd\n", b"h", b"h", b"q"):
+        colored.stdin.write(keys)
+        colored.stdin.flush()
+        time.sleep(0.075)
+    colored.stdin.close()
+    returncode = colored.wait(timeout=60)
+    stdout_thread.join(timeout=5)
+    stderr_thread.join(timeout=5)
+    if returncode != 0:
         raise RuntimeError(
             "native htop PTY command failed: "
-            + colored.stderr.decode(errors="replace")
+            + bytes(colored_stderr).decode(errors="replace")
         )
     required = (
         b"\x1b[2J\x1b[H",
@@ -232,10 +267,11 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
         b"Filter: ",
         b"sshd",
         b"XAIOS htop help",
+        b"60 frames/s",
         b"F10 Quit",
         b"\x1b[?25h",
     )
-    missing = [marker for marker in required if marker not in colored.stdout]
+    missing = [marker for marker in required if marker not in colored_stdout]
     if missing:
         raise RuntimeError(f"native htop PTY output missing markers: {missing!r}")
 

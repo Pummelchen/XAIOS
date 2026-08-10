@@ -52,9 +52,9 @@ subsequently passed the explicitly identified subset below on 2026-08-10:
 - guest userspace resolved `example.com` through the asynchronous DNS syscall,
   then completed an immediate cache hit.
 - a Debian 13 OpenSSH PTY drove the native guest-generated live ANSI `htop`,
-  including sort, filter, help and clean cursor-restoring exit
-  dashboard with CPU/memory meters and process framing, while a non-PTY command
-  retained the plain automation format.
+  including sort, filter, help, CPU/memory meters, process framing, a hard
+  60-frame-per-second render cap and clean cursor-restoring exit, while a
+  non-PTY command retained the plain automation format.
 
 ### FreeBSD Unix-reference gate
 

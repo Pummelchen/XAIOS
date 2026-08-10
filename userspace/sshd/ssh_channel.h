@@ -43,6 +43,7 @@ typedef struct ssh_channel {
   uint32_t htop_filter_mode;
   uint32_t htop_help;
   uint32_t htop_filter_length;
+  uint64_t htop_last_frame_ns;
   uint64_t htop_next_refresh_ns;
   char htop_filter[32];
   uint32_t sftp_rx_used;

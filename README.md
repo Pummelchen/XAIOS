@@ -103,6 +103,7 @@ opt-in; exact target-model semantics are the default.
   The native guest also turns an SSH PTY `htop` command into a terminal-sized
   live ANSI monitor with sampled CPU/memory percentages, process selection,
   sorting, filtering, help, resize handling and dynamic many-core paging;
+  a monotonic limiter caps all screen rendering at 60 frames per second, and
   non-PTY output stays a plain one-shot snapshot for automation.
   SSH has no built-in password and fails closed without secure entropy. These
   QEMU checks complete the declared core-OS correctness gate; they do not approve

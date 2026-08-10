@@ -19,6 +19,10 @@
 #define SSH_HTOP_MIN_REFRESH_MS 250U
 #define SSH_HTOP_DEFAULT_REFRESH_MS 1000U
 #define SSH_HTOP_MAX_REFRESH_MS 5000U
+#define SSH_HTOP_MAX_FRAMES_PER_SECOND 60U
+#define SSH_HTOP_MIN_FRAME_NS                                             \
+  ((UINT64_C(1000000000) + SSH_HTOP_MAX_FRAMES_PER_SECOND - 1U) /       \
+   SSH_HTOP_MAX_FRAMES_PER_SECOND)
 
 enum {
   SSH_HTOP_SORT_CPU = 0U,
@@ -308,6 +312,7 @@ static void htop_initialize(ssh_channel_t *ch, const char *command) {
   ch->htop_filter_mode = 0U;
   ch->htop_help = 0U;
   ch->htop_filter_length = 0U;
+  ch->htop_last_frame_ns = 0U;
   ch->htop_filter[0] = '\0';
   if (command_has_option(command, "--tree") != 0) {
     ch->htop_sort_key = SSH_HTOP_SORT_PARENT;
@@ -570,6 +575,21 @@ int ssh_channel_send_data(int sockfd, uint32_t remote_id,
   return flush_channel(ch);
 }
 
+static int htop_frame_ready(ssh_channel_t *ch, uint64_t now_ns) {
+  uint64_t earliest_ns;
+  if (ch->htop_last_frame_ns == 0U) return 1;
+  earliest_ns = ch->htop_last_frame_ns > UINT64_MAX - SSH_HTOP_MIN_FRAME_NS
+                    ? UINT64_MAX
+                    : ch->htop_last_frame_ns + SSH_HTOP_MIN_FRAME_NS;
+  if (now_ns >= earliest_ns) return 1;
+  ch->htop_next_refresh_ns = earliest_ns;
+  return 0;
+}
+
+static void htop_frame_sent(ssh_channel_t *ch, uint64_t now_ns) {
+  ch->htop_last_frame_ns = now_ns;
+}
+
 static int htop_render_frame(ssh_channel_t *ch, uint64_t now_ns) {
   ssh_connection_t *connection;
   char command[256];
@@ -577,6 +597,7 @@ static int htop_render_frame(ssh_channel_t *ch, uint64_t now_ns) {
   u64 out_size = 0U;
   int result;
   if (ch == 0 || ch->htop_active == 0U || ch->pending_used != 0U) return 0;
+  if (htop_frame_ready(ch, now_ns) == 0) return 0;
   connection = ssh_conn_find(ch->owner_sockfd);
   if (connection == 0 ||
       connection->principal_role != XAIOS_CONTROL_ROLE_ADMIN ||
@@ -591,13 +612,14 @@ static int htop_render_frame(ssh_channel_t *ch, uint64_t now_ns) {
   if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
                             (const uint8_t *)output,
                             (uint32_t)out_size) != 0) return -1;
+  htop_frame_sent(ch, now_ns);
   ch->htop_next_refresh_ns =
       now_ns + (uint64_t)ch->htop_refresh_ms * UINT64_C(1000000);
   if (ch->htop_next_refresh_ns < now_ns) ch->htop_next_refresh_ns = UINT64_MAX;
   return 0;
 }
 
-static int htop_send_help(ssh_channel_t *ch) {
+static int htop_send_help(ssh_channel_t *ch, uint64_t now_ns) {
   static const char help[] =
       "\033[2J\033[H\033[?25l\033[44;97m XAIOS htop help \033[0m\r\n\r\n"
       "  Up/Down, j/k   select process\r\n"
@@ -610,17 +632,22 @@ static int htop_send_help(ssh_channel_t *ch) {
       "  [ and ]        previous/next CPU page\r\n"
       "  - and +        slower/faster refresh (250..5000 ms)\r\n"
       "  r              refresh now        F10/q/Ctrl-C quit\r\n\r\n"
+      "Rendering is internally capped at 60 frames/s.\r\n"
       "XAIOS exposes read-only process telemetry here. Generic kill and nice "
       "operations are unavailable because no safe process-control ABI exists.\r\n\r\n"
       "Press F1, h, Escape, or q to return.\033[0m";
+  if (htop_frame_ready(ch, now_ns) == 0) return 0;
   int result = ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
                                      (const uint8_t *)help,
                                      (uint32_t)(sizeof(help) - 1U));
-  if (result == 0) ch->htop_next_refresh_ns = UINT64_MAX;
+  if (result == 0) {
+    htop_frame_sent(ch, now_ns);
+    ch->htop_next_refresh_ns = UINT64_MAX;
+  }
   return result;
 }
 
-static int htop_send_filter_prompt(ssh_channel_t *ch) {
+static int htop_send_filter_prompt(ssh_channel_t *ch, uint64_t now_ns) {
   char prompt[256];
   uint32_t used = 0U;
   static const char prefix[] =
@@ -628,6 +655,7 @@ static int htop_send_filter_prompt(ssh_channel_t *ch) {
       "Filter: ";
   static const char suffix[] =
       "\r\n\r\nType a single token. Enter applies, Backspace edits, Escape cancels.\r\n";
+  if (htop_frame_ready(ch, now_ns) == 0) return 0;
   if (sizeof(prefix) - 1U + ch->htop_filter_length + sizeof(suffix) - 1U >
       sizeof(prompt)) return -1;
   ssh_mem_copy(prompt + used, prefix, sizeof(prefix) - 1U);
@@ -638,7 +666,10 @@ static int htop_send_filter_prompt(ssh_channel_t *ch) {
   used += sizeof(suffix) - 1U;
   int result = ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
                                      (const uint8_t *)prompt, used);
-  if (result == 0) ch->htop_next_refresh_ns = UINT64_MAX;
+  if (result == 0) {
+    htop_frame_sent(ch, now_ns);
+    ch->htop_next_refresh_ns = UINT64_MAX;
+  }
   return result;
 }
 
@@ -691,7 +722,8 @@ static int htop_handle_input(ssh_channel_t *ch, const uint8_t *data,
           ch->htop_filter[--ch->htop_filter_length] = '\0';
         }
         ch->htop_next_refresh_ns = 0U;
-        if (ch->pending_used == 0U && htop_send_filter_prompt(ch) != 0) return -1;
+        if (ch->pending_used == 0U &&
+            htop_send_filter_prompt(ch, xaios_clock_nanos()) != 0) return -1;
       } else if (ch->htop_filter_length + 1U < sizeof(ch->htop_filter) &&
                  ((key >= 'a' && key <= 'z') ||
                   (key >= 'A' && key <= 'Z') ||
@@ -700,7 +732,8 @@ static int htop_handle_input(ssh_channel_t *ch, const uint8_t *data,
         ch->htop_filter[ch->htop_filter_length++] = (char)key;
         ch->htop_filter[ch->htop_filter_length] = '\0';
         ch->htop_next_refresh_ns = 0U;
-        if (ch->pending_used == 0U && htop_send_filter_prompt(ch) != 0) return -1;
+        if (ch->pending_used == 0U &&
+            htop_send_filter_prompt(ch, xaios_clock_nanos()) != 0) return -1;
       }
       continue;
     }
@@ -746,13 +779,15 @@ static int htop_handle_input(ssh_channel_t *ch, const uint8_t *data,
     if (key == 'h') {
       ch->htop_help = 1U;
       ch->htop_next_refresh_ns = 0U;
-      if (ch->pending_used == 0U && htop_send_help(ch) != 0) return -1;
+      if (ch->pending_used == 0U &&
+          htop_send_help(ch, xaios_clock_nanos()) != 0) return -1;
     } else if (key == '/' ) {
       ch->htop_filter_mode = 1U;
       ch->htop_filter_length = 0U;
       ch->htop_filter[0] = '\0';
       ch->htop_next_refresh_ns = 0U;
-      if (ch->pending_used == 0U && htop_send_filter_prompt(ch) != 0) return -1;
+      if (ch->pending_used == 0U &&
+          htop_send_filter_prompt(ch, xaios_clock_nanos()) != 0) return -1;
     } else if (key == 'x') {
       ch->htop_filter_length = 0U;
       ch->htop_filter[0] = '\0';
@@ -863,11 +898,11 @@ int ssh_channel_tick(uint64_t now_ns) {
       continue;
     }
     if (ch->htop_help != 0U) {
-      if (htop_send_help(ch) != 0) return -1;
+      if (htop_send_help(ch, now_ns) != 0) return -1;
       continue;
     }
     if (ch->htop_filter_mode != 0U) {
-      if (htop_send_filter_prompt(ch) != 0) return -1;
+      if (htop_send_filter_prompt(ch, now_ns) != 0) return -1;
       continue;
     }
     if (htop_render_frame(ch, now_ns) != 0) {
@@ -993,8 +1028,10 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
                                 (uint32_t)out_size) != 0) {
         return -1;
       }
+      uint64_t now_ns = xaios_clock_nanos();
+      htop_frame_sent(ch, now_ns);
       ch->htop_next_refresh_ns =
-          xaios_clock_nanos() +
+          now_ns +
           (uint64_t)ch->htop_refresh_ms * UINT64_C(1000000);
       return 0;
     }

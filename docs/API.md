@@ -203,7 +203,10 @@ Interactive keys include arrows or `j`/`k`, Page Up/Page Down, `P`/`M`/`T`/`N`/
 `F4` filter clearing, `F5` or `t` process-tree view, `a` active/all tasks,
 `1` CPU-meter visibility, `[`/`]` CPU pages, `+`/`-` refresh speed, `r` refresh,
 `F1` help, and `F10`, `q` or Control-C to quit. Refresh delay is bounded to
-250..5000 ms; each frame uses a short 10 ms accounting sample.
+250..5000 ms; each frame uses a short 10 ms accounting sample. Independently,
+all periodic and input-triggered screen rendering is capped internally at 60
+frames per second using monotonic time. Changes arriving inside that interval
+are coalesced into the next permitted frame.
 
 `--plain` explicitly disables ANSI and interaction. Non-PTY invocations remain
 one-shot plain snapshots for scripts. Generic process kill and priority changes

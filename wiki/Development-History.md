@@ -9,6 +9,8 @@ commits, source code, and machine-readable test artifacts remain authoritative.
   application with periodic sampled refresh and output-window backpressure.
 - Added selection, process paging, CPU paging, terminal resize, active/all
   views, sorting, reverse order, filtering, help and process-tree display.
+- Added a monotonic 60-frame-per-second hard cap across periodic, keyboard,
+  filter, help and resize-triggered rendering; rapid changes are coalesced.
 - Kept non-PTY output machine-readable and one-shot, retained runtime-sized CPU
   accounting, and documented that kill/nice await a safe process-control ABI.
 - Extended the Debian 13 and FreeBSD interoperability gates to send keys, verify
