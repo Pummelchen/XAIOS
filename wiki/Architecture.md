@@ -14,14 +14,19 @@ they do not prove physical performance or production readiness.
 1. UEFI firmware loads the XAIOS loader. VMware Fusion uses a generated GRUB
    compatibility chainloader before the same XAIOS loader.
 2. `boot/uefi/loader_main.c` validates and loads `kernel.elf`, builds the boot
-   information structure, and transfers control to the architecture entry.
+   information structure, and transfers control to the architecture entry. A
+   normal boot displays the colored XAI OS identity and begins the in-place
+   progress meter at 0% before loading the system image.
 3. The AArch64 path enters `kernel/core/kmain.c`. The x86_64 path currently
    uses its focused bring-up entry under `kernel/arch/x86_64/`.
 4. The kernel initializes architecture services, memory, devices, storage,
    filesystems, security, networking, processes, runtime services, and
    telemetry in dependency order.
-5. A normal AArch64 image loads `/init`, the service manager, and persistent
-   SSH/SFTP from initramfs. Exact allowlisted diagnostic commands are loaded in
+5. A normal AArch64 image loads `/init`, the service manager, and the persistent
+   console/SSH service from initramfs. Before opening TCP port 22, that service
+   requires a successful external IPv4 DNS response. It then prints the local
+   IPv4 address and verified SSH state at 100% and leaves a functional serial
+   prompt active beside the SSH event loop. Exact allowlisted diagnostics load in
    separate transient address spaces only when invoked over SSH, then reaped.
    QEMU correctness gates use an explicit profile that runs workers and
    diagnostics during boot to retain deterministic fixture markers.
@@ -46,6 +51,8 @@ they do not prove physical performance or production readiness.
 - EL0 code crosses into the kernel only through validated syscall dispatch.
 - Every syscall is associated with a process capability and validates user
   buffers before dereference.
+- Direct serial input/output is restricted to the persistent console owner by
+  `XAIOS_CAP_CONSOLE`; other applications use the kernel log or SSH channels.
 - VFS descriptors and network sockets are process-owned and reclaimed with the
   owning address space.
 - Administrative mutations are role- and capability-gated, replay-protected,

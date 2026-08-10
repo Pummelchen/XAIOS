@@ -27,6 +27,10 @@ documents, and the QEMU release-candidate contract.
 - FreeBSD 15.1, native macOS, and Debian 13 OpenSSH clients pass bounded QEMU
   interoperability suites. This is not a production Internet deployment or an
   independent security audit.
+- The normal QEMU boot requires an external IPv4 A-record response before SSH
+  binds. This checks the configured gateway/DNS path only; it is not a general
+  Internet-health check. Failure leaves the capability-restricted local serial
+  prompt available and reports a numeric startup error.
 - The SSH service deliberately supports four transports and two active
   channels per transport. Fleet-scale identity, audit, replay, and connection
   policy remains unresolved.

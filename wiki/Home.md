@@ -39,6 +39,10 @@ unless the maintainer explicitly reprioritizes them.
 - Normal AArch64 images do not pre-run diagnostic applications. Exact
   allowlisted diagnostics run as transient SSH commands and are reaped after
   exit; deterministic QEMU gates retain a separate boot-fixture profile.
+- Normal QEMU boots use an in-place colored 0-100% progress display. SSH binds
+  only after an external IPv4 DNS response; the final screen reports the guest
+  IPv4 and verified listener state or a numeric error, then leaves the local
+  serial command prompt active.
 - XAIOS uses a native freestanding ABI. FreeBSD is the primary external Unix
   behavioral reference, with a real FreeBSD 15.1 OpenSSH/SFTP/UDP QEMU gate;
   neither FreeBSD nor Linux binary ABI compatibility is claimed.

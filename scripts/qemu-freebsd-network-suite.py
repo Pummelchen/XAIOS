@@ -33,7 +33,7 @@ FREEBSD_ARCHIVE_URL = (
     "https://download.freebsd.org/releases/VM-IMAGES/15.1-RELEASE/"
     f"aarch64/Latest/{FREEBSD_IMAGE_NAME}.xz"
 )
-XAIOS_READY_MARKER = "syscall: net_listen protocol=17 port=2223 sockfd="
+XAIOS_READY_MARKER = "SSH server: up and running (tcp/22)"
 FREEBSD_PASS_MARKER = "XAIOS_FREEBSD_INTEROP: PASS"
 FREEBSD_FAIL_MARKER = "XAIOS_FREEBSD_INTEROP: FAIL"
 

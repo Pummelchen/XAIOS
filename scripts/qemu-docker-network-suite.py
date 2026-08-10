@@ -20,7 +20,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build"
 IMAGE = "xaios-debian13-network-client:13"
-SSH_READY_MARKER = "syscall: net_listen protocol=17 port=2223 sockfd="
+SSH_READY_MARKER = "SSH server: up and running (tcp/22)"
 BOOT_TIMEOUT_SECONDS = 150.0
 CLIENT_TIMEOUT_SECONDS = 600.0
 
@@ -613,7 +613,7 @@ def main() -> int:
     reboot_qemu, reboot_log_file, reboot_log_path, _ = start_qemu_ready(
         "qemu-docker-network-reboot",
         {"XAIOS_QEMU_HOSTFWD_PORT": str(ssh_port)},
-        SSH_READY_MARKER,
+        "Loading: IPv4 internet check",
         persistent_path=persistent_path,
         reset_persistent=False,
     )
@@ -691,10 +691,11 @@ def main() -> int:
         persistent_path.unlink(missing_ok=True)
 
     socket_port = reserve_port(socket.SOCK_STREAM)
+    ipv6_ssh_port = reserve_port(socket.SOCK_STREAM)
     qemu, log_file, ipv6_log_path, persistent_path = start_qemu_ready(
         "qemu-docker-ipv6-suite",
         {
-            "XAIOS_QEMU_HOSTFWD_PORT": "none",
+            "XAIOS_QEMU_HOSTFWD_PORT": str(ipv6_ssh_port),
             "XAIOS_QEMU_NET_SOCKET_HOST": "0.0.0.0",
             "XAIOS_QEMU_NET_SOCKET_PORT": str(socket_port),
         },
@@ -732,7 +733,7 @@ def main() -> int:
             "XAIOS_QEMU_HOSTFWD_PORT": str(no_rng_port),
             "XAIOS_QEMU_RNG": "none",
         },
-        "kernel: /bin/sshd returned to kernel exit_code=1",
+        "SSH server: not running error=2001",
     )
     try:
         banner = b""
@@ -814,7 +815,7 @@ def main() -> int:
     qemu, log_file, invalid_log_path, persistent_path = start_qemu_ready(
         "qemu-docker-invalid-users-suite",
         {"XAIOS_QEMU_HOSTFWD_PORT": str(invalid_port)},
-        "kernel: /bin/sshd returned to kernel exit_code=1",
+        "SSH server: not running error=2202",
     )
     try:
         banner = b""

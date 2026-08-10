@@ -2,7 +2,7 @@ SHELL := /bin/sh
 HOST_CC ?= clang
 HOST_CFLAGS ?= -std=c99 -Wall -Wextra -Werror -pedantic
 
-.PHONY: all bootstrap test image image-qemu-test image-x86_64 engine-cli vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-dry-run qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-dry-run qemu-smoke qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-parallel-network-load qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test docs-check production-source-audit qemu-baseline clean clean-persistent
+.PHONY: all bootstrap test image image-qemu-test image-x86_64 image-x86_64-qemu-test engine-cli vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-dry-run qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-dry-run qemu-smoke qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-parallel-network-load qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test docs-check production-source-audit qemu-baseline clean clean-persistent
 
 all: bootstrap image
 
@@ -19,6 +19,9 @@ image-qemu-test:
 
 image-x86_64:
 	./scripts/build-image-x86_64.sh
+
+image-x86_64-qemu-test:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image-x86_64.sh
 
 vmware-fusion-image: image
 	./scripts/build-vmware-fusion.sh
@@ -92,7 +95,7 @@ qemu-release: image
 qemu-100-gate: image-qemu-test
 	python3 ./scripts/qemu-100-gate.py
 
-qemu-x86_64-smoke: image-x86_64
+qemu-x86_64-smoke: image-x86_64-qemu-test
 	python3 ./scripts/qemu-x86_64-smoke.py
 
 intel-desktop-gate:

@@ -123,7 +123,7 @@ XAIOS/
 │   ├── user/             — Userspace management
 │   │   ├── user.c        — Process table, ELF loading, address space
 │   │   ├── service.c     — Service supervisor (tree, restart policies)
-│   │   └── syscall.c     — Syscall dispatch table (46 syscalls)
+│   │   └── syscall.c     — Syscall dispatch table (49 syscalls)
 │   ├── runtime/          — Kernel runtime services
 │   │   ├── ai_cell.c     — AI cell lifecycle and resource management
 │   │   ├── cpu_ai_runtime.c — Deterministic fixture runtime; production decode unsupported

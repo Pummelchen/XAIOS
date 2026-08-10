@@ -58,7 +58,10 @@
       {"number": 43, "name": "thread_join", "capability": "XAIOS_CAP_THREADS"},
       {"number": 44, "name": "thread_cancel", "capability": "XAIOS_CAP_THREADS"},
       {"number": 45, "name": "thread_exit", "capability": "XAIOS_CAP_THREADS"},
-      {"number": 46, "name": "net_resolve", "capability": "XAIOS_CAP_NET"}
+      {"number": 46, "name": "net_resolve", "capability": "XAIOS_CAP_NET"},
+      {"number": 47, "name": "console_read", "capability": "XAIOS_CAP_CONSOLE"},
+      {"number": 48, "name": "console_write", "capability": "XAIOS_CAP_CONSOLE"},
+      {"number": 49, "name": "net_local_ipv4", "capability": "XAIOS_CAP_NET"}
     ],
     "capabilities": [
       {"bit": 1, "name": "XAIOS_CAP_LOG"},
@@ -90,7 +93,8 @@
       {"bit": 67108864, "name": "XAIOS_CAP_STORAGE_RESIZE"},
       {"bit": 134217728, "name": "XAIOS_CAP_STORAGE_TRIM"},
       {"bit": 268435456, "name": "XAIOS_CAP_MODEL_STAGE"},
-      {"bit": 536870912, "name": "XAIOS_CAP_MODEL_ACTIVATE"}
+      {"bit": 536870912, "name": "XAIOS_CAP_MODEL_ACTIVATE"},
+      {"bit": 1073741824, "name": "XAIOS_CAP_CONSOLE"}
     ]
   },
   "control_protocol": {

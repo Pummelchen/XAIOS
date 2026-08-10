@@ -51,6 +51,9 @@ typedef long long s64;
 #define XAIOS_SYSCALL_THREAD_CANCEL 44ULL
 #define XAIOS_SYSCALL_THREAD_EXIT 45ULL
 #define XAIOS_SYSCALL_NET_RESOLVE 46ULL
+#define XAIOS_SYSCALL_CONSOLE_READ 47ULL
+#define XAIOS_SYSCALL_CONSOLE_WRITE 48ULL
+#define XAIOS_SYSCALL_NET_LOCAL_IPV4 49ULL
 #define XAIOS_THREAD_CPU_ANY (~0ULL)
 
 #define XAIOS_REMOTE_LOGIN_SESSION_EXECUTE 1ULL
@@ -65,6 +68,7 @@ typedef long long s64;
 #define XAIOS_CAP_STORAGE_TRIM 134217728ULL
 #define XAIOS_CAP_MODEL_STAGE 268435456ULL
 #define XAIOS_CAP_MODEL_ACTIVATE 536870912ULL
+#define XAIOS_CAP_CONSOLE 1073741824ULL
 
 #define XAIOS_NET_PROTOCOL_UDP 17ULL
 #define XAIOS_NET_PROTOCOL_TCP 6ULL
@@ -306,6 +310,9 @@ int xaios_remote_login_session(u64 session_id, const char *user,
                                const char *command, char *output,
                                u64 output_size, u64 *out_size);
 int xaios_remote_login_session_close(u64 session_id);
+int xaios_console_read(char *value);
+int xaios_console_write(const char *buffer, u64 size);
+u32 xaios_net_local_ipv4(void);
 int xaios_net_external_session(u64 protocol, u64 port, const void *payload,
                               u64 payload_size, char *output,
                               u64 output_size, u64 *out_size);

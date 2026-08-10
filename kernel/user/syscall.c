@@ -5,6 +5,7 @@
 #include <xaios/control_protocol.h>
 #include <xaios/dns.h>
 #include <xaios/initramfs.h>
+#include <xaios/ipv4.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
 #include <xaios/mutable_fs.h>
@@ -81,6 +82,9 @@ static const xaios_syscall_entry_t g_syscall_table[] = {
     {XAIOS_SYSCALL_THREAD_CANCEL, "thread_cancel", XAIOS_CAP_THREADS},
     {XAIOS_SYSCALL_THREAD_EXIT, "thread_exit", XAIOS_CAP_THREADS},
     {XAIOS_SYSCALL_NET_RESOLVE, "net_resolve", XAIOS_CAP_NET},
+    {XAIOS_SYSCALL_CONSOLE_READ, "console_read", XAIOS_CAP_CONSOLE},
+    {XAIOS_SYSCALL_CONSOLE_WRITE, "console_write", XAIOS_CAP_CONSOLE},
+    {XAIOS_SYSCALL_NET_LOCAL_IPV4, "net_local_ipv4", XAIOS_CAP_NET},
 };
 
 static uint64_t control_operation_capability(uint16_t operation) {
@@ -432,6 +436,38 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     user_process_note_syscall(0);
     klog_write(log_snapshot, arg1);
     return 0;
+  }
+
+  if (syscall == XAIOS_SYSCALL_CONSOLE_READ) {
+    uint8_t value = 0U;
+    if (arg1 != 1U ||
+        vmm_validate_user_buffer(arg0, 1U, XAIOS_VMM_WRITABLE) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "bad-console-read-buffer");
+    }
+    if (!klog_console_read_char(&value)) {
+      user_process_note_syscall(0);
+      return 0U;
+    }
+    bytes_copy((void *)(uintptr_t)arg0, &value, 1U);
+    user_process_note_syscall(0);
+    return 1U;
+  }
+
+  if (syscall == XAIOS_SYSCALL_CONSOLE_WRITE) {
+    char output[XAIOS_SYSCALL_LOG_MAX_BYTES];
+    if (arg1 == 0U || arg1 > sizeof(output) ||
+        vmm_validate_user_buffer(arg0, arg1, 0) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "bad-console-write-buffer");
+    }
+    bytes_copy(output, (const void *)(uintptr_t)arg0, arg1);
+    klog_console_write(output, arg1);
+    user_process_note_syscall(0);
+    return arg1;
+  }
+
+  if (syscall == XAIOS_SYSCALL_NET_LOCAL_IPV4) {
+    user_process_note_syscall(0);
+    return XAIOS_IPV4_GUEST_IP;
   }
 
   if (syscall == XAIOS_SYSCALL_EXIT) {
@@ -1674,6 +1710,9 @@ void syscall_self_test(void) {
   kassert(lookup_syscall(XAIOS_SYSCALL_THREAD_CANCEL) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_THREAD_EXIT) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_NET_RESOLVE) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_CONSOLE_READ) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_CONSOLE_WRITE) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_NET_LOCAL_IPV4) != 0);
   kassert(lookup_syscall(99) == 0);
   klog("syscall: socket ownership self-test passed capacity=%u per_port=%u\n",
        g_kernel_socket_capacity, g_kernel_socket_per_port_limit);

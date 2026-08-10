@@ -64,7 +64,7 @@ TARGETS = [
     "initramfs: child service=/svc/source-index parent=/init restart=never",
     "initramfs: mounted rofs version=2 files=19",
     "initramfs: rofs metadata/config self-test passed",
-    "syscall: table self-test passed entries=46",
+    "syscall: table self-test passed entries=49",
     "virtio-rng: entropy delivery self-test passed",
     "user: process table initialized slots=1024",
     "user: process lifecycle invalid/failed transition self-test passed",
@@ -217,7 +217,9 @@ TARGETS = [
     "/bin/agenttest: agent protocol dispatch passed",
     "/bin/agenttest: complete",
     "kernel: /bin/agenttest returned to kernel exit_code=0",
+    "boot-ui: progress=90 loaded=runtime services loading=IPv4 internet check remaining=2",
     "sshd: Phase 2 runtime ready",
+    "boot-ui: progress=100 loaded=SSH-server loading=complete remaining=0",
 ]
 
 # OR targets: each entry is a list of alternative strings.

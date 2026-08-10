@@ -30,6 +30,13 @@
 
 #define ACPI_HEADER_SIZE UINT32_C(36)
 #define ACPI_MAX_TABLE_SIZE UINT32_C(0x01000000)
+#define EFI_TEXT_CYAN UINT64_C(3)
+#define EFI_TEXT_MAGENTA UINT64_C(5)
+#define EFI_TEXT_LIGHTGRAY UINT64_C(7)
+
+#ifndef XAIOS_BOOT_TEST_APPS
+#define XAIOS_BOOT_TEST_APPS 0
+#endif
 
 typedef struct elf64_ehdr {
   unsigned char e_ident[EI_NIDENT];
@@ -120,6 +127,61 @@ static void loader_puts(efi_system_table_t *system_table,
   }
 
   (void)system_table->con_out->output_string(system_table->con_out, message);
+}
+
+static void loader_diagnostic(efi_system_table_t *system_table,
+                              const efi_char16_t *message) {
+#if XAIOS_BOOT_TEST_APPS
+  loader_puts(system_table, message);
+#else
+  (void)system_table;
+  (void)message;
+#endif
+}
+
+static void loader_set_color(efi_system_table_t *system_table,
+                             uint64_t color) {
+  if (system_table != 0 && system_table->con_out != 0 &&
+      system_table->con_out->set_attribute != 0) {
+    (void)system_table->con_out->set_attribute(system_table->con_out, color);
+  }
+}
+
+static void loader_brand(efi_system_table_t *system_table) {
+  loader_set_color(system_table, EFI_TEXT_MAGENTA);
+  loader_puts(system_table, u"XAI");
+  loader_set_color(system_table, EFI_TEXT_CYAN);
+  loader_puts(system_table, u" OS");
+  loader_set_color(system_table, EFI_TEXT_LIGHTGRAY);
+  loader_puts(system_table, u"\r\n\r\n");
+}
+
+static void loader_progress(efi_system_table_t *system_table,
+                            const efi_char16_t *bar,
+                            const efi_char16_t *loaded,
+                            const efi_char16_t *loading,
+                            const efi_char16_t *remaining) {
+#if XAIOS_BOOT_TEST_APPS
+  (void)system_table;
+  (void)bar;
+  (void)loaded;
+  (void)loading;
+  (void)remaining;
+#else
+  if (system_table != 0 && system_table->con_out != 0 &&
+      system_table->con_out->clear_screen != 0) {
+    (void)system_table->con_out->clear_screen(system_table->con_out);
+  }
+  loader_brand(system_table);
+  loader_puts(system_table, bar);
+  loader_puts(system_table, u"\r\n\r\nLoaded: ");
+  loader_puts(system_table, loaded);
+  loader_puts(system_table, u"\r\nLoading: ");
+  loader_puts(system_table, loading);
+  loader_puts(system_table, u"\r\nRemaining: ");
+  loader_puts(system_table, remaining);
+  loader_puts(system_table, u" components\r\n");
+#endif
 }
 
 static int is_error(efi_status_t status) {
@@ -553,8 +615,15 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
   if (g_image_relocation_anchor == 0) {
     return EFI_LOAD_ERROR;
   }
+#if XAIOS_BOOT_TEST_APPS
+  loader_brand(system_table);
   loader_puts(system_table, u"XAIOS loader starting\r\n");
   loader_puts(system_table, XAIOS_LOADER_TARGET_MESSAGE);
+#else
+  loader_progress(system_table,
+                  u"[........................................] 0%",
+                  u"UEFI firmware", u"system image", u"9");
+#endif
 
   void *kernel_buffer = 0;
   uint64_t kernel_size = 0;
@@ -567,11 +636,12 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
       &system_generation, &rollback_performed);
   if (!is_error(status)) {
     if (rollback_performed != 0U) {
-      loader_puts(system_table,
-                  u"XAIOS loader rolled back an unconfirmed system slot\r\n");
+      loader_diagnostic(
+          system_table,
+          u"XAIOS loader rolled back an unconfirmed system slot\r\n");
     }
-    loader_puts(system_table,
-                u"XAIOS loader loaded verified A/B system slot\r\n");
+    loader_diagnostic(
+        system_table, u"XAIOS loader loaded verified A/B system slot\r\n");
   } else {
     status = open_root(image_handle, system_table, &root);
     if (is_error(status)) {
@@ -584,8 +654,12 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
       loader_puts(system_table, u"XAIOS loader error: missing kernel.elf\r\n");
       return status;
     }
-    loader_puts(system_table, u"XAIOS loader loaded kernel.elf fallback\r\n");
+    loader_diagnostic(system_table,
+                      u"XAIOS loader loaded kernel.elf fallback\r\n");
   }
+  loader_progress(system_table,
+                  u"[##......................................] 5%",
+                  u"system image", u"initial filesystem", u"8");
 
   uint64_t boot_image_base = 0U;
   uint64_t boot_image_size = 0U;
@@ -602,15 +676,22 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
     return status;
   }
   if (boot_image_size != 0U) {
-    loader_puts(system_table, u"XAIOS loader loaded initfs boot image\r\n");
+    loader_diagnostic(system_table,
+                      u"XAIOS loader loaded initfs boot image\r\n");
   }
+  loader_progress(system_table,
+                  u"[####....................................] 10%",
+                  u"initial filesystem", u"kernel image", u"7");
 
   const elf64_ehdr_t *ehdr = 0;
   if (!validate_elf(kernel_buffer, kernel_size, &ehdr)) {
     loader_puts(system_table, XAIOS_LOADER_INVALID_MESSAGE);
     return EFI_LOAD_ERROR;
   }
-  loader_puts(system_table, u"XAIOS loader validated ELF64 kernel\r\n");
+  loader_diagnostic(system_table, u"XAIOS loader validated ELF64 kernel\r\n");
+  loader_progress(system_table,
+                  u"[######..................................] 15%",
+                  u"kernel image", u"kernel segments", u"6");
 
   uint64_t kernel_base = 0;
   uint64_t kernel_end = 0;
@@ -620,9 +701,13 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
     loader_puts(system_table, u"XAIOS loader error: failed to load kernel segments\r\n");
     return status;
   }
-  loader_puts(system_table, u"XAIOS loader copied kernel segments\r\n");
-
+  loader_diagnostic(system_table, u"XAIOS loader copied kernel segments\r\n");
+  loader_progress(system_table,
+                  u"[########................................] 20%",
+                  u"kernel segments", u"hardware handoff", u"5");
+#if XAIOS_BOOT_TEST_APPS
   loader_puts(system_table, u"XAIOS loader exiting boot services\r\n");
+#endif
 
   uint64_t acpi_rsdp = configuration_table_pointer(
       system_table, &EFI_ACPI_20_TABLE_GUID, &EFI_ACPI_TABLE_GUID);

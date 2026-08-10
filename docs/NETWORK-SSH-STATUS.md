@@ -7,6 +7,22 @@ expose XAIOS directly to the Internet.
 
 ## QEMU-Tested Surface
 
+Normal boot now treats SSH readiness as a checked state rather than a startup
+claim. After the persistent VirtIO network is initialized, `/bin/sshd` first
+resolves `example.com` through the configured IPv4 DNS path. It opens TCP port
+22 only after receiving a nonzero A record, then initializes crypto, host keys,
+configuration, users, channels, and the listener before printing `SSH server:
+up and running`. A failed stage is shown on the serial console with a numeric
+error code and leaves the local command prompt running without an SSH listener.
+The configured QEMU address is also printed at completion.
+
+Boot error codes are stable by stage: `1001`-`1006` identify IPv4/DNS status
+failures (`1005` is the bounded DNS timeout), `2001` entropy, `2002` host-key
+initialization, `2101` and above crypto self-tests, `2201` runtime
+configuration, `2202` users, `2203` authorized keys, `2301` the TCP listener,
+and `2302` the companion UDP service. No SSH-ready message is emitted on these
+paths.
+
 The following paths passed from OpenSSH clients on macOS and in an official
 Debian 13 Docker container on this host on 2026-08-04. Both clients exercised
 the same freestanding AArch64 guest. An official FreeBSD 15.1 AArch64 client

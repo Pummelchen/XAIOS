@@ -150,6 +150,7 @@ printf '%s\n' "Building AArch64 UEFI loader..."
   -Wall \
   -Wextra \
   -Werror \
+  -DXAIOS_BOOT_TEST_APPS="$BOOT_TEST_APPS" \
   -I"$ROOT_DIR/boot/uefi" \
   -I"$ROOT_DIR/kernel/include" \
   -c "$ROOT_DIR/boot/uefi/loader_main.c" \
@@ -268,6 +269,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/secondary.o
   $KERNEL_BUILD_DIR/vectors.o
   $KERNEL_BUILD_DIR/kmain.o
+  $KERNEL_BUILD_DIR/boot_ui.o
   $KERNEL_BUILD_DIR/klog.o
   $KERNEL_BUILD_DIR/klog_ring.o
   $KERNEL_BUILD_DIR/telemetry.o
@@ -360,6 +362,7 @@ compile_kernel "$ROOT_DIR/kernel/arch/aarch64/entry.S" "$KERNEL_BUILD_DIR/entry.
 compile_kernel "$ROOT_DIR/kernel/arch/aarch64/secondary.S" "$KERNEL_BUILD_DIR/secondary.o"
 compile_kernel "$ROOT_DIR/kernel/arch/aarch64/vectors.S" "$KERNEL_BUILD_DIR/vectors.o"
 compile_kernel "$ROOT_DIR/kernel/core/kmain.c" "$KERNEL_BUILD_DIR/kmain.o"
+compile_kernel "$ROOT_DIR/kernel/core/boot_ui.c" "$KERNEL_BUILD_DIR/boot_ui.o"
 compile_kernel "$ROOT_DIR/kernel/core/klog.c" "$KERNEL_BUILD_DIR/klog.o"
 compile_kernel "$ROOT_DIR/kernel/core/klog_ring.c" "$KERNEL_BUILD_DIR/klog_ring.o"
 compile_kernel "$ROOT_DIR/kernel/core/telemetry.c" "$KERNEL_BUILD_DIR/telemetry.o"

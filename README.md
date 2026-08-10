@@ -65,6 +65,24 @@ targets, each requiring its own verified architecture adapter and parity gates.
 Approximate routing or execution modes, if added, will be named, reported and
 opt-in; exact target-model semantics are the default.
 
+## Boot and local console
+
+A normal QEMU boot presents one in-place progress display from the UEFI loader
+through service startup. `XAI` is shown in purple and `OS` in cyan; each update
+reports the last completed component, the component in progress, and the number
+still required. Verbose kernel diagnostics remain available to the log system
+without scrolling the normal console. The explicit QEMU test profile retains
+text markers for automated correctness gates.
+
+After the VirtIO IPv4 stack is ready, the persistent service resolves an
+external A record through the configured DNS path before opening TCP port 22.
+Only a successful check permits SSH initialization. The completed screen prints
+the configured guest IPv4 address and either `SSH server: up and running` or a
+numeric startup error. In both cases the serial console remains at a functional
+`admin@xaios:/$` prompt backed by the same session-aware command parser used by
+SSH. This DNS round trip is a QEMU reachability gate, not proof that arbitrary
+Internet destinations or physical networks are production-ready.
+
 ## Current implementation
 
 - AArch64 UEFI/QEMU boot, freestanding kernel, EL0 userspace, VirtIO devices,

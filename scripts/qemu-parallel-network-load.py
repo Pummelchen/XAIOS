@@ -17,7 +17,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build"
 IMAGE = "xaios-debian13-network-client:13"
-SSH_READY_MARKER = "syscall: net_listen protocol=17 port=2223 sockfd="
+SSH_READY_MARKER = "SSH server: up and running (tcp/22)"
 BOOT_TIMEOUT_SECONDS = 150.0
 CLIENT_TIMEOUT_SECONDS = 900.0
 

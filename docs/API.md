@@ -16,7 +16,7 @@ All wrapper functions below are built on this primitive.
 
 | Syscall | Number | Wrapper | Description |
 |---------|-------:|---------|-------------|
-| `XAIOS_SYSCALL_LOG` | 1 | `xaios_log(text)` | Write a string to the kernel log (UART). |
+| `XAIOS_SYSCALL_LOG` | 1 | `xaios_log(text)` | Write a string to the kernel log. Normal interactive boots keep diagnostic log traffic off the display; test profiles and fatal errors expose it on UART. |
 | `XAIOS_SYSCALL_EXIT` | 2 | `xaios_exit(code)` | Terminate the current process. |
 | `XAIOS_SYSCALL_OSCTL` | 3 | `xaios_osctl(command)` | Send a control-plane command (JSON telemetry query). |
 | `XAIOS_SYSCALL_CLOCK_NANOS` | 20 | `xaios_clock_nanos()` | Return monotonic wall-clock nanoseconds since boot. |
@@ -27,6 +27,8 @@ All wrapper functions below are built on this primitive.
 | `XAIOS_SYSCALL_FS_PREAD` | 39 | `xaios_fs_pread(fd, buffer, size, offset)` | Read at an unsigned 64-bit offset without changing the handle cursor. One call is limited to 65,536 bytes. |
 | `XAIOS_SYSCALL_FS_PWRITE` | 40 | `xaios_fs_pwrite(fd, buffer, size, offset)` | Write at an unsigned 64-bit offset without changing the handle cursor. One call is limited to 65,536 bytes. |
 | `XAIOS_SYSCALL_FS_FSYNC` | 41 | `xaios_fs_fsync(fd)` | Request backend durability for writes completed through the handle. |
+| `XAIOS_SYSCALL_CONSOLE_READ` | 47 | `xaios_console_read(byte)` | Nonblocking read of one serial-console byte. Returns 0 when no byte is ready. Requires `XAIOS_CAP_CONSOLE`. |
+| `XAIOS_SYSCALL_CONSOLE_WRITE` | 48 | `xaios_console_write(buffer, size)` | Write at most 4096 bytes directly to the serial console. Requires `XAIOS_CAP_CONSOLE`. |
 
 ## Filesystem
 
@@ -89,6 +91,7 @@ does not remove that backend's capacity limit.
 | `XAIOS_SYSCALL_NET_SEND` | 32 | `xaios_net_send(sockfd, buf, size, bytes)` / `xaios_net_sendto(...)` | Send TCP stream data or a UDP datagram. One call is limited to 16,384 bytes; the kernel snapshots the payload before use. |
 | `XAIOS_SYSCALL_NET_CLOSE` | 33 | `xaios_net_close(sockfd)` | Close a socket. |
 | `XAIOS_SYSCALL_NET_RESOLVE` | 46 | `xaios_net_resolve(hostname, ipv4)` | Poll or start a bounded asynchronous A-record lookup. Returns `XAIOS_ERR_BUSY` while pending and uses a TTL cache. |
+| `XAIOS_SYSCALL_NET_LOCAL_IPV4` | 49 | `xaios_net_local_ipv4()` | Return the configured local IPv4 address in network byte order. |
 
 ## SMP and Threads
 
@@ -280,6 +283,7 @@ Each process is launched with a capability bitmask. Syscalls are rejected if the
 | `XAIOS_CAP_STORAGE_TRIM` | 134217728 | Free-space trim/discard lifecycle |
 | `XAIOS_CAP_MODEL_STAGE` | 268435456 | ModelFS registration, staging cleanup and package verification |
 | `XAIOS_CAP_MODEL_ACTIVATE` | 536870912 | Verified package activation |
+| `XAIOS_CAP_CONSOLE` | 1073741824 | Direct serial-console input/output; reserved for the persistent console owner |
 
 ## Data Types
 

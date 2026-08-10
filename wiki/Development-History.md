@@ -3,6 +3,20 @@
 This page summarizes significant implementation and validation changes. Git
 commits, source code, and machine-readable test artifacts remain authoritative.
 
+## 2026-08-10 - verified boot progress and local console
+
+- Added an in-place 0-100% UEFI/kernel/service progress display with the purple
+  `XAI` and cyan `OS` identity, completed/current component text, and a remaining
+  component count.
+- Kept normal serial output quiet while retaining diagnostic log capture and the
+  explicit textual QEMU fixture profile.
+- Required a successful external IPv4 DNS response before SSH binds TCP port
+  22, and report the configured IPv4 plus verified listener status or a numeric
+  startup error.
+- Added capability-restricted nonblocking console I/O and a local Unix-like
+  prompt that shares the session-aware command parser with SSH while the SSH
+  event loop remains active.
+
 ## 2026-08-10 - on-demand diagnostic applications
 
 - Removed workers and diagnostic applications from the normal boot lifecycle;

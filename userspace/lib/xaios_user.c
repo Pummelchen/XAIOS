@@ -65,6 +65,20 @@ void xaios_log(const char *text) {
   (void)xaios_syscall3(XAIOS_SYSCALL_LOG, (u64)text, xaios_strlen(text), 0);
 }
 
+int xaios_console_read(char *value) {
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_CONSOLE_READ, (u64)value, 1U, 0U);
+  return rc == ~0ULL ? -1 : (int)(s64)rc;
+}
+
+int xaios_console_write(const char *buffer, u64 size) {
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_CONSOLE_WRITE, (u64)buffer, size, 0U);
+  return rc == ~0ULL ? -1 : (int)(s64)rc;
+}
+
+u32 xaios_net_local_ipv4(void) {
+  return (u32)xaios_syscall3(XAIOS_SYSCALL_NET_LOCAL_IPV4, 0U, 0U, 0U);
+}
+
 void xaios_exit(int code) {
   (void)xaios_syscall3(XAIOS_SYSCALL_EXIT, (u64)(u32)code, 0, 0);
   for (;;) {

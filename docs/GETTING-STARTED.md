@@ -48,6 +48,14 @@ The AArch64 launcher defaults to TCG, including on Apple Silicon. HVF is an
 explicit experimental override (`XAIOS_QEMU_ACCEL=hvf`) because current
 QEMU/HVF exception handling may abort instead of returning control to the guest.
 
+The normal image uses an in-place 0-100% boot display rather than scrolling
+diagnostic output. At completion it prints the configured IPv4 address, the
+verified SSH listener state, and a local `admin@xaios:/$` prompt. Enter commands
+directly in the QEMU terminal; Backspace, `Ctrl-C`, and `Ctrl-L` are supported.
+SSH port 22 is not bound until a bounded external IPv4 DNS lookup succeeds. If
+that check or SSH initialization fails, the screen reports a numeric error and
+keeps the local prompt available for diagnosis.
+
 `make qemu-smmu-gate` additionally needs the test-only `iommu-testdev` from
 upstream QEMU commit `6ce361b02c825b4a12a9684c47342859ee967cb2`.
 `scripts/provision-qemu-smmu-testdev.sh` builds and verifies that exact revision;

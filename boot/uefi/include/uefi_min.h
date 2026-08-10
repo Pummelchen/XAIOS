@@ -56,6 +56,16 @@ struct efi_simple_text_output_protocol {
   efi_status_t(EFIAPI *output_string)(
       efi_simple_text_output_protocol_t *self,
       const efi_char16_t *string);
+  void *test_string;
+  void *query_mode;
+  void *set_mode;
+  efi_status_t(EFIAPI *set_attribute)(
+      efi_simple_text_output_protocol_t *self, uint64_t attribute);
+  efi_status_t(EFIAPI *clear_screen)(
+      efi_simple_text_output_protocol_t *self);
+  void *set_cursor_position;
+  void *enable_cursor;
+  void *mode;
 };
 
 struct efi_boot_services {

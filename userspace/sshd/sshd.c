@@ -23,6 +23,19 @@ static sshd_stats_t g_server_stats;
 static xaios_admin_config_user_t g_runtime_config;
 static uint32_t g_password_auth_enabled;
 
+#define SSHD_CONSOLE_SESSION_ID UINT64_C(0xfffffffffffffffe)
+#define SSHD_CONSOLE_COMMAND_MAX UINT32_C(256)
+#define SSHD_CONSOLE_OUTPUT_MAX UINT32_C(32768)
+#define SSHD_IPV4_CHECK_TIMEOUT_NS UINT64_C(15000000000)
+
+static char g_console_command[SSHD_CONSOLE_COMMAND_MAX];
+static char g_console_output[SSHD_CONSOLE_OUTPUT_MAX];
+static uint32_t g_console_command_length;
+static uint32_t g_console_ignore_lf;
+static uint32_t g_console_ipv4;
+static uint32_t g_console_ssh_ready;
+static int32_t g_console_boot_error;
+
 static uint64_t fnv1a64_zero_range(const void *data, uint64_t size,
                                    uint64_t zero_offset,
                                    uint64_t zero_size) {
@@ -354,6 +367,151 @@ static int conn_packet_read_encrypted(ssh_connection_t *conn,
 /* ---- Timer ---- */
 static uint64_t timer_now(void) {
   return xaios_clock_nanos();
+}
+
+static void console_write(const char *text) {
+  if (text != 0) {
+    (void)xaios_console_write(text, xaios_strlen(text));
+  }
+}
+
+static void console_write_ipv4(uint32_t address) {
+  char line[32];
+  u64 offset = 0U;
+  xaios_memzero(line, sizeof(line));
+  xaios_append_u64(line, sizeof(line), &offset, (address >> 24U) & 0xffU);
+  xaios_append_cstr(line, sizeof(line), &offset, ".");
+  xaios_append_u64(line, sizeof(line), &offset, (address >> 16U) & 0xffU);
+  xaios_append_cstr(line, sizeof(line), &offset, ".");
+  xaios_append_u64(line, sizeof(line), &offset, (address >> 8U) & 0xffU);
+  xaios_append_cstr(line, sizeof(line), &offset, ".");
+  xaios_append_u64(line, sizeof(line), &offset, address & 0xffU);
+  console_write(line);
+}
+
+static void console_write_error(int32_t status) {
+  char line[32];
+  u64 offset = 0U;
+  uint64_t magnitude;
+  xaios_memzero(line, sizeof(line));
+  if (status < 0) {
+    xaios_append_cstr(line, sizeof(line), &offset, "-");
+    magnitude = (uint64_t)(-(status + 1)) + 1U;
+  } else {
+    magnitude = (uint64_t)status;
+  }
+  xaios_append_u64(line, sizeof(line), &offset, magnitude);
+  console_write(line);
+}
+
+static void console_prompt(void) {
+  console_write("\x1b[1;32madmin@xaios\x1b[0m:\x1b[1;34m/\x1b[0m$ ");
+}
+
+static void console_render_boot_status(void) {
+  console_write("\x1b[2J\x1b[H\x1b[1;35mXAI\x1b[0m ");
+  console_write("\x1b[1;36mOS\x1b[0m\n\n");
+  console_write("[########################################] 100%\n\n");
+  console_write("Loaded: system services\nLoading: complete\n");
+  console_write("Remaining: 0 components\n\nIPv4: ");
+  console_write_ipv4(g_console_ipv4);
+  console_write("\nSSH server: ");
+  if (g_console_ssh_ready != 0U) {
+    console_write("up and running (tcp/22)\n\n");
+  } else {
+    console_write("not running error=");
+    console_write_error(g_console_boot_error);
+    console_write("\n\n");
+  }
+  console_prompt();
+}
+
+static void console_render_ssh_loading(void) {
+  console_write("\x1b[H\x1b[J\x1b[1;35mXAI\x1b[0m ");
+  console_write("\x1b[1;36mOS\x1b[0m\n\n");
+  console_write("[######################################..] 95%\n\n");
+  console_write("Loaded: IPv4 internet access\nLoading: SSH server\n");
+  console_write("Remaining: 1 component\n");
+}
+
+static int verify_external_ipv4(void) {
+  uint32_t resolved = 0U;
+  uint64_t started = xaios_clock_nanos();
+  uint64_t deadline = started > UINT64_MAX - SSHD_IPV4_CHECK_TIMEOUT_NS
+                          ? UINT64_MAX
+                          : started + SSHD_IPV4_CHECK_TIMEOUT_NS;
+  int status = XAIOS_ERR_BUSY;
+  while (status == XAIOS_ERR_BUSY && xaios_clock_nanos() < deadline) {
+    status = xaios_net_resolve("example.com", &resolved);
+  }
+  if (status != 0) return status;
+  return resolved == 0U ? -4 : 0;
+}
+
+static void console_execute_command(void) {
+  g_console_command[g_console_command_length] = '\0';
+  console_write("\n");
+  if (g_console_command_length == 0U) {
+    console_prompt();
+    return;
+  }
+  if (ssh_str_eq(g_console_command, "clear")) {
+    console_write("\x1b[2J\x1b[H");
+  } else if (ssh_str_eq(g_console_command, "exit") ||
+             ssh_str_eq(g_console_command, "logout") ||
+             ssh_str_eq(g_console_command, "quit")) {
+    (void)xaios_remote_login_session_close(SSHD_CONSOLE_SESSION_ID);
+    console_write("Local console session reset\n");
+  } else {
+    u64 output_bytes = 0U;
+    xaios_memzero(g_console_output, sizeof(g_console_output));
+    int status = xaios_remote_login_session(
+        SSHD_CONSOLE_SESSION_ID, "admin", g_console_command, g_console_output,
+        sizeof(g_console_output), &output_bytes);
+    if (output_bytes != 0U) {
+      (void)xaios_console_write(g_console_output, output_bytes);
+      if (g_console_output[output_bytes - 1U] != '\n') console_write("\n");
+    }
+    if (status < 0) {
+      console_write("command failed: status=");
+      console_write_error(status);
+      console_write("\n");
+    }
+  }
+  g_console_command_length = 0U;
+  console_prompt();
+}
+
+static void console_tick(void) {
+  for (uint32_t count = 0U; count < 32U; ++count) {
+    char value = 0;
+    int received = xaios_console_read(&value);
+    if (received <= 0) return;
+    if (value == '\n' && g_console_ignore_lf != 0U) {
+      g_console_ignore_lf = 0U;
+      continue;
+    }
+    g_console_ignore_lf = 0U;
+    if (value == '\r' || value == '\n') {
+      g_console_ignore_lf = value == '\r' ? 1U : 0U;
+      console_execute_command();
+    } else if (value == '\b' || (uint8_t)value == UINT8_C(0x7f)) {
+      if (g_console_command_length != 0U) {
+        --g_console_command_length;
+        console_write("\b \b");
+      }
+    } else if ((uint8_t)value == UINT8_C(0x03)) {
+      g_console_command_length = 0U;
+      console_write("^C\n");
+      console_prompt();
+    } else if ((uint8_t)value == UINT8_C(0x0c)) {
+      console_render_boot_status();
+    } else if (value >= ' ' && value <= '~' &&
+               g_console_command_length + 1U < sizeof(g_console_command)) {
+      g_console_command[g_console_command_length++] = value;
+      (void)xaios_console_write(&value, 1U);
+    }
+  }
 }
 
 /* ---- User Database ---- */
@@ -1595,49 +1753,76 @@ static int process_connection(ssh_connection_t *conn) {
 
 /* ---- Cooperative Polling Main Loop ---- */
 int sshd_run(void) {
+  u64 listen_fd = 0U;
+  u64 udp_fd = 0U;
+  int crypto_status;
+  int network_status;
+
+  g_console_ipv4 = xaios_net_local_ipv4();
+  g_console_ssh_ready = 0U;
+  g_console_boot_error = 0;
+  network_status = verify_external_ipv4();
+  if (network_status != 0) {
+    ssh_log(SSH_LOG_ERROR,
+            "External IPv4 DNS check failed; refusing SSH startup status=%u\n",
+            (uint64_t)(uint32_t)(-network_status));
+    g_console_boot_error = 1000 - network_status;
+    goto service_loop;
+  }
+  console_render_ssh_loading();
+
   if (crypto_random_init() != 0) {
     ssh_log(SSH_LOG_ERROR, "Secure entropy unavailable; refusing SSH startup\n");
-    return -1;
+    g_console_boot_error = 2001;
+    goto service_loop;
   }
   if (ssh_host_key_init() != 0) {
     ssh_log(SSH_LOG_ERROR, "Persistent SSH host key unavailable\n");
-    return -1;
+    g_console_boot_error = 2002;
+    goto service_loop;
   }
-  int crypto_status = ssh_crypto_self_test();
+  crypto_status = ssh_crypto_self_test();
   if (crypto_status != 0) {
     ssh_log(SSH_LOG_ERROR, "SSH crypto self-test failed check=%u\n",
             (uint64_t)(uint32_t)(-crypto_status));
-    return -1;
+    g_console_boot_error = 2100 - crypto_status;
+    goto service_loop;
   }
   ssh_log(SSH_LOG_INFO, "SSH crypto self-test passed\n");
 
   if (load_runtime_config() != 0) {
     ssh_log(SSH_LOG_ERROR, "SSH runtime configuration rejected\n");
-    return -1;
+    g_console_boot_error = 2201;
+    goto service_loop;
   }
 
   if (load_user_database() != 0) {
     ssh_log(SSH_LOG_ERROR, "SSH user database rejected\n");
-    return -1;
+    g_console_boot_error = 2202;
+    goto service_loop;
   }
   (void)load_authorized_keys();
-  if (g_authorized_database_invalid != 0U) return -1;
+  if (g_authorized_database_invalid != 0U) {
+    g_console_boot_error = 2203;
+    goto service_loop;
+  }
 
   ssh_mem_zero(&g_server_stats, sizeof(g_server_stats));
 
   ssh_conn_pool_init();
 
-  u64 listen_fd = 0;
   if (xaios_net_listen(SSHD_PORT, &listen_fd) != 0) {
     ssh_log(SSH_LOG_ERROR, "Failed to listen on port %u\n", SSHD_PORT);
-    return -1;
+    g_console_boot_error = 2301;
+    goto service_loop;
   }
-  u64 udp_fd = 0;
   if (xaios_net_bind_udp(SSHD_UDP_ECHO_PORT, &udp_fd) != 0) {
     ssh_log(SSH_LOG_ERROR, "Failed to bind UDP port %u\n",
             SSHD_UDP_ECHO_PORT);
     xaios_net_close(listen_fd);
-    return -1;
+    listen_fd = 0U;
+    g_console_boot_error = 2302;
+    goto service_loop;
   }
   ssh_log(SSH_LOG_INFO, "SSH server listening on port %u\n", SSHD_PORT);
   ssh_log(SSH_LOG_INFO, "UDP echo service listening on port %u\n",
@@ -1647,9 +1832,14 @@ int sshd_run(void) {
 
   ssh_channel_init();
   xaios_log("sshd: Phase 2 runtime ready\n");
+  xaios_log("boot-ui: progress=100 loaded=SSH-server loading=complete remaining=0\n");
+  g_console_ssh_ready = 1U;
 
+service_loop:
+  console_render_boot_status();
   for (;;) {
-    for (uint32_t i = 0; i < 4U; ++i) {
+    console_tick();
+    for (uint32_t i = 0; g_console_ssh_ready != 0U && i < 4U; ++i) {
       uint8_t udp_buffer[1400];
       xaios_ip_addr_user_t source_addr;
       u64 bytes_read = 0;
@@ -1669,7 +1859,7 @@ int sshd_run(void) {
     }
 
     /* Try to accept new connections (non-blocking) */
-    for (uint32_t i = 0; i < 4; ++i) {
+    for (uint32_t i = 0; g_console_ssh_ready != 0U && i < 4U; ++i) {
       u64 conn_fd = 0;
       xaios_ip_addr_user_t peer_addr;
       u64 peer_port = 0;
@@ -1768,7 +1958,7 @@ close_conn:
         ssh_log(SSH_LOG_INFO, "Connection closed\n");
       }
     }
-    if (ssh_channel_tick(timer_now()) != 0) {
+    if (g_console_ssh_ready != 0U && ssh_channel_tick(timer_now()) != 0) {
       ssh_log(SSH_LOG_WARN, "Interactive channel refresh failed\n");
     }
   }

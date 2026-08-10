@@ -10,14 +10,18 @@
 #define PL011_UARTDR 0x00U
 #define PL011_UARTFR 0x18U
 #define PL011_UARTFR_TXFF UINT32_C(0x20)
+#define PL011_UARTFR_RXFE UINT32_C(0x10)
 #define UART_16550_THR UINT32_C(0)
+#define UART_16550_RBR UINT32_C(0)
 #define UART_16550_LSR UINT32_C(5)
 #define UART_16550_LSR_THRE UINT8_C(0x20)
+#define UART_16550_LSR_DR UINT8_C(0x01)
 
 static volatile uint32_t *g_uart_base;
 static uint32_t g_uart_kind;
 static uint32_t g_uart_reg_shift;
 static xaios_spinlock_t g_klog_lock;
+static uint32_t g_log_output_enabled = 1U;
 
 /* Line buffer for ring capture */
 static char g_klog_line[XAIOS_KLOG_LINE_MAX];
@@ -56,10 +60,12 @@ static void uart_putc(char c) {
 }
 
 static void klog_char(char c) {
-  if (c == '\n') {
-    uart_putc('\r');
+  if (g_log_output_enabled != 0U) {
+    if (c == '\n') {
+      uart_putc('\r');
+    }
+    uart_putc(c);
   }
-  uart_putc(c);
 
   /* Also capture to line buffer for ring */
   if (g_klog_line_pos < XAIOS_KLOG_LINE_MAX - 1U) {
@@ -81,6 +87,48 @@ void klog_init(const xaios_boot_info_t *boot) {
   g_uart_kind = boot->uart_kind;
   g_uart_reg_shift = boot->uart_reg_shift;
   xaios_spin_init(&g_klog_lock);
+  g_log_output_enabled = 1U;
+}
+
+void klog_console_set_log_output(uint32_t enabled) {
+  g_log_output_enabled = enabled != 0U ? 1U : 0U;
+}
+
+void klog_console_write(const char *message, uint64_t length) {
+  if (message == 0 || length == 0U) return;
+  xaios_spin_lock(&g_klog_lock);
+  for (uint64_t i = 0U; i < length; ++i) {
+    if (message[i] == '\n') uart_putc('\r');
+    uart_putc(message[i]);
+  }
+  xaios_spin_unlock(&g_klog_lock);
+}
+
+int klog_console_read_char(uint8_t *value) {
+  if (value == 0 || g_uart_base == 0) return 0;
+#if defined(__aarch64__)
+  if (g_uart_kind == XAIOS_UART_PL011) {
+    if ((g_uart_base[PL011_UARTFR / 4] & PL011_UARTFR_RXFE) != 0U) return 0;
+    *value = (uint8_t)g_uart_base[PL011_UARTDR / 4];
+    return 1;
+  }
+  if (g_uart_kind == XAIOS_UART_16550_MMIO) {
+    volatile uint8_t *base = (volatile uint8_t *)(uintptr_t)g_uart_base;
+    uint32_t lsr_offset = UART_16550_LSR << g_uart_reg_shift;
+    if ((base[lsr_offset] & UART_16550_LSR_DR) == 0U) return 0;
+    *value = base[UART_16550_RBR << g_uart_reg_shift];
+    return 1;
+  }
+#elif defined(__x86_64__)
+  uint16_t base = (uint16_t)(uintptr_t)g_uart_base;
+  uint8_t status;
+  __asm__ volatile("inb %1, %0" : "=a"(status)
+                   : "Nd"((uint16_t)(base + UART_16550_LSR)));
+  if ((status & UART_16550_LSR_DR) == 0U) return 0;
+  __asm__ volatile("inb %1, %0" : "=a"(*value) : "Nd"(base));
+  return 1;
+#endif
+  return 0;
 }
 
 void klog_puts(const char *message) {
@@ -220,6 +268,9 @@ static const char *log_level_str(xaios_log_level_t level) {
 }
 
 void klog_level(xaios_log_level_t level, const char *fmt, ...) {
+  if (level == XAIOS_LOG_PANIC || level == XAIOS_LOG_ERROR) {
+    klog_console_set_log_output(1U);
+  }
   uint64_t wall_ns = wall_time_now_ns();
   uint64_t sec = wall_ns / UINT64_C(1000000000);
   uint64_t nsec = wall_ns % UINT64_C(1000000000);

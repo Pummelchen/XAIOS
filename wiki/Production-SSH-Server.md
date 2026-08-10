@@ -29,6 +29,12 @@ asynchronous DNS, malformed/reset/reordered/retransmitted TCP, and out-of-order
 IPv4/IPv6 fragment reassembly are in
 [`docs/NETWORK-SSH-STATUS.md`](https://github.com/Pummelchen/XAIOS/blob/main/docs/NETWORK-SSH-STATUS.md).
 
+On normal boot, the service first requires an external IPv4 A-record response.
+It does not open TCP port 22 until that check and all SSH initialization stages
+succeed. The final serial screen prints the configured guest IPv4 and a verified
+listener state. Failure reports a stage-specific numeric error and retains the
+local capability-restricted command prompt without advertising SSH readiness.
+
 The server currently negotiates classical `curve25519-sha256` only; it does not
 yet implement an OpenSSH hybrid post-quantum KEX such as
 `mlkem768x25519-sha256`. OpenSSH 10 therefore warns on a direct connection.

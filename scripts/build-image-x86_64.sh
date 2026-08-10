@@ -6,6 +6,7 @@ BUILD_DIR="$ROOT_DIR/build"
 EFI_BUILD_DIR="$BUILD_DIR/uefi-x86_64"
 KERNEL_BUILD_DIR="$BUILD_DIR/kernel-x86_64"
 IMAGE_PATH="${XAIOS_X86_64_IMAGE:-$BUILD_DIR/xaios-x86_64.img}"
+BOOT_TEST_APPS="${XAIOS_BOOT_TEST_APPS:-0}"
 LOADER_OBJ="$EFI_BUILD_DIR/loader_main.obj"
 LOADER_SYSTEM_OBJ="$EFI_BUILD_DIR/system_volume_loader.obj"
 LOADER_SHA256_OBJ="$EFI_BUILD_DIR/sha256.obj"
@@ -140,6 +141,7 @@ printf '%s\n' "Building x86_64 UEFI loader..."
 "$CLANG" \
   --target=x86_64-unknown-windows \
   -DXAIOS_UEFI_TARGET_X86_64=1 \
+  -DXAIOS_BOOT_TEST_APPS="$BOOT_TEST_APPS" \
   -ffreestanding \
   -fno-stack-protector \
   -fno-builtin \

@@ -7,6 +7,7 @@
 #include <xaios/arena.h>
 #include <xaios/arp.h>
 #include <xaios/boot_info.h>
+#include <xaios/boot_ui.h>
 #include <xaios/core_lease.h>
 #include <xaios/control_protocol.h>
 #include <xaios/dns.h>
@@ -108,7 +109,7 @@ static void early_spinlock_self_test(void) {
   klog("spinlock: early single-core try-lock self-test passed\n");
 }
 
-static void run_user_app(const char *path, uint32_t pid, uint64_t capabilities) {
+static int run_user_app(const char *path, uint32_t pid, uint64_t capabilities) {
   const xaios_initramfs_file_t *file = 0;
   xaios_user_process_t process;
   kassert(initramfs_lookup(path, &file) == XAIOS_OK);
@@ -121,6 +122,7 @@ static void run_user_app(const char *path, uint32_t pid, uint64_t capabilities) 
   klog("kernel: %s returned to kernel exit_code=%d\n",
        path, exit_code);
   user_process_reclaim_address_space(&process);
+  return exit_code;
 }
 
 static void map_mmio_range(uint64_t start, uint64_t size) {
@@ -137,6 +139,8 @@ static void map_mmio_range(uint64_t start, uint64_t size) {
 
 void kmain(const xaios_boot_info_t *boot) {
   klog_init(boot);
+  boot_ui_begin();
+  boot_ui_update(25U, "hardware handoff", "CPU and interrupts", 5U);
   klog("XAIOS kernel starting\n");
   kassert(boot->magic == XAIOS_BOOT_INFO_MAGIC);
   kassert(boot->version == XAIOS_BOOT_INFO_VERSION);
@@ -155,6 +159,7 @@ void kmain(const xaios_boot_info_t *boot) {
   stack_canary_self_test();
   smp_init_qemu_virt(boot);
   smp_self_test();
+  boot_ui_update(35U, "CPU and interrupts", "memory management", 4U);
 
   numa_init(boot);
   numa_self_test();
@@ -162,6 +167,7 @@ void kmain(const xaios_boot_info_t *boot) {
   pmm_init(boot);
   vmm_init(boot);
   vmm_self_test();
+  boot_ui_update(45U, "memory management", "devices and storage", 3U);
 
   /* Map SMMU MMIO and initialize */
   map_mmio_range(XAIOS_SMMU_MMIO_BASE, 0x10000);
@@ -300,6 +306,7 @@ void kmain(const xaios_boot_info_t *boot) {
   system_slot_self_test();
   update_self_test();
   update_delivery_self_test();
+  boot_ui_update(60U, "devices and storage", "kernel services", 2U);
   virtio_net_self_test();
   arp_self_test();
   ipv4_self_test();
@@ -326,6 +333,7 @@ void kmain(const xaios_boot_info_t *boot) {
   ai_cell_self_test();
   agent_protocol_self_test();
   control_protocol_self_test();
+  boot_ui_update(70U, "kernel services", "userspace services", 2U);
   telemetry_emit_boot_summary();
 
   /* Flush logs to persistent storage */
@@ -397,8 +405,10 @@ void kmain(const xaios_boot_info_t *boot) {
     dns_init();
     dns_configure(UINT32_C(0x08080808));
     klog("kernel: persistent network stack enabled\n");
+    boot_ui_update(80U, "network stack", "scheduler", 2U);
   } else {
     klog("kernel: persistent network init skipped\n");
+    boot_ui_error("network-stack", XAIOS_ERR_IO);
   }
 
   /* Initialize preemptive scheduler infrastructure */
@@ -415,6 +425,7 @@ void kmain(const xaios_boot_info_t *boot) {
   kassert(smp_release_secondary_schedulers() == XAIOS_OK);
   xaios_thread_self_test();
   klog("kernel: preemptive scheduler infrastructure enabled\n");
+  boot_ui_update(85U, "scheduler", "runtime services", 2U);
 
 #if XAIOS_BOOT_TEST_APPS
   for (uint32_t pid = 3; pid <= 5; ++pid) {
@@ -440,7 +451,8 @@ void kmain(const xaios_boot_info_t *boot) {
 
   const uint64_t sshd_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_FS_READ |
       XAIOS_CAP_FS_WRITE | XAIOS_CAP_NET_SOCKET | XAIOS_CAP_REMOTE_LOGIN |
-      XAIOS_CAP_TIME | XAIOS_CAP_RANDOM | XAIOS_CAP_CONTROL_QUERY |
+      XAIOS_CAP_NET | XAIOS_CAP_TIME | XAIOS_CAP_RANDOM |
+      XAIOS_CAP_CONSOLE | XAIOS_CAP_CONTROL_QUERY |
       XAIOS_CAP_CONTROL_ADMIN | XAIOS_CAP_STORAGE_READ |
       XAIOS_CAP_STORAGE_MOUNT | XAIOS_CAP_STORAGE_FORMAT |
       XAIOS_CAP_STORAGE_PARTITION | XAIOS_CAP_STORAGE_REPAIR |
@@ -488,6 +500,8 @@ void kmain(const xaios_boot_info_t *boot) {
   klog("kernel: boot diagnostics disabled; utilities are SSH on-demand\n");
 #endif
 
+  boot_ui_update(90U, "runtime services", "IPv4 internet check", 2U);
+
   telemetry_emit_boot_summary();
 
   if (system_slot_available() != 0U) {
@@ -495,7 +509,9 @@ void kmain(const xaios_boot_info_t *boot) {
   }
 
   klog("kernel: starting persistent /bin/sshd service\n");
-  run_user_app("/bin/sshd", XAIOS_BOOT_TEST_APPS ? 18U : 3U, sshd_caps);
+  int sshd_exit =
+      run_user_app("/bin/sshd", XAIOS_BOOT_TEST_APPS ? 18U : 3U, sshd_caps);
+  boot_ui_error("sshd", sshd_exit);
 
   for (;;) {
     xaios_cpu_wait();
