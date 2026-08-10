@@ -145,8 +145,15 @@ security boundary.
 XAIOS_QEMU_HOSTFWD_PORT=2299 XAIOS_QEMU_HOSTFWD_UDP_PORT=2298 make qemu
 ```
 
-From a second terminal, use OpenSSH/SFTP against `127.0.0.1:2299` and send UDP
-to `127.0.0.1:2298`. Direct IPv6/TCP testing uses QEMU's framed socket backend:
+From a second terminal, use the repository launcher for a quiet OpenSSH session
+with persistent host-key checking. It accepts a remote command after `--`:
+
+```sh
+scripts/ssh-xaios-qemu.sh -- htop --all --sample-ms 250 --cpu-count 4
+```
+
+Use SFTP against `127.0.0.1:2299` and send UDP to `127.0.0.1:2298`. Direct
+IPv6/TCP testing uses QEMU's framed socket backend:
 
 ```sh
 XAIOS_QEMU_HOSTFWD_PORT=none XAIOS_QEMU_NET_SOCKET_PORT=12345 make qemu

@@ -29,6 +29,14 @@ asynchronous DNS, malformed/reset/reordered/retransmitted TCP, and out-of-order
 IPv4/IPv6 fragment reassembly are in
 [`docs/NETWORK-SSH-STATUS.md`](https://github.com/Pummelchen/XAIOS/blob/main/docs/NETWORK-SSH-STATUS.md).
 
+The server currently negotiates classical `curve25519-sha256` only; it does not
+yet implement an OpenSSH hybrid post-quantum KEX such as
+`mlkem768x25519-sha256`. OpenSSH 10 therefore warns on a direct connection.
+For local QEMU development, `scripts/ssh-xaios-qemu.sh` uses a persistent
+project-local known-hosts file and suppresses that client notice for this scoped
+connection. This convenience does not add post-quantum protection or relax the
+production security gate.
+
 The guest validates SSH PTY and resize dimensions. Running `htop` on a PTY
 selects a native XAIOS-generated live ANSI monitor with sampled CPU/memory
 meters, process selection and paging, CPU paging, sorting, filtering, help and
@@ -61,6 +69,8 @@ release builds.
   secret-storage/replay-retention policy beyond the bounded Phase 2 stores.
 - Extended rate-limit, timeout, repeated-loss, and long concurrent-session soak.
 - Independent cryptographic and security review.
+- Reviewed hybrid post-quantum SSH KEX, interoperability and downgrade-policy
+  validation.
 - Long-run physical-hardware soak, recovery, logging, and update validation.
 
 ## Validation Commands

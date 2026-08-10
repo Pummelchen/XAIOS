@@ -107,6 +107,10 @@ opt-in; exact target-model semantics are the default.
   non-PTY output stays a plain one-shot snapshot for automation. The htop sample
   interval uses an interrupt-backed idle wait that is not charged as artificial
   100% housekeeping-core load.
+  `scripts/ssh-xaios-qemu.sh` provides a quiet local QEMU client with persistent
+  host-key checking for interactive commands such as `htop`. The server still
+  negotiates classical `curve25519-sha256`; hybrid post-quantum SSH key exchange
+  remains a production security gate.
   SSH has no built-in password and fails closed without secure entropy. These
   QEMU checks complete the declared core-OS correctness gate; they do not approve
   Internet exposure or physical production deployment.

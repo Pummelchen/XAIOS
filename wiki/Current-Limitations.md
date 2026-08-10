@@ -30,6 +30,10 @@ documents, and the QEMU release-candidate contract.
 - The SSH service deliberately supports four transports and two active
   channels per transport. Fleet-scale identity, audit, replay, and connection
   policy remains unresolved.
+- SSH key exchange is classical `curve25519-sha256` only. Hybrid post-quantum
+  key exchange, OpenSSH interoperability and downgrade-policy review remain
+  production security gates; the quiet local QEMU launcher only suppresses the
+  OpenSSH 10 client notice for that development connection.
 - DNS performs asynchronous external A-record resolution with timeout, retry,
   cache, and a QEMU-verified cache hit. DNSSEC, TCP fallback, complete AAAA
   application results, and deployment resolver policy remain absent.

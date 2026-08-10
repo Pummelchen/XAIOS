@@ -113,6 +113,13 @@ The transport currently negotiates one exact suite:
 - `hmac-sha2-256` integrity;
 - no compression.
 
+This is a classical key exchange. XAIOS does not yet implement
+`mlkem768x25519-sha256` or another hybrid post-quantum SSH KEX. OpenSSH 10 and
+later therefore emit a store-now/decrypt-later warning for direct connections.
+The local QEMU launcher below suppresses that client notice only for the scoped
+development connection; it does not add post-quantum protection or change the
+production acceptance boundary.
+
 Fresh randomness comes from a VirtIO RNG-backed ChaCha20 DRBG. SSH startup is
 fail-closed when secure entropy is unavailable. The host key is created once,
 stored on the persistent mutable filesystem, flushed to the block device, and
@@ -210,13 +217,21 @@ XAIOS_SSH_PASSWORD_AUTH=1 make image
 XAIOS_QEMU_HOSTFWD_PORT=2299 XAIOS_QEMU_HOSTFWD_UDP_PORT=2298 make qemu
 ```
 
-Connect from a second terminal:
+Connect from a second terminal. The launcher uses
+`build/local-ssh/known_hosts`, `StrictHostKeyChecking=accept-new`, and an
+OpenSSH-version-gated `WarnWeakCrypto=no`; it does not discard host identity via
+`UserKnownHostsFile=/dev/null`:
 
 ```sh
-ssh -i build/local-ssh/admin -o IdentitiesOnly=yes \
-  -o StrictHostKeyChecking=accept-new -p 2299 admin@127.0.0.1
+scripts/ssh-xaios-qemu.sh
+scripts/ssh-xaios-qemu.sh -- htop --all --sample-ms 250 --cpu-count 4
 sftp -i build/local-ssh/admin -o IdentitiesOnly=yes -P 2299 admin@127.0.0.1
 ```
+
+Pass a non-default key with `--identity`, for example
+`scripts/ssh-xaios-qemu.sh --identity /tmp/xaios-htop-key -- htop --all`.
+If a rebuilt guest intentionally rotates its host key, remove only the matching
+entry from `build/local-ssh/known_hosts` after verifying the rotation.
 
 Do not package development private keys or plaintext passwords into the image.
 The mutable filesystem currently limits each file to 8,192 bytes.
@@ -227,6 +242,7 @@ The mutable filesystem currently limits each file to 8,192 bytes.
 |---|---|
 | Physical networking | No physical NIC driver interoperability, cable/link recovery, DHCP deployment, firewall, or hostile-Internet soak has been established. |
 | Security assurance | The freestanding SSH implementation and bundled cryptographic code need independent review, fuzzing, side-channel analysis, and long-duration adversarial testing. |
+| Post-quantum SSH | The server currently negotiates classical `curve25519-sha256` only. A reviewed hybrid KEX implementation, known-answer tests, OpenSSH interoperability and downgrade-policy review are required before suppressing this boundary in production. |
 | Administrative scale | Phase 2's config, key/revocation, replay/audit and session stores are bounded QEMU fixtures. Fleet identity integration, long-lived audit export and production replay retention are not implemented. |
 | TCP throughput | Correct ACK/reset validation, checksums, an eight-segment transmit window, cumulative and partial ACK release, retained-segment RTT/RTO tracking, SACK parsing/emission, fast retransmit, zero-window handling, bounded reordering, keepalive, FIN state, and RTO backoff exist. A production congestion controller and high-bandwidth/lossy-link tuning remain outside the QEMU release gate. |
 | UDP service | IPv4 and IPv6 checksums, bounded atomic datagram delivery, truncation semantics, flow expiry, and buffer reclamation are implemented. QEMU evidence covers IPv4 application echo and kernel-level IPv4/IPv6 parsing; physical lossy-link behavior remains untested. |
