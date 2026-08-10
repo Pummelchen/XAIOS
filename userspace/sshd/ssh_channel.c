@@ -42,6 +42,29 @@ static char g_nano_frame[SSH_CHANNEL_PENDING_SIZE];
 
 static int shell_send_prompt(ssh_channel_t *ch);
 
+static int shell_send_output(ssh_channel_t *ch, const uint8_t *data,
+                             uint32_t length) {
+  uint32_t segment_start = 0U;
+  if (ch == 0 || (data == 0 && length != 0U)) return -1;
+  for (uint32_t i = 0U; i < length; ++i) {
+    if (data[i] != '\n' || (i != 0U && data[i - 1U] == '\r')) continue;
+    if (i != segment_start &&
+        ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                              data + segment_start, i - segment_start) != 0) {
+      return -1;
+    }
+    if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                              (const uint8_t *)"\r\n", 2U) != 0) {
+      return -1;
+    }
+    segment_start = i + 1U;
+  }
+  if (segment_start == length) return 0;
+  return ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                               data + segment_start,
+                               length - segment_start);
+}
+
 static int nano_command_argument(const char *command, char *argument,
                                  uint32_t capacity) {
   uint32_t i = 0U;
@@ -708,7 +731,8 @@ static int htop_send_filter_prompt(ssh_channel_t *ch, uint64_t now_ns) {
 }
 
 static int htop_finish(ssh_channel_t *ch) {
-  static const char restore[] = "\033[0m\033[?25h\033[?1049l";
+  static const char restore[] =
+      "\033[0m\033[?25h\033[?1049l\033[0m\033[?25h\r";
   ch->htop_active = 0U;
   ch->htop_help = 0U;
   ch->htop_filter_mode = 0U;
@@ -1001,9 +1025,8 @@ static int shell_start_htop(ssh_channel_t *ch, char *command) {
                                      sizeof(output), &out_size);
   if (result < 0 || out_size == 0U || out_size > sizeof(output)) {
     if (out_size != 0U &&
-        ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
-                              (const uint8_t *)output,
-                              (uint32_t)out_size) != 0) {
+        shell_send_output(ch, (const uint8_t *)output,
+                          (uint32_t)out_size) != 0) {
       return -1;
     }
     return shell_send_prompt(ch);
@@ -1037,7 +1060,8 @@ static int nano_render_frame(ssh_channel_t *ch) {
 }
 
 static int nano_finish(ssh_channel_t *ch, uint32_t status) {
-  static const char restore[] = "\033[0m\033[?25h\033[?1049l";
+  static const char restore[] =
+      "\033[0m\033[?25h\033[?1049l\033[0m\033[?25h\r";
   ch->nano.active = 0U;
   ch->exit_status = status;
   if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
@@ -1148,9 +1172,8 @@ static int shell_execute_line(ssh_channel_t *ch) {
   int result = execute_admin_command((int)ch->owner_sockfd, ch->shell_line,
                                      output, sizeof(output), &out_size);
   if (out_size != 0U &&
-      ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
-                            (const uint8_t *)output,
-                            (uint32_t)out_size) != 0) {
+      shell_send_output(ch, (const uint8_t *)output,
+                        (uint32_t)out_size) != 0) {
     return -1;
   }
   if (result < 0 && out_size == 0U) {

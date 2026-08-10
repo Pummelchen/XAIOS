@@ -510,6 +510,103 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
     if b"F1Help" not in visible_output or b"F10Quit" not in visible_output:
         raise RuntimeError("native htop footer did not use segmented key labels")
 
+    shell = subprocess.Popen(
+        docker_command(
+            key_dir,
+            *ssh_base[:1],
+            "-tt",
+            *ssh_base[1:],
+        ),
+        cwd=ROOT,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    shell_stdout = bytearray()
+    shell_stderr = bytearray()
+    shell_prompt_ready = threading.Event()
+    shell_dashboard_ready = threading.Event()
+    shell_htop_returned = threading.Event()
+    shell_listing_ready = threading.Event()
+
+    def drain_shell(stream: object, output: bytearray,
+                    inspect: bool = False) -> None:
+        while True:
+            chunk = stream.read1(4096)  # type: ignore[union-attr]
+            if not chunk:
+                return
+            output.extend(chunk)
+            if not inspect:
+                continue
+            prompt_count = output.count(b"admin@xaios")
+            if prompt_count >= 1:
+                shell_prompt_ready.set()
+            if b"[Main]" in output:
+                shell_dashboard_ready.set()
+            if prompt_count >= 2:
+                shell_htop_returned.set()
+            if prompt_count >= 3 and b"etc\r\nbin\r\nstate\r\n" in output:
+                shell_listing_ready.set()
+
+    shell_stdout_thread = threading.Thread(
+        target=drain_shell, args=(shell.stdout, shell_stdout, True), daemon=True
+    )
+    shell_stderr_thread = threading.Thread(
+        target=drain_shell, args=(shell.stderr, shell_stderr), daemon=True
+    )
+    shell_stdout_thread.start()
+    shell_stderr_thread.start()
+    assert shell.stdin is not None
+    if not shell_prompt_ready.wait(30):
+        shell.kill()
+        shell.wait(timeout=5)
+        raise RuntimeError("interactive shell did not render its initial prompt")
+    shell.stdin.write(b"htop\n")
+    shell.stdin.flush()
+    if not shell_dashboard_ready.wait(30):
+        shell.kill()
+        shell.wait(timeout=5)
+        raise RuntimeError("shell-launched htop did not render its dashboard")
+    shell.stdin.write(b"q")
+    shell.stdin.flush()
+    if not shell_htop_returned.wait(30):
+        shell.kill()
+        shell.wait(timeout=5)
+        raise RuntimeError("htop did not restore the interactive shell prompt")
+    shell.stdin.write(b"ls /\n")
+    shell.stdin.flush()
+    if not shell_listing_ready.wait(30):
+        shell.kill()
+        shell.wait(timeout=5)
+        raise RuntimeError("post-htop shell listing was not left aligned")
+    shell.stdin.write(b"exit\n")
+    shell.stdin.close()
+    shell_returncode = shell.wait(timeout=60)
+    shell_stdout_thread.join(timeout=5)
+    shell_stderr_thread.join(timeout=5)
+    if shell_returncode != 0:
+        raise RuntimeError(
+            "post-htop interactive shell failed: "
+            + bytes(shell_stderr).decode(errors="replace")
+        )
+    restore = b"\x1b[?1049l\x1b[0m\x1b[?25h\r"
+    if restore not in shell_stdout:
+        raise RuntimeError("htop did not fully reset the host terminal state")
+    listing_start = shell_stdout.find(b"ls /\r\n")
+    listing_end = shell_stdout.find(b"admin@xaios", listing_start + 6)
+    if listing_start < 0 or listing_end < 0:
+        raise RuntimeError("post-htop shell listing boundaries were not found")
+    listing = shell_stdout[listing_start + 6:listing_end]
+    bare_newline = next(
+        (index for index, value in enumerate(listing)
+         if value == 10 and (index == 0 or listing[index - 1] != 13)),
+        None,
+    )
+    if bare_newline is not None:
+        raise RuntimeError(
+            f"post-htop PTY output contained a bare LF at offset {bare_newline}"
+        )
+
     plain = subprocess.run(
         docker_command(
             key_dir,
@@ -782,6 +879,7 @@ def main() -> int:
         results["ssh_rekey"] = "passed"
         results["ssh_shared_transport_channels"] = "passed"
         results["native_htop_pty_ansi"] = "passed"
+        results["native_htop_shell_restore"] = "passed"
         results["native_htop_non_pty_plain"] = "passed"
         results["native_htop_invalid_option_rejected"] = "passed"
         results["native_transient_apps_on_demand"] = "passed"

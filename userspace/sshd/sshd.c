@@ -625,7 +625,8 @@ static void console_tick(void) {
       }
       if (should_exit != 0U) {
         g_console_nano.active = 0U;
-        console_write("\033[0m\033[?25h\033[?1049l");
+        console_write(
+            "\033[0m\033[?25h\033[?1049l\033[0m\033[?25h\r");
         console_prompt();
       } else if (nano_editor_render(&g_console_nano, g_console_output,
                                     sizeof(g_console_output),
