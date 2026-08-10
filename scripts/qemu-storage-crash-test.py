@@ -79,6 +79,7 @@ def boot_until(
 def build_crash_image(point: str, system_image: Path) -> None:
     shutil.copyfile(BUILD / "xaios-system.img", system_image)
     env = os.environ.copy()
+    env["XAIOS_BOOT_TEST_APPS"] = "1"
     env["XAIOS_STORAGE_CRASH_POINT"] = point
     env["XAIOS_SYSTEM_VOLUME_IMAGE"] = str(system_image)
     run(["./scripts/build-image.sh"], env)
@@ -151,6 +152,7 @@ def main() -> int:
             print(f"qemu-storage-crash: recovered point={point}", flush=True)
     finally:
         restore_env = os.environ.copy()
+        restore_env["XAIOS_BOOT_TEST_APPS"] = "1"
         restore_env.pop("XAIOS_STORAGE_CRASH_POINT", None)
         restore_env.pop("XAIOS_SYSTEM_VOLUME_IMAGE", None)
         run(["./scripts/build-image.sh"], restore_env)

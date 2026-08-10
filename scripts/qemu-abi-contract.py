@@ -204,8 +204,10 @@ def validate_core_os_gate_contract(rc_contract):
         failures.append("core OS gate command mismatch")
     if gate.get("correctness_only") is not True:
         failures.append("core OS gate must remain correctness-only")
-    if gate.get("x86_full_platform_parity") is not False:
-        failures.append("core OS gate must not claim x86 full platform parity")
+    if gate.get("x86_qemu_service_parity") is not True:
+        failures.append("core OS gate must record verified x86 QEMU service parity")
+    if gate.get("x86_physical_support") is not False:
+        failures.append("core OS gate must not claim physical x86 support")
     for capability in gate.get("required_capabilities", []):
         if capability not in gate_source:
             failures.append(f"core OS gate source missing capability {capability}")

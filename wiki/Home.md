@@ -10,14 +10,14 @@ they do not prove real-model inference or physical-hardware performance.
 
 ## Delivery Sequence
 
-Only the XAIOS platform workstream is active. Qwen is next, but remains blocked
-until XAIOS reaches its completion gate. Later model workstreams are not active
-unless the maintainer explicitly reprioritizes them.
+The declared ARM and x86 QEMU core-OS gate is complete, so Qwen is ready as the
+next workstream. Physical platform qualification continues separately. Later
+model workstreams are not active unless the maintainer reprioritizes them.
 
 | Order | Workstream | Project status | Entry gate |
 |---|---|---|---|
-| 1 | XAIOS | In Progress | Finish the core OS, portable engine, model-v2 integration, platform services, hardware readiness, and release gates. |
-| 2 | Qwen 3.6 27B Support | Blocked | Starts only after the XAIOS completion gate. |
+| 1 | XAIOS | QEMU Complete | ARM and x86 common-service correctness gates pass; physical platform qualification remains separate. |
+| 2 | Qwen 3.6 27B Support | Ready | Next workstream; begin scalar tokenizer, tensor and logits correctness. |
 | Later | Kimi K3 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
 | Later | DeepSeek V4 Flash 0731 Support | Blocked | Also blocked on authoritative release and source verification. |
 | Later | GLM 5.2 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
@@ -57,15 +57,14 @@ unless the maintainer explicitly reprioritizes them.
   a focused TCG gate validates SMP and NUMA metadata with 130 emulated CPUs,
   while hosted cpuset tests cover 4,097 CPU IDs. EL0 create/join/cancel/exit,
   asynchronous DNS, IPv4/IPv6 reassembly, and SACK-aware TCP pass QEMU gates.
-- x86_64 starts MADT-discovered application processors, dispatches IPI work,
-  validates controlled exception and local-APIC timer interrupts, performs a
-  real shared-runtime `/bin/hello` ELF LOG/EXIT ring-3 syscall round trip,
-  executes common security/scalar-kernel self-tests, validates runtime-sized
-  XSAVE and ACPI parsing, and operates modern VirtIO block DMA/MSI-X plus
-  network TX.
-  Full ARM-service parity on x86 remains open: complete userspace/thread services,
-  receive networking/SSH, mounted filesystems, x86 NVMe, security, AI Cell and
-  telemetry are not yet integrated.
+- x86_64 executes the complete common kernel and userspace/service image. It
+  starts MADT-discovered application processors, runs EL0 threads on APs with
+  per-CPU page-table roots, preserves FP/SIMD interrupt state, and operates the
+  shared filesystems, IPv4/IPv6, SSH/SFTP, control, security, AI Cell and
+  telemetry paths over modern PCI VirtIO. Emulated NVMe also passes its focused
+  data test, and a post-`sti` canary proves shared-driver MSI-X completion.
+  QEMU service parity with AArch64 is complete; physical Intel qualification
+  remains open.
 - Model loading, cluster and inference-service administration remains gated.
 
 ## Start Here

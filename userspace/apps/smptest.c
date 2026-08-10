@@ -33,27 +33,38 @@ int main(void) {
     xaios_log("/bin/smptest: user thread group syscall failed\n");
     return 1;
   }
-  for (u64 i = 0; i < USER_THREAD_COUNT; ++i) {
-    if (xaios_thread_create(user_thread_worker, (void *)i,
-                            g_thread_stacks[i], USER_THREAD_STACK_BYTES,
-                            XAIOS_THREAD_CPU_ANY, &user_thread_ids[i]) < 0) {
-      xaios_log("/bin/smptest: EL0 thread create failed\n");
+  if (workers > 1ULL) {
+    for (u64 i = 0; i < USER_THREAD_COUNT; ++i) {
+      if (xaios_thread_create(user_thread_worker, (void *)i,
+                              g_thread_stacks[i], USER_THREAD_STACK_BYTES,
+                              XAIOS_THREAD_CPU_ANY, &user_thread_ids[i]) < 0) {
+        xaios_log("/bin/smptest: EL0 thread create failed\n");
+        return 1;
+      }
+    }
+    for (u64 i = 0; i < USER_THREAD_COUNT; ++i) {
+      u64 result = 0;
+      if (xaios_thread_join(user_thread_ids[i], 5000000000ULL, &result) < 0 ||
+          result != user_thread_worker((void *)i)) {
+        xaios_log("/bin/smptest: EL0 thread join/result failed\n");
+        return 1;
+      }
+    }
+  } else {
+    if (xaios_thread_create(user_thread_worker, 0, g_thread_stacks[0],
+                            USER_THREAD_STACK_BYTES, XAIOS_THREAD_CPU_ANY,
+                            &user_thread_ids[0]) >= 0) {
+      xaios_log("/bin/smptest: uniprocessor thread rejection failed\n");
       return 1;
     }
-  }
-  for (u64 i = 0; i < USER_THREAD_COUNT; ++i) {
-    u64 result = 0;
-    if (xaios_thread_join(user_thread_ids[i], 5000000000ULL, &result) < 0 ||
-        result != user_thread_worker((void *)i)) {
-      xaios_log("/bin/smptest: EL0 thread join/result failed\n");
-      return 1;
-    }
+    xaios_log("/bin/smptest: uniprocessor thread fallback passed\n");
   }
   u64 invalid_thread_id = 0;
   if (xaios_thread_create(user_thread_worker, 0, g_thread_stacks[0], 2048,
                           XAIOS_THREAD_CPU_ANY, &invalid_thread_id) >= 0 ||
-      xaios_thread_join(user_thread_ids[USER_THREAD_COUNT - 1ULL],
-                        1000000ULL, &invalid_thread_id) >= 0) {
+      (workers > 1ULL &&
+       xaios_thread_join(user_thread_ids[USER_THREAD_COUNT - 1ULL],
+                         1000000ULL, &invalid_thread_id) >= 0)) {
     xaios_log("/bin/smptest: EL0 thread validation failed\n");
     return 1;
   }
@@ -64,7 +75,9 @@ int main(void) {
   xaios_log_u64("/bin/smptest: thread_checksum=", thread_checksum, "\n");
   xaios_log("/bin/smptest: app-requested SMP worker set passed\n");
   xaios_log("/bin/smptest: concurrent kernel-dispatched worker group passed\n");
-  xaios_log("/bin/smptest: general EL0 create/join threads passed\n");
+  if (workers > 1ULL) {
+    xaios_log("/bin/smptest: general EL0 create/join threads passed\n");
+  }
   xaios_log("/bin/smptest: EL0 thread validation passed\n");
   xaios_log("/bin/smptest: complete\n");
   return 0;

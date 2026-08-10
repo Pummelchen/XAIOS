@@ -269,7 +269,8 @@ def main() -> int:
     if qemu_x86_64:
         if any(tier.get("validation") == "qemu-smoke"
                for tier in contract["cpu_matrix"]["x86_64_command_tiers"]):
-            image_proc = run(["make", "image-x86_64"], base_env, 120)
+            image_proc = run(["make", "image-x86_64-qemu-test"], base_env,
+                             120)
             if image_proc.returncode != 0:
                 failures.append("x86_64 image build failed for CPU matrix")
         for tier in contract["cpu_matrix"]["x86_64_command_tiers"]:

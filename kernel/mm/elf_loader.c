@@ -13,6 +13,14 @@
 #define PF_R UINT32_C(4)
 #define ET_EXEC UINT16_C(2)
 #define EM_AARCH64 UINT16_C(183)
+#define EM_X86_64 UINT16_C(62)
+#if defined(__aarch64__)
+#define XAIOS_ELF_MACHINE EM_AARCH64
+#elif defined(__x86_64__)
+#define XAIOS_ELF_MACHINE EM_X86_64
+#else
+#error "Unsupported XAIOS ELF target architecture"
+#endif
 
 typedef struct elf64_ehdr {
   uint8_t ident[16];
@@ -80,7 +88,7 @@ static xaios_status_t validate_elf(const xaios_initramfs_file_t *file,
   const elf64_ehdr_t *ehdr = (const elf64_ehdr_t *)file->base;
   if (elf_magic_value(ehdr->ident) != ELF_MAGIC || ehdr->ident[4] != 2 ||
       ehdr->ident[5] != 1 || ehdr->type != ET_EXEC ||
-      ehdr->machine != EM_AARCH64 ||
+      ehdr->machine != XAIOS_ELF_MACHINE ||
       ehdr->phentsize != sizeof(elf64_phdr_t) || ehdr->phnum == 0 ||
       ehdr->phoff + ((uint64_t)ehdr->phnum * ehdr->phentsize) > file->size) {
     return XAIOS_ERR_INVALID;

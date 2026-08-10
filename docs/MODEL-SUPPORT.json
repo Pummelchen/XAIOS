@@ -1,18 +1,18 @@
 {
   "schema": "xaios.model_support.v1",
-  "updated": "2026-08-02",
+  "updated": "2026-08-10",
   "delivery_sequence": [
     {
       "order": "1",
       "workstream": "XAIOS",
-      "status": "In Progress",
-      "gate": "Finish the platform milestone before model-family implementation begins."
+      "status": "QEMU Complete",
+      "gate": "ARM and x86 common-service correctness gates pass; physical platform qualification remains separate."
     },
     {
       "order": "2",
       "workstream": "Qwen 3.6 27B Support",
-      "status": "Blocked",
-      "gate": "Next workstream; starts only after the XAIOS completion gate."
+      "status": "Ready",
+      "gate": "Next workstream; begin scalar tokenizer, tensor and logits correctness."
     },
     {
       "order": "Later",

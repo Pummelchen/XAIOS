@@ -3,23 +3,67 @@ set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 BUILD_DIR="$ROOT_DIR/build"
-EFI_BUILD_DIR="$BUILD_DIR/uefi"
-KERNEL_BUILD_DIR="$BUILD_DIR/kernel"
-INIT_BUILD_DIR="$BUILD_DIR/init"
+TARGET_ARCH="${XAIOS_TARGET_ARCH:-aarch64}"
+case "$TARGET_ARCH" in
+  aarch64)
+    TARGET_TRIPLE=aarch64-none-elf
+    UEFI_TARGET=aarch64-unknown-windows
+    UEFI_MACHINE=arm64
+    UEFI_BOOT_NAME=BOOTAA64.EFI
+    ARCH_BUILD_SUFFIX=""
+    ARCH_KERNEL_DIR=aarch64
+    ARCH_LINKER="$ROOT_DIR/kernel/arch/aarch64/linker.ld"
+    INIT_SOURCE="$ROOT_DIR/userspace/init/init.S"
+    SERVICE_MANAGER_SOURCE="$ROOT_DIR/userspace/service-manager/service-manager.S"
+    WORKER_SOURCE="$ROOT_DIR/userspace/worker/worker.S"
+    IMAGE_PATH="${XAIOS_AARCH64_IMAGE:-$BUILD_DIR/xaios-aarch64.img}"
+    TEST_BLOCK_IMAGE="${XAIOS_TEST_BLOCK_IMAGE:-$BUILD_DIR/xaios-virtio-test.img}"
+    PERSISTENT_IMAGE="${XAIOS_PERSISTENT_IMAGE:-$BUILD_DIR/xaios-persistent.img}"
+    ;;
+  x86_64)
+    TARGET_TRIPLE=x86_64-none-elf
+    UEFI_TARGET=x86_64-unknown-windows
+    UEFI_MACHINE=x64
+    UEFI_BOOT_NAME=BOOTX64.EFI
+    ARCH_BUILD_SUFFIX=-x86_64
+    ARCH_KERNEL_DIR=x86_64
+    ARCH_LINKER="$ROOT_DIR/kernel/arch/x86_64/linker.ld"
+    INIT_SOURCE="$ROOT_DIR/userspace/init/init-x86_64.S"
+    SERVICE_MANAGER_SOURCE="$ROOT_DIR/userspace/service-manager/service-manager-x86_64.S"
+    WORKER_SOURCE="$ROOT_DIR/userspace/worker/worker-x86_64.S"
+    IMAGE_PATH="${XAIOS_X86_64_IMAGE:-$BUILD_DIR/xaios-x86_64.img}"
+    TEST_BLOCK_IMAGE="${XAIOS_X86_TEST_BLOCK_IMAGE:-$BUILD_DIR/xaios-x86-virtio-test.img}"
+    PERSISTENT_IMAGE="${XAIOS_X86_PERSISTENT_IMAGE:-$BUILD_DIR/xaios-x86-persistent.img}"
+    ;;
+  *)
+    printf '%s\n' "error: XAIOS_TARGET_ARCH must be aarch64 or x86_64" >&2
+    exit 2
+    ;;
+esac
+EFI_BUILD_DIR="$BUILD_DIR/uefi$ARCH_BUILD_SUFFIX"
+KERNEL_BUILD_DIR="$BUILD_DIR/kernel$ARCH_BUILD_SUFFIX"
+INIT_BUILD_DIR="$BUILD_DIR/init$ARCH_BUILD_SUFFIX"
 
-IMAGE_PATH="${XAIOS_AARCH64_IMAGE:-$BUILD_DIR/xaios-aarch64.img}"
-TEST_BLOCK_IMAGE="${XAIOS_TEST_BLOCK_IMAGE:-$BUILD_DIR/xaios-virtio-test.img}"
-PERSISTENT_IMAGE="${XAIOS_PERSISTENT_IMAGE:-$BUILD_DIR/xaios-persistent.img}"
 MODEL_VOLUME_IMAGE_CONFIGURED="${XAIOS_MODEL_VOLUME_IMAGE:-}"
-MODEL_VOLUME_IMAGE="${MODEL_VOLUME_IMAGE_CONFIGURED:-$BUILD_DIR/xaios-model-volume.img}"
+if [ "$TARGET_ARCH" = x86_64 ]; then
+  MODEL_VOLUME_IMAGE="${MODEL_VOLUME_IMAGE_CONFIGURED:-$BUILD_DIR/xaios-x86-model-volume.img}"
+else
+  MODEL_VOLUME_IMAGE="${MODEL_VOLUME_IMAGE_CONFIGURED:-$BUILD_DIR/xaios-model-volume.img}"
+fi
 SYSTEM_VOLUME_IMAGE_CONFIGURED="${XAIOS_SYSTEM_VOLUME_IMAGE:-}"
-SYSTEM_VOLUME_IMAGE="${SYSTEM_VOLUME_IMAGE_CONFIGURED:-$BUILD_DIR/xaios-system.img}"
+if [ "$TARGET_ARCH" = x86_64 ]; then
+  SYSTEM_VOLUME_IMAGE="${SYSTEM_VOLUME_IMAGE_CONFIGURED:-$BUILD_DIR/xaios-x86-system.img}"
+  STORAGE_ADMIN_IMAGE="${XAIOS_X86_STORAGE_ADMIN_IMAGE:-$BUILD_DIR/xaios-x86-storage-admin.img}"
+else
+  SYSTEM_VOLUME_IMAGE="${SYSTEM_VOLUME_IMAGE_CONFIGURED:-$BUILD_DIR/xaios-system.img}"
+  STORAGE_ADMIN_IMAGE=""
+fi
 LOADER_OBJ="$EFI_BUILD_DIR/loader_main.obj"
 LOADER_SYSTEM_OBJ="$EFI_BUILD_DIR/system_volume_loader.obj"
 LOADER_SHA256_OBJ="$EFI_BUILD_DIR/sha256.obj"
 LOADER_SSH_CRYPTO_OBJ="$EFI_BUILD_DIR/ssh_crypto.obj"
 LOADER_TWEETNACL_OBJ="$EFI_BUILD_DIR/tweetnacl_subset.obj"
-LOADER_EFI="$EFI_BUILD_DIR/BOOTAA64.EFI"
+LOADER_EFI="$EFI_BUILD_DIR/$UEFI_BOOT_NAME"
 KERNEL_ELF="$KERNEL_BUILD_DIR/kernel.elf"
 INIT_OBJ="$INIT_BUILD_DIR/init.o"
 INIT_ELF="$INIT_BUILD_DIR/init.elf"
@@ -138,9 +182,14 @@ PYTHON3="$(require_tool "Python 3" python3 "Install with: brew install python" /
 
 mkdir -p "$EFI_BUILD_DIR" "$KERNEL_BUILD_DIR" "$INIT_BUILD_DIR"
 
-printf '%s\n' "Building AArch64 UEFI loader..."
+printf '%s\n' "Building $TARGET_ARCH UEFI loader..."
+UEFI_ARCH_CFLAG=""
+if [ "$TARGET_ARCH" = x86_64 ]; then
+  UEFI_ARCH_CFLAG=-DXAIOS_UEFI_TARGET_X86_64=1
+fi
 "$CLANG" \
-  --target=aarch64-unknown-windows \
+  --target="$UEFI_TARGET" \
+  $UEFI_ARCH_CFLAG \
   -ffreestanding \
   -fno-stack-protector \
   -fno-builtin \
@@ -165,7 +214,8 @@ do
   source_path=${loader_source%%:*}
   object_path=${loader_source#*:}
   "$CLANG" \
-    --target=aarch64-unknown-windows \
+    --target="$UEFI_TARGET" \
+    $UEFI_ARCH_CFLAG \
     -ffreestanding \
     -fno-stack-protector \
     -fno-builtin \
@@ -191,7 +241,7 @@ done
   /subsystem:efi_application \
   /entry:efi_main \
   /nodefaultlib \
-  /machine:arm64 \
+  /machine:"$UEFI_MACHINE" \
   "$LOADER_OBJ" \
   "$LOADER_SYSTEM_OBJ" \
   "$LOADER_SHA256_OBJ" \
@@ -200,9 +250,9 @@ done
   /opt:ref \
   /out:"$LOADER_EFI"
 
-printf '%s\n' "Building AArch64 kernel ELF..."
+printf '%s\n' "Building $TARGET_ARCH kernel ELF..."
 KERNEL_CFLAGS="
-  --target=aarch64-none-elf
+  --target=$TARGET_TRIPLE
   -std=c99
   -ffreestanding
   -fno-stack-protector
@@ -214,6 +264,9 @@ KERNEL_CFLAGS="
   -Wextra
   -Werror
 "
+if [ "$TARGET_ARCH" = x86_64 ]; then
+  KERNEL_CFLAGS="$KERNEL_CFLAGS -mno-red-zone -DXAIOS_X86_COMMON_RUNTIME=1"
+fi
 
 case "${XAIOS_FAULT_TEST:-}" in
   "") ;;
@@ -264,18 +317,12 @@ compile_kernel() {
     -c "$source_path" -o "$object_path"
 }
 
-KERNEL_OBJECTS="
+if [ "$TARGET_ARCH" = aarch64 ]; then
+  ARCH_KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/entry.o
   $KERNEL_BUILD_DIR/secondary.o
   $KERNEL_BUILD_DIR/vectors.o
-  $KERNEL_BUILD_DIR/kmain.o
-  $KERNEL_BUILD_DIR/boot_ui.o
-  $KERNEL_BUILD_DIR/klog.o
-  $KERNEL_BUILD_DIR/klog_ring.o
-  $KERNEL_BUILD_DIR/telemetry.o
-  $KERNEL_BUILD_DIR/panic.o
-  $KERNEL_BUILD_DIR/assert.o
-  $KERNEL_BUILD_DIR/stack_canary.o
+  $KERNEL_BUILD_DIR/context.o
   $KERNEL_BUILD_DIR/exception.o
   $KERNEL_BUILD_DIR/timer.o
   $KERNEL_BUILD_DIR/rtc.o
@@ -284,6 +331,31 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/pci.o
   $KERNEL_BUILD_DIR/gic.o
   $KERNEL_BUILD_DIR/smp.o
+  "
+else
+  ARCH_KERNEL_OBJECTS="
+  $KERNEL_BUILD_DIR/entry.o
+  $KERNEL_BUILD_DIR/acpi.o
+  $KERNEL_BUILD_DIR/early.o
+  $KERNEL_BUILD_DIR/engine_packed.o
+  $KERNEL_BUILD_DIR/timer.o
+  $KERNEL_BUILD_DIR/platform.o
+  $KERNEL_BUILD_DIR/watchdog.o
+  $KERNEL_BUILD_DIR/pci.o
+  $KERNEL_BUILD_DIR/smp.o
+  "
+fi
+
+KERNEL_OBJECTS="
+  $ARCH_KERNEL_OBJECTS
+  $KERNEL_BUILD_DIR/kmain.o
+  $KERNEL_BUILD_DIR/boot_ui.o
+  $KERNEL_BUILD_DIR/klog.o
+  $KERNEL_BUILD_DIR/klog_ring.o
+  $KERNEL_BUILD_DIR/telemetry.o
+  $KERNEL_BUILD_DIR/panic.o
+  $KERNEL_BUILD_DIR/assert.o
+  $KERNEL_BUILD_DIR/stack_canary.o
   $KERNEL_BUILD_DIR/nvme.o
   $KERNEL_BUILD_DIR/virtio_transport.o
   $KERNEL_BUILD_DIR/block_device.o
@@ -338,7 +410,6 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/scheduler.o
   $KERNEL_BUILD_DIR/thread.o
   $KERNEL_BUILD_DIR/topology.o
-  $KERNEL_BUILD_DIR/context.o
   $KERNEL_BUILD_DIR/arp.o
   $KERNEL_BUILD_DIR/ipv4.o
   $KERNEL_BUILD_DIR/icmp.o
@@ -358,9 +429,14 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/kernel_tweetnacl_subset.o
 "
 
-compile_kernel "$ROOT_DIR/kernel/arch/aarch64/entry.S" "$KERNEL_BUILD_DIR/entry.o"
-compile_kernel "$ROOT_DIR/kernel/arch/aarch64/secondary.S" "$KERNEL_BUILD_DIR/secondary.o"
-compile_kernel "$ROOT_DIR/kernel/arch/aarch64/vectors.S" "$KERNEL_BUILD_DIR/vectors.o"
+if [ "$TARGET_ARCH" = aarch64 ]; then
+  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/entry.S" "$KERNEL_BUILD_DIR/entry.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/secondary.S" "$KERNEL_BUILD_DIR/secondary.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/vectors.S" "$KERNEL_BUILD_DIR/vectors.o"
+else
+  compile_kernel "$ROOT_DIR/kernel/arch/x86_64/entry.S" "$KERNEL_BUILD_DIR/entry.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/x86_64/acpi.c" "$KERNEL_BUILD_DIR/acpi.o"
+fi
 compile_kernel "$ROOT_DIR/kernel/core/kmain.c" "$KERNEL_BUILD_DIR/kmain.o"
 compile_kernel "$ROOT_DIR/kernel/core/boot_ui.c" "$KERNEL_BUILD_DIR/boot_ui.o"
 compile_kernel "$ROOT_DIR/kernel/core/klog.c" "$KERNEL_BUILD_DIR/klog.o"
@@ -369,17 +445,31 @@ compile_kernel "$ROOT_DIR/kernel/core/telemetry.c" "$KERNEL_BUILD_DIR/telemetry.
 compile_kernel "$ROOT_DIR/kernel/core/panic.c" "$KERNEL_BUILD_DIR/panic.o"
 compile_kernel "$ROOT_DIR/kernel/core/assert.c" "$KERNEL_BUILD_DIR/assert.o"
 compile_kernel "$ROOT_DIR/kernel/core/stack_canary.c" "$KERNEL_BUILD_DIR/stack_canary.o"
-compile_kernel "$ROOT_DIR/kernel/arch/aarch64/exception.c" "$KERNEL_BUILD_DIR/exception.o"
-compile_kernel "$ROOT_DIR/kernel/arch/aarch64/timer.c" "$KERNEL_BUILD_DIR/timer.o"
-compile_kernel "$ROOT_DIR/kernel/arch/aarch64/rtc.c" "$KERNEL_BUILD_DIR/rtc.o"
-compile_kernel "$ROOT_DIR/kernel/arch/aarch64/watchdog.c" "$KERNEL_BUILD_DIR/watchdog.o"
-compile_kernel "$ROOT_DIR/kernel/arch/aarch64/smmu.c" "$KERNEL_BUILD_DIR/smmu.o"
-compile_kernel "$ROOT_DIR/kernel/arch/aarch64/pci.c" "$KERNEL_BUILD_DIR/pci.o"
-compile_kernel "$ROOT_DIR/kernel/arch/aarch64/gic.c" "$KERNEL_BUILD_DIR/gic.o"
-compile_kernel "$ROOT_DIR/kernel/arch/aarch64/smp.c" "$KERNEL_BUILD_DIR/smp.o"
+if [ "$TARGET_ARCH" = aarch64 ]; then
+  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/exception.c" "$KERNEL_BUILD_DIR/exception.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/timer.c" "$KERNEL_BUILD_DIR/timer.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/rtc.c" "$KERNEL_BUILD_DIR/rtc.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/watchdog.c" "$KERNEL_BUILD_DIR/watchdog.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/smmu.c" "$KERNEL_BUILD_DIR/smmu.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/pci.c" "$KERNEL_BUILD_DIR/pci.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/gic.c" "$KERNEL_BUILD_DIR/gic.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/smp.c" "$KERNEL_BUILD_DIR/smp.o"
+else
+  compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early.c" "$KERNEL_BUILD_DIR/early.o"
+  compile_kernel "$ROOT_DIR/engine/src/packed.c" "$KERNEL_BUILD_DIR/engine_packed.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/x86_64/timer.c" "$KERNEL_BUILD_DIR/timer.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/x86_64/platform.c" "$KERNEL_BUILD_DIR/platform.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/x86_64/watchdog.c" "$KERNEL_BUILD_DIR/watchdog.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/x86_64/pci.c" "$KERNEL_BUILD_DIR/pci.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/x86_64/smp.c" "$KERNEL_BUILD_DIR/smp.o"
+fi
 compile_kernel "$ROOT_DIR/kernel/arch/aarch64/topology.c" "$KERNEL_BUILD_DIR/topology.o"
 compile_kernel "$ROOT_DIR/kernel/dev/nvme.c" "$KERNEL_BUILD_DIR/nvme.o"
-compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport.c" "$KERNEL_BUILD_DIR/virtio_transport.o"
+if [ "$TARGET_ARCH" = aarch64 ]; then
+  compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport.c" "$KERNEL_BUILD_DIR/virtio_transport.o"
+else
+  compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport_pci.c" "$KERNEL_BUILD_DIR/virtio_transport.o"
+fi
 compile_kernel "$ROOT_DIR/kernel/dev/block_device.c" "$KERNEL_BUILD_DIR/block_device.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_blk.c" "$KERNEL_BUILD_DIR/virtio_blk.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_net.c" "$KERNEL_BUILD_DIR/virtio_net.o"
@@ -428,10 +518,12 @@ compile_kernel "$ROOT_DIR/kernel/mm/pmm.c" "$KERNEL_BUILD_DIR/pmm.o"
 compile_kernel "$ROOT_DIR/kernel/mm/numa.c" "$KERNEL_BUILD_DIR/numa.o"
 compile_kernel "$ROOT_DIR/kernel/mm/arena.c" "$KERNEL_BUILD_DIR/arena.o"
 compile_kernel "$ROOT_DIR/kernel/mm/kheap.c" "$KERNEL_BUILD_DIR/kheap.o"
-compile_kernel "$ROOT_DIR/kernel/arch/aarch64/mmu.c" "$KERNEL_BUILD_DIR/mmu.o"
+compile_kernel "$ROOT_DIR/kernel/arch/$ARCH_KERNEL_DIR/mmu.c" "$KERNEL_BUILD_DIR/mmu.o"
 compile_kernel "$ROOT_DIR/kernel/sched/scheduler.c" "$KERNEL_BUILD_DIR/scheduler.o"
 compile_kernel "$ROOT_DIR/kernel/sched/thread.c" "$KERNEL_BUILD_DIR/thread.o"
-compile_kernel "$ROOT_DIR/kernel/sched/context.S" "$KERNEL_BUILD_DIR/context.o"
+if [ "$TARGET_ARCH" = aarch64 ]; then
+  compile_kernel "$ROOT_DIR/kernel/sched/context.S" "$KERNEL_BUILD_DIR/context.o"
+fi
 compile_kernel "$ROOT_DIR/kernel/net/arp.c" "$KERNEL_BUILD_DIR/arp.o"
 compile_kernel "$ROOT_DIR/kernel/net/ipv4.c" "$KERNEL_BUILD_DIR/ipv4.o"
 compile_kernel "$ROOT_DIR/kernel/net/icmp.c" "$KERNEL_BUILD_DIR/icmp.o"
@@ -459,13 +551,18 @@ done > "$KERNEL_RESPONSE_FILE"
 
 "$LD_LLD" \
   -nostdlib \
-  -T "$ROOT_DIR/kernel/arch/aarch64/linker.ld" \
+  -T "$ARCH_LINKER" \
   -o "$KERNEL_ELF" \
   @"$KERNEL_RESPONSE_FILE"
 
 printf '%s\n' "Building userspace /init ELF..."
+USER_ARCH_CFLAGS=""
+if [ "$TARGET_ARCH" = x86_64 ]; then
+  USER_ARCH_CFLAGS="-mcmodel=large -mno-red-zone"
+fi
 "$CLANG" \
-  --target=aarch64-none-elf \
+  --target="$TARGET_TRIPLE" \
+  $USER_ARCH_CFLAGS \
   -ffreestanding \
   -fno-stack-protector \
   -fno-builtin \
@@ -474,7 +571,7 @@ printf '%s\n' "Building userspace /init ELF..."
   -Wall \
   -Wextra \
   -Werror \
-  -c "$ROOT_DIR/userspace/init/init.S" \
+  -c "$INIT_SOURCE" \
   -o "$INIT_OBJ"
 
 "$LD_LLD" \
@@ -485,7 +582,8 @@ printf '%s\n' "Building userspace /init ELF..."
 
 printf '%s\n' "Building userspace /bin/service-manager ELF..."
 "$CLANG" \
-  --target=aarch64-none-elf \
+  --target="$TARGET_TRIPLE" \
+  $USER_ARCH_CFLAGS \
   -ffreestanding \
   -fno-stack-protector \
   -fno-builtin \
@@ -494,7 +592,7 @@ printf '%s\n' "Building userspace /bin/service-manager ELF..."
   -Wall \
   -Wextra \
   -Werror \
-  -c "$ROOT_DIR/userspace/service-manager/service-manager.S" \
+  -c "$SERVICE_MANAGER_SOURCE" \
   -o "$SERVICE_MANAGER_OBJ"
 
 "$LD_LLD" \
@@ -505,7 +603,8 @@ printf '%s\n' "Building userspace /bin/service-manager ELF..."
 
 printf '%s\n' "Building userspace /bin/xaios-worker ELF..."
 "$CLANG" \
-  --target=aarch64-none-elf \
+  --target="$TARGET_TRIPLE" \
+  $USER_ARCH_CFLAGS \
   -ffreestanding \
   -fno-stack-protector \
   -fno-builtin \
@@ -514,7 +613,7 @@ printf '%s\n' "Building userspace /bin/xaios-worker ELF..."
   -Wall \
   -Wextra \
   -Werror \
-  -c "$ROOT_DIR/userspace/worker/worker.S" \
+  -c "$WORKER_SOURCE" \
   -o "$WORKER_OBJ"
 
 "$LD_LLD" \
@@ -525,7 +624,8 @@ printf '%s\n' "Building userspace /bin/xaios-worker ELF..."
 
 printf '%s\n' "Building userspace C runtime..."
 "$CLANG" \
-  --target=aarch64-none-elf \
+  --target="$TARGET_TRIPLE" \
+  $USER_ARCH_CFLAGS \
   -ffreestanding \
   -fno-stack-protector \
   -fno-builtin \
@@ -539,7 +639,8 @@ printf '%s\n' "Building userspace C runtime..."
   -o "$USER_START_OBJ"
 
 "$CLANG" \
-  --target=aarch64-none-elf \
+  --target="$TARGET_TRIPLE" \
+  $USER_ARCH_CFLAGS \
   -std=c99 \
   -ffreestanding \
   -fno-stack-protector \
@@ -554,7 +655,8 @@ printf '%s\n' "Building userspace C runtime..."
   -o "$USER_LIB_OBJ"
 
 "$CLANG" \
-  --target=aarch64-none-elf \
+  --target="$TARGET_TRIPLE" \
+  $USER_ARCH_CFLAGS \
   -std=c99 \
   -ffreestanding \
   -fno-stack-protector \
@@ -575,7 +677,8 @@ for app in $USER_APPS; do
   app_elf="$INIT_BUILD_DIR/$app.elf"
   printf '%s\n' "Building userspace /bin/$app ELF..."
   "$CLANG" \
-    --target=aarch64-none-elf \
+    --target="$TARGET_TRIPLE" \
+    $USER_ARCH_CFLAGS \
     -std=c99 \
     -ffreestanding \
     -fno-stack-protector \
@@ -620,7 +723,8 @@ for sshd_src in sshd.c ssh_crypto.c tweetnacl_subset.c ssh_protocol.c ssh_channe
     sshd_opt="-Os"
   fi
   "$CLANG" \
-    --target=aarch64-none-elf \
+    --target="$TARGET_TRIPLE" \
+    $USER_ARCH_CFLAGS \
     -std=c99 \
     -ffreestanding \
     -fno-stack-protector \
@@ -671,7 +775,7 @@ dd if=/dev/zero of="$IMAGE_PATH" bs=1048576 count=64 status=none
 "$MMD" -i "$IMAGE_PATH" ::/EFI
 "$MMD" -i "$IMAGE_PATH" ::/EFI/BOOT
 "$MMD" -i "$IMAGE_PATH" ::/EFI/XAIOS
-"$MCOPY" -i "$IMAGE_PATH" "$LOADER_EFI" ::/EFI/BOOT/BOOTAA64.EFI
+"$MCOPY" -i "$IMAGE_PATH" "$LOADER_EFI" "::/EFI/BOOT/$UEFI_BOOT_NAME"
 "$MCOPY" -i "$IMAGE_PATH" "$KERNEL_ELF" ::/EFI/XAIOS/kernel.elf
 
 printf '%s\n' "Created $IMAGE_PATH"
@@ -696,6 +800,12 @@ if [ ! -f "$PERSISTENT_IMAGE" ]; then
   printf '%s\n' "Created $PERSISTENT_IMAGE (4 MB, 8192 sectors)"
 else
   printf '%s\n' "Persistent image already exists: $PERSISTENT_IMAGE"
+fi
+
+if [ "$TARGET_ARCH" = x86_64 ] && [ ! -f "$STORAGE_ADMIN_IMAGE" ]; then
+  printf '%s\n' "Creating x86 storage administration scratch image: $STORAGE_ADMIN_IMAGE"
+  dd if=/dev/zero of="$STORAGE_ADMIN_IMAGE" bs=512 count=16384 status=none
+  printf '%s\n' "Created $STORAGE_ADMIN_IMAGE (8 MB, 16384 sectors)"
 fi
 
 if [ "$MODEL_VOLUME_IMAGE_CONFIGURED" = "" ]; then

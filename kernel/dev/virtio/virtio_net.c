@@ -355,10 +355,17 @@ xaios_status_t virtio_net_init_persistent(void) {
 
   status = virtio_transport_find(VIRTIO_DEVICE_NET, "virtio-net-persist",
                                  &g_net->device);
-  if (status != XAIOS_OK) return status;
+  if (status != XAIOS_OK) {
+    klog("virtio-net-persist: discovery failed status=%d\n", (int)status);
+    return status;
+  }
   g_net->device_present = 1U;
   status = negotiate_net_features(g_net);
-  if (status != XAIOS_OK) return status;
+  if (status != XAIOS_OK) {
+    klog("virtio-net-persist: feature negotiation failed status=%d\n",
+         (int)status);
+    return status;
+  }
 
   bytes_zero(g_net->rx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
   bytes_zero(g_net->rx_avail, sizeof(*g_net->rx_avail));
@@ -374,12 +381,22 @@ xaios_status_t virtio_net_init_persistent(void) {
   status = virtio_transport_setup_queue(&g_net->device, 0, VIRTQ_SIZE,
                                         g_net->rx_desc, g_net->rx_avail,
                                         g_net->rx_used);
-  if (status != XAIOS_OK) return status;
+  if (status != XAIOS_OK) {
+    klog("virtio-net-persist: RX queue setup failed status=%d\n", (int)status);
+    return status;
+  }
   status = virtio_transport_setup_queue(&g_net->device, 1, VIRTQ_SIZE,
                                         g_net->tx_desc, g_net->tx_avail,
                                         g_net->tx_used);
-  if (status != XAIOS_OK) return status;
-  virtio_transport_set_driver_ok(&g_net->device);
+  if (status != XAIOS_OK) {
+    klog("virtio-net-persist: TX queue setup failed status=%d\n", (int)status);
+    return status;
+  }
+  status = virtio_transport_set_driver_ok_checked(&g_net->device);
+  if (status != XAIOS_OK) {
+    klog("virtio-net-persist: DRIVER_OK failed status=%d\n", (int)status);
+    return status;
+  }
 
   /* Allocate and post RX buffers */
   for (uint32_t i = 0; i < VIRTIO_NET_PERSISTENT_RX_DESCS; ++i) {

@@ -1,8 +1,8 @@
 # Qwen, Kimi, DeepSeek and GLM implementation roadmap
 
-This roadmap is dependency ordered. XAIOS platform completion is workstream 1;
-Qwen 3.6 27B correctness is workstream 2 and does not begin until that platform
-gate passes. An interface or fixture is not model support, and Kimi K3 text
+This roadmap is dependency ordered. The declared XAIOS QEMU platform gate now
+passes, so Qwen 3.6 27B correctness is the active workstream 2. An interface or
+fixture is not model support, and Kimi K3 text
 support is not multimodal support. Later model-family targets enter only after
 the XAIOS and Qwen gates, plus their own immutable official source and
 architecture-contract prerequisites.
@@ -11,8 +11,8 @@ architecture-contract prerequisites.
 
 | Order | Workstream | Project status | Entry gate |
 |---|---|---|---|
-| 1 | XAIOS | In Progress | Finish the core OS, portable engine, model-v2 integration, platform services, hardware readiness, and release gates. |
-| 2 | Qwen 3.6 27B Support | Blocked | Starts only after the XAIOS completion gate. |
+| 1 | XAIOS | QEMU Complete | ARM and x86 common-service correctness gates pass; physical platform qualification remains separate. |
+| 2 | Qwen 3.6 27B Support | Ready | Next workstream; begin scalar tokenizer, tensor and logits correctness. |
 | Later | Kimi K3 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
 | Later | DeepSeek V4 Flash 0731 Support | Blocked | Also blocked on authoritative release and source verification. |
 | Later | GLM 5.2 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
@@ -60,20 +60,20 @@ architecture-contract prerequisites.
 - [x] Replace fixed RAM/CPU bitmap and worker-dispatch limits with runtime-sized
   NUMA/CPU/cpuset state and CPU-assigned joinable worker threads.
 - [x] Link portable common CRC/block/VFS/engine components into x86_64.
-- [x] Prove x86 controlled exception and local-APIC timer interrupt delivery
-  plus modern VirtIO/MSI/MSI-X capability discovery under QEMU.
+- [x] Prove x86 controlled exception, local-APIC timer and shared-driver MSI-X
+  completion delivery plus modern VirtIO PCI discovery under QEMU.
 - [x] Start MADT-discovered x86 APs, dispatch IPI work, validate GDT/TSS ring-3
-  syscall entry and XSAVE/FXSAVE state, and operate modern VirtIO block DMA,
-  MSI-X completion and network TX.
-- [ ] Port the complete ARM EL0/thread ABI, receive networking/SSH, mounted
-  filesystems, x86 NVMe operation, security, AI Cell and telemetry services.
+  syscall entry and XSAVE/FXSAVE interrupt state, and operate modern VirtIO
+  block/network plus emulated NVMe.
+- [x] Port the complete ARM EL0/thread ABI, receive networking/SSH, mounted
+  filesystems, security, AI Cell and telemetry services to the x86 QEMU image.
 - [x] Replace copied production model admission with no-copy immutable 64-bit
   mappings and add lifecycle-safe 64-bit session metadata.
 - [ ] Complete typed reusable model state, prefix COW, ragged batching and exact
   target-authoritative speculation.
 - [ ] Pass release/security gates and record physical-hardware entry evidence.
 
-## Workstream 2: Qwen config and tokenizer (blocked on XAIOS)
+## Workstream 2: Qwen config and tokenizer (ready)
 
 - [ ] Add a SafeTensors/config/tokenizer importer that streams tensor payloads.
 - [ ] Pin immutable official Qwen3.5-0.8B files and preserve unknown config

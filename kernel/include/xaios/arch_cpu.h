@@ -3,6 +3,9 @@
 
 #include <xaios/types.h>
 
+uint32_t x86_64_platform_current_ordinal(void);
+uint32_t x86_64_platform_cpu_apic_id(uint32_t ordinal);
+
 static inline void xaios_cpu_memory_barrier(void) {
 #if defined(__aarch64__)
   __asm__ volatile("dmb ish" ::: "memory");

@@ -64,9 +64,9 @@ and writes:
 - `build/qemu-full-os-rc-report.json`
 
 The full OS RC report schema is
-`xaios.qemu.full_os_release_candidate.v1`. The AArch64 report and x86_64
-bring-up report remain separate because the x86 image does not yet host all
-ARM platform services.
+`xaios.qemu.full_os_release_candidate.v1`. AArch64 and x86_64 retain separate
+reports because they exercise different virtual hardware, although both now
+run the full common service image under QEMU.
 
 The post-51 QEMU-only hardening gate is:
 
@@ -117,11 +117,10 @@ The QEMU release-candidate gate intentionally does not claim:
 - performance wins against Linux or BSD;
 - measured x86_64 hardware performance evidence beyond the milestone 43-51
   QEMU correctness gate;
-- full x86 ARM-parity services, including the complete userspace/thread ABI,
-  RX networking and SSH, mounted filesystems, x86 NVMe operation, security,
-  AI Cell and telemetry integration; equivalently, the full ARM
-  userspace/service stack is not yet present in the x86 image (tracked in
-  [issue #18](https://github.com/Pummelchen/XAIOS/issues/18));
+- physical x86 validation of the full x86 QEMU service image, including
+  firmware, interrupt routing, NIC, NVMe durability, NUMA locality, ISA state,
+  security exposure, thermals and sustained load (tracked in
+  [issue #19](https://github.com/Pummelchen/XAIOS/issues/19));
 - production update signing and key management;
 - a production mutable filesystem;
 - production tokenizer/model runtimes beyond the QEMU CPU-only deterministic
@@ -165,21 +164,21 @@ Intel Desktop work can begin only after:
   MADT-driven AP startup with IPI worker dispatch pass. The x86 AP trampoline
   is reserved by UEFI and owned by the kernel; these paths pass
   `make qemu-x86_64-smoke`.
-- PCI discovery includes MSI, MSI-X and modern VirtIO capabilities. The same
-  gate maps the high MMIO aperture, performs a modern VirtIO boot-sector DMA
-  read, receives a queue MSI-X interrupt, and completes VirtIO network TX.
-  Full RX/network-stack integration and x86 NVMe operation remain incomplete.
-- P-core/E-core placement policy metadata: milestone 49 gate is
-  `make intel-desktop-gate`.
-- x86_64 links and executes a portable common-runtime subset plus common
-  security and scalar-kernel self-tests, while its emitted OS contract
-  explicitly reports complete userspace, networking, AI Cell, security-service
-  and telemetry parity as unavailable. Milestone 50 remains incomplete rather
-  than treating linked shared code as full platform support. The full ARM userspace/service stack is not yet linked into the x86 image.
+- PCI discovery includes MSI, MSI-X and modern VirtIO capabilities. The shared
+  persistent block and IPv4/IPv6 network stacks run over modern PCI VirtIO;
+  a post-`sti` completion canary proves MSI-X handler delivery. The x86 QEMU
+  gate also passes NVMe identify/write/flush/read.
+- Dynamic topology and interrupt placement metadata pass
+  `make qemu-x86_64-smoke`; `make intel-desktop-gate` remains a deliberately
+  blocked physical-hardware assessment after its QEMU prerequisites pass.
+- x86_64 links and executes the common kernel and full userspace/service image,
+  including process/thread ABI, filesystems, networking, SSH/SFTP, control,
+  security, AI Cell and telemetry. This completes QEMU service parity only;
+  physical Intel support remains gated.
 - Hosted tests validate MADT/SRAT/SLIT/HMAT checksums, malformed data, dynamic
   CPU counts and xAPIC/x2APIC identifiers; the default QEMU machine exposes
   MADT but does not expose SRAT, SLIT or HMAT.
-- The milestone 51 Intel Desktop hardware assessment reports `blocked` until
-  the remaining platform services and qualifying physical evidence exist.
+- The milestone 51 Intel Desktop hardware assessment remains blocked only on
+  qualifying physical evidence; the declared QEMU service-parity gate passes.
 - Initial tuned Linux/BSD baseline plan for later measured comparisons remains
   required before hardware performance claims.

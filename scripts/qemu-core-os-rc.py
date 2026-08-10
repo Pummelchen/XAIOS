@@ -57,7 +57,7 @@ AARCH64_CAPABILITIES = {
         "/bin/nettest: userspace DNS resolve/cache path passed",
     ],
     "arm_fp_neon_context": [
-        "scheduler: AArch64 SIMD/FP interrupt preservation passed regs=32",
+        "scheduler: SIMD/FP interrupt preservation passed",
     ],
     "immutable_model_mapping": [
         "model-arena: shared read-only arena self-test passed fixture_copy=1 immutable_mapping=1 copy=0",
@@ -70,17 +70,18 @@ X86_CAPABILITIES = {
         "x86_64: local APIC timer interrupt passed id=0 version=20 interrupts=1",
     ],
     "x86_modern_pci_inventory": [
-        "msi=1 msix=2 modern_virtio=2",
+        "PCI: x86 enumerated ",
+        "PCI: x86 enumeration self-test passed devices=",
     ],
     "portable_common_runtime": [
-        "x86_64: common kernel/runtime linked=1 probe=0x000000000000000f",
-        "x86_64: OS contract userspace=0 filesystem=1 networking=0 ai_cell=0 security=0 telemetry=0",
-        "x86_64: Intel Desktop milestone 50 portable common runtime passed platform services pending",
+        "/init: service setup complete",
+        "kernel: /bin/service-manager returned to kernel exit_code=0",
+        "kernel: persistent network stack enabled",
     ],
     "dynamic_topology_description": [
-        "x86_64: placement policy logical_cpus=",
-        "threads_per_core=",
-        "topology_leaf=",
+        "smp: x86 MADT/APIC online cpus=",
+        "dynamic_capacity=",
+        "topology: initialized ",
     ],
     "x86_acpi_topology": [
         "x86_64: ACPI topology and NUMA tables validated",
@@ -88,22 +89,31 @@ X86_CAPABILITIES = {
     "x86_ap_startup": [
         "x86_64: SMP AP startup passed online=",
         "dynamic_records=1",
-        "x86_64: SMP IPI worker dispatch passed workers=",
+        "smp: x86 secondary worker barrier passed ready=",
     ],
     "x86_ring3_syscall": [
         "/bin/hello: hello world from C userspace",
         "/bin/hello: C toolchain and EL0 runtime integration passed",
-        "x86_64: real /bin/hello ELF syscall ABI passed calls=3 exit=0",
+        "kernel: /bin/hello returned to kernel exit_code=0",
     ],
     "x86_xsave_state": [
         "x86_64: XSAVE/XRSTOR canary passed bytes=",
+        "scheduler: SIMD/FP interrupt preservation passed",
     ],
     "x86_virtio_dma": [
-        "x86_64: modern VirtIO block DMA read passed sector=0 bytes=512",
-        "x86_64: modern VirtIO network DMA TX passed bytes=42",
+        "virtio-blk: modern PCI transport index=",
+        "virtio-blk: read/write/error/reset self-test passed",
+        "virtio-net: modern PCI transport index=",
+        "virtio-net: queue/tx/parser/reset self-test passed",
     ],
     "x86_msix_completion": [
-        "x86_64: VirtIO block MSI-X completion interrupt passed vector=34",
+        "virtio-blk: x86 MSI-X completion canary passed count=",
+    ],
+    "x86_full_service_stack": [
+        "/bin/smptest: complete",
+        "/bin/nettest: complete",
+        "sshd: Phase 2 runtime ready",
+        "SSH server: up and running (tcp/22)",
     ],
 }
 
@@ -223,12 +233,12 @@ def main() -> int:
         "physical_performance_claims_allowed": False,
         "commands": results,
         "capabilities": capabilities,
-        "x86_full_platform_parity": False,
+        "x86_qemu_service_parity": not failures,
+        "x86_physical_support": False,
         "x86_pending": [
-            "complete ARM EL0 process and thread ABI",
-            "receive networking and SSH/control services",
-            "mounted filesystem and x86 NVMe operation",
-            "security, telemetry, and AI Cell service integration",
+            "physical Intel firmware, interrupt, storage, NIC, and NUMA validation",
+            "physical AVX2, AVX-512, VNNI, and AMX state and kernel validation",
+            "physical reliability, security, performance, power, and thermal evidence",
         ],
         "failures": failures,
     }

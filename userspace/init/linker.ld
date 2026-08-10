@@ -5,19 +5,19 @@ SECTIONS
   . = 0x100000000;
 
   .text : ALIGN(0x1000) {
-    *(.text .text.*)
+    *(.text .text.* .ltext .ltext.*)
   }
 
   .rodata : ALIGN(0x1000) {
-    *(.rodata .rodata.*)
+    *(.rodata .rodata.* .lrodata .lrodata.*)
   }
 
   .data : ALIGN(0x1000) {
-    *(.data .data.*)
+    *(.data .data.* .ldata .ldata.*)
   }
 
   .bss : ALIGN(0x1000) {
-    *(.bss .bss.* COMMON)
+    *(.bss .bss.* .lbss .lbss.* COMMON)
   }
 }
 

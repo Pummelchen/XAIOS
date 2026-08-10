@@ -38,6 +38,14 @@ typedef struct virtq_used {
 
 typedef struct virtio_mmio_device {
   uint64_t base;
+  uint64_t common_config;
+  uint64_t notify_base;
+  uint64_t isr_config;
+  uint32_t notify_multiplier;
+  uint32_t transport_slot;
+  uint32_t transport_index;
+  uint32_t interrupt_id;
+  uint32_t interrupt_configured;
   uint32_t device_id;
   const char *name;
 } virtio_mmio_device_t;
@@ -65,7 +73,7 @@ xaios_status_t virtio_transport_negotiate_features(
     const virtio_mmio_device_t *device, uint32_t requested_low,
     uint32_t requested_high, uint32_t *accepted_low,
     uint32_t *accepted_high);
-xaios_status_t virtio_transport_setup_queue(const virtio_mmio_device_t *device,
+xaios_status_t virtio_transport_setup_queue(virtio_mmio_device_t *device,
                                            uint32_t queue_index,
                                            uint32_t queue_size,
                                            virtq_desc_t *desc,
@@ -86,5 +94,6 @@ xaios_status_t virtio_transport_register_interrupt(
 xaios_status_t virtio_transport_unregister_interrupt(
     const virtio_mmio_device_t *device, virtio_interrupt_handler_t handler,
     void *context);
+uint32_t virtio_transport_slot(const virtio_mmio_device_t *device);
 
 #endif

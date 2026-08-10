@@ -115,12 +115,12 @@ on Apple Silicon reaches `/init` through a limited ARM64 compatibility path but
 does not yet have VMware networking, persistent storage, or multi-vCPU
 discovery.
 
-The x86_64 image starts MADT-discovered application processors, executes a real
-shared-runtime ring-3 ELF syscall round trip, validates runtime-sized XSAVE and
-ACPI topology, and exercises modern VirtIO block DMA/MSI-X plus network TX.
-Full AArch64 service parity remains open, including complete userspace/thread
-services, receive networking and SSH, mounted filesystems, x86 NVMe operation,
-security services, AI Cell integration, and telemetry.
+The x86_64 QEMU image executes the common kernel and complete userspace/service
+image. MADT-discovered application processors run EL0 workers with per-CPU user
+page-table roots, while runtime-sized XSAVE/FXSAVE state survives live timer
+interrupts. The shared filesystems, IPv4/IPv6, SSH/SFTP, security, AI Cell and
+telemetry paths run over modern PCI VirtIO block/network, and emulated NVMe
+passes identify/write/flush/read. Physical Intel qualification remains open.
 
 ## Inference boundary
 

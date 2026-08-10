@@ -89,8 +89,9 @@ secrets. Revoke and rotate an exposed credential before continuing work.
 ## Non-claims
 
 - QEMU validation is not a security certification.
-- The x86_64 image does not yet integrate the complete AArch64 security,
-  process, SSH, filesystem, networking, AI Cell, and telemetry services.
+- The x86_64 QEMU image integrates the common security, process, SSH,
+  filesystem, networking, AI Cell and telemetry services, but this is not an
+  independent security review or approval for physical Internet exposure.
 - Development keys and fixture credentials are not production trust roots.
 - Physical DMA isolation, firmware trust, side channels, thermal/fault behavior,
   and supply-chain controls require separate validation.

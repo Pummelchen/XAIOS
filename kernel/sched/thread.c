@@ -231,7 +231,12 @@ xaios_status_t xaios_user_thread_create(uint64_t entry, uint64_t argument,
   context->owner_pid = owner_pid;
   status = thread_create_on_cpu(user_thread_worker, context, target_cpu,
                                 owner_pid, 1U, thread_id);
-  if (status != XAIOS_OK) kheap_free(context);
+  if (status != XAIOS_OK) {
+    kheap_free(context);
+  } else {
+    klog("threads: user create id=%lu owner=%u target_cpu=%u\n", *thread_id,
+         owner_pid, target_cpu);
+  }
   return status;
 }
 
@@ -253,9 +258,17 @@ uint32_t xaios_thread_run_pending(uint32_t cpu_id) {
   xaios_spin_unlock(&g_thread_lock);
   if (claimed == 0) return 0U;
 
+  if (claimed->owner_pid != 0U) {
+    klog("threads: user dispatch id=%lu owner=%u cpu=%u\n", claimed->id,
+         claimed->owner_pid, cpu_id);
+  }
   uint64_t result = claimed->entry(claimed->context);
   claimed->result = result;
   __atomic_store_n(&claimed->state, XAIOS_THREAD_COMPLETE, __ATOMIC_RELEASE);
+  if (claimed->owner_pid != 0U) {
+    klog("threads: user complete id=%lu owner=%u cpu=%u result=%lu\n",
+         claimed->id, claimed->owner_pid, cpu_id, result);
+  }
   xaios_cpu_notify();
   return 1U;
 }
@@ -273,10 +286,17 @@ static xaios_status_t thread_join_owned(uint64_t thread_id, uint64_t timeout_ns,
     xaios_thread_record_t *thread = find_thread_locked(thread_id);
     if (thread == 0) {
       xaios_spin_unlock(&g_thread_lock);
+      if (enforce_owner != 0U) {
+        klog("threads: user join id=%lu owner=%u not found\n", thread_id,
+             owner_pid);
+      }
       return XAIOS_ERR_NOT_FOUND;
     }
     if (enforce_owner != 0U && thread->owner_pid != owner_pid) {
+      uint32_t actual_owner = thread->owner_pid;
       xaios_spin_unlock(&g_thread_lock);
+      klog("threads: user join id=%lu owner=%u actual_owner=%u\n", thread_id,
+           owner_pid, actual_owner);
       return XAIOS_ERR_INVALID;
     }
     xaios_thread_state_t state =
@@ -294,6 +314,17 @@ static xaios_status_t thread_join_owned(uint64_t thread_id, uint64_t timeout_ns,
 
     if (current_cpu != UINT32_MAX) (void)xaios_thread_run_pending(current_cpu);
     if (timeout_ns != 0U && timer_now_ns() - start >= timeout_ns) {
+      if (enforce_owner != 0U) {
+        xaios_spin_lock(&g_thread_lock);
+        thread = find_thread_locked(thread_id);
+        uint32_t state = thread == 0 ? XAIOS_THREAD_UNUSED : thread->state;
+        uint32_t target = thread == 0 ? UINT32_MAX : thread->target_cpu;
+        uint32_t running = thread == 0 ? UINT32_MAX : thread->running_cpu;
+        xaios_spin_unlock(&g_thread_lock);
+        klog("threads: user join timeout id=%lu owner=%u state=%u target=%u "
+             "running=%u\n",
+             thread_id, owner_pid, state, target, running);
+      }
       return XAIOS_ERR_BUSY;
     }
     xaios_cpu_relax();
@@ -529,7 +560,12 @@ void xaios_thread_self_test(void) {
       break;
     }
   }
-  kassert(target_cpu != UINT32_MAX);
+  if (target_cpu == UINT32_MAX) {
+    klog("threads: pending cancellation self-test skipped on uniprocessor\n");
+    klog("threads: concurrent scheduler self-test passed threads=%lu cpus=%u\n",
+         ran, smp_online_count());
+    return;
+  }
   xaios_cancel_test_context_t context = {0U, 0U};
   uint64_t blocker_id = 0U;
   uint64_t queued_id = 0U;

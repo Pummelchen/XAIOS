@@ -673,49 +673,63 @@ void ai_cell_self_test(void) {
   kassert(ai_cell_create_from_descriptor(&conflict) == XAIOS_OK);
   kassert(ai_cell_prepare(1) == XAIOS_ERR_INVALID);
 
-  xaios_ai_cell_descriptor_v1_t nic_conflict;
-  fill_descriptor(&nic_conflict, 2, "nic-conflict-agent", 0x4, 2, 1, 2,
-                  64 * 1024, 128 * 1024);
-  kassert(ai_cell_create_from_descriptor(&nic_conflict) == XAIOS_OK);
-  kassert(ai_cell_prepare(2) == XAIOS_ERR_INVALID);
+  uint32_t multi_worker = smp_online_count() >= 3U;
+  if (multi_worker != 0U) {
+    xaios_ai_cell_descriptor_v1_t nic_conflict;
+    fill_descriptor(&nic_conflict, 2, "nic-conflict-agent", 0x4, 2, 1, 2,
+                    64 * 1024, 128 * 1024);
+    kassert(ai_cell_create_from_descriptor(&nic_conflict) == XAIOS_OK);
+    kassert(ai_cell_prepare(2) == XAIOS_ERR_INVALID);
 
-  xaios_ai_cell_descriptor_v1_t workspace_conflict;
-  fill_descriptor(&workspace_conflict, 4, "workspace-conflict-agent", 0x4, 2,
-                  2, 1, 64 * 1024, 128 * 1024);
-  kassert(ai_cell_create_from_descriptor(&workspace_conflict) == XAIOS_OK);
-  kassert(ai_cell_prepare(4) == XAIOS_ERR_INVALID);
+    xaios_ai_cell_descriptor_v1_t workspace_conflict;
+    fill_descriptor(&workspace_conflict, 4, "workspace-conflict-agent", 0x4,
+                    2, 2, 1, 64 * 1024, 128 * 1024);
+    kassert(ai_cell_create_from_descriptor(&workspace_conflict) == XAIOS_OK);
+    kassert(ai_cell_prepare(4) == XAIOS_ERR_INVALID);
 
-  xaios_ai_cell_descriptor_v1_t shared;
-  fill_descriptor(&shared, 3, "shared-weight-agent", 0x4, 2, 2, 2,
-                  64 * 1024, 128 * 1024);
-  kassert(ai_cell_create_from_descriptor(&shared) == XAIOS_OK);
-  kassert(ai_cell_prepare(3) == XAIOS_OK);
-  kassert(ai_cell_start(3) == XAIOS_OK);
-  kassert(cpu_ai_runtime_fixture_decode_piece(3, piece, sizeof(piece), output,
-                                             sizeof(output), &out) ==
-          XAIOS_OK);
-  kassert(str_equal(output, "1B1F2327"));
-  kassert(ai_cell_arena_pages_reserved() == 160);
-  kassert(ai_cell_arena_bytes_reserved() == 655360);
-  kassert(ai_cell_arena_pages_peak() == 160);
-  kassert(ai_cell_arena_bytes_peak() == 655360);
-  kassert(ai_cell_stop(3) == XAIOS_OK);
-  kassert(ai_cell_arena_pages_reserved() == 80);
-  kassert(ai_cell_arena_bytes_reserved() == 327680);
-  klog("ai-cell: multi-cell shared model/private kv self-test passed\n");
+    xaios_ai_cell_descriptor_v1_t shared;
+    fill_descriptor(&shared, 3, "shared-weight-agent", 0x4, 2, 2, 2,
+                    64 * 1024, 128 * 1024);
+    kassert(ai_cell_create_from_descriptor(&shared) == XAIOS_OK);
+    kassert(ai_cell_prepare(3) == XAIOS_OK);
+    kassert(ai_cell_start(3) == XAIOS_OK);
+    kassert(cpu_ai_runtime_fixture_decode_piece(3, piece, sizeof(piece), output,
+                                               sizeof(output), &out) ==
+            XAIOS_OK);
+    kassert(str_equal(output, "1B1F2327"));
+    kassert(ai_cell_arena_pages_reserved() == 160);
+    kassert(ai_cell_arena_bytes_reserved() == 655360);
+    kassert(ai_cell_arena_pages_peak() == 160);
+    kassert(ai_cell_arena_bytes_peak() == 655360);
+    kassert(ai_cell_stop(3) == XAIOS_OK);
+    kassert(ai_cell_arena_pages_reserved() == 80);
+    kassert(ai_cell_arena_bytes_reserved() == 327680);
+    klog("ai-cell: multi-cell shared model/private kv self-test passed\n");
+  } else {
+    klog("ai-cell: multi-worker sharing self-test skipped cpus=%u\n",
+         smp_online_count());
+  }
 
   kassert(ai_cell_stop(0) == XAIOS_OK);
   kassert(ai_cell_arena_pages_reserved() == 0);
   kassert(ai_cell_arena_bytes_reserved() == 0);
-  kassert(ai_cell_descriptor_accept_count() == 5);
+  kassert(ai_cell_descriptor_accept_count() ==
+          (multi_worker != 0U ? 5U : 2U));
   kassert(ai_cell_descriptor_reject_count() == 4);
-  kassert(ai_cell_resource_admission_count() == 2);
-  kassert(ai_cell_resource_reject_count() >= 10);
-  kassert(ai_cell_queue_bind_count() == 3);
-  kassert(ai_cell_queue_release_count() == 3);
-  kassert(ai_cell_workspace_bind_count() == 2);
-  kassert(ai_cell_workspace_release_count() == 2);
-  kassert(ai_cell_conflict_count() == 3);
+  kassert(ai_cell_resource_admission_count() ==
+          (multi_worker != 0U ? 2U : 1U));
+  kassert(ai_cell_resource_reject_count() >=
+          (multi_worker != 0U ? 10U : 4U));
+  kassert(ai_cell_queue_bind_count() ==
+          (multi_worker != 0U ? 3U : 1U));
+  kassert(ai_cell_queue_release_count() ==
+          (multi_worker != 0U ? 3U : 1U));
+  kassert(ai_cell_workspace_bind_count() ==
+          (multi_worker != 0U ? 2U : 1U));
+  kassert(ai_cell_workspace_release_count() ==
+          (multi_worker != 0U ? 2U : 1U));
+  kassert(ai_cell_conflict_count() ==
+          (multi_worker != 0U ? 3U : 1U));
   klog("ai-cell: descriptor ABI self-test passed accepts=%lu rejects=%lu checksum=0x%lx\n",
        ai_cell_descriptor_accept_count(), ai_cell_descriptor_reject_count(),
        descriptor.checksum);

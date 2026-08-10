@@ -24,9 +24,10 @@ and `2302` the companion UDP service. No SSH-ready message is emitted on these
 paths.
 
 The following paths passed from OpenSSH clients on macOS and in an official
-Debian 13 Docker container on this host on 2026-08-04. Both clients exercised
-the same freestanding AArch64 guest. An official FreeBSD 15.1 AArch64 client
-subsequently passed the explicitly identified subset below on 2026-08-10:
+Debian 13 Docker container. The broad Debian suite passes against both the
+freestanding AArch64 and x86_64 QEMU guests; the x86 report is
+`build/qemu-docker-network-suite-x86_64.json`. An official FreeBSD 15.1 AArch64
+client passed the explicitly identified subset below on 2026-08-10:
 
 - OpenSSH Ed25519 public-key login succeeded and an unauthorized key failed;
 - an explicitly provisioned PBKDF2-HMAC-SHA256 password succeeded and a wrong

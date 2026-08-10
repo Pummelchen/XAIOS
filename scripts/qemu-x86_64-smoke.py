@@ -9,57 +9,40 @@ import time
 TARGETS = [
     "XAIOS loader starting",
     "XAIOS loader target: x86_64 UEFI",
-    "XAIOS loader loaded kernel.elf",
+    "XAIOS loader loaded verified A/B system slot",
     "XAIOS loader validated ELF64 kernel",
-    "XAIOS loader copied kernel segments",
-    "XAIOS loader exiting boot services",
     "XAIOS x86_64 kernel starting",
     "x86_64: UEFI boot info valid",
-    "x86_64: COM1 serial online",
-    "x86_64: Intel Desktop milestone 43 boot path passed",
-    "x86_64: GDT/TSS installed rsp0=",
-    "x86_64: IDT installed vectors=32",
-    "x86_64: early exception path online",
     "x86_64: controlled INT3 exception round-trip passed count=1",
-    "x86_64: Intel Desktop milestone 44 early exceptions passed",
     "x86_64: PMM parsed descriptors=",
-    "x86_64: Intel Desktop milestone 45 memory map passed",
     "x86_64: ACPI root=XSDT enabled_cpus=",
-    "MADT=1 SRAT=",
-    "x86_64: ACPI topology and NUMA tables validated",
     "x86_64: early page tables loaded cr3=",
-    "x86_64: VMM policy kernel/user split prepared",
-    "x86_64: Intel Desktop milestone 46 page tables passed",
-    "/bin/hello: hello world from C userspace",
-    "/bin/hello: C toolchain and EL0 runtime integration passed",
-    "x86_64: real /bin/hello ELF syscall ABI passed calls=3 exit=0",
-    "x86_64: APIC discovery supported=",
-    "x86_64: timer discovery tsc=",
     "x86_64: local APIC timer interrupt passed id=",
-    "x86_64: Intel Desktop milestone 47 timers APIC passed",
     "x86_64: SMP AP startup passed online=",
-    "madt_cpus=",
     "dynamic_records=1",
-    "x86_64: SMP IPI worker dispatch passed workers=",
-    "x86_64: common security policy self-test passed",
-    "x86_64: scalar AI kernel self-test passed",
-    "x86_64: PCI discovery devices=",
-    "modern_virtio=2",
-    "x86_64: Intel Desktop milestone 48 PCI discovery passed",
-    "x86_64: modern VirtIO block DMA read passed sector=0 bytes=512",
-    "x86_64: VirtIO block MSI-X completion interrupt passed vector=34",
-    "x86_64: modern VirtIO network DMA TX passed bytes=42",
-    "x86_64: placement policy logical_cpus=",
-    "x86_64: SMT policy disabled_by_default=1",
-    "x86_64: hot-core telemetry migration_total=0 context_switch_total=0",
-    "x86_64: Intel Desktop milestone 49 placement policy passed",
-    "x86_64: common kernel/runtime linked=1 probe=0x000000000000000f expected=0x000000000000000f",
-    "x86_64: OS contract userspace=0 filesystem=1 networking=0 ai_cell=0 security=0 telemetry=0",
-    "x86_64: full OS contract parity marker ready=0",
-    "x86_64: Intel Desktop milestone 50 portable common runtime passed platform services pending",
-    "x86_64: hardware gate qemu_correctness=1 physical_required=1 baseline_required=1 performance_claims_allowed=0 release_candidate_ready=0",
-    "x86_64: Intel Desktop hardware gate blocked platform-parity-and-physical-evidence-required",
-    "x86_64: Intel Desktop milestone 51 hardware gate blocked",
+    "NUMA: self-test passed",
+    "VMM: x86 map/unmap self-test passed",
+    "PCI: x86 enumeration self-test passed",
+    "virtio-blk: read/write/error/reset self-test passed",
+    "virtio-blk: x86 MSI-X completion canary passed count=",
+    "virtio-net: persistent mode initialized",
+    "kernel: /bin/service-manager returned to kernel exit_code=0",
+    "scheduler: SIMD/FP interrupt preservation passed",
+    "smp: x86 secondary worker barrier passed ready=",
+    "threads: concurrent group complete",
+    "/bin/smptest: complete",
+    "/bin/nettest: complete",
+    "kernel: starting persistent /bin/sshd service",
+    "sshd: Phase 2 runtime ready",
+    "boot-ui: progress=100 loaded=SSH-server loading=complete remaining=0",
+    "IPv4: 10.0.2.15",
+    "SSH server: up and running (tcp/22)",
+]
+
+FORBIDDEN = [
+    "x86_64: panic:",
+    "Triple fault",
+    "Cyan Screen of Death",
 ]
 
 OR_TARGETS = [
@@ -78,7 +61,7 @@ def main() -> int:
     env = os.environ.copy()
     env.setdefault("XAIOS_QEMU_X86_ACCEL", "tcg")
     env.setdefault("XAIOS_QEMU_X86_CPU", "max")
-    timeout = int(env.get("XAIOS_QEMU_X86_SMOKE_TIMEOUT", "45"))
+    timeout = int(env.get("XAIOS_QEMU_X86_SMOKE_TIMEOUT", "180"))
 
     proc = subprocess.Popen(
         ["./scripts/run-qemu-x86_64.sh"],
@@ -100,10 +83,15 @@ def main() -> int:
                 chunk = os.read(fd, 4096).decode("utf-8", errors="replace")
                 if not chunk:
                     break
-                sys.stdout.write(chunk)
-                sys.stdout.flush()
+                try:
+                    sys.stdout.write(chunk)
+                    sys.stdout.flush()
+                except BlockingIOError:
+                    pass
                 seen.append(chunk)
                 text = "".join(seen)
+                if any(marker in text for marker in FORBIDDEN):
+                    break
                 if (
                     all(target in text for target in TARGETS)
                     and all(
@@ -113,7 +101,7 @@ def main() -> int:
                 ):
                     print(
                         "qemu-x86_64-smoke: x86_64 boot reached all "
-                        "early bring-up and portable-runtime markers"
+                        "full common-runtime and SSH readiness markers"
                     )
                     return 0
             elif proc.poll() is not None:
@@ -134,9 +122,12 @@ def main() -> int:
         for alternatives in OR_TARGETS
         if not any(target in text for target in alternatives)
     )
+    forbidden = [marker for marker in FORBIDDEN if marker in text]
     print("\nqemu-x86_64-smoke: missing markers:")
     for marker in missing:
         print(f"  - {marker}")
+    for marker in forbidden:
+        print(f"  - forbidden marker observed: {marker}")
     return 1
 
 

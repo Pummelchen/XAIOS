@@ -21,8 +21,8 @@ authoritative in [`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json).
 
 | Order | Workstream | Project status | Entry gate |
 |---|---|---|---|
-| 1 | XAIOS | In Progress | Finish the core OS, portable engine, model-v2 integration, platform services, hardware readiness, and release gates. |
-| 2 | Qwen 3.6 27B Support | Blocked | Starts only after the XAIOS completion gate. |
+| 1 | XAIOS | QEMU Complete | ARM and x86 common-service correctness gates pass; physical platform qualification remains separate. |
+| 2 | Qwen 3.6 27B Support | Ready | Next workstream; begin scalar tokenizer, tensor and logits correctness. |
 | Later | Kimi K3 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
 | Later | DeepSeek V4 Flash 0731 Support | Blocked | Also blocked on authoritative release and source verification. |
 | Later | GLM 5.2 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
@@ -112,11 +112,12 @@ authoritative in [`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json).
 - [x] Add an OS-owned x86 GDT/TSS, a user-only mapping and a real x86_64
   `/bin/hello` ELF built from the shared userspace runtime that completes LOG
   and EXIT through ring-3 `int 0x80`.
-- [x] Execute modern PCI VirtIO block DMA, MSI-X completion delivery and
-  VirtIO-network DMA transmit under x86 QEMU.
-- [ ] Port the complete ARM EL0 process/thread ABI, receive-side networking,
+- [x] Execute modern PCI VirtIO block DMA, shared-driver MSI-X completion
+  delivery and VirtIO-network DMA transmit under x86 QEMU.
+- [x] Port the complete ARM EL0 process/thread ABI, receive-side networking,
   filesystems, SSH/control/security, AI Cell and telemetry services for full
-  x86_64 OS parity ([issue #18](https://github.com/Pummelchen/XAIOS/issues/18)).
+  x86_64 QEMU OS parity, including Debian 13 interoperability and 256-vCPU
+  x2APIC correctness coverage ([issue #18](https://github.com/Pummelchen/XAIOS/issues/18)).
 - [x] Add cumulative/partial ACK TCP sliding-window transmit with up to eight
   retained segments, SACK, fast retransmit, zero-window handling, bounded
   reordering and RTO backoff.
@@ -133,15 +134,16 @@ authoritative in [`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json).
   without treating TCG duration as physical scalability evidence.
 - [x] Complete the focused security-sensitive syscall/user-buffer audit and
   QEMU security gate ([issue #8](https://github.com/Pummelchen/XAIOS/issues/8)).
-- [ ] Complete x86 full-service and physical-hardware entry gates
-  ([issue #18](https://github.com/Pummelchen/XAIOS/issues/18) and
-  [issue #19](https://github.com/Pummelchen/XAIOS/issues/19)).
+- [x] Complete the x86 full-service QEMU gate
+  ([issue #18](https://github.com/Pummelchen/XAIOS/issues/18)).
+- [ ] Complete physical-hardware entry gates
+  ([issue #19](https://github.com/Pummelchen/XAIOS/issues/19)).
 - [x] Keep QEMU evidence limited to correctness and ABI claims.
 
 Qwen and every other model-family implementation remain gated until these
 platform criteria and the XAIOS GitHub milestone are complete.
 
-## Workstream 2: Qwen correctness MVP (blocked on XAIOS)
+## Workstream 2: Qwen correctness MVP (ready)
 
 - [ ] Pin immutable Qwen3.5-0.8B config, tokenizer and SafeTensors fixtures.
 - [ ] Implement streaming SafeTensors/config/tokenizer importer.
@@ -225,8 +227,8 @@ platform criteria and the XAIOS GitHub milestone are complete.
 
 All ten independent jobs passed in GitHub Actions run
 [`30886171942`](https://github.com/Pummelchen/XAIOS/actions/runs/30886171942).
-That is the current repository CI baseline, not evidence of physical hardware
-or full x86 service parity.
+That is the current repository CI baseline. Local QEMU additionally proves
+full x86 service parity, but neither result is physical-hardware evidence.
 
 QEMU gates are correctness evidence only. Physical performance claims require
 immutable artifacts satisfying

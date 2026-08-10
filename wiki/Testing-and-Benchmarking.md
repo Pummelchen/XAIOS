@@ -42,6 +42,7 @@ QEMU throughput and timing are never physical performance evidence.
 | Network stack | `make qemu-network-suite` |
 | FreeBSD Unix reference | `make qemu-freebsd-network-suite` |
 | Debian/OpenSSH cross-client | `make qemu-docker-network-suite` |
+| Debian/OpenSSH against x86 | `XAIOS_QEMU_NETWORK_ARCH=x86_64 make qemu-docker-network-suite` |
 | macOS and Debian parallel load | `make qemu-parallel-network-load` |
 | ModelFS SFTP lifecycle | `make qemu-model-sftp-gate` |
 | Security | `make qemu-security-gate` |
@@ -58,6 +59,11 @@ QEMU throughput and timing are never physical performance evidence.
 The FreeBSD gate uses an official checksum-pinned FreeBSD 15.1 AArch64 image.
 The Debian gate uses a disposable Docker client. These clients validate wire
 behavior and do not imply FreeBSD or Linux binary ABI compatibility.
+
+The x86 platform matrix runs the same full common-runtime smoke contract on
+1, 4, 8, 128 and 256 vCPUs, q35 and pc machines, xAPIC/x2APIC, emulated NVMe,
+and single/multi-threaded TCG. These are correctness cases, not throughput or
+scalability measurements.
 
 ## CI
 

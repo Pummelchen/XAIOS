@@ -39,23 +39,23 @@ ALLOWED_STATUSES = {
 REQUIRED_MARKERS = {
     "README.md": (
         "FP/SIMD interrupt context",
-        "MADT/SRAT/SLIT/HMAT",
-        "VirtIO block DMA",
-        "Full x86 service parity remains open",
+        "MADT CPU",
+        "PCI VirtIO block/network",
+        "QEMU service parity with AArch64",
     ),
     "PROJECT-TRACKER.md": (
         "all MADT-discovered x86 APs",
         "ring-3 `int 0x80`",
-        "complete ARM EL0 process/thread ABI",
+        "x86_64 QEMU OS parity",
     ),
     "HARDWARE-READINESS.md": (
         "AP trampoline",
         "XSAVE/XRSTOR",
-        "full ARM userspace/service stack",
+        "full x86 QEMU service image",
     ),
     "wiki/Home.md": (
         "MADT-discovered application processors",
-        "Full ARM-service parity on x86 remains open",
+        "QEMU service parity with AArch64",
     ),
 }
 

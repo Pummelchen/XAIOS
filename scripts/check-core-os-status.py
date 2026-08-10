@@ -13,8 +13,8 @@ REQUIRED = {
         "eight-request",
         "userspace DNS",
         "IPv4/IPv6 fragment reassembly",
-        "controlled exception round trip",
-        "local-APIC timer interrupt",
+        "AP trampoline",
+        "QEMU service parity with AArch64",
     ],
     "PROJECT-TRACKER.md": [
         "focused QEMU NVMe",
@@ -36,12 +36,14 @@ REQUIRED = {
     ],
     "wiki/Current-Limitations.md": [
         "external A-record resolution",
-        "controlled INT3 round trip",
+        "complete common process/thread",
+        "QEMU parity is not a physical support claim",
     ],
     "wiki/Home.md": [
         "eight-request block batching",
         "IPv4/IPv6 reassembly",
-        "local-APIC timer interrupts",
+        "MADT-discovered application processors",
+        "QEMU service parity with AArch64",
     ],
     "wiki/Production-SSH-Server.md": [
         "out-of-order",
@@ -78,6 +80,7 @@ CONTRACT_CAPABILITIES = {
     "x86_xsave_state",
     "x86_virtio_dma",
     "x86_msix_completion",
+    "x86_full_service_stack",
     "engine_service_boundary",
     "immutable_model_mapping",
     "async_model_range_io",

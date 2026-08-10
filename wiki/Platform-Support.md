@@ -20,9 +20,9 @@ and ABI evidence only.
 | 6 | Generic ARM server scope | `scope-defined` |
 | 7 | SVE and SVE2 | `interface-only` |
 | 8 | x86 AP startup and worker participation | `qemu-tested` |
-| 9 | x86 ring 3, syscalls and user threads | `partial` |
-| 10 | x86 PCI storage, network, NVMe and interrupts | `partial` |
-| 11 | x86 full platform services | `pending` |
+| 9 | x86 ring 3, syscalls and user threads | `qemu-tested` |
+| 10 | x86 PCI storage, network, NVMe and interrupts | `qemu-tested` |
+| 11 | x86 full platform services | `qemu-tested` |
 | 12 | MADT, SRAT, SLIT and HMAT | `parser-tested` |
 | 13 | XSAVE and XRSTOR state management | `qemu-tested` |
 | 14 | Physical Intel and Xeon evidence | `physical-gate` |
@@ -47,11 +47,13 @@ The exact evidence for each row remains in the authoritative JSON source.
 - x86 starts all MADT-discovered application processors through an OS-owned
   trampoline and dispatches deterministic IPI work without a project-level CPU
   count limit.
-- x86 validates GDT/TSS ring-3 syscall entry by executing a real `/bin/hello`
-  ELF built from the shared userspace runtime, plus common security and scalar
-  kernel self-tests. It also validates runtime-sized XSAVE/XRSTOR with
-  FXSAVE/FXRSTOR fallback, ACPI MADT/SRAT/SLIT/HMAT parsing, modern VirtIO block
-  DMA, MSI-X completion, and VirtIO network TX.
+- x86 executes the complete shared ELF/syscall/process/thread ABI with per-CPU
+  page-table roots and AP worker threads. Runtime-sized XSAVE/XRSTOR or
+  FXSAVE/FXRSTOR preserves FP/SIMD state across live interrupts. The common
+  filesystems, security, AI Cell, telemetry, control and SSH/SFTP services run
+  over PCI VirtIO block/network, and emulated NVMe passes identify/write/flush/read.
+- The x86 platform matrix passes 1, 4, 8, 128 and 256 vCPUs including x2APIC;
+  every required CPU-family tier and the Debian 13 interoperability suite pass.
 - Production model registration retains immutable readers or no-copy 64-bit
   mappings. Direct aligned range I/O and lifecycle-safe 64-bit session metadata
   pass hosted tests. The copied model arena remains fixture-only.
@@ -62,9 +64,9 @@ The exact evidence for each row remains in the authoritative JSON source.
 
 ## Deliberate Open Boundaries
 
-- Full ARM-service parity on x86 remains open: the complete EL0 process/thread
-  ABI, receive networking, SSH/control, mounted filesystems, x86 NVMe operation,
-  security, AI Cell and telemetry are not linked as one x86 service image.
+- QEMU service parity with AArch64 is complete. Physical Intel firmware,
+  storage, NIC, NUMA, ISA-state, security and performance validation remains
+  open and cannot be inferred from emulation.
 - SVE/SVE2, Metal, AVX-512/VNNI and AMX are capability/roadmap entries, not
   executing production backends.
 - Typed model state, ragged batching, exact speculation, tokenizer parity,
@@ -77,7 +79,7 @@ The exact evidence for each row remains in the authoritative JSON source.
 The repository tracker and hardware-readiness document retain these open items;
 an interface, parser, or QEMU canary is not a production-support claim.
 
-The remaining implementation blocker for full x86 service parity is tracked in
+The completed QEMU x86 service-parity work is tracked in
 [issue #18](https://github.com/Pummelchen/XAIOS/issues/18). Physical Apple, ARM,
-Intel and Xeon validation is tracked separately in
+Intel and Xeon validation remains tracked separately in
 [issue #19](https://github.com/Pummelchen/XAIOS/issues/19).

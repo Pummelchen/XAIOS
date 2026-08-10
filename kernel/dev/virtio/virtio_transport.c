@@ -103,6 +103,12 @@ xaios_status_t virtio_transport_find_from(uint32_t device_id, const char *name,
     uint32_t found_id = virtio_mmio_read32(base, VIRTIO_MMIO_DEVICE_ID);
     if (magic == VIRTIO_MAGIC && version >= 2 && found_id == device_id) {
       device->base = base;
+      device->common_config = base;
+      device->notify_base = base;
+      device->isr_config = base;
+      device->notify_multiplier = 0U;
+      device->transport_slot = slot;
+      device->interrupt_id = VIRTIO_MMIO_FIRST_INTID + slot;
       device->device_id = device_id;
       device->name = name;
       klog("%s: mmio base=0x%lx version=%u vendor=0x%x\n",
@@ -129,6 +135,12 @@ xaios_status_t virtio_transport_find_at(uint32_t device_id, const char *name,
     return XAIOS_ERR_NOT_FOUND;
   }
   device->base = base;
+  device->common_config = base;
+  device->notify_base = base;
+  device->isr_config = base;
+  device->notify_multiplier = 0U;
+  device->transport_slot = slot;
+  device->interrupt_id = VIRTIO_MMIO_FIRST_INTID + slot;
   device->device_id = device_id;
   device->name = name;
   klog("%s: mmio slot=%u base=0x%lx version=%u vendor=0x%x\n", name, slot,
@@ -216,7 +228,7 @@ xaios_status_t virtio_transport_negotiate_features(
   return XAIOS_OK;
 }
 
-xaios_status_t virtio_transport_setup_queue(const virtio_mmio_device_t *device,
+xaios_status_t virtio_transport_setup_queue(virtio_mmio_device_t *device,
                                            uint32_t queue_index,
                                            uint32_t queue_size,
                                            virtq_desc_t *desc,
@@ -304,13 +316,7 @@ void virtio_transport_ack_interrupts(const virtio_mmio_device_t *device) {
 }
 
 uint32_t virtio_transport_interrupt_id(const virtio_mmio_device_t *device) {
-  if (device == 0 || device->base < VIRTIO_MMIO_BASE ||
-      (device->base - VIRTIO_MMIO_BASE) % VIRTIO_MMIO_STRIDE != 0U) {
-    return UINT32_MAX;
-  }
-  uint64_t slot = (device->base - VIRTIO_MMIO_BASE) / VIRTIO_MMIO_STRIDE;
-  if (slot >= VIRTIO_MMIO_SLOTS) return UINT32_MAX;
-  return VIRTIO_MMIO_FIRST_INTID + (uint32_t)slot;
+  return device == 0 ? UINT32_MAX : device->interrupt_id;
 }
 
 xaios_status_t virtio_transport_register_interrupt(
@@ -327,4 +333,8 @@ xaios_status_t virtio_transport_unregister_interrupt(
   uint32_t intid = virtio_transport_interrupt_id(device);
   if (intid == UINT32_MAX) return XAIOS_ERR_INVALID;
   return gic_unregister_interrupt(intid, handler, context);
+}
+
+uint32_t virtio_transport_slot(const virtio_mmio_device_t *device) {
+  return device == 0 ? UINT32_MAX : device->transport_slot;
 }

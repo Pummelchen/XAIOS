@@ -11,8 +11,8 @@ Current source code takes precedence if any Wiki page disagrees.
 
 | Order | Workstream | Project status | Entry gate |
 |---|---|---|---|
-| 1 | XAIOS | In Progress | Finish the core OS, portable engine, model-v2 integration, platform services, hardware readiness, and release gates. |
-| 2 | Qwen 3.6 27B Support | Blocked | Starts only after the XAIOS completion gate. |
+| 1 | XAIOS | QEMU Complete | ARM and x86 common-service correctness gates pass; physical platform qualification remains separate. |
+| 2 | Qwen 3.6 27B Support | Ready | Next workstream; begin scalar tokenizer, tensor and logits correctness. |
 | Later | Kimi K3 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
 | Later | DeepSeek V4 Flash 0731 Support | Blocked | Also blocked on authoritative release and source verification. |
 | Later | GLM 5.2 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
@@ -23,7 +23,7 @@ Current source code takes precedence if any Wiki page disagrees.
 |---|---|---|
 | Deterministic QEMU model-v1 path | Fixture only | Validates OS/runtime contracts. It is not transformer inference or a hardware benchmark. |
 | xaios.model.v2 tooling | Interface only | Package parser/writer and interface tests exist; no production model executes from it. |
-| Qwen 3.6 27B | Interface only | Next model target after XAIOS; tokenizer, logits and deterministic decode parity remain incomplete. |
+| Qwen 3.6 27B | Interface only | Next active model target; tokenizer, logits and deterministic decode parity remain incomplete. |
 | Kimi K3 text | Interface only | Queued behind Qwen; KDA, Gated MLA, exact top-16 MoE, shared experts and MXFP4 remain unimplemented. |
 | Kimi K3 multimodal | Roadmap only | Vision preprocessing, tower, projection and multimodal parity are a separate later gate. |
 | DeepSeek V4 Flash 0731 | Roadmap only | Exact official release, configuration and tokenizer sources must be verified first. |
@@ -38,19 +38,20 @@ physical-hardware gates pass.
 
 ### XAIOS
 
-Complete the production-width memory/NUMA/storage paths, typed model state,
-full x86_64 service parity, release/security gates, and physical-hardware entry
-evidence before model implementation begins. The portable service boundary,
-no-copy model mappings, direct range I/O, ARM worker and FP/SIMD context gates,
-and x86 AP/ring-3/XSAVE/modern-VirtIO foundations are implemented at their
-documented QEMU/hosted boundary. See
+The declared QEMU core-OS and x86_64 service-parity gates are complete. Physical
+Apple/Intel firmware, storage, network, NUMA, security and performance evidence
+remain separate platform qualification work and do not block starting scalar
+Qwen correctness. The portable service boundary, no-copy model mappings,
+direct range I/O and ARM/x86 process, worker, FP/SIMD and device gates are
+implemented at their documented QEMU/hosted boundary. See
 [`docs/PLATFORM-SUPPORT.json`](https://github.com/Pummelchen/XAIOS/blob/main/docs/PLATFORM-SUPPORT.json).
 
 ### Qwen 3.6 27B
 
-Qwen is workstream 2 and the first real-model target. It remains blocked until
-XAIOS completes. The implementation then proceeds through a smaller compatible
-Qwen-family checkpoint before 27B tokenizer/logits/decode and hardware gates.
+Qwen is workstream 2 and the first real-model target. Its QEMU platform entry
+gate is now satisfied. Implementation proceeds through a smaller compatible
+Qwen-family checkpoint before 27B tokenizer/logits/decode and physical-hardware
+gates.
 
 ### Later Model Workstreams
 

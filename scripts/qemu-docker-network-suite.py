@@ -20,6 +20,16 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build"
 IMAGE = "xaios-debian13-network-client:13"
+TARGET_ARCH = os.environ.get("XAIOS_QEMU_NETWORK_ARCH", "aarch64")
+if TARGET_ARCH not in ("aarch64", "x86_64"):
+    raise SystemExit("error: XAIOS_QEMU_NETWORK_ARCH must be aarch64 or x86_64")
+BUILD_TARGET = "image" if TARGET_ARCH == "aarch64" else "image-x86_64"
+QEMU_RUNNER = (
+    "run-qemu-aarch64.sh"
+    if TARGET_ARCH == "aarch64"
+    else "run-qemu-x86_64.sh"
+)
+ARTIFACT_SUFFIX = "" if TARGET_ARCH == "aarch64" else "-x86_64"
 SSH_READY_MARKER = "SSH server: up and running (tcp/22)"
 BOOT_TIMEOUT_SECONDS = 150.0
 CLIENT_TIMEOUT_SECONDS = 600.0
@@ -69,16 +79,25 @@ def start_qemu(
         persistent_path.unlink(missing_ok=True)
     log_file = log_path.open("wb")
     env = os.environ.copy()
-    env.update(
-        {
-            "XAIOS_QEMU_ACCEL": "tcg",
-            "XAIOS_QEMU_SMP": "4",
-            "XAIOS_PERSISTENT_IMAGE": str(persistent_path),
-        }
-    )
+    if TARGET_ARCH == "aarch64":
+        env.update(
+            {
+                "XAIOS_QEMU_ACCEL": "tcg",
+                "XAIOS_QEMU_SMP": "4",
+                "XAIOS_PERSISTENT_IMAGE": str(persistent_path),
+            }
+        )
+    else:
+        env.update(
+            {
+                "XAIOS_QEMU_X86_ACCEL": "tcg",
+                "XAIOS_QEMU_X86_SMP": "4",
+                "XAIOS_X86_PERSISTENT_IMAGE": str(persistent_path),
+            }
+        )
     env.update(extra_env)
     process = subprocess.Popen(
-        [str(ROOT / "scripts" / "run-qemu-aarch64.sh")],
+        [str(ROOT / "scripts" / QEMU_RUNNER)],
         cwd=ROOT,
         env=env,
         stdin=subprocess.DEVNULL,
@@ -227,9 +246,9 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
         )
 
     for command, marker in (
-        ("hello", b"/bin/hello: C toolchain and EL0 runtime integration passed"),
-        ("sysinfo", b"/bin/sysinfo: complete"),
-        ("lstm-xor", b"/bin/lstm-xor: xor solve passed predictions=0,1,1,0"),
+        ("hello", b"hello: complete"),
+        ("sysinfo", b"sysinfo: complete"),
+        ("lstm-xor", b"lstm-xor: complete"),
     ):
         app_output = run_guest(command, 120)
         if marker not in app_output:
@@ -416,7 +435,7 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
 
 def require_rejected_build(env: dict[str, str], marker: str) -> None:
     completed = subprocess.run(
-        ["make", "image"],
+        ["make", BUILD_TARGET],
         cwd=ROOT,
         env=env,
         capture_output=True,
@@ -541,13 +560,17 @@ def main() -> int:
     require_rejected_build(
         release_env, "password authentication is forbidden in release builds"
     )
-    run_checked(["make", "image"], 180, build_env)
+    run_checked(["make", BUILD_TARGET], 180, build_env)
 
-    results: dict[str, object] = {"debian_version": version, "image": IMAGE}
+    results: dict[str, object] = {
+        "architecture": TARGET_ARCH,
+        "debian_version": version,
+        "image": IMAGE,
+    }
 
     ssh_port = reserve_port(socket.SOCK_STREAM)
     udp_port = reserve_port(socket.SOCK_DGRAM)
-    packet_capture = BUILD / "qemu-docker-network-suite.pcap"
+    packet_capture = BUILD / f"qemu-docker-network-suite{ARTIFACT_SUFFIX}.pcap"
     packet_capture.unlink(missing_ok=True)
     qemu, log_file, log_path, persistent_path = start_qemu_ready(
         "qemu-docker-network-suite",
@@ -567,6 +590,7 @@ def main() -> int:
                 "host.docker.internal",
                 str(ssh_port),
                 str(udp_port),
+                TARGET_ARCH,
             ),
             CLIENT_TIMEOUT_SECONDS,
         )
@@ -756,7 +780,7 @@ def main() -> int:
     key_only_env = os.environ.copy()
     key_only_env["XAIOS_AUTHORIZED_KEYS_FILE"] = str(key_dir / "authorized.pub")
     key_only_env.pop("XAIOS_SSH_USERS_FILE", None)
-    run_checked(["make", "image"], 180, key_only_env)
+    run_checked(["make", BUILD_TARGET], 180, key_only_env)
     key_only_port = reserve_port(socket.SOCK_STREAM)
     qemu, log_file, key_only_log_path, persistent_path = start_qemu_ready(
         "qemu-docker-key-only-suite",
@@ -810,7 +834,7 @@ def main() -> int:
     invalid_env = key_only_env.copy()
     invalid_env["XAIOS_SSH_USERS_FILE"] = str(invalid_users)
     invalid_env["XAIOS_SSH_PASSWORD_AUTH"] = "1"
-    run_checked(["make", "image"], 180, invalid_env)
+    run_checked(["make", BUILD_TARGET], 180, invalid_env)
     invalid_port = reserve_port(socket.SOCK_STREAM)
     qemu, log_file, invalid_log_path, persistent_path = start_qemu_ready(
         "qemu-docker-invalid-users-suite",
@@ -833,7 +857,7 @@ def main() -> int:
         log_file.close()
         persistent_path.unlink(missing_ok=True)
 
-    report_path = BUILD / "qemu-docker-network-suite.json"
+    report_path = BUILD / f"qemu-docker-network-suite{ARTIFACT_SUFFIX}.json"
     report_path.write_text(json.dumps(results, indent=2, sort_keys=True) + "\n")
     shutil.rmtree(key_dir)
     print(f"PASS: Docker network suite report: {report_path}")

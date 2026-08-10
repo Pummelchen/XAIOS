@@ -6,12 +6,11 @@ XAIOS combines a freestanding AArch64 operating-system prototype with a
 portable C99 inference-engine foundation. The current complete OS correctness
 path boots through UEFI on QEMU virt. A limited VMware Fusion ARM64 path on
 Apple Silicon reaches `/init`; `docs/VMWARE-FUSION.md` records its narrower
-device/platform boundary. The x86_64 image boots and executes the
-real shared CRC, block, VFS, architecture-registry, scalar-backend and packed
-engine modules. It starts MADT-discovered APs, validates ring-3 syscall and
-XSAVE state transitions, parses ACPI topology, and operates modern VirtIO block
-DMA/MSI-X plus network TX; x86 platform services and full userspace parity
-remain incomplete. Kernel and userspace code are freestanding C99 without libc.
+device/platform boundary. The x86_64 QEMU image executes the common kernel and
+complete userspace/service image. It starts MADT-discovered APs, uses per-CPU
+user address-space roots, validates ring-3 threads and XSAVE/FXSAVE interrupt
+state, parses ACPI topology, and operates modern PCI VirtIO block/network plus
+emulated NVMe. Kernel and userspace code are freestanding C99 without libc.
 The authoritative 20-item status is `docs/PLATFORM-SUPPORT.json`.
 
 ## Boot Flow

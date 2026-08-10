@@ -105,7 +105,18 @@ cpu="${XAIOS_QEMU_X86_CPU:-max}"
 memory="${XAIOS_QEMU_X86_MEMORY:-2G}"
 smp="${XAIOS_QEMU_X86_SMP:-4}"
 image="${XAIOS_X86_64_IMAGE:-build/xaios-x86_64.img}"
+test_block_image="${XAIOS_X86_TEST_BLOCK_IMAGE:-build/xaios-x86-virtio-test.img}"
+persistent_image="${XAIOS_X86_PERSISTENT_IMAGE:-build/xaios-x86-persistent.img}"
+model_volume_image="${XAIOS_MODEL_VOLUME_IMAGE:-build/xaios-x86-model-volume.img}"
+system_volume_image="${XAIOS_SYSTEM_VOLUME_IMAGE:-build/xaios-x86-system.img}"
+storage_admin_image="${XAIOS_X86_STORAGE_ADMIN_IMAGE:-build/xaios-x86-storage-admin.img}"
+hostfwd_port="${XAIOS_QEMU_HOSTFWD_PORT:-2223}"
+hostfwd_udp_port="${XAIOS_QEMU_HOSTFWD_UDP_PORT:-none}"
+net_socket_host="${XAIOS_QEMU_NET_SOCKET_HOST:-127.0.0.1}"
+net_socket_port="${XAIOS_QEMU_NET_SOCKET_PORT:-none}"
+pcap_file="${XAIOS_QEMU_NET_DUMP:-none}"
 nvme_image="${XAIOS_QEMU_X86_NVME_IMAGE:-}"
+debug_log="${XAIOS_QEMU_X86_DEBUG_LOG:-}"
 
 if [ "$dry_run" -eq 0 ] && [ ! -f "$image" ]; then
   printf '%s\n' "error: missing x86_64 boot image: $image" >&2
@@ -113,19 +124,88 @@ if [ "$dry_run" -eq 0 ] && [ ! -f "$image" ]; then
   exit 1
 fi
 
+if [ "$dry_run" -eq 0 ] && [ ! -f "$persistent_image" ]; then
+  printf '%s\n' "note: persistent image not found, creating: $persistent_image"
+  dd if=/dev/zero of="$persistent_image" bs=512 count=8192 status=none
+fi
+
+for required_image in "$test_block_image" \
+  "$model_volume_image" "$system_volume_image" "$storage_admin_image"
+do
+  if [ "$dry_run" -eq 0 ] && [ ! -f "$required_image" ]; then
+    printf '%s\n' "error: missing x86_64 runtime image: $required_image" >&2
+    printf '%s\n' "       Run make image-x86_64 first." >&2
+    exit 1
+  fi
+done
+
 set -- "$qemu" \
   -machine "$machine" \
   -accel "$accel" \
   -cpu "$cpu" \
   -m "$memory" \
   -smp "$smp" \
+  -no-reboot \
   -nographic \
   -serial mon:stdio \
   -drive "if=pflash,format=raw,readonly=on,file=$firmware" \
   -drive "if=none,format=raw,id=xaios_x86_boot,file=$image" \
   -device virtio-blk-pci,drive=xaios_x86_boot,bootindex=0,disable-legacy=on \
-  -netdev user,id=net0,hostfwd=tcp::2223-:22 \
-  -device virtio-net-pci,netdev=net0,disable-legacy=on,mq=on
+  -drive "if=none,format=raw,id=xaios_x86_test,file=$test_block_image" \
+  -device virtio-blk-pci,drive=xaios_x86_test,disable-legacy=on \
+  -drive "if=none,format=raw,id=xaios_x86_persistent,file=$persistent_image" \
+  -device virtio-blk-pci,drive=xaios_x86_persistent,disable-legacy=on \
+  -drive "if=none,format=raw,id=xaios_x86_models,file=$model_volume_image" \
+  -device virtio-blk-pci,drive=xaios_x86_models,disable-legacy=on \
+  -drive "if=none,format=raw,id=xaios_x86_admin,file=$storage_admin_image" \
+  -device virtio-blk-pci,drive=xaios_x86_admin,disable-legacy=on \
+  -blockdev "driver=file,node-name=xaios_x86_system_uefi_file,filename=$system_volume_image,locking=off" \
+  -blockdev driver=raw,node-name=xaios_x86_system_uefi,file=xaios_x86_system_uefi_file \
+  -device virtio-blk-pci,drive=xaios_x86_system_uefi,bootindex=1,disable-legacy=on \
+  -blockdev "driver=file,node-name=xaios_x86_system_kernel_file,filename=$system_volume_image,locking=off" \
+  -blockdev driver=raw,node-name=xaios_x86_system_kernel,file=xaios_x86_system_kernel_file \
+  -device virtio-blk-pci,drive=xaios_x86_system_kernel,disable-legacy=on \
+  -device virtio-net-pci,netdev=net0,mac=52:54:00:12:34:57,disable-legacy=on
+
+if [ "$net_socket_port" != "none" ]; then
+  net0_user_options="user,id=net0_user,ipv6=off"
+  if [ "$hostfwd_port" != "none" ]; then
+    net0_user_options="${net0_user_options},hostfwd=tcp::${hostfwd_port}-:22"
+  fi
+  if [ "$hostfwd_udp_port" != "none" ]; then
+    net0_user_options="${net0_user_options},hostfwd=udp::${hostfwd_udp_port}-:2223"
+  fi
+  set -- "$@" \
+    -netdev "$net0_user_options" \
+    -netdev "hubport,id=net0_user_hub,hubid=1,netdev=net0_user" \
+    -netdev "socket,id=net0_socket,listen=${net_socket_host}:${net_socket_port}" \
+    -netdev "hubport,id=net0_socket_hub,hubid=1,netdev=net0_socket" \
+    -netdev "hubport,id=net0,hubid=1"
+else
+  net0_options="user,id=net0"
+  if [ "$hostfwd_port" != "none" ]; then
+    net0_options="${net0_options},hostfwd=tcp::${hostfwd_port}-:22"
+  fi
+  if [ "$hostfwd_udp_port" != "none" ]; then
+    net0_options="${net0_options},hostfwd=udp::${hostfwd_udp_port}-:2223"
+  fi
+  set -- "$@" -netdev "$net0_options"
+fi
+
+if [ "$pcap_file" != "none" ]; then
+  set -- "$@" \
+    -object "filter-dump,id=xaios_x86_net_capture,netdev=net0,file=$pcap_file"
+fi
+
+if [ "${XAIOS_QEMU_RNG:-virtio}" != "none" ]; then
+  set -- "$@" \
+    -object rng-random,filename=/dev/urandom,id=xaios_x86_rng \
+    -device virtio-rng-pci,rng=xaios_x86_rng,disable-legacy=on
+fi
+
+if [ "$debug_log" != "" ]; then
+  set -- "$@" -d int,cpu_reset -D "$debug_log"
+fi
 
 if [ "$nvme_image" != "" ]; then
   if [ "$dry_run" -eq 0 ] && [ ! -f "$nvme_image" ]; then

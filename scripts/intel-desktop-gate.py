@@ -10,12 +10,12 @@ from pathlib import Path
 SCHEMA = "xaios.intel_desktop.hardware_gate.v1"
 REPORT_PATH = Path("build/intel-desktop-gate-report.json")
 REQUIRED_MARKERS = [
-    "x86_64: Intel Desktop milestone 49 placement policy passed",
-    "x86_64: common kernel/runtime linked=1 probe=0x000000000000000f",
-    "x86_64: Intel Desktop milestone 50 portable common runtime passed platform services pending",
-    "x86_64: Intel Desktop milestone 51 hardware gate blocked",
-    "x86_64: hot-core telemetry migration_total=0 context_switch_total=0",
-    "release_candidate_ready=0",
+    "x86_64: SMP AP startup passed online=",
+    "topology: initialized ",
+    "virtio-blk: x86 MSI-X completion canary passed count=",
+    "scheduler: SIMD/FP interrupt preservation passed",
+    "kernel: /bin/service-manager returned to kernel exit_code=0",
+    "sshd: Phase 2 runtime ready",
 ]
 
 
@@ -48,15 +48,19 @@ def main() -> int:
         "elapsed_seconds": round(time.time() - start, 3),
         "qemu_smoke_exit_code": proc.returncode,
         "milestones": {
-            "49_placement_policy": "pass" if REQUIRED_MARKERS[0] in output else "fail",
-            "50_os_contract_port": "partial" if REQUIRED_MARKERS[2] in output else "unknown",
-            "51_hardware_gate": "blocked" if REQUIRED_MARKERS[3] in output else "unknown",
+            "49_topology_and_interrupts": "pass" if all(
+                marker in output for marker in REQUIRED_MARKERS[:4]
+            ) else "fail",
+            "50_os_contract_port": "pass" if all(
+                marker in output for marker in REQUIRED_MARKERS[4:]
+            ) else "fail",
+            "51_physical_hardware_gate": "blocked",
         },
         "gates": {
             "assessment_complete": assessment_complete,
-            "qemu_early_boot_ready": proc.returncode == 0,
-            "common_kernel_runtime_linked": REQUIRED_MARKERS[1] in output,
-            "hot_core_migration_zero": REQUIRED_MARKERS[4] in output,
+            "qemu_service_parity": assessment_complete,
+            "common_kernel_runtime_linked": REQUIRED_MARKERS[4] in output,
+            "interrupt_delivery": REQUIRED_MARKERS[2] in output,
             "physical_hardware_required": True,
             "tuned_linux_bsd_baseline_required": True,
             "performance_claims_allowed": False,
@@ -64,9 +68,9 @@ def main() -> int:
         },
         "missing_markers": missing,
         "notes": (
-            "Intel Desktop assessment validates portable common storage, VFS, "
-            "integrity and inference-engine code. Platform-service parity and "
-            "physical evidence remain missing."
+            "Intel Desktop assessment validates QEMU common-service parity. "
+            "Physical firmware, device, reliability, security and performance "
+            "evidence remains missing."
         ),
     }
 

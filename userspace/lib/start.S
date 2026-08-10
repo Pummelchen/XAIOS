@@ -32,6 +32,7 @@ _start:
   jmp 1b
 
 xaios_thread_return_trampoline:
+  movq %rax, %rdi
   movl $45, %eax
   int $0x80
 2:

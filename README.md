@@ -36,7 +36,7 @@ against it.
 |---|---|---|
 | Deterministic QEMU model-v1 path | Fixture only | Validates model admission, private state, ABI and deterministic dispatch. It is not transformer inference or a hardware benchmark. |
 | xaios.model.v2 tooling | Interface only | Streaming Python writer, Python reader and C parser pass round-trip, checksum, overflow and sparse-file tests. No production importer or executing model uses it yet. |
-| Qwen 3.6 27B | Interface only | Next real-model bring-up target after XAIOS platform completion. Transformer execution, official tokenizer parity, logits parity and physical-hardware validation remain incomplete. |
+| Qwen 3.6 27B | Interface only | Next real-model bring-up target; its QEMU platform entry gate now passes. Transformer execution, official tokenizer parity, logits parity and physical-hardware validation remain incomplete. |
 | Kimi K3 text | Interface only | Queued behind XAIOS and Qwen for KDA, Gated MLA, AttnRes, exact top-16 routing, shared experts and native MXFP4. Text inference is not available. |
 | Kimi K3 multimodal | Roadmap only | Vision preprocessing, MoonViT-V2, projection, multimodal positions and golden image cases are a separate milestone. |
 | DeepSeek V4 Flash 0731 | Roadmap only | Planned architecture-adapter target. The exact official release, configuration and tokenizer sources must be verified and pinned before implementation. |
@@ -44,22 +44,22 @@ against it.
 
 ## Delivery sequence
 
-This order is authoritative for current execution planning. Only XAIOS is
-active. Qwen is the next workstream, but remains blocked until the XAIOS
-platform milestone is complete. No relative order is assigned to the later
-model workstreams unless the maintainer explicitly reprioritizes them.
+This order is authoritative for current execution planning. The declared ARM
+and x86 QEMU core-OS gate is complete, so Qwen is ready as the next workstream.
+Physical platform qualification continues separately. No relative order is
+assigned to later model workstreams unless the maintainer reprioritizes them.
 
 | Order | Workstream | Project status | Entry gate |
 |---|---|---|---|
-| 1 | XAIOS | In Progress | Finish the core OS, portable engine, model-v2 integration, platform services, hardware readiness, and release gates. |
-| 2 | Qwen 3.6 27B Support | Blocked | Starts only after the XAIOS completion gate. |
+| 1 | XAIOS | QEMU Complete | ARM and x86 common-service correctness gates pass; physical platform qualification remains separate. |
+| 2 | Qwen 3.6 27B Support | Ready | Next workstream; begin scalar tokenizer, tensor and logits correctness. |
 | Later | Kimi K3 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
 | Later | DeepSeek V4 Flash 0731 Support | Blocked | Also blocked on authoritative release and source verification. |
 | Later | GLM 5.2 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
 
 XAIOS is designed for multiple official architecture identifiers rather than a
-hard-coded Qwen graph. Qwen 3.6 27B remains the first real-model target after
-the platform completion gate. Kimi K3 text and multimodal support are separate
+hard-coded Qwen graph. Qwen 3.6 27B is now the active real-model target after
+the QEMU platform gate. Kimi K3 text and multimodal support are separate
 later milestones. DeepSeek V4 Flash 0731 and GLM 5.2 are additional roadmap
 targets, each requiring its own verified architecture adapter and parity gates.
 Approximate routing or execution modes, if added, will be named, reported and
@@ -187,21 +187,18 @@ Internet destinations or physical networks are production-ready.
   backing-image persistence behavior. Production NVMe multiqueue, a physical
   100+ GiB transfer, trusted-replica repair, and physical-device
   durability/performance validation remain incomplete.
-- The x86_64 QEMU image links and executes shared CRC, block-device, VFS,
-  architecture-registry, scalar-backend and packed-engine code. It owns its
-  GDT/TSS and AP trampoline, passes a controlled exception round trip and a
-  real local-APIC timer interrupt, starts all enabled MADT CPUs with dynamic
-  records and stacks, dispatches IPI worker jobs, executes a real x86_64
-  `/bin/hello` ELF from the shared userspace runtime through LOG/EXIT `int 0x80`
-  calls, executes common security/scalar-kernel self-tests, and validates
-  XSAVE/XRSTOR. ACPI parsing covers
-  MADT/SRAT/SLIT/HMAT.
-  The PCI path maps QEMU's high MMIO aperture, reads the boot disk through a
-  modern VirtIO block DMA queue, receives MSI-X completion, and completes
-  network TX. Full x86 service parity remains open: userspace/thread ABI parity,
-  RX networking and SSH, mounted filesystems, x86 NVMe operation, security, AI
-  Cell and telemetry remain pending; the x86 gate continues to report full
-  parity as false.
+- The x86_64 QEMU image executes the same common kernel and complete userspace
+  service image as AArch64. It owns its GDT/TSS and AP trampoline, starts every
+  MADT CPU with dynamic records and per-CPU page-table roots, runs EL0
+  create/join/exit threads on APs, and preserves FP/SIMD state across live
+  interrupts with runtime-sized XSAVE/XRSTOR or FXSAVE/FXRSTOR fallback. The
+  shared filesystems, security, AI Cell, telemetry, control, utilities and
+  SSH/SFTP services run over modern PCI VirtIO block/network; emulated NVMe
+  identify/write/flush/read also passes. The platform matrix covers 1, 4, 8,
+  128 and 256 vCPUs including x2APIC, and the Debian 13 OpenSSH/SFTP/IPv4/IPv6
+  suite passes against the x86 guest. QEMU service parity with AArch64 is
+  complete at the declared correctness boundary. This is not physical Intel
+  compatibility, security certification, scalability, or performance evidence.
 
 The retired GGUF converter emitted packages incompatible with the model-v1
 reader and has been made fail-closed. `tools/create_xaios_v1_fixture.py` exists
@@ -305,6 +302,10 @@ make qemu-docker-network-suite
 make qemu-parallel-network-load
 make qemu-core-os-rc
 make qemu-high-core-gate
+make qemu-x86_64-smoke
+make qemu-x86_64-cpu-matrix
+make qemu-x86_64-platform-matrix
+XAIOS_QEMU_NETWORK_ARCH=x86_64 make qemu-docker-network-suite
 make vmware-fusion-smoke
 ```
 

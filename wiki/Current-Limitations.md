@@ -11,14 +11,13 @@ documents, and the QEMU release-candidate contract.
 - VMware Fusion 25.0.1 on Apple Silicon reaches `/init` through a generated
   ARM64 compatibility stage. VMware networking, persistent storage,
   multi-vCPU discovery, and later service gates are not integrated.
-- The x86_64 image starts MADT-discovered processors, performs a controlled INT3 round trip
-  and local-APIC timer interrupt, executes a ring-3 syscall,
-  validates runtime-sized XSAVE and ACPI data, and exercises modern VirtIO
-  block DMA/MSI-X plus network TX.
-- Full AArch64 service parity on x86_64 remains open: complete userspace and
-  thread services, receive networking and SSH, mounted filesystems, x86 NVMe
-  operation, process-owned security services, AI Cell integration, and
-  telemetry are absent.
+- The x86_64 QEMU image executes the complete common process/thread, filesystem,
+  networking, SSH/SFTP, control, security, AI Cell and telemetry service set.
+  Modern PCI VirtIO block/network and emulated NVMe pass focused correctness
+  gates. The platform matrix reaches 256 vCPUs with x2APIC.
+- Physical x86 firmware, interrupt routing, NIC, NVMe durability, NUMA locality,
+  AVX2/AVX-512/VNNI/AMX state, security exposure and performance remain
+  unvalidated. QEMU parity is not a physical support claim.
 - Physical Apple, Intel desktop, Xeon, SMMU/IOMMU, NVMe, NIC, NUMA, many-core,
   thermal, power, and performance evidence is not present.
 
@@ -51,7 +50,8 @@ documents, and the QEMU release-candidate contract.
 ## Storage and persistence
 
 - VirtIO block/network use interrupt-driven completions, event-index
-  suppression, indirect descriptors, and bounded queued work. Emulated NVMe
+  suppression, indirect descriptors, and bounded queued work. The x86 gate
+  includes a post-`sti` MSI-X completion canary. Emulated NVMe
   covers focused identify/write/flush/read and backing-byte checks.
 - Production NVMe multiqueue, queue affinity, cancellation, direct final-buffer
   expert reads, physical durability, discard behavior, and throughput remain
@@ -85,8 +85,9 @@ documents, and the QEMU release-candidate contract.
   Model-v2 packages are not yet executed end to end.
 - No official tokenizer importer, real Qwen tensor importer, transformer plan,
   logits parity, or deterministic 32-token decode parity exists.
-- Qwen 3.6 27B is blocked until the XAIOS platform completion gate. Kimi K3,
-  DeepSeek V4 Flash 0731, and GLM 5.2 remain later roadmap targets.
+- Qwen 3.6 27B is the next active correctness workstream now that the declared
+  QEMU platform gate passes. Kimi K3, DeepSeek V4 Flash 0731, and GLM 5.2
+  remain later roadmap targets.
 - Kimi K3 KDA, Gated MLA, AttnRes, exact top-16 routing, shared experts, native
   MXFP4, text parity, and multimodal execution are not implemented.
 - Scalar INT4/INT6 and experimental NEON/AVX2 packed kernels pass bounded

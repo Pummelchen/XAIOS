@@ -1,5 +1,20 @@
 # Development History
 
+## 2026-08-10 — x86 common-service QEMU parity
+
+- Replaced the early-only x86 image with the common kernel and complete
+  x86_64 userspace/service image, including filesystems, IPv4/IPv6, SSH/SFTP,
+  control, security, AI Cell, telemetry and on-demand utilities.
+- Added PCI VirtIO block/network transport, emulated NVMe operation, per-CPU
+  user page-table roots, AP EL0 threads and live XSAVE/FXSAVE interrupt-state
+  preservation.
+- Fixed x86 thread-return ABI handling, concurrent address-space corruption,
+  low-memory NUMA metadata placement and uniprocessor/two-worker self-tests.
+- Passed ARM and x86 full-runtime smoke, the x86 CPU-family matrix, Debian 13
+  interoperability, and the 1-to-256-vCPU platform matrix under QEMU.
+- Advanced the Qwen workstream to ready while retaining physical Intel and
+  Apple qualification as separate non-QEMU gates.
+
 This page summarizes significant implementation and validation changes. Git
 commits, source code, and machine-readable test artifacts remain authoritative.
 
@@ -116,8 +131,8 @@ commits, source code, and machine-readable test artifacts remain authoritative.
   redundant-metadata crash, and >128-CPU focused gates.
 - Added general EL0 threads, asynchronous userspace DNS, IPv4/IPv6 fragment
   reassembly, and SACK/zero-window/reordering/RTO TCP correctness paths.
-- Added x86 controlled exception and local-APIC timer interrupt delivery plus
-  modern VirtIO/MSI/MSI-X capability discovery while retaining parity blockers.
+- Added x86 controlled exception and local-APIC timer interrupt delivery,
+  modern VirtIO/MSI-X shared-driver completions, and full QEMU service parity.
 - Expanded `make qemu-core-os-rc` into an independent, non-skipping aggregate
   gate and added a production-source unfinished-marker audit.
 

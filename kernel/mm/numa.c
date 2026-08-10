@@ -41,6 +41,9 @@ static int descriptor_bounds(const xaios_memory_descriptor_t *descriptor,
 }
 
 static int page_is_reserved(const xaios_boot_info_t *boot, uint64_t page) {
+  /* A physical allocation is returned as a pointer, so page zero cannot be
+   * represented without colliding with the allocation-failure sentinel. */
+  if (page == 0U) return 1;
   uint64_t page_end = page + PAGE_SIZE;
   uint64_t map_start = boot->memory_map;
   uint64_t map_end = boot->memory_map + boot->memory_map_size;
@@ -68,27 +71,30 @@ static uint64_t find_metadata_space(const xaios_boot_info_t *boot,
         descriptor_bounds(descriptor, &start, &end)) {
       if (end > EARLY_IDENTITY_LIMIT) end = EARLY_IDENTITY_LIMIT;
       uint64_t candidate = start;
-      for (uint32_t retry = 0U; retry < 4U && candidate < end; ++retry) {
+      if (candidate == 0U) candidate = PAGE_SIZE;
+      while (candidate < end) {
         uint64_t candidate_end = candidate + required_bytes;
         if (candidate_end < candidate || candidate_end > end) break;
+        uint64_t next = candidate;
         if (overlaps(candidate, candidate_end, boot->kernel_phys_base,
                      boot->kernel_phys_end)) {
-          candidate = align_up(boot->kernel_phys_end, PAGE_SIZE);
-          continue;
+          next = align_up(boot->kernel_phys_end, PAGE_SIZE);
         }
         uint64_t map_end = boot->memory_map + boot->memory_map_size;
         if (overlaps(candidate, candidate_end, boot->memory_map, map_end)) {
-          candidate = align_up(map_end, PAGE_SIZE);
-          continue;
+          uint64_t after_map = align_up(map_end, PAGE_SIZE);
+          if (after_map > next) next = after_map;
         }
         uint64_t smp_start = 0U;
         uint64_t smp_end = 0U;
         if (smp_bootstrap_reserved_range(&smp_start, &smp_end) == XAIOS_OK &&
             overlaps(candidate, candidate_end, smp_start, smp_end)) {
-          candidate = align_up(smp_end, PAGE_SIZE);
-          continue;
+          uint64_t after_smp = align_up(smp_end, PAGE_SIZE);
+          if (after_smp > next) next = after_smp;
         }
-        return candidate;
+        if (next == candidate) return candidate;
+        if (next < candidate) break;
+        candidate = next;
       }
     }
     offset += boot->memory_descriptor_size;

@@ -137,10 +137,10 @@ def run_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
 
     log_path.write_text(output, encoding="utf-8")
     required_markers = [
-        f"x86_64: placement policy logical_cpus={scenario['smp']}"
+        f"x86_64: SMP AP startup passed online={scenario['smp']}"
     ]
     if scenario.get("nvme"):
-        required_markers.append("nvme=1")
+        required_markers.append("nvme: admin/io self-test passed")
     if scenario.get("apic_mode"):
         required_markers.append(f"mode={scenario['apic_mode']}")
     missing_markers = [marker for marker in required_markers

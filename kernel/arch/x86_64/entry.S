@@ -12,6 +12,7 @@ kernel_entry:
   shr $3, %rcx
   rep stosq
   mov %r12, %rdi
+  andq $-16, %rsp
   call x86_64_kmain
 
 1:
@@ -80,8 +81,23 @@ x86_64_irq_\vector:
 XAIOS_IRQ_NOERR 32
 XAIOS_IRQ_NOERR 33
 XAIOS_IRQ_NOERR 34
+.irp vector,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127
+XAIOS_IRQ_NOERR \vector
+.endr
 XAIOS_IRQ_NOERR 128
 XAIOS_IRQ_NOERR 255
+
+.section .rodata, "a"
+.align 8
+.global x86_64_device_irq_stubs
+.type x86_64_device_irq_stubs, @object
+x86_64_device_irq_stubs:
+.irp vector,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127
+  .quad x86_64_irq_\vector
+.endr
+.size x86_64_device_irq_stubs, . - x86_64_device_irq_stubs
+
+.section .text, "ax"
 
 .global x86_64_load_gdt
 .type x86_64_load_gdt, @function
@@ -110,28 +126,72 @@ x86_64_load_tss:
 
 .global x86_64_enter_ring3
 .type x86_64_enter_ring3, @function
+.global aarch64_enter_user
+.type aarch64_enter_user, @function
+aarch64_enter_user:
 x86_64_enter_ring3:
-  movq %rsp, x86_64_ring0_resume_rsp(%rip)
+  subq $8, %rsp
+  pushq %rbx
+  pushq %rbp
+  pushq %r12
+  pushq %r13
+  pushq %r14
+  pushq %r15
+  movq %rdi, %r12
+  movq %rsi, %r13
+  movq %rsp, %rdi
+  call x86_64_platform_set_user_resume
   pushq $0x1b
-  pushq %rsi
+  pushq %r13
   pushfq
   popq %rax
   andq $~0x200, %rax
   pushq %rax
   pushq $0x23
-  pushq %rdi
+  pushq %r12
+  iretq
+
+.global aarch64_enter_user_thread
+.type aarch64_enter_user_thread, @function
+aarch64_enter_user_thread:
+  subq $8, %rsp
+  pushq %rbx
+  pushq %rbp
+  pushq %r12
+  pushq %r13
+  pushq %r14
+  pushq %r15
+  movq %rdi, %r12
+  leaq -8(%rsi), %r13
+  movq %rdx, %r14
+  movq %rcx, (%r13)
+  movq %rsp, %rdi
+  call x86_64_platform_set_user_resume
+  pushq $0x1b
+  pushq %r13
+  pushfq
+  popq %rax
+  andq $~0x200, %rax
+  pushq %rax
+  pushq $0x23
+  pushq %r12
+  movq %r14, %rdi
   iretq
 
 .global x86_64_ring3_resume
 .type x86_64_ring3_resume, @function
 x86_64_ring3_resume:
-  movq x86_64_ring0_resume_rsp(%rip), %rsp
+  call x86_64_platform_user_resume
+  movq %rax, %rsp
+  call x86_64_platform_user_return
+  popq %r15
+  popq %r14
+  popq %r13
+  popq %r12
+  popq %rbp
+  popq %rbx
+  addq $8, %rsp
   ret
-
-.section .bss, "aw", @nobits
-.align 8
-x86_64_ring0_resume_rsp:
-  .quad 0
 
 .section .ap_trampoline, "ax"
 .code16
@@ -232,8 +292,18 @@ x86_64_isr_common:
   pushq %r9
   pushq %r10
   pushq %r11
+  pushq %r12
+  pushq %r13
+  pushq %r14
+  pushq %r15
+  call x86_64_irq_state_save
   movq %rsp, %rdi
   call x86_64_exception_entry
+  call x86_64_irq_state_restore
+  popq %r15
+  popq %r14
+  popq %r13
+  popq %r12
   popq %r11
   popq %r10
   popq %r9
@@ -262,10 +332,20 @@ x86_64_irq_common:
   pushq %r9
   pushq %r10
   pushq %r11
+  pushq %r12
+  pushq %r13
+  pushq %r14
+  pushq %r15
+  call x86_64_irq_state_save
   movq %rsp, %rdi
   call x86_64_interrupt_entry
   testq %rax, %rax
   jnz 1f
+  call x86_64_irq_state_restore
+  popq %r15
+  popq %r14
+  popq %r13
+  popq %r12
   popq %r11
   popq %r10
   popq %r9
@@ -280,4 +360,43 @@ x86_64_irq_common:
   addq $16, %rsp
   iretq
 1:
-  jmp *%rax
+  movq %rax, %r12
+  call x86_64_irq_state_restore
+  jmp *%r12
+
+.global aarch64_simd_irq_self_test
+.type aarch64_simd_irq_self_test, @function
+aarch64_simd_irq_self_test:
+  pushq %rbp
+  movq %rsp, %rbp
+  subq $32, %rsp
+  movdqu %xmm0, 0(%rsp)
+  movdqu %xmm15, 16(%rsp)
+  movq g_x86_lapic_timer_interrupts(%rip), %rcx
+  movabsq $0x0123456789abcdef, %rax
+  movq %rax, %xmm0
+  movabsq $0xfedcba9876543210, %rax
+  movq %rax, %xmm15
+  sti
+2:
+  hlt
+  cmpq g_x86_lapic_timer_interrupts(%rip), %rcx
+  je 2b
+  cli
+  movq %xmm0, %rdx
+  movabsq $0x0123456789abcdef, %rax
+  cmpq %rax, %rdx
+  jne 3f
+  movq %xmm15, %rdx
+  movabsq $0xfedcba9876543210, %rax
+  cmpq %rax, %rdx
+  jne 3f
+  movq $1, %rax
+  jmp 4f
+3:
+  movq $2, %rax
+4:
+  movdqu 0(%rsp), %xmm0
+  movdqu 16(%rsp), %xmm15
+  leave
+  retq

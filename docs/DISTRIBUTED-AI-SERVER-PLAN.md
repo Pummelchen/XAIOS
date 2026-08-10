@@ -156,10 +156,9 @@ Kimi K3 multimodal support remains separate from K3 text support.
 - No real Qwen checkpoint has tokenizer/logits/decode parity.
 - ModelFS has a fixture-tested transactional implementation, but no physical
   storage validation, asynchronous hardware backend or production qualification.
-- The x86_64 image links the portable common subset, starts MADT APs, proves
-  ring-3/syscall and XSAVE transitions, and operates modern VirtIO block/MSI-X
-  plus network TX. It does not yet host the complete ARM userspace, SSH,
-  filesystem, security, AI Cell or telemetry service set.
+- The x86_64 QEMU image now hosts the complete common userspace, SSH,
+  filesystem, security, AI Cell and telemetry service set. Physical Intel
+  storage, network, NUMA, ISA and performance qualification remains open.
 - A native macOS/Linux engine executable, experimental NEON, and experimental
   AVX2 packed kernels exist. Metal, SVE/SVE2, AVX-512/VNNI and AMX execution
   backends do not.

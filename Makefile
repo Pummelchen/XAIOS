@@ -18,10 +18,10 @@ image-qemu-test:
 	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
 
 image-x86_64:
-	./scripts/build-image-x86_64.sh
+	XAIOS_TARGET_ARCH=x86_64 ./scripts/build-image.sh
 
 image-x86_64-qemu-test:
-	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image-x86_64.sh
+	XAIOS_TARGET_ARCH=x86_64 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
 
 vmware-fusion-image: image
 	./scripts/build-vmware-fusion.sh
@@ -104,13 +104,13 @@ intel-desktop-gate:
 qemu-core-os-rc:
 	python3 ./scripts/qemu-core-os-rc.py
 
-qemu-high-core-gate: image
+qemu-high-core-gate: image-qemu-test
 	python3 ./scripts/qemu-high-core-gate.py
 
-qemu-smmu-gate: image
+qemu-smmu-gate: image-qemu-test
 	python3 ./scripts/qemu-smmu-gate.py
 
-qemu-nvme-gate: image
+qemu-nvme-gate: image-qemu-test
 	python3 ./scripts/qemu-nvme-gate.py
 
 qemu-preview: image-qemu-test
@@ -119,18 +119,18 @@ qemu-preview: image-qemu-test
 qemu-matrix:
 	python3 ./scripts/qemu-matrix.py
 
-qemu-cpu-matrix: image-qemu-test image-x86_64
+qemu-cpu-matrix: image-qemu-test image-x86_64-qemu-test
 	python3 ./scripts/qemu-cpu-matrix.py
 
-qemu-x86_64-cpu-matrix: image-x86_64
+qemu-x86_64-cpu-matrix: image-x86_64-qemu-test
 	XAIOS_QEMU_CPU_MATRIX_ARCH=x86_64 \
 	XAIOS_QEMU_CPU_MATRIX_REPORT=build/qemu-x86_64-cpu-matrix-report.json \
 	python3 ./scripts/qemu-cpu-matrix.py
 
-qemu-x86_64-platform-matrix: image-x86_64
+qemu-x86_64-platform-matrix: image-x86_64-qemu-test
 	python3 ./scripts/qemu-x86_64-platform-matrix.py
 
-qemu-x86_64-repeat-boot: image-x86_64
+qemu-x86_64-repeat-boot: image-x86_64-qemu-test
 	python3 ./scripts/qemu-x86_64-repeat-boot.py
 
 qemu-benchmark: image-qemu-test
@@ -139,7 +139,7 @@ qemu-benchmark: image-qemu-test
 qemu-persistence-reboot: image
 	python3 ./scripts/qemu-persistence-reboot.py
 
-qemu-storage-crash-test: image
+qemu-storage-crash-test: image-qemu-test
 	python3 ./scripts/qemu-storage-crash-test.py
 
 qemu-fault-matrix:

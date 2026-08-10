@@ -186,13 +186,7 @@ static int multiply_u64(uint64_t left, uint64_t right, uint64_t *result) {
 }
 
 static uint32_t physical_slot(const virtio_mmio_device_t *device) {
-  const uint64_t base = UINT64_C(0x0a000000);
-  const uint64_t stride = UINT64_C(0x200);
-  if (device->base < base || (device->base - base) % stride != 0U) {
-    return UINT32_MAX;
-  }
-  uint64_t slot = (device->base - base) / stride;
-  return slot <= UINT32_MAX ? (uint32_t)slot : UINT32_MAX;
+  return virtio_transport_slot(device);
 }
 
 static void set_device_identifier(char *identifier, uint64_t capacity,
@@ -851,6 +845,10 @@ uint64_t virtio_block_capacity_sectors(void) {
     return 0;
   }
   return g_blk->capacity_sectors;
+}
+
+uint64_t virtio_block_interrupt_count(void) {
+  return g_blk == 0 ? 0U : g_blk->interrupt_count;
 }
 
 static xaios_status_t transfer_sector_h(virtio_block_driver_t *drv,

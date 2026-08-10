@@ -4,6 +4,7 @@ set -euo pipefail
 host="${1:-host.docker.internal}"
 ssh_port="${2:-2222}"
 udp_port="${3:-2223}"
+expected_arch="${4:-aarch64}"
 password="${XAIOS_SSH_PASSWORD:-admin}"
 authorized_key="${XAIOS_SSH_AUTHORIZED_KEY:-/keys/authorized}"
 unauthorized_key="${XAIOS_SSH_UNAUTHORIZED_KEY:-/keys/unauthorized}"
@@ -145,12 +146,13 @@ if run_ssh 'xaiosctl unsupported --json' \
   fail "unsupported xaiosctl operation returned success"
 fi
 
-python3 - "$workdir" <<'PY'
+python3 - "$workdir" "$expected_arch" <<'PY'
 import json
 import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
+expected_arch = sys.argv[2]
 
 
 def load(name):
@@ -169,8 +171,10 @@ if version["control_protocol_version"] != 1:
     raise SystemExit("version: unexpected control protocol version")
 if version["kernel_abi_version"] != 1 or version["model_package_version"] != 2:
     raise SystemExit("version: unexpected kernel/model ABI versions")
-if len(version["git_commit"]) != 40 or version["architecture"] != "aarch64":
-    raise SystemExit("version: build identity is not the current AArch64 image")
+if len(version["git_commit"]) != 40 or version["architecture"] != expected_arch:
+    raise SystemExit(
+        f"version: expected {expected_arch} image, got {version['architecture']}"
+    )
 if version["build_identifier"] not in (
     "xaios-admin-control", "xaios-admin-control-dirty"
 ):

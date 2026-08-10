@@ -59,6 +59,13 @@ uint32_t pci_find_device(uint16_t vendor_id, uint16_t device_id);
 xaios_status_t pci_enable_device(uint32_t index);
 uint64_t pci_bar_address(uint32_t index, uint32_t bar_index);
 uint32_t pci_stream_id(uint32_t index);
+uint8_t pci_config_read8(uint32_t index, uint16_t offset);
+uint16_t pci_config_read16(uint32_t index, uint16_t offset);
+uint32_t pci_config_read32(uint32_t index, uint16_t offset);
+xaios_status_t pci_config_write16(uint32_t index, uint16_t offset,
+                                  uint16_t value);
+xaios_status_t pci_config_write32(uint32_t index, uint16_t offset,
+                                  uint32_t value);
 void pci_self_test(void);
 
 #endif

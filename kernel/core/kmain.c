@@ -169,11 +169,14 @@ void kmain(const xaios_boot_info_t *boot) {
   vmm_self_test();
   boot_ui_update(45U, "memory management", "devices and storage", 3U);
 
-  /* Map SMMU MMIO and initialize */
+  /* Map architecture interrupt/IOMMU resources and initialize. */
+#if defined(__aarch64__)
   map_mmio_range(XAIOS_SMMU_MMIO_BASE, 0x10000);
   map_mmio_range(XAIOS_SMMU_MMIO_PAGE1, 0x10000);
+#endif
   smmu_init(boot);
 
+#if defined(__aarch64__)
   map_mmio_range(boot->uart_base, 4096);
   map_mmio_range(UINT64_C(0x08000000), UINT64_C(0x20000));
   uint32_t low_redistributors =
@@ -186,14 +189,21 @@ void kmain(const xaios_boot_info_t *boot) {
                        UINT64_C(0x20000));
   }
   map_mmio_range(UINT64_C(0x0a000000), UINT64_C(0x4000));
+#else
+  /* The x86 UART is port I/O. Keep a software VMM descriptor for capability
+   * and translation validation without treating the port as MMIO. */
+  map_mmio_range(boot->uart_base, 4096);
+#endif
 
   /* Map ECAM and enumerate PCIe */
   pci_init();
   pci_self_test();
   smmu_self_test();
 
-  /* Map RTC MMIO and initialize real-time clock */
+  /* Initialize the architecture real-time clock. */
+#if defined(__aarch64__)
   map_mmio_range(XAIOS_PL031_RTC_BASE, 4096);
+#endif
   rtc_init();
   wall_time_calibrate();
   rtc_self_test();
@@ -202,7 +212,7 @@ void kmain(const xaios_boot_info_t *boot) {
   watchdog_init();
   watchdog_self_test();
 
-  klog("VMM MMIO device mappings installed\n");
+  klog("VMM architecture device mappings installed\n");
   kheap_self_test();
   topology_init();
   topology_self_test();
@@ -414,14 +424,27 @@ void kmain(const xaios_boot_info_t *boot) {
   /* Initialize preemptive scheduler infrastructure */
   scheduler_lock();
   gic_enable_full();
+#if defined(__x86_64__)
+  uint8_t interrupt_sector[512];
+  kassert(virtio_block_read_sector(0U, interrupt_sector,
+                                  sizeof(interrupt_sector)) == XAIOS_OK);
+  uint64_t interrupt_deadline = timer_now_ns() + UINT64_C(1000000000);
+  while (virtio_block_interrupt_count() == 0U &&
+         timer_now_ns() < interrupt_deadline) {
+    xaios_cpu_relax();
+  }
+  kassert(virtio_block_interrupt_count() != 0U);
+  klog("virtio-blk: x86 MSI-X completion canary passed count=%lu\n",
+       virtio_block_interrupt_count());
+#endif
   timer_enable_periodic(XAIOS_SCHEDULER_DEFAULT_TICK_HZ);
   kassert(smp_set_scheduling_enabled(smp_cpu_id(), 1U) == XAIOS_OK);
   uint64_t simd_irq_status = aarch64_simd_irq_self_test();
-  klog("scheduler: AArch64 SIMD/FP interrupt canary status=%lu\n",
+  klog("scheduler: SIMD/FP interrupt canary status=%lu\n",
        simd_irq_status);
   kassert(simd_irq_status == 1U);
   scheduler_unlock();
-  klog("scheduler: AArch64 SIMD/FP interrupt preservation passed regs=32\n");
+  klog("scheduler: SIMD/FP interrupt preservation passed\n");
   kassert(smp_release_secondary_schedulers() == XAIOS_OK);
   xaios_thread_self_test();
   klog("kernel: preemptive scheduler infrastructure enabled\n");

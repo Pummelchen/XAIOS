@@ -3,8 +3,8 @@
   "status": "frozen",
   "release_candidate": "qemu-rc-1",
   "scope": {
-    "architecture": "aarch64",
-    "machine": "qemu-virt",
+    "architecture": "aarch64+x86_64",
+    "machine": "qemu-virt+q35",
     "firmware": "UEFI",
     "accelerators": ["hvf", "tcg"],
     "benchmark_type": "qemu-correctness",
@@ -493,6 +493,7 @@
       "x86_xsave_state",
       "x86_virtio_dma",
       "x86_msix_completion",
+      "x86_full_service_stack",
       "engine_service_boundary",
       "immutable_model_mapping",
       "async_model_range_io",
@@ -504,9 +505,14 @@
       {"name": "smmuv3", "command": "make qemu-smmu-gate"},
       {"name": "nvme", "command": "make qemu-nvme-gate"},
       {"name": "network", "command": "make qemu-network-suite"},
-      {"name": "high_core", "command": "make qemu-high-core-gate"}
+      {"name": "high_core", "command": "make qemu-high-core-gate"},
+      {"name": "x86_64", "command": "make qemu-x86_64-smoke"},
+      {"name": "x86_64_cpu_matrix", "command": "make qemu-x86_64-cpu-matrix"},
+      {"name": "x86_64_platform_matrix", "command": "make qemu-x86_64-platform-matrix"},
+      {"name": "x86_64_network", "command": "XAIOS_QEMU_NETWORK_ARCH=x86_64 python3 scripts/qemu-docker-network-suite.py"}
     ],
-    "x86_full_platform_parity": false
+    "x86_qemu_service_parity": true,
+    "x86_physical_support": false
   },
   "cpu_matrix": {
     "schema": "xaios.qemu.cpu_matrix.v1",

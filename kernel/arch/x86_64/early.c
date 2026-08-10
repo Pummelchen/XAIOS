@@ -1,12 +1,29 @@
 #include <xaios/boot_info.h>
 #include <xaios/ai_kernels.h>
 #include <xaios/common_runtime.h>
+#include <xaios/gic.h>
 #include <xaios/klog.h>
 #include <xaios/security.h>
+#include <xaios/smp.h>
+#include <xaios/syscall.h>
+#include <xaios/thread.h>
 #include <xaios/types.h>
+#include <xaios/user.h>
+#include <xaios/vmm.h>
 #include <xaios_engine/packed.h>
 
 #include "acpi.h"
+#include "platform.h"
+
+#ifndef XAIOS_X86_COMMON_RUNTIME
+#define XAIOS_X86_COMMON_RUNTIME 0
+#endif
+
+#if XAIOS_X86_COMMON_RUNTIME
+#define X86_BRINGUP_ONLY __attribute__((unused))
+#else
+#define X86_BRINGUP_ONLY
+#endif
 
 #define COM1_PORT UINT16_C(0x3f8)
 #define UART_DATA 0U
@@ -54,6 +71,10 @@
 #define X86_USER_BASE UINT64_C(0x100000000)
 #define X86_USER_WINDOW_SIZE UINT64_C(0x200000)
 #define X86_USER_LOG_MAX UINT64_C(4096)
+#define X86_KERNEL_STACK_SIZE UINT64_C(524288)
+#define X86_KERNEL_STACK_GUARD_BYTES UINT32_C(64)
+#define X86_KERNEL_STACK_GUARD_VALUE UINT8_C(0xa5)
+#define X86_USER_NESTING_MAX UINT32_C(8)
 #define IDT_PRESENT UINT8_C(0x80)
 #define IDT_INTERRUPT_GATE UINT8_C(0x0e)
 #define PCI_CONFIG_ADDRESS UINT16_C(0x0cf8)
@@ -93,6 +114,10 @@ typedef struct x86_64_tss {
 } __attribute__((packed)) x86_64_tss_t;
 
 typedef struct x86_64_exception_frame {
+  uint64_t r15;
+  uint64_t r14;
+  uint64_t r13;
+  uint64_t r12;
   uint64_t r11;
   uint64_t r10;
   uint64_t r9;
@@ -172,6 +197,18 @@ typedef struct x86_64_cpu_record {
   volatile uint32_t requested_generation;
   volatile uint32_t completed_generation;
   volatile uint64_t checksum;
+  uint64_t kernel_stack_top;
+  uint64_t syscall_stack_top;
+  uint64_t user_resume_rsp[X86_USER_NESTING_MAX];
+  uint64_t user_previous_rsp0[X86_USER_NESTING_MAX];
+  uint32_t user_nesting_depth;
+  uint64_t user_return_value;
+  uint8_t *irq_state_area;
+  uint64_t *page_table_root;
+  uint64_t *user_page_directory;
+  uint64_t gdt[7];
+  x86_64_tss_t tss;
+  xaios_cpu_state_t state;
 } x86_64_cpu_record_t;
 
 typedef struct x86_64_virtio_pci_device {
@@ -248,6 +285,7 @@ extern uint8_t x86_64_ap_trampoline_long_offset[];
 extern uint8_t x86_64_ap_trampoline_gdt_offset[];
 
 static x86_64_idt_entry_t g_idt[256] __attribute__((aligned(16)));
+extern void (*const x86_64_device_irq_stubs[64])(void);
 static uint64_t g_pml4[512] __attribute__((aligned(PAGE_SIZE)));
 static uint64_t g_pdpt[512] __attribute__((aligned(PAGE_SIZE)));
 static uint64_t g_pd[4][512] __attribute__((aligned(PAGE_SIZE)));
@@ -257,7 +295,8 @@ static uint64_t g_mmio_pd[512] __attribute__((aligned(PAGE_SIZE)));
 static uint64_t g_mmio_gib_base;
 static uint64_t g_gdt[7] __attribute__((aligned(16)));
 static x86_64_tss_t g_tss;
-static uint8_t g_syscall_stack[UINT32_C(65536)] __attribute__((aligned(16)));
+static uint8_t g_syscall_stack[X86_KERNEL_STACK_SIZE]
+    __attribute__((aligned(PAGE_SIZE)));
 static uint8_t g_user_test_page[UINT32_C(0x200000)]
     __attribute__((section(".user_test"), aligned(UINT32_C(0x200000))));
 static x86_64_pmm_state_t g_pmm;
@@ -273,24 +312,42 @@ static uint16_t g_code_selector;
 static volatile uint32_t *g_lapic;
 static uint32_t g_lapic_ready;
 static uint32_t g_lapic_x2apic;
-static volatile uint64_t g_lapic_timer_interrupts;
+volatile uint64_t g_x86_lapic_timer_interrupts;
 static volatile uint64_t g_ring3_syscalls;
 static volatile uint64_t g_ring3_exit_code;
+volatile uint64_t g_ring3_return_value;
 static x86_64_acpi_info_t g_acpi;
 static xaios_boot_info_t g_boot_info_copy;
 static uint8_t g_xsave_original[UINT32_C(65536)] __attribute__((aligned(64)));
 static uint8_t g_xsave_test[UINT32_C(65536)] __attribute__((aligned(64)));
 static x86_64_cpu_record_t *g_cpu_records;
 static uint32_t g_cpu_record_count;
+static uint32_t g_bsp_ordinal = UINT32_MAX;
 static uint64_t g_early_alloc_cursor;
+static uint64_t g_early_alloc_start;
 static uint64_t g_early_alloc_end;
 static uint64_t g_xsave_enabled;
+static uint32_t g_xsave_area_size;
 static volatile uint64_t g_virtio_msix_interrupts;
 static uint64_t g_virtio_msix_isr;
+static volatile uint32_t g_common_worker_release;
+static uint64_t g_tsc_frequency;
+static uint64_t g_lapic_frequency;
+
+#if XAIOS_X86_COMMON_RUNTIME
+extern void kmain(const xaios_boot_info_t *boot);
+#endif
 
 extern const uint8_t _binary_hello_bin_start[];
 extern const uint8_t _binary_hello_bin_end[];
 
+static inline uint64_t rdtsc(void);
+static uint32_t lapic_id(void);
+static void lapic_send(uint32_t destination, uint32_t command);
+static void lapic_write(uint32_t offset, uint32_t value);
+static void panic_halt(uint16_t serial_base, const char *message);
+
+#if !XAIOS_X86_COMMON_RUNTIME
 uint32_t smp_online_count(void) {
   if (g_cpu_records == 0 || g_cpu_record_count == 0U) return 1U;
   uint32_t online = 0U;
@@ -300,6 +357,158 @@ uint32_t smp_online_count(void) {
     }
   }
   return online == 0U ? 1U : online;
+}
+#endif
+
+uint64_t x86_64_platform_tsc(void) { return rdtsc(); }
+
+uint64_t x86_64_platform_tsc_hz(void) { return g_tsc_frequency; }
+
+void x86_64_platform_set_tsc_hz(uint64_t frequency) {
+  g_tsc_frequency = frequency;
+}
+
+uint64_t x86_64_platform_lapic_hz(void) { return g_lapic_frequency; }
+
+uint32_t x86_64_platform_cpu_count(void) { return g_cpu_record_count; }
+
+uint32_t x86_64_platform_cpu_apic_id(uint32_t ordinal) {
+  return ordinal < g_cpu_record_count ? g_cpu_records[ordinal].apic_id
+                                      : UINT32_MAX;
+}
+
+uint32_t x86_64_platform_cpu_online(uint32_t ordinal) {
+  return ordinal < g_cpu_record_count
+             ? __atomic_load_n(&g_cpu_records[ordinal].online,
+                               __ATOMIC_ACQUIRE)
+             : 0U;
+}
+
+struct xaios_cpu_state *x86_64_platform_cpu_state(uint32_t ordinal) {
+  return ordinal < g_cpu_record_count ? &g_cpu_records[ordinal].state : 0;
+}
+
+void x86_64_platform_set_page_tables(uint32_t ordinal, uint64_t *root,
+                                      uint64_t *user_directory) {
+  if (ordinal >= g_cpu_record_count) return;
+  g_cpu_records[ordinal].page_table_root = root;
+  g_cpu_records[ordinal].user_page_directory = user_directory;
+}
+
+uint64_t *x86_64_platform_page_table_root(uint32_t ordinal) {
+  return ordinal < g_cpu_record_count
+             ? g_cpu_records[ordinal].page_table_root
+             : 0;
+}
+
+uint64_t *x86_64_platform_user_page_directory(uint32_t ordinal) {
+  return ordinal < g_cpu_record_count
+             ? g_cpu_records[ordinal].user_page_directory
+             : 0;
+}
+
+uint32_t x86_64_platform_current_ordinal(void) {
+  uint32_t id = lapic_id();
+  for (uint32_t ordinal = 0U; ordinal < g_cpu_record_count; ++ordinal) {
+    if (g_cpu_records[ordinal].apic_id == id) return ordinal;
+  }
+  return UINT32_MAX;
+}
+
+void x86_64_platform_wake(uint32_t ordinal) {
+  if (ordinal < g_cpu_record_count && g_cpu_records[ordinal].online != 0U) {
+    lapic_send(g_cpu_records[ordinal].apic_id, 33U);
+  }
+}
+
+void x86_64_platform_release_workers(void) {
+  __atomic_store_n(&g_common_worker_release, 1U, __ATOMIC_RELEASE);
+  for (uint32_t ordinal = 0U; ordinal < g_cpu_record_count; ++ordinal) {
+    if (ordinal != x86_64_platform_current_ordinal()) {
+      x86_64_platform_wake(ordinal);
+    }
+  }
+}
+
+uint64_t x86_64_platform_bootstrap_start(void) {
+  return g_early_alloc_start;
+}
+
+uint64_t x86_64_platform_bootstrap_end(void) { return g_early_alloc_cursor; }
+
+void x86_64_platform_timer_start(uint32_t initial_count, uint32_t periodic) {
+  if (g_lapic_ready == 0U) return;
+  lapic_write(APIC_LVT_TIMER,
+              32U | (periodic != 0U ? UINT32_C(1 << 17) : 0U));
+  lapic_write(APIC_TIMER_DIVIDE, UINT32_C(0x0b));
+  lapic_write(APIC_TIMER_INITIAL, initial_count);
+}
+
+void x86_64_platform_timer_stop(void) {
+  if (g_lapic_ready != 0U) {
+    lapic_write(APIC_LVT_TIMER, UINT32_C(1 << 16) | 32U);
+    lapic_write(APIC_TIMER_INITIAL, 0U);
+  }
+}
+
+uint64_t x86_64_platform_timer_interrupts(void) {
+  return g_x86_lapic_timer_interrupts;
+}
+
+void x86_64_platform_eoi(void) {
+  if (g_lapic_ready != 0U) lapic_write(APIC_EOI, 0U);
+}
+
+void x86_64_platform_set_user_resume(uint64_t stack) {
+  uint32_t ordinal = x86_64_platform_current_ordinal();
+  if (ordinal >= g_cpu_record_count) panic_halt(COM1_PORT, "user CPU ordinal");
+  x86_64_cpu_record_t *record = &g_cpu_records[ordinal];
+  uint32_t depth = record->user_nesting_depth;
+  if (depth >= X86_USER_NESTING_MAX) {
+    panic_halt(COM1_PORT, "user nesting depth");
+  }
+  x86_64_tss_t *tss = ordinal == g_bsp_ordinal ? &g_tss : &record->tss;
+  record->user_resume_rsp[depth] = stack;
+  record->user_previous_rsp0[depth] = tss->rsp0;
+  ++record->user_nesting_depth;
+
+  uint64_t syscall_stack_low =
+      record->syscall_stack_top - X86_KERNEL_STACK_SIZE;
+  if (stack > syscall_stack_low && stack < record->syscall_stack_top) {
+    tss->rsp0 = stack & ~UINT64_C(0xf);
+  }
+}
+
+uint64_t x86_64_platform_user_resume(void) {
+  uint32_t ordinal = x86_64_platform_current_ordinal();
+  if (ordinal >= g_cpu_record_count) {
+    panic_halt(COM1_PORT, "user resume stack");
+  }
+  x86_64_cpu_record_t *record = &g_cpu_records[ordinal];
+  uint32_t depth = record->user_nesting_depth;
+  if (depth == 0U || record->user_resume_rsp[depth - 1U] == 0U) {
+    panic_halt(COM1_PORT, "user resume stack");
+  }
+  --depth;
+  uint64_t stack = record->user_resume_rsp[depth];
+  x86_64_tss_t *tss = ordinal == g_bsp_ordinal ? &g_tss : &record->tss;
+  tss->rsp0 = record->user_previous_rsp0[depth];
+  record->user_resume_rsp[depth] = 0U;
+  record->user_previous_rsp0[depth] = 0U;
+  record->user_nesting_depth = depth;
+  return stack;
+}
+
+void x86_64_platform_set_user_return(uint64_t value) {
+  uint32_t ordinal = x86_64_platform_current_ordinal();
+  if (ordinal >= g_cpu_record_count) panic_halt(COM1_PORT, "user return CPU");
+  g_cpu_records[ordinal].user_return_value = value;
+}
+
+uint64_t x86_64_platform_user_return(void) {
+  uint32_t ordinal = x86_64_platform_current_ordinal();
+  if (ordinal >= g_cpu_record_count) panic_halt(COM1_PORT, "user result CPU");
+  return g_cpu_records[ordinal].user_return_value;
 }
 
 static uint8_t mmio_read8(uint64_t address);
@@ -379,6 +588,41 @@ static inline void fxsave_state(void *area) {
 
 static inline void fxrstor_state(const void *area) {
   __asm__ volatile("fxrstor64 (%0)" : : "r"(area) : "memory");
+}
+
+static uint8_t *current_irq_state_area(void) {
+  uint32_t ordinal = x86_64_platform_current_ordinal();
+  if (ordinal >= g_cpu_record_count || g_xsave_area_size == 0U ||
+      g_cpu_records[ordinal].irq_state_area == 0) {
+    return 0;
+  }
+  uint32_t depth = g_cpu_records[ordinal].user_nesting_depth;
+  uint32_t slot = depth == 0U ? 0U : depth - 1U;
+  if (slot >= X86_USER_NESTING_MAX) {
+    panic_halt(COM1_PORT, "IRQ state nesting");
+  }
+  return g_cpu_records[ordinal].irq_state_area +
+         (uint64_t)slot * g_xsave_area_size;
+}
+
+void x86_64_irq_state_save(void) {
+  uint8_t *area = current_irq_state_area();
+  if (area == 0) return;
+  if (g_xsave_enabled != 0U) {
+    xsave_state(area, g_xsave_enabled);
+  } else {
+    fxsave_state(area);
+  }
+}
+
+void x86_64_irq_state_restore(void) {
+  uint8_t *area = current_irq_state_area();
+  if (area == 0) return;
+  if (g_xsave_enabled != 0U) {
+    xrstor_state(area, g_xsave_enabled);
+  } else {
+    fxrstor_state(area);
+  }
 }
 
 static inline void write_cr3(uint64_t value) {
@@ -508,11 +752,13 @@ static void panic_halt(uint16_t serial_base, const char *message) {
   }
 }
 
+#if !XAIOS_X86_COMMON_RUNTIME
 void panic_at(const char *file, int line, const char *fmt, ...) {
   (void)file;
   (void)line;
   panic_halt(COM1_PORT, fmt != 0 ? fmt : "kernel panic");
 }
+#endif
 
 static void idt_set_gate(uint8_t vector, void (*handler)(void)) {
   uint64_t address = (uint64_t)(uintptr_t)handler;
@@ -537,6 +783,9 @@ static void install_gdt_tss(uint16_t serial_base) {
   g_gdt[3] = UINT64_C(0x00cff2000000ffff);
   g_gdt[4] = UINT64_C(0x00affa000000ffff);
   g_tss = (x86_64_tss_t){0};
+  for (uint32_t i = 0U; i < X86_KERNEL_STACK_GUARD_BYTES; ++i) {
+    g_syscall_stack[i] = X86_KERNEL_STACK_GUARD_VALUE;
+  }
   g_tss.rsp0 = (uint64_t)(uintptr_t)(g_syscall_stack + sizeof(g_syscall_stack));
   g_tss.io_map_base = sizeof(g_tss);
   uint64_t base = (uint64_t)(uintptr_t)&g_tss;
@@ -557,6 +806,56 @@ static void install_gdt_tss(uint16_t serial_base) {
   serial_hex64(serial_base, g_tss.rsp0);
   serial_puts(serial_base, "\n");
 }
+
+static void install_ap_gdt_tss(x86_64_cpu_record_t *record) {
+  if (record == 0 || record->kernel_stack_top == 0U ||
+      record->syscall_stack_top == 0U) {
+    panic_halt(COM1_PORT, "AP GDT inputs");
+  }
+  for (uint32_t i = 0U; i < 7U; ++i) record->gdt[i] = 0U;
+  record->gdt[1] = UINT64_C(0x00af9a000000ffff);
+  record->gdt[2] = UINT64_C(0x00cf92000000ffff);
+  record->gdt[3] = UINT64_C(0x00cff2000000ffff);
+  record->gdt[4] = UINT64_C(0x00affa000000ffff);
+  record->tss = (x86_64_tss_t){0};
+  record->tss.rsp0 = record->syscall_stack_top;
+  record->tss.io_map_base = sizeof(record->tss);
+  uint64_t base = (uint64_t)(uintptr_t)&record->tss;
+  uint64_t limit = sizeof(record->tss) - 1U;
+  record->gdt[5] = (limit & UINT64_C(0xffff)) |
+                   ((base & UINT64_C(0xffffff)) << 16U) |
+                   (UINT64_C(0x89) << 40U) |
+                   ((limit & UINT64_C(0xf0000)) << 32U) |
+                   ((base & UINT64_C(0xff000000)) << 32U);
+  record->gdt[6] = base >> 32U;
+  x86_64_idtr_t gdtr = {
+      .limit = (uint16_t)(sizeof(record->gdt) - 1U),
+      .base = (uint64_t)(uintptr_t)record->gdt,
+  };
+  x86_64_load_gdt(&gdtr);
+  x86_64_load_tss();
+}
+
+#if XAIOS_X86_COMMON_RUNTIME
+static int kernel_stack_guard_valid(uint32_t ordinal) {
+  if (ordinal >= g_cpu_record_count ||
+      g_cpu_records[ordinal].kernel_stack_top < X86_KERNEL_STACK_SIZE ||
+      g_cpu_records[ordinal].syscall_stack_top < X86_KERNEL_STACK_SIZE) {
+    return 0;
+  }
+  const uint8_t *kernel_guard = (const uint8_t *)(uintptr_t)(
+      g_cpu_records[ordinal].kernel_stack_top - X86_KERNEL_STACK_SIZE);
+  const uint8_t *syscall_guard = (const uint8_t *)(uintptr_t)(
+      g_cpu_records[ordinal].syscall_stack_top - X86_KERNEL_STACK_SIZE);
+  for (uint32_t i = 0U; i < X86_KERNEL_STACK_GUARD_BYTES; ++i) {
+    if (kernel_guard[i] != X86_KERNEL_STACK_GUARD_VALUE ||
+        syscall_guard[i] != X86_KERNEL_STACK_GUARD_VALUE) {
+      return 0;
+    }
+  }
+  return 1;
+}
+#endif
 
 static void install_idt(uint16_t serial_base) {
   void (*handlers[32])(void) = {
@@ -579,6 +878,9 @@ static void install_idt(uint16_t serial_base) {
   idt_set_gate(32U, x86_64_irq_32);
   idt_set_gate(33U, x86_64_irq_33);
   idt_set_gate(34U, x86_64_irq_34);
+  for (uint32_t vector = 64U; vector < 128U; ++vector) {
+    idt_set_gate((uint8_t)vector, x86_64_device_irq_stubs[vector - 64U]);
+  }
   idt_set_user_gate(128U, x86_64_irq_128);
   idt_set_gate(255U, x86_64_irq_255);
 
@@ -598,28 +900,38 @@ static void install_idt(uint16_t serial_base) {
 }
 
 static uint32_t lapic_read(uint32_t offset) {
-  if (g_lapic_x2apic != 0U) {
+  uint64_t apic_base = rdmsr(MSR_IA32_APIC_BASE);
+  if ((apic_base & (APIC_BASE_ENABLE | APIC_BASE_X2APIC)) ==
+      (APIC_BASE_ENABLE | APIC_BASE_X2APIC)) {
     return (uint32_t)rdmsr(X2APIC_MSR_BASE + (offset >> 4U));
   }
-  return g_lapic[offset / sizeof(uint32_t)];
+  volatile uint32_t *lapic = (volatile uint32_t *)(uintptr_t)(
+      apic_base & UINT64_C(0xfffff000));
+  return lapic[offset / sizeof(uint32_t)];
 }
 
 static void lapic_write(uint32_t offset, uint32_t value) {
-  if (g_lapic_x2apic != 0U) {
+  uint64_t apic_base = rdmsr(MSR_IA32_APIC_BASE);
+  if ((apic_base & (APIC_BASE_ENABLE | APIC_BASE_X2APIC)) ==
+      (APIC_BASE_ENABLE | APIC_BASE_X2APIC)) {
     wrmsr(X2APIC_MSR_BASE + (offset >> 4U), value);
     return;
   }
-  g_lapic[offset / sizeof(uint32_t)] = value;
-  (void)g_lapic[APIC_ID / sizeof(uint32_t)];
+  volatile uint32_t *lapic = (volatile uint32_t *)(uintptr_t)(
+      apic_base & UINT64_C(0xfffff000));
+  lapic[offset / sizeof(uint32_t)] = value;
+  (void)lapic[APIC_ID / sizeof(uint32_t)];
 }
 
 static uint32_t lapic_id(void) {
+  uint64_t apic_base = rdmsr(MSR_IA32_APIC_BASE);
   uint32_t id = lapic_read(APIC_ID);
-  return g_lapic_x2apic != 0U ? id : id >> 24U;
+  return (apic_base & APIC_BASE_X2APIC) != 0U ? id : id >> 24U;
 }
 
 static void lapic_send(uint32_t destination, uint32_t command) {
-  if (g_lapic_x2apic != 0U) {
+  uint64_t apic_base = rdmsr(MSR_IA32_APIC_BASE);
+  if ((apic_base & APIC_BASE_X2APIC) != 0U) {
     wrmsr(X2APIC_ICR_MSR, ((uint64_t)destination << 32U) | command);
     return;
   }
@@ -642,6 +954,21 @@ uint64_t x86_64_interrupt_entry(x86_64_exception_frame_t *frame) {
   if (frame != 0 && frame->vector == 128U) {
     if ((frame->cs & 3U) != 3U) panic_halt(COM1_PORT, "ring3 syscall CPL");
     ++g_ring3_syscalls;
+#if XAIOS_X86_COMMON_RUNTIME
+    uint64_t result = syscall_dispatch(frame->rax, frame->rdi, frame->rsi,
+                                       frame->rdx);
+    uint32_t ordinal = x86_64_platform_current_ordinal();
+    if (!kernel_stack_guard_valid(ordinal)) {
+      panic_halt(COM1_PORT, "kernel syscall stack overflow");
+    }
+    if ((result & XAIOS_USER_EXIT_RETURN_MASK) ==
+        XAIOS_USER_EXIT_RETURN_MAGIC) {
+      x86_64_platform_set_user_return(result);
+      return (uint64_t)(uintptr_t)x86_64_ring3_resume;
+    }
+    frame->rax = result;
+    return 0U;
+#else
     if (frame->rax == 1U) {
       uint64_t address = frame->rdi;
       uint64_t length = frame->rsi;
@@ -663,8 +990,13 @@ uint64_t x86_64_interrupt_entry(x86_64_exception_frame_t *frame) {
       return (uint64_t)(uintptr_t)x86_64_ring3_resume;
     }
     panic_halt(COM1_PORT, "ring3 syscall number");
+#endif
   }
   if (frame != 0 && frame->vector == 33U && g_cpu_records != 0) {
+#if XAIOS_X86_COMMON_RUNTIME
+    x86_64_platform_eoi();
+    return 0U;
+#else
     uint32_t current_id = lapic_id();
     for (uint32_t i = 0U; i < g_cpu_record_count; ++i) {
       x86_64_cpu_record_t *record = &g_cpu_records[i];
@@ -683,6 +1015,7 @@ uint64_t x86_64_interrupt_entry(x86_64_exception_frame_t *frame) {
       return 0U;
     }
     panic_halt(COM1_PORT, "AP worker identity");
+#endif
   }
   if (frame != 0 && frame->vector == 34U && g_lapic_ready != 0U) {
     if (g_virtio_msix_isr != 0U) (void)mmio_read8(g_virtio_msix_isr);
@@ -690,8 +1023,17 @@ uint64_t x86_64_interrupt_entry(x86_64_exception_frame_t *frame) {
     lapic_write(APIC_EOI, 0U);
     return 0U;
   }
+  if (frame != 0 && frame->vector >= 64U && frame->vector < 128U &&
+      g_lapic_ready != 0U) {
+    (void)gic_dispatch_interrupt((uint32_t)frame->vector);
+    lapic_write(APIC_EOI, 0U);
+    return 0U;
+  }
   if (frame != 0 && frame->vector == 32U && g_lapic_ready != 0U) {
-    ++g_lapic_timer_interrupts;
+    ++g_x86_lapic_timer_interrupts;
+#if XAIOS_X86_COMMON_RUNTIME
+    x86_64_platform_timer_irq();
+#endif
     lapic_write(APIC_EOI, 0U);
     return 0U;
   }
@@ -716,9 +1058,22 @@ void x86_64_ap_entry(uint32_t ordinal) {
   if (lapic_id() != g_cpu_records[ordinal].apic_id) {
     panic_halt(COM1_PORT, "AP APIC identity");
   }
+  install_ap_gdt_tss(&g_cpu_records[ordinal]);
   __atomic_store_n(&g_cpu_records[ordinal].online, 1U, __ATOMIC_RELEASE);
   __asm__ volatile("sti" ::: "memory");
+#if XAIOS_X86_COMMON_RUNTIME
+  while (__atomic_load_n(&g_common_worker_release, __ATOMIC_ACQUIRE) == 0U) {
+    __asm__ volatile("hlt");
+  }
+  vmm_activate_kernel();
+  for (;;) {
+    if (xaios_thread_run_pending(ordinal) == 0U) {
+      __asm__ volatile("hlt");
+    }
+  }
+#else
   for (;;) __asm__ volatile("hlt");
+#endif
 }
 
 static void parse_memory_map(uint16_t serial_base, const xaios_boot_info_t *boot) {
@@ -767,6 +1122,7 @@ static void parse_memory_map(uint16_t serial_base, const xaios_boot_info_t *boot
     panic_halt(serial_base, "memory map parse failed");
   }
   g_early_alloc_cursor = allocator_base;
+  g_early_alloc_start = allocator_base;
   g_early_alloc_end = allocator_base + allocator_pages * PAGE_SIZE;
 
   serial_puts(serial_base, "x86_64: PMM parsed descriptors=");
@@ -820,6 +1176,7 @@ static void validate_xsave(uint16_t serial_base) {
     fxrstor_state(g_xsave_test);
     fxrstor_state(g_xsave_original);
     g_xsave_enabled = 0U;
+    g_xsave_area_size = UINT32_C(512);
     serial_puts(serial_base,
                 "x86_64: FXSAVE/FXRSTOR fallback canary passed bytes=512\n");
     return;
@@ -840,6 +1197,7 @@ static void validate_xsave(uint16_t serial_base) {
   if (ebx == 0U || ebx > sizeof(g_xsave_original) || read_xcr0() != enabled) {
     panic_halt(serial_base, "XSAVE area sizing failed");
   }
+  g_xsave_area_size = ebx;
   xsave_state(g_xsave_original, enabled);
   xsave_state(g_xsave_test, enabled);
   xrstor_state(g_xsave_test, enabled);
@@ -853,6 +1211,30 @@ static void validate_xsave(uint16_t serial_base) {
              (supported & X86_XSTATE_AVX512) == X86_XSTATE_AVX512);
   serial_puts(serial_base, " amx_supported=");
   serial_dec(serial_base, (supported & X86_XSTATE_AMX) == X86_XSTATE_AMX);
+  serial_puts(serial_base, "\n");
+}
+
+static void prepare_irq_state_areas(uint16_t serial_base) {
+  if (g_xsave_area_size == 0U ||
+      g_xsave_area_size > UINT32_C(65536)) {
+    panic_halt(serial_base, "IRQ state area size");
+  }
+  uint64_t bytes =
+      (uint64_t)g_xsave_area_size * X86_USER_NESTING_MAX;
+  for (uint32_t ordinal = 0U; ordinal < g_cpu_record_count; ++ordinal) {
+    g_cpu_records[ordinal].irq_state_area =
+        (uint8_t *)early_alloc(bytes, UINT64_C(64));
+    if (g_cpu_records[ordinal].irq_state_area == 0) {
+      panic_halt(serial_base, "IRQ state allocation");
+    }
+    for (uint64_t offset = 0U; offset < bytes; ++offset) {
+      g_cpu_records[ordinal].irq_state_area[offset] = 0U;
+    }
+  }
+  serial_puts(serial_base, "x86_64: per-CPU nested IRQ state areas ready bytes=");
+  serial_dec(serial_base, bytes);
+  serial_puts(serial_base, " cpus=");
+  serial_dec(serial_base, g_cpu_record_count);
   serial_puts(serial_base, "\n");
 }
 
@@ -900,7 +1282,7 @@ static void install_page_tables(uint16_t serial_base) {
   serial_puts(serial_base, "x86_64: VMM policy kernel/user split prepared\n");
 }
 
-static void validate_ring3_syscall(uint16_t serial_base) {
+static void X86_BRINGUP_ONLY validate_ring3_syscall(uint16_t serial_base) {
   uint64_t image_size =
       (uint64_t)(_binary_hello_bin_end - _binary_hello_bin_start);
   if (image_size == 0U || image_size > sizeof(g_user_test_page)) {
@@ -940,6 +1322,17 @@ static void discover_timer_apic(uint16_t serial_base) {
   if (max_leaf >= 0x15U) {
     cpuid(0x15U, 0, &tsc_denominator, &tsc_numerator, &crystal_hz, &edx);
   }
+  if (tsc_denominator != 0U && tsc_numerator != 0U && crystal_hz != 0U) {
+    g_tsc_frequency =
+        ((uint64_t)crystal_hz * tsc_numerator) / tsc_denominator;
+  } else if (max_leaf >= 0x16U) {
+    uint32_t base_mhz = 0U;
+    cpuid(0x16U, 0U, &base_mhz, &ebx, &ecx, &edx);
+    if (base_mhz != 0U) {
+      g_tsc_frequency = (uint64_t)base_mhz * UINT64_C(1000000);
+    }
+  }
+  if (g_tsc_frequency == 0U) g_tsc_frequency = UINT64_C(1000000000);
 
   serial_puts(serial_base, "x86_64: APIC discovery supported=");
   serial_dec(serial_base, apic_supported);
@@ -979,22 +1372,27 @@ static void validate_lapic_timer_interrupt(uint16_t serial_base) {
   lapic_write(APIC_SPURIOUS, UINT32_C(0x100) | UINT32_C(0xff));
   lapic_write(APIC_LVT_TIMER, 32U);
   lapic_write(APIC_TIMER_DIVIDE, UINT32_C(0x0b));
-  g_lapic_timer_interrupts = 0U;
+  g_x86_lapic_timer_interrupts = 0U;
   uint64_t started_tsc = rdtsc();
   lapic_write(APIC_TIMER_INITIAL, UINT32_C(100000));
   __asm__ volatile("sti; hlt; cli" ::: "memory");
   uint64_t elapsed_tsc = rdtsc() - started_tsc;
   lapic_write(APIC_LVT_TIMER, UINT32_C(1 << 16) | 32U);
-  if (g_lapic_timer_interrupts != 1U ||
+  if (g_x86_lapic_timer_interrupts != 1U ||
       lapic_read(APIC_TIMER_CURRENT) != 0U) {
     panic_halt(serial_base, "local APIC timer interrupt failed");
   }
+  if (elapsed_tsc != 0U) {
+    g_lapic_frequency =
+        (UINT64_C(100000) * g_tsc_frequency) / elapsed_tsc;
+  }
+  if (g_lapic_frequency == 0U) g_lapic_frequency = UINT64_C(1000000);
   serial_puts(serial_base, "x86_64: local APIC timer interrupt passed id=");
   serial_dec(serial_base, apic_id);
   serial_puts(serial_base, " version=");
   serial_dec(serial_base, version);
   serial_puts(serial_base, " interrupts=");
-  serial_dec(serial_base, g_lapic_timer_interrupts);
+  serial_dec(serial_base, g_x86_lapic_timer_interrupts);
   serial_puts(serial_base, " mode=");
   serial_puts(serial_base,
               g_lapic_x2apic != 0U ? "x2apic" : "xapic");
@@ -1072,6 +1470,9 @@ static void start_application_processors(uint16_t serial_base,
   for (uint32_t i = 0U; i < g_cpu_record_count; ++i) {
     if (g_cpu_records[i].apic_id == bsp_id) {
       g_cpu_records[i].online = 1U;
+      g_cpu_records[i].kernel_stack_top = g_tss.rsp0;
+      g_cpu_records[i].syscall_stack_top = g_tss.rsp0;
+      g_bsp_ordinal = i;
       bsp_found = 1U;
     }
   }
@@ -1081,10 +1482,23 @@ static void start_application_processors(uint16_t serial_base,
   for (uint32_t i = 0U; i < g_cpu_record_count; ++i) {
     x86_64_cpu_record_t *record = &g_cpu_records[i];
     if (record->apic_id == bsp_id) continue;
-    uint8_t *stack = (uint8_t *)early_alloc(UINT64_C(65536), UINT64_C(64));
-    if (stack == 0) panic_halt(serial_base, "AP stack allocation");
+    uint8_t *stack =
+        (uint8_t *)early_alloc(X86_KERNEL_STACK_SIZE, PAGE_SIZE);
+    uint8_t *syscall_stack =
+        (uint8_t *)early_alloc(X86_KERNEL_STACK_SIZE, PAGE_SIZE);
+    if (stack == 0 || syscall_stack == 0) {
+      panic_halt(serial_base, "AP stack allocation");
+    }
+    for (uint32_t guard = 0U; guard < X86_KERNEL_STACK_GUARD_BYTES; ++guard) {
+      stack[guard] = X86_KERNEL_STACK_GUARD_VALUE;
+      syscall_stack[guard] = X86_KERNEL_STACK_GUARD_VALUE;
+    }
+    record->kernel_stack_top =
+        (uint64_t)(uintptr_t)(stack + X86_KERNEL_STACK_SIZE);
+    record->syscall_stack_top =
+        (uint64_t)(uintptr_t)(syscall_stack + X86_KERNEL_STACK_SIZE);
     patch_ap_trampoline(serial_base, boot->ap_trampoline,
-                        (uint64_t)(uintptr_t)(stack + UINT64_C(65536)), i);
+                        record->kernel_stack_top, i);
     lapic_send(record->apic_id, UINT32_C(0x0000c500));
     tsc_delay(UINT64_C(10000000));
     lapic_send(record->apic_id, UINT32_C(0x00008500));
@@ -1102,6 +1516,13 @@ static void start_application_processors(uint16_t serial_base,
     ++online;
   }
 
+  serial_puts(serial_base, "x86_64: SMP AP startup passed online=");
+  serial_dec(serial_base, online);
+  serial_puts(serial_base, " madt_cpus=");
+  serial_dec(serial_base, g_cpu_record_count);
+  serial_puts(serial_base, " dynamic_records=1\n");
+
+#if !XAIOS_X86_COMMON_RUNTIME
   uint32_t workers = 0U;
   uint64_t combined = 0U;
   for (uint32_t i = 0U; i < g_cpu_record_count; ++i) {
@@ -1125,16 +1546,12 @@ static void start_application_processors(uint16_t serial_base,
     combined ^= record->checksum;
     ++workers;
   }
-  serial_puts(serial_base, "x86_64: SMP AP startup passed online=");
-  serial_dec(serial_base, online);
-  serial_puts(serial_base, " madt_cpus=");
-  serial_dec(serial_base, g_cpu_record_count);
-  serial_puts(serial_base, " dynamic_records=1\n");
   serial_puts(serial_base, "x86_64: SMP IPI worker dispatch passed workers=");
   serial_dec(serial_base, workers);
   serial_puts(serial_base, " checksum=");
   serial_hex64(serial_base, combined);
   serial_puts(serial_base, "\n");
+#endif
 }
 
 static uint32_t pci_read_config(uint8_t bus, uint8_t device, uint8_t function,
@@ -1294,7 +1711,7 @@ static void inspect_pci_capabilities(uint8_t bus, uint8_t device,
   }
 }
 
-static void discover_pci(uint16_t serial_base) {
+static void X86_BRINGUP_ONLY discover_pci(uint16_t serial_base) {
   g_pci = (x86_64_pci_state_t){0};
   for (uint16_t bus = 0; bus < 256; ++bus) {
     for (uint8_t device = 0; device < 32; ++device) {
@@ -1500,7 +1917,7 @@ static int virtio_wait_used(volatile uint16_t *used_index,
   return *used_index == expected;
 }
 
-static void validate_virtio_block_operation(uint16_t serial_base) {
+static void X86_BRINGUP_ONLY validate_virtio_block_operation(uint16_t serial_base) {
   x86_64_virtio_pci_device_t device;
   int found = find_virtio_pci_device(UINT16_C(0x1042), &device);
   serial_puts(serial_base, "x86_64: VirtIO block PCI transport found=");
@@ -1559,7 +1976,7 @@ static void validate_virtio_block_operation(uint16_t serial_base) {
               "x86_64: VirtIO block MSI-X completion interrupt passed vector=34\n");
 }
 
-static void validate_virtio_network_operation(uint16_t serial_base) {
+static void X86_BRINGUP_ONLY validate_virtio_network_operation(uint16_t serial_base) {
   x86_64_virtio_pci_device_t device;
   if (!find_virtio_pci_device(UINT16_C(0x1041), &device) ||
       !map_high_mmio_gib(device.common_config) ||
@@ -1618,7 +2035,7 @@ static void validate_virtio_network_operation(uint16_t serial_base) {
               "x86_64: modern VirtIO network DMA TX passed bytes=42\n");
 }
 
-static void build_placement_policy(uint16_t serial_base) {
+static void X86_BRINGUP_ONLY build_placement_policy(uint16_t serial_base) {
   uint32_t eax = 0;
   uint32_t ebx = 0;
   uint32_t ecx = 0;
@@ -1693,7 +2110,7 @@ static void build_placement_policy(uint16_t serial_base) {
   serial_puts(serial_base, "\n");
 }
 
-static void validate_x86_os_contract(uint16_t serial_base) {
+static void X86_BRINGUP_ONLY validate_x86_os_contract(uint16_t serial_base) {
   uint32_t portable = xaios_common_runtime_probe();
   uint32_t storage_ready =
       (portable & (XAIOS_COMMON_RUNTIME_BLOCK | XAIOS_COMMON_RUNTIME_VFS)) ==
@@ -1729,7 +2146,7 @@ static void validate_x86_os_contract(uint16_t serial_base) {
   serial_puts(serial_base, "\n");
 }
 
-static void validate_hardware_gate(uint16_t serial_base) {
+static void X86_BRINGUP_ONLY validate_hardware_gate(uint16_t serial_base) {
   g_hardware_gate = (x86_64_hardware_gate_state_t){
       .qemu_correctness_ready = 1U,
       .physical_hardware_required = 1U,
@@ -1848,12 +2265,17 @@ void x86_64_kmain(const xaios_boot_info_t *boot) {
     panic_halt(serial_base, "page tables not loaded");
   }
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 46 page tables passed\n");
-  validate_ring3_syscall(serial_base);
   validate_xsave(serial_base);
+  prepare_irq_state_areas(serial_base);
   discover_timer_apic(serial_base);
   validate_lapic_timer_interrupt(serial_base);
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 47 timers APIC passed\n");
   start_application_processors(serial_base, boot);
+#if XAIOS_X86_COMMON_RUNTIME
+  kmain(boot);
+  panic_halt(serial_base, "common kernel returned");
+#else
+  validate_ring3_syscall(serial_base);
   klog_init(boot);
   security_self_test();
   serial_puts(serial_base,
@@ -1871,6 +2293,7 @@ void x86_64_kmain(const xaios_boot_info_t *boot) {
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 50 portable common runtime passed platform services pending\n");
   validate_hardware_gate(serial_base);
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 51 hardware gate blocked\n");
+#endif
 
   for (;;) {
     __asm__ volatile("hlt");

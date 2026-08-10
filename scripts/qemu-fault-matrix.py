@@ -38,6 +38,7 @@ FAULTS = [
 def run_build(fault: str) -> int:
     env = os.environ.copy()
     env["XAIOS_FAULT_TEST"] = fault
+    env["XAIOS_BOOT_TEST_APPS"] = "1"
     proc = subprocess.run(
         ["./scripts/build-image.sh"],
         stdout=subprocess.PIPE,
@@ -113,11 +114,14 @@ def run_fault_boot(name: str, targets) -> int:
 
 
 def rebuild_normal_image() -> int:
+    env = os.environ.copy()
+    env["XAIOS_BOOT_TEST_APPS"] = "1"
     proc = subprocess.run(
         ["./scripts/build-image.sh"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        env=env,
         check=False,
     )
     sys.stdout.write(proc.stdout)
