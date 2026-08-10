@@ -4,6 +4,9 @@
 #ifndef XAIOS_BOOT_TEST_APPS
 #define XAIOS_BOOT_TEST_APPS 0
 #endif
+#ifndef XAIOS_BOOT_VERBOSE
+#define XAIOS_BOOT_VERBOSE 0
+#endif
 
 #define BOOT_BAR_WIDTH UINT32_C(40)
 
@@ -46,14 +49,14 @@ static void write_int(int32_t value) {
   write_uint(magnitude);
 }
 
-#if !XAIOS_BOOT_TEST_APPS
+#if !XAIOS_BOOT_TEST_APPS && !XAIOS_BOOT_VERBOSE
 static void write_brand(void) {
   write_text("\x1b[1;35mXAI\x1b[0m \x1b[1;36mOS\x1b[0m\n\n");
 }
 #endif
 
 void boot_ui_begin(void) {
-#if XAIOS_BOOT_TEST_APPS
+#if XAIOS_BOOT_TEST_APPS || XAIOS_BOOT_VERBOSE
   write_text("boot-ui: XAI OS\n");
 #else
   klog_console_set_log_output(0U);
@@ -65,7 +68,7 @@ void boot_ui_begin(void) {
 void boot_ui_update(uint32_t percent, const char *loaded,
                     const char *loading, uint32_t remaining) {
   if (percent > 100U) percent = 100U;
-#if XAIOS_BOOT_TEST_APPS
+#if XAIOS_BOOT_TEST_APPS || XAIOS_BOOT_VERBOSE
   write_text("boot-ui: progress=");
   write_uint(percent);
   write_text(" loaded=");

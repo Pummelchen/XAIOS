@@ -38,6 +38,7 @@
 #define VIRTIO_BLK_DIRECT_DEPTH 2U
 #define VIRTIO_BLK_MAX_ASYNC_DEPTH VIRTQ_SIZE
 #define VIRTIO_BLK_WAIT_TIMEOUT_NS UINT64_C(5000000000)
+#define VIRTIO_BLK_SELF_TEST_SECTOR UINT64_C(2999)
 
 typedef struct virtio_blk_req {
   uint32_t type;
@@ -793,6 +794,7 @@ xaios_status_t virtio_block_init(void) {
     g_blk->logical_sector_size = SECTOR_SIZE;
     g_blk->physical_block_size = SECTOR_SIZE;
     g_blk->queue_depth = 1U;
+    g_blk->read_only = 1U;
     g_blk->supports_flush = 1U;
     g_blk->initialized = 1U;
     if (register_block_device(g_blk) != XAIOS_OK) {
@@ -1122,9 +1124,11 @@ static xaios_status_t block_backend_write_zeroes(void *context,
 void virtio_block_self_test(void) {
   uint8_t *sector = (uint8_t *)kheap_calloc(DMA_ALIGNMENT, 16);
   uint8_t *write_sector = (uint8_t *)kheap_calloc(SECTOR_SIZE, 16);
+  uint8_t *original_sector = (uint8_t *)kheap_calloc(SECTOR_SIZE, 16);
   uint8_t *async_sectors[VIRTIO_BLK_MAX_ASYNC_DEPTH];
   kassert(sector != 0);
   kassert(write_sector != 0);
+  kassert(original_sector != 0);
   for (uint32_t i = 0U; i < VIRTIO_BLK_MAX_ASYNC_DEPTH; ++i) {
     async_sectors[i] = (uint8_t *)kheap_calloc(SECTOR_SIZE, 16);
     kassert(async_sectors[i] != 0);
@@ -1141,17 +1145,11 @@ void virtio_block_self_test(void) {
   for (uint64_t i = 0; i < SECTOR_SIZE; ++i) {
     write_sector[i] = (uint8_t)(i & 0xffU);
   }
-  uint64_t write_test_sector = virtio_block_capacity_sectors() - 2U;
-  kassert(virtio_block_write_sector(write_test_sector, write_sector,
-                                    SECTOR_SIZE) == XAIOS_OK);
-  kassert(virtio_block_flush() == XAIOS_OK);
-  bytes_zero(sector, SECTOR_SIZE);
-  kassert(virtio_block_read_sector(write_test_sector, sector, SECTOR_SIZE) ==
-          XAIOS_OK);
-  for (uint64_t i = 0; i < SECTOR_SIZE; ++i) {
-    kassert(sector[i] == (uint8_t)(i & 0xffU));
-  }
+  kassert(virtio_block_capacity_sectors() > VIRTIO_BLK_SELF_TEST_SECTOR);
+  uint64_t write_test_sector = VIRTIO_BLK_SELF_TEST_SECTOR;
   if (g_blk->memory_backed != 0U) {
+    kassert(virtio_block_write_sector(write_test_sector, write_sector,
+                                      SECTOR_SIZE) == XAIOS_ERR_UNSUPPORTED);
     virtio_block_sync_wait_t wait = {0U, XAIOS_ERR_IO};
     uint64_t token = 0U;
     bytes_zero(sector, SECTOR_SIZE);
@@ -1165,11 +1163,23 @@ void virtio_block_self_test(void) {
     kassert(block_device_open("/dev/vblk0", &block) == XAIOS_OK);
     kassert(block_device_info(block, &info) == XAIOS_OK);
     kassert(info.capacity_bytes == g_blk->memory_size);
+    kassert(info.read_only != 0U);
     kassert(info.flush_supported != 0U);
     kassert(block_device_close(block) == XAIOS_OK);
-    klog("boot-memory: read/write/async/flush self-test passed capacity_sectors=%lu\n",
+    klog("boot-memory: read-only/async/flush self-test passed capacity_sectors=%lu\n",
          g_blk->capacity_sectors);
     return;
+  }
+  kassert(virtio_block_read_sector(write_test_sector, original_sector,
+                                   SECTOR_SIZE) == XAIOS_OK);
+  kassert(virtio_block_write_sector(write_test_sector, write_sector,
+                                    SECTOR_SIZE) == XAIOS_OK);
+  kassert(virtio_block_flush() == XAIOS_OK);
+  bytes_zero(sector, SECTOR_SIZE);
+  kassert(virtio_block_read_sector(write_test_sector, sector, SECTOR_SIZE) ==
+          XAIOS_OK);
+  for (uint64_t i = 0; i < SECTOR_SIZE; ++i) {
+    kassert(sector[i] == (uint8_t)(i & 0xffU));
   }
   kassert(g_blk->uses_indirect != 0U);
   kassert(virtio_block_queue_depth_h(g_blk) ==
@@ -1196,6 +1206,15 @@ void virtio_block_self_test(void) {
   kassert(virtio_block_outstanding_h(g_blk) == 0U);
   kassert(async_sectors[0][0] == 'X' && async_sectors[0][1] == 'A' &&
           async_sectors[1][0] == 0U && async_sectors[1][1] == 1U);
+  kassert(virtio_block_write_sector(write_test_sector, original_sector,
+                                    SECTOR_SIZE) == XAIOS_OK);
+  kassert(virtio_block_flush() == XAIOS_OK);
+  bytes_zero(sector, SECTOR_SIZE);
+  kassert(virtio_block_read_sector(write_test_sector, sector, SECTOR_SIZE) ==
+          XAIOS_OK);
+  for (uint64_t i = 0U; i < SECTOR_SIZE; ++i) {
+    kassert(sector[i] == original_sector[i]);
+  }
   klog("virtio-blk: asynchronous queue self-test passed depth=%u indirect=%u direct-or-bounce=verified\n",
        virtio_block_queue_depth_h(g_blk), g_blk->uses_indirect);
   uint64_t resets_before = g_blk->reset_count;

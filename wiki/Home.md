@@ -41,8 +41,13 @@ model workstreams are not active unless the maintainer reprioritizes them.
   exit; deterministic QEMU gates retain a separate boot-fixture profile.
 - Normal QEMU boots use an in-place colored 0-100% progress display. SSH binds
   only after an external IPv4 DNS response; the final screen reports the guest
-  IPv4 and verified listener state or a numeric error, then leaves the local
-  serial command prompt active.
+  IPv4 and verified listener state or a numeric error. Password-enabled
+  development images then provide authenticated serial login, while key-only,
+  default and release images keep the local console locked.
+- Local and SSH PTY sessions provide cwd-aware prompts, basic file/directory
+  operations, command-not-found errors and interactive `nano`. MutableFS v4
+  supports recursive directory rename/removal and bounded 128 KiB state files;
+  it is not a replacement for ModelFS or general bulk storage.
 - XAIOS uses a native freestanding ABI. FreeBSD is the primary external Unix
   behavioral reference, with a real FreeBSD 15.1 OpenSSH/SFTP/UDP QEMU gate;
   neither FreeBSD nor Linux binary ABI compatibility is claimed.

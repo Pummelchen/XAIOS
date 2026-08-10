@@ -6,6 +6,7 @@
 #include "ssh_host_key.h"
 #include "ssh_utils.h"
 #include "tweetnacl_subset.h"
+#include "nano_editor.h"
 #include <xaios_user.h>
 #include <stdarg.h>
 
@@ -35,6 +36,18 @@ static uint32_t g_console_ignore_lf;
 static uint32_t g_console_ipv4;
 static uint32_t g_console_ssh_ready;
 static int32_t g_console_boot_error;
+static nano_editor_t g_console_nano;
+static uint32_t g_console_auth_state;
+static uint32_t g_console_auth_failures;
+
+enum {
+  SSHD_CONSOLE_AUTH_LOCKED = 0U,
+  SSHD_CONSOLE_AUTH_USER = 1U,
+  SSHD_CONSOLE_AUTH_PASSWORD = 2U,
+  SSHD_CONSOLE_AUTH_SHELL = 3U
+};
+
+static int authenticate_password(const char *username, const char *password);
 
 static uint64_t fnv1a64_zero_range(const void *data, uint64_t size,
                                    uint64_t zero_offset,
@@ -405,7 +418,88 @@ static void console_write_error(int32_t status) {
 }
 
 static void console_prompt(void) {
-  console_write("\x1b[1;32madmin@xaios\x1b[0m:\x1b[1;34m/\x1b[0m$ ");
+  char cwd[256];
+  u64 cwd_size = 0U;
+  xaios_memzero(cwd, sizeof(cwd));
+  if (xaios_remote_login_session(SSHD_CONSOLE_SESSION_ID, "admin", "pwd", cwd,
+                                 sizeof(cwd), &cwd_size) < 0 ||
+      cwd_size == 0U || cwd_size >= sizeof(cwd)) {
+    cwd[0] = '/';
+    cwd[1] = '\0';
+    cwd_size = 1U;
+  }
+  while (cwd_size != 0U &&
+         (cwd[cwd_size - 1U] == '\n' || cwd[cwd_size - 1U] == '\r')) {
+    --cwd_size;
+  }
+  console_write("\x1b[1;32madmin@xaios\x1b[0m:\x1b[1;34m");
+  (void)xaios_console_write(cwd, cwd_size);
+  console_write("\x1b[0m$ ");
+}
+
+static void console_begin_login(void) {
+  g_console_command_length = 0U;
+  g_console_ignore_lf = 0U;
+  if (g_user_count == 0U || g_password_auth_enabled == 0U) {
+    g_console_auth_state = SSHD_CONSOLE_AUTH_LOCKED;
+    console_write(
+        "Local console locked: password authentication is not configured.\n"
+        "Use SSH public-key authentication for administration.\n");
+    return;
+  }
+  g_console_auth_state = SSHD_CONSOLE_AUTH_USER;
+  console_write("xaios login: ");
+}
+
+static int console_nano_argument(const char *command, char *argument,
+                                 uint32_t capacity) {
+  uint32_t i = 0U;
+  uint32_t used = 0U;
+  while (command[i] == ' ' || command[i] == '\t') ++i;
+  if (command[i++] != 'n' || command[i++] != 'a' || command[i++] != 'n' ||
+      command[i++] != 'o' ||
+      (command[i] != ' ' && command[i] != '\t')) return -1;
+  while (command[i] == ' ' || command[i] == '\t') ++i;
+  if (command[i] == '\0' || command[i] == '-') return -1;
+  while (command[i] != '\0' && command[i] != ' ' && command[i] != '\t') {
+    if (used + 1U >= capacity) return -1;
+    argument[used++] = command[i++];
+  }
+  while (command[i] == ' ' || command[i] == '\t') ++i;
+  if (command[i] != '\0') return -1;
+  argument[used] = '\0';
+  return 0;
+}
+
+static int console_start_nano(const char *command) {
+  char argument[NANO_EDITOR_PATH_MAX];
+  char cwd[NANO_EDITOR_PATH_MAX];
+  u64 cwd_size = 0U;
+  uint32_t frame_size = 0U;
+  if (console_nano_argument(command, argument, sizeof(argument)) != 0 ||
+      xaios_remote_login_session(SSHD_CONSOLE_SESSION_ID, "admin", "pwd", cwd,
+                                 sizeof(cwd), &cwd_size) < 0 ||
+      cwd_size == 0U || cwd_size >= sizeof(cwd)) {
+    return -1;
+  }
+  while (cwd_size != 0U &&
+         (cwd[cwd_size - 1U] == '\n' || cwd[cwd_size - 1U] == '\r')) {
+    cwd[--cwd_size] = '\0';
+  }
+  if (nano_editor_open(&g_console_nano, argument, cwd, 120U, 40U) != 0) {
+    console_write("nano: ");
+    console_write(g_console_nano.status);
+    console_write("\n");
+    return -1;
+  }
+  if (nano_editor_render(&g_console_nano, g_console_output,
+                         sizeof(g_console_output), &frame_size) != 0) {
+    g_console_nano.active = 0U;
+    return -1;
+  }
+  console_write("\033[?1049h");
+  (void)xaios_console_write(g_console_output, frame_size);
+  return 0;
 }
 
 static void console_render_boot_status(void) {
@@ -423,7 +517,7 @@ static void console_render_boot_status(void) {
     console_write_error(g_console_boot_error);
     console_write("\n\n");
   }
-  console_prompt();
+  console_begin_login();
 }
 
 static void console_render_ssh_loading(void) {
@@ -455,13 +549,21 @@ static void console_execute_command(void) {
     console_prompt();
     return;
   }
-  if (ssh_str_eq(g_console_command, "clear")) {
+  char nano_argument[NANO_EDITOR_PATH_MAX];
+  if (console_nano_argument(g_console_command, nano_argument,
+                            sizeof(nano_argument)) == 0) {
+    (void)console_start_nano(g_console_command);
+  } else if (ssh_str_eq(g_console_command, "clear")) {
     console_write("\x1b[2J\x1b[H");
   } else if (ssh_str_eq(g_console_command, "exit") ||
              ssh_str_eq(g_console_command, "logout") ||
              ssh_str_eq(g_console_command, "quit")) {
     (void)xaios_remote_login_session_close(SSHD_CONSOLE_SESSION_ID);
-    console_write("Local console session reset\n");
+    console_write("logout\n");
+    g_console_auth_state = SSHD_CONSOLE_AUTH_USER;
+    g_console_command_length = 0U;
+    console_write("xaios login: ");
+    return;
   } else {
     u64 output_bytes = 0U;
     xaios_memzero(g_console_output, sizeof(g_console_output));
@@ -472,14 +574,41 @@ static void console_execute_command(void) {
       (void)xaios_console_write(g_console_output, output_bytes);
       if (g_console_output[output_bytes - 1U] != '\n') console_write("\n");
     }
-    if (status < 0) {
+    if (status < 0 && output_bytes == 0U) {
       console_write("command failed: status=");
       console_write_error(status);
       console_write("\n");
     }
   }
   g_console_command_length = 0U;
-  console_prompt();
+  if (g_console_nano.active == 0U) console_prompt();
+}
+
+static void console_submit_auth(void) {
+  g_console_command[g_console_command_length] = '\0';
+  console_write("\n");
+  if (g_console_auth_state == SSHD_CONSOLE_AUTH_USER) {
+    if (!ssh_str_eq(g_console_command, "admin")) {
+      console_write("Login incorrect\nxaios login: ");
+      ++g_console_auth_failures;
+    } else {
+      g_console_auth_state = SSHD_CONSOLE_AUTH_PASSWORD;
+      console_write("Password: ");
+    }
+  } else if (g_console_auth_state == SSHD_CONSOLE_AUTH_PASSWORD) {
+    if (authenticate_password("admin", g_console_command) != 0) {
+      ++g_console_auth_failures;
+      console_write("Login incorrect\nxaios login: ");
+      g_console_auth_state = SSHD_CONSOLE_AUTH_USER;
+    } else {
+      g_console_auth_failures = 0U;
+      g_console_auth_state = SSHD_CONSOLE_AUTH_SHELL;
+      console_write("XAIOS local console session opened\n");
+      console_prompt();
+    }
+  }
+  xaios_memzero(g_console_command, sizeof(g_console_command));
+  g_console_command_length = 0U;
 }
 
 static void console_tick(void) {
@@ -487,6 +616,24 @@ static void console_tick(void) {
     char value = 0;
     int received = xaios_console_read(&value);
     if (received <= 0) return;
+    if (g_console_nano.active != 0U) {
+      uint32_t frame_size = 0U;
+      uint32_t should_exit = 0U;
+      if (nano_editor_input(&g_console_nano, (const uint8_t *)&value, 1U,
+                            &should_exit) != 0) {
+        should_exit = 1U;
+      }
+      if (should_exit != 0U) {
+        g_console_nano.active = 0U;
+        console_write("\033[0m\033[?25h\033[?1049l");
+        console_prompt();
+      } else if (nano_editor_render(&g_console_nano, g_console_output,
+                                    sizeof(g_console_output),
+                                    &frame_size) == 0) {
+        (void)xaios_console_write(g_console_output, frame_size);
+      }
+      continue;
+    }
     if (value == '\n' && g_console_ignore_lf != 0U) {
       g_console_ignore_lf = 0U;
       continue;
@@ -494,22 +641,37 @@ static void console_tick(void) {
     g_console_ignore_lf = 0U;
     if (value == '\r' || value == '\n') {
       g_console_ignore_lf = value == '\r' ? 1U : 0U;
-      console_execute_command();
+      if (g_console_auth_state == SSHD_CONSOLE_AUTH_SHELL) {
+        console_execute_command();
+      } else if (g_console_auth_state != SSHD_CONSOLE_AUTH_LOCKED) {
+        console_submit_auth();
+      }
     } else if (value == '\b' || (uint8_t)value == UINT8_C(0x7f)) {
       if (g_console_command_length != 0U) {
         --g_console_command_length;
-        console_write("\b \b");
+        if (g_console_auth_state != SSHD_CONSOLE_AUTH_PASSWORD) {
+          console_write("\b \b");
+        }
       }
     } else if ((uint8_t)value == UINT8_C(0x03)) {
       g_console_command_length = 0U;
       console_write("^C\n");
-      console_prompt();
+      if (g_console_auth_state == SSHD_CONSOLE_AUTH_SHELL) {
+        console_prompt();
+      } else if (g_console_auth_state == SSHD_CONSOLE_AUTH_USER) {
+        console_write("xaios login: ");
+      } else if (g_console_auth_state == SSHD_CONSOLE_AUTH_PASSWORD) {
+        console_write("Password: ");
+      }
     } else if ((uint8_t)value == UINT8_C(0x0c)) {
       console_render_boot_status();
-    } else if (value >= ' ' && value <= '~' &&
+    } else if (g_console_auth_state != SSHD_CONSOLE_AUTH_LOCKED &&
+               value >= ' ' && value <= '~' &&
                g_console_command_length + 1U < sizeof(g_console_command)) {
       g_console_command[g_console_command_length++] = value;
-      (void)xaios_console_write(&value, 1U);
+      if (g_console_auth_state != SSHD_CONSOLE_AUTH_PASSWORD) {
+        (void)xaios_console_write(&value, 1U);
+      }
     }
   }
 }

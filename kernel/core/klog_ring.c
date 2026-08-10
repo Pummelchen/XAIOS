@@ -175,6 +175,7 @@ xaios_status_t klog_rotate(void) {
 }
 
 xaios_status_t klog_flush(void) {
+  uint64_t append_offset = 0;
   if (g_ring_initialized == 0 || g_ring.count == 0) {
     return XAIOS_OK;
   }
@@ -182,10 +183,12 @@ xaios_status_t klog_flush(void) {
   /* Check if rotation is needed */
   xaios_mfs_stat_t stat;
   if (mutable_fs_stat(KLOG_PATH, &stat) == XAIOS_OK) {
-    if (stat.size + XAIOS_KLOG_FLUSH_MAX > XAIOS_MFS_MAX_FILE_BYTES_V3) {
+    if (stat.size > XAIOS_MFS_MAX_FILE_BYTES_V4 - XAIOS_KLOG_FLUSH_MAX) {
       if (klog_rotate() != XAIOS_OK) {
         return XAIOS_ERR_IO;
       }
+    } else {
+      append_offset = stat.size;
     }
   }
 
@@ -200,6 +203,11 @@ xaios_status_t klog_flush(void) {
   int64_t fd = mutable_fs_open(KLOG_PATH,
                                 XAIOS_MFS_OPEN_WRITE | XAIOS_MFS_OPEN_CREATE);
   if (fd < 0) {
+    return XAIOS_ERR_IO;
+  }
+  if (append_offset != 0U &&
+      mutable_fs_seek((uint32_t)fd, append_offset) != XAIOS_OK) {
+    mutable_fs_close((uint32_t)fd);
     return XAIOS_ERR_IO;
   }
 

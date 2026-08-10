@@ -21,6 +21,9 @@
 #ifndef XAIOS_BOOT_TEST_APPS
 #define XAIOS_BOOT_TEST_APPS 0
 #endif
+#ifndef XAIOS_FAILURE_TEST_APP
+#define XAIOS_FAILURE_TEST_APP 0
+#endif
 
 static uint64_t g_remote_login_sessions;
 static uint64_t g_remote_login_commands;
@@ -2094,21 +2097,23 @@ static xaios_status_t handle_mv(const char *src, const char *dst, char *output,
 
 static xaios_status_t handle_rm(const char *arg, char *output,
                               uint64_t output_capacity,
-                              uint64_t *output_bytes, int allow_dir) {
+                              uint64_t *output_bytes, int mode) {
   char resolved[XAIOS_MFS_PATH_MAX];
   xaios_mfs_stat_t stat;
   if (arg == 0 || arg[0] == '\0') {
     return command_fail(
         output, output_capacity, output_bytes,
-        allow_dir ? "rmdir: missing operand" : "rm: missing path");
+        mode == 1 ? "rmdir: missing operand" : "rm: missing path");
   }
   if (remote_path_resolve(g_remote_login_cwd, arg, resolved, sizeof(resolved)) !=
           XAIOS_OK ||
       mutable_fs_stat(resolved, &stat) != XAIOS_OK ||
-      (allow_dir ? stat.type != 1U : stat.type != 2U) ||
-      mutable_fs_delete(resolved) != XAIOS_OK) {
+      (mode == 0 && stat.type != 2U) ||
+      (mode == 1 && stat.type != 1U) ||
+      (mode == 2 ? mutable_fs_delete_tree(resolved)
+                 : mutable_fs_delete(resolved)) != XAIOS_OK) {
     return command_fail(output, output_capacity, output_bytes,
-                        allow_dir ? "rmdir: failed" : "rm: failed");
+                        mode == 1 ? "rmdir: failed" : "rm: failed");
   }
   output[0] = '\0';
   return XAIOS_OK;
@@ -3718,7 +3723,7 @@ static xaios_status_t handle_htop(const char *args, char *output,
         output, output_capacity, output_bytes, terminal_columns, terminal_rows,
         cpu_start, cpu_shown, cpu_total, before_cpu, after_ns, elapsed_ns,
         managed_pages, free_pages, user_process_active_count(),
-        user_process_failed_count(), rows, process_count, process_start,
+        user_process_current_failed_count(), rows, process_count, process_start,
         selected, sort_key, reverse, interactive, filter);
     (void)process_shown;
     kheap_free(before_runtime);
@@ -3736,7 +3741,7 @@ static xaios_status_t handle_htop(const char *args, char *output,
                     user_process_active_count());
   output_append(output, output_capacity, output_bytes, " failed=");
   output_append_u64(output, output_capacity, output_bytes,
-                    user_process_failed_count());
+                    user_process_current_failed_count());
   output_append(output, output_capacity, output_bytes, " sort=");
   output_append(output, output_capacity, output_bytes, htop_sort_name(sort_key));
   output_append(output, output_capacity, output_bytes, " reverse=");
@@ -3897,6 +3902,9 @@ static const remote_app_definition_t g_remote_apps[] = {
     {"agenttest", "/bin/agenttest",
      XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_AGENT | XAIOS_CAP_CPU_AI |
          XAIOS_CAP_ML},
+#if XAIOS_FAILURE_TEST_APP
+    {"app-fail", "/bin/app-fail", XAIOS_CAP_LOG | XAIOS_CAP_EXIT},
+#endif
 };
 
 static const remote_app_definition_t *remote_app_find(const char *command) {
@@ -4154,11 +4162,28 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
     return handle_mv(arg1, arg2, output, output_capacity, output_bytes);
   }
   if (string_equal(cmd, "rm") == 1U) {
-    if (has_more_args(args, arg_index) != 0) {
+    uint64_t rm_index = 0U;
+    char option[XAIOS_MFS_PATH_MAX];
+    if (token_next(args, &rm_index, option, sizeof(option)) != XAIOS_OK) {
+      return handle_rm("", output, output_capacity, output_bytes, 0);
+    }
+    int recursive = string_equal(option, "-r") == 1U ||
+                    string_equal(option, "-R") == 1U ||
+                    string_equal(option, "-rf") == 1U ||
+                    string_equal(option, "-fr") == 1U;
+    if (recursive != 0) {
+      if (token_next(args, &rm_index, arg1, sizeof(arg1)) != XAIOS_OK) {
+        return handle_rm("", output, output_capacity, output_bytes, 2);
+      }
+    } else {
+      copy_cstr(arg1, sizeof(arg1), option);
+    }
+    if (has_more_args(args, rm_index) != 0) {
       return command_fail(output, output_capacity, output_bytes,
                           "rm: too many arguments");
     }
-    return handle_rm(arg1, output, output_capacity, output_bytes, 0);
+    return handle_rm(arg1, output, output_capacity, output_bytes,
+                     recursive != 0 ? 2 : 0);
   }
   if (string_equal(cmd, "rmdir") == 1U) {
     if (has_more_args(args, arg_index) != 0) {
@@ -4195,8 +4220,10 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
   }
 
   klog("remote-login: command rejected reason=not-allowlisted\n");
-  return command_fail(output, output_capacity, output_bytes,
-                      "xaios-ssh: command not allowlisted");
+  output_append(output, output_capacity, output_bytes, "xaios: ");
+  output_append(output, output_capacity, output_bytes, cmd);
+  output_append(output, output_capacity, output_bytes, ": command not found\n");
+  return XAIOS_ERR_INVALID;
 }
 
 static xaios_status_t parse_and_execute_pipeline(const char *command,

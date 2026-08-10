@@ -32,8 +32,11 @@ IPv4/IPv6 fragment reassembly are in
 On normal boot, the service first requires an external IPv4 A-record response.
 It does not open TCP port 22 until that check and all SSH initialization stages
 succeed. The final serial screen prints the configured guest IPv4 and a verified
-listener state. Failure reports a stage-specific numeric error and retains the
-local capability-restricted command prompt without advertising SSH readiness.
+listener state. Failure reports a stage-specific numeric error without
+advertising SSH readiness. Password-enabled development images then require the
+same PBKDF2 admin credentials at `xaios login:` before exposing a local shell.
+Default, key-only and release images keep serial login locked and require SSH
+public-key authentication; there is no built-in console password.
 
 The server currently negotiates classical `curve25519-sha256` only; it does not
 yet implement an OpenSSH hybrid post-quantum KEX such as
@@ -67,6 +70,15 @@ htop-style color segments.
 Non-PTY calls remain one-shot plain
 snapshots for automation. Process kill and priority controls are not offered
 until XAIOS has a safe generic process-control ABI.
+
+A bare SSH PTY starts a stateful line-edited shell rather than a one-command
+facade. Its cwd and colored `admin@xaios:<cwd>$` prompt are isolated per
+connection, unknown commands produce a Unix-style diagnostic and nonzero exit
+status, and `exit`/`logout` close the channel cleanly. Basic file and directory
+commands include recursive tree rename/removal. `nano PATH` provides an
+alternate-screen editor with cursor movement, scrolling, insertion/deletion,
+save and dirty-exit confirmation. MutableFS v4 permits 128 KiB state files;
+interactive nano remains intentionally bounded to 32 KiB.
 
 Normal images start only `/init`, `/bin/service-manager`, and persistent
 `/bin/sshd`. They do not pre-run `hello`, `sysinfo`, `lstm-xor`, or the other
@@ -104,6 +116,7 @@ make qemu-network-suite
 make qemu-freebsd-network-suite
 make qemu-docker-network-suite
 make qemu-parallel-network-load
+make qemu-local-console-gate
 make qemu-model-sftp-gate
 make qemu-ssh-smoke
 make xaios-ssh-bridge

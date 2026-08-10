@@ -99,6 +99,7 @@ uint64_t user_process_running_count(void);
 uint64_t user_process_waiting_count(void);
 uint64_t user_process_exited_count(void);
 uint64_t user_process_failed_count(void);
+uint64_t user_process_current_failed_count(void);
 uint64_t user_process_reclaim_count(void);
 uint64_t user_process_scheduled_count(void);
 uint64_t user_process_wait_count(void);

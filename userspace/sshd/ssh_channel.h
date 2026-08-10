@@ -2,11 +2,13 @@
 #define SSH_CHANNEL_H
 
 #include <xaios/types.h>
+#include "nano_editor.h"
 #include "ssh_protocol.h"
 
 #define SSH_CHANNELS_PER_CONNECTION 2U
 #define SSH_CHANNEL_MAX 8U
-#define SSH_CHANNEL_PENDING_SIZE 8704U
+#define SSH_CHANNEL_PENDING_SIZE 32768U
+#define SSH_CHANNEL_SHELL_LINE_SIZE 256U
 #define SSH_CHANNEL_INITIAL_WINDOW 65536U
 #define SSH_CHANNEL_MAX_PACKET 10240U
 #define SSH_CHANNEL_SFTP_REQUEST_MAX SSH_MAX_PACKET_SIZE
@@ -43,9 +45,15 @@ typedef struct ssh_channel {
   uint32_t htop_filter_mode;
   uint32_t htop_help;
   uint32_t htop_filter_length;
+  uint32_t shell_active;
+  uint32_t shell_line_length;
+  uint32_t shell_ignore_lf;
+  uint32_t interactive_returns_to_shell;
   uint64_t htop_last_frame_ns;
   uint64_t htop_next_refresh_ns;
   char htop_filter[32];
+  char shell_line[SSH_CHANNEL_SHELL_LINE_SIZE];
+  nano_editor_t nano;
   uint32_t sftp_rx_used;
   uint8_t sftp_rx[SSH_CHANNEL_SFTP_BUFFER_SIZE];
   uint8_t pending[SSH_CHANNEL_PENDING_SIZE];

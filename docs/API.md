@@ -74,9 +74,14 @@ typedef struct xaios_mfs_stat_user {
 ```
 
 `XAIOS_FS_TYPE_FILE` and `XAIOS_FS_TYPE_DIRECTORY` are the public stat type
-constants. File sizes and positional offsets are unsigned 64-bit values. The
-legacy MutableFS backend remains limited to small state files; 64-bit API width
-does not remove that backend's capacity limit.
+constants. File sizes and positional offsets are unsigned 64-bit values.
+MutableFS v4 supports 128 nodes, 64 open handles, paths up to 255 bytes,
+128 KiB per file and 2 MiB of data extents. It atomically renames complete
+non-empty directory trees after collision/path validation. The recursive shell
+forms `rm -r`, `rm -R`, `rm -rf`, and `rm -fr` remove trees; the filesystem
+delete syscall itself still removes one file or empty directory. Valid v2/v3
+volumes are migrated to v4 during mount. These remain bounded state-filesystem
+limits; the 64-bit API and separate ModelFS are used for large model packages.
 
 ## Networking
 
@@ -141,6 +146,12 @@ rechecks capability and requested role for every control operation. Legacy
 `xaiosctl status` output. `sysinfo` invokes the legacy diagnostic ELF on demand;
 operators should use `xaiosctl hardware` for structured discovered state.
 
+An SSH `shell` request requires a PTY and starts a stateful line-edited shell.
+Each connection has an independent cwd and `admin@xaios:<cwd>$` prompt;
+Backspace, `Ctrl-C`, `clear`, `exit`, `logout`, and `quit` have interactive
+semantics. Unknown commands print `xaios: NAME: command not found` and return a
+nonzero SSH exit status. Exec requests remain one-command operations.
+
 Remote shell and SFTP access deny the private host key, password database,
 legacy authorized-key source and `/state/control` subtree. This path guard
 applies even to administrators. See [`XAIOSCTL.md`](./XAIOSCTL.md) for the
@@ -152,7 +163,12 @@ claiming a host platform; operators should use `xaiosctl status`.
 
 Pipe (`|`) and output redirection (`>`) are supported for chaining commands.
 
-`nano` is a bounded text editor for mutable-filesystem paths:
+`nano` is a bounded text editor for mutable-filesystem paths. On an SSH PTY or
+the authenticated local console, `nano PATH` opens an alternate-screen editor
+with terminal-size rendering, arrow movement, scrolling, Backspace/Delete,
+Enter, `Ctrl-A`, `Ctrl-E`, `Ctrl-O` save, and `Ctrl-X` exit with a dirty-buffer
+confirmation. Protected credential and control paths are denied. For scripts
+and non-PTY exec requests the immediate command forms remain available:
 
 ```text
 nano PATH
@@ -164,9 +180,10 @@ nano PATH --replace LINE TEXT
 nano PATH --delete LINE
 ```
 
-Text arguments decode `\n`, `\r`, `\t`, and `\\`. Files must fit within the
-3,071-byte editor capacity; oversized input is rejected without truncation.
-Edits are saved immediately by the modifying commands.
+Text arguments decode `\n`, `\r`, `\t`, and `\\`. Interactive editing is
+limited to 32 KiB. Immediate command-mode edits use a smaller 3,071-byte work
+buffer. Oversized input is rejected without truncation, and modifying
+command-mode operations save immediately.
 
 `htop` emits a sampled kernel CPU, memory, and process snapshot:
 

@@ -25,7 +25,7 @@ MARKERS = [
     "XAIOS kernel starting",
     "gic: discovery self-test skipped no compatible controller",
     "rtc: self-test skipped no compatible clock",
-    "boot-memory: read/write/async/flush self-test passed",
+    "boot-memory: read-only/async/flush self-test passed",
     "initramfs: mounted rofs",
     "/init: service setup complete",
 ]

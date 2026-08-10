@@ -117,6 +117,57 @@ if grep -q 'authentication-must-not-run' "$workdir/wrong-password.stdout"; then
 fi
 printf 'PASS: wrong SSH password rejected\n'
 
+if ! printf 'pwd\rcd /tmp\rpwd\rexit\r' | \
+    ssh -tt "${key_ssh_options[@]}" "admin@$host" \
+      >"$workdir/interactive-shell.ansi" 2>"$workdir/interactive-shell.err"; then
+  cat "$workdir/interactive-shell.err" >&2
+  fail "interactive SSH shell failed"
+fi
+python3 - "$workdir/interactive-shell.ansi" <<'PY'
+import pathlib
+import re
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_bytes()
+visible = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", text).replace(b"\r", b"")
+if b"admin@xaios:/$ " not in visible or b"admin@xaios:/tmp$ " not in visible:
+    raise SystemExit(f"cwd-aware prompts missing from interactive shell: {visible!r}")
+PY
+printf 'PASS: interactive SSH shell line editing and cwd-aware prompt\n'
+
+run_ssh 'mkdir /tmp/tree-source'
+run_ssh 'mkdir /tmp/tree-source/nested'
+run_ssh 'write /tmp/tree-source/nested/value.txt recursive-tree-ok'
+run_ssh 'mv /tmp/tree-source /tmp/tree-renamed'
+test "$(run_ssh 'cat /tmp/tree-renamed/nested/value.txt')" = "recursive-tree-ok" \
+  || fail "renamed directory tree lost file content"
+run_ssh 'rm -r /tmp/tree-renamed'
+if run_ssh 'stat /tmp/tree-renamed' >"$workdir/tree-stat.out" 2>&1; then
+  fail "recursive removal left the directory tree present"
+fi
+printf 'PASS: recursive directory rename and removal\n'
+
+if ! printf 'first\r\nsecond\033[H\033[3~\033[F!\017\030' | \
+    ssh -tt "${key_ssh_options[@]}" "admin@$host" \
+      'nano /tmp/interactive-nano.txt' \
+      >"$workdir/nano.ansi" 2>"$workdir/nano.err"; then
+  cat "$workdir/nano.err" >&2
+  fail "interactive nano session failed"
+fi
+grep -Fq $'\033[?1049h' "$workdir/nano.ansi" \
+  || fail "nano did not enter the alternate terminal screen"
+test "$(run_ssh 'cat /tmp/interactive-nano.txt')" = "first
+econd!" || fail "nano did not preserve CRLF or Home/Delete/End editing"
+run_ssh 'rm /tmp/interactive-nano.txt'
+printf 'PASS: interactive nano edit, save, and exit\n'
+
+if run_ssh 'definitely-not-an-app' >"$workdir/not-found.out" 2>&1; then
+  fail "unknown command returned success"
+fi
+grep -q '^xaios: definitely-not-an-app: command not found$' \
+  "$workdir/not-found.out" || fail "unknown command error is not Unix-like"
+printf 'PASS: unknown command reports command-not-found and nonzero status\n'
+
 run_ssh 'xaiosctl version --json --node local --timeout 5s' \
   >"$workdir/xaiosctl-version.json"
 run_ssh 'xaiosctl status --json' >"$workdir/xaiosctl-status.json"

@@ -249,6 +249,7 @@ void kmain(const xaios_boot_info_t *boot) {
   klog("VMM translation test passed\n");
   gic_init_qemu_virt();
   gic_self_test();
+  boot_ui_update(48U, "platform devices", "boot storage", 3U);
 
   xaios_nvme_self_test_result_t nvme_result;
   xaios_status_t nvme_status = nvme_self_test(&nvme_result);
@@ -266,6 +267,7 @@ void kmain(const xaios_boot_info_t *boot) {
   initramfs_self_test();
   persistence_self_test();
   mutable_fs_self_test();
+  boot_ui_update(52U, "boot storage", "persistent filesystem", 3U);
   /* The QEMU runner pins the persistent disk to VirtIO-MMIO slot 1. */
   xaios_status_t persistent_status = mutable_fs_mount_persistent(1);
   if (persistent_status == XAIOS_OK) {
@@ -291,6 +293,7 @@ void kmain(const xaios_boot_info_t *boot) {
   }
   kassert(vfs_mount_mutable_root() == XAIOS_OK);
   klog("vfs: MutableFS mounted at /\n");
+  boot_ui_update(55U, "persistent filesystem", "model and system volumes", 2U);
   xaios_status_t model_volume_status = vfs_mount_model_volume(4U);
   if (model_volume_status == XAIOS_OK) {
     vfs_model_self_test();

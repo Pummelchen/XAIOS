@@ -92,6 +92,23 @@ case "$BOOT_TEST_APPS" in
     exit 2
     ;;
 esac
+BOOT_VERBOSE="${XAIOS_BOOT_VERBOSE:-0}"
+case "$BOOT_VERBOSE" in
+  0|1) ;;
+  *)
+    printf '%s\n' "error: XAIOS_BOOT_VERBOSE must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
+FAILURE_TEST_APP="${XAIOS_FAILURE_TEST_APP:-0}"
+case "$FAILURE_TEST_APP" in
+  0) ;;
+  1) USER_APPS="$USER_APPS app-fail" ;;
+  *)
+    printf '%s\n' "error: XAIOS_FAILURE_TEST_APP must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
 PASSWORD_AUTH_CFLAG="-DXAIOS_PASSWORD_AUTH_AVAILABLE=0"
 if [ "${XAIOS_SSH_USERS_FILE:-}" != "" ]; then
   if [ "${XAIOS_SSH_PASSWORD_AUTH:-}" != "1" ]; then
@@ -300,7 +317,7 @@ if ! git -C "$ROOT_DIR" diff-index --quiet HEAD -- 2>/dev/null ||
    [ -n "$(git -C "$ROOT_DIR" ls-files --others --exclude-standard 2>/dev/null)" ]; then
   BUILD_IDENTIFIER="${BUILD_IDENTIFIER}-dirty"
 fi
-KERNEL_CFLAGS="$KERNEL_CFLAGS $PASSWORD_AUTH_CFLAG -DXAIOS_BOOT_TEST_APPS=$BOOT_TEST_APPS"
+KERNEL_CFLAGS="$KERNEL_CFLAGS $PASSWORD_AUTH_CFLAG -DXAIOS_BOOT_TEST_APPS=$BOOT_TEST_APPS -DXAIOS_BOOT_VERBOSE=$BOOT_VERBOSE -DXAIOS_FAILURE_TEST_APP=$FAILURE_TEST_APP"
 
 compile_kernel() {
   source_path="$1"
@@ -716,7 +733,7 @@ done
 printf '%s\n' "Building userspace /bin/sshd ELF..."
 SSHD_RESPONSE_FILE="$INIT_BUILD_DIR/sshd-objects.rsp"
 : > "$SSHD_RESPONSE_FILE"
-for sshd_src in sshd.c ssh_crypto.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_host_key.c ssh_connection.c sftp_server.c; do
+for sshd_src in sshd.c ssh_crypto.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_host_key.c ssh_connection.c sftp_server.c nano_editor.c; do
   sshd_obj="$INIT_BUILD_DIR/sshd-${sshd_src%.c}.o"
   sshd_opt=""
   if [ "$sshd_src" = "sshd.c" ]; then
@@ -782,7 +799,7 @@ printf '%s\n' "Created $IMAGE_PATH"
 
 printf '%s\n' "Creating VirtIO block test image: $TEST_BLOCK_IMAGE"
 rm -f "$TEST_BLOCK_IMAGE"
-dd if=/dev/zero of="$TEST_BLOCK_IMAGE" bs=512 count=4096 status=none
+dd if=/dev/zero of="$TEST_BLOCK_IMAGE" bs=512 count=8192 status=none
 printf 'XAIOS-VIRTIO-BLOCK-TEST\n' | dd of="$TEST_BLOCK_IMAGE" bs=512 count=1 conv=notrunc status=none
 "$PYTHON3" "$ROOT_DIR/scripts/create-initfs.py" \
   "$TEST_BLOCK_IMAGE" \

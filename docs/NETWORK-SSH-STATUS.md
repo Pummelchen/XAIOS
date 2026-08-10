@@ -89,6 +89,15 @@ coverage. See [`UNIX-COMPATIBILITY.md`](./UNIX-COMPATIBILITY.md).
 
 The machine-readable result is `build/qemu-docker-network-suite.json`. Serial
 logs and the direct-network packet capture are also generated under `build/`.
+This long-running interoperability suite builds with `XAIOS_BOOT_VERBOSE=1` so
+an early entropy or storage timeout remains attributable in its saved logs;
+normal in-place boot UI behavior is covered separately by smoke and console
+gates.
+The harness permits at most two nonfatal QEMU startup retries and retains every
+failed serial log because macOS TCG/EDK2 can intermittently stop advancing.
+Guest panic or assertion markers fail immediately, and a repeatable timeout
+still exhausts the bounded retry and fails the gate. Reboot persistence waits
+for the same SSH-ready marker as first boot in both normal and verbose modes.
 
 ### Dual-origin one-guest load gate
 
@@ -251,7 +260,8 @@ If a rebuilt guest intentionally rotates its host key, remove only the matching
 entry from `build/local-ssh/known_hosts` after verifying the rotation.
 
 Do not package development private keys or plaintext passwords into the image.
-The mutable filesystem currently limits each file to 8,192 bytes.
+MutableFS v4 limits a state file to 131,072 bytes; interactive `nano` accepts
+at most 32 KiB so its complete editing buffer remains bounded.
 
 ## Remaining Non-QEMU Gates
 

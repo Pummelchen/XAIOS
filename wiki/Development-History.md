@@ -1,5 +1,31 @@
 # Development History
 
+## 2026-08-10 - authenticated shells, nano and MutableFS v4
+
+- Replaced the SSH shell request facade with a stateful PTY shell whose prompt,
+  cwd, line editing, command status and logout behavior are isolated per
+  connection; kept exec requests as one-command operations.
+- Added PBKDF2-authenticated local-console login for explicitly enabled
+  development images and fail-closed serial policy for key-only/release images.
+- Added a shared alternate-screen `nano` editor for SSH and local terminals,
+  including cursor movement, scrolling, save and dirty-exit confirmation.
+- Expanded MutableFS to v4 with 128 nodes, 64 handles, 128 KiB files and 2 MiB
+  of extents, plus data-preserving v2/v3 migration and atomic non-empty tree
+  rename. Physical power-loss recovery during migration remains a separate
+  validation requirement.
+- Added recursive shell removal, Unix-style unknown-command errors and an
+  opt-in intentional-failure application gate that verifies exit reporting,
+  process reaping and zero current failures in `htop`.
+- Extended the Debian 13 interoperability suite and added a serial-console gate
+  for wrong/correct login, filesystem commands, shell survival and logout.
+- Made the UEFI initramfs block device immutable and corrected the block
+  self-test so it cannot overwrite a live executable sector; writable-device
+  verification now restores the original test sector.
+- Separated the deterministic VirtIO fixture's writable diagnostic sectors
+  from its immutable initramfs payload. Payloads now start at sector 4096 while
+  block, persistence and MutableFS probes remain below sector 3186, preventing
+  a successful first boot from corrupting the next boot.
+
 ## 2026-08-10 — x86 common-service QEMU parity
 
 - Replaced the early-only x86 image with the common kernel and complete

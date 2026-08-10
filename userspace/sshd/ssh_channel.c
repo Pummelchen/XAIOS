@@ -3,6 +3,7 @@
 #include "ssh_protocol.h"
 #include "ssh_utils.h"
 #include "sftp_server.h"
+#include "nano_editor.h"
 #include "sshd.h"
 #include <xaios_control_client.h>
 #include <xaios_user.h>
@@ -37,6 +38,29 @@ enum {
 
 static ssh_channel_t g_channels[SSH_CHANNEL_MAX];
 static uint32_t g_next_local_id = 1;
+static char g_nano_frame[SSH_CHANNEL_PENDING_SIZE];
+
+static int shell_send_prompt(ssh_channel_t *ch);
+
+static int nano_command_argument(const char *command, char *argument,
+                                 uint32_t capacity) {
+  uint32_t i = 0U;
+  uint32_t used = 0U;
+  while (command[i] == ' ' || command[i] == '\t') ++i;
+  while (command[i] != '\0' && command[i] != ' ' && command[i] != '\t') ++i;
+  while (command[i] == ' ' || command[i] == '\t') ++i;
+  if (command[i] == '\0' || command[i] == '-') return -1;
+  while (command[i] != '\0' && command[i] != ' ' && command[i] != '\t' &&
+         command[i] != '\r' && command[i] != '\n') {
+    if (used + 1U >= capacity) return -1;
+    argument[used++] = command[i++];
+  }
+  while (command[i] == ' ' || command[i] == '\t' || command[i] == '\r' ||
+         command[i] == '\n') ++i;
+  if (command[i] != '\0') return -1;
+  argument[used] = '\0';
+  return 0;
+}
 
 void ssh_channel_init(void) {
   ssh_mem_zero(g_channels, sizeof(g_channels));
@@ -687,10 +711,14 @@ static int htop_finish(ssh_channel_t *ch) {
   ch->htop_active = 0U;
   ch->htop_help = 0U;
   ch->htop_filter_mode = 0U;
-  ch->close_after_flush = 1U;
   if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
                             (const uint8_t *)restore,
                             (uint32_t)(sizeof(restore) - 1U)) != 0) return -1;
+  if (ch->interactive_returns_to_shell != 0U && ch->shell_active != 0U) {
+    ch->interactive_returns_to_shell = 0U;
+    return shell_send_prompt(ch);
+  }
+  ch->close_after_flush = 1U;
   return flush_channel(ch);
 }
 
@@ -928,6 +956,270 @@ static int htop_handle_input(ssh_channel_t *ch, const uint8_t *data,
   return 0;
 }
 
+static int shell_send_prompt(ssh_channel_t *ch) {
+  char cwd[256];
+  char prompt[320];
+  u64 cwd_size = 0U;
+  uint32_t used = 0U;
+  static const char prefix[] = "\033[1;32madmin@xaios\033[0m:\033[1;34m";
+  static const char suffix[] = "\033[0m$ ";
+  if (ch == 0 || ch->shell_active == 0U) return -1;
+  if (xaios_remote_login_session(ch->owner_sockfd, "admin", "pwd", cwd,
+                                 sizeof(cwd), &cwd_size) < 0 ||
+      cwd_size == 0U || cwd_size >= sizeof(cwd)) {
+    cwd[0] = '/';
+    cwd[1] = '\0';
+    cwd_size = 1U;
+  }
+  while (cwd_size != 0U &&
+         (cwd[cwd_size - 1U] == '\n' || cwd[cwd_size - 1U] == '\r')) {
+    --cwd_size;
+  }
+  if (sizeof(prefix) - 1U + cwd_size + sizeof(suffix) - 1U >
+      sizeof(prompt)) {
+    return -1;
+  }
+  ssh_mem_copy(prompt + used, prefix, sizeof(prefix) - 1U);
+  used += sizeof(prefix) - 1U;
+  ssh_mem_copy(prompt + used, cwd, (uint32_t)cwd_size);
+  used += (uint32_t)cwd_size;
+  ssh_mem_copy(prompt + used, suffix, sizeof(suffix) - 1U);
+  used += sizeof(suffix) - 1U;
+  return ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                               (const uint8_t *)prompt, used);
+}
+
+static int shell_start_htop(ssh_channel_t *ch, char *command) {
+  char output[8192];
+  u64 out_size = 0U;
+  static const char enter_screen[] = "\033[?1049h";
+  if (prepare_terminal_command(ch, command, SSH_CHANNEL_SHELL_LINE_SIZE) != 0) {
+    return -1;
+  }
+  int result = execute_admin_command((int)ch->owner_sockfd, command, output,
+                                     sizeof(output), &out_size);
+  if (result < 0 || out_size == 0U || out_size > sizeof(output)) {
+    if (out_size != 0U &&
+        ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                              (const uint8_t *)output,
+                              (uint32_t)out_size) != 0) {
+      return -1;
+    }
+    return shell_send_prompt(ch);
+  }
+  htop_initialize(ch, command);
+  ch->interactive_returns_to_shell = 1U;
+  if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                            (const uint8_t *)enter_screen,
+                            (uint32_t)(sizeof(enter_screen) - 1U)) != 0 ||
+      ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                            (const uint8_t *)output,
+                            (uint32_t)out_size) != 0) {
+    return -1;
+  }
+  uint64_t now_ns = xaios_clock_nanos();
+  htop_frame_sent(ch, now_ns);
+  ch->htop_next_refresh_ns =
+      now_ns + (uint64_t)ch->htop_refresh_ms * UINT64_C(1000000);
+  return 0;
+}
+
+static int nano_render_frame(ssh_channel_t *ch) {
+  uint32_t frame_size = 0U;
+  if (nano_editor_render(&ch->nano, g_nano_frame, sizeof(g_nano_frame),
+                         &frame_size) != 0 ||
+      frame_size == 0U) {
+    return -1;
+  }
+  return ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                               (const uint8_t *)g_nano_frame, frame_size);
+}
+
+static int nano_finish(ssh_channel_t *ch, uint32_t status) {
+  static const char restore[] = "\033[0m\033[?25h\033[?1049l";
+  ch->nano.active = 0U;
+  ch->exit_status = status;
+  if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                            (const uint8_t *)restore,
+                            (uint32_t)(sizeof(restore) - 1U)) != 0) {
+    return -1;
+  }
+  if (ch->interactive_returns_to_shell != 0U && ch->shell_active != 0U) {
+    ch->interactive_returns_to_shell = 0U;
+    return shell_send_prompt(ch);
+  }
+  ch->close_after_flush = 1U;
+  return flush_channel(ch);
+}
+
+static int nano_start(ssh_channel_t *ch, const char *command,
+                      uint32_t return_to_shell) {
+  char argument[NANO_EDITOR_PATH_MAX];
+  char cwd[NANO_EDITOR_PATH_MAX];
+  u64 cwd_size = 0U;
+  static const char enter[] = "\033[?1049h";
+  if (nano_command_argument(command, argument, sizeof(argument)) != 0) {
+    static const char usage[] = "nano: usage: nano FILE\r\n";
+    if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                              (const uint8_t *)usage,
+                              (uint32_t)(sizeof(usage) - 1U)) != 0) {
+      return -1;
+    }
+    return return_to_shell != 0U ? shell_send_prompt(ch) : nano_finish(ch, 1U);
+  }
+  if (xaios_remote_login_session(ch->owner_sockfd, "admin", "pwd", cwd,
+                                 sizeof(cwd), &cwd_size) < 0 ||
+      cwd_size == 0U || cwd_size >= sizeof(cwd)) {
+    return -1;
+  }
+  while (cwd_size != 0U &&
+         (cwd[cwd_size - 1U] == '\n' || cwd[cwd_size - 1U] == '\r')) {
+    cwd[--cwd_size] = '\0';
+  }
+  if (nano_editor_open(&ch->nano, argument, cwd, ch->terminal_columns,
+                       ch->terminal_rows) != 0) {
+    char error[160];
+    uint32_t used = 0U;
+    static const char prefix[] = "nano: ";
+    ssh_mem_copy(error + used, prefix, sizeof(prefix) - 1U);
+    used += sizeof(prefix) - 1U;
+    uint32_t status_length = ssh_str_len(ch->nano.status);
+    if (status_length > sizeof(error) - used - 2U) {
+      status_length = sizeof(error) - used - 2U;
+    }
+    ssh_mem_copy(error + used, ch->nano.status, status_length);
+    used += status_length;
+    error[used++] = '\r';
+    error[used++] = '\n';
+    if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                              (const uint8_t *)error, used) != 0) {
+      return -1;
+    }
+    if (return_to_shell != 0U) return shell_send_prompt(ch);
+    ch->exit_status = 1U;
+    ch->close_after_flush = 1U;
+    return flush_channel(ch);
+  }
+  ch->interactive_returns_to_shell = return_to_shell;
+  if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                            (const uint8_t *)enter,
+                            (uint32_t)(sizeof(enter) - 1U)) != 0) {
+    return -1;
+  }
+  return nano_render_frame(ch);
+}
+
+static int nano_handle_input(ssh_channel_t *ch, const uint8_t *data,
+                             uint32_t length) {
+  uint32_t should_exit = 0U;
+  if (nano_editor_input(&ch->nano, data, length, &should_exit) != 0) return -1;
+  if (should_exit != 0U) return nano_finish(ch, 0U);
+  return nano_render_frame(ch);
+}
+
+static int shell_execute_line(ssh_channel_t *ch) {
+  char output[8192];
+  u64 out_size = 0U;
+  ch->shell_line[ch->shell_line_length] = '\0';
+  if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                            (const uint8_t *)"\r\n", 2U) != 0) {
+    return -1;
+  }
+  if (ch->shell_line_length == 0U) return shell_send_prompt(ch);
+  if (ssh_str_eq(ch->shell_line, "exit") ||
+      ssh_str_eq(ch->shell_line, "logout") ||
+      ssh_str_eq(ch->shell_line, "quit")) {
+    (void)xaios_remote_login_session_close(ch->owner_sockfd);
+    ch->shell_active = 0U;
+    ch->exit_status = 0U;
+    ch->close_after_flush = 1U;
+    return flush_channel(ch);
+  }
+  if (command_token_equal(ch->shell_line, "htop") != 0) {
+    ch->shell_line_length = 0U;
+    return shell_start_htop(ch, ch->shell_line);
+  }
+  if (command_token_equal(ch->shell_line, "nano") != 0 &&
+      nano_command_argument(ch->shell_line, output, sizeof(output)) == 0) {
+    ch->shell_line_length = 0U;
+    return nano_start(ch, ch->shell_line, 1U);
+  }
+  int result = execute_admin_command((int)ch->owner_sockfd, ch->shell_line,
+                                     output, sizeof(output), &out_size);
+  if (out_size != 0U &&
+      ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                            (const uint8_t *)output,
+                            (uint32_t)out_size) != 0) {
+    return -1;
+  }
+  if (result < 0 && out_size == 0U) {
+    static const char failed[] = "xaios: command execution failed\r\n";
+    if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                              (const uint8_t *)failed,
+                              (uint32_t)(sizeof(failed) - 1U)) != 0) {
+      return -1;
+    }
+  }
+  ch->shell_line_length = 0U;
+  return shell_send_prompt(ch);
+}
+
+static int shell_handle_input(ssh_channel_t *ch, const uint8_t *data,
+                              uint32_t length) {
+  for (uint32_t i = 0U; i < length; ++i) {
+    uint8_t value = data[i];
+    if (value == '\n' && ch->shell_ignore_lf != 0U) {
+      ch->shell_ignore_lf = 0U;
+      continue;
+    }
+    ch->shell_ignore_lf = 0U;
+    if (value == '\r' || value == '\n') {
+      ch->shell_ignore_lf = value == '\r' ? 1U : 0U;
+      if (shell_execute_line(ch) != 0) return -1;
+      if (ch->shell_active == 0U) return 0;
+      if (ch->htop_active != 0U) {
+        return i + 1U < length
+                   ? htop_handle_input(ch, data + i + 1U, length - i - 1U)
+                   : 0;
+      }
+      if (ch->nano.active != 0U) {
+        return i + 1U < length
+                   ? nano_handle_input(ch, data + i + 1U, length - i - 1U)
+                   : 0;
+      }
+    } else if (value == 8U || value == 127U) {
+      if (ch->shell_line_length != 0U) {
+        --ch->shell_line_length;
+        if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                                  (const uint8_t *)"\b \b", 3U) != 0) {
+          return -1;
+        }
+      }
+    } else if (value == 3U) {
+      ch->shell_line_length = 0U;
+      if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                                (const uint8_t *)"^C\r\n", 4U) != 0 ||
+          shell_send_prompt(ch) != 0) {
+        return -1;
+      }
+    } else if (value >= 32U && value <= 126U &&
+               ch->shell_line_length + 1U < sizeof(ch->shell_line)) {
+      ch->shell_line[ch->shell_line_length++] = (char)value;
+      if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                                &value, 1U) != 0) {
+        return -1;
+      }
+    } else if (value >= 32U && value <= 126U) {
+      static const char bell[] = "\a";
+      if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                                (const uint8_t *)bell, 1U) != 0) {
+        return -1;
+      }
+    }
+  }
+  return 0;
+}
+
 int ssh_channel_tick(uint64_t now_ns) {
   for (uint32_t i = 0U; i < SSH_CHANNEL_MAX; ++i) {
     ssh_channel_t *ch = &g_channels[i];
@@ -986,6 +1278,10 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
   if (ssh_str_eq(request_type, "window-change")) {
     int valid = parse_window_change(ch, pkt, data_start) == 0;
     if (valid && ch->htop_active != 0U) ch->htop_next_refresh_ns = 0U;
+    if (valid && ch->nano.active != 0U) {
+      nano_editor_resize(&ch->nano, ch->terminal_columns, ch->terminal_rows);
+      if (nano_render_frame(ch) != 0) return -1;
+    }
     if (want_reply) {
       if (send_channel_reply(sockfd, ch->remote_id, valid) != 0) return -1;
     }
@@ -1001,10 +1297,15 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
   }
 
   if (ssh_str_eq(request_type, "shell")) {
+    int valid = ch->pty_requested != 0U && ch->shell_active == 0U;
     if (want_reply) {
-      if (send_channel_reply(sockfd, ch->remote_id, 1) != 0) return -1;
+      if (send_channel_reply(sockfd, ch->remote_id, valid) != 0) return -1;
     }
-    return 0;
+    if (!valid) return -1;
+    ch->shell_active = 1U;
+    ch->shell_line_length = 0U;
+    ch->shell_ignore_lf = 0U;
+    return shell_send_prompt(ch);
   }
 
   if (ssh_str_eq(request_type, "exec")) {
@@ -1024,11 +1325,16 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
       return -1;
     }
     char command[4096];
+    char nano_argument[NANO_EDITOR_PATH_MAX];
     ssh_mem_copy(command, pkt->data + data_start + 4, cmd_len);
     command[cmd_len] = '\0';
     int interactive_htop = ch->pty_requested != 0U &&
                            command_token_equal(command, "htop") != 0 &&
                            command_has_option(command, "--plain") == 0;
+    int interactive_nano =
+        ch->pty_requested != 0U && command_token_equal(command, "nano") != 0 &&
+        nano_command_argument(command, nano_argument,
+                              sizeof(nano_argument)) == 0;
     if (prepare_terminal_command(ch, command, sizeof(command)) != 0) {
       if (want_reply && send_channel_reply(sockfd, ch->remote_id, 0) != 0) {
         return -1;
@@ -1038,6 +1344,10 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
 
     if (want_reply) {
       if (send_channel_reply(sockfd, ch->remote_id, 1) != 0) return -1;
+    }
+
+    if (interactive_nano != 0) {
+      return nano_start(ch, command, 0U);
     }
 
     if (interactive_htop != 0) {
@@ -1261,6 +1571,14 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
       return htop_handle_input(ch, pkt->data + 9U, data_len);
     }
 
+    if (ch->nano.active != 0U) {
+      return nano_handle_input(ch, pkt->data + 9U, data_len);
+    }
+
+    if (ch->shell_active != 0U) {
+      return shell_handle_input(ch, pkt->data + 9U, data_len);
+    }
+
     /* Execute command via remote_login */
     char command[4096];
     if (data_len >= sizeof(command) ||
@@ -1307,6 +1625,14 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
       return flush_channel(ch);
     }
     if (ch->htop_active != 0U) return htop_finish(ch);
+    if (ch->nano.active != 0U) return nano_finish(ch, 0U);
+    if (ch->shell_active != 0U) {
+      (void)xaios_remote_login_session_close(ch->owner_sockfd);
+      ch->shell_active = 0U;
+      ch->exit_status = 0U;
+      ch->close_after_flush = 1U;
+      return flush_channel(ch);
+    }
     return 0;
   }
 

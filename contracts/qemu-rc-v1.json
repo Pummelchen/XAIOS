@@ -295,7 +295,7 @@
     "block_size": 512,
     "max_files": 32,
     "path_max": 64,
-    "data_offset": 4096,
+    "data_offset": 2097152,
     "flags": ["read_only"],
     "entry_type": "file",
     "entry_flags": ["executable", "manifest"],

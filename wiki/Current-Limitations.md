@@ -20,6 +20,9 @@ documents, and the QEMU release-candidate contract.
   unvalidated. QEMU parity is not a physical support claim.
 - Physical Apple, Intel desktop, Xeon, SMMU/IOMMU, NVMe, NIC, NUMA, many-core,
   thermal, power, and performance evidence is not present.
+- The macOS TCG/EDK2 harness permits at most two nonfatal startup retries and
+  saves each failed serial log. Guest panic/assertion markers are never retried.
+  This is emulator robustness handling, not physical boot evidence.
 
 ## Networking and SSH
 
@@ -28,8 +31,9 @@ documents, and the QEMU release-candidate contract.
   independent security audit.
 - The normal QEMU boot requires an external IPv4 A-record response before SSH
   binds. This checks the configured gateway/DNS path only; it is not a general
-  Internet-health check. Failure leaves the capability-restricted local serial
-  prompt available and reports a numeric startup error.
+  Internet-health check. Failure reports a numeric startup error. A local shell
+  is available only after PBKDF2 authentication in explicitly password-enabled
+  development images; default, key-only and release consoles stay locked.
 - The SSH service deliberately supports four transports and two active
   channels per transport. Fleet-scale identity, audit, replay, and connection
   policy remains unresolved.
@@ -64,6 +68,10 @@ documents, and the QEMU release-candidate contract.
 - ModelFS activation and MutableFS audit persistence are separate durability
   domains. A post-publication audit failure cannot roll back an already
   published active generation.
+- MutableFS v4 is intentionally bounded to 128 nodes, 64 open handles, 128 KiB
+  files and 2 MiB of data space. Interactive `nano` is further bounded to a
+  32 KiB editing buffer. This is suitable for OS state and small user files,
+  not general bulk storage or model weights.
 
 ## Administration and security
 

@@ -49,12 +49,20 @@ explicit experimental override (`XAIOS_QEMU_ACCEL=hvf`) because current
 QEMU/HVF exception handling may abort instead of returning control to the guest.
 
 The normal image uses an in-place 0-100% boot display rather than scrolling
-diagnostic output. At completion it prints the configured IPv4 address, the
-verified SSH listener state, and a local `admin@xaios:/$` prompt. Enter commands
-directly in the QEMU terminal; Backspace, `Ctrl-C`, and `Ctrl-L` are supported.
-SSH port 22 is not bound until a bounded external IPv4 DNS lookup succeeds. If
-that check or SSH initialization fails, the screen reports a numeric error and
-keeps the local prompt available for diagnosis.
+diagnostic output. At completion it prints the configured IPv4 address and the
+verified SSH listener state. A development image built with an explicit PBKDF2
+user database and `XAIOS_SSH_PASSWORD_AUTH=1` presents `xaios login:`; after
+authentication its local `admin@xaios:<cwd>$` prompt supports Backspace,
+`Ctrl-C`, `Ctrl-L`, logout, filesystem commands and interactive `nano`.
+Default, key-only and release images keep serial login locked and require SSH
+public-key authentication instead of exposing a built-in local password. SSH
+port 22 is not bound until a bounded external IPv4 DNS lookup succeeds. A
+failure is reported with a numeric error and does not weaken the local-console
+authentication policy.
+
+Set `XAIOS_BOOT_VERBOSE=1` only when diagnosing boot failures. The image then
+keeps the progress markers in the serial log instead of using the in-place boot
+display; normal builds default to `0`.
 
 `make qemu-smmu-gate` additionally needs the test-only `iommu-testdev` from
 upstream QEMU commit `6ce361b02c825b4a12a9684c47342859ee967cb2`.
@@ -99,7 +107,8 @@ evidence. See [`VMWARE-FUSION.md`](./VMWARE-FUSION.md).
 | `make qemu-filesystem-gate` | Mutable filesystem operations |
 | `make qemu-network-suite` | Network stack (UDP/TCP) |
 | `make qemu-freebsd-network-suite` | FreeBSD 15.1 OpenSSH/SFTP/UDP Unix-reference interoperability |
-| `make qemu-docker-network-suite` | Linux OpenSSH/SFTP/UDP/IPv6 interoperability through Debian 13 |
+| `make qemu-docker-network-suite` | Debian 13 OpenSSH/SFTP/UDP/IPv6 interoperability plus MutableFS v3-to-v4 migration and reboot persistence |
+| `make qemu-local-console-gate` | Wrong/correct local login, stateful prompt, filesystem commands, command errors and logout |
 | `make qemu-cpu-ai-suite` | CPU-only AI runtime |
 | `make qemu-regression-suite` | Full regression suite |
 | `make qemu-benchmark` | QEMU correctness telemetry collection |

@@ -372,7 +372,7 @@ void persistence_self_test(void) {
   persistence_runtime_init();
   kassert(sizeof(xaios_persistence_disk_sector_t) <= PERSISTENCE_SECTOR_SIZE);
   kassert(PERSISTENCE_SECTOR < virtio_block_capacity_sectors());
-  klog("persistence: mutable state region sector=%lu sectors=1 read_only_rofs_boundary=sector1+\n",
+  klog("persistence: self-test scratch sector=%lu sectors=1 initramfs_payload_start=4096\n",
        PERSISTENCE_SECTOR);
   persistence_probe_existing_disk_state();
 

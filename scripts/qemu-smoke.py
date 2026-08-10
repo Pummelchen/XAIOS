@@ -26,7 +26,7 @@ TARGETS = [
     "git-workspace: self-test passed",
     "git-workspace: blob hash and diff self-test passed",
     "virtio-blk: read/write/error/reset self-test passed",
-    "persistence: mutable state region sector=3000 sectors=1",
+    "persistence: self-test scratch sector=3000 sectors=1 initramfs_payload_start=4096",
     "persistence: disk write sector=3000 version=1 records=5",
     "persistence: disk loaded sector=3000 version=1 records=5",
     "persistence: disk reload/rollback self-test passed snapshots=5 rollbacks=5 rejects=2 disk_writes=1 disk_loads=1 checksum_errors=0",

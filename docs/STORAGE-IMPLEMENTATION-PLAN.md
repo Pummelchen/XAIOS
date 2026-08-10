@@ -9,12 +9,14 @@ Starting source revision: `8ddefb26f3dbc366dc4402677a156cf235daed82`.
 The working tree already contained unrelated Phase 2 control-plane and network
 changes when this work began. They are preserved.
 
-## Verified starting state
+## Current state
 
-- MutableFS v2/v3 is the only writable filesystem. V3 has 64 fixed nodes, 256
-  512-byte data sectors, 16 inline block numbers per file, 8 open handles, and
-  an 8 KiB maximum file size. It is appropriate only for small configuration,
-  state, audit, and log records.
+- MutableFS v4 is the bounded writable state filesystem. It has 128 fixed
+  nodes, 4,096 512-byte data sectors, 256 inline block numbers per file,
+  64 open handles, 255-byte paths and a 128 KiB maximum file size. Valid v2/v3
+  volumes are migrated by relocating allocated extents before v4
+  metadata is published. It remains appropriate only for configuration, state,
+  audit, logs and small user files; model packages belong in ModelFS.
 - Initramfs is a separate read-only boot image with 32 fixed entries. It is not
   a model store.
 - The VirtIO block driver performs synchronous copied 512-byte operations. It
@@ -192,12 +194,17 @@ There is no generic force switch that bypasses boot-device protection.
 
 ## Compatibility and migration
 
-- MutableFS v2/v3 remains mounted for small state. Its bytes are never
-  interpreted as ModelFS.
+- MutableFS v4 remains mounted for small state. Its bytes are never interpreted
+  as ModelFS. The mount path recognizes valid v2/v3 metadata and performs the
+  explicit extent-relocating migration before writable v4 use.
+- QEMU verifies data preservation across completed v2/v3 migrations. Recovery
+  from power loss during the metadata-publication window still requires
+  physical-device fault testing and is not claimed by that gate.
 - ModelFS uses a separate GPT partition and normally a separate QEMU block
   image. Existing boot and state images remain valid.
-- Model weights cannot be migrated from MutableFS because its format cannot
-  contain them. Small state migration, if needed, is an explicit offline tool.
+- Model weights are not migrated from MutableFS because the state format is not
+  a model store. The built-in migration is restricted to valid v2/v3 state
+  volumes and rejects corrupt metadata instead of reinterpreting it.
 - Unknown required ModelFS feature bits prevent read-write mount. A compatible
   reader may mount older supported versions read-only.
 - Format upgrades require a new documented version and fault-injected migration

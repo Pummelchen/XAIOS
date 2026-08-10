@@ -78,9 +78,13 @@ After the VirtIO IPv4 stack is ready, the persistent service resolves an
 external A record through the configured DNS path before opening TCP port 22.
 Only a successful check permits SSH initialization. The completed screen prints
 the configured guest IPv4 address and either `SSH server: up and running` or a
-numeric startup error. In both cases the serial console remains at a functional
-`admin@xaios:/$` prompt backed by the same session-aware command parser used by
-SSH. This DNS round trip is a QEMU reachability gate, not proof that arbitrary
+numeric startup error. A password-enabled development image then presents
+`xaios login:` and authenticates the local console against the same PBKDF2 user
+database used by SSH. Key-only, default, and release images keep the serial
+console locked and direct administrators to SSH public-key authentication; no
+built-in local password exists. After login, the cwd-aware
+`admin@xaios:<path>$` prompt uses the same session-aware command parser as SSH.
+This DNS round trip is a QEMU reachability gate, not proof that arbitrary
 Internet destinations or physical networks are production-ready.
 
 ## Current implementation
@@ -130,6 +134,16 @@ Internet destinations or physical networks are production-ready.
   non-PTY output stays a plain one-shot snapshot for automation. The htop sample
   interval uses an interrupt-backed idle wait that is not charged as artificial
   100% housekeeping-core load.
+  A bare SSH PTY opens a stateful, line-edited shell with a per-connection cwd,
+  Unix-style prompt, useful command-not-found diagnostics, and nonzero command
+  status. MutableFS v4 provides files and directory trees with atomic recursive
+  rename and explicit recursive removal; it remains a bounded state filesystem
+  with 128 nodes, 128 KiB files, 64 open handles and 2 MiB of data space.
+  Existing valid v2/v3 volumes are migrated rather than silently reformatted.
+  `nano PATH` is an interactive alternate-screen editor over both the local
+  console and SSH PTYs, with cursor movement, scrolling, insert/delete,
+  save and dirty-exit confirmation. Its editable buffer is intentionally
+  limited to 32 KiB even though the filesystem accepts larger state files.
   Normal images start only `/init`, `/bin/service-manager`, and the persistent
   `/bin/sshd`; diagnostic applications are not run during boot. An administrator
   can invoke `hello`, `sysinfo`, `systest`, `smptest`, `nettest`, `lstm-xor`,

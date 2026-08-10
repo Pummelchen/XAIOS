@@ -14,7 +14,7 @@ gate establishes only the tested command or wire behavior.
 |---|---|
 | FreeBSD 15.1 AArch64 | Official checksum-pinned VM; OpenSSH public-key acceptance and rejection, `xaiosctl`, SFTP write/stat/read/rename/remove, interactive PTY ANSI `htop`, and UDP echo. |
 | macOS | Native OpenSSH/SFTP administration and one-guest parallel load coverage. |
-| Debian 13 | Independent Linux/OpenSSH cross-client coverage for password policy, rekey, administration, persistence, concurrency, interactive PTY `htop` and malformed network traffic. |
+| Debian 13 | Independent Linux/OpenSSH cross-client coverage for password policy, stateful shell prompts, interactive `nano`, recursive filesystem operations, command errors, rekey, administration, persistence, concurrency, interactive PTY `htop` and malformed network traffic. |
 
 Run the FreeBSD reference gate with:
 

@@ -15,16 +15,23 @@
 #define MFS_CHECKSUM_OFFSET UINT64_C(80)
 #define MFS_DATA_SECTORS 96U
 #define MFS_MAX_NODES 32U
-#define MFS_PATH_MAX 96U
+#define MFS_V3_PATH_MAX 96U
+#define MFS_PATH_MAX 256U
 #define MFS_FILE_MAX_BLOCKS 16U
 #define MFS_MAX_FILE_BYTES (MFS_FILE_MAX_BLOCKS * MFS_SECTOR_SIZE)
-#define MFS_MAX_OPEN_FILES 8U
 #define MFS_V3_METADATA_SECTORS 32U
 #define MFS_V3_DATA_SECTORS 256U
 #define MFS_V3_MAX_NODES 64U
 #define MFS_V3_FILE_MAX_BLOCKS 16U
 #define MFS_V3_MAX_FILE_BYTES (MFS_V3_FILE_MAX_BLOCKS * MFS_SECTOR_SIZE)
 #define MFS_V3_VERSION 3U
+#define MFS_V4_METADATA_SECTORS 384U
+#define MFS_V4_DATA_SECTORS 4096U
+#define MFS_V4_MAX_NODES 128U
+#define MFS_V4_FILE_MAX_BLOCKS 256U
+#define MFS_V4_MAX_FILE_BYTES (MFS_V4_FILE_MAX_BLOCKS * MFS_SECTOR_SIZE)
+#define MFS_V4_VERSION 4U
+#define MFS_MAX_OPEN_FILES 64U
 #define MFS_NODE_FREE 0U
 #define MFS_NODE_DIR 1U
 #define MFS_NODE_FILE 2U
@@ -35,7 +42,7 @@
 #define FNV1A64_OFFSET UINT64_C(14695981039346656037)
 #define FNV1A64_PRIME UINT64_C(1099511628211)
 
-typedef struct xaios_mfs_node {
+typedef struct xaios_mfs_node_v3 {
   uint32_t active;
   uint32_t snapshot_active;
   uint32_t type;
@@ -50,6 +57,24 @@ typedef struct xaios_mfs_node {
   uint16_t snapshot_block_count;
   uint16_t blocks[MFS_FILE_MAX_BLOCKS];
   uint16_t snapshot_blocks[MFS_FILE_MAX_BLOCKS];
+  char path[MFS_V3_PATH_MAX];
+} xaios_mfs_node_v3_t;
+
+typedef struct xaios_mfs_node {
+  uint32_t active;
+  uint32_t snapshot_active;
+  uint32_t type;
+  uint32_t snapshot_type;
+  uint64_t size;
+  uint64_t content_hash;
+  uint64_t generation;
+  uint64_t snapshot_size;
+  uint64_t snapshot_hash;
+  uint64_t snapshot_generation;
+  uint16_t block_count;
+  uint16_t snapshot_block_count;
+  uint16_t blocks[MFS_V4_FILE_MAX_BLOCKS];
+  uint16_t snapshot_blocks[MFS_V4_FILE_MAX_BLOCKS];
   char path[MFS_PATH_MAX];
 } xaios_mfs_node_t;
 
@@ -68,7 +93,7 @@ typedef struct xaios_mfs_disk {
   uint64_t committed_generation;
   uint64_t checksum;
   uint8_t block_bitmap[MFS_DATA_SECTORS];
-  xaios_mfs_node_t nodes[MFS_MAX_NODES];
+  xaios_mfs_node_v3_t nodes[MFS_MAX_NODES];
 } xaios_mfs_disk_t;
 
 typedef struct xaios_mfs_state {
@@ -85,9 +110,22 @@ typedef struct xaios_mfs_state {
   uint64_t generation;
   uint64_t committed_generation;
   uint64_t checksum;
-  uint8_t block_bitmap[MFS_V3_DATA_SECTORS];
-  xaios_mfs_node_t nodes[MFS_V3_MAX_NODES];
+  uint8_t block_bitmap[MFS_V4_DATA_SECTORS];
+  xaios_mfs_node_t nodes[MFS_V4_MAX_NODES];
 } xaios_mfs_state_t;
+
+typedef struct xaios_mfs_journal_v3 {
+  char magic[MFS_MAGIC_LEN];
+  uint32_t version;
+  uint32_t state;
+  uint32_t op;
+  uint32_t reserved;
+  uint64_t size;
+  uint64_t content_hash;
+  uint64_t checksum;
+  char path[MFS_V3_PATH_MAX];
+  uint8_t padding[368];
+} xaios_mfs_journal_v3_t;
 
 typedef struct xaios_mfs_journal {
   char magic[MFS_MAGIC_LEN];
@@ -99,7 +137,7 @@ typedef struct xaios_mfs_journal {
   uint64_t content_hash;
   uint64_t checksum;
   char path[MFS_PATH_MAX];
-  uint8_t padding[368];
+  uint8_t padding[208];
 } xaios_mfs_journal_t;
 
 typedef struct xaios_mfs_file_handle {
@@ -138,12 +176,17 @@ static uint64_t g_close_count;
 
 static uint64_t g_metadata_verified_checksum;
 
+static uint8_t g_metadata_buffer[MFS_V4_METADATA_SECTORS * MFS_SECTOR_SIZE];
+static uint8_t g_file_buffer[MFS_V4_MAX_FILE_BYTES];
+static char g_path_transaction[MFS_V4_MAX_NODES][MFS_PATH_MAX];
+
 static uint32_t g_active_metadata_sectors = MFS_METADATA_SECTORS;
 static uint32_t g_active_max_nodes = MFS_MAX_NODES;
 static uint32_t g_active_file_max_blocks = MFS_FILE_MAX_BLOCKS;
 static uint64_t g_active_max_file_bytes = MFS_MAX_FILE_BYTES;
 static uint32_t g_active_data_sectors = MFS_DATA_SECTORS;
 static uint32_t g_active_version = MFS_VERSION;
+static uint32_t g_active_path_max = MFS_V3_PATH_MAX;
 static virtio_block_handle_t *g_persistent_handle;
 static uint64_t g_persistent_mount_count;
 
@@ -182,6 +225,7 @@ static void set_active_v2(void) {
   g_active_max_file_bytes = MFS_MAX_FILE_BYTES;
   g_active_data_sectors = MFS_DATA_SECTORS;
   g_active_version = MFS_VERSION;
+  g_active_path_max = MFS_V3_PATH_MAX;
 }
 
 static void set_active_v3(void) {
@@ -191,6 +235,17 @@ static void set_active_v3(void) {
   g_active_max_file_bytes = MFS_V3_MAX_FILE_BYTES;
   g_active_data_sectors = MFS_V3_DATA_SECTORS;
   g_active_version = MFS_V3_VERSION;
+  g_active_path_max = MFS_V3_PATH_MAX;
+}
+
+static void set_active_v4(void) {
+  g_active_metadata_sectors = MFS_V4_METADATA_SECTORS;
+  g_active_max_nodes = MFS_V4_MAX_NODES;
+  g_active_file_max_blocks = MFS_V4_FILE_MAX_BLOCKS;
+  g_active_max_file_bytes = MFS_V4_MAX_FILE_BYTES;
+  g_active_data_sectors = MFS_V4_DATA_SECTORS;
+  g_active_version = MFS_V4_VERSION;
+  g_active_path_max = MFS_PATH_MAX;
 }
 
 static uint64_t active_journal_header_sector(void) {
@@ -331,11 +386,24 @@ static uint64_t fnv1a64(const void *buffer, uint64_t size) {
 }
 
 static uint64_t mfs_checksum(const void *data, uint64_t size) {
-  uint8_t temp[MFS_V3_METADATA_SECTORS * MFS_SECTOR_SIZE];
-  uint64_t copy_size = size < sizeof(temp) ? size : sizeof(temp);
-  bytes_copy(temp, data, copy_size);
-  bytes_zero(temp + MFS_CHECKSUM_OFFSET, sizeof(uint64_t));
-  return fnv1a64(temp, size);
+  const uint8_t *bytes = (const uint8_t *)data;
+  uint64_t hash = FNV1A64_OFFSET;
+  for (uint64_t i = 0; i < size; ++i) {
+    uint8_t value = (i >= MFS_CHECKSUM_OFFSET &&
+                     i < MFS_CHECKSUM_OFFSET + sizeof(uint64_t))
+                        ? 0U
+                        : bytes[i];
+    hash ^= value;
+    hash *= FNV1A64_PRIME;
+  }
+  return hash;
+}
+
+static int metadata_header_is_blank(void) {
+  for (uint32_t i = 0U; i < MFS_SECTOR_SIZE; ++i) {
+    if (g_metadata_buffer[i] != 0U) return 0;
+  }
+  return 1;
 }
 
 static uint64_t journal_checksum(xaios_mfs_journal_t *journal) {
@@ -374,7 +442,7 @@ static xaios_status_t validate_path(const char *path) {
   }
   uint32_t len = 0;
   uint32_t last_slash = 1;
-  for (uint32_t i = 0; i < MFS_PATH_MAX; ++i) {
+  for (uint32_t i = 0; i < g_active_path_max; ++i) {
     char c = path[i];
     if (c == '\0') {
       if (len == 0 || (len > 1U && last_slash != 0)) {
@@ -463,6 +531,57 @@ static xaios_mfs_node_t *find_free_node(void) {
   return 0;
 }
 
+static void import_legacy_node(xaios_mfs_node_t *node,
+                               const xaios_mfs_node_v3_t *legacy) {
+  bytes_zero(node, sizeof(*node));
+  node->active = legacy->active;
+  node->snapshot_active = legacy->snapshot_active;
+  node->type = legacy->type;
+  node->snapshot_type = legacy->snapshot_type;
+  node->size = legacy->size;
+  node->content_hash = legacy->content_hash;
+  node->generation = legacy->generation;
+  node->snapshot_size = legacy->snapshot_size;
+  node->snapshot_hash = legacy->snapshot_hash;
+  node->snapshot_generation = legacy->snapshot_generation;
+  node->block_count = legacy->block_count;
+  node->snapshot_block_count = legacy->snapshot_block_count;
+  bytes_copy(node->blocks, legacy->blocks, sizeof(legacy->blocks));
+  bytes_copy(node->snapshot_blocks, legacy->snapshot_blocks,
+             sizeof(legacy->snapshot_blocks));
+  for (uint32_t i = 0; i < MFS_V3_PATH_MAX; ++i) {
+    node->path[i] = legacy->path[i];
+    if (legacy->path[i] == '\0') {
+      return;
+    }
+  }
+  node->path[MFS_V3_PATH_MAX] = '\0';
+}
+
+static void export_legacy_node(xaios_mfs_node_v3_t *legacy,
+                               const xaios_mfs_node_t *node) {
+  bytes_zero(legacy, sizeof(*legacy));
+  legacy->active = node->active;
+  legacy->snapshot_active = node->snapshot_active;
+  legacy->type = node->type;
+  legacy->snapshot_type = node->snapshot_type;
+  legacy->size = node->size;
+  legacy->content_hash = node->content_hash;
+  legacy->generation = node->generation;
+  legacy->snapshot_size = node->snapshot_size;
+  legacy->snapshot_hash = node->snapshot_hash;
+  legacy->snapshot_generation = node->snapshot_generation;
+  legacy->block_count = node->block_count;
+  legacy->snapshot_block_count = node->snapshot_block_count;
+  bytes_copy(legacy->blocks, node->blocks, sizeof(legacy->blocks));
+  bytes_copy(legacy->snapshot_blocks, node->snapshot_blocks,
+             sizeof(legacy->snapshot_blocks));
+  for (uint32_t i = 0; i + 1U < MFS_V3_PATH_MAX && node->path[i] != '\0';
+       ++i) {
+    legacy->path[i] = node->path[i];
+  }
+}
+
 static xaios_status_t read_metadata(void) {
   uint8_t first_sector[MFS_SECTOR_SIZE];
   if (blk_read(MFS_START_SECTOR, first_sector, sizeof(first_sector)) != XAIOS_OK) {
@@ -470,86 +589,109 @@ static xaios_status_t read_metadata(void) {
   }
   uint32_t version = 0;
   bytes_copy(&version, first_sector + MFS_MAGIC_LEN, sizeof(version));
-  uint32_t sectors = (version == MFS_V3_VERSION) ? MFS_V3_METADATA_SECTORS
-                                                 : MFS_METADATA_SECTORS;
-  uint8_t raw[MFS_V3_METADATA_SECTORS * MFS_SECTOR_SIZE];
-  bytes_zero(raw, sizeof(raw));
-  bytes_copy(raw, first_sector, MFS_SECTOR_SIZE);
+  if (version == MFS_V4_VERSION) {
+    set_active_v4();
+  } else if (version == MFS_V3_VERSION) {
+    set_active_v3();
+  } else {
+    set_active_v2();
+  }
+  uint32_t sectors = g_active_metadata_sectors;
+  bytes_zero(g_metadata_buffer, sizeof(g_metadata_buffer));
+  bytes_copy(g_metadata_buffer, first_sector, MFS_SECTOR_SIZE);
   for (uint32_t i = 1; i < sectors; ++i) {
-    if (blk_read(MFS_START_SECTOR + i, raw + i * MFS_SECTOR_SIZE,
+    if (blk_read(MFS_START_SECTOR + i,
+                 g_metadata_buffer + i * MFS_SECTOR_SIZE,
                  MFS_SECTOR_SIZE) != XAIOS_OK) {
       return XAIOS_ERR_IO;
     }
   }
-  /* compute and store checksum over raw data before deserializing */
   uint64_t total_bytes = (uint64_t)sectors * MFS_SECTOR_SIZE;
-  g_metadata_verified_checksum = mfs_checksum(raw, total_bytes);
-  uint32_t disk_max_nodes = (version == MFS_V3_VERSION) ? MFS_V3_MAX_NODES
-                                                       : MFS_MAX_NODES;
-  uint32_t disk_bitmap = (version == MFS_V3_VERSION) ? MFS_V3_DATA_SECTORS
-                                                    : MFS_DATA_SECTORS;
+  g_metadata_verified_checksum = mfs_checksum(g_metadata_buffer, total_bytes);
+  bytes_zero(&g_mfs, sizeof(g_mfs));
   uint64_t p = 0;
-  bytes_copy(g_mfs.magic, raw + p, MFS_MAGIC_LEN); p += MFS_MAGIC_LEN;
-  bytes_copy(&g_mfs.version, raw + p, 4); p += 4;
-  bytes_copy(&g_mfs.sector_size, raw + p, 4); p += 4;
-  bytes_copy(&g_mfs.metadata_sectors, raw + p, 4); p += 4;
-  bytes_copy(&g_mfs.max_nodes, raw + p, 4); p += 4;
-  bytes_copy(&g_mfs.start_sector, raw + p, 8); p += 8;
-  bytes_copy(&g_mfs.journal_header_sector, raw + p, 8); p += 8;
-  bytes_copy(&g_mfs.journal_data_sector, raw + p, 8); p += 8;
-  bytes_copy(&g_mfs.data_start_sector, raw + p, 8); p += 8;
-  bytes_copy(&g_mfs.data_sectors, raw + p, 8); p += 8;
-  bytes_copy(&g_mfs.generation, raw + p, 8); p += 8;
-  bytes_copy(&g_mfs.committed_generation, raw + p, 8); p += 8;
-  bytes_copy(&g_mfs.checksum, raw + p, 8); p += 8;
-  bytes_copy(g_mfs.block_bitmap, raw + p, disk_bitmap); p += disk_bitmap;
-  for (uint32_t i = 0; i < disk_max_nodes; ++i) {
-    bytes_copy(&g_mfs.nodes[i], raw + p, sizeof(xaios_mfs_node_t));
-    p += sizeof(xaios_mfs_node_t);
+  bytes_copy(g_mfs.magic, g_metadata_buffer + p, MFS_MAGIC_LEN); p += MFS_MAGIC_LEN;
+  bytes_copy(&g_mfs.version, g_metadata_buffer + p, 4); p += 4;
+  bytes_copy(&g_mfs.sector_size, g_metadata_buffer + p, 4); p += 4;
+  bytes_copy(&g_mfs.metadata_sectors, g_metadata_buffer + p, 4); p += 4;
+  bytes_copy(&g_mfs.max_nodes, g_metadata_buffer + p, 4); p += 4;
+  bytes_copy(&g_mfs.start_sector, g_metadata_buffer + p, 8); p += 8;
+  bytes_copy(&g_mfs.journal_header_sector, g_metadata_buffer + p, 8); p += 8;
+  bytes_copy(&g_mfs.journal_data_sector, g_metadata_buffer + p, 8); p += 8;
+  bytes_copy(&g_mfs.data_start_sector, g_metadata_buffer + p, 8); p += 8;
+  bytes_copy(&g_mfs.data_sectors, g_metadata_buffer + p, 8); p += 8;
+  bytes_copy(&g_mfs.generation, g_metadata_buffer + p, 8); p += 8;
+  bytes_copy(&g_mfs.committed_generation, g_metadata_buffer + p, 8); p += 8;
+  bytes_copy(&g_mfs.checksum, g_metadata_buffer + p, 8); p += 8;
+  bytes_copy(g_mfs.block_bitmap, g_metadata_buffer + p,
+             g_active_data_sectors);
+  p += g_active_data_sectors;
+  if (version == MFS_V4_VERSION) {
+    for (uint32_t i = 0; i < g_active_max_nodes; ++i) {
+      bytes_copy(&g_mfs.nodes[i], g_metadata_buffer + p,
+                 sizeof(xaios_mfs_node_t));
+      p += sizeof(xaios_mfs_node_t);
+    }
+  } else {
+    for (uint32_t i = 0; i < g_active_max_nodes; ++i) {
+      xaios_mfs_node_v3_t legacy;
+      bytes_copy(&legacy, g_metadata_buffer + p, sizeof(legacy));
+      p += sizeof(legacy);
+      import_legacy_node(&g_mfs.nodes[i], &legacy);
+    }
   }
-  for (uint32_t i = disk_max_nodes; i < MFS_V3_MAX_NODES; ++i) {
-    bytes_zero(&g_mfs.nodes[i], sizeof(xaios_mfs_node_t));
-  }
-  for (uint32_t i = disk_bitmap; i < MFS_V3_DATA_SECTORS; ++i) {
-    g_mfs.block_bitmap[i] = 0;
+  if (p > total_bytes) {
+    return XAIOS_ERR_INVALID;
   }
   return XAIOS_OK;
 }
 
 static xaios_status_t write_metadata(void) {
-  uint8_t raw[MFS_V3_METADATA_SECTORS * MFS_SECTOR_SIZE];
-  bytes_zero(raw, sizeof(raw));
+  bytes_zero(g_metadata_buffer, sizeof(g_metadata_buffer));
   uint64_t p = 0;
-  bytes_copy(raw + p, g_mfs.magic, MFS_MAGIC_LEN); p += MFS_MAGIC_LEN;
-  bytes_copy(raw + p, &g_mfs.version, 4); p += 4;
-  bytes_copy(raw + p, &g_mfs.sector_size, 4); p += 4;
-  bytes_copy(raw + p, &g_mfs.metadata_sectors, 4); p += 4;
-  bytes_copy(raw + p, &g_mfs.max_nodes, 4); p += 4;
-  bytes_copy(raw + p, &g_mfs.start_sector, 8); p += 8;
-  bytes_copy(raw + p, &g_mfs.journal_header_sector, 8); p += 8;
-  bytes_copy(raw + p, &g_mfs.journal_data_sector, 8); p += 8;
-  bytes_copy(raw + p, &g_mfs.data_start_sector, 8); p += 8;
-  bytes_copy(raw + p, &g_mfs.data_sectors, 8); p += 8;
-  bytes_copy(raw + p, &g_mfs.generation, 8); p += 8;
-  bytes_copy(raw + p, &g_mfs.committed_generation, 8); p += 8;
+  bytes_copy(g_metadata_buffer + p, g_mfs.magic, MFS_MAGIC_LEN); p += MFS_MAGIC_LEN;
+  bytes_copy(g_metadata_buffer + p, &g_mfs.version, 4); p += 4;
+  bytes_copy(g_metadata_buffer + p, &g_mfs.sector_size, 4); p += 4;
+  bytes_copy(g_metadata_buffer + p, &g_mfs.metadata_sectors, 4); p += 4;
+  bytes_copy(g_metadata_buffer + p, &g_mfs.max_nodes, 4); p += 4;
+  bytes_copy(g_metadata_buffer + p, &g_mfs.start_sector, 8); p += 8;
+  bytes_copy(g_metadata_buffer + p, &g_mfs.journal_header_sector, 8); p += 8;
+  bytes_copy(g_metadata_buffer + p, &g_mfs.journal_data_sector, 8); p += 8;
+  bytes_copy(g_metadata_buffer + p, &g_mfs.data_start_sector, 8); p += 8;
+  bytes_copy(g_metadata_buffer + p, &g_mfs.data_sectors, 8); p += 8;
+  bytes_copy(g_metadata_buffer + p, &g_mfs.generation, 8); p += 8;
+  bytes_copy(g_metadata_buffer + p, &g_mfs.committed_generation, 8); p += 8;
   uint64_t checksum_offset = p;
   uint64_t zero_cksum = 0;
-  bytes_copy(raw + p, &zero_cksum, 8); p += 8;
-  uint32_t disk_bitmap = (g_active_version == MFS_V3_VERSION)
-                             ? MFS_V3_DATA_SECTORS : MFS_DATA_SECTORS;
-  uint32_t disk_max_nodes = (g_active_version == MFS_V3_VERSION)
-                                ? MFS_V3_MAX_NODES : MFS_MAX_NODES;
-  bytes_copy(raw + p, g_mfs.block_bitmap, disk_bitmap); p += disk_bitmap;
-  for (uint32_t i = 0; i < disk_max_nodes; ++i) {
-    bytes_copy(raw + p, &g_mfs.nodes[i], sizeof(xaios_mfs_node_t));
-    p += sizeof(xaios_mfs_node_t);
+  bytes_copy(g_metadata_buffer + p, &zero_cksum, 8); p += 8;
+  bytes_copy(g_metadata_buffer + p, g_mfs.block_bitmap,
+             g_active_data_sectors);
+  p += g_active_data_sectors;
+  if (g_active_version == MFS_V4_VERSION) {
+    for (uint32_t i = 0; i < g_active_max_nodes; ++i) {
+      bytes_copy(g_metadata_buffer + p, &g_mfs.nodes[i],
+                 sizeof(xaios_mfs_node_t));
+      p += sizeof(xaios_mfs_node_t);
+    }
+  } else {
+    for (uint32_t i = 0; i < g_active_max_nodes; ++i) {
+      xaios_mfs_node_v3_t legacy;
+      export_legacy_node(&legacy, &g_mfs.nodes[i]);
+      bytes_copy(g_metadata_buffer + p, &legacy, sizeof(legacy));
+      p += sizeof(legacy);
+    }
   }
   uint64_t total_bytes = (uint64_t)g_active_metadata_sectors * MFS_SECTOR_SIZE;
-  g_mfs.checksum = mfs_checksum(raw, total_bytes);
-  bytes_copy(raw + checksum_offset, &g_mfs.checksum, 8);
+  if (p > total_bytes) {
+    ++g_reject_count;
+    return XAIOS_ERR_NO_MEMORY;
+  }
+  g_mfs.checksum = mfs_checksum(g_metadata_buffer, total_bytes);
+  bytes_copy(g_metadata_buffer + checksum_offset, &g_mfs.checksum, 8);
   uint8_t sector[MFS_SECTOR_SIZE];
   for (uint32_t i = 0; i < g_active_metadata_sectors; ++i) {
-    bytes_copy(sector, raw + (uint64_t)i * MFS_SECTOR_SIZE, MFS_SECTOR_SIZE);
+    bytes_copy(sector, g_metadata_buffer + (uint64_t)i * MFS_SECTOR_SIZE,
+               MFS_SECTOR_SIZE);
     if (blk_write(MFS_START_SECTOR + i, sector, sizeof(sector)) != XAIOS_OK) {
       klog("mutable-fs: metadata write failed sector=%lu capacity=%lu\n",
            MFS_START_SECTOR + i, blk_capacity());
@@ -597,7 +739,7 @@ static uint64_t absolute_data_sector(uint16_t block_index) {
 }
 
 static xaios_status_t allocate_blocks(uint16_t count,
-                                     uint16_t blocks[MFS_FILE_MAX_BLOCKS]) {
+                                     uint16_t blocks[MFS_V4_FILE_MAX_BLOCKS]) {
   if (count > g_active_file_max_blocks) {
     return XAIOS_ERR_INVALID;
   }
@@ -624,7 +766,7 @@ static xaios_status_t allocate_blocks(uint16_t count,
 }
 
 static void free_blocks(uint16_t count,
-                        const uint16_t blocks[MFS_FILE_MAX_BLOCKS]) {
+                        const uint16_t blocks[MFS_V4_FILE_MAX_BLOCKS]) {
   for (uint16_t i = 0; i < count; ++i) {
     if (blocks[i] < g_active_data_sectors && g_mfs.block_bitmap[blocks[i]] != 0) {
       g_mfs.block_bitmap[blocks[i]] = 0;
@@ -694,6 +836,45 @@ static xaios_status_t format_volume(void) {
     return XAIOS_ERR_IO;
   }
   return write_metadata();
+}
+
+static xaios_status_t migrate_volume_to_v4(void) {
+  if (g_active_version == MFS_V4_VERSION) {
+    return XAIOS_OK;
+  }
+  uint32_t old_version = g_active_version;
+  uint64_t old_data_start = g_mfs.data_start_sector;
+  uint64_t new_data_start = MFS_START_SECTOR + MFS_V4_METADATA_SECTORS +
+                            MFS_JOURNAL_SECTORS;
+  uint8_t sector[MFS_SECTOR_SIZE];
+  for (uint32_t i = 0; i < g_active_data_sectors; ++i) {
+    if (g_mfs.block_bitmap[i] == 0) {
+      continue;
+    }
+    if (blk_read(old_data_start + i, sector, sizeof(sector)) != XAIOS_OK ||
+        blk_write(new_data_start + i, sector, sizeof(sector)) != XAIOS_OK) {
+      ++g_reject_count;
+      return XAIOS_ERR_IO;
+    }
+  }
+  if (blk_flush() != XAIOS_OK) {
+    return XAIOS_ERR_IO;
+  }
+  set_active_v4();
+  g_mfs.version = MFS_V4_VERSION;
+  g_mfs.metadata_sectors = MFS_V4_METADATA_SECTORS;
+  g_mfs.max_nodes = MFS_V4_MAX_NODES;
+  g_mfs.journal_header_sector = active_journal_header_sector();
+  g_mfs.journal_data_sector = active_journal_data_sector();
+  g_mfs.data_start_sector = active_data_start_sector();
+  g_mfs.data_sectors = MFS_V4_DATA_SECTORS;
+  ++g_mfs.generation;
+  if (clear_journal() != XAIOS_OK || write_metadata() != XAIOS_OK) {
+    return XAIOS_ERR_IO;
+  }
+  klog("mutable-fs: migrated v%u to v4 nodes=%u sectors=%u\n", old_version,
+       g_active_max_nodes, g_active_data_sectors);
+  return XAIOS_OK;
 }
 
 static xaios_status_t write_file(const char *path, const void *data,
@@ -863,7 +1044,7 @@ static uint16_t block_count_for_size(uint64_t size) {
   return (uint16_t)((size + MFS_SECTOR_SIZE - 1U) / MFS_SECTOR_SIZE);
 }
 
-static xaios_status_t write_blocks(const uint16_t blocks[MFS_FILE_MAX_BLOCKS],
+static xaios_status_t write_blocks(const uint16_t blocks[MFS_V4_FILE_MAX_BLOCKS],
                                   uint16_t block_count, const void *data,
                                   uint64_t size) {
   const uint8_t *bytes = (const uint8_t *)data;
@@ -883,7 +1064,7 @@ static xaios_status_t write_blocks(const uint16_t blocks[MFS_FILE_MAX_BLOCKS],
   return XAIOS_OK;
 }
 
-static xaios_status_t read_blocks(const uint16_t blocks[MFS_FILE_MAX_BLOCKS],
+static xaios_status_t read_blocks(const uint16_t blocks[MFS_V4_FILE_MAX_BLOCKS],
                                  uint16_t block_count, void *buffer,
                                  uint64_t size) {
   uint8_t *bytes = (uint8_t *)buffer;
@@ -902,6 +1083,30 @@ static xaios_status_t read_blocks(const uint16_t blocks[MFS_FILE_MAX_BLOCKS],
   return XAIOS_OK;
 }
 
+static xaios_status_t clone_blocks(
+    const uint16_t source[MFS_V4_FILE_MAX_BLOCKS], uint16_t block_count,
+    uint16_t destination[MFS_V4_FILE_MAX_BLOCKS]) {
+  uint8_t sector[MFS_SECTOR_SIZE];
+  bytes_zero(destination,
+             sizeof(uint16_t) * (uint64_t)MFS_V4_FILE_MAX_BLOCKS);
+  if (allocate_blocks(block_count, destination) != XAIOS_OK) {
+    return XAIOS_ERR_NO_MEMORY;
+  }
+  for (uint16_t i = 0; i < block_count; ++i) {
+    if (blk_read(absolute_data_sector(source[i]), sector, sizeof(sector)) !=
+            XAIOS_OK ||
+        blk_write(absolute_data_sector(destination[i]), sector,
+                  sizeof(sector)) != XAIOS_OK) {
+      free_blocks(block_count, destination);
+      bytes_zero(destination,
+                 sizeof(uint16_t) * (uint64_t)MFS_V4_FILE_MAX_BLOCKS);
+      ++g_reject_count;
+      return XAIOS_ERR_IO;
+    }
+  }
+  return XAIOS_OK;
+}
+
 static xaios_status_t write_file(const char *path, const void *data,
                                 uint64_t size) {
   if (g_mounted == 0 || (g_mount_flags & MFS_MOUNT_READ_WRITE) == 0 ||
@@ -915,7 +1120,7 @@ static xaios_status_t write_file(const char *path, const void *data,
   }
 
   uint16_t new_count = block_count_for_size(size);
-  uint16_t new_blocks[MFS_FILE_MAX_BLOCKS];
+  uint16_t new_blocks[MFS_V4_FILE_MAX_BLOCKS];
   bytes_zero(new_blocks, sizeof(new_blocks));
   if (allocate_blocks(new_count, new_blocks) != XAIOS_OK) {
     klog("mutable-fs: write allocation failed path=%s blocks=%u used=%lu\n",
@@ -1013,6 +1218,12 @@ static int has_active_children(const char *path) {
   return 0;
 }
 
+static int path_is_at_or_below(const char *path, const char *root) {
+  uint64_t root_len = cstr_len(root);
+  return str_eq(path, root) ||
+         (bytes_eq(path, root, root_len) && path[root_len] == '/');
+}
+
 static xaios_status_t delete_node(const char *path) {
   if (g_mounted == 0 || (g_mount_flags & MFS_MOUNT_READ_WRITE) == 0 ||
       validate_path(path) != XAIOS_OK) {
@@ -1040,6 +1251,47 @@ static xaios_status_t delete_node(const char *path) {
   return write_metadata();
 }
 
+static xaios_status_t delete_tree(const char *path) {
+  char normalized[MFS_PATH_MAX];
+  if (g_mounted == 0 || (g_mount_flags & MFS_MOUNT_READ_WRITE) == 0 ||
+      normalize_path(path, normalized) != XAIOS_OK ||
+      str_eq(normalized, "/")) {
+    ++g_reject_count;
+    return XAIOS_ERR_INVALID;
+  }
+  xaios_mfs_node_t *root = find_node(normalized, 0);
+  if (root == 0 || root->active == 0) {
+    ++g_reject_count;
+    return XAIOS_ERR_NOT_FOUND;
+  }
+  uint32_t deleted = 0;
+  for (uint32_t i = 0; i < g_active_max_nodes; ++i) {
+    xaios_mfs_node_t *node = &g_mfs.nodes[i];
+    if (node->active == 0 || !path_is_at_or_below(node->path, normalized)) {
+      continue;
+    }
+    if (node->type == MFS_NODE_FILE) {
+      free_blocks(node->block_count, node->blocks);
+      node->block_count = 0;
+      bytes_zero(node->blocks, sizeof(node->blocks));
+    }
+    node->active = 0;
+    node->generation = g_mfs.generation++;
+    ++deleted;
+  }
+  for (uint32_t i = 0; i < MFS_MAX_OPEN_FILES; ++i) {
+    if (g_open_files[i].in_use != 0 &&
+        path_is_at_or_below(g_open_files[i].path, normalized)) {
+      g_open_files[i].in_use = 0;
+      g_open_files[i].path[0] = '\0';
+    }
+  }
+  g_delete_count += deleted;
+  klog("mutable-fs: delete-tree path=%s nodes=%u generation=%lu\n",
+       normalized, deleted, g_mfs.generation);
+  return write_metadata();
+}
+
 static xaios_status_t rename_node(const char *old_path, const char *new_path) {
   char normalized_old[MFS_PATH_MAX];
   char normalized_new[MFS_PATH_MAX];
@@ -1059,15 +1311,67 @@ static xaios_status_t rename_node(const char *old_path, const char *new_path) {
     ++g_reject_count;
     return XAIOS_ERR_BUSY;
   }
-  if (node->type == MFS_NODE_DIR && has_active_children(normalized_old)) {
+  if (str_eq(normalized_old, "/") ||
+      (node->type == MFS_NODE_DIR &&
+       path_is_at_or_below(normalized_new, normalized_old))) {
     ++g_reject_count;
-    return XAIOS_ERR_BUSY;
+    return XAIOS_ERR_INVALID;
   }
-  copy_path(node->path, normalized_new);
-  node->generation = g_mfs.generation++;
+
+  uint64_t old_len = cstr_len(normalized_old);
+  uint64_t new_len = cstr_len(normalized_new);
+  for (uint32_t i = 0; i < g_active_max_nodes; ++i) {
+    g_path_transaction[i][0] = '\0';
+    xaios_mfs_node_t *candidate = &g_mfs.nodes[i];
+    if (candidate->active == 0 ||
+        !path_is_at_or_below(candidate->path, normalized_old)) {
+      continue;
+    }
+    const char *suffix = candidate->path + old_len;
+    uint64_t suffix_len = cstr_len(suffix);
+    if (new_len + suffix_len + 1U > g_active_path_max) {
+      ++g_reject_count;
+      return XAIOS_ERR_INVALID;
+    }
+    copy_path(g_path_transaction[i], normalized_new);
+    bytes_copy(g_path_transaction[i] + new_len, suffix, suffix_len + 1U);
+    if (validate_path(g_path_transaction[i]) != XAIOS_OK) {
+      ++g_reject_count;
+      return XAIOS_ERR_INVALID;
+    }
+  }
+  for (uint32_t i = 0; i < g_active_max_nodes; ++i) {
+    if (g_path_transaction[i][0] == '\0') {
+      continue;
+    }
+    for (uint32_t j = 0; j < g_active_max_nodes; ++j) {
+      if (g_path_transaction[j][0] == '\0' && g_mfs.nodes[j].active != 0 &&
+          str_eq(g_path_transaction[i], g_mfs.nodes[j].path)) {
+        ++g_reject_count;
+        return XAIOS_ERR_BUSY;
+      }
+    }
+  }
+  for (uint32_t i = 0; i < g_active_max_nodes; ++i) {
+    if (g_path_transaction[i][0] != '\0') {
+      copy_path(g_mfs.nodes[i].path, g_path_transaction[i]);
+      g_mfs.nodes[i].generation = g_mfs.generation++;
+    }
+  }
+  for (uint32_t i = 0; i < MFS_MAX_OPEN_FILES; ++i) {
+    if (g_open_files[i].in_use == 0 ||
+        !path_is_at_or_below(g_open_files[i].path, normalized_old)) {
+      continue;
+    }
+    char suffix[MFS_PATH_MAX];
+    copy_path(suffix, g_open_files[i].path + old_len);
+    copy_path(g_open_files[i].path, normalized_new);
+    bytes_copy(g_open_files[i].path + new_len, suffix,
+               cstr_len(suffix) + 1U);
+  }
   ++g_rename_count;
   klog("mutable-fs: rename old=%s new=%s generation=%lu\n",
-       normalized_old, normalized_new, node->generation);
+       normalized_old, normalized_new, g_mfs.generation);
   return write_metadata();
 }
 
@@ -1182,7 +1486,6 @@ static xaios_status_t commit_snapshot(const char *label) {
     ++g_reject_count;
     return XAIOS_ERR_INVALID;
   }
-  uint8_t buffer[MFS_MAX_FILE_BYTES];
   for (uint32_t i = 0; i < g_active_max_nodes; ++i) {
     xaios_mfs_node_t *node = &g_mfs.nodes[i];
     if (node->snapshot_active != 0 && node->snapshot_type == MFS_NODE_FILE) {
@@ -1204,18 +1507,10 @@ static xaios_status_t commit_snapshot(const char *label) {
     node->snapshot_hash = node->content_hash;
     node->snapshot_generation = node->generation;
     if (node->type == MFS_NODE_FILE) {
-      if (read_blocks(node->blocks, node->block_count, buffer, node->size) !=
-          XAIOS_OK) {
-        return XAIOS_ERR_IO;
-      }
-      uint16_t snapshot_blocks[MFS_FILE_MAX_BLOCKS];
+      uint16_t snapshot_blocks[MFS_V4_FILE_MAX_BLOCKS];
       bytes_zero(snapshot_blocks, sizeof(snapshot_blocks));
-      if (allocate_blocks(node->block_count, snapshot_blocks) != XAIOS_OK) {
-        return XAIOS_ERR_NO_MEMORY;
-      }
-      if (write_blocks(snapshot_blocks, node->block_count, buffer,
-                       node->size) != XAIOS_OK) {
-        free_blocks(node->block_count, snapshot_blocks);
+      if (clone_blocks(node->blocks, node->block_count, snapshot_blocks) !=
+          XAIOS_OK) {
         return XAIOS_ERR_IO;
       }
       node->snapshot_block_count = node->block_count;
@@ -1232,7 +1527,6 @@ static xaios_status_t commit_snapshot(const char *label) {
 }
 
 static xaios_status_t restore_snapshot_node(xaios_mfs_node_t *node) {
-  uint8_t buffer[MFS_MAX_FILE_BYTES];
   if (node->snapshot_active == 0) {
     return XAIOS_OK;
   }
@@ -1247,19 +1541,10 @@ static xaios_status_t restore_snapshot_node(xaios_mfs_node_t *node) {
   node->block_count = 0;
   bytes_zero(node->blocks, sizeof(node->blocks));
   if (node->snapshot_type == MFS_NODE_FILE) {
-    if (read_blocks(node->snapshot_blocks, node->snapshot_block_count, buffer,
-                    node->snapshot_size) != XAIOS_OK) {
-      return XAIOS_ERR_IO;
-    }
-    uint16_t restored_blocks[MFS_FILE_MAX_BLOCKS];
+    uint16_t restored_blocks[MFS_V4_FILE_MAX_BLOCKS];
     bytes_zero(restored_blocks, sizeof(restored_blocks));
-    if (allocate_blocks(node->snapshot_block_count, restored_blocks) !=
-        XAIOS_OK) {
-      return XAIOS_ERR_NO_MEMORY;
-    }
-    if (write_blocks(restored_blocks, node->snapshot_block_count, buffer,
-                     node->snapshot_size) != XAIOS_OK) {
-      free_blocks(node->snapshot_block_count, restored_blocks);
+    if (clone_blocks(node->snapshot_blocks, node->snapshot_block_count,
+                     restored_blocks) != XAIOS_OK) {
       return XAIOS_ERR_IO;
     }
     node->block_count = node->snapshot_block_count;
@@ -1522,6 +1807,10 @@ xaios_status_t mutable_fs_delete(const char *path) {
   return delete_node(path);
 }
 
+xaios_status_t mutable_fs_delete_tree(const char *path) {
+  return delete_tree(path);
+}
+
 xaios_status_t mutable_fs_rename(const char *old_path, const char *new_path) {
   return rename_node(old_path, new_path);
 }
@@ -1606,10 +1895,9 @@ int64_t mutable_fs_read_fd(uint32_t fd, void *buffer, uint64_t size) {
     ++g_reject_count;
     return (int64_t)XAIOS_ERR_INVALID;
   }
-  uint8_t file_buffer[MFS_MAX_FILE_BYTES];
   uint64_t file_size = 0;
   xaios_status_t read_status =
-      read_file(handle->path, file_buffer, sizeof(file_buffer), &file_size);
+      read_file(handle->path, g_file_buffer, sizeof(g_file_buffer), &file_size);
   if (read_status != XAIOS_OK) {
     klog("mutable-fs: read-fd failed fd=%u path=%s status=%d\n", fd,
          handle->path, (int)read_status);
@@ -1620,7 +1908,7 @@ int64_t mutable_fs_read_fd(uint32_t fd, void *buffer, uint64_t size) {
   }
   uint64_t available = file_size - handle->cursor;
   uint64_t copy = available < size ? available : size;
-  bytes_copy(buffer, file_buffer + handle->cursor, copy);
+  bytes_copy(buffer, g_file_buffer + handle->cursor, copy);
   handle->cursor += copy;
   klog("mutable-fs: read-fd fd=%u bytes=%lu cursor=%lu\n", fd, copy,
        handle->cursor);
@@ -1637,11 +1925,10 @@ int64_t mutable_fs_write_fd(uint32_t fd, const void *buffer, uint64_t size) {
     return (int64_t)XAIOS_ERR_INVALID;
   }
 
-  uint8_t file_buffer[MFS_MAX_FILE_BYTES];
   uint64_t file_size = 0;
-  bytes_zero(file_buffer, sizeof(file_buffer));
+  bytes_zero(g_file_buffer, sizeof(g_file_buffer));
   if (find_node(handle->path, 0) != 0) {
-    if (read_file(handle->path, file_buffer, sizeof(file_buffer), &file_size) !=
+    if (read_file(handle->path, g_file_buffer, sizeof(g_file_buffer), &file_size) !=
         XAIOS_OK) {
       return (int64_t)XAIOS_ERR_IO;
     }
@@ -1650,8 +1937,8 @@ int64_t mutable_fs_write_fd(uint32_t fd, const void *buffer, uint64_t size) {
   if (new_size < file_size) {
     new_size = file_size;
   }
-  bytes_copy(file_buffer + handle->cursor, buffer, size);
-  if (write_file(handle->path, file_buffer, new_size) != XAIOS_OK) {
+  bytes_copy(g_file_buffer + handle->cursor, buffer, size);
+  if (write_file(handle->path, g_file_buffer, new_size) != XAIOS_OK) {
     return (int64_t)XAIOS_ERR_IO;
   }
   handle->cursor += size;
@@ -1717,12 +2004,12 @@ xaios_status_t mutable_fs_mount_persistent(uint32_t slot) {
     klog("mutable-fs: persistent block device not found at slot=%u\n", slot);
     return status;
   }
-  set_active_v3();
+  set_active_v4();
   if (virtio_block_capacity_sectors_h(handle) <
-      active_data_start_sector() + MFS_V3_DATA_SECTORS) {
+      active_data_start_sector() + MFS_V4_DATA_SECTORS) {
     klog("mutable-fs: persistent disk too small capacity=%lu needed=%lu\n",
          virtio_block_capacity_sectors_h(handle),
-         active_data_start_sector() + MFS_V3_DATA_SECTORS);
+         active_data_start_sector() + MFS_V4_DATA_SECTORS);
     set_active_v2();
     virtio_block_close(handle);
     return XAIOS_ERR_IO;
@@ -1737,14 +2024,25 @@ xaios_status_t mutable_fs_mount_persistent(uint32_t slot) {
     return XAIOS_ERR_IO;
   }
   uint64_t saved_checksum = g_mfs.checksum;
-  if (validate_disk(g_metadata_verified_checksum) == XAIOS_OK &&
-      saved_checksum == g_metadata_verified_checksum) {
+  uint32_t loaded_version = g_active_version;
+  int valid_existing =
+      validate_disk(g_metadata_verified_checksum) == XAIOS_OK &&
+      saved_checksum == g_metadata_verified_checksum;
+  if (valid_existing) {
     ++g_boot_load_count;
     klog("mutable-fs: persistent loaded files=%lu dirs=%lu blocks=%lu gen=%lu\n",
          node_count_by_type(MFS_NODE_FILE), node_count_by_type(MFS_NODE_DIR),
          block_count_used(), g_mfs.generation);
   } else {
-    klog("mutable-fs: persistent disk no valid fs; formatting v3\n");
+    if (!metadata_header_is_blank()) {
+      klog("mutable-fs: persistent metadata invalid; refusing destructive format\n");
+      g_persistent_handle = 0;
+      set_active_v2();
+      virtio_block_close(handle);
+      return XAIOS_ERR_INVALID;
+    }
+    set_active_v4();
+    klog("mutable-fs: persistent disk no valid fs; formatting v4\n");
     if (format_volume() != XAIOS_OK) {
       g_persistent_handle = 0;
       set_active_v2();
@@ -1757,6 +2055,13 @@ xaios_status_t mutable_fs_mount_persistent(uint32_t slot) {
   ++g_mount_count;
   ++g_persistent_mount_count;
   if (replay_journal() != XAIOS_OK) {
+    g_persistent_handle = 0;
+    set_active_v2();
+    virtio_block_close(handle);
+    return XAIOS_ERR_IO;
+  }
+  if (valid_existing && loaded_version != MFS_V4_VERSION &&
+      migrate_volume_to_v4() != XAIOS_OK) {
     g_persistent_handle = 0;
     set_active_v2();
     virtio_block_close(handle);
@@ -1777,14 +2082,14 @@ xaios_status_t mutable_fs_mount_persistent(uint32_t slot) {
     virtio_block_close(handle);
     return XAIOS_ERR_IO;
   }
-  klog("mutable-fs: persistent mounted v3 nodes=%u sectors=%u\n",
+  klog("mutable-fs: persistent mounted v4 nodes=%u sectors=%u\n",
        g_active_max_nodes, g_active_data_sectors);
   return XAIOS_OK;
 }
 
 static void fsck_count_file_blocks(
-    uint16_t block_count, const uint16_t blocks[MFS_FILE_MAX_BLOCKS],
-    uint8_t references[MFS_V3_DATA_SECTORS],
+    uint16_t block_count, const uint16_t blocks[MFS_V4_FILE_MAX_BLOCKS],
+    uint8_t references[MFS_V4_DATA_SECTORS],
     xaios_mfs_fsck_result_t *result) {
   if (block_count > g_active_file_max_blocks) {
     ++result->errors;
@@ -1802,7 +2107,7 @@ static void fsck_count_file_blocks(
 
 xaios_mfs_fsck_result_t mutable_fs_fsck(void) {
   xaios_mfs_fsck_result_t result;
-  uint8_t references[MFS_V3_DATA_SECTORS];
+  uint8_t references[MFS_V4_DATA_SECTORS];
   bytes_zero(&result, sizeof(result));
   bytes_zero(references, sizeof(references));
   result.version = g_active_version;

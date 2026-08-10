@@ -33,6 +33,12 @@ ARTIFACT_SUFFIX = "" if TARGET_ARCH == "aarch64" else "-x86_64"
 SSH_READY_MARKER = "SSH server: up and running (tcp/22)"
 BOOT_TIMEOUT_SECONDS = 150.0
 CLIENT_TIMEOUT_SECONDS = 600.0
+FATAL_BOOT_MARKERS = (
+    "CYAN SCREEN OF DEATH",
+    "System halted. Manual reset required",
+    "kernel panic",
+    "assertion failed",
+)
 
 
 def reserve_port(socket_type: int) -> int:
@@ -46,8 +52,19 @@ def reserve_port(socket_type: int) -> int:
 def wait_for_marker(log_path: Path, marker: str, timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if log_path.exists() and marker in log_path.read_text(errors="replace"):
-            return
+        if log_path.exists():
+            log_text = log_path.read_text(errors="replace")
+            if marker in log_text:
+                return
+            lower_log = log_text.lower()
+            fatal = next(
+                (item for item in FATAL_BOOT_MARKERS
+                 if item.lower() in lower_log),
+                None,
+            )
+            if fatal is not None:
+                tail = "\n".join(log_text.splitlines()[-40:])
+                raise RuntimeError(f"fatal guest boot marker {fatal!r}\n{tail}")
         time.sleep(0.25)
     tail = ""
     if log_path.exists():
@@ -115,7 +132,7 @@ def start_qemu_ready(
     reset_persistent: bool = True,
 ) -> tuple[subprocess.Popen[bytes], object, Path, Path]:
     last_error: TimeoutError | None = None
-    for attempt in range(2):
+    for attempt in range(3):
         process, log_file, log_path, selected_persistent = start_qemu(
             name,
             extra_env,
@@ -125,17 +142,30 @@ def start_qemu_ready(
         try:
             wait_for_marker(log_path, marker, BOOT_TIMEOUT_SECONDS)
             return process, log_file, log_path, selected_persistent
+        except RuntimeError:
+            stop_qemu(process)
+            log_file.close()
+            raise
         except TimeoutError as error:
             last_error = error
             stop_qemu(process)
             log_file.close()
             log_text = log_path.read_text(errors="replace")
-            if "XAIOS loader starting" in log_text or attempt != 0:
+            lower_log = log_text.lower()
+            if any(marker.lower() in lower_log for marker in FATAL_BOOT_MARKERS):
                 raise
-            attempt_log = BUILD / f"{name}-firmware-attempt-1.log"
+            if attempt == 2:
+                raise
+            entered_guest = (
+                "XAIOS loader starting" in log_text
+                or "Loading: hardware handoff" in log_text
+                or "boot-ui: progress=25" in log_text
+            )
+            stage = "boot-timeout" if entered_guest else "firmware"
+            attempt_log = BUILD / f"{name}-{stage}-attempt-{attempt + 1}.log"
             log_path.replace(attempt_log)
             print(
-                f"RETRY: QEMU firmware did not enter the XAIOS loader; "
+                f"RETRY: QEMU did not reach {marker!r}; "
                 f"saved {attempt_log}",
                 flush=True,
             )
@@ -211,6 +241,80 @@ def ed25519_raw_fingerprint(public_key_path: Path) -> str:
     return hashlib.sha256(blob[19:51]).hexdigest()
 
 
+def fnv1a64(data: bytes | bytearray) -> int:
+    value = 14695981039346656037
+    for byte in data:
+        value ^= byte
+        value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return value
+
+
+def create_mutable_fs_v3_fixture(path: Path) -> bytes:
+    sector_size = 512
+    start_sector = 3072
+    metadata_sectors = 32
+    data_sectors = 256
+    node_size = 232
+    payload = (b"XAIOS MutableFS v3 migration payload\n" * 40)[:1400]
+    block_count = (len(payload) + sector_size - 1) // sector_size
+    metadata = bytearray(metadata_sectors * sector_size)
+    struct_header = (
+        b"XAIOSMFS"
+        + (3).to_bytes(4, "little")
+        + sector_size.to_bytes(4, "little")
+        + metadata_sectors.to_bytes(4, "little")
+        + (64).to_bytes(4, "little")
+        + start_sector.to_bytes(8, "little")
+        + (start_sector + metadata_sectors).to_bytes(8, "little")
+        + (start_sector + metadata_sectors + 1).to_bytes(8, "little")
+        + (start_sector + metadata_sectors + 2).to_bytes(8, "little")
+        + data_sectors.to_bytes(8, "little")
+        + (4).to_bytes(8, "little")
+        + (0).to_bytes(8, "little")
+        + (0).to_bytes(8, "little")
+    )
+    if len(struct_header) != 88:
+        raise RuntimeError("MutableFS v3 fixture header layout drifted")
+    metadata[:len(struct_header)] = struct_header
+    metadata[88:88 + block_count] = b"\x01" * block_count
+    nodes_offset = 88 + data_sectors
+
+    def add_node(index: int, node_type: int, generation: int, node_path: str,
+                 content: bytes = b"") -> None:
+        encoded_path = node_path.encode("ascii")
+        if len(encoded_path) >= 96:
+            raise RuntimeError("MutableFS v3 fixture path is too long")
+        node = bytearray(node_size)
+        node[0:4] = (1).to_bytes(4, "little")
+        node[8:12] = node_type.to_bytes(4, "little")
+        node[16:24] = len(content).to_bytes(8, "little")
+        node[24:32] = (fnv1a64(content) if content else 0).to_bytes(8, "little")
+        node[32:40] = generation.to_bytes(8, "little")
+        count = ((len(content) + sector_size - 1) // sector_size
+                 if node_type == 2 else 0)
+        node[64:66] = count.to_bytes(2, "little")
+        for block in range(count):
+            node[68 + block * 2:70 + block * 2] = block.to_bytes(2, "little")
+        node[132:132 + len(encoded_path)] = encoded_path
+        offset = nodes_offset + index * node_size
+        metadata[offset:offset + node_size] = node
+
+    add_node(0, 1, 1, "/")
+    add_node(1, 1, 2, "/tmp")
+    add_node(2, 2, 3, "/tmp/migration.txt", payload)
+    checksum_data = bytearray(metadata)
+    checksum_data[80:88] = b"\x00" * 8
+    metadata[80:88] = fnv1a64(checksum_data).to_bytes(8, "little")
+
+    image = bytearray(8192 * sector_size)
+    metadata_offset = start_sector * sector_size
+    image[metadata_offset:metadata_offset + len(metadata)] = metadata
+    data_offset = (start_sector + metadata_sectors + 2) * sector_size
+    image[data_offset:data_offset + len(payload)] = payload
+    path.write_bytes(image)
+    return payload
+
+
 def verify_native_htop_pty(key_dir: Path, port: int) -> None:
     ssh_base = [
         "ssh",
@@ -237,7 +341,12 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
             )
         return completed.stdout
 
-    transient_paths = (b"/bin/hello", b"/bin/sysinfo", b"/bin/lstm-xor")
+    transient_paths = (
+        b"/bin/hello",
+        b"/bin/sysinfo",
+        b"/bin/lstm-xor",
+        b"/bin/app-fail",
+    )
     initial_processes = run_guest("htop --plain --sample-ms 10")
     unexpected = [path for path in transient_paths if path in initial_processes]
     if unexpected:
@@ -256,6 +365,19 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
                 f"on-demand application {command!r} lacked marker: "
                 + app_output.decode(errors="replace")
             )
+
+    failed_app = subprocess.run(
+        docker_command(key_dir, *ssh_base, "app-fail"),
+        cwd=ROOT,
+        capture_output=True,
+        timeout=60,
+    )
+    if (failed_app.returncode != 1 or
+            b"app-fail: exit status 42" not in failed_app.stdout):
+        raise RuntimeError(
+            "intentional application failure was not reported and reaped: "
+            + (failed_app.stdout + failed_app.stderr).decode(errors="replace")
+        )
 
     final_processes = run_guest("htop --plain --sample-ms 10")
     unreaped = [path for path in transient_paths if path in final_processes]
@@ -549,6 +671,8 @@ def main() -> int:
     build_env["XAIOS_AUTHORIZED_KEYS_FILE"] = str(key_dir / "authorized.pub")
     build_env["XAIOS_SSH_USERS_FILE"] = str(users_file)
     build_env["XAIOS_SSH_PASSWORD_AUTH"] = "1"
+    build_env["XAIOS_FAILURE_TEST_APP"] = "1"
+    build_env["XAIOS_BOOT_VERBOSE"] = "1"
     missing_opt_in_env = build_env.copy()
     missing_opt_in_env.pop("XAIOS_SSH_PASSWORD_AUTH")
     require_rejected_build(
@@ -567,6 +691,52 @@ def main() -> int:
         "debian_version": version,
         "image": IMAGE,
     }
+
+    migration_path = BUILD / f"qemu-mutable-fs-v3-migration{ARTIFACT_SUFFIX}.img"
+    migration_payload = create_mutable_fs_v3_fixture(migration_path)
+    migration_port = reserve_port(socket.SOCK_STREAM)
+    migration_qemu, migration_log, _, _ = start_qemu_ready(
+        "qemu-mutable-fs-v3-migration" + ARTIFACT_SUFFIX,
+        {"XAIOS_QEMU_HOSTFWD_PORT": str(migration_port)},
+        SSH_READY_MARKER,
+        persistent_path=migration_path,
+        reset_persistent=False,
+    )
+    try:
+        migrated = subprocess.run(
+            docker_command(
+                key_dir,
+                "ssh",
+                "-i", "/keys/authorized",
+                "-o", "IdentitiesOnly=yes",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", "PasswordAuthentication=no",
+                "-p", str(migration_port),
+                "admin@host.docker.internal",
+                "cat /tmp/migration.txt",
+            ),
+            cwd=ROOT,
+            capture_output=True,
+            timeout=60,
+        )
+        if migrated.returncode != 0 or migrated.stdout != migration_payload:
+            raise RuntimeError(
+                "MutableFS v3 migration did not preserve file data: "
+                + (migrated.stdout + migrated.stderr).decode(errors="replace")
+            )
+    finally:
+        stop_qemu(migration_qemu)
+        migration_log.close()
+    with migration_path.open("rb") as fixture:
+        fixture.seek(3072 * 512 + 8)
+        migrated_version = int.from_bytes(fixture.read(4), "little")
+    if migrated_version != 4:
+        raise RuntimeError(
+            f"MutableFS migration did not publish v4 metadata: {migrated_version}"
+        )
+    migration_path.unlink(missing_ok=True)
+    results["mutable_fs_v3_to_v4_migration"] = "passed"
 
     ssh_port = reserve_port(socket.SOCK_STREAM)
     udp_port = reserve_port(socket.SOCK_DGRAM)
@@ -637,7 +807,7 @@ def main() -> int:
     reboot_qemu, reboot_log_file, reboot_log_path, _ = start_qemu_ready(
         "qemu-docker-network-reboot",
         {"XAIOS_QEMU_HOSTFWD_PORT": str(ssh_port)},
-        "Loading: IPv4 internet check",
+        SSH_READY_MARKER,
         persistent_path=persistent_path,
         reset_persistent=False,
     )
@@ -779,6 +949,7 @@ def main() -> int:
 
     key_only_env = os.environ.copy()
     key_only_env["XAIOS_AUTHORIZED_KEYS_FILE"] = str(key_dir / "authorized.pub")
+    key_only_env["XAIOS_BOOT_VERBOSE"] = "1"
     key_only_env.pop("XAIOS_SSH_USERS_FILE", None)
     run_checked(["make", BUILD_TARGET], 180, key_only_env)
     key_only_port = reserve_port(socket.SOCK_STREAM)

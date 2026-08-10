@@ -966,6 +966,14 @@ uint64_t user_process_failed_count(void) {
   return g_process_failed_count;
 }
 
+uint64_t user_process_current_failed_count(void) {
+  uint64_t failed = 0U;
+  for (uint32_t i = 0U; i < XAIOS_MAX_USER_PROCESSES; ++i) {
+    if (g_process_table[i].state == XAIOS_USER_PROCESS_FAILED) ++failed;
+  }
+  return failed;
+}
+
 uint64_t user_process_reclaim_count(void) {
   return g_process_reclaim_count;
 }

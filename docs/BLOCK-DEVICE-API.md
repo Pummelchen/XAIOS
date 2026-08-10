@@ -25,6 +25,16 @@ name, 64-bit geometry, optional-operation capabilities, transfer limits, and
 backend callbacks. The registry is bounded to 32 boot-time devices; file and
 volume capacity is not coupled to that registry size.
 
+The UEFI-provided initramfs is registered as a read-only `boot-memory` device.
+Its self-test verifies reads, async completion, flush reporting and write
+rejection. Destructive write/read verification is restricted to the dedicated
+writable VirtIO test disk and restores the original sector afterward.
+
+The deterministic VirtIO fixture reserves sector `2999` for the block write
+probe and sectors `3000..3185` for persistence and MutableFS diagnostics.
+Immutable initramfs payloads start at sector `4096`. The ABI gate enforces this
+separation so repeated boot tests cannot overwrite executable data.
+
 ## Geometry and ranges
 
 All public offsets and lengths are bytes represented by `uint64_t`.

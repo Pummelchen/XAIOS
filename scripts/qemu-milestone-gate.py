@@ -13,7 +13,7 @@ GATES = {
             "mutable-fs: mounted start=3072 metadata=16 journal=2 data=3090 sectors=96 nodes=32 policy=rw",
             "mutable-fs: public API self-test passed list=1 stat=3 rename=1 open=3 close=3",
             "mutable-fs: journal replay self-test passed replays=1 journal_writes=1",
-            "mutable-fs: self-test passed files=7 directories=12 writes=12 reads=6 deletes=1 commits=1 rollbacks=1 replays=1 rejects=8 checksum_errors=0",
+            "mutable-fs: self-test passed files=7 directories=15 writes=12 reads=6 deletes=1 commits=1 rollbacks=1 replays=1 rejects=8 checksum_errors=0",
             "/service-manager: mutable fs syscalls passed",
         ],
         "minimums": {

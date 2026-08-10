@@ -10,9 +10,9 @@ that XAIOS is derived from FreeBSD or implements the FreeBSD kernel ABI.
 | Surface | Status | Boundary |
 |---|---|---|
 | XAIOS kernel and userspace | Native freestanding ABI | C99 code uses XAIOS syscalls and services. It does not depend on glibc, Linux syscalls, FreeBSD libc or either host kernel. |
-| Unix command behavior | Partial, QEMU-tested | The bounded shell and image utilities exercise composable command, pipe and redirection behavior. XAIOS is not POSIX-certified and does not provide a general POSIX process environment. |
+| Unix command behavior | Partial, QEMU-tested | Stateful local/SSH shells provide independent cwd, prompts, command errors, basic file/directory operations, recursive tree rename/removal and bounded interactive nano editing. Pipes and redirection remain supported. XAIOS is not POSIX-certified and does not provide a general POSIX process environment. |
 | FreeBSD client interoperability | QEMU-tested subset | An official FreeBSD 15.1 AArch64 VM uses base-system OpenSSH/SFTP and `nc` to test XAIOS public-key login/rejection, `xaiosctl`, SFTP operations, interactive PTY ANSI `htop`, and UDP echo. |
-| Linux client interoperability | QEMU-tested subset | A disposable Debian 13 container remains an independent OpenSSH/SFTP/network client and exercises the broader administration, password, rekey, concurrency and malformed-traffic suite. |
+| Linux client interoperability | QEMU-tested subset | A disposable Debian 13 container remains an independent OpenSSH/SFTP/network client and exercises the broader administration, password, stateful shell, interactive nano, recursive filesystem, rekey, concurrency and malformed-traffic suite. |
 | Linux binary ABI | Not implemented | XAIOS does not run Linux ELF programs or implement Linux syscalls, procfs, namespaces, cgroups or distribution package semantics. |
 | FreeBSD binary ABI | Not implemented | XAIOS does not run FreeBSD ELF programs or implement FreeBSD syscalls, jails, rc.d, ports/pkg or kernel interfaces. |
 | Hosted inference engine | macOS/Linux hosts | The portable engine currently builds as a native process on macOS and Linux. That host support does not define the XAIOS guest ABI. |

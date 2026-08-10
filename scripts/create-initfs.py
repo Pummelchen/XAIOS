@@ -11,7 +11,10 @@ MAX_FILES = 32
 PATH_MAX = 64
 HEADER_SECTOR = 1
 HEADER_BYTES = 3584
-DATA_OFFSET = 4096
+# Sectors 3000 through 3185 are reserved for the kernel's persistence and
+# MutableFS boot self-tests. Keep the immutable payload beyond that scratch
+# range so repeated boots cannot overwrite executable data.
+DATA_OFFSET = 2097152
 FLAG_READ_ONLY = 1
 ENTRY_FLAG_EXECUTABLE = 1
 ENTRY_FLAG_MANIFEST = 2

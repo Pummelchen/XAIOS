@@ -4,10 +4,11 @@
 #include <xaios/status.h>
 #include <xaios/types.h>
 
-#define XAIOS_MFS_PATH_MAX 96U
+#define XAIOS_MFS_PATH_MAX 256U
 #define XAIOS_MFS_MAX_FILE_BYTES UINT64_C(3072)
 #define XAIOS_MFS_MAX_FILE_BYTES_V3 UINT64_C(8192)
-#define XAIOS_MFS_MAX_LIST_BYTES UINT64_C(512)
+#define XAIOS_MFS_MAX_FILE_BYTES_V4 UINT64_C(131072)
+#define XAIOS_MFS_MAX_LIST_BYTES UINT64_C(16384)
 #define XAIOS_MFS_OPEN_READ UINT32_C(1)
 #define XAIOS_MFS_OPEN_WRITE UINT32_C(2)
 #define XAIOS_MFS_OPEN_CREATE UINT32_C(4)
@@ -65,6 +66,7 @@ xaios_status_t mutable_fs_write(const char *path, const void *data,
 xaios_status_t mutable_fs_read(const char *path, void *buffer,
                               uint64_t buffer_size, uint64_t *out_size);
 xaios_status_t mutable_fs_delete(const char *path);
+xaios_status_t mutable_fs_delete_tree(const char *path);
 xaios_status_t mutable_fs_rename(const char *old_path, const char *new_path);
 xaios_status_t mutable_fs_stat(const char *path, xaios_mfs_stat_t *stat);
 xaios_status_t mutable_fs_list(const char *path, char *buffer,

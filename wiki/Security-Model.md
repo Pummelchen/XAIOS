@@ -50,6 +50,11 @@ password-enabled build. The QEMU acceptance suite checks valid and invalid
 keys, valid and invalid passwords in development mode, malformed credential
 files, entropy failure, host identity persistence and rotation, revocation,
 rekey, session limits, reconnects, SFTP isolation, and secret redaction.
+The local serial console follows the same policy: it authenticates against the
+PBKDF2 database only in an explicitly password-enabled development image.
+Key-only, default and release images remain locally locked and direct operators
+to SSH public-key authentication. Password input is not echoed, failed login
+does not create a shell session, and logout requires authentication again.
 
 These tests do not replace an independent cryptographic implementation audit,
 hostile-network review, side-channel analysis, or production key-management

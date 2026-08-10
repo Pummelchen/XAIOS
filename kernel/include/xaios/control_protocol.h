@@ -17,6 +17,7 @@
 #define XAIOS_CONTROL_MAX_REQUEST_BYTES UINT32_C(512)
 #define XAIOS_CONTROL_MAX_RESPONSE_BYTES UINT32_C(8192)
 #define XAIOS_CONTROL_LOG_COMPONENT_MAX UINT32_C(32)
+#define XAIOS_CONTROL_PATH_MAX UINT32_C(96)
 #define XAIOS_CONTROL_STORAGE_MAX_DEVICES UINT32_C(8)
 #define XAIOS_CONTROL_STORAGE_MAX_FILESYSTEMS UINT32_C(4)
 #define XAIOS_CONTROL_STORAGE_MAX_PARTITIONS UINT32_C(24)
@@ -321,7 +322,7 @@ typedef struct xaios_control_logs_payload {
 } xaios_control_logs_payload_t;
 
 typedef struct xaios_control_path_request_payload {
-  char path[XAIOS_MFS_PATH_MAX];
+  char path[XAIOS_CONTROL_PATH_MAX];
 } xaios_control_path_request_payload_t;
 
 typedef struct xaios_control_mutation_request_payload {
@@ -329,7 +330,7 @@ typedef struct xaios_control_mutation_request_payload {
   uint32_t assigned_role;
   uint32_t reserved;
   char actor[XAIOS_ADMIN_PRINCIPAL_MAX];
-  char argument[XAIOS_MFS_PATH_MAX];
+  char argument[XAIOS_CONTROL_PATH_MAX];
   char target_principal[XAIOS_ADMIN_PRINCIPAL_MAX];
 } xaios_control_mutation_request_payload_t;
 
