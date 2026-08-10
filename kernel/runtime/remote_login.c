@@ -3068,40 +3068,50 @@ static uint32_t htop_render_color(
     output_append(output, output_capacity, output_bytes, "\r\n");
   }
 
-  uint32_t suffix_width = 14U;
-  uint32_t full_meter_columns = columns > suffix_width
-                                    ? columns - suffix_width
-                                    : columns;
-  uint32_t full_overhead = label_columns + 11U;
-  uint32_t full_bar_width = full_meter_columns > full_overhead
-                                ? full_meter_columns - full_overhead
-                                : 1U;
-  htop_append_meter(output, output_capacity, output_bytes, "Mem",
-                    label_columns, memory_tenths, full_bar_width,
-                    full_meter_columns);
   uint64_t used_mebibytes = used_pages / 256U;
   uint64_t managed_mebibytes = managed_pages / 256U;
   uint32_t memory_value_width = (uint32_t)u64_digits(used_mebibytes) +
                                 (uint32_t)u64_digits(managed_mebibytes) + 3U;
-  output_append(output, output_capacity, output_bytes, "\033[33m");
-  if (memory_value_width < suffix_width) {
+  uint32_t suffix_width = memory_value_width > 5U
+                              ? memory_value_width + 1U
+                              : 6U;
+  if (suffix_width < 14U) suffix_width = 14U;
+  uint32_t minimum_meter_columns = label_columns + 9U;
+  if (cell_width <= minimum_meter_columns ||
+      suffix_width > cell_width - minimum_meter_columns) {
+    suffix_width = 0U;
+  }
+  uint32_t system_meter_columns = cell_width - suffix_width;
+  uint32_t system_overhead = label_columns + 11U;
+  uint32_t system_bar_width = system_meter_columns > system_overhead
+                                  ? system_meter_columns - system_overhead
+                                  : 1U;
+  htop_append_meter(output, output_capacity, output_bytes, "Mem",
+                    label_columns, memory_tenths, system_bar_width,
+                    system_meter_columns);
+  if (suffix_width != 0U) {
+    output_append(output, output_capacity, output_bytes, "\033[33m");
     htop_append_repeat(output, output_capacity, output_bytes, ' ',
                        suffix_width - memory_value_width);
+    output_append_u64(output, output_capacity, output_bytes,
+                      used_mebibytes);
+    output_append(output, output_capacity, output_bytes, "M/");
+    output_append_u64(output, output_capacity, output_bytes,
+                      managed_mebibytes);
+    output_append(output, output_capacity, output_bytes, "M\033[0m");
   }
-  output_append_u64(output, output_capacity, output_bytes,
-                    used_mebibytes);
-  output_append(output, output_capacity, output_bytes, "M/");
-  output_append_u64(output, output_capacity, output_bytes,
-                    managed_mebibytes);
-  output_append(output, output_capacity, output_bytes, "M\033[0m\r\n");
+  output_append(output, output_capacity, output_bytes, "\r\n");
 
   htop_append_meter(output, output_capacity, output_bytes, "Swp",
-                    label_columns, 0U, full_bar_width, full_meter_columns);
-  output_append(output, output_capacity, output_bytes, "\033[36m");
-  htop_append_repeat(output, output_capacity, output_bytes, ' ',
-                     suffix_width - 5U);
-  output_append(output, output_capacity, output_bytes,
-                "0K/0K\033[0m\r\n");
+                    label_columns, 0U, system_bar_width,
+                    system_meter_columns);
+  if (suffix_width != 0U) {
+    output_append(output, output_capacity, output_bytes, "\033[36m");
+    htop_append_repeat(output, output_capacity, output_bytes, ' ',
+                       suffix_width - 5U);
+    output_append(output, output_capacity, output_bytes, "0K/0K\033[0m");
+  }
+  output_append(output, output_capacity, output_bytes, "\r\n");
 
   output_append(output, output_capacity, output_bytes,
                 "\033[36mTasks: \033[32m");

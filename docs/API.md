@@ -200,8 +200,9 @@ managed-memory and zero-capacity swap meters, task and uptime state, process
 selection, process/CPU paging, sorting, filtering and an in-terminal help view.
 CPU, `Mem`, and `Swp` labels use a shared width derived from the largest runtime
 CPU ID, keeping every opening meter bracket in one column on many-core systems.
-Memory and swap values are right-aligned, and the footer uses distinct htop-style
-key and command color segments.
+Memory and swap remain within the left meter column beneath the first CPU group;
+their capacity values are right-aligned there when terminal width permits. The
+footer uses distinct htop-style key and command color segments.
 Resize requests trigger a new bounded frame. Each PTY channel owns independent
 view state and refreshes only after its previous output has drained. Interactive
 sessions use the terminal alternate-screen buffer and restore the original

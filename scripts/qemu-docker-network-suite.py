@@ -260,6 +260,7 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
         b"\x1b[2J\x1b[H",
         b"\x1b[42;30m",
         b"Tasks:",
+        b"0 failed",
         b"Mem",
         b"[Main]",
         b"View: ",
@@ -300,6 +301,12 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
     if len(bracket_columns) != 1:
         raise RuntimeError(
             f"native htop meter brackets were not aligned: {bracket_columns!r}"
+        )
+    left_cell_width = len(cpu_line) // 2
+    if len(memory_line) != left_cell_width or len(swap_line) != left_cell_width:
+        raise RuntimeError(
+            "native htop memory/swap meters escaped the left CPU column: "
+            f"cpu={len(cpu_line)} mem={len(memory_line)} swap={len(swap_line)}"
         )
     if b"F1Help" not in visible_output or b"F10Quit" not in visible_output:
         raise RuntimeError("native htop footer did not use segmented key labels")

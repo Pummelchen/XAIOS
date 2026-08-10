@@ -48,7 +48,9 @@ scrollback. CPU sampling uses a complete interrupt-backed timer wait that is
 excluded from process runtime, so htop does not create a permanent 100% CPU 0
 reading. CPU, memory and swap meter brackets share one dynamically sized label
 column;
-capacity values are right-aligned and footer keys use htop-style color segments.
+memory and swap remain beneath the left CPU group, capacity values are
+right-aligned there when width permits, and footer keys use htop-style color
+segments.
 Non-PTY calls remain one-shot plain
 snapshots for automation. Process kill and priority controls are not offered
 until XAIOS has a safe generic process-control ABI.
