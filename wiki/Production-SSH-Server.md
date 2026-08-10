@@ -40,7 +40,9 @@ production security gate.
 The guest validates SSH PTY and resize dimensions. Running `htop` on a PTY
 selects a native XAIOS-generated live ANSI monitor with sampled CPU/memory
 meters, process selection and paging, CPU paging, sorting, filtering, help and
-resize-aware rerendering. Each SSH channel has independent monitor state and
+resize-aware rerendering. Bare `htop` shows all process slots and detected CPUs
+with a 250 ms refresh; `--active`, `--all`, `--sample-ms`, and CPU-range options
+remain available. Each SSH channel has independent monitor state and
 bounded refresh/backpressure behavior with a hard monotonic 60-frame-per-second
 render cap. The PTY uses the terminal alternate-screen buffer and restores the
 original screen on exit, preventing live frames from accumulating in normal

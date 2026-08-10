@@ -149,7 +149,7 @@ From a second terminal, use the repository launcher for a quiet OpenSSH session
 with persistent host-key checking. It accepts a remote command after `--`:
 
 ```sh
-scripts/ssh-xaios-qemu.sh -- htop --all --sample-ms 250 --cpu-count 4
+scripts/ssh-xaios-qemu.sh -- htop
 ```
 
 Use SFTP against `127.0.0.1:2299` and send UDP to `127.0.0.1:2298`. Direct

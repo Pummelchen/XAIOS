@@ -611,11 +611,11 @@ def _handle_nano_command(args, cwd):
 
 
 def _handle_htop_command(args):
-    show_all = False
+    show_all = True
     show_cpus = True
     cpu_start = 0
     cpu_requested = None
-    sample_ms = 100
+    sample_ms = 250
     index = 0
     while index < len(args):
         option = args[index]

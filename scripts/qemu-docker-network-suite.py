@@ -209,7 +209,7 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
             *ssh_base[:1],
             "-tt",
             *ssh_base[1:],
-            "htop --all --sample-ms 10 --cpu-count 4",
+            "htop",
         ),
         cwd=ROOT,
         stdin=subprocess.PIPE,

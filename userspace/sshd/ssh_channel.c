@@ -17,7 +17,7 @@
 #define SSH_PTY_MAX_ROWS 100U
 #define SSH_HTOP_SAMPLE_MS 10U
 #define SSH_HTOP_MIN_REFRESH_MS 250U
-#define SSH_HTOP_DEFAULT_REFRESH_MS 1000U
+#define SSH_HTOP_DEFAULT_REFRESH_MS 250U
 #define SSH_HTOP_MAX_REFRESH_MS 5000U
 #define SSH_HTOP_MAX_FRAMES_PER_SECOND 60U
 #define SSH_HTOP_MIN_FRAME_NS                                             \
@@ -300,7 +300,7 @@ static void htop_initialize(ssh_channel_t *ch, const char *command) {
   char sort[24];
   uint32_t value;
   ch->htop_active = 1U;
-  ch->htop_show_all = command_has_option(command, "--all") != 0;
+  ch->htop_show_all = command_has_option(command, "--active") == 0;
   ch->htop_show_cpus = command_has_option(command, "--no-cpus") == 0;
   ch->htop_sort_key = SSH_HTOP_SORT_CPU;
   ch->htop_reverse = command_has_option(command, "--reverse") != 0;
@@ -337,6 +337,14 @@ static void htop_initialize(ssh_channel_t *ch, const char *command) {
   if (command_option_u32(command, "--selected", &value) > 0) {
     ch->htop_selected = value;
   }
+  if (command_option_u32(command, "--sample-ms", &value) > 0) {
+    ch->htop_refresh_ms = value < SSH_HTOP_MIN_REFRESH_MS
+                              ? SSH_HTOP_MIN_REFRESH_MS
+                              : value;
+    if (ch->htop_refresh_ms > SSH_HTOP_MAX_REFRESH_MS) {
+      ch->htop_refresh_ms = SSH_HTOP_MAX_REFRESH_MS;
+    }
+  }
   if (command_option_text(command, "--filter", ch->htop_filter,
                           sizeof(ch->htop_filter)) > 0) {
     ch->htop_filter_length = ssh_str_len(ch->htop_filter);
@@ -365,8 +373,9 @@ static int htop_build_command(const ssh_channel_t *ch, char *command,
       append_command_u32(command, capacity, ch->htop_selected) != 0) {
     return -1;
   }
-  if (ch->htop_show_all != 0U &&
-      append_command_text(command, capacity, " --all") != 0) return -1;
+  if (append_command_text(command, capacity,
+                          ch->htop_show_all != 0U ? " --all" : " --active") !=
+      0) return -1;
   if (ch->htop_show_cpus == 0U &&
       append_command_text(command, capacity, " --no-cpus") != 0) return -1;
   if (ch->htop_reverse != 0U &&

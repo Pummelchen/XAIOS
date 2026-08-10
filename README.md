@@ -106,6 +106,8 @@ opt-in; exact target-model semantics are the default.
   resize handling and dynamic many-core paging. Its Debian-style header keeps
   up to eight CPU meters in the left column beside Tasks/Load/Uptime, then uses
   progressively denser 2/4/8/16-column CPU grids as core counts grow;
+  bare `htop` shows all process slots and detected CPUs at a 250 ms refresh,
+  while command-line options can still narrow the view or change the interval;
   a monotonic limiter caps all screen rendering at 60 frames per second, and
   non-PTY output stays a plain one-shot snapshot for automation. The htop sample
   interval uses an interrupt-backed idle wait that is not charged as artificial

@@ -170,7 +170,10 @@ htop [--active|--all] [--sample-ms 1..1000]
      [--reverse] [--tree] [--filter TEXT] [--process-start N] [--selected N]
 ```
 
-The default 100 ms interval reports `%CPU` from monotonic runtime deltas, not
+Bare `htop` defaults to all process slots, all detected CPUs, and a 250 ms
+sample interval. `--active` limits the process table to active slots, while
+`--all`, `--sample-ms`, and the CPU-range options remain available for explicit
+automation. The sample reports `%CPU` from monotonic runtime deltas, not
 dispatch counts. Per-CPU utilization uses each CPU's busy-time delta divided by
 the common sample interval. Process utilization uses the process runtime delta;
 it follows the conventional per-core scale, where one fully occupied CPU is
@@ -204,7 +207,8 @@ includes exited and failed slots.
 
 The native SSH daemon validates `pty-req` and `window-change` dimensions. An
 exact `htop` command on a PTY channel automatically selects the guest-generated
-live ANSI monitor and uses the reported terminal size. It includes colored CPU,
+live ANSI monitor, uses the reported terminal size, and refreshes every 250 ms
+by default. It includes colored CPU,
 managed-memory and zero-capacity swap meters, task and uptime state,
 scheduler-backed 1/5/15-minute fixed-point load averages, process
 selection, process/CPU paging, sorting, filtering and an in-terminal help view.

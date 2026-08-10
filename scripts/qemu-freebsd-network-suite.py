@@ -268,7 +268,7 @@ cmp /tmp/sftp-source /tmp/sftp-renamed-result || fail "SFTP rename round trip di
 grep -q '/tmp/freebsd-sftp' /tmp/sftp.log || fail "SFTP stat/list output missing"
 echo "XAIOS_FREEBSD_INTEROP: SFTP read/write/stat/rename/remove PASS"
 
-{{ sleep 2; printf 'M'; sleep 0.1; printf '/sshd\n'; sleep 0.1; printf 'h'; sleep 0.1; printf 'h'; sleep 0.1; printf 'q'; }} | TERM=xterm ssh -tt $ssh_base admin@$host 'htop --all --sample-ms 10 --cpu-count 4' >/tmp/htop.ansi 2>/tmp/htop.err || fail "PTY htop failed"
+{{ sleep 2; printf 'M'; sleep 0.1; printf '/sshd\n'; sleep 0.1; printf 'h'; sleep 0.1; printf 'h'; sleep 0.1; printf 'q'; }} | TERM=xterm ssh -tt $ssh_base admin@$host 'htop' >/tmp/htop.ansi 2>/tmp/htop.err || fail "PTY htop failed"
 printf '\\033[2J\\033[H' >/tmp/clear-sequence
 printf '\\033[?1049h' >/tmp/alternate-enter
 printf '\\033[?1049l' >/tmp/alternate-leave

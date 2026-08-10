@@ -224,12 +224,12 @@ OpenSSH-version-gated `WarnWeakCrypto=no`; it does not discard host identity via
 
 ```sh
 scripts/ssh-xaios-qemu.sh
-scripts/ssh-xaios-qemu.sh -- htop --all --sample-ms 250 --cpu-count 4
+scripts/ssh-xaios-qemu.sh -- htop
 sftp -i build/local-ssh/admin -o IdentitiesOnly=yes -P 2299 admin@127.0.0.1
 ```
 
 Pass a non-default key with `--identity`, for example
-`scripts/ssh-xaios-qemu.sh --identity /tmp/xaios-htop-key -- htop --all`.
+`scripts/ssh-xaios-qemu.sh --identity /tmp/xaios-htop-key -- htop`.
 If a rebuilt guest intentionally rotates its host key, remove only the matching
 entry from `build/local-ssh/known_hosts` after verifying the rotation.
 

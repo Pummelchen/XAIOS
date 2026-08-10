@@ -3479,7 +3479,7 @@ static xaios_status_t handle_htop(const char *args, char *output,
                                  uint64_t *output_bytes) {
   char option[24];
   uint64_t index = 0U;
-  int show_all = 0;
+  int show_all = 1;
   int show_cpus = 1;
   int color_output = 0;
   int reverse = 0;
@@ -3490,7 +3490,7 @@ static xaios_status_t handle_htop(const char *args, char *output,
   uint32_t cpu_requested = UINT32_MAX;
   uint32_t process_start = 0U;
   uint32_t selected = 0U;
-  uint32_t sample_ms = 100U;
+  uint32_t sample_ms = 250U;
   uint32_t terminal_columns = 120U;
   uint32_t terminal_rows = 40U;
   uint32_t cpu_total;

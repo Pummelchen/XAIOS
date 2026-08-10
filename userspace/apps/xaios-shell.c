@@ -115,8 +115,9 @@ int main(void) {
     xaios_log("/bin/xaios-shell: nano edit verification failed\n");
     return 1;
   }
-  if (shell_run("htop --all --sample-ms 10 --cpu-count 2", output,
+  if (shell_run("htop", output,
                 sizeof(output), &out_size) != 0 ||
+      text_contains(output, "XAIOS htop sample_ms=250") == 0 ||
       text_contains(output, "CPU CPU% BUSY_MS IDLE_MS ACTIVE ROLE") == 0 ||
       text_contains(output, "0 100.0%") != 0 ||
       text_contains(output, "MEM managed=") == 0 ||
@@ -125,11 +126,19 @@ int main(void) {
       text_contains(
           output,
           "PID PPID S CPU% MEM% TIME_MS RES_KIB CPU SYSCALLS COMMAND") == 0 ||
+      text_contains(output, "/init") == 0 ||
       text_contains(output, "/bin/xaios-shell") == 0) {
     xaios_log("/bin/xaios-shell: htop process verification failed\n");
     return 1;
   }
   xaios_log("/bin/xaios-shell: htop idle sample returned to userspace\n");
+  if (shell_run("htop --active --sample-ms 1 --no-cpus", output,
+                sizeof(output), &out_size) != 0 ||
+      text_contains(output, "/bin/xaios-shell") == 0 ||
+      text_contains(output, "/init") != 0) {
+    xaios_log("/bin/xaios-shell: htop active-view override failed\n");
+    return 1;
+  }
   if (shell_run("htop --all --sample-ms 10 --cpu-count 2 --sort mem "
                 "--reverse --filter xaios-shell --process-start 0",
                 output, sizeof(output), &out_size) != 0 ||
