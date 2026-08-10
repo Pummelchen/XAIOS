@@ -420,7 +420,11 @@ def main() -> int:
     build_env = os.environ.copy()
     build_env["XAIOS_AUTHORIZED_KEYS_FILE"] = str(key.with_suffix(".pub"))
     subprocess.run(
-        ["make", "image"], cwd=ROOT, env=build_env, check=True, timeout=180
+        ["make", "image-qemu-test"],
+        cwd=ROOT,
+        env=build_env,
+        check=True,
+        timeout=180,
     )
 
     source = gate_dir / "model.package"
