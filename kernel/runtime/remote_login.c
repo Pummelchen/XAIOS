@@ -3991,10 +3991,8 @@ static xaios_status_t handle_remote_app(
     output_append(output, output_capacity, output_bytes, "\n");
     return XAIOS_ERR_INVALID;
   }
-  if (*output_bytes == 0U) {
-    output_append(output, output_capacity, output_bytes, app->command);
-    output_append(output, output_capacity, output_bytes, ": complete\n");
-  }
+  output_append(output, output_capacity, output_bytes, app->command);
+  output_append(output, output_capacity, output_bytes, ": complete\n");
   return XAIOS_OK;
 }
 #endif
