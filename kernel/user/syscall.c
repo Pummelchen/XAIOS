@@ -434,7 +434,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1, "log-secret-denied");
     }
     user_process_note_syscall(0);
-    klog_write(log_snapshot, arg1);
+    klog_write_atomic(log_snapshot, arg1);
     return 0;
   }
 

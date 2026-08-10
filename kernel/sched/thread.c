@@ -264,11 +264,11 @@ uint32_t xaios_thread_run_pending(uint32_t cpu_id) {
   }
   uint64_t result = claimed->entry(claimed->context);
   claimed->result = result;
-  __atomic_store_n(&claimed->state, XAIOS_THREAD_COMPLETE, __ATOMIC_RELEASE);
   if (claimed->owner_pid != 0U) {
     klog("threads: user complete id=%lu owner=%u cpu=%u result=%lu\n",
          claimed->id, claimed->owner_pid, cpu_id, result);
   }
+  __atomic_store_n(&claimed->state, XAIOS_THREAD_COMPLETE, __ATOMIC_RELEASE);
   xaios_cpu_notify();
   return 1U;
 }

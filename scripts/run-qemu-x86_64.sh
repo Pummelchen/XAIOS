@@ -178,7 +178,7 @@ if [ "$net_socket_port" != "none" ]; then
   set -- "$@" \
     -netdev "$net0_user_options" \
     -netdev "hubport,id=net0_user_hub,hubid=1,netdev=net0_user" \
-    -netdev "socket,id=net0_socket,listen=${net_socket_host}:${net_socket_port}" \
+    -netdev "stream,id=net0_socket,server=on,addr.type=inet,addr.host=${net_socket_host},addr.port=${net_socket_port}" \
     -netdev "hubport,id=net0_socket_hub,hubid=1,netdev=net0_socket" \
     -netdev "hubport,id=net0,hubid=1"
 else

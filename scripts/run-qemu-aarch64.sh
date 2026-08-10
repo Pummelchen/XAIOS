@@ -281,16 +281,16 @@ if [ "$net_socket_port" != "none" ] && {
       -netdev "hubport,id=net1_user_hub,hubid=1,netdev=net1_user"
   fi
   set -- "$@" \
-    -netdev "socket,id=net1_socket,listen=${net_socket_host}:${net_socket_port}" \
+    -netdev "stream,id=net1_socket,server=on,addr.type=inet,addr.host=${net_socket_host},addr.port=${net_socket_port}" \
     -netdev "hubport,id=net1_socket_hub,hubid=1,netdev=net1_socket"
   if [ "$net_socket_port_2" != "none" ]; then
     set -- "$@" \
-      -netdev "socket,id=net1_socket_2,listen=${net_socket_host}:${net_socket_port_2}" \
+      -netdev "stream,id=net1_socket_2,server=on,addr.type=inet,addr.host=${net_socket_host},addr.port=${net_socket_port_2}" \
       -netdev "hubport,id=net1_socket_2_hub,hubid=1,netdev=net1_socket_2"
   fi
   set -- "$@" -netdev "hubport,id=net1,hubid=1"
 elif [ "$net_socket_port" != "none" ]; then
-  net1_options="socket,id=net1,listen=${net_socket_host}:${net_socket_port}"
+  net1_options="stream,id=net1,server=on,addr.type=inet,addr.host=${net_socket_host},addr.port=${net_socket_port}"
   set -- "$@" -netdev "$net1_options"
 else
   net1_options="user,id=net1"

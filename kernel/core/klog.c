@@ -143,6 +143,14 @@ void klog_write(const char *message, uint64_t length) {
   }
 }
 
+void klog_write_atomic(const char *message, uint64_t length) {
+  if (message == 0 || length == 0U) return;
+  xaios_spin_lock(&g_klog_lock);
+  klog_write(message, length);
+  klog_line_flush();
+  xaios_spin_unlock(&g_klog_lock);
+}
+
 static void klog_u64_width(uint64_t value, unsigned base, unsigned width,
                            char padding) {
   char buffer[32];

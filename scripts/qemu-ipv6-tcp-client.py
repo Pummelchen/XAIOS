@@ -18,6 +18,13 @@ CLIENT_IP_V4 = ipaddress.IPv4Address("10.0.2.100").packed
 GUEST_IP_V4 = ipaddress.IPv4Address("10.0.2.15").packed
 CLIENT_PORT = 42022
 GUEST_PORT = 22
+ETHERNET_MIN_FRAME_BYTES = 60
+
+
+def pad_ethernet_frame(frame: bytes) -> bytes:
+    if len(frame) >= ETHERNET_MIN_FRAME_BYTES:
+        return frame
+    return frame + bytes(ETHERNET_MIN_FRAME_BYTES - len(frame))
 
 
 def checksum(data: bytes) -> int:
@@ -54,7 +61,9 @@ def ethernet_frame(
 ) -> bytes:
     tcp = tcp_segment(seq, ack, flags, payload, valid_checksum)
     ipv6 = struct.pack("!IHBB16s16s", 6 << 28, len(tcp), 6, 64, CLIENT_IP, GUEST_IP)
-    return GUEST_MAC + CLIENT_MAC + struct.pack("!H", 0x86DD) + ipv6 + tcp
+    return pad_ethernet_frame(
+        GUEST_MAC + CLIENT_MAC + struct.pack("!H", 0x86DD) + ipv6 + tcp
+    )
 
 
 def ipv4_tcp_frame(
@@ -97,7 +106,9 @@ def ipv4_tcp_frame(
     )
     ip_checksum = checksum(ip) if valid_ip_checksum else 0
     ip = ip[:10] + struct.pack("!H", ip_checksum) + ip[12:]
-    return GUEST_MAC + CLIENT_MAC + struct.pack("!H", 0x0800) + ip + tcp
+    return pad_ethernet_frame(
+        GUEST_MAC + CLIENT_MAC + struct.pack("!H", 0x0800) + ip + tcp
+    )
 
 
 def ipv4_tcp_fragments(seq: int, identification: int) -> list[bytes]:
@@ -106,7 +117,8 @@ def ipv4_tcp_fragments(seq: int, identification: int) -> list[bytes]:
     )
     ethernet = whole[:14]
     ip = whole[14:34]
-    tcp = whole[34:]
+    total_length = struct.unpack("!H", ip[2:4])[0]
+    tcp = whole[34 : 14 + total_length]
     fragments = []
     for offset, payload, more in ((0, tcp[:8], True), (8, tcp[8:], False)):
         fragment_ip = bytearray(ip)
@@ -116,7 +128,9 @@ def ipv4_tcp_fragments(seq: int, identification: int) -> list[bytes]:
         )
         fragment_ip[10:12] = b"\0\0"
         fragment_ip[10:12] = struct.pack("!H", checksum(bytes(fragment_ip)))
-        fragments.append(ethernet + bytes(fragment_ip) + payload)
+        fragments.append(
+            pad_ethernet_frame(ethernet + bytes(fragment_ip) + payload)
+        )
     return fragments
 
 
@@ -137,12 +151,14 @@ def ipv6_tcp_fragments(seq: int, identification: int) -> list[bytes]:
             GUEST_IP,
         )
         fragments.append(
-            GUEST_MAC
-            + CLIENT_MAC
-            + struct.pack("!H", 0x86DD)
-            + ipv6
-            + fragment_header
-            + payload
+            pad_ethernet_frame(
+                GUEST_MAC
+                + CLIENT_MAC
+                + struct.pack("!H", 0x86DD)
+                + ipv6
+                + fragment_header
+                + payload
+            )
         )
     return fragments
 
@@ -323,8 +339,8 @@ def main() -> int:
 
         ipv4_fragment_seq = 0x55667900
         ipv4_fragments = ipv4_tcp_fragments(ipv4_fragment_seq, 0x1235)
-        send_frame(sock, ipv4_fragments[1])
         send_frame(sock, ipv4_fragments[0])
+        send_frame(sock, ipv4_fragments[1])
         ipv4_server_seq, ipv4_ack, _, _ = wait_for_tcp_v4(
             sock,
             lambda packet: packet[2] & 0x12 == 0x12,
