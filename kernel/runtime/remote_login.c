@@ -1,6 +1,8 @@
 #include <xaios/assert.h>
+#include <xaios/initramfs.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
+#include <xaios/klog_ring.h>
 #include <xaios/mutable_fs.h>
 #include <xaios/pmm.h>
 #include <xaios/remote_login.h>
@@ -14,6 +16,10 @@
 
 #ifndef XAIOS_REMOTE_LOGIN_LIST_BYTES
 #define XAIOS_REMOTE_LOGIN_LIST_BYTES XAIOS_MFS_MAX_FILE_BYTES
+#endif
+
+#ifndef XAIOS_BOOT_TEST_APPS
+#define XAIOS_BOOT_TEST_APPS 0
 #endif
 
 static uint64_t g_remote_login_sessions;
@@ -3862,6 +3868,137 @@ static xaios_status_t handle_htop(const char *args, char *output,
   return XAIOS_OK;
 }
 
+#if !XAIOS_BOOT_TEST_APPS
+typedef struct remote_app_definition {
+  const char *command;
+  const char *path;
+  uint64_t capabilities;
+} remote_app_definition_t;
+
+static const remote_app_definition_t g_remote_apps[] = {
+    {"hello", "/bin/hello", XAIOS_CAP_LOG | XAIOS_CAP_EXIT},
+    {"sysinfo", "/bin/sysinfo",
+     XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_TIME},
+    {"systest", "/bin/systest",
+     XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_FS_READ |
+         XAIOS_CAP_FS_WRITE},
+    {"smptest", "/bin/smptest",
+     XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_OSCTL | XAIOS_CAP_SMP |
+         XAIOS_CAP_THREADS},
+    {"nettest", "/bin/nettest",
+     XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_OSCTL | XAIOS_CAP_NET |
+         XAIOS_CAP_TIME},
+    {"lstm-xor", "/bin/lstm-xor",
+     XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_CPU_AI | XAIOS_CAP_ML},
+    {"mltest", "/bin/mltest",
+     XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_CPU_AI | XAIOS_CAP_ML},
+    {"posix-shell", "/bin/posix-shell",
+     XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_REMOTE_LOGIN},
+    {"agenttest", "/bin/agenttest",
+     XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_AGENT | XAIOS_CAP_CPU_AI |
+         XAIOS_CAP_ML},
+};
+
+static const remote_app_definition_t *remote_app_find(const char *command) {
+  for (uint32_t i = 0U;
+       i < sizeof(g_remote_apps) / sizeof(g_remote_apps[0]); ++i) {
+    if (string_equal(command, g_remote_apps[i].command) != 0) {
+      return &g_remote_apps[i];
+    }
+  }
+  return 0;
+}
+
+static int line_has_prefix(const char *line, uint32_t length,
+                           const char *prefix) {
+  uint32_t i = 0U;
+  if (line == 0 || prefix == 0) return 0;
+  while (prefix[i] != '\0') {
+    if (i >= length || line[i] != prefix[i]) return 0;
+    ++i;
+  }
+  return 1;
+}
+
+static void append_app_log_lines(char *output, uint64_t output_capacity,
+                                 uint64_t *output_bytes, const char *log,
+                                 uint32_t log_bytes, const char *path) {
+  uint32_t line_start = 0U;
+  for (uint32_t i = 0U; i <= log_bytes; ++i) {
+    if (i != log_bytes && log[i] != '\n') continue;
+    uint32_t line_bytes = i - line_start;
+    if (line_has_prefix(&log[line_start], line_bytes, path) != 0) {
+      for (uint32_t j = line_start; j < i; ++j) {
+        (void)output_append_char(output, output_capacity, output_bytes, log[j]);
+      }
+      (void)output_append_char(output, output_capacity, output_bytes, '\n');
+    }
+    line_start = i + 1U;
+  }
+}
+
+static xaios_status_t handle_remote_app(
+    const remote_app_definition_t *app, const char *args, char *output,
+    uint64_t output_capacity, uint64_t *output_bytes) {
+  const xaios_initramfs_file_t *file = 0;
+  char *log;
+  uint64_t cursor;
+  uint64_t start_cursor = 0U;
+  uint64_t next_cursor = 0U;
+  uint64_t latest_cursor = 0U;
+  uint32_t log_bytes;
+  int exit_code = 0;
+  xaios_status_t status;
+
+  if (app == 0 || args == 0 || args[skip_ws(args, 0U)] != '\0') {
+    return command_fail(output, output_capacity, output_bytes,
+                        "application: arguments are not supported");
+  }
+  if (initramfs_lookup(app->path, &file) != XAIOS_OK || file == 0 ||
+      file->executable == 0U) {
+    return command_fail(output, output_capacity, output_bytes,
+                        "application: executable unavailable");
+  }
+
+  log = (char *)kheap_alloc(XAIOS_KLOG_FLUSH_MAX, 16U);
+  if (log == 0) {
+    return command_fail(output, output_capacity, output_bytes,
+                        "application: output buffer unavailable");
+  }
+  cursor = klog_ring_total_written();
+  status = user_process_run_transient(file, app->capabilities, &exit_code);
+  log_bytes = klog_ring_snapshot(log, XAIOS_KLOG_FLUSH_MAX, cursor,
+                                 &start_cursor, &next_cursor, &latest_cursor);
+  if (status == XAIOS_OK) {
+    append_app_log_lines(output, output_capacity, output_bytes, log, log_bytes,
+                         app->path);
+  }
+  kheap_free(log);
+
+  if (status == XAIOS_ERR_BUSY) {
+    return command_fail(output, output_capacity, output_bytes,
+                        "application: another transient command is running");
+  }
+  if (status != XAIOS_OK) {
+    return command_fail(output, output_capacity, output_bytes,
+                        "application: launch failed");
+  }
+  if (exit_code != 0) {
+    output_append(output, output_capacity, output_bytes, app->command);
+    output_append(output, output_capacity, output_bytes, ": exit status ");
+    output_append_u64(output, output_capacity, output_bytes,
+                      (uint64_t)(uint32_t)exit_code);
+    output_append(output, output_capacity, output_bytes, "\n");
+    return XAIOS_ERR_INVALID;
+  }
+  if (*output_bytes == 0U) {
+    output_append(output, output_capacity, output_bytes, app->command);
+    output_append(output, output_capacity, output_bytes, ": complete\n");
+  }
+  return XAIOS_OK;
+}
+#endif
+
 static xaios_status_t parse_and_execute(const char *command, char *output,
                                       uint64_t output_capacity,
                                       uint64_t *output_bytes) {
@@ -3888,6 +4025,7 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
         output, output_capacity, output_bytes,
         "XAIOS shell: pwd ls l la ll cd mkdir touch cp grep find head tail echo "
         "tar cpio cat mv rm rmdir stat write sed nano htop status sysinfo "
+        "hello systest smptest nettest lstm-xor mltest posix-shell agenttest "
         "xaiosctl exit "
         "quit logout help\n");
     return XAIOS_OK;
@@ -3899,11 +4037,25 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
     return XAIOS_OK;
   }
   if (string_equal(cmd, "sysinfo") == 1U) {
+#if XAIOS_BOOT_TEST_APPS
     output_append(output, output_capacity, output_bytes,
                   "sysinfo: legacy command; use xaiosctl hardware for "
                   "discovered state\n");
     return XAIOS_OK;
+#else
+    return handle_remote_app(remote_app_find(cmd), args, output,
+                             output_capacity, output_bytes);
+#endif
   }
+#if !XAIOS_BOOT_TEST_APPS
+  {
+    const remote_app_definition_t *app = remote_app_find(cmd);
+    if (app != 0) {
+      return handle_remote_app(app, args, output, output_capacity,
+                               output_bytes);
+    }
+  }
+#endif
   if (string_equal(cmd, "pwd") == 1U) {
     return handle_pwd(output, output_capacity, output_bytes);
   }

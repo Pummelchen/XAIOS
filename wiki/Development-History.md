@@ -3,6 +3,21 @@
 This page summarizes significant implementation and validation changes. Git
 commits, source code, and machine-readable test artifacts remain authoritative.
 
+## 2026-08-10 - on-demand diagnostic applications
+
+- Removed workers and diagnostic applications from the normal boot lifecycle;
+  persistent SSH now starts as PID 3 after `/init` and the service manager.
+- Added an exact SSH diagnostic registry that runs each utility in a separate
+  transient address space and reaps its process slot and pages after exit.
+- Kept historical boot markers under the explicit `XAIOS_BOOT_TEST_APPS=1`
+  QEMU fixture profile.
+- Made process-local user mappings authoritative and preserved complete
+  AArch64 callee-saved state across nested EL0 execution.
+- Provisioned `/tmp`, `/home`, and `/home/admin` during filesystem mount so SFTP
+  no longer depends on `systest` having run during boot.
+- Passed the QEMU smoke contract and the Debian 13 OpenSSH/SFTP/network suite,
+  including the on-demand execution and reaping assertion.
+
 ## 2026-08-10 - interactive XAIOS htop
 
 - Made bare `htop` select all process slots, all detected CPUs, and a 250 ms

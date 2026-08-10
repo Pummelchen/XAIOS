@@ -143,9 +143,13 @@ Run `make compile-check`, `make qemu-abi-contract`, and the focused QEMU gate.
 
 1. Add the source under `userspace/apps/`.
 2. Register it in `scripts/build-image.sh`.
-3. Launch it from `kernel/core/kmain.c` with the smallest capability mask.
-4. Add a functional smoke marker when it participates in boot validation.
-5. Run `make image && make qemu-smoke`.
+3. For an SSH diagnostic, add its exact name, path, and smallest capability
+   mask to `g_remote_apps` in `kernel/runtime/remote_login.c`; arguments and
+   arbitrary executable paths remain unsupported.
+4. Add a `run_user_app` call under `XAIOS_BOOT_TEST_APPS` only when the
+   diagnostic must participate in deterministic boot validation.
+5. Add a functional smoke marker when it participates in boot validation.
+6. Run `make image && make qemu-smoke`.
 
 ### Kernel subsystem
 

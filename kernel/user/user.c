@@ -14,6 +14,7 @@
 
 #define PAGE_SIZE UINT64_C(4096)
 #define USER_STACK_PAGES UINT64_C(64)
+#define XAIOS_TRANSIENT_PID_FIRST 32U
 
 static void bytes_zero(void *buffer, uint64_t size) {
   uint8_t *bytes = (uint8_t *)buffer;
@@ -68,6 +69,7 @@ static uint64_t g_process_reclaim_count;
 static uint64_t g_process_scheduled_count;
 static uint64_t g_process_wait_count;
 static uint64_t g_process_wake_count;
+static uint32_t g_transient_process_busy;
 
 extern uint64_t aarch64_enter_user(uint64_t entry, uint64_t stack);
 
@@ -327,6 +329,7 @@ void user_process_table_init(void) {
   g_process_scheduled_count = 0;
   g_process_wait_count = 0;
   g_process_wake_count = 0;
+  g_transient_process_busy = 0U;
   g_cpu_usage_count = smp_online_count();
   g_cpu_usage = (xaios_cpu_usage_record_t *)kheap_calloc(
       (uint64_t)g_cpu_usage_count * sizeof(xaios_cpu_usage_record_t), 64U);
@@ -793,6 +796,66 @@ int user_process_run_concurrent(const xaios_user_process_t *process) {
   return exit_code;
 }
 
+xaios_status_t user_process_run_transient(
+    const xaios_initramfs_file_t *file, uint64_t capability_mask,
+    int *exit_code) {
+  const xaios_user_process_t *parent = user_current_process();
+  xaios_user_process_t child;
+  uint32_t child_pid = 0U;
+  uint32_t parent_pid;
+  uint32_t cpu_id;
+  xaios_status_t status = XAIOS_ERR_NO_MEMORY;
+
+  if (file == 0 || exit_code == 0 || parent == 0 || parent->pid == 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  if (__sync_lock_test_and_set(&g_transient_process_busy, 1U) != 0U) {
+    return XAIOS_ERR_BUSY;
+  }
+
+  parent_pid = parent->pid;
+  cpu_id = smp_cpu_id();
+  for (uint32_t pid = XAIOS_TRANSIENT_PID_FIRST;
+       pid <= XAIOS_MAX_USER_PROCESSES; ++pid) {
+    if (g_process_table[pid - 1U].state == XAIOS_USER_PROCESS_EMPTY) {
+      child_pid = pid;
+      break;
+    }
+  }
+  if (child_pid == 0U) {
+    goto out;
+  }
+
+  status = user_load_process(file, child_pid, capability_mask, &child);
+  if (status != XAIOS_OK) {
+    user_switch_address_space(parent_pid);
+    goto out;
+  }
+  status = user_process_make_runnable(child_pid, parent_pid);
+  if (status != XAIOS_OK) {
+    user_process_reclaim_address_space(&child);
+    user_switch_address_space(parent_pid);
+    (void)user_process_reap(child_pid);
+    goto out;
+  }
+  kassert(user_process_snapshot(child_pid, &child) == XAIOS_OK);
+
+  user_process_runtime_stop(parent_pid, cpu_id, timer_now_ns());
+  *exit_code = user_process_run(&child);
+
+  user_process_reclaim_address_space(&child);
+  kassert(user_bind_current_process(parent_pid) == XAIOS_OK);
+  user_switch_address_space(parent_pid);
+  user_process_runtime_start(parent_pid, cpu_id, timer_now_ns());
+
+  kassert(user_process_reap(child_pid) == XAIOS_OK);
+  status = XAIOS_OK;
+
+out:
+  __sync_lock_release(&g_transient_process_busy);
+  return status;
+}
+
 void user_process_reclaim_address_space(const xaios_user_process_t *process) {
   if (process == 0) {
     return;
@@ -842,6 +905,26 @@ void user_process_reclaim_address_space(const xaios_user_process_t *process) {
   ++g_process_reclaim_count;
   klog("user: reclaimed address space pid=%u range=[0x%lx,0x%lx)\n",
        process->pid, process->mapped_low, process->mapped_high);
+}
+
+xaios_status_t user_process_reap(uint32_t pid) {
+  xaios_user_process_t *process;
+  if (pid == 0U || pid > XAIOS_MAX_USER_PROCESSES) {
+    return XAIOS_ERR_INVALID;
+  }
+  process = &g_process_table[pid - 1U];
+  if (process->pid != pid || process->aspace.l3_count != 0U ||
+      (process->state != XAIOS_USER_PROCESS_LOADED &&
+       process->state != XAIOS_USER_PROCESS_EXITED &&
+       process->state != XAIOS_USER_PROCESS_FAILED)) {
+    return XAIOS_ERR_INVALID;
+  }
+  if (g_current_process == process) {
+    return XAIOS_ERR_BUSY;
+  }
+  reset_process_slot(process);
+  klog("user: reaped transient process pid=%u\n", pid);
+  return XAIOS_OK;
 }
 
 void user_switch_address_space(uint32_t pid) {

@@ -64,6 +64,10 @@
 #include <xaios/vmm.h>
 #include <xaios/watchdog.h>
 
+#ifndef XAIOS_BOOT_TEST_APPS
+#define XAIOS_BOOT_TEST_APPS 0
+#endif
+
 static const char g_vmm_rodata_probe[] = "vmm-rodata";
 static uint64_t g_vmm_data_probe;
 static virtio_block_handle_t *g_storage_admin_handle;
@@ -355,7 +359,9 @@ void kmain(const xaios_boot_info_t *boot) {
 
   const xaios_initramfs_file_t *init_file = 0;
   const xaios_initramfs_file_t *manager_file = 0;
+#if XAIOS_BOOT_TEST_APPS
   const xaios_initramfs_file_t *worker_file = 0;
+#endif
   xaios_user_process_t init_process;
   xaios_user_process_t manager_process;
   const xaios_initramfs_config_t *init_config = initramfs_config();
@@ -363,7 +369,9 @@ void kmain(const xaios_boot_info_t *boot) {
   kassert(initramfs_lookup(init_config->service_path, &init_file) == XAIOS_OK);
   kassert(initramfs_lookup(init_config->service_manager_path, &manager_file) ==
           XAIOS_OK);
+#if XAIOS_BOOT_TEST_APPS
   kassert(initramfs_lookup("/bin/xaios-worker", &worker_file) == XAIOS_OK);
+#endif
   kassert(user_load_init(init_file, &init_process) == XAIOS_OK);
   int init_exit_code = user_process_run(&init_process);
   kassert(init_exit_code == 0);
@@ -408,6 +416,7 @@ void kmain(const xaios_boot_info_t *boot) {
   xaios_thread_self_test();
   klog("kernel: preemptive scheduler infrastructure enabled\n");
 
+#if XAIOS_BOOT_TEST_APPS
   for (uint32_t pid = 3; pid <= 5; ++pid) {
     xaios_user_process_t worker_process;
     kassert(user_load_process(worker_file, pid, XAIOS_CAP_LOG | XAIOS_CAP_EXIT,
@@ -421,6 +430,7 @@ void kmain(const xaios_boot_info_t *boot) {
          pid, (unsigned)worker_exit_code);
     user_process_reclaim_address_space(&worker_process);
   }
+#endif
 
   /* Stop preemption after the concurrent worker gate. Keep interrupt delivery
    * available for bounded userspace idle waits and VirtIO completions. */
@@ -428,7 +438,17 @@ void kmain(const xaios_boot_info_t *boot) {
   timer_disable();
   klog("kernel: preemption disabled; interrupt-backed idle waits retained\n");
 
-  /* Per-app least-privilege capability masks */
+  const uint64_t sshd_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_FS_READ |
+      XAIOS_CAP_FS_WRITE | XAIOS_CAP_NET_SOCKET | XAIOS_CAP_REMOTE_LOGIN |
+      XAIOS_CAP_TIME | XAIOS_CAP_RANDOM | XAIOS_CAP_CONTROL_QUERY |
+      XAIOS_CAP_CONTROL_ADMIN | XAIOS_CAP_STORAGE_READ |
+      XAIOS_CAP_STORAGE_MOUNT | XAIOS_CAP_STORAGE_FORMAT |
+      XAIOS_CAP_STORAGE_PARTITION | XAIOS_CAP_STORAGE_REPAIR |
+      XAIOS_CAP_STORAGE_RESIZE | XAIOS_CAP_STORAGE_TRIM |
+      XAIOS_CAP_MODEL_STAGE | XAIOS_CAP_MODEL_ACTIVATE;
+
+#if XAIOS_BOOT_TEST_APPS
+  /* Deterministic QEMU gate profile: execute diagnostic applications once. */
   const uint64_t shell_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_FS_READ |
       XAIOS_CAP_FS_WRITE | XAIOS_CAP_OSCTL | XAIOS_CAP_TIME |
       XAIOS_CAP_NET | XAIOS_CAP_NET_SOCKET | XAIOS_CAP_REMOTE_LOGIN;
@@ -452,15 +472,6 @@ void kmain(const xaios_boot_info_t *boot) {
       XAIOS_CAP_REMOTE_LOGIN;
   const uint64_t agenttest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_AGENT |
       XAIOS_CAP_CPU_AI | XAIOS_CAP_ML;
-  const uint64_t sshd_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_FS_READ |
-      XAIOS_CAP_FS_WRITE | XAIOS_CAP_NET_SOCKET | XAIOS_CAP_REMOTE_LOGIN |
-      XAIOS_CAP_TIME | XAIOS_CAP_RANDOM | XAIOS_CAP_CONTROL_QUERY |
-      XAIOS_CAP_CONTROL_ADMIN | XAIOS_CAP_STORAGE_READ |
-      XAIOS_CAP_STORAGE_MOUNT | XAIOS_CAP_STORAGE_FORMAT |
-      XAIOS_CAP_STORAGE_PARTITION | XAIOS_CAP_STORAGE_REPAIR |
-      XAIOS_CAP_STORAGE_RESIZE | XAIOS_CAP_STORAGE_TRIM |
-      XAIOS_CAP_MODEL_STAGE | XAIOS_CAP_MODEL_ACTIVATE;
-
   run_user_app("/bin/xaios-shell", 6, shell_caps);
   run_user_app("/bin/xaiosctl", 7, xaiosctl_caps);
   run_user_app("/bin/hello", 8, hello_caps);
@@ -473,6 +484,9 @@ void kmain(const xaios_boot_info_t *boot) {
   run_user_app("/bin/mltest", 15, mltest_caps);
   run_user_app("/bin/posix-shell", 16, posix_shell_caps);
   run_user_app("/bin/agenttest", 17, agenttest_caps);
+#else
+  klog("kernel: boot diagnostics disabled; utilities are SSH on-demand\n");
+#endif
 
   telemetry_emit_boot_summary();
 
@@ -481,7 +495,7 @@ void kmain(const xaios_boot_info_t *boot) {
   }
 
   klog("kernel: starting persistent /bin/sshd service\n");
-  run_user_app("/bin/sshd", 18, sshd_caps);
+  run_user_app("/bin/sshd", XAIOS_BOOT_TEST_APPS ? 18U : 3U, sshd_caps);
 
   for (;;) {
     xaios_cpu_wait();

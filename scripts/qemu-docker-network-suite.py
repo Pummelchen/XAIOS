@@ -203,6 +203,46 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
         "-p", str(port),
         "admin@host.docker.internal",
     ]
+
+    def run_guest(command: str, timeout: int = 60) -> bytes:
+        completed = subprocess.run(
+            docker_command(key_dir, *ssh_base, command),
+            cwd=ROOT,
+            capture_output=True,
+            timeout=timeout,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"native command failed: {command!r}: "
+                + (completed.stdout + completed.stderr).decode(errors="replace")
+            )
+        return completed.stdout
+
+    transient_paths = (b"/bin/hello", b"/bin/sysinfo", b"/bin/lstm-xor")
+    initial_processes = run_guest("htop --plain --sample-ms 10")
+    unexpected = [path for path in transient_paths if path in initial_processes]
+    if unexpected:
+        raise RuntimeError(
+            f"normal boot pre-ran transient applications: {unexpected!r}"
+        )
+
+    for command, marker in (
+        ("hello", b"/bin/hello: C toolchain and EL0 runtime integration passed"),
+        ("sysinfo", b"/bin/sysinfo: complete"),
+        ("lstm-xor", b"/bin/lstm-xor: xor solve passed predictions=0,1,1,0"),
+    ):
+        app_output = run_guest(command, 120)
+        if marker not in app_output:
+            raise RuntimeError(
+                f"on-demand application {command!r} lacked marker: "
+                + app_output.decode(errors="replace")
+            )
+
+    final_processes = run_guest("htop --plain --sample-ms 10")
+    unreaped = [path for path in transient_paths if path in final_processes]
+    if unreaped:
+        raise RuntimeError(f"transient applications were not reaped: {unreaped!r}")
+
     colored = subprocess.Popen(
         docker_command(
             key_dir,
@@ -550,6 +590,7 @@ def main() -> int:
         results["native_htop_pty_ansi"] = "passed"
         results["native_htop_non_pty_plain"] = "passed"
         results["native_htop_invalid_option_rejected"] = "passed"
+        results["native_transient_apps_on_demand"] = "passed"
         results["ssh_port"] = ssh_port
         results["udp_port"] = udp_port
         results["packet_capture"] = str(packet_capture)

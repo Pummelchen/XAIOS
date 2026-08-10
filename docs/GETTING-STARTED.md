@@ -61,7 +61,10 @@ make qemu-smoke   # Boots and validates the AArch64 QEMU contract
 ```
 
 The smoke test is the primary AArch64 QEMU validation: it boots the prototype,
-executes its self-tests and userspace fixtures, and validates JSON telemetry.
+builds the explicit `XAIOS_BOOT_TEST_APPS=1` profile, executes its self-tests and
+userspace fixtures, and validates JSON telemetry. A normal `make image` leaves
+those diagnostics stopped until an administrator invokes their exact command
+name over SSH. `make image-qemu-test` builds the fixture profile directly.
 It is correctness evidence, not production or hardware-performance evidence.
 
 ### VMware Fusion on Apple Silicon
@@ -207,9 +210,15 @@ Edit `scripts/build-image.sh`, line 23. Add your app name to `USER_APPS`:
 USER_APPS="xaios-shell xaiosctl hello sysinfo systest smptest nettest lstm-xor sshtest mltest posix-shell agenttest myapp"
 ```
 
-### 3. Register the app in kmain
+### 3. Register an execution path
 
-Edit `kernel/core/kmain.c`, add after the existing `run_user_app` calls (around line 308):
+Normal images do not run applications during boot. To expose a diagnostic over
+SSH, add its exact command name, initramfs path, and least-privilege capability
+mask to `g_remote_apps` in `kernel/runtime/remote_login.c`. The command accepts
+no arguments and the runtime reaps it after completion.
+
+For a deterministic boot fixture only, add a `run_user_app` call inside the
+`XAIOS_BOOT_TEST_APPS` block in `kernel/core/kmain.c`:
 
 ```c
 run_user_app("/bin/myapp", 15, app_caps);
@@ -228,7 +237,8 @@ Edit `scripts/qemu-smoke.py`, add your expected output to the `TARGETS` list:
 ### 5. Build and test
 
 ```sh
-make image && make qemu-smoke
+make image
+make qemu-smoke
 ```
 
 ### Key constraints

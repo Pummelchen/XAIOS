@@ -28,6 +28,7 @@ dependencies are listed in `requirements-dev.txt`.
 |---|---|
 | `make all` | Default repository build. |
 | `make image` | AArch64 UEFI loader, kernel, userspace, initramfs, and QEMU disk images. |
+| `make image-qemu-test` | Same image with deterministic boot diagnostics enabled for fixture gates. |
 | `make image-x86_64` | Focused x86_64 UEFI bring-up image. |
 | `make engine-cli` | Native portable-engine command-line tool. |
 | `make vmware-fusion-image` | Apple Silicon Fusion ISO and VM bundle through the ARM64 GRUB compatibility stage. |
@@ -37,6 +38,8 @@ dependencies are listed in `requirements-dev.txt`.
 architecture compiler targets, builds EFI/kernel/userspace objects, creates the
 initramfs, and assembles the disk images. Architecture-specific source must be
 compiled for its actual target; CI keeps AArch64 and x86_64 gates separate.
+Normal images do not execute diagnostic applications during boot. Marker-based
+QEMU targets set `XAIOS_BOOT_TEST_APPS=1` through `make image-qemu-test`.
 
 ## Run targets
 

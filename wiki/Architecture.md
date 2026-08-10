@@ -20,8 +20,11 @@ they do not prove physical performance or production readiness.
 4. The kernel initializes architecture services, memory, devices, storage,
    filesystems, security, networking, processes, runtime services, and
    telemetry in dependency order.
-5. The AArch64 image loads `/init`, the service manager, workers, applications,
-   and SSH/SFTP from initramfs before entering its persistent service loop.
+5. A normal AArch64 image loads `/init`, the service manager, and persistent
+   SSH/SFTP from initramfs. Exact allowlisted diagnostic commands are loaded in
+   separate transient address spaces only when invoked over SSH, then reaped.
+   QEMU correctness gates use an explicit profile that runs workers and
+   diagnostics during boot to retain deterministic fixture markers.
 
 ## Major components
 
@@ -69,7 +72,7 @@ make image
 
 ```text
 make qemu-smoke
-  -> build image
+  -> build the explicit boot-diagnostic fixture image
   -> boot isolated QEMU guest
   -> collect serial markers and telemetry
   -> validate the release-candidate contract

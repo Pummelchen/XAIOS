@@ -40,6 +40,14 @@ case "$BUILD_MODE" in
     exit 2
     ;;
 esac
+BOOT_TEST_APPS="${XAIOS_BOOT_TEST_APPS:-0}"
+case "$BOOT_TEST_APPS" in
+  0|1) ;;
+  *)
+    printf '%s\n' "error: XAIOS_BOOT_TEST_APPS must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
 PASSWORD_AUTH_CFLAG="-DXAIOS_PASSWORD_AUTH_AVAILABLE=0"
 if [ "${XAIOS_SSH_USERS_FILE:-}" != "" ]; then
   if [ "${XAIOS_SSH_PASSWORD_AUTH:-}" != "1" ]; then
@@ -238,7 +246,7 @@ if ! git -C "$ROOT_DIR" diff-index --quiet HEAD -- 2>/dev/null ||
    [ -n "$(git -C "$ROOT_DIR" ls-files --others --exclude-standard 2>/dev/null)" ]; then
   BUILD_IDENTIFIER="${BUILD_IDENTIFIER}-dirty"
 fi
-KERNEL_CFLAGS="$KERNEL_CFLAGS $PASSWORD_AUTH_CFLAG"
+KERNEL_CFLAGS="$KERNEL_CFLAGS $PASSWORD_AUTH_CFLAG -DXAIOS_BOOT_TEST_APPS=$BOOT_TEST_APPS"
 
 compile_kernel() {
   source_path="$1"

@@ -849,7 +849,7 @@ static xaios_status_t ensure_base_directories(void) {
   static const char *const paths[] = {
       "/", "/etc", "/bin", "/state", "/state/services",
       "/state/workspaces", "/state/updates", "/config", "/logs",
-      "/workspaces", "/models",
+      "/workspaces", "/models", "/tmp", "/home", "/home/admin",
   };
   for (uint32_t i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i) {
     if (create_dir(paths[i]) != XAIOS_OK) {
@@ -1872,6 +1872,10 @@ void mutable_fs_self_test(void) {
   kassert(mount_volume(MFS_MOUNT_READ_WRITE) == XAIOS_OK);
   kassert(format_volume() == XAIOS_OK);
   kassert(ensure_base_directories() == XAIOS_OK);
+  xaios_mfs_node_t *base_node = find_node("/tmp", 1);
+  kassert(base_node != 0 && base_node->type == MFS_NODE_DIR);
+  base_node = find_node("/home/admin", 1);
+  kassert(base_node != 0 && base_node->type == MFS_NODE_DIR);
 
   kassert(mutable_fs_record_service_state("/svc/source-index", "running") ==
           XAIOS_OK);

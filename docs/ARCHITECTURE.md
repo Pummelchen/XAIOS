@@ -64,9 +64,12 @@ services, and jumps to `kmain`. The kernel establishes its own page tables.
 29. telemetry_emit()          — Boot summary JSON
 ```
 
-After self-tests, the kernel exercises bounded workers and userspace apps, then
-runs the persistent SSH service before its idle loop. This boot sequence is a
-QEMU correctness harness, not the final service-process architecture.
+After self-tests, a normal image runs `/init`, `/bin/service-manager`, and the
+persistent SSH service. Diagnostic applications are loaded into independent
+address spaces only when an administrator invokes their exact allowlisted name
+over SSH; the kernel reclaims their pages and process-table slot after exit.
+QEMU gates use a separate build profile that exercises bounded workers and all
+diagnostic applications during boot to preserve deterministic fixture markers.
 
 ## Directory Layout
 
@@ -174,12 +177,16 @@ XAIOS/
 
 1. Kernel loads `/init` from initramfs → PID 1, runs syscalls, exits
 2. Kernel loads `/bin/service-manager` → PID 2, supervises child services
-3. Service manager loads `/svc/source-index` → PID 3, crash/restart tested
-4. Workers (PIDs 3-5) run via scheduler for concurrent execution testing
-5. User apps (PIDs 6-17) run sequentially: shell, xaiosctl, hello, sysinfo, systest, smptest, nettest, lstm-xor, sshtest, mltest, posix-shell, agenttest
-6. Persistent `/bin/sshd` runs as PID 18 with control-query/admin capabilities;
-   authenticated key roles remain the per-request authority
-7. Kernel enters idle loop (`wfe`) after the service returns
+3. The service-manager fixture exercises `/svc/source-index` supervision without
+   retaining a userspace process-table entry
+4. A normal image starts persistent `/bin/sshd` as PID 3; authenticated key roles
+   remain the per-request authority
+5. Exact allowlisted diagnostic commands run on demand in a transient slot from
+   PID 32 upward, in their own address space, and are reaped after exit
+6. The `XAIOS_BOOT_TEST_APPS=1` QEMU fixture profile instead runs workers as PIDs
+   3-5, apps as PIDs 6-17, and persistent `/bin/sshd` as PID 18
+7. The boot CPU remains in the persistent SSH service; secondary CPUs use the
+   scheduler's interrupt-backed idle path when no work is assigned
 
 ## Security Model
 
@@ -195,6 +202,7 @@ XAIOS/
 ```
 make bootstrap   — Install toolchain (macOS: brew install llvm lld qemu mtools python)
 make image       — Build UEFI loader + kernel ELF + userspace → disk image
+make image-qemu-test — Build the deterministic boot-diagnostic fixture image
 make qemu        — Boot in QEMU (interactive)
 make qemu-smoke  — Automated smoke test (330+ boot markers)
 make hosted-test — Portable engine, ModelFS and storage correctness tests

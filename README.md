@@ -112,6 +112,14 @@ opt-in; exact target-model semantics are the default.
   non-PTY output stays a plain one-shot snapshot for automation. The htop sample
   interval uses an interrupt-backed idle wait that is not charged as artificial
   100% housekeeping-core load.
+  Normal images start only `/init`, `/bin/service-manager`, and the persistent
+  `/bin/sshd`; diagnostic applications are not run during boot. An administrator
+  can invoke `hello`, `sysinfo`, `systest`, `smptest`, `nettest`, `lstm-xor`,
+  `mltest`, `posix-shell`, or `agenttest` through the exact SSH command allowlist.
+  Each command runs in a separate transient address space and is reaped after
+  exit, so completed diagnostics do not remain in `htop`. The QEMU smoke gates
+  build a separate fixture profile that runs these applications once to retain
+  deterministic correctness markers.
   `scripts/ssh-xaios-qemu.sh` provides a quiet local QEMU client with persistent
   host-key checking for interactive commands such as `htop`. The server still
   negotiates classical `curve25519-sha256`; hybrid post-quantum SSH key exchange
@@ -140,8 +148,9 @@ opt-in; exact target-model semantics are the default.
   format/mount/grow/fsck, online scrub and trim, and storage discovery. Native
   macOS and Debian 13 OpenSSH clients validate these operations against one live
   guest. The `/bin/xaiosctl` image application exercises the same parser/renderer
-  used by the exact SSH allowlist; no arbitrary SSH executable launch is
-  provided.
+  used by the exact SSH allowlist. The allowlist also exposes a fixed set of
+  diagnostic applications as isolated transient processes; arbitrary paths,
+  arguments, and executable launch remain unavailable.
 - Dynamically sized userspace image-page tracking with checked cleanup. The SSH
   image is no longer constrained by the former fixed 256-page tracking array.
 - A backend-neutral 64-bit block API, redundant GPT parser/writer, mount-routing

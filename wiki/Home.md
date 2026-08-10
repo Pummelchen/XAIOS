@@ -36,6 +36,9 @@ unless the maintainer explicitly reprioritizes them.
 - `xaiosctl` Phase 2 is QEMU/OpenSSH fixture-tested with role-mapped keys,
   revocation, config transactions, host-key rotation, redacted audit and typed
   storage lifecycle administration.
+- Normal AArch64 images do not pre-run diagnostic applications. Exact
+  allowlisted diagnostics run as transient SSH commands and are reaped after
+  exit; deterministic QEMU gates retain a separate boot-fixture profile.
 - XAIOS uses a native freestanding ABI. FreeBSD is the primary external Unix
   behavioral reference, with a real FreeBSD 15.1 OpenSSH/SFTP/UDP QEMU gate;
   neither FreeBSD nor Linux binary ABI compatibility is claimed.

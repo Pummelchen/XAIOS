@@ -599,10 +599,6 @@ xaios_status_t vmm_map_user_page(uint64_t virtual_address,
 
   uint64_t *l3 = (uint64_t *)(uintptr_t)l3_tables[l3_slot];
   l3[l3_index] = page_descriptor(physical_address, attrs_from_flags(flags));
-
-  /* Also map into global tables for backward compatibility */
-  (void)l2_index;
-  vmm_map_page(virtual_address, physical_address, flags);
   return XAIOS_OK;
 }
 
@@ -620,8 +616,6 @@ xaios_status_t vmm_unmap_user_page(uint64_t virtual_address,
     l3[l3_index] = 0;
   }
 
-  /* Also unmap from global tables */
-  vmm_unmap_page(virtual_address);
   return XAIOS_OK;
 }
 

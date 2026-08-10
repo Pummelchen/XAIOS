@@ -45,10 +45,15 @@ kernel_entry:
   b 3b
 
 aarch64_enter_user:
-  sub sp, sp, #32
-  stp x29, x30, [sp]
+  sub sp, sp, #112
+  stp x19, x20, [sp, #0]
+  stp x21, x22, [sp, #16]
+  stp x23, x24, [sp, #32]
+  stp x25, x26, [sp, #48]
+  stp x27, x28, [sp, #64]
+  stp x29, x30, [sp, #80]
   mrs x3, tpidr_el1
-  str x3, [sp, #16]
+  str x3, [sp, #96]
   mov x9, sp
   msr tpidr_el1, x9
   mov x2, #0
@@ -60,10 +65,15 @@ aarch64_enter_user:
 .global aarch64_enter_user_thread
 .type aarch64_enter_user_thread, %function
 aarch64_enter_user_thread:
-  sub sp, sp, #32
-  stp x29, x30, [sp]
+  sub sp, sp, #112
+  stp x19, x20, [sp, #0]
+  stp x21, x22, [sp, #16]
+  stp x23, x24, [sp, #32]
+  stp x25, x26, [sp, #48]
+  stp x27, x28, [sp, #64]
+  stp x29, x30, [sp, #80]
   mrs x9, tpidr_el1
-  str x9, [sp, #16]
+  str x9, [sp, #96]
   mov x10, sp
   msr tpidr_el1, x10
   msr sp_el0, x1
@@ -77,8 +87,13 @@ aarch64_enter_user_thread:
 aarch64_return_from_user_exit:
   mrs x9, tpidr_el1
   mov sp, x9
-  ldr x10, [sp, #16]
-  ldp x29, x30, [sp]
-  add sp, sp, #32
+  ldr x10, [sp, #96]
+  ldp x19, x20, [sp, #0]
+  ldp x21, x22, [sp, #16]
+  ldp x23, x24, [sp, #32]
+  ldp x25, x26, [sp, #48]
+  ldp x27, x28, [sp, #64]
+  ldp x29, x30, [sp, #80]
+  add sp, sp, #112
   msr tpidr_el1, x10
   ret

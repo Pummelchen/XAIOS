@@ -123,15 +123,20 @@ does not remove that backend's capacity limit.
 
 ### Supported shell commands
 
-`pwd`, `ls` (with `-l`/`-a`), `cd`, `mkdir`, `touch`, `cat`, `cp`, `mv`, `rm`, `rmdir`, `stat`, `write`, `echo`, `grep`, `find`, `head`, `tail`, `sed`, `tar`, `cpio`, `nano`, `htop`, `xaiosctl`, `status`, `sysinfo`, `help`, `exit`.
+`pwd`, `ls` (with `-l`/`-a`), `cd`, `mkdir`, `touch`, `cat`, `cp`, `mv`, `rm`, `rmdir`, `stat`, `write`, `echo`, `grep`, `find`, `head`, `tail`, `sed`, `tar`, `cpio`, `nano`, `htop`, `xaiosctl`, `status`, `hello`, `sysinfo`, `systest`, `smptest`, `nettest`, `lstm-xor`, `mltest`, `posix-shell`, `agenttest`, `help`, `exit`.
 
 `xaiosctl` is the structured administrative entrypoint. The SSH
 daemon recognizes only the exact `xaiosctl` command prefix and calls the shared
-client library; it does not provide general executable launch. Authenticated
+client library. It also recognizes the fixed diagnostic names listed above,
+loads the matching initramfs ELF in a separate transient address space with a
+command-specific capability mask, captures its application log output, and
+reclaims its pages and process slot after exit. Diagnostic commands accept no
+arguments; arbitrary paths and executable launch are rejected. Authenticated
 Ed25519 keys map to observer, operator or administrator roles, and the kernel
 rechecks capability and requested role for every control operation. Legacy
-`status` and `sysinfo` remain compatibility commands but direct callers to
-measured `xaiosctl status` and `xaiosctl hardware` output.
+`status` remains a compatibility command that directs callers to measured
+`xaiosctl status` output. `sysinfo` invokes the legacy diagnostic ELF on demand;
+operators should use `xaiosctl hardware` for structured discovered state.
 
 Remote shell and SFTP access deny the private host key, password database,
 legacy authorized-key source and `/state/control` subtree. This path guard

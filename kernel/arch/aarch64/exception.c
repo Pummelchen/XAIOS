@@ -226,9 +226,20 @@ uint64_t aarch64_exception_entry(uint64_t kind, uint64_t esr, uint64_t elr,
   }
 
   if (kind == XAIOS_EXCEPTION_LOWER_A64_SYNC && ec == ESR_EC_SVC_A64) {
+    uint64_t parent_spsr;
+    uint64_t parent_sp;
+    __asm__ volatile("mrs %0, spsr_el1" : "=r"(parent_spsr));
+    __asm__ volatile("mrs %0, sp_el0" : "=r"(parent_sp));
     user_access_enable();
     uint64_t result = syscall_dispatch(syscall, arg0, arg1, arg2);
     user_access_disable();
+    __asm__ volatile("msr elr_el1, %0\n"
+                     "msr spsr_el1, %1\n"
+                     "msr sp_el0, %2\n"
+                     "isb\n"
+                     :
+                     : "r"(elr), "r"(parent_spsr), "r"(parent_sp)
+                     : "memory");
     return result;
   }
 

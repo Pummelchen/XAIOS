@@ -62,6 +62,15 @@ Non-PTY calls remain one-shot plain
 snapshots for automation. Process kill and priority controls are not offered
 until XAIOS has a safe generic process-control ABI.
 
+Normal images start only `/init`, `/bin/service-manager`, and persistent
+`/bin/sshd`. They do not pre-run `hello`, `sysinfo`, `lstm-xor`, or the other
+diagnostics. Administrators may invoke `hello`, `sysinfo`, `systest`, `smptest`,
+`nettest`, `lstm-xor`, `mltest`, `posix-shell`, and `agenttest` by exact command
+name. Each command receives a fixed least-privilege capability mask, runs in a
+separate transient address space, and is reaped after exit. Arbitrary paths and
+arguments remain rejected. `make qemu-smoke` uses the separate deterministic
+boot-diagnostic profile instead.
+
 Ed25519 principals are assigned observer, operator or administrator roles.
 Administrative audit entries and operational remote-login records omit command
 payloads and authentication material.
@@ -96,8 +105,8 @@ make xaios-ssh-bridge
 
 These commands provide development and QEMU correctness evidence only.
 
-The guest SSH server only admits its existing bounded shell command set plus
-the exact `xaiosctl` prefix. It does not provide arbitrary executable launch.
+The guest SSH server admits its bounded shell commands, exact `xaiosctl` prefix,
+and fixed diagnostic registry. It does not provide arbitrary executable launch.
 See the [xaiosctl reference](https://github.com/Pummelchen/XAIOS/blob/main/docs/XAIOSCTL.md)
 and [control protocol](https://github.com/Pummelchen/XAIOS/blob/main/docs/CONTROL-PROTOCOL.md).
 

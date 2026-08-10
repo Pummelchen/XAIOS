@@ -2,7 +2,7 @@ SHELL := /bin/sh
 HOST_CC ?= clang
 HOST_CFLAGS ?= -std=c99 -Wall -Wextra -Werror -pedantic
 
-.PHONY: all bootstrap test image image-x86_64 engine-cli vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-dry-run qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-dry-run qemu-smoke qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-parallel-network-load qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test docs-check production-source-audit qemu-baseline clean clean-persistent
+.PHONY: all bootstrap test image image-qemu-test image-x86_64 engine-cli vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-dry-run qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-dry-run qemu-smoke qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-parallel-network-load qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test docs-check production-source-audit qemu-baseline clean clean-persistent
 
 all: bootstrap image
 
@@ -13,6 +13,9 @@ test: bootstrap image qemu-dry-run
 
 image:
 	./scripts/build-image.sh
+
+image-qemu-test:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
 
 image-x86_64:
 	./scripts/build-image-x86_64.sh
@@ -50,43 +53,43 @@ qemu-dry-run:
 	./scripts/run-qemu-aarch64.sh --dry-run
 	./scripts/run-qemu-x86_64.sh --dry-run
 
-qemu-smoke: image
+qemu-smoke: image-qemu-test
 	python3 ./scripts/qemu-smoke.py
 
-qemu-process-gate: image
+qemu-process-gate: image-qemu-test
 	python3 ./scripts/qemu-process-gate.py
 
-qemu-osctl-gate: image
+qemu-osctl-gate: image-qemu-test
 	python3 ./scripts/qemu-osctl-gate.py
 
-qemu-filesystem-gate: image
+qemu-filesystem-gate: image-qemu-test
 	python3 ./scripts/qemu-milestone-gate.py 62
 
-qemu-app-agent-gate: image
+qemu-app-agent-gate: image-qemu-test
 	python3 ./scripts/qemu-milestone-gate.py 63
 
-qemu-network-full-gate: image
+qemu-network-full-gate: image-qemu-test
 	python3 ./scripts/qemu-milestone-gate.py 64
 
-qemu-cpu-ai-runtime-gate: image
+qemu-cpu-ai-runtime-gate: image-qemu-test
 	python3 ./scripts/qemu-milestone-gate.py 65
 
-qemu-ai-cell-gate: image
+qemu-ai-cell-gate: image-qemu-test
 	python3 ./scripts/qemu-milestone-gate.py 66
 
-qemu-security-gate: image
+qemu-security-gate: image-qemu-test
 	python3 ./scripts/qemu-milestone-gate.py 67
 
-qemu-update-gate: image
+qemu-update-gate: image-qemu-test
 	python3 ./scripts/qemu-milestone-gate.py 68
 
-qemu-soak-gate: image
+qemu-soak-gate: image-qemu-test
 	python3 ./scripts/qemu-soak-gate.py
 
 qemu-release: image
 	python3 ./scripts/qemu-release.py
 
-qemu-100-gate: image
+qemu-100-gate: image-qemu-test
 	python3 ./scripts/qemu-100-gate.py
 
 qemu-x86_64-smoke: image-x86_64
@@ -107,13 +110,13 @@ qemu-smmu-gate: image
 qemu-nvme-gate: image
 	python3 ./scripts/qemu-nvme-gate.py
 
-qemu-preview: image
+qemu-preview: image-qemu-test
 	python3 ./scripts/qemu-preview.py
 
 qemu-matrix:
 	python3 ./scripts/qemu-matrix.py
 
-qemu-cpu-matrix: image image-x86_64
+qemu-cpu-matrix: image-qemu-test image-x86_64
 	python3 ./scripts/qemu-cpu-matrix.py
 
 qemu-x86_64-cpu-matrix: image-x86_64
@@ -127,7 +130,7 @@ qemu-x86_64-platform-matrix: image-x86_64
 qemu-x86_64-repeat-boot: image-x86_64
 	python3 ./scripts/qemu-x86_64-repeat-boot.py
 
-qemu-benchmark:
+qemu-benchmark: image-qemu-test
 	python3 ./scripts/qemu-benchmark.py
 
 qemu-persistence-reboot: image
@@ -139,22 +142,22 @@ qemu-storage-crash-test: image
 qemu-fault-matrix:
 	python3 ./scripts/qemu-fault-matrix.py
 
-qemu-regression-suite: image
+qemu-regression-suite: image-qemu-test
 	python3 ./scripts/qemu-regression-suite.py
 
-qemu-fault-injection: image
+qemu-fault-injection: image-qemu-test
 	python3 ./scripts/qemu-fault-injection.py
 
 qemu-abi-contract:
 	python3 ./scripts/qemu-abi-contract.py
 
-qemu-boot-loop: image
+qemu-boot-loop: image-qemu-test
 	python3 ./scripts/qemu-boot-loop.py
 
-qemu-userspace-suite: image
+qemu-userspace-suite: image-qemu-test
 	python3 ./scripts/qemu-userspace-suite.py
 
-qemu-network-suite: image
+qemu-network-suite: image-qemu-test
 	python3 ./scripts/qemu-network-suite.py
 
 qemu-docker-network-suite:
@@ -166,7 +169,7 @@ qemu-freebsd-network-suite:
 qemu-parallel-network-load:
 	python3 ./scripts/qemu-parallel-network-load.py
 
-qemu-cpu-ai-suite: image
+qemu-cpu-ai-suite: image-qemu-test
 	python3 ./scripts/qemu-cpu-ai-suite.py
 
 qemu-ssh-smoke:
