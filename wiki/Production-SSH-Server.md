@@ -34,7 +34,9 @@ selects a native XAIOS-generated live ANSI monitor with sampled CPU/memory
 meters, process selection and paging, CPU paging, sorting, filtering, help and
 resize-aware rerendering. Each SSH channel has independent monitor state and
 bounded refresh/backpressure behavior with a hard monotonic 60-frame-per-second
-render cap. Non-PTY calls remain one-shot plain
+render cap. The PTY uses the terminal alternate-screen buffer and restores the
+original screen on exit, preventing live frames from accumulating in normal
+scrollback. Non-PTY calls remain one-shot plain
 snapshots for automation. Process kill and priority controls are not offered
 until XAIOS has a safe generic process-control ABI.
 

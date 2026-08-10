@@ -196,7 +196,9 @@ live ANSI monitor and uses the reported terminal size. It includes colored CPU,
 managed-memory and zero-capacity swap meters, task and uptime state, process
 selection, process/CPU paging, sorting, filtering and an in-terminal help view.
 Resize requests trigger a new bounded frame. Each PTY channel owns independent
-view state and refreshes only after its previous output has drained.
+view state and refreshes only after its previous output has drained. Interactive
+sessions use the terminal alternate-screen buffer and restore the original
+screen on exit, so live redraws do not accumulate in normal scrollback.
 
 Interactive keys include arrows or `j`/`k`, Page Up/Page Down, `P`/`M`/`T`/`N`/
 `S`/`C` sorting, `F6` sort cycling, `I` reverse order, `F3` or `/` filtering,

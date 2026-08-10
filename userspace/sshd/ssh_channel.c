@@ -674,7 +674,7 @@ static int htop_send_filter_prompt(ssh_channel_t *ch, uint64_t now_ns) {
 }
 
 static int htop_finish(ssh_channel_t *ch) {
-  static const char restore[] = "\033[0m\033[?25h\r\n";
+  static const char restore[] = "\033[0m\033[?25h\033[?1049l";
   ch->htop_active = 0U;
   ch->htop_help = 0U;
   ch->htop_filter_mode = 0U;
@@ -1002,6 +1002,7 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
     }
 
     if (interactive_htop != 0) {
+      static const char enter_screen[] = "\033[?1049h";
       char output[8192];
       u64 out_size = 0U;
       int result = execute_admin_command(sockfd, command, output,
@@ -1023,6 +1024,11 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
         return flush_channel(ch);
       }
       htop_initialize(ch, command);
+      if (ssh_channel_send_data(sockfd, ch->remote_id,
+                                (const uint8_t *)enter_screen,
+                                (uint32_t)(sizeof(enter_screen) - 1U)) != 0) {
+        return -1;
+      }
       if (ssh_channel_send_data(sockfd, ch->remote_id,
                                 (const uint8_t *)output,
                                 (uint32_t)out_size) != 0) {

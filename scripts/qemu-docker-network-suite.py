@@ -255,6 +255,7 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
             + bytes(colored_stderr).decode(errors="replace")
         )
     required = (
+        b"\x1b[?1049h",
         b"\x1b[2J\x1b[H",
         b"\x1b[42;30m",
         b"Tasks:",
@@ -270,6 +271,7 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
         b"60 frames/s",
         b"F10 Quit",
         b"\x1b[?25h",
+        b"\x1b[?1049l",
     )
     missing = [marker for marker in required if marker not in colored_stdout]
     if missing:
