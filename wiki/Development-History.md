@@ -5,6 +5,11 @@ commits, source code, and machine-readable test artifacts remain authoritative.
 
 ## 2026-08-10 - interactive XAIOS htop
 
+- Matched Debian htop's adaptive, column-major CPU header: eight CPUs in the
+  left column beside Tasks/Load/Uptime, followed by 2/4/8/16-column grids with
+  width-aware density and unbounded ordinal paging.
+- Added scheduler-maintained fixed-point 1/5/15-minute load averages and kept
+  Memory/Swap aligned beneath the left CPU group.
 - Converted PTY `htop` from a one-shot ANSI screen into a persistent live SSH
   application with periodic sampled refresh and output-window backpressure.
 - Added selection, process paging, CPU paging, terminal resize, active/all

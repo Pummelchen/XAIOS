@@ -28,11 +28,70 @@ static uint64_t g_tick_count;
 static uint64_t g_context_switch_count;
 static uint64_t g_yield_count;
 static uint64_t g_steal_count;
+static uint64_t g_load_average_q16[3];
+static uint64_t g_load_average_last_ns;
+static uint32_t g_load_average_guard;
 static uint32_t g_initialized;
 static uint32_t *g_lock_depth_per_cpu;
 
 /* Periodic load balancing counter */
 static uint32_t g_balance_counter;
+
+#define XAIOS_LOAD_FIXED_ONE UINT64_C(65536)
+
+static void scheduler_load_average_step(uint32_t active_tasks) {
+  static const uint32_t decay_q16[3] = {64453U, 65318U, 65463U};
+  uint64_t active_q16 = (uint64_t)active_tasks * XAIOS_LOAD_FIXED_ONE;
+  for (uint32_t i = 0U; i < 3U; ++i) {
+    uint64_t retained = g_load_average_q16[i] * decay_q16[i];
+    uint64_t added = active_q16 * (XAIOS_LOAD_FIXED_ONE - decay_q16[i]);
+    g_load_average_q16[i] =
+        (retained + added + XAIOS_LOAD_FIXED_ONE / 2U) / XAIOS_LOAD_FIXED_ONE;
+  }
+}
+
+static uint64_t scheduler_load_decay_power(uint32_t decay_q16,
+                                           uint64_t seconds) {
+  uint64_t result = XAIOS_LOAD_FIXED_ONE;
+  uint64_t factor = decay_q16;
+  while (seconds != 0U) {
+    if ((seconds & 1U) != 0U) {
+      result = (result * factor + XAIOS_LOAD_FIXED_ONE / 2U) /
+               XAIOS_LOAD_FIXED_ONE;
+    }
+    seconds >>= 1U;
+    if (seconds != 0U) {
+      factor = (factor * factor + XAIOS_LOAD_FIXED_ONE / 2U) /
+               XAIOS_LOAD_FIXED_ONE;
+    }
+  }
+  return result;
+}
+
+static void scheduler_load_average_update(uint64_t now_ns) {
+  static const uint32_t decay_q16[3] = {64453U, 65318U, 65463U};
+  if (__sync_lock_test_and_set(&g_load_average_guard, 1U) != 0U) return;
+  if (g_load_average_last_ns == 0U) g_load_average_last_ns = now_ns;
+  uint64_t elapsed_ns = now_ns >= g_load_average_last_ns
+                            ? now_ns - g_load_average_last_ns
+                            : 0U;
+  uint64_t seconds = elapsed_ns / UINT64_C(1000000000);
+  if (seconds != 0U) {
+    uint64_t active = user_process_active_count();
+    if (active > UINT32_MAX) active = UINT32_MAX;
+    uint64_t target = active * XAIOS_LOAD_FIXED_ONE;
+    for (uint32_t i = 0U; i < 3U; ++i) {
+      uint64_t decay = scheduler_load_decay_power(decay_q16[i], seconds);
+      g_load_average_q16[i] =
+          (g_load_average_q16[i] * decay +
+           target * (XAIOS_LOAD_FIXED_ONE - decay) +
+           XAIOS_LOAD_FIXED_ONE / 2U) /
+          XAIOS_LOAD_FIXED_ONE;
+    }
+    g_load_average_last_ns += seconds * UINT64_C(1000000000);
+  }
+  __sync_lock_release(&g_load_average_guard);
+}
 
 static void bytes_zero(void *buffer, uint64_t size) {
   uint8_t *bytes = (uint8_t *)buffer;
@@ -418,6 +477,11 @@ void scheduler_init(void) {
   g_yield_count = 0;
   g_steal_count = 0;
   g_balance_counter = 0;
+  for (uint32_t i = 0U; i < 3U; ++i) {
+    g_load_average_q16[i] = 0U;
+  }
+  g_load_average_last_ns = timer_now_ns();
+  g_load_average_guard = 0U;
   g_initialized = 1;
 
   klog("scheduler: hierarchical SMP initialized max_tasks=%u per_cpu_rq=%u "
@@ -557,8 +621,15 @@ void scheduler_tick(xaios_context_frame_t *irq_frame) {
     return;
   }
 
-  __sync_fetch_and_add(&g_tick_count, 1);
+  uint64_t tick = __sync_add_and_fetch(&g_tick_count, 1U);
   __sync_fetch_and_add(&g_sched_stats[cpu].tick_count, 1);
+
+  uint32_t online = smp_online_count();
+  uint64_t load_interval =
+      (uint64_t)(online == 0U ? 1U : online) * XAIOS_SCHEDULER_DEFAULT_TICK_HZ;
+  if (tick % load_interval == 0U) {
+    scheduler_load_average_update(timer_now_ns());
+  }
 
   xaios_runqueue_t *rq = &g_runqueues[cpu];
   xaios_spin_lock(&rq->lock);
@@ -731,6 +802,18 @@ uint32_t scheduler_runnable_count(void) {
   return total;
 }
 
+void scheduler_load_average_hundredths(uint32_t averages[3]) {
+  if (averages == 0) {
+    return;
+  }
+  scheduler_load_average_update(timer_now_ns());
+  for (uint32_t i = 0U; i < 3U; ++i) {
+    uint64_t value = __atomic_load_n(&g_load_average_q16[i], __ATOMIC_RELAXED);
+    averages[i] = (uint32_t)((value * 100U + XAIOS_LOAD_FIXED_ONE / 2U) /
+                             XAIOS_LOAD_FIXED_ONE);
+  }
+}
+
 void scheduler_get_stats(uint32_t cpu_id, xaios_sched_stats_t *stats) {
   if (cpu_id >= g_cpu_capacity || stats == 0) {
     return;
@@ -761,6 +844,18 @@ void scheduler_self_test(void) {
   kassert(cpu_state != 0);
   uint32_t scheduling_was_enabled = cpu_state->scheduling_enabled;
   kassert(smp_set_scheduling_enabled(cpu, 1U) == XAIOS_OK);
+
+  uint32_t load_average[3];
+  scheduler_load_average_step(4U);
+  scheduler_load_average_hundredths(load_average);
+  kassert(g_load_average_q16[0] == 4332U);
+  kassert(g_load_average_q16[1] == 872U);
+  kassert(g_load_average_q16[2] == 292U);
+  kassert(load_average[0] == 7U && load_average[1] == 1U &&
+          load_average[2] == 0U);
+  for (uint32_t i = 0U; i < 3U; ++i) {
+    g_load_average_q16[i] = 0U;
+  }
 
   kassert(scheduler_register_on_cpu(1, XAIOS_PRIORITY_HIGH, cpu) == XAIOS_OK);
   kassert(scheduler_register_on_cpu(2, XAIOS_PRIORITY_NORMAL, cpu) == XAIOS_OK);

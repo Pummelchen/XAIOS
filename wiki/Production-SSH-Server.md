@@ -47,10 +47,15 @@ original screen on exit, preventing live frames from accumulating in normal
 scrollback. CPU sampling uses a complete interrupt-backed timer wait that is
 excluded from process runtime, so htop does not create a permanent 100% CPU 0
 reading. CPU, memory and swap meter brackets share one dynamically sized label
-column;
-memory and swap remain beneath the left CPU group, capacity values are
-right-aligned there when width permits, and footer keys use htop-style color
-segments.
+column. Up to eight CPU meters remain in the left half beside Tasks, scheduler
+1/5/15-minute Load average, and Uptime. For 9-16 visible CPUs, the second group
+uses the right half and those three status rows move below the CPU grid; larger
+pages progress through 4, 8, and 16 column-major CPU columns when terminal width
+permits. Narrow terminals reduce column density, and ordinal pages preserve
+access to every runtime CPU instead of collapsing systems above 128 CPUs to one
+aggregate meter. Memory and swap remain beneath the left CPU group, capacity
+values are right-aligned there when width permits, and footer keys use
+htop-style color segments.
 Non-PTY calls remain one-shot plain
 snapshots for automation. Process kill and priority controls are not offered
 until XAIOS has a safe generic process-control ABI.

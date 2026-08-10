@@ -102,7 +102,10 @@ opt-in; exact target-model semantics are the default.
   verifies fragmented TCP traffic and recovery after saturation.
   The native guest also turns an SSH PTY `htop` command into a terminal-sized
   live ANSI monitor with sampled CPU/memory percentages, process selection,
-  sorting, filtering, help, resize handling and dynamic many-core paging;
+  scheduler-backed 1/5/15-minute load averages, sorting, filtering, help,
+  resize handling and dynamic many-core paging. Its Debian-style header keeps
+  up to eight CPU meters in the left column beside Tasks/Load/Uptime, then uses
+  progressively denser 2/4/8/16-column CPU grids as core counts grow;
   a monotonic limiter caps all screen rendering at 60 frames per second, and
   non-PTY output stays a plain one-shot snapshot for automation. The htop sample
   interval uses an interrupt-backed idle wait that is not charged as artificial

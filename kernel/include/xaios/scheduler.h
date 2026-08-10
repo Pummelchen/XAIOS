@@ -101,6 +101,7 @@ uint64_t scheduler_yield_count(void);
 uint32_t scheduler_current_pid(void);
 uint32_t scheduler_current_pid_on_cpu(uint32_t cpu_id);
 uint32_t scheduler_runnable_count(void);
+void scheduler_load_average_hundredths(uint32_t averages[3]);
 void scheduler_self_test(void);
 
 /* Statistics and telemetry */

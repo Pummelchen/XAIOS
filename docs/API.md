@@ -190,13 +190,23 @@ display mask or fixed monitoring-array limit. The output buffer determines the
 number of rows in a page; subsequent invocations can retrieve every CPU exposed
 by platform discovery. This removes limits from the monitoring and display path;
 the current QEMU AArch64 SMP implementation separately admits at most 256 CPUs.
+The ANSI header follows Debian htop's column-major scaling model: up to eight
+CPUs remain in one left-hand column with Tasks, Load average and Uptime in the
+right-hand column; 9-16 CPUs use two columns, 17-32 use four, 33-64 use eight,
+and larger visible pages may use sixteen when the terminal is wide enough.
+Memory and swap follow the left CPU group. When more than one CPU column is
+needed, the three status rows move below the CPU grid beside Memory and Swap.
+Narrow terminals reduce the number of columns rather than allowing meters to
+overlap. Unlike Debian htop's stock default above 128 CPUs, XAIOS retains
+ordinal paging so every runtime CPU remains inspectable.
 `--active` shows loaded, runnable, running, and waiting processes; `--all` also
 includes exited and failed slots.
 
 The native SSH daemon validates `pty-req` and `window-change` dimensions. An
 exact `htop` command on a PTY channel automatically selects the guest-generated
 live ANSI monitor and uses the reported terminal size. It includes colored CPU,
-managed-memory and zero-capacity swap meters, task and uptime state, process
+managed-memory and zero-capacity swap meters, task and uptime state,
+scheduler-backed 1/5/15-minute fixed-point load averages, process
 selection, process/CPU paging, sorting, filtering and an in-terminal help view.
 CPU, `Mem`, and `Swp` labels use a shared width derived from the largest runtime
 CPU ID, keeping every opening meter bracket in one column on many-core systems.

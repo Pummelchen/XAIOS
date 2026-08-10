@@ -305,7 +305,7 @@ static void htop_initialize(ssh_channel_t *ch, const char *command) {
   ch->htop_sort_key = SSH_HTOP_SORT_CPU;
   ch->htop_reverse = command_has_option(command, "--reverse") != 0;
   ch->htop_cpu_start = 0U;
-  ch->htop_cpu_count = 16U;
+  ch->htop_cpu_count = UINT32_MAX;
   ch->htop_process_start = 0U;
   ch->htop_selected = 0U;
   ch->htop_refresh_ms = SSH_HTOP_DEFAULT_REFRESH_MS;
@@ -685,18 +685,48 @@ static int htop_finish(ssh_channel_t *ch) {
   return flush_channel(ch);
 }
 
+static uint32_t htop_cpu_max_columns(uint32_t terminal_columns) {
+  uint32_t cells = terminal_columns / 14U;
+  if (cells >= 16U) return 16U;
+  if (cells >= 8U) return 8U;
+  if (cells >= 4U) return 4U;
+  if (cells >= 2U) return 2U;
+  return 1U;
+}
+
+static uint32_t htop_cpu_grid_columns(uint32_t cpu_count,
+                                      uint32_t terminal_columns) {
+  uint32_t requested = 1U;
+  if (cpu_count > 64U) requested = 16U;
+  else if (cpu_count > 32U) requested = 8U;
+  else if (cpu_count > 16U) requested = 4U;
+  else if (cpu_count > 8U) requested = 2U;
+  uint32_t maximum = htop_cpu_max_columns(terminal_columns);
+  return requested < maximum ? requested : maximum;
+}
+
 static uint32_t htop_cpu_page(const ssh_channel_t *ch) {
-  uint32_t lines = ch->terminal_rows > 14U
-                       ? (ch->terminal_rows - 14U) / 2U : 1U;
-  uint32_t visible = lines > UINT32_MAX / 2U ? UINT32_MAX : lines * 2U;
+  uint32_t lines = ch->terminal_rows > 10U ? ch->terminal_rows - 10U : 1U;
+  if (lines > 8U) lines = 8U;
+  uint32_t columns = htop_cpu_max_columns(ch->terminal_columns);
+  uint32_t visible = lines > UINT32_MAX / columns
+                         ? UINT32_MAX : lines * columns;
   return ch->htop_cpu_count < visible ? ch->htop_cpu_count : visible;
 }
 
 static uint32_t htop_process_page(const ssh_channel_t *ch) {
   uint32_t cpu_shown = ch->htop_show_cpus != 0U ? htop_cpu_page(ch) : 0U;
-  uint32_t cpu_lines = (cpu_shown + 1U) / 2U;
-  return ch->terminal_rows > cpu_lines + 10U
-             ? ch->terminal_rows - cpu_lines - 10U : 1U;
+  uint32_t grid_columns =
+      htop_cpu_grid_columns(cpu_shown, ch->terminal_columns);
+  uint32_t cpu_lines = cpu_shown == 0U
+                           ? 0U
+                           : (cpu_shown + grid_columns - 1U) / grid_columns;
+  uint32_t header_lines = grid_columns == 1U
+                              ? cpu_lines + 2U
+                              : cpu_lines + 3U;
+  if (header_lines < 3U) header_lines = 3U;
+  return ch->terminal_rows > header_lines + 6U
+             ? ch->terminal_rows - header_lines - 6U : 1U;
 }
 
 static int htop_handle_input(ssh_channel_t *ch, const uint8_t *data,

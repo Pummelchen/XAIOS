@@ -146,6 +146,8 @@ int main(void) {
       text_contains(output, "\033[?25l") == 0 ||
       text_contains(output, "\033[42;30m") == 0 ||
       text_contains(output, "Tasks:") == 0 ||
+      text_contains(output, "Load:") == 0 ||
+      text_contains(output, "Uptime:") == 0 ||
       text_contains(output, "\033[36mMem\033[32m[") == 0 ||
       text_contains(output, "\033[36mSwp\033[32m[") == 0 ||
       text_contains(output, "View: ") == 0 ||
@@ -153,7 +155,7 @@ int main(void) {
       text_contains(output, "syscalls") == 0 ||
       text_contains(output, "[Main]") == 0 ||
       text_contains(output, " PID S   CPU%   MEM% COMMAND") == 0 ||
-      text_contains(output, "CPUs:") == 0 ||
+      text_contains(output, "CPU page:") == 0 ||
       text_contains(output, "F10") == 0 ||
       text_contains(output, "Quit") == 0) {
     xaios_log("/bin/xaios-shell: htop ANSI dashboard verification failed\n");

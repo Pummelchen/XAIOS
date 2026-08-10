@@ -260,7 +260,8 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
         b"\x1b[2J\x1b[H",
         b"\x1b[42;30m",
         b"Tasks:",
-        b"0 failed",
+        b"Load average:",
+        b"Uptime:",
         b"Mem",
         b"[Main]",
         b"View: ",
@@ -283,9 +284,17 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
     visible_output = re.sub(
         rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", bytes(colored_stdout)
     ).replace(b"\r", b"")
+    if b"0 failed" not in visible_output:
+        raise RuntimeError("native htop visible task status did not report zero failures")
     visible_lines = visible_output.splitlines()
     cpu_line = next(
         (line for line in visible_lines if line.lstrip().startswith(b"0[")), None
+    )
+    cpu_one_line = next(
+        (line for line in visible_lines if line.lstrip().startswith(b"1[")), None
+    )
+    cpu_two_line = next(
+        (line for line in visible_lines if line.lstrip().startswith(b"2[")), None
     )
     memory_line = next(
         (line for line in visible_lines if line.lstrip().startswith(b"Mem[")), None
@@ -293,7 +302,8 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
     swap_line = next(
         (line for line in visible_lines if line.lstrip().startswith(b"Swp[")), None
     )
-    if cpu_line is None or memory_line is None or swap_line is None:
+    if (cpu_line is None or cpu_one_line is None or cpu_two_line is None or
+            memory_line is None or swap_line is None):
         raise RuntimeError("native htop output lacked aligned CPU/memory/swap meters")
     bracket_columns = {
         cpu_line.index(b"["), memory_line.index(b"["), swap_line.index(b"[")
@@ -303,9 +313,17 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
             f"native htop meter brackets were not aligned: {bracket_columns!r}"
         )
     left_cell_width = len(cpu_line) // 2
-    if len(memory_line) != left_cell_width or len(swap_line) != left_cell_width:
+    if (cpu_line.find(b"Tasks:") != left_cell_width or
+            cpu_one_line.find(b"Load average:") != left_cell_width or
+            cpu_two_line.find(b"Uptime:") != left_cell_width):
         raise RuntimeError(
-            "native htop memory/swap meters escaped the left CPU column: "
+            "native htop Debian-style status rows were not in the right column"
+        )
+    if (len(memory_line) != len(cpu_line) or len(swap_line) != len(cpu_line) or
+            memory_line[left_cell_width:].strip() or
+            swap_line[left_cell_width:].strip()):
+        raise RuntimeError(
+            "native htop memory/swap content escaped the left CPU column: "
             f"cpu={len(cpu_line)} mem={len(memory_line)} swap={len(swap_line)}"
         )
     if b"F1Help" not in visible_output or b"F10Quit" not in visible_output:
