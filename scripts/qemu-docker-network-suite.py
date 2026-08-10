@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import base64
 import hashlib
+import re
 import shutil
 import socket
 import subprocess
@@ -269,13 +270,39 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
         b"sshd",
         b"XAIOS htop help",
         b"60 frames/s",
-        b"F10 Quit",
+        b"F10",
+        b"Quit",
         b"\x1b[?25h",
         b"\x1b[?1049l",
     )
     missing = [marker for marker in required if marker not in colored_stdout]
     if missing:
         raise RuntimeError(f"native htop PTY output missing markers: {missing!r}")
+
+    visible_output = re.sub(
+        rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", bytes(colored_stdout)
+    ).replace(b"\r", b"")
+    visible_lines = visible_output.splitlines()
+    cpu_line = next(
+        (line for line in visible_lines if line.lstrip().startswith(b"0[")), None
+    )
+    memory_line = next(
+        (line for line in visible_lines if line.lstrip().startswith(b"Mem[")), None
+    )
+    swap_line = next(
+        (line for line in visible_lines if line.lstrip().startswith(b"Swp[")), None
+    )
+    if cpu_line is None or memory_line is None or swap_line is None:
+        raise RuntimeError("native htop output lacked aligned CPU/memory/swap meters")
+    bracket_columns = {
+        cpu_line.index(b"["), memory_line.index(b"["), swap_line.index(b"[")
+    }
+    if len(bracket_columns) != 1:
+        raise RuntimeError(
+            f"native htop meter brackets were not aligned: {bracket_columns!r}"
+        )
+    if b"F1Help" not in visible_output or b"F10Quit" not in visible_output:
+        raise RuntimeError("native htop footer did not use segmented key labels")
 
     plain = subprocess.run(
         docker_command(
@@ -294,6 +321,16 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
         )
     if b"\x1b[" in plain.stdout or b"CPU CPU% BUSY_MS" not in plain.stdout:
         raise RuntimeError("native htop non-PTY output did not remain plain text")
+    cpu_zero = re.search(rb"(?m)^0 ([0-9]+\.[0-9])% ", plain.stdout)
+    if cpu_zero is None:
+        raise RuntimeError("native htop plain output lacked CPU 0 utilization")
+    cpu_zero_tenths = int(cpu_zero.group(1).replace(b".", b""))
+    if cpu_zero_tenths >= 1000:
+        raise RuntimeError(
+            "native htop sampling saturated housekeeping CPU 0: "
+            + cpu_zero.group(1).decode()
+            + "%"
+        )
 
     invalid = subprocess.run(
         docker_command(

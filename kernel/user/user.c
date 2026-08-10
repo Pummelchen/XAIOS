@@ -556,6 +556,20 @@ uint64_t user_cpu_busy_total(uint64_t now_ns) {
   return total;
 }
 
+void user_process_idle_until(uint64_t deadline_ns) {
+  xaios_user_process_t *process = g_current_process;
+  uint32_t cpu_id = smp_cpu_id();
+  uint64_t started_ns = timer_now_ns();
+  if (deadline_ns <= started_ns) return;
+  if (process != 0) {
+    user_process_runtime_stop(process->pid, cpu_id, started_ns);
+  }
+  timer_idle_until(deadline_ns);
+  if (process != 0) {
+    user_process_runtime_start(process->pid, cpu_id, timer_now_ns());
+  }
+}
+
 xaios_status_t user_load_process(const xaios_initramfs_file_t *file,
                                 uint32_t pid, uint64_t capability_mask,
                                 xaios_user_process_t *process) {

@@ -104,7 +104,9 @@ opt-in; exact target-model semantics are the default.
   live ANSI monitor with sampled CPU/memory percentages, process selection,
   sorting, filtering, help, resize handling and dynamic many-core paging;
   a monotonic limiter caps all screen rendering at 60 frames per second, and
-  non-PTY output stays a plain one-shot snapshot for automation.
+  non-PTY output stays a plain one-shot snapshot for automation. The htop sample
+  interval uses an interrupt-backed idle wait that is not charged as artificial
+  100% housekeeping-core load.
   SSH has no built-in password and fails closed without secure entropy. These
   QEMU checks complete the declared core-OS correctness gate; they do not approve
   Internet exposure or physical production deployment.

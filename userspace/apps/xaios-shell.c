@@ -118,7 +118,7 @@ int main(void) {
   if (shell_run("htop --all --sample-ms 10 --cpu-count 2", output,
                 sizeof(output), &out_size) != 0 ||
       text_contains(output, "CPU CPU% BUSY_MS IDLE_MS ACTIVE ROLE") == 0 ||
-      text_contains(output, "0 100.0%") == 0 ||
+      text_contains(output, "0 100.0%") != 0 ||
       text_contains(output, "MEM managed=") == 0 ||
       text_contains(output, "physical_pages=") == 0 ||
       text_contains(output, "cpu_shown=") == 0 ||
@@ -129,6 +129,7 @@ int main(void) {
     xaios_log("/bin/xaios-shell: htop process verification failed\n");
     return 1;
   }
+  xaios_log("/bin/xaios-shell: htop idle sample returned to userspace\n");
   if (shell_run("htop --all --sample-ms 10 --cpu-count 2 --sort mem "
                 "--reverse --filter xaios-shell --process-start 0",
                 output, sizeof(output), &out_size) != 0 ||
@@ -145,14 +146,16 @@ int main(void) {
       text_contains(output, "\033[?25l") == 0 ||
       text_contains(output, "\033[42;30m") == 0 ||
       text_contains(output, "Tasks:") == 0 ||
-      text_contains(output, "Mem") == 0 ||
+      text_contains(output, "\033[36mMem\033[32m[") == 0 ||
+      text_contains(output, "\033[36mSwp\033[32m[") == 0 ||
       text_contains(output, "View: ") == 0 ||
       text_contains(output, "Sort: ") == 0 ||
       text_contains(output, "syscalls") == 0 ||
       text_contains(output, "[Main]") == 0 ||
       text_contains(output, " PID S   CPU%   MEM% COMMAND") == 0 ||
       text_contains(output, "CPUs:") == 0 ||
-      text_contains(output, "F10Quit") == 0) {
+      text_contains(output, "F10") == 0 ||
+      text_contains(output, "Quit") == 0) {
     xaios_log("/bin/xaios-shell: htop ANSI dashboard verification failed\n");
     return 1;
   }

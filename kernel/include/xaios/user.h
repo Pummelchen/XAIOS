@@ -80,6 +80,7 @@ uint32_t user_cpu_usage_count(void);
 xaios_status_t user_cpu_usage_snapshot(uint32_t ordinal, uint64_t now_ns,
                                        xaios_cpu_usage_snapshot_t *snapshot);
 uint64_t user_cpu_busy_total(uint64_t now_ns);
+void user_process_idle_until(uint64_t deadline_ns);
 xaios_status_t user_process_make_runnable(uint32_t pid, uint32_t parent_pid);
 xaios_status_t user_process_wait(uint32_t pid);
 xaios_status_t user_process_wake(uint32_t pid);

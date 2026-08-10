@@ -99,6 +99,42 @@ void timer_rearm(void) {
   write_cntv_cval_el0(now + g_timer_interval);
 }
 
+static uint64_t duration_ticks(uint64_t duration_ns) {
+  uint64_t seconds = duration_ns / UINT64_C(1000000000);
+  uint64_t remainder = duration_ns % UINT64_C(1000000000);
+  if (seconds > UINT64_MAX / g_timer_frequency_hz) return UINT64_MAX;
+  uint64_t ticks = seconds * g_timer_frequency_hz;
+  uint64_t fractional =
+      (remainder * g_timer_frequency_hz + UINT64_C(999999999)) /
+      UINT64_C(1000000000);
+  return ticks > UINT64_MAX - fractional ? UINT64_MAX : ticks + fractional;
+}
+
+void timer_idle_until(uint64_t deadline_ns) {
+  uint64_t outer_elr;
+  uint64_t outer_spsr;
+  __asm__ volatile("mrs %0, elr_el1\n\tmrs %1, spsr_el1"
+                   : "=r"(outer_elr), "=r"(outer_spsr));
+  for (;;) {
+    uint64_t now_ns = timer_now_ns();
+    if (now_ns >= deadline_ns) break;
+    uint64_t ticks = duration_ticks(deadline_ns - now_ns);
+    uint64_t counter = timer_counter();
+    uint64_t compare = ticks > UINT64_MAX - counter
+                           ? UINT64_MAX
+                           : counter + (ticks == 0U ? 1U : ticks);
+    write_cntv_cval_el0(compare);
+    write_cntv_ctl_el0(1U);
+    __asm__ volatile("msr daifclr, #2\n\twfi\n\tmsr daifset, #2"
+                     ::: "memory");
+  }
+  timer_mask_local();
+  __asm__ volatile("msr elr_el1, %0\n\tmsr spsr_el1, %1\n\tisb"
+                   :
+                   : "r"(outer_elr), "r"(outer_spsr)
+                   : "memory");
+}
+
 void wall_time_calibrate(void) {
   g_wall_epoch = (uint64_t)rtc_read_epoch();
   g_wall_monotonic_base = timer_now_ns();

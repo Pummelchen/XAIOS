@@ -11,6 +11,7 @@ void timer_enable_periodic(uint32_t hz);
 void timer_mask_local(void);
 void timer_disable(void);
 void timer_rearm(void);
+void timer_idle_until(uint64_t deadline_ns);
 void wall_time_calibrate(void);
 uint64_t wall_time_now_ns(void);
 void timer_self_test(void);

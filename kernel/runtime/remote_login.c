@@ -2716,13 +2716,17 @@ static const char *htop_meter_color(uint64_t tenths) {
 
 static void htop_append_meter(char *output, uint64_t output_capacity,
                               uint64_t *output_bytes, const char *label,
-                              uint64_t tenths, uint32_t bar_width,
-                              uint32_t cell_width) {
+                              uint32_t label_columns, uint64_t tenths,
+                              uint32_t bar_width, uint32_t cell_width) {
   uint32_t label_width = (uint32_t)cstr_len(label);
-  uint32_t visible = label_width + bar_width + 8U;
+  uint32_t visible = label_columns + bar_width + 8U;
   uint64_t filled64 = (tenths * bar_width + 999U) / 1000U;
   uint32_t filled = filled64 > bar_width ? bar_width : (uint32_t)filled64;
   output_append(output, output_capacity, output_bytes, "\033[36m");
+  if (label_width < label_columns) {
+    htop_append_repeat(output, output_capacity, output_bytes, ' ',
+                       label_columns - label_width);
+  }
   output_append(output, output_capacity, output_bytes, label);
   output_append(output, output_capacity, output_bytes, "\033[32m[");
   output_append(output, output_capacity, output_bytes,
@@ -2738,6 +2742,56 @@ static void htop_append_meter(char *output, uint64_t output_capacity,
     htop_append_repeat(output, output_capacity, output_bytes, ' ',
                        cell_width - visible);
   }
+}
+
+static void htop_append_footer_segment(char *output, uint64_t output_capacity,
+                                       uint64_t *output_bytes,
+                                       uint32_t *visible, const char *key,
+                                       const char *label) {
+  output_append(output, output_capacity, output_bytes, "\033[30;46m");
+  output_append(output, output_capacity, output_bytes, key);
+  output_append(output, output_capacity, output_bytes, "\033[42;30m");
+  output_append(output, output_capacity, output_bytes, label);
+  output_append_char(output, output_capacity, output_bytes, ' ');
+  *visible += (uint32_t)cstr_len(key) + (uint32_t)cstr_len(label) + 1U;
+}
+
+static void htop_append_footer(char *output, uint64_t output_capacity,
+                               uint64_t *output_bytes, uint32_t columns,
+                               int interactive) {
+  uint32_t visible = 0U;
+  output_append(output, output_capacity, output_bytes, "\033[42;30m");
+  if (interactive != 0) {
+    htop_append_footer_segment(output, output_capacity, output_bytes, &visible,
+                               "F1", "Help");
+    htop_append_footer_segment(output, output_capacity, output_bytes, &visible,
+                               "F3", "Search");
+    htop_append_footer_segment(output, output_capacity, output_bytes, &visible,
+                               "F4", "Filter");
+    htop_append_footer_segment(output, output_capacity, output_bytes, &visible,
+                               "F5", "Tree");
+    if (columns >= 80U) {
+      htop_append_footer_segment(output, output_capacity, output_bytes,
+                                 &visible, "F6", "Sort");
+      htop_append_footer_segment(output, output_capacity, output_bytes,
+                                 &visible, "I", "Reverse");
+      htop_append_footer_segment(output, output_capacity, output_bytes,
+                                 &visible, "[/]", "CPUs");
+    }
+    htop_append_footer_segment(output, output_capacity, output_bytes, &visible,
+                               "F10", "Quit");
+  } else {
+    const char *text = columns < 60U
+                           ? " --active --all --sort KEY --plain"
+                           : " --active  --all  --sort KEY  --filter TEXT  --cpu-start N  --plain";
+    output_append(output, output_capacity, output_bytes, text);
+    visible = (uint32_t)cstr_len(text);
+  }
+  if (visible < columns) {
+    htop_append_repeat(output, output_capacity, output_bytes, ' ',
+                       columns - visible);
+  }
+  output_append(output, output_capacity, output_bytes, "\033[0m\r\n");
 }
 
 static char htop_state_character(xaios_user_process_state_t state) {
@@ -2962,7 +3016,14 @@ static uint32_t htop_render_color(
                                 ? terminal_rows - cpu_line_count - fixed_lines
                                 : 1U;
   uint32_t cell_width = columns / 2U;
-  uint32_t meter_width = cell_width > 15U ? cell_width - 15U : 1U;
+  uint32_t label_columns = 3U;
+  if (cpu_total != 0U && u64_digits((uint64_t)cpu_total - 1U) > label_columns) {
+    label_columns = (uint32_t)u64_digits((uint64_t)cpu_total - 1U);
+  }
+  uint32_t meter_overhead = label_columns + 12U;
+  uint32_t meter_width = cell_width > meter_overhead
+                             ? cell_width - meter_overhead
+                             : 1U;
   uint64_t used_pages = managed_pages >= free_pages
                             ? managed_pages - free_pages
                             : 0U;
@@ -3000,28 +3061,47 @@ static uint32_t htop_render_color(
       uint64_t label_bytes = 0U;
       label[0] = '\0';
       htop_append_u64_width(label, sizeof(label), &label_bytes,
-                            cpu_start + offset, 3U);
-      htop_append_meter(output, output_capacity, output_bytes, label, tenths,
-                        meter_width, cell_width);
+                            cpu_start + offset, label_columns);
+      htop_append_meter(output, output_capacity, output_bytes, label,
+                        label_columns, tenths, meter_width, cell_width);
     }
     output_append(output, output_capacity, output_bytes, "\r\n");
   }
 
-  uint32_t full_bar_width = columns > 28U ? columns - 28U : 4U;
-  htop_append_meter(output, output_capacity, output_bytes, "Mem", memory_tenths,
-                    full_bar_width, columns - 14U);
-  output_append(output, output_capacity, output_bytes, "\033[33m ");
+  uint32_t suffix_width = 14U;
+  uint32_t full_meter_columns = columns > suffix_width
+                                    ? columns - suffix_width
+                                    : columns;
+  uint32_t full_overhead = label_columns + 11U;
+  uint32_t full_bar_width = full_meter_columns > full_overhead
+                                ? full_meter_columns - full_overhead
+                                : 1U;
+  htop_append_meter(output, output_capacity, output_bytes, "Mem",
+                    label_columns, memory_tenths, full_bar_width,
+                    full_meter_columns);
+  uint64_t used_mebibytes = used_pages / 256U;
+  uint64_t managed_mebibytes = managed_pages / 256U;
+  uint32_t memory_value_width = (uint32_t)u64_digits(used_mebibytes) +
+                                (uint32_t)u64_digits(managed_mebibytes) + 3U;
+  output_append(output, output_capacity, output_bytes, "\033[33m");
+  if (memory_value_width < suffix_width) {
+    htop_append_repeat(output, output_capacity, output_bytes, ' ',
+                       suffix_width - memory_value_width);
+  }
   output_append_u64(output, output_capacity, output_bytes,
-                    used_pages / 256U);
+                    used_mebibytes);
   output_append(output, output_capacity, output_bytes, "M/");
   output_append_u64(output, output_capacity, output_bytes,
-                    managed_pages / 256U);
+                    managed_mebibytes);
   output_append(output, output_capacity, output_bytes, "M\033[0m\r\n");
 
-  htop_append_meter(output, output_capacity, output_bytes, "Swp", 0U,
-                    full_bar_width, columns - 9U);
+  htop_append_meter(output, output_capacity, output_bytes, "Swp",
+                    label_columns, 0U, full_bar_width, full_meter_columns);
+  output_append(output, output_capacity, output_bytes, "\033[36m");
+  htop_append_repeat(output, output_capacity, output_bytes, ' ',
+                     suffix_width - 5U);
   output_append(output, output_capacity, output_bytes,
-                "\033[36m 0K/0K\033[0m\r\n");
+                "0K/0K\033[0m\r\n");
 
   output_append(output, output_capacity, output_bytes,
                 "\033[36mTasks: \033[32m");
@@ -3176,20 +3256,10 @@ static uint32_t htop_render_color(
   }
 
   if (interactive != 0) {
-    htop_append_ansi_line(
-        output, output_capacity, output_bytes, "\033[42;30m",
-        columns < 80U
-            ? " F1Help F3Find F4Filter F5Tree F10Quit"
-            : " F1 Help  F3 Search  F4 Filter  F5 Tree  F6 Sort  I Reverse  [/] CPUs  F10 Quit",
-        columns);
+    htop_append_footer(output, output_capacity, output_bytes, columns, 1);
     output_append(output, output_capacity, output_bytes, "\033[0m\033[?25l");
   } else {
-    htop_append_ansi_line(
-        output, output_capacity, output_bytes, "\033[42;30m",
-        columns < 60U
-            ? " --active --all --sort KEY --plain"
-            : " --active  --all  --sort KEY  --filter TEXT  --cpu-start N  --plain",
-        columns);
+    htop_append_footer(output, output_capacity, output_bytes, columns, 0);
     output_append(output, output_capacity, output_bytes, "\033[0m\033[?25h");
   }
   return process_shown;
@@ -3228,9 +3298,7 @@ static xaios_status_t htop_parse_sort_option(const char *args, uint64_t *index,
 }
 
 static void htop_sample_wait(uint64_t deadline_ns) {
-  while (timer_now_ns() < deadline_ns) {
-    __asm__ volatile("" ::: "memory");
-  }
+  user_process_idle_until(deadline_ns);
 }
 
 static xaios_status_t handle_htop(const char *args, char *output,

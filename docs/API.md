@@ -176,6 +176,9 @@ the common sample interval. Process utilization uses the process runtime delta;
 it follows the conventional per-core scale, where one fully occupied CPU is
 `100.0%` and a future process running on multiple CPUs may exceed 100%. `%MEM`
 is the process's resident mapped pages divided by detected physical pages.
+The sampler waits through its complete interval on the architectural timer and
+excludes that idle interval from the calling process's runtime, so opening
+`htop` does not manufacture a 100% housekeeping-core reading.
 The system `MEM managed` percentage is allocator pressure over pages the current
 NUMA allocator can manage; `physical_pages` separately reports detected
 physical capacity, so pages beyond a platform allocator's current tracking
@@ -195,6 +198,10 @@ exact `htop` command on a PTY channel automatically selects the guest-generated
 live ANSI monitor and uses the reported terminal size. It includes colored CPU,
 managed-memory and zero-capacity swap meters, task and uptime state, process
 selection, process/CPU paging, sorting, filtering and an in-terminal help view.
+CPU, `Mem`, and `Swp` labels use a shared width derived from the largest runtime
+CPU ID, keeping every opening meter bracket in one column on many-core systems.
+Memory and swap values are right-aligned, and the footer uses distinct htop-style
+key and command color segments.
 Resize requests trigger a new bounded frame. Each PTY channel owns independent
 view state and refreshes only after its previous output has drained. Interactive
 sessions use the terminal alternate-screen buffer and restore the original

@@ -422,10 +422,11 @@ void kmain(const xaios_boot_info_t *boot) {
     user_process_reclaim_address_space(&worker_process);
   }
 
-  /* Disable preemptive infrastructure after concurrent workers */
+  /* Stop preemption after the concurrent worker gate. Keep interrupt delivery
+   * available for bounded userspace idle waits and VirtIO completions. */
   kassert(smp_set_scheduling_enabled(smp_cpu_id(), 0U) == XAIOS_OK);
   timer_disable();
-  gic_disable_full();
+  klog("kernel: preemption disabled; interrupt-backed idle waits retained\n");
 
   /* Per-app least-privilege capability masks */
   const uint64_t shell_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_FS_READ |
