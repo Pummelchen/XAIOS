@@ -83,8 +83,9 @@ the right paddle. Human and computer win counters continue without a match
 limit. Human points multiply ball speed by 1.01; computer points multiply it by
 0.99, bounded to 40%-300% for indefinite play. `P` pauses, `R` resets, and `Q`
 or Control-C restores the alternate screen and shell prompt. Window-change
-requests rescale the live court. The authenticated serial console uses the same
-engine with independent state.
+requests rescale the live court. Rendering runs at up to 60 frames per second
+without queuing a new frame behind pending channel output. The authenticated
+serial console uses the same engine with independent state.
 
 A bare SSH PTY starts a stateful line-edited shell rather than a one-command
 facade. Its cwd and colored `admin@xaios:<cwd>$` prompt are isolated per

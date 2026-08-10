@@ -9,6 +9,8 @@
 - Integrated alternate-screen play, `W`/`S` input, pause/reset/quit, resize and
   terminal restoration into independent SSH PTY and authenticated local-console
   sessions.
+- Set the game cadence to a tested 60-frame-per-second maximum while retaining
+  channel backpressure.
 - Added hosted physics/render checks plus native OpenSSH PTY and local-console
   QEMU acceptance coverage.
 - Expanded the per-process code/data mapping from 2 MiB to 4 MiB on both

@@ -17,6 +17,10 @@ int main(void) {
   assert(game.active == 1U);
   assert(game.speed_basis_points == 10000U);
   assert(game.play_width == 78U && game.play_height == 20U);
+  assert(pong_game_tick(&game, now) == 1);
+  assert(game.next_frame_ns - now == UINT64_C(16666667));
+  assert(pong_game_tick(&game, now + UINT64_C(16666666)) == 0);
+  assert(pong_game_tick(&game, now + UINT64_C(16666667)) == 1);
 
   int32_t original_human = game.human_y;
   assert(pong_game_input(&game, (const uint8_t *)"w", 1U, &should_exit,
@@ -31,7 +35,7 @@ int main(void) {
   game.ball_y = game.human_y;
   game.direction_x = -1;
   game.direction_y = 1;
-  assert(pong_game_tick(&game, now + UINT64_C(50000000)) == 1);
+  assert(pong_game_tick(&game, now + UINT64_C(66666667)) == 1);
   assert(game.direction_x == 1);
 
   game.serve_until_ns = 0U;

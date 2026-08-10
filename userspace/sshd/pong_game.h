@@ -8,6 +8,7 @@
 #define PONG_MIN_ROWS 12U
 #define PONG_MAX_ROWS 100U
 #define PONG_FRAME_BYTES 32768U
+#define PONG_MAX_FPS 60U
 
 typedef struct pong_game {
   uint32_t active;

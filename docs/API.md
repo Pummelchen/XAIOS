@@ -301,7 +301,7 @@ overflow its fixed-point arithmetic. The initial 100% horizontal speed crosses
 the current court in approximately six seconds. Physics use monotonic fixed-
 point time and do not require floating point. SSH resize events rescale the
 court and live state. Rendering is bounded to 40x12 through 240x100 terminals
-and refreshes at no more than 30 frames per second after prior channel output
+and refreshes at no more than 60 frames per second after prior channel output
 has drained.
 
 ## Capabilities

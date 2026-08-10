@@ -140,7 +140,8 @@ Internet destinations or physical networks are production-ready.
   ball speed by 1.01 and a computer point multiplies it by 0.99, with bounded
   40%-300% safety limits so very long sessions remain playable. Each session
   owns independent scores and game state, responds to SSH terminal resize, and
-  restores the original screen and prompt on exit.
+  renders at up to 60 frames per second while respecting channel backpressure,
+  and restores the original screen and prompt on exit.
   A bare SSH PTY opens a stateful, line-edited shell with a per-connection cwd,
   Unix-style prompt, useful command-not-found diagnostics, and nonzero command
   status. MutableFS v4 provides files and directory trees with atomic recursive
