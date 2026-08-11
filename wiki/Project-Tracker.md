@@ -38,8 +38,8 @@ performance require immutable evidence under the
 
 | Item | Status | Evidence required |
 |---|---|---|
-| Centralize all test runners and Docker fixtures under `tests/` | `TESTING` | Layout validator, syntax checks, hosted/docs/ABI/QEMU gates, Docker image rebuilds, and CI. |
-| Publish Applications, Commands, Test Suite, and this canonical tracker to the live Wiki | `TESTING` | Repository/Wiki byte parity and link validation after push. |
+| Centralize all test runners and Docker fixtures under `tests/` | `DONE` | Layout, syntax, hosted, docs, ABI, QEMU, Docker rebuild, and [CI](https://github.com/Pummelchen/XAIOS/actions/runs/31454809543) gates pass. |
+| Publish Applications, Commands, Test Suite, and this canonical tracker to the live Wiki | `DONE` | Repository/Wiki sources are byte-identical at Wiki commit `b2678c8`. |
 
 ## Model support boundary
 
@@ -78,8 +78,8 @@ remain concise here; no secondary page owns their status.
 | P-16 | Immutable 64-bit model mappings | `DONE` | Production mappings are no-copy and read-only; copied admission is fixture-only. |
 | P-17 | Async direct model range I/O | `DONE` | Hosted aligned direct-buffer completion/cancellation tests pass. |
 | P-18 | Lifecycle-safe sessions | `DONE` | 64-bit append/fork/commit/rollback/destruction metadata passes; typed model state is tracked below. |
-| P-19 | Documentation reconciliation | `TESTING` | This consolidation must pass docs checks and live-Wiki parity. |
-| P-20 | GitHub milestone reconciliation | `TESTING` | The canonical Wiki tracker is replacing duplicate human status pages; live publication remains. |
+| P-19 | Documentation reconciliation | `DONE` | Docs checks and repository/live-Wiki byte parity pass. |
+| P-20 | GitHub milestone reconciliation | `DONE` | All human progress status is consolidated on this canonical Wiki page; legacy planning files are redirects. |
 
 ## Core OS foundation items
 
