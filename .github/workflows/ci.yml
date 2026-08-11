@@ -171,6 +171,7 @@ jobs:
             build/qemu-smmu-gate-report.json
             build/qemu-smmu-gate.log
             build/qemu-nvme-gate-report.json
+            build/qemu-outbound-fragmentation-report.json
             build/qemu-high-core-gate-report.json
             build/qemu-high-core-gate.log
             build/qemu-milestone-53-fault-injection.json

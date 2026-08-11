@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""Validate common NVMe queue and PRP behavior on both QEMU architectures."""
+
+from __future__ import annotations
+
 import json
 import os
 from pathlib import Path
@@ -8,72 +12,83 @@ import sys
 import time
 
 
-IMAGE = Path("build/xaios-nvme-gate.img")
-PERSISTENT = Path("build/xaios-nvme-gate-persistent.img")
-REPORT = Path("build/qemu-nvme-gate-report.json")
+BUILD = Path("build")
+REPORT = BUILD / "qemu-nvme-gate-report.json"
 MARKERS = [
-    "PCI: [0:",
-    "class=0x1.8",
     "nvme: controller ready version=",
     "nvme: identify controller serial='XAIOSNVME",
     "nvme: admin/io self-test passed namespaces=1",
-    "queue_depth=16 write_read_flush=1",
+    "queue_depth=16 io_queues=4 prp_pages=4 transfer_bytes=16384 write_read_flush=1",
 ]
 
 
-def stop_process(proc: subprocess.Popen[bytes]) -> None:
-    if proc.poll() is not None:
+def stop_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
         return
-    proc.terminate()
+    process.terminate()
     try:
-        proc.wait(timeout=3)
+        process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=3)
+        process.kill()
+        process.wait(timeout=5)
 
 
-def main() -> int:
-    IMAGE.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["truncate", "-s", "64M", str(IMAGE)], check=True)
-    PERSISTENT.unlink(missing_ok=True)
+def run_architecture(architecture: str) -> dict[str, object]:
+    image = BUILD / f"xaios-nvme-gate-{architecture}.img"
+    persistent = BUILD / f"xaios-nvme-gate-{architecture}-persistent.img"
+    log_path = BUILD / f"qemu-nvme-gate-{architecture}.log"
+    subprocess.run(["truncate", "-s", "64M", str(image)], check=True)
+    persistent.unlink(missing_ok=True)
 
-    env = os.environ.copy()
-    env.update(
+    environment = os.environ.copy()
+    environment.update(
         {
-            "XAIOS_NVME_IMAGE": str(IMAGE),
-            "XAIOS_PERSISTENT_IMAGE": str(PERSISTENT),
+            "XAIOS_PERSISTENT_IMAGE": str(persistent),
             "XAIOS_QEMU_HOSTFWD_PORT": "none",
             "XAIOS_QEMU_ACCEL": "tcg",
+            "XAIOS_QEMU_SMP": "4",
         }
     )
-    proc = subprocess.Popen(
-        ["./scripts/run-qemu-aarch64.sh"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        env=env,
-    )
-    chunks: list[str] = []
-    deadline = time.time() + int(env.get("XAIOS_QEMU_NVME_TIMEOUT", "60"))
-    try:
-        assert proc.stdout is not None
-        fd = proc.stdout.fileno()
-        while time.time() < deadline:
-            ready, _, _ = select.select([fd], [], [], 0.2)
-            if ready:
-                data = os.read(fd, 4096)
-                if not data:
+    if architecture == "aarch64":
+        environment["XAIOS_NVME_IMAGE"] = str(image)
+        runner = "./scripts/run-qemu-aarch64.sh"
+    else:
+        environment["XAIOS_QEMU_X86_NVME_IMAGE"] = str(image)
+        runner = "./scripts/run-qemu-x86_64.sh"
+
+    with log_path.open("wb") as log:
+        process = subprocess.Popen(
+            [runner],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=environment,
+        )
+        chunks: list[str] = []
+        deadline = time.time() + int(
+            environment.get("XAIOS_QEMU_NVME_TIMEOUT", "120")
+        )
+        try:
+            assert process.stdout is not None
+            descriptor = process.stdout.fileno()
+            while time.time() < deadline:
+                ready, _, _ = select.select([descriptor], [], [], 0.2)
+                if ready:
+                    data = os.read(descriptor, 4096)
+                    if not data:
+                        break
+                    text = data.decode("utf-8", errors="replace")
+                    log.write(data)
+                    log.flush()
+                    sys.stdout.write(text)
+                    sys.stdout.flush()
+                    chunks.append(text)
+                    output = "".join(chunks)
+                    if all(marker in output for marker in MARKERS):
+                        break
+                elif process.poll() is not None:
                     break
-                text = data.decode("utf-8", errors="replace")
-                sys.stdout.write(text)
-                sys.stdout.flush()
-                chunks.append(text)
-                output = "".join(chunks)
-                if all(marker in output for marker in MARKERS):
-                    break
-            elif proc.poll() is not None:
-                break
-    finally:
-        stop_process(proc)
+        finally:
+            stop_process(process)
 
     output = "".join(chunks)
     missing = [marker for marker in MARKERS if marker not in output]
@@ -82,29 +97,53 @@ def main() -> int:
         for marker in ("CYAN SCREEN OF DEATH", "nvme: self-test failed")
         if marker in output
     ]
-    with IMAGE.open("rb") as stream:
-        block = stream.read(512)
-    expected = bytes((index ^ 0xA5) & 0xFF for index in range(512))
-    host_verified = block == expected
+    with image.open("rb") as stream:
+        first_transfer = stream.read(16384)
+    expected = bytes((index ^ 0xA5) & 0xFF for index in range(16384))
+    host_verified = first_transfer == expected
     passed = not missing and not forbidden and host_verified
-    report = {
-        "schema_version": 1,
-        "qemu_correctness_only": True,
+    return {
+        "status": "pass" if passed else "fail",
         "controller": "QEMU NVMe",
         "queue_depth": 16,
+        "io_queues": 4,
+        "prp_pages": 4,
+        "transfer_bytes": 16384,
         "guest_write_read_flush": not missing and not forbidden,
         "host_backing_image_verified": host_verified,
         "missing_markers": missing,
         "forbidden_markers": forbidden,
-        "passed": passed,
+        "guest_log": str(log_path),
     }
-    REPORT.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+
+def main() -> int:
+    BUILD.mkdir(parents=True, exist_ok=True)
+    results: dict[str, dict[str, object]] = {}
+    for architecture in ("aarch64", "x86_64"):
+        print(f"qemu-nvme-gate: testing {architecture}", flush=True)
+        results[architecture] = run_architecture(architecture)
+    passed = all(result["status"] == "pass" for result in results.values())
+    REPORT.write_text(
+        json.dumps(
+            {
+                "schema": "xaios.qemu.nvme.v2",
+                "status": "pass" if passed else "fail",
+                "qemu_correctness_only": True,
+                "architectures": results,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     if not passed:
-        print(f"qemu-nvme-gate: failed report={REPORT}")
+        print(f"qemu-nvme-gate: failed report={REPORT}", file=sys.stderr)
         return 1
     print(
-        "qemu-nvme-gate: admin identify and queued write/read/flush passed; "
-        f"host image verified report={REPORT}"
+        "qemu-nvme-gate: AArch64/x86_64 four-queue multi-page PRP "
+        f"write/read/flush passed report={REPORT}"
     )
     return 0
 

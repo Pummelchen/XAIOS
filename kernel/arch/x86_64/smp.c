@@ -2,8 +2,11 @@
 #include <xaios/klog.h>
 #include <xaios/smp.h>
 #include <xaios/thread.h>
+#include <xaios/timer.h>
 
 #include "platform.h"
+
+#define SECONDARY_WORKER_READY_TIMEOUT_NS UINT64_C(30000000000)
 
 static uint32_t g_capacity;
 static uint32_t g_online;
@@ -60,8 +63,23 @@ xaios_status_t smp_release_secondary_schedulers(void) {
   }
   g_workers_released = 1U;
   x86_64_platform_release_workers();
-  klog("smp: x86 secondary worker barrier passed ready=%u\n", g_online);
-  return XAIOS_OK;
+  uint64_t started = timer_now_ns();
+  for (;;) {
+    uint32_t ready = x86_64_platform_workers_ready();
+    if (ready == g_online) {
+      klog("smp: x86 secondary worker barrier passed ready=%u\n", ready);
+      return XAIOS_OK;
+    }
+    for (uint32_t cpu = 0U; cpu < g_capacity; ++cpu) {
+      if (cpu != g_housekeeping_cpu) x86_64_platform_wake(cpu);
+    }
+    if (timer_now_ns() - started >= SECONDARY_WORKER_READY_TIMEOUT_NS) {
+      klog("smp: x86 secondary worker barrier timed out ready=%u online=%u\n",
+           ready, g_online);
+      return XAIOS_ERR_BUSY;
+    }
+    xaios_cpu_relax();
+  }
 }
 
 const xaios_cpu_state_t *smp_cpu_state(uint32_t cpu_id) {

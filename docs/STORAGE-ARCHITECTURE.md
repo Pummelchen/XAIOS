@@ -82,8 +82,10 @@ ModelFS is the placement and lifecycle container.
   small state.
 - The QEMU VirtIO path is interrupt-dispatched with eight request slots,
   direct-or-bounce DMA, event-index suppression and indirect descriptors. The
-  emulated-NVMe gate exercises admin and I/O queues. Neither path is evidence
-  of production multiqueue affinity, physical durability, or throughput.
+  AArch64/x86_64 emulated-NVMe gate negotiates four I/O queues and verifies
+  four-page PRP 16 KiB transfers through every queue. Async block integration,
+  SGL, MSI-X affinity, cancellation and physical durability remain open; QEMU
+  is not throughput evidence.
 - Registration accepts the bounded signed identity fields defined by
   `xaios.control.v1`; it is not a general JSON manifest parser. Package payloads
   still arrive through SFTP after allocation.

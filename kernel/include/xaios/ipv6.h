@@ -47,7 +47,7 @@
 /* Max extension headers to walk before giving up */
 #define XAIOS_IPV6_MAX_EXTENSION_CHAIN_DEPTH 16U
 #define XAIOS_IPV6_FRAG_TIMEOUT_NS UINT64_C(60000000000)
-#define XAIOS_IPV6_MAX_REASSEMBLED_PAYLOAD 1460U
+#define XAIOS_IPV6_MAX_REASSEMBLED_PAYLOAD 1466U
 
 /* Threshold for ICMPv6 error generation rate limit (shared with IPv4) */
 #define XAIOS_ICMPV6_RATE_LIMIT_MAX_PER_SECOND 100U

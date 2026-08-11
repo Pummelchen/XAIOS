@@ -194,6 +194,7 @@ typedef struct x86_64_hardware_gate_state {
 typedef struct x86_64_cpu_record {
   uint32_t apic_id;
   volatile uint32_t online;
+  volatile uint32_t worker_ready;
   volatile uint32_t requested_generation;
   volatile uint32_t completed_generation;
   volatile uint64_t checksum;
@@ -382,6 +383,22 @@ uint32_t x86_64_platform_cpu_online(uint32_t ordinal) {
              ? __atomic_load_n(&g_cpu_records[ordinal].online,
                                __ATOMIC_ACQUIRE)
              : 0U;
+}
+
+uint32_t x86_64_platform_workers_ready(void) {
+  uint32_t ready = g_bsp_ordinal < g_cpu_record_count ? 1U : 0U;
+  for (uint32_t ordinal = 0U; ordinal < g_cpu_record_count; ++ordinal) {
+    if (ordinal == g_bsp_ordinal ||
+        __atomic_load_n(&g_cpu_records[ordinal].online, __ATOMIC_ACQUIRE) ==
+            0U) {
+      continue;
+    }
+    if (__atomic_load_n(&g_cpu_records[ordinal].worker_ready,
+                        __ATOMIC_ACQUIRE) != 0U) {
+      ++ready;
+    }
+  }
+  return ready;
 }
 
 struct xaios_cpu_state *x86_64_platform_cpu_state(uint32_t ordinal) {
@@ -1066,6 +1083,8 @@ void x86_64_ap_entry(uint32_t ordinal) {
     __asm__ volatile("hlt");
   }
   vmm_activate_kernel();
+  __atomic_store_n(&g_cpu_records[ordinal].worker_ready, 1U,
+                   __ATOMIC_RELEASE);
   for (;;) {
     if (xaios_thread_run_pending(ordinal) == 0U) {
       __asm__ volatile("hlt");

@@ -12,6 +12,7 @@ uint64_t x86_64_platform_lapic_hz(void);
 uint32_t x86_64_platform_cpu_count(void);
 uint32_t x86_64_platform_cpu_apic_id(uint32_t ordinal);
 uint32_t x86_64_platform_cpu_online(uint32_t ordinal);
+uint32_t x86_64_platform_workers_ready(void);
 struct xaios_cpu_state *x86_64_platform_cpu_state(uint32_t ordinal);
 void x86_64_platform_set_page_tables(uint32_t ordinal, uint64_t *root,
                                       uint64_t *user_directory);

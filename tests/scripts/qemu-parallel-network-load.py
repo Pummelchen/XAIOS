@@ -517,8 +517,19 @@ def main() -> int:
             stop_group(mixed)
             raise
         assert_qemu_healthy(qemu, qemu_log_path)
+        for origin, _, _, log_path in direct_entries:
+            direct_output = log_path.read_text(errors="replace")
+            for marker in (
+                "outbound_ipv4_fragments=2",
+                "outbound_ipv6_fragments=2",
+            ):
+                if marker not in direct_output:
+                    raise RuntimeError(
+                        f"direct {origin} client omitted {marker!r}\n{direct_output}"
+                    )
         phases["raw_tcp_under_ssh_sftp_udp_load"] = "passed"
         phases["ipv4_ipv6_fragment_reassembly_under_load"] = "passed"
+        phases["ipv4_ipv6_source_fragmentation_under_load"] = "passed"
 
         saturation, _, saturation_start, audit_request, audit_output = start_stress_clients(
             "saturation", key_dir, coord_dir, ssh_port, udp_port,
@@ -599,6 +610,8 @@ def main() -> int:
                 "raw_tcp_clients": 2,
                 "fragmented_ipv4_clients": 2,
                 "fragmented_ipv6_clients": 2,
+                "outbound_ipv4_fragment_sequences": 2,
+                "outbound_ipv6_fragment_sequences": 2,
             },
             "artifacts": {
                 "qemu_log": str(qemu_log_path),

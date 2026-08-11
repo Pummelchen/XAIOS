@@ -3,6 +3,7 @@
 #include <xaios/klog.h>
 #include <xaios/nvme.h>
 #include <xaios/pci.h>
+#include <xaios/smp.h>
 #include <xaios/timer.h>
 #include <xaios/vmm.h>
 
@@ -27,12 +28,16 @@
 #define NVME_ADMIN_DELETE_IO_CQ UINT8_C(0x04)
 #define NVME_ADMIN_CREATE_IO_CQ UINT8_C(0x05)
 #define NVME_ADMIN_IDENTIFY UINT8_C(0x06)
+#define NVME_ADMIN_SET_FEATURES UINT8_C(0x09)
+#define NVME_FEATURE_NUMBER_OF_QUEUES UINT32_C(0x07)
 #define NVME_IO_FLUSH UINT8_C(0x00)
 #define NVME_IO_WRITE UINT8_C(0x01)
 #define NVME_IO_READ UINT8_C(0x02)
 
 #define NVME_QUEUE_DEPTH 16U
+#define NVME_MAX_IO_QUEUES 4U
 #define NVME_PAGE_SIZE UINT64_C(4096)
+#define NVME_TEST_TRANSFER_BYTES UINT32_C(16384)
 #define NVME_TIMEOUT_NS UINT64_C(5000000000)
 #define NVME_MMIO_VIRTUAL_BASE UINT64_C(0x300000000)
 
@@ -77,9 +82,11 @@ typedef struct nvme_controller {
   uint32_t doorbell_stride;
   uint16_t next_cid;
   nvme_queue_t admin;
-  nvme_queue_t io;
+  nvme_queue_t io[NVME_MAX_IO_QUEUES];
+  uint32_t io_queue_count;
   uint8_t *identify;
   uint8_t *data;
+  uint64_t *prp_list;
 } nvme_controller_t;
 
 typedef char nvme_command_size_must_be_64[(sizeof(nvme_command_t) == 64) ? 1 : -1];
@@ -219,13 +226,28 @@ static xaios_status_t initialize_controller(nvme_controller_t *controller,
     mmio_write32(controller, NVME_REG_CC, cc & ~NVME_CC_ENABLE);
     if (wait_ready(controller, 0U) != XAIOS_OK) return XAIOS_ERR_IO;
   }
-  if (allocate_queue(&controller->admin, 0U) != XAIOS_OK ||
-      allocate_queue(&controller->io, 1U) != XAIOS_OK) {
+  if (allocate_queue(&controller->admin, 0U) != XAIOS_OK) {
     return XAIOS_ERR_NO_MEMORY;
   }
+  uint32_t desired_queues = smp_online_count();
+  if (desired_queues == 0U) desired_queues = 1U;
+  if (desired_queues > NVME_MAX_IO_QUEUES) {
+    desired_queues = NVME_MAX_IO_QUEUES;
+  }
+  for (uint32_t i = 0U; i < desired_queues; ++i) {
+    if (allocate_queue(&controller->io[i], (uint16_t)(i + 1U)) !=
+        XAIOS_OK) {
+      return XAIOS_ERR_NO_MEMORY;
+    }
+  }
+  controller->io_queue_count = desired_queues;
   controller->identify = (uint8_t *)kheap_calloc(NVME_PAGE_SIZE, NVME_PAGE_SIZE);
-  controller->data = (uint8_t *)kheap_calloc(NVME_PAGE_SIZE, NVME_PAGE_SIZE);
-  if (controller->identify == 0 || controller->data == 0) {
+  controller->data =
+      (uint8_t *)kheap_calloc(NVME_TEST_TRANSFER_BYTES, NVME_PAGE_SIZE);
+  controller->prp_list =
+      (uint64_t *)kheap_calloc(NVME_PAGE_SIZE, NVME_PAGE_SIZE);
+  if (controller->identify == 0 || controller->data == 0 ||
+      controller->prp_list == 0) {
     return XAIOS_ERR_NO_MEMORY;
   }
 
@@ -257,36 +279,105 @@ static xaios_status_t identify(nvme_controller_t *controller, uint32_t nsid,
   return submit(controller, &controller->admin, &command, 0);
 }
 
-static xaios_status_t create_io_queues(nvme_controller_t *controller) {
+static xaios_status_t negotiate_io_queues(nvme_controller_t *controller) {
   nvme_command_t command;
   bytes_zero(&command, sizeof(command));
-  command.opcode = NVME_ADMIN_CREATE_IO_CQ;
-  command.prp1 = dma_address(controller->io.cq);
-  command.cdw10 = ((NVME_QUEUE_DEPTH - 1U) << 16U) | 1U;
-  command.cdw11 = 1U;
-  if (submit(controller, &controller->admin, &command, 0) != XAIOS_OK) {
+  command.opcode = NVME_ADMIN_SET_FEATURES;
+  command.cdw10 = NVME_FEATURE_NUMBER_OF_QUEUES;
+  uint32_t requested = controller->io_queue_count - 1U;
+  command.cdw11 = (requested << 16U) | requested;
+  uint32_t result = 0U;
+  if (submit(controller, &controller->admin, &command, &result) != XAIOS_OK) {
     return XAIOS_ERR_IO;
   }
-  bytes_zero(&command, sizeof(command));
-  command.opcode = NVME_ADMIN_CREATE_IO_SQ;
-  command.prp1 = dma_address(controller->io.sq);
-  command.cdw10 = ((NVME_QUEUE_DEPTH - 1U) << 16U) | 1U;
-  command.cdw11 = (1U << 16U) | 1U;
-  return submit(controller, &controller->admin, &command, 0);
+  uint32_t completion_queues = (result & UINT32_C(0xffff)) + 1U;
+  uint32_t submission_queues = (result >> 16U) + 1U;
+  uint32_t granted = completion_queues < submission_queues
+                         ? completion_queues
+                         : submission_queues;
+  if (granted == 0U) return XAIOS_ERR_IO;
+  if (controller->io_queue_count > granted) {
+    controller->io_queue_count = granted;
+  }
+  return XAIOS_OK;
+}
+
+static xaios_status_t create_io_queues(nvme_controller_t *controller) {
+  for (uint32_t index = 0U; index < controller->io_queue_count; ++index) {
+    nvme_queue_t *queue = &controller->io[index];
+    nvme_command_t command;
+    bytes_zero(&command, sizeof(command));
+    command.opcode = NVME_ADMIN_CREATE_IO_CQ;
+    command.prp1 = dma_address(queue->cq);
+    command.cdw10 = ((NVME_QUEUE_DEPTH - 1U) << 16U) | queue->qid;
+    command.cdw11 = 1U;
+    if (submit(controller, &controller->admin, &command, 0) != XAIOS_OK) {
+      return XAIOS_ERR_IO;
+    }
+    bytes_zero(&command, sizeof(command));
+    command.opcode = NVME_ADMIN_CREATE_IO_SQ;
+    command.prp1 = dma_address(queue->sq);
+    command.cdw10 = ((NVME_QUEUE_DEPTH - 1U) << 16U) | queue->qid;
+    command.cdw11 = ((uint32_t)queue->qid << 16U) | 1U;
+    if (submit(controller, &controller->admin, &command, 0) != XAIOS_OK) {
+      return XAIOS_ERR_IO;
+    }
+  }
+  return XAIOS_OK;
+}
+
+static xaios_status_t prepare_prps(nvme_controller_t *controller,
+                                   nvme_command_t *command,
+                                   uint32_t transfer_bytes) {
+  if (transfer_bytes == 0U || transfer_bytes > NVME_TEST_TRANSFER_BYTES) {
+    return XAIOS_ERR_INVALID;
+  }
+  command->prp1 = dma_address(controller->data);
+  if (command->prp1 == 0U) return XAIOS_ERR_IO;
+  uint32_t pages = (transfer_bytes + (uint32_t)NVME_PAGE_SIZE - 1U) /
+                   (uint32_t)NVME_PAGE_SIZE;
+  if (pages == 1U) return XAIOS_OK;
+  uint64_t second = dma_address(controller->data + NVME_PAGE_SIZE);
+  if (second == 0U) return XAIOS_ERR_IO;
+  if (pages == 2U) {
+    command->prp2 = second;
+    return XAIOS_OK;
+  }
+  bytes_zero(controller->prp_list, NVME_PAGE_SIZE);
+  for (uint32_t page = 1U; page < pages; ++page) {
+    uint64_t physical =
+        dma_address(controller->data + (uint64_t)page * NVME_PAGE_SIZE);
+    if (physical == 0U) return XAIOS_ERR_IO;
+    controller->prp_list[page - 1U] = physical;
+  }
+  command->prp2 = dma_address(controller->prp_list);
+  return command->prp2 != 0U ? XAIOS_OK : XAIOS_ERR_IO;
 }
 
 static xaios_status_t io_command(nvme_controller_t *controller,
-                                 uint8_t opcode, uint32_t nsid,
-                                 uint64_t lba) {
+                                 uint32_t queue_index, uint8_t opcode,
+                                 uint32_t nsid, uint64_t lba,
+                                 uint32_t transfer_bytes,
+                                 uint32_t block_size) {
+  if (queue_index >= controller->io_queue_count || block_size == 0U ||
+      (opcode != NVME_IO_FLUSH &&
+       (transfer_bytes == 0U || transfer_bytes % block_size != 0U))) {
+    return XAIOS_ERR_INVALID;
+  }
   nvme_command_t command;
   bytes_zero(&command, sizeof(command));
   command.opcode = opcode;
   command.nsid = nsid;
-  if (opcode != NVME_IO_FLUSH) command.prp1 = dma_address(controller->data);
+  if (opcode != NVME_IO_FLUSH &&
+      prepare_prps(controller, &command, transfer_bytes) != XAIOS_OK) {
+    return XAIOS_ERR_IO;
+  }
   command.cdw10 = (uint32_t)lba;
   command.cdw11 = (uint32_t)(lba >> 32U);
-  command.cdw12 = 0U;
-  return submit(controller, &controller->io, &command, 0);
+  command.cdw12 = opcode == NVME_IO_FLUSH
+                      ? 0U
+                      : transfer_bytes / block_size - 1U;
+  return submit(controller, &controller->io[queue_index], &command, 0);
 }
 
 static uint64_t read_le64(const uint8_t *bytes) {
@@ -343,26 +434,54 @@ xaios_status_t nvme_self_test(xaios_nvme_self_test_result_t *result) {
     result->namespace_blocks = blocks;
     result->logical_block_size = block_size;
   }
-  if (create_io_queues(controller) != XAIOS_OK) return XAIOS_ERR_IO;
+  if (NVME_TEST_TRANSFER_BYTES % block_size != 0U ||
+      negotiate_io_queues(controller) != XAIOS_OK ||
+      create_io_queues(controller) != XAIOS_OK) {
+    return XAIOS_ERR_IO;
+  }
+  uint32_t blocks_per_transfer = NVME_TEST_TRANSFER_BYTES / block_size;
+  if ((uint64_t)blocks_per_transfer * controller->io_queue_count > blocks) {
+    return XAIOS_ERR_UNSUPPORTED;
+  }
+  if (result != 0) {
+    result->io_queues = controller->io_queue_count;
+    result->prp_pages = NVME_TEST_TRANSFER_BYTES / (uint32_t)NVME_PAGE_SIZE;
+    result->transfer_bytes = NVME_TEST_TRANSFER_BYTES;
+  }
 
-  for (uint32_t i = 0U; i < block_size; ++i) {
-    controller->data[i] = (uint8_t)(i ^ UINT32_C(0xa5));
-  }
-  if (io_command(controller, NVME_IO_WRITE, 1U, 0U) != XAIOS_OK ||
-      io_command(controller, NVME_IO_FLUSH, 1U, 0U) != XAIOS_OK) {
-    return XAIOS_ERR_IO;
-  }
-  bytes_zero(controller->data, block_size);
-  if (io_command(controller, NVME_IO_READ, 1U, 0U) != XAIOS_OK) {
-    return XAIOS_ERR_IO;
-  }
-  for (uint32_t i = 0U; i < block_size; ++i) {
-    if (controller->data[i] != (uint8_t)(i ^ UINT32_C(0xa5))) {
+  for (uint32_t queue = 0U; queue < controller->io_queue_count; ++queue) {
+    for (uint32_t i = 0U; i < NVME_TEST_TRANSFER_BYTES; ++i) {
+      controller->data[i] =
+          (uint8_t)(i ^ UINT32_C(0xa5) ^ (queue << 4U));
+    }
+    uint64_t lba = (uint64_t)queue * blocks_per_transfer;
+    if (io_command(controller, queue, NVME_IO_WRITE, 1U, lba,
+                   NVME_TEST_TRANSFER_BYTES, block_size) != XAIOS_OK) {
       return XAIOS_ERR_IO;
     }
   }
+  if (io_command(controller, 0U, NVME_IO_FLUSH, 1U, 0U, 0U, block_size) !=
+      XAIOS_OK) {
+    return XAIOS_ERR_IO;
+  }
+  for (uint32_t queue = 0U; queue < controller->io_queue_count; ++queue) {
+    bytes_zero(controller->data, NVME_TEST_TRANSFER_BYTES);
+    uint64_t lba = (uint64_t)queue * blocks_per_transfer;
+    if (io_command(controller, queue, NVME_IO_READ, 1U, lba,
+                   NVME_TEST_TRANSFER_BYTES, block_size) != XAIOS_OK) {
+      return XAIOS_ERR_IO;
+    }
+    for (uint32_t i = 0U; i < NVME_TEST_TRANSFER_BYTES; ++i) {
+      if (controller->data[i] !=
+          (uint8_t)(i ^ UINT32_C(0xa5) ^ (queue << 4U))) {
+        return XAIOS_ERR_IO;
+      }
+    }
+  }
   if (result != 0) result->io_verified = 1U;
-  klog("nvme: admin/io self-test passed namespaces=1 blocks=%lu block_size=%u queue_depth=%u write_read_flush=1\n",
-       blocks, block_size, NVME_QUEUE_DEPTH);
+  klog("nvme: admin/io self-test passed namespaces=1 blocks=%lu block_size=%u queue_depth=%u io_queues=%u prp_pages=%u transfer_bytes=%u write_read_flush=1\n",
+       blocks, block_size, NVME_QUEUE_DEPTH, controller->io_queue_count,
+       NVME_TEST_TRANSFER_BYTES / (uint32_t)NVME_PAGE_SIZE,
+       NVME_TEST_TRANSFER_BYTES);
   return XAIOS_OK;
 }

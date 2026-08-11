@@ -33,6 +33,8 @@ Docker build inputs, and test-image inputs outside `tests/`. It runs through
 | Primary AArch64 smoke | `make qemu-smoke` |
 | x86_64 full-service smoke | `make qemu-x86_64-smoke` |
 | Aggregate QEMU core OS | `make qemu-core-os-rc` |
+| IPv4/IPv6 source fragmentation on ARM/x86 | `make qemu-outbound-fragmentation-gate` |
+| NVMe queues and PRP lists on ARM/x86 | `make qemu-nvme-gate` |
 | Power/recovery/operations closure | `make qemu-operations-closure` |
 | Debian/OpenSSH interoperability | `make qemu-docker-network-suite` |
 | FreeBSD client interoperability | `make qemu-freebsd-network-suite` |

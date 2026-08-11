@@ -19,6 +19,7 @@ COMMANDS = [
     ("storage_crash", ["make", "qemu-storage-crash-test"], 700),
     ("smmuv3", ["make", "qemu-smmu-gate"], 300),
     ("nvme", ["make", "qemu-nvme-gate"], 300),
+    ("fragmentation", ["make", "qemu-outbound-fragmentation-gate"], 360),
     ("network", ["make", "qemu-network-suite"], 300),
     ("high_core", ["make", "qemu-high-core-gate"], 500),
     ("x86_64", ["make", "qemu-x86_64-smoke"], 240),
@@ -156,8 +157,14 @@ SPECIAL_CAPABILITIES = {
         "nvme",
         [
             "nvme: admin/io self-test passed namespaces=1",
-            "queue_depth=16 write_read_flush=1",
-            "qemu-nvme-gate: admin identify and queued write/read/flush passed; host image verified",
+            "queue_depth=16 io_queues=4 prp_pages=4 transfer_bytes=16384 write_read_flush=1",
+            "qemu-nvme-gate: AArch64/x86_64 four-queue multi-page PRP write/read/flush passed",
+        ],
+    ),
+    "outbound_fragmentation": (
+        "fragmentation",
+        [
+            "PASS: AArch64/x86_64 outbound fragmentation report=",
         ],
     ),
     "high_core_dynamic_capacity": (

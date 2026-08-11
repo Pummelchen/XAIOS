@@ -28,7 +28,7 @@ REQUIRED = {
     ],
     "docs/STORAGE-ARCHITECTURE.md": [
         "interrupt-dispatched with eight request slots",
-        "emulated-NVMe gate exercises admin and I/O queues",
+        "emulated-NVMe gate negotiates four I/O queues",
     ],
     "wiki/Current-Limitations.md": [
         "external A-record resolution",
@@ -63,6 +63,7 @@ FORBIDDEN = {
 
 CONTRACT_CAPABILITIES = {
     "fragment_reassembly",
+    "outbound_fragmentation",
     "userspace_dns",
     "storage_crash_consistency",
     "translated_smmuv3_isolation",

@@ -6,6 +6,7 @@
 #define XAIOS_IPV4_FRAG_BUCKETS 8U
 
 static ipv4_frag_bucket_t g_frag_buckets[XAIOS_IPV4_FRAG_BUCKETS];
+static uint16_t g_ipv4_identification = 1U;
 
 static void put_be16(uint8_t *dst, uint16_t value) {
   dst[0] = (uint8_t)(value >> 8U);
@@ -81,8 +82,14 @@ void ipv4_build_header(uint8_t *hdr, uint16_t total_length, uint8_t protocol,
   hdr[0] = XAIOS_IPV4_VERSION_IHL;
   hdr[1] = 0;
   put_be16(hdr + 2, total_length);
-  put_be16(hdr + 4, 0);
-  put_be16(hdr + 6, 0x4000);
+  uint16_t identification = __atomic_fetch_add(
+      &g_ipv4_identification, 1U, __ATOMIC_RELAXED);
+  if (identification == 0U) {
+    identification = __atomic_fetch_add(&g_ipv4_identification, 1U,
+                                         __ATOMIC_RELAXED);
+  }
+  put_be16(hdr + 4, identification);
+  put_be16(hdr + 6, 0U);
   hdr[8] = 64;
   hdr[9] = protocol;
   put_be16(hdr + 10, 0);
@@ -126,7 +133,7 @@ xaios_status_t ipv4_fragment(const uint8_t *frame, uint64_t frame_len,
   }
   uint64_t payload_len = (uint64_t)total_len - XAIOS_IPV4_HEADER_SIZE;
 
-  if (payload_len <= 1400U) {
+  if (total_len <= XAIOS_IPV4_DEFAULT_MTU) {
     uint64_t exact_len = 14U + total_len;
     if (out_capacity < exact_len) return XAIOS_ERR_NO_MEMORY;
     bytes_copy(out_buf, frame, exact_len);
@@ -134,12 +141,25 @@ xaios_status_t ipv4_fragment(const uint8_t *frame, uint64_t frame_len,
     return XAIOS_OK;
   }
 
+  uint16_t flags_offset = get_be16(frame + 20U);
+  if ((flags_offset & XAIOS_IPV4_FLAG_DF) != 0U ||
+      (flags_offset & XAIOS_IPV4_OFFSET_MASK) != 0U ||
+      (flags_offset & XAIOS_IPV4_FLAG_MF) != 0U) {
+    return XAIOS_ERR_UNSUPPORTED;
+  }
   uint16_t id = get_be16(frame + 18U);
+  if (id == 0U) {
+    id = __atomic_fetch_add(&g_ipv4_identification, 1U, __ATOMIC_RELAXED);
+    if (id == 0U) {
+      id = __atomic_fetch_add(&g_ipv4_identification, 1U, __ATOMIC_RELAXED);
+    }
+  }
   uint32_t src_ip = get_be32(frame + 26U);
   uint32_t dst_ip = get_be32(frame + 30U);
   uint8_t protocol = frame[23];
 
-  uint64_t per_frag = 1392U; /* multiple of 8, leaves room for headers */
+  const uint64_t per_frag =
+      (XAIOS_IPV4_DEFAULT_MTU - XAIOS_IPV4_HEADER_SIZE) & ~UINT64_C(7);
   uint64_t offset = 0;
   uint64_t written = 0;
 
@@ -320,7 +340,7 @@ void ipv4_frag_self_test(void) {
     frame[6U + i] = (uint8_t)(0x20U + i);
   }
   put_be16(frame + 12U, UINT16_C(0x0800));
-  const uint32_t payload_len = 1450U;
+  const uint32_t payload_len = XAIOS_IPV4_MAX_REASSEMBLED_PAYLOAD;
   ipv4_build_header(frame + 14U,
                     (uint16_t)(XAIOS_IPV4_HEADER_SIZE + payload_len),
                     XAIOS_IPV4_PROTO_UDP, XAIOS_IPV4_GUEST_IP,

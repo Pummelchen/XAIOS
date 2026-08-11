@@ -2066,7 +2066,7 @@ service_loop:
     console_service_pong(timer_now());
     console_tick();
     for (uint32_t i = 0; g_console_ssh_ready != 0U && i < 4U; ++i) {
-      uint8_t udp_buffer[1400];
+      uint8_t udp_buffer[1478];
       xaios_ip_addr_user_t source_addr;
       u64 bytes_read = 0;
       u64 bytes_written = 0;

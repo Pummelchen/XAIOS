@@ -66,7 +66,7 @@ remain concise here; no secondary page owns their status.
 | P-05 | Physical Apple NEON evidence | `NOT STARTED` | QEMU cannot satisfy this physical gate. |
 | P-06 | Generic ARM server scope | `DONE` | UEFI/SBSA-style AArch64 scope is documented; QEMU `virt` is the service target. |
 | P-07 | SVE/SVE2 backend | `NOT STARTED` | Capability IDs fail closed; no executing backend exists. |
-| P-08 | x86 AP startup and worker participation | `DONE` | MADT AP trampoline/IPI work and 1/4/8/128/256-vCPU matrices pass QEMU. |
+| P-08 | x86 AP startup and worker participation | `DONE` | MADT AP trampoline/IPI work, a bounded per-CPU dispatch-loop readiness handshake, and 1/4/8/128/256-vCPU matrices pass QEMU. |
 | P-09 | x86 ring 3, syscalls, and user threads | `DONE` | Common loader, per-CPU page tables, syscall ABI, and EL0 threads pass QEMU. |
 | P-10 | x86 PCI storage/network/NVMe/interrupts | `DONE` | PCI VirtIO, block MSI-X-or-bounded-poll completion, and focused emulated NVMe gates pass. Repeated post-reset MSI-X requires physical validation. |
 | P-11 | x86 full platform services | `DONE` | Filesystems, IPv4/IPv6, SSH/SFTP, control, security, AI Cell, and telemetry match ARM QEMU scope. |
@@ -117,13 +117,13 @@ remain concise here; no secondary page owns their status.
 | N-A9 | Out-of-order TCP data | `DONE` | Bounded reordering passes focused tests. |
 | N-A10 | Listener backlog | `DONE` | Multiple transports and bounded pending/active channels pass concurrent tests. |
 | N-B1 | IPv4 receive fragment reassembly | `DONE` | Bounded out-of-order reassembly passes macOS/Debian load. |
-| N-B2 | General outbound IPv4 fragmentation | `NOT STARTED` | DF/MTU-bounded output remains the supported scope. |
+| N-B2 | General outbound IPv4 fragmentation | `DONE` | The common egress boundary enforces the 1500-byte MTU and source-fragments maximum-size UDP output; macOS/Debian raw clients and AArch64/x86_64 QEMU gates reassemble two fragments with valid offsets and checksums. |
 | N-B3 | ICMPv4 error generation | `DONE` | Bounded protocol errors are implemented and tested. |
 | N-B4 | ARP aging and bounded expansion | `DONE` | Cache aging/replacement behavior is implemented. |
 | N-B5 | Route deletion and expanded table | `DONE` | Bounded mutable route management is present. |
 | N-C1 | IPv6 extension-header parsing | `DONE` | Supported chain validation is bounded. |
 | N-C2 | IPv6 receive fragment reassembly | `DONE` | Focused out-of-order cases pass. |
-| N-C3 | General outbound IPv6 fragmentation | `NOT STARTED` | MTU-bounded output remains the supported scope. |
+| N-C3 | General outbound IPv6 fragmentation | `DONE` | The common egress boundary source-fragments above the IPv6 minimum MTU; dual-client load and AArch64/x86_64 QEMU gates verify two-fragment UDP echo, offsets and checksums. |
 | N-C4 | NDP reachability, aging, and hop-limit checks | `DONE` | Neighbor cache lifecycle and validation are covered. |
 | N-C5 | Duplicate address detection and router discovery | `DONE` | Bounded DAD/RS/RA behavior is implemented. |
 | N-C6 | ICMPv6 error generation | `DONE` | Bounded protocol errors are implemented. |
@@ -144,7 +144,7 @@ remain concise here; no secondary page owns their status.
 | N-E4 | DNSSEC, TCP fallback, complete AAAA results | `NOT STARTED` | These remain explicit network limitations. |
 | N-F1 | Hybrid post-quantum SSH KEX | `NOT STARTED` | Current interoperable suite is classical curve25519 only. |
 | N-F2 | Outbound public-key auth, IPv6 active open, forwarding/agents/jump hosts | `NOT STARTED` | Outbound SSH/SCP currently uses password auth over IPv4/DNS A. |
-| N-F3 | Hostile-network fuzz/physical soak/independent SSH review | `NOT STARTED` | Required before production Internet exposure. |
+| N-F3 | Hostile-network fuzz/physical soak/independent SSH review | `IN PROGRESS` | Deterministic sanitizer coverage now includes 50,000 malformed IPv4/IPv6 fragment cases in addition to SSH/SFTP/DNS malformed corpora and concurrent QEMU load. Coverage-guided fuzzing, physical soak, side-channel work and independent review remain. |
 
 ## Storage phases
 
@@ -160,7 +160,7 @@ remain concise here; no secondary page owns their status.
 | S-08 TRIM/discard | `DONE` | Free-only planning, persistence, cancellation, and QEMU VirtIO negotiation pass. |
 | S-09 Large SFTP | `DONE` | >4 GiB offsets and concurrent resumable macOS/Debian transfers pass at QEMU-testable scope. |
 | S-10 Model loader boundary | `DONE` | Signed open, ranged reads, extent maps, callbacks, aligned arena, metrics, and >100 GiB offsets pass hosted tests. |
-| S-11 Production NVMe multiqueue/PRP/SGL/affinity/direct reads | `NOT STARTED` | Requires implementation plus physical-device correctness and durability evidence. |
+| S-11 Production NVMe multiqueue/PRP/SGL/affinity/direct reads | `IN PROGRESS` | AArch64 and x86_64 QEMU negotiate four I/O queues and verify four-page PRP 16 KiB write/read/flush commands plus backing bytes. Async block integration, SGL, cancellation, MSI-X affinity, direct final-buffer APIs and physical durability remain. |
 | S-12 Trusted-replica repair and production key custody | `BLOCKED` | Depends on production trust and repair-source decisions. |
 
 ## Distributed AI server phases

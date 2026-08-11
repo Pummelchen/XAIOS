@@ -9,6 +9,7 @@
 #define XAIOS_IPV4_PROTO_UDP 17U
 #define XAIOS_IPV4_HEADER_SIZE 20U
 #define XAIOS_IPV4_VERSION_IHL 0x45U
+#define XAIOS_IPV4_DEFAULT_MTU 1500U
 
 /* Static IP configuration for QEMU SLIRP */
 #define XAIOS_IPV4_GUEST_IP  0x0a00020fU /* 10.0.2.15 */
@@ -17,7 +18,7 @@
 
 /* B1: IP fragmentation/reassembly */
 #define XAIOS_IPV4_FRAG_TIMEOUT_NS UINT64_C(30000000000)
-#define XAIOS_IPV4_MAX_REASSEMBLED_PAYLOAD 1480U
+#define XAIOS_IPV4_MAX_REASSEMBLED_PAYLOAD 1486U
 
 /* IP flag bits */
 #define XAIOS_IPV4_FLAG_MF    0x2000U  /* more fragments */

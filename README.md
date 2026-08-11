@@ -82,23 +82,25 @@ Internet destinations or physical networks are production-ready.
   negotiated event-index suppression and indirect descriptors. Block I/O uses
   an eight-request direct-or-bounce queue and batches multi-sector transfers;
   network transmit accepts bounded scatter/gather input without requiring a
-  whole-frame copy when the buffers are DMA-addressable. A QEMU NVMe path
-  initializes admin and I/O queues, identifies its namespace, and passes a
-  write/flush/read test whose backing bytes are checked by the host. Production
-  NVMe multiqueue, interrupt affinity, physical durability, and performance
-  remain unimplemented.
+  whole-frame copy when the buffers are DMA-addressable. The AArch64 and x86_64
+  QEMU NVMe path negotiates four I/O queues, exercises four-page PRP transfers,
+  and passes 16 KiB write/flush/read tests whose backing bytes are checked by
+  the host. Asynchronous block integration, SGL, cancellation, MSI-X queue
+  affinity, physical durability, and performance remain unimplemented.
 - An experimental freestanding SSH/SFTP service reachable through QEMU host
   forwarding, plus guest userspace UDP receive/echo and IPv6/TCP receive/send
   paths. OpenSSH clients on FreeBSD 15.1, macOS and in an official Debian 13
   Docker container verify authentication and rejection paths, with the broader
   Linux/macOS gates covering persistent host identity, strict
   SFTP operations, shared channels, forced rekey, four simultaneous sessions,
-  reconnect recycling, userspace DNS, UDP echo, IPv4/IPv6 fragment reassembly,
+  reconnect recycling, userspace DNS, UDP echo, IPv4/IPv6 fragment reassembly
+  and source fragmentation,
   TCP reordering/retransmission and malformed transport rejection. TCP transmit
   uses an eight-segment SACK-aware cumulative/partial-ACK sliding window with
   fast retransmit, zero-window handling, and RTO backoff. A dual-origin load gate
   runs these paths in parallel against one successful guest instance and
-  verifies fragmented TCP traffic and recovery after saturation.
+  verifies fragmented TCP traffic, maximum-size fragmented UDP echo in both
+  directions, and recovery after saturation.
   The native guest also turns an SSH PTY `htop` command into a terminal-sized
   live ANSI monitor with sampled CPU/memory percentages, process selection,
   scheduler-backed 1/5/15-minute load averages, sorting, filtering, help,
@@ -206,10 +208,11 @@ Internet destinations or physical networks are production-ready.
   caller-owned aligned arenas and exposes extent/prefetch metadata. Sparse tests
   exercise a 128 GiB volume and logical package above 100 GiB without
   materializing the payload. QEMU VirtIO now has interrupt-driven eight-request
-  batching, and the focused emulated-NVMe gate validates admin/I/O queue and
-  backing-image persistence behavior. Production NVMe multiqueue, a physical
-  100+ GiB transfer, trusted-replica repair, and physical-device
-  durability/performance validation remain incomplete.
+  batching, and the AArch64/x86_64 emulated-NVMe gate validates four negotiated
+  I/O queues, multi-page PRP transfer and backing-image persistence behavior.
+  Asynchronous block integration, SGL, queue affinity, a physical 100+ GiB
+  transfer, trusted-replica repair, and physical-device durability/performance
+  validation remain incomplete.
 - Both architecture ports use per-CPU translation roots and private user
   directories, so concurrent EL0 workers cannot replace another core's process
   mappings. The x86_64 QEMU image executes the same common kernel and complete
@@ -321,6 +324,7 @@ make qemu-smoke
 make qemu-storage-crash-test
 make qemu-smmu-gate
 make qemu-nvme-gate
+make qemu-outbound-fragmentation-gate
 make qemu-model-sftp-gate
 make qemu-freebsd-network-suite
 make qemu-freebsd-bidirectional-suite

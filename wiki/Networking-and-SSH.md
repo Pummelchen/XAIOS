@@ -30,7 +30,8 @@ database and development-image opt-in; release builds reject it.
 
 ## Network behavior
 
-The QEMU-tested stack includes IPv4/IPv6 fragment reassembly, TCP
+The QEMU-tested stack includes IPv4/IPv6 fragment reassembly and source
+fragmentation, TCP
 handshake/data retransmission, out-of-order receive, duplicate-ACK/SACK
 handling, UDP delivery semantics, asynchronous DNS A-record resolution, socket
 ownership, cancellation, and cleanup. Runtime-sized CPU/queue metadata avoids
@@ -56,7 +57,9 @@ Automated suites exercise XAIOS from macOS OpenSSH, Debian 13 OpenSSH, and an
 official FreeBSD 15.1 VM. They cover valid/invalid authentication, four
 simultaneous sessions, reconnects, PTY applications, SFTP lifecycle and
 isolation, SCP, UDP, IPv6/TCP, malformed traffic, rekey, reboot persistence,
-and concurrent clients against one guest.
+and concurrent clients against one guest. The raw Ethernet gates additionally
+send maximum-size fragmented UDP requests and independently reassemble XAIOS
+IPv4 and IPv6 replies on AArch64 and x86_64 QEMU.
 
 This is protocol correctness evidence under QEMU, not approval for direct
 Internet exposure. See [[Security Model|Security-Model]],

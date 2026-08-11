@@ -57,8 +57,10 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   RTT/RTO backoff, SACK, fast retransmit, zero-window handling, bounded
   reordering, keepalive, and FIN bookkeeping. Repeated-loss physical-network
   soak and congestion-control tuning remain unverified.
-- Bounded IPv4/IPv6 fragment reassembly passes focused cases. Broad hostile
-  fragment fuzzing remains incomplete.
+- Bounded IPv4/IPv6 reassembly and source fragmentation pass maximum-size UDP
+  echo under dual-client load and focused AArch64/x86_64 QEMU gates. A
+  deterministic sanitizer corpus covers 50,000 malformed fragment inputs;
+  coverage-guided hostile fuzzing and physical lossy-link behavior remain.
 
 ## Storage and persistence
 
@@ -68,9 +70,11 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   bounded polling fallback. Repeated block MSI-X delivery after a device reset
   is not claimed from QEMU. Emulated NVMe covers focused
   identify/write/flush/read and backing-byte checks.
-- Production NVMe multiqueue, queue affinity, cancellation, direct final-buffer
-  expert reads, physical durability, discard behavior, and throughput remain
-  open.
+- AArch64 and x86_64 QEMU negotiate four NVMe I/O queues and pass four-page PRP
+  16 KiB write/read/flush operations with host backing-byte verification.
+  Asynchronous block integration, SGL, queue affinity, cancellation, direct
+  final-buffer reads, physical durability, discard behavior, and throughput
+  remain open.
 - ModelFS supports signed registration, resumable staging, verification,
   immutable activation, scrub/quarantine, cleanup/reuse, and free-only trim
   under hosted and QEMU tests.

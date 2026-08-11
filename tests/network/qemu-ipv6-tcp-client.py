@@ -18,6 +18,7 @@ CLIENT_IP_V4 = ipaddress.IPv4Address("10.0.2.100").packed
 GUEST_IP_V4 = ipaddress.IPv4Address("10.0.2.15").packed
 CLIENT_PORT = 42022
 GUEST_PORT = 22
+GUEST_UDP_PORT = 2223
 ETHERNET_MIN_FRAME_BYTES = 60
 
 
@@ -161,6 +162,225 @@ def ipv6_tcp_fragments(seq: int, identification: int) -> list[bytes]:
             )
         )
     return fragments
+
+
+def udp_segment_v4(payload: bytes) -> bytes:
+    header = struct.pack(
+        "!HHHH", CLIENT_PORT, GUEST_UDP_PORT, 8 + len(payload), 0
+    )
+    pseudo = CLIENT_IP_V4 + GUEST_IP_V4 + struct.pack(
+        "!BBH", 0, 17, len(header) + len(payload)
+    )
+    value = checksum(pseudo + header + payload)
+    if value == 0:
+        value = 0xFFFF
+    return header[:6] + struct.pack("!H", value) + payload
+
+
+def udp_segment_v6(payload: bytes) -> bytes:
+    header = struct.pack(
+        "!HHHH", CLIENT_PORT, GUEST_UDP_PORT, 8 + len(payload), 0
+    )
+    pseudo = CLIENT_IP + GUEST_IP + struct.pack(
+        "!I3xB", len(header) + len(payload), 17
+    )
+    value = checksum(pseudo + header + payload)
+    if value == 0:
+        value = 0xFFFF
+    return header[:6] + struct.pack("!H", value) + payload
+
+
+def ipv4_udp_fragments(payload: bytes, identification: int) -> list[bytes]:
+    datagram = udp_segment_v4(payload)
+    fragments = []
+    fragment_payload = 1480
+    for offset in range(0, len(datagram), fragment_payload):
+        chunk = datagram[offset : offset + fragment_payload]
+        more = offset + len(chunk) < len(datagram)
+        ip = struct.pack(
+            "!BBHHHBBH4s4s",
+            0x45,
+            0,
+            20 + len(chunk),
+            identification,
+            (0x2000 if more else 0) | (offset // 8),
+            64,
+            17,
+            0,
+            CLIENT_IP_V4,
+            GUEST_IP_V4,
+        )
+        ip = ip[:10] + struct.pack("!H", checksum(ip)) + ip[12:]
+        fragments.append(
+            pad_ethernet_frame(
+                GUEST_MAC + CLIENT_MAC + struct.pack("!H", 0x0800) + ip + chunk
+            )
+        )
+    return fragments
+
+
+def ipv6_udp_fragments(payload: bytes, identification: int) -> list[bytes]:
+    datagram = udp_segment_v6(payload)
+    fragments = []
+    fragment_payload = 1232
+    for offset in range(0, len(datagram), fragment_payload):
+        chunk = datagram[offset : offset + fragment_payload]
+        more = offset + len(chunk) < len(datagram)
+        fragment_header = struct.pack(
+            "!BBHI", 17, 0, (offset & 0xFFF8) | (1 if more else 0), identification
+        )
+        ipv6 = struct.pack(
+            "!IHBB16s16s",
+            6 << 28,
+            len(fragment_header) + len(chunk),
+            44,
+            64,
+            CLIENT_IP,
+            GUEST_IP,
+        )
+        fragments.append(
+            pad_ethernet_frame(
+                GUEST_MAC
+                + CLIENT_MAC
+                + struct.pack("!H", 0x86DD)
+                + ipv6
+                + fragment_header
+                + chunk
+            )
+        )
+    return fragments
+
+
+def _assemble_fragments(parts: dict[int, bytes], total: int | None) -> bytes | None:
+    if total is None:
+        return None
+    position = 0
+    result = bytearray()
+    for offset in sorted(parts):
+        if offset != position:
+            return None
+        result.extend(parts[offset])
+        position += len(parts[offset])
+    return bytes(result) if position == total else None
+
+
+def wait_for_udp_echo_v4(
+    sock: socket.socket, expected: bytes, timeout: float, verbose: bool
+) -> int:
+    deadline = time.monotonic() + timeout
+    parts: dict[int, bytes] = {}
+    total = None
+    identification = None
+    while time.monotonic() < deadline:
+        try:
+            frame = recv_frame(sock)
+        except socket.timeout:
+            continue
+        if verbose:
+            print(f"received IPv4 candidate bytes={len(frame)}")
+        if len(frame) < 34 or frame[12:14] != b"\x08\x00":
+            continue
+        ip = frame[14:]
+        ip_length = struct.unpack("!H", ip[2:4])[0]
+        if (
+            ip[0] != 0x45
+            or ip_length > 1500
+            or ip_length > len(ip)
+            or ip[9] != 17
+            or ip[12:16] != GUEST_IP_V4
+            or ip[16:20] != CLIENT_IP_V4
+        ):
+            continue
+        if checksum(ip[:20]) != 0:
+            raise RuntimeError("guest fragmented IPv4 header checksum mismatch")
+        current_id, flags_offset = struct.unpack("!HH", ip[4:8])
+        if (flags_offset & 0x4000) != 0:
+            raise RuntimeError("guest set DF on an emitted IPv4 fragment")
+        offset = (flags_offset & 0x1FFF) * 8
+        more = (flags_offset & 0x2000) != 0
+        chunk = ip[20:ip_length]
+        if more and len(chunk) % 8 != 0:
+            raise RuntimeError("guest emitted misaligned non-final IPv4 fragment")
+        if identification is None:
+            identification = current_id
+        if current_id != identification:
+            continue
+        parts[offset] = chunk
+        if not more:
+            total = offset + len(chunk)
+        datagram = _assemble_fragments(parts, total)
+        if datagram is None:
+            continue
+        source, destination, length, _ = struct.unpack("!HHHH", datagram[:8])
+        if source != GUEST_UDP_PORT or destination != CLIENT_PORT:
+            continue
+        if length != len(datagram) or datagram[8:] != expected:
+            raise RuntimeError("guest fragmented IPv4 UDP echo payload mismatch")
+        pseudo = GUEST_IP_V4 + CLIENT_IP_V4 + struct.pack("!BBH", 0, 17, length)
+        if checksum(pseudo + datagram) != 0:
+            raise RuntimeError("guest fragmented IPv4 UDP checksum mismatch")
+        return len(parts)
+    raise TimeoutError("timed out waiting for fragmented guest IPv4 UDP echo")
+
+
+def wait_for_udp_echo_v6(
+    sock: socket.socket, expected: bytes, timeout: float, verbose: bool
+) -> int:
+    deadline = time.monotonic() + timeout
+    parts: dict[int, bytes] = {}
+    total = None
+    identification = None
+    while time.monotonic() < deadline:
+        try:
+            frame = recv_frame(sock)
+        except socket.timeout:
+            continue
+        if verbose:
+            print(f"received IPv6 candidate bytes={len(frame)}")
+        if len(frame) < 62 or frame[12:14] != b"\x86\xdd":
+            continue
+        ip6 = frame[14:]
+        payload_length = struct.unpack("!H", ip6[4:6])[0]
+        if (
+            ip6[0] >> 4 != 6
+            or 40 + payload_length > 1280
+            or 40 + payload_length > len(ip6)
+            or ip6[6] != 44
+            or ip6[8:24] != GUEST_IP
+            or ip6[24:40] != CLIENT_IP
+        ):
+            continue
+        fragment = ip6[40:48]
+        next_header, reserved, offset_flags, current_id = struct.unpack(
+            "!BBHI", fragment
+        )
+        if next_header != 17 or reserved != 0 or (offset_flags & 0x0006) != 0:
+            raise RuntimeError("guest emitted invalid IPv6 fragment header")
+        offset = offset_flags & 0xFFF8
+        more = (offset_flags & 1) != 0
+        chunk = ip6[48 : 40 + payload_length]
+        if more and len(chunk) % 8 != 0:
+            raise RuntimeError("guest emitted misaligned non-final IPv6 fragment")
+        if identification is None:
+            identification = current_id
+        if current_id != identification:
+            continue
+        parts[offset] = chunk
+        if not more:
+            total = offset + len(chunk)
+        datagram = _assemble_fragments(parts, total)
+        if datagram is None:
+            continue
+        source, destination, length, _ = struct.unpack("!HHHH", datagram[:8])
+        if source != GUEST_UDP_PORT or destination != CLIENT_PORT:
+            continue
+        if length != len(datagram) or datagram[8:] != expected:
+            raise RuntimeError("guest fragmented IPv6 UDP echo payload mismatch")
+        pseudo = GUEST_IP + CLIENT_IP + struct.pack("!I3xB", length, 17)
+        if checksum(pseudo + datagram) != 0:
+            raise RuntimeError("guest fragmented IPv6 UDP checksum mismatch")
+        return len(parts)
+    raise TimeoutError("timed out waiting for fragmented guest IPv6 UDP echo")
 
 
 def send_frame(sock: socket.socket, frame: bytes) -> None:
@@ -332,6 +552,24 @@ def main() -> int:
 
     client_seq = 0x10203040
     with connect_with_retry(args.host, args.port, args.timeout) as sock:
+        ipv4_udp_payload = bytes((index * 17 + 3) & 0xFF for index in range(1478))
+        for frame in ipv4_udp_fragments(ipv4_udp_payload, 0xCAFE):
+            send_frame(sock, frame)
+        ipv4_outbound_fragments = wait_for_udp_echo_v4(
+            sock, ipv4_udp_payload, args.timeout, args.verbose
+        )
+        if ipv4_outbound_fragments < 2:
+            raise RuntimeError("guest did not fragment oversized IPv4 UDP output")
+
+        ipv6_udp_payload = bytes((index * 29 + 7) & 0xFF for index in range(1458))
+        for frame in ipv6_udp_fragments(ipv6_udp_payload, 0x0BADF00D):
+            send_frame(sock, frame)
+        ipv6_outbound_fragments = wait_for_udp_echo_v6(
+            sock, ipv6_udp_payload, args.timeout, args.verbose
+        )
+        if ipv6_outbound_fragments < 2:
+            raise RuntimeError("guest did not fragment oversized IPv6 UDP output")
+
         send_frame(sock, ipv4_tcp_frame(valid_ip_checksum=False))
         assert_no_tcp(sock, lambda packet: packet[2] & 0x12 == 0x12, 0.5)
         send_frame(sock, ipv4_tcp_frame(valid_ip_checksum=True, fragment=True))
@@ -444,6 +682,8 @@ def main() -> int:
             f"retransmit_seconds={retransmit_seconds:.3f} "
             "ipv4_bad_header=rejected incomplete_fragment=held "
             "ipv4_fragments=reassembled ipv6_fragments=reassembled "
+            f"outbound_ipv4_fragments={ipv4_outbound_fragments} "
+            f"outbound_ipv6_fragments={ipv6_outbound_fragments} "
             "zero_checksum=rejected invalid_rst=rejected "
             "reordered_input=accepted valid_rst=closed "
             f"guest_banner={payload.decode().strip()}"

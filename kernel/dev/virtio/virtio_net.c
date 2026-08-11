@@ -2,6 +2,8 @@
 #include <xaios/assert.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
+#include <xaios/ipv4.h>
+#include <xaios/ipv6.h>
 #include <xaios/spinlock.h>
 #include <xaios/timer.h>
 #include <xaios/virtio_net.h>
@@ -23,6 +25,7 @@
 #define VIRTIO_F_RING_EVENT_IDX (UINT32_C(1) << 29U)
 #define VIRTIO_F_VERSION_1_HIGH UINT32_C(1)
 #define VIRTIO_NET_MAX_TX_FRAGMENTS 4U
+#define VIRTIO_NET_FRAGMENT_BUFFER 4096U
 
 typedef struct virtio_net_driver {
   virtio_mmio_device_t device;
@@ -54,6 +57,10 @@ typedef struct virtio_net_driver {
 } virtio_net_driver_t;
 
 static virtio_net_driver_t *g_net;
+
+static uint16_t read_be16(const uint8_t *value) {
+  return (uint16_t)(((uint16_t)value[0] << 8U) | value[1]);
+}
 
 static uint32_t drain_tx_completions_locked(void) {
   if (g_net == 0 || g_net->persistent == 0U) return 0U;
@@ -528,6 +535,15 @@ static xaios_status_t tx_submit_vectors(const xaios_net_iovec_t *vectors,
 
 xaios_status_t virtio_net_tx_submit(const uint8_t *data, uint64_t len,
                                     uint64_t *token) {
+  if (data == 0 || len < 14U) return XAIOS_ERR_INVALID;
+  uint16_t ethertype = read_be16(data + 12U);
+  if ((ethertype == UINT16_C(0x0800) && len >= 34U &&
+       read_be16(data + 16U) > XAIOS_IPV4_DEFAULT_MTU) ||
+      (ethertype == XAIOS_IPV6_ETHERTYPE && len >= 54U &&
+       XAIOS_IPV6_HEADER_SIZE + read_be16(data + 18U) >
+           XAIOS_IPV6_MIN_MTU)) {
+    return XAIOS_ERR_UNSUPPORTED;
+  }
   xaios_net_iovec_t vector = {data, len};
   return tx_submit_vectors(&vector, 1U, 0U, token);
 }
@@ -544,13 +560,8 @@ static xaios_status_t wait_tx_token(uint64_t token, uint64_t started) {
   return XAIOS_OK;
 }
 
-xaios_status_t virtio_net_tx(const uint8_t *data, uint64_t len) {
-  xaios_net_iovec_t vector = {data, len};
-  return virtio_net_txv(&vector, 1U);
-}
-
-xaios_status_t virtio_net_txv(const xaios_net_iovec_t *vectors,
-                              uint32_t vector_count) {
+static xaios_status_t tx_vectors_wait(const xaios_net_iovec_t *vectors,
+                                      uint32_t vector_count) {
   uint64_t started = timer_now_ns();
   uint64_t token = 0U;
   for (;;) {
@@ -565,6 +576,92 @@ xaios_status_t virtio_net_txv(const xaios_net_iovec_t *vectors,
     xaios_cpu_relax();
   }
   return wait_tx_token(token, started);
+}
+
+static xaios_status_t tx_fragment_sequence(const uint8_t *fragments,
+                                           uint64_t fragments_len,
+                                           uint16_t ethertype) {
+  uint64_t offset = 0U;
+  while (offset < fragments_len) {
+    if (fragments_len - offset < 14U) return XAIOS_ERR_INVALID;
+    uint64_t frame_len;
+    if (ethertype == UINT16_C(0x0800)) {
+      if (fragments_len - offset < 34U) return XAIOS_ERR_INVALID;
+      frame_len = 14U + read_be16(fragments + offset + 16U);
+    } else {
+      if (fragments_len - offset < 54U) return XAIOS_ERR_INVALID;
+      frame_len = 14U + XAIOS_IPV6_HEADER_SIZE +
+                  read_be16(fragments + offset + 18U);
+    }
+    if (frame_len > fragments_len - offset ||
+        frame_len > VIRTIO_NET_MAX_FRAME) {
+      return XAIOS_ERR_INVALID;
+    }
+    xaios_net_iovec_t vector = {fragments + offset, frame_len};
+    xaios_status_t status = tx_vectors_wait(&vector, 1U);
+    if (status != XAIOS_OK) return status;
+    offset += frame_len;
+  }
+  return offset == fragments_len ? XAIOS_OK : XAIOS_ERR_INVALID;
+}
+
+xaios_status_t virtio_net_tx(const uint8_t *data, uint64_t len) {
+  if (data == 0 || len < 14U || len > VIRTIO_NET_MAX_FRAME) {
+    return XAIOS_ERR_INVALID;
+  }
+  uint16_t ethertype = read_be16(data + 12U);
+  uint8_t fragments[VIRTIO_NET_FRAGMENT_BUFFER];
+  uint64_t fragments_len = 0U;
+  xaios_status_t status;
+
+  if (ethertype == UINT16_C(0x0800) && len >= 34U &&
+      read_be16(data + 16U) > XAIOS_IPV4_DEFAULT_MTU) {
+    status = ipv4_fragment(data, len, fragments, &fragments_len,
+                           sizeof(fragments));
+    if (status != XAIOS_OK) return status;
+    return tx_fragment_sequence(fragments, fragments_len, ethertype);
+  }
+  if (ethertype == XAIOS_IPV6_ETHERTYPE && len >= 54U &&
+      XAIOS_IPV6_HEADER_SIZE + read_be16(data + 18U) >
+          XAIOS_IPV6_MIN_MTU) {
+    status = ipv6_fragment_v6(data, len, fragments, &fragments_len,
+                              sizeof(fragments));
+    if (status != XAIOS_OK) return status;
+    return tx_fragment_sequence(fragments, fragments_len, ethertype);
+  }
+
+  xaios_net_iovec_t vector = {data, len};
+  return tx_vectors_wait(&vector, 1U);
+}
+
+xaios_status_t virtio_net_txv(const xaios_net_iovec_t *vectors,
+                              uint32_t vector_count) {
+  if (vectors == 0 || vector_count == 0U) return XAIOS_ERR_INVALID;
+  if (vector_count == 1U) {
+    return virtio_net_tx((const uint8_t *)vectors[0].base,
+                         vectors[0].length);
+  }
+  uint64_t total = 0U;
+  for (uint32_t i = 0U; i < vector_count; ++i) {
+    if (vectors[i].base == 0 || vectors[i].length == 0U ||
+        total + vectors[i].length < total) {
+      return XAIOS_ERR_INVALID;
+    }
+    total += vectors[i].length;
+  }
+  if (total > XAIOS_IPV6_MIN_MTU + 14U) {
+    if (total > VIRTIO_NET_MAX_FRAME) return XAIOS_ERR_INVALID;
+    uint8_t frame[VIRTIO_NET_MAX_FRAME];
+    uint64_t offset = 0U;
+    for (uint32_t i = 0U; i < vector_count; ++i) {
+      const uint8_t *source = (const uint8_t *)vectors[i].base;
+      for (uint64_t j = 0U; j < vectors[i].length; ++j) {
+        frame[offset++] = source[j];
+      }
+    }
+    return virtio_net_tx(frame, total);
+  }
+  return tx_vectors_wait(vectors, vector_count);
 }
 
 uint32_t virtio_net_tx_poll_completions(void) {
