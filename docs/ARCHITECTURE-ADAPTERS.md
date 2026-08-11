@@ -32,6 +32,6 @@ exact top-16 routing across 896 routed experts, two shared experts, AttnRes,
 SiTU activation, long-context state, and MXFP4 metadata. Text and multimodal
 acceptance remain separate milestones.
 
-Official compatibility sources are linked from
-`docs/QWEN-K3-IMPLEMENTATION-ROADMAP.md` and must be rechecked at an immutable
-revision before implementing an adapter.
+Official compatibility sources are linked from `README.md`. Their immutable
+revision must be recorded in `wiki/Project-Tracker.md` before implementing an
+adapter.

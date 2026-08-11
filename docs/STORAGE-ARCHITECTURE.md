@@ -99,5 +99,5 @@ ModelFS is the placement and lifecycle container.
   transaction. An audit failure after publication is logged but cannot revert
   an already durable ModelFS generation.
 
-See [the implementation plan](./STORAGE-IMPLEMENTATION-PLAN.md) for phase status
+See [the canonical project tracker](../wiki/Project-Tracker.md) for phase status
 and [storage security](./STORAGE-SECURITY.md) for mutation policy.

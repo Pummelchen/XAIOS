@@ -4,6 +4,9 @@ XAIOS validation combines hosted unit tests, boot-time self-tests, QEMU gates,
 external OpenSSH/SFTP clients, ABI contracts, and GitHub Actions. Every result
 must be described at the level it actually proves.
 
+All runners and Docker test inputs are versioned under `tests/`; see
+[[Test Suite|Test-Suite]] for the layout contract and clean-host rebuild steps.
+
 ## Evidence levels
 
 - **Hosted-tested** means native C or Python tests passed on a host operating

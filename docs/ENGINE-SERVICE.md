@@ -3,8 +3,8 @@
 The service boundary is `engine/include/xaios_engine/service.h`. It is portable
 C99 and uses caller-owned storage so the same ownership rules work in a hosted
 process and in a future XAIOS service without depending on libc allocation.
-Its cross-platform status is authoritative in
-[`PLATFORM-SUPPORT.json`](./PLATFORM-SUPPORT.json).
+Its cross-platform progress is tracked only in
+[`wiki/Project-Tracker.md`](../wiki/Project-Tracker.md).
 
 ## Implemented contract
 

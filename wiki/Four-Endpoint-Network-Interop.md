@@ -73,7 +73,7 @@ After individually validated child reports already exist, assemble them
 without repeating the expensive emulated runs:
 
 ```sh
-python3 scripts/qemu-four-endpoint-network-suite.py \
+python3 tests/scripts/qemu-four-endpoint-network-suite.py \
   --vps root@VPS --reuse-local --reuse-remote
 ```
 

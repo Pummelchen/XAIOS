@@ -1,9 +1,9 @@
 # Hardware backends
 
-The authoritative cross-platform implementation boundary is
-[`PLATFORM-SUPPORT.json`](./PLATFORM-SUPPORT.json). Backend labels below must
-not be promoted beyond that source or physical evidence under the benchmark
-contract.
+Cross-platform progress is tracked only in
+[`wiki/Project-Tracker.md`](../wiki/Project-Tracker.md). Backend descriptions
+below are current implementation facts and must not be promoted beyond physical
+evidence under the benchmark contract.
 
 The backend boundary is `engine/include/xaios_engine/backend.h`. It covers
 capability validation, model preparation, prefill, decode, multi-position

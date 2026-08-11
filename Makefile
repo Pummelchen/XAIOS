@@ -30,7 +30,7 @@ vmware-fusion: vmware-fusion-image
 	./scripts/run-vmware-fusion.sh
 
 vmware-fusion-smoke: vmware-fusion-image
-	python3 ./scripts/vmware-fusion-smoke.py
+	python3 ./tests/scripts/vmware-fusion-smoke.py
 
 vmware-fusion-dry-run:
 	./scripts/run-vmware-fusion.sh --dry-run
@@ -57,158 +57,158 @@ qemu-dry-run:
 	./scripts/run-qemu-x86_64.sh --dry-run
 
 qemu-smoke: image-qemu-test
-	python3 ./scripts/qemu-smoke.py
+	python3 ./tests/scripts/qemu-smoke.py
 
 qemu-process-gate: image-qemu-test
-	python3 ./scripts/qemu-process-gate.py
+	python3 ./tests/scripts/qemu-process-gate.py
 
 qemu-osctl-gate: image-qemu-test
-	python3 ./scripts/qemu-osctl-gate.py
+	python3 ./tests/scripts/qemu-osctl-gate.py
 
 qemu-filesystem-gate: image-qemu-test
-	python3 ./scripts/qemu-milestone-gate.py 62
+	python3 ./tests/scripts/qemu-milestone-gate.py 62
 
 qemu-app-agent-gate: image-qemu-test
-	python3 ./scripts/qemu-milestone-gate.py 63
+	python3 ./tests/scripts/qemu-milestone-gate.py 63
 
 qemu-network-full-gate: image-qemu-test
-	python3 ./scripts/qemu-milestone-gate.py 64
+	python3 ./tests/scripts/qemu-milestone-gate.py 64
 
 qemu-cpu-ai-runtime-gate: image-qemu-test
-	python3 ./scripts/qemu-milestone-gate.py 65
+	python3 ./tests/scripts/qemu-milestone-gate.py 65
 
 qemu-ai-cell-gate: image-qemu-test
-	python3 ./scripts/qemu-milestone-gate.py 66
+	python3 ./tests/scripts/qemu-milestone-gate.py 66
 
 qemu-security-gate: image-qemu-test
-	python3 ./scripts/qemu-milestone-gate.py 67
+	python3 ./tests/scripts/qemu-milestone-gate.py 67
 
 qemu-update-gate: image-qemu-test
-	python3 ./scripts/qemu-milestone-gate.py 68
+	python3 ./tests/scripts/qemu-milestone-gate.py 68
 
 qemu-soak-gate: image-qemu-test
-	python3 ./scripts/qemu-soak-gate.py
+	python3 ./tests/scripts/qemu-soak-gate.py
 
 qemu-release: image
-	python3 ./scripts/qemu-release.py
+	python3 ./tests/scripts/qemu-release.py
 
 qemu-100-gate: image-qemu-test
-	python3 ./scripts/qemu-100-gate.py
+	python3 ./tests/scripts/qemu-100-gate.py
 
 qemu-x86_64-smoke: image-x86_64-qemu-test
-	python3 ./scripts/qemu-x86_64-smoke.py
+	python3 ./tests/scripts/qemu-x86_64-smoke.py
 
 intel-desktop-gate:
-	python3 ./scripts/intel-desktop-gate.py
+	python3 ./tests/scripts/intel-desktop-gate.py
 
 qemu-core-os-rc:
-	python3 ./scripts/qemu-core-os-rc.py
+	python3 ./tests/scripts/qemu-core-os-rc.py
 
 qemu-high-core-gate: image-qemu-test
-	python3 ./scripts/qemu-high-core-gate.py
+	python3 ./tests/scripts/qemu-high-core-gate.py
 
 qemu-smmu-gate: image-qemu-test
-	python3 ./scripts/qemu-smmu-gate.py
+	python3 ./tests/scripts/qemu-smmu-gate.py
 
 qemu-nvme-gate: image-qemu-test
-	python3 ./scripts/qemu-nvme-gate.py
+	python3 ./tests/scripts/qemu-nvme-gate.py
 
 qemu-preview: image-qemu-test
-	python3 ./scripts/qemu-preview.py
+	python3 ./tests/scripts/qemu-preview.py
 
 qemu-matrix:
-	python3 ./scripts/qemu-matrix.py
+	python3 ./tests/scripts/qemu-matrix.py
 
 qemu-cpu-matrix: image-qemu-test image-x86_64-qemu-test
-	python3 ./scripts/qemu-cpu-matrix.py
+	python3 ./tests/scripts/qemu-cpu-matrix.py
 
 qemu-x86_64-cpu-matrix: image-x86_64-qemu-test
 	XAIOS_QEMU_CPU_MATRIX_ARCH=x86_64 \
 	XAIOS_QEMU_CPU_MATRIX_REPORT=build/qemu-x86_64-cpu-matrix-report.json \
-	python3 ./scripts/qemu-cpu-matrix.py
+	python3 ./tests/scripts/qemu-cpu-matrix.py
 
 qemu-x86_64-platform-matrix: image-x86_64-qemu-test
-	python3 ./scripts/qemu-x86_64-platform-matrix.py
+	python3 ./tests/scripts/qemu-x86_64-platform-matrix.py
 
 qemu-x86_64-repeat-boot: image-x86_64-qemu-test
-	python3 ./scripts/qemu-x86_64-repeat-boot.py
+	python3 ./tests/scripts/qemu-x86_64-repeat-boot.py
 
 qemu-benchmark: image-qemu-test
-	python3 ./scripts/qemu-benchmark.py
+	python3 ./tests/scripts/qemu-benchmark.py
 
 qemu-persistence-reboot: image
-	python3 ./scripts/qemu-persistence-reboot.py
+	python3 ./tests/scripts/qemu-persistence-reboot.py
 
 qemu-storage-crash-test: image-qemu-test
-	python3 ./scripts/qemu-storage-crash-test.py
+	python3 ./tests/scripts/qemu-storage-crash-test.py
 
 qemu-fault-matrix:
-	python3 ./scripts/qemu-fault-matrix.py
+	python3 ./tests/scripts/qemu-fault-matrix.py
 
 qemu-regression-suite: image-qemu-test
-	python3 ./scripts/qemu-regression-suite.py
+	python3 ./tests/scripts/qemu-regression-suite.py
 
 qemu-fault-injection: image-qemu-test
-	python3 ./scripts/qemu-fault-injection.py
+	python3 ./tests/scripts/qemu-fault-injection.py
 
 qemu-abi-contract:
-	python3 ./scripts/qemu-abi-contract.py
+	python3 ./tests/scripts/qemu-abi-contract.py
 
 qemu-boot-loop: image-qemu-test
-	python3 ./scripts/qemu-boot-loop.py
+	python3 ./tests/scripts/qemu-boot-loop.py
 
 qemu-userspace-suite: image-qemu-test
-	python3 ./scripts/qemu-userspace-suite.py
+	python3 ./tests/scripts/qemu-userspace-suite.py
 
 qemu-network-suite: image-qemu-test
-	python3 ./scripts/qemu-network-suite.py
+	python3 ./tests/scripts/qemu-network-suite.py
 
 qemu-docker-network-suite:
-	python3 ./scripts/qemu-docker-network-suite.py
+	python3 ./tests/scripts/qemu-docker-network-suite.py
 
 qemu-freebsd-network-suite:
-	python3 ./scripts/qemu-freebsd-network-suite.py
+	python3 ./tests/scripts/qemu-freebsd-network-suite.py
 
 qemu-freebsd-bidirectional-suite:
-	python3 ./scripts/qemu-freebsd-bidirectional-suite.py
+	python3 ./tests/scripts/qemu-freebsd-bidirectional-suite.py
 
 qemu-four-endpoint-network-suite:
 	@test -n "$(XAIOS_INTEL_VPS)" || { \
 	  printf '%s\n' 'error: set XAIOS_INTEL_VPS to an SSH destination' >&2; \
 	  exit 2; \
 	}
-	python3 ./scripts/qemu-four-endpoint-network-suite.py \
+	python3 ./tests/scripts/qemu-four-endpoint-network-suite.py \
 	  --vps "$(XAIOS_INTEL_VPS)"
 
 qemu-parallel-network-load:
-	python3 ./scripts/qemu-parallel-network-load.py
+	python3 ./tests/scripts/qemu-parallel-network-load.py
 
 qemu-local-console-gate:
-	python3 ./scripts/qemu-local-console-gate.py
+	python3 ./tests/scripts/qemu-local-console-gate.py
 
 qemu-cpu-ai-suite: image-qemu-test
-	python3 ./scripts/qemu-cpu-ai-suite.py
+	python3 ./tests/scripts/qemu-cpu-ai-suite.py
 
 qemu-ssh-smoke:
-	python3 ./scripts/qemu-ssh-smoke.py
+	python3 ./tests/scripts/qemu-ssh-smoke.py
 
 qemu-model-sftp-gate:
-	python3 ./scripts/qemu-model-sftp-gate.py
+	python3 ./tests/scripts/qemu-model-sftp-gate.py
 
 xaios-ssh-bridge:
 	./scripts/run-xaios-ssh-bridge.sh
 
 qemu-developer-ux:
-	python3 ./scripts/qemu-developer-ux.py
+	python3 ./tests/scripts/qemu-developer-ux.py
 
 qemu-post51-gate: image image-x86_64
-	python3 ./scripts/qemu-post51-gate.py
+	python3 ./tests/scripts/qemu-post51-gate.py
 
 qemu-readiness-gate:
-	python3 ./scripts/qemu-readiness-gate.py
+	python3 ./tests/scripts/qemu-readiness-gate.py
 
 qemu-full-os-rc:
-	python3 ./scripts/qemu-full-os-rc.py
+	python3 ./tests/scripts/qemu-full-os-rc.py
 
 compile-check:
 	@mkdir -p build/compile-check/x86-kernel build/compile-check/x86-userspace
@@ -363,15 +363,17 @@ crash-test: hosted-sanitizer-test
 model-v2-test: hosted-test
 
 docs-check:
-	python3 scripts/check-model-support.py
-	python3 scripts/check-platform-support.py
-	python3 scripts/check-core-os-status.py
+	python3 tests/scripts/check-test-layout.py
+	python3 tests/scripts/check-user-docs.py
+	python3 tests/scripts/check-model-support.py
+	python3 tests/scripts/check-platform-support.py
+	python3 tests/scripts/check-core-os-status.py
 
 production-source-audit:
-	python3 scripts/check-production-source.py
+	python3 tests/scripts/check-production-source.py
 
 qemu-baseline: image
-	python3 ./scripts/benchmark-baseline.py
+	python3 ./tests/scripts/benchmark-baseline.py
 
 clean:
 	rm -rf build out dist

@@ -37,8 +37,7 @@ currently be converted, loaded, and decoded through XAIOS.
 
 ## Plans
 
-- [[Model Support Roadmap|Model-Support-Roadmap]]
-- [Repository implementation roadmap](https://github.com/Pummelchen/XAIOS/blob/main/docs/QWEN-K3-IMPLEMENTATION-ROADMAP.md)
+- [[Project Tracker|Project-Tracker]]
 - [Model-v2 specification](https://github.com/Pummelchen/XAIOS/blob/main/docs/MODEL-V2-SPECIFICATION.md)
 - [Benchmark contract](https://github.com/Pummelchen/XAIOS/blob/main/docs/BENCHMARK-CONTRACT.md)
 - [Qwen tracker](https://github.com/Pummelchen/XAIOS/issues/17)

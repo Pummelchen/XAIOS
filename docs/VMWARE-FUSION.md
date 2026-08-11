@@ -2,8 +2,8 @@
 
 Status: limited virtual-platform correctness path.
 
-The authoritative platform status remains
-[`PLATFORM-SUPPORT.json`](./PLATFORM-SUPPORT.json). VMware Fusion does not
+Platform progress is tracked only in
+[`wiki/Project-Tracker.md`](../wiki/Project-Tracker.md). VMware Fusion does not
 replace the QEMU release gates and does not provide physical-hardware or
 performance evidence.
 

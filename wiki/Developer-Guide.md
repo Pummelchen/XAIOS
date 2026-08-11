@@ -2,8 +2,9 @@
 
 This page is the human-oriented entry point for working on XAIOS. Current
 source code and build configuration are authoritative. The Wiki explains the
-project, while machine-readable support state is maintained in
-`docs/MODEL-SUPPORT.json` and `docs/PLATFORM-SUPPORT.json`.
+project, and all human progress tracking lives in
+[[Project Tracker|Project-Tracker]]. The JSON files under `docs/` register
+stable model/platform identifiers for validation; they are not status mirrors.
 
 ## Repository map
 
@@ -40,8 +41,8 @@ project, while machine-readable support state is maintained in
 - Image build: `scripts/build-image.sh`
 - QEMU launchers: `scripts/run-qemu-aarch64.sh` and
   `scripts/run-qemu-x86_64.sh`
-- Primary smoke gate: `scripts/qemu-smoke.py`
-- Aggregate gate: `scripts/qemu-core-os-rc.py`
+- Primary smoke gate: `tests/scripts/qemu-smoke.py`
+- Aggregate gate: `tests/scripts/qemu-core-os-rc.py`
 - Portable engine API: `engine/include/xaios_engine/`
 
 ## Toolchain
@@ -198,5 +199,5 @@ release process explicitly records an immutable artifact elsewhere.
   and machine-readable contracts they describe.
 - Update documentation whenever architecture, APIs, commands, test gates,
   security boundaries, or support status changes.
-- Keep claims aligned with `docs/MODEL-SUPPORT.json`,
-  `docs/PLATFORM-SUPPORT.json`, and immutable test evidence.
+- Keep claims aligned with [[Project Tracker|Project-Tracker]], the stable
+  model/platform registries, and immutable test evidence.

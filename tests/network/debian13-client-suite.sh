@@ -430,7 +430,7 @@ control_socket="$workdir/control-master.sock"
 ssh "${key_ssh_options[@]}" -M -S "$control_socket" -N "admin@$host" \
   >"$workdir/control-master.log" 2>&1 &
 master_pid="$!"
-for _ in $(seq 1 20); do
+for _ in $(seq 1 60); do
   test -S "$control_socket" && break
   kill -0 "$master_pid" 2>/dev/null || fail "SSH control master exited early"
   sleep 1

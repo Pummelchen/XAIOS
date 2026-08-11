@@ -66,7 +66,7 @@ display; normal builds default to `0`.
 
 `make qemu-smmu-gate` additionally needs the test-only `iommu-testdev` from
 upstream QEMU commit `6ce361b02c825b4a12a9684c47342859ee967cb2`.
-`scripts/provision-qemu-smmu-testdev.sh` builds and verifies that exact revision;
+`tests/scripts/provision-qemu-smmu-testdev.sh` builds and verifies that exact revision;
 set `XAIOS_QEMU_SMMU` to its `qemu-system-aarch64` output. Aggregate CI performs
 this provision automatically and keeps the gate mandatory.
 
@@ -187,7 +187,7 @@ IPv6/TCP testing uses QEMU's framed socket backend:
 
 ```sh
 XAIOS_QEMU_HOSTFWD_PORT=none XAIOS_QEMU_NET_SOCKET_PORT=12345 make qemu
-python3 scripts/qemu-ipv6-tcp-client.py --port 12345
+python3 tests/network/qemu-ipv6-tcp-client.py --port 12345
 ```
 
 Run the forwarding and framed-socket QEMU configurations separately. See
@@ -255,7 +255,7 @@ The `app_caps` bitmask includes all standard capabilities (LOG, EXIT, OSCTL, FS_
 
 ### 4. Add a smoke test marker (optional)
 
-Edit `scripts/qemu-smoke.py`, add your expected output to the `TARGETS` list:
+Edit `tests/scripts/qemu-smoke.py`, add your expected output to the `TARGETS` list:
 
 ```python
 "myapp: done",

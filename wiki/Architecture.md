@@ -134,5 +134,5 @@ execute a real Qwen checkpoint. Qwen 3.6 27B is the next model workstream after
 the XAIOS platform completion gate; Kimi K3 and the other model families remain
 later roadmap items.
 
-See [[Current Limitations|Current-Limitations]], [[Platform Support|Platform-Support]],
+See [[Current Limitations|Current-Limitations]], [[Project Tracker|Project-Tracker]],
 and [[Developer Guide|Developer-Guide]].

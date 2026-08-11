@@ -101,9 +101,9 @@ body:
     id: related
     attributes:
       label: Related docs or source files
-      description: Include paths such as kernel/user/syscall.c, contracts/qemu-rc-v1.json, or scripts/qemu-smoke.py.
+      description: Include paths such as kernel/user/syscall.c, contracts/qemu-rc-v1.json, or tests/scripts/qemu-smoke.py.
       placeholder: |
         - kernel/user/syscall.c
-        - scripts/qemu-smoke.py
+        - tests/scripts/qemu-smoke.py
     validations:
       required: true

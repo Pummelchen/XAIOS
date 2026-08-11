@@ -1,26 +1,20 @@
 # XAIOS Wiki
 
-This directory mirrors selected pages from the live GitHub Wiki. Current source,
-build/test configuration, `docs/MODEL-SUPPORT.json`, and
-`docs/PLATFORM-SUPPORT.json` take precedence over older Wiki revisions.
+This directory mirrors selected pages from the live GitHub Wiki. Current source
+and build/test configuration take precedence over older Wiki revisions. All
+human project status is maintained in [[Project Tracker|Project-Tracker]].
 
 XAIOS is an experimental operating system and portable inference-engine
 foundation. Its current QEMU paths validate deterministic OS/runtime contracts;
 they do not prove real-model inference or physical-hardware performance.
 
-## Delivery Sequence
+## Project Status
 
-The declared ARM and x86 QEMU core-OS gate is complete, so Qwen is ready as the
-next workstream. Physical platform qualification continues separately. Later
-model workstreams are not active unless the maintainer reprioritizes them.
-
-| Order | Workstream | Project status | Entry gate |
-|---|---|---|---|
-| 1 | XAIOS | QEMU Complete | ARM and x86 common-service correctness gates pass; physical platform qualification remains separate. |
-| 2 | Qwen 3.6 27B Support | Ready | Next workstream; begin scalar tokenizer, tensor and logits correctness. |
-| Later | Kimi K3 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
-| Later | DeepSeek V4 Flash 0731 Support | Blocked | Also blocked on authoritative release and source verification. |
-| Later | GLM 5.2 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
+The declared ARM and x86 QEMU core-OS correctness gate is complete. Physical
+platform qualification remains separate, and real Qwen inference has not
+started. Delivery order, model boundaries, all former milestone/phase plans,
+open decisions, risks, and evidence-linked status codes now live only in
+[[Project Tracker|Project-Tracker]].
 
 ## Current Boundaries
 
@@ -80,24 +74,23 @@ model workstreams are not active unless the maintainer reprioritizes them.
 ## Start Here
 
 - [[Developer Guide|Developer-Guide]]
+- [[Applications|Applications]]
+- [[Commands|Commands]]
 - [[Architecture|Architecture]]
 - [[Build System|Build-System]]
+- [[Test Suite|Test-Suite]]
 - [[Testing and Benchmarking|Testing-and-Benchmarking]]
 - [[Security Model|Security-Model]]
 - [[Current Limitations|Current-Limitations]]
-- [[Open Decisions|Open-Decisions]]
-- [[Risk Register|Risk-Register]]
+- [[Project Tracker|Project-Tracker]]
 - [[Development History|Development-History]]
-- [[Model Support Roadmap|Model-Support-Roadmap]]
-- [[Platform Support|Platform-Support]]
 - [[VMware Fusion|VMware-Fusion]]
 - [[Qwen CPU Inference Status|Qwen3.6-INT6-Support]]
 - [[SSH Status|Production-SSH-Server]]
 - [[Unix Compatibility|Unix-Compatibility]]
 - [[Four-Endpoint Network Interoperability|Four-Endpoint-Network-Interop]]
 - [Repository README](https://github.com/Pummelchen/XAIOS/blob/main/README.md)
-- [Implementation roadmap](https://github.com/Pummelchen/XAIOS/blob/main/docs/QWEN-K3-IMPLEMENTATION-ROADMAP.md)
-- [Distributed server plan](https://github.com/Pummelchen/XAIOS/blob/main/docs/DISTRIBUTED-AI-SERVER-PLAN.md)
+- [Repository test inventory](https://github.com/Pummelchen/XAIOS/blob/main/tests/README.md)
 - [xaiosctl reference](https://github.com/Pummelchen/XAIOS/blob/main/docs/XAIOSCTL.md)
 - [Large-model upload status](https://github.com/Pummelchen/XAIOS/blob/main/docs/LARGE-MODEL-UPLOAD.md)
 - [Benchmark contract](https://github.com/Pummelchen/XAIOS/blob/main/docs/BENCHMARK-CONTRACT.md)

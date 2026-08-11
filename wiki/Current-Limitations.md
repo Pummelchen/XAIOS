@@ -1,8 +1,8 @@
 # Current Limitations
 
 This page records verified implementation gaps and explicit non-claims. It is
-kept consistent with `docs/PLATFORM-SUPPORT.json`, project trackers, readiness
-documents, and the QEMU release-candidate contract.
+kept consistent with current source and the QEMU release-candidate contract.
+Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 
 ## Platform and hardware
 
@@ -121,5 +121,4 @@ behavior, not physical transfer throughput. High-vCPU QEMU gates prove dynamic
 metadata capacity, not server scalability. Performance claims require physical
 artifacts satisfying `docs/BENCHMARK-CONTRACT.md`.
 
-See [[Open Decisions|Open-Decisions]], [[Platform Support|Platform-Support]],
-and [[Model Support Roadmap|Model-Support-Roadmap]].
+See [[Project Tracker|Project-Tracker]].

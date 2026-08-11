@@ -160,11 +160,11 @@ and [control protocol](https://github.com/Pummelchen/XAIOS/blob/main/docs/CONTRO
 - `kernel/runtime/remote_login.c`
 - `userspace/sshd/`
 - `scripts/xaios-ssh-bridge.py`
-- `scripts/qemu-ssh-smoke.py`
-- `scripts/qemu-docker-network-suite.py`
-- `scripts/qemu-freebsd-network-suite.py`
-- `scripts/qemu-parallel-network-load.py`
-- `scripts/qemu-model-sftp-gate.py`
+- `tests/scripts/qemu-ssh-smoke.py`
+- `tests/scripts/qemu-docker-network-suite.py`
+- `tests/scripts/qemu-freebsd-network-suite.py`
+- `tests/scripts/qemu-parallel-network-load.py`
+- `tests/scripts/qemu-model-sftp-gate.py`
 - `tests/network/`
 
 See the [repository README](https://github.com/Pummelchen/XAIOS/blob/main/README.md)

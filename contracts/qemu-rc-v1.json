@@ -510,7 +510,7 @@
       {"name": "x86_64", "command": "make qemu-x86_64-smoke"},
       {"name": "x86_64_cpu_matrix", "command": "make qemu-x86_64-cpu-matrix"},
       {"name": "x86_64_platform_matrix", "command": "make qemu-x86_64-platform-matrix"},
-      {"name": "x86_64_network", "command": "XAIOS_QEMU_NETWORK_ARCH=x86_64 python3 scripts/qemu-docker-network-suite.py"}
+      {"name": "x86_64_network", "command": "XAIOS_QEMU_NETWORK_ARCH=x86_64 python3 tests/scripts/qemu-docker-network-suite.py"}
     ],
     "x86_qemu_service_parity": true,
     "x86_physical_support": false

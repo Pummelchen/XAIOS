@@ -101,4 +101,4 @@ secrets. Revoke and rotate an exposed credential before continuing work.
 - Physical DMA isolation, firmware trust, side channels, thermal/fault behavior,
   and supply-chain controls require separate validation.
 
-See [[Current Limitations|Current-Limitations]] and [[Risk Register|Risk-Register]].
+See [[Current Limitations|Current-Limitations]] and [[Project Tracker|Project-Tracker]].

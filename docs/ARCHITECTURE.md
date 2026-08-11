@@ -11,7 +11,8 @@ complete userspace/service image. It starts MADT-discovered APs, uses per-CPU
 user address-space roots, validates ring-3 threads and XSAVE/FXSAVE interrupt
 state, parses ACPI topology, and operates modern PCI VirtIO block/network plus
 emulated NVMe. Kernel and userspace code are freestanding C99 without libc.
-The authoritative 20-item status is `docs/PLATFORM-SUPPORT.json`.
+Platform progress is tracked only in `wiki/Project-Tracker.md`;
+`docs/PLATFORM-SUPPORT.json` is the machine-readable recommendation registry.
 
 ## Boot Flow
 

@@ -27,43 +27,20 @@ load coverage. See [Unix compatibility](./docs/UNIX-COMPATIBILITY.md).
 
 ## Model support status
 
-[`docs/MODEL-SUPPORT.json`](./docs/MODEL-SUPPORT.json) is the authoritative
-status and delivery-sequence source. CI checks the README, project tracker,
-implementation roadmap, hardware-readiness document, and selected Wiki mirrors
-against it.
+The deterministic QEMU model-v1 path is **Fixture only**, and model-v2 is a
+format/interface foundation; neither executes a transformer. Qwen 3.6 27B is
+the next real-model correctness target. Kimi K3 text, Kimi K3 multimodal,
+DeepSeek V4 Flash 0731, and GLM 5.2 remain later targets, and no listed model is
+production supported. K3 text and multimodal support are separate milestones.
 
-| Model or path | Status | Current evidence and boundary |
-|---|---|---|
-| Deterministic QEMU model-v1 path | Fixture only | Validates model admission, private state, ABI and deterministic dispatch. It is not transformer inference or a hardware benchmark. |
-| xaios.model.v2 tooling | Interface only | Streaming Python writer, Python reader and C parser pass round-trip, checksum, overflow and sparse-file tests. No production importer or executing model uses it yet. |
-| Qwen 3.6 27B | Interface only | Next real-model bring-up target; its QEMU platform entry gate now passes. Transformer execution, official tokenizer parity, logits parity and physical-hardware validation remain incomplete. |
-| Kimi K3 text | Interface only | Queued behind XAIOS and Qwen for KDA, Gated MLA, AttnRes, exact top-16 routing, shared experts and native MXFP4. Text inference is not available. |
-| Kimi K3 multimodal | Roadmap only | Vision preprocessing, MoonViT-V2, projection, multimodal positions and golden image cases are a separate milestone. |
-| DeepSeek V4 Flash 0731 | Roadmap only | Planned architecture-adapter target. The exact official release, configuration and tokenizer sources must be verified and pinned before implementation. |
-| GLM 5.2 | Roadmap only | Planned architecture-adapter target. Import, tokenizer, operator, state, logits and physical-hardware parity work has not started. |
-
-## Delivery sequence
-
-This order is authoritative for current execution planning. The declared ARM
-and x86 QEMU core-OS gate is complete, so Qwen is ready as the next workstream.
-Physical platform qualification continues separately. No relative order is
-assigned to later model workstreams unless the maintainer reprioritizes them.
-
-| Order | Workstream | Project status | Entry gate |
-|---|---|---|---|
-| 1 | XAIOS | QEMU Complete | ARM and x86 common-service correctness gates pass; physical platform qualification remains separate. |
-| 2 | Qwen 3.6 27B Support | Ready | Next workstream; begin scalar tokenizer, tensor and logits correctness. |
-| Later | Kimi K3 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
-| Later | DeepSeek V4 Flash 0731 Support | Blocked | Also blocked on authoritative release and source verification. |
-| Later | GLM 5.2 Support | Backlog | Queued behind XAIOS and Qwen unless explicitly reprioritized. |
-
-XAIOS is designed for multiple official architecture identifiers rather than a
-hard-coded Qwen graph. Qwen 3.6 27B is now the active real-model target after
-the QEMU platform gate. Kimi K3 text and multimodal support are separate
-later milestones. DeepSeek V4 Flash 0731 and GLM 5.2 are additional roadmap
-targets, each requiring its own verified architecture adapter and parity gates.
-Approximate routing or execution modes, if added, will be named, reported and
-opt-in; exact target-model semantics are the default.
+XAIOS is designed around official architecture adapters rather than a
+hard-coded Qwen graph. Exact target-model semantics are the default;
+approximate modes, if introduced, will be explicit and opt-in. The single
+authoritative delivery order, progress code, support boundary, acceptance gate,
+open-decision list, and risk register are in the
+[Project Tracker](./wiki/Project-Tracker.md). The machine-readable model catalog
+at [`docs/MODEL-SUPPORT.json`](./docs/MODEL-SUPPORT.json) contains identifiers,
+not an independent status mirror.
 
 ## Boot and local console
 
@@ -361,12 +338,13 @@ scalability or performance benchmark.
 The translated SMMUv3 isolation gate requires QEMU's test-only
 `iommu-testdev`. Aggregate CI builds and caches the exact upstream QEMU commit
 `6ce361b02c825b4a12a9684c47342859ee967cb2` through
-`scripts/provision-qemu-smmu-testdev.sh`; it does not silently skip this gate
+`tests/scripts/provision-qemu-smmu-testdev.sh`; it does not silently skip this gate
 when the distro emulator lacks the device.
 
-The authoritative 20-item platform parity status, including physical-only
-Apple and Intel gates, is
-[`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json).
+The 20 platform recommendation identifiers are registered in
+[`docs/PLATFORM-SUPPORT.json`](./docs/PLATFORM-SUPPORT.json); their only
+human-maintained progress status is in the
+[Project Tracker](./wiki/Project-Tracker.md).
 
 ### VMware Fusion on Apple Silicon
 
@@ -396,8 +374,10 @@ for the complete VirtIO, networking, SSH/SFTP, persistence and SMP suites. See
 - [Wiki home and documentation index](https://github.com/Pummelchen/XAIOS/wiki)
 - [Developer guide](https://github.com/Pummelchen/XAIOS/wiki/Developer-Guide)
 - [Current limitations](https://github.com/Pummelchen/XAIOS/wiki/Current-Limitations)
-- [Model implementation roadmap](./docs/QWEN-K3-IMPLEMENTATION-ROADMAP.md)
-- [Distributed AI server plan](./docs/DISTRIBUTED-AI-SERVER-PLAN.md)
+- [Canonical project tracker](./wiki/Project-Tracker.md)
+- [Applications](./wiki/Applications.md)
+- [Commands](./wiki/Commands.md)
+- [Test suite](./tests/README.md)
 - [`xaiosctl` command reference](./docs/XAIOSCTL.md)
 - [Control protocol](./docs/CONTROL-PROTOCOL.md)
 - [xaios.model.v2 specification](./docs/MODEL-V2-SPECIFICATION.md)
@@ -416,11 +396,10 @@ for the complete VirtIO, networking, SSH/SFTP, persistence and SMP suites. See
 - [Large-model upload](./docs/LARGE-MODEL-UPLOAD.md)
 - [Storage security](./docs/STORAGE-SECURITY.md)
 - [Storage benchmarking](./docs/STORAGE-BENCHMARKING.md)
-- [Hardware readiness](./HARDWARE-READINESS.md)
+- [Hardware evidence contract](./HARDWARE-READINESS.md)
 - [VMware Fusion](./docs/VMWARE-FUSION.md)
-- [Project tracker](./PROJECT-TRACKER.md)
 - [Live GitHub Wiki](https://github.com/Pummelchen/XAIOS/wiki)
-- [Live model support roadmap](https://github.com/Pummelchen/XAIOS/wiki/Model-Support-Roadmap)
+- [Live project tracker](https://github.com/Pummelchen/XAIOS/wiki/Project-Tracker)
 
 Official compatibility sources used for the current design audit:
 
