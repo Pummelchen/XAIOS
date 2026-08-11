@@ -19,7 +19,7 @@ jobs:
       - name: Install libc and QEMU dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld meson ninja-build qemu-system-arm qemu-efi-aarch64 qemu-system-x86 ovmf mtools python3 python3-cryptography
+          sudo apt-get install -y clang lld llvm meson ninja-build qemu-system-arm qemu-efi-aarch64 qemu-system-x86 ovmf mtools python3 python3-cryptography
 
       - name: Build and run the current hosted C99 gates
         run: make qemu-libc-gate
