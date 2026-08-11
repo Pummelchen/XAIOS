@@ -17,7 +17,7 @@ mkdir -p "$OUT"
 set --
 COMMON="mulsc3 muldc3 clzti2"
 if [ "$ARCH" = aarch64 ]; then
-  SOURCES="addtf3 multf3 comparetf2 fixtfsi floatsitf subtf3 divtf3 multc3 fixtfdi floatditf trunctfdf2 extenddftf2 extendsftf2 trunctfsf2 floatuntitf $COMMON"
+  SOURCES="addtf3 multf3 comparetf2 fixtfsi floatsitf subtf3 divtf3 multc3 fixtfdi floatditf trunctfdf2 extenddftf2 extendsftf2 trunctfsf2 floatunsitf floatuntitf $COMMON"
 else
   SOURCES="floatuntixf floattixf mulxc3 $COMMON"
 fi
