@@ -10,11 +10,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 REQUIRED = {
     "README.md": [
-        "eight-request",
-        "userspace DNS",
-        "IPv4/IPv6 fragment reassembly",
-        "AP trampoline",
-        "QEMU service parity with AArch64",
+        "XAIOS Wiki",
+        "Model support status",
+        "Project Tracker",
+        "PolyForm Noncommercial License 1.0.0",
     ],
     "wiki/Project-Tracker.md": [
         "focused emulated NVMe",
@@ -45,6 +44,10 @@ REQUIRED = {
     "wiki/Networking-and-SSH.md": [
         "out-of-order",
         "IPv4/IPv6 fragment reassembly",
+    ],
+    "wiki/Testing-XAIOS.md": [
+        "make qemu-outbound-fragmentation-gate",
+        "6ce361b02c825b4a12a9684c47342859ee967cb2",
     ],
 }
 

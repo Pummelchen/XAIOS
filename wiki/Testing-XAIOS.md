@@ -8,6 +8,10 @@ not test runners.
 Gate orchestration is under `tests/scripts/`; protocol clients and reproducible
 Debian/FreeBSD environments are under `tests/network/`.
 
+Host prerequisites are Clang, LLD, Python 3, mtools, QEMU, and the applicable
+AArch64 or x86_64 UEFI firmware. Setup details are in
+[[Getting Started|Getting-Started]].
+
 ## Core validation
 
 | Command | Purpose |
@@ -25,6 +29,50 @@ Focused gates cover boot loops, faults, security, local console, storage,
 ModelFS, SMMUv3, NVMe, CPU-count/topology, x86_64, VMware Fusion, and developer
 UX. The exact current inventory and prerequisites are maintained in
 [`tests/README.md`](https://github.com/Pummelchen/XAIOS/blob/main/tests/README.md).
+
+## Complete validation command set
+
+```sh
+make bootstrap
+make engine-cli
+make compile-check
+make hosted-test
+make hosted-sanitizer-test
+make production-source-audit
+make qemu-abi-contract
+make image
+make qemu-smoke
+make qemu-storage-crash-test
+make qemu-smmu-gate
+make qemu-nvme-gate
+make qemu-outbound-fragmentation-gate
+make qemu-model-sftp-gate
+make qemu-freebsd-network-suite
+make qemu-freebsd-bidirectional-suite
+make qemu-docker-network-suite
+make qemu-parallel-network-load
+make qemu-core-os-rc
+make qemu-high-core-gate
+make qemu-x86_64-smoke
+make qemu-x86_64-cpu-matrix
+make qemu-x86_64-platform-matrix
+XAIOS_QEMU_NETWORK_ARCH=x86_64 make qemu-docker-network-suite
+XAIOS_QEMU_NETWORK_ARCH=x86_64 make qemu-freebsd-bidirectional-suite
+XAIOS_INTEL_VPS=root@VPS make qemu-four-endpoint-network-suite
+make vmware-fusion-smoke
+```
+
+The ModelFS and parallel-network gates require macOS plus Docker because they
+run native macOS and Debian 13 clients against one guest. The focused high-core
+gate validates runtime-sized SMP/NUMA metadata; it is not a scalability test.
+
+The translated SMMUv3 gate requires QEMU's test-only `iommu-testdev`. Aggregate
+CI builds and caches upstream QEMU commit
+`6ce361b02c825b4a12a9684c47342859ee967cb2`; the gate does not silently skip
+when a distribution QEMU lacks that device. Platform recommendation IDs are
+registered in
+[`docs/PLATFORM-SUPPORT.json`](https://github.com/Pummelchen/XAIOS/blob/main/docs/PLATFORM-SUPPORT.json),
+while their sole human-maintained status is in [[Project Tracker|Project-Tracker]].
 
 ## External interoperability
 

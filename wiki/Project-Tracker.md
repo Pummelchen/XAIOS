@@ -52,6 +52,21 @@ performance require immutable evidence under the
 | DeepSeek V4 Flash 0731 | `BLOCKED` | Roadmap only | Verify exact official source before architecture work. |
 | GLM 5.2 | `NOT STARTED` | Roadmap only | Immutable official source plus independent adapter/parity suite. |
 
+### Compatibility sources
+
+The current architecture audit uses these official upstream sources:
+
+- [Qwen3.5-0.8B configuration](https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/config.json)
+- [Qwen3.6-27B configuration](https://huggingface.co/Qwen/Qwen3.6-27B/blob/main/config.json)
+- [Qwen3.6 repository](https://github.com/QwenLM/Qwen3.6)
+- [Kimi K3 configuration](https://huggingface.co/moonshotai/Kimi-K3/blob/main/config.json)
+- [Kimi K3 repository and report](https://github.com/MoonshotAI/Kimi-K3)
+- [GLM 5.2 model repository](https://huggingface.co/zai-org/GLM-5.2)
+
+An immutable official source has not yet been pinned for the exact
+DeepSeek V4 Flash 0731 roadmap label. That name records planning scope, not
+compatibility evidence.
+
 ## Platform recommendations
 
 These are the former 20 ARM/Intel/platform recommendations. Evidence details

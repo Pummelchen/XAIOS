@@ -28,10 +28,48 @@ xaiosctl storage partition list
 xaiosctl audit show --limit 16
 ```
 
+The complete QEMU-tested command family is:
+
+```text
+xaiosctl version
+xaiosctl status
+xaiosctl health
+xaiosctl capabilities
+xaiosctl hardware
+xaiosctl metrics
+xaiosctl logs
+xaiosctl config show|validate|diff|apply
+xaiosctl auth key list|add|remove
+xaiosctl auth host-key rotate
+xaiosctl audit show
+xaiosctl model verify PACKAGE_ID
+xaiosctl model register PACKAGE_ID --model-uuid UUID --signer-key KEY \
+  --signature SIGNATURE --source-revision REVISION --architecture ID \
+  --target ID --size BYTES --operation-id ID
+xaiosctl model activate PACKAGE_ID --operation-id ID
+xaiosctl model cleanup PACKAGE_ID --operation-id ID
+xaiosctl storage device list
+xaiosctl storage partition list|verify|plan-create|create|plan-delete|delete|plan-resize|resize|repair ...
+xaiosctl storage filesystem list
+xaiosctl storage usage /models
+xaiosctl storage format-plan|format|mount|unmount|fsck|resize-plan|resize ...
+xaiosctl storage scrub /models --start|--status|--pause|--resume|--cancel
+xaiosctl storage trim /models --dry-run
+xaiosctl storage trim /models --all-free --operation-id ID
+xaiosctl storage trim-status|trim-cancel /models ...
+```
+
+Every command accepts `--json`, `--timeout`, and `--node`. Mutations require a
+nonzero replay-protected `--operation-id`. Ed25519 principals map to observer,
+operator, or administrator roles: configuration application requires operator,
+while key and host-identity changes require administrator.
+
 Mutating operations require an administrator role, matching capability, and a
 fresh request identity. Planning operations are separate from confirmed
 mutation where destructive state is involved. Unknown cluster nodes and
 unimplemented services return stable errors rather than simulated success.
+`xaiosctl health` therefore reports degraded and exits nonzero while production
+model inference and clustering remain unavailable.
 
 ## Operations and recovery
 

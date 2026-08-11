@@ -32,5 +32,11 @@ desktop, Xeon, NVMe, NIC, SMMU/IOMMU, thermal, power, or performance support.
 Physical qualification requires boot logs, device inventory, correctness gates,
 and immutable benchmark artifacts from the actual machine.
 
+No physical Apple or Xeon benchmark artifact currently exists in the
+repository. Performance numbers that do not satisfy the
+[benchmark contract](https://github.com/Pummelchen/XAIOS/blob/main/docs/BENCHMARK-CONTRACT.md)
+are targets, not results, and independent microbenchmark improvements must not
+be multiplied into an end-to-end claim.
+
 See [[VMware Fusion|VMware-Fusion]], [[Testing XAIOS|Testing-XAIOS]], and the
 single [[Project Tracker|Project-Tracker]].

@@ -6,9 +6,10 @@ The UEFI loader validates and loads the kernel, then XAIOS initializes memory,
 interrupts, devices, storage, filesystems, security, networking, processes,
 runtime services, and telemetry in dependency order.
 
-A normal boot displays `XAI OS`, an in-place 0-100% progress bar, the component
-that completed, the component currently loading, and the remaining count. At
-completion it prints the configured IPv4 address and one of these outcomes:
+A normal boot displays `XAI OS`, with `XAI` in purple and `OS` in cyan, an
+in-place 0-100% progress bar, the component that completed, the component
+currently loading, and the remaining count. At completion it prints the
+configured IPv4 address and one of these outcomes:
 
 - `SSH server: up and running` only after the listener is operational;
 - a numeric startup error when networking, DNS, entropy, credentials, crypto,

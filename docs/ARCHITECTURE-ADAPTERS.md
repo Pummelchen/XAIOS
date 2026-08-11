@@ -32,6 +32,5 @@ exact top-16 routing across 896 routed experts, two shared experts, AttnRes,
 SiTU activation, long-context state, and MXFP4 metadata. Text and multimodal
 acceptance remain separate milestones.
 
-Official compatibility sources are linked from `README.md`. Their immutable
-revision must be recorded in `wiki/Project-Tracker.md` before implementing an
-adapter.
+Official compatibility sources are linked from `wiki/Project-Tracker.md`.
+Their immutable revision must be recorded there before implementing an adapter.

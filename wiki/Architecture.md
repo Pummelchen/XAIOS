@@ -17,13 +17,13 @@ they do not prove physical performance or production readiness.
    information structure, and transfers control to the architecture entry. A
    normal boot displays the colored XAI OS identity and begins the in-place
    progress meter at 0% before loading the system image.
-3. The AArch64 path enters `kernel/core/kmain.c`. The x86_64 path currently
-   uses its focused bring-up entry under `kernel/arch/x86_64/`.
+3. Each architecture performs its platform-specific handoff and enters the
+   shared `kernel/core/kmain.c` runtime.
 4. The kernel initializes architecture services, memory, devices, storage,
    filesystems, security, networking, processes, runtime services, and
    telemetry in dependency order.
-5. A normal AArch64 image loads `/init`, the service manager, and the persistent
-   console/SSH service from initramfs. Before opening TCP port 22, that service
+5. A normal AArch64 or x86_64 image loads `/init`, the service manager, and the
+   persistent console/SSH service from initramfs. Before opening TCP port 22, that service
    requires a successful external IPv4 DNS response. It then prints the local
    IPv4 address and verified SSH state at 100% and leaves a functional serial
    prompt active beside the SSH event loop. Exact allowlisted diagnostics load in
