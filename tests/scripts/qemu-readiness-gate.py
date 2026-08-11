@@ -334,7 +334,7 @@ def validate_contract(contract: Dict[str, Any], failures: List[str]) -> Dict[str
     check_equal(filesystem.get("header_bytes"), 3584, "contract.filesystem.header_bytes", failures)
     check_equal(filesystem.get("manifest_path"), "/etc/xaios-init.conf", "contract.filesystem.manifest_path", failures)
     required_paths = filesystem.get("required_paths", [])
-    for path in ["/init", "/bin/service-manager", "/bin/xaios-worker", "/bin/xaios-shell", "/bin/xaiosctl", "/bin/hello", "/bin/sysinfo", "/bin/systest", "/bin/smptest", "/bin/nettest", "/bin/lstm-xor", "/bin/sshtest", "/bin/mltest", "/etc/xaios-init.conf", "/etc/services/source-index.svc", "/models/cpu-ai-v1-fixture.xaiosmodel"]:
+    for path in ["/init", "/bin/service-manager", "/bin/xaios-worker", "/bin/xaios-shell", "/bin/xaiosctl", "/bin/hello", "/bin/helloworldc99", "/bin/sysinfo", "/bin/systest", "/bin/smptest", "/bin/nettest", "/bin/lstm-xor", "/bin/sshtest", "/bin/mltest", "/etc/xaios-init.conf", "/etc/services/source-index.svc", "/models/cpu-ai-v1-fixture.xaiosmodel"]:
         if path not in required_paths:
             failures.append(f"contract.filesystem.required_paths missing {path}")
     check_equal(filesystem.get("max_files"), 32, "contract.filesystem.max_files", failures)

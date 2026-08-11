@@ -513,6 +513,7 @@ void kmain(const xaios_boot_info_t *boot) {
       XAIOS_CAP_FS_WRITE | XAIOS_CAP_OSCTL | XAIOS_CAP_TIME |
       XAIOS_CAP_NET | XAIOS_CAP_NET_SOCKET | XAIOS_CAP_REMOTE_LOGIN;
   const uint64_t hello_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT;
+  const uint64_t c99_demo_caps = XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT;
   const uint64_t xaiosctl_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT |
       XAIOS_CAP_TIME | XAIOS_CAP_CONTROL_QUERY | XAIOS_CAP_STORAGE_READ;
   const uint64_t sysinfo_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_TIME;
@@ -544,6 +545,7 @@ void kmain(const xaios_boot_info_t *boot) {
   run_user_app("/bin/mltest", 15, mltest_caps);
   run_user_app("/bin/posix-shell", 16, posix_shell_caps);
   run_user_app("/bin/agenttest", 17, agenttest_caps);
+  kassert(run_user_app("/bin/helloworldc99", 23U, c99_demo_caps) == 0);
 #else
   klog("kernel: boot diagnostics disabled; utilities are SSH on-demand\n");
 #endif

@@ -5476,6 +5476,8 @@ typedef struct remote_app_definition {
 
 static const remote_app_definition_t g_remote_apps[] = {
     {"hello", "/bin/hello", XAIOS_CAP_LOG | XAIOS_CAP_EXIT},
+    {"helloworldc99", "/bin/helloworldc99",
+     XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT},
     {"sysinfo", "/bin/sysinfo",
      XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_TIME},
     {"systest", "/bin/systest",
@@ -5544,11 +5546,13 @@ static xaios_status_t handle_remote_app(
     uint64_t output_capacity, uint64_t *output_bytes) {
   const xaios_initramfs_file_t *file = 0;
   char *log;
+  char *console;
   uint64_t cursor;
   uint64_t start_cursor = 0U;
   uint64_t next_cursor = 0U;
   uint64_t latest_cursor = 0U;
   uint32_t log_bytes;
+  uint64_t console_bytes;
   int exit_code = 0;
   xaios_status_t status;
 
@@ -5567,14 +5571,31 @@ static xaios_status_t handle_remote_app(
     return command_fail(output, output_capacity, output_bytes,
                         "application: output buffer unavailable");
   }
+  console = (char *)kheap_alloc(XAIOS_KLOG_FLUSH_MAX, 16U);
+  if (console == 0) {
+    kheap_free(log);
+    return command_fail(output, output_capacity, output_bytes,
+                        "application: output buffer unavailable");
+  }
   cursor = klog_ring_total_written();
+  if (klog_console_capture_begin(console, XAIOS_KLOG_FLUSH_MAX) == 0) {
+    kheap_free(console);
+    kheap_free(log);
+    return command_fail(output, output_capacity, output_bytes,
+                        "application: output capture unavailable");
+  }
   status = user_process_run_transient(file, app->capabilities, &exit_code);
+  console_bytes = klog_console_capture_end();
   log_bytes = klog_ring_snapshot(log, XAIOS_KLOG_FLUSH_MAX, cursor,
                                  &start_cursor, &next_cursor, &latest_cursor);
   if (status == XAIOS_OK) {
+    for (uint64_t i = 0U; i < console_bytes; ++i) {
+      (void)output_append_char(output, output_capacity, output_bytes, console[i]);
+    }
     append_app_log_lines(output, output_capacity, output_bytes, log, log_bytes,
                          app->path);
   }
+  kheap_free(console);
   kheap_free(log);
 
   if (status == XAIOS_ERR_BUSY) {
@@ -5628,7 +5649,8 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
         "ssh scp status sysinfo "
         "shutdown reboot power service kill ifconfig route arp ndp netstat "
         "ping nslookup date ntp limits recovery update config support "
-        "hello systest smptest nettest lstm-xor mltest posix-shell agenttest "
+        "hello helloworldc99 systest smptest nettest lstm-xor mltest "
+        "posix-shell agenttest "
         "xaiosctl exit "
         "quit logout help\n");
     return XAIOS_OK;

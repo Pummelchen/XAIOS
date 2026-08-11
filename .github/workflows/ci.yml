@@ -93,11 +93,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld qemu-system-arm qemu-efi-aarch64 mtools python3 python3-cryptography
+          sudo apt-get install -y clang lld llvm meson ninja-build qemu-system-arm qemu-efi-aarch64 mtools python3 python3-cryptography
 
       - name: Build disk image
         run: make image-qemu-test
@@ -123,11 +125,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Install x86_64 QEMU dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld qemu-system-x86 ovmf mtools python3
+          sudo apt-get install -y clang lld llvm meson ninja-build qemu-system-x86 ovmf mtools python3
 
       - name: Run SMP x86_64 smoke
         run: make qemu-x86_64-smoke
@@ -166,11 +170,13 @@ jobs:
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Install AArch64 and x86_64 test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential clang git libfdt-dev libglib2.0-dev libpixman-1-dev libslirp-dev lld ninja-build ovmf mtools pkg-config python3 python3-cryptography python3-venv qemu-efi-aarch64 qemu-system-arm qemu-system-x86 zlib1g-dev
+          sudo apt-get install -y build-essential clang git libfdt-dev libglib2.0-dev libpixman-1-dev libslirp-dev lld llvm meson ninja-build ovmf mtools pkg-config python3 python3-cryptography python3-venv qemu-efi-aarch64 qemu-system-arm qemu-system-x86 zlib1g-dev
 
       - name: Restore pinned SMMUv3 test QEMU
         uses: actions/cache@v5
@@ -214,11 +220,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld qemu-system-arm qemu-efi-aarch64 mtools python3 python3-cryptography
+          sudo apt-get install -y clang lld llvm meson ninja-build qemu-system-arm qemu-efi-aarch64 mtools python3 python3-cryptography
 
       - name: Build disk image
         run: make image-qemu-test
@@ -234,11 +242,13 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Install QEMU and OpenSSH dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld qemu-system-arm qemu-efi-aarch64 mtools openssh-client python3 python3-cryptography
+          sudo apt-get install -y clang lld llvm meson ninja-build qemu-system-arm qemu-efi-aarch64 mtools openssh-client python3 python3-cryptography
 
       - name: Run concurrent host and Debian ModelFS lifecycle gate
         run: make qemu-model-sftp-gate
@@ -260,11 +270,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Install QEMU build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld qemu-system-arm qemu-efi-aarch64 mtools python3 python3-cryptography
+          sudo apt-get install -y clang lld llvm meson ninja-build qemu-system-arm qemu-efi-aarch64 mtools python3 python3-cryptography
 
       - name: Run SSH, SFTP, UDP, and IPv6/TCP gate
         run: make qemu-docker-network-suite
@@ -286,11 +298,13 @@ jobs:
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Install QEMU build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld qemu-system-arm qemu-utils qemu-efi-aarch64 mtools python3 python3-cryptography xz-utils genisoimage
+          sudo apt-get install -y clang lld llvm meson ninja-build qemu-system-arm qemu-utils qemu-efi-aarch64 mtools python3 python3-cryptography xz-utils genisoimage
 
       - name: Cache pinned FreeBSD client image
         uses: actions/cache@v6

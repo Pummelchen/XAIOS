@@ -261,13 +261,15 @@ compile-check:
 	    -c "$$f" -o "$$object" \
 	    || failed=$$((failed + 1)); \
 	done; \
-	for f in $$(find userspace -name '*.c' ! -path 'userspace/libc/*'); do \
+	for f in $$(find userspace -name '*.c' ! -path 'userspace/libc/*' \
+	    ! -path 'userspace/apps/hosted/*'); do \
 	  clang --target=aarch64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
 	    -Wall -Wextra -Werror -Iuserspace/include -Itests -fsyntax-only "$$f" \
 	    || failed=$$((failed + 1)); \
 	done; \
-	for f in $$(find userspace -name '*.c' ! -path 'userspace/libc/*'); do \
+	for f in $$(find userspace -name '*.c' ! -path 'userspace/libc/*' \
+	    ! -path 'userspace/apps/hosted/*'); do \
 	  object=build/compile-check/x86-userspace/$$(printf '%s' "$$f" | tr / _).o; \
 	  clang --target=x86_64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie -mno-red-zone \

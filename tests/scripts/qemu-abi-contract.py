@@ -64,10 +64,11 @@ def validate_initfs_contract(rc_contract):
             failures.append(f"create-initfs {name} expected {expected}, got {value}")
 
     required_paths = fs.get("required_paths", [])
-    user_apps_match = re.search(r'^USER_APPS="([^"]*)"', build_image, re.MULTILINE)
     user_app_paths = set()
-    if user_apps_match:
-        user_app_paths = {f"/bin/{name}" for name in user_apps_match.group(1).split()}
+    for variable in ("USER_APPS", "HOSTED_USER_APPS"):
+        match = re.search(rf'^{variable}="([^"]*)"', build_image, re.MULTILINE)
+        if match:
+            user_app_paths.update(f"/bin/{name}" for name in match.group(1).split())
     for path in required_paths:
         if path not in create_initfs and path not in build_image and path not in user_app_paths:
             failures.append(f"initfs build inputs missing required path {path}")

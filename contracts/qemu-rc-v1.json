@@ -307,6 +307,7 @@
       "/bin/xaios-shell",
       "/bin/xaiosctl",
       "/bin/hello",
+      "/bin/helloworldc99",
       "/bin/sysinfo",
       "/bin/systest",
       "/bin/smptest",

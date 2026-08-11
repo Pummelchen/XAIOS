@@ -32,6 +32,8 @@ TARGETS = [
     "threads: concurrent group complete",
     "/bin/smptest: complete",
     "/bin/nettest: complete",
+    "/bin/helloworldc99: Hello, World!",
+    "kernel: /bin/helloworldc99 returned to kernel exit_code=0",
     "kernel: starting persistent /bin/sshd service",
     "sshd: Phase 2 runtime ready",
     "boot-ui: progress=100 loaded=SSH-server loading=complete remaining=0",

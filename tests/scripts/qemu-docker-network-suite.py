@@ -362,6 +362,7 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
 
     transient_paths = (
         b"/bin/hello",
+        b"/bin/helloworldc99",
         b"/bin/sysinfo",
         b"/bin/lstm-xor",
         b"/bin/app-fail",
@@ -375,6 +376,7 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
 
     for command, marker in (
         ("hello", b"hello: complete"),
+        ("helloworldc99", b"/bin/helloworldc99: Hello, World!"),
         ("sysinfo", b"sysinfo: complete"),
         ("lstm-xor", b"lstm-xor: complete"),
     ):

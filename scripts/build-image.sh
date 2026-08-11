@@ -75,6 +75,7 @@ USER_START_OBJ="$INIT_BUILD_DIR/user-start.o"
 USER_LIB_OBJ="$INIT_BUILD_DIR/xaios-user.o"
 USER_CONTROL_OBJ="$INIT_BUILD_DIR/xaios-control-client.o"
 USER_APPS="xaios-shell xaiosctl hello sysinfo systest smptest nettest lstm-xor sshtest mltest posix-shell agenttest"
+HOSTED_USER_APPS="helloworldc99"
 
 BUILD_MODE="${XAIOS_BUILD_MODE:-development}"
 case "$BUILD_MODE" in
@@ -754,6 +755,32 @@ for app in $USER_APPS; do
       "$USER_LIB_OBJ" \
       "$app_obj"
   fi
+  set -- "$@" "/bin/$app=$app_elf"
+done
+
+LIBC_SYSROOT="$BUILD_DIR/libc/$TARGET_ARCH/sysroot"
+LIBC_RUNTIME="$BUILD_DIR/libc/$TARGET_ARCH/runtime-test"
+LIBC_READY=1
+for libc_artifact in \
+    "$LIBC_SYSROOT/lib/libc.a" \
+    "$LIBC_SYSROOT/lib/libm.a" \
+    "$LIBC_SYSROOT/lib/libcompiler_rt_xaios.a" \
+    "$LIBC_RUNTIME/crt0.o" \
+    "$LIBC_RUNTIME/runtime_main_void.o" \
+    "$LIBC_RUNTIME/os_adapter.o"; do
+  if [ ! -f "$libc_artifact" ]; then
+    LIBC_READY=0
+  fi
+done
+if [ "$LIBC_READY" = 0 ]; then
+  printf '%s\n' "Building hosted ISO C99 libc for $TARGET_ARCH..."
+  XAIOS_LIBC_ARCHES="$TARGET_ARCH" "$ROOT_DIR/scripts/build-libc.sh"
+fi
+for app in $HOSTED_USER_APPS; do
+  app_elf="$INIT_BUILD_DIR/$app.elf"
+  printf '%s\n' "Building hosted C99 userspace /bin/$app ELF..."
+  "$ROOT_DIR/scripts/build-c99-app.sh" --arch "$TARGET_ARCH" --main void \
+    "$ROOT_DIR/userspace/apps/hosted/$app.c" "$app_elf"
   set -- "$@" "/bin/$app=$app_elf"
 done
 

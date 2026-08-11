@@ -22,8 +22,9 @@ performance. The requirement source is the
    console, file, clock, or termination state.
 5. AI hot paths do not use stdio or the general libc heap for tensors, model
    weights, KV state, DMA, huge pages, or NUMA placement.
-6. Kernel, boot code and existing low-level applications remain freestanding;
-   the hosted sysroot is opt-in.
+6. Kernel, boot code and low-level applications remain freestanding. Normal
+   images include only the hosted `helloworldc99` demonstration; additional
+   hosted applications remain an explicit build choice.
 
 ## Architecture
 
@@ -79,6 +80,12 @@ scripts/build-c99-app.sh --arch x86_64 --main void app.c build/app-x86.elf
 `--main args` selects `int main(int, char **)`; `--main void` selects
 `int main(void)`. Applications compile with `-std=c99 -fhosted
 -pedantic-errors` against the generated architecture sysroot.
+
+Every standard image packages `/bin/helloworldc99` from
+`userspace/apps/hosted/helloworldc99.c`. Run `helloworldc99` from an
+authenticated local or SSH shell to verify hosted `stdio`, process loading and
+clean exit. Its bounded standard output is returned to the invoking terminal
+while the same bytes remain visible on the serial console.
 
 `make qemu-libc-gate` runs the contract audit, builds both images, executes the
 runtime and termination probes under AArch64 and x86_64 QEMU, and writes the

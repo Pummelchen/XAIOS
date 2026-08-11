@@ -16,12 +16,13 @@ def main() -> int:
     build = (ROOT / "scripts/build-image.sh").read_text(encoding="utf-8")
     apps_doc = (ROOT / "wiki/Applications.md").read_text(encoding="utf-8")
     commands_doc = (ROOT / "wiki/Commands.md").read_text(encoding="utf-8")
-    match = re.search(r'^USER_APPS="([^"]+)"', build, re.MULTILINE)
-    if match is None:
-        failures.append("cannot locate USER_APPS in build-image.sh")
-        user_apps: set[str] = set()
-    else:
-        user_apps = set(match.group(1).split())
+    user_apps: set[str] = set()
+    for variable in ("USER_APPS", "HOSTED_USER_APPS"):
+        match = re.search(rf'^{variable}="([^"]+)"', build, re.MULTILINE)
+        if match is None:
+            failures.append(f"cannot locate {variable} in build-image.sh")
+        else:
+            user_apps.update(match.group(1).split())
     all_apps = user_apps | {"init", "service-manager", "xaios-worker", "sshd", "app-fail"}
     for app in sorted(all_apps):
         rendered = f"`/init`" if app == "init" else f"`/bin/{app}`"

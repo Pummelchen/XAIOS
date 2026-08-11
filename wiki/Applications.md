@@ -48,6 +48,7 @@ acceptance.
 | Path | Purpose |
 |---|---|
 | `/bin/hello` | Minimal userspace toolchain, ELF loader, logging, and exit integration check. |
+| `/bin/helloworldc99` | Hosted ISO C99 demonstration built against the XAIOS libc. It prints `Hello, World!` through `stdio` and is available on demand as `helloworldc99`. |
 | `/bin/sysinfo` | Legacy compatibility diagnostic that directs administrators to `xaiosctl status` and `xaiosctl hardware`. |
 | `/bin/systest` | Syscall, descriptor-width validation, and MutableFS create/read/stat/list/rename/delete suite. |
 | `/bin/smptest` | SMP scheduler visibility, worker groups, and EL0 thread create/join/validation test. |
@@ -67,6 +68,8 @@ the normal image.
 - Diagnostic names are exact allowlist entries; paths, arguments, and arbitrary
   executable launch are rejected by the remote application dispatcher.
 - Built-in shell commands run inside the persistent SSH/local command subsystem.
+- Standard output from a transient hosted-libc application is bounded and
+  returned to the invoking SSH session as well as written to the serial console.
 - Interactive terminal applications have dedicated lifecycle and UI modules,
   but currently share the `/bin/sshd` host process rather than separate ELF
   images.
