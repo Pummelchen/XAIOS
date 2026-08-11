@@ -335,6 +335,7 @@ make qemu-smmu-gate
 make qemu-nvme-gate
 make qemu-model-sftp-gate
 make qemu-freebsd-network-suite
+make qemu-freebsd-bidirectional-suite
 make qemu-docker-network-suite
 make qemu-parallel-network-load
 make qemu-core-os-rc
@@ -343,6 +344,8 @@ make qemu-x86_64-smoke
 make qemu-x86_64-cpu-matrix
 make qemu-x86_64-platform-matrix
 XAIOS_QEMU_NETWORK_ARCH=x86_64 make qemu-docker-network-suite
+XAIOS_QEMU_NETWORK_ARCH=x86_64 make qemu-freebsd-bidirectional-suite
+XAIOS_INTEL_VPS=root@VPS make qemu-four-endpoint-network-suite
 make vmware-fusion-smoke
 ```
 

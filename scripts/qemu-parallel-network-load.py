@@ -113,6 +113,35 @@ def run_checked(
     )
 
 
+def wait_for_ssh_recovery(key: Path, ssh_port: int, timeout: float = 30.0) -> None:
+    marker = "capacity-recovered"
+    deadline = time.monotonic() + timeout
+    command = [
+        "ssh", "-F", "/dev/null", "-i", str(key),
+        "-o", "IdentitiesOnly=yes",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "PreferredAuthentications=publickey",
+        "-o", "PasswordAuthentication=no",
+        "-o", "ConnectTimeout=3",
+        "-o", "LogLevel=ERROR",
+        "-p", str(ssh_port), "admin@127.0.0.1", f"echo {marker}",
+    ]
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip() == marker:
+            return
+        time.sleep(0.1)
+    raise TimeoutError("SSH capacity did not recover after saturation")
+
+
 def client_command(
     origin: str,
     key_dir: Path,
@@ -271,10 +300,17 @@ def start_stress_clients(
     cycles: int,
     udp_count: int,
     minimum_seconds: int,
+    capture_audit: bool = False,
 ) -> tuple[
-    list[tuple[str, subprocess.Popen[bytes], object, Path]], list[Path], Path
+    list[tuple[str, subprocess.Popen[bytes], object, Path]],
+    list[Path],
+    Path,
+    Path | None,
+    Path | None,
 ]:
     start_file = coord_dir / f"{phase}.start"
+    audit_request = coord_dir / f"{phase}.audit-request" if capture_audit else None
+    audit_output = coord_dir / f"{phase}.audit-output" if capture_audit else None
     entries = []
     ready_files = []
     for origin in ("macos", "debian"):
@@ -286,6 +322,13 @@ def start_stress_clients(
         else:
             ready_arg = f"/coord/{ready_host.name}"
             start_arg = f"/coord/{start_file.name}"
+        audit_args: list[str] = []
+        if capture_audit and origin == "macos":
+            assert audit_request is not None and audit_output is not None
+            audit_args = [
+                "--audit-request-file", str(audit_request),
+                "--audit-output-file", str(audit_output),
+            ]
         entries.append(
             (
                 origin,
@@ -304,13 +347,14 @@ def start_stress_clients(
                         "--minimum-seconds", str(minimum_seconds),
                         "--ready-file", ready_arg,
                         "--start-file", start_arg,
+                        *audit_args,
                         "--timeout", str(CLIENT_TIMEOUT_SECONDS),
                     ),
                 ),
             )
         )
     wait_ready(entries, ready_files, 120.0)
-    return entries, ready_files, start_file
+    return entries, ready_files, start_file, audit_request, audit_output
 
 
 def direct_client_commands(
@@ -451,7 +495,7 @@ def main() -> int:
         assert_qemu_healthy(qemu, qemu_log_path)
         phases["dual_origin_preflight"] = "passed"
 
-        mixed, _, mixed_start = start_stress_clients(
+        mixed, _, mixed_start, _, _ = start_stress_clients(
             "mixed", key_dir, coord_dir, ssh_port, udp_port,
             workers=1, cycles=4, udp_count=40, minimum_seconds=15,
         )
@@ -476,9 +520,10 @@ def main() -> int:
         phases["raw_tcp_under_ssh_sftp_udp_load"] = "passed"
         phases["ipv4_ipv6_fragment_reassembly_under_load"] = "passed"
 
-        saturation, _, saturation_start = start_stress_clients(
+        saturation, _, saturation_start, audit_request, audit_output = start_stress_clients(
             "saturation", key_dir, coord_dir, ssh_port, udp_port,
             workers=2, cycles=8, udp_count=100, minimum_seconds=20,
+            capture_audit=True,
         )
         try:
             run_parallel_clients(
@@ -490,6 +535,13 @@ def main() -> int:
                 udp_port,
                 "expect-rejected",
             )
+            assert audit_request is not None and audit_output is not None
+            audit_request.write_text("capture\n", encoding="ascii")
+            wait_for_marker(
+                audit_output, "Max connections reached", 30.0
+            )
+            sshd_audit = audit_output.read_text(errors="replace")
+            capacity_markers = sshd_audit.count("Max connections reached")
             saturation_start.write_text("start\n", encoding="ascii")
             wait_group(saturation)
         except BaseException:
@@ -498,6 +550,8 @@ def main() -> int:
         assert_qemu_healthy(qemu, qemu_log_path)
         phases["four_connection_two_channel_saturation"] = "passed"
         phases["over_capacity_rejection"] = "passed"
+        wait_for_ssh_recovery(key_dir / "authorized", ssh_port)
+        phases["capacity_reclamation"] = "passed"
 
         run_parallel_clients(
             "reconnect",
@@ -523,16 +577,6 @@ def main() -> int:
         phases["forty_parallel_reconnects"] = "passed"
         phases["post_load_recovery"] = "passed"
 
-        qemu_log = qemu_log_path.read_text(errors="replace")
-        capacity_markers = qemu_log.count(
-            "sshd: connection capacity rejection observed"
-        )
-        if capacity_markers < 1:
-            raise RuntimeError(
-                "over-capacity clients were rejected without the guest "
-                "capacity marker"
-            )
-
         report = {
             "schema": "xaios.qemu.parallel_network_load.v1",
             "status": "pass",
@@ -551,7 +595,7 @@ def main() -> int:
                 "reconnects": 40,
                 "udp_round_trips": 330,
                 "over_capacity_rejections": 2,
-                "guest_capacity_markers": capacity_markers,
+                "guest_capacity_audit_entries": capacity_markers,
                 "raw_tcp_clients": 2,
                 "fragmented_ipv4_clients": 2,
                 "fragmented_ipv6_clients": 2,

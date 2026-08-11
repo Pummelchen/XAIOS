@@ -311,9 +311,18 @@ case "${XAIOS_STORAGE_CRASH_POINT:-}" in
     ;;
 esac
 
-BUILD_REVISION="$(git -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || printf '%s' unknown)"
+if [ -n "${XAIOS_BUILD_REVISION_OVERRIDE:-}" ]; then
+  if ! printf '%s' "$XAIOS_BUILD_REVISION_OVERRIDE" | grep -Eq '^[0-9a-f]{40}$'; then
+    printf '%s\n' 'error: XAIOS_BUILD_REVISION_OVERRIDE must be 40 lowercase hex characters' >&2
+    exit 2
+  fi
+  BUILD_REVISION="$XAIOS_BUILD_REVISION_OVERRIDE"
+else
+  BUILD_REVISION="$(git -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || printf '%s' unknown)"
+fi
 BUILD_IDENTIFIER="xaios-admin-control"
-if ! git -C "$ROOT_DIR" diff-index --quiet HEAD -- 2>/dev/null ||
+if [ -n "${XAIOS_BUILD_REVISION_OVERRIDE:-}" ] ||
+   ! git -C "$ROOT_DIR" diff-index --quiet HEAD -- 2>/dev/null ||
    [ -n "$(git -C "$ROOT_DIR" ls-files --others --exclude-standard 2>/dev/null)" ]; then
   BUILD_IDENTIFIER="${BUILD_IDENTIFIER}-dirty"
 fi

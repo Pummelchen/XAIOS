@@ -341,14 +341,13 @@ def main() -> int:
         ipv4_fragments = ipv4_tcp_fragments(ipv4_fragment_seq, 0x1235)
         send_frame(sock, ipv4_fragments[0])
         send_frame(sock, ipv4_fragments[1])
-        ipv4_server_seq, ipv4_ack, _, _ = wait_for_tcp_v4(
+        ipv4_server_seq, _, _, _ = wait_for_tcp_v4(
             sock,
-            lambda packet: packet[2] & 0x12 == 0x12,
+            lambda packet: packet[2] & 0x12 == 0x12
+            and packet[1] == ipv4_fragment_seq + 1,
             args.timeout,
             args.verbose,
         )
-        if ipv4_ack != ipv4_fragment_seq + 1:
-            raise RuntimeError("fragmented IPv4 SYN was acknowledged incorrectly")
         send_frame(
             sock,
             ipv4_tcp_frame(
@@ -364,14 +363,13 @@ def main() -> int:
         ipv6_fragments = ipv6_tcp_fragments(ipv6_fragment_seq, 0xA1B2C3D4)
         send_frame(sock, ipv6_fragments[1])
         send_frame(sock, ipv6_fragments[0])
-        ipv6_server_seq, ipv6_ack, _, _ = wait_for_tcp(
+        ipv6_server_seq, _, _, _ = wait_for_tcp(
             sock,
-            lambda packet: packet[2] & 0x12 == 0x12,
+            lambda packet: packet[2] & 0x12 == 0x12
+            and packet[1] == ipv6_fragment_seq + 1,
             args.timeout,
             args.verbose,
         )
-        if ipv6_ack != ipv6_fragment_seq + 1:
-            raise RuntimeError("fragmented IPv6 SYN was acknowledged incorrectly")
         send_frame(
             sock,
             ethernet_frame(
@@ -385,12 +383,13 @@ def main() -> int:
         )
         assert_no_tcp(sock, lambda packet: packet[2] & 0x12 == 0x12, 0.75)
         send_frame(sock, ethernet_frame(client_seq, 0, 0x02))
-        server_seq, ack, flags, _ = wait_for_tcp(
-            sock, lambda packet: packet[2] & 0x12 == 0x12, args.timeout,
+        server_seq, _, _, _ = wait_for_tcp(
+            sock,
+            lambda packet: packet[2] & 0x12 == 0x12
+            and packet[1] == client_seq + 1,
+            args.timeout,
             args.verbose,
         )
-        if ack != client_seq + 1:
-            raise RuntimeError("guest SYN-ACK acknowledged the wrong sequence")
 
         client_seq += 1
         server_next = server_seq + 1

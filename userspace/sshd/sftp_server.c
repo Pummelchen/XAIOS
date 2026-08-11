@@ -797,6 +797,51 @@ static int handle_fstat(int sockfd, const uint8_t *data, uint32_t len) {
   return send_sftp_packet(sockfd, response, sizeof(response));
 }
 
+static int handle_fsetstat(int sockfd, const uint8_t *data, uint32_t len) {
+  if (len < 12U) {
+    uint32_t request_id = len >= 4U ? read_u32(data) : 0U;
+    return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE,
+                       "Invalid FSETSTAT");
+  }
+  uint32_t request_id = read_u32(data);
+  const uint8_t *handle_data;
+  uint32_t handle_len;
+  uint32_t next_offset;
+  if (read_string_at(data, len, 4U, &handle_data, &handle_len,
+                     &next_offset) != 0 ||
+      handle_len != 4U || len - next_offset < 4U) {
+    return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE,
+                       "Invalid handle");
+  }
+  sftp_file_handle_t *handle = find_handle(sockfd, read_u32(handle_data));
+  if (handle == 0 || handle->is_dir != 0 || handle->fd < 0) {
+    return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE,
+                       "Invalid handle ID");
+  }
+
+  uint32_t flags = read_u32(data + next_offset);
+  next_offset += 4U;
+  if (flags == 0U && next_offset == len) {
+    return send_status(sockfd, request_id, SSH_FX_OK, "Success");
+  }
+  if (flags != SSH_FILEXFER_ATTR_SIZE || len - next_offset != 8U) {
+    return send_status(sockfd, request_id, SSH_FX_OP_UNSUPPORTED,
+                       "Unsupported attributes");
+  }
+  uint64_t requested_size = ((uint64_t)read_u32(data + next_offset) << 32U) |
+                            read_u32(data + next_offset + 4U);
+  xaios_mfs_stat_user_t file_stat;
+  if (xaios_fs_stat(handle->path, &file_stat) != 0) {
+    return send_status(sockfd, request_id, SSH_FX_NO_SUCH_FILE,
+                       "File not found");
+  }
+  if (file_stat.size != requested_size) {
+    return send_status(sockfd, request_id, SSH_FX_OP_UNSUPPORTED,
+                       "Resize not supported");
+  }
+  return send_status(sockfd, request_id, SSH_FX_OK, "Success");
+}
+
 static int handle_realpath(int sockfd, const uint8_t *data, uint32_t len) {
   if (len < 8U) {
     return send_status(sockfd, 0, SSH_FX_BAD_MESSAGE, "Invalid REALPATH");
@@ -945,6 +990,9 @@ int sftp_handle_message(int sockfd, uint32_t remote_channel_id,
     case SSH_FXP_FSTAT:
       return handle_fstat(sockfd, data + 1, len - 1);
 
+    case SSH_FXP_FSETSTAT:
+      return handle_fsetstat(sockfd, data + 1, len - 1);
+
     case SSH_FXP_REALPATH:
       return handle_realpath(sockfd, data + 1, len - 1);
 
@@ -953,6 +1001,8 @@ int sftp_handle_message(int sockfd, uint32_t remote_channel_id,
     
     default:
       /* Unsupported operation */
-      return send_status(sockfd, 0, SSH_FX_OP_UNSUPPORTED, "Operation not supported");
+      return send_status(sockfd, len >= 5U ? read_u32(data + 1U) : 0U,
+                         SSH_FX_OP_UNSUPPORTED,
+                         "Operation not supported");
   }
 }

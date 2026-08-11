@@ -1,0 +1,23 @@
+FROM debian:13
+
+LABEL org.opencontainers.image.title="XAIOS FreeBSD QEMU network endpoint"
+LABEL org.opencontainers.image.description="Runs an official FreeBSD cloud image under QEMU for SSH/SFTP interoperability tests"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ovmf \
+        qemu-efi-aarch64 \
+        qemu-system-arm \
+        qemu-system-x86 \
+        qemu-utils \
+        socat \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY tests/network/freebsd-qemu-server.sh /usr/local/bin/xaios-freebsd-qemu-server
+RUN chmod 0755 /usr/local/bin/xaios-freebsd-qemu-server
+
+EXPOSE 2222/tcp
+
+ENTRYPOINT ["/usr/local/bin/xaios-freebsd-qemu-server"]

@@ -94,6 +94,7 @@ model workstreams are not active unless the maintainer reprioritizes them.
 - [[Qwen CPU Inference Status|Qwen3.6-INT6-Support]]
 - [[SSH Status|Production-SSH-Server]]
 - [[Unix Compatibility|Unix-Compatibility]]
+- [[Four-Endpoint Network Interoperability|Four-Endpoint-Network-Interop]]
 - [Repository README](https://github.com/Pummelchen/XAIOS/blob/main/README.md)
 - [Implementation roadmap](https://github.com/Pummelchen/XAIOS/blob/main/docs/QWEN-K3-IMPLEMENTATION-ROADMAP.md)
 - [Distributed server plan](https://github.com/Pummelchen/XAIOS/blob/main/docs/DISTRIBUTED-AI-SERVER-PLAN.md)

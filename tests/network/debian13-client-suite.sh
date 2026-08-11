@@ -222,7 +222,12 @@ if version["control_protocol_version"] != 1:
     raise SystemExit("version: unexpected control protocol version")
 if version["kernel_abi_version"] != 1 or version["model_package_version"] != 2:
     raise SystemExit("version: unexpected kernel/model ABI versions")
-if len(version["git_commit"]) != 40 or version["architecture"] != expected_arch:
+if len(version["git_commit"]) != 40:
+    raise SystemExit(
+        f"version: expected 40-character source revision, got "
+        f"{version['git_commit']!r}"
+    )
+if version["architecture"] != expected_arch:
     raise SystemExit(
         f"version: expected {expected_arch} image, got {version['architecture']}"
     )

@@ -13,6 +13,7 @@
 #define FXP_READ 5U
 #define FXP_WRITE 6U
 #define FXP_FSTAT 8U
+#define FXP_FSETSTAT 10U
 #define FXP_EXTENDED 200U
 #define FXP_STATUS 101U
 #define FXP_HANDLE 102U
@@ -178,6 +179,11 @@ static uint32_t response_status(void) {
   return get_u32(g_response + 9U);
 }
 
+static uint32_t response_request_id(void) {
+  assert(g_response_size >= 9U);
+  return get_u32(g_response + 5U);
+}
+
 static uint32_t open_file(const char *path) {
   uint8_t packet[512];
   uint32_t position = 0U;
@@ -265,6 +271,32 @@ int main(void) {
   uint64_t reported_size = ((uint64_t)get_u32(g_response + 13U) << 32U) |
                            get_u32(g_response + 17U);
   assert(reported_size == high_offset + 7U);
+
+  position = 0U;
+  packet[position++] = FXP_FSETSTAT;
+  put_u32(packet + position, 14U); position += 4U;
+  put_u32(packet + position, 4U); position += 4U;
+  put_u32(packet + position, handle); position += 4U;
+  put_u32(packet + position, 0x00000001U); position += 4U;
+  put_u64(packet + position, high_offset + 7U); position += 8U;
+  assert(sftp_handle_message(7, 42U, packet, position) == 0);
+  assert(response_request_id() == 14U && response_status() == 0U);
+
+  position = 0U;
+  packet[position++] = FXP_FSETSTAT;
+  put_u32(packet + position, 15U); position += 4U;
+  put_u32(packet + position, 4U); position += 4U;
+  put_u32(packet + position, handle); position += 4U;
+  put_u32(packet + position, 0x00000001U); position += 4U;
+  put_u64(packet + position, high_offset + 8U); position += 8U;
+  assert(sftp_handle_message(7, 42U, packet, position) == 0);
+  assert(response_request_id() == 15U && response_status() == 8U);
+
+  position = 0U;
+  packet[position++] = 250U;
+  put_u32(packet + position, 0x12345678U); position += 4U;
+  assert(sftp_handle_message(7, 42U, packet, position) == 0);
+  assert(response_request_id() == 0x12345678U && response_status() == 8U);
 
   position = 0U;
   packet[position++] = FXP_READ;

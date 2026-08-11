@@ -361,9 +361,28 @@ def stress_worker(
             raise RuntimeError(f"worker {worker} payload mismatch: {path.name}")
 
 
-def wait_for_start(path: Path, timeout: float) -> None:
+def wait_for_start(
+    path: Path,
+    timeout: float,
+    args: argparse.Namespace,
+    master: ControlMaster,
+) -> None:
     deadline = time.monotonic() + timeout
+    audit_captured = False
     while time.monotonic() < deadline:
+        if (
+            not audit_captured
+            and args.audit_request_file is not None
+            and args.audit_output_file is not None
+            and args.audit_request_file.exists()
+        ):
+            result = ssh_command(
+                args,
+                "cat /state/sshd.log",
+                control_path=master.socket_path,
+            )
+            args.audit_output_file.write_text(result.stdout, encoding="utf-8")
+            audit_captured = True
         if path.exists():
             return
         time.sleep(0.05)
@@ -379,7 +398,7 @@ def run_stress(args: argparse.Namespace, workdir: Path) -> None:
             masters.append(ControlMaster(args, workdir, worker))
         args.ready_file.write_text(f"workers={args.workers}\n", encoding="ascii")
         print(f"READY: {args.client_id} workers={args.workers}", flush=True)
-        wait_for_start(args.start_file, args.timeout)
+        wait_for_start(args.start_file, args.timeout, args, masters[0])
         started = time.monotonic()
         with ThreadPoolExecutor(max_workers=args.workers + 1) as pool:
             futures = [
@@ -407,7 +426,13 @@ def run_stress(args: argparse.Namespace, workdir: Path) -> None:
 def run_reconnect(args: argparse.Namespace) -> None:
     for index in range(args.reconnects):
         marker = f"reconnect-{args.client_id}-{index}"
-        result = ssh_command(args, f"echo {marker}")
+        result = ssh_command(args, f"echo {marker}", check=False)
+        if result.returncode != 0:
+            detail = " ".join((result.stderr or result.stdout).split())
+            raise RuntimeError(
+                f"reconnect {index} transport failed rc={result.returncode} "
+                f"detail={detail[:240]!r}"
+            )
         if result.stdout.strip() != marker:
             raise RuntimeError(f"reconnect {index} output mismatch: {result.stdout!r}")
     print(
@@ -425,6 +450,7 @@ def run_health(args: argparse.Namespace) -> None:
 
 
 def run_expected_rejection(args: argparse.Namespace) -> None:
+    started = time.monotonic()
     result = ssh_command(
         args,
         "echo over-capacity-must-not-run",
@@ -433,7 +459,13 @@ def run_expected_rejection(args: argparse.Namespace) -> None:
     )
     if result.returncode == 0 or "over-capacity-must-not-run" in result.stdout:
         raise RuntimeError("server admitted a connection above its declared limit")
-    print(f"PASS: {args.client_id} over-capacity connection rejected", flush=True)
+    elapsed = time.monotonic() - started
+    detail = " ".join((result.stderr or result.stdout).split())
+    print(
+        f"PASS: {args.client_id} over-capacity connection rejected "
+        f"after={elapsed:.2f}s detail={detail[:240]!r}",
+        flush=True,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -457,6 +489,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--minimum-seconds", type=float, default=0.0)
     parser.add_argument("--ready-file", type=Path)
     parser.add_argument("--start-file", type=Path)
+    parser.add_argument("--audit-request-file", type=Path)
+    parser.add_argument("--audit-output-file", type=Path)
     parser.add_argument("--timeout", type=float, default=300.0)
     args = parser.parse_args()
     if args.workers < 1 or args.workers > 2:

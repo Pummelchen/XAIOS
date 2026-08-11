@@ -1,0 +1,6 @@
+build/
+.git/
+.DS_Store
+*.img
+*.qcow2
+*.iso

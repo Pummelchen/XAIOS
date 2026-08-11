@@ -250,9 +250,9 @@ jobs:
           retention-days: 14
 
   freebsd-network-interoperability:
-    name: FreeBSD 15.1 Unix Interoperability
+    name: FreeBSD 15.1 Bidirectional Interoperability
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v6
 
@@ -267,8 +267,11 @@ jobs:
           path: ~/.cache/xaios/freebsd
           key: freebsd-15.1-release-aarch64-cloudinit-9722aea499610802
 
-      - name: Run FreeBSD OpenSSH, SFTP, PTY, and UDP gate
-        run: make qemu-freebsd-network-suite
+      - name: Verify Docker runtime
+        run: docker info
+
+      - name: Run bidirectional FreeBSD SSH, SFTP, SCP, PTY, and UDP gate
+        run: make qemu-freebsd-bidirectional-suite
         env:
           XAIOS_FREEBSD_TIMEOUT: "900"
 
@@ -278,8 +281,8 @@ jobs:
         with:
           name: qemu-freebsd-network-evidence
           path: |
-            build/qemu-freebsd-network-suite.json
-            build/qemu-freebsd-client.log
-            build/qemu-freebsd-xaios.log
+            build/qemu-freebsd-bidirectional-aarch64.json
+            build/qemu-freebsd-docker-aarch64.log
+            build/qemu-freebsd-bidirectional-xaios-aarch64.log
           if-no-files-found: ignore
           retention-days: 14

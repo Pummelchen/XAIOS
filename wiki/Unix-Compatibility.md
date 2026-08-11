@@ -32,12 +32,21 @@ Run the FreeBSD reference gate with:
 
 ```sh
 make qemu-freebsd-network-suite
+make qemu-freebsd-bidirectional-suite
 ```
 
 The first run downloads the official compressed FreeBSD image into
 `~/.cache/xaios/freebsd`. Both the compressed archive and decompressed image
 are SHA-256 checked. Tests use a disposable overlay; the cached vendor image is
 not modified.
+
+The bidirectional gate additionally places the real FreeBSD VM inside a
+Dockerized QEMU harness, starts base-system `sshd`, and validates XAIOS's
+password-authenticated outbound SSH and recursive SFTP-backed SCP client in
+both transfer directions. Docker supplies process isolation and repeatable
+QEMU dependencies; it does not substitute a Linux kernel for FreeBSD. See the
+[[four-endpoint matrix|Four-Endpoint-Network-Interop]] for the complete local
+and Intel VPS contract.
 
 See the authoritative repository document:
 [Unix compatibility boundary](https://github.com/Pummelchen/XAIOS/blob/main/docs/UNIX-COMPATIBILITY.md).
