@@ -12,14 +12,18 @@ slot and takes effect only after reboot.
 xapt update
 xapt list
 xapt list --upgradable
-xapt search calculator
-xapt show calculator
-xapt install calculator
-xapt upgrade calculator
-xapt rollback calculator
-xapt remove calculator
+xapt search APP
+xapt show APP
+xapt install APP
+xapt upgrade APP
+xapt rollback APP
+xapt remove APP
 xapt os-upgrade
 ```
+
+`APP` is a package name returned by the signed catalog. The current production
+catalog contains no optional applications; a newly published application is
+offered by `xapt list` without requiring an OS-image update.
 
 `xapt update` fetches and activates the catalog only after signature,
 architecture, and monotonic-generation validation. Install and upgrade are

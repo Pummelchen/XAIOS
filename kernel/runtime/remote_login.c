@@ -5483,6 +5483,12 @@ static const remote_app_definition_t g_remote_apps[] = {
          XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE | XAIOS_CAP_NET_SOCKET |
          XAIOS_CAP_CONTROL_QUERY | XAIOS_CAP_CONTROL_ADMIN |
          XAIOS_CAP_UPDATE | XAIOS_CAP_ADMIN},
+    {"nano", "/bin/nano",
+     XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT | XAIOS_CAP_REMOTE_LOGIN},
+    {"htop", "/bin/htop",
+     XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT | XAIOS_CAP_REMOTE_LOGIN},
+    {"pong", "/bin/pong",
+     XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT | XAIOS_CAP_REMOTE_LOGIN},
     {"sysinfo", "/bin/sysinfo",
      XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_TIME},
     {"systest", "/bin/systest",
@@ -5565,27 +5571,39 @@ static xaios_status_t handle_remote_app_file(
   uint64_t console_bytes;
   int exit_code = 0;
   xaios_status_t status;
+  int raw_arguments;
 
   if (app == 0 || file == 0 || args == 0 || file->executable == 0U) {
     return command_fail(output, output_capacity, output_bytes,
                         "application: executable unavailable");
   }
   argv[0] = app->command;
-  while (has_more_args(args, argument_cursor) != 0) {
-    uint64_t before = argument_cursor;
-    if (argc >= XAIOS_USER_ARG_MAX ||
-        token_next(args, &argument_cursor, argument_storage[argc - 1U],
-                   sizeof(argument_storage[0])) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "application: too many or oversized arguments");
-    }
-    argument_bytes += argument_cursor - before;
-    if (argument_bytes > XAIOS_USER_ARG_BYTES_MAX) {
+  raw_arguments = string_equal(app->command, "nano") != 0 ||
+                  string_equal(app->command, "htop") != 0 ||
+                  string_equal(app->command, "pong") != 0;
+  if (raw_arguments != 0 && args[0] != '\0') {
+    if (cstr_len(args) + 1U > XAIOS_USER_ARG_BYTES_MAX) {
       return command_fail(output, output_capacity, output_bytes,
                           "application: argument data exceeds limit");
     }
-    argv[argc] = argument_storage[argc - 1U];
-    ++argc;
+    argv[argc++] = args;
+  } else {
+    while (has_more_args(args, argument_cursor) != 0) {
+      uint64_t before = argument_cursor;
+      if (argc >= XAIOS_USER_ARG_MAX ||
+          token_next(args, &argument_cursor, argument_storage[argc - 1U],
+                     sizeof(argument_storage[0])) != XAIOS_OK) {
+        return command_fail(output, output_capacity, output_bytes,
+                            "application: too many or oversized arguments");
+      }
+      argument_bytes += argument_cursor - before;
+      if (argument_bytes > XAIOS_USER_ARG_BYTES_MAX) {
+        return command_fail(output, output_capacity, output_bytes,
+                            "application: argument data exceeds limit");
+      }
+      argv[argc] = argument_storage[argc - 1U];
+      ++argc;
+    }
   }
 
   log = (char *)kheap_alloc(XAIOS_KLOG_FLUSH_MAX, 16U);
@@ -5689,6 +5707,20 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
         "xaiosctl exit "
         "quit logout help\n");
     return XAIOS_OK;
+  }
+  if (string_equal(cmd, "__xaios_nano_core") == 1U) {
+    return handle_nano(args, output, output_capacity, output_bytes);
+  }
+  if (string_equal(cmd, "__xaios_htop_core") == 1U) {
+    return handle_htop(args, output, output_capacity, output_bytes);
+  }
+  if (string_equal(cmd, "__xaios_pong_core") == 1U) {
+    if (args[0] != '\0') {
+      return command_fail(output, output_capacity, output_bytes,
+                          "pong: usage: pong");
+    }
+    return command_fail(output, output_capacity, output_bytes,
+                        "pong: interactive terminal required");
   }
   if (operations_is_command(command) != 0U) {
     return operations_execute(command, output, output_capacity, output_bytes);
@@ -6130,7 +6162,7 @@ void remote_login_self_test(void) {
                                &out) == XAIOS_ERR_INVALID);
   out = 0U;
   output[0] = '\0';
-  kassert(parse_and_execute("pong", output, sizeof(output),
+  kassert(parse_and_execute("__xaios_pong_core", output, sizeof(output),
                             &out) == XAIOS_ERR_INVALID);
   kassert(contains_substring(output,
                             "pong: interactive terminal required") == 1);

@@ -74,7 +74,7 @@ WORKER_ELF="$INIT_BUILD_DIR/worker.elf"
 USER_START_OBJ="$INIT_BUILD_DIR/user-start.o"
 USER_LIB_OBJ="$INIT_BUILD_DIR/xaios-user.o"
 USER_CONTROL_OBJ="$INIT_BUILD_DIR/xaios-control-client.o"
-USER_APPS="xaios-shell xaiosctl xapt hello sysinfo systest smptest nettest lstm-xor sshtest mltest posix-shell agenttest"
+USER_APPS="xaios-shell xaiosctl xapt nano htop pong hello sysinfo systest smptest nettest lstm-xor sshtest mltest posix-shell agenttest"
 HOSTED_USER_APPS="helloworldc99"
 
 BUILD_MODE="${XAIOS_BUILD_MODE:-development}"

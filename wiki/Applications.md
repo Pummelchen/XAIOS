@@ -31,22 +31,24 @@ Applications in the signed repository are not built into the boot image. `xapt`
 downloads them into a staging area, verifies their manifest and payload, then
 atomically activates them in `/apps`.
 
-| Name | Purpose | Install |
-|---|---|---|
-| `calculator` | Signed 64-bit integer calculator supporting `+`, `-`, `*`, `/`, and `%`, with overflow and divide-by-zero checks. | `xapt install calculator` |
+The current production catalog does not advertise optional applications. New
+applications will appear in `xapt list` only after a real application binary
+and its signed package metadata have been published for the running
+architecture. Package-manager tests use an explicitly test-only fixture that
+is never part of the production application catalog.
 
 ## Interactive terminal applications
 
-These are applications rather than shell commands. Their current implementation
-is packaged as dedicated state, input, and rendering modules inside `/bin/sshd`
-so the local console and SSH PTYs execute the same code. They do not yet have
-independent `/bin/*` ELF images.
+These are applications rather than shell built-ins. Each is shipped as a
+dedicated ELF image. The local-console and SSH PTY hosts link the same bounded
+input and rendering cores so interactive sessions do not require a second,
+incompatible terminal implementation.
 
-| Application | Runtime host | Purpose |
+| Path | Interactive transport | Purpose |
 |---|---|---|
-| `nano` | `/bin/sshd` | Full-screen editor with cursor movement, insertion/deletion, save, search, and exit. The editing buffer is limited to 32 KiB. |
-| `htop` | `/bin/sshd` | Full-screen sampled process monitor with color, alternate-screen in-place refresh, runtime-sized CPU meters, sorting, filtering, tree view, keyboard navigation, and a 60 FPS rendering cap. |
-| `pong` | `/bin/sshd` | 60 FPS terminal Pong. `W`/`S` control the left paddle, the computer controls the right, and session win/loss counts adjust ball speed by one percent per round. |
+| `/bin/nano` | Local console and SSH PTY adapter in `/bin/sshd` | Full-screen editor with cursor movement, insertion/deletion, save, search, and exit. The editing buffer is limited to 32 KiB. |
+| `/bin/htop` | Local console and SSH PTY adapter in `/bin/sshd` | Full-screen sampled process monitor with color, alternate-screen in-place refresh, runtime-sized CPU meters, sorting, filtering, tree view, keyboard navigation, and a 60 FPS rendering cap. |
+| `/bin/pong` | Local console and SSH PTY adapter in `/bin/sshd` | 60 FPS terminal Pong. `W`/`S` control the left paddle, the computer controls the right, and session win/loss counts adjust ball speed by one percent per round. |
 
 ## Diagnostic applications
 
@@ -81,9 +83,9 @@ the normal image.
 - Built-in shell commands run inside the persistent SSH/local command subsystem.
 - Standard output from a transient hosted-libc application is bounded and
   returned to the invoking SSH session as well as written to the serial console.
-- Interactive terminal applications have dedicated lifecycle and UI modules,
-  but currently share the `/bin/sshd` host process rather than separate ELF
-  images.
+- Interactive terminal applications have dedicated `/bin/*` ELF images. SSH
+  and local-console PTY adapters share their app cores for terminal transport;
+  non-interactive command execution is dispatched through the ELF entrypoint.
 - A crashed or nonzero application reports a friendly command error and exit
   status; it does not remain as an active process.
 - Normal boot does not pre-run `hello`, `sysinfo`, `lstm-xor`, or the other

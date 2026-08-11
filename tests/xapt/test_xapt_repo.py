@@ -27,17 +27,17 @@ class XaptRepositoryTests(unittest.TestCase):
     def test_package_catalog_and_corruption_detection(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xaios-xapt-test.") as temporary:
             root = Path(temporary)
-            elf = root / "calculator.elf"
+            elf = root / "xapt-test-app.elf"
             elf.write_bytes(b"\x7fELF" + bytes(range(64)))
             common = (
                 "package",
                 "--repository", str(root / "repo"),
                 "--elf", str(elf),
-                "--name", "calculator",
+                "--name", "xapt-test-app",
                 "--version", "1.2.3",
                 "--arch", "aarch64",
                 "--capabilities", "1073741826",
-                "--description", "Integer calculator",
+                "--description", "Test-only package lifecycle fixture",
             )
             self.run_tool(*common)
             self.run_tool(
@@ -48,7 +48,7 @@ class XaptRepositoryTests(unittest.TestCase):
             verified = self.run_tool("verify", "--repository", str(root / "repo"))
             self.assertIn("packages=1", verified.stdout)
 
-            payload = root / "repo/apps/aarch64/calculator/1.2.3/calculator.elf"
+            payload = root / "repo/apps/aarch64/xapt-test-app/1.2.3/xapt-test-app.elf"
             payload.write_bytes(payload.read_bytes() + b"corrupt")
             failed = self.run_tool(
                 "verify", "--repository", str(root / "repo"), ok=False

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install and execute a signed external XAIOS app through xapt in QEMU."""
+"""Install and execute a signed test-only XAIOS package through xapt in QEMU."""
 
 from __future__ import annotations
 
@@ -91,17 +91,17 @@ def wait_ssh(key: Path, port: int) -> None:
 
 def build_repository(arch: str, repository: Path) -> None:
     shutil.rmtree(repository, ignore_errors=True)
-    elf = BUILD / "xapt" / arch / "calculator.elf"
+    elf = BUILD / "xapt" / arch / "xapt-test-app.elf"
     subprocess.run(
         [str(ROOT / "scripts/build-user-app.sh"), "--arch", arch,
-         "userspace/apps/calculator.c", str(elf)], cwd=ROOT, check=True,
+         "tests/fixtures/xapt-test-app.c", str(elf)], cwd=ROOT, check=True,
     )
     common = [
         "python3", "tools/xaios_xapt_repo.py", "package",
         "--repository", str(repository), "--elf", str(elf),
-        "--name", "calculator", "--version", "1.0.0", "--arch", arch,
+        "--name", "xapt-test-app", "--version", "1.0.0", "--arch", arch,
         "--capabilities", "1073741826", "--description",
-        "Signed 64-bit integer calculator",
+        "Test-only package lifecycle fixture",
     ]
     subprocess.run(common, cwd=ROOT, check=True)
     kernel = BUILD / ("kernel/kernel.elf" if arch == "aarch64" else
@@ -125,15 +125,15 @@ def build_repository(arch: str, repository: Path) -> None:
     )
 
 
-def publish_calculator(arch: str, repository: Path, version: str,
-                       generation: int) -> None:
-    elf = BUILD / "xapt" / arch / "calculator.elf"
+def publish_test_app(arch: str, repository: Path, version: str,
+                     generation: int) -> None:
+    elf = BUILD / "xapt" / arch / "xapt-test-app.elf"
     subprocess.run(
         ["python3", "tools/xaios_xapt_repo.py", "package",
          "--repository", str(repository), "--elf", str(elf),
-         "--name", "calculator", "--version", version, "--arch", arch,
+         "--name", "xapt-test-app", "--version", version, "--arch", arch,
          "--capabilities", "1073741826", "--description",
-         "Signed 64-bit integer calculator"],
+         "Test-only package lifecycle fixture"],
         cwd=ROOT, check=True,
     )
     subprocess.run(
@@ -205,42 +205,52 @@ def exercise(arch: str, key: Path) -> None:
                 "nano /state/xapt/config --write "
                 f"host=10.0.2.2\\nport={server.server_port}\\nbase=/\\n",
             )
+            htop = ssh(
+                key, ssh_port,
+                "htop --plain --no-cpus --sample-ms 1 --filter htop",
+            )
+            if "XAIOS htop sample_ms=1" not in htop or "/bin/htop" not in htop:
+                raise RuntimeError(f"dedicated htop binary did not execute: {htop!r}")
+            pong = ssh_fails(key, ssh_port, "pong")
+            if "pong: interactive terminal required" not in pong:
+                raise RuntimeError(f"dedicated pong binary did not reject non-PTY use: {pong!r}")
             update = ssh(key, ssh_port, "xapt update")
             if "catalog verified and activated" not in update:
                 raise RuntimeError(f"catalog activation failed: {update!r}")
             listing = ssh(key, ssh_port, "xapt list")
-            if "calculator 1.0.0 [available]" not in listing:
+            if "xapt-test-app 1.0.0 [available]" not in listing:
                 raise RuntimeError(f"new app not offered: {listing!r}")
             if "xaios 0.1.1 [OS upgrade; reboot required]" not in listing:
                 raise RuntimeError(f"OS update not offered: {listing!r}")
-            install = ssh(key, ssh_port, "xapt install calculator", 180)
-            if "activated calculator 1.0.0 without reboot" not in install:
+            install = ssh(key, ssh_port, "xapt install xapt-test-app", 180)
+            if "activated xapt-test-app 1.0.0 without reboot" not in install:
                 raise RuntimeError(f"install failed: {install!r}")
-            calculation = ssh(key, ssh_port, "calculator 21 '*' 2")
-            if not calculation.startswith("42\n"):
-                raise RuntimeError(f"installed app/argv failed: {calculation!r}")
+            probe = ssh(key, ssh_port, "xapt-test-app argv works")
+            if not probe.startswith("xapt-test-app argv works\n"):
+                raise RuntimeError(f"installed app/argv failed: {probe!r}")
             installed = ssh(key, ssh_port, "xapt list")
-            if "calculator 1.0.0 [installed]" not in installed:
+            if "xapt-test-app 1.0.0 [installed]" not in installed:
                 raise RuntimeError(f"installed state missing: {installed!r}")
-            publish_calculator(arch, repository, "1.1.0", 2)
+            publish_test_app(arch, repository, "1.1.0", 2)
             ssh(key, ssh_port, "xapt update")
-            upgrade = ssh(key, ssh_port, "xapt upgrade calculator", 180)
-            if "activated calculator 1.1.0 without reboot" not in upgrade:
+            upgrade = ssh(key, ssh_port, "xapt upgrade xapt-test-app", 180)
+            if "activated xapt-test-app 1.1.0 without reboot" not in upgrade:
                 raise RuntimeError(f"upgrade failed: {upgrade!r}")
-            if "calculator 1.1.0 [installed]" not in ssh(key, ssh_port, "xapt list"):
+            if "xapt-test-app 1.1.0 [installed]" not in ssh(key, ssh_port, "xapt list"):
                 raise RuntimeError("upgraded version is not active")
-            ssh(key, ssh_port, "xapt rollback calculator")
-            if "calculator 1.1.0 [upgradable]" not in ssh(key, ssh_port, "xapt list"):
+            ssh(key, ssh_port, "xapt rollback xapt-test-app")
+            if "xapt-test-app 1.1.0 [upgradable]" not in ssh(key, ssh_port, "xapt list"):
                 raise RuntimeError("one-step rollback did not restore version 1.0.0")
 
-            publish_calculator(arch, repository, "1.2.0", 3)
+            publish_test_app(arch, repository, "1.2.0", 3)
             ssh(key, ssh_port, "xapt update")
-            payload = repository / "apps" / arch / "calculator" / "1.2.0" / "calculator.elf"
+            payload = repository / "apps" / arch / "xapt-test-app" / "1.2.0" / "xapt-test-app.elf"
             payload.write_bytes(payload.read_bytes() + b"tampered")
-            rejected = ssh_fails(key, ssh_port, "xapt upgrade calculator", 180)
+            rejected = ssh_fails(key, ssh_port, "xapt upgrade xapt-test-app", 180)
             if "package rejected" not in rejected:
                 raise RuntimeError(f"corrupted package was not rejected: {rejected!r}")
-            if not ssh(key, ssh_port, "calculator 21 '*' 2").startswith("42\n"):
+            if not ssh(key, ssh_port, "xapt-test-app still active").startswith(
+                    "xapt-test-app still active\n"):
                 raise RuntimeError("corrupted upgrade changed the active app")
             os_update = ssh(key, ssh_port, "xapt os-upgrade", 300)
             if "OS update staged and verified" not in os_update:
@@ -252,12 +262,13 @@ def exercise(arch: str, key: Path) -> None:
         try:
             wait_marker(log, READY)
             wait_ssh(key, ssh_port)
-            if "calculator 1.2.0 [upgradable]" not in ssh(key, ssh_port, "xapt list"):
+            if "xapt-test-app 1.2.0 [upgradable]" not in ssh(key, ssh_port, "xapt list"):
                 raise RuntimeError("catalog or rollback version did not persist across reboot")
-            if not ssh(key, ssh_port, "calculator 6 '*' 7").startswith("42\n"):
+            if not ssh(key, ssh_port, "xapt-test-app reboot persisted").startswith(
+                    "xapt-test-app reboot persisted\n"):
                 raise RuntimeError("installed application did not persist across reboot")
-            ssh(key, ssh_port, "xapt remove calculator")
-            removed = ssh_fails(key, ssh_port, "calculator 1 '+' 1")
+            ssh(key, ssh_port, "xapt remove xapt-test-app")
+            removed = ssh_fails(key, ssh_port, "xapt-test-app removed")
             if "not found" not in removed:
                 raise RuntimeError(f"removed application remained executable: {removed!r}")
             print(f"qemu-xapt-gate: {arch}: PASS")
@@ -287,7 +298,7 @@ def main() -> int:
             cwd=ROOT, env=env, check=True,
         )
         exercise(arch, key)
-    print("qemu-xapt-gate: PASS: signed independent app install on all requested architectures")
+    print("qemu-xapt-gate: PASS: signed test package lifecycle on all requested architectures")
     return 0
 
 

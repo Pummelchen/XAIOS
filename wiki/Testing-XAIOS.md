@@ -99,12 +99,13 @@ runtime inputs and must never be stored in the repository.
 
 ## Update repository validation
 
-`make xapt-repository` creates a deterministic development repository for both
-architectures under `build/xapt/repository`. The build compiles the external
-`calculator` application, packages current AArch64 and x86_64 kernel images,
-signs both catalogs, and verifies every referenced payload. The QEMU gate serves
-an isolated copy over HTTP/1.1 and deliberately corrupts a package before
-confirming that the active application is unchanged.
+`make xapt-repository` creates a deterministic OS-update repository for both
+architectures under `build/xapt/repository`. It packages current AArch64 and
+x86_64 kernel images and signs architecture-specific catalogs. It does not
+invent product applications. `make qemu-xapt-gate` separately compiles the
+`tests/fixtures/xapt-test-app.c` package and serves an isolated copy over
+HTTP/1.1 to verify discovery, arguments, install, upgrade, rollback, corruption
+rejection, persistence, and removal.
 
 The Caddy deployment and live-origin checks are documented in
 [[xapt Package Updates|Xapt-Package-Updates]]. The repository test key is a
