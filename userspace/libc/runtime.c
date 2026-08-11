@@ -84,13 +84,14 @@ void _exit(int status) {
   }
 }
 
-void xaios_libc_start(void) {
+void xaios_libc_start(int argc, char **argv) {
 #if defined(XAIOS_LIBC_MAIN_VOID)
+  (void)argc;
+  (void)argv;
   __libc_init_array();
   exit(main());
 #else
-  static char *argv[] = {NULL};
   __libc_init_array();
-  exit(main(0, argv));
+  exit(main(argc, argv));
 #endif
 }

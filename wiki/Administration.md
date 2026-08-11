@@ -5,6 +5,9 @@ the authenticated shell. Queries and mutations use typed requests, role and
 capability checks, replay protection, bounded audit records, and explicit
 errors.
 
+Signed application installation and A/B operating-system delivery are handled
+by `xapt`; see [[xapt Package Updates|Xapt-Package-Updates]].
+
 ## Main command groups
 
 | Group | Purpose |

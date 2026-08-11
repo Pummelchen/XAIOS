@@ -51,6 +51,8 @@
 #define TCP_OPT_SACK      5U
 
 #define NETWORK_TCP_MSS 1400U
+#define NETWORK_TCP_IPV4_RX_MAX 1460U
+#define NETWORK_TCP_IPV6_RX_MAX 1440U
 #define NETWORK_TCP_WSCALE_OK 1U
 #define TCP_OOO_BUF_ENTRIES 4U
 #define TCP_TX_WINDOW_SEGMENTS 8U
@@ -160,7 +162,7 @@ typedef struct network_tcp_flow {
     uint32_t seq;
     uint16_t len;
     uint8_t  in_use;
-    uint8_t  data[NETWORK_TCP_MSS];
+    uint8_t  data[NETWORK_TCP_IPV4_RX_MAX];
   } ooo_buf[TCP_OOO_BUF_ENTRIES];
   /* TCP MSS negotiation. */
   uint16_t peer_mss;           /* received from peer */
@@ -330,7 +332,7 @@ static uint32_t ooo_buffer_store(network_tcp_flow_t *flow, uint32_t seq,
                                    const uint8_t *data, uint32_t len,
                                    uint32_t expected_seq) {
   uint32_t distance = seq - expected_seq;
-  if (len == 0U || len > NETWORK_TCP_MSS ||
+  if (len == 0U || len > NETWORK_TCP_IPV4_RX_MAX ||
       !tcp_seq_after(seq, expected_seq) ||
       distance >= flow->window_size) return 0;
   uint32_t available = flow->window_size - distance;
@@ -2867,7 +2869,7 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
     uint32_t payload_len = (uint32_t)(ip_total) - (uint32_t)ip_hdr_bytes -
                             (uint32_t)tcp_hdr_bytes;
 
-    if (payload_len > NETWORK_TCP_MSS) {
+    if (payload_len > NETWORK_TCP_IPV4_RX_MAX) {
       packet_mark_dropped(packet);
       return XAIOS_ERR_INVALID;
     }
@@ -3284,7 +3286,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
     uint16_t ip6_payload_len = read_u16_be(ip6 + 4U);
     uint32_t payload_len_v6 = (uint32_t)ip6_payload_len - (uint32_t)tcp_hdr_bytes;
 
-    if (payload_len_v6 > NETWORK_TCP_MSS) {
+    if (payload_len_v6 > NETWORK_TCP_IPV6_RX_MAX) {
       packet_mark_dropped(packet);
       return XAIOS_ERR_INVALID;
     }

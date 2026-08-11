@@ -1,4 +1,5 @@
 #include <xaios/assert.h>
+#include <xaios/app_store.h>
 #include <xaios/crc32.h>
 #include <xaios/initramfs.h>
 #include <xaios/inflate.h>
@@ -414,8 +415,7 @@ static void remote_login_log_failure(const char *operation, const char *reason,
 }
 
 static int has_more_args(const char *text, uint64_t index) {
-  char token[2];
-  return token_next(text, &index, token, sizeof(token)) == XAIOS_OK;
+  return text != 0 && text[skip_ws(text, index)] != '\0';
 }
 
 static xaios_status_t buffer_append_char(char *buffer, uint64_t capacity,
@@ -5478,6 +5478,11 @@ static const remote_app_definition_t g_remote_apps[] = {
     {"hello", "/bin/hello", XAIOS_CAP_LOG | XAIOS_CAP_EXIT},
     {"helloworldc99", "/bin/helloworldc99",
      XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT},
+    {"xapt", "/bin/xapt",
+     XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT | XAIOS_CAP_TIME |
+         XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE | XAIOS_CAP_NET_SOCKET |
+         XAIOS_CAP_CONTROL_QUERY | XAIOS_CAP_CONTROL_ADMIN |
+         XAIOS_CAP_UPDATE | XAIOS_CAP_ADMIN},
     {"sysinfo", "/bin/sysinfo",
      XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_TIME},
     {"systest", "/bin/systest",
@@ -5541,10 +5546,15 @@ static void append_app_log_lines(char *output, uint64_t output_capacity,
   }
 }
 
-static xaios_status_t handle_remote_app(
-    const remote_app_definition_t *app, const char *args, char *output,
+static xaios_status_t handle_remote_app_file(
+    const remote_app_definition_t *app, const xaios_initramfs_file_t *file,
+    const char *args, char *output,
     uint64_t output_capacity, uint64_t *output_bytes) {
-  const xaios_initramfs_file_t *file = 0;
+  const char *argv[XAIOS_USER_ARG_MAX];
+  char argument_storage[XAIOS_USER_ARG_MAX - 1U][64];
+  uint32_t argc = 1U;
+  uint64_t argument_cursor = 0U;
+  uint64_t argument_bytes = 0U;
   char *log;
   char *console;
   uint64_t cursor;
@@ -5556,14 +5566,26 @@ static xaios_status_t handle_remote_app(
   int exit_code = 0;
   xaios_status_t status;
 
-  if (app == 0 || args == 0 || args[skip_ws(args, 0U)] != '\0') {
-    return command_fail(output, output_capacity, output_bytes,
-                        "application: arguments are not supported");
-  }
-  if (initramfs_lookup(app->path, &file) != XAIOS_OK || file == 0 ||
-      file->executable == 0U) {
+  if (app == 0 || file == 0 || args == 0 || file->executable == 0U) {
     return command_fail(output, output_capacity, output_bytes,
                         "application: executable unavailable");
+  }
+  argv[0] = app->command;
+  while (has_more_args(args, argument_cursor) != 0) {
+    uint64_t before = argument_cursor;
+    if (argc >= XAIOS_USER_ARG_MAX ||
+        token_next(args, &argument_cursor, argument_storage[argc - 1U],
+                   sizeof(argument_storage[0])) != XAIOS_OK) {
+      return command_fail(output, output_capacity, output_bytes,
+                          "application: too many or oversized arguments");
+    }
+    argument_bytes += argument_cursor - before;
+    if (argument_bytes > XAIOS_USER_ARG_BYTES_MAX) {
+      return command_fail(output, output_capacity, output_bytes,
+                          "application: argument data exceeds limit");
+    }
+    argv[argc] = argument_storage[argc - 1U];
+    ++argc;
   }
 
   log = (char *)kheap_alloc(XAIOS_KLOG_FLUSH_MAX, 16U);
@@ -5584,7 +5606,8 @@ static xaios_status_t handle_remote_app(
     return command_fail(output, output_capacity, output_bytes,
                         "application: output capture unavailable");
   }
-  status = user_process_run_transient(file, app->capabilities, &exit_code);
+  status = user_process_run_transient_args(file, app->capabilities, argc, argv,
+                                           &exit_code);
   console_bytes = klog_console_capture_end();
   log_bytes = klog_ring_snapshot(log, XAIOS_KLOG_FLUSH_MAX, cursor,
                                  &start_cursor, &next_cursor, &latest_cursor);
@@ -5618,6 +5641,18 @@ static xaios_status_t handle_remote_app(
   output_append(output, output_capacity, output_bytes, ": complete\n");
   return XAIOS_OK;
 }
+
+static xaios_status_t handle_remote_app(
+    const remote_app_definition_t *app, const char *args, char *output,
+    uint64_t output_capacity, uint64_t *output_bytes) {
+  const xaios_initramfs_file_t *file = 0;
+  if (app == 0 || initramfs_lookup(app->path, &file) != XAIOS_OK) {
+    return command_fail(output, output_capacity, output_bytes,
+                        "application: executable unavailable");
+  }
+  return handle_remote_app_file(app, file, args, output, output_capacity,
+                                output_bytes);
+}
 #endif
 
 static xaios_status_t parse_and_execute(const char *command, char *output,
@@ -5650,7 +5685,7 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
         "shutdown reboot power service kill ifconfig route arp ndp netstat "
         "ping nslookup date ntp limits recovery update config support "
         "hello helloworldc99 systest smptest nettest lstm-xor mltest "
-        "posix-shell agenttest "
+        "posix-shell agenttest xapt "
         "xaiosctl exit "
         "quit logout help\n");
     return XAIOS_OK;
@@ -5818,6 +5853,19 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
   if (string_equal(cmd, "du") == 1U) {
     return handle_du(args, output, output_capacity, output_bytes);
   }
+
+#if !XAIOS_BOOT_TEST_APPS
+  {
+    xaios_app_image_t image;
+    if (app_store_load(cmd, &image) == XAIOS_OK) {
+      remote_app_definition_t app = {cmd, image.path, image.capabilities};
+      xaios_status_t status = handle_remote_app_file(
+          &app, &image.file, args, output, output_capacity, output_bytes);
+      app_store_release(&image);
+      return status;
+    }
+  }
+#endif
 
   klog("remote-login: command rejected reason=not-allowlisted\n");
   output_append(output, output_capacity, output_bytes, "xaios: ");

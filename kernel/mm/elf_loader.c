@@ -289,6 +289,40 @@ xaios_status_t elf_loader_map_stack(xaios_process_aspace_t *aspace,
   return XAIOS_OK;
 }
 
+xaios_status_t elf_loader_write_user(xaios_process_aspace_t *aspace,
+                                     uint64_t virtual_address,
+                                     const void *source, uint64_t size) {
+  const uint8_t *input = (const uint8_t *)source;
+  if (aspace == 0 || (source == 0 && size != 0U) ||
+      virtual_address + size < virtual_address) {
+    return XAIOS_ERR_INVALID;
+  }
+
+  while (size != 0U) {
+    uint64_t page_va = align_down(virtual_address, PAGE_SIZE);
+    uint64_t page_offset = virtual_address - page_va;
+    uint64_t chunk = PAGE_SIZE - page_offset;
+    uint64_t page_pa = 0U;
+    if (chunk > size) {
+      chunk = size;
+    }
+    for (uint32_t i = 0; i < aspace->page_count; ++i) {
+      if (aspace->pages[i].va == page_va) {
+        page_pa = aspace->pages[i].pa;
+        break;
+      }
+    }
+    if (page_pa == 0U) {
+      return XAIOS_ERR_INVALID;
+    }
+    bytes_copy((uint8_t *)(uintptr_t)page_pa + page_offset, input, chunk);
+    virtual_address += chunk;
+    input += chunk;
+    size -= chunk;
+  }
+  return XAIOS_OK;
+}
+
 void elf_loader_reclaim(xaios_process_aspace_t *aspace, uint64_t mapped_low,
                         uint64_t mapped_high) {
   if (aspace == 0) {

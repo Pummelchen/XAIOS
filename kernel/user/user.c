@@ -71,7 +71,8 @@ static uint64_t g_process_wait_count;
 static uint64_t g_process_wake_count;
 static uint32_t g_transient_process_busy;
 
-extern uint64_t aarch64_enter_user(uint64_t entry, uint64_t stack);
+extern uint64_t aarch64_enter_user(uint64_t entry, uint64_t stack,
+                                   uint64_t argc, uint64_t argv);
 
 static void copy_process(xaios_user_process_t *dst,
                          const xaios_user_process_t *src) {
@@ -85,6 +86,9 @@ static void copy_process(xaios_user_process_t *dst,
   dst->rejected_syscall_count = src->rejected_syscall_count;
   dst->entry = src->entry;
   dst->stack_top = src->stack_top;
+  dst->argv_user = src->argv_user;
+  dst->argc = src->argc;
+  dst->reserved_args = src->reserved_args;
   dst->stack_guard_low = src->stack_guard_low;
   dst->stack_guard_high = src->stack_guard_high;
   dst->mapped_low = src->mapped_low;
@@ -131,6 +135,9 @@ static void reset_process_slot(xaios_user_process_t *process) {
   process->rejected_syscall_count = 0;
   process->entry = 0;
   process->stack_top = 0;
+  process->argv_user = 0;
+  process->argc = 0;
+  process->reserved_args = 0;
   process->stack_guard_low = 0;
   process->stack_guard_high = 0;
   process->mapped_low = 0;
@@ -573,11 +580,82 @@ void user_process_idle_until(uint64_t deadline_ns) {
   }
 }
 
+static uint64_t argument_length(const char *text) {
+  uint64_t length = 0U;
+  if (text == 0) {
+    return UINT64_MAX;
+  }
+  while (text[length] != '\0') {
+    if (length == XAIOS_USER_ARG_BYTES_MAX) {
+      return UINT64_MAX;
+    }
+    ++length;
+  }
+  return length;
+}
+
+xaios_status_t user_process_set_arguments(xaios_user_process_t *process,
+                                          uint32_t argc,
+                                          const char *const argv[]) {
+  uint64_t pointers[XAIOS_USER_ARG_MAX + 1U];
+  uint64_t cursor;
+  uint64_t lower_bound;
+  uint64_t string_bytes = 0U;
+
+  if (process == 0 || argc == 0U || argc > XAIOS_USER_ARG_MAX || argv == 0 ||
+      process->stack_guard_high == 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  cursor = process->stack_guard_high;
+  lower_bound = process->stack_guard_low + PAGE_SIZE;
+  for (uint32_t i = argc; i != 0U; --i) {
+    uint64_t length = argument_length(argv[i - 1U]);
+    if (length == UINT64_MAX || length + 1U > XAIOS_USER_ARG_BYTES_MAX -
+                                                 string_bytes ||
+        cursor < lower_bound + length + 1U) {
+      return XAIOS_ERR_INVALID;
+    }
+    cursor -= length + 1U;
+    if (elf_loader_write_user(&process->aspace, cursor, argv[i - 1U],
+                              length + 1U) != XAIOS_OK) {
+      return XAIOS_ERR_INVALID;
+    }
+    pointers[i - 1U] = cursor;
+    string_bytes += length + 1U;
+  }
+  pointers[argc] = 0U;
+
+  uint64_t pointer_bytes = ((uint64_t)argc + 1U) * sizeof(uint64_t);
+  if (cursor < lower_bound + pointer_bytes + 15U) {
+    return XAIOS_ERR_INVALID;
+  }
+  cursor = (cursor - pointer_bytes) & ~UINT64_C(15);
+  if (elf_loader_write_user(&process->aspace, cursor, pointers,
+                            pointer_bytes) != XAIOS_OK) {
+    return XAIOS_ERR_INVALID;
+  }
+
+  process->stack_top = cursor;
+  process->argv_user = cursor;
+  process->argc = argc;
+  if (process->pid != 0U && process->pid <= XAIOS_MAX_USER_PROCESSES) {
+    xaios_user_process_t *slot = &g_process_table[process->pid - 1U];
+    if (slot->pid == process->pid &&
+        slot->state != XAIOS_USER_PROCESS_EMPTY) {
+      slot->stack_top = process->stack_top;
+      slot->argv_user = process->argv_user;
+      slot->argc = process->argc;
+    }
+  }
+  return XAIOS_OK;
+}
+
 xaios_status_t user_load_process(const xaios_initramfs_file_t *file,
                                 uint32_t pid, uint64_t capability_mask,
                                 xaios_user_process_t *process) {
   if (process == 0 || pid == 0 || pid > XAIOS_MAX_USER_PROCESSES ||
-      file == 0 || file->base == 0 || file->executable == 0) {
+      file == 0 || file->base == 0 || file->path == 0 ||
+      file->executable == 0) {
     return XAIOS_ERR_INVALID;
   }
 
@@ -619,6 +697,13 @@ xaios_status_t user_load_process(const xaios_initramfs_file_t *file,
   process->stack_guard_high = guard_high;
   track_process_mapping(process, stack, guard_high);
   process->resident_pages = process->aspace.page_count;
+
+  const char *default_argv[] = {file->path};
+  if (user_process_set_arguments(process, 1U, default_argv) != XAIOS_OK) {
+    elf_loader_reclaim(&process->aspace, process->mapped_low,
+                       process->mapped_high);
+    return XAIOS_ERR_INVALID;
+  }
 
   xaios_user_process_t *slot = &g_process_table[pid - 1U];
   copy_process(slot, process);
@@ -736,7 +821,8 @@ int user_process_run(const xaios_user_process_t *process) {
        g_current_process->name, g_current_process->pid, entry, stack);
 
   user_switch_address_space(g_current_process->pid);
-  uint64_t encoded = aarch64_enter_user(entry, stack);
+  uint64_t encoded = aarch64_enter_user(entry, stack, g_current_process->argc,
+                                        g_current_process->argv_user);
   kassert((encoded & XAIOS_USER_EXIT_RETURN_MASK) ==
           XAIOS_USER_EXIT_RETURN_MAGIC);
   int exit_code = (int)(uint32_t)encoded;
@@ -783,7 +869,8 @@ int user_process_run_concurrent(const xaios_user_process_t *process) {
 
   /* Enter user mode for initial execution */
   user_switch_address_space(g_current_process->pid);
-  uint64_t encoded = aarch64_enter_user(entry, stack);
+  uint64_t encoded = aarch64_enter_user(entry, stack, g_current_process->argc,
+                                        g_current_process->argv_user);
   kassert((encoded & XAIOS_USER_EXIT_RETURN_MASK) ==
           XAIOS_USER_EXIT_RETURN_MAGIC);
   int exit_code = (int)(uint32_t)encoded;
@@ -796,9 +883,9 @@ int user_process_run_concurrent(const xaios_user_process_t *process) {
   return exit_code;
 }
 
-xaios_status_t user_process_run_transient(
+xaios_status_t user_process_run_transient_args(
     const xaios_initramfs_file_t *file, uint64_t capability_mask,
-    int *exit_code) {
+    uint32_t argc, const char *const argv[], int *exit_code) {
   const xaios_user_process_t *parent = user_current_process();
   xaios_user_process_t child;
   uint32_t child_pid = 0U;
@@ -806,7 +893,8 @@ xaios_status_t user_process_run_transient(
   uint32_t cpu_id;
   xaios_status_t status = XAIOS_ERR_NO_MEMORY;
 
-  if (file == 0 || exit_code == 0 || parent == 0 || parent->pid == 0U) {
+  if (file == 0 || exit_code == 0 || parent == 0 || parent->pid == 0U ||
+      argc == 0U || argv == 0) {
     return XAIOS_ERR_INVALID;
   }
   if (__sync_lock_test_and_set(&g_transient_process_busy, 1U) != 0U) {
@@ -829,6 +917,13 @@ xaios_status_t user_process_run_transient(
   status = user_load_process(file, child_pid, capability_mask, &child);
   if (status != XAIOS_OK) {
     user_switch_address_space(parent_pid);
+    goto out;
+  }
+  status = user_process_set_arguments(&child, argc, argv);
+  if (status != XAIOS_OK) {
+    user_process_reclaim_address_space(&child);
+    user_switch_address_space(parent_pid);
+    (void)user_process_reap(child_pid);
     goto out;
   }
   status = user_process_make_runnable(child_pid, parent_pid);
@@ -854,6 +949,18 @@ xaios_status_t user_process_run_transient(
 out:
   __sync_lock_release(&g_transient_process_busy);
   return status;
+}
+
+xaios_status_t user_process_run_transient(
+    const xaios_initramfs_file_t *file, uint64_t capability_mask,
+    int *exit_code) {
+  const char *argv[1];
+  if (file == 0) {
+    return XAIOS_ERR_INVALID;
+  }
+  argv[0] = file->path;
+  return user_process_run_transient_args(file, capability_mask, 1U, argv,
+                                         exit_code);
 }
 
 void user_process_reclaim_address_space(const xaios_user_process_t *process) {

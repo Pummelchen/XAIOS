@@ -78,6 +78,14 @@
 #define XAIOS_CONTROL_OP_STORAGE_TRIM_STATUS 47U
 #define XAIOS_CONTROL_OP_STORAGE_TRIM_CANCEL 48U
 #define XAIOS_CONTROL_OP_MODEL_CLEANUP 49U
+#define XAIOS_CONTROL_OP_APP_ACTIVATE 50U
+#define XAIOS_CONTROL_OP_APP_REMOVE 51U
+#define XAIOS_CONTROL_OP_APP_ROLLBACK 52U
+#define XAIOS_CONTROL_OP_CATALOG_ACTIVATE 53U
+#define XAIOS_CONTROL_OP_SYSTEM_UPDATE_BEGIN 54U
+#define XAIOS_CONTROL_OP_SYSTEM_UPDATE_CHUNK 55U
+#define XAIOS_CONTROL_OP_SYSTEM_UPDATE_COMMIT 56U
+#define XAIOS_CONTROL_OP_SYSTEM_UPDATE_ABORT 57U
 
 #define XAIOS_CONTROL_PAYLOAD_NONE 0U
 #define XAIOS_CONTROL_PAYLOAD_VERSION 1U
@@ -107,6 +115,9 @@
 #define XAIOS_CONTROL_PAYLOAD_STORAGE_TRIM_REQUEST 25U
 #define XAIOS_CONTROL_PAYLOAD_STORAGE_TRIM_REPORT 26U
 #define XAIOS_CONTROL_PAYLOAD_MODEL_CLEANUP_REPORT 27U
+#define XAIOS_CONTROL_PAYLOAD_APP_REQUEST 28U
+#define XAIOS_CONTROL_PAYLOAD_SYSTEM_UPDATE_BEGIN 29U
+#define XAIOS_CONTROL_PAYLOAD_SYSTEM_UPDATE_CHUNK 30U
 
 #define XAIOS_MODEL_MAINTENANCE_IDLE 0U
 #define XAIOS_MODEL_MAINTENANCE_RUNNING 1U
@@ -187,6 +198,25 @@ typedef struct xaios_control_response_header_user {
   u32 reserved;
   u64 payload_length;
 } xaios_control_response_header_user_t;
+
+typedef struct xaios_control_app_request_payload_user {
+  char name[32];
+} xaios_control_app_request_payload_user_t;
+
+typedef struct xaios_control_system_update_begin_payload_user {
+  u64 payload_size;
+  u32 generation;
+  u32 reserved;
+  unsigned char payload_hash[32];
+  char signature[320];
+} xaios_control_system_update_begin_payload_user_t;
+
+#define XAIOS_CONTROL_SYSTEM_UPDATE_CHUNK_MAX 400U
+typedef struct xaios_control_system_update_chunk_payload_user {
+  u32 size;
+  u32 reserved;
+  unsigned char data[XAIOS_CONTROL_SYSTEM_UPDATE_CHUNK_MAX];
+} xaios_control_system_update_chunk_payload_user_t;
 
 typedef char xaios_control_request_header_user_must_be_48_bytes[
     sizeof(xaios_control_request_header_user_t) == 48U ? 1 : -1];

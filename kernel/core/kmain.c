@@ -1,6 +1,7 @@
 #include <xaios/assert.h>
 #include <xaios/admin_control.h>
 #include <xaios/agent_protocol.h>
+#include <xaios/app_store.h>
 #include <xaios/ai_cell.h>
 #include <xaios/arch_cpu.h>
 #include <xaios/ai_kernels.h>
@@ -282,6 +283,7 @@ void kmain(const xaios_boot_info_t *boot) {
          fsck.valid, fsck.version, fsck.files, fsck.directories);
     provision_read_only_config("/etc/xaios_authorized_keys");
     provision_read_only_config("/etc/xaios_sshd_users");
+    provision_read_only_config("/etc/xapt.conf");
     admin_control_init();
     admin_control_self_test();
     /* Initialize persistent log ring buffer */
@@ -326,6 +328,7 @@ void kmain(const xaios_boot_info_t *boot) {
   system_slot_self_test();
   update_self_test();
   update_delivery_self_test();
+  app_store_init();
   boot_ui_update(60U, "devices and storage", "kernel services", 2U);
   virtio_net_self_test();
   arp_self_test();

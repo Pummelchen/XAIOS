@@ -8,6 +8,8 @@
 #include <xaios/types.h>
 
 #define XAIOS_MAX_USER_PROCESSES 1024U
+#define XAIOS_USER_ARG_MAX 16U
+#define XAIOS_USER_ARG_BYTES_MAX 1024U
 #define XAIOS_USER_EXIT_RETURN_MAGIC UINT64_C(0x4f53414900000000)
 #define XAIOS_USER_EXIT_RETURN_MASK UINT64_C(0xffffffff00000000)
 
@@ -32,6 +34,9 @@ typedef struct xaios_user_process {
   uint64_t rejected_syscall_count;
   uint64_t entry;
   uint64_t stack_top;
+  uint64_t argv_user;
+  uint32_t argc;
+  uint32_t reserved_args;
   uint64_t stack_guard_low;
   uint64_t stack_guard_high;
   uint64_t mapped_low;
@@ -67,6 +72,9 @@ xaios_status_t user_load_init(const xaios_initramfs_file_t *file,
 xaios_status_t user_load_process(const xaios_initramfs_file_t *file,
                                 uint32_t pid, uint64_t capability_mask,
                                 xaios_user_process_t *process);
+xaios_status_t user_process_set_arguments(xaios_user_process_t *process,
+                                          uint32_t argc,
+                                          const char *const argv[]);
 xaios_status_t user_process_snapshot(uint32_t pid, xaios_user_process_t *process);
 xaios_status_t user_process_snapshot_at(uint32_t pid, uint64_t now_ns,
                                         xaios_user_process_t *process);
@@ -89,6 +97,9 @@ int user_process_run_concurrent(const xaios_user_process_t *process);
 xaios_status_t user_process_run_transient(
     const xaios_initramfs_file_t *file, uint64_t capability_mask,
     int *exit_code);
+xaios_status_t user_process_run_transient_args(
+    const xaios_initramfs_file_t *file, uint64_t capability_mask,
+    uint32_t argc, const char *const argv[], int *exit_code);
 void user_process_reclaim_address_space(const xaios_user_process_t *process);
 xaios_status_t user_process_reap(uint32_t pid);
 xaios_status_t user_process_terminate(uint32_t pid, int exit_code);

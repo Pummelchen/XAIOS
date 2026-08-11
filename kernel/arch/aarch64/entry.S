@@ -45,6 +45,8 @@ kernel_entry:
   b 3b
 
 aarch64_enter_user:
+  mov x10, x2
+  mov x11, x3
   sub sp, sp, #112
   stp x19, x20, [sp, #0]
   stp x21, x22, [sp, #16]
@@ -60,6 +62,8 @@ aarch64_enter_user:
   msr sp_el0, x1
   msr elr_el1, x0
   msr spsr_el1, x2
+  mov x0, x10
+  mov x1, x11
   eret
 
 .global aarch64_enter_user_thread

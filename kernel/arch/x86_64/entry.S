@@ -139,6 +139,8 @@ x86_64_enter_ring3:
   pushq %r15
   movq %rdi, %r12
   movq %rsi, %r13
+  movq %rdx, %r14
+  movq %rcx, %r15
   movq %rsp, %rdi
   call x86_64_platform_set_user_resume
   pushq $0x1b
@@ -149,6 +151,8 @@ x86_64_enter_ring3:
   pushq %rax
   pushq $0x23
   pushq %r12
+  movq %r14, %rdi
+  movq %r15, %rsi
   iretq
 
 .global aarch64_enter_user_thread

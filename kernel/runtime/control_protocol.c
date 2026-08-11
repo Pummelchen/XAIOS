@@ -1,4 +1,5 @@
 #include <xaios/ai_cell.h>
+#include <xaios/app_store.h>
 #include <xaios/assert.h>
 #include <xaios/block_device.h>
 #include <xaios/control_protocol.h>
@@ -15,6 +16,7 @@
 #include <xaios/smp.h>
 #include <xaios/timer.h>
 #include <xaios/user.h>
+#include <xaios/update.h>
 #include <xaios/vfs.h>
 #include <xaios/vfs_model.h>
 
@@ -177,6 +179,131 @@ static xaios_status_t write_error(void *response, uint64_t response_capacity,
   }
   return write_response(response, response_capacity, response_bytes, operation,
                         request_id, status, XAIOS_CONTROL_PAYLOAD_NONE, 0, 0);
+}
+
+static xaios_status_t write_mutation_result(
+    const xaios_control_request_header_t *request, void *response,
+    uint64_t response_capacity, uint64_t *response_bytes,
+    xaios_status_t operation_status) {
+  xaios_control_mutation_payload_t result;
+  bytes_zero(&result, sizeof(result));
+  result.operation_id = request->request_id;
+  result.changed = operation_status == XAIOS_OK ? 1U : 0U;
+  if (operation_status != XAIOS_OK) {
+    return write_error(response, response_capacity, response_bytes,
+                       request->operation, request->request_id,
+                       operation_status == XAIOS_ERR_NOT_FOUND
+                           ? XAIOS_CONTROL_STATUS_NOT_FOUND
+                           : XAIOS_CONTROL_STATUS_CONFLICT);
+  }
+  return write_response(response, response_capacity, response_bytes,
+                        request->operation, request->request_id,
+                        XAIOS_CONTROL_STATUS_OK,
+                        XAIOS_CONTROL_PAYLOAD_MUTATION, &result,
+                        sizeof(result));
+}
+
+static xaios_status_t handle_package_operation(
+    const xaios_control_request_header_t *request, const uint8_t *payload,
+    void *response, uint64_t response_capacity, uint64_t *response_bytes,
+    xaios_control_role_t authenticated_role) {
+  xaios_status_t status = XAIOS_ERR_INVALID;
+  if (authenticated_role != XAIOS_CONTROL_ROLE_ADMIN ||
+      request->principal_role != XAIOS_CONTROL_ROLE_ADMIN) {
+    return write_error(response, response_capacity, response_bytes,
+                       request->operation, request->request_id,
+                       XAIOS_CONTROL_STATUS_DENIED);
+  }
+  if (request->operation == XAIOS_CONTROL_OP_CATALOG_ACTIVATE) {
+    if (request->payload_type != XAIOS_CONTROL_PAYLOAD_NONE ||
+        request->payload_length != 0U) {
+      return write_error(response, response_capacity, response_bytes,
+                         request->operation, request->request_id,
+                         XAIOS_CONTROL_STATUS_INVALID_REQUEST);
+    }
+    status = app_store_activate_catalog();
+  } else {
+    xaios_control_app_request_payload_t app;
+    if (request->payload_type != XAIOS_CONTROL_PAYLOAD_APP_REQUEST ||
+        request->payload_length != sizeof(app)) {
+      return write_error(response, response_capacity, response_bytes,
+                         request->operation, request->request_id,
+                         XAIOS_CONTROL_STATUS_INVALID_REQUEST);
+    }
+    bytes_copy(&app, payload, sizeof(app));
+    if (app.name[sizeof(app.name) - 1U] != '\0') {
+      return write_error(response, response_capacity, response_bytes,
+                         request->operation, request->request_id,
+                         XAIOS_CONTROL_STATUS_INVALID_REQUEST);
+    }
+    if (request->operation == XAIOS_CONTROL_OP_APP_ACTIVATE)
+      status = app_store_activate(app.name);
+    else if (request->operation == XAIOS_CONTROL_OP_APP_REMOVE)
+      status = app_store_remove(app.name);
+    else if (request->operation == XAIOS_CONTROL_OP_APP_ROLLBACK)
+      status = app_store_rollback(app.name);
+  }
+  return write_mutation_result(request, response, response_capacity,
+                               response_bytes, status);
+}
+
+static xaios_status_t handle_system_update_operation(
+    const xaios_control_request_header_t *request, const uint8_t *payload,
+    void *response, uint64_t response_capacity, uint64_t *response_bytes,
+    xaios_control_role_t authenticated_role) {
+  xaios_status_t status = XAIOS_ERR_INVALID;
+  if (authenticated_role != XAIOS_CONTROL_ROLE_ADMIN ||
+      request->principal_role != XAIOS_CONTROL_ROLE_ADMIN) {
+    return write_error(response, response_capacity, response_bytes,
+                       request->operation, request->request_id,
+                       XAIOS_CONTROL_STATUS_DENIED);
+  }
+  if (request->operation == XAIOS_CONTROL_OP_SYSTEM_UPDATE_BEGIN) {
+    xaios_control_system_update_begin_payload_t begin;
+    if (request->payload_type != XAIOS_CONTROL_PAYLOAD_SYSTEM_UPDATE_BEGIN ||
+        request->payload_length != sizeof(begin)) {
+      return write_error(response, response_capacity, response_bytes,
+                         request->operation, request->request_id,
+                         XAIOS_CONTROL_STATUS_INVALID_REQUEST);
+    }
+    bytes_copy(&begin, payload, sizeof(begin));
+    if (begin.reserved != 0U || begin.signature[sizeof(begin.signature) - 1U] !=
+                                   '\0') {
+      return write_error(response, response_capacity, response_bytes,
+                         request->operation, request->request_id,
+                         XAIOS_CONTROL_STATUS_INVALID_REQUEST);
+    }
+    status = update_begin_system(begin.generation, begin.payload_size,
+                                 begin.payload_hash, begin.signature);
+  } else if (request->operation == XAIOS_CONTROL_OP_SYSTEM_UPDATE_CHUNK) {
+    xaios_control_system_update_chunk_payload_t chunk;
+    if (request->payload_type != XAIOS_CONTROL_PAYLOAD_SYSTEM_UPDATE_CHUNK ||
+        request->payload_length != sizeof(chunk)) {
+      return write_error(response, response_capacity, response_bytes,
+                         request->operation, request->request_id,
+                         XAIOS_CONTROL_STATUS_INVALID_REQUEST);
+    }
+    bytes_copy(&chunk, payload, sizeof(chunk));
+    if (chunk.reserved != 0U || chunk.size == 0U ||
+        chunk.size > sizeof(chunk.data)) {
+      return write_error(response, response_capacity, response_bytes,
+                         request->operation, request->request_id,
+                         XAIOS_CONTROL_STATUS_INVALID_REQUEST);
+    }
+    status = update_stage_chunk(chunk.data, chunk.size);
+  } else {
+    if (request->payload_type != XAIOS_CONTROL_PAYLOAD_NONE ||
+        request->payload_length != 0U) {
+      return write_error(response, response_capacity, response_bytes,
+                         request->operation, request->request_id,
+                         XAIOS_CONTROL_STATUS_INVALID_REQUEST);
+    }
+    status = request->operation == XAIOS_CONTROL_OP_SYSTEM_UPDATE_COMMIT
+                 ? update_finish_system()
+                 : update_abort_delivery();
+  }
+  return write_mutation_result(request, response, response_capacity,
+                               response_bytes, status);
 }
 
 static uint32_t service_control_state(const char *name) {
@@ -2083,6 +2210,20 @@ xaios_status_t control_protocol_dispatch(
   case XAIOS_CONTROL_OP_STORAGE_TRIM_STATUS:
   case XAIOS_CONTROL_OP_STORAGE_TRIM_CANCEL:
     return handle_storage_trim_operation(
+        &request, payload, response, response_capacity, response_bytes,
+        authenticated_role);
+  case XAIOS_CONTROL_OP_APP_ACTIVATE:
+  case XAIOS_CONTROL_OP_APP_REMOVE:
+  case XAIOS_CONTROL_OP_APP_ROLLBACK:
+  case XAIOS_CONTROL_OP_CATALOG_ACTIVATE:
+    return handle_package_operation(&request, payload, response,
+                                    response_capacity, response_bytes,
+                                    authenticated_role);
+  case XAIOS_CONTROL_OP_SYSTEM_UPDATE_BEGIN:
+  case XAIOS_CONTROL_OP_SYSTEM_UPDATE_CHUNK:
+  case XAIOS_CONTROL_OP_SYSTEM_UPDATE_COMMIT:
+  case XAIOS_CONTROL_OP_SYSTEM_UPDATE_ABORT:
+    return handle_system_update_operation(
         &request, payload, response, response_capacity, response_bytes,
         authenticated_role);
   default:

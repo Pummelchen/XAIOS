@@ -75,6 +75,14 @@ typedef enum xaios_control_operation {
   XAIOS_CONTROL_OP_STORAGE_TRIM_STATUS = 47,
   XAIOS_CONTROL_OP_STORAGE_TRIM_CANCEL = 48,
   XAIOS_CONTROL_OP_MODEL_CLEANUP = 49,
+  XAIOS_CONTROL_OP_APP_ACTIVATE = 50,
+  XAIOS_CONTROL_OP_APP_REMOVE = 51,
+  XAIOS_CONTROL_OP_APP_ROLLBACK = 52,
+  XAIOS_CONTROL_OP_CATALOG_ACTIVATE = 53,
+  XAIOS_CONTROL_OP_SYSTEM_UPDATE_BEGIN = 54,
+  XAIOS_CONTROL_OP_SYSTEM_UPDATE_CHUNK = 55,
+  XAIOS_CONTROL_OP_SYSTEM_UPDATE_COMMIT = 56,
+  XAIOS_CONTROL_OP_SYSTEM_UPDATE_ABORT = 57,
 } xaios_control_operation_t;
 
 typedef enum xaios_control_payload_type {
@@ -106,6 +114,9 @@ typedef enum xaios_control_payload_type {
   XAIOS_CONTROL_PAYLOAD_STORAGE_TRIM_REQUEST = 25,
   XAIOS_CONTROL_PAYLOAD_STORAGE_TRIM_REPORT = 26,
   XAIOS_CONTROL_PAYLOAD_MODEL_CLEANUP_REPORT = 27,
+  XAIOS_CONTROL_PAYLOAD_APP_REQUEST = 28,
+  XAIOS_CONTROL_PAYLOAD_SYSTEM_UPDATE_BEGIN = 29,
+  XAIOS_CONTROL_PAYLOAD_SYSTEM_UPDATE_CHUNK = 30,
 } xaios_control_payload_type_t;
 
 typedef enum xaios_control_status {
@@ -358,6 +369,25 @@ typedef struct xaios_control_mutation_payload {
   uint32_t changed;
   uint32_t reserved;
 } xaios_control_mutation_payload_t;
+
+typedef struct xaios_control_app_request_payload {
+  char name[32];
+} xaios_control_app_request_payload_t;
+
+typedef struct xaios_control_system_update_begin_payload {
+  uint64_t payload_size;
+  uint32_t generation;
+  uint32_t reserved;
+  uint8_t payload_hash[32];
+  char signature[320];
+} xaios_control_system_update_begin_payload_t;
+
+#define XAIOS_CONTROL_SYSTEM_UPDATE_CHUNK_MAX 400U
+typedef struct xaios_control_system_update_chunk_payload {
+  uint32_t size;
+  uint32_t reserved;
+  uint8_t data[XAIOS_CONTROL_SYSTEM_UPDATE_CHUNK_MAX];
+} xaios_control_system_update_chunk_payload_t;
 
 typedef struct xaios_control_audit_payload {
   uint64_t next_sequence;

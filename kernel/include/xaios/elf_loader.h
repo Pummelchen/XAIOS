@@ -27,6 +27,9 @@ xaios_status_t elf_loader_load(const xaios_initramfs_file_t *file,
 xaios_status_t elf_loader_map_stack(xaios_process_aspace_t *aspace,
                                    uint64_t stack_va, uint64_t guard_low,
                                    uint64_t guard_high);
+xaios_status_t elf_loader_write_user(xaios_process_aspace_t *aspace,
+                                     uint64_t virtual_address,
+                                     const void *source, uint64_t size);
 void elf_loader_reclaim(xaios_process_aspace_t *aspace, uint64_t mapped_low,
                         uint64_t mapped_high);
 void elf_loader_self_test(void);

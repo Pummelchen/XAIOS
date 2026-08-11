@@ -11,8 +11,7 @@
 #define XAIOS_UPDATE_SIGNATURE_PREFIX "xaios-update:v2:"
 #define XAIOS_UPDATE_SIGNATURE_GEN_FIELD "gen="
 #define XAIOS_UPDATE_SIGNATURE_SHA_FIELD "sha256="
-#define XAIOS_UPDATE_SIGNATURE_KEY_HEX                                      \
-  "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+#define XAIOS_UPDATE_SIGNATURE_KEY_HEX XAIOS_RELEASE_PUBLIC_KEY_HEX
 #define XAIOS_UPDATE_SIGNATURE_KEY_FIELD "key=" XAIOS_UPDATE_SIGNATURE_KEY_HEX
 #define XAIOS_UPDATE_SIGNATURE_SIG_FIELD "sig="
 #define XAIOS_UPDATE_SIGNATURE_BYTES 64U
@@ -250,7 +249,7 @@ xaios_status_t security_authorize_fs_read(const char *path) {
   if (starts_with(path, "/etc/") || path_in_tree(path, "/tmp") ||
       path_in_tree(path, "/home") || path_in_tree(path, "/apps") ||
       path_in_tree(path, "/state") || path_in_tree(path, "/logs") ||
-      path_in_tree(path, "/models")) {
+      path_in_tree(path, "/models") || path_in_tree(path, "/update")) {
     return XAIOS_OK;
   }
   ++g_fs_denials;
@@ -264,7 +263,7 @@ xaios_status_t security_authorize_fs_write(const char *path) {
   }
   if (path_in_tree(path, "/tmp") || path_in_tree(path, "/home") ||
       path_in_tree(path, "/apps") || path_in_tree(path, "/state") ||
-      path_in_tree(path, "/logs") ||
+      path_in_tree(path, "/logs") || path_in_tree(path, "/update") ||
       path_in_tree(path, "/models/.staging")) {
     return XAIOS_OK;
   }
@@ -457,6 +456,19 @@ xaios_status_t security_validate_update_signature(const char *signature) {
   return validate_update_signature(signature, 0U, 0);
 }
 
+xaios_status_t security_verify_release_signature(
+    const void *message, uint32_t message_size,
+    const uint8_t signature[64]) {
+  if (message == 0 || message_size == 0U || signature == 0 ||
+      xaios_ed25519_verify(signature, (const uint8_t *)message, message_size,
+                           k_update_public_key) != 0) {
+    ++g_signature_rejects;
+    return XAIOS_ERR_INVALID;
+  }
+  ++g_signature_accepts;
+  return XAIOS_OK;
+}
+
 xaios_status_t security_authorize_update_signature(const char *signature,
                                                   uint64_t granted) {
   if ((granted & XAIOS_CAP_UPDATE) != XAIOS_CAP_UPDATE) {
@@ -614,6 +626,8 @@ void security_self_test(void) {
           XAIOS_ERR_INVALID);
   kassert(security_authorize_fs_write("/models/.staging/package") ==
           XAIOS_OK);
+  kassert(security_authorize_fs_read("/update/xapt/catalog") == XAIOS_OK);
+  kassert(security_authorize_fs_write("/update/xapt/catalog") == XAIOS_OK);
   kassert(security_authorize_git_workspace(0, 1, 2, "patch") ==
           XAIOS_ERR_INVALID);
   kassert(security_authorize_sandbox(0, 1, 2, "build") ==

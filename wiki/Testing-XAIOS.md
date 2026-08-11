@@ -21,6 +21,8 @@ AArch64 or x86_64 UEFI firmware. Setup details are in
 | `make hosted-test` | Hosted model-v2, engine, parser, kernel, and utility tests. |
 | `make libc-check` | Strict hosted C99 headers, 464-function namespace/link, ELF layout, source pin, non-POSIX surface, and syscall-budget contract. |
 | `make qemu-libc-gate` | Complete libc contract plus AArch64/x86_64 runtime and termination probes; emits the conformance report. |
+| `make xapt-test` | Host-side signed package/catalog/system-image construction, verification, tamper, and malformed-input tests. |
+| `make qemu-xapt-gate` | AArch64 and x86_64 install, execute, upgrade, rollback, corruption rejection, OS-slot update, reboot persistence, and removal through real SSH. |
 | `make qemu-abi-contract` | Syscall, image, service, telemetry, and fixture ABI contract. |
 | `make qemu-smoke` | Primary AArch64 boot and deterministic self-test gate. |
 | `make qemu-regression-suite` | Broader process, filesystem, network, and runtime regression suite. |
@@ -41,6 +43,8 @@ make compile-check
 make hosted-test
 make hosted-sanitizer-test
 make qemu-libc-gate
+make xapt-test
+make qemu-xapt-gate
 make production-source-audit
 make qemu-abi-contract
 make image
@@ -92,6 +96,19 @@ caches are deleted; no required script exists only inside a container.
 The four-endpoint gate coordinates macOS, Debian 13, FreeBSD 15.1, and the
 remote Intel Debian/QEMU endpoint when explicitly configured. Credentials are
 runtime inputs and must never be stored in the repository.
+
+## Update repository validation
+
+`make xapt-repository` creates a deterministic development repository for both
+architectures under `build/xapt/repository`. The build compiles the external
+`calculator` application, packages current AArch64 and x86_64 kernel images,
+signs both catalogs, and verifies every referenced payload. The QEMU gate serves
+an isolated copy over HTTP/1.1 and deliberately corrupts a package before
+confirming that the active application is unchanged.
+
+The Caddy deployment and live-origin checks are documented in
+[[xapt Package Updates|Xapt-Package-Updates]]. The repository test key is a
+public fixture and is not production trust evidence.
 
 ## Evidence policy
 

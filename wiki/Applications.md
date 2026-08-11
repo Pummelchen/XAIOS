@@ -22,7 +22,18 @@ in [[Commands|Commands]].
 | Path | Purpose |
 |---|---|
 | `/bin/xaiosctl` | Test client for the versioned `xaios.control.v1` administrative protocol. Exercises status, health, hardware, metrics, logs, configuration, identity, audit, storage, and ModelFS rendering/authorization paths. The interactive shell exposes the same bounded command family. |
+| `/bin/xapt` | Signed application and system updater. It refreshes a monotonic architecture-specific catalog, installs or upgrades individual applications without rebooting, and streams an OS image to the inactive A/B slot. |
 | `/bin/xaios-shell` | Scripted acceptance application for the remote-login command engine. It validates filesystem commands, archives, `nano`, and `htop`; it is not the persistent interactive shell process. |
+
+## Repository applications
+
+Applications in the signed repository are not built into the boot image. `xapt`
+downloads them into a staging area, verifies their manifest and payload, then
+atomically activates them in `/apps`.
+
+| Name | Purpose | Install |
+|---|---|---|
+| `calculator` | Signed 64-bit integer calculator supporting `+`, `-`, `*`, `/`, and `%`, with overflow and divide-by-zero checks. | `xapt install calculator` |
 
 ## Interactive terminal applications
 
@@ -77,6 +88,9 @@ the normal image.
   status; it does not remain as an active process.
 - Normal boot does not pre-run `hello`, `sysinfo`, `lstm-xor`, or the other
   diagnostics.
+- Installed repository applications are loaded on demand with the capabilities
+  declared in their signed manifest. They are never started merely by install.
 
-For command syntax see [[Commands|Commands]]. For lifecycle verification see
-[[Testing XAIOS|Testing-XAIOS]].
+For command syntax see [[Commands|Commands]], for package administration see
+[[xapt Package Updates|Xapt-Package-Updates]], and for lifecycle verification
+see [[Testing XAIOS|Testing-XAIOS]].

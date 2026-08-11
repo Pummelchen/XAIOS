@@ -1,0 +1,8 @@
+:8090 {
+	root * /var/xaios_updater
+	header {
+		X-Content-Type-Options nosniff
+		Cache-Control "public, max-age=300"
+	}
+	file_server
+}

@@ -7,6 +7,8 @@ typedef unsigned short u16;
 typedef int s32;
 typedef long long s64;
 
+void *xaios_memcpy(void *dst, const void *src, u64 size);
+
 #include <xaios_control.h>
 
 #define XAIOS_ERR_UNSUPPORTED (-6)

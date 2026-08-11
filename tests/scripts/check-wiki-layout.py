@@ -30,6 +30,7 @@ EXPECTED_PAGES = {
     "Testing-XAIOS.md",
     "Unix-Compatibility.md",
     "VMware-Fusion.md",
+    "Xapt-Package-Updates.md",
     "_Footer.md",
     "_Sidebar.md",
 }

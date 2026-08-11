@@ -64,7 +64,9 @@ static xaios_status_t mutable_statfs(void *context,
   (void)context;
   xaios_mfs_fsck_result_t fsck = mutable_fs_fsck();
   if (fsck.valid == 0U) return XAIOS_ERR_IO;
-  uint64_t data_sectors = fsck.version >= 3U ? 256U : 96U;
+  uint64_t data_sectors = fsck.version >= 4U ? 4096U
+                          : fsck.version >= 3U ? 256U
+                                              : 96U;
   statfs->total_bytes = data_sectors * 512U;
   statfs->allocated_bytes = fsck.blocks_used * 512U;
   statfs->free_bytes = statfs->total_bytes - statfs->allocated_bytes;

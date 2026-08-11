@@ -214,6 +214,49 @@ xaios_status_t update_begin(uint32_t generation, const char *target,
   return XAIOS_OK;
 }
 
+xaios_status_t update_begin_system(uint32_t generation, uint64_t payload_size,
+                                  const uint8_t payload_hash[32],
+                                  const char *signature) {
+  if (payload_size == 0U || payload_hash == 0 ||
+      update_begin(generation, "/system/xaios", signature) != XAIOS_OK) {
+    return XAIOS_ERR_INVALID;
+  }
+  for (uint32_t i = 0U; i < 32U; ++i) {
+    if (g_update.expected_hash[i] != payload_hash[i]) {
+      reset_transaction();
+      ++g_rejects;
+      return XAIOS_ERR_INVALID;
+    }
+  }
+  g_delivery.bytes_received = 0U;
+  g_delivery.bytes_expected = payload_size;
+  g_delivery.chunks_written = 0U;
+  g_delivery.hash_verified = 0U;
+  g_delivery.last_error = XAIOS_OK;
+  g_chunk_staging_active = 0U;
+  return XAIOS_OK;
+}
+
+xaios_status_t update_finish_system(void) {
+  if (!system_target() ||
+      update_verify_hash(g_update.expected_hash) != XAIOS_OK) {
+    return XAIOS_ERR_INVALID;
+  }
+  return update_commit();
+}
+
+xaios_status_t update_abort_delivery(void) {
+  if (g_update.active == 0U) return XAIOS_ERR_INVALID;
+  if (system_target()) (void)system_slot_cancel_pending();
+  g_update.state = XAIOS_UPDATE_FAILED;
+  g_delivery.last_error = XAIOS_ERR_INVALID;
+  g_chunk_staging_active = 0U;
+  (void)persist_update_state();
+  ++g_failures;
+  g_update.active = 0U;
+  return XAIOS_OK;
+}
+
 xaios_status_t update_stage(void) {
   if (g_update.active == 0 || g_update.state != XAIOS_UPDATE_PENDING) {
     ++g_rejects;

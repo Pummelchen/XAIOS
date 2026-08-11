@@ -30,6 +30,11 @@ ship the on-demand `helloworldc99` demonstration; custom hosted applications
 remain an explicit build choice. The project conformance boundary and evidence
 are documented in the [C99 libc Wiki page](./wiki/C99-Libc.md).
 
+The native [`xapt` updater](./wiki/Xapt-Package-Updates.md) installs and updates
+independently signed XAIOS applications without rebooting and stages signed OS
+images into the inactive A/B slot. Its current trust root is for development
+and QEMU use; production key custody and rotation remain an explicit gate.
+
 ## Model support status
 
 The deterministic QEMU model-v1 path is **Fixture only**, and model-v2 is a

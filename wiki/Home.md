@@ -17,6 +17,7 @@ primary Unix behavior reference for commands and network interoperability.
 4. Use the shell surface in [[Commands|Commands]] and executable programs in
    [[Applications|Applications]].
 5. Manage the system through [[Administration|Administration]].
+6. Install signed applications through [[xapt Package Updates|Xapt-Package-Updates]].
 
 ## Implemented OS surface
 
@@ -32,6 +33,8 @@ primary Unix behavior reference for commands and network interoperability.
   and terminal Pong.
 - Typed `xaiosctl` administration for status, configuration, identity, audit,
   storage, and model-package lifecycle operations.
+- Signed `xapt` catalogs, independent application activation and rollback, and
+  streamed A/B OS updates.
 
 ## Evidence boundary
 
@@ -54,6 +57,7 @@ single [[Project Tracker|Project-Tracker]] for remaining work.
 - [[Filesystem and Storage|Filesystem-and-Storage]]
 - [[Networking and SSH|Networking-and-SSH]]
 - [[Administration|Administration]]
+- [[xapt Package Updates|Xapt-Package-Updates]]
 
 ### Understand and validate it
 

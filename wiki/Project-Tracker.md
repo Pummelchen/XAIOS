@@ -1,6 +1,6 @@
 # Project Tracker
 
-Last reviewed: 2026-08-11.
+Last reviewed: 2026-08-12.
 
 This is the only human-maintained XAIOS project tracker. Roadmaps, milestones,
 phase plans, open decisions, and risks are consolidated here. The Wiki does not
@@ -114,9 +114,10 @@ remain concise here; no secondary page owns their status.
 | C-12 | Clock management and SNTP | `DONE` | RTC/manual source reporting plus validated SNTP request/reply/retry/timeout behavior pass parser and live QEMU gates. |
 | C-13 | Resource pressure behavior | `DONE` | Normal/warning/critical thresholds and underlying memory/process/filesystem/CPU counters pass self-tests and QEMU inspection. |
 | C-14 | Crash and recovery lifecycle | `DONE` | Abrupt QEMU termination is detected from persistent running state; forced/consecutive rescue policy and clean-state reset pass. |
-| C-15 | System update lifecycle operations | `DONE` | Existing signed stage/hash/commit/fail/fallback/rollback tests are exposed through status and authorized rollback operations. Production trust remains OD-004. |
+| C-15 | System update lifecycle operations | `DONE` | Signed streamed inactive-slot delivery, hash/signature verification, commit/fail/fallback/rollback, reboot selection, and current-version rejection pass on ARM and x86 QEMU. Production trust remains OD-004. |
 | C-16 | Configuration recovery and support bundles | `DONE` | Canonical text export/import uses the transactional admin path; support output is bounded and secret-redacted. |
 | C-17 | Long-duration and fault closure | `DONE` | Operations closure is combined with existing soak, fault injection, storage crash, boot-loop, and non-skipping aggregate gates. Physical soak remains P-05/P-14. |
+| C-18 | Independent signed application updates | `DONE` | `xapt` verifies monotonic signed catalogs and per-app manifests, atomically installs/upgrades/removes, preserves one rollback version, accepts argv, and persists across reboot on ARM and x86 QEMU. The external `calculator` package is the executable gate. |
 
 ## Hosted ISO C99 libc
 

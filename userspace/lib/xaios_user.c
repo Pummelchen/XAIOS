@@ -61,6 +61,10 @@ void *memcpy(void *dst, const void *src, u64 size) {
   return dst;
 }
 
+void *xaios_memcpy(void *dst, const void *src, u64 size) {
+  return memcpy(dst, src, size);
+}
+
 void xaios_log(const char *text) {
   (void)xaios_syscall3(XAIOS_SYSCALL_LOG, (u64)text, xaios_strlen(text), 0);
 }

@@ -62,7 +62,7 @@ TARGETS = [
     "initramfs: config service=/init mode=qemu-mvp",
     "initramfs: service-manager path=/bin/service-manager descriptor=/etc/services/source-index.svc",
     "initramfs: child service=/svc/source-index parent=/init restart=never",
-    "initramfs: mounted rofs version=2 files=20",
+    "initramfs: mounted rofs version=2 files=22",
     "initramfs: rofs metadata/config self-test passed",
     "syscall: table self-test passed entries=50",
     "virtio-rng: entropy delivery self-test passed",

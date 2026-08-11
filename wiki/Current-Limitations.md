@@ -101,7 +101,17 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   and secret-redaction behavior pass QEMU/OpenSSH gates but have not received an
   independent production security review.
 - Update signing uses a development trust root to validate transaction,
-  fallback, and rollback behavior. Production key management is unresolved.
+  fallback, and rollback behavior. The checked-in private fixture seed is
+  public; production key custody, rotation, revocation, and release authorization
+  are unresolved.
+- `xapt` uses HTTP/1.1 with a required `Content-Length`; it does not yet support
+  TLS, transfer encoding, compression, proxies, mirrors, deltas, dependencies,
+  or unattended updates. Signed catalogs and payload hashes provide integrity
+  and authenticity for the QEMU scope, not transport confidentiality.
+- External applications are bounded to 128 KiB by the current MutableFS/app
+  loader, and only one previous version is retained. Built-in shell-hosted
+  applications such as `htop` must first become standalone package ELFs before
+  they can be upgraded independently from the OS image.
 - QEMU verifies persistent clean/unclean lifecycle records, rescue selection,
   reset/poweroff dispatch, and block flush completion. It cannot establish
   physical power-loss durability or platform reset correctness. Thermal and PMU

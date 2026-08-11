@@ -89,6 +89,10 @@ static const xaios_syscall_entry_t g_syscall_table[] = {
 };
 
 static uint64_t control_operation_capability(uint16_t operation) {
+  if (operation >= XAIOS_CONTROL_OP_APP_ACTIVATE &&
+      operation <= XAIOS_CONTROL_OP_SYSTEM_UPDATE_ABORT) {
+    return XAIOS_CAP_UPDATE | XAIOS_CAP_ADMIN;
+  }
   if (operation == XAIOS_CONTROL_OP_MODEL_VERIFY ||
       operation == XAIOS_CONTROL_OP_MODEL_REGISTER ||
       operation == XAIOS_CONTROL_OP_MODEL_CLEANUP) {

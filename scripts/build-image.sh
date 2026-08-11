@@ -74,7 +74,7 @@ WORKER_ELF="$INIT_BUILD_DIR/worker.elf"
 USER_START_OBJ="$INIT_BUILD_DIR/user-start.o"
 USER_LIB_OBJ="$INIT_BUILD_DIR/xaios-user.o"
 USER_CONTROL_OBJ="$INIT_BUILD_DIR/xaios-control-client.o"
-USER_APPS="xaios-shell xaiosctl hello sysinfo systest smptest nettest lstm-xor sshtest mltest posix-shell agenttest"
+USER_APPS="xaios-shell xaiosctl xapt hello sysinfo systest smptest nettest lstm-xor sshtest mltest posix-shell agenttest"
 HOSTED_USER_APPS="helloworldc99"
 
 BUILD_MODE="${XAIOS_BUILD_MODE:-development}"
@@ -413,6 +413,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/operations.o
   $KERNEL_BUILD_DIR/admin_control.o
   $KERNEL_BUILD_DIR/control_protocol.o
+  $KERNEL_BUILD_DIR/app_store.o
   $KERNEL_BUILD_DIR/cpu_ai_runtime.o
   $KERNEL_BUILD_DIR/ai_kernels.o
   $KERNEL_BUILD_DIR/paged_kv_cache.o
@@ -530,6 +531,7 @@ compile_kernel "$ROOT_DIR/kernel/runtime/remote_login.c" "$KERNEL_BUILD_DIR/remo
 compile_kernel "$ROOT_DIR/kernel/runtime/operations.c" "$KERNEL_BUILD_DIR/operations.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/admin_control.c" "$KERNEL_BUILD_DIR/admin_control.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/control_protocol.c" "$KERNEL_BUILD_DIR/control_protocol.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/app_store.c" "$KERNEL_BUILD_DIR/app_store.o"
 compile_kernel "$ROOT_DIR/kernel/user/user.c" "$KERNEL_BUILD_DIR/user.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/model_arena.c" "$KERNEL_BUILD_DIR/model_arena.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/ai_cell.c" "$KERNEL_BUILD_DIR/ai_cell.o"
@@ -737,7 +739,7 @@ for app in $USER_APPS; do
     -c "$ROOT_DIR/userspace/apps/$app.c" \
     -o "$app_obj"
 
-  if [ "$app" = "xaiosctl" ]; then
+  if [ "$app" = "xaiosctl" ] || [ "$app" = "xapt" ]; then
     "$LD_LLD" \
       -nostdlib \
       -T "$ROOT_DIR/userspace/init/linker.ld" \
@@ -783,6 +785,8 @@ for app in $HOSTED_USER_APPS; do
     "$ROOT_DIR/userspace/apps/hosted/$app.c" "$app_elf"
   set -- "$@" "/bin/$app=$app_elf"
 done
+
+set -- "$@" "/etc/xapt.conf=$ROOT_DIR/userspace/init/xapt.conf"
 
 if [ "$LIBC_TEST" = 1 ]; then
   LIBC_TEST_ELF="$BUILD_DIR/libc/$TARGET_ARCH/runtime-test/c99-runtime-smoke.elf"

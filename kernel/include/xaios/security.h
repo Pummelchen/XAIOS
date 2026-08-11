@@ -4,6 +4,9 @@
 #include <xaios/status.h>
 #include <xaios/types.h>
 
+#define XAIOS_RELEASE_PUBLIC_KEY_HEX                                      \
+  "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+
 void security_policy_init(void);
 xaios_status_t security_authorize_capability(const char *operation,
                                             uint64_t granted,
@@ -28,6 +31,9 @@ xaios_status_t security_authorize_update_signature_for_generation(
     const char *signature, uint64_t granted, uint64_t expected_generation,
     uint8_t expected_hash[32]);
 xaios_status_t security_validate_update_signature(const char *signature);
+xaios_status_t security_verify_release_signature(
+    const void *message, uint32_t message_size,
+    const uint8_t signature[64]);
 xaios_status_t security_validate_sandbox_path(const char *path);
 xaios_status_t security_reject_credential_material(const char *text);
 xaios_status_t security_reject_credential_material_buffer(const char *text,

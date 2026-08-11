@@ -37,6 +37,11 @@ typedef struct xaios_update_status {
 void update_runtime_init(void);
 xaios_status_t update_begin(uint32_t generation, const char *target,
                            const char *signature);
+xaios_status_t update_begin_system(uint32_t generation, uint64_t payload_size,
+                                  const uint8_t payload_hash[32],
+                                  const char *signature);
+xaios_status_t update_finish_system(void);
+xaios_status_t update_abort_delivery(void);
 xaios_status_t update_stage(void);
 xaios_status_t update_commit(void);
 xaios_status_t update_fail(void);
