@@ -48,6 +48,11 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 - DNS performs asynchronous external A-record resolution with timeout, retry,
   cache, and a QEMU-verified cache hit. DNSSEC, TCP fallback, complete AAAA
   application results, and deployment resolver policy remain absent.
+- The SNTP client validates request binding, server mode/version, stratum, and
+  bounded retry/timeout behavior. QEMU's PL031 RTC may report epoch zero, and
+  public UDP/123 may be filtered; both conditions remain explicit instead of
+  being reported as synchronized. Production NTP authentication, source policy,
+  drift discipline, and physical RTC qualification remain open.
 - TCP implements retained segments, cumulative and partial ACK handling,
   RTT/RTO backoff, SACK, fast retransmit, zero-window handling, bounded
   reordering, keepalive, and FIN bookkeeping. Repeated-loss physical-network
@@ -57,10 +62,12 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 
 ## Storage and persistence
 
-- VirtIO block/network use interrupt-driven completions, event-index
-  suppression, indirect descriptors, and bounded queued work. The x86 gate
-  includes a post-`sti` MSI-X completion canary. Emulated NVMe
-  covers focused identify/write/flush/read and backing-byte checks.
+- VirtIO block/network use interrupt-assisted completions, indirect
+  descriptors, and bounded queued work. The x86 block gate records whether
+  the post-reset completion arrived through MSI-X and otherwise verifies the
+  bounded polling fallback. Repeated block MSI-X delivery after a device reset
+  is not claimed from QEMU. Emulated NVMe covers focused
+  identify/write/flush/read and backing-byte checks.
 - Production NVMe multiqueue, queue affinity, cancellation, direct final-buffer
   expert reads, physical durability, discard behavior, and throughput remain
   open.
@@ -91,6 +98,10 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   independent production security review.
 - Update signing uses a development trust root to validate transaction,
   fallback, and rollback behavior. Production key management is unresolved.
+- QEMU verifies persistent clean/unclean lifecycle records, rescue selection,
+  reset/poweroff dispatch, and block flush completion. It cannot establish
+  physical power-loss durability or platform reset correctness. Thermal and PMU
+  support reports remain explicitly unavailable until physical backends exist.
 
 ## Inference engine and model support
 

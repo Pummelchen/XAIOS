@@ -521,8 +521,8 @@ static xaios_status_t tx_submit_vectors(const xaios_net_iovec_t *vectors,
   ++g_net->tx_avail_idx;
   g_net->tx_avail->idx = g_net->tx_avail_idx;
   *token = g_net->tx_avail_idx;
-  virtio_transport_notify(&g_net->device, 1U);
   xaios_spin_unlock(&g_net->tx_lock);
+  virtio_transport_notify(&g_net->device, 1U);
   return XAIOS_OK;
 }
 

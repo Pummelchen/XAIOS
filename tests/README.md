@@ -33,6 +33,7 @@ Docker build inputs, and test-image inputs outside `tests/`. It runs through
 | Primary AArch64 smoke | `make qemu-smoke` |
 | x86_64 full-service smoke | `make qemu-x86_64-smoke` |
 | Aggregate QEMU core OS | `make qemu-core-os-rc` |
+| Power/recovery/operations closure | `make qemu-operations-closure` |
 | Debian/OpenSSH interoperability | `make qemu-docker-network-suite` |
 | FreeBSD client interoperability | `make qemu-freebsd-network-suite` |
 | Bidirectional FreeBSD SSH/SCP | `make qemu-freebsd-bidirectional-suite` |
@@ -40,6 +41,14 @@ Docker build inputs, and test-image inputs outside `tests/`. It runs through
 
 The complete command catalog is maintained in `Makefile`; focused runners live
 in `tests/scripts/` and are normally entered through a Make target.
+
+`qemu-operations-closure` builds authenticated AArch64 and x86_64 images and
+uses the real guest SSH server to check abrupt-stop detection, persisted clean
+reboot/shutdown, service controls, network diagnostics, DNS, ICMP, SNTP,
+resource-pressure reporting, update status, configuration export/import, and
+redacted support bundles. By default it also runs a Debian 13 OpenSSH client
+from the reproducible Docker image; `--skip-docker` is used by the aggregate
+gate where Docker interoperability has a separate required job.
 
 ## Rebuilding disposable Docker test images
 

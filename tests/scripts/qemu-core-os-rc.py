@@ -22,6 +22,8 @@ COMMANDS = [
     ("network", ["make", "qemu-network-suite"], 300),
     ("high_core", ["make", "qemu-high-core-gate"], 500),
     ("x86_64", ["make", "qemu-x86_64-smoke"], 240),
+    ("operations", ["python3", "tests/scripts/qemu-operations-closure.py",
+                    "--skip-docker"], 700),
 ]
 
 AARCH64_CAPABILITIES = {
@@ -106,8 +108,8 @@ X86_CAPABILITIES = {
         "virtio-net: modern PCI transport index=",
         "virtio-net: queue/tx/parser/reset self-test passed",
     ],
-    "x86_msix_completion": [
-        "virtio-blk: x86 MSI-X completion canary passed count=",
+    "x86_block_completion": [
+        "virtio-blk: x86 completion canary passed mode=",
     ],
     "x86_full_service_stack": [
         "/bin/smptest: complete",
@@ -130,6 +132,10 @@ HOSTED_CAPABILITIES = {
 }
 
 SPECIAL_CAPABILITIES = {
+    "operational_lifecycle_closure": (
+        "operations",
+        ["qemu-operations-closure: PASS"],
+    ),
     "storage_crash_consistency": (
         "storage_crash",
         [

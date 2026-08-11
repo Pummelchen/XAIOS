@@ -8,6 +8,8 @@
 #include <xaios/ipv6.h>
 #include <xaios/klog.h>
 #include <xaios/ndp.h>
+#include <xaios/ntp.h>
+#include <xaios/operations.h>
 #include <xaios/network_stack.h>
 #include <xaios/routing.h>
 #include <xaios/socket_buffer.h>
@@ -274,6 +276,12 @@ static uint64_t g_icmpv6_reply_count;
 static uint64_t g_ndp_reply_count;
 static uint64_t g_ipv6_rx_count;
 static xaios_ip_addr_t g_link_local_v6;
+static xaios_network_ping_status_t g_ping;
+static uint64_t g_ping_sent_ns;
+static uint16_t g_ping_sequence;
+
+#define NETWORK_PING_IDENTIFIER UINT16_C(0x5841)
+#define NETWORK_PING_TIMEOUT_NS UINT64_C(3000000000)
 
 /* ---- Socket-to-Flow Mapping ---- */
 #define NETWORK_SOCK_FLOW_MAP_SIZE 16U
@@ -4347,6 +4355,7 @@ void network_init_persistent(void) {
   }
   arp_init();
   ndp_init();
+  ntp_init();
   ipv4_frag_init();
   ipv6_frag_init();
   for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
@@ -4385,8 +4394,59 @@ void network_init_persistent(void) {
   g_icmpv6_reply_count = 0;
   g_ndp_reply_count = 0;
   g_ipv6_rx_count = 0;
+  g_ping.state = XAIOS_NETWORK_PING_IDLE;
+  g_ping.target_ip = 0U;
+  g_ping.attempts = 0U;
+  g_ping.round_trip_ns = 0U;
+  g_ping.last_error = XAIOS_OK;
+  g_ping_sent_ns = 0U;
+  g_ping_sequence = 0U;
   klog("network: persistent mode initialized (dual-stack)\n");
 }
+
+uint32_t network_stack_local_ipv4(void) { return XAIOS_IPV4_GUEST_IP; }
+
+xaios_status_t network_stack_local_mac(uint8_t mac[6]) {
+  if (mac == 0 || g_persistent_initialized == 0U) return XAIOS_ERR_NOT_FOUND;
+  for (uint32_t i = 0U; i < 6U; ++i) mac[i] = g_local_mac[i];
+  return XAIOS_OK;
+}
+
+xaios_status_t network_stack_ping_start(uint32_t target_ip) {
+  uint8_t frame[50];
+  uint8_t gateway_mac[6] = {0x52U, 0x55U, 0x0aU, 0x00U, 0x02U, 0x02U};
+  if (g_persistent_initialized == 0U || target_ip == 0U)
+    return XAIOS_ERR_INVALID;
+  if (g_ping.state == XAIOS_NETWORK_PING_PENDING) return XAIOS_ERR_BUSY;
+  for (uint32_t i = 0U; i < sizeof(frame); ++i) frame[i] = 0U;
+  for (uint32_t i = 0U; i < 6U; ++i) {
+    frame[i] = gateway_mac[i];
+    frame[6U + i] = g_local_mac[i];
+  }
+  write_be16(frame + 12U, NETWORK_ETHERTYPE_IPV4);
+  ipv4_build_header(frame + 14U, 36U, XAIOS_IPV4_PROTO_ICMP,
+                    XAIOS_IPV4_GUEST_IP, target_ip);
+  uint8_t *icmp = frame + 34U;
+  icmp[0] = XAIOS_ICMP_ECHO_REQUEST;
+  icmp[1] = 0U;
+  write_be16(icmp + 4U, NETWORK_PING_IDENTIFIER);
+  ++g_ping_sequence;
+  write_be16(icmp + 6U, g_ping_sequence);
+  icmp[8] = 'X'; icmp[9] = 'A'; icmp[10] = 'I'; icmp[11] = 'O';
+  icmp[12] = 'S'; icmp[13] = 'P'; icmp[14] = 'N'; icmp[15] = 'G';
+  write_be16(icmp + 2U, ipv4_checksum(icmp, 16U));
+  xaios_status_t status = virtio_net_tx(frame, sizeof(frame));
+  g_ping.state = status == XAIOS_OK ? XAIOS_NETWORK_PING_PENDING
+                                     : XAIOS_NETWORK_PING_FAILED;
+  g_ping.target_ip = target_ip;
+  g_ping.attempts = 1U;
+  g_ping.round_trip_ns = 0U;
+  g_ping.last_error = status;
+  g_ping_sent_ns = timer_now_ns();
+  return status == XAIOS_OK ? XAIOS_ERR_BUSY : status;
+}
+
+xaios_network_ping_status_t network_stack_ping_status(void) { return g_ping; }
 
 static int network_reassemble_incoming(uint8_t *frame, uint32_t *frame_len,
                                        uint16_t ethertype) {
@@ -4418,13 +4478,20 @@ static int network_reassemble_incoming(uint8_t *frame, uint32_t *frame_len,
 }
 
 void network_poll_tick(void) {
+  operations_tick();
   if (g_persistent_initialized == 0) {
     return;
+  }
+  uint64_t now_ns = timer_now_ns();
+  ntp_tick(now_ns);
+  if (g_ping.state == XAIOS_NETWORK_PING_PENDING && now_ns >= g_ping_sent_ns &&
+      now_ns - g_ping_sent_ns >= NETWORK_PING_TIMEOUT_NS) {
+    g_ping.state = XAIOS_NETWORK_PING_TIMEOUT;
+    g_ping.last_error = XAIOS_ERR_IO;
   }
   uint8_t rx_buf[NETWORK_BUFFER_SIZE];
   uint32_t frame_len = virtio_net_rx_poll(rx_buf, sizeof(rx_buf));
   if (frame_len == 0) {
-    uint64_t now_ns = timer_now_ns();
     ++g_poll_tick_count;
     dns_tick(now_ns);
     network_stack_retransmit_tcp_flows(now_ns);
@@ -4461,11 +4528,28 @@ void network_poll_tick(void) {
     }
     uint8_t protocol = rx_buf[23U];
     if (protocol == NETWORK_IP_PROTO_UDP &&
-        dns_process_ipv4_frame(rx_buf, frame_len, timer_now_ns()) == XAIOS_OK) {
-      dns_tick(timer_now_ns());
+        ntp_process_ipv4_frame(rx_buf, frame_len, now_ns) == XAIOS_OK) {
+      return;
+    }
+    if (protocol == NETWORK_IP_PROTO_UDP &&
+        dns_process_ipv4_frame(rx_buf, frame_len, now_ns) == XAIOS_OK) {
+      dns_tick(now_ns);
       return;
     }
     if (protocol == XAIOS_IPV4_PROTO_ICMP) {
+      const uint8_t *icmp = rx_buf + 34U;
+      if (frame_len >= 42U && icmp[0] == XAIOS_ICMP_ECHO_REPLY &&
+          read_u16_be(icmp + 4U) == NETWORK_PING_IDENTIFIER &&
+          read_u16_be(icmp + 6U) == g_ping_sequence &&
+          read_u32_be(rx_buf + 26U) == g_ping.target_ip &&
+          ipv4_checksum(icmp, read_u16_be(rx_buf + 16U) - 20U) == 0U &&
+          g_ping.state == XAIOS_NETWORK_PING_PENDING) {
+        g_ping.state = XAIOS_NETWORK_PING_REPLIED;
+        g_ping.round_trip_ns = now_ns >= g_ping_sent_ns
+                                  ? now_ns - g_ping_sent_ns : 0U;
+        g_ping.last_error = XAIOS_OK;
+        return;
+      }
       uint16_t identifier = 0;
       uint16_t sequence = 0;
       if (icmp_process_echo_request(rx_buf, frame_len, &identifier,
@@ -4540,7 +4624,6 @@ void network_poll_tick(void) {
     }
   }
   /* Drain pending TCP transmissions (SYN-ACK, data, ACK, FIN) */
-  uint64_t now_ns = timer_now_ns();
   dns_tick(now_ns);
   network_stack_retransmit_tcp_flows(now_ns);
   network_stack_expire_tcp_flows(now_ns);

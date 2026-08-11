@@ -31,6 +31,7 @@ xaios_status_t arp_build_reply(uint8_t *frame, uint64_t *frame_len,
                                const uint8_t src_mac[6], uint32_t src_ip,
                                const uint8_t dst_mac[6], uint32_t dst_ip);
 uint64_t arp_cache_count(void);
+xaios_status_t arp_cache_snapshot(uint32_t index, xaios_arp_entry_t *entry);
 
 /* B3-B4: Cache aging and gratuitous ARP */
 void arp_cache_age(void);

@@ -352,6 +352,7 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   $KERNEL_BUILD_DIR/exception.o
   $KERNEL_BUILD_DIR/timer.o
   $KERNEL_BUILD_DIR/rtc.o
+  $KERNEL_BUILD_DIR/power.o
   $KERNEL_BUILD_DIR/watchdog.o
   $KERNEL_BUILD_DIR/smmu.o
   $KERNEL_BUILD_DIR/pci.o
@@ -366,6 +367,7 @@ else
   $KERNEL_BUILD_DIR/engine_packed.o
   $KERNEL_BUILD_DIR/timer.o
   $KERNEL_BUILD_DIR/platform.o
+  $KERNEL_BUILD_DIR/power.o
   $KERNEL_BUILD_DIR/watchdog.o
   $KERNEL_BUILD_DIR/pci.o
   $KERNEL_BUILD_DIR/smp.o
@@ -399,6 +401,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/core_lease.o
   $KERNEL_BUILD_DIR/security.o
   $KERNEL_BUILD_DIR/remote_login.o
+  $KERNEL_BUILD_DIR/operations.o
   $KERNEL_BUILD_DIR/admin_control.o
   $KERNEL_BUILD_DIR/control_protocol.o
   $KERNEL_BUILD_DIR/cpu_ai_runtime.o
@@ -446,6 +449,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/socket_buffer.o
   $KERNEL_BUILD_DIR/routing.o
   $KERNEL_BUILD_DIR/dns.o
+  $KERNEL_BUILD_DIR/ntp.o
   $KERNEL_BUILD_DIR/elf_loader.o
   $KERNEL_BUILD_DIR/string.o
   $KERNEL_BUILD_DIR/bpe_tokenizer.o
@@ -476,6 +480,7 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/exception.c" "$KERNEL_BUILD_DIR/exception.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/timer.c" "$KERNEL_BUILD_DIR/timer.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/rtc.c" "$KERNEL_BUILD_DIR/rtc.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/power.c" "$KERNEL_BUILD_DIR/power.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/watchdog.c" "$KERNEL_BUILD_DIR/watchdog.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/smmu.c" "$KERNEL_BUILD_DIR/smmu.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/pci.c" "$KERNEL_BUILD_DIR/pci.o"
@@ -486,6 +491,7 @@ else
   compile_kernel "$ROOT_DIR/engine/src/packed.c" "$KERNEL_BUILD_DIR/engine_packed.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/timer.c" "$KERNEL_BUILD_DIR/timer.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/platform.c" "$KERNEL_BUILD_DIR/platform.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/x86_64/power.c" "$KERNEL_BUILD_DIR/power.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/watchdog.c" "$KERNEL_BUILD_DIR/watchdog.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/pci.c" "$KERNEL_BUILD_DIR/pci.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/smp.c" "$KERNEL_BUILD_DIR/smp.o"
@@ -512,6 +518,7 @@ compile_kernel "$ROOT_DIR/kernel/user/syscall.c" "$KERNEL_BUILD_DIR/syscall.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/core_lease.c" "$KERNEL_BUILD_DIR/core_lease.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/security.c" "$KERNEL_BUILD_DIR/security.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login.c" "$KERNEL_BUILD_DIR/remote_login.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/operations.c" "$KERNEL_BUILD_DIR/operations.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/admin_control.c" "$KERNEL_BUILD_DIR/admin_control.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/control_protocol.c" "$KERNEL_BUILD_DIR/control_protocol.o"
 compile_kernel "$ROOT_DIR/kernel/user/user.c" "$KERNEL_BUILD_DIR/user.o"
@@ -561,6 +568,7 @@ compile_kernel "$ROOT_DIR/kernel/net/ndp.c" "$KERNEL_BUILD_DIR/ndp.o"
 compile_kernel "$ROOT_DIR/kernel/net/socket_buffer.c" "$KERNEL_BUILD_DIR/socket_buffer.o"
 compile_kernel "$ROOT_DIR/kernel/net/routing.c" "$KERNEL_BUILD_DIR/routing.o"
 compile_kernel "$ROOT_DIR/kernel/net/dns.c" "$KERNEL_BUILD_DIR/dns.o"
+compile_kernel "$ROOT_DIR/kernel/net/ntp.c" "$KERNEL_BUILD_DIR/ntp.o"
 compile_kernel "$ROOT_DIR/kernel/mm/elf_loader.c" "$KERNEL_BUILD_DIR/elf_loader.o"
 compile_kernel "$ROOT_DIR/kernel/lib/string.c" "$KERNEL_BUILD_DIR/string.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/bpe_tokenizer.c" "$KERNEL_BUILD_DIR/bpe_tokenizer.o"

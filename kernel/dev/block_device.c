@@ -263,6 +263,27 @@ xaios_status_t block_flush(xaios_block_device_t *device) {
   return XAIOS_OK;
 }
 
+xaios_status_t block_flush_all(uint64_t *flushed, uint64_t *unsupported,
+                               uint64_t *failed) {
+  uint64_t completed = 0U;
+  uint64_t skipped = 0U;
+  uint64_t errors = 0U;
+  for (uint32_t i = 0U; i < XAIOS_BLOCK_MAX_DEVICES; ++i) {
+    xaios_block_device_t *device = g_devices[i];
+    if (device == 0) continue;
+    if (device->info.flush_supported == 0U || device->ops->flush == 0) {
+      ++skipped;
+      continue;
+    }
+    if (block_flush(device) == XAIOS_OK) ++completed;
+    else ++errors;
+  }
+  if (flushed != 0) *flushed = completed;
+  if (unsupported != 0) *unsupported = skipped;
+  if (failed != 0) *failed = errors;
+  return errors == 0U ? XAIOS_OK : XAIOS_ERR_IO;
+}
+
 xaios_status_t block_discard(xaios_block_device_t *device,
                              uint64_t byte_offset, uint64_t length) {
   if (!device_is_registered(device)) return XAIOS_ERR_INVALID;

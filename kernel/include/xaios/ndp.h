@@ -86,6 +86,7 @@ xaios_status_t ndp_process_router_advertisement(const uint8_t *frame,
                                                  uint64_t frame_len);
 
 uint64_t ndp_cache_count(void);
+xaios_status_t ndp_cache_snapshot(uint32_t index, xaios_ndp_entry_t *entry);
 void ndp_self_test(void);
 
 #endif /* XAIOS_NDP_H */

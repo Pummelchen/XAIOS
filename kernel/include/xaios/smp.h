@@ -26,6 +26,9 @@ typedef struct __attribute__((aligned(16))) xaios_cpu_state {
   /* SMP scheduler fields */
   uint32_t scheduling_enabled; /* 1 when the CPU can accept scheduled work */
   uint32_t steal_count;        /* work-stealing events on this CPU */
+  /* Architecture-owned translation root and private user directory. */
+  uint64_t *page_table_root;
+  uint64_t *user_page_directory;
 } xaios_cpu_state_t;
 
 uint32_t smp_cpu_id(void);

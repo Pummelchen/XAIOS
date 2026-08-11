@@ -869,6 +869,28 @@ xaios_status_t service_snapshot(const char *name, xaios_service_t *snapshot) {
   return XAIOS_OK;
 }
 
+uint32_t service_count(void) {
+  return g_child_service.name != 0 ? 4U : 3U;
+}
+
+xaios_status_t service_snapshot_at(uint32_t index,
+                                   xaios_service_t *snapshot) {
+  xaios_service_t *service = 0;
+  if (snapshot == 0) return XAIOS_ERR_INVALID;
+  switch (index) {
+    case 0U: service = &g_init_service; break;
+    case 1U: service = &g_manager_service; break;
+    case 2U: service = &g_worker_service; break;
+    case 3U:
+      if (g_child_service.name != 0) service = &g_child_service;
+      break;
+    default: break;
+  }
+  if (service == 0) return XAIOS_ERR_NOT_FOUND;
+  *snapshot = *service;
+  return XAIOS_OK;
+}
+
 xaios_status_t service_start(const char *name) {
   xaios_service_t *service = find_service(name);
   if (service == 0) {

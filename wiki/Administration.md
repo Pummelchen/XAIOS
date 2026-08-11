@@ -33,6 +33,46 @@ fresh request identity. Planning operations are separate from confirmed
 mutation where destructive state is involved. Unknown cluster nodes and
 unimplemented services return stable errors rather than simulated success.
 
+## Operations and recovery
+
+The authenticated shell also exposes a bounded host-operations layer:
+
+```sh
+power status
+service list
+service start /bin/xaios-worker
+service stop /bin/xaios-worker
+ifconfig
+route
+netstat
+ping 10.0.2.2
+ping status
+nslookup example.com
+date
+ntp sync
+ntp status
+limits
+recovery status
+config export /tmp/xaios-config.conf
+config import /tmp/xaios-config.conf
+update status
+support > /tmp/xaios-support.txt
+shutdown
+```
+
+`shutdown` and `reboot` are delayed briefly so the SSH response can be sent,
+then persist lifecycle intent, flush the kernel log and all flush-capable block
+devices, and invoke the architecture power primitive. A boot left in `running`
+state is counted as unclean. Three consecutive unclean boots or `recovery
+enter` select rescue mode; `recovery clear` removes the forced rescue marker.
+Rescue SSH sessions permit diagnostics and bounded filesystem repair commands,
+but block ordinary application launch.
+
+`config export` writes the canonical `xaios.config.v1` text format. Import uses
+the existing validation, role, replay, audit, and transactional commit path.
+`support` contains build, lifecycle, clock, resource, network, and log counters
+and explicitly redacts secrets. See [[Operations and Recovery|Operations-and-Recovery]].
+
 ## Capacity boundaries
 
 The current QEMU-tested control plane is intentionally bounded to 16 active

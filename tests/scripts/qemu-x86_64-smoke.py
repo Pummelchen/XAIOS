@@ -24,7 +24,7 @@ TARGETS = [
     "VMM: x86 map/unmap self-test passed",
     "PCI: x86 enumeration self-test passed",
     "virtio-blk: read/write/error/reset self-test passed",
-    "virtio-blk: x86 MSI-X completion canary passed count=",
+    "virtio-blk: x86 completion canary passed mode=",
     "virtio-net: persistent mode initialized",
     "kernel: /bin/service-manager returned to kernel exit_code=0",
     "scheduler: SIMD/FP interrupt preservation passed",

@@ -75,6 +75,8 @@ xaios_status_t block_read(xaios_block_device_t *device, uint64_t byte_offset,
 xaios_status_t block_write(xaios_block_device_t *device, uint64_t byte_offset,
                            const void *buffer, uint64_t length);
 xaios_status_t block_flush(xaios_block_device_t *device);
+xaios_status_t block_flush_all(uint64_t *flushed, uint64_t *unsupported,
+                               uint64_t *failed);
 xaios_status_t block_discard(xaios_block_device_t *device,
                              uint64_t byte_offset, uint64_t length);
 xaios_status_t block_write_zeroes(xaios_block_device_t *device,

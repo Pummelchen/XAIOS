@@ -1,4 +1,5 @@
 #include <xaios/assert.h>
+#include <xaios/arch_power.h>
 #include <xaios/klog.h>
 #include <xaios/mutable_fs.h>
 #include <xaios/timer.h>
@@ -6,20 +7,6 @@
 
 static uint64_t g_watchdog_deadline_ns;
 static uint32_t g_watchdog_active;
-
-/* PSCI SYSTEM_RESET function ID for AArch64 */
-#define PSCI_SYSTEM_RESET UINT32_C(0x84000009)
-
-static void psci_system_reset(void) {
-  register uint64_t x0 __asm__("x0") = PSCI_SYSTEM_RESET;
-  register uint64_t x1 __asm__("x1") = 0;
-  register uint64_t x2 __asm__("x2") = 0;
-  register uint64_t x3 __asm__("x3") = 0;
-  __asm__ volatile("hvc #0"
-                   : "+r"(x0)
-                   : "r"(x1), "r"(x2), "r"(x3)
-                   : "memory");
-}
 
 void watchdog_init(void) {
   g_watchdog_deadline_ns =
@@ -43,17 +30,7 @@ void watchdog_trigger_reset(void) {
   g_watchdog_active = 0;
   klog("watchdog: triggering PSCI system reset\n");
 
-  /* Disable interrupts */
-  __asm__ volatile("msr daifset, #0xf");
-
-  /* Attempt PSCI reset */
-  psci_system_reset();
-
-  /* Fallback: should not reach here */
-  klog("watchdog: PSCI reset failed, entering halt\n");
-  for (;;) {
-    __asm__ volatile("wfe");
-  }
+  arch_reboot();
 }
 
 uint32_t watchdog_is_active(void) {

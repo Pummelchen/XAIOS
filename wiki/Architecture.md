@@ -113,10 +113,11 @@ block device
 
 ## Platform status
 
-The AArch64 QEMU path provides the broadest OS-service coverage. VMware Fusion
-on Apple Silicon reaches `/init` through a limited ARM64 compatibility path but
-does not yet have VMware networking, persistent storage, or multi-vCPU
-discovery.
+The AArch64 QEMU path provides the broadest OS-service coverage. Each discovered
+CPU has a private translation root and user directory, preventing concurrent
+EL0 workers from replacing another core's mappings. VMware Fusion on Apple
+Silicon reaches `/init` through a limited ARM64 compatibility path but does not
+yet have VMware networking, persistent storage, or multi-vCPU discovery.
 
 The x86_64 QEMU image executes the common kernel and complete userspace/service
 image. MADT-discovered application processors run EL0 workers with per-CPU user

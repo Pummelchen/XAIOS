@@ -22,6 +22,8 @@ xaios_status_t routing_add(uint32_t dest_network, uint32_t netmask,
  * For direct routes, returns dest_ip itself.
  * For indirect routes, returns the gateway IP. */
 uint32_t routing_lookup(uint32_t dest_ip);
+uint32_t routing_count(void);
+xaios_status_t routing_snapshot(uint32_t index, routing_entry_t *entry);
 
 /* B5: Route deletion and clear */
 xaios_status_t routing_remove(uint32_t dest_ip_net_order);

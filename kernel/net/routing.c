@@ -93,6 +93,27 @@ uint32_t routing_lookup(uint32_t dest_ip) {
   return g_routing_table[best_match].gateway;
 }
 
+uint32_t routing_count(void) {
+  uint32_t count = 0U;
+  for (uint32_t i = 0U; i < ROUTING_TABLE_SIZE; ++i) {
+    if (g_routing_table[i].active != 0U) ++count;
+  }
+  return count;
+}
+
+xaios_status_t routing_snapshot(uint32_t index, routing_entry_t *entry) {
+  uint32_t ordinal = 0U;
+  if (entry == 0) return XAIOS_ERR_INVALID;
+  for (uint32_t i = 0U; i < ROUTING_TABLE_SIZE; ++i) {
+    if (g_routing_table[i].active == 0U) continue;
+    if (ordinal++ == index) {
+      *entry = g_routing_table[i];
+      return XAIOS_OK;
+    }
+  }
+  return XAIOS_ERR_NOT_FOUND;
+}
+
 void routing_self_test(void) {
   routing_init();
 

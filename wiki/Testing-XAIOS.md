@@ -18,6 +18,7 @@ Debian/FreeBSD environments are under `tests/network/`.
 | `make qemu-abi-contract` | Syscall, image, service, telemetry, and fixture ABI contract. |
 | `make qemu-smoke` | Primary AArch64 boot and deterministic self-test gate. |
 | `make qemu-regression-suite` | Broader process, filesystem, network, and runtime regression suite. |
+| `make qemu-operations-closure` | Both-architecture abrupt-stop, power, recovery, diagnostics, clock, pressure, update/config, support, and Debian-client gate. |
 | `make qemu-full-os-rc` | Aggregate mandatory QEMU core-OS release-candidate gate. |
 
 Focused gates cover boot loops, faults, security, local console, storage,

@@ -927,6 +927,25 @@ xaios_status_t user_process_reap(uint32_t pid) {
   return XAIOS_OK;
 }
 
+xaios_status_t user_process_terminate(uint32_t pid, int exit_code) {
+  xaios_user_process_t snapshot;
+  xaios_user_process_t *process;
+  if (pid <= 2U || pid > XAIOS_MAX_USER_PROCESSES) return XAIOS_ERR_INVALID;
+  process = &g_process_table[pid - 1U];
+  if (process->pid != pid || process == user_current_process())
+    return XAIOS_ERR_BUSY;
+  if (process->state != XAIOS_USER_PROCESS_LOADED &&
+      process->state != XAIOS_USER_PROCESS_RUNNABLE &&
+      process->state != XAIOS_USER_PROCESS_WAITING)
+    return XAIOS_ERR_BUSY;
+  copy_process(&snapshot, process);
+  if (process->state == XAIOS_USER_PROCESS_RUNNABLE ||
+      process->state == XAIOS_USER_PROCESS_WAITING)
+    transition_process(process, XAIOS_USER_PROCESS_FAILED, exit_code);
+  user_process_reclaim_address_space(&snapshot);
+  return user_process_reap(pid);
+}
+
 void user_switch_address_space(uint32_t pid) {
   if (pid == 0 || pid > XAIOS_MAX_USER_PROCESSES) {
     vmm_switch_user_aspace(0, 0);

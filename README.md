@@ -183,6 +183,15 @@ Internet destinations or physical networks are production-ready.
   used by the exact SSH allowlist. The allowlist also exposes a fixed set of
   diagnostic applications as isolated transient processes; arbitrary paths,
   arguments, and executable launch remain unavailable.
+- An authenticated operator lifecycle surface provides `shutdown`, `reboot`,
+  bounded service/PID controls, `ifconfig`, `route`, `arp`, `ndp`, `netstat`,
+  asynchronous `ping` and `nslookup`, RTC/manual/SNTP clock status, resource
+  pressure limits, recovery status, signed-update status/rollback, portable
+  configuration export/import, and a redacted `support` bundle. Shutdown and
+  reboot persist lifecycle intent, flush logs and every flush-capable block
+  device, then use PSCI on AArch64 or reset/ACPI ports on x86_64. The focused
+  QEMU gate verifies abrupt-stop detection and clean-state persistence across
+  real reboots on both architectures; it is not physical power-loss evidence.
 - Dynamically sized userspace image-page tracking with checked cleanup. The SSH
   image is no longer constrained by the former fixed 256-page tracking array.
 - A backend-neutral 64-bit block API, redundant GPT parser/writer, mount-routing
@@ -201,9 +210,11 @@ Internet destinations or physical networks are production-ready.
   backing-image persistence behavior. Production NVMe multiqueue, a physical
   100+ GiB transfer, trusted-replica repair, and physical-device
   durability/performance validation remain incomplete.
-- The x86_64 QEMU image executes the same common kernel and complete userspace
-  service image as AArch64. It owns its GDT/TSS and AP trampoline, starts every
-  MADT CPU with dynamic records and per-CPU page-table roots, runs EL0
+- Both architecture ports use per-CPU translation roots and private user
+  directories, so concurrent EL0 workers cannot replace another core's process
+  mappings. The x86_64 QEMU image executes the same common kernel and complete
+  userspace service image as AArch64. It owns its GDT/TSS and AP trampoline,
+  starts every MADT CPU with dynamic records, runs EL0
   create/join/exit threads on APs, and preserves FP/SIMD state across live
   interrupts with runtime-sized XSAVE/XRSTOR or FXSAVE/FXRSTOR fallback. The
   shared filesystems, security, AI Cell, telemetry, control, utilities and

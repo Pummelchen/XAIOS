@@ -1,7 +1,10 @@
 #include <xaios/assert.h>
 #include <xaios/klog.h>
 #include <xaios/pmm.h>
+#include <xaios/smp.h>
 #include <xaios/vmm.h>
+
+#include "platform.h"
 
 #define PAGE_SIZE UINT64_C(4096)
 #define L2_BLOCK_SIZE UINT64_C(0x200000)
@@ -75,6 +78,23 @@ static void zero_table(uint64_t *table, uint64_t entries) {
 
 static uint64_t table_descriptor(const uint64_t *table) {
   return ((uint64_t)(uintptr_t)table & PTE_ADDR_MASK) | PTE_VALID | PTE_TABLE;
+}
+
+static uint64_t *allocate_table(void) {
+  uint64_t *table = (uint64_t *)pmm_alloc_page();
+  if (table != 0) zero_table(table, 512U);
+  return table;
+}
+
+static uint64_t *current_root(void) {
+  uint64_t *root = aarch64_platform_page_table_root(
+      aarch64_platform_current_ordinal());
+  return root != 0 ? root : g_l0_table;
+}
+
+static uint64_t *current_user_directory(void) {
+  return aarch64_platform_user_page_directory(
+      aarch64_platform_current_ordinal());
 }
 
 static uint64_t page_descriptor(uint64_t physical_address, uint64_t attrs) {
@@ -336,6 +356,48 @@ static void build_tables(const xaios_boot_info_t *boot) {
   map_kernel_pages(boot->kernel_phys_base, boot->kernel_phys_end);
 }
 
+static void build_per_cpu_roots(void) {
+  uint32_t capacity = smp_capacity();
+  uint32_t user_l1_index =
+      (uint32_t)((XAIOS_USER_BASE >> 30U) & UINT64_C(0x1ff));
+  for (uint32_t cpu = 0U; cpu < capacity; ++cpu) {
+    uint64_t *root = allocate_table();
+    uint64_t *l1 = allocate_table();
+    uint64_t *user_directory = allocate_table();
+    kassert(root != 0 && l1 != 0 && user_directory != 0);
+    for (uint32_t index = 0U; index < 512U; ++index) {
+      root[index] = g_l0_table[index];
+      l1[index] = g_l1_table[index];
+    }
+    root[0] = table_descriptor(l1);
+    l1[user_l1_index] = table_descriptor(user_directory);
+    aarch64_platform_set_page_tables(cpu, root, user_directory);
+  }
+}
+
+static uint32_t user_address(uint64_t virtual_address) {
+  return virtual_address >= XAIOS_USER_BASE &&
+         virtual_address < XAIOS_USER_LIMIT;
+}
+
+static void sync_kernel_hierarchy(uint64_t virtual_address) {
+  uint32_t l0_index =
+      (uint32_t)((virtual_address >> 39U) & UINT64_C(0x1ff));
+  uint32_t l1_index =
+      (uint32_t)((virtual_address >> 30U) & UINT64_C(0x1ff));
+  for (uint32_t cpu = 0U; cpu < smp_capacity(); ++cpu) {
+    uint64_t *root = aarch64_platform_page_table_root(cpu);
+    if (root == 0) continue;
+    if (l0_index != 0U) {
+      root[l0_index] = g_l0_table[l0_index];
+      continue;
+    }
+    uint64_t *l1 =
+        (uint64_t *)(uintptr_t)(root[0] & PTE_ADDR_MASK);
+    l1[l1_index] = g_l1_table[l1_index];
+  }
+}
+
 static void aarch64_enable_mmu(uint64_t root_table) {
   uint64_t mair = MAIR_NORMAL_WB | (MAIR_DEVICE_NGNRE << 8U);
   uint64_t tcr = UINT64_C(16) | UINT64_C(1 << 8) | UINT64_C(1 << 10) |
@@ -391,9 +453,11 @@ static xaios_status_t descriptor_to_flags(uint64_t virtual_address,
 
 void vmm_init(const xaios_boot_info_t *boot) {
   build_tables(boot);
-  
-  aarch64_enable_mmu((uint64_t)(uintptr_t)g_l0_table);
-  klog("VMM enabled\n");
+  build_per_cpu_roots();
+
+  aarch64_enable_mmu((uint64_t)(uintptr_t)current_root());
+  klog("VMM enabled with per-CPU user translation roots cpus=%u\n",
+       smp_capacity());
   
   /* Null page guard: map page 0 with minimal permissions so any NULL
    * pointer dereference triggers a page fault. Done after MMU enable
@@ -405,7 +469,7 @@ void vmm_init(const xaios_boot_info_t *boot) {
 }
 
 void vmm_activate_kernel(void) {
-  aarch64_enable_mmu((uint64_t)(uintptr_t)g_l0_table);
+  aarch64_enable_mmu((uint64_t)(uintptr_t)current_root());
 }
 
 xaios_status_t vmm_translate(uint64_t virtual_address, uint64_t *physical_address,
@@ -418,7 +482,7 @@ xaios_status_t vmm_translate(uint64_t virtual_address, uint64_t *physical_addres
   uint64_t l2_offset = virtual_address & (L2_BLOCK_SIZE - 1);
   uint64_t l1_offset = virtual_address & (L1_BLOCK_SIZE - 1);
 
-  uint64_t l0_desc = g_l0_table[l0_index];
+  uint64_t l0_desc = current_root()[l0_index];
   if ((l0_desc & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE)) {
     return XAIOS_ERR_INVALID;
   }
@@ -488,6 +552,9 @@ xaios_status_t vmm_map_page(uint64_t virtual_address, uint64_t physical_address,
   uint64_t *l3 = ensure_l3_table(virtual_address);
   uint64_t l3_index = (virtual_address >> 12) & 0x1ffU;
   l3[l3_index] = page_descriptor(physical_address, attrs_from_flags(flags));
+  if (user_address(virtual_address) == 0U) {
+    sync_kernel_hierarchy(virtual_address);
+  }
   invalidate_tlb_page(virtual_address);
   return XAIOS_OK;
 }
@@ -500,6 +567,9 @@ xaios_status_t vmm_unmap_page(uint64_t virtual_address) {
   uint64_t *l3 = ensure_l3_table(virtual_address);
   uint64_t l3_index = (virtual_address >> 12) & 0x1ffU;
   l3[l3_index] = 0;
+  if (user_address(virtual_address) == 0U) {
+    sync_kernel_hierarchy(virtual_address);
+  }
   invalidate_tlb_page(virtual_address);
   return XAIOS_OK;
 }
@@ -530,27 +600,6 @@ xaios_status_t vmm_validate_user_buffer(uint64_t virtual_address, uint64_t size,
 }
 
 void vmm_self_test(void) {
-  void *page = pmm_alloc_page();
-  kassert(page != 0);
-  uint64_t va = XAIOS_USER_BASE + L2_BLOCK_SIZE;
-  kassert(vmm_map_page(va, (uint64_t)(uintptr_t)page,
-                       XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
-                           XAIOS_VMM_USER) == XAIOS_OK);
-  uint64_t translated = 0;
-  uint32_t flags = 0;
-  kassert(vmm_translate(va, &translated, &flags) == XAIOS_OK);
-  kassert(translated == (uint64_t)(uintptr_t)page);
-  kassert((flags & XAIOS_VMM_USER) != 0);
-  kassert((flags & XAIOS_VMM_WRITABLE) != 0);
-  kassert(vmm_validate_range_flags(
-              va, 16U, XAIOS_VMM_PRESENT | XAIOS_VMM_USER, 0U) == XAIOS_OK);
-  kassert(vmm_validate_range_flags(va, 16U, XAIOS_VMM_PRESENT,
-                                   XAIOS_VMM_WRITABLE) == XAIOS_ERR_INVALID);
-  kassert(vmm_validate_user_buffer(va, 16, XAIOS_VMM_WRITABLE) == XAIOS_OK);
-  kassert(vmm_unmap_page(va) == XAIOS_OK);
-  kassert(vmm_translate(va, &translated, &flags) == XAIOS_ERR_INVALID);
-  pmm_free_page(page);
-
   uint64_t process_tables[USER_ASPACE_L3_TABLES];
   uint32_t process_table_count = 0U;
   vmm_create_user_aspace(process_tables, USER_ASPACE_L3_TABLES,
@@ -564,15 +613,32 @@ void vmm_self_test(void) {
                             XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
                                 XAIOS_VMM_USER,
                             process_tables, process_table_count) == XAIOS_OK);
+  vmm_switch_user_aspace(process_tables, process_table_count);
+  uint64_t translated = 0U;
+  uint32_t flags = 0U;
+  kassert(vmm_translate(boundary_va, &translated, &flags) == XAIOS_OK);
+  kassert(translated == (uint64_t)(uintptr_t)boundary_page);
+  kassert((flags & (XAIOS_VMM_USER | XAIOS_VMM_WRITABLE)) ==
+          (XAIOS_VMM_USER | XAIOS_VMM_WRITABLE));
+  kassert(vmm_validate_range_flags(
+              boundary_va, 16U,
+              XAIOS_VMM_PRESENT | XAIOS_VMM_USER | XAIOS_VMM_WRITABLE,
+              XAIOS_VMM_EXECUTABLE) == XAIOS_OK);
+  kassert(vmm_validate_user_buffer(boundary_va, 16U,
+                                   XAIOS_VMM_WRITABLE) == XAIOS_OK);
   uint64_t *second_code_table =
       (uint64_t *)(uintptr_t)process_tables[1];
   kassert((second_code_table[0] & PTE_VALID) != 0U);
   kassert(vmm_unmap_user_page(boundary_va, process_tables,
                               process_table_count) == XAIOS_OK);
   kassert(second_code_table[0] == 0U);
+  invalidate_tlb_page(boundary_va);
+  kassert(vmm_translate(boundary_va, &translated, &flags) ==
+          XAIOS_ERR_INVALID);
+  vmm_switch_user_aspace(0, 0U);
   pmm_free_page(boundary_page);
   vmm_destroy_user_aspace(process_tables, process_table_count);
-  klog("VMM map/unmap self-test passed\n");
+  klog("VMM map/unmap self-test passed mode=per-cpu-user-aspace\n");
 }
 
 /* --- Per-process address space APIs --- */
@@ -663,22 +729,8 @@ xaios_status_t vmm_unmap_user_page(uint64_t virtual_address,
 }
 
 void vmm_switch_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
-  /* Get the L2 table that covers the user VA range */
-  uint64_t user_va = XAIOS_USER_BASE;
-  uint64_t l0_index = (user_va >> 39) & 0x1ffU;
-  uint64_t l1_index = (user_va >> 30) & 0x1ffU;
-
-  uint64_t l0_desc = g_l0_table[l0_index];
-  if ((l0_desc & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE)) {
-    return;
-  }
-  uint64_t *l1 = (uint64_t *)(uintptr_t)(l0_desc & PTE_ADDR_MASK);
-
-  uint64_t l1_desc = l1[l1_index];
-  if ((l1_desc & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE)) {
-    return;
-  }
-  uint64_t *l2 = (uint64_t *)(uintptr_t)(l1_desc & PTE_ADDR_MASK);
+  uint64_t *l2 = current_user_directory();
+  kassert(l2 != 0);
 
   /* Clear every owned slot before installing the next process. */
   l2[USER_CODE_L2_INDEX] = 0;

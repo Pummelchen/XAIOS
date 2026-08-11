@@ -91,6 +91,7 @@ xaios_status_t user_process_run_transient(
     int *exit_code);
 void user_process_reclaim_address_space(const xaios_user_process_t *process);
 xaios_status_t user_process_reap(uint32_t pid);
+xaios_status_t user_process_terminate(uint32_t pid, int exit_code);
 void user_switch_address_space(uint32_t pid);
 uint64_t user_process_transition_count(void);
 uint64_t user_process_loaded_count(void);

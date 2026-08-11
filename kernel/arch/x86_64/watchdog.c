@@ -1,4 +1,5 @@
 #include <xaios/assert.h>
+#include <xaios/arch_power.h>
 #include <xaios/klog.h>
 #include <xaios/mutable_fs.h>
 #include <xaios/timer.h>
@@ -6,10 +7,6 @@
 
 static uint64_t g_watchdog_deadline_ns;
 static uint32_t g_watchdog_active;
-
-static inline void outw(uint16_t port, uint16_t value) {
-  __asm__ volatile("outw %0, %1" : : "a"(value), "Nd"(port) : "memory");
-}
 
 void watchdog_init(void) {
   g_watchdog_deadline_ns =
@@ -29,10 +26,8 @@ void watchdog_kick(void) {
 
 void watchdog_trigger_reset(void) {
   g_watchdog_active = 0U;
-  klog("watchdog: triggering QEMU ACPI reset\n");
-  __asm__ volatile("cli" ::: "memory");
-  outw(UINT16_C(0x604), UINT16_C(0x2000));
-  for (;;) __asm__ volatile("hlt");
+  klog("watchdog: triggering architecture reset\n");
+  arch_reboot();
 }
 
 uint32_t watchdog_is_active(void) { return g_watchdog_active; }

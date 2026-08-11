@@ -593,6 +593,17 @@ xaios_update_delivery_status_t update_delivery_status(void) {
   return g_delivery;
 }
 
+xaios_update_status_t update_status_snapshot(void) {
+  xaios_update_status_t status;
+  bytes_zero(&status, sizeof(status));
+  status.active = g_update.active;
+  status.generation = g_update.generation;
+  status.state = (uint32_t)g_update.state;
+  copy_token(status.target, sizeof(status.target), g_update.target);
+  status.delivery = g_delivery;
+  return status;
+}
+
 void update_delivery_self_test(void) {
   xaios_update_transaction_t saved_update = g_update;
   xaios_update_delivery_status_t saved_delivery = g_delivery;

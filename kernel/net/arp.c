@@ -252,6 +252,19 @@ uint64_t arp_cache_count(void) {
   return count;
 }
 
+xaios_status_t arp_cache_snapshot(uint32_t index, xaios_arp_entry_t *entry) {
+  uint32_t ordinal = 0U;
+  if (entry == 0) return XAIOS_ERR_INVALID;
+  for (uint32_t i = 0U; i < XAIOS_ARP_CACHE_SIZE; ++i) {
+    if (g_arp_cache[i].active == 0U) continue;
+    if (ordinal++ == index) {
+      *entry = g_arp_cache[i];
+      return XAIOS_OK;
+    }
+  }
+  return XAIOS_ERR_NOT_FOUND;
+}
+
 void arp_self_test(void) {
   arp_init();
   kassert(arp_cache_count() == 0);

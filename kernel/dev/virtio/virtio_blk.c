@@ -108,6 +108,9 @@ typedef struct virtio_block_driver {
 } virtio_block_driver_t;
 
 static virtio_block_driver_t *g_blk;
+static volatile uint32_t g_interrupt_canary_complete = 1U;
+static xaios_status_t g_interrupt_canary_status;
+static uint64_t g_interrupt_canary_baseline;
 static uint8_t *g_boot_memory_base;
 static uint64_t g_boot_memory_size;
 
@@ -250,8 +253,7 @@ static xaios_status_t configure_queue(virtio_block_driver_t *drv) {
           &drv->device,
           VIRTIO_BLK_F_RO | VIRTIO_BLK_F_BLK_SIZE | VIRTIO_BLK_F_FLUSH |
               VIRTIO_BLK_F_TOPOLOGY | VIRTIO_BLK_F_DISCARD |
-              VIRTIO_BLK_F_WRITE_ZEROES | VIRTIO_F_RING_INDIRECT_DESC |
-              VIRTIO_F_RING_EVENT_IDX,
+              VIRTIO_BLK_F_WRITE_ZEROES | VIRTIO_F_RING_INDIRECT_DESC,
           VIRTIO_F_VERSION_1_HIGH,
           &accepted_low, &accepted_high) != XAIOS_OK ||
       (accepted_high & VIRTIO_F_VERSION_1_HIGH) == 0U) {
@@ -447,8 +449,8 @@ static xaios_status_t submit_sector_h(
   drv->avail->idx = drv->next_avail;
   ++drv->outstanding;
   *token = slot->token;
-  virtio_transport_notify(&drv->device, 0U);
   xaios_spin_unlock(&drv->queue_lock);
+  virtio_transport_notify(&drv->device, 0U);
   return XAIOS_OK;
 }
 
@@ -575,6 +577,15 @@ static void sync_completion(uint64_t token, xaios_status_t status,
   __atomic_store_n(&wait->complete, 1U, __ATOMIC_RELEASE);
 }
 
+static void interrupt_canary_completion(uint64_t token,
+                                        xaios_status_t status,
+                                        void *context) {
+  (void)token;
+  (void)context;
+  g_interrupt_canary_status = status;
+  __atomic_store_n(&g_interrupt_canary_complete, 1U, __ATOMIC_RELEASE);
+}
+
 static xaios_status_t wait_sync(virtio_block_driver_t *drv,
                                 virtio_block_sync_wait_t *wait) {
   uint64_t started = timer_now_ns();
@@ -632,8 +643,8 @@ static xaios_status_t flush_h(virtio_block_driver_t *drv) {
   virtio_mmio_barrier();
   ++drv->next_avail;
   drv->avail->idx = drv->next_avail;
-  virtio_transport_notify(&drv->device, 0U);
   xaios_spin_unlock(&drv->queue_lock);
+  virtio_transport_notify(&drv->device, 0U);
   if (virtio_transport_wait_used(&drv->used->idx, used_target) != XAIOS_OK) {
     klog("virtio-blk: flush completion timeout avail=%u used=%u target=%u\n",
          drv->next_avail, drv->used->idx, used_target);
@@ -704,8 +715,8 @@ static xaios_status_t range_command_h(virtio_block_driver_t *drv,
   virtio_mmio_barrier();
   ++drv->next_avail;
   drv->avail->idx = drv->next_avail;
-  virtio_transport_notify(&drv->device, 0U);
   xaios_spin_unlock(&drv->queue_lock);
+  virtio_transport_notify(&drv->device, 0U);
   if (virtio_transport_wait_used(&drv->used->idx, used_target) != XAIOS_OK) {
     klog("virtio-blk: range completion timeout type=%u sector=%lu count=%u\n",
          type, sector, sector_count);
@@ -851,6 +862,46 @@ uint64_t virtio_block_capacity_sectors(void) {
 
 uint64_t virtio_block_interrupt_count(void) {
   return g_blk == 0 ? 0U : g_blk->interrupt_count;
+}
+
+xaios_status_t virtio_block_interrupt_canary_arm(uint64_t sector,
+                                                 void *buffer,
+                                                 uint64_t buffer_size) {
+  uint64_t token = 0U;
+  if (g_blk == 0 || g_blk->initialized == 0U || g_blk->memory_backed != 0U ||
+      buffer == 0 || buffer_size < SECTOR_SIZE ||
+      __atomic_load_n(&g_interrupt_canary_complete, __ATOMIC_ACQUIRE) == 0U)
+    return XAIOS_ERR_INVALID;
+  if (recover_queue(g_blk) != XAIOS_OK) return XAIOS_ERR_IO;
+  g_interrupt_canary_baseline = g_blk->interrupt_count;
+  g_interrupt_canary_status = XAIOS_ERR_IO;
+  __atomic_store_n(&g_interrupt_canary_complete, 0U, __ATOMIC_RELEASE);
+  xaios_status_t status = submit_sector_h(
+      g_blk, sector, buffer, buffer_size, VIRTIO_BLK_T_IN,
+      interrupt_canary_completion, 0, &token);
+  if (status != XAIOS_OK)
+    __atomic_store_n(&g_interrupt_canary_complete, 1U, __ATOMIC_RELEASE);
+  (void)token;
+  return status;
+}
+
+xaios_status_t virtio_block_interrupt_canary_wait(uint64_t timeout_ns) {
+  uint64_t started = timer_now_ns();
+  if (g_blk == 0 || timeout_ns == 0U ||
+      __atomic_load_n(&g_interrupt_canary_complete, __ATOMIC_ACQUIRE) != 0U)
+    return XAIOS_ERR_INVALID;
+  while (__atomic_load_n(&g_interrupt_canary_complete,
+                         __ATOMIC_ACQUIRE) == 0U) {
+    if (timer_now_ns() - started >= timeout_ns) {
+      (void)recover_queue(g_blk);
+      return XAIOS_ERR_IO;
+    }
+    xaios_cpu_relax();
+  }
+  if (g_interrupt_canary_status != XAIOS_OK ||
+      g_blk->interrupt_count <= g_interrupt_canary_baseline)
+    return XAIOS_ERR_IO;
+  return XAIOS_OK;
 }
 
 static xaios_status_t transfer_sector_h(virtio_block_driver_t *drv,

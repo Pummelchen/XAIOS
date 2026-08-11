@@ -11,6 +11,7 @@
 - [[Filesystem and Storage|Filesystem-and-Storage]]
 - [[Networking and SSH|Networking-and-SSH]]
 - [[Administration|Administration]]
+- [[Operations and Recovery|Operations-and-Recovery]]
 
 ## Reference
 

@@ -6,6 +6,7 @@
 #include <xaios/klog.h>
 #include <xaios/klog_ring.h>
 #include <xaios/mutable_fs.h>
+#include <xaios/operations.h>
 #include <xaios/pmm.h>
 #include <xaios/remote_login.h>
 #include <xaios/scheduler.h>
@@ -5620,10 +5621,15 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
         "XAIOS shell: pwd ls l la ll cd mkdir touch cp grep find head tail echo "
         "tar zip unzip cpio cat less mv rm rmdir stat df du ps write sed nano htop pong "
         "ssh scp status sysinfo "
+        "shutdown reboot power service kill ifconfig route arp ndp netstat "
+        "ping nslookup date ntp limits recovery update config support "
         "hello systest smptest nettest lstm-xor mltest posix-shell agenttest "
         "xaiosctl exit "
         "quit logout help\n");
     return XAIOS_OK;
+  }
+  if (operations_is_command(command) != 0U) {
+    return operations_execute(command, output, output_capacity, output_bytes);
   }
   if (string_equal(cmd, "status") == 1U) {
     output_append(output, output_capacity, output_bytes,
@@ -5924,6 +5930,16 @@ xaios_status_t remote_login_execute(const char *user, const char *command,
   if (security_reject_credential_material(command) != XAIOS_OK) {
     ++g_remote_login_denials;
     klog("remote-login: denied user=%s reason=secret-material\n", user);
+    return XAIOS_ERR_INVALID;
+  }
+  if (operations_rescue_mode() != 0U &&
+      operations_command_allowed_in_rescue(command) == 0U) {
+    ++g_remote_login_denials;
+    output[0] = '\0';
+    *output_bytes = 0U;
+    output_append(output, output_capacity, output_bytes,
+                  "xaios: rescue mode permits diagnostics and filesystem "
+                  "repair commands only\n");
     return XAIOS_ERR_INVALID;
   }
 

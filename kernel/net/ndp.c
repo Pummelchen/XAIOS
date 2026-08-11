@@ -675,6 +675,19 @@ uint64_t ndp_cache_count(void) {
   return count;
 }
 
+xaios_status_t ndp_cache_snapshot(uint32_t index, xaios_ndp_entry_t *entry) {
+  uint32_t ordinal = 0U;
+  if (entry == 0) return XAIOS_ERR_INVALID;
+  for (uint32_t i = 0U; i < XAIOS_NDP_CACHE_SIZE; ++i) {
+    if (g_ndp_cache[i].active == 0U) continue;
+    if (ordinal++ == index) {
+      *entry = g_ndp_cache[i];
+      return XAIOS_OK;
+    }
+  }
+  return XAIOS_ERR_NOT_FOUND;
+}
+
 void ndp_self_test(void) {
   ndp_init();
   /* Set a baseline time for tests */

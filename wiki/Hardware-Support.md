@@ -5,7 +5,7 @@
 | Target | Current status |
 |---|---|
 | QEMU AArch64 `virt` | Complete core-OS correctness target with UEFI, SMP, GIC, VirtIO, SMMUv3 gates, filesystems, network, SSH/SFTP, and userspace. |
-| QEMU x86_64 `q35` | Common kernel/userspace service parity with AArch64, including ACPI/MADT AP startup, xAPIC, XSAVE/FXSAVE, PCI VirtIO, MSI-X, network, SSH/SFTP, storage, and userspace. |
+| QEMU x86_64 `q35` | Common kernel/userspace service parity with AArch64, including ACPI/MADT AP startup, xAPIC, XSAVE/FXSAVE, PCI VirtIO, network, SSH/SFTP, storage, and userspace. Block MSI-X setup is exercised, with bounded polling when a post-reset edge is not delivered. |
 | VMware Fusion ARM64 | Limited boot path through the UEFI/GRUB compatibility stage to `/init`; no VMware NIC, persistent-disk driver, or multi-vCPU discovery. |
 
 QEMU CPU-count gates cover 1 through 256 emulated CPUs and a focused 130-CPU

@@ -7,6 +7,8 @@
 #include <xaios/thread.h>
 #include <xaios/vmm.h>
 
+#include "platform.h"
+
 #define PSCI_0_2_FN64_CPU_ON UINT64_C(0xc4000003)
 #define WORKER_SGI_INTID UINT64_C(1)
 #define SECONDARY_STACK_SIZE 16384U
@@ -100,6 +102,24 @@ uint32_t smp_cpu_id(void) {
   }
   return UINT32_MAX;
 }
+
+void aarch64_platform_set_page_tables(uint32_t ordinal, uint64_t *root,
+                                      uint64_t *user_directory) {
+  if (ordinal >= g_cpu_capacity) return;
+  g_cpu_states[ordinal].page_table_root = root;
+  g_cpu_states[ordinal].user_page_directory = user_directory;
+}
+
+uint64_t *aarch64_platform_page_table_root(uint32_t ordinal) {
+  return ordinal < g_cpu_capacity ? g_cpu_states[ordinal].page_table_root : 0;
+}
+
+uint64_t *aarch64_platform_user_page_directory(uint32_t ordinal) {
+  return ordinal < g_cpu_capacity ? g_cpu_states[ordinal].user_page_directory
+                                  : 0;
+}
+
+uint32_t aarch64_platform_current_ordinal(void) { return smp_cpu_id(); }
 
 xaios_status_t smp_wake_cpu(uint32_t cpu_id) {
   if (cpu_id >= g_cpu_capacity || g_cpu_states[cpu_id].online == 0U ||

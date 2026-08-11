@@ -23,6 +23,7 @@ EXPECTED_PAGES = {
     "Hardware-Support.md",
     "Home.md",
     "Networking-and-SSH.md",
+    "Operations-and-Recovery.md",
     "Project-Tracker.md",
     "Security-Model.md",
     "Testing-XAIOS.md",

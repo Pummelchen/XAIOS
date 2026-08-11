@@ -13,6 +13,8 @@ static uint64_t g_lapic_frequency;
 static uint64_t g_wall_epoch;
 static uint64_t g_wall_monotonic_base;
 static uint32_t g_wall_calibrated;
+static uint32_t g_wall_source;
+static uint64_t g_wall_last_sync_ns;
 static uint32_t g_periodic_active;
 static xaios_context_frame_t g_irq_frame;
 
@@ -26,6 +28,11 @@ static uint64_t ticks_to_ns(uint64_t ticks) {
 }
 
 void timer_init(void) {
+  g_wall_epoch = 0U;
+  g_wall_monotonic_base = 0U;
+  g_wall_calibrated = 0U;
+  g_wall_source = 0U;
+  g_wall_last_sync_ns = 0U;
   g_frequency = x86_64_platform_tsc_hz();
   g_lapic_frequency = x86_64_platform_lapic_hz();
   if (g_frequency == 0U) g_frequency = UINT64_C(1000000000);
@@ -77,9 +84,30 @@ void wall_time_calibrate(void) {
   g_wall_epoch = rtc_read_epoch();
   g_wall_monotonic_base = timer_now_ns();
   g_wall_calibrated = 1U;
+  g_wall_source = 1U;
+  g_wall_last_sync_ns = timer_now_ns();
   klog("timer: wall time calibrated epoch=%lu mono_base=%lu\n", g_wall_epoch,
        g_wall_monotonic_base);
 }
+
+xaios_status_t wall_time_set_ns(uint64_t epoch_ns, uint32_t source) {
+  uint64_t now_ns;
+  uint64_t fractional_ns;
+  if (epoch_ns < UINT64_C(946684800000000000) || source == 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  now_ns = timer_now_ns();
+  fractional_ns = epoch_ns % UINT64_C(1000000000);
+  g_wall_epoch = epoch_ns / UINT64_C(1000000000);
+  g_wall_monotonic_base = now_ns >= fractional_ns ? now_ns - fractional_ns : 0U;
+  g_wall_calibrated = 1U;
+  g_wall_source = source;
+  g_wall_last_sync_ns = now_ns;
+  return XAIOS_OK;
+}
+
+uint32_t wall_time_source(void) { return g_wall_source; }
+uint64_t wall_time_last_sync_ns(void) { return g_wall_last_sync_ns; }
 
 uint64_t wall_time_now_ns(void) {
   if (g_wall_calibrated == 0U) return timer_now_ns();

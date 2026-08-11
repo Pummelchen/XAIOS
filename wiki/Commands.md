@@ -75,6 +75,29 @@ exchange archives, not model packages.
 The clients do not implement public-key client authentication, IPv6 active
 opens, forwarding, agents, jump hosts, or hybrid post-quantum key exchange.
 
+## Operations and diagnostics
+
+| Command | Supported core behavior |
+|---|---|
+| `shutdown` / `reboot` | Persist lifecycle intent, flush logs and block devices, then power off or reset through the architecture backend. |
+| `power status` | Show running/quiescing and boot-ready state. |
+| `service list|status|start|stop|restart` | Inspect or control the bounded kernel service registry with capability checks. |
+| `kill PID` | Terminate and reclaim a non-running transient process; PID 1/2 and the current process are protected. |
+| `ifconfig` | Show the active VirtIO interface, IPv4 address, netmask, MTU, and MAC. |
+| `route`, `arp`, `ndp`, `netstat` | Show bounded routing, neighbor, packet, flow, drop, and resolver state. |
+| `ping IP`, `ping status` | Start a validated asynchronous ICMP echo and inspect its result/RTT. |
+| `nslookup NAME` | Start or read an asynchronous DNS A-record lookup. |
+| `date`, `date -s EPOCH` | Show epoch/source or set a validated UTC epoch in seconds. |
+| `ntp sync [IP]`, `ntp status` | Start a bounded SNTP exchange or inspect source, attempts, stratum, RTT, timeout, and error state. |
+| `limits` | Show normal/warning/critical pressure plus memory, heap, process, filesystem, and CPU capacity. |
+| `recovery status|enter|clear` | Inspect unclean boots or manage the persistent rescue marker. |
+| `update status|rollback` | Inspect the signed update transaction or invoke its authorized rollback path. |
+| `config export|import PATH` | Round-trip canonical configuration through the validated transactional admin path. |
+| `support` | Emit a redacted build/lifecycle/clock/resource/network/log bundle suitable for host-side capture. |
+
+Power, lifecycle, and recovery details are in
+[[Operations and Recovery|Operations-and-Recovery]].
+
 ## Session control and errors
 
 `help` prints the available surface. `exit`, `quit`, and `logout` end the

@@ -76,7 +76,7 @@ CONTRACT_CAPABILITIES = {
     "x86_ring3_syscall",
     "x86_xsave_state",
     "x86_virtio_dma",
-    "x86_msix_completion",
+    "x86_block_completion",
     "x86_full_service_stack",
     "engine_service_boundary",
     "immutable_model_mapping",

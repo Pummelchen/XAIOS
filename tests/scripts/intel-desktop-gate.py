@@ -12,7 +12,7 @@ REPORT_PATH = Path("build/intel-desktop-gate-report.json")
 REQUIRED_MARKERS = [
     "x86_64: SMP AP startup passed online=",
     "topology: initialized ",
-    "virtio-blk: x86 MSI-X completion canary passed count=",
+    "virtio-blk: x86 completion canary passed mode=",
     "scheduler: SIMD/FP interrupt preservation passed",
     "kernel: /bin/service-manager returned to kernel exit_code=0",
     "sshd: Phase 2 runtime ready",

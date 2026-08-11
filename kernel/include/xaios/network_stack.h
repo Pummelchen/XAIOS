@@ -10,6 +10,22 @@
 #define XAIOS_NETWORK_PROTOCOL_UDP UINT64_C(17)
 #define XAIOS_NETWORK_PROTOCOL_TCP UINT64_C(6)
 
+typedef enum xaios_network_ping_state {
+  XAIOS_NETWORK_PING_IDLE = 0,
+  XAIOS_NETWORK_PING_PENDING = 1,
+  XAIOS_NETWORK_PING_REPLIED = 2,
+  XAIOS_NETWORK_PING_TIMEOUT = 3,
+  XAIOS_NETWORK_PING_FAILED = 4,
+} xaios_network_ping_state_t;
+
+typedef struct xaios_network_ping_status {
+  xaios_network_ping_state_t state;
+  uint32_t target_ip;
+  uint32_t attempts;
+  uint64_t round_trip_ns;
+  xaios_status_t last_error;
+} xaios_network_ping_status_t;
+
 typedef enum xaios_network_flow_state {
   XAIOS_NETWORK_FLOW_FREE = 0,
   XAIOS_NETWORK_FLOW_SYN_RECV = 1,
@@ -98,6 +114,10 @@ uint64_t network_arp_reply_sent_count(void);
 uint64_t network_icmpv6_reply_count(void);
 uint64_t network_ndp_reply_count(void);
 uint64_t network_ipv6_rx_count(void);
+uint32_t network_stack_local_ipv4(void);
+xaios_status_t network_stack_local_mac(uint8_t mac[6]);
+xaios_status_t network_stack_ping_start(uint32_t target_ip);
+xaios_network_ping_status_t network_stack_ping_status(void);
 
 /* Data plane: TCP send/close */
 xaios_status_t network_stack_tcp_send(uint32_t flow_id, const uint8_t *data,

@@ -26,6 +26,14 @@ typedef struct xaios_update_delivery_status {
   xaios_status_t last_error;
 } xaios_update_delivery_status_t;
 
+typedef struct xaios_update_status {
+  uint32_t active;
+  uint32_t generation;
+  uint32_t state;
+  char target[XAIOS_UPDATE_TARGET_MAX];
+  xaios_update_delivery_status_t delivery;
+} xaios_update_status_t;
+
 void update_runtime_init(void);
 xaios_status_t update_begin(uint32_t generation, const char *target,
                            const char *signature);
@@ -40,6 +48,7 @@ xaios_status_t update_verify_hash(const uint8_t expected_hash[32]);
 xaios_status_t update_parse_manifest(const char *manifest_data, uint32_t size,
                                      xaios_update_manifest_t *out);
 xaios_update_delivery_status_t update_delivery_status(void);
+xaios_update_status_t update_status_snapshot(void);
 void update_delivery_self_test(void);
 
 uint64_t update_transaction_count(void);

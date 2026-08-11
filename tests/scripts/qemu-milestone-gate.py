@@ -185,10 +185,10 @@ GATES = {
         "report": "qemu-milestone-68-update-gate.json",
         "name": "update",
         "markers": [
-            "update: transaction begin generation=2 target=/system/xaios rollback=update-rp",
+            "update: transaction begin generation=2 target=/fixture/xaios rollback=update-rp",
             "update: boot fallback recovered generation=2 rollback=update-rp",
-            "update: committed generation=3 target=/system/xaios",
-            "update: rollback complete generation=3 target=/system/xaios",
+            "update: committed generation=3 target=/fixture/xaios",
+            "update: rollback complete generation=3 target=/fixture/xaios",
             "update: self-test passed transactions=2 staged=2 committed=1 failed=1 recovered=1 rollbacks=1 boot_fallbacks=1 records=8 rollback_points=2 rejects=2",
         ],
         "minimums": {

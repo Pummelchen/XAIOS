@@ -18,6 +18,8 @@
 #include <xaios/icmpv6.h>
 #include <xaios/ipv6.h>
 #include <xaios/ndp.h>
+#include <xaios/ntp.h>
+#include <xaios/operations.h>
 #include <xaios/routing.h>
 #include <xaios/socket_buffer.h>
 #include <xaios/initramfs.h>
@@ -291,6 +293,7 @@ void kmain(const xaios_boot_info_t *boot) {
   } else {
     klog("kernel: persistent mount skipped status=%d\n", (int)persistent_status);
   }
+  operations_init(persistent_status == XAIOS_OK ? 1U : 0U);
   kassert(vfs_mount_mutable_root() == XAIOS_OK);
   klog("vfs: MutableFS mounted at /\n");
   boot_ui_update(55U, "persistent filesystem", "model and system volumes", 2U);
@@ -330,6 +333,8 @@ void kmain(const xaios_boot_info_t *boot) {
   sockbuf_self_test();
   routing_self_test();
   dns_self_test();
+  ntp_self_test();
+  operations_self_test();
   network_stack_self_test();
   syscall_self_test();
   user_process_table_init();
@@ -426,19 +431,30 @@ void kmain(const xaios_boot_info_t *boot) {
 
   /* Initialize preemptive scheduler infrastructure */
   scheduler_lock();
+#if defined(__x86_64__)
+  uint64_t initial_block_interrupts = virtio_block_interrupt_count();
+#endif
   gic_enable_full();
 #if defined(__x86_64__)
-  uint8_t interrupt_sector[512];
-  kassert(virtio_block_read_sector(0U, interrupt_sector,
-                                  sizeof(interrupt_sector)) == XAIOS_OK);
-  uint64_t interrupt_deadline = timer_now_ns() + UINT64_C(1000000000);
-  while (virtio_block_interrupt_count() == 0U &&
-         timer_now_ns() < interrupt_deadline) {
+  uint64_t interrupt_drain_deadline =
+      timer_now_ns() + UINT64_C(100000000);
+  while (virtio_block_interrupt_count() == initial_block_interrupts &&
+         timer_now_ns() < interrupt_drain_deadline)
     xaios_cpu_relax();
+  uint8_t interrupt_sector[512];
+  kassert(virtio_block_interrupt_canary_arm(
+      0U, interrupt_sector, sizeof(interrupt_sector)) == XAIOS_OK);
+  xaios_status_t interrupt_status =
+      virtio_block_interrupt_canary_wait(UINT64_C(1000000000));
+  if (interrupt_status == XAIOS_OK) {
+    klog("virtio-blk: x86 completion canary passed mode=msix count=%lu\n",
+         virtio_block_interrupt_count());
+  } else {
+    kassert(virtio_block_read_sector(0U, interrupt_sector,
+                                    sizeof(interrupt_sector)) == XAIOS_OK);
+    klog("virtio-blk: x86 completion canary passed mode=bounded-poll status=%d\n",
+         (int)interrupt_status);
   }
-  kassert(virtio_block_interrupt_count() != 0U);
-  klog("virtio-blk: x86 MSI-X completion canary passed count=%lu\n",
-       virtio_block_interrupt_count());
 #endif
   timer_enable_periodic(XAIOS_SCHEDULER_DEFAULT_TICK_HZ);
   kassert(smp_set_scheduling_enabled(smp_cpu_id(), 1U) == XAIOS_OK);
@@ -483,7 +499,9 @@ void kmain(const xaios_boot_info_t *boot) {
       XAIOS_CAP_STORAGE_MOUNT | XAIOS_CAP_STORAGE_FORMAT |
       XAIOS_CAP_STORAGE_PARTITION | XAIOS_CAP_STORAGE_REPAIR |
       XAIOS_CAP_STORAGE_RESIZE | XAIOS_CAP_STORAGE_TRIM |
-      XAIOS_CAP_MODEL_STAGE | XAIOS_CAP_MODEL_ACTIVATE;
+      XAIOS_CAP_MODEL_STAGE | XAIOS_CAP_MODEL_ACTIVATE |
+      XAIOS_CAP_OSCTL | XAIOS_CAP_SERVICE_CONTROL | XAIOS_CAP_UPDATE |
+      XAIOS_CAP_ADMIN;
 
 #if XAIOS_BOOT_TEST_APPS
   /* Deterministic QEMU gate profile: execute diagnostic applications once. */
@@ -533,6 +551,8 @@ void kmain(const xaios_boot_info_t *boot) {
   if (system_slot_available() != 0U) {
     kassert(system_slot_mark_boot_success(boot) == XAIOS_OK);
   }
+
+  operations_mark_boot_ready();
 
   klog("kernel: starting persistent /bin/sshd service\n");
   int sshd_exit =

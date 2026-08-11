@@ -68,7 +68,7 @@ remain concise here; no secondary page owns their status.
 | P-07 | SVE/SVE2 backend | `NOT STARTED` | Capability IDs fail closed; no executing backend exists. |
 | P-08 | x86 AP startup and worker participation | `DONE` | MADT AP trampoline/IPI work and 1/4/8/128/256-vCPU matrices pass QEMU. |
 | P-09 | x86 ring 3, syscalls, and user threads | `DONE` | Common loader, per-CPU page tables, syscall ABI, and EL0 threads pass QEMU. |
-| P-10 | x86 PCI storage/network/NVMe/interrupts | `DONE` | PCI VirtIO, MSI-X, and focused emulated NVMe gates pass. |
+| P-10 | x86 PCI storage/network/NVMe/interrupts | `DONE` | PCI VirtIO, block MSI-X-or-bounded-poll completion, and focused emulated NVMe gates pass. Repeated post-reset MSI-X requires physical validation. |
 | P-11 | x86 full platform services | `DONE` | Filesystems, IPv4/IPv6, SSH/SFTP, control, security, AI Cell, and telemetry match ARM QEMU scope. |
 | P-12 | MADT/SRAT/SLIT/HMAT parsing | `DONE` | MADT passes QEMU; all four tables have hosted checksum/range tests. |
 | P-13 | XSAVE/XRSTOR state management | `DONE` | Runtime-sized XSAVE with FXSAVE fallback passes live-interrupt tests; AMX remains separate. |
@@ -92,6 +92,15 @@ remain concise here; no secondary page owns their status.
 | C-06 | Non-skipping aggregate core release gate | `DONE` | `make qemu-core-os-rc` reports each required component independently. |
 | C-07 | Security-sensitive syscall/user-buffer audit | `DONE` | Capability, ownership, snapshot, range, and bounded-I/O gates pass. |
 | C-08 | Professional bounded filesystem/PTY command surface | `DONE` | Local and concurrent SSH sessions pass create/copy/move/delete/archive/editor/process/error tests. |
+| C-09 | Orderly power lifecycle | `DONE` | AArch64 PSCI and x86 reset/ACPI paths persist intent, flush logs/devices, reboot, and power off in the focused QEMU gate. |
+| C-10 | Process and service controls | `DONE` | Authenticated list/status/start/stop/restart and protected bounded PID termination are implemented; PID 1/2/current cannot be killed. |
+| C-11 | Network diagnostics | `DONE` | Interface, route, ARP/NDP, packet/flow/drop counters, asynchronous ICMP, and DNS pass real-SSH QEMU checks. |
+| C-12 | Clock management and SNTP | `DONE` | RTC/manual source reporting plus validated SNTP request/reply/retry/timeout behavior pass parser and live QEMU gates. |
+| C-13 | Resource pressure behavior | `DONE` | Normal/warning/critical thresholds and underlying memory/process/filesystem/CPU counters pass self-tests and QEMU inspection. |
+| C-14 | Crash and recovery lifecycle | `DONE` | Abrupt QEMU termination is detected from persistent running state; forced/consecutive rescue policy and clean-state reset pass. |
+| C-15 | System update lifecycle operations | `DONE` | Existing signed stage/hash/commit/fail/fallback/rollback tests are exposed through status and authorized rollback operations. Production trust remains OD-004. |
+| C-16 | Configuration recovery and support bundles | `DONE` | Canonical text export/import uses the transactional admin path; support output is bounded and secret-redacted. |
+| C-17 | Long-duration and fault closure | `DONE` | Operations closure is combined with existing soak, fault injection, storage crash, boot-loop, and non-skipping aggregate gates. Physical soak remains P-05/P-14. |
 
 ## Core OS, network, and SSH phases
 
