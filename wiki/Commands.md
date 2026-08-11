@@ -2,8 +2,8 @@
 
 XAIOS provides a bounded FreeBSD-style command surface for authenticated local
 and SSH PTY sessions. These commands are implemented by the XAIOS shell/SSH
-subsystem; they are not standalone ELF applications. Executable applications
-are listed in [[Applications|Applications]].
+subsystem; they are not standalone applications. Executable and interactive
+applications are listed in [[Applications|Applications]].
 
 ## Navigation and files
 
@@ -61,9 +61,6 @@ exchange archives, not model packages.
 | `du [-s] [PATH]` | Report bounded recursive usage; `-s` prints a summary. |
 | `ps` | Show the kernel process snapshot, state, CPU assignment, memory, runtime, and syscall counters. |
 | `status` | Render the bounded administrative status view; detailed operations use the `xaiosctl` application family. |
-| `nano FILE` | Full-screen editor with cursor movement, insertion/deletion, save, search, and exit; editing buffer is 32 KiB. |
-| `htop` | Full-screen sampled process monitor. Defaults to color, alternate-screen in-place refresh, up to 60 refreshes/second, CPU meters sized from runtime CPU count, process sorting/filtering/tree controls, and keyboard navigation. Options remain available for test automation. |
-| `pong` | 60 FPS terminal Pong: `W`/`S` control the left paddle, the computer controls the right, and persistent-session win/loss counts adjust ball speed by one percent per round. |
 
 ## Outbound network clients
 
@@ -106,7 +103,7 @@ paths, unsupported archive features, authentication failures, and application
 exit failures return a nonzero status with command-specific text. Per-session
 working directories are isolated across concurrent SSH connections.
 
-Commands that are executable diagnostics (`hello`, `sysinfo`, `systest`, and
-others) are intentionally documented on [[Applications|Applications]], not
-duplicated here. Interoperability coverage is in
+Executable diagnostics and interactive terminal applications are intentionally
+documented on [[Applications|Applications]], not duplicated here.
+Interoperability coverage is in
 [[Testing XAIOS|Testing-XAIOS]].

@@ -1,11 +1,12 @@
 # Applications
 
-This page inventories executable images shipped in the XAIOS initfs. Programs
-are started through the kernel loader with explicit capabilities; arbitrary
-host binaries and FreeBSD/Linux binaries do not execute in XAIOS.
+This page inventories executable images and dedicated interactive applications
+shipped with XAIOS. Standalone programs are started through the kernel loader
+with explicit capabilities; arbitrary host binaries and FreeBSD/Linux binaries
+do not execute in XAIOS.
 
-Shell built-ins such as `ls`, `nano`, `htop`, `ssh`, and `scp` are documented
-separately in [[Commands|Commands]].
+Shell built-in commands such as `ls`, `ssh`, and `scp` are documented separately
+in [[Commands|Commands]].
 
 ## Boot and service applications
 
@@ -22,6 +23,19 @@ separately in [[Commands|Commands]].
 |---|---|
 | `/bin/xaiosctl` | Test client for the versioned `xaios.control.v1` administrative protocol. Exercises status, health, hardware, metrics, logs, configuration, identity, audit, storage, and ModelFS rendering/authorization paths. The interactive shell exposes the same bounded command family. |
 | `/bin/xaios-shell` | Scripted acceptance application for the remote-login command engine. It validates filesystem commands, archives, `nano`, and `htop`; it is not the persistent interactive shell process. |
+
+## Interactive terminal applications
+
+These are applications rather than shell commands. Their current implementation
+is packaged as dedicated state, input, and rendering modules inside `/bin/sshd`
+so the local console and SSH PTYs execute the same code. They do not yet have
+independent `/bin/*` ELF images.
+
+| Application | Runtime host | Purpose |
+|---|---|---|
+| `nano` | `/bin/sshd` | Full-screen editor with cursor movement, insertion/deletion, save, search, and exit. The editing buffer is limited to 32 KiB. |
+| `htop` | `/bin/sshd` | Full-screen sampled process monitor with color, alternate-screen in-place refresh, runtime-sized CPU meters, sorting, filtering, tree view, keyboard navigation, and a 60 FPS rendering cap. |
+| `pong` | `/bin/sshd` | 60 FPS terminal Pong. `W`/`S` control the left paddle, the computer controls the right, and session win/loss counts adjust ball speed by one percent per round. |
 
 ## Diagnostic applications
 
@@ -52,8 +66,10 @@ the normal image.
 
 - Diagnostic names are exact allowlist entries; paths, arguments, and arbitrary
   executable launch are rejected by the remote application dispatcher.
-- Interactive shell commands run inside the persistent SSH/local command
-  subsystem and are not separate ELF applications.
+- Built-in shell commands run inside the persistent SSH/local command subsystem.
+- Interactive terminal applications have dedicated lifecycle and UI modules,
+  but currently share the `/bin/sshd` host process rather than separate ELF
+  images.
 - A crashed or nonzero application reports a friendly command error and exit
   status; it does not remain as an active process.
 - Normal boot does not pre-run `hello`, `sysinfo`, `lstm-xor`, or the other

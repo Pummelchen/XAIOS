@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+INTERACTIVE_APPLICATIONS = {"htop", "nano", "pong"}
 
 
 def main() -> int:
@@ -40,9 +41,15 @@ def main() -> int:
         shell_commands = set(help_text.split())
 
     app_commands = user_apps - {"xaios-shell", "sshtest"}
-    for command in sorted(shell_commands - app_commands):
+    built_in_commands = shell_commands - app_commands - INTERACTIVE_APPLICATIONS
+    for command in sorted(built_in_commands):
         if f"`{command}" not in commands_doc and f" `{command}`" not in commands_doc:
             failures.append(f"Commands.md missing built-in {command}")
+    for app in sorted(INTERACTIVE_APPLICATIONS):
+        if f"| `{app}` |" not in apps_doc:
+            failures.append(f"Applications.md missing interactive application {app}")
+        if re.search(rf"^\| `{re.escape(app)}(?:[ `])", commands_doc, re.MULTILINE):
+            failures.append(f"Commands.md lists interactive application {app}")
     if "[[Commands|Commands]]" not in apps_doc or "[[Applications|Applications]]" not in commands_doc:
         failures.append("Applications and Commands pages are not cross-referenced")
 
@@ -53,7 +60,8 @@ def main() -> int:
         return 1
     print(
         f"user-docs: documented {len(all_apps)} executable images and "
-        f"{len(shell_commands - app_commands)} built-in commands"
+        f"{len(INTERACTIVE_APPLICATIONS)} interactive applications and "
+        f"{len(built_in_commands)} built-in commands"
     )
     return 0
 
