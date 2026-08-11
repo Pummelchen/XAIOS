@@ -83,7 +83,7 @@ make qemu-smoke
 
 Update, storage, SSH, administration, or network changes also require their
 focused gates and the external interoperability suites described in
-[[Testing and Benchmarking|Testing-and-Benchmarking]].
+[[Testing XAIOS|Testing-XAIOS]].
 
 ## Secret handling
 

@@ -32,10 +32,6 @@ def main() -> int:
             failures.append(f"tracker must contain one row for P-{entry['id']:02d}")
         elif not any(f"`{status}`" in rows[0] for status in ALLOWED):
             failures.append(f"P-{entry['id']:02d} uses an unknown progress status")
-    for redirect in ("HARDWARE-READINESS.md", "wiki/Platform-Support.md"):
-        redirect_text = (ROOT / redirect).read_text(encoding="utf-8")
-        if "Project-Tracker" not in redirect_text and "project tracker" not in redirect_text:
-            failures.append(f"{redirect}: missing canonical tracker link")
     if failures:
         print("platform-support: failed")
         for failure in failures:

@@ -35,13 +35,14 @@ REQUIRED = {
         "complete common process/thread",
         "QEMU parity is not a physical support claim",
     ],
-    "wiki/Home.md": [
+    "wiki/Filesystem-and-Storage.md": [
         "eight-request block batching",
-        "IPv4/IPv6 reassembly",
+    ],
+    "wiki/Hardware-Support.md": [
         "MADT-discovered application processors",
         "QEMU service parity with AArch64",
     ],
-    "wiki/Production-SSH-Server.md": [
+    "wiki/Networking-and-SSH.md": [
         "out-of-order",
         "IPv4/IPv6 fragment reassembly",
     ],

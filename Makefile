@@ -364,6 +364,7 @@ model-v2-test: hosted-test
 
 docs-check:
 	python3 tests/scripts/check-test-layout.py
+	python3 tests/scripts/check-wiki-layout.py
 	python3 tests/scripts/check-user-docs.py
 	python3 tests/scripts/check-model-support.py
 	python3 tests/scripts/check-platform-support.py

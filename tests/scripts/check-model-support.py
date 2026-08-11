@@ -33,14 +33,6 @@ def main() -> int:
     for entry in registry.get("models", []):
         if not tracked(text, entry["name"]):
             failures.append(f"tracker missing model status: {entry['name']}")
-    for redirect in (
-        "PROJECT-TRACKER.md",
-        "docs/QWEN-K3-IMPLEMENTATION-ROADMAP.md",
-        "wiki/Model-Support-Roadmap.md",
-    ):
-        redirect_text = (ROOT / redirect).read_text(encoding="utf-8")
-        if "Project-Tracker" not in redirect_text and "project tracker" not in redirect_text:
-            failures.append(f"{redirect}: missing canonical tracker redirect")
     if failures:
         for failure in failures:
             print(f"model-support: {failure}")

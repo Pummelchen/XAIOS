@@ -7,8 +7,9 @@ tracker.
 ## Getting Started
 
 See [Getting Started](docs/GETTING-STARTED.md) for toolchain setup, building,
-and running. The [Developer Guide](https://github.com/Pummelchen/XAIOS/wiki/Developer-Guide)
-contains the repository map, change procedures, and validation matrix.
+running, and userspace application development. The
+[testing guide](https://github.com/Pummelchen/XAIOS/wiki/Testing-XAIOS)
+documents validation tiers and external interoperability suites.
 
 ## Documentation
 

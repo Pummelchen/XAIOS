@@ -66,4 +66,5 @@ artifacts under `build/`.
 
 Hosted and QEMU results prove only the behavior named by each gate. QEMU timing
 does not establish physical performance, durability, NUMA behavior, or hardware
-support. See `docs/BENCHMARK-CONTRACT.md` and the Wiki Test Suite page.
+support. See `docs/BENCHMARK-CONTRACT.md` and the Wiki
+[`Testing XAIOS`](../wiki/Testing-XAIOS.md) page.

@@ -53,7 +53,7 @@ def main() -> int:
                     f"{path.relative_to(ROOT)}: test image source is outside tests/: {source}"
                 )
 
-    required_docs = (TESTS / "README.md", ROOT / "wiki/Test-Suite.md")
+    required_docs = (TESTS / "README.md", ROOT / "wiki/Testing-XAIOS.md")
     for path in required_docs:
         if not path.is_file():
             failures.append(f"missing test documentation: {path.relative_to(ROOT)}")

@@ -1,97 +1,70 @@
-# XAIOS Wiki
+# XAIOS
 
-This directory mirrors selected pages from the live GitHub Wiki. Current source
-and build/test configuration take precedence over older Wiki revisions. All
-human project status is maintained in [[Project Tracker|Project-Tracker]].
+XAIOS is a freestanding Unix-like operating system for dedicated AI and
+high-performance server workloads. It boots on AArch64 and x86_64 under QEMU,
+provides a native kernel/userspace ABI, persistent filesystems, IPv4/IPv6,
+OpenSSH-compatible SSH/SFTP, local and remote shells, administration controls,
+and a portable inference-engine foundation.
 
-XAIOS is an experimental operating system and portable inference-engine
-foundation. Its current QEMU paths validate deterministic OS/runtime contracts;
-they do not prove real-model inference or physical-hardware performance.
+XAIOS is not Linux or FreeBSD and does not run their binaries. FreeBSD is the
+primary Unix behavior reference for commands and network interoperability.
 
-## Project Status
+## Use XAIOS
 
-The declared ARM and x86 QEMU core-OS correctness gate is complete. Physical
-platform qualification remains separate, and real Qwen inference has not
-started. Delivery order, model boundaries, all former milestone/phase plans,
-open decisions, risks, and evidence-linked status codes now live only in
-[[Project Tracker|Project-Tracker]].
+1. Follow [[Getting Started|Getting-Started]] to build and boot an image.
+2. Read [[Boot and Console|Boot-and-Console]] for startup and local login.
+3. Connect through [[Networking and SSH|Networking-and-SSH]].
+4. Use the shell surface in [[Commands|Commands]] and executable programs in
+   [[Applications|Applications]].
+5. Manage the system through [[Administration|Administration]].
 
-## Current Boundaries
+## Implemented OS surface
 
-- The model-v1 QEMU path is a deterministic fixture, not a transformer.
-- `xaios.model.v2` and portable adapter/backend APIs are interface foundations.
-- No listed real model has passed tokenizer, logits, deterministic decode, and
-  physical-hardware acceptance gates.
-- QEMU is correctness and ABI evidence only.
-- VMware Fusion 25.0.1 on Apple Silicon reaches `/init` through the limited
-  ARM64 compatibility path. It has no VMware NIC/persistent-disk driver or
-  multi-vCPU discovery and is not physical-hardware evidence.
-- Performance claims require immutable artifacts under the benchmark contract.
-- `xaiosctl` Phase 2 is QEMU/OpenSSH fixture-tested with role-mapped keys,
-  revocation, config transactions, host-key rotation, redacted audit and typed
-  storage lifecycle administration.
-- Normal AArch64 images do not pre-run diagnostic applications. Exact
-  allowlisted diagnostics run as transient SSH commands and are reaped after
-  exit; deterministic QEMU gates retain a separate boot-fixture profile.
-- Normal QEMU boots use an in-place colored 0-100% progress display. SSH binds
-  only after an external IPv4 DNS response; the final screen reports the guest
-  IPv4 and verified listener state or a numeric error. Password-enabled
-  development images then provide authenticated serial login, while key-only,
-  default and release images keep the local console locked.
-- Local and SSH PTY sessions provide cwd-aware prompts, a documented portable
-  core-command subset, command-not-found errors, interactive `nano` and
-  alternate-screen `less`. POSIX ustar/PAX and stored/Deflate ZIP exchange is
-  interoperable with macOS and Debian readers; the bounded outbound SSH/SCP
-  client interoperates with Debian OpenSSH using password authentication.
-  Native `pong` runs on authenticated local and SSH terminals with independent
-  continuous scores, adaptive ball speed and a predictive computer player.
-  MutableFS v4 supports recursive trees and 128 KiB state files; it is not a
-  replacement for ModelFS or general bulk storage.
-- XAIOS uses a native freestanding ABI. FreeBSD is the primary external Unix
-  behavioral reference, with a real FreeBSD 15.1 OpenSSH/SFTP/UDP QEMU gate;
-  neither FreeBSD nor Linux binary ABI compatibility is claimed.
-- Signed ModelFS supports dynamic registration, resumable SFTP, cleanup/reuse,
-  verification, atomic activation, scrub/quarantine and free-only trim under
-  QEMU. Concurrent macOS/Debian clients pass against one guest. QEMU VirtIO uses
-  interrupt-driven block/network completions, event-index suppression, indirect
-  descriptors and eight-request block batching. A focused emulated-NVMe gate
-  verifies identify/write/flush/read and host backing bytes; production
-  multiqueue and physical storage validation remain open.
-- Runtime-sized NUMA/CPU/cpuset state and CPU-assigned worker threads pass QEMU;
-  a focused TCG gate validates SMP and NUMA metadata with 130 emulated CPUs,
-  while hosted cpuset tests cover 4,097 CPU IDs. EL0 create/join/cancel/exit,
-  asynchronous DNS, IPv4/IPv6 reassembly, and SACK-aware TCP pass QEMU gates.
-- x86_64 executes the complete common kernel and userspace/service image. It
-  starts MADT-discovered application processors, runs EL0 threads on APs with
-  per-CPU page-table roots, preserves FP/SIMD interrupt state, and operates the
-  shared filesystems, IPv4/IPv6, SSH/SFTP, control, security, AI Cell and
-  telemetry paths over modern PCI VirtIO. Emulated NVMe also passes its focused
-  data test, and a post-`sti` canary proves shared-driver MSI-X completion.
-  QEMU service parity with AArch64 is complete; physical Intel qualification
-  remains open.
-- Model loading, cluster and inference-service administration remains gated.
+- AArch64 and x86_64 UEFI boot under QEMU.
+- Runtime-sized CPU, cpuset, scheduler, NUMA, and process metadata.
+- EL0 processes and threads with capability-checked syscalls.
+- VirtIO block/network/RNG plus focused emulated NVMe and SMMUv3 gates.
+- MutableFS for bounded writable state and ModelFS for immutable model data.
+- IPv4, IPv6, TCP, UDP, DNS, reassembly, and SACK-aware transport behavior.
+- Concurrent SSH sessions, SFTP, outbound SSH/SCP, and authenticated local
+  console sessions in explicitly provisioned development images.
+- FreeBSD-style command behavior, archive exchange, `nano`, `less`, `htop`,
+  and terminal Pong.
+- Typed `xaiosctl` administration for status, configuration, identity, audit,
+  storage, and model-package lifecycle operations.
 
-## Start Here
+## Evidence boundary
 
-- [[Developer Guide|Developer-Guide]]
+The ARM and x86_64 QEMU core-OS correctness gates pass. QEMU proves boot,
+protocol, ABI, and deterministic behavior; it does not prove physical hardware
+performance, production security, or real-model inference. No real Qwen, Kimi,
+DeepSeek, or GLM checkpoint has passed end-to-end token and logits parity.
+
+See [[Current Limitations|Current-Limitations]] for explicit non-claims and the
+single [[Project Tracker|Project-Tracker]] for remaining work.
+
+## Documentation
+
+### Operate the OS
+
+- [[Getting Started|Getting-Started]]
+- [[Boot and Console|Boot-and-Console]]
 - [[Applications|Applications]]
 - [[Commands|Commands]]
+- [[Filesystem and Storage|Filesystem-and-Storage]]
+- [[Networking and SSH|Networking-and-SSH]]
+- [[Administration|Administration]]
+
+### Understand and validate it
+
+- [[Hardware Support|Hardware-Support]]
 - [[Architecture|Architecture]]
-- [[Build System|Build-System]]
-- [[Test Suite|Test-Suite]]
-- [[Testing and Benchmarking|Testing-and-Benchmarking]]
 - [[Security Model|Security-Model]]
-- [[Current Limitations|Current-Limitations]]
-- [[Project Tracker|Project-Tracker]]
-- [[Development History|Development-History]]
-- [[VMware Fusion|VMware-Fusion]]
-- [[Qwen CPU Inference Status|Qwen3.6-INT6-Support]]
-- [[SSH Status|Production-SSH-Server]]
 - [[Unix Compatibility|Unix-Compatibility]]
-- [[Four-Endpoint Network Interoperability|Four-Endpoint-Network-Interop]]
-- [Repository README](https://github.com/Pummelchen/XAIOS/blob/main/README.md)
-- [Repository test inventory](https://github.com/Pummelchen/XAIOS/blob/main/tests/README.md)
-- [xaiosctl reference](https://github.com/Pummelchen/XAIOS/blob/main/docs/XAIOSCTL.md)
-- [Large-model upload status](https://github.com/Pummelchen/XAIOS/blob/main/docs/LARGE-MODEL-UPLOAD.md)
-- [Benchmark contract](https://github.com/Pummelchen/XAIOS/blob/main/docs/BENCHMARK-CONTRACT.md)
-- [GitHub Project](https://github.com/users/Pummelchen/projects/5)
+- [[Testing XAIOS|Testing-XAIOS]]
+- [[VMware Fusion|VMware-Fusion]]
+- [[Current Limitations|Current-Limitations]]
+- [[FAQ]]
+- [[Project Tracker|Project-Tracker]]
+
+[Source repository](https://github.com/Pummelchen/XAIOS) | [API reference](https://github.com/Pummelchen/XAIOS/blob/main/docs/API.md) | [License](https://github.com/Pummelchen/XAIOS/blob/main/LICENSE)

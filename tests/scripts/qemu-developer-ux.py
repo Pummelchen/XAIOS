@@ -21,7 +21,7 @@ REQUIRED_MAKE_TARGETS = [
 REQUIRED_DOC_MARKERS = {
     "README.md": ["wiki/Project-Tracker.md", "tests/README.md", "QEMU"],
     "wiki/Project-Tracker.md": ["P-20", "## Qwen 3.6 27B implementation", "Kimi K3 text"],
-    "wiki/Test-Suite.md": ["make qemu-full-os-rc", "tests/scripts/"],
+    "wiki/Testing-XAIOS.md": ["make qemu-full-os-rc", "tests/scripts/"],
     "HARDWARE-READINESS.md": ["make qemu-post51-gate"],
 }
 

@@ -11,8 +11,8 @@ network service are under development and are not production supported.
 
 Human-facing project documentation is maintained in the
 [XAIOS Wiki](https://github.com/Pummelchen/XAIOS/wiki). The repository keeps
-selected Wiki pages under [`wiki/`](./wiki/) so architecture, development,
-testing, security, and status claims can be checked with the source.
+the complete curated Wiki page set under [`wiki/`](./wiki/) so operating,
+architecture, testing, security, and status claims can be checked with source.
 
 ## Unix compatibility boundary
 
@@ -372,12 +372,14 @@ for the complete VirtIO, networking, SSH/SFTP, persistence and SMP suites. See
 ## Documentation
 
 - [Wiki home and documentation index](https://github.com/Pummelchen/XAIOS/wiki)
-- [Developer guide](https://github.com/Pummelchen/XAIOS/wiki/Developer-Guide)
+- [Getting started](https://github.com/Pummelchen/XAIOS/wiki/Getting-Started)
+- [Boot and console](https://github.com/Pummelchen/XAIOS/wiki/Boot-and-Console)
 - [Current limitations](https://github.com/Pummelchen/XAIOS/wiki/Current-Limitations)
 - [Canonical project tracker](./wiki/Project-Tracker.md)
 - [Applications](./wiki/Applications.md)
 - [Commands](./wiki/Commands.md)
-- [Test suite](./tests/README.md)
+- [Testing XAIOS](./wiki/Testing-XAIOS.md)
+- [Test suite inventory](./tests/README.md)
 - [`xaiosctl` command reference](./docs/XAIOSCTL.md)
 - [Control protocol](./docs/CONTROL-PROTOCOL.md)
 - [xaios.model.v2 specification](./docs/MODEL-V2-SPECIFICATION.md)

@@ -60,4 +60,4 @@ the normal image.
   diagnostics.
 
 For command syntax see [[Commands|Commands]]. For lifecycle verification see
-[[Test Suite|Test-Suite]].
+[[Testing XAIOS|Testing-XAIOS]].

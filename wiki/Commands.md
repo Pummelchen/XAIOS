@@ -85,4 +85,5 @@ working directories are isolated across concurrent SSH connections.
 
 Commands that are executable diagnostics (`hello`, `sysinfo`, `systest`, and
 others) are intentionally documented on [[Applications|Applications]], not
-duplicated here. Interoperability coverage is in [[Test Suite|Test-Suite]].
+duplicated here. Interoperability coverage is in
+[[Testing XAIOS|Testing-XAIOS]].

@@ -3,9 +3,8 @@
 Last reviewed: 2026-08-11.
 
 This is the only human-maintained XAIOS project tracker. Roadmaps, milestones,
-phase plans, open decisions, and risks that were previously spread across the
-repository and Wiki are consolidated here. Other planning filenames are
-retained only as redirects so old links do not become ambiguous.
+phase plans, open decisions, and risks are consolidated here. The Wiki does not
+retain previous tracker, roadmap, milestone, or phase-plan pages.
 
 ## Status codes
 
@@ -39,7 +38,7 @@ performance require immutable evidence under the
 | Item | Status | Evidence required |
 |---|---|---|
 | Centralize all test runners and Docker fixtures under `tests/` | `DONE` | Layout, syntax, hosted, docs, ABI, QEMU, Docker rebuild, and [CI](https://github.com/Pummelchen/XAIOS/actions/runs/31454809543) gates pass. |
-| Publish Applications, Commands, Test Suite, and this canonical tracker to the live Wiki | `DONE` | Repository/Wiki sources are byte-identical at Wiki commit `b2678c8`. |
+| Publish the operator Wiki and this canonical tracker | `DONE` | The repository mirrors the complete curated live-Wiki page set. |
 
 ## Model support boundary
 
@@ -79,7 +78,7 @@ remain concise here; no secondary page owns their status.
 | P-17 | Async direct model range I/O | `DONE` | Hosted aligned direct-buffer completion/cancellation tests pass. |
 | P-18 | Lifecycle-safe sessions | `DONE` | 64-bit append/fork/commit/rollback/destruction metadata passes; typed model state is tracked below. |
 | P-19 | Documentation reconciliation | `DONE` | Docs checks and repository/live-Wiki byte parity pass. |
-| P-20 | GitHub milestone reconciliation | `DONE` | All human progress status is consolidated on this canonical Wiki page; legacy planning files are redirects. |
+| P-20 | GitHub milestone reconciliation | `DONE` | All human progress status is consolidated here; legacy planning pages and redirects are removed. |
 
 ## Core OS foundation items
 
@@ -244,7 +243,7 @@ checked continuously.
 ## Evidence gates
 
 The default status-changing evidence set is documented in
-[[Test Suite|Test-Suite]]. At minimum, source changes require the smallest
+[[Testing XAIOS|Testing-XAIOS]]. At minimum, source changes require the smallest
 relevant compile/hosted/QEMU gates; documentation changes require layout,
 status, JSON, link, and live-Wiki checks. A failed required gate changes the
 affected item to `FAILED` until a passing rerun is recorded.
