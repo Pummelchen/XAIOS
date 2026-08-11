@@ -93,7 +93,11 @@ void xaios_exit(int code) {
 }
 
 u64 xaios_clock_nanos(void) {
-  return xaios_syscall3(XAIOS_SYSCALL_CLOCK_NANOS, 0, 0, 0);
+  return xaios_clock_nanos_kind(XAIOS_CLOCK_MONOTONIC);
+}
+
+u64 xaios_clock_nanos_kind(u64 kind) {
+  return xaios_syscall3(XAIOS_SYSCALL_CLOCK_NANOS, kind, 0, 0);
 }
 
 int xaios_random(void *buffer, u64 size) {

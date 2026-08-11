@@ -24,6 +24,11 @@ FreeBSD 15.1 AArch64 QEMU gate covers public-key acceptance/rejection,
 independent Linux/OpenSSH cross-family gate with broader administration and
 load coverage. See [Unix compatibility](./wiki/Unix-Compatibility.md).
 
+XAIOS also provides an opt-in, statically linked hosted ISO C99 library for
+AArch64 and x86_64 without a public POSIX API or new syscall identifiers. Its
+project conformance boundary and evidence are documented in the
+[C99 libc Wiki page](./wiki/C99-Libc.md).
+
 ## Model support status
 
 The deterministic QEMU model-v1 path is **Fixture only**, and model-v2 is a

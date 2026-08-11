@@ -12,13 +12,18 @@ SCRIPTS = ROOT / "scripts"
 TESTS = ROOT / "tests"
 
 RUNTIME_SCRIPTS = {
+    "build-c99-app.sh",
+    "build-compiler-rt.sh",
     "build-image-x86_64.sh",
     "build-image.sh",
+    "build-libc-runtime-test.sh",
+    "build-libc.sh",
     "build-vmware-fusion.sh",
     "create-initfs.py",
     "create-persistent-image.sh",
     "create-sshd-user-config.py",
     "macos-bootstrap.sh",
+    "prepare-libc-sysroot.py",
     "run-qemu-aarch64.sh",
     "run-qemu-x86_64.sh",
     "run-vmware-fusion.sh",
@@ -39,7 +44,7 @@ def main() -> int:
         failures.append("expected runtime scripts are missing: " + ", ".join(missing))
 
     for path in ROOT.rglob("Dockerfile*"):
-        if ".git" in path.parts or "build" in path.parts:
+        if any(part in path.parts for part in (".git", "build", "third_party")):
             continue
         text = path.read_text(encoding="utf-8")
         for source in re.findall(r"^(?:COPY|ADD)\s+([^\s]+)", text, re.MULTILINE):

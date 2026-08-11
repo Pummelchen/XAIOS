@@ -10,7 +10,9 @@ device/platform boundary. The x86_64 QEMU image executes the common kernel and
 complete userspace/service image. It starts MADT-discovered APs, uses per-CPU
 user address-space roots, validates ring-3 threads and XSAVE/FXSAVE interrupt
 state, parses ACPI topology, and operates modern PCI VirtIO block/network plus
-emulated NVMe. Kernel and userspace code are freestanding C99 without libc.
+emulated NVMe. Kernel, boot and existing low-level applications remain
+freestanding C99. Hosted applications may opt into the static XAIOS C99 libc;
+it does not alter the kernel ABI or expose POSIX interfaces.
 Platform progress is tracked only in `wiki/Project-Tracker.md`;
 `docs/PLATFORM-SUPPORT.json` is the machine-readable recommendation registry.
 
@@ -129,7 +131,7 @@ XAIOS/
 │   ├── user/             — Userspace management
 │   │   ├── user.c        — Process table, ELF loading, address space
 │   │   ├── service.c     — Service supervisor (tree, restart policies)
-│   │   └── syscall.c     — Syscall dispatch table (49 syscalls)
+│   │   └── syscall.c     — Syscall dispatch table (50 syscalls)
 │   ├── runtime/          — Kernel runtime services
 │   │   ├── ai_cell.c     — AI cell lifecycle and resource management
 │   │   ├── cpu_ai_runtime.c — Deterministic fixture runtime; production decode unsupported
@@ -217,4 +219,6 @@ make vmware-fusion-smoke — Limited Apple Silicon Fusion boot through /init
 make test        — bootstrap + image + dry-run
 ```
 
-All C code is compiled with `clang --target=aarch64-none-elf -std=c99 -ffreestanding -Wall -Wextra -Werror`.
+Kernel and low-level userspace C use `-std=c99 -ffreestanding`. Opt-in hosted
+applications use `-std=c99 -fhosted -pedantic-errors` and the architecture
+sysroot produced by `make libc`.

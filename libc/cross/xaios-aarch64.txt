@@ -1,0 +1,19 @@
+[binaries]
+c = ['clang', '-target', 'aarch64-none-elf', '-nostdlib', '-fuse-ld=lld']
+cpp = ['clang++', '-target', 'aarch64-none-elf', '-nostdlib', '-fuse-ld=lld']
+c_ld = 'lld'
+cpp_ld = 'lld'
+ar = 'llvm-ar'
+as = 'clang'
+nm = 'llvm-nm'
+strip = 'llvm-strip'
+
+[host_machine]
+system = 'none'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'
+
+[properties]
+skip_sanity_check = true
+needs_exe_wrapper = true

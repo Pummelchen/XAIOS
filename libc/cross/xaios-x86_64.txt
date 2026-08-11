@@ -1,0 +1,19 @@
+[binaries]
+c = ['clang', '-target', 'x86_64-none-elf', '-mcmodel=large', '-march=core2', '-mfpmath=sse', '-msse2', '-fno-pic', '-fno-PIE', '-static', '-nostdlib', '-fuse-ld=lld']
+cpp = ['clang++', '-target', 'x86_64-none-elf', '-mcmodel=large', '-march=core2', '-mfpmath=sse', '-msse2', '-fno-pic', '-fno-PIE', '-static', '-nostdlib', '-fuse-ld=lld']
+c_ld = 'lld'
+cpp_ld = 'lld'
+ar = 'llvm-ar'
+as = 'clang'
+nm = 'llvm-nm'
+strip = 'llvm-strip'
+
+[host_machine]
+system = 'none'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'
+
+[properties]
+skip_sanity_check = true
+needs_exe_wrapper = true

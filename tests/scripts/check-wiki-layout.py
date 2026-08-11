@@ -15,6 +15,7 @@ EXPECTED_PAGES = {
     "Applications.md",
     "Architecture.md",
     "Boot-and-Console.md",
+    "C99-Libc.md",
     "Commands.md",
     "Current-Limitations.md",
     "FAQ.md",

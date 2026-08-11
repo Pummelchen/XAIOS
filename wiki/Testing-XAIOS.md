@@ -19,6 +19,8 @@ AArch64 or x86_64 UEFI firmware. Setup details are in
 | `make docs-check` | Wiki/catalog/status and test-layout contracts. |
 | `make compile-check` | Freestanding C compile checks with warnings treated as failures. |
 | `make hosted-test` | Hosted model-v2, engine, parser, kernel, and utility tests. |
+| `make libc-check` | Strict hosted C99 headers, 464-function namespace/link, ELF layout, source pin, non-POSIX surface, and syscall-budget contract. |
+| `make qemu-libc-gate` | Complete libc contract plus AArch64/x86_64 runtime and termination probes; emits the conformance report. |
 | `make qemu-abi-contract` | Syscall, image, service, telemetry, and fixture ABI contract. |
 | `make qemu-smoke` | Primary AArch64 boot and deterministic self-test gate. |
 | `make qemu-regression-suite` | Broader process, filesystem, network, and runtime regression suite. |
@@ -38,6 +40,7 @@ make engine-cli
 make compile-check
 make hosted-test
 make hosted-sanitizer-test
+make qemu-libc-gate
 make production-source-audit
 make qemu-abi-contract
 make image

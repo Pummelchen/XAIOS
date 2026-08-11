@@ -1,0 +1,113 @@
+{
+  "assert.h": [],
+  "complex.h": [
+    "cacos", "cacosf", "cacosl", "casin", "casinf", "casinl",
+    "catan", "catanf", "catanl", "ccos", "ccosf", "ccosl",
+    "csin", "csinf", "csinl", "ctan", "ctanf", "ctanl",
+    "cacosh", "cacoshf", "cacoshl", "casinh", "casinhf", "casinhl",
+    "catanh", "catanhf", "catanhl", "ccosh", "ccoshf", "ccoshl",
+    "csinh", "csinhf", "csinhl", "ctanh", "ctanhf", "ctanhl",
+    "cexp", "cexpf", "cexpl",
+    "clog", "clogf", "clogl", "cabs", "cabsf", "cabsl",
+    "cpow", "cpowf", "cpowl", "csqrt", "csqrtf", "csqrtl",
+    "carg", "cargf", "cargl", "cimag", "cimagf", "cimagl",
+    "conj", "conjf", "conjl", "cproj", "cprojf", "cprojl",
+    "creal", "crealf", "creall"
+  ],
+  "ctype.h": [
+    "isalnum", "isalpha", "isblank", "iscntrl", "isdigit", "isgraph",
+    "islower", "isprint", "ispunct", "isspace", "isupper", "isxdigit",
+    "tolower", "toupper"
+  ],
+  "errno.h": [],
+  "fenv.h": [
+    "feclearexcept", "fegetexceptflag", "feraiseexcept", "fesetexceptflag",
+    "fetestexcept", "fegetround", "fesetround", "fegetenv", "feholdexcept",
+    "fesetenv", "feupdateenv"
+  ],
+  "float.h": [],
+  "inttypes.h": [
+    "imaxabs", "imaxdiv", "strtoimax", "strtoumax", "wcstoimax",
+    "wcstoumax"
+  ],
+  "iso646.h": [],
+  "limits.h": [],
+  "locale.h": ["localeconv", "setlocale"],
+  "math.h": [
+    "acos", "acosf", "acosl", "asin", "asinf", "asinl", "atan", "atanf",
+    "atanl", "atan2", "atan2f", "atan2l", "cos", "cosf", "cosl", "sin",
+    "sinf", "sinl", "tan", "tanf", "tanl", "acosh", "acoshf", "acoshl",
+    "asinh", "asinhf", "asinhl", "atanh", "atanhf", "atanhl", "cosh",
+    "coshf", "coshl", "sinh", "sinhf", "sinhl", "tanh", "tanhf", "tanhl",
+    "exp", "expf", "expl", "exp2", "exp2f", "exp2l", "expm1", "expm1f",
+    "expm1l", "frexp", "frexpf", "frexpl", "ldexp", "ldexpf", "ldexpl",
+    "log", "logf", "logl", "log10", "log10f", "log10l", "log1p",
+    "log1pf", "log1pl", "log2", "log2f", "log2l", "logb", "logbf",
+    "logbl", "ilogb", "ilogbf", "ilogbl", "modf", "modff", "modfl",
+    "scalbn", "scalbnf", "scalbnl",
+    "scalbln", "scalblnf", "scalblnl", "cbrt", "cbrtf", "cbrtl", "fabs",
+    "fabsf", "fabsl", "hypot", "hypotf", "hypotl", "pow", "powf", "powl",
+    "sqrt", "sqrtf", "sqrtl", "erf", "erff", "erfl", "erfc", "erfcf",
+    "erfcl", "lgamma", "lgammaf", "lgammal", "tgamma", "tgammaf",
+    "tgammal", "ceil", "ceilf", "ceill", "floor", "floorf", "floorl",
+    "nearbyint", "nearbyintf", "nearbyintl", "rint", "rintf", "rintl",
+    "lrint", "lrintf", "lrintl", "llrint", "llrintf", "llrintl", "round",
+    "roundf", "roundl", "lround", "lroundf", "lroundl", "llround",
+    "llroundf", "llroundl", "trunc", "truncf", "truncl", "fmod", "fmodf",
+    "fmodl", "remainder", "remainderf", "remainderl", "remquo", "remquof",
+    "remquol", "copysign", "copysignf", "copysignl", "nan", "nanf", "nanl",
+    "nextafter", "nextafterf", "nextafterl", "nexttoward", "nexttowardf",
+    "nexttowardl", "fdim", "fdimf", "fdiml", "fmax", "fmaxf", "fmaxl",
+    "fmin", "fminf", "fminl", "fma", "fmaf", "fmal"
+  ],
+  "setjmp.h": ["longjmp", "setjmp"],
+  "signal.h": ["raise", "signal"],
+  "stdarg.h": [],
+  "stdbool.h": [],
+  "stddef.h": [],
+  "stdint.h": [],
+  "stdio.h": [
+    "remove", "rename", "tmpfile", "tmpnam", "fclose", "fflush", "fopen",
+    "freopen", "setbuf", "setvbuf", "fprintf", "fscanf", "printf", "scanf",
+    "snprintf", "sprintf", "sscanf", "vfprintf", "vfscanf", "vprintf",
+    "vscanf", "vsnprintf", "vsprintf", "vsscanf", "fgetc", "fgets", "fputc",
+    "fputs", "getc", "getchar", "gets", "putc", "putchar", "puts", "ungetc",
+    "fread", "fwrite", "fgetpos", "fseek", "fsetpos", "ftell", "rewind",
+    "clearerr", "feof", "ferror", "perror"
+  ],
+  "stdlib.h": [
+    "atof", "atoi", "atol", "atoll", "strtod", "strtof", "strtold",
+    "strtol", "strtoll", "strtoul", "strtoull", "rand", "srand", "calloc",
+    "free", "malloc", "realloc", "abort", "atexit", "exit", "_Exit",
+    "getenv", "system", "bsearch", "qsort", "abs", "labs", "llabs", "div",
+    "ldiv", "lldiv", "mblen", "mbtowc", "wctomb", "mbstowcs", "wcstombs"
+  ],
+  "string.h": [
+    "memcpy", "memmove", "strcpy", "strncpy", "strcat", "strncat", "memcmp",
+    "strcmp", "strcoll", "strncmp", "strxfrm", "memchr", "strchr", "strcspn",
+    "strpbrk", "strrchr", "strspn", "strstr", "strtok", "memset", "strerror",
+    "strlen"
+  ],
+  "tgmath.h": [],
+  "time.h": [
+    "clock", "difftime", "mktime", "time", "asctime", "ctime", "gmtime",
+    "localtime", "strftime"
+  ],
+  "wchar.h": [
+    "fwprintf", "fwscanf", "swprintf", "swscanf", "vfwprintf", "vfwscanf",
+    "vswprintf", "vswscanf", "vwprintf", "vwscanf", "wprintf", "wscanf",
+    "fgetwc", "fgetws", "fputwc", "fputws", "fwide", "getwc", "getwchar",
+    "putwc", "putwchar", "ungetwc", "wcstod", "wcstof", "wcstold", "wcstol",
+    "wcstoll", "wcstoul", "wcstoull", "wcscpy", "wcsncpy", "wmemcpy",
+    "wmemmove", "wcscat", "wcsncat", "wcscmp", "wcscoll", "wcsncmp",
+    "wcsxfrm", "wmemcmp", "wcschr", "wcscspn", "wcspbrk", "wcsrchr",
+    "wcsspn", "wcsstr", "wcstok", "wmemchr", "wcslen", "wmemset", "btowc",
+    "wctob", "mbsinit", "mbrlen", "mbrtowc", "wcrtomb", "mbsrtowcs",
+    "wcsrtombs", "wcsftime"
+  ],
+  "wctype.h": [
+    "iswalnum", "iswalpha", "iswblank", "iswcntrl", "iswdigit", "iswgraph",
+    "iswlower", "iswprint", "iswpunct", "iswspace", "iswupper", "iswxdigit",
+    "towlower", "towupper", "iswctype", "wctype", "towctrans", "wctrans"
+  ]
+}

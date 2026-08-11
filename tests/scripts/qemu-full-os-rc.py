@@ -235,10 +235,10 @@ def validate_contract(contract: Dict[str, Any], failures: List[str]) -> None:
     check_equal(contract.get("release_candidate"), "qemu-rc-1",
                 "contract.release_candidate", failures)
     scope = contract.get("scope", {})
-    check_equal(scope.get("architecture"), "aarch64", "contract.scope.architecture",
-                failures)
-    check_equal(scope.get("machine"), "qemu-virt", "contract.scope.machine",
-                failures)
+    check_equal(scope.get("architecture"), "aarch64+x86_64",
+                "contract.scope.architecture", failures)
+    check_equal(scope.get("machine"), "qemu-virt+q35",
+                "contract.scope.machine", failures)
     check_equal(scope.get("firmware"), "UEFI", "contract.scope.firmware",
                 failures)
     check_equal(scope.get("benchmark_type"), "qemu-correctness",

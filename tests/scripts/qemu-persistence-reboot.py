@@ -4,8 +4,11 @@ import select
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import List
 
+
+PERSISTENT_IMAGE = Path("build/qemu-persistence-reboot.img")
 
 FIRST_BOOT_TARGETS = [
     "persistence: no existing disk state sector=3000",
@@ -29,6 +32,7 @@ SECOND_BOOT_TARGETS = [
 def run_boot(label: str, targets: List[str], timeout_seconds: int) -> int:
     env = os.environ.copy()
     env["XAIOS_QEMU_HOSTFWD_PORT"] = "none"
+    env["XAIOS_PERSISTENT_IMAGE"] = str(PERSISTENT_IMAGE)
     proc = subprocess.Popen(
         ["./scripts/run-qemu-aarch64.sh"],
         stdout=subprocess.PIPE,
@@ -76,16 +80,21 @@ def run_boot(label: str, targets: List[str], timeout_seconds: int) -> int:
 
 def main() -> int:
     timeout = int(os.environ.get("XAIOS_QEMU_PERSISTENCE_TIMEOUT", "60"))
-    first = run_boot("first boot", FIRST_BOOT_TARGETS, timeout)
-    if first != 0:
-        return first
+    PERSISTENT_IMAGE.parent.mkdir(parents=True, exist_ok=True)
+    PERSISTENT_IMAGE.unlink(missing_ok=True)
+    try:
+        first = run_boot("first boot", FIRST_BOOT_TARGETS, timeout)
+        if first != 0:
+            return first
 
-    second = run_boot("second boot", SECOND_BOOT_TARGETS, timeout)
-    if second != 0:
-        return second
+        second = run_boot("second boot", SECOND_BOOT_TARGETS, timeout)
+        if second != 0:
+            return second
 
-    print("qemu-persistence-reboot: mutable VirtIO state survived QEMU reboot")
-    return 0
+        print("qemu-persistence-reboot: mutable VirtIO state survived QEMU reboot")
+        return 0
+    finally:
+        PERSISTENT_IMAGE.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ bridge utilities.
 | `tests/network/` | Debian and FreeBSD interoperability Dockerfiles, client/server scripts, IPv4/IPv6 helpers, keys generated at runtime, and network fixtures. |
 | `tests/model_v2/` | Python/C model-v2 round trips, malformed packages, sparse files, and memory-bound conversion checks. |
 | `tests/hosted/` | Hosted C correctness tests for portable kernel/runtime components. |
+| `tests/libc/` | ISO C99 requirement inventories plus strict language, library, startup and termination probes. |
 | `tests/fuzz/` | Parser fuzz entrypoints and corpora. |
 | `tests/fixtures/` | Deterministic test inputs that are safe to version. |
 
@@ -27,6 +28,8 @@ Docker build inputs, and test-image inputs outside `tests/`. It runs through
 | C compile boundary | `make compile-check` |
 | Hosted unit tests | `make hosted-test` |
 | Hosted sanitizers | `make hosted-sanitizer-test` |
+| Hosted ISO C99 contract | `make libc-check` |
+| Hosted ISO C99 dual-architecture runtime | `make qemu-libc-gate` |
 | Documentation and test layout | `make docs-check` |
 | Production-source audit | `make production-source-audit` |
 | ABI contract | `make qemu-abi-contract` |

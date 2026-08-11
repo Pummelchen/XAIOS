@@ -71,6 +71,10 @@
 #define XAIOS_BOOT_TEST_APPS 0
 #endif
 
+#ifndef XAIOS_LIBC_TEST
+#define XAIOS_LIBC_TEST 0
+#endif
+
 static const char g_vmm_rodata_probe[] = "vmm-rodata";
 static uint64_t g_vmm_data_probe;
 static virtio_block_handle_t *g_storage_admin_handle;
@@ -542,6 +546,17 @@ void kmain(const xaios_boot_info_t *boot) {
   run_user_app("/bin/agenttest", 17, agenttest_caps);
 #else
   klog("kernel: boot diagnostics disabled; utilities are SSH on-demand\n");
+#endif
+
+#if XAIOS_LIBC_TEST
+  const uint64_t libc_test_caps =
+      XAIOS_CAP_EXIT | XAIOS_CAP_CONSOLE | XAIOS_CAP_TIME |
+      XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE;
+  kassert(run_user_app("/bin/c99-runtime-smoke", 19U, libc_test_caps) == 0);
+  kassert(run_user_app("/bin/c99-main-void", 20U, libc_test_caps) == 0);
+  kassert(run_user_app("/bin/c99-exit-probe", 21U, libc_test_caps) == 23);
+  kassert(run_user_app("/bin/c99-abort-probe", 22U, libc_test_caps) == 134);
+  klog("C99-TERMINATION-PROBES-PASS\n");
 #endif
 
   boot_ui_update(90U, "runtime services", "IPv4 internet check", 2U);

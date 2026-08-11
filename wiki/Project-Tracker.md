@@ -27,7 +27,8 @@ performance require immutable evidence under the
 |---:|---|---|---|
 | 1 | XAIOS QEMU core OS | `DONE` | AArch64 and x86_64 run the common service image and pass the declared aggregate QEMU correctness gates. |
 | 1b | Physical Apple/ARM, Intel desktop, and Xeon qualification | `NOT STARTED` | Named hardware must pass firmware, device, durability, security, ISA-state, NUMA, soak, and benchmark contracts. |
-| 2 | Qwen 3.6 27B support | `NOT STARTED` | This is the next implementation workstream; official tokenizer, layer, logits, 32-step decode, session, and physical gates must pass. |
+| 1c | Hosted ISO C99 libc without POSIX | `DONE` | The strict 24-header/464-function inventory, native adapters, both target QEMU runs, and 50-syscall invariant pass. This is project evidence, not third-party certification. |
+| 2 | Qwen 3.6 27B support | `NOT STARTED` | Begins after the libc workstream unless reprioritized; official tokenizer, layer, logits, 32-step decode, session, and physical gates must pass. |
 | 3 | Kimi K3 text support | `NOT STARTED` | Begins after Qwen unless reprioritized; KDA, Gated MLA, exact top-16 MoE, MXFP4, and token parity are mandatory. |
 | 4 | Kimi K3 multimodal support | `NOT STARTED` | Separate vision preprocessing/tower/projection/position and golden image gates. |
 | 5 | DeepSeek V4 Flash 0731 support | `BLOCKED` | The exact official release label and immutable source must be verified first. |
@@ -116,6 +117,29 @@ remain concise here; no secondary page owns their status.
 | C-15 | System update lifecycle operations | `DONE` | Existing signed stage/hash/commit/fail/fallback/rollback tests are exposed through status and authorized rollback operations. Production trust remains OD-004. |
 | C-16 | Configuration recovery and support bundles | `DONE` | Canonical text export/import uses the transactional admin path; support output is bounded and secret-redacted. |
 | C-17 | Long-duration and fault closure | `DONE` | Operations closure is combined with existing soak, fault injection, storage crash, boot-loop, and non-skipping aggregate gates. Physical soak remains P-05/P-14. |
+
+## Hosted ISO C99 libc
+
+The architecture, non-POSIX boundary, syscall budget and evidence contract are
+defined in [[ISO C99 Library|C99-Libc]]. A selected upstream implementation or
+an available symbol is not proof of conformance.
+
+| ID | Item | Status | Evidence / remaining gate |
+|---|---|---|---|
+| L-01 | Hosted C99 conformance and non-POSIX architecture contract | `DONE` | The Wiki defines ISO/IEC 9899:1999 plus TC1-3, zero libc-specific syscall growth, native extension separation and final evidence gates. |
+| L-02 | Pin and license-audit complete library baseline | `DONE` | Picolibc 1.8.12 commit `2ae376c6cdf4fef90ca2388ecf7a07457fa63cff` is a pinned submodule; generated sysroots retain `COPYING.picolibc` and verify source identity. |
+| L-03 | Machine-readable mandatory C99 inventory | `DONE` | `c99-requirements.json` and `c99-library-functions.json` enumerate 24 headers, 464 functions, forbidden extensions, syscall budget, architectures and runtime markers. |
+| L-04 | XAIOS hosted sysroot, compiler runtime and static link path | `DONE` | Strict AArch64/x86_64 sysroots, page-separated ELF layout, generic application builder and all-symbol links pass. |
+| L-05 | Startup, standard streams, heap and termination | `DONE` | Both standard `main` forms, initialized streams, allocation, `atexit`, return, `_Exit(23)` and `abort` pass as XAIOS processes. |
+| L-06 | Native console, file, time and temporary-file adapters | `DONE` | Private adapters use existing capability-checked syscalls; stdio file/temp/position tests pass without a public POSIX API. |
+| L-07 | Complete strings, conversion, locale, multibyte and wide-character surface | `DONE` | Strict runtime tests cover the required `C` locale, conversions, narrow/wide strings and allocation edge cases. |
+| L-08 | Complete printf/scanf and stream semantics | `DONE` | C99 formats, long long, architecture long double, `%n`, buffering, scan, positioning and wide streams pass. |
+| L-09 | Complete libm, complex and floating-point environment | `DONE` | Mandatory symbols link and special-value, complex, rounding and exception operations execute on both targets. |
+| L-10 | setjmp, ISO signals and ISO libc state | `DONE` | Architecture `setjmp`/`longjmp`, process-local standard `signal`/`raise`, and termination behavior pass. C99 has no thread API. |
+| L-11 | ARM64 and x86_64 full C99 QEMU conformance | `DONE` | Every required runtime marker and termination exit code passes under both QEMU targets. |
+| L-12 | Syscall, POSIX-surface and AI-architecture invariants | `DONE` | AST and negative-compile audits expose only 464 ISO function names, omit forbidden headers, add zero syscall IDs, and preserve native AI boundaries. |
+| L-13 | Final audit and immutable conformance report | `DONE` | The second inventory audit corrected 13 omissions; the generated 13/13 report hashes manifests, ELFs, archives and both QEMU logs. |
+| L-14 | Thread-safe libc contexts for XAIOS native threads | `NOT STARTED` | Optional non-ISO extension: per-thread `errno`, allocator/stream locks and concurrency gates without a new syscall ID. |
 
 ## Core OS, network, and SSH phases
 

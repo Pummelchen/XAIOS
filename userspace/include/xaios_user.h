@@ -57,6 +57,10 @@ typedef long long s64;
 #define XAIOS_SYSCALL_NET_CONNECT 50ULL
 #define XAIOS_THREAD_CPU_ANY (~0ULL)
 
+#define XAIOS_CLOCK_MONOTONIC 0ULL
+#define XAIOS_CLOCK_REALTIME 1ULL
+#define XAIOS_CLOCK_PROCESS_CPU 2ULL
+
 #define XAIOS_REMOTE_LOGIN_SESSION_EXECUTE 1ULL
 #define XAIOS_REMOTE_LOGIN_SESSION_CLOSE 2ULL
 
@@ -284,6 +288,7 @@ void xaios_log(const char *text);
 void xaios_log_u64(const char *prefix, u64 value, const char *suffix);
 void xaios_exit(int code);
 u64 xaios_clock_nanos(void);
+u64 xaios_clock_nanos_kind(u64 kind);
 int xaios_random(void *buffer, u64 size);
 int xaios_osctl(const char *command);
 int xaios_fs_mkdir(const char *path);

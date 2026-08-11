@@ -2,7 +2,7 @@ SHELL := /bin/sh
 HOST_CC ?= clang
 HOST_CFLAGS ?= -std=c99 -Wall -Wextra -Werror -pedantic
 
-.PHONY: all bootstrap test image image-qemu-test image-x86_64 image-x86_64-qemu-test engine-cli vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-dry-run qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-operations-closure qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-outbound-fragmentation-gate qemu-dry-run qemu-smoke qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-freebsd-bidirectional-suite qemu-four-endpoint-network-suite qemu-parallel-network-load qemu-local-console-gate qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test docs-check production-source-audit qemu-baseline clean clean-persistent
+.PHONY: all bootstrap test image image-qemu-test image-x86_64 image-x86_64-qemu-test image-libc-test qemu-libc-gate engine-cli libc libc-check vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-dry-run qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-operations-closure qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-outbound-fragmentation-gate qemu-dry-run qemu-smoke qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-freebsd-bidirectional-suite qemu-four-endpoint-network-suite qemu-parallel-network-load qemu-local-console-gate qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test docs-check production-source-audit qemu-baseline clean clean-persistent
 
 all: bootstrap image
 
@@ -23,6 +23,14 @@ image-x86_64:
 image-x86_64-qemu-test:
 	XAIOS_TARGET_ARCH=x86_64 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
 
+image-libc-test: libc
+	XAIOS_LIBC_TEST=1 XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
+	XAIOS_TARGET_ARCH=x86_64 XAIOS_LIBC_TEST=1 XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
+
+qemu-libc-gate: libc-check image-libc-test
+	python3 tests/scripts/qemu-libc-gate.py
+	python3 tests/scripts/generate-libc-report.py
+
 vmware-fusion-image: image
 	./scripts/build-vmware-fusion.sh
 
@@ -42,6 +50,14 @@ engine-cli:
 	  engine/src/service.c engine/src/backend_scalar.c \
 	  engine/src/backend_neon.c engine/src/backend_avx2.c engine/src/packed.c \
 	  tools/xaios_engine_cli.c -o build/hosted/xaios-engine
+
+libc:
+	./scripts/build-libc.sh
+
+libc-check: libc
+	python3 tests/scripts/check-libc-contract.py
+	./scripts/build-c99-app.sh --arch aarch64 --main void tests/libc/c99_main_void.c build/libc/aarch64/c99-app-builder-probe.elf
+	./scripts/build-c99-app.sh --arch x86_64 --main void tests/libc/c99_main_void.c build/libc/x86_64/c99-app-builder-probe.elf
 
 qemu:
 	./scripts/run-qemu-aarch64.sh
@@ -142,7 +158,8 @@ qemu-x86_64-repeat-boot: image-x86_64-qemu-test
 qemu-benchmark: image-qemu-test
 	python3 ./tests/scripts/qemu-benchmark.py
 
-qemu-persistence-reboot: image
+qemu-persistence-reboot:
+	XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
 	python3 ./tests/scripts/qemu-persistence-reboot.py
 
 qemu-storage-crash-test: image-qemu-test
@@ -244,13 +261,13 @@ compile-check:
 	    -c "$$f" -o "$$object" \
 	    || failed=$$((failed + 1)); \
 	done; \
-	for f in $$(find userspace -name '*.c'); do \
+	for f in $$(find userspace -name '*.c' ! -path 'userspace/libc/*'); do \
 	  clang --target=aarch64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
 	    -Wall -Wextra -Werror -Iuserspace/include -Itests -fsyntax-only "$$f" \
 	    || failed=$$((failed + 1)); \
 	done; \
-	for f in $$(find userspace -name '*.c'); do \
+	for f in $$(find userspace -name '*.c' ! -path 'userspace/libc/*'); do \
 	  object=build/compile-check/x86-userspace/$$(printf '%s' "$$f" | tr / _).o; \
 	  clang --target=x86_64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie -mno-red-zone \
@@ -262,7 +279,7 @@ compile-check:
 	  printf '%s\n' "$$failed file(s) failed compilation" >&2; \
 	  exit 1; \
 	fi; \
-	printf '%s\n' "All C files compiled clean"
+	printf '%s\n' "All freestanding C files compiled clean; hosted libc uses make libc-check"
 
 hosted-test: engine-cli
 	@mkdir -p build/hosted

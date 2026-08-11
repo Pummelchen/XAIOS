@@ -7,6 +7,36 @@ on:
     branches: [main]
 
 jobs:
+  hosted-c99-libc:
+    name: Hosted C99 libc (ARM64 and x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install libc and QEMU dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld meson ninja-build qemu-system-arm qemu-efi-aarch64 qemu-system-x86 ovmf mtools python3 python3-cryptography
+
+      - name: Build and run the current hosted C99 gates
+        run: make qemu-libc-gate
+
+      - name: Upload libc evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hosted-c99-libc-evidence
+          path: |
+            build/libc/*/sysroot/manifest.json
+            build/libc/*/runtime-test/*.elf
+            build/libc/c99-conformance-report.json
+            build/qemu-libc-*.log
+          if-no-files-found: ignore
+          retention-days: 14
+
   compile-check:
     name: Compile Check
     runs-on: ubuntu-latest

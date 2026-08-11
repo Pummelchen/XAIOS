@@ -19,7 +19,7 @@ All wrapper functions below are built on this primitive.
 | `XAIOS_SYSCALL_LOG` | 1 | `xaios_log(text)` | Write a string to the kernel log. Normal interactive boots keep diagnostic log traffic off the display; test profiles and fatal errors expose it on UART. |
 | `XAIOS_SYSCALL_EXIT` | 2 | `xaios_exit(code)` | Terminate the current process. |
 | `XAIOS_SYSCALL_OSCTL` | 3 | `xaios_osctl(command)` | Send a control-plane command (JSON telemetry query). |
-| `XAIOS_SYSCALL_CLOCK_NANOS` | 20 | `xaios_clock_nanos()` | Return monotonic wall-clock nanoseconds since boot. |
+| `XAIOS_SYSCALL_CLOCK_NANOS` | 20 | `xaios_clock_nanos()`, `xaios_clock_nanos_kind(kind)` | Return nanoseconds for selector 0 (monotonic), 1 (UTC realtime), or 2 (current-process CPU runtime). The legacy wrapper selects monotonic time. Invalid selectors fail. |
 | `XAIOS_SYSCALL_RANDOM` | 35 | `xaios_random(buffer, size)` | Fill up to 4096 bytes from the kernel's hardware-backed entropy source. Fails when secure entropy is unavailable. |
 | `XAIOS_SYSCALL_FS_SEEK` | 36 | `xaios_fs_seek(fd, offset)` | Set an open mutable-file descriptor to an absolute byte offset. |
 | `XAIOS_SYSCALL_CONTROL_QUERY` | 37 | `xaios_control_query(request, request_size, response, response_size, out_size)` | Submit a bounded `xaios.control.v1` operation. Read access requires `XAIOS_CAP_CONTROL_QUERY`; administrator operations additionally require `XAIOS_CAP_CONTROL_ADMIN`. |

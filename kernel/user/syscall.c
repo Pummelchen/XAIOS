@@ -487,7 +487,23 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
   }
 
   if (syscall == XAIOS_SYSCALL_CLOCK_NANOS) {
-    return complete_control_syscall(timer_now_ns());
+    if (arg0 == XAIOS_CLOCK_MONOTONIC) {
+      return complete_control_syscall(timer_now_ns());
+    }
+    if (arg0 == XAIOS_CLOCK_REALTIME) {
+      return complete_control_syscall(wall_time_now_ns());
+    }
+    if (arg0 == XAIOS_CLOCK_PROCESS_CPU) {
+      const xaios_user_process_t *current = user_current_process();
+      xaios_user_process_t snapshot;
+      if (current == 0 ||
+          user_process_snapshot_at(current->pid, timer_now_ns(), &snapshot) !=
+              XAIOS_OK) {
+        return reject_syscall(syscall, arg0, arg1, "clock-process-unavailable");
+      }
+      return complete_control_syscall(snapshot.runtime_ns);
+    }
+    return reject_syscall(syscall, arg0, arg1, "clock-selector-invalid");
   }
 
   if (syscall == XAIOS_SYSCALL_RANDOM) {

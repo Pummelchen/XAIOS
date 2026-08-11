@@ -268,9 +268,25 @@ make image
 make qemu-smoke
 ```
 
-### Key constraints
+### Hosted C99 applications
 
-- **No libc**: Use `xaios_user.h` functions only. `xaios_memzero()`, `xaios_strlen()`, `memcpy()`, `memset()` are available.
+The default application path above remains freestanding. A statically linked
+hosted ISO C99 application can instead be built with:
+
+```sh
+make libc
+scripts/build-c99-app.sh --arch aarch64 --main args app.c build/app.elf
+scripts/build-c99-app.sh --arch x86_64 --main void app.c build/app-x86.elf
+make qemu-libc-gate
+```
+
+The hosted sysroot exposes ISO C99 rather than POSIX. Registering the resulting
+ELF in an image and assigning its least-privilege capability mask remain
+explicit image-policy steps.
+
+### Freestanding application constraints
+
+- **No implicit libc**: The default app path uses `xaios_user.h`; hosted libc is an explicit build choice.
 - **No dynamic allocation**: The userspace runtime has no `malloc`. Use stack buffers or fixed-size arrays.
 - **Freestanding C99**: Standard C99 only. No POSIX headers, no standard library.
 - **Single-threaded**: Each app runs as a single process. Use `xaios_thread_group_run()` for parallelism within CPU 0, or `xaios_smp_run()` to dispatch to secondary cores.

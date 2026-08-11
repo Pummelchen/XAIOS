@@ -92,6 +92,14 @@ case "$BOOT_TEST_APPS" in
     exit 2
     ;;
 esac
+LIBC_TEST="${XAIOS_LIBC_TEST:-0}"
+case "$LIBC_TEST" in
+  0|1) ;;
+  *)
+    printf '%s\n' "error: XAIOS_LIBC_TEST must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
 BOOT_VERBOSE="${XAIOS_BOOT_VERBOSE:-0}"
 case "$BOOT_VERBOSE" in
   0|1) ;;
@@ -326,7 +334,7 @@ if [ -n "${XAIOS_BUILD_REVISION_OVERRIDE:-}" ] ||
    [ -n "$(git -C "$ROOT_DIR" ls-files --others --exclude-standard 2>/dev/null)" ]; then
   BUILD_IDENTIFIER="${BUILD_IDENTIFIER}-dirty"
 fi
-KERNEL_CFLAGS="$KERNEL_CFLAGS $PASSWORD_AUTH_CFLAG -DXAIOS_BOOT_TEST_APPS=$BOOT_TEST_APPS -DXAIOS_BOOT_VERBOSE=$BOOT_VERBOSE -DXAIOS_FAILURE_TEST_APP=$FAILURE_TEST_APP"
+KERNEL_CFLAGS="$KERNEL_CFLAGS $PASSWORD_AUTH_CFLAG -DXAIOS_BOOT_TEST_APPS=$BOOT_TEST_APPS -DXAIOS_BOOT_VERBOSE=$BOOT_VERBOSE -DXAIOS_FAILURE_TEST_APP=$FAILURE_TEST_APP -DXAIOS_LIBC_TEST=$LIBC_TEST"
 
 compile_kernel() {
   source_path="$1"
@@ -748,6 +756,29 @@ for app in $USER_APPS; do
   fi
   set -- "$@" "/bin/$app=$app_elf"
 done
+
+if [ "$LIBC_TEST" = 1 ]; then
+  LIBC_TEST_ELF="$BUILD_DIR/libc/$TARGET_ARCH/runtime-test/c99-runtime-smoke.elf"
+  if [ ! -f "$LIBC_TEST_ELF" ]; then
+    printf '%s\n' "error: hosted C99 test image missing: $LIBC_TEST_ELF" >&2
+    printf '%s\n' "       Run XAIOS_LIBC_ARCHES=$TARGET_ARCH make libc first." >&2
+    exit 1
+  fi
+  LIBC_MAIN_VOID_ELF="$BUILD_DIR/libc/$TARGET_ARCH/runtime-test/c99-main_void.elf"
+  LIBC_EXIT_PROBE_ELF="$BUILD_DIR/libc/$TARGET_ARCH/runtime-test/c99-exit_probe.elf"
+  LIBC_ABORT_PROBE_ELF="$BUILD_DIR/libc/$TARGET_ARCH/runtime-test/c99-abort_probe.elf"
+  for libc_probe in "$LIBC_MAIN_VOID_ELF" "$LIBC_EXIT_PROBE_ELF" \
+      "$LIBC_ABORT_PROBE_ELF"; do
+    if [ ! -f "$libc_probe" ]; then
+      printf 'error: missing libc probe: %s\n' "$libc_probe" >&2
+      exit 1
+    fi
+  done
+  set -- "$@" "/bin/c99-runtime-smoke=$LIBC_TEST_ELF" \
+    "/bin/c99-main-void=$LIBC_MAIN_VOID_ELF" \
+    "/bin/c99-exit-probe=$LIBC_EXIT_PROBE_ELF" \
+    "/bin/c99-abort-probe=$LIBC_ABORT_PROBE_ELF"
+fi
 
 printf '%s\n' "Building userspace /bin/sshd ELF..."
 SSHD_RESPONSE_FILE="$INIT_BUILD_DIR/sshd-objects.rsp"

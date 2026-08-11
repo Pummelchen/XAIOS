@@ -1,0 +1,81 @@
+{
+  "schema": "xaios.c99.requirements.v1",
+  "standard": "ISO/IEC 9899:1999 with TC1, TC2 and TC3",
+  "public_draft": "https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1256.pdf",
+  "profile": "hosted",
+  "mandatory_function_count": 464,
+  "public_headers": [
+    "assert.h",
+    "complex.h",
+    "ctype.h",
+    "errno.h",
+    "fenv.h",
+    "float.h",
+    "inttypes.h",
+    "iso646.h",
+    "limits.h",
+    "locale.h",
+    "math.h",
+    "setjmp.h",
+    "signal.h",
+    "stdarg.h",
+    "stdbool.h",
+    "stddef.h",
+    "stdint.h",
+    "stdio.h",
+    "stdlib.h",
+    "string.h",
+    "tgmath.h",
+    "time.h",
+    "wchar.h",
+    "wctype.h"
+  ],
+  "architecture_gates": ["aarch64", "x86_64"],
+  "required_macros": {
+    "__STDC_HOSTED__": "1",
+    "__STDC_VERSION__": "199901L"
+  },
+  "forbidden_public_headers": [
+    "alloca.h",
+    "dirent.h",
+    "fcntl.h",
+    "netdb.h",
+    "poll.h",
+    "pthread.h",
+    "sys/socket.h",
+    "sys/types.h",
+    "unistd.h",
+    "strings.h"
+  ],
+  "forbidden_public_identifiers": [
+    "accept", "asprintf", "close", "connect", "execve", "fdopen",
+    "fileno", "fmemopen", "fork", "gettimeofday", "lseek", "mmap",
+    "munmap", "nanosleep", "open", "poll", "pthread_create", "read",
+    "setbuffer", "setlinebuf", "socket", "stat", "strfromd",
+    "timespec_get", "unlink", "valloc", "vasprintf", "write"
+  ],
+  "forbidden_public_macros": ["SIGUSR1", "TIME_UTC"],
+  "runtime_markers": [
+    "C99-LANGUAGE-PASS",
+    "C99-TYPES-MACROS-PASS",
+    "C99-CHAR-STRING-WIDE-PASS",
+    "C99-CONVERSION-ALLOCATION-PASS",
+    "C99-LOCALE-TIME-PASS",
+    "C99-STDIO-PASS",
+    "C99-MATH-COMPLEX-FENV-PASS",
+    "C99-CONFORMANCE-SUITE-PASS",
+    "C99-RUNTIME-PASS",
+    "C99-ATEXIT-PASS",
+    "C99-MAIN-VOID-PASS",
+    "C99-TERMINATION-PROBES-PASS",
+    "kernel: /bin/c99-runtime-smoke returned to kernel exit_code=0",
+    "kernel: /bin/c99-main-void returned to kernel exit_code=0",
+    "kernel: /bin/c99-exit-probe returned to kernel exit_code=23",
+    "kernel: /bin/c99-abort-probe returned to kernel exit_code=134"
+  ],
+  "syscall_budget": {
+    "baseline_count": 50,
+    "maximum_identifier": 50,
+    "libc_specific_additions": 0
+  }
+}
