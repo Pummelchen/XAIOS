@@ -49,8 +49,9 @@ int main(int argc, char **argv) {
   clock_t cpu_before;
   time_t wall;
 
-  assert(argc == 0);
-  assert(argv != NULL && argv[0] == NULL);
+  assert(argc == 1);
+  assert(argv != NULL && strcmp(argv[0], "/bin/c99-runtime-smoke") == 0);
+  assert(argv[argc] == NULL);
   assert(atexit(on_exit_marker) == 0);
 
   memory = malloc(4096U);
