@@ -18,6 +18,11 @@
 #include <xaios/user.h>
 #include <xaios/vfs.h>
 
+/*
+ * Picard — “They invade our space and we fall back. They assimilate entire
+ * worlds, and we fall back. Not again!”
+ */
+
 #ifndef XAIOS_REMOTE_LOGIN_LIST_BYTES
 #define XAIOS_REMOTE_LOGIN_LIST_BYTES XAIOS_MFS_MAX_LIST_BYTES
 #endif

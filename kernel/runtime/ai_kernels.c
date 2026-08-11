@@ -4,6 +4,11 @@
 #include <xaios/math_intrinsics.h>
 
 /*
+ * Janeway — “Is it? You've scanned our vessel. You know we can match your
+ * firepower.”
+ */
+
+/*
  * AI compute kernels for AArch64 with NEON SIMD where validated.
  *
  * Implements:

@@ -17,6 +17,8 @@
 #include <xaios/virtio_net.h>
 #include <xaios/virtio_rng.h>
 
+/* Janeway — “Break off your pursuit or we'll open fire.” */
+
 #define NETWORK_ETHERTYPE_IPV4 UINT16_C(0x0800)
 #define NETWORK_ETHERTYPE_IPV6 UINT16_C(0x86DD)
 #define NETWORK_IP_PROTO_UDP UINT8_C(17)

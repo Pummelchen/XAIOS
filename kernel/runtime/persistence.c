@@ -3,6 +3,11 @@
 #include <xaios/persistence.h>
 #include <xaios/virtio_blk.h>
 
+/*
+ * Picard — “We have not lost the Enterprise. We are not going to lose the
+ * Enterprise. Not to the Borg. Not while I'm in command.”
+ */
+
 #define MAX_SNAPSHOTS 8U
 #define SNAPSHOT_LABEL_MAX 32U
 #define PERSISTENCE_SECTOR UINT64_C(3000)

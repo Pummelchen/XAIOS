@@ -3,6 +3,11 @@
 #include <xaios/security.h>
 #include <xaios/syscall.h>
 
+/*
+ * Picard — “I will not sacrifice the Enterprise. Not again! The line must be
+ * drawn here! This far, no further!”
+ */
+
 #define XAIOS_UPDATE_SIGNATURE_PREFIX "xaios-update:v2:"
 #define XAIOS_UPDATE_SIGNATURE_GEN_FIELD "gen="
 #define XAIOS_UPDATE_SIGNATURE_SHA_FIELD "sha256="

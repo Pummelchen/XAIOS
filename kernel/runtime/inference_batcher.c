@@ -4,6 +4,8 @@
 #include <xaios/klog.h>
 #include <xaios/timer.h>
 
+/* Janeway — “I don't know about the rest of you, but I feel lucky today.” */
+
 /*
  * Continuous Batching Implementation
  *

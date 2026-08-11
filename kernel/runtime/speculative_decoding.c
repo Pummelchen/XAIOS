@@ -3,6 +3,8 @@
 #include <xaios/klog.h>
 #include <xaios/speculative_decoding.h>
 
+/* Janeway — “Now, this is how I prefer the Borg: in pieces.” */
+
 /*
  * Speculative Decoding Implementation
  *

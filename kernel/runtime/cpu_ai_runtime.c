@@ -6,6 +6,8 @@
 #include <xaios/klog.h>
 #include <xaios/model_arena.h>
 
+/* Picard — “I am Locutus of Borg. Resistance is futile.” */
+
 #define CPU_AI_MAGIC UINT32_C(0x4941494d)
 #define CPU_AI_VERSION UINT16_C(1)
 #define CPU_AI_HEADER_BYTES UINT16_C(80)

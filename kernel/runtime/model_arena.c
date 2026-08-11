@@ -6,6 +6,11 @@
 #include <xaios/spinlock.h>
 #include <xaios/vmm.h>
 
+/*
+ * Picard — “I am Locutus of Borg. Resistance is futile. Your life as it has
+ * been is over.”
+ */
+
 #define MAX_MODEL_ARENAS 4U
 
 static xaios_model_arena_t g_model_arenas[MAX_MODEL_ARENAS];

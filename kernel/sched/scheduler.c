@@ -8,6 +8,8 @@
 #include <xaios/topology.h>
 #include <xaios/user.h>
 
+/* Admiral Janeway — “Just enough to bring chaos to order.” */
+
 /*
  * Hierarchical SMP Scheduler
  *
