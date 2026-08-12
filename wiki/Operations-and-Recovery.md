@@ -53,3 +53,9 @@ both AArch64 and x86_64. It also uses Debian 13 OpenSSH when Docker is available
 This proves the named QEMU behavior only. Physical power loss, firmware reset,
 RTC quality, thermals, PMU access, and device durability still require named
 hardware qualification.
+
+The consolidated pre-physical evidence packet is
+`make qemu-qualification-readiness`. It preserves this boundary while
+collecting the QEMU network/SSH, storage, topology, diagnostic, and sustained
+soak reports in one hashed manifest. See
+[`docs/PHYSICAL-QUALIFICATION-READINESS.md`](https://github.com/Pummelchen/XAIOS/blob/main/docs/PHYSICAL-QUALIFICATION-READINESS.md).

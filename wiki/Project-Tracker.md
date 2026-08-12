@@ -74,14 +74,14 @@ an available symbol is not proof of conformance.
 | N-F1 | Hybrid post-quantum SSH KEX | `NOT STARTED` | Current interoperable suite is classical curve25519 only. |
 | N-F2 | Outbound public-key auth, IPv6 active open, forwarding/agents/jump hosts | `NOT STARTED` | Outbound SSH/SCP currently uses password auth over IPv4/DNS A. |
 | N-F3Q | Hostile-network fuzzing and emulated adversarial soak | `IN PROGRESS` | Deterministic sanitizer coverage includes 50,000 malformed IPv4/IPv6 fragment cases plus SSH/SFTP/DNS malformed corpora and concurrent QEMU load. Close after coverage-guided fuzzing, packet loss/reorder/corruption injection, resource-exhaustion cases, and a documented long-duration ARM64/x86_64 QEMU soak pass. |
-| N-F3P | Physical SSH/network security qualification | `NOT STARTED` | Requires physical lossy-link and sustained-load evidence, side-channel analysis, and independent SSH/cryptography review. QEMU evidence cannot close this item. |
+| N-F3P | Physical SSH/network security qualification | `IN PROGRESS` | Consolidated QEMU network/SSH readiness evidence is available through `make qemu-qualification-readiness`; physical lossy-link, sustained-load, side-channel analysis, and independent SSH/cryptography review remain open. QEMU evidence cannot close this item. |
 
 ## Storage phases
 
 | Phase | Status | Evidence / remaining gate |
 |---|---|---|
 | S-11Q QEMU NVMe async/multiqueue/SGL/cancellation/direct-buffer path | `IN PROGRESS` | AArch64 and x86_64 QEMU negotiate four I/O queues and verify four-page PRP 16 KiB write/read/flush commands plus backing bytes. Close after async block integration, SGL, cancellation, MSI-X queue affinity, direct final-buffer APIs, malformed-completion tests, and ARM64/x86_64 QEMU stress gates pass. |
-| S-11P Physical production NVMe qualification | `NOT STARTED` | Requires named physical devices to pass queue scaling, interrupt affinity, FUA/flush/discard semantics, reset recovery, power-loss durability, sustained-load, and performance gates. QEMU evidence cannot close this item. |
+| S-11P Physical production NVMe qualification | `IN PROGRESS` | Consolidated QEMU NVMe and crash-recovery evidence is available through `make qemu-qualification-readiness`; named physical devices must still pass queue scaling, interrupt affinity, FUA/flush/discard semantics, reset recovery, power-loss durability, sustained-load, and performance gates. QEMU evidence cannot close this item. |
 | S-12 Trusted-replica repair and production key custody | `BLOCKED` | Depends on production trust and repair-source decisions. |
 
 ## Distributed AI server phases
@@ -92,9 +92,9 @@ an available symbol is not proof of conformance.
 | D-05 Real local inference | `NOT STARTED` | Real Qwen correctness, typed state, scheduling, cancellation, backpressure, and metrics. |
 | D-06 Authenticated cluster control | `NOT STARTED` | Mutually authenticated protocol and three-node join/partition/replay tests. |
 | D-07 Distributed placement/execution | `NOT STARTED` | Transactional dense/MoE ownership, deterministic routing, and node-loss behavior. |
-| D-08 Benchmarks/diagnostics | `NOT STARTED` | Physical metadata-rich measurements and redacted support bundles. |
+| D-08 Benchmarks/diagnostics | `IN PROGRESS` | QEMU benchmark telemetry and a hashed qualification-readiness report are implemented; physical metadata-rich NUMA, bandwidth, PMU, thermal, storage, network, and redacted support-bundle evidence remain. |
 | D-09 Production inference service | `NOT STARTED` | Authenticated API, streaming, cancellation, saturation, loss, and long-lived tests. |
-| D-10 Support qualification/cleanup | `IN PROGRESS` | Documentation contracts exist; physical/model/cluster qualifications remain. |
+| D-10 Support qualification/cleanup | `IN PROGRESS` | Documentation contracts and the consolidated QEMU qualification-readiness gate exist; physical, model, cluster, thermal, PMU, and durability qualifications remain. |
 
 ## Qwen 3.8 27B implementation
 
@@ -126,7 +126,7 @@ an available symbol is not proof of conformance.
 | DeepSeek V4 Flash 0731 source verification | `BLOCKED` | Maintainer-approved immutable official source. |
 | DeepSeek adapter and parity suite | `BLOCKED` | Depends on verified source. |
 | Multi-terabyte sparse allocators and large pages | `NOT STARTED` | Physical capacity and correctness evidence. |
-| SRAT/SLIT/HMAT placement policy and local/remote byte telemetry | `NOT STARTED` | Physical NUMA validation. |
+| SRAT/SLIT/HMAT placement policy and local/remote byte telemetry | `IN PROGRESS` | QEMU dynamic topology/high-core evidence and the physical telemetry contract are covered by the qualification-readiness packet; real SRAT/SLIT/HMAT placement and local/remote byte validation remain. |
 | AI Cell/secondary-CPU real inference dispatch | `NOT STARTED` | Real model work executes on leased workers. |
 | NUMA/machine expert ownership and stable failure-aware reduction | `NOT STARTED` | Multi-node exactness and failure tests. |
 

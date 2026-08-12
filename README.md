@@ -53,6 +53,11 @@ open-decision list, and risk register are in the
 at [`docs/MODEL-SUPPORT.json`](./docs/MODEL-SUPPORT.json) contains identifiers,
 not an independent status mirror.
 
+The consolidated QEMU qualification-readiness gate is documented in
+[`docs/PHYSICAL-QUALIFICATION-READINESS.md`](./docs/PHYSICAL-QUALIFICATION-READINESS.md).
+It collects the strongest emulated SSH/network, NVMe, diagnostics, topology,
+and sustained-soak evidence without treating QEMU as physical hardware.
+
 ## License
 
 XAIOS is source-available under the

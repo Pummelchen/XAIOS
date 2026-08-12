@@ -28,6 +28,7 @@ AArch64 or x86_64 UEFI firmware. Setup details are in
 | `make qemu-smoke` | Primary AArch64 boot and deterministic self-test gate. |
 | `make qemu-regression-suite` | Broader process, filesystem, network, and runtime regression suite. |
 | `make qemu-operations-closure` | Both-architecture abrupt-stop, power, recovery, diagnostics, clock, pressure, update/config, support, and Debian-client gate. |
+| `make qemu-qualification-readiness` | Consolidated QEMU evidence packet for SSH/network, NVMe, storage recovery, diagnostics, high-core topology, x86 parity, and repeated soak; physical qualification remains open. |
 | `make qemu-full-os-rc` | Aggregate mandatory QEMU core-OS release-candidate gate. |
 
 Focused gates cover boot loops, faults, security, local console, storage,
@@ -82,6 +83,10 @@ when a distribution QEMU lacks that device. Platform recommendation IDs are
 registered in
 [`docs/PLATFORM-SUPPORT.json`](https://github.com/Pummelchen/XAIOS/blob/main/docs/PLATFORM-SUPPORT.json),
 while their sole human-maintained status is in [[Project Tracker|Project-Tracker]].
+
+The evidence boundary and the physical measurements required after QEMU are
+documented in
+[`docs/PHYSICAL-QUALIFICATION-READINESS.md`](https://github.com/Pummelchen/XAIOS/blob/main/docs/PHYSICAL-QUALIFICATION-READINESS.md).
 
 ## External interoperability
 

@@ -38,5 +38,20 @@ repository. Performance numbers that do not satisfy the
 are targets, not results, and independent microbenchmark improvements must not
 be multiplied into an end-to-end claim.
 
+## Qualification readiness packet
+
+`make qemu-qualification-readiness` is the consolidated QEMU pre-physical
+gate. It runs both architecture boot/readiness checks, network and SSH
+operations, fragmentation, NVMe queue/flush, storage crash recovery, dynamic
+high-core metadata, benchmark telemetry, and repeated smoke boots. A passing
+`build/qemu-qualification-readiness-report.json` is still marked
+`qemu_evidence_pass_physical_open`.
+
+The report deliberately marks real NUMA-local/remote bytes, memory bandwidth,
+PMU counters, frequency/power/thermal behavior, physical NIC behavior, and
+physical NVMe durability as unavailable under QEMU. The required physical
+artifact fields are defined in
+[`docs/PHYSICAL-QUALIFICATION-READINESS.md`](https://github.com/Pummelchen/XAIOS/blob/main/docs/PHYSICAL-QUALIFICATION-READINESS.md).
+
 See [[VMware Fusion|VMware-Fusion]], [[Testing XAIOS|Testing-XAIOS]], and the
 single [[Project Tracker|Project-Tracker]].
