@@ -975,6 +975,8 @@ def main() -> int:
         if qemu.poll() is not None:
             raise RuntimeError(f"QEMU exited unexpectedly with status {qemu.returncode}")
         results["ipv4_ssh_sftp_udp"] = "passed"
+        results["standalone_utility_apps"] = "passed"
+        results["archive_interoperability"] = "passed"
         results["xaiosctl_control_surface"] = "passed"
         results["sftp_file_directory_operations"] = "passed"
         results["ssh_rekey"] = "passed"

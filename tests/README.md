@@ -58,6 +58,12 @@ redacted support bundles. By default it also runs a Debian 13 OpenSSH client
 from the reproducible Docker image; `--skip-docker` is used by the aggregate
 gate where Docker interoperability has a separate required job.
 
+`qemu-docker-network-suite` also invokes every standalone file, text, archive,
+and observability utility over the real guest SSH server. It verifies archive
+round trips, recursive filesystem work, typed `ps`/`df` snapshots, and nested
+transient launches before continuing into SSH, SFTP, rekey, concurrency, IPv6,
+UDP, and administration coverage.
+
 ## Rebuilding disposable Docker test images
 
 No required test program exists only inside a Docker layer. Every `COPY` input

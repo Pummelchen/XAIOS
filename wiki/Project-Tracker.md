@@ -86,7 +86,7 @@ an available symbol is not proof of conformance.
 
 | ID | Item | Status | Evidence / remaining boundary |
 |---|---|---|---|
-| O-U1 | Move non-privileged command implementations into isolated applications | `IN PROGRESS` | User-mode synchronous faults now terminate and reap only the offending process on AArch64 and x86-64. Next: split outbound `ssh`/`scp`, then migrate file/text/archive handlers without increasing the 50-syscall ABI. |
+| O-U1 | Split outbound `ssh`/`scp` from the persistent SSH service | `NOT STARTED` | File, text, archive, and observability utilities are isolated ELFs without increasing the 50-syscall ABI. Correct client separation requires asynchronous child-channel IPC so password prompts and PTY traffic remain serviceable; no such ABI exists yet. |
 | N-E4 | DNSSEC, TCP fallback, complete AAAA results | `NOT STARTED` | These remain explicit network limitations. |
 | N-F1 | Hybrid post-quantum SSH KEX | `NOT STARTED` | Current interoperable suite is classical curve25519 only. |
 | N-F2 | Outbound public-key auth, IPv6 active open, forwarding/agents/jump hosts | `NOT STARTED` | Outbound SSH/SCP currently uses password auth over IPv4/DNS A. |

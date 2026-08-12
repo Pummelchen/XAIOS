@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+import json
+import re
+
 from qemu_gate_lib import BUILD, check_markers, now, result, run, status_from_failures, write_report
 
 
@@ -16,9 +19,6 @@ COMMAND_MARKERS = {
         "ai-cell: multi-cell shared model/private kv self-test passed",
     ],
     "osctl_telemetry": [
-        "\"control_plane_syscalls\":160",
-        "\"user_process_loaded\":14",
-        "\"user_process_scheduled\":14",
         "\"ai_cell_transitions\":14",
     ],
     "osctl_rollback": [
@@ -64,6 +64,30 @@ def main() -> int:
         missing = check_markers(proc.stdout, markers)
         checks.append(result(command, not missing, missing_markers=missing))
         failures.extend(f"{command} missing marker: {marker}" for marker in missing)
+
+    telemetry_matches = re.findall(r"^telemetry: (\{.*\})$", proc.stdout, re.MULTILINE)
+    telemetry_failures = []
+    if not telemetry_matches:
+        telemetry_failures.append("telemetry JSON record missing")
+    else:
+        try:
+            telemetry = json.loads(telemetry_matches[-1])
+        except json.JSONDecodeError as exc:
+            telemetry_failures.append(f"telemetry JSON invalid: {exc}")
+        else:
+            for field, minimum in (
+                ("control_plane_syscalls", 160),
+                ("user_process_loaded", 14),
+                ("user_process_scheduled", 14),
+            ):
+                value = telemetry.get(field)
+                if not isinstance(value, int) or value < minimum:
+                    telemetry_failures.append(
+                        f"{field} expected at least {minimum}, observed {value!r}"
+                    )
+    checks.append(result("osctl_telemetry_ranges", not telemetry_failures,
+                         failures=telemetry_failures))
+    failures.extend(telemetry_failures)
 
     report = {
         "schema": SCHEMA,

@@ -147,6 +147,104 @@ if run_ssh 'stat /tmp/tree-renamed' >"$workdir/tree-stat.out" 2>&1; then
 fi
 printf 'PASS: recursive directory rename and removal\n'
 
+run_ssh 'rm -rf /tmp/utility-migration'
+run_ssh 'mkdir -p /tmp/utility-migration/tree'
+run_ssh 'write /tmp/utility-migration/input.txt alpha beta'
+run_ssh 'touch /tmp/utility-migration/empty'
+run_ssh 'cp /tmp/utility-migration/input.txt /tmp/utility-migration/copy.txt'
+run_ssh 'mv /tmp/utility-migration/copy.txt /tmp/utility-migration/moved.txt'
+run_ssh 'stat /tmp/utility-migration/moved.txt' \
+  | grep -q 'Type: file' || fail 'stat utility did not inspect a regular file'
+test "$(run_ssh 'cat /tmp/utility-migration/moved.txt')" = 'alpha beta' \
+  || fail 'cat utility returned unexpected content'
+test "$(run_ssh 'head -n 1 /tmp/utility-migration/moved.txt')" = 'alpha beta' \
+  || fail 'head utility returned unexpected content'
+test "$(run_ssh 'tail -n 1 /tmp/utility-migration/moved.txt')" = 'alpha beta' \
+  || fail 'tail utility returned unexpected content'
+run_ssh "sed 's/alpha/omega/g' /tmp/utility-migration/moved.txt" >/dev/null
+run_ssh 'grep -n omega /tmp/utility-migration/moved.txt' \
+  | grep -q '1:omega beta' || fail 'grep/sed utility result mismatch'
+run_ssh "grep '^omega.*beta$' /tmp/utility-migration/moved.txt" \
+  | grep -q '^omega beta$' || fail 'grep basic-regex compatibility regressed'
+run_ssh 'find /tmp/utility-migration -name moved.txt' \
+  | grep -q '/tmp/utility-migration/moved.txt' \
+  || fail 'find utility omitted the migrated file'
+run_ssh 'll /tmp/utility-migration' | grep -q 'moved.txt' \
+  || fail 'ls alias did not dispatch to /bin/ls'
+run_ssh 'mkdir -p /tmp/utility-migration/tar-out'
+run_ssh 'tar -cf /tmp/utility-migration/files.tar /tmp/utility-migration/moved.txt'
+run_ssh 'tar -tf /tmp/utility-migration/files.tar' | grep -q 'moved.txt' \
+  || fail 'tar list omitted archived file'
+run_ssh 'tar -xf /tmp/utility-migration/files.tar -C /tmp/utility-migration/tar-out'
+test "$(run_ssh 'cat /tmp/utility-migration/tar-out/moved.txt')" = 'omega beta' \
+  || fail 'tar extraction content mismatch'
+run_ssh 'cpio -o -O /tmp/utility-migration/files.cpio /tmp/utility-migration/moved.txt'
+run_ssh 'cpio -it -I /tmp/utility-migration/files.cpio' | grep -q 'moved.txt' \
+  || fail 'cpio list omitted archived file'
+run_ssh 'mkdir -p /tmp/utility-migration/cpio-out'
+run_ssh 'cpio -i -I /tmp/utility-migration/files.cpio -D /tmp/utility-migration/cpio-out'
+test "$(run_ssh 'cat /tmp/utility-migration/cpio-out/moved.txt')" = 'omega beta' \
+  || fail 'cpio extraction content mismatch'
+run_ssh 'zip -r /tmp/utility-migration/files.zip /tmp/utility-migration/tree'
+run_ssh 'unzip -l /tmp/utility-migration/files.zip' | grep -q 'tree/' \
+  || fail 'ZIP list omitted archived directory'
+run_ssh 'mkdir -p /tmp/utility-migration/zip-out'
+run_ssh 'unzip /tmp/utility-migration/files.zip -d /tmp/utility-migration/zip-out'
+run_ssh 'ps -a' | grep -q 'PID PPID' || fail 'ps utility header missing'
+run_ssh 'df' | grep -q 'Filesystem Size Used' || fail 'df utility header missing'
+run_ssh 'df -h' | grep -q 'Filesystem Size Used' || fail 'df -h compatibility missing'
+run_ssh 'du -s /tmp/utility-migration' | grep -q '/tmp/utility-migration' \
+  || fail 'du utility omitted requested path'
+run_ssh 'sshtest' | grep -q '^sshtest: complete$' \
+  || fail 'nested standalone utility invocation failed'
+
+mkdir -p "$workdir/archive-source"
+printf 'debian archive payload\n' >"$workdir/archive-source/external.txt"
+tar -cf "$workdir/debian.tar" -C "$workdir/archive-source" external.txt
+gzip -c "$workdir/debian.tar" >"$workdir/debian.tar.gz"
+(cd "$workdir/archive-source" && \
+  printf 'external.txt\n' | cpio -o -H newc >"$workdir/debian.cpio" 2>/dev/null)
+(cd "$workdir/archive-source" && zip -q "$workdir/debian.zip" external.txt)
+
+if ! {
+  {
+    printf 'get /tmp/utility-migration/files.tar %s\n' "$workdir/xaios.tar"
+    printf 'get /tmp/utility-migration/files.cpio %s\n' "$workdir/xaios.cpio"
+    printf 'get /tmp/utility-migration/files.zip %s\n' "$workdir/xaios.zip"
+    printf 'put %s /tmp/utility-migration/debian.tar\n' "$workdir/debian.tar"
+    printf 'put %s /tmp/utility-migration/debian.tar.gz\n' "$workdir/debian.tar.gz"
+    printf 'put %s /tmp/utility-migration/debian.cpio\n' "$workdir/debian.cpio"
+    printf 'put %s /tmp/utility-migration/debian.zip\n' "$workdir/debian.zip"
+    printf 'quit\n'
+  } | sftp "${sftp_options[@]}" -b - "admin@$host" \
+      >"$workdir/archive-sftp.log" 2>&1
+}; then
+  cat "$workdir/archive-sftp.log" >&2
+  fail 'archive interoperability SFTP transfer failed'
+fi
+
+tar -tf "$workdir/xaios.tar" | grep -q 'moved.txt' \
+  || fail 'Debian tar rejected the XAIOS ustar archive'
+cpio -it <"$workdir/xaios.cpio" 2>/dev/null | grep -q 'moved.txt' \
+  || fail 'Debian cpio rejected the XAIOS newc archive'
+unzip -tq "$workdir/xaios.zip" >/dev/null \
+  || fail 'Debian unzip rejected the XAIOS ZIP archive'
+
+run_ssh 'mkdir -p /tmp/utility-migration/debian-tar /tmp/utility-migration/debian-gzip /tmp/utility-migration/debian-cpio /tmp/utility-migration/debian-zip'
+run_ssh 'tar -xf /tmp/utility-migration/debian.tar -C /tmp/utility-migration/debian-tar'
+run_ssh 'tar -xf /tmp/utility-migration/debian.tar.gz -C /tmp/utility-migration/debian-gzip'
+run_ssh 'cpio -i -I /tmp/utility-migration/debian.cpio -D /tmp/utility-migration/debian-cpio'
+run_ssh 'unzip /tmp/utility-migration/debian.zip -d /tmp/utility-migration/debian-zip'
+for directory in debian-tar debian-gzip debian-cpio debian-zip; do
+  test "$(run_ssh "cat /tmp/utility-migration/$directory/external.txt")" = \
+    'debian archive payload' \
+    || fail "XAIOS could not extract the Debian $directory archive"
+done
+printf 'PASS: Debian and XAIOS tar, gzip-tar, newc, and ZIP interoperability\n'
+
+run_ssh 'rm -rf /tmp/utility-migration'
+printf 'PASS: 23 standalone file, text, archive, and observability utilities\n'
+
 if ! printf 'first\r\nsecond\033[H\033[3~\033[F!\017\030' | \
     ssh -tt "${key_ssh_options[@]}" "admin@$host" \
       'nano /tmp/interactive-nano.txt' \

@@ -5,8 +5,8 @@ shipped with XAIOS. Standalone programs are started through the kernel loader
 with explicit capabilities; arbitrary host binaries and FreeBSD/Linux binaries
 do not execute in XAIOS.
 
-Shell built-in commands such as `ls`, `ssh`, and `scp` are documented separately
-in [[Commands|Commands]].
+Session syntax such as `cd` and service-hosted commands such as `ssh` and `scp`
+are documented separately in [[Commands|Commands]].
 
 ## Boot and service applications
 
@@ -51,6 +51,45 @@ into the kernel.
 | `/bin/htop` | Dedicated ELF using the typed runtime-snapshot control operation | Full-screen sampled process monitor with color, alternate-screen in-place refresh, runtime-sized CPU meters, sorting, filtering, tree view, keyboard navigation, and a 60 FPS rendering cap. |
 | `/bin/pong` | Dedicated ELF plus shared app-owned PTY module | 60 FPS terminal Pong. `W`/`S` control the left paddle, the computer controls the right, and session win/loss counts adjust ball speed by one percent per round. |
 
+## Utility applications
+
+The following commands are independent ELF applications. The shell passes a
+normalized session working directory and bounded raw argument string to each
+process. A parser fault, malformed archive, or ordinary nonzero exit is
+contained by the transient-process boundary rather than executing in the
+kernel.
+
+| Path | Supported core behavior |
+|---|---|
+| `/bin/ls` | `ls [-a] [-l] [PATH]`; list files or directories. `l`, `la`, and `ll` dispatch to this binary. |
+| `/bin/mkdir` | `mkdir [-p] DIR...`; create directories and optional parents. |
+| `/bin/touch` | `touch FILE...`; create or truncate regular files. |
+| `/bin/cp` | `cp [-R|-r] SOURCE... DEST`; copy files or bounded directory trees. |
+| `/bin/mv` | `mv SOURCE DEST`; rename or move within MutableFS. |
+| `/bin/rm` | `rm [-r] [-f] PATH...`; remove files or trees. |
+| `/bin/rmdir` | `rmdir DIR...`; remove empty directories. |
+| `/bin/stat` | `stat PATH`; show type, size, blocks, generation, and content hash. |
+| `/bin/cat` | `cat [-n] FILE...`; concatenate files with optional line numbers. |
+| `/bin/head` | `head [-n N] FILE`; print the first lines, defaulting to 10. |
+| `/bin/tail` | `tail [-n N] FILE`; print the last lines, defaulting to 10. |
+| `/bin/less` | `less [-N] FILE`; non-PTY rendering through the ELF and app-owned alternate-screen paging in an SSH PTY. |
+| `/bin/grep` | `grep [-incvFHh] PATTERN FILE...`; bounded basic or fixed-string search. |
+| `/bin/find` | `find [PATH] [-name PATTERN]`; recursively enumerate matching paths. |
+| `/bin/sed` | `sed 's/OLD/NEW/[g]' FILE`; bounded literal replacement and write-back. |
+| `/bin/write` | `write FILE TEXT...`; replace a file with the supplied text. |
+| `/bin/tar` | Create POSIX ustar archives and list/extract ustar, PAX-path, GNU-long-name, or single-member gzip input. |
+| `/bin/cpio` | Create, list, and extract portable `newc` archives. |
+| `/bin/zip` | Create standards-readable stored ZIP archives. |
+| `/bin/unzip` | List or extract stored and Deflate ZIP entries. |
+| `/bin/ps` | Render the typed kernel process snapshot. |
+| `/bin/df` | Render typed MutableFS and ModelFS capacity records. |
+| `/bin/du` | Report bounded recursive block usage with summary and human-readable options. |
+
+Archive extraction rejects absolute and traversal paths, corrupt checksums,
+encrypted ZIP, ZIP64, links, device nodes, and unsupported required features.
+MutableFS limits regular files to 128 KiB, so these utilities are intended for
+configuration and small exchange archives rather than model payloads.
+
 ## Diagnostic applications
 
 These executables are not started on a normal boot. An authenticated exact-name
@@ -85,9 +124,9 @@ shipped in the normal image:
 
 - Diagnostic names are exact allowlist entries; paths, arguments, and arbitrary
   executable launch are rejected by the remote application dispatcher.
-- Built-in shell parsing and most file/archive command handlers currently run in
-  the kernel remote-login subsystem. Their audited migration candidates are
-  listed in [[Commands|Commands]].
+- Shell state, command composition, authorization, and privileged mechanisms
+  remain kernel-owned. File, text, archive, and observability parsing runs in
+  the independent utility applications listed above.
 - SSH transport and outbound SSH/SCP protocol code run in `/bin/sshd`, not in
   the kernel. A fault there cannot corrupt kernel state, but it can stop that
   SSH service until lifecycle recovery restarts it.

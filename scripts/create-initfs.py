@@ -7,10 +7,10 @@ import sys
 SECTOR_SIZE = 512
 MAGIC = b"XAIOSROFS2"
 VERSION = 2
-MAX_FILES = 32
+MAX_FILES = 64
 PATH_MAX = 64
 HEADER_SECTOR = 1
-HEADER_BYTES = 3584
+HEADER_BYTES = 8192
 # Sectors 3000 through 3185 are reserved for the kernel's persistence and
 # MutableFS boot self-tests. Keep the immutable payload beyond that scratch
 # range so repeated boots cannot overwrite executable data.

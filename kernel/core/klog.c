@@ -16,15 +16,22 @@
 #define UART_16550_LSR UINT32_C(5)
 #define UART_16550_LSR_THRE UINT8_C(0x20)
 #define UART_16550_LSR_DR UINT8_C(0x01)
+#define XAIOS_CONSOLE_CAPTURE_DEPTH 8U
+
+typedef struct xaios_console_capture {
+  char *buffer;
+  uint64_t capacity;
+  uint64_t length;
+} xaios_console_capture_t;
 
 static volatile uint32_t *g_uart_base;
 static uint32_t g_uart_kind;
 static uint32_t g_uart_reg_shift;
 static xaios_spinlock_t g_klog_lock;
 static uint32_t g_log_output_enabled = 1U;
-static char *g_console_capture_buffer;
-static uint64_t g_console_capture_capacity;
-static uint64_t g_console_capture_length;
+static xaios_console_capture_t
+    g_console_captures[XAIOS_CONSOLE_CAPTURE_DEPTH];
+static uint32_t g_console_capture_depth;
 
 /* Line buffer for ring capture */
 static char g_klog_line[XAIOS_KLOG_LINE_MAX];
@@ -101,9 +108,12 @@ void klog_console_write(const char *message, uint64_t length) {
   if (message == 0 || length == 0U) return;
   xaios_spin_lock(&g_klog_lock);
   for (uint64_t i = 0U; i < length; ++i) {
-    if (g_console_capture_buffer != 0 &&
-        g_console_capture_length < g_console_capture_capacity) {
-      g_console_capture_buffer[g_console_capture_length++] = message[i];
+    if (g_console_capture_depth != 0U) {
+      xaios_console_capture_t *capture =
+          &g_console_captures[g_console_capture_depth - 1U];
+      if (capture->length < capture->capacity) {
+        capture->buffer[capture->length++] = message[i];
+      }
     }
     if (message[i] == '\n') uart_putc('\r');
     uart_putc(message[i]);
@@ -114,24 +124,30 @@ void klog_console_write(const char *message, uint64_t length) {
 int klog_console_capture_begin(char *buffer, uint64_t capacity) {
   if (buffer == 0 || capacity == 0U) return 0;
   xaios_spin_lock(&g_klog_lock);
-  if (g_console_capture_buffer != 0) {
+  if (g_console_capture_depth == XAIOS_CONSOLE_CAPTURE_DEPTH) {
     xaios_spin_unlock(&g_klog_lock);
     return 0;
   }
-  g_console_capture_buffer = buffer;
-  g_console_capture_capacity = capacity;
-  g_console_capture_length = 0U;
+  xaios_console_capture_t *capture =
+      &g_console_captures[g_console_capture_depth++];
+  capture->buffer = buffer;
+  capture->capacity = capacity;
+  capture->length = 0U;
   xaios_spin_unlock(&g_klog_lock);
   return 1;
 }
 
 uint64_t klog_console_capture_end(void) {
-  uint64_t length;
+  uint64_t length = 0U;
   xaios_spin_lock(&g_klog_lock);
-  length = g_console_capture_length;
-  g_console_capture_buffer = 0;
-  g_console_capture_capacity = 0U;
-  g_console_capture_length = 0U;
+  if (g_console_capture_depth != 0U) {
+    xaios_console_capture_t *capture =
+        &g_console_captures[--g_console_capture_depth];
+    length = capture->length;
+    capture->buffer = 0;
+    capture->capacity = 0U;
+    capture->length = 0U;
+  }
   xaios_spin_unlock(&g_klog_lock);
   return length;
 }

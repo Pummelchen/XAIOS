@@ -8,6 +8,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
+        cpio \
+        gzip \
         iproute2 \
         iputils-ping \
         netcat-openbsd \
@@ -15,6 +17,8 @@ RUN apt-get update \
         procps \
         python3 \
         sshpass \
+        unzip \
+        zip \
     && rm -rf /var/lib/apt/lists/*
 
 COPY tests/network/debian13-client-suite.sh /usr/local/bin/xaios-network-client-suite

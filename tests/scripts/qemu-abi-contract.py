@@ -65,7 +65,7 @@ def validate_initfs_contract(rc_contract):
 
     required_paths = fs.get("required_paths", [])
     user_app_paths = set()
-    for variable in ("USER_APPS", "HOSTED_USER_APPS"):
+    for variable in ("USER_APPS", "UTILITY_APPS", "HOSTED_USER_APPS"):
         match = re.search(rf'^{variable}="([^"]*)"', build_image, re.MULTILINE)
         if match:
             user_app_paths.update(f"/bin/{name}" for name in match.group(1).split())

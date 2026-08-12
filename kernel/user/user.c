@@ -70,6 +70,8 @@ static uint64_t g_process_scheduled_count;
 static uint64_t g_process_wait_count;
 static uint64_t g_process_wake_count;
 static uint32_t g_transient_process_busy;
+static uint32_t g_transient_process_owner_cpu;
+static uint32_t g_transient_process_depth;
 
 extern uint64_t aarch64_enter_user(uint64_t entry, uint64_t stack,
                                    uint64_t argc, uint64_t argv);
@@ -337,6 +339,8 @@ void user_process_table_init(void) {
   g_process_wait_count = 0;
   g_process_wake_count = 0;
   g_transient_process_busy = 0U;
+  g_transient_process_owner_cpu = UINT32_MAX;
+  g_transient_process_depth = 0U;
   g_cpu_usage_count = smp_online_count();
   g_cpu_usage = (xaios_cpu_usage_record_t *)kheap_calloc(
       (uint64_t)g_cpu_usage_count * sizeof(xaios_cpu_usage_record_t), 64U);
@@ -901,18 +905,25 @@ xaios_status_t user_process_run_transient_args(
   uint32_t child_pid = 0U;
   uint32_t parent_pid;
   uint32_t cpu_id;
+  uint32_t owns_transient_lock = 0U;
   xaios_status_t status = XAIOS_ERR_NO_MEMORY;
 
   if (file == 0 || exit_code == 0 || parent == 0 || parent->pid == 0U ||
       argc == 0U || argv == 0) {
     return XAIOS_ERR_INVALID;
   }
-  if (__sync_lock_test_and_set(&g_transient_process_busy, 1U) != 0U) {
-    return XAIOS_ERR_BUSY;
-  }
-
   parent_pid = parent->pid;
   cpu_id = smp_cpu_id();
+  if (__sync_lock_test_and_set(&g_transient_process_busy, 1U) == 0U) {
+    g_transient_process_owner_cpu = cpu_id;
+    g_transient_process_depth = 1U;
+    owns_transient_lock = 1U;
+  } else if (g_transient_process_owner_cpu == cpu_id &&
+             g_transient_process_depth < XAIOS_MAX_USER_PROCESSES) {
+    ++g_transient_process_depth;
+  } else {
+    return XAIOS_ERR_BUSY;
+  }
   for (uint32_t pid = XAIOS_TRANSIENT_PID_FIRST;
        pid <= XAIOS_MAX_USER_PROCESSES; ++pid) {
     if (g_process_table[pid - 1U].state == XAIOS_USER_PROCESS_EMPTY) {
@@ -957,7 +968,14 @@ xaios_status_t user_process_run_transient_args(
   status = XAIOS_OK;
 
 out:
-  __sync_lock_release(&g_transient_process_busy);
+  kassert(g_transient_process_owner_cpu == cpu_id &&
+          g_transient_process_depth != 0U);
+  --g_transient_process_depth;
+  if (owns_transient_lock != 0U) {
+    kassert(g_transient_process_depth == 0U);
+    g_transient_process_owner_cpu = UINT32_MAX;
+    __sync_lock_release(&g_transient_process_busy);
+  }
   return status;
 }
 

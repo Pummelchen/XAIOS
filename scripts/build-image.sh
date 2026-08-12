@@ -75,6 +75,7 @@ USER_START_OBJ="$INIT_BUILD_DIR/user-start.o"
 USER_LIB_OBJ="$INIT_BUILD_DIR/xaios-user.o"
 USER_CONTROL_OBJ="$INIT_BUILD_DIR/xaios-control-client.o"
 USER_APPS="xaios-shell xaiosctl xapt nano htop pong hello sysinfo systest smptest nettest lstm-xor sshtest mltest posix-shell agenttest"
+UTILITY_APPS="ls mkdir touch cp mv rm rmdir stat cat head tail less grep find sed write tar cpio zip unzip ps df du"
 HOSTED_USER_APPS="helloworldc99"
 
 BUILD_MODE="${XAIOS_BUILD_MODE:-development}"
@@ -758,6 +759,55 @@ for app in $USER_APPS; do
       "$USER_LIB_OBJ" \
       "$app_obj"
   fi
+  set -- "$@" "/bin/$app=$app_elf"
+done
+
+USER_INFLATE_OBJ="$INIT_BUILD_DIR/xutils-inflate.o"
+"$CLANG" \
+  --target="$TARGET_TRIPLE" \
+  $USER_ARCH_CFLAGS \
+  -std=c99 \
+  -ffreestanding \
+  -fno-stack-protector \
+  -fno-builtin \
+  -fno-pic \
+  -fno-pie \
+  -Wall \
+  -Wextra \
+  -Werror \
+  -I"$ROOT_DIR/kernel/include" \
+  -c "$ROOT_DIR/kernel/lib/inflate.c" \
+  -o "$USER_INFLATE_OBJ"
+
+for app in $UTILITY_APPS; do
+  app_obj="$INIT_BUILD_DIR/xutils-$app.o"
+  app_elf="$INIT_BUILD_DIR/$app.elf"
+  printf '%s\n' "Building userspace /bin/$app utility ELF..."
+  "$CLANG" \
+    --target="$TARGET_TRIPLE" \
+    $USER_ARCH_CFLAGS \
+    -std=c99 \
+    -ffreestanding \
+    -fno-stack-protector \
+    -fno-builtin \
+    -fno-pic \
+    -fno-pie \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -DXAIOS_UTILITY_NAME=\"$app\" \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/apps/xutils.c" \
+    -o "$app_obj"
+  "$LD_LLD" \
+    -nostdlib \
+    -T "$ROOT_DIR/userspace/init/linker.ld" \
+    -o "$app_elf" \
+    "$USER_START_OBJ" \
+    "$USER_LIB_OBJ" \
+    "$USER_CONTROL_OBJ" \
+    "$USER_INFLATE_OBJ" \
+    "$app_obj"
   set -- "$@" "/bin/$app=$app_elf"
 done
 

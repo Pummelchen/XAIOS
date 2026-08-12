@@ -48,12 +48,15 @@ static remote_login_context_t
     g_remote_login_contexts[XAIOS_REMOTE_LOGIN_MAX_SESSIONS];
 static char g_remote_login_default_cwd[XAIOS_MFS_PATH_MAX] = "/";
 static char *g_remote_login_cwd = g_remote_login_default_cwd;
+#if XAIOS_BOOT_TEST_APPS
 static const char g_remote_login_archive_magic[] = "XAIOSARCHIVE\n";
 static xaios_status_t path_join(char *out, uint64_t out_capacity, const char *base,
                               const char *name);
 static xaios_status_t path_basename(const char *path, char *basename,
                                   uint64_t basename_capacity);
+#endif
 
+#if XAIOS_BOOT_TEST_APPS
 static uint64_t u64_digits(uint64_t value) {
   uint64_t digits = 1U;
   while (value >= 10U) {
@@ -62,6 +65,7 @@ static uint64_t u64_digits(uint64_t value) {
   }
   return digits;
 }
+#endif
 
 static uint64_t cstr_len(const char *text) {
   uint64_t len = 0;
@@ -418,6 +422,25 @@ static int has_more_args(const char *text, uint64_t index) {
   return text != 0 && text[skip_ws(text, index)] != '\0';
 }
 
+static uint64_t find_unquoted_char(const char *text, uint64_t start,
+                                   char target) {
+  if (text == 0) return UINT64_MAX;
+  int in_single = 0;
+  int in_double = 0;
+  for (uint64_t i = start; text[i] != '\0'; ++i) {
+    char c = text[i];
+    if (c == '\'' && in_double == 0) {
+      in_single = in_single ? 0 : 1;
+    } else if (c == '"' && in_single == 0) {
+      in_double = in_double ? 0 : 1;
+    } else if (c == target && in_single == 0 && in_double == 0) {
+      return i;
+    }
+  }
+  return UINT64_MAX;
+}
+
+#if XAIOS_BOOT_TEST_APPS
 static xaios_status_t buffer_append_char(char *buffer, uint64_t capacity,
                                        uint64_t *offset, char value) {
   if (buffer == 0 || offset == 0 || capacity == 0U) {
@@ -1817,6 +1840,7 @@ static xaios_status_t handle_head_tail(const char *args, int is_head, char *outp
   }
   return XAIOS_OK;
 }
+#endif
 
 static xaios_status_t handle_pwd(char *output, uint64_t output_capacity,
                                uint64_t *output_bytes) {
@@ -1859,6 +1883,7 @@ static xaios_status_t handle_cd(const char *arg, char *output,
   return XAIOS_OK;
 }
 
+#if XAIOS_BOOT_TEST_APPS
 static xaios_status_t handle_stat(const char *arg, char *output,
                                 uint64_t output_capacity,
                                 uint64_t *output_bytes) {
@@ -3367,26 +3392,6 @@ static xaios_status_t handle_rmdir(const char *args, char *output,
   return XAIOS_OK;
 }
 
-static uint64_t find_unquoted_char(const char *text, uint64_t start,
-                                   char target) {
-  if (text == 0) {
-    return UINT64_MAX;
-  }
-  int in_single = 0;
-  int in_double = 0;
-  for (uint64_t i = start; text[i] != '\0'; ++i) {
-    char c = text[i];
-    if (c == '\'' && in_double == 0) {
-      in_single = in_single ? 0 : 1;
-    } else if (c == '"' && in_single == 0) {
-      in_double = in_double ? 0 : 1;
-    } else if (c == target && in_single == 0 && in_double == 0) {
-      return i;
-    }
-  }
-  return UINT64_MAX;
-}
-
 static xaios_status_t handle_sed(const char *args, char *output,
                                uint64_t output_capacity,
                                uint64_t *output_bytes) {
@@ -3876,53 +3881,117 @@ static xaios_status_t handle_less(const char *args, char *output,
   (void)buffer_append_text(cat_args, sizeof(cat_args), &cat_used, files);
   return handle_cat(cat_args, output, output_capacity, output_bytes);
 }
+#endif
 
 #if !XAIOS_BOOT_TEST_APPS
 typedef struct remote_app_definition {
   const char *command;
   const char *path;
   uint64_t capabilities;
+  uint8_t raw_arguments;
+  uint8_t pass_cwd;
+  uint8_t report_completion;
 } remote_app_definition_t;
 
+#define REMOTE_APP(command_, path_, capabilities_)                            \
+  {command_, path_, capabilities_, 0U, 0U, 1U}
+#define REMOTE_TERMINAL_APP(command_, path_, capabilities_)                   \
+  {command_, path_, capabilities_, 1U, 0U, 1U}
+#define REMOTE_UTILITY_APP(command_, capabilities_)                           \
+  {command_, "/bin/" command_, capabilities_, 1U, 1U, 0U}
+
 static const remote_app_definition_t g_remote_apps[] = {
-    {"hello", "/bin/hello", XAIOS_CAP_LOG | XAIOS_CAP_EXIT},
-    {"helloworldc99", "/bin/helloworldc99",
-     XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT},
-    {"xapt", "/bin/xapt",
+    REMOTE_APP("hello", "/bin/hello", XAIOS_CAP_LOG | XAIOS_CAP_EXIT),
+    REMOTE_APP("helloworldc99", "/bin/helloworldc99",
+               XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT),
+    REMOTE_APP("xapt", "/bin/xapt",
      XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT | XAIOS_CAP_TIME |
          XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE | XAIOS_CAP_NET_SOCKET |
          XAIOS_CAP_CONTROL_QUERY | XAIOS_CAP_CONTROL_ADMIN |
-         XAIOS_CAP_UPDATE | XAIOS_CAP_ADMIN},
-    {"nano", "/bin/nano",
+         XAIOS_CAP_UPDATE | XAIOS_CAP_ADMIN),
+    REMOTE_TERMINAL_APP("nano", "/bin/nano",
      XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT | XAIOS_CAP_FS_READ |
-         XAIOS_CAP_FS_WRITE | XAIOS_CAP_REMOTE_LOGIN},
-    {"htop", "/bin/htop",
-     XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT | XAIOS_CAP_CONTROL_QUERY},
-    {"pong", "/bin/pong",
-     XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT},
-    {"sysinfo", "/bin/sysinfo",
-     XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_TIME},
-    {"systest", "/bin/systest",
+         XAIOS_CAP_FS_WRITE | XAIOS_CAP_REMOTE_LOGIN),
+    REMOTE_TERMINAL_APP("htop", "/bin/htop",
+                        XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                            XAIOS_CAP_CONTROL_QUERY),
+    REMOTE_TERMINAL_APP("pong", "/bin/pong",
+                        XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT),
+    REMOTE_APP("sysinfo", "/bin/sysinfo",
+               XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_TIME),
+    REMOTE_APP("systest", "/bin/systest",
      XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_FS_READ |
-         XAIOS_CAP_FS_WRITE},
-    {"smptest", "/bin/smptest",
+         XAIOS_CAP_FS_WRITE),
+    REMOTE_APP("smptest", "/bin/smptest",
      XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_OSCTL | XAIOS_CAP_SMP |
-         XAIOS_CAP_THREADS},
-    {"nettest", "/bin/nettest",
+         XAIOS_CAP_THREADS),
+    REMOTE_APP("nettest", "/bin/nettest",
      XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_OSCTL | XAIOS_CAP_NET |
-         XAIOS_CAP_TIME},
-    {"lstm-xor", "/bin/lstm-xor",
-     XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_CPU_AI | XAIOS_CAP_ML},
-    {"mltest", "/bin/mltest",
-     XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_CPU_AI | XAIOS_CAP_ML},
-    {"posix-shell", "/bin/posix-shell",
-     XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_REMOTE_LOGIN},
-    {"agenttest", "/bin/agenttest",
+         XAIOS_CAP_TIME),
+    REMOTE_APP("sshtest", "/bin/sshtest",
+               XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_REMOTE_LOGIN),
+    REMOTE_APP("lstm-xor", "/bin/lstm-xor",
+               XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_CPU_AI |
+                   XAIOS_CAP_ML),
+    REMOTE_APP("mltest", "/bin/mltest",
+               XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_CPU_AI |
+                   XAIOS_CAP_ML),
+    REMOTE_APP("posix-shell", "/bin/posix-shell",
+               XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_REMOTE_LOGIN),
+    REMOTE_APP("agenttest", "/bin/agenttest",
      XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_AGENT | XAIOS_CAP_CPU_AI |
-         XAIOS_CAP_ML},
+         XAIOS_CAP_ML),
+    REMOTE_UTILITY_APP("ls", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                XAIOS_CAP_FS_READ),
+    REMOTE_UTILITY_APP("mkdir", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                   XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
+    REMOTE_UTILITY_APP("touch", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                   XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
+    REMOTE_UTILITY_APP("cp", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
+    REMOTE_UTILITY_APP("mv", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
+    REMOTE_UTILITY_APP("rm", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
+    REMOTE_UTILITY_APP("rmdir", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                   XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
+    REMOTE_UTILITY_APP("stat", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                  XAIOS_CAP_FS_READ),
+    REMOTE_UTILITY_APP("cat", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                 XAIOS_CAP_FS_READ),
+    REMOTE_UTILITY_APP("head", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                  XAIOS_CAP_FS_READ),
+    REMOTE_UTILITY_APP("tail", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                  XAIOS_CAP_FS_READ),
+    REMOTE_UTILITY_APP("less", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                  XAIOS_CAP_FS_READ),
+    REMOTE_UTILITY_APP("grep", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                  XAIOS_CAP_FS_READ),
+    REMOTE_UTILITY_APP("find", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                  XAIOS_CAP_FS_READ),
+    REMOTE_UTILITY_APP("sed", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                 XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
+    REMOTE_UTILITY_APP("write", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                   XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
+    REMOTE_UTILITY_APP("tar", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                 XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
+    REMOTE_UTILITY_APP("cpio", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                  XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
+    REMOTE_UTILITY_APP("zip", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                 XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
+    REMOTE_UTILITY_APP("unzip", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                   XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
+    REMOTE_UTILITY_APP("ps", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                XAIOS_CAP_CONTROL_QUERY),
+    REMOTE_UTILITY_APP("df", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                XAIOS_CAP_CONTROL_QUERY |
+                                XAIOS_CAP_STORAGE_READ),
+    REMOTE_UTILITY_APP("du", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
+                                XAIOS_CAP_FS_READ),
 #if XAIOS_FAILURE_TEST_APP
-    {"app-fail", "/bin/app-fail", XAIOS_CAP_LOG | XAIOS_CAP_EXIT},
-    {"app-crash", "/bin/app-crash", XAIOS_CAP_LOG | XAIOS_CAP_EXIT},
+    REMOTE_APP("app-fail", "/bin/app-fail", XAIOS_CAP_LOG | XAIOS_CAP_EXIT),
+    REMOTE_APP("app-crash", "/bin/app-crash",
+               XAIOS_CAP_LOG | XAIOS_CAP_EXIT),
 #endif
 };
 
@@ -3969,7 +4038,7 @@ static xaios_status_t handle_remote_app_file(
     const char *args, char *output,
     uint64_t output_capacity, uint64_t *output_bytes) {
   const char *argv[XAIOS_USER_ARG_MAX];
-  char argument_storage[XAIOS_USER_ARG_MAX - 1U][64];
+  char argument_storage[XAIOS_USER_ARG_MAX - 1U][XAIOS_MFS_PATH_MAX];
   uint32_t argc = 1U;
   uint64_t argument_cursor = 0U;
   uint64_t argument_bytes = 0U;
@@ -3983,17 +4052,14 @@ static xaios_status_t handle_remote_app_file(
   uint64_t console_bytes;
   int exit_code = 0;
   xaios_status_t status;
-  int raw_arguments;
 
   if (app == 0 || file == 0 || args == 0 || file->executable == 0U) {
     return command_fail(output, output_capacity, output_bytes,
                         "application: executable unavailable");
   }
   argv[0] = app->command;
-  raw_arguments = string_equal(app->command, "nano") != 0 ||
-                  string_equal(app->command, "htop") != 0 ||
-                  string_equal(app->command, "pong") != 0;
-  if (raw_arguments != 0 && args[0] != '\0') {
+  if (app->pass_cwd != 0U) argv[argc++] = g_remote_login_cwd;
+  if (app->raw_arguments != 0U && args[0] != '\0') {
     if (cstr_len(args) + 1U > XAIOS_USER_ARG_BYTES_MAX) {
       return command_fail(output, output_capacity, output_bytes,
                           "application: argument data exceeds limit");
@@ -4067,8 +4133,10 @@ static xaios_status_t handle_remote_app_file(
     output_append(output, output_capacity, output_bytes, "\n");
     return XAIOS_ERR_INVALID;
   }
-  output_append(output, output_capacity, output_bytes, app->command);
-  output_append(output, output_capacity, output_bytes, ": complete\n");
+  if (app->report_completion != 0U) {
+    output_append(output, output_capacity, output_bytes, app->command);
+    output_append(output, output_capacity, output_bytes, ": complete\n");
+  }
   return XAIOS_OK;
 }
 
@@ -4159,6 +4227,7 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
     }
     return handle_cd(arg1, output, output_capacity, output_bytes);
   }
+#if XAIOS_BOOT_TEST_APPS
   if (string_equal(cmd, "ls") == 1U) {
     return handle_ls(args, output, output_capacity, output_bytes);
   }
@@ -4171,6 +4240,26 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
   if (string_equal(cmd, "la") == 1U) {
     return handle_ls("-la", output, output_capacity, output_bytes);
   }
+#else
+  if (string_equal(cmd, "l") == 1U || string_equal(cmd, "ll") == 1U ||
+      string_equal(cmd, "la") == 1U) {
+    char alias_args[XAIOS_MFS_PATH_MAX];
+    const char *flags = string_equal(cmd, "ll") == 1U ? "-l" : "-la";
+    uint64_t used = cstr_len(flags);
+    if (used + (args[0] != '\0' ? cstr_len(args) + 2U : 1U) >
+        sizeof(alias_args)) {
+      return command_fail(output, output_capacity, output_bytes,
+                          "ls: arguments exceed limit");
+    }
+    (void)copy_cstr(alias_args, sizeof(alias_args), flags);
+    if (args[0] != '\0') {
+      alias_args[used++] = ' ';
+      (void)copy_cstr(alias_args + used, sizeof(alias_args) - used, args);
+    }
+    return handle_remote_app(remote_app_find("ls"), alias_args, output,
+                             output_capacity, output_bytes);
+  }
+#endif
   if (string_equal(cmd, "exit") == 1U) {
     return XAIOS_OK;
   }
@@ -4180,6 +4269,7 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
   if (string_equal(cmd, "logout") == 1U) {
     return XAIOS_OK;
   }
+#if XAIOS_BOOT_TEST_APPS
   if (string_equal(cmd, "cp") == 1U) {
     return handle_cp(args, output, output_capacity, output_bytes);
   }
@@ -4195,6 +4285,7 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
   if (string_equal(cmd, "tail") == 1U) {
     return handle_head_tail(args, 0, output, output_capacity, output_bytes);
   }
+#endif
   if (string_equal(cmd, "echo") == 1U) {
     if (args[0] == '\0') {
       output_append_char(output, output_capacity, output_bytes, '\n');
@@ -4204,6 +4295,7 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
     output_append_char(output, output_capacity, output_bytes, '\n');
     return XAIOS_OK;
   }
+#if XAIOS_BOOT_TEST_APPS
   if (string_equal(cmd, "cpio") == 1U) {
     return handle_cpio(args, output, output_capacity, output_bytes);
   }
@@ -4270,12 +4362,14 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
   if (string_equal(cmd, "du") == 1U) {
     return handle_du(args, output, output_capacity, output_bytes);
   }
+#endif
 
 #if !XAIOS_BOOT_TEST_APPS
   {
     xaios_app_image_t image;
     if (app_store_load(cmd, &image) == XAIOS_OK) {
-      remote_app_definition_t app = {cmd, image.path, image.capabilities};
+      remote_app_definition_t app = {
+          cmd, image.path, image.capabilities, 0U, 0U, 1U};
       xaios_status_t status = handle_remote_app_file(
           &app, &image.file, args, output, output_capacity, output_bytes);
       app_store_release(&image);

@@ -246,7 +246,8 @@ xaios_status_t security_authorize_fs_read(const char *path) {
     ++g_fs_denials;
     return XAIOS_ERR_INVALID;
   }
-  if (starts_with(path, "/etc/") || path_in_tree(path, "/tmp") ||
+  if ((path[0] == '/' && path[1] == '\0') || path_in_tree(path, "/bin") ||
+      starts_with(path, "/etc/") || path_in_tree(path, "/tmp") ||
       path_in_tree(path, "/home") || path_in_tree(path, "/apps") ||
       path_in_tree(path, "/state") || path_in_tree(path, "/logs") ||
       path_in_tree(path, "/models") || path_in_tree(path, "/update")) {
