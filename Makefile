@@ -274,7 +274,8 @@ compile-check:
 	    ! -path 'userspace/apps/hosted/*'); do \
 	  clang --target=aarch64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
-	    -Wall -Wextra -Werror -Iuserspace/include -Itests -fsyntax-only "$$f" \
+	    -Wall -Wextra -Werror -Iuserspace/include -Iuserspace/sshd \
+	    -Iuserspace/apps/terminal -Itests -fsyntax-only "$$f" \
 	    || failed=$$((failed + 1)); \
 	done; \
 	for f in $$(find userspace -name '*.c' ! -path 'userspace/libc/*' \
@@ -282,7 +283,8 @@ compile-check:
 	  object=build/compile-check/x86-userspace/$$(printf '%s' "$$f" | tr / _).o; \
 	  clang --target=x86_64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie -mno-red-zone \
-	    -Wall -Wextra -Werror -Iuserspace/include -Itests \
+	    -Wall -Wextra -Werror -Iuserspace/include -Iuserspace/sshd \
+	    -Iuserspace/apps/terminal -Itests \
 	    -c "$$f" -o "$$object" \
 	    || failed=$$((failed + 1)); \
 	done; \
@@ -350,7 +352,8 @@ hosted-test: engine-cli
 	  -o build/hosted/test-vfs
 	./build/hosted/test-vfs
 	$(HOST_CC) $(HOST_CFLAGS) \
-	  -Iuserspace/include -Iuserspace/sshd -Ikernel/include \
+	  -Iuserspace/include -Iuserspace/sshd -Iuserspace/apps/terminal \
+	  -Ikernel/include \
 	  userspace/sshd/sftp_server.c tests/storage/test_sftp_large.c \
 	  -o build/hosted/test-sftp-large
 	./build/hosted/test-sftp-large
@@ -367,7 +370,8 @@ hosted-test: engine-cli
 	  -o build/hosted/test-inflate
 	./build/hosted/test-inflate
 	$(HOST_CC) $(HOST_CFLAGS) -Iuserspace/include -Iuserspace/sshd \
-	  userspace/sshd/pong_game.c tests/system/test_pong_game.c \
+	  -Iuserspace/apps/terminal \
+	  userspace/apps/terminal/pong_game.c tests/system/test_pong_game.c \
 	  -o build/hosted/test-pong-game
 	./build/hosted/test-pong-game
 	PYTHONPATH=. python3 -m unittest discover -s tests/system -p 'test_*.py'
@@ -379,6 +383,7 @@ hosted-test: engine-cli
 	  build/hosted/model-volume-c-sparse.img
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Iengine/include -Iengine/src -Iuserspace/include -Iuserspace/sshd \
+	  -Iuserspace/apps/terminal \
 	  -Ikernel/include engine/src/model_volume.c \
 	  engine/src/model_volume_writer.c engine/src/model_file.c \
 	  engine/src/sha256.c \

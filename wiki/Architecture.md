@@ -47,6 +47,7 @@ they do not prove physical performance or production readiness.
 | Processes and ABI | `kernel/user/`, `userspace/` | Process ownership, service supervision, syscalls, applications, and SSH/SFTP. |
 | Network | `kernel/net/`, `kernel/runtime/network_stack.c` | IPv4/IPv6, TCP/UDP, DNS, routing, and socket state. |
 | Administration | `kernel/runtime/admin_control.c`, `kernel/runtime/control_protocol.c` | Typed role-based configuration, key, audit, storage, and model operations. |
+| Applications | `userspace/apps/`, `userspace/apps/terminal/` | Standalone ELFs and app-owned terminal modules. The kernel supplies generic capability-gated primitives rather than application implementations. |
 | Portable engine | `engine/` | Model-v2 and ModelFS parsing, adapters, backends, model/session ownership, and asynchronous range I/O. |
 
 ## Trust boundaries

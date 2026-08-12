@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 INTERACTIVE_APPLICATIONS = {"htop", "nano", "pong"}
+ADMIN_APPLICATIONS = {"xaiosctl", "xapt"}
 
 
 def main() -> int:
@@ -33,12 +34,29 @@ def main() -> int:
     for app in sorted(INTERACTIVE_APPLICATIONS):
         if not (ROOT / "userspace" / "apps" / f"{app}.c").is_file():
             failures.append(f"interactive application source missing: {app}.c")
+    for app in sorted(INTERACTIVE_APPLICATIONS | ADMIN_APPLICATIONS):
+        source_path = ROOT / "userspace" / "apps" / f"{app}.c"
+        if not source_path.is_file() or "main(" not in source_path.read_text(
+            encoding="utf-8"
+        ):
+            failures.append(f"application is not a standalone ELF source: {app}")
     for app in sorted(all_apps):
         rendered = f"`/init`" if app == "init" else f"`/bin/{app}`"
         if rendered not in apps_doc:
             failures.append(f"Applications.md missing {rendered}")
 
     source = (ROOT / "kernel/runtime/remote_login.c").read_text(encoding="utf-8")
+    for forbidden in (
+        "__xaios_nano_core",
+        "__xaios_htop_core",
+        "__xaios_pong_core",
+        "handle_nano(",
+        "handle_htop(",
+    ):
+        if forbidden in source:
+            failures.append(f"kernel retains private application logic: {forbidden}")
+    if (ROOT / "userspace/apps/terminal_app_bridge.h").exists():
+        failures.append("terminal applications still use the private kernel bridge")
     start = source.find('"XAIOS shell: ')
     end = source.find('quit logout help\\n"', start)
     if start < 0 or end < 0:

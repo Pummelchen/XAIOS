@@ -118,6 +118,7 @@ remain concise here; no secondary page owns their status.
 | C-16 | Configuration recovery and support bundles | `DONE` | Canonical text export/import uses the transactional admin path; support output is bounded and secret-redacted. |
 | C-17 | Long-duration and fault closure | `DONE` | Operations closure is combined with existing soak, fault injection, storage crash, boot-loop, and non-skipping aggregate gates. Physical soak remains P-05/P-14. |
 | C-18 | Independent signed application updates | `DONE` | `xapt` verifies monotonic signed catalogs and per-app manifests, atomically installs/upgrades/removes, preserves one rollback version, accepts argv, and persists across reboot on ARM and x86 QEMU. An explicitly test-only package exercises the lifecycle without being advertised as a product application. |
+| C-19 | Standalone application ownership | `DONE` | `xapt`, `xaiosctl`, `nano`, `htop`, `pong`, and diagnostics are dedicated ELFs. Editor/game terminal modules are app-owned, `htop` consumes a paged generic control snapshot, and the kernel contains no private app command path. |
 
 ## Hosted ISO C99 libc
 

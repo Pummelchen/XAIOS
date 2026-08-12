@@ -12,6 +12,7 @@
 #include <xaios/numa.h>
 #include <xaios/pmm.h>
 #include <xaios/remote_login.h>
+#include <xaios/scheduler.h>
 #include <xaios/service.h>
 #include <xaios/smp.h>
 #include <xaios/timer.h>
@@ -565,6 +566,96 @@ static void fill_metrics(xaios_control_metrics_payload_t *payload) {
   payload->log_overflows = klog_ring_overflow_count();
   payload->worker_count = active_process_count("/bin/xaios-worker");
   payload->per_worker_health = XAIOS_CONTROL_STATE_UNKNOWN;
+}
+
+static xaios_status_t fill_runtime_snapshot(
+    const xaios_control_runtime_snapshot_request_t *request,
+    xaios_control_runtime_snapshot_payload_t *payload) {
+  uint64_t now_ns;
+  uint32_t next_cpu;
+  uint32_t next_process;
+  if (request == 0 || payload == 0 || request->reserved != 0U ||
+      request->cpu_limit > XAIOS_CONTROL_RUNTIME_CPU_MAX ||
+      request->process_limit > XAIOS_CONTROL_RUNTIME_PROCESS_MAX ||
+      request->process_start > XAIOS_MAX_USER_PROCESSES ||
+      request->wait_ms > 1000U) {
+    return XAIOS_ERR_INVALID;
+  }
+  if (request->wait_ms != 0U) {
+    uint64_t start_ns = timer_now_ns();
+    uint64_t wait_ns = (uint64_t)request->wait_ms * UINT64_C(1000000);
+    uint64_t deadline_ns = start_ns > UINT64_MAX - wait_ns
+                               ? UINT64_MAX
+                               : start_ns + wait_ns;
+    user_process_idle_until(deadline_ns);
+  }
+  now_ns = timer_now_ns();
+  bytes_zero(payload, sizeof(*payload));
+  payload->sampled_at_ns = now_ns;
+  payload->cpu_busy_total_ns = user_cpu_busy_total(now_ns);
+  payload->physical_pages = pmm_total_pages();
+  payload->managed_pages = pmm_managed_pages();
+  payload->free_pages = pmm_free_pages();
+  payload->cpu_total = user_cpu_usage_count();
+  payload->cpu_start = request->cpu_start > payload->cpu_total
+                           ? payload->cpu_total
+                           : request->cpu_start;
+  payload->process_capacity = XAIOS_MAX_USER_PROCESSES;
+  payload->process_start = request->process_start;
+  payload->process_active = (uint32_t)user_process_active_count();
+  payload->process_failed = (uint32_t)user_process_current_failed_count();
+  scheduler_load_average_hundredths(payload->load_average_hundredths);
+
+  next_cpu = payload->cpu_start;
+  while (next_cpu < payload->cpu_total &&
+         payload->cpu_count < request->cpu_limit) {
+    xaios_cpu_usage_snapshot_t usage;
+    xaios_control_runtime_cpu_record_t *record =
+        &payload->cpus[payload->cpu_count];
+    uint32_t ordinal = next_cpu++;
+    if (user_cpu_usage_snapshot(ordinal, now_ns, &usage) != XAIOS_OK) {
+      continue;
+    }
+    const xaios_cpu_state_t *state = smp_cpu_state(usage.cpu_id);
+    record->cpu_id = usage.cpu_id;
+    record->active_pid = usage.active_pid;
+    record->role = state == 0 ? XAIOS_CPU_ROLE_OFFLINE : (uint32_t)state->role;
+    record->busy_ns = usage.busy_ns;
+    record->elapsed_ns = usage.elapsed_ns;
+    ++payload->cpu_count;
+  }
+  payload->cpu_next =
+      request->cpu_limit != 0U && next_cpu < payload->cpu_total
+          ? next_cpu
+          : UINT32_MAX;
+
+  next_process = request->process_start;
+  for (uint32_t pid = request->process_start + 1U;
+       pid <= XAIOS_MAX_USER_PROCESSES &&
+       payload->process_count < request->process_limit;
+       ++pid) {
+    xaios_user_process_t process;
+    next_process = pid;
+    if (user_process_snapshot_at(pid, now_ns, &process) != XAIOS_OK) {
+      continue;
+    }
+    xaios_control_runtime_process_record_t *record =
+        &payload->processes[payload->process_count++];
+    record->pid = process.pid;
+    record->parent_pid = process.parent_pid;
+    record->cpu_id = process.running_cpu_id;
+    record->state = (uint32_t)process.state;
+    record->runtime_ns = process.runtime_ns;
+    record->resident_pages = process.resident_pages;
+    record->syscall_count = process.syscall_count;
+    string_copy(record->name, sizeof(record->name),
+                process.name == 0 ? "(unknown)" : process.name);
+  }
+  payload->process_next =
+      request->process_limit != 0U && next_process < XAIOS_MAX_USER_PROCESSES
+          ? next_process
+          : UINT32_MAX;
+  return XAIOS_OK;
 }
 
 static xaios_status_t append_text(char *output, uint64_t capacity,
@@ -2121,6 +2212,28 @@ xaios_status_t control_protocol_dispatch(
                           request.operation, request.request_id,
                           XAIOS_CONTROL_STATUS_OK,
                           XAIOS_CONTROL_PAYLOAD_METRICS, &value,
+                          sizeof(value));
+  }
+  case XAIOS_CONTROL_OP_RUNTIME_SNAPSHOT: {
+    xaios_control_runtime_snapshot_request_t query;
+    xaios_control_runtime_snapshot_payload_t value;
+    if (request.payload_type !=
+            XAIOS_CONTROL_PAYLOAD_RUNTIME_SNAPSHOT_REQUEST ||
+        request.payload_length != sizeof(query)) {
+      return write_error(response, response_capacity, response_bytes,
+                         request.operation, request.request_id,
+                         XAIOS_CONTROL_STATUS_INVALID_REQUEST);
+    }
+    bytes_copy(&query, payload, sizeof(query));
+    if (fill_runtime_snapshot(&query, &value) != XAIOS_OK) {
+      return write_error(response, response_capacity, response_bytes,
+                         request.operation, request.request_id,
+                         XAIOS_CONTROL_STATUS_INVALID_REQUEST);
+    }
+    return write_response(response, response_capacity, response_bytes,
+                          request.operation, request.request_id,
+                          XAIOS_CONTROL_STATUS_OK,
+                          XAIOS_CONTROL_PAYLOAD_RUNTIME_SNAPSHOT, &value,
                           sizeof(value));
   }
   case XAIOS_CONTROL_OP_LOGS: {

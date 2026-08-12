@@ -739,7 +739,8 @@ for app in $USER_APPS; do
     -c "$ROOT_DIR/userspace/apps/$app.c" \
     -o "$app_obj"
 
-  if [ "$app" = "xaiosctl" ] || [ "$app" = "xapt" ]; then
+  if [ "$app" = "xaiosctl" ] || [ "$app" = "xapt" ] ||
+      [ "$app" = "htop" ]; then
     "$LD_LLD" \
       -nostdlib \
       -T "$ROOT_DIR/userspace/init/linker.ld" \
@@ -814,10 +815,10 @@ fi
 printf '%s\n' "Building userspace /bin/sshd ELF..."
 SSHD_RESPONSE_FILE="$INIT_BUILD_DIR/sshd-objects.rsp"
 : > "$SSHD_RESPONSE_FILE"
-for sshd_src in sshd.c ssh_crypto.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_client.c ssh_host_key.c ssh_connection.c sftp_server.c nano_editor.c less_pager.c pong_game.c; do
+for sshd_src in sshd.c ssh_crypto.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_client.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
   sshd_obj="$INIT_BUILD_DIR/sshd-${sshd_src%.c}.o"
   sshd_opt=""
-  if [ "$sshd_src" = "sshd.c" ] || [ "$sshd_src" = "pong_game.c" ]; then
+  if [ "$sshd_src" = "sshd.c" ]; then
     sshd_opt="-Os"
   fi
   "$CLANG" \
@@ -836,9 +837,35 @@ for sshd_src in sshd.c ssh_crypto.c tweetnacl_subset.c ssh_protocol.c ssh_channe
     $PASSWORD_AUTH_CFLAG \
     -I"$ROOT_DIR/userspace/include" \
     -I"$ROOT_DIR/userspace/sshd" \
+    -I"$ROOT_DIR/userspace/apps/terminal" \
     -c "$ROOT_DIR/userspace/sshd/$sshd_src" \
     -o "$sshd_obj"
   printf '"%s"\n' "$sshd_obj" >> "$SSHD_RESPONSE_FILE"
+done
+for app_src in nano_editor.c pong_game.c; do
+  app_obj="$INIT_BUILD_DIR/sshd-${app_src%.c}.o"
+  app_opt=""
+  if [ "$app_src" = "pong_game.c" ]; then
+    app_opt="-Os"
+  fi
+  "$CLANG" \
+    --target="$TARGET_TRIPLE" \
+    $USER_ARCH_CFLAGS \
+    -std=c99 \
+    -ffreestanding \
+    -fno-stack-protector \
+    -fno-builtin \
+    -fno-pic \
+    -fno-pie \
+    $app_opt \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -I"$ROOT_DIR/userspace/include" \
+    -I"$ROOT_DIR/userspace/apps/terminal" \
+    -c "$ROOT_DIR/userspace/apps/terminal/$app_src" \
+    -o "$app_obj"
+  printf '"%s"\n' "$app_obj" >> "$SSHD_RESPONSE_FILE"
 done
 "$LD_LLD" \
   -nostdlib \

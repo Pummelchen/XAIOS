@@ -154,7 +154,8 @@ def validate_control_protocol_contract(rc_contract):
         "storage scrub-start", "storage scrub-status",
         "storage scrub-pause", "storage scrub-resume",
         "storage scrub-cancel", "storage trim-start",
-        "storage trim-status", "storage trim-cancel", "model cleanup"
+        "storage trim-status", "storage trim-cancel", "model cleanup",
+        "runtime snapshot"
     ]
     if control.get("operations") != expected_operations:
         failures.append("control protocol operation list mismatch")

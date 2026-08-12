@@ -86,6 +86,7 @@
 #define XAIOS_CONTROL_OP_SYSTEM_UPDATE_CHUNK 55U
 #define XAIOS_CONTROL_OP_SYSTEM_UPDATE_COMMIT 56U
 #define XAIOS_CONTROL_OP_SYSTEM_UPDATE_ABORT 57U
+#define XAIOS_CONTROL_OP_RUNTIME_SNAPSHOT 58U
 
 #define XAIOS_CONTROL_PAYLOAD_NONE 0U
 #define XAIOS_CONTROL_PAYLOAD_VERSION 1U
@@ -118,6 +119,8 @@
 #define XAIOS_CONTROL_PAYLOAD_APP_REQUEST 28U
 #define XAIOS_CONTROL_PAYLOAD_SYSTEM_UPDATE_BEGIN 29U
 #define XAIOS_CONTROL_PAYLOAD_SYSTEM_UPDATE_CHUNK 30U
+#define XAIOS_CONTROL_PAYLOAD_RUNTIME_SNAPSHOT_REQUEST 31U
+#define XAIOS_CONTROL_PAYLOAD_RUNTIME_SNAPSHOT 32U
 
 #define XAIOS_MODEL_MAINTENANCE_IDLE 0U
 #define XAIOS_MODEL_MAINTENANCE_RUNNING 1U
@@ -344,6 +347,82 @@ typedef struct xaios_control_metrics_payload_user {
   u32 worker_count;
   u32 per_worker_health;
 } xaios_control_metrics_payload_user_t;
+
+#define XAIOS_CONTROL_RUNTIME_CPU_MAX 64U
+#define XAIOS_CONTROL_RUNTIME_PROCESS_MAX 56U
+#define XAIOS_CONTROL_RUNTIME_PROCESS_NAME_MAX 64U
+
+#define XAIOS_RUNTIME_PROCESS_EMPTY 0U
+#define XAIOS_RUNTIME_PROCESS_LOADED 1U
+#define XAIOS_RUNTIME_PROCESS_RUNNABLE 2U
+#define XAIOS_RUNTIME_PROCESS_RUNNING 3U
+#define XAIOS_RUNTIME_PROCESS_WAITING 4U
+#define XAIOS_RUNTIME_PROCESS_EXITED 5U
+#define XAIOS_RUNTIME_PROCESS_FAILED 6U
+
+#define XAIOS_RUNTIME_CPU_OFFLINE 0U
+#define XAIOS_RUNTIME_CPU_HOUSEKEEPING 1U
+#define XAIOS_RUNTIME_CPU_SCHEDULING 2U
+#define XAIOS_RUNTIME_CPU_AI_HOT 3U
+
+typedef struct xaios_control_runtime_snapshot_request_user {
+  u32 cpu_start;
+  u32 cpu_limit;
+  u32 process_start;
+  u32 process_limit;
+  u32 wait_ms;
+  u32 reserved;
+} xaios_control_runtime_snapshot_request_user_t;
+
+typedef struct xaios_control_runtime_cpu_record_user {
+  u32 cpu_id;
+  u32 active_pid;
+  u32 role;
+  u32 reserved;
+  u64 busy_ns;
+  u64 elapsed_ns;
+} xaios_control_runtime_cpu_record_user_t;
+
+typedef struct xaios_control_runtime_process_record_user {
+  u32 pid;
+  u32 parent_pid;
+  u32 cpu_id;
+  u32 state;
+  u64 runtime_ns;
+  u64 resident_pages;
+  u64 syscall_count;
+  char name[XAIOS_CONTROL_RUNTIME_PROCESS_NAME_MAX];
+} xaios_control_runtime_process_record_user_t;
+
+typedef struct xaios_control_runtime_snapshot_payload_user {
+  u64 sampled_at_ns;
+  u64 cpu_busy_total_ns;
+  u64 physical_pages;
+  u64 managed_pages;
+  u64 free_pages;
+  u32 cpu_total;
+  u32 cpu_start;
+  u32 cpu_count;
+  u32 cpu_next;
+  u32 process_capacity;
+  u32 process_start;
+  u32 process_count;
+  u32 process_next;
+  u32 process_active;
+  u32 process_failed;
+  u32 load_average_hundredths[3];
+  u32 reserved;
+  xaios_control_runtime_cpu_record_user_t cpus[XAIOS_CONTROL_RUNTIME_CPU_MAX];
+  xaios_control_runtime_process_record_user_t
+      processes[XAIOS_CONTROL_RUNTIME_PROCESS_MAX];
+} xaios_control_runtime_snapshot_payload_user_t;
+
+typedef char xaios_control_runtime_snapshot_user_must_fit_response[
+    sizeof(xaios_control_response_header_user_t) +
+                sizeof(xaios_control_runtime_snapshot_payload_user_t) <=
+            XAIOS_CONTROL_MAX_RESPONSE_BYTES
+        ? 1
+        : -1];
 
 typedef struct xaios_control_log_request_payload_user {
   u64 since_cursor;

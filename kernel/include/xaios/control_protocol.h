@@ -83,6 +83,7 @@ typedef enum xaios_control_operation {
   XAIOS_CONTROL_OP_SYSTEM_UPDATE_CHUNK = 55,
   XAIOS_CONTROL_OP_SYSTEM_UPDATE_COMMIT = 56,
   XAIOS_CONTROL_OP_SYSTEM_UPDATE_ABORT = 57,
+  XAIOS_CONTROL_OP_RUNTIME_SNAPSHOT = 58,
 } xaios_control_operation_t;
 
 typedef enum xaios_control_payload_type {
@@ -117,6 +118,8 @@ typedef enum xaios_control_payload_type {
   XAIOS_CONTROL_PAYLOAD_APP_REQUEST = 28,
   XAIOS_CONTROL_PAYLOAD_SYSTEM_UPDATE_BEGIN = 29,
   XAIOS_CONTROL_PAYLOAD_SYSTEM_UPDATE_CHUNK = 30,
+  XAIOS_CONTROL_PAYLOAD_RUNTIME_SNAPSHOT_REQUEST = 31,
+  XAIOS_CONTROL_PAYLOAD_RUNTIME_SNAPSHOT = 32,
 } xaios_control_payload_type_t;
 
 typedef enum xaios_control_status {
@@ -314,6 +317,69 @@ typedef struct xaios_control_metrics_payload {
   uint32_t worker_count;
   uint32_t per_worker_health;
 } xaios_control_metrics_payload_t;
+
+#define XAIOS_CONTROL_RUNTIME_CPU_MAX UINT32_C(64)
+#define XAIOS_CONTROL_RUNTIME_PROCESS_MAX UINT32_C(56)
+#define XAIOS_CONTROL_RUNTIME_PROCESS_NAME_MAX UINT32_C(64)
+
+typedef struct xaios_control_runtime_snapshot_request {
+  uint32_t cpu_start;
+  uint32_t cpu_limit;
+  uint32_t process_start;
+  uint32_t process_limit;
+  uint32_t wait_ms;
+  uint32_t reserved;
+} xaios_control_runtime_snapshot_request_t;
+
+typedef struct xaios_control_runtime_cpu_record {
+  uint32_t cpu_id;
+  uint32_t active_pid;
+  uint32_t role;
+  uint32_t reserved;
+  uint64_t busy_ns;
+  uint64_t elapsed_ns;
+} xaios_control_runtime_cpu_record_t;
+
+typedef struct xaios_control_runtime_process_record {
+  uint32_t pid;
+  uint32_t parent_pid;
+  uint32_t cpu_id;
+  uint32_t state;
+  uint64_t runtime_ns;
+  uint64_t resident_pages;
+  uint64_t syscall_count;
+  char name[XAIOS_CONTROL_RUNTIME_PROCESS_NAME_MAX];
+} xaios_control_runtime_process_record_t;
+
+typedef struct xaios_control_runtime_snapshot_payload {
+  uint64_t sampled_at_ns;
+  uint64_t cpu_busy_total_ns;
+  uint64_t physical_pages;
+  uint64_t managed_pages;
+  uint64_t free_pages;
+  uint32_t cpu_total;
+  uint32_t cpu_start;
+  uint32_t cpu_count;
+  uint32_t cpu_next;
+  uint32_t process_capacity;
+  uint32_t process_start;
+  uint32_t process_count;
+  uint32_t process_next;
+  uint32_t process_active;
+  uint32_t process_failed;
+  uint32_t load_average_hundredths[3];
+  uint32_t reserved;
+  xaios_control_runtime_cpu_record_t cpus[XAIOS_CONTROL_RUNTIME_CPU_MAX];
+  xaios_control_runtime_process_record_t
+      processes[XAIOS_CONTROL_RUNTIME_PROCESS_MAX];
+} xaios_control_runtime_snapshot_payload_t;
+
+typedef char xaios_control_runtime_snapshot_must_fit_response[
+    sizeof(xaios_control_response_header_t) +
+                sizeof(xaios_control_runtime_snapshot_payload_t) <=
+            XAIOS_CONTROL_MAX_RESPONSE_BYTES
+        ? 1
+        : -1];
 
 typedef struct xaios_control_log_request_payload {
   uint64_t since_cursor;

@@ -109,9 +109,10 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   or unattended updates. Signed catalogs and payload hashes provide integrity
   and authenticity for the QEMU scope, not transport confidentiality.
 - External applications are bounded to 128 KiB by the current MutableFS/app
-  loader, and only one previous version is retained. Built-in shell-hosted
-  applications such as `htop` must first become standalone package ELFs before
-  they can be upgraded independently from the OS image.
+  loader, and only one previous version is retained. Shipped applications,
+  including `xapt`, `nano`, `htop`, and `pong`, are standalone ELFs; publishing
+  them as independently upgradable repository packages still requires signed
+  package manifests and architecture-specific payloads.
 - QEMU verifies persistent clean/unclean lifecycle records, rescue selection,
   reset/poweroff dispatch, and block flush completion. It cannot establish
   physical power-loss durability or platform reset correctness. Thermal and PMU

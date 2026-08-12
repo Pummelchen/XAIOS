@@ -177,7 +177,7 @@ TARGETS = [
     "name=/bin/xaios-worker state=exited exit_code=0",
     "/worker: scheduled child process ran",
     "/bin/xaios-shell: command surface passed 1..15 + ls variants + tar/cpio archive",
-    "/bin/xaios-shell: nano and htop utilities passed",
+    "/bin/xaios-shell: standalone applications validated by SSH gates",
     "kernel: /bin/xaios-shell returned to kernel exit_code=0",
     "/bin/xaiosctl: control commands passed human=14 json=14",
     "/bin/xaiosctl: negative tests passed malformed=1 authorization=1 node=1",

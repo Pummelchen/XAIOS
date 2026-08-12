@@ -1,6 +1,32 @@
 #include "nano_editor.h"
-#include "ssh_utils.h"
 #include <xaios_user.h>
+
+static void app_mem_copy(void *destination, const void *source,
+                         uint64_t size) {
+  uint8_t *output = (uint8_t *)destination;
+  const uint8_t *input = (const uint8_t *)source;
+  for (uint64_t i = 0U; i < size; ++i) output[i] = input[i];
+}
+
+static void app_mem_zero(void *buffer, uint64_t size) {
+  uint8_t *bytes = (uint8_t *)buffer;
+  for (uint64_t i = 0U; i < size; ++i) bytes[i] = 0U;
+}
+
+static uint32_t app_text_length(const char *text) {
+  uint32_t size = 0U;
+  while (text[size] != '\0') ++size;
+  return size;
+}
+
+static int app_text_equal(const char *lhs, const char *rhs) {
+  if (lhs == 0 || rhs == 0) return 0;
+  while (*lhs != '\0' && *lhs == *rhs) {
+    ++lhs;
+    ++rhs;
+  }
+  return *lhs == *rhs;
+}
 
 static void copy_text(char *destination, uint32_t capacity,
                       const char *source) {
@@ -19,20 +45,20 @@ static int append_bytes(char *output, uint32_t capacity, uint32_t *used,
       length > capacity - *used) {
     return -1;
   }
-  ssh_mem_copy(output + *used, value, length);
+  app_mem_copy(output + *used, value, length);
   *used += length;
   return 0;
 }
 
 static int append_text(char *output, uint32_t capacity, uint32_t *used,
                        const char *value) {
-  return append_bytes(output, capacity, used, value, ssh_str_len(value));
+  return append_bytes(output, capacity, used, value, app_text_length(value));
 }
 
 static int append_text_clipped(char *output, uint32_t capacity,
                                uint32_t *used, const char *value,
                                uint32_t columns) {
-  uint32_t length = ssh_str_len(value);
+  uint32_t length = app_text_length(value);
   if (length > columns) length = columns;
   return append_bytes(output, capacity, used, value, length);
 }
@@ -55,8 +81,8 @@ static int protected_path(const char *path) {
   static const char host_key[] = "/state/xaios_host_key";
   static const char users[] = "/etc/xaios_sshd_users";
   static const char keys[] = "/etc/xaios_authorized_keys";
-  if (ssh_str_eq(path, host_key) || ssh_str_eq(path, users) ||
-      ssh_str_eq(path, keys)) {
+  if (app_text_equal(path, host_key) || app_text_equal(path, users) ||
+      app_text_equal(path, keys)) {
     return 1;
   }
   uint32_t control_length = sizeof(control) - 1U;
@@ -73,17 +99,17 @@ static int resolve_path(const char *cwd, const char *argument, char *output) {
   if (cwd == 0 || argument == 0 || argument[0] == '\0') return -1;
   combined[0] = '\0';
   if (argument[0] != '/') {
-    uint32_t cwd_length = ssh_str_len(cwd);
+    uint32_t cwd_length = app_text_length(cwd);
     if (cwd_length == 0U || cwd_length >= sizeof(combined)) return -1;
-    ssh_mem_copy(combined, cwd, cwd_length);
+    app_mem_copy(combined, cwd, cwd_length);
     combined_length = cwd_length;
     if (combined_length > 1U && combined[combined_length - 1U] != '/') {
       combined[combined_length++] = '/';
     }
   }
-  uint32_t argument_length = ssh_str_len(argument);
+  uint32_t argument_length = app_text_length(argument);
   if (argument_length >= sizeof(combined) - combined_length) return -1;
-  ssh_mem_copy(combined + combined_length, argument, argument_length + 1U);
+  app_mem_copy(combined + combined_length, argument, argument_length + 1U);
   if (combined[0] != '/') return -1;
   output[0] = '/';
   output[1] = '\0';
@@ -112,7 +138,7 @@ static int resolve_path(const char *cwd, const char *argument, char *output) {
     if (length == 0U || length >= NANO_EDITOR_PATH_MAX - output_length) {
       return -1;
     }
-    ssh_mem_copy(output + output_length, combined + start, length);
+    app_mem_copy(output + output_length, combined + start, length);
     output_length += length;
     output[output_length] = '\0';
   }
@@ -194,7 +220,7 @@ static void move_vertical(nano_editor_t *editor, int direction) {
 int nano_editor_open(nano_editor_t *editor, const char *argument,
                      const char *cwd, uint32_t columns, uint32_t rows) {
   if (editor == 0) return -1;
-  ssh_mem_zero(editor, sizeof(*editor));
+  app_mem_zero(editor, sizeof(*editor));
   if (resolve_path(cwd, argument, editor->path) != 0) {
     copy_text(editor->status, sizeof(editor->status),
               "Invalid or protected path");

@@ -58,8 +58,13 @@ and responses to 8,192 bytes. All length arithmetic is bounds-checked.
 | `storage scrub start/status/pause/resume/cancel` | 41-45 | administrator/observer | Persisted cooperative scrub and quarantine. |
 | `storage trim start/status/cancel` | 46-48 | observer or administrator | Dry-run/status or confirmed free-space discard. |
 | `model cleanup` | 49 | administrator | Remove incomplete staging and reclaim extents. |
+| `app activate/remove/rollback` | 50-52 | administrator | Atomically switch, remove, or restore a signed application generation. |
+| `catalog activate` | 53 | administrator | Publish the verified monotonic application catalog. |
+| `system update begin/chunk/commit/abort` | 54-57 | administrator | Stream and finalize or abort an inactive-slot system update. |
+| `runtime snapshot` | 58 | observer | Paged raw CPU/process counters, memory, load averages, roles, and sample wait. |
 
-Request payloads are typed as log query, bounded path, mutation or audit query.
+Request payloads are typed as log query, bounded path, mutation, audit query,
+application/update transaction, or runtime-snapshot query.
 Mutation payloads carry the authenticated principal context, nonzero operation
 ID, optional assigned role and bounded path/fingerprint fields. Responses use
 version, status, health, capabilities, hardware, metrics, logs, config,
@@ -129,7 +134,7 @@ logs. Audit records contain hashes and metadata rather than operation payloads.
 ## Compatibility
 
 The QEMU release-candidate contract freezes magic, version, header sizes,
-limits, operation codes 1 through 49, syscall 37, and control/storage/model
+limits, operation codes 1 through 58, syscall 37, and control/storage/model
 capability bits. Syscall 38 is separately frozen for session lifecycle. New
 incompatible layouts require a new protocol version; existing structures must
 not be silently reinterpreted.

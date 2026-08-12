@@ -156,7 +156,8 @@
       "storage trim-start",
       "storage trim-status",
       "storage trim-cancel",
-      "model cleanup"
+      "model cleanup",
+      "runtime snapshot"
     ]
   },
   "telemetry_schema": {

@@ -141,12 +141,13 @@ and `exit`. Exact options and storage/archive limits are specified in
 [`UNIX-COMPATIBILITY.md`](./UNIX-COMPATIBILITY.md).
 
 `xaiosctl` is the structured administrative entrypoint. The SSH
-daemon recognizes only the exact `xaiosctl` command prefix and calls the shared
-client library. It also recognizes the fixed diagnostic names listed above,
-loads the matching initramfs ELF in a separate transient address space with a
-command-specific capability mask, captures its application log output, and
-reclaims its pages and process slot after exit. Diagnostic commands accept no
-arguments; arbitrary paths and executable launch are rejected. Authenticated
+daemon recognizes only the exact `xaiosctl` command prefix and launches its
+standalone ELF, which calls the shared client library. It also recognizes the
+fixed application names listed above, loads the matching initramfs ELF in a
+separate transient address space with a command-specific capability mask,
+passes bounded arguments, captures its application output, and reclaims its
+pages and process slot after exit. Each application validates its own argument
+surface; arbitrary executable paths and unlisted names are rejected. Authenticated
 Ed25519 keys map to observer, operator or administrator roles, and the kernel
 rechecks capability and requested role for every control operation. Legacy
 `status` remains a compatibility command that directs callers to measured
@@ -194,10 +195,11 @@ nano PATH --replace LINE TEXT
 nano PATH --delete LINE
 ```
 
-Text arguments decode `\n`, `\r`, `\t`, and `\\`. Interactive editing is
-limited to 32 KiB. Immediate command-mode edits use a smaller 3,071-byte work
-buffer. Oversized input is rejected without truncation, and modifying
-command-mode operations save immediately.
+Text arguments decode `\n`, `\r`, `\t`, and `\\`. Interactive and immediate
+command-mode editing are limited to 32 KiB. Oversized input is rejected without
+truncation, and modifying command-mode operations save immediately. The editor
+implementation is userspace-owned; the kernel provides only filesystem and
+console primitives.
 
 `htop` emits a sampled kernel CPU, memory, and process snapshot:
 
@@ -227,11 +229,11 @@ physical capacity, so pages beyond a platform allocator's current tracking
 range are not misreported as used.
 
 CPU rows are paged by runtime CPU ordinal. `cpu_shown`, `cpu_total`, and
-`next_cpu_start` identify continuation pages, so the command has no 32/64-core
-display mask or fixed monitoring-array limit. The output buffer determines the
-number of rows in a page; subsequent invocations can retrieve every CPU exposed
-by platform discovery. This removes limits from the monitoring and display path;
-the current QEMU AArch64 SMP implementation separately admits at most 256 CPUs.
+`next_cpu_start` identify continuation pages, so there is no global topology
+limit in the monitoring ABI. Each userspace render page is bounded to 256 CPU
+records and subsequent invocations can retrieve every CPU exposed by platform
+discovery. The current QEMU AArch64 SMP implementation separately admits at
+most 256 CPUs.
 The ANSI header follows Debian htop's column-major scaling model: up to eight
 CPUs remain in one left-hand column with Tasks, Load average and Uptime in the
 right-hand column; 9-16 CPUs use two columns, 17-32 use four, 33-64 use eight,
@@ -374,10 +376,18 @@ Request structures passed by pointer via syscall arguments:
 `xaios.control.v1` uses a 48-byte request header and 40-byte response header,
 with magic, version, operation, flags, request ID, role, node, timeout, status,
 payload type and 64-bit payload length fields. Requests are limited to 512
-bytes and responses to 8,192 bytes. Operations 1-49 cover measured queries,
+bytes and responses to 8,192 bytes. Operations 1-58 cover measured queries,
 configuration/authentication/audit, ModelFS registration/verification/
-activation/cleanup, block/GPT/filesystem lifecycle, persisted scrub and safe
-trim/discard administration.
+activation/cleanup, block/GPT/filesystem lifecycle, persisted scrub, safe
+trim/discard administration, application/system update transactions, and a
+read-only paged runtime snapshot for userspace monitoring.
+
+Operation 58 (`runtime snapshot`) returns raw timestamped CPU/process counters,
+memory pages, process states, CPU roles, load averages, and continuation
+cursors. It can wait for at most 1,000 ms without charging the caller's process
+runtime. `htop` performs delta calculation, sorting, filtering, paging, and ANSI
+rendering in its standalone userspace ELF. This extends the existing control
+syscall rather than adding an application-specific syscall.
 
 The kernel validates request framing and user buffers, derives the maximum role
 from the caller's capability mask, and rejects privilege elevation, role

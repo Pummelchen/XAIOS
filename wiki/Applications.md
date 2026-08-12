@@ -15,7 +15,7 @@ in [[Commands|Commands]].
 | `/init` | First userspace process. Establishes the initial service lifecycle and returns status to the kernel. | Started once during boot. |
 | `/bin/service-manager` | Exercises and owns the bounded service-manager protocol used for managed workers. | Started during boot. |
 | `/bin/xaios-worker` | Joinable worker process used for scheduler, CPU-assignment, and service-lifecycle work. | Started by the service manager; count follows the boot profile. |
-| `/bin/sshd` | Persistent SSH/SFTP server, authenticated PTY shell, command engine, outbound SSH/SCP client host, and interactive terminal utilities. | Started only after networking and the configured external IPv4/DNS readiness check succeeds. |
+| `/bin/sshd` | Persistent SSH/SFTP server, authenticated PTY shell, command engine, outbound SSH/SCP client host, and PTY transport adapter for terminal applications. | Started only after networking and the configured external IPv4/DNS readiness check succeeds. |
 
 ## Administrative applications
 
@@ -23,7 +23,7 @@ in [[Commands|Commands]].
 |---|---|
 | `/bin/xaiosctl` | Test client for the versioned `xaios.control.v1` administrative protocol. Exercises status, health, hardware, metrics, logs, configuration, identity, audit, storage, and ModelFS rendering/authorization paths. The interactive shell exposes the same bounded command family. |
 | `/bin/xapt` | Signed application and system updater. It refreshes a monotonic architecture-specific catalog, installs or upgrades individual applications without rebooting, and streams an OS image to the inactive A/B slot. |
-| `/bin/xaios-shell` | Scripted acceptance application for the remote-login command engine. It validates filesystem commands, archives, `nano`, and `htop`; it is not the persistent interactive shell process. |
+| `/bin/xaios-shell` | Scripted acceptance application for built-in remote-login commands and archives; it is not the persistent interactive shell process. Standalone applications are covered by the SSH gates. |
 
 ## Repository applications
 
@@ -40,15 +40,16 @@ is never part of the production application catalog.
 ## Interactive terminal applications
 
 These are applications rather than shell built-ins. Each is shipped as a
-dedicated ELF image. The local-console and SSH PTY hosts link the same bounded
-input and rendering cores so interactive sessions do not require a second,
-incompatible terminal implementation.
+dedicated ELF image. Shared terminal engines are owned under
+`userspace/apps/terminal`; the local-console and SSH PTY hosts link those app
+modules only as transport adapters. No editor, monitor, or game logic is built
+into the kernel.
 
 | Path | Interactive transport | Purpose |
 |---|---|---|
-| `/bin/nano` | Local console and SSH PTY adapter in `/bin/sshd` | Full-screen editor with cursor movement, insertion/deletion, save, search, and exit. The editing buffer is limited to 32 KiB. |
-| `/bin/htop` | Local console and SSH PTY adapter in `/bin/sshd` | Full-screen sampled process monitor with color, alternate-screen in-place refresh, runtime-sized CPU meters, sorting, filtering, tree view, keyboard navigation, and a 60 FPS rendering cap. |
-| `/bin/pong` | Local console and SSH PTY adapter in `/bin/sshd` | 60 FPS terminal Pong. `W`/`S` control the left paddle, the computer controls the right, and session win/loss counts adjust ball speed by one percent per round. |
+| `/bin/nano` | Dedicated ELF plus shared app-owned PTY module | Full-screen editor with cursor movement, insertion/deletion, save, search, and exit. The editing buffer is limited to 32 KiB. |
+| `/bin/htop` | Dedicated ELF using the typed runtime-snapshot control operation | Full-screen sampled process monitor with color, alternate-screen in-place refresh, runtime-sized CPU meters, sorting, filtering, tree view, keyboard navigation, and a 60 FPS rendering cap. |
+| `/bin/pong` | Dedicated ELF plus shared app-owned PTY module | 60 FPS terminal Pong. `W`/`S` control the left paddle, the computer controls the right, and session win/loss counts adjust ball speed by one percent per round. |
 
 ## Diagnostic applications
 
@@ -84,8 +85,10 @@ the normal image.
 - Standard output from a transient hosted-libc application is bounded and
   returned to the invoking SSH session as well as written to the serial console.
 - Interactive terminal applications have dedicated `/bin/*` ELF images. SSH
-  and local-console PTY adapters share their app cores for terminal transport;
-  non-interactive command execution is dispatched through the ELF entrypoint.
+  and local-console PTY adapters consume app-owned modules for terminal
+  transport; non-interactive command execution is dispatched through the ELF
+  entrypoint. The kernel exposes only generic process, filesystem, console, and
+  paged runtime-snapshot primitives.
 - A crashed or nonzero application reports a friendly command error and exit
   status; it does not remain as an active process.
 - Normal boot does not pre-run `hello`, `sysinfo`, `lstm-xor`, or the other
