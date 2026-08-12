@@ -1,4 +1,5 @@
-<img width="1122" height="1402" alt="image" src="https://github.com/user-attachments/assets/e305c7bb-40f2-4454-87f8-f58c9082d808" />
+<img width="1122" height="1402" alt="image" src="https://github.com/user-attachments/assets/d1170b39-84b0-40c3-8f3e-c2de85ae9c94" />
+
 
 # XAIOS
 
