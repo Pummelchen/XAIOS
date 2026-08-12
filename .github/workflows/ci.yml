@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   hosted-c99-libc:
     name: Hosted C99 libc (ARM64 and x86_64)

@@ -538,9 +538,10 @@ def main() -> int:
 
     print(f"qemu-readiness-gate: report written to {readiness_path}")
     if failures:
-        print("qemu-readiness-gate: failed")
-        for failure in failures:
-            print(f"  - {failure}")
+        print(
+            "qemu-readiness-gate: failed "
+            f"({len(failures)} checks; details are in the report)"
+        )
         return 1
 
     print("qemu-readiness-gate: milestone 33 hardware-readiness gate passed")

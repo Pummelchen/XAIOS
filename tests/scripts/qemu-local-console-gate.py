@@ -87,12 +87,14 @@ class Console:
 
 def reserve_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("0.0.0.0", 0))
+        sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
 
 
-def run_checked(command: list[str], env: dict[str, str] | None = None) -> None:
-    print("+", " ".join(command), flush=True)
+def run_checked(
+    command: list[str], label: str, env: dict[str, str] | None = None
+) -> None:
+    print(f"+ {label}", flush=True)
     subprocess.run(command, cwd=ROOT, env=env, check=True, timeout=180)
 
 
@@ -126,7 +128,8 @@ def main() -> int:
             str(users),
             "--iterations",
             "100000",
-        ]
+        ],
+        "generate local-console authentication fixture",
     )
 
     build_env = os.environ.copy()
@@ -136,7 +139,7 @@ def main() -> int:
             "XAIOS_SSH_PASSWORD_AUTH": "1",
         }
     )
-    run_checked(["make", "image"], build_env)
+    run_checked(["make", "image"], "build local-console image", build_env)
 
     qemu_env = build_env.copy()
     qemu_env.update(

@@ -23,6 +23,7 @@ AArch64 or x86_64 UEFI firmware. Setup details are in
 | `make qemu-libc-gate` | Complete libc contract plus AArch64/x86_64 runtime and termination probes; emits the conformance report. |
 | `make xapt-test` | Host-side signed package/catalog/system-image construction, verification, tamper, and malformed-input tests. |
 | `make qemu-xapt-gate` | AArch64 and x86_64 install, execute, upgrade, rollback, corruption rejection, OS-slot update, reboot persistence, and removal through real SSH. |
+| `make code-scanning-contract` | Read-only workflow permissions, loopback-only test port reservation, bounded diagnostics, and integer-width regression checks for resolved CodeQL findings. |
 | `make qemu-abi-contract` | Syscall, image, service, telemetry, and fixture ABI contract. |
 | `make qemu-smoke` | Primary AArch64 boot and deterministic self-test gate. |
 | `make qemu-regression-suite` | Broader process, filesystem, network, and runtime regression suite. |
@@ -45,6 +46,7 @@ make hosted-sanitizer-test
 make qemu-libc-gate
 make xapt-test
 make qemu-xapt-gate
+make code-scanning-contract
 make production-source-audit
 make qemu-abi-contract
 make image

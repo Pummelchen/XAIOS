@@ -32,6 +32,7 @@ Docker build inputs, and test-image inputs outside `tests/`. It runs through
 | Hosted ISO C99 dual-architecture runtime | `make qemu-libc-gate` |
 | Signed xapt repository unit tests | `make xapt-test` |
 | xapt app and A/B OS lifecycle on ARM/x86 | `make qemu-xapt-gate` |
+| Code-scanning regression contract | `make code-scanning-contract` |
 | Documentation and test layout | `make docs-check` |
 | Production-source audit | `make production-source-audit` |
 | ABI contract | `make qemu-abi-contract` |

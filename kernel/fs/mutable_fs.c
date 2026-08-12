@@ -743,14 +743,17 @@ static xaios_status_t allocate_blocks(uint16_t count,
   if (count > g_active_file_max_blocks) {
     return XAIOS_ERR_INVALID;
   }
+  if (g_active_data_sectors > (uint32_t)UINT16_MAX + 1U) {
+    return XAIOS_ERR_INVALID;
+  }
   if (count == 0) {
     return XAIOS_OK;
   }
   uint16_t found = 0;
-  for (uint16_t i = 0; i < g_active_data_sectors && found < count; ++i) {
+  for (uint32_t i = 0; i < g_active_data_sectors && found < count; ++i) {
     if (g_mfs.block_bitmap[i] == 0) {
       g_mfs.block_bitmap[i] = 1;
-      blocks[found++] = i;
+      blocks[found++] = (uint16_t)i;
       ++g_allocation_count;
     }
   }
