@@ -19,7 +19,8 @@ REQUIRED = {
         "Physical Apple/ARM, Intel desktop, and Xeon qualification",
         "Thread-safe libc contexts for XAIOS native threads",
         "DNSSEC, TCP fallback, complete AAAA results",
-        "Production NVMe multiqueue/PRP/SGL/affinity/direct reads",
+        "S-11Q QEMU NVMe async/multiqueue/SGL/cancellation/direct-buffer path",
+        "S-11P Physical production NVMe qualification",
     ],
     "docs/NETWORK-SSH-STATUS.md": [
         "SACK parsing/emission",

@@ -90,13 +90,15 @@ an available symbol is not proof of conformance.
 | N-E4 | DNSSEC, TCP fallback, complete AAAA results | `NOT STARTED` | These remain explicit network limitations. |
 | N-F1 | Hybrid post-quantum SSH KEX | `NOT STARTED` | Current interoperable suite is classical curve25519 only. |
 | N-F2 | Outbound public-key auth, IPv6 active open, forwarding/agents/jump hosts | `NOT STARTED` | Outbound SSH/SCP currently uses password auth over IPv4/DNS A. |
-| N-F3 | Hostile-network fuzz/physical soak/independent SSH review | `IN PROGRESS` | Deterministic sanitizer coverage now includes 50,000 malformed IPv4/IPv6 fragment cases in addition to SSH/SFTP/DNS malformed corpora and concurrent QEMU load. Coverage-guided fuzzing, physical soak, side-channel work and independent review remain. |
+| N-F3Q | Hostile-network fuzzing and emulated adversarial soak | `IN PROGRESS` | Deterministic sanitizer coverage includes 50,000 malformed IPv4/IPv6 fragment cases plus SSH/SFTP/DNS malformed corpora and concurrent QEMU load. Close after coverage-guided fuzzing, packet loss/reorder/corruption injection, resource-exhaustion cases, and a documented long-duration ARM64/x86_64 QEMU soak pass. |
+| N-F3P | Physical SSH/network security qualification | `NOT STARTED` | Requires physical lossy-link and sustained-load evidence, side-channel analysis, and independent SSH/cryptography review. QEMU evidence cannot close this item. |
 
 ## Storage phases
 
 | Phase | Status | Evidence / remaining gate |
 |---|---|---|
-| S-11 Production NVMe multiqueue/PRP/SGL/affinity/direct reads | `IN PROGRESS` | AArch64 and x86_64 QEMU negotiate four I/O queues and verify four-page PRP 16 KiB write/read/flush commands plus backing bytes. Async block integration, SGL, cancellation, MSI-X affinity, direct final-buffer APIs and physical durability remain. |
+| S-11Q QEMU NVMe async/multiqueue/SGL/cancellation/direct-buffer path | `IN PROGRESS` | AArch64 and x86_64 QEMU negotiate four I/O queues and verify four-page PRP 16 KiB write/read/flush commands plus backing bytes. Close after async block integration, SGL, cancellation, MSI-X queue affinity, direct final-buffer APIs, malformed-completion tests, and ARM64/x86_64 QEMU stress gates pass. |
+| S-11P Physical production NVMe qualification | `NOT STARTED` | Requires named physical devices to pass queue scaling, interrupt affinity, FUA/flush/discard semantics, reset recovery, power-loss durability, sustained-load, and performance gates. QEMU evidence cannot close this item. |
 | S-12 Trusted-replica repair and production key custody | `BLOCKED` | Depends on production trust and repair-source decisions. |
 
 ## Distributed AI server phases
@@ -172,7 +174,7 @@ checked continuously.
 | R-002 | Documentation drift | `TESTING` | One tracker plus `make docs-check` and live-Wiki parity. |
 | R-004 | Unreviewed SSH exposure | `TESTING` | Passwords off by default, bounded limits, OpenSSH/FreeBSD gates; independent review remains. |
 | R-005 | Fixture keys used as production trust | `TESTING` | Fixtures are labeled; OD-004 blocks production trust. |
-| R-006 | Storage durability inferred from sparse/QEMU tests | `TESTING` | Physical S-11/S-12 gates remain explicit. |
+| R-006 | Storage durability inferred from sparse/QEMU tests | `TESTING` | The S-11Q emulation gate is separate from physical S-11P and trust/repair S-12; only physical evidence can establish durability. |
 | R-007 | Parser arithmetic or ownership error | `TESTING` | Checked arithmetic, malformed tests, sanitizers, immutable readers, fuzzing. |
 | R-008 | Interfaces advertised as model support | `TESTING` | Separate progress and support-boundary columns plus golden gates. |
 | R-009 | SIMD selected from CPUID alone | `TESTING` | OS-state checks, known-answer canaries, and scalar differential tests. |
