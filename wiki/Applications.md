@@ -15,13 +15,13 @@ in [[Commands|Commands]].
 | `/init` | First userspace process. Establishes the initial service lifecycle and returns status to the kernel. | Started once during boot. |
 | `/bin/service-manager` | Exercises and owns the bounded service-manager protocol used for managed workers. | Started during boot. |
 | `/bin/xaios-worker` | Joinable worker process used for scheduler, CPU-assignment, and service-lifecycle work. | Started by the service manager; count follows the boot profile. |
-| `/bin/sshd` | Persistent SSH/SFTP server, authenticated PTY shell, command engine, outbound SSH/SCP client host, and PTY transport adapter for terminal applications. | Started only after networking and the configured external IPv4/DNS readiness check succeeds. |
+| `/bin/sshd` | Persistent SSH/SFTP server, authenticated PTY transport, outbound SSH/SCP client host, and userspace adapter for the kernel command dispatcher. | Started only after networking and the configured external IPv4/DNS readiness check succeeds. |
 
 ## Administrative applications
 
 | Path | Purpose |
 |---|---|
-| `/bin/xaiosctl` | Test client for the versioned `xaios.control.v1` administrative protocol. Exercises status, health, hardware, metrics, logs, configuration, identity, audit, storage, and ModelFS rendering/authorization paths. The interactive shell exposes the same bounded command family. |
+| `/bin/xaiosctl` | Administrative client for the versioned `xaios.control.v1` protocol. It exposes status, health, hardware, metrics, logs, configuration, identity, audit, storage, and ModelFS rendering/authorization paths. The interactive shell exposes a bounded compatibility command family. |
 | `/bin/xapt` | Signed application and system updater. It refreshes a monotonic architecture-specific catalog, installs or upgrades individual applications without rebooting, and streams an OS image to the inactive A/B slot. |
 | `/bin/xaios-shell` | Scripted acceptance application for built-in remote-login commands and archives; it is not the persistent interactive shell process. Standalone applications are covered by the SSH gates. |
 
@@ -73,15 +73,24 @@ acceptance.
 | `/bin/posix-shell` | Scripted FreeBSD/POSIX-like shell-subset compatibility suite for redirects, pipelines, filters, and filesystem operations. |
 | `/bin/agenttest` | Bounded agent protocol dispatch test for ping, source-index, Git status, build, denial, and validation cases. |
 
-`/bin/app-fail` exists only in the explicit failure-fixture image. It exits with
-status 42 so lifecycle and error reporting can be tested; it is not shipped in
-the normal image.
+Two applications exist only in the explicit failure-fixture image and are not
+shipped in the normal image:
+
+| Path | Purpose |
+|---|---|
+| `/bin/app-fail` | Returns status 42 to verify ordinary application-failure reporting and reaping. |
+| `/bin/app-crash` | Deliberately reads an unmapped user address to verify user-mode fault containment, status 128 reporting, reaping, and continued SSH command service. |
 
 ## Execution boundaries
 
 - Diagnostic names are exact allowlist entries; paths, arguments, and arbitrary
   executable launch are rejected by the remote application dispatcher.
-- Built-in shell commands run inside the persistent SSH/local command subsystem.
+- Built-in shell parsing and most file/archive command handlers currently run in
+  the kernel remote-login subsystem. Their audited migration candidates are
+  listed in [[Commands|Commands]].
+- SSH transport and outbound SSH/SCP protocol code run in `/bin/sshd`, not in
+  the kernel. A fault there cannot corrupt kernel state, but it can stop that
+  SSH service until lifecycle recovery restarts it.
 - Standard output from a transient hosted-libc application is bounded and
   returned to the invoking SSH session as well as written to the serial console.
 - Interactive terminal applications have dedicated `/bin/*` ELF images. SSH
@@ -89,8 +98,11 @@ the normal image.
   transport; non-interactive command execution is dispatched through the ELF
   entrypoint. The kernel exposes only generic process, filesystem, console, and
   paged runtime-snapshot primitives.
-- A crashed or nonzero application reports a friendly command error and exit
-  status; it does not remain as an active process.
+- A nonzero transient application reports its exit status and is reaped. A
+  synchronous user-mode fault on AArch64 or x86-64 is converted to exit status 128,
+  returns through the normal transient-process boundary, and leaves
+  the kernel, SSH service, and other applications running. Kernel-mode faults
+  remain fatal by design.
 - Normal boot does not pre-run `hello`, `sysinfo`, `lstm-xor`, or the other
   diagnostics.
 - Installed repository applications are loaded on demand with the capabilities

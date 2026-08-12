@@ -112,7 +112,7 @@ esac
 FAILURE_TEST_APP="${XAIOS_FAILURE_TEST_APP:-0}"
 case "$FAILURE_TEST_APP" in
   0) ;;
-  1) USER_APPS="$USER_APPS app-fail" ;;
+  1) USER_APPS="$USER_APPS app-fail app-crash" ;;
   *)
     printf '%s\n' "error: XAIOS_FAILURE_TEST_APP must be 0 or 1" >&2
     exit 2

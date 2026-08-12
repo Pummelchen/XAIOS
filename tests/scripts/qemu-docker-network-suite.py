@@ -364,6 +364,7 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
         b"/bin/sysinfo",
         b"/bin/lstm-xor",
         b"/bin/app-fail",
+        b"/bin/app-crash",
     )
     initial_processes = run_guest("htop --plain --sample-ms 10")
     unexpected = [path for path in transient_paths if path in initial_processes]
@@ -397,6 +398,21 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
             "intentional application failure was not reported and reaped: "
             + (failed_app.stdout + failed_app.stderr).decode(errors="replace")
         )
+
+    crashed_app = subprocess.run(
+        docker_command(key_dir, *ssh_base, "app-crash"),
+        cwd=ROOT,
+        capture_output=True,
+        timeout=60,
+    )
+    if (crashed_app.returncode != 1 or
+            b"app-crash: exit status 128" not in crashed_app.stdout):
+        raise RuntimeError(
+            "faulting application was not isolated and reaped: "
+            + (crashed_app.stdout + crashed_app.stderr).decode(errors="replace")
+        )
+    if run_guest("pwd").strip() != b"/":
+        raise RuntimeError("SSH command engine did not survive a user fault")
 
     final_processes = run_guest("htop --plain --sample-ms 10")
     unreaped = [path for path in transient_paths if path in final_processes]
@@ -969,6 +985,7 @@ def main() -> int:
         results["native_htop_invalid_option_rejected"] = "passed"
         results["native_pong_pty"] = "passed"
         results["native_transient_apps_on_demand"] = "passed"
+        results["native_user_fault_isolation"] = "passed"
         results["ssh_port"] = ssh_port
         results["udp_port"] = udp_port
         results["packet_capture"] = str(packet_capture)

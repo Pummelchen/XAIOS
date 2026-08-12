@@ -3922,6 +3922,7 @@ static const remote_app_definition_t g_remote_apps[] = {
          XAIOS_CAP_ML},
 #if XAIOS_FAILURE_TEST_APP
     {"app-fail", "/bin/app-fail", XAIOS_CAP_LOG | XAIOS_CAP_EXIT},
+    {"app-crash", "/bin/app-crash", XAIOS_CAP_LOG | XAIOS_CAP_EXIT},
 #endif
 };
 

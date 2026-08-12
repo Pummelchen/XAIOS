@@ -12,6 +12,7 @@
 #define XAIOS_USER_ARG_BYTES_MAX 1024U
 #define XAIOS_USER_EXIT_RETURN_MAGIC UINT64_C(0x4f53414900000000)
 #define XAIOS_USER_EXIT_RETURN_MASK UINT64_C(0xffffffff00000000)
+#define XAIOS_USER_FAULT_EXIT_CODE 128
 
 typedef enum xaios_user_process_state {
   XAIOS_USER_PROCESS_EMPTY = 0,
@@ -67,6 +68,7 @@ void user_clear_current_process(void);
 xaios_status_t user_process_has_capability(uint64_t capability);
 void user_process_note_syscall(uint32_t rejected);
 uint64_t user_process_note_exit(int exit_code);
+uint64_t user_process_note_fault(void);
 xaios_status_t user_load_init(const xaios_initramfs_file_t *file,
                              xaios_user_process_t *process);
 xaios_status_t user_load_process(const xaios_initramfs_file_t *file,

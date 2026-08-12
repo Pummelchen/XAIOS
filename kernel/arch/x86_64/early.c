@@ -2188,13 +2188,13 @@ static void X86_BRINGUP_ONLY validate_hardware_gate(uint16_t serial_base) {
   serial_puts(serial_base, "x86_64: Intel Desktop hardware gate blocked platform-parity-and-physical-evidence-required\n");
 }
 
-void x86_64_exception_entry(const x86_64_exception_frame_t *frame) {
+uint64_t x86_64_exception_entry(const x86_64_exception_frame_t *frame) {
   uint16_t serial_base = COM1_PORT;
   serial_init(serial_base);
   if (frame != 0 && frame->vector == g_expected_exception_vector) {
     ++g_exception_test_count;
     g_expected_exception_vector = UINT32_MAX;
-    return;
+    return 0U;
   }
   serial_puts(serial_base, "\nEXCEPTION x86_64 vector=");
   serial_dec(serial_base, frame->vector);
@@ -2207,7 +2207,15 @@ void x86_64_exception_entry(const x86_64_exception_frame_t *frame) {
     serial_hex64(serial_base, read_cr2());
   }
   serial_puts(serial_base, "\n");
+#if XAIOS_X86_COMMON_RUNTIME
+  if (frame != 0 && (frame->cs & 3U) == 3U) {
+    uint64_t result = user_process_note_fault();
+    x86_64_platform_set_user_return(result);
+    return (uint64_t)(uintptr_t)x86_64_ring3_resume;
+  }
+#endif
   panic_halt(serial_base, "controlled x86_64 exception reported");
+  return 0U;
 }
 
 static void validate_exception_round_trip(uint16_t serial_base) {

@@ -442,6 +442,16 @@ uint64_t user_process_note_exit(int exit_code) {
   return XAIOS_USER_EXIT_RETURN_MAGIC | ((uint64_t)(uint32_t)exit_code);
 }
 
+uint64_t user_process_note_fault(void) {
+  if (g_current_process != 0) {
+    klog("user: process fault pid=%u image=%s exit=%d\n",
+         (uint64_t)g_current_process->pid,
+         g_current_process->name != 0 ? g_current_process->name : "unknown",
+         (uint64_t)XAIOS_USER_FAULT_EXIT_CODE);
+  }
+  return user_process_note_exit(XAIOS_USER_FAULT_EXIT_CODE);
+}
+
 void user_process_runtime_start(uint32_t pid, uint32_t cpu_id,
                                 uint64_t now_ns) {
   if (pid == 0U || pid > XAIOS_MAX_USER_PROCESSES || now_ns == 0U) {

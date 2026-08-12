@@ -303,6 +303,8 @@ x86_64_isr_common:
   call x86_64_irq_state_save
   movq %rsp, %rdi
   call x86_64_exception_entry
+  testq %rax, %rax
+  jnz 1f
   call x86_64_irq_state_restore
   popq %r15
   popq %r14
@@ -321,6 +323,10 @@ x86_64_isr_common:
   popq %rax
   addq $16, %rsp
   iretq
+1:
+  movq %rax, %r12
+  call x86_64_irq_state_restore
+  jmp *%r12
 
 .global x86_64_irq_common
 .type x86_64_irq_common, @function

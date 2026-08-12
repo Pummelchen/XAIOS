@@ -24,7 +24,14 @@ def main() -> int:
             failures.append(f"cannot locate {variable} in build-image.sh")
         else:
             user_apps.update(match.group(1).split())
-    all_apps = user_apps | {"init", "service-manager", "xaios-worker", "sshd", "app-fail"}
+    all_apps = user_apps | {
+        "init",
+        "service-manager",
+        "xaios-worker",
+        "sshd",
+        "app-fail",
+        "app-crash",
+    }
     missing_binaries = INTERACTIVE_APPLICATIONS - user_apps
     if missing_binaries:
         failures.append(
@@ -80,6 +87,12 @@ def main() -> int:
             failures.append(f"Commands.md lists interactive application {app}")
     if "[[Commands|Commands]]" not in apps_doc or "[[Applications|Applications]]" not in commands_doc:
         failures.append("Applications and Commands pages are not cross-referenced")
+    for marker in ("user-mode fault", "exit status 128"):
+        if marker not in apps_doc:
+            failures.append(f"Applications.md missing isolation evidence: {marker}")
+    for marker in ("Current owner", "Migration assessment", "`/bin/ssh`", "`cd`"):
+        if marker not in commands_doc:
+            failures.append(f"Commands.md missing ownership audit: {marker}")
 
     if failures:
         print("user-docs: failed")

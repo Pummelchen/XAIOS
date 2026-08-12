@@ -216,15 +216,6 @@ uint64_t aarch64_exception_entry(uint64_t kind, uint64_t esr, uint64_t elr,
     return 0;
   }
 
-  /* FIX-008: Division by zero protection */
-  if (kind == XAIOS_EXCEPTION_LOWER_A64_SYNC && ec == ESR_EC_UNKNOWN) {
-    /* Check if this is a division by zero (trapped instruction) */
-    klog("exception: division by zero or undefined operation at ELR=0x%lx\n", elr);
-    klog("exception: killing process to prevent kernel crash\n");
-    /* Return error to kill the offending process */
-    return (uint64_t)-1;
-  }
-
   if (kind == XAIOS_EXCEPTION_LOWER_A64_SYNC && ec == ESR_EC_SVC_A64) {
     uint64_t parent_spsr;
     uint64_t parent_sp;
@@ -241,6 +232,12 @@ uint64_t aarch64_exception_entry(uint64_t kind, uint64_t esr, uint64_t elr,
                      : "r"(elr), "r"(parent_spsr), "r"(parent_sp)
                      : "memory");
     return result;
+  }
+
+  if (kind == XAIOS_EXCEPTION_LOWER_A64_SYNC) {
+    klog("user exception: class=%s ec=0x%lx elr=0x%lx far=0x%lx\n",
+         exception_class_name(ec), ec, elr, far);
+    return user_process_note_fault();
   }
 
   klog("\nEXCEPTION: kind=%s class=%s ec=0x%lx iss=0x%lx\n",

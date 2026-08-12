@@ -1,9 +1,41 @@
 # Commands
 
 XAIOS provides a bounded FreeBSD-style command surface for authenticated local
-and SSH PTY sessions. These commands are implemented by the XAIOS shell/SSH
-subsystem; they are not standalone applications. Executable and interactive
-applications are listed in [[Applications|Applications]].
+and SSH PTY sessions. This page lists command syntax, not executable images.
+Most commands are currently kernel command handlers, while outbound `ssh` and
+`scp` run in the userspace SSH service. Dedicated binaries are applications and
+are listed only in [[Applications|Applications]].
+
+## Current ownership
+
+| Current owner | Commands or responsibility | Fault boundary |
+|---|---|---|
+| Kernel session layer | `cd`, `pwd`, `help`, `exit`, `quit`, `logout`, aliases, redirection, and pipelines | Maintains per-session state and command composition. |
+| Kernel file/archive handlers | `ls`, `mkdir`, `touch`, `cp`, `mv`, `rm`, `rmdir`, `stat`, `cat`, `head`, `tail`, `less`, `grep`, `find`, `sed`, `write`, `tar`, `cpio`, `zip`, `unzip`, `df`, `du`, and `ps` | Validated operations, but parser/formatting defects are still in the kernel fault domain. |
+| `/bin/sshd` userspace service | Outbound `ssh` and `scp` protocol clients and inbound SSH/SFTP transport | A fault cannot panic the kernel, but can interrupt the SSH service. |
+| Kernel operations layer | `status`, power, service, process, network, clock, recovery, update, configuration, and support commands | Capability checks and privileged mechanisms remain authoritative in the kernel. |
+
+## Migration assessment
+
+The target is to move non-privileged parsing, archive handling, formatting, and
+protocol-client code to independent ELF applications without adding a syscall.
+The existing 50-syscall ABI already supplies filesystem, console, process
+snapshot, clock, networking, and control operations. The shell can continue to
+launch allowlisted binaries through its current kernel-mediated process loader.
+
+| Priority | Candidate | Planned boundary |
+|---|---|---|
+| 1 | `ssh`, `scp` | Split the outbound clients from `/bin/sshd` into `/bin/ssh` and `/bin/scp`; keep only inbound SSH/SFTP service code in `sshd`. This prevents an outbound-client fault from taking down active inbound sessions. |
+| 2 | File and text utilities | Move `ls`, `mkdir`, `touch`, `cp`, `mv`, `rm`, `rmdir`, `stat`, `cat`, `head`, `tail`, `less`, `grep`, `find`, `sed`, and `write` into independently loaded applications using existing filesystem and console syscalls. Pass the normalized session CWD as launch metadata and preserve bounded pipelines/redirection in the shell. |
+| 3 | Archive utilities | Move `tar`, `cpio`, `zip`, and `unzip` after shared userspace path-validation and streaming archive libraries are available. Malformed external archives then remain outside the kernel fault domain. |
+| 4 | Observability utilities | Move `ps`, `df`, and `du` to typed snapshot/filesystem APIs. Route administrative display commands through `/bin/xaiosctl` while keeping authorization and state changes in kernel mechanisms. |
+| Keep resident | Session syntax | Keep `cd`, `pwd`, `help`, `exit`, `quit`, `logout`, aliases, `echo`, pipelines, and redirection in the session layer because they mutate or compose shell state rather than represent independent programs. |
+| Keep privileged | Kernel mechanisms | Keep process termination, service lifecycle, power, network configuration, storage, recovery, and update authorization in capability-checked kernel APIs; only their CLI parsing and rendering should move out. |
+
+When a command becomes a dedicated binary, it moves to
+[[Applications|Applications]] and is removed from this catalog. The migration
+must preserve command behavior and add a crash-isolation test before the old
+kernel handler is deleted.
 
 ## Navigation and files
 
