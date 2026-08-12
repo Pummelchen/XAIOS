@@ -1,22 +1,22 @@
 {
   "schema": "xaios.model_catalog.v2",
-  "updated": "2026-08-11",
+  "updated": "2026-08-12",
   "canonical_tracker": "wiki/Project-Tracker.md",
   "delivery_workstreams": [
-    {"order": 1, "name": "XAIOS QEMU core OS"},
-    {"order": 2, "name": "Qwen 3.6 27B support"},
-    {"order": 3, "name": "Kimi K3 text support"},
-    {"order": 4, "name": "Kimi K3 multimodal support"},
-    {"order": 5, "name": "DeepSeek V4 Flash 0731 support"},
-    {"order": 6, "name": "GLM 5.2 support"}
+    {"order": 1, "name": "XAIOS QEMU core OS", "open_tracker": false},
+    {"order": 2, "name": "Qwen 3.6 27B support", "open_tracker": true},
+    {"order": 3, "name": "Kimi K3 text support", "open_tracker": true},
+    {"order": 4, "name": "Kimi K3 multimodal support", "open_tracker": true},
+    {"order": 5, "name": "DeepSeek V4 Flash 0731 support", "open_tracker": true},
+    {"order": 6, "name": "GLM 5.2 support", "open_tracker": true}
   ],
   "models": [
-    {"id": "qemu_v1_fixture", "name": "Deterministic model-v1 path"},
-    {"id": "model_v2", "name": "xaios.model.v2 format/tooling"},
-    {"id": "qwen_3_6_27b", "name": "Qwen 3.6 27B"},
-    {"id": "kimi_k3_text", "name": "Kimi K3 text"},
-    {"id": "kimi_k3_multimodal", "name": "Kimi K3 multimodal"},
-    {"id": "deepseek_v4_flash_0731", "name": "DeepSeek V4 Flash 0731"},
-    {"id": "glm_5_2", "name": "GLM 5.2"}
+    {"id": "qemu_v1_fixture", "name": "Deterministic model-v1 path", "open_tracker": false},
+    {"id": "model_v2", "name": "xaios.model.v2 format/tooling", "open_tracker": false},
+    {"id": "qwen_3_6_27b", "name": "Qwen 3.6 27B", "open_tracker": true},
+    {"id": "kimi_k3_text", "name": "Kimi K3 text", "open_tracker": true},
+    {"id": "kimi_k3_multimodal", "name": "Kimi K3 multimodal", "open_tracker": true},
+    {"id": "deepseek_v4_flash_0731", "name": "DeepSeek V4 Flash 0731", "open_tracker": true},
+    {"id": "glm_5_2", "name": "GLM 5.2", "open_tracker": true}
   ]
 }

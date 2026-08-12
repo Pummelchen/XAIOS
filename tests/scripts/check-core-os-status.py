@@ -16,9 +16,10 @@ REQUIRED = {
         "PolyForm Noncommercial License 1.0.0",
     ],
     "wiki/Project-Tracker.md": [
-        "focused emulated NVMe",
-        "QEMU SMMUv3 translated-DMA isolation",
-        "EL0 thread create/join/cancel/exit",
+        "Physical Apple/ARM, Intel desktop, and Xeon qualification",
+        "Thread-safe libc contexts for XAIOS native threads",
+        "DNSSEC, TCP fallback, complete AAAA results",
+        "Production NVMe multiqueue/PRP/SGL/affinity/direct reads",
     ],
     "docs/NETWORK-SSH-STATUS.md": [
         "SACK parsing/emission",
@@ -101,6 +102,10 @@ def main() -> int:
         for marker in markers:
             if marker in text:
                 failures.append(f"{relative}: stale status marker remains: {marker}")
+
+    tracker_text = (ROOT / "wiki/Project-Tracker.md").read_text(encoding="utf-8")
+    if "| `DONE` |" in tracker_text:
+        failures.append("wiki/Project-Tracker.md: completed row remains in open tracker")
 
     contract = json.loads(
         (ROOT / "contracts/qemu-rc-v1.json").read_text(encoding="utf-8")

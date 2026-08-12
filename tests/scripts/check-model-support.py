@@ -15,6 +15,19 @@ def tracked(text: str, name: str) -> bool:
     return any(f"| {name} | {status} |" in plain for status in ALLOWED)
 
 
+def check_entries(
+    failures: list[str], text: str, entries: list[dict[str, object]], kind: str
+) -> None:
+    for entry in entries:
+        name = entry["name"]
+        should_track = entry.get("open_tracker")
+        if not isinstance(name, str) or not isinstance(should_track, bool):
+            failures.append(f"{kind} entry requires name and open_tracker fields")
+        elif tracked(text, name) != should_track:
+            expectation = "present" if should_track else "absent"
+            failures.append(f"{kind} must be {expectation} in open tracker: {name}")
+
+
 def main() -> int:
     registry = json.loads(REGISTRY.read_text(encoding="utf-8"))
     failures: list[str] = []
@@ -27,12 +40,8 @@ def main() -> int:
         text = ""
     else:
         text = tracker.read_text(encoding="utf-8")
-    for entry in registry.get("delivery_workstreams", []):
-        if not tracked(text, entry["name"]):
-            failures.append(f"tracker missing delivery workstream: {entry['name']}")
-    for entry in registry.get("models", []):
-        if not tracked(text, entry["name"]):
-            failures.append(f"tracker missing model status: {entry['name']}")
+    check_entries(failures, text, registry.get("delivery_workstreams", []), "workstream")
+    check_entries(failures, text, registry.get("models", []), "model")
     if failures:
         for failure in failures:
             print(f"model-support: {failure}")

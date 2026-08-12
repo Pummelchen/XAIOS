@@ -28,16 +28,24 @@ def main() -> int:
     for entry in recommendations:
         prefix = f"| P-{entry['id']:02d} | {entry['name']} | `"
         rows = [line for line in text.splitlines() if line.startswith(prefix)]
-        if len(rows) != 1:
-            failures.append(f"tracker must contain one row for P-{entry['id']:02d}")
-        elif not any(f"`{status}`" in rows[0] for status in ALLOWED):
+        should_track = entry.get("open_tracker")
+        if not isinstance(should_track, bool):
+            failures.append(f"P-{entry['id']:02d} requires open_tracker boolean")
+        elif len(rows) != int(should_track):
+            expectation = "one open row" if should_track else "no completed row"
+            failures.append(f"tracker must contain {expectation} for P-{entry['id']:02d}")
+        elif rows and not any(f"`{status}`" in rows[0] for status in ALLOWED):
             failures.append(f"P-{entry['id']:02d} uses an unknown progress status")
     if failures:
         print("platform-support: failed")
         for failure in failures:
             print(f"  - {failure}")
         return 1
-    print("platform-support: 20 recommendations have one canonical tracked status")
+    open_count = sum(entry["open_tracker"] for entry in recommendations)
+    print(
+        "platform-support: "
+        f"{open_count} open recommendations tracked; completed rows omitted"
+    )
     return 0
 
 
