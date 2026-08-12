@@ -127,9 +127,9 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   Model-v2 packages are not yet executed end to end.
 - No official tokenizer importer, real Qwen tensor importer, transformer plan,
   logits parity, or deterministic 32-token decode parity exists.
-- Qwen 3.6 27B is the next active correctness workstream now that the declared
-  QEMU platform gate passes. Kimi K3, DeepSeek V4 Flash 0731, and GLM 5.2
-  remain later roadmap targets.
+- Qwen 3.8 27B is the next active correctness workstream now that the declared
+  QEMU platform gate passes. Kimi K3 and DeepSeek V4 Flash 0731 remain later
+  roadmap targets.
 - Kimi K3 KDA, Gated MLA, AttnRes, exact top-16 routing, shared experts, native
   MXFP4, text parity, and multimodal execution are not implemented.
 - Scalar INT4/INT6 and experimental NEON/AVX2 packed kernels pass bounded

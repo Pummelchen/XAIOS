@@ -65,11 +65,11 @@ static xaios_engine_status_t interface_only_backend(uint64_t capabilities) {
 }
 
 /*
- * IDs come from official configuration fields, not product display names.
- * Qwen3.6 currently retains qwen3_5 as its model_type; Kimi K3 uses kimi_k3.
+ * IDs come from package configuration fields, not roadmap display names.
+ * xaios_fixture is synthetic test metadata; Kimi K3 uses kimi_k3.
  */
 static const xaios_architecture_adapter_t k_adapters[] = {
-    {"qwen3_5", XAIOS_ARCHITECTURE_INTERFACE_ONLY,
+    {"xaios_fixture", XAIOS_ARCHITECTURE_INTERFACE_ONLY,
      interface_only_validate, interface_only_map_tensor, interface_only_plan,
      interface_only_state_layout, interface_only_scratch_size,
      interface_only_backend},

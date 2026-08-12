@@ -39,16 +39,16 @@ and QEMU use; production key custody and rotation remain an explicit gate.
 ## Model support status
 
 The deterministic QEMU model-v1 path is **Fixture only**, and model-v2 is a
-format/interface foundation; neither executes a transformer. Qwen 3.6 27B is
+format/interface foundation; neither executes a transformer. Qwen 3.8 27B is
 the next real-model correctness target. Kimi K3 text, Kimi K3 multimodal,
-DeepSeek V4 Flash 0731, and GLM 5.2 remain later targets, and no listed model is
+and DeepSeek V4 Flash 0731 remain later targets, and no listed model is
 production supported. K3 text and multimodal support are separate milestones.
 
 XAIOS is designed around official architecture adapters rather than a
 hard-coded Qwen graph. Exact target-model semantics are the default;
 approximate modes, if introduced, will be explicit and opt-in. The single
 authoritative delivery order, progress code, support boundary, acceptance gate,
-open-decision list, risk register, and official compatibility sources are in the
+open-decision list, and risk register are in the
 [Project Tracker](./wiki/Project-Tracker.md). The machine-readable model catalog
 at [`docs/MODEL-SUPPORT.json`](./docs/MODEL-SUPPORT.json) contains identifiers,
 not an independent status mirror.

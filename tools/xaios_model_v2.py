@@ -462,10 +462,10 @@ def read_header(path: Path) -> dict[str, object]:
     return result
 
 
-def build_miniature_package(path: Path, architecture_id: str = "qwen3_5") -> None:
+def build_miniature_package(path: Path, architecture_id: str = "xaios_fixture") -> None:
     architecture = json.dumps(
         {
-            "architectures": ["Qwen3_5ForConditionalGeneration"],
+            "architectures": ["XAIOSFixtureForCausalLM"],
             "model_type": architecture_id,
             "status": "interface-only",
         },
@@ -509,7 +509,7 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     create = subparsers.add_parser("create-miniature")
     create.add_argument("output", type=Path)
-    create.add_argument("--architecture", default="qwen3_5")
+    create.add_argument("--architecture", default="xaios_fixture")
     inspect = subparsers.add_parser("inspect")
     inspect.add_argument("package", type=Path)
     args = parser.parse_args()

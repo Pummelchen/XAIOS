@@ -75,10 +75,10 @@ class ModelV2Tests(unittest.TestCase):
             package = Path(temporary) / "miniature.xaiosmodel2"
             build_miniature_package(package)
             header = read_header(package)
-            self.assertEqual(header["architecture_id"], "qwen3_5")
+            self.assertEqual(header["architecture_id"], "xaios_fixture")
             self.assertEqual(header["tensor_count"], 1)
             result = self.run_inspector(package)
-            self.assertIn("architecture=qwen3_5", result.stdout)
+            self.assertIn("architecture=xaios_fixture", result.stdout)
 
     def test_sparse_package_exceeds_four_gib(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -101,7 +101,9 @@ class ModelV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             package = Path(temporary) / "streamed.xaiosmodel2"
             source = TrackingSource(32 * 1024 * 1024)
-            writer = PackageWriter("qwen3_5", hashlib.sha256(b"stream").digest())
+            writer = PackageWriter(
+                "xaios_fixture", hashlib.sha256(b"stream").digest()
+            )
             add_required_sections(writer)
             writer.add_section(
                 SectionSpec(SECTION_DENSE_WEIGHTS, "dense", source)
@@ -164,7 +166,9 @@ class ModelV2Tests(unittest.TestCase):
     def test_scale_offset_is_absolute_and_round_trips(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             package = Path(temporary) / "scales.xaiosmodel2"
-            writer = PackageWriter("qwen3_5", hashlib.sha256(b"scales").digest())
+            writer = PackageWriter(
+                "xaios_fixture", hashlib.sha256(b"scales").digest()
+            )
             add_required_sections(writer)
             writer.add_section(
                 SectionSpec(

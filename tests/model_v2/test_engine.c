@@ -64,14 +64,14 @@ static xaios_engine_status_t file_read_at(void *opaque, uint64_t offset,
 }
 
 static int test_interfaces(void) {
-  const xaios_architecture_adapter_t *qwen =
-      xaios_architecture_find("qwen3_5");
+  const xaios_architecture_adapter_t *fixture =
+      xaios_architecture_find("xaios_fixture");
   const xaios_architecture_adapter_t *kimi =
       xaios_architecture_find("kimi_k3");
-  if (xaios_architecture_count() != 2U || qwen == NULL || kimi == NULL ||
-      qwen->status != XAIOS_ARCHITECTURE_INTERFACE_ONLY ||
+  if (xaios_architecture_count() != 2U || fixture == NULL || kimi == NULL ||
+      fixture->status != XAIOS_ARCHITECTURE_INTERFACE_ONLY ||
       kimi->status != XAIOS_ARCHITECTURE_INTERFACE_ONLY ||
-      xaios_architecture_find("Qwen3.6") != NULL) {
+      xaios_architecture_find("Qwen3.8") != NULL) {
     return 1;
   }
 

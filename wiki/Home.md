@@ -41,7 +41,7 @@ primary Unix behavior reference for commands and network interoperability.
 The ARM and x86_64 QEMU core-OS correctness gates pass. QEMU proves boot,
 protocol, ABI, and deterministic behavior; it does not prove physical hardware
 performance, production security, or real-model inference. No real Qwen, Kimi,
-DeepSeek, or GLM checkpoint has passed end-to-end token and logits parity.
+or DeepSeek checkpoint has passed end-to-end token and logits parity.
 
 See [[Current Limitations|Current-Limitations]] for explicit non-claims and the
 single [[Project Tracker|Project-Tracker]] for remaining work.

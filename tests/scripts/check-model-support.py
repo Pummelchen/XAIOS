@@ -8,6 +8,29 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 REGISTRY = ROOT / "docs/MODEL-SUPPORT.json"
 ALLOWED = ("DONE", "TESTING", "IN PROGRESS", "NOT STARTED", "BLOCKED", "FAILED")
+RETIRED_TARGETS = ("GLM 5.2", "Qwen 3.6 27B", "Qwen3.6")
+STATUS_SURFACES = (
+    "README.md",
+    "docs/MODEL-SUPPORT.json",
+    "docs/ARCHITECTURE-ADAPTERS.md",
+    "docs/MODEL-V2-SPECIFICATION.md",
+    "wiki/Architecture.md",
+    "wiki/Current-Limitations.md",
+    "wiki/Home.md",
+    "wiki/Project-Tracker.md",
+)
+EXPECTED_OPEN_WORKSTREAMS = {
+    "Qwen 3.8 27B support",
+    "Kimi K3 text support",
+    "Kimi K3 multimodal support",
+    "DeepSeek V4 Flash 0731 support",
+}
+EXPECTED_OPEN_MODEL_IDS = {
+    "qwen_3_8_27b",
+    "kimi_k3_text",
+    "kimi_k3_multimodal",
+    "deepseek_v4_flash_0731",
+}
 
 
 def tracked(text: str, name: str) -> bool:
@@ -42,6 +65,25 @@ def main() -> int:
         text = tracker.read_text(encoding="utf-8")
     check_entries(failures, text, registry.get("delivery_workstreams", []), "workstream")
     check_entries(failures, text, registry.get("models", []), "model")
+    open_workstreams = {
+        entry.get("name")
+        for entry in registry.get("delivery_workstreams", [])
+        if entry.get("open_tracker") is True
+    }
+    if open_workstreams != EXPECTED_OPEN_WORKSTREAMS:
+        failures.append("open model workstream set does not match project scope")
+    open_model_ids = {
+        entry.get("id")
+        for entry in registry.get("models", [])
+        if entry.get("open_tracker") is True
+    }
+    if open_model_ids != EXPECTED_OPEN_MODEL_IDS:
+        failures.append("open model ID set does not match project scope")
+    for relative in STATUS_SURFACES:
+        surface = (ROOT / relative).read_text(encoding="utf-8")
+        for retired in RETIRED_TARGETS:
+            if retired in surface:
+                failures.append(f"{relative}: retired model target remains: {retired}")
     if failures:
         for failure in failures:
             print(f"model-support: {failure}")

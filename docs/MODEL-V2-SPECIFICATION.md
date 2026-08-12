@@ -50,8 +50,9 @@ set to zero.
 | 240 | 16 | Reserved, zero |
 
 Architecture identity comes from official configuration fields. Display names
-are not identifiers. For example, the official Qwen3.6-27B configuration uses
-`model_type=qwen3_5`, while Kimi K3 uses `model_type=kimi_k3`.
+are not identifiers. The existing `xaios_fixture` entry is synthetic test
+metadata, not evidence for any Qwen architecture identifier. Kimi K3 packages
+use `model_type=kimi_k3`.
 
 ## Section directory
 

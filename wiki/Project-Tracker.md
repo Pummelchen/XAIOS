@@ -29,36 +29,19 @@ performance require immutable evidence under the
 | Order | Workstream | Status | Current boundary / exit gate |
 |---:|---|---|---|
 | 1b | Physical Apple/ARM, Intel desktop, and Xeon qualification | `NOT STARTED` | Named hardware must pass firmware, device, durability, security, ISA-state, NUMA, soak, and benchmark contracts. |
-| 2 | Qwen 3.6 27B support | `NOT STARTED` | Begins after the libc workstream unless reprioritized; official tokenizer, layer, logits, 32-step decode, session, and physical gates must pass. |
+| 2 | Qwen 3.8 27B support | `NOT STARTED` | Begins after the libc workstream unless reprioritized; official tokenizer, layer, logits, 32-step decode, session, and physical gates must pass. |
 | 3 | Kimi K3 text support | `NOT STARTED` | Begins after Qwen unless reprioritized; KDA, Gated MLA, exact top-16 MoE, MXFP4, and token parity are mandatory. |
 | 4 | Kimi K3 multimodal support | `NOT STARTED` | Separate vision preprocessing/tower/projection/position and golden image gates. |
 | 5 | DeepSeek V4 Flash 0731 support | `BLOCKED` | The exact official release label and immutable source must be verified first. |
-| 6 | GLM 5.2 support | `NOT STARTED` | Pin official sources, then implement a separate adapter and parity gates. |
 
 ## Model support boundary
 
 | Model or format | Progress | Support boundary | Completion gate |
 |---|---|---|---|
-| Qwen 3.6 27B | `NOT STARTED` | Interface only | Trusted tokenizer, tensor, layer, prefill-logit, decode, session, backend, and physical parity. |
+| Qwen 3.8 27B | `NOT STARTED` | Roadmap target; no architecture adapter is claimed | Pin an immutable official configuration before tokenizer, tensor, layer, prefill-logit, decode, session, backend, and physical parity work. |
 | Kimi K3 text | `NOT STARTED` | Interface only | KDA/MLA/MoE/MXFP4/operator and target-token parity on a real checkpoint. |
 | Kimi K3 multimodal | `NOT STARTED` | Roadmap only | Separate official vision and multimodal golden acceptance. |
 | DeepSeek V4 Flash 0731 | `BLOCKED` | Roadmap only | Verify exact official source before architecture work. |
-| GLM 5.2 | `NOT STARTED` | Roadmap only | Immutable official source plus independent adapter/parity suite. |
-
-### Compatibility sources
-
-The current architecture audit uses these official upstream sources:
-
-- [Qwen3.5-0.8B configuration](https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/config.json)
-- [Qwen3.6-27B configuration](https://huggingface.co/Qwen/Qwen3.6-27B/blob/main/config.json)
-- [Qwen3.6 repository](https://github.com/QwenLM/Qwen3.6)
-- [Kimi K3 configuration](https://huggingface.co/moonshotai/Kimi-K3/blob/main/config.json)
-- [Kimi K3 repository and report](https://github.com/MoonshotAI/Kimi-K3)
-- [GLM 5.2 model repository](https://huggingface.co/zai-org/GLM-5.2)
-
-An immutable official source has not yet been pinned for the exact
-DeepSeek V4 Flash 0731 roadmap label. That name records planning scope, not
-compatibility evidence.
 
 ## Platform recommendations
 
@@ -113,16 +96,16 @@ an available symbol is not proof of conformance.
 | D-09 Production inference service | `NOT STARTED` | Authenticated API, streaming, cancellation, saturation, loss, and long-lived tests. |
 | D-10 Support qualification/cleanup | `IN PROGRESS` | Documentation contracts exist; physical/model/cluster qualifications remain. |
 
-## Qwen 3.6 27B implementation
+## Qwen 3.8 27B implementation
 
 | Item | Status | Acceptance |
 |---|---|---|
 | Pin immutable official config/tokenizer/SafeTensors and parity corpus | `NOT STARTED` | Hashes and source revisions recorded. |
 | Streaming SafeTensors/config/tokenizer importer | `NOT STARTED` | Bounded RSS and deterministic package output. |
 | Package-owned tokenizer | `NOT STARTED` | Trusted tokenizer IDs match. |
-| Official architecture probe and ordered hybrid layer plan | `NOT STARTED` | Unknown fields fail closed. |
+| Official architecture probe and ordered configuration-derived layer plan | `NOT STARTED` | Unknown fields fail closed. |
 | Scalar embedding, RMSNorm, and first projection | `NOT STARTED` | Python reference parity. |
-| Full/linear attention, convolution/recurrent state, GQA, masking, mRoPE, FFN, residual, norm/head | `NOT STARTED` | Complete-layer and prefill-logit parity. |
+| Every configured attention/recurrent/convolution operator, position encoding, FFN, residual, norm/head | `NOT STARTED` | Complete-layer and prefill-logit parity. |
 | Separate prefill/decode plans and real per-layer state | `NOT STARTED` | State and reload continuity. |
 | 32-step deterministic decode | `NOT STARTED` | Exact trusted continuation within documented tolerance. |
 | Physical AVX2 and tiled prefill/verification kernels | `NOT STARTED` | Physical differential and performance artifacts. |
@@ -142,7 +125,6 @@ an available symbol is not proof of conformance.
 | K3 MoonViT-V2 and multimodal pipeline | `NOT STARTED` | Separate golden image/text cases. |
 | DeepSeek V4 Flash 0731 source verification | `BLOCKED` | Maintainer-approved immutable official source. |
 | DeepSeek adapter and parity suite | `BLOCKED` | Depends on verified source. |
-| GLM 5.2 source pin and independent adapter | `NOT STARTED` | Tokenizer/operator/logit/decode/session/physical gates. |
 | Multi-terabyte sparse allocators and large pages | `NOT STARTED` | Physical capacity and correctness evidence. |
 | SRAT/SLIT/HMAT placement policy and local/remote byte telemetry | `NOT STARTED` | Physical NUMA validation. |
 | AI Cell/secondary-CPU real inference dispatch | `NOT STARTED` | Real model work executes on leased workers. |
@@ -158,8 +140,8 @@ an available symbol is not proof of conformance.
 | OD-004 | Define production update/ModelFS trust roots, custody, rotation, revocation, recovery | `BLOCKED` | Untrusted deployment. |
 | OD-005 | Define SSH fleet limits, identity, audit retention, lockout, recovery | `NOT STARTED` | Production SSH exposure. |
 | OD-006 | Define supported NVMe/FUA/flush/discard/repair/power-loss contract | `NOT STARTED` | Physical persistent deployment. |
-| OD-007 | Pin official immutable Qwen fixtures | `NOT STARTED` | Qwen implementation. |
-| OD-008 | Pin official Kimi/DeepSeek/GLM sources | `BLOCKED` | Corresponding adapters; DeepSeek exact label is unresolved. |
+| OD-007 | Pin official immutable Qwen 3.8 fixtures | `NOT STARTED` | Qwen implementation. |
+| OD-008 | Pin official Kimi/DeepSeek sources | `BLOCKED` | Corresponding adapters; DeepSeek exact label is unresolved. |
 | OD-009 | Select expert-parallel interconnect and failure/ownership model | `NOT STARTED` | Cluster inference. |
 | OD-010 | Define names, quality reporting, telemetry, and acceptance for opt-in approximate modes | `NOT STARTED` | Any approximate mode. |
 

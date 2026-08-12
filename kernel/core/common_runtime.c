@@ -138,7 +138,7 @@ static uint32_t probe_engine(void) {
   const xaios_backend_t *scalar = xaios_backend_scalar();
   return scalar != 0 && scalar->validate() == XAIOS_ENGINE_OK &&
          xaios_architecture_count() >= 2U &&
-         xaios_architecture_find("qwen3_5") != 0 &&
+         xaios_architecture_find("xaios_fixture") != 0 &&
          xaios_architecture_find("kimi_k3") != 0;
 }
 

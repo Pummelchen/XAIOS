@@ -260,7 +260,7 @@ def validate_docs(root: Path, failures: List[str]) -> Dict[str, bool]:
         "README.md": [
             "## Model support status",
             "Fixture only",
-            "Qwen 3.6 27B",
+            "Qwen 3.8 27B",
             "Kimi K3 text",
         ],
         "docs/BENCHMARK-CONTRACT.md": [
