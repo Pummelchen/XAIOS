@@ -392,6 +392,15 @@ static int command_starts_with(const char *command, const char *name) {
          command[offset + index] == '\t';
 }
 
+static int path_equal(const char *left, const char *right) {
+  uint32_t index = 0U;
+  while (left[index] != '\0' && right[index] != '\0') {
+    if (left[index] != right[index]) return 0;
+    ++index;
+  }
+  return left[index] == right[index];
+}
+
 static xaios_status_t child_process_ready(uint32_t pid, void *opaque) {
   return child_channel_bind_child((uint64_t)(uintptr_t)opaque, pid);
 }
@@ -697,6 +706,11 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       (void)security_authorize_capability("fs.open.write", granted,
                                           XAIOS_CAP_FS_WRITE);
       return reject_syscall(syscall, arg0, arg1, "missing-fs-write");
+    }
+    if (path_equal(path, "/etc/xaios_ssh_client_identity") &&
+        user_process_has_capability(XAIOS_CAP_CREDENTIAL_READ) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1,
+                            "missing-credential-read");
     }
     if ((arg2 & XAIOS_MFS_OPEN_WRITE) != 0 &&
         security_authorize_fs_write(path) != XAIOS_OK) {
@@ -1143,7 +1157,8 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
               file, XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_NET |
                         XAIOS_CAP_NET_SOCKET | XAIOS_CAP_FS_READ |
                         XAIOS_CAP_FS_WRITE | XAIOS_CAP_TIME |
-                        XAIOS_CAP_REMOTE_LOGIN | XAIOS_CAP_RANDOM,
+                        XAIOS_CAP_REMOTE_LOGIN | XAIOS_CAP_RANDOM |
+                        XAIOS_CAP_CREDENTIAL_READ,
               4U, argv, caller_pid, child_process_ready,
               child_process_complete, (void *)(uintptr_t)channel_id,
               &child_pid, &child_thread);
@@ -1454,7 +1469,8 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     }
     bytes_copy(&remote_addr, (const void *)(uintptr_t)request.addr_ptr,
                sizeof(remote_addr));
-    if (remote_addr.family != XAIOS_IP_FAMILY_V4) {
+    if (remote_addr.family != XAIOS_IP_FAMILY_V4 &&
+        remote_addr.family != XAIOS_IP_FAMILY_V6) {
       return reject_syscall(syscall, arg0, arg1,
                             "net-connect-family-unsupported");
     }
@@ -1809,7 +1825,8 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
   if (syscall == XAIOS_SYSCALL_NET_RESOLVE) {
     xaios_syscall_net_resolve_request_t request;
     char hostname[64];
-    uint32_t address = 0U;
+    xaios_ip_addr_t address;
+    xaios_ip_addr_zero(&address);
     if (arg1 != sizeof(request) ||
         vmm_validate_user_buffer(arg0, sizeof(request), 0) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "bad-net-resolve-request");
@@ -1817,7 +1834,9 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     bytes_copy(&request, (const void *)(uintptr_t)arg0, sizeof(request));
     if (copy_user_string(request.hostname, request.hostname_size, hostname,
                          sizeof(hostname)) != XAIOS_OK ||
-        vmm_validate_user_buffer(request.out_ipv4, sizeof(address),
+        (request.family != XAIOS_IP_FAMILY_V4 &&
+         request.family != XAIOS_IP_FAMILY_V6) ||
+        vmm_validate_user_buffer(request.out_address, sizeof(address),
                                  XAIOS_VMM_WRITABLE) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "net-resolve-denied");
     }
@@ -1828,9 +1847,10 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       }
     }
     network_poll_tick();
-    xaios_status_t status = dns_resolve(hostname, &address);
+    xaios_status_t status = dns_resolve_address(
+        hostname, (uint8_t)request.family, &address);
     if (status == XAIOS_OK) {
-      bytes_copy((void *)(uintptr_t)request.out_ipv4, &address,
+      bytes_copy((void *)(uintptr_t)request.out_address, &address,
                  sizeof(address));
     }
     user_process_note_syscall(0);

@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import shutil
@@ -190,6 +191,7 @@ def stop_process(process: subprocess.Popen[bytes]) -> None:
 def freebsd_script(
     private_key: str,
     unauthorized_key: str,
+    outbound_public_key: str,
     server_password: str,
     expected_architecture: str,
 ) -> str:
@@ -213,15 +215,23 @@ printf '%s\n' '{server_password}' | pw useradd xaios -m -s /bin/sh -h 0 \
     || fail "could not create server user"
 mkdir -p /home/xaios/fixture/nested
 printf 'freebsd-to-xaios-scp\n' >/home/xaios/fixture/nested/source.txt
+mkdir -p /home/xaios/.ssh
+cat >/home/xaios/.ssh/authorized_keys <<'XAIOS_OUTBOUND_AUTHORIZED_KEY'
+{outbound_public_key.rstrip()}
+XAIOS_OUTBOUND_AUTHORIZED_KEY
+chmod 700 /home/xaios/.ssh
+chmod 600 /home/xaios/.ssh/authorized_keys
 chown -R xaios:xaios /home/xaios
 cat >>/etc/ssh/sshd_config <<'XAIOS_SSHD_CONFIG'
 PasswordAuthentication yes
 KbdInteractiveAuthentication no
 PermitRootLogin no
+LogLevel DEBUG3
 XAIOS_SSHD_CONFIG
 sysrc sshd_enable=YES >/dev/null
 /usr/bin/ssh-keygen -A || fail "could not generate FreeBSD SSH host keys"
 service sshd restart || fail "could not start FreeBSD sshd"
+tail -F /var/log/auth.log >/dev/ttyu0 2>&1 &
 sockstat -4 -l | grep -q ':22' || fail "FreeBSD sshd is not listening"
 echo "{SERVER_READY}"
 sleep 10
@@ -242,7 +252,7 @@ ssh_base="-i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnown
 ready=0
 attempt=0
 while [ "$attempt" -lt 120 ]; do
-    if ssh $ssh_base admin@$host 'echo freebsd-client-ssh-ok' >/tmp/ssh-ready.out 2>/tmp/ssh-ready.err; then
+    if ssh -vv $ssh_base admin@$host 'echo freebsd-client-ssh-ok' >/tmp/ssh-ready.out 2>/tmp/ssh-ready.err; then
         ready=1
         break
     fi
@@ -251,6 +261,8 @@ while [ "$attempt" -lt 120 ]; do
 done
 [ "$ready" -eq 1 ] || fail "XAIOS SSH did not become reachable"
 [ "$(cat /tmp/ssh-ready.out)" = "freebsd-client-ssh-ok" ] || fail "SSH output mismatch"
+grep -q 'kex: algorithm: mlkem768x25519-sha256' /tmp/ssh-ready.err \
+    || {{ cat /tmp/ssh-ready.err; fail "hybrid ML-KEM KEX was not negotiated"; }}
 
 printf 'echo freebsd-pty-ok\nexit\n' | ssh -tt $ssh_base admin@$host \
     >/tmp/pty.out 2>/tmp/pty.err || {{ cat /tmp/pty.err; fail "PTY shell failed"; }}
@@ -306,11 +318,13 @@ echo "{CLIENT_PASS}"
 def user_data(
     private_key: str,
     unauthorized_key: str,
+    outbound_public_key: str,
     server_password: str,
     architecture: str,
 ) -> str:
     script = freebsd_script(
-        private_key, unauthorized_key, server_password, architecture
+        private_key, unauthorized_key, outbound_public_key, server_password,
+        architecture
     )
     encoded = base64.b64encode(script.encode("ascii")).decode("ascii")
     return (
@@ -376,7 +390,7 @@ def main() -> int:
     architecture = os.environ.get("XAIOS_QEMU_NETWORK_ARCH", "aarch64")
     if architecture not in IMAGES:
         raise SystemExit("error: XAIOS_QEMU_NETWORK_ARCH must be aarch64 or x86_64")
-    required = ("docker", "qemu-img", "xz", "ssh-keygen", "ssh")
+    required = ("docker", "qemu-img", "xz", "ssh-keygen", "ssh", "ssh-agent", "ssh-add")
     missing = [tool for tool in required if shutil.which(tool) is None]
     if missing:
         raise SystemExit(f"error: missing required tools: {', '.join(missing)}")
@@ -388,7 +402,7 @@ def main() -> int:
     work.mkdir(mode=0o700)
     key_dir = work / "keys"
     key_dir.mkdir(mode=0o700)
-    for name in ("authorized", "unauthorized"):
+    for name in ("authorized", "unauthorized", "agent"):
         run_checked(
             [
                 "ssh-keygen",
@@ -404,6 +418,18 @@ def main() -> int:
             ],
             30,
         )
+    client_passphrase = "XAIOS-client-test-passphrase"
+    run_checked(
+        [
+            "ssh-keygen", "-q", "-t", "ed25519", "-a", "1",
+            "-N", client_passphrase,
+            "-C", "xaios-outbound-client", "-f", str(key_dir / "outbound")
+        ],
+        30,
+    )
+    client_passphrase_file = work / "identity-passphrase"
+    client_passphrase_file.write_text(client_passphrase + "\n", encoding="ascii")
+    client_passphrase_file.chmod(0o600)
     server_password = "Xf" + secrets.token_hex(16)
     password_file = work / "freebsd-password"
     password_file.write_text(server_password + "\n", encoding="ascii")
@@ -421,6 +447,9 @@ def main() -> int:
         user_data(
             (key_dir / "authorized").read_text(encoding="ascii"),
             (key_dir / "unauthorized").read_text(encoding="ascii"),
+            (key_dir / "outbound.pub").read_text(encoding="ascii")
+            + (key_dir / "authorized.pub").read_text(encoding="ascii")
+            + (key_dir / "agent.pub").read_text(encoding="ascii"),
             server_password,
             architecture,
         ),
@@ -445,6 +474,7 @@ def main() -> int:
 
     build_env = os.environ.copy()
     build_env["XAIOS_AUTHORIZED_KEYS_FILE"] = str(key_dir / "authorized.pub")
+    build_env["XAIOS_SSH_CLIENT_IDENTITY_FILE"] = str(key_dir / "outbound")
     build_env.pop("XAIOS_SSH_USERS_FILE", None)
     build_env.pop("XAIOS_SSH_PASSWORD_AUTH", None)
     build_target = "image" if architecture == "aarch64" else "image-x86_64"
@@ -509,6 +539,43 @@ def main() -> int:
         )
         if server_marker != SERVER_READY:
             raise RuntimeError("FreeBSD server provisioning failed")
+        # ProxyJump reuses this path in a child command without shell quoting.
+        jump_config = Path("/tmp") / f"xaios-jump-{os.getpid()}-{architecture}.conf"
+        jump_config.write_text(
+            "Host xaios-jump\n"
+            "  HostName 127.0.0.1\n"
+            f"  Port {xaios_ssh_port}\n"
+            "  User admin\n"
+            f'  IdentityFile "{key_dir / "authorized"}"\n'
+            "  IdentitiesOnly yes\n"
+            "  StrictHostKeyChecking no\n"
+            "  UserKnownHostsFile /dev/null\n"
+            "Host freebsd-via-xaios\n"
+            "  HostName 10.0.2.2\n"
+            f"  Port {freebsd_ssh_port}\n"
+            "  User xaios\n"
+            f'  IdentityFile "{key_dir / "authorized"}"\n'
+            "  IdentitiesOnly yes\n"
+            "  StrictHostKeyChecking no\n"
+            "  UserKnownHostsFile /dev/null\n"
+            "  ProxyJump xaios-jump\n",
+            encoding="ascii",
+        )
+        jump = subprocess.run(
+            ["ssh", "-F", str(jump_config), "freebsd-via-xaios",
+             "printf", "xaios-jump-host-ok"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        jump_config.unlink(missing_ok=True)
+        if jump.returncode != 0 or jump.stdout != "xaios-jump-host-ok":
+            raise RuntimeError(
+                "XAIOS direct-tcpip jump-host test failed\n"
+                + jump.stdout + jump.stderr
+            )
         run_checked(
             [
                 sys.executable,
@@ -521,11 +588,61 @@ def main() -> int:
                 str(freebsd_ssh_port),
                 "--password-file",
                 str(password_file),
+                "--identity-passphrase-file",
+                str(client_passphrase_file),
                 "--timeout",
                 os.environ.get("XAIOS_OUTBOUND_TIMEOUT", "60"),
             ],
             900,
         )
+        agent_start = subprocess.run(
+            ["ssh-agent", "-s"], check=True, capture_output=True, text=True,
+            timeout=30,
+        )
+        agent_env = os.environ.copy()
+        for name in ("SSH_AUTH_SOCK", "SSH_AGENT_PID"):
+            match = re.search(rf"{name}=([^;]+);", agent_start.stdout)
+            if match is None:
+                raise RuntimeError(f"ssh-agent did not report {name}")
+            agent_env[name] = match.group(1)
+        try:
+            run_checked(["ssh-add", str(key_dir / "agent")], 30, agent_env)
+            agent_command = [
+                "ssh", "-A", "-o", "IdentitiesOnly=yes",
+                "-o", "PreferredAuthentications=publickey",
+                "-o", "PubkeyAuthentication=yes",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-i", str(key_dir / "authorized"), "-p",
+                str(xaios_ssh_port), "admin@127.0.0.1",
+                f"ssh -A -p {freebsd_ssh_port} xaios@10.0.2.2 "
+                "printf xaios-agent-forwarding-ok",
+            ]
+            try:
+                agent = subprocess.run(
+                    agent_command, cwd=ROOT, env=agent_env, check=False,
+                    capture_output=True, text=True, timeout=60,
+                )
+            except subprocess.TimeoutExpired as error:
+                stdout = error.stdout or ""
+                stderr = error.stderr or ""
+                if isinstance(stdout, bytes):
+                    stdout = stdout.decode(errors="replace")
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode(errors="replace")
+                raise RuntimeError(
+                    "XAIOS OpenSSH agent-forwarding test timed out\n"
+                    + stdout + stderr
+                ) from error
+            if (agent.returncode != 0 or
+                    "xaios-agent-forwarding-ok" not in agent.stdout):
+                raise RuntimeError(
+                    "XAIOS OpenSSH agent-forwarding test failed\n"
+                    + agent.stdout + agent.stderr
+                )
+        finally:
+            subprocess.run(["ssh-agent", "-k"], env=agent_env, check=False,
+                           capture_output=True, timeout=30)
         marker = wait_for_marker(
             freebsd_log,
             (CLIENT_PASS, CLIENT_FAIL),
@@ -553,13 +670,18 @@ def main() -> int:
             "freebsd_runtime": "QEMU TCG inside Debian 13 Docker",
             "seed_tool": iso_tool,
             "checks": {
-                "freebsd_to_xaios_ssh": "passed",
+        "freebsd_to_xaios_ssh": "passed",
+        "freebsd_to_xaios_mlkem768x25519": "passed",
                 "freebsd_to_xaios_pty": "passed",
                 "freebsd_to_xaios_unauthorized_key_rejection": "passed",
                 "freebsd_to_xaios_sftp": "passed",
                 "freebsd_to_xaios_scp": "passed",
+                "xaios_direct_tcpip_jump_host": "passed",
+                "xaios_openssh_agent_forwarding": "passed",
                 "freebsd_to_xaios_udp": "passed",
                 "xaios_to_freebsd_ssh": "passed",
+                "xaios_to_freebsd_ipv6_ssh": "passed",
+                "xaios_to_freebsd_encrypted_ed25519_key": "passed",
                 "xaios_to_freebsd_wrong_password_rejection": "passed",
                 "xaios_to_freebsd_scp_file": "passed",
                 "xaios_to_freebsd_scp_recursive_upload": "passed",

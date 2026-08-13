@@ -38,7 +38,8 @@ static int protected_path(const char *path) {
   static const char control[] = "/state/control";
   if (ssh_str_eq(path, "/state/xaios_host_key") ||
       ssh_str_eq(path, "/etc/xaios_sshd_users") ||
-      ssh_str_eq(path, "/etc/xaios_authorized_keys")) return 1;
+      ssh_str_eq(path, "/etc/xaios_authorized_keys") ||
+      ssh_str_eq(path, "/etc/xaios_ssh_client_identity")) return 1;
   for (uint32_t i = 0U; i < sizeof(control) - 1U; ++i)
     if (path[i] != control[i]) return 0;
   return path[sizeof(control) - 1U] == '\0' ||

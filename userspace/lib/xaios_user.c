@@ -583,14 +583,30 @@ int xaios_net_close(u64 sockfd) {
   return rc == ~0ULL ? -1 : 0;
 }
 
-int xaios_net_resolve(const char *hostname, u32 *out_ipv4) {
+int xaios_net_resolve_address(const char *hostname, u32 family,
+                              xaios_ip_addr_user_t *out_address) {
+  if (hostname == 0 || out_address == 0 || (family != 4U && family != 6U))
+    return -1;
   xaios_net_resolve_request_t request;
   request.hostname = (u64)hostname;
   request.hostname_size = xaios_strlen(hostname);
-  request.out_ipv4 = (u64)out_ipv4;
+  request.out_address = (u64)out_address;
+  request.family = family;
   u64 rc = xaios_syscall3(XAIOS_SYSCALL_NET_RESOLVE, (u64)&request,
                           sizeof(request), 0);
   return (int)(s64)rc;
+}
+
+int xaios_net_resolve(const char *hostname, u32 *out_ipv4) {
+  if (out_ipv4 == 0) return -1;
+  xaios_ip_addr_user_t address;
+  int status = xaios_net_resolve_address(hostname, 4U, &address);
+  if (status == 0) {
+    *out_ipv4 = ((u32)address.addr[0] << 24U) |
+                ((u32)address.addr[1] << 16U) |
+                ((u32)address.addr[2] << 8U) | address.addr[3];
+  }
+  return status;
 }
 
 int xaios_write_file(const char *path, const char *content) {

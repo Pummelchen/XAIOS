@@ -14,6 +14,7 @@ import time
 
 PROMPT = b"admin@xaios"
 PASSWORD_PROMPT = b"'s password: "
+PASSPHRASE_PROMPT = b" key passphrase: "
 
 
 class PtySession:
@@ -75,6 +76,17 @@ class PtySession:
         result += self.expect(PROMPT, "XAIOS shell prompt")
         return result
 
+    def passphrase_command(
+        self, command: str, passphrase: str, marker: bytes
+    ) -> bytes:
+        print(f"XAIOS> {command}", flush=True)
+        self.send(command + "\n")
+        result = self.expect(PASSPHRASE_PROMPT, "outbound key passphrase prompt")
+        self.send(passphrase + "\n")
+        result += self.expect(marker, repr(marker))
+        result += self.expect(PROMPT, "XAIOS shell prompt")
+        return result
+
     def close(self) -> None:
         if self.process.poll() is None:
             self.send("exit\n")
@@ -108,6 +120,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-port", required=True, type=int)
     parser.add_argument("--target-user", default="xaios")
     parser.add_argument("--password-file", required=True, type=Path)
+    parser.add_argument("--identity-passphrase-file", type=Path)
     parser.add_argument("--timeout", default=45.0, type=float)
     return parser.parse_args()
 
@@ -117,6 +130,11 @@ def main() -> int:
     password = args.password_file.read_text(encoding="ascii").strip()
     if not password or "\n" in password or "\r" in password:
         raise RuntimeError("password fixture must contain one nonempty line")
+    identity_passphrase = ""
+    if args.identity_passphrase_file is not None:
+        identity_passphrase = args.identity_passphrase_file.read_text(
+            encoding="ascii"
+        ).strip()
     endpoint = f"{args.target_user}@{args.target_host}"
     ssh = [
         "ssh",
@@ -149,7 +167,6 @@ def main() -> int:
         session.command(
             "echo xaios-freebsd-upload > /tmp/freebsd-upload/nested/data.txt"
         )
-
         remote_exec = (
             f"ssh -p {args.target_port} {endpoint} "
             "printf freebsd-outbound-ssh-ok"
@@ -167,6 +184,21 @@ def main() -> int:
         )
         if b"permanently added host key" in second:
             raise RuntimeError("known FreeBSD host key was added more than once")
+
+        session.password_command(
+            f"ssh -p {args.target_port} xaios@[fec0::2] "
+            "printf freebsd-ipv6-ok",
+            password,
+            b"freebsd-ipv6-ok",
+        )
+
+        if args.identity_passphrase_file is not None:
+            session.passphrase_command(
+                f"ssh -i /etc/xaios_ssh_client_identity -p {args.target_port} "
+                f"{endpoint} printf freebsd-publickey-ok",
+                identity_passphrase,
+                b"freebsd-publickey-ok",
+            )
 
         print(f"XAIOS> ssh -p {args.target_port} {endpoint} true [wrong password]", flush=True)
         session.send(f"ssh -p {args.target_port} {endpoint} true\n")

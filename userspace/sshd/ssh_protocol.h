@@ -48,6 +48,8 @@ int ssh_recv_version(int sockfd, uint8_t *buf, uint32_t buf_size,
 /* Binary packet protocol */
 int ssh_packet_read(int sockfd, ssh_packet_t *pkt);
 int ssh_packet_write(int sockfd, const uint8_t *data, uint32_t len);
+int ssh_packet_decode_plain(const uint8_t *wire, uint32_t wire_len,
+                            ssh_packet_t *pkt);
 
 /* Encrypted packet I/O (used after NEWKEYS) */
 int ssh_packet_write_encrypted(int sockfd, const uint8_t *data, uint32_t len);

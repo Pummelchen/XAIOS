@@ -1086,6 +1086,9 @@ void x86_64_ap_entry(uint32_t ordinal) {
   __atomic_store_n(&g_cpu_records[ordinal].worker_ready, 1U,
                    __ATOMIC_RELEASE);
   for (;;) {
+    /* Ring-3 exit returns with IF clear. Re-enable worker wake IPIs before
+     * checking the queue so every subsequent detached job can run. */
+    __asm__ volatile("sti" ::: "memory");
     if (xaios_thread_run_pending(ordinal) == 0U) {
       __asm__ volatile("hlt");
     }

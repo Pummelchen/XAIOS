@@ -872,7 +872,7 @@ fi
 printf '%s\n' "Building userspace /bin/sshd ELF..."
 SSHD_RESPONSE_FILE="$INIT_BUILD_DIR/sshd-objects.rsp"
 : > "$SSHD_RESPONSE_FILE"
-for sshd_src in sshd.c ssh_crypto.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
+for sshd_src in sshd.c ssh_crypto.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
   sshd_obj="$INIT_BUILD_DIR/sshd-${sshd_src%.c}.o"
   sshd_opt=""
   if [ "$sshd_src" = "sshd.c" ]; then
@@ -892,13 +892,27 @@ for sshd_src in sshd.c ssh_crypto.c tweetnacl_subset.c ssh_protocol.c ssh_channe
     -Wextra \
     -Werror \
     $PASSWORD_AUTH_CFLAG \
+    -DMLK_CONFIG_FILE='"mlkem_xaios_config.h"' \
     -I"$ROOT_DIR/userspace/include" \
     -I"$ROOT_DIR/userspace/sshd" \
+    -I"$ROOT_DIR/third_party/mlkem-native/mlkem" \
     -I"$ROOT_DIR/userspace/apps/terminal" \
     -c "$ROOT_DIR/userspace/sshd/$sshd_src" \
     -o "$sshd_obj"
   printf '"%s"\n' "$sshd_obj" >> "$SSHD_RESPONSE_FILE"
 done
+SSHD_MLKEM_OBJ="$INIT_BUILD_DIR/sshd-mlkem-native.o"
+"$CLANG" \
+  --target="$TARGET_TRIPLE" \
+  $USER_ARCH_CFLAGS \
+  -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+  -Wall -Wextra -Werror \
+  -DMLK_CONFIG_FILE='"mlkem_xaios_config.h"' \
+  -I"$ROOT_DIR/userspace/sshd" \
+  -I"$ROOT_DIR/third_party/mlkem-native/mlkem" \
+  -c "$ROOT_DIR/third_party/mlkem-native/mlkem/mlkem_native.c" \
+  -o "$SSHD_MLKEM_OBJ"
+printf '"%s"\n' "$SSHD_MLKEM_OBJ" >> "$SSHD_RESPONSE_FILE"
 for app_src in nano_editor.c pong_game.c; do
   app_obj="$INIT_BUILD_DIR/sshd-${app_src%.c}.o"
   app_opt=""
@@ -937,7 +951,7 @@ set -- "$@" "/bin/sshd=$INIT_BUILD_DIR/sshd.elf"
 printf '%s\n' "Building userspace /bin/ssh child client ELF..."
 SSH_CLIENT_RESPONSE_FILE="$INIT_BUILD_DIR/ssh-client-objects.rsp"
 : > "$SSH_CLIENT_RESPONSE_FILE"
-for ssh_client_src in ssh.c ssh_client.c ssh_crypto.c tweetnacl_subset.c ssh_protocol.c ssh_connection.c; do
+for ssh_client_src in ssh.c ssh_client.c ssh_crypto.c ssh_identity.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_connection.c; do
   ssh_client_obj="$INIT_BUILD_DIR/ssh-client-${ssh_client_src%.c}.o"
   ssh_client_path="$ROOT_DIR/userspace/apps/$ssh_client_src"
   if [ "$ssh_client_src" != "ssh.c" ]; then
@@ -956,12 +970,30 @@ for ssh_client_src in ssh.c ssh_client.c ssh_crypto.c tweetnacl_subset.c ssh_pro
     -Wextra \
     -Werror \
     -DXAIOS_SSH_CLIENT_APP=1 \
+    -DMLK_CONFIG_FILE='"mlkem_xaios_config.h"' \
     -I"$ROOT_DIR/userspace/include" \
     -I"$ROOT_DIR/userspace/sshd" \
+    -I"$ROOT_DIR/third_party/mlkem-native/mlkem" \
+    -I"$ROOT_DIR/third_party/openbsd-compat" \
     -I"$ROOT_DIR/userspace/apps/terminal" \
     -c "$ssh_client_path" \
     -o "$ssh_client_obj"
   printf '"%s"\n' "$ssh_client_obj" >> "$SSH_CLIENT_RESPONSE_FILE"
+done
+printf '"%s"\n' "$SSHD_MLKEM_OBJ" >> "$SSH_CLIENT_RESPONSE_FILE"
+for compat_src in blowfish.c bcrypt_pbkdf.c; do
+  compat_obj="$INIT_BUILD_DIR/ssh-client-${compat_src%.c}.o"
+  "$CLANG" \
+    --target="$TARGET_TRIPLE" \
+    $USER_ARCH_CFLAGS \
+    -std=c99 -ffreestanding -fno-stack-protector -fno-builtin \
+    -fno-pic -fno-pie -Wall -Wextra -Werror \
+    -I"$ROOT_DIR/userspace/include" \
+    -I"$ROOT_DIR/userspace/sshd" \
+    -I"$ROOT_DIR/third_party/openbsd-compat" \
+    -c "$ROOT_DIR/third_party/openbsd-compat/$compat_src" \
+    -o "$compat_obj"
+  printf '"%s"\n' "$compat_obj" >> "$SSH_CLIENT_RESPONSE_FILE"
 done
 "$LD_LLD" \
   -nostdlib \
@@ -993,6 +1025,13 @@ if [ "${XAIOS_SSH_USERS_FILE:-}" != "" ]; then
     exit 1
   fi
   set -- "$@" "/etc/xaios_sshd_users=$XAIOS_SSH_USERS_FILE"
+fi
+if [ "${XAIOS_SSH_CLIENT_IDENTITY_FILE:-}" != "" ]; then
+  if [ ! -f "$XAIOS_SSH_CLIENT_IDENTITY_FILE" ]; then
+    printf '%s\n' "error: SSH client identity not found: $XAIOS_SSH_CLIENT_IDENTITY_FILE" >&2
+    exit 1
+  fi
+  set -- "$@" "/etc/xaios_ssh_client_identity=$XAIOS_SSH_CLIENT_IDENTITY_FILE"
 fi
 
 rm -f "$IMAGE_PATH"

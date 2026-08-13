@@ -137,6 +137,33 @@ static void append_ipv4(char *output, uint64_t capacity, uint64_t *used,
   append_u64(output, capacity, used, ip & 0xffU);
 }
 
+static void append_hex16(char *output, uint64_t capacity, uint64_t *used,
+                         uint16_t value) {
+  static const char digits[] = "0123456789abcdef";
+  char text[5];
+  uint32_t position = 0U;
+  uint32_t started = 0U;
+  for (int32_t shift = 12; shift >= 0; shift -= 4) {
+    uint8_t digit = (uint8_t)((value >> (uint32_t)shift) & 0x0fU);
+    if (digit != 0U || started != 0U || shift == 0) {
+      text[position++] = digits[digit];
+      started = 1U;
+    }
+  }
+  text[position] = '\0';
+  append(output, capacity, used, text);
+}
+
+static void append_ipv6(char *output, uint64_t capacity, uint64_t *used,
+                        const xaios_ip_addr_t *address) {
+  for (uint32_t group = 0U; group < 8U; ++group) {
+    if (group != 0U) append(output, capacity, used, ":");
+    append_hex16(output, capacity, used,
+                 (uint16_t)(((uint16_t)address->addr[group * 2U] << 8U) |
+                            address->addr[group * 2U + 1U]));
+  }
+}
+
 static xaios_status_t parse_u64(const char *text, uint64_t *value) {
   uint64_t result = 0U;
   if (text == 0 || *text == '\0' || value == 0) return XAIOS_ERR_INVALID;
@@ -535,11 +562,26 @@ xaios_status_t operations_execute(const char *command, char *output,
       append(output, capacity, &used, "ping: request sent; use ping status\n");
     }
   } else if (str_equal(name, "nslookup")) {
-    uint32_t ip = 0U;
-    status = dns_resolve(arg1, &ip);
-    append(output, capacity, &used, arg1);
+    uint8_t family = XAIOS_IP_FAMILY_V4;
+    const char *hostname = arg1;
+    if (str_equal(arg1, "-6")) {
+      family = XAIOS_IP_FAMILY_V6;
+      hostname = arg2;
+    } else if (arg2[0] != '\0') {
+      status = XAIOS_ERR_INVALID;
+    }
+    if (has_extra != 0U || hostname[0] == '\0') status = XAIOS_ERR_INVALID;
+    xaios_ip_addr_t address;
+    xaios_ip_addr_zero(&address);
+    if (status == XAIOS_OK)
+      status = dns_resolve_address(hostname, family, &address);
+    append(output, capacity, &used, hostname);
     append(output, capacity, &used, ": ");
-    if (status == XAIOS_OK) append_ipv4(output, capacity, &used, ip);
+    if (status == XAIOS_OK && family == XAIOS_IP_FAMILY_V4)
+      append_ipv4(output, capacity, &used,
+                  xaios_ip_addr_to_ipv4(&address));
+    else if (status == XAIOS_OK)
+      append_ipv6(output, capacity, &used, &address);
     else if (status == XAIOS_ERR_BUSY) append(output, capacity, &used, "pending");
     else append_status(output, capacity, &used, status);
     append(output, capacity, &used, "\n");

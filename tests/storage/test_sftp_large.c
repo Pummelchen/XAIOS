@@ -200,6 +200,14 @@ static uint32_t open_file(const char *path) {
   return get_u32(g_response + 13U);
 }
 
+#ifdef XAIOS_LIBFUZZER
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+  if (size == 0U || size > UINT32_MAX) return 0;
+  g_response_size = 0U;
+  (void)sftp_handle_message(91, 77U, data, (uint32_t)size);
+  return 0;
+}
+#else
 int main(void) {
   static uint8_t packet[40000];
   uint32_t position = 0U;
@@ -388,3 +396,4 @@ int main(void) {
   puts("sftp: 64-bit I/O and deterministic malformed corpus passed");
   return 0;
 }
+#endif

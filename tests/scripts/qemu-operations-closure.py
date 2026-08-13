@@ -226,6 +226,13 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
         second_dns = ssh_command(key, port, "nslookup example.com")
         if "pending" in first_dns and "pending" in second_dns:
             raise RuntimeError("DNS remained pending after the network poll interval")
+        first_aaaa = ssh_command(key, port, "nslookup -6 example.com")
+        time.sleep(1.0)
+        second_aaaa = ssh_command(key, port, "nslookup -6 example.com")
+        if "pending" in first_aaaa and "pending" in second_aaaa:
+            raise RuntimeError("DNS AAAA remained pending after the network poll interval")
+        if "pending" in second_aaaa or "error(" in second_aaaa or ":" not in second_aaaa:
+            raise RuntimeError("DNS AAAA response did not contain an IPv6 address")
         ssh_command(key, port, "config export /tmp/closure-config.bin")
         assert_contains(ssh_command(key, port,
                                     "config import /tmp/closure-config.bin"),

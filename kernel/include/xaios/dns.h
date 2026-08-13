@@ -3,6 +3,7 @@
 
 #include <xaios/status.h>
 #include <xaios/types.h>
+#include <xaios/ip_addr.h>
 
 #define XAIOS_DNS_PORT 53U
 #define XAIOS_DNS_MAX_NAME 256U
@@ -26,19 +27,35 @@ void dns_init(void);
  * out_ip is in host byte order. */
 xaios_status_t dns_resolve(const char *hostname, uint32_t *out_ip);
 
+/* Resolve one address family without adding a new syscall. The configured
+ * recursive resolver is a trust boundary: only replies carrying its AD bit
+ * are admitted to the cache. */
+xaios_status_t dns_resolve_address(const char *hostname, uint8_t family,
+                                   xaios_ip_addr_t *out_address);
+
 /* DNS background tick: send pending queries, process responses.
  * Call from network_poll_tick(). */
 void dns_tick(uint64_t now_ns);
+
+/* Advance DNS-over-TCP outside the network poll lock. */
+void dns_transport_tick(uint64_t now_ns);
 
 /* Consume an IPv4/UDP DNS response already received by the network poller. */
 xaios_status_t dns_process_ipv4_frame(const uint8_t *frame,
                                       uint32_t frame_len,
                                       uint64_t now_ns);
 
+/* Parse one DNS wire message. Exposed for deterministic malformed-response
+ * and TCP-fallback tests. */
+xaios_status_t dns_process_message(const uint8_t *message, uint32_t length,
+                                   uint64_t now_ns, uint32_t from_tcp);
+
 uint64_t dns_query_count(void);
 uint64_t dns_response_count(void);
 uint64_t dns_reject_count(void);
 uint64_t dns_timeout_count(void);
+uint64_t dns_tcp_fallback_count(void);
+uint64_t dns_authenticated_count(void);
 uint32_t dns_pending_count(void);
 
 /* Encode a DNS name (e.g., "www.google.com" -> 3www6google3com0) */

@@ -157,6 +157,7 @@ static int sensitive(const char *path) {
   return equal(path, "/state/xaios_host_key") ||
          equal(path, "/etc/xaios_sshd_users") ||
          equal(path, "/etc/xaios_authorized_keys") ||
+         equal(path, "/etc/xaios_ssh_client_identity") ||
          starts(path, "/state/control/") || equal(path, "/state/control");
 }
 

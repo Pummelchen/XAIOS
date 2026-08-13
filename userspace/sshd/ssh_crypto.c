@@ -362,6 +362,13 @@ static const uint8_t aes_rcon[11] = {
   0x00,0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36
 };
 
+static uint32_t aes_sub_word(uint32_t value) {
+  return ((uint32_t)aes_sbox[(value >> 24U) & 0xffU] << 24U) |
+         ((uint32_t)aes_sbox[(value >> 16U) & 0xffU] << 16U) |
+         ((uint32_t)aes_sbox[(value >> 8U) & 0xffU] << 8U) |
+         (uint32_t)aes_sbox[value & 0xffU];
+}
+
 void aes128_init(aes128_ctx_t *ctx, const uint8_t key[16]) {
   for (uint32_t i = 0; i < 4; ++i) {
     ctx->round_keys[i] = be32(key + i * 4);
@@ -383,42 +390,52 @@ static uint8_t xtime(uint8_t x) {
   return (uint8_t)((x << 1) ^ (((x >> 7) & 1) * 0x1b));
 }
 
-void aes128_encrypt_block(const aes128_ctx_t *ctx, const uint8_t in[16],
-                          uint8_t out[16]) {
+static void aes_encrypt_block(const uint32_t *round_keys, uint32_t rounds,
+                              const uint8_t in[16], uint8_t out[16]) {
   uint8_t s[16];
-  ssh_mem_copy(s, in, 16);
-  /* AddRoundKey 0 */
-  for (uint32_t i = 0; i < 4; ++i) {
-    uint32_t k = ctx->round_keys[i];
-    s[i*4] ^= (uint8_t)(k >> 24); s[i*4+1] ^= (uint8_t)(k >> 16);
-    s[i*4+2] ^= (uint8_t)(k >> 8); s[i*4+3] ^= (uint8_t)k;
+  ssh_mem_copy(s, in, 16U);
+  for (uint32_t i = 0U; i < 4U; ++i) {
+    uint32_t key = round_keys[i];
+    s[i * 4U] ^= (uint8_t)(key >> 24U);
+    s[i * 4U + 1U] ^= (uint8_t)(key >> 16U);
+    s[i * 4U + 2U] ^= (uint8_t)(key >> 8U);
+    s[i * 4U + 3U] ^= (uint8_t)key;
   }
-  for (uint32_t round = 1; round <= 10; ++round) {
-    /* SubBytes */
-    for (uint32_t i = 0; i < 16; ++i) s[i] = aes_sbox[s[i]];
-    /* ShiftRows */
-    uint8_t t;
-    t = s[1]; s[1] = s[5]; s[5] = s[9]; s[9] = s[13]; s[13] = t;
-    t = s[2]; s[2] = s[10]; s[10] = t; t = s[6]; s[6] = s[14]; s[14] = t;
-    t = s[15]; s[15] = s[11]; s[11] = s[7]; s[7] = s[3]; s[3] = t;
-    /* MixColumns (skip on last round) */
-    if (round < 10) {
-      for (uint32_t c = 0; c < 4; ++c) {
-        uint8_t a0 = s[c*4], a1 = s[c*4+1], a2 = s[c*4+2], a3 = s[c*4+3];
-        s[c*4] = xtime(a0) ^ xtime(a1) ^ a1 ^ a2 ^ a3;
-        s[c*4+1] = a0 ^ xtime(a1) ^ xtime(a2) ^ a2 ^ a3;
-        s[c*4+2] = a0 ^ a1 ^ xtime(a2) ^ xtime(a3) ^ a3;
-        s[c*4+3] = xtime(a0) ^ a0 ^ a1 ^ a2 ^ xtime(a3);
+  for (uint32_t round = 1U; round <= rounds; ++round) {
+    for (uint32_t i = 0U; i < 16U; ++i) s[i] = aes_sbox[s[i]];
+    uint8_t temporary;
+    temporary = s[1]; s[1] = s[5]; s[5] = s[9];
+    s[9] = s[13]; s[13] = temporary;
+    temporary = s[2]; s[2] = s[10]; s[10] = temporary;
+    temporary = s[6]; s[6] = s[14]; s[14] = temporary;
+    temporary = s[15]; s[15] = s[11]; s[11] = s[7];
+    s[7] = s[3]; s[3] = temporary;
+    if (round < rounds) {
+      for (uint32_t column = 0U; column < 4U; ++column) {
+        uint32_t offset = column * 4U;
+        uint8_t a0 = s[offset], a1 = s[offset + 1U];
+        uint8_t a2 = s[offset + 2U], a3 = s[offset + 3U];
+        s[offset] = xtime(a0) ^ xtime(a1) ^ a1 ^ a2 ^ a3;
+        s[offset + 1U] = a0 ^ xtime(a1) ^ xtime(a2) ^ a2 ^ a3;
+        s[offset + 2U] = a0 ^ a1 ^ xtime(a2) ^ xtime(a3) ^ a3;
+        s[offset + 3U] = xtime(a0) ^ a0 ^ a1 ^ a2 ^ xtime(a3);
       }
     }
-    /* AddRoundKey */
-    for (uint32_t i = 0; i < 4; ++i) {
-      uint32_t k = ctx->round_keys[round * 4 + i];
-      s[i*4] ^= (uint8_t)(k >> 24); s[i*4+1] ^= (uint8_t)(k >> 16);
-      s[i*4+2] ^= (uint8_t)(k >> 8); s[i*4+3] ^= (uint8_t)k;
+    for (uint32_t i = 0U; i < 4U; ++i) {
+      uint32_t key = round_keys[round * 4U + i];
+      s[i * 4U] ^= (uint8_t)(key >> 24U);
+      s[i * 4U + 1U] ^= (uint8_t)(key >> 16U);
+      s[i * 4U + 2U] ^= (uint8_t)(key >> 8U);
+      s[i * 4U + 3U] ^= (uint8_t)key;
     }
   }
-  ssh_mem_copy(out, s, 16);
+  ssh_mem_copy(out, s, 16U);
+  ssh_mem_zero(s, sizeof(s));
+}
+
+void aes128_encrypt_block(const aes128_ctx_t *ctx, const uint8_t in[16],
+                          uint8_t out[16]) {
+  aes_encrypt_block(ctx->round_keys, 10U, in, out);
 }
 
 void aes128_ctr(const aes128_ctx_t *ctx, const uint8_t iv[16],
@@ -438,6 +455,44 @@ void aes128_ctr(const aes128_ctx_t *ctx, const uint8_t iv[16],
       if (++counter[i] != 0) break;
     }
   }
+}
+
+void aes256_init(aes256_ctx_t *ctx, const uint8_t key[32]) {
+  for (uint32_t i = 0U; i < 8U; ++i)
+    ctx->round_keys[i] = be32(key + i * 4U);
+  for (uint32_t i = 8U; i < 60U; ++i) {
+    uint32_t temporary = ctx->round_keys[i - 1U];
+    if (i % 8U == 0U) {
+      temporary = (temporary << 8U) | (temporary >> 24U);
+      temporary = aes_sub_word(temporary) ^
+                  ((uint32_t)aes_rcon[i / 8U] << 24U);
+    } else if (i % 8U == 4U) {
+      temporary = aes_sub_word(temporary);
+    }
+    ctx->round_keys[i] = ctx->round_keys[i - 8U] ^ temporary;
+  }
+}
+
+void aes256_encrypt_block(const aes256_ctx_t *ctx, const uint8_t in[16],
+                          uint8_t out[16]) {
+  aes_encrypt_block(ctx->round_keys, 14U, in, out);
+}
+
+void aes256_ctr(const aes256_ctx_t *ctx, const uint8_t iv[16],
+                const uint8_t *input, uint8_t *output, uint64_t length) {
+  uint8_t counter[16], keystream[16];
+  ssh_mem_copy(counter, iv, sizeof(counter));
+  uint64_t position = 0U;
+  while (position < length) {
+    aes256_encrypt_block(ctx, counter, keystream);
+    uint64_t block_length = length - position < 16U ? length - position : 16U;
+    for (uint64_t i = 0U; i < block_length; ++i)
+      output[position + i] = input[position + i] ^ keystream[i];
+    position += block_length;
+    for (int i = 15; i >= 0; --i) if (++counter[i] != 0U) break;
+  }
+  ssh_mem_zero(counter, sizeof(counter));
+  ssh_mem_zero(keystream, sizeof(keystream));
 }
 
 /* ---- Curve25519 ---- */

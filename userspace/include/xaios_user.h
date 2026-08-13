@@ -82,6 +82,7 @@ void *xaios_memcpy(void *dst, const void *src, u64 size);
 #define XAIOS_CAP_MODEL_STAGE 268435456ULL
 #define XAIOS_CAP_MODEL_ACTIVATE 536870912ULL
 #define XAIOS_CAP_CONSOLE 1073741824ULL
+#define XAIOS_CAP_CREDENTIAL_READ 2147483648ULL
 
 #define XAIOS_NET_PROTOCOL_UDP 17ULL
 #define XAIOS_NET_PROTOCOL_TCP 6ULL
@@ -251,7 +252,8 @@ typedef struct xaios_socket_request {
 typedef struct xaios_net_resolve_request {
   u64 hostname;
   u64 hostname_size;
-  u64 out_ipv4;
+  u64 out_address;
+  u64 family;
 } xaios_net_resolve_request_t;
 
 typedef struct xaios_agent_request {
@@ -368,6 +370,8 @@ int xaios_net_sendto(u64 sockfd, const void *buffer, u64 buffer_size,
                      u64 *out_bytes, const xaios_ip_addr_user_t *dst_addr);
 int xaios_net_close(u64 sockfd);
 int xaios_net_resolve(const char *hostname, u32 *out_ipv4);
+int xaios_net_resolve_address(const char *hostname, u32 family,
+                              xaios_ip_addr_user_t *out_address);
 int xaios_write_file(const char *path, const char *content);
 int xaios_read_file(const char *path, char *buffer, u64 buffer_size);
 void xaios_memzero(void *buffer, u64 size);

@@ -90,6 +90,7 @@
 #define XAIOS_CAP_MODEL_STAGE UINT64_C(268435456)
 #define XAIOS_CAP_MODEL_ACTIVATE UINT64_C(536870912)
 #define XAIOS_CAP_CONSOLE UINT64_C(1073741824)
+#define XAIOS_CAP_CREDENTIAL_READ UINT64_C(2147483648)
 
 #define XAIOS_REMOTE_LOGIN_SESSION_EXECUTE UINT64_C(1)
 #define XAIOS_REMOTE_LOGIN_SESSION_CLOSE UINT64_C(2)
@@ -223,7 +224,8 @@ typedef struct xaios_syscall_socket_request {
 typedef struct xaios_syscall_net_resolve_request {
   uint64_t hostname;
   uint64_t hostname_size;
-  uint64_t out_ipv4;
+  uint64_t out_address;
+  uint64_t family;
 } xaios_syscall_net_resolve_request_t;
 
 typedef struct xaios_syscall_agent_dispatch_request {

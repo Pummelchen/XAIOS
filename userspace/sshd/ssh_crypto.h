@@ -54,6 +54,16 @@ void aes128_encrypt_block(const aes128_ctx_t *ctx, const uint8_t in[16],
 void aes128_ctr(const aes128_ctx_t *ctx, const uint8_t iv[16],
                 const uint8_t *input, uint8_t *output, uint64_t len);
 
+typedef struct aes256_ctx {
+  uint32_t round_keys[60];
+} aes256_ctx_t;
+
+void aes256_init(aes256_ctx_t *ctx, const uint8_t key[32]);
+void aes256_encrypt_block(const aes256_ctx_t *ctx, const uint8_t in[16],
+                          uint8_t out[16]);
+void aes256_ctr(const aes256_ctx_t *ctx, const uint8_t iv[16],
+                const uint8_t *input, uint8_t *output, uint64_t len);
+
 /* Curve25519 (RFC 7748) */
 #define CURVE25519_SCALAR_SIZE 32U
 #define CURVE25519_POINT_SIZE 32U

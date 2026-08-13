@@ -88,10 +88,11 @@ static int validate_path(const char *path) {
   static const char host_key[] = "/state/xaios_host_key";
   static const char password_users[] = "/etc/xaios_sshd_users";
   static const char authorized_keys[] = "/etc/xaios_authorized_keys";
+  static const char client_identity[] = "/etc/xaios_ssh_client_identity";
   if (path == 0 || path[0] != '/') return -1;
 
   if (ssh_str_eq(path, host_key) || ssh_str_eq(path, password_users) ||
-      ssh_str_eq(path, authorized_keys)) {
+      ssh_str_eq(path, authorized_keys) || ssh_str_eq(path, client_identity)) {
     return -1;
   }
   uint32_t control_length = sizeof(control_prefix) - 1U;

@@ -100,6 +100,20 @@ static void provision_read_only_config(const char *path) {
   klog("kernel: provisioned config path=%s bytes=%lu\n", path, file->size);
 }
 
+static void provision_ephemeral_credential(const char *path) {
+  const xaios_initramfs_file_t *file = 0;
+  xaios_status_t status = initramfs_lookup(path, &file);
+  if (status == XAIOS_ERR_NOT_FOUND) return;
+  if (status != XAIOS_OK || file == 0 || file->base == 0 || file->size == 0U ||
+      file->size > XAIOS_MFS_MAX_FILE_BYTES_V3 ||
+      mutable_fs_write(path, file->base, file->size) != XAIOS_OK) {
+    klog("kernel: failed to provision credential path=%s\n", path);
+    return;
+  }
+  klog("kernel: provisioned ephemeral credential path=%s bytes=%lu\n", path,
+       file->size);
+}
+
 static void early_spinlock_self_test(void) {
   xaios_spinlock_t lock = XAIOS_SPINLOCK_INIT;
   kassert(smp_online_count() <= 1U);
@@ -287,6 +301,7 @@ void kmain(const xaios_boot_info_t *boot) {
     provision_read_only_config("/etc/xaios_authorized_keys");
     provision_read_only_config("/etc/xaios_sshd_users");
     provision_read_only_config("/etc/xapt.conf");
+    provision_ephemeral_credential("/etc/xaios_ssh_client_identity");
     admin_control_init();
     admin_control_self_test();
     /* Initialize persistent log ring buffer */

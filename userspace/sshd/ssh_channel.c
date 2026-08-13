@@ -41,8 +41,55 @@ enum {
 static ssh_channel_t g_channels[SSH_CHANNEL_MAX];
 static uint32_t g_next_local_id = 1;
 static char g_nano_frame[SSH_CHANNEL_PENDING_SIZE];
+static uint8_t g_forward_buffer[SSH_CHANNEL_MAX_PACKET];
 
 static int shell_send_prompt(ssh_channel_t *ch);
+static ssh_channel_t *alloc_channel(int sockfd);
+
+static ssh_channel_t *find_agent_channel(const ssh_channel_t *session) {
+  if (session == 0) return 0;
+  for (uint32_t i = 0U; i < SSH_CHANNEL_MAX; ++i) {
+    if (g_channels[i].active != 0U && g_channels[i].is_agent != 0U &&
+        g_channels[i].owner_sockfd == session->owner_sockfd &&
+        g_channels[i].agent_session_local_id == session->local_id) {
+      return &g_channels[i];
+    }
+  }
+  return 0;
+}
+
+static int open_agent_channel(ssh_channel_t *session) {
+  static const char type[] = "auth-agent@openssh.com";
+  uint8_t packet[64];
+  uint32_t position = 0U;
+  if (session == 0 || session->agent_forwarding != 0U ||
+      find_agent_channel(session) != 0) return -1;
+  ssh_channel_t *agent = alloc_channel((int)session->owner_sockfd);
+  if (agent == 0) return -1;
+  agent->is_agent = 1U;
+  agent->agent_open_pending = 1U;
+  agent->agent_session_local_id = session->local_id;
+  agent->window_size = SSH_CHANNEL_INITIAL_WINDOW;
+  packet[position++] = SSH_MSG_CHANNEL_OPEN;
+  ssh_write_u32_be(packet + position, (uint32_t)(sizeof(type) - 1U));
+  position += 4U;
+  ssh_mem_copy(packet + position, type, (uint32_t)(sizeof(type) - 1U));
+  position += (uint32_t)(sizeof(type) - 1U);
+  ssh_write_u32_be(packet + position, agent->local_id);
+  position += 4U;
+  ssh_write_u32_be(packet + position, SSH_CHANNEL_INITIAL_WINDOW);
+  position += 4U;
+  ssh_write_u32_be(packet + position, SSH_CHANNEL_MAX_PACKET);
+  position += 4U;
+  if (ssh_packet_write_encrypted((int)session->owner_sockfd, packet,
+                                 position) != 0) {
+    ssh_mem_zero(agent, sizeof(*agent));
+    return -1;
+  }
+  session->agent_forwarding = 1U;
+  session->agent_open_pending = 1U;
+  return 0;
+}
 
 static int shell_send_output(ssh_channel_t *ch, const uint8_t *data,
                              uint32_t length) {
@@ -150,6 +197,46 @@ static int packet_has_zero(const uint8_t *value, uint32_t value_len) {
     if (value[i] == 0U) return 1;
   }
   return 0;
+}
+
+static int parse_forward_ipv4(const char *text,
+                              xaios_ip_addr_user_t *address) {
+  uint32_t part = 0U, value = 0U, digits = 0U;
+  xaios_memzero(address, sizeof(*address));
+  for (uint32_t i = 0U;; ++i) {
+    char character = text[i];
+    if (character >= '0' && character <= '9') {
+      value = value * 10U + (uint32_t)(character - '0');
+      if (value > 255U || ++digits > 3U) return -1;
+    } else if (character == '.' || character == '\0') {
+      if (digits == 0U || part >= 4U) return -1;
+      address->addr[part++] = (uint8_t)value;
+      value = 0U;
+      digits = 0U;
+      if (character == '\0') break;
+    } else {
+      return -1;
+    }
+  }
+  if (part != 4U) return -1;
+  address->family = 4U;
+  return 0;
+}
+
+static int connect_forward_target(const uint8_t *host, uint32_t host_length,
+                                  uint32_t port, u64 *socket) {
+  char name[128];
+  xaios_ip_addr_user_t address;
+  if (host_length == 0U || host_length >= sizeof(name) || port == 0U ||
+      port > 65535U || packet_has_zero(host, host_length)) return -1;
+  ssh_mem_copy(name, host, host_length);
+  name[host_length] = '\0';
+  if (parse_forward_ipv4(name, &address) != 0) {
+    int status = xaios_net_resolve_address(name, 4U, &address);
+    if (status != 0) status = xaios_net_resolve_address(name, 6U, &address);
+    if (status != 0) return -1;
+  }
+  return xaios_net_connect(&address, port, socket);
 }
 
 static uint32_t clamp_terminal_dimension(uint32_t value, uint32_t fallback,
@@ -533,6 +620,8 @@ void ssh_channel_close_connection(int sockfd) {
         g_channels[i].owner_sockfd == (uint64_t)(uint32_t)sockfd) {
       sftp_close_channel(sockfd, g_channels[i].remote_id);
       ssh_client_close(&g_channels[i]);
+      if (g_channels[i].forward_fd != 0U)
+        (void)xaios_net_close(g_channels[i].forward_fd);
       if (g_channels[i].less.active != 0U)
         less_pager_close(&g_channels[i].less);
       ssh_mem_zero(&g_channels[i], sizeof(g_channels[i]));
@@ -647,6 +736,15 @@ int ssh_channel_send_data(int sockfd, uint32_t remote_id,
   ssh_mem_copy(ch->pending + ch->pending_used, data, len);
   ch->pending_used += len;
   return flush_channel(ch);
+}
+
+int ssh_channel_agent_send(const ssh_channel_t *session, const uint8_t *data,
+                           uint32_t len) {
+  ssh_channel_t *agent = find_agent_channel(session);
+  if (agent == 0 || agent->agent_open_pending != 0U ||
+      agent->remote_max_packet == 0U) return -1;
+  return ssh_channel_send_data((int)agent->owner_sockfd, agent->remote_id,
+                               data, len);
 }
 
 static int htop_frame_ready(ssh_channel_t *ch, uint64_t now_ns) {
@@ -1419,11 +1517,28 @@ static int shell_handle_input(ssh_channel_t *ch, const uint8_t *data,
 int ssh_channel_tick(uint64_t now_ns) {
   for (uint32_t i = 0U; i < SSH_CHANNEL_MAX; ++i) {
     ssh_channel_t *ch = &g_channels[i];
+    if (ch->active != 0U && ch->is_forward != 0U &&
+        ch->pending_used == 0U && ch->remote_window != 0U) {
+      u64 received = 0U;
+      uint32_t capacity = sizeof(g_forward_buffer);
+      if (capacity > ch->remote_window) capacity = ch->remote_window;
+      if (capacity > ch->remote_max_packet) capacity = ch->remote_max_packet;
+      if (xaios_net_recv(ch->forward_fd, g_forward_buffer, capacity,
+                         &received) != 0 || received > capacity) return -1;
+      if (received != 0U &&
+          ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                                g_forward_buffer, (uint32_t)received) != 0)
+        return -1;
+    }
     if (ch->active != 0U && ssh_client_is_active(ch)) {
       int client_result = ssh_client_tick(ch, now_ns);
       if (client_result < 0) return -1;
       if (client_result > 0 && ch->shell_active != 0U &&
           shell_send_prompt(ch) != 0) return -1;
+      if (client_result > 0 && ch->shell_active == 0U) {
+        ch->close_after_flush = 1U;
+        if (flush_channel(ch) != 0) return -1;
+      }
     }
     if (ch->active != 0U && ch->pong.active != 0U &&
         ch->pending_used == 0U && pong_game_tick(&ch->pong, now_ns) != 0 &&
@@ -1510,6 +1625,16 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
       if (send_channel_reply(sockfd, ch->remote_id, 1) != 0) return -1;
     }
     return 0;
+  }
+
+  if (ssh_str_eq(request_type, "auth-agent-req@openssh.com")) {
+    ssh_connection_t *connection = ssh_conn_find((u64)(uint32_t)sockfd);
+    int valid = data_start == pkt->len && connection != 0 &&
+                connection->principal_role == XAIOS_CONTROL_ROLE_ADMIN &&
+                open_agent_channel(ch) == 0;
+    if (want_reply && send_channel_reply(sockfd, ch->remote_id, valid) != 0)
+      return -1;
+    return valid ? 0 : -1;
   }
 
   if (ssh_str_eq(request_type, "shell")) {
@@ -1615,6 +1740,11 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
       return 0;
     }
 
+    {
+      int client_result = ssh_client_prepare(ch, command);
+      if (client_result != 0) return client_result < 0 ? -1 : 0;
+    }
+
     /* Execute command */
     char output[8192];
     u64 out_size = 0;
@@ -1697,6 +1827,39 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
   if (pkt->len == 0) return -1;
   uint8_t msg_type = pkt->data[0];
 
+  if (msg_type == SSH_MSG_CHANNEL_OPEN_CONFIRM) {
+    if (pkt->len < 17U) return -1;
+    uint32_t local_id = ssh_read_u32_be(pkt->data + 1U);
+    ssh_channel_t *agent = find_channel_by_local(sockfd, local_id);
+    if (agent == 0 || agent->is_agent == 0U ||
+        agent->agent_open_pending == 0U) return -1;
+    agent->remote_id = ssh_read_u32_be(pkt->data + 5U);
+    agent->remote_window = ssh_read_u32_be(pkt->data + 9U);
+    agent->remote_max_packet = ssh_read_u32_be(pkt->data + 13U);
+    if (agent->remote_max_packet == 0U) return -1;
+    agent->agent_open_pending = 0U;
+    ssh_channel_t *session = find_channel_by_local(
+        sockfd, agent->agent_session_local_id);
+    if (session == 0) return -1;
+    session->agent_open_pending = 0U;
+    return ssh_client_agent_ready(session);
+  }
+
+  if (msg_type == SSH_MSG_CHANNEL_OPEN_FAILURE) {
+    if (pkt->len < 9U) return -1;
+    ssh_channel_t *agent = find_channel_by_local(
+        sockfd, ssh_read_u32_be(pkt->data + 1U));
+    if (agent == 0 || agent->is_agent == 0U) return 0;
+    ssh_channel_t *session = find_channel_by_local(
+        sockfd, agent->agent_session_local_id);
+    if (session != 0) {
+      session->agent_forwarding = 0U;
+      session->agent_open_pending = 0U;
+    }
+    ssh_mem_zero(agent, sizeof(*agent));
+    return 0;
+  }
+
   if (msg_type == SSH_MSG_CHANNEL_OPEN) {
     if (pkt->len < 17) return -1;
     uint32_t type_len = ssh_read_string_len(pkt->data + 1);
@@ -1704,7 +1867,11 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
     uint32_t off = 5U + type_len;
     if (off + 12U > pkt->len) return -1;
     uint32_t remote_id = ssh_read_u32_be(pkt->data + off);
-    if (!packet_string_equal(pkt->data + 5U, type_len, "session")) {
+    uint32_t is_session =
+        packet_string_equal(pkt->data + 5U, type_len, "session");
+    uint32_t is_forward =
+        packet_string_equal(pkt->data + 5U, type_len, "direct-tcpip");
+    if (is_session == 0U && is_forward == 0U) {
       uint8_t failure[17];
       failure[0] = SSH_MSG_CHANNEL_OPEN_FAILURE;
       ssh_write_u32_be(failure + 1U, remote_id);
@@ -1730,6 +1897,44 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
     if (ch->remote_max_packet == 0U) {
       ch->active = 0U;
       return -1;
+    }
+    if (is_forward != 0U) {
+      ssh_connection_t *connection = ssh_conn_find((u64)(uint32_t)sockfd);
+      uint32_t cursor = off + 12U;
+      if (connection == 0 ||
+          connection->principal_role != XAIOS_CONTROL_ROLE_ADMIN ||
+          pkt->len - cursor < 4U) {
+        ch->active = 0U;
+        return -1;
+      }
+      uint32_t host_length = ssh_read_u32_be(pkt->data + cursor);
+      cursor += 4U;
+      if (host_length > pkt->len - cursor ||
+          pkt->len - cursor - host_length < 8U) {
+        ch->active = 0U;
+        return -1;
+      }
+      const uint8_t *host = pkt->data + cursor;
+      cursor += host_length;
+      uint32_t port = ssh_read_u32_be(pkt->data + cursor);
+      cursor += 4U;
+      uint32_t origin_length = ssh_read_u32_be(pkt->data + cursor);
+      cursor += 4U;
+      if (origin_length > pkt->len - cursor ||
+          pkt->len - cursor - origin_length != 4U ||
+          packet_has_zero(pkt->data + cursor, origin_length) ||
+          connect_forward_target(host, host_length, port,
+                                 &ch->forward_fd) != 0) {
+        uint8_t failure[17];
+        failure[0] = SSH_MSG_CHANNEL_OPEN_FAILURE;
+        ssh_write_u32_be(failure + 1U, remote_id);
+        ssh_write_u32_be(failure + 5U, 2U);
+        ssh_write_u32_be(failure + 9U, 0U);
+        ssh_write_u32_be(failure + 13U, 0U);
+        ssh_mem_zero(ch, sizeof(*ch));
+        return ssh_packet_write_encrypted(sockfd, failure, sizeof(failure));
+      }
+      ch->is_forward = 1U;
     }
     /* Send CHANNEL_OPEN_CONFIRMATION */
     uint8_t reply[32];
@@ -1758,6 +1963,27 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
       uint32_t added = SSH_CHANNEL_INITIAL_WINDOW - ch->window_size;
       if (send_window_adjust(sockfd, ch->remote_id, added) != 0) return -1;
       ch->window_size += added;
+    }
+
+    if (ch->is_forward != 0U) {
+      uint32_t offset = 0U;
+      while (offset < data_len) {
+        u64 sent = 0U;
+        if (xaios_net_send(ch->forward_fd, pkt->data + 9U + offset,
+                           data_len - offset, &sent) != 0 || sent == 0U ||
+            sent > data_len - offset) return -1;
+        offset += (uint32_t)sent;
+      }
+      return 0;
+    }
+
+    if (ch->is_agent != 0U) {
+      ssh_channel_t *session = find_channel_by_local(
+          sockfd, ch->agent_session_local_id);
+      if (session == 0 ||
+          ssh_client_agent_response(session, pkt->data + 9U, data_len) != 0)
+        return -1;
+      return 0;
     }
 
     if (ch->is_sftp != 0U) {
@@ -1860,6 +2086,13 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
     ssh_channel_t *ch = find_channel_by_local(
         sockfd, ssh_read_u32_be(pkt->data + 1U));
     if (ch == 0 || ch->close_sent != 0U) return 0;
+    if (ch->is_forward != 0U) {
+      if (ch->forward_fd != 0U) (void)xaios_net_close(ch->forward_fd);
+      ch->forward_fd = 0U;
+      ch->exit_status = 0U;
+      ch->close_after_flush = 1U;
+      return flush_channel(ch);
+    }
     if (ch->is_sftp != 0U) {
       ch->exit_status = 0U;
       ch->close_after_flush = 1U;
@@ -1869,9 +2102,7 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
     if (ch->nano.active != 0U) return nano_finish(ch, 0U);
     if (ch->less.active != 0U) return less_finish(ch, 0U);
     if (ch->pong.active != 0U) return pong_finish(ch, 0U);
-    if (ssh_client_is_prompting(ch) || ssh_client_is_active(ch)) {
-      ssh_client_close(ch);
-    }
+    if (ssh_client_is_prompting(ch) || ssh_client_is_active(ch)) return 0;
     if (ch->shell_active != 0U) {
       (void)xaios_remote_login_session_close(ch->owner_sockfd);
       ch->shell_active = 0U;
@@ -1887,8 +2118,29 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
       uint32_t local_id = ssh_read_u32_be(pkt->data + 1);
       ssh_channel_t *ch = find_channel_by_local(sockfd, local_id);
       if (ch) {
+        if (ch->forward_fd != 0U) (void)xaios_net_close(ch->forward_fd);
         sftp_close_channel(sockfd, ch->remote_id);
         ssh_client_close(ch);
+        if (ch->is_agent != 0U) {
+          ssh_channel_t *session = find_channel_by_local(
+              sockfd, ch->agent_session_local_id);
+          if (session != 0) {
+            session->agent_forwarding = 0U;
+            session->agent_open_pending = 0U;
+          }
+        } else {
+          ssh_channel_t *agent = find_agent_channel(ch);
+          if (agent != 0) {
+            if (agent->close_sent == 0U && agent->remote_max_packet != 0U) {
+              uint8_t close_agent[5];
+              close_agent[0] = SSH_MSG_CHANNEL_CLOSE;
+              ssh_write_u32_be(close_agent + 1U, agent->remote_id);
+              (void)ssh_packet_write_encrypted(sockfd, close_agent,
+                                               sizeof(close_agent));
+            }
+            ssh_mem_zero(agent, sizeof(*agent));
+          }
+        }
         if (ch->close_sent == 0U) {
           uint8_t close_msg[5];
           close_msg[0] = SSH_MSG_CHANNEL_CLOSE;

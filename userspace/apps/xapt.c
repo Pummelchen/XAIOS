@@ -138,20 +138,11 @@ static int parse_ipv4(const char *text, xaios_ip_addr_user_t *address) {
 }
 
 static int resolve_host(const char *host, xaios_ip_addr_user_t *address) {
-  u32 ipv4 = 0U;
   u64 deadline = xaios_clock_nanos() + 5000000000ULL;
   if (parse_ipv4(host, address) == 0) return 0;
   while (xaios_clock_nanos() < deadline) {
-    int status = xaios_net_resolve(host, &ipv4);
-    if (status == 0) {
-      xaios_memzero(address, sizeof(*address));
-      address->family = 4U;
-      address->addr[0] = (unsigned char)ipv4;
-      address->addr[1] = (unsigned char)(ipv4 >> 8U);
-      address->addr[2] = (unsigned char)(ipv4 >> 16U);
-      address->addr[3] = (unsigned char)(ipv4 >> 24U);
-      return 0;
-    }
+    int status = xaios_net_resolve_address(host, 4U, address);
+    if (status == 0) return 0;
     if (status != XAIOS_ERR_BUSY) return -1;
   }
   return -1;

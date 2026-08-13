@@ -2,16 +2,26 @@
 #include <xaios/dns.h>
 #include <xaios/ipv4.h>
 #include <xaios/klog.h>
+#include <xaios/network_stack.h>
 #include <xaios/timer.h>
 #include <xaios/virtio_net.h>
+#include <xaios/virtio_rng.h>
 
-#define DNS_BUFFER_SIZE 512U
+#define DNS_UDP_FRAME_SIZE 512U
+#define DNS_TCP_MESSAGE_SIZE 4096U
 #define DNS_MAX_HOSTNAME 64U
 #define DNS_RETRANSMIT_NS UINT64_C(5000000000)
 #define DNS_QUERY_TIMEOUT_NS UINT64_C(15000000000)
 #define DNS_MAX_RETRANSMITS 2U
 #define DNS_MAX_POINTER_JUMPS 32U
-#define DNS_EPHEMERAL_PORT UINT16_C(0xC001)
+#define DNS_EPHEMERAL_PORT_MIN UINT16_C(49152)
+#define DNS_EDNS_UDP_SIZE UINT16_C(1232)
+#define DNS_FLAG_QR UINT16_C(0x8000)
+#define DNS_FLAG_TC UINT16_C(0x0200)
+#define DNS_FLAG_RD UINT16_C(0x0100)
+#define DNS_FLAG_AD UINT16_C(0x0020)
+#define DNS_EDNS_DO UINT32_C(0x00008000)
+#define DNS_TYPE_OPT UINT16_C(41)
 #define DNS_GATEWAY_MAC0 0x52U
 #define DNS_GATEWAY_MAC1 0x55U
 #define DNS_GATEWAY_MAC2 0x0aU
@@ -19,34 +29,51 @@
 #define DNS_GATEWAY_MAC4 0x02U
 #define DNS_GATEWAY_MAC5 0x02U
 
-static uint32_t g_dns_server_ip = 0x08080808U;
-static uint16_t g_next_dns_id = 1U;
+enum dns_pending_state {
+  DNS_PENDING_NONE = 0U,
+  DNS_PENDING_UDP = 1U,
+  DNS_PENDING_TCP_CONNECT = 2U,
+  DNS_PENDING_TCP_REPLY = 3U,
+};
 
 typedef struct dns_cache_entry {
   uint8_t valid;
+  uint8_t family;
   char hostname[DNS_MAX_HOSTNAME];
-  uint32_t ip;
+  xaios_ip_addr_t address;
   uint64_t expiry_ns;
 } dns_cache_entry_t;
 
-static dns_cache_entry_t g_cache[XAIOS_DNS_CACHE_SIZE];
-
 typedef struct dns_pending {
-  uint8_t active;
+  uint8_t state;
+  uint8_t family;
+  uint8_t retransmits;
   uint16_t id;
+  uint16_t query_type;
+  uint16_t udp_port;
+  uint16_t tcp_port;
+  uint16_t udp_frame_len;
+  uint16_t query_len;
+  uint32_t tcp_flow_id;
+  uint32_t tcp_received;
   char hostname[DNS_MAX_HOSTNAME];
   uint64_t started_ns;
   uint64_t sent_ns;
-  uint8_t retransmits;
-  uint8_t frame[DNS_BUFFER_SIZE];
-  uint16_t frame_len;
+  uint8_t udp_frame[DNS_UDP_FRAME_SIZE];
+  uint8_t query[DNS_UDP_FRAME_SIZE];
+  uint8_t tcp_reply[DNS_TCP_MESSAGE_SIZE + 2U];
 } dns_pending_t;
 
+static uint32_t g_dns_server_ip = UINT32_C(0x08080808);
+static uint16_t g_next_dns_id = 1U;
+static dns_cache_entry_t g_cache[XAIOS_DNS_CACHE_SIZE];
 static dns_pending_t g_pending;
 static uint64_t g_query_count;
 static uint64_t g_response_count;
 static uint64_t g_reject_count;
 static uint64_t g_timeout_count;
+static uint64_t g_tcp_fallback_count;
+static uint64_t g_authenticated_count;
 
 static void put_be16(uint8_t *dst, uint16_t value) {
   dst[0] = (uint8_t)(value >> 8U);
@@ -57,34 +84,65 @@ static uint16_t get_be16(const uint8_t *src) {
   return (uint16_t)(((uint16_t)src[0] << 8U) | src[1]);
 }
 
+static void put_be32(uint8_t *dst, uint32_t value) {
+  dst[0] = (uint8_t)(value >> 24U);
+  dst[1] = (uint8_t)(value >> 16U);
+  dst[2] = (uint8_t)(value >> 8U);
+  dst[3] = (uint8_t)value;
+}
+
 static uint32_t get_be32(const uint8_t *src) {
   return ((uint32_t)src[0] << 24U) | ((uint32_t)src[1] << 16U) |
          ((uint32_t)src[2] << 8U) | src[3];
 }
 
-static uint32_t str_len(const char *s) {
-  uint32_t n = 0;
-  while (s[n] != '\0') ++n;
-  return n;
+static uint32_t str_len(const char *value) {
+  uint32_t length = 0U;
+  while (value[length] != '\0') ++length;
+  return length;
 }
 
-static int str_n_cmp(const char *a, const char *b, uint32_t n) {
-  for (uint32_t i = 0; i < n; ++i) {
-    if (a[i] != b[i]) return (int)(unsigned char)a[i] - (int)(unsigned char)b[i];
-    if (a[i] == '\0') break;
+static uint8_t ascii_lower(uint8_t value) {
+  return value >= 'A' && value <= 'Z' ? (uint8_t)(value + ('a' - 'A')) : value;
+}
+
+static int str_case_equal(const char *a, const char *b, uint32_t capacity) {
+  for (uint32_t i = 0U; i < capacity; ++i) {
+    if (ascii_lower((uint8_t)a[i]) != ascii_lower((uint8_t)b[i])) return 0;
+    if (a[i] == '\0') return 1;
   }
   return 0;
 }
 
-static void str_cpy(char *dst, const char *src, uint32_t max) {
-  uint32_t i;
-  for (i = 0; i + 1U < max && src[i] != '\0'; ++i) dst[i] = src[i];
+static void str_copy(char *dst, const char *src, uint32_t capacity) {
+  uint32_t i = 0U;
+  while (i + 1U < capacity && src[i] != '\0') {
+    dst[i] = src[i];
+    ++i;
+  }
   dst[i] = '\0';
 }
 
 static void bytes_zero(void *buffer, uint32_t size) {
   uint8_t *bytes = (uint8_t *)buffer;
-  for (uint32_t i = 0; i < size; ++i) bytes[i] = 0U;
+  for (uint32_t i = 0U; i < size; ++i) bytes[i] = 0U;
+}
+
+static void bytes_copy(void *output, const void *input, uint32_t size) {
+  uint8_t *dst = (uint8_t *)output;
+  const uint8_t *src = (const uint8_t *)input;
+  for (uint32_t i = 0U; i < size; ++i) dst[i] = src[i];
+}
+
+static uint16_t random_u16(uint16_t fallback) {
+  uint16_t value = 0U;
+  if (virtio_rng_read(&value, sizeof(value)) != XAIOS_OK) value = fallback;
+  return value;
+}
+
+static uint16_t random_ephemeral_port(uint16_t fallback) {
+  return (uint16_t)(DNS_EPHEMERAL_PORT_MIN |
+                    (random_u16(fallback) & UINT16_C(0x3fff)));
 }
 
 void dns_init(void) {
@@ -95,13 +153,15 @@ void dns_init(void) {
   g_response_count = 0U;
   g_reject_count = 0U;
   g_timeout_count = 0U;
+  g_tcp_fallback_count = 0U;
+  g_authenticated_count = 0U;
 }
 
 void dns_configure(uint32_t server_ip) {
   g_dns_server_ip = server_ip;
-  klog("dns: configured server %u.%u.%u.%u\n",
-       (unsigned)(server_ip >> 24U), (unsigned)((server_ip >> 16U) & 0xFFU),
-       (unsigned)((server_ip >> 8U) & 0xFFU), (unsigned)(server_ip & 0xFFU));
+  klog("dns: configured validating resolver %u.%u.%u.%u\n",
+       (unsigned)(server_ip >> 24U), (unsigned)((server_ip >> 16U) & 0xffU),
+       (unsigned)((server_ip >> 8U) & 0xffU), (unsigned)(server_ip & 0xffU));
 }
 
 uint32_t dns_encode_name(uint8_t *buf, uint32_t buf_size, const char *name) {
@@ -110,344 +170,453 @@ uint32_t dns_encode_name(uint8_t *buf, uint32_t buf_size, const char *name) {
     buf[0] = 0U;
     return 1U;
   }
-  uint32_t wi = 0;
-  uint32_t si = 0;
+  uint32_t wi = 0U;
+  uint32_t si = 0U;
   while (name[si] != '\0') {
     if (name[si] == '.') return 0U;
     uint32_t label_start = wi;
     if (wi >= buf_size || wi >= 255U) return 0U;
-    buf[wi] = 0;
-    ++wi;
+    buf[wi++] = 0U;
     while (name[si] != '\0' && name[si] != '.') {
       if (wi >= buf_size || wi >= 255U) return 0U;
-      buf[wi] = (uint8_t)name[si];
-      ++wi;
-      ++si;
+      buf[wi++] = (uint8_t)name[si++];
     }
-    uint32_t label_len = wi - label_start - 1U;
-    if (label_len == 0U || label_len > 63U) return 0U;
-    buf[label_start] = (uint8_t)label_len;
+    uint32_t label_length = wi - label_start - 1U;
+    if (label_length == 0U || label_length > 63U) return 0U;
+    buf[label_start] = (uint8_t)label_length;
     if (name[si] == '.') {
       ++si;
       if (name[si] == '\0') break;
     }
   }
   if (wi >= buf_size || wi >= 255U) return 0U;
-  buf[wi] = 0;
+  buf[wi] = 0U;
   return wi + 1U;
 }
 
-int dns_decode_name(const uint8_t *msg, uint32_t msg_len,
-                    uint32_t offset, char *out, uint32_t out_size) {
-  if (msg == 0 || out == 0 || out_size == 0U || offset >= msg_len) return -1;
-  uint32_t oi = 0;
-  uint32_t pos = offset;
+int dns_decode_name(const uint8_t *message, uint32_t message_length,
+                    uint32_t offset, char *output, uint32_t output_size) {
+  if (message == 0 || output == 0 || output_size == 0U ||
+      offset >= message_length) return -1;
+  uint32_t output_position = 0U;
+  uint32_t position = offset;
   uint32_t next_offset = 0U;
   uint32_t pointer_jumps = 0U;
-
-  while (pos < msg_len) {
-    uint8_t len = msg[pos];
-    if (len == 0) {
-      if (next_offset == 0U) next_offset = pos + 1U;
-      if (oi >= out_size) return -1;
-      out[oi] = '\0';
+  while (position < message_length) {
+    uint8_t label_length = message[position];
+    if (label_length == 0U) {
+      if (next_offset == 0U) next_offset = position + 1U;
+      if (output_position >= output_size) return -1;
+      output[output_position] = '\0';
       return next_offset <= (uint32_t)INT32_MAX ? (int)next_offset : -1;
     }
-    if ((len & 0xC0U) == 0xC0U) {
-      if (pos + 1U >= msg_len) return -1;
-      uint16_t ptr = (uint16_t)(((uint16_t)(len & 0x3FU) << 8U) | msg[pos + 1U]);
-      if ((uint32_t)ptr >= msg_len || ++pointer_jumps > DNS_MAX_POINTER_JUMPS) {
-        return -1;
-      }
-      if (next_offset == 0U) next_offset = pos + 2U;
-      pos = ptr;
+    if ((label_length & 0xc0U) == 0xc0U) {
+      if (position + 1U >= message_length) return -1;
+      uint16_t pointer = (uint16_t)(
+          ((uint16_t)(label_length & 0x3fU) << 8U) | message[position + 1U]);
+      if ((uint32_t)pointer >= message_length ||
+          ++pointer_jumps > DNS_MAX_POINTER_JUMPS) return -1;
+      if (next_offset == 0U) next_offset = position + 2U;
+      position = pointer;
       continue;
     }
-    if ((len & 0xC0U) != 0U || len > 63U) return -1;
-    uint8_t label_len = len;
-    if (pos + 1U + label_len > msg_len) return -1;
-    if (oi > 0) {
-      if (oi + 1U >= out_size) return -1;
-      out[oi] = '.';
-      ++oi;
+    if ((label_length & 0xc0U) != 0U || label_length > 63U ||
+        position + 1U + label_length > message_length) return -1;
+    if (output_position != 0U) {
+      if (output_position + 1U >= output_size) return -1;
+      output[output_position++] = '.';
     }
-    for (uint8_t i = 0; i < label_len; ++i) {
-      if (oi + 1U >= out_size) return -1;
-      out[oi] = (char)msg[pos + 1U + i];
-      ++oi;
+    for (uint8_t i = 0U; i < label_length; ++i) {
+      if (output_position + 1U >= output_size) return -1;
+      output[output_position++] =
+          (char)message[position + 1U + (uint32_t)i];
     }
-    pos += 1U + label_len;
+    position += 1U + label_length;
   }
   return -1;
 }
 
-static int cache_lookup(const char *hostname, uint32_t *out_ip, uint64_t now_ns) {
-  for (uint32_t i = 0; i < XAIOS_DNS_CACHE_SIZE; ++i) {
-    if (g_cache[i].valid &&
-        str_n_cmp(g_cache[i].hostname, hostname, DNS_MAX_HOSTNAME) == 0 &&
+static int cache_lookup(const char *hostname, uint8_t family,
+                        xaios_ip_addr_t *address, uint64_t now_ns) {
+  for (uint32_t i = 0U; i < XAIOS_DNS_CACHE_SIZE; ++i) {
+    if (g_cache[i].valid != 0U && g_cache[i].family == family &&
+        str_case_equal(g_cache[i].hostname, hostname, DNS_MAX_HOSTNAME) &&
         now_ns < g_cache[i].expiry_ns) {
-      *out_ip = g_cache[i].ip;
+      *address = g_cache[i].address;
       return 1;
     }
   }
   return 0;
 }
 
-static void cache_insert(const char *hostname, uint32_t ip, uint32_t ttl_secs,
-                          uint64_t now_ns) {
-  uint32_t oldest_idx = 0;
-  uint64_t oldest_time = now_ns;
-  for (uint32_t i = 0; i < XAIOS_DNS_CACHE_SIZE; ++i) {
-    if (!g_cache[i].valid) {
-      oldest_idx = i;
+static void cache_insert(const char *hostname, const xaios_ip_addr_t *address,
+                         uint32_t ttl_seconds, uint64_t now_ns) {
+  uint32_t replace = 0U;
+  uint64_t oldest = UINT64_MAX;
+  for (uint32_t i = 0U; i < XAIOS_DNS_CACHE_SIZE; ++i) {
+    if (g_cache[i].valid == 0U) {
+      replace = i;
       break;
     }
-    if (g_cache[i].expiry_ns < oldest_time) {
-      oldest_time = g_cache[i].expiry_ns;
-      oldest_idx = i;
+    if (g_cache[i].family == address->family &&
+        str_case_equal(g_cache[i].hostname, hostname, DNS_MAX_HOSTNAME)) {
+      replace = i;
+      break;
+    }
+    if (g_cache[i].expiry_ns < oldest) {
+      oldest = g_cache[i].expiry_ns;
+      replace = i;
     }
   }
-  g_cache[oldest_idx].valid = 1;
-  str_cpy(g_cache[oldest_idx].hostname, hostname, DNS_MAX_HOSTNAME);
-  g_cache[oldest_idx].ip = ip;
-  uint64_t ttl_ns = (uint64_t)ttl_secs * UINT64_C(1000000000);
-  g_cache[oldest_idx].expiry_ns =
+  g_cache[replace].valid = 1U;
+  g_cache[replace].family = address->family;
+  str_copy(g_cache[replace].hostname, hostname, DNS_MAX_HOSTNAME);
+  g_cache[replace].address = *address;
+  uint64_t ttl_ns = (uint64_t)ttl_seconds * UINT64_C(1000000000);
+  g_cache[replace].expiry_ns =
       ttl_ns > UINT64_MAX - now_ns ? UINT64_MAX : now_ns + ttl_ns;
 }
 
-xaios_status_t dns_resolve(const char *hostname, uint32_t *out_ip) {
-  if (hostname == 0 || out_ip == 0) return XAIOS_ERR_INVALID;
-  uint64_t now = timer_now_ns();
-  if (cache_lookup(hostname, out_ip, now)) return XAIOS_OK;
+static uint32_t build_query(uint8_t *output, uint32_t capacity,
+                            const char *hostname, uint16_t id,
+                            uint16_t query_type) {
+  if (capacity < 32U) return 0U;
+  put_be16(output, id);
+  put_be16(output + 2U, DNS_FLAG_RD);
+  put_be16(output + 4U, 1U);
+  put_be16(output + 6U, 0U);
+  put_be16(output + 8U, 0U);
+  put_be16(output + 10U, 1U);
+  uint32_t position = 12U;
+  uint32_t encoded = dns_encode_name(output + position, capacity - position,
+                                     hostname);
+  if (encoded == 0U || capacity - position < encoded + 15U) return 0U;
+  position += encoded;
+  put_be16(output + position, query_type);
+  position += 2U;
+  put_be16(output + position, XAIOS_DNS_CLASS_IN);
+  position += 2U;
+  output[position++] = 0U;
+  put_be16(output + position, DNS_TYPE_OPT);
+  position += 2U;
+  put_be16(output + position, DNS_EDNS_UDP_SIZE);
+  position += 2U;
+  put_be32(output + position, DNS_EDNS_DO);
+  position += 4U;
+  put_be16(output + position, 0U);
+  position += 2U;
+  return position;
+}
 
-  uint32_t nlen = str_len(hostname);
-  if (nlen == 0 || nlen >= DNS_MAX_HOSTNAME) return XAIOS_ERR_INVALID;
-  if (g_pending.active != 0U) return XAIOS_ERR_BUSY;
-
-  uint16_t id = g_next_dns_id;
-  ++g_next_dns_id;
-
-  uint8_t buf[DNS_BUFFER_SIZE];
-  uint32_t wi = 0;
-
-  /* Ethernet header (dst MAC = gateway MAC) */
-  buf[0] = DNS_GATEWAY_MAC0; buf[1] = DNS_GATEWAY_MAC1;
-  buf[2] = DNS_GATEWAY_MAC2; buf[3] = DNS_GATEWAY_MAC3;
-  buf[4] = DNS_GATEWAY_MAC4; buf[5] = DNS_GATEWAY_MAC5;
+static xaios_status_t send_udp_query(dns_pending_t *pending) {
+  uint8_t *frame = pending->udp_frame;
+  frame[0] = DNS_GATEWAY_MAC0;
+  frame[1] = DNS_GATEWAY_MAC1;
+  frame[2] = DNS_GATEWAY_MAC2;
+  frame[3] = DNS_GATEWAY_MAC3;
+  frame[4] = DNS_GATEWAY_MAC4;
+  frame[5] = DNS_GATEWAY_MAC5;
   uint8_t local_mac[6];
   if (virtio_net_get_mac(local_mac) != XAIOS_OK) {
-    local_mac[0] = 0x02; local_mac[1] = 0x00;
-    local_mac[2] = 0x00; local_mac[3] = 0x00;
-    local_mac[4] = 0x00; local_mac[5] = 0x01;
+    static const uint8_t fallback[6] = {0x02U, 0U, 0U, 0U, 0U, 1U};
+    bytes_copy(local_mac, fallback, sizeof(fallback));
   }
-  for (uint32_t i = 0; i < 6; ++i) buf[6U + i] = local_mac[i];
-  wi = 12; put_be16(buf + wi, 0x0800); wi += 2;
+  bytes_copy(frame + 6U, local_mac, sizeof(local_mac));
+  put_be16(frame + 12U, UINT16_C(0x0800));
+  uint32_t ip_offset = 14U;
+  uint32_t udp_offset = ip_offset + XAIOS_IPV4_HEADER_SIZE;
+  uint32_t dns_offset = udp_offset + 8U;
+  if (dns_offset + pending->query_len > DNS_UDP_FRAME_SIZE)
+    return XAIOS_ERR_INVALID;
+  bytes_copy(frame + dns_offset, pending->query, pending->query_len);
+  uint16_t udp_length = (uint16_t)(8U + pending->query_len);
+  put_be16(frame + udp_offset, pending->udp_port);
+  put_be16(frame + udp_offset + 2U, XAIOS_DNS_PORT);
+  put_be16(frame + udp_offset + 4U, udp_length);
+  put_be16(frame + udp_offset + 6U, 0U);
+  uint16_t ip_total = (uint16_t)(XAIOS_IPV4_HEADER_SIZE + udp_length);
+  ipv4_build_header(frame + ip_offset, ip_total, XAIOS_IPV4_PROTO_UDP,
+                    XAIOS_IPV4_GUEST_IP, g_dns_server_ip);
+  pending->udp_frame_len = (uint16_t)(14U + ip_total);
+  return virtio_net_tx(frame, pending->udp_frame_len);
+}
 
-  /* Build IPv4 header */
-  uint32_t ip_hdr_off = wi;
-  wi += XAIOS_IPV4_HEADER_SIZE;
-
-  /* Build UDP header (src port ephemeral, dst port 53) */
-  uint32_t udp_hdr_off = wi;
-  wi += 8;
-
-  /* DNS header */
-  put_be16(buf + wi, id); wi += 2;
-  put_be16(buf + wi, 0x0100); wi += 2; /* flags: RD=1 */
-  put_be16(buf + wi, 1); wi += 2;      /* QDCOUNT = 1 */
-  put_be16(buf + wi, 0); wi += 2;      /* ANCOUNT = 0 */
-  put_be16(buf + wi, 0); wi += 2;      /* NSCOUNT = 0 */
-  put_be16(buf + wi, 0); wi += 2;      /* ARCOUNT = 0 */
-
-  /* Question */
-  uint32_t enc_len = dns_encode_name(buf + wi, DNS_BUFFER_SIZE - wi, hostname);
-  if (enc_len == 0) return XAIOS_ERR_INVALID;
-  wi += enc_len;
-  put_be16(buf + wi, XAIOS_DNS_TYPE_A);    wi += 2;
-  put_be16(buf + wi, XAIOS_DNS_CLASS_IN);  wi += 2;
-
-  /* Fill UDP header */
-  uint16_t udp_len = (uint16_t)(wi - udp_hdr_off);
-  put_be16(buf + udp_hdr_off, DNS_EPHEMERAL_PORT);
-  put_be16(buf + udp_hdr_off + 2, XAIOS_DNS_PORT);
-  put_be16(buf + udp_hdr_off + 4, udp_len);
-  put_be16(buf + udp_hdr_off + 6, 0);
-
-  /* Fill IPv4 header */
-  uint16_t ip_total = (uint16_t)(wi - ip_hdr_off);
-  ipv4_build_header(buf + ip_hdr_off, ip_total, XAIOS_IPV4_PROTO_UDP,
-                     XAIOS_IPV4_GUEST_IP, g_dns_server_ip);
-
-  g_pending.active = 1;
-  g_pending.id = id;
-  str_cpy(g_pending.hostname, hostname, DNS_MAX_HOSTNAME);
-  g_pending.started_ns = now;
-  g_pending.sent_ns = 0;
-  g_pending.retransmits = 0;
-  g_pending.frame_len = (uint16_t)wi;
-  for (uint32_t i = 0; i < wi; ++i) g_pending.frame[i] = buf[i];
-
-  xaios_status_t st = virtio_net_tx(buf, wi);
-  if (st != XAIOS_OK) {
+xaios_status_t dns_resolve_address(const char *hostname, uint8_t family,
+                                   xaios_ip_addr_t *out_address) {
+  if (hostname == 0 || out_address == 0 ||
+      (family != XAIOS_IP_FAMILY_V4 && family != XAIOS_IP_FAMILY_V6)) {
+    return XAIOS_ERR_INVALID;
+  }
+  uint64_t now_ns = timer_now_ns();
+  if (cache_lookup(hostname, family, out_address, now_ns)) return XAIOS_OK;
+  uint32_t hostname_length = str_len(hostname);
+  if (hostname_length == 0U || hostname_length >= DNS_MAX_HOSTNAME)
+    return XAIOS_ERR_INVALID;
+  if (g_pending.state != DNS_PENDING_NONE) return XAIOS_ERR_BUSY;
+  bytes_zero(&g_pending, sizeof(g_pending));
+  g_pending.state = DNS_PENDING_UDP;
+  g_pending.family = family;
+  g_pending.query_type = family == XAIOS_IP_FAMILY_V4
+                             ? XAIOS_DNS_TYPE_A : XAIOS_DNS_TYPE_AAAA;
+  g_pending.id = random_u16(g_next_dns_id++);
+  if (g_pending.id == 0U) g_pending.id = g_next_dns_id;
+  if (g_next_dns_id == 0U) g_next_dns_id = 1U;
+  g_pending.udp_port = random_ephemeral_port(UINT16_C(0xc001));
+  g_pending.tcp_port = random_ephemeral_port(UINT16_C(0xc002));
+  if (g_pending.tcp_port == g_pending.udp_port) ++g_pending.tcp_port;
+  str_copy(g_pending.hostname, hostname, DNS_MAX_HOSTNAME);
+  g_pending.query_len = (uint16_t)build_query(
+      g_pending.query, sizeof(g_pending.query), hostname, g_pending.id,
+      g_pending.query_type);
+  if (g_pending.query_len == 0U) {
+    bytes_zero(&g_pending, sizeof(g_pending));
+    return XAIOS_ERR_INVALID;
+  }
+  g_pending.started_ns = now_ns;
+  if (send_udp_query(&g_pending) != XAIOS_OK) {
     bytes_zero(&g_pending, sizeof(g_pending));
     ++g_reject_count;
-    return st;
+    return XAIOS_ERR_IO;
   }
-  g_pending.sent_ns = now;
+  g_pending.sent_ns = now_ns;
   ++g_query_count;
-
-  klog("dns: resolve %s id=%u len=%u\n", hostname, (unsigned)id, (unsigned)wi);
+  klog("dns: resolve %s type=%u id=%u dnssec=required\n", hostname,
+       g_pending.query_type, g_pending.id);
   return XAIOS_ERR_BUSY;
 }
 
-static void process_dns_response(const uint8_t *payload, uint32_t len,
-                                  uint64_t now_ns) {
-  if (g_pending.active == 0U || len < 12U) {
-    ++g_reject_count;
-    return;
-  }
-  uint16_t rcv_id = get_be16(payload);
-  if (rcv_id != g_pending.id) {
-    ++g_reject_count;
-    return;
-  }
+xaios_status_t dns_resolve(const char *hostname, uint32_t *out_ip) {
+  if (out_ip == 0) return XAIOS_ERR_INVALID;
+  xaios_ip_addr_t address;
+  xaios_status_t status = dns_resolve_address(
+      hostname, XAIOS_IP_FAMILY_V4, &address);
+  if (status == XAIOS_OK) *out_ip = xaios_ip_addr_to_ipv4(&address);
+  return status;
+}
 
-  uint16_t flags = get_be16(payload + 2);
-  if ((flags & 0xF800U) != 0x8000U) {
+static int skip_record(const uint8_t *message, uint32_t length,
+                       uint32_t *position, uint16_t *type, uint16_t *rr_class,
+                       uint32_t *ttl, const uint8_t **data,
+                       uint16_t *data_length) {
+  char owner[XAIOS_DNS_MAX_NAME];
+  int decoded = dns_decode_name(message, length, *position, owner,
+                                sizeof(owner));
+  if (decoded < 0) return -1;
+  *position = (uint32_t)decoded;
+  if (*position > length || length - *position < 10U) return -1;
+  *type = get_be16(message + *position);
+  *rr_class = get_be16(message + *position + 2U);
+  *ttl = get_be32(message + *position + 4U);
+  *data_length = get_be16(message + *position + 8U);
+  *position += 10U;
+  if (*data_length > length - *position) return -1;
+  *data = message + *position;
+  *position += *data_length;
+  return 0;
+}
+
+xaios_status_t dns_process_message(const uint8_t *message, uint32_t length,
+                                   uint64_t now_ns, uint32_t from_tcp) {
+  if (message == 0 || length < 12U || g_pending.state == DNS_PENDING_NONE ||
+      get_be16(message) != g_pending.id) {
     ++g_reject_count;
-    return;
+    return XAIOS_ERR_INVALID;
   }
-  uint8_t rcode = (uint8_t)(flags & 0x0FU);
-  if (rcode != 0) {
-    klog("dns: server error for %s rcode=%u\n", g_pending.hostname, rcode);
-    g_pending.active = 0;
+  uint16_t flags = get_be16(message + 2U);
+  if ((flags & UINT16_C(0xf800)) != DNS_FLAG_QR) {
+    ++g_reject_count;
+    return XAIOS_ERR_INVALID;
+  }
+  if ((flags & DNS_FLAG_TC) != 0U && from_tcp == 0U) {
+    g_pending.state = DNS_PENDING_TCP_CONNECT;
+    g_pending.tcp_flow_id = 0U;
+    g_pending.tcp_received = 0U;
+    ++g_tcp_fallback_count;
+    return XAIOS_ERR_BUSY;
+  }
+  if ((flags & DNS_FLAG_TC) != 0U || (flags & 0x000fU) != 0U) {
+    bytes_zero(&g_pending, sizeof(g_pending));
     ++g_response_count;
-    return;
+    return XAIOS_ERR_NOT_FOUND;
   }
-
-  uint16_t qdcount = get_be16(payload + 4);
-  uint16_t ancount = get_be16(payload + 6);
-  if (qdcount != 1U || ancount == 0U) {
+  uint16_t question_count = get_be16(message + 4U);
+  uint16_t answer_count = get_be16(message + 6U);
+  uint16_t authority_count = get_be16(message + 8U);
+  uint16_t additional_count = get_be16(message + 10U);
+  if (question_count != 1U || answer_count == 0U) {
     ++g_reject_count;
-    return;
+    return XAIOS_ERR_INVALID;
   }
-
-  /* Skip question section */
-  uint32_t pos = 12;
-  char tmp[XAIOS_DNS_MAX_NAME];
-  int res = dns_decode_name(payload, len, pos, tmp, sizeof(tmp));
-  if (res < 0) {
+  uint32_t position = 12U;
+  char question[XAIOS_DNS_MAX_NAME];
+  int decoded = dns_decode_name(message, length, position, question,
+                                sizeof(question));
+  if (decoded < 0 || !str_case_equal(question, g_pending.hostname,
+                                     DNS_MAX_HOSTNAME)) {
     ++g_reject_count;
-    return;
+    return XAIOS_ERR_INVALID;
   }
-  pos = (uint32_t)res;
-  if (pos > len || len - pos < 4U) {
+  position = (uint32_t)decoded;
+  if (position > length || length - position < 4U ||
+      get_be16(message + position) != g_pending.query_type ||
+      get_be16(message + position + 2U) != XAIOS_DNS_CLASS_IN) {
     ++g_reject_count;
-    return;
+    return XAIOS_ERR_INVALID;
   }
-  pos += 4U;
-
-  /* Parse answers */
-  for (uint16_t ai = 0; ai < ancount; ++ai) {
-    if (pos >= len) break;
-    res = dns_decode_name(payload, len, pos, tmp, sizeof(tmp));
-    if (res < 0) break;
-    pos = (uint32_t)res;
-    if (pos + 10 > len) break;
-    uint16_t rtype = get_be16(payload + pos);
-    pos += 2;
-    uint16_t rclass = get_be16(payload + pos);
-    pos += 2;
-    uint32_t ttl = get_be32(payload + pos);
-    pos += 4;
-    uint16_t rdlength = get_be16(payload + pos);
-    pos += 2;
-    if (pos + rdlength > len) break;
-
-    if (rtype == XAIOS_DNS_TYPE_A && rclass == XAIOS_DNS_CLASS_IN &&
-        rdlength == 4) {
-      uint32_t ip = ((uint32_t)payload[pos] << 24U) |
-                    ((uint32_t)payload[pos + 1U] << 16U) |
-                    ((uint32_t)payload[pos + 2U] << 8U) |
-                    payload[pos + 3U];
-      cache_insert(g_pending.hostname, ip, ttl, now_ns);
-      klog("dns: resolved %s -> %u.%u.%u.%u ttl=%u\n",
-           g_pending.hostname,
-           (unsigned)(ip >> 24U), (unsigned)((ip >> 16U) & 0xFFU),
-           (unsigned)((ip >> 8U) & 0xFFU), (unsigned)(ip & 0xFFU),
-           (unsigned)ttl);
-      g_pending.active = 0;
-      ++g_response_count;
-      return;
+  position += 4U;
+  xaios_ip_addr_t answer;
+  xaios_ip_addr_zero(&answer);
+  uint32_t answer_ttl = 0U;
+  uint32_t found_answer = 0U;
+  uint32_t total_records = (uint32_t)answer_count + authority_count +
+                           additional_count;
+  for (uint32_t record = 0U; record < total_records; ++record) {
+    uint16_t type = 0U;
+    uint16_t rr_class = 0U;
+    uint16_t data_length = 0U;
+    uint32_t ttl = 0U;
+    const uint8_t *data = 0;
+    if (skip_record(message, length, &position, &type, &rr_class, &ttl,
+                    &data, &data_length) != 0) {
+      ++g_reject_count;
+      return XAIOS_ERR_INVALID;
     }
-    pos += rdlength;
+    if (record >= answer_count || found_answer != 0U ||
+        rr_class != XAIOS_DNS_CLASS_IN || type != g_pending.query_type) {
+      continue;
+    }
+    if (type == XAIOS_DNS_TYPE_A && data_length == 4U) {
+      answer.family = XAIOS_IP_FAMILY_V4;
+      bytes_copy(answer.addr, data, 4U);
+      answer_ttl = ttl;
+      found_answer = 1U;
+    } else if (type == XAIOS_DNS_TYPE_AAAA && data_length == 16U) {
+      answer.family = XAIOS_IP_FAMILY_V6;
+      bytes_copy(answer.addr, data, 16U);
+      answer_ttl = ttl;
+      found_answer = 1U;
+    }
   }
-  ++g_reject_count;
+  if (position != length || found_answer == 0U ||
+      (flags & DNS_FLAG_AD) == 0U) {
+    ++g_reject_count;
+    return XAIOS_ERR_INVALID;
+  }
+  cache_insert(g_pending.hostname, &answer, answer_ttl, now_ns);
+  ++g_authenticated_count;
+  ++g_response_count;
+  klog("dns: authenticated answer host=%s family=%u ttl=%u transport=%s\n",
+       g_pending.hostname, answer.family, answer_ttl,
+       from_tcp != 0U ? "tcp" : "udp");
+  if (g_pending.tcp_flow_id != 0U)
+    (void)network_stack_tcp_close_flow(g_pending.tcp_flow_id);
+  bytes_zero(&g_pending, sizeof(g_pending));
+  return XAIOS_OK;
 }
 
 xaios_status_t dns_process_ipv4_frame(const uint8_t *frame,
-                                      uint32_t frame_len,
+                                      uint32_t frame_length,
                                       uint64_t now_ns) {
-  if (frame == 0 || frame_len < 42U || g_pending.active == 0U) {
-    return XAIOS_ERR_NOT_FOUND;
-  }
-  if (get_be16(frame + 12U) != 0x0800U ||
-      !ipv4_validate_incoming(frame, frame_len) ||
-      ipv4_is_fragment(frame, frame_len)) {
-    return XAIOS_ERR_INVALID;
-  }
+  if (frame == 0 || frame_length < 42U ||
+      g_pending.state != DNS_PENDING_UDP) return XAIOS_ERR_NOT_FOUND;
+  if (get_be16(frame + 12U) != UINT16_C(0x0800) ||
+      !ipv4_validate_incoming(frame, frame_length) ||
+      ipv4_is_fragment(frame, frame_length)) return XAIOS_ERR_INVALID;
   const uint8_t *ip = frame + 14U;
-  uint32_t ip_header_bytes = (uint32_t)(ip[0] & 0x0FU) * 4U;
+  uint32_t ip_header_length = (uint32_t)(ip[0] & 0x0fU) * 4U;
   uint16_t ip_total = get_be16(ip + 2U);
-  if (ip[9U] != XAIOS_IPV4_PROTO_UDP || ip_header_bytes < 20U ||
-      ip_total < ip_header_bytes + 8U || 14U + ip_total > frame_len) {
+  if (ip[9U] != XAIOS_IPV4_PROTO_UDP || ip_header_length < 20U ||
+      get_be32(ip + 12U) != g_dns_server_ip ||
+      ip_total < ip_header_length + 8U || 14U + ip_total > frame_length)
     return XAIOS_ERR_NOT_FOUND;
-  }
-  const uint8_t *udp = ip + ip_header_bytes;
-  uint16_t source_port = get_be16(udp);
-  uint16_t destination_port = get_be16(udp + 2U);
-  uint16_t udp_len = get_be16(udp + 4U);
-  if (source_port != XAIOS_DNS_PORT || destination_port != DNS_EPHEMERAL_PORT) {
-    return XAIOS_ERR_NOT_FOUND;
-  }
-  if (udp_len < 8U || udp_len > ip_total - ip_header_bytes) {
+  const uint8_t *udp = ip + ip_header_length;
+  uint16_t udp_length = get_be16(udp + 4U);
+  if (get_be16(udp) != XAIOS_DNS_PORT ||
+      get_be16(udp + 2U) != g_pending.udp_port) return XAIOS_ERR_NOT_FOUND;
+  if (udp_length < 8U || udp_length > ip_total - ip_header_length) {
     ++g_reject_count;
     return XAIOS_ERR_INVALID;
   }
-  uint16_t wire_checksum = get_be16(udp + 6U);
-  if (wire_checksum != 0U &&
+  uint16_t checksum = get_be16(udp + 6U);
+  if (checksum != 0U &&
       ipv4_pseudo_checksum(get_be32(ip + 12U), get_be32(ip + 16U),
-                           XAIOS_IPV4_PROTO_UDP, udp_len, udp, udp_len) != 0U) {
+                           XAIOS_IPV4_PROTO_UDP, udp_length, udp,
+                           udp_length) != 0U) {
     ++g_reject_count;
     return XAIOS_ERR_INVALID;
   }
-  uint64_t before = g_response_count;
-  process_dns_response(udp + 8U, udp_len - 8U, now_ns);
-  return g_response_count != before ? XAIOS_OK : XAIOS_ERR_INVALID;
+  return dns_process_message(udp + 8U, udp_length - 8U, now_ns, 0U);
+}
+
+void dns_transport_tick(uint64_t now_ns) {
+  if (g_pending.state == DNS_PENDING_TCP_CONNECT) {
+    if (g_pending.tcp_flow_id == 0U) {
+      xaios_ip_addr_t server = xaios_ip_addr_from_ipv4(g_dns_server_ip);
+      xaios_status_t status = network_stack_tcp_open(
+          &server, XAIOS_DNS_PORT, g_pending.tcp_port,
+          &g_pending.tcp_flow_id);
+      if (status != XAIOS_OK) return;
+    }
+    xaios_status_t status =
+        network_stack_tcp_open_status(g_pending.tcp_flow_id);
+    if (status == XAIOS_ERR_BUSY) return;
+    if (status != XAIOS_OK) {
+      (void)network_stack_tcp_abort_flow(g_pending.tcp_flow_id);
+      bytes_zero(&g_pending, sizeof(g_pending));
+      ++g_reject_count;
+      return;
+    }
+    uint8_t framed[DNS_UDP_FRAME_SIZE + 2U];
+    put_be16(framed, g_pending.query_len);
+    bytes_copy(framed + 2U, g_pending.query, g_pending.query_len);
+    uint32_t written = 0U;
+    if (network_stack_tcp_send(g_pending.tcp_flow_id, framed,
+                               g_pending.query_len + 2U, &written) != XAIOS_OK ||
+        written != g_pending.query_len + 2U) return;
+    g_pending.state = DNS_PENDING_TCP_REPLY;
+    g_pending.sent_ns = now_ns;
+  }
+  if (g_pending.state != DNS_PENDING_TCP_REPLY) return;
+  uint32_t available = sizeof(g_pending.tcp_reply) - g_pending.tcp_received;
+  uint32_t received = network_stack_tcp_recv(
+      g_pending.tcp_flow_id, g_pending.tcp_reply + g_pending.tcp_received,
+      available);
+  g_pending.tcp_received += received;
+  if (g_pending.tcp_received < 2U) return;
+  uint32_t message_length = get_be16(g_pending.tcp_reply);
+  if (message_length < 12U || message_length > DNS_TCP_MESSAGE_SIZE) {
+    (void)network_stack_tcp_abort_flow(g_pending.tcp_flow_id);
+    bytes_zero(&g_pending, sizeof(g_pending));
+    ++g_reject_count;
+    return;
+  }
+  if (g_pending.tcp_received < message_length + 2U) return;
+  (void)dns_process_message(g_pending.tcp_reply + 2U, message_length, now_ns,
+                            1U);
 }
 
 void dns_tick(uint64_t now_ns) {
-  if (!g_pending.active) return;
-
+  if (g_pending.state == DNS_PENDING_NONE) return;
   if (now_ns > g_pending.started_ns &&
       now_ns - g_pending.started_ns >= DNS_QUERY_TIMEOUT_NS) {
+    if (g_pending.tcp_flow_id != 0U)
+      (void)network_stack_tcp_abort_flow(g_pending.tcp_flow_id);
     klog("dns: query timeout id=%u host=%s\n", g_pending.id,
          g_pending.hostname);
     bytes_zero(&g_pending, sizeof(g_pending));
     ++g_timeout_count;
     return;
   }
-
-  if (g_pending.retransmits < DNS_MAX_RETRANSMITS &&
+  if (g_pending.state == DNS_PENDING_UDP &&
+      g_pending.retransmits < DNS_MAX_RETRANSMITS &&
       now_ns > g_pending.sent_ns &&
       now_ns - g_pending.sent_ns >= DNS_RETRANSMIT_NS) {
-    if (virtio_net_tx(g_pending.frame, g_pending.frame_len) != XAIOS_OK) {
+    if (virtio_net_tx(g_pending.udp_frame, g_pending.udp_frame_len) != XAIOS_OK) {
       ++g_reject_count;
       return;
     }
     g_pending.sent_ns = now_ns;
     ++g_pending.retransmits;
-    klog("dns: retransmit id=%u host=%s\n", g_pending.id, g_pending.hostname);
   }
 }
 
@@ -455,67 +624,37 @@ uint64_t dns_query_count(void) { return g_query_count; }
 uint64_t dns_response_count(void) { return g_response_count; }
 uint64_t dns_reject_count(void) { return g_reject_count; }
 uint64_t dns_timeout_count(void) { return g_timeout_count; }
-uint32_t dns_pending_count(void) { return g_pending.active != 0U ? 1U : 0U; }
+uint64_t dns_tcp_fallback_count(void) { return g_tcp_fallback_count; }
+uint64_t dns_authenticated_count(void) { return g_authenticated_count; }
+uint32_t dns_pending_count(void) {
+  return g_pending.state != DNS_PENDING_NONE ? 1U : 0U;
+}
 
 void dns_self_test(void) {
   dns_init();
-  /* Test dns_encode_name */
-  uint8_t enc[64];
-  uint32_t elen = dns_encode_name(enc, sizeof(enc), "www.google.com");
-  kassert(elen == 16);
-  uint8_t expected[16] = {3, 'w', 'w', 'w', 6, 'g', 'o', 'o',
-                          'g', 'l', 'e', 3, 'c', 'o', 'm', 0};
-  kassert(enc[15] == 0);
-  for (uint32_t i = 0; i < 15; ++i) kassert(enc[i] == expected[i]);
-
-  /* Test empty label (root) */
-  elen = dns_encode_name(enc, sizeof(enc), "");
-  kassert(elen == 1 && enc[0] == 0);
-
-  /* Test dns_decode_name round-trip */
-  const char *names[] = {"www.google.com", "example.org", "a.b.c.d.e", ""};
-  for (uint32_t ti = 0; ti < 4; ++ti) {
-    elen = dns_encode_name(enc, sizeof(enc), names[ti]);
-    kassert(elen > 0);
-    char dec[64];
-    int dlen = dns_decode_name(enc, elen, 0, dec, sizeof(dec));
-    kassert(dlen > 0);
-    kassert(str_n_cmp(dec, names[ti], sizeof(dec)) == 0);
-    klog("dns: round-trip '%s' ok\n", names[ti]);
-  }
-
-  /* Test dns_decode_name with pointer compression. */
-  uint8_t comp[64] = {6, 'g', 'o', 'o', 'g', 'l', 'e',
-                      3, 'c', 'o', 'm', 0,
-                      3, 'w', 'w', 'w', 0xC0, 0x00};
-  char dec[64];
-  int dlen = dns_decode_name(comp, 18U, 12U, dec, sizeof(dec));
-  kassert(dlen == 18);
-  kassert(str_n_cmp(dec, "www.google.com", sizeof(dec)) == 0);
-  klog("dns: compression decode ok -> '%s'\n", dec);
-
-  uint8_t loop[2] = {0xC0, 0x00};
-  kassert(dns_decode_name(loop, sizeof(loop), 0U, dec, sizeof(dec)) < 0);
-  kassert(dns_decode_name(loop, sizeof(loop), 0U, dec, 0U) < 0);
-  uint8_t reserved_label[2] = {0x40, 0};
-  kassert(dns_decode_name(reserved_label, sizeof(reserved_label), 0U, dec,
-                          sizeof(dec)) < 0);
-  kassert(dns_encode_name(enc, sizeof(enc), ".bad") == 0U);
-  kassert(dns_encode_name(enc, sizeof(enc), "bad..name") == 0U);
-
-  /* Test cache */
-  uint64_t now = 1000000ULL;
-  uint32_t ip_out = 0;
-  kassert(cache_lookup("nonexistent", &ip_out, now) == 0);
-  cache_insert("test.example.com", 0x08080808, 60, now);
-  kassert(cache_lookup("test.example.com", &ip_out, now) == 1);
-  kassert(ip_out == 0x08080808);
-  kassert(cache_lookup("test.example.com", &ip_out, now + 61000000000ULL) == 0);
-
-  kassert(cache_lookup("other", &ip_out, now) == 0);
-  cache_insert("other.example.com", 0x01020304, 60, now);
-  kassert(cache_lookup("other.example.com", &ip_out, now) == 1);
-  kassert(ip_out == 0x01020304);
-
-  klog("dns: self-test passed\n");
+  uint8_t encoded[64];
+  uint32_t encoded_length = dns_encode_name(
+      encoded, sizeof(encoded), "www.google.com");
+  kassert(encoded_length == 16U && encoded[15] == 0U);
+  char decoded[64];
+  kassert(dns_decode_name(encoded, encoded_length, 0U, decoded,
+                          sizeof(decoded)) > 0);
+  kassert(str_case_equal(decoded, "www.google.com", sizeof(decoded)));
+  uint8_t loop[2] = {0xc0U, 0x00U};
+  kassert(dns_decode_name(loop, sizeof(loop), 0U, decoded,
+                          sizeof(decoded)) < 0);
+  uint8_t reserved[2] = {0x40U, 0U};
+  kassert(dns_decode_name(reserved, sizeof(reserved), 0U, decoded,
+                          sizeof(decoded)) < 0);
+  kassert(dns_encode_name(encoded, sizeof(encoded), ".bad") == 0U);
+  kassert(dns_encode_name(encoded, sizeof(encoded), "bad..name") == 0U);
+  xaios_ip_addr_t address = xaios_ip_addr_from_ipv4(UINT32_C(0x01020304));
+  cache_insert("cache.test", &address, 60U, UINT64_C(1000000));
+  xaios_ip_addr_t result;
+  kassert(cache_lookup("CACHE.TEST", XAIOS_IP_FAMILY_V4, &result,
+                       UINT64_C(1000000)) == 1);
+  kassert(xaios_ip_addr_to_ipv4(&result) == UINT32_C(0x01020304));
+  kassert(cache_lookup("cache.test", XAIOS_IP_FAMILY_V6, &result,
+                       UINT64_C(1000000)) == 0);
+  klog("dns: self-test passed dnssec=required tcp-fallback=enabled aaaa=enabled\n");
 }

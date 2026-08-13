@@ -262,6 +262,11 @@ xaios_status_t security_authorize_fs_write(const char *path) {
     ++g_fs_denials;
     return XAIOS_ERR_INVALID;
   }
+  if (starts_with(path, "/etc/xaios_ssh_client_identity") &&
+      path[sizeof("/etc/xaios_ssh_client_identity") - 1U] == '\0') {
+    ++g_fs_denials;
+    return reject_security_operation("credential-write-denied");
+  }
   if (path_in_tree(path, "/tmp") || path_in_tree(path, "/home") ||
       path_in_tree(path, "/apps") || path_in_tree(path, "/state") ||
       path_in_tree(path, "/logs") || path_in_tree(path, "/update") ||

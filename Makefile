@@ -2,7 +2,7 @@ SHELL := /bin/sh
 HOST_CC ?= clang
 HOST_CFLAGS ?= -std=c99 -Wall -Wextra -Werror -pedantic
 
-.PHONY: all bootstrap test image image-qemu-test image-x86_64 image-x86_64-qemu-test image-libc-test qemu-libc-gate xapt-test xapt-repository qemu-xapt-gate engine-cli libc libc-check vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-dry-run qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-operations-closure qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-outbound-fragmentation-gate qemu-qualification-readiness qemu-dry-run qemu-smoke qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-freebsd-bidirectional-suite qemu-four-endpoint-network-suite qemu-parallel-network-load qemu-local-console-gate qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test code-scanning-contract docs-check production-source-audit qemu-baseline clean clean-persistent
+.PHONY: all bootstrap test image image-qemu-test image-x86_64 image-x86_64-qemu-test image-libc-test qemu-libc-gate xapt-test xapt-repository qemu-xapt-gate engine-cli libc libc-check vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-dry-run qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-operations-closure qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-outbound-fragmentation-gate qemu-qualification-readiness qemu-dry-run qemu-smoke qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-freebsd-bidirectional-suite qemu-four-endpoint-network-suite qemu-parallel-network-load qemu-network-adversarial-gate qemu-local-console-gate qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc parser-fuzz compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test code-scanning-contract docs-check production-source-audit qemu-baseline clean clean-persistent
 
 all: bootstrap image
 
@@ -218,6 +218,12 @@ qemu-four-endpoint-network-suite:
 qemu-parallel-network-load:
 	python3 ./tests/scripts/qemu-parallel-network-load.py
 
+parser-fuzz:
+	python3 ./tests/scripts/run-parser-fuzz.py
+
+qemu-network-adversarial-gate:
+	python3 ./tests/scripts/qemu-network-adversarial-gate.py
+
 qemu-local-console-gate:
 	python3 ./tests/scripts/qemu-local-console-gate.py
 
@@ -278,7 +284,9 @@ compile-check:
 	  clang --target=aarch64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
 	    -Wall -Wextra -Werror -Iuserspace/include -Iuserspace/sshd \
-	    -Iuserspace/apps/terminal -Itests -fsyntax-only "$$f" \
+	    -Iuserspace/apps/terminal -Ithird_party/mlkem-native/mlkem \
+	    -Ithird_party/openbsd-compat -Itests \
+	    -DMLK_CONFIG_FILE='"mlkem_xaios_config.h"' -fsyntax-only "$$f" \
 	    || failed=$$((failed + 1)); \
 	done; \
 	for f in $$(find userspace -name '*.c' ! -path 'userspace/libc/*' \
@@ -287,7 +295,9 @@ compile-check:
 	  clang --target=x86_64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie -mno-red-zone \
 	    -Wall -Wextra -Werror -Iuserspace/include -Iuserspace/sshd \
-	    -Iuserspace/apps/terminal -Itests \
+	    -Iuserspace/apps/terminal -Ithird_party/mlkem-native/mlkem \
+	    -Ithird_party/openbsd-compat -Itests \
+	    -DMLK_CONFIG_FILE='"mlkem_xaios_config.h"' \
 	    -c "$$f" -o "$$object" \
 	    || failed=$$((failed + 1)); \
 	done; \
@@ -364,6 +374,26 @@ hosted-test: engine-cli
 	  -Ikernel/include kernel/net/dns.c kernel/net/ipv4.c \
 	  tests/crashtest/test_dns.c -o build/hosted/test-dns
 	./build/hosted/test-dns
+	$(HOST_CC) $(HOST_CFLAGS) \
+	  -DMLK_CONFIG_FILE='"mlkem_xaios_config.h"' \
+	  -Iuserspace/sshd -Ithird_party/mlkem-native/mlkem \
+	  third_party/mlkem-native/mlkem/mlkem_native.c \
+	  tests/security/test_mlkem.c -o build/hosted/test-mlkem
+	./build/hosted/test-mlkem
+	rm -f build/hosted/id-ed25519 build/hosted/id-ed25519.pub \
+	  build/hosted/id-ed25519-encrypted build/hosted/id-ed25519-encrypted.pub
+	ssh-keygen -q -t ed25519 -N '' -f build/hosted/id-ed25519
+	ssh-keygen -q -t ed25519 -N xaios-test-passphrase \
+	  -f build/hosted/id-ed25519-encrypted
+	$(HOST_CC) $(HOST_CFLAGS) -DXAIOS_IDENTITY_HOSTED=1 \
+	  -Iuserspace/include -Iuserspace/sshd -Ithird_party/openbsd-compat \
+	  userspace/sshd/ssh_identity.c userspace/sshd/ssh_crypto.c \
+	  userspace/sshd/tweetnacl_subset.c \
+	  third_party/openbsd-compat/blowfish.c \
+	  third_party/openbsd-compat/bcrypt_pbkdf.c \
+	  tests/security/test_ssh_identity.c -o build/hosted/test-ssh-identity
+	./build/hosted/test-ssh-identity build/hosted/id-ed25519 \
+	  build/hosted/id-ed25519-encrypted
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Ikernel/include kernel/net/ipv4.c kernel/net/ipv6.c \
 	  tests/network/test_ip_fragments.c -o build/hosted/test-ip-fragments

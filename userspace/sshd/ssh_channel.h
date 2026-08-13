@@ -31,6 +31,12 @@ typedef struct ssh_channel {
   uint32_t close_sent;
   uint32_t exit_status;
   uint32_t is_sftp;
+  uint32_t is_forward;
+  uint32_t is_agent;
+  uint32_t agent_forwarding;
+  uint32_t agent_open_pending;
+  uint32_t agent_session_local_id;
+  unsigned long long forward_fd;
   uint32_t pty_requested;
   uint32_t terminal_columns;
   uint32_t terminal_rows;
@@ -70,5 +76,7 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt);
 int ssh_channel_tick(uint64_t now_ns);
 int ssh_channel_send_data(int sockfd, uint32_t remote_id,
                           const uint8_t *data, uint32_t len);
+int ssh_channel_agent_send(const ssh_channel_t *session, const uint8_t *data,
+                           uint32_t len);
 
 #endif

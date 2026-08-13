@@ -3,12 +3,18 @@
 #include "ssh_channel.h"
 #include "ssh_connection.h"
 #include "ssh_crypto.h"
+#include "ssh_identity.h"
+#include "ssh_mlkem.h"
 #include "ssh_protocol.h"
 #include "ssh_utils.h"
 #include "tweetnacl_subset.h"
 #include <xaios_user.h>
 
+#if defined(XAIOS_SSH_CLIENT_APP)
+#define SSH_CLIENT_CONTEXTS 1U
+#else
 #define SSH_CLIENT_CONTEXTS SSH_MAX_CLIENT_CONNECTIONS
+#endif
 #define SSH_CLIENT_COMMAND_MAX 256U
 #define SSH_CLIENT_HOST_MAX 128U
 #define SSH_CLIENT_USER_MAX 64U
@@ -46,8 +52,11 @@ typedef struct ssh_client_context {
   uint32_t close_sent;
   uint32_t exit_status;
   uint32_t recursive;
+  uint32_t use_identity;
+  uint32_t use_agent;
   uint32_t password_length;
   char password[SSH_CLIENT_PASSWORD_MAX + 1U];
+  char identity_path[SSH_CLIENT_PATH_MAX];
   char host[SSH_CLIENT_HOST_MAX];
   char user[SSH_CLIENT_USER_MAX];
   char command[SSH_CLIENT_COMMAND_MAX];
@@ -56,6 +65,9 @@ typedef struct ssh_client_context {
   uint32_t sftp_used;
   uint32_t sftp_request_id;
   uint8_t sftp_buffer[SSH_CLIENT_SFTP_BUFFER];
+  ssh_packet_t packet_workspace;
+  uint8_t frame_workspace[SSH_CLIENT_SFTP_BUFFER];
+  uint8_t request_workspace[SSH_CLIENT_PACKET];
 } ssh_client_context_t;
 
 static ssh_client_context_t g_clients[SSH_CLIENT_CONTEXTS];
@@ -170,13 +182,22 @@ static void sha256_update_mpint(sha256_ctx_t *context,
   if (length != 0U) sha256_update(context, value + first, length);
 }
 
-static void derive_one(const uint8_t shared_secret[32],
+static void sha256_update_kex_secret(sha256_ctx_t *context,
+                                     const uint8_t value[32],
+                                     uint32_t hybrid) {
+  if (hybrid != 0U)
+    sha256_update_string(context, value, 32U);
+  else
+    sha256_update_mpint(context, value);
+}
+
+static void derive_one(const uint8_t shared_secret[32], uint32_t hybrid,
                        const uint8_t exchange_hash[32],
                        const uint8_t session_id[32], uint8_t letter,
                        uint8_t output[32]) {
   sha256_ctx_t context;
   sha256_init(&context);
-  sha256_update_mpint(&context, shared_secret);
+  sha256_update_kex_secret(&context, shared_secret, hybrid);
   sha256_update(&context, exchange_hash, 32U);
   sha256_update(&context, &letter, 1U);
   sha256_update(&context, session_id, 32U);
@@ -188,22 +209,28 @@ static int derive_client_crypto(ssh_connection_t *connection) {
   uint8_t derived[32];
   ssh_connection_crypto_t *crypto = &connection->crypto;
   ssh_mem_zero(crypto, sizeof(*crypto));
-  derive_one(connection->shared_secret, connection->exchange_hash,
+  derive_one(connection->shared_secret, connection->kex_hybrid,
+             connection->exchange_hash,
              connection->session_id, (uint8_t)'A', derived);
   ssh_mem_copy(crypto->encrypt_iv, derived, 16U);
-  derive_one(connection->shared_secret, connection->exchange_hash,
+  derive_one(connection->shared_secret, connection->kex_hybrid,
+             connection->exchange_hash,
              connection->session_id, (uint8_t)'B', derived);
   ssh_mem_copy(crypto->decrypt_iv, derived, 16U);
-  derive_one(connection->shared_secret, connection->exchange_hash,
+  derive_one(connection->shared_secret, connection->kex_hybrid,
+             connection->exchange_hash,
              connection->session_id, (uint8_t)'C', derived);
   aes128_init(&crypto->encrypt_ctx, derived);
-  derive_one(connection->shared_secret, connection->exchange_hash,
+  derive_one(connection->shared_secret, connection->kex_hybrid,
+             connection->exchange_hash,
              connection->session_id, (uint8_t)'D', derived);
   aes128_init(&crypto->decrypt_ctx, derived);
-  derive_one(connection->shared_secret, connection->exchange_hash,
+  derive_one(connection->shared_secret, connection->kex_hybrid,
+             connection->exchange_hash,
              connection->session_id, (uint8_t)'E', derived);
   ssh_mem_copy(crypto->encrypt_mac_key, derived, 32U);
-  derive_one(connection->shared_secret, connection->exchange_hash,
+  derive_one(connection->shared_secret, connection->kex_hybrid,
+             connection->exchange_hash,
              connection->session_id, (uint8_t)'F', derived);
   ssh_mem_copy(crypto->decrypt_mac_key, derived, 32U);
   crypto->encrypt_seq = 3U;
@@ -239,7 +266,8 @@ static int build_kexinit(uint8_t *buffer, uint32_t capacity,
   if (crypto_random_bytes(buffer + position, 16U) != 0) return -1;
   position += 16U;
   static const char *lists[] = {
-      "curve25519-sha256", "ssh-ed25519", "aes128-ctr", "aes128-ctr",
+      "mlkem768x25519-sha256,curve25519-sha256", "ssh-ed25519",
+      "aes128-ctr", "aes128-ctr",
       "hmac-sha2-256", "hmac-sha2-256", "none", "none", "", ""};
   for (uint32_t i = 0U; i < 10U; ++i) {
     uint32_t length = ssh_str_len(lists[i]);
@@ -269,7 +297,8 @@ static int list_has_name(const uint8_t *list, uint32_t length,
   return 0;
 }
 
-static int validate_server_kexinit(const ssh_packet_t *packet) {
+static int validate_server_kexinit(const ssh_packet_t *packet,
+                                   uint32_t *hybrid) {
   static const char *required[] = {
       "curve25519-sha256", "ssh-ed25519", "aes128-ctr", "aes128-ctr",
       "hmac-sha2-256", "hmac-sha2-256", "none", "none"};
@@ -281,7 +310,16 @@ static int validate_server_kexinit(const ssh_packet_t *packet) {
     uint32_t length = ssh_read_u32_be(packet->data + position);
     position += 4U;
     if (length > packet->len - position) return -1;
-    if (i < 8U &&
+    if (i == 0U) {
+      if (list_has_name(packet->data + position, length,
+                        "mlkem768x25519-sha256"))
+        *hybrid = 1U;
+      else if (list_has_name(packet->data + position, length,
+                             "curve25519-sha256"))
+        *hybrid = 0U;
+      else
+        return -1;
+    } else if (i < 8U &&
         !list_has_name(packet->data + position, length, required[i])) {
       return -1;
     }
@@ -315,19 +353,78 @@ static int parse_ipv4(const char *text, xaios_ip_addr_user_t *address) {
   return 0;
 }
 
+static int hex_value(char character);
+
+static int parse_ipv6_hex(const char *text, uint32_t length, uint16_t *value) {
+  uint32_t parsed = 0U;
+  if (length == 0U || length > 4U) return -1;
+  for (uint32_t i = 0U; i < length; ++i) {
+    int digit = hex_value(text[i]);
+    if (digit < 0) return -1;
+    parsed = (parsed << 4U) | (uint32_t)digit;
+  }
+  *value = (uint16_t)parsed;
+  return 0;
+}
+
+static int parse_ipv6(const char *text, xaios_ip_addr_user_t *address) {
+  uint16_t groups[8];
+  uint32_t group_count = 0U;
+  uint32_t compressed_at = UINT32_MAX;
+  uint32_t position = 0U;
+  uint32_t length = ssh_str_len(text);
+  if (length == 0U) return -1;
+  if (text[position] == ':' && text[position + 1U] == ':') {
+    compressed_at = 0U;
+    position += 2U;
+  }
+  while (position < length) {
+    if (group_count >= 8U) return -1;
+    uint32_t start = position;
+    while (position < length && text[position] != ':') ++position;
+    if (parse_ipv6_hex(text + start, position - start,
+                       &groups[group_count++]) != 0) return -1;
+    if (position == length) break;
+    ++position;
+    if (position < length && text[position] == ':') {
+      if (compressed_at != UINT32_MAX) return -1;
+      compressed_at = group_count;
+      ++position;
+      if (position == length) break;
+    }
+  }
+  if (compressed_at == UINT32_MAX) {
+    if (group_count != 8U) return -1;
+  } else {
+    if (group_count >= 8U) return -1;
+    uint32_t missing = 8U - group_count;
+    for (uint32_t i = group_count; i > compressed_at; --i)
+      groups[i + missing - 1U] = groups[i - 1U];
+    for (uint32_t i = 0U; i < missing; ++i) groups[compressed_at + i] = 0U;
+  }
+  xaios_memzero(address, sizeof(*address));
+  address->family = 6U;
+  for (uint32_t i = 0U; i < 8U; ++i) {
+    address->addr[i * 2U] = (uint8_t)(groups[i] >> 8U);
+    address->addr[i * 2U + 1U] = (uint8_t)groups[i];
+  }
+  return 0;
+}
+
 static int resolve_host(const char *host, xaios_ip_addr_user_t *address,
                         uint64_t deadline) {
   if (parse_ipv4(host, address) == 0) return 0;
-  uint32_t ipv4 = 0U;
+  if (parse_ipv6(host, address) == 0) return 0;
+  uint32_t family = 4U;
   while (xaios_clock_nanos() < deadline) {
-    if (xaios_net_resolve(host, &ipv4) == 0) {
-      xaios_memzero(address, sizeof(*address));
-      address->family = 4U;
-      address->addr[0] = (uint8_t)(ipv4 & UINT32_C(0xff));
-      address->addr[1] = (uint8_t)((ipv4 >> 8U) & UINT32_C(0xff));
-      address->addr[2] = (uint8_t)((ipv4 >> 16U) & UINT32_C(0xff));
-      address->addr[3] = (uint8_t)((ipv4 >> 24U) & UINT32_C(0xff));
-      return 0;
+    int status = xaios_net_resolve_address(host, family, address);
+    if (status == 0) return 0;
+    if (status != XAIOS_ERR_BUSY) {
+      if (family == 4U) {
+        family = 6U;
+        continue;
+      }
+      return -1;
     }
   }
   return -1;
@@ -428,7 +525,9 @@ static int parse_kex_reply(ssh_client_context_t *client,
                            const uint8_t *server_kex,
                            uint32_t server_kex_length,
                            const uint8_t client_private[32],
-                           const uint8_t client_public[32]) {
+                           const uint8_t *client_public,
+                           uint32_t client_public_length,
+                           const uint8_t *mlkem_secret_key) {
   if (packet->len < 1U || packet->data[0] != SSH_MSG_KEXDH_REPLY) return -1;
   uint32_t position = 1U;
   if (position + 4U > packet->len) return -1;
@@ -445,7 +544,11 @@ static int parse_kex_reply(ssh_client_context_t *client,
   if (position + 4U > packet->len) return -1;
   uint32_t server_public_length = ssh_read_u32_be(packet->data + position);
   position += 4U;
-  if (server_public_length != 32U || server_public_length > packet->len - position)
+  uint32_t expected_server_length = client->transport->kex_hybrid != 0U
+                                        ? SSH_MLKEM768_CIPHERTEXT_SIZE + 32U
+                                        : 32U;
+  if (server_public_length != expected_server_length ||
+      server_public_length > packet->len - position)
     return -1;
   const uint8_t *server_public = packet->data + position;
   position += server_public_length;
@@ -460,12 +563,32 @@ static int parse_kex_reply(ssh_client_context_t *client,
       ssh_read_u32_be(signature_blob + 15U) != 64U) return -1;
   const uint8_t *signature = signature_blob + 19U;
 
-  if (xaios_x25519(client->transport->shared_secret, client_private,
-                   server_public) != 0) return -1;
+  const uint8_t *server_x25519 = server_public;
+  if (client->transport->kex_hybrid != 0U)
+    server_x25519 += SSH_MLKEM768_CIPHERTEXT_SIZE;
+  uint8_t x25519_secret[32];
+  if (xaios_x25519(x25519_secret, client_private, server_x25519) != 0)
+    return -1;
   uint8_t nonzero = 0U;
   for (uint32_t i = 0U; i < 32U; ++i)
-    nonzero |= client->transport->shared_secret[i];
+    nonzero |= x25519_secret[i];
   if (nonzero == 0U) return -1;
+  if (client->transport->kex_hybrid != 0U) {
+    uint8_t mlkem_secret[SSH_MLKEM768_SHARED_SECRET_SIZE];
+    uint8_t combined[64];
+    if (mlkem_secret_key == 0 ||
+        ssh_mlkem768_decapsulate(mlkem_secret, server_public,
+                                 mlkem_secret_key) != 0) return -1;
+    ssh_mem_copy(combined, mlkem_secret, 32U);
+    ssh_mem_copy(combined + 32U, x25519_secret, 32U);
+    sha256_hash(combined, sizeof(combined),
+                client->transport->shared_secret);
+    ssh_mem_zero(mlkem_secret, sizeof(mlkem_secret));
+    ssh_mem_zero(combined, sizeof(combined));
+  } else {
+    ssh_mem_copy(client->transport->shared_secret, x25519_secret, 32U);
+  }
+  ssh_mem_zero(x25519_secret, sizeof(x25519_secret));
 
   sha256_ctx_t hash;
   sha256_init(&hash);
@@ -474,9 +597,10 @@ static int parse_kex_reply(ssh_client_context_t *client,
   sha256_update_string(&hash, client_kex, client_kex_length);
   sha256_update_string(&hash, server_kex, server_kex_length);
   sha256_update_string(&hash, host_blob, host_blob_length);
-  sha256_update_string(&hash, client_public, 32U);
-  sha256_update_string(&hash, server_public, 32U);
-  sha256_update_mpint(&hash, client->transport->shared_secret);
+  sha256_update_string(&hash, client_public, client_public_length);
+  sha256_update_string(&hash, server_public, server_public_length);
+  sha256_update_kex_secret(&hash, client->transport->shared_secret,
+                           client->transport->kex_hybrid);
   sha256_final(&hash, client->transport->exchange_hash);
   ssh_mem_copy(client->transport->session_id,
                client->transport->exchange_hash, 32U);
@@ -500,9 +624,9 @@ static int send_service_request(ssh_client_context_t *client,
 static int authenticate_password(ssh_client_context_t *client,
                                  uint64_t deadline) {
   if (send_service_request(client, "ssh-userauth") != 0) return -1;
-  ssh_packet_t packet;
-  if (wait_encrypted_packet(client, &packet, deadline) != 0 ||
-      packet.len < 1U || packet.data[0] != SSH_MSG_SERVICE_ACCEPT) return -1;
+  ssh_packet_t *packet = &client->packet_workspace;
+  if (wait_encrypted_packet(client, packet, deadline) != 0 ||
+      packet->len < 1U || packet->data[0] != SSH_MSG_SERVICE_ACCEPT) return -1;
 
   uint8_t request[512];
   uint32_t position = 0U;
@@ -525,10 +649,228 @@ static int authenticate_password(ssh_client_context_t *client,
   ssh_mem_zero(request, sizeof(request));
   ssh_mem_zero(client->password, sizeof(client->password));
   client->password_length = 0U;
-  if (wait_encrypted_packet(client, &packet, deadline) != 0 || packet.len < 1U)
+  if (wait_encrypted_packet(client, packet, deadline) != 0 || packet->len < 1U)
     return -1;
-  return packet.data[0] == SSH_MSG_USERAUTH_SUCCESS ? 0 : -1;
+  return packet->data[0] == SSH_MSG_USERAUTH_SUCCESS ? 0 : -1;
 }
+
+static int authenticate_public_key(ssh_client_context_t *client,
+                                   uint64_t deadline,
+                                   const ssh_identity_t *identity) {
+  if (send_service_request(client, "ssh-userauth") != 0) return -1;
+  ssh_packet_t *response = &client->packet_workspace;
+  if (wait_encrypted_packet(client, response, deadline) != 0 ||
+      response->len < 1U || response->data[0] != SSH_MSG_SERVICE_ACCEPT)
+    return -1;
+
+  uint8_t public_blob[64];
+  uint32_t public_length = append_string(
+      public_blob, 0U, sizeof(public_blob),
+      (const uint8_t *)"ssh-ed25519", 11U);
+  public_length = append_string(public_blob, public_length,
+                                sizeof(public_blob), identity->public_key, 32U);
+  if (public_length == UINT32_MAX) return -1;
+
+  uint8_t request[512];
+  uint32_t position = 0U;
+  request[position++] = SSH_MSG_USERAUTH_REQUEST;
+  position = append_string(request, position, sizeof(request),
+                           (const uint8_t *)client->user,
+                           ssh_str_len(client->user));
+  position = append_string(request, position, sizeof(request),
+                           (const uint8_t *)"ssh-connection", 14U);
+  position = append_string(request, position, sizeof(request),
+                           (const uint8_t *)"publickey", 9U);
+  if (position == UINT32_MAX || position >= sizeof(request)) return -1;
+  uint32_t signature_flag_position = position;
+  request[position++] = 0U;
+  position = append_string(request, position, sizeof(request),
+                           (const uint8_t *)"ssh-ed25519", 11U);
+  position = append_string(request, position, sizeof(request), public_blob,
+                           public_length);
+  if (position == UINT32_MAX) return -1;
+
+  if (ssh_packet_write_encrypted((int)client->sockfd, request, position) != 0 ||
+      wait_encrypted_packet(client, response, deadline) != 0 ||
+      response->len != 1U + 4U + 11U + 4U + public_length ||
+      response->data[0] != SSH_MSG_USERAUTH_PK_OK ||
+      ssh_read_u32_be(response->data + 1U) != 11U ||
+      !bytes_equal(response->data + 5U, (const uint8_t *)"ssh-ed25519", 11U) ||
+      ssh_read_u32_be(response->data + 16U) != public_length ||
+      !bytes_equal(response->data + 20U, public_blob, public_length)) return -1;
+  request[signature_flag_position] = 1U;
+
+  uint8_t signed_data[512];
+  uint32_t signed_length = append_string(
+      signed_data, 0U, sizeof(signed_data), client->transport->session_id, 32U);
+  if (signed_length == UINT32_MAX || position > sizeof(signed_data) - signed_length)
+    return -1;
+  ssh_mem_copy(signed_data + signed_length, request, position);
+  signed_length += position;
+  uint8_t signature[64];
+  if (xaios_ed25519_sign(signature, signed_data, signed_length,
+                         identity->public_key, identity->seed) != 0)
+    return -1;
+  uint8_t signature_blob[96];
+  uint32_t signature_length = append_string(
+      signature_blob, 0U, sizeof(signature_blob),
+      (const uint8_t *)"ssh-ed25519", 11U);
+  signature_length = append_string(signature_blob, signature_length,
+                                   sizeof(signature_blob), signature, 64U);
+  position = append_string(request, position, sizeof(request), signature_blob,
+                           signature_length);
+  ssh_mem_zero(signature, sizeof(signature));
+  ssh_mem_zero(signed_data, sizeof(signed_data));
+  if (position == UINT32_MAX ||
+      ssh_packet_write_encrypted((int)client->sockfd, request, position) != 0)
+    return -1;
+  ssh_mem_zero(request, sizeof(request));
+  if (wait_encrypted_packet(client, response, deadline) != 0 ||
+      response->len < 1U) return -1;
+  return response->data[0] == SSH_MSG_USERAUTH_SUCCESS ? 0 : -1;
+}
+
+#if defined(XAIOS_SSH_CLIENT_APP)
+static int agent_exchange_payload(const uint8_t *payload,
+                                  uint32_t payload_length, uint8_t *response,
+                                  uint32_t response_capacity,
+                                  uint32_t *response_length,
+                                  uint64_t deadline) {
+  uint8_t request[1024];
+  if (payload == 0 || payload_length == 0U ||
+      payload_length > sizeof(request) - 4U) return -1;
+  ssh_write_u32_be(request, payload_length);
+  ssh_mem_copy(request + 4U, payload, payload_length);
+  return ssh_client_app_agent_exchange(request, payload_length + 4U, response,
+                                       response_capacity, response_length,
+                                       deadline);
+}
+
+static int agent_first_ed25519(uint8_t *public_blob,
+                               uint32_t *public_blob_length,
+                               uint64_t deadline) {
+  uint8_t response[4096];
+  uint32_t response_length = 0U;
+  static const uint8_t request_identities = 11U;
+  if (agent_exchange_payload(&request_identities, 1U, response,
+                             sizeof(response), &response_length,
+                             deadline) != 0 ||
+      response_length < 9U || ssh_read_u32_be(response) + 4U != response_length ||
+      response[4U] != 12U) return -1;
+  uint32_t count = ssh_read_u32_be(response + 5U);
+  uint32_t position = 9U;
+  for (uint32_t i = 0U; i < count; ++i) {
+    if (position > response_length || response_length - position < 4U)
+      return -1;
+    uint32_t key_length = ssh_read_u32_be(response + position);
+    position += 4U;
+    if (key_length > response_length - position) return -1;
+    const uint8_t *key = response + position;
+    position += key_length;
+    if (response_length - position < 4U) return -1;
+    uint32_t comment_length = ssh_read_u32_be(response + position);
+    position += 4U;
+    if (comment_length > response_length - position) return -1;
+    position += comment_length;
+    if (key_length == 51U && ssh_read_u32_be(key) == 11U &&
+        bytes_equal(key + 4U, (const uint8_t *)"ssh-ed25519", 11U) &&
+        ssh_read_u32_be(key + 15U) == 32U) {
+      ssh_mem_copy(public_blob, key, key_length);
+      *public_blob_length = key_length;
+      return 0;
+    }
+  }
+  return -1;
+}
+
+static int agent_sign(const uint8_t *public_blob, uint32_t public_blob_length,
+                      const uint8_t *data, uint32_t data_length,
+                      uint8_t *signature_blob, uint32_t signature_capacity,
+                      uint32_t *signature_length, uint64_t deadline) {
+  uint8_t payload[1024];
+  uint8_t response[512];
+  uint32_t position = 0U;
+  uint32_t response_length = 0U;
+  payload[position++] = 13U;
+  position = append_string(payload, position, sizeof(payload), public_blob,
+                           public_blob_length);
+  position = append_string(payload, position, sizeof(payload), data,
+                           data_length);
+  if (position == UINT32_MAX || position + 4U > sizeof(payload)) return -1;
+  ssh_write_u32_be(payload + position, 0U);
+  position += 4U;
+  if (agent_exchange_payload(payload, position, response, sizeof(response),
+                             &response_length, deadline) != 0 ||
+      response_length < 9U || ssh_read_u32_be(response) + 4U != response_length ||
+      response[4U] != 14U) return -1;
+  uint32_t length = ssh_read_u32_be(response + 5U);
+  if (length != response_length - 9U || length > signature_capacity ||
+      length != 83U || ssh_read_u32_be(response + 9U) != 11U ||
+      !bytes_equal(response + 13U, (const uint8_t *)"ssh-ed25519", 11U) ||
+      ssh_read_u32_be(response + 24U) != 64U) return -1;
+  ssh_mem_copy(signature_blob, response + 9U, length);
+  *signature_length = length;
+  return 0;
+}
+
+static int authenticate_agent(ssh_client_context_t *client,
+                              uint64_t deadline) {
+  uint8_t public_blob[64];
+  uint32_t public_length = 0U;
+  if (send_service_request(client, "ssh-userauth") != 0) return -1;
+  ssh_packet_t *response = &client->packet_workspace;
+  if (wait_encrypted_packet(client, response, deadline) != 0 ||
+      response->len < 1U || response->data[0] != SSH_MSG_SERVICE_ACCEPT ||
+      agent_first_ed25519(public_blob, &public_length, deadline) != 0)
+    return -1;
+
+  uint8_t request[512];
+  uint32_t position = 0U;
+  request[position++] = SSH_MSG_USERAUTH_REQUEST;
+  position = append_string(request, position, sizeof(request),
+                           (const uint8_t *)client->user,
+                           ssh_str_len(client->user));
+  position = append_string(request, position, sizeof(request),
+                           (const uint8_t *)"ssh-connection", 14U);
+  position = append_string(request, position, sizeof(request),
+                           (const uint8_t *)"publickey", 9U);
+  if (position == UINT32_MAX || position >= sizeof(request)) return -1;
+  uint32_t signature_flag_position = position;
+  request[position++] = 0U;
+  position = append_string(request, position, sizeof(request),
+                           (const uint8_t *)"ssh-ed25519", 11U);
+  position = append_string(request, position, sizeof(request), public_blob,
+                           public_length);
+  if (position == UINT32_MAX ||
+      ssh_packet_write_encrypted((int)client->sockfd, request, position) != 0 ||
+      wait_encrypted_packet(client, response, deadline) != 0 ||
+      response->len != 1U + 4U + 11U + 4U + public_length ||
+      response->data[0] != SSH_MSG_USERAUTH_PK_OK) return -1;
+  request[signature_flag_position] = 1U;
+
+  uint8_t signed_data[512];
+  uint32_t signed_length = append_string(
+      signed_data, 0U, sizeof(signed_data), client->transport->session_id, 32U);
+  if (signed_length == UINT32_MAX || position > sizeof(signed_data) - signed_length)
+    return -1;
+  ssh_mem_copy(signed_data + signed_length, request, position);
+  signed_length += position;
+  uint8_t signature_blob[96];
+  uint32_t signature_length = 0U;
+  if (agent_sign(public_blob, public_length, signed_data, signed_length,
+                 signature_blob, sizeof(signature_blob), &signature_length,
+                 deadline) != 0) return -1;
+  position = append_string(request, position, sizeof(request), signature_blob,
+                           signature_length);
+  ssh_mem_zero(signed_data, sizeof(signed_data));
+  ssh_mem_zero(signature_blob, sizeof(signature_blob));
+  if (position == UINT32_MAX ||
+      ssh_packet_write_encrypted((int)client->sockfd, request, position) != 0 ||
+      wait_encrypted_packet(client, response, deadline) != 0 ||
+      response->len < 1U) return -1;
+  return response->data[0] == SSH_MSG_USERAUTH_SUCCESS ? 0 : -1;
+}
+#endif
 
 static int wait_channel_reply(ssh_client_context_t *client, uint8_t expected,
                               uint64_t deadline, ssh_packet_t *out_packet) {
@@ -566,13 +908,13 @@ static int open_session_channel(ssh_client_context_t *client,
   position += 4U;
   if (ssh_packet_write_encrypted((int)client->sockfd, packet, position) != 0)
     return -1;
-  ssh_packet_t response;
+  ssh_packet_t *response = &client->packet_workspace;
   if (wait_channel_reply(client, SSH_MSG_CHANNEL_OPEN_CONFIRM, deadline,
-                         &response) != 0 || response.len < 17U ||
-      ssh_read_u32_be(response.data + 1U) != client->local_channel) return -1;
-  client->remote_channel = ssh_read_u32_be(response.data + 5U);
-  client->remote_window = ssh_read_u32_be(response.data + 9U);
-  client->remote_max_packet = ssh_read_u32_be(response.data + 13U);
+                         response) != 0 || response->len < 17U ||
+      ssh_read_u32_be(response->data + 1U) != client->local_channel) return -1;
+  client->remote_channel = ssh_read_u32_be(response->data + 5U);
+  client->remote_window = ssh_read_u32_be(response->data + 9U);
+  client->remote_max_packet = ssh_read_u32_be(response->data + 13U);
   client->receive_window = SSH_CLIENT_WINDOW;
   if (client->remote_max_packet == 0U) return -1;
 
@@ -598,7 +940,7 @@ static int open_session_channel(ssh_client_context_t *client,
     if (position == UINT32_MAX ||
         ssh_packet_write_encrypted((int)client->sockfd, packet, position) != 0 ||
         wait_channel_reply(client, SSH_MSG_CHANNEL_SUCCESS, deadline,
-                           &response) != 0) return -1;
+                           response) != 0) return -1;
   }
 
   position = 0U;
@@ -626,7 +968,7 @@ static int open_session_channel(ssh_client_context_t *client,
   if (position == UINT32_MAX ||
       ssh_packet_write_encrypted((int)client->sockfd, packet, position) != 0 ||
       wait_channel_reply(client, SSH_MSG_CHANNEL_SUCCESS, deadline,
-                         &response) != 0) return -1;
+                         response) != 0) return -1;
   return 0;
 }
 
@@ -674,37 +1016,74 @@ static int client_handshake(ssh_client_context_t *client,
   if (build_kexinit(client_kex, sizeof(client_kex), &client_kex_length) != 0 ||
       ssh_packet_write((int)client->sockfd, client_kex, client_kex_length) != 0)
     return -17;
-  ssh_packet_t server_kex_packet;
-  if (wait_plain_packet(client, &server_kex_packet, deadline) != 0 ||
-      validate_server_kexinit(&server_kex_packet) != 0) return -18;
+  ssh_packet_t *packet = &client->packet_workspace;
+  uint32_t hybrid = 0U;
+  if (wait_plain_packet(client, packet, deadline) != 0 ||
+      validate_server_kexinit(packet, &hybrid) != 0) return -18;
+  uint32_t server_kex_length = packet->len;
+  if (server_kex_length > sizeof(client->frame_workspace)) return -18;
+  ssh_mem_copy(client->frame_workspace, packet->data, server_kex_length);
+  client->transport->kex_hybrid = hybrid;
 
   uint8_t client_private[32];
-  uint8_t client_public[32];
+  uint8_t client_public[SSH_MLKEM768_PUBLIC_KEY_SIZE + 32U];
+  uint8_t mlkem_secret_key[SSH_MLKEM768_SECRET_KEY_SIZE];
+  uint32_t client_public_length = 32U;
   if (crypto_random_bytes(client_private, sizeof(client_private)) != 0 ||
-      xaios_x25519_base(client_public, client_private) != 0) return -19;
-  uint8_t init[37];
+      xaios_x25519_base(client_public + (hybrid != 0U
+                                            ? SSH_MLKEM768_PUBLIC_KEY_SIZE
+                                            : 0U),
+                        client_private) != 0) return -19;
+  if (hybrid != 0U) {
+    if (ssh_mlkem768_keypair(client_public, mlkem_secret_key) != 0) return -19;
+    client_public_length = sizeof(client_public);
+  }
+  uint8_t init[SSH_MLKEM768_PUBLIC_KEY_SIZE + 32U + 5U];
   init[0] = SSH_MSG_KEXDH_INIT;
-  ssh_write_u32_be(init + 1U, 32U);
-  ssh_mem_copy(init + 5U, client_public, 32U);
-  if (ssh_packet_write((int)client->sockfd, init, sizeof(init)) != 0) return -20;
-  ssh_packet_t reply;
-  if (wait_plain_packet(client, &reply, deadline) != 0) return -21;
-  int kex_reply = parse_kex_reply(client, &reply, client_version,
+  ssh_write_u32_be(init + 1U, client_public_length);
+  ssh_mem_copy(init + 5U, client_public, client_public_length);
+  if (ssh_packet_write((int)client->sockfd, init,
+                       client_public_length + 5U) != 0) return -20;
+  if (wait_plain_packet(client, packet, deadline) != 0) return -21;
+  int kex_reply = parse_kex_reply(client, packet, client_version,
                                   sizeof(client_version) - 1U, server_version,
                                   server_version_length, client_kex,
-                                  client_kex_length, server_kex_packet.data,
-                                  server_kex_packet.len, client_private,
-                                  client_public);
+                                  client_kex_length, client->frame_workspace,
+                                  server_kex_length, client_private,
+                                  client_public, client_public_length,
+                                  hybrid != 0U ? mlkem_secret_key : 0);
   if (kex_reply == -2) return -25;
   if (kex_reply != 0) return -21;
   ssh_mem_zero(client_private, sizeof(client_private));
-  ssh_packet_t newkeys;
-  if (wait_plain_packet(client, &newkeys, deadline) != 0 ||
-      newkeys.len != 1U || newkeys.data[0] != SSH_MSG_NEWKEYS) return -22;
+  ssh_mem_zero(mlkem_secret_key, sizeof(mlkem_secret_key));
+  if (wait_plain_packet(client, packet, deadline) != 0 ||
+      packet->len != 1U || packet->data[0] != SSH_MSG_NEWKEYS) return -22;
   uint8_t client_newkeys = SSH_MSG_NEWKEYS;
   if (ssh_packet_write((int)client->sockfd, &client_newkeys, 1U) != 0 ||
-      derive_client_crypto(client->transport) != 0 ||
-      authenticate_password(client, deadline) != 0) return -23;
+      derive_client_crypto(client->transport) != 0) return -23;
+  if (client->use_agent != 0U) {
+#if defined(XAIOS_SSH_CLIENT_APP)
+    if (authenticate_agent(client, deadline) != 0) return -28;
+#else
+    return -28;
+#endif
+  } else if (client->use_identity != 0U) {
+    ssh_identity_t identity;
+    if (ssh_identity_load(client->identity_path, client->password, &identity) !=
+        0) {
+      ssh_mem_zero(&identity, sizeof(identity));
+      return -27;
+    }
+    if (authenticate_public_key(client, deadline, &identity) != 0) {
+      ssh_mem_zero(&identity, sizeof(identity));
+      return -28;
+    }
+    ssh_mem_zero(&identity, sizeof(identity));
+    ssh_mem_zero(client->password, sizeof(client->password));
+    client->password_length = 0U;
+  } else if (authenticate_password(client, deadline) != 0) {
+    return -23;
+  }
   if (open_session_channel(client, outer, deadline) != 0) return -24;
   client->connected = 1U;
   return 0;
@@ -750,22 +1129,33 @@ static int parse_destination(ssh_client_context_t *client, const char *text) {
   uint32_t at = UINT32_MAX;
   uint32_t length = ssh_str_len(text);
   for (uint32_t i = 0U; i < length; ++i) if (text[i] == '@') at = i;
-  if (at == 0U || at == UINT32_MAX || at + 1U >= length ||
-      at >= sizeof(client->user) || length - at >= sizeof(client->host)) {
+  uint32_t host_start = at + 1U;
+  uint32_t host_end = length;
+  if (host_start < length && text[host_start] == '[') {
+    if (length < host_start + 3U || text[length - 1U] != ']') return -1;
+    ++host_start;
+    --host_end;
+  }
+  uint32_t host_length = host_end - host_start;
+  if (at == 0U || at == UINT32_MAX || host_length == 0U ||
+      at >= sizeof(client->user) || host_length >= sizeof(client->host)) {
     return -1;
   }
   ssh_mem_copy(client->user, text, at);
   client->user[at] = '\0';
-  ssh_mem_copy(client->host, text + at + 1U, length - at - 1U);
-  client->host[length - at - 1U] = '\0';
+  ssh_mem_copy(client->host, text + host_start, host_length);
+  client->host[host_length] = '\0';
   return 0;
 }
 
 static int remote_specification(const char *text, uint32_t *colon) {
   uint32_t at = UINT32_MAX;
+  uint32_t bracket = 0U;
   for (uint32_t i = 0U; text[i] != '\0'; ++i) {
     if (text[i] == '@') at = i;
-    if (text[i] == ':' && at != UINT32_MAX && i > at + 1U) {
+    if (text[i] == '[' && at != UINT32_MAX) bracket = 1U;
+    if (text[i] == ']' && bracket != 0U) bracket = 0U;
+    if (text[i] == ':' && bracket == 0U && at != UINT32_MAX && i > at + 1U) {
       *colon = i;
       return 1;
     }
@@ -809,8 +1199,8 @@ static int resolve_local_path(const ssh_channel_t *channel, const char *input,
 
 static void client_usage(const ssh_channel_t *channel, int scp) {
   const char *usage = scp
-      ? "usage: scp [-r] [-P port] SOURCE DESTINATION\r\n"
-      : "usage: ssh [-p port] user@host [command]\r\n";
+      ? "usage: scp [-r] [-i key] [-P port] SOURCE DESTINATION\r\n"
+      : "usage: ssh [-i key] [-p port] user@host [command]\r\n";
   (void)ssh_channel_send_data((int)channel->owner_sockfd, channel->remote_id,
                               (const uint8_t *)usage, ssh_str_len(usage));
 }
@@ -851,6 +1241,20 @@ int ssh_client_prepare(struct ssh_channel *channel, const char *command) {
       }
       if (ssh_str_eq(token, "-r")) {
         client->recursive = 1U;
+        continue;
+      }
+      if (ssh_str_eq(token, "-A")) {
+        client->use_agent = 1U;
+        continue;
+      }
+      if (ssh_str_eq(token, "-i")) {
+        if (next_token(command, &position, client->identity_path,
+                       sizeof(client->identity_path)) != 0) {
+          client_usage(channel, 1);
+          client_release(channel, client);
+          return -1;
+        }
+        client->use_identity = 1U;
         continue;
       }
       if (token[0] == '-') {
@@ -923,6 +1327,20 @@ int ssh_client_prepare(struct ssh_channel *channel, const char *command) {
       }
       continue;
     }
+    if (ssh_str_eq(token, "-A")) {
+      client->use_agent = 1U;
+      continue;
+    }
+    if (ssh_str_eq(token, "-i")) {
+      if (next_token(command, &position, client->identity_path,
+                     sizeof(client->identity_path)) != 0) {
+        client_release(channel, client);
+        client_usage(channel, 0);
+        return -1;
+      }
+      client->use_identity = 1U;
+      continue;
+    }
     if (token[0] == '-') {
       client_release(channel, client);
       client_usage(channel, 0);
@@ -948,6 +1366,31 @@ int ssh_client_prepare(struct ssh_channel *channel, const char *command) {
     client->mode = SSH_CLIENT_MODE_EXEC;
   }
 send_password_prompt:
+  if (client->use_agent != 0U && client->use_identity != 0U) {
+    client_usage(channel, is_scp);
+    client_release(channel, client);
+    return -1;
+  }
+  if (client->use_agent != 0U) {
+    if (output_text(client, "ssh: authenticating with forwarded agent\r\n") != 0)
+      goto agent_failed;
+    int handshake = client_handshake(client, channel);
+    if (handshake != 0) goto agent_failed;
+    if (client->mode == SSH_CLIENT_MODE_SCP_UPLOAD ||
+        client->mode == SSH_CLIENT_MODE_SCP_DOWNLOAD) {
+      int transfer = client_scp_transfer(client);
+      (void)output_text(client, transfer == 0 ? "scp: transfer complete\r\n"
+                                                : "scp: transfer failed\r\n");
+      client_release(channel, client);
+      return transfer == 0 ? 1 : -1;
+    }
+    return 1;
+agent_failed:
+    (void)output_text(client,
+                      "ssh: forwarded-agent authentication failed\r\n");
+    client_release(channel, client);
+    return -1;
+  }
   client->prompting = 1U;
   char prompt[SSH_CLIENT_USER_MAX + SSH_CLIENT_HOST_MAX + 24U];
   uint32_t used = 0U;
@@ -958,9 +1401,16 @@ send_password_prompt:
   prompt[used++] = '@';
   ssh_mem_copy(prompt + used, client->host, host_length);
   used += host_length;
-  static const char suffix[] = "'s password: ";
-  ssh_mem_copy(prompt + used, suffix, sizeof(suffix) - 1U);
-  used += sizeof(suffix) - 1U;
+  static const char password_suffix[] = "'s password: ";
+  static const char passphrase_suffix[] = " key passphrase: ";
+  static const char agent_suffix[] = " forwarded agent: ";
+  const char *suffix = client->use_agent != 0U
+                           ? agent_suffix
+                           : (client->use_identity != 0U ? passphrase_suffix
+                                                        : password_suffix);
+  uint32_t suffix_length = ssh_str_len(suffix);
+  ssh_mem_copy(prompt + used, suffix, suffix_length);
+  used += suffix_length;
   if (ssh_channel_send_data((int)channel->owner_sockfd, channel->remote_id,
                             (const uint8_t *)prompt, used) != 0) {
     client_release(channel, client);
@@ -1011,9 +1461,17 @@ int ssh_client_password_input(struct ssh_channel *channel,
           handshake == -20 || handshake == -21 || handshake == -22) {
         message = "ssh: key exchange failed\r\n";
       }
+      if (handshake == -17) message = "ssh: key exchange initialization failed\r\n";
+      if (handshake == -18) message = "ssh: server key exchange proposal invalid\r\n";
+      if (handshake == -19) message = "ssh: key generation failed\r\n";
+      if (handshake == -20) message = "ssh: key exchange request failed\r\n";
+      if (handshake == -21) message = "ssh: key exchange reply invalid\r\n";
+      if (handshake == -22) message = "ssh: new-keys exchange failed\r\n";
       if (handshake == -23) message = "ssh: authentication failed\r\n";
       if (handshake == -24) message = "ssh: session open failed\r\n";
       if (handshake == -25) message = "ssh: host key verification failed\r\n";
+      if (handshake == -27) message = "ssh: identity file or passphrase invalid\r\n";
+      if (handshake == -28) message = "ssh: public-key authentication failed\r\n";
       (void)output_text(client, message);
       client_release(channel, client);
       return 1;
@@ -1057,25 +1515,25 @@ static int send_channel_data(ssh_client_context_t *client,
     if (client->remote_window == 0U) {
       uint64_t deadline = xaios_clock_nanos() + SSH_CLIENT_TIMEOUT_NS;
       for (;;) {
-        ssh_packet_t packet;
-        if (wait_encrypted_packet(client, &packet, deadline) != 0 ||
-            packet.len == 0U) return -1;
-        if (packet.data[0] == SSH_MSG_CHANNEL_WINDOW_ADJUST &&
-            packet.len >= 9U) {
-          uint32_t added = ssh_read_u32_be(packet.data + 5U);
+        ssh_packet_t *packet = &client->packet_workspace;
+        if (wait_encrypted_packet(client, packet, deadline) != 0 ||
+            packet->len == 0U) return -1;
+        if (packet->data[0] == SSH_MSG_CHANNEL_WINDOW_ADJUST &&
+            packet->len >= 9U) {
+          uint32_t added = ssh_read_u32_be(packet->data + 5U);
           if (UINT32_MAX - client->remote_window < added) return -1;
           client->remote_window += added;
           break;
         }
-        if (packet.data[0] == SSH_MSG_CHANNEL_CLOSE ||
-            packet.data[0] == SSH_MSG_DISCONNECT) return -1;
+        if (packet->data[0] == SSH_MSG_CHANNEL_CLOSE ||
+            packet->data[0] == SSH_MSG_DISCONNECT) return -1;
       }
     }
     uint32_t chunk = length - offset;
     if (chunk > client->remote_window) chunk = client->remote_window;
     if (chunk > client->remote_max_packet) chunk = client->remote_max_packet;
     if (chunk > SSH_MAX_PACKET_SIZE - 9U) chunk = SSH_MAX_PACKET_SIZE - 9U;
-    uint8_t packet[SSH_MAX_PACKET_SIZE];
+    uint8_t *packet = client->packet_workspace.data;
     packet[0] = SSH_MSG_CHANNEL_DATA;
     ssh_write_u32_be(packet + 1U, client->remote_channel);
     ssh_write_u32_be(packet + 5U, chunk);
@@ -1135,7 +1593,7 @@ static int path_join(char *output, uint32_t capacity, const char *parent,
 static int sftp_send_message(ssh_client_context_t *client,
                              const uint8_t *payload, uint32_t payload_length) {
   if (payload_length > SSH_CLIENT_SFTP_BUFFER - 4U) return -1;
-  uint8_t framed[SSH_CLIENT_SFTP_BUFFER];
+  uint8_t *framed = client->frame_workspace;
   ssh_write_u32_be(framed, payload_length);
   ssh_mem_copy(framed + 4U, payload, payload_length);
   return send_channel_data(client, framed, payload_length + 4U);
@@ -1159,23 +1617,23 @@ static int sftp_receive_message(ssh_client_context_t *client, uint8_t *output,
         return 0;
       }
     }
-    ssh_packet_t packet;
-    if (wait_encrypted_packet(client, &packet, deadline) != 0 ||
-        packet.len == 0U) return -41;
-    if (packet.data[0] == SSH_MSG_CHANNEL_WINDOW_ADJUST && packet.len >= 9U) {
-      uint32_t added = ssh_read_u32_be(packet.data + 5U);
+    ssh_packet_t *packet = &client->packet_workspace;
+    if (wait_encrypted_packet(client, packet, deadline) != 0 ||
+        packet->len == 0U) return -41;
+    if (packet->data[0] == SSH_MSG_CHANNEL_WINDOW_ADJUST && packet->len >= 9U) {
+      uint32_t added = ssh_read_u32_be(packet->data + 5U);
       if (UINT32_MAX - client->remote_window < added) return -1;
       client->remote_window += added;
       continue;
     }
-    if (packet.data[0] == SSH_MSG_CHANNEL_DATA && packet.len >= 9U) {
-      if (ssh_read_u32_be(packet.data + 1U) != client->local_channel)
+    if (packet->data[0] == SSH_MSG_CHANNEL_DATA && packet->len >= 9U) {
+      if (ssh_read_u32_be(packet->data + 1U) != client->local_channel)
         return -1;
-      uint32_t length = ssh_read_u32_be(packet.data + 5U);
-      if (length > packet.len - 9U ||
+      uint32_t length = ssh_read_u32_be(packet->data + 5U);
+      if (length > packet->len - 9U ||
           length > SSH_CLIENT_SFTP_BUFFER - client->sftp_used) return -1;
       ssh_mem_copy(client->sftp_buffer + client->sftp_used,
-                   packet.data + 9U, length);
+                   packet->data + 9U, length);
       client->sftp_used += length;
       if (length > client->receive_window) return -1;
       client->receive_window -= length;
@@ -1191,9 +1649,9 @@ static int sftp_receive_message(ssh_client_context_t *client, uint8_t *output,
       }
       continue;
     }
-    if (packet.data[0] == SSH_MSG_CHANNEL_CLOSE ||
-        packet.data[0] == SSH_MSG_DISCONNECT) return -42;
-    if (packet.data[0] == SSH_MSG_CHANNEL_EXTENDED_DATA) return -43;
+    if (packet->data[0] == SSH_MSG_CHANNEL_CLOSE ||
+        packet->data[0] == SSH_MSG_DISCONNECT) return -42;
+    if (packet->data[0] == SSH_MSG_CHANNEL_EXTENDED_DATA) return -43;
   }
 }
 
@@ -1425,7 +1883,7 @@ static int scp_upload_file(ssh_client_context_t *client, const char *local_path,
     (void)xaios_fs_close(local);
     return -23;
   }
-  uint8_t request[SSH_CLIENT_PACKET];
+  uint8_t *request = client->request_workspace;
   uint64_t offset = 0U;
   int result = 0;
   while (offset < stat.size) {
@@ -1449,7 +1907,7 @@ static int scp_upload_file(ssh_client_context_t *client, const char *local_path,
       result = -25; break;
     }
     uint32_t response_length = 0U;
-    if (sftp_receive_message(client, request, sizeof(request), &response_length,
+    if (sftp_receive_message(client, request, SSH_CLIENT_PACKET, &response_length,
                              deadline) != 0 ||
         sftp_expect_status(request, response_length, request_id, 0U) != 0) {
       xaios_log("ssh-client: scp remote write status failed\n");
@@ -1489,7 +1947,7 @@ static int scp_download_file(ssh_client_context_t *client,
     (void)sftp_close_remote(client, handle, handle_length, deadline);
     return -32;
   }
-  uint8_t request[SSH_CLIENT_PACKET];
+  uint8_t *request = client->request_workspace;
   uint64_t offset = 0U;
   int result = 0;
   for (;;) {
@@ -1504,7 +1962,7 @@ static int scp_download_file(ssh_client_context_t *client,
       result = -1; break;
     }
     uint32_t response_length = 0U;
-    if (sftp_receive_message(client, request, sizeof(request), &response_length,
+    if (sftp_receive_message(client, request, SSH_CLIENT_PACKET, &response_length,
                              deadline) != 0 || response_length < 5U ||
         ssh_read_u32_be(request + 1U) != request_id) {
       result = -1; break;
@@ -1710,26 +2168,26 @@ int ssh_client_tick(struct ssh_channel *channel, uint64_t now_ns) {
   ssh_client_context_t *client = client_for_channel(channel);
   if (client == 0 || client->connected == 0U) return 0;
   for (uint32_t iteration = 0U; iteration < 8U; ++iteration) {
-    ssh_packet_t packet;
-    int result = ssh_packet_read_encrypted((int)client->sockfd, &packet);
+    ssh_packet_t *packet = &client->packet_workspace;
+    int result = ssh_packet_read_encrypted((int)client->sockfd, packet);
     if (result > 0) return 0;
-    if (result < 0 || packet.len == 0U) {
+    if (result < 0 || packet->len == 0U) {
       (void)output_text(client, "\r\nssh: connection closed with protocol error\r\n");
       client_release(channel, client);
       return 1;
     }
-    uint8_t type = packet.data[0];
+    uint8_t type = packet->data[0];
     if ((type == SSH_MSG_CHANNEL_DATA ||
-         type == SSH_MSG_CHANNEL_EXTENDED_DATA) && packet.len >= 9U) {
+         type == SSH_MSG_CHANNEL_EXTENDED_DATA) && packet->len >= 9U) {
       uint32_t string_offset = type == SSH_MSG_CHANNEL_DATA ? 5U : 9U;
-      if (type == SSH_MSG_CHANNEL_EXTENDED_DATA && packet.len < 13U)
+      if (type == SSH_MSG_CHANNEL_EXTENDED_DATA && packet->len < 13U)
         return -1;
-      uint32_t length = ssh_read_u32_be(packet.data + string_offset);
+      uint32_t length = ssh_read_u32_be(packet->data + string_offset);
       string_offset += 4U;
-      if (length > packet.len - string_offset) return -1;
+      if (length > packet->len - string_offset) return -1;
       if (ssh_channel_send_data((int)client->outer_sockfd,
                                 client->outer_remote_id,
-                                packet.data + string_offset, length) != 0)
+                                packet->data + string_offset, length) != 0)
         return -1;
       if (length > client->receive_window) return -1;
       client->receive_window -= length;
@@ -1743,15 +2201,15 @@ int ssh_client_tick(struct ssh_channel *channel, uint64_t now_ns) {
                                        sizeof(adjust)) != 0) return -1;
         client->receive_window += added;
       }
-    } else if (type == SSH_MSG_CHANNEL_WINDOW_ADJUST && packet.len >= 9U) {
-      uint32_t added = ssh_read_u32_be(packet.data + 5U);
+    } else if (type == SSH_MSG_CHANNEL_WINDOW_ADJUST && packet->len >= 9U) {
+      uint32_t added = ssh_read_u32_be(packet->data + 5U);
       if (UINT32_MAX - client->remote_window < added) return -1;
       client->remote_window += added;
-    } else if (type == SSH_MSG_CHANNEL_REQUEST && packet.len >= 9U) {
-      uint32_t name_length = ssh_read_u32_be(packet.data + 5U);
-      if (name_length == 11U && packet.len >= 25U &&
-          bytes_equal(packet.data + 9U, (const uint8_t *)"exit-status", 11U)) {
-        client->exit_status = ssh_read_u32_be(packet.data + 21U);
+    } else if (type == SSH_MSG_CHANNEL_REQUEST && packet->len >= 9U) {
+      uint32_t name_length = ssh_read_u32_be(packet->data + 5U);
+      if (name_length == 11U && packet->len >= 25U &&
+          bytes_equal(packet->data + 9U, (const uint8_t *)"exit-status", 11U)) {
+        client->exit_status = ssh_read_u32_be(packet->data + 21U);
       }
     } else if (type == SSH_MSG_CHANNEL_EOF) {
       (void)client_send_close(client);
@@ -1763,9 +2221,9 @@ int ssh_client_tick(struct ssh_channel *channel, uint64_t now_ns) {
         (void)output_text(client, "ssh: remote command failed\r\n");
       client_release(channel, client);
       return 1;
-    } else if (type == SSH_MSG_GLOBAL_REQUEST && packet.len >= 6U) {
-      uint32_t name_length = ssh_read_u32_be(packet.data + 1U);
-      if (name_length <= packet.len - 6U && packet.data[5U + name_length] != 0U) {
+    } else if (type == SSH_MSG_GLOBAL_REQUEST && packet->len >= 6U) {
+      uint32_t name_length = ssh_read_u32_be(packet->data + 1U);
+      if (name_length <= packet->len - 6U && packet->data[5U + name_length] != 0U) {
         uint8_t failure = SSH_MSG_REQUEST_FAILURE;
         if (ssh_packet_write_encrypted((int)client->sockfd, &failure, 1U) != 0)
           return -1;

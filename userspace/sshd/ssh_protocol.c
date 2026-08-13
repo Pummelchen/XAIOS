@@ -114,13 +114,26 @@ int ssh_packet_read(int sockfd, ssh_packet_t *pkt) {
     if (conn->plaintext_rx_used < conn->plaintext_rx_expected) return 1;
   }
 
+  if (ssh_packet_decode_plain(wire, conn->plaintext_rx_expected, pkt) != 0)
+    return -1;
+  conn->plaintext_rx_used = 0;
+  conn->plaintext_rx_expected = 0;
+  return 0;
+}
+
+int ssh_packet_decode_plain(const uint8_t *wire, uint32_t wire_len,
+                            ssh_packet_t *pkt) {
+  if (wire == 0 || pkt == 0 || wire_len < 5U) return -1;
+  uint32_t packet_len = ssh_read_u32_be(wire);
+  if (packet_len < 5U || packet_len > SSH_PLAINTEXT_PACKET_SIZE ||
+      packet_len > wire_len - 4U || packet_len + 4U != wire_len) {
+    return -1;
+  }
   uint32_t padding = wire[4];
   if (padding < 4U || padding >= packet_len) return -1;
   pkt->len = packet_len - padding - 1U;
   if (pkt->len > sizeof(pkt->data)) return -1;
   ssh_mem_copy(pkt->data, wire + 5U, pkt->len);
-  conn->plaintext_rx_used = 0;
-  conn->plaintext_rx_expected = 0;
   return 0;
 }
 
