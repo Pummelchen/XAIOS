@@ -1,6 +1,6 @@
 # Project Tracker
 
-Last reviewed: 2026-08-12.
+Last reviewed: 2026-08-13.
 
 This is the only human-maintained XAIOS project tracker. Roadmaps, milestones,
 phase plans, open decisions, and risks are consolidated here. The Wiki does not
@@ -69,11 +69,7 @@ an available symbol is not proof of conformance.
 
 | ID | Item | Status | Evidence / remaining boundary |
 |---|---|---|---|
-| O-U1 | Split outbound `ssh`/`scp` from the persistent SSH service | `NOT STARTED` | File, text, archive, and observability utilities are isolated ELFs without increasing the 50-syscall ABI. Correct client separation requires asynchronous child-channel IPC so password prompts and PTY traffic remain serviceable; no such ABI exists yet. |
-| N-E4 | DNSSEC, TCP fallback, complete AAAA results | `NOT STARTED` | These remain explicit network limitations. |
-| N-F1 | Hybrid post-quantum SSH KEX | `NOT STARTED` | Current interoperable suite is classical curve25519 only. |
-| N-F2 | Outbound public-key auth, IPv6 active open, forwarding/agents/jump hosts | `NOT STARTED` | Outbound SSH/SCP currently uses password auth over IPv4/DNS A. |
-| N-F3Q | Hostile-network fuzzing and emulated adversarial soak | `IN PROGRESS` | Deterministic sanitizer coverage includes 50,000 malformed IPv4/IPv6 fragment cases plus SSH/SFTP/DNS malformed corpora and concurrent QEMU load. Close after coverage-guided fuzzing, packet loss/reorder/corruption injection, resource-exhaustion cases, and a documented long-duration ARM64/x86_64 QEMU soak pass. |
+| N-F3Q | Hostile-network fuzzing and emulated adversarial soak | `FAILED` | Coverage-guided SSH/SFTP/DNS fuzzing, packet loss/reorder/corruption injection, connection/channel resource exhaustion with recovery, and the 20-boot x86_64 QEMU soak pass. The latest `make qemu-network-adversarial-gate` run failed on the first repeated AArch64 smoke iteration, so this item remains open until that regression is fixed and a documented long-duration dual-architecture soak passes. |
 | N-F3P | Physical SSH/network security qualification | `IN PROGRESS` | Consolidated QEMU network/SSH readiness evidence is available through `make qemu-qualification-readiness`; physical lossy-link, sustained-load, side-channel analysis, and independent SSH/cryptography review remain open. QEMU evidence cannot close this item. |
 
 ## Storage phases

@@ -18,7 +18,7 @@ REQUIRED = {
     "wiki/Project-Tracker.md": [
         "Physical Apple/ARM, Intel desktop, and Xeon qualification",
         "Thread-safe libc contexts for XAIOS native threads",
-        "DNSSEC, TCP fallback, complete AAAA results",
+        "Hostile-network fuzzing and emulated adversarial soak",
         "S-11Q QEMU NVMe async/multiqueue/SGL/cancellation/direct-buffer path",
         "S-11P Physical production NVMe qualification",
     ],
