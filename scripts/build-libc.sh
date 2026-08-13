@@ -62,12 +62,14 @@ for arch in $ARCHES; do
     -Dio-wchar=true \
     -Dmb-capable=true \
     -Dstdio-exit-flush=true \
+    -Dstdio-locking=true \
     -Dwant-math-errno=true \
     -Dtmpdir=/tmp/ \
     -Dinternal-heap=262144 \
     -Dthread-local-storage=false \
     -Dthread-local-storage-api=false \
-    -Dnewlib-global-errno=true
+    -Dnewlib-global-errno=false \
+    -Derrno-function=__xaios_libc_errno_location
   ninja -C "$build"
   DESTDIR="$install" meson install -C "$build" --no-rebuild
   python3 "$ROOT/scripts/prepare-libc-sysroot.py" \

@@ -63,7 +63,7 @@ an available symbol is not proof of conformance.
 
 | ID | Item | Status | Evidence / remaining gate |
 |---|---|---|---|
-| L-14 | Thread-safe libc contexts for XAIOS native threads | `NOT STARTED` | Optional non-ISO extension: per-thread `errno`, allocator/stream locks and concurrency gates without a new syscall ID. |
+| L-14 | Thread-safe libc contexts for XAIOS native threads | `TESTING` | Stack-bound per-thread `errno`, allocator/stream locks and a concurrent hosted C99 gate are implemented without a new syscall ID; AArch64/x86_64 QEMU evidence is pending this change's full gate. |
 
 ## Core OS, network, and SSH phases
 

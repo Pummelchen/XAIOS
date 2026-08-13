@@ -73,6 +73,12 @@ static uint32_t g_transient_process_busy;
 static uint32_t g_transient_process_owner_cpu;
 static uint32_t g_transient_process_depth;
 
+typedef struct xaios_async_process_context {
+  xaios_user_process_t process;
+  xaios_user_process_async_complete_fn complete;
+  void *opaque;
+} xaios_async_process_context_t;
+
 extern uint64_t aarch64_enter_user(uint64_t entry, uint64_t stack,
                                    uint64_t argc, uint64_t argv);
 
@@ -895,6 +901,83 @@ int user_process_run_concurrent(const xaios_user_process_t *process) {
   klog("user: concurrent exited pid=%u exit_code=%u\n",
        g_current_process->pid, (unsigned)exit_code);
   return exit_code;
+}
+
+static uint64_t async_process_worker(void *opaque) {
+  xaios_async_process_context_t *context =
+      (xaios_async_process_context_t *)opaque;
+  if (context == 0) return UINT64_MAX;
+  uint32_t pid = context->process.pid;
+  int exit_code = user_process_run(&context->process);
+  user_process_reclaim_address_space(&context->process);
+  user_clear_current_process();
+  vmm_activate_kernel();
+  if (context->complete != 0) {
+    context->complete(pid, exit_code, context->opaque);
+  }
+  (void)user_process_reap(pid);
+  kheap_free(context);
+  return (uint64_t)(uint32_t)exit_code;
+}
+
+xaios_status_t user_process_start_async(
+    const xaios_initramfs_file_t *file, uint64_t capability_mask,
+    uint32_t argc, const char *const argv[], uint32_t parent_pid,
+    xaios_user_process_async_ready_fn ready,
+    xaios_user_process_async_complete_fn complete, void *opaque,
+    uint32_t *child_pid, uint64_t *thread_id) {
+  if (file == 0 || argc == 0U || argv == 0 || parent_pid == 0U ||
+      child_pid == 0 || thread_id == 0) {
+    return XAIOS_ERR_INVALID;
+  }
+  uint32_t pid = 0U;
+  for (uint32_t candidate = XAIOS_TRANSIENT_PID_FIRST;
+       candidate <= XAIOS_MAX_USER_PROCESSES; ++candidate) {
+    if (g_process_table[candidate - 1U].state == XAIOS_USER_PROCESS_EMPTY) {
+      pid = candidate;
+      break;
+    }
+  }
+  if (pid == 0U) return XAIOS_ERR_BUSY;
+
+  xaios_async_process_context_t *context =
+      (xaios_async_process_context_t *)kheap_calloc(sizeof(*context), 16U);
+  if (context == 0) return XAIOS_ERR_NO_MEMORY;
+  xaios_status_t status = user_load_process(file, pid, capability_mask,
+                                            &context->process);
+  if (status == XAIOS_OK) {
+    status = user_process_set_arguments(&context->process, argc, argv);
+  }
+  if (status == XAIOS_OK) {
+    status = user_process_make_runnable(pid, parent_pid);
+  }
+  if (status != XAIOS_OK) {
+    user_process_reclaim_address_space(&context->process);
+    (void)user_process_reap(pid);
+    kheap_free(context);
+    return status;
+  }
+  context->complete = complete;
+  context->opaque = opaque;
+  if (ready != 0 && ready(pid, opaque) != XAIOS_OK) {
+    user_process_reclaim_address_space(&context->process);
+    (void)user_process_reap(pid);
+    kheap_free(context);
+    return XAIOS_ERR_INVALID;
+  }
+  status = xaios_thread_create_detached_off_current_cpu(async_process_worker,
+                                                         context);
+  if (status != XAIOS_OK) {
+    user_process_reclaim_address_space(&context->process);
+    (void)user_process_reap(pid);
+    kheap_free(context);
+    return status;
+  }
+  *thread_id = 0U;
+  *child_pid = pid;
+  klog("user: async child pid=%u parent=%u thread=%lu name=%s\n", pid,
+       parent_pid, *thread_id, context->process.name);
+  return XAIOS_OK;
 }
 
 xaios_status_t user_process_run_transient_args(

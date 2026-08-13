@@ -65,6 +65,12 @@ void *xaios_memcpy(void *dst, const void *src, u64 size);
 
 #define XAIOS_REMOTE_LOGIN_SESSION_EXECUTE 1ULL
 #define XAIOS_REMOTE_LOGIN_SESSION_CLOSE 2ULL
+#define XAIOS_REMOTE_LOGIN_SESSION_CHILD_OPEN 3ULL
+#define XAIOS_REMOTE_LOGIN_SESSION_CHILD_WRITE 4ULL
+#define XAIOS_REMOTE_LOGIN_SESSION_CHILD_READ 5ULL
+#define XAIOS_REMOTE_LOGIN_SESSION_CHILD_STATUS 6ULL
+#define XAIOS_REMOTE_LOGIN_SESSION_CHILD_CANCEL 7ULL
+#define XAIOS_REMOTE_LOGIN_SESSION_CHILD_RELEASE 8ULL
 
 #define XAIOS_CAP_STORAGE_READ 2097152ULL
 #define XAIOS_CAP_STORAGE_MOUNT 4194304ULL
@@ -175,6 +181,8 @@ typedef struct xaios_remote_login_session_request {
   u64 output;
   u64 output_size;
   u64 out_size;
+  u64 metadata;
+  u64 metadata_size;
 } xaios_remote_login_session_request_t;
 
 typedef struct xaios_net_external_session_request {
@@ -318,6 +326,15 @@ int xaios_remote_login_session(u64 session_id, const char *user,
                                const char *command, char *output,
                                u64 output_size, u64 *out_size);
 int xaios_remote_login_session_close(u64 session_id);
+int xaios_remote_login_child_open(u64 session_id, const char *command,
+                                  const char *cwd, u64 *child_channel_id);
+int xaios_remote_login_child_write(u64 child_channel_id, const void *data,
+                                   u64 data_size);
+int xaios_remote_login_child_read(u64 child_channel_id, void *data,
+                                  u64 data_size, u64 *out_size);
+int xaios_remote_login_child_status(u64 child_channel_id, u64 *out_status);
+int xaios_remote_login_child_cancel(u64 child_channel_id);
+int xaios_remote_login_child_release(u64 child_channel_id);
 int xaios_console_read(char *value);
 int xaios_console_write(const char *buffer, u64 size);
 u32 xaios_net_local_ipv4(void);

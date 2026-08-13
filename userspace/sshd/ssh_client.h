@@ -16,4 +16,8 @@ void ssh_client_close(struct ssh_channel *channel);
 int ssh_client_is_prompting(const struct ssh_channel *channel);
 int ssh_client_is_active(const struct ssh_channel *channel);
 
+#if defined(XAIOS_SSH_CLIENT_APP)
+void ssh_client_app_set_cwd(const char *cwd);
+#endif
+
 #endif

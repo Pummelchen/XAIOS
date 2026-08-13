@@ -1,6 +1,7 @@
 #include <xaios/agent_protocol.h>
 #include <xaios/arena.h>
 #include <xaios/assert.h>
+#include <xaios/child_channel.h>
 #include <xaios/cpu_ai_runtime.h>
 #include <xaios/control_protocol.h>
 #include <xaios/dns.h>
@@ -366,6 +367,37 @@ static void bytes_copy(void *dst, const void *src, uint64_t size) {
   for (uint64_t i = 0; i < size; ++i) {
     out[i] = in[i];
   }
+}
+
+static void format_u64_decimal(uint64_t value, char output[21]) {
+  char reverse[20];
+  uint32_t count = 0U;
+  do {
+    reverse[count++] = (char)('0' + (value % 10U));
+    value /= 10U;
+  } while (value != 0U);
+  for (uint32_t i = 0U; i < count; ++i) output[i] = reverse[count - i - 1U];
+  output[count] = '\0';
+}
+
+static int command_starts_with(const char *command, const char *name) {
+  uint32_t offset = 0U;
+  uint32_t index = 0U;
+  while (command[offset] == ' ' || command[offset] == '\t') ++offset;
+  while (name[index] != '\0') {
+    if (command[offset + index] != name[index]) return 0;
+    ++index;
+  }
+  return command[offset + index] == '\0' || command[offset + index] == ' ' ||
+         command[offset + index] == '\t';
+}
+
+static xaios_status_t child_process_ready(uint32_t pid, void *opaque) {
+  return child_channel_bind_child((uint64_t)(uintptr_t)opaque, pid);
+}
+
+static void child_process_complete(uint32_t pid, int exit_code, void *opaque) {
+  (void)child_channel_finish((uint64_t)(uintptr_t)opaque, pid, exit_code);
 }
 
 static int is_control_plane_syscall(uint64_t syscall) {
@@ -1049,6 +1081,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     xaios_syscall_remote_login_session_request_t request;
     char user[32];
     char command[256];
+    char cwd[256];
     uint64_t out_size = 0U;
     if (arg1 != sizeof(request) ||
         vmm_validate_user_buffer(arg0, sizeof(request), 0) != XAIOS_OK) {
@@ -1064,10 +1097,138 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       if (request.user != 0U || request.user_size != 0U ||
           request.command != 0U || request.command_size != 0U ||
           request.output != 0U || request.output_size != 0U ||
-          request.out_size != 0U ||
+          request.out_size != 0U || request.metadata != 0U ||
+          request.metadata_size != 0U ||
           remote_login_close_session(request.session_id) != XAIOS_OK) {
         return reject_syscall(syscall, arg0, arg1,
                               "remote-login-session-close-failed");
+      }
+      return complete_control_syscall(0U);
+    }
+    const xaios_user_process_t *caller = user_current_process();
+    uint32_t caller_pid = caller == 0 ? 0U : caller->pid;
+    if (request.action == XAIOS_REMOTE_LOGIN_SESSION_CHILD_OPEN) {
+      const xaios_initramfs_file_t *file = 0;
+      uint64_t channel_id = 0U;
+      uint32_t child_pid = 0U;
+      uint64_t child_thread = 0U;
+      char channel_text[21];
+      const char *argv[4];
+      const char *child_path = 0;
+      if (caller_pid == 0U ||
+          copy_user_string(request.command, request.command_size, command,
+                           sizeof(command)) != XAIOS_OK ||
+          copy_user_string(request.metadata, request.metadata_size, cwd,
+                           sizeof(cwd)) != XAIOS_OK ||
+          request.output != 0U || request.output_size != 0U ||
+          request.out_size == 0U ||
+          vmm_validate_user_buffer(request.out_size, sizeof(channel_id),
+                                   XAIOS_VMM_WRITABLE) != XAIOS_OK) {
+        return reject_syscall(syscall, arg0, arg1, "child-channel-open-denied");
+      }
+      child_path = command_starts_with(command, "scp") ? "/bin/scp" : "/bin/ssh";
+      xaios_status_t child_status = initramfs_lookup(child_path, &file);
+      if (child_status != XAIOS_OK || file == 0 || file->executable == 0U) {
+        return child_status == XAIOS_OK ? XAIOS_ERR_NOT_FOUND : child_status;
+      }
+      child_status = child_channel_open(caller_pid, request.session_id,
+                                        &channel_id);
+      if (child_status != XAIOS_OK) return child_status;
+      format_u64_decimal(channel_id, channel_text);
+      argv[0] = child_path;
+      argv[1] = channel_text;
+      argv[2] = cwd;
+      argv[3] = command;
+      child_status = user_process_start_async(
+              file, XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_NET |
+                        XAIOS_CAP_NET_SOCKET | XAIOS_CAP_FS_READ |
+                        XAIOS_CAP_FS_WRITE | XAIOS_CAP_TIME |
+                        XAIOS_CAP_REMOTE_LOGIN | XAIOS_CAP_RANDOM,
+              4U, argv, caller_pid, child_process_ready,
+              child_process_complete, (void *)(uintptr_t)channel_id,
+              &child_pid, &child_thread);
+      if (child_status != XAIOS_OK) {
+        (void)child_channel_cancel(channel_id, caller_pid);
+        (void)child_channel_release(channel_id, caller_pid);
+        return child_status;
+      }
+      bytes_copy((void *)(uintptr_t)request.out_size, &channel_id,
+                 sizeof(channel_id));
+      klog("child-channel: opened id=%lu parent=%u child=%u detached=%u\n",
+           channel_id, caller_pid, child_pid, child_thread == 0U ? 1U : 0U);
+      return complete_control_syscall(channel_id);
+    }
+    if (request.action == XAIOS_REMOTE_LOGIN_SESSION_CHILD_WRITE) {
+      if (caller_pid == 0U || request.command_size == 0U ||
+          request.command_size > XAIOS_CHILD_CHANNEL_BUFFER_BYTES ||
+          request.user != 0U || request.user_size != 0U ||
+          request.output != 0U || request.output_size != 0U ||
+          request.out_size != 0U || request.metadata != 0U ||
+          request.metadata_size != 0U ||
+          vmm_validate_user_buffer(request.command, request.command_size, 0U) !=
+              XAIOS_OK ||
+          child_channel_write(request.session_id, caller_pid,
+                              (const void *)(uintptr_t)request.command,
+                              request.command_size) != XAIOS_OK) {
+        return reject_syscall(syscall, arg0, arg1, "child-channel-write-failed");
+      }
+      return complete_control_syscall(request.command_size);
+    }
+    if (request.action == XAIOS_REMOTE_LOGIN_SESSION_CHILD_READ) {
+      if (caller_pid == 0U || request.user != 0U || request.user_size != 0U ||
+          request.command != 0U || request.command_size != 0U ||
+          request.metadata != 0U || request.metadata_size != 0U ||
+          request.output_size == 0U ||
+          request.output_size > XAIOS_CHILD_CHANNEL_BUFFER_BYTES ||
+          request.out_size == 0U ||
+          vmm_validate_user_buffer(request.output, request.output_size,
+                                   XAIOS_VMM_WRITABLE) != XAIOS_OK ||
+          vmm_validate_user_buffer(request.out_size, sizeof(out_size),
+                                   XAIOS_VMM_WRITABLE) != XAIOS_OK ||
+          child_channel_read(request.session_id, caller_pid,
+                             (void *)(uintptr_t)request.output,
+                             request.output_size, &out_size) != XAIOS_OK) {
+        return reject_syscall(syscall, arg0, arg1, "child-channel-read-failed");
+      }
+      bytes_copy((void *)(uintptr_t)request.out_size, &out_size,
+                 sizeof(out_size));
+      return complete_control_syscall(out_size);
+    }
+    if (request.action == XAIOS_REMOTE_LOGIN_SESSION_CHILD_STATUS) {
+      uint64_t status = 0U;
+      if (caller_pid == 0U || request.user != 0U || request.user_size != 0U ||
+          request.command != 0U || request.command_size != 0U ||
+          request.output != 0U || request.output_size != 0U ||
+          request.metadata != 0U || request.metadata_size != 0U ||
+          request.out_size == 0U ||
+          vmm_validate_user_buffer(request.out_size, sizeof(status),
+                                   XAIOS_VMM_WRITABLE) != XAIOS_OK ||
+          child_channel_status(request.session_id, caller_pid, &status) !=
+              XAIOS_OK) {
+        return reject_syscall(syscall, arg0, arg1, "child-channel-status-failed");
+      }
+      bytes_copy((void *)(uintptr_t)request.out_size, &status, sizeof(status));
+      return complete_control_syscall(status);
+    }
+    if (request.action == XAIOS_REMOTE_LOGIN_SESSION_CHILD_CANCEL) {
+      if (caller_pid == 0U || request.user != 0U || request.user_size != 0U ||
+          request.command != 0U || request.command_size != 0U ||
+          request.output != 0U || request.output_size != 0U ||
+          request.out_size != 0U || request.metadata != 0U ||
+          request.metadata_size != 0U ||
+          child_channel_cancel(request.session_id, caller_pid) != XAIOS_OK) {
+        return reject_syscall(syscall, arg0, arg1, "child-channel-cancel-failed");
+      }
+      return complete_control_syscall(0U);
+    }
+    if (request.action == XAIOS_REMOTE_LOGIN_SESSION_CHILD_RELEASE) {
+      if (caller_pid == 0U || request.user != 0U || request.user_size != 0U ||
+          request.command != 0U || request.command_size != 0U ||
+          request.output != 0U || request.output_size != 0U ||
+          request.out_size != 0U || request.metadata != 0U ||
+          request.metadata_size != 0U ||
+          child_channel_release(request.session_id, caller_pid) != XAIOS_OK) {
+        return reject_syscall(syscall, arg0, arg1, "child-channel-release-failed");
       }
       return complete_control_syscall(0U);
     }
@@ -1077,6 +1238,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
         copy_user_string(request.command, request.command_size, command,
                          sizeof(command)) != XAIOS_OK ||
         request.output_size == 0U ||
+        request.metadata != 0U || request.metadata_size != 0U ||
         vmm_validate_user_buffer(request.output, request.output_size,
                                  XAIOS_VMM_WRITABLE) != XAIOS_OK ||
         vmm_validate_user_buffer(request.out_size, sizeof(out_size),

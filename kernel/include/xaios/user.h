@@ -59,6 +59,12 @@ typedef struct xaios_cpu_usage_snapshot {
   uint64_t elapsed_ns;
 } xaios_cpu_usage_snapshot_t;
 
+typedef void (*xaios_user_process_async_complete_fn)(uint32_t pid,
+                                                      int exit_code,
+                                                      void *opaque);
+typedef xaios_status_t (*xaios_user_process_async_ready_fn)(uint32_t pid,
+                                                             void *opaque);
+
 void user_process_table_init(void);
 void user_process_lifecycle_self_test(void);
 void user_scheduler_self_test(void);
@@ -102,6 +108,12 @@ xaios_status_t user_process_run_transient(
 xaios_status_t user_process_run_transient_args(
     const xaios_initramfs_file_t *file, uint64_t capability_mask,
     uint32_t argc, const char *const argv[], int *exit_code);
+xaios_status_t user_process_start_async(
+    const xaios_initramfs_file_t *file, uint64_t capability_mask,
+    uint32_t argc, const char *const argv[], uint32_t parent_pid,
+    xaios_user_process_async_ready_fn ready,
+    xaios_user_process_async_complete_fn complete, void *opaque,
+    uint32_t *child_pid, uint64_t *thread_id);
 void user_process_reclaim_address_space(const xaios_user_process_t *process);
 xaios_status_t user_process_reap(uint32_t pid);
 xaios_status_t user_process_terminate(uint32_t pid, int exit_code);

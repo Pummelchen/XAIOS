@@ -177,6 +177,9 @@ def main() -> int:
 
     notice = Path(__file__).resolve().parents[1] / "third_party/picolibc/COPYING.picolibc"
     shutil.copy2(notice, args.output / notice.name)
+    extension_include = Path(__file__).resolve().parents[1] / "userspace/libc/include/xaios"
+    if extension_include.is_dir():
+        shutil.copytree(extension_include, output_include / "xaios", dirs_exist_ok=True)
     manifest = {
         "schema": "xaios.libc.sysroot.v1",
         "architecture": args.arch,
@@ -185,7 +188,8 @@ def main() -> int:
         "private_dependency_headers": sorted(copied - set(ISO_HEADERS)),
         "archives": archives,
         "picolibc_commit": "2ae376c6cdf4fef90ca2388ecf7a07457fa63cff",
-        "tls_status": "disabled-until-xaios-thread-pointer-gate-passes",
+        "tls_status": "not-required-for-xaios-stack-bound-libc-contexts",
+        "xaios_extension_headers": ["xaios/thread.h"],
     }
     (args.output / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n"

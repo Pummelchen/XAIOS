@@ -173,7 +173,7 @@ def main() -> int:
         session.expect(PASSWORD_PROMPT, "outbound password prompt")
         session.send("definitely-wrong-password\n")
         session.expect(
-            b"ssh: connection or authentication failed",
+            b"ssh: authentication failed",
             "wrong-password rejection",
         )
         session.expect(PROMPT, "XAIOS shell prompt")

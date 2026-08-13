@@ -26,7 +26,9 @@ def main() -> int:
         "ld.lld", "-nostdlib", "--gc-sections", "-T",
         str(ROOT / "userspace/libc/linker.ld"), "-o", str(output),
         str(runtime / "crt0.o"), str(runtime / "runtime.o"),
-        str(runtime / "os_adapter.o"), str(runtime / "c99_runtime_smoke.o"),
+        str(runtime / "os_adapter.o"), str(runtime / "thread_context.o"),
+        str(runtime / "locking.o"), str(runtime / "thread_api.o"),
+        str(runtime / "c99_runtime_smoke.o"),
         str(runtime / "c99_conformance_suite.o"),
         str(runtime / "c99_language_conformance.o"),
     ]

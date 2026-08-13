@@ -21,6 +21,7 @@ typedef struct xaios_thread_record {
   uint32_t running_cpu;
   uint32_t owner_pid;
   uint32_t release_context;
+  uint32_t detached;
   xaios_thread_state_t state;
 } xaios_thread_record_t;
 
@@ -96,7 +97,8 @@ void xaios_thread_runtime_init(void) {
 
 static xaios_status_t thread_create_on_cpu(
     xaios_thread_entry_t entry, void *context, uint32_t target_cpu,
-    uint32_t owner_pid, uint32_t release_context, uint64_t *thread_id) {
+    uint32_t owner_pid, uint32_t release_context, uint32_t detached,
+    uint64_t *thread_id) {
   const xaios_cpu_state_t *cpu = smp_cpu_state(target_cpu);
   if (entry == 0 || thread_id == 0 || g_threads == 0 || cpu == 0 ||
       cpu->online == 0U) {
@@ -125,6 +127,7 @@ static xaios_status_t thread_create_on_cpu(
   slot->running_cpu = UINT32_MAX;
   slot->owner_pid = owner_pid;
   slot->release_context = release_context;
+  slot->detached = detached;
   __atomic_store_n(&slot->state, XAIOS_THREAD_PENDING, __ATOMIC_RELEASE);
   *thread_id = id;
   xaios_spin_unlock(&g_thread_lock);
@@ -145,7 +148,47 @@ xaios_status_t xaios_thread_create(xaios_thread_entry_t entry, void *context,
       return XAIOS_ERR_INVALID;
     }
   }
-  return thread_create_on_cpu(entry, context, target_cpu, 0U, 0U, thread_id);
+  return thread_create_on_cpu(entry, context, target_cpu, 0U, 0U, 0U,
+                              thread_id);
+}
+
+xaios_status_t xaios_thread_create_off_current_cpu(
+    xaios_thread_entry_t entry, void *context, uint64_t *thread_id) {
+  uint32_t current_cpu = smp_cpu_id();
+  uint32_t online = smp_online_count();
+  for (uint32_t ordinal = 0U; ordinal < online; ++ordinal) {
+    uint32_t target_cpu = 0U;
+    if (smp_cpu_id_at(ordinal, &target_cpu) != XAIOS_OK ||
+        target_cpu == current_cpu) continue;
+    const xaios_cpu_state_t *cpu = smp_cpu_state(target_cpu);
+    if (cpu == 0 || cpu->online == 0U ||
+        cpu->role != XAIOS_CPU_ROLE_SCHEDULING || cpu->lease_owner_id != 0U) {
+      continue;
+    }
+    return thread_create_on_cpu(entry, context, target_cpu, 0U, 0U, 0U,
+                                thread_id);
+  }
+  return XAIOS_ERR_UNSUPPORTED;
+}
+
+xaios_status_t xaios_thread_create_detached_off_current_cpu(
+    xaios_thread_entry_t entry, void *context) {
+  uint32_t current_cpu = smp_cpu_id();
+  uint32_t online = smp_online_count();
+  uint64_t ignored_id = 0U;
+  for (uint32_t ordinal = 0U; ordinal < online; ++ordinal) {
+    uint32_t target_cpu = 0U;
+    if (smp_cpu_id_at(ordinal, &target_cpu) != XAIOS_OK ||
+        target_cpu == current_cpu) continue;
+    const xaios_cpu_state_t *cpu = smp_cpu_state(target_cpu);
+    if (cpu == 0 || cpu->online == 0U ||
+        cpu->role != XAIOS_CPU_ROLE_SCHEDULING || cpu->lease_owner_id != 0U) {
+      continue;
+    }
+    return thread_create_on_cpu(entry, context, target_cpu, 0U, 0U, 1U,
+                                &ignored_id);
+  }
+  return XAIOS_ERR_UNSUPPORTED;
 }
 
 static xaios_status_t select_user_cpu(uint32_t preferred_cpu,
@@ -230,7 +273,7 @@ xaios_status_t xaios_user_thread_create(uint64_t entry, uint64_t argument,
   context->return_address = return_address;
   context->owner_pid = owner_pid;
   status = thread_create_on_cpu(user_thread_worker, context, target_cpu,
-                                owner_pid, 1U, thread_id);
+                                owner_pid, 1U, 0U, thread_id);
   if (status != XAIOS_OK) {
     kheap_free(context);
   } else {
@@ -268,7 +311,11 @@ uint32_t xaios_thread_run_pending(uint32_t cpu_id) {
     klog("threads: user complete id=%lu owner=%u cpu=%u result=%lu\n",
          claimed->id, claimed->owner_pid, cpu_id, result);
   }
-  __atomic_store_n(&claimed->state, XAIOS_THREAD_COMPLETE, __ATOMIC_RELEASE);
+  if (claimed->detached != 0U) {
+    bytes_zero(claimed, sizeof(*claimed));
+  } else {
+    __atomic_store_n(&claimed->state, XAIOS_THREAD_COMPLETE, __ATOMIC_RELEASE);
+  }
   xaios_cpu_notify();
   return 1U;
 }

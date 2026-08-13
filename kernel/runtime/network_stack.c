@@ -11,6 +11,7 @@
 #include <xaios/ntp.h>
 #include <xaios/operations.h>
 #include <xaios/network_stack.h>
+#include <xaios/spinlock.h>
 #include <xaios/routing.h>
 #include <xaios/socket_buffer.h>
 #include <xaios/timer.h>
@@ -264,6 +265,9 @@ static uint64_t g_next_flow_id = 1U;
 static network_packet_desc_t g_packet_descs[NETWORK_PACKET_DESCRIPTORS];
 static network_udp_flow_t g_udp_flows[NETWORK_UDP_FLOWS];
 static network_tcp_flow_t g_tcp_flows[NETWORK_TCP_CONNECTIONS];
+
+/* VirtIO RX/TX and the TCP table are shared by service and child CPUs. */
+static xaios_spinlock_t g_network_poll_lock = XAIOS_SPINLOCK_INIT;
 
 /* Bound half-open state so SYN floods cannot exhaust the flow table. */
 #define NETWORK_TCP_MAX_HALF_OPEN 8U
@@ -1646,9 +1650,11 @@ xaios_status_t network_stack_tcp_open(const xaios_ip_addr_t *remote_addr,
                                       uint16_t remote_port,
                                       uint16_t local_port,
                                       uint32_t *out_flow_id) {
+  xaios_status_t status = XAIOS_ERR_INVALID;
   if (remote_addr == 0 || out_flow_id == 0 || remote_port == 0U ||
       local_port == 0U || remote_addr->family != XAIOS_IP_FAMILY_V4)
     return XAIOS_ERR_INVALID;
+  xaios_spin_lock(&g_network_poll_lock);
   uint32_t remote_address = (uint32_t)remote_addr->addr[0] |
                             ((uint32_t)remote_addr->addr[1] << 8U) |
                             ((uint32_t)remote_addr->addr[2] << 16U) |
@@ -1656,13 +1662,19 @@ xaios_status_t network_stack_tcp_open(const xaios_ip_addr_t *remote_addr,
   uint32_t local_address = UINT32_C(10) | (UINT32_C(2) << 16U) |
                            (UINT32_C(15) << 24U);
   if (find_flow_by_ports(local_port, remote_port, remote_address) != 0)
-    return XAIOS_ERR_BUSY;
+    goto busy;
   network_queue_binding_t *binding = select_binding_for_flow(
       local_port, remote_port, local_address, remote_address);
-  if (binding == 0) return XAIOS_ERR_NOT_FOUND;
+  if (binding == 0) {
+    status = XAIOS_ERR_NOT_FOUND;
+    goto out;
+  }
   network_tcp_flow_t *flow = alloc_tcp_flow(local_port, remote_port,
                                             remote_address, remote_addr);
-  if (flow == 0) return XAIOS_ERR_NO_MEMORY;
+  if (flow == 0) {
+    status = XAIOS_ERR_NO_MEMORY;
+    goto out;
+  }
   flow->flow_id = (uint32_t)(g_next_flow_id++);
   if (flow->flow_id == 0U) {
     flow->flow_id = 1U;
@@ -1687,25 +1699,39 @@ xaios_status_t network_stack_tcp_open(const xaios_ip_addr_t *remote_addr,
   if (flow->rx_buf == 0 || flow->tx_buf == 0) {
     if (g_half_open_count > 0U) --g_half_open_count;
     release_tcp_flow(flow);
-    return XAIOS_ERR_NO_MEMORY;
+    status = XAIOS_ERR_NO_MEMORY;
+    goto out;
   }
   flow->state = XAIOS_NETWORK_FLOW_SYN_SENT;
   *out_flow_id = flow->flow_id;
   klog("network: active TCP open flow=%u local=%u remote=%u\n",
        flow->flow_id, local_port, remote_port);
-  return XAIOS_OK;
+  status = XAIOS_OK;
+  goto out;
+
+busy:
+  status = XAIOS_ERR_BUSY;
+out:
+  xaios_spin_unlock(&g_network_poll_lock);
+  return status;
 }
 
 xaios_status_t network_stack_tcp_open_status(uint32_t flow_id) {
+  xaios_status_t status = XAIOS_ERR_NOT_FOUND;
+  xaios_spin_lock(&g_network_poll_lock);
   for (uint32_t i = 0U; i < NETWORK_TCP_CONNECTIONS; ++i) {
     if (g_tcp_flows[i].flow_id != flow_id) continue;
-    if (g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_ESTABLISHED)
-      return XAIOS_OK;
-    if (g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_SYN_SENT)
-      return XAIOS_ERR_BUSY;
-    return XAIOS_ERR_IO;
+    if (g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_ESTABLISHED) {
+      status = XAIOS_OK;
+    } else if (g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_SYN_SENT) {
+      status = XAIOS_ERR_BUSY;
+    } else {
+      status = XAIOS_ERR_IO;
+    }
+    break;
   }
-  return XAIOS_ERR_NOT_FOUND;
+  xaios_spin_unlock(&g_network_poll_lock);
+  return status;
 }
 
 xaios_status_t network_stack_tcp_abort_flow(uint32_t flow_id) {
@@ -1725,6 +1751,7 @@ xaios_status_t network_stack_tcp_abort_flow(uint32_t flow_id) {
 }
 
 void network_stack_init(void) {
+  xaios_spin_init(&g_network_poll_lock);
   g_tcp_drain_cursor = 0U;
   for (uint32_t i = 0; i < XAIOS_NETWORK_MAX_QUEUE_BINDINGS; ++i) {
     g_queue_bindings[i].cell_id = 0;
@@ -4481,7 +4508,7 @@ static int network_reassemble_incoming(uint8_t *frame, uint32_t *frame_len,
   return 1;
 }
 
-void network_poll_tick(void) {
+static void network_poll_tick_locked(void) {
   operations_tick();
   if (g_persistent_initialized == 0) {
     return;
@@ -4632,6 +4659,12 @@ void network_poll_tick(void) {
   network_stack_retransmit_tcp_flows(now_ns);
   network_stack_expire_tcp_flows(now_ns);
   tcp_drain_pending();
+}
+
+void network_poll_tick(void) {
+  xaios_spin_lock(&g_network_poll_lock);
+  network_poll_tick_locked();
+  xaios_spin_unlock(&g_network_poll_lock);
 }
 
 uint64_t network_poll_tick_count(void) {

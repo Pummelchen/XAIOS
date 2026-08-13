@@ -59,6 +59,20 @@ typedef struct ssh_client_context {
 } ssh_client_context_t;
 
 static ssh_client_context_t g_clients[SSH_CLIENT_CONTEXTS];
+static uint32_t string_copy(char *output, uint32_t capacity,
+                            const char *input);
+
+#if defined(XAIOS_SSH_CLIENT_APP)
+static char g_client_app_cwd[SSH_CLIENT_PATH_MAX];
+
+void ssh_client_app_set_cwd(const char *cwd) {
+  if (cwd == 0) {
+    g_client_app_cwd[0] = '\0';
+    return;
+  }
+  (void)string_copy(g_client_app_cwd, sizeof(g_client_app_cwd), cwd);
+}
+#endif
 
 static int client_scp_transfer(ssh_client_context_t *client);
 
@@ -469,7 +483,7 @@ static int parse_kex_reply(ssh_client_context_t *client,
   ssh_mem_zero(&hash, sizeof(hash));
   if (xaios_ed25519_verify(signature, client->transport->exchange_hash, 32U,
                            host_public) != 0) return -1;
-  return verify_known_host(client, host_public);
+  return verify_known_host(client, host_public) == 0 ? 0 : -2;
 }
 
 static int send_service_request(ssh_client_context_t *client,
@@ -620,12 +634,11 @@ static int client_handshake(ssh_client_context_t *client,
                             const ssh_channel_t *outer) {
   uint64_t deadline = xaios_clock_nanos() + SSH_CLIENT_TIMEOUT_NS;
   xaios_ip_addr_user_t address;
-  if (resolve_host(client->host, &address, deadline) != 0 ||
-      xaios_net_connect(&address, client->port, &client->sockfd) != 0) {
-    return -1;
-  }
+  if (resolve_host(client->host, &address, deadline) != 0) return -10;
+  if (xaios_net_connect(&address, client->port, &client->sockfd) != 0)
+    return -26;
   client->transport = ssh_conn_client_alloc();
-  if (client->transport == 0) return -1;
+  if (client->transport == 0) return -11;
   client->transport->sockfd = client->sockfd;
 
   static const uint8_t client_version[] = "SSH-2.0-XAIOS_Client_1.0";
@@ -633,20 +646,20 @@ static int client_handshake(ssh_client_context_t *client,
   u64 sent = 0U;
   if (xaios_net_send(client->sockfd, client_version_line,
                      sizeof(client_version_line) - 1U, &sent) != 0 ||
-      sent != sizeof(client_version_line) - 1U) return -1;
+      sent != sizeof(client_version_line) - 1U) return -12;
   uint8_t server_version[256];
   uint32_t server_version_length = 0U;
   for (;;) {
     u64 received = 0U;
     if (xaios_net_recv(client->sockfd,
                        server_version + server_version_length, 1U,
-                       &received) != 0) return -1;
+                       &received) != 0) return -13;
     if (received == 0U) {
-      if (xaios_clock_nanos() >= deadline) return -1;
+      if (xaios_clock_nanos() >= deadline) return -14;
       continue;
     }
     if (server_version[server_version_length++] == '\n') break;
-    if (server_version_length == sizeof(server_version)) return -1;
+    if (server_version_length == sizeof(server_version)) return -15;
   }
   while (server_version_length != 0U &&
          (server_version[server_version_length - 1U] == '\r' ||
@@ -654,42 +667,45 @@ static int client_handshake(ssh_client_context_t *client,
     --server_version_length;
   }
   if (server_version_length < 8U ||
-      !bytes_equal(server_version, (const uint8_t *)"SSH-2.0-", 8U)) return -1;
+      !bytes_equal(server_version, (const uint8_t *)"SSH-2.0-", 8U)) return -16;
 
   uint8_t client_kex[512];
   uint32_t client_kex_length = 0U;
   if (build_kexinit(client_kex, sizeof(client_kex), &client_kex_length) != 0 ||
       ssh_packet_write((int)client->sockfd, client_kex, client_kex_length) != 0)
-    return -1;
+    return -17;
   ssh_packet_t server_kex_packet;
   if (wait_plain_packet(client, &server_kex_packet, deadline) != 0 ||
-      validate_server_kexinit(&server_kex_packet) != 0) return -1;
+      validate_server_kexinit(&server_kex_packet) != 0) return -18;
 
   uint8_t client_private[32];
   uint8_t client_public[32];
   if (crypto_random_bytes(client_private, sizeof(client_private)) != 0 ||
-      xaios_x25519_base(client_public, client_private) != 0) return -1;
+      xaios_x25519_base(client_public, client_private) != 0) return -19;
   uint8_t init[37];
   init[0] = SSH_MSG_KEXDH_INIT;
   ssh_write_u32_be(init + 1U, 32U);
   ssh_mem_copy(init + 5U, client_public, 32U);
-  if (ssh_packet_write((int)client->sockfd, init, sizeof(init)) != 0) return -1;
+  if (ssh_packet_write((int)client->sockfd, init, sizeof(init)) != 0) return -20;
   ssh_packet_t reply;
-  if (wait_plain_packet(client, &reply, deadline) != 0 ||
-      parse_kex_reply(client, &reply, client_version,
-                      sizeof(client_version) - 1U, server_version,
-                      server_version_length, client_kex, client_kex_length,
-                      server_kex_packet.data, server_kex_packet.len,
-                      client_private, client_public) != 0) return -1;
+  if (wait_plain_packet(client, &reply, deadline) != 0) return -21;
+  int kex_reply = parse_kex_reply(client, &reply, client_version,
+                                  sizeof(client_version) - 1U, server_version,
+                                  server_version_length, client_kex,
+                                  client_kex_length, server_kex_packet.data,
+                                  server_kex_packet.len, client_private,
+                                  client_public);
+  if (kex_reply == -2) return -25;
+  if (kex_reply != 0) return -21;
   ssh_mem_zero(client_private, sizeof(client_private));
   ssh_packet_t newkeys;
   if (wait_plain_packet(client, &newkeys, deadline) != 0 ||
-      newkeys.len != 1U || newkeys.data[0] != SSH_MSG_NEWKEYS) return -1;
+      newkeys.len != 1U || newkeys.data[0] != SSH_MSG_NEWKEYS) return -22;
   uint8_t client_newkeys = SSH_MSG_NEWKEYS;
   if (ssh_packet_write((int)client->sockfd, &client_newkeys, 1U) != 0 ||
       derive_client_crypto(client->transport) != 0 ||
-      authenticate_password(client, deadline) != 0 ||
-      open_session_channel(client, outer, deadline) != 0) return -1;
+      authenticate_password(client, deadline) != 0) return -23;
+  if (open_session_channel(client, outer, deadline) != 0) return -24;
   client->connected = 1U;
   return 0;
 }
@@ -767,10 +783,16 @@ static int resolve_local_path(const ssh_channel_t *channel, const char *input,
     return 0;
   }
   char cwd[SSH_CLIENT_PATH_MAX];
+#if defined(XAIOS_SSH_CLIENT_APP)
+  (void)channel;
+  uint32_t cwd_length = string_copy(cwd, sizeof(cwd), g_client_app_cwd);
+  if (cwd_length == 0U) return -1;
+#else
   u64 cwd_length = 0U;
   if (xaios_remote_login_session(channel->owner_sockfd, "admin", "pwd", cwd,
                                  sizeof(cwd), &cwd_length) < 0 ||
       cwd_length == 0U || cwd_length >= sizeof(cwd)) return -1;
+#endif
   while (cwd_length != 0U &&
          (cwd[cwd_length - 1U] == '\n' || cwd[cwd_length - 1U] == '\r'))
     --cwd_length;
@@ -972,9 +994,27 @@ int ssh_client_password_input(struct ssh_channel *channel,
       continue;
     }
     client->prompting = 0U;
-    if (output_text(client, "\r\n") != 0 ||
-        client_handshake(client, channel) != 0) {
-      (void)output_text(client, "ssh: connection or authentication failed\r\n");
+    int handshake = client_handshake(client, channel);
+    if (output_text(client, "\r\n") != 0 || handshake != 0) {
+      if (handshake != 0) {
+        xaios_log("ssh-client: handshake failed\n");
+      }
+      const char *message = "ssh: connection or authentication failed\r\n";
+      if (handshake == -10 || handshake == -26)
+        message = "ssh: connection failed\r\n";
+      if (handshake == -11) message = "ssh: client memory unavailable\r\n";
+      if (handshake == -12 || handshake == -13 || handshake == -14 ||
+          handshake == -15 || handshake == -16) {
+        message = "ssh: protocol version exchange failed\r\n";
+      }
+      if (handshake == -17 || handshake == -18 || handshake == -19 ||
+          handshake == -20 || handshake == -21 || handshake == -22) {
+        message = "ssh: key exchange failed\r\n";
+      }
+      if (handshake == -23) message = "ssh: authentication failed\r\n";
+      if (handshake == -24) message = "ssh: session open failed\r\n";
+      if (handshake == -25) message = "ssh: host key verification failed\r\n";
+      (void)output_text(client, message);
       client_release(channel, client);
       return 1;
     }

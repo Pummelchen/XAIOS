@@ -410,6 +410,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/syscall.o
   $KERNEL_BUILD_DIR/core_lease.o
   $KERNEL_BUILD_DIR/security.o
+  $KERNEL_BUILD_DIR/child_channel.o
   $KERNEL_BUILD_DIR/remote_login.o
   $KERNEL_BUILD_DIR/operations.o
   $KERNEL_BUILD_DIR/admin_control.o
@@ -528,6 +529,7 @@ compile_kernel "$ROOT_DIR/kernel/user/service.c" "$KERNEL_BUILD_DIR/service.o"
 compile_kernel "$ROOT_DIR/kernel/user/syscall.c" "$KERNEL_BUILD_DIR/syscall.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/core_lease.c" "$KERNEL_BUILD_DIR/core_lease.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/security.c" "$KERNEL_BUILD_DIR/security.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/child_channel.c" "$KERNEL_BUILD_DIR/child_channel.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login.c" "$KERNEL_BUILD_DIR/remote_login.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/operations.c" "$KERNEL_BUILD_DIR/operations.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/admin_control.c" "$KERNEL_BUILD_DIR/admin_control.o"
@@ -820,7 +822,10 @@ for libc_artifact in \
     "$LIBC_SYSROOT/lib/libcompiler_rt_xaios.a" \
     "$LIBC_RUNTIME/crt0.o" \
     "$LIBC_RUNTIME/runtime_main_void.o" \
-    "$LIBC_RUNTIME/os_adapter.o"; do
+    "$LIBC_RUNTIME/os_adapter.o" \
+    "$LIBC_RUNTIME/thread_context.o" \
+    "$LIBC_RUNTIME/locking.o" \
+    "$LIBC_RUNTIME/thread_api.o"; do
   if [ ! -f "$libc_artifact" ]; then
     LIBC_READY=0
   fi
@@ -849,8 +854,9 @@ if [ "$LIBC_TEST" = 1 ]; then
   LIBC_MAIN_VOID_ELF="$BUILD_DIR/libc/$TARGET_ARCH/runtime-test/c99-main_void.elf"
   LIBC_EXIT_PROBE_ELF="$BUILD_DIR/libc/$TARGET_ARCH/runtime-test/c99-exit_probe.elf"
   LIBC_ABORT_PROBE_ELF="$BUILD_DIR/libc/$TARGET_ARCH/runtime-test/c99-abort_probe.elf"
+  LIBC_THREAD_CONTEXT_ELF="$BUILD_DIR/libc/$TARGET_ARCH/runtime-test/c99-thread-context.elf"
   for libc_probe in "$LIBC_MAIN_VOID_ELF" "$LIBC_EXIT_PROBE_ELF" \
-      "$LIBC_ABORT_PROBE_ELF"; do
+      "$LIBC_ABORT_PROBE_ELF" "$LIBC_THREAD_CONTEXT_ELF"; do
     if [ ! -f "$libc_probe" ]; then
       printf 'error: missing libc probe: %s\n' "$libc_probe" >&2
       exit 1
@@ -859,13 +865,14 @@ if [ "$LIBC_TEST" = 1 ]; then
   set -- "$@" "/bin/c99-runtime-smoke=$LIBC_TEST_ELF" \
     "/bin/c99-main-void=$LIBC_MAIN_VOID_ELF" \
     "/bin/c99-exit-probe=$LIBC_EXIT_PROBE_ELF" \
-    "/bin/c99-abort-probe=$LIBC_ABORT_PROBE_ELF"
+    "/bin/c99-abort-probe=$LIBC_ABORT_PROBE_ELF" \
+    "/bin/c99-thread-context=$LIBC_THREAD_CONTEXT_ELF"
 fi
 
 printf '%s\n' "Building userspace /bin/sshd ELF..."
 SSHD_RESPONSE_FILE="$INIT_BUILD_DIR/sshd-objects.rsp"
 : > "$SSHD_RESPONSE_FILE"
-for sshd_src in sshd.c ssh_crypto.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_client.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
+for sshd_src in sshd.c ssh_crypto.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
   sshd_obj="$INIT_BUILD_DIR/sshd-${sshd_src%.c}.o"
   sshd_opt=""
   if [ "$sshd_src" = "sshd.c" ]; then
@@ -926,6 +933,53 @@ done
   "$USER_CONTROL_OBJ" \
   @"$SSHD_RESPONSE_FILE"
 set -- "$@" "/bin/sshd=$INIT_BUILD_DIR/sshd.elf"
+
+printf '%s\n' "Building userspace /bin/ssh child client ELF..."
+SSH_CLIENT_RESPONSE_FILE="$INIT_BUILD_DIR/ssh-client-objects.rsp"
+: > "$SSH_CLIENT_RESPONSE_FILE"
+for ssh_client_src in ssh.c ssh_client.c ssh_crypto.c tweetnacl_subset.c ssh_protocol.c ssh_connection.c; do
+  ssh_client_obj="$INIT_BUILD_DIR/ssh-client-${ssh_client_src%.c}.o"
+  ssh_client_path="$ROOT_DIR/userspace/apps/$ssh_client_src"
+  if [ "$ssh_client_src" != "ssh.c" ]; then
+    ssh_client_path="$ROOT_DIR/userspace/sshd/$ssh_client_src"
+  fi
+  "$CLANG" \
+    --target="$TARGET_TRIPLE" \
+    $USER_ARCH_CFLAGS \
+    -std=c99 \
+    -ffreestanding \
+    -fno-stack-protector \
+    -fno-builtin \
+    -fno-pic \
+    -fno-pie \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -DXAIOS_SSH_CLIENT_APP=1 \
+    -I"$ROOT_DIR/userspace/include" \
+    -I"$ROOT_DIR/userspace/sshd" \
+    -I"$ROOT_DIR/userspace/apps/terminal" \
+    -c "$ssh_client_path" \
+    -o "$ssh_client_obj"
+  printf '"%s"\n' "$ssh_client_obj" >> "$SSH_CLIENT_RESPONSE_FILE"
+done
+"$LD_LLD" \
+  -nostdlib \
+  -T "$ROOT_DIR/userspace/init/linker.ld" \
+  -o "$INIT_BUILD_DIR/ssh.elf" \
+  "$USER_START_OBJ" \
+  "$USER_LIB_OBJ" \
+  @"$SSH_CLIENT_RESPONSE_FILE"
+"$LD_LLD" \
+  -nostdlib \
+  -T "$ROOT_DIR/userspace/init/linker.ld" \
+  -o "$INIT_BUILD_DIR/scp.elf" \
+  "$USER_START_OBJ" \
+  "$USER_LIB_OBJ" \
+  @"$SSH_CLIENT_RESPONSE_FILE"
+set -- "$@" "/bin/ssh=$INIT_BUILD_DIR/ssh.elf"
+set -- "$@" "/bin/scp=$INIT_BUILD_DIR/scp.elf"
+
 if [ "${XAIOS_AUTHORIZED_KEYS_FILE:-}" != "" ]; then
   if [ ! -f "$XAIOS_AUTHORIZED_KEYS_FILE" ]; then
     printf '%s\n' "error: authorized keys file not found: $XAIOS_AUTHORIZED_KEYS_FILE" >&2

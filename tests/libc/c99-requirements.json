@@ -67,11 +67,13 @@
     "C99-RUNTIME-PASS",
     "C99-ATEXIT-PASS",
     "C99-MAIN-VOID-PASS",
+    "C99-THREAD-CONTEXT-PASS",
     "C99-TERMINATION-PROBES-PASS",
     "kernel: /bin/c99-runtime-smoke returned to kernel exit_code=0",
     "kernel: /bin/c99-main-void returned to kernel exit_code=0",
     "kernel: /bin/c99-exit-probe returned to kernel exit_code=23",
-    "kernel: /bin/c99-abort-probe returned to kernel exit_code=134"
+    "kernel: /bin/c99-abort-probe returned to kernel exit_code=134",
+    "kernel: /bin/c99-thread-context returned to kernel exit_code=0"
   ],
   "syscall_budget": {
     "baseline_count": 50,

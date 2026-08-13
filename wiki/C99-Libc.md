@@ -60,7 +60,7 @@ reserved private headers remain available to the library implementation.
 | Math | `float`, `double`, architecture-native `long double`, complex math and fenv operations link and execute on both targets. |
 | Locale | The required `C` locale and single-byte multibyte behavior are supported. |
 | Linking | Static ELF executables with page-separated RX, R and RW load segments. Dynamic linking is outside this profile. |
-| Threads | ISO C99 itself has no thread API. The current libc profile has process-global state; thread-safe native-libc contexts are a separate extension gate. |
+| Threads | ISO C99 itself has no thread API. XAIOS exposes an explicitly non-ISO `<xaios/thread.h>` extension; each created XAIOS thread gets a stack-bound libc context with isolated `errno`, allocator locking and stream locking. |
 
 ## Build and test
 
@@ -105,7 +105,7 @@ the report, manifests, linked ELFs and QEMU logs.
 | Command processor | None. `system(NULL)` returns zero; a non-null command returns `-1` with `ENOSYS`. |
 | Environment | No predefined environment variables are promised. |
 | Clock epoch | `time_t` is signed 64-bit seconds from the Unix epoch; realtime comes from the XAIOS wall clock. |
-| `errno` | Process-global in the ISO-only profile. Per-thread state belongs to the future native thread-context extension. |
+| `errno` | Isolated per XAIOS native thread through Picolibc's reserved errno hook. The ISO C99 headers remain unchanged and POSIX-free. |
 
 Optional IEC 60559 and ISO 10646 annex macros are not advertised merely
 because a compiler or CPU provides related behavior.
@@ -129,8 +129,9 @@ because a compiler or CPU provides related behavior.
 The following are useful native extensions but are not part of ISO C99 and do
 not block the hosted C99 status:
 
-- per-thread libc context, `errno`, allocator and stream locking for programs
-  that opt into XAIOS native threads;
+- native-thread context regression coverage exercises concurrent allocation,
+  shared-stream writes and isolated failing I/O paths on AArch64 and x86_64
+  QEMU;
 - runtime-selected NEON/SVE and AVX2/AVX-512 memory primitives after scalar
   differential and physical-hardware tests;
 - larger or dynamically supplied general heaps for ordinary hosted programs;

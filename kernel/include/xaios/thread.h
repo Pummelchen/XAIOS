@@ -20,6 +20,10 @@ void xaios_thread_runtime_init(void);
 xaios_status_t xaios_thread_create(xaios_thread_entry_t entry, void *context,
                                    uint32_t preferred_cpu,
                                    uint64_t *thread_id);
+xaios_status_t xaios_thread_create_off_current_cpu(
+    xaios_thread_entry_t entry, void *context, uint64_t *thread_id);
+xaios_status_t xaios_thread_create_detached_off_current_cpu(
+    xaios_thread_entry_t entry, void *context);
 xaios_status_t xaios_thread_join(uint64_t thread_id, uint64_t timeout_ns,
                                  uint64_t *result);
 xaios_status_t xaios_thread_cancel(uint64_t thread_id);

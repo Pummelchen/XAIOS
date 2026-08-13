@@ -101,10 +101,11 @@ def main() -> int:
         ("C99-11", "Signals, setjmp and termination behavior"),
         ("C99-12", "AArch64 and x86_64 XAIOS QEMU execution"),
         ("C99-13", "Zero libc-specific syscall identifiers"),
+        ("L-14", "Native thread contexts, errno isolation and libc locking"),
     ]
     report = {
         "schema": "xaios.c99.conformance-report.v1",
-        "status": "HOSTED_C99_PROJECT_GATES_PASS",
+        "status": "HOSTED_C99_AND_NATIVE_CONTEXT_GATES_PASS",
         "claim_scope": (
             "All XAIOS project acceptance gates for ISO/IEC 9899:1999 with "
             "TC1-TC3 pass. This is not third-party conformance certification."
@@ -131,7 +132,7 @@ def main() -> int:
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print(
-        "libc-report: PASS: 13/13 project gates, 24 headers, "
+        "libc-report: PASS: 14/14 project gates, 24 headers, "
         f"{len(functions)} functions, 2 architectures; {OUTPUT}"
     )
     return 0

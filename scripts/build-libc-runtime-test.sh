@@ -60,6 +60,9 @@ compile_private() {
 compile "$ROOT/userspace/libc/crt0.S" "$OUT/crt0.o"
 compile "$ROOT/userspace/libc/runtime.c" "$OUT/runtime.o"
 compile_private "$ROOT/userspace/libc/os_adapter.c" "$OUT/os_adapter.o"
+compile_private "$ROOT/userspace/libc/thread_context.c" "$OUT/thread_context.o"
+compile_private "$ROOT/userspace/libc/locking.c" "$OUT/locking.o"
+compile "$ROOT/userspace/libc/thread_api.c" "$OUT/thread_api.o"
 compile "$ROOT/tests/libc/c99_runtime_smoke.c" "$OUT/c99_runtime_smoke.o"
 compile "$ROOT/tests/libc/c99_conformance_suite.c" "$OUT/c99_conformance_suite.o"
 compile "$ROOT/tests/libc/c99_language_conformance.c" "$OUT/c99_language_conformance.o"
@@ -67,10 +70,12 @@ compile_main_void_runtime
 compile "$ROOT/tests/libc/c99_main_void.c" "$OUT/c99_main_void.o"
 compile "$ROOT/tests/libc/c99_exit_probe.c" "$OUT/c99_exit_probe.o"
 compile "$ROOT/tests/libc/c99_abort_probe.c" "$OUT/c99_abort_probe.o"
+compile "$ROOT/tests/libc/c99_thread_context.c" "$OUT/c99_thread_context.o"
 
 ld.lld -nostdlib --gc-sections -T "$ROOT/userspace/libc/linker.ld" \
   -o "$OUT/c99-runtime-smoke.elf" \
   "$OUT/crt0.o" "$OUT/runtime.o" "$OUT/os_adapter.o" \
+  "$OUT/thread_context.o" "$OUT/locking.o" "$OUT/thread_api.o" \
   "$OUT/c99_runtime_smoke.o" "$OUT/c99_conformance_suite.o" \
   "$OUT/c99_language_conformance.o" \
   --start-group "$SYSROOT/lib/libc.a" "$SYSROOT/lib/libm.a" \
@@ -88,6 +93,7 @@ for probe in main_void exit_probe abort_probe; do
   ld.lld -nostdlib --gc-sections -T "$ROOT/userspace/libc/linker.ld" \
     -o "$OUT/c99-$probe.elf" \
     "$OUT/crt0.o" "$OUT/runtime_main_void.o" "$OUT/os_adapter.o" \
+    "$OUT/thread_context.o" "$OUT/locking.o" "$OUT/thread_api.o" \
     "$OUT/c99_${probe}.o" \
     --start-group "$SYSROOT/lib/libc.a" "$SYSROOT/lib/libm.a" \
       "$SYSROOT/lib/libcompiler_rt_xaios.a" --end-group
@@ -97,3 +103,15 @@ for probe in main_void exit_probe abort_probe; do
     exit 1
   fi
 done
+
+ld.lld -nostdlib --gc-sections -T "$ROOT/userspace/libc/linker.ld" \
+  -o "$OUT/c99-thread-context.elf" \
+  "$OUT/crt0.o" "$OUT/runtime.o" "$OUT/os_adapter.o" \
+  "$OUT/thread_context.o" "$OUT/locking.o" "$OUT/thread_api.o" \
+  "$OUT/c99_thread_context.o" --start-group "$SYSROOT/lib/libc.a" \
+  "$SYSROOT/lib/libm.a" "$SYSROOT/lib/libcompiler_rt_xaios.a" --end-group
+if llvm-nm -u "$OUT/c99-thread-context.elf" | grep -q .; then
+  llvm-nm -u "$OUT/c99-thread-context.elf" >&2
+  printf '%s\n' "error: $ARCH thread-context test has unresolved symbols" >&2
+  exit 1
+fi

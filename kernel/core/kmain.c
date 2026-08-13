@@ -11,6 +11,7 @@
 #include <xaios/boot_ui.h>
 #include <xaios/core_lease.h>
 #include <xaios/control_protocol.h>
+#include <xaios/child_channel.h>
 #include <xaios/dns.h>
 #include <xaios/elf_loader.h>
 #include <xaios/exception.h>
@@ -228,6 +229,8 @@ void kmain(const xaios_boot_info_t *boot) {
   rate_limit_init();
   rate_limit_self_test();
   security_self_test();
+  child_channel_init();
+  child_channel_self_test();
   remote_login_self_test();
   source_index_runtime_init();
   source_index_self_test();
@@ -556,11 +559,13 @@ void kmain(const xaios_boot_info_t *boot) {
 #if XAIOS_LIBC_TEST
   const uint64_t libc_test_caps =
       XAIOS_CAP_EXIT | XAIOS_CAP_CONSOLE | XAIOS_CAP_TIME |
-      XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE;
+      XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE | XAIOS_CAP_THREADS;
   kassert(run_user_app("/bin/c99-runtime-smoke", 19U, libc_test_caps) == 0);
   kassert(run_user_app("/bin/c99-main-void", 20U, libc_test_caps) == 0);
   kassert(run_user_app("/bin/c99-exit-probe", 21U, libc_test_caps) == 23);
   kassert(run_user_app("/bin/c99-abort-probe", 22U, libc_test_caps) == 134);
+  kassert(run_user_app("/bin/c99-thread-context", 24U, libc_test_caps) ==
+          0);
   klog("C99-TERMINATION-PROBES-PASS\n");
 #endif
 

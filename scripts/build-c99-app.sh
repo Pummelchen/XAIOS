@@ -62,7 +62,8 @@ clang --target="$TARGET" $ARCH_FLAGS -std=c99 -fhosted -fno-pic -fno-pie \
 mkdir -p "$(dirname "$OUTPUT")"
 ld.lld -nostdlib --gc-sections -T "$ROOT/userspace/libc/linker.ld" \
   -o "$OUTPUT" "$RUNTIME/crt0.o" "$RUNTIME_OBJECT" \
-  "$RUNTIME/os_adapter.o" "$OBJECT" --start-group \
+  "$RUNTIME/os_adapter.o" "$RUNTIME/thread_context.o" \
+  "$RUNTIME/locking.o" "$RUNTIME/thread_api.o" "$OBJECT" --start-group \
   "$SYSROOT/lib/libc.a" "$SYSROOT/lib/libm.a" \
   "$SYSROOT/lib/libcompiler_rt_xaios.a" --end-group
 

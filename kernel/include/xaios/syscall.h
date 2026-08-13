@@ -93,6 +93,12 @@
 
 #define XAIOS_REMOTE_LOGIN_SESSION_EXECUTE UINT64_C(1)
 #define XAIOS_REMOTE_LOGIN_SESSION_CLOSE UINT64_C(2)
+#define XAIOS_REMOTE_LOGIN_SESSION_CHILD_OPEN UINT64_C(3)
+#define XAIOS_REMOTE_LOGIN_SESSION_CHILD_WRITE UINT64_C(4)
+#define XAIOS_REMOTE_LOGIN_SESSION_CHILD_READ UINT64_C(5)
+#define XAIOS_REMOTE_LOGIN_SESSION_CHILD_STATUS UINT64_C(6)
+#define XAIOS_REMOTE_LOGIN_SESSION_CHILD_CANCEL UINT64_C(7)
+#define XAIOS_REMOTE_LOGIN_SESSION_CHILD_RELEASE UINT64_C(8)
 
 typedef struct xaios_syscall_rename_request {
   uint64_t old_path;
@@ -155,6 +161,8 @@ typedef struct xaios_syscall_remote_login_session_request {
   uint64_t output;
   uint64_t output_size;
   uint64_t out_size;
+  uint64_t metadata;
+  uint64_t metadata_size;
 } xaios_syscall_remote_login_session_request_t;
 
 typedef struct xaios_syscall_net_external_session_request {

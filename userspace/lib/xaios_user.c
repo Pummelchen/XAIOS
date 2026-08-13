@@ -249,7 +249,7 @@ int xaios_cpu_ai_decode(const void *input, u64 input_size, char *output,
   request.out_size = (u64)out_size;
   u64 rc = xaios_syscall3(XAIOS_SYSCALL_CPU_AI_DECODE, (u64)&request,
                          sizeof(request), 0);
-  return rc == ~0ULL ? -1 : (int)(signed long long)rc;
+  return rc == ~0ULL ? -1 : (int)rc;
 }
 
 int xaios_remote_login(const char *user, const char *command, char *output,
@@ -280,9 +280,11 @@ int xaios_remote_login_session(u64 session_id, const char *user,
   request.output = (u64)output;
   request.output_size = output_size;
   request.out_size = (u64)out_size;
+  request.metadata = 0ULL;
+  request.metadata_size = 0ULL;
   u64 rc = xaios_syscall3(XAIOS_SYSCALL_REMOTE_LOGIN_SESSION, (u64)&request,
                           sizeof(request), 0);
-  return rc == ~0ULL ? -1 : (int)(signed long long)rc;
+  return rc == ~0ULL ? -1 : (int)rc;
 }
 
 int xaios_remote_login_session_close(u64 session_id) {
@@ -292,7 +294,88 @@ int xaios_remote_login_session_close(u64 session_id) {
   request.action = XAIOS_REMOTE_LOGIN_SESSION_CLOSE;
   u64 rc = xaios_syscall3(XAIOS_SYSCALL_REMOTE_LOGIN_SESSION, (u64)&request,
                           sizeof(request), 0);
-  return rc == ~0ULL ? -1 : (int)(signed long long)rc;
+  return rc == ~0ULL ? -1 : (int)rc;
+}
+
+int xaios_remote_login_child_open(u64 session_id, const char *command,
+                                  const char *cwd, u64 *child_channel_id) {
+  if (command == 0 || cwd == 0 || child_channel_id == 0) return -1;
+  xaios_remote_login_session_request_t request;
+  xaios_memzero(&request, sizeof(request));
+  request.session_id = session_id;
+  request.action = XAIOS_REMOTE_LOGIN_SESSION_CHILD_OPEN;
+  request.command = (u64)command;
+  request.command_size = xaios_strlen(command);
+  request.metadata = (u64)cwd;
+  request.metadata_size = xaios_strlen(cwd);
+  request.out_size = (u64)child_channel_id;
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_REMOTE_LOGIN_SESSION, (u64)&request,
+                          sizeof(request), 0);
+  return (signed long long)rc < 0 ? (int)(signed long long)rc : 0;
+}
+
+int xaios_remote_login_child_write(u64 child_channel_id, const void *data,
+                                   u64 data_size) {
+  if (child_channel_id == 0ULL || data == 0 || data_size == 0ULL) return -1;
+  xaios_remote_login_session_request_t request;
+  xaios_memzero(&request, sizeof(request));
+  request.session_id = child_channel_id;
+  request.action = XAIOS_REMOTE_LOGIN_SESSION_CHILD_WRITE;
+  request.command = (u64)data;
+  request.command_size = data_size;
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_REMOTE_LOGIN_SESSION, (u64)&request,
+                          sizeof(request), 0);
+  return (signed long long)rc < 0 ? (int)(signed long long)rc : 0;
+}
+
+int xaios_remote_login_child_read(u64 child_channel_id, void *data,
+                                  u64 data_size, u64 *out_size) {
+  if (child_channel_id == 0ULL || data == 0 || data_size == 0ULL ||
+      out_size == 0) return -1;
+  xaios_remote_login_session_request_t request;
+  xaios_memzero(&request, sizeof(request));
+  request.session_id = child_channel_id;
+  request.action = XAIOS_REMOTE_LOGIN_SESSION_CHILD_READ;
+  request.output = (u64)data;
+  request.output_size = data_size;
+  request.out_size = (u64)out_size;
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_REMOTE_LOGIN_SESSION, (u64)&request,
+                          sizeof(request), 0);
+  return (signed long long)rc < 0 ? (int)(signed long long)rc : 0;
+}
+
+int xaios_remote_login_child_status(u64 child_channel_id, u64 *out_status) {
+  if (child_channel_id == 0ULL || out_status == 0) return -1;
+  xaios_remote_login_session_request_t request;
+  xaios_memzero(&request, sizeof(request));
+  request.session_id = child_channel_id;
+  request.action = XAIOS_REMOTE_LOGIN_SESSION_CHILD_STATUS;
+  request.out_size = (u64)out_status;
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_REMOTE_LOGIN_SESSION, (u64)&request,
+                          sizeof(request), 0);
+  return (signed long long)rc < 0 ? (int)(signed long long)rc : 0;
+}
+
+int xaios_remote_login_child_cancel(u64 child_channel_id) {
+  if (child_channel_id == 0ULL) return -1;
+  xaios_remote_login_session_request_t request;
+  xaios_memzero(&request, sizeof(request));
+  request.session_id = child_channel_id;
+  request.action = XAIOS_REMOTE_LOGIN_SESSION_CHILD_CANCEL;
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_REMOTE_LOGIN_SESSION, (u64)&request,
+                          sizeof(request), 0);
+  return (signed long long)rc < 0 ? (int)(signed long long)rc : 0;
+}
+
+int xaios_remote_login_child_release(u64 child_channel_id) {
+  if (child_channel_id == 0ULL) return -1;
+  xaios_remote_login_session_request_t request;
+  xaios_memzero(&request, sizeof(request));
+  request.session_id = child_channel_id;
+  request.action = XAIOS_REMOTE_LOGIN_SESSION_CHILD_RELEASE;
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_REMOTE_LOGIN_SESSION, (u64)&request,
+                          sizeof(request), 0);
+  return (signed long long)rc < 0 ? (int)(signed long long)rc : 0;
 }
 
 int xaios_net_external_session(u64 protocol, u64 port, const void *payload,
