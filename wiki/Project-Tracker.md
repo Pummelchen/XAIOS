@@ -2,6 +2,11 @@
 
 Last reviewed: 2026-08-13.
 
+Verified repository revision: `e5aa1ad1fed1e14ce29072ee17894f5bca39c623`.
+The hosted, sanitizer, AArch64/x86_64 smoke, libc, async-NVMe, SVE2-canary,
+two-node NUMA, and consolidated QEMU qualification gates pass at this revision.
+The consolidated report deliberately retains `physical_qualification=false`.
+
 This is the only human-maintained XAIOS project tracker. Roadmaps, milestones,
 phase plans, open decisions, and risks are consolidated here. The Wiki does not
 retain previous tracker, roadmap, milestone, or phase-plan pages.
@@ -29,7 +34,7 @@ performance require immutable evidence under the
 | Order | Workstream | Status | Current boundary / exit gate |
 |---:|---|---|---|
 | 1b | Physical Apple/ARM, Intel desktop, and Xeon qualification | `NOT STARTED` | Named hardware must pass firmware, device, durability, security, ISA-state, NUMA, soak, and benchmark contracts. |
-| 2 | Qwen 3.8 27B support | `NOT STARTED` | Begins after the libc workstream unless reprioritized; official tokenizer, layer, logits, 32-step decode, session, and physical gates must pass. |
+| 2 | Qwen 3.8 27B support | `NOT STARTED` | Begins after physical platform qualification is accepted or explicitly deferred; official tokenizer, layer, logits, 32-step decode, session, and physical gates must pass. |
 | 3 | Kimi K3 text support | `NOT STARTED` | Begins after Qwen unless reprioritized; KDA, Gated MLA, exact top-16 MoE, MXFP4, and token parity are mandatory. |
 | 4 | Kimi K3 multimodal support | `NOT STARTED` | Separate vision preprocessing/tower/projection/position and golden image gates. |
 | 5 | DeepSeek V4 Flash 0731 support | `BLOCKED` | The exact official release label and immutable source must be verified first. |
@@ -73,8 +78,8 @@ status.
 | Phase | Status | Exit gate |
 |---|---|---|
 | D-05 Real local inference | `NOT STARTED` | Real Qwen correctness, typed state, scheduling, cancellation, backpressure, and metrics. |
-| D-06 Authenticated cluster control | `IN PROGRESS` | Hosted tests cover directional HMAC framing, receiver/epoch/nonce validation, replay rejection, and membership transitions. Asynchronous transport between independent XAIOS QEMU guests plus join/partition recovery remains. |
-| D-07 Distributed placement/execution | `IN PROGRESS` | Hosted tests cover deterministic expert ownership, grouped routing, simulated node-loss rerouting, and stable node/expert reduction. Distributed activation transport and execution across independent guests remain. |
+| D-06 Authenticated cluster control | `IN PROGRESS` | Hosted tests cover directional HMAC framing, receiver/epoch/nonce validation, replay rejection, and membership transitions. The next QEMU-testable tranche is asynchronous transport between independent XAIOS guests plus join, partition, recovery, and ownership-version tests. |
+| D-07 Distributed placement/execution | `IN PROGRESS` | Hosted tests cover deterministic expert ownership, grouped routing, simulated node-loss rerouting, and stable node/expert reduction. End-to-end distributed activation execution depends on D-05 real local inference and D-06 guest transport; it cannot be closed by hosted placement tests alone. |
 | D-08 Benchmarks/diagnostics | `IN PROGRESS` | QEMU benchmark telemetry and a hashed qualification-readiness report are implemented; physical metadata-rich NUMA, bandwidth, PMU, thermal, storage, network, and redacted support-bundle evidence remain. |
 | D-09 Production inference service | `NOT STARTED` | Authenticated API, streaming, cancellation, saturation, loss, and long-lived tests. |
 | D-10 Support qualification/cleanup | `IN PROGRESS` | Documentation contracts and the consolidated QEMU qualification-readiness gate exist; physical, model, cluster, thermal, PMU, and durability qualifications remain. |
