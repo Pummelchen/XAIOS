@@ -11,7 +11,7 @@ observability utilities, is listed in [[Applications|Applications]].
 |---|---|---|
 | Kernel session layer | `cd`, `pwd`, `help`, `exit`, `quit`, `logout`, aliases, redirection, and pipelines | Maintains per-session state and command composition. |
 | Independent utility ELFs | File, text, archive, and observability tools documented in [[Applications|Applications]] | Each invocation has a bounded address space, least-privilege capabilities, exit status, and fault containment. |
-| `/bin/sshd` userspace service | Outbound `ssh` and `scp` protocol clients and inbound SSH/SFTP transport | A fault cannot panic the kernel, but can interrupt the SSH service. |
+| `/bin/sshd` plus transient `/bin/ssh` | Inbound SSH/SFTP transport plus dedicated outbound `ssh` and `scp` protocol execution | The client uses asynchronous child-channel IPC; a client fault is contained without terminating the inbound service. |
 | Kernel operations layer | `status`, power, service, process, network, clock, recovery, update, configuration, and support commands | Capability checks and privileged mechanisms remain authoritative in the kernel. |
 
 ## Session navigation and composition
@@ -29,16 +29,14 @@ observability utilities, is listed in [[Applications|Applications]].
 
 | Command | Supported core behavior |
 |---|---|
-| `ssh [-p PORT] user@host [command]` | IPv4/DNS-A SSH client with password authentication, Ed25519 host-key TOFU, persistent known-host verification, PTY or one command. |
-| `scp [-r] [-P PORT] SOURCE DESTINATION` | Copy files or bounded directory trees between XAIOS and compatible XAIOS, FreeBSD, or OpenSSH servers. Exactly one endpoint may be remote. |
+| `ssh [-A] [-i KEY] [-p PORT] user@host [command]` | Dedicated SSH application with password, Ed25519 identity-file or forwarded-agent authentication; encrypted OpenSSH keys, IPv4/IPv6 and DNS A/AAAA are supported. |
+| `scp [-r] [-A] [-i KEY] [-P PORT] SOURCE DESTINATION` | Dedicated SFTP-backed copy application for files or bounded directory trees between XAIOS and compatible XAIOS, FreeBSD, or OpenSSH servers. Exactly one endpoint may be remote. |
 
-The clients do not implement public-key client authentication, IPv6 active
-opens, forwarding, agents, jump hosts, or hybrid post-quantum key exchange.
-They remain modules of the persistent SSH service because the current process
-ABI has synchronous launch but no asynchronous child-channel IPC. Splitting
-them before that transport exists would break password prompting, interactive
-PTY forwarding, and concurrent inbound service. This is tracked only on
-[[Project Tracker|Project-Tracker]].
+The clients run outside the persistent SSH service through bounded asynchronous child-channel IPC, so a client fault does not terminate the inbound server.
+The inbound server implements hybrid `mlkem768x25519-sha256`, `direct-tcpip`
+jump-host forwarding and agent forwarding. A native outbound `-J` or
+`ProxyCommand` option parser and the complete OpenSSH algorithm matrix are not
+implemented.
 
 ## Operations and diagnostics
 

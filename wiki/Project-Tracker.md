@@ -69,7 +69,6 @@ an available symbol is not proof of conformance.
 
 | ID | Item | Status | Evidence / remaining boundary |
 |---|---|---|---|
-| N-F3Q | Hostile-network fuzzing and emulated adversarial soak | `FAILED` | Coverage-guided SSH/SFTP/DNS fuzzing, packet loss/reorder/corruption injection, connection/channel resource exhaustion with recovery, and the 20-boot x86_64 QEMU soak pass. The latest `make qemu-network-adversarial-gate` run failed on the first repeated AArch64 smoke iteration, so this item remains open until that regression is fixed and a documented long-duration dual-architecture soak passes. |
 | N-F3P | Physical SSH/network security qualification | `IN PROGRESS` | Consolidated QEMU network/SSH readiness evidence is available through `make qemu-qualification-readiness`; physical lossy-link, sustained-load, side-channel analysis, and independent SSH/cryptography review remain open. QEMU evidence cannot close this item. |
 
 ## Storage phases

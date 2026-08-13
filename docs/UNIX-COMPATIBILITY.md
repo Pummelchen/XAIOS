@@ -41,7 +41,7 @@ fail explicitly rather than being silently ignored.
 | `df`, `du` | `df -h`/`-k`/`-P` over mounted XAIOS filesystems; recursive `du -a`/`-s`/`-h`/`-k`. |
 | `tar` | Create/list/extract POSIX ustar (`-cf`, `-tf`, `-xf`, optional `v`, extraction `-C`). Reading also accepts POSIX PAX paths, GNU long-name records and validated single-member gzip/DEFLATE archives (`z` accepted for read operations). Symlinks, devices, multi-member gzip and gzip creation are rejected. |
 | `zip`, `unzip` | `zip [-r] ARCHIVE PATH...` writes standards-compliant stored ZIP entries with CRC32 and Unix attributes. `unzip [-l] ARCHIVE [-d DIR]` reads stored or Deflate entries from Unix, Windows or macOS tools. Encryption and ZIP64 are rejected. |
-| `ssh`, `scp` | PTY outbound `ssh [-p PORT] user@host [command]` and SFTP-backed `scp [-r] [-P PORT] SOURCE DESTINATION`. Password authentication, Ed25519 host signatures, persistent TOFU known-host checks, IPv4 literals and DNS A records are implemented. Client public-key authentication, IPv6 active open, proxy/jump options and agent forwarding are not. |
+| `ssh`, `scp` | Dedicated PTY outbound `ssh [-A] [-i KEY] [-p PORT] user@host [command]` and SFTP-backed `scp [-r] [-A] [-i KEY] [-P PORT] SOURCE DESTINATION`. Password, Ed25519 identity-file and forwarded-agent authentication, encrypted OpenSSH private keys, persistent Ed25519 TOFU checks, IPv4/IPv6 literals and DNS A/AAAA are implemented. Native outbound `-J`/`ProxyCommand` parsing and the complete OpenSSH algorithm matrix are not. |
 
 MutableFS v4 bounds this surface to 128 nodes, 64 open handles, 128 KiB per
 file, 2 MiB data capacity and 256-byte paths. Archive containers must fit in a

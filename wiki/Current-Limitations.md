@@ -37,17 +37,18 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 - The SSH service deliberately supports four transports and two active
   channels per transport. Fleet-scale identity, audit, replay, and connection
   policy remains unresolved.
-- SSH key exchange is classical `curve25519-sha256` only. Hybrid post-quantum
-  key exchange, OpenSSH interoperability and downgrade-policy review remain
-  production security gates; the quiet local QEMU launcher only suppresses the
-  OpenSSH 10 client notice for that development connection.
-- The outbound guest SSH/SCP client uses the same classical crypto suite,
-  verifies Ed25519 host keys through persistent TOFU, and currently authenticates
-  with passwords over IPv4 or DNS A records. Public-key client authentication,
-  IPv6 active opens, forwarding, agents and jump hosts are not implemented.
-- DNS performs asynchronous external A-record resolution with timeout, retry,
-  cache, and a QEMU-verified cache hit. DNSSEC, TCP fallback, complete AAAA
-  application results, and deployment resolver policy remain absent.
+- SSH prefers hybrid `mlkem768x25519-sha256` with classical
+  `curve25519-sha256` fallback. Known-answer and OpenSSH interoperability gates
+  pass; independent cryptographic, downgrade-policy, side-channel and physical
+  deployment review remain open.
+- The dedicated outbound SSH/SCP process supports password, Ed25519 identity
+  file and forwarded-agent authentication, encrypted OpenSSH keys, persistent
+  Ed25519 TOFU, IPv4/IPv6 literals, and DNS A/AAAA results. Native outbound
+  `-J`/`ProxyCommand` parsing and the complete OpenSSH matrix are not provided.
+- DNS performs asynchronous A/AAAA resolution with timeout, retry, bounded TTL
+  cache, and DNS-over-TCP fallback. It trusts the authenticated-data bit from a
+  configured validating resolver; local DNSSEC chain validation and production
+  resolver policy remain outside the current boundary.
 - The SNTP client validates request binding, server mode/version, stratum, and
   bounded retry/timeout behavior. QEMU's PL031 RTC may report epoch zero, and
   public UDP/123 may be filtered; both conditions remain explicit instead of
@@ -58,9 +59,9 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   reordering, keepalive, and FIN bookkeeping. Repeated-loss physical-network
   soak and congestion-control tuning remain unverified.
 - Bounded IPv4/IPv6 reassembly and source fragmentation pass maximum-size UDP
-  echo under dual-client load and focused AArch64/x86_64 QEMU gates. A
-  deterministic sanitizer corpus covers 50,000 malformed fragment inputs;
-  coverage-guided hostile fuzzing and physical lossy-link behavior remain.
+  echo under dual-client load and focused AArch64/x86_64 QEMU gates.
+  Deterministic and coverage-guided sanitizer campaigns plus packet-fault and
+  recovery gates pass; physical lossy-link behavior remains.
 
 ## Storage and persistence
 

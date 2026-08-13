@@ -18,21 +18,21 @@ REQUIRED = {
     "wiki/Project-Tracker.md": [
         "Physical Apple/ARM, Intel desktop, and Xeon qualification",
         "Thread-safe libc contexts for XAIOS native threads",
-        "Hostile-network fuzzing and emulated adversarial soak",
+        "Physical SSH/network security qualification",
         "S-11Q QEMU NVMe async/multiqueue/SGL/cancellation/direct-buffer path",
         "S-11P Physical production NVMe qualification",
     ],
     "docs/NETWORK-SSH-STATUS.md": [
         "SACK parsing/emission",
         "Bounded IPv4 and IPv6 reassembly",
-        "asynchronous resolver syscall",
+        "asynchronous resolver supports A/AAAA",
     ],
     "docs/STORAGE-ARCHITECTURE.md": [
         "interrupt-dispatched with eight request slots",
         "emulated-NVMe gate negotiates four I/O queues",
     ],
     "wiki/Current-Limitations.md": [
-        "external A-record resolution",
+        "asynchronous A/AAAA resolution",
         "complete common process/thread",
         "QEMU parity is not a physical support claim",
     ],

@@ -116,12 +116,13 @@ int main(void) {
   /* Test 5: Combined pipe + grep with file input */
   xaios_log("/bin/posix-shell: test combined operations\n");
   const char *combined_tests[] = {
-      "grep apple /tmp/posix-test/data.txt",
+      "grep orange /tmp/posix-test/data.txt",
       "echo test pipe sed redirect | grep pipe",
   };
   for (u64 i = 0; i < sizeof(combined_tests) / sizeof(combined_tests[0]); ++i) {
     if (shell_run(combined_tests[i], output, sizeof(output), &out_size) != 0) {
       xaios_log("/bin/posix-shell: combined test failed\n");
+      return 1;
     }
   }
   xaios_log("/bin/posix-shell: combined operations passed\n");

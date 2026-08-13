@@ -27,6 +27,7 @@ AArch64 or x86_64 UEFI firmware. Setup details are in
 | `make qemu-abi-contract` | Syscall, image, service, telemetry, and fixture ABI contract. |
 | `make qemu-smoke` | Primary AArch64 boot and deterministic self-test gate. |
 | `make qemu-regression-suite` | Broader process, filesystem, network, and runtime regression suite. |
+| `make qemu-network-adversarial-gate` | N-F3Q parser fuzzing, packet-fault handling, concurrent load/recovery, and 20 fresh ARM64 plus 20 fresh x86_64 QEMU boots. Set `XAIOS_NF3Q_BOOTS` only for bounded development reruns. |
 | `make qemu-operations-closure` | Both-architecture abrupt-stop, power, recovery, diagnostics, clock, pressure, update/config, support, and Debian-client gate. |
 | `make qemu-qualification-readiness` | Consolidated QEMU evidence packet for SSH/network, NVMe, storage recovery, diagnostics, high-core topology, x86 parity, and repeated soak; physical qualification remains open. |
 | `make qemu-full-os-rc` | Aggregate mandatory QEMU core-OS release-candidate gate. |
@@ -57,6 +58,7 @@ make qemu-smmu-gate
 make qemu-nvme-gate
 make qemu-outbound-fragmentation-gate
 make qemu-model-sftp-gate
+make qemu-network-adversarial-gate
 make qemu-freebsd-network-suite
 make qemu-freebsd-bidirectional-suite
 make qemu-docker-network-suite

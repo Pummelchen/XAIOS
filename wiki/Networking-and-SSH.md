@@ -23,6 +23,8 @@ database and development-image opt-in; release builds reject it.
 - Persistent host identity, host-key rotation, revocation, and fail-closed RNG.
 - Concurrent SSH connections and multiple channels on one transport.
 - PTY shells, one-command execution, terminal resize, rekey, and reconnect.
+- Hybrid `mlkem768x25519-sha256` key exchange with classical fallback.
+- `direct-tcpip` forwarding for OpenSSH jump-host use and agent forwarding.
 - SFTP v3 read, write, positional I/O, stat, list, mkdir, rename, remove, and
   rmdir with per-process descriptor ownership.
 - Stateful per-session cwd, prompt, command status, and terminal applications.
@@ -33,23 +35,27 @@ database and development-image opt-in; release builds reject it.
 The QEMU-tested stack includes IPv4/IPv6 fragment reassembly and source
 fragmentation, TCP
 handshake/data retransmission, out-of-order receive, duplicate-ACK/SACK
-handling, UDP delivery semantics, asynchronous DNS A-record resolution, socket
-ownership, cancellation, and cleanup. Runtime-sized CPU/queue metadata avoids
-a fixed small-core limit.
+handling, UDP delivery semantics, asynchronous DNS A/AAAA resolution, bounded
+TTL caching, DNS-over-TCP fallback, socket ownership, cancellation, and
+cleanup. Resolver answers must carry authenticated-data status from the
+configured validating resolver. Runtime-sized CPU/queue metadata avoids a
+fixed small-core limit.
 
 ## Outbound clients
 
 From an XAIOS shell:
 
 ```sh
-ssh [-p PORT] user@host [command]
-scp [-r] [-P PORT] SOURCE DESTINATION
+ssh [-A] [-i KEY] [-p PORT] user@host [command]
+scp [-r] [-A] [-i KEY] [-P PORT] SOURCE DESTINATION
 ```
 
-The clients support password authentication, Ed25519 host signatures,
-persistent trust-on-first-use host-key checking, IPv4 literals, and DNS A
-records. They do not yet support client public keys, IPv6 active open,
-forwarding, agents, jump hosts, or hybrid post-quantum key exchange.
+The dedicated `/bin/ssh` process supports password, Ed25519 identity-file and
+forwarded-agent authentication, including passphrase-protected OpenSSH private
+keys. It verifies Ed25519 host signatures with persistent trust-on-first-use
+records and connects through IPv4/IPv6 literals or DNS A/AAAA results. Recursive
+SCP is SFTP-backed. XAIOS does not implement the complete OpenSSH option and
+algorithm matrix, including a native outbound `-J`/`ProxyCommand` parser.
 
 ## Interoperability evidence
 
@@ -60,6 +66,12 @@ isolation, SCP, UDP, IPv6/TCP, malformed traffic, rekey, reboot persistence,
 and concurrent clients against one guest. The raw Ethernet gates additionally
 send maximum-size fragmented UDP requests and independently reassemble XAIOS
 IPv4 and IPv6 replies on AArch64 and x86_64 QEMU.
+
+`make qemu-network-adversarial-gate` adds sanitizer-backed coverage-guided
+SSH/SFTP/DNS parser campaigns, packet loss/reordering/corruption cases,
+connection and channel exhaustion with recovery, concurrent macOS/Debian load,
+and 20 fresh boots on each of ARM64 and x86_64. This remains emulated
+correctness evidence rather than physical deployment qualification.
 
 This is protocol correctness evidence under QEMU, not approval for direct
 Internet exposure. See [[Security Model|Security-Model]],

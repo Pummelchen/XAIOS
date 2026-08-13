@@ -9,13 +9,23 @@ REPORT = BUILD / "qemu-milestone-69-soak-gate.json"
 
 def main() -> int:
     iterations = int(os.environ.get("XAIOS_QEMU_SOAK_BOOTS", "5"))
+    smoke_timeout = os.environ.get("XAIOS_QEMU_SOAK_SMOKE_TIMEOUT", "120")
     failures = []
     checks = []
     for index in range(iterations):
-        proc = run(["python3", "./tests/scripts/qemu-smoke.py"], timeout=180)
+        proc = run(
+            ["python3", "./tests/scripts/qemu-smoke.py"],
+            timeout=int(smoke_timeout) + 30,
+            env={"XAIOS_QEMU_SMOKE_TIMEOUT": smoke_timeout},
+        )
         ok = proc.returncode == 0
+        detail = {}
+        if not ok:
+            output_tail = proc.stdout[-4096:]
+            detail["output_tail"] = output_tail
+            print(output_tail, end="" if output_tail.endswith("\n") else "\n")
         checks.append(result("smoke_boot", ok, iteration=index + 1,
-                             exit_code=proc.returncode))
+                             exit_code=proc.returncode, **detail))
         if not ok:
             failures.append(f"smoke iteration {index + 1} exited {proc.returncode}")
             break

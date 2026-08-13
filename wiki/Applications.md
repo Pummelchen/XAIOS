@@ -5,7 +5,7 @@ shipped with XAIOS. Standalone programs are started through the kernel loader
 with explicit capabilities; arbitrary host binaries and FreeBSD/Linux binaries
 do not execute in XAIOS.
 
-Session syntax such as `cd` and service-hosted commands such as `ssh` and `scp`
+Session syntax such as `cd` and the invocation syntax for dedicated applications
 are documented separately in [[Commands|Commands]].
 
 ## Boot and service applications
@@ -15,7 +15,7 @@ are documented separately in [[Commands|Commands]].
 | `/init` | First userspace process. Establishes the initial service lifecycle and returns status to the kernel. | Started once during boot. |
 | `/bin/service-manager` | Exercises and owns the bounded service-manager protocol used for managed workers. | Started during boot. |
 | `/bin/xaios-worker` | Joinable worker process used for scheduler, CPU-assignment, and service-lifecycle work. | Started by the service manager; count follows the boot profile. |
-| `/bin/sshd` | Persistent SSH/SFTP server, authenticated PTY transport, outbound SSH/SCP client host, and userspace adapter for the kernel command dispatcher. | Started only after networking and the configured external IPv4/DNS readiness check succeeds. |
+| `/bin/sshd` | Persistent SSH/SFTP server, authenticated PTY transport, forwarding endpoint, and userspace adapter for the kernel command dispatcher. | Started only after networking and the configured external IPv4/DNS readiness check succeeds. |
 
 ## Administrative applications
 
@@ -24,6 +24,12 @@ are documented separately in [[Commands|Commands]].
 | `/bin/xaiosctl` | Administrative client for the versioned `xaios.control.v1` protocol. It exposes status, health, hardware, metrics, logs, configuration, identity, audit, storage, and ModelFS rendering/authorization paths. The interactive shell exposes a bounded compatibility command family. |
 | `/bin/xapt` | Signed application and system updater. It refreshes a monotonic architecture-specific catalog, installs or upgrades individual applications without rebooting, and streams an OS image to the inactive A/B slot. |
 | `/bin/xaios-shell` | Scripted acceptance application for built-in remote-login commands and archives; it is not the persistent interactive shell process. Standalone applications are covered by the SSH gates. |
+
+## Network client applications
+
+| Path | Purpose |
+|---|---|
+| `/bin/ssh` | Dedicated outbound SSH/SCP process. It supports password, Ed25519 identity-file and forwarded-agent authentication, encrypted OpenSSH keys, IPv4/IPv6, DNS A/AAAA, PTY/exec sessions, and recursive SFTP-backed copies. The parent SSH service exchanges terminal data through bounded asynchronous child-channel IPC. |
 
 ## Repository applications
 
@@ -127,9 +133,9 @@ shipped in the normal image:
 - Shell state, command composition, authorization, and privileged mechanisms
   remain kernel-owned. File, text, archive, and observability parsing runs in
   the independent utility applications listed above.
-- SSH transport and outbound SSH/SCP protocol code run in `/bin/sshd`, not in
-  the kernel. A fault there cannot corrupt kernel state, but it can stop that
-  SSH service until lifecycle recovery restarts it.
+- Inbound SSH/SFTP transport runs in `/bin/sshd`; outbound SSH/SCP protocol code
+  runs in transient `/bin/ssh`. Neither runs in the kernel, and an outbound
+  client fault is contained without terminating the inbound service.
 - Standard output from a transient hosted-libc application is bounded and
   returned to the invoking SSH session as well as written to the serial console.
 - Interactive terminal applications have dedicated `/bin/*` ELF images. SSH

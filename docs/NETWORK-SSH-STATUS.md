@@ -84,24 +84,25 @@ client passed the explicitly identified subset below on 2026-08-10:
 
 ### Outbound guest client
 
-The persistent SSH service owns the guest's bounded outbound client state; the
-kernel only provides checked IPv4 TCP active-open and stream syscalls. From an
-XAIOS SSH PTY:
+The dedicated `/bin/ssh` process owns each guest outbound session and exchanges
+terminal data with the parent through bounded asynchronous child-channel IPC.
+The kernel provides checked IPv4/IPv6 TCP active-open and stream syscalls. From
+an XAIOS SSH PTY:
 
 ```sh
-ssh [-p PORT] user@host [command]
-scp [-r] [-P PORT] SOURCE user@host:PATH
-scp [-r] [-P PORT] user@host:PATH DESTINATION
+ssh [-A] [-i KEY] [-p PORT] user@host [command]
+scp [-r] [-A] [-i KEY] [-P PORT] SOURCE user@host:PATH
+scp [-r] [-A] [-i KEY] [-P PORT] user@host:PATH DESTINATION
 ```
 
-It negotiates `curve25519-sha256`, `ssh-ed25519`, `aes128-ctr`, and
-`hmac-sha2-256`, requests a shell or exec channel, and uses SFTP v3 for file
-operations. Password input is not echoed. First contact persists an Ed25519
-known-host record under `/home/admin/.ssh`; a changed host key fails closed.
-DNS A records and IPv4 literals are accepted. The current client does not yet
-support public-key authentication, IPv6 active opens, encrypted private keys,
-agent/port forwarding, jump hosts, proxy commands, or the wider OpenSSH
-algorithm matrix.
+It negotiates the repository's bounded SSH suite, requests a shell or exec
+channel, and uses SFTP v3 for file operations. Password input and private-key
+passphrases are not echoed. Authentication supports passwords, Ed25519
+identity files, passphrase-protected OpenSSH keys, and a forwarded OpenSSH
+agent. First contact persists an Ed25519 known-host record under
+`/home/admin/.ssh`; a changed host key fails closed. IPv4/IPv6 literals and DNS
+A/AAAA results are accepted. Native outbound `-J`/`ProxyCommand` parsing and
+the wider OpenSSH option and algorithm matrix are not implemented.
 
 ### FreeBSD Unix-reference gate
 
@@ -161,20 +162,19 @@ plaintext and malformed records are rejected. Authentication attempts are
 bounded per connection and by a 256-entry, expiration-aware source-address
 rate table.
 
-The transport currently negotiates one exact suite:
+The transport currently negotiates this bounded suite:
 
-- `curve25519-sha256` key exchange;
+- preferred `mlkem768x25519-sha256` hybrid key exchange with
+  `curve25519-sha256` compatibility fallback;
 - `ssh-ed25519` host and user keys;
 - `aes128-ctr` encryption;
 - `hmac-sha2-256` integrity;
 - no compression.
 
-This is a classical key exchange. XAIOS does not yet implement
-`mlkem768x25519-sha256` or another hybrid post-quantum SSH KEX. OpenSSH 10 and
-later therefore emit a store-now/decrypt-later warning for direct connections.
-The local QEMU launcher below suppresses that client notice only for the scoped
-development connection; it does not add post-quantum protection or change the
-production acceptance boundary.
+The hybrid path passes ML-KEM known-answer tests and OpenSSH interoperability
+under both AArch64 and x86_64 QEMU. Classical fallback remains for compatible
+clients. Independent cryptographic review, downgrade-policy review, side-channel
+analysis and physical deployment qualification remain required.
 
 Fresh randomness comes from a VirtIO RNG-backed ChaCha20 DRBG. SSH startup is
 fail-closed when secure entropy is unavailable. The host key is created once,
@@ -305,13 +305,13 @@ at most 32 KiB so its complete editing buffer remains bounded.
 | Area | Current source-grounded boundary |
 |---|---|
 | Physical networking | No physical NIC driver interoperability, cable/link recovery, DHCP deployment, firewall, or hostile-Internet soak has been established. |
-| Security assurance | Deterministic malformed corpora cover SSH/SFTP/DNS plus 50,000 IPv4/IPv6 fragment cases under hosted sanitizers. The freestanding SSH implementation and bundled cryptographic code still need coverage-guided fuzzing, independent review, side-channel analysis, and long-duration adversarial testing. |
-| Post-quantum SSH | The server currently negotiates classical `curve25519-sha256` only. A reviewed hybrid KEX implementation, known-answer tests, OpenSSH interoperability and downgrade-policy review are required before suppressing this boundary in production. |
+| Security assurance | Deterministic malformed corpora, sanitizer-backed coverage-guided SSH/SFTP/DNS campaigns, packet-fault injection, bounded resource exhaustion/recovery, concurrent macOS/Debian load, and 20 fresh ARM64 plus 20 fresh x86_64 boots pass. Independent review, side-channel analysis, physical lossy-link testing, and long-lived Internet deployment remain open. |
+| Post-quantum SSH | `mlkem768x25519-sha256` passes known-answer and OpenSSH interoperability gates with classical fallback. Independent cryptographic and downgrade-policy review plus physical qualification remain open. |
 | Administrative scale | Phase 2's config, key/revocation, replay/audit and session stores are bounded QEMU fixtures. Fleet identity integration, long-lived audit export and production replay retention are not implemented. |
 | TCP throughput | Correct ACK/reset validation, checksums, an eight-segment transmit window, cumulative and partial ACK release, retained-segment RTT/RTO tracking, SACK parsing/emission, fast retransmit, zero-window handling, bounded reordering, keepalive, FIN state, and RTO backoff exist. A production congestion controller and high-bandwidth/lossy-link tuning remain outside the QEMU release gate. |
 | UDP service | IPv4 and IPv6 checksums, bounded atomic datagram delivery, truncation semantics, flow expiry, and buffer reclamation are implemented. QEMU evidence covers IPv4 application echo and kernel-level IPv4/IPv6 parsing; physical lossy-link behavior remains untested. |
-| Fragmentation | Bounded IPv4 and IPv6 reassembly accepts complete out-of-order fragment sets, rejects malformed overlaps/checksums, and expires incomplete sets. The common transmit boundary performs IPv4 and IPv6 source fragmentation. Dual-client load and focused AArch64/x86_64 gates verify maximum-size fragmented UDP echo in both directions with valid MTU, offsets and checksums. Coverage-guided hostile fuzzing and physical lossy-link behavior remain open. |
-| DNS | The asynchronous resolver syscall, A-record parser, timeout/retry path, and bounded cache are wired into the persistent network loop. QEMU smoke verifies an external resolution and cache hit. DNSSEC, TCP fallback, AAAA application results, and production resolver policy are not implemented. |
+| Fragmentation | Bounded IPv4 and IPv6 reassembly accepts complete out-of-order fragment sets, rejects malformed overlaps/checksums, and expires incomplete sets. The common transmit boundary performs IPv4 and IPv6 source fragmentation. Dual-client load, coverage-guided parser campaigns, and focused AArch64/x86_64 gates verify maximum-size fragmented UDP echo and malformed handling. Physical lossy-link behavior remains open. |
+| DNS | The asynchronous resolver supports A/AAAA results, TTL-bounded caching, retry/timeout, and DNS-over-TCP fallback. It requires the authenticated-data bit from a configured validating resolver; XAIOS does not perform a local DNSSEC chain validation. Production resolver selection and physical deployment remain open. |
 | General threads | EL0 create/join/cancel/exit syscalls dispatch general workers across the runtime-sized online CPU set and pass QEMU concurrency tests. Physical many-core scheduling, fairness, and long-duration stress remain unverified. |
 | SMMU | The focused QEMU SMMUv3 gate proves translated authorized DMA, a translation fault for forbidden DMA, and stale-mapping rejection after teardown. Default QEMU boot remains bypass-compatible; physical-platform Stage 1 policy and performance remain unverified. |
 
