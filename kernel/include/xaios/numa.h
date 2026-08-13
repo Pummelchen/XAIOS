@@ -16,6 +16,8 @@ typedef struct xaios_numa_region {
 typedef struct xaios_numa_node {
   uint32_t node_id;
   uint32_t online;
+  uint32_t proximity_domain;
+  uint32_t distance_count;
   uint64_t phys_start;
   uint64_t phys_end;
   uint64_t total_pages;
@@ -26,6 +28,7 @@ typedef struct xaios_numa_node {
   uint32_t cpu_word_count;
   xaios_numa_region_t *regions;
   uint64_t *cpu_bitmap;
+  uint8_t *distances;
   uint32_t alloc_region_hint;
   uint32_t reserved;
   uint64_t alloc_page_hint;
@@ -37,6 +40,12 @@ uint32_t numa_node_count(void);
 const xaios_numa_node_t *numa_node(uint32_t node_id);
 uint32_t numa_node_of_phys(uint64_t phys_addr);
 int numa_node_has_cpu(uint32_t node_id, uint32_t cpu_id);
+uint32_t numa_node_of_cpu(uint32_t cpu_id);
+uint8_t numa_distance(uint32_t from_node, uint32_t to_node);
+void numa_record_access(uint32_t cpu_id, uint64_t physical_address,
+                        uint64_t bytes);
+uint64_t numa_local_bytes(void);
+uint64_t numa_remote_bytes(void);
 void *numa_alloc_page_on_node(uint32_t node_id);
 int numa_free_page(void *page);
 void numa_self_test(void);

@@ -50,6 +50,11 @@ they do not prove physical performance or production readiness.
 | Applications | `userspace/apps/`, `userspace/apps/terminal/` | Standalone ELFs and app-owned terminal modules. The kernel supplies generic capability-gated primitives rather than application implementations. |
 | Portable engine | `engine/` | Model-v2 and ModelFS parsing, adapters, backends, model/session ownership, and asynchronous range I/O. |
 
+The engine's hosted cluster reference authenticates bounded peer messages,
+rejects replay, and deterministically assigns and reduces expert work. It does
+not yet have an XAIOS multi-guest transport; see
+[`docs/CLUSTER-PROTOCOL.md`](https://github.com/Pummelchen/XAIOS/blob/main/docs/CLUSTER-PROTOCOL.md).
+
 ## Trust boundaries
 
 - EL0 code crosses into the kernel only through validated syscall dispatch.

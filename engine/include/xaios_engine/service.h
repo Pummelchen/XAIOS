@@ -32,7 +32,10 @@ typedef struct xaios_engine_async_io {
 
 typedef struct xaios_engine_model_slot {
   uint64_t model_id;
+  uint64_t last_used_generation;
+  uint64_t pin_count;
   uint32_t active;
+  uint32_t resident;
   uint32_t executable;
   xaios_model_v2_package_t package;
   const xaios_architecture_adapter_t *adapter;
@@ -59,6 +62,7 @@ typedef struct xaios_engine_service {
   uint64_t session_capacity;
   uint64_t next_model_id;
   uint64_t next_session_id;
+  uint64_t lifecycle_generation;
 } xaios_engine_service_t;
 
 xaios_engine_status_t xaios_engine_service_init(
@@ -71,6 +75,19 @@ xaios_engine_status_t xaios_engine_service_admit_model(
     uint64_t required_backend_capabilities, uint64_t *model_id);
 xaios_engine_status_t xaios_engine_service_release_model(
     xaios_engine_service_t *service, uint64_t model_id);
+xaios_engine_status_t xaios_engine_service_activate_model(
+    xaios_engine_service_t *service, uint64_t model_id);
+xaios_engine_status_t xaios_engine_service_pin_model(
+    xaios_engine_service_t *service, uint64_t model_id);
+xaios_engine_status_t xaios_engine_service_unpin_model(
+    xaios_engine_service_t *service, uint64_t model_id);
+xaios_engine_status_t xaios_engine_service_evict_model(
+    xaios_engine_service_t *service, uint64_t model_id);
+xaios_engine_status_t xaios_engine_service_evict_lru(
+    xaios_engine_service_t *service, uint64_t *model_id);
+xaios_engine_status_t xaios_engine_service_model_snapshot(
+    const xaios_engine_service_t *service, uint64_t model_id,
+    xaios_engine_model_slot_t *snapshot);
 xaios_engine_status_t xaios_engine_service_read_range_async(
     xaios_engine_service_t *service, uint64_t model_id, uint64_t offset,
     void *destination, uint64_t length,

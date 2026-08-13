@@ -1,8 +1,8 @@
 # Block Device API
 
-Status: Phase 1 implemented and tested with a hosted mock and QEMU VirtIO-blk.
-This is a synchronous correctness API. It does not claim NVMe queueing or
-physical storage performance.
+Status: synchronous and asynchronous correctness APIs are implemented and
+tested with hosted mocks, QEMU VirtIO-blk, and emulated NVMe. This does not
+claim physical storage performance or durability.
 
 ## Interface
 
@@ -18,12 +18,23 @@ block_write(...);
 block_flush(...);
 block_discard(...);
 block_write_zeroes(...);
+block_async_submit(...);
+block_async_poll(...);
+block_async_cancel(...);
+block_async_complete(...);
 ```
 
 Devices register an explicit stable identifier such as `/dev/vblk0`, a backend
 name, 64-bit geometry, optional-operation capabilities, transfer limits, and
 backend callbacks. The registry is bounded to 32 boot-time devices; file and
 volume capacity is not coupled to that registry size.
+
+An asynchronous request has an explicit operation, state, byte range,
+caller-owned buffer, completion status, token, callback, and backend-private
+slot. Submit validates the same geometry and capability rules as synchronous
+I/O. Backends may complete immediately, remain pending until polling or an
+interrupt, or acknowledge cancellation and drain the hardware completion before
+slot reuse. Devices without async operations use the synchronous fallback.
 
 The UEFI-provided initramfs is registered as a read-only `boot-memory` device.
 Its self-test verifies reads, async completion, flush reporting and write
@@ -84,6 +95,13 @@ negotiated.
 QEMU 2026-08-03 evidence: the test device reported 512-byte logical and
 physical blocks and advertised flush, discard, and write-zeroes. This proves
 emulated feature negotiation and boot compatibility only.
+
+The focused NVMe adapter uses four 16-entry queues, caller-aligned direct
+buffers, reusable PRP lists, native single-descriptor SGL where advertised,
+and persistent request slots. Its QEMU gate covers cancellation, malformed
+completion fields, repeated concurrent queue stress, flush, and host backing
+bytes. x86_64 verifies one MSI-X completion after interrupt activation;
+AArch64 currently polls because no GICv3 ITS backend exists.
 
 The model-volume drive defaults to conservative file semantics. Set
 `XAIOS_QEMU_MODEL_DISCARD=unmap` to launch QEMU with

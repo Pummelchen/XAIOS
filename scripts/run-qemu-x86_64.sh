@@ -117,6 +117,21 @@ net_socket_port="${XAIOS_QEMU_NET_SOCKET_PORT:-none}"
 pcap_file="${XAIOS_QEMU_NET_DUMP:-none}"
 nvme_image="${XAIOS_QEMU_X86_NVME_IMAGE:-}"
 debug_log="${XAIOS_QEMU_X86_DEBUG_LOG:-}"
+numa_profile="${XAIOS_QEMU_X86_NUMA:-none}"
+
+case "$numa_profile" in
+  none) ;;
+  two-node)
+    if [ "$memory" != "2G" ] || [ "$smp" != "4" ]; then
+      printf '%s\n' "error: two-node NUMA profile requires XAIOS_QEMU_X86_MEMORY=2G and XAIOS_QEMU_X86_SMP=4" >&2
+      exit 2
+    fi
+    ;;
+  *)
+    printf '%s\n' "error: XAIOS_QEMU_X86_NUMA must be none or two-node" >&2
+    exit 2
+    ;;
+esac
 
 if [ "$dry_run" -eq 0 ] && [ ! -f "$image" ]; then
   printf '%s\n' "error: missing x86_64 boot image: $image" >&2
@@ -143,7 +158,6 @@ set -- "$qemu" \
   -machine "$machine" \
   -accel "$accel" \
   -cpu "$cpu" \
-  -m "$memory" \
   -smp "$smp" \
   -no-reboot \
   -nographic \
@@ -166,6 +180,18 @@ set -- "$qemu" \
   -blockdev driver=raw,node-name=xaios_x86_system_kernel,file=xaios_x86_system_kernel_file \
   -device virtio-blk-pci,drive=xaios_x86_system_kernel,disable-legacy=on \
   -device virtio-net-pci,netdev=net0,mac=52:54:00:12:34:57,disable-legacy=on
+
+if [ "$numa_profile" = "two-node" ]; then
+  set -- "$@" \
+    -m 2G \
+    -object memory-backend-ram,id=xaios_ram0,size=1G \
+    -object memory-backend-ram,id=xaios_ram1,size=1G \
+    -numa node,nodeid=0,cpus=0-1,memdev=xaios_ram0 \
+    -numa node,nodeid=1,cpus=2-3,memdev=xaios_ram1 \
+    -numa dist,src=0,dst=1,val=20
+else
+  set -- "$@" -m "$memory"
+fi
 
 if [ "$net_socket_port" != "none" ]; then
   net0_user_options="user,id=net0_user,ipv6=off"

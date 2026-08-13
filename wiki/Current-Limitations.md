@@ -72,10 +72,11 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   is not claimed from QEMU. Emulated NVMe covers focused
   identify/write/flush/read and backing-byte checks.
 - AArch64 and x86_64 QEMU negotiate four NVMe I/O queues and pass four-page PRP
-  16 KiB write/read/flush operations with host backing-byte verification.
-  Asynchronous block integration, SGL, queue affinity, cancellation, direct
-  final-buffer reads, physical durability, discard behavior, and throughput
-  remain open.
+  and SGL 16 KiB write/read/flush operations with async submission, direct
+  aligned buffers, cancellation, malformed-completion rejection, queue
+  affinity, and host backing-byte verification. x86_64 verifies MSI-X delivery;
+  AArch64 is polling-backed until GICv3 ITS support exists. Physical durability,
+  discard behavior, and throughput remain open.
 - ModelFS supports signed registration, resumable staging, verification,
   immutable activation, scrub/quarantine, cleanup/reuse, and free-only trim
   under hosted and QEMU tests.
@@ -131,10 +132,14 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 - Qwen 3.8 27B is the next active correctness workstream now that the declared
   QEMU platform gate passes. Kimi K3 and DeepSeek V4 Flash 0731 remain later
   roadmap targets.
-- Kimi K3 KDA, Gated MLA, AttnRes, exact top-16 routing, shared experts, native
-  MXFP4, text parity, and multimodal execution are not implemented.
+- A miniature Kimi K3 reference covers reduced KDA recurrence, causal Gated
+  MLA, exact top-16 routing across 20 experts, shared-expert reduction, SiTU,
+  and one native MXFP4 block. AttnRes, production dimensions, tokenizer/text
+  parity, real checkpoints, and multimodal execution are not implemented.
 - Scalar INT4/INT6 and experimental NEON/AVX2 packed kernels pass bounded
-  correctness tests. Physical AVX2 validation, AVX-512/VNNI, AMX, SVE,
+  correctness tests. An SVE2 arithmetic canary passes under QEMU, but scalable
+  context state and kernels do not exist. Physical AVX2 validation,
+  AVX-512/VNNI, AMX, SVE,
   tiled prefill/verification, persistent worker gangs, and bandwidth autotuning
   remain incomplete.
 - No complete model-executing native macOS process, Metal backend, physical

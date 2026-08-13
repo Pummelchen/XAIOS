@@ -17,13 +17,21 @@ is complete for the declared common core-OS scope.
 
 ## CPU feature foundations
 
-- AArch64: scalar baseline, NEON context handling, and experimental packed
-  NEON kernel interfaces. SVE/SVE2 remain capability-gated future work.
+- AArch64: scalar baseline, NEON context handling, experimental packed NEON
+  interfaces, and an SVE2 QEMU arithmetic canary. SVE/SVE2 backends remain
+  disabled because scalable Z/P/FFR scheduler state is not preserved yet.
 - x86_64: CPUID/topology discovery, AVX2 packed-kernel interfaces, XSAVE state,
   and conservative FXSAVE fallback. AVX-512, VNNI, and AMX production backends
   remain incomplete.
-- NUMA: runtime-sized node and CPU metadata exists; physical SRAT/SLIT/HMAT
-  placement and bandwidth validation remain open.
+- NUMA: runtime-sized node and CPU metadata exists. A two-node x86 QEMU gate
+  parses SRAT/SLIT, allocates from each firmware range, and reports deterministic
+  local/remote accounting. HMAT policy and physical locality/bandwidth remain
+  open.
+
+Both architecture VMMs expose collision-safe kernel 2 MiB map/unmap operations
+and validate translation across the full extent during boot. Sparse model
+packages beyond 100 GiB are covered in hosted tests. Neither result proves
+multi-terabyte physical capacity or large-page performance.
 
 ## Physical hardware boundary
 

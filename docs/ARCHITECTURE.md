@@ -39,7 +39,7 @@ services, and jumps to `kmain`. The kernel establishes its own page tables.
  2. timer_init()              — ARM generic timer (CNTVCT_EL0)
  3. stack_canary_init()       — Stack protection seed
  4. smp_init_qemu_virt()      — Secondary core discovery
- 5. numa_init(boot)           — NUMA topology (single node on QEMU)
+ 5. numa_init(boot)           — Firmware NUMA topology or single-node fallback
  6. pmm_init(boot)            — Physical memory manager (delegates to NUMA)
  7. vmm_init(boot)            — Virtual memory manager (4-level page tables)
  8. smmu_init()               — ARM SMMUv3 IOMMU

@@ -112,6 +112,9 @@ static int test_service_lifecycle(void) {
   }
   models[0].model_id = 42U;
   models[0].active = 1U;
+  models[0].resident = 1U;
+  models[0].last_used_generation = 1U;
+  service.lifecycle_generation = 1U;
   models[0].package.header.file_size = sizeof(io_context.source);
   models[0].async_io = (xaios_engine_async_io_t){
       &io_context, async_submit, async_cancel, 4096U, 4096U};
@@ -140,6 +143,31 @@ static int test_service_lifecycle(void) {
     return 1;
   }
 
+  models[1].model_id = 84U;
+  models[1].active = 1U;
+  models[1].resident = 1U;
+  models[1].last_used_generation = 2U;
+  service.lifecycle_generation = 2U;
+  xaios_engine_model_slot_t model_snapshot;
+  uint64_t evicted_model = 0U;
+  if (xaios_engine_service_pin_model(&service, 42U) != XAIOS_ENGINE_OK ||
+      xaios_engine_service_evict_model(&service, 42U) !=
+          XAIOS_ENGINE_ERR_BUSY ||
+      xaios_engine_service_evict_lru(&service, &evicted_model) !=
+          XAIOS_ENGINE_OK ||
+      evicted_model != 84U ||
+      xaios_engine_session_create(&service, 84U, &evicted_model) !=
+          XAIOS_ENGINE_ERR_BUSY ||
+      xaios_engine_service_activate_model(&service, 84U) != XAIOS_ENGINE_OK ||
+      xaios_engine_service_unpin_model(&service, 42U) != XAIOS_ENGINE_OK ||
+      xaios_engine_service_unpin_model(&service, 42U) !=
+          XAIOS_ENGINE_ERR_INVALID ||
+      xaios_engine_service_model_snapshot(&service, 84U, &model_snapshot) !=
+          XAIOS_ENGINE_OK ||
+      model_snapshot.resident == 0U || model_snapshot.pin_count != 0U) {
+    return 1;
+  }
+
   uint64_t parent = 0U;
   uint64_t child = 0U;
   xaios_engine_session_slot_t snapshot;
@@ -161,7 +189,9 @@ static int test_service_lifecycle(void) {
       xaios_engine_session_destroy(&service, parent) != XAIOS_ENGINE_ERR_BUSY ||
       xaios_engine_session_destroy(&service, child) != XAIOS_ENGINE_OK ||
       xaios_engine_session_destroy(&service, parent) != XAIOS_ENGINE_OK ||
-      xaios_engine_service_release_model(&service, 42U) != XAIOS_ENGINE_OK) {
+      xaios_engine_service_release_model(&service, 42U) != XAIOS_ENGINE_OK ||
+      xaios_engine_service_evict_model(&service, 84U) != XAIOS_ENGINE_OK ||
+      xaios_engine_service_release_model(&service, 84U) != XAIOS_ENGINE_OK) {
     return 1;
   }
   return 0;
@@ -227,7 +257,7 @@ int main(int argc, char **argv) {
     return 1;
   }
   if (argc == 1) {
-    puts("hosted engine: scalar, registry, async I/O, and session lifecycle passed");
+    puts("hosted engine: scalar, registry, async I/O, model cache, and session lifecycle passed");
     return 0;
   }
   if (argc != 2) {

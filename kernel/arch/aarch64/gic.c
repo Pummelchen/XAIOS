@@ -1,6 +1,7 @@
 #include <xaios/assert.h>
 #include <xaios/gic.h>
 #include <xaios/klog.h>
+#include <xaios/smp.h>
 
 #define QEMU_VIRT_GICD_BASE UINT64_C(0x08000000)
 #define QEMU_VIRT_GICR_BASE UINT64_C(0x080A0000)
@@ -15,8 +16,11 @@
 #define GICD_IGROUPR0    0x0080U
 #define GICD_ISENABLER0  0x0100U
 #define GICD_ICENABLER0  0x0180U
+#define GICD_ICFGR0      0x0c00U
 #define GICD_IPRIORITYR0 0x0400U
 #define GICD_IROUTER0    0x6000U
+#define GICD_CTLR_RWP    (UINT32_C(1) << 31U)
+#define GICD_CTLR_ARE_NS (UINT32_C(1) << 5U)
 #define GIC_MAX_INTIDS   1020U
 
 /* GIC Redistributor registers (per-CPU frame 0) */
@@ -43,6 +47,7 @@ static xaios_gic_info_t g_gic_info;
 static uint32_t g_gic_full_init;
 static xaios_irq_handler_t g_irq_handlers[GIC_MAX_INTIDS];
 static void *g_irq_contexts[GIC_MAX_INTIDS];
+static uint32_t g_irq_cpu_ids[GIC_MAX_INTIDS];
 static uint32_t g_registered_interrupts;
 
 static uint32_t mmio_read32(uint64_t base, uint32_t offset) {
@@ -68,10 +73,50 @@ static void mmio_write64(uint64_t base, uint32_t offset, uint64_t value) {
   *reg = value;
 }
 
+static void wait_distributor(void) {
+  while ((mmio_read32(QEMU_VIRT_GICD_BASE, GICD_CTLR) & GICD_CTLR_RWP) !=
+         0U) {
+    xaios_cpu_relax();
+  }
+}
+
+static void configure_spi_route(uint32_t intid, uint32_t cpu_id) {
+  const xaios_cpu_state_t *cpu = smp_cpu_state(cpu_id);
+  if (cpu == 0) return;
+  uint64_t mpidr = cpu->mpidr;
+  uint64_t route = (mpidr & UINT64_C(0xffffff)) |
+                   ((mpidr & UINT64_C(0xff00000000)) >> 8U);
+  mmio_write64(QEMU_VIRT_GICD_BASE, GICD_IROUTER0 + intid * 8U, route);
+}
+
+static void configure_spi(uint32_t intid, uint32_t cpu_id) {
+  uint32_t group_offset = GICD_IGROUPR0 + (intid / 32U) * 4U;
+  uint32_t group = mmio_read32(QEMU_VIRT_GICD_BASE, group_offset);
+  mmio_write32(QEMU_VIRT_GICD_BASE, group_offset,
+               group | (UINT32_C(1) << (intid % 32U)));
+  uint32_t priority_offset = GICD_IPRIORITYR0 + (intid & ~UINT32_C(3));
+  uint32_t priority = mmio_read32(QEMU_VIRT_GICD_BASE, priority_offset);
+  uint32_t shift = (intid % 4U) * 8U;
+  priority = (priority & ~(UINT32_C(0xff) << shift)) |
+             (UINT32_C(0x80) << shift);
+  mmio_write32(QEMU_VIRT_GICD_BASE, priority_offset, priority);
+  uint32_t config_offset = GICD_ICFGR0 + (intid / 16U) * 4U;
+  uint32_t config = mmio_read32(QEMU_VIRT_GICD_BASE, config_offset);
+  uint32_t config_shift = (intid % 16U) * 2U;
+  config = (config & ~(UINT32_C(3) << config_shift)) |
+           (UINT32_C(2) << config_shift);
+  mmio_write32(QEMU_VIRT_GICD_BASE, config_offset, config);
+  configure_spi_route(intid, cpu_id);
+  mmio_write32(QEMU_VIRT_GICD_BASE,
+               GICD_ISENABLER0 + (intid / 32U) * 4U,
+               UINT32_C(1) << (intid % 32U));
+}
+
 void gic_init_qemu_virt(void) {
   for (uint32_t intid = 0U; intid < GIC_MAX_INTIDS; ++intid) {
     g_irq_handlers[intid] = 0;
     g_irq_contexts[intid] = 0;
+    g_irq_cpu_ids[intid] = UINT32_MAX;
   }
   g_registered_interrupts = 0U;
   g_gic_info.distributor_base = QEMU_VIRT_GICD_BASE;
@@ -104,22 +149,9 @@ xaios_status_t gic_register_interrupt(uint32_t intid,
   if (g_irq_handlers[intid] != 0) return XAIOS_ERR_BUSY;
   g_irq_handlers[intid] = handler;
   g_irq_contexts[intid] = context;
+  g_irq_cpu_ids[intid] = 0U;
   ++g_registered_interrupts;
-
-  uint32_t group_offset = GICD_IGROUPR0 + (intid / 32U) * 4U;
-  uint32_t group = mmio_read32(QEMU_VIRT_GICD_BASE, group_offset);
-  mmio_write32(QEMU_VIRT_GICD_BASE, group_offset,
-               group | (UINT32_C(1) << (intid % 32U)));
-  uint32_t priority_offset = GICD_IPRIORITYR0 + (intid & ~UINT32_C(3));
-  uint32_t priority = mmio_read32(QEMU_VIRT_GICD_BASE, priority_offset);
-  uint32_t shift = (intid % 4U) * 8U;
-  priority &= ~(UINT32_C(0xff) << shift);
-  priority |= UINT32_C(0x80) << shift;
-  mmio_write32(QEMU_VIRT_GICD_BASE, priority_offset, priority);
-  mmio_write64(QEMU_VIRT_GICD_BASE, GICD_IROUTER0 + intid * 8U, 0U);
-  mmio_write32(QEMU_VIRT_GICD_BASE,
-               GICD_ISENABLER0 + (intid / 32U) * 4U,
-               UINT32_C(1) << (intid % 32U));
+  configure_spi(intid, 0U);
   klog("gic: registered interrupt intid=%u handlers=%u\n", intid,
        g_registered_interrupts);
   return XAIOS_OK;
@@ -137,7 +169,19 @@ xaios_status_t gic_unregister_interrupt(uint32_t intid,
                UINT32_C(1) << (intid % 32U));
   g_irq_handlers[intid] = 0;
   g_irq_contexts[intid] = 0;
+  g_irq_cpu_ids[intid] = UINT32_MAX;
   --g_registered_interrupts;
+  return XAIOS_OK;
+}
+
+xaios_status_t gic_route_interrupt(uint32_t intid, uint32_t cpu_id) {
+  const xaios_cpu_state_t *cpu = smp_cpu_state(cpu_id);
+  if (intid < 32U || intid >= g_gic_info.interrupt_lines || cpu == 0 ||
+      cpu->online == 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  configure_spi_route(intid, cpu_id);
+  g_irq_cpu_ids[intid] = cpu_id;
   return XAIOS_OK;
 }
 
@@ -152,15 +196,29 @@ void gic_enable_full(void) {
     return;
   }
 
-  /* SGIs and PPIs are configured in the local redistributor, not GICD. */
-  uint32_t timer_priority_offset = TIMER_PPI_INTID & ~UINT32_C(3);
-  uint32_t timer_priority_shift = (TIMER_PPI_INTID % 4U) * 8U;
-
-  /* Enable Group 1 non-secure delivery. Keep Group 0 unchanged because
-   * firmware may have configured it for secure-world use. */
+  /* Enable Group 1 non-secure delivery while preserving secure firmware. */
   uint32_t ctlr = mmio_read32(QEMU_VIRT_GICD_BASE, GICD_CTLR);
+  if ((ctlr & GICD_CTLR_ARE_NS) == 0U) {
+    mmio_write32(QEMU_VIRT_GICD_BASE, GICD_CTLR,
+                 ctlr & ~UINT32_C(0x7));
+    wait_distributor();
+    ctlr = (ctlr & ~UINT32_C(0x7)) | GICD_CTLR_ARE_NS;
+    mmio_write32(QEMU_VIRT_GICD_BASE, GICD_CTLR, ctlr);
+    wait_distributor();
+  }
   ctlr |= UINT32_C(1) << 1U;
   mmio_write32(QEMU_VIRT_GICD_BASE, GICD_CTLR, ctlr);
+  wait_distributor();
+
+  for (uint32_t intid = 32U; intid < g_gic_info.interrupt_lines; ++intid) {
+    if (g_irq_handlers[intid] == 0 || g_irq_cpu_ids[intid] == UINT32_MAX) {
+      continue;
+    }
+    configure_spi(intid, g_irq_cpu_ids[intid]);
+  }
+
+  uint32_t timer_priority_offset = TIMER_PPI_INTID & ~UINT32_C(3);
+  uint32_t timer_priority_shift = (TIMER_PPI_INTID % 4U) * 8U;
 
   /* Configure redistributor for CPU 0 */
   uint32_t gicr_waker = mmio_read32(QEMU_VIRT_GICR_BASE, GICR_WAKER);
@@ -198,7 +256,7 @@ void gic_enable_full(void) {
   /* Unmask IRQs at CPU level (clear I bit in DAIF) */
   __asm__ volatile("msr daifclr, #2");
 
-  g_gic_full_init = 1;
+  g_gic_full_init = 1U;
   klog("gic: full init complete redistributor=0x%lx timer_intid=%u\n",
        QEMU_VIRT_GICR_BASE, TIMER_PPI_INTID);
 }
@@ -249,7 +307,6 @@ void gic_disable_full(void) {
   if (g_gic_full_init == 0) {
     return;
   }
-  /* Disable redistributor PPI */
   mmio_write32(QEMU_VIRT_GICR_BASE, GICR_ICENABLER0,
                (UINT32_C(1) << TIMER_PPI_INTID) |
                    (UINT32_C(1) << WORKER_SGI_INTID));
@@ -258,7 +315,7 @@ void gic_disable_full(void) {
     __asm__ volatile("msr " ICC_PMR_EL1 ", %0" : : "r"((uint64_t)0U));
     __asm__ volatile("msr " ICC_IGRPEN1_EL1 ", %0" : : "r"((uint64_t)0U));
     __asm__ volatile("isb");
-    g_gic_full_init = 0;
+    g_gic_full_init = 0U;
   }
   klog("gic: timer mode disabled device_handlers=%u cpu_interface=%s\n",
        g_registered_interrupts,

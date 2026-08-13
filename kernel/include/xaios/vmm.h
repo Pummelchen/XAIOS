@@ -12,6 +12,8 @@
 #define XAIOS_VMM_USER (UINT32_C(1) << 4)
 #define XAIOS_VMM_NG (UINT32_C(1) << 5)
 
+#define XAIOS_VMM_LARGE_PAGE_SIZE UINT64_C(0x200000)
+
 #define XAIOS_USER_BASE UINT64_C(0x100000000)
 #define XAIOS_USER_LIMIT UINT64_C(0x140000000)
 #define XAIOS_USER_STACK_TOP UINT64_C(0x13f000000)
@@ -26,6 +28,9 @@ xaios_status_t vmm_validate_range_flags(uint64_t virtual_address, uint64_t size,
 xaios_status_t vmm_map_page(uint64_t virtual_address, uint64_t physical_address,
                            uint32_t flags);
 xaios_status_t vmm_unmap_page(uint64_t virtual_address);
+xaios_status_t vmm_map_large_page(uint64_t virtual_address,
+                                 uint64_t physical_address, uint32_t flags);
+xaios_status_t vmm_unmap_large_page(uint64_t virtual_address);
 xaios_status_t vmm_validate_user_buffer(uint64_t virtual_address, uint64_t size,
                                        uint32_t required_flags);
 void vmm_self_test(void);

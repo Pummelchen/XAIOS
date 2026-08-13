@@ -75,9 +75,10 @@ while ModelFS handles or maintenance operations are active.
 - QEMU VirtIO block I/O is interrupt-dispatched with an eight-request queue,
   direct-or-bounce DMA, event-index suppression and indirect descriptors. A
   AArch64/x86_64 emulated-NVMe gate negotiates four I/O queues and validates
-  four-page PRP 16 KiB write/flush/read operations. Async block integration,
-  SGL, MSI-X affinity, direct-final-buffer I/O, cancellation, and
-  physical-device durability are not implemented.
+  repeated four-page PRP/SGL 16 KiB write/flush/read operations, direct aligned
+  buffers, cancellation, malformed completion rejection, and backing bytes.
+  x86_64 also verifies queue-0 MSI-X delivery. AArch64 uses bounded polling
+  pending a GICv3 ITS path. Physical-device durability is not established.
 - Registration and cleanup are administrator-controlled and capacity-checked,
   but there is no fleet-wide tenant quota or background expiry policy.
 - ModelFS activation and the MutableFS audit append are separately durable.

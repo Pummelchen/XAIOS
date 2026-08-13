@@ -2,7 +2,7 @@
 
 Status: the hosted and QEMU-testable storage path is implemented, including
 dynamic online ModelFS lifecycle, persisted scrub and free-space trim. Physical
-device validation and asynchronous hardware queues remain pending.
+device validation and durability remain pending.
 
 ## Layers
 
@@ -20,7 +20,7 @@ small state                       immutable active + bounded staging
 portable model_volume/model_file reader
                                        |
                                        v
-block_device API -> partition device -> VirtIO-blk or hosted backend
+block_device sync/async API -> partition device -> VirtIO-blk, NVMe, or hosted backend
 ```
 
 GPT is the standard partition-map layer between whole devices and bounded
@@ -74,6 +74,9 @@ ModelFS is the placement and lifecycle container.
 - The portable loader uses caller-provided scratch and destination memory. Its
   memory requirement is bounded by metadata and chunk verification, not model
   byte size.
+- The generic block layer supports validated asynchronous submission, polling,
+  cancellation, completion callbacks, and per-device accounting. A backend may
+  use the synchronous fallback without changing callers.
 
 ## Current limits
 
@@ -83,9 +86,11 @@ ModelFS is the placement and lifecycle container.
 - The QEMU VirtIO path is interrupt-dispatched with eight request slots,
   direct-or-bounce DMA, event-index suppression and indirect descriptors. The
   AArch64/x86_64 emulated-NVMe gate negotiates four I/O queues and verifies
-  four-page PRP 16 KiB transfers through every queue. Async block integration,
-  SGL, MSI-X affinity, cancellation and physical durability remain open; QEMU
-  is not throughput evidence.
+  eight rounds of four-page PRP/SGL 16 KiB transfers through every queue,
+  direct aligned buffers, cancellation, malformed completions, flushes, and
+  host backing bytes. x86_64 additionally verifies queue-0 MSI-X delivery;
+  AArch64 remains polling-backed until a GICv3 ITS path exists. Physical
+  durability and throughput remain open; QEMU is not performance evidence.
 - Registration accepts the bounded signed identity fields defined by
   `xaios.control.v1`; it is not a general JSON manifest parser. Package payloads
   still arrive through SFTP after allocation.

@@ -2,7 +2,7 @@ SHELL := /bin/sh
 HOST_CC ?= clang
 HOST_CFLAGS ?= -std=c99 -Wall -Wextra -Werror -pedantic
 
-.PHONY: all bootstrap test image image-qemu-test image-x86_64 image-x86_64-qemu-test image-libc-test qemu-libc-gate xapt-test xapt-repository qemu-xapt-gate engine-cli libc libc-check vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-dry-run qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-operations-closure qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-outbound-fragmentation-gate qemu-qualification-readiness qemu-dry-run qemu-smoke qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-freebsd-bidirectional-suite qemu-four-endpoint-network-suite qemu-parallel-network-load qemu-network-adversarial-gate qemu-local-console-gate qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc parser-fuzz compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test code-scanning-contract docs-check production-source-audit qemu-baseline clean clean-persistent
+.PHONY: all bootstrap test image image-qemu-test image-x86_64 image-x86_64-qemu-test image-libc-test qemu-libc-gate xapt-test xapt-repository qemu-xapt-gate engine-cli libc libc-check vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-dry-run qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-numa-gate qemu-aarch64-sve2-gate qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-operations-closure qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-outbound-fragmentation-gate qemu-qualification-readiness qemu-dry-run qemu-smoke qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-freebsd-bidirectional-suite qemu-four-endpoint-network-suite qemu-parallel-network-load qemu-network-adversarial-gate qemu-local-console-gate qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc parser-fuzz compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test code-scanning-contract docs-check production-source-audit qemu-baseline clean clean-persistent
 
 all: bootstrap image
 
@@ -76,6 +76,13 @@ qemu-aarch64:
 
 qemu-x86_64: image-x86_64
 	./scripts/run-qemu-x86_64.sh
+
+qemu-x86_64-numa-gate:
+	XAIOS_TARGET_ARCH=x86_64 XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
+	python3 tests/scripts/qemu-x86_64-numa-gate.py
+
+qemu-aarch64-sve2-gate: image-qemu-test
+	python3 tests/scripts/qemu-aarch64-sve2-gate.py
 
 qemu-dry-run:
 	./scripts/run-qemu-aarch64.sh --dry-run
@@ -274,7 +281,8 @@ compile-check:
 	  object=build/compile-check/x86-kernel/$$(printf '%s' "$$f" | tr / _).o; \
 	  clang --target=x86_64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie -mno-red-zone \
-	    -Wall -Wextra -Werror -Ikernel/include -Iengine/include \
+	    -Wall -Wextra -Werror -DXAIOS_X86_COMMON_RUNTIME=1 \
+	    -Ikernel/include -Iengine/include \
 	    -Iengine/src -Iuserspace/include -Iuserspace/sshd \
 	    -c "$$f" -o "$$object" \
 	    || failed=$$((failed + 1)); \
@@ -324,6 +332,14 @@ hosted-test: engine-cli
 	  engine/src/backend_neon.c engine/src/backend_avx2.c engine/src/packed.c \
 	  tests/model_v2/test_engine.c -o build/hosted/test-engine
 	./build/hosted/test-engine
+	$(HOST_CC) $(HOST_CFLAGS) \
+	  -Iengine/include -Iengine/src engine/src/cluster.c engine/src/sha256.c \
+	  tests/model_v2/test_cluster.c -o build/hosted/test-cluster
+	./build/hosted/test-cluster
+	$(HOST_CC) $(HOST_CFLAGS) \
+	  -Iengine/include engine/src/kimi_k3_mini.c \
+	  tests/model_v2/test_kimi_k3_mini.c -lm -o build/hosted/test-kimi-k3-mini
+	./build/hosted/test-kimi-k3-mini
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Iengine/include engine/src/backend_scalar.c engine/src/backend_neon.c \
 	  engine/src/backend_avx2.c engine/src/packed.c \

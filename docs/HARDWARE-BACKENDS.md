@@ -16,7 +16,7 @@ Current status:
 |---|---|---|
 | Scalar reference | Scalar packed-kernel correctness complete | FP32 dense projection plus group-scaled signed INT4/INT6 no-expand GEMV/GEMM pass deterministic randomized and every-tail tests. Full model execution is unsupported. |
 | AArch64 NEON | Optimized backend experimental | Native Apple Silicon known-answer startup canaries and scalar differential/tail tests pass for FP32 projection and packed INT4/INT6 GEMV/GEMM. No model parity or benchmark artifact exists. |
-| ARM SVE/SVE2 | Interface only | Capability IDs fail closed. No SVE/SVE2 kernels, layout pack, startup canary, model parity, or physical artifact exists. |
+| ARM SVE/SVE2 | Interface only | `make qemu-aarch64-sve2-gate` executes an SVE2 known-answer arithmetic canary under QEMU `-cpu max`. No packed kernel, scalable-state scheduler support, model parity, or physical artifact exists, so backend selection still fails closed. |
 | macOS Metal | Roadmap only | No native Metal runtime exists. |
 | Intel AVX2 | Optimized backend experimental | QEMU TCG executes INT4/INT6 known-answer canaries and the freestanding x86 image links the portable packed kernel. Physical x86 differential tests and benchmarks remain required. |
 | Xeon AVX-512/VNNI/AMX | Roadmap only | No portable-engine backend exists. |
@@ -34,6 +34,9 @@ from CPUID leaf `0xD`, validates XSAVE/XRSTOR, and applies the selected XCR0 to
 started APs. CPUs without XSAVE use a validated FXSAVE/FXRSTOR FP/SSE fallback.
 ZMM/opmask and AMX state remain disabled unless a future backend,
 OS context path, and known-answer canary jointly authorize them.
+The SVE2 boot canary enables scalable vectors only long enough to validate the
+emulated instruction path. Scheduler frames do not preserve Z/P/FFR state, so
+SVE/SVE2 application and inference execution remains disabled.
 
 Optimized packed kernels must fuse unpack, scale and dot product in registers;
 hot calls may not expand a complete matrix. Every backend must pass scalar

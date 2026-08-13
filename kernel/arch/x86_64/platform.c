@@ -166,6 +166,13 @@ xaios_status_t gic_unregister_interrupt(uint32_t intid,
   return XAIOS_OK;
 }
 
+xaios_status_t gic_route_interrupt(uint32_t intid, uint32_t cpu_id) {
+  (void)cpu_id;
+  return intid < X86_IRQ_SLOTS && g_irq_slots[intid].handler != 0
+             ? XAIOS_OK
+             : XAIOS_ERR_INVALID;
+}
+
 int gic_dispatch_interrupt(uint32_t intid) {
   if (intid >= X86_IRQ_SLOTS || g_irq_slots[intid].handler == 0) return 0;
   g_irq_slots[intid].handler(intid, g_irq_slots[intid].context);

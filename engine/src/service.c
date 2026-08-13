@@ -26,6 +26,28 @@ static xaios_engine_session_slot_t *find_session(
   return NULL;
 }
 
+static int model_has_sessions(const xaios_engine_service_t *service,
+                              uint64_t model_id) {
+  if (service == NULL) return 0;
+  for (uint64_t i = 0U; i < service->session_capacity; ++i) {
+    if (service->sessions[i].active != 0U &&
+        service->sessions[i].model_id == model_id) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static xaios_engine_status_t touch_model(xaios_engine_service_t *service,
+                                         xaios_engine_model_slot_t *model) {
+  if (service == NULL || model == NULL) return XAIOS_ENGINE_ERR_INVALID;
+  if (service->lifecycle_generation == UINT64_MAX) {
+    return XAIOS_ENGINE_ERR_OVERFLOW;
+  }
+  model->last_used_generation = ++service->lifecycle_generation;
+  return XAIOS_ENGINE_OK;
+}
+
 static uint64_t allocate_model_id(xaios_engine_service_t *service) {
   for (uint64_t attempt = 0U; attempt <= service->model_capacity; ++attempt) {
     uint64_t candidate = service->next_model_id++;
@@ -74,7 +96,7 @@ xaios_engine_status_t xaios_engine_service_init(
   memset(models, 0, model_capacity * sizeof(*models));
   memset(sessions, 0, session_capacity * sizeof(*sessions));
   *service = (xaios_engine_service_t){models, model_capacity, sessions,
-                                      session_capacity, 1U, 1U};
+                                      session_capacity, 1U, 1U, 0U};
   return XAIOS_ENGINE_OK;
 }
 
@@ -114,7 +136,13 @@ xaios_engine_status_t xaios_engine_service_admit_model(
   if (async_io != NULL) slot->async_io = *async_io;
   slot->executable =
       adapter->status >= XAIOS_ARCHITECTURE_SCALAR_CORRECTNESS_COMPLETE;
+  slot->resident = 1U;
   slot->active = 1U;
+  status = touch_model(service, slot);
+  if (status != XAIOS_ENGINE_OK) {
+    memset(slot, 0, sizeof(*slot));
+    return status;
+  }
   *model_id = slot->model_id;
   return XAIOS_ENGINE_OK;
 }
@@ -123,14 +151,101 @@ xaios_engine_status_t xaios_engine_service_release_model(
     xaios_engine_service_t *service, uint64_t model_id) {
   xaios_engine_model_slot_t *model = find_model(service, model_id);
   if (model == NULL) return XAIOS_ENGINE_ERR_NOT_FOUND;
-  for (uint64_t i = 0U; i < service->session_capacity; ++i) {
-    if (service->sessions[i].active != 0U &&
-        service->sessions[i].model_id == model_id) {
-      return XAIOS_ENGINE_ERR_BUSY;
-    }
+  if (model->pin_count != 0U || model_has_sessions(service, model_id)) {
+    return XAIOS_ENGINE_ERR_BUSY;
   }
   memset(model, 0, sizeof(*model));
   return XAIOS_ENGINE_OK;
+}
+
+xaios_engine_status_t xaios_engine_service_activate_model(
+    xaios_engine_service_t *service, uint64_t model_id) {
+  xaios_engine_model_slot_t *model = find_model(service, model_id);
+  if (model == NULL) return XAIOS_ENGINE_ERR_NOT_FOUND;
+  uint32_t was_resident = model->resident;
+  model->resident = 1U;
+  xaios_engine_status_t status = touch_model(service, model);
+  if (status != XAIOS_ENGINE_OK) model->resident = was_resident;
+  return status;
+}
+
+xaios_engine_status_t xaios_engine_service_pin_model(
+    xaios_engine_service_t *service, uint64_t model_id) {
+  xaios_engine_model_slot_t *model = find_model(service, model_id);
+  if (model == NULL) return XAIOS_ENGINE_ERR_NOT_FOUND;
+  if (model->pin_count == UINT64_MAX) return XAIOS_ENGINE_ERR_OVERFLOW;
+  uint32_t was_resident = model->resident;
+  model->resident = 1U;
+  ++model->pin_count;
+  xaios_engine_status_t status = touch_model(service, model);
+  if (status != XAIOS_ENGINE_OK) {
+    --model->pin_count;
+    model->resident = was_resident;
+  }
+  return status;
+}
+
+xaios_engine_status_t xaios_engine_service_unpin_model(
+    xaios_engine_service_t *service, uint64_t model_id) {
+  xaios_engine_model_slot_t *model = find_model(service, model_id);
+  if (model == NULL) return XAIOS_ENGINE_ERR_NOT_FOUND;
+  if (model->pin_count == 0U) return XAIOS_ENGINE_ERR_INVALID;
+  --model->pin_count;
+  xaios_engine_status_t status = touch_model(service, model);
+  if (status != XAIOS_ENGINE_OK) ++model->pin_count;
+  return status;
+}
+
+xaios_engine_status_t xaios_engine_service_evict_model(
+    xaios_engine_service_t *service, uint64_t model_id) {
+  xaios_engine_model_slot_t *model = find_model(service, model_id);
+  if (model == NULL) return XAIOS_ENGINE_ERR_NOT_FOUND;
+  if (model->pin_count != 0U || model_has_sessions(service, model_id)) {
+    return XAIOS_ENGINE_ERR_BUSY;
+  }
+  if (model->resident == 0U) return XAIOS_ENGINE_ERR_INVALID;
+  model->resident = 0U;
+  return XAIOS_ENGINE_OK;
+}
+
+xaios_engine_status_t xaios_engine_service_evict_lru(
+    xaios_engine_service_t *service, uint64_t *model_id) {
+  if (service == NULL || model_id == NULL) return XAIOS_ENGINE_ERR_INVALID;
+  *model_id = 0U;
+  xaios_engine_model_slot_t *candidate = NULL;
+  for (uint64_t i = 0U; i < service->model_capacity; ++i) {
+    xaios_engine_model_slot_t *model = &service->models[i];
+    if (model->active == 0U || model->resident == 0U ||
+        model->pin_count != 0U || model_has_sessions(service, model->model_id)) {
+      continue;
+    }
+    if (candidate == NULL ||
+        model->last_used_generation < candidate->last_used_generation ||
+        (model->last_used_generation == candidate->last_used_generation &&
+         model->model_id < candidate->model_id)) {
+      candidate = model;
+    }
+  }
+  if (candidate == NULL) return XAIOS_ENGINE_ERR_BUSY;
+  candidate->resident = 0U;
+  *model_id = candidate->model_id;
+  return XAIOS_ENGINE_OK;
+}
+
+xaios_engine_status_t xaios_engine_service_model_snapshot(
+    const xaios_engine_service_t *service, uint64_t model_id,
+    xaios_engine_model_slot_t *snapshot) {
+  if (service == NULL || model_id == 0U || snapshot == NULL) {
+    return XAIOS_ENGINE_ERR_INVALID;
+  }
+  for (uint64_t i = 0U; i < service->model_capacity; ++i) {
+    if (service->models[i].active != 0U &&
+        service->models[i].model_id == model_id) {
+      *snapshot = service->models[i];
+      return XAIOS_ENGINE_OK;
+    }
+  }
+  return XAIOS_ENGINE_ERR_NOT_FOUND;
 }
 
 xaios_engine_status_t xaios_engine_service_read_range_async(
@@ -140,6 +255,7 @@ xaios_engine_status_t xaios_engine_service_read_range_async(
     xaios_engine_io_request_id_t *request_id) {
   xaios_engine_model_slot_t *model = find_model(service, model_id);
   if (model == NULL) return XAIOS_ENGINE_ERR_NOT_FOUND;
+  if (model->resident == 0U) return XAIOS_ENGINE_ERR_BUSY;
   if (destination == NULL || length == 0U || completion == NULL ||
       request_id == NULL || offset > model->package.header.file_size ||
       length > model->package.header.file_size - offset) {
@@ -154,6 +270,8 @@ xaios_engine_status_t xaios_engine_service_read_range_async(
       (io->max_transfer != 0U && length > io->max_transfer)) {
     return XAIOS_ENGINE_ERR_INVALID;
   }
+  xaios_engine_status_t status = touch_model(service, model);
+  if (status != XAIOS_ENGINE_OK) return status;
   return io->submit(io->context, offset, destination, length, completion,
                     completion_context, request_id);
 }
@@ -172,7 +290,11 @@ xaios_engine_status_t xaios_engine_session_create(
     xaios_engine_service_t *service, uint64_t model_id, uint64_t *session_id) {
   if (session_id == NULL) return XAIOS_ENGINE_ERR_INVALID;
   *session_id = 0U;
-  if (find_model(service, model_id) == NULL) return XAIOS_ENGINE_ERR_NOT_FOUND;
+  xaios_engine_model_slot_t *model = find_model(service, model_id);
+  if (model == NULL) return XAIOS_ENGINE_ERR_NOT_FOUND;
+  if (model->resident == 0U) return XAIOS_ENGINE_ERR_BUSY;
+  xaios_engine_status_t status = touch_model(service, model);
+  if (status != XAIOS_ENGINE_OK) return status;
   for (uint64_t i = 0U; i < service->session_capacity; ++i) {
     xaios_engine_session_slot_t *slot = &service->sessions[i];
     if (slot->active != 0U) continue;
@@ -282,7 +404,7 @@ xaios_engine_status_t xaios_engine_service_decode(
   xaios_engine_session_slot_t *session = find_session(service, session_id);
   if (session == NULL) return XAIOS_ENGINE_ERR_NOT_FOUND;
   xaios_engine_model_slot_t *model = find_model(service, session->model_id);
-  return model != NULL && model->executable != 0U
+  return model != NULL && model->resident != 0U && model->executable != 0U
              ? model->backend->decode(NULL)
              : XAIOS_ENGINE_ERR_UNSUPPORTED;
 }

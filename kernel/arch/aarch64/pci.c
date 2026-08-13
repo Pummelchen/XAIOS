@@ -47,6 +47,14 @@ static void ecam_write16(uint8_t bus, uint8_t dev, uint8_t func,
   __asm__ volatile("dsb sy" ::: "memory");
 }
 
+static void ecam_write32(uint8_t bus, uint8_t dev, uint8_t func,
+                         uint16_t offset, uint32_t value) {
+  volatile uint32_t *p =
+      (volatile uint32_t *)(uintptr_t)ecam_addr(bus, dev, func, offset);
+  *p = value;
+  __asm__ volatile("dsb sy" ::: "memory");
+}
+
 static void map_ecam_bus0(void) {
   uint64_t page = 0;
   while (page < XAIOS_PCI_ECAM_BUS0_SIZE) {
@@ -255,6 +263,75 @@ xaios_status_t pci_enable_device(uint32_t index) {
              : XAIOS_ERR_IO;
 }
 
+xaios_status_t pci_configure_msix(uint32_t index, uint16_t table_entry,
+                                  uint64_t message_address,
+                                  uint32_t message_data) {
+  uint8_t pointer = pci_config_read8(index, XAIOS_PCI_CAP_PTR) & UINT8_C(0xfc);
+  for (uint32_t count = 0U; count < 48U && pointer >= 0x40U; ++count) {
+    uint8_t capability = pci_config_read8(index, pointer);
+    uint8_t next = pci_config_read8(index, pointer + 1U) & UINT8_C(0xfc);
+    if (capability == UINT8_C(0x11)) {
+      uint16_t control = pci_config_read16(index, pointer + 2U);
+      uint16_t table_size = (control & UINT16_C(0x07ff)) + 1U;
+      if (table_entry >= table_size) return XAIOS_ERR_UNSUPPORTED;
+      uint32_t table = pci_config_read32(index, pointer + 4U);
+      uint32_t bar_index = table & UINT32_C(7);
+      uint64_t table_base = pci_bar_address(index, bar_index);
+      uint64_t table_offset = table & UINT32_C(0xfffffff8);
+      if (table_base == 0U || table_base > UINT64_MAX - table_offset ||
+          table_base + table_offset >
+              UINT64_MAX - (uint64_t)table_entry * 16U) {
+        return XAIOS_ERR_INVALID;
+      }
+      uint64_t physical_entry = table_base + table_offset +
+                                (uint64_t)table_entry * 16U;
+      uint64_t physical_page = physical_entry & ~UINT64_C(0xfff);
+      uint64_t virtual_page = UINT64_C(0x310000000) +
+                              (uint64_t)index * UINT64_C(0x10000) +
+                              ((uint64_t)table_entry / 256U) *
+                                  UINT64_C(0x1000);
+      uint64_t mapped = 0U;
+      uint32_t flags = 0U;
+      if (vmm_translate(virtual_page, &mapped, &flags) != XAIOS_OK ||
+          mapped != physical_page || (flags & XAIOS_VMM_DEVICE) == 0U) {
+        if (vmm_map_page(virtual_page, physical_page,
+                         XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
+                             XAIOS_VMM_DEVICE) != XAIOS_OK) {
+          return XAIOS_ERR_IO;
+        }
+      }
+      uint64_t virtual_entry =
+          virtual_page + (physical_entry & UINT64_C(0xfff));
+      volatile uint32_t *words =
+          (volatile uint32_t *)(uintptr_t)virtual_entry;
+      words[3] = 1U;
+      words[0] = (uint32_t)message_address;
+      words[1] = (uint32_t)(message_address >> 32U);
+      words[2] = message_data;
+      __asm__ volatile("dsb sy" ::: "memory");
+      control = (control | UINT16_C(0x8000)) &
+                (uint16_t)~UINT16_C(0x4000);
+      if (pci_config_write16(index, pointer + 2U, control) != XAIOS_OK) {
+        return XAIOS_ERR_IO;
+      }
+      return words[0] == (uint32_t)message_address &&
+                     words[1] == (uint32_t)(message_address >> 32U) &&
+                     words[2] == message_data && words[3] == 1U
+                 ? XAIOS_OK
+                 : XAIOS_ERR_IO;
+    }
+    if (next == 0U || next == pointer) break;
+    pointer = next;
+  }
+  return XAIOS_ERR_UNSUPPORTED;
+}
+
+xaios_status_t pci_unmask_msix(uint32_t index, uint16_t table_entry) {
+  (void)index;
+  (void)table_entry;
+  return XAIOS_ERR_UNSUPPORTED;
+}
+
 uint64_t pci_bar_address(uint32_t index, uint32_t bar_index) {
   const xaios_pci_device_t *device = pci_device(index);
   if (device == 0 || bar_index >= XAIOS_PCI_MAX_BARS) return 0U;
@@ -273,6 +350,46 @@ uint32_t pci_stream_id(uint32_t index) {
   if (device == 0) return UINT32_MAX;
   return ((uint32_t)device->bus << 8U) |
          ((uint32_t)device->device << 3U) | device->function;
+}
+
+uint8_t pci_config_read8(uint32_t index, uint16_t offset) {
+  const xaios_pci_device_t *device = pci_device(index);
+  return device == 0
+             ? UINT8_MAX
+             : ecam_read8(device->bus, device->device, device->function,
+                          offset);
+}
+
+uint16_t pci_config_read16(uint32_t index, uint16_t offset) {
+  const xaios_pci_device_t *device = pci_device(index);
+  return device == 0
+             ? UINT16_MAX
+             : ecam_read16(device->bus, device->device, device->function,
+                           offset);
+}
+
+uint32_t pci_config_read32(uint32_t index, uint16_t offset) {
+  const xaios_pci_device_t *device = pci_device(index);
+  return device == 0
+             ? UINT32_MAX
+             : ecam_read32(device->bus, device->device, device->function,
+                           offset);
+}
+
+xaios_status_t pci_config_write16(uint32_t index, uint16_t offset,
+                                  uint16_t value) {
+  const xaios_pci_device_t *device = pci_device(index);
+  if (device == 0) return XAIOS_ERR_INVALID;
+  ecam_write16(device->bus, device->device, device->function, offset, value);
+  return XAIOS_OK;
+}
+
+xaios_status_t pci_config_write32(uint32_t index, uint16_t offset,
+                                  uint32_t value) {
+  const xaios_pci_device_t *device = pci_device(index);
+  if (device == 0) return XAIOS_ERR_INVALID;
+  ecam_write32(device->bus, device->device, device->function, offset, value);
+  return XAIOS_OK;
 }
 
 void pci_self_test(void) {

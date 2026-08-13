@@ -167,8 +167,7 @@ void exception_self_test(void) {
 volatile uint64_t g_aarch64_irq_count;
 
 xaios_context_frame_t *aarch64_irq_handler(xaios_context_frame_t *frame) {
-  /* Read interrupt ID from GIC CPU interface */
-  uint64_t iar = 0;
+  uint64_t iar = 0U;
   __asm__ volatile("mrs %[iar], " ICC_IAR1_EL1 : [iar] "=r"(iar));
   uint32_t intid = (uint32_t)(iar & 0xffffffU);
   if (intid < 1020U) ++g_aarch64_irq_count;
@@ -187,7 +186,6 @@ xaios_context_frame_t *aarch64_irq_handler(xaios_context_frame_t *frame) {
   }
   /* else: spurious interrupt (1023) */
 
-  /* Signal end of interrupt to GIC */
   __asm__ volatile("msr " ICC_EOIR1_EL1 ", %[iar]" : : [iar] "r"(iar));
 
   return frame;

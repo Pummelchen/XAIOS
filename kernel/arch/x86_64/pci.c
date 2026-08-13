@@ -1,6 +1,7 @@
 #include <xaios/assert.h>
 #include <xaios/klog.h>
 #include <xaios/pci.h>
+#include <xaios/vmm.h>
 
 #define PCI_CONFIG_ADDRESS UINT16_C(0x0cf8)
 #define PCI_CONFIG_DATA UINT16_C(0x0cfc)
@@ -170,6 +171,90 @@ xaios_status_t pci_enable_device(uint32_t index) {
   config_write16(device->bus, device->device, device->function,
                  XAIOS_PCI_COMMAND, command);
   return XAIOS_OK;
+}
+
+xaios_status_t pci_configure_msix(uint32_t index, uint16_t table_entry,
+                                  uint64_t message_address,
+                                  uint32_t message_data) {
+  uint8_t pointer = pci_config_read8(index, XAIOS_PCI_CAP_PTR) & UINT8_C(0xfc);
+  for (uint32_t count = 0U; count < 48U && pointer >= 0x40U; ++count) {
+    uint8_t capability = pci_config_read8(index, pointer);
+    uint8_t next = pci_config_read8(index, pointer + 1U) & UINT8_C(0xfc);
+    if (capability == UINT8_C(0x11)) {
+      uint16_t control = pci_config_read16(index, pointer + 2U);
+      uint16_t table_size = (control & UINT16_C(0x07ff)) + 1U;
+      if (table_entry >= table_size) return XAIOS_ERR_UNSUPPORTED;
+      uint32_t table = pci_config_read32(index, pointer + 4U);
+      uint32_t bar_index = table & UINT32_C(7);
+      uint64_t table_base = pci_bar_address(index, bar_index);
+      uint64_t table_offset = table & UINT32_C(0xfffffff8);
+      if (table_base == 0U || table_base > UINT64_MAX - table_offset ||
+          table_base + table_offset >
+              UINT64_MAX - (uint64_t)table_entry * 16U) {
+        return XAIOS_ERR_INVALID;
+      }
+      uint64_t entry = table_base + table_offset +
+                       (uint64_t)table_entry * 16U;
+      uint64_t page = entry & ~UINT64_C(0xfff);
+      if (vmm_map_page(page, page, XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
+                                      XAIOS_VMM_DEVICE) != XAIOS_OK) {
+        return XAIOS_ERR_IO;
+      }
+      volatile uint32_t *words = (volatile uint32_t *)(uintptr_t)entry;
+      words[3] = 1U;
+      words[0] = (uint32_t)message_address;
+      words[1] = (uint32_t)(message_address >> 32U);
+      words[2] = message_data;
+      xaios_status_t status =
+          pci_config_write16(index, pointer + 2U,
+                             (control | UINT16_C(0x8000)) &
+                                 (uint16_t)~UINT16_C(0x4000));
+      if (status != XAIOS_OK) return status;
+      return words[0] == (uint32_t)message_address &&
+                     words[1] == (uint32_t)(message_address >> 32U) &&
+                     words[2] == message_data && words[3] == 1U
+                 ? XAIOS_OK
+                 : XAIOS_ERR_IO;
+    }
+    if (next == 0U || next == pointer) break;
+    pointer = next;
+  }
+  return XAIOS_ERR_UNSUPPORTED;
+}
+
+xaios_status_t pci_unmask_msix(uint32_t index, uint16_t table_entry) {
+  uint8_t pointer = pci_config_read8(index, XAIOS_PCI_CAP_PTR) & UINT8_C(0xfc);
+  for (uint32_t count = 0U; count < 48U && pointer >= 0x40U; ++count) {
+    uint8_t capability = pci_config_read8(index, pointer);
+    uint8_t next = pci_config_read8(index, pointer + 1U) & UINT8_C(0xfc);
+    if (capability == UINT8_C(0x11)) {
+      uint16_t control = pci_config_read16(index, pointer + 2U);
+      uint16_t table_size = (control & UINT16_C(0x07ff)) + 1U;
+      if (table_entry >= table_size) return XAIOS_ERR_UNSUPPORTED;
+      uint32_t table = pci_config_read32(index, pointer + 4U);
+      uint64_t table_base = pci_bar_address(index, table & UINT32_C(7));
+      uint64_t table_offset = table & UINT32_C(0xfffffff8);
+      if (table_base == 0U || table_base > UINT64_MAX - table_offset ||
+          table_base + table_offset >
+              UINT64_MAX - (uint64_t)table_entry * 16U) {
+        return XAIOS_ERR_INVALID;
+      }
+      uint64_t entry = table_base + table_offset +
+                       (uint64_t)table_entry * 16U;
+      uint64_t page = entry & ~UINT64_C(0xfff);
+      if (vmm_map_page(page, page, XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
+                                      XAIOS_VMM_DEVICE) != XAIOS_OK) {
+        return XAIOS_ERR_IO;
+      }
+      volatile uint32_t *words = (volatile uint32_t *)(uintptr_t)entry;
+      words[3] = 0U;
+      __asm__ volatile("mfence" ::: "memory");
+      return words[3] == 0U ? XAIOS_OK : XAIOS_ERR_IO;
+    }
+    if (next == 0U || next == pointer) break;
+    pointer = next;
+  }
+  return XAIOS_ERR_UNSUPPORTED;
 }
 
 uint64_t pci_bar_address(uint32_t index, uint32_t bar_index) {

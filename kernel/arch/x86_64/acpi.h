@@ -18,8 +18,31 @@ typedef struct x86_64_acpi_info {
   uint32_t memory_affinities;
 } x86_64_acpi_info_t;
 
+typedef struct x86_64_acpi_processor_affinity {
+  uint32_t proximity_domain;
+  uint32_t apic_id;
+  uint32_t clock_domain;
+} x86_64_acpi_processor_affinity_t;
+
+typedef struct x86_64_acpi_memory_affinity {
+  uint32_t proximity_domain;
+  uint32_t hot_pluggable;
+  uint32_t nonvolatile;
+  uint64_t base;
+  uint64_t length;
+} x86_64_acpi_memory_affinity_t;
+
 int x86_64_acpi_parse(uint64_t rsdp_address, x86_64_acpi_info_t *info);
 int x86_64_acpi_cpu_apic_id(const x86_64_acpi_info_t *info,
                             uint32_t ordinal, uint32_t *apic_id);
+int x86_64_acpi_processor_affinity_at(
+    const x86_64_acpi_info_t *info, uint32_t ordinal,
+    x86_64_acpi_processor_affinity_t *affinity);
+int x86_64_acpi_memory_affinity_at(
+    const x86_64_acpi_info_t *info, uint32_t ordinal,
+    x86_64_acpi_memory_affinity_t *affinity);
+int x86_64_acpi_slit_distance(const x86_64_acpi_info_t *info,
+                              uint32_t from, uint32_t to,
+                              uint8_t *distance);
 
 #endif

@@ -291,6 +291,34 @@ static uint64_t *ensure_l3_table(uint64_t virtual_address) {
   return l3;
 }
 
+static uint64_t *ensure_l2_table(uint64_t virtual_address) {
+  uint64_t l0_index = (virtual_address >> 39U) & 0x1ffU;
+  uint64_t l1_index = (virtual_address >> 30U) & 0x1ffU;
+  if (l0_index != 0U) return 0;
+
+  uint64_t l1_desc = g_l1_table[l1_index];
+  if ((l1_desc & PTE_VALID) == 0U) {
+    uint64_t *l2 = allocate_table();
+    if (l2 == 0) return 0;
+    g_l1_table[l1_index] = table_descriptor(l2);
+    return l2;
+  }
+  if ((l1_desc & PTE_TABLE) == 0U) return 0;
+  return (uint64_t *)(uintptr_t)(l1_desc & PTE_ADDR_MASK);
+}
+
+static uint64_t *find_l2_table(uint64_t virtual_address) {
+  uint64_t l0_index = (virtual_address >> 39U) & 0x1ffU;
+  uint64_t l1_index = (virtual_address >> 30U) & 0x1ffU;
+  if (l0_index != 0U) return 0;
+  uint64_t l1_desc = g_l1_table[l1_index];
+  if ((l1_desc & (PTE_VALID | PTE_TABLE)) !=
+      (PTE_VALID | PTE_TABLE)) {
+    return 0;
+  }
+  return (uint64_t *)(uintptr_t)(l1_desc & PTE_ADDR_MASK);
+}
+
 static void invalidate_tlb_page(uint64_t virtual_address) {
   (void)virtual_address;
   __asm__ volatile(
@@ -574,6 +602,42 @@ xaios_status_t vmm_unmap_page(uint64_t virtual_address) {
   return XAIOS_OK;
 }
 
+xaios_status_t vmm_map_large_page(uint64_t virtual_address,
+                                 uint64_t physical_address, uint32_t flags) {
+  if ((virtual_address & (L2_BLOCK_SIZE - 1U)) != 0U ||
+      (physical_address & (L2_BLOCK_SIZE - 1U)) != 0U ||
+      (flags & XAIOS_VMM_PRESENT) == 0U ||
+      (flags & XAIOS_VMM_USER) != 0U || user_address(virtual_address) != 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  uint64_t *l2 = ensure_l2_table(virtual_address);
+  if (l2 == 0) return XAIOS_ERR_NO_MEMORY;
+  uint64_t l2_index = (virtual_address >> 21U) & 0x1ffU;
+  if ((l2[l2_index] & PTE_VALID) != 0U) return XAIOS_ERR_BUSY;
+  l2[l2_index] = block_descriptor(physical_address, attrs_from_flags(flags));
+  sync_kernel_hierarchy(virtual_address);
+  invalidate_tlb_page(virtual_address);
+  return XAIOS_OK;
+}
+
+xaios_status_t vmm_unmap_large_page(uint64_t virtual_address) {
+  if ((virtual_address & (L2_BLOCK_SIZE - 1U)) != 0U ||
+      user_address(virtual_address) != 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  uint64_t *l2 = find_l2_table(virtual_address);
+  if (l2 == 0) return XAIOS_ERR_INVALID;
+  uint64_t l2_index = (virtual_address >> 21U) & 0x1ffU;
+  uint64_t descriptor = l2[l2_index];
+  if ((descriptor & PTE_VALID) == 0U || (descriptor & PTE_TABLE) != 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  l2[l2_index] = 0U;
+  sync_kernel_hierarchy(virtual_address);
+  invalidate_tlb_page(virtual_address);
+  return XAIOS_OK;
+}
+
 xaios_status_t vmm_validate_user_buffer(uint64_t virtual_address, uint64_t size,
                                        uint32_t required_flags) {
   if (size == 0 || virtual_address < XAIOS_USER_BASE ||
@@ -600,6 +664,26 @@ xaios_status_t vmm_validate_user_buffer(uint64_t virtual_address, uint64_t size,
 }
 
 void vmm_self_test(void) {
+  const uint64_t large_va = UINT64_C(0x7000000000);
+  const uint64_t large_pa = UINT64_C(0x40000000);
+  uint64_t translated = 0U;
+  uint32_t flags = 0U;
+  kassert(vmm_map_large_page(large_va, large_pa,
+                             XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE) ==
+          XAIOS_OK);
+  kassert(vmm_map_large_page(large_va, large_pa, XAIOS_VMM_PRESENT) ==
+          XAIOS_ERR_BUSY);
+  kassert(vmm_validate_range_flags(
+              large_va, XAIOS_VMM_LARGE_PAGE_SIZE,
+              XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE,
+              XAIOS_VMM_USER | XAIOS_VMM_EXECUTABLE) == XAIOS_OK);
+  kassert(vmm_translate(large_va + XAIOS_VMM_LARGE_PAGE_SIZE - 1U,
+                        &translated, &flags) == XAIOS_OK);
+  kassert(translated == large_pa + XAIOS_VMM_LARGE_PAGE_SIZE - 1U);
+  kassert(vmm_unmap_large_page(large_va) == XAIOS_OK);
+  kassert(vmm_translate(large_va, &translated, &flags) == XAIOS_ERR_INVALID);
+  klog("VMM: ARM64 2 MiB large-page map/unmap self-test passed\n");
+
   uint64_t process_tables[USER_ASPACE_L3_TABLES];
   uint32_t process_table_count = 0U;
   vmm_create_user_aspace(process_tables, USER_ASPACE_L3_TABLES,
@@ -614,8 +698,6 @@ void vmm_self_test(void) {
                                 XAIOS_VMM_USER,
                             process_tables, process_table_count) == XAIOS_OK);
   vmm_switch_user_aspace(process_tables, process_table_count);
-  uint64_t translated = 0U;
-  uint32_t flags = 0U;
   kassert(vmm_translate(boundary_va, &translated, &flags) == XAIOS_OK);
   kassert(translated == (uint64_t)(uintptr_t)boundary_page);
   kassert((flags & (XAIOS_VMM_USER | XAIOS_VMM_WRITABLE)) ==

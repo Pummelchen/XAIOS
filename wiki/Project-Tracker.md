@@ -52,18 +52,8 @@ status.
 | # | Recommendation | Status | Evidence / remaining gate |
 |---:|---|---|---|
 | P-05 | Physical Apple NEON evidence | `NOT STARTED` | QEMU cannot satisfy this physical gate. |
-| P-07 | SVE/SVE2 backend | `NOT STARTED` | Capability IDs fail closed; no executing backend exists. |
+| P-07 | SVE/SVE2 backend | `IN PROGRESS` | The ARM64 QEMU gate executes an SVE2 known-answer canary after OS-state enablement. Packed inference kernels, scheduler preservation of Z/P/FFR state, scalar-model differential tests, and physical qualification remain; backend selection stays fail closed. |
 | P-14 | Physical Intel/Xeon evidence | `NOT STARTED` | Physical firmware, ISA, NUMA, storage, network, thermals, and sustained-load gates remain. |
-
-## Hosted ISO C99 libc
-
-The architecture, non-POSIX boundary, syscall budget and evidence contract are
-defined in [[ISO C99 Library|C99-Libc]]. A selected upstream implementation or
-an available symbol is not proof of conformance.
-
-| ID | Item | Status | Evidence / remaining gate |
-|---|---|---|---|
-| L-14 | Thread-safe libc contexts for XAIOS native threads | `TESTING` | Stack-bound per-thread `errno`, allocator/stream locks and a concurrent hosted C99 gate are implemented without a new syscall ID; AArch64/x86_64 QEMU evidence is pending this change's full gate. |
 
 ## Core OS, network, and SSH phases
 
@@ -75,7 +65,6 @@ an available symbol is not proof of conformance.
 
 | Phase | Status | Evidence / remaining gate |
 |---|---|---|
-| S-11Q QEMU NVMe async/multiqueue/SGL/cancellation/direct-buffer path | `IN PROGRESS` | AArch64 and x86_64 QEMU negotiate four I/O queues and verify four-page PRP 16 KiB write/read/flush commands plus backing bytes. Close after async block integration, SGL, cancellation, MSI-X queue affinity, direct final-buffer APIs, malformed-completion tests, and ARM64/x86_64 QEMU stress gates pass. |
 | S-11P Physical production NVMe qualification | `IN PROGRESS` | Consolidated QEMU NVMe and crash-recovery evidence is available through `make qemu-qualification-readiness`; named physical devices must still pass queue scaling, interrupt affinity, FUA/flush/discard semantics, reset recovery, power-loss durability, sustained-load, and performance gates. QEMU evidence cannot close this item. |
 | S-12 Trusted-replica repair and production key custody | `BLOCKED` | Depends on production trust and repair-source decisions. |
 
@@ -83,10 +72,9 @@ an available symbol is not proof of conformance.
 
 | Phase | Status | Exit gate |
 |---|---|---|
-| D-04 Model management | `IN PROGRESS` | Register/verify/activate/cleanup exist; execution load/unload/pin/evict/cache remain. |
 | D-05 Real local inference | `NOT STARTED` | Real Qwen correctness, typed state, scheduling, cancellation, backpressure, and metrics. |
-| D-06 Authenticated cluster control | `NOT STARTED` | Mutually authenticated protocol and three-node join/partition/replay tests. |
-| D-07 Distributed placement/execution | `NOT STARTED` | Transactional dense/MoE ownership, deterministic routing, and node-loss behavior. |
+| D-06 Authenticated cluster control | `IN PROGRESS` | Hosted tests cover directional HMAC framing, receiver/epoch/nonce validation, replay rejection, and membership transitions. Asynchronous transport between independent XAIOS QEMU guests plus join/partition recovery remains. |
+| D-07 Distributed placement/execution | `IN PROGRESS` | Hosted tests cover deterministic expert ownership, grouped routing, simulated node-loss rerouting, and stable node/expert reduction. Distributed activation transport and execution across independent guests remain. |
 | D-08 Benchmarks/diagnostics | `IN PROGRESS` | QEMU benchmark telemetry and a hashed qualification-readiness report are implemented; physical metadata-rich NUMA, bandwidth, PMU, thermal, storage, network, and redacted support-bundle evidence remain. |
 | D-09 Production inference service | `NOT STARTED` | Authenticated API, streaming, cancellation, saturation, loss, and long-lived tests. |
 | D-10 Support qualification/cleanup | `IN PROGRESS` | Documentation contracts and the consolidated QEMU qualification-readiness gate exist; physical, model, cluster, thermal, PMU, and durability qualifications remain. |
@@ -114,16 +102,15 @@ an available symbol is not proof of conformance.
 |---|---|---|
 | Separate `kimi_k3` adapter from immutable official config | `NOT STARTED` | Config/tensor roles reject unsupported fields. |
 | K3 KDA, Gated MLA, AttnRes, exact top-16 routing, shared experts, SiTU, MXFP4 | `NOT STARTED` | Scalar operator/router/expert parity. |
-| Miniature executable K3 package | `NOT STARTED` | KDA/MLA/router/expert/reduction golden tests. |
 | K3 independently addressable expert shards and async residency/prefetch | `NOT STARTED` | Authoritative routing is unchanged by prediction. |
 | Real K3 text checkpoint | `NOT STARTED` | Tokenizer/operator/router/target-token and production-width physical gates. |
 | K3 MoonViT-V2 and multimodal pipeline | `NOT STARTED` | Separate golden image/text cases. |
 | DeepSeek V4 Flash 0731 source verification | `BLOCKED` | Maintainer-approved immutable official source. |
 | DeepSeek adapter and parity suite | `BLOCKED` | Depends on verified source. |
-| Multi-terabyte sparse allocators and large pages | `NOT STARTED` | Physical capacity and correctness evidence. |
-| SRAT/SLIT/HMAT placement policy and local/remote byte telemetry | `IN PROGRESS` | QEMU dynamic topology/high-core evidence and the physical telemetry contract are covered by the qualification-readiness packet; real SRAT/SLIT/HMAT placement and local/remote byte validation remain. |
+| Multi-terabyte sparse allocators and large pages | `IN PROGRESS` | Hosted model packages represent sparse offsets above 100 GiB, and ARM64/x86_64 QEMU gates map, translate, reject collisions, and unmap 2 MiB pages. Physical-capacity evidence, 1 GiB pages, and performance qualification remain. |
+| SRAT/SLIT/HMAT placement policy and local/remote byte telemetry | `IN PROGRESS` | A two-node x86_64 QEMU gate validates SRAT/SLIT parsing, usable-memory intersection, node-local allocation, and local/remote byte accounting. HMAT policy and physical locality/performance qualification remain. |
 | AI Cell/secondary-CPU real inference dispatch | `NOT STARTED` | Real model work executes on leased workers. |
-| NUMA/machine expert ownership and stable failure-aware reduction | `NOT STARTED` | Multi-node exactness and failure tests. |
+| NUMA/machine expert ownership and stable failure-aware reduction | `IN PROGRESS` | Hosted tests validate deterministic owner selection, grouping, simulated owner failure, and stable reduction. Real NUMA/machine transport, remote activation execution, and multi-QEMU exactness remain. |
 
 ## Open decisions
 
@@ -151,7 +138,7 @@ checked continuously.
 | R-002 | Documentation drift | `TESTING` | One tracker plus `make docs-check` and live-Wiki parity. |
 | R-004 | Unreviewed SSH exposure | `TESTING` | Passwords off by default, bounded limits, OpenSSH/FreeBSD gates; independent review remains. |
 | R-005 | Fixture keys used as production trust | `TESTING` | Fixtures are labeled; OD-004 blocks production trust. |
-| R-006 | Storage durability inferred from sparse/QEMU tests | `TESTING` | The S-11Q emulation gate is separate from physical S-11P and trust/repair S-12; only physical evidence can establish durability. |
+| R-006 | Storage durability inferred from sparse/QEMU tests | `TESTING` | Passing emulated async-NVMe and crash-recovery gates remain separate from physical S-11P and trust/repair S-12; only physical evidence can establish durability. |
 | R-007 | Parser arithmetic or ownership error | `TESTING` | Checked arithmetic, malformed tests, sanitizers, immutable readers, fuzzing. |
 | R-008 | Interfaces advertised as model support | `TESTING` | Separate progress and support-boundary columns plus golden gates. |
 | R-009 | SIMD selected from CPUID alone | `TESTING` | OS-state checks, known-answer canaries, and scalar differential tests. |

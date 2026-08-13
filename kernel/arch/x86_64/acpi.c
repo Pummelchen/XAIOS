@@ -234,3 +234,99 @@ int x86_64_acpi_cpu_apic_id(const x86_64_acpi_info_t *info,
     }
   }
 }
+
+static int srat_entry_at(const x86_64_acpi_info_t *info, uint8_t type,
+                         uint32_t ordinal, const uint8_t **result) {
+  if (info == 0 || info->srat == 0U || result == 0) return 0;
+  const acpi_sdt_header_t *srat =
+      (const acpi_sdt_header_t *)(uintptr_t)info->srat;
+  if (!table_valid(srat) || srat->length < sizeof(*srat) + 12U) return 0;
+  uint32_t offset = (uint32_t)sizeof(*srat) + 12U;
+  uint32_t current = 0U;
+  while (offset + 2U <= srat->length) {
+    const uint8_t *entry = (const uint8_t *)srat + offset;
+    uint32_t length = entry[1];
+    if (length < 2U || length > srat->length - offset) return 0;
+    uint32_t enabled = 0U;
+    if (entry[0] == 0U && length >= 16U) {
+      enabled = read_le32(entry + 4U) & 1U;
+    } else if (entry[0] == 1U && length >= 40U) {
+      enabled = read_le32(entry + 28U) & 1U;
+    } else if (entry[0] == 2U && length >= 24U) {
+      enabled = read_le32(entry + 12U) & 1U;
+    }
+    if (entry[0] == type && enabled != 0U && current++ == ordinal) {
+      *result = entry;
+      return 1;
+    }
+    offset += length;
+  }
+  return 0;
+}
+
+int x86_64_acpi_processor_affinity_at(
+    const x86_64_acpi_info_t *info, uint32_t ordinal,
+    x86_64_acpi_processor_affinity_t *affinity) {
+  if (affinity == 0) return 0;
+  const uint8_t *entry = 0;
+  uint32_t legacy_count = 0U;
+  if (info != 0 && info->srat != 0U) {
+    const acpi_sdt_header_t *srat =
+        (const acpi_sdt_header_t *)(uintptr_t)info->srat;
+    uint32_t offset = (uint32_t)sizeof(*srat) + 12U;
+    while (offset + 2U <= srat->length) {
+      const uint8_t *candidate = (const uint8_t *)srat + offset;
+      uint32_t length = candidate[1];
+      if (length < 2U || length > srat->length - offset) return 0;
+      if (candidate[0] == 0U && length >= 16U &&
+          (read_le32(candidate + 4U) & 1U) != 0U) {
+        ++legacy_count;
+      }
+      offset += length;
+    }
+  }
+  if (ordinal < legacy_count) {
+    if (!srat_entry_at(info, 0U, ordinal, &entry)) return 0;
+    affinity->proximity_domain =
+        (uint32_t)entry[2] | ((uint32_t)entry[9] << 8U) |
+        ((uint32_t)entry[10] << 16U) | ((uint32_t)entry[11] << 24U);
+    affinity->apic_id = entry[3];
+    affinity->clock_domain = read_le32(entry + 12U);
+    return 1;
+  }
+  if (!srat_entry_at(info, 2U, ordinal - legacy_count, &entry)) return 0;
+  affinity->proximity_domain = read_le32(entry + 4U);
+  affinity->apic_id = read_le32(entry + 8U);
+  affinity->clock_domain = read_le32(entry + 16U);
+  return 1;
+}
+
+int x86_64_acpi_memory_affinity_at(
+    const x86_64_acpi_info_t *info, uint32_t ordinal,
+    x86_64_acpi_memory_affinity_t *affinity) {
+  if (affinity == 0) return 0;
+  const uint8_t *entry = 0;
+  if (!srat_entry_at(info, 1U, ordinal, &entry)) return 0;
+  uint32_t flags = read_le32(entry + 28U);
+  uint64_t base = read_le64(entry + 8U);
+  uint64_t length = read_le64(entry + 16U);
+  if (length == 0U || base > UINT64_MAX - length) return 0;
+  *affinity = (x86_64_acpi_memory_affinity_t){
+      read_le32(entry + 2U), (flags >> 1U) & 1U, (flags >> 2U) & 1U,
+      base, length};
+  return 1;
+}
+
+int x86_64_acpi_slit_distance(const x86_64_acpi_info_t *info,
+                              uint32_t from, uint32_t to,
+                              uint8_t *distance) {
+  if (info == 0 || info->slit == 0U || distance == 0 ||
+      from >= info->slit_localities || to >= info->slit_localities) {
+    return 0;
+  }
+  const acpi_sdt_header_t *slit =
+      (const acpi_sdt_header_t *)(uintptr_t)info->slit;
+  uint64_t index = (uint64_t)from * info->slit_localities + to;
+  *distance = *((const uint8_t *)slit + sizeof(*slit) + 8U + index);
+  return 1;
+}

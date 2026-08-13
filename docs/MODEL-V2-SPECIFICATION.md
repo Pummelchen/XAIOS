@@ -98,7 +98,15 @@ production tokenizer encoding must include an algorithm/version, complete
 vocabulary with byte-preserving token text, merges or rules, added and special
 tokens, BOS/EOS/padding IDs, normalization, pre-tokenization, chat template,
 and multimodal placeholders. The current writer treats this payload as opaque;
-the miniature package uses metadata only and is not tokenizer support.
+the miniature packages use metadata only and are not tokenizer support.
+
+`create-kimi-k3-miniature` writes a deterministic CI-scale `kimi_k3` package
+with dense, KDA, gated-MLA and sparse-MoE layer metadata. Its 20 independently
+addressable expert descriptors activate exactly 16 experts and include native
+32-value MXFP4/E2M1 blocks with E8M0 scales. The companion scalar gate checks
+KDA recurrence, causal MLA cache and output gating, correction-biased sigmoid
+routing, stable routed/shared-expert reduction and SiTU. This is miniature
+operator and package-format evidence, not tokenizer, checkpoint or token parity.
 
 ## Validation and security
 

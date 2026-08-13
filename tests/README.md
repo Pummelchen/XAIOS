@@ -41,7 +41,9 @@ Docker build inputs, and test-image inputs outside `tests/`. It runs through
 | Aggregate QEMU core OS | `make qemu-core-os-rc` |
 | Parser, packet-fault, load/recovery, and dual-architecture soak | `make qemu-network-adversarial-gate` |
 | IPv4/IPv6 source fragmentation on ARM/x86 | `make qemu-outbound-fragmentation-gate` |
-| NVMe queues and PRP lists on ARM/x86 | `make qemu-nvme-gate` |
+| Async NVMe PRP/SGL, cancellation, queue affinity, malformed completions, and x86 MSI-X | `make qemu-nvme-gate` |
+| x86 two-node SRAT/SLIT placement and accounting | `make qemu-x86_64-numa-gate` |
+| ARM SVE2 QEMU arithmetic canary | `make qemu-aarch64-sve2-gate` |
 | Power/recovery/operations closure | `make qemu-operations-closure` |
 | Debian/OpenSSH interoperability | `make qemu-docker-network-suite` |
 | FreeBSD client interoperability | `make qemu-freebsd-network-suite` |

@@ -122,13 +122,13 @@ X86_CAPABILITIES = {
 
 HOSTED_CAPABILITIES = {
     "engine_service_boundary": [
-        "hosted engine: scalar, registry, async I/O, and session lifecycle passed",
+        "hosted engine: scalar, registry, async I/O, model cache, and session lifecycle passed",
     ],
     "async_model_range_io": [
-        "hosted engine: scalar, registry, async I/O, and session lifecycle passed",
+        "hosted engine: scalar, registry, async I/O, model cache, and session lifecycle passed",
     ],
     "session_lifecycle_metadata": [
-        "hosted engine: scalar, registry, async I/O, and session lifecycle passed",
+        "hosted engine: scalar, registry, async I/O, model cache, and session lifecycle passed",
     ],
 }
 
@@ -156,9 +156,9 @@ SPECIAL_CAPABILITIES = {
     "emulated_nvme_io": (
         "nvme",
         [
-            "nvme: admin/io self-test passed namespaces=1",
-            "queue_depth=16 io_queues=4 prp_pages=4 transfer_bytes=16384 write_read_flush=1",
-            "qemu-nvme-gate: AArch64/x86_64 four-queue multi-page PRP write/read/flush passed",
+            "nvme: async self-test passed namespaces=1",
+            "rounds=8 async=38 cancelled=1",
+            "qemu-nvme-gate: AArch64/x86_64 async four-queue PRP/SGL direct I/O",
         ],
     ),
     "outbound_fragmentation": (

@@ -66,6 +66,10 @@ xaios_status_t pci_config_write16(uint32_t index, uint16_t offset,
                                   uint16_t value);
 xaios_status_t pci_config_write32(uint32_t index, uint16_t offset,
                                   uint32_t value);
+xaios_status_t pci_configure_msix(uint32_t index, uint16_t table_entry,
+                                  uint64_t message_address,
+                                  uint32_t message_data);
+xaios_status_t pci_unmask_msix(uint32_t index, uint16_t table_entry);
 void pci_self_test(void);
 
 #endif

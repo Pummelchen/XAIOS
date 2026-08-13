@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate common NVMe queue and PRP behavior on both QEMU architectures."""
+"""Validate asynchronous NVMe behavior on both QEMU architectures."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import select
 import subprocess
 import sys
 import time
+import re
 
 
 BUILD = Path("build")
@@ -17,9 +18,17 @@ REPORT = BUILD / "qemu-nvme-gate-report.json"
 MARKERS = [
     "nvme: controller ready version=",
     "nvme: identify controller serial='XAIOSNVME",
-    "nvme: admin/io self-test passed namespaces=1",
-    "queue_depth=16 io_queues=4 prp_pages=4 transfer_bytes=16384 write_read_flush=1",
+    "nvme: async self-test passed namespaces=1",
+    "queue_depth=16 io_queues=4 prp_pages=4 transfer_bytes=16384 rounds=8",
+    "affinity=cpu msix=4 write_read_flush=1",
 ]
+
+RESULT_PATTERN = re.compile(
+    r"rounds=(?P<rounds>\d+) async=(?P<async_ops>\d+) "
+    r"cancelled=(?P<cancelled>\d+) sgl=(?P<sgl>\d+) "
+    r"direct=(?P<direct>\d+) malformed=(?P<malformed>\d+) "
+    r"affinity=cpu msix=(?P<msix>\d+)"
+)
 
 
 def stop_process(process: subprocess.Popen[bytes]) -> None:
@@ -50,11 +59,15 @@ def run_architecture(architecture: str) -> dict[str, object]:
         }
     )
     if architecture == "aarch64":
+        environment["XAIOS_QEMU_MSI_CONTROLLER"] = "gicv2m"
         environment["XAIOS_NVME_IMAGE"] = str(image)
         runner = "./scripts/run-qemu-aarch64.sh"
     else:
         environment["XAIOS_QEMU_X86_NVME_IMAGE"] = str(image)
         runner = "./scripts/run-qemu-x86_64.sh"
+    required_markers = list(MARKERS)
+    if architecture == "x86_64":
+        required_markers.append("nvme: MSI-X interrupt self-test passed queues=4")
 
     with log_path.open("wb") as log:
         process = subprocess.Popen(
@@ -83,7 +96,7 @@ def run_architecture(architecture: str) -> dict[str, object]:
                     sys.stdout.flush()
                     chunks.append(text)
                     output = "".join(chunks)
-                    if all(marker in output for marker in MARKERS):
+                    if all(marker in output for marker in required_markers):
                         break
                 elif process.poll() is not None:
                     break
@@ -91,17 +104,33 @@ def run_architecture(architecture: str) -> dict[str, object]:
             stop_process(process)
 
     output = "".join(chunks)
-    missing = [marker for marker in MARKERS if marker not in output]
+    missing = [marker for marker in required_markers if marker not in output]
     forbidden = [
         marker
         for marker in ("CYAN SCREEN OF DEATH", "nvme: self-test failed")
         if marker in output
     ]
+    match = RESULT_PATTERN.search(output)
+    metrics = (
+        {key: int(value) for key, value in match.groupdict().items()}
+        if match is not None
+        else {}
+    )
     with image.open("rb") as stream:
         first_transfer = stream.read(16384)
     expected = bytes((index ^ 0xA5) & 0xFF for index in range(16384))
     host_verified = first_transfer == expected
-    passed = not missing and not forbidden and host_verified
+    behavior_verified = bool(
+        metrics
+        and metrics["rounds"] >= 8
+        and metrics["async_ops"] >= 38
+        and metrics["cancelled"] >= 1
+        and metrics["sgl"] >= 1
+        and metrics["direct"] == metrics["async_ops"]
+        and metrics["malformed"] >= 4
+        and metrics["msix"] == 4
+    )
+    passed = not missing and not forbidden and host_verified and behavior_verified
     return {
         "status": "pass" if passed else "fail",
         "controller": "QEMU NVMe",
@@ -111,6 +140,11 @@ def run_architecture(architecture: str) -> dict[str, object]:
         "transfer_bytes": 16384,
         "guest_write_read_flush": not missing and not forbidden,
         "host_backing_image_verified": host_verified,
+        "async_behavior_verified": behavior_verified,
+        "msix_delivery_verified": architecture == "x86_64" and not any(
+            "MSI-X interrupt self-test" in marker for marker in missing
+        ),
+        "metrics": metrics,
         "missing_markers": missing,
         "forbidden_markers": forbidden,
         "guest_log": str(log_path),
@@ -127,7 +161,7 @@ def main() -> int:
     REPORT.write_text(
         json.dumps(
             {
-                "schema": "xaios.qemu.nvme.v2",
+                "schema": "xaios.qemu.nvme.v3",
                 "status": "pass" if passed else "fail",
                 "qemu_correctness_only": True,
                 "architectures": results,
@@ -142,8 +176,8 @@ def main() -> int:
         print(f"qemu-nvme-gate: failed report={REPORT}", file=sys.stderr)
         return 1
     print(
-        "qemu-nvme-gate: AArch64/x86_64 four-queue multi-page PRP "
-        f"write/read/flush passed report={REPORT}"
+        "qemu-nvme-gate: AArch64/x86_64 async four-queue PRP/SGL "
+        f"direct I/O, cancellation, malformed completion, and stress passed report={REPORT}"
     )
     return 0
 

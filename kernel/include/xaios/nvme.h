@@ -12,10 +12,16 @@ typedef struct xaios_nvme_self_test_result {
   uint32_t io_queues;
   uint32_t prp_pages;
   uint32_t transfer_bytes;
+  uint64_t async_operations;
+  uint64_t cancelled_operations;
+  uint64_t sgl_operations;
+  uint64_t direct_operations;
+  uint32_t malformed_completions_rejected;
   uint64_t namespace_blocks;
   uint32_t logical_block_size;
 } xaios_nvme_self_test_result_t;
 
 xaios_status_t nvme_self_test(xaios_nvme_self_test_result_t *result);
+xaios_status_t nvme_interrupt_self_test(void);
 
 #endif

@@ -136,6 +136,7 @@ net_socket_port="${XAIOS_QEMU_NET_SOCKET_PORT:-none}"
 net_socket_port_2="${XAIOS_QEMU_NET_SOCKET_PORT_2:-none}"
 net_socket_host="${XAIOS_QEMU_NET_SOCKET_HOST:-127.0.0.1}"
 pcap_file="${XAIOS_QEMU_PCAP:-none}"
+msi_controller="${XAIOS_QEMU_MSI_CONTROLLER:-auto}"
 
 case "$iommu" in
   none) machine_options="$machine,accel=$accel,gic-version=3" ;;
@@ -144,6 +145,15 @@ case "$iommu" in
     ;;
   *)
     printf '%s\n' "error: XAIOS_QEMU_IOMMU must be none or smmuv3" >&2
+    exit 2
+    ;;
+esac
+
+case "$msi_controller" in
+  auto) ;;
+  gicv2m) machine_options="$machine_options,msi=gicv2m" ;;
+  *)
+    printf '%s\n' "error: XAIOS_QEMU_MSI_CONTROLLER must be auto or gicv2m" >&2
     exit 2
     ;;
 esac
@@ -323,6 +333,10 @@ fi
 
 if [ "${XAIOS_QEMU_DEBUG:-}" != "" ]; then
   set -- "$@" -d "$XAIOS_QEMU_DEBUG"
+fi
+
+if [ "${XAIOS_QEMU_TRACE:-}" != "" ]; then
+  set -- "$@" -trace "$XAIOS_QEMU_TRACE"
 fi
 
 if [ "$dry_run" -eq 1 ]; then

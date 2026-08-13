@@ -17,9 +17,7 @@ REQUIRED = {
     ],
     "wiki/Project-Tracker.md": [
         "Physical Apple/ARM, Intel desktop, and Xeon qualification",
-        "Thread-safe libc contexts for XAIOS native threads",
         "Physical SSH/network security qualification",
-        "S-11Q QEMU NVMe async/multiqueue/SGL/cancellation/direct-buffer path",
         "S-11P Physical production NVMe qualification",
     ],
     "docs/NETWORK-SSH-STATUS.md": [
@@ -30,6 +28,7 @@ REQUIRED = {
     "docs/STORAGE-ARCHITECTURE.md": [
         "interrupt-dispatched with eight request slots",
         "emulated-NVMe gate negotiates four I/O queues",
+        "direct aligned buffers, cancellation, malformed completions",
     ],
     "wiki/Current-Limitations.md": [
         "asynchronous A/AAAA resolution",

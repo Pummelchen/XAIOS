@@ -68,6 +68,9 @@
 #include <xaios/vfs_model.h>
 #include <xaios/vmm.h>
 #include <xaios/watchdog.h>
+#if defined(__aarch64__)
+#include <xaios/aarch64_sve.h>
+#endif
 
 #ifndef XAIOS_BOOT_TEST_APPS
 #define XAIOS_BOOT_TEST_APPS 0
@@ -174,6 +177,9 @@ void kmain(const xaios_boot_info_t *boot) {
 
   exception_init();
   exception_self_test();
+#if defined(__aarch64__)
+  aarch64_sve2_self_test();
+#endif
   early_spinlock_self_test();
   timer_init();
   timer_self_test();
@@ -461,6 +467,9 @@ void kmain(const xaios_boot_info_t *boot) {
 #endif
   gic_enable_full();
 #if defined(__x86_64__)
+  if (nvme_status == XAIOS_OK) {
+    kassert(nvme_interrupt_self_test() == XAIOS_OK);
+  }
   uint64_t interrupt_drain_deadline =
       timer_now_ns() + UINT64_C(100000000);
   while (virtio_block_interrupt_count() == initial_block_interrupts &&

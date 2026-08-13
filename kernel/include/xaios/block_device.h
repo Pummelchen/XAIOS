@@ -49,9 +49,49 @@ typedef struct xaios_block_backend_ops {
                                 uint64_t length);
 } xaios_block_backend_ops_t;
 
+typedef enum xaios_block_async_operation {
+  XAIOS_BLOCK_ASYNC_READ = 1,
+  XAIOS_BLOCK_ASYNC_WRITE = 2,
+  XAIOS_BLOCK_ASYNC_FLUSH = 3,
+} xaios_block_async_operation_t;
+
+typedef enum xaios_block_async_state {
+  XAIOS_BLOCK_ASYNC_IDLE = 0,
+  XAIOS_BLOCK_ASYNC_PENDING = 1,
+  XAIOS_BLOCK_ASYNC_CANCEL_REQUESTED = 2,
+  XAIOS_BLOCK_ASYNC_COMPLETE = 3,
+} xaios_block_async_state_t;
+
+struct xaios_block_async_request;
+typedef void (*xaios_block_async_completion_t)(
+    struct xaios_block_async_request *request, void *context);
+
+typedef struct xaios_block_async_request {
+  xaios_block_async_operation_t operation;
+  xaios_block_async_state_t state;
+  uint64_t byte_offset;
+  void *buffer;
+  uint64_t length;
+  uint64_t token;
+  xaios_status_t status;
+  xaios_block_async_completion_t completion;
+  void *completion_context;
+  struct xaios_block_device *device;
+  void *backend_private;
+} xaios_block_async_request_t;
+
+typedef struct xaios_block_async_ops {
+  xaios_status_t (*submit)(void *context,
+                           xaios_block_async_request_t *request);
+  uint32_t (*poll)(void *context, uint32_t budget);
+  xaios_status_t (*cancel)(void *context,
+                           xaios_block_async_request_t *request);
+} xaios_block_async_ops_t;
+
 typedef struct xaios_block_device {
   xaios_block_device_info_t info;
   const xaios_block_backend_ops_t *ops;
+  const xaios_block_async_ops_t *async_ops;
   void *context;
   uint32_t registered;
   uint32_t open_count;
@@ -61,6 +101,8 @@ xaios_status_t block_device_register(
     xaios_block_device_t *device, const xaios_block_device_info_t *info,
     const xaios_block_backend_ops_t *ops, void *context);
 xaios_status_t block_device_unregister(xaios_block_device_t *device);
+xaios_status_t block_device_set_async_ops(
+    xaios_block_device_t *device, const xaios_block_async_ops_t *ops);
 xaios_status_t block_device_list(xaios_block_device_info_t *devices,
                                  uint64_t capacity, uint64_t *out_count);
 xaios_status_t block_device_open(const char *identifier,
@@ -81,6 +123,15 @@ xaios_status_t block_discard(xaios_block_device_t *device,
                              uint64_t byte_offset, uint64_t length);
 xaios_status_t block_write_zeroes(xaios_block_device_t *device,
                                   uint64_t byte_offset, uint64_t length);
+xaios_status_t block_async_submit(
+    xaios_block_device_t *device, xaios_block_async_request_t *request,
+    xaios_block_async_operation_t operation, uint64_t byte_offset,
+    void *buffer, uint64_t length, xaios_block_async_completion_t completion,
+    void *completion_context);
+uint32_t block_async_poll(xaios_block_device_t *device, uint32_t budget);
+xaios_status_t block_async_cancel(xaios_block_async_request_t *request);
+void block_async_complete(xaios_block_async_request_t *request,
+                          xaios_status_t status);
 
 /* Test isolation for hosted unit tests. Refuses reset while a device is open. */
 xaios_status_t block_device_test_reset(void);

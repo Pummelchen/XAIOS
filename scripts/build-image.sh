@@ -368,6 +368,8 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   $KERNEL_BUILD_DIR/pci.o
   $KERNEL_BUILD_DIR/gic.o
   $KERNEL_BUILD_DIR/smp.o
+  $KERNEL_BUILD_DIR/sve.o
+  $KERNEL_BUILD_DIR/sve_canary.o
   "
 else
   ARCH_KERNEL_OBJECTS="
@@ -498,6 +500,8 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/pci.c" "$KERNEL_BUILD_DIR/pci.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/gic.c" "$KERNEL_BUILD_DIR/gic.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/smp.c" "$KERNEL_BUILD_DIR/smp.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/sve.c" "$KERNEL_BUILD_DIR/sve.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/sve_canary.S" "$KERNEL_BUILD_DIR/sve_canary.o"
 else
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early.c" "$KERNEL_BUILD_DIR/early.o"
   compile_kernel "$ROOT_DIR/engine/src/packed.c" "$KERNEL_BUILD_DIR/engine_packed.o"

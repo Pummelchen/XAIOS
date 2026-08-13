@@ -55,7 +55,10 @@ The current QEMU VirtIO block path is interrupt-driven and supports
 eight-request block batching, indirect descriptors, and event-index
 notification suppression. The AArch64/x86_64 emulated-NVMe gate negotiates
 four I/O queues and exercises four-page PRP 16 KiB write, flush, read, and host
-backing-byte verification.
+backing-byte verification across repeated async rounds. It also covers SGL,
+direct aligned buffers, cancellation, malformed completions, and queue
+affinity. x86_64 verifies MSI-X delivery; AArch64 uses bounded polling until a
+GICv3 ITS path is implemented.
 
 Storage administration is documented in [[Administration|Administration]].
 Detailed formats and recovery procedures remain in the repository

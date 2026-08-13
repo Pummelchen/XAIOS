@@ -23,6 +23,7 @@ from xaios_model_v2 import (
     TENSOR_DESCRIPTOR_SIZE,
     TensorSpec,
     build_miniature_package,
+    build_kimi_k3_miniature_package,
     read_header,
 )
 
@@ -79,6 +80,17 @@ class ModelV2Tests(unittest.TestCase):
             self.assertEqual(header["tensor_count"], 1)
             result = self.run_inspector(package)
             self.assertIn("architecture=xaios_fixture", result.stdout)
+
+    def test_kimi_k3_miniature_package(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            package = Path(temporary) / "kimi-k3-mini.xaiosmodel2"
+            build_kimi_k3_miniature_package(package)
+            header = read_header(package)
+            self.assertEqual(header["architecture_id"], "kimi_k3")
+            self.assertEqual(header["tensor_count"], 21)
+            self.assertGreaterEqual(package.stat().st_size, 2 * 1024 * 1024)
+            result = self.run_inspector(package)
+            self.assertIn("architecture=kimi_k3", result.stdout)
 
     def test_sparse_package_exceeds_four_gib(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

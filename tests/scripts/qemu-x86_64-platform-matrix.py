@@ -140,7 +140,7 @@ def run_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
         f"x86_64: SMP AP startup passed online={scenario['smp']}"
     ]
     if scenario.get("nvme"):
-        required_markers.append("nvme: admin/io self-test passed")
+        required_markers.append("nvme: async self-test passed")
     if scenario.get("apic_mode"):
         required_markers.append(f"mode={scenario['apic_mode']}")
     missing_markers = [marker for marker in required_markers
