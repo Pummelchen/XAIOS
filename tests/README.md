@@ -34,6 +34,10 @@ Docker build inputs, and test-image inputs outside `tests/`. It runs through
 | xapt app and A/B OS lifecycle on ARM/x86 | `make qemu-xapt-gate` |
 | Code-scanning regression contract | `make code-scanning-contract` |
 | Documentation and test layout | `make docs-check` |
+| Firmware profile contract and documentation | `make firmware-profiles-check` |
+| macOS QEMU ARM64 profile evidence | `XAIOS_AAVMF_CODE=/absolute/path/to/edk2-aarch64-code.fd make firmware-profile-macos-qemu-aarch64` |
+| macOS VMware Fusion ARM64 profile evidence | `make firmware-profile-macos-vmware-fusion-aarch64` |
+| Intel VPS QEMU x86_64 profile evidence | `XAIOS_FIRMWARE_PROFILE_HOST_CLASS=intel-vps XAIOS_OVMF_CODE=/absolute/path/to/OVMF_CODE.fd make firmware-profile-intel-vps-qemu-x86_64` |
 | Production-source audit | `make production-source-audit` |
 | ABI contract | `make qemu-abi-contract` |
 | Primary AArch64 smoke | `make qemu-smoke` |
@@ -42,6 +46,7 @@ Docker build inputs, and test-image inputs outside `tests/`. It runs through
 | Parser, packet-fault, load/recovery, and dual-architecture soak | `make qemu-network-adversarial-gate` |
 | IPv4/IPv6 source fragmentation on ARM/x86 | `make qemu-outbound-fragmentation-gate` |
 | Async NVMe PRP/SGL, cancellation, malformed completions, and all-queue x86 MSI-X/ARM ITS delivery | `make qemu-nvme-gate` |
+| x86_64-only async NVMe evidence for the Intel profile | `make qemu-x86_64-nvme-gate` |
 | x86 SRAT/SLIT/HMAT, 1 GiB mapping, targeted TLB invalidation, placement, and accounting | `make qemu-x86_64-numa-gate` |
 | ARM SVE2 arithmetic and per-task Z/P/FFR preservation | `make qemu-aarch64-sve2-gate` |
 | Power/recovery/operations closure | `make qemu-operations-closure` |

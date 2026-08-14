@@ -19,6 +19,7 @@ EXPECTED_PAGES = {
     "Commands.md",
     "Current-Limitations.md",
     "FAQ.md",
+    "Firmware-Profiles.md",
     "Filesystem-and-Storage.md",
     "Getting-Started.md",
     "Hardware-Support.md",

@@ -69,6 +69,14 @@ VMware Fusion support is experimental and tested only on Apple Silicon with
 Fusion versions, x86_64 guests, or physical Apple hardware; see
 [`docs/VMWARE-FUSION.md`](./docs/VMWARE-FUSION.md).
 
+## Firmware profiles
+
+XAIOS keeps **macOS QEMU ARM64**, **macOS VMware Fusion ARM64**, and
+**Intel VPS QEMU x86_64** as separate qualification profiles. Each records its
+own firmware and emulator hashes, device inventory, lifecycle gates and explicit
+unavailable capabilities; a passing ARM result cannot stand in for Intel VPS
+evidence. See [Firmware Platform Profiles](./docs/FIRMWARE-PLATFORM-PROFILES.md).
+
 ## License
 
 XAIOS is source-available under the

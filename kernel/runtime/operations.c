@@ -218,6 +218,9 @@ static uint32_t record_running(const char *record) {
 
 static void persist_lifecycle(const char *state) {
   char record[160];
+  uint64_t flushed = 0U;
+  uint64_t unsupported = 0U;
+  uint64_t failed = 0U;
   uint64_t used = 0U;
   record[0] = '\0';
   append(record, sizeof(record), &used, "state=");
@@ -228,8 +231,17 @@ static void persist_lifecycle(const char *state) {
   append_u64(record, sizeof(record), &used, g_boots);
   append(record, sizeof(record), &used, "\n");
   if (g_persistent != 0U) {
-    (void)mutable_fs_write(OPERATIONS_RECORD_PATH, record, used);
-    (void)mutable_fs_commit("lifecycle");
+    xaios_status_t status =
+        mutable_fs_write(OPERATIONS_RECORD_PATH, record, used);
+    if (status == XAIOS_OK) status = mutable_fs_commit("lifecycle");
+    if (status == XAIOS_OK) {
+      /* A running marker must survive host-side power loss before SSH starts. */
+      status = block_flush_all(&flushed, &unsupported, &failed);
+    }
+    if (status != XAIOS_OK) {
+      klog("operations: lifecycle persist failed state=%s status=%d flushed=%lu unsupported=%lu failed=%lu\n",
+           state, (int)status, flushed, unsupported, failed);
+    }
   }
 }
 

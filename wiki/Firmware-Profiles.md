@@ -1,0 +1,48 @@
+# Firmware Profiles
+
+XAIOS uses three distinct firmware/platform profiles. A result for one profile
+does not validate a different firmware, hypervisor or CPU architecture.
+
+| Profile | Platform contract | Required device inventory | Evidence scope |
+|---|---|---|---|
+| macOS QEMU ARM64 | AAVMF/EDK2, ARM ACPI, GICv3, PSCI, PL011 and VirtIO-MMIO | VirtIO-MMIO block/net/RNG | QEMU ARM64 correctness only |
+| macOS VMware Fusion ARM64 | Fusion 26H1 (26.0.0) UEFI through generated GRUB chainload, ARM ACPI and PCI ECAM | E1000E, AHCI and PL011-compatible serial | Fusion 26H1 functional guest path |
+| Intel VPS QEMU x86_64 | OVMF/EDK2, q35, x86 ACPI MADT/SRAT/SLIT/HMAT, xAPIC/IOAPIC and PCI configuration I/O | VirtIO-PCI block/net and QEMU NVMe/MSI-X | immutable designated Intel VPS QEMU evidence |
+
+The contract records a required table and device inventory plus separate gates
+for boot, CPU, storage, network/SSH, shutdown and repeat boot. It also records
+unavailable capability outcomes. In particular, the Fusion profile does not
+claim qualified multi-vCPU, shutdown/repeat-boot behavior or VMXNET3 merely
+because it can boot an ARM64 guest.
+
+## Evidence
+
+The profile runner writes a JSON report containing the source commit, contract,
+firmware and emulator SHA-256 hashes, effective machine/CPU arguments, host
+identity, gate log hashes and capability outcomes. Fusion reports additionally
+hash the GRUB chainloader, boot ISO and VMX configuration. The exact command set
+is in [Firmware Platform Profiles](../docs/FIRMWARE-PLATFORM-PROFILES.md). It
+rejects a tracked dirty worktree so the recorded source commit is authoritative.
+
+```sh
+make firmware-profiles-check
+```
+
+Run the ARM QEMU and Fusion commands on Apple Silicon macOS. Run the x86_64
+profile only on the designated Intel VPS with
+`XAIOS_FIRMWARE_PROFILE_HOST_CLASS=intel-vps`; copy its JSON report unchanged
+for aggregation. The aggregate refuses a missing, mismatched or non-passing
+profile report.
+
+The shared architecture boundary is UEFI loader -> architecture firmware parser
+-> generic capability consumers. The x86-specific early boot and ACPI code in
+`kernel/arch/x86_64/` remains separate from ARM firmware discovery in
+`kernel/arch/aarch64/`.
+
+On both QEMU profiles, `vblk0` is the immutable initramfs/test volume and the
+separately discovered durable MutableFS volume is mounted as `vblk1`. This
+prevents fixture writes from being mistaken for durable lifecycle state.
+
+QEMU evidence proves the named virtual correctness gates only. It never proves
+physical hardware performance, durability, NUMA locality, thermal behavior or
+PMU results.

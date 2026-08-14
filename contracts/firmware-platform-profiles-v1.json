@@ -1,0 +1,112 @@
+{
+  "schema": "xaios.firmware_platform_profiles.v1",
+  "evidence_schema": "xaios.firmware_platform_evidence.v1",
+  "aggregate_schema": "xaios.firmware_platform_evidence_aggregate.v1",
+  "profiles": [
+    {
+      "id": "macos-qemu-aarch64",
+      "host": {"system": "Darwin", "machine": "arm64"},
+      "architecture": "aarch64",
+      "firmware": {
+        "provider": "AAVMF/EDK2",
+        "path_environment": "XAIOS_AAVMF_CODE",
+        "identity_required": true
+      },
+      "emulator": {
+        "binary": "qemu-system-aarch64",
+        "machine": "virt,gic-version=3",
+        "cpu": "cortex-a72",
+        "accelerator": "tcg"
+      },
+      "required_firmware_tables": ["RSDP", "XSDT/RSDT", "MADT GICC/GICD/GICR", "MCFG"],
+      "expected_devices": ["PL011", "GICv3", "PSCI", "VirtIO-MMIO block", "VirtIO-MMIO net", "VirtIO RNG"],
+      "gates": [
+        {"name": "boot_cpu_network_ssh", "command": ["make", "qemu-smoke"], "timeout_seconds": 300,
+         "environment": {"XAIOS_QEMU_SMOKE_TIMEOUT": "240"}},
+        {"name": "sve_context", "command": ["make", "qemu-aarch64-sve2-gate"], "timeout_seconds": 600},
+        {"name": "storage_recovery", "command": ["make", "qemu-storage-crash-test"], "timeout_seconds": 1500,
+         "environment": {"XAIOS_QEMU_STORAGE_CRASH_TIMEOUT": "240"}},
+        {"name": "operations_shutdown", "command": ["python3", "tests/scripts/qemu-operations-closure.py", "--arch", "aarch64", "--skip-docker"], "timeout_seconds": 900},
+        {"name": "repeat_boot", "command": ["make", "qemu-soak-gate"], "timeout_seconds": 1500,
+         "environment": {"XAIOS_QEMU_SOAK_BOOTS": "5", "XAIOS_QEMU_SOAK_SMOKE_TIMEOUT": "240"}}
+      ],
+      "capabilities": {
+        "boot": "required",
+        "cpu": "required",
+        "storage": "required",
+        "network_ssh": "required",
+        "shutdown": "required",
+        "repeat_boot": "required",
+        "physical_performance": "unavailable-in-qemu"
+      }
+    },
+    {
+      "id": "macos-vmware-fusion-aarch64",
+      "host": {"system": "Darwin", "machine": "arm64"},
+      "architecture": "aarch64",
+      "firmware": {
+        "provider": "VMware Fusion UEFI via generated GRUB chainload",
+        "qualified_release": "26H1 (26.0.0)",
+        "identity_required": true
+      },
+      "emulator": {
+        "binary": "vmrun",
+        "machine": "VMware Fusion ARM64",
+        "cpu": "firmware bootstrap policy",
+        "accelerator": "Fusion managed"
+      },
+      "required_firmware_tables": ["RSDP", "XSDT/RSDT", "MADT GICC/GICD/GICR", "MCFG"],
+      "expected_devices": ["PCI ECAM", "Intel 82574L/E1000E", "AHCI SATA", "PL011-compatible serial"],
+      "gates": [
+        {"name": "boot_storage_network_ssh", "command": ["make", "vmware-fusion-smoke"], "timeout_seconds": 600}
+      ],
+      "capabilities": {
+        "boot": "required",
+        "cpu": "unavailable-bootstrap-only",
+        "storage": "required",
+        "network_ssh": "required",
+        "shutdown": "unavailable-not-qualified",
+        "repeat_boot": "unavailable-not-qualified",
+        "vmxnet3": "unavailable-not-implemented",
+        "physical_performance": "unavailable-in-virtualization"
+      }
+    },
+    {
+      "id": "intel-vps-qemu-x86_64",
+      "host": {"system": "Linux", "machine": "x86_64", "required_environment": {"XAIOS_FIRMWARE_PROFILE_HOST_CLASS": "intel-vps"}},
+      "architecture": "x86_64",
+      "firmware": {
+        "provider": "OVMF/EDK2",
+        "path_environment": "XAIOS_OVMF_CODE",
+        "identity_required": true
+      },
+      "emulator": {
+        "binary": "qemu-system-x86_64",
+        "machine": "q35",
+        "cpu": "max",
+        "accelerator": "tcg unless explicitly recorded otherwise"
+      },
+      "required_firmware_tables": ["RSDP", "XSDT/RSDT", "MADT", "SRAT", "SLIT", "HMAT", "MCFG"],
+      "expected_devices": ["xAPIC/IOAPIC", "PCI config I/O", "VirtIO-PCI block", "VirtIO-PCI net", "QEMU NVMe/MSI-X"],
+      "gates": [
+        {"name": "boot_network_ssh", "command": ["make", "qemu-x86_64-smoke"], "timeout_seconds": 360},
+        {"name": "cpu_matrix", "command": ["make", "qemu-x86_64-cpu-matrix"], "timeout_seconds": 1200},
+        {"name": "platform_inventory", "command": ["make", "qemu-x86_64-platform-matrix"], "timeout_seconds": 1800},
+        {"name": "numa_firmware", "command": ["make", "qemu-x86_64-numa-gate"], "timeout_seconds": 600},
+        {"name": "nvme_storage", "command": ["make", "qemu-x86_64-nvme-gate"], "timeout_seconds": 600},
+        {"name": "operations_shutdown", "command": ["python3", "tests/scripts/qemu-operations-closure.py", "--arch", "x86_64", "--skip-docker"], "timeout_seconds": 900},
+        {"name": "repeat_boot", "command": ["make", "qemu-x86_64-repeat-boot"], "timeout_seconds": 1200,
+         "environment": {"XAIOS_QEMU_X86_REPEAT_COUNT": "5"}}
+      ],
+      "capabilities": {
+        "boot": "required",
+        "cpu": "required",
+        "storage": "required",
+        "network_ssh": "required",
+        "shutdown": "required",
+        "repeat_boot": "required",
+        "physical_performance": "unavailable-in-qemu"
+      }
+    }
+  ]
+}

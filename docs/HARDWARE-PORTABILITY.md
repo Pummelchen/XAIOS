@@ -36,3 +36,8 @@ public-key SSH evidence on the current Apple Silicon host. It remains incomplete
 for multi-vCPU, VMXNET3, live DNSSEC interoperability and physical
 qualification. Future Fusion and physical drivers must be capability-gated; no
 platform is supported merely because it reports a CPU family or firmware table.
+
+The canonical three-profile contract and immutable evidence format are in
+[Firmware Platform Profiles](./FIRMWARE-PLATFORM-PROFILES.md). It keeps macOS
+QEMU ARM64, macOS VMware Fusion ARM64, and Intel VPS QEMU x86_64 evidence
+separate and rejects an aggregate with missing or mismatched reports.

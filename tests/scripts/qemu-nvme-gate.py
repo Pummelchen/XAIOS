@@ -43,6 +43,18 @@ def stop_process(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=5)
 
 
+def selected_architectures() -> tuple[str, ...]:
+    requested = os.environ.get("XAIOS_QEMU_NVME_ARCH", "all")
+    if requested == "all":
+        return ("aarch64", "x86_64")
+    if requested in ("aarch64", "x86_64"):
+        return (requested,)
+    raise ValueError(
+        "XAIOS_QEMU_NVME_ARCH must be all, aarch64, or x86_64; "
+        f"got {requested!r}"
+    )
+
+
 def run_architecture(architecture: str) -> dict[str, object]:
     image = BUILD / f"xaios-nvme-gate-{architecture}.img"
     persistent = BUILD / f"xaios-nvme-gate-{architecture}-persistent.img"
@@ -162,17 +174,23 @@ def run_architecture(architecture: str) -> dict[str, object]:
 
 def main() -> int:
     BUILD.mkdir(parents=True, exist_ok=True)
+    try:
+        architectures = selected_architectures()
+    except ValueError as error:
+        print(f"qemu-nvme-gate: {error}", file=sys.stderr)
+        return 2
     results: dict[str, dict[str, object]] = {}
-    for architecture in ("aarch64", "x86_64"):
+    for architecture in architectures:
         print(f"qemu-nvme-gate: testing {architecture}", flush=True)
         results[architecture] = run_architecture(architecture)
     passed = all(result["status"] == "pass" for result in results.values())
     REPORT.write_text(
         json.dumps(
             {
-                "schema": "xaios.qemu.nvme.v3",
+                "schema": "xaios.qemu.nvme.v4",
                 "status": "pass" if passed else "fail",
                 "qemu_correctness_only": True,
+                "requested_architectures": list(architectures),
                 "architectures": results,
             },
             indent=2,
@@ -185,7 +203,7 @@ def main() -> int:
         print(f"qemu-nvme-gate: failed report={REPORT}", file=sys.stderr)
         return 1
     print(
-        "qemu-nvme-gate: AArch64/x86_64 async four-queue PRP/SGL "
+        "qemu-nvme-gate: " + "/".join(architectures) + " async four-queue PRP/SGL "
         f"direct I/O, cancellation, malformed completion, and stress passed report={REPORT}"
     )
     return 0

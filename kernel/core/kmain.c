@@ -87,6 +87,7 @@
 static const char g_vmm_rodata_probe[] = "vmm-rodata";
 static uint64_t g_vmm_data_probe;
 static virtio_block_handle_t *g_storage_admin_handle;
+static virtio_block_handle_t *g_persistent_handle;
 
 static void provision_read_only_config(const char *path) {
   const xaios_initramfs_file_t *file = 0;
@@ -367,11 +368,15 @@ void kmain(const xaios_boot_info_t *boot) {
   }
   if (persistent_status == XAIOS_ERR_NOT_FOUND && nvme_status != XAIOS_OK &&
       ahci_status != XAIOS_OK) {
-    /* The deterministic QEMU data disk is registered at vblk0. This fallback
-     * never bypasses the block-device contract and is not a hardware policy. */
-    persistent_status = mutable_fs_mount_device("/dev/vblk0");
+    /* vblk0 remains the immutable initramfs/test image. Open the dedicated
+     * second VirtIO block device for durable MutableFS state. */
+    xaios_status_t virtio_status =
+        virtio_block_open_slot(1U, &g_persistent_handle);
+    persistent_status = virtio_status == XAIOS_OK
+                            ? mutable_fs_mount_device("/dev/vblk1")
+                            : virtio_status;
     if (persistent_status == XAIOS_OK) {
-      klog("mutable-fs: using registered QEMU compatibility data disk\n");
+      klog("mutable-fs: using registered QEMU persistent data disk\n");
     }
   }
   if (persistent_status == XAIOS_OK) {
