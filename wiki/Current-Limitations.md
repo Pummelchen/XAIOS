@@ -82,7 +82,9 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 - ModelFS supports signed registration, resumable staging, verification,
   immutable activation, scrub/quarantine, cleanup/reuse, and free-only trim
   under hosted and QEMU tests.
-- Trusted-replica repair, production signing and key custody, physical
+- Offline trusted-replica repair is implemented for a selected unmounted
+  ModelFS partition with exact signed package identity and full payload
+  verification. Production signing/key custody, replica enrollment, physical
   multi-terabyte transfer, and model-v2 execution admission are not complete.
 - ModelFS activation and MutableFS audit persistence are separate durability
   domains. A post-publication audit failure cannot roll back an already

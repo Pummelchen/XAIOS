@@ -46,6 +46,8 @@ xaiosctl storage format-plan|format TARGET --type modelfs [...]
 xaiosctl storage mount TARGET /models [--read-only] --operation-id ID
 xaiosctl storage unmount /models --operation-id ID
 xaiosctl storage fsck TARGET [--check|--repair] [--verify-data] [...]
+xaiosctl storage repair-from-replica TARGET REPLICA PACKAGE_ID \
+  --confirm-partition TARGET_UUID --operation-id ID
 xaiosctl storage resize-plan|resize TARGET --grow-to SIZE|max [...]
 xaiosctl storage scrub /models --start|--status|--pause|--resume|--cancel [...]
 xaiosctl storage trim /models --dry-run
@@ -89,7 +91,11 @@ devices. `mount-status` aliases `storage filesystem list`; `usage` aliases
 `storage filesystem show`. The current guest exposes live block capabilities,
 I/O counters, and the `/` MutableFS and `/models` ModelFS mounts. Typed guest
 operations cover GPT plan/mutation, format/mount/unmount, fsck/repair, grow-only
-resize, persistent scrub/quarantine, and free-only trim/discard. Destructive
+resize, persistent scrub/quarantine, offline trusted-replica payload repair,
+and free-only trim/discard. Replica repair requires two distinct unmounted
+ModelFS partitions. It accepts only an active replica whose signed immutable
+package identity and complete payload verify exactly against an existing
+quarantined target package; it never overwrites active bytes. Destructive
 operations require their dedicated capability, administrator role, nonzero
 operation ID and exact target confirmation. Dry-run trim is observer-safe and
 defaults to all catalog-owned free extents; actual trim requires explicit scope.

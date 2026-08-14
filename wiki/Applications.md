@@ -21,7 +21,7 @@ are documented separately in [[Commands|Commands]].
 
 | Path | Purpose |
 |---|---|
-| `/bin/xaiosctl` | Administrative client for the versioned `xaios.control.v1` protocol. It exposes status, health, hardware, metrics, logs, configuration, identity, audit, storage, and ModelFS rendering/authorization paths. The interactive shell exposes a bounded compatibility command family. |
+| `/bin/xaiosctl` | Administrative client for the versioned `xaios.control.v1` protocol. It exposes status, health, hardware, metrics, logs, configuration, identity, audit, storage, and signed ModelFS lifecycle, scrub, trim, and offline trusted-replica repair paths. The interactive shell exposes a bounded compatibility command family. |
 | `/bin/xapt` | Signed application and system updater. It refreshes a monotonic architecture-specific catalog, installs or upgrades individual applications without rebooting, and streams an OS image to the inactive A/B slot. |
 | `/bin/xaios-shell` | Scripted acceptance application for built-in remote-login commands and archives; it is not the persistent interactive shell process. Standalone applications are covered by the SSH gates. |
 

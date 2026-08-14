@@ -122,6 +122,18 @@ xaios_engine_status_t xaios_model_volume_remove_staging(
     const xaios_model_volume_package_t *package,
     const xaios_model_volume_writer_t *writer, void *scratch,
     size_t scratch_size, uint64_t *reclaimed_bytes);
+xaios_engine_status_t xaios_model_volume_remove_quarantined(
+    xaios_model_volume_t *volume,
+    const xaios_model_volume_package_t *package,
+    const xaios_model_volume_writer_t *writer, void *scratch,
+    size_t scratch_size, uint64_t *reclaimed_bytes);
+xaios_engine_status_t xaios_model_volume_repair_from_replica(
+    xaios_model_volume_t *target,
+    const xaios_model_volume_package_t *target_package,
+    const xaios_model_volume_t *replica,
+    const xaios_model_volume_package_t *replica_package,
+    const xaios_model_volume_writer_t *target_writer, void *scratch,
+    size_t scratch_size, uint64_t *copied_bytes);
 
 xaios_engine_status_t xaios_model_volume_open(
     const xaios_model_volume_reader_t *reader,

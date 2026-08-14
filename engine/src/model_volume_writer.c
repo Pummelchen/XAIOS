@@ -720,16 +720,17 @@ xaios_engine_status_t xaios_model_volume_register_staging(
   return XAIOS_ENGINE_OK;
 }
 
-xaios_engine_status_t xaios_model_volume_remove_staging(
+static xaios_engine_status_t remove_package_in_state(
     xaios_model_volume_t *volume,
     const xaios_model_volume_package_t *package,
     const xaios_model_volume_writer_t *writer, void *scratch,
-    size_t scratch_size, uint64_t *reclaimed_bytes) {
+    size_t scratch_size, uint32_t required_state,
+    uint64_t *reclaimed_bytes) {
   if (reclaimed_bytes != NULL) *reclaimed_bytes = 0U;
   if (volume == NULL || package == NULL || writer == NULL ||
       writer->write_at == NULL || writer->flush == NULL || scratch == NULL ||
       scratch_size < MODEL_VOLUME_WRITER_SCRATCH_MIN ||
-      package->state != XAIOS_MODEL_VOLUME_PACKAGE_STAGING ||
+      package->state != required_state ||
       volume->package_count == 0U || volume->generation == UINT64_MAX ||
       volume->catalog_generation == UINT64_MAX) {
     return XAIOS_ENGINE_ERR_INVALID;
@@ -743,7 +744,7 @@ xaios_engine_status_t xaios_model_volume_remove_staging(
         xaios_model_volume_read_package(volume, index, &current);
     if (status != XAIOS_ENGINE_OK) return status;
     if (current.record_id == package->record_id) {
-      if (current.state != XAIOS_MODEL_VOLUME_PACKAGE_STAGING ||
+      if (current.state != required_state ||
           memcmp(current.package_id, package->package_id, 32U) != 0) {
         return XAIOS_ENGINE_ERR_CAPABILITY;
       }
@@ -971,6 +972,123 @@ xaios_engine_status_t xaios_model_volume_remove_staging(
   memcpy(next.catalog_hash, catalog_hash, sizeof(catalog_hash));
   *volume = next;
   if (reclaimed_bytes != NULL) *reclaimed_bytes = reclaimed;
+  return XAIOS_ENGINE_OK;
+}
+
+xaios_engine_status_t xaios_model_volume_remove_staging(
+    xaios_model_volume_t *volume,
+    const xaios_model_volume_package_t *package,
+    const xaios_model_volume_writer_t *writer, void *scratch,
+    size_t scratch_size, uint64_t *reclaimed_bytes) {
+  return remove_package_in_state(
+      volume, package, writer, scratch, scratch_size,
+      XAIOS_MODEL_VOLUME_PACKAGE_STAGING, reclaimed_bytes);
+}
+
+xaios_engine_status_t xaios_model_volume_remove_quarantined(
+    xaios_model_volume_t *volume,
+    const xaios_model_volume_package_t *package,
+    const xaios_model_volume_writer_t *writer, void *scratch,
+    size_t scratch_size, uint64_t *reclaimed_bytes) {
+  return remove_package_in_state(
+      volume, package, writer, scratch, scratch_size,
+      XAIOS_MODEL_VOLUME_PACKAGE_QUARANTINED, reclaimed_bytes);
+}
+
+static int replica_identity_matches(
+    const xaios_model_volume_package_t *target,
+    const xaios_model_volume_package_t *replica) {
+  return target != NULL && replica != NULL &&
+         target->logical_size == replica->logical_size &&
+         target->chunk_size == replica->chunk_size &&
+         memcmp(target->model_uuid, replica->model_uuid,
+                sizeof(target->model_uuid)) == 0 &&
+         memcmp(target->package_id, replica->package_id,
+                sizeof(target->package_id)) == 0 &&
+         memcmp(target->signer_public_key, replica->signer_public_key,
+                sizeof(target->signer_public_key)) == 0 &&
+         memcmp(target->signature, replica->signature,
+                sizeof(target->signature)) == 0 &&
+         memcmp(target->source_revision, replica->source_revision,
+                sizeof(target->source_revision)) == 0 &&
+         memcmp(target->architecture_id, replica->architecture_id,
+                sizeof(target->architecture_id)) == 0 &&
+         memcmp(target->target_id, replica->target_id,
+                sizeof(target->target_id)) == 0;
+}
+
+xaios_engine_status_t xaios_model_volume_repair_from_replica(
+    xaios_model_volume_t *target,
+    const xaios_model_volume_package_t *target_package,
+    const xaios_model_volume_t *replica,
+    const xaios_model_volume_package_t *replica_package,
+    const xaios_model_volume_writer_t *target_writer, void *scratch,
+    size_t scratch_size, uint64_t *copied_bytes) {
+  if (copied_bytes != NULL) *copied_bytes = 0U;
+  if (target == NULL || target_package == NULL || replica == NULL ||
+      replica_package == NULL || target_writer == NULL ||
+      target_writer->write_at == NULL || target_writer->flush == NULL ||
+      scratch == NULL || scratch_size < MODEL_VOLUME_WRITER_SCRATCH_MIN ||
+      target == replica || target->reader.context == replica->reader.context ||
+      target_package->state != XAIOS_MODEL_VOLUME_PACKAGE_QUARANTINED ||
+      replica_package->state != XAIOS_MODEL_VOLUME_PACKAGE_ACTIVE ||
+      !replica_identity_matches(target_package, replica_package) ||
+      target->chunk_size != replica->chunk_size) {
+    return XAIOS_ENGINE_ERR_INVALID;
+  }
+
+  uint64_t bad_offset = UINT64_MAX;
+  xaios_engine_status_t status = xaios_model_volume_verify_package(
+      replica, replica_package, scratch, scratch_size, &bad_offset);
+  if (status != XAIOS_ENGINE_OK) return status;
+
+  status = xaios_model_volume_remove_quarantined(
+      target, target_package, target_writer, scratch, scratch_size, NULL);
+  if (status != XAIOS_ENGINE_OK) return status;
+
+  xaios_model_volume_package_t replacement;
+  status = xaios_model_volume_register_staging(
+      target, replica_package, target_writer, scratch, scratch_size,
+      &replacement);
+  if (status != XAIOS_ENGINE_OK) return status;
+
+  uint8_t *buffer = (uint8_t *)scratch;
+  for (uint64_t relative = 0U; relative < replacement.chunk_count; ++relative) {
+    xaios_model_volume_chunk_t chunk;
+    status = xaios_model_volume_read_chunk(target,
+                                           replacement.chunk_start + relative,
+                                           &chunk);
+    if (status != XAIOS_ENGINE_OK || chunk.record_id != replacement.record_id) {
+      return status == XAIOS_ENGINE_OK ? XAIOS_ENGINE_ERR_INVALID : status;
+    }
+    uint64_t copied_chunk = 0U;
+    while (copied_chunk < chunk.length) {
+      uint64_t remaining = chunk.length - copied_chunk;
+      size_t length = remaining < (uint64_t)scratch_size
+                          ? (size_t)remaining
+                          : scratch_size;
+      uint64_t offset = chunk.logical_offset + copied_chunk;
+      status = xaios_model_volume_pread(replica, replica_package, offset,
+                                        buffer, length);
+      if (status != XAIOS_ENGINE_OK) return status;
+      status = xaios_model_volume_pwrite_staging(target, &replacement,
+                                                 target_writer, offset, buffer,
+                                                 length);
+      if (status != XAIOS_ENGINE_OK) return status;
+      copied_chunk += (uint64_t)length;
+    }
+    uint64_t completed = 0U;
+    status = xaios_model_volume_commit_staging_range(
+        target, &replacement, target_writer, chunk.logical_offset, chunk.length,
+        scratch, scratch_size, &completed);
+    if (status != XAIOS_ENGINE_OK) return status;
+    if (completed != 1U) return XAIOS_ENGINE_ERR_INVALID;
+  }
+
+  status = xaios_model_volume_activate_staging(
+      target, &replacement, target_writer, scratch, scratch_size);
+  if (status != XAIOS_ENGINE_OK) return status;
+  if (copied_bytes != NULL) *copied_bytes = replacement.logical_size;
   return XAIOS_ENGINE_OK;
 }
 

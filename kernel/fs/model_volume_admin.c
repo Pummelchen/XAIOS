@@ -171,31 +171,43 @@ static void derive_volume_uuid(const char *partition_uuid,
   volume_uuid[8] = (uint8_t)((volume_uuid[8] & 0x3fU) | 0x80U);
 }
 
-static xaios_status_t open_partition(
-    const char *identifier, uint32_t require_idle,
-    xaios_storage_partition_record_t *partition) {
-  bytes_zero(&g_admin_io, sizeof(g_admin_io));
+static xaios_status_t open_partition_into(
+    model_admin_io_t *io, const char *identifier, uint32_t require_idle,
+    uint32_t require_writable, xaios_storage_partition_record_t *partition) {
+  if (io == 0) return XAIOS_ERR_INVALID;
+  bytes_zero(io, sizeof(*io));
   xaios_status_t status = storage_admin_partition_open(
       identifier, XAIOS_STORAGE_PARTITION_MODEL, require_idle,
-      &g_admin_io.device, partition);
+      &io->device, partition);
   if (status != XAIOS_OK) return status;
-  status = block_device_info(g_admin_io.device, &g_admin_io.info);
+  status = block_device_info(io->device, &io->info);
   if (status != XAIOS_OK ||
-      g_admin_io.info.logical_sector_size > sizeof(g_admin_io.bounce) ||
-      g_admin_io.info.read_only != 0U ||
-      g_admin_io.info.flush_supported == 0U) {
-    (void)storage_admin_partition_close(g_admin_io.device);
-    bytes_zero(&g_admin_io, sizeof(g_admin_io));
+      io->info.logical_sector_size > sizeof(io->bounce) ||
+      (require_writable != 0U &&
+       (io->info.read_only != 0U || io->info.flush_supported == 0U))) {
+    (void)storage_admin_partition_close(io->device);
+    bytes_zero(io, sizeof(*io));
     return status != XAIOS_OK ? status : XAIOS_ERR_UNSUPPORTED;
   }
   return XAIOS_OK;
 }
 
-static void close_partition(void) {
-  if (g_admin_io.device != 0) {
-    (void)storage_admin_partition_close(g_admin_io.device);
+static xaios_status_t open_partition(
+    const char *identifier, uint32_t require_idle,
+    xaios_storage_partition_record_t *partition) {
+  return open_partition_into(&g_admin_io, identifier, require_idle, 1U,
+                             partition);
+}
+
+static void close_partition_io(model_admin_io_t *io) {
+  if (io != 0 && io->device != 0) {
+    (void)storage_admin_partition_close(io->device);
   }
-  bytes_zero(&g_admin_io, sizeof(g_admin_io));
+  if (io != 0) bytes_zero(io, sizeof(*io));
+}
+
+static void close_partition(void) {
+  close_partition_io(&g_admin_io);
 }
 
 static void hex_id(const uint8_t id[32], char output[65]) {
@@ -255,17 +267,66 @@ static xaios_status_t fill_volume_report(
   return XAIOS_OK;
 }
 
-static xaios_status_t open_volume(xaios_model_volume_t *volume,
-                                  xaios_model_volume_probe_t *probe) {
+static xaios_status_t open_volume_into(model_admin_io_t *io,
+                                       xaios_model_volume_t *volume,
+                                       xaios_model_volume_probe_t *probe) {
+  if (io == 0 || volume == 0 || probe == 0) return XAIOS_ERR_INVALID;
   xaios_model_volume_reader_t reader = {
-      &g_admin_io, read_at, g_admin_io.info.capacity_bytes};
+      io, read_at, io->info.capacity_bytes};
   xaios_engine_status_t status = xaios_model_volume_probe(
-      &reader, g_admin_io.scratch, sizeof(g_admin_io.scratch), probe);
+      &reader, io->scratch, sizeof(io->scratch), probe);
   if (status != XAIOS_ENGINE_OK) return map_engine_status(status);
   status = xaios_model_volume_open(
-      &reader, verify_signature, 0, g_admin_io.scratch,
-      sizeof(g_admin_io.scratch), volume);
+      &reader, verify_signature, 0, io->scratch, sizeof(io->scratch), volume);
   return map_engine_status(status);
+}
+
+static xaios_status_t open_volume(xaios_model_volume_t *volume,
+                                  xaios_model_volume_probe_t *probe) {
+  return open_volume_into(&g_admin_io, volume, probe);
+}
+
+static int parse_package_id(const char *text, uint8_t package_id[32]) {
+  if (text == 0 || package_id == 0) return 0;
+  for (uint32_t index = 0U; index < 32U; ++index) {
+    uint8_t high = (uint8_t)text[index * 2U];
+    uint8_t low = (uint8_t)text[index * 2U + 1U];
+    uint8_t value = 0U;
+    if (high >= '0' && high <= '9') {
+      value = (uint8_t)(high - '0');
+    } else if (high >= 'a' && high <= 'f') {
+      value = (uint8_t)(high - 'a' + 10U);
+    } else if (high >= 'A' && high <= 'F') {
+      value = (uint8_t)(high - 'A' + 10U);
+    } else {
+      return 0;
+    }
+    value = (uint8_t)(value << 4U);
+    if (low >= '0' && low <= '9') {
+      value |= (uint8_t)(low - '0');
+    } else if (low >= 'a' && low <= 'f') {
+      value |= (uint8_t)(low - 'a' + 10U);
+    } else if (low >= 'A' && low <= 'F') {
+      value |= (uint8_t)(low - 'A' + 10U);
+    } else {
+      return 0;
+    }
+    package_id[index] = value;
+  }
+  return text[64] == '\0';
+}
+
+static xaios_status_t find_package(
+    const xaios_model_volume_t *volume, const uint8_t package_id[32],
+    xaios_model_volume_package_t *package) {
+  if (volume == 0 || package_id == 0 || package == 0) return XAIOS_ERR_INVALID;
+  for (uint64_t index = 0U; index < volume->package_count; ++index) {
+    xaios_engine_status_t status =
+        xaios_model_volume_read_package(volume, index, package);
+    if (status != XAIOS_ENGINE_OK) return map_engine_status(status);
+    if (memcmp(package->package_id, package_id, 32U) == 0) return XAIOS_OK;
+  }
+  return XAIOS_ERR_NOT_FOUND;
 }
 
 xaios_status_t model_volume_admin_format_plan(
@@ -465,6 +526,83 @@ xaios_status_t model_volume_admin_repair(
       report->check_state = XAIOS_MODEL_VOLUME_CHECK_REPAIRED;
     }
   }
+  close_partition();
+  return status;
+}
+
+xaios_status_t model_volume_admin_repair_from_replica(
+    const char *target_identifier, const char *target_confirmation,
+    const char *replica_identifier, const char *package_id,
+    xaios_model_volume_admin_report_t *report) {
+  if (report == 0 || target_identifier == 0 || replica_identifier == 0 ||
+      package_id == 0 || strcmp(target_identifier, replica_identifier) == 0) {
+    return XAIOS_ERR_INVALID;
+  }
+  uint8_t requested_package_id[32];
+  if (!parse_package_id(package_id, requested_package_id)) {
+    return XAIOS_ERR_INVALID;
+  }
+
+  xaios_storage_partition_record_t target_partition;
+  xaios_status_t status =
+      open_partition(target_identifier, 1U, &target_partition);
+  if (status != XAIOS_OK) return status;
+  if (confirmation_matches(target_confirmation, target_partition.unique_guid) !=
+      XAIOS_OK) {
+    close_partition();
+    return XAIOS_ERR_INVALID;
+  }
+
+  model_admin_io_t replica_io;
+  xaios_storage_partition_record_t replica_partition;
+  status = open_partition_into(&replica_io, replica_identifier, 1U, 0U,
+                               &replica_partition);
+  if (status != XAIOS_OK) {
+    close_partition();
+    return status;
+  }
+  if (strcmp(target_partition.unique_guid, replica_partition.unique_guid) ==
+      0) {
+    close_partition_io(&replica_io);
+    close_partition();
+    return XAIOS_ERR_INVALID;
+  }
+
+  xaios_model_volume_t target;
+  xaios_model_volume_t replica;
+  xaios_model_volume_probe_t target_probe;
+  xaios_model_volume_probe_t replica_probe;
+  status = open_volume(&target, &target_probe);
+  if (status == XAIOS_OK) {
+    status = open_volume_into(&replica_io, &replica, &replica_probe);
+  }
+  xaios_model_volume_package_t target_package;
+  xaios_model_volume_package_t replica_package;
+  if (status == XAIOS_OK) {
+    status = find_package(&target, requested_package_id, &target_package);
+  }
+  if (status == XAIOS_OK) {
+    status = find_package(&replica, requested_package_id, &replica_package);
+  }
+  if (status == XAIOS_OK) {
+    xaios_model_volume_writer_t writer = {&g_admin_io, write_at, flush};
+    uint64_t copied = 0U;
+    status = map_engine_status(xaios_model_volume_repair_from_replica(
+        &target, &target_package, &replica, &replica_package, &writer,
+        g_admin_io.scratch, sizeof(g_admin_io.scratch), &copied));
+    if (status == XAIOS_OK) {
+      status = open_volume(&target, &target_probe);
+    }
+    if (status == XAIOS_OK) {
+      status = fill_volume_report(&target_partition, &target, &target_probe,
+                                  report);
+    }
+    if (status == XAIOS_OK) {
+      report->checked_bytes = copied;
+      report->check_state = XAIOS_MODEL_VOLUME_CHECK_REPAIRED;
+    }
+  }
+  close_partition_io(&replica_io);
   close_partition();
   return status;
 }

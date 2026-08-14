@@ -37,6 +37,11 @@ images into the inactive A/B slot. Its current trust root is for development
 and QEMU use; production key custody and an operator-approved rotation process
 remain explicit gates.
 
+ModelFS can repair a quarantined package from an administrator-selected,
+unmounted signed replica after complete identity and payload verification. This
+offline recovery path does not establish production replica enrollment or
+private signing-key custody; see [ModelFS recovery](./docs/MODELFS-RECOVERY.md).
+
 ## Model support status
 
 The deterministic QEMU model-v1 path is **Fixture only**, and model-v2 is a

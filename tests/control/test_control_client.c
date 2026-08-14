@@ -78,6 +78,22 @@ int xaios_control_query(const void *request_bytes, u64 request_size,
     return respond_status(&request, XAIOS_CONTROL_STATUS_DENIED, response,
                           response_size, out_size);
   }
+  if (request.operation == XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA) {
+    xaios_control_storage_replica_repair_request_payload_user_t repair;
+    if (request_size != sizeof(request) + sizeof(repair)) return -1;
+    copy_bytes(&repair, (const unsigned char *)request_bytes + sizeof(request),
+               sizeof(repair));
+    if (strcmp(repair.target, "/dev/vblk5p1") != 0 ||
+        strcmp(repair.replica, "/dev/vblk6p1") != 0 ||
+        strcmp(repair.confirmation,
+               "aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee") != 0 ||
+        strcmp(repair.package_id,
+               "da3246a8df558dd6d9da385adb58976cd964a76d413f9a5f395f65a861e1333f") !=
+            0 ||
+        strcmp(repair.actor, "ci-admin") != 0 || repair.operation_id != 606U) {
+      return -1;
+    }
+  }
   if (request.operation == XAIOS_CONTROL_OP_CONFIG_APPLY &&
       request.principal_role < XAIOS_CONTROL_ROLE_OPERATOR) {
     return respond_status(&request, XAIOS_CONTROL_STATUS_DENIED, response,
@@ -94,6 +110,7 @@ int xaios_control_query(const void *request_bytes, u64 request_size,
        request.operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_DELETE ||
        request.operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_RESIZE ||
        request.operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_REPAIR ||
+       request.operation == XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA ||
        request.operation == XAIOS_CONTROL_OP_STORAGE_SCRUB_START ||
        request.operation == XAIOS_CONTROL_OP_STORAGE_SCRUB_PAUSE ||
        request.operation == XAIOS_CONTROL_OP_STORAGE_SCRUB_RESUME ||
@@ -393,8 +410,9 @@ int xaios_control_query(const void *request_bytes, u64 request_size,
     return respond(&request, XAIOS_CONTROL_PAYLOAD_STORAGE_PARTITION_PLAN,
                    &value, sizeof(value), response, response_size, out_size);
   }
-  if (request.operation >= XAIOS_CONTROL_OP_STORAGE_FORMAT_PLAN &&
-      request.operation <= XAIOS_CONTROL_OP_STORAGE_FS_RESIZE) {
+  if ((request.operation >= XAIOS_CONTROL_OP_STORAGE_FORMAT_PLAN &&
+       request.operation <= XAIOS_CONTROL_OP_STORAGE_FS_RESIZE) ||
+      request.operation == XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA) {
     xaios_model_volume_admin_report_user_t value;
     xaios_memzero(&value, sizeof(value));
     strcpy(value.target, request.operation == XAIOS_CONTROL_OP_STORAGE_UNMOUNT
@@ -416,7 +434,8 @@ int xaios_control_query(const void *request_bytes, u64 request_size,
     value.second_superblock_valid = 1U;
     value.copies_compatible = 1U;
     value.check_state =
-        request.operation == XAIOS_CONTROL_OP_STORAGE_FS_REPAIR
+        request.operation == XAIOS_CONTROL_OP_STORAGE_FS_REPAIR ||
+                request.operation == XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA
             ? XAIOS_MODEL_VOLUME_CHECK_REPAIRED
             : XAIOS_MODEL_VOLUME_CHECK_CLEAN;
     value.discard_supported = 1U;
@@ -672,6 +691,13 @@ int main(void) {
       run_case_as("xaiosctl storage fsck /dev/vblk5p1 --repair "
                   "--confirm-partition aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee "
                   "--operation-id 604",
+                  XAIOS_CONTROL_ROLE_ADMIN, "ci-admin", 0,
+                  "check_state=repaired") != 0 ||
+      run_case_as("xaiosctl storage repair-from-replica /dev/vblk5p1 "
+                  "/dev/vblk6p1 "
+                  "da3246a8df558dd6d9da385adb58976cd964a76d413f9a5f395f65a861e1333f "
+                  "--confirm-partition aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee "
+                  "--operation-id 606",
                   XAIOS_CONTROL_ROLE_ADMIN, "ci-admin", 0,
                   "check_state=repaired") != 0 ||
       run_case("xaiosctl storage resize-plan /dev/vblk5p1 --grow-to max --json",

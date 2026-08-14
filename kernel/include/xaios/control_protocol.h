@@ -84,6 +84,7 @@ typedef enum xaios_control_operation {
   XAIOS_CONTROL_OP_SYSTEM_UPDATE_COMMIT = 56,
   XAIOS_CONTROL_OP_SYSTEM_UPDATE_ABORT = 57,
   XAIOS_CONTROL_OP_RUNTIME_SNAPSHOT = 58,
+  XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA = 59,
 } xaios_control_operation_t;
 
 typedef enum xaios_control_payload_type {
@@ -120,6 +121,7 @@ typedef enum xaios_control_payload_type {
   XAIOS_CONTROL_PAYLOAD_SYSTEM_UPDATE_CHUNK = 30,
   XAIOS_CONTROL_PAYLOAD_RUNTIME_SNAPSHOT_REQUEST = 31,
   XAIOS_CONTROL_PAYLOAD_RUNTIME_SNAPSHOT = 32,
+  XAIOS_CONTROL_PAYLOAD_STORAGE_REPLICA_REPAIR_REQUEST = 33,
 } xaios_control_payload_type_t;
 
 typedef enum xaios_control_status {
@@ -544,6 +546,15 @@ typedef struct xaios_control_storage_volume_request_payload {
   uint32_t reserved;
 } xaios_control_storage_volume_request_payload_t;
 
+typedef struct xaios_control_storage_replica_repair_request_payload {
+  char target[XAIOS_BLOCK_DEVICE_ID_MAX];
+  char replica[XAIOS_BLOCK_DEVICE_ID_MAX];
+  char confirmation[XAIOS_STORAGE_GUID_TEXT_MAX];
+  char package_id[65];
+  char actor[XAIOS_ADMIN_PRINCIPAL_MAX];
+  uint64_t operation_id;
+} xaios_control_storage_replica_repair_request_payload_t;
+
 typedef struct xaios_control_model_register_request_payload {
   uint64_t operation_id;
   uint64_t logical_size;
@@ -597,6 +608,12 @@ typedef char xaios_control_storage_partition_request_must_fit[
         : -1];
 typedef char xaios_control_storage_volume_request_must_fit[
     sizeof(xaios_control_storage_volume_request_payload_t) <=
+            XAIOS_CONTROL_MAX_REQUEST_BYTES -
+                sizeof(xaios_control_request_header_t)
+        ? 1
+        : -1];
+typedef char xaios_control_storage_replica_repair_request_must_fit[
+    sizeof(xaios_control_storage_replica_repair_request_payload_t) <=
             XAIOS_CONTROL_MAX_REQUEST_BYTES -
                 sizeof(xaios_control_request_header_t)
         ? 1

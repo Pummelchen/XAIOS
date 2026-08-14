@@ -1761,6 +1761,73 @@ static xaios_status_t handle_storage_volume_operation(
                         sizeof(report));
 }
 
+static xaios_status_t handle_storage_replica_repair(
+    const xaios_control_request_header_t *request, const uint8_t *payload,
+    void *response, uint64_t response_capacity, uint64_t *response_bytes,
+    xaios_control_role_t authenticated_role) {
+  xaios_control_storage_replica_repair_request_payload_t query;
+  if (request->payload_type !=
+          XAIOS_CONTROL_PAYLOAD_STORAGE_REPLICA_REPAIR_REQUEST ||
+      request->payload_length != sizeof(query)) {
+    return write_error(response, response_capacity, response_bytes,
+                       request->operation, request->request_id,
+                       XAIOS_CONTROL_STATUS_INVALID_REQUEST);
+  }
+  bytes_copy(&query, payload, sizeof(query));
+  if (!fixed_string_valid(query.target, sizeof(query.target)) ||
+      !fixed_string_valid(query.replica, sizeof(query.replica)) ||
+      !fixed_string_terminated(query.confirmation,
+                               sizeof(query.confirmation)) ||
+      !fixed_string_terminated(query.package_id, sizeof(query.package_id)) ||
+      !fixed_string_terminated(query.actor, sizeof(query.actor)) ||
+      string_equal(query.target, query.replica) || query.actor[0] == '\0' ||
+      query.operation_id == 0U ||
+      authenticated_role < XAIOS_CONTROL_ROLE_ADMIN ||
+      request->principal_role < XAIOS_CONTROL_ROLE_ADMIN) {
+    return write_admin_error(request, XAIOS_ADMIN_RESULT_DENIED, response,
+                             response_capacity, response_bytes);
+  }
+  const char *audit_name = "storage.fs.replica-repair";
+  xaios_admin_result_t begin = admin_control_mutation_begin(
+      query.actor, request->principal_role, XAIOS_CONTROL_ROLE_ADMIN,
+      query.operation_id, audit_name);
+  if (begin != XAIOS_ADMIN_RESULT_OK) {
+    return write_admin_error(request, begin, response, response_capacity,
+                             response_bytes);
+  }
+  xaios_model_volume_admin_report_t report;
+  bytes_zero(&report, sizeof(report));
+  xaios_status_t status = model_volume_admin_repair_from_replica(
+      query.target, query.confirmation, query.replica, query.package_id,
+      &report);
+  if (status != XAIOS_OK) {
+    xaios_admin_result_t failed = admin_control_mutation_fail(
+        query.actor, request->principal_role, query.operation_id, audit_name,
+        storage_admin_result(status));
+    return write_admin_error(request, failed, response, response_capacity,
+                             response_bytes);
+  }
+  uint8_t object_hash[32];
+  bytes_zero(object_hash, sizeof(object_hash));
+  for (uint32_t index = 0U;
+       index < sizeof(object_hash) && query.package_id[index] != '\0';
+       ++index) {
+    object_hash[index] = (uint8_t)query.package_id[index];
+  }
+  xaios_admin_result_t completed = admin_control_mutation_complete(
+      query.actor, request->principal_role, query.operation_id, audit_name,
+      object_hash);
+  if (completed != XAIOS_ADMIN_RESULT_OK) {
+    return write_admin_error(request, completed, response, response_capacity,
+                             response_bytes);
+  }
+  return write_response(response, response_capacity, response_bytes,
+                        request->operation, request->request_id,
+                        XAIOS_CONTROL_STATUS_OK,
+                        XAIOS_CONTROL_PAYLOAD_STORAGE_VOLUME_REPORT, &report,
+                        sizeof(report));
+}
+
 static int storage_scrub_mutation(uint16_t operation) {
   return operation != XAIOS_CONTROL_OP_STORAGE_SCRUB_STATUS;
 }
@@ -2309,6 +2376,10 @@ xaios_status_t control_protocol_dispatch(
   case XAIOS_CONTROL_OP_STORAGE_FS_RESIZE_PLAN:
   case XAIOS_CONTROL_OP_STORAGE_FS_RESIZE:
     return handle_storage_volume_operation(
+        &request, payload, response, response_capacity, response_bytes,
+        authenticated_role);
+  case XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA:
+    return handle_storage_replica_repair(
         &request, payload, response, response_capacity, response_bytes,
         authenticated_role);
   case XAIOS_CONTROL_OP_STORAGE_SCRUB_START:

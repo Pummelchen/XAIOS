@@ -52,6 +52,10 @@ xaios_status_t model_volume_admin_fsck(
 xaios_status_t model_volume_admin_repair(
     const char *partition_identifier, const char *partition_confirmation,
     xaios_model_volume_admin_report_t *report);
+xaios_status_t model_volume_admin_repair_from_replica(
+    const char *target_identifier, const char *target_confirmation,
+    const char *replica_identifier, const char *package_id,
+    xaios_model_volume_admin_report_t *report);
 xaios_status_t model_volume_admin_grow(
     const char *partition_identifier, const char *partition_confirmation,
     uint64_t new_size, xaios_model_volume_admin_report_t *report);

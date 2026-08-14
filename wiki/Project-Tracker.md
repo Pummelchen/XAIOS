@@ -72,7 +72,7 @@ status.
 | Phase | Status | Evidence / remaining gate |
 |---|---|---|
 | S-11P Physical production NVMe qualification | `IN PROGRESS` | Consolidated QEMU NVMe and crash-recovery evidence is available through `make qemu-qualification-readiness`; named physical devices must still pass queue scaling, interrupt affinity, FUA/flush/discard semantics, reset recovery, power-loss durability, sustained-load, and performance gates. QEMU evidence cannot close this item. |
-| S-12 Trusted-replica repair and production key custody | `BLOCKED` | Depends on production trust and repair-source decisions. |
+| S-12 Production ModelFS trust-root and signing-key custody | `BLOCKED` | Offline trusted-replica payload repair is implemented and QEMU/hosted-tested. Production trust-root enrollment, private-key custody, replica authorization, and rotation decisions require named operators and deployment credentials. |
 
 ## Distributed AI server phases
 

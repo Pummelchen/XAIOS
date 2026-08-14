@@ -17,7 +17,7 @@ by `xapt`; see [[xapt Package Updates|Xapt-Package-Updates]].
 | `auth key list|add|remove` | Manage role-mapped administrative keys and revocation. |
 | `auth host-key rotate` | Rotate the persistent SSH host key. |
 | `audit show` | Read bounded, redacted audit history by sequence. |
-| `storage device|partition|format|mount|unmount|fsck|resize|scrub|trim` | Inspect and manage GPT, filesystems, ModelFS integrity, and free extents. |
+| `storage device|partition|format|mount|unmount|fsck|repair-from-replica|resize|scrub|trim` | Inspect and manage GPT, filesystems, ModelFS integrity, trusted-replica recovery, and free extents. |
 | `model register|verify|activate|cleanup` | Manage signed ModelFS package lifecycle around resumable SFTP staging. |
 
 Examples:
@@ -55,7 +55,7 @@ xaiosctl storage device list
 xaiosctl storage partition list|verify|plan-create|create|plan-delete|delete|plan-resize|resize|repair ...
 xaiosctl storage filesystem list
 xaiosctl storage usage /models
-xaiosctl storage format-plan|format|mount|unmount|fsck|resize-plan|resize ...
+xaiosctl storage format-plan|format|mount|unmount|fsck|repair-from-replica|resize-plan|resize ...
 xaiosctl storage scrub /models --start|--status|--pause|--resume|--cancel
 xaiosctl storage trim /models --dry-run
 xaiosctl storage trim /models --all-free --operation-id ID

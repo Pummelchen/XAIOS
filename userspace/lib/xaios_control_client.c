@@ -25,6 +25,8 @@ typedef struct xaios_control_options {
   u64 trim_length;
   char component[XAIOS_CONTROL_LOG_COMPONENT_MAX];
   char argument[XAIOS_CONTROL_PATH_MAX];
+  char replica[XAIOS_CONTROL_PATH_MAX];
+  char replica_package_id[65];
   char storage_name[37];
   char confirmation[37];
   char mount_path[XAIOS_CONTROL_STORAGE_MOUNT_MAX];
@@ -2131,6 +2133,7 @@ static int parse_options(const char *command, xaios_control_options_t *options,
   u32 seen = 0U;
   int needs_argument = 0;
   int needs_mount_path = 0;
+  int needs_replica = 0;
   xaios_memzero(options, sizeof(*options));
   options->timeout_ms = 1000ULL;
   if (next_token(command, &index, token, sizeof(token)) != 0 ||
@@ -2271,6 +2274,10 @@ static int parse_options(const char *command, xaios_control_options_t *options,
     } else if (string_equal(token, "fsck")) {
       options->operation = XAIOS_CONTROL_OP_STORAGE_FSCK;
       needs_argument = 1;
+    } else if (string_equal(token, "repair-from-replica")) {
+      options->operation = XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA;
+      needs_argument = 1;
+      needs_replica = 1;
     } else if (string_equal(token, "resize-plan")) {
       options->operation = XAIOS_CONTROL_OP_STORAGE_FS_RESIZE_PLAN;
       needs_argument = 1;
@@ -2317,6 +2324,20 @@ static int parse_options(const char *command, xaios_control_options_t *options,
     if (string_copy(options->mount_path, sizeof(options->mount_path),
                     options->argument) != 0) {
       goto usage;
+    }
+  }
+  if (needs_replica != 0) {
+    if (next_token(command, &index, token, sizeof(token)) != 0 ||
+        token[0] == '-' ||
+        string_copy(options->replica, sizeof(options->replica), token) != 0 ||
+        next_token(command, &index, token, sizeof(token)) != 0 ||
+        parse_hex_exact(token, options->package_id,
+                        sizeof(options->package_id)) != 0 ||
+        string_copy(options->replica_package_id,
+                    sizeof(options->replica_package_id), token) != 0) {
+      *error_code = "invalid_replica_repair";
+      *error_message = "Replica repair requires target, replica, and a 64-hex package ID.";
+      return -1;
     }
   }
   options->limit = options->operation == XAIOS_CONTROL_OP_AUDIT_SHOW ? 16U
@@ -2649,6 +2670,7 @@ static int parse_options(const char *command, xaios_control_options_t *options,
                  options->operation == XAIOS_CONTROL_OP_STORAGE_MOUNT ||
                  options->operation == XAIOS_CONTROL_OP_STORAGE_UNMOUNT ||
                  options->operation == XAIOS_CONTROL_OP_STORAGE_FS_REPAIR ||
+                 options->operation == XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA ||
                  options->operation == XAIOS_CONTROL_OP_STORAGE_FS_RESIZE ||
                  options->operation == XAIOS_CONTROL_OP_STORAGE_SCRUB_START ||
                  options->operation == XAIOS_CONTROL_OP_STORAGE_SCRUB_PAUSE ||
@@ -2663,6 +2685,8 @@ static int parse_options(const char *command, xaios_control_options_t *options,
   int volume_command =
       options->operation >= XAIOS_CONTROL_OP_STORAGE_FORMAT_PLAN &&
       options->operation <= XAIOS_CONTROL_OP_STORAGE_FS_RESIZE;
+  int replica_repair =
+      options->operation == XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA;
   int model_register =
       options->operation == XAIOS_CONTROL_OP_MODEL_REGISTER;
   int scrub_command =
@@ -2725,7 +2749,8 @@ static int parse_options(const char *command, xaios_control_options_t *options,
   int partition_resize =
       options->operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_PLAN_RESIZE ||
       options->operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_RESIZE;
-  if (partition_command == 0 && volume_command == 0 && model_register == 0 &&
+  if (partition_command == 0 && volume_command == 0 && replica_repair == 0 &&
+      model_register == 0 &&
       trim_command == 0 &&
       (seen & (SEEN_STORAGE_TYPE | SEEN_STORAGE_SIZE | SEEN_STORAGE_NAME |
                SEEN_CONFIRMATION | SEEN_DRY_RUN | SEEN_CHUNK_SIZE |
@@ -2828,7 +2853,8 @@ static int parse_options(const char *command, xaios_control_options_t *options,
   int volume_confirmation =
       options->operation == XAIOS_CONTROL_OP_STORAGE_FORMAT ||
       options->operation == XAIOS_CONTROL_OP_STORAGE_FS_REPAIR ||
-      options->operation == XAIOS_CONTROL_OP_STORAGE_FS_RESIZE;
+      options->operation == XAIOS_CONTROL_OP_STORAGE_FS_RESIZE ||
+      options->operation == XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA;
   if ((partition_mutation != 0 || volume_confirmation != 0) &&
       (seen & SEEN_CONFIRMATION) == 0U) {
     *error_code = "confirmation_required";
@@ -2980,6 +3006,26 @@ static u64 build_request(const xaios_control_options_t *options,
     bytes_copy(request, &header, sizeof(header));
     bytes_copy(request + sizeof(header), &storage, sizeof(storage));
     return sizeof(header) + sizeof(storage);
+  }
+  if (options->operation == XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA) {
+    xaios_control_storage_replica_repair_request_payload_user_t repair;
+    xaios_memzero(&repair, sizeof(repair));
+    bytes_copy(repair.target, options->argument,
+               xaios_strlen(options->argument) + 1ULL);
+    bytes_copy(repair.replica, options->replica,
+               xaios_strlen(options->replica) + 1ULL);
+    bytes_copy(repair.confirmation, options->confirmation,
+               xaios_strlen(options->confirmation) + 1ULL);
+    bytes_copy(repair.package_id, options->replica_package_id,
+               xaios_strlen(options->replica_package_id) + 1ULL);
+    bytes_copy(repair.actor, options->principal,
+               xaios_strlen(options->principal) + 1ULL);
+    repair.operation_id = options->operation_id;
+    header.payload_type = XAIOS_CONTROL_PAYLOAD_STORAGE_REPLICA_REPAIR_REQUEST;
+    header.payload_length = sizeof(repair);
+    bytes_copy(request, &header, sizeof(header));
+    bytes_copy(request + sizeof(header), &repair, sizeof(repair));
+    return sizeof(header) + sizeof(repair);
   }
   if (options->operation == XAIOS_CONTROL_OP_MODEL_REGISTER) {
     xaios_control_model_register_request_payload_user_t registration;
@@ -3341,6 +3387,12 @@ int xaios_control_run_as(const char *command, u32 principal_role,
              options.operation <= XAIOS_CONTROL_OP_STORAGE_FS_RESIZE &&
              header.payload_type ==
                  XAIOS_CONTROL_PAYLOAD_STORAGE_VOLUME_REPORT) {
+    render_result = render_storage_volume_report(
+        payload, header.payload_length, json, output, output_capacity, &offset,
+        request_id);
+  } else if (options.operation ==
+                 XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA &&
+             header.payload_type == XAIOS_CONTROL_PAYLOAD_STORAGE_VOLUME_REPORT) {
     render_result = render_storage_volume_report(
         payload, header.payload_length, json, output, output_capacity, &offset,
         request_id);

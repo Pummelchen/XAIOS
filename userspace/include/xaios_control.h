@@ -87,6 +87,7 @@
 #define XAIOS_CONTROL_OP_SYSTEM_UPDATE_COMMIT 56U
 #define XAIOS_CONTROL_OP_SYSTEM_UPDATE_ABORT 57U
 #define XAIOS_CONTROL_OP_RUNTIME_SNAPSHOT 58U
+#define XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA 59U
 
 #define XAIOS_CONTROL_PAYLOAD_NONE 0U
 #define XAIOS_CONTROL_PAYLOAD_VERSION 1U
@@ -121,6 +122,7 @@
 #define XAIOS_CONTROL_PAYLOAD_SYSTEM_UPDATE_CHUNK 30U
 #define XAIOS_CONTROL_PAYLOAD_RUNTIME_SNAPSHOT_REQUEST 31U
 #define XAIOS_CONTROL_PAYLOAD_RUNTIME_SNAPSHOT 32U
+#define XAIOS_CONTROL_PAYLOAD_STORAGE_REPLICA_REPAIR_REQUEST 33U
 
 #define XAIOS_MODEL_MAINTENANCE_IDLE 0U
 #define XAIOS_MODEL_MAINTENANCE_RUNNING 1U
@@ -667,6 +669,15 @@ typedef struct xaios_control_storage_volume_request_payload_user {
   u32 reserved;
 } xaios_control_storage_volume_request_payload_user_t;
 
+typedef struct xaios_control_storage_replica_repair_request_payload_user {
+  char target[48];
+  char replica[48];
+  char confirmation[37];
+  char package_id[65];
+  char actor[XAIOS_ADMIN_PRINCIPAL_MAX];
+  u64 operation_id;
+} xaios_control_storage_replica_repair_request_payload_user_t;
+
 typedef struct xaios_control_model_register_request_payload_user {
   u64 operation_id;
   u64 logical_size;
@@ -766,6 +777,12 @@ typedef char xaios_control_storage_filesystem_record_user_must_be_216_bytes[
     sizeof(xaios_control_storage_filesystem_record_user_t) == 216U ? 1 : -1];
 typedef char xaios_control_storage_volume_request_user_must_fit[
     sizeof(xaios_control_storage_volume_request_payload_user_t) <=
+            XAIOS_CONTROL_MAX_REQUEST_BYTES -
+                sizeof(xaios_control_request_header_user_t)
+        ? 1
+        : -1];
+typedef char xaios_control_storage_replica_repair_request_user_must_fit[
+    sizeof(xaios_control_storage_replica_repair_request_payload_user_t) <=
             XAIOS_CONTROL_MAX_REQUEST_BYTES -
                 sizeof(xaios_control_request_header_user_t)
         ? 1

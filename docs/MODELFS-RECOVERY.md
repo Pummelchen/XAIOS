@@ -1,8 +1,9 @@
 # ModelFS Recovery
 
-Status: hosted and guest administrative fsck/superblock repair are implemented;
-repair requires an unmounted target. Mounted ModelFS supports persistent online
-scrub, quarantine, staging cleanup and free-extent reuse.
+Status: hosted and guest administrative fsck, superblock repair, and offline
+trusted-replica payload repair are implemented. Repair requires unmounted
+target and replica volumes. Mounted ModelFS supports persistent online scrub,
+quarantine, staging cleanup and free-extent reuse.
 
 ## Commit ordering
 
@@ -40,6 +41,27 @@ Stable status classes are:
 invalid redundant copy, flushes, and revalidates. It does not fabricate
 catalogs or model bytes.
 
+## Trusted-replica payload repair
+
+`xaiosctl storage repair-from-replica TARGET REPLICA PACKAGE_ID` repairs a
+quarantined target package from one administrator-selected ModelFS replica.
+It requires `--confirm-partition TARGET_UUID` and a nonzero
+`--operation-id`. Both partitions must be distinct and unmounted.
+
+Before the target changes, XAIOS requires the replica package to be active and
+to pass complete manifest, Ed25519 signature, and streamed SHA-256 payload
+verification. The target package must be quarantined and must match the
+replica's immutable model UUID, package ID, signer key, signature, source
+revision, logical size, chunk size, architecture ID, and target ID exactly.
+
+Repair removes only the unavailable quarantined record, registers a fresh
+staging record, copies bounded scratch-sized portions, commits each complete
+chunk, re-verifies the entire replacement, and publishes it active. Active
+payload bytes are never modified. A failure before removal leaves the target
+unchanged; a later failure can leave only absent or staging data, never a
+newly active unverified package. The target remains recoverable through a new
+replica repair attempt.
+
 ## Incomplete staging and quarantine
 
 Hosted `recover` reports incomplete staging packages and can drop them with
@@ -61,8 +83,12 @@ or be read through the kernel ModelFS namespace.
 - Scrub uses cooperative chunk-sized work units, not an autonomous background
   thread or a wall-clock bandwidth-rate controller. Reads continue between
   units; registration, cleanup, activation and trim are rejected while it runs.
-- Damaged model bytes require a trusted source package or replica. Current code
-  does not implement network replica repair.
+- Replica selection is currently an offline, administrator-specified ModelFS
+  partition. Network retrieval, replica discovery, quorum policy, and
+  automatic repair remain out of scope.
+- Production signer private-key custody, operator authorization, trust-root
+  rotation, and trusted-replica enrollment are deployment responsibilities;
+  fixture keys exercise the format contract only.
 - Old catalog snapshots are recovery metadata and are not compacted in v1.
 
 Run recovery against an unmounted copy and preserve the original image before

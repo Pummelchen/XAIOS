@@ -117,6 +117,41 @@ static void dynamic_package_identity(
   xaios_engine_sha256_final(&context, identity);
 }
 
+static void replica_package_identity(
+    const xaios_model_volume_package_t *package, const uint8_t *data,
+    uint8_t identity[32]) {
+  xaios_engine_sha256_context_t context;
+  xaios_engine_sha256_init(&context);
+  static const uint8_t domain[] = "xaios.model.volume.package.v1\0";
+  xaios_engine_sha256_update(&context, domain, sizeof(domain) - 1U);
+  xaios_engine_sha256_update(&context, package->model_uuid, 16U);
+  xaios_engine_sha256_update(&context, package->source_revision, 32U);
+  uint8_t fixed[32];
+  memset(fixed, 0, sizeof(fixed));
+  memcpy(fixed, package->architecture_id, strlen(package->architecture_id));
+  xaios_engine_sha256_update(&context, fixed, sizeof(fixed));
+  memset(fixed, 0, sizeof(fixed));
+  memcpy(fixed, package->target_id, strlen(package->target_id));
+  xaios_engine_sha256_update(&context, fixed, sizeof(fixed));
+  uint8_t encoded[20];
+  test_store_le64(encoded, package->logical_size);
+  test_store_le64(encoded + 8U, package->chunk_size);
+  xaios_engine_sha256_update(&context, encoded, 16U);
+  for (uint64_t offset = 0U; offset < package->logical_size;) {
+    uint64_t length = package->logical_size - offset;
+    if (length > package->chunk_size) length = package->chunk_size;
+    uint8_t checksum[32];
+    hash_bytes(data + offset, (size_t)length, checksum);
+    test_store_le64(encoded, offset);
+    test_store_le64(encoded + 8U, length);
+    test_store_le32(encoded + 16U, 0U);
+    xaios_engine_sha256_update(&context, encoded, sizeof(encoded));
+    xaios_engine_sha256_update(&context, checksum, sizeof(checksum));
+    offset += length;
+  }
+  xaios_engine_sha256_final(&context, identity);
+}
+
 typedef struct prefetch_capture {
   uint64_t calls;
   uint64_t bytes;
@@ -524,6 +559,194 @@ static void test_format_writer(void) {
   fclose(file);
 }
 
+static void write_active_package(
+    xaios_model_volume_t *volume, const xaios_model_volume_package_t *template,
+    const uint8_t *data, xaios_model_volume_writer_t *writer,
+    uint8_t *scratch, size_t scratch_size,
+    xaios_model_volume_package_t *active) {
+  xaios_model_volume_package_t staging;
+  uint64_t completed = 0U;
+  assert(xaios_model_volume_register_staging(volume, template, writer, scratch,
+                                             scratch_size, &staging) ==
+         XAIOS_ENGINE_OK);
+  assert(xaios_model_volume_pwrite_staging(volume, &staging, writer, 0U, data,
+                                           (size_t)staging.logical_size) ==
+         XAIOS_ENGINE_OK);
+  assert(xaios_model_volume_commit_staging_range(
+             volume, &staging, writer, 0U, staging.logical_size, scratch,
+             scratch_size, &completed) == XAIOS_ENGINE_OK);
+  assert(completed == staging.chunk_count);
+  assert(xaios_model_volume_activate_staging(volume, &staging, writer, scratch,
+                                             scratch_size) == XAIOS_ENGINE_OK);
+  assert(xaios_model_volume_read_package(volume, 0U, active) ==
+         XAIOS_ENGINE_OK);
+  assert(active->state == XAIOS_MODEL_VOLUME_PACKAGE_ACTIVE);
+}
+
+static void test_replica_repair(void) {
+  const uint64_t volume_size = UINT64_C(64) << 20U;
+  const size_t data_size = (size_t)UINT64_C(3145825);
+  static uint8_t scratch[64U * 1024U];
+  uint8_t *data = (uint8_t *)malloc(data_size);
+  uint8_t *recovered = (uint8_t *)malloc(data_size);
+  assert(data != NULL && recovered != NULL);
+  for (size_t index = 0U; index < data_size; ++index) {
+    data[index] = (uint8_t)((index * 29U + 17U) & 0xffU);
+  }
+
+  FILE *source_file = tmpfile();
+  FILE *target_file = tmpfile();
+  assert(source_file != NULL && target_file != NULL);
+  assert(ftruncate(fileno(source_file), (off_t)volume_size) == 0);
+  assert(ftruncate(fileno(target_file), (off_t)volume_size) == 0);
+  file_writer_t source_file_writer = {source_file, 0};
+  file_writer_t target_file_writer = {target_file, 0};
+  xaios_model_volume_writer_t source_writer = {
+      &source_file_writer, write_at, flush_writer};
+  xaios_model_volume_writer_t target_writer = {
+      &target_file_writer, write_at, flush_writer};
+  const uint8_t source_uuid[16] = {
+      0x11U, 0x22U, 0x33U, 0x44U, 0x55U, 0x66U, 0x77U, 0x88U,
+      0x99U, 0xaaU, 0xbbU, 0xccU, 0xddU, 0xeeU, 0xf0U, 0x01U};
+  const uint8_t target_uuid[16] = {
+      0x12U, 0x23U, 0x34U, 0x45U, 0x56U, 0x67U, 0x78U, 0x89U,
+      0x9aU, 0xabU, 0xbcU, 0xcdU, 0xdeU, 0xefU, 0xf1U, 0x02U};
+  assert(xaios_model_volume_format(&source_writer, volume_size,
+                                   UINT64_C(2097152), source_uuid, scratch,
+                                   sizeof(scratch)) == XAIOS_ENGINE_OK);
+  assert(xaios_model_volume_format(&target_writer, volume_size,
+                                   UINT64_C(2097152), target_uuid, scratch,
+                                   sizeof(scratch)) == XAIOS_ENGINE_OK);
+  file_reader_t source_reader_context = {source_file};
+  file_reader_t target_reader_context = {target_file};
+  xaios_model_volume_reader_t source_reader = {
+      &source_reader_context, read_at, volume_size};
+  xaios_model_volume_reader_t target_reader = {
+      &target_reader_context, read_at, volume_size};
+  xaios_model_volume_t source;
+  xaios_model_volume_t target;
+  assert(xaios_model_volume_open(&source_reader, verify_signature, NULL,
+                                 scratch, sizeof(scratch), &source) ==
+         XAIOS_ENGINE_OK);
+  assert(xaios_model_volume_open(&target_reader, verify_signature, NULL,
+                                 scratch, sizeof(scratch), &target) ==
+         XAIOS_ENGINE_OK);
+
+  xaios_model_volume_package_t package_template;
+  memset(&package_template, 0, sizeof(package_template));
+  for (uint32_t index = 0U; index < 16U; ++index) {
+    package_template.model_uuid[index] = (uint8_t)(0x41U + index);
+  }
+  for (uint32_t index = 0U; index < 32U; ++index) {
+    package_template.source_revision[index] = (uint8_t)(0x70U + index);
+  }
+  package_template.logical_size = data_size;
+  package_template.chunk_size = source.chunk_size;
+  memcpy(package_template.architecture_id, "replica-test", 13U);
+  memcpy(package_template.target_id, "portable", 9U);
+  replica_package_identity(&package_template, data, package_template.package_id);
+  const uint8_t signing_seed[32] = {
+      31U, 30U, 29U, 28U, 27U, 26U, 25U, 24U,
+      23U, 22U, 21U, 20U, 19U, 18U, 17U, 16U,
+      15U, 14U, 13U, 12U, 11U, 10U, 9U, 8U,
+      7U, 6U, 5U, 4U, 3U, 2U, 1U, 0U};
+  xaios_ed25519_public_key(package_template.signer_public_key, signing_seed);
+  assert(xaios_ed25519_sign(package_template.signature,
+                            package_template.package_id, 32U,
+                            package_template.signer_public_key,
+                            signing_seed) == 0);
+  xaios_model_volume_package_t source_package;
+  xaios_model_volume_package_t target_package;
+  write_active_package(&source, &package_template, data, &source_writer,
+                       scratch, sizeof(scratch), &source_package);
+  write_active_package(&target, &package_template, data, &target_writer,
+                       scratch, sizeof(scratch), &target_package);
+
+  xaios_model_volume_chunk_t target_chunk;
+  assert(xaios_model_volume_read_chunk(&target, target_package.chunk_start,
+                                       &target_chunk) == XAIOS_ENGINE_OK);
+  uint8_t damaged = 0U;
+  assert(write_at(&target_file_writer, target_chunk.physical_offset + 4096U,
+                  &damaged, sizeof(damaged)) == XAIOS_ENGINE_OK);
+  assert(flush_writer(&target_file_writer) == XAIOS_ENGINE_OK);
+  uint64_t bad_offset = UINT64_MAX;
+  assert(xaios_model_volume_verify_package(&target, &target_package, scratch,
+                                           sizeof(scratch), &bad_offset) ==
+         XAIOS_ENGINE_ERR_CHECKSUM);
+  assert(xaios_model_volume_quarantine_package(
+             &target, &target_package, &target_writer, scratch,
+             sizeof(scratch)) == XAIOS_ENGINE_OK);
+  assert(xaios_model_volume_read_package(&target, 0U, &target_package) ==
+         XAIOS_ENGINE_OK);
+  assert(target_package.state == XAIOS_MODEL_VOLUME_PACKAGE_QUARANTINED);
+
+  const uint64_t quarantined_generation = target.generation;
+  xaios_model_volume_package_t mismatch = source_package;
+  mismatch.source_revision[0] ^= 0xffU;
+  assert(xaios_model_volume_repair_from_replica(
+             &target, &target_package, &source, &mismatch, &target_writer,
+             scratch, sizeof(scratch), NULL) == XAIOS_ENGINE_ERR_INVALID);
+  assert(target.generation == quarantined_generation);
+
+  xaios_model_volume_chunk_t source_chunk;
+  assert(xaios_model_volume_read_chunk(&source, source_package.chunk_start,
+                                       &source_chunk) == XAIOS_ENGINE_OK);
+  uint8_t original = data[8192U];
+  uint8_t corrupt = (uint8_t)(original ^ 0xffU);
+  assert(write_at(&source_file_writer, source_chunk.physical_offset + 8192U,
+                  &corrupt, sizeof(corrupt)) == XAIOS_ENGINE_OK);
+  assert(flush_writer(&source_file_writer) == XAIOS_ENGINE_OK);
+  assert(xaios_model_volume_repair_from_replica(
+             &target, &target_package, &source, &source_package,
+             &target_writer, scratch, sizeof(scratch), NULL) ==
+         XAIOS_ENGINE_ERR_CHECKSUM);
+  assert(target.generation == quarantined_generation);
+  assert(write_at(&source_file_writer, source_chunk.physical_offset + 8192U,
+                  &original, sizeof(original)) == XAIOS_ENGINE_OK);
+  assert(flush_writer(&source_file_writer) == XAIOS_ENGINE_OK);
+
+  target_file_writer.fail_superblock = 1;
+  assert(xaios_model_volume_repair_from_replica(
+             &target, &target_package, &source, &source_package,
+             &target_writer, scratch, sizeof(scratch), NULL) ==
+         XAIOS_ENGINE_ERR_IO);
+  xaios_model_volume_t reopened_target;
+  assert(xaios_model_volume_open(&target_reader, verify_signature, NULL,
+                                 scratch, sizeof(scratch), &reopened_target) ==
+         XAIOS_ENGINE_OK);
+  assert(reopened_target.generation == quarantined_generation);
+  assert(xaios_model_volume_read_package(&reopened_target, 0U,
+                                         &target_package) == XAIOS_ENGINE_OK);
+  assert(target_package.state == XAIOS_MODEL_VOLUME_PACKAGE_QUARANTINED);
+  target = reopened_target;
+  target_file_writer.fail_superblock = 0;
+
+  uint64_t copied = 0U;
+  assert(xaios_model_volume_repair_from_replica(
+             &target, &target_package, &source, &source_package,
+             &target_writer, scratch, sizeof(scratch), &copied) ==
+         XAIOS_ENGINE_OK);
+  assert(copied == data_size);
+  assert(xaios_model_volume_read_package(&target, 0U, &target_package) ==
+         XAIOS_ENGINE_OK);
+  assert(target_package.state == XAIOS_MODEL_VOLUME_PACKAGE_ACTIVE);
+  assert(xaios_model_volume_verify_package(&target, &target_package, scratch,
+                                           sizeof(scratch), &bad_offset) ==
+         XAIOS_ENGINE_OK);
+  assert(xaios_model_volume_pread(&target, &target_package, 0U, recovered,
+                                  data_size) == XAIOS_ENGINE_OK);
+  assert(memcmp(data, recovered, data_size) == 0);
+  assert(xaios_model_volume_repair_from_replica(
+             &target, &target_package, &source, &source_package,
+             &target_writer, scratch, sizeof(scratch), NULL) ==
+         XAIOS_ENGINE_ERR_INVALID);
+
+  fclose(source_file);
+  fclose(target_file);
+  free(recovered);
+  free(data);
+}
+
 int main(int argc, char **argv) {
   assert(argc == 3);
   FILE *file = fopen(argv[1], "r+b");
@@ -635,6 +858,7 @@ int main(int argc, char **argv) {
   test_staging_writer(file, &volume, &package, scratch, sizeof(scratch));
   fclose(file);
   test_format_writer();
+  test_replica_repair();
   test_sparse_large_model(argv[2]);
   puts("model-volume: format, signed stream, model-file, and >100 GiB sparse tests passed");
   return 0;
