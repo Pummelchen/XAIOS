@@ -10,22 +10,10 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
   python3 -m venv "$VENV_DIR"
 fi
 
-"$VENV_DIR/bin/python" - "$ROOT_DIR/requirements-dev.txt" <<'PY'
-import importlib.util
-import subprocess
-import sys
-
-if importlib.util.find_spec("paramiko") is None:
-    subprocess.check_call([
-        sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "-q",
-        "-r",
-        sys.argv[1],
-    ])
-PY
+"$VENV_DIR/bin/python" -m pip install \
+  --disable-pip-version-check \
+  -q \
+  -r "$ROOT_DIR/requirements-dev.txt"
 
 exec "$VENV_DIR/bin/python" "$ROOT_DIR/scripts/xaios-ssh-bridge.py" \
   --host "$HOST" \
