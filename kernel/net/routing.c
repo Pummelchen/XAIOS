@@ -1,6 +1,7 @@
 #include <xaios/assert.h>
 #include <xaios/ipv4.h>
 #include <xaios/klog.h>
+#include <xaios/network_config.h>
 #include <xaios/routing.h>
 
 static routing_entry_t g_routing_table[ROUTING_TABLE_SIZE];
@@ -13,11 +14,11 @@ void routing_init(void) {
     g_routing_table[i].gateway = 0;
   }
 
-  uint32_t local_net = 0x0a000200U;   /* 10.0.2.0 network byte order */
-  uint32_t local_mask = 0xffffff00U;  /* 255.255.255.0 */
+  uint32_t local_mask = network_config_netmask();
+  uint32_t local_net = network_config_local_ipv4() & local_mask;
   routing_add(local_net, local_mask, 0);
 
-  uint32_t gateway = XAIOS_IPV4_GATEWAY;
+  uint32_t gateway = network_config_gateway_ipv4();
   routing_add(0x00000000U, 0x00000000U, gateway);
 
   klog("routing: initialized (local=%08x/24 gw=%08x)\n",

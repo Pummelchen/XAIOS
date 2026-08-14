@@ -1,6 +1,7 @@
 #include <xaios/assert.h>
 #include <xaios/admin_control.h>
 #include <xaios/agent_protocol.h>
+#include <xaios/ahci.h>
 #include <xaios/app_store.h>
 #include <xaios/ai_cell.h>
 #include <xaios/arch_cpu.h>
@@ -14,6 +15,7 @@
 #include <xaios/child_channel.h>
 #include <xaios/dns.h>
 #include <xaios/elf_loader.h>
+#include <xaios/entropy.h>
 #include <xaios/exception.h>
 #include <xaios/gic.h>
 #include <xaios/icmp.h>
@@ -48,6 +50,8 @@
 #include <xaios/service.h>
 #include <xaios/smp.h>
 #include <xaios/network_stack.h>
+#include <xaios/net_device.h>
+#include <xaios/network_config.h>
 #include <xaios/numa.h>
 #include <xaios/nvme.h>
 #include <xaios/pci.h>
@@ -62,7 +66,6 @@
 #include <xaios/update.h>
 #include <xaios/user.h>
 #include <xaios/virtio_blk.h>
-#include <xaios/virtio_net.h>
 #include <xaios/virtio_rng.h>
 #include <xaios/vfs_mutable.h>
 #include <xaios/vfs_model.h>
@@ -164,6 +167,7 @@ static void map_mmio_range(uint64_t start, uint64_t size) {
 }
 
 void kmain(const xaios_boot_info_t *boot) {
+  uint32_t persistent_network_ready = 0U;
   klog_init(boot);
   boot_ui_begin();
   boot_ui_update(25U, "hardware handoff", "CPU and interrupts", 5U);
@@ -316,16 +320,22 @@ void kmain(const xaios_boot_info_t *boot) {
   klog("VMM translation test passed\n");
   gic_init_platform();
   gic_self_test();
-  boot_ui_update(48U, "platform devices", "NVMe discovery", 3U);
+  boot_ui_update(48U, "platform devices", "storage discovery", 3U);
 
   xaios_nvme_self_test_result_t nvme_result;
   xaios_status_t nvme_status = nvme_self_test(&nvme_result);
   if (nvme_status != XAIOS_OK && nvme_status != XAIOS_ERR_NOT_FOUND) {
     klog("nvme: self-test failed status=%d\n", (int)nvme_status);
   }
+  xaios_status_t ahci_status = ahci_init();
+  if (ahci_status != XAIOS_OK && ahci_status != XAIOS_ERR_NOT_FOUND) {
+    klog("ahci: initialization failed status=%d\n", (int)ahci_status);
+  }
 
-  boot_ui_update(49U, "NVMe discovery", "entropy and boot storage", 3U);
+  boot_ui_update(49U, "storage discovery", "entropy and boot storage", 3U);
   virtio_rng_self_test();
+  entropy_init(boot);
+  entropy_self_test();
   if (boot->boot_image_size != 0U) {
     kassert(virtio_block_set_boot_memory(
                 (void *)(uintptr_t)boot->boot_image_base,
@@ -346,10 +356,17 @@ void kmain(const xaios_boot_info_t *boot) {
   boot_ui_update(52U, "boot storage", "persistent filesystem", 3U);
   /* Prefer a standards-enumerated NVMe namespace when one has completed its
    * controller canary; QEMU retains its explicit VirtIO compatibility slot. */
-  xaios_status_t persistent_status =
-      nvme_status == XAIOS_OK ? mutable_fs_mount_device("/dev/nvme0n1")
-                              : mutable_fs_mount_persistent(1);
-  if (persistent_status == XAIOS_ERR_NOT_FOUND && nvme_status != XAIOS_OK) {
+  xaios_status_t persistent_status = nvme_status == XAIOS_OK
+                                         ? mutable_fs_mount_device("/dev/nvme0n1")
+                                         : XAIOS_ERR_NOT_FOUND;
+  if (persistent_status == XAIOS_ERR_NOT_FOUND && ahci_status == XAIOS_OK) {
+    persistent_status = mutable_fs_mount_device("/dev/ahci0p0");
+    if (persistent_status == XAIOS_OK) {
+      klog("mutable-fs: using registered AHCI persistent data disk\n");
+    }
+  }
+  if (persistent_status == XAIOS_ERR_NOT_FOUND && nvme_status != XAIOS_OK &&
+      ahci_status != XAIOS_OK) {
     /* The deterministic QEMU data disk is registered at vblk0. This fallback
      * never bypasses the block-device contract and is not a hardware policy. */
     persistent_status = mutable_fs_mount_device("/dev/vblk0");
@@ -415,7 +432,8 @@ void kmain(const xaios_boot_info_t *boot) {
   }
   app_store_init();
   boot_ui_update(60U, "devices and storage", "kernel services", 2U);
-  virtio_net_self_test();
+  network_config_reset_defaults();
+  network_device_self_test();
   arp_self_test();
   ipv4_self_test();
   icmp_self_test();
@@ -515,16 +533,25 @@ void kmain(const xaios_boot_info_t *boot) {
   user_process_reclaim_address_space(&manager_process);
 
   /* Initialize persistent network for real TX/RX */
-  if (virtio_net_init_persistent() == XAIOS_OK) {
+  if (network_device_init_persistent() == XAIOS_OK) {
+    if (network_device_kind() == XAIOS_NETWORK_DEVICE_E1000E &&
+        network_config_dhcp(UINT64_C(6000000000)) != XAIOS_OK) {
+      klog("kernel: DHCP configuration failed for e1000e\n");
+      boot_ui_error("network DHCP", XAIOS_ERR_IO);
+      goto persistent_network_done;
+    }
     network_init_persistent();
     dns_init();
-    dns_configure(UINT32_C(0x08080808));
-    klog("kernel: persistent network stack enabled\n");
+    dns_configure(network_config_dns_server());
+    klog("kernel: persistent network stack enabled device=%s\n",
+         network_device_name());
+    persistent_network_ready = 1U;
     boot_ui_update(80U, "network stack", "scheduler", 2U);
   } else {
     klog("kernel: persistent network init skipped\n");
     boot_ui_error("network-stack", XAIOS_ERR_IO);
   }
+persistent_network_done:
 
   /* Initialize preemptive scheduler infrastructure */
   scheduler_lock();
@@ -667,7 +694,7 @@ void kmain(const xaios_boot_info_t *boot) {
   klog("C99-TERMINATION-PROBES-PASS\n");
 #endif
 
-  boot_ui_update(90U, "runtime services", "IPv4 internet check", 2U);
+  boot_ui_update(90U, "runtime services", "IPv4 network readiness", 2U);
 
   telemetry_emit_boot_summary();
 
@@ -676,6 +703,14 @@ void kmain(const xaios_boot_info_t *boot) {
   }
 
   operations_mark_boot_ready();
+
+  if (persistent_network_ready == 0U) {
+    klog("kernel: SSH service withheld; IPv4 network is not ready\n");
+    boot_ui_error("network readiness", XAIOS_ERR_IO);
+    for (;;) {
+      xaios_cpu_wait();
+    }
+  }
 
   klog("kernel: starting persistent /bin/sshd service\n");
   int sshd_exit =

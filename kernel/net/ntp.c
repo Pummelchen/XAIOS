@@ -3,7 +3,8 @@
 #include <xaios/klog.h>
 #include <xaios/ntp.h>
 #include <xaios/timer.h>
-#include <xaios/virtio_net.h>
+#include <xaios/net_device.h>
+#include <xaios/network_config.h>
 
 #define NTP_PORT UINT16_C(123)
 #define NTP_LOCAL_PORT UINT16_C(49155)
@@ -73,7 +74,7 @@ static xaios_status_t ntp_to_unix(uint64_t stamp, uint64_t *epoch_ns) {
 }
 
 static xaios_status_t transmit(void) {
-  xaios_status_t status = virtio_net_tx(g_frame, sizeof(g_frame));
+  xaios_status_t status = network_device_tx(g_frame, sizeof(g_frame));
   if (status == XAIOS_OK) {
     g_sent_ns = timer_now_ns();
     ++g_status.attempts;
@@ -96,18 +97,19 @@ void ntp_init(void) {
 
 xaios_status_t ntp_sync(uint32_t server_ip) {
   uint8_t local_mac[6];
-  uint8_t gateway_mac[6] = {0x52U, 0x55U, 0x0aU, 0x00U, 0x02U, 0x02U};
+  uint8_t gateway_mac[6];
   if (g_status.state == XAIOS_NTP_PENDING) return XAIOS_ERR_BUSY;
   if (server_ip == 0U) server_ip = NTP_DEFAULT_SERVER;
   bytes_zero(g_frame, sizeof(g_frame));
-  if (virtio_net_get_mac(local_mac) != XAIOS_OK) return XAIOS_ERR_NOT_FOUND;
+  if (network_device_get_mac(local_mac) != XAIOS_OK) return XAIOS_ERR_NOT_FOUND;
+  network_config_gateway_mac(gateway_mac);
   for (uint32_t i = 0U; i < 6U; ++i) {
     g_frame[i] = gateway_mac[i];
     g_frame[6U + i] = local_mac[i];
   }
   put_be16(g_frame + 12U, UINT16_C(0x0800));
   ipv4_build_header(g_frame + 14U, 20U + 8U + NTP_PACKET_BYTES,
-                    XAIOS_IPV4_PROTO_UDP, XAIOS_IPV4_GUEST_IP, server_ip);
+                    XAIOS_IPV4_PROTO_UDP, network_config_local_ipv4(), server_ip);
   put_be16(g_frame + 34U, NTP_LOCAL_PORT);
   put_be16(g_frame + 36U, NTP_PORT);
   put_be16(g_frame + 38U, 8U + NTP_PACKET_BYTES);

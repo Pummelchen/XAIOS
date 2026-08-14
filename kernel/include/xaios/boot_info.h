@@ -4,7 +4,8 @@
 #include <stdint.h>
 
 #define XAIOS_BOOT_INFO_MAGIC UINT64_C(0x4f534149424f4f54)
-#define XAIOS_BOOT_INFO_VERSION UINT32_C(7)
+#define XAIOS_BOOT_INFO_VERSION UINT32_C(8)
+#define XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES UINT32_C(64)
 
 #define XAIOS_BOOT_PLATFORM_SMMUV3 UINT32_C(1)
 
@@ -50,6 +51,11 @@ typedef struct xaios_boot_info {
   uint64_t pci_ecam_base;
   uint32_t pci_ecam_start_bus;
   uint32_t pci_ecam_end_bus;
+  /* A loader-provided seed from EFI_RNG_PROTOCOL. It is absent when the
+   * firmware does not offer a cryptographic random source. */
+  uint32_t entropy_seed_size;
+  uint32_t entropy_reserved;
+  uint8_t entropy_seed[XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES];
 } xaios_boot_info_t;
 
 #endif

@@ -47,6 +47,7 @@ typedef struct efi_simple_file_system_protocol efi_simple_file_system_protocol_t
 typedef struct efi_file_protocol efi_file_protocol_t;
 typedef struct efi_block_io_protocol efi_block_io_protocol_t;
 typedef struct efi_block_io_media efi_block_io_media_t;
+typedef struct efi_rng_protocol efi_rng_protocol_t;
 typedef struct efi_system_table efi_system_table_t;
 typedef struct efi_configuration_table efi_configuration_table_t;
 
@@ -191,6 +192,23 @@ struct efi_block_io_protocol {
                                      uint64_t buffer_size, const void *buffer);
   efi_status_t(EFIAPI *flush_blocks)(efi_block_io_protocol_t *self);
 };
+
+typedef efi_status_t(EFIAPI *efi_rng_get_info_t)(
+    efi_rng_protocol_t *self, uint64_t *algorithm_list_size,
+    efi_guid_t *algorithm_list);
+typedef efi_status_t(EFIAPI *efi_rng_get_rng_t)(efi_rng_protocol_t *self,
+                                                 efi_guid_t *algorithm,
+                                                 uint64_t rng_value_length,
+                                                 uint8_t *rng_value);
+
+struct efi_rng_protocol {
+  efi_rng_get_info_t get_info;
+  efi_rng_get_rng_t get_rng;
+};
+
+typedef efi_status_t(EFIAPI *efi_locate_protocol_t)(efi_guid_t *protocol,
+                                                     void *registration,
+                                                     void **interface);
 
 struct efi_system_table {
   efi_table_header_t hdr;

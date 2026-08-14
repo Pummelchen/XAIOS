@@ -1,6 +1,7 @@
 #include <xaios/arp.h>
 #include <xaios/assert.h>
 #include <xaios/dns.h>
+#include <xaios/entropy.h>
 #include <xaios/icmp.h>
 #include <xaios/icmpv6.h>
 #include <xaios/ip_addr.h>
@@ -15,8 +16,8 @@
 #include <xaios/routing.h>
 #include <xaios/socket_buffer.h>
 #include <xaios/timer.h>
-#include <xaios/virtio_net.h>
-#include <xaios/virtio_rng.h>
+#include <xaios/net_device.h>
+#include <xaios/network_config.h>
 
 /* Janeway — “Break off your pursuit or we'll open fire.” */
 
@@ -844,7 +845,7 @@ static void write_be32(uint8_t *dst, uint32_t value) {
 
 static uint32_t tcp_generate_isn(uint32_t flow_id) {
   uint32_t sequence = 0;
-  if (virtio_rng_read(&sequence, sizeof(sequence)) == XAIOS_OK) {
+  if (entropy_read(&sequence, sizeof(sequence)) == XAIOS_OK) {
     return sequence;
   }
   return (uint32_t)(timer_now_ns() ^ ((uint64_t)flow_id << 16U));
@@ -1668,8 +1669,7 @@ xaios_status_t network_stack_tcp_open(const xaios_ip_addr_t *remote_addr,
                      ((uint32_t)remote_addr->addr[1] << 8U) |
                      ((uint32_t)remote_addr->addr[2] << 16U) |
                      ((uint32_t)remote_addr->addr[3] << 24U);
-    local_address = UINT32_C(10) | (UINT32_C(2) << 16U) |
-                    (UINT32_C(15) << 24U);
+    local_address = network_config_local_ipv4();
     if (find_flow_by_ports(local_port, remote_port, remote_address) != 0)
       goto busy;
   } else if (find_flow_by_ports_v6(local_port, remote_port, remote_addr) != 0) {
@@ -1704,7 +1704,7 @@ xaios_status_t network_stack_tcp_open(const xaios_ip_addr_t *remote_addr,
   flow->local_address = local_address;
   flow->remote_addr = *remote_addr;
   if (remote_addr->family == XAIOS_IP_FAMILY_V4) {
-    flow->local_addr = xaios_ip_addr_from_ipv4(XAIOS_IPV4_GUEST_IP);
+    flow->local_addr = xaios_ip_addr_from_ipv4(network_config_local_ipv4());
   } else if (remote_addr->addr[0] == 0xfeU &&
              (remote_addr->addr[1] & 0xc0U) == 0x80U) {
     flow->local_addr = g_link_local_v6;
@@ -1743,7 +1743,7 @@ xaios_status_t network_stack_tcp_open(const xaios_ip_addr_t *remote_addr,
     if (ndp_build_neighbor_solicitation(
             solicitation, &solicitation_length, g_local_mac,
             &flow->local_addr, remote_addr) != XAIOS_OK ||
-        virtio_net_tx(solicitation, solicitation_length) != XAIOS_OK) {
+        network_device_tx(solicitation, solicitation_length) != XAIOS_OK) {
       if (g_half_open_count > 0U) --g_half_open_count;
       release_tcp_flow(flow);
       status = XAIOS_ERR_IO;
@@ -2119,7 +2119,7 @@ static xaios_status_t tcp_build_and_send_segment(
   uint16_t cksum = ipv4_pseudo_checksum(src_ip, dst_ip, 6, tcp_seg_len,
                                            tcp, (uint32_t)tcp_seg_len);
   write_be16(tcp + 16, cksum);
-  return virtio_net_tx(frame, frame_len);
+  return network_device_tx(frame, frame_len);
 }
 
 static int tcp_resolve_mac(uint32_t dest_ip_net_order, uint8_t out_mac[6],
@@ -2135,8 +2135,8 @@ static int tcp_resolve_mac(uint32_t dest_ip_net_order, uint8_t out_mac[6],
   uint8_t arp_frame[42];
   uint64_t arp_len = 0;
   if (arp_build_request(arp_frame, &arp_len, local_mac,
-                         XAIOS_IPV4_GUEST_IP, next_hop) == XAIOS_OK) {
-    virtio_net_tx(arp_frame, arp_len);
+                         network_config_local_ipv4(), next_hop) == XAIOS_OK) {
+    network_device_tx(arp_frame, arp_len);
   }
   return 0;
 }
@@ -2203,7 +2203,7 @@ static xaios_status_t tcp_build_and_send_segment_v6(
   uint16_t cksum = ipv6_pseudo_checksum(src_ip, dst_ip, 6, tcp_total,
                                            tcp, (uint32_t)tcp_total);
   write_be16(tcp + 16, cksum);
-  return virtio_net_tx(frame, frame_len);
+  return network_device_tx(frame, frame_len);
 }
 
 static xaios_status_t tcp_send_flow_segment(network_tcp_flow_t *flow,
@@ -2222,7 +2222,7 @@ static xaios_status_t tcp_send_flow_segment(network_tcp_flow_t *flow,
                             (((destination >> 16U) & 0xFFU) << 8U) |
                             ((destination >> 24U) & 0xFFU);
   return tcp_build_and_send_segment(
-      flow, g_local_mac, flow->remote_mac, XAIOS_IPV4_GUEST_IP, destination_be,
+      flow, g_local_mac, flow->remote_mac, network_config_local_ipv4(), destination_be,
       flow->local_port, flow->remote_port, seq, flow->expected_seq, flags,
       flow->window_size, payload, payload_len);
 }
@@ -2542,7 +2542,7 @@ xaios_status_t network_stack_udp_send(uint32_t flow_id, const uint8_t *data,
             NETWORK_IP_PROTO_UDP, udp_len, udp, udp_len);
         write_be16(udp + 6U, checksum == 0U ? UINT16_MAX : checksum);
         *bytes_written = len;
-        return virtio_net_tx(frame, frame_len);
+        return network_device_tx(frame, frame_len);
       }
 
       /* Build Ethernet + IPv4 + UDP frame. */
@@ -2571,7 +2571,7 @@ xaios_status_t network_stack_udp_send(uint32_t flow_id, const uint8_t *data,
       write_be16(frame + 12, 0x0800U);
       /* IPv4 */
       ipv4_build_header(frame + 14, ip_total, 17,
-                         XAIOS_IPV4_GUEST_IP, dst_ip_be);
+                         network_config_local_ipv4(), dst_ip_be);
       /* UDP header */
       uint8_t *udp = frame + 34U;
       write_be16(udp, g_udp_flows[i].local_port);
@@ -2583,11 +2583,11 @@ xaios_status_t network_stack_udp_send(uint32_t flow_id, const uint8_t *data,
         frame[42U + j] = data[j];
       }
       uint16_t checksum = ipv4_pseudo_checksum(
-          XAIOS_IPV4_GUEST_IP, dst_ip_be, NETWORK_IP_PROTO_UDP, udp_len,
+          network_config_local_ipv4(), dst_ip_be, NETWORK_IP_PROTO_UDP, udp_len,
           udp, udp_len);
       write_be16(udp + 6U, checksum == 0U ? UINT16_MAX : checksum);
       *bytes_written = len;
-      return virtio_net_tx(frame, frame_len);
+      return network_device_tx(frame, frame_len);
     }
   }
   return XAIOS_ERR_NOT_FOUND;
@@ -4472,7 +4472,7 @@ void network_init_persistent(void) {
   if (g_persistent_initialized != 0) {
     return;
   }
-  if (virtio_net_get_mac(g_local_mac) == XAIOS_OK) {
+  if (network_device_get_mac(g_local_mac) == XAIOS_OK) {
     klog("network: local mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
          g_local_mac[0], g_local_mac[1], g_local_mac[2],
          g_local_mac[3], g_local_mac[4], g_local_mac[5]);
@@ -4528,7 +4528,7 @@ void network_init_persistent(void) {
   klog("network: persistent mode initialized (dual-stack)\n");
 }
 
-uint32_t network_stack_local_ipv4(void) { return XAIOS_IPV4_GUEST_IP; }
+uint32_t network_stack_local_ipv4(void) { return network_config_local_ipv4(); }
 
 xaios_status_t network_stack_local_mac(uint8_t mac[6]) {
   if (mac == 0 || g_persistent_initialized == 0U) return XAIOS_ERR_NOT_FOUND;
@@ -4538,10 +4538,11 @@ xaios_status_t network_stack_local_mac(uint8_t mac[6]) {
 
 xaios_status_t network_stack_ping_start(uint32_t target_ip) {
   uint8_t frame[50];
-  uint8_t gateway_mac[6] = {0x52U, 0x55U, 0x0aU, 0x00U, 0x02U, 0x02U};
+  uint8_t gateway_mac[6];
   if (g_persistent_initialized == 0U || target_ip == 0U)
     return XAIOS_ERR_INVALID;
   if (g_ping.state == XAIOS_NETWORK_PING_PENDING) return XAIOS_ERR_BUSY;
+  network_config_gateway_mac(gateway_mac);
   for (uint32_t i = 0U; i < sizeof(frame); ++i) frame[i] = 0U;
   for (uint32_t i = 0U; i < 6U; ++i) {
     frame[i] = gateway_mac[i];
@@ -4549,7 +4550,7 @@ xaios_status_t network_stack_ping_start(uint32_t target_ip) {
   }
   write_be16(frame + 12U, NETWORK_ETHERTYPE_IPV4);
   ipv4_build_header(frame + 14U, 36U, XAIOS_IPV4_PROTO_ICMP,
-                    XAIOS_IPV4_GUEST_IP, target_ip);
+                    network_config_local_ipv4(), target_ip);
   uint8_t *icmp = frame + 34U;
   icmp[0] = XAIOS_ICMP_ECHO_REQUEST;
   icmp[1] = 0U;
@@ -4559,7 +4560,7 @@ xaios_status_t network_stack_ping_start(uint32_t target_ip) {
   icmp[8] = 'X'; icmp[9] = 'A'; icmp[10] = 'I'; icmp[11] = 'O';
   icmp[12] = 'S'; icmp[13] = 'P'; icmp[14] = 'N'; icmp[15] = 'G';
   write_be16(icmp + 2U, ipv4_checksum(icmp, 16U));
-  xaios_status_t status = virtio_net_tx(frame, sizeof(frame));
+  xaios_status_t status = network_device_tx(frame, sizeof(frame));
   g_ping.state = status == XAIOS_OK ? XAIOS_NETWORK_PING_PENDING
                                      : XAIOS_NETWORK_PING_FAILED;
   g_ping.target_ip = target_ip;
@@ -4614,7 +4615,7 @@ static void network_poll_tick_locked(void) {
     g_ping.last_error = XAIOS_ERR_IO;
   }
   uint8_t rx_buf[NETWORK_BUFFER_SIZE];
-  uint32_t frame_len = virtio_net_rx_poll(rx_buf, sizeof(rx_buf));
+  uint32_t frame_len = network_device_rx_poll(rx_buf, sizeof(rx_buf));
   if (frame_len == 0) {
     ++g_poll_tick_count;
     dns_tick(now_ns);
@@ -4634,13 +4635,13 @@ static void network_poll_tick_locked(void) {
     } else if (frame_len >= 42U &&
                read_u16_be(rx_buf + 20U) == XAIOS_ARP_OP_REQUEST) {
       uint32_t target_ip = read_u32_be(rx_buf + 38U);
-      if (target_ip == XAIOS_IPV4_GUEST_IP) {
+      if (target_ip == network_config_local_ipv4()) {
         uint8_t reply_frame[64];
         uint64_t reply_len = 0;
         if (arp_build_reply(reply_frame, &reply_len, g_local_mac,
-                            XAIOS_IPV4_GUEST_IP, rx_buf + 6,
+                            network_config_local_ipv4(), rx_buf + 6,
                             read_u32_be(rx_buf + 28U)) == XAIOS_OK) {
-          virtio_net_tx(reply_frame, reply_len);
+          network_device_tx(reply_frame, reply_len);
           ++g_arp_reply_count;
         }
       }
@@ -4681,10 +4682,10 @@ static void network_poll_tick_locked(void) {
         uint8_t reply_buf[NETWORK_BUFFER_SIZE];
         uint64_t reply_len = 0;
         if (icmp_build_echo_reply(reply_buf, &reply_len, g_local_mac,
-                                   rx_buf + 6, XAIOS_IPV4_GUEST_IP,
+                                   rx_buf + 6, network_config_local_ipv4(),
                                    read_u32_be(rx_buf + 26U), rx_buf,
                                    frame_len) == XAIOS_OK) {
-          virtio_net_tx(reply_buf, reply_len);
+          network_device_tx(reply_buf, reply_len);
           ++g_icmp_reply_count;
         }
       }
@@ -4717,7 +4718,7 @@ static void network_poll_tick_locked(void) {
                                          rx_buf + 6, &g_link_local_v6,
                                          &echo_src, rx_buf,
                                          frame_len) == XAIOS_OK) {
-              virtio_net_tx(reply_buf, reply_len);
+              network_device_tx(reply_buf, reply_len);
               ++g_icmpv6_reply_count;
             }
           }
@@ -4734,7 +4735,7 @@ static void network_poll_tick_locked(void) {
           if (icmpv6_build_neighbor_advertisement(na_frame, &na_len,
                 g_local_mac, rx_buf + 6, &na_src, &na_dst, &ns_target,
                 rx_buf, frame_len) == XAIOS_OK) {
-            virtio_net_tx(na_frame, na_len);
+            network_device_tx(na_frame, na_len);
             ++g_ndp_reply_count;
           }
         } else if (icmpv6_type == XAIOS_ICMPV6_NEIGHBOR_ADVERT) {

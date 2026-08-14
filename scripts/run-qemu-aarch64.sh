@@ -132,6 +132,7 @@ storage_admin_image="${XAIOS_STORAGE_ADMIN_IMAGE:-none}"
 nvme_image="${XAIOS_NVME_IMAGE:-none}"
 hostfwd_port="${XAIOS_QEMU_HOSTFWD_PORT:-7788}"
 hostfwd_udp_port="${XAIOS_QEMU_HOSTFWD_UDP_PORT:-none}"
+network_device="${XAIOS_QEMU_NETWORK_DEVICE:-virtio-net-device}"
 net_socket_port="${XAIOS_QEMU_NET_SOCKET_PORT:-none}"
 net_socket_port_2="${XAIOS_QEMU_NET_SOCKET_PORT_2:-none}"
 net_socket_host="${XAIOS_QEMU_NET_SOCKET_HOST:-127.0.0.1}"
@@ -155,6 +156,14 @@ case "$msi_controller" in
   its) machine_options="$machine_options,its=on,msi=its" ;;
   *)
     printf '%s\n' "error: XAIOS_QEMU_MSI_CONTROLLER must be auto, gicv2m, or its" >&2
+    exit 2
+    ;;
+esac
+
+case "$network_device" in
+  virtio-net-device|e1000e) ;;
+  *)
+    printf '%s\n' "error: XAIOS_QEMU_NETWORK_DEVICE must be virtio-net-device or e1000e" >&2
     exit 2
     ;;
 esac
@@ -237,9 +246,9 @@ set -- "$qemu" \
   -nographic \
   -serial mon:stdio \
   -drive "if=pflash,format=raw,readonly=on,file=$firmware" \
-  -drive "if=none,format=raw,id=xaios_boot,file=$image" \
+  -drive "if=none,format=raw,readonly=on,id=xaios_boot,file=$image" \
   -device virtio-blk-pci,drive=xaios_boot,bootindex=0 \
-  -drive "if=none,format=raw,id=xaios_test_block,file=$test_block_image" \
+  -drive "if=none,format=raw,snapshot=on,id=xaios_test_block,file=$test_block_image" \
   -device virtio-blk-device,drive=xaios_test_block,bus=virtio-mmio-bus.0 \
   -drive "if=none,format=raw,id=xaios_persistent,file=$persistent_image" \
   -device virtio-blk-device,drive=xaios_persistent,bus=virtio-mmio-bus.1 \
@@ -314,8 +323,13 @@ else
   set -- "$@" -netdev "$net1_options"
 fi
 
-set -- "$@" \
-  -device virtio-net-device,netdev=net1,mac=52:54:00:12:34:57,bus=virtio-mmio-bus.2
+if [ "$network_device" = "virtio-net-device" ]; then
+  set -- "$@" \
+    -device virtio-net-device,netdev=net1,mac=52:54:00:12:34:57,bus=virtio-mmio-bus.2
+else
+  set -- "$@" \
+    -device e1000e,netdev=net1,mac=52:54:00:12:34:57
+fi
 
 if [ "$pcap_file" != "none" ]; then
   set -- "$@" \

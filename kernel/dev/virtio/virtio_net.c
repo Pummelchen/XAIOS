@@ -733,3 +733,7 @@ uint64_t virtio_net_interrupt_count(void) {
 uint64_t virtio_net_tx_completion_count(void) {
   return g_net == 0 ? 0U : g_net->tx_completion_count;
 }
+
+uint32_t virtio_net_is_available(void) {
+  return g_net != 0 && g_net->device_present != 0U ? 1U : 0U;
+}

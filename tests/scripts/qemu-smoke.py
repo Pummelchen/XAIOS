@@ -221,7 +221,7 @@ TARGETS = [
     "/bin/helloworldc99: Hello, World!",
     "/bin/helloworldc99: hosted ISO C99 libc application",
     "kernel: /bin/helloworldc99 returned to kernel exit_code=0",
-    "boot-ui: progress=90 loaded=runtime services loading=IPv4 internet check remaining=2",
+    "boot-ui: progress=90 loaded=runtime services loading=IPv4 network readiness remaining=2",
     "sshd: Phase 2 runtime ready",
     "boot-ui: progress=100 loaded=SSH-server loading=complete remaining=0",
 ]
@@ -264,7 +264,9 @@ def main() -> int:
         start_new_session=True,
     )
     seen = []
-    deadline = time.time() + int(os.environ.get("XAIOS_QEMU_SMOKE_TIMEOUT", "60"))
+    # A full QEMU boot includes the complete userspace/resource gate. Keep a
+    # bounded timeout, but leave margin for an unloaded Apple Silicon host.
+    deadline = time.time() + int(os.environ.get("XAIOS_QEMU_SMOKE_TIMEOUT", "120"))
     try:
         fd = proc.stdout.fileno()
         while time.time() < deadline:

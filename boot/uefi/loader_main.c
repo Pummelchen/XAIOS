@@ -102,9 +102,17 @@ static const efi_guid_t EFI_ACPI_20_TABLE_GUID = {
     0x11d3U,
     {0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81}};
 
+static const efi_guid_t EFI_RNG_PROTOCOL_GUID = {
+    0x3152bca5U,
+    0xeadeU,
+    0x433dU,
+    {0x86, 0x2e, 0xc0, 0x1c, 0xdc, 0x29, 0x1f, 0x44}};
+
 static xaios_boot_info_t g_boot_info;
 /* UEFI loaders must remain relocatable even when all code/data references are PC-relative. */
 static void *g_image_relocation_anchor = &g_image_relocation_anchor;
+
+static int is_error(efi_status_t status);
 
 static void *mem_copy(void *dst, const void *src, uint64_t size) {
   unsigned char *d = (unsigned char *)dst;
@@ -121,6 +129,27 @@ static void *mem_set(void *dst, int value, uint64_t size) {
     d[i] = (unsigned char)value;
   }
   return dst;
+}
+
+static void collect_firmware_entropy(efi_system_table_t *system_table,
+                                     xaios_boot_info_t *boot_info) {
+  if (system_table == 0 || system_table->boot_services == 0 ||
+      system_table->boot_services->locate_protocol == 0 || boot_info == 0) {
+    return;
+  }
+  efi_locate_protocol_t locate_protocol =
+      (efi_locate_protocol_t)system_table->boot_services->locate_protocol;
+  efi_rng_protocol_t *rng = 0;
+  efi_status_t status = locate_protocol((efi_guid_t *)&EFI_RNG_PROTOCOL_GUID,
+                                        0, (void **)&rng);
+  if (is_error(status) || rng == 0 || rng->get_rng == 0) return;
+  status = rng->get_rng(rng, 0, XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES,
+                        boot_info->entropy_seed);
+  if (is_error(status)) {
+    mem_set(boot_info->entropy_seed, 0, XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES);
+    return;
+  }
+  boot_info->entropy_seed_size = XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES;
 }
 
 static void loader_puts(efi_system_table_t *system_table,
@@ -528,6 +557,35 @@ static efi_status_t read_optional_boot_image(
   return EFI_SUCCESS;
 }
 
+static efi_status_t read_optional_entropy_seed(
+    efi_file_protocol_t *root,
+    uint8_t seed[XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES],
+    uint32_t *seed_size) {
+  efi_file_protocol_t *seed_file = 0;
+  uint64_t read_size = XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES;
+  if (root == 0 || seed == 0 || seed_size == 0) return EFI_INVALID_PARAMETER;
+  efi_status_t status = root->open(root, &seed_file,
+                                   u"\\EFI\\XAIOS\\entropy.seed",
+                                   EFI_FILE_MODE_READ, 0);
+  if (status == EFI_NOT_FOUND) return EFI_SUCCESS;
+  if (is_error(status)) return status;
+  status = seed_file->read(seed_file, &read_size, seed);
+  uint8_t overflow_probe = 0U;
+  uint64_t overflow_size =
+      read_size == XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES ? 1U : 0U;
+  if (!is_error(status) && overflow_size != 0U) {
+    status = seed_file->read(seed_file, &overflow_size, &overflow_probe);
+  }
+  (void)seed_file->close(seed_file);
+  if (is_error(status) || read_size != XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES ||
+      overflow_size != 0U) {
+    mem_set(seed, 0, XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES);
+    return is_error(status) ? status : EFI_LOAD_ERROR;
+  }
+  *seed_size = XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES;
+  return EFI_SUCCESS;
+}
+
 static int validate_elf(const void *kernel_buffer, uint64_t kernel_size,
                         const elf64_ehdr_t **ehdr_out) {
   if (kernel_size < sizeof(elf64_ehdr_t)) {
@@ -693,13 +751,15 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
 
   uint64_t boot_image_base = 0U;
   uint64_t boot_image_size = 0U;
+  uint8_t optional_entropy_seed[XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES];
+  uint32_t optional_entropy_seed_size = 0U;
+  mem_set(optional_entropy_seed, 0, sizeof(optional_entropy_seed));
   if (root == 0) {
     status = open_root(image_handle, system_table, &root);
     if (is_error(status)) return status;
   }
   status = read_optional_boot_image(system_table, root, &boot_image_base,
                                     &boot_image_size);
-  (void)root->close(root);
   if (is_error(status)) {
     loader_puts(system_table,
                 u"XAIOS loader error: invalid initfs boot image\r\n");
@@ -708,6 +768,14 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
   if (boot_image_size != 0U) {
     loader_diagnostic(system_table,
                       u"XAIOS loader loaded initfs boot image\r\n");
+  }
+  status = read_optional_entropy_seed(root, optional_entropy_seed,
+                                      &optional_entropy_seed_size);
+  (void)root->close(root);
+  if (is_error(status)) {
+    loader_puts(system_table,
+                u"XAIOS loader error: invalid entropy seed\r\n");
+    return status;
   }
   loader_progress(system_table,
                   u"[####....................................] 10%",
@@ -803,6 +871,13 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
   g_boot_info.pci_ecam_base = pci_ecam_base;
   g_boot_info.pci_ecam_start_bus = pci_ecam_start_bus;
   g_boot_info.pci_ecam_end_bus = pci_ecam_end_bus;
+  if (optional_entropy_seed_size != 0U) {
+    mem_copy(g_boot_info.entropy_seed, optional_entropy_seed,
+             optional_entropy_seed_size);
+    g_boot_info.entropy_seed_size = optional_entropy_seed_size;
+  }
+  mem_set(optional_entropy_seed, 0, sizeof(optional_entropy_seed));
+  collect_firmware_entropy(system_table, &g_boot_info);
 
   /* Firmware is permitted to alter the memory map between GetMemoryMap and
    * ExitBootServices. Retry with a fresh key without doing any allocations

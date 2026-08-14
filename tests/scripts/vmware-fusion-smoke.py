@@ -23,9 +23,13 @@ VMRUN = Path(os.environ.get(
 TIMEOUT_SECONDS = int(os.environ.get("XAIOS_FUSION_TIMEOUT", "180"))
 MARKERS = [
     "smp: secondary worker barrier passed ready=1",
+    "e1000e: ready pci=",
+    "ahci: ready pci=",
+    "mutable-fs: persistent mounted v5",
+    "kernel: persistent network stack enabled device=e1000e",
     "telemetry: boot_summary cpu_online=1",
     "kernel: starting persistent /bin/sshd service",
-    "SSH server: not running error=1001",
+    "SSH server: up and running (tcp/22)",
 ]
 FATAL_MARKERS = ["System halted", "assertion failed", "CYAN SCREEN OF DEATH"]
 
@@ -95,7 +99,7 @@ def main() -> int:
         "markers": MARKERS,
         "missing_markers": missing,
         "fatal_markers": fatal_markers,
-        "scope": "virtual ARM64 boot completion with ACPI bootstrap-only CPU policy and expected no-network/no-storage capability errors",
+        "scope": "virtual ARM64 boot, E1000E DHCP, AHCI MutableFS, and SSH service readiness; not physical-performance evidence",
         "performance_evidence": False,
     }
     EVIDENCE.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")

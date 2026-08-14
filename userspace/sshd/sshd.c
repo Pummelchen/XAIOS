@@ -582,22 +582,15 @@ static void console_render_ssh_loading(void) {
   console_write("\x1b[H\x1b[J\x1b[1;35mXAI\x1b[0m ");
   console_write("\x1b[1;36mOS\x1b[0m\n\n");
   console_write("[######################################..] 95%\n\n");
-  console_write("Loaded: IPv4 internet access\nLoading: SSH server\n");
+  console_write("Loaded: IPv4 network configuration\nLoading: SSH server\n");
   console_write("Remaining: 1 component\n");
 }
 
-static int verify_external_ipv4(void) {
-  xaios_ip_addr_user_t probe;
-  u64 socket_fd = 0U;
-  xaios_memzero(&probe, sizeof(probe));
-  probe.family = 4U;
-  probe.addr[0] = 1U;
-  probe.addr[1] = 1U;
-  probe.addr[2] = 1U;
-  probe.addr[3] = 1U;
-  int status = xaios_net_connect(&probe, 443U, &socket_fd);
-  if (status != 0) return status;
-  return xaios_net_close(socket_fd);
+static int verify_ipv4_ready(void) {
+  /* The kernel reaches this service only after NIC selection and IPv4 setup.
+   * Keep SSH availability independent of a third-party DNS/TCP endpoint. */
+  u32 address = xaios_net_local_ipv4();
+  return address != 0U && address != UINT32_MAX ? 0 : -1;
 }
 
 static void console_execute_command(void) {
@@ -2061,10 +2054,10 @@ int sshd_run(void) {
   g_console_ipv4 = xaios_net_local_ipv4();
   g_console_ssh_ready = 0U;
   g_console_boot_error = 0;
-  network_status = verify_external_ipv4();
+  network_status = verify_ipv4_ready();
   if (network_status != 0) {
     ssh_log(SSH_LOG_ERROR,
-            "External IPv4 DNS check failed; refusing SSH startup status=%u\n",
+            "IPv4 network readiness check failed; refusing SSH startup status=%u\n",
             (uint64_t)(uint32_t)(-network_status));
     g_console_boot_error = 1000 - network_status;
     goto service_loop;

@@ -5,8 +5,10 @@
 #include <xaios/cpu_ai_runtime.h>
 #include <xaios/control_protocol.h>
 #include <xaios/dns.h>
+#include <xaios/entropy.h>
 #include <xaios/initramfs.h>
 #include <xaios/ipv4.h>
+#include <xaios/network_config.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
 #include <xaios/mutable_fs.h>
@@ -23,7 +25,6 @@
 #include <xaios/user.h>
 #include <xaios/vfs.h>
 #include <xaios/vmm.h>
-#include <xaios/virtio_rng.h>
 
 typedef struct xaios_syscall_entry {
   uint64_t number;
@@ -514,7 +515,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
 
   if (syscall == XAIOS_SYSCALL_NET_LOCAL_IPV4) {
     user_process_note_syscall(0);
-    return XAIOS_IPV4_GUEST_IP;
+    return network_config_local_ipv4();
   }
 
   if (syscall == XAIOS_SYSCALL_EXIT) {
@@ -556,7 +557,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
         vmm_validate_user_buffer(arg0, arg1, XAIOS_VMM_WRITABLE) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "bad-random-buffer");
     }
-    if (virtio_rng_read((void *)(uintptr_t)arg0, arg1) != XAIOS_OK) {
+    if (entropy_read((void *)(uintptr_t)arg0, arg1) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "entropy-unavailable");
     }
     user_process_note_syscall(0);
@@ -1852,6 +1853,9 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     if (status == XAIOS_OK) {
       bytes_copy((void *)(uintptr_t)request.out_address, &address,
                  sizeof(address));
+    } else if (status != XAIOS_ERR_BUSY) {
+      klog("dns: resolve syscall failed host=%s status=%d\n", hostname,
+           (int)status);
     }
     user_process_note_syscall(0);
     return (uint64_t)(int64_t)status;

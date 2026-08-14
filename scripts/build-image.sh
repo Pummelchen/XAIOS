@@ -400,11 +400,16 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/assert.o
   $KERNEL_BUILD_DIR/stack_canary.o
   $KERNEL_BUILD_DIR/nvme.o
+  $KERNEL_BUILD_DIR/ahci.o
   $KERNEL_BUILD_DIR/virtio_transport.o
   $KERNEL_BUILD_DIR/block_device.o
   $KERNEL_BUILD_DIR/virtio_blk.o
   $KERNEL_BUILD_DIR/virtio_net.o
+  $KERNEL_BUILD_DIR/e1000e.o
+  $KERNEL_BUILD_DIR/net_device.o
   $KERNEL_BUILD_DIR/virtio_rng.o
+  $KERNEL_BUILD_DIR/arch_random.o
+  $KERNEL_BUILD_DIR/entropy.o
   $KERNEL_BUILD_DIR/initramfs.o
   $KERNEL_BUILD_DIR/mutable_fs.o
   $KERNEL_BUILD_DIR/vfs.o
@@ -447,6 +452,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/rate_limit.o
   $KERNEL_BUILD_DIR/source_index.o
   $KERNEL_BUILD_DIR/network_stack.o
+  $KERNEL_BUILD_DIR/network_config.o
   $KERNEL_BUILD_DIR/git_workspace.o
   $KERNEL_BUILD_DIR/agent_protocol.o
   $KERNEL_BUILD_DIR/pmm.o
@@ -520,6 +526,7 @@ else
 fi
 compile_kernel "$ROOT_DIR/kernel/arch/aarch64/topology.c" "$KERNEL_BUILD_DIR/topology.o"
 compile_kernel "$ROOT_DIR/kernel/dev/nvme.c" "$KERNEL_BUILD_DIR/nvme.o"
+compile_kernel "$ROOT_DIR/kernel/dev/ahci.c" "$KERNEL_BUILD_DIR/ahci.o"
 if [ "$TARGET_ARCH" = aarch64 ]; then
   compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport.c" "$KERNEL_BUILD_DIR/virtio_transport.o"
 else
@@ -528,7 +535,11 @@ fi
 compile_kernel "$ROOT_DIR/kernel/dev/block_device.c" "$KERNEL_BUILD_DIR/block_device.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_blk.c" "$KERNEL_BUILD_DIR/virtio_blk.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_net.c" "$KERNEL_BUILD_DIR/virtio_net.o"
+compile_kernel "$ROOT_DIR/kernel/dev/e1000e.c" "$KERNEL_BUILD_DIR/e1000e.o"
+compile_kernel "$ROOT_DIR/kernel/dev/net_device.c" "$KERNEL_BUILD_DIR/net_device.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_rng.c" "$KERNEL_BUILD_DIR/virtio_rng.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/arch_random.c" "$KERNEL_BUILD_DIR/arch_random.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/entropy.c" "$KERNEL_BUILD_DIR/entropy.o"
 compile_kernel "$ROOT_DIR/kernel/fs/initramfs.c" "$KERNEL_BUILD_DIR/initramfs.o"
 compile_kernel "$ROOT_DIR/kernel/fs/mutable_fs.c" "$KERNEL_BUILD_DIR/mutable_fs.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs.c" "$KERNEL_BUILD_DIR/vfs.o"
@@ -571,6 +582,7 @@ compile_kernel "$ROOT_DIR/kernel/storage/storage_admin.c" "$KERNEL_BUILD_DIR/sto
 compile_kernel "$ROOT_DIR/kernel/runtime/rate_limit.c" "$KERNEL_BUILD_DIR/rate_limit.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/source_index.c" "$KERNEL_BUILD_DIR/source_index.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack.c" "$KERNEL_BUILD_DIR/network_stack.o"
+compile_kernel "$ROOT_DIR/kernel/net/network_config.c" "$KERNEL_BUILD_DIR/network_config.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/git_workspace.c" "$KERNEL_BUILD_DIR/git_workspace.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/agent_protocol.c" "$KERNEL_BUILD_DIR/agent_protocol.o"
 compile_kernel "$ROOT_DIR/kernel/mm/pmm.c" "$KERNEL_BUILD_DIR/pmm.o"

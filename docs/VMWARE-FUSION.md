@@ -1,34 +1,43 @@
 # VMware Fusion ARM64
 
-Status: experimental boot-compatibility target. The firmware boot path is
-verified; XAIOS is not yet a usable VMware Fusion guest.
+Status: experimental functional ARM64 guest. VMware Fusion is a distinct
+virtual-hardware target, not a QEMU mode. QEMU remains the reproducible ARM64
+and x86_64 correctness environment; neither result establishes physical
+hardware performance or support.
 
-Fusion is a separate virtual-hardware target, not a QEMU mode. QEMU remains the
-reproducible AArch64 and x86_64 correctness environment; neither environment
-provides physical-hardware or performance evidence.
+## Verified Scope
 
-## Current Groundwork
-
-The generated ARM64 Fusion bundle uses Debian 13 ARM64 GRUB only as a UEFI
+The generated ARM64 bundle uses Debian 13 ARM64 GRUB only as a UEFI
 compatibility chainloader. GRUB chainloads `XAIOS.EFI`; the XAIOS loader still
 validates and loads `kernel.elf` itself.
 
-The common ARM64 kernel now validates ACPI RSDP/XSDT/RSDT checksums and uses
-MADT GICC/GICD/GICR and MCFG records for CPU discovery, GIC resource selection
-and PCI ECAM selection. It rejects malformed, incomplete or unsupported GIC
-descriptions without falling back to QEMU MMIO addresses. This path is covered
-by hosted parser tests and the AArch64 QEMU smoke gate.
+The common ARM64 kernel validates ACPI RSDP/XSDT/RSDT checksums and consumes
+MADT GICC/GICD/GICR and MCFG records for CPU discovery, GIC selection and PCI
+ECAM discovery. The Fusion VM uses a standard Intel 82574L/E1000E-compatible
+NIC and a standard AHCI SATA controller, selected from PCI identifiers rather
+than a Fusion-specific kernel path.
 
-MutableFS now consumes the generic block-device interface rather than raw
-VirtIO calls. NVMe or a future VMware storage driver must register a writable,
-flush-capable 512-byte block device before it can be mounted. This preserves the
-same storage contract for QEMU, Fusion and physical machines.
+The generated VM is bridged by default. It obtains its IPv4 configuration by
+DHCP, prints the lease address at boot, and starts SSH only after the kernel
+has initialized the selected network device and IPv4 configuration. A
+per-build 64-byte development seed is provisioned into the UEFI image because
+the tested Fusion firmware exposes neither `EFI_RNG_PROTOCOL` nor AArch64
+RNDR. This seed is unique to the local generated bundle and is not a
+hardware-backed entropy claim.
 
-On 2026-08-14, `make vmware-fusion-smoke` passed on VMware Fusion 26.0.0 on
-Apple Silicon in 8.31 seconds. It proves boot completion through the normal
-service boundary with the safe ACPI bootstrap-only CPU policy and explicit
-no-network/no-storage capability errors. It does not prove a usable service,
-network, storage or multi-vCPU guest.
+The bundle includes a 256 MiB SATA VMDK. The AHCI driver registers
+`/dev/ahci0p0` through the generic block-device interface; MutableFS formats a
+new disk and loads the existing volume on later boots. No filesystem behavior
+is special-cased for Fusion.
+
+On the current Apple Silicon host, Fusion 26 ARM64 evidence covers:
+
+- UEFI-to-kernel boot through normal services.
+- PCI bridge traversal, E1000E discovery, DHCP lease acquisition and IPv4
+  stack initialization.
+- AHCI ATA identify, writable MutableFS format, and subsequent persistent
+  volume reload.
+- Public-key SSH command execution from macOS to the bridged guest.
 
 ## Commands
 
@@ -38,31 +47,41 @@ Python 3, mtools and `xorriso`.
 ```sh
 make image
 make vmware-fusion-image
-make vmware-fusion-dry-run
 make vmware-fusion-smoke
 make vmware-fusion
 ```
 
 `make vmware-fusion-image` generates
 `build/vmware-fusion/XAIOS.vmwarevm`; do not edit that generated bundle. The
-smoke gate is authoritative only when it writes passing evidence from the
-current host. It is not currently a release gate.
+boot screen prints the DHCP address. For a usable SSH test, package a
+disposable public key at build time and use that address:
 
-## Required Gates Before Fusion Support
+```sh
+XAIOS_AUTHORIZED_KEYS_FILE=/path/to/test-key.pub make vmware-fusion-image
+ssh -i /path/to/test-key admin@guest-address
+```
 
-- A reproducible Fusion boot with serial evidence through the normal kernel
-  service boundary, not only a firmware handoff.
-- Firmware-described timer and UART support, including ACPI GTDT/SPCR where
-  Fusion exposes them.
-- Confirmed multi-vCPU startup using the firmware CPU-start method supported by
-  Fusion. The current ARM64 secondary path uses PSCI and is QEMU-proven only.
-- A capability-gated VMware NIC driver with IPv4/IPv6, SSH and SFTP
-  interoperability gates. No VMXNET3 or e1000 driver exists today.
-- A writable VMware storage path that registers a generic block device, then
-  passes MutableFS persistence, update and crash-recovery tests. No such driver
-  exists today.
-- Clean shutdown, reset, snapshot/recovery and hostile-device-input tests.
+The build VMDK is recreated when `make vmware-fusion-image` rebuilds the
+bundle. Reboots of the same generated bundle preserve MutableFS state.
 
-Apple Silicon Fusion hosts ARM64 guests only. It is not an x86_64 validation
-environment. See `wiki/Hardware-Support.md` and `wiki/Project-Tracker.md` for
-the current cross-platform qualification boundary.
+`make vmware-fusion-smoke` is authoritative only when it writes passing
+evidence from the current host. It is not a release or physical-performance
+gate.
+
+## Remaining Qualification Work
+
+- Fusion firmware currently reaches the safe bootstrap-only CPU policy; it
+  does not yet prove secondary-vCPU startup through a Fusion firmware method.
+- The current NIC path covers E1000E. VMXNET3 is not implemented.
+- Live recursive DNSSEC interoperability needs resolver-response compatibility
+  work. DNSSEC callers remain fail-closed; SSH startup is intentionally not
+  tied to a third-party DNS or TCP endpoint.
+- SFTP, IPv6, outbound SSH/SCP and long-duration network/storage soak evidence
+  need Fusion-specific gates.
+- Clean guest shutdown, snapshots/recovery and hostile VMware-device tests are
+  not complete.
+- Apple Silicon Fusion hosts ARM64 guests only. It is not an x86_64 or physical
+  Apple Silicon qualification environment.
+
+See `wiki/Hardware-Support.md` and `wiki/Project-Tracker.md` for the current
+cross-platform boundary.

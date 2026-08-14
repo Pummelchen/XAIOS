@@ -8,6 +8,8 @@
 #include <xaios/dns.h>
 #include <xaios/dnssec.h>
 #include <xaios/ipv4.h>
+#include <xaios/net_device.h>
+#include <xaios/network_config.h>
 #include <xaios/status.h>
 
 #define DNS_PAYLOAD_OFFSET 42U
@@ -43,6 +45,24 @@ xaios_status_t network_stack_tcp_close_flow(uint32_t id) { (void)id; return XAIO
 xaios_status_t network_stack_tcp_send(uint32_t id, const uint8_t *d, uint32_t n, uint32_t *w) { (void)id; (void)d; *w = n; return XAIOS_OK; }
 uint32_t network_stack_tcp_recv(uint32_t id, uint8_t *b, uint32_t n) { (void)id; (void)b; (void)n; return 0U; }
 uint32_t virtio_net_rx_poll(uint8_t *b, uint64_t n) { (void)b; (void)n; return 0U; }
+
+/* DNS uses the portable NIC/config boundary; keep the hosted fixture below
+ * that boundary instead of linking a hardware driver into the parser test. */
+xaios_status_t network_device_get_mac(uint8_t mac[6]) {
+  return virtio_net_get_mac(mac);
+}
+xaios_status_t network_device_tx(const uint8_t *data, uint64_t length) {
+  return virtio_net_tx(data, length);
+}
+uint32_t network_device_rx_poll(uint8_t *buffer, uint64_t capacity) {
+  return virtio_net_rx_poll(buffer, capacity);
+}
+uint32_t network_config_local_ipv4(void) { return XAIOS_IPV4_GUEST_IP; }
+void network_config_gateway_mac(uint8_t mac[6]) {
+  static const uint8_t gateway[6] = {0x52U, 0x55U, 0x0aU,
+                                     0x00U, 0x02U, 0x02U};
+  memcpy(mac, gateway, sizeof(gateway));
+}
 
 static void put_be16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8U); p[1] = (uint8_t)v; }
 static uint16_t get_be16(const uint8_t *p) { return (uint16_t)(((uint16_t)p[0] << 8U) | p[1]); }

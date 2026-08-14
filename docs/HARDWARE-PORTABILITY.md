@@ -30,7 +30,9 @@ hypervisor or board identity into core services.
 ## Current Status
 
 QEMU is the only complete operating-system correctness environment. VMware
-Fusion ARM64 is an active compatibility target with firmware discovery
-groundwork only. Future Fusion and physical drivers must be capability-gated;
-no platform is supported merely because it reports a CPU family or firmware
-table.
+Fusion ARM64 is an experimental functional guest path with PCI-discovered
+E1000E DHCP, AHCI MutableFS and public-key SSH evidence on the current Apple
+Silicon host. It remains incomplete for multi-vCPU, VMXNET3, live DNSSEC
+interoperability and physical qualification. Future Fusion and physical drivers
+must be capability-gated; no platform is supported merely because it reports a
+CPU family or firmware table.

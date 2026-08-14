@@ -614,9 +614,17 @@ int xaios_net_resolve_address(const char *hostname, u32 family,
   request.hostname_size = xaios_strlen(hostname);
   request.out_address = (u64)out_address;
   request.family = family;
-  u64 rc = xaios_syscall3(XAIOS_SYSCALL_NET_RESOLVE, (u64)&request,
-                          sizeof(request), 0);
-  return (int)(s64)rc;
+  /* DNS resolution advances through the kernel packet poller. Keep the
+   * userspace ABI synchronous by driving pending work to completion rather
+   * than exposing a one-shot XAIOS_ERR_BUSY result to every caller. */
+  u64 deadline = xaios_clock_nanos() + 16000000000ULL;
+  for (;;) {
+    u64 rc = xaios_syscall3(XAIOS_SYSCALL_NET_RESOLVE, (u64)&request,
+                            sizeof(request), 0);
+    s64 status = (s64)rc;
+    if (status != -5) return (int)status;
+    if (xaios_clock_nanos() >= deadline) return -5;
+  }
 }
 
 int xaios_net_resolve(const char *hostname, u32 *out_ipv4) {

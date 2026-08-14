@@ -36,6 +36,18 @@ static int overlaps(uint64_t start, uint64_t end, uint64_t used_start,
   return start < used_end && used_start < end;
 }
 
+static void boot_image_range(const xaios_boot_info_t *boot, uint64_t *start,
+                             uint64_t *end) {
+  *start = 0U;
+  *end = 0U;
+  if (boot->boot_image_base == 0U || boot->boot_image_size == 0U ||
+      boot->boot_image_base > UINT64_MAX - boot->boot_image_size) {
+    return;
+  }
+  *start = align_down(boot->boot_image_base, PAGE_SIZE);
+  *end = align_up(boot->boot_image_base + boot->boot_image_size, PAGE_SIZE);
+}
+
 static void bytes_zero(void *buffer, uint64_t length) {
   uint8_t *bytes = (uint8_t *)buffer;
   for (uint64_t index = 0U; index < length; ++index) bytes[index] = 0U;
@@ -388,12 +400,16 @@ static int page_is_reserved(const xaios_boot_info_t *boot, uint64_t page) {
   uint64_t page_end = page + PAGE_SIZE;
   uint64_t map_start = boot->memory_map;
   uint64_t map_end = boot->memory_map + boot->memory_map_size;
+  uint64_t boot_image_start = 0U;
+  uint64_t boot_image_end = 0U;
   uint64_t smp_start = 0U;
   uint64_t smp_end = 0U;
+  boot_image_range(boot, &boot_image_start, &boot_image_end);
   (void)smp_bootstrap_reserved_range(&smp_start, &smp_end);
   return overlaps(page, page_end, boot->kernel_phys_base,
                   boot->kernel_phys_end) ||
          overlaps(page, page_end, map_start, map_end) ||
+         overlaps(page, page_end, boot_image_start, boot_image_end) ||
          overlaps(page, page_end, smp_start, smp_end) ||
          overlaps(page, page_end, g_metadata_start, g_metadata_end);
 }
@@ -425,6 +441,14 @@ static uint64_t find_metadata_space(const xaios_boot_info_t *boot,
         if (overlaps(candidate, candidate_end, boot->memory_map, map_end)) {
           uint64_t after_map = align_up(map_end, PAGE_SIZE);
           if (after_map > next) next = after_map;
+        }
+        uint64_t boot_image_start = 0U;
+        uint64_t boot_image_end = 0U;
+        boot_image_range(boot, &boot_image_start, &boot_image_end);
+        if (overlaps(candidate, candidate_end, boot_image_start,
+                     boot_image_end)) {
+          uint64_t after_image = align_up(boot_image_end, PAGE_SIZE);
+          if (after_image > next) next = after_image;
         }
         uint64_t smp_start = 0U;
         uint64_t smp_end = 0U;

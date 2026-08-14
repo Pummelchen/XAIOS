@@ -5,8 +5,9 @@
 XAIOS combines a freestanding AArch64 operating-system prototype with a
 portable C99 inference-engine foundation. The current complete OS correctness
 path boots through UEFI on QEMU virt. An experimental VMware Fusion ARM64 path
-Apple Silicon reaches `/init`; `docs/VMWARE-FUSION.md` records its narrower
-device/platform boundary. The x86_64 QEMU image executes the common kernel and
+on Apple Silicon reaches SSH through PCI-discovered E1000E networking and AHCI
+MutableFS; `docs/VMWARE-FUSION.md` records its narrower device/platform
+boundary. The x86_64 QEMU image executes the common kernel and
 complete userspace/service image. It starts MADT-discovered APs, uses per-CPU
 user address-space roots, validates ring-3 threads and XSAVE/FXSAVE interrupt
 state, parses ACPI topology, and operates modern PCI VirtIO block/network plus
@@ -22,7 +23,7 @@ Platform progress is tracked only in `wiki/Project-Tracker.md`;
 UEFI firmware (AAVMF or Fusion through GRUB chainload)
   └─ BOOTAA64.EFI (loader_main.c)
        └─ Loads kernel.elf from FAT partition
-       └─ Passes boot-info v6 (memory map, UART, kernel and optional initfs)
+       └─ Passes boot-info v8 (memory map, UART, kernel, optional initfs and entropy seed)
             └─ kmain(boot_info)
 ```
 
@@ -215,7 +216,7 @@ make qemu        — Boot in QEMU (interactive)
 make qemu-smoke  — Automated smoke test (330+ boot markers)
 make hosted-test — Portable engine, ModelFS and storage correctness tests
 make qemu-core-os-rc — Aggregate cross-architecture core correctness gate
-make vmware-fusion-smoke — Experimental Apple Silicon Fusion evidence gate
+make vmware-fusion-smoke — Fusion ARM64 E1000E/AHCI/SSH readiness gate
 make test        — bootstrap + image + dry-run
 ```
 

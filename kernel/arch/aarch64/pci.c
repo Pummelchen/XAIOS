@@ -14,6 +14,7 @@ static uint32_t g_ecam_mapped;
 static uint64_t g_ecam_base = XAIOS_PCI_ECAM_BASE;
 static uint8_t g_ecam_start_bus;
 static uint8_t g_ecam_end_bus;
+static uint8_t g_ecam_bus_mapped[UINT8_MAX + 1U];
 
 static volatile uint8_t *ecam_addr(uint8_t bus, uint8_t dev, uint8_t func,
                                    uint16_t offset) {
@@ -58,19 +59,28 @@ static void ecam_write32(uint8_t bus, uint8_t dev, uint8_t func,
   __asm__ volatile("dsb sy" ::: "memory");
 }
 
-static void map_ecam_first_bus(void) {
+static int map_ecam_bus(uint8_t bus) {
+  if (bus < g_ecam_start_bus || bus > g_ecam_end_bus) {
+    return 0;
+  }
+  if (g_ecam_bus_mapped[bus] != 0U) {
+    return 1;
+  }
+
+  uint64_t bus_offset = (uint64_t)(bus - g_ecam_start_bus) << 20;
   uint64_t page = 0;
   while (page < XAIOS_PCI_ECAM_BUS0_SIZE) {
-    uint64_t phys = g_ecam_base + page;
+    uint64_t phys = g_ecam_base + bus_offset + page;
     if (vmm_map_page(phys, phys,
                      XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
                          XAIOS_VMM_DEVICE) != XAIOS_OK) {
-      klog("PCI: failed to map ECAM page 0x%lx\n", phys);
-      return;
+      klog("PCI: failed to map ECAM bus=%u page=0x%lx\n", bus, phys);
+      return 0;
     }
     page += PAGE_SIZE;
   }
-  g_ecam_mapped = 1;
+  g_ecam_bus_mapped[bus] = 1U;
+  return 1;
 }
 
 void pci_configure_ecam(uint64_t base, uint32_t start_bus, uint32_t end_bus) {
@@ -156,12 +166,71 @@ static void add_device(uint8_t bus, uint8_t dev, uint8_t func) {
   ++g_device_count;
 }
 
+static void queue_bridge_buses(uint8_t bus, uint8_t dev, uint8_t func,
+                               uint8_t *seen, uint8_t *queue,
+                               uint32_t *queue_count) {
+  uint8_t secondary = ecam_read8(bus, dev, func, XAIOS_PCI_SECONDARY_BUS);
+  uint8_t subordinate = ecam_read8(bus, dev, func, XAIOS_PCI_SUBORDINATE_BUS);
+  if (secondary == 0U || secondary < g_ecam_start_bus ||
+      secondary > subordinate || subordinate > g_ecam_end_bus) {
+    return;
+  }
+
+  for (uint32_t candidate = secondary; candidate <= subordinate;
+       ++candidate) {
+    if (seen[candidate] != 0U || *queue_count >= UINT8_MAX + 1U) {
+      continue;
+    }
+    seen[candidate] = 1U;
+    queue[*queue_count] = (uint8_t)candidate;
+    ++*queue_count;
+  }
+}
+
+static void scan_bus(uint8_t bus, uint8_t *seen, uint8_t *queue,
+                     uint32_t *queue_count) {
+  for (uint8_t dev = 0; dev < 32; ++dev) {
+    uint16_t vendor = ecam_read16(bus, dev, 0, XAIOS_PCI_VENDOR_ID);
+    if (vendor == XAIOS_PCI_VENDOR_INVALID) {
+      continue;
+    }
+
+    add_device(bus, dev, 0);
+    uint32_t class_rev = ecam_read32(bus, dev, 0, XAIOS_PCI_CLASS_REV);
+    if (((class_rev >> 24) & 0xFFU) == XAIOS_PCI_CLASS_BRIDGE &&
+        ((class_rev >> 16) & 0xFFU) == XAIOS_PCI_SUBCLASS_PCI_TO_PCI) {
+      queue_bridge_buses(bus, dev, 0, seen, queue, queue_count);
+    }
+
+    uint8_t hdr = ecam_read8(bus, dev, 0, XAIOS_PCI_HEADER_TYPE);
+    if ((hdr & 0x80U) == 0U) {
+      continue;
+    }
+    for (uint8_t func = 1; func < 8; ++func) {
+      uint16_t function_vendor =
+          ecam_read16(bus, dev, func, XAIOS_PCI_VENDOR_ID);
+      if (function_vendor == XAIOS_PCI_VENDOR_INVALID) {
+        continue;
+      }
+      add_device(bus, dev, func);
+      class_rev = ecam_read32(bus, dev, func, XAIOS_PCI_CLASS_REV);
+      if (((class_rev >> 24) & 0xFFU) == XAIOS_PCI_CLASS_BRIDGE &&
+          ((class_rev >> 16) & 0xFFU) == XAIOS_PCI_SUBCLASS_PCI_TO_PCI) {
+        queue_bridge_buses(bus, dev, func, seen, queue, queue_count);
+      }
+    }
+  }
+}
+
 void pci_init(void) {
   g_device_count = 0;
   g_virtio_count = 0;
   g_network_count = 0;
   g_bridge_count = 0;
   g_ecam_mapped = 0;
+  for (uint32_t i = 0; i <= UINT8_MAX; ++i) {
+    g_ecam_bus_mapped[i] = 0U;
+  }
 
   for (uint32_t i = 0; i < XAIOS_PCI_MAX_DEVICES; ++i) {
     xaios_pci_device_t *d = &g_devices[i];
@@ -183,12 +252,12 @@ void pci_init(void) {
     }
   }
 
-  /* Map the first firmware-described ECAM bus (one MiB). */
-  map_ecam_first_bus();
-  if (g_ecam_mapped == 0) {
+  /* Map and validate the root ECAM bus before discovering bridge buses. */
+  if (map_ecam_bus(g_ecam_start_bus) == 0) {
     klog("PCI: ECAM mapping failed\n");
     return;
   }
+  g_ecam_mapped = 1;
 
   /* Verify ECAM accessibility before probing a firmware device range. */
   uint32_t bdf0 = ecam_read32(g_ecam_start_bus, 0, 0, 0);
@@ -201,27 +270,20 @@ void pci_init(void) {
   klog("PCI: ECAM mapped bus=%u at 0x%lx BDF[%u,0,0]=0x%x\n",
        g_ecam_start_bus, g_ecam_base, g_ecam_start_bus, bdf0);
 
-  /* The root bus contains Fusion and QEMU's directly attached devices. */
-  for (uint8_t dev = 0; dev < 32; ++dev) {
-    uint16_t vendor =
-        ecam_read16(g_ecam_start_bus, dev, 0, XAIOS_PCI_VENDOR_ID);
-    if (vendor == XAIOS_PCI_VENDOR_INVALID) {
+  uint8_t seen[UINT8_MAX + 1U] = {0};
+  uint8_t queue[UINT8_MAX + 1U];
+  uint32_t queue_head = 0;
+  uint32_t queue_count = 1;
+  seen[g_ecam_start_bus] = 1U;
+  queue[0] = g_ecam_start_bus;
+
+  while (queue_head < queue_count) {
+    uint8_t bus = queue[queue_head++];
+    if (map_ecam_bus(bus) == 0) {
+      klog("PCI: skipped inaccessible ECAM bus=%u\n", bus);
       continue;
     }
-
-    add_device(g_ecam_start_bus, dev, 0);
-
-    /* Check multi-function bit */
-    uint8_t hdr = ecam_read8(g_ecam_start_bus, dev, 0, XAIOS_PCI_HEADER_TYPE);
-    if ((hdr & 0x80) != 0) {
-      for (uint8_t func = 1; func < 8; ++func) {
-        uint16_t v = ecam_read16(g_ecam_start_bus, dev, func,
-                                 XAIOS_PCI_VENDOR_ID);
-        if (v != XAIOS_PCI_VENDOR_INVALID) {
-          add_device(g_ecam_start_bus, dev, func);
-        }
-      }
-    }
+    scan_bus(bus, seen, queue, &queue_count);
   }
 
   klog("PCI: enumerated %u devices (virtio=%u net=%u bridge=%u)\n",

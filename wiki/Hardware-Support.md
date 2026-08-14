@@ -6,7 +6,7 @@
 |---|---|
 | QEMU AArch64 `virt` | Complete core-OS correctness target with UEFI, SMP, GICv3/ITS, VirtIO, SMMUv3 gates, filesystems, network, SSH/SFTP, and userspace. NVMe requires LPI delivery on every negotiated queue. |
 | QEMU x86_64 `q35` | Common kernel/userspace service parity with AArch64, including ACPI/MADT AP startup, xAPIC, XSAVE/FXSAVE, PCI VirtIO, network, SSH/SFTP, storage, and userspace. NVMe requires APIC/MSI-X delivery on every negotiated queue. |
-| VMware Fusion ARM64 | Experimental boot-compatibility path: a live Fusion 26 ARM64 smoke passes with ACPI bootstrap-only CPU policy and expected no-network/no-storage errors. No VMware NIC, storage driver, timer/UART integration or Fusion multi-vCPU qualification exists. |
+| VMware Fusion ARM64 | Experimental functional guest path: Fusion 26 evidence covers PCI-discovered E1000E DHCP, AHCI MutableFS persistence and public-key SSH. Bootstrap-only CPU policy, VMXNET3, live DNSSEC interoperability, IPv6/SFTP/outbound-client gates and Fusion multi-vCPU qualification remain open. |
 
 QEMU CPU-count gates cover 1 through 256 emulated CPUs and a focused 130-CPU
 NUMA case. Hosted cpuset tests cover CPU IDs beyond 4,096. These checks prove

@@ -21,5 +21,6 @@ uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size);
 xaios_status_t virtio_net_get_mac(uint8_t mac[6]);
 uint64_t virtio_net_interrupt_count(void);
 uint64_t virtio_net_tx_completion_count(void);
+uint32_t virtio_net_is_available(void);
 
 #endif

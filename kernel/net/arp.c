@@ -1,6 +1,7 @@
 #include <xaios/arp.h>
 #include <xaios/assert.h>
 #include <xaios/klog.h>
+#include <xaios/net_device.h>
 #include <xaios/ipv4.h>
 
 static xaios_arp_entry_t g_arp_cache[XAIOS_ARP_CACHE_SIZE];
@@ -181,9 +182,7 @@ xaios_status_t arp_send_gratuitous(const uint8_t local_mac[6], uint32_t local_ip
   /* Insert self into cache */
   arp_cache_insert(local_ip, local_mac);
 
-  /* Pass to virtio for transmit */
-  extern xaios_status_t virtio_net_tx(const uint8_t *frame, uint64_t frame_len);
-  return virtio_net_tx(frame, frame_len);
+  return network_device_tx(frame, frame_len);
 }
 
 xaios_status_t arp_build_request(uint8_t *frame, uint64_t *frame_len,

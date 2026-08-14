@@ -5,7 +5,8 @@
 #include <xaios/klog.h>
 #include <xaios/network_stack.h>
 #include <xaios/timer.h>
-#include <xaios/virtio_net.h>
+#include <xaios/net_device.h>
+#include <xaios/network_config.h>
 #include <xaios/virtio_rng.h>
 
 #define DNS_UDP_FRAME_SIZE 512U
@@ -25,12 +26,6 @@
 #define DNS_TYPE_OPT UINT16_C(41)
 #define DNS_TYPE_DS UINT16_C(43)
 #define DNS_TYPE_DNSKEY UINT16_C(48)
-#define DNS_GATEWAY_MAC0 0x52U
-#define DNS_GATEWAY_MAC1 0x55U
-#define DNS_GATEWAY_MAC2 0x0aU
-#define DNS_GATEWAY_MAC3 0x00U
-#define DNS_GATEWAY_MAC4 0x02U
-#define DNS_GATEWAY_MAC5 0x02U
 
 enum dns_pending_state {
   DNS_PENDING_NONE = 0U,
@@ -341,14 +336,9 @@ static uint32_t build_query(uint8_t *output, uint32_t capacity,
 
 static xaios_status_t send_udp_query(dns_pending_t *pending) {
   uint8_t *frame = pending->udp_frame;
-  frame[0] = DNS_GATEWAY_MAC0;
-  frame[1] = DNS_GATEWAY_MAC1;
-  frame[2] = DNS_GATEWAY_MAC2;
-  frame[3] = DNS_GATEWAY_MAC3;
-  frame[4] = DNS_GATEWAY_MAC4;
-  frame[5] = DNS_GATEWAY_MAC5;
+  network_config_gateway_mac(frame);
   uint8_t local_mac[6];
-  if (virtio_net_get_mac(local_mac) != XAIOS_OK) {
+  if (network_device_get_mac(local_mac) != XAIOS_OK) {
     static const uint8_t fallback[6] = {0x02U, 0U, 0U, 0U, 0U, 1U};
     bytes_copy(local_mac, fallback, sizeof(fallback));
   }
@@ -367,9 +357,9 @@ static xaios_status_t send_udp_query(dns_pending_t *pending) {
   put_be16(frame + udp_offset + 6U, 0U);
   uint16_t ip_total = (uint16_t)(XAIOS_IPV4_HEADER_SIZE + udp_length);
   ipv4_build_header(frame + ip_offset, ip_total, XAIOS_IPV4_PROTO_UDP,
-                    XAIOS_IPV4_GUEST_IP, g_dns_server_ip);
+                    network_config_local_ipv4(), g_dns_server_ip);
   pending->udp_frame_len = (uint16_t)(14U + ip_total);
-  return virtio_net_tx(frame, pending->udp_frame_len);
+  return network_device_tx(frame, pending->udp_frame_len);
 }
 
 static uint8_t hostname_label_count(const char *hostname) {
@@ -678,7 +668,7 @@ void dns_tick(uint64_t now_ns) {
       g_pending.retransmits < DNS_MAX_RETRANSMITS &&
       now_ns > g_pending.sent_ns &&
       now_ns - g_pending.sent_ns >= DNS_RETRANSMIT_NS) {
-    if (virtio_net_tx(g_pending.udp_frame, g_pending.udp_frame_len) != XAIOS_OK) {
+    if (network_device_tx(g_pending.udp_frame, g_pending.udp_frame_len) != XAIOS_OK) {
       ++g_reject_count;
       return;
     }
