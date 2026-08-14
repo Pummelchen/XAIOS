@@ -591,7 +591,10 @@ def main() -> int:
                 "--identity-passphrase-file",
                 str(client_passphrase_file),
                 "--timeout",
-                os.environ.get("XAIOS_OUTBOUND_TIMEOUT", "60"),
+                os.environ.get(
+                    "XAIOS_OUTBOUND_TIMEOUT",
+                    "600" if architecture == "x86_64" else "60",
+                ),
             ],
             900,
         )

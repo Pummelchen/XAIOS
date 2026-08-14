@@ -11,8 +11,7 @@
 #define XAIOS_UPDATE_SIGNATURE_PREFIX "xaios-update:v2:"
 #define XAIOS_UPDATE_SIGNATURE_GEN_FIELD "gen="
 #define XAIOS_UPDATE_SIGNATURE_SHA_FIELD "sha256="
-#define XAIOS_UPDATE_SIGNATURE_KEY_HEX XAIOS_RELEASE_PUBLIC_KEY_HEX
-#define XAIOS_UPDATE_SIGNATURE_KEY_FIELD "key=" XAIOS_UPDATE_SIGNATURE_KEY_HEX
+#define XAIOS_UPDATE_SIGNATURE_KEY_FIELD "key="
 #define XAIOS_UPDATE_SIGNATURE_SIG_FIELD "sig="
 #define XAIOS_UPDATE_SIGNATURE_BYTES 64U
 
@@ -21,6 +20,12 @@ static const uint8_t k_update_public_key[32] = {
     0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64, 0x07, 0x3a,
     0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25,
     0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07, 0x51, 0x1a};
+static const uint8_t k_recovery_public_key[32] = {
+    0x5c, 0x34, 0xb6, 0x58, 0x2a, 0x13, 0xd1, 0x4a,
+    0x95, 0x4e, 0x08, 0x2f, 0x33, 0x3d, 0xf3, 0x3b,
+    0x0b, 0xa6, 0x22, 0x2f, 0xb0, 0x19, 0xcf, 0x3a,
+    0xd4, 0x5a, 0xe3, 0xed, 0x5e, 0x9f, 0x9d, 0xe4};
+static uint8_t g_release_public_key[32];
 
 extern int xaios_ed25519_verify(const uint8_t signature[64],
                                 const uint8_t *message,
@@ -44,6 +49,13 @@ static uint64_t g_key_accepts;
 static uint64_t g_key_rejects;
 static uint64_t g_sandbox_escape_rejects;
 static uint64_t g_last_update_generation;
+
+static int constant_time_equal(const uint8_t *left, const uint8_t *right,
+                               uint32_t size) {
+  uint8_t difference = 0U;
+  for (uint32_t i = 0U; i < size; ++i) difference |= left[i] ^ right[i];
+  return difference == 0U;
+}
 
 static const char k_pat_credential_pattern[] = {
     'g', 'i', 't', 'h', 'u', 'b', '_', 'p', 'a', 't', '_', '\0'};
@@ -223,6 +235,8 @@ void security_policy_init(void) {
   g_key_rejects = 0;
   g_sandbox_escape_rejects = 0;
   g_last_update_generation = 0;
+  for (uint32_t i = 0U; i < sizeof(g_release_public_key); ++i)
+    g_release_public_key[i] = k_update_public_key[i];
   klog("security: policy initialized mode=qemu-dev signed_updates=dev-public-key admin=required replay=monotonic\n");
 }
 
@@ -419,6 +433,12 @@ static xaios_status_t validate_update_signature(
     return reject_update_key("bad-update-key");
   }
   cursor += sizeof(XAIOS_UPDATE_SIGNATURE_KEY_FIELD) - 1U;
+  uint8_t supplied_key[32];
+  if (!parse_hex_bytes(cursor, supplied_key, sizeof(supplied_key)) ||
+      !security_release_key_matches(supplied_key)) {
+    return reject_update_key("bad-update-key");
+  }
+  cursor += sizeof(supplied_key) * 2U;
   const char *signed_end = cursor;
   if (*cursor != ':') {
     return reject_update_signature("bad-update-signature-format");
@@ -441,7 +461,7 @@ static xaios_status_t validate_update_signature(
   if (signed_length == 0U || signed_length > UINT32_MAX ||
       xaios_ed25519_verify(signature_bytes, (const uint8_t *)signature,
                            (uint32_t)signed_length,
-                           k_update_public_key) != 0) {
+                           g_release_public_key) != 0) {
     return reject_update_signature("bad-update-cryptographic-signature");
   }
 
@@ -467,12 +487,51 @@ xaios_status_t security_verify_release_signature(
     const uint8_t signature[64]) {
   if (message == 0 || message_size == 0U || signature == 0 ||
       xaios_ed25519_verify(signature, (const uint8_t *)message, message_size,
-                           k_update_public_key) != 0) {
+                           g_release_public_key) != 0) {
     ++g_signature_rejects;
     return XAIOS_ERR_INVALID;
   }
   ++g_signature_accepts;
   return XAIOS_OK;
+}
+
+xaios_status_t security_verify_signature_with_key(
+    const void *message, uint32_t message_size, const uint8_t signature[64],
+    const uint8_t public_key[32]) {
+  if (message == 0 || message_size == 0U || signature == 0 ||
+      public_key == 0 ||
+      xaios_ed25519_verify(signature, (const uint8_t *)message, message_size,
+                           public_key) != 0) {
+    ++g_signature_rejects;
+    return XAIOS_ERR_INVALID;
+  }
+  ++g_signature_accepts;
+  return XAIOS_OK;
+}
+
+int security_release_key_matches(const uint8_t public_key[32]) {
+  return public_key != 0 &&
+         constant_time_equal(public_key, g_release_public_key, 32U);
+}
+
+int security_recovery_key_matches(const uint8_t public_key[32]) {
+  return public_key != 0 &&
+         constant_time_equal(public_key, k_recovery_public_key, 32U);
+}
+
+xaios_status_t security_set_release_key(const uint8_t public_key[32]) {
+  if (public_key == 0) return XAIOS_ERR_INVALID;
+  int changed = !constant_time_equal(public_key, g_release_public_key, 32U);
+  for (uint32_t i = 0U; i < sizeof(g_release_public_key); ++i)
+    g_release_public_key[i] = public_key[i];
+  if (changed) g_last_update_generation = 0U;
+  return XAIOS_OK;
+}
+
+void security_get_release_key(uint8_t public_key[32]) {
+  if (public_key == 0) return;
+  for (uint32_t i = 0U; i < sizeof(g_release_public_key); ++i)
+    public_key[i] = g_release_public_key[i];
 }
 
 xaios_status_t security_authorize_update_signature(const char *signature,

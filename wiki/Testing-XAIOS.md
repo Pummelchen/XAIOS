@@ -22,15 +22,15 @@ AArch64 or x86_64 UEFI firmware. Setup details are in
 | `make libc-check` | Strict hosted C99 headers, 464-function namespace/link, ELF layout, source pin, non-POSIX surface, and syscall-budget contract. |
 | `make qemu-libc-gate` | Complete libc contract plus AArch64/x86_64 runtime and termination probes; emits the conformance report. |
 | `make xapt-test` | Host-side signed package/catalog/system-image construction, verification, tamper, and malformed-input tests. |
-| `make qemu-xapt-gate` | AArch64 and x86_64 install, execute, upgrade, rollback, corruption rejection, OS-slot update, reboot persistence, and removal through real SSH. |
+| `make qemu-xapt-gate` | AArch64/x86_64 pinned TLS, trust rotation/revocation/recovery, install, execute, upgrade, rollback, corruption rejection, OS-slot update, reboot persistence, and removal. |
 | `make code-scanning-contract` | Read-only workflow permissions, loopback-only test port reservation, bounded diagnostics, and integer-width regression checks for resolved CodeQL findings. |
 | `make qemu-abi-contract` | Syscall, image, service, telemetry, and fixture ABI contract. |
 | `make qemu-smoke` | Primary AArch64 boot and deterministic self-test gate. |
 | `make qemu-regression-suite` | Broader process, filesystem, network, and runtime regression suite. |
 | `make qemu-network-adversarial-gate` | N-F3Q parser fuzzing, packet-fault handling, concurrent load/recovery, and 20 fresh ARM64 plus 20 fresh x86_64 QEMU boots. Set `XAIOS_NF3Q_BOOTS` only for bounded development reruns. |
-| `make qemu-nvme-gate` | AArch64/x86_64 async four-queue PRP/SGL, direct-buffer, cancellation, malformed-completion, stress, and backing-byte checks; x86_64 also requires MSI-X delivery. |
-| `make qemu-x86_64-numa-gate` | Two-node x86 SRAT/SLIT discovery, range ownership, node-local allocation and local/remote byte accounting. |
-| `make qemu-aarch64-sve2-gate` | SVE2 arithmetic canary under QEMU TCG; it does not qualify scalable scheduler state, a backend, or physical SVE hardware. |
+| `make qemu-nvme-gate` | AArch64/x86_64 async four-queue PRP/SGL, direct-buffer, cancellation, malformed-completion, stress, backing-byte, and every-queue MSI-X/LPI delivery checks. |
+| `make qemu-x86_64-numa-gate` | Two-node x86 SRAT/SLIT/HMAT, 2 MiB/1 GiB mappings, targeted SMP TLB invalidation, placement, and byte accounting. |
+| `make qemu-aarch64-sve2-gate` | SVE2 arithmetic plus per-task Z/P/FFR scheduler/interrupt preservation under QEMU TCG; it does not qualify an inference backend or physical hardware. |
 | `make qemu-operations-closure` | Both-architecture abrupt-stop, power, recovery, diagnostics, clock, pressure, update/config, support, and Debian-client gate. |
 | `make qemu-qualification-readiness` | Consolidated QEMU evidence packet for SSH/network, NVMe, storage recovery, diagnostics, high-core topology, x86 parity, and repeated soak; physical qualification remains open. |
 | `make qemu-full-os-rc` | Aggregate mandatory QEMU core-OS release-candidate gate. |
@@ -117,9 +117,9 @@ runtime inputs and must never be stored in the repository.
 architectures under `build/xapt/repository`. It packages current AArch64 and
 x86_64 kernel images and signs architecture-specific catalogs. It does not
 invent product applications. `make qemu-xapt-gate` separately compiles the
-`tests/fixtures/xapt-test-app.c` package and serves an isolated copy over
-HTTP/1.1 to verify discovery, arguments, install, upgrade, rollback, corruption
-rejection, persistence, and removal.
+`tests/fixtures/xapt-test-app.c` package and serves an isolated copy over pinned
+TLS 1.2 to verify trust rotation/revocation/recovery, discovery, arguments,
+install, upgrade, rollback, corruption rejection, persistence, and removal.
 
 The Caddy deployment and live-origin checks are documented in
 [[xapt Package Updates|Xapt-Package-Updates]]. The repository test key is a

@@ -53,7 +53,8 @@ client passed the explicitly identified subset below on 2026-08-10:
 - one SSH transport carried simultaneous exec and SFTP channels;
 - client-initiated rekey at a 4 KiB OpenSSH `RekeyLimit` completed without
   interrupting SFTP;
-- four simultaneous SSH connections and 20 sequential reconnects completed;
+- the focused suite completed four simultaneous SSH connections and 20
+  sequential reconnects; the load gate separately holds all 32 transports;
 - storage discovery reported the expected writable `/dev/vblk4` ModelFS
   device, the MutableFS root, the `/models` mount, and consistent staging/active
   package accounting before and after activation;
@@ -204,10 +205,12 @@ all-zero X25519 shared secrets, and malformed PTY or resize payloads terminate
 the connection. Valid PTY dimensions are retained per channel and bounded to
 the native dashboard's supported terminal range.
 
-The service is cooperatively scheduled and intentionally bounded to four
-connections, two channels per connection, and eight channels globally. Each
-connection has independent shell cwd/parser state. These limits match current
-fixed freestanding userspace buffers. They are explicit resource limits, not
+The service is cooperatively scheduled and intentionally bounded to 32
+connections, two channels per connection, and 64 asynchronous child channels.
+Each connection has independent shell cwd/parser state. The kernel TCP table
+retains admission headroom so over-capacity attempts reach the auditable SSH
+policy rejection, while socket buffers cover the complete TCP and UDP tables.
+These are explicit resource limits, not
 claims of unlimited server concurrency. Connection/authentication and
 shell/control command rates are independently bounded. SFTP protocol packets do
 not consume the shell-command quota; they remain bounded by connection/channel
@@ -297,7 +300,7 @@ If a rebuilt guest intentionally rotates its host key, remove only the matching
 entry from `build/local-ssh/known_hosts` after verifying the rotation.
 
 Do not package development private keys or plaintext passwords into the image.
-MutableFS v4 limits a state file to 131,072 bytes; interactive `nano` accepts
+MutableFS v5 limits a state file to 262,144 bytes; interactive `nano` accepts
 at most 32 KiB so its complete editing buffer remains bounded.
 
 ## Remaining Non-QEMU Gates
@@ -308,10 +311,10 @@ at most 32 KiB so its complete editing buffer remains bounded.
 | Security assurance | Deterministic malformed corpora, sanitizer-backed coverage-guided SSH/SFTP/DNS campaigns, packet-fault injection, bounded resource exhaustion/recovery, concurrent macOS/Debian load, and 20 fresh ARM64 plus 20 fresh x86_64 boots pass. Independent review, side-channel analysis, physical lossy-link testing, and long-lived Internet deployment remain open. |
 | Post-quantum SSH | `mlkem768x25519-sha256` passes known-answer and OpenSSH interoperability gates with classical fallback. Independent cryptographic and downgrade-policy review plus physical qualification remain open. |
 | Administrative scale | Phase 2's config, key/revocation, replay/audit and session stores are bounded QEMU fixtures. Fleet identity integration, long-lived audit export and production replay retention are not implemented. |
-| TCP throughput | Correct ACK/reset validation, checksums, an eight-segment transmit window, cumulative and partial ACK release, retained-segment RTT/RTO tracking, SACK parsing/emission, fast retransmit, zero-window handling, bounded reordering, keepalive, FIN state, and RTO backoff exist. A production congestion controller and high-bandwidth/lossy-link tuning remain outside the QEMU release gate. |
+| TCP throughput | Correct ACK/reset validation, checksums, an eight-segment transmit window, cumulative and partial ACK release, retained-segment RTT/RTO tracking, slow start, congestion avoidance, SACK parsing/emission, fast retransmit, zero-window handling, bounded reordering, keepalive, FIN state, and RTO backoff exist. High-bandwidth/lossy-link tuning remains outside the QEMU release gate. |
 | UDP service | IPv4 and IPv6 checksums, bounded atomic datagram delivery, truncation semantics, flow expiry, and buffer reclamation are implemented. QEMU evidence covers IPv4 application echo and kernel-level IPv4/IPv6 parsing; physical lossy-link behavior remains untested. |
 | Fragmentation | Bounded IPv4 and IPv6 reassembly accepts complete out-of-order fragment sets, rejects malformed overlaps/checksums, and expires incomplete sets. The common transmit boundary performs IPv4 and IPv6 source fragmentation. Dual-client load, coverage-guided parser campaigns, and focused AArch64/x86_64 gates verify maximum-size fragmented UDP echo and malformed handling. Physical lossy-link behavior remains open. |
-| DNS | The asynchronous resolver supports A/AAAA results, TTL-bounded caching, retry/timeout, and DNS-over-TCP fallback. It requires the authenticated-data bit from a configured validating resolver; XAIOS does not perform a local DNSSEC chain validation. Production resolver selection and physical deployment remain open. |
+| DNS | The asynchronous resolver supports A/AAAA results, TTL-bounded caching, retry/timeout, and DNS-over-TCP fallback. Queries set EDNS DO and advertise AD understanding; unsigned answers fail closed and are returned without an artificial timeout. The deterministic boot fixture tests parser/cache behavior without depending on public DNS. XAIOS does not perform local DNSSEC chain validation, so production validating-resolver selection and physical deployment remain open. |
 | General threads | EL0 create/join/cancel/exit syscalls dispatch general workers across the runtime-sized online CPU set and pass QEMU concurrency tests. Physical many-core scheduling, fairness, and long-duration stress remain unverified. |
 | SMMU | The focused QEMU SMMUv3 gate proves translated authorized DMA, a translation fault for forbidden DMA, and stale-mapping rejection after teardown. Default QEMU boot remains bypass-compatible; physical-platform Stage 1 policy and performance remain unverified. |
 

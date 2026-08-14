@@ -29,14 +29,15 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 - FreeBSD 15.1, native macOS, and Debian 13 OpenSSH clients pass bounded QEMU
   interoperability suites. This is not a production Internet deployment or an
   independent security audit.
-- The normal QEMU boot requires an external IPv4 A-record response before SSH
-  binds. This checks the configured gateway/DNS path only; it is not a general
-  Internet-health check. Failure reports a numeric startup error. A local shell
-  is available only after PBKDF2 authentication in explicitly password-enabled
-  development images; default, key-only and release consoles stay locked.
-- The SSH service deliberately supports four transports and two active
-  channels per transport. Fleet-scale identity, audit, replay, and connection
-  policy remains unresolved.
+- The normal QEMU boot requires a bounded IPv4 TCP connection to
+  `1.1.1.1:443` before SSH binds. This checks configured external reachability
+  without depending on public DNS; it is not a general Internet-health check.
+  Failure reports a numeric startup error. A local shell is available only
+  after PBKDF2 authentication in explicitly password-enabled development
+  images; default, key-only and release consoles stay locked.
+- The SSH service deliberately supports 32 transports and two active channels
+  per transport, backed by 64 asynchronous child-channel records. Fleet-scale
+  identity, audit, replay, and connection policy remains unresolved.
 - SSH prefers hybrid `mlkem768x25519-sha256` with classical
   `curve25519-sha256` fallback. Known-answer and OpenSSH interoperability gates
   pass; independent cryptographic, downgrade-policy, side-channel and physical
@@ -50,10 +51,11 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   configured validating resolver; local DNSSEC chain validation and production
   resolver policy remain outside the current boundary.
 - The SNTP client validates request binding, server mode/version, stratum, and
-  bounded retry/timeout behavior. QEMU's PL031 RTC may report epoch zero, and
-  public UDP/123 may be filtered; both conditions remain explicit instead of
-  being reported as synchronized. Production NTP authentication, source policy,
-  drift discipline, and physical RTC qualification remain open.
+  bounded retry/timeout behavior, then applies corrections through a monotonic
+  500-ppm slew after initial calibration. QEMU's PL031 RTC may report epoch
+  zero, and public UDP/123 may be filtered; both conditions remain explicit.
+  Production NTP authentication, source policy, oscillator characterization,
+  and physical RTC qualification remain open.
 - TCP implements retained segments, cumulative and partial ACK handling,
   RTT/RTO backoff, SACK, fast retransmit, zero-window handling, bounded
   reordering, keepalive, and FIN bookkeeping. Repeated-loss physical-network
@@ -74,9 +76,9 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 - AArch64 and x86_64 QEMU negotiate four NVMe I/O queues and pass four-page PRP
   and SGL 16 KiB write/read/flush operations with async submission, direct
   aligned buffers, cancellation, malformed-completion rejection, queue
-  affinity, and host backing-byte verification. x86_64 verifies MSI-X delivery;
-  AArch64 is polling-backed until GICv3 ITS support exists. Physical durability,
-  discard behavior, and throughput remain open.
+  affinity, and host backing-byte verification. Every queue must deliver its
+  canary through APIC/MSI-X on x86_64 or GICv3 ITS LPIs on AArch64. Physical
+  durability, discard behavior, and throughput remain open.
 - ModelFS supports signed registration, resumable staging, verification,
   immutable activation, scrub/quarantine, cleanup/reuse, and free-only trim
   under hosted and QEMU tests.
@@ -85,11 +87,11 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 - ModelFS activation and MutableFS audit persistence are separate durability
   domains. A post-publication audit failure cannot roll back an already
   published active generation.
-- MutableFS v4 is intentionally bounded to 128 nodes, 64 open handles, 128 KiB
-  files and 2 MiB of data space. Interactive `nano` is further bounded to a
+- MutableFS v5 is intentionally bounded to 256 nodes, 256 open handles, 256 KiB
+  files and 4 MiB of data space. Interactive `nano` is further bounded to a
   32 KiB editing buffer. This is suitable for OS state and small user files,
   not general bulk storage or model weights.
-- Tar/ZIP exchange is bounded by that 128 KiB file limit. Tar extraction accepts
+- Tar/ZIP exchange is bounded by that 256 KiB file limit. Tar extraction accepts
   ustar, PAX paths, GNU long names and one gzip member; ZIP accepts stored and
   Deflate entries. Symlinks, device nodes, encrypted ZIP, ZIP64, multi-member
   gzip and gzip creation are explicitly unsupported.
@@ -102,15 +104,13 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 - Role, capability, replay, rollback, host-key rotation, sensitive-path denial,
   and secret-redaction behavior pass QEMU/OpenSSH gates but have not received an
   independent production security review.
-- Update signing uses a development trust root to validate transaction,
-  fallback, and rollback behavior. The checked-in private fixture seed is
-  public; production key custody, rotation, revocation, and release authorization
-  are unresolved.
-- `xapt` uses HTTP/1.1 with a required `Content-Length`; it does not yet support
-  TLS, transfer encoding, compression, proxies, mirrors, deltas, dependencies,
-  or unattended updates. Signed catalogs and payload hashes provide integrity
-  and authenticity for the QEMU scope, not transport confidentiality.
-- External applications are bounded to 128 KiB by the current MutableFS/app
+- `xapt` requires TLS 1.2 with an exact RSA public-key pin and supports signed
+  release-root rotation, revocation, offline recovery, and rollback of an
+  interrupted trust/catalog activation. The checked-in TLS and signing private
+  fixtures are public; production key custody and release authorization remain
+  unresolved. Transfer encoding, compression, proxies, mirrors, deltas,
+  dependencies, and unattended updates are not supported.
+- External applications are bounded to 256 KiB by the current MutableFS/app
   loader, and only one previous version is retained. Shipped applications,
   including `xapt`, `nano`, `htop`, and `pong`, are standalone ELFs; publishing
   them as independently upgradable repository packages still requires signed
@@ -137,8 +137,9 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   and one native MXFP4 block. AttnRes, production dimensions, tokenizer/text
   parity, real checkpoints, and multimodal execution are not implemented.
 - Scalar INT4/INT6 and experimental NEON/AVX2 packed kernels pass bounded
-  correctness tests. An SVE2 arithmetic canary passes under QEMU, but scalable
-  context state and kernels do not exist. Physical AVX2 validation,
+  correctness tests. An SVE2 arithmetic canary and per-task Z/P/FFR context
+  preservation pass under QEMU, but an SVE inference backend does not exist.
+  Physical AVX2 validation,
   AVX-512/VNNI, AMX, SVE,
   tiled prefill/verification, persistent worker gangs, and bandwidth autotuning
   remain incomplete.

@@ -13,6 +13,7 @@ TESTS = ROOT / "tests"
 
 RUNTIME_SCRIPTS = {
     "build-c99-app.sh",
+    "build-bearssl.sh",
     "build-compiler-rt.sh",
     "build-image-x86_64.sh",
     "build-image.sh",

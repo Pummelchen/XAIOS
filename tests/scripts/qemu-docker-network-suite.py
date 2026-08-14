@@ -31,8 +31,9 @@ QEMU_RUNNER = (
 )
 ARTIFACT_SUFFIX = "" if TARGET_ARCH == "aarch64" else "-x86_64"
 SSH_READY_MARKER = "SSH server: up and running (tcp/22)"
-BOOT_TIMEOUT_SECONDS = 150.0
-CLIENT_TIMEOUT_SECONDS = 600.0
+BOOT_TIMEOUT_SECONDS = float(os.environ.get("XAIOS_TEST_BOOT_TIMEOUT", "150"))
+CLIENT_TIMEOUT_SECONDS = float(os.environ.get("XAIOS_TEST_SUITE_TIMEOUT", "600"))
+CONNECT_TIMEOUT_SECONDS = os.environ.get("XAIOS_TEST_CONNECT_TIMEOUT", "60")
 HTOP_TIMEOUT_SECONDS = 180
 FATAL_BOOT_MARKERS = (
     "CYAN SCREEN OF DEATH",
@@ -205,7 +206,9 @@ def run_checked(
     )
 
 
-def docker_command(key_dir: Path, *command: str) -> list[str]:
+def docker_command(
+    key_dir: Path, *command: str, writable_keys: bool = False
+) -> list[str]:
     return [
         "docker",
         "run",
@@ -213,11 +216,113 @@ def docker_command(key_dir: Path, *command: str) -> list[str]:
         "--interactive",
         "--add-host",
         "host.docker.internal:host-gateway",
+        "--env",
+        f"XAIOS_TEST_CONNECT_TIMEOUT={CONNECT_TIMEOUT_SECONDS}",
         "--volume",
-        f"{key_dir}:/keys:ro",
+        f"{key_dir}:/keys:{'rw' if writable_keys else 'ro'}",
         IMAGE,
         *command,
     ]
+
+
+def run_scale_sftp(
+    key_dir: Path, port: int, commands: str, *, expect_success: bool = True
+) -> subprocess.CompletedProcess[bytes]:
+    result = subprocess.run(
+        docker_command(
+            key_dir,
+            "sftp", "-b", "-", "-i", "/keys/authorized",
+            "-o", "IdentitiesOnly=yes",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "PasswordAuthentication=no",
+            "-P", str(port), "admin@host.docker.internal",
+            writable_keys=True,
+        ),
+        cwd=ROOT,
+        input=commands.encode("ascii"),
+        capture_output=True,
+        timeout=300,
+    )
+    if (result.returncode == 0) != expect_success:
+        raise RuntimeError(
+            "MutableFS v5 SFTP result did not match expectation: "
+            + (result.stdout + result.stderr).decode(errors="replace")
+        )
+    return result
+
+
+def prepare_mutable_fs_v5_scale(key_dir: Path, port: int) -> dict[str, object]:
+    payload = key_dir / "mutablefs-v5-limit.bin"
+    overflow = key_dir / "mutablefs-v5-overflow.bin"
+    downloaded = key_dir / "mutablefs-v5-download.bin"
+    pattern = bytes((index * 29 + 17) & 0xFF for index in range(4096))
+    payload.write_bytes(pattern * 64)
+    overflow.write_bytes(payload.read_bytes() + b"X")
+    downloaded.unlink(missing_ok=True)
+
+    node_root = "/tmp/mutablefs-v5-nodes"
+    directory_count = 180
+    commands = [
+        "put /keys/mutablefs-v5-limit.bin /tmp/mutablefs-v5-limit.bin",
+        "get /tmp/mutablefs-v5-limit.bin /keys/mutablefs-v5-download.bin",
+        f"mkdir {node_root}",
+    ]
+    commands.extend(
+        f"mkdir {node_root}/d{index:03d}" for index in range(directory_count)
+    )
+    commands.extend([f"ls -1 {node_root}", "quit", ""])
+    listing = run_scale_sftp(key_dir, port, "\n".join(commands))
+    if downloaded.read_bytes() != payload.read_bytes():
+        raise RuntimeError("MutableFS v5 256 KiB SFTP round trip changed payload bytes")
+    listing_text = (listing.stdout + listing.stderr).decode(errors="replace")
+    if sum(f"d{index:03d}" in listing_text for index in range(directory_count)) \
+            != directory_count:
+        raise RuntimeError("MutableFS v5 directory-pressure listing was incomplete")
+
+    run_scale_sftp(
+        key_dir,
+        port,
+        "put /keys/mutablefs-v5-overflow.bin /tmp/mutablefs-v5-overflow.bin\nquit\n",
+        expect_success=False,
+    )
+    return {
+        "file_bytes": payload.stat().st_size,
+        "overflow_bytes_rejected": overflow.stat().st_size,
+        "pressure_directories": directory_count,
+        "sha256": hashlib.sha256(payload.read_bytes()).hexdigest(),
+    }
+
+
+def verify_mutable_fs_v5_scale_after_reboot(
+    key_dir: Path, port: int, expected: dict[str, object]
+) -> None:
+    downloaded = key_dir / "mutablefs-v5-reboot.bin"
+    downloaded.unlink(missing_ok=True)
+    node_root = "/tmp/mutablefs-v5-nodes"
+    directory_count = int(expected["pressure_directories"])
+    commands = [
+        "get /tmp/mutablefs-v5-limit.bin /keys/mutablefs-v5-reboot.bin",
+        f"ls -1 {node_root}",
+    ]
+    commands.extend(
+        f"rmdir {node_root}/d{index:03d}" for index in range(directory_count)
+    )
+    commands.extend([
+        f"rmdir {node_root}",
+        "rm /tmp/mutablefs-v5-limit.bin",
+        "rm /tmp/mutablefs-v5-overflow.bin",
+        "quit",
+        "",
+    ])
+    listing = run_scale_sftp(key_dir, port, "\n".join(commands))
+    digest = hashlib.sha256(downloaded.read_bytes()).hexdigest()
+    if digest != expected["sha256"]:
+        raise RuntimeError("MutableFS v5 persisted payload changed after reboot")
+    listing_text = (listing.stdout + listing.stderr).decode(errors="replace")
+    if sum(f"d{index:03d}" in listing_text for index in range(directory_count)) \
+            != directory_count:
+        raise RuntimeError("MutableFS v5 pressure directories did not persist")
 
 
 def scan_host_key(key_dir: Path, port: int) -> tuple[str, str]:
@@ -266,21 +371,33 @@ def fnv1a64(data: bytes | bytearray) -> int:
     return value
 
 
-def create_mutable_fs_v3_fixture(path: Path) -> bytes:
+def create_mutable_fs_fixture(path: Path, version: int) -> bytes:
     sector_size = 512
     start_sector = 3072
-    metadata_sectors = 32
-    data_sectors = 256
-    node_size = 232
-    payload = (b"XAIOS MutableFS v3 migration payload\n" * 40)[:1400]
+    if version == 3:
+        metadata_sectors = 32
+        data_sectors = 256
+        max_nodes = 64
+        file_max_blocks = 16
+        path_bytes = 96
+    elif version == 4:
+        metadata_sectors = 384
+        data_sectors = 4096
+        max_nodes = 128
+        file_max_blocks = 256
+        path_bytes = 256
+    else:
+        raise ValueError(f"unsupported MutableFS fixture version: {version}")
+    node_size = (68 + file_max_blocks * 4 + path_bytes + 7) & ~7
+    payload = (f"XAIOS MutableFS v{version} migration payload\n".encode() * 40)[:1400]
     block_count = (len(payload) + sector_size - 1) // sector_size
     metadata = bytearray(metadata_sectors * sector_size)
     struct_header = (
         b"XAIOSMFS"
-        + (3).to_bytes(4, "little")
+        + version.to_bytes(4, "little")
         + sector_size.to_bytes(4, "little")
         + metadata_sectors.to_bytes(4, "little")
-        + (64).to_bytes(4, "little")
+        + max_nodes.to_bytes(4, "little")
         + start_sector.to_bytes(8, "little")
         + (start_sector + metadata_sectors).to_bytes(8, "little")
         + (start_sector + metadata_sectors + 1).to_bytes(8, "little")
@@ -291,7 +408,7 @@ def create_mutable_fs_v3_fixture(path: Path) -> bytes:
         + (0).to_bytes(8, "little")
     )
     if len(struct_header) != 88:
-        raise RuntimeError("MutableFS v3 fixture header layout drifted")
+        raise RuntimeError(f"MutableFS v{version} fixture header layout drifted")
     metadata[:len(struct_header)] = struct_header
     metadata[88:88 + block_count] = b"\x01" * block_count
     nodes_offset = 88 + data_sectors
@@ -299,8 +416,8 @@ def create_mutable_fs_v3_fixture(path: Path) -> bytes:
     def add_node(index: int, node_type: int, generation: int, node_path: str,
                  content: bytes = b"") -> None:
         encoded_path = node_path.encode("ascii")
-        if len(encoded_path) >= 96:
-            raise RuntimeError("MutableFS v3 fixture path is too long")
+        if len(encoded_path) >= path_bytes:
+            raise RuntimeError(f"MutableFS v{version} fixture path is too long")
         node = bytearray(node_size)
         node[0:4] = (1).to_bytes(4, "little")
         node[8:12] = node_type.to_bytes(4, "little")
@@ -312,7 +429,8 @@ def create_mutable_fs_v3_fixture(path: Path) -> bytes:
         node[64:66] = count.to_bytes(2, "little")
         for block in range(count):
             node[68 + block * 2:70 + block * 2] = block.to_bytes(2, "little")
-        node[132:132 + len(encoded_path)] = encoded_path
+        path_offset = 68 + file_max_blocks * 4
+        node[path_offset:path_offset + len(encoded_path)] = encoded_path
         offset = nodes_offset + index * node_size
         metadata[offset:offset + node_size] = node
 
@@ -323,7 +441,7 @@ def create_mutable_fs_v3_fixture(path: Path) -> bytes:
     checksum_data[80:88] = b"\x00" * 8
     metadata[80:88] = fnv1a64(checksum_data).to_bytes(8, "little")
 
-    image = bytearray(8192 * sector_size)
+    image = bytearray(32768 * sector_size)
     metadata_offset = start_sector * sector_size
     image[metadata_offset:metadata_offset + len(metadata)] = metadata
     data_offset = (start_sector + metadata_sectors + 2) * sector_size
@@ -769,23 +887,36 @@ def require_rejected_build(env: dict[str, str], marker: str) -> None:
         )
 
 
+def build_debian_client_image() -> None:
+    command = [
+        "docker", "build", "--pull",
+        "--file", "tests/network/Dockerfile.debian13",
+        "--tag", IMAGE, ".",
+    ]
+    try:
+        run_checked(command, 300)
+    except subprocess.CalledProcessError:
+        cached = subprocess.run(
+            ["docker", "image", "inspect", IMAGE],
+            cwd=ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+        if cached.returncode != 0:
+            raise
+        print(
+            "warning: registry refresh failed; using the existing local "
+            f"{IMAGE} image",
+            flush=True,
+        )
+
+
 def main() -> int:
     if shutil.which("docker") is None:
         raise SystemExit("error: Docker CLI is required")
     run_checked(["docker", "info", "--format", "{{.ServerVersion}} {{.Architecture}}"], 30)
-    run_checked(
-        [
-            "docker",
-            "build",
-            "--pull",
-            "--file",
-            "tests/network/Dockerfile.debian13",
-            "--tag",
-            IMAGE,
-            ".",
-        ],
-        300,
-    )
+    build_debian_client_image()
     version = subprocess.run(
         ["docker", "run", "--rm", IMAGE, "sh", "-c", ". /etc/os-release; printf '%s' \"$VERSION_ID\""],
         check=True,
@@ -823,7 +954,7 @@ def main() -> int:
     )
     (key_dir / "config-high.conf").write_text(
         "schema=xaios.config.v1\n"
-        "ssh.max_connections=4\n"
+        "ssh.max_connections=32\n"
         "ssh.max_channels_per_connection=2\n"
         "ssh.max_auth_attempts=5\n"
         "ssh.command_rate_per_minute=120\n"
@@ -832,7 +963,7 @@ def main() -> int:
     )
     (key_dir / "config-low.conf").write_text(
         "schema=xaios.config.v1\n"
-        "ssh.max_connections=4\n"
+        "ssh.max_connections=32\n"
         "ssh.max_channels_per_connection=2\n"
         "ssh.max_auth_attempts=5\n"
         "ssh.command_rate_per_minute=2\n"
@@ -841,7 +972,7 @@ def main() -> int:
     )
     (key_dir / "config-invalid.conf").write_text(
         "schema=xaios.config.v1\n"
-        "ssh.max_connections=5\n"
+        "ssh.max_connections=33\n"
         "ssh.max_channels_per_connection=2\n"
         "ssh.max_auth_attempts=5\n"
         "ssh.command_rate_per_minute=120\n"
@@ -890,51 +1021,56 @@ def main() -> int:
         "image": IMAGE,
     }
 
-    migration_path = BUILD / f"qemu-mutable-fs-v3-migration{ARTIFACT_SUFFIX}.img"
-    migration_payload = create_mutable_fs_v3_fixture(migration_path)
-    migration_port = reserve_port(socket.SOCK_STREAM)
-    migration_qemu, migration_log, _, _ = start_qemu_ready(
-        "qemu-mutable-fs-v3-migration" + ARTIFACT_SUFFIX,
-        {"XAIOS_QEMU_HOSTFWD_PORT": str(migration_port)},
-        SSH_READY_MARKER,
-        persistent_path=migration_path,
-        reset_persistent=False,
-    )
-    try:
-        migrated = subprocess.run(
-            docker_command(
-                key_dir,
-                "ssh",
-                "-i", "/keys/authorized",
-                "-o", "IdentitiesOnly=yes",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "-o", "PasswordAuthentication=no",
-                "-p", str(migration_port),
-                "admin@host.docker.internal",
-                "cat /tmp/migration.txt",
-            ),
-            cwd=ROOT,
-            capture_output=True,
-            timeout=60,
+    for source_version in (3, 4):
+        migration_path = BUILD / (
+            f"qemu-mutable-fs-v{source_version}-migration{ARTIFACT_SUFFIX}.img"
         )
-        if migrated.returncode != 0 or migrated.stdout != migration_payload:
-            raise RuntimeError(
-                "MutableFS v3 migration did not preserve file data: "
-                + (migrated.stdout + migrated.stderr).decode(errors="replace")
+        migration_payload = create_mutable_fs_fixture(migration_path, source_version)
+        migration_port = reserve_port(socket.SOCK_STREAM)
+        migration_qemu, migration_log, _, _ = start_qemu_ready(
+            f"qemu-mutable-fs-v{source_version}-migration" + ARTIFACT_SUFFIX,
+            {"XAIOS_QEMU_HOSTFWD_PORT": str(migration_port)},
+            SSH_READY_MARKER,
+            persistent_path=migration_path,
+            reset_persistent=False,
+        )
+        try:
+            migrated = subprocess.run(
+                docker_command(
+                    key_dir,
+                    "ssh",
+                    "-i", "/keys/authorized",
+                    "-o", "IdentitiesOnly=yes",
+                    "-o", "StrictHostKeyChecking=no",
+                    "-o", "UserKnownHostsFile=/dev/null",
+                    "-o", "PasswordAuthentication=no",
+                    "-p", str(migration_port),
+                    "admin@host.docker.internal",
+                    "cat /tmp/migration.txt",
+                ),
+                cwd=ROOT,
+                capture_output=True,
+                timeout=60,
             )
-    finally:
-        stop_qemu(migration_qemu)
-        migration_log.close()
-    with migration_path.open("rb") as fixture:
-        fixture.seek(3072 * 512 + 8)
-        migrated_version = int.from_bytes(fixture.read(4), "little")
-    if migrated_version != 4:
-        raise RuntimeError(
-            f"MutableFS migration did not publish v4 metadata: {migrated_version}"
-        )
-    migration_path.unlink(missing_ok=True)
-    results["mutable_fs_v3_to_v4_migration"] = "passed"
+            if migrated.returncode != 0 or migrated.stdout != migration_payload:
+                raise RuntimeError(
+                    f"MutableFS v{source_version} migration did not preserve "
+                    "file data: "
+                    + (migrated.stdout + migrated.stderr).decode(errors="replace")
+                )
+        finally:
+            stop_qemu(migration_qemu)
+            migration_log.close()
+        with migration_path.open("rb") as fixture:
+            fixture.seek(3072 * 512 + 8)
+            migrated_version = int.from_bytes(fixture.read(4), "little")
+        if migrated_version != 5:
+            raise RuntimeError(
+                f"MutableFS v{source_version} migration did not publish v5 "
+                f"metadata: {migrated_version}"
+            )
+        migration_path.unlink(missing_ok=True)
+        results[f"mutable_fs_v{source_version}_to_v5_migration"] = "passed"
 
     ssh_port = reserve_port(socket.SOCK_STREAM)
     udp_port = reserve_port(socket.SOCK_DGRAM)
@@ -1003,6 +1139,9 @@ def main() -> int:
         results["sensitive_state_remote_denial"] = "passed"
         results["log_secret_redaction"] = "passed"
         results["password_build_profiles"] = "passed"
+        results["mutable_fs_v5_scale"] = prepare_mutable_fs_v5_scale(
+            key_dir, ssh_port
+        )
     finally:
         if qemu.poll() is None:
             wait_for_log_quiescence(log_path)
@@ -1082,8 +1221,12 @@ def main() -> int:
         )
         if revoked_attempt.returncode == 0:
             raise RuntimeError("revoked operator key became valid after reboot")
+        verify_mutable_fs_v5_scale_after_reboot(
+            key_dir, ssh_port, results["mutable_fs_v5_scale"]
+        )
         results["host_key_persistence"] = "passed"
         results["admin_state_persistence"] = "passed"
+        results["mutable_fs_v5_reboot_persistence"] = "passed"
     finally:
         stop_qemu(reboot_qemu)
         reboot_log_file.close()

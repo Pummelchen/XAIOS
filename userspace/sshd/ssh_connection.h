@@ -5,8 +5,8 @@
 #include "ssh_protocol.h"
 #include <xaios_user.h>
 
-#define SSH_MAX_CONNECTIONS 4U
-#define SSH_MAX_CLIENT_CONNECTIONS 2U
+#define SSH_MAX_CONNECTIONS 32U
+#define SSH_MAX_CLIENT_CONNECTIONS 8U
 #define SSH_PLAINTEXT_PACKET_SIZE 4096U
 
 #define SSH_STATE_INIT 0

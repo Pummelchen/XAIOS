@@ -158,6 +158,7 @@ def main() -> int:
         f"admin@{args.xaios_host}",
     ]
     session = PtySession(ssh, args.timeout)
+    failed = False
     try:
         session.expect(PROMPT, "initial XAIOS shell prompt")
         session.command("rm -rf /tmp/freebsd-upload")
@@ -242,8 +243,15 @@ def main() -> int:
             "cat /tmp/freebsd-tree-copy/nested/data.txt",
             b"xaios-freebsd-upload",
         )
+    except BaseException:
+        failed = True
+        raise
     finally:
-        session.close()
+        try:
+            session.close()
+        except RuntimeError:
+            if not failed:
+                raise
     print("XAIOS_OUTBOUND_FREEBSD: PASS", flush=True)
     return 0
 

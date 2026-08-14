@@ -89,7 +89,7 @@ ModelFS is the placement and lifecycle container.
   eight rounds of four-page PRP/SGL 16 KiB transfers through every queue,
   direct aligned buffers, cancellation, malformed completions, flushes, and
   host backing bytes. x86_64 additionally verifies queue-0 MSI-X delivery;
-  AArch64 remains polling-backed until a GICv3 ITS path exists. Physical
+  AArch64 requires GICv3 ITS LPI delivery on every negotiated queue. Physical
   durability and throughput remain open; QEMU is not performance evidence.
 - Registration accepts the bounded signed identity fields defined by
   `xaios.control.v1`; it is not a general JSON manifest parser. Package payloads

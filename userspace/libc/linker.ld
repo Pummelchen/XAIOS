@@ -45,4 +45,4 @@ SECTIONS
   /DISCARD/ : { *(.comment .note .note.*) }
 }
 
-ASSERT(. < 0x102000000, "Hosted userspace image exceeds the 2 MiB code/data window")
+ASSERT(. < 0x110000000, "Hosted userspace image exceeds the 16 MiB code/data window")

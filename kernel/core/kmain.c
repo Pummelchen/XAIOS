@@ -466,10 +466,10 @@ void kmain(const xaios_boot_info_t *boot) {
   uint64_t initial_block_interrupts = virtio_block_interrupt_count();
 #endif
   gic_enable_full();
-#if defined(__x86_64__)
   if (nvme_status == XAIOS_OK) {
     kassert(nvme_interrupt_self_test() == XAIOS_OK);
   }
+#if defined(__x86_64__)
   uint64_t interrupt_drain_deadline =
       timer_now_ns() + UINT64_C(100000000);
   while (virtio_block_interrupt_count() == initial_block_interrupts &&
@@ -496,6 +496,14 @@ void kmain(const xaios_boot_info_t *boot) {
   klog("scheduler: SIMD/FP interrupt canary status=%lu\n",
        simd_irq_status);
   kassert(simd_irq_status == 1U);
+#if defined(__aarch64__)
+  if (aarch64_sve_enabled() != 0U) {
+    uint64_t sve_irq_status = aarch64_sve_irq_self_test();
+    klog("scheduler: SVE interrupt canary status=%lu\n", sve_irq_status);
+    kassert(sve_irq_status == 1U);
+    klog("scheduler: SVE Z/P/FFR interrupt preservation passed EL0-task-state=1\n");
+  }
+#endif
   scheduler_unlock();
   klog("scheduler: SIMD/FP interrupt preservation passed\n");
   kassert(smp_release_secondary_schedulers() == XAIOS_OK);

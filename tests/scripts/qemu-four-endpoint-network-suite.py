@@ -15,6 +15,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
+PICOLIBC_PIN = "2ae376c6cdf4fef90ca2388ecf7a07457fa63cff"
 
 
 def run(command: list[str], timeout: float) -> None:
@@ -32,6 +33,17 @@ def read_report(path: Path) -> dict[str, object]:
 
 
 def source_archive(destination: Path) -> tuple[str, str]:
+    picolibc_revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT / "third_party" / "picolibc",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if picolibc_revision != PICOLIBC_PIN:
+        raise RuntimeError(
+            f"Picolibc source is {picolibc_revision}, expected {PICOLIBC_PIN}"
+        )
     files = subprocess.run(
         [
             "git",
@@ -45,12 +57,41 @@ def source_archive(destination: Path) -> tuple[str, str]:
         check=True,
         capture_output=True,
     ).stdout.split(b"\0")
+    submodule_paths = subprocess.run(
+        ["git", "submodule", "foreach", "--quiet", "printf '%s\\0' \"$sm_path\""],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout.split(b"\0")
     with tarfile.open(destination, "w:gz") as archive:
         for encoded in files:
             if not encoded:
                 continue
             relative = encoded.decode("utf-8")
             archive.add(ROOT / relative, arcname=relative, recursive=False)
+        for encoded_path in submodule_paths:
+            if not encoded_path:
+                continue
+            relative_path = encoded_path.decode("utf-8")
+            submodule = ROOT / relative_path
+            tracked = subprocess.run(
+                ["git", "ls-files", "-z"],
+                cwd=submodule,
+                check=True,
+                capture_output=True,
+            ).stdout.split(b"\0")
+            for encoded_file in tracked:
+                if not encoded_file:
+                    continue
+                sub_relative = encoded_file.decode("utf-8")
+                archive.add(
+                    submodule / sub_relative,
+                    arcname=f"{relative_path}/{sub_relative}",
+                    recursive=False,
+                )
+    with tarfile.open(destination, "r:gz") as archive:
+        if "third_party/picolibc/meson.build" not in archive.getnames():
+            raise RuntimeError("source archive is missing the Picolibc submodule")
     identity = hashlib.sha256(destination.read_bytes()).hexdigest()
     revision = subprocess.run(
         ["git", "rev-parse", "--verify", "HEAD"],
@@ -97,6 +138,7 @@ def remote_matrix(vps: str, remote_root: str) -> dict[str, object]:
         remote_command = (
             f"cd {run_root} && "
             f"export XAIOS_BUILD_REVISION_OVERRIDE={revision} && "
+            f"export XAIOS_PICOLIBC_REVISION_OVERRIDE={PICOLIBC_PIN} && "
             "XAIOS_QEMU_NETWORK_ARCH=x86_64 make qemu-docker-network-suite && "
             "XAIOS_QEMU_NETWORK_ARCH=x86_64 make qemu-freebsd-bidirectional-suite"
         )

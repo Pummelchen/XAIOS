@@ -13,7 +13,6 @@ need() {
   }
 }
 
-need git
 need clang
 need llvm-ar
 need meson
@@ -25,7 +24,22 @@ if [ ! -f "$SOURCE/meson.build" ]; then
   exit 1
 fi
 
-actual_pin=$(git -C "$SOURCE" rev-parse HEAD)
+if [ -n "${XAIOS_PICOLIBC_REVISION_OVERRIDE:-}" ]; then
+  case "$XAIOS_PICOLIBC_REVISION_OVERRIDE" in
+    *[!0-9a-f]*|'')
+      printf '%s\n' 'error: XAIOS_PICOLIBC_REVISION_OVERRIDE must be lowercase hexadecimal' >&2
+      exit 1
+      ;;
+  esac
+  if [ "${#XAIOS_PICOLIBC_REVISION_OVERRIDE}" -ne 40 ]; then
+    printf '%s\n' 'error: XAIOS_PICOLIBC_REVISION_OVERRIDE must contain 40 characters' >&2
+    exit 1
+  fi
+  actual_pin=$XAIOS_PICOLIBC_REVISION_OVERRIDE
+else
+  need git
+  actual_pin=$(git -C "$SOURCE" rev-parse HEAD)
+fi
 if [ "$actual_pin" != "$PIN" ]; then
   printf 'error: Picolibc source is %s, expected %s\n' "$actual_pin" "$PIN" >&2
   exit 1

@@ -6,7 +6,8 @@
 #include <xaios/types.h>
 #include <xaios/vmm.h>
 
-#define XAIOS_ELF_LOADER_L3_TABLES 4U
+#define XAIOS_ELF_CODE_WINDOWS 8U
+#define XAIOS_ELF_LOADER_L3_TABLES (XAIOS_ELF_CODE_WINDOWS + 1U)
 
 typedef struct xaios_process_page_mapping {
   uint64_t va;

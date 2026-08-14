@@ -29,6 +29,10 @@ typedef struct xaios_numa_node {
   xaios_numa_region_t *regions;
   uint64_t *cpu_bitmap;
   uint8_t *distances;
+  uint64_t *hmat_latency_ps;
+  uint64_t *hmat_bandwidth_bytes_per_second;
+  uint32_t preferred_memory_node;
+  uint32_t hmat_metrics_valid;
   uint32_t alloc_region_hint;
   uint32_t reserved;
   uint64_t alloc_page_hint;
@@ -42,6 +46,7 @@ uint32_t numa_node_of_phys(uint64_t phys_addr);
 int numa_node_has_cpu(uint32_t node_id, uint32_t cpu_id);
 uint32_t numa_node_of_cpu(uint32_t cpu_id);
 uint8_t numa_distance(uint32_t from_node, uint32_t to_node);
+uint32_t numa_preferred_node_for_cpu(uint32_t cpu_id);
 void numa_record_access(uint32_t cpu_id, uint64_t physical_address,
                         uint64_t bytes);
 uint64_t numa_local_bytes(void);

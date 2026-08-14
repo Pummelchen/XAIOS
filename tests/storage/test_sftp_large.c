@@ -215,6 +215,7 @@ int main(void) {
   assert(SSH_CHANNEL_SFTP_REQUEST_MAX >= 32793U);
   assert(SSH_CHANNEL_SFTP_BUFFER_SIZE >=
          SSH_CHANNEL_SFTP_REQUEST_MAX + SSH_CHANNEL_MAX_PACKET);
+  assert(SSH_CHANNEL_PENDING_SIZE >= 32768U + 13U);
 
   packet[position++] = FXP_OPEN;
   put_u32(packet + position, 9U); position += 4U;

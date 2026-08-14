@@ -34,6 +34,7 @@ enum dns_pending_state {
   DNS_PENDING_UDP = 1U,
   DNS_PENDING_TCP_CONNECT = 2U,
   DNS_PENDING_TCP_REPLY = 3U,
+  DNS_PENDING_COMPLETE = 4U,
 };
 
 typedef struct dns_cache_entry {
@@ -56,6 +57,7 @@ typedef struct dns_pending {
   uint16_t query_len;
   uint32_t tcp_flow_id;
   uint32_t tcp_received;
+  xaios_status_t result;
   char hostname[DNS_MAX_HOSTNAME];
   uint64_t started_ns;
   uint64_t sent_ns;
@@ -74,6 +76,14 @@ static uint64_t g_reject_count;
 static uint64_t g_timeout_count;
 static uint64_t g_tcp_fallback_count;
 static uint64_t g_authenticated_count;
+
+static void complete_pending(xaios_status_t status) {
+  g_pending.state = DNS_PENDING_COMPLETE;
+  g_pending.result = status;
+  if (g_pending.tcp_flow_id != 0U)
+    (void)network_stack_tcp_abort_flow(g_pending.tcp_flow_id);
+  g_pending.tcp_flow_id = 0U;
+}
 
 static void put_be16(uint8_t *dst, uint16_t value) {
   dst[0] = (uint8_t)(value >> 8U);
@@ -282,7 +292,9 @@ static uint32_t build_query(uint8_t *output, uint32_t capacity,
                             uint16_t query_type) {
   if (capacity < 32U) return 0U;
   put_be16(output, id);
-  put_be16(output + 2U, DNS_FLAG_RD);
+  /* RFC 6840 section 5.7: set AD in the query to signal that the client
+   * understands and requires the validating resolver's AD response bit. */
+  put_be16(output + 2U, DNS_FLAG_RD | DNS_FLAG_AD);
   put_be16(output + 4U, 1U);
   put_be16(output + 6U, 0U);
   put_be16(output + 8U, 0U);
@@ -349,6 +361,15 @@ xaios_status_t dns_resolve_address(const char *hostname, uint8_t family,
   }
   uint64_t now_ns = timer_now_ns();
   if (cache_lookup(hostname, family, out_address, now_ns)) return XAIOS_OK;
+  if (g_pending.state == DNS_PENDING_COMPLETE) {
+    if (g_pending.family == family &&
+        str_case_equal(g_pending.hostname, hostname, DNS_MAX_HOSTNAME)) {
+      xaios_status_t result = g_pending.result;
+      bytes_zero(&g_pending, sizeof(g_pending));
+      return result;
+    }
+    bytes_zero(&g_pending, sizeof(g_pending));
+  }
   uint32_t hostname_length = str_len(hostname);
   if (hostname_length == 0U || hostname_length >= DNS_MAX_HOSTNAME)
     return XAIOS_ERR_INVALID;
@@ -435,7 +456,7 @@ xaios_status_t dns_process_message(const uint8_t *message, uint32_t length,
     return XAIOS_ERR_BUSY;
   }
   if ((flags & DNS_FLAG_TC) != 0U || (flags & 0x000fU) != 0U) {
-    bytes_zero(&g_pending, sizeof(g_pending));
+    complete_pending(XAIOS_ERR_NOT_FOUND);
     ++g_response_count;
     return XAIOS_ERR_NOT_FOUND;
   }
@@ -497,8 +518,12 @@ xaios_status_t dns_process_message(const uint8_t *message, uint32_t length,
       found_answer = 1U;
     }
   }
-  if (position != length || found_answer == 0U ||
-      (flags & DNS_FLAG_AD) == 0U) {
+  if (position != length || found_answer == 0U) {
+    ++g_reject_count;
+    return XAIOS_ERR_INVALID;
+  }
+  if ((flags & DNS_FLAG_AD) == 0U) {
+    complete_pending(XAIOS_ERR_INVALID);
     ++g_reject_count;
     return XAIOS_ERR_INVALID;
   }
@@ -561,8 +586,7 @@ void dns_transport_tick(uint64_t now_ns) {
         network_stack_tcp_open_status(g_pending.tcp_flow_id);
     if (status == XAIOS_ERR_BUSY) return;
     if (status != XAIOS_OK) {
-      (void)network_stack_tcp_abort_flow(g_pending.tcp_flow_id);
-      bytes_zero(&g_pending, sizeof(g_pending));
+      complete_pending(XAIOS_ERR_IO);
       ++g_reject_count;
       return;
     }
@@ -585,8 +609,7 @@ void dns_transport_tick(uint64_t now_ns) {
   if (g_pending.tcp_received < 2U) return;
   uint32_t message_length = get_be16(g_pending.tcp_reply);
   if (message_length < 12U || message_length > DNS_TCP_MESSAGE_SIZE) {
-    (void)network_stack_tcp_abort_flow(g_pending.tcp_flow_id);
-    bytes_zero(&g_pending, sizeof(g_pending));
+    complete_pending(XAIOS_ERR_INVALID);
     ++g_reject_count;
     return;
   }
@@ -596,14 +619,13 @@ void dns_transport_tick(uint64_t now_ns) {
 }
 
 void dns_tick(uint64_t now_ns) {
-  if (g_pending.state == DNS_PENDING_NONE) return;
+  if (g_pending.state == DNS_PENDING_NONE ||
+      g_pending.state == DNS_PENDING_COMPLETE) return;
   if (now_ns > g_pending.started_ns &&
       now_ns - g_pending.started_ns >= DNS_QUERY_TIMEOUT_NS) {
-    if (g_pending.tcp_flow_id != 0U)
-      (void)network_stack_tcp_abort_flow(g_pending.tcp_flow_id);
     klog("dns: query timeout id=%u host=%s\n", g_pending.id,
          g_pending.hostname);
-    bytes_zero(&g_pending, sizeof(g_pending));
+    complete_pending(XAIOS_ERR_CANCELLED);
     ++g_timeout_count;
     return;
   }
@@ -627,7 +649,10 @@ uint64_t dns_timeout_count(void) { return g_timeout_count; }
 uint64_t dns_tcp_fallback_count(void) { return g_tcp_fallback_count; }
 uint64_t dns_authenticated_count(void) { return g_authenticated_count; }
 uint32_t dns_pending_count(void) {
-  return g_pending.state != DNS_PENDING_NONE ? 1U : 0U;
+  return g_pending.state != DNS_PENDING_NONE &&
+                 g_pending.state != DNS_PENDING_COMPLETE
+             ? 1U
+             : 0U;
 }
 
 void dns_self_test(void) {

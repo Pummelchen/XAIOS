@@ -61,6 +61,28 @@ void *memcpy(void *dst, const void *src, u64 size) {
   return dst;
 }
 
+void *memmove(void *dst, const void *src, u64 size) {
+  unsigned char *out = (unsigned char *)dst;
+  const unsigned char *in = (const unsigned char *)src;
+  if (out < in) {
+    for (u64 i = 0U; i < size; ++i) out[i] = in[i];
+  } else if (out > in) {
+    for (u64 i = size; i != 0U; --i) out[i - 1U] = in[i - 1U];
+  }
+  return dst;
+}
+
+int memcmp(const void *left, const void *right, u64 size) {
+  const unsigned char *a = (const unsigned char *)left;
+  const unsigned char *b = (const unsigned char *)right;
+  for (u64 i = 0U; i < size; ++i) {
+    if (a[i] != b[i]) return (int)a[i] - (int)b[i];
+  }
+  return 0;
+}
+
+u64 strlen(const char *text) { return xaios_strlen(text); }
+
 void *xaios_memcpy(void *dst, const void *src, u64 size) {
   return memcpy(dst, src, size);
 }

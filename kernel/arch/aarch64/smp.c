@@ -1,4 +1,5 @@
 #include <xaios/assert.h>
+#include <xaios/aarch64_sve.h>
 #include <xaios/gic.h>
 #include <xaios/klog.h>
 #include <xaios/scheduler.h>
@@ -194,6 +195,17 @@ static void bytes_zero(void *buffer, uint64_t bytes) {
 }
 
 void smp_secondary_main(uint64_t cpu_id) {
+  if (aarch64_sve_enabled() != 0U) {
+    uint64_t cpacr = 0U;
+    __asm__ volatile("mrs %0, cpacr_el1" : "=r"(cpacr));
+    cpacr = (cpacr & ~(UINT64_C(3) << 16U)) | (UINT64_C(3) << 16U);
+    __asm__ volatile("msr cpacr_el1, %0\n"
+                     "msr S3_0_C1_C2_0, %1\n"
+                     "isb\n"
+                     :
+                     : "r"(cpacr), "r"(UINT64_C(0xf))
+                     : "memory");
+  }
   if (cpu_id < g_cpu_capacity) {
     g_cpu_states[cpu_id].cpu_id = (uint32_t)cpu_id;
     g_cpu_states[cpu_id].mpidr = read_mpidr_el1();

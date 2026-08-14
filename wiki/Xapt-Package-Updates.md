@@ -66,19 +66,29 @@ the existing verified fallback behavior.
 /apps/NAME/previous.*       one rollback version
 ```
 
-The default development origin is `91.99.176.243:8090`. Configuration is plain
-text:
+The default development origin is `91.99.176.243:8443`. Configuration is plain
+text, but transport security is mandatory:
 
 ```text
 host=91.99.176.243
-port=8090
+port=8443
 base=/
+tls=required
+tls_rsa_modulus=OPERATOR_RSA_MODULUS_HEX
 ```
 
-HTTP is only the transport. Authenticity and integrity come from signed
-catalogs/manifests and payload hashes. The current client requires HTTP/1.1 with
-`Content-Length` and does not support transfer encoding, compression, TLS,
-mirrors, proxies, deltas, dependencies, or unattended upgrades.
+`xapt` uses TLS 1.2 with an exact operator-managed RSA public-key pin and
+fail-closed entropy. Signed catalogs/manifests and payload hashes remain the
+content authenticity layer. The client requires HTTP/1.1 with
+`Content-Length`; transfer encoding, compression, mirrors, proxies, deltas,
+dependencies, and unattended upgrades are not supported.
+
+The signing trust chain is independent of the TLS identity. Monotonic signed
+trust records rotate the active Ed25519 release key and revoke the previous
+key. A separately pinned offline recovery key can publish a later recovery
+record. XAIOS retains the previous verified trust/catalog pair and restores it
+after an interrupted activation; replayed generations, revoked signers, and
+mismatched trust/catalog generations fail closed.
 
 ## Build and publish a development repository
 
@@ -90,8 +100,14 @@ make xapt-repository
 The first command creates and verifies both architecture trees under
 `build/xapt/repository`. The publisher re-verifies locally, synchronizes to
 `/var/xaios_updater`, validates the repository Caddy configuration, and reloads
-Caddy on port 8090. Override the destination with `XAIOS_UPDATE_HOST` and
+Caddy on TLS port 8443. Override the destination with `XAIOS_UPDATE_HOST` and
 `XAIOS_UPDATE_ROOT`.
+
+Publishing requires `XAIOS_XAPT_TLS_CERT` and `XAIOS_XAPT_TLS_KEY`; the script
+refuses to publish without an operator-managed identity. The public fixture may
+be selected only for disposable tests with `XAIOS_ALLOW_TEST_TLS_FIXTURE=1`.
+The configured `tls_rsa_modulus` must match the deployed certificate key.
+Caddy exposes only the TLS listener on port 8443.
 
 The repository shape is:
 
@@ -107,11 +123,13 @@ operations. Publishing a newer catalog requires a strictly higher generation.
 
 ## Security boundary
 
-The checked-in Ed25519 key is a deterministic test fixture and its private seed
-is public. It exists so builds and QEMU tests are reproducible. A server using
-that key is a development origin, not a production trust root. Production use
-is blocked until maintainers define offline key custody, root rotation,
-revocation, signing authorization, recovery, and release audit procedures.
+The checked-in Ed25519 signing keys and TLS certificate/key are deterministic
+test fixtures and their private material is public. They exist so builds and
+QEMU tests are reproducible. The implementation covers signing-root rotation,
+revocation, offline recovery, interrupted-activation rollback, TLS pin
+rejection, and payload corruption. Production use remains blocked until
+maintainers provision private operator keys and define custody, authorization,
+recovery, and release-audit procedures.
 
 The app loader remains capability-based and does not add a package-manager
 syscall. `xapt` uses the existing filesystem, network, clock, and control
@@ -125,11 +143,12 @@ make xapt-test
 make qemu-xapt-gate
 ```
 
-The dual-architecture QEMU gate proves signed catalog refresh, independent app
-install and argv execution, upgrade, one-step rollback, tamper rejection,
-streamed A/B OS delivery, reboot persistence, and removal. QEMU does not prove
-physical-device durability, Internet-scale availability, or production key
-security.
+The dual-architecture QEMU gate proves pinned TLS transport, signed catalog
+refresh, signing-root rotation/revocation/recovery, interrupted activation
+recovery, independent app install and argv execution, upgrade, one-step
+rollback, tamper rejection, streamed A/B OS delivery, reboot persistence, and
+removal. QEMU does not prove physical-device durability, Internet-scale
+availability, or production key security.
 
 See [[Applications|Applications]], [[Administration|Administration]],
 [[Testing XAIOS|Testing-XAIOS]], and [[Security Model|Security-Model]].

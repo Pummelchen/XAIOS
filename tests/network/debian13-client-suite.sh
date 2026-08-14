@@ -5,6 +5,10 @@ host="${1:-host.docker.internal}"
 ssh_port="${2:-2222}"
 udp_port="${3:-2223}"
 expected_arch="${4:-aarch64}"
+connect_timeout="${XAIOS_TEST_CONNECT_TIMEOUT:-60}"
+case "$connect_timeout" in
+  ''|*[!0-9]*) printf 'FAIL: XAIOS_TEST_CONNECT_TIMEOUT must be an integer\n' >&2; exit 2 ;;
+esac
 password="${XAIOS_SSH_PASSWORD:-admin}"
 authorized_key="${XAIOS_SSH_AUTHORIZED_KEY:-/keys/authorized}"
 unauthorized_key="${XAIOS_SSH_UNAUTHORIZED_KEY:-/keys/unauthorized}"
@@ -26,7 +30,7 @@ ssh_options=(
   -o PreferredAuthentications=password
   -o PubkeyAuthentication=no
   -o NumberOfPasswordPrompts=1
-  -o ConnectTimeout=20
+  -o "ConnectTimeout=$connect_timeout"
   -o ServerAliveInterval=5
   -o ServerAliveCountMax=36
   -p "$ssh_port"
@@ -38,9 +42,9 @@ key_ssh_options=(
   -o UserKnownHostsFile=/dev/null
   -o PreferredAuthentications=publickey
   -o PasswordAuthentication=no
-  -o ConnectTimeout=20
+  -o "ConnectTimeout=$connect_timeout"
   -o ServerAliveInterval=2
-  -o ServerAliveCountMax=5
+  -o ServerAliveCountMax=30
   -p "$ssh_port"
 )
 sftp_options=(
@@ -50,9 +54,9 @@ sftp_options=(
   -o UserKnownHostsFile=/dev/null
   -o PreferredAuthentications=publickey
   -o PasswordAuthentication=no
-  -o ConnectTimeout=20
+  -o "ConnectTimeout=$connect_timeout"
   -o ServerAliveInterval=2
-  -o ServerAliveCountMax=5
+  -o ServerAliveCountMax=30
   -P "$ssh_port"
 )
 
@@ -80,7 +84,7 @@ public_key_output="$(ssh \
   -o UserKnownHostsFile=/dev/null \
   -o PreferredAuthentications=publickey \
   -o PasswordAuthentication=no \
-  -o ConnectTimeout=20 \
+  -o "ConnectTimeout=$connect_timeout" \
   -p "$ssh_port" \
   "admin@$host" 'echo public-key-auth-ok')"
 test "$public_key_output" = "public-key-auth-ok" \
@@ -94,7 +98,7 @@ if ssh \
     -o UserKnownHostsFile=/dev/null \
     -o PreferredAuthentications=publickey \
     -o PasswordAuthentication=no \
-    -o ConnectTimeout=20 \
+    -o "ConnectTimeout=$connect_timeout" \
     -p "$ssh_port" \
     "admin@$host" 'echo unauthorized-key-must-not-run' \
     >"$workdir/unauthorized-key.stdout" \

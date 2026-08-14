@@ -16,12 +16,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 MARKERS = (
     "NUMA: ACPI topology nodes=2",
+    "hmat_structures=2",
+    "NUMA: HMAT initiator=0 preferred=0 valid=1 latency_ps=10000 bandwidth_Bps=21474836480",
+    "NUMA: HMAT initiator=1 preferred=1 valid=1 latency_ps=10000 bandwidth_Bps=21474836480",
+    "VMM: x86 1 GiB page and SMP address-specific invalidation self-test passed",
     "NUMA: self-test passed nodes=2",
     "ownership=verified local_bytes=64 remote_bytes=128",
 )
 
 
 def main() -> int:
+    entry_source = (ROOT / "kernel/arch/x86_64/entry.S").read_text()
+    platform_source = (ROOT / "kernel/arch/x86_64/early.c").read_text()
+    if entry_source.count("orq $0x200, %rax") < 2:
+        raise RuntimeError("x86 user entry must enable RFLAGS.IF")
+    if "IDT_PRESENT | UINT8_C(0x60) | IDT_TRAP_GATE" not in platform_source:
+        raise RuntimeError("x86 syscall vector must use an interruptible trap gate")
     sources = {
         "XAIOS_X86_64_IMAGE": ROOT / "build/xaios-x86_64.img",
         "XAIOS_X86_TEST_BLOCK_IMAGE": ROOT / "build/xaios-x86-virtio-test.img",
@@ -71,7 +81,7 @@ def main() -> int:
                     output.append(line)
                     joined = "".join(output)
                     if all(marker in joined for marker in MARKERS):
-                        print("qemu-x86_64-numa-gate: two-node SRAT/SLIT allocation and telemetry passed")
+                        print("qemu-x86_64-numa-gate: SRAT/SLIT/HMAT placement, 1-GiB mapping, and SMP TLB shootdown passed")
                         return 0
                     if "Remaining: 0 components" in joined:
                         break

@@ -1,6 +1,7 @@
 #include <xaios/child_channel.h>
 
 #include <xaios/assert.h>
+#include <xaios/kheap.h>
 #include <xaios/klog.h>
 #include <xaios/spinlock.h>
 
@@ -22,7 +23,7 @@ typedef struct xaios_child_channel {
   xaios_child_ring_t child_to_parent;
 } xaios_child_channel_t;
 
-static xaios_child_channel_t g_channels[XAIOS_CHILD_CHANNEL_CAPACITY];
+static xaios_child_channel_t *g_channels;
 static xaios_spinlock_t g_channel_lock = XAIOS_SPINLOCK_INIT;
 static uint64_t g_next_channel_id;
 
@@ -66,7 +67,9 @@ static uint64_t ring_read(xaios_child_ring_t *ring, uint8_t *data,
 }
 
 void child_channel_init(void) {
-  bytes_zero(g_channels, sizeof(g_channels));
+  g_channels = (xaios_child_channel_t *)kheap_calloc(
+      sizeof(*g_channels) * XAIOS_CHILD_CHANNEL_CAPACITY, 64U);
+  kassert(g_channels != 0);
   g_next_channel_id = 1U;
   xaios_spin_init(&g_channel_lock);
   klog("child-channel: initialized capacity=%u bytes=%u\n",
@@ -221,6 +224,7 @@ xaios_status_t child_channel_release(uint64_t channel_id,
 }
 
 void child_channel_self_test(void) {
+  uint64_t capacity_ids[XAIOS_CHILD_CHANNEL_CAPACITY];
   uint64_t channel_id = 0U;
   uint64_t size = 0U;
   uint64_t status = 0U;
@@ -256,5 +260,16 @@ void child_channel_self_test(void) {
   kassert(child_channel_status(channel_id, 101U, &status) == XAIOS_OK);
   kassert((uint32_t)status == XAIOS_CHILD_CHANNEL_CANCELLED);
   kassert(child_channel_release(channel_id, 101U) == XAIOS_OK);
+
+  for (uint32_t i = 0U; i < XAIOS_CHILD_CHANNEL_CAPACITY; ++i) {
+    kassert(child_channel_open(101U, UINT64_C(1000) + i,
+                               &capacity_ids[i]) == XAIOS_OK);
+    kassert(child_channel_cancel(capacity_ids[i], 101U) == XAIOS_OK);
+  }
+  kassert(child_channel_open(101U, UINT64_C(2000), &channel_id) ==
+          XAIOS_ERR_BUSY);
+  for (uint32_t i = 0U; i < XAIOS_CHILD_CHANNEL_CAPACITY; ++i) {
+    kassert(child_channel_release(capacity_ids[i], 101U) == XAIOS_OK);
+  }
   klog("child-channel: self-test passed\n");
 }

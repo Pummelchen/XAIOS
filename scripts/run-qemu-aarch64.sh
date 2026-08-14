@@ -152,8 +152,9 @@ esac
 case "$msi_controller" in
   auto) ;;
   gicv2m) machine_options="$machine_options,msi=gicv2m" ;;
+  its) machine_options="$machine_options,its=on,msi=its" ;;
   *)
-    printf '%s\n' "error: XAIOS_QEMU_MSI_CONTROLLER must be auto or gicv2m" >&2
+    printf '%s\n' "error: XAIOS_QEMU_MSI_CONTROLLER must be auto, gicv2m, or its" >&2
     exit 2
     ;;
 esac
@@ -191,7 +192,7 @@ fi
 
 if [ "$dry_run" -eq 0 ] && [ ! -f "$persistent_image" ]; then
   printf '%s\n' "note: persistent image not found, creating: $persistent_image"
-  dd if=/dev/zero of="$persistent_image" bs=512 count=8192 status=none
+  dd if=/dev/zero of="$persistent_image" bs=512 count=32768 status=none
 fi
 
 if [ "$dry_run" -eq 0 ] && [ ! -f "$model_volume_image" ]; then

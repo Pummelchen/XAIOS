@@ -6,6 +6,8 @@
 
 #define XAIOS_RELEASE_PUBLIC_KEY_HEX                                      \
   "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+#define XAIOS_RECOVERY_PUBLIC_KEY_HEX                                     \
+  "5c34b6582a13d14a954e082f333df33b0ba6222fb019cf3ad45ae3ed5e9f9de4"
 
 void security_policy_init(void);
 xaios_status_t security_authorize_capability(const char *operation,
@@ -34,6 +36,13 @@ xaios_status_t security_validate_update_signature(const char *signature);
 xaios_status_t security_verify_release_signature(
     const void *message, uint32_t message_size,
     const uint8_t signature[64]);
+xaios_status_t security_verify_signature_with_key(
+    const void *message, uint32_t message_size, const uint8_t signature[64],
+    const uint8_t public_key[32]);
+int security_release_key_matches(const uint8_t public_key[32]);
+int security_recovery_key_matches(const uint8_t public_key[32]);
+xaios_status_t security_set_release_key(const uint8_t public_key[32]);
+void security_get_release_key(uint8_t public_key[32]);
 xaios_status_t security_validate_sandbox_path(const char *path);
 xaios_status_t security_reject_credential_material(const char *text);
 xaios_status_t security_reject_credential_material_buffer(const char *text,

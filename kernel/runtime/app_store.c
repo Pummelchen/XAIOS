@@ -7,6 +7,26 @@
 
 #define APP_PATH_MAX 96U
 #define APP_SIGNATURE_HEX_BYTES 128U
+#define APP_PUBLIC_KEY_BYTES 32U
+#define APP_PUBLIC_KEY_HEX_BYTES 64U
+#define APP_TRUST_CHAIN_MAX 4096U
+#define APP_TRUST_LINE_MAX 384U
+#define APP_REVOKED_KEY_MAX 8U
+
+typedef struct app_trust_state {
+  uint32_t generation;
+  uint8_t active_key[APP_PUBLIC_KEY_BYTES];
+  uint32_t revoked_count;
+  uint8_t revoked_keys[APP_REVOKED_KEY_MAX][APP_PUBLIC_KEY_BYTES];
+} app_trust_state_t;
+
+static xaios_status_t validate_trust_chain(const char *data, uint64_t size,
+                                           app_trust_state_t *state);
+static xaios_status_t parse_catalog_identity(const char *data, uint64_t size,
+                                             uint32_t *generation);
+static xaios_status_t copy_if_present(const char *source, const char *target);
+static xaios_status_t read_file_alloc(const char *path, uint64_t maximum,
+                                      void **data, uint64_t *size);
 
 static void bytes_zero(void *buffer, uint64_t size) {
   uint8_t *bytes = (uint8_t *)buffer;
@@ -38,6 +58,24 @@ static int bytes_equal(const uint8_t *left, const uint8_t *right,
   uint8_t difference = 0U;
   for (uint64_t i = 0U; i < size; ++i) difference |= left[i] ^ right[i];
   return difference == 0U;
+}
+
+static int trust_key_is_revoked(const app_trust_state_t *state,
+                                const uint8_t key[APP_PUBLIC_KEY_BYTES]) {
+  for (uint32_t i = 0U; i < state->revoked_count; ++i) {
+    if (bytes_equal(state->revoked_keys[i], key, APP_PUBLIC_KEY_BYTES))
+      return 1;
+  }
+  return 0;
+}
+
+static int trust_revoke_key(app_trust_state_t *state,
+                            const uint8_t key[APP_PUBLIC_KEY_BYTES]) {
+  if (trust_key_is_revoked(state, key)) return 1;
+  if (state->revoked_count >= APP_REVOKED_KEY_MAX) return 0;
+  bytes_copy(state->revoked_keys[state->revoked_count++], key,
+             APP_PUBLIC_KEY_BYTES);
+  return 1;
 }
 
 static int app_name_valid(const char *name) {
@@ -186,13 +224,14 @@ static xaios_status_t verify_signed_document(const char *data, uint64_t size,
                                              const char *prefix,
                                              uint64_t maximum,
                                              uint64_t *signed_size) {
-  static const char key_line[] =
-      "key=" XAIOS_RELEASE_PUBLIC_KEY_HEX "\n";
+  static const char key_prefix[] = "key=";
   static const char signature_key[] = "signature=";
   uint64_t prefix_length = text_length(prefix);
-  uint64_t key_length = sizeof(key_line) - 1U;
+  uint64_t key_length = sizeof(key_prefix) - 1U +
+                        APP_PUBLIC_KEY_HEX_BYTES + 1U;
   uint64_t signature_offset = UINT64_MAX;
   uint8_t signature[64];
+  uint8_t public_key[APP_PUBLIC_KEY_BYTES];
   if (data == 0 || size > maximum ||
       size < prefix_length + key_length + sizeof(signature_key) +
                  APP_SIGNATURE_HEX_BYTES ||
@@ -222,10 +261,14 @@ static xaios_status_t verify_signed_document(const char *data, uint64_t size,
           size) {
     return XAIOS_ERR_INVALID;
   }
-  for (uint64_t i = 0U; i < key_length; ++i) {
-    if (data[signature_offset - key_length + i] != key_line[i])
-      return XAIOS_ERR_INVALID;
-  }
+  uint64_t key_offset = signature_offset - key_length;
+  for (uint64_t i = 0U; i < sizeof(key_prefix) - 1U; ++i)
+    if (data[key_offset + i] != key_prefix[i]) return XAIOS_ERR_INVALID;
+  if (data[signature_offset - 1U] != '\n' ||
+      !parse_hex(data + key_offset + sizeof(key_prefix) - 1U, public_key,
+                 sizeof(public_key)) ||
+      !security_release_key_matches(public_key))
+    return XAIOS_ERR_INVALID;
   if (!parse_hex(data + signature_offset + sizeof(signature_key) - 1U,
                  signature, sizeof(signature))) {
     return XAIOS_ERR_INVALID;
@@ -236,6 +279,157 @@ static xaios_status_t verify_signed_document(const char *data, uint64_t size,
     return XAIOS_ERR_INVALID;
   }
   if (signed_size != 0) *signed_size = signature_offset;
+  return XAIOS_OK;
+}
+
+static xaios_status_t parse_trust_line(const char *line, uint64_t size,
+                                       const app_trust_state_t *current,
+                                       app_trust_state_t *next) {
+  static const char prefix[] = "XAIOS-TRUST-V1:gen=";
+  static const char mode_field[] = ":mode=";
+  static const char active_field[] = ":active=";
+  static const char revoke_field[] = ":revoke=";
+  static const char signer_field[] = ":signer=";
+  static const char signature_field[] = ":sig=";
+  uint64_t cursor = sizeof(prefix) - 1U;
+  uint64_t start;
+  uint64_t generation = 0U;
+  uint8_t active[APP_PUBLIC_KEY_BYTES];
+  uint8_t revoked[APP_PUBLIC_KEY_BYTES];
+  uint8_t signer[APP_PUBLIC_KEY_BYTES];
+  uint8_t signature[64];
+  int recovery = 0;
+  if (line == 0 || current == 0 || next == 0 || size > APP_TRUST_LINE_MAX ||
+      size < sizeof(prefix) + 250U || line[size - 1U] != '\n')
+    return XAIOS_ERR_INVALID;
+  for (uint64_t i = 0U; i < sizeof(prefix) - 1U; ++i)
+    if (line[i] != prefix[i]) return XAIOS_ERR_INVALID;
+  start = cursor;
+  while (cursor < size && line[cursor] >= '0' && line[cursor] <= '9')
+    ++cursor;
+  if (!parse_u64(line + start, cursor - start, &generation) ||
+      generation <= current->generation || generation > UINT32_MAX)
+    return XAIOS_ERR_INVALID;
+#define TRUST_EXPECT(field)                                                   \
+  do {                                                                        \
+    for (uint64_t i = 0U; i < sizeof(field) - 1U; ++i)                        \
+      if (cursor + i >= size || line[cursor + i] != field[i])                 \
+        return XAIOS_ERR_INVALID;                                              \
+    cursor += sizeof(field) - 1U;                                              \
+  } while (0)
+  TRUST_EXPECT(mode_field);
+  if (cursor + 6U <= size && line[cursor] == 'r' && line[cursor + 1U] == 'o' &&
+      line[cursor + 2U] == 't' && line[cursor + 3U] == 'a' &&
+      line[cursor + 4U] == 't' && line[cursor + 5U] == 'e') {
+    cursor += 6U;
+  } else if (cursor + 8U <= size && line[cursor] == 'r' &&
+             line[cursor + 1U] == 'e' && line[cursor + 2U] == 'c' &&
+             line[cursor + 3U] == 'o' && line[cursor + 4U] == 'v' &&
+             line[cursor + 5U] == 'e' && line[cursor + 6U] == 'r' &&
+             line[cursor + 7U] == 'y') {
+    recovery = 1;
+    cursor += 8U;
+  } else {
+    return XAIOS_ERR_INVALID;
+  }
+  TRUST_EXPECT(active_field);
+  if (cursor + APP_PUBLIC_KEY_HEX_BYTES > size ||
+      !parse_hex(line + cursor, active, sizeof(active)))
+    return XAIOS_ERR_INVALID;
+  cursor += APP_PUBLIC_KEY_HEX_BYTES;
+  TRUST_EXPECT(revoke_field);
+  if (cursor + APP_PUBLIC_KEY_HEX_BYTES > size ||
+      !parse_hex(line + cursor, revoked, sizeof(revoked)))
+    return XAIOS_ERR_INVALID;
+  cursor += APP_PUBLIC_KEY_HEX_BYTES;
+  TRUST_EXPECT(signer_field);
+  if (cursor + APP_PUBLIC_KEY_HEX_BYTES > size ||
+      !parse_hex(line + cursor, signer, sizeof(signer)))
+    return XAIOS_ERR_INVALID;
+  cursor += APP_PUBLIC_KEY_HEX_BYTES;
+  uint64_t signed_size = cursor;
+  TRUST_EXPECT(signature_field);
+  if (cursor + APP_SIGNATURE_HEX_BYTES + 1U != size ||
+      !parse_hex(line + cursor, signature, sizeof(signature)))
+    return XAIOS_ERR_INVALID;
+  if (recovery) {
+    if (!security_recovery_key_matches(signer)) return XAIOS_ERR_INVALID;
+  } else if (!bytes_equal(signer, current->active_key, sizeof(signer)) ||
+             !bytes_equal(revoked, current->active_key, sizeof(revoked)) ||
+             trust_key_is_revoked(current, active)) {
+    return XAIOS_ERR_INVALID;
+  }
+  if (bytes_equal(active, revoked, sizeof(active)) ||
+      security_verify_signature_with_key(line, (uint32_t)signed_size,
+                                         signature, signer) != XAIOS_OK)
+    return XAIOS_ERR_INVALID;
+  *next = *current;
+  if (recovery) next->revoked_count = 0U;
+  if (!trust_revoke_key(next, revoked)) return XAIOS_ERR_NO_MEMORY;
+  next->generation = (uint32_t)generation;
+  bytes_copy(next->active_key, active, sizeof(active));
+#undef TRUST_EXPECT
+  return XAIOS_OK;
+}
+
+static void default_trust_state(app_trust_state_t *state) {
+  bytes_zero(state, sizeof(*state));
+  state->generation = 1U;
+  (void)parse_hex(XAIOS_RELEASE_PUBLIC_KEY_HEX, state->active_key,
+                  sizeof(state->active_key));
+}
+
+static xaios_status_t load_trust_and_catalog(const char *trust_path,
+                                             const char *catalog_path,
+                                             app_trust_state_t *trust) {
+  void *trust_data = 0;
+  uint64_t trust_size = 0U;
+  void *catalog_data = 0;
+  uint64_t catalog_size = 0U;
+  uint32_t generation = 0U;
+  default_trust_state(trust);
+  xaios_status_t trust_status = read_file_alloc(
+      trust_path, APP_TRUST_CHAIN_MAX, &trust_data, &trust_size);
+  if (trust_status == XAIOS_OK &&
+      validate_trust_chain((const char *)trust_data, trust_size, trust) !=
+          XAIOS_OK) {
+    kheap_free(trust_data);
+    return XAIOS_ERR_INVALID;
+  }
+  kheap_free(trust_data);
+  (void)security_set_release_key(trust->active_key);
+  xaios_status_t catalog_status = read_file_alloc(
+      catalog_path, XAIOS_APP_CATALOG_MAX, &catalog_data, &catalog_size);
+  if (trust_status == XAIOS_OK && catalog_status != XAIOS_OK) {
+    kheap_free(catalog_data);
+    return XAIOS_ERR_INVALID;
+  }
+  if (catalog_status == XAIOS_OK &&
+      parse_catalog_identity((const char *)catalog_data, catalog_size,
+                             &generation) != XAIOS_OK) {
+    kheap_free(catalog_data);
+    return XAIOS_ERR_INVALID;
+  }
+  kheap_free(catalog_data);
+  return catalog_status == XAIOS_ERR_INVALID ? XAIOS_OK : catalog_status;
+}
+
+static xaios_status_t validate_trust_chain(const char *data, uint64_t size,
+                                           app_trust_state_t *state) {
+  app_trust_state_t current;
+  default_trust_state(&current);
+  uint64_t cursor = 0U;
+  while (cursor < size) {
+    uint64_t start = cursor;
+    while (cursor < size && data[cursor] != '\n') ++cursor;
+    if (cursor >= size || cursor == start ||
+        parse_trust_line(data + start, cursor - start + 1U, &current,
+                         state) != XAIOS_OK)
+      return XAIOS_ERR_INVALID;
+    current = *state;
+    ++cursor;
+  }
+  *state = current;
   return XAIOS_OK;
 }
 
@@ -324,7 +518,7 @@ static xaios_status_t parse_manifest(const char *data, uint64_t size,
       !version_at_least(XAIOS_APP_OS_VERSION, manifest->minimum_os) ||
       manifest->minimum_abi > XAIOS_APP_KERNEL_ABI_VERSION ||
       manifest->binary_size == 0U ||
-      manifest->binary_size > XAIOS_MFS_MAX_FILE_BYTES_V4) {
+      manifest->binary_size > XAIOS_MFS_MAX_FILE_BYTES_V5) {
     return XAIOS_ERR_INVALID;
   }
   return XAIOS_OK;
@@ -381,7 +575,7 @@ static xaios_status_t load_version(const char *name, const char *leaf_prefix,
       parse_manifest((const char *)manifest_data, manifest_size, &manifest) !=
           XAIOS_OK ||
       !text_equal(name, manifest.name) ||
-      read_file_alloc(binary_path, XAIOS_MFS_MAX_FILE_BYTES_V4, &binary_data,
+      read_file_alloc(binary_path, XAIOS_MFS_MAX_FILE_BYTES_V5, &binary_data,
                       &binary_size) != XAIOS_OK ||
       binary_size != manifest.binary_size) {
     kheap_free(manifest_data);
@@ -409,10 +603,31 @@ static xaios_status_t load_version(const char *name, const char *leaf_prefix,
 }
 
 void app_store_init(void) {
+  static const char trust_path[] = "/state/xapt/trust";
+  static const char catalog_path[] = "/state/xapt/catalog";
+  static const char previous_trust_path[] = "/state/xapt/trust.previous";
+  static const char previous_catalog_path[] = "/state/xapt/catalog.previous";
+  app_trust_state_t trust;
   (void)mutable_fs_mkdir("/apps");
   (void)mutable_fs_mkdir("/update");
   (void)mutable_fs_mkdir("/update/xapt");
   (void)mutable_fs_mkdir("/state/xapt");
+  if (load_trust_and_catalog(trust_path, catalog_path, &trust) != XAIOS_OK) {
+    klog("app-store: interrupted trust/catalog activation detected\n");
+    if (copy_if_present(previous_trust_path, trust_path) != XAIOS_OK)
+      (void)mutable_fs_delete(trust_path);
+    if (copy_if_present(previous_catalog_path, catalog_path) != XAIOS_OK)
+      (void)mutable_fs_delete(catalog_path);
+    if (load_trust_and_catalog(trust_path, catalog_path, &trust) != XAIOS_OK) {
+      (void)mutable_fs_delete(trust_path);
+      (void)mutable_fs_delete(catalog_path);
+      default_trust_state(&trust);
+      klog("app-store: no verified rollback pair; bootstrap root retained\n");
+    } else {
+      klog("app-store: restored last verified trust/catalog pair\n");
+    }
+  }
+  (void)security_set_release_key(trust.active_key);
   klog("app-store: initialized format=%u os=%s abi=%u\n",
        XAIOS_APP_FORMAT_VERSION, XAIOS_APP_OS_VERSION,
        XAIOS_APP_KERNEL_ABI_VERSION);
@@ -433,7 +648,7 @@ void app_store_release(xaios_app_image_t *image) {
 static xaios_status_t copy_if_present(const char *source, const char *target) {
   void *data = 0;
   uint64_t size = 0U;
-  xaios_status_t status = read_file_alloc(source, XAIOS_MFS_MAX_FILE_BYTES_V4,
+  xaios_status_t status = read_file_alloc(source, XAIOS_MFS_MAX_FILE_BYTES_V5,
                                           &data, &size);
   if (status != XAIOS_OK) return status;
   status = mutable_fs_write(target, data, size);
@@ -476,7 +691,7 @@ xaios_status_t app_store_activate(const char *name) {
       parse_manifest((const char *)manifest_data, manifest_size, &manifest) !=
           XAIOS_OK ||
       !text_equal(name, manifest.name) ||
-      read_file_alloc(staged_binary, XAIOS_MFS_MAX_FILE_BYTES_V4, &binary_data,
+      read_file_alloc(staged_binary, XAIOS_MFS_MAX_FILE_BYTES_V5, &binary_data,
                       &binary_size) != XAIOS_OK ||
       binary_size != manifest.binary_size) {
     kheap_free(manifest_data);
@@ -552,7 +767,7 @@ xaios_status_t app_store_rollback(const char *name) {
       load_version(name, "previous", &previous) != XAIOS_OK ||
       read_file_alloc(previous_manifest, XAIOS_APP_MANIFEST_MAX, &manifest,
                       &manifest_size) != XAIOS_OK ||
-      read_file_alloc(previous_binary, XAIOS_MFS_MAX_FILE_BYTES_V4, &binary,
+      read_file_alloc(previous_binary, XAIOS_MFS_MAX_FILE_BYTES_V5, &binary,
                       &binary_size) != XAIOS_OK) {
     app_store_release(&previous);
     kheap_free(manifest);
@@ -574,46 +789,137 @@ xaios_status_t app_store_rollback(const char *name) {
 xaios_status_t app_store_activate_catalog(void) {
   static const char staged_path[] = "/update/xapt/catalog";
   static const char active_path[] = "/state/xapt/catalog";
+  static const char staged_trust_path[] = "/update/xapt/trust";
+  static const char active_trust_path[] = "/state/xapt/trust";
+  static const char previous_path[] = "/state/xapt/catalog.previous";
+  static const char previous_trust_path[] = "/state/xapt/trust.previous";
   void *data = 0;
   uint64_t size = 0U;
   void *active = 0;
   uint64_t active_size = 0U;
   uint32_t generation = 0U;
   uint32_t active_generation = 0U;
+  void *trust_data = 0;
+  uint64_t trust_size = 0U;
+  void *active_trust_data = 0;
+  uint64_t active_trust_size = 0U;
+  app_trust_state_t current_trust;
+  app_trust_state_t candidate_trust;
+  uint8_t original_key[APP_PUBLIC_KEY_BYTES];
+  default_trust_state(&current_trust);
+  if (read_file_alloc(active_trust_path, APP_TRUST_CHAIN_MAX,
+                      &active_trust_data, &active_trust_size) == XAIOS_OK &&
+      validate_trust_chain((const char *)active_trust_data, active_trust_size,
+                           &current_trust) != XAIOS_OK) {
+    klog("app-store: catalog reject stage=active-trust\n");
+    kheap_free(active_trust_data);
+    return XAIOS_ERR_INVALID;
+  }
+  (void)security_set_release_key(current_trust.active_key);
+  if (read_file_alloc(active_path, XAIOS_APP_CATALOG_MAX, &active,
+                      &active_size) == XAIOS_OK &&
+      parse_catalog_identity((const char *)active, active_size,
+                             &active_generation) != XAIOS_OK) {
+    klog("app-store: catalog reject stage=active-catalog\n");
+    kheap_free(active);
+    kheap_free(active_trust_data);
+    return XAIOS_ERR_INVALID;
+  }
+  candidate_trust = current_trust;
+  if (read_file_alloc(staged_trust_path, APP_TRUST_CHAIN_MAX, &trust_data,
+                      &trust_size) == XAIOS_OK) {
+    if (validate_trust_chain((const char *)trust_data, trust_size,
+                             &candidate_trust) != XAIOS_OK ||
+        candidate_trust.generation < current_trust.generation ||
+        (candidate_trust.generation == current_trust.generation &&
+         (trust_size != active_trust_size ||
+          !bytes_equal((const uint8_t *)trust_data,
+                       (const uint8_t *)active_trust_data, trust_size)))) {
+      klog("app-store: catalog reject stage=staged-trust current=%u candidate=%u\n",
+           current_trust.generation, candidate_trust.generation);
+      kheap_free(active_trust_data);
+      kheap_free(trust_data);
+      return XAIOS_ERR_INVALID;
+    }
+  }
+  security_get_release_key(original_key);
+  (void)security_set_release_key(candidate_trust.active_key);
   if (read_file_alloc(staged_path, XAIOS_APP_CATALOG_MAX, &data, &size) !=
           XAIOS_OK ||
       parse_catalog_identity((const char *)data, size, &generation) !=
           XAIOS_OK) {
+    klog("app-store: catalog reject stage=staged-catalog trust=%u\n",
+         candidate_trust.generation);
+    (void)security_set_release_key(original_key);
+    kheap_free(active_trust_data);
+    kheap_free(active);
+    kheap_free(trust_data);
     kheap_free(data);
     return XAIOS_ERR_INVALID;
   }
-  if (read_file_alloc(active_path, XAIOS_APP_CATALOG_MAX, &active,
-                      &active_size) == XAIOS_OK &&
-      parse_catalog_identity((const char *)active, active_size,
-                             &active_generation) == XAIOS_OK) {
+  if (active != 0) {
     if (generation < active_generation ||
         (generation == active_generation &&
          (size != active_size ||
           !bytes_equal((const uint8_t *)data, (const uint8_t *)active,
                        size)))) {
+      klog("app-store: catalog reject stage=catalog-replay active=%u staged=%u\n",
+           active_generation, generation);
       kheap_free(active);
+      (void)security_set_release_key(original_key);
+      kheap_free(active_trust_data);
+      kheap_free(trust_data);
       kheap_free(data);
       return XAIOS_ERR_INVALID;
     }
     if (generation == active_generation) {
       kheap_free(active);
+      kheap_free(active_trust_data);
+      kheap_free(trust_data);
       kheap_free(data);
       (void)mutable_fs_delete(staged_path);
+      (void)mutable_fs_delete(staged_trust_path);
       return XAIOS_OK;
     }
   }
-  kheap_free(active);
-  if (mutable_fs_write(active_path, data, size) != XAIOS_OK) {
+  if ((active_trust_data != 0 &&
+       mutable_fs_write(previous_trust_path, active_trust_data,
+                        active_trust_size) != XAIOS_OK) ||
+      (active != 0 &&
+       mutable_fs_write(previous_path, active, active_size) != XAIOS_OK)) {
+    (void)security_set_release_key(original_key);
+    kheap_free(active_trust_data);
+    kheap_free(trust_data);
     kheap_free(data);
     return XAIOS_ERR_IO;
   }
+  if ((trust_data != 0 &&
+       mutable_fs_write(active_trust_path, trust_data, trust_size) !=
+           XAIOS_OK) ||
+      mutable_fs_write(active_path, data, size) != XAIOS_OK) {
+    klog("app-store: catalog reject stage=write\n");
+    if (active_trust_data != 0)
+      (void)mutable_fs_write(active_trust_path, active_trust_data,
+                             active_trust_size);
+    else
+      (void)mutable_fs_delete(active_trust_path);
+    if (active != 0)
+      (void)mutable_fs_write(active_path, active, active_size);
+    else
+      (void)mutable_fs_delete(active_path);
+    (void)security_set_release_key(original_key);
+    kheap_free(active_trust_data);
+    kheap_free(trust_data);
+    kheap_free(data);
+    return XAIOS_ERR_IO;
+  }
+  kheap_free(active_trust_data);
+  kheap_free(active);
+  kheap_free(trust_data);
   kheap_free(data);
   (void)mutable_fs_delete(staged_path);
-  klog("app-store: activated catalog generation=%u\n", generation);
+  (void)mutable_fs_delete(staged_trust_path);
+  klog("app-store: activated catalog generation=%u trust_generation=%u\n",
+       generation, candidate_trust.generation);
   return XAIOS_OK;
 }

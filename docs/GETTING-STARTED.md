@@ -107,7 +107,7 @@ evidence. See [`VMWARE-FUSION.md`](./VMWARE-FUSION.md).
 | `make qemu-filesystem-gate` | Mutable filesystem operations |
 | `make qemu-network-suite` | Network stack (UDP/TCP) |
 | `make qemu-freebsd-network-suite` | FreeBSD 15.1 OpenSSH/SFTP/UDP Unix-reference interoperability |
-| `make qemu-docker-network-suite` | Debian 13 OpenSSH/SFTP/UDP/IPv6 interoperability plus MutableFS v3-to-v4 migration and reboot persistence |
+| `make qemu-docker-network-suite` | Debian 13 OpenSSH/SFTP/UDP/IPv6 interoperability plus MutableFS v3/v4-to-v5 migration and reboot persistence |
 | `make qemu-local-console-gate` | Wrong/correct local login, stateful prompt, filesystem commands, command errors and logout |
 | `make qemu-cpu-ai-suite` | CPU-only AI runtime |
 | `make qemu-regression-suite` | Full regression suite |
@@ -135,7 +135,7 @@ It requires QEMU, `qemu-img`, `xz`, and an ISO creator (`hdiutil`, `xorrisofs`,
 official Debian 13 Docker base and tests Ed25519 and password
 acceptance/rejection, default-disabled and malformed
 credential configurations, secure-entropy failure, persistent host identity,
-SFTP offsets, channel sharing, rekey, four simultaneous SSH sessions, reconnect
+SFTP offsets, channel sharing, rekey, simultaneous SSH sessions, reconnect
 recycling, UDP echo, and direct malformed/reordered/retransmitted TCP traffic:
 
 ```sh

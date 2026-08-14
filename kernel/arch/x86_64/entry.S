@@ -81,6 +81,7 @@ x86_64_irq_\vector:
 XAIOS_IRQ_NOERR 32
 XAIOS_IRQ_NOERR 33
 XAIOS_IRQ_NOERR 34
+XAIOS_IRQ_NOERR 35
 .irp vector,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127
 XAIOS_IRQ_NOERR \vector
 .endr
@@ -147,7 +148,7 @@ x86_64_enter_ring3:
   pushq %r13
   pushfq
   popq %rax
-  andq $~0x200, %rax
+  orq $0x200, %rax
   pushq %rax
   pushq $0x23
   pushq %r12
@@ -175,7 +176,7 @@ aarch64_enter_user_thread:
   pushq %r13
   pushfq
   popq %rax
-  andq $~0x200, %rax
+  orq $0x200, %rax
   pushq %rax
   pushq $0x23
   pushq %r12

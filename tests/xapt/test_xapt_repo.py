@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -59,7 +60,7 @@ class XaptRepositoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="xaios-xapt-test.") as temporary:
             root = Path(temporary)
             elf = root / "app.elf"
-            elf.write_bytes(b"\x7fELF" + b"x" * 131069)
+            elf.write_bytes(b"\x7fELF" + b"x" * 262141)
             result = self.run_tool(
                 "package", "--repository", str(root / "repo"),
                 "--elf", str(elf), "--name", "../bad", "--version", "1.0.0",
@@ -73,7 +74,7 @@ class XaptRepositoryTests(unittest.TestCase):
                 "--arch", "aarch64", "--capabilities", "2",
                 "--description", "large", ok=False,
             )
-            self.assertIn("no larger than 128 KiB", result.stdout)
+            self.assertIn("no larger than 256 KiB", result.stdout)
 
     def test_rejects_invalid_catalog_generation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xaios-xapt-test.") as temporary:
@@ -106,6 +107,47 @@ class XaptRepositoryTests(unittest.TestCase):
             payload.write_bytes(payload.read_bytes() + b"corrupt")
             failed = self.run_tool("verify", "--repository", str(repository), ok=False)
             self.assertIn("system payload mismatch", failed.stdout)
+
+    def test_trust_rotation_and_recovery_documents(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xaios-xapt-test.") as temporary:
+            repository = Path(temporary) / "repo"
+            self.run_tool(
+                "trust", "--repository", str(repository), "--generation", "2",
+                "--mode", "rotate", "--active", "v2", "--revoke", "v1",
+                "--signer", "v1",
+            )
+            first = (repository / "trust.txt").read_bytes()
+            self.assertIn(b"gen=2:mode=rotate", first)
+            self.run_tool(
+                "trust", "--repository", str(repository), "--generation", "3",
+                "--mode", "recovery", "--active", "v1", "--revoke", "v2",
+                "--signer", "recovery", "--append",
+            )
+            chain = (repository / "trust.txt").read_bytes()
+            self.assertEqual(chain.count(b"XAIOS-TRUST-V1:"), 2)
+
+    def test_normal_rotation_cannot_reactivate_revoked_key(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xaios-xapt-test.") as temporary:
+            repository = Path(temporary)
+            self.run_tool(
+                "trust", "--repository", str(repository), "--generation", "2",
+                "--mode", "rotate", "--active", "v2", "--revoke", "v1",
+                "--signer", "v1")
+            self.run_tool(
+                "trust", "--repository", str(repository), "--generation", "3",
+                "--mode", "rotate", "--active", "v1", "--revoke", "v2",
+                "--signer", "v2", "--append")
+            sys.path.insert(0, str(ROOT / "tools"))
+            import xaios_xapt_repo
+            with self.assertRaises(ValueError):
+                xaios_xapt_repo.verify_trust_chain(
+                    (repository / "trust.txt").read_bytes())
+            rejected = self.run_tool(
+                "trust", "--repository", str(repository), "--generation", "4",
+                "--mode", "recovery", "--active", "v2", "--revoke", "v1",
+                "--signer", "v1", ok=False,
+            )
+            self.assertIn("recovery transition must use", rejected.stdout)
 
 
 if __name__ == "__main__":

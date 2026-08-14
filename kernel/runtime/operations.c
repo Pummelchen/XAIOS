@@ -583,6 +583,8 @@ xaios_status_t operations_execute(const char *command, char *output,
     else if (status == XAIOS_OK)
       append_ipv6(output, capacity, &used, &address);
     else if (status == XAIOS_ERR_BUSY) append(output, capacity, &used, "pending");
+    else if (status == XAIOS_ERR_INVALID)
+      append(output, capacity, &used, "dnssec-unverified");
     else append_status(output, capacity, &used, status);
     append(output, capacity, &used, "\n");
     if (status == XAIOS_ERR_BUSY) status = XAIOS_OK;

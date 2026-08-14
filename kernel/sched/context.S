@@ -1,3 +1,4 @@
+.arch armv8.5-a+sve2
 .section .text.context, "ax"
 
 /* IRQ full-frame entry: saves integer, exception and SIMD/FP state.
@@ -19,7 +20,10 @@
 .global irq_entry_full
 .type irq_entry_full, %function
 irq_entry_full:
-  sub sp, sp, #816
+  /* Reserve the fixed frame plus maximum architectural SVE state:
+   * 32 * 256-byte Z, 16 * 32-byte P, and one 32-byte FFR slot. */
+  sub sp, sp, #2, lsl #12
+  sub sp, sp, #1360
   stp x0, x1, [sp, #0]
   stp x2, x3, [sp, #16]
   stp x4, x5, [sp, #32]
@@ -36,7 +40,8 @@ irq_entry_full:
   stp x26, x27, [sp, #208]
   stp x28, x29, [sp, #224]
   str x30, [sp, #240]
-  add x1, sp, #816
+  add x1, sp, #2, lsl #12
+  add x1, x1, #1360
   str x1, [sp, #248]
   mrs x1, sp_el0
   str x1, [sp, #256]
@@ -65,31 +70,149 @@ irq_entry_full:
   str x1, [sp, #800]
   mrs x1, fpsr
   str x1, [sp, #808]
+  adrp x9, g_aarch64_sve_enabled
+  ldr x9, [x9, :lo12:g_aarch64_sve_enabled]
+  cbz x9, 40f
+  add x9, sp, #816
+  str z0, [x9, #0, mul vl]
+  str z1, [x9, #1, mul vl]
+  str z2, [x9, #2, mul vl]
+  str z3, [x9, #3, mul vl]
+  str z4, [x9, #4, mul vl]
+  str z5, [x9, #5, mul vl]
+  str z6, [x9, #6, mul vl]
+  str z7, [x9, #7, mul vl]
+  str z8, [x9, #8, mul vl]
+  str z9, [x9, #9, mul vl]
+  str z10, [x9, #10, mul vl]
+  str z11, [x9, #11, mul vl]
+  str z12, [x9, #12, mul vl]
+  str z13, [x9, #13, mul vl]
+  str z14, [x9, #14, mul vl]
+  str z15, [x9, #15, mul vl]
+  str z16, [x9, #16, mul vl]
+  str z17, [x9, #17, mul vl]
+  str z18, [x9, #18, mul vl]
+  str z19, [x9, #19, mul vl]
+  str z20, [x9, #20, mul vl]
+  str z21, [x9, #21, mul vl]
+  str z22, [x9, #22, mul vl]
+  str z23, [x9, #23, mul vl]
+  str z24, [x9, #24, mul vl]
+  str z25, [x9, #25, mul vl]
+  str z26, [x9, #26, mul vl]
+  str z27, [x9, #27, mul vl]
+  str z28, [x9, #28, mul vl]
+  str z29, [x9, #29, mul vl]
+  str z30, [x9, #30, mul vl]
+  str z31, [x9, #31, mul vl]
+  add x10, x9, #2, lsl #12
+  str p0, [x10, #0, mul vl]
+  str p1, [x10, #1, mul vl]
+  str p2, [x10, #2, mul vl]
+  str p3, [x10, #3, mul vl]
+  str p4, [x10, #4, mul vl]
+  str p5, [x10, #5, mul vl]
+  str p6, [x10, #6, mul vl]
+  str p7, [x10, #7, mul vl]
+  str p8, [x10, #8, mul vl]
+  str p9, [x10, #9, mul vl]
+  str p10, [x10, #10, mul vl]
+  str p11, [x10, #11, mul vl]
+  str p12, [x10, #12, mul vl]
+  str p13, [x10, #13, mul vl]
+  str p14, [x10, #14, mul vl]
+  str p15, [x10, #15, mul vl]
+  rdffr p0.b
+  add x11, x10, #512
+  str p0, [x11]
+40:
+  mov x19, sp
   mov x0, sp
   adrp x1, aarch64_irq_handler
   add x1, x1, :lo12:aarch64_irq_handler
   blr x1
-  mov sp, x0
+  mov x12, x0
+  adrp x9, g_aarch64_sve_enabled
+  ldr x9, [x9, :lo12:g_aarch64_sve_enabled]
+  cbz x9, 41f
+  add x9, x19, #816
+  add x10, x9, #2, lsl #12
+  add x11, x10, #512
+  ldr p0, [x11]
+  wrffr p0.b
+  ldr p0, [x10, #0, mul vl]
+  ldr p1, [x10, #1, mul vl]
+  ldr p2, [x10, #2, mul vl]
+  ldr p3, [x10, #3, mul vl]
+  ldr p4, [x10, #4, mul vl]
+  ldr p5, [x10, #5, mul vl]
+  ldr p6, [x10, #6, mul vl]
+  ldr p7, [x10, #7, mul vl]
+  ldr p8, [x10, #8, mul vl]
+  ldr p9, [x10, #9, mul vl]
+  ldr p10, [x10, #10, mul vl]
+  ldr p11, [x10, #11, mul vl]
+  ldr p12, [x10, #12, mul vl]
+  ldr p13, [x10, #13, mul vl]
+  ldr p14, [x10, #14, mul vl]
+  ldr p15, [x10, #15, mul vl]
+  ldr z0, [x9, #0, mul vl]
+  ldr z1, [x9, #1, mul vl]
+  ldr z2, [x9, #2, mul vl]
+  ldr z3, [x9, #3, mul vl]
+  ldr z4, [x9, #4, mul vl]
+  ldr z5, [x9, #5, mul vl]
+  ldr z6, [x9, #6, mul vl]
+  ldr z7, [x9, #7, mul vl]
+  ldr z8, [x9, #8, mul vl]
+  ldr z9, [x9, #9, mul vl]
+  ldr z10, [x9, #10, mul vl]
+  ldr z11, [x9, #11, mul vl]
+  ldr z12, [x9, #12, mul vl]
+  ldr z13, [x9, #13, mul vl]
+  ldr z14, [x9, #14, mul vl]
+  ldr z15, [x9, #15, mul vl]
+  ldr z16, [x9, #16, mul vl]
+  ldr z17, [x9, #17, mul vl]
+  ldr z18, [x9, #18, mul vl]
+  ldr z19, [x9, #19, mul vl]
+  ldr z20, [x9, #20, mul vl]
+  ldr z21, [x9, #21, mul vl]
+  ldr z22, [x9, #22, mul vl]
+  ldr z23, [x9, #23, mul vl]
+  ldr z24, [x9, #24, mul vl]
+  ldr z25, [x9, #25, mul vl]
+  ldr z26, [x9, #26, mul vl]
+  ldr z27, [x9, #27, mul vl]
+  ldr z28, [x9, #28, mul vl]
+  ldr z29, [x9, #29, mul vl]
+  ldr z30, [x9, #30, mul vl]
+  ldr z31, [x9, #31, mul vl]
+  b 42f
+41:
+  ldp q0, q1, [x12, #288]
+  ldp q2, q3, [x12, #320]
+  ldp q4, q5, [x12, #352]
+  ldp q6, q7, [x12, #384]
+  ldp q8, q9, [x12, #416]
+  ldp q10, q11, [x12, #448]
+  ldp q12, q13, [x12, #480]
+  ldp q14, q15, [x12, #512]
+  ldp q16, q17, [x12, #544]
+  ldp q18, q19, [x12, #576]
+  ldp q20, q21, [x12, #608]
+  ldp q22, q23, [x12, #640]
+  ldp q24, q25, [x12, #672]
+  ldp q26, q27, [x12, #704]
+  ldp q28, q29, [x12, #736]
+  ldp q30, q31, [x12, #768]
+42:
+  mov sp, x12
   ldr x1, [sp, #800]
   msr fpcr, x1
   ldr x1, [sp, #808]
   msr fpsr, x1
-  ldp q0, q1, [sp, #288]
-  ldp q2, q3, [sp, #320]
-  ldp q4, q5, [sp, #352]
-  ldp q6, q7, [sp, #384]
-  ldp q8, q9, [sp, #416]
-  ldp q10, q11, [sp, #448]
-  ldp q12, q13, [sp, #480]
-  ldp q14, q15, [sp, #512]
-  ldp q16, q17, [sp, #544]
-  ldp q18, q19, [sp, #576]
-  ldp q20, q21, [sp, #608]
-  ldp q22, q23, [sp, #640]
-  ldp q24, q25, [sp, #672]
-  ldp q26, q27, [sp, #704]
-  ldp q28, q29, [sp, #736]
-  ldp q30, q31, [sp, #768]
   ldr x1, [sp, #256]
   msr sp_el0, x1
   ldr x1, [sp, #264]
@@ -112,7 +235,8 @@ irq_entry_full:
   ldp x26, x27, [sp, #208]
   ldp x28, x29, [sp, #224]
   ldr x30, [sp, #240]
-  add sp, sp, #816
+  add sp, sp, #2, lsl #12
+  add sp, sp, #1360
   eret
 .size irq_entry_full, . - irq_entry_full
 

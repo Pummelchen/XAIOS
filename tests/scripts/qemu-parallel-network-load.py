@@ -407,14 +407,27 @@ def main() -> int:
         if shutil.which(tool) is None:
             raise SystemExit(f"error: required tool is unavailable: {tool}")
     run_checked(["docker", "info", "--format", "{{.ServerVersion}} {{.Architecture}}"], 30)
-    run_checked(
-        [
-            "docker", "build", "--pull",
-            "--file", "tests/network/Dockerfile.debian13",
-            "--tag", IMAGE, ".",
-        ],
-        300,
-    )
+    try:
+        run_checked(
+            [
+                "docker", "build", "--pull",
+                "--file", "tests/network/Dockerfile.debian13",
+                "--tag", IMAGE, ".",
+            ],
+            300,
+        )
+    except subprocess.CalledProcessError:
+        if subprocess.run(
+            ["docker", "image", "inspect", IMAGE], cwd=ROOT,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=30,
+        ).returncode != 0:
+            raise
+        print(
+            "warning: registry refresh failed; using the existing local "
+            f"{IMAGE} image",
+            flush=True,
+        )
     debian_version = subprocess.run(
         [
             "docker", "run", "--rm", IMAGE, "sh", "-c",
@@ -533,7 +546,7 @@ def main() -> int:
 
         saturation, _, saturation_start, audit_request, audit_output = start_stress_clients(
             "saturation", key_dir, coord_dir, ssh_port, udp_port,
-            workers=2, cycles=8, udp_count=100, minimum_seconds=20,
+            workers=16, cycles=2, udp_count=100, minimum_seconds=30,
             capture_audit=True,
         )
         try:
@@ -559,7 +572,7 @@ def main() -> int:
             stop_group(saturation)
             raise
         assert_qemu_healthy(qemu, qemu_log_path)
-        phases["four_connection_two_channel_saturation"] = "passed"
+        phases["thirty_two_connection_two_channel_saturation"] = "passed"
         phases["over_capacity_rejection"] = "passed"
         wait_for_ssh_recovery(key_dir / "authorized", ssh_port)
         phases["capacity_reclamation"] = "passed"
@@ -599,10 +612,10 @@ def main() -> int:
             },
             "phases": phases,
             "workload": {
-                "declared_connection_limit": 4,
-                "saturation_connections": 4,
+                "declared_connection_limit": 32,
+                "saturation_connections": 32,
                 "channels_per_connection": 2,
-                "sftp_cycles": 40,
+                "sftp_cycles": 64,
                 "reconnects": 40,
                 "udp_round_trips": 330,
                 "over_capacity_rejections": 2,

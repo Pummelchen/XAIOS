@@ -12,7 +12,8 @@
 #define EARLY_IDENTITY_SIZE UINT64_C(0x100000000)
 #define EARLY_L1_TABLES 4
 #define EARLY_KERNEL_L3_TABLES 16
-#define USER_ASPACE_L3_TABLES 3U
+#define USER_CODE_WINDOWS 8U
+#define USER_ASPACE_L3_TABLES (USER_CODE_WINDOWS + 1U)
 
 #define PTE_VALID UINT64_C(1)
 #define PTE_TABLE UINT64_C(1 << 1)
@@ -58,7 +59,6 @@ static uint64_t g_mmio_end;
 
 #define USER_CODE_L2_INDEX \
   ((uint32_t)((XAIOS_USER_BASE >> 21U) & UINT64_C(0x1ff)))
-#define USER_CODE_SECOND_L2_INDEX (USER_CODE_L2_INDEX + 1U)
 #define USER_STACK_L2_INDEX \
   ((uint32_t)(((XAIOS_USER_STACK_TOP - PAGE_SIZE) >> 21U) & UINT64_C(0x1ff)))
 
@@ -638,6 +638,20 @@ xaios_status_t vmm_unmap_large_page(uint64_t virtual_address) {
   return XAIOS_OK;
 }
 
+xaios_status_t vmm_map_gigantic_page(uint64_t virtual_address,
+                                    uint64_t physical_address,
+                                    uint32_t flags) {
+  (void)virtual_address;
+  (void)physical_address;
+  (void)flags;
+  return XAIOS_ERR_UNSUPPORTED;
+}
+
+xaios_status_t vmm_unmap_gigantic_page(uint64_t virtual_address) {
+  (void)virtual_address;
+  return XAIOS_ERR_UNSUPPORTED;
+}
+
 xaios_status_t vmm_validate_user_buffer(uint64_t virtual_address, uint64_t size,
                                        uint32_t required_flags) {
   if (size == 0 || virtual_address < XAIOS_USER_BASE ||
@@ -729,16 +743,13 @@ static xaios_status_t user_l3_slot(uint64_t virtual_address,
                                    uint32_t *out_slot) {
   uint32_t l2_index =
       (uint32_t)((virtual_address >> 21U) & UINT64_C(0x1ff));
-  if (l2_index == USER_CODE_L2_INDEX) {
-    *out_slot = 0U;
-    return XAIOS_OK;
-  }
-  if (l2_index == USER_CODE_SECOND_L2_INDEX) {
-    *out_slot = 1U;
+  if (l2_index >= USER_CODE_L2_INDEX &&
+      l2_index < USER_CODE_L2_INDEX + USER_CODE_WINDOWS) {
+    *out_slot = l2_index - USER_CODE_L2_INDEX;
     return XAIOS_OK;
   }
   if (l2_index == USER_STACK_L2_INDEX) {
-    *out_slot = 2U;
+    *out_slot = USER_CODE_WINDOWS;
     return XAIOS_OK;
   }
   return XAIOS_ERR_INVALID;
@@ -751,7 +762,7 @@ void vmm_create_user_aspace(uint64_t l3_tables[], uint32_t max_tables,
   for (uint32_t i = 0; i < max_tables; ++i) {
     l3_tables[i] = 0;
   }
-  /* Two 2 MiB code/data spans and one independent stack span. */
+  /* Eight 2 MiB code/data spans and one independent stack span. */
   for (uint32_t i = 0; i < USER_ASPACE_L3_TABLES; ++i) {
     void *page = pmm_alloc_page();
     kassert(page != 0);
@@ -815,21 +826,21 @@ void vmm_switch_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
   kassert(l2 != 0);
 
   /* Clear every owned slot before installing the next process. */
-  l2[USER_CODE_L2_INDEX] = 0;
-  l2[USER_CODE_SECOND_L2_INDEX] = 0;
+  for (uint32_t index = 0U; index < USER_CODE_WINDOWS; ++index) {
+    l2[USER_CODE_L2_INDEX + index] = 0U;
+  }
   l2[USER_STACK_L2_INDEX] = 0;
   if (l3_tables != 0 && l3_count >= USER_ASPACE_L3_TABLES) {
-    if (l3_tables[0] != 0) {
-      l2[USER_CODE_L2_INDEX] =
-          table_descriptor((uint64_t *)(uintptr_t)l3_tables[0]);
+    for (uint32_t index = 0U; index < USER_CODE_WINDOWS; ++index) {
+      if (l3_tables[index] != 0U) {
+        l2[USER_CODE_L2_INDEX + index] =
+            table_descriptor((uint64_t *)(uintptr_t)l3_tables[index]);
+      }
     }
-    if (l3_tables[1] != 0) {
-      l2[USER_CODE_SECOND_L2_INDEX] =
-          table_descriptor((uint64_t *)(uintptr_t)l3_tables[1]);
-    }
-    if (l3_tables[2] != 0) {
+    if (l3_tables[USER_CODE_WINDOWS] != 0U) {
       l2[USER_STACK_L2_INDEX] =
-          table_descriptor((uint64_t *)(uintptr_t)l3_tables[2]);
+          table_descriptor(
+              (uint64_t *)(uintptr_t)l3_tables[USER_CODE_WINDOWS]);
     }
   }
 

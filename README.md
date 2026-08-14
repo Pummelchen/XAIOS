@@ -34,7 +34,8 @@ are documented in the [C99 libc Wiki page](./wiki/C99-Libc.md).
 The native [`xapt` updater](./wiki/Xapt-Package-Updates.md) installs and updates
 independently signed XAIOS applications without rebooting and stages signed OS
 images into the inactive A/B slot. Its current trust root is for development
-and QEMU use; production key custody and rotation remain an explicit gate.
+and QEMU use; production key custody and an operator-approved rotation process
+remain explicit gates.
 
 ## Model support status
 

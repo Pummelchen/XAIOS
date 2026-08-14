@@ -7,6 +7,9 @@
 #include <xaios/timer.h>
 #include <xaios/topology.h>
 #include <xaios/user.h>
+#if defined(__aarch64__)
+#include <xaios/aarch64_sve.h>
+#endif
 
 /* Admiral Janeway — “Just enough to bring chaos to order.” */
 
@@ -102,6 +105,20 @@ static void bytes_zero(void *buffer, uint64_t size) {
   }
 }
 
+static void bytes_copy(void *destination, const void *source, uint64_t size) {
+  uint8_t *output = (uint8_t *)destination;
+  const uint8_t *input = (const uint8_t *)source;
+  for (uint64_t i = 0U; i < size; ++i) output[i] = input[i];
+}
+
+static uint64_t architecture_state_size(void) {
+#if defined(__aarch64__)
+  return aarch64_sve_state_size();
+#else
+  return 0U;
+#endif
+}
+
 /* Find task in local CPU's task table (O(128) max, not O(32K)) */
 static xaios_sched_task_t *find_task_local(uint32_t cpu_id, uint32_t pid) {
   if (cpu_id >= g_cpu_capacity) {
@@ -178,6 +195,10 @@ static void free_task_slot(uint32_t cpu_id, xaios_sched_task_t *task) {
   if (index >= XAIOS_TASK_SLOTS_PER_CPU) {
     return;
   }
+
+  kheap_free(task->architecture_state);
+  task->architecture_state = 0;
+  task->architecture_state_size = 0U;
 
   uint32_t word = index >> 6U;
   uint32_t bit = index & 63U;
@@ -513,6 +534,15 @@ static xaios_status_t scheduler_register_on_cpu(
   slot->state = XAIOS_TASK_STATE_REGISTERED;
   slot->remaining_ticks = priority_slice(priority);
   slot->assigned_cpu = cpu;
+  slot->architecture_state_size = architecture_state_size();
+  if (slot->architecture_state_size != 0U) {
+    slot->architecture_state =
+        kheap_calloc(slot->architecture_state_size, 64U);
+    if (slot->architecture_state == 0) {
+      free_task_slot(cpu, slot);
+      return XAIOS_ERR_NO_MEMORY;
+    }
+  }
 
   klog("scheduler: registered pid=%u priority=%u cpu=%u\n",
        pid, (unsigned)priority, cpu);
@@ -609,7 +639,7 @@ void scheduler_unlock(void) {
   }
 }
 
-void scheduler_tick(xaios_context_frame_t *irq_frame) {
+void scheduler_tick(xaios_context_frame_t *irq_frame, void *architecture_state) {
   if (g_initialized == 0) {
     return;
   }
@@ -642,6 +672,10 @@ void scheduler_tick(xaios_context_frame_t *irq_frame) {
     xaios_sched_task_t *current = find_task_local(cpu, current_pid);
     if (current != 0) {
       current->frame = *irq_frame;
+      if (architecture_state != 0 && current->architecture_state != 0) {
+        bytes_copy(current->architecture_state, architecture_state,
+                   current->architecture_state_size);
+      }
       ++current->tick_count;
       if (current->remaining_ticks > 0) {
         --current->remaining_ticks;
@@ -727,6 +761,10 @@ void scheduler_tick(xaios_context_frame_t *irq_frame) {
 
   user_switch_address_space(next_pid);
   *irq_frame = next_task->frame;
+  if (architecture_state != 0 && next_task->architecture_state != 0) {
+    bytes_copy(architecture_state, next_task->architecture_state,
+               next_task->architecture_state_size);
+  }
 }
 
 void scheduler_yield(void) {
@@ -879,13 +917,13 @@ void scheduler_self_test(void) {
   bytes_zero(&dummy_frame, sizeof(dummy_frame));
   dummy_frame.elr_el1 = 0x1000;
 
-  scheduler_tick(&dummy_frame);
+  scheduler_tick(&dummy_frame, 0);
   uint32_t picked = g_runqueues[cpu].current_pid;
   kassert(picked == 1 || picked == 2 || picked == 3);
 
   scheduler_lock();
   uint32_t before = g_runqueues[cpu].current_pid;
-  scheduler_tick(&dummy_frame);
+  scheduler_tick(&dummy_frame, 0);
   kassert(g_runqueues[cpu].current_pid == before);
   scheduler_unlock();
 

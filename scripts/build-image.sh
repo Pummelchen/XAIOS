@@ -367,6 +367,7 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   $KERNEL_BUILD_DIR/smmu.o
   $KERNEL_BUILD_DIR/pci.o
   $KERNEL_BUILD_DIR/gic.o
+  $KERNEL_BUILD_DIR/gic_its.o
   $KERNEL_BUILD_DIR/smp.o
   $KERNEL_BUILD_DIR/sve.o
   $KERNEL_BUILD_DIR/sve_canary.o
@@ -499,6 +500,7 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/smmu.c" "$KERNEL_BUILD_DIR/smmu.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/pci.c" "$KERNEL_BUILD_DIR/pci.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/gic.c" "$KERNEL_BUILD_DIR/gic.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/gic_its.c" "$KERNEL_BUILD_DIR/gic_its.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/smp.c" "$KERNEL_BUILD_DIR/smp.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/sve.c" "$KERNEL_BUILD_DIR/sve.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/sve_canary.S" "$KERNEL_BUILD_DIR/sve_canary.o"
@@ -742,11 +744,26 @@ for app in $USER_APPS; do
     -Wall \
     -Wextra \
     -Werror \
+    -DXAIOS_BOOT_TEST_APPS="$BOOT_TEST_APPS" \
     -I"$ROOT_DIR/userspace/include" \
     -c "$ROOT_DIR/userspace/apps/$app.c" \
     -o "$app_obj"
 
-  if [ "$app" = "xaiosctl" ] || [ "$app" = "xapt" ] ||
+  if [ "$app" = "xapt" ]; then
+    XAPT_TLS_OBJ="$INIT_BUILD_DIR/xapt-tls.o"
+    XAPT_BEARSSL="$BUILD_DIR/bearssl/$TARGET_ARCH/libbearssl-xapt.a"
+    [ -f "$XAPT_BEARSSL" ] || "$ROOT_DIR/scripts/build-bearssl.sh" "$TARGET_ARCH"
+    "$CLANG" --target="$TARGET_TRIPLE" $USER_ARCH_CFLAGS -std=c99 \
+      -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+      -Os -Wall -Wextra -Werror \
+      -isystem "$BUILD_DIR/libc/$TARGET_ARCH/sysroot/include" \
+      -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/apps" \
+      -I"$ROOT_DIR/third_party/bearssl/inc" \
+      -c "$ROOT_DIR/userspace/apps/xapt_tls.c" -o "$XAPT_TLS_OBJ"
+    "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
+      -o "$app_elf" "$USER_START_OBJ" "$USER_LIB_OBJ" \
+      "$USER_CONTROL_OBJ" "$app_obj" "$XAPT_TLS_OBJ" "$XAPT_BEARSSL"
+  elif [ "$app" = "xaiosctl" ] ||
       [ "$app" = "htop" ]; then
     "$LD_LLD" \
       -nostdlib \
@@ -991,7 +1008,7 @@ for compat_src in blowfish.c bcrypt_pbkdf.c; do
     --target="$TARGET_TRIPLE" \
     $USER_ARCH_CFLAGS \
     -std=c99 -ffreestanding -fno-stack-protector -fno-builtin \
-    -fno-pic -fno-pie -Wall -Wextra -Werror \
+    -fno-pic -fno-pie -Wall -Wextra -Werror -Wno-unknown-attributes \
     -I"$ROOT_DIR/userspace/include" \
     -I"$ROOT_DIR/userspace/sshd" \
     -I"$ROOT_DIR/third_party/openbsd-compat" \
@@ -1066,11 +1083,18 @@ printf 'XAIOS-VIRTIO-BLOCK-TEST\n' | dd of="$TEST_BLOCK_IMAGE" bs=512 count=1 co
   "$@"
 printf '%s\n' "Created $TEST_BLOCK_IMAGE"
 
+PERSISTENT_BYTES=16777216
 if [ ! -f "$PERSISTENT_IMAGE" ]; then
   printf '%s\n' "Creating persistent disk image: $PERSISTENT_IMAGE"
-  dd if=/dev/zero of="$PERSISTENT_IMAGE" bs=512 count=8192 status=none
-  printf '%s\n' "Created $PERSISTENT_IMAGE (4 MB, 8192 sectors)"
+  dd if=/dev/zero of="$PERSISTENT_IMAGE" bs=512 count=32768 status=none
+  printf '%s\n' "Created $PERSISTENT_IMAGE (16 MB, 32768 sectors)"
 else
+  PERSISTENT_SIZE=$(wc -c < "$PERSISTENT_IMAGE" | tr -d ' ')
+  if [ "$PERSISTENT_SIZE" -lt "$PERSISTENT_BYTES" ]; then
+    dd if=/dev/zero of="$PERSISTENT_IMAGE" bs=1 count=0 \
+      seek="$PERSISTENT_BYTES" conv=notrunc status=none
+    printf '%s\n' "Expanded persistent image to 16 MB without replacing data"
+  fi
   printf '%s\n' "Persistent image already exists: $PERSISTENT_IMAGE"
 fi
 

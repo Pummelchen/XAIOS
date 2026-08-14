@@ -1,4 +1,5 @@
 #include <xaios/assert.h>
+#include <xaios/aarch64_sve.h>
 #include <xaios/context.h>
 #include <xaios/exception.h>
 #include <xaios/gic.h>
@@ -170,16 +171,20 @@ xaios_context_frame_t *aarch64_irq_handler(xaios_context_frame_t *frame) {
   uint64_t iar = 0U;
   __asm__ volatile("mrs %[iar], " ICC_IAR1_EL1 : [iar] "=r"(iar));
   uint32_t intid = (uint32_t)(iar & 0xffffffU);
-  if (intid < 1020U) ++g_aarch64_irq_count;
+  if (intid < 1020U || (intid >= 8192U && intid < 16384U)) {
+    ++g_aarch64_irq_count;
+  }
 
   if (intid == TIMER_PPI_INTID) {
     /* Timer interrupt: rearm and call scheduler tick */
     timer_rearm();
-    scheduler_tick(frame);
+    scheduler_tick(frame, aarch64_sve_enabled() != 0U
+                              ? (uint8_t *)frame + XAIOS_CONTEXT_FRAME_SIZE
+                              : 0);
   } else if (intid == WORKER_SGI_INTID) {
     /* The interrupt only provides an architectural wake-up for the worker
      * loop; pending work is claimed after exception return. */
-  } else if (intid < 1020U) {
+  } else if (intid < 1020U || (intid >= 8192U && intid < 16384U)) {
     if (gic_dispatch_interrupt(intid) == 0) {
       klog("irq: unhandled intid=%u\n", intid);
     }

@@ -4,8 +4,8 @@
 
 | Target | Current status |
 |---|---|
-| QEMU AArch64 `virt` | Complete core-OS correctness target with UEFI, SMP, GIC, VirtIO, SMMUv3 gates, filesystems, network, SSH/SFTP, and userspace. |
-| QEMU x86_64 `q35` | Common kernel/userspace service parity with AArch64, including ACPI/MADT AP startup, xAPIC, XSAVE/FXSAVE, PCI VirtIO, network, SSH/SFTP, storage, and userspace. Block MSI-X setup is exercised, with bounded polling when a post-reset edge is not delivered. |
+| QEMU AArch64 `virt` | Complete core-OS correctness target with UEFI, SMP, GICv3/ITS, VirtIO, SMMUv3 gates, filesystems, network, SSH/SFTP, and userspace. NVMe requires LPI delivery on every negotiated queue. |
+| QEMU x86_64 `q35` | Common kernel/userspace service parity with AArch64, including ACPI/MADT AP startup, xAPIC, XSAVE/FXSAVE, PCI VirtIO, network, SSH/SFTP, storage, and userspace. NVMe requires APIC/MSI-X delivery on every negotiated queue. |
 | VMware Fusion ARM64 | Limited boot path through the UEFI/GRUB compatibility stage to `/init`; no VMware NIC, persistent-disk driver, or multi-vCPU discovery. |
 
 QEMU CPU-count gates cover 1 through 256 emulated CPUs and a focused 130-CPU
@@ -18,20 +18,23 @@ is complete for the declared common core-OS scope.
 ## CPU feature foundations
 
 - AArch64: scalar baseline, NEON context handling, experimental packed NEON
-  interfaces, and an SVE2 QEMU arithmetic canary. SVE/SVE2 backends remain
-  disabled because scalable Z/P/FFR scheduler state is not preserved yet.
+  interfaces, and an SVE2 QEMU arithmetic canary. EL0 SVE is enabled only when
+  supported, and scheduler/interrupt gates preserve scalable Z/P/FFR state per
+  task. A production SVE inference backend and physical qualification remain.
 - x86_64: CPUID/topology discovery, AVX2 packed-kernel interfaces, XSAVE state,
   and conservative FXSAVE fallback. AVX-512, VNNI, and AMX production backends
   remain incomplete.
 - NUMA: runtime-sized node and CPU metadata exists. A two-node x86 QEMU gate
-  parses SRAT/SLIT, allocates from each firmware range, and reports deterministic
-  local/remote accounting. HMAT policy and physical locality/bandwidth remain
-  open.
+  parses SRAT/SLIT/HMAT, allocates from each firmware range, selects a preferred
+  memory node from checked latency/bandwidth records, and reports deterministic
+  local/remote accounting. Physical locality and bandwidth remain open.
 
 Both architecture VMMs expose collision-safe kernel 2 MiB map/unmap operations
-and validate translation across the full extent during boot. Sparse model
-packages beyond 100 GiB are covered in hosted tests. Neither result proves
-multi-terabyte physical capacity or large-page performance.
+and validate translation across the full extent during boot. x86_64 additionally
+validates a 1 GiB leaf and address-specific SMP TLB invalidation; AArch64
+reports 1 GiB mappings as unsupported. Sparse model packages beyond 100 GiB are
+covered in hosted tests. None of these results proves multi-terabyte physical
+capacity or large-page performance.
 
 ## Physical hardware boundary
 

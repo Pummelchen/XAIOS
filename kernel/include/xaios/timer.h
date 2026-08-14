@@ -16,6 +16,9 @@ void timer_idle_until(uint64_t deadline_ns);
 void wall_time_calibrate(void);
 uint64_t wall_time_now_ns(void);
 xaios_status_t wall_time_set_ns(uint64_t epoch_ns, uint32_t source);
+xaios_status_t wall_time_discipline_ns(uint64_t epoch_ns, uint32_t source,
+                                      uint32_t maximum_ppm);
+int64_t wall_time_slew_remaining_ns(void);
 uint32_t wall_time_source(void);
 uint64_t wall_time_last_sync_ns(void);
 void timer_self_test(void);

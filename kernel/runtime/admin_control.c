@@ -17,6 +17,7 @@
 #define XAIOS_ADMIN_CONFIG_ALL_CHANGES UINT32_C(31)
 #define XAIOS_ADMIN_SOURCE_BYTES UINT64_C(2048)
 #define XAIOS_ADMIN_LEGACY_KEYS_PATH "/etc/xaios_authorized_keys"
+#define XAIOS_ADMIN_MAX_SSH_CONNECTIONS UINT32_C(32)
 
 static xaios_admin_config_t g_active_config;
 static uint32_t g_initialized;
@@ -143,7 +144,7 @@ static void default_config(xaios_admin_config_t *config) {
   config->version = XAIOS_ADMIN_SCHEMA_VERSION;
   config->size = (uint16_t)sizeof(*config);
   config->generation = 1U;
-  config->max_connections = 4U;
+  config->max_connections = 32U;
   config->max_channels_per_connection = 2U;
   config->max_auth_attempts = 5U;
   config->command_rate_per_minute = 60U;
@@ -157,7 +158,8 @@ static int config_valid(const xaios_admin_config_t *config) {
   return config != 0 && config->magic == XAIOS_ADMIN_CONFIG_MAGIC &&
          config->version == XAIOS_ADMIN_SCHEMA_VERSION &&
          config->size == sizeof(*config) && config->generation != 0U &&
-         config->max_connections >= 1U && config->max_connections <= 4U &&
+         config->max_connections >= 1U &&
+         config->max_connections <= XAIOS_ADMIN_MAX_SSH_CONNECTIONS &&
          config->max_channels_per_connection >= 1U &&
          config->max_channels_per_connection <= 2U &&
          config->max_auth_attempts >= 1U &&
@@ -1194,7 +1196,7 @@ xaios_admin_result_t admin_control_audit_read(
 void admin_control_self_test(void) {
   static const char valid[] =
       "schema=xaios.config.v1\n"
-      "ssh.max_connections=4\n"
+      "ssh.max_connections=32\n"
       "ssh.max_channels_per_connection=2\n"
       "ssh.max_auth_attempts=5\n"
       "ssh.command_rate_per_minute=60\n"

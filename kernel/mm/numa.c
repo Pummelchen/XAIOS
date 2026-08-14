@@ -215,7 +215,9 @@ static int numa_init_from_acpi(const xaios_boot_info_t *boot) {
   addition = (uint64_t)node_count * cpu_words * sizeof(uint64_t);
   if (metadata_bytes > UINT64_MAX - addition) return 0;
   metadata_bytes += addition;
-  addition = (uint64_t)node_count * node_count * sizeof(uint8_t) + 128U;
+  addition = (uint64_t)node_count * node_count *
+                 (sizeof(uint8_t) + 2U * sizeof(uint64_t)) +
+             128U;
   if (metadata_bytes > UINT64_MAX - addition) return 0;
   metadata_bytes = align_up(metadata_bytes + addition, PAGE_SIZE);
   if (metadata_bytes == UINT64_MAX) return 0;
@@ -313,6 +315,37 @@ static int numa_init_from_acpi(const xaios_boot_info_t *boot) {
       node->distances[target] = distance;
     }
   }
+  cursor = align_up(cursor, 8U);
+  for (uint32_t node_index = 0U; node_index < node_count; ++node_index) {
+    xaios_numa_node_t *node = &g_numa_nodes[node_index];
+    node->hmat_latency_ps = (uint64_t *)(uintptr_t)cursor;
+    cursor += (uint64_t)node_count * sizeof(uint64_t);
+    node->hmat_bandwidth_bytes_per_second = (uint64_t *)(uintptr_t)cursor;
+    cursor += (uint64_t)node_count * sizeof(uint64_t);
+    node->preferred_memory_node = node_index;
+    uint64_t best_latency = UINT64_MAX;
+    uint64_t best_bandwidth = 0U;
+    for (uint32_t target = 0U; target < node_count; ++target) {
+      uint32_t target_domain = g_numa_nodes[target].proximity_domain;
+      uint64_t latency = 0U;
+      uint64_t bandwidth = 0U;
+      int have_latency = x86_64_acpi_hmat_metric(
+          &info, node->proximity_domain, target_domain, 0U, &latency);
+      int have_bandwidth = x86_64_acpi_hmat_metric(
+          &info, node->proximity_domain, target_domain, 3U, &bandwidth);
+      node->hmat_latency_ps[target] = have_latency ? latency : 0U;
+      node->hmat_bandwidth_bytes_per_second[target] =
+          have_bandwidth ? bandwidth : 0U;
+      if (have_latency && have_bandwidth &&
+          (latency < best_latency ||
+           (latency == best_latency && bandwidth > best_bandwidth))) {
+        best_latency = latency;
+        best_bandwidth = bandwidth;
+        node->preferred_memory_node = target;
+      }
+    }
+    node->hmat_metrics_valid = best_latency != UINT64_MAX ? 1U : 0U;
+  }
   if (cursor > g_metadata_end) return 0;
   for (uint32_t ordinal = 0U; ordinal < smp_online_count(); ++ordinal) {
     uint32_t cpu_id = 0U;
@@ -333,8 +366,17 @@ static int numa_init_from_acpi(const xaios_boot_info_t *boot) {
         UINT64_C(1) << (cpu_id % 64U);
   }
   g_numa_node_count = node_count;
-  klog("NUMA: ACPI topology nodes=%u regions=%u managed=%lu cpu_words=%u metadata_bytes=%lu\n",
-       node_count, total_regions, total_pages, cpu_words, metadata_bytes);
+  klog("NUMA: ACPI topology nodes=%u regions=%u managed=%lu cpu_words=%u metadata_bytes=%lu hmat_structures=%u\n",
+       node_count, total_regions, total_pages, cpu_words, metadata_bytes,
+       info.hmat_locality_structures);
+  for (uint32_t node_index = 0U; node_index < node_count; ++node_index) {
+    const xaios_numa_node_t *node = &g_numa_nodes[node_index];
+    klog("NUMA: HMAT initiator=%u preferred=%u valid=%u latency_ps=%lu bandwidth_Bps=%lu\n",
+         node->proximity_domain, node->preferred_memory_node,
+         node->hmat_metrics_valid,
+         node->hmat_latency_ps[node->preferred_memory_node],
+         node->hmat_bandwidth_bytes_per_second[node->preferred_memory_node]);
+  }
   return 1;
 }
 #endif
@@ -602,6 +644,13 @@ uint8_t numa_distance(uint32_t from_node, uint32_t to_node) {
   return g_numa_nodes[from_node].distances[to_node];
 }
 
+uint32_t numa_preferred_node_for_cpu(uint32_t cpu_id) {
+  uint32_t local = numa_node_of_cpu(cpu_id);
+  if (local == UINT32_MAX || local >= g_numa_node_count) return 0U;
+  uint32_t preferred = g_numa_nodes[local].preferred_memory_node;
+  return preferred < g_numa_node_count ? preferred : local;
+}
+
 void numa_record_access(uint32_t cpu_id, uint64_t physical_address,
                         uint64_t bytes) {
   uint32_t cpu_node = numa_node_of_cpu(cpu_id);
@@ -703,6 +752,7 @@ void numa_self_test(void) {
   kassert(node0->free_count > 0U);
   kassert(numa_node_has_cpu(0U, 0U));
   kassert(numa_distance(0U, 0U) == 10U);
+  kassert(numa_preferred_node_for_cpu(0U) < g_numa_node_count);
   kassert(node0->phys_start < node0->phys_end);
 
   void *page = numa_alloc_page_on_node(0U);

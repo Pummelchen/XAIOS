@@ -12,11 +12,13 @@ currently loading, and the remaining count. At completion it prints the
 configured IPv4 address and one of these outcomes:
 
 - `SSH server: up and running` only after the listener is operational;
-- a numeric startup error when networking, DNS, entropy, credentials, crypto,
+- a numeric startup error when networking, IPv4 reachability, entropy,
+  credentials, crypto,
   or listener initialization fails.
 
-SSH is not opened until networking is active and an external IPv4 DNS A-record
-lookup succeeds. Failure leaves the listener closed.
+SSH is not opened until networking is active and a bounded IPv4 TCP connection
+to `1.1.1.1:443` succeeds. This checks configured external reachability without
+making SSH startup depend on public DNS. Failure leaves the listener closed.
 
 ## Local console policy
 

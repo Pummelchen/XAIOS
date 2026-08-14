@@ -28,18 +28,31 @@ database and development-image opt-in; release builds reject it.
 - SFTP v3 read, write, positional I/O, stat, list, mkdir, rename, remove, and
   rmdir with per-process descriptor ownership.
 - Stateful per-session cwd, prompt, command status, and terminal applications.
-- Connection, channel, command-rate, and resource bounds with explicit errors.
+- A 32-transport server ceiling, up to two active channels per transport, and
+  64 asynchronous child-channel records, with explicit saturation errors and
+  reclamation after disconnect.
 
 ## Network behavior
 
 The QEMU-tested stack includes IPv4/IPv6 fragment reassembly and source
 fragmentation, TCP
-handshake/data retransmission, out-of-order receive, duplicate-ACK/SACK
-handling, UDP delivery semantics, asynchronous DNS A/AAAA resolution, bounded
+handshake/data retransmission, slow start, congestion avoidance, fast
+retransmit, out-of-order receive, duplicate-ACK/SACK handling, UDP delivery
+semantics, asynchronous DNS A/AAAA resolution, bounded
 TTL caching, DNS-over-TCP fallback, socket ownership, cancellation, and
-cleanup. Resolver answers must carry authenticated-data status from the
-configured validating resolver. Runtime-sized CPU/queue metadata avoids a
-fixed small-core limit.
+cleanup. DNS requests set EDNS DO and advertise AD understanding; resolver
+answers are cached only when the configured validating resolver returns AD.
+Unsigned replies fail closed and are reported to the caller without waiting
+for the query timeout. XAIOS does not perform recursive DNSSEC chain validation
+locally. SNTP applies accepted corrections through a bounded
+500-ppm monotonic slew after initial calibration. Runtime-sized CPU/queue
+metadata avoids a fixed small-core limit.
+
+Boot readiness uses a real IPv4 TCP connection to port 443 before starting
+`sshd`; it does not treat a DNS response as proof of Internet reachability. The
+boot-test image uses the in-guest DNSSEC parser/cache self-test so `make
+qemu-smoke` remains deterministic when public DNS is unavailable. The normal
+`nettest` application performs the external validating-resolver check.
 
 ## Outbound clients
 
@@ -60,8 +73,9 @@ algorithm matrix, including a native outbound `-J`/`ProxyCommand` parser.
 ## Interoperability evidence
 
 Automated suites exercise XAIOS from macOS OpenSSH, Debian 13 OpenSSH, and an
-official FreeBSD 15.1 VM. They cover valid/invalid authentication, four
-simultaneous sessions, reconnects, PTY applications, SFTP lifecycle and
+official FreeBSD 15.1 VM. They cover valid/invalid authentication, 32
+simultaneous sessions under the combined macOS/Debian load gate, reconnects,
+PTY applications, SFTP lifecycle and
 isolation, SCP, UDP, IPv6/TCP, malformed traffic, rekey, reboot persistence,
 and concurrent clients against one guest. The raw Ethernet gates additionally
 send maximum-size fragmented UDP requests and independently reassemble XAIOS

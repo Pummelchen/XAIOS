@@ -46,6 +46,8 @@ typedef struct xaios_sched_task {
   uint32_t pid;
   uint32_t active;
   xaios_context_frame_t frame;
+  void *architecture_state;
+  uint64_t architecture_state_size;
   uint64_t tick_count;
   uint64_t switch_count;
   xaios_task_priority_t priority;
@@ -84,7 +86,7 @@ typedef struct xaios_sched_stats {
 } xaios_sched_stats_t;
 
 void scheduler_init(void);
-void scheduler_tick(xaios_context_frame_t *irq_frame);
+void scheduler_tick(xaios_context_frame_t *irq_frame, void *architecture_state);
 void scheduler_yield(void);
 void scheduler_lock(void);
 void scheduler_unlock(void);

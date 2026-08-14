@@ -41,9 +41,9 @@ Docker build inputs, and test-image inputs outside `tests/`. It runs through
 | Aggregate QEMU core OS | `make qemu-core-os-rc` |
 | Parser, packet-fault, load/recovery, and dual-architecture soak | `make qemu-network-adversarial-gate` |
 | IPv4/IPv6 source fragmentation on ARM/x86 | `make qemu-outbound-fragmentation-gate` |
-| Async NVMe PRP/SGL, cancellation, queue affinity, malformed completions, and x86 MSI-X | `make qemu-nvme-gate` |
-| x86 two-node SRAT/SLIT placement and accounting | `make qemu-x86_64-numa-gate` |
-| ARM SVE2 QEMU arithmetic canary | `make qemu-aarch64-sve2-gate` |
+| Async NVMe PRP/SGL, cancellation, malformed completions, and all-queue x86 MSI-X/ARM ITS delivery | `make qemu-nvme-gate` |
+| x86 SRAT/SLIT/HMAT, 1 GiB mapping, targeted TLB invalidation, placement, and accounting | `make qemu-x86_64-numa-gate` |
+| ARM SVE2 arithmetic and per-task Z/P/FFR preservation | `make qemu-aarch64-sve2-gate` |
 | Power/recovery/operations closure | `make qemu-operations-closure` |
 | Debian/OpenSSH interoperability | `make qemu-docker-network-suite` |
 | FreeBSD client interoperability | `make qemu-freebsd-network-suite` |
@@ -52,6 +52,11 @@ Docker build inputs, and test-image inputs outside `tests/`. It runs through
 
 The complete command catalog is maintained in `Makefile`; focused runners live
 in `tests/scripts/` and are normally entered through a Make target.
+
+The smoke image exercises DNSSEC parsing and cache admission deterministically;
+it does not require a public resolver. Normal images retain strict external
+resolver behavior, while SSH boot readiness is established by an IPv4 TCP
+connection rather than DNS.
 
 `qemu-operations-closure` builds authenticated AArch64 and x86_64 images and
 uses the real guest SSH server to check abrupt-stop detection, persisted clean
@@ -66,6 +71,12 @@ and observability utility over the real guest SSH server. It verifies archive
 round trips, recursive filesystem work, typed `ps`/`df` snapshots, and nested
 transient launches before continuing into SSH, SFTP, rekey, concurrency, IPv6,
 UDP, and administration coverage.
+
+The same suite cold-boots MutableFS v3/v4 migration fixtures into v5 and tests
+the v5 limits: exact 256 KiB SFTP round trip, 256 KiB + 1 rejection, 180
+directories, and persistence across a second boot. `qemu-parallel-network-load`
+holds 32 SSH transports with two channels each across native macOS and Debian,
+checks above-capacity rejection, then proves connection reclamation.
 
 ## Rebuilding disposable Docker test images
 

@@ -75,12 +75,12 @@ typedef struct xaios_mfs_stat_user {
 
 `XAIOS_FS_TYPE_FILE` and `XAIOS_FS_TYPE_DIRECTORY` are the public stat type
 constants. File sizes and positional offsets are unsigned 64-bit values.
-MutableFS v4 supports 128 nodes, 64 open handles, paths up to 255 bytes,
-128 KiB per file and 2 MiB of data extents. It atomically renames complete
+MutableFS v5 supports 256 nodes, 256 open handles, paths up to 255 bytes,
+256 KiB per file and 4 MiB of data extents. It atomically renames complete
 non-empty directory trees after collision/path validation. The recursive shell
 forms `rm -r`, `rm -R`, `rm -rf`, and `rm -fr` remove trees; the filesystem
 delete syscall itself still removes one file or empty directory. Valid v2/v3
-volumes are migrated to v4 during mount. These remain bounded state-filesystem
+volumes are migrated to v5 during mount. These remain bounded state-filesystem
 limits; the 64-bit API and separate ModelFS are used for large model packages.
 
 ## Networking

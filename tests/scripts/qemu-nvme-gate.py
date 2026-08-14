@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import select
+import signal
 import subprocess
 import sys
 import time
@@ -34,11 +35,11 @@ RESULT_PATTERN = re.compile(
 def stop_process(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is not None:
         return
-    process.terminate()
+    os.killpg(process.pid, signal.SIGTERM)
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        process.kill()
+        os.killpg(process.pid, signal.SIGKILL)
         process.wait(timeout=5)
 
 
@@ -59,15 +60,22 @@ def run_architecture(architecture: str) -> dict[str, object]:
         }
     )
     if architecture == "aarch64":
-        environment["XAIOS_QEMU_MSI_CONTROLLER"] = "gicv2m"
+        environment["XAIOS_QEMU_MSI_CONTROLLER"] = "its"
         environment["XAIOS_NVME_IMAGE"] = str(image)
         runner = "./scripts/run-qemu-aarch64.sh"
     else:
+        environment["XAIOS_X86_PERSISTENT_IMAGE"] = str(persistent)
         environment["XAIOS_QEMU_X86_NVME_IMAGE"] = str(image)
         runner = "./scripts/run-qemu-x86_64.sh"
     required_markers = list(MARKERS)
-    if architecture == "x86_64":
-        required_markers.append("nvme: MSI-X interrupt self-test passed queues=4")
+    required_markers.append(
+        "nvme: MSI-X interrupt self-test passed queues=4 all_queues=1"
+    )
+    required_markers.append(
+        "controller=gicv3-its"
+        if architecture == "aarch64"
+        else "controller=x86-apic"
+    )
 
     with log_path.open("wb") as log:
         process = subprocess.Popen(
@@ -75,6 +83,7 @@ def run_architecture(architecture: str) -> dict[str, object]:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             env=environment,
+            start_new_session=True,
         )
         chunks: list[str] = []
         deadline = time.time() + int(
@@ -141,7 +150,7 @@ def run_architecture(architecture: str) -> dict[str, object]:
         "guest_write_read_flush": not missing and not forbidden,
         "host_backing_image_verified": host_verified,
         "async_behavior_verified": behavior_verified,
-        "msix_delivery_verified": architecture == "x86_64" and not any(
+        "msix_delivery_verified": not any(
             "MSI-X interrupt self-test" in marker for marker in missing
         ),
         "metrics": metrics,

@@ -27,6 +27,8 @@ void x86_64_platform_timer_start(uint32_t initial_count, uint32_t periodic);
 void x86_64_platform_timer_stop(void);
 uint64_t x86_64_platform_timer_interrupts(void);
 void x86_64_platform_eoi(void);
+void x86_64_platform_invalidate_page_all(uint64_t virtual_address);
+uint64_t x86_64_platform_tlb_shootdown_count(void);
 
 void x86_64_platform_timer_irq(void);
 void x86_64_platform_set_user_resume(uint64_t stack);

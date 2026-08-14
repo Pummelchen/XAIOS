@@ -4,7 +4,7 @@
 #include <xaios/status.h>
 #include <xaios/types.h>
 
-#define XAIOS_CHILD_CHANNEL_CAPACITY 8U
+#define XAIOS_CHILD_CHANNEL_CAPACITY 64U
 #define XAIOS_CHILD_CHANNEL_BUFFER_BYTES 32768U
 
 typedef enum xaios_child_channel_state {

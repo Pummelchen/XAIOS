@@ -69,7 +69,7 @@
 #define PTE_GLOBAL UINT64_C(1 << 8)
 #define PTE_NX (UINT64_C(1) << 63)
 #define X86_USER_BASE UINT64_C(0x100000000)
-#define X86_USER_WINDOW_SIZE UINT64_C(0x200000)
+#define X86_USER_WINDOW_SIZE UINT64_C(0x1000000)
 #define X86_USER_LOG_MAX UINT64_C(4096)
 #define X86_KERNEL_STACK_SIZE UINT64_C(524288)
 #define X86_KERNEL_STACK_GUARD_BYTES UINT32_C(64)
@@ -77,6 +77,7 @@
 #define X86_USER_NESTING_MAX UINT32_C(8)
 #define IDT_PRESENT UINT8_C(0x80)
 #define IDT_INTERRUPT_GATE UINT8_C(0x0e)
+#define IDT_TRAP_GATE UINT8_C(0x0f)
 #define PCI_CONFIG_ADDRESS UINT16_C(0x0cf8)
 #define PCI_CONFIG_DATA UINT16_C(0x0cfc)
 
@@ -198,6 +199,7 @@ typedef struct x86_64_cpu_record {
   volatile uint32_t requested_generation;
   volatile uint32_t completed_generation;
   volatile uint64_t checksum;
+  volatile uint32_t tlb_generation;
   uint64_t kernel_stack_top;
   uint64_t syscall_stack_top;
   uint64_t user_resume_rsp[X86_USER_NESTING_MAX];
@@ -268,6 +270,7 @@ extern void x86_64_isr_31(void);
 extern void x86_64_irq_32(void);
 extern void x86_64_irq_33(void);
 extern void x86_64_irq_34(void);
+extern void x86_64_irq_35(void);
 extern void x86_64_irq_128(void);
 extern void x86_64_irq_255(void);
 extern void x86_64_load_gdt(const x86_64_idtr_t *gdtr);
@@ -298,8 +301,7 @@ static uint64_t g_gdt[7] __attribute__((aligned(16)));
 static x86_64_tss_t g_tss;
 static uint8_t g_syscall_stack[X86_KERNEL_STACK_SIZE]
     __attribute__((aligned(PAGE_SIZE)));
-static uint8_t g_user_test_page[UINT32_C(0x200000)]
-    __attribute__((section(".user_test"), aligned(UINT32_C(0x200000))));
+static uint8_t *g_user_test_page;
 static x86_64_pmm_state_t g_pmm;
 static x86_64_pci_state_t g_pci;
 static x86_64_placement_state_t g_placement;
@@ -334,6 +336,10 @@ static uint64_t g_virtio_msix_isr;
 static volatile uint32_t g_common_worker_release;
 static uint64_t g_tsc_frequency;
 static uint64_t g_lapic_frequency;
+static volatile uint32_t g_tlb_shootdown_lock;
+static volatile uint32_t g_tlb_shootdown_generation;
+static volatile uint64_t g_tlb_shootdown_address;
+static volatile uint64_t g_tlb_shootdown_count;
 
 #if XAIOS_X86_COMMON_RUNTIME
 extern void kmain(const xaios_boot_info_t *boot);
@@ -474,6 +480,53 @@ uint64_t x86_64_platform_timer_interrupts(void) {
 
 void x86_64_platform_eoi(void) {
   if (g_lapic_ready != 0U) lapic_write(APIC_EOI, 0U);
+}
+
+void x86_64_platform_invalidate_page_all(uint64_t virtual_address) {
+  while (__atomic_exchange_n(&g_tlb_shootdown_lock, 1U,
+                             __ATOMIC_ACQUIRE) != 0U) {
+    __asm__ volatile("pause");
+  }
+  uint32_t self = x86_64_platform_current_ordinal();
+  uint32_t generation =
+      __atomic_add_fetch(&g_tlb_shootdown_generation, 1U, __ATOMIC_RELAXED);
+  if (generation == 0U) {
+    generation = __atomic_add_fetch(&g_tlb_shootdown_generation, 1U,
+                                    __ATOMIC_RELAXED);
+  }
+  __atomic_store_n(&g_tlb_shootdown_address, virtual_address,
+                   __ATOMIC_RELEASE);
+  for (uint32_t ordinal = 0U; ordinal < g_cpu_record_count; ++ordinal) {
+    if (ordinal == self ||
+        __atomic_load_n(&g_cpu_records[ordinal].online,
+                        __ATOMIC_ACQUIRE) == 0U) {
+      continue;
+    }
+    lapic_send(g_cpu_records[ordinal].apic_id, 35U);
+  }
+  __asm__ volatile("invlpg (%0)" : : "r"((void *)(uintptr_t)virtual_address)
+                   : "memory");
+  uint64_t deadline = rdtsc() + UINT64_C(2000000000);
+  for (uint32_t ordinal = 0U; ordinal < g_cpu_record_count; ++ordinal) {
+    if (ordinal == self ||
+        __atomic_load_n(&g_cpu_records[ordinal].online,
+                        __ATOMIC_ACQUIRE) == 0U) {
+      continue;
+    }
+    while (__atomic_load_n(&g_cpu_records[ordinal].tlb_generation,
+                           __ATOMIC_ACQUIRE) != generation) {
+      if ((int64_t)(rdtsc() - deadline) >= 0) {
+        panic_halt(COM1_PORT, "TLB shootdown timeout");
+      }
+      __asm__ volatile("pause");
+    }
+  }
+  __atomic_add_fetch(&g_tlb_shootdown_count, 1U, __ATOMIC_RELAXED);
+  __atomic_store_n(&g_tlb_shootdown_lock, 0U, __ATOMIC_RELEASE);
+}
+
+uint64_t x86_64_platform_tlb_shootdown_count(void) {
+  return __atomic_load_n(&g_tlb_shootdown_count, __ATOMIC_ACQUIRE);
 }
 
 void x86_64_platform_set_user_resume(uint64_t stack) {
@@ -790,7 +843,7 @@ static void idt_set_gate(uint8_t vector, void (*handler)(void)) {
 
 static void idt_set_user_gate(uint8_t vector, void (*handler)(void)) {
   idt_set_gate(vector, handler);
-  g_idt[vector].type_attr |= UINT8_C(0x60);
+  g_idt[vector].type_attr = IDT_PRESENT | UINT8_C(0x60) | IDT_TRAP_GATE;
 }
 
 static void install_gdt_tss(uint16_t serial_base) {
@@ -895,6 +948,7 @@ static void install_idt(uint16_t serial_base) {
   idt_set_gate(32U, x86_64_irq_32);
   idt_set_gate(33U, x86_64_irq_33);
   idt_set_gate(34U, x86_64_irq_34);
+  idt_set_gate(35U, x86_64_irq_35);
   for (uint32_t vector = 64U; vector < 128U; ++vector) {
     idt_set_gate((uint8_t)vector, x86_64_device_irq_stubs[vector - 64U]);
   }
@@ -1037,6 +1091,21 @@ uint64_t x86_64_interrupt_entry(x86_64_exception_frame_t *frame) {
   if (frame != 0 && frame->vector == 34U && g_lapic_ready != 0U) {
     if (g_virtio_msix_isr != 0U) (void)mmio_read8(g_virtio_msix_isr);
     ++g_virtio_msix_interrupts;
+    lapic_write(APIC_EOI, 0U);
+    return 0U;
+  }
+  if (frame != 0 && frame->vector == 35U && g_lapic_ready != 0U) {
+    uint32_t ordinal = x86_64_platform_current_ordinal();
+    uint32_t generation =
+        __atomic_load_n(&g_tlb_shootdown_generation, __ATOMIC_ACQUIRE);
+    uint64_t address =
+        __atomic_load_n(&g_tlb_shootdown_address, __ATOMIC_ACQUIRE);
+    __asm__ volatile("invlpg (%0)" : : "r"((void *)(uintptr_t)address)
+                     : "memory");
+    if (ordinal < g_cpu_record_count) {
+      __atomic_store_n(&g_cpu_records[ordinal].tlb_generation, generation,
+                       __ATOMIC_RELEASE);
+    }
     lapic_write(APIC_EOI, 0U);
     return 0U;
   }
@@ -1213,6 +1282,13 @@ static void validate_xsave(uint16_t serial_base) {
       avx_supported != 0U) {
     enabled |= X86_XCR0_AVX;
   }
+  if ((enabled & X86_XCR0_AVX) != 0U &&
+      (supported & X86_XSTATE_AVX512) == X86_XSTATE_AVX512) {
+    enabled |= X86_XSTATE_AVX512;
+  }
+  if ((supported & X86_XSTATE_AMX) == X86_XSTATE_AMX) {
+    enabled |= X86_XSTATE_AMX;
+  }
   write_xcr0(enabled);
   g_xsave_enabled = enabled;
   cpuid(0x0dU, 0U, &eax, &ebx, &ecx, &edx);
@@ -1231,8 +1307,13 @@ static void validate_xsave(uint16_t serial_base) {
   serial_puts(serial_base, " avx512_supported=");
   serial_dec(serial_base,
              (supported & X86_XSTATE_AVX512) == X86_XSTATE_AVX512);
+  serial_puts(serial_base, " avx512_preserved=");
+  serial_dec(serial_base,
+             (enabled & X86_XSTATE_AVX512) == X86_XSTATE_AVX512);
   serial_puts(serial_base, " amx_supported=");
   serial_dec(serial_base, (supported & X86_XSTATE_AMX) == X86_XSTATE_AMX);
+  serial_puts(serial_base, " amx_preserved=");
+  serial_dec(serial_base, (enabled & X86_XSTATE_AMX) == X86_XSTATE_AMX);
   serial_puts(serial_base, "\n");
 }
 
@@ -1261,6 +1342,10 @@ static void prepare_irq_state_areas(uint16_t serial_base) {
 }
 
 static void install_page_tables(uint16_t serial_base) {
+  if (g_user_test_page == 0) {
+    g_user_test_page = (uint8_t *)early_alloc(LARGE_PAGE_SIZE, LARGE_PAGE_SIZE);
+    if (g_user_test_page == 0) panic_halt(serial_base, "early user window");
+  }
   for (uint32_t i = 0; i < 512; ++i) {
     g_pml4[i] = 0;
     g_pdpt[i] = 0;
@@ -1307,10 +1392,10 @@ static void install_page_tables(uint16_t serial_base) {
 static void X86_BRINGUP_ONLY validate_ring3_syscall(uint16_t serial_base) {
   uint64_t image_size =
       (uint64_t)(_binary_hello_bin_end - _binary_hello_bin_start);
-  if (image_size == 0U || image_size > sizeof(g_user_test_page)) {
+  if (image_size == 0U || image_size > LARGE_PAGE_SIZE) {
     panic_halt(serial_base, "userspace hello image size");
   }
-  for (uint64_t i = 0U; i < sizeof(g_user_test_page); ++i) {
+  for (uint64_t i = 0U; i < LARGE_PAGE_SIZE; ++i) {
     g_user_test_page[i] = 0U;
   }
   for (uint64_t i = 0U; i < image_size; ++i) {
@@ -1319,7 +1404,7 @@ static void X86_BRINGUP_ONLY validate_ring3_syscall(uint16_t serial_base) {
   g_ring3_syscalls = 0U;
   g_ring3_exit_code = UINT64_MAX;
   x86_64_enter_ring3(X86_USER_BASE,
-                     X86_USER_BASE + X86_USER_WINDOW_SIZE - 16U);
+                     X86_USER_BASE + LARGE_PAGE_SIZE - 16U);
   if (g_ring3_syscalls != 3U) panic_halt(serial_base, "ring3 syscall count");
   if (g_ring3_exit_code != 0U) panic_halt(serial_base, "ring3 exit code");
   serial_puts(serial_base,

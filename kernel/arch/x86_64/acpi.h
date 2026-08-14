@@ -16,6 +16,7 @@ typedef struct x86_64_acpi_info {
   uint32_t io_apics;
   uint32_t processor_affinities;
   uint32_t memory_affinities;
+  uint32_t hmat_locality_structures;
 } x86_64_acpi_info_t;
 
 typedef struct x86_64_acpi_processor_affinity {
@@ -44,5 +45,9 @@ int x86_64_acpi_memory_affinity_at(
 int x86_64_acpi_slit_distance(const x86_64_acpi_info_t *info,
                               uint32_t from, uint32_t to,
                               uint8_t *distance);
+int x86_64_acpi_hmat_metric(const x86_64_acpi_info_t *info,
+                            uint32_t initiator_domain,
+                            uint32_t target_domain, uint8_t data_type,
+                            uint64_t *value);
 
 #endif

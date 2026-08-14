@@ -28,9 +28,9 @@
 #define NETWORK_BUFFER_SIZE 1520U
 #define NETWORK_MAX_SAMPLES 64U
 
-#define NETWORK_TCP_CONNECTIONS 16U
-#define NETWORK_UDP_FLOWS 16U
-#define NETWORK_PACKET_DESCRIPTORS 16U
+#define NETWORK_TCP_CONNECTIONS 128U
+#define NETWORK_UDP_FLOWS 32U
+#define NETWORK_PACKET_DESCRIPTORS 32U
 #define NETWORK_QUEUE_RING_SIZE 8U
 #define NETWORK_UDP_IDLE_TIMEOUT_NS UINT64_C(30000000000)
 #define NETWORK_TCP_RETRANSMIT_NS UINT64_C(1000000000)
@@ -271,7 +271,7 @@ static network_tcp_flow_t g_tcp_flows[NETWORK_TCP_CONNECTIONS];
 static xaios_spinlock_t g_network_poll_lock = XAIOS_SPINLOCK_INIT;
 
 /* Bound half-open state so SYN floods cannot exhaust the flow table. */
-#define NETWORK_TCP_MAX_HALF_OPEN 8U
+#define NETWORK_TCP_MAX_HALF_OPEN 16U
 
 static uint32_t g_half_open_count = 0;
 
@@ -293,7 +293,8 @@ static uint16_t g_ping_sequence;
 #define NETWORK_PING_TIMEOUT_NS UINT64_C(3000000000)
 
 /* ---- Socket-to-Flow Mapping ---- */
-#define NETWORK_SOCK_FLOW_MAP_SIZE 16U
+#define NETWORK_SOCK_FLOW_MAP_SIZE \
+  (NETWORK_TCP_CONNECTIONS + NETWORK_UDP_FLOWS)
 static socket_flow_mapping_t g_socket_flow_map[NETWORK_SOCK_FLOW_MAP_SIZE];
 
 static uint64_t g_udp_tx_count;
@@ -402,8 +403,8 @@ static uint32_t ooo_buffer_drain(network_tcp_flow_t *flow) {
 }
 
 /* Per-listener accept backlog. */
-#define NETWORK_MAX_LISTENERS 8U
-#define NETWORK_LISTENER_BACKLOG 8U
+#define NETWORK_MAX_LISTENERS 16U
+#define NETWORK_LISTENER_BACKLOG NETWORK_TCP_CONNECTIONS
 typedef struct listener_accept_entry {
   uint32_t flow_id;
   uint32_t peer_ip;         /* IPv4 (host order) */

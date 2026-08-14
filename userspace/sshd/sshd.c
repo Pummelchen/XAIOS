@@ -30,7 +30,6 @@ static uint32_t g_password_auth_enabled;
 #define SSHD_CONSOLE_COMMAND_MAX UINT32_C(256)
 #define SSHD_CONSOLE_OUTPUT_MAX UINT32_C(32768)
 #define SSHD_CONSOLE_WRITE_MAX UINT32_C(4096)
-#define SSHD_IPV4_CHECK_TIMEOUT_NS UINT64_C(15000000000)
 
 static char g_console_command[SSHD_CONSOLE_COMMAND_MAX];
 static char g_console_output[SSHD_CONSOLE_OUTPUT_MAX];
@@ -588,17 +587,17 @@ static void console_render_ssh_loading(void) {
 }
 
 static int verify_external_ipv4(void) {
-  uint32_t resolved = 0U;
-  uint64_t started = xaios_clock_nanos();
-  uint64_t deadline = started > UINT64_MAX - SSHD_IPV4_CHECK_TIMEOUT_NS
-                          ? UINT64_MAX
-                          : started + SSHD_IPV4_CHECK_TIMEOUT_NS;
-  int status = XAIOS_ERR_BUSY;
-  while (status == XAIOS_ERR_BUSY && xaios_clock_nanos() < deadline) {
-    status = xaios_net_resolve("example.com", &resolved);
-  }
+  xaios_ip_addr_user_t probe;
+  u64 socket_fd = 0U;
+  xaios_memzero(&probe, sizeof(probe));
+  probe.family = 4U;
+  probe.addr[0] = 1U;
+  probe.addr[1] = 1U;
+  probe.addr[2] = 1U;
+  probe.addr[3] = 1U;
+  int status = xaios_net_connect(&probe, 443U, &socket_fd);
   if (status != 0) return status;
-  return resolved == 0U ? -4 : 0;
+  return xaios_net_close(socket_fd);
 }
 
 static void console_execute_command(void) {

@@ -15,7 +15,7 @@ are documented separately in [[Commands|Commands]].
 | `/init` | First userspace process. Establishes the initial service lifecycle and returns status to the kernel. | Started once during boot. |
 | `/bin/service-manager` | Exercises and owns the bounded service-manager protocol used for managed workers. | Started during boot. |
 | `/bin/xaios-worker` | Joinable worker process used for scheduler, CPU-assignment, and service-lifecycle work. | Started by the service manager; count follows the boot profile. |
-| `/bin/sshd` | Persistent SSH/SFTP server, authenticated PTY transport, forwarding endpoint, and userspace adapter for the kernel command dispatcher. | Started only after networking and the configured external IPv4/DNS readiness check succeeds. |
+| `/bin/sshd` | Persistent SSH/SFTP server, authenticated PTY transport, forwarding endpoint, and userspace adapter for the kernel command dispatcher. | Started only after networking and the bounded external IPv4 TCP readiness check succeeds. |
 
 ## Administrative applications
 
@@ -93,7 +93,7 @@ kernel.
 
 Archive extraction rejects absolute and traversal paths, corrupt checksums,
 encrypted ZIP, ZIP64, links, device nodes, and unsupported required features.
-MutableFS limits regular files to 128 KiB, so these utilities are intended for
+MutableFS limits regular files to 256 KiB, so these utilities are intended for
 configuration and small exchange archives rather than model payloads.
 
 ## Diagnostic applications

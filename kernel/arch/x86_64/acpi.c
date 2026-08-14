@@ -152,6 +152,37 @@ static int srat_inventory(const acpi_sdt_header_t *srat,
   return offset == srat->length;
 }
 
+static int hmat_inventory(const acpi_sdt_header_t *hmat,
+                          x86_64_acpi_info_t *info) {
+  if (hmat == 0) return 1;
+  if (!table_valid(hmat) || hmat->length < sizeof(*hmat) + 4U) return 0;
+  uint32_t offset = (uint32_t)sizeof(*hmat) + 4U;
+  while (offset < hmat->length) {
+    if (hmat->length - offset < 8U) return 0;
+    const uint8_t *entry = (const uint8_t *)hmat + offset;
+    uint16_t type = (uint16_t)entry[0] | ((uint16_t)entry[1] << 8U);
+    uint32_t length = read_le32(entry + 4U);
+    if (length < 8U || length > hmat->length - offset) return 0;
+    if (type == 1U) {
+      if (length < 32U) return 0;
+      uint64_t initiators = read_le32(entry + 12U);
+      uint64_t targets = read_le32(entry + 16U);
+      if (initiators == 0U || targets == 0U ||
+          initiators > UINT64_MAX / targets) {
+        return 0;
+      }
+      uint64_t matrix = initiators * targets;
+      uint64_t required = UINT64_C(32) + 4U * initiators + 4U * targets;
+      if (matrix > (UINT64_MAX - required) / 2U) return 0;
+      required += 2U * matrix;
+      if (required != length) return 0;
+      ++info->hmat_locality_structures;
+    }
+    offset += length;
+  }
+  return offset == hmat->length;
+}
+
 int x86_64_acpi_parse(uint64_t rsdp_address, x86_64_acpi_info_t *info) {
   if (rsdp_address == 0U || info == 0) return 0;
   *info = (x86_64_acpi_info_t){0};
@@ -191,7 +222,7 @@ int x86_64_acpi_parse(uint64_t rsdp_address, x86_64_acpi_info_t *info) {
       find_table(root, info->root_is_xsdt, "SLIT");
   const acpi_sdt_header_t *hmat =
       find_table(root, info->root_is_xsdt, "HMAT");
-  if (!srat_inventory(srat, info)) return 0;
+  if (!srat_inventory(srat, info) || !hmat_inventory(hmat, info)) return 0;
   if (slit != 0) {
     if (slit->length < sizeof(*slit) + 8U) return 0;
     uint64_t localities =
@@ -329,4 +360,61 @@ int x86_64_acpi_slit_distance(const x86_64_acpi_info_t *info,
   uint64_t index = (uint64_t)from * info->slit_localities + to;
   *distance = *((const uint8_t *)slit + sizeof(*slit) + 8U + index);
   return 1;
+}
+
+int x86_64_acpi_hmat_metric(const x86_64_acpi_info_t *info,
+                            uint32_t initiator_domain,
+                            uint32_t target_domain, uint8_t data_type,
+                            uint64_t *value) {
+  if (info == 0 || info->hmat == 0U || value == 0 || data_type > 5U) return 0;
+  const acpi_sdt_header_t *hmat =
+      (const acpi_sdt_header_t *)(uintptr_t)info->hmat;
+  uint32_t offset = (uint32_t)sizeof(*hmat) + 4U;
+  while (offset + 8U <= hmat->length) {
+    const uint8_t *entry = (const uint8_t *)hmat + offset;
+    uint16_t type = (uint16_t)entry[0] | ((uint16_t)entry[1] << 8U);
+    uint32_t length = read_le32(entry + 4U);
+    if (length < 8U || length > hmat->length - offset) return 0;
+    if (type == 1U && length >= 32U && entry[8] == 0U &&
+        entry[9] == data_type) {
+      uint32_t initiators = read_le32(entry + 12U);
+      uint32_t targets = read_le32(entry + 16U);
+      const uint8_t *initiator_list = entry + 32U;
+      const uint8_t *target_list = initiator_list + (uint64_t)initiators * 4U;
+      const uint8_t *matrix = target_list + (uint64_t)targets * 4U;
+      uint32_t initiator_index = UINT32_MAX;
+      uint32_t target_index = UINT32_MAX;
+      for (uint32_t i = 0U; i < initiators; ++i) {
+        if (read_le32(initiator_list + (uint64_t)i * 4U) ==
+            initiator_domain) {
+          initiator_index = i;
+          break;
+        }
+      }
+      for (uint32_t i = 0U; i < targets; ++i) {
+        if (read_le32(target_list + (uint64_t)i * 4U) == target_domain) {
+          target_index = i;
+          break;
+        }
+      }
+      if (initiator_index != UINT32_MAX && target_index != UINT32_MAX) {
+        uint64_t index = (uint64_t)initiator_index * targets + target_index;
+        uint16_t quantity = (uint16_t)matrix[index * 2U] |
+                            ((uint16_t)matrix[index * 2U + 1U] << 8U);
+        uint64_t base = read_le64(entry + 24U);
+        if (quantity == 0U || base == 0U || base > UINT64_MAX / quantity) {
+          return 0;
+        }
+        uint64_t result = base * quantity;
+        if (data_type >= 3U) {
+          if (result > UINT64_MAX / UINT64_C(1048576)) return 0;
+          result *= UINT64_C(1048576);
+        }
+        *value = result;
+        return 1;
+      }
+    }
+    offset += length;
+  }
+  return 0;
 }

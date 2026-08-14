@@ -62,10 +62,13 @@ design.
 
 ## Updates and persistence
 
-The current signed-update format uses a QEMU development key identifier and
-monotonic generation counter to exercise parser, authorization, replay,
-fallback, and rollback behavior. It is not a production trust root. Production
-signing, key custody, rotation, recovery, and compromise response remain open.
+The update client requires TLS 1.2 with an exact operator RSA-key pin. Signed
+trust records provide monotonic Ed25519 release-root rotation and revocation;
+a separate pinned offline key authorizes recovery, and interrupted
+trust/catalog activation restores the previous verified pair. Checked-in TLS
+and signing keys are public QEMU fixtures, not production trust roots.
+Production key generation, custody, authorization, and compromise-response
+procedures remain open.
 
 System-slot metadata and ModelFS use redundant or copy-on-write publication
 where implemented. QEMU crash gates test selected interruption points, not all

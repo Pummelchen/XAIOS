@@ -7,6 +7,10 @@ workdir="$(mktemp -d)"
 admin_key="${XAIOS_SSH_ADMIN_KEY:-/keys/authorized}"
 observer_key="${XAIOS_SSH_OBSERVER_KEY:-/keys/observer}"
 operator_key="${XAIOS_SSH_OPERATOR_KEY:-/keys/operator}"
+connect_timeout="${XAIOS_TEST_CONNECT_TIMEOUT:-60}"
+case "$connect_timeout" in
+  ''|*[!0-9]*) printf 'FAIL: XAIOS_TEST_CONNECT_TIMEOUT must be an integer\n' >&2; exit 2 ;;
+esac
 
 cleanup() {
   for socket in "$workdir"/*.sock; do
@@ -23,7 +27,7 @@ common_options=(
   -o StrictHostKeyChecking=no
   -o UserKnownHostsFile=/dev/null
   -o PasswordAuthentication=no
-  -o ConnectTimeout=20
+  -o "ConnectTimeout=$connect_timeout"
   -o ServerAliveInterval=2
   -o ServerAliveCountMax=5
   -p "$ssh_port"
@@ -72,7 +76,7 @@ sftp_options=(
   -o StrictHostKeyChecking=no
   -o UserKnownHostsFile=/dev/null
   -o PasswordAuthentication=no
-  -o ConnectTimeout=20
+  -o "ConnectTimeout=$connect_timeout"
   -P "$ssh_port"
 )
 
@@ -116,7 +120,7 @@ expect_failure "$operator_key" \
 if printf 'pwd\nquit\n' | sftp -i "$observer_key" \
     -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null -o PasswordAuthentication=no \
-    -o ConnectTimeout=20 -P "$ssh_port" -b - "admin@$host" \
+    -o "ConnectTimeout=$connect_timeout" -P "$ssh_port" -b - "admin@$host" \
     >"$workdir/observer-sftp.log" 2>&1; then
   fail "observer principal opened an SFTP subsystem"
 fi

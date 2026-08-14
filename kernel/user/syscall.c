@@ -166,9 +166,9 @@ static uint32_t g_cpu_ai_app_bound;
 #define KERNEL_SOCK_LISTEN UINT32_C(1)
 #define KERNEL_SOCK_CONNECTED UINT32_C(2)
 #define KERNEL_SOCK_DATAGRAM UINT32_C(3)
-#define KERNEL_SOCK_MIN_CAPACITY UINT32_C(64)
-#define KERNEL_SOCKETS_PER_CPU UINT32_C(8)
-#define KERNEL_SOCK_MIN_PER_PORT UINT32_C(32)
+#define KERNEL_SOCK_MIN_CAPACITY UINT32_C(256)
+#define KERNEL_SOCKETS_PER_CPU UINT32_C(32)
+#define KERNEL_SOCK_MIN_PER_PORT UINT32_C(128)
 
 typedef struct kernel_socket {
   uint32_t state;   /* 0=free, KERNEL_SOCK_LISTEN, KERNEL_SOCK_CONNECTED */
@@ -198,7 +198,7 @@ static void kernel_socket_table_init(void) {
       capacity * sizeof(*g_kernel_sockets), 64U);
   kassert(g_kernel_sockets != 0);
   g_kernel_socket_capacity = (uint32_t)capacity;
-  uint64_t per_port = (uint64_t)smp_online_count() * 2U;
+  uint64_t per_port = (uint64_t)smp_online_count() * 8U;
   if (per_port < KERNEL_SOCK_MIN_PER_PORT) {
     per_port = KERNEL_SOCK_MIN_PER_PORT;
   }

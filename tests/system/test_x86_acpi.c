@@ -36,7 +36,7 @@ int main(void) {
   uint8_t madt[80];
   uint8_t srat[168];
   uint8_t slit[48];
-  uint8_t hmat[36];
+  uint8_t hmat[96];
   uint8_t xsdt[68];
   uint8_t rsdp[36];
 
@@ -90,6 +90,20 @@ int main(void) {
   checksum(slit, sizeof(slit), 9U);
 
   table_header(hmat, "HMAT", sizeof(hmat));
+  hmat[40] = 1U;
+  put32(hmat + 44U, 56U);
+  hmat[49] = 0U;
+  put32(hmat + 52U, 2U);
+  put32(hmat + 56U, 2U);
+  put64(hmat + 64U, 100U);
+  put32(hmat + 72U, 0U);
+  put32(hmat + 76U, 1U);
+  put32(hmat + 80U, 0U);
+  put32(hmat + 84U, 1U);
+  hmat[88] = 10U;
+  hmat[90] = 20U;
+  hmat[92] = 20U;
+  hmat[94] = 10U;
   checksum(hmat, sizeof(hmat), 9U);
 
   table_header(xsdt, "XSDT", sizeof(xsdt));
@@ -116,11 +130,13 @@ int main(void) {
   uint32_t first = 0U;
   uint32_t second = 0U;
   uint8_t distance = 0U;
+  uint64_t latency = 0U;
   if (!x86_64_acpi_parse((uint64_t)(uintptr_t)rsdp, &info) ||
       info.root_is_xsdt != 1U || info.enabled_cpus != 2U ||
       info.io_apics != 1U || info.processor_affinities != 2U ||
       info.memory_affinities != 2U || info.slit_localities != 2U ||
-      info.hmat == 0U || !x86_64_acpi_cpu_apic_id(&info, 0U, &first) ||
+      info.hmat == 0U || info.hmat_locality_structures != 1U ||
+      !x86_64_acpi_cpu_apic_id(&info, 0U, &first) ||
       !x86_64_acpi_cpu_apic_id(&info, 1U, &second) || first != 1U ||
       second != 257U ||
       !x86_64_acpi_processor_affinity_at(&info, 0U, &processor0) ||
@@ -138,7 +154,9 @@ int main(void) {
       memory1.length != UINT64_C(0x40000000) ||
       memory1.hot_pluggable != 1U || memory1.nonvolatile != 1U ||
       !x86_64_acpi_slit_distance(&info, 0U, 1U, &distance) ||
-      distance != 20U) {
+      distance != 20U ||
+      !x86_64_acpi_hmat_metric(&info, 0U, 1U, 0U, &latency) ||
+      latency != 2000U) {
     return 1;
   }
   madt[9] ^= 1U;

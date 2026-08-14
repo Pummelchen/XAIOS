@@ -11,8 +11,10 @@ from pathlib import Path
 import signal
 import shutil
 import socket
+import ssl
 import subprocess
 import threading
+import tempfile
 import time
 
 
@@ -89,6 +91,21 @@ def wait_ssh(key: Path, port: int) -> None:
     raise TimeoutError("SSH did not become ready")
 
 
+def upload_config(key: Path, port: int, content: str) -> None:
+    with tempfile.NamedTemporaryFile("w", prefix="xaios-xapt-config.") as source:
+        source.write(content)
+        source.flush()
+        result = subprocess.run(
+            ["scp", "-F", "/dev/null", "-i", str(key), "-o",
+             "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", "-o",
+             "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-P",
+             str(port), source.name, "admin@127.0.0.1:/state/xapt/config"],
+            cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=30)
+        if result.returncode != 0:
+            raise RuntimeError(f"xapt config upload failed: {result.stderr}")
+
+
 def build_repository(arch: str, repository: Path) -> None:
     shutil.rmtree(repository, ignore_errors=True)
     elf = BUILD / "xapt" / arch / "xapt-test-app.elf"
@@ -126,21 +143,30 @@ def build_repository(arch: str, repository: Path) -> None:
 
 
 def publish_test_app(arch: str, repository: Path, version: str,
-                     generation: int) -> None:
+                     generation: int, key_name: str = "v1") -> None:
     elf = BUILD / "xapt" / arch / "xapt-test-app.elf"
     subprocess.run(
         ["python3", "tools/xaios_xapt_repo.py", "package",
          "--repository", str(repository), "--elf", str(elf),
          "--name", "xapt-test-app", "--version", version, "--arch", arch,
          "--capabilities", "1073741826", "--description",
-         "Test-only package lifecycle fixture"],
+         "Test-only package lifecycle fixture", "--key", key_name],
         cwd=ROOT, check=True,
+    )
+    kernel = BUILD / ("kernel/kernel.elf" if arch == "aarch64" else
+                      "kernel-x86_64/kernel.elf")
+    subprocess.run(
+        ["python3", "tools/xaios_xapt_repo.py", "system",
+         "--repository", str(repository), "--image", str(kernel),
+         "--version", "0.1.1", "--generation", "100", "--arch", arch,
+         "--key", key_name], cwd=ROOT, check=True,
     )
     subprocess.run(
         ["python3", "tools/xaios_xapt_repo.py", "catalog", "--repository",
          str(repository), "--arch", arch, "--generation", str(generation),
          "--generated", f"qemu-gate-{generation}", "--os-record",
-         str(repository / "os" / arch / "0.1.1" / "record.json")],
+         str(repository / "os" / arch / "0.1.1" / "record.json"),
+         "--key", key_name],
         cwd=ROOT, check=True,
     )
     subprocess.run(
@@ -188,6 +214,12 @@ def exercise(arch: str, key: Path) -> None:
     build_repository(arch, repository)
     handler = functools.partial(Http11Handler, directory=str(repository))
     server = http.server.ThreadingHTTPServer(("0.0.0.0", 0), handler)
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.minimum_version = ssl.TLSVersion.TLSv1_2
+    tls.maximum_version = ssl.TLSVersion.TLSv1_2
+    tls.load_cert_chain(ROOT / "tests/fixtures/xapt-tls-cert.pem",
+                        ROOT / "tests/fixtures/xapt-tls-key.pem")
+    server.socket = tls.wrap_socket(server.socket, server_side=True)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     ssh_port = reserve_port()
@@ -199,12 +231,12 @@ def exercise(arch: str, key: Path) -> None:
         try:
             wait_marker(log, READY)
             wait_ssh(key, ssh_port)
-            ssh(
-                key,
-                ssh_port,
-                "nano /state/xapt/config --write "
-                f"host=10.0.2.2\\nport={server.server_port}\\nbase=/\\n",
-            )
+            upload_config(
+                key, ssh_port,
+                f"host=10.0.2.2\nport={server.server_port}\nbase=/\n"
+                "tls=required\n"
+                "tls_rsa_modulus="
+                "b4cef411efa36fc7f79c728c9a792dd206a2c72a5eeeedca708ac7afa743c1cac9bf6fea56782ee92bc359861381f40b0db41968e5490ca2f214b5f29ab4c6144d8e24f453c2ed415d95b8789b71fd1fd33b8c491212d5865d31f135f2736f38cdef3aa13ad64ec7af59f2795f0ff944d3ea70018c8ec874e684dbc1c640123ea060a52e8101f9d87713e91ba77635f1e83321010dd56e01b652623b9dd9cd56ac516541640f3b9ef0e6ab84c98e4f667d75c5e7c547a584155eddba0d0e7ffe712a23b44f14166f4fe859473c2fc8f3c7ab25151e86ae53169f2aa8f8ef784d9c4a0251c3a5e54b2a3083f722c26df97f31c9b364bd840eef503029d91e00df\n")
             htop = ssh(
                 key, ssh_port,
                 "htop --plain --no-cpus --sample-ms 1 --filter htop",
@@ -231,18 +263,44 @@ def exercise(arch: str, key: Path) -> None:
             installed = ssh(key, ssh_port, "xapt list")
             if "xapt-test-app 1.0.0 [installed]" not in installed:
                 raise RuntimeError(f"installed state missing: {installed!r}")
-            publish_test_app(arch, repository, "1.1.0", 2)
+            publish_test_app(arch, repository, "1.0.1", 2, "v1")
+            ssh(key, ssh_port, "xapt update")
+            upgrade = ssh(key, ssh_port, "xapt upgrade xapt-test-app", 180)
+            if "activated xapt-test-app 1.0.1 without reboot" not in upgrade:
+                raise RuntimeError(f"pre-rotation upgrade failed: {upgrade!r}")
+            ssh(key, ssh_port, "xapt rollback xapt-test-app")
+            if "xapt-test-app 1.0.1 [upgradable]" not in ssh(
+                    key, ssh_port, "xapt list"):
+                raise RuntimeError("one-step rollback did not restore version 1.0.0")
+
+            subprocess.run(
+                ["python3", "tools/xaios_xapt_repo.py", "trust",
+                 "--repository", str(repository), "--generation", "2",
+                 "--mode", "rotate", "--active", "v2", "--revoke", "v1",
+                 "--signer", "v1"], cwd=ROOT, check=True,
+            )
+            publish_test_app(arch, repository, "1.1.0", 3, "v2")
             ssh(key, ssh_port, "xapt update")
             upgrade = ssh(key, ssh_port, "xapt upgrade xapt-test-app", 180)
             if "activated xapt-test-app 1.1.0 without reboot" not in upgrade:
                 raise RuntimeError(f"upgrade failed: {upgrade!r}")
             if "xapt-test-app 1.1.0 [installed]" not in ssh(key, ssh_port, "xapt list"):
                 raise RuntimeError("upgraded version is not active")
-            ssh(key, ssh_port, "xapt rollback xapt-test-app")
-            if "xapt-test-app 1.1.0 [upgradable]" not in ssh(key, ssh_port, "xapt list"):
-                raise RuntimeError("one-step rollback did not restore version 1.0.0")
+            revoked_rollback = ssh_fails(
+                key, ssh_port, "xapt rollback xapt-test-app"
+            )
+            if "rollback failed" not in revoked_rollback:
+                raise RuntimeError(
+                    f"revoked package rollback was not rejected: {revoked_rollback!r}"
+                )
 
-            publish_test_app(arch, repository, "1.2.0", 3)
+            publish_test_app(arch, repository, "1.2.0", 4, "v1")
+            old_root_rejected = ssh_fails(key, ssh_port, "xapt update")
+            if "catalog update failed" not in old_root_rejected:
+                raise RuntimeError(
+                    f"revoked release root was not rejected: {old_root_rejected!r}"
+                )
+            publish_test_app(arch, repository, "1.2.0", 4, "v2")
             ssh(key, ssh_port, "xapt update")
             payload = repository / "apps" / arch / "xapt-test-app" / "1.2.0" / "xapt-test-app.elf"
             payload.write_bytes(payload.read_bytes() + b"tampered")
@@ -252,6 +310,23 @@ def exercise(arch: str, key: Path) -> None:
             if not ssh(key, ssh_port, "xapt-test-app still active").startswith(
                     "xapt-test-app still active\n"):
                 raise RuntimeError("corrupted upgrade changed the active app")
+            subprocess.run(
+                ["python3", "tools/xaios_xapt_repo.py", "trust",
+                 "--repository", str(repository), "--generation", "3",
+                 "--mode", "recovery", "--active", "v1", "--revoke", "v2",
+                 "--signer", "recovery", "--append"], cwd=ROOT, check=True,
+            )
+            publish_test_app(arch, repository, "1.2.0", 5, "v1")
+            recovered = ssh(key, ssh_port, "xapt update")
+            if "catalog verified and activated" not in recovered:
+                raise RuntimeError(f"recovery-root transition failed: {recovered!r}")
+            recovered_upgrade = ssh(
+                key, ssh_port, "xapt upgrade xapt-test-app", 180
+            )
+            if "activated xapt-test-app 1.2.0 without reboot" not in recovered_upgrade:
+                raise RuntimeError(
+                    f"recovered root could not reactivate app: {recovered_upgrade!r}"
+                )
             os_update = ssh(key, ssh_port, "xapt os-upgrade", 300)
             if "OS update staged and verified" not in os_update:
                 raise RuntimeError(f"OS update failed: {os_update!r}")
@@ -262,8 +337,8 @@ def exercise(arch: str, key: Path) -> None:
         try:
             wait_marker(log, READY)
             wait_ssh(key, ssh_port)
-            if "xapt-test-app 1.2.0 [upgradable]" not in ssh(key, ssh_port, "xapt list"):
-                raise RuntimeError("catalog or rollback version did not persist across reboot")
+            if "xapt-test-app 1.2.0 [installed]" not in ssh(key, ssh_port, "xapt list"):
+                raise RuntimeError("catalog or recovered version did not persist across reboot")
             if not ssh(key, ssh_port, "xapt-test-app reboot persisted").startswith(
                     "xapt-test-app reboot persisted\n"):
                 raise RuntimeError("installed application did not persist across reboot")

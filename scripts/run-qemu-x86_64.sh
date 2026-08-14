@@ -126,6 +126,7 @@ case "$numa_profile" in
       printf '%s\n' "error: two-node NUMA profile requires XAIOS_QEMU_X86_MEMORY=2G and XAIOS_QEMU_X86_SMP=4" >&2
       exit 2
     fi
+    machine="${machine},hmat=on"
     ;;
   *)
     printf '%s\n' "error: XAIOS_QEMU_X86_NUMA must be none or two-node" >&2
@@ -141,7 +142,7 @@ fi
 
 if [ "$dry_run" -eq 0 ] && [ ! -f "$persistent_image" ]; then
   printf '%s\n' "note: persistent image not found, creating: $persistent_image"
-  dd if=/dev/zero of="$persistent_image" bs=512 count=8192 status=none
+  dd if=/dev/zero of="$persistent_image" bs=512 count=32768 status=none
 fi
 
 for required_image in "$test_block_image" \
@@ -186,9 +187,17 @@ if [ "$numa_profile" = "two-node" ]; then
     -m 2G \
     -object memory-backend-ram,id=xaios_ram0,size=1G \
     -object memory-backend-ram,id=xaios_ram1,size=1G \
-    -numa node,nodeid=0,cpus=0-1,memdev=xaios_ram0 \
-    -numa node,nodeid=1,cpus=2-3,memdev=xaios_ram1 \
-    -numa dist,src=0,dst=1,val=20
+    -numa node,nodeid=0,cpus=0-1,memdev=xaios_ram0,initiator=0 \
+    -numa node,nodeid=1,cpus=2-3,memdev=xaios_ram1,initiator=1 \
+    -numa dist,src=0,dst=1,val=20 \
+    -numa hmat-lb,initiator=0,target=0,hierarchy=memory,data-type=access-latency,latency=10 \
+    -numa hmat-lb,initiator=0,target=1,hierarchy=memory,data-type=access-latency,latency=30 \
+    -numa hmat-lb,initiator=1,target=0,hierarchy=memory,data-type=access-latency,latency=30 \
+    -numa hmat-lb,initiator=1,target=1,hierarchy=memory,data-type=access-latency,latency=10 \
+    -numa hmat-lb,initiator=0,target=0,hierarchy=memory,data-type=access-bandwidth,bandwidth=20G \
+    -numa hmat-lb,initiator=0,target=1,hierarchy=memory,data-type=access-bandwidth,bandwidth=10G \
+    -numa hmat-lb,initiator=1,target=0,hierarchy=memory,data-type=access-bandwidth,bandwidth=10G \
+    -numa hmat-lb,initiator=1,target=1,hierarchy=memory,data-type=access-bandwidth,bandwidth=20G
 else
   set -- "$@" -m "$memory"
 fi

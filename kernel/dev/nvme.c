@@ -34,7 +34,7 @@
 #define NVME_IO_FLUSH UINT8_C(0x00)
 #define NVME_IO_WRITE UINT8_C(0x01)
 #define NVME_IO_READ UINT8_C(0x02)
-#define NVME_PSDT_SGL UINT8_C(1U << 6U)
+#define NVME_PSDT_SGL ((uint8_t)(UINT8_C(1) << 6U))
 
 #define NVME_QUEUE_DEPTH 16U
 #define NVME_MAX_IO_QUEUES 4U
@@ -398,11 +398,13 @@ static xaios_status_t configure_queue_interrupts(
   for (uint32_t index = 0U; index < controller->io_queue_count; ++index) {
     nvme_queue_t *queue = &controller->io[index];
     uint32_t interrupt_id = 80U + index;
-    uint32_t destination = x86_64_platform_cpu_apic_id(index);
+    /* The bootstrap CPU owns the canary until secondary scheduler workers are
+     * released. Queue affinity is switched only after that barrier. */
+    uint32_t destination = x86_64_platform_cpu_apic_id(smp_cpu_id());
     if (destination > UINT32_C(0xfffff) ||
         gic_register_interrupt(interrupt_id, nvme_interrupt_handler, queue) !=
             XAIOS_OK ||
-        gic_route_interrupt(interrupt_id, queue->assigned_cpu) != XAIOS_OK ||
+        gic_route_interrupt(interrupt_id, smp_cpu_id()) != XAIOS_OK ||
         pci_configure_msix(controller->pci_index, (uint16_t)index,
                            UINT64_C(0xfee00000) |
                                ((uint64_t)destination << 12U),
@@ -414,6 +416,35 @@ static xaios_status_t configure_queue_interrupts(
     ++controller->msix_queue_count;
   }
 #else
+  uint32_t device_id = pci_stream_id(controller->pci_index);
+  uint32_t use_its = 1U;
+  for (uint32_t index = 0U; index < controller->io_queue_count; ++index) {
+    nvme_queue_t *queue = &controller->io[index];
+    uint32_t interrupt_id = 8192U + index;
+    uint64_t message_address = 0U;
+    uint32_t message_data = 0U;
+    xaios_status_t status =
+        gic_its_configure_msi(device_id, index, interrupt_id,
+                              queue->assigned_cpu, &message_address,
+                              &message_data);
+    if (status == XAIOS_ERR_UNSUPPORTED && index == 0U) {
+      use_its = 0U;
+      break;
+    }
+    if (status != XAIOS_OK ||
+        gic_register_lpi(interrupt_id, queue->assigned_cpu,
+                         nvme_interrupt_handler, queue) != XAIOS_OK ||
+        pci_configure_msix(controller->pci_index, (uint16_t)index,
+                           message_address, message_data) != XAIOS_OK) {
+      klog("nvme: ITS queue setup failed queue=%u device=%u intid=%u status=%d\n",
+           index, device_id, interrupt_id, (int)status);
+      return XAIOS_ERR_IO;
+    }
+    queue->interrupt_id = interrupt_id;
+    queue->msix_entry = (uint16_t)index;
+    ++controller->msix_queue_count;
+  }
+  if (use_its != 0U) return XAIOS_OK;
   const uint64_t v2m_base = UINT64_C(0x08020000);
   uint64_t physical = 0U;
   uint32_t flags = 0U;
@@ -932,34 +963,42 @@ xaios_status_t nvme_interrupt_self_test(void) {
       controller->msix_queue_count != controller->io_queue_count) {
     return XAIOS_ERR_NOT_FOUND;
   }
-  nvme_queue_t *queue = &controller->io[0];
-  uint64_t before = queue->interrupt_completions;
+  uint64_t delivered = 0U;
+  for (uint32_t index = 0U; index < controller->io_queue_count; ++index) {
+    nvme_queue_t *queue = &controller->io[index];
+    uint64_t before = queue->interrupt_completions;
+    if (pci_unmask_msix(controller->pci_index, queue->msix_entry) != XAIOS_OK) {
+      return XAIOS_ERR_IO;
+    }
+    xaios_block_async_request_t request;
+    bytes_zero(&request, sizeof(request));
+    request.operation = XAIOS_BLOCK_ASYNC_READ;
+    request.state = XAIOS_BLOCK_ASYNC_PENDING;
+    request.buffer = controller->interrupt_test_buffer;
+    request.length = controller->block_size;
+    if (submit_io(controller, index, &request, 0U) != XAIOS_OK) {
+      return XAIOS_ERR_IO;
+    }
+    uint64_t started = timer_now_ns();
+    while (request.state != XAIOS_BLOCK_ASYNC_COMPLETE &&
+           timer_now_ns() - started < NVME_TIMEOUT_NS) {
+      xaios_cpu_relax();
+    }
+    if (request.status != XAIOS_OK ||
+        queue->interrupt_completions <= before) {
+      klog("nvme: MSI-X device canary failed queue=%u status=%d before=%lu after=%lu\n",
+           index, (int)request.status, before, queue->interrupt_completions);
+      return XAIOS_ERR_IO;
+    }
+    delivered += queue->interrupt_completions - before;
+  }
+  klog("nvme: MSI-X interrupt self-test passed queues=%u all_queues=1 completions=%lu controller=%s\n",
+       controller->msix_queue_count, delivered,
 #if defined(__x86_64__)
-  if (pci_unmask_msix(controller->pci_index, queue->msix_entry) != XAIOS_OK) {
-    return XAIOS_ERR_IO;
-  }
+       "x86-apic"
+#else
+       gic_its_available() ? "gicv3-its" : "gicv2m"
 #endif
-  xaios_block_async_request_t request;
-  bytes_zero(&request, sizeof(request));
-  request.operation = XAIOS_BLOCK_ASYNC_READ;
-  request.state = XAIOS_BLOCK_ASYNC_PENDING;
-  request.buffer = controller->interrupt_test_buffer;
-  request.length = controller->block_size;
-  if (submit_io(controller, 0U, &request, 0U) != XAIOS_OK) {
-    return XAIOS_ERR_IO;
-  }
-  uint64_t started = timer_now_ns();
-  while (request.state != XAIOS_BLOCK_ASYNC_COMPLETE &&
-         timer_now_ns() - started < NVME_TIMEOUT_NS) {
-    xaios_cpu_relax();
-  }
-  if (request.status != XAIOS_OK || queue->interrupt_completions <= before) {
-    klog("nvme: MSI-X device canary failed status=%d before=%lu after=%lu\n",
-         (int)request.status, before, queue->interrupt_completions);
-    return XAIOS_ERR_IO;
-  }
-  klog("nvme: MSI-X interrupt self-test passed queues=%u vector=%u cpu=%u completions=%lu\n",
-       controller->msix_queue_count, queue->interrupt_id,
-       queue->assigned_cpu, queue->interrupt_completions);
+  );
   return XAIOS_OK;
 }

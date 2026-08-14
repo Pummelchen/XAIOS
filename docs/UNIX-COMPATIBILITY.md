@@ -43,9 +43,9 @@ fail explicitly rather than being silently ignored.
 | `zip`, `unzip` | `zip [-r] ARCHIVE PATH...` writes standards-compliant stored ZIP entries with CRC32 and Unix attributes. `unzip [-l] ARCHIVE [-d DIR]` reads stored or Deflate entries from Unix, Windows or macOS tools. Encryption and ZIP64 are rejected. |
 | `ssh`, `scp` | Dedicated PTY outbound `ssh [-A] [-i KEY] [-p PORT] user@host [command]` and SFTP-backed `scp [-r] [-A] [-i KEY] [-P PORT] SOURCE DESTINATION`. Password, Ed25519 identity-file and forwarded-agent authentication, encrypted OpenSSH private keys, persistent Ed25519 TOFU checks, IPv4/IPv6 literals and DNS A/AAAA are implemented. Native outbound `-J`/`ProxyCommand` parsing and the complete OpenSSH algorithm matrix are not. |
 
-MutableFS v4 bounds this surface to 128 nodes, 64 open handles, 128 KiB per
-file, 2 MiB data capacity and 256-byte paths. Archive containers must fit in a
-128 KiB file. These are explicit XAIOS storage limits, not tar/ZIP format
+MutableFS v5 bounds this surface to 256 nodes, 256 open handles, 256 KiB per
+file, 4 MiB data capacity and 256-byte paths. Archive containers must fit in a
+256 KiB file. These are explicit XAIOS storage limits, not tar/ZIP format
 limits. Extraction rejects absolute paths, `..`, Windows drive prefixes,
 backslashes, checksum failures, integer overflow and unsupported entry types.
 

@@ -4,6 +4,7 @@ import select
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 
 TARGETS = [
@@ -32,6 +33,9 @@ TARGETS = [
     "threads: concurrent group complete",
     "/bin/smptest: complete",
     "/bin/nettest: complete",
+    "kernel: /bin/xaios-shell returned to kernel exit_code=0",
+    "kernel: /bin/sshtest returned to kernel exit_code=0",
+    "kernel: /bin/posix-shell returned to kernel exit_code=0",
     "/bin/helloworldc99: Hello, World!",
     "kernel: /bin/helloworldc99 returned to kernel exit_code=0",
     "kernel: starting persistent /bin/sshd service",
@@ -64,6 +68,9 @@ def main() -> int:
     env.setdefault("XAIOS_QEMU_X86_ACCEL", "tcg")
     env.setdefault("XAIOS_QEMU_X86_CPU", "max")
     timeout = int(env.get("XAIOS_QEMU_X86_SMOKE_TIMEOUT", "180"))
+    persistent_image = Path("build/xaios-x86-smoke-persistent.img")
+    persistent_image.unlink(missing_ok=True)
+    env["XAIOS_X86_PERSISTENT_IMAGE"] = str(persistent_image)
 
     proc = subprocess.Popen(
         ["./scripts/run-qemu-x86_64.sh"],
@@ -116,6 +123,7 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=3)
+        persistent_image.unlink(missing_ok=True)
 
     text = "".join(seen)
     missing = [target for target in TARGETS if target not in text]

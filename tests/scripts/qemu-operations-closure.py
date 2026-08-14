@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -72,16 +73,16 @@ def ssh_base(key: Path, port: int, host: str = "127.0.0.1") -> list[str]:
     ]
 
 
-def ssh_command(key: Path, port: int, command: str, *, ok: bool = True,
+def ssh_command(key: Path, port: int, command: str, *, ok: bool | None = True,
                 timeout: int = 30) -> str:
     result = subprocess.run(ssh_base(key, port) + [command], cwd=ROOT,
                             text=True, capture_output=True, timeout=timeout)
-    if ok and result.returncode != 0:
+    if ok is True and result.returncode != 0:
         raise RuntimeError(
             f"SSH command failed rc={result.returncode}: {command}\n"
             f"stdout={result.stdout}\nstderr={result.stderr}"
         )
-    if not ok and result.returncode == 0:
+    if ok is False and result.returncode == 0:
         raise RuntimeError(f"SSH command unexpectedly succeeded: {command}")
     return result.stdout
 
@@ -221,18 +222,34 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
         time.sleep(1.0)
         ping = ssh_command(key, port, "ping status")
         assert_contains(ping, "target=10.0.2.2", "rtt_ns=")
-        first_dns = ssh_command(key, port, "nslookup example.com")
+        first_dns = ssh_command(key, port, "nslookup example.com", ok=None)
         time.sleep(1.0)
-        second_dns = ssh_command(key, port, "nslookup example.com")
+        second_dns = ssh_command(key, port, "nslookup example.com", ok=None)
         if "pending" in first_dns and "pending" in second_dns:
             raise RuntimeError("DNS remained pending after the network poll interval")
-        first_aaaa = ssh_command(key, port, "nslookup -6 example.com")
+        dns_value = second_dns.partition(": ")[2].strip()
+        if dns_value != "dnssec-unverified":
+            try:
+                if ipaddress.ip_address(dns_value).version != 4:
+                    raise ValueError("not IPv4")
+            except ValueError as error:
+                raise RuntimeError(
+                    "DNS A response was neither authenticated nor fail-closed"
+                ) from error
+        first_aaaa = ssh_command(key, port, "nslookup -6 example.com", ok=None)
         time.sleep(1.0)
-        second_aaaa = ssh_command(key, port, "nslookup -6 example.com")
+        second_aaaa = ssh_command(key, port, "nslookup -6 example.com", ok=None)
         if "pending" in first_aaaa and "pending" in second_aaaa:
             raise RuntimeError("DNS AAAA remained pending after the network poll interval")
-        if "pending" in second_aaaa or "error(" in second_aaaa or ":" not in second_aaaa:
-            raise RuntimeError("DNS AAAA response did not contain an IPv6 address")
+        aaaa_value = second_aaaa.partition(": ")[2].strip()
+        if aaaa_value != "dnssec-unverified":
+            try:
+                if ipaddress.ip_address(aaaa_value).version != 6:
+                    raise ValueError("not IPv6")
+            except ValueError as error:
+                raise RuntimeError(
+                    "DNS AAAA response was neither authenticated nor fail-closed"
+                ) from error
         ssh_command(key, port, "config export /tmp/closure-config.bin")
         assert_contains(ssh_command(key, port,
                                     "config import /tmp/closure-config.bin"),

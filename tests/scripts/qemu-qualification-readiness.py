@@ -114,10 +114,15 @@ def main() -> int:
         ("network", [sys.executable, "tests/scripts/qemu-network-suite.py"], 420, {}),
         ("fragmentation", [sys.executable, "tests/scripts/qemu-outbound-fragmentation-gate.py"], 600, {}),
         ("nvme", [sys.executable, "tests/scripts/qemu-nvme-gate.py"], 600, {}),
+        ("sve_context", [sys.executable, "tests/scripts/qemu-aarch64-sve2-gate.py"], 600, {}),
+        ("x86_numa_hmat", [sys.executable, "tests/scripts/qemu-x86_64-numa-gate.py"], 600, {}),
         ("high_core", [sys.executable, "tests/scripts/qemu-high-core-gate.py"], 900, {}),
         ("x86_64", [sys.executable, "tests/scripts/qemu-x86_64-smoke.py"], 360, {}),
         ("sustained_soak", [sys.executable, "tests/scripts/qemu-soak-gate.py"], 1200,
          {"XAIOS_QEMU_SOAK_BOOTS": str(soak_boots)}),
+        # xapt and operations rebuild production images. Keep every gate that
+        # consumes diagnostic boot markers ahead of these image-mutating steps.
+        ("xapt_tls", [sys.executable, "tests/scripts/qemu-xapt-gate.py"], 1800, {}),
         ("ssh_network", [sys.executable, "tests/scripts/qemu-operations-closure.py", "--skip-docker"], 900, {}),
         ("storage_crash", [sys.executable, "tests/scripts/qemu-storage-crash-test.py"], 900, {}),
     ]

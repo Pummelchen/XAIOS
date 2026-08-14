@@ -221,6 +221,8 @@ int main(void) {
   assert(g_tx_frame[30] == 10U && g_tx_frame[31] == 0U &&
          g_tx_frame[32] == 2U && g_tx_frame[33] == 3U);
   assert(g_tx_length > DNS_PAYLOAD_OFFSET + 16U);
+  assert((get_be16(g_tx_frame + DNS_PAYLOAD_OFFSET + 2U) &
+          UINT16_C(0x0020)) != 0U);
   assert(dns_query_count() == 1U && dns_pending_count() == 1U);
 
   uint8_t response[512];
@@ -278,13 +280,16 @@ int main(void) {
       sizeof(ipv4_answer));
   assert(dns_process_ipv4_frame(response, response_length, g_now_ns) ==
          XAIOS_ERR_INVALID);
+  assert(dns_pending_count() == 0U);
+  assert(dns_resolve("unsigned.test", &address) == XAIOS_ERR_INVALID);
+  assert(dns_resolve("unsigned.test", &address) == XAIOS_ERR_BUSY);
+  response_length = build_response(
+      response, UINT16_C(0x81a0), XAIOS_DNS_TYPE_A, ipv4_answer,
+      sizeof(ipv4_answer));
   response[26U] ^= 1U;
   assert(dns_process_ipv4_frame(response, response_length, g_now_ns) ==
          XAIOS_ERR_INVALID);
   response[26U] ^= 1U;
-  response_length = build_response(
-      response, UINT16_C(0x81a0), XAIOS_DNS_TYPE_A, ipv4_answer,
-      sizeof(ipv4_answer));
   assert(dns_process_ipv4_frame(response, response_length, g_now_ns) ==
          XAIOS_OK);
 
@@ -294,6 +299,7 @@ int main(void) {
   g_now_ns += UINT64_C(40000000000);
   dns_tick(g_now_ns);
   assert(dns_pending_count() == 0U && dns_timeout_count() == 1U);
+  assert(dns_resolve("timeout.test", &address) == XAIOS_ERR_CANCELLED);
 
   puts("dns: deterministic malformed corpus, response, cache, and timeout passed");
   return 0;

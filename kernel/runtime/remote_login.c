@@ -38,7 +38,7 @@
 static uint64_t g_remote_login_sessions;
 static uint64_t g_remote_login_commands;
 static uint64_t g_remote_login_denials;
-#define XAIOS_REMOTE_LOGIN_MAX_SESSIONS 16U
+#define XAIOS_REMOTE_LOGIN_MAX_SESSIONS 64U
 typedef struct remote_login_context {
   uint64_t session_id;
   char cwd[XAIOS_MFS_PATH_MAX];
@@ -1487,12 +1487,12 @@ static xaios_status_t handle_grep(const char *args, char *output,
   uint64_t total_matches = 0U;
   for (uint32_t file = 0U; file < file_count; ++file) {
     char resolved[XAIOS_MFS_PATH_MAX];
-    char *data = (char *)kheap_alloc(XAIOS_MFS_MAX_FILE_BYTES_V4 + 1U, 16U);
+    char *data = (char *)kheap_alloc(XAIOS_MFS_MAX_FILE_BYTES_V5 + 1U, 16U);
     uint64_t data_size = 0U;
     if (data == 0 ||
         remote_path_resolve(g_remote_login_cwd, files[file], resolved,
                             sizeof(resolved)) != XAIOS_OK ||
-        mutable_fs_read(resolved, data, XAIOS_MFS_MAX_FILE_BYTES_V4,
+        mutable_fs_read(resolved, data, XAIOS_MFS_MAX_FILE_BYTES_V5,
                         &data_size) != XAIOS_OK) {
       kheap_free(data);
       return command_fail(output, output_capacity, output_bytes,
@@ -2288,7 +2288,7 @@ static xaios_status_t ustar_build_path(const char *source, const char *name,
     }
     return XAIOS_OK;
   }
-  if (stat.type != 2U || stat.size > XAIOS_MFS_MAX_FILE_BYTES_V4)
+  if (stat.type != 2U || stat.size > XAIOS_MFS_MAX_FILE_BYTES_V5)
     return XAIOS_ERR_INVALID;
   if (stat.size > UINT64_MAX - 511U) return XAIOS_ERR_INVALID;
   uint64_t padded = (stat.size + 511U) & ~UINT64_C(511);
@@ -2443,21 +2443,21 @@ static xaios_status_t ustar_walk(const char *archive_path,
                                 const char *destination, int extract,
                                 char *output, uint64_t output_capacity,
                                 uint64_t *output_bytes) {
-  char *archive = (char *)kheap_alloc(XAIOS_MFS_MAX_FILE_BYTES_V4, 16U);
+  char *archive = (char *)kheap_alloc(XAIOS_MFS_MAX_FILE_BYTES_V5, 16U);
   char *decoded = 0;
   uint64_t archive_size = 0U;
   xaios_status_t status = XAIOS_ERR_INVALID;
   if (archive == 0) return XAIOS_ERR_NO_MEMORY;
-  if (mutable_fs_read(archive_path, archive, XAIOS_MFS_MAX_FILE_BYTES_V4,
+  if (mutable_fs_read(archive_path, archive, XAIOS_MFS_MAX_FILE_BYTES_V5,
                       &archive_size) != XAIOS_OK)
     goto done;
   if (archive_size >= 2U && (uint8_t)archive[0] == UINT8_C(0x1f) &&
       (uint8_t)archive[1] == UINT8_C(0x8b)) {
     uint64_t decoded_size = 0U;
-    decoded = (char *)kheap_alloc(XAIOS_MFS_MAX_FILE_BYTES_V4, 16U);
+    decoded = (char *)kheap_alloc(XAIOS_MFS_MAX_FILE_BYTES_V5, 16U);
     if (decoded == 0 ||
         gzip_decode((const uint8_t *)archive, archive_size, (uint8_t *)decoded,
-                    XAIOS_MFS_MAX_FILE_BYTES_V4, &decoded_size) != XAIOS_OK)
+                    XAIOS_MFS_MAX_FILE_BYTES_V5, &decoded_size) != XAIOS_OK)
       goto done;
     kheap_free(archive);
     archive = decoded;
@@ -2664,7 +2664,7 @@ static xaios_status_t handle_tar(const char *args, char *output,
     return XAIOS_OK;
   }
 
-  char *archive = (char *)kheap_alloc(XAIOS_MFS_MAX_FILE_BYTES_V4, 16U);
+  char *archive = (char *)kheap_alloc(XAIOS_MFS_MAX_FILE_BYTES_V5, 16U);
   if (archive == 0)
     return command_fail(output, output_capacity, output_bytes,
                         "tar: memory unavailable");
@@ -2679,7 +2679,7 @@ static xaios_status_t handle_tar(const char *args, char *output,
         path_basename(source_path, source_name, sizeof(source_name)) !=
             XAIOS_OK ||
         ustar_build_path(source_path, source_name, archive,
-                         XAIOS_MFS_MAX_FILE_BYTES_V4 - 1024U,
+                         XAIOS_MFS_MAX_FILE_BYTES_V5 - 1024U,
                          &archive_size) != XAIOS_OK) {
       status = XAIOS_ERR_INVALID;
       break;
@@ -2883,7 +2883,7 @@ static xaios_status_t handle_zip(const char *args, char *output,
                           sizeof(archive_path)) != XAIOS_OK)
     return command_fail(output, output_capacity, output_bytes,
                         "zip: invalid archive");
-  uint8_t *archive = (uint8_t *)kheap_alloc(XAIOS_MFS_MAX_FILE_BYTES_V4, 16U);
+  uint8_t *archive = (uint8_t *)kheap_alloc(XAIOS_MFS_MAX_FILE_BYTES_V5, 16U);
   xaios_zip_entry_t *entries = (xaios_zip_entry_t *)kheap_calloc(
       sizeof(xaios_zip_entry_t) * XAIOS_ZIP_MAX_ENTRIES, 16U);
   if (archive == 0 || entries == 0) {
@@ -2902,7 +2902,7 @@ static xaios_status_t handle_zip(const char *args, char *output,
                             sizeof(source)) != XAIOS_OK ||
         path_basename(source, name, sizeof(name)) != XAIOS_OK ||
         zip_append_path(source, name, recursive, archive,
-                        XAIOS_MFS_MAX_FILE_BYTES_V4, &archive_size, entries,
+                        XAIOS_MFS_MAX_FILE_BYTES_V5, &archive_size, entries,
                         &entry_count) != XAIOS_OK) {
       status = XAIOS_ERR_INVALID;
       break;
@@ -2913,7 +2913,7 @@ static xaios_status_t handle_zip(const char *args, char *output,
   }
   if (entry_count == 0U) status = XAIOS_ERR_INVALID;
   if (status == XAIOS_OK)
-    status = zip_finish(archive, XAIOS_MFS_MAX_FILE_BYTES_V4, &archive_size,
+    status = zip_finish(archive, XAIOS_MFS_MAX_FILE_BYTES_V5, &archive_size,
                         entries, entry_count);
   if (status == XAIOS_OK)
     status = write_buffer_to_path(archive_path, (const char *)archive,
@@ -2930,11 +2930,11 @@ static xaios_status_t unzip_archive(const char *archive_path,
                                     const char *destination, int list_only,
                                     char *output, uint64_t output_capacity,
                                     uint64_t *output_bytes) {
-  uint8_t *archive = (uint8_t *)kheap_alloc(XAIOS_MFS_MAX_FILE_BYTES_V4, 16U);
+  uint8_t *archive = (uint8_t *)kheap_alloc(XAIOS_MFS_MAX_FILE_BYTES_V5, 16U);
   uint64_t archive_size = 0U;
   xaios_status_t status = XAIOS_ERR_INVALID;
   if (archive == 0) return XAIOS_ERR_NO_MEMORY;
-  if (mutable_fs_read(archive_path, archive, XAIOS_MFS_MAX_FILE_BYTES_V4,
+  if (mutable_fs_read(archive_path, archive, XAIOS_MFS_MAX_FILE_BYTES_V5,
                       &archive_size) != XAIOS_OK ||
       archive_size < 22U)
     goto done;
@@ -2995,7 +2995,7 @@ static xaios_status_t unzip_archive(const char *archive_path,
         uint64_t data_offset = (uint64_t)local_offset + 30U + local_name +
                                local_extra;
         if (data_offset > archive_size || compressed > archive_size - data_offset ||
-            uncompressed > XAIOS_MFS_MAX_FILE_BYTES_V4)
+            uncompressed > XAIOS_MFS_MAX_FILE_BYTES_V5)
           goto done;
         uint8_t *decoded = archive + data_offset;
         uint8_t *allocated = 0;
@@ -3907,6 +3907,7 @@ static const remote_app_definition_t g_remote_apps[] = {
     REMOTE_APP("xapt", "/bin/xapt",
      XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT | XAIOS_CAP_TIME |
          XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE | XAIOS_CAP_NET_SOCKET |
+         XAIOS_CAP_RANDOM |
          XAIOS_CAP_CONTROL_QUERY | XAIOS_CAP_CONTROL_ADMIN |
          XAIOS_CAP_UPDATE | XAIOS_CAP_ADMIN),
     REMOTE_TERMINAL_APP("nano", "/bin/nano",

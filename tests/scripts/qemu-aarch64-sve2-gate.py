@@ -14,7 +14,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MARKER = b"SVE2: QEMU arithmetic canary passed"
+MARKERS = (
+    b"SVE2: QEMU arithmetic canary passed vector_bytes=256 el0=enabled",
+    b"scheduler: SVE Z/P/FFR interrupt preservation passed EL0-task-state=1",
+)
 
 
 def main() -> int:
@@ -64,9 +67,10 @@ def main() -> int:
                 if not chunk and process.poll() is not None:
                     break
                 output.extend(chunk)
-                if MARKER in output:
+                if all(marker in output for marker in MARKERS):
                     print(
-                        "qemu-aarch64-sve2-gate: SVE2 arithmetic and runtime capability gate passed"
+                        "qemu-aarch64-sve2-gate: SVE2 arithmetic, EL0 enablement, "
+                        "and per-task Z/P/FFR interrupt preservation passed"
                     )
                     return 0
         finally:

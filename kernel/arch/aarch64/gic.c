@@ -21,7 +21,9 @@
 #define GICD_IROUTER0    0x6000U
 #define GICD_CTLR_RWP    (UINT32_C(1) << 31U)
 #define GICD_CTLR_ARE_NS (UINT32_C(1) << 5U)
-#define GIC_MAX_INTIDS   1020U
+#define GIC_SPI_LIMIT    1020U
+#define GIC_LPI_BASE     8192U
+#define GIC_MAX_INTIDS   16384U
 
 /* GIC Redistributor registers (per-CPU frame 0) */
 #define GICR_CTLR         0x0000U
@@ -157,6 +159,21 @@ xaios_status_t gic_register_interrupt(uint32_t intid,
   return XAIOS_OK;
 }
 
+xaios_status_t gic_register_lpi(uint32_t intid, uint32_t cpu_id,
+                               xaios_irq_handler_t handler, void *context) {
+  const xaios_cpu_state_t *cpu = smp_cpu_state(cpu_id);
+  if (intid < GIC_LPI_BASE || intid >= GIC_MAX_INTIDS || handler == 0 ||
+      cpu == 0 || cpu->online == 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  if (g_irq_handlers[intid] != 0) return XAIOS_ERR_BUSY;
+  g_irq_handlers[intid] = handler;
+  g_irq_contexts[intid] = context;
+  g_irq_cpu_ids[intid] = cpu_id;
+  ++g_registered_interrupts;
+  return XAIOS_OK;
+}
+
 xaios_status_t gic_unregister_interrupt(uint32_t intid,
                                         xaios_irq_handler_t handler,
                                         void *context) {
@@ -164,9 +181,11 @@ xaios_status_t gic_unregister_interrupt(uint32_t intid,
       g_irq_handlers[intid] != handler || g_irq_contexts[intid] != context) {
     return XAIOS_ERR_INVALID;
   }
-  mmio_write32(QEMU_VIRT_GICD_BASE,
-               GICD_ICENABLER0 + (intid / 32U) * 4U,
-               UINT32_C(1) << (intid % 32U));
+  if (intid < GIC_SPI_LIMIT) {
+    mmio_write32(QEMU_VIRT_GICD_BASE,
+                 GICD_ICENABLER0 + (intid / 32U) * 4U,
+                 UINT32_C(1) << (intid % 32U));
+  }
   g_irq_handlers[intid] = 0;
   g_irq_contexts[intid] = 0;
   g_irq_cpu_ids[intid] = UINT32_MAX;
@@ -176,7 +195,8 @@ xaios_status_t gic_unregister_interrupt(uint32_t intid,
 
 xaios_status_t gic_route_interrupt(uint32_t intid, uint32_t cpu_id) {
   const xaios_cpu_state_t *cpu = smp_cpu_state(cpu_id);
-  if (intid < 32U || intid >= g_gic_info.interrupt_lines || cpu == 0 ||
+  if (intid < 32U || intid >= GIC_SPI_LIMIT ||
+      intid >= g_gic_info.interrupt_lines || cpu == 0 ||
       cpu->online == 0U) {
     return XAIOS_ERR_INVALID;
   }
@@ -210,7 +230,8 @@ void gic_enable_full(void) {
   mmio_write32(QEMU_VIRT_GICD_BASE, GICD_CTLR, ctlr);
   wait_distributor();
 
-  for (uint32_t intid = 32U; intid < g_gic_info.interrupt_lines; ++intid) {
+  for (uint32_t intid = 32U;
+       intid < g_gic_info.interrupt_lines && intid < GIC_SPI_LIMIT; ++intid) {
     if (g_irq_handlers[intid] == 0 || g_irq_cpu_ids[intid] == UINT32_MAX) {
       continue;
     }

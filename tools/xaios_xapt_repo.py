@@ -15,10 +15,31 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 TEST_SEED = bytes.fromhex(
     "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
 )
-PUBLIC_KEY = bytes.fromhex(
+PUBLIC_KEY_V1 = bytes.fromhex(
     "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
 )
-PRIVATE = Ed25519PrivateKey.from_private_bytes(TEST_SEED)
+TEST_SEED_V2 = bytes.fromhex(
+    "1e56b2c5b66c1a77c982e18fce95cc943c5c88cc20c2f52919b8cda5f9e89b1e"
+)
+PUBLIC_KEY_V2 = bytes.fromhex(
+    "cf5310d0073efd9f5c5a7404945dccbac525b02559a297271b272bb87cb6baf4"
+)
+RECOVERY_SEED = bytes.fromhex(
+    "29b62165292dacf2ead4809e4854707e04581e636907f4d3ef4c334797f3a3ec"
+)
+RECOVERY_PUBLIC_KEY = bytes.fromhex(
+    "5c34b6582a13d14a954e082f333df33b0ba6222fb019cf3ad45ae3ed5e9f9de4"
+)
+KEY_SEEDS = {"v1": TEST_SEED, "v2": TEST_SEED_V2, "recovery": RECOVERY_SEED}
+PUBLIC_KEYS = {
+    name: Ed25519PrivateKey.from_private_bytes(seed).public_key()
+    for name, seed in KEY_SEEDS.items()
+}
+PUBLIC_KEY_BYTES = {
+    "v1": PUBLIC_KEY_V1,
+    "v2": PUBLIC_KEY_V2,
+    "recovery": RECOVERY_PUBLIC_KEY,
+}
 ARCHES = {"aarch64", "x86_64"}
 SYSTEM_SLOT_BYTES = 16 * 1024 * 1024
 
@@ -39,8 +60,12 @@ def semver(value: str) -> tuple[int, int, int]:
     return parsed  # type: ignore[return-value]
 
 
-def sign_document(unsigned: bytes) -> bytes:
-    return unsigned + b"signature=" + PRIVATE.sign(unsigned).hex().encode("ascii") + b"\n"
+def private_key(name: str) -> Ed25519PrivateKey:
+    return Ed25519PrivateKey.from_private_bytes(KEY_SEEDS[name])
+
+
+def sign_document(unsigned: bytes, key_name: str) -> bytes:
+    return unsigned + b"signature=" + private_key(key_name).sign(unsigned).hex().encode("ascii") + b"\n"
 
 
 def verify_document(data: bytes, prefix: bytes) -> bytes:
@@ -48,15 +73,66 @@ def verify_document(data: bytes, prefix: bytes) -> bytes:
         raise ValueError("invalid signed document framing")
     marker = b"signature="
     offset = data.rfind(marker)
-    if offset < 0 or data[offset - len(b"key=" + PUBLIC_KEY.hex().encode() + b"\n") : offset] != (
-        b"key=" + PUBLIC_KEY.hex().encode() + b"\n"
-    ):
+    if offset < 0:
         raise ValueError("missing trusted key immediately before signature")
+    key_line = data[data.rfind(b"\n", 0, offset - 1) + 1:offset]
+    if not key_line.startswith(b"key=") or len(key_line) != 69:
+        raise ValueError("missing trusted key immediately before signature")
+    key_bytes = bytes.fromhex(key_line[4:-1].decode("ascii"))
+    key_name = next((name for name, value in PUBLIC_KEY_BYTES.items()
+                     if value == key_bytes), None)
+    if key_name is None or key_name == "recovery":
+        raise ValueError("unknown release signing key")
     signature_hex = data[offset + len(marker) : -1]
     if len(signature_hex) != 128:
         raise ValueError("invalid Ed25519 signature width")
-    PRIVATE.public_key().verify(bytes.fromhex(signature_hex.decode("ascii")), data[:offset])
+    PUBLIC_KEYS[key_name].verify(bytes.fromhex(signature_hex.decode("ascii")), data[:offset])
     return data[:offset]
+
+
+def verify_trust_chain(data: bytes) -> str:
+    active = "v1"
+    revoked: set[str] = set()
+    generation = 1
+    if not data or not data.endswith(b"\n"):
+        raise ValueError("invalid trust-chain framing")
+    for encoded_line in data.splitlines():
+        line = encoded_line.decode("ascii")
+        fields = line.split(":")
+        if len(fields) != 7 or fields[0] != "XAIOS-TRUST-V1":
+            raise ValueError("invalid trust transition fields")
+        values = dict(field.split("=", 1) for field in fields[1:])
+        next_generation = int(values["gen"])
+        mode = values["mode"]
+        next_active = next(
+            (name for name, key in PUBLIC_KEY_BYTES.items()
+             if key.hex() == values["active"]), None)
+        revoked_name = next(
+            (name for name, key in PUBLIC_KEY_BYTES.items()
+             if key.hex() == values["revoke"]), None)
+        signer = next(
+            (name for name, key in PUBLIC_KEY_BYTES.items()
+             if key.hex() == values["signer"]), None)
+        if (next_generation <= generation or next_generation > 0xFFFFFFFF or
+                next_active not in {"v1", "v2"} or
+                revoked_name not in {"v1", "v2"} or
+                signer is None or next_active == revoked_name):
+            raise ValueError("invalid trust transition identity")
+        unsigned, signature_hex = encoded_line.rsplit(b":sig=", 1)
+        PUBLIC_KEYS[signer].verify(bytes.fromhex(signature_hex.decode()), unsigned)
+        if mode == "rotate":
+            if signer != active or revoked_name != active or next_active in revoked:
+                raise ValueError("invalid normal trust rotation")
+        elif mode == "recovery":
+            if signer != "recovery":
+                raise ValueError("invalid recovery trust rotation")
+            revoked.clear()
+        else:
+            raise ValueError("invalid trust transition mode")
+        revoked.add(revoked_name)
+        active = next_active
+        generation = next_generation
+    return active
 
 
 def package(args: argparse.Namespace) -> None:
@@ -67,8 +143,8 @@ def package(args: argparse.Namespace) -> None:
     if args.arch not in ARCHES:
         raise ValueError("unsupported architecture")
     binary = args.elf.read_bytes()
-    if not binary.startswith(b"\x7fELF") or not binary or len(binary) > 131072:
-        raise ValueError("application must be a non-empty ELF no larger than 128 KiB")
+    if not binary.startswith(b"\x7fELF") or not binary or len(binary) > 262144:
+        raise ValueError("application must be a non-empty ELF no larger than 256 KiB")
     target = args.repository / "apps" / args.arch / args.name / args.version
     target.mkdir(parents=True, exist_ok=True)
     binary_name = f"{args.name}.elf"
@@ -83,9 +159,9 @@ def package(args: argparse.Namespace) -> None:
         f"capabilities={args.capabilities}\n"
         f"size={len(binary)}\n"
         f"sha256={hashlib.sha256(binary).hexdigest()}\n"
-        f"key={PUBLIC_KEY.hex()}\n"
+        f"key={PUBLIC_KEY_BYTES[args.key].hex()}\n"
     ).encode("ascii")
-    manifest = sign_document(unsigned)
+    manifest = sign_document(unsigned, args.key)
     (target / "manifest.txt").write_bytes(manifest)
     (target / "record.json").write_text(
         json.dumps(
@@ -119,9 +195,9 @@ def system(args: argparse.Namespace) -> None:
     digest = hashlib.sha256(image).hexdigest()
     unsigned = (
         f"xaios-update:v2:gen={args.generation}:sha256={digest}:"
-        f"key={PUBLIC_KEY.hex()}"
+        f"key={PUBLIC_KEY_BYTES[args.key].hex()}"
     ).encode("ascii")
-    signature = unsigned.decode("ascii") + ":sig=" + PRIVATE.sign(unsigned).hex()
+    signature = unsigned.decode("ascii") + ":sig=" + private_key(args.key).sign(unsigned).hex()
     target = args.repository / "os" / args.arch / args.version
     target.mkdir(parents=True, exist_ok=True)
     image_name = "kernel.elf"
@@ -179,8 +255,8 @@ def catalog(args: argparse.Namespace) -> None:
         if any("|" in value or "\n" in value for value in values):
             raise ValueError("catalog fields may not contain separators")
         lines.append("app=" + "|".join(values))
-    lines.append(f"key={PUBLIC_KEY.hex()}")
-    data = sign_document(("\n".join(lines) + "\n").encode("ascii"))
+    lines.append(f"key={PUBLIC_KEY_BYTES[args.key].hex()}")
+    data = sign_document(("\n".join(lines) + "\n").encode("ascii"), args.key)
     output = args.repository / f"catalog-{args.arch}.txt"
     output.write_bytes(data)
     verify_document(data, b"XAIOS-CATALOG-V1\n")
@@ -188,6 +264,9 @@ def catalog(args: argparse.Namespace) -> None:
 
 
 def verify(args: argparse.Namespace) -> None:
+    trust_path = args.repository / "trust.txt"
+    if trust_path.exists():
+        verify_trust_chain(trust_path.read_bytes())
     catalogs = sorted(args.repository.glob("catalog-*.txt"))
     if not catalogs:
         raise ValueError("repository has no catalogs")
@@ -232,15 +311,46 @@ def verify(args: argparse.Namespace) -> None:
         signed, signature_hex = str(record["signature"]).rsplit(":sig=", 1)
         expected = (
             f"xaios-update:v2:gen={generation}:sha256={digest}:"
-            f"key={PUBLIC_KEY.hex()}"
+            f"key={bytes.fromhex(signed.rsplit('key=', 1)[1]).hex()}"
         )
         if signed != expected:
             raise ValueError(f"system signature metadata mismatch: {record_path}")
-        PRIVATE.public_key().verify(bytes.fromhex(signature_hex), signed.encode("ascii"))
+        key_bytes = bytes.fromhex(signed.rsplit("key=", 1)[1])
+        key_name = next((name for name, value in PUBLIC_KEY_BYTES.items()
+                         if value == key_bytes), None)
+        if key_name is None or key_name == "recovery":
+            raise ValueError(f"unknown system signing key: {record_path}")
+        PUBLIC_KEYS[key_name].verify(bytes.fromhex(signature_hex), signed.encode("ascii"))
         system_count += 1
     print(
         f"xapt-repo: verified catalogs={len(catalogs)} "
         f"packages={package_count} systems={system_count}"
+    )
+
+
+def trust(args: argparse.Namespace) -> None:
+    if args.generation <= 1 or args.generation > 0xFFFFFFFF:
+        raise ValueError("trust generation must be between 2 and 4294967295")
+    if args.mode == "rotate" and args.signer == "recovery":
+        raise ValueError("normal rotation must be signed by an active release key")
+    if args.mode == "recovery" and args.signer != "recovery":
+        raise ValueError("recovery transition must use the recovery key")
+    unsigned = (
+        f"XAIOS-TRUST-V1:gen={args.generation}:mode={args.mode}:"
+        f"active={PUBLIC_KEY_BYTES[args.active].hex()}:"
+        f"revoke={PUBLIC_KEY_BYTES[args.revoke].hex()}:"
+        f"signer={PUBLIC_KEY_BYTES[args.signer].hex()}"
+    ).encode("ascii")
+    line = unsigned + b":sig=" + private_key(args.signer).sign(unsigned).hex().encode() + b"\n"
+    target = args.repository / "trust.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if args.append and target.exists():
+        target.write_bytes(target.read_bytes() + line)
+    else:
+        target.write_bytes(line)
+    print(
+        f"xapt-repo: trust generation={args.generation} mode={args.mode} "
+        f"active={args.active} signer={args.signer}"
     )
 
 
@@ -257,6 +367,7 @@ def main() -> None:
     package_parser.add_argument("--minimum-abi", type=int, default=1)
     package_parser.add_argument("--capabilities", type=int, required=True)
     package_parser.add_argument("--description", required=True)
+    package_parser.add_argument("--key", choices=("v1", "v2"), default="v1")
     package_parser.set_defaults(function=package)
     system_parser = commands.add_parser("system")
     system_parser.add_argument("--repository", type=Path, required=True)
@@ -264,6 +375,7 @@ def main() -> None:
     system_parser.add_argument("--version", required=True)
     system_parser.add_argument("--generation", type=int, required=True)
     system_parser.add_argument("--arch", required=True)
+    system_parser.add_argument("--key", choices=("v1", "v2"), default="v1")
     system_parser.set_defaults(function=system)
     catalog_parser = commands.add_parser("catalog")
     catalog_parser.add_argument("--repository", type=Path, required=True)
@@ -271,10 +383,20 @@ def main() -> None:
     catalog_parser.add_argument("--generated", default="deterministic")
     catalog_parser.add_argument("--generation", type=int, default=1)
     catalog_parser.add_argument("--os-record", type=Path)
+    catalog_parser.add_argument("--key", choices=("v1", "v2"), default="v1")
     catalog_parser.set_defaults(function=catalog)
     verify_parser = commands.add_parser("verify")
     verify_parser.add_argument("--repository", type=Path, required=True)
     verify_parser.set_defaults(function=verify)
+    trust_parser = commands.add_parser("trust")
+    trust_parser.add_argument("--repository", type=Path, required=True)
+    trust_parser.add_argument("--generation", type=int, required=True)
+    trust_parser.add_argument("--mode", choices=("rotate", "recovery"), required=True)
+    trust_parser.add_argument("--active", choices=("v1", "v2"), required=True)
+    trust_parser.add_argument("--revoke", choices=("v1", "v2"), required=True)
+    trust_parser.add_argument("--signer", choices=("v1", "v2", "recovery"), required=True)
+    trust_parser.add_argument("--append", action="store_true")
+    trust_parser.set_defaults(function=trust)
     args = parser.parse_args()
     args.function(args)
 

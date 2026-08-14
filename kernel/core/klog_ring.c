@@ -183,7 +183,7 @@ xaios_status_t klog_flush(void) {
   /* Check if rotation is needed */
   xaios_mfs_stat_t stat;
   if (mutable_fs_stat(KLOG_PATH, &stat) == XAIOS_OK) {
-    if (stat.size > XAIOS_MFS_MAX_FILE_BYTES_V4 - XAIOS_KLOG_FLUSH_MAX) {
+    if (stat.size > XAIOS_MFS_MAX_FILE_BYTES_V5 - XAIOS_KLOG_FLUSH_MAX) {
       if (klog_rotate() != XAIOS_OK) {
         return XAIOS_ERR_IO;
       }

@@ -180,13 +180,14 @@ xaios_status_t ntp_process_ipv4_frame(const uint8_t *frame,
   g_status.round_trip_ns = now_ns >= g_sent_ns ? now_ns - g_sent_ns : 0U;
   if (epoch_ns <= UINT64_MAX - g_status.round_trip_ns / 2U)
     epoch_ns += g_status.round_trip_ns / 2U;
-  status = wall_time_set_ns(epoch_ns, 2U);
+  status = wall_time_discipline_ns(epoch_ns, 2U, 500U);
   g_status.state = status == XAIOS_OK ? XAIOS_NTP_SYNCED : XAIOS_NTP_FAILED;
   g_status.stratum = stratum;
   g_status.last_sync_epoch_ns = status == XAIOS_OK ? epoch_ns : 0U;
   g_status.last_error = status;
-  klog("ntp: sync state=%u stratum=%u rtt_ns=%lu status=%d\n",
-       (unsigned)g_status.state, stratum, g_status.round_trip_ns, (int)status);
+  klog("ntp: sync state=%u stratum=%u rtt_ns=%lu slew_remaining_ns=%ld status=%d\n",
+       (unsigned)g_status.state, stratum, g_status.round_trip_ns,
+       wall_time_slew_remaining_ns(), (int)status);
   return status;
 }
 
@@ -219,6 +220,14 @@ void ntp_self_test(void) {
   kassert(stratum == 2U);
   kassert(parsed_ns >= epoch_ns - 1U && parsed_ns <= epoch_ns + 1U);
   packet[1] = 0U;
+  kassert(parse_response(packet, sizeof(packet), origin, &parsed_ns,
+                         &stratum) == XAIOS_ERR_INVALID);
+  packet[1] = 2U;
+  packet[0] = UINT8_C(0x23);
+  kassert(parse_response(packet, sizeof(packet), origin, &parsed_ns,
+                         &stratum) == XAIOS_ERR_INVALID);
+  packet[0] = UINT8_C(0x24);
+  put_be64(packet + 24U, origin + 1U);
   kassert(parse_response(packet, sizeof(packet), origin, &parsed_ns,
                          &stratum) == XAIOS_ERR_INVALID);
   ntp_init();

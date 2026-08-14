@@ -1,11 +1,12 @@
 # Project Tracker
 
-Last reviewed: 2026-08-13.
+Last reviewed: 2026-08-14.
 
-Verified repository revision: `e5aa1ad1fed1e14ce29072ee17894f5bca39c623`.
-The hosted, sanitizer, AArch64/x86_64 smoke, libc, async-NVMe, SVE2-canary,
-two-node NUMA, and consolidated QEMU qualification gates pass at this revision.
-The consolidated report deliberately retains `physical_qualification=false`.
+The current QEMU closure revision passes hosted, AArch64/x86_64 smoke, libc,
+dual-architecture all-queue NVMe interrupt, SVE2 per-task context, x86 HMAT/
+1-GiB/TLB, MutableFS-v5 migration/scale, TLS xapt, and external network gates.
+The final consolidated report deliberately retains
+`physical_qualification=false`.
 
 This is the only human-maintained XAIOS project tracker. Roadmaps, milestones,
 phase plans, open decisions, and risks are consolidated here. The Wiki does not
@@ -57,7 +58,7 @@ status.
 | # | Recommendation | Status | Evidence / remaining gate |
 |---:|---|---|---|
 | P-05 | Physical Apple NEON evidence | `NOT STARTED` | QEMU cannot satisfy this physical gate. |
-| P-07 | SVE/SVE2 backend | `IN PROGRESS` | The ARM64 QEMU gate executes an SVE2 known-answer canary after OS-state enablement. Packed inference kernels, scheduler preservation of Z/P/FFR state, scalar-model differential tests, and physical qualification remain; backend selection stays fail closed. |
+| P-07 | SVE/SVE2 backend | `IN PROGRESS` | ARM64 QEMU executes the SVE2 canary and preserves per-task Z/P/FFR state across scheduling and interrupts. Packed inference kernels, scalar-model differential tests, and physical qualification remain; backend selection stays fail closed. |
 | P-14 | Physical Intel/Xeon evidence | `NOT STARTED` | Physical firmware, ISA, NUMA, storage, network, thermals, and sustained-load gates remain. |
 
 ## Core OS, network, and SSH phases
@@ -112,8 +113,8 @@ status.
 | K3 MoonViT-V2 and multimodal pipeline | `NOT STARTED` | Separate golden image/text cases. |
 | DeepSeek V4 Flash 0731 source verification | `BLOCKED` | Maintainer-approved immutable official source. |
 | DeepSeek adapter and parity suite | `BLOCKED` | Depends on verified source. |
-| Multi-terabyte sparse allocators and large pages | `IN PROGRESS` | Hosted model packages represent sparse offsets above 100 GiB, and ARM64/x86_64 QEMU gates map, translate, reject collisions, and unmap 2 MiB pages. Physical-capacity evidence, 1 GiB pages, and performance qualification remain. |
-| SRAT/SLIT/HMAT placement policy and local/remote byte telemetry | `IN PROGRESS` | A two-node x86_64 QEMU gate validates SRAT/SLIT parsing, usable-memory intersection, node-local allocation, and local/remote byte accounting. HMAT policy and physical locality/performance qualification remain. |
+| Multi-terabyte sparse allocators and large pages | `IN PROGRESS` | Hosted model packages represent sparse offsets above 100 GiB; both QEMU targets cover 2 MiB mappings and x86_64 covers a 1 GiB leaf plus targeted SMP TLB invalidation. Physical capacity and performance qualification remain. |
+| SRAT/SLIT/HMAT placement policy and local/remote byte telemetry | `IN PROGRESS` | The two-node x86_64 QEMU gate validates SRAT/SLIT/HMAT parsing, usable-memory intersection, deterministic preferred-node policy, node-local allocation, and local/remote byte accounting. Physical locality/performance qualification remains. |
 | AI Cell/secondary-CPU real inference dispatch | `NOT STARTED` | Real model work executes on leased workers. |
 | NUMA/machine expert ownership and stable failure-aware reduction | `IN PROGRESS` | Hosted tests validate deterministic owner selection, grouping, simulated owner failure, and stable reduction. Real NUMA/machine transport, remote activation execution, and multi-QEMU exactness remain. |
 
@@ -124,7 +125,7 @@ status.
 | OD-001 | Select first physical Apple/ARM target and firmware/storage/NIC boundary | `NOT STARTED` | Physical ARM support. |
 | OD-002 | Select representative AVX2 Intel desktop and hybrid-core/device baseline | `NOT STARTED` | Intel desktop support. |
 | OD-003 | Select Xeon generation, sockets/NUMA, memory, NIC, and NVMe | `NOT STARTED` | Xeon support. |
-| OD-004 | Define production update/ModelFS trust roots, custody, rotation, revocation, recovery | `BLOCKED` | Untrusted deployment. |
+| OD-004 | Provision production update/ModelFS trust roots and define custody/authorization procedures | `BLOCKED` | Rotation, revocation, offline recovery, and interrupted-activation rollback are implemented; private operator keys and process are required before untrusted deployment. |
 | OD-005 | Define SSH fleet limits, identity, audit retention, lockout, recovery | `NOT STARTED` | Production SSH exposure. |
 | OD-006 | Define supported NVMe/FUA/flush/discard/repair/power-loss contract | `NOT STARTED` | Physical persistent deployment. |
 | OD-007 | Pin official immutable Qwen 3.8 fixtures | `NOT STARTED` | Qwen implementation. |

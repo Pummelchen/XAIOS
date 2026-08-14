@@ -258,7 +258,7 @@ qemu-readiness-gate:
 qemu-full-os-rc:
 	python3 ./tests/scripts/qemu-full-os-rc.py
 
-compile-check:
+compile-check: libc
 	@mkdir -p build/compile-check/x86-kernel build/compile-check/x86-userspace
 	@failed=0; \
 	for f in $$(find kernel -name '*.c' ! -path '*/x86_64/*'); do \
@@ -293,7 +293,8 @@ compile-check:
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
 	    -Wall -Wextra -Werror -Iuserspace/include -Iuserspace/sshd \
 	    -Iuserspace/apps/terminal -Ithird_party/mlkem-native/mlkem \
-	    -Ithird_party/openbsd-compat -Itests \
+	    -Ithird_party/openbsd-compat -Ithird_party/bearssl/inc -Itests \
+	    -isystem build/libc/aarch64/sysroot/include \
 	    -DMLK_CONFIG_FILE='"mlkem_xaios_config.h"' -fsyntax-only "$$f" \
 	    || failed=$$((failed + 1)); \
 	done; \
@@ -304,7 +305,8 @@ compile-check:
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie -mno-red-zone \
 	    -Wall -Wextra -Werror -Iuserspace/include -Iuserspace/sshd \
 	    -Iuserspace/apps/terminal -Ithird_party/mlkem-native/mlkem \
-	    -Ithird_party/openbsd-compat -Itests \
+	    -Ithird_party/openbsd-compat -Ithird_party/bearssl/inc -Itests \
+	    -isystem build/libc/x86_64/sysroot/include \
 	    -DMLK_CONFIG_FILE='"mlkem_xaios_config.h"' \
 	    -c "$$f" -o "$$object" \
 	    || failed=$$((failed + 1)); \

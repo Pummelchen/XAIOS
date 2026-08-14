@@ -10,8 +10,12 @@
 
 static uint64_t g_frequency;
 static uint64_t g_lapic_frequency;
-static uint64_t g_wall_epoch;
+static uint64_t g_wall_epoch_ns;
 static uint64_t g_wall_monotonic_base;
+static uint64_t g_wall_last_return_ns;
+static uint64_t g_wall_slew_last_mono_ns;
+static int64_t g_wall_slew_remaining_ns;
+static uint32_t g_wall_slew_ppm;
 static uint32_t g_wall_calibrated;
 static uint32_t g_wall_source;
 static uint64_t g_wall_last_sync_ns;
@@ -28,8 +32,12 @@ static uint64_t ticks_to_ns(uint64_t ticks) {
 }
 
 void timer_init(void) {
-  g_wall_epoch = 0U;
+  g_wall_epoch_ns = 0U;
   g_wall_monotonic_base = 0U;
+  g_wall_last_return_ns = 0U;
+  g_wall_slew_last_mono_ns = 0U;
+  g_wall_slew_remaining_ns = 0;
+  g_wall_slew_ppm = 0U;
   g_wall_calibrated = 0U;
   g_wall_source = 0U;
   g_wall_last_sync_ns = 0U;
@@ -81,29 +89,75 @@ void timer_idle_until(uint64_t deadline_ns) {
 }
 
 void wall_time_calibrate(void) {
-  g_wall_epoch = rtc_read_epoch();
+  g_wall_epoch_ns = rtc_read_epoch() * NANOSECONDS_PER_SECOND;
   g_wall_monotonic_base = timer_now_ns();
+  g_wall_last_return_ns = g_wall_epoch_ns;
+  g_wall_slew_last_mono_ns = g_wall_monotonic_base;
   g_wall_calibrated = 1U;
   g_wall_source = 1U;
   g_wall_last_sync_ns = timer_now_ns();
-  klog("timer: wall time calibrated epoch=%lu mono_base=%lu\n", g_wall_epoch,
+  klog("timer: wall time calibrated epoch=%lu mono_base=%lu\n",
+       g_wall_epoch_ns / NANOSECONDS_PER_SECOND,
        g_wall_monotonic_base);
 }
 
 xaios_status_t wall_time_set_ns(uint64_t epoch_ns, uint32_t source) {
   uint64_t now_ns;
-  uint64_t fractional_ns;
   if (epoch_ns < UINT64_C(946684800000000000) || source == 0U) {
     return XAIOS_ERR_INVALID;
   }
   now_ns = timer_now_ns();
-  fractional_ns = epoch_ns % UINT64_C(1000000000);
-  g_wall_epoch = epoch_ns / UINT64_C(1000000000);
-  g_wall_monotonic_base = now_ns >= fractional_ns ? now_ns - fractional_ns : 0U;
+  if (g_wall_calibrated != 0U && epoch_ns < g_wall_last_return_ns) {
+    return XAIOS_ERR_INVALID;
+  }
+  g_wall_epoch_ns = epoch_ns;
+  g_wall_monotonic_base = now_ns;
+  g_wall_last_return_ns = epoch_ns;
+  g_wall_slew_last_mono_ns = now_ns;
+  g_wall_slew_remaining_ns = 0;
+  g_wall_slew_ppm = 0U;
   g_wall_calibrated = 1U;
   g_wall_source = source;
   g_wall_last_sync_ns = now_ns;
   return XAIOS_OK;
+}
+
+static int64_t slew_correction(uint64_t elapsed_ns, int64_t remaining,
+                               uint32_t ppm) {
+  uint64_t maximum = elapsed_ns > UINT64_MAX / ppm
+                         ? UINT64_MAX
+                         : (elapsed_ns * ppm) / UINT64_C(1000000);
+  uint64_t magnitude = remaining < 0 ? (uint64_t)(-(remaining + 1)) + 1U
+                                     : (uint64_t)remaining;
+  if (maximum > magnitude) maximum = magnitude;
+  return remaining < 0 ? -(int64_t)maximum : (int64_t)maximum;
+}
+
+xaios_status_t wall_time_discipline_ns(uint64_t epoch_ns, uint32_t source,
+                                      uint32_t maximum_ppm) {
+  if (epoch_ns < UINT64_C(946684800000000000) || source == 0U ||
+      maximum_ppm == 0U || maximum_ppm > 1000U) {
+    return XAIOS_ERR_INVALID;
+  }
+  uint64_t current = wall_time_now_ns();
+  uint64_t difference = current > epoch_ns ? current - epoch_ns
+                                           : epoch_ns - current;
+  if (g_wall_calibrated == 0U || current < UINT64_C(946684800000000000) ||
+      (epoch_ns > current && difference > UINT64_C(300000000000))) {
+    return wall_time_set_ns(epoch_ns, source);
+  }
+  if (difference > (uint64_t)INT64_MAX) return XAIOS_ERR_INVALID;
+  g_wall_slew_remaining_ns = current > epoch_ns ? -(int64_t)difference
+                                                 : (int64_t)difference;
+  g_wall_slew_ppm = maximum_ppm;
+  g_wall_slew_last_mono_ns = timer_now_ns();
+  g_wall_source = source;
+  g_wall_last_sync_ns = g_wall_slew_last_mono_ns;
+  return XAIOS_OK;
+}
+
+int64_t wall_time_slew_remaining_ns(void) {
+  return g_wall_slew_remaining_ns;
 }
 
 uint32_t wall_time_source(void) { return g_wall_source; }
@@ -112,13 +166,32 @@ uint64_t wall_time_last_sync_ns(void) { return g_wall_last_sync_ns; }
 uint64_t wall_time_now_ns(void) {
   if (g_wall_calibrated == 0U) return timer_now_ns();
   uint64_t now = timer_now_ns();
-  uint64_t elapsed = now - g_wall_monotonic_base;
-  uint64_t seconds = elapsed / NANOSECONDS_PER_SECOND;
-  uint64_t remainder = elapsed % NANOSECONDS_PER_SECOND;
-  if (g_wall_epoch > UINT64_MAX - seconds) return UINT64_MAX;
-  uint64_t epoch = g_wall_epoch + seconds;
-  if (epoch > UINT64_MAX / NANOSECONDS_PER_SECOND) return UINT64_MAX;
-  return epoch * NANOSECONDS_PER_SECOND + remainder;
+  uint64_t elapsed = now >= g_wall_monotonic_base
+                         ? now - g_wall_monotonic_base
+                         : 0U;
+  uint64_t candidate = g_wall_epoch_ns > UINT64_MAX - elapsed
+                           ? UINT64_MAX
+                           : g_wall_epoch_ns + elapsed;
+  if (g_wall_slew_remaining_ns != 0 && now >= g_wall_slew_last_mono_ns) {
+    int64_t correction = slew_correction(
+        now - g_wall_slew_last_mono_ns, g_wall_slew_remaining_ns,
+        g_wall_slew_ppm);
+    if (correction < 0) {
+      uint64_t magnitude = (uint64_t)(-(correction + 1)) + 1U;
+      candidate = candidate > magnitude ? candidate - magnitude : 0U;
+    } else if (candidate <= UINT64_MAX - (uint64_t)correction) {
+      candidate += (uint64_t)correction;
+    } else {
+      candidate = UINT64_MAX;
+    }
+    g_wall_slew_remaining_ns -= correction;
+    g_wall_slew_last_mono_ns = now;
+  }
+  if (candidate < g_wall_last_return_ns) candidate = g_wall_last_return_ns;
+  g_wall_epoch_ns = candidate;
+  g_wall_monotonic_base = now;
+  g_wall_last_return_ns = candidate;
+  return candidate;
 }
 
 void timer_self_test(void) {
@@ -130,10 +203,14 @@ void timer_self_test(void) {
   uint64_t end = timer_counter();
   uint64_t end_ns = timer_now_ns();
   kassert(end > start && end_ns >= start_ns);
+  kassert(slew_correction(UINT64_C(1000000000), INT64_C(1000000), 500U) ==
+          INT64_C(500000));
+  kassert(slew_correction(UINT64_C(1000000000), -INT64_C(1000000), 500U) ==
+          -INT64_C(500000));
   klog("timer: monotonic self-test passed counter_delta=%lu ns_delta=%lu\n",
        end - start, end_ns - start_ns);
 }
 
 void x86_64_platform_timer_irq(void) {
-  if (g_periodic_active != 0U) scheduler_tick(&g_irq_frame);
+  if (g_periodic_active != 0U) scheduler_tick(&g_irq_frame, 0);
 }

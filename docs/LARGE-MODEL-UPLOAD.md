@@ -77,8 +77,8 @@ while ModelFS handles or maintenance operations are active.
   AArch64/x86_64 emulated-NVMe gate negotiates four I/O queues and validates
   repeated four-page PRP/SGL 16 KiB write/flush/read operations, direct aligned
   buffers, cancellation, malformed completion rejection, and backing bytes.
-  x86_64 also verifies queue-0 MSI-X delivery. AArch64 uses bounded polling
-  pending a GICv3 ITS path. Physical-device durability is not established.
+  x86_64 verifies APIC/MSI-X and AArch64 verifies GICv3 ITS LPI delivery on
+  every negotiated queue. Physical-device durability is not established.
 - Registration and cleanup are administrator-controlled and capacity-checked,
   but there is no fleet-wide tenant quota or background expiry policy.
 - ModelFS activation and the MutableFS audit append are separately durable.

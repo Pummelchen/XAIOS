@@ -2,6 +2,7 @@
 #include <xaios/klog.h>
 #include <xaios/numa.h>
 #include <xaios/pmm.h>
+#include <xaios/smp.h>
 
 static uint64_t g_total_pages;
 static uint64_t g_managed_pages;
@@ -36,13 +37,14 @@ void pmm_init(const xaios_boot_info_t *boot) {
 }
 
 void *pmm_alloc_page(void) {
-  /* Try node 0 first, then fallback to other nodes */
-  void *page = numa_alloc_page_on_node(0);
+  uint32_t preferred = numa_preferred_node_for_cpu(smp_cpu_id());
+  void *page = numa_alloc_page_on_node(preferred);
   if (page != 0) {
     return page;
   }
   uint32_t ncount = numa_node_count();
-  for (uint32_t i = 1; i < ncount; ++i) {
+  for (uint32_t i = 0; i < ncount; ++i) {
+    if (i == preferred) continue;
     page = numa_alloc_page_on_node(i);
     if (page != 0) {
       return page;

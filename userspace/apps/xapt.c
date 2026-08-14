@@ -1,5 +1,7 @@
 #include <xaios_user.h>
 
+#include "xapt_tls.h"
+
 #define XAPT_BUFFER_BYTES 4096U
 #define XAPT_LINE_BYTES 1024U
 #define XAPT_PATH_BYTES 160U
@@ -7,12 +9,16 @@
 #define XAPT_CONFIG_PATH "/state/xapt/config"
 #define XAPT_CATALOG_PATH "/state/xapt/catalog"
 #define XAPT_STAGED_CATALOG_PATH "/update/xapt/catalog"
+#define XAPT_STAGED_TRUST_PATH "/update/xapt/trust"
 #define XAPT_OS_VERSION "0.1.0"
+#define XAPT_TLS_MODULUS_HEX_BYTES 512U
 
 typedef struct xapt_config {
   char host[XAPT_HOST_BYTES];
   char base[64];
   u64 port;
+  u32 tls_required;
+  char tls_rsa_modulus[XAPT_TLS_MODULUS_HEX_BYTES + 1U];
 } xapt_config_t;
 
 typedef struct xapt_app_record {
@@ -148,7 +154,9 @@ static int resolve_host(const char *host, xaios_ip_addr_user_t *address) {
   return -1;
 }
 
-static int send_all(u64 socket, const char *data, u64 size) {
+static int send_all(u64 socket, const char *data, u64 size,
+                    u32 tls_required) {
+  if (tls_required != 0U) return xapt_tls_write(data, size);
   u64 offset = 0U;
   while (offset < size) {
     u64 sent = 0U;
@@ -212,7 +220,7 @@ static int http_get(const xapt_config_t *config, const char *catalog_path,
   u64 content_length = 0U;
   u64 header_used = 0U;
   u32 header_complete = 0U;
-  u64 deadline = xaios_clock_nanos() + 120000000000ULL;
+  u64 deadline = xaios_clock_nanos() + 600000000000ULL;
   g_http_error = 0U;
   g_http_received = 0U;
   g_http_expected = 0U;
@@ -236,7 +244,13 @@ static int http_get(const xapt_config_t *config, const char *catalog_path,
   xaios_append_cstr(request, sizeof(request), &request_used, config->host);
   xaios_append_cstr(request, sizeof(request), &request_used,
                     "\r\nConnection: close\r\nAccept: application/octet-stream\r\n\r\n");
-  if (send_all(socket, request, request_used) != 0) {
+  if (config->tls_required != 0U &&
+      xapt_tls_open(socket, config->host, config->tls_rsa_modulus) != 0) {
+    g_http_error = 100U + (u32)xapt_tls_last_error();
+    (void)xaios_net_close(socket);
+    return -1;
+  }
+  if (send_all(socket, request, request_used, config->tls_required) != 0) {
     g_http_error = 4U;
     (void)xaios_net_close(socket);
     return -1;
@@ -244,7 +258,19 @@ static int http_get(const xapt_config_t *config, const char *catalog_path,
 
   while (xaios_clock_nanos() < deadline) {
     u64 received = 0U;
-    int status = xaios_net_recv(socket, g_buffer, sizeof(g_buffer), &received);
+    int status;
+    if (config->tls_required != 0U) {
+      status = xapt_tls_read(g_buffer, sizeof(g_buffer));
+      received = status > 0 ? (u64)status : 0U;
+      if (status < 0) {
+        g_http_error = 200U + (u32)xapt_tls_last_error();
+        status = -1;
+      } else {
+        status = 0;
+      }
+    } else {
+      status = xaios_net_recv(socket, g_buffer, sizeof(g_buffer), &received);
+    }
     if (status == XAIOS_ERR_BUSY) continue;
     if (status != 0) break;
     if (received == 0U) continue;
@@ -286,6 +312,7 @@ static int http_get(const xapt_config_t *config, const char *catalog_path,
     }
     if (header_complete != 0U && received_total == content_length) break;
   }
+  if (config->tls_required != 0U) (void)xapt_tls_close();
   (void)xaios_net_close(socket);
   g_http_received = received_total;
   g_http_expected = content_length;
@@ -339,6 +366,7 @@ static int load_config(xapt_config_t *config) {
   int bytes;
   xaios_memzero(config, sizeof(*config));
   config->port = 80U;
+  config->tls_required = 1U;
   bytes = xaios_read_file(XAPT_CONFIG_PATH, g_buffer, sizeof(g_buffer));
   if (bytes <= 0)
     bytes = xaios_read_file("/etc/xapt.conf", g_buffer, sizeof(g_buffer));
@@ -359,11 +387,26 @@ static int load_config(xapt_config_t *config) {
     } else if (text_starts(g_buffer + start, "port=")) {
       if (parse_u64(g_buffer + start + 5U, length - 5U, &config->port) != 0)
         return -1;
+    } else if (text_starts(g_buffer + start, "tls=")) {
+      if (length == 12U && text_starts(g_buffer + start + 4U, "required"))
+        config->tls_required = 1U;
+      else if (length == 7U && text_starts(g_buffer + start + 4U, "off"))
+        config->tls_required = 0U;
+      else
+        return -1;
+    } else if (text_starts(g_buffer + start, "tls_rsa_modulus=")) {
+      if (copy_text(config->tls_rsa_modulus,
+                    sizeof(config->tls_rsa_modulus), g_buffer + start + 16U,
+                    length - 16U) != 0)
+        return -1;
     }
     ++cursor;
   }
   return config->host[0] != '\0' && config->port > 0U &&
                  config->port <= 65535U &&
+                 (config->tls_required == 0U ||
+                  xaios_strlen(config->tls_rsa_modulus) ==
+                      XAPT_TLS_MODULUS_HEX_BYTES) &&
                  (config->base[0] == '\0' || path_valid(config->base))
              ? 0
              : -1;
@@ -593,6 +636,13 @@ static int catalog_update(const xapt_config_t *config) {
   xaios_append_cstr(remote, sizeof(remote), &used, "/catalog-");
   xaios_append_cstr(remote, sizeof(remote), &used, architecture());
   xaios_append_cstr(remote, sizeof(remote), &used, ".txt");
+  print("xapt: checking trust-root transitions\n");
+  if (download_file(config, "/trust.txt", XAPT_STAGED_TRUST_PATH, &bytes) !=
+      0) {
+    /* A repository without a transition remains valid under the active root. */
+    (void)xaios_fs_delete(XAPT_STAGED_TRUST_PATH);
+  }
+  bytes = 0U;
   print("xapt: fetching signed catalog\n");
   if (download_file(config, remote, XAPT_STAGED_CATALOG_PATH, &bytes) != 0 ||
       control_call(XAIOS_CONTROL_OP_CATALOG_ACTIVATE,
@@ -774,6 +824,15 @@ static int os_upgrade(const xapt_config_t *config) {
     (void)control_call(XAIOS_CONTROL_OP_SYSTEM_UPDATE_ABORT,
                        XAIOS_CONTROL_PAYLOAD_NONE, 0, 0U);
     print("xapt: OS update failed; active slot unchanged\n");
+    print("xapt: diagnostics http_stage=");
+    print_u64(g_http_error);
+    print(" received=");
+    print_u64(g_http_received);
+    print("/");
+    print_u64(g_http_expected);
+    print(" control_status=");
+    print_u64(g_control_status);
+    print("\n");
     return -1;
   }
   print("xapt: OS update staged and verified; reboot to try the pending slot\n");

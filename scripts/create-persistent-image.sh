@@ -13,5 +13,5 @@ if [ -f "$PERSISTENT_IMAGE" ]; then
 fi
 
 printf '%s\n' "Creating persistent disk image: $PERSISTENT_IMAGE"
-dd if=/dev/zero of="$PERSISTENT_IMAGE" bs=512 count=8192 status=none
-printf '%s\n' "Created $PERSISTENT_IMAGE (4 MB, 8192 sectors)"
+dd if=/dev/zero of="$PERSISTENT_IMAGE" bs=512 count=32768 status=none
+printf '%s\n' "Created $PERSISTENT_IMAGE (16 MB, 32768 sectors)"
