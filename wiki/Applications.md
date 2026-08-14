@@ -29,7 +29,7 @@ are documented separately in [[Commands|Commands]].
 
 | Path | Purpose |
 |---|---|
-| `/bin/ssh` | Dedicated outbound SSH/SCP process. It supports password, Ed25519 identity-file and forwarded-agent authentication, encrypted OpenSSH keys, IPv4/IPv6, DNS A/AAAA, PTY/exec sessions, and recursive SFTP-backed copies. The parent SSH service exchanges terminal data through bounded asynchronous child-channel IPC. |
+| `/bin/ssh` | Dedicated outbound SSH/SCP process. It supports password, Ed25519 identity-file and forwarded-agent authentication, encrypted OpenSSH keys, IPv4/IPv6, DNS A/AAAA, PTY/exec sessions, recursive SFTP-backed copies, and one password-authenticated `-J user@host[:port]` hop with independent target authentication. The parent SSH service exchanges terminal data through bounded asynchronous child-channel IPC. |
 
 ## Repository applications
 

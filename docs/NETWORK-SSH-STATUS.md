@@ -102,8 +102,11 @@ passphrases are not echoed. Authentication supports passwords, Ed25519
 identity files, passphrase-protected OpenSSH keys, and a forwarded OpenSSH
 agent. First contact persists an Ed25519 known-host record under
 `/home/admin/.ssh`; a changed host key fails closed. IPv4/IPv6 literals and DNS
-A/AAAA results are accepted. Native outbound `-J`/`ProxyCommand` parsing and
-the wider OpenSSH option and algorithm matrix are not implemented.
+A/AAAA results are accepted. `ssh -J user@host[:port]` supports one
+password-authenticated jump host and a separately password- or
+identity-authenticated target over a `direct-tcpip` channel. Multi-hop jumps,
+agent authentication with `-J`, `ProxyCommand`, and the wider OpenSSH option
+and algorithm matrix are not implemented.
 
 ### FreeBSD Unix-reference gate
 

@@ -1,5 +1,6 @@
 #include "ssh_connection.h"
 #include "ssh_utils.h"
+#include <xaios_user.h>
 
 static ssh_connection_t g_connections[SSH_MAX_CONNECTIONS];
 static ssh_connection_t g_client_connections[SSH_MAX_CLIENT_CONNECTIONS];
@@ -27,6 +28,22 @@ ssh_connection_t *ssh_conn_client_alloc(void) {
 
 ssh_connection_scratch_t *ssh_conn_scratch(void) {
   return &g_scratch;
+}
+
+int ssh_conn_send(ssh_connection_t *conn, const uint8_t *data,
+                  u64 length, u64 *sent) {
+  if (conn == 0 || data == 0 || sent == 0) return -1;
+  if (conn->send_fn != 0)
+    return conn->send_fn(conn->io_context, data, length, sent);
+  return xaios_net_send(conn->sockfd, data, length, sent);
+}
+
+int ssh_conn_recv(ssh_connection_t *conn, uint8_t *data,
+                  u64 length, u64 *received) {
+  if (conn == 0 || data == 0 || received == 0) return -1;
+  if (conn->recv_fn != 0)
+    return conn->recv_fn(conn->io_context, data, length, received);
+  return xaios_net_recv(conn->sockfd, data, length, received);
 }
 
 ssh_connection_t *ssh_conn_alloc(void) {

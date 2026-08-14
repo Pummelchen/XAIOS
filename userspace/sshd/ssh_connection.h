@@ -34,9 +34,19 @@ typedef struct {
   uint64_t decrypt_seq;
 } ssh_connection_crypto_t;
 
+struct ssh_connection;
+typedef int (*ssh_connection_send_fn)(void *context, const uint8_t *data,
+                                      u64 length, u64 *sent);
+typedef int (*ssh_connection_recv_fn)(void *context, uint8_t *data,
+                                      u64 length, u64 *received);
+
 typedef struct {
   int active;
   uint64_t sockfd;
+  /* A NULL callback pair uses the native XAIOS TCP socket in sockfd. */
+  ssh_connection_send_fn send_fn;
+  ssh_connection_recv_fn recv_fn;
+  void *io_context;
   ssh_connection_crypto_t crypto;
   ssh_connection_crypto_t pending_crypto;
   uint64_t last_activity;
@@ -93,5 +103,9 @@ ssh_connection_t *ssh_conn_find(uint64_t sockfd);
 ssh_connection_t *ssh_conn_by_index(uint32_t idx);
 void ssh_conn_pool_init(void);
 ssh_connection_scratch_t *ssh_conn_scratch(void);
+int ssh_conn_send(ssh_connection_t *conn, const uint8_t *data, u64 length,
+                  u64 *sent);
+int ssh_conn_recv(ssh_connection_t *conn, uint8_t *data, u64 length,
+                  u64 *received);
 
 #endif

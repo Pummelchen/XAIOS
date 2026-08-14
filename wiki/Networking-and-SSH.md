@@ -59,7 +59,7 @@ qemu-smoke` remains deterministic when public DNS is unavailable. The normal
 From an XAIOS shell:
 
 ```sh
-ssh [-A] [-i KEY] [-p PORT] user@host [command]
+ssh [-A] [-i KEY] [-p PORT] [-J user@host[:port]] user@host [command]
 scp [-r] [-A] [-i KEY] [-P PORT] SOURCE DESTINATION
 ```
 
@@ -67,8 +67,12 @@ The dedicated `/bin/ssh` process supports password, Ed25519 identity-file and
 forwarded-agent authentication, including passphrase-protected OpenSSH private
 keys. It verifies Ed25519 host signatures with persistent trust-on-first-use
 records and connects through IPv4/IPv6 literals or DNS A/AAAA results. Recursive
-SCP is SFTP-backed. XAIOS does not implement the complete OpenSSH option and
-algorithm matrix, including a native outbound `-J`/`ProxyCommand` parser.
+SCP is SFTP-backed. `ssh -J user@host[:port]` opens a separately authenticated
+password session to one jump host, requests a bounded `direct-tcpip` channel,
+then authenticates the target through that channel. Target password and
+identity-file authentication are supported; agent authentication with `-J`,
+multiple jump hosts, `ProxyCommand`, and the wider OpenSSH option/algorithm
+matrix are intentionally out of scope.
 
 ## Interoperability evidence
 

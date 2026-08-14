@@ -47,7 +47,7 @@ Docker build inputs, and test-image inputs outside `tests/`. It runs through
 | Power/recovery/operations closure | `make qemu-operations-closure` |
 | Debian/OpenSSH interoperability | `make qemu-docker-network-suite` |
 | FreeBSD client interoperability | `make qemu-freebsd-network-suite` |
-| Bidirectional FreeBSD SSH/SCP | `make qemu-freebsd-bidirectional-suite` |
+| Bidirectional FreeBSD SSH/SCP and outbound `ssh -J` | `make qemu-freebsd-bidirectional-suite` |
 | Four-endpoint network matrix | `XAIOS_INTEL_VPS=root@HOST make qemu-four-endpoint-network-suite` |
 
 The complete command catalog is maintained in `Makefile`; focused runners live
@@ -94,6 +94,12 @@ that a Linux container has a FreeBSD kernel. The gate downloads the official
 FreeBSD VM image, verifies its pinned SHA-256 identity, and stores the cache
 under `~/.cache/xaios/freebsd/`. Docker images and that cache may be deleted at
 any time and reconstructed from the repository plus the official download.
+
+The bidirectional gate includes two complementary jump-host checks: an OpenSSH
+client reaches FreeBSD through XAIOS inbound `direct-tcpip`, and XAIOS outbound
+`ssh -J` reaches a second XAIOS SSH server through the FreeBSD OpenSSH jump
+host. It also rejects malformed `-J` port specifications before any network
+connection is opened.
 
 Do not commit downloaded VM images, generated SSH keys, passwords, build
 outputs, or reports. Test runners create ephemeral credentials and write

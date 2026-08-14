@@ -44,8 +44,10 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   deployment review remain open.
 - The dedicated outbound SSH/SCP process supports password, Ed25519 identity
   file and forwarded-agent authentication, encrypted OpenSSH keys, persistent
-  Ed25519 TOFU, IPv4/IPv6 literals, and DNS A/AAAA results. Native outbound
-  `-J`/`ProxyCommand` parsing and the complete OpenSSH matrix are not provided.
+  Ed25519 TOFU, IPv4/IPv6 literals, DNS A/AAAA results, and one
+  password-authenticated `-J user@host[:port]` jump host with a separately
+  authenticated target. Multi-hop `-J`, `ProxyCommand`, `-J` agent
+  authentication, and the complete OpenSSH matrix are not provided.
 - DNS performs asynchronous A/AAAA resolution with timeout, retry, bounded TTL
   cache, and DNS-over-TCP fallback. It trusts the authenticated-data bit from a
   configured validating resolver; local DNSSEC chain validation and production

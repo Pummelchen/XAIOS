@@ -435,6 +435,14 @@ def main() -> int:
     password_file.write_text(server_password + "\n", encoding="ascii")
     password_file.chmod(0o600)
 
+    xaios_authorized_keys = work / "xaios-authorized-keys"
+    xaios_authorized_keys.write_text(
+        (key_dir / "authorized.pub").read_text(encoding="ascii")
+        + (key_dir / "outbound.pub").read_text(encoding="ascii"),
+        encoding="ascii",
+    )
+    xaios_authorized_keys.chmod(0o600)
+
     base_image, image_sha256, archive_identity = prepare_freebsd_image(architecture)
     seed_dir = work / "cidata"
     seed_dir.mkdir()
@@ -473,7 +481,7 @@ def main() -> int:
     )
 
     build_env = os.environ.copy()
-    build_env["XAIOS_AUTHORIZED_KEYS_FILE"] = str(key_dir / "authorized.pub")
+    build_env["XAIOS_AUTHORIZED_KEYS_FILE"] = str(xaios_authorized_keys)
     build_env["XAIOS_SSH_CLIENT_IDENTITY_FILE"] = str(key_dir / "outbound")
     build_env.pop("XAIOS_SSH_USERS_FILE", None)
     build_env.pop("XAIOS_SSH_PASSWORD_AUTH", None)
@@ -586,10 +594,14 @@ def main() -> int:
                 str(key_dir / "authorized"),
                 "--target-port",
                 str(freebsd_ssh_port),
+                "--jump-port",
+                str(freebsd_ssh_port),
                 "--password-file",
                 str(password_file),
                 "--identity-passphrase-file",
                 str(client_passphrase_file),
+                "--transcript",
+                str(work / "xaios-outbound-client.log"),
                 "--timeout",
                 os.environ.get(
                     "XAIOS_OUTBOUND_TIMEOUT",
@@ -690,6 +702,8 @@ def main() -> int:
                 "xaios_to_freebsd_scp_recursive_upload": "passed",
                 "xaios_to_freebsd_scp_recursive_download": "passed",
                 "xaios_freebsd_known_host_persistence": "passed",
+                "xaios_outbound_proxyjump_invalid_spec_rejection": "passed",
+                "xaios_outbound_proxyjump_to_xaios": "passed",
             },
         }
         report_path = BUILD / f"qemu-freebsd-bidirectional-{architecture}.json"

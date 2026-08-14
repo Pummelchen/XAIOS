@@ -87,6 +87,20 @@ class PtySession:
         result += self.expect(PROMPT, "XAIOS shell prompt")
         return result
 
+    def proxy_jump_command(
+        self, command: str, proxy_password: str, target_passphrase: str,
+        marker: bytes,
+    ) -> bytes:
+        print(f"XAIOS> {command}", flush=True)
+        self.send(command + "\n")
+        result = self.expect(PASSWORD_PROMPT, "ProxyJump password prompt")
+        self.send(proxy_password + "\n")
+        result += self.expect(PASSPHRASE_PROMPT, "ProxyJump target key prompt")
+        self.send(target_passphrase + "\n")
+        result += self.expect(marker, repr(marker))
+        result += self.expect(PROMPT, "XAIOS shell prompt")
+        return result
+
     def close(self) -> None:
         if self.process.poll() is None:
             self.send("exit\n")
@@ -118,9 +132,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--xaios-key", required=True, type=Path)
     parser.add_argument("--target-host", default="10.0.2.2")
     parser.add_argument("--target-port", required=True, type=int)
+    parser.add_argument("--jump-port", type=int)
     parser.add_argument("--target-user", default="xaios")
     parser.add_argument("--password-file", required=True, type=Path)
     parser.add_argument("--identity-passphrase-file", type=Path)
+    parser.add_argument("--transcript", type=Path)
     parser.add_argument("--timeout", default=45.0, type=float)
     return parser.parse_args()
 
@@ -136,6 +152,7 @@ def main() -> int:
             encoding="ascii"
         ).strip()
     endpoint = f"{args.target_user}@{args.target_host}"
+    jump_port = args.jump_port or args.target_port
     ssh = [
         "ssh",
         "-tt",
@@ -193,6 +210,29 @@ def main() -> int:
             b"freebsd-ipv6-ok",
         )
 
+        invalid_jump = session.command(
+            f"ssh -J xaios@{args.target_host}:not-a-port "
+            f"{endpoint} printf should-not-run"
+        )
+        if b"usage: ssh" not in invalid_jump:
+            raise RuntimeError("invalid ProxyJump specification was not rejected")
+        overflow_jump = session.command(
+            f"ssh -J xaios@{args.target_host}:99999999999999999999 "
+            f"{endpoint} printf should-not-run"
+        )
+        if b"usage: ssh" not in overflow_jump:
+            raise RuntimeError("overflowing ProxyJump port was not rejected")
+
+        if args.identity_passphrase_file is not None:
+            session.proxy_jump_command(
+                f"ssh -J xaios@{args.target_host}:{jump_port} "
+                f"-i /etc/xaios_ssh_client_identity -p 2223 "
+                "admin@10.0.2.2 echo xaios-proxyjump-ok",
+                password,
+                identity_passphrase,
+                b"xaios-proxyjump-ok",
+            )
+
         if args.identity_passphrase_file is not None:
             session.passphrase_command(
                 f"ssh -i /etc/xaios_ssh_client_identity -p {args.target_port} "
@@ -200,16 +240,6 @@ def main() -> int:
                 identity_passphrase,
                 b"freebsd-publickey-ok",
             )
-
-        print(f"XAIOS> ssh -p {args.target_port} {endpoint} true [wrong password]", flush=True)
-        session.send(f"ssh -p {args.target_port} {endpoint} true\n")
-        session.expect(PASSWORD_PROMPT, "outbound password prompt")
-        session.send("definitely-wrong-password\n")
-        session.expect(
-            b"ssh: authentication failed",
-            "wrong-password rejection",
-        )
-        session.expect(PROMPT, "XAIOS shell prompt")
 
         session.password_command(
             f"scp -r -P {args.target_port} /tmp/freebsd-upload "
@@ -243,10 +273,23 @@ def main() -> int:
             "cat /tmp/freebsd-tree-copy/nested/data.txt",
             b"xaios-freebsd-upload",
         )
+
+        print(f"XAIOS> ssh -p {args.target_port} {endpoint} true [wrong password]", flush=True)
+        session.send(f"ssh -p {args.target_port} {endpoint} true\n")
+        session.expect(PASSWORD_PROMPT, "outbound password prompt")
+        session.send("definitely-wrong-password\n")
+        session.expect(
+            b"ssh: authentication failed",
+            "wrong-password rejection",
+        )
+        session.expect(PROMPT, "XAIOS shell prompt")
     except BaseException:
         failed = True
         raise
     finally:
+        if args.transcript is not None:
+            args.transcript.write_bytes(bytes(session.output))
+            args.transcript.chmod(0o600)
         try:
             session.close()
         except RuntimeError:

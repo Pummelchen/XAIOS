@@ -26,6 +26,7 @@
 #define SSH_CLIENT_WINDOW UINT32_C(65536)
 #define SSH_CLIENT_PACKET UINT32_C(10240)
 #define SSH_CLIENT_SFTP_BUFFER (SSH_MAX_PACKET_SIZE + 4U)
+#define SSH_CLIENT_RELAY_SOCKET UINT32_C(0x7fff0001)
 
 enum ssh_client_mode {
   SSH_CLIENT_MODE_SHELL = 1,
@@ -54,11 +55,30 @@ typedef struct ssh_client_context {
   uint32_t recursive;
   uint32_t use_identity;
   uint32_t use_agent;
+  uint32_t proxy_enabled;
+  uint32_t proxy_established;
+  uint32_t target_use_identity;
   uint32_t password_length;
   char password[SSH_CLIENT_PASSWORD_MAX + 1U];
   char identity_path[SSH_CLIENT_PATH_MAX];
   char host[SSH_CLIENT_HOST_MAX];
   char user[SSH_CLIENT_USER_MAX];
+  char target_host[SSH_CLIENT_HOST_MAX];
+  char target_user[SSH_CLIENT_USER_MAX];
+  uint16_t target_port;
+  char proxy_host[SSH_CLIENT_HOST_MAX];
+  char proxy_user[SSH_CLIENT_USER_MAX];
+  uint16_t proxy_port;
+  u64 proxy_sockfd;
+  ssh_connection_t *proxy_transport;
+  uint32_t proxy_local_channel;
+  uint32_t proxy_remote_channel;
+  uint32_t proxy_remote_window;
+  uint32_t proxy_remote_max_packet;
+  uint32_t proxy_receive_window;
+  uint32_t proxy_rx_used;
+  uint8_t proxy_rx[SSH_MAX_PACKET_SIZE];
+  ssh_packet_t proxy_packet_workspace;
   char command[SSH_CLIENT_COMMAND_MAX];
   char local_path[SSH_CLIENT_PATH_MAX];
   char remote_path[SSH_CLIENT_PATH_MAX];
@@ -87,6 +107,10 @@ void ssh_client_app_set_cwd(const char *cwd) {
 #endif
 
 static int client_scp_transfer(ssh_client_context_t *client);
+static int proxy_stream_send(void *context, const uint8_t *data,
+                             u64 length, u64 *sent);
+static int proxy_stream_recv(void *context, uint8_t *data,
+                             u64 length, u64 *received);
 
 static int bytes_equal(const uint8_t *a, const uint8_t *b, uint32_t length) {
   uint8_t difference = 0U;
@@ -139,8 +163,19 @@ static ssh_client_context_t *client_allocate(ssh_channel_t *channel) {
 static void client_release(ssh_channel_t *channel,
                            ssh_client_context_t *client) {
   if (client == 0) return;
-  if (client->sockfd != 0U) (void)xaios_net_close(client->sockfd);
+  if (client->sockfd != 0U && client->sockfd != SSH_CLIENT_RELAY_SOCKET)
+    (void)xaios_net_close(client->sockfd);
   if (client->transport != 0) ssh_conn_free(client->transport);
+  if (client->proxy_transport != 0) {
+    if (client->proxy_transport->crypto.enabled != 0) {
+      uint8_t close[5] = {SSH_MSG_CHANNEL_CLOSE, 0U, 0U, 0U, 0U};
+      ssh_write_u32_be(close + 1U, client->proxy_remote_channel);
+      (void)ssh_packet_write_encrypted((int)client->proxy_sockfd, close,
+                                       sizeof(close));
+    }
+    ssh_conn_free(client->proxy_transport);
+  }
+  if (client->proxy_sockfd != 0U) (void)xaios_net_close(client->proxy_sockfd);
   ssh_mem_zero(client->password, sizeof(client->password));
   ssh_mem_zero(client, sizeof(*client));
   if (channel != 0) channel->ssh_client_slot = 0U;
@@ -240,10 +275,24 @@ static int derive_client_crypto(ssh_connection_t *connection) {
   return 0;
 }
 
+static int wait_plain_packet_fd(int sockfd, ssh_packet_t *packet,
+                                uint64_t deadline) {
+  for (;;) {
+    int result = ssh_packet_read(sockfd, packet);
+    if (result <= 0) return result;
+    if (xaios_clock_nanos() >= deadline) return -1;
+  }
+}
+
 static int wait_plain_packet(ssh_client_context_t *client, ssh_packet_t *packet,
                              uint64_t deadline) {
+  return wait_plain_packet_fd((int)client->sockfd, packet, deadline);
+}
+
+static int wait_encrypted_packet_fd(int sockfd, ssh_packet_t *packet,
+                                    uint64_t deadline) {
   for (;;) {
-    int result = ssh_packet_read((int)client->sockfd, packet);
+    int result = ssh_packet_read_encrypted(sockfd, packet);
     if (result <= 0) return result;
     if (xaios_clock_nanos() >= deadline) return -1;
   }
@@ -251,11 +300,7 @@ static int wait_plain_packet(ssh_client_context_t *client, ssh_packet_t *packet,
 
 static int wait_encrypted_packet(ssh_client_context_t *client,
                                  ssh_packet_t *packet, uint64_t deadline) {
-  for (;;) {
-    int result = ssh_packet_read_encrypted((int)client->sockfd, packet);
-    if (result <= 0) return result;
-    if (xaios_clock_nanos() >= deadline) return -1;
-  }
+  return wait_encrypted_packet_fd((int)client->sockfd, packet, deadline);
 }
 
 static int build_kexinit(uint8_t *buffer, uint32_t capacity,
@@ -972,30 +1017,227 @@ static int open_session_channel(ssh_client_context_t *client,
   return 0;
 }
 
+static int proxy_send_window_adjust(ssh_client_context_t *client,
+                                    uint32_t added) {
+  uint8_t packet[9];
+  packet[0] = SSH_MSG_CHANNEL_WINDOW_ADJUST;
+  ssh_write_u32_be(packet + 1U, client->proxy_remote_channel);
+  ssh_write_u32_be(packet + 5U, added);
+  return ssh_packet_write_encrypted((int)client->proxy_sockfd, packet,
+                                    sizeof(packet));
+}
+
+static int proxy_process_packet(ssh_client_context_t *client,
+                                const ssh_packet_t *packet) {
+  if (packet->len == 0U) return -1;
+  uint8_t type = packet->data[0];
+  if (type == SSH_MSG_CHANNEL_WINDOW_ADJUST) {
+    if (packet->len != 9U ||
+        ssh_read_u32_be(packet->data + 1U) != client->proxy_local_channel)
+      return -1;
+    uint32_t added = ssh_read_u32_be(packet->data + 5U);
+    if (UINT32_MAX - client->proxy_remote_window < added) return -1;
+    client->proxy_remote_window += added;
+    return 0;
+  }
+  if (type == SSH_MSG_CHANNEL_DATA) {
+    if (packet->len < 9U ||
+        ssh_read_u32_be(packet->data + 1U) != client->proxy_local_channel)
+      return -1;
+    uint32_t length = ssh_read_u32_be(packet->data + 5U);
+    if (length > packet->len - 9U ||
+        length > sizeof(client->proxy_rx) - client->proxy_rx_used ||
+        length > client->proxy_receive_window) return -1;
+    ssh_mem_copy(client->proxy_rx + client->proxy_rx_used, packet->data + 9U,
+                 length);
+    client->proxy_rx_used += length;
+    client->proxy_receive_window -= length;
+    if (client->proxy_receive_window <= SSH_CLIENT_WINDOW / 2U) {
+      uint32_t added = SSH_CLIENT_WINDOW - client->proxy_receive_window;
+      if (proxy_send_window_adjust(client, added) != 0) return -1;
+      client->proxy_receive_window += added;
+    }
+    return 0;
+  }
+  if (type == SSH_MSG_CHANNEL_EOF || type == SSH_MSG_CHANNEL_CLOSE ||
+      type == SSH_MSG_DISCONNECT) {
+    return -1;
+  }
+  if (type == SSH_MSG_GLOBAL_REQUEST && packet->len >= 6U) {
+    uint32_t name_length = ssh_read_u32_be(packet->data + 1U);
+    if (name_length > packet->len - 6U) return -1;
+    if (packet->data[5U + name_length] != 0U) {
+      uint8_t failure = SSH_MSG_REQUEST_FAILURE;
+      return ssh_packet_write_encrypted((int)client->proxy_sockfd, &failure,
+                                        1U);
+    }
+  }
+  return 0;
+}
+
+static int proxy_pump(ssh_client_context_t *client, uint64_t deadline) {
+  if (client == 0 || client->proxy_transport == 0) return -1;
+  int result = wait_encrypted_packet_fd((int)client->proxy_sockfd,
+                                        &client->proxy_packet_workspace,
+                                        deadline);
+  if (result != 0) return result;
+  return proxy_process_packet(client, &client->proxy_packet_workspace);
+}
+
+static int proxy_stream_send(void *context, const uint8_t *data,
+                             u64 length, u64 *sent) {
+  ssh_client_context_t *client = (ssh_client_context_t *)context;
+  if (client == 0 || data == 0 || sent == 0 || client->proxy_established == 0U ||
+      client->proxy_transport == 0) return -1;
+  *sent = 0U;
+  uint64_t deadline = xaios_clock_nanos() + SSH_CLIENT_TIMEOUT_NS;
+  while (client->proxy_remote_window == 0U) {
+    if (proxy_pump(client, deadline) != 0) return -1;
+  }
+  uint32_t chunk = length > UINT32_MAX ? UINT32_MAX : (uint32_t)length;
+  if (chunk > client->proxy_remote_window) chunk = client->proxy_remote_window;
+  if (chunk > client->proxy_remote_max_packet) chunk = client->proxy_remote_max_packet;
+  if (chunk > SSH_MAX_PACKET_SIZE - 9U) chunk = SSH_MAX_PACKET_SIZE - 9U;
+  if (chunk == 0U) return -1;
+  /* The target handshake retains frame_workspace as its server KEXINIT. */
+  uint8_t *packet = client->proxy_packet_workspace.data;
+  packet[0] = SSH_MSG_CHANNEL_DATA;
+  ssh_write_u32_be(packet + 1U, client->proxy_remote_channel);
+  ssh_write_u32_be(packet + 5U, chunk);
+  ssh_mem_copy(packet + 9U, data, chunk);
+  if (ssh_packet_write_encrypted((int)client->proxy_sockfd, packet,
+                                 chunk + 9U) != 0) return -1;
+  client->proxy_remote_window -= chunk;
+  *sent = chunk;
+  return 0;
+}
+
+static int proxy_stream_recv(void *context, uint8_t *data,
+                             u64 length, u64 *received) {
+  ssh_client_context_t *client = (ssh_client_context_t *)context;
+  if (client == 0 || data == 0 || received == 0 ||
+      client->proxy_established == 0U || client->proxy_transport == 0) return -1;
+  *received = 0U;
+  for (uint32_t attempts = 0U; attempts < 16U; ++attempts) {
+    if (client->proxy_rx_used != 0U) {
+      uint32_t count = length < client->proxy_rx_used ? (uint32_t)length
+                                                       : client->proxy_rx_used;
+      ssh_mem_copy(data, client->proxy_rx, count);
+      uint32_t remaining = client->proxy_rx_used - count;
+      for (uint32_t i = 0U; i < remaining; ++i)
+        client->proxy_rx[i] = client->proxy_rx[count + i];
+      client->proxy_rx_used = remaining;
+      *received = count;
+      return 0;
+    }
+    int result = proxy_pump(client, xaios_clock_nanos() + SSH_CLIENT_TIMEOUT_NS);
+    if (result > 0) return 0;
+    if (result < 0) return -1;
+  }
+  return 0;
+}
+
+static int open_proxy_channel(ssh_client_context_t *client, uint64_t deadline) {
+  uint8_t packet[512];
+  uint32_t position = 0U;
+  packet[position++] = SSH_MSG_CHANNEL_OPEN;
+  position = append_string(packet, position, sizeof(packet),
+                           (const uint8_t *)"direct-tcpip", 12U);
+  if (position == UINT32_MAX || position + 12U > sizeof(packet)) return -1;
+  client->local_channel = 1U;
+  ssh_write_u32_be(packet + position, client->local_channel);
+  position += 4U;
+  ssh_write_u32_be(packet + position, SSH_CLIENT_WINDOW);
+  position += 4U;
+  ssh_write_u32_be(packet + position, SSH_CLIENT_PACKET);
+  position += 4U;
+  position = append_string(packet, position, sizeof(packet),
+                           (const uint8_t *)client->target_host,
+                           ssh_str_len(client->target_host));
+  if (position == UINT32_MAX || position + 4U > sizeof(packet)) return -1;
+  ssh_write_u32_be(packet + position, client->target_port);
+  position += 4U;
+  position = append_string(packet, position, sizeof(packet),
+                           (const uint8_t *)"127.0.0.1", 9U);
+  if (position == UINT32_MAX || position + 4U > sizeof(packet)) return -1;
+  ssh_write_u32_be(packet + position, 0U);
+  position += 4U;
+  if (ssh_packet_write_encrypted((int)client->sockfd, packet, position) != 0)
+    return -1;
+  for (;;) {
+    ssh_packet_t *response = &client->packet_workspace;
+    if (wait_encrypted_packet(client, response, deadline) != 0 ||
+        response->len == 0U) return -1;
+    if (response->data[0] == SSH_MSG_CHANNEL_OPEN_FAILURE ||
+        response->data[0] == SSH_MSG_DISCONNECT) return -1;
+    if (response->data[0] != SSH_MSG_CHANNEL_OPEN_CONFIRM) continue;
+    if (response->len != 17U ||
+        ssh_read_u32_be(response->data + 1U) != client->local_channel)
+      return -1;
+    client->remote_channel = ssh_read_u32_be(response->data + 5U);
+    client->remote_window = ssh_read_u32_be(response->data + 9U);
+    client->remote_max_packet = ssh_read_u32_be(response->data + 13U);
+    client->receive_window = SSH_CLIENT_WINDOW;
+    return client->remote_max_packet == 0U ? -1 : 0;
+  }
+}
+
+static void promote_proxy_transport(ssh_client_context_t *client) {
+  client->proxy_sockfd = client->sockfd;
+  client->proxy_transport = client->transport;
+  client->proxy_local_channel = client->local_channel;
+  client->proxy_remote_channel = client->remote_channel;
+  client->proxy_remote_window = client->remote_window;
+  client->proxy_remote_max_packet = client->remote_max_packet;
+  client->proxy_receive_window = client->receive_window;
+  client->sockfd = 0U;
+  client->transport = 0;
+  client->local_channel = 0U;
+  client->remote_channel = 0U;
+  client->remote_window = 0U;
+  client->remote_max_packet = 0U;
+  client->receive_window = 0U;
+  string_copy(client->host, sizeof(client->host), client->target_host);
+  string_copy(client->user, sizeof(client->user), client->target_user);
+  client->port = client->target_port;
+  client->use_identity = client->target_use_identity;
+  client->use_agent = 0U;
+  client->proxy_established = 1U;
+  ssh_mem_zero(client->password, sizeof(client->password));
+  client->password_length = 0U;
+}
+
 static int client_handshake(ssh_client_context_t *client,
                             const ssh_channel_t *outer) {
   uint64_t deadline = xaios_clock_nanos() + SSH_CLIENT_TIMEOUT_NS;
-  xaios_ip_addr_user_t address;
-  if (resolve_host(client->host, &address, deadline) != 0) return -10;
-  if (xaios_net_connect(&address, client->port, &client->sockfd) != 0)
-    return -26;
   client->transport = ssh_conn_client_alloc();
   if (client->transport == 0) return -11;
-  client->transport->sockfd = client->sockfd;
+  if (client->proxy_established != 0U) {
+    client->sockfd = SSH_CLIENT_RELAY_SOCKET;
+    client->transport->sockfd = client->sockfd;
+    client->transport->send_fn = proxy_stream_send;
+    client->transport->recv_fn = proxy_stream_recv;
+    client->transport->io_context = client;
+  } else {
+    xaios_ip_addr_user_t address;
+    if (resolve_host(client->host, &address, deadline) != 0) return -10;
+    if (xaios_net_connect(&address, client->port, &client->sockfd) != 0)
+      return -26;
+    client->transport->sockfd = client->sockfd;
+  }
 
   static const uint8_t client_version[] = "SSH-2.0-XAIOS_Client_1.0";
   static const uint8_t client_version_line[] = "SSH-2.0-XAIOS_Client_1.0\r\n";
   u64 sent = 0U;
-  if (xaios_net_send(client->sockfd, client_version_line,
-                     sizeof(client_version_line) - 1U, &sent) != 0 ||
+  if (ssh_conn_send(client->transport, client_version_line,
+                    sizeof(client_version_line) - 1U, &sent) != 0 ||
       sent != sizeof(client_version_line) - 1U) return -12;
   uint8_t server_version[256];
   uint32_t server_version_length = 0U;
   for (;;) {
     u64 received = 0U;
-    if (xaios_net_recv(client->sockfd,
-                       server_version + server_version_length, 1U,
-                       &received) != 0) return -13;
+    if (ssh_conn_recv(client->transport, server_version + server_version_length,
+                      1U, &received) != 0) return -13;
     if (received == 0U) {
       if (xaios_clock_nanos() >= deadline) return -14;
       continue;
@@ -1084,6 +1326,11 @@ static int client_handshake(ssh_client_context_t *client,
   } else if (authenticate_password(client, deadline) != 0) {
     return -23;
   }
+  if (client->proxy_enabled != 0U && client->proxy_established == 0U) {
+    if (open_proxy_channel(client, deadline) != 0) return -24;
+    promote_proxy_transport(client);
+    return 1;
+  }
   if (open_session_channel(client, outer, deadline) != 0) return -24;
   client->connected = 1U;
   return 0;
@@ -1094,8 +1341,9 @@ static int parse_port(const char *text, uint16_t *port) {
   if (text == 0 || text[0] == '\0') return -1;
   for (uint32_t i = 0U; text[i] != '\0'; ++i) {
     if (text[i] < '0' || text[i] > '9') return -1;
-    value = value * 10U + (uint32_t)(text[i] - '0');
-    if (value > 65535U) return -1;
+    uint32_t digit = (uint32_t)(text[i] - '0');
+    if (value > (65535U - digit) / 10U) return -1;
+    value = value * 10U + digit;
   }
   if (value == 0U) return -1;
   *port = (uint16_t)value;
@@ -1145,6 +1393,89 @@ static int parse_destination(ssh_client_context_t *client, const char *text) {
   client->user[at] = '\0';
   ssh_mem_copy(client->host, text + host_start, host_length);
   client->host[host_length] = '\0';
+  return 0;
+}
+
+static int parse_proxy_destination(ssh_client_context_t *client,
+                                   const char *text) {
+  uint32_t length = ssh_str_len(text);
+  uint32_t at = UINT32_MAX;
+  for (uint32_t i = 0U; i < length; ++i) {
+    if (text[i] == '@') at = i;
+  }
+  if (at == 0U || at == UINT32_MAX || at + 1U >= length ||
+      at >= sizeof(client->proxy_user)) return -1;
+  uint32_t host_start = at + 1U;
+  uint32_t host_end = length;
+  uint16_t port = 22U;
+  if (text[host_start] == '[') {
+    uint32_t close = host_start + 1U;
+    while (close < length && text[close] != ']') ++close;
+    if (close == host_start + 1U || close == length) return -1;
+    host_start += 1U;
+    host_end = close;
+    if (close + 1U != length) {
+      if (text[close + 1U] != ':' ||
+          parse_port(text + close + 2U, &port) != 0) return -1;
+    }
+  } else {
+    uint32_t colon = UINT32_MAX;
+    for (uint32_t i = host_start; i < length; ++i) {
+      if (text[i] != ':') continue;
+      if (colon != UINT32_MAX) return -1;
+      colon = i;
+    }
+    if (colon != UINT32_MAX) {
+      host_end = colon;
+      if (parse_port(text + colon + 1U, &port) != 0) return -1;
+    }
+  }
+  uint32_t host_length = host_end - host_start;
+  if (host_length == 0U || host_length >= sizeof(client->proxy_host)) return -1;
+  for (uint32_t i = 0U; i < at; ++i) {
+    char value = text[i];
+    if (value == '@' || value == '/' || value == '\\' || value == '\r' ||
+        value == '\n') return -1;
+  }
+  for (uint32_t i = 0U; i < host_length; ++i) {
+    char value = text[host_start + i];
+    if (value == '@' || value == '/' || value == '\\' || value == '\r' ||
+        value == '\n') return -1;
+  }
+  ssh_mem_copy(client->proxy_user, text, at);
+  client->proxy_user[at] = '\0';
+  ssh_mem_copy(client->proxy_host, text + host_start, host_length);
+  client->proxy_host[host_length] = '\0';
+  client->proxy_port = port;
+  return 0;
+}
+
+static int client_prompt_password(ssh_client_context_t *client,
+                                  const ssh_channel_t *channel) {
+  char prompt[SSH_CLIENT_USER_MAX + SSH_CLIENT_HOST_MAX + 24U];
+  uint32_t used = 0U;
+  uint32_t user_length = ssh_str_len(client->user);
+  uint32_t host_length = ssh_str_len(client->host);
+  ssh_mem_copy(prompt + used, client->user, user_length);
+  used += user_length;
+  prompt[used++] = '@';
+  ssh_mem_copy(prompt + used, client->host, host_length);
+  used += host_length;
+  static const char password_suffix[] = "'s password: ";
+  static const char passphrase_suffix[] = " key passphrase: ";
+  static const char agent_suffix[] = " forwarded agent: ";
+  const char *suffix = client->use_agent != 0U
+                           ? agent_suffix
+                           : (client->use_identity != 0U ? passphrase_suffix
+                                                        : password_suffix);
+  uint32_t suffix_length = ssh_str_len(suffix);
+  ssh_mem_copy(prompt + used, suffix, suffix_length);
+  used += suffix_length;
+  if (ssh_channel_send_data((int)channel->owner_sockfd, channel->remote_id,
+                            (const uint8_t *)prompt, used) != 0) {
+    return -1;
+  }
+  client->prompting = 1U;
   return 0;
 }
 
@@ -1200,7 +1531,7 @@ static int resolve_local_path(const ssh_channel_t *channel, const char *input,
 static void client_usage(const ssh_channel_t *channel, int scp) {
   const char *usage = scp
       ? "usage: scp [-r] [-i key] [-P port] SOURCE DESTINATION\r\n"
-      : "usage: ssh [-i key] [-p port] user@host [command]\r\n";
+      : "usage: ssh [-J user@host[:port]] [-i key] [-p port] user@host [command]\r\n";
   (void)ssh_channel_send_data((int)channel->owner_sockfd, channel->remote_id,
                               (const uint8_t *)usage, ssh_str_len(usage));
 }
@@ -1327,6 +1658,17 @@ int ssh_client_prepare(struct ssh_channel *channel, const char *command) {
       }
       continue;
     }
+    if (ssh_str_eq(token, "-J")) {
+      if (client->proxy_enabled != 0U ||
+          next_token(command, &position, token, sizeof(token)) != 0 ||
+          parse_proxy_destination(client, token) != 0) {
+        client_release(channel, client);
+        client_usage(channel, 0);
+        return -1;
+      }
+      client->proxy_enabled = 1U;
+      continue;
+    }
     if (ssh_str_eq(token, "-A")) {
       client->use_agent = 1U;
       continue;
@@ -1365,6 +1707,29 @@ int ssh_client_prepare(struct ssh_channel *channel, const char *command) {
     }
     client->mode = SSH_CLIENT_MODE_EXEC;
   }
+  if (client->proxy_enabled != 0U) {
+    if (client->use_agent != 0U) {
+      (void)output_text(client,
+                        "ssh: -J with forwarded-agent authentication is not supported\r\n");
+      client_release(channel, client);
+      return -1;
+    }
+    if (string_copy(client->target_host, sizeof(client->target_host),
+                    client->host) != ssh_str_len(client->host) ||
+        string_copy(client->target_user, sizeof(client->target_user),
+                    client->user) != ssh_str_len(client->user)) {
+      client_release(channel, client);
+      client_usage(channel, 0);
+      return -1;
+    }
+    client->target_port = client->port;
+    client->target_use_identity = client->use_identity;
+    string_copy(client->host, sizeof(client->host), client->proxy_host);
+    string_copy(client->user, sizeof(client->user), client->proxy_user);
+    client->port = client->proxy_port;
+    client->use_identity = 0U;
+    client->use_agent = 0U;
+  }
 send_password_prompt:
   if (client->use_agent != 0U && client->use_identity != 0U) {
     client_usage(channel, is_scp);
@@ -1391,28 +1756,7 @@ agent_failed:
     client_release(channel, client);
     return -1;
   }
-  client->prompting = 1U;
-  char prompt[SSH_CLIENT_USER_MAX + SSH_CLIENT_HOST_MAX + 24U];
-  uint32_t used = 0U;
-  uint32_t user_length = ssh_str_len(client->user);
-  uint32_t host_length = ssh_str_len(client->host);
-  ssh_mem_copy(prompt + used, client->user, user_length);
-  used += user_length;
-  prompt[used++] = '@';
-  ssh_mem_copy(prompt + used, client->host, host_length);
-  used += host_length;
-  static const char password_suffix[] = "'s password: ";
-  static const char passphrase_suffix[] = " key passphrase: ";
-  static const char agent_suffix[] = " forwarded agent: ";
-  const char *suffix = client->use_agent != 0U
-                           ? agent_suffix
-                           : (client->use_identity != 0U ? passphrase_suffix
-                                                        : password_suffix);
-  uint32_t suffix_length = ssh_str_len(suffix);
-  ssh_mem_copy(prompt + used, suffix, suffix_length);
-  used += suffix_length;
-  if (ssh_channel_send_data((int)channel->owner_sockfd, channel->remote_id,
-                            (const uint8_t *)prompt, used) != 0) {
+  if (client_prompt_password(client, channel) != 0) {
     client_release(channel, client);
     return -1;
   }
@@ -1445,8 +1789,8 @@ int ssh_client_password_input(struct ssh_channel *channel,
     }
     client->prompting = 0U;
     int handshake = client_handshake(client, channel);
-    if (output_text(client, "\r\n") != 0 || handshake != 0) {
-      if (handshake != 0) {
+    if (output_text(client, "\r\n") != 0 || handshake < 0) {
+      if (handshake < 0) {
         xaios_log("ssh-client: handshake failed\n");
       }
       const char *message = "ssh: connection or authentication failed\r\n";
@@ -1475,6 +1819,13 @@ int ssh_client_password_input(struct ssh_channel *channel,
       (void)output_text(client, message);
       client_release(channel, client);
       return 1;
+    }
+    if (handshake == 1) {
+      if (client_prompt_password(client, channel) != 0) {
+        client_release(channel, client);
+        return 1;
+      }
+      return 0;
     }
     if (client->mode == SSH_CLIENT_MODE_SCP_UPLOAD ||
         client->mode == SSH_CLIENT_MODE_SCP_DOWNLOAD) {

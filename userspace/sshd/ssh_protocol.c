@@ -18,13 +18,29 @@ uint32_t ssh_read_string_len(const uint8_t *p) {
   return ssh_read_u32_be(p);
 }
 
+static int connection_send(int sockfd, const void *data, u64 len,
+                           u64 *sent) {
+  ssh_connection_t *conn = ssh_conn_find((uint64_t)(uint32_t)sockfd);
+  if (conn != 0)
+    return ssh_conn_send(conn, (const uint8_t *)data, len, sent);
+  return xaios_net_send((u64)(uint64_t)sockfd, data, len, sent);
+}
+
+static int connection_recv(int sockfd, void *data, u64 len,
+                           u64 *received) {
+  ssh_connection_t *conn = ssh_conn_find((uint64_t)(uint32_t)sockfd);
+  if (conn != 0)
+    return ssh_conn_recv(conn, (uint8_t *)data, len, received);
+  return xaios_net_recv((u64)(uint64_t)sockfd, data, len, received);
+}
+
 static int send_all(int sockfd, const void *data, uint64_t len) {
   uint64_t sent = 0;
   uint64_t stalled_since = 0;
   while (sent < len) {
     u64 n = 0;
-    int r = xaios_net_send((u64)(uint64_t)sockfd,
-                          (const uint8_t *)data + sent, len - sent, &n);
+    int r = connection_send(sockfd, (const uint8_t *)data + sent,
+                            len - sent, &n);
     if (r != 0) return -1;
     if (n == 0) {
       uint64_t now = xaios_clock_nanos();
@@ -65,7 +81,7 @@ int ssh_recv_version(int sockfd, uint8_t *buf, uint32_t buf_size,
   uint32_t pos = 0;
   while (pos < buf_size) {
     u64 n = 0;
-    int r = xaios_net_recv((u64)(uint64_t)sockfd, buf + pos, 1, &n);
+    int r = connection_recv(sockfd, buf + pos, 1, &n);
     if (r != 0 || n == 0) return -1;
     
     /* Reject version lines beyond the transport protocol limit. */
@@ -90,9 +106,8 @@ int ssh_packet_read(int sockfd, ssh_packet_t *pkt) {
   if (conn->plaintext_rx_used < 4U) {
     u64 received = 0;
     uint32_t needed = 4U - conn->plaintext_rx_used;
-    if (xaios_net_recv((u64)(uint64_t)sockfd,
-                       wire + conn->plaintext_rx_used, needed,
-                       &received) != 0) {
+    if (connection_recv(sockfd, wire + conn->plaintext_rx_used, needed,
+                        &received) != 0) {
       return -1;
     }
     conn->plaintext_rx_used += (uint32_t)received;
@@ -105,9 +120,8 @@ int ssh_packet_read(int sockfd, ssh_packet_t *pkt) {
   if (conn->plaintext_rx_used < conn->plaintext_rx_expected) {
     u64 received = 0;
     uint32_t needed = conn->plaintext_rx_expected - conn->plaintext_rx_used;
-    if (xaios_net_recv((u64)(uint64_t)sockfd,
-                       wire + conn->plaintext_rx_used, needed,
-                       &received) != 0) {
+    if (connection_recv(sockfd, wire + conn->plaintext_rx_used, needed,
+                        &received) != 0) {
       return -1;
     }
     conn->plaintext_rx_used += (uint32_t)received;
@@ -204,9 +218,8 @@ int ssh_packet_read_encrypted(int sockfd, ssh_packet_t *out_pkt) {
   if (conn->encrypted_rx_used < block_size) {
     u64 received = 0;
     uint32_t needed = block_size - conn->encrypted_rx_used;
-    if (xaios_net_recv((u64)(uint64_t)sockfd,
-                       wire + conn->encrypted_rx_used, needed,
-                       &received) != 0) {
+    if (connection_recv(sockfd, wire + conn->encrypted_rx_used, needed,
+                        &received) != 0) {
       return -1;
     }
     conn->encrypted_rx_used += (uint32_t)received;
@@ -237,9 +250,8 @@ int ssh_packet_read_encrypted(int sockfd, ssh_packet_t *out_pkt) {
     u64 received = 0;
     uint32_t needed =
         conn->encrypted_rx_expected - conn->encrypted_rx_used;
-    if (xaios_net_recv((u64)(uint64_t)sockfd,
-                       wire + conn->encrypted_rx_used, needed,
-                       &received) != 0) {
+    if (connection_recv(sockfd, wire + conn->encrypted_rx_used, needed,
+                        &received) != 0) {
       return -1;
     }
     conn->encrypted_rx_used += (uint32_t)received;

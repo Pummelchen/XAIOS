@@ -29,14 +29,14 @@ observability utilities, is listed in [[Applications|Applications]].
 
 | Command | Supported core behavior |
 |---|---|
-| `ssh [-A] [-i KEY] [-p PORT] user@host [command]` | Dedicated SSH application with password, Ed25519 identity-file or forwarded-agent authentication; encrypted OpenSSH keys, IPv4/IPv6 and DNS A/AAAA are supported. |
+| `ssh [-A] [-i KEY] [-p PORT] [-J user@host[:port]] user@host [command]` | Dedicated SSH application with password, Ed25519 identity-file or forwarded-agent authentication; encrypted OpenSSH keys, IPv4/IPv6 and DNS A/AAAA are supported. One password-authenticated ProxyJump hop can carry a separately password- or identity-authenticated target through `direct-tcpip`. |
 | `scp [-r] [-A] [-i KEY] [-P PORT] SOURCE DESTINATION` | Dedicated SFTP-backed copy application for files or bounded directory trees between XAIOS and compatible XAIOS, FreeBSD, or OpenSSH servers. Exactly one endpoint may be remote. |
 
 The clients run outside the persistent SSH service through bounded asynchronous child-channel IPC, so a client fault does not terminate the inbound server.
 The inbound server implements hybrid `mlkem768x25519-sha256`, `direct-tcpip`
-jump-host forwarding and agent forwarding. A native outbound `-J` or
-`ProxyCommand` option parser and the complete OpenSSH algorithm matrix are not
-implemented.
+jump-host forwarding and agent forwarding. The native outbound client supports
+one `-J user@host[:port]` hop; multi-hop `-J`, `ProxyCommand`, `-J` with agent
+authentication, and the complete OpenSSH algorithm matrix are not implemented.
 
 ## Operations and diagnostics
 
