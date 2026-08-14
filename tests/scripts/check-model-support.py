@@ -20,13 +20,13 @@ STATUS_SURFACES = (
     "wiki/Project-Tracker.md",
 )
 EXPECTED_OPEN_WORKSTREAMS = {
-    "Qwen 3.8 27B support",
+    "Qwen 3.8 support",
     "Kimi K3 text support",
     "Kimi K3 multimodal support",
     "DeepSeek V4 Flash 0731 support",
 }
 EXPECTED_OPEN_MODEL_IDS = {
-    "qwen_3_8_27b",
+    "qwen_3_8",
     "kimi_k3_text",
     "kimi_k3_multimodal",
     "deepseek_v4_flash_0731",

@@ -40,7 +40,7 @@ remain explicit gates.
 ## Model support status
 
 The deterministic QEMU model-v1 path is **Fixture only**, and model-v2 is a
-format/interface foundation; neither executes a transformer. Qwen 3.8 27B is
+format/interface foundation; neither executes a transformer. Qwen 3.8 is
 the next real-model correctness target. Kimi K3 text, Kimi K3 multimodal,
 and DeepSeek V4 Flash 0731 remain later targets, and no listed model is
 production supported. K3 text and multimodal support are separate milestones.

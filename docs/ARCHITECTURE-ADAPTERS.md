@@ -29,7 +29,7 @@ An adapter must provide:
 - scratch and persistent-state requirements;
 - exact/approximate mode validation and backend capability checks.
 
-Qwen 3.8 27B cannot be implemented from a marketing name or an assumed generic
+Qwen 3.8 cannot be implemented from a marketing name or an assumed generic
 transformer. Implementation starts only after an immutable official
 configuration, tokenizer, tensor manifest, and parity corpus are pinned. The
 adapter must follow every operator and state requirement in that configuration.

@@ -137,7 +137,7 @@ passes identify/write/flush/read. Physical Intel qualification remains open.
 The portable engine already supplies model-v2 parsing, architecture and backend
 registries, scalar packed INT4/INT6 correctness kernels, immutable model
 readers, sessions, and a caller-owned service API. It does not yet import or
-execute a real Qwen checkpoint. Qwen 3.8 27B is the next model workstream after
+execute a real Qwen checkpoint. Qwen 3.8 is the next model workstream after
 the XAIOS platform completion gate; Kimi K3 and DeepSeek V4 Flash 0731 remain
 later roadmap items.
 
