@@ -47,6 +47,13 @@
 
 static xaios_gic_info_t g_gic_info;
 static uint32_t g_gic_full_init;
+static uint64_t g_distributor_base = QEMU_VIRT_GICD_BASE;
+static uint64_t g_redistributor_base = QEMU_VIRT_GICR_BASE;
+static uint64_t g_redistributor_length =
+    (uint64_t)QEMU_VIRT_GICR_LOW_FRAMES * GICR_STRIDE;
+static uint64_t g_redistributor_high_base = QEMU_VIRT_GICR_HIGH_BASE;
+static uint32_t g_redistributor_low_frames = QEMU_VIRT_GICR_LOW_FRAMES;
+static uint32_t g_platform_firmware_described;
 static xaios_irq_handler_t g_irq_handlers[GIC_MAX_INTIDS];
 static void *g_irq_contexts[GIC_MAX_INTIDS];
 static uint32_t g_irq_cpu_ids[GIC_MAX_INTIDS];
@@ -58,11 +65,12 @@ static uint32_t mmio_read32(uint64_t base, uint32_t offset) {
 }
 
 static uint64_t redistributor_base(uint32_t cpu_id) {
-  if (cpu_id < QEMU_VIRT_GICR_LOW_FRAMES) {
-    return QEMU_VIRT_GICR_BASE + (uint64_t)cpu_id * GICR_STRIDE;
+  if (cpu_id < g_redistributor_low_frames) {
+    return g_redistributor_base + (uint64_t)cpu_id * GICR_STRIDE;
   }
-  return QEMU_VIRT_GICR_HIGH_BASE +
-         (uint64_t)(cpu_id - QEMU_VIRT_GICR_LOW_FRAMES) * GICR_STRIDE;
+  if (g_redistributor_high_base == 0U) return 0U;
+  return g_redistributor_high_base +
+         (uint64_t)(cpu_id - g_redistributor_low_frames) * GICR_STRIDE;
 }
 
 static void mmio_write32(uint64_t base, uint32_t offset, uint32_t value) {
@@ -76,7 +84,7 @@ static void mmio_write64(uint64_t base, uint32_t offset, uint64_t value) {
 }
 
 static void wait_distributor(void) {
-  while ((mmio_read32(QEMU_VIRT_GICD_BASE, GICD_CTLR) & GICD_CTLR_RWP) !=
+  while ((mmio_read32(g_distributor_base, GICD_CTLR) & GICD_CTLR_RWP) !=
          0U) {
     xaios_cpu_relax();
   }
@@ -88,55 +96,92 @@ static void configure_spi_route(uint32_t intid, uint32_t cpu_id) {
   uint64_t mpidr = cpu->mpidr;
   uint64_t route = (mpidr & UINT64_C(0xffffff)) |
                    ((mpidr & UINT64_C(0xff00000000)) >> 8U);
-  mmio_write64(QEMU_VIRT_GICD_BASE, GICD_IROUTER0 + intid * 8U, route);
+  mmio_write64(g_distributor_base, GICD_IROUTER0 + intid * 8U, route);
 }
 
 static void configure_spi(uint32_t intid, uint32_t cpu_id) {
   uint32_t group_offset = GICD_IGROUPR0 + (intid / 32U) * 4U;
-  uint32_t group = mmio_read32(QEMU_VIRT_GICD_BASE, group_offset);
-  mmio_write32(QEMU_VIRT_GICD_BASE, group_offset,
+  uint32_t group = mmio_read32(g_distributor_base, group_offset);
+  mmio_write32(g_distributor_base, group_offset,
                group | (UINT32_C(1) << (intid % 32U)));
   uint32_t priority_offset = GICD_IPRIORITYR0 + (intid & ~UINT32_C(3));
-  uint32_t priority = mmio_read32(QEMU_VIRT_GICD_BASE, priority_offset);
+  uint32_t priority = mmio_read32(g_distributor_base, priority_offset);
   uint32_t shift = (intid % 4U) * 8U;
   priority = (priority & ~(UINT32_C(0xff) << shift)) |
              (UINT32_C(0x80) << shift);
-  mmio_write32(QEMU_VIRT_GICD_BASE, priority_offset, priority);
+  mmio_write32(g_distributor_base, priority_offset, priority);
   uint32_t config_offset = GICD_ICFGR0 + (intid / 16U) * 4U;
-  uint32_t config = mmio_read32(QEMU_VIRT_GICD_BASE, config_offset);
+  uint32_t config = mmio_read32(g_distributor_base, config_offset);
   uint32_t config_shift = (intid % 16U) * 2U;
   config = (config & ~(UINT32_C(3) << config_shift)) |
            (UINT32_C(2) << config_shift);
-  mmio_write32(QEMU_VIRT_GICD_BASE, config_offset, config);
+  mmio_write32(g_distributor_base, config_offset, config);
   configure_spi_route(intid, cpu_id);
-  mmio_write32(QEMU_VIRT_GICD_BASE,
+  mmio_write32(g_distributor_base,
                GICD_ISENABLER0 + (intid / 32U) * 4U,
                UINT32_C(1) << (intid % 32U));
 }
 
-void gic_init_qemu_virt(void) {
+void gic_configure_platform(uint64_t distributor_base,
+                            uint64_t redistributor_base,
+                            uint64_t redistributor_length) {
+  if (distributor_base == 0U || redistributor_base == 0U ||
+      (distributor_base & UINT64_C(0xfff)) != 0U ||
+      (redistributor_base & UINT64_C(0xfff)) != 0U ||
+      redistributor_length < GICR_STRIDE ||
+      redistributor_length / GICR_STRIDE > UINT32_MAX) {
+    return;
+  }
+  g_distributor_base = distributor_base;
+  g_redistributor_base = redistributor_base;
+  g_redistributor_length = redistributor_length;
+  g_redistributor_high_base = 0U;
+  g_redistributor_low_frames =
+      (uint32_t)(redistributor_length / GICR_STRIDE);
+  g_platform_firmware_described = 1U;
+}
+
+void gic_disable_platform(void) {
+  g_distributor_base = 0U;
+  g_redistributor_base = 0U;
+  g_redistributor_length = 0U;
+  g_redistributor_high_base = 0U;
+  g_redistributor_low_frames = 0U;
+  g_platform_firmware_described = 1U;
+}
+
+void gic_init_platform(void) {
   for (uint32_t intid = 0U; intid < GIC_MAX_INTIDS; ++intid) {
     g_irq_handlers[intid] = 0;
     g_irq_contexts[intid] = 0;
     g_irq_cpu_ids[intid] = UINT32_MAX;
   }
   g_registered_interrupts = 0U;
-  g_gic_info.distributor_base = QEMU_VIRT_GICD_BASE;
-  (void)mmio_read32(QEMU_VIRT_GICD_BASE, GICD_CTLR);
-  g_gic_info.typer = mmio_read32(QEMU_VIRT_GICD_BASE, GICD_TYPER);
-  g_gic_info.iidr = mmio_read32(QEMU_VIRT_GICD_BASE, GICD_IIDR);
+  g_gic_info.distributor_base = g_distributor_base;
+  if (g_distributor_base == 0U) {
+    g_gic_info.interrupt_lines = 0U;
+    g_gic_info.cpu_count_hint = 0U;
+    klog("gic: platform controller disabled invalid firmware resources\n");
+    return;
+  }
+  (void)mmio_read32(g_distributor_base, GICD_CTLR);
+  g_gic_info.typer = mmio_read32(g_distributor_base, GICD_TYPER);
+  g_gic_info.iidr = mmio_read32(g_distributor_base, GICD_IIDR);
   if (g_gic_info.typer == UINT32_MAX || g_gic_info.iidr == UINT32_MAX) {
     g_gic_info.distributor_base = 0U;
     g_gic_info.interrupt_lines = 0U;
     g_gic_info.cpu_count_hint = 0U;
-    klog("gic: QEMU fixed-address controller unavailable\n");
+    klog("gic: platform controller unavailable source=%s\n",
+         g_platform_firmware_described != 0U ? "ACPI" : "QEMU-fallback");
     return;
   }
   g_gic_info.interrupt_lines = ((g_gic_info.typer & 0x1fU) + 1U) * 32U;
   g_gic_info.cpu_count_hint = ((g_gic_info.typer >> 5U) & 0x7U) + 1U;
 
-  klog("gic: distributor=0x%lx typer=0x%x iidr=0x%x lines=%u cpu_hint=%u\n",
-       g_gic_info.distributor_base, g_gic_info.typer, g_gic_info.iidr,
+  klog("gic: source=%s distributor=0x%lx redistributor=0x%lx bytes=%lu typer=0x%x iidr=0x%x lines=%u cpu_hint=%u\n",
+       g_platform_firmware_described != 0U ? "ACPI" : "QEMU-fallback",
+       g_gic_info.distributor_base, g_redistributor_base,
+       g_redistributor_length, g_gic_info.typer, g_gic_info.iidr,
        g_gic_info.interrupt_lines, g_gic_info.cpu_count_hint);
 }
 
@@ -182,7 +227,7 @@ xaios_status_t gic_unregister_interrupt(uint32_t intid,
     return XAIOS_ERR_INVALID;
   }
   if (intid < GIC_SPI_LIMIT) {
-    mmio_write32(QEMU_VIRT_GICD_BASE,
+    mmio_write32(g_distributor_base,
                  GICD_ICENABLER0 + (intid / 32U) * 4U,
                  UINT32_C(1) << (intid % 32U));
   }
@@ -217,17 +262,17 @@ void gic_enable_full(void) {
   }
 
   /* Enable Group 1 non-secure delivery while preserving secure firmware. */
-  uint32_t ctlr = mmio_read32(QEMU_VIRT_GICD_BASE, GICD_CTLR);
+  uint32_t ctlr = mmio_read32(g_distributor_base, GICD_CTLR);
   if ((ctlr & GICD_CTLR_ARE_NS) == 0U) {
-    mmio_write32(QEMU_VIRT_GICD_BASE, GICD_CTLR,
+    mmio_write32(g_distributor_base, GICD_CTLR,
                  ctlr & ~UINT32_C(0x7));
     wait_distributor();
     ctlr = (ctlr & ~UINT32_C(0x7)) | GICD_CTLR_ARE_NS;
-    mmio_write32(QEMU_VIRT_GICD_BASE, GICD_CTLR, ctlr);
+    mmio_write32(g_distributor_base, GICD_CTLR, ctlr);
     wait_distributor();
   }
   ctlr |= UINT32_C(1) << 1U;
-  mmio_write32(QEMU_VIRT_GICD_BASE, GICD_CTLR, ctlr);
+  mmio_write32(g_distributor_base, GICD_CTLR, ctlr);
   wait_distributor();
 
   for (uint32_t intid = 32U;
@@ -242,29 +287,30 @@ void gic_enable_full(void) {
   uint32_t timer_priority_shift = (TIMER_PPI_INTID % 4U) * 8U;
 
   /* Configure redistributor for CPU 0 */
-  uint32_t gicr_waker = mmio_read32(QEMU_VIRT_GICR_BASE, GICR_WAKER);
+  uint64_t boot_gicr = redistributor_base(0U);
+  uint32_t gicr_waker = mmio_read32(boot_gicr, GICR_WAKER);
   gicr_waker &= ~(1U << 1U); /* clear ProcessorSleep */
-  mmio_write32(QEMU_VIRT_GICR_BASE, GICR_WAKER, gicr_waker);
+  mmio_write32(boot_gicr, GICR_WAKER, gicr_waker);
 
   /* Set redistributor priority for timer */
-  uint32_t gicr_group = mmio_read32(QEMU_VIRT_GICR_BASE, GICR_IGROUPR0);
-  mmio_write32(QEMU_VIRT_GICR_BASE, GICR_IGROUPR0,
+  uint32_t gicr_group = mmio_read32(boot_gicr, GICR_IGROUPR0);
+  mmio_write32(boot_gicr, GICR_IGROUPR0,
                gicr_group | (UINT32_C(1) << TIMER_PPI_INTID) |
                    (UINT32_C(1) << WORKER_SGI_INTID));
   uint32_t gicr_ipr7 = mmio_read32(
-      QEMU_VIRT_GICR_BASE, GICR_IPRIORITYR0 + timer_priority_offset);
+      boot_gicr, GICR_IPRIORITYR0 + timer_priority_offset);
   gicr_ipr7 &= ~(UINT32_C(0xff) << timer_priority_shift);
   gicr_ipr7 |= UINT32_C(0xa0) << timer_priority_shift;
-  mmio_write32(QEMU_VIRT_GICR_BASE,
+  mmio_write32(boot_gicr,
                GICR_IPRIORITYR0 + timer_priority_offset, gicr_ipr7);
   uint32_t gicr_ipr0 =
-      mmio_read32(QEMU_VIRT_GICR_BASE, GICR_IPRIORITYR0);
+      mmio_read32(boot_gicr, GICR_IPRIORITYR0);
   gicr_ipr0 &= ~(UINT32_C(0xff) << (WORKER_SGI_INTID * 8U));
   gicr_ipr0 |= UINT32_C(0x80) << (WORKER_SGI_INTID * 8U);
-  mmio_write32(QEMU_VIRT_GICR_BASE, GICR_IPRIORITYR0, gicr_ipr0);
+  mmio_write32(boot_gicr, GICR_IPRIORITYR0, gicr_ipr0);
 
   /* Enable the EL1 virtual timer PPI. */
-  mmio_write32(QEMU_VIRT_GICR_BASE, GICR_ISENABLER0,
+  mmio_write32(boot_gicr, GICR_ISENABLER0,
                (UINT32_C(1) << TIMER_PPI_INTID) |
                    (UINT32_C(1) << WORKER_SGI_INTID));
   __asm__ volatile("dsb sy\n\tisb" ::: "memory");
@@ -279,13 +325,17 @@ void gic_enable_full(void) {
 
   g_gic_full_init = 1U;
   klog("gic: full init complete redistributor=0x%lx timer_intid=%u\n",
-       QEMU_VIRT_GICR_BASE, TIMER_PPI_INTID);
+       boot_gicr, TIMER_PPI_INTID);
 }
 
 /* Initialize GIC redistributor and CPU interface for a secondary CPU */
 void gic_secondary_init(uint32_t cpu_id) {
   if (g_gic_info.distributor_base == 0U) return;
   uint64_t gicr_base = redistributor_base(cpu_id);
+  if (gicr_base == 0U) {
+    klog("gic: no redistributor frame for cpu%u\n", cpu_id);
+    return;
+  }
 
   /* Wake redistributor: clear ProcessorSleep */
   uint32_t gicr_waker = mmio_read32(gicr_base, GICR_WAKER);
@@ -328,7 +378,7 @@ void gic_disable_full(void) {
   if (g_gic_full_init == 0) {
     return;
   }
-  mmio_write32(QEMU_VIRT_GICR_BASE, GICR_ICENABLER0,
+  mmio_write32(redistributor_base(0U), GICR_ICENABLER0,
                (UINT32_C(1) << TIMER_PPI_INTID) |
                    (UINT32_C(1) << WORKER_SGI_INTID));
   if (g_registered_interrupts == 0U) {
@@ -352,7 +402,7 @@ void gic_self_test(void) {
     klog("gic: discovery self-test skipped no compatible controller\n");
     return;
   }
-  kassert(g_gic_info.distributor_base == QEMU_VIRT_GICD_BASE);
+  kassert(g_gic_info.distributor_base == g_distributor_base);
   kassert(g_gic_info.interrupt_lines >= 32);
   klog("gic: discovery self-test passed\n");
 }

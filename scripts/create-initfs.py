@@ -147,6 +147,7 @@ def main() -> int:
         for payload_offset, content in payloads:
             f.seek(payload_offset)
             f.write(content)
+        f.truncate(image_size)
     return 0
 
 

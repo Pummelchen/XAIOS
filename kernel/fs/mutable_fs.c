@@ -1,4 +1,5 @@
 #include <xaios/assert.h>
+#include <xaios/block_device.h>
 #include <xaios/klog.h>
 #include <xaios/mutable_fs.h>
 #include <xaios/virtio_blk.h>
@@ -211,7 +212,7 @@ static uint64_t g_active_max_file_bytes = MFS_MAX_FILE_BYTES;
 static uint32_t g_active_data_sectors = MFS_DATA_SECTORS;
 static uint32_t g_active_version = MFS_VERSION;
 static uint32_t g_active_path_max = MFS_V3_PATH_MAX;
-static virtio_block_handle_t *g_persistent_handle;
+static xaios_block_device_t *g_persistent_device;
 static uint64_t g_persistent_mount_count;
 
 static const char k_config_v1[] = "mode=qemu-full-os\nmutable=true\n";
@@ -295,29 +296,31 @@ static uint64_t active_data_start_sector(void) {
 }
 
 static xaios_status_t blk_read(uint64_t sector, void *buf, uint64_t sz) {
-  if (g_persistent_handle != 0) {
-    return virtio_block_read_sector_h(g_persistent_handle, sector, buf, sz);
+  if (g_persistent_device != 0) {
+    if (sector > UINT64_MAX / MFS_SECTOR_SIZE) return XAIOS_ERR_INVALID;
+    return block_read(g_persistent_device, sector * MFS_SECTOR_SIZE, buf, sz);
   }
   return virtio_block_read_sector(sector, buf, sz);
 }
 
 static xaios_status_t blk_write(uint64_t sector, const void *buf, uint64_t sz) {
-  if (g_persistent_handle != 0) {
-    return virtio_block_write_sector_h(g_persistent_handle, sector, buf, sz);
+  if (g_persistent_device != 0) {
+    if (sector > UINT64_MAX / MFS_SECTOR_SIZE) return XAIOS_ERR_INVALID;
+    return block_write(g_persistent_device, sector * MFS_SECTOR_SIZE, buf, sz);
   }
   return virtio_block_write_sector(sector, buf, sz);
 }
 
 static xaios_status_t blk_flush(void) {
-  if (g_persistent_handle != 0) {
-    return virtio_block_flush_h(g_persistent_handle);
+  if (g_persistent_device != 0) {
+    return block_flush(g_persistent_device);
   }
   return virtio_block_flush();
 }
 
 static uint64_t blk_capacity(void) {
-  if (g_persistent_handle != 0) {
-    return virtio_block_capacity_sectors_h(g_persistent_handle);
+  if (g_persistent_device != 0) {
+    return g_persistent_device->info.capacity_bytes / MFS_SECTOR_SIZE;
   }
   return virtio_block_capacity_sectors();
 }
@@ -2094,32 +2097,54 @@ uint64_t mutable_fs_open_count(void) { return g_open_count; }
 uint64_t mutable_fs_close_count(void) { return g_close_count; }
 uint64_t mutable_fs_persistent_mount_count(void) { return g_persistent_mount_count; }
 
-xaios_status_t mutable_fs_mount_persistent(uint32_t slot) {
-  virtio_block_handle_t *handle = 0;
-  xaios_status_t status = virtio_block_open_slot(slot, &handle);
-  if (status != XAIOS_OK) {
-    klog("mutable-fs: persistent block device not found at slot=%u\n", slot);
-    return status;
-  }
-  set_active_v5();
-  if (virtio_block_capacity_sectors_h(handle) <
-      active_data_start_sector() + MFS_V5_DATA_SECTORS) {
-    klog("mutable-fs: persistent disk too small capacity=%lu needed=%lu\n",
-         virtio_block_capacity_sectors_h(handle),
-         active_data_start_sector() + MFS_V5_DATA_SECTORS);
-    set_active_v2();
-    virtio_block_close(handle);
-    return XAIOS_ERR_IO;
-  }
-  g_persistent_handle = handle;
+static xaios_status_t mount_failure(xaios_block_device_t *device,
+                                    xaios_status_t status) {
+  g_persistent_device = 0;
   g_mounted = 0;
   g_mount_flags = 0;
-  if (read_metadata() != XAIOS_OK) {
-    g_persistent_handle = 0;
-    set_active_v2();
-    virtio_block_close(handle);
+  set_active_v2();
+  (void)block_device_close(device);
+  return status;
+}
+
+xaios_status_t mutable_fs_mount_device(const char *identifier) {
+  if (g_persistent_device != 0) return XAIOS_ERR_BUSY;
+  xaios_block_device_t *device = 0;
+  xaios_status_t status = block_device_open(identifier, &device);
+  if (status != XAIOS_OK) {
+    klog("mutable-fs: persistent block device not found id=%s\n",
+         identifier != 0 ? identifier : "(null)");
+    return status;
+  }
+  xaios_block_device_info_t info;
+  if (block_device_info(device, &info) != XAIOS_OK) {
+    (void)block_device_close(device);
     return XAIOS_ERR_IO;
   }
+  if (info.read_only != 0U ||
+      info.logical_sector_size != MFS_SECTOR_SIZE ||
+      info.capacity_bytes % MFS_SECTOR_SIZE != 0U ||
+      info.flush_supported == 0U) {
+    klog("mutable-fs: device rejected id=%s sector=%lu read_only=%u flush=%u\n",
+         identifier, info.logical_sector_size, info.read_only,
+         info.flush_supported);
+    (void)block_device_close(device);
+    return XAIOS_ERR_UNSUPPORTED;
+  }
+  set_active_v5();
+  if (info.capacity_bytes / MFS_SECTOR_SIZE <
+      active_data_start_sector() + MFS_V5_DATA_SECTORS) {
+    klog("mutable-fs: persistent disk too small capacity=%lu needed=%lu\n",
+         info.capacity_bytes / MFS_SECTOR_SIZE,
+         active_data_start_sector() + MFS_V5_DATA_SECTORS);
+    set_active_v2();
+    (void)block_device_close(device);
+    return XAIOS_ERR_IO;
+  }
+  g_persistent_device = device;
+  g_mounted = 0;
+  g_mount_flags = 0;
+  if (read_metadata() != XAIOS_OK) return mount_failure(device, XAIOS_ERR_IO);
   uint64_t saved_checksum = g_mfs.checksum;
   uint32_t loaded_version = g_active_version;
   int valid_existing =
@@ -2133,18 +2158,12 @@ xaios_status_t mutable_fs_mount_persistent(uint32_t slot) {
   } else {
     if (!metadata_header_is_blank()) {
       klog("mutable-fs: persistent metadata invalid; refusing destructive format\n");
-      g_persistent_handle = 0;
-      set_active_v2();
-      virtio_block_close(handle);
-      return XAIOS_ERR_INVALID;
+      return mount_failure(device, XAIOS_ERR_INVALID);
     }
     set_active_v5();
     klog("mutable-fs: persistent disk no valid fs; formatting v5\n");
     if (format_volume() != XAIOS_OK) {
-      g_persistent_handle = 0;
-      set_active_v2();
-      virtio_block_close(handle);
-      return XAIOS_ERR_IO;
+      return mount_failure(device, XAIOS_ERR_IO);
     }
   }
   g_mounted = 1;
@@ -2152,36 +2171,41 @@ xaios_status_t mutable_fs_mount_persistent(uint32_t slot) {
   ++g_mount_count;
   ++g_persistent_mount_count;
   if (replay_journal() != XAIOS_OK) {
-    g_persistent_handle = 0;
-    set_active_v2();
-    virtio_block_close(handle);
-    return XAIOS_ERR_IO;
+    return mount_failure(device, XAIOS_ERR_IO);
   }
   if (valid_existing && loaded_version != MFS_V5_VERSION &&
       migrate_volume_to_v5() != XAIOS_OK) {
-    g_persistent_handle = 0;
-    set_active_v2();
-    virtio_block_close(handle);
-    return XAIOS_ERR_IO;
+    return mount_failure(device, XAIOS_ERR_IO);
   }
   xaios_mfs_node_t *root = find_node("/", 1);
   if (root == 0) {
     if (create_dir("/") != XAIOS_OK) {
-      g_persistent_handle = 0;
-      set_active_v2();
-      virtio_block_close(handle);
-      return XAIOS_ERR_IO;
+      return mount_failure(device, XAIOS_ERR_IO);
     }
   }
   if (ensure_base_directories() != XAIOS_OK) {
-    g_persistent_handle = 0;
-    set_active_v2();
-    virtio_block_close(handle);
-    return XAIOS_ERR_IO;
+    return mount_failure(device, XAIOS_ERR_IO);
   }
   klog("mutable-fs: persistent mounted v5 nodes=%u sectors=%u\n",
        g_active_max_nodes, g_active_data_sectors);
   return XAIOS_OK;
+}
+
+xaios_status_t mutable_fs_mount_persistent(uint32_t slot) {
+  char identifier[16] = "/dev/vblk";
+  uint32_t value = slot;
+  uint32_t digits = 1U;
+  while (value >= 10U) {
+    value /= 10U;
+    ++digits;
+  }
+  if (9U + digits + 1U > sizeof(identifier)) return XAIOS_ERR_INVALID;
+  identifier[9U + digits] = '\0';
+  for (uint32_t index = 0U; index < digits; ++index) {
+    identifier[9U + digits - 1U - index] = (char)('0' + slot % 10U);
+    slot /= 10U;
+  }
+  return mutable_fs_mount_device(identifier);
 }
 
 static void fsck_count_file_blocks(
@@ -2245,7 +2269,7 @@ void mutable_fs_self_test(void) {
   kassert(sizeof(xaios_mfs_disk_t) <= MFS_METADATA_SECTORS * MFS_SECTOR_SIZE);
   g_mounted = 0;
   g_mount_flags = 0;
-  g_persistent_handle = 0;
+  g_persistent_device = 0;
   set_active_v2();
   g_mount_count = 0;
   g_format_count = 0;

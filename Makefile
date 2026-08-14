@@ -2,7 +2,7 @@ SHELL := /bin/sh
 HOST_CC ?= clang
 HOST_CFLAGS ?= -std=c99 -Wall -Wextra -Werror -pedantic
 
-.PHONY: all bootstrap test image image-qemu-test image-x86_64 image-x86_64-qemu-test image-libc-test qemu-libc-gate xapt-test xapt-repository qemu-xapt-gate engine-cli libc libc-check vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-dry-run qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-numa-gate qemu-aarch64-sve2-gate qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-operations-closure qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-outbound-fragmentation-gate qemu-qualification-readiness qemu-dry-run qemu-smoke qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-freebsd-bidirectional-suite qemu-four-endpoint-network-suite qemu-parallel-network-load qemu-network-adversarial-gate qemu-local-console-gate qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc parser-fuzz compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test code-scanning-contract docs-check production-source-audit qemu-baseline clean clean-persistent
+.PHONY: all bootstrap test image image-qemu-test image-x86_64 image-x86_64-qemu-test image-libc-test qemu-libc-gate xapt-test xapt-repository qemu-xapt-gate engine-cli libc libc-check initfs-format-test vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-dry-run qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-numa-gate qemu-aarch64-sve2-gate qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-operations-closure qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-outbound-fragmentation-gate qemu-qualification-readiness qemu-dry-run qemu-smoke qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-freebsd-bidirectional-suite qemu-four-endpoint-network-suite qemu-parallel-network-load qemu-network-adversarial-gate qemu-local-console-gate qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc parser-fuzz compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test code-scanning-contract docs-check production-source-audit qemu-baseline clean clean-persistent
 
 all: bootstrap image
 
@@ -36,6 +36,9 @@ xapt-test:
 
 xapt-repository:
 	./scripts/build-xapt-repository.sh
+
+initfs-format-test:
+	python3 tests/scripts/test-initfs-image.py
 
 qemu-xapt-gate:
 	python3 tests/scripts/qemu-xapt-gate.py
@@ -328,6 +331,10 @@ hosted-test: engine-cli
 	  kernel/arch/x86_64/acpi.c tests/system/test_x86_acpi.c \
 	  -o build/hosted/test-x86-acpi
 	./build/hosted/test-x86-acpi
+	$(HOST_CC) $(HOST_CFLAGS) -Ikernel/include \
+	  kernel/arch/aarch64/acpi.c tests/system/test_aarch64_acpi.c \
+	  -o build/hosted/test-aarch64-acpi
+	./build/hosted/test-aarch64-acpi
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Iengine/include engine/src/model_v2.c engine/src/sha256.c \
 	  engine/src/architecture.c engine/src/service.c engine/src/backend_scalar.c \

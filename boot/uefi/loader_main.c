@@ -11,7 +11,11 @@
 #define EM_AARCH64 183
 #define ET_EXEC 2
 #define KERNEL_MAX_SIZE (16ULL * 1024ULL * 1024ULL)
-#define BOOT_IMAGE_MAX_SIZE (8ULL * 1024ULL * 1024ULL)
+/*
+ * The initfs is loaded by the UEFI path before a block driver is available.
+ * Keep this bound finite, but large enough for the complete XAIOS app set.
+ */
+#define BOOT_IMAGE_MAX_SIZE (32ULL * 1024ULL * 1024ULL)
 
 #if defined(XAIOS_UEFI_TARGET_X86_64)
 #define XAIOS_LOADER_TARGET_MESSAGE u"XAIOS loader target: x86_64 UEFI\r\n"
@@ -284,6 +288,32 @@ static void discover_uart(uint64_t acpi_rsdp, uint64_t *base,
     *reg_shift = access_size >= 1U && access_size <= 4U
                      ? (uint32_t)(access_size - 1U)
                      : 0U;
+  }
+}
+
+static void discover_pci_ecam(uint64_t acpi_rsdp, uint64_t *base,
+                              uint32_t *start_bus, uint32_t *end_bus) {
+  const unsigned char *mcfg = acpi_find_table(acpi_rsdp, "MCFG");
+  if (mcfg == 0 || read_le32(mcfg + 4U) < 60U) return;
+
+  /* ACPI MCFG has an eight-byte reserved field after the common header,
+   * followed by 16-byte allocation records. Select segment zero because
+   * XAIOS currently has one PCI domain. */
+  uint32_t length = read_le32(mcfg + 4U);
+  for (uint32_t offset = 44U; offset + 16U <= length; offset += 16U) {
+    uint64_t candidate = read_le64(mcfg + offset);
+    uint16_t segment = (uint16_t)(mcfg[offset + 8U] |
+                                  ((uint16_t)mcfg[offset + 9U] << 8U));
+    uint8_t first = mcfg[offset + 10U];
+    uint8_t last = mcfg[offset + 11U];
+    if (segment != 0U || candidate == 0U ||
+        (candidate & UINT64_C(0xfffff)) != 0U || last < first) {
+      continue;
+    }
+    *base = candidate;
+    *start_bus = first;
+    *end_bus = last;
+    return;
   }
 }
 #endif
@@ -717,8 +747,13 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
   uint64_t uart_base = XAIOS_LOADER_UART_BASE;
   uint32_t uart_kind = XAIOS_LOADER_UART_KIND;
   uint32_t uart_reg_shift = 0U;
+  uint64_t pci_ecam_base = 0U;
+  uint32_t pci_ecam_start_bus = 0U;
+  uint32_t pci_ecam_end_bus = 0U;
 #if !defined(XAIOS_UEFI_TARGET_X86_64)
   discover_uart(acpi_rsdp, &uart_base, &uart_kind, &uart_reg_shift);
+  discover_pci_ecam(acpi_rsdp, &pci_ecam_base, &pci_ecam_start_bus,
+                    &pci_ecam_end_bus);
 #endif
 #if defined(XAIOS_UEFI_TARGET_X86_64)
   efi_physical_address_t trampoline_page = UINT64_C(0x8000);
@@ -765,11 +800,36 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
   g_boot_info.ap_trampoline = ap_trampoline;
   g_boot_info.boot_image_base = boot_image_base;
   g_boot_info.boot_image_size = boot_image_size;
+  g_boot_info.pci_ecam_base = pci_ecam_base;
+  g_boot_info.pci_ecam_start_bus = pci_ecam_start_bus;
+  g_boot_info.pci_ecam_end_bus = pci_ecam_end_bus;
 
-  status = system_table->boot_services->exit_boot_services(image_handle, map_key);
-  if (is_error(status)) {
-    loader_puts(system_table, u"XAIOS loader error: ExitBootServices failed\r\n");
-    return status;
+  /* Firmware is permitted to alter the memory map between GetMemoryMap and
+   * ExitBootServices. Retry with a fresh key without doing any allocations
+   * after the successful map retrieval. Fusion exercises this path. */
+  for (uint32_t attempt = 0U; attempt < 3U; ++attempt) {
+    status = system_table->boot_services->exit_boot_services(image_handle,
+                                                              map_key);
+    if (!is_error(status)) break;
+    if (status != EFI_INVALID_PARAMETER || attempt == 2U) {
+      loader_puts(system_table,
+                  u"XAIOS loader error: ExitBootServices failed\r\n");
+      return status;
+    }
+    (void)system_table->boot_services->free_pool(memory_map);
+    memory_map = 0;
+    status = get_memory_map(system_table, &memory_map, &memory_map_size,
+                            &map_key, &descriptor_size,
+                            &descriptor_version);
+    if (is_error(status)) {
+      loader_puts(system_table,
+                  u"XAIOS loader error: failed to refresh memory map\r\n");
+      return status;
+    }
+    g_boot_info.memory_map = (uint64_t)memory_map;
+    g_boot_info.memory_map_size = memory_map_size;
+    g_boot_info.memory_descriptor_size = descriptor_size;
+    g_boot_info.memory_descriptor_version = descriptor_version;
   }
 
   kernel_entry_t kernel_entry = (kernel_entry_t)ehdr->e_entry;

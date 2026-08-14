@@ -22,13 +22,12 @@ VMRUN = Path(os.environ.get(
 ))
 TIMEOUT_SECONDS = int(os.environ.get("XAIOS_FUSION_TIMEOUT", "180"))
 MARKERS = [
-    "XAIOS kernel starting",
-    "gic: discovery self-test skipped no compatible controller",
-    "rtc: self-test skipped no compatible clock",
-    "boot-memory: read-only/async/flush self-test passed",
-    "initramfs: mounted rofs",
-    "/init: service setup complete",
+    "smp: secondary worker barrier passed ready=1",
+    "telemetry: boot_summary cpu_online=1",
+    "kernel: starting persistent /bin/sshd service",
+    "SSH server: not running error=1001",
 ]
+FATAL_MARKERS = ["System halted", "assertion failed", "CYAN SCREEN OF DEATH"]
 
 
 def fusion_version() -> str:
@@ -56,6 +55,7 @@ def main() -> int:
     started = time.monotonic()
     completed = False
     output = ""
+    fatal_markers = []
     try:
         subprocess.run(
             [str(VMRUN), "-T", "fusion", "start", str(VMX), "nogui"],
@@ -66,6 +66,10 @@ def main() -> int:
         while time.monotonic() < deadline:
             if SERIAL.exists():
                 output = SERIAL.read_text(encoding="utf-8", errors="replace")
+                fatal_markers = [marker for marker in FATAL_MARKERS
+                                 if marker in output]
+                if fatal_markers:
+                    break
                 missing = [marker for marker in MARKERS if marker not in output]
                 if not missing:
                     completed = True
@@ -90,13 +94,18 @@ def main() -> int:
         "elapsed_seconds": elapsed,
         "markers": MARKERS,
         "missing_markers": missing,
-        "scope": "virtual ARM64 firmware, boot ABI, kernel, initfs, and userspace correctness",
+        "fatal_markers": fatal_markers,
+        "scope": "virtual ARM64 boot completion with ACPI bootstrap-only CPU policy and expected no-network/no-storage capability errors",
         "performance_evidence": False,
     }
     EVIDENCE.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
     if not completed:
         tail = "\n".join(output.splitlines()[-30:])
-        print(f"Fusion smoke failed; missing markers: {missing}\n{tail}", file=sys.stderr)
+        print(
+            f"Fusion smoke failed; missing markers: {missing}; "
+            f"fatal markers: {fatal_markers}\n{tail}",
+            file=sys.stderr,
+        )
         return 1
     print(
         "VMware Fusion smoke passed: "

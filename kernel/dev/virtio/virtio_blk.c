@@ -864,6 +864,10 @@ uint64_t virtio_block_interrupt_count(void) {
   return g_blk == 0 ? 0U : g_blk->interrupt_count;
 }
 
+uint32_t virtio_block_is_read_only(void) {
+  return g_blk != 0 && g_blk->initialized != 0U && g_blk->read_only != 0U;
+}
+
 xaios_status_t virtio_block_interrupt_canary_arm(uint64_t sector,
                                                  void *buffer,
                                                  uint64_t buffer_size) {

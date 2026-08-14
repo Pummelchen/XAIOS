@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define XAIOS_BOOT_INFO_MAGIC UINT64_C(0x4f534149424f4f54)
-#define XAIOS_BOOT_INFO_VERSION UINT32_C(6)
+#define XAIOS_BOOT_INFO_VERSION UINT32_C(7)
 
 #define XAIOS_BOOT_PLATFORM_SMMUV3 UINT32_C(1)
 
@@ -45,6 +45,11 @@ typedef struct xaios_boot_info {
   uint64_t ap_trampoline;
   uint64_t boot_image_base;
   uint64_t boot_image_size;
+  /* ACPI MCFG allocation selected by the UEFI loader. Zero selects the
+   * architecture's platform fallback (currently QEMU virt on ARM64). */
+  uint64_t pci_ecam_base;
+  uint32_t pci_ecam_start_bus;
+  uint32_t pci_ecam_end_bus;
 } xaios_boot_info_t;
 
 #endif

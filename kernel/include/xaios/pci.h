@@ -49,6 +49,7 @@ typedef struct xaios_pci_device {
 } xaios_pci_device_t;
 
 void pci_init(void);
+void pci_configure_ecam(uint64_t base, uint32_t start_bus, uint32_t end_bus);
 uint32_t pci_ecam_mapped(void);
 uint32_t pci_device_count(void);
 const xaios_pci_device_t *pci_device(uint32_t index);

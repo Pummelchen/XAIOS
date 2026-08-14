@@ -11,10 +11,13 @@ static uint32_t g_virtio_count;
 static uint32_t g_network_count;
 static uint32_t g_bridge_count;
 static uint32_t g_ecam_mapped;
+static uint64_t g_ecam_base = XAIOS_PCI_ECAM_BASE;
+static uint8_t g_ecam_start_bus;
+static uint8_t g_ecam_end_bus;
 
 static volatile uint8_t *ecam_addr(uint8_t bus, uint8_t dev, uint8_t func,
                                    uint16_t offset) {
-  uint64_t addr = XAIOS_PCI_ECAM_BASE | ((uint64_t)bus << 20) |
+  uint64_t addr = g_ecam_base + ((uint64_t)(bus - g_ecam_start_bus) << 20) |
                   ((uint64_t)dev << 15) | ((uint64_t)func << 12) |
                   (uint64_t)offset;
   return (volatile uint8_t *)(uintptr_t)addr;
@@ -55,10 +58,10 @@ static void ecam_write32(uint8_t bus, uint8_t dev, uint8_t func,
   __asm__ volatile("dsb sy" ::: "memory");
 }
 
-static void map_ecam_bus0(void) {
+static void map_ecam_first_bus(void) {
   uint64_t page = 0;
   while (page < XAIOS_PCI_ECAM_BUS0_SIZE) {
-    uint64_t phys = XAIOS_PCI_ECAM_BASE + page;
+    uint64_t phys = g_ecam_base + page;
     if (vmm_map_page(phys, phys,
                      XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
                          XAIOS_VMM_DEVICE) != XAIOS_OK) {
@@ -68,6 +71,16 @@ static void map_ecam_bus0(void) {
     page += PAGE_SIZE;
   }
   g_ecam_mapped = 1;
+}
+
+void pci_configure_ecam(uint64_t base, uint32_t start_bus, uint32_t end_bus) {
+  if (base == 0U || (base & UINT64_C(0xfffff)) != 0U ||
+      start_bus > UINT8_MAX || end_bus > UINT8_MAX || end_bus < start_bus) {
+    return;
+  }
+  g_ecam_base = base;
+  g_ecam_start_bus = (uint8_t)start_bus;
+  g_ecam_end_bus = (uint8_t)end_bus;
 }
 
 static int walk_pcie_caps(uint8_t bus, uint8_t dev, uint8_t func) {
@@ -170,40 +183,42 @@ void pci_init(void) {
     }
   }
 
-  /* Map ECAM bus 0 (1MB) */
-  map_ecam_bus0();
+  /* Map the first firmware-described ECAM bus (one MiB). */
+  map_ecam_first_bus();
   if (g_ecam_mapped == 0) {
     klog("PCI: ECAM mapping failed\n");
     return;
   }
 
-  /* Verify ECAM accessibility: read bus 0 device 0 function 0 */
-  uint32_t bdf0 = ecam_read32(0, 0, 0, 0);
+  /* Verify ECAM accessibility before probing a firmware device range. */
+  uint32_t bdf0 = ecam_read32(g_ecam_start_bus, 0, 0, 0);
   if (bdf0 == UINT32_C(0xFFFFFFFF)) {
     klog("PCI: ECAM reads all-ones, PCIe host not present\n");
     g_ecam_mapped = 0;
     return;
   }
 
-  klog("PCI: ECAM mapped bus0 at 0x%lx BDF[0,0,0]=0x%x\n",
-       XAIOS_PCI_ECAM_BASE, bdf0);
+  klog("PCI: ECAM mapped bus=%u at 0x%lx BDF[%u,0,0]=0x%x\n",
+       g_ecam_start_bus, g_ecam_base, g_ecam_start_bus, bdf0);
 
-  /* Enumerate bus 0 */
+  /* The root bus contains Fusion and QEMU's directly attached devices. */
   for (uint8_t dev = 0; dev < 32; ++dev) {
-    uint16_t vendor = ecam_read16(0, dev, 0, XAIOS_PCI_VENDOR_ID);
+    uint16_t vendor =
+        ecam_read16(g_ecam_start_bus, dev, 0, XAIOS_PCI_VENDOR_ID);
     if (vendor == XAIOS_PCI_VENDOR_INVALID) {
       continue;
     }
 
-    add_device(0, dev, 0);
+    add_device(g_ecam_start_bus, dev, 0);
 
     /* Check multi-function bit */
-    uint8_t hdr = ecam_read8(0, dev, 0, XAIOS_PCI_HEADER_TYPE);
+    uint8_t hdr = ecam_read8(g_ecam_start_bus, dev, 0, XAIOS_PCI_HEADER_TYPE);
     if ((hdr & 0x80) != 0) {
       for (uint8_t func = 1; func < 8; ++func) {
-        uint16_t v = ecam_read16(0, dev, func, XAIOS_PCI_VENDOR_ID);
+        uint16_t v = ecam_read16(g_ecam_start_bus, dev, func,
+                                 XAIOS_PCI_VENDOR_ID);
         if (v != XAIOS_PCI_VENDOR_INVALID) {
-          add_device(0, dev, func);
+          add_device(g_ecam_start_bus, dev, func);
         }
       }
     }

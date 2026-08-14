@@ -4,7 +4,7 @@
 
 XAIOS combines a freestanding AArch64 operating-system prototype with a
 portable C99 inference-engine foundation. The current complete OS correctness
-path boots through UEFI on QEMU virt. A limited VMware Fusion ARM64 path on
+path boots through UEFI on QEMU virt. An experimental VMware Fusion ARM64 path
 Apple Silicon reaches `/init`; `docs/VMWARE-FUSION.md` records its narrower
 device/platform boundary. The x86_64 QEMU image executes the common kernel and
 complete userspace/service image. It starts MADT-discovered APs, uses per-CPU
@@ -38,7 +38,7 @@ services, and jumps to `kmain`. The kernel establishes its own page tables.
  1. exception_init()          — Vector table install (VBAR_EL1)
  2. timer_init()              — ARM generic timer (CNTVCT_EL0)
  3. stack_canary_init()       — Stack protection seed
- 4. smp_init_qemu_virt()      — Secondary core discovery
+ 4. smp_init_platform()       — Firmware-described secondary-core discovery
  5. numa_init(boot)           — Firmware NUMA topology or single-node fallback
  6. pmm_init(boot)            — Physical memory manager (delegates to NUMA)
  7. vmm_init(boot)            — Virtual memory manager (4-level page tables)
@@ -215,7 +215,7 @@ make qemu        — Boot in QEMU (interactive)
 make qemu-smoke  — Automated smoke test (330+ boot markers)
 make hosted-test — Portable engine, ModelFS and storage correctness tests
 make qemu-core-os-rc — Aggregate cross-architecture core correctness gate
-make vmware-fusion-smoke — Limited Apple Silicon Fusion boot through /init
+make vmware-fusion-smoke — Experimental Apple Silicon Fusion evidence gate
 make test        — bootstrap + image + dry-run
 ```
 

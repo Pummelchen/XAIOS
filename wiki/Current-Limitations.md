@@ -8,9 +8,11 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 
 - AArch64 QEMU provides the broadest complete OS-service path. QEMU validates
   behavior, not physical ARM performance, firmware behavior, or scaling.
-- VMware Fusion 25.0.1 on Apple Silicon reaches `/init` through a generated
-  ARM64 compatibility stage. VMware networking, persistent storage,
-  multi-vCPU discovery, and later service gates are not integrated.
+- VMware Fusion on Apple Silicon has a generated ARM64 compatibility stage,
+  QEMU-validated ACPI CPU/GIC/PCI discovery groundwork, and a live limited
+  boot-completion smoke. VMware networking, persistent storage, firmware
+  timer/UART integration, multi-vCPU validation and later service gates remain
+  unintegrated.
 - The x86_64 QEMU image executes the complete common process/thread, filesystem,
   networking, SSH/SFTP, control, security, AI Cell and telemetry service set.
   Modern PCI VirtIO block/network and emulated NVMe pass focused correctness

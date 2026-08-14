@@ -69,6 +69,7 @@
 #include <xaios/vmm.h>
 #include <xaios/watchdog.h>
 #if defined(__aarch64__)
+#include <xaios/aarch64_acpi.h>
 #include <xaios/aarch64_sve.h>
 #endif
 
@@ -185,7 +186,7 @@ void kmain(const xaios_boot_info_t *boot) {
   timer_self_test();
   stack_canary_init();
   stack_canary_self_test();
-  smp_init_qemu_virt(boot);
+  smp_init_platform(boot);
   smp_self_test();
   boot_ui_update(35U, "CPU and interrupts", "memory management", 4U);
 
@@ -206,15 +207,51 @@ void kmain(const xaios_boot_info_t *boot) {
 
 #if defined(__aarch64__)
   map_mmio_range(boot->uart_base, 4096);
-  map_mmio_range(UINT64_C(0x08000000), UINT64_C(0x20000));
-  uint32_t low_redistributors =
-      smp_capacity() < 123U ? smp_capacity() : 123U;
-  map_mmio_range(UINT64_C(0x080A0000),
-                 (uint64_t)low_redistributors * UINT64_C(0x20000));
-  if (smp_capacity() > low_redistributors) {
-    map_mmio_range(UINT64_C(0x4000000000),
-                   (uint64_t)(smp_capacity() - low_redistributors) *
-                       UINT64_C(0x20000));
+  aarch64_acpi_info_t acpi_info;
+  uint64_t gic_distributor = UINT64_C(0x08000000);
+  uint64_t gic_redistributor = UINT64_C(0x080A0000);
+  uint64_t gic_redistributor_bytes = UINT64_C(0x00f60000);
+  if (aarch64_acpi_parse(boot->acpi_rsdp, &acpi_info) != 0) {
+    uint64_t required_redistributor_bytes =
+        (uint64_t)smp_capacity() * UINT64_C(0x20000);
+    if (smp_capacity() != 0U &&
+        acpi_info.gic_redistributor_length >= required_redistributor_bytes) {
+      gic_distributor = acpi_info.gic_distributor_base;
+      gic_redistributor = acpi_info.gic_redistributor_base;
+      gic_redistributor_bytes = acpi_info.gic_redistributor_length;
+      gic_configure_platform(gic_distributor, gic_redistributor,
+                             gic_redistributor_bytes);
+    } else {
+      klog("platform: ACPI GIC redistributor range too small cpus=%u bytes=%lu\n",
+           smp_capacity(), acpi_info.gic_redistributor_length);
+      gic_distributor = 0U;
+      gic_redistributor = 0U;
+      gic_redistributor_bytes = 0U;
+      gic_disable_platform();
+    }
+    pci_configure_ecam(acpi_info.pci_ecam_base, acpi_info.pci_start_bus,
+                       acpi_info.pci_end_bus);
+    klog("platform: ACPI GICv%u CPUs=%u ECAM=0x%lx bus=%u-%u\n",
+         acpi_info.gic_version, acpi_info.enabled_cpus,
+         acpi_info.pci_ecam_base, acpi_info.pci_start_bus,
+         acpi_info.pci_end_bus);
+  } else {
+    uint32_t low_redistributors =
+        smp_capacity() < 123U ? smp_capacity() : 123U;
+    gic_redistributor_bytes =
+        (uint64_t)low_redistributors * UINT64_C(0x20000);
+    if (smp_capacity() > low_redistributors) {
+      map_mmio_range(UINT64_C(0x4000000000),
+                     (uint64_t)(smp_capacity() - low_redistributors) *
+                         UINT64_C(0x20000));
+    }
+    pci_configure_ecam(boot->pci_ecam_base, boot->pci_ecam_start_bus,
+                       boot->pci_ecam_end_bus);
+  }
+  if (gic_distributor != 0U && gic_redistributor != 0U &&
+      gic_redistributor_bytes != 0U) {
+    map_mmio_range(gic_distributor, UINT64_C(0x20000));
+    map_mmio_range(gic_redistributor, gic_redistributor_bytes);
   }
   map_mmio_range(UINT64_C(0x0a000000), UINT64_C(0x4000));
 #else
@@ -277,9 +314,9 @@ void kmain(const xaios_boot_info_t *boot) {
   kassert((flags & XAIOS_VMM_DEVICE) != 0);
   kassert((flags & XAIOS_VMM_EXECUTABLE) == 0);
   klog("VMM translation test passed\n");
-  gic_init_qemu_virt();
+  gic_init_platform();
   gic_self_test();
-  boot_ui_update(48U, "platform devices", "boot storage", 3U);
+  boot_ui_update(48U, "platform devices", "NVMe discovery", 3U);
 
   xaios_nvme_self_test_result_t nvme_result;
   xaios_status_t nvme_status = nvme_self_test(&nvme_result);
@@ -287,19 +324,39 @@ void kmain(const xaios_boot_info_t *boot) {
     klog("nvme: self-test failed status=%d\n", (int)nvme_status);
   }
 
+  boot_ui_update(49U, "NVMe discovery", "entropy and boot storage", 3U);
   virtio_rng_self_test();
   if (boot->boot_image_size != 0U) {
     kassert(virtio_block_set_boot_memory(
                 (void *)(uintptr_t)boot->boot_image_base,
                 boot->boot_image_size) == XAIOS_OK);
   }
+  boot_ui_update(50U, "entropy and boot storage", "boot storage validation", 3U);
   virtio_block_self_test();
+  boot_ui_update(51U, "boot storage validation", "initial filesystem", 3U);
   initramfs_self_test();
-  persistence_self_test();
-  mutable_fs_self_test();
+  if (virtio_block_is_read_only() != 0U) {
+    persistence_runtime_init();
+    klog("persistence: writable self-test skipped boot device is read-only\n");
+    klog("mutable-fs: writable self-test deferred no persistent block device\n");
+  } else {
+    persistence_self_test();
+    mutable_fs_self_test();
+  }
   boot_ui_update(52U, "boot storage", "persistent filesystem", 3U);
-  /* The QEMU runner pins the persistent disk to VirtIO-MMIO slot 1. */
-  xaios_status_t persistent_status = mutable_fs_mount_persistent(1);
+  /* Prefer a standards-enumerated NVMe namespace when one has completed its
+   * controller canary; QEMU retains its explicit VirtIO compatibility slot. */
+  xaios_status_t persistent_status =
+      nvme_status == XAIOS_OK ? mutable_fs_mount_device("/dev/nvme0n1")
+                              : mutable_fs_mount_persistent(1);
+  if (persistent_status == XAIOS_ERR_NOT_FOUND && nvme_status != XAIOS_OK) {
+    /* The deterministic QEMU data disk is registered at vblk0. This fallback
+     * never bypasses the block-device contract and is not a hardware policy. */
+    persistent_status = mutable_fs_mount_device("/dev/vblk0");
+    if (persistent_status == XAIOS_OK) {
+      klog("mutable-fs: using registered QEMU compatibility data disk\n");
+    }
+  }
   if (persistent_status == XAIOS_OK) {
     xaios_mfs_fsck_result_t fsck = mutable_fs_fsck();
     klog("kernel: persistent fsck valid=%u v%u files=%lu dirs=%lu\n",
@@ -350,8 +407,12 @@ void kmain(const xaios_boot_info_t *boot) {
     klog("system-slot: unavailable status=%d\n", (int)system_slot_status);
   }
   system_slot_self_test();
-  update_self_test();
-  update_delivery_self_test();
+  if (persistent_status == XAIOS_OK) {
+    update_self_test();
+    update_delivery_self_test();
+  } else {
+    klog("update: self-tests deferred no writable persistent filesystem\n");
+  }
   app_store_init();
   boot_ui_update(60U, "devices and storage", "kernel services", 2U);
   virtio_net_self_test();
@@ -443,9 +504,14 @@ void kmain(const xaios_boot_info_t *boot) {
                             &manager_process) == XAIOS_OK);
   kassert(service_start(init_config->service_manager_path) == XAIOS_OK);
   int manager_exit_code = user_process_run(&manager_process);
-  kassert(manager_exit_code == 0);
-  klog("kernel: /bin/service-manager returned to kernel exit_code=%u\n",
-       (unsigned)manager_exit_code);
+  if (manager_exit_code != 0 && persistent_status != XAIOS_OK) {
+    klog("kernel: service-manager deferred exit_code=%u no writable persistent storage status=%d\n",
+         (unsigned)manager_exit_code, (int)persistent_status);
+  } else {
+    kassert(manager_exit_code == 0);
+    klog("kernel: /bin/service-manager returned to kernel exit_code=%u\n",
+         (unsigned)manager_exit_code);
+  }
   user_process_reclaim_address_space(&manager_process);
 
   /* Initialize persistent network for real TX/RX */

@@ -85,8 +85,9 @@ It is correctness evidence, not production or hardware-performance evidence.
 
 ### VMware Fusion on Apple Silicon
 
-VMware Fusion 25.0.1 is an additional limited ARM64 boot target. Docker builds
-the reproducible Debian 13 ARM64 GRUB compatibility stage.
+VMware Fusion on Apple Silicon is an experimental ARM64 firmware-portability
+target. Docker builds the reproducible Debian 13 ARM64 GRUB compatibility
+stage.
 
 ```sh
 make vmware-fusion-image
@@ -94,9 +95,12 @@ make vmware-fusion-smoke
 make vmware-fusion
 ```
 
-The smoke reaches `/init`; it does not provide VMware networking, persistent
-storage, multi-vCPU discovery, x86 virtualization, or physical-performance
-evidence. See [`VMWARE-FUSION.md`](./VMWARE-FUSION.md).
+Do not treat a generated bundle as a supported Fusion guest. The current
+implementation has a current Fusion boot gate and ACPI CPU/GIC/PCI discovery
+groundwork, but lacks VMware networking, persistent storage,
+firmware timer/UART integration and Fusion-specific multi-vCPU validation. It
+also cannot validate x86_64 guests or physical performance. See
+[`VMWARE-FUSION.md`](./VMWARE-FUSION.md).
 
 ### Other test targets
 

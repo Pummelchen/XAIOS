@@ -366,6 +366,10 @@ void panic_at(const char *file, int line, const char *fmt, ...) {
   __asm__ volatile("cli" ::: "memory");
 #endif
 
+  /* Boot progress intentionally suppresses ordinary logs. Fatal diagnostics
+   * must always reach the console, including before userspace is available. */
+  klog_console_set_log_output(1U);
+
   /* Capture GP registers */
   uint64_t gp_regs[32];
   capture_gp_regs(gp_regs);

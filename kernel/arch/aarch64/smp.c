@@ -1,4 +1,5 @@
 #include <xaios/assert.h>
+#include <xaios/aarch64_acpi.h>
 #include <xaios/aarch64_sve.h>
 #include <xaios/gic.h>
 #include <xaios/klog.h>
@@ -47,16 +48,24 @@ static uint64_t mmio_read64(uint64_t base, uint32_t offset) {
   return *reg;
 }
 
-static uint64_t psci_cpu_on(uint64_t mpidr, uint64_t entry, uint64_t context) {
+static uint64_t psci_cpu_on(uint64_t mpidr, uint64_t entry, uint64_t context,
+                            uint32_t use_hvc) {
   register uint64_t x0 __asm__("x0") = PSCI_0_2_FN64_CPU_ON;
   register uint64_t x1 __asm__("x1") = mpidr;
   register uint64_t x2 __asm__("x2") = entry;
   register uint64_t x3 __asm__("x3") = context;
 
-  __asm__ volatile("hvc #0"
-                   : "+r"(x0)
-                   : "r"(x1), "r"(x2), "r"(x3)
-                   : "memory");
+  if (use_hvc != 0U) {
+    __asm__ volatile("hvc #0"
+                     : "+r"(x0)
+                     : "r"(x1), "r"(x2), "r"(x3)
+                     : "memory");
+  } else {
+    __asm__ volatile("smc #0"
+                     : "+r"(x0)
+                     : "r"(x1), "r"(x2), "r"(x3)
+                     : "memory");
+  }
   return x0;
 }
 
@@ -91,6 +100,40 @@ static uint64_t mpidr_for_ordinal(uint32_t ordinal) {
   return (uint64_t)(ordinal % 16U) |
          ((uint64_t)((ordinal / 16U) % 256U) << 8U) |
          ((uint64_t)(ordinal / 4096U) << 16U);
+}
+
+static int acpi_is_qemu_virt(const aarch64_acpi_info_t *info) {
+  return info->gic_distributor_base == UINT64_C(0x08000000) &&
+         info->gic_redistributor_base == UINT64_C(0x080A0000) &&
+         info->pci_ecam_base == UINT64_C(0x4010000000);
+}
+
+static uint32_t platform_cpu_capacity(const xaios_boot_info_t *boot,
+                                      aarch64_acpi_info_t *acpi_info) {
+  if (aarch64_acpi_parse(boot->acpi_rsdp, acpi_info) != 0 &&
+      acpi_info->enabled_cpus != 0U) {
+    return (acpi_info->psci_compliant != 0U ||
+            acpi_is_qemu_virt(acpi_info)) ? acpi_info->enabled_cpus : 1U;
+  }
+  *acpi_info = (aarch64_acpi_info_t){0};
+  return detect_cpu_count();
+}
+
+static uint64_t platform_mpidr(const aarch64_acpi_info_t *acpi_info,
+                               uint64_t boot_mpidr, uint32_t ordinal) {
+  if (acpi_info->madt == 0U) return mpidr_for_ordinal(ordinal);
+  if (ordinal == 0U) return boot_mpidr;
+  uint32_t selected = 1U;
+  for (uint32_t index = 0U; index < acpi_info->enabled_cpus; ++index) {
+    uint64_t candidate = 0U;
+    if (aarch64_acpi_cpu_mpidr(acpi_info, index, &candidate) == 0) break;
+    if ((candidate & UINT64_C(0x00ffffff)) ==
+        (boot_mpidr & UINT64_C(0x00ffffff))) {
+      continue;
+    }
+    if (selected++ == ordinal) return candidate;
+  }
+  return 0U;
 }
 
 uint32_t smp_cpu_id(void) {
@@ -251,8 +294,14 @@ void smp_secondary_main(uint64_t cpu_id) {
   }
 }
 
-void smp_init_qemu_virt(const xaios_boot_info_t *boot) {
-  uint32_t candidate_capacity = detect_cpu_count();
+void smp_init_platform(const xaios_boot_info_t *boot) {
+  aarch64_acpi_info_t acpi_info;
+  uint32_t candidate_capacity = platform_cpu_capacity(boot, &acpi_info);
+  uint32_t qemu_virt = acpi_info.madt != 0U && acpi_is_qemu_virt(&acpi_info);
+  uint32_t psci_use_hvc =
+      acpi_info.madt != 0U ? (qemu_virt != 0U ? 1U : acpi_info.psci_use_hvc)
+                          : 1U;
+  uint64_t boot_mpidr = read_mpidr_el1();
   uint64_t state_bytes = align_up(
       (uint64_t)candidate_capacity * sizeof(xaios_cpu_state_t), PAGE_SIZE);
   uint64_t stack_bytes =
@@ -268,7 +317,7 @@ void smp_init_qemu_virt(const xaios_boot_info_t *boot) {
   for (uint32_t i = 0; i < g_cpu_capacity; ++i) {
     g_cpu_states[i].cpu_id = i;
     g_cpu_states[i].online = 0;
-    g_cpu_states[i].mpidr = i;
+    g_cpu_states[i].mpidr = platform_mpidr(&acpi_info, boot_mpidr, i);
     g_cpu_states[i].role = XAIOS_CPU_ROLE_OFFLINE;
     g_cpu_states[i].lease_owner_id = 0;
     g_cpu_states[i].irq_routed_away = 0;
@@ -283,7 +332,7 @@ void smp_init_qemu_virt(const xaios_boot_info_t *boot) {
   g_secondary_scheduler_release = 0;
 
   g_cpu_states[0].online = 1;
-  g_cpu_states[0].mpidr = read_mpidr_el1();
+  g_cpu_states[0].mpidr = boot_mpidr;
   g_cpu_states[0].role = XAIOS_CPU_ROLE_HOUSEKEEPING;
   g_cpu_states[0].irq_routed_away = 0;
   g_cpu_states[0].tick_suppressed = 0;
@@ -292,16 +341,24 @@ void smp_init_qemu_virt(const xaios_boot_info_t *boot) {
   klog("smp: boot cpu mpidr=0x%lx role=housekeeping\n",
        g_cpu_states[0].mpidr);
 
-  klog("smp: probing candidate_capacity=%u dynamic_registry_bytes=%lu stack_bytes=%lu\n",
-       candidate_capacity, state_bytes, stack_bytes);
+  klog("smp: source=%s candidate_capacity=%u psci=%s dynamic_registry_bytes=%lu stack_bytes=%lu\n",
+       acpi_info.madt != 0U ? (acpi_info.psci_compliant != 0U ? "ACPI-PSCI" :
+                               (qemu_virt != 0U ? "QEMU-ACPI-PSCI" : "ACPI-bootstrap-only")) : "QEMU-fallback", candidate_capacity,
+       candidate_capacity > 1U ? (psci_use_hvc != 0U ? "hvc" : "smc") : "unavailable",
+       state_bytes, stack_bytes);
 
   /* Wake secondary CPUs via PSCI */
   uint32_t admitted_count = 1U;
   uint32_t rejected_count = 0U;
   for (uint32_t cpu = 1; cpu < candidate_capacity; ++cpu) {
-    uint64_t mpidr = mpidr_for_ordinal(cpu);
-    uint64_t status =
-        psci_cpu_on(mpidr, (uint64_t)(uintptr_t)aarch64_secondary_entry, cpu);
+    uint64_t mpidr = g_cpu_states[cpu].mpidr;
+    if (mpidr == 0U) {
+      ++rejected_count;
+      continue;
+    }
+    uint64_t status = psci_cpu_on(mpidr,
+                                  (uint64_t)(uintptr_t)aarch64_secondary_entry,
+                                  cpu, psci_use_hvc);
     if (status == 0U) ++admitted_count;
     else ++rejected_count;
   }

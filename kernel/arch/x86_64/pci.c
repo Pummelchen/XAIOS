@@ -141,6 +141,12 @@ void pci_init(void) {
        g_device_count, g_virtio_count, g_network_count, g_bridge_count);
 }
 
+void pci_configure_ecam(uint64_t base, uint32_t start_bus, uint32_t end_bus) {
+  (void)base;
+  (void)start_bus;
+  (void)end_bus;
+}
+
 uint32_t pci_ecam_mapped(void) { return 1U; }
 uint32_t pci_device_count(void) { return g_device_count; }
 

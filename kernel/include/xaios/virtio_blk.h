@@ -19,6 +19,7 @@ xaios_status_t virtio_block_write_sector(uint64_t sector, const void *buffer,
 xaios_status_t virtio_block_flush(void);
 uint64_t virtio_block_capacity_sectors(void);
 uint64_t virtio_block_interrupt_count(void);
+uint32_t virtio_block_is_read_only(void);
 xaios_status_t virtio_block_interrupt_canary_arm(uint64_t sector,
                                                  void *buffer,
                                                  uint64_t buffer_size);

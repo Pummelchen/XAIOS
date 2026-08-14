@@ -14,7 +14,11 @@ typedef struct xaios_gic_info {
   uint32_t cpu_count_hint;
 } xaios_gic_info_t;
 
-void gic_init_qemu_virt(void);
+void gic_configure_platform(uint64_t distributor_base,
+                            uint64_t redistributor_base,
+                            uint64_t redistributor_length);
+void gic_disable_platform(void);
+void gic_init_platform(void);
 void gic_enable_full(void);
 void gic_disable_full(void);
 void gic_secondary_init(uint32_t cpu_id);

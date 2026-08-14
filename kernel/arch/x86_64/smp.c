@@ -26,7 +26,7 @@ xaios_status_t smp_wake_cpu(uint32_t cpu_id) {
   return XAIOS_OK;
 }
 
-void smp_init_qemu_virt(const xaios_boot_info_t *boot) {
+void smp_init_platform(const xaios_boot_info_t *boot) {
   (void)boot;
   g_capacity = x86_64_platform_cpu_count();
   g_online = 0U;

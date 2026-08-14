@@ -8,6 +8,7 @@
 #define EFI_ERROR_BIT UINT64_C(0x8000000000000000)
 #define EFI_BUFFER_TOO_SMALL ((efi_status_t)(EFI_ERROR_BIT | 5))
 #define EFI_LOAD_ERROR ((efi_status_t)(EFI_ERROR_BIT | 1))
+#define EFI_INVALID_PARAMETER ((efi_status_t)(EFI_ERROR_BIT | 2))
 #define EFI_NOT_FOUND ((efi_status_t)(EFI_ERROR_BIT | 14))
 #define EFI_DEVICE_ERROR ((efi_status_t)(EFI_ERROR_BIT | 7))
 #define EFI_WRITE_PROTECTED ((efi_status_t)(EFI_ERROR_BIT | 8))

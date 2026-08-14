@@ -122,7 +122,7 @@ int exception_mmio_probe_faulted(void) {
   return g_probe_active != 0U && g_probe_faulted != 0U;
 }
 
-void gic_init_qemu_virt(void) {
+void gic_init_platform(void) {
   g_interrupt_info = (xaios_gic_info_t){
       .distributor_base = UINT64_C(0xfee00000),
       .typer = 0U,

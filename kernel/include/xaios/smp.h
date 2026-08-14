@@ -34,7 +34,7 @@ typedef struct __attribute__((aligned(16))) xaios_cpu_state {
 uint32_t smp_cpu_id(void);
 xaios_status_t smp_wake_cpu(uint32_t cpu_id);
 
-void smp_init_qemu_virt(const xaios_boot_info_t *boot);
+void smp_init_platform(const xaios_boot_info_t *boot);
 xaios_status_t smp_release_secondary_schedulers(void);
 const xaios_cpu_state_t *smp_cpu_state(uint32_t cpu_id);
 xaios_status_t smp_set_scheduling_enabled(uint32_t cpu_id, uint32_t enabled);
