@@ -9,23 +9,26 @@ SECTIONS
     __text_start = .;
     *(.text.entry)
     *(.ap_trampoline)
-    *(.text .text.*)
+    *(.text .text.* .ltext .ltext.*)
     __text_end = .;
   }
 
-  .rodata : ALIGN(0x1000) {
+  . = ALIGN(0x1000);
+  .rodata : {
     __rodata_start = .;
-    *(.rodata .rodata.*)
+    *(.rodata .rodata.* .lrodata .lrodata.*)
     __rodata_end = .;
   }
 
-  .data : ALIGN(0x1000) {
+  . = ALIGN(0x1000);
+  .data : {
     __data_start = .;
     *(.data .data.*)
     __data_end = .;
   }
 
-  .bss : ALIGN(0x1000) {
+  . = ALIGN(0x1000);
+  .bss : {
     __bss_start = .;
     *(.bss .bss.* COMMON)
     __bss_end = .;

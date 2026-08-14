@@ -265,7 +265,7 @@ compile-check: libc
 	  clang --target=aarch64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
 	    -Wall -Wextra -Werror -Ikernel/include -Iengine/include \
-	    -Iengine/src -Iuserspace/include -Iuserspace/sshd \
+	    -Iengine/src -Iuserspace/include -Iuserspace/sshd -Ithird_party/bearssl/inc \
 	    -fsyntax-only "$$f" \
 	    || failed=$$((failed + 1)); \
 	done; \
@@ -282,7 +282,7 @@ compile-check: libc
 	  clang --target=x86_64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie -mno-red-zone \
 	    -Wall -Wextra -Werror -DXAIOS_X86_COMMON_RUNTIME=1 \
-	    -Ikernel/include -Iengine/include \
+	    -Ikernel/include -Iengine/include -Ithird_party/bearssl/inc \
 	    -Iengine/src -Iuserspace/include -Iuserspace/sshd \
 	    -c "$$f" -o "$$object" \
 	    || failed=$$((failed + 1)); \
@@ -388,8 +388,13 @@ hosted-test: engine-cli
 	  userspace/sshd/sftp_server.c tests/storage/test_sftp_large.c \
 	  -o build/hosted/test-sftp-large
 	./build/hosted/test-sftp-large
+	python3 tests/scripts/generate-dnssec-fixture.py build/hosted/dnssec_fixture.h
 	$(HOST_CC) $(HOST_CFLAGS) \
-	  -Ikernel/include kernel/net/dns.c kernel/net/ipv4.c \
+	  -Ikernel/include -Iuserspace/include -Iuserspace/sshd -Ithird_party/bearssl/inc \
+	  -Ithird_party/bearssl/src -Ibuild/hosted \
+	  kernel/net/dns.c kernel/net/dnssec.c kernel/net/ipv4.c \
+	  userspace/sshd/ssh_crypto.c userspace/sshd/tweetnacl_subset.c \
+	  $$(find third_party/bearssl/src -name '*.c' | LC_ALL=C sort) \
 	  tests/crashtest/test_dns.c -o build/hosted/test-dns
 	./build/hosted/test-dns
 	$(HOST_CC) $(HOST_CFLAGS) \

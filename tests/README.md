@@ -53,10 +53,12 @@ Docker build inputs, and test-image inputs outside `tests/`. It runs through
 The complete command catalog is maintained in `Makefile`; focused runners live
 in `tests/scripts/` and are normally entered through a Make target.
 
-The smoke image exercises DNSSEC parsing and cache admission deterministically;
-it does not require a public resolver. Normal images retain strict external
-resolver behavior, while SSH boot readiness is established by an IPv4 TCP
-connection rather than DNS.
+The smoke image exercises the in-guest local-DNSSEC resolver wiring
+deterministically; it does not require a public resolver. The hosted DNS test
+generates a signed root-to-child chain and verifies DNSKEY, DS, RRSIG, signed A,
+signature corruption, expiry, NSEC NODATA, and malformed input. Normal images
+perform the same local validation, while SSH boot readiness is established by an
+IPv4 TCP connection rather than DNS.
 
 `qemu-operations-closure` builds authenticated AArch64 and x86_64 images and
 uses the real guest SSH server to check abrupt-stop detection, persisted clean

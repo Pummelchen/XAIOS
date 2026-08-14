@@ -38,21 +38,25 @@ The QEMU-tested stack includes IPv4/IPv6 fragment reassembly and source
 fragmentation, TCP
 handshake/data retransmission, slow start, congestion avoidance, fast
 retransmit, out-of-order receive, duplicate-ACK/SACK handling, UDP delivery
-semantics, asynchronous DNS A/AAAA resolution, bounded
-TTL caching, DNS-over-TCP fallback, socket ownership, cancellation, and
-cleanup. DNS requests set EDNS DO and advertise AD understanding; resolver
-answers are cached only when the configured validating resolver returns AD.
-Unsigned replies fail closed and are reported to the caller without waiting
-for the query timeout. XAIOS does not perform recursive DNSSEC chain validation
-locally. SNTP applies accepted corrections through a bounded
+semantics, asynchronous DNS A/AAAA resolution, bounded TTL caching,
+DNS-over-TCP fallback, socket ownership, cancellation, and cleanup. DNS
+requests set EDNS DO and CD; answers are admitted only after XAIOS locally
+validates the DNSKEY/DS delegation chain from compiled root DS anchors and a
+matching RRSIG. The upstream resolver's AD bit is not trusted. Unsigned,
+malformed, expired, unsupported-algorithm, or clock-untrusted replies fail
+closed and are reported to the caller without waiting for the query timeout.
+RSA/SHA-256, ECDSA P-256/P-384, and Ed25519 signatures plus SHA-256/SHA-384
+DS digests are supported. Signed exact-owner NSEC NODATA proofs are supported;
+NXDOMAIN, NSEC3, CNAME/DNAME synthesis, wildcard synthesis, and root-anchor rollover policy
+are deliberately unsupported and fail closed. SNTP applies accepted corrections through a bounded
 500-ppm monotonic slew after initial calibration. Runtime-sized CPU/queue
 metadata avoids a fixed small-core limit.
 
 Boot readiness uses a real IPv4 TCP connection to port 443 before starting
 `sshd`; it does not treat a DNS response as proof of Internet reachability. The
-boot-test image uses the in-guest DNSSEC parser/cache self-test so `make
-qemu-smoke` remains deterministic when public DNS is unavailable. The normal
-`nettest` application performs the external validating-resolver check.
+boot-test image uses the in-guest local-DNSSEC resolver wiring self-test so
+`make qemu-smoke` remains deterministic when public DNS is unavailable. The
+normal `nettest` application performs an external locally validated lookup.
 
 ## Outbound clients
 

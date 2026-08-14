@@ -28,8 +28,8 @@ void dns_init(void);
 xaios_status_t dns_resolve(const char *hostname, uint32_t *out_ip);
 
 /* Resolve one address family without adding a new syscall. The configured
- * recursive resolver is a trust boundary: only replies carrying its AD bit
- * are admitted to the cache. */
+ * recursive resolver transports DNS material only; cache admission requires
+ * a locally validated DNSKEY/DS/RRSIG chain from a compiled root DS anchor. */
 xaios_status_t dns_resolve_address(const char *hostname, uint8_t family,
                                    xaios_ip_addr_t *out_address);
 

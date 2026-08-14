@@ -350,6 +350,7 @@ compile_kernel() {
     -I"$ROOT_DIR/engine/src" \
     -I"$ROOT_DIR/userspace/include" \
     -I"$ROOT_DIR/userspace/sshd" \
+    -I"$ROOT_DIR/third_party/bearssl/inc" \
     -c "$source_path" -o "$object_path"
 }
 
@@ -464,6 +465,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/socket_buffer.o
   $KERNEL_BUILD_DIR/routing.o
   $KERNEL_BUILD_DIR/dns.o
+  $KERNEL_BUILD_DIR/dnssec.o
   $KERNEL_BUILD_DIR/ntp.o
   $KERNEL_BUILD_DIR/elf_loader.o
   $KERNEL_BUILD_DIR/string.o
@@ -588,6 +590,7 @@ compile_kernel "$ROOT_DIR/kernel/net/ndp.c" "$KERNEL_BUILD_DIR/ndp.o"
 compile_kernel "$ROOT_DIR/kernel/net/socket_buffer.c" "$KERNEL_BUILD_DIR/socket_buffer.o"
 compile_kernel "$ROOT_DIR/kernel/net/routing.c" "$KERNEL_BUILD_DIR/routing.o"
 compile_kernel "$ROOT_DIR/kernel/net/dns.c" "$KERNEL_BUILD_DIR/dns.o"
+compile_kernel "$ROOT_DIR/kernel/net/dnssec.c" "$KERNEL_BUILD_DIR/dnssec.o"
 compile_kernel "$ROOT_DIR/kernel/net/ntp.c" "$KERNEL_BUILD_DIR/ntp.o"
 compile_kernel "$ROOT_DIR/kernel/mm/elf_loader.c" "$KERNEL_BUILD_DIR/elf_loader.o"
 compile_kernel "$ROOT_DIR/kernel/lib/string.c" "$KERNEL_BUILD_DIR/string.o"
@@ -604,6 +607,9 @@ printf '%s\n' "$KERNEL_OBJECTS" | while IFS= read -r object_path; do
     printf '"%s"\n' "${object_path#  }"
   fi
 done > "$KERNEL_RESPONSE_FILE"
+KERNEL_BEARSSL="$BUILD_DIR/bearssl/$TARGET_ARCH/libbearssl-xapt.a"
+[ -f "$KERNEL_BEARSSL" ] || "$ROOT_DIR/scripts/build-bearssl.sh" "$TARGET_ARCH"
+printf '"%s"\n' "$KERNEL_BEARSSL" >> "$KERNEL_RESPONSE_FILE"
 
 "$LD_LLD" \
   -nostdlib \

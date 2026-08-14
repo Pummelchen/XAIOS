@@ -11,6 +11,18 @@ ssh_connection_scratch_t *ssh_conn_scratch(void) {
   return (ssh_connection_scratch_t *)0;
 }
 
+int ssh_conn_send(ssh_connection_t *conn, const uint8_t *data, u64 length,
+                  u64 *sent) {
+  (void)conn; (void)data; (void)length; if (sent != 0) *sent = 0U;
+  return -1;
+}
+
+int ssh_conn_recv(ssh_connection_t *conn, uint8_t *data, u64 length,
+                  u64 *received) {
+  (void)conn; (void)data; (void)length; if (received != 0) *received = 0U;
+  return -1;
+}
+
 int xaios_net_recv(uint64_t socket, void *buffer, uint64_t size,
                    uint64_t *received) {
   (void)socket; (void)buffer; (void)size; (void)received;

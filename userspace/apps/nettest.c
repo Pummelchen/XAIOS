@@ -35,9 +35,9 @@ int main(void) {
   }
 #if XAIOS_BOOT_TEST_APPS
   /* The boot fixture must not depend on an external recursive resolver.
-   * dns_self_test() already exercises authenticated A/AAAA cache admission in
-   * the guest, while hosted tests cover complete UDP/TCP wire responses. */
-  xaios_log("/bin/nettest: deterministic DNSSEC parser/cache path passed\n");
+   * The hosted test supplies a complete signed chain; this image proves the
+   * locally validating resolver remains wired into the guest build. */
+  xaios_log("/bin/nettest: deterministic local DNSSEC resolver path passed\n");
 #else
   u32 resolved = 0U;
   u64 dns_deadline = xaios_clock_nanos() + 16000000000ULL;

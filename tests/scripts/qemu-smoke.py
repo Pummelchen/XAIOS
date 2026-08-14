@@ -198,7 +198,7 @@ TARGETS = [
     "/bin/nettest: complete",
     "/bin/nettest: app-callable udp/tcp path passed",
     "/bin/nettest: external host-to-guest tcp/udp session path passed",
-    "/bin/nettest: deterministic DNSSEC parser/cache path passed",
+    "/bin/nettest: deterministic local DNSSEC resolver path passed",
     "/bin/nettest: userspace DNS fixture path passed",
     "kernel: /bin/nettest returned to kernel exit_code=0",
     "/bin/lstm-xor: CPU-only two-hidden-layer LSTM XOR example starting",

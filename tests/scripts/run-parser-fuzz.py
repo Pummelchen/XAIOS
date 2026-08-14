@@ -33,8 +33,12 @@ def main() -> int:
             "tests/fuzz/ssh_protocol_stubs.c",
         ],
         "dns": [
-            "-DXAIOS_LIBFUZZER=1", "-Ikernel/include",
-            "kernel/net/dns.c", "kernel/net/ipv4.c",
+            "-DXAIOS_LIBFUZZER=1", "-Ikernel/include", "-Iuserspace/include",
+            "-Iuserspace/sshd", "-Ithird_party/bearssl/inc",
+            "-Ithird_party/bearssl/src",
+            "kernel/net/dns.c", "kernel/net/dnssec.c", "kernel/net/ipv4.c",
+            "userspace/sshd/ssh_crypto.c", "userspace/sshd/tweetnacl_subset.c",
+            *sorted(str(path) for path in (ROOT / "third_party" / "bearssl" / "src").rglob("*.c")),
             "tests/crashtest/test_dns.c",
         ],
         "sftp": [

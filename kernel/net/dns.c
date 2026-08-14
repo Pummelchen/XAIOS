@@ -1,5 +1,6 @@
 #include <xaios/assert.h>
 #include <xaios/dns.h>
+#include <xaios/dnssec.h>
 #include <xaios/ipv4.h>
 #include <xaios/klog.h>
 #include <xaios/network_stack.h>
@@ -19,9 +20,11 @@
 #define DNS_FLAG_QR UINT16_C(0x8000)
 #define DNS_FLAG_TC UINT16_C(0x0200)
 #define DNS_FLAG_RD UINT16_C(0x0100)
-#define DNS_FLAG_AD UINT16_C(0x0020)
+#define DNS_FLAG_CD UINT16_C(0x0010)
 #define DNS_EDNS_DO UINT32_C(0x00008000)
 #define DNS_TYPE_OPT UINT16_C(41)
+#define DNS_TYPE_DS UINT16_C(43)
+#define DNS_TYPE_DNSKEY UINT16_C(48)
 #define DNS_GATEWAY_MAC0 0x52U
 #define DNS_GATEWAY_MAC1 0x55U
 #define DNS_GATEWAY_MAC2 0x0aU
@@ -37,6 +40,13 @@ enum dns_pending_state {
   DNS_PENDING_COMPLETE = 4U,
 };
 
+enum dnssec_stage {
+  DNSSEC_STAGE_ROOT_DNSKEY = 1U,
+  DNSSEC_STAGE_CHILD_DS = 2U,
+  DNSSEC_STAGE_CHILD_DNSKEY = 3U,
+  DNSSEC_STAGE_ADDRESS = 4U,
+};
+
 typedef struct dns_cache_entry {
   uint8_t valid;
   uint8_t family;
@@ -49,6 +59,9 @@ typedef struct dns_pending {
   uint8_t state;
   uint8_t family;
   uint8_t retransmits;
+  uint8_t dnssec_stage;
+  uint8_t zone_labels;
+  uint8_t hostname_labels;
   uint16_t id;
   uint16_t query_type;
   uint16_t udp_port;
@@ -59,6 +72,10 @@ typedef struct dns_pending {
   uint32_t tcp_received;
   xaios_status_t result;
   char hostname[DNS_MAX_HOSTNAME];
+  char query_name[DNS_MAX_HOSTNAME];
+  char child_zone[DNS_MAX_HOSTNAME];
+  dnssec_keyset_t validated_keys;
+  dnssec_dsset_t child_ds;
   uint64_t started_ns;
   uint64_t sent_ns;
   uint8_t udp_frame[DNS_UDP_FRAME_SIZE];
@@ -165,6 +182,7 @@ void dns_init(void) {
   g_timeout_count = 0U;
   g_tcp_fallback_count = 0U;
   g_authenticated_count = 0U;
+  dnssec_init();
 }
 
 void dns_configure(uint32_t server_ip) {
@@ -292,9 +310,10 @@ static uint32_t build_query(uint8_t *output, uint32_t capacity,
                             uint16_t query_type) {
   if (capacity < 32U) return 0U;
   put_be16(output, id);
-  /* RFC 6840 section 5.7: set AD in the query to signal that the client
-   * understands and requires the validating resolver's AD response bit. */
-  put_be16(output + 2U, DNS_FLAG_RD | DNS_FLAG_AD);
+  /* RFC 4035: request DNSSEC records and perform validation locally. CD
+   * prevents an upstream recursive resolver's AD decision becoming our trust
+   * decision. */
+  put_be16(output + 2U, DNS_FLAG_RD | DNS_FLAG_CD);
   put_be16(output + 4U, 1U);
   put_be16(output + 6U, 0U);
   put_be16(output + 8U, 0U);
@@ -353,6 +372,56 @@ static xaios_status_t send_udp_query(dns_pending_t *pending) {
   return virtio_net_tx(frame, pending->udp_frame_len);
 }
 
+static uint8_t hostname_label_count(const char *hostname) {
+  uint8_t count = hostname[0] == '\0' ? 0U : 1U;
+  for (uint32_t i = 0U; hostname[i] != '\0'; ++i)
+    if (hostname[i] == '.') ++count;
+  return count;
+}
+
+static int child_zone_name(const char *hostname, uint8_t labels,
+                           char *out, uint32_t capacity) {
+  if (labels == 0U || capacity == 0U) return -1;
+  uint8_t seen = 0U;
+  uint32_t start = 0U;
+  for (uint32_t i = str_len(hostname); i > 0U; --i) {
+    if (hostname[i - 1U] == '.') {
+      if (++seen == labels) { start = i; break; }
+    }
+  }
+  if (labels == 1U) {
+    start = 0U;
+    for (uint32_t i = 0U; hostname[i] != '\0'; ++i)
+      if (hostname[i] == '.') start = i + 1U;
+  } else if (seen != labels) {
+    return -1;
+  }
+  if (str_len(hostname + start) + 1U > capacity) return -1;
+  str_copy(out, hostname + start, capacity);
+  return 0;
+}
+
+static xaios_status_t start_query(dns_pending_t *pending, const char *name,
+                                  uint16_t type, uint64_t now_ns) {
+  str_copy(pending->query_name, name, sizeof(pending->query_name));
+  pending->query_type = type;
+  pending->id = random_u16(g_next_dns_id++);
+  if (pending->id == 0U) pending->id = g_next_dns_id;
+  if (g_next_dns_id == 0U) g_next_dns_id = 1U;
+  pending->retransmits = 0U;
+  pending->udp_port = random_ephemeral_port((uint16_t)(UINT16_C(0xc001) ^ pending->id));
+  pending->tcp_port = random_ephemeral_port((uint16_t)(UINT16_C(0xc002) ^ pending->id));
+  if (pending->tcp_port == pending->udp_port) ++pending->tcp_port;
+  pending->query_len = (uint16_t)build_query(pending->query,
+      sizeof(pending->query), name, pending->id, type);
+  if (pending->query_len == 0U) return XAIOS_ERR_INVALID;
+  pending->state = DNS_PENDING_UDP;
+  if (send_udp_query(pending) != XAIOS_OK) return XAIOS_ERR_IO;
+  pending->sent_ns = now_ns;
+  ++g_query_count;
+  return XAIOS_OK;
+}
+
 xaios_status_t dns_resolve_address(const char *hostname, uint8_t family,
                                    xaios_ip_addr_t *out_address) {
   if (hostname == 0 || out_address == 0 ||
@@ -375,34 +444,19 @@ xaios_status_t dns_resolve_address(const char *hostname, uint8_t family,
     return XAIOS_ERR_INVALID;
   if (g_pending.state != DNS_PENDING_NONE) return XAIOS_ERR_BUSY;
   bytes_zero(&g_pending, sizeof(g_pending));
-  g_pending.state = DNS_PENDING_UDP;
   g_pending.family = family;
-  g_pending.query_type = family == XAIOS_IP_FAMILY_V4
-                             ? XAIOS_DNS_TYPE_A : XAIOS_DNS_TYPE_AAAA;
-  g_pending.id = random_u16(g_next_dns_id++);
-  if (g_pending.id == 0U) g_pending.id = g_next_dns_id;
-  if (g_next_dns_id == 0U) g_next_dns_id = 1U;
-  g_pending.udp_port = random_ephemeral_port(UINT16_C(0xc001));
-  g_pending.tcp_port = random_ephemeral_port(UINT16_C(0xc002));
-  if (g_pending.tcp_port == g_pending.udp_port) ++g_pending.tcp_port;
   str_copy(g_pending.hostname, hostname, DNS_MAX_HOSTNAME);
-  g_pending.query_len = (uint16_t)build_query(
-      g_pending.query, sizeof(g_pending.query), hostname, g_pending.id,
-      g_pending.query_type);
-  if (g_pending.query_len == 0U) {
-    bytes_zero(&g_pending, sizeof(g_pending));
-    return XAIOS_ERR_INVALID;
-  }
+  g_pending.hostname_labels = hostname_label_count(hostname);
+  if (g_pending.hostname_labels == 0U) return XAIOS_ERR_INVALID;
+  g_pending.dnssec_stage = DNSSEC_STAGE_ROOT_DNSKEY;
   g_pending.started_ns = now_ns;
-  if (send_udp_query(&g_pending) != XAIOS_OK) {
+  if (start_query(&g_pending, "", DNS_TYPE_DNSKEY, now_ns) != XAIOS_OK) {
     bytes_zero(&g_pending, sizeof(g_pending));
     ++g_reject_count;
     return XAIOS_ERR_IO;
   }
-  g_pending.sent_ns = now_ns;
-  ++g_query_count;
-  klog("dns: resolve %s type=%u id=%u dnssec=required\n", hostname,
-       g_pending.query_type, g_pending.id);
+  klog("dns: resolve %s type=%u dnssec=local-chain\n", hostname,
+       family == XAIOS_IP_FAMILY_V4 ? XAIOS_DNS_TYPE_A : XAIOS_DNS_TYPE_AAAA);
   return XAIOS_ERR_BUSY;
 }
 
@@ -413,27 +467,6 @@ xaios_status_t dns_resolve(const char *hostname, uint32_t *out_ip) {
       hostname, XAIOS_IP_FAMILY_V4, &address);
   if (status == XAIOS_OK) *out_ip = xaios_ip_addr_to_ipv4(&address);
   return status;
-}
-
-static int skip_record(const uint8_t *message, uint32_t length,
-                       uint32_t *position, uint16_t *type, uint16_t *rr_class,
-                       uint32_t *ttl, const uint8_t **data,
-                       uint16_t *data_length) {
-  char owner[XAIOS_DNS_MAX_NAME];
-  int decoded = dns_decode_name(message, length, *position, owner,
-                                sizeof(owner));
-  if (decoded < 0) return -1;
-  *position = (uint32_t)decoded;
-  if (*position > length || length - *position < 10U) return -1;
-  *type = get_be16(message + *position);
-  *rr_class = get_be16(message + *position + 2U);
-  *ttl = get_be32(message + *position + 4U);
-  *data_length = get_be16(message + *position + 8U);
-  *position += 10U;
-  if (*data_length > length - *position) return -1;
-  *data = message + *position;
-  *position += *data_length;
-  return 0;
 }
 
 xaios_status_t dns_process_message(const uint8_t *message, uint32_t length,
@@ -461,10 +494,7 @@ xaios_status_t dns_process_message(const uint8_t *message, uint32_t length,
     return XAIOS_ERR_NOT_FOUND;
   }
   uint16_t question_count = get_be16(message + 4U);
-  uint16_t answer_count = get_be16(message + 6U);
-  uint16_t authority_count = get_be16(message + 8U);
-  uint16_t additional_count = get_be16(message + 10U);
-  if (question_count != 1U || answer_count == 0U) {
+  if (question_count != 1U) {
     ++g_reject_count;
     return XAIOS_ERR_INVALID;
   }
@@ -472,7 +502,7 @@ xaios_status_t dns_process_message(const uint8_t *message, uint32_t length,
   char question[XAIOS_DNS_MAX_NAME];
   int decoded = dns_decode_name(message, length, position, question,
                                 sizeof(question));
-  if (decoded < 0 || !str_case_equal(question, g_pending.hostname,
+  if (decoded < 0 || !str_case_equal(question, g_pending.query_name,
                                      DNS_MAX_HOSTNAME)) {
     ++g_reject_count;
     return XAIOS_ERR_INVALID;
@@ -485,58 +515,73 @@ xaios_status_t dns_process_message(const uint8_t *message, uint32_t length,
     return XAIOS_ERR_INVALID;
   }
   position += 4U;
-  xaios_ip_addr_t answer;
-  xaios_ip_addr_zero(&answer);
-  uint32_t answer_ttl = 0U;
-  uint32_t found_answer = 0U;
-  uint32_t total_records = (uint32_t)answer_count + authority_count +
-                           additional_count;
-  for (uint32_t record = 0U; record < total_records; ++record) {
-    uint16_t type = 0U;
-    uint16_t rr_class = 0U;
-    uint16_t data_length = 0U;
-    uint32_t ttl = 0U;
-    const uint8_t *data = 0;
-    if (skip_record(message, length, &position, &type, &rr_class, &ttl,
-                    &data, &data_length) != 0) {
-      ++g_reject_count;
-      return XAIOS_ERR_INVALID;
+  xaios_status_t status = XAIOS_ERR_INVALID;
+  uint64_t wall_ns = wall_time_now_ns();
+  if (g_pending.dnssec_stage == DNSSEC_STAGE_ROOT_DNSKEY) {
+    status = dnssec_verify_dnskey(message, length, "", 0, wall_ns,
+                                  &g_pending.validated_keys);
+    if (status == XAIOS_OK) {
+      g_pending.zone_labels = 1U;
+      if (child_zone_name(g_pending.hostname, g_pending.zone_labels,
+                          g_pending.child_zone, sizeof(g_pending.child_zone)) == 0)
+        status = start_query(&g_pending, g_pending.child_zone, DNS_TYPE_DS, now_ns);
+      else status = XAIOS_ERR_INVALID;
+      g_pending.dnssec_stage = DNSSEC_STAGE_CHILD_DS;
     }
-    if (record >= answer_count || found_answer != 0U ||
-        rr_class != XAIOS_DNS_CLASS_IN || type != g_pending.query_type) {
-      continue;
+  } else if (g_pending.dnssec_stage == DNSSEC_STAGE_CHILD_DS) {
+    status = dnssec_verify_ds(message, length, g_pending.child_zone,
+                             &g_pending.validated_keys, wall_ns,
+                             &g_pending.child_ds);
+    if (status == XAIOS_OK) {
+      status = start_query(&g_pending, g_pending.child_zone, DNS_TYPE_DNSKEY, now_ns);
+      g_pending.dnssec_stage = DNSSEC_STAGE_CHILD_DNSKEY;
+    } else if (dnssec_verify_nodata(message, length, g_pending.child_zone,
+                                    DNS_TYPE_DS, &g_pending.validated_keys,
+                                    wall_ns) == XAIOS_OK) {
+      status = start_query(&g_pending, g_pending.hostname,
+                           g_pending.family == XAIOS_IP_FAMILY_V4 ? XAIOS_DNS_TYPE_A : XAIOS_DNS_TYPE_AAAA, now_ns);
+      g_pending.dnssec_stage = DNSSEC_STAGE_ADDRESS;
     }
-    if (type == XAIOS_DNS_TYPE_A && data_length == 4U) {
-      answer.family = XAIOS_IP_FAMILY_V4;
-      bytes_copy(answer.addr, data, 4U);
-      answer_ttl = ttl;
-      found_answer = 1U;
-    } else if (type == XAIOS_DNS_TYPE_AAAA && data_length == 16U) {
-      answer.family = XAIOS_IP_FAMILY_V6;
-      bytes_copy(answer.addr, data, 16U);
-      answer_ttl = ttl;
-      found_answer = 1U;
+  } else if (g_pending.dnssec_stage == DNSSEC_STAGE_CHILD_DNSKEY) {
+    dnssec_keyset_t child_keys;
+    status = dnssec_verify_dnskey(message, length, g_pending.child_zone,
+                                  &g_pending.child_ds, wall_ns, &child_keys);
+    if (status == XAIOS_OK) {
+      g_pending.validated_keys = child_keys;
+      if (g_pending.zone_labels == g_pending.hostname_labels) {
+        status = start_query(&g_pending, g_pending.hostname,
+                             g_pending.family == XAIOS_IP_FAMILY_V4 ? XAIOS_DNS_TYPE_A : XAIOS_DNS_TYPE_AAAA, now_ns);
+        g_pending.dnssec_stage = DNSSEC_STAGE_ADDRESS;
+      } else {
+        ++g_pending.zone_labels;
+        if (child_zone_name(g_pending.hostname, g_pending.zone_labels,
+                            g_pending.child_zone, sizeof(g_pending.child_zone)) == 0)
+          status = start_query(&g_pending, g_pending.child_zone, DNS_TYPE_DS, now_ns);
+        else status = XAIOS_ERR_INVALID;
+        g_pending.dnssec_stage = DNSSEC_STAGE_CHILD_DS;
+      }
     }
+  } else if (g_pending.dnssec_stage == DNSSEC_STAGE_ADDRESS) {
+    uint8_t bytes[16]; uint32_t ttl = 0U;
+    uint16_t type = g_pending.family == XAIOS_IP_FAMILY_V4 ? XAIOS_DNS_TYPE_A : XAIOS_DNS_TYPE_AAAA;
+    status = dnssec_verify_address(message, length, g_pending.hostname, type,
+                                   &g_pending.validated_keys, wall_ns, bytes, &ttl);
+    if (status == XAIOS_OK) {
+      xaios_ip_addr_t answer; xaios_ip_addr_zero(&answer); answer.family = g_pending.family;
+      bytes_copy(answer.addr, bytes, g_pending.family == XAIOS_IP_FAMILY_V4 ? 4U : 16U);
+      cache_insert(g_pending.hostname, &answer, ttl, now_ns);
+      ++g_authenticated_count; ++g_response_count;
+      if (g_pending.tcp_flow_id != 0U) (void)network_stack_tcp_close_flow(g_pending.tcp_flow_id);
+      bytes_zero(&g_pending, sizeof(g_pending)); return XAIOS_OK;
+    }
+    if (dnssec_verify_nodata(message, length, g_pending.hostname, type,
+                             &g_pending.validated_keys, wall_ns) == XAIOS_OK)
+      status = XAIOS_ERR_NOT_FOUND;
   }
-  if (position != length || found_answer == 0U) {
-    ++g_reject_count;
-    return XAIOS_ERR_INVALID;
-  }
-  if ((flags & DNS_FLAG_AD) == 0U) {
-    complete_pending(XAIOS_ERR_INVALID);
-    ++g_reject_count;
-    return XAIOS_ERR_INVALID;
-  }
-  cache_insert(g_pending.hostname, &answer, answer_ttl, now_ns);
-  ++g_authenticated_count;
-  ++g_response_count;
-  klog("dns: authenticated answer host=%s family=%u ttl=%u transport=%s\n",
-       g_pending.hostname, answer.family, answer_ttl,
-       from_tcp != 0U ? "tcp" : "udp");
-  if (g_pending.tcp_flow_id != 0U)
-    (void)network_stack_tcp_close_flow(g_pending.tcp_flow_id);
-  bytes_zero(&g_pending, sizeof(g_pending));
-  return XAIOS_OK;
+  if (status == XAIOS_OK && g_pending.state == DNS_PENDING_UDP)
+    return XAIOS_ERR_BUSY;
+  if (status == XAIOS_OK || status == XAIOS_ERR_BUSY) return status;
+  complete_pending(status); ++g_reject_count; return status;
 }
 
 xaios_status_t dns_process_ipv4_frame(const uint8_t *frame,
@@ -681,5 +726,5 @@ void dns_self_test(void) {
   kassert(xaios_ip_addr_to_ipv4(&result) == UINT32_C(0x01020304));
   kassert(cache_lookup("cache.test", XAIOS_IP_FAMILY_V6, &result,
                        UINT64_C(1000000)) == 0);
-  klog("dns: self-test passed dnssec=required tcp-fallback=enabled aaaa=enabled\n");
+  klog("dns: self-test passed dnssec=local-chain tcp-fallback=enabled aaaa=enabled\n");
 }

@@ -49,9 +49,10 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   authenticated target. Multi-hop `-J`, `ProxyCommand`, `-J` agent
   authentication, and the complete OpenSSH matrix are not provided.
 - DNS performs asynchronous A/AAAA resolution with timeout, retry, bounded TTL
-  cache, and DNS-over-TCP fallback. It trusts the authenticated-data bit from a
-  configured validating resolver; local DNSSEC chain validation and production
-  resolver policy remain outside the current boundary.
+  cache, and DNS-over-TCP fallback. It locally validates DNSKEY, DS, and RRSIG
+  chains from compiled root DS anchors and accepts signed exact-owner NSEC NODATA proofs.
+  NXDOMAIN, NSEC3, CNAME/DNAME and wildcard synthesis, plus production root-anchor
+  rollover/update policy, remain unsupported and fail closed.
 - The SNTP client validates request binding, server mode/version, stratum, and
   bounded retry/timeout behavior, then applies corrections through a monotonic
   500-ppm slew after initial calibration. QEMU's PL031 RTC may report epoch
