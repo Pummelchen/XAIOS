@@ -1,14 +1,15 @@
 # VMware Fusion
 
-XAIOS has an experimental functional ARM64 guest path for VMware Fusion on
-Apple Silicon. It remains virtual-platform correctness evidence, not physical
-Apple Silicon performance or production certification.
+XAIOS has an experimental functional ARM64 guest path for VMware Fusion 26H1
+(26.0.0) on Apple Silicon. It remains virtual-platform correctness evidence,
+not a compatibility claim for other Fusion releases, physical Apple Silicon
+performance, or production certification.
 
 The generated VM uses the Debian 13 ARM64 GRUB chainloader to launch the same
 XAIOS UEFI loader used by the common firmware path. The kernel discovers its
 devices through ACPI/PCI rather than selecting a Fusion-specific core path.
 
-## Verified On Fusion 26 ARM64
+## Verified On Fusion 26H1 (26.0.0) ARM64
 
 - PCI bridge traversal and Intel 82574L/E1000E-compatible NIC discovery.
 - Bridged DHCP IPv4 configuration and the boot-screen lease address.

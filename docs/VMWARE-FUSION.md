@@ -1,9 +1,10 @@
 # VMware Fusion ARM64
 
-Status: experimental functional ARM64 guest. VMware Fusion is a distinct
-virtual-hardware target, not a QEMU mode. QEMU remains the reproducible ARM64
-and x86_64 correctness environment; neither result establishes physical
-hardware performance or support.
+Status: experimental functional ARM64 guest, tested only with VMware Fusion
+26H1 (26.0.0) on Apple Silicon. VMware Fusion is a distinct virtual-hardware
+target, not a QEMU mode. QEMU remains the reproducible ARM64 and x86_64
+correctness environment; neither result establishes physical hardware
+performance or support.
 
 ## Verified Scope
 
@@ -30,7 +31,7 @@ The bundle includes a 256 MiB SATA VMDK. The AHCI driver registers
 new disk and loads the existing volume on later boots. No filesystem behavior
 is special-cased for Fusion.
 
-On the current Apple Silicon host, Fusion 26 ARM64 evidence covers:
+On the current Apple Silicon host, Fusion 26H1 (26.0.0) ARM64 evidence covers:
 
 - UEFI-to-kernel boot through normal services.
 - PCI bridge traversal, E1000E discovery, DHCP lease acquisition and IPv4

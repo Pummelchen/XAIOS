@@ -64,6 +64,11 @@ The consolidated QEMU qualification-readiness gate is documented in
 It collects the strongest emulated SSH/network, NVMe, diagnostics, topology,
 and sustained-soak evidence without treating QEMU as physical hardware.
 
+VMware Fusion support is experimental and tested only on Apple Silicon with
+**VMware Fusion 26H1 (26.0.0)**. It is not a compatibility claim for other
+Fusion versions, x86_64 guests, or physical Apple hardware; see
+[`docs/VMWARE-FUSION.md`](./docs/VMWARE-FUSION.md).
+
 ## License
 
 XAIOS is source-available under the
