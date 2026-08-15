@@ -62,6 +62,9 @@ make firmware-profile-intel-vps-qemu-x86_64
 sha256sum build/firmware-profiles/intel-vps-qemu-x86_64.json
 ```
 
+The Intel VPS contract reserves loopback-forwarded port `17788` for its QEMU
+gates, leaving unrelated services such as the VPS's public port `7788` intact.
+
 Copy the Intel JSON evidence without editing it to the macOS checkout, preserve
 its SHA-256 with the qualification record, then aggregate only matching commits:
 

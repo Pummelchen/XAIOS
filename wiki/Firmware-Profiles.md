@@ -37,6 +37,9 @@ profile only on the designated Intel VPS with
 for aggregation. The aggregate refuses a missing, mismatched or non-passing
 profile report.
 
+The Intel evidence profile reserves QEMU-forwarded port `17788`; it does not
+take over a host's existing service port `7788`.
+
 The shared architecture boundary is UEFI loader -> architecture firmware parser
 -> generic capability consumers. The x86-specific early boot and ACPI code in
 `kernel/arch/x86_64/` remains separate from ARM firmware discovery in

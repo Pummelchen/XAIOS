@@ -74,6 +74,7 @@
     {
       "id": "intel-vps-qemu-x86_64",
       "host": {"system": "Linux", "machine": "x86_64", "required_environment": {"XAIOS_FIRMWARE_PROFILE_HOST_CLASS": "intel-vps"}},
+      "environment": {"XAIOS_QEMU_HOSTFWD_PORT": "17788"},
       "architecture": "x86_64",
       "firmware": {
         "provider": "OVMF/EDK2",

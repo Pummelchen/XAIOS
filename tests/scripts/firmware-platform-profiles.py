@@ -224,7 +224,14 @@ def run_profile(profile_id: str, dry_run: bool) -> int:
     gates = []
     log_directory = LOG_ROOT / f"{profile_id}-{git_revision()}-{time.time_ns()}"
     if not failures and not dry_run:
-        gates = [run_gate(log_directory, gate) for gate in profile["gates"]]
+        profile_environment = profile.get("environment", {})
+        gates = [
+            run_gate(
+                log_directory,
+                {**gate, "environment": {**profile_environment, **gate.get("environment", {})}},
+            )
+            for gate in profile["gates"]
+        ]
         failures.extend(gate["name"] for gate in gates if gate["status"] != "pass")
     elif dry_run:
         gates = [{"name": gate["name"], "status": "not-run-dry-run",
