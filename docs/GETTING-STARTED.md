@@ -50,12 +50,13 @@ QEMU/HVF exception handling may abort instead of returning control to the guest.
 
 The normal image uses an in-place 0-100% boot display rather than scrolling
 diagnostic output. At completion it prints the configured IPv4 address and the
-verified SSH listener state. A development image built with an explicit PBKDF2
-user database and `XAIOS_SSH_PASSWORD_AUTH=1` presents `xaios login:`; after
-authentication its local `admin@xaios:<cwd>$` prompt supports Backspace,
-`Ctrl-C`, `Ctrl-L`, logout, filesystem commands and interactive `nano`.
-Default, key-only and release images keep serial login locked and require SSH
-public-key authentication instead of exposing a built-in local password. SSH
+verified SSH listener state. The default development image presents `xaios
+login:` and accepts `admin` with password `xaios`; after authentication its
+local `admin@xaios:<cwd>$` prompt supports Backspace, `Ctrl-C`, `Ctrl-L`,
+logout, filesystem commands and interactive `nano`. This is a public
+development credential, not a deployment credential. Set
+`XAIOS_SSH_PASSWORD_AUTH=0` for a key-only development image. Release images
+always keep serial login locked and require SSH public-key authentication. SSH
 port 22 is not bound until a bounded external IPv4 DNS lookup succeeds. A
 failure is reported with a numeric error and does not weaken the local-console
 authentication policy.
@@ -122,9 +123,10 @@ validate x86_64 guests. See [`VMWARE-FUSION.md`](./VMWARE-FUSION.md).
 ### Mac client interoperability
 
 The freestanding guest SSH/SFTP and UDP services can be exercised through QEMU
-host forwarding. The image has no built-in password or authorized key. Package
-disposable development credentials at build time and do not expose these ports
-beyond localhost.
+host forwarding. The default development image accepts `admin` / `xaios` for
+local and SSH password authentication; use it only on an isolated development
+network. Package a public key or a replacement PBKDF2 record before exposing a
+guest outside localhost.
 
 The primary external Unix-reference check boots an official, checksum-pinned
 FreeBSD 15.1 AArch64 VM beside XAIOS:
@@ -157,11 +159,10 @@ ssh-keygen -t ed25519 -N '' -f build/local-ssh/admin
 XAIOS_AUTHORIZED_KEYS_FILE=build/local-ssh/admin.pub make image
 ```
 
-To test password authentication, generate the strict PBKDF2 record with
+To replace the development password, generate a strict PBKDF2 record with
 `scripts/create-sshd-user-config.py` and pass it through
-`XAIOS_SSH_USERS_FILE` together with the explicit
-`XAIOS_SSH_PASSWORD_AUTH=1` development opt-in. `XAIOS_BUILD_MODE=release`
-rejects password-enabled images. See
+`XAIOS_SSH_USERS_FILE` together with `XAIOS_SSH_PASSWORD_AUTH=1`.
+`XAIOS_BUILD_MODE=release` rejects every password-enabled image. See
 [`NETWORK-SSH-STATUS.md`](./NETWORK-SSH-STATUS.md) for the exact commands and
 security boundary.
 

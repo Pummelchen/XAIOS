@@ -11,8 +11,10 @@ XAIOS UEFI loader used by the common firmware path. The kernel discovers its
 devices through ACPI/PCI rather than selecting a Fusion-specific core path.
 
 Fusion's UEFI Graphics Output Protocol framebuffer is passed to the kernel
-when valid. The kernel continues the progress display after UEFI hands off at
-20%, while serial remains the authoritative console for headless operation.
+when valid. The kernel continues a compact VGA-style progress display after
+UEFI hands off at 20%, then renders the IPv4 address, verified SSH state and
+local-login availability at 100%. The graphics window is status-only; serial
+remains the authoritative interactive local console.
 
 ## Verified On Fusion 26H1 (26.0.0) ARM64
 
@@ -31,8 +33,9 @@ make vmware-fusion-image
 make vmware-fusion-smoke
 ```
 
-For SSH, package a disposable key when building and connect to the address
-shown by the guest:
+The default development account is `admin` / `xaios`; it is public and must
+only be used on an isolated development network. For key-based SSH, package a
+disposable key when building and connect to the address shown by the guest:
 
 ```sh
 XAIOS_AUTHORIZED_KEYS_FILE=/path/to/test-key.pub make vmware-fusion-image

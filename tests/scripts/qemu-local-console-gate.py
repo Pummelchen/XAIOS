@@ -113,33 +113,13 @@ def main() -> int:
     if GATE_DIR.exists():
         shutil.rmtree(GATE_DIR)
     GATE_DIR.mkdir(parents=True, mode=0o700)
-    password = GATE_DIR / "password"
-    users = GATE_DIR / "sshd-users"
     persistent = GATE_DIR / "persistent.img"
-    password.write_text("admin\n", encoding="ascii")
-    password.chmod(0o600)
-    run_checked(
-        [
-            sys.executable,
-            "scripts/create-sshd-user-config.py",
-            "--password-file",
-            str(password),
-            "--output",
-            str(users),
-            "--iterations",
-            "100000",
-        ],
-        "generate local-console authentication fixture",
-    )
-
     build_env = os.environ.copy()
-    build_env.update(
-        {
-            "XAIOS_SSH_USERS_FILE": str(users),
-            "XAIOS_SSH_PASSWORD_AUTH": "1",
-        }
+    build_env.pop("XAIOS_SSH_USERS_FILE", None)
+    build_env.pop("XAIOS_SSH_PASSWORD_AUTH", None)
+    run_checked(
+        ["make", "image"], "build default local-console image", build_env
     )
-    run_checked(["make", "image"], "build local-console image", build_env)
 
     qemu_env = build_env.copy()
     qemu_env.update(
@@ -168,7 +148,7 @@ def main() -> int:
         console.wait_since(checkpoint, b"Login incorrect\r\nxaios login: ", STEP_TIMEOUT_SECONDS)
 
         checkpoint = console.checkpoint()
-        console.send(b"admin\radmin\r")
+        console.send(b"admin\rxaios\r")
         console.wait_since(
             checkpoint, b"XAIOS local console session opened", STEP_TIMEOUT_SECONDS
         )

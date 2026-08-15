@@ -565,7 +565,8 @@ static void console_render_boot_status(void) {
       XAIOS_BOOT_UI_CONTROL_MAGIC, XAIOS_BOOT_UI_CONTROL_VERSION,
       g_console_ssh_ready != 0U ? XAIOS_BOOT_UI_STAGE_SSH_READY
                                 : XAIOS_BOOT_UI_STAGE_SSH_FAILED,
-      g_console_boot_error};
+      g_console_boot_error, g_console_ipv4,
+      g_user_count != 0U && g_password_auth_enabled != 0U};
   (void)xaios_console_write((const char *)&control, sizeof(control));
   console_write("\x1b[2J\x1b[H\x1b[1;35mXAI\x1b[0m ");
   console_write("\x1b[1;36mOS\x1b[0m\n\n");
@@ -587,7 +588,7 @@ static void console_render_boot_status(void) {
 static void console_render_ssh_loading(void) {
   xaios_boot_ui_control_t control = {
       XAIOS_BOOT_UI_CONTROL_MAGIC, XAIOS_BOOT_UI_CONTROL_VERSION,
-      XAIOS_BOOT_UI_STAGE_SSH_LOADING, 0};
+      XAIOS_BOOT_UI_STAGE_SSH_LOADING, 0, 0U, 0U};
   (void)xaios_console_write((const char *)&control, sizeof(control));
   console_write("\x1b[H\x1b[J\x1b[1;35mXAI\x1b[0m ");
   console_write("\x1b[1;36mOS\x1b[0m\n\n");

@@ -1299,6 +1299,7 @@ def main() -> int:
     key_only_env["XAIOS_AUTHORIZED_KEYS_FILE"] = str(key_dir / "authorized.pub")
     key_only_env["XAIOS_BOOT_VERBOSE"] = "1"
     key_only_env.pop("XAIOS_SSH_USERS_FILE", None)
+    key_only_env["XAIOS_SSH_PASSWORD_AUTH"] = "0"
     run_checked(["make", BUILD_TARGET], 180, key_only_env)
     key_only_port = reserve_port(socket.SOCK_STREAM)
     qemu, log_file, key_only_log_path, persistent_path = start_qemu_ready(

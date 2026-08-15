@@ -50,9 +50,11 @@ make qemu
 Silicon. Press `Ctrl-A X` to exit QEMU. Set `XAIOS_BOOT_VERBOSE=1` only when a
 boot failure requires scrolling diagnostics.
 
-The launcher forwards host TCP port 7788 to guest SSH port 22 by default. A
-normal image contains no built-in password or private key; provision a key for
-manual access:
+The launcher forwards host TCP port 7788 to guest SSH port 22 by default. The
+development image includes the public development account `admin` / `xaios`.
+Use it only on isolated development networks; release images reject password
+authentication. For a key-only development image, pass
+`XAIOS_SSH_PASSWORD_AUTH=0` when building. To provision key-based access:
 
 ```sh
 mkdir -p build/local-ssh

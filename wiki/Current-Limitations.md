@@ -34,9 +34,9 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 - The normal QEMU boot requires a bounded IPv4 TCP connection to
   `1.1.1.1:443` before SSH binds. This checks configured external reachability
   without depending on public DNS; it is not a general Internet-health check.
-  Failure reports a numeric startup error. A local shell is available only
-  after PBKDF2 authentication in explicitly password-enabled development
-  images; default, key-only and release consoles stay locked.
+  Failure reports a numeric startup error. A local shell is available after
+  PBKDF2 authentication in the default development image (`admin` / `xaios`);
+  key-only and release consoles stay locked.
 - The SSH service deliberately supports 32 transports and two active channels
   per transport, backed by 64 asynchronous child-channel records. Fleet-scale
   identity, audit, replay, and connection policy remains unresolved.

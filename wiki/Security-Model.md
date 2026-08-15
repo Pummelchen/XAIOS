@@ -43,17 +43,18 @@ atomicity, replay, cleanup, and secret exposure.
 
 ## SSH administration
 
-Release images do not contain a built-in password or authorized key. Key
-material is packaged explicitly for a deployment or disposable test image.
-Password authentication is disabled by default and release mode rejects a
-password-enabled build. The QEMU acceptance suite checks valid and invalid
+Release images do not contain a built-in password or authorized key. The
+default development image contains the public `admin` / `xaios` credential for
+isolated QEMU and Fusion use; it must not be exposed on a bridged or public
+network. Set `XAIOS_SSH_PASSWORD_AUTH=0` for a key-only development image.
+Release mode rejects every password-enabled build. The QEMU acceptance suite checks valid and invalid
 keys, valid and invalid passwords in development mode, malformed credential
 files, entropy failure, host identity persistence and rotation, revocation,
 rekey, session limits, reconnects, SFTP isolation, and secret redaction.
 The local serial console follows the same policy: it authenticates against the
-PBKDF2 database only in an explicitly password-enabled development image.
-Key-only, default and release images remain locally locked and direct operators
-to SSH public-key authentication. Password input is not echoed, failed login
+PBKDF2 database in the default development image, while key-only and release
+images remain locally locked and direct operators to SSH public-key
+authentication. Password input is not echoed, failed login
 does not create a shell session, and logout requires authentication again.
 
 These tests do not replace an independent cryptographic implementation audit,

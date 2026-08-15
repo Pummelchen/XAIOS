@@ -22,13 +22,16 @@ making SSH startup depend on public DNS. Failure leaves the listener closed.
 
 ## Local console policy
 
-Default, key-only, and release images keep the local serial console locked.
-This avoids turning VM console access into an unauthenticated administrator
-shell. An explicitly password-enabled development image presents:
+The default development image presents:
 
 ```text
 xaios login:
 ```
+
+Its public development account is `admin` with password `xaios`. It is for
+isolated QEMU/Fusion development only; use `XAIOS_SSH_PASSWORD_AUTH=0` to make
+a development build key-only. Release images keep the local serial console
+locked and never package a password database.
 
 After successful authentication the prompt is:
 
@@ -36,7 +39,7 @@ After successful authentication the prompt is:
 admin@xaios:/$
 ```
 
-The console supports independent working-directory state, line editing,
+The serial console supports independent working-directory state, line editing,
 `Backspace`, `Ctrl-C`, `Ctrl-L`, logout, filesystem commands, `nano`, `less`,
 `htop`, and `pong`. Password input is not echoed. Failed authentication does
 not create a shell session.
@@ -58,6 +61,11 @@ make image-qemu-test
 
 That profile is for validation only. Normal images start diagnostics on demand
 and reclaim them after exit.
+
+On VMware Fusion, the graphics window displays the compact post-UEFI status
+screen, including the 100% completion state and login availability. Interactive
+local login uses its PL011 serial device; use SSH for an interactive network
+terminal.
 
 See [[Networking and SSH|Networking-and-SSH]], [[Security Model|Security-Model]],
 and [[Applications|Applications]].

@@ -120,10 +120,22 @@ case "$FAILURE_TEST_APP" in
     ;;
 esac
 PASSWORD_AUTH_CFLAG="-DXAIOS_PASSWORD_AUTH_AVAILABLE=0"
-if [ "${XAIOS_SSH_USERS_FILE:-}" != "" ]; then
+SSH_USERS_FILE="${XAIOS_SSH_USERS_FILE:-}"
+if [ "${XAIOS_SSH_PASSWORD_AUTH+x}" = "x" ]; then
+  SSH_PASSWORD_AUTH_EXPLICIT=1
+else
+  SSH_PASSWORD_AUTH_EXPLICIT=0
+fi
+if [ "$BUILD_MODE" = "development" ] && [ "$SSH_USERS_FILE" = "" ] && \
+   [ "$SSH_PASSWORD_AUTH_EXPLICIT" = 0 ]; then
+  SSH_USERS_FILE="$ROOT_DIR/config/development-sshd-users"
+fi
+if [ "$SSH_USERS_FILE" != "" ]; then
   if [ "${XAIOS_SSH_PASSWORD_AUTH:-}" != "1" ]; then
-    printf '%s\n' "error: password credentials require XAIOS_SSH_PASSWORD_AUTH=1" >&2
-    exit 2
+    if [ "$SSH_USERS_FILE" != "$ROOT_DIR/config/development-sshd-users" ]; then
+      printf '%s\n' "error: password credentials require XAIOS_SSH_PASSWORD_AUTH=1" >&2
+      exit 2
+    fi
   fi
   if [ "$BUILD_MODE" = "release" ]; then
     printf '%s\n' "error: password authentication is forbidden in release builds" >&2
@@ -1060,12 +1072,12 @@ if [ "${XAIOS_AUTHORIZED_KEYS_FILE:-}" != "" ]; then
   fi
   set -- "$@" "/etc/xaios_authorized_keys=$XAIOS_AUTHORIZED_KEYS_FILE"
 fi
-if [ "${XAIOS_SSH_USERS_FILE:-}" != "" ]; then
-  if [ ! -f "$XAIOS_SSH_USERS_FILE" ]; then
-    printf '%s\n' "error: SSH users file not found: $XAIOS_SSH_USERS_FILE" >&2
+if [ "$SSH_USERS_FILE" != "" ]; then
+  if [ ! -f "$SSH_USERS_FILE" ]; then
+    printf '%s\n' "error: SSH users file not found: $SSH_USERS_FILE" >&2
     exit 1
   fi
-  set -- "$@" "/etc/xaios_sshd_users=$XAIOS_SSH_USERS_FILE"
+  set -- "$@" "/etc/xaios_sshd_users=$SSH_USERS_FILE"
 fi
 if [ "${XAIOS_SSH_CLIENT_IDENTITY_FILE:-}" != "" ]; then
   if [ ! -f "$XAIOS_SSH_CLIENT_IDENTITY_FILE" ]; then

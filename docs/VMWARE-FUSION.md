@@ -27,10 +27,13 @@ hardware-backed entropy claim.
 
 The UEFI loader passes an optional validated Graphics Output Protocol (GOP)
 framebuffer to the kernel. Where firmware provides an RGBX/BGRX framebuffer,
-the kernel continues the boot progress display after `ExitBootServices`; this
-prevents Fusion from leaving the final UEFI 20% frame visible while the kernel
-finishes booting on its serial console. Serial remains the authoritative
-headless-console path when no usable framebuffer is present.
+the kernel continues a compact VGA-style boot display after `ExitBootServices`;
+this prevents Fusion from leaving the final UEFI 20% frame visible while the
+kernel finishes booting on its serial console. At 100%, the display shows the
+IPv4 address, verified SSH state and whether local login is enabled. Fusion's
+graphics device is status-only: the authoritative interactive local console is
+the PL011 serial device. Serial remains the headless-console path when no
+usable framebuffer is present.
 
 The bundle includes a 256 MiB SATA VMDK. The AHCI driver registers
 `/dev/ahci0p0` through the generic block-device interface; MutableFS formats a
@@ -63,8 +66,10 @@ make vmware-fusion
 
 `make vmware-fusion-image` generates
 `build/vmware-fusion/XAIOS.vmwarevm`; do not edit that generated bundle. The
-boot screen prints the DHCP address. For a usable SSH test, package a
-disposable public key at build time and use that address:
+boot screen prints the DHCP address and enables the default development account
+`admin` / `xaios`. This credential is public and is unsuitable for an exposed
+bridged network. For a usable key-based SSH test, package a disposable public
+key at build time and use that address:
 
 ```sh
 XAIOS_AUTHORIZED_KEYS_FILE=/path/to/test-key.pub make vmware-fusion-image

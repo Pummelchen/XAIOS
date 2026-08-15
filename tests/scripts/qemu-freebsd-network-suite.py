@@ -355,7 +355,7 @@ def main() -> int:
     build_env = os.environ.copy()
     build_env["XAIOS_AUTHORIZED_KEYS_FILE"] = str(key_dir / "authorized.pub")
     build_env.pop("XAIOS_SSH_USERS_FILE", None)
-    build_env.pop("XAIOS_SSH_PASSWORD_AUTH", None)
+    build_env["XAIOS_SSH_PASSWORD_AUTH"] = "0"
     run_checked(["make", "image"], 240, env=build_env)
 
     ssh_port = reserve_port(socket.SOCK_STREAM)

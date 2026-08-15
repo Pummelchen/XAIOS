@@ -484,7 +484,7 @@ def main() -> int:
     build_env["XAIOS_AUTHORIZED_KEYS_FILE"] = str(xaios_authorized_keys)
     build_env["XAIOS_SSH_CLIENT_IDENTITY_FILE"] = str(key_dir / "outbound")
     build_env.pop("XAIOS_SSH_USERS_FILE", None)
-    build_env.pop("XAIOS_SSH_PASSWORD_AUTH", None)
+    build_env["XAIOS_SSH_PASSWORD_AUTH"] = "0"
     build_target = "image" if architecture == "aarch64" else "image-x86_64"
     run_checked(["make", build_target], 360, build_env)
 

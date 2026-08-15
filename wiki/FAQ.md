@@ -30,8 +30,10 @@ See [[Getting Started|Getting-Started]] and
 
 ## Is there a default password?
 
-No. Default and release images contain no built-in password. Password login is
-an explicit development-image option and release builds reject it.
+Development images use `admin` / `xaios` for isolated QEMU and Fusion testing.
+This is a public development credential. Set `XAIOS_SSH_PASSWORD_AUTH=0` for a
+key-only development build. Release images contain no built-in password and
+reject password authentication.
 
 ## Is XAIOS production ready?
 

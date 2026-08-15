@@ -9,8 +9,9 @@
 #endif
 
 #define BOOT_BAR_WIDTH UINT32_C(40)
-#define FB_MARGIN UINT32_C(64)
-#define FB_SCALE UINT32_C(3)
+#define FB_MARGIN UINT32_C(72)
+#define FB_SCALE UINT32_C(2)
+#define FB_BAR_MAX_WIDTH UINT32_C(720)
 #define FB_GLYPH_WIDTH UINT32_C(5)
 #define FB_GLYPH_HEIGHT UINT32_C(7)
 
@@ -66,6 +67,7 @@ static const uint8_t g_font[][FB_GLYPH_HEIGHT] = {
     {0, 4, 0, 0, 4, 0, 0},              /* : */
     {0, 0, 0, 31, 0, 0, 0},             /* - */
     {17, 2, 4, 8, 16, 0, 0},            /* / */
+    {0, 0, 0, 0, 0, 12, 12},            /* . */
 };
 
 static uint64_t text_length(const char *text) {
@@ -134,6 +136,7 @@ static uint32_t glyph_index(char value) {
   if (value == ':') return 37U;
   if (value == '-') return 38U;
   if (value == '/') return 39U;
+  if (value == '.') return 40U;
   return 0U;
 }
 
@@ -178,6 +181,19 @@ static void fb_uint(uint32_t x, uint32_t y, uint32_t value, uint32_t scale,
   }
 }
 
+static void fb_ipv4(uint32_t x, uint32_t y, uint32_t address, uint32_t scale,
+                    uint32_t color) {
+  for (uint32_t octet = 0U; octet < 4U; ++octet) {
+    fb_uint(x, y, (address >> (24U - octet * 8U)) & UINT32_C(0xff), scale,
+            color);
+    x += 4U * (FB_GLYPH_WIDTH + 1U) * scale;
+    if (octet != 3U) {
+      fb_glyph(x, y, '.', scale, color);
+      x += (FB_GLYPH_WIDTH + 1U) * scale;
+    }
+  }
+}
+
 static void fb_draw_status(uint32_t percent, const char *loaded,
                            const char *loading, uint32_t remaining) {
   if (g_framebuffer.pixels == 0) return;
@@ -187,22 +203,40 @@ static void fb_draw_status(uint32_t percent, const char *loaded,
   const uint32_t green = fb_color(50U, 210U, 100U);
   const uint32_t dim = fb_color(110U, 110U, 110U);
   const uint32_t margin = g_framebuffer.width > FB_MARGIN * 2U ? FB_MARGIN : 8U;
-  const uint32_t bar_width = g_framebuffer.width - margin * 2U;
-  const uint32_t bar_y = margin + 80U;
+  uint32_t bar_width = g_framebuffer.width - margin * 2U;
+  if (bar_width > FB_BAR_MAX_WIDTH) bar_width = FB_BAR_MAX_WIDTH;
+  const uint32_t bar_y = margin + 40U;
   fb_rect(0U, 0U, g_framebuffer.width, g_framebuffer.height, fb_color(0U, 0U, 0U));
   fb_text(margin, margin, "XAI", FB_SCALE, purple);
-  fb_text(margin + 18U * FB_SCALE, margin, "OS", FB_SCALE, cyan);
-  fb_rect(margin, bar_y, bar_width, 24U, dim);
-  fb_rect(margin, bar_y, (bar_width * percent) / 100U, 24U, green);
-  fb_uint(margin, bar_y + 44U, percent, FB_SCALE, white);
-  fb_text(margin + 24U * FB_SCALE, bar_y + 44U, "PERCENT", FB_SCALE, white);
-  fb_text(margin, bar_y + 96U, "LOADED:", FB_SCALE, cyan);
-  fb_text(margin + 48U * FB_SCALE, bar_y + 96U, loaded, FB_SCALE, white);
-  fb_text(margin, bar_y + 132U, "LOADING:", FB_SCALE, cyan);
-  fb_text(margin + 54U * FB_SCALE, bar_y + 132U, loading, FB_SCALE, white);
-  fb_text(margin, bar_y + 168U, "REMAINING:", FB_SCALE, cyan);
-  fb_uint(margin + 66U * FB_SCALE, bar_y + 168U, remaining, FB_SCALE, white);
-  fb_text(margin + 84U * FB_SCALE, bar_y + 168U, "COMPONENTS", FB_SCALE, white);
+  fb_text(margin + 24U * FB_SCALE, margin, "OS", FB_SCALE, cyan);
+  fb_rect(margin, bar_y, bar_width, 10U, dim);
+  fb_rect(margin, bar_y, (bar_width * percent) / 100U, 10U, green);
+  fb_uint(margin, bar_y + 24U, percent, FB_SCALE, white);
+  fb_text(margin + 24U * FB_SCALE, bar_y + 24U, "PERCENT", FB_SCALE, white);
+  fb_text(margin, bar_y + 56U, "LOADED:", FB_SCALE, cyan);
+  fb_text(margin + 48U * FB_SCALE, bar_y + 56U, loaded, FB_SCALE, white);
+  fb_text(margin, bar_y + 80U, "LOADING:", FB_SCALE, cyan);
+  fb_text(margin + 54U * FB_SCALE, bar_y + 80U, loading, FB_SCALE, white);
+  fb_text(margin, bar_y + 104U, "REMAINING:", FB_SCALE, cyan);
+  fb_uint(margin + 66U * FB_SCALE, bar_y + 104U, remaining, FB_SCALE, white);
+  fb_text(margin + 84U * FB_SCALE, bar_y + 104U, "COMPONENTS", FB_SCALE, white);
+}
+
+static void fb_draw_ready(const xaios_boot_ui_control_t *control) {
+  const uint32_t cyan = fb_color(0U, 220U, 230U);
+  const uint32_t green = fb_color(50U, 210U, 100U);
+  const uint32_t white = fb_color(220U, 220U, 220U);
+  const uint32_t margin = g_framebuffer.width > FB_MARGIN * 2U ? FB_MARGIN : 8U;
+  const uint32_t base_y = margin + 184U;
+  fb_text(margin, base_y, "IPV4:", FB_SCALE, cyan);
+  fb_ipv4(margin + 36U * FB_SCALE, base_y, control->ipv4, FB_SCALE, white);
+  fb_text(margin, base_y + 28U, "SSH SERVER: UP TCP/22", FB_SCALE, green);
+  if (control->local_login_enabled != 0U) {
+    fb_text(margin, base_y + 56U, "XAIOS LOGIN:", FB_SCALE, cyan);
+    fb_text(margin, base_y + 80U, "ACCOUNT: ADMIN", FB_SCALE, white);
+  } else {
+    fb_text(margin, base_y + 56U, "LOCAL LOGIN: KEY ONLY", FB_SCALE, white);
+  }
 }
 
 static void fb_init(const xaios_boot_info_t *boot) {
@@ -291,6 +325,7 @@ uint32_t boot_ui_handle_control(const xaios_boot_ui_control_t *control) {
   }
   if (control->stage == XAIOS_BOOT_UI_STAGE_SSH_READY) {
     boot_ui_update(100U, "system services", "complete", 0U);
+    fb_draw_ready(control);
     return 1U;
   }
   if (control->stage == XAIOS_BOOT_UI_STAGE_SSH_FAILED) {

@@ -141,10 +141,12 @@ diff` reports the field change mask. `config apply` validates a candidate,
 writes it atomically to persistent control state, reloads the daemon, and
 retains the previous generation if any step fails.
 
-Password authentication is disabled by default. The `development` value is
-accepted only in an image explicitly built with
-`XAIOS_SSH_PASSWORD_AUTH=1`; release builds reject that profile. Public-key
-authentication is the default and required release mode.
+Development images start with password authentication enabled for the public
+`admin` / `xaios` test account. Set `XAIOS_SSH_PASSWORD_AUTH=0` to build a
+key-only development image, or pass an explicit PBKDF2 record with
+`XAIOS_SSH_USERS_FILE` and `XAIOS_SSH_PASSWORD_AUTH=1` to replace it. Release
+builds reject every password-enabled profile; public-key authentication is
+required in release mode.
 
 ## Persistence and sensitive state
 
