@@ -360,14 +360,16 @@ void kmain(const xaios_boot_info_t *boot) {
   xaios_status_t persistent_status = nvme_status == XAIOS_OK
                                          ? mutable_fs_mount_device("/dev/nvme0n1")
                                          : XAIOS_ERR_NOT_FOUND;
-  if (persistent_status == XAIOS_ERR_NOT_FOUND && ahci_status == XAIOS_OK) {
+  /* An enumerated NVMe namespace may be a test or model volume rather than
+   * MutableFS storage. Preserve its contents and continue probing the
+   * explicitly provisioned persistence devices instead of suppressing SSH. */
+  if (persistent_status != XAIOS_OK && ahci_status == XAIOS_OK) {
     persistent_status = mutable_fs_mount_device("/dev/ahci0p0");
     if (persistent_status == XAIOS_OK) {
       klog("mutable-fs: using registered AHCI persistent data disk\n");
     }
   }
-  if (persistent_status == XAIOS_ERR_NOT_FOUND && nvme_status != XAIOS_OK &&
-      ahci_status != XAIOS_OK) {
+  if (persistent_status != XAIOS_OK) {
     /* vblk0 remains the immutable initramfs/test image. Open the dedicated
      * second VirtIO block device for durable MutableFS state. */
     xaios_status_t virtio_status =

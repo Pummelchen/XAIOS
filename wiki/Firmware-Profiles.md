@@ -48,6 +48,10 @@ The shared architecture boundary is UEFI loader -> architecture firmware parser
 On both QEMU profiles, `vblk0` is the immutable initramfs/test volume and the
 separately discovered durable MutableFS volume is mounted as `vblk1`. This
 prevents fixture writes from being mistaken for durable lifecycle state.
+An NVMe namespace added for controller validation or model data is preserved
+when it is not a valid MutableFS volume; the kernel continues to the dedicated
+durable volume. A valid NVMe MutableFS namespace remains eligible for root
+persistence.
 
 QEMU evidence proves the named virtual correctness gates only. It never proves
 physical hardware performance, durability, NUMA locality, thermal behavior or

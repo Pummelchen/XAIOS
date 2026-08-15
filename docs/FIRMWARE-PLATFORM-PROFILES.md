@@ -40,6 +40,10 @@ For the QEMU profiles, `vblk0` remains the immutable initramfs/test volume.
 The kernel opens the separately discovered durable VirtIO volume as `vblk1`
 before mounting MutableFS. This keeps fixture self-tests out of the persistence
 and lifecycle-recovery path on both ARM VirtIO-MMIO and x86 VirtIO-PCI.
+When a QEMU NVMe namespace is present only for controller validation or model
+data, an incompatible or unformatted namespace is not reformatted or selected
+as the root: the kernel continues to the dedicated MutableFS volume. A valid
+NVMe MutableFS volume remains eligible for root persistence.
 
 ## Running Profile Evidence
 

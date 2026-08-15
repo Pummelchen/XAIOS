@@ -68,9 +68,14 @@ def main() -> int:
     env.setdefault("XAIOS_QEMU_X86_ACCEL", "tcg")
     env.setdefault("XAIOS_QEMU_X86_CPU", "max")
     timeout = int(env.get("XAIOS_QEMU_X86_SMOKE_TIMEOUT", "180"))
-    persistent_image = Path("build/xaios-x86-smoke-persistent.img")
-    persistent_image.unlink(missing_ok=True)
-    env["XAIOS_X86_PERSISTENT_IMAGE"] = str(persistent_image)
+    supplied_persistent_image = env.get("XAIOS_X86_PERSISTENT_IMAGE")
+    persistent_image = Path(
+        supplied_persistent_image or "build/xaios-x86-smoke-persistent.img"
+    )
+    owns_persistent_image = supplied_persistent_image is None
+    if owns_persistent_image:
+        persistent_image.unlink(missing_ok=True)
+        env["XAIOS_X86_PERSISTENT_IMAGE"] = str(persistent_image)
 
     proc = subprocess.Popen(
         ["./scripts/run-qemu-x86_64.sh"],
@@ -123,7 +128,8 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=3)
-        persistent_image.unlink(missing_ok=True)
+        if owns_persistent_image:
+            persistent_image.unlink(missing_ok=True)
 
     text = "".join(seen)
     missing = [target for target in TARGETS if target not in text]

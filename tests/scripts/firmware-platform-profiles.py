@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -178,18 +179,24 @@ def run_gate(log_directory: Path, gate: dict[str, Any]) -> dict[str, Any]:
     environment = os.environ.copy()
     environment.update(gate.get("environment", {}))
     started = time.monotonic()
-    try:
-        with log_path.open("w", encoding="utf-8") as log:
-            completed = subprocess.run(
-                gate["command"], cwd=ROOT, env=environment, check=False,
-                stdout=log, stderr=subprocess.STDOUT, text=True,
-                timeout=gate["timeout_seconds"],
-            )
-        exit_code = completed.returncode
-        error = None
-    except subprocess.TimeoutExpired:
-        exit_code = None
-        error = f"timed out after {gate['timeout_seconds']}s"
+    with log_path.open("w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            gate["command"], cwd=ROOT, env=environment,
+            stdout=log, stderr=subprocess.STDOUT, text=True,
+            start_new_session=True,
+        )
+        try:
+            exit_code = process.wait(timeout=gate["timeout_seconds"])
+            error = None
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)
+            exit_code = None
+            error = f"timed out after {gate['timeout_seconds']}s"
     output = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
     return {
         "name": gate["name"],

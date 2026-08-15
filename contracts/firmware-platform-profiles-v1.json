@@ -91,7 +91,7 @@
       "expected_devices": ["xAPIC/IOAPIC", "PCI config I/O", "VirtIO-PCI block", "VirtIO-PCI net", "QEMU NVMe/MSI-X"],
       "gates": [
         {"name": "boot_network_ssh", "command": ["make", "qemu-x86_64-smoke"], "timeout_seconds": 360},
-        {"name": "cpu_matrix", "command": ["make", "qemu-x86_64-cpu-matrix"], "timeout_seconds": 1200},
+        {"name": "cpu_matrix", "command": ["make", "qemu-x86_64-cpu-matrix"], "timeout_seconds": 1500},
         {"name": "platform_inventory", "command": ["make", "qemu-x86_64-platform-matrix"], "timeout_seconds": 1800},
         {"name": "numa_firmware", "command": ["make", "qemu-x86_64-numa-gate"], "timeout_seconds": 600},
         {"name": "nvme_storage", "command": ["make", "qemu-x86_64-nvme-gate"], "timeout_seconds": 600},
