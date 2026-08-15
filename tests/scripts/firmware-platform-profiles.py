@@ -19,6 +19,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build" / "firmware-profiles"
 CONTRACT = ROOT / "contracts" / "firmware-platform-profiles-v1.json"
+LOG_ROOT = Path(
+    os.environ.get("XAIOS_FIRMWARE_PROFILE_LOG_DIR", "/var/tmp/xaios-firmware-profiles")
+)
 PROFILE_IDS = (
     "macos-qemu-aarch64",
     "macos-vmware-fusion-aarch64",
@@ -162,9 +165,16 @@ def artifact_identity(profile_id: str) -> dict[str, dict[str, str]]:
     }
 
 
-def run_gate(profile_id: str, gate: dict[str, Any]) -> dict[str, Any]:
-    BUILD.mkdir(parents=True, exist_ok=True)
-    log_path = BUILD / f"{profile_id}-{gate['name']}.log"
+def evidence_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
+def run_gate(log_directory: Path, gate: dict[str, Any]) -> dict[str, Any]:
+    log_directory.mkdir(parents=True, exist_ok=True)
+    log_path = log_directory / f"{gate['name']}.log"
     environment = os.environ.copy()
     environment.update(gate.get("environment", {}))
     started = time.monotonic()
@@ -188,7 +198,7 @@ def run_gate(profile_id: str, gate: dict[str, Any]) -> dict[str, Any]:
         "exit_code": exit_code,
         "timeout_seconds": gate["timeout_seconds"],
         "duration_seconds": round(time.monotonic() - started, 3),
-        "log": str(log_path.relative_to(ROOT)),
+        "log": evidence_path(log_path),
         "log_sha256": digest(log_path) if log_path.is_file() else "unavailable",
         "tail": "\n".join(output.splitlines()[-12:]),
         "error": error,
@@ -212,8 +222,9 @@ def run_profile(profile_id: str, dry_run: bool) -> int:
     if source_failure is not None:
         failures.append(source_failure)
     gates = []
+    log_directory = LOG_ROOT / f"{profile_id}-{git_revision()}-{time.time_ns()}"
     if not failures and not dry_run:
-        gates = [run_gate(profile_id, gate) for gate in profile["gates"]]
+        gates = [run_gate(log_directory, gate) for gate in profile["gates"]]
         failures.extend(gate["name"] for gate in gates if gate["status"] != "pass")
     elif dry_run:
         gates = [{"name": gate["name"], "status": "not-run-dry-run",
@@ -229,6 +240,7 @@ def run_profile(profile_id: str, dry_run: bool) -> int:
         "firmware": firmware,
         "emulator": emulator,
         "platform_artifacts": artifact_identity(profile_id),
+        "evidence_log_directory": evidence_path(log_directory),
         "required_firmware_tables": profile["required_firmware_tables"],
         "expected_devices": profile["expected_devices"],
         "capability_outcomes": profile["capabilities"],

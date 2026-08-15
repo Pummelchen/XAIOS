@@ -23,6 +23,9 @@ identity, gate log hashes and capability outcomes. Fusion reports additionally
 hash the GRUB chainloader, boot ISO and VMX configuration. The exact command set
 is in [Firmware Platform Profiles](../docs/FIRMWARE-PLATFORM-PROFILES.md). It
 rejects a tracked dirty worktree so the recorded source commit is authoritative.
+Gate logs live outside the disposable build tree under
+`/var/tmp/xaios-firmware-profiles` by default and are SHA-256 hashed in the
+evidence report.
 
 ```sh
 make firmware-profiles-check

@@ -18,7 +18,10 @@ source commit, contract SHA-256, host identity, firmware and emulator paths and
 SHA-256 hashes, effective machine/CPU/accelerator arguments, gate logs and their
 hashes. Fusion evidence also hashes the generated GRUB chainloader, boot ISO and
 VMX configuration after the smoke gate builds them. It refuses a tracked dirty
-worktree, so every report is tied to its stated commit.
+worktree, so every report is tied to its stated commit. Gate logs are written
+outside the disposable `build/` tree to
+`${XAIOS_FIRMWARE_PROFILE_LOG_DIR:-/var/tmp/xaios-firmware-profiles}` and their
+SHA-256 hashes are included in the JSON report.
 
 ## Boundary
 
