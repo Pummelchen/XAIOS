@@ -26,6 +26,7 @@ AArch64 or x86_64 UEFI firmware. Setup details are in
 | `make code-scanning-contract` | Read-only workflow permissions, loopback-only test port reservation, bounded diagnostics, and integer-width regression checks for resolved CodeQL findings. |
 | `make qemu-abi-contract` | Syscall, image, service, telemetry, and fixture ABI contract. |
 | `make qemu-smoke` | Primary AArch64 boot and deterministic self-test gate. |
+| `make qemu-keyboard-input-gate` | QMP-injected USB HID boot-keyboard login through the local console on both ARM64 and x86_64 QEMU. |
 | `make qemu-regression-suite` | Broader process, filesystem, network, and runtime regression suite. |
 | `make qemu-network-adversarial-gate` | N-F3Q parser fuzzing, packet-fault handling, concurrent load/recovery, and 20 fresh ARM64 plus 20 fresh x86_64 QEMU boots. Set `XAIOS_NF3Q_BOOTS` only for bounded development reruns. |
 | `make qemu-nvme-gate` | AArch64/x86_64 async four-queue PRP/SGL, direct-buffer, cancellation, malformed-completion, stress, backing-byte, and every-queue MSI-X/LPI delivery checks. |
@@ -56,6 +57,7 @@ make production-source-audit
 make qemu-abi-contract
 make image
 make qemu-smoke
+make qemu-keyboard-input-gate
 make qemu-storage-crash-test
 make qemu-smmu-gate
 make qemu-nvme-gate

@@ -15,8 +15,10 @@ when valid. The kernel continues a compact 8x16 console-style progress display
 after UEFI hands off at 20%, then renders the IPv4 address, an assigned public
 IPv6 SLAAC address when a validated Router Advertisement provides one, verified SSH state
 and the current local-authentication prompt with a blinking cursor at 100%.
-The graphics window is status-only; it mirrors PL011 serial-console state but
-cannot receive graphical keyboard input until a Fusion input driver exists.
+The common input path includes a USB HID boot-keyboard driver for QEMU xHCI.
+The Fusion bundle provisions xHCI so the same driver is available to the guest;
+interactive Fusion-window qualification remains separate from the QEMU input
+gates. PL011 serial remains the headless-console fallback.
 
 ## Verified On Fusion 26H1 (26.0.0) ARM64
 

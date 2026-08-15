@@ -20,6 +20,7 @@
 #include <xaios/gic.h>
 #include <xaios/icmp.h>
 #include <xaios/icmpv6.h>
+#include <xaios/input.h>
 #include <xaios/ipv6.h>
 #include <xaios/ndp.h>
 #include <xaios/ntp.h>
@@ -265,9 +266,14 @@ void kmain(const xaios_boot_info_t *boot) {
   map_mmio_range(boot->uart_base, 4096);
 #endif
 
-  /* Map ECAM and enumerate PCIe */
+  /* PCI drivers allocate DMA rings, so establish the heap before probing. */
+  kheap_self_test();
+
+  /* Map ECAM and enumerate PCIe. */
   pci_init();
   pci_self_test();
+  input_init();
+  input_self_test();
   smmu_self_test();
 
   /* Initialize the architecture real-time clock. */
@@ -283,7 +289,6 @@ void kmain(const xaios_boot_info_t *boot) {
   watchdog_self_test();
 
   klog("VMM architecture device mappings installed\n");
-  kheap_self_test();
   exception_runtime_init();
   topology_init();
   topology_self_test();

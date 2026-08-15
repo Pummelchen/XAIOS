@@ -118,6 +118,8 @@ pcap_file="${XAIOS_QEMU_NET_DUMP:-none}"
 nvme_image="${XAIOS_QEMU_X86_NVME_IMAGE:-}"
 debug_log="${XAIOS_QEMU_X86_DEBUG_LOG:-}"
 numa_profile="${XAIOS_QEMU_X86_NUMA:-none}"
+keyboard_device="${XAIOS_QEMU_KEYBOARD:-usb}"
+qmp_socket="${XAIOS_QEMU_QMP_SOCKET:-}"
 
 case "$numa_profile" in
   none) ;;
@@ -130,6 +132,14 @@ case "$numa_profile" in
     ;;
   *)
     printf '%s\n' "error: XAIOS_QEMU_X86_NUMA must be none or two-node" >&2
+    exit 2
+    ;;
+esac
+
+case "$keyboard_device" in
+  usb|none) ;;
+  *)
+    printf '%s\n' "error: XAIOS_QEMU_KEYBOARD must be usb or none" >&2
     exit 2
     ;;
 esac
@@ -181,6 +191,17 @@ set -- "$qemu" \
   -blockdev driver=raw,node-name=xaios_x86_system_kernel,file=xaios_x86_system_kernel_file \
   -device virtio-blk-pci,drive=xaios_x86_system_kernel,disable-legacy=on \
   -device virtio-net-pci,netdev=net0,mac=52:54:00:12:34:57,disable-legacy=on
+
+if [ "$keyboard_device" = "usb" ]; then
+  set -- "$@" \
+    -device qemu-xhci,id=xaios_xhci \
+    -device usb-kbd,bus=xaios_xhci.0
+fi
+
+if [ "$qmp_socket" != "" ]; then
+  rm -f "$qmp_socket"
+  set -- "$@" -qmp "unix:${qmp_socket},server=on,wait=off"
+fi
 
 if [ "$numa_profile" = "two-node" ]; then
   set -- "$@" \

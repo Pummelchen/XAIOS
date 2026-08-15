@@ -138,6 +138,8 @@ net_socket_port_2="${XAIOS_QEMU_NET_SOCKET_PORT_2:-none}"
 net_socket_host="${XAIOS_QEMU_NET_SOCKET_HOST:-127.0.0.1}"
 pcap_file="${XAIOS_QEMU_PCAP:-none}"
 msi_controller="${XAIOS_QEMU_MSI_CONTROLLER:-auto}"
+keyboard_device="${XAIOS_QEMU_KEYBOARD:-usb}"
+qmp_socket="${XAIOS_QEMU_QMP_SOCKET:-}"
 
 case "$iommu" in
   none) machine_options="$machine,accel=$accel,gic-version=3" ;;
@@ -164,6 +166,14 @@ case "$network_device" in
   virtio-net-device|e1000e) ;;
   *)
     printf '%s\n' "error: XAIOS_QEMU_NETWORK_DEVICE must be virtio-net-device or e1000e" >&2
+    exit 2
+    ;;
+esac
+
+case "$keyboard_device" in
+  usb|none) ;;
+  *)
+    printf '%s\n' "error: XAIOS_QEMU_KEYBOARD must be usb or none" >&2
     exit 2
     ;;
 esac
@@ -260,6 +270,17 @@ set -- "$qemu" \
   -blockdev "driver=file,node-name=xaios_system_kernel_file,filename=$system_volume_image,locking=off,cache.direct=on" \
   -blockdev driver=raw,node-name=xaios_system_kernel,file=xaios_system_kernel_file \
   -device virtio-blk-device,drive=xaios_system_kernel,bus=virtio-mmio-bus.6
+
+if [ "$keyboard_device" = "usb" ]; then
+  set -- "$@" \
+    -device qemu-xhci,id=xaios_xhci \
+    -device usb-kbd,bus=xaios_xhci.0
+fi
+
+if [ "$qmp_socket" != "" ]; then
+  rm -f "$qmp_socket"
+  set -- "$@" -qmp "unix:${qmp_socket},server=on,wait=off"
+fi
 
 if [ "$iommu" = "smmuv3" ]; then
   set -- "$@" -device iommu-testdev,addr=06.0

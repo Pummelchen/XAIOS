@@ -6,9 +6,9 @@ profile does not validate another.
 
 | Profile | Firmware and machine | Required inventory | Evidence host |
 |---|---|---|---|
-| macOS QEMU ARM64 | AAVMF/EDK2; `qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a72 -accel tcg` | ARM ACPI, GICv3, PSCI, PL011, VirtIO-MMIO block/net/RNG | Apple Silicon macOS |
+| macOS QEMU ARM64 | AAVMF/EDK2; `qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a72 -accel tcg` | ARM ACPI, GICv3, PSCI, PL011, VirtIO-MMIO block/net/RNG, xHCI USB HID keyboard | Apple Silicon macOS |
 | macOS VMware Fusion ARM64 | Fusion 26H1 (26.0.0) UEFI through generated GRUB chainload; one-vCPU profile | ARM ACPI, PCI ECAM, E1000E, AHCI, PL011-compatible serial | Apple Silicon macOS |
-| Intel VPS QEMU x86_64 | OVMF/EDK2; `qemu-system-x86_64 -machine q35 -cpu max -accel tcg` unless recorded otherwise | x86 ACPI MADT/SRAT/SLIT/HMAT, xAPIC/IOAPIC, PCI config I/O, VirtIO-PCI, QEMU NVMe/MSI-X | designated Intel VPS |
+| Intel VPS QEMU x86_64 | OVMF/EDK2; `qemu-system-x86_64 -machine q35 -cpu max -accel tcg` unless recorded otherwise | x86 ACPI MADT/SRAT/SLIT/HMAT, xAPIC/IOAPIC, PCI config I/O, VirtIO-PCI, QEMU NVMe/MSI-X, xHCI USB HID keyboard | designated Intel VPS |
 
 The machine-readable contract is
 [`contracts/firmware-platform-profiles-v1.json`](../contracts/firmware-platform-profiles-v1.json).

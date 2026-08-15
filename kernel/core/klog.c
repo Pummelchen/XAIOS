@@ -1,5 +1,6 @@
 #include <stdarg.h>
 #include <xaios/klog.h>
+#include <xaios/input.h>
 #if defined(__aarch64__)
 #include <xaios/klog_ring.h>
 #endif
@@ -153,7 +154,9 @@ uint64_t klog_console_capture_end(void) {
 }
 
 int klog_console_read_char(uint8_t *value) {
-  if (value == 0 || g_uart_base == 0) return 0;
+  if (value == 0) return 0;
+  if (input_read_char(value)) return 1;
+  if (g_uart_base == 0) return 0;
 #if defined(__aarch64__)
   if (g_uart_kind == XAIOS_UART_PL011) {
     if ((g_uart_base[PL011_UARTFR / 4] & PL011_UARTFR_RXFE) != 0U) return 0;

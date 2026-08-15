@@ -37,10 +37,12 @@ unicast `/64` prefix, it also shows the resulting `PUBLIC IPV6` SLAAC address.
 Link-local and unique-local IPv6 addresses are intentionally not presented as
 public addresses.
 The screen leaves a terminal row below the SSH status and mirrors the serial
-login state with a blinking cursor. Fusion's graphics device is status-only:
-the authoritative interactive local console is the PL011 serial device. The
-screen cannot receive keyboard input until XAIOS has a Fusion input driver.
-Serial remains the headless-console path when no usable framebuffer is present.
+login state with a blinking cursor. The common input path includes a USB HID
+boot-keyboard driver for the QEMU xHCI device. The Fusion bundle provisions an
+xHCI controller so the same driver is available to the guest; its interactive
+Fusion window path remains separately qualified from the QEMU input gates.
+PL011 serial remains the headless-console path when no usable framebuffer or
+USB keyboard is present.
 
 The bundle includes a 256 MiB SATA VMDK. The AHCI driver registers
 `/dev/ahci0p0` through the generic block-device interface; MutableFS formats a

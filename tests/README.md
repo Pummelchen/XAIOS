@@ -42,6 +42,7 @@ Docker build inputs, and test-image inputs outside `tests/`. It runs through
 | ABI contract | `make qemu-abi-contract` |
 | Primary AArch64 smoke | `make qemu-smoke` |
 | x86_64 full-service smoke | `make qemu-x86_64-smoke` |
+| USB HID local-console login on ARM64 and x86_64 QEMU | `make qemu-keyboard-input-gate` |
 | Aggregate QEMU core OS | `make qemu-core-os-rc` |
 | Parser, packet-fault, load/recovery, and dual-architecture soak | `make qemu-network-adversarial-gate` |
 | IPv4/IPv6 source fragmentation on ARM/x86 | `make qemu-outbound-fragmentation-gate` |

@@ -19,10 +19,11 @@
         "accelerator": "tcg"
       },
       "required_firmware_tables": ["RSDP", "XSDT/RSDT", "MADT GICC/GICD/GICR", "MCFG"],
-      "expected_devices": ["PL011", "GICv3", "PSCI", "VirtIO-MMIO block", "VirtIO-MMIO net", "VirtIO RNG"],
+      "expected_devices": ["PL011", "GICv3", "PSCI", "VirtIO-MMIO block", "VirtIO-MMIO net", "VirtIO RNG", "QEMU xHCI USB HID keyboard"],
       "gates": [
         {"name": "boot_cpu_network_ssh", "command": ["make", "qemu-smoke"], "timeout_seconds": 300,
          "environment": {"XAIOS_QEMU_SMOKE_TIMEOUT": "240"}},
+        {"name": "usb_keyboard_console", "command": ["python3", "tests/scripts/qemu-keyboard-input-gate.py", "--arch", "aarch64"], "timeout_seconds": 420},
         {"name": "sve_context", "command": ["make", "qemu-aarch64-sve2-gate"], "timeout_seconds": 600},
         {"name": "storage_recovery", "command": ["make", "qemu-storage-crash-test"], "timeout_seconds": 1500,
          "environment": {"XAIOS_QEMU_STORAGE_CRASH_TIMEOUT": "240"}},
@@ -88,9 +89,10 @@
         "accelerator": "tcg unless explicitly recorded otherwise"
       },
       "required_firmware_tables": ["RSDP", "XSDT/RSDT", "MADT", "SRAT", "SLIT", "HMAT", "MCFG"],
-      "expected_devices": ["xAPIC/IOAPIC", "PCI config I/O", "VirtIO-PCI block", "VirtIO-PCI net", "QEMU NVMe/MSI-X"],
+      "expected_devices": ["xAPIC/IOAPIC", "PCI config I/O", "VirtIO-PCI block", "VirtIO-PCI net", "QEMU NVMe/MSI-X", "QEMU xHCI USB HID keyboard"],
       "gates": [
         {"name": "boot_network_ssh", "command": ["make", "qemu-x86_64-smoke"], "timeout_seconds": 360},
+        {"name": "usb_keyboard_console", "command": ["python3", "tests/scripts/qemu-keyboard-input-gate.py", "--arch", "x86_64"], "timeout_seconds": 420},
         {"name": "cpu_matrix", "command": ["make", "qemu-x86_64-cpu-matrix"], "timeout_seconds": 1500},
         {"name": "platform_inventory", "command": ["make", "qemu-x86_64-platform-matrix"], "timeout_seconds": 1800},
         {"name": "numa_firmware", "command": ["make", "qemu-x86_64-numa-gate"], "timeout_seconds": 600},

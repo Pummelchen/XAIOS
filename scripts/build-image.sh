@@ -406,6 +406,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/kmain.o
   $KERNEL_BUILD_DIR/boot_ui.o
   $KERNEL_BUILD_DIR/klog.o
+  $KERNEL_BUILD_DIR/input.o
   $KERNEL_BUILD_DIR/klog_ring.o
   $KERNEL_BUILD_DIR/telemetry.o
   $KERNEL_BUILD_DIR/panic.o
@@ -508,6 +509,7 @@ fi
 compile_kernel "$ROOT_DIR/kernel/core/kmain.c" "$KERNEL_BUILD_DIR/kmain.o"
 compile_kernel "$ROOT_DIR/kernel/core/boot_ui.c" "$KERNEL_BUILD_DIR/boot_ui.o"
 compile_kernel "$ROOT_DIR/kernel/core/klog.c" "$KERNEL_BUILD_DIR/klog.o"
+compile_kernel "$ROOT_DIR/kernel/dev/input.c" "$KERNEL_BUILD_DIR/input.o"
 compile_kernel "$ROOT_DIR/kernel/core/klog_ring.c" "$KERNEL_BUILD_DIR/klog_ring.o"
 compile_kernel "$ROOT_DIR/kernel/core/telemetry.c" "$KERNEL_BUILD_DIR/telemetry.o"
 compile_kernel "$ROOT_DIR/kernel/core/panic.c" "$KERNEL_BUILD_DIR/panic.o"

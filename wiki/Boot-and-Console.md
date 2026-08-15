@@ -46,7 +46,9 @@ admin@xaios:/$
 The serial console supports independent working-directory state, line editing,
 `Backspace`, `Ctrl-C`, `Ctrl-L`, logout, filesystem commands, `nano`, `less`,
 `htop`, and `pong`. Password input is not echoed. Failed authentication does
-not create a shell session.
+not create a shell session. The same byte-oriented console interface accepts
+USB HID boot-keyboard input from the default xHCI device on both QEMU ARM64 and
+QEMU x86_64; PL011 serial remains available when no USB keyboard is attached.
 
 ## Verbose diagnostics
 
@@ -68,9 +70,10 @@ and reclaim them after exit.
 
 On VMware Fusion, the graphics window displays the compact 8x16 post-UEFI
 status screen, including the 100% completion state and the current local login
-prompt with a blinking cursor. It mirrors the PL011 serial-console state but
-does not yet receive graphical keyboard input. Interactive local login uses
-PL011; use SSH for an interactive network terminal.
+prompt with a blinking cursor. The bundle exposes an xHCI controller to the
+common USB HID input driver; the interactive Fusion window path is documented
+as a separate qualification scope. PL011 remains the headless console and SSH
+remains the network terminal.
 
 See [[Networking and SSH|Networking-and-SSH]], [[Security Model|Security-Model]],
 and [[Applications|Applications]].
