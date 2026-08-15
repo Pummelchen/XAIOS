@@ -1,12 +1,19 @@
 # Project Tracker
 
-Last reviewed: 2026-08-14.
+Last reviewed: 2026-08-15.
 
 The current QEMU closure revision passes hosted, AArch64/x86_64 smoke, libc,
 dual-architecture all-queue NVMe interrupt, SVE2 per-task context, x86 HMAT/
 1-GiB/TLB, MutableFS-v5 migration/scale, TLS xapt, and external network gates.
 The final consolidated report deliberately retains
 `physical_qualification=false`.
+
+The current three-profile virtual-platform evidence set passes at
+`adc0b69a1b4e6eb8f1c123fcc25aa3a73d6a881e`: macOS QEMU ARM64, macOS VMware
+Fusion ARM64, and Intel VPS QEMU x86_64. The completed Fusion 26H1 (26.0.0)
+one-vCPU profile is removed from the open-work tables; it covers UEFI/GRUB
+boot, E1000E DHCP IPv4, AHCI MutableFS, public-key SSH/SFTP, abrupt-stop
+recovery, reboot, shutdown, and repeat boot.
 
 This is the only human-maintained XAIOS project tracker. Roadmaps, milestones,
 phase plans, open decisions, and risks are consolidated here. The Wiki does not
@@ -60,6 +67,21 @@ status.
 | P-05 | Physical Apple NEON evidence | `NOT STARTED` | QEMU cannot satisfy this physical gate. |
 | P-07 | SVE/SVE2 backend | `IN PROGRESS` | ARM64 QEMU executes the SVE2 canary and preserves per-task Z/P/FFR state across scheduling and interrupts. Packed inference kernels, scalar-model differential tests, and physical qualification remain; backend selection stays fail closed. |
 | P-14 | Physical Intel/Xeon evidence | `NOT STARTED` | Physical firmware, ISA, NUMA, storage, network, thermals, and sustained-load gates remain. |
+
+## VMware Fusion ARM64 remaining work
+
+The qualified Fusion boundary is Apple Silicon VMware Fusion 26H1 (26.0.0),
+one vCPU, E1000E, AHCI, DHCP IPv4, and public-key SSH/SFTP. The items below
+are intentionally not implied by that passing profile.
+
+| ID | Item | Status | Evidence / remaining gate |
+|---|---|---|---|
+| F-01 | Fusion multi-vCPU startup | `NOT STARTED` | Fusion UEFI does not expose PSCI `CPU_ON` after `ExitBootServices`. Define a validated UEFI MP Services handoff, add secondary-CPU bring-up and scheduler gates, then qualify 2+ vCPU lifecycle behavior. |
+| F-02 | VMXNET3 networking | `NOT STARTED` | The current profile uses PCI E1000E only. Implement capability-gated VMXNET3 discovery, queue/DMA/interrupt paths, recovery behavior, and IPv4/IPv6 SSH/SFTP interoperability gates. |
+| F-03 | Fusion network feature qualification | `NOT STARTED` | Prove IPv6 TCP/UDP, outbound SSH/SCP, local DNSSEC interoperability, forwarding, and constrained loss/reorder behavior on a Fusion guest; existing QEMU evidence does not transfer automatically. |
+| F-04 | Fusion snapshot and sustained-load qualification | `NOT STARTED` | Define snapshot/resume semantics and run bounded long-duration storage/network, crash-recovery, and repeat-boot tests against generated VMDKs. QEMU durability evidence is not Fusion evidence. |
+| F-05 | Fusion entropy and production-credential boundary | `BLOCKED` | Fusion 26H1 exposes neither `EFI_RNG_PROTOCOL` nor AArch64 RNDR in this profile, so current images use a unique local development seed. Production requires an operator-approved entropy/key-provisioning design and credentials. |
+| F-06 | Fusion release-version coverage | `NOT STARTED` | Qualify each additional Fusion release independently. Fusion 26H1 evidence is not a compatibility claim for earlier/later releases, x86_64 guests, or physical Apple hardware. |
 
 ## Core OS, network, and SSH phases
 
