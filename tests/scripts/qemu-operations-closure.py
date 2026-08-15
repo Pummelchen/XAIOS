@@ -155,6 +155,18 @@ def assert_contains(value: str, *markers: str) -> None:
         raise RuntimeError(f"missing {missing!r} in output {value!r}")
 
 
+def wait_dns_result(key: Path, port: int, command: str, label: str) -> str:
+    """Wait for XAIOS's asynchronous resolver without accepting a timeout."""
+    deadline = time.monotonic() + 15.0
+    value = ""
+    while time.monotonic() < deadline:
+        value = ssh_command(key, port, command, ok=None)
+        if "pending" not in value:
+            return value
+        time.sleep(0.5)
+    raise RuntimeError(f"DNS {label} remained pending for 15 seconds")
+
+
 def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
     port = reserve_port()
     persistent = BUILD / f"operations-{arch}-persistent.img"
@@ -222,11 +234,7 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
         time.sleep(1.0)
         ping = ssh_command(key, port, "ping status")
         assert_contains(ping, "target=10.0.2.2", "rtt_ns=")
-        first_dns = ssh_command(key, port, "nslookup example.com", ok=None)
-        time.sleep(1.0)
-        second_dns = ssh_command(key, port, "nslookup example.com", ok=None)
-        if "pending" in first_dns and "pending" in second_dns:
-            raise RuntimeError("DNS remained pending after the network poll interval")
+        second_dns = wait_dns_result(key, port, "nslookup example.com", "A")
         dns_value = second_dns.partition(": ")[2].strip()
         if dns_value != "dnssec-unverified":
             try:
@@ -236,11 +244,7 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
                 raise RuntimeError(
                     "DNS A response was neither authenticated nor fail-closed"
                 ) from error
-        first_aaaa = ssh_command(key, port, "nslookup -6 example.com", ok=None)
-        time.sleep(1.0)
-        second_aaaa = ssh_command(key, port, "nslookup -6 example.com", ok=None)
-        if "pending" in first_aaaa and "pending" in second_aaaa:
-            raise RuntimeError("DNS AAAA remained pending after the network poll interval")
+        second_aaaa = wait_dns_result(key, port, "nslookup -6 example.com", "AAAA")
         aaaa_value = second_aaaa.partition(": ")[2].strip()
         if aaaa_value != "dnssec-unverified":
             try:
