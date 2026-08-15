@@ -9,7 +9,11 @@ runtime services, and telemetry in dependency order.
 A normal boot displays `XAI OS`, with `XAI` in purple and `OS` in cyan, an
 in-place 0-100% progress bar, the component that completed, the component
 currently loading, and the remaining count. At completion it prints the
-configured IPv4 address and one of these outcomes:
+configured IPv4 address without padding between address components. If a
+checksum-valid Router Advertisement supplies an autonomous global-unicast
+`/64` prefix, it also prints the resulting `PUBLIC IPV6` SLAAC address.
+Link-local and unique-local IPv6 addresses are not shown as public addresses.
+It then reports one of these outcomes:
 
 - `SSH server: up and running` only after the listener is operational;
 - a numeric startup error when networking, IPv4 reachability, entropy,

@@ -12,7 +12,8 @@ devices through ACPI/PCI rather than selecting a Fusion-specific core path.
 
 Fusion's UEFI Graphics Output Protocol framebuffer is passed to the kernel
 when valid. The kernel continues a compact 8x16 console-style progress display
-after UEFI hands off at 20%, then renders the IPv4 address, verified SSH state
+after UEFI hands off at 20%, then renders the IPv4 address, an assigned public
+IPv6 SLAAC address when a validated Router Advertisement provides one, verified SSH state
 and the current local-authentication prompt with a blinking cursor at 100%.
 The graphics window is status-only; it mirrors PL011 serial-console state but
 cannot receive graphical keyboard input until a Fusion input driver exists.

@@ -627,14 +627,24 @@ xaios_status_t ndp_process_router_advertisement(const uint8_t *frame,
   if (next_header != XAIOS_IPV6_NEXT_ICMPV6) {
     return XAIOS_ERR_INVALID;
   }
+  if (src_ip.family != XAIOS_IP_FAMILY_V6 || src_ip.addr[0] != UINT8_C(0xfe) ||
+      (src_ip.addr[1] & UINT8_C(0xc0)) != UINT8_C(0x80)) {
+    return XAIOS_ERR_INVALID;
+  }
 
   const uint8_t *icmpv6 = frame + XAIOS_ICMPV6_OFFSET;
-  if (icmpv6[0] != XAIOS_ICMPV6_ROUTER_ADVERT) {
+  if (icmpv6[0] != XAIOS_ICMPV6_ROUTER_ADVERT || icmpv6[1] != 0U) {
     return XAIOS_ERR_INVALID;
   }
 
   uint64_t icmpv6_len = (uint64_t)payload_length;
-  if (icmpv6_len < 16U) { /* RA header: 4 + 4 + 4 + 4 = 16 bytes min */
+  if (icmpv6_len < 16U || icmpv6_len > frame_len - XAIOS_ICMPV6_OFFSET) {
+    return XAIOS_ERR_INVALID;
+  }
+  xaios_ip_addr_t dst_ip;
+  xaios_ip_addr_from_raw_ipv6(&dst_ip, frame + 38U);
+  if (ipv6_pseudo_checksum(&src_ip, &dst_ip, XAIOS_IPV6_NEXT_ICMPV6,
+                           payload_length, icmpv6, payload_length) != 0U) {
     return XAIOS_ERR_INVALID;
   }
 
@@ -643,15 +653,18 @@ xaios_status_t ndp_process_router_advertisement(const uint8_t *frame,
 
   /* Extract source link-layer address */
   uint32_t offset = 16U;
-  while (offset + 8U <= icmpv6_len) {
+  while (offset + 2U <= icmpv6_len) {
     uint8_t opt_type = icmpv6[offset];
     uint8_t opt_len = icmpv6[offset + 1U];
-    if (opt_len == 0) break;
+    uint32_t option_bytes = (uint32_t)opt_len * 8U;
+    if (opt_len == 0 || option_bytes > icmpv6_len - offset) {
+      return XAIOS_ERR_INVALID;
+    }
     if (opt_type == 1 && opt_len == 1) {
       /* Source Link-Layer Address: cache the source */
       ndp_cache_insert(&src_ip, icmpv6 + offset + 2);
     }
-    offset += (uint32_t)opt_len * 8U;
+    offset += option_bytes;
   }
 
   /* Store default gateway from RA source */
@@ -866,6 +879,8 @@ void ndp_self_test(void) {
     xaios_ip_addr_t ra_src;
     ra_src.family = XAIOS_IP_FAMILY_V6;
     for (uint32_t j = 0; j < 16; ++j) ra_src.addr[j] = 0;
+    ra_src.addr[0] = 0xFE;
+    ra_src.addr[1] = 0x80;
     ra_src.addr[15] = 0xFE; /* fe80::fe */
 
     /* Build a minimal RA: eth + ipv6 + icmpv6(type=134) + source-ll-option */

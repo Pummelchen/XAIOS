@@ -1,5 +1,6 @@
 #include <xaios/boot_ui.h>
 #include <xaios/klog.h>
+#include <xaios/network_stack.h>
 
 #ifndef XAIOS_BOOT_TEST_APPS
 #define XAIOS_BOOT_TEST_APPS 0
@@ -199,12 +200,44 @@ static void fb_uint(uint32_t x, uint32_t y, uint32_t value, uint32_t color) {
   }
 }
 
+static uint32_t fb_uint_width(uint32_t value) {
+  if (value < 10U) return 1U;
+  if (value < 100U) return 2U;
+  return 3U;
+}
+
 static void fb_ipv4(uint32_t x, uint32_t y, uint32_t address, uint32_t color) {
   for (uint32_t octet = 0U; octet < 4U; ++octet) {
-    fb_uint(x, y, (address >> (24U - octet * 8U)) & UINT32_C(0xff), color);
-    x += 4U * FB_GLYPH_ADVANCE;
+    uint32_t value = (address >> (24U - octet * 8U)) & UINT32_C(0xff);
+    fb_uint(x, y, value, color);
+    x += fb_uint_width(value) * FB_GLYPH_ADVANCE;
     if (octet != 3U) {
       fb_glyph(x, y, '.', color);
+      x += FB_GLYPH_ADVANCE;
+    }
+  }
+}
+
+static void fb_hex4(uint32_t x, uint32_t y, uint16_t value, uint32_t color) {
+  for (uint32_t shift = 12U;; shift -= 4U) {
+    uint32_t digit = (value >> shift) & UINT16_C(0xf);
+    fb_glyph(x, y, digit < 10U ? (char)('0' + digit)
+                                : (char)('A' + digit - 10U), color);
+    x += FB_GLYPH_ADVANCE;
+    if (shift == 0U) return;
+  }
+}
+
+static void fb_ipv6(uint32_t x, uint32_t y, const xaios_ip_addr_t *address,
+                    uint32_t color) {
+  if (address == 0 || address->family != XAIOS_IP_FAMILY_V6) return;
+  for (uint32_t group = 0U; group < 8U; ++group) {
+    uint16_t value = (uint16_t)((uint16_t)address->addr[group * 2U] << 8U) |
+                     address->addr[group * 2U + 1U];
+    fb_hex4(x, y, value, color);
+    x += 4U * FB_GLYPH_ADVANCE;
+    if (group != 7U) {
+      fb_glyph(x, y, ':', color);
       x += FB_GLYPH_ADVANCE;
     }
   }
@@ -244,18 +277,27 @@ static void fb_draw_ready(const xaios_boot_ui_control_t *control) {
   const uint32_t white = fb_color(220U, 220U, 220U);
   const uint32_t margin = g_framebuffer.width > FB_MARGIN * 2U ? FB_MARGIN : 8U;
   const uint32_t base_y = margin + 142U;
+  xaios_ip_addr_t public_ipv6;
+  uint32_t prompt_y = base_y + 72U;
   fb_text(margin, base_y, "IPV4:", cyan);
   fb_ipv4(margin + 54U, base_y, control->ipv4, white);
-  fb_text(margin, base_y + 24U, "SSH SERVER: UP TCP/22", green);
+  if (network_stack_local_public_ipv6(&public_ipv6) == XAIOS_OK) {
+    fb_text(margin, base_y + 24U, "PUBLIC IPV6:", cyan);
+    fb_ipv6(margin + 117U, base_y + 24U, &public_ipv6, white);
+    fb_text(margin, base_y + 48U, "SSH SERVER: UP TCP/22", green);
+    prompt_y = base_y + 96U;
+  } else {
+    fb_text(margin, base_y + 24U, "SSH SERVER: UP TCP/22", green);
+  }
   /* Reserve one full terminal row after SSH readiness before the prompt. */
   if (control->console_state == XAIOS_BOOT_UI_CONSOLE_LOGIN) {
-    fb_text(margin, base_y + 72U, "XAIOS LOGIN:", cyan);
+    fb_text(margin, prompt_y, "XAIOS LOGIN:", cyan);
   } else if (control->console_state == XAIOS_BOOT_UI_CONSOLE_PASSWORD) {
-    fb_text(margin, base_y + 72U, "PASSWORD:", cyan);
+    fb_text(margin, prompt_y, "PASSWORD:", cyan);
   } else if (control->console_state == XAIOS_BOOT_UI_CONSOLE_SHELL) {
-    fb_text(margin, base_y + 72U, "ADMIN@XAIOS:/$", green);
+    fb_text(margin, prompt_y, "ADMIN@XAIOS:/$", green);
   } else {
-    fb_text(margin, base_y + 72U, "LOCAL LOGIN: KEY ONLY", white);
+    fb_text(margin, prompt_y, "LOCAL LOGIN: KEY ONLY", white);
   }
   if (control->console_state != XAIOS_BOOT_UI_CONSOLE_LOCKED &&
       control->cursor_visible != 0U) {
@@ -267,7 +309,7 @@ static void fb_draw_ready(const xaios_boot_ui_control_t *control) {
     } else {
       cursor_x += UINT32_C(15) * FB_GLYPH_ADVANCE;
     }
-    fb_glyph(cursor_x, base_y + 72U, '_', white);
+    fb_glyph(cursor_x, prompt_y, '_', white);
   }
 }
 

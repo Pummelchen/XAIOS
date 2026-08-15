@@ -116,6 +116,8 @@ uint64_t network_ndp_reply_count(void);
 uint64_t network_ipv6_rx_count(void);
 uint32_t network_stack_local_ipv4(void);
 xaios_status_t network_stack_local_mac(uint8_t mac[6]);
+/* Returns the current SLAAC global-unicast address, never link-local or ULA. */
+xaios_status_t network_stack_local_public_ipv6(xaios_ip_addr_t *address);
 xaios_status_t network_stack_ping_start(uint32_t target_ip);
 xaios_network_ping_status_t network_stack_ping_status(void);
 

@@ -18,7 +18,8 @@ NIC and a standard AHCI SATA controller, selected from PCI identifiers rather
 than a Fusion-specific kernel path.
 
 The generated VM is bridged by default. It obtains its IPv4 configuration by
-DHCP, prints the lease address at boot, and starts SSH only after the kernel
+DHCP, prints the lease address without padding between address components at
+boot, and starts SSH only after the kernel
 has initialized the selected network device and IPv4 configuration. A
 per-build 64-byte development seed is provisioned into the UEFI image because
 the tested Fusion firmware exposes neither `EFI_RNG_PROTOCOL` nor AArch64
@@ -31,6 +32,10 @@ the kernel continues a compact, sharp 8x16 console-style boot display after `Exi
 this prevents Fusion from leaving the final UEFI 20% frame visible while the
 kernel finishes booting on its serial console. At 100%, the display shows the
 IPv4 address, verified SSH state and the current local-authentication prompt.
+When a checksum-valid Router Advertisement supplies an autonomous global
+unicast `/64` prefix, it also shows the resulting `PUBLIC IPV6` SLAAC address.
+Link-local and unique-local IPv6 addresses are intentionally not presented as
+public addresses.
 The screen leaves a terminal row below the SSH status and mirrors the serial
 login state with a blinking cursor. Fusion's graphics device is status-only:
 the authoritative interactive local console is the PL011 serial device. The

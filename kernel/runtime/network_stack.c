@@ -286,6 +286,8 @@ static uint64_t g_icmpv6_reply_count;
 static uint64_t g_ndp_reply_count;
 static uint64_t g_ipv6_rx_count;
 static xaios_ip_addr_t g_link_local_v6;
+static xaios_ip_addr_t g_public_v6;
+static uint64_t g_public_v6_valid_until_ns;
 static xaios_network_ping_status_t g_ping;
 static uint64_t g_ping_sent_ns;
 static uint16_t g_ping_sequence;
@@ -841,6 +843,55 @@ static void write_be32(uint8_t *dst, uint32_t value) {
   dst[1] = (uint8_t)(value >> 16U);
   dst[2] = (uint8_t)(value >> 8U);
   dst[3] = (uint8_t)value;
+}
+
+static int network_ipv6_is_global_unicast(const xaios_ip_addr_t *address) {
+  return address != 0 && address->family == XAIOS_IP_FAMILY_V6 &&
+         (address->addr[0] & UINT8_C(0xe0)) == UINT8_C(0x20);
+}
+
+static void network_ipv6_slaac_from_prefix(xaios_ip_addr_t *address,
+                                           const uint8_t prefix[16]) {
+  address->family = XAIOS_IP_FAMILY_V6;
+  for (uint32_t i = 0U; i < 8U; ++i) address->addr[i] = prefix[i];
+  address->addr[8] = g_local_mac[0] ^ UINT8_C(0x02);
+  address->addr[9] = g_local_mac[1];
+  address->addr[10] = g_local_mac[2];
+  address->addr[11] = UINT8_C(0xff);
+  address->addr[12] = UINT8_C(0xfe);
+  address->addr[13] = g_local_mac[3];
+  address->addr[14] = g_local_mac[4];
+  address->addr[15] = g_local_mac[5];
+}
+
+static void network_ipv6_apply_router_advertisement(const uint8_t *frame,
+                                                     uint32_t frame_len,
+                                                     uint64_t now_ns) {
+  if (frame == 0 || frame_len < XAIOS_ICMPV6_OFFSET + 16U) return;
+  uint32_t payload_len = read_u16_be(frame + 18U);
+  if (payload_len < 16U || payload_len > frame_len - XAIOS_ICMPV6_OFFSET) return;
+
+  const uint8_t *icmpv6 = frame + XAIOS_ICMPV6_OFFSET;
+  for (uint32_t offset = 16U; offset + 2U <= payload_len;) {
+    uint32_t option_len = (uint32_t)icmpv6[offset + 1U] * 8U;
+    if (option_len == 0U || option_len > payload_len - offset) return;
+    if (icmpv6[offset] == 3U && option_len == 32U &&
+        icmpv6[offset + 2U] == 64U &&
+        (icmpv6[offset + 3U] & UINT8_C(0x40)) != 0U) {
+      uint32_t valid_lifetime_s = read_u32_be(icmpv6 + offset + 4U);
+      xaios_ip_addr_t candidate;
+      network_ipv6_slaac_from_prefix(&candidate, icmpv6 + offset + 16U);
+      if (valid_lifetime_s != 0U && network_ipv6_is_global_unicast(&candidate)) {
+        uint64_t lifetime_ns = (uint64_t)valid_lifetime_s * UINT64_C(1000000000);
+        g_public_v6 = candidate;
+        g_public_v6_valid_until_ns =
+            lifetime_ns > UINT64_MAX - now_ns ? UINT64_MAX : now_ns + lifetime_ns;
+        klog("network: public IPv6 SLAAC address configured\n");
+      }
+      return;
+    }
+    offset += option_len;
+  }
 }
 
 static uint32_t tcp_generate_isn(uint32_t flow_id) {
@@ -4425,6 +4476,45 @@ void network_stack_self_test(void) {
   network_stack_unregister_udp_listener(UINT16_C(0x5678));
   kassert(network_stack_queue_bindings() == 0U);
 
+  {
+    uint8_t ra_frame[14U + 40U + 16U + 32U] = {0};
+    uint8_t saved_mac[6];
+    const uint8_t test_mac[6] = {0x02U, 0x11U, 0x22U,
+                                 0x33U, 0x44U, 0x55U};
+    for (uint32_t i = 0U; i < 6U; ++i) {
+      saved_mac[i] = g_local_mac[i];
+      g_local_mac[i] = test_mac[i];
+    }
+    write_be16(ra_frame + 18U, 48U);
+    uint8_t *ra_icmpv6 = ra_frame + XAIOS_ICMPV6_OFFSET;
+    ra_icmpv6[0] = XAIOS_ICMPV6_ROUTER_ADVERT;
+    ra_icmpv6[16] = 3U; /* Prefix Information option */
+    ra_icmpv6[17] = 4U; /* 32 bytes */
+    ra_icmpv6[18] = 64U;
+    ra_icmpv6[19] = UINT8_C(0x40); /* Autonomous address configuration */
+    write_be32(ra_icmpv6 + 20U, 60U);
+    ra_icmpv6[32] = UINT8_C(0x20);
+    ra_icmpv6[33] = UINT8_C(0x01);
+    ra_icmpv6[34] = UINT8_C(0x0d);
+    ra_icmpv6[35] = UINT8_C(0xb8);
+    xaios_ip_addr_zero(&g_public_v6);
+    g_public_v6_valid_until_ns = 0U;
+    network_ipv6_apply_router_advertisement(ra_frame, sizeof(ra_frame), 10U);
+    kassert(network_ipv6_is_global_unicast(&g_public_v6));
+    kassert(g_public_v6.addr[0] == UINT8_C(0x20));
+    kassert(g_public_v6.addr[8] == 0U);
+    kassert(g_public_v6.addr[11] == UINT8_C(0xff));
+    kassert(g_public_v6.addr[12] == UINT8_C(0xfe));
+    kassert(g_public_v6.addr[15] == UINT8_C(0x55));
+    kassert(g_public_v6_valid_until_ns == UINT64_C(60000000010));
+    ra_icmpv6[17] = 0U;
+    xaios_ip_addr_zero(&g_public_v6);
+    network_ipv6_apply_router_advertisement(ra_frame, sizeof(ra_frame), 10U);
+    kassert(!network_ipv6_is_global_unicast(&g_public_v6));
+    for (uint32_t i = 0U; i < 6U; ++i) g_local_mac[i] = saved_mac[i];
+    klog("network: public IPv6 SLAAC self-test passed\n");
+  }
+
   kassert(network_stack_udp_tx_count() == 3U);
   kassert(network_stack_udp_rx_count() == 3U);
   kassert(network_stack_tcp_reset_count() == 0U);
@@ -4511,6 +4601,8 @@ void network_init_persistent(void) {
     kassert(network_stack_bind_queue(0, 1, 1U) == XAIOS_OK);
   }
   ipv6_link_local_from_mac(&g_link_local_v6, g_local_mac);
+  xaios_ip_addr_zero(&g_public_v6);
+  g_public_v6_valid_until_ns = 0U;
   g_persistent_initialized = 1;
   g_poll_tick_count = 0;
   g_icmp_reply_count = 0;
@@ -4533,6 +4625,19 @@ uint32_t network_stack_local_ipv4(void) { return network_config_local_ipv4(); }
 xaios_status_t network_stack_local_mac(uint8_t mac[6]) {
   if (mac == 0 || g_persistent_initialized == 0U) return XAIOS_ERR_NOT_FOUND;
   for (uint32_t i = 0U; i < 6U; ++i) mac[i] = g_local_mac[i];
+  return XAIOS_OK;
+}
+
+xaios_status_t network_stack_local_public_ipv6(xaios_ip_addr_t *address) {
+  if (address == 0) return XAIOS_ERR_INVALID;
+  if (g_persistent_initialized == 0U ||
+      !network_ipv6_is_global_unicast(&g_public_v6) ||
+      g_public_v6_valid_until_ns == 0U ||
+      timer_now_ns() >= g_public_v6_valid_until_ns) {
+    xaios_ip_addr_zero(address);
+    return XAIOS_ERR_NOT_FOUND;
+  }
+  *address = g_public_v6;
   return XAIOS_OK;
 }
 
@@ -4609,6 +4714,10 @@ static void network_poll_tick_locked(void) {
   }
   uint64_t now_ns = timer_now_ns();
   ntp_tick(now_ns);
+  if (g_public_v6_valid_until_ns != 0U && now_ns >= g_public_v6_valid_until_ns) {
+    xaios_ip_addr_zero(&g_public_v6);
+    g_public_v6_valid_until_ns = 0U;
+  }
   if (g_ping.state == XAIOS_NETWORK_PING_PENDING && now_ns >= g_ping_sent_ns &&
       now_ns - g_ping_sent_ns >= NETWORK_PING_TIMEOUT_NS) {
     g_ping.state = XAIOS_NETWORK_PING_TIMEOUT;
@@ -4740,6 +4849,9 @@ static void network_poll_tick_locked(void) {
           }
         } else if (icmpv6_type == XAIOS_ICMPV6_NEIGHBOR_ADVERT) {
           ndp_process_neighbor_advertisement(rx_buf, frame_len);
+        } else if (icmpv6_type == XAIOS_ICMPV6_ROUTER_ADVERT &&
+                   ndp_process_router_advertisement(rx_buf, frame_len) == XAIOS_OK) {
+          network_ipv6_apply_router_advertisement(rx_buf, frame_len, now_ns);
         }
       }
     } else if (next_header == NETWORK_IP_PROTO_UDP) {
