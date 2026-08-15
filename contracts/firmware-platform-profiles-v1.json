@@ -52,21 +52,21 @@
       "emulator": {
         "binary": "vmrun",
         "machine": "VMware Fusion ARM64",
-        "cpu": "firmware bootstrap policy",
+        "cpu": "single vCPU; Fusion UEFI does not provide PSCI CPU_ON",
         "accelerator": "Fusion managed"
       },
       "required_firmware_tables": ["RSDP", "XSDT/RSDT", "MADT GICC/GICD/GICR", "MCFG"],
       "expected_devices": ["PCI ECAM", "Intel 82574L/E1000E", "AHCI SATA", "PL011-compatible serial"],
       "gates": [
-        {"name": "boot_storage_network_ssh", "command": ["make", "vmware-fusion-smoke"], "timeout_seconds": 600}
+        {"name": "boot_storage_network_ssh_lifecycle", "command": ["make", "vmware-fusion-smoke"], "timeout_seconds": 600}
       ],
       "capabilities": {
         "boot": "required",
-        "cpu": "unavailable-bootstrap-only",
+        "cpu": "required-single-vcpu",
         "storage": "required",
         "network_ssh": "required",
-        "shutdown": "unavailable-not-qualified",
-        "repeat_boot": "unavailable-not-qualified",
+        "shutdown": "required",
+        "repeat_boot": "required",
         "vmxnet3": "unavailable-not-implemented",
         "physical_performance": "unavailable-in-virtualization"
       }

@@ -6,14 +6,15 @@ does not validate a different firmware, hypervisor or CPU architecture.
 | Profile | Platform contract | Required device inventory | Evidence scope |
 |---|---|---|---|
 | macOS QEMU ARM64 | AAVMF/EDK2, ARM ACPI, GICv3, PSCI, PL011 and VirtIO-MMIO | VirtIO-MMIO block/net/RNG | QEMU ARM64 correctness only |
-| macOS VMware Fusion ARM64 | Fusion 26H1 (26.0.0) UEFI through generated GRUB chainload, ARM ACPI and PCI ECAM | E1000E, AHCI and PL011-compatible serial | Fusion 26H1 functional guest path |
+| macOS VMware Fusion ARM64 | Fusion 26H1 (26.0.0) UEFI through generated GRUB chainload, one-vCPU ARM ACPI and PCI ECAM | E1000E, AHCI and PL011-compatible serial | Fusion 26H1 full supported lifecycle |
 | Intel VPS QEMU x86_64 | OVMF/EDK2, q35, x86 ACPI MADT/SRAT/SLIT/HMAT, xAPIC/IOAPIC and PCI configuration I/O | VirtIO-PCI block/net and QEMU NVMe/MSI-X | immutable designated Intel VPS QEMU evidence |
 
 The contract records a required table and device inventory plus separate gates
 for boot, CPU, storage, network/SSH, shutdown and repeat boot. It also records
-unavailable capability outcomes. In particular, the Fusion profile does not
-claim qualified multi-vCPU, shutdown/repeat-boot behavior or VMXNET3 merely
-because it can boot an ARM64 guest.
+unavailable capability outcomes. The Fusion profile qualifies its explicit
+one-vCPU boot, SSH/SFTP, persistence/recovery, reboot and shutdown lifecycle.
+It does not claim multi-vCPU or VMXNET3 merely because it can boot an ARM64
+guest.
 
 ## Evidence
 

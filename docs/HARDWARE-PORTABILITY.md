@@ -29,13 +29,14 @@ hypervisor or board identity into core services.
 
 ## Current Status
 
-QEMU is the only complete operating-system correctness environment. VMware
-Fusion ARM64 is an experimental functional guest path tested only on VMware
-Fusion 26H1 (26.0.0), with PCI-discovered E1000E DHCP, AHCI MutableFS and
-public-key SSH evidence on the current Apple Silicon host. It remains incomplete
-for multi-vCPU, VMXNET3, live DNSSEC interoperability and physical
-qualification. Future Fusion and physical drivers must be capability-gated; no
-platform is supported merely because it reports a CPU family or firmware table.
+QEMU is the broadest operating-system correctness environment. VMware Fusion
+ARM64 is a qualified one-vCPU guest path tested only on VMware Fusion 26H1
+(26.0.0), with PCI-discovered E1000E DHCP, AHCI MutableFS, public-key SSH/SFTP,
+recovery, reboot and shutdown evidence on the current Apple Silicon host. It
+remains incomplete for multi-vCPU, VMXNET3, live DNSSEC interoperability and
+physical qualification. Future Fusion and physical drivers must be
+capability-gated; no platform is supported merely because it reports a CPU
+family or firmware table.
 
 The canonical three-profile contract and immutable evidence format are in
 [Firmware Platform Profiles](./FIRMWARE-PLATFORM-PROFILES.md). It keeps macOS

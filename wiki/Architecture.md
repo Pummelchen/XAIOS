@@ -123,7 +123,9 @@ The AArch64 QEMU path provides the broadest OS-service coverage. Each discovered
 CPU has a private translation root and user directory, preventing concurrent
 EL0 workers from replacing another core's mappings. VMware Fusion on Apple
 Silicon now reaches public-key SSH through PCI-discovered E1000E networking and
-AHCI MutableFS persistence. Fusion multi-vCPU qualification remains open.
+AHCI MutableFS persistence, public-key SSH/SFTP, recovery, reboot and orderly
+shutdown. Fusion multi-vCPU qualification remains open because its UEFI path
+does not expose PSCI CPU_ON.
 
 The x86_64 QEMU image executes the common kernel and complete userspace/service
 image. MADT-discovered application processors run EL0 workers with per-CPU user

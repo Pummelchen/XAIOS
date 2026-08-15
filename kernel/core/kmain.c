@@ -284,6 +284,7 @@ void kmain(const xaios_boot_info_t *boot) {
 
   klog("VMM architecture device mappings installed\n");
   kheap_self_test();
+  exception_runtime_init();
   topology_init();
   topology_self_test();
   arena_manager_init();

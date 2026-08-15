@@ -85,9 +85,9 @@ It is correctness evidence, not production or hardware-performance evidence.
 
 ### VMware Fusion on Apple Silicon
 
-VMware Fusion on Apple Silicon is an experimental ARM64 functional guest
-target. Docker builds the reproducible Debian 13 ARM64 GRUB compatibility
-stage; XAIOS uses PCI-discovered E1000E networking and AHCI SATA storage.
+VMware Fusion on Apple Silicon has a qualified one-vCPU ARM64 guest profile.
+Docker builds the reproducible Debian 13 ARM64 GRUB compatibility stage; XAIOS
+uses PCI-discovered E1000E networking and AHCI SATA storage.
 
 ```sh
 make vmware-fusion-image
@@ -96,8 +96,9 @@ make vmware-fusion
 ```
 
 The generated VM is bridged by default, receives a DHCP address, and creates a
-writable SATA VMDK for MutableFS. Build with a disposable authorized key to
-test SSH. Fusion still lacks multi-vCPU qualification, VMXNET3, complete live
+writable SATA VMDK for MutableFS. `make vmware-fusion-smoke` uses a disposable
+authorized key and validates SSH, SFTP, recovery, reboot, shutdown and repeat
+boot. Fusion still lacks multi-vCPU qualification, VMXNET3, complete live
 DNSSEC interoperability, and physical-performance evidence; it also cannot
 validate x86_64 guests. See [`VMWARE-FUSION.md`](./VMWARE-FUSION.md).
 
@@ -116,7 +117,7 @@ validate x86_64 guests. See [`VMWARE-FUSION.md`](./VMWARE-FUSION.md).
 | `make qemu-regression-suite` | Full regression suite |
 | `make qemu-benchmark` | QEMU correctness telemetry collection |
 | `make qemu-readiness-gate` | QEMU correctness-readiness validation |
-| `make vmware-fusion-smoke` | ARM64 Fusion boot, E1000E DHCP, AHCI MutableFS and SSH readiness |
+| `make vmware-fusion-smoke` | Fusion one-vCPU boot, E1000E DHCP, AHCI MutableFS, SSH/SFTP, recovery, reboot, shutdown and repeat boot |
 
 ### Mac client interoperability
 

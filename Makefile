@@ -51,8 +51,6 @@ vmware-fusion: vmware-fusion-image
 	./scripts/run-vmware-fusion.sh
 
 vmware-fusion-smoke:
-	XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
-	./scripts/build-vmware-fusion.sh
 	python3 ./tests/scripts/vmware-fusion-smoke.py
 
 vmware-fusion-dry-run:

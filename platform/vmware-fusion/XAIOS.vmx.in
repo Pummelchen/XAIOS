@@ -6,7 +6,9 @@ displayName = "XAIOS"
 guestOS = "arm-other-64"
 firmware = "efi"
 uefi.secureBoot.enabled = "FALSE"
-numvcpus = "4"
+# Fusion UEFI does not expose PSCI CPU_ON after ExitBootServices. Keep the
+# generated profile at the one CPU that XAIOS can bring online correctly.
+numvcpus = "1"
 memsize = "2048"
 sata0.present = "TRUE"
 sata0:0.present = "TRUE"

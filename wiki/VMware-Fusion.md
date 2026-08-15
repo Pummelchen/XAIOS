@@ -1,9 +1,10 @@
 # VMware Fusion
 
-XAIOS has an experimental functional ARM64 guest path for VMware Fusion 26H1
-(26.0.0) on Apple Silicon. It remains virtual-platform correctness evidence,
-not a compatibility claim for other Fusion releases, physical Apple Silicon
-performance, or production certification.
+XAIOS has a qualified virtual ARM64 guest profile for VMware Fusion 26H1
+(26.0.0) on Apple Silicon. The supported profile is one vCPU with E1000E and
+AHCI. It remains virtual-platform correctness evidence, not a compatibility
+claim for other Fusion releases, physical Apple Silicon performance, or
+production certification.
 
 The generated VM uses the Debian 13 ARM64 GRUB chainloader to launch the same
 XAIOS UEFI loader used by the common firmware path. The kernel discovers its
@@ -15,7 +16,9 @@ devices through ACPI/PCI rather than selecting a Fusion-specific core path.
 - Bridged DHCP IPv4 configuration and the boot-screen lease address.
 - Standard AHCI SATA discovery, ATA identify, writable MutableFS format, and
   reload of the same VMDK after reboot.
-- Public-key SSH command execution from macOS to the bridged guest.
+- Mac-local public-key SSH command execution and SFTP upload/download.
+- Persistent SSH writes across hard-stop recovery, guest reboot, orderly
+  shutdown with storage quiescing, and a clean repeat boot.
 
 Build the bundle with:
 
@@ -36,12 +39,16 @@ The generated bundle and its 256 MiB VMDK live under
 `build/vmware-fusion/XAIOS.vmwarevm`. Rebuilding the bundle creates a new VMDK;
 ordinary reboots preserve it.
 
+`make vmware-fusion-smoke` builds a disposable public-key image and performs
+the complete lifecycle above. It leaves no VM running when it succeeds or
+fails.
+
 ## Remaining Boundary
 
 - Fusion multi-vCPU startup remains bootstrap-only.
 - VMXNET3 is not implemented; the qualified device is E1000E.
-- Live recursive DNSSEC, IPv6/SFTP/outbound client, clean shutdown and
-  long-duration Fusion service gates are not complete.
+- IPv6, outbound SSH/SCP, VM snapshot semantics and long-duration Fusion
+  service gates remain separate work.
 - Fusion on Apple Silicon does not validate x86_64 guests or physical hardware.
 
 See the repository [Fusion detail document](https://github.com/Pummelchen/XAIOS/blob/main/docs/VMWARE-FUSION.md),

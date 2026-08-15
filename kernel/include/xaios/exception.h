@@ -24,6 +24,8 @@ typedef enum xaios_exception_kind {
 } xaios_exception_kind_t;
 
 void exception_init(void);
+/* Allocate per-CPU exception state after the kernel heap is available. */
+void exception_runtime_init(void);
 void exception_self_test(void);
 void exception_trigger_page_fault_for_test(void);
 uint64_t aarch64_exception_entry(uint64_t kind, uint64_t esr, uint64_t elr,

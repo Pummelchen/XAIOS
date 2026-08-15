@@ -3,9 +3,11 @@
 #include <xaios/context.h>
 #include <xaios/exception.h>
 #include <xaios/gic.h>
+#include <xaios/kheap.h>
 #include <xaios/klog.h>
 #include <xaios/panic.h>
 #include <xaios/scheduler.h>
+#include <xaios/smp.h>
 #include <xaios/syscall.h>
 #include <xaios/timer.h>
 #include <xaios/user.h>
@@ -39,6 +41,18 @@ extern char __exception_vectors[];
  * instruction instead of panicking. Used for probing optional hardware. */
 static volatile int g_mmio_probe_active = 0;
 static volatile int g_mmio_probe_faulted = 0;
+static uint32_t *g_user_access_depth_by_cpu;
+static uint32_t g_user_access_depth_capacity;
+static uint32_t g_bootstrap_user_access_depth;
+
+static uint32_t *user_access_depth_slot(void) {
+  uint32_t cpu_id = smp_cpu_id();
+  if (g_user_access_depth_by_cpu != 0U &&
+      cpu_id < g_user_access_depth_capacity) {
+    return &g_user_access_depth_by_cpu[cpu_id];
+  }
+  return &g_bootstrap_user_access_depth;
+}
 
 static int pan_supported(void) {
   uint64_t features = 0U;
@@ -47,6 +61,12 @@ static int pan_supported(void) {
 }
 
 static void user_access_enable(void) {
+  uint32_t *depth = user_access_depth_slot();
+  kassert(*depth != UINT32_MAX);
+  ++(*depth);
+  /* Exception return installs the child's PSTATE, so every nested EL0
+   * syscall must re-open privileged access even when its parent remains in
+   * a user-copy section. The depth controls only when PAN is re-enabled. */
   if (pan_supported()) {
     __asm__ volatile(".inst 0xd500409f\n" /* msr PAN, #0 */
                      "isb\n"
@@ -57,7 +77,9 @@ static void user_access_enable(void) {
 }
 
 static void user_access_disable(void) {
-  if (pan_supported()) {
+  uint32_t *depth = user_access_depth_slot();
+  kassert(*depth != 0U);
+  if (--(*depth) == 0U && pan_supported()) {
     __asm__ volatile(".inst 0xd500419f\n" /* msr PAN, #1 */
                      "isb\n"
                      :
@@ -144,6 +166,9 @@ static const char *exception_class_name(uint64_t ec) {
 }
 
 void exception_init(void) {
+  g_user_access_depth_by_cpu = 0;
+  g_user_access_depth_capacity = 0U;
+  g_bootstrap_user_access_depth = 0U;
   uint64_t vector_base = (uint64_t)(uintptr_t)__exception_vectors;
   __asm__ volatile(
       "msr vbar_el1, %[vectors]\n"
@@ -153,6 +178,22 @@ void exception_init(void) {
       : "memory");
 
   klog("exceptions: VBAR_EL1=0x%lx\n", vector_base);
+}
+
+void exception_runtime_init(void) {
+  uint32_t capacity = smp_capacity();
+  if (capacity == 0U) {
+    capacity = 1U;
+  }
+  g_user_access_depth_by_cpu =
+      (uint32_t *)kheap_calloc((uint64_t)capacity *
+                                   sizeof(*g_user_access_depth_by_cpu),
+                               16U);
+  kassert(g_user_access_depth_by_cpu != 0U);
+  g_user_access_depth_capacity = capacity;
+  g_user_access_depth_by_cpu[0] = g_bootstrap_user_access_depth;
+  g_bootstrap_user_access_depth = 0U;
+  klog("exceptions: per-cpu user-access nesting contexts=%u\n", capacity);
 }
 
 void exception_self_test(void) {

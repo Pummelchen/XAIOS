@@ -102,6 +102,8 @@ void exception_init(void) {
   klog("exceptions: x86 IDT active\n");
 }
 
+void exception_runtime_init(void) {}
+
 void exception_self_test(void) {
   klog("exceptions: x86 controlled INT3 gate verified during early boot\n");
 }

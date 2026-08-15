@@ -1,10 +1,9 @@
 # VMware Fusion ARM64
 
-Status: experimental functional ARM64 guest, tested only with VMware Fusion
-26H1 (26.0.0) on Apple Silicon. VMware Fusion is a distinct virtual-hardware
-target, not a QEMU mode. QEMU remains the reproducible ARM64 and x86_64
-correctness environment; neither result establishes physical hardware
-performance or support.
+Status: qualified virtual ARM64 guest profile, tested only with VMware Fusion
+26H1 (26.0.0) on Apple Silicon. The qualified VM uses one vCPU, E1000E and
+AHCI. VMware Fusion is a distinct virtual-hardware target, not a QEMU mode.
+No virtual result establishes physical hardware performance or support.
 
 ## Verified Scope
 
@@ -38,7 +37,10 @@ On the current Apple Silicon host, Fusion 26H1 (26.0.0) ARM64 evidence covers:
   stack initialization.
 - AHCI ATA identify, writable MutableFS format, and subsequent persistent
   volume reload.
-- Public-key SSH command execution from macOS to the bridged guest.
+- Mac-local public-key SSH command execution and SFTP upload/download to the
+  bridged guest.
+- A persistent file written through SSH, hard-stop recovery, guest-initiated
+  reboot, orderly shutdown with storage quiescing, and a clean repeat boot.
 
 ## Commands
 
@@ -63,7 +65,9 @@ ssh -i /path/to/test-key admin@guest-address
 ```
 
 The build VMDK is recreated when `make vmware-fusion-image` rebuilds the
-bundle. Reboots of the same generated bundle preserve MutableFS state.
+bundle. Reboots and recovery of the same generated bundle preserve MutableFS
+state. `make vmware-fusion-smoke` builds a disposable public-key image and
+proves SSH, SFTP, crash recovery, reboot, clean shutdown and repeat boot.
 
 `make vmware-fusion-smoke` is authoritative only when it writes passing
 evidence from the current host. It is not a release or physical-performance
@@ -71,16 +75,15 @@ gate.
 
 ## Remaining Qualification Work
 
-- Fusion firmware currently reaches the safe bootstrap-only CPU policy; it
-  does not yet prove secondary-vCPU startup through a Fusion firmware method.
+- Fusion multi-vCPU startup is deliberately outside this profile. Fusion UEFI
+  does not expose PSCI `CPU_ON` after `ExitBootServices`; supporting additional
+  CPUs requires a separate UEFI MP Services handoff design and gate.
 - The current NIC path covers E1000E. VMXNET3 is not implemented.
 - Live recursive DNSSEC interoperability needs resolver-response compatibility
   work. DNSSEC callers remain fail-closed; SSH startup is intentionally not
   tied to a third-party DNS or TCP endpoint.
-- SFTP, IPv6, outbound SSH/SCP and long-duration network/storage soak evidence
-  need Fusion-specific gates.
-- Clean guest shutdown, snapshots/recovery and hostile VMware-device tests are
-  not complete.
+- IPv6, outbound SSH/SCP, VM snapshot semantics and long-duration
+  network/storage soak need separate Fusion-specific qualification.
 - Apple Silicon Fusion hosts ARM64 guests only. It is not an x86_64 or physical
   Apple Silicon qualification environment.
 
