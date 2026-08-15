@@ -108,6 +108,12 @@ static const efi_guid_t EFI_RNG_PROTOCOL_GUID = {
     0x433dU,
     {0x86, 0x2e, 0xc0, 0x1c, 0xdc, 0x29, 0x1f, 0x44}};
 
+static const efi_guid_t EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID = {
+    0x9042a9deU,
+    0x23dcU,
+    0x4a38U,
+    {0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a}};
+
 static xaios_boot_info_t g_boot_info;
 /* UEFI loaders must remain relocatable even when all code/data references are PC-relative. */
 static void *g_image_relocation_anchor = &g_image_relocation_anchor;
@@ -150,6 +156,43 @@ static void collect_firmware_entropy(efi_system_table_t *system_table,
     return;
   }
   boot_info->entropy_seed_size = XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES;
+}
+
+static void collect_framebuffer(efi_system_table_t *system_table,
+                                xaios_boot_info_t *boot_info) {
+  if (system_table == 0 || system_table->boot_services == 0 ||
+      system_table->boot_services->locate_protocol == 0 || boot_info == 0) {
+    return;
+  }
+  efi_locate_protocol_t locate_protocol =
+      (efi_locate_protocol_t)system_table->boot_services->locate_protocol;
+  efi_graphics_output_protocol_t *gop = 0;
+  efi_status_t status = locate_protocol(
+      (efi_guid_t *)&EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, 0, (void **)&gop);
+  if (is_error(status) || gop == 0 || gop->mode == 0 ||
+      gop->mode->info == 0 || gop->mode->framebuffer_base == 0U ||
+      gop->mode->framebuffer_size == 0U) {
+    return;
+  }
+  const efi_graphics_output_mode_information_t *info = gop->mode->info;
+  if (info->horizontal_resolution == 0U || info->vertical_resolution == 0U ||
+      info->pixels_per_scan_line < info->horizontal_resolution ||
+      info->pixel_format > 1U) {
+    return;
+  }
+  uint64_t pixels = (uint64_t)info->pixels_per_scan_line *
+                    (uint64_t)info->vertical_resolution;
+  if (pixels > UINT64_MAX / 4U || pixels * 4U > gop->mode->framebuffer_size) {
+    return;
+  }
+  boot_info->framebuffer_base = gop->mode->framebuffer_base;
+  boot_info->framebuffer_size = gop->mode->framebuffer_size;
+  boot_info->framebuffer_width = info->horizontal_resolution;
+  boot_info->framebuffer_height = info->vertical_resolution;
+  boot_info->framebuffer_pixels_per_scan_line = info->pixels_per_scan_line;
+  boot_info->framebuffer_format = info->pixel_format == 0U
+                                      ? XAIOS_FRAMEBUFFER_RGBX8
+                                      : XAIOS_FRAMEBUFFER_BGRX8;
 }
 
 static void loader_puts(efi_system_table_t *system_table,
@@ -878,6 +921,7 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
   }
   mem_set(optional_entropy_seed, 0, sizeof(optional_entropy_seed));
   collect_firmware_entropy(system_table, &g_boot_info);
+  collect_framebuffer(system_table, &g_boot_info);
 
   /* Firmware is permitted to alter the memory map between GetMemoryMap and
    * ExitBootServices. Retry with a fresh key without doing any allocations

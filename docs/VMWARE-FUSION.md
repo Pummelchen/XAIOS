@@ -25,6 +25,13 @@ the tested Fusion firmware exposes neither `EFI_RNG_PROTOCOL` nor AArch64
 RNDR. This seed is unique to the local generated bundle and is not a
 hardware-backed entropy claim.
 
+The UEFI loader passes an optional validated Graphics Output Protocol (GOP)
+framebuffer to the kernel. Where firmware provides an RGBX/BGRX framebuffer,
+the kernel continues the boot progress display after `ExitBootServices`; this
+prevents Fusion from leaving the final UEFI 20% frame visible while the kernel
+finishes booting on its serial console. Serial remains the authoritative
+headless-console path when no usable framebuffer is present.
+
 The bundle includes a 256 MiB SATA VMDK. The AHCI driver registers
 `/dev/ahci0p0` through the generic block-device interface; MutableFS formats a
 new disk and loads the existing volume on later boots. No filesystem behavior

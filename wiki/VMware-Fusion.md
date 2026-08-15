@@ -10,6 +10,10 @@ The generated VM uses the Debian 13 ARM64 GRUB chainloader to launch the same
 XAIOS UEFI loader used by the common firmware path. The kernel discovers its
 devices through ACPI/PCI rather than selecting a Fusion-specific core path.
 
+Fusion's UEFI Graphics Output Protocol framebuffer is passed to the kernel
+when valid. The kernel continues the progress display after UEFI hands off at
+20%, while serial remains the authoritative console for headless operation.
+
 ## Verified On Fusion 26H1 (26.0.0) ARM64
 
 - PCI bridge traversal and Intel 82574L/E1000E-compatible NIC discovery.

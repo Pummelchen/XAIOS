@@ -48,6 +48,9 @@ typedef struct efi_file_protocol efi_file_protocol_t;
 typedef struct efi_block_io_protocol efi_block_io_protocol_t;
 typedef struct efi_block_io_media efi_block_io_media_t;
 typedef struct efi_rng_protocol efi_rng_protocol_t;
+typedef struct efi_graphics_output_protocol efi_graphics_output_protocol_t;
+typedef struct efi_graphics_output_protocol_mode efi_graphics_output_protocol_mode_t;
+typedef struct efi_graphics_output_mode_information efi_graphics_output_mode_information_t;
 typedef struct efi_system_table efi_system_table_t;
 typedef struct efi_configuration_table efi_configuration_table_t;
 
@@ -204,6 +207,31 @@ typedef efi_status_t(EFIAPI *efi_rng_get_rng_t)(efi_rng_protocol_t *self,
 struct efi_rng_protocol {
   efi_rng_get_info_t get_info;
   efi_rng_get_rng_t get_rng;
+};
+
+struct efi_graphics_output_mode_information {
+  uint32_t version;
+  uint32_t horizontal_resolution;
+  uint32_t vertical_resolution;
+  uint32_t pixel_format;
+  uint32_t pixel_information[4];
+  uint32_t pixels_per_scan_line;
+};
+
+struct efi_graphics_output_protocol_mode {
+  uint32_t max_mode;
+  uint32_t mode;
+  efi_graphics_output_mode_information_t *info;
+  uint64_t size_of_info;
+  efi_physical_address_t framebuffer_base;
+  uint64_t framebuffer_size;
+};
+
+struct efi_graphics_output_protocol {
+  void *query_mode;
+  void *set_mode;
+  void *blt;
+  efi_graphics_output_protocol_mode_t *mode;
 };
 
 typedef efi_status_t(EFIAPI *efi_locate_protocol_t)(efi_guid_t *protocol,

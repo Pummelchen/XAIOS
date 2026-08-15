@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define XAIOS_BOOT_INFO_MAGIC UINT64_C(0x4f534149424f4f54)
-#define XAIOS_BOOT_INFO_VERSION UINT32_C(8)
+#define XAIOS_BOOT_INFO_VERSION UINT32_C(9)
 #define XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES UINT32_C(64)
 
 #define XAIOS_BOOT_PLATFORM_SMMUV3 UINT32_C(1)
@@ -15,6 +15,10 @@
 #define XAIOS_UART_16550_IO UINT32_C(3)
 
 #define XAIOS_MEMORY_TYPE_CONVENTIONAL UINT32_C(7)
+
+#define XAIOS_FRAMEBUFFER_NONE UINT32_C(0)
+#define XAIOS_FRAMEBUFFER_RGBX8 UINT32_C(1)
+#define XAIOS_FRAMEBUFFER_BGRX8 UINT32_C(2)
 
 typedef struct xaios_memory_descriptor {
   uint32_t type;
@@ -56,6 +60,13 @@ typedef struct xaios_boot_info {
   uint32_t entropy_seed_size;
   uint32_t entropy_reserved;
   uint8_t entropy_seed[XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES];
+  /* Optional UEFI GOP framebuffer. Serial remains the universal console. */
+  uint64_t framebuffer_base;
+  uint64_t framebuffer_size;
+  uint32_t framebuffer_width;
+  uint32_t framebuffer_height;
+  uint32_t framebuffer_pixels_per_scan_line;
+  uint32_t framebuffer_format;
 } xaios_boot_info_t;
 
 #endif

@@ -1,6 +1,7 @@
 #include <xaios/agent_protocol.h>
 #include <xaios/arena.h>
 #include <xaios/assert.h>
+#include <xaios/boot_ui.h>
 #include <xaios/child_channel.h>
 #include <xaios/cpu_ai_runtime.h>
 #include <xaios/control_protocol.h>
@@ -508,6 +509,14 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1, "bad-console-write-buffer");
     }
     bytes_copy(output, (const void *)(uintptr_t)arg0, arg1);
+    if (arg1 == sizeof(xaios_boot_ui_control_t)) {
+      xaios_boot_ui_control_t control;
+      bytes_copy(&control, output, sizeof(control));
+      if (boot_ui_handle_control(&control) != 0U) {
+        user_process_note_syscall(0);
+        return arg1;
+      }
+    }
     klog_console_write(output, arg1);
     user_process_note_syscall(0);
     return arg1;
