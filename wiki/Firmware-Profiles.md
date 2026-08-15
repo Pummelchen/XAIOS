@@ -53,6 +53,10 @@ when it is not a valid MutableFS volume; the kernel continues to the dedicated
 durable volume. A valid NVMe MutableFS namespace remains eligible for root
 persistence.
 
+The 128- and 256-vCPU x86 QEMU topology scenarios have a 480-second TCG
+correctness budget for AP startup and complete services. It does not represent
+a physical-hardware performance target.
+
 QEMU evidence proves the named virtual correctness gates only. It never proves
 physical hardware performance, durability, NUMA locality, thermal behavior or
 PMU results.

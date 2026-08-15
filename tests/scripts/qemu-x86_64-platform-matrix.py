@@ -44,6 +44,7 @@ SCENARIOS = [
         "smp": 128,
         "memory": "4G",
         "accelerator": "tcg,thread=multi",
+        "smoke_timeout": 480,
     },
     {
         "name": "q35-high-core-256-x2apic",
@@ -53,6 +54,7 @@ SCENARIOS = [
         "memory": "4G",
         "accelerator": "tcg,thread=multi",
         "apic_mode": "x2apic",
+        "smoke_timeout": 480,
     },
     {
         "name": "pc-compatibility",
@@ -101,13 +103,14 @@ def run_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
     name = str(scenario["name"])
     log_path = BUILD / f"qemu-x86_64-platform-{name}.log"
     env = os.environ.copy()
+    smoke_timeout = int(scenario.get("smoke_timeout", 180))
     env.update({
         "XAIOS_QEMU_X86_ACCEL": str(scenario["accelerator"]),
         "XAIOS_QEMU_X86_MACHINE": str(scenario["machine"]),
         "XAIOS_QEMU_X86_CPU": str(scenario["cpu"]),
         "XAIOS_QEMU_X86_MEMORY": str(scenario["memory"]),
         "XAIOS_QEMU_X86_SMP": str(scenario["smp"]),
-        "XAIOS_QEMU_X86_SMOKE_TIMEOUT": "180",
+        "XAIOS_QEMU_X86_SMOKE_TIMEOUT": str(smoke_timeout),
     })
     if scenario.get("nvme"):
         env["XAIOS_QEMU_X86_NVME_IMAGE"] = str(
@@ -124,7 +127,7 @@ def run_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            timeout=210,
+            timeout=smoke_timeout + 30,
         )
         output = proc.stdout
         exit_code = proc.returncode

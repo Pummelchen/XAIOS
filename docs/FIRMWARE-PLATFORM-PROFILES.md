@@ -45,6 +45,11 @@ data, an incompatible or unformatted namespace is not reformatted or selected
 as the root: the kernel continues to the dedicated MutableFS volume. A valid
 NVMe MutableFS volume remains eligible for root persistence.
 
+The 128- and 256-vCPU x86 QEMU topology scenarios receive a 480-second
+correctness budget under TCG. This accommodates emulated AP startup and the
+complete service sequence without relaxing markers or asserting physical
+scaling performance.
+
 ## Running Profile Evidence
 
 Use each command only on its matching host. Firmware inputs are explicit so a
