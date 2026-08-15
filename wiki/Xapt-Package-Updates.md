@@ -52,7 +52,9 @@ System records bind version, architecture, monotonic system generation, byte
 size, SHA-256, signed update metadata, and image path. `xapt os-upgrade` rejects
 the current or an older version, streams the image in bounded chunks, verifies
 it in the inactive slot, and marks that slot pending. The boot lifecycle retains
-the existing verified fallback behavior.
+the existing verified fallback behavior. A pending slot becomes active only
+after mandatory boot services have initialized; optional diagnostic fixtures do
+not determine OS-slot health.
 
 ## Storage layout
 

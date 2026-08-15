@@ -408,6 +408,26 @@ void kmain(const xaios_boot_info_t *boot) {
   operations_init(persistent_status == XAIOS_OK ? 1U : 0U);
   kassert(vfs_mount_mutable_root() == XAIOS_OK);
   klog("vfs: MutableFS mounted at /\n");
+
+  /* The boot loader selected this immutable system slot. Admit and validate
+   * its redundant metadata before optional model-volume discovery so recovery
+   * remains independent of model fixture work. */
+  xaios_status_t system_slot_status = system_slot_init(boot);
+  if (system_slot_status != XAIOS_OK) {
+    klog("system-slot: unavailable status=%d\n", (int)system_slot_status);
+  }
+  system_slot_self_test();
+
+#if defined(XAIOS_STORAGE_CRASH_AFTER_SYSTEM_BACKUP) || \
+    defined(XAIOS_STORAGE_CRASH_AFTER_SYSTEM_PRIMARY)
+  /* The crash gate exercises only redundant system metadata persistence. Do
+   * not make that fault injection wait for unrelated model and diagnostic
+   * fixture work later in the boot sequence. */
+  if (system_slot_available() != 0U) {
+    kassert(system_slot_mark_boot_success(boot) == XAIOS_OK);
+  }
+#endif
+
   boot_ui_update(55U, "persistent filesystem", "model and system volumes", 2U);
   xaios_status_t model_volume_status = vfs_mount_model_volume(4U);
   if (model_volume_status == XAIOS_OK) {
@@ -427,11 +447,6 @@ void kmain(const xaios_boot_info_t *boot) {
     klog("storage-admin: scratch device unavailable status=%d\n",
          (int)storage_admin_status);
   }
-  xaios_status_t system_slot_status = system_slot_init(boot);
-  if (system_slot_status != XAIOS_OK) {
-    klog("system-slot: unavailable status=%d\n", (int)system_slot_status);
-  }
-  system_slot_self_test();
   if (persistent_status == XAIOS_OK) {
     update_self_test();
     update_delivery_self_test();
@@ -612,6 +627,14 @@ persistent_network_done:
   klog("kernel: preemptive scheduler infrastructure enabled\n");
   boot_ui_update(85U, "scheduler", "runtime services", 2U);
 
+  /* A boot slot is healthy once mandatory platform services are live. Optional
+   * diagnostic applications exercise the same runtime but must not hold an
+   * otherwise bootable system slot in its pending state. */
+  if (system_slot_available() != 0U) {
+    kassert(system_slot_mark_boot_success(boot) == XAIOS_OK);
+  }
+  operations_mark_boot_ready();
+
 #if XAIOS_BOOT_TEST_APPS
   for (uint32_t pid = 3; pid <= 5; ++pid) {
     xaios_user_process_t worker_process;
@@ -705,12 +728,6 @@ persistent_network_done:
   boot_ui_update(90U, "runtime services", "IPv4 network readiness", 2U);
 
   telemetry_emit_boot_summary();
-
-  if (system_slot_available() != 0U) {
-    kassert(system_slot_mark_boot_success(boot) == XAIOS_OK);
-  }
-
-  operations_mark_boot_ready();
 
   if (persistent_network_ready == 0U) {
     klog("kernel: SSH service withheld; IPv4 network is not ready\n");

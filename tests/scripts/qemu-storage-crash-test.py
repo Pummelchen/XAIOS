@@ -116,7 +116,10 @@ def validate_committed_metadata(system_image: Path) -> None:
 
 
 def main() -> int:
-    timeout = int(os.environ.get("XAIOS_QEMU_STORAGE_CRASH_TIMEOUT", "90"))
+    # The injected commit point follows the deterministic diagnostic boot
+    # workload. On TCG this may take materially longer than a normal service
+    # boot, so retain a bounded but realistic per-boot deadline.
+    timeout = int(os.environ.get("XAIOS_QEMU_STORAGE_CRASH_TIMEOUT", "240"))
     work = BUILD / "storage-crash"
     work.mkdir(parents=True, exist_ok=True)
     try:
@@ -144,7 +147,6 @@ def main() -> int:
                 (
                     "system-slot: attached active=1 pending=4294967295",
                     "system-slot: self-test passed",
-                    "sshd: Phase 2 runtime ready",
                 ),
                 timeout,
                 hard=False,
