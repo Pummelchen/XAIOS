@@ -590,7 +590,7 @@ xaios_status_t xaios_thread_run_group(uint64_t requested_threads,
 }
 
 void xaios_thread_self_test(void) {
-  uint64_t count = smp_online_count() + 2U;
+  uint64_t count = smp_online_count();
   if (count > g_thread_capacity) count = g_thread_capacity;
   uint64_t ran = 0U;
   uint64_t checksum = 0U;
