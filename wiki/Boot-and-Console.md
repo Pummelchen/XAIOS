@@ -62,10 +62,11 @@ make image-qemu-test
 That profile is for validation only. Normal images start diagnostics on demand
 and reclaim them after exit.
 
-On VMware Fusion, the graphics window displays the compact post-UEFI status
-screen, including the 100% completion state and login availability. Interactive
-local login uses its PL011 serial device; use SSH for an interactive network
-terminal.
+On VMware Fusion, the graphics window displays the compact 8x16 post-UEFI
+status screen, including the 100% completion state and the current local login
+prompt with a blinking cursor. It mirrors the PL011 serial-console state but
+does not yet receive graphical keyboard input. Interactive local login uses
+PL011; use SSH for an interactive network terminal.
 
 See [[Networking and SSH|Networking-and-SSH]], [[Security Model|Security-Model]],
 and [[Applications|Applications]].

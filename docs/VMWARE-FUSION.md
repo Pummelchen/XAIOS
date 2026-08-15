@@ -27,13 +27,15 @@ hardware-backed entropy claim.
 
 The UEFI loader passes an optional validated Graphics Output Protocol (GOP)
 framebuffer to the kernel. Where firmware provides an RGBX/BGRX framebuffer,
-the kernel continues a compact VGA-style boot display after `ExitBootServices`;
+the kernel continues a compact, sharp 8x16 console-style boot display after `ExitBootServices`;
 this prevents Fusion from leaving the final UEFI 20% frame visible while the
 kernel finishes booting on its serial console. At 100%, the display shows the
-IPv4 address, verified SSH state and whether local login is enabled. Fusion's
-graphics device is status-only: the authoritative interactive local console is
-the PL011 serial device. Serial remains the headless-console path when no
-usable framebuffer is present.
+IPv4 address, verified SSH state and the current local-authentication prompt.
+The screen leaves a terminal row below the SSH status and mirrors the serial
+login state with a blinking cursor. Fusion's graphics device is status-only:
+the authoritative interactive local console is the PL011 serial device. The
+screen cannot receive keyboard input until XAIOS has a Fusion input driver.
+Serial remains the headless-console path when no usable framebuffer is present.
 
 The bundle includes a 256 MiB SATA VMDK. The AHCI driver registers
 `/dev/ahci0p0` through the generic block-device interface; MutableFS formats a

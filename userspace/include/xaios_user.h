@@ -8,10 +8,14 @@ typedef int s32;
 typedef long long s64;
 
 #define XAIOS_BOOT_UI_CONTROL_MAGIC 0x58425549U
-#define XAIOS_BOOT_UI_CONTROL_VERSION 2U
+#define XAIOS_BOOT_UI_CONTROL_VERSION 3U
 #define XAIOS_BOOT_UI_STAGE_SSH_LOADING 1U
 #define XAIOS_BOOT_UI_STAGE_SSH_READY 2U
 #define XAIOS_BOOT_UI_STAGE_SSH_FAILED 3U
+#define XAIOS_BOOT_UI_CONSOLE_LOCKED 0U
+#define XAIOS_BOOT_UI_CONSOLE_LOGIN 1U
+#define XAIOS_BOOT_UI_CONSOLE_PASSWORD 2U
+#define XAIOS_BOOT_UI_CONSOLE_SHELL 3U
 
 typedef struct xaios_boot_ui_control {
   u32 magic;
@@ -19,7 +23,8 @@ typedef struct xaios_boot_ui_control {
   u32 stage;
   s32 status;
   u32 ipv4;
-  u32 local_login_enabled;
+  u32 console_state;
+  u32 cursor_visible;
 } xaios_boot_ui_control_t;
 
 void *xaios_memcpy(void *dst, const void *src, u64 size);

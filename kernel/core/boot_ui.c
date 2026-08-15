@@ -9,11 +9,13 @@
 #endif
 
 #define BOOT_BAR_WIDTH UINT32_C(40)
-#define FB_MARGIN UINT32_C(72)
-#define FB_SCALE UINT32_C(2)
+#define FB_MARGIN UINT32_C(48)
 #define FB_BAR_MAX_WIDTH UINT32_C(720)
-#define FB_GLYPH_WIDTH UINT32_C(5)
-#define FB_GLYPH_HEIGHT UINT32_C(7)
+#define FB_GLYPH_WIDTH UINT32_C(8)
+#define FB_GLYPH_HEIGHT UINT32_C(8)
+#define FB_GLYPH_X_SCALE UINT32_C(1)
+#define FB_GLYPH_Y_SCALE UINT32_C(2)
+#define FB_GLYPH_ADVANCE UINT32_C(9)
 
 typedef struct boot_framebuffer {
   volatile uint32_t *pixels;
@@ -25,49 +27,73 @@ typedef struct boot_framebuffer {
 
 static boot_framebuffer_t g_framebuffer;
 
-/* 5x7 uppercase display font. Keep the post-UEFI boot UI allocation-free. */
-static const uint8_t g_font[][FB_GLYPH_HEIGHT] = {
-    {0, 0, 0, 0, 0, 0, 0},             /* space */
-    {14, 17, 17, 31, 17, 17, 17},       /* A */
-    {30, 17, 17, 30, 17, 17, 30},       /* B */
-    {15, 16, 16, 16, 16, 16, 15},       /* C */
-    {30, 17, 17, 17, 17, 17, 30},       /* D */
-    {31, 16, 16, 30, 16, 16, 31},       /* E */
-    {31, 16, 16, 30, 16, 16, 16},       /* F */
-    {15, 16, 16, 23, 17, 17, 15},       /* G */
-    {17, 17, 17, 31, 17, 17, 17},       /* H */
-    {31, 4, 4, 4, 4, 4, 31},            /* I */
-    {1, 1, 1, 1, 17, 17, 14},           /* J */
-    {17, 18, 20, 24, 20, 18, 17},       /* K */
-    {16, 16, 16, 16, 16, 16, 31},       /* L */
-    {17, 27, 21, 21, 17, 17, 17},       /* M */
-    {17, 25, 21, 19, 17, 17, 17},       /* N */
-    {14, 17, 17, 17, 17, 17, 14},       /* O */
-    {30, 17, 17, 30, 16, 16, 16},       /* P */
-    {14, 17, 17, 17, 21, 18, 13},       /* Q */
-    {30, 17, 17, 30, 20, 18, 17},       /* R */
-    {15, 16, 16, 14, 1, 1, 30},         /* S */
-    {31, 4, 4, 4, 4, 4, 4},             /* T */
-    {17, 17, 17, 17, 17, 17, 14},       /* U */
-    {17, 17, 17, 17, 17, 10, 4},        /* V */
-    {17, 17, 17, 21, 21, 21, 10},       /* W */
-    {17, 17, 10, 4, 10, 17, 17},        /* X */
-    {17, 17, 10, 4, 4, 4, 4},           /* Y */
-    {31, 1, 2, 4, 8, 16, 31},           /* Z */
-    {14, 17, 19, 21, 25, 17, 14},       /* 0 */
-    {4, 12, 4, 4, 4, 4, 14},            /* 1 */
-    {14, 17, 1, 2, 4, 8, 31},           /* 2 */
-    {30, 1, 1, 14, 1, 1, 30},           /* 3 */
-    {2, 6, 10, 18, 31, 2, 2},           /* 4 */
-    {31, 16, 16, 30, 1, 1, 30},         /* 5 */
-    {14, 16, 16, 30, 17, 17, 14},       /* 6 */
-    {31, 1, 2, 4, 8, 8, 8},             /* 7 */
-    {14, 17, 17, 14, 17, 17, 14},       /* 8 */
-    {14, 17, 17, 15, 1, 1, 14},         /* 9 */
-    {0, 4, 0, 0, 4, 0, 0},              /* : */
-    {0, 0, 0, 31, 0, 0, 0},             /* - */
-    {17, 2, 4, 8, 16, 0, 0},            /* / */
-    {0, 0, 0, 0, 0, 12, 12},            /* . */
+/* Public-domain 8x8 IBM VGA bitmap glyphs, adapted from Daniel Hepper's
+ * font8x8 collection. Keep the post-UEFI display allocation-free. */
+static const uint8_t g_font[UINT32_C(64)][FB_GLYPH_HEIGHT] = {
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, /* space */
+    {0x18, 0x3c, 0x3c, 0x18, 0x18, 0x00, 0x18, 0x00}, /* ! */
+    {0x36, 0x36, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, /* \" */
+    {0x36, 0x36, 0x7f, 0x36, 0x7f, 0x36, 0x36, 0x00}, /* # */
+    {0x0c, 0x3e, 0x03, 0x1e, 0x30, 0x1f, 0x0c, 0x00}, /* $ */
+    {0x00, 0x63, 0x33, 0x18, 0x0c, 0x66, 0x63, 0x00}, /* % */
+    {0x1c, 0x36, 0x1c, 0x6e, 0x3b, 0x33, 0x6e, 0x00}, /* & */
+    {0x06, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00}, /* ' */
+    {0x18, 0x0c, 0x06, 0x06, 0x06, 0x0c, 0x18, 0x00}, /* ( */
+    {0x06, 0x0c, 0x18, 0x18, 0x18, 0x0c, 0x06, 0x00}, /* ) */
+    {0x00, 0x66, 0x3c, 0xff, 0x3c, 0x66, 0x00, 0x00}, /* * */
+    {0x00, 0x0c, 0x0c, 0x3f, 0x0c, 0x0c, 0x00, 0x00}, /* + */
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x0c, 0x06}, /* , */
+    {0x00, 0x00, 0x00, 0x3f, 0x00, 0x00, 0x00, 0x00}, /* - */
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x0c, 0x0c, 0x00}, /* . */
+    {0x60, 0x30, 0x18, 0x0c, 0x06, 0x03, 0x01, 0x00}, /* / */
+    {0x3e, 0x63, 0x73, 0x7b, 0x6f, 0x67, 0x3e, 0x00}, /* 0 */
+    {0x0c, 0x0e, 0x0c, 0x0c, 0x0c, 0x0c, 0x3f, 0x00}, /* 1 */
+    {0x1e, 0x33, 0x30, 0x1c, 0x06, 0x33, 0x3f, 0x00}, /* 2 */
+    {0x1e, 0x33, 0x30, 0x1c, 0x30, 0x33, 0x1e, 0x00}, /* 3 */
+    {0x38, 0x3c, 0x36, 0x33, 0x7f, 0x30, 0x78, 0x00}, /* 4 */
+    {0x3f, 0x03, 0x1f, 0x30, 0x30, 0x33, 0x1e, 0x00}, /* 5 */
+    {0x1c, 0x06, 0x03, 0x1f, 0x33, 0x33, 0x1e, 0x00}, /* 6 */
+    {0x3f, 0x33, 0x30, 0x18, 0x0c, 0x0c, 0x0c, 0x00}, /* 7 */
+    {0x1e, 0x33, 0x33, 0x1e, 0x33, 0x33, 0x1e, 0x00}, /* 8 */
+    {0x1e, 0x33, 0x33, 0x3e, 0x30, 0x18, 0x0e, 0x00}, /* 9 */
+    {0x00, 0x0c, 0x0c, 0x00, 0x00, 0x0c, 0x0c, 0x00}, /* : */
+    {0x00, 0x0c, 0x0c, 0x00, 0x00, 0x0c, 0x0c, 0x06}, /* ; */
+    {0x18, 0x0c, 0x06, 0x03, 0x06, 0x0c, 0x18, 0x00}, /* < */
+    {0x00, 0x00, 0x3f, 0x00, 0x00, 0x3f, 0x00, 0x00}, /* = */
+    {0x06, 0x0c, 0x18, 0x30, 0x18, 0x0c, 0x06, 0x00}, /* > */
+    {0x1e, 0x33, 0x30, 0x18, 0x0c, 0x00, 0x0c, 0x00}, /* ? */
+    {0x3e, 0x63, 0x7b, 0x7b, 0x7b, 0x03, 0x1e, 0x00}, /* @ */
+    {0x0c, 0x1e, 0x33, 0x33, 0x3f, 0x33, 0x33, 0x00}, /* A */
+    {0x3f, 0x66, 0x66, 0x3e, 0x66, 0x66, 0x3f, 0x00}, /* B */
+    {0x3c, 0x66, 0x03, 0x03, 0x03, 0x66, 0x3c, 0x00}, /* C */
+    {0x1f, 0x36, 0x66, 0x66, 0x66, 0x36, 0x1f, 0x00}, /* D */
+    {0x7f, 0x46, 0x16, 0x1e, 0x16, 0x46, 0x7f, 0x00}, /* E */
+    {0x7f, 0x46, 0x16, 0x1e, 0x16, 0x06, 0x0f, 0x00}, /* F */
+    {0x3c, 0x66, 0x03, 0x03, 0x73, 0x66, 0x7c, 0x00}, /* G */
+    {0x33, 0x33, 0x33, 0x3f, 0x33, 0x33, 0x33, 0x00}, /* H */
+    {0x1e, 0x0c, 0x0c, 0x0c, 0x0c, 0x0c, 0x1e, 0x00}, /* I */
+    {0x78, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1e, 0x00}, /* J */
+    {0x67, 0x66, 0x36, 0x1e, 0x36, 0x66, 0x67, 0x00}, /* K */
+    {0x0f, 0x06, 0x06, 0x06, 0x46, 0x66, 0x7f, 0x00}, /* L */
+    {0x63, 0x77, 0x7f, 0x7f, 0x6b, 0x63, 0x63, 0x00}, /* M */
+    {0x63, 0x67, 0x6f, 0x7b, 0x73, 0x63, 0x63, 0x00}, /* N */
+    {0x1c, 0x36, 0x63, 0x63, 0x63, 0x36, 0x1c, 0x00}, /* O */
+    {0x3f, 0x66, 0x66, 0x3e, 0x06, 0x06, 0x0f, 0x00}, /* P */
+    {0x1e, 0x33, 0x33, 0x33, 0x3b, 0x1e, 0x38, 0x00}, /* Q */
+    {0x3f, 0x66, 0x66, 0x3e, 0x36, 0x66, 0x67, 0x00}, /* R */
+    {0x1e, 0x33, 0x07, 0x0e, 0x38, 0x33, 0x1e, 0x00}, /* S */
+    {0x3f, 0x2d, 0x0c, 0x0c, 0x0c, 0x0c, 0x1e, 0x00}, /* T */
+    {0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x3f, 0x00}, /* U */
+    {0x33, 0x33, 0x33, 0x33, 0x33, 0x1e, 0x0c, 0x00}, /* V */
+    {0x63, 0x63, 0x63, 0x6b, 0x7f, 0x77, 0x63, 0x00}, /* W */
+    {0x63, 0x63, 0x36, 0x1c, 0x1c, 0x36, 0x63, 0x00}, /* X */
+    {0x33, 0x33, 0x33, 0x1e, 0x0c, 0x0c, 0x1e, 0x00}, /* Y */
+    {0x7f, 0x63, 0x31, 0x18, 0x4c, 0x66, 0x7f, 0x00}, /* Z */
+    {0x1e, 0x06, 0x06, 0x06, 0x06, 0x06, 0x1e, 0x00}, /* [ */
+    {0x03, 0x06, 0x0c, 0x18, 0x30, 0x60, 0x40, 0x00}, /* \\ */
+    {0x1e, 0x18, 0x18, 0x18, 0x18, 0x18, 0x1e, 0x00}, /* ] */
+    {0x08, 0x1c, 0x36, 0x63, 0x00, 0x00, 0x00, 0x00}, /* ^ */
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff}, /* _ */
 };
 
 static uint64_t text_length(const char *text) {
@@ -131,43 +157,35 @@ static void fb_rect(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
 
 static uint32_t glyph_index(char value) {
   if (value >= 'a' && value <= 'z') value = (char)(value - ('a' - 'A'));
-  if (value >= 'A' && value <= 'Z') return 1U + (uint32_t)(value - 'A');
-  if (value >= '0' && value <= '9') return 27U + (uint32_t)(value - '0');
-  if (value == ':') return 37U;
-  if (value == '-') return 38U;
-  if (value == '/') return 39U;
-  if (value == '.') return 40U;
-  return 0U;
+  if (value < ' ' || value > '_') return 0U;
+  return (uint32_t)(value - ' ');
 }
 
-static void fb_glyph(uint32_t x, uint32_t y, char value, uint32_t scale,
-                     uint32_t color) {
+static void fb_glyph(uint32_t x, uint32_t y, char value, uint32_t color) {
   const uint8_t *glyph = g_font[glyph_index(value)];
   for (uint32_t row = 0U; row < FB_GLYPH_HEIGHT; ++row) {
     for (uint32_t column = 0U; column < FB_GLYPH_WIDTH; ++column) {
-      if ((glyph[row] & (UINT8_C(1) << (FB_GLYPH_WIDTH - 1U - column))) != 0U) {
-        fb_rect(x + column * scale, y + row * scale, scale, scale, color);
+      if ((glyph[row] & (UINT8_C(1) << column)) != 0U) {
+        fb_rect(x + column * FB_GLYPH_X_SCALE, y + row * FB_GLYPH_Y_SCALE,
+                FB_GLYPH_X_SCALE, FB_GLYPH_Y_SCALE, color);
       }
     }
   }
 }
 
-static void fb_text(uint32_t x, uint32_t y, const char *text, uint32_t scale,
-                    uint32_t color) {
+static void fb_text(uint32_t x, uint32_t y, const char *text, uint32_t color) {
   if (text == 0) return;
-  const uint32_t advance = (FB_GLYPH_WIDTH + 1U) * scale;
-  while (*text != '\0' && x + FB_GLYPH_WIDTH * scale < g_framebuffer.width) {
-    fb_glyph(x, y, *text++, scale, color);
-    x += advance;
+  while (*text != '\0' && x + FB_GLYPH_WIDTH < g_framebuffer.width) {
+    fb_glyph(x, y, *text++, color);
+    x += FB_GLYPH_ADVANCE;
   }
 }
 
-static void fb_uint(uint32_t x, uint32_t y, uint32_t value, uint32_t scale,
-                    uint32_t color) {
+static void fb_uint(uint32_t x, uint32_t y, uint32_t value, uint32_t color) {
   char digits[10];
   uint32_t count = 0U;
   if (value == 0U) {
-    fb_glyph(x, y, '0', scale, color);
+    fb_glyph(x, y, '0', color);
     return;
   }
   while (value != 0U && count < sizeof(digits)) {
@@ -176,20 +194,18 @@ static void fb_uint(uint32_t x, uint32_t y, uint32_t value, uint32_t scale,
   }
   while (count != 0U) {
     --count;
-    fb_glyph(x, y, digits[count], scale, color);
-    x += (FB_GLYPH_WIDTH + 1U) * scale;
+    fb_glyph(x, y, digits[count], color);
+    x += FB_GLYPH_ADVANCE;
   }
 }
 
-static void fb_ipv4(uint32_t x, uint32_t y, uint32_t address, uint32_t scale,
-                    uint32_t color) {
+static void fb_ipv4(uint32_t x, uint32_t y, uint32_t address, uint32_t color) {
   for (uint32_t octet = 0U; octet < 4U; ++octet) {
-    fb_uint(x, y, (address >> (24U - octet * 8U)) & UINT32_C(0xff), scale,
-            color);
-    x += 4U * (FB_GLYPH_WIDTH + 1U) * scale;
+    fb_uint(x, y, (address >> (24U - octet * 8U)) & UINT32_C(0xff), color);
+    x += 4U * FB_GLYPH_ADVANCE;
     if (octet != 3U) {
-      fb_glyph(x, y, '.', scale, color);
-      x += (FB_GLYPH_WIDTH + 1U) * scale;
+      fb_glyph(x, y, '.', color);
+      x += FB_GLYPH_ADVANCE;
     }
   }
 }
@@ -205,21 +221,21 @@ static void fb_draw_status(uint32_t percent, const char *loaded,
   const uint32_t margin = g_framebuffer.width > FB_MARGIN * 2U ? FB_MARGIN : 8U;
   uint32_t bar_width = g_framebuffer.width - margin * 2U;
   if (bar_width > FB_BAR_MAX_WIDTH) bar_width = FB_BAR_MAX_WIDTH;
-  const uint32_t bar_y = margin + 40U;
+  const uint32_t bar_y = margin + 28U;
   fb_rect(0U, 0U, g_framebuffer.width, g_framebuffer.height, fb_color(0U, 0U, 0U));
-  fb_text(margin, margin, "XAI", FB_SCALE, purple);
-  fb_text(margin + 24U * FB_SCALE, margin, "OS", FB_SCALE, cyan);
+  fb_text(margin, margin, "XAI", purple);
+  fb_text(margin + 36U, margin, "OS", cyan);
   fb_rect(margin, bar_y, bar_width, 10U, dim);
   fb_rect(margin, bar_y, (bar_width * percent) / 100U, 10U, green);
-  fb_uint(margin, bar_y + 24U, percent, FB_SCALE, white);
-  fb_text(margin + 24U * FB_SCALE, bar_y + 24U, "PERCENT", FB_SCALE, white);
-  fb_text(margin, bar_y + 56U, "LOADED:", FB_SCALE, cyan);
-  fb_text(margin + 48U * FB_SCALE, bar_y + 56U, loaded, FB_SCALE, white);
-  fb_text(margin, bar_y + 80U, "LOADING:", FB_SCALE, cyan);
-  fb_text(margin + 54U * FB_SCALE, bar_y + 80U, loading, FB_SCALE, white);
-  fb_text(margin, bar_y + 104U, "REMAINING:", FB_SCALE, cyan);
-  fb_uint(margin + 66U * FB_SCALE, bar_y + 104U, remaining, FB_SCALE, white);
-  fb_text(margin + 84U * FB_SCALE, bar_y + 104U, "COMPONENTS", FB_SCALE, white);
+  fb_uint(margin, bar_y + 20U, percent, white);
+  fb_text(margin + 36U, bar_y + 20U, "PERCENT", white);
+  fb_text(margin, bar_y + 44U, "LOADED:", cyan);
+  fb_text(margin + 72U, bar_y + 44U, loaded, white);
+  fb_text(margin, bar_y + 66U, "LOADING:", cyan);
+  fb_text(margin + 81U, bar_y + 66U, loading, white);
+  fb_text(margin, bar_y + 88U, "REMAINING:", cyan);
+  fb_uint(margin + 99U, bar_y + 88U, remaining, white);
+  fb_text(margin + 144U, bar_y + 88U, "COMPONENTS", white);
 }
 
 static void fb_draw_ready(const xaios_boot_ui_control_t *control) {
@@ -227,15 +243,31 @@ static void fb_draw_ready(const xaios_boot_ui_control_t *control) {
   const uint32_t green = fb_color(50U, 210U, 100U);
   const uint32_t white = fb_color(220U, 220U, 220U);
   const uint32_t margin = g_framebuffer.width > FB_MARGIN * 2U ? FB_MARGIN : 8U;
-  const uint32_t base_y = margin + 184U;
-  fb_text(margin, base_y, "IPV4:", FB_SCALE, cyan);
-  fb_ipv4(margin + 36U * FB_SCALE, base_y, control->ipv4, FB_SCALE, white);
-  fb_text(margin, base_y + 28U, "SSH SERVER: UP TCP/22", FB_SCALE, green);
-  if (control->local_login_enabled != 0U) {
-    fb_text(margin, base_y + 56U, "XAIOS LOGIN:", FB_SCALE, cyan);
-    fb_text(margin, base_y + 80U, "ACCOUNT: ADMIN", FB_SCALE, white);
+  const uint32_t base_y = margin + 142U;
+  fb_text(margin, base_y, "IPV4:", cyan);
+  fb_ipv4(margin + 54U, base_y, control->ipv4, white);
+  fb_text(margin, base_y + 24U, "SSH SERVER: UP TCP/22", green);
+  /* Reserve one full terminal row after SSH readiness before the prompt. */
+  if (control->console_state == XAIOS_BOOT_UI_CONSOLE_LOGIN) {
+    fb_text(margin, base_y + 72U, "XAIOS LOGIN:", cyan);
+  } else if (control->console_state == XAIOS_BOOT_UI_CONSOLE_PASSWORD) {
+    fb_text(margin, base_y + 72U, "PASSWORD:", cyan);
+  } else if (control->console_state == XAIOS_BOOT_UI_CONSOLE_SHELL) {
+    fb_text(margin, base_y + 72U, "ADMIN@XAIOS:/$", green);
   } else {
-    fb_text(margin, base_y + 56U, "LOCAL LOGIN: KEY ONLY", FB_SCALE, white);
+    fb_text(margin, base_y + 72U, "LOCAL LOGIN: KEY ONLY", white);
+  }
+  if (control->console_state != XAIOS_BOOT_UI_CONSOLE_LOCKED &&
+      control->cursor_visible != 0U) {
+    uint32_t cursor_x = margin;
+    if (control->console_state == XAIOS_BOOT_UI_CONSOLE_LOGIN) {
+      cursor_x += UINT32_C(13) * FB_GLYPH_ADVANCE;
+    } else if (control->console_state == XAIOS_BOOT_UI_CONSOLE_PASSWORD) {
+      cursor_x += UINT32_C(9) * FB_GLYPH_ADVANCE;
+    } else {
+      cursor_x += UINT32_C(15) * FB_GLYPH_ADVANCE;
+    }
+    fb_glyph(cursor_x, base_y + 72U, '_', white);
   }
 }
 
@@ -320,11 +352,11 @@ uint32_t boot_ui_handle_control(const xaios_boot_ui_control_t *control) {
     return 0U;
   }
   if (control->stage == XAIOS_BOOT_UI_STAGE_SSH_LOADING) {
-    boot_ui_update(95U, "IPv4 network configuration", "SSH server", 1U);
+    fb_draw_status(95U, "IPv4 network configuration", "SSH server", 1U);
     return 1U;
   }
   if (control->stage == XAIOS_BOOT_UI_STAGE_SSH_READY) {
-    boot_ui_update(100U, "system services", "complete", 0U);
+    fb_draw_status(100U, "system services", "complete", 0U);
     fb_draw_ready(control);
     return 1U;
   }

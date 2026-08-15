@@ -42,6 +42,8 @@ static nano_editor_t g_console_nano;
 static pong_game_t g_console_pong;
 static uint32_t g_console_auth_state;
 static uint32_t g_console_auth_failures;
+static uint64_t g_console_ui_next_refresh;
+static uint32_t g_console_ui_cursor_visible;
 
 enum {
   SSHD_CONSOLE_AUTH_LOCKED = 0U,
@@ -535,6 +537,34 @@ static int console_render_pong(uint64_t now_ns) {
   return console_write_bytes(g_console_output, frame_size);
 }
 
+static uint32_t console_boot_ui_state(void) {
+  if (g_console_auth_state == SSHD_CONSOLE_AUTH_USER)
+    return XAIOS_BOOT_UI_CONSOLE_LOGIN;
+  if (g_console_auth_state == SSHD_CONSOLE_AUTH_PASSWORD)
+    return XAIOS_BOOT_UI_CONSOLE_PASSWORD;
+  if (g_console_auth_state == SSHD_CONSOLE_AUTH_SHELL)
+    return XAIOS_BOOT_UI_CONSOLE_SHELL;
+  return XAIOS_BOOT_UI_CONSOLE_LOCKED;
+}
+
+static void console_publish_boot_ui(uint32_t cursor_visible) {
+  xaios_boot_ui_control_t control = {
+      XAIOS_BOOT_UI_CONTROL_MAGIC, XAIOS_BOOT_UI_CONTROL_VERSION,
+      g_console_ssh_ready != 0U ? XAIOS_BOOT_UI_STAGE_SSH_READY
+                                : XAIOS_BOOT_UI_STAGE_SSH_FAILED,
+      g_console_boot_error, g_console_ipv4, console_boot_ui_state(),
+      cursor_visible};
+  (void)xaios_console_write((const char *)&control, sizeof(control));
+}
+
+static void console_refresh_boot_ui(uint64_t now_ns) {
+  if (g_console_ssh_ready == 0U && g_console_ui_next_refresh != 0U) return;
+  if (now_ns < g_console_ui_next_refresh) return;
+  g_console_ui_cursor_visible ^= 1U;
+  console_publish_boot_ui(g_console_ui_cursor_visible);
+  g_console_ui_next_refresh = now_ns + UINT64_C(500000000);
+}
+
 static int console_start_pong(void) {
   uint64_t now_ns = xaios_clock_nanos();
   pong_game_start(&g_console_pong, 120U, 40U, now_ns);
@@ -561,13 +591,6 @@ static void console_service_pong(uint64_t now_ns) {
 }
 
 static void console_render_boot_status(void) {
-  xaios_boot_ui_control_t control = {
-      XAIOS_BOOT_UI_CONTROL_MAGIC, XAIOS_BOOT_UI_CONTROL_VERSION,
-      g_console_ssh_ready != 0U ? XAIOS_BOOT_UI_STAGE_SSH_READY
-                                : XAIOS_BOOT_UI_STAGE_SSH_FAILED,
-      g_console_boot_error, g_console_ipv4,
-      g_user_count != 0U && g_password_auth_enabled != 0U};
-  (void)xaios_console_write((const char *)&control, sizeof(control));
   console_write("\x1b[2J\x1b[H\x1b[1;35mXAI\x1b[0m ");
   console_write("\x1b[1;36mOS\x1b[0m\n\n");
   console_write("[########################################] 100%\n\n");
@@ -583,12 +606,16 @@ static void console_render_boot_status(void) {
     console_write("\n\n");
   }
   console_begin_login();
+  g_console_ui_cursor_visible = 1U;
+  console_publish_boot_ui(g_console_ui_cursor_visible);
+  g_console_ui_next_refresh = timer_now() + UINT64_C(500000000);
 }
 
 static void console_render_ssh_loading(void) {
   xaios_boot_ui_control_t control = {
       XAIOS_BOOT_UI_CONTROL_MAGIC, XAIOS_BOOT_UI_CONTROL_VERSION,
-      XAIOS_BOOT_UI_STAGE_SSH_LOADING, 0, 0U, 0U};
+      XAIOS_BOOT_UI_STAGE_SSH_LOADING, 0, 0U,
+      XAIOS_BOOT_UI_CONSOLE_LOCKED, 0U};
   (void)xaios_console_write((const char *)&control, sizeof(control));
   console_write("\x1b[H\x1b[J\x1b[1;35mXAI\x1b[0m ");
   console_write("\x1b[1;36mOS\x1b[0m\n\n");
@@ -2148,7 +2175,9 @@ int sshd_run(void) {
 service_loop:
   console_render_boot_status();
   for (;;) {
-    console_service_pong(timer_now());
+    uint64_t now = timer_now();
+    console_refresh_boot_ui(now);
+    console_service_pong(now);
     console_tick();
     for (uint32_t i = 0; g_console_ssh_ready != 0U && i < 4U; ++i) {
       uint8_t udp_buffer[1478];

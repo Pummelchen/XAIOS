@@ -11,10 +11,11 @@ XAIOS UEFI loader used by the common firmware path. The kernel discovers its
 devices through ACPI/PCI rather than selecting a Fusion-specific core path.
 
 Fusion's UEFI Graphics Output Protocol framebuffer is passed to the kernel
-when valid. The kernel continues a compact VGA-style progress display after
-UEFI hands off at 20%, then renders the IPv4 address, verified SSH state and
-local-login availability at 100%. The graphics window is status-only; serial
-remains the authoritative interactive local console.
+when valid. The kernel continues a compact 8x16 console-style progress display
+after UEFI hands off at 20%, then renders the IPv4 address, verified SSH state
+and the current local-authentication prompt with a blinking cursor at 100%.
+The graphics window is status-only; it mirrors PL011 serial-console state but
+cannot receive graphical keyboard input until a Fusion input driver exists.
 
 ## Verified On Fusion 26H1 (26.0.0) ARM64
 
