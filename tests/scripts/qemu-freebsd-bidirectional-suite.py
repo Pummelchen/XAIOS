@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import os
+import platform
 import re
 from pathlib import Path
 import secrets
@@ -39,6 +40,30 @@ IMAGES = {
         "archive_sha256": "e4ca4db889f8559c9b9dfcacc70405c038476f4b6d41649b152d3809a2ed9e1f",
     },
 }
+
+# Outbound SSH budget when QEMU emulates the host's own architecture. The
+# aarch64 value is measured on an Apple Silicon host; x86_64 keeps the larger
+# value because it has only ever been run cross-emulated, so there is no
+# native measurement to justify shrinking it.
+NATIVE_OUTBOUND_TIMEOUT = {"aarch64": "60", "x86_64": "600"}
+# Budget when QEMU must translate a foreign ISA, which is roughly an order of
+# magnitude slower than emulating the host architecture.
+CROSS_OUTBOUND_TIMEOUT = "600"
+
+HOST_ARCHITECTURES = {"arm64": "aarch64", "aarch64": "aarch64",
+                      "amd64": "x86_64", "x86_64": "x86_64"}
+
+
+def default_outbound_timeout(architecture: str) -> str:
+    # The budget depends on the host/guest pairing, not on the guest
+    # architecture alone. Keying it off the guest only held on an AArch64
+    # development host, where aarch64 happened to be native and x86_64
+    # happened to be emulated; on an x86_64 CI runner that mapping inverts
+    # and leaves the cross-emulated aarch64 guest with the 60 second budget.
+    host = HOST_ARCHITECTURES.get(platform.machine().lower())
+    if host is None or host != architecture:
+        return CROSS_OUTBOUND_TIMEOUT
+    return NATIVE_OUTBOUND_TIMEOUT[architecture]
 
 
 def reserve_port(socket_type: int) -> int:
@@ -605,7 +630,7 @@ def main() -> int:
                 "--timeout",
                 os.environ.get(
                     "XAIOS_OUTBOUND_TIMEOUT",
-                    "600" if architecture == "x86_64" else "60",
+                    default_outbound_timeout(architecture),
                 ),
             ],
             900,
