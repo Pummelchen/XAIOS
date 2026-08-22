@@ -95,7 +95,8 @@
       {"bit": 134217728, "name": "XAIOS_CAP_STORAGE_TRIM"},
       {"bit": 268435456, "name": "XAIOS_CAP_MODEL_STAGE"},
       {"bit": 536870912, "name": "XAIOS_CAP_MODEL_ACTIVATE"},
-      {"bit": 1073741824, "name": "XAIOS_CAP_CONSOLE"}
+      {"bit": 1073741824, "name": "XAIOS_CAP_CONSOLE"},
+      {"bit": 2147483648, "name": "XAIOS_CAP_CREDENTIAL_READ"}
     ]
   },
   "control_protocol": {
