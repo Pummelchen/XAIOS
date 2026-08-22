@@ -45,11 +45,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld
+          sudo apt-get install -y clang lld llvm meson ninja-build python3
 
       - name: Compile-check kernel C files
         run: make compile-check
