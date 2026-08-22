@@ -428,7 +428,7 @@ hosted-test: engine-cli
 	  -o build/hosted/test-sftp-large
 	./build/hosted/test-sftp-large
 	python3 tests/scripts/generate-dnssec-fixture.py build/hosted/dnssec_fixture.h
-	$(HOST_CC) $(HOST_CFLAGS) \
+	$(HOST_CC) $(HOST_CFLAGS) -D_DEFAULT_SOURCE \
 	  -Ikernel/include -Iuserspace/include -Iuserspace/sshd -Ithird_party/bearssl/inc \
 	  -Ithird_party/bearssl/src -Ibuild/hosted \
 	  kernel/net/dns.c kernel/net/dnssec.c kernel/net/ipv4.c \
@@ -447,7 +447,7 @@ hosted-test: engine-cli
 	ssh-keygen -q -t ed25519 -N '' -f build/hosted/id-ed25519
 	ssh-keygen -q -t ed25519 -N xaios-test-passphrase \
 	  -f build/hosted/id-ed25519-encrypted
-	$(HOST_CC) $(HOST_CFLAGS) -DXAIOS_IDENTITY_HOSTED=1 \
+	$(HOST_CC) $(HOST_CFLAGS) -DXAIOS_IDENTITY_HOSTED=1 -Wno-unknown-attributes \
 	  -Iuserspace/include -Iuserspace/sshd -Ithird_party/openbsd-compat \
 	  userspace/sshd/ssh_identity.c userspace/sshd/ssh_crypto.c \
 	  userspace/sshd/tweetnacl_subset.c \
