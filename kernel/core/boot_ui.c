@@ -313,6 +313,293 @@ static void fb_draw_ready(const xaios_boot_ui_control_t *control) {
   }
 }
 
+/* ---- Framebuffer text terminal ----
+   After boot the display stops being a status panel and becomes a terminal
+   that mirrors the console byte stream, so a machine with no serial cable --
+   VMware Fusion in particular -- offers the same session as a QEMU serial
+   console: prompt, echoed input, and command output. */
+#define TERM_MARGIN_X UINT32_C(8)
+#define TERM_MARGIN_Y UINT32_C(8)
+#define TERM_LINE_HEIGHT (FB_GLYPH_HEIGHT * FB_GLYPH_Y_SCALE + UINT32_C(2))
+#define TERM_TAB_WIDTH UINT32_C(8)
+#define TERM_ESC_IDLE UINT32_C(0)
+#define TERM_ESC_SAW_ESC UINT32_C(1)
+#define TERM_ESC_CSI UINT32_C(2)
+#define TERM_CSI_PARAM_MAX UINT32_C(8)
+
+static uint32_t g_term_active;
+static void term_putc(uint8_t value);
+static uint32_t g_term_columns;
+static uint32_t g_term_rows;
+static uint32_t g_term_column;
+static uint32_t g_term_row;
+static uint32_t g_term_color;
+static uint32_t g_term_esc_state;
+static uint32_t g_term_params[TERM_CSI_PARAM_MAX];
+static uint32_t g_term_param_count;
+static uint32_t g_term_cursor_drawn;
+
+static uint32_t term_background(void) { return fb_color(4U, 6U, 10U); }
+static uint32_t term_foreground(void) { return fb_color(222U, 230U, 236U); }
+
+static uint32_t term_sgr_color(uint32_t code) {
+  switch (code) {
+    case 30U: case 90U: return fb_color(90U, 100U, 110U);
+    case 31U: case 91U: return fb_color(235U, 110U, 100U);
+    case 32U: case 92U: return fb_color(120U, 210U, 140U);
+    case 33U: case 93U: return fb_color(226U, 190U, 110U);
+    case 34U: case 94U: return fb_color(120U, 165U, 235U);
+    case 35U: case 95U: return fb_color(200U, 140U, 225U);
+    case 36U: case 96U: return fb_color(110U, 200U, 210U);
+    default: return term_foreground();
+  }
+}
+
+static uint32_t term_x(uint32_t column) {
+  return TERM_MARGIN_X + column * FB_GLYPH_ADVANCE;
+}
+
+static uint32_t term_y(uint32_t row) {
+  return TERM_MARGIN_Y + row * TERM_LINE_HEIGHT;
+}
+
+static void term_erase_cursor(void) {
+  if (g_term_cursor_drawn == 0U) return;
+  fb_rect(term_x(g_term_column), term_y(g_term_row) + FB_GLYPH_HEIGHT *
+              FB_GLYPH_Y_SCALE - UINT32_C(2),
+          FB_GLYPH_WIDTH, UINT32_C(2), term_background());
+  g_term_cursor_drawn = 0U;
+}
+
+static void term_draw_cursor(void) {
+  if (g_term_active == 0U || g_term_cursor_drawn != 0U) return;
+  fb_rect(term_x(g_term_column), term_y(g_term_row) + FB_GLYPH_HEIGHT *
+              FB_GLYPH_Y_SCALE - UINT32_C(2),
+          FB_GLYPH_WIDTH, UINT32_C(2), term_foreground());
+  g_term_cursor_drawn = 1U;
+}
+
+static void term_scroll(void) {
+  uint32_t shift = TERM_LINE_HEIGHT;
+  if (g_framebuffer.pixels == 0 || shift >= g_framebuffer.height) return;
+  uint64_t stride = g_framebuffer.stride;
+  for (uint32_t y = TERM_MARGIN_Y; y + shift < g_framebuffer.height; ++y) {
+    volatile uint32_t *destination = &g_framebuffer.pixels[(uint64_t)y * stride];
+    volatile uint32_t *source =
+        &g_framebuffer.pixels[(uint64_t)(y + shift) * stride];
+    for (uint32_t x = 0U; x < g_framebuffer.width; ++x) destination[x] = source[x];
+  }
+  fb_rect(0U, g_framebuffer.height - shift, g_framebuffer.width, shift,
+          term_background());
+}
+
+static void term_newline(void) {
+  g_term_column = 0U;
+  if (g_term_row + 1U < g_term_rows) {
+    ++g_term_row;
+    return;
+  }
+  term_scroll();
+}
+
+static void term_apply_csi(char final) {
+  if (final == 'm') {
+    if (g_term_param_count == 0U) {
+      g_term_color = term_foreground();
+      return;
+    }
+    for (uint32_t i = 0U; i < g_term_param_count; ++i) {
+      uint32_t code = g_term_params[i];
+      if (code == 0U) {
+        g_term_color = term_foreground();
+      } else if ((code >= 30U && code <= 37U) || (code >= 90U && code <= 97U)) {
+        g_term_color = term_sgr_color(code);
+      }
+    }
+    return;
+  }
+  if (final == 'J' || final == 'H') {
+    /* Clear and home are the only cursor controls the shell emits that must
+       affect this display; the remainder are ignored deliberately. */
+    if (final == 'J') {
+      fb_rect(0U, 0U, g_framebuffer.width, g_framebuffer.height,
+              term_background());
+    }
+    g_term_column = 0U;
+    g_term_row = 0U;
+  }
+}
+
+static void term_putc(uint8_t value) {
+  if (g_term_esc_state == TERM_ESC_SAW_ESC) {
+    if (value == '[') {
+      g_term_esc_state = TERM_ESC_CSI;
+      g_term_param_count = 0U;
+      g_term_params[0] = 0U;
+    } else {
+      g_term_esc_state = TERM_ESC_IDLE;
+    }
+    return;
+  }
+  if (g_term_esc_state == TERM_ESC_CSI) {
+    if (value >= '0' && value <= '9') {
+      if (g_term_param_count == 0U) g_term_param_count = 1U;
+      uint32_t *slot = &g_term_params[g_term_param_count - 1U];
+      if (*slot < UINT32_C(100000)) *slot = *slot * 10U + (uint32_t)(value - '0');
+      return;
+    }
+    if (value == ';') {
+      if (g_term_param_count < TERM_CSI_PARAM_MAX) {
+        g_term_params[g_term_param_count++] = 0U;
+      }
+      return;
+    }
+    if (value == '?' || value == ':') return;
+    term_apply_csi((char)value);
+    g_term_esc_state = TERM_ESC_IDLE;
+    return;
+  }
+  if (value == UINT8_C(0x1b)) {
+    g_term_esc_state = TERM_ESC_SAW_ESC;
+    return;
+  }
+  if (value == '\n') {
+    term_newline();
+    return;
+  }
+  if (value == '\r') {
+    g_term_column = 0U;
+    return;
+  }
+  if (value == '\b') {
+    if (g_term_column != 0U) --g_term_column;
+    fb_rect(term_x(g_term_column), term_y(g_term_row), FB_GLYPH_ADVANCE,
+            TERM_LINE_HEIGHT, term_background());
+    return;
+  }
+  if (value == '\t') {
+    uint32_t next = (g_term_column / TERM_TAB_WIDTH + 1U) * TERM_TAB_WIDTH;
+    while (g_term_column < next) {
+      if (g_term_column >= g_term_columns) {
+        term_newline();
+        break;
+      }
+      fb_rect(term_x(g_term_column), term_y(g_term_row), FB_GLYPH_ADVANCE,
+              TERM_LINE_HEIGHT, term_background());
+      ++g_term_column;
+    }
+    return;
+  }
+  if (value < ' ' || value > '~') return;
+  if (g_term_column >= g_term_columns) term_newline();
+  fb_rect(term_x(g_term_column), term_y(g_term_row), FB_GLYPH_ADVANCE,
+          TERM_LINE_HEIGHT, term_background());
+  fb_glyph(term_x(g_term_column), term_y(g_term_row), (char)value, g_term_color);
+  ++g_term_column;
+}
+
+static void term_activate(const xaios_boot_ui_control_t *control) {
+  if (g_framebuffer.pixels == 0 || g_term_active != 0U) return;
+  g_term_columns =
+      (g_framebuffer.width - 2U * TERM_MARGIN_X) / FB_GLYPH_ADVANCE;
+  g_term_rows = (g_framebuffer.height - 2U * TERM_MARGIN_Y) / TERM_LINE_HEIGHT;
+  if (g_term_columns == 0U || g_term_rows == 0U) return;
+  if (g_term_columns > UINT32_C(512)) g_term_columns = UINT32_C(512);
+  fb_rect(0U, 0U, g_framebuffer.width, g_framebuffer.height, term_background());
+  g_term_column = 0U;
+  g_term_row = 0U;
+  g_term_color = term_foreground();
+  g_term_esc_state = TERM_ESC_IDLE;
+  g_term_param_count = 0U;
+  g_term_cursor_drawn = 0U;
+  g_term_active = 1U;
+  klog("boot-ui: framebuffer terminal active %ux%u cells\n", g_term_columns,
+       g_term_rows);
+
+  /* The login banner was written to the console before this display existed,
+     so reproduce the reachability summary and the prompt for the state the
+     console is actually in. */
+  boot_ui_console_text("XAI OS\n\n");
+  if (control != 0 && control->ipv4 != 0U) {
+    boot_ui_console_text("IPv4: ");
+    uint32_t address = control->ipv4;
+    for (uint32_t i = 0U; i < 4U; ++i) {
+      uint32_t octet = (address >> (24U - 8U * i)) & UINT32_C(0xff);
+      char digits[4];
+      uint32_t count = 0U;
+      do {
+        digits[count++] = (char)('0' + octet % 10U);
+        octet /= 10U;
+      } while (octet != 0U);
+      while (count != 0U) term_putc((uint8_t)digits[--count]);
+      if (i != 3U) term_putc((uint8_t)'.');
+    }
+    boot_ui_console_text("\n");
+  }
+  boot_ui_console_text("SSH server: up and running (tcp/22)\n\n");
+  if (control != 0 && control->console_state == XAIOS_BOOT_UI_CONSOLE_PASSWORD) {
+    boot_ui_console_text("Password: ");
+  } else if (control != 0 &&
+             control->console_state == XAIOS_BOOT_UI_CONSOLE_SHELL) {
+    boot_ui_console_text("admin@xaios:/$ ");
+  } else if (control == 0 ||
+             control->console_state != XAIOS_BOOT_UI_CONSOLE_LOCKED) {
+    boot_ui_console_text("xaios login: ");
+  } else {
+    boot_ui_console_text("Local console locked: use SSH public-key access.\n");
+  }
+}
+
+/* Render a known glyph into a scratch cell and read the pixels back, so the
+   display path is proven on the machine that actually has a framebuffer
+   rather than assumed from the code. */
+void boot_ui_self_test(void) {
+  if (g_framebuffer.pixels == 0) {
+    klog("boot-ui: no framebuffer; terminal renders to serial only\n");
+    return;
+  }
+  uint32_t foreground = fb_color(255U, 255U, 255U);
+  uint32_t background = fb_color(0U, 0U, 0U);
+  uint32_t width = FB_GLYPH_WIDTH * FB_GLYPH_X_SCALE;
+  uint32_t height = FB_GLYPH_HEIGHT * FB_GLYPH_Y_SCALE;
+  uint32_t origin_x = g_framebuffer.width - width;
+  uint32_t origin_y = g_framebuffer.height - height;
+
+  fb_rect(origin_x, origin_y, width, height, background);
+  fb_glyph(origin_x, origin_y, 'A', foreground);
+  uint32_t lit = 0U;
+  for (uint32_t row = 0U; row < height; ++row) {
+    volatile uint32_t *pixel =
+        &g_framebuffer.pixels[(uint64_t)(origin_y + row) * g_framebuffer.stride +
+                              origin_x];
+    for (uint32_t column = 0U; column < width; ++column) {
+      if ((pixel[column] & UINT32_C(0x00ffffff)) ==
+          (foreground & UINT32_C(0x00ffffff))) {
+        ++lit;
+      }
+    }
+  }
+  fb_rect(origin_x, origin_y, width, height, background);
+  klog("boot-ui: framebuffer %ux%u glyph readback lit=%u %s\n",
+       g_framebuffer.width, g_framebuffer.height, lit,
+       lit != 0U ? "passed" : "FAILED");
+}
+
+void boot_ui_console_write(const char *text, uint64_t length) {
+  if (g_term_active == 0U || text == 0) return;
+  term_erase_cursor();
+  for (uint64_t i = 0U; i < length; ++i) term_putc((uint8_t)text[i]);
+  term_draw_cursor();
+}
+
+void boot_ui_console_text(const char *text) {
+  if (text == 0) return;
+  uint64_t length = 0U;
+  while (text[length] != '\0') ++length;
+  if (g_term_active == 0U) return;
+  for (uint64_t i = 0U; i < length; ++i) term_putc((uint8_t)text[i]);
+}
+
 static void fb_init(const xaios_boot_info_t *boot) {
   if (boot == 0 || boot->framebuffer_base == 0U ||
       boot->framebuffer_format == XAIOS_FRAMEBUFFER_NONE ||
@@ -398,8 +685,21 @@ uint32_t boot_ui_handle_control(const xaios_boot_ui_control_t *control) {
     return 1U;
   }
   if (control->stage == XAIOS_BOOT_UI_STAGE_SSH_READY) {
-    fb_draw_status(100U, "system services", "complete", 0U);
-    fb_draw_ready(control);
+    if (g_term_active == 0U) {
+      fb_draw_status(100U, "system services", "complete", 0U);
+      fb_draw_ready(control);
+      /* Boot is finished, so hand the display over to a real terminal. From
+         here the framebuffer mirrors the console instead of summarising it. */
+      term_activate(control);
+      return 1U;
+    }
+    /* In terminal mode the control record only drives the cursor; the text
+       itself arrives through the console stream. */
+    if (control->cursor_visible != 0U) {
+      term_draw_cursor();
+    } else {
+      term_erase_cursor();
+    }
     return 1U;
   }
   if (control->stage == XAIOS_BOOT_UI_STAGE_SSH_FAILED) {

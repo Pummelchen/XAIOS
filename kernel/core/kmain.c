@@ -172,6 +172,7 @@ void kmain(const xaios_boot_info_t *boot) {
   uint32_t persistent_network_ready = 0U;
   klog_init(boot);
   boot_ui_begin(boot);
+  boot_ui_self_test();
   boot_ui_update(25U, "hardware handoff", "CPU and interrupts", 5U);
   klog("XAIOS kernel starting\n");
   kassert(boot->magic == XAIOS_BOOT_INFO_MAGIC);
