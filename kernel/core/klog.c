@@ -108,13 +108,20 @@ void klog_console_set_log_output(uint32_t enabled) {
 void klog_console_write(const char *message, uint64_t length) {
   if (message == 0 || length == 0U) return;
   xaios_spin_lock(&g_klog_lock);
+  /* Console output produced while a session is capturing belongs to that
+     session: the capturing caller relays it to its own terminal exactly once.
+     Echoing it to the UART as well printed every transient application's
+     output twice on the local console, and published the output of remote
+     SSH commands on the physical serial port. */
+  int capturing = g_console_capture_depth != 0U;
   for (uint64_t i = 0U; i < length; ++i) {
-    if (g_console_capture_depth != 0U) {
+    if (capturing) {
       xaios_console_capture_t *capture =
           &g_console_captures[g_console_capture_depth - 1U];
       if (capture->length < capture->capacity) {
         capture->buffer[capture->length++] = message[i];
       }
+      continue;
     }
     if (message[i] == '\n') uart_putc('\r');
     uart_putc(message[i]);
