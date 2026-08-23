@@ -1968,7 +1968,6 @@ int64_t mutable_fs_open(const char *path, uint32_t flags) {
     if (write_file(normalized, 0, 0) != XAIOS_OK) {
       return (int64_t)XAIOS_ERR_IO;
     }
-    node = find_node(normalized, 0);
   }
 
   for (uint32_t i = 0; i < MFS_MAX_OPEN_FILES; ++i) {

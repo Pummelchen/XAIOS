@@ -532,10 +532,10 @@ xaios_status_t git_workspace_compute_diff(const char *old_text,
 
   uint32_t old_lines = count_lines(old_text, old_bytes);
   uint32_t new_lines = count_lines(new_text, new_bytes);
-  uint32_t max_lines = old_lines > new_lines ? old_lines : new_lines;
-  if (max_lines > XAIOS_GIT_WORKSPACE_DIFF_MAX_LINES) {
-    max_lines = XAIOS_GIT_WORKSPACE_DIFF_MAX_LINES;
-  }
+  /* The emitted diff is bounded by hunk_capacity below. A line cap was
+     computed here from XAIOS_GIT_WORKSPACE_DIFF_MAX_LINES but never read, so
+     it never applied; the dead computation is removed rather than switched on,
+     because enforcing it would start truncating any diff past 32 lines. */
 
   uint32_t oi = 0;
   uint32_t ni = 0;
