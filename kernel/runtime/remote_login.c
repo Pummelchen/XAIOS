@@ -3918,6 +3918,12 @@ static const remote_app_definition_t g_remote_apps[] = {
                             XAIOS_CAP_CONTROL_QUERY),
     REMOTE_TERMINAL_APP("pong", "/bin/pong",
                         XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT),
+    /* Operator control surface. Arguments are forwarded verbatim to the
+       control protocol, which authorizes them under the observer role. */
+    {"xaiosctl", "/bin/xaiosctl",
+     XAIOS_CAP_CONSOLE | XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_TIME |
+         XAIOS_CAP_CONTROL_QUERY | XAIOS_CAP_STORAGE_READ,
+     1U, 0U, 0U},
     REMOTE_APP("sysinfo", "/bin/sysinfo",
                XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_TIME),
     REMOTE_APP("systest", "/bin/systest",
