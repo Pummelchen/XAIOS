@@ -534,10 +534,13 @@ static int htop_build_command(const ssh_channel_t *ch, char *command,
   return 0;
 }
 
-static int prepare_terminal_command(const ssh_channel_t *ch, char *command,
-                                    uint32_t capacity) {
-  if (ch == 0 || command == 0 || ch->pty_requested == 0U ||
-      command_token_equal(command, "htop") == 0 ||
+/* Shared by the SSH channel and the local console so an application is
+   launched with the same options on both, and therefore renders the same.
+   The two surfaces still differ in what happens after the first frame: the
+   channel keeps an interactive session alive, the console does not yet. */
+int ssh_terminal_promote_command(char *command, uint32_t capacity,
+                                 uint32_t columns, uint32_t rows) {
+  if (command == 0 || command_token_equal(command, "htop") == 0 ||
       command_has_option(command, "--plain") != 0) {
     return 0;
   }
@@ -551,16 +554,24 @@ static int prepare_terminal_command(const ssh_channel_t *ch, char *command,
   }
   if (command_has_option(command, "--columns") == 0 &&
       (append_command_text(command, capacity, " --columns ") != 0 ||
-       append_command_u32(command, capacity, ch->terminal_columns) != 0)) {
+       append_command_u32(command, capacity, columns) != 0)) {
     return -1;
   }
   if (command_has_option(command, "--rows") == 0 &&
       (append_command_text(command, capacity, " --rows ") != 0 ||
-       append_command_u32(command, capacity, ch->terminal_rows) != 0)) {
+       append_command_u32(command, capacity, rows) != 0)) {
     return -1;
   }
   return 0;
 }
+
+static int prepare_terminal_command(const ssh_channel_t *ch, char *command,
+                                    uint32_t capacity) {
+  if (ch == 0 || ch->pty_requested == 0U) return 0;
+  return ssh_terminal_promote_command(command, capacity, ch->terminal_columns,
+                                      ch->terminal_rows);
+}
+
 
 static int command_rate_allowed(ssh_connection_t *connection) {
   static const u64 window_ns = 60000000000ULL;

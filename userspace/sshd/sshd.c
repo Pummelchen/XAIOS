@@ -170,6 +170,12 @@ static void sha256_update_kex_secret(sha256_ctx_t *context,
     sha256_update_mpint(context, value);
 }
 
+/* The local console has no window-size protocol, so applications are given a
+   conservative terminal that renders correctly on a serial line and inside the
+   framebuffer terminal alike. */
+#define SSHD_CONSOLE_COLUMNS 80U
+#define SSHD_CONSOLE_ROWS 24U
+
 static int g_log_fd = -1;
 static uint32_t g_log_bytes = 0;
 
@@ -727,6 +733,13 @@ static void console_execute_command(void) {
     return;
   } else {
     u64 output_bytes = 0U;
+    /* Launch terminal applications with the same options the SSH channel
+       gives them, so htop and friends render identically on both surfaces
+       rather than falling back to their plain snapshot form here. */
+    (void)ssh_terminal_promote_command(g_console_command,
+                                       sizeof(g_console_command),
+                                       SSHD_CONSOLE_COLUMNS,
+                                       SSHD_CONSOLE_ROWS);
     xaios_memzero(g_console_output, sizeof(g_console_output));
     int status = xaios_remote_login_session(
         SSHD_CONSOLE_SESSION_ID, "admin", g_console_command, g_console_output,

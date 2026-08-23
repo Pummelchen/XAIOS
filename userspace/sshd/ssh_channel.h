@@ -79,4 +79,11 @@ int ssh_channel_send_data(int sockfd, uint32_t remote_id,
 int ssh_channel_agent_send(const ssh_channel_t *session, const uint8_t *data,
                            uint32_t len);
 
+
+/* Apply the terminal-application option promotion used for a PTY session.
+   Exposed so the local console launches applications exactly as the SSH
+   channel does, instead of maintaining a second copy of the rules. */
+int ssh_terminal_promote_command(char *command, uint32_t capacity,
+                                 uint32_t columns, uint32_t rows);
+
 #endif
