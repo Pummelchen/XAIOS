@@ -36,6 +36,60 @@ static int run_checked(const char *command, int expected_result,
   return 0;
 }
 
+static u64 text_length(const char *text) {
+  u64 length = 0ULL;
+  while (text != 0 && text[length] != '\0') ++length;
+  return length;
+}
+
+/* Forward a shell command line to the control protocol and print the rendered
+   response. Runs with the observer role, so read-only operations succeed and
+   privileged ones are refused by the control plane rather than by this tool. */
+static int run_control_command(int argc, char **argv) {
+  char command[XAIOS_CONTROL_MAX_REQUEST_BYTES];
+  char output[XAIOS_CONTROL_MAX_RESPONSE_BYTES];
+  u64 used = 0ULL;
+  u64 output_size = 0ULL;
+  int result;
+
+  static const char prefix[] = "xaiosctl";
+  u64 prefix_length = sizeof(prefix) - 1ULL;
+  if (prefix_length >= sizeof(command)) return 1;
+  copy_bytes(command, prefix, prefix_length);
+  used = prefix_length;
+
+  for (int i = 1; i < argc; ++i) {
+    u64 length = text_length(argv[i]);
+    if (length == 0ULL) continue;
+    if (used + 1ULL + length >= sizeof(command)) {
+      xaios_log("/bin/xaiosctl: command line exceeds control request limit\n");
+      return 1;
+    }
+    command[used++] = ' ';
+    copy_bytes(command + used, argv[i], length);
+    used += length;
+  }
+  command[used] = '\0';
+
+  result = xaios_control_run(command, output, sizeof(output), &output_size);
+  /* Operator output goes to the console, not the kernel log: the shell relays
+     captured console bytes verbatim, whereas log lines are filtered down to
+     those prefixed with this application's path. */
+  if (output_size != 0ULL) {
+    if (output_size > sizeof(output)) output_size = sizeof(output);
+    if (xaios_console_write(output, output_size) != (int)output_size) return 1;
+    if (output[output_size - 1ULL] != '\n') {
+      if (xaios_console_write("\n", 1ULL) != 1) return 1;
+    }
+  }
+  if (result < 0) {
+    static const char failed[] = "xaiosctl: control command rejected\n";
+    (void)xaios_console_write(failed, sizeof(failed) - 1ULL);
+    return 1;
+  }
+  return result == 0 ? 0 : result;
+}
+
 static int protocol_negative_tests(void) {
   xaios_control_request_header_user_t request;
   xaios_control_response_header_user_t response_header;
@@ -71,7 +125,7 @@ static int protocol_negative_tests(void) {
                                                                         : -1;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
   static const struct command_test {
     const char *human;
     const char *json;
@@ -114,6 +168,10 @@ int main(void) {
        "xaiosctl storage usage /models --json", "mount=/models",
        "\"staging_writable\":1", 0},
   };
+
+  /* With arguments this is the operator CLI; without them it stays the boot
+     and gate self-test, so the existing startup evidence is unchanged. */
+  if (argc > 1) return run_control_command(argc, argv);
 
   xaios_log("/bin/xaiosctl: starting control protocol client tests\n");
   for (u64 i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
