@@ -2025,7 +2025,6 @@ int64_t mutable_fs_write_fd(uint32_t fd, const void *buffer, uint64_t size) {
   }
 
   uint64_t file_size = 0;
-  bytes_zero(g_file_buffer, sizeof(g_file_buffer));
   if (find_node(handle->path, 0) != 0) {
     if (read_file(handle->path, g_file_buffer, sizeof(g_file_buffer), &file_size) !=
         XAIOS_OK) {
@@ -2035,6 +2034,15 @@ int64_t mutable_fs_write_fd(uint32_t fd, const void *buffer, uint64_t size) {
   uint64_t new_size = handle->cursor + size;
   if (new_size < file_size) {
     new_size = file_size;
+  }
+  /* Only a cursor seeked past the end leaves a hole, and only that hole has to
+     read back as zeros. Everything below file_size was just read back, and
+     everything from the cursor on is about to be overwritten, so clearing the
+     whole buffer meant a 256 KiB memset for every append -- the audit log paid
+     roughly 21 MiB of it to write 3 KiB of lines. Nothing above new_size is
+     written out, so stale bytes there cannot reach the volume. */
+  if (handle->cursor > file_size) {
+    bytes_zero(g_file_buffer + file_size, handle->cursor - file_size);
   }
   bytes_copy(g_file_buffer + handle->cursor, buffer, size);
   if (write_file(handle->path, g_file_buffer, new_size) != XAIOS_OK) {
