@@ -10,6 +10,11 @@ are documented separately in [[Commands|Commands]].
 
 ## Boot and service applications
 
+`/bin` is the boot image mounted read-only into the VFS, so `ls /bin`
+lists the shipped executables and `ls -l` reports their sizes. Writes,
+renames, and deletions under it are rejected; mutable data belongs under
+`/state`, `/apps`, and `/tmp`.
+
 | Path | Purpose | Normal startup |
 |---|---|---|
 | `/init` | First userspace process. Establishes the initial service lifecycle and returns status to the kernel. | Started once during boot. |

@@ -117,8 +117,14 @@ static int use_pinned_key(const char *rsa_modulus_hex) {
 
 int xapt_tls_open(u64 socket, const char *server_name,
                   const char *rsa_modulus_hex) {
-  static const uint16_t suites[] = {
+  /* The pinned mode accepts exactly one RSA key, so it must offer only the
+     RSA suite: a server holding both certificate types honours the client's
+     order, and offering ECDSA first would steer such a server into a suite
+     the pin can never satisfy. Chain validation handles either type. */
+  static const uint16_t chain_suites[] = {
       BR_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+      BR_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256};
+  static const uint16_t pinned_suites[] = {
       BR_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256};
   int pinned = rsa_modulus_hex != 0 && rsa_modulus_hex[0] != '\0';
   unsigned char entropy[32];
@@ -135,8 +141,13 @@ int xapt_tls_open(u64 socket, const char *server_name,
   g_deadline = xaios_clock_nanos() + UINT64_C(600000000000);
   br_ssl_client_zero(&g_client);
   br_ssl_engine_set_versions(&g_client.eng, BR_TLS12, BR_TLS12);
-  br_ssl_engine_set_suites(&g_client.eng, suites,
-                           sizeof(suites) / sizeof(suites[0]));
+  if (pinned) {
+    br_ssl_engine_set_suites(&g_client.eng, pinned_suites,
+                             sizeof(pinned_suites) / sizeof(pinned_suites[0]));
+  } else {
+    br_ssl_engine_set_suites(&g_client.eng, chain_suites,
+                             sizeof(chain_suites) / sizeof(chain_suites[0]));
+  }
   br_ssl_client_set_default_rsapub(&g_client);
   br_ssl_engine_set_default_rsavrfy(&g_client.eng);
   br_ssl_engine_set_default_ecdsa(&g_client.eng);

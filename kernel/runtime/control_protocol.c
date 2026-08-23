@@ -2149,9 +2149,14 @@ xaios_status_t control_protocol_dispatch(
     xaios_control_role_t authenticated_role) {
   xaios_control_request_header_t request;
   counter_increment(&g_control_requests);
-  if (response_bytes != 0) {
-    *response_bytes = 0U;
+  /* Every handler's success path writes the response and its size without
+     rechecking these, so the guarantee has to be made once here. Tolerating
+     a null response_bytes at entry while handlers dereference it was an
+     inconsistency waiting for a caller to find it. */
+  if (response == 0 || response_bytes == 0) {
+    return XAIOS_ERR_INVALID;
   }
+  *response_bytes = 0U;
   if (request_bytes == 0 || request_size < sizeof(request)) {
     return write_error(response, response_capacity, response_bytes, 0U, 0U,
                        XAIOS_CONTROL_STATUS_INVALID_REQUEST);

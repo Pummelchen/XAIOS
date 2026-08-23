@@ -218,6 +218,9 @@ static uint64_t process_runtime_read(const xaios_user_process_t *process,
   do {
     before = __atomic_load_n(&process->runtime_sequence, __ATOMIC_ACQUIRE);
     if ((before & 1U) != 0U) {
+      /* A writer is mid-update. Force the retry through a defined value
+         rather than letting the loop test read an unwritten `after`. */
+      after = before;
       continue;
     }
     runtime = process->runtime_ns;
@@ -240,6 +243,8 @@ static uint64_t cpu_usage_read(const xaios_cpu_usage_record_t *usage,
   do {
     before = __atomic_load_n(&usage->sequence, __ATOMIC_ACQUIRE);
     if ((before & 1U) != 0U) {
+      /* Same defined-retry as the runtime reader above. */
+      after = before;
       continue;
     }
     busy = usage->busy_ns;

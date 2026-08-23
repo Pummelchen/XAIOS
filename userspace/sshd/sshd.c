@@ -474,16 +474,21 @@ static void console_write_ipv6(void) {
   if (best_length < 2U) best_start = 8U;
 
   static const char hex[] = "0123456789abcdef";
+  /* The marker carries both of its colons, and the group after it therefore
+     adds no separator of its own. Splitting the pair across the marker and
+     the next group breaks whenever there is no next group: a run reaching
+     the last group would render one colon short. */
+  uint32_t marker_end = best_start < 8U ? best_start + best_length : 8U;
   char line[48];
   u64 offset = 0U;
   xaios_memzero(line, sizeof(line));
   for (uint32_t i = 0U; i < 8U;) {
     if (i == best_start) {
-      xaios_append_cstr(line, sizeof(line), &offset, i == 0U ? "::" : ":");
+      xaios_append_cstr(line, sizeof(line), &offset, "::");
       i += best_length;
       continue;
     }
-    if (i != 0U && i != best_start) {
+    if (i != 0U && i != marker_end) {
       xaios_append_cstr(line, sizeof(line), &offset, ":");
     }
     uint16_t value = groups[i];

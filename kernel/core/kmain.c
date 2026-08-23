@@ -456,6 +456,9 @@ void kmain(const xaios_boot_info_t *boot) {
   }
   operations_init(persistent_status == XAIOS_OK ? 1U : 0U);
   kassert(vfs_mount_mutable_root() == XAIOS_OK);
+  /* Expose the boot image's /bin read-only, so the userspace ls that ships
+     as /bin/ls can list the directory it lives in. */
+  kassert(vfs_mount_initramfs("/bin") == XAIOS_OK);
   klog("vfs: MutableFS mounted at /\n");
 
   /* The boot loader selected this immutable system slot. Admit and validate
