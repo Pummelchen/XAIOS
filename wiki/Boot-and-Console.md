@@ -37,6 +37,18 @@ isolated QEMU/Fusion development only; use `XAIOS_SSH_PASSWORD_AUTH=0` to make
 a development build key-only. Release images keep the local serial console
 locked and never package a password database.
 
+The same prompt also accepts a six-digit console PIN, `012345` by default.
+Entering six digits authenticates directly, without a password prompt; any
+other entry is treated as a user name. Digits are masked as they are typed.
+
+The PIN is a local console credential only. It is never accepted over SSH,
+because a six-digit space is far too small to expose to a network attacker,
+and it is packaged only when password authentication is already enabled, so a
+key-only image stays key-only. Five consecutive console authentication
+failures lock the prompt for 60 seconds, which applies to password and PIN
+attempts alike. Override the record with `XAIOS_CONSOLE_PIN_FILE`; release
+builds refuse to package one at all.
+
 After successful authentication the prompt is:
 
 ```text

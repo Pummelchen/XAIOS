@@ -393,6 +393,7 @@ void kmain(const xaios_boot_info_t *boot) {
          fsck.valid, fsck.version, fsck.files, fsck.directories);
     provision_read_only_config("/etc/xaios_authorized_keys");
     provision_read_only_config("/etc/xaios_sshd_users");
+    provision_read_only_config("/etc/xaios_console_pin");
     provision_read_only_config("/etc/xapt.conf");
     provision_ephemeral_credential("/etc/xaios_ssh_client_identity");
     admin_control_init();

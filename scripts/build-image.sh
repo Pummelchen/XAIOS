@@ -147,6 +147,25 @@ elif [ "${XAIOS_SSH_PASSWORD_AUTH:-0}" != "0" ]; then
   exit 2
 fi
 
+# Local console PIN. It is console-only and never accepted over SSH, and it
+# rides along with password authentication: an image without a password user
+# database stays key-only and packages no PIN record.
+CONSOLE_PIN_FILE="${XAIOS_CONSOLE_PIN_FILE:-}"
+if [ "$BUILD_MODE" = "development" ] && [ "$CONSOLE_PIN_FILE" = "" ] && \
+   [ "$SSH_USERS_FILE" = "$ROOT_DIR/config/development-sshd-users" ]; then
+  CONSOLE_PIN_FILE="$ROOT_DIR/config/development-console-pin"
+fi
+if [ "$CONSOLE_PIN_FILE" != "" ]; then
+  if [ "$BUILD_MODE" = "release" ]; then
+    printf '%s\n' "error: console PIN authentication is forbidden in release builds" >&2
+    exit 2
+  fi
+  if [ "$SSH_USERS_FILE" = "" ]; then
+    printf '%s\n' "error: XAIOS_CONSOLE_PIN_FILE requires XAIOS_SSH_USERS_FILE" >&2
+    exit 2
+  fi
+fi
+
 # Cleanup only failures that occur after the build profile has been accepted.
 cleanup() {
   if [ $? -ne 0 ]; then
@@ -1080,6 +1099,13 @@ if [ "$SSH_USERS_FILE" != "" ]; then
     exit 1
   fi
   set -- "$@" "/etc/xaios_sshd_users=$SSH_USERS_FILE"
+fi
+if [ "$CONSOLE_PIN_FILE" != "" ]; then
+  if [ ! -f "$CONSOLE_PIN_FILE" ]; then
+    printf '%s\n' "error: console PIN file not found: $CONSOLE_PIN_FILE" >&2
+    exit 1
+  fi
+  set -- "$@" "/etc/xaios_console_pin=$CONSOLE_PIN_FILE"
 fi
 if [ "${XAIOS_SSH_CLIENT_IDENTITY_FILE:-}" != "" ]; then
   if [ ! -f "$XAIOS_SSH_CLIENT_IDENTITY_FILE" ]; then

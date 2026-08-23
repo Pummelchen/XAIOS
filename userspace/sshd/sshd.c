@@ -44,6 +44,13 @@ static uint32_t g_console_auth_state;
 static uint32_t g_console_auth_failures;
 static uint64_t g_console_ui_next_refresh;
 static uint32_t g_console_ui_cursor_visible;
+static uint32_t g_console_pin_available;
+
+/* Defined with the console PIN credential below; needed by the input echo and
+   by the login prompt, both of which appear earlier in this file. */
+static int console_input_is_pin_prefix(const char *text, uint32_t length);
+static int console_input_is_pin(const char *text, uint32_t length);
+static int authenticate_console_pin(const char *pin);
 
 enum {
   SSHD_CONSOLE_AUTH_LOCKED = 0U,
@@ -676,27 +683,82 @@ static void console_execute_command(void) {
     console_prompt();
 }
 
+/* Consecutive failures cost the attacker wall clock time. This matters most
+   for the six digit PIN, whose search space is small enough to exhaust in
+   seconds against a prompt that answers instantly. */
+#define SSHD_CONSOLE_FAILURE_LIMIT 5U
+#define SSHD_CONSOLE_LOCKOUT_NS UINT64_C(60000000000)
+
+static uint64_t g_console_lockout_until_ns;
+
+static int console_locked_out(void) {
+  if (g_console_lockout_until_ns == 0U) return 0;
+  if (xaios_clock_nanos() >= g_console_lockout_until_ns) {
+    g_console_lockout_until_ns = 0U;
+    g_console_auth_failures = 0U;
+    return 0;
+  }
+  return 1;
+}
+
+static void console_record_auth_failure(void) {
+  if (++g_console_auth_failures >= SSHD_CONSOLE_FAILURE_LIMIT) {
+    g_console_lockout_until_ns = xaios_clock_nanos() + SSHD_CONSOLE_LOCKOUT_NS;
+  }
+}
+
+static void console_auth_failed(void) {
+  console_record_auth_failure();
+  g_console_auth_state = SSHD_CONSOLE_AUTH_USER;
+  if (g_console_lockout_until_ns != 0U) {
+    console_write(
+        "Login incorrect\n"
+        "Too many failed attempts. Try again in 60 seconds.\n"
+        "xaios login: ");
+    return;
+  }
+  console_write("Login incorrect\nxaios login: ");
+}
+
+static void console_auth_succeeded(void) {
+  g_console_auth_failures = 0U;
+  g_console_lockout_until_ns = 0U;
+  g_console_auth_state = SSHD_CONSOLE_AUTH_SHELL;
+  console_write("XAIOS local console session opened\n");
+  console_prompt();
+}
+
 static void console_submit_auth(void) {
+  uint32_t submitted_length = g_console_command_length;
   g_console_command[g_console_command_length] = '\0';
   console_write("\n");
+  if (console_locked_out()) {
+    console_write("Locked out. Try again in a moment.\nxaios login: ");
+    g_console_auth_state = SSHD_CONSOLE_AUTH_USER;
+    xaios_memzero(g_console_command, sizeof(g_console_command));
+    g_console_command_length = 0U;
+    return;
+  }
   if (g_console_auth_state == SSHD_CONSOLE_AUTH_USER) {
-    if (!ssh_str_eq(g_console_command, "admin")) {
+    if (g_console_pin_available != 0U &&
+        console_input_is_pin(g_console_command, submitted_length)) {
+      if (authenticate_console_pin(g_console_command) != 0) {
+        console_auth_failed();
+      } else {
+        console_auth_succeeded();
+      }
+    } else if (!ssh_str_eq(g_console_command, "admin")) {
       console_write("Login incorrect\nxaios login: ");
-      ++g_console_auth_failures;
+      console_record_auth_failure();
     } else {
       g_console_auth_state = SSHD_CONSOLE_AUTH_PASSWORD;
       console_write("Password: ");
     }
   } else if (g_console_auth_state == SSHD_CONSOLE_AUTH_PASSWORD) {
     if (authenticate_password("admin", g_console_command) != 0) {
-      ++g_console_auth_failures;
-      console_write("Login incorrect\nxaios login: ");
-      g_console_auth_state = SSHD_CONSOLE_AUTH_USER;
+      console_auth_failed();
     } else {
-      g_console_auth_failures = 0U;
-      g_console_auth_state = SSHD_CONSOLE_AUTH_SHELL;
-      console_write("XAIOS local console session opened\n");
-      console_prompt();
+      console_auth_succeeded();
     }
   }
   xaios_memzero(g_console_command, sizeof(g_console_command));
@@ -774,7 +836,19 @@ static void console_tick(void) {
                value >= ' ' && value <= '~' &&
                g_console_command_length + 1U < sizeof(g_console_command)) {
       g_console_command[g_console_command_length++] = value;
-      if (g_console_auth_state != SSHD_CONSOLE_AUTH_PASSWORD) {
+      if (g_console_auth_state == SSHD_CONSOLE_AUTH_PASSWORD) {
+        /* Never echo a password. */
+      } else if (g_console_auth_state == SSHD_CONSOLE_AUTH_USER &&
+                 g_console_pin_available != 0U &&
+                 console_input_is_pin_prefix(g_console_command,
+                                             g_console_command_length)) {
+        /* An all-digit entry at the login prompt may be a PIN, which is a
+           secret rather than a user name, so mask it while it is typed. A
+           user name that merely starts with digits is masked for those
+           leading digits only. */
+        static const char masked = '*';
+        (void)xaios_console_write(&masked, 1U);
+      } else {
         (void)xaios_console_write(&value, 1U);
       }
     }
@@ -949,6 +1023,146 @@ static int authenticate_password(const char *username, const char *password) {
   for (uint32_t i = 0; i < sizeof(hash); ++i) diff |= hash[i] ^ expected[i];
   ssh_mem_zero(hash, sizeof(hash));
   return diff == 0U ? 0 : -1;
+}
+
+/* ---- Local Console PIN ----
+   A six digit PIN is a 10^6 search space, so this credential is deliberately
+   restricted: it is accepted only on the local console, never over SSH, and
+   only when password authentication is already enabled for the image. The
+   console prompt is rate limited below, because an unthrottled prompt makes a
+   space this small trivially searchable. */
+#define SSHD_CONSOLE_PIN_PATH "/etc/xaios_console_pin"
+#define SSHD_CONSOLE_PIN_DIGITS 6U
+
+static uint8_t g_console_pin_salt[SSHD_PASSWORD_SALT_MAX];
+static uint8_t g_console_pin_hash[32];
+static uint32_t g_console_pin_salt_len;
+static uint32_t g_console_pin_iterations;
+
+static int parse_console_pin_line(const char *line, uint32_t line_len) {
+  uint32_t separator[3];
+  uint32_t separator_count = 0U;
+  while (line_len > 0U && line[line_len - 1U] == '\r') --line_len;
+  if (line_len == 0U || line[0] == '#') return 1;
+  for (uint32_t i = 0U; i < line_len; ++i) {
+    if (line[i] != ':') continue;
+    if (separator_count >= 3U) return -1;
+    separator[separator_count++] = i;
+  }
+  if (separator_count != 3U) return -1;
+
+  static const char scheme[] = "pbkdf2-sha256";
+  if (separator[0] != sizeof(scheme) - 1U) return -1;
+  for (uint32_t i = 0U; i < sizeof(scheme) - 1U; ++i) {
+    if (line[i] != scheme[i]) return -1;
+  }
+
+  uint32_t iterations = 0U;
+  if (parse_decimal_u32(line + separator[0] + 1U,
+                        separator[1] - separator[0] - 1U, &iterations) != 0 ||
+      iterations < SSHD_PASSWORD_ITERATIONS_MIN ||
+      iterations > SSHD_PASSWORD_ITERATIONS_MAX) {
+    return -1;
+  }
+
+  uint32_t salt_len = 0U;
+  if (parse_hex_bytes(line + separator[1] + 1U,
+                      separator[2] - separator[1] - 1U, g_console_pin_salt,
+                      sizeof(g_console_pin_salt), &salt_len) != 0 ||
+      salt_len == 0U) {
+    return -1;
+  }
+  uint32_t hash_len = 0U;
+  if (parse_hex_bytes(line + separator[2] + 1U, line_len - separator[2] - 1U,
+                      g_console_pin_hash, sizeof(g_console_pin_hash),
+                      &hash_len) != 0 ||
+      hash_len != sizeof(g_console_pin_hash)) {
+    return -1;
+  }
+  g_console_pin_salt_len = salt_len;
+  g_console_pin_iterations = iterations;
+  return 0;
+}
+
+static int load_console_pin(void) {
+  char buffer[512];
+  ssh_mem_zero(g_console_pin_salt, sizeof(g_console_pin_salt));
+  ssh_mem_zero(g_console_pin_hash, sizeof(g_console_pin_hash));
+  g_console_pin_salt_len = 0U;
+  g_console_pin_iterations = 0U;
+  g_console_pin_available = 0U;
+  /* The PIN never widens the authentication surface on its own: an image with
+     password authentication disabled stays key-only. */
+  if (g_password_auth_enabled == 0U) return 0;
+
+  int result = xaios_read_file(SSHD_CONSOLE_PIN_PATH, buffer, sizeof(buffer));
+  if (result <= 0) return 0;
+
+  uint32_t line_start = 0U;
+  for (uint32_t i = 0U; i <= (uint32_t)result; ++i) {
+    if (i != (uint32_t)result && buffer[i] != '\n') continue;
+    int parsed = parse_console_pin_line(buffer + line_start, i - line_start);
+    if (parsed < 0) {
+      ssh_mem_zero(buffer, sizeof(buffer));
+      ssh_mem_zero(g_console_pin_salt, sizeof(g_console_pin_salt));
+      ssh_mem_zero(g_console_pin_hash, sizeof(g_console_pin_hash));
+      g_console_pin_salt_len = 0U;
+      g_console_pin_iterations = 0U;
+      ssh_log(SSH_LOG_ERROR, "Invalid local console PIN record\n");
+      return -1;
+    }
+    if (parsed == 0) {
+      g_console_pin_available = 1U;
+      break;
+    }
+    line_start = i + 1U;
+  }
+  ssh_mem_zero(buffer, sizeof(buffer));
+  if (g_console_pin_available != 0U)
+    ssh_log(SSH_LOG_INFO, "Local console PIN authentication enabled\n");
+  return 0;
+}
+
+static int authenticate_console_pin(const char *pin) {
+  static const uint8_t dummy_salt[16] = {
+    0x58,0x41,0x49,0x4f,0x53,0x2d,0x50,0x49,
+    0x4e,0x2d,0x44,0x55,0x4d,0x4d,0x59,0x31
+  };
+  static const uint8_t dummy_hash[32] = {0};
+  const uint8_t *salt = g_console_pin_available != 0U ? g_console_pin_salt
+                                                      : dummy_salt;
+  const uint8_t *expected = g_console_pin_available != 0U ? g_console_pin_hash
+                                                          : dummy_hash;
+  uint32_t salt_len = g_console_pin_available != 0U ? g_console_pin_salt_len
+                                                    : (uint32_t)sizeof(dummy_salt);
+  uint32_t iterations = g_console_pin_available != 0U
+                            ? g_console_pin_iterations
+                            : SSHD_PASSWORD_ITERATIONS_MIN;
+  uint8_t hash[32];
+  if (pbkdf2_hmac_sha256((const uint8_t *)pin, ssh_str_len(pin), salt,
+                         salt_len, iterations, hash) != 0) {
+    return -1;
+  }
+  /* Fold availability into the accumulator so a missing PIN record cannot
+     authenticate regardless of the derived hash, and keep the compare
+     constant time. */
+  uint8_t diff = (uint8_t)(g_console_pin_available == 0U);
+  for (uint32_t i = 0U; i < sizeof(hash); ++i) diff |= hash[i] ^ expected[i];
+  ssh_mem_zero(hash, sizeof(hash));
+  return diff == 0U ? 0 : -1;
+}
+
+static int console_input_is_pin_prefix(const char *text, uint32_t length) {
+  if (length == 0U || length > SSHD_CONSOLE_PIN_DIGITS) return 0;
+  for (uint32_t i = 0U; i < length; ++i) {
+    if (text[i] < '0' || text[i] > '9') return 0;
+  }
+  return 1;
+}
+
+static int console_input_is_pin(const char *text, uint32_t length) {
+  return length == SSHD_CONSOLE_PIN_DIGITS &&
+         console_input_is_pin_prefix(text, length);
 }
 
 /* ---- Authorized Keys for Public Key Auth ---- */
@@ -1226,6 +1440,7 @@ int sshd_reload_control_state(const char *command) {
   if (command_starts_with(command, "xaiosctl config apply ")) {
     if (load_runtime_config() != 0) return -1;
     if (load_user_database() != 0) return -1;
+    if (load_console_pin() != 0) return -1;
     ssh_log(SSH_LOG_INFO, "Applied SSH runtime configuration generation=%u\n",
             g_runtime_config.generation);
   } else if (command_starts_with(command, "xaiosctl auth key add ") ||
@@ -2136,6 +2351,11 @@ int sshd_run(void) {
   if (load_user_database() != 0) {
     ssh_log(SSH_LOG_ERROR, "SSH user database rejected\n");
     g_console_boot_error = 2202;
+    goto service_loop;
+  }
+  if (load_console_pin() != 0) {
+    ssh_log(SSH_LOG_ERROR, "Local console PIN record rejected\n");
+    g_console_boot_error = 2203;
     goto service_loop;
   }
   (void)load_authorized_keys();

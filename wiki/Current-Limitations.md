@@ -35,8 +35,12 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   `1.1.1.1:443` before SSH binds. This checks configured external reachability
   without depending on public DNS; it is not a general Internet-health check.
   Failure reports a numeric startup error. A local shell is available after
-  PBKDF2 authentication in the default development image (`admin` / `xaios`);
-  key-only and release consoles stay locked.
+  PBKDF2 authentication in the default development image (`admin` / `xaios`,
+  or the six-digit console PIN `012345`); key-only and release consoles stay
+  locked. The PIN is console-only and never accepted over SSH. Its search
+  space is 10^6, so it is protected only by a 60-second lockout after five
+  consecutive failures; it is a development convenience and is not a
+  production-strength credential.
 - The SSH service deliberately supports 32 transports and two active channels
   per transport, backed by 64 asynchronous child-channel records. Fleet-scale
   identity, audit, replay, and connection policy remains unresolved.
