@@ -322,6 +322,22 @@ KERNEL_CFLAGS="
   -Wextra
   -Werror
 "
+# Deny the compiler FP/SIMD registers in kernel code.
+#
+# Without this it emits q-register loads and stores for ordinary struct
+# copies, including in the device drivers, which is wrong twice over. The
+# kernel does not save FP/SIMD state across exceptions, so a handler that
+# touches those registers can corrupt whatever owned them. And a SIMD access
+# to device memory reports no instruction syndrome to a hypervisor, which is
+# why booting under Apple's HVF aborted QEMU inside the xHCI and GIC MMIO
+# paths: both objects carried SIMD stores the compiler chose on its own.
+#
+# The few files that use SIMD deliberately are built with compile_kernel_simd
+# and manage the register state themselves.
+KERNEL_NO_SIMD_CFLAGS=""
+if [ "$TARGET_ARCH" = aarch64 ]; then
+  KERNEL_NO_SIMD_CFLAGS="-mgeneral-regs-only"
+fi
 if [ "$TARGET_ARCH" = x86_64 ]; then
   KERNEL_CFLAGS="$KERNEL_CFLAGS -mno-red-zone -DXAIOS_X86_COMMON_RUNTIME=1"
 fi
@@ -369,10 +385,20 @@ if [ -n "${XAIOS_BUILD_REVISION_OVERRIDE:-}" ] ||
 fi
 KERNEL_CFLAGS="$KERNEL_CFLAGS $PASSWORD_AUTH_CFLAG -DXAIOS_BOOT_TEST_APPS=$BOOT_TEST_APPS -DXAIOS_BOOT_VERBOSE=$BOOT_VERBOSE -DXAIOS_FAILURE_TEST_APP=$FAILURE_TEST_APP -DXAIOS_LIBC_TEST=$LIBC_TEST"
 
+# Files that use FP/SIMD on purpose opt back in; everything else is built
+# without it. See KERNEL_NO_SIMD_CFLAGS below for why.
+compile_kernel_simd() {
+  KERNEL_ALLOW_SIMD=1 compile_kernel "$1" "$2"
+}
+
 compile_kernel() {
   source_path="$1"
   object_path="$2"
-  "$CLANG" $KERNEL_CFLAGS \
+  simd_cflags="$KERNEL_NO_SIMD_CFLAGS"
+  if [ "${KERNEL_ALLOW_SIMD:-0}" = 1 ]; then
+    simd_cflags=""
+  fi
+  "$CLANG" $KERNEL_CFLAGS $simd_cflags \
     "-DXAIOS_BUILD_IDENTIFIER=\"$BUILD_IDENTIFIER\"" \
     "-DXAIOS_BUILD_REVISION=\"$BUILD_REVISION\"" \
     "-DXAIOS_BUILD_MODE=\"$BUILD_MODE\"" \
@@ -546,11 +572,11 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/gic.c" "$KERNEL_BUILD_DIR/gic.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/gic_its.c" "$KERNEL_BUILD_DIR/gic_its.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/smp.c" "$KERNEL_BUILD_DIR/smp.o"
-  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/sve.c" "$KERNEL_BUILD_DIR/sve.o"
-  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/sve_canary.S" "$KERNEL_BUILD_DIR/sve_canary.o"
+  compile_kernel_simd "$ROOT_DIR/kernel/arch/aarch64/sve.c" "$KERNEL_BUILD_DIR/sve.o"
+  compile_kernel_simd "$ROOT_DIR/kernel/arch/aarch64/sve_canary.S" "$KERNEL_BUILD_DIR/sve_canary.o"
 else
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early.c" "$KERNEL_BUILD_DIR/early.o"
-  compile_kernel "$ROOT_DIR/engine/src/packed.c" "$KERNEL_BUILD_DIR/engine_packed.o"
+  compile_kernel_simd "$ROOT_DIR/engine/src/packed.c" "$KERNEL_BUILD_DIR/engine_packed.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/timer.c" "$KERNEL_BUILD_DIR/timer.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/platform.c" "$KERNEL_BUILD_DIR/platform.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/power.c" "$KERNEL_BUILD_DIR/power.o"
@@ -595,15 +621,15 @@ compile_kernel "$ROOT_DIR/kernel/user/user.c" "$KERNEL_BUILD_DIR/user.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/model_arena.c" "$KERNEL_BUILD_DIR/model_arena.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/ai_cell.c" "$KERNEL_BUILD_DIR/ai_cell.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/cpu_ai_runtime.c" "$KERNEL_BUILD_DIR/cpu_ai_runtime.o"
-compile_kernel "$ROOT_DIR/kernel/runtime/ai_kernels.c" "$KERNEL_BUILD_DIR/ai_kernels.o"
-compile_kernel "$ROOT_DIR/kernel/runtime/paged_kv_cache.c" "$KERNEL_BUILD_DIR/paged_kv_cache.o"
+compile_kernel_simd "$ROOT_DIR/kernel/runtime/ai_kernels.c" "$KERNEL_BUILD_DIR/ai_kernels.o"
+compile_kernel_simd "$ROOT_DIR/kernel/runtime/paged_kv_cache.c" "$KERNEL_BUILD_DIR/paged_kv_cache.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/inference_batcher.c" "$KERNEL_BUILD_DIR/inference_batcher.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/inference_preempt.c" "$KERNEL_BUILD_DIR/inference_preempt.o"
-compile_kernel "$ROOT_DIR/kernel/runtime/model_parallel.c" "$KERNEL_BUILD_DIR/model_parallel.o"
+compile_kernel_simd "$ROOT_DIR/kernel/runtime/model_parallel.c" "$KERNEL_BUILD_DIR/model_parallel.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/speculative_decoding.c" "$KERNEL_BUILD_DIR/speculative_decoding.o"
-compile_kernel "$ROOT_DIR/kernel/runtime/flash_attention.c" "$KERNEL_BUILD_DIR/flash_attention.o"
+compile_kernel_simd "$ROOT_DIR/kernel/runtime/flash_attention.c" "$KERNEL_BUILD_DIR/flash_attention.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/model_compilation.c" "$KERNEL_BUILD_DIR/model_compilation.o"
-compile_kernel "$ROOT_DIR/kernel/runtime/math_intrinsics.c" "$KERNEL_BUILD_DIR/math_intrinsics.o"
+compile_kernel_simd "$ROOT_DIR/kernel/runtime/math_intrinsics.c" "$KERNEL_BUILD_DIR/math_intrinsics.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/sandbox.c" "$KERNEL_BUILD_DIR/sandbox.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/persistence.c" "$KERNEL_BUILD_DIR/persistence.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/update.c" "$KERNEL_BUILD_DIR/update.o"
