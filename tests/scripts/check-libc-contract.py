@@ -206,7 +206,8 @@ def main() -> int:
         check_sysroot(arch)
     print(
         "libc-contract: PASS: 24 headers, 464 functions, exact strict-C99 "
-        "namespace, pinned source, non-POSIX surface, 50-syscall budget"
+        f"namespace, pinned source, non-POSIX surface, "
+        f"{REQUIREMENTS['syscall_budget']['baseline_count']}-syscall budget"
     )
     return 0
 

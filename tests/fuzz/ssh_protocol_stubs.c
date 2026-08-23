@@ -23,19 +23,20 @@ int ssh_conn_recv(ssh_connection_t *conn, uint8_t *data, u64 length,
   return -1;
 }
 
-int xaios_net_recv(uint64_t socket, void *buffer, uint64_t size,
-                   uint64_t *received) {
+/* Match xaios_user.h exactly. uint64_t is unsigned long long on macOS but
+   unsigned long on Linux, so spelling these with uint64_t compiled on a
+   development host and conflicted on CI. */
+int xaios_net_recv(u64 socket, void *buffer, u64 size, u64 *received) {
   (void)socket; (void)buffer; (void)size; (void)received;
   return -1;
 }
 
-int xaios_net_send(uint64_t socket, const void *buffer, uint64_t size,
-                   uint64_t *sent) {
+int xaios_net_send(u64 socket, const void *buffer, u64 size, u64 *sent) {
   (void)socket; (void)buffer; (void)size; (void)sent;
   return -1;
 }
 
-uint64_t xaios_clock_nanos(void) { return 0U; }
+u64 xaios_clock_nanos(void) { return 0U; }
 void xaios_log(const char *message) { (void)message; }
 int crypto_random_bytes(uint8_t *output, uint32_t len) {
   (void)output; (void)len; return -1;
