@@ -241,6 +241,72 @@ jobs:
         env:
           XAIOS_QEMU_SMOKE_TIMEOUT: "120"
 
+  parser-fuzz:
+    name: Parser Fuzzing
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm python3
+
+      # Every one of these parsers is reachable before authentication: the SSH
+      # binary packet layer, the DNS/DNSSEC response path, and the SFTP request
+      # decoder. The corpus is carried between runs so each campaign starts
+      # from the coverage the previous one reached instead of from one seed.
+      - name: Restore fuzzing corpus
+        uses: actions/cache@v5
+        with:
+          path: build/fuzz
+          key: parser-fuzz-corpus-${{ github.sha }}
+          restore-keys: |
+            parser-fuzz-corpus-
+
+      - name: Run bounded coverage-guided campaign
+        run: make parser-fuzz
+        env:
+          XAIOS_FUZZ_RUNS: "300000"
+
+      - name: Upload crashes and corpus
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: parser-fuzz-evidence
+          path: |
+            build/fuzz/*-corpus/**
+            build/fuzz/crash-*
+            build/fuzz/leak-*
+            build/fuzz/timeout-*
+          if-no-files-found: ignore
+          retention-days: 14
+
+  persistence-reboot:
+    name: Persistence Across Reboot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm meson ninja-build qemu-system-arm qemu-efi-aarch64 mtools python3 python3-cryptography
+
+      # Boots twice against one VirtIO volume and requires the second boot to
+      # reload the state the first wrote. Nothing else in CI covers durability
+      # across a restart, which is how a persistence subsystem that wrote to a
+      # snapshot-backed device went unnoticed.
+      - name: Verify snapshot state survives a reboot
+        run: make qemu-persistence-reboot
+        env:
+          XAIOS_QEMU_PERSISTENCE_TIMEOUT: "180"
+
   model-storage-interoperability:
     name: ModelFS SFTP Interoperability
     runs-on: ubuntu-latest

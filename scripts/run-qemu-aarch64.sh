@@ -152,10 +152,34 @@ case "$iommu" in
     ;;
 esac
 
+# The virt machine only grew an "msi" property in newer QEMU releases. Older
+# builds still route MSI through the ITS whenever one is instantiated, so ask
+# the binary what it supports rather than passing an option that makes it
+# refuse to start: on QEMU 8.2 the explicit form fails with
+# "Property 'virt-8.2-machine.msi' not found" and the guest never boots.
+if "$qemu" -machine virt,help 2>/dev/null | grep -q '^[[:space:]]*msi='; then
+  machine_msi_property=1
+else
+  machine_msi_property=0
+fi
+
 case "$msi_controller" in
   auto) ;;
-  gicv2m) machine_options="$machine_options,msi=gicv2m" ;;
-  its) machine_options="$machine_options,its=on,msi=its" ;;
+  gicv2m)
+    if [ "$machine_msi_property" -eq 1 ]; then
+      machine_options="$machine_options,msi=gicv2m"
+    else
+      printf '%s\n' \
+        "error: this QEMU cannot select GICv2m explicitly; it has no virt machine msi property" >&2
+      exit 2
+    fi
+    ;;
+  its)
+    machine_options="$machine_options,its=on"
+    if [ "$machine_msi_property" -eq 1 ]; then
+      machine_options="$machine_options,msi=its"
+    fi
+    ;;
   *)
     printf '%s\n' "error: XAIOS_QEMU_MSI_CONTROLLER must be auto, gicv2m, or its" >&2
     exit 2

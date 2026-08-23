@@ -2,6 +2,7 @@
 """Prove QEMU SMMUv3 translation, revocation, and stream teardown."""
 
 import json
+import re
 import os
 import select
 import signal
@@ -19,7 +20,12 @@ MARKERS = [
     "SMMU: translated DMA result=0x0",
     "SMMU: event type=0x10",
     "SMMU: translated DMA self-test passed",
-    "authorized=1 forbidden=1 stale_mapping=blocked faults=1",
+    # The fault counter is cumulative across the whole SMMU, not a count of
+    # this test's faults: unrelated streams that reach the SMMU without a
+    # configured entry raise C_BAD_STE first, so the total is whatever the
+    # boot happened to accumulate. Assert the outcome and that at least one
+    # fault was recorded, not an exact running total.
+    "authorized=1 forbidden=1 stale_mapping=blocked faults=",
 ]
 PANIC_MARKERS = ["CYAN SCREEN OF DEATH", "System halted. Manual reset required"]
 
@@ -118,6 +124,13 @@ def main() -> int:
     missing = [marker for marker in MARKERS if marker not in text]
     panics = [marker for marker in PANIC_MARKERS if marker in text]
     failures = [f"missing marker: {marker}" for marker in missing]
+    # The marker above only proves the summary line was printed. Check the
+    # fault total separately so a run that recorded no fault at all still
+    # fails, without pinning the assertion to one exact cumulative value.
+    fault_totals = [int(value) for value in
+                    re.findall(r"stale_mapping=blocked faults=(\d+)", text)]
+    if fault_totals and max(fault_totals) < 1:
+        failures.append("SMMU recorded no translation faults")
     failures.extend(f"panic marker present: {marker}" for marker in panics)
     if not passed and not failures:
         failures.append(f"QEMU exited before SMMU evidence, code={process.returncode}")
