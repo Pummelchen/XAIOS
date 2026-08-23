@@ -1127,9 +1127,24 @@ static xaios_status_t handle_ls(const char *args, char *output,
                            explicit_path[0] == '\0' ? resolved : explicit_path,
                            target_stat.size, target_stat.type, long_form);
   }
+  {
+    const xaios_initramfs_file_t *image_file = 0;
+    if (initramfs_lookup(resolved, &image_file) == XAIOS_OK &&
+        initramfs_directory_exists(resolved) == 0) {
+      return append_ls_entry(output, output_capacity, output_bytes,
+                             explicit_path[0] == '\0' ? resolved
+                                                       : explicit_path,
+                             image_file->size, 2U, long_form);
+    }
+  }
+  int image_directory = initramfs_directory_exists(resolved);
   xaios_status_t list_status = mutable_fs_list(resolved, listing,
                                               sizeof(listing),
                                               &listing_size);
+  if (image_directory != 0 && list_status != XAIOS_OK) {
+    list_status = XAIOS_OK;
+    listing_size = 0U;
+  }
   if ((list_status != XAIOS_OK &&
        (list_status != XAIOS_ERR_NO_MEMORY || listing_size == 0U)) ||
       listing_size > sizeof(listing)) {
@@ -1178,6 +1193,39 @@ static xaios_status_t handle_ls(const char *args, char *output,
       return command_fail(output, output_capacity, output_bytes, "ls: output too large");
     }
     line_start = line_end + 1U;
+  }
+  /* Merge the boot image's view of this directory. MutableFS took its turn
+     above, so anything it can stat is already listed and is skipped here;
+     synthetic subdirectories are deduplicated against earlier image files. */
+  for (uint32_t i = 0U; i < initramfs_file_count(); ++i) {
+    char name[XAIOS_MFS_PATH_MAX];
+    int is_directory = 0;
+    if (initramfs_child_at(resolved, i, name, sizeof(name), &is_directory) == 0)
+      continue;
+    if (!show_all && is_hidden_name(name) != 0) continue;
+    char child[XAIOS_MFS_PATH_MAX];
+    xaios_mfs_stat_t child_stat;
+    if (path_join(child, sizeof(child), resolved, name) != XAIOS_OK) continue;
+    if (mutable_fs_stat(child, &child_stat) == XAIOS_OK) continue;
+    if (is_directory != 0) {
+      uint32_t seen = 0U;
+      for (uint32_t j = 0U; j < i && seen == 0U; ++j) {
+        char earlier[XAIOS_MFS_PATH_MAX];
+        int earlier_dir = 0;
+        if (initramfs_child_at(resolved, j, earlier, sizeof(earlier),
+                               &earlier_dir) != 0 &&
+            earlier_dir != 0 && string_equal(earlier, name) == 1U)
+          seen = 1U;
+      }
+      if (seen != 0U) continue;
+    }
+    const xaios_initramfs_file_t *file = initramfs_file_at(i);
+    if (append_ls_entry(output, output_capacity, output_bytes, name,
+                        is_directory != 0 ? 0U : file->size,
+                        is_directory != 0 ? 1U : 2U, long_form) != XAIOS_OK) {
+      return command_fail(output, output_capacity, output_bytes,
+                          "ls: output too large");
+    }
   }
   return XAIOS_OK;
 }
@@ -1869,7 +1917,8 @@ static xaios_status_t handle_cd(const char *arg, char *output,
     output_append(output, output_capacity, output_bytes, "\n");
     return XAIOS_OK;
   }
-  if (mutable_fs_stat(resolved, &stat) != XAIOS_OK || stat.type != 1U) {
+  if ((mutable_fs_stat(resolved, &stat) != XAIOS_OK || stat.type != 1U) &&
+      initramfs_directory_exists(resolved) == 0) {
     return command_fail(output, output_capacity, output_bytes,
                         "cd: not a directory");
   }

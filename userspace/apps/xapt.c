@@ -283,7 +283,11 @@ static int http_get(const xapt_config_t *config, const char *catalog_path,
     u64 cursor = 0U;
     if (header_complete == 0U) {
       while (cursor < received && header_complete == 0U) {
-        if (header_used + 1U >= sizeof(g_buffer)) {
+        /* Headers accumulate in g_catalog before the body claims it, so the
+           cap must hold against that buffer, not g_buffer: the old test only
+           worked because g_buffer happens to be the smaller of the two. */
+        if (header_used + 1U >= sizeof(g_buffer) ||
+            header_used + 1U >= sizeof(g_catalog)) {
           g_http_error = 5U;
           (void)xaios_net_close(socket);
           return -1;
@@ -377,6 +381,11 @@ static int load_config(xapt_config_t *config) {
   if (bytes <= 0)
     bytes = xaios_read_file("/etc/xapt.conf", g_buffer, sizeof(g_buffer));
   if (bytes <= 0) return -1;
+  /* The key matches below compare fixed prefixes against the raw buffer, so
+     the content must end inside it: a full buffer is either truncated or
+     leaves a final unterminated line for a prefix compare to walk past. */
+  if ((u64)bytes >= sizeof(g_buffer)) return -1;
+  g_buffer[bytes] = '\0';
   u64 cursor = 0U;
   while (cursor < (u64)bytes) {
     u64 start = cursor;

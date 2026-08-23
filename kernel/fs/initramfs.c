@@ -55,6 +55,12 @@ static char g_config_child_service_restart[INITFS_MODE_MAX];
 static xaios_initramfs_config_t g_config;
 static uint32_t g_file_count;
 
+static uint32_t str_len(const char *value) {
+  uint32_t length = 0U;
+  while (value[length] != '\0') ++length;
+  return length;
+}
+
 static int str_eq(const char *a, const char *b) {
   while (*a != '\0' && *b != '\0') {
     if (*a != *b) {
@@ -408,6 +414,53 @@ xaios_status_t initramfs_lookup(const char *path,
     }
   }
   return XAIOS_ERR_NOT_FOUND;
+}
+
+uint32_t initramfs_file_count(void) { return g_file_count; }
+
+const xaios_initramfs_file_t *initramfs_file_at(uint32_t index) {
+  return index < g_file_count ? &g_files[index] : 0;
+}
+
+/* The image stores flat absolute paths and no directory records, so
+   directory shape is derived: a directory exists when any file path extends
+   it, and its children are the first path components under it. */
+int initramfs_child_at(const char *directory, uint32_t index, char *name,
+                       uint64_t name_capacity, int *is_directory) {
+  const xaios_initramfs_file_t *file = initramfs_file_at(index);
+  uint32_t dir_length = 0U;
+  if (directory == 0 || name == 0 || is_directory == 0 || file == 0 ||
+      file->path == 0 || directory[0] != '/') {
+    return 0;
+  }
+  dir_length = str_len(directory);
+  if (dir_length > 1U) {
+    uint32_t i = 0U;
+    while (i < dir_length && file->path[i] == directory[i]) ++i;
+    if (i != dir_length || file->path[i] != '/') return 0;
+  }
+  const char *remainder =
+      file->path + (dir_length == 1U ? 1U : dir_length + 1U);
+  uint64_t component = 0U;
+  while (remainder[component] != '\0' && remainder[component] != '/')
+    ++component;
+  if (component == 0U || component + 1U > name_capacity) return 0;
+  for (uint64_t i = 0U; i < component; ++i) name[i] = remainder[i];
+  name[component] = '\0';
+  *is_directory = remainder[component] == '/';
+  return 1;
+}
+
+int initramfs_directory_exists(const char *directory) {
+  char name[64];
+  int is_directory = 0;
+  if (directory == 0 || directory[0] != '/') return 0;
+  if (directory[1] == '\0') return 1;
+  for (uint32_t i = 0U; i < g_file_count; ++i) {
+    if (initramfs_child_at(directory, i, name, sizeof(name), &is_directory))
+      return 1;
+  }
+  return 0;
 }
 
 const xaios_initramfs_config_t *initramfs_config(void) {

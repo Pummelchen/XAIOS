@@ -545,12 +545,59 @@ static xaios_status_t vfs_list_locked(const char *path, char *buffer, uint64_t c
   }
   xaios_vfs_resolution_t resolution;
   vfs_mount_record_t *mount = 0;
+  char normalized[XAIOS_VFS_PATH_MAX];
   xaios_status_t status = resolve_operation(path, &resolution, &mount);
   if (status != XAIOS_OK || mount->ops->list == 0) {
     return status != XAIOS_OK ? status : XAIOS_ERR_UNSUPPORTED;
   }
-  return mount->ops->list(mount->context, resolution.relative_path, buffer,
-                          capacity, out_size);
+  status = mount->ops->list(mount->context, resolution.relative_path, buffer,
+                            capacity, out_size);
+  if (status != XAIOS_OK || normalize_path(path, normalized) != XAIOS_OK) {
+    return status;
+  }
+  /* A mount point is a directory entry of its parent, but the parent's
+     backend has never heard of it: without this, /bin is fully usable yet
+     absent from a listing of /. Append the basename of every mount rooted
+     one level below the listed directory, unless the backend already named
+     it. */
+  uint64_t base_length = string_length(normalized);
+  if (base_length == 1U) base_length = 0U;
+  for (uint32_t index = 0U; index < XAIOS_VFS_MAX_MOUNTS; ++index) {
+    const vfs_mount_record_t *candidate = &g_mounts[index];
+    const char *name;
+    uint64_t name_length = 0U;
+    if (candidate->active == 0U || candidate == mount) continue;
+    if (!mount_matches(normalized, candidate->path) ||
+        string_length(candidate->path) <= base_length) {
+      continue;
+    }
+    name = candidate->path + base_length + 1U;
+    while (name[name_length] != '\0' && name[name_length] != '/')
+      ++name_length;
+    if (name_length == 0U || name[name_length] == '/') continue;
+    /* Skip when the backend listed the same name already. */
+    {
+      uint64_t line = 0U;
+      int present = 0;
+      while (line < *out_size && present == 0) {
+        uint64_t end = line;
+        while (end < *out_size && buffer[end] != '\n') ++end;
+        if (end - line == name_length) {
+          uint64_t i = 0U;
+          while (i < name_length && buffer[line + i] == name[i]) ++i;
+          if (i == name_length) present = 1;
+        }
+        line = end + 1U;
+      }
+      if (present != 0) continue;
+    }
+    if (*out_size + name_length + 1U > capacity) return XAIOS_ERR_NO_MEMORY;
+    for (uint64_t i = 0U; i < name_length; ++i)
+      buffer[*out_size + i] = name[i];
+    buffer[*out_size + name_length] = '\n';
+    *out_size += name_length + 1U;
+  }
+  return XAIOS_OK;
 }
 
 

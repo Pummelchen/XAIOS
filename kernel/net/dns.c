@@ -509,7 +509,8 @@ xaios_status_t dns_process_message(const uint8_t *message, uint32_t length,
     ++g_reject_count;
     return XAIOS_ERR_INVALID;
   }
-  position += 4U;
+  /* The stage verifiers re-parse the whole message themselves, so nothing
+     consumes an offset past the question section here. */
   xaios_status_t status = XAIOS_ERR_INVALID;
   uint64_t wall_ns = wall_time_now_ns();
   if (g_pending.dnssec_stage == DNSSEC_STAGE_ROOT_DNSKEY) {
