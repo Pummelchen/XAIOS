@@ -25,6 +25,13 @@ def main() -> int:
         "clang", "-std=c99", "-O1", "-g", "-fno-omit-frame-pointer",
         "-fsanitize=fuzzer,address,undefined", "-Wall", "-Wextra", "-Werror",
         "-Wno-unused-function",
+        # BearSSL calls getentropy(), which glibc hides under -std=c99 unless
+        # _DEFAULT_SOURCE is defined. macOS declares it either way, so without
+        # this the DNS target only builds on a development host.
+        "-D_DEFAULT_SOURCE",
+        # openbsd-compat uses __nonstring__, unknown to clang before 21, the
+        # same reason scripts/build-image.sh passes this for those files.
+        "-Wno-unknown-attributes",
     ]
     targets = {
         "ssh-packet": [
