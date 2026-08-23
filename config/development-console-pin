@@ -1,0 +1,5 @@
+# Development-only local console PIN: 012345.
+# Console-only credential. It is never accepted over SSH, and release images
+# reject PIN authentication and never package this record.
+# Format: pbkdf2-sha256:<iterations>:<salt hex>:<hash hex>
+pbkdf2-sha256:200000:5841494f532d4445562d50494e303031:c6203e31b628cf333ec89006f53e2883d4c13e9ac6b9edd6b26a1e919e4acf09
