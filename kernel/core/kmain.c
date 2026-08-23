@@ -353,7 +353,15 @@ void kmain(const xaios_boot_info_t *boot) {
   virtio_block_self_test();
   boot_ui_update(51U, "boot storage validation", "initial filesystem", 3U);
   initramfs_self_test();
-  if (virtio_block_is_read_only() != 0U) {
+  /* Snapshot state must land on the durable volume, not on vblk0: that device
+     carries the initramfs/test image and the QEMU launcher attaches it with
+     snapshot=on, so its writes are thrown away when the machine stops. Bind
+     the dedicated persistent slot before the self-test runs, and reuse the
+     same handle for MutableFS below. */
+  if (virtio_block_open_slot(1U, &g_persistent_handle) == XAIOS_OK) {
+    persistence_bind_block_device(g_persistent_handle);
+  }
+  if (virtio_block_is_read_only() != 0U && g_persistent_handle == 0) {
     persistence_runtime_init();
     klog("persistence: writable self-test skipped boot device is read-only\n");
     klog("mutable-fs: writable self-test deferred no persistent block device\n");
@@ -380,7 +388,9 @@ void kmain(const xaios_boot_info_t *boot) {
     /* vblk0 remains the immutable initramfs/test image. Open the dedicated
      * second VirtIO block device for durable MutableFS state. */
     xaios_status_t virtio_status =
-        virtio_block_open_slot(1U, &g_persistent_handle);
+        g_persistent_handle != 0
+            ? XAIOS_OK
+            : virtio_block_open_slot(1U, &g_persistent_handle);
     persistent_status = virtio_status == XAIOS_OK
                             ? mutable_fs_mount_device("/dev/vblk1")
                             : virtio_status;

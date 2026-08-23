@@ -166,6 +166,38 @@ static uint64_t persistence_sector_checksum(xaios_persistence_disk_sector_t *sec
   return checksum;
 }
 
+/* Durable snapshot storage.
+   vblk0 is the initramfs/test image and the QEMU launcher attaches it with
+   snapshot=on, so every write to it is discarded when the machine stops. The
+   snapshot sector has to live on the same durable volume MutableFS uses, which
+   is why PERSISTENCE_SECTOR (3000) sits just below MFS_START_SECTOR (3072).
+   Until a durable device is bound the default device is used, which keeps the
+   pre-storage self-test working on machines that expose no writable volume. */
+static virtio_block_handle_t *g_persistence_device;
+
+void persistence_bind_block_device(virtio_block_handle_t *handle) {
+  g_persistence_device = handle;
+  klog("persistence: durable device %s\n",
+       handle != 0 ? "bound" : "cleared");
+}
+
+static xaios_status_t persistence_read_sector(void *buffer, uint64_t size) {
+  if (g_persistence_device != 0) {
+    return virtio_block_read_sector_h(g_persistence_device, PERSISTENCE_SECTOR,
+                                      buffer, size);
+  }
+  return virtio_block_read_sector(PERSISTENCE_SECTOR, buffer, size);
+}
+
+static xaios_status_t persistence_write_sector(const void *buffer,
+                                               uint64_t size) {
+  if (g_persistence_device != 0) {
+    return virtio_block_write_sector_h(g_persistence_device, PERSISTENCE_SECTOR,
+                                       buffer, size);
+  }
+  return virtio_block_write_sector(PERSISTENCE_SECTOR, buffer, size);
+}
+
 static xaios_status_t persistence_flush_to_disk(void) {
   xaios_persistence_disk_sector_t sector;
   bytes_zero(&sector, sizeof(sector));
@@ -191,8 +223,7 @@ static xaios_status_t persistence_flush_to_disk(void) {
   sector.record_count = out;
   sector.checksum = persistence_sector_checksum(&sector);
 
-  if (virtio_block_write_sector(PERSISTENCE_SECTOR, &sector,
-                                sizeof(sector)) != XAIOS_OK) {
+  if (persistence_write_sector(&sector, sizeof(sector)) != XAIOS_OK) {
     ++g_reject_count;
     return XAIOS_ERR_IO;
   }
@@ -206,7 +237,7 @@ static xaios_status_t persistence_flush_to_disk(void) {
 static xaios_status_t persistence_load_from_disk(void) {
   xaios_persistence_disk_sector_t sector;
   bytes_zero(&sector, sizeof(sector));
-  if (virtio_block_read_sector(PERSISTENCE_SECTOR, &sector, sizeof(sector)) !=
+  if (persistence_read_sector(&sector, sizeof(sector)) !=
       XAIOS_OK) {
     ++g_reject_count;
     return XAIOS_ERR_IO;
@@ -260,7 +291,7 @@ static xaios_status_t persistence_load_from_disk(void) {
 static void persistence_probe_existing_disk_state(void) {
   xaios_persistence_disk_sector_t sector;
   bytes_zero(&sector, sizeof(sector));
-  if (virtio_block_read_sector(PERSISTENCE_SECTOR, &sector, sizeof(sector)) !=
+  if (persistence_read_sector(&sector, sizeof(sector)) !=
       XAIOS_OK) {
     return;
   }
@@ -376,7 +407,10 @@ uint64_t persistence_checksum_error_count(void) {
 void persistence_self_test(void) {
   persistence_runtime_init();
   kassert(sizeof(xaios_persistence_disk_sector_t) <= PERSISTENCE_SECTOR_SIZE);
-  kassert(PERSISTENCE_SECTOR < virtio_block_capacity_sectors());
+  kassert(PERSISTENCE_SECTOR <
+          (g_persistence_device != 0
+               ? virtio_block_capacity_sectors_h(g_persistence_device)
+               : virtio_block_capacity_sectors()));
   klog("persistence: self-test scratch sector=%lu sectors=1 initramfs_payload_start=4096\n",
        PERSISTENCE_SECTOR);
   persistence_probe_existing_disk_state();
