@@ -2,6 +2,7 @@
 #include <xaios/block_device.h>
 #include <xaios/klog.h>
 #include <xaios/mutable_fs.h>
+#include <xaios/spinlock.h>
 #include <xaios/virtio_blk.h>
 
 #define MFS_MAGIC "XAIOSMFS2"
@@ -202,6 +203,7 @@ static uint64_t g_close_count;
 static uint64_t g_metadata_verified_checksum;
 
 static uint8_t g_metadata_buffer[MFS_V5_METADATA_SECTORS * MFS_SECTOR_SIZE];
+static xaios_spinlock_t g_mutable_fs_lock = XAIOS_SPINLOCK_INIT;
 static uint8_t g_file_buffer[MFS_V5_MAX_FILE_BYTES];
 static char g_path_transaction[MFS_V5_MAX_NODES][MFS_PATH_MAX];
 
@@ -1721,8 +1723,7 @@ static xaios_status_t write_pending_journal_file(const char *path,
   return write_journal(&journal);
 }
 
-xaios_status_t mutable_fs_record_service_state(const char *name,
-                                              const char *state) {
+static xaios_status_t mutable_fs_record_service_state_locked(const char *name, const char *state) {
   char path[MFS_PATH_MAX];
   char record[256];
   uint64_t path_offset = 0;
@@ -1752,8 +1753,7 @@ xaios_status_t mutable_fs_record_service_state(const char *name,
   return status;
 }
 
-xaios_status_t mutable_fs_record_workspace_state(uint32_t workspace_id,
-                                                const char *revision) {
+static xaios_status_t mutable_fs_record_workspace_state_locked(uint32_t workspace_id, const char *revision) {
   char path[MFS_PATH_MAX];
   char record[256];
   uint64_t path_offset = 0;
@@ -1785,7 +1785,7 @@ xaios_status_t mutable_fs_record_workspace_state(uint32_t workspace_id,
   return status;
 }
 
-xaios_status_t mutable_fs_record_update_state(const char *policy) {
+static xaios_status_t mutable_fs_record_update_state_locked(const char *policy) {
   char record[256];
   uint64_t record_offset = 0;
   bytes_zero(record, sizeof(record));
@@ -1806,10 +1806,7 @@ xaios_status_t mutable_fs_record_update_state(const char *policy) {
   return status;
 }
 
-xaios_status_t mutable_fs_record_update_transaction(uint32_t generation,
-                                                   const char *state,
-                                                   const char *target,
-                                                   const char *rollback_label) {
+static xaios_status_t mutable_fs_record_update_transaction_locked(uint32_t generation, const char *state, const char *target, const char *rollback_label) {
   char record[256];
   uint64_t record_offset = 0;
   bytes_zero(record, sizeof(record));
@@ -1842,11 +1839,7 @@ xaios_status_t mutable_fs_record_update_transaction(uint32_t generation,
   return status;
 }
 
-xaios_status_t mutable_fs_record_admin_status(const char *service,
-                                             const char *state,
-                                             uint32_t starts,
-                                             uint32_t restarts,
-                                             uint32_t logs) {
+static xaios_status_t mutable_fs_record_admin_status_locked(const char *service, const char *state, uint32_t starts, uint32_t restarts, uint32_t logs) {
   char record[256];
   uint64_t record_offset = 0;
   bytes_zero(record, sizeof(record));
@@ -1881,46 +1874,43 @@ xaios_status_t mutable_fs_record_admin_status(const char *service,
   return status;
 }
 
-xaios_status_t mutable_fs_commit(const char *label) {
+static xaios_status_t mutable_fs_commit_locked(const char *label) {
   return commit_snapshot(label);
 }
 
-xaios_status_t mutable_fs_rollback(void) {
+static xaios_status_t mutable_fs_rollback_locked(void) {
   return rollback_snapshot();
 }
 
-xaios_status_t mutable_fs_mkdir(const char *path) {
+static xaios_status_t mutable_fs_mkdir_locked(const char *path) {
   return create_dir(path);
 }
 
-xaios_status_t mutable_fs_write(const char *path, const void *data,
-                               uint64_t size) {
+static xaios_status_t mutable_fs_write_locked(const char *path, const void *data, uint64_t size) {
   return write_file(path, data, size);
 }
 
-xaios_status_t mutable_fs_read(const char *path, void *buffer,
-                              uint64_t buffer_size, uint64_t *out_size) {
+static xaios_status_t mutable_fs_read_locked(const char *path, void *buffer, uint64_t buffer_size, uint64_t *out_size) {
   return read_file(path, buffer, buffer_size, out_size);
 }
 
-xaios_status_t mutable_fs_delete(const char *path) {
+static xaios_status_t mutable_fs_delete_locked(const char *path) {
   return delete_node(path);
 }
 
-xaios_status_t mutable_fs_delete_tree(const char *path) {
+static xaios_status_t mutable_fs_delete_tree_locked(const char *path) {
   return delete_tree(path);
 }
 
-xaios_status_t mutable_fs_rename(const char *old_path, const char *new_path) {
+static xaios_status_t mutable_fs_rename_locked(const char *old_path, const char *new_path) {
   return rename_node(old_path, new_path);
 }
 
-xaios_status_t mutable_fs_stat(const char *path, xaios_mfs_stat_t *stat) {
+static xaios_status_t mutable_fs_stat_locked(const char *path, xaios_mfs_stat_t *stat) {
   return stat_node(path, stat);
 }
 
-xaios_status_t mutable_fs_list(const char *path, char *buffer,
-                              uint64_t buffer_size, uint64_t *out_size) {
+static xaios_status_t mutable_fs_list_locked(const char *path, char *buffer, uint64_t buffer_size, uint64_t *out_size) {
   return list_dir(path, buffer, buffer_size, out_size);
 }
 
@@ -1932,7 +1922,7 @@ static xaios_mfs_file_handle_t *handle_for_fd(uint32_t fd) {
   return handle->in_use != 0 ? handle : 0;
 }
 
-int64_t mutable_fs_open(const char *path, uint32_t flags) {
+static int64_t mutable_fs_open_locked(const char *path, uint32_t flags) {
   char normalized[MFS_PATH_MAX];
   if (normalize_path(path, normalized) != XAIOS_OK ||
       (flags & (XAIOS_MFS_OPEN_READ | XAIOS_MFS_OPEN_WRITE)) == 0 ||
@@ -1987,7 +1977,7 @@ int64_t mutable_fs_open(const char *path, uint32_t flags) {
   return (int64_t)XAIOS_ERR_NO_MEMORY;
 }
 
-int64_t mutable_fs_read_fd(uint32_t fd, void *buffer, uint64_t size) {
+static int64_t mutable_fs_read_fd_locked(uint32_t fd, void *buffer, uint64_t size) {
   xaios_mfs_file_handle_t *handle = handle_for_fd(fd);
   if (handle == 0 || buffer == 0 || size == 0 ||
       (handle->flags & XAIOS_MFS_OPEN_READ) == 0) {
@@ -2014,7 +2004,7 @@ int64_t mutable_fs_read_fd(uint32_t fd, void *buffer, uint64_t size) {
   return (int64_t)copy;
 }
 
-int64_t mutable_fs_write_fd(uint32_t fd, const void *buffer, uint64_t size) {
+static int64_t mutable_fs_write_fd_locked(uint32_t fd, const void *buffer, uint64_t size) {
   xaios_mfs_file_handle_t *handle = handle_for_fd(fd);
   if (handle == 0 || buffer == 0 || size == 0 ||
       (handle->flags & XAIOS_MFS_OPEN_WRITE) == 0 ||
@@ -2054,7 +2044,7 @@ int64_t mutable_fs_write_fd(uint32_t fd, const void *buffer, uint64_t size) {
   return (int64_t)size;
 }
 
-xaios_status_t mutable_fs_seek(uint32_t fd, uint64_t offset) {
+static xaios_status_t mutable_fs_seek_locked(uint32_t fd, uint64_t offset) {
   xaios_mfs_file_handle_t *handle = handle_for_fd(fd);
   if (handle == 0 || offset > g_active_max_file_bytes) {
     ++g_reject_count;
@@ -2064,7 +2054,7 @@ xaios_status_t mutable_fs_seek(uint32_t fd, uint64_t offset) {
   return XAIOS_OK;
 }
 
-xaios_status_t mutable_fs_close(uint32_t fd) {
+static xaios_status_t mutable_fs_close_locked(uint32_t fd) {
   xaios_mfs_file_handle_t *handle = handle_for_fd(fd);
   if (handle == 0) {
     ++g_reject_count;
@@ -2114,7 +2104,7 @@ static xaios_status_t mount_failure(xaios_block_device_t *device,
   return status;
 }
 
-xaios_status_t mutable_fs_mount_device(const char *identifier) {
+static xaios_status_t mutable_fs_mount_device_locked(const char *identifier) {
   if (g_persistent_device != 0) return XAIOS_ERR_BUSY;
   xaios_block_device_t *device = 0;
   xaios_status_t status = block_device_open(identifier, &device);
@@ -2198,7 +2188,7 @@ xaios_status_t mutable_fs_mount_device(const char *identifier) {
   return XAIOS_OK;
 }
 
-xaios_status_t mutable_fs_mount_persistent(uint32_t slot) {
+static xaios_status_t mutable_fs_mount_persistent_locked(uint32_t slot) {
   char identifier[16] = "/dev/vblk";
   uint32_t value = slot;
   uint32_t digits = 1U;
@@ -2212,7 +2202,7 @@ xaios_status_t mutable_fs_mount_persistent(uint32_t slot) {
     identifier[9U + digits - 1U - index] = (char)('0' + slot % 10U);
     slot /= 10U;
   }
-  return mutable_fs_mount_device(identifier);
+  return mutable_fs_mount_device_locked(identifier);
 }
 
 static void fsck_count_file_blocks(
@@ -2233,7 +2223,7 @@ static void fsck_count_file_blocks(
   }
 }
 
-xaios_mfs_fsck_result_t mutable_fs_fsck(void) {
+static xaios_mfs_fsck_result_t mutable_fs_fsck_locked(void) {
   xaios_mfs_fsck_result_t result;
   uint8_t references[MFS_V5_DATA_SECTORS];
   bytes_zero(&result, sizeof(result));
@@ -2268,6 +2258,175 @@ xaios_mfs_fsck_result_t mutable_fs_fsck(void) {
   klog("mutable-fs: fsck v%u files=%lu dirs=%lu blocks=%lu errors=%lu valid=%u\n",
        result.version, result.files, result.directories,
        result.blocks_used, result.errors, result.valid);
+  return result;
+}
+
+
+/* Serialised public entry points.
+   The volume is reachable from every CPU through the filesystem syscalls and
+   from kernel services, yet its node table, open-file table and block bitmap
+   were mutated with no mutual exclusion at all. Each entry point now runs
+   under one lock. The bodies above assume the lock is already held and must
+   not be called directly. mutable_fs_self_test stays outside deliberately: it
+   drives these same entry points and runs single threaded during boot. */
+xaios_status_t mutable_fs_record_service_state(const char *name, const char *state) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_record_service_state_locked(name, state);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_record_workspace_state(uint32_t workspace_id, const char *revision) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_record_workspace_state_locked(workspace_id, revision);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_record_update_state(const char *policy) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_record_update_state_locked(policy);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_record_update_transaction(uint32_t generation, const char *state, const char *target, const char *rollback_label) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_record_update_transaction_locked(generation, state, target, rollback_label);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_record_admin_status(const char *service, const char *state, uint32_t starts, uint32_t restarts, uint32_t logs) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_record_admin_status_locked(service, state, starts, restarts, logs);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_commit(const char *label) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_commit_locked(label);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_rollback(void) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_rollback_locked();
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_mkdir(const char *path) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_mkdir_locked(path);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_write(const char *path, const void *data, uint64_t size) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_write_locked(path, data, size);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_read(const char *path, void *buffer, uint64_t buffer_size, uint64_t *out_size) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_read_locked(path, buffer, buffer_size, out_size);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_delete(const char *path) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_delete_locked(path);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_delete_tree(const char *path) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_delete_tree_locked(path);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_rename(const char *old_path, const char *new_path) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_rename_locked(old_path, new_path);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_stat(const char *path, xaios_mfs_stat_t *stat) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_stat_locked(path, stat);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_list(const char *path, char *buffer, uint64_t buffer_size, uint64_t *out_size) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_list_locked(path, buffer, buffer_size, out_size);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+int64_t mutable_fs_open(const char *path, uint32_t flags) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  int64_t result = mutable_fs_open_locked(path, flags);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+int64_t mutable_fs_read_fd(uint32_t fd, void *buffer, uint64_t size) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  int64_t result = mutable_fs_read_fd_locked(fd, buffer, size);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+int64_t mutable_fs_write_fd(uint32_t fd, const void *buffer, uint64_t size) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  int64_t result = mutable_fs_write_fd_locked(fd, buffer, size);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_seek(uint32_t fd, uint64_t offset) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_seek_locked(fd, offset);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_close(uint32_t fd) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_close_locked(fd);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_mount_device(const char *identifier) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_mount_device_locked(identifier);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_status_t mutable_fs_mount_persistent(uint32_t slot) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_status_t result = mutable_fs_mount_persistent_locked(slot);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return result;
+}
+
+xaios_mfs_fsck_result_t mutable_fs_fsck(void) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  xaios_mfs_fsck_result_t result = mutable_fs_fsck_locked();
+  xaios_spin_unlock(&g_mutable_fs_lock);
   return result;
 }
 
