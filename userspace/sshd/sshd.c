@@ -7,6 +7,7 @@
 #include "ssh_mlkem.h"
 #include "ssh_utils.h"
 #include "tweetnacl_subset.h"
+#include "less_pager.h"
 #include "nano_editor.h"
 #include "pong_game.h"
 #include <xaios_user.h>
@@ -40,6 +41,7 @@ static uint32_t g_console_ssh_ready;
 static int32_t g_console_boot_error;
 static nano_editor_t g_console_nano;
 static pong_game_t g_console_pong;
+static less_pager_t g_console_less;
 static uint32_t g_console_auth_state;
 static uint32_t g_console_auth_failures;
 static uint64_t g_console_ui_next_refresh;
@@ -572,6 +574,43 @@ static int console_nano_argument(const char *command, char *argument,
   return 0;
 }
 
+/* Local console pager, driving the same less_pager_t the SSH channel uses so
+   paging, searching and quitting behave identically on both surfaces. */
+static int console_start_less(const char *command) {
+  char cwd[LESS_PAGER_PATH_MAX];
+  u64 cwd_size = 0U;
+  uint32_t frame_size = 0U;
+  if (xaios_remote_login_session(SSHD_CONSOLE_SESSION_ID, "admin", "pwd", cwd,
+                                 sizeof(cwd), &cwd_size) < 0 ||
+      cwd_size == 0U || cwd_size >= sizeof(cwd)) {
+    return -1;
+  }
+  while (cwd_size != 0U &&
+         (cwd[cwd_size - 1U] == '\n' || cwd[cwd_size - 1U] == '\r')) {
+    cwd[--cwd_size] = '\0';
+  }
+  if (less_pager_open(&g_console_less, command, cwd, SSHD_CONSOLE_COLUMNS,
+                      SSHD_CONSOLE_ROWS) != 0) {
+    console_write(
+        "less: usage: less [-N] FILE (regular files up to 128 KiB)\n");
+    return -1;
+  }
+  if (less_pager_render(&g_console_less, g_console_output,
+                        sizeof(g_console_output), &frame_size) != 0) {
+    less_pager_close(&g_console_less);
+    return -1;
+  }
+  console_write("\033[?1049h\033[?25l");
+  (void)console_write_bytes(g_console_output, frame_size);
+  return 0;
+}
+
+static void console_finish_less(void) {
+  less_pager_close(&g_console_less);
+  console_write("\033[0m\033[?25h\033[?1049l\033[0m\033[?25h\r");
+  console_prompt();
+}
+
 static int console_start_nano(const char *command) {
   char argument[NANO_EDITOR_PATH_MAX];
   char cwd[NANO_EDITOR_PATH_MAX];
@@ -813,6 +852,10 @@ static void console_execute_command(void) {
     (void)console_start_nano(g_console_command);
   } else if (ssh_str_eq(g_console_command, "pong")) {
     (void)console_start_pong();
+  } else if (g_console_command[0] == 'l' && g_console_command[1] == 'e' &&
+             g_console_command[2] == 's' && g_console_command[3] == 's' &&
+             (g_console_command[4] == '\0' || g_console_command[4] == ' ')) {
+    (void)console_start_less(g_console_command);
   } else if (console_command_is_htop(g_console_command)) {
     (void)console_start_htop(g_console_command);
   } else if (ssh_str_eq(g_console_command, "clear")) {
@@ -851,7 +894,7 @@ static void console_execute_command(void) {
   }
   g_console_command_length = 0U;
   if (g_console_nano.active == 0U && g_console_pong.active == 0U &&
-      g_console_htop.active == 0U)
+      g_console_htop.active == 0U && g_console_less.active == 0U)
     console_prompt();
 }
 
@@ -957,6 +1000,22 @@ static void console_tick(void) {
       } else if (nano_editor_render(&g_console_nano, g_console_output,
                                     sizeof(g_console_output),
                                     &frame_size) == 0) {
+        (void)console_write_bytes(g_console_output, frame_size);
+      }
+      continue;
+    }
+    if (g_console_less.active != 0U) {
+      uint32_t frame_size = 0U;
+      uint32_t should_exit = 0U;
+      if (less_pager_input(&g_console_less, (const uint8_t *)&value, 1U,
+                           &should_exit) != 0) {
+        should_exit = 1U;
+      }
+      if (should_exit != 0U) {
+        console_finish_less();
+      } else if (less_pager_render(&g_console_less, g_console_output,
+                                   sizeof(g_console_output),
+                                   &frame_size) == 0) {
         (void)console_write_bytes(g_console_output, frame_size);
       }
       continue;
