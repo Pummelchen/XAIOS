@@ -1,9 +1,58 @@
-:8443 {
-	tls /etc/caddy/xapt-tls-cert.pem /etc/caddy/xapt-tls-key.pem
+# The updater's own web server: its own binary, config, storage, user and unit.
+# Nothing here is shared with any other project on the host.
+#
+# Deployed to /var/xaios_updater/caddy/Caddyfile and run by xaios-caddy.service.
+# TLS is NOT terminated here — the master edge in /var/caddy owns :443 for
+# xaios.91.99.176.243.nip.io and forwards to :8090 below. Reloading the shared
+# `caddy` service from this project would take the other projects down with it,
+# so publishing only ever reloads xaios-caddy.
+{
+	# The master terminates TLS and forwards here, so this instance never
+	# speaks TLS and never talks to an ACME server.
+	auto_https off
+	# Its own admin socket: two Caddy processes cannot share the default
+	# admin endpoint, and the second one to start would fail.
+	admin unix//var/xaios_updater/caddy/admin.sock
+
+	servers {
+		# Behind the master, so the forwarded client address is trustworthy
+		# here. Without this every request logs as 127.0.0.1.
+		trusted_proxies static private_ranges
+	}
+}
+
+:8090 {
+	# Not bound to loopback yet, deliberately. Devices provisioned before the
+	# master existed still fetch from http://91.99.176.243:8090/, and a
+	# device's base URL is configured on the device, so binding loopback would
+	# silently strand them. Integrity does not depend on the transport:
+	# catalog entries carry sha256, a signature and a key, so a tampered
+	# artifact is rejected by the device however it arrived.
 	root * /var/xaios_updater
+
 	header {
+		-Server
 		X-Content-Type-Options nosniff
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		# Applies to the hostname served through the master. HSTS is ignored
+		# for bare-IP requests, so this cannot strand a device still using
+		# http://91.99.176.243:8090/.
+		Strict-Transport-Security "max-age=31536000"
 		Cache-Control "public, max-age=300"
 	}
-	file_server
+
+	file_server {
+		# The server's own files live inside the directory it serves, so they
+		# are hidden explicitly rather than being downloadable.
+		hide /var/xaios_updater/caddy /var/xaios_updater/bin
+	}
+
+	log {
+		output file /var/xaios_updater/caddy/logs/updater.log {
+			roll_size 20MiB
+			roll_keep 10
+		}
+		format json
+	}
 }
