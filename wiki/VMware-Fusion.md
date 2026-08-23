@@ -37,6 +37,37 @@ make vmware-fusion-image
 make vmware-fusion-smoke
 ```
 
+## Typing at the Fusion console
+
+The generated profile wires the serial port to `fusion-serial.log`, which is
+write-only: the guest prints to it but nothing can be typed back. The Fusion
+window itself shows the boot status screen — progress bar, address, SSH state
+and a `XAIOS LOGIN:` prompt with a blinking cursor — but that screen is a
+status display, not a terminal. It never echoes typed characters or renders
+command output, so it cannot be used to operate the system.
+
+There are two ways to get an interactive session:
+
+**SSH**, which is the intended administration path. The guest takes a bridged
+address, printed on the boot screen, and accepts `admin` / `xaios`:
+
+```sh
+ssh admin@<address printed on the boot screen>
+```
+
+**A bidirectional serial pipe**, for console-level access such as recovery or
+watching early boot. Build with the serial port as a pipe, then attach a
+terminal to the socket VMware creates:
+
+```sh
+XAIOS_FUSION_SERIAL=pipe ./scripts/build-vmware-fusion.sh
+./scripts/run-vmware-fusion.sh
+nc -U /tmp/xaios-fusion-console
+```
+
+Set `XAIOS_FUSION_SERIAL_PIPE` to move the socket. The default stays `file`
+so the automated Fusion smoke gate keeps reading `fusion-serial.log`.
+
 The default development account is `admin` / `xaios`; it is public and must
 only be used on an isolated development network. For key-based SSH, package a
 disposable key when building and connect to the address shown by the guest:
