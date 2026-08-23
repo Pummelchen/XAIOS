@@ -16,6 +16,16 @@
 #define USER_STACK_PAGES UINT64_C(64)
 #define XAIOS_TRANSIENT_PID_FIRST 32U
 
+/* Monotonic, never reused. Zero is reserved for "no owner", so the counter
+   skips it on wrap. */
+static uint32_t g_owner_token_next = 1U;
+
+static uint32_t user_next_owner_token(void) {
+  uint32_t token = g_owner_token_next++;
+  if (g_owner_token_next == 0U) g_owner_token_next = 1U;
+  return token;
+}
+
 static void bytes_zero(void *buffer, uint64_t size) {
   uint8_t *bytes = (uint8_t *)buffer;
   for (uint64_t i = 0; i < size; ++i) {
@@ -85,6 +95,7 @@ extern uint64_t aarch64_enter_user(uint64_t entry, uint64_t stack,
 static void copy_process(xaios_user_process_t *dst,
                          const xaios_user_process_t *src) {
   dst->pid = src->pid;
+  dst->owner_token = src->owner_token;
   dst->parent_pid = src->parent_pid;
   dst->name = src->name;
   dst->state = src->state;
@@ -681,6 +692,7 @@ xaios_status_t user_load_process(const xaios_initramfs_file_t *file,
 
   reset_process_slot(process);
   process->pid = pid;
+  process->owner_token = user_next_owner_token();
   process->name = file->path;
   process->capability_mask = capability_mask;
 
@@ -1085,7 +1097,7 @@ void user_process_reclaim_address_space(const xaios_user_process_t *process) {
          process->pid);
     return;
   }
-  syscall_release_process_resources(process->pid);
+  syscall_release_process_resources(process->owner_token);
 
   /* Use ELF loader reclaim for processes with per-process address spaces */
   if (process->aspace.l3_count > 0) {

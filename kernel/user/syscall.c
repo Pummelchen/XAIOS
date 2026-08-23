@@ -180,7 +180,7 @@ typedef struct kernel_socket {
   uint8_t  bind_addr[16];   /* bind address (16 bytes for IPv6) */
   uint8_t  peer_addr[16];   /* peer address (connected sockets) */
   uint16_t peer_port;
-  uint32_t owner_pid;
+  uint32_t owner_token;
   uint64_t id;              /* unique socket ID from alloc */
 } kernel_socket_t;
 
@@ -210,8 +210,8 @@ static void kernel_socket_table_init(void) {
 }
 
 static uint64_t kernel_socket_alloc(uint32_t type, uint16_t port,
-                                    uint32_t owner_pid) {
-  if (g_kernel_sockets == 0 || owner_pid == 0U) return 0U;
+                                    uint32_t owner_token) {
+  if (g_kernel_sockets == 0 || owner_token == 0U) return 0U;
   xaios_spin_lock(&g_kernel_socket_lock);
   if (g_total_connections >= g_kernel_socket_capacity) {
     xaios_spin_unlock(&g_kernel_socket_lock);
@@ -241,7 +241,7 @@ static uint64_t kernel_socket_alloc(uint32_t type, uint16_t port,
     if (g_kernel_sockets[i].state == 0) {
       g_kernel_sockets[i].state = type;
       g_kernel_sockets[i].port = port;
-      g_kernel_sockets[i].owner_pid = owner_pid;
+      g_kernel_sockets[i].owner_token = owner_token;
       g_kernel_sockets[i].id = g_socket_next_id;
       g_total_connections++;
       uint64_t id = g_socket_next_id++;
@@ -255,10 +255,10 @@ static uint64_t kernel_socket_alloc(uint32_t type, uint16_t port,
 }
 
 static kernel_socket_t *kernel_socket_find_owned_locked(uint64_t sockfd,
-                                                        uint32_t owner_pid) {
+                                                        uint32_t owner_token) {
   for (uint32_t i = 0; i < g_kernel_socket_capacity; ++i) {
     if (g_kernel_sockets[i].state != 0 && g_kernel_sockets[i].id == sockfd &&
-        g_kernel_sockets[i].owner_pid == owner_pid) {
+        g_kernel_sockets[i].owner_token == owner_token) {
       return &g_kernel_sockets[i];
     }
   }
@@ -266,11 +266,11 @@ static kernel_socket_t *kernel_socket_find_owned_locked(uint64_t sockfd,
 }
 
 static xaios_status_t kernel_socket_snapshot_owned(uint64_t sockfd,
-                                                   uint32_t owner_pid,
+                                                   uint32_t owner_token,
                                                    kernel_socket_t *snapshot) {
   if (snapshot == 0) return XAIOS_ERR_INVALID;
   xaios_spin_lock(&g_kernel_socket_lock);
-  kernel_socket_t *socket = kernel_socket_find_owned_locked(sockfd, owner_pid);
+  kernel_socket_t *socket = kernel_socket_find_owned_locked(sockfd, owner_token);
   if (socket == 0) {
     xaios_spin_unlock(&g_kernel_socket_lock);
     return XAIOS_ERR_INVALID;
@@ -280,16 +280,16 @@ static xaios_status_t kernel_socket_snapshot_owned(uint64_t sockfd,
   return XAIOS_OK;
 }
 
-static xaios_status_t kernel_socket_free(uint64_t sockfd, uint32_t owner_pid) {
+static xaios_status_t kernel_socket_free(uint64_t sockfd, uint32_t owner_token) {
   xaios_spin_lock(&g_kernel_socket_lock);
-  kernel_socket_t *socket = kernel_socket_find_owned_locked(sockfd, owner_pid);
+  kernel_socket_t *socket = kernel_socket_find_owned_locked(sockfd, owner_token);
   if (socket != 0) {
     socket->state = 0;
     socket->port = 0;
     socket->family = 0;
     socket->protocol = 0;
     socket->peer_port = 0;
-    socket->owner_pid = 0;
+    socket->owner_token = 0;
     socket->id = 0;
     for (uint32_t j = 0; j < 16; ++j) {
       socket->bind_addr[j] = 0;
@@ -303,9 +303,9 @@ static xaios_status_t kernel_socket_free(uint64_t sockfd, uint32_t owner_pid) {
   return XAIOS_ERR_INVALID;
 }
 
-void syscall_release_process_resources(uint32_t owner_pid) {
-  if (owner_pid == 0U) return;
-  (void)vfs_release_owner(owner_pid);
+void syscall_release_process_resources(uint32_t owner_token) {
+  if (owner_token == 0U) return;
+  (void)vfs_release_owner(owner_token);
   if (g_kernel_sockets == 0) return;
   for (;;) {
     kernel_socket_t snapshot;
@@ -313,7 +313,7 @@ void syscall_release_process_resources(uint32_t owner_pid) {
     xaios_spin_lock(&g_kernel_socket_lock);
     for (uint32_t i = 0; i < g_kernel_socket_capacity; ++i) {
       if (g_kernel_sockets[i].state != 0U &&
-          g_kernel_sockets[i].owner_pid == owner_pid) {
+          g_kernel_sockets[i].owner_token == owner_token) {
         snapshot = g_kernel_sockets[i];
         found = 1U;
         break;
@@ -335,7 +335,7 @@ void syscall_release_process_resources(uint32_t owner_pid) {
     } else if (snapshot.state == KERNEL_SOCK_DATAGRAM) {
       network_stack_unregister_udp_listener(snapshot.port);
     }
-    (void)kernel_socket_free(snapshot.id, owner_pid);
+    (void)kernel_socket_free(snapshot.id, owner_token);
   }
 }
 
@@ -731,7 +731,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1, "fs-open-read-denied");
     }
     const xaios_user_process_t *current = user_current_process();
-    uint32_t owner_id = current != 0 ? current->pid : 0U;
+    uint32_t owner_id = current != 0 ? current->owner_token : 0U;
     int64_t fd = vfs_open(path, (uint32_t)arg2, owner_id);
     if (fd < 0) {
       return reject_syscall(syscall, arg0, arg1, "fs-open-denied");
@@ -746,7 +746,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1, "bad-fs-read-buffer");
     }
     const xaios_user_process_t *current = user_current_process();
-    uint32_t owner_id = current != 0 ? current->pid : 0U;
+    uint32_t owner_id = current != 0 ? current->owner_token : 0U;
     int64_t bytes = vfs_read((uint32_t)arg0, owner_id,
                              (void *)(uintptr_t)arg1, arg2);
     if (bytes < 0) {
@@ -772,7 +772,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1, "fs-write-secret-denied");
     }
     const xaios_user_process_t *current = user_current_process();
-    uint32_t owner_id = current != 0 ? current->pid : 0U;
+    uint32_t owner_id = current != 0 ? current->owner_token : 0U;
     int64_t bytes =
         vfs_write((uint32_t)arg0, owner_id, write_snapshot, arg2);
     kheap_free(write_snapshot);
@@ -799,7 +799,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1, "bad-fs-positional-buffer");
     }
     const xaios_user_process_t *current = user_current_process();
-    uint32_t owner_id = current != 0 ? current->pid : 0U;
+    uint32_t owner_id = current != 0 ? current->owner_token : 0U;
     int64_t bytes;
     if (syscall == XAIOS_SYSCALL_FS_PREAD) {
       bytes = vfs_pread((uint32_t)request.fd, owner_id,
@@ -835,7 +835,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
 
   if (syscall == XAIOS_SYSCALL_FS_FSYNC) {
     const xaios_user_process_t *current = user_current_process();
-    uint32_t owner_id = current != 0 ? current->pid : 0U;
+    uint32_t owner_id = current != 0 ? current->owner_token : 0U;
     if (arg0 > UINT32_MAX ||
         vfs_fsync((uint32_t)arg0, owner_id) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-fsync-denied");
@@ -845,7 +845,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
 
   if (syscall == XAIOS_SYSCALL_FS_SEEK) {
     const xaios_user_process_t *current = user_current_process();
-    uint32_t owner_id = current != 0 ? current->pid : 0U;
+    uint32_t owner_id = current != 0 ? current->owner_token : 0U;
     if (arg0 > UINT32_MAX ||
         vfs_seek((uint32_t)arg0, owner_id, arg1) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-seek-denied");
@@ -855,7 +855,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
 
   if (syscall == XAIOS_SYSCALL_FS_CLOSE) {
     const xaios_user_process_t *current = user_current_process();
-    uint32_t owner_id = current != 0 ? current->pid : 0U;
+    uint32_t owner_id = current != 0 ? current->owner_token : 0U;
     if (arg0 > UINT32_MAX ||
         vfs_close((uint32_t)arg0, owner_id) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-close-denied");
@@ -1510,9 +1510,9 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
                             "net-connect-handshake-failed");
     }
     const xaios_user_process_t *process = user_current_process();
-    uint32_t owner_pid = process != 0 ? process->pid : 0U;
+    uint32_t owner_token = process != 0 ? process->owner_token : 0U;
     uint64_t sockfd = kernel_socket_alloc(KERNEL_SOCK_CONNECTED,
-                                          (uint16_t)request.port, owner_pid);
+                                          (uint16_t)request.port, owner_token);
     if (sockfd == 0U) {
       (void)network_stack_tcp_abort_flow(flow_id);
       return reject_syscall(syscall, arg0, arg1,
@@ -1520,7 +1520,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     }
     xaios_spin_lock(&g_kernel_socket_lock);
     kernel_socket_t *socket =
-        kernel_socket_find_owned_locked(sockfd, owner_pid);
+        kernel_socket_find_owned_locked(sockfd, owner_token);
     kassert(socket != 0);
     socket->protocol = XAIOS_NETWORK_PROTOCOL_TCP;
     socket->family = remote_addr.family;
@@ -1568,18 +1568,18 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       }
     }
     const xaios_user_process_t *process = user_current_process();
-    uint32_t owner_pid = process != 0 ? process->pid : 0U;
+    uint32_t owner_token = process != 0 ? process->owner_token : 0U;
     uint32_t socket_type = protocol == XAIOS_NETWORK_PROTOCOL_UDP
                                ? KERNEL_SOCK_DATAGRAM
                                : KERNEL_SOCK_LISTEN;
     uint64_t sockfd = kernel_socket_alloc(socket_type, (uint16_t)request.port,
-                                          owner_pid);
+                                          owner_token);
     if (sockfd == 0) {
       return reject_syscall(syscall, arg0, arg1, "net-listen-no-memory");
     }
     xaios_spin_lock(&g_kernel_socket_lock);
     kernel_socket_t *socket =
-        kernel_socket_find_owned_locked(sockfd, owner_pid);
+        kernel_socket_find_owned_locked(sockfd, owner_token);
     kassert(socket != 0);
     socket->protocol = (uint8_t)protocol;
     if (request.addr_ptr != 0U) {
@@ -1619,9 +1619,9 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1, "net-accept-denied");
     }
     const xaios_user_process_t *process = user_current_process();
-    uint32_t owner_pid = process != 0 ? process->pid : 0U;
+    uint32_t owner_token = process != 0 ? process->owner_token : 0U;
     kernel_socket_t listener;
-    if (kernel_socket_snapshot_owned(request.sockfd, owner_pid, &listener) !=
+    if (kernel_socket_snapshot_owned(request.sockfd, owner_token, &listener) !=
             XAIOS_OK ||
         listener.state != KERNEL_SOCK_LISTEN ||
         listener.protocol != XAIOS_NETWORK_PROTOCOL_TCP) {
@@ -1641,7 +1641,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     }
     /* Allocate connected socket */
     uint64_t connfd =
-        kernel_socket_alloc(KERNEL_SOCK_CONNECTED, listen_port, owner_pid);
+        kernel_socket_alloc(KERNEL_SOCK_CONNECTED, listen_port, owner_token);
     if (connfd == 0) {
       network_stack_tcp_close_flow(flow_id);
       return reject_syscall(syscall, arg0, arg1, "net-accept-no-memory");
@@ -1649,7 +1649,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     /* Store peer info on the socket */
     xaios_spin_lock(&g_kernel_socket_lock);
     kernel_socket_t *socket =
-        kernel_socket_find_owned_locked(connfd, owner_pid);
+        kernel_socket_find_owned_locked(connfd, owner_token);
     kassert(socket != 0);
     socket->peer_port = peer_port;
     socket->family = peer_addr.family;
@@ -1700,9 +1700,9 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     }
     network_poll_tick();
     const xaios_user_process_t *process = user_current_process();
-    uint32_t owner_pid = process != 0 ? process->pid : 0U;
+    uint32_t owner_token = process != 0 ? process->owner_token : 0U;
     kernel_socket_t socket_snapshot;
-    if (kernel_socket_snapshot_owned(request.sockfd, owner_pid,
+    if (kernel_socket_snapshot_owned(request.sockfd, owner_token,
                                      &socket_snapshot) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "net-recv-no-socket");
     }
@@ -1766,9 +1766,9 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     }
     network_poll_tick();
     const xaios_user_process_t *process = user_current_process();
-    uint32_t owner_pid = process != 0 ? process->pid : 0U;
+    uint32_t owner_token = process != 0 ? process->owner_token : 0U;
     kernel_socket_t socket_snapshot;
-    if (kernel_socket_snapshot_owned(request.sockfd, owner_pid,
+    if (kernel_socket_snapshot_owned(request.sockfd, owner_token,
                                      &socket_snapshot) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "net-send-no-socket");
     }
@@ -1807,9 +1807,9 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
 
   if (syscall == XAIOS_SYSCALL_NET_CLOSE) {
     const xaios_user_process_t *process = user_current_process();
-    uint32_t owner_pid = process != 0 ? process->pid : 0U;
+    uint32_t owner_token = process != 0 ? process->owner_token : 0U;
     kernel_socket_t socket_snapshot;
-    if (kernel_socket_snapshot_owned(arg0, owner_pid, &socket_snapshot) !=
+    if (kernel_socket_snapshot_owned(arg0, owner_token, &socket_snapshot) !=
         XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "net-close-no-socket");
     }
@@ -1827,7 +1827,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     } else if (socket_snapshot.state == KERNEL_SOCK_DATAGRAM) {
       network_stack_unregister_udp_listener(socket_snapshot.port);
     }
-    kassert(kernel_socket_free(arg0, owner_pid) == XAIOS_OK);
+    kassert(kernel_socket_free(arg0, owner_token) == XAIOS_OK);
     klog("syscall: net_close sockfd=%lu\n", arg0);
     return XAIOS_OK;
   }

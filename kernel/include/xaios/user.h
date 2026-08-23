@@ -26,6 +26,11 @@ typedef enum xaios_user_process_state {
 
 typedef struct xaios_user_process {
   uint32_t pid;
+  /* Process-table slots, and therefore pids, are handed straight back to the
+     next transient process. Resource ownership must not be keyed on a value
+     that is reused within milliseconds, so every incarnation also carries a
+     token that is never issued twice. */
+  uint32_t owner_token;
   uint32_t parent_pid;
   const char *name;
   xaios_user_process_state_t state;
