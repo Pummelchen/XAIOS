@@ -1,0 +1,151 @@
+// Boot XAIOS on Apple's Virtualization.framework.
+//
+// QEMU's HVF backend cannot run XAIOS: it aborts emulating MMIO whose trap
+// carries no instruction syndrome, which happens in both the xHCI and GIC
+// paths (QEMU issue 2312, reproducible from other guests since 8.2). That
+// leaves TCG, which tells us nothing about cache behaviour or timing.
+//
+// Virtualization.framework takes a different route. The guest runs on the
+// host's own cores, and the interrupt controller and timer are the real
+// hardware rather than a userspace model, so the class of failure that blocks
+// HVF does not arise. The trade is a fixed device set: virtio over PCI, no
+// PL011, and no control over core affinity.
+//
+// This is deliberately a spike. It answers one question — does Apple's EFI
+// firmware load and run the XAIOS loader — and prints whatever the firmware
+// and loader write to the virtio console.
+
+import Foundation
+import Virtualization
+
+func fail(_ message: String) -> Never {
+    FileHandle.standardError.write(Data("xaios-vz: \(message)\n".utf8))
+    exit(1)
+}
+
+// The variable store is firmware state, not ours; keep it beside the images.
+func efiVariableStore(at url: URL) -> VZEFIVariableStore {
+    if FileManager.default.fileExists(atPath: url.path) {
+        return VZEFIVariableStore(url: url)
+    }
+    do {
+        return try VZEFIVariableStore(creatingVariableStoreAt: url, options: [])
+    } catch {
+        fail("could not create EFI variable store: \(error)")
+    }
+}
+
+func blockDevice(_ url: URL, readOnly: Bool) -> VZVirtioBlockDeviceConfiguration {
+    guard FileManager.default.fileExists(atPath: url.path) else {
+        fail("disk image not found: \(url.path)")
+    }
+    do {
+        let attachment = try VZDiskImageStorageDeviceAttachment(url: url,
+                                                               readOnly: readOnly)
+        return VZVirtioBlockDeviceConfiguration(attachment: attachment)
+    } catch {
+        fail("could not attach \(url.lastPathComponent): \(error)")
+    }
+}
+
+let arguments = CommandLine.arguments
+guard arguments.count >= 2 else {
+    fail("usage: xaios-vz <boot-image> [persistent-image] [--cpus N] [--memory-mib N]")
+}
+
+var positional: [String] = []
+var cpuCount = 1
+var memoryMiB: UInt64 = 2048
+var index = 1
+while index < arguments.count {
+    switch arguments[index] {
+    case "--cpus":
+        index += 1
+        cpuCount = Int(arguments[safe: index] ?? "") ?? cpuCount
+    case "--memory-mib":
+        index += 1
+        memoryMiB = UInt64(arguments[safe: index] ?? "") ?? memoryMiB
+    default:
+        positional.append(arguments[index])
+    }
+    index += 1
+}
+
+extension Array where Element == String {
+    subscript(safe i: Int) -> String? { indices.contains(i) ? self[i] : nil }
+}
+
+let bootImage = URL(fileURLWithPath: positional[0])
+let stateDirectory = bootImage.deletingLastPathComponent()
+    .appendingPathComponent("vz", isDirectory: true)
+try? FileManager.default.createDirectory(at: stateDirectory,
+                                         withIntermediateDirectories: true)
+
+let configuration = VZVirtualMachineConfiguration()
+configuration.cpuCount = cpuCount
+configuration.memorySize = memoryMiB * 1024 * 1024
+configuration.platform = VZGenericPlatformConfiguration()
+
+let bootLoader = VZEFIBootLoader()
+bootLoader.variableStore = efiVariableStore(
+    at: stateDirectory.appendingPathComponent("efi-vars"))
+configuration.bootLoader = bootLoader
+
+// The boot image is read-only: it is the same artifact the QEMU and Fusion
+// paths consume, and nothing here should be able to modify it.
+var storage: [VZStorageDeviceConfiguration] = [blockDevice(bootImage, readOnly: true)]
+if positional.count > 1 {
+    storage.append(blockDevice(URL(fileURLWithPath: positional[1]), readOnly: false))
+}
+configuration.storageDevices = storage
+
+let network = VZVirtioNetworkDeviceConfiguration()
+network.attachment = VZNATNetworkDeviceAttachment()
+configuration.networkDevices = [network]
+
+configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
+
+// XAIOS logs to PL011, which this platform does not have, so nothing from the
+// kernel proper will appear here yet. The firmware and the UEFI loader write
+// through EFI console services, which do land on this port, and that is
+// exactly what the spike needs to observe.
+let console = VZVirtioConsoleDeviceSerialPortConfiguration()
+console.attachment = VZFileHandleSerialPortAttachment(
+    fileHandleForReading: FileHandle.standardInput,
+    fileHandleForWriting: FileHandle.standardOutput)
+configuration.serialPorts = [console]
+
+do {
+    try configuration.validate()
+} catch {
+    fail("configuration rejected: \(error)")
+}
+
+final class Observer: NSObject, VZVirtualMachineDelegate {
+    func guestDidStop(_ virtualMachine: VZVirtualMachine) {
+        FileHandle.standardError.write(Data("xaios-vz: guest stopped\n".utf8))
+        exit(0)
+    }
+    func virtualMachine(_ virtualMachine: VZVirtualMachine,
+                        didStopWithError error: Error) {
+        fail("guest stopped with error: \(error)")
+    }
+}
+
+let queue = DispatchQueue(label: "xaios.vz")
+let observer = Observer()
+var machine: VZVirtualMachine!
+queue.sync {
+    machine = VZVirtualMachine(configuration: configuration, queue: queue)
+    machine.delegate = observer
+}
+queue.async {
+    machine.start { result in
+        if case .failure(let error) = result {
+            fail("start failed: \(error)")
+        }
+        FileHandle.standardError.write(Data(
+            "xaios-vz: started cpus=\(cpuCount) memory=\(memoryMiB)MiB\n".utf8))
+    }
+}
+RunLoop.main.run()
