@@ -1,4 +1,5 @@
 #include "ssh_host_key.h"
+#include "sshd.h"
 #include "ssh_crypto.h"
 #include "ssh_utils.h"
 #include "tweetnacl_subset.h"
@@ -9,6 +10,9 @@
 static uint8_t g_host_private_key[32];
 static uint8_t g_host_public_key[32];
 static uint32_t g_key_initialized = 0;
+/* Set when the key in use could not be written to persistent storage, so the
+   condition can be reported rather than silently tolerated. */
+static uint32_t g_host_key_ephemeral = 0;
 
 /* Convert hex char to nibble */
 static int hex_to_nibble(char c) {
@@ -62,15 +66,27 @@ static int ensure_key(void) {
     }
     xaios_ed25519_public_key(g_host_public_key, g_host_private_key);
 
-    /* Save private key to persistent storage */
+    /* Save private key to persistent storage.
+
+       A failure here used to abort SSH startup, which made an unwritable
+       persistent filesystem mean no remote access at all. The key pair in
+       hand is perfectly good; only its durability is in question, so the
+       service continues with it rather than leaving the machine unreachable
+       at exactly the moment an operator needs to get in and repair storage.
+
+       The cost is a host key that does not survive this boot, which clients
+       see as a changed key and warn about. That warning is the point: it is
+       visible, whereas an unreachable machine offers nothing to act on. */
     char hex_buf[65];
     bin_to_hex(g_host_private_key, 32, hex_buf);
     int save_ret = xaios_write_file(HOST_KEY_PATH, hex_buf);
     ssh_mem_zero(hex_buf, sizeof(hex_buf));
     if (save_ret != 64) {
-      ssh_mem_zero(g_host_private_key, sizeof(g_host_private_key));
-      ssh_mem_zero(g_host_public_key, sizeof(g_host_public_key));
-      return -1;
+      g_host_key_ephemeral = 1U;
+      ssh_log(SSH_LOG_ERROR,
+              "Host key could not be persisted; continuing with an ephemeral "
+              "key. Clients will report a changed host key until persistent "
+              "storage is repaired.\n");
     }
 
     g_key_initialized = 1;
@@ -80,6 +96,10 @@ static int ensure_key(void) {
 
 int ssh_host_key_init(void) {
   return ensure_key();
+}
+
+int ssh_host_key_is_ephemeral(void) {
+  return g_host_key_ephemeral != 0U;
 }
 
 int ssh_host_key_reload(void) {

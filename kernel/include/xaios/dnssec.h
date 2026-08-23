@@ -73,4 +73,21 @@ xaios_status_t dnssec_verify_nodata(const uint8_t *message, uint32_t length,
                                     const dnssec_keyset_t *keys,
                                     uint64_t wall_time_ns);
 
+/* Prove a delegation carries no DS, which makes the child zone insecure
+ * rather than bogus. Accepts a signed NSEC3 matching the delegation with NS
+ * and without DS, or a signed opt-out NSEC3 whose hash range covers it. */
+xaios_status_t dnssec_verify_no_ds(const uint8_t *message, uint32_t length,
+                                   const char *child_zone,
+                                   const dnssec_keyset_t *keys,
+                                   uint64_t wall_time_ns);
+
+/* Read an address from an unsigned answer. Valid only after the chain has
+ * proven the zone insecure; owner and type are still matched. */
+xaios_status_t dnssec_extract_address_insecure(const uint8_t *message,
+                                               uint32_t length,
+                                               const char *hostname,
+                                               uint16_t type,
+                                               uint8_t *out_address,
+                                               uint32_t *out_ttl);
+
 #endif

@@ -55,6 +55,10 @@ typedef struct dns_pending {
   uint8_t family;
   uint8_t retransmits;
   uint8_t dnssec_stage;
+  /* DNSSEC has three outcomes. Set once a delegation is proven to carry no
+     DS: everything below it is unsigned, so the address answer arrives with
+     no RRSIG and must be accepted on the strength of that proof instead. */
+  uint8_t dnssec_insecure;
   uint8_t zone_labels;
   uint8_t hostname_labels;
   uint16_t id;
@@ -88,6 +92,7 @@ static uint64_t g_reject_count;
 static uint64_t g_timeout_count;
 static uint64_t g_tcp_fallback_count;
 static uint64_t g_authenticated_count;
+static uint64_t g_insecure_count;
 
 static void complete_pending(xaios_status_t status) {
   g_pending.state = DNS_PENDING_COMPLETE;
@@ -177,6 +182,7 @@ void dns_init(void) {
   g_timeout_count = 0U;
   g_tcp_fallback_count = 0U;
   g_authenticated_count = 0U;
+  g_insecure_count = 0U;
   dnssec_init();
 }
 
@@ -533,7 +539,14 @@ xaios_status_t dns_process_message(const uint8_t *message, uint32_t length,
       g_pending.dnssec_stage = DNSSEC_STAGE_CHILD_DNSKEY;
     } else if (dnssec_verify_nodata(message, length, g_pending.child_zone,
                                     DNS_TYPE_DS, &g_pending.validated_keys,
-                                    wall_ns) == XAIOS_OK) {
+                                    wall_ns) == XAIOS_OK ||
+               dnssec_verify_no_ds(message, length, g_pending.child_zone,
+                                   &g_pending.validated_keys,
+                                   wall_ns) == XAIOS_OK) {
+      /* No DS at this delegation: the child is insecure, not bogus. Ask for
+         the address directly rather than walking further down a chain that
+         has no keys to offer. */
+      g_pending.dnssec_insecure = 1U;
       status = start_query(&g_pending, g_pending.hostname,
                            g_pending.family == XAIOS_IP_FAMILY_V4 ? XAIOS_DNS_TYPE_A : XAIOS_DNS_TYPE_AAAA, now_ns);
       g_pending.dnssec_stage = DNSSEC_STAGE_ADDRESS;
@@ -560,13 +573,23 @@ xaios_status_t dns_process_message(const uint8_t *message, uint32_t length,
   } else if (g_pending.dnssec_stage == DNSSEC_STAGE_ADDRESS) {
     uint8_t bytes[16]; uint32_t ttl = 0U;
     uint16_t type = g_pending.family == XAIOS_IP_FAMILY_V4 ? XAIOS_DNS_TYPE_A : XAIOS_DNS_TYPE_AAAA;
-    status = dnssec_verify_address(message, length, g_pending.hostname, type,
-                                   &g_pending.validated_keys, wall_ns, bytes, &ttl);
+    status = g_pending.dnssec_insecure != 0U
+                 ? dnssec_extract_address_insecure(message, length,
+                                                   g_pending.hostname, type,
+                                                   bytes, &ttl)
+                 : dnssec_verify_address(message, length, g_pending.hostname,
+                                         type, &g_pending.validated_keys,
+                                         wall_ns, bytes, &ttl);
     if (status == XAIOS_OK) {
       xaios_ip_addr_t answer; xaios_ip_addr_zero(&answer); answer.family = g_pending.family;
       bytes_copy(answer.addr, bytes, g_pending.family == XAIOS_IP_FAMILY_V4 ? 4U : 16U);
       cache_insert(g_pending.hostname, &answer, ttl, now_ns);
-      ++g_authenticated_count; ++g_response_count;
+      /* Only a validated chain counts as authenticated. An insecure answer
+         is a separate, weaker result and is counted separately so the two
+         can never be read as the same thing. */
+      if (g_pending.dnssec_insecure != 0U) ++g_insecure_count;
+      else ++g_authenticated_count;
+      ++g_response_count;
       if (g_pending.tcp_flow_id != 0U) (void)network_stack_tcp_close_flow(g_pending.tcp_flow_id);
       bytes_zero(&g_pending, sizeof(g_pending)); return XAIOS_OK;
     }
@@ -689,6 +712,7 @@ uint64_t dns_reject_count(void) { return g_reject_count; }
 uint64_t dns_timeout_count(void) { return g_timeout_count; }
 uint64_t dns_tcp_fallback_count(void) { return g_tcp_fallback_count; }
 uint64_t dns_authenticated_count(void) { return g_authenticated_count; }
+uint64_t dns_insecure_count(void) { return g_insecure_count; }
 uint32_t dns_pending_count(void) {
   return g_pending.state != DNS_PENDING_NONE &&
                  g_pending.state != DNS_PENDING_COMPLETE

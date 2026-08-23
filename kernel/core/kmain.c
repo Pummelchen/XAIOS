@@ -203,6 +203,12 @@ static void map_mmio_range(uint64_t start, uint64_t size) {
 void kmain(const xaios_boot_info_t *boot) {
   uint32_t persistent_network_ready = 0U;
   klog_init(boot);
+  /* Start capturing before any subsystem can fail. A normal boot redraws the
+     progress display over the serial console, so a failure explanation is
+     cleared from the screen moments before a panic replaces it; the ring is
+     what lets the panic screen say why, not just where. */
+  klog_ring_init();
+  klog_ring_self_test();
   boot_ui_begin(boot);
   boot_ui_self_test();
   boot_ui_update(25U, "hardware handoff", "CPU and interrupts", 5U);
@@ -441,9 +447,8 @@ void kmain(const xaios_boot_info_t *boot) {
     provision_ephemeral_credential("/etc/xaios_ssh_client_identity");
     admin_control_init();
     admin_control_self_test();
-    /* Initialize persistent log ring buffer */
-    klog_ring_init();
-    klog_ring_self_test();
+    /* Capture already runs; this only adds the persistent flush path. */
+    (void)klog_ring_enable_persistence();
     /* Increment boot counter for recovery detection */
     boot_counter_increment();
     if (boot_in_recovery_mode()) {

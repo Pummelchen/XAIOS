@@ -20,6 +20,11 @@ typedef struct xaios_klog_ring {
 
 static xaios_klog_ring_t g_ring;
 static uint32_t g_ring_initialized;
+/* Capturing to memory and being able to persist are separate capabilities.
+   Conflating them meant the ring stayed switched off until MutableFS was
+   mounted, so nothing from early boot was ever captured and a boot whose
+   persistent mount failed captured nothing at all. */
+static uint32_t g_persist_ready;
 static uint64_t g_persist_count;
 static uint64_t g_rotate_count;
 
@@ -35,17 +40,27 @@ void klog_ring_init(void) {
   g_ring.total_written = 0;
   g_persist_count = 0;
   g_rotate_count = 0;
+  g_persist_ready = 0;
 
-  /* Ensure the persistent log path exists before enabling the ring. */
+  /* In-memory capture depends on nothing but this buffer, so it starts here
+     and can be started long before storage exists. */
+  g_ring_initialized = 1;
+  klog("klog_ring: capture enabled size=%u\n", XAIOS_KLOG_RING_SIZE);
+}
+
+/* Enable the persistent path once MutableFS is mounted. Capture continues
+   regardless; only flushing depends on this. */
+xaios_status_t klog_ring_enable_persistence(void) {
+  if (g_ring_initialized == 0) return XAIOS_ERR_INVALID;
   if (mutable_fs_mkdir("/var") != XAIOS_OK ||
       mutable_fs_mkdir("/var/log") != XAIOS_OK) {
-    g_ring_initialized = 0;
-    klog("klog_ring: initialization failed; persistent path unavailable\n");
-    return;
+    g_persist_ready = 0;
+    klog("klog_ring: persistent path unavailable; capture continues\n");
+    return XAIOS_ERR_IO;
   }
-
-  g_ring_initialized = 1;
-  klog("klog_ring: initialized size=%u\n", XAIOS_KLOG_RING_SIZE);
+  g_persist_ready = 1;
+  klog("klog_ring: persistence enabled\n");
+  return XAIOS_OK;
 }
 
 void klog_ring_write(const char *data, uint32_t length) {
@@ -114,6 +129,30 @@ uint32_t klog_ring_snapshot(char *out, uint32_t max_len,
   return copied;
 }
 
+/* Lock-free tail read for the panic path.
+
+   Every other reader takes the ring lock, which a panic must not: interrupts
+   are already masked and another CPU may hold it, so waiting would replace a
+   readable diagnostic with a hang. Reading unlocked can tear against a
+   concurrent writer; a possibly-frayed last line beats no log at all, which
+   is what the panic screen showed before. */
+uint32_t klog_ring_panic_tail(char *out, uint32_t max_len) {
+  uint32_t available;
+  uint32_t take;
+  uint32_t start;
+  if (g_ring_initialized == 0 || out == 0 || max_len == 0) return 0;
+  available = g_ring.count;
+  if (available > XAIOS_KLOG_RING_SIZE) available = XAIOS_KLOG_RING_SIZE;
+  take = available < max_len ? available : max_len;
+  if (take == 0U) return 0;
+  start = (g_ring.write_pos + XAIOS_KLOG_RING_SIZE - take) %
+          XAIOS_KLOG_RING_SIZE;
+  for (uint32_t i = 0U; i < take; ++i) {
+    out[i] = g_ring.buffer[(start + i) % XAIOS_KLOG_RING_SIZE];
+  }
+  return take;
+}
+
 void klog_ring_clear(void) {
   if (g_ring_initialized == 0) {
     return;
@@ -156,7 +195,7 @@ uint64_t klog_ring_total_written(void) {
 }
 
 xaios_status_t klog_rotate(void) {
-  if (g_ring_initialized == 0) {
+  if (g_ring_initialized == 0 || g_persist_ready == 0) {
     return XAIOS_ERR_INVALID;
   }
 
@@ -176,7 +215,7 @@ xaios_status_t klog_rotate(void) {
 
 xaios_status_t klog_flush(void) {
   uint64_t append_offset = 0;
-  if (g_ring_initialized == 0 || g_ring.count == 0) {
+  if (g_ring_initialized == 0 || g_persist_ready == 0 || g_ring.count == 0) {
     return XAIOS_OK;
   }
 

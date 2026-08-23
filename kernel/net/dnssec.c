@@ -9,6 +9,13 @@
 #define DNSSEC_TYPE_DNSKEY 48U
 #define DNSSEC_TYPE_RRSIG 46U
 #define DNSSEC_TYPE_NSEC 47U
+#define DNSSEC_TYPE_NSEC3 50U
+#define DNSSEC_NSEC3_SHA1 1U
+#define DNSSEC_NSEC3_OPT_OUT 0x01U
+/* An iteration count is attacker-chosen work for the resolver. RFC 9276 puts
+   the sensible ceiling at zero; accept a small margin for zones that have not
+   caught up, and refuse the rest rather than burn boot time on them. */
+#define DNSSEC_NSEC3_MAX_ITERATIONS 150U
 #define DNSSEC_MIN_WALL_TIME UINT64_C(946684800000000000)
 #define DNSSEC_MAX_RECORDS 96U
 #define DNSSEC_MAX_RRSET 16U
@@ -278,6 +285,173 @@ xaios_status_t dnssec_set_trust_anchors(const dnssec_ds_t *anchors, uint32_t cou
   if (anchors == 0 || count == 0U || count > sizeof(g_anchors) / sizeof(g_anchors[0])) return XAIOS_ERR_INVALID;
   for (uint32_t i = 0; i < count; ++i) if (anchors[i].digest_length == 0U || anchors[i].digest_length > XAIOS_DNSSEC_MAX_DS_DIGEST) return XAIOS_ERR_INVALID;
   copy_bytes(g_anchors, anchors, count * sizeof(g_anchors[0])); g_anchor_count = count; return XAIOS_OK;
+}
+
+/* base32hex (RFC 4648 section 7), the encoding NSEC3 owner labels use. */
+static int base32hex_value(uint8_t c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'A' && c <= 'V') return c - 'A' + 10;
+  if (c >= 'a' && c <= 'v') return c - 'a' + 10;
+  return -1;
+}
+
+/* Decode the first label of an NSEC3 owner name into its hash. */
+static int nsec3_owner_hash(const char *owner, uint8_t *out, uint32_t capacity,
+                            uint32_t *out_length) {
+  uint32_t bits = 0U, accumulator = 0U, produced = 0U;
+  uint32_t i = 0U;
+  for (; owner[i] != '\0' && owner[i] != '.'; ++i) {
+    int value = base32hex_value((uint8_t)owner[i]);
+    if (value < 0) return -1;
+    accumulator = (accumulator << 5U) | (uint32_t)value;
+    bits += 5U;
+    if (bits >= 8U) {
+      bits -= 8U;
+      if (produced >= capacity) return -1;
+      out[produced++] = (uint8_t)(accumulator >> bits);
+    }
+  }
+  /* A partial group must be zero padding, never discarded data. */
+  if (i == 0U || (accumulator & ((1U << bits) - 1U)) != 0U) return -1;
+  *out_length = produced;
+  return 0;
+}
+
+/* H(name) = SHA1(wire_name || salt), then iterated over H || salt. */
+static int nsec3_hash(const char *name, const uint8_t *salt, uint32_t salt_length,
+                      uint16_t iterations, uint8_t *out) {
+  uint8_t wire[256];
+  uint32_t wire_length = 0U;
+  br_sha1_context ctx;
+  if (iterations > DNSSEC_NSEC3_MAX_ITERATIONS) return -1;
+  if (canonical_name(name, wire, sizeof(wire), &wire_length) != 0) return -1;
+  br_sha1_init(&ctx);
+  br_sha1_update(&ctx, wire, wire_length);
+  br_sha1_update(&ctx, salt, salt_length);
+  br_sha1_out(&ctx, out);
+  for (uint32_t i = 0U; i < iterations; ++i) {
+    br_sha1_init(&ctx);
+    br_sha1_update(&ctx, out, 20U);
+    br_sha1_update(&ctx, salt, salt_length);
+    br_sha1_out(&ctx, out);
+  }
+  return 0;
+}
+
+static int hash_compare(const uint8_t *a, const uint8_t *b, uint32_t n) {
+  for (uint32_t i = 0U; i < n; ++i) if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+  return 0;
+}
+
+/* True when target lies strictly between owner and next in NSEC3 hash order,
+   accounting for the wrap at the last record of the zone's ordered chain. */
+static int nsec3_covers(const uint8_t *owner, const uint8_t *next,
+                        const uint8_t *target) {
+  int wrapped = hash_compare(owner, next, 20U) >= 0;
+  int above_owner = hash_compare(target, owner, 20U) > 0;
+  int below_next = hash_compare(target, next, 20U) < 0;
+  return wrapped ? (above_owner || below_next) : (above_owner && below_next);
+}
+
+static int type_bitmap_has(const uint8_t *bitmap, uint32_t length,
+                           uint16_t type) {
+  uint32_t p = 0U;
+  while (p + 2U <= length) {
+    uint8_t window = bitmap[p];
+    uint8_t bytes = bitmap[p + 1U];
+    p += 2U;
+    if (bytes == 0U || bytes > 32U || bytes > length - p) return -1;
+    if ((uint32_t)(type >> 8U) == window) {
+      uint32_t bit = type & 0xffU;
+      if (bit / 8U < bytes &&
+          (bitmap[p + bit / 8U] & (uint8_t)(0x80U >> (bit & 7U))) != 0U) {
+        return 1;
+      }
+    }
+    p += bytes;
+  }
+  return p == length ? 0 : -1;
+}
+
+/* Prove that a delegation carries no DS, which makes the child zone insecure
+   rather than bogus. Two shapes are accepted, both signed by the parent:
+   an NSEC3 matching the delegation exactly whose bitmap has NS without DS,
+   and an opt-out NSEC3 whose hash range covers the delegation. */
+xaios_status_t dnssec_verify_no_ds(const uint8_t *message, uint32_t length,
+                                   const char *child_zone,
+                                   const dnssec_keyset_t *keys,
+                                   uint64_t wall_time_ns) {
+  if (message == 0 || child_zone == 0 || keys == 0) return XAIOS_ERR_INVALID;
+  if (parse_records(message, length) != 0) return XAIOS_ERR_INVALID;
+  for (uint32_t i = 0U; i < g_record_count; ++i) {
+    const dnssec_rr_t *rr = &g_records[i];
+    const uint8_t *r = rr->rdata;
+    uint8_t salt_length, hash_length;
+    uint16_t iterations;
+    uint8_t target[20], owner_hash[20];
+    uint32_t owner_hash_length = 0U, bitmap_offset;
+    if (rr->type != DNSSEC_TYPE_NSEC3 || rr->rdata_length < 6U) continue;
+    if (r[0] != DNSSEC_NSEC3_SHA1) continue;
+    iterations = get_be16(r + 2U);
+    salt_length = r[4];
+    if ((uint32_t)5U + salt_length + 1U > rr->rdata_length) continue;
+    hash_length = r[5U + salt_length];
+    if (hash_length != 20U) continue;
+    bitmap_offset = 6U + (uint32_t)salt_length + hash_length;
+    if (bitmap_offset > rr->rdata_length) continue;
+    if (nsec3_hash(child_zone, r + 5U, salt_length, iterations, target) != 0) {
+      continue;
+    }
+    if (nsec3_owner_hash(rr->owner, owner_hash, sizeof(owner_hash),
+                         &owner_hash_length) != 0 ||
+        owner_hash_length != 20U) {
+      continue;
+    }
+    if (hash_compare(owner_hash, target, 20U) == 0) {
+      const uint8_t *bitmap = r + bitmap_offset;
+      uint32_t bitmap_length = rr->rdata_length - bitmap_offset;
+      int has_ds = type_bitmap_has(bitmap, bitmap_length, DNSSEC_TYPE_DS);
+      int has_ns = type_bitmap_has(bitmap, bitmap_length, 2U /* NS */);
+      if (has_ds != 0 || has_ns != 1) continue;
+    } else if ((r[1] & DNSSEC_NSEC3_OPT_OUT) != 0U &&
+               nsec3_covers(owner_hash, r + 6U + salt_length, target) != 0) {
+      /* Opt-out: the span is unsigned, so the delegation is insecure. */
+    } else {
+      continue;
+    }
+    if (verify_rrset(message, length, rr->owner, DNSSEC_TYPE_NSEC3, keys,
+                     wall_time_ns)) {
+      return XAIOS_OK;
+    }
+  }
+  return XAIOS_ERR_NOT_FOUND;
+}
+
+/* Read an address out of an unsigned answer. Only reached once the chain has
+   proven the zone insecure, so there is no signature to check; the owner and
+   type still have to match what was asked. */
+xaios_status_t dnssec_extract_address_insecure(const uint8_t *message,
+                                               uint32_t length,
+                                               const char *hostname,
+                                               uint16_t type,
+                                               uint8_t *out_address,
+                                               uint32_t *out_ttl) {
+  uint32_t want = type == XAIOS_DNS_TYPE_A ? 4U : 16U;
+  if (message == 0 || hostname == 0 || out_address == 0 || out_ttl == 0) {
+    return XAIOS_ERR_INVALID;
+  }
+  if (parse_records(message, length) != 0) return XAIOS_ERR_INVALID;
+  for (uint32_t i = 0U; i < g_record_count; ++i) {
+    const dnssec_rr_t *rr = &g_records[i];
+    if (rr->type != type || rr->rr_class != XAIOS_DNS_CLASS_IN ||
+        rr->rdata_length != want || !name_equal(rr->owner, hostname)) {
+      continue;
+    }
+    copy_bytes(out_address, rr->rdata, want);
+    *out_ttl = rr->ttl;
+    return XAIOS_OK;
+  }
+  return XAIOS_ERR_NOT_FOUND;
 }
 
 xaios_status_t dnssec_verify_dnskey(const uint8_t *message, uint32_t length, const char *zone, const dnssec_dsset_t *parent_ds, uint64_t wall_time_ns, dnssec_keyset_t *out) {

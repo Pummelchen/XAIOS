@@ -57,12 +57,14 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 - DNS performs asynchronous A/AAAA resolution with timeout, retry, bounded TTL
   cache, and DNS-over-TCP fallback. It locally validates DNSKEY, DS, and RRSIG
   chains from compiled root DS anchors and accepts signed exact-owner NSEC NODATA proofs.
-  NXDOMAIN, NSEC3, CNAME/DNAME and wildcard synthesis, plus production root-anchor
-  rollover/update policy, remain unsupported and fail closed. DNSSEC has three
-  outcomes and the resolver implements two: an unsigned delegation, whose
-  absent DS can only be proven under the opt-out NSEC3 its parent uses, is
-  refused as bogus rather than accepted as insecure. Names under such a
-  delegation, `nip.io` among them, therefore do not resolve.
+  It also resolves names under an unsigned delegation, proving the absent DS
+  from a signed NSEC3 the parent serves, including the opt-out form, and then
+  accepting the unsigned answer as insecure rather than refusing it as bogus.
+  Insecure answers are counted separately from authenticated ones, because
+  they carry a weaker guarantee. NSEC3 iteration counts above 150 are refused
+  rather than computed. NXDOMAIN, CNAME/DNAME and wildcard synthesis, plus
+  production root-anchor rollover/update policy, remain unsupported and fail
+  closed.
 - The SNTP client validates request binding, server mode/version, stratum, and
   bounded retry/timeout behavior, then applies corrections through a monotonic
   500-ppm slew after initial calibration. Boot performs one bounded, non-fatal
@@ -106,6 +108,14 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 - ModelFS activation and MutableFS audit persistence are separate durability
   domains. A post-publication audit failure cannot roll back an already
   published active generation.
+- MutableFS v5 keeps two metadata copies and alternates writes between them,
+  so a write interrupted by power loss damages only the copy that is not
+  currently authoritative and mount falls back to the survivor. The mirror
+  sits past the data region, so volumes written before it keep mounting, and
+  a volume with no room for it operates single-copy. When both copies are
+  damaged the mount still refuses rather than formatting, because falling
+  back is a recovery and not a licence to discard data. Host tests damage
+  each copy in turn and require the volume to mount with contents intact.
 - MutableFS v5 is intentionally bounded to 256 nodes, 256 open handles, 256 KiB
   files and 4 MiB of data space. Interactive `nano` is further bounded to a
   32 KiB editing buffer. This is suitable for OS state and small user files,
@@ -127,10 +137,9 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   ISRG roots with server-name and validity checks, or an exact RSA public-key
   pin for a private origin. Chain validation depends on the realtime clock set
   during boot and refuses an unset one. The shipped configuration currently
-  sets `tls=off` and fetches over plain HTTP, because the resolver cannot
-  return an address for the origin name; signed catalogs and per-artifact
+  sets `tls=off` and fetches over plain HTTP; signed catalogs and per-artifact
   hashes remain the authenticity layer, and transport confidentiality is
-  forfeited until that is restored. It supports signed
+  forfeited until TLS is restored. It supports signed
   release-root rotation, revocation, offline recovery, and rollback of an
   interrupted trust/catalog activation. The checked-in TLS and signing private
   fixtures are public; production key custody and release authorization remain
