@@ -70,6 +70,29 @@ not create a shell session. The same byte-oriented console interface accepts
 USB HID boot-keyboard input from the default xHCI device on both QEMU ARM64 and
 QEMU x86_64; PL011 serial remains available when no USB keyboard is attached.
 
+## Rebuilding over an existing persistent disk
+
+The active administration configuration lives in persistent storage, and a
+stored record takes precedence over the compiled default. `build/xaios-persistent.img`
+is not recreated by a rebuild, so an image rebuilt over a disk written by an
+earlier key-only build inherits `password=disabled` from that disk and comes up
+with the console locked, whatever the new build was configured for. The boot
+log names it:
+
+```text
+admin-control: initialized schema=1 generation=1 password=disabled
+```
+
+Discard the stale state to get the development credentials the build intended:
+
+```sh
+make clean-persistent
+make image
+```
+
+This deletes persistent state, so use it on development images rather than on a
+disk holding anything worth keeping.
+
 ## Verbose diagnostics
 
 Normal boot avoids scrolling logs. For failure analysis:
