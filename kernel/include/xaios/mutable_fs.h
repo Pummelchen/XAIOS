@@ -34,6 +34,10 @@ typedef struct xaios_mfs_fsck_result {
 
 void mutable_fs_self_test(void);
 xaios_status_t mutable_fs_mount_device(const char *identifier);
+/* Flush and release the mounted device. */
+xaios_status_t mutable_fs_unmount(void);
+/* Metadata copies recovered from during mount, when one was unusable. */
+uint64_t mutable_fs_metadata_recoveries(void);
 xaios_status_t mutable_fs_mount_persistent(uint32_t slot);
 xaios_mfs_fsck_result_t mutable_fs_fsck(void);
 uint64_t mutable_fs_persistent_mount_count(void);

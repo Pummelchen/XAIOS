@@ -259,6 +259,31 @@ static xaios_status_t validate_descriptor_target(void) {
   return XAIOS_ERR_NOT_FOUND;
 }
 
+/* Bounded retry for boot-time block reads.
+
+   A single transient sector read used to end the boot in a panic, with no
+   second attempt anywhere on the path. Retrying cannot smuggle in corruption:
+   the header is structurally validated and every file is checked against its
+   recorded hash below, so a bad read still fails. A retry that was actually
+   needed is logged, so a marginal device stays visible rather than silently
+   absorbed. */
+#define INITFS_READ_ATTEMPTS 3U
+
+static xaios_status_t read_sector_retrying(uint64_t sector, void *buffer) {
+  for (uint32_t attempt = 0U; attempt < INITFS_READ_ATTEMPTS; ++attempt) {
+    if (virtio_block_read_sector(sector, buffer, SECTOR_SIZE) == XAIOS_OK) {
+      if (attempt != 0U) {
+        klog("initramfs: sector=%lu read recovered on attempt %u\n", sector,
+             (unsigned)(attempt + 1U));
+      }
+      return XAIOS_OK;
+    }
+  }
+  klog("initramfs: sector=%lu unreadable after %u attempts\n", sector,
+       (unsigned)INITFS_READ_ATTEMPTS);
+  return XAIOS_ERR_IO;
+}
+
 static xaios_status_t read_file_bytes(uint64_t offset, uint64_t size,
                                      void *buffer) {
   uint8_t sector[SECTOR_SIZE];
@@ -273,8 +298,7 @@ static xaios_status_t read_file_bytes(uint64_t offset, uint64_t size,
     if (chunk > size - copied) {
       chunk = size - copied;
     }
-    if (virtio_block_read_sector(sector_index, sector, sizeof(sector)) !=
-        XAIOS_OK) {
+    if (read_sector_retrying(sector_index, sector) != XAIOS_OK) {
       return XAIOS_ERR_IO;
     }
     bytes_copy(out + copied, sector + sector_offset, chunk);
@@ -325,9 +349,8 @@ static xaios_status_t validate_entry(const initfs_disk_header_t *header,
 xaios_status_t initramfs_init(void) {
   uint8_t header_bytes[INITFS_HEADER_BYTES];
   for (uint64_t i = 0; i < INITFS_HEADER_BYTES / SECTOR_SIZE; ++i) {
-    if (virtio_block_read_sector(INITFS_SECTOR + i,
-                                 header_bytes + (i * SECTOR_SIZE),
-                                 SECTOR_SIZE) != XAIOS_OK) {
+    if (read_sector_retrying(INITFS_SECTOR + i,
+                             header_bytes + (i * SECTOR_SIZE)) != XAIOS_OK) {
       klog("initramfs: failed to read header sector=%lu\n",
            INITFS_SECTOR + i);
       return XAIOS_ERR_IO;

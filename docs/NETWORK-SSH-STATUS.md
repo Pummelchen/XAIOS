@@ -183,7 +183,11 @@ analysis and physical deployment qualification remain required.
 Fresh randomness comes from a VirtIO RNG-backed ChaCha20 DRBG. SSH startup is
 fail-closed when secure entropy is unavailable. The host key is created once,
 stored on the persistent mutable filesystem, flushed to the block device, and
-reused on reboot. Rekey works in both protocol directions; the Debian gate
+reused on reboot. If it cannot be written, the service keeps the key it has
+and reports that the key is ephemeral rather than refusing to start: an
+unwritable filesystem is exactly when an operator needs remote access to
+repair storage, and a key that clients report as changed is at least visible,
+where an unreachable machine offers nothing to act on. Rekey works in both protocol directions; the Debian gate
 forces the client-initiated path.
 
 The SSH command boundary recognizes an exact `xaiosctl` prefix and invokes the

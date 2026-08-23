@@ -56,6 +56,9 @@ uint64_t dns_reject_count(void);
 uint64_t dns_timeout_count(void);
 uint64_t dns_tcp_fallback_count(void);
 uint64_t dns_authenticated_count(void);
+/* Answers accepted from a proven-insecure zone. Deliberately not folded into
+   the authenticated count: the two carry different guarantees. */
+uint64_t dns_insecure_count(void);
 uint32_t dns_pending_count(void);
 
 /* Encode a DNS name (e.g., "www.google.com" -> 3www6google3com0) */

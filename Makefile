@@ -422,6 +422,11 @@ hosted-test: engine-cli
 	  -o build/hosted/test-vfs
 	./build/hosted/test-vfs
 	$(HOST_CC) $(HOST_CFLAGS) \
+	  -Ikernel/include kernel/fs/mutable_fs.c kernel/dev/block_device.c \
+	  tests/storage/test_mutable_fs_mirror.c \
+	  -o build/hosted/test-mutable-fs-mirror
+	./build/hosted/test-mutable-fs-mirror
+	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Iuserspace/include -Iuserspace/sshd -Iuserspace/apps/terminal \
 	  -Ikernel/include \
 	  userspace/sshd/sftp_server.c tests/storage/test_sftp_large.c \

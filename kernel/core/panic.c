@@ -1,5 +1,6 @@
 #include <stdarg.h>
 #include <xaios/klog.h>
+#include <xaios/klog_ring.h>
 #include <xaios/arch_cpu.h>
 #include <xaios/panic.h>
 #include <xaios/pmm.h>
@@ -349,6 +350,41 @@ static void render_backtrace(const uint64_t *trace, uint32_t depth) {
   panic_puts("\r\n");
 }
 
+/* The last thing the kernel said before it died.
+
+   Subsystems log why they fail, but a normal boot redraws the progress
+   display over the serial console, so on a non-verbose boot that explanation
+   is cleared off the screen a moment before the panic replaces it. Registers
+   and a backtrace then describe where the assertion fired without ever
+   saying what it found. Replaying the ring here keeps the reason attached to
+   the failure, which is what makes a rare boot panic diagnosable at all. */
+#define XAIOS_PANIC_LOG_BYTES 1536U
+
+static void render_recent_log(void) {
+  static char tail[XAIOS_PANIC_LOG_BYTES];
+  uint32_t used = klog_ring_panic_tail(tail, sizeof(tail));
+  uint32_t start = 0U;
+  if (used == 0U) return;
+  panic_puts("\r\n  --- Recent Kernel Log ---\r\n");
+  /* The first line is usually cut mid-way by the tail boundary; drop it so
+     the replay starts on a real line. */
+  while (start < used && tail[start] != '\n') ++start;
+  if (start < used) ++start;
+  if (start >= used) start = 0U;
+  panic_puts("  ");
+  for (uint32_t i = start; i < used; ++i) {
+    char c = tail[i];
+    if (c == '\n') {
+      panic_puts("\r\n  ");
+    } else if (c == '\r') {
+      continue;
+    } else if (c >= 0x20 && c < 0x7f) {
+      panic_putc(c);
+    }
+  }
+  panic_puts("\r\n");
+}
+
 static void render_halt(void) {
   panic_puts("  System halted. Manual reset required.\r\n");
   panic_puts("  =====================================================\r\n");
@@ -394,6 +430,7 @@ void panic_at(const char *file, int line, const char *fmt, ...) {
   render_gp_regs(gp_regs);
   render_sys_regs(elr, esr, far, spsr, sp_el0, current_el);
   render_backtrace(stack_trace, trace_depth);
+  render_recent_log();
   render_halt();
 
   /* Halt forever — no auto-reboot so the operator can read diagnostics */

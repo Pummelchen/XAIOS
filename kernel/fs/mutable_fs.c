@@ -13,6 +13,27 @@
 #define MFS_SECTOR_SIZE UINT64_C(512)
 #define MFS_START_SECTOR UINT64_C(3072)
 #define MFS_METADATA_SECTORS UINT64_C(16)
+/* A/B metadata.
+
+   The metadata region is written in place, so a write torn by power loss
+   leaves it neither valid nor blank. Mount then refuses to continue, because
+   formatting would destroy the volume, and the result is a filesystem that
+   cannot be mounted or repaired. A second copy removes that: writes alternate
+   between the two, so a tear can only ever damage the copy that is not
+   currently authoritative, and mount falls back to the survivor.
+
+   The mirror lives past the data region, so every existing offset is
+   unchanged and an existing volume keeps mounting. The write sequence sits in
+   the slack at the end of the region for the same reason: appending a header
+   field would have shifted the bitmap and every node after it. A volume
+   written before this reads sequence 0, which simply makes it the older copy.
+
+   Alternating rather than writing both copies each time keeps the write cost
+   identical to before. The trade is that a torn write falls back to the
+   previous commit instead of the one being written, which is the same
+   guarantee an interrupted commit already had. */
+#define MFS_METADATA_SLOTS 2U
+#define MFS_SEQUENCE_TAIL_BYTES UINT64_C(16)
 #define MFS_JOURNAL_SECTORS UINT64_C(2)
 #define MFS_CHECKSUM_OFFSET UINT64_C(80)
 #define MFS_DATA_SECTORS 96U
@@ -201,6 +222,11 @@ static uint64_t g_open_count;
 static uint64_t g_close_count;
 
 static uint64_t g_metadata_verified_checksum;
+/* Slot the live metadata was loaded from; the next write targets the other. */
+static uint32_t g_metadata_slot;
+static uint32_t g_metadata_mirror_enabled;
+static uint64_t g_metadata_sequence;
+static uint64_t g_metadata_mirror_recoveries;
 
 static uint8_t g_metadata_buffer[MFS_V5_METADATA_SECTORS * MFS_SECTOR_SIZE];
 static xaios_spinlock_t g_mutable_fs_lock = XAIOS_SPINLOCK_INIT;
@@ -295,6 +321,21 @@ static uint64_t active_journal_data_sector(void) {
 
 static uint64_t active_data_start_sector(void) {
   return active_journal_header_sector() + MFS_JOURNAL_SECTORS;
+}
+
+/* The mirror sits immediately after the data region, so nothing that an
+   existing volume already uses moves. */
+static uint64_t metadata_mirror_start_sector(void) {
+  return active_data_start_sector() + g_active_data_sectors;
+}
+
+static uint64_t metadata_slot_start_sector(uint32_t slot) {
+  return slot == 0U ? MFS_START_SECTOR : metadata_mirror_start_sector();
+}
+
+static uint64_t metadata_sequence_offset(void) {
+  return (uint64_t)g_active_metadata_sectors * MFS_SECTOR_SIZE -
+         MFS_SEQUENCE_TAIL_BYTES;
 }
 
 static xaios_status_t blk_read(uint64_t sector, void *buf, uint64_t sz) {
@@ -663,9 +704,10 @@ static void export_legacy_node(xaios_mfs_node_v3_t *legacy,
   }
 }
 
-static xaios_status_t read_metadata(void) {
+static xaios_status_t read_metadata_slot(uint32_t slot) {
   uint8_t first_sector[MFS_SECTOR_SIZE];
-  if (blk_read(MFS_START_SECTOR, first_sector, sizeof(first_sector)) != XAIOS_OK) {
+  uint64_t start = metadata_slot_start_sector(slot);
+  if (blk_read(start, first_sector, sizeof(first_sector)) != XAIOS_OK) {
     return XAIOS_ERR_IO;
   }
   uint32_t version = 0;
@@ -683,12 +725,14 @@ static xaios_status_t read_metadata(void) {
   bytes_zero(g_metadata_buffer, sizeof(g_metadata_buffer));
   bytes_copy(g_metadata_buffer, first_sector, MFS_SECTOR_SIZE);
   for (uint32_t i = 1; i < sectors; ++i) {
-    if (blk_read(MFS_START_SECTOR + i,
+    if (blk_read(start + i,
                  g_metadata_buffer + i * MFS_SECTOR_SIZE,
                  MFS_SECTOR_SIZE) != XAIOS_OK) {
       return XAIOS_ERR_IO;
     }
   }
+  bytes_copy(&g_metadata_sequence,
+             g_metadata_buffer + metadata_sequence_offset(), 8);
   uint64_t total_bytes = (uint64_t)sectors * MFS_SECTOR_SIZE;
   g_metadata_verified_checksum = mfs_checksum(g_metadata_buffer, total_bytes);
   bytes_zero(&g_mfs, sizeof(g_mfs));
@@ -734,6 +778,54 @@ static xaios_status_t read_metadata(void) {
     return XAIOS_ERR_INVALID;
   }
   return XAIOS_OK;
+}
+
+/* A slot is usable when it parses and its stored checksum matches what its
+   own bytes hash to. Structural validation stays with the caller, which
+   applies it to whichever slot wins. */
+static int metadata_slot_probe(uint32_t slot, uint64_t *out_sequence) {
+  if (read_metadata_slot(slot) != XAIOS_OK) return 0;
+  if (g_mfs.checksum != g_metadata_verified_checksum) return 0;
+  if (!bytes_eq(g_mfs.magic, MFS_MAGIC, MFS_MAGIC_LEN)) return 0;
+  *out_sequence = g_metadata_sequence;
+  return 1;
+}
+
+/* Load the newer of the two copies that is intact. */
+static xaios_status_t read_metadata(void) {
+  uint64_t sequence[MFS_METADATA_SLOTS] = {0U, 0U};
+  int usable[MFS_METADATA_SLOTS] = {0, 0};
+  uint32_t chosen;
+  usable[0] = metadata_slot_probe(0U, &sequence[0]);
+  if (g_metadata_mirror_enabled != 0U) {
+    /* The mirror's position depends on the geometry, which normally comes
+       from the primary. A torn primary is exactly the case this exists for,
+       and its version field is unreadable then, so assume the only layout
+       that ever has a mirror rather than giving up on the copy that is
+       still intact. */
+    if (usable[0] == 0) set_active_v5();
+    if (g_active_version == MFS_V5_VERSION) {
+      usable[1] = metadata_slot_probe(1U, &sequence[1]);
+    }
+  }
+  if (usable[0] == 0 && usable[1] == 0) {
+    /* Neither copy is intact. Reload the primary so the caller sees the
+       original bytes and can apply its own blank-versus-damaged judgement. */
+    g_metadata_slot = 0U;
+    return read_metadata_slot(0U);
+  }
+  if (usable[0] != 0 && usable[1] != 0) {
+    chosen = sequence[1] > sequence[0] ? 1U : 0U;
+  } else {
+    chosen = usable[0] != 0 ? 0U : 1U;
+  }
+  if (usable[chosen ^ 1U] == 0) {
+    ++g_metadata_mirror_recoveries;
+    klog("mutable-fs: metadata slot %u unusable; continuing from slot %u seq=%lu\n",
+         (unsigned)(chosen ^ 1U), (unsigned)chosen, sequence[chosen]);
+  }
+  g_metadata_slot = chosen;
+  return read_metadata_slot(chosen);
 }
 
 static xaios_status_t write_metadata(void) {
@@ -783,20 +875,36 @@ static xaios_status_t write_metadata(void) {
     ++g_reject_count;
     return XAIOS_ERR_NO_MEMORY;
   }
+  /* Stamp the write sequence before hashing so the checksum covers it; a
+     tear that damages the sequence therefore invalidates the copy too. */
+  uint64_t next_sequence = g_metadata_sequence + 1U;
+  bytes_copy(g_metadata_buffer + metadata_sequence_offset(), &next_sequence, 8);
   g_mfs.checksum = mfs_checksum(g_metadata_buffer, total_bytes);
   bytes_copy(g_metadata_buffer + checksum_offset, &g_mfs.checksum, 8);
+  /* Alternate slots so the copy being overwritten is never the one mount
+     would currently choose. Without a mirror this degrades to the previous
+     in-place behaviour. */
+  uint32_t target = g_metadata_mirror_enabled != 0U ? (g_metadata_slot ^ 1U)
+                                                    : g_metadata_slot;
+  uint64_t start = metadata_slot_start_sector(target);
   uint8_t sector[MFS_SECTOR_SIZE];
   for (uint32_t i = 0; i < g_active_metadata_sectors; ++i) {
     bytes_copy(sector, g_metadata_buffer + (uint64_t)i * MFS_SECTOR_SIZE,
                MFS_SECTOR_SIZE);
-    if (blk_write(MFS_START_SECTOR + i, sector, sizeof(sector)) != XAIOS_OK) {
+    if (blk_write(start + i, sector, sizeof(sector)) != XAIOS_OK) {
       klog("mutable-fs: metadata write failed sector=%lu capacity=%lu\n",
-           MFS_START_SECTOR + i, blk_capacity());
+           start + i, blk_capacity());
       ++g_reject_count;
       return XAIOS_ERR_IO;
     }
   }
-  return blk_flush();
+  xaios_status_t flushed = blk_flush();
+  if (flushed != XAIOS_OK) return flushed;
+  /* Only once the new copy is durable does it become the one to read, and
+     the other becomes the next target. */
+  g_metadata_slot = target;
+  g_metadata_sequence = next_sequence;
+  return XAIOS_OK;
 }
 
 static xaios_status_t clear_journal(void) {
@@ -932,9 +1040,17 @@ static xaios_status_t format_volume(void) {
   g_mfs.generation = 1;
   g_mfs.committed_generation = 0;
   ++g_format_count;
+  g_metadata_sequence = 0U;
+  g_metadata_slot = 0U;
   if (clear_journal() != XAIOS_OK) {
     return XAIOS_ERR_IO;
   }
+  /* Fill both copies at format time. Writing only one would leave a fresh
+     volume with a single valid copy until its second metadata write, which
+     is exactly the window this is meant to remove. The two writes alternate
+     slots, so both end up holding a complete, self-consistent image. */
+  if (write_metadata() != XAIOS_OK) return XAIOS_ERR_IO;
+  if (g_metadata_mirror_enabled == 0U) return XAIOS_OK;
   return write_metadata();
 }
 
@@ -1030,6 +1146,12 @@ static xaios_status_t replay_journal(void) {
 
 static xaios_status_t mount_volume(uint32_t mount_flags) {
   set_active_v2();
+  /* The in-image volume is sized to the boot image and has no room for a
+     mirror. Clear it explicitly: this global outlives a previous device
+     mount, and inheriting its setting here would send writes to a slot that
+     does not exist on this volume. */
+  g_metadata_mirror_enabled = 0U;
+  g_metadata_slot = 0U;
   if (blk_capacity() < active_data_start_sector() + g_active_data_sectors) {
     ++g_reject_count;
     return XAIOS_ERR_IO;
@@ -2070,6 +2192,10 @@ static xaios_status_t mutable_fs_close_locked(uint32_t fd) {
 }
 
 uint64_t mutable_fs_mount_count(void) { return g_mount_count; }
+uint64_t mutable_fs_metadata_recoveries(void) {
+  return g_metadata_mirror_recoveries;
+}
+
 uint64_t mutable_fs_format_count(void) { return g_format_count; }
 uint64_t mutable_fs_boot_load_count(void) { return g_boot_load_count; }
 uint64_t mutable_fs_file_count(void) { return node_count_by_type(MFS_NODE_FILE); }
@@ -2129,6 +2255,15 @@ static xaios_status_t mutable_fs_mount_device_locked(const char *identifier) {
     return XAIOS_ERR_UNSUPPORTED;
   }
   set_active_v5();
+  g_metadata_slot = 0U;
+  g_metadata_sequence = 0U;
+  /* The mirror is optional: a volume sized exactly for the old layout keeps
+     working single-copy rather than being refused. */
+  g_metadata_mirror_enabled =
+      info.capacity_bytes / MFS_SECTOR_SIZE >=
+              metadata_mirror_start_sector() + g_active_metadata_sectors
+          ? 1U
+          : 0U;
   if (info.capacity_bytes / MFS_SECTOR_SIZE <
       active_data_start_sector() + MFS_V5_DATA_SECTORS) {
     klog("mutable-fs: persistent disk too small capacity=%lu needed=%lu\n",
@@ -2414,6 +2549,29 @@ xaios_status_t mutable_fs_mount_device(const char *identifier) {
   xaios_status_t result = mutable_fs_mount_device_locked(identifier);
   xaios_spin_unlock(&g_mutable_fs_lock);
   return result;
+}
+
+/* Release a mounted device, flushing first. The slot bookkeeping is reset so
+   a later mount re-derives which copy is authoritative from the volume rather
+   than from whatever the previous mount happened to leave behind. */
+xaios_status_t mutable_fs_unmount(void) {
+  xaios_spin_lock(&g_mutable_fs_lock);
+  if (g_persistent_device == 0) {
+    xaios_spin_unlock(&g_mutable_fs_lock);
+    return XAIOS_ERR_INVALID;
+  }
+  (void)blk_flush();
+  xaios_block_device_t *device = g_persistent_device;
+  g_persistent_device = 0;
+  g_mounted = 0;
+  g_mount_flags = 0;
+  g_metadata_slot = 0U;
+  g_metadata_sequence = 0U;
+  g_metadata_mirror_enabled = 0U;
+  set_active_v2();
+  (void)block_device_close(device);
+  xaios_spin_unlock(&g_mutable_fs_lock);
+  return XAIOS_OK;
 }
 
 xaios_status_t mutable_fs_mount_persistent(uint32_t slot) {

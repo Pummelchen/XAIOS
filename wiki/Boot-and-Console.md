@@ -70,6 +70,19 @@ not create a shell session. The same byte-oriented console interface accepts
 USB HID boot-keyboard input from the default xHCI device on both QEMU ARM64 and
 QEMU x86_64; PL011 serial remains available when no USB keyboard is attached.
 
+## Diagnosing a boot failure
+
+A panic prints registers, a backtrace, and the tail of the kernel log. That
+last section matters because a normal boot redraws the progress display over
+the serial console, so the message explaining a failure is cleared from the
+screen moments before the panic replaces it. Capture starts at the very
+beginning of boot and does not depend on storage, so it is available even for
+failures that happen before any filesystem is mounted.
+
+Boot-time reads of the boot image retry a bounded number of times before
+failing. A read that only succeeded on a retry is logged, so a marginal device
+stays visible rather than being silently absorbed.
+
 ## Rebuilding over an existing persistent disk
 
 The active administration configuration lives in persistent storage, and a
