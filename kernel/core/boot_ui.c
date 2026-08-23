@@ -14,9 +14,16 @@
 #define FB_BAR_MAX_WIDTH UINT32_C(720)
 #define FB_GLYPH_WIDTH UINT32_C(8)
 #define FB_GLYPH_HEIGHT UINT32_C(8)
-#define FB_GLYPH_X_SCALE UINT32_C(1)
-#define FB_GLYPH_Y_SCALE UINT32_C(2)
-#define FB_GLYPH_ADVANCE UINT32_C(9)
+/* Glyph geometry follows the mode the firmware gave us. The bitmap font is
+   8x8, so a fixed 1x2 scale that reads well at 1024x768 turns into unreadable
+   specks once the loader selects a 1920x1200 mode. Scale with the display so
+   text keeps roughly the same physical size instead. */
+static uint32_t g_glyph_x_scale = UINT32_C(1);
+static uint32_t g_glyph_y_scale = UINT32_C(2);
+static uint32_t g_glyph_advance = UINT32_C(9);
+#define FB_GLYPH_X_SCALE g_glyph_x_scale
+#define FB_GLYPH_Y_SCALE g_glyph_y_scale
+#define FB_GLYPH_ADVANCE g_glyph_advance
 
 typedef struct boot_framebuffer {
   volatile uint32_t *pixels;
@@ -615,6 +622,14 @@ static void fb_init(const xaios_boot_info_t *boot) {
   g_framebuffer.height = boot->framebuffer_height;
   g_framebuffer.stride = boot->framebuffer_pixels_per_scan_line;
   g_framebuffer.format = boot->framebuffer_format;
+
+  /* Roughly 100-160 columns at any supported width. */
+  uint32_t scale = g_framebuffer.width / UINT32_C(1024);
+  if (scale == 0U) scale = 1U;
+  if (scale > 3U) scale = 3U;
+  g_glyph_x_scale = scale;
+  g_glyph_y_scale = scale * 2U;
+  g_glyph_advance = (FB_GLYPH_WIDTH + 1U) * scale;
 }
 
 #if !XAIOS_BOOT_TEST_APPS && !XAIOS_BOOT_VERBOSE
