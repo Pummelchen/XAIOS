@@ -158,6 +158,54 @@ static void collect_firmware_entropy(efi_system_table_t *system_table,
   boot_info->entropy_seed_size = XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES;
 }
 
+/* Firmware hands over whatever mode it happened to be in, which on VMware
+   Fusion is 1024x768. The console renders an 8x8 font into that, so the guest
+   looks like a DOS box on a modern display. Pick the largest mode the firmware
+   offers in a directly addressable 32-bit format, bounded so an unusually
+   large mode cannot produce a framebuffer the kernel will not map. */
+#define LOADER_MAX_DISPLAY_WIDTH UINT32_C(2560)
+#define LOADER_MAX_DISPLAY_HEIGHT UINT32_C(1600)
+
+static void select_display_mode(efi_graphics_output_protocol_t *gop) {
+  if (gop == 0 || gop->query_mode == 0 || gop->set_mode == 0 ||
+      gop->mode == 0 || gop->mode->max_mode == 0U) {
+    return;
+  }
+  uint32_t best_mode = gop->mode->mode;
+  uint64_t best_pixels = 0U;
+  if (gop->mode->info != 0) {
+    best_pixels = (uint64_t)gop->mode->info->horizontal_resolution *
+                  (uint64_t)gop->mode->info->vertical_resolution;
+  }
+  for (uint32_t candidate = 0U; candidate < gop->mode->max_mode; ++candidate) {
+    efi_graphics_output_mode_information_t *info = 0;
+    uint64_t size_of_info = 0U;
+    if (is_error(gop->query_mode(gop, candidate, &size_of_info, &info)) ||
+        info == 0) {
+      continue;
+    }
+    /* Only the two packed 32-bit formats are drawable by the kernel. */
+    if (info->pixel_format > 1U) continue;
+    if (info->horizontal_resolution == 0U || info->vertical_resolution == 0U ||
+        info->pixels_per_scan_line < info->horizontal_resolution) {
+      continue;
+    }
+    if (info->horizontal_resolution > LOADER_MAX_DISPLAY_WIDTH ||
+        info->vertical_resolution > LOADER_MAX_DISPLAY_HEIGHT) {
+      continue;
+    }
+    uint64_t pixels = (uint64_t)info->horizontal_resolution *
+                      (uint64_t)info->vertical_resolution;
+    if (pixels > best_pixels) {
+      best_pixels = pixels;
+      best_mode = candidate;
+    }
+  }
+  if (best_mode != gop->mode->mode) {
+    (void)gop->set_mode(gop, best_mode);
+  }
+}
+
 static void collect_framebuffer(efi_system_table_t *system_table,
                                 xaios_boot_info_t *boot_info) {
   if (system_table == 0 || system_table->boot_services == 0 ||
@@ -174,6 +222,7 @@ static void collect_framebuffer(efi_system_table_t *system_table,
       gop->mode->framebuffer_size == 0U) {
     return;
   }
+  select_display_mode(gop);
   const efi_graphics_output_mode_information_t *info = gop->mode->info;
   if (info->horizontal_resolution == 0U || info->vertical_resolution == 0U ||
       info->pixels_per_scan_line < info->horizontal_resolution ||

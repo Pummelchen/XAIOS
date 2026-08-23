@@ -4,6 +4,7 @@
 typedef unsigned long long u64;
 typedef unsigned int u32;
 typedef unsigned short u16;
+typedef unsigned char u8;
 typedef int s32;
 typedef long long s64;
 
@@ -77,6 +78,7 @@ void *xaios_memcpy(void *dst, const void *src, u64 size);
 #define XAIOS_SYSCALL_CONSOLE_WRITE 48ULL
 #define XAIOS_SYSCALL_NET_LOCAL_IPV4 49ULL
 #define XAIOS_SYSCALL_NET_CONNECT 50ULL
+#define XAIOS_SYSCALL_NET_LOCAL_IPV6 51ULL
 #define XAIOS_THREAD_CPU_ANY (~0ULL)
 
 #define XAIOS_CLOCK_MONOTONIC 0ULL
@@ -360,6 +362,9 @@ int xaios_remote_login_child_release(u64 child_channel_id);
 int xaios_console_read(char *value);
 int xaios_console_write(const char *buffer, u64 size);
 u32 xaios_net_local_ipv4(void);
+/* Copies the public IPv6 address out and returns 1, or returns 0 when the
+   guest has no public IPv6 address configured. */
+int xaios_net_local_ipv6(u8 address[16]);
 int xaios_net_external_session(u64 protocol, u64 port, const void *payload,
                               u64 payload_size, char *output,
                               u64 output_size, u64 *out_size);

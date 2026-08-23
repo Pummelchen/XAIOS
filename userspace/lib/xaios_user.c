@@ -105,6 +105,11 @@ u32 xaios_net_local_ipv4(void) {
   return (u32)xaios_syscall3(XAIOS_SYSCALL_NET_LOCAL_IPV4, 0U, 0U, 0U);
 }
 
+int xaios_net_local_ipv6(u8 address[16]) {
+  return (int)(s64)xaios_syscall3(XAIOS_SYSCALL_NET_LOCAL_IPV6,
+                                  (u64)(void *)address, 16U, 0U);
+}
+
 void xaios_exit(int code) {
   (void)xaios_syscall3(XAIOS_SYSCALL_EXIT, (u64)(u32)code, 0, 0);
   for (;;) {

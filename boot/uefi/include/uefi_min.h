@@ -228,8 +228,12 @@ struct efi_graphics_output_protocol_mode {
 };
 
 struct efi_graphics_output_protocol {
-  void *query_mode;
-  void *set_mode;
+  efi_status_t(EFIAPI *query_mode)(
+      efi_graphics_output_protocol_t *self, uint32_t mode_number,
+      uint64_t *size_of_info,
+      efi_graphics_output_mode_information_t **info);
+  efi_status_t(EFIAPI *set_mode)(efi_graphics_output_protocol_t *self,
+                                 uint32_t mode_number);
   void *blt;
   efi_graphics_output_protocol_mode_t *mode;
 };

@@ -435,6 +435,68 @@ static void console_write_ipv4(uint32_t address) {
   console_write(line);
 }
 
+/* Render the public IPv6 address in RFC 5952 form, with the longest run of
+   zero groups collapsed to "::". Prints nothing when the guest has no public
+   IPv6 address, so an IPv4-only network shows an IPv4-only boot screen. */
+static void console_write_ipv6(void) {
+  uint8_t address[16];
+  if (xaios_net_local_ipv6(address) != 1) return;
+
+  uint16_t groups[8];
+  for (uint32_t i = 0U; i < 8U; ++i) {
+    groups[i] = (uint16_t)(((uint16_t)address[i * 2U] << 8U) |
+                           address[i * 2U + 1U]);
+  }
+  uint32_t best_start = 8U;
+  uint32_t best_length = 0U;
+  uint32_t run_start = 8U;
+  uint32_t run_length = 0U;
+  for (uint32_t i = 0U; i < 8U; ++i) {
+    if (groups[i] == 0U) {
+      if (run_length == 0U) run_start = i;
+      ++run_length;
+      if (run_length > best_length) {
+        best_length = run_length;
+        best_start = run_start;
+      }
+    } else {
+      run_length = 0U;
+    }
+  }
+  if (best_length < 2U) best_start = 8U;
+
+  static const char hex[] = "0123456789abcdef";
+  char line[48];
+  u64 offset = 0U;
+  xaios_memzero(line, sizeof(line));
+  for (uint32_t i = 0U; i < 8U;) {
+    if (i == best_start) {
+      xaios_append_cstr(line, sizeof(line), &offset, i == 0U ? "::" : ":");
+      i += best_length;
+      continue;
+    }
+    if (i != 0U && i != best_start) {
+      xaios_append_cstr(line, sizeof(line), &offset, ":");
+    }
+    uint16_t value = groups[i];
+    char digits[4];
+    uint32_t count = 0U;
+    do {
+      digits[count++] = hex[value & 0xfU];
+      value = (uint16_t)(value >> 4U);
+    } while (value != 0U);
+    while (count != 0U) {
+      char single[2];
+      single[0] = digits[--count];
+      single[1] = '\0';
+      xaios_append_cstr(line, sizeof(line), &offset, single);
+    }
+    ++i;
+  }
+  console_write("\nIPv6: ");
+  console_write(line);
+}
+
 static void console_write_error(int32_t status) {
   char line[32];
   u64 offset = 0U;
@@ -604,6 +666,7 @@ static void console_render_boot_status(void) {
   console_write("Loaded: system services\nLoading: complete\n");
   console_write("Remaining: 0 components\n\nIPv4: ");
   console_write_ipv4(g_console_ipv4);
+  console_write_ipv6();
   console_write("\nSSH server: ");
   if (g_console_ssh_ready != 0U) {
     console_write("up and running (tcp/22)\n\n");

@@ -89,6 +89,7 @@ static const xaios_syscall_entry_t g_syscall_table[] = {
     {XAIOS_SYSCALL_CONSOLE_WRITE, "console_write", XAIOS_CAP_CONSOLE},
     {XAIOS_SYSCALL_NET_LOCAL_IPV4, "net_local_ipv4", XAIOS_CAP_NET},
     {XAIOS_SYSCALL_NET_CONNECT, "net_connect", XAIOS_CAP_NET_SOCKET},
+    {XAIOS_SYSCALL_NET_LOCAL_IPV6, "net_local_ipv6", XAIOS_CAP_NET},
 };
 
 static uint64_t control_operation_capability(uint16_t operation) {
@@ -520,6 +521,21 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     klog_console_write(output, arg1);
     user_process_note_syscall(0);
     return arg1;
+  }
+
+  if (syscall == XAIOS_SYSCALL_NET_LOCAL_IPV6) {
+    xaios_ip_addr_t address;
+    if (arg1 != 16U ||
+        vmm_validate_user_buffer(arg0, 16U, XAIOS_VMM_WRITABLE) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "bad-ipv6-buffer");
+    }
+    if (network_stack_local_public_ipv6(&address) != XAIOS_OK) {
+      user_process_note_syscall(0);
+      return 0U;
+    }
+    bytes_copy((void *)(uintptr_t)arg0, address.addr, 16U);
+    user_process_note_syscall(0);
+    return 1U;
   }
 
   if (syscall == XAIOS_SYSCALL_NET_LOCAL_IPV4) {
