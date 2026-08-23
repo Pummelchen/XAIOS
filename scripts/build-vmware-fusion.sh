@@ -87,6 +87,36 @@ xorriso -as mkisofs -quiet -R -V XAIOS_FUSION \
   -e efi.img -no-emul-boot \
   -o "$ISO_IMAGE" "$STAGE_DIR"
 cp "$ROOT_DIR/platform/vmware-fusion/XAIOS.vmx.in" "$VM_BUNDLE/XAIOS.vmx"
+# Serial console wiring. "file" is the default and keeps the automated Fusion
+# smoke gate reading fusion-serial.log. "pipe" makes the console bidirectional
+# so an operator can actually log in and type; VMware creates a UNIX socket at
+# XAIOS_FUSION_SERIAL_PIPE that a terminal can attach to.
+FUSION_SERIAL="${XAIOS_FUSION_SERIAL:-file}"
+FUSION_SERIAL_PIPE="${XAIOS_FUSION_SERIAL_PIPE:-/tmp/xaios-fusion-console}"
+case "$FUSION_SERIAL" in
+  file) ;;
+  pipe)
+    "${XAIOS_PYTHON3:-python3}" - "$VM_BUNDLE/XAIOS.vmx" "$FUSION_SERIAL_PIPE" <<'PYEOF'
+import sys
+vmx, pipe = sys.argv[1], sys.argv[2]
+text = open(vmx, encoding="utf-8").read()
+old = ('serial0.fileType = "file"\n'
+       'serial0.fileName = "fusion-serial.log"\n')
+new = (f'serial0.fileType = "pipe"\n'
+       f'serial0.fileName = "{pipe}"\n'
+       f'serial0.pipe.endPoint = "server"\n'
+       f'serial0.startConnected = "TRUE"\n')
+if old not in text:
+    raise SystemExit("error: unexpected serial configuration in VMX template")
+open(vmx, "w", encoding="utf-8").write(text.replace(old, new))
+PYEOF
+    printf '%s\n' "Serial console: bidirectional pipe at $FUSION_SERIAL_PIPE"
+    ;;
+  *)
+    printf '%s\n' "error: XAIOS_FUSION_SERIAL must be file or pipe" >&2
+    exit 2
+    ;;
+esac
 "$VDISK_MANAGER" -c -s "${XAIOS_FUSION_DISK_SIZE:-256MB}" -a lsilogic -t 0 \
   "$DATA_DISK" >/dev/null
 
