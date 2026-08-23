@@ -52,12 +52,20 @@ def main() -> int:
         run([*common, *sources, "-o", str(binary)])
         seed_corpus = ROOT / "tests" / "fuzz" / f"{name}-corpus"
         corpus = BUILD / f"{name}-corpus"
-        if corpus.exists():
-            shutil.rmtree(corpus)
-        shutil.copytree(seed_corpus, corpus)
+        # Merge the checked-in seeds into whatever the corpus already holds
+        # rather than resetting it. A campaign that starts from one seed every
+        # time relearns the same shallow coverage; carrying the corpus forward
+        # is what lets successive runs reach deeper states.
+        corpus.mkdir(parents=True, exist_ok=True)
+        for seed in seed_corpus.iterdir():
+            if seed.is_file():
+                target_path = corpus / seed.name
+                if not target_path.exists():
+                    shutil.copy2(seed, target_path)
         run([
             str(binary), str(corpus), f"-runs={RUNS}", "-timeout=5",
             "-rss_limit_mb=1024", "-print_final_stats=1",
+            f"-artifact_prefix={BUILD}/",
         ])
     print(f"parser-fuzz: PASS targets={len(targets)} runs_per_target={RUNS}")
     return 0
