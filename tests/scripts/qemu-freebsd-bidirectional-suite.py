@@ -510,6 +510,11 @@ def main() -> int:
     build_env["XAIOS_SSH_CLIENT_IDENTITY_FILE"] = str(key_dir / "outbound")
     build_env.pop("XAIOS_SSH_USERS_FILE", None)
     build_env["XAIOS_SSH_PASSWORD_AUTH"] = "0"
+    # Keep kernel logging on the serial console for the whole run. The guest
+    # already reports why a filesystem write failed, but a non-verbose build
+    # silences klog once boot finishes, so the captured evidence stopped at the
+    # login prompt and every failure here had to be re-diagnosed blind.
+    build_env.setdefault("XAIOS_BOOT_VERBOSE", "1")
     build_target = "image" if architecture == "aarch64" else "image-x86_64"
     run_checked(["make", build_target], 360, build_env)
 
