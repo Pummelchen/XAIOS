@@ -68,19 +68,26 @@ not determine OS-slot health.
 /apps/NAME/previous.*       one rollback version
 ```
 
-The default development origin is `91.99.176.243:8443`. Configuration is plain
-text, but transport security is mandatory:
+The default development origin is `xaios.91.99.176.243.nip.io` over HTTPS.
+Configuration is plain text, but transport security is mandatory:
 
 ```text
-host=91.99.176.243
-port=8443
+host=xaios.91.99.176.243.nip.io
+port=443
 base=/
 tls=required
-tls_rsa_modulus=OPERATOR_RSA_MODULUS_HEX
 ```
 
-`xapt` uses TLS 1.2 with an exact operator-managed RSA public-key pin and
-fail-closed entropy. Signed catalogs/manifests and payload hashes remain the
+`xapt` uses TLS 1.2 with fail-closed entropy and validates the presented
+certificate chain against the compiled-in ISRG roots, checking the server name
+and the validity window. Because expiry is checked, the realtime clock must be
+set; an unset clock is refused rather than silently accepted.
+
+Add `tls_rsa_modulus=OPERATOR_RSA_MODULUS_HEX` to require one exact leaf RSA
+key instead, ignoring the rest of the certificate. That suits a private origin
+reached by address, where no publicly issued chain exists. It is the wrong
+choice for a publicly issued certificate, which is reissued with a fresh key
+every renewal and would strand every deployed image. Signed catalogs/manifests and payload hashes remain the
 content authenticity layer. The client requires HTTP/1.1 with
 `Content-Length`; transfer encoding, compression, mirrors, proxies, deltas,
 dependencies, and unattended upgrades are not supported.
@@ -101,15 +108,18 @@ make xapt-repository
 
 The first command creates and verifies both architecture trees under
 `build/xapt/repository`. The publisher re-verifies locally, synchronizes to
-`/var/xaios_updater`, validates the repository Caddy configuration, and reloads
-Caddy on TLS port 8443. Override the destination with `XAIOS_UPDATE_HOST` and
-`XAIOS_UPDATE_ROOT`.
+`/var/xaios_updater`, and reloads the updater's own server. Override the
+destination with `XAIOS_UPDATE_HOST` and `XAIOS_UPDATE_ROOT`, and the reloaded
+unit with `XAIOS_UPDATE_SERVICE`.
 
-Publishing requires `XAIOS_XAPT_TLS_CERT` and `XAIOS_XAPT_TLS_KEY`; the script
-refuses to publish without an operator-managed identity. The public fixture may
-be selected only for disposable tests with `XAIOS_ALLOW_TEST_TLS_FIXTURE=1`.
-The configured `tls_rsa_modulus` must match the deployed certificate key.
-Caddy exposes only the TLS listener on port 8443.
+The publisher handles no TLS material. A master edge in `/var/caddy` owns
+`:443` for `xaios.91.99.176.243.nip.io` and forwards to the updater's own
+instance, `xaios-caddy`, which serves plain HTTP on `:8090` and is the only
+service publishing reloads. That edge also fronts unrelated projects, so
+nothing here writes `/etc/caddy` or reloads the shared `caddy` service.
+
+A configured `tls_rsa_modulus` must match the deployed certificate key; with
+chain validation no pin has to be re-cut when the certificate renews.
 
 The repository shape is:
 

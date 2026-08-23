@@ -115,7 +115,10 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 - Role, capability, replay, rollback, host-key rotation, sensitive-path denial,
   and secret-redaction behavior pass QEMU/OpenSSH gates but have not received an
   independent production security review.
-- `xapt` requires TLS 1.2 with an exact RSA public-key pin and supports signed
+- `xapt` requires TLS 1.2, validating the certificate chain against compiled-in
+  ISRG roots with server-name and validity checks, or an exact RSA public-key
+  pin for a private origin. Chain validation depends on a set realtime clock
+  and refuses an unset one. It supports signed
   release-root rotation, revocation, offline recovery, and rollback of an
   interrupted trust/catalog activation. The checked-in TLS and signing private
   fixtures are public; production key custody and release authorization remain

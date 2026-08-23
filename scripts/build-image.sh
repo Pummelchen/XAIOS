@@ -813,9 +813,19 @@ for app in $USER_APPS; do
       -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/apps" \
       -I"$ROOT_DIR/third_party/bearssl/inc" \
       -c "$ROOT_DIR/userspace/apps/xapt_tls.c" -o "$XAPT_TLS_OBJ"
+    XAPT_TRUST_OBJ="$INIT_BUILD_DIR/xapt-trust-anchors.o"
+    "$CLANG" --target="$TARGET_TRIPLE" $USER_ARCH_CFLAGS -std=c99 \
+      -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+      -Os -Wall -Wextra -Werror \
+      -isystem "$BUILD_DIR/libc/$TARGET_ARCH/sysroot/include" \
+      -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/apps" \
+      -I"$ROOT_DIR/third_party/bearssl/inc" \
+      -c "$ROOT_DIR/userspace/apps/xapt_trust_anchors.c" \
+      -o "$XAPT_TRUST_OBJ"
     "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
       -o "$app_elf" "$USER_START_OBJ" "$USER_LIB_OBJ" \
-      "$USER_CONTROL_OBJ" "$app_obj" "$XAPT_TLS_OBJ" "$XAPT_BEARSSL"
+      "$USER_CONTROL_OBJ" "$app_obj" "$XAPT_TLS_OBJ" "$XAPT_TRUST_OBJ" \
+      "$XAPT_BEARSSL"
   elif [ "$app" = "xaiosctl" ] ||
       [ "$app" = "htop" ]; then
     "$LD_LLD" \

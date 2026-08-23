@@ -404,7 +404,7 @@ static int load_config(xapt_config_t *config) {
   }
   return config->host[0] != '\0' && config->port > 0U &&
                  config->port <= 65535U &&
-                 (config->tls_required == 0U ||
+                 (xaios_strlen(config->tls_rsa_modulus) == 0U ||
                   xaios_strlen(config->tls_rsa_modulus) ==
                       XAPT_TLS_MODULUS_HEX_BYTES) &&
                  (config->base[0] == '\0' || path_valid(config->base))
