@@ -652,6 +652,99 @@ static int console_start_pong(void) {
   return 0;
 }
 
+/* Local console htop session.
+   Drives the same xaios_htop_session_t state machine the SSH channel uses, so
+   refresh cadence, sort keys, filtering, help and quit behave identically on
+   both surfaces. Only the sink differs: bytes go straight to the console and
+   sampling runs against the console's own remote-login session. */
+/* "htop" with or without options, but not "htop --plain": that form asks for
+   the snapshot output on purpose, on either surface. */
+static int console_command_is_htop(const char *command) {
+  static const char name[] = "htop";
+  uint32_t i = 0U;
+  if (command == 0) return 0;
+  for (; i < sizeof(name) - 1U; ++i) {
+    if (command[i] != name[i]) return 0;
+  }
+  if (command[i] != '\0' && command[i] != ' ') return 0;
+  for (uint32_t j = i; command[j] != '\0'; ++j) {
+    if (command[j] == '-' && command[j + 1U] == '-' &&
+        command[j + 2U] == 'p' && command[j + 3U] == 'l' &&
+        command[j + 4U] == 'a' && command[j + 5U] == 'i' &&
+        command[j + 6U] == 'n') {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static xaios_htop_session_t g_console_htop;
+
+static int console_htop_write(void *context, const uint8_t *data,
+                              uint32_t length) {
+  (void)context;
+  /* console_write_bytes reports success as 0, not a byte count. */
+  return console_write_bytes((const char *)data, length);
+}
+
+static int console_htop_run(void *context, const char *command, char *output,
+                            unsigned long long capacity,
+                            unsigned long long *output_length) {
+  (void)context;
+  return xaios_remote_login_session(SSHD_CONSOLE_SESSION_ID, "admin", command,
+                                    output, capacity, output_length);
+}
+
+static xaios_htop_sink_t console_htop_sink(void) {
+  xaios_htop_sink_t sink;
+  sink.write = console_htop_write;
+  sink.run = console_htop_run;
+  sink.busy = 0;
+  sink.context = 0;
+  return sink;
+}
+
+static void console_finish_htop(void) {
+  xaios_htop_sink_t sink = console_htop_sink();
+  (void)xaios_htop_stop(&g_console_htop, &sink);
+  console_prompt();
+}
+
+static int console_start_htop(const char *command) {
+  xaios_htop_sink_t sink = console_htop_sink();
+  xaios_htop_start(&g_console_htop, command, SSHD_CONSOLE_COLUMNS,
+                   SSHD_CONSOLE_ROWS);
+  console_write("\033[?1049h\033[?25l");
+  if (xaios_htop_render(&g_console_htop, &sink, xaios_clock_nanos()) != 0) {
+    console_finish_htop();
+    return -1;
+  }
+  return 0;
+}
+
+static void console_service_htop(uint64_t now_ns) {
+  xaios_htop_sink_t sink = console_htop_sink();
+  if (g_console_htop.active == 0U) return;
+  if (g_console_htop.help != 0U) {
+    if (now_ns >= g_console_htop.next_refresh_ns &&
+        xaios_htop_send_help(&g_console_htop, &sink, now_ns) != 0) {
+      console_finish_htop();
+    }
+    return;
+  }
+  if (g_console_htop.filter_mode != 0U) {
+    if (now_ns >= g_console_htop.next_refresh_ns &&
+        xaios_htop_send_filter_prompt(&g_console_htop, &sink, now_ns) != 0) {
+      console_finish_htop();
+    }
+    return;
+  }
+  if (now_ns >= g_console_htop.next_refresh_ns &&
+      xaios_htop_render(&g_console_htop, &sink, now_ns) != 0) {
+    console_finish_htop();
+  }
+}
+
 static void console_finish_pong(void) {
   g_console_pong.active = 0U;
   console_write("\033[0m\033[?25h\033[?1049l\033[0m\033[?25h\r");
@@ -720,6 +813,8 @@ static void console_execute_command(void) {
     (void)console_start_nano(g_console_command);
   } else if (ssh_str_eq(g_console_command, "pong")) {
     (void)console_start_pong();
+  } else if (console_command_is_htop(g_console_command)) {
+    (void)console_start_htop(g_console_command);
   } else if (ssh_str_eq(g_console_command, "clear")) {
     console_write("\x1b[2J\x1b[H");
   } else if (ssh_str_eq(g_console_command, "exit") ||
@@ -755,7 +850,8 @@ static void console_execute_command(void) {
     }
   }
   g_console_command_length = 0U;
-  if (g_console_nano.active == 0U && g_console_pong.active == 0U)
+  if (g_console_nano.active == 0U && g_console_pong.active == 0U &&
+      g_console_htop.active == 0U)
     console_prompt();
 }
 
@@ -863,6 +959,15 @@ static void console_tick(void) {
                                     &frame_size) == 0) {
         (void)console_write_bytes(g_console_output, frame_size);
       }
+      continue;
+    }
+    if (g_console_htop.active != 0U) {
+      xaios_htop_sink_t sink = console_htop_sink();
+      (void)xaios_htop_input(&g_console_htop, &sink, xaios_clock_nanos(),
+                             (const uint8_t *)&value, 1U);
+      /* The session signals it is finished by clearing active; the surface
+         then does its own teardown, here reprinting the shell prompt. */
+      if (g_console_htop.active == 0U) console_prompt();
       continue;
     }
     if (g_console_pong.active != 0U) {
@@ -2474,6 +2579,7 @@ service_loop:
     uint64_t now = timer_now();
     console_refresh_boot_ui(now);
     console_service_pong(now);
+    console_service_htop(now);
     console_tick();
     for (uint32_t i = 0; g_console_ssh_ready != 0U && i < 4U; ++i) {
       uint8_t udp_buffer[1478];
