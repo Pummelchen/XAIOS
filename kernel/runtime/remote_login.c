@@ -3904,9 +3904,14 @@ static const remote_app_definition_t g_remote_apps[] = {
     REMOTE_APP("hello", "/bin/hello", XAIOS_CAP_LOG | XAIOS_CAP_EXIT),
     REMOTE_APP("helloworldc99", "/bin/helloworldc99",
                XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT),
+    /* XAIOS_CAP_NET is what authorizes net_resolve. Without it xapt can open
+       sockets but cannot turn a name into an address, so a configured host
+       works only as a literal and every hostname fails identically whether or
+       not it is DNSSEC-signed. */
     REMOTE_APP("xapt", "/bin/xapt",
      XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT | XAIOS_CAP_TIME |
-         XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE | XAIOS_CAP_NET_SOCKET |
+         XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE |
+         XAIOS_CAP_NET | XAIOS_CAP_NET_SOCKET |
          XAIOS_CAP_RANDOM |
          XAIOS_CAP_CONTROL_QUERY | XAIOS_CAP_CONTROL_ADMIN |
          XAIOS_CAP_UPDATE | XAIOS_CAP_ADMIN),
