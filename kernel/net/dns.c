@@ -369,22 +369,27 @@ static uint8_t hostname_label_count(const char *hostname) {
   return count;
 }
 
+/* Write the zone formed by the last `labels` labels of `hostname`.
+
+   That zone starts just after the dot with `labels` labels to its right, so
+   the search needs one fewer dot than it might look. When the zone is the
+   hostname itself there is no such dot at all, which is the ordinary case for
+   any name whose apex is the name being resolved, such as example.com. */
 static int child_zone_name(const char *hostname, uint8_t labels,
                            char *out, uint32_t capacity) {
   if (labels == 0U || capacity == 0U) return -1;
-  uint8_t seen = 0U;
+  uint8_t total = hostname_label_count(hostname);
+  if (labels > total) return -1;
   uint32_t start = 0U;
-  for (uint32_t i = str_len(hostname); i > 0U; --i) {
-    if (hostname[i - 1U] == '.') {
-      if (++seen == labels) { start = i; break; }
+  if (labels < total) {
+    uint8_t seen = 0U;
+    for (uint32_t i = str_len(hostname); i > 0U; --i) {
+      if (hostname[i - 1U] == '.' && ++seen == labels) {
+        start = i;
+        break;
+      }
     }
-  }
-  if (labels == 1U) {
-    start = 0U;
-    for (uint32_t i = 0U; hostname[i] != '\0'; ++i)
-      if (hostname[i] == '.') start = i + 1U;
-  } else if (seen != labels) {
-    return -1;
+    if (seen != labels) return -1;
   }
   if (str_len(hostname + start) + 1U > capacity) return -1;
   str_copy(out, hostname + start, capacity);
