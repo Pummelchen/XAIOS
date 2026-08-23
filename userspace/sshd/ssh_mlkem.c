@@ -39,10 +39,14 @@ int ssh_mlkem768_self_test(void) {
     result = ssh_mlkem768_encapsulate(ciphertext, sender_secret, public_key);
   if (result == 0)
     result = ssh_mlkem768_decapsulate(receiver_secret, ciphertext, secret_key);
-  uint8_t difference = 0U;
-  for (uint32_t i = 0U; i < sizeof(sender_secret); ++i)
-    difference |= sender_secret[i] ^ receiver_secret[i];
-  if (result == 0 && difference != 0U) result = -1;
+  /* Only compare once both secrets have been written: on a keypair or
+     encapsulation failure they remain uninitialised stack. */
+  if (result == 0) {
+    uint8_t difference = 0U;
+    for (uint32_t i = 0U; i < sizeof(sender_secret); ++i)
+      difference |= sender_secret[i] ^ receiver_secret[i];
+    if (difference != 0U) result = -1;
+  }
   ssh_mem_zero(secret_key, sizeof(secret_key));
   ssh_mem_zero(sender_secret, sizeof(sender_secret));
   ssh_mem_zero(receiver_secret, sizeof(receiver_secret));
