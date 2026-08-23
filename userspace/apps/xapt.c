@@ -15,6 +15,11 @@
 
 typedef struct xapt_config {
   char host[XAPT_HOST_BYTES];
+  /* Optional literal to dial instead of resolving `host`. The name still
+     identifies the origin: it is what goes in the Host header and what any
+     certificate is checked against. Set this to reach an origin whose name
+     the resolver cannot yet return, and drop it once it can. */
+  char address[XAPT_HOST_BYTES];
   char base[64];
   u64 port;
   u32 tls_required;
@@ -228,7 +233,8 @@ static int http_get(const xapt_config_t *config, const char *catalog_path,
     g_http_error = 1U;
     return -1;
   }
-  if (resolve_host(config->host, &address) != 0) {
+  if (resolve_host(config->address[0] != '\0' ? config->address : config->host,
+                   &address) != 0) {
     g_http_error = 2U;
     return -1;
   }
@@ -379,6 +385,10 @@ static int load_config(xapt_config_t *config) {
     if (text_starts(g_buffer + start, "host=")) {
       if (copy_text(config->host, sizeof(config->host), g_buffer + start + 5U,
                     length - 5U) != 0)
+        return -1;
+    } else if (text_starts(g_buffer + start, "address=")) {
+      if (copy_text(config->address, sizeof(config->address),
+                    g_buffer + start + 8U, length - 8U) != 0)
         return -1;
     } else if (text_starts(g_buffer + start, "base=")) {
       if (copy_text(config->base, sizeof(config->base), g_buffer + start + 5U,

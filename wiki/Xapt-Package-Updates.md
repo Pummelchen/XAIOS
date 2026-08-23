@@ -68,20 +68,35 @@ not determine OS-slot health.
 /apps/NAME/previous.*       one rollback version
 ```
 
-The default development origin is `xaios.91.99.176.243.nip.io` over HTTPS.
-Configuration is plain text, but transport security is mandatory:
+The default development origin is `xaios.91.99.176.243.nip.io`. The shipped
+configuration reaches it over plain HTTP:
 
 ```text
 host=xaios.91.99.176.243.nip.io
-port=443
+address=91.99.176.243
+port=80
 base=/
-tls=required
+tls=off
 ```
 
-`xapt` uses TLS 1.2 with fail-closed entropy and validates the presented
-certificate chain against the compiled-in ISRG roots, checking the server name
-and the validity window. Because expiry is checked, the realtime clock must be
-set; an unset clock is refused rather than silently accepted.
+`address` is the literal to dial. The name still identifies the origin: it is
+what goes in the `Host` header, and what a certificate would be checked
+against. The two are separate here because the resolver cannot yet return an
+address for this name, an unsigned delegation it treats as bogus; once it can,
+`address` can be dropped. Without `address` the client resolves `host`.
+
+`tls=off` is a deliberate interim setting, not a default to keep. Update
+authenticity does not depend on it: catalogs and manifests are signed and every
+artifact carries a `sha256`, so a tampered payload is rejected whatever the
+transport. What plain HTTP gives up is confidentiality and transport integrity
+of the exchange itself, and an observer can see which artifacts a host fetches.
+Restore `tls=required` with `port=443` once the resolver reaches the name.
+
+With `tls=required`, `xapt` uses TLS 1.2 with fail-closed entropy and validates
+the presented certificate chain against the compiled-in ISRG roots, checking
+the server name and the validity window. Because expiry is checked, the
+realtime clock must be set; boot synchronizes it, and an unset clock is refused
+rather than silently accepted.
 
 Add `tls_rsa_modulus=OPERATOR_RSA_MODULUS_HEX` to require one exact leaf RSA
 key instead, ignoring the rest of the certificate. That suits a private origin
