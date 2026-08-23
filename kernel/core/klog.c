@@ -1,6 +1,7 @@
 #include <stdarg.h>
 #include <xaios/klog.h>
 #include <xaios/input.h>
+#include <xaios/boot_ui.h>
 #if defined(__aarch64__)
 #include <xaios/klog_ring.h>
 #endif
@@ -127,6 +128,11 @@ void klog_console_write(const char *message, uint64_t length) {
     uart_putc(message[i]);
   }
   xaios_spin_unlock(&g_klog_lock);
+  /* The framebuffer terminal is a second console attached to the same stream,
+     so it receives exactly what the UART receives: everything except bytes
+     that belong to a capturing session. Written outside the klog lock because
+     it paints pixels and must not hold the console lock while doing so. */
+  if (!capturing) boot_ui_console_write(message, length);
 }
 
 int klog_console_capture_begin(char *buffer, uint64_t capacity) {

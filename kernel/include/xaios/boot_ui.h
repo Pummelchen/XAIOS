@@ -29,5 +29,10 @@ void boot_ui_update(uint32_t percent, const char *loaded,
                     const char *loading, uint32_t remaining);
 void boot_ui_error(const char *component, int32_t status);
 uint32_t boot_ui_handle_control(const xaios_boot_ui_control_t *control);
+/* Mirror console bytes onto the framebuffer terminal, once boot hands the
+   display over. No-ops when there is no framebuffer or before handover. */
+void boot_ui_console_write(const char *text, uint64_t length);
+void boot_ui_console_text(const char *text);
+void boot_ui_self_test(void);
 
 #endif
