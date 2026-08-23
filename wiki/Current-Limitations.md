@@ -58,7 +58,11 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   cache, and DNS-over-TCP fallback. It locally validates DNSKEY, DS, and RRSIG
   chains from compiled root DS anchors and accepts signed exact-owner NSEC NODATA proofs.
   NXDOMAIN, NSEC3, CNAME/DNAME and wildcard synthesis, plus production root-anchor
-  rollover/update policy, remain unsupported and fail closed.
+  rollover/update policy, remain unsupported and fail closed. DNSSEC has three
+  outcomes and the resolver implements two: an unsigned delegation, whose
+  absent DS can only be proven under the opt-out NSEC3 its parent uses, is
+  refused as bogus rather than accepted as insecure. Names under such a
+  delegation, `nip.io` among them, therefore do not resolve.
 - The SNTP client validates request binding, server mode/version, stratum, and
   bounded retry/timeout behavior, then applies corrections through a monotonic
   500-ppm slew after initial calibration. Boot performs one bounded, non-fatal
@@ -119,10 +123,14 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 - Role, capability, replay, rollback, host-key rotation, sensitive-path denial,
   and secret-redaction behavior pass QEMU/OpenSSH gates but have not received an
   independent production security review.
-- `xapt` requires TLS 1.2, validating the certificate chain against compiled-in
+- `xapt` supports TLS 1.2, validating the certificate chain against compiled-in
   ISRG roots with server-name and validity checks, or an exact RSA public-key
   pin for a private origin. Chain validation depends on the realtime clock set
-  during boot and refuses an unset one. It supports signed
+  during boot and refuses an unset one. The shipped configuration currently
+  sets `tls=off` and fetches over plain HTTP, because the resolver cannot
+  return an address for the origin name; signed catalogs and per-artifact
+  hashes remain the authenticity layer, and transport confidentiality is
+  forfeited until that is restored. It supports signed
   release-root rotation, revocation, offline recovery, and rollback of an
   interrupted trust/catalog activation. The checked-in TLS and signing private
   fixtures are public; production key custody and release authorization remain
