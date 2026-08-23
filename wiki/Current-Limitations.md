@@ -61,8 +61,12 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   rollover/update policy, remain unsupported and fail closed.
 - The SNTP client validates request binding, server mode/version, stratum, and
   bounded retry/timeout behavior, then applies corrections through a monotonic
-  500-ppm slew after initial calibration. QEMU's PL031 RTC may report epoch
-  zero, and public UDP/123 may be filtered; both conditions remain explicit.
+  500-ppm slew after initial calibration. Boot performs one bounded, non-fatal
+  synchronization against a fixed server address before services start, and an
+  offset from an unset clock is stepped rather than slewed. QEMU's PL031 RTC may
+  report epoch zero, and public UDP/123 may be filtered; a filtered port leaves
+  boot on the RTC reading after a bounded pause, so both conditions remain
+  explicit.
   Production NTP authentication, source policy, oscillator characterization,
   and physical RTC qualification remain open.
 - TCP implements retained segments, cumulative and partial ACK handling,
@@ -117,8 +121,8 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   independent production security review.
 - `xapt` requires TLS 1.2, validating the certificate chain against compiled-in
   ISRG roots with server-name and validity checks, or an exact RSA public-key
-  pin for a private origin. Chain validation depends on a set realtime clock
-  and refuses an unset one. It supports signed
+  pin for a private origin. Chain validation depends on the realtime clock set
+  during boot and refuses an unset one. It supports signed
   release-root rotation, revocation, offline recovery, and rollback of an
   interrupted trust/catalog activation. The checked-in TLS and signing private
   fixtures are public; production key custody and release authorization remain

@@ -20,6 +20,14 @@ It then reports one of these outcomes:
   credentials, crypto,
   or listener initialization fails.
 
+Once networking is active and before any service starts, the kernel sets the
+wall clock from NTP. The default server is a bare address, so this needs no
+DNS. It is bounded and non-fatal: a network that filters UDP/123 costs a pause
+of at most six seconds and boot continues on the RTC reading. Without this the
+clock is whatever the RTC reports, and QEMU's PL031 commonly reports epoch
+zero, which leaves anything checking a certificate validity window seeing every
+certificate as not yet valid. Confirm the result with `date` and `ntp status`.
+
 SSH is not opened until networking is active and a bounded IPv4 TCP connection
 to `1.1.1.1:443` succeeds. This checks configured external reachability without
 making SSH startup depend on public DNS. Failure leaves the listener closed.

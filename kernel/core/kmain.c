@@ -85,6 +85,10 @@
 #define XAIOS_LIBC_TEST 0
 #endif
 
+/* Two NTP retransmits plus margin, well inside the client's own 10s
+   timeout, so a filtered UDP/123 costs a bounded pause and nothing more. */
+#define BOOT_NTP_DEADLINE_NS UINT64_C(6000000000)
+
 static const char g_vmm_rodata_probe[] = "vmm-rodata";
 static uint64_t g_vmm_data_probe;
 static virtio_block_handle_t *g_storage_admin_handle;
@@ -154,6 +158,34 @@ static int run_user_app(const char *path, uint32_t pid, uint64_t capabilities) {
        path, exit_code);
   user_process_reclaim_address_space(&process);
   return exit_code;
+}
+
+/* Set the wall clock from NTP before any service starts.
+
+   The clock is otherwise whatever the RTC reports, and QEMU's PL031 commonly
+   reports epoch zero, leaving the system in 1970. Anything that checks a
+   certificate validity window then sees every certificate as not-yet-valid,
+   which is how xapt fails against the updater's publicly issued certificate.
+
+   Bounded and non-fatal. The default server is a bare address, so this needs
+   no DNS, but UDP/123 is filtered on some networks and a boot must not stall
+   waiting for a reply that will never arrive. */
+static void boot_sync_wall_clock(void) {
+  if (ntp_sync(0U) != XAIOS_ERR_BUSY) {
+    klog("kernel: boot ntp not started state=%u\n",
+         (unsigned)ntp_status().state);
+    return;
+  }
+  uint64_t deadline = timer_now_ns() + BOOT_NTP_DEADLINE_NS;
+  while (ntp_status().state == XAIOS_NTP_PENDING &&
+         timer_now_ns() < deadline) {
+    network_poll_tick();
+    xaios_cpu_relax();
+  }
+  klog("kernel: boot ntp state=%u epoch_seconds=%lu source=%u\n",
+       (unsigned)ntp_status().state,
+       wall_time_now_ns() / UINT64_C(1000000000),
+       (unsigned)wall_time_source());
 }
 
 static void map_mmio_range(uint64_t start, uint64_t size) {
@@ -753,6 +785,8 @@ persistent_network_done:
       xaios_cpu_wait();
     }
   }
+
+  boot_sync_wall_clock();
 
   klog("kernel: starting persistent /bin/sshd service\n");
   int sshd_exit =
