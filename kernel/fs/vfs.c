@@ -1,4 +1,5 @@
 #include <xaios/vfs.h>
+#include <xaios/spinlock.h>
 
 typedef struct vfs_mount_record {
   uint32_t active;
@@ -21,6 +22,7 @@ typedef struct vfs_handle_record {
 } vfs_handle_record_t;
 
 static vfs_mount_record_t g_mounts[XAIOS_VFS_MAX_MOUNTS];
+static xaios_spinlock_t g_vfs_lock = XAIOS_SPINLOCK_INIT;
 static vfs_handle_record_t g_handles[XAIOS_VFS_MAX_HANDLES];
 static uint64_t g_next_generation;
 
@@ -204,9 +206,7 @@ xaios_status_t vfs_init(void) {
   return XAIOS_OK;
 }
 
-xaios_status_t vfs_mount(const char *mount_path,
-                         const xaios_vfs_backend_ops_t *ops, void *context,
-                         uint32_t flags) {
+static xaios_status_t vfs_mount_locked(const char *mount_path, const xaios_vfs_backend_ops_t *ops, void *context, uint32_t flags) {
   if (ops == 0 || ops->open == 0 || ops->close == 0 || ops->pread == 0 ||
       ops->stat == 0 || flags & ~XAIOS_VFS_MOUNT_READ_ONLY) {
     return XAIOS_ERR_INVALID;
@@ -238,7 +238,7 @@ xaios_status_t vfs_mount(const char *mount_path,
   return XAIOS_OK;
 }
 
-xaios_status_t vfs_unmount(const char *mount_path) {
+static xaios_status_t vfs_unmount_locked(const char *mount_path) {
   char normalized[XAIOS_VFS_PATH_MAX];
   if (normalize_path(mount_path, normalized) != XAIOS_OK) {
     return XAIOS_ERR_INVALID;
@@ -263,7 +263,7 @@ xaios_status_t vfs_resolve(const char *path,
   return resolve_normalized(normalized, resolution);
 }
 
-int64_t vfs_open(const char *path, uint32_t flags, uint32_t owner_id) {
+static int64_t vfs_open_locked(const char *path, uint32_t flags, uint32_t owner_id) {
   if (flags == 0U ||
       flags & ~(XAIOS_VFS_OPEN_READ | XAIOS_VFS_OPEN_WRITE |
                 XAIOS_VFS_OPEN_CREATE | XAIOS_VFS_OPEN_TRUNCATE) ||
@@ -304,7 +304,7 @@ int64_t vfs_open(const char *path, uint32_t flags, uint32_t owner_id) {
   return (int64_t)(index + 1U);
 }
 
-xaios_status_t vfs_close(uint32_t fd, uint32_t owner_id) {
+static xaios_status_t vfs_close_locked(uint32_t fd, uint32_t owner_id) {
   vfs_handle_record_t *handle = find_handle(fd, owner_id);
   if (handle == 0) return XAIOS_ERR_INVALID;
   vfs_mount_record_t *mount = &g_mounts[handle->mount_index];
@@ -317,7 +317,7 @@ xaios_status_t vfs_close(uint32_t fd, uint32_t owner_id) {
   return XAIOS_OK;
 }
 
-xaios_status_t vfs_release_owner(uint32_t owner_id) {
+static xaios_status_t vfs_release_owner_locked(uint32_t owner_id) {
   if (owner_id == 0U) return XAIOS_ERR_INVALID;
   xaios_status_t result = XAIOS_OK;
   for (uint32_t index = 0U; index < XAIOS_VFS_MAX_HANDLES; ++index) {
@@ -348,8 +348,7 @@ xaios_status_t vfs_release_owner(uint32_t owner_id) {
   return result;
 }
 
-int64_t vfs_pread(uint32_t fd, uint32_t owner_id, void *buffer,
-                  uint64_t length, uint64_t offset) {
+static int64_t vfs_pread_locked(uint32_t fd, uint32_t owner_id, void *buffer, uint64_t length, uint64_t offset) {
   vfs_handle_record_t *handle = find_handle(fd, owner_id);
   if (handle == 0 || buffer == 0 ||
       (handle->flags & XAIOS_VFS_OPEN_READ) == 0U) {
@@ -360,8 +359,7 @@ int64_t vfs_pread(uint32_t fd, uint32_t owner_id, void *buffer,
                            length, offset);
 }
 
-int64_t vfs_pwrite(uint32_t fd, uint32_t owner_id, const void *buffer,
-                   uint64_t length, uint64_t offset) {
+static int64_t vfs_pwrite_locked(uint32_t fd, uint32_t owner_id, const void *buffer, uint64_t length, uint64_t offset) {
   vfs_handle_record_t *handle = find_handle(fd, owner_id);
   if (handle == 0 || buffer == 0 ||
       (handle->flags & XAIOS_VFS_OPEN_WRITE) == 0U) {
@@ -376,11 +374,11 @@ int64_t vfs_pwrite(uint32_t fd, uint32_t owner_id, const void *buffer,
                             length, offset);
 }
 
-int64_t vfs_read(uint32_t fd, uint32_t owner_id, void *buffer,
-                 uint64_t length) {
+static int64_t vfs_read_locked(uint32_t fd, uint32_t owner_id, void *buffer, uint64_t length) {
   vfs_handle_record_t *handle = find_handle(fd, owner_id);
   if (handle == 0) return XAIOS_ERR_INVALID;
-  int64_t result = vfs_pread(fd, owner_id, buffer, length, handle->cursor);
+  int64_t result = vfs_pread_locked(fd, owner_id, buffer, length,
+                                    handle->cursor);
   if (result > 0) {
     if ((uint64_t)result > UINT64_MAX - handle->cursor) return XAIOS_ERR_INVALID;
     handle->cursor += (uint64_t)result;
@@ -388,11 +386,11 @@ int64_t vfs_read(uint32_t fd, uint32_t owner_id, void *buffer,
   return result;
 }
 
-int64_t vfs_write(uint32_t fd, uint32_t owner_id, const void *buffer,
-                  uint64_t length) {
+static int64_t vfs_write_locked(uint32_t fd, uint32_t owner_id, const void *buffer, uint64_t length) {
   vfs_handle_record_t *handle = find_handle(fd, owner_id);
   if (handle == 0) return XAIOS_ERR_INVALID;
-  int64_t result = vfs_pwrite(fd, owner_id, buffer, length, handle->cursor);
+  int64_t result = vfs_pwrite_locked(fd, owner_id, buffer, length,
+                                     handle->cursor);
   if (result > 0) {
     if ((uint64_t)result > UINT64_MAX - handle->cursor) return XAIOS_ERR_INVALID;
     handle->cursor += (uint64_t)result;
@@ -400,14 +398,14 @@ int64_t vfs_write(uint32_t fd, uint32_t owner_id, const void *buffer,
   return result;
 }
 
-xaios_status_t vfs_seek(uint32_t fd, uint32_t owner_id, uint64_t offset) {
+static xaios_status_t vfs_seek_locked(uint32_t fd, uint32_t owner_id, uint64_t offset) {
   vfs_handle_record_t *handle = find_handle(fd, owner_id);
   if (handle == 0) return XAIOS_ERR_INVALID;
   handle->cursor = offset;
   return XAIOS_OK;
 }
 
-xaios_status_t vfs_fsync(uint32_t fd, uint32_t owner_id) {
+static xaios_status_t vfs_fsync_locked(uint32_t fd, uint32_t owner_id) {
   vfs_handle_record_t *handle = find_handle(fd, owner_id);
   if (handle == 0) return XAIOS_ERR_INVALID;
   vfs_mount_record_t *mount = &g_mounts[handle->mount_index];
@@ -416,7 +414,7 @@ xaios_status_t vfs_fsync(uint32_t fd, uint32_t owner_id) {
              : XAIOS_ERR_UNSUPPORTED;
 }
 
-xaios_status_t vfs_truncate(uint32_t fd, uint32_t owner_id, uint64_t size) {
+static xaios_status_t vfs_truncate_locked(uint32_t fd, uint32_t owner_id, uint64_t size) {
   vfs_handle_record_t *handle = find_handle(fd, owner_id);
   if (handle == 0 || (handle->flags & XAIOS_VFS_OPEN_WRITE) == 0U) {
     return XAIOS_ERR_INVALID;
@@ -429,8 +427,7 @@ xaios_status_t vfs_truncate(uint32_t fd, uint32_t owner_id, uint64_t size) {
   return mount->ops->truncate(mount->context, handle->backend_handle, size);
 }
 
-xaios_status_t vfs_fallocate(uint32_t fd, uint32_t owner_id, uint64_t offset,
-                             uint64_t length) {
+static xaios_status_t vfs_fallocate_locked(uint32_t fd, uint32_t owner_id, uint64_t offset, uint64_t length) {
   vfs_handle_record_t *handle = find_handle(fd, owner_id);
   if (handle == 0 || length == 0U || offset > UINT64_MAX - length ||
       (handle->flags & XAIOS_VFS_OPEN_WRITE) == 0U) {
@@ -454,7 +451,7 @@ static xaios_status_t resolve_operation(const char *path,
   return XAIOS_OK;
 }
 
-xaios_status_t vfs_stat(const char *path, xaios_vfs_stat_t *stat) {
+static xaios_status_t vfs_stat_locked(const char *path, xaios_vfs_stat_t *stat) {
   if (stat == 0) return XAIOS_ERR_INVALID;
   xaios_vfs_resolution_t resolution;
   vfs_mount_record_t *mount = 0;
@@ -464,7 +461,7 @@ xaios_status_t vfs_stat(const char *path, xaios_vfs_stat_t *stat) {
              : status;
 }
 
-xaios_status_t vfs_statfs(const char *path, xaios_vfs_statfs_t *statfs) {
+static xaios_status_t vfs_statfs_locked(const char *path, xaios_vfs_statfs_t *statfs) {
   if (statfs == 0) return XAIOS_ERR_INVALID;
   xaios_vfs_resolution_t resolution;
   vfs_mount_record_t *mount = 0;
@@ -494,36 +491,36 @@ static xaios_status_t path_mutation(
   return operation(mount->context, resolution.relative_path);
 }
 
-xaios_status_t vfs_mkdir(const char *path) {
+static xaios_status_t vfs_mkdir_locked(const char *path) {
   xaios_vfs_resolution_t resolution;
   vfs_mount_record_t *mount = 0;
   xaios_status_t status = resolve_operation(path, &resolution, &mount);
   return status == XAIOS_OK ? path_mutation(path, mount->ops->mkdir) : status;
 }
 
-xaios_status_t vfs_rmdir(const char *path) {
+static xaios_status_t vfs_rmdir_locked(const char *path) {
   xaios_vfs_resolution_t resolution;
   vfs_mount_record_t *mount = 0;
   xaios_status_t status = resolve_operation(path, &resolution, &mount);
   return status == XAIOS_OK ? path_mutation(path, mount->ops->rmdir) : status;
 }
 
-xaios_status_t vfs_unlink(const char *path) {
+static xaios_status_t vfs_unlink_locked(const char *path) {
   xaios_vfs_resolution_t resolution;
   vfs_mount_record_t *mount = 0;
   xaios_status_t status = resolve_operation(path, &resolution, &mount);
   return status == XAIOS_OK ? path_mutation(path, mount->ops->unlink) : status;
 }
 
-xaios_status_t vfs_delete(const char *path) {
+static xaios_status_t vfs_delete_locked(const char *path) {
   xaios_vfs_stat_t stat;
-  xaios_status_t status = vfs_stat(path, &stat);
+  xaios_status_t status = vfs_stat_locked(path, &stat);
   if (status != XAIOS_OK) return status;
-  return stat.type == XAIOS_VFS_TYPE_DIRECTORY ? vfs_rmdir(path)
-                                                : vfs_unlink(path);
+  return stat.type == XAIOS_VFS_TYPE_DIRECTORY ? vfs_rmdir_locked(path)
+                                                : vfs_unlink_locked(path);
 }
 
-xaios_status_t vfs_rename(const char *old_path, const char *new_path) {
+static xaios_status_t vfs_rename_locked(const char *old_path, const char *new_path) {
   xaios_vfs_resolution_t old_resolution;
   xaios_vfs_resolution_t new_resolution;
   if (vfs_resolve(old_path, &old_resolution) != XAIOS_OK ||
@@ -542,8 +539,7 @@ xaios_status_t vfs_rename(const char *old_path, const char *new_path) {
                             new_resolution.relative_path);
 }
 
-xaios_status_t vfs_list(const char *path, char *buffer, uint64_t capacity,
-                        uint64_t *out_size) {
+static xaios_status_t vfs_list_locked(const char *path, char *buffer, uint64_t capacity, uint64_t *out_size) {
   if (buffer == 0 || capacity == 0U || out_size == 0) {
     return XAIOS_ERR_INVALID;
   }
@@ -556,3 +552,159 @@ xaios_status_t vfs_list(const char *path, char *buffer, uint64_t capacity,
   return mount->ops->list(mount->context, resolution.relative_path, buffer,
                           capacity, out_size);
 }
+
+
+/* Serialised public entry points.
+   The handle table and mount table are reached from every CPU through the
+   filesystem syscalls, and were mutated with no mutual exclusion: vfs_open
+   scanned for a free slot and filled it in separate steps while vfs_close and
+   vfs_release_owner cleared entries underneath it. Each entry point now runs
+   under one lock; the bodies above assume it is held and must not be called
+   directly. */
+xaios_status_t vfs_mount(const char *mount_path, const xaios_vfs_backend_ops_t *ops, void *context, uint32_t flags) {
+  xaios_spin_lock(&g_vfs_lock);
+  xaios_status_t result = vfs_mount_locked(mount_path, ops, context, flags);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+xaios_status_t vfs_unmount(const char *mount_path) {
+  xaios_spin_lock(&g_vfs_lock);
+  xaios_status_t result = vfs_unmount_locked(mount_path);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+int64_t vfs_open(const char *path, uint32_t flags, uint32_t owner_id) {
+  xaios_spin_lock(&g_vfs_lock);
+  int64_t result = vfs_open_locked(path, flags, owner_id);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+xaios_status_t vfs_close(uint32_t fd, uint32_t owner_id) {
+  xaios_spin_lock(&g_vfs_lock);
+  xaios_status_t result = vfs_close_locked(fd, owner_id);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+xaios_status_t vfs_release_owner(uint32_t owner_id) {
+  xaios_spin_lock(&g_vfs_lock);
+  xaios_status_t result = vfs_release_owner_locked(owner_id);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+int64_t vfs_pread(uint32_t fd, uint32_t owner_id, void *buffer, uint64_t length, uint64_t offset) {
+  xaios_spin_lock(&g_vfs_lock);
+  int64_t result = vfs_pread_locked(fd, owner_id, buffer, length, offset);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+int64_t vfs_pwrite(uint32_t fd, uint32_t owner_id, const void *buffer, uint64_t length, uint64_t offset) {
+  xaios_spin_lock(&g_vfs_lock);
+  int64_t result = vfs_pwrite_locked(fd, owner_id, buffer, length, offset);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+int64_t vfs_read(uint32_t fd, uint32_t owner_id, void *buffer, uint64_t length) {
+  xaios_spin_lock(&g_vfs_lock);
+  int64_t result = vfs_read_locked(fd, owner_id, buffer, length);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+int64_t vfs_write(uint32_t fd, uint32_t owner_id, const void *buffer, uint64_t length) {
+  xaios_spin_lock(&g_vfs_lock);
+  int64_t result = vfs_write_locked(fd, owner_id, buffer, length);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+xaios_status_t vfs_seek(uint32_t fd, uint32_t owner_id, uint64_t offset) {
+  xaios_spin_lock(&g_vfs_lock);
+  xaios_status_t result = vfs_seek_locked(fd, owner_id, offset);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+xaios_status_t vfs_fsync(uint32_t fd, uint32_t owner_id) {
+  xaios_spin_lock(&g_vfs_lock);
+  xaios_status_t result = vfs_fsync_locked(fd, owner_id);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+xaios_status_t vfs_truncate(uint32_t fd, uint32_t owner_id, uint64_t size) {
+  xaios_spin_lock(&g_vfs_lock);
+  xaios_status_t result = vfs_truncate_locked(fd, owner_id, size);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+xaios_status_t vfs_fallocate(uint32_t fd, uint32_t owner_id, uint64_t offset, uint64_t length) {
+  xaios_spin_lock(&g_vfs_lock);
+  xaios_status_t result = vfs_fallocate_locked(fd, owner_id, offset, length);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+xaios_status_t vfs_stat(const char *path, xaios_vfs_stat_t *stat) {
+  xaios_spin_lock(&g_vfs_lock);
+  xaios_status_t result = vfs_stat_locked(path, stat);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+xaios_status_t vfs_statfs(const char *path, xaios_vfs_statfs_t *statfs) {
+  xaios_spin_lock(&g_vfs_lock);
+  xaios_status_t result = vfs_statfs_locked(path, statfs);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+xaios_status_t vfs_mkdir(const char *path) {
+  xaios_spin_lock(&g_vfs_lock);
+  xaios_status_t result = vfs_mkdir_locked(path);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+xaios_status_t vfs_rmdir(const char *path) {
+  xaios_spin_lock(&g_vfs_lock);
+  xaios_status_t result = vfs_rmdir_locked(path);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+xaios_status_t vfs_unlink(const char *path) {
+  xaios_spin_lock(&g_vfs_lock);
+  xaios_status_t result = vfs_unlink_locked(path);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+xaios_status_t vfs_delete(const char *path) {
+  xaios_spin_lock(&g_vfs_lock);
+  xaios_status_t result = vfs_delete_locked(path);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+xaios_status_t vfs_rename(const char *old_path, const char *new_path) {
+  xaios_spin_lock(&g_vfs_lock);
+  xaios_status_t result = vfs_rename_locked(old_path, new_path);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
+xaios_status_t vfs_list(const char *path, char *buffer, uint64_t capacity, uint64_t *out_size) {
+  xaios_spin_lock(&g_vfs_lock);
+  xaios_status_t result = vfs_list_locked(path, buffer, capacity, out_size);
+  xaios_spin_unlock(&g_vfs_lock);
+  return result;
+}
+
