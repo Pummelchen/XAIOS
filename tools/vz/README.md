@@ -183,6 +183,22 @@ address by copying the destination's prefix and appending our own interface
 identifier -- right only when the peer happened to share our link. That guess
 now applies only when no advertisement has been accepted.
 
+## Why interrupts are polled here
+
+Message-signalled interrupts on aarch64 are delivered through the GIC's
+interrupt translation service, and this platform has none: its firmware
+describes no ITS in ACPI, and nothing answers at the address QEMU's virt
+machine uses. So every virtio queue here runs polled, which each driver
+supports and which is why a missing interrupt no longer costs a device.
+
+The kernel does now configure MSI-X over the ITS for virtio on PCI where one
+exists, alongside the NVMe driver that already did, and it finds the ITS from
+ACPI rather than assuming QEMU's address. That path cannot be exercised in
+either environment available here: this platform has no ITS, and QEMU's virt
+machine puts virtio on MMIO, where interrupts arrive through the distributor
+instead. It matters for ARM server hardware, where virtio and NVMe both sit on
+PCIe behind an ITS, and it is unverified until it meets one.
+
 ## Why the kernel has no framebuffer here
 
 Apple's GOP reports `PixelBltOnly`, at 1280x800 across 37 modes, with

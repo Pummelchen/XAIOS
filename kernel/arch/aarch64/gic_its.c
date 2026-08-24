@@ -4,7 +4,10 @@
 #include <xaios/smp.h>
 #include <xaios/vmm.h>
 
-#define ITS_BASE UINT64_C(0x08080000)
+/* Where QEMU's virt machine puts the translation service. Firmware that
+   describes its own is believed instead; this is only the fallback for a
+   platform that provides no description at all. */
+#define ITS_DEFAULT_BASE UINT64_C(0x08080000)
 #define ITS_SIZE UINT64_C(0x20000)
 #define GITS_CTLR 0x0000U
 #define GITS_TYPER 0x0008U
@@ -68,9 +71,17 @@ typedef struct its_state {
   void **pending;
   uint8_t *collection_ready;
   uint32_t cpu_capacity;
+  uint64_t base;
+  uint32_t unavailable;
 } its_state_t;
 
-static its_state_t g_its;
+static its_state_t g_its = {.base = ITS_DEFAULT_BASE};
+
+void gic_its_set_base(uint64_t base) {
+  if (g_its.initialized != 0U || base == 0U) return;
+  g_its.base = base;
+  g_its.unavailable = 0U;
+}
 
 static uint32_t read32(uint64_t address) {
   return *(volatile uint32_t *)(uintptr_t)address;
@@ -146,7 +157,7 @@ static int wait_set32(uint64_t address, uint32_t mask) {
 
 static int wait_command(uint64_t writer) {
   for (uint32_t attempt = 0U; attempt < UINT32_C(10000000); ++attempt) {
-    if ((read64(ITS_BASE + GITS_CREADR) & ~UINT64_C(0x1f)) == writer) {
+    if ((read64(g_its.base + GITS_CREADR) & ~UINT64_C(0x1f)) == writer) {
       return 1;
     }
     xaios_cpu_relax();
@@ -162,14 +173,14 @@ static xaios_status_t send_command(const its_command_t *command) {
   __asm__ volatile("dsb ishst" ::: "memory");
   g_its.command_write += ITS_COMMAND_SIZE;
   if (g_its.command_write == ITS_TABLE_SIZE) g_its.command_write = 0U;
-  write64(ITS_BASE + GITS_CWRITER, g_its.command_write);
+  write64(g_its.base + GITS_CWRITER, g_its.command_write);
   return wait_command(g_its.command_write) ? XAIOS_OK : XAIOS_ERR_IO;
 }
 
 static xaios_status_t program_baser(uint32_t wanted_type,
                                     uint32_t *capacity) {
   for (uint32_t index = 0U; index < 8U; ++index) {
-    uint64_t address = ITS_BASE + GITS_BASER + (uint64_t)index * 8U;
+    uint64_t address = g_its.base + GITS_BASER + (uint64_t)index * 8U;
     uint64_t original = read64(address);
     uint32_t type = (uint32_t)((original >> GITS_BASER_TYPE_SHIFT) & 7U);
     if (type != wanted_type) continue;
@@ -198,16 +209,25 @@ static xaios_status_t program_baser(uint32_t wanted_type,
 
 static xaios_status_t initialize_its(void) {
   if (g_its.initialized != 0U) return XAIOS_OK;
-  if (map_device_range(ITS_BASE, ITS_SIZE) != XAIOS_OK) {
+  /* A machine that has no translation service will not grow one, and every
+     queue setup would otherwise probe an address nothing answers at. */
+  if (g_its.unavailable != 0U) return XAIOS_ERR_UNSUPPORTED;
+  if (map_device_range(g_its.base, ITS_SIZE) != XAIOS_OK) {
+    g_its.unavailable = 1U;
     return XAIOS_ERR_UNSUPPORTED;
   }
-  uint64_t typer = read64(ITS_BASE + GITS_TYPER);
-  uint32_t ctlr = read32(ITS_BASE + GITS_CTLR);
-  klog("gic-its: probe base=0x%lx typer=0x%lx ctlr=0x%x\n", ITS_BASE,
+  uint64_t typer = read64(g_its.base + GITS_TYPER);
+  uint32_t ctlr = read32(g_its.base + GITS_CTLR);
+  klog("gic-its: probe base=0x%lx typer=0x%lx ctlr=0x%x\n", g_its.base,
        typer, ctlr);
-  if (typer == UINT64_MAX || ctlr == UINT32_MAX) return XAIOS_ERR_UNSUPPORTED;
-  write32(ITS_BASE + GITS_CTLR, ctlr & ~GITS_CTLR_ENABLE);
-  if (!wait_set32(ITS_BASE + GITS_CTLR, GITS_CTLR_QUIESCENT)) {
+  if (typer == UINT64_MAX || ctlr == UINT32_MAX) {
+    klog("gic-its: nothing responds at 0x%lx; interrupts stay polled\n",
+         g_its.base);
+    g_its.unavailable = 1U;
+    return XAIOS_ERR_UNSUPPORTED;
+  }
+  write32(g_its.base + GITS_CTLR, ctlr & ~GITS_CTLR_ENABLE);
+  if (!wait_set32(g_its.base + GITS_CTLR, GITS_CTLR_QUIESCENT)) {
     return XAIOS_ERR_IO;
   }
   g_its.commands =
@@ -245,18 +265,18 @@ static xaios_status_t initialize_its(void) {
                      UINT64_C(0x0000fffffffff000)) |
                     GITS_CBASER_RAWAWB | GITS_CBASER_INNER_SHAREABLE |
                     UINT64_C(15) | GITS_CBASER_VALID;
-  write64(ITS_BASE + GITS_CBASER, cbaser);
-  write64(ITS_BASE + GITS_CWRITER, 0U);
+  write64(g_its.base + GITS_CBASER, cbaser);
+  write64(g_its.base + GITS_CWRITER, 0U);
   g_its.command_write = 0U;
-  write32(ITS_BASE + GITS_CTLR, GITS_CTLR_ENABLE);
+  write32(g_its.base + GITS_CTLR, GITS_CTLR_ENABLE);
   __asm__ volatile("dsb sy\n\tisb" ::: "memory");
-  if ((read32(ITS_BASE + GITS_CTLR) & GITS_CTLR_ENABLE) == 0U) {
+  if ((read32(g_its.base + GITS_CTLR) & GITS_CTLR_ENABLE) == 0U) {
     return XAIOS_ERR_IO;
   }
   g_its.typer = typer;
   g_its.initialized = 1U;
   klog("gic-its: initialized base=0x%lx typer=0x%lx devices=%u collections=%u\n",
-       ITS_BASE, typer, g_its.device_capacity, g_its.collection_capacity);
+       g_its.base, typer, g_its.device_capacity, g_its.collection_capacity);
   return XAIOS_OK;
 }
 
@@ -370,7 +390,7 @@ xaios_status_t gic_its_configure_msi(uint32_t device_id, uint32_t event_id,
                          0U}};
   status = send_command(&sync);
   if (status != XAIOS_OK) return status;
-  *message_address = ITS_BASE + GITS_TRANSLATER;
+  *message_address = g_its.base + GITS_TRANSLATER;
   *message_data = event_id;
   return XAIOS_OK;
 }

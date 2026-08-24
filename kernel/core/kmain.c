@@ -264,6 +264,15 @@ void kmain(const xaios_boot_info_t *boot) {
         acpi_info.gic_redistributor_length >= required_redistributor_bytes) {
       gic_distributor = acpi_info.gic_distributor_base;
       gic_redistributor = acpi_info.gic_redistributor_base;
+      /* Message-signalled interrupts need the translation service, and where
+         it sits is a property of the machine rather than of one emulator. */
+      if (acpi_info.gic_its_base != 0U) {
+        gic_its_set_base(acpi_info.gic_its_base);
+        klog("platform: ACPI GIC ITS at 0x%lx\n", acpi_info.gic_its_base);
+      } else {
+        klog("platform: firmware reports no GIC ITS; PCI interrupts are "
+             "polled\n");
+      }
       gic_redistributor_bytes = acpi_info.gic_redistributor_length;
       gic_configure_platform(gic_distributor, gic_redistributor,
                              gic_redistributor_bytes);

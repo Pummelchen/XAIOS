@@ -28,6 +28,7 @@
 #include <xaios/gic.h>
 #include <xaios/klog.h>
 #include <xaios/pci.h>
+#include <xaios/smp.h>
 #include <xaios/timer.h>
 #include <xaios/virtio_transport.h>
 #include <xaios/vmm.h>
@@ -332,15 +333,36 @@ static uint64_t dma_address(const void *pointer) {
 
 static xaios_status_t configure_msix(virtio_mmio_device_t *device,
                                     uint16_t table_entry) {
+  /* Queue setup asks for the same vector once per queue, so configuring it
+     again would allocate a second identifier for an interrupt that is already
+     wired up. */
+  if (device != 0 && device->interrupt_configured != 0U) return XAIOS_OK;
 #if !defined(__x86_64__)
   /* MSI-X message addressing is architecture specific: x86 encodes an APIC
      destination in the message address, while aarch64 targets a GIC ITS
-     translator register with an event ID. Only the x86 form is implemented
-     here, so report no MSI-X elsewhere. The caller writes NO_VECTOR and the
-     queue runs polled, which every driver in this tree supports. */
-  (void)device;
-  (void)table_entry;
-  return XAIOS_ERR_UNSUPPORTED;
+     translator with an event identifier, and only the ITS can say what that
+     address and data are. Without an ITS there is no way to raise one here,
+     so report no MSI-X and let the caller write NO_VECTOR and run the queue
+     polled, which every driver in this tree supports. */
+  if (device == 0) return XAIOS_ERR_INVALID;
+  /* The ITS initialises lazily inside the first configure call, so asking
+     whether it is available before ever calling one always answers no. */
+  uint32_t its_device_id = pci_stream_id(device->transport_index);
+  uint32_t lpi = 0U;
+  if (gic_allocate_lpi(&lpi) != XAIOS_OK) return XAIOS_ERR_UNSUPPORTED;
+  uint64_t message_address = 0U;
+  uint32_t message_data = 0U;
+  if (gic_its_configure_msi(its_device_id, table_entry, lpi, smp_cpu_id(),
+                            &message_address, &message_data) != XAIOS_OK) {
+    return XAIOS_ERR_UNSUPPORTED;
+  }
+  if (pci_configure_msix(device->transport_index, table_entry,
+                         message_address, message_data) != XAIOS_OK) {
+    return XAIOS_ERR_IO;
+  }
+  device->interrupt_id = lpi;
+  device->interrupt_configured = 1U;
+  return XAIOS_OK;
 #else
   uint32_t pci_index = device->transport_index;
   uint8_t pointer = pci_config_read8(pci_index, XAIOS_PCI_CAP_PTR) & 0xfcU;
@@ -499,8 +521,23 @@ xaios_status_t virtio_transport_register_interrupt(
     void *context) {
   if (device == 0 || handler == 0) return XAIOS_ERR_INVALID;
   if (device->interrupt_configured == 0U) return XAIOS_ERR_UNSUPPORTED;
-  return gic_register_interrupt(virtio_transport_interrupt_id(device), handler,
-                                context);
+  uint32_t intid = virtio_transport_interrupt_id(device);
+#if !defined(__x86_64__)
+  /* An interrupt raised through the ITS arrives as an LPI, which is routed
+     per CPU rather than through the distributor. The vector is left masked
+     until a handler exists, so unmask it once one does. */
+  xaios_status_t status = gic_register_lpi(intid, smp_cpu_id(), handler,
+                                           context);
+  if (status != XAIOS_OK) return status;
+  status = pci_unmask_msix(device->transport_index, 0U);
+  if (status != XAIOS_OK) {
+    (void)gic_unregister_interrupt(intid, handler, context);
+    return status;
+  }
+  return XAIOS_OK;
+#else
+  return gic_register_interrupt(intid, handler, context);
+#endif
 }
 
 xaios_status_t virtio_transport_unregister_interrupt(

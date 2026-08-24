@@ -15,6 +15,9 @@ typedef struct aarch64_acpi_info {
   uint64_t gic_distributor_base;
   uint64_t gic_redistributor_base;
   uint64_t gic_redistributor_length;
+  /* Zero when firmware describes no interrupt translation service, which is
+     the case on hardware and hypervisors that do not provide one. */
+  uint64_t gic_its_base;
   uint64_t pci_ecam_base;
   uint32_t root_is_xsdt;
   uint32_t enabled_cpus;

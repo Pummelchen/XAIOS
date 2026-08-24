@@ -14,6 +14,7 @@
 #define ACPI_MADT_GICC UINT8_C(11)
 #define ACPI_MADT_GICD UINT8_C(12)
 #define ACPI_MADT_GICR UINT8_C(14)
+#define ACPI_MADT_GIC_ITS UINT8_C(15)
 #define ACPI_MADT_GICC_ENABLED UINT32_C(1)
 #define ACPI_GIC_VERSION_V3 UINT8_C(3)
 #define ACPI_GIC_VERSION_V4 UINT8_C(4)
@@ -139,6 +140,15 @@ static int madt_inventory(const acpi_sdt_header_t *madt,
       }
       info->gic_distributor_base = base;
       info->gic_version = version;
+    } else if (entry[0] == ACPI_MADT_GIC_ITS) {
+      /* Type 15 carries the translation service base at byte 8. Firmware that
+         provides none simply omits the entry, and the hard-coded address that
+         stood here before belonged to one particular emulator. */
+      if (entry[1] < 16U) return 0;
+      uint64_t base = read_le64(entry + 8U);
+      if (base != 0U && info->gic_its_base == 0U) {
+        info->gic_its_base = base;
+      }
     } else if (entry[0] == ACPI_MADT_GICR) {
       if (entry[1] < 16U || info->gic_redistributor_base != 0U) return 0;
       uint64_t base = read_le64(entry + 4U);
