@@ -297,6 +297,13 @@ xaios_status_t virtio_transport_negotiate_features(
                          VIRTIO_PCI_STATUS_FEATURES_OK);
   if ((mmio_read8(device->common_config + 20U) &
        VIRTIO_PCI_STATUS_FEATURES_OK) == 0U) {
+    /* The device cleared FEATURES_OK, meaning it will not run with the set
+       the driver chose. Report both sides: what it offered is the only way
+       to tell which bit it insists on. */
+    klog("%s: device rejected feature selection offered=0x%x:0x%x "
+         "selected=0x%x:0x%x\n",
+         device->name == 0 ? "virtio" : device->name, available_high,
+         available_low, *accepted_high, *accepted_low);
     set_status(device, VIRTIO_PCI_STATUS_FAILED);
     return XAIOS_ERR_IO;
   }

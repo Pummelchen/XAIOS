@@ -75,9 +75,35 @@ vfs: MutableFS mounted at /
 kernel: preemptive scheduler infrastructure enabled
 ```
 
-Networking stops at feature negotiation: the device declines the set the
-driver requires, so the driver reports it and the machine boots without a
-network, which is why sshd is withheld at the end.
+Networking stops at feature negotiation, and what it would take to finish is
+now known precisely. The device offers:
+
+```
+offered = 0x5:0x300119ab   VERSION_1, RING_PACKED; CSUM, GUEST_CSUM, MTU,
+                           MAC, GUEST_TSO4/6, HOST_TSO4/6, STATUS,
+                           INDIRECT_DESC, EVENT_IDX
+```
+
+and it clears FEATURES_OK for every subset the driver has reason to want:
+`MAC` alone, `MAC | INDIRECT_DESC | EVENT_IDX`, and either of those with
+`RING_PACKED` added. Selecting *everything* offered is accepted, so this
+device wants the whole set rather than a subset.
+
+Taking the whole set is not safe as things stand. `GUEST_TSO4` and
+`GUEST_TSO6` let the device deliver segments far larger than the 2048-byte
+receive buffer this driver posts, and `GUEST_CSUM` means a received frame may
+carry a partial checksum the driver would have to finish. Finishing
+networking here therefore means, in order:
+
+1. Establish the minimum set this device will actually accept, by bisecting
+   the offered bits rather than taking all of them.
+2. Honour whatever that set implies: larger receive buffers if a guest TSO
+   bit is required, and checksum completion if a guest checksum bit is.
+3. Replace the QEMU addresses in the ARP self-test. It builds a request from
+   `10.0.2.15` to `10.0.2.2`, which are user-mode QEMU's, and then asserts on
+   the reply; this platform's NAT uses a different subnet, so the assertion
+   fires even once negotiation succeeds. A self-test should report an
+   unexpected environment, not halt in it.
 
 ## What had to be fixed
 
