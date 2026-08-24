@@ -12,5 +12,8 @@ xaios_status_t virtio_console_init(void);
    the call returns once the device has consumed the buffer. */
 void virtio_console_write(const char *data, uint64_t length);
 uint32_t virtio_console_ready(void);
+/* Take one byte of input if the device has delivered any. Returns 1 when a
+   byte was taken, 0 when there is nothing waiting. */
+int virtio_console_read(uint8_t *value);
 
 #endif

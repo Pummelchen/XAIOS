@@ -23,6 +23,8 @@ typedef struct virtio_console_queue {
   uint8_t *buffer;
   uint16_t avail_idx;
   uint16_t used_idx;
+  uint32_t pending;
+  uint32_t offset;
 } virtio_console_queue_t;
 
 typedef struct virtio_console_driver {
@@ -38,6 +40,8 @@ typedef struct virtio_console_driver {
 } virtio_console_driver_t;
 
 static virtio_console_driver_t *g_console;
+
+static void post_receive_buffer(void);
 
 static void bytes_zero(void *buffer, uint64_t size) {
   uint8_t *bytes = (uint8_t *)buffer;
@@ -135,8 +139,10 @@ xaios_status_t virtio_console_init(void) {
     return status;
   }
 
-  /* Offer the single receive descriptor so the device has somewhere to put
-     input. Nothing reads it yet; this keeps the device from stalling. */
+  /* Offer the receive descriptor so the device has somewhere to put input,
+     and make it available: a descriptor the driver never publishes is one the
+     device may not write, which is the difference between a console that can
+     be typed into and one that only speaks. */
   g_console->receive.desc[0].addr = dma_address(g_console->receive.buffer);
   g_console->receive.desc[0].len = VIRTIO_CONSOLE_BUFFER_SIZE;
   g_console->receive.desc[0].flags = VRING_DESC_F_WRITE;
@@ -150,7 +156,57 @@ xaios_status_t virtio_console_init(void) {
     return status;
   }
   g_console->initialized = 1U;
+  post_receive_buffer();
   return XAIOS_OK;
+}
+
+static void post_receive_buffer(void) {
+  virtio_console_queue_t *queue = &g_console->receive;
+  queue->desc[0].addr = dma_address(queue->buffer);
+  queue->desc[0].len = VIRTIO_CONSOLE_BUFFER_SIZE;
+  queue->desc[0].flags = VRING_DESC_F_WRITE;
+  queue->avail->ring[queue->avail_idx % 1U] = 0;
+  ++queue->avail_idx;
+  virtio_mmio_barrier();
+  queue->avail->idx = queue->avail_idx;
+  virtio_transport_notify(&g_console->device, VIRTIO_CONSOLE_RECEIVE_QUEUE);
+}
+
+int virtio_console_read(uint8_t *value) {
+  if (value == 0 || virtio_console_ready() == 0U) return 0;
+  if (g_console->writing != 0U) return 0;
+  int taken = 0;
+  xaios_spin_lock(&g_console->lock);
+  virtio_console_queue_t *queue = &g_console->receive;
+  if (queue->offset >= queue->pending) {
+    /* Nothing buffered, so see whether the device has delivered anything. */
+    virtio_mmio_barrier();
+    uint16_t used_idx = *(volatile uint16_t *)(void *)&queue->used->idx;
+    if (used_idx != queue->used_idx) {
+      virtio_mmio_barrier();
+      uint32_t length = queue->used->ring[queue->used_idx % 1U].len;
+      queue->used_idx = (uint16_t)(queue->used_idx + 1U);
+      queue->pending =
+          length > VIRTIO_CONSOLE_BUFFER_SIZE ? VIRTIO_CONSOLE_BUFFER_SIZE
+                                              : length;
+      queue->offset = 0U;
+      virtio_transport_ack_interrupts(&g_console->device);
+      if (queue->pending == 0U) {
+        post_receive_buffer();
+      }
+    }
+  }
+  if (queue->offset < queue->pending) {
+    *value = queue->buffer[queue->offset++];
+    taken = 1;
+    if (queue->offset >= queue->pending) {
+      queue->pending = 0U;
+      queue->offset = 0U;
+      post_receive_buffer();
+    }
+  }
+  xaios_spin_unlock(&g_console->lock);
+  return taken;
 }
 
 uint32_t virtio_console_ready(void) {

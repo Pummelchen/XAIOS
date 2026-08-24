@@ -108,12 +108,38 @@ static int acpi_is_qemu_virt(const aarch64_acpi_info_t *info) {
          info->pci_ecam_base == UINT64_C(0x4010000000);
 }
 
+/* PSCI_VERSION over HVC. Firmware that implements PSCI answers with a version;
+   firmware that does not returns NOT_SUPPORTED. HVC is the conduit this tree
+   already uses for SYSTEM_OFF on every AArch64 target. */
+static uint32_t psci_probe_version(void) {
+  register uint64_t x0 __asm__("x0") = UINT64_C(0x84000000);
+  __asm__ volatile("hvc #0" : "+r"(x0) : : "x1", "x2", "x3", "memory");
+  return (uint32_t)x0;
+}
+
 static uint32_t platform_cpu_capacity(const xaios_boot_info_t *boot,
                                       aarch64_acpi_info_t *acpi_info) {
   if (aarch64_acpi_parse(boot->acpi_rsdp, acpi_info) != 0 &&
       acpi_info->enabled_cpus != 0U) {
-    return (acpi_info->psci_compliant != 0U ||
-            acpi_is_qemu_virt(acpi_info)) ? acpi_info->enabled_cpus : 1U;
+    if (acpi_info->psci_compliant != 0U || acpi_is_qemu_virt(acpi_info)) {
+      return acpi_info->enabled_cpus;
+    }
+    /* Firmware may implement PSCI and still leave the FADT's boot-architecture
+       flags clear; Virtualization.framework reports four enabled CPUs that way
+       while answering PSCI perfectly well. Refusing every secondary on the
+       strength of an unset flag costs the whole machine, so ask PSCI itself
+       before giving up on it. */
+    if (acpi_info->enabled_cpus > 1U) {
+      uint32_t version = psci_probe_version();
+      if (version != UINT32_MAX && (version >> 16U) <= 1U) {
+        klog("smp: firmware answers PSCI %u.%u without advertising it\n",
+             version >> 16U, version & UINT32_C(0xffff));
+        acpi_info->psci_compliant = 1U;
+        acpi_info->psci_use_hvc = 1U;
+        return acpi_info->enabled_cpus;
+      }
+    }
+    return 1U;
   }
   *acpi_info = (aarch64_acpi_info_t){0};
   return detect_cpu_count();

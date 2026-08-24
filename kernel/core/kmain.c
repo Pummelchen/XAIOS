@@ -327,6 +327,7 @@ void kmain(const xaios_boot_info_t *boot) {
      so the early boot is not lost. Absent on QEMU, which logs to a PL011. */
   if (virtio_console_init() == XAIOS_OK) {
     klog_set_console_sink(virtio_console_write);
+    klog_set_console_source(virtio_console_read);
 #if defined(__aarch64__)
     char *replay = (char *)kheap_alloc(XAIOS_KLOG_FLUSH_MAX, 16U);
     if (replay != 0) {

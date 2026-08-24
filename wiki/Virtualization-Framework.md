@@ -78,9 +78,28 @@ A bridged attachment would expose the guest, and needs the
 profile; ad-hoc signing cannot provide it. Until then, use the QEMU targets for
 anything that has to be connected to.
 
-The console is output-only for the same practical effect: the virtio console
-driver posts a receive buffer to keep the device from stalling, but nothing
-reads it, so there is no interactive login here yet.
+The console is interactive, which is the way in while the network is not. Log
+in on it and the usual shell is there:
+
+```
+xaios login: admin
+Password:
+XAIOS local console session opened
+admin@xaios:/$ ifconfig
+vtnet0: flags=UP,RUNNING mtu 1500
+  inet 192.168.64.21 netmask 255.255.255.0
+  ether 8a:40:8a:1e:fa:e3
+```
+
+## Processors
+
+The firmware reports every configured CPU in its MADT but leaves the FADT's
+PSCI flag clear, so a kernel that trusts that flag brings up none of them. It
+answers `PSCI_VERSION` with 1.1 regardless, so XAIOS asks rather than trusts,
+and four vCPUs come online.
+
+Networking does not survive that transition: DHCP completes at one vCPU and
+fails at four, repeatably. The harness defaults to one vCPU for that reason.
 
 ## Running the Intel build here
 

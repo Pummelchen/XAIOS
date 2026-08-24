@@ -75,6 +75,14 @@ void klog_set_console_sink(xaios_klog_sink_t sink) {
   g_console_sink = sink;
 }
 
+/* A platform with no UART has nowhere to read from either, so the console it
+   speaks through has to be the one it listens on. */
+static xaios_klog_source_t g_console_source;
+
+void klog_set_console_source(xaios_klog_source_t source) {
+  g_console_source = source;
+}
+
 static void uart_putc(char c) {
   sink_putc(c);
   if (g_uart_base == 0) {
@@ -206,6 +214,7 @@ uint64_t klog_console_capture_end(void) {
 int klog_console_read_char(uint8_t *value) {
   if (value == 0) return 0;
   if (input_read_char(value)) return 1;
+  if (g_console_source != 0 && g_console_source(value) != 0) return 1;
   if (g_uart_base == 0) return 0;
 #if defined(__aarch64__)
   if (g_uart_kind == XAIOS_UART_PL011) {
