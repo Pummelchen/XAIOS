@@ -402,3 +402,49 @@ jobs:
             build/qemu-freebsd-bidirectional-xaios-aarch64.log
           if-no-files-found: ignore
           retention-days: 14
+
+  publish-wiki:
+    name: Publish curated Wiki
+    # The repository holds the curated Wiki under wiki/ and gates its layout and
+    # links, but the published Wiki is a separate repository that nothing kept
+    # level, so it drifted across several rounds of work. Publish only after the
+    # documentation contract passes, so a Wiki that fails its own gate is never
+    # the one people read.
+    needs: documentation-contract
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Pummelchen/XAIOS'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Publish wiki/ to the repository Wiki
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git" \
+            "${RUNNER_TEMP}/wiki"
+          # Report anything published that the repository no longer carries,
+          # rather than deleting it. The layout gate owns the page set, so an
+          # orphan here means the two disagree and a person should look.
+          for published in "${RUNNER_TEMP}"/wiki/*.md; do
+            page="$(basename "${published}")"
+            case "${page}" in _*) continue ;; esac
+            if [ ! -f "wiki/${page}" ]; then
+              echo "wiki: ${page} is published but absent from wiki/; leaving it in place"
+            fi
+          done
+          cp wiki/*.md "${RUNNER_TEMP}/wiki/"
+          cd "${RUNNER_TEMP}/wiki"
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "wiki: already level with the repository"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Sync the curated Wiki from ${GITHUB_SHA}"
+          git push origin HEAD

@@ -60,7 +60,7 @@ All C code is freestanding C99 compiled with `-Wall -Wextra -Werror`:
 - Use one task per commit or pull request.
 - Run the relevant tests, build checks, or QEMU boot command before submitting.
 - Keep boot logs and benchmark outputs when they support the change.
-- Update the GitHub Wiki or repository notes when code changes alter architecture, build steps, APIs, or benchmark methodology.
+- Update the Wiki under `wiki/` when code changes alter architecture, build steps, APIs, or benchmark methodology. Edit it there rather than on GitHub: `make docs-check` gates its page set and links, and CI publishes it to the GitHub Wiki on merge to `main`, so an edit made on the published pages is overwritten by the next merge.
 - Do not make benchmark claims without measured data and a documented baseline.
 - Do not commit credentials, GitHub tokens, private keys, SSH keys, passwords, or secret benchmark data.
 
