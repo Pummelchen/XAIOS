@@ -1,3 +1,29 @@
+#ifdef XAIOS_VIRTIO_PCI_BACKEND
+/* Built as one of two backends behind virtio_transport_dispatch.c.
+   The public names belong to the dispatcher, so take private ones. */
+#define virtio_mmio_read32 virtio_pci_backend_mmio_read32
+#define virtio_mmio_read8 virtio_pci_backend_mmio_read8
+#define virtio_mmio_write32 virtio_pci_backend_mmio_write32
+#define virtio_mmio_barrier virtio_pci_backend_mmio_barrier
+#define virtio_transport_find virtio_pci_backend_transport_find
+#define virtio_transport_find_from virtio_pci_backend_transport_find_from
+#define virtio_transport_find_at virtio_pci_backend_transport_find_at
+#define virtio_transport_reset virtio_pci_backend_transport_reset
+#define virtio_transport_reset_checked virtio_pci_backend_transport_reset_checked
+#define virtio_transport_negotiate_no_features virtio_pci_backend_transport_negotiate_no_features
+#define virtio_transport_negotiate_features virtio_pci_backend_transport_negotiate_features
+#define virtio_transport_setup_queue virtio_pci_backend_transport_setup_queue
+#define virtio_transport_set_driver_ok virtio_pci_backend_transport_set_driver_ok
+#define virtio_transport_set_driver_ok_checked virtio_pci_backend_transport_set_driver_ok_checked
+#define virtio_transport_notify virtio_pci_backend_transport_notify
+#define virtio_transport_wait_used virtio_pci_backend_transport_wait_used
+#define virtio_transport_ack_interrupts virtio_pci_backend_transport_ack_interrupts
+#define virtio_transport_interrupt_id virtio_pci_backend_transport_interrupt_id
+#define virtio_transport_register_interrupt virtio_pci_backend_transport_register_interrupt
+#define virtio_transport_unregister_interrupt virtio_pci_backend_transport_unregister_interrupt
+#define virtio_transport_slot virtio_pci_backend_transport_slot
+#endif
+
 #include <xaios/arch_cpu.h>
 #include <xaios/gic.h>
 #include <xaios/klog.h>
@@ -152,12 +178,16 @@ static xaios_status_t probe_device(uint32_t pci_index, uint32_t device_id,
     if (next == 0U || next == pointer) break;
     pointer = next;
   }
-  if (common == 0U || notify == 0U || notify_multiplier == 0U || config == 0U) {
+  /* A device-specific config region is optional: virtio-rng has none at all,
+     and a console without MULTIPORT need not publish one either. QEMU exposes
+     one regardless, which is why requiring it went unnoticed. Only the common,
+     notify and ISR structures are actually needed to drive a queue. */
+  if (common == 0U || notify == 0U || notify_multiplier == 0U) {
     return XAIOS_ERR_UNSUPPORTED;
   }
   if (pci_enable_device(pci_index) != XAIOS_OK) return XAIOS_ERR_IO;
   *result = (virtio_mmio_device_t){
-      .base = config - UINT64_C(0x100),
+      .base = config != 0U ? config - UINT64_C(0x100) : 0U,
       .common_config = common,
       .notify_base = notify,
       .isr_config = isr,
@@ -295,6 +325,16 @@ static uint64_t dma_address(const void *pointer) {
 
 static xaios_status_t configure_msix(virtio_mmio_device_t *device,
                                     uint16_t table_entry) {
+#if !defined(__x86_64__)
+  /* MSI-X message addressing is architecture specific: x86 encodes an APIC
+     destination in the message address, while aarch64 targets a GIC ITS
+     translator register with an event ID. Only the x86 form is implemented
+     here, so report no MSI-X elsewhere. The caller writes NO_VECTOR and the
+     queue runs polled, which every driver in this tree supports. */
+  (void)device;
+  (void)table_entry;
+  return XAIOS_ERR_UNSUPPORTED;
+#else
   uint32_t pci_index = device->transport_index;
   uint8_t pointer = pci_config_read8(pci_index, XAIOS_PCI_CAP_PTR) & 0xfcU;
   for (uint32_t count = 0U; count < 48U && pointer >= 0x40U; ++count) {
@@ -340,6 +380,7 @@ static xaios_status_t configure_msix(virtio_mmio_device_t *device,
     pointer = next;
   }
   return XAIOS_ERR_UNSUPPORTED;
+#endif
 }
 
 xaios_status_t virtio_transport_setup_queue(virtio_mmio_device_t *device,

@@ -39,7 +39,44 @@ static uint32_t g_console_capture_depth;
 static char g_klog_line[XAIOS_KLOG_LINE_MAX];
 static uint32_t g_klog_line_pos;
 
+/* A platform may offer no UART at all. Virtualization.framework is one: it
+   has no PL011, and its GOP is Blt-only, so a virtio console is the only way
+   the kernel can be heard. Bytes are buffered to a line before being handed
+   over, because each virtio transmission is a round trip to the device and
+   one per character is far too slow to log a boot. */
+static xaios_klog_sink_t g_console_sink;
+static char g_sink_line[XAIOS_KLOG_LINE_MAX];
+static uint32_t g_sink_pos;
+
+static void sink_flush(void) {
+  if (g_console_sink != 0 && g_sink_pos != 0U) {
+    xaios_klog_sink_t sink = g_console_sink;
+    uint32_t length = g_sink_pos;
+    g_sink_pos = 0U;
+    sink(g_sink_line, length);
+    return;
+  }
+  g_sink_pos = 0U;
+}
+
+static void sink_putc(char c) {
+  if (g_console_sink == 0) {
+    return;
+  }
+  if (g_sink_pos < XAIOS_KLOG_LINE_MAX) {
+    g_sink_line[g_sink_pos++] = c;
+  }
+  if (c == '\n' || g_sink_pos >= XAIOS_KLOG_LINE_MAX) {
+    sink_flush();
+  }
+}
+
+void klog_set_console_sink(xaios_klog_sink_t sink) {
+  g_console_sink = sink;
+}
+
 static void uart_putc(char c) {
+  sink_putc(c);
   if (g_uart_base == 0) {
     return;
   }

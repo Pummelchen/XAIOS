@@ -67,6 +67,7 @@
 #include <xaios/update.h>
 #include <xaios/user.h>
 #include <xaios/virtio_blk.h>
+#include <xaios/virtio_console.h>
 #include <xaios/virtio_rng.h>
 #include <xaios/vfs_mutable.h>
 #include <xaios/vfs_model.h>
@@ -311,6 +312,29 @@ void kmain(const xaios_boot_info_t *boot) {
   /* Map ECAM and enumerate PCIe. */
   pci_init();
   pci_self_test();
+
+  /* A platform with no UART has had nothing to say until now. Attach the
+     virtio console if one exists, then replay what was logged before it did,
+     so the early boot is not lost. Absent on QEMU, which logs to a PL011. */
+  if (virtio_console_init() == XAIOS_OK) {
+    klog_set_console_sink(virtio_console_write);
+#if defined(__aarch64__)
+    char *replay = (char *)kheap_alloc(XAIOS_KLOG_FLUSH_MAX, 16U);
+    if (replay != 0) {
+      uint64_t replay_start = 0U;
+      uint64_t replay_next = 0U;
+      uint64_t replay_latest = 0U;
+      uint32_t replayed =
+          klog_ring_snapshot(replay, XAIOS_KLOG_FLUSH_MAX, 0U, &replay_start,
+                             &replay_next, &replay_latest);
+      if (replayed != 0U) {
+        virtio_console_write(replay, replayed);
+      }
+      kheap_free(replay);
+    }
+#endif
+    klog("virtio-console: kernel log attached\n");
+  }
   input_init();
   input_self_test();
   smmu_self_test();

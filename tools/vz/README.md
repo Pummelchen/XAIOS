@@ -5,10 +5,11 @@ the fourth target: Apple's Virtualization.framework, where the guest executes
 on the host's own cores with the real interrupt controller and timer rather
 than a software model.
 
-**Status: XAIOS boots.** The loader runs, the kernel starts, and
-initialisation completes. There is no console yet, because this platform
-offers the kernel neither a linear framebuffer nor a PL011; see *Where it
-stops* below.
+**Status: XAIOS boots, with a working console.** The loader runs, the kernel
+starts, initialisation completes, and the kernel log streams to this
+program's stdout over the virtio console. Networking does not come up yet:
+the device refuses the feature set the driver asks for, and the machine
+carries on without it.
 
 ## Why this target exists
 
@@ -61,36 +62,55 @@ EFI_LOAD_ERROR and the machine powers off having printed nothing.
 
 ## How far it gets
 
-The firmware boots the removable-media path, the loader runs to completion,
-and the kernel completes its whole initialisation sequence: MMU, PCI, devices,
-storage, entropy, runtime services and userspace applications all come up.
+Everything except networking. Storage, entropy, the initial filesystem, the
+VFS, the scheduler and the userspace services all come up, and the boot log
+arrives on stdout:
 
-It does so **silently**, because this platform gives the kernel no console at
-all, and that silence was for a long time mistaken for a failure to boot.
+```
+PCI: enumerated 5 devices (virtio=4 net=1 bridge=1)
+virtio-console: modern PCI transport index=2 slot=0 common=0x180010000
+virtio-rng: secure entropy source initialized
+initramfs: mounted rofs version=2 files=52 source=virtio-blk
+vfs: MutableFS mounted at /
+kernel: preemptive scheduler infrastructure enabled
+```
 
-Two XAIOS bugs had to be fixed to get here, both of which only appear on
-firmware that differs from QEMU's EDK2:
+Networking stops at feature negotiation: the device declines the set the
+driver requires, so the driver reports it and the machine boots without a
+network, which is why sshd is withheld at the end.
 
-- The loader validated `FrameBufferBase` *before* calling `SetMode`. Firmware
-  is not required to publish a framebuffer until a mode is set, and Apple's
-  does not, so a working GOP was rejected. EDK2 sets a mode during startup,
-  which is why this never showed under QEMU.
-- The loader advertised a hard-coded QEMU PL011 at `0x9000000` on a platform
-  with no serial hardware. `discover_uart` returns early when ACPI carries no
-  SPCR table, leaving the compiled-in default in place, so the kernel's first
-  `klog()` wrote to a device that is not there. With the MMU still off that is
-  an external abort, and with no framebuffer it is a silent one. The loader
-  now reports no UART when firmware publishes ACPI tables but no SPCR.
+## What had to be fixed
 
-## Why the kernel has no console here
+Five defects, none of which show under QEMU, because EDK2 and the virt
+machine happen to accommodate each one:
+
+- The loader validated `FrameBufferBase` before calling `SetMode`. Firmware
+  need not publish a framebuffer until a mode is set, and Apple's does not.
+- The loader advertised a hard-coded QEMU PL011 at `0x9000000` on a machine
+  with no serial hardware. The kernel's first `klog()` then wrote to a device
+  that is not there, which with the MMU off is an external abort and with no
+  framebuffer is a silent one. That, and nothing else, is what "does not
+  boot" meant for a long time.
+- aarch64 spoke virtio-MMIO only, scanning a window this platform does not
+  have. Both transports are now built and a dispatcher picks between them:
+  MMIO first, so the QEMU path is unchanged, then PCI. Real ARM PCIe hardware
+  needs this as much as this platform does.
+- The PCI transport rejected any device with no device-specific config
+  capability. The virtio specification makes that region optional and
+  virtio-rng has none at all; QEMU publishes one regardless.
+- The network self-test asserted on feature negotiation, so a device that
+  declined the driver's feature set halted the kernel outright. Negotiation
+  is the device's decision, so it now degrades exactly as an absent device
+  already did.
+
+## Why the kernel has no framebuffer here
 
 Apple's GOP reports `PixelBltOnly`, at 1280x800 across 37 modes, with
 `FrameBufferBase` and `FrameBufferSize` both zero after a successful
 `SetMode`. That is legal UEFI and it means there is no linear framebuffer:
 drawing goes through `GOP->Blt()`, a boot service that ceases to exist at
-`ExitBootServices`. There is also no PL011. So a kernel console on this
-platform needs a **virtio-console driver**, which the harness already wires to
-stdout; that is the next piece of work.
+`ExitBootServices`. The kernel therefore renders its terminal to the virtio
+console instead, and reports `boot-ui: no framebuffer` on the way past.
 
 ## A note on instruments
 

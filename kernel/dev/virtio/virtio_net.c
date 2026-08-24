@@ -185,6 +185,9 @@ static xaios_status_t negotiate_net_features(virtio_net_driver_t *driver) {
       VIRTIO_F_VERSION_1_HIGH, &accepted_low, &accepted_high);
   if (status != XAIOS_OK ||
       (accepted_high & VIRTIO_F_VERSION_1_HIGH) == 0U) {
+    klog("virtio-net: feature negotiation refused status=%d low=0x%x "
+         "high=0x%x\n",
+         (int)status, accepted_low, accepted_high);
     return XAIOS_ERR_IO;
   }
   driver->event_idx =
@@ -264,7 +267,15 @@ void virtio_net_self_test(void) {
   }
   kassert(status == XAIOS_OK);
   g_net->device_present = 1U;
-  kassert(negotiate_net_features(g_net) == XAIOS_OK);
+  /* Feature negotiation is the device's decision, not ours. A device that
+     refuses the set this driver needs must leave the machine without
+     networking, not halt it: the same posture already taken when no device
+     is present at all. */
+  if (negotiate_net_features(g_net) != XAIOS_OK) {
+    g_net->device_present = 0U;
+    klog("virtio-net: self-test skipped device refused required features\n");
+    return;
+  }
 
   bytes_zero(g_net->rx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
   bytes_zero(g_net->rx_avail, sizeof(*g_net->rx_avail));

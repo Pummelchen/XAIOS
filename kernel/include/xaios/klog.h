@@ -4,7 +4,12 @@
 #include <xaios/boot_info.h>
 #include <xaios/klog_ring.h>
 
+typedef void (*xaios_klog_sink_t)(const char *data, uint64_t length);
+
 void klog_init(const xaios_boot_info_t *boot);
+/* Attach a second console for platforms with no UART. Bytes are delivered a
+   line at a time. Passing 0 detaches. */
+void klog_set_console_sink(xaios_klog_sink_t sink);
 void klog(const char *fmt, ...);
 void klog_level(xaios_log_level_t level, const char *fmt, ...);
 void klog_puts(const char *message);

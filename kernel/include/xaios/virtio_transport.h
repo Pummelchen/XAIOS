@@ -8,6 +8,7 @@
 
 #define VIRTIO_DEVICE_NET UINT32_C(1)
 #define VIRTIO_DEVICE_BLOCK UINT32_C(2)
+#define VIRTIO_DEVICE_CONSOLE UINT32_C(3)
 #define VIRTIO_DEVICE_RNG UINT32_C(4)
 
 typedef struct virtq_desc {
@@ -47,8 +48,15 @@ typedef struct virtio_mmio_device {
   uint32_t interrupt_id;
   uint32_t interrupt_configured;
   uint32_t device_id;
+  /* Which transport found this device. aarch64 can see both: QEMU presents
+     virtio over MMIO, Virtualization.framework and real PCIe hardware over
+     PCI. Set by virtio_transport_find and honoured by every later call. */
+  uint32_t backend;
   const char *name;
 } virtio_mmio_device_t;
+
+#define VIRTIO_BACKEND_MMIO UINT32_C(0)
+#define VIRTIO_BACKEND_PCI UINT32_C(1)
 
 typedef void (*virtio_interrupt_handler_t)(uint32_t intid, void *context);
 

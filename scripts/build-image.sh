@@ -394,11 +394,12 @@ compile_kernel_simd() {
 compile_kernel() {
   source_path="$1"
   object_path="$2"
+  extra_cflags="${3:-}"
   simd_cflags="$KERNEL_NO_SIMD_CFLAGS"
   if [ "${KERNEL_ALLOW_SIMD:-0}" = 1 ]; then
     simd_cflags=""
   fi
-  "$CLANG" $KERNEL_CFLAGS $simd_cflags \
+  "$CLANG" $KERNEL_CFLAGS $simd_cflags $extra_cflags \
     "-DXAIOS_BUILD_IDENTIFIER=\"$BUILD_IDENTIFIER\"" \
     "-DXAIOS_BUILD_REVISION=\"$BUILD_REVISION\"" \
     "-DXAIOS_BUILD_MODE=\"$BUILD_MODE\"" \
@@ -430,6 +431,8 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   $KERNEL_BUILD_DIR/smp.o
   $KERNEL_BUILD_DIR/sve.o
   $KERNEL_BUILD_DIR/sve_canary.o
+  $KERNEL_BUILD_DIR/virtio_transport_mmio.o
+  $KERNEL_BUILD_DIR/virtio_transport_pci.o
   "
 else
   ARCH_KERNEL_OBJECTS="
@@ -466,6 +469,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/e1000e.o
   $KERNEL_BUILD_DIR/net_device.o
   $KERNEL_BUILD_DIR/virtio_rng.o
+  $KERNEL_BUILD_DIR/virtio_console.o
   $KERNEL_BUILD_DIR/arch_random.o
   $KERNEL_BUILD_DIR/entropy.o
   $KERNEL_BUILD_DIR/initramfs.o
@@ -588,7 +592,14 @@ compile_kernel "$ROOT_DIR/kernel/arch/aarch64/topology.c" "$KERNEL_BUILD_DIR/top
 compile_kernel "$ROOT_DIR/kernel/dev/nvme.c" "$KERNEL_BUILD_DIR/nvme.o"
 compile_kernel "$ROOT_DIR/kernel/dev/ahci.c" "$KERNEL_BUILD_DIR/ahci.o"
 if [ "$TARGET_ARCH" = aarch64 ]; then
-  compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport.c" "$KERNEL_BUILD_DIR/virtio_transport.o"
+  # aarch64 can meet virtio on either transport, so both are built and a
+  # dispatcher picks between them. x86_64 only ever sees PCI.
+  compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport.c" \
+    "$KERNEL_BUILD_DIR/virtio_transport_mmio.o" "-DXAIOS_VIRTIO_MMIO_BACKEND=1"
+  compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport_pci.c" \
+    "$KERNEL_BUILD_DIR/virtio_transport_pci.o" "-DXAIOS_VIRTIO_PCI_BACKEND=1"
+  compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport_dispatch.c" \
+    "$KERNEL_BUILD_DIR/virtio_transport.o"
 else
   compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport_pci.c" "$KERNEL_BUILD_DIR/virtio_transport.o"
 fi
@@ -598,6 +609,7 @@ compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_net.c" "$KERNEL_BUILD_DIR/vir
 compile_kernel "$ROOT_DIR/kernel/dev/e1000e.c" "$KERNEL_BUILD_DIR/e1000e.o"
 compile_kernel "$ROOT_DIR/kernel/dev/net_device.c" "$KERNEL_BUILD_DIR/net_device.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_rng.c" "$KERNEL_BUILD_DIR/virtio_rng.o"
+compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_console.c" "$KERNEL_BUILD_DIR/virtio_console.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/arch_random.c" "$KERNEL_BUILD_DIR/arch_random.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/entropy.c" "$KERNEL_BUILD_DIR/entropy.o"
 compile_kernel "$ROOT_DIR/kernel/fs/initramfs.c" "$KERNEL_BUILD_DIR/initramfs.o"
