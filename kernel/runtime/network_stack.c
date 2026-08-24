@@ -27,6 +27,9 @@
 #define NETWORK_IP_PROTO_TCP UINT8_C(6)
 
 #define NETWORK_BUFFER_SIZE 1520U
+/* Twice the receive ring depth, so one poll can clear a full ring and the
+   refills that land while it works. */
+#define NETWORK_POLL_RX_BUDGET 16U
 #define NETWORK_MAX_SAMPLES 64U
 
 #define NETWORK_TCP_CONNECTIONS 128U
@@ -4814,16 +4817,19 @@ static void network_poll_tick_locked(void) {
     g_ping.last_error = XAIOS_ERR_IO;
   }
   uint8_t rx_buf[NETWORK_BUFFER_SIZE];
-  uint32_t frame_len = network_device_rx_poll(rx_buf, sizeof(rx_buf));
-  if (frame_len == 0) {
-    ++g_poll_tick_count;
-    dns_tick(now_ns);
-    network_stack_retransmit_tcp_flows(now_ns);
-    network_stack_expire_tcp_flows(now_ns);
-    tcp_drain_pending();
-    return;
-  }
   ++g_poll_tick_count;
+  /* Take everything the device has queued rather than one frame per call. The
+     receive ring holds a handful of buffers, so draining only the head leaves
+     a link with steady inbound traffic permanently full: the device then drops
+     what arrives, and the guest answers nothing it was not already holding.
+     An interrupt hides this by draining promptly; a platform with none, and a
+     poll that runs only inside network syscalls, does not. Bounded so a busy
+     link cannot hold the poll lock indefinitely. */
+  for (uint32_t drained = 0U; drained < NETWORK_POLL_RX_BUDGET; ++drained) {
+    uint32_t frame_len = network_device_rx_poll(rx_buf, sizeof(rx_buf));
+    if (frame_len == 0) {
+      break;
+    }
   if (frame_len < 14U) {
     return;
   }
@@ -4949,6 +4955,7 @@ static void network_poll_tick_locked(void) {
     } else if (next_header == NETWORK_IP_PROTO_TCP) {
       (void)network_stack_process_tcp_frame_v6(rx_buf, frame_len);
     }
+  }
   }
   /* Drain pending TCP transmissions (SYN-ACK, data, ACK, FIN) */
   dns_tick(now_ns);
