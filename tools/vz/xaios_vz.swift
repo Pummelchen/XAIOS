@@ -125,8 +125,14 @@ if usbBoot {
 } else {
     storage.append(blockDevice(bootImage, readOnly: true))
 }
-if positional.count > 1 {
-    storage.append(blockDevice(URL(fileURLWithPath: positional[1]), readOnly: false))
+// Every disk after the boot image is attached in the order given, because
+// the kernel identifies its volumes by position on the bus: the deterministic
+// test volume, the persistent MutableFS volume, the model volume, the storage
+// administration scratch volume and the A/B system volume, in that order.
+// This mirrors the order run-qemu-x86_64.sh uses, which is the layout the
+// slot-to-ordinal mapping in the PCI transport expects.
+for path in positional.dropFirst() {
+    storage.append(blockDevice(URL(fileURLWithPath: path), readOnly: false))
 }
 configuration.storageDevices = storage
 

@@ -301,6 +301,8 @@ static xaios_status_t read_device_geometry(virtio_block_driver_t *drv) {
   if (drv->logical_sector_size < SECTOR_SIZE ||
       drv->logical_sector_size % SECTOR_SIZE != 0U ||
       (drv->logical_sector_size & (drv->logical_sector_size - 1U)) != 0U) {
+    klog("virtio-blk: unusable logical sector size %u\n",
+         drv->logical_sector_size);
     return XAIOS_ERR_INVALID;
   }
   drv->physical_block_size = drv->logical_sector_size;
@@ -310,6 +312,8 @@ static xaios_status_t read_device_geometry(virtio_block_driver_t *drv) {
         VIRTIO_MMIO_CONFIG + VIRTIO_BLK_CONFIG_PHYSICAL_BLOCK_EXP);
     if (exponent >= 64U ||
         drv->logical_sector_size > (UINT64_MAX >> exponent)) {
+      klog("virtio-blk: unusable physical block exponent %u\n",
+           (unsigned)exponent);
       return XAIOS_ERR_INVALID;
     }
     drv->physical_block_size = drv->logical_sector_size << exponent;
@@ -829,10 +833,13 @@ xaios_status_t virtio_block_init(void) {
   g_blk->capacity_sectors = read_capacity(&g_blk->device);
   if (read_device_geometry(g_blk) != XAIOS_OK) return XAIOS_ERR_INVALID;
   g_blk->initialized = 1;
+  /* Completion is polled through the used ring on every submission path, so
+     a transport with no message-signalled interrupt still serves requests.
+     Losing a whole volume over a missing notification would leave the
+     machine without persistent storage for no reason. */
   if (virtio_transport_register_interrupt(
           &g_blk->device, virtio_block_interrupt, g_blk) != XAIOS_OK) {
-    g_blk->initialized = 0U;
-    return XAIOS_ERR_INVALID;
+    klog("virtio-blk: no interrupt available; completions are polled\n");
   }
   if (register_block_device(g_blk) != XAIOS_OK) {
     g_blk->initialized = 0U;
@@ -997,17 +1004,24 @@ xaios_status_t virtio_block_open_slot(uint32_t start_slot,
     return XAIOS_ERR_NOT_FOUND;
   }
   if (configure_queue(drv) != XAIOS_OK) {
+    klog("virtio-blk-h: slot=%u queue configuration failed\n", start_slot);
     return XAIOS_ERR_IO;
   }
   drv->capacity_sectors = read_capacity(&drv->device);
   if (read_device_geometry(drv) != XAIOS_OK) return XAIOS_ERR_INVALID;
   drv->initialized = 1;
+  /* Completion is polled through the used ring on every submission path, so
+     a transport with no message-signalled interrupt still serves requests.
+     Losing a whole volume over a missing notification would leave the
+     machine without persistent storage for no reason. */
   if (virtio_transport_register_interrupt(
           &drv->device, virtio_block_interrupt, drv) != XAIOS_OK) {
-    drv->initialized = 0U;
-    return XAIOS_ERR_INVALID;
+    klog("virtio-blk-h: slot=%u no interrupt available; completions are "
+         "polled\n",
+         start_slot);
   }
   if (register_block_device(drv) != XAIOS_OK) {
+    klog("virtio-blk-h: slot=%u registration failed\n", start_slot);
     drv->initialized = 0U;
     return XAIOS_ERR_INVALID;
   }

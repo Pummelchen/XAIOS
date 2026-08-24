@@ -36,6 +36,27 @@ codesign --force --sign - --entitlements tools/vz/xaios-vz.entitlements \
 ./build/vz/xaios-vz build/vz/xaios-vz-disk.img --memory-mib 4096 --gui
 ```
 
+Every path after the boot image is attached as a further volume, in order,
+because the kernel identifies its volumes by position on the bus: the
+deterministic test volume, the persistent MutableFS volume, the model volume,
+the storage administration scratch volume, then the A/B system volume twice.
+That is the order `run-qemu-x86_64.sh` uses and the one the slot mapping in
+the PCI transport expects.
+
+```sh
+./build/vz/xaios-vz build/vz/xaios-vz-disk.img \
+  build/xaios-virtio-test.img build/vz/persistent.img \
+  build/xaios-model-volume.img build/vz/scratch.img \
+  build/vz/system-a.img build/vz/system-b.img --memory-mib 4096
+```
+
+Two cautions, both of which cost a while to find. The framework takes an
+exclusive lock on each image, so the same file cannot be attached twice: the
+system volume needs two separate copies. And the loader prefers the kernel on
+the A/B system volume over the one on the ESP, so a stale copy of that image
+silently boots a stale kernel; refresh every attached volume from the current
+build before each run.
+
 Signing uses an ad-hoc identity; no developer account is involved. `--gui`
 opens a window, which is the only way to observe the guest: this platform has
 no PL011, so the kernel's serial log has nowhere to go, and Apple's firmware

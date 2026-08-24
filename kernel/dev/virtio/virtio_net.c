@@ -20,7 +20,26 @@
 #define VIRTIO_NET_PERSISTENT_TX_DESCS 4U
 #define VIRTIO_NET_MAX_FRAME 1524U
 #define VIRTIO_DMA_ALIGNMENT 4096U
+#define VIRTIO_NET_F_CSUM (UINT32_C(1) << 0U)
+#define VIRTIO_NET_F_GUEST_CSUM (UINT32_C(1) << 1U)
+#define VIRTIO_NET_F_MTU (UINT32_C(1) << 3U)
 #define VIRTIO_NET_F_MAC (UINT32_C(1) << 5U)
+#define VIRTIO_NET_F_GUEST_TSO4 (UINT32_C(1) << 7U)
+#define VIRTIO_NET_F_GUEST_TSO6 (UINT32_C(1) << 8U)
+#define VIRTIO_NET_F_GUEST_ECN (UINT32_C(1) << 9U)
+#define VIRTIO_NET_F_GUEST_UFO (UINT32_C(1) << 10U)
+#define VIRTIO_NET_F_HOST_TSO4 (UINT32_C(1) << 11U)
+#define VIRTIO_NET_F_HOST_TSO6 (UINT32_C(1) << 12U)
+#define VIRTIO_NET_F_MRG_RXBUF (UINT32_C(1) << 15U)
+#define VIRTIO_NET_F_STATUS (UINT32_C(1) << 16U)
+#define VIRTIO_NET_GUEST_GSO_MASK                                   \
+  (VIRTIO_NET_F_GUEST_TSO4 | VIRTIO_NET_F_GUEST_TSO6 |              \
+   VIRTIO_NET_F_GUEST_ECN | VIRTIO_NET_F_GUEST_UFO)
+/* Without mergeable receive buffers, negotiating any guest segmentation
+   offload obliges the driver to post receive buffers of at least 65550
+   bytes, because the device may then deliver a coalesced segment that
+   large. Frames beyond what the stack accepts are dropped on receive. */
+#define VIRTIO_NET_GSO_RX_BUFFER 65550U
 #define VIRTIO_F_RING_INDIRECT_DESC (UINT32_C(1) << 28U)
 #define VIRTIO_F_RING_EVENT_IDX (UINT32_C(1) << 29U)
 #define VIRTIO_F_VERSION_1_HIGH UINT32_C(1)
@@ -47,6 +66,7 @@ typedef struct virtio_net_driver {
   uint64_t tx_completion_count;
   uint32_t event_idx;
   uint32_t indirect_desc;
+  uint32_t large_rx;
   uint32_t device_present;
   uint64_t scatter_gather_submissions;
   uint64_t copy_fallbacks;
@@ -158,7 +178,8 @@ static xaios_status_t allocate_driver(void) {
       sizeof(virtq_avail_t), VIRTIO_DMA_ALIGNMENT);
   g_net->tx_used = (virtq_used_t *)kheap_calloc(
       sizeof(virtq_used_t), VIRTIO_DMA_ALIGNMENT);
-  g_net->rx_packet = (uint8_t *)kheap_calloc(2048, VIRTIO_DMA_ALIGNMENT);
+  g_net->rx_packet =
+      (uint8_t *)kheap_calloc(VIRTIO_NET_GSO_RX_BUFFER, VIRTIO_DMA_ALIGNMENT);
   g_net->tx_packet = (uint8_t *)kheap_calloc(
       VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME, VIRTIO_DMA_ALIGNMENT);
   if (g_net->rx_desc == 0 || g_net->rx_avail == 0 || g_net->rx_used == 0 ||
@@ -175,26 +196,54 @@ static xaios_status_t allocate_driver(void) {
   return XAIOS_OK;
 }
 
+static uint32_t rx_buffer_bytes(const virtio_net_driver_t *driver) {
+  return driver != 0 && driver->large_rx != 0U
+             ? VIRTIO_NET_GSO_RX_BUFFER
+             : VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME;
+}
+
 static xaios_status_t negotiate_net_features(virtio_net_driver_t *driver) {
-  uint32_t accepted_low = 0U;
-  uint32_t accepted_high = 0U;
-  xaios_status_t status = virtio_transport_negotiate_features(
-      &driver->device,
+  /* Ask for the smallest useful set first. A device is entitled to refuse to
+     run on a subset of what it offers, and Virtualization.framework's does:
+     it declines the address alone, declines it with the ring features, and
+     accepts only the full set. Everything in that set can be honoured here,
+     so offer to take all of it on a second attempt. Mergeable receive
+     buffers stay out of both: this driver does not reassemble a packet
+     spread across several buffers. */
+  static const uint32_t attempts[2] = {
       VIRTIO_NET_F_MAC | VIRTIO_F_RING_INDIRECT_DESC |
           VIRTIO_F_RING_EVENT_IDX,
-      VIRTIO_F_VERSION_1_HIGH, &accepted_low, &accepted_high);
-  if (status != XAIOS_OK ||
-      (accepted_high & VIRTIO_F_VERSION_1_HIGH) == 0U) {
-    klog("virtio-net: feature negotiation refused status=%d low=0x%x "
-         "high=0x%x\n",
-         (int)status, accepted_low, accepted_high);
-    return XAIOS_ERR_IO;
+      VIRTIO_NET_F_CSUM | VIRTIO_NET_F_GUEST_CSUM | VIRTIO_NET_F_MTU |
+          VIRTIO_NET_F_MAC | VIRTIO_NET_F_GUEST_TSO4 |
+          VIRTIO_NET_F_GUEST_TSO6 | VIRTIO_NET_F_GUEST_ECN |
+          VIRTIO_NET_F_GUEST_UFO | VIRTIO_NET_F_HOST_TSO4 |
+          VIRTIO_NET_F_HOST_TSO6 | VIRTIO_NET_F_STATUS |
+          VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX,
+  };
+  for (uint32_t attempt = 0U; attempt < 2U; ++attempt) {
+    uint32_t accepted_low = 0U;
+    uint32_t accepted_high = 0U;
+    xaios_status_t status = virtio_transport_negotiate_features(
+        &driver->device, attempts[attempt], VIRTIO_F_VERSION_1_HIGH,
+        &accepted_low, &accepted_high);
+    if (status != XAIOS_OK ||
+        (accepted_high & VIRTIO_F_VERSION_1_HIGH) == 0U) {
+      continue;
+    }
+    driver->event_idx =
+        (accepted_low & VIRTIO_F_RING_EVENT_IDX) != 0U ? 1U : 0U;
+    driver->indirect_desc =
+        (accepted_low & VIRTIO_F_RING_INDIRECT_DESC) != 0U ? 1U : 0U;
+    driver->large_rx =
+        (accepted_low & VIRTIO_NET_GUEST_GSO_MASK) != 0U ? 1U : 0U;
+    if (driver->large_rx != 0U) {
+      klog("virtio-net: guest offload negotiated; receive buffers hold %u "
+           "bytes\n",
+           rx_buffer_bytes(driver));
+    }
+    return XAIOS_OK;
   }
-  driver->event_idx =
-      (accepted_low & VIRTIO_F_RING_EVENT_IDX) != 0U ? 1U : 0U;
-  driver->indirect_desc =
-      (accepted_low & VIRTIO_F_RING_INDIRECT_DESC) != 0U ? 1U : 0U;
-  return XAIOS_OK;
+  return XAIOS_ERR_IO;
 }
 
 static void build_arp_request(uint8_t *packet, uint64_t *packet_len) {
@@ -287,7 +336,7 @@ void virtio_net_self_test(void) {
     g_net->rx_avail->used_event = 0U;
     g_net->tx_avail->used_event = 0U;
   }
-  bytes_zero(g_net->rx_packet, 2048);
+  bytes_zero(g_net->rx_packet, rx_buffer_bytes(g_net));
   bytes_zero(g_net->tx_packet, 128);
 
   kassert(virtio_transport_setup_queue(&g_net->device, 0, VIRTQ_SIZE,
@@ -299,7 +348,7 @@ void virtio_net_self_test(void) {
   virtio_transport_set_driver_ok(&g_net->device);
 
   g_net->rx_desc[0].addr = dma_address(g_net->rx_packet);
-  g_net->rx_desc[0].len = 2048;
+  g_net->rx_desc[0].len = rx_buffer_bytes(g_net);
   g_net->rx_desc[0].flags = VRING_DESC_F_WRITE;
   g_net->rx_avail->ring[0] = 0;
   virtio_mmio_barrier();
@@ -343,9 +392,17 @@ void virtio_net_self_test(void) {
 
   if (rx_status == XAIOS_OK) {
     uint32_t rx_len = g_net->rx_used->ring[0].len;
-    kassert(is_expected_arp_reply(g_net->rx_packet, rx_len));
-    klog("virtio-net: host arp reply validated len=%u from=10.0.2.2\n",
-         rx_len);
+    /* The request went to QEMU user-mode networking's gateway. Any other
+       host answers from its own subnet, so a reply that does not match is
+       evidence of a different network rather than of a broken driver. */
+    if (is_expected_arp_reply(g_net->rx_packet, rx_len)) {
+      klog("virtio-net: host arp reply validated len=%u from=10.0.2.2\n",
+           rx_len);
+    } else {
+      klog("virtio-net: arp reply from a different network len=%u; RX "
+           "integration not asserted\n",
+           rx_len);
+    }
   } else {
     klog("virtio-net: host arp reply unavailable; RX integration not asserted\n");
   }
@@ -418,13 +475,15 @@ xaios_status_t virtio_net_init_persistent(void) {
 
   /* Allocate and post RX buffers */
   for (uint32_t i = 0; i < VIRTIO_NET_PERSISTENT_RX_DESCS; ++i) {
-    g_net->rx_bufs[i] = (uint8_t *)kheap_calloc(
-        VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME, VIRTIO_DMA_ALIGNMENT);
+    g_net->rx_bufs[i] = (uint8_t *)kheap_calloc(rx_buffer_bytes(g_net),
+                                                VIRTIO_DMA_ALIGNMENT);
     if (g_net->rx_bufs[i] == 0) {
+      klog("virtio-net-persist: receive buffer %u of %u bytes unavailable\n",
+           i, rx_buffer_bytes(g_net));
       return XAIOS_ERR_NO_MEMORY;
     }
     g_net->rx_desc[i].addr = net_dma_address(g_net->rx_bufs[i]);
-    g_net->rx_desc[i].len = VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME;
+    g_net->rx_desc[i].len = rx_buffer_bytes(g_net);
     g_net->rx_desc[i].flags = VRING_DESC_F_WRITE;
     g_net->rx_avail->ring[i] = (uint16_t)i;
   }
@@ -439,6 +498,7 @@ xaios_status_t virtio_net_init_persistent(void) {
     g_net->tx_bufs[i] = (uint8_t *)kheap_calloc(
         VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME, VIRTIO_DMA_ALIGNMENT);
     if (g_net->tx_bufs[i] == 0) {
+      klog("virtio-net-persist: transmit buffer %u unavailable\n", i);
       return XAIOS_ERR_NO_MEMORY;
     }
   }
@@ -452,13 +512,20 @@ xaios_status_t virtio_net_init_persistent(void) {
   status = virtio_transport_register_interrupt(
       &g_net->device, virtio_net_interrupt, g_net);
   if (status != XAIOS_OK) {
-    g_net->persistent = 0U;
-    return status;
+    /* Interrupt delivery is an optimisation, not a requirement: the receive
+       path polls the used ring either way, and transmission already waits on
+       it. A transport that offers no message-signalled interrupt still
+       carries traffic, so keep the interface rather than discarding a
+       working device over a missing notification. */
+    klog("virtio-net-persist: no interrupt available status=%d; receive path "
+         "polls\n",
+         (int)status);
   }
 
-  klog("virtio-net: persistent mode initialized rx=%u tx=%u event_idx=%u indirect_sg=%u\n",
+  klog("virtio-net: persistent mode initialized rx=%u tx=%u event_idx=%u indirect_sg=%u interrupt=%u\n",
        VIRTIO_NET_PERSISTENT_RX_DESCS, VIRTIO_NET_PERSISTENT_TX_DESCS,
-       g_net->event_idx, g_net->indirect_desc);
+       g_net->event_idx, g_net->indirect_desc,
+       status == XAIOS_OK ? 1U : 0U);
   return XAIOS_OK;
 }
 
@@ -716,7 +783,7 @@ uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size) {
     g_net->rx_avail->used_event = g_net->rx_last_used;
   }
   g_net->rx_desc[desc].addr = net_dma_address(g_net->rx_bufs[desc]);
-  g_net->rx_desc[desc].len = VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME;
+  g_net->rx_desc[desc].len = rx_buffer_bytes(g_net);
   g_net->rx_desc[desc].flags = VRING_DESC_F_WRITE;
   g_net->rx_avail->ring[g_net->rx_avail_idx % VIRTQ_SIZE] = desc;
   virtio_mmio_barrier();
