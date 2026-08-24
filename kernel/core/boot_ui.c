@@ -543,6 +543,25 @@ static void term_activate(const xaios_boot_ui_control_t *control) {
     }
     boot_ui_console_text("\n");
   }
+  {
+    /* The graphical panel reports the IPv6 address too, and a machine with no
+       framebuffer should not be the only one left guessing. */
+    xaios_ip_addr_t console_ipv6;
+    if (network_stack_local_ipv6(&console_ipv6) == XAIOS_OK) {
+      static const char hex_digits[] = "0123456789abcdef";
+      boot_ui_console_text("IPv6: ");
+      for (uint32_t group = 0U; group < 8U; ++group) {
+        uint32_t value = ((uint32_t)console_ipv6.addr[group * 2U] << 8U) |
+                         (uint32_t)console_ipv6.addr[group * 2U + 1U];
+        term_putc((uint8_t)hex_digits[(value >> 12U) & 0xFU]);
+        term_putc((uint8_t)hex_digits[(value >> 8U) & 0xFU]);
+        term_putc((uint8_t)hex_digits[(value >> 4U) & 0xFU]);
+        term_putc((uint8_t)hex_digits[value & 0xFU]);
+        if (group != 7U) term_putc((uint8_t)':');
+      }
+      boot_ui_console_text("\n");
+    }
+  }
   boot_ui_console_text("SSH server: up and running (tcp/22)\n\n");
   if (control != 0 && control->console_state == XAIOS_BOOT_UI_CONSOLE_PASSWORD) {
     boot_ui_console_text("Password: ");

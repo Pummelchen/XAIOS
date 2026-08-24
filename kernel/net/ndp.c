@@ -4,6 +4,7 @@
 #include <xaios/ipv6.h>
 #include <xaios/klog.h>
 #include <xaios/ndp.h>
+#include <xaios/net_device.h>
 
 static xaios_ndp_entry_t g_ndp_cache[XAIOS_NDP_CACHE_SIZE];
 static uint64_t g_ndp_last_tick_ns = 0;
@@ -546,9 +547,17 @@ int ndp_dad_tick(xaios_dad_state_t *dad, uint64_t now_ns) {
 }
 
 /* ---- C7: Router Solicitation ---- */
-xaios_status_t ndp_send_router_solicitation(const uint8_t src_mac[6],
-                                              const xaios_ip_addr_t *src_ip) {
-  if (src_mac == 0 || src_ip == 0) return XAIOS_ERR_INVALID;
+/* Construction is separated from transmission so the self-test can check the
+   frame this builds without needing a network device, which does not exist
+   when the self-tests run. */
+static xaios_status_t build_router_solicitation(uint8_t *rs_frame,
+                                                uint64_t capacity,
+                                                uint64_t *out_len,
+                                                const uint8_t src_mac[6],
+                                                const xaios_ip_addr_t *src_ip) {
+  if (rs_frame == 0 || out_len == 0 || src_mac == 0 || src_ip == 0) {
+    return XAIOS_ERR_INVALID;
+  }
 
   /* Build RS to ff02::2 (all-routers multicast) */
   xaios_ip_addr_t all_routers;
@@ -565,7 +574,7 @@ xaios_status_t ndp_send_router_solicitation(const uint8_t src_mac[6],
   uint64_t icmpv6_len = 12U; /* 4 + 8 (source link-layer option) */
   uint64_t total = 14U + XAIOS_IPV6_HEADER_SIZE + icmpv6_len;
 
-  uint8_t rs_frame[128];
+  if (total > capacity) return XAIOS_ERR_INVALID;
   bytes_zero(rs_frame, total);
 
   for (uint32_t i = 0; i < 6; ++i) {
@@ -597,8 +606,26 @@ xaios_status_t ndp_send_router_solicitation(const uint8_t src_mac[6],
                                          icmpv6, (uint32_t)icmpv6_len);
   put_be16(icmpv6 + 2, cksum);
 
-  (void)rs_frame;
+  *out_len = total;
+  return XAIOS_OK;
+}
 
+xaios_status_t ndp_send_router_solicitation(const uint8_t src_mac[6],
+                                            const xaios_ip_addr_t *src_ip) {
+  /* This used to build a correct solicitation, discard it and report success,
+     so no router was ever asked and a global address only ever appeared in
+     the self-test that fabricates an advertisement. Put it on the wire. */
+  uint8_t rs_frame[128];
+  uint64_t total = 0U;
+  xaios_status_t status =
+      build_router_solicitation(rs_frame, sizeof(rs_frame), &total, src_mac,
+                                src_ip);
+  if (status != XAIOS_OK) return status;
+  status = network_device_tx(rs_frame, total);
+  if (status != XAIOS_OK) {
+    klog("ndp: router solicitation not transmitted status=%d\n", (int)status);
+    return status;
+  }
   klog("ndp: sent RS to ff02::2\n");
   return XAIOS_OK;
 }
@@ -873,7 +900,15 @@ void ndp_self_test(void) {
 
   /* ---- C7 RS/RA test ---- */
   {
-    kassert(ndp_send_router_solicitation(src_mac, &src) == XAIOS_OK);
+    uint8_t rs_probe[128];
+    uint64_t rs_len = 0U;
+    kassert(build_router_solicitation(rs_probe, sizeof(rs_probe), &rs_len,
+                                      src_mac, &src) == XAIOS_OK);
+    kassert(rs_len == 14U + XAIOS_IPV6_HEADER_SIZE + 12U);
+    kassert(rs_probe[0] == 0x33U && rs_probe[1] == 0x33U &&
+            rs_probe[5] == 0x02U);
+    kassert(rs_probe[XAIOS_ICMPV6_OFFSET] == XAIOS_ICMPV6_ROUTER_SOLICIT);
+    kassert(rs_probe[XAIOS_ICMPV6_OFFSET + 4U] == 1U);
 
     /* Build and process an RA */
     xaios_ip_addr_t ra_src;

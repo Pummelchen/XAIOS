@@ -288,6 +288,12 @@ static uint64_t g_ipv6_rx_count;
 static xaios_ip_addr_t g_link_local_v6;
 static xaios_ip_addr_t g_public_v6;
 static uint64_t g_public_v6_valid_until_ns;
+/* The address actually configured from a router advertisement, which may be a
+   unique-local prefix rather than a globally routable one. A host on such a
+   network still has working IPv6 within it, so this is what packets are sent
+   from; g_public_v6 stays reserved for genuinely global addresses. */
+static xaios_ip_addr_t g_slaac_v6;
+static uint64_t g_slaac_valid_until_ns;
 static xaios_network_ping_status_t g_ping;
 static uint64_t g_ping_sent_ns;
 static uint16_t g_ping_sequence;
@@ -850,6 +856,11 @@ static int network_ipv6_is_global_unicast(const xaios_ip_addr_t *address) {
          (address->addr[0] & UINT8_C(0xe0)) == UINT8_C(0x20);
 }
 
+static int network_ipv6_is_unique_local(const xaios_ip_addr_t *address) {
+  return address != 0 && address->family == XAIOS_IP_FAMILY_V6 &&
+         (address->addr[0] & UINT8_C(0xfe)) == UINT8_C(0xfc);
+}
+
 static void network_ipv6_slaac_from_prefix(xaios_ip_addr_t *address,
                                            const uint8_t prefix[16]) {
   address->family = XAIOS_IP_FAMILY_V6;
@@ -881,12 +892,25 @@ static void network_ipv6_apply_router_advertisement(const uint8_t *frame,
       uint32_t valid_lifetime_s = read_u32_be(icmpv6 + offset + 4U);
       xaios_ip_addr_t candidate;
       network_ipv6_slaac_from_prefix(&candidate, icmpv6 + offset + 16U);
-      if (valid_lifetime_s != 0U && network_ipv6_is_global_unicast(&candidate)) {
+      int global = network_ipv6_is_global_unicast(&candidate);
+      int unique_local = network_ipv6_is_unique_local(&candidate);
+      if (valid_lifetime_s != 0U && (global != 0 || unique_local != 0)) {
         uint64_t lifetime_ns = (uint64_t)valid_lifetime_s * UINT64_C(1000000000);
-        g_public_v6 = candidate;
-        g_public_v6_valid_until_ns =
+        uint64_t valid_until =
             lifetime_ns > UINT64_MAX - now_ns ? UINT64_MAX : now_ns + lifetime_ns;
-        klog("network: public IPv6 SLAAC address configured\n");
+        if (xaios_ip_addr_equal(&g_slaac_v6, &candidate) == 0) {
+          klog("network: IPv6 address configured from advertised %x%x:%x%x::/64"
+               " (%s)\n",
+               candidate.addr[0], candidate.addr[1], candidate.addr[2],
+               candidate.addr[3], global != 0 ? "global" : "unique-local");
+        }
+        g_slaac_v6 = candidate;
+        g_slaac_valid_until_ns = valid_until;
+        if (global != 0) {
+          g_public_v6 = candidate;
+          g_public_v6_valid_until_ns = valid_until;
+          klog("network: public IPv6 SLAAC address configured\n");
+        }
       }
       return;
     }
@@ -1759,7 +1783,14 @@ xaios_status_t network_stack_tcp_open(const xaios_ip_addr_t *remote_addr,
   } else if (remote_addr->addr[0] == 0xfeU &&
              (remote_addr->addr[1] & 0xc0U) == 0x80U) {
     flow->local_addr = g_link_local_v6;
+  } else if (g_slaac_valid_until_ns != 0U &&
+             timer_now_ns() < g_slaac_valid_until_ns) {
+    /* Send from the address a router actually gave us. */
+    flow->local_addr = g_slaac_v6;
   } else {
+    /* No advertisement has been accepted, so assume the peer's prefix is ours
+       and derive an interface identifier. That is a guess, and only right when
+       the peer is on the same link. */
     xaios_ip_addr_zero(&flow->local_addr);
     flow->local_addr.family = XAIOS_IP_FAMILY_V6;
     for (uint32_t i = 0U; i < 8U; ++i)
@@ -4603,6 +4634,8 @@ void network_init_persistent(void) {
   ipv6_link_local_from_mac(&g_link_local_v6, g_local_mac);
   xaios_ip_addr_zero(&g_public_v6);
   g_public_v6_valid_until_ns = 0U;
+  xaios_ip_addr_zero(&g_slaac_v6);
+  g_slaac_valid_until_ns = 0U;
   g_persistent_initialized = 1;
   g_poll_tick_count = 0;
   g_icmp_reply_count = 0;
@@ -4617,7 +4650,64 @@ void network_init_persistent(void) {
   g_ping.last_error = XAIOS_OK;
   g_ping_sent_ns = 0U;
   g_ping_sequence = 0U;
+  /* RFC 4861 has a host solicit a router on startup rather than wait for the
+     next unsolicited advertisement, which may be minutes away or never come.
+     Without this the stack has a link-local address and no global one, and
+     IPv6 works only on the local link. */
+  if (ndp_send_router_solicitation(g_local_mac, &g_link_local_v6) !=
+      XAIOS_OK) {
+    klog("network: router solicitation could not be sent\n");
+  }
   klog("network: persistent mode initialized (dual-stack)\n");
+}
+
+xaios_status_t network_stack_local_ipv6(xaios_ip_addr_t *address) {
+  if (address == 0) return XAIOS_ERR_INVALID;
+  if (g_persistent_initialized == 0U) {
+    xaios_ip_addr_zero(address);
+    return XAIOS_ERR_NOT_FOUND;
+  }
+  if (g_slaac_valid_until_ns != 0U &&
+      timer_now_ns() < g_slaac_valid_until_ns &&
+      g_slaac_v6.family == XAIOS_IP_FAMILY_V6) {
+    *address = g_slaac_v6;
+    return XAIOS_OK;
+  }
+  *address = g_link_local_v6;
+  return XAIOS_OK;
+}
+
+xaios_status_t network_wait_for_ipv6_slaac(uint64_t timeout_ns) {
+  if (g_persistent_initialized == 0U || timeout_ns == 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  /* A router advertisement answers the solicitation within milliseconds, but
+     nothing polls the interface between bringing it up and starting services,
+     so the reply would sit unread in the receive ring and the machine would
+     come up with a link-local address only. Poll for it here, re-soliciting
+     the way RFC 4861 does rather than waiting on one packet. */
+  xaios_ip_addr_t address;
+  uint64_t started = timer_now_ns();
+  uint64_t next_solicit = started + UINT64_C(500000000);
+  uint32_t solicits = 1U;
+  for (;;) {
+    network_poll_tick();
+    if (g_slaac_valid_until_ns != 0U &&
+        network_stack_local_ipv6(&address) == XAIOS_OK) {
+      return XAIOS_OK;
+    }
+    uint64_t now = timer_now_ns();
+    if (now - started >= timeout_ns) break;
+    if (now >= next_solicit && solicits < 3U) {
+      (void)ndp_send_router_solicitation(g_local_mac, &g_link_local_v6);
+      ++solicits;
+      next_solicit = now + UINT64_C(500000000);
+    }
+  }
+  klog("network: no usable IPv6 prefix after %u solicitations; link-local "
+       "only\n",
+       solicits);
+  return XAIOS_ERR_NOT_FOUND;
 }
 
 uint32_t network_stack_local_ipv4(void) { return network_config_local_ipv4(); }

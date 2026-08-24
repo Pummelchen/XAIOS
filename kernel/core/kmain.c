@@ -429,7 +429,18 @@ void kmain(const xaios_boot_info_t *boot) {
     klog("mutable-fs: writable self-test deferred no persistent block device\n");
   } else {
     persistence_self_test();
-    mutable_fs_self_test();
+    /* The MutableFS self-test formats whichever block device is currently
+       selected, and until a volume is bound that is the boot device. Under
+       QEMU that device is attached with snapshot=on, so formatting it costs
+       nothing; on firmware that boots from read-only removable media there is
+       no such scratch device, and the durable volume must not be formatted
+       merely to exercise the filesystem. Run it only where a throwaway write
+       is safe. */
+    if (virtio_block_is_read_only() == 0U) {
+      mutable_fs_self_test();
+    } else {
+      klog("mutable-fs: self-test skipped no disposable writable device\n");
+    }
   }
   boot_ui_update(52U, "boot storage", "persistent filesystem", 3U);
   /* Prefer a standards-enumerated NVMe namespace when one has completed its
@@ -638,13 +649,21 @@ void kmain(const xaios_boot_info_t *boot) {
 
   /* Initialize persistent network for real TX/RX */
   if (network_device_init_persistent() == XAIOS_OK) {
-    if (network_device_kind() == XAIOS_NETWORK_DEVICE_E1000E &&
-        network_config_dhcp(UINT64_C(6000000000)) != XAIOS_OK) {
-      klog("kernel: DHCP configuration failed for e1000e\n");
-      boot_ui_error("network DHCP", XAIOS_ERR_IO);
-      goto persistent_network_done;
+    /* Ask the network for an address before falling back to the compiled-in
+       one. That default is QEMU user-mode networking's, and a guest that
+       assumes it is simply off-net anywhere else: Virtualization.framework
+       hands out a different subnet entirely. QEMU answers DHCP with the same
+       address it always did, so nothing changes there. */
+    if (network_config_dhcp(UINT64_C(6000000000)) != XAIOS_OK) {
+      if (network_device_kind() == XAIOS_NETWORK_DEVICE_E1000E) {
+        klog("kernel: DHCP configuration failed for e1000e\n");
+        boot_ui_error("network DHCP", XAIOS_ERR_IO);
+        goto persistent_network_done;
+      }
+      klog("kernel: DHCP unanswered; keeping the compiled-in address\n");
     }
     network_init_persistent();
+    (void)network_wait_for_ipv6_slaac(UINT64_C(3000000000));
     dns_init();
     dns_configure(network_config_dns_server());
     klog("kernel: persistent network stack enabled device=%s\n",

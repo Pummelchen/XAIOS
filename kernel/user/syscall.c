@@ -529,7 +529,11 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
         vmm_validate_user_buffer(arg0, 16U, XAIOS_VMM_WRITABLE) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "bad-ipv6-buffer");
     }
-    if (network_stack_local_public_ipv6(&address) != XAIOS_OK) {
+    /* Report the address this host sends IPv6 from, which on a network whose
+       router advertises a unique-local prefix is that address rather than a
+       globally routable one. Reporting only global addresses left userspace
+       believing the machine had no IPv6 at all. */
+    if (network_stack_local_ipv6(&address) != XAIOS_OK) {
       user_process_note_syscall(0);
       return 0U;
     }

@@ -35,11 +35,24 @@
 #define VIRTIO_NET_GUEST_GSO_MASK                                   \
   (VIRTIO_NET_F_GUEST_TSO4 | VIRTIO_NET_F_GUEST_TSO6 |              \
    VIRTIO_NET_F_GUEST_ECN | VIRTIO_NET_F_GUEST_UFO)
-/* Without mergeable receive buffers, negotiating any guest segmentation
-   offload obliges the driver to post receive buffers of at least 65550
-   bytes, because the device may then deliver a coalesced segment that
-   large. Frames beyond what the stack accepts are dropped on receive. */
+/* Without mergeable receive buffers, negotiating a guest segmentation offload
+   would oblige the driver to post receive buffers of at least 65550 bytes,
+   because the device may then deliver a coalesced segment that large. A
+   buffer that size spans seventeen pages, and a single descriptor must be
+   physically contiguous, which the kernel heap cannot promise: it maps pages
+   allocated one at a time. Posting one page instead keeps every descriptor
+   contiguous and carries any ordinary frame; a coalesced segment larger than
+   this is dropped on receive, which the receive path already does safely.
+   Lifting that limit needs either a contiguous allocator or an indirect
+   descriptor chain per receive buffer. */
 #define VIRTIO_NET_GSO_RX_BUFFER 65550U
+/* A buffer that large spans seventeen pages, and a descriptor covers one
+   physically contiguous run, which the kernel heap cannot promise: it maps
+   pages allocated one at a time. The specification lets a receive buffer be a
+   descriptor chain, so each slot posts one indirect descriptor naming a page
+   per entry. That is why indirect descriptors are asked for above. */
+#define VIRTIO_NET_RX_PAGE_BYTES 4096U
+#define VIRTIO_NET_RX_PAGES 17U
 #define VIRTIO_F_RING_INDIRECT_DESC (UINT32_C(1) << 28U)
 #define VIRTIO_F_RING_EVENT_IDX (UINT32_C(1) << 29U)
 #define VIRTIO_F_VERSION_1_HIGH UINT32_C(1)
@@ -72,6 +85,9 @@ typedef struct virtio_net_driver {
   uint64_t copy_fallbacks;
   xaios_spinlock_t tx_lock;
   uint8_t *rx_bufs[VIRTIO_NET_PERSISTENT_RX_DESCS];
+  virtq_desc_t *rx_indirect[VIRTIO_NET_PERSISTENT_RX_DESCS];
+  uint8_t *rx_pages[VIRTIO_NET_PERSISTENT_RX_DESCS][VIRTIO_NET_RX_PAGES];
+  uint32_t rx_chained;
   uint8_t *tx_bufs[VIRTIO_NET_PERSISTENT_TX_DESCS];
   virtq_desc_t *tx_indirect[VIRTIO_NET_PERSISTENT_TX_DESCS];
 } virtio_net_driver_t;
@@ -236,6 +252,13 @@ static xaios_status_t negotiate_net_features(virtio_net_driver_t *driver) {
         (accepted_low & VIRTIO_F_RING_INDIRECT_DESC) != 0U ? 1U : 0U;
     driver->large_rx =
         (accepted_low & VIRTIO_NET_GUEST_GSO_MASK) != 0U ? 1U : 0U;
+    driver->rx_chained =
+        driver->large_rx != 0U && driver->indirect_desc != 0U ? 1U : 0U;
+    if (driver->large_rx != 0U && driver->rx_chained == 0U) {
+      klog("virtio-net: guest offload without indirect descriptors; receive "
+           "buffers cannot reach %u bytes\n",
+           VIRTIO_NET_GSO_RX_BUFFER);
+    }
     if (driver->large_rx != 0U) {
       klog("virtio-net: guest offload negotiated; receive buffers hold %u "
            "bytes\n",
@@ -475,16 +498,46 @@ xaios_status_t virtio_net_init_persistent(void) {
 
   /* Allocate and post RX buffers */
   for (uint32_t i = 0; i < VIRTIO_NET_PERSISTENT_RX_DESCS; ++i) {
-    g_net->rx_bufs[i] = (uint8_t *)kheap_calloc(rx_buffer_bytes(g_net),
-                                                VIRTIO_DMA_ALIGNMENT);
-    if (g_net->rx_bufs[i] == 0) {
-      klog("virtio-net-persist: receive buffer %u of %u bytes unavailable\n",
-           i, rx_buffer_bytes(g_net));
-      return XAIOS_ERR_NO_MEMORY;
+    if (g_net->rx_chained != 0U) {
+      g_net->rx_indirect[i] = (virtq_desc_t *)kheap_calloc(
+          sizeof(virtq_desc_t) * VIRTIO_NET_RX_PAGES, VIRTIO_DMA_ALIGNMENT);
+      if (g_net->rx_indirect[i] == 0) {
+        klog("virtio-net-persist: receive descriptor table %u unavailable\n", i);
+        return XAIOS_ERR_NO_MEMORY;
+      }
+      for (uint32_t page = 0U; page < VIRTIO_NET_RX_PAGES; ++page) {
+        g_net->rx_pages[i][page] = (uint8_t *)kheap_calloc(
+            VIRTIO_NET_RX_PAGE_BYTES, VIRTIO_DMA_ALIGNMENT);
+        if (g_net->rx_pages[i][page] == 0) {
+          klog("virtio-net-persist: receive page %u/%u unavailable\n", i, page);
+          return XAIOS_ERR_NO_MEMORY;
+        }
+        g_net->rx_indirect[i][page].addr =
+            net_dma_address(g_net->rx_pages[i][page]);
+        g_net->rx_indirect[i][page].len = VIRTIO_NET_RX_PAGE_BYTES;
+        g_net->rx_indirect[i][page].flags =
+            page + 1U < VIRTIO_NET_RX_PAGES
+                ? (uint16_t)(VRING_DESC_F_WRITE | VRING_DESC_F_NEXT)
+                : VRING_DESC_F_WRITE;
+        g_net->rx_indirect[i][page].next = (uint16_t)(page + 1U);
+      }
+      g_net->rx_bufs[i] = g_net->rx_pages[i][0];
+      g_net->rx_desc[i].addr = net_dma_address(g_net->rx_indirect[i]);
+      g_net->rx_desc[i].len =
+          (uint32_t)(sizeof(virtq_desc_t) * VIRTIO_NET_RX_PAGES);
+      g_net->rx_desc[i].flags = VRING_DESC_F_INDIRECT;
+    } else {
+      g_net->rx_bufs[i] = (uint8_t *)kheap_calloc(rx_buffer_bytes(g_net),
+                                                  VIRTIO_DMA_ALIGNMENT);
+      if (g_net->rx_bufs[i] == 0) {
+        klog("virtio-net-persist: receive buffer %u of %u bytes unavailable\n",
+             i, rx_buffer_bytes(g_net));
+        return XAIOS_ERR_NO_MEMORY;
+      }
+      g_net->rx_desc[i].addr = net_dma_address(g_net->rx_bufs[i]);
+      g_net->rx_desc[i].len = rx_buffer_bytes(g_net);
+      g_net->rx_desc[i].flags = VRING_DESC_F_WRITE;
     }
-    g_net->rx_desc[i].addr = net_dma_address(g_net->rx_bufs[i]);
-    g_net->rx_desc[i].len = rx_buffer_bytes(g_net);
-    g_net->rx_desc[i].flags = VRING_DESC_F_WRITE;
     g_net->rx_avail->ring[i] = (uint16_t)i;
   }
   virtio_mmio_barrier();
@@ -522,6 +575,13 @@ xaios_status_t virtio_net_init_persistent(void) {
          (int)status);
   }
 
+  {
+    uint8_t mac[6];
+    if (virtio_net_get_mac(mac) == XAIOS_OK) {
+      klog("virtio-net: hardware address %x:%x:%x:%x:%x:%x\n", mac[0], mac[1],
+           mac[2], mac[3], mac[4], mac[5]);
+    }
+  }
   klog("virtio-net: persistent mode initialized rx=%u tx=%u event_idx=%u indirect_sg=%u interrupt=%u\n",
        VIRTIO_NET_PERSISTENT_RX_DESCS, VIRTIO_NET_PERSISTENT_TX_DESCS,
        g_net->event_idx, g_net->indirect_desc,
@@ -772,8 +832,30 @@ uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size) {
   if (rx_len > VIRTIO_NET_HDR_SIZE &&
       rx_len - VIRTIO_NET_HDR_SIZE <= buffer_size) {
     frame_len = rx_len - VIRTIO_NET_HDR_SIZE;
-    for (uint32_t i = 0; i < frame_len; ++i) {
-      buffer[i] = g_net->rx_bufs[desc][VIRTIO_NET_HDR_SIZE + i];
+    if (g_net->rx_chained == 0U) {
+      for (uint32_t i = 0; i < frame_len; ++i) {
+        buffer[i] = g_net->rx_bufs[desc][VIRTIO_NET_HDR_SIZE + i];
+      }
+    } else {
+      /* The device fills the chain in order, so skip the header wherever it
+         happens to end and take the rest page by page. */
+      uint32_t skip = VIRTIO_NET_HDR_SIZE;
+      uint32_t copied = 0U;
+      for (uint32_t page = 0U;
+           page < VIRTIO_NET_RX_PAGES && copied < frame_len; ++page) {
+        if (skip >= VIRTIO_NET_RX_PAGE_BYTES) {
+          skip -= VIRTIO_NET_RX_PAGE_BYTES;
+          continue;
+        }
+        const uint8_t *source = g_net->rx_pages[desc][page] + skip;
+        uint32_t available = VIRTIO_NET_RX_PAGE_BYTES - skip;
+        uint32_t remaining = frame_len - copied;
+        uint32_t take = remaining < available ? remaining : available;
+        for (uint32_t i = 0U; i < take; ++i) buffer[copied + i] = source[i];
+        copied += take;
+        skip = 0U;
+      }
+      frame_len = copied;
     }
   }
 
@@ -782,9 +864,16 @@ uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size) {
   if (g_net->event_idx != 0U) {
     g_net->rx_avail->used_event = g_net->rx_last_used;
   }
-  g_net->rx_desc[desc].addr = net_dma_address(g_net->rx_bufs[desc]);
-  g_net->rx_desc[desc].len = rx_buffer_bytes(g_net);
-  g_net->rx_desc[desc].flags = VRING_DESC_F_WRITE;
+  if (g_net->rx_chained != 0U) {
+    g_net->rx_desc[desc].addr = net_dma_address(g_net->rx_indirect[desc]);
+    g_net->rx_desc[desc].len =
+        (uint32_t)(sizeof(virtq_desc_t) * VIRTIO_NET_RX_PAGES);
+    g_net->rx_desc[desc].flags = VRING_DESC_F_INDIRECT;
+  } else {
+    g_net->rx_desc[desc].addr = net_dma_address(g_net->rx_bufs[desc]);
+    g_net->rx_desc[desc].len = rx_buffer_bytes(g_net);
+    g_net->rx_desc[desc].flags = VRING_DESC_F_WRITE;
+  }
   g_net->rx_avail->ring[g_net->rx_avail_idx % VIRTQ_SIZE] = desc;
   virtio_mmio_barrier();
   ++g_net->rx_avail_idx;

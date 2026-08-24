@@ -115,9 +115,17 @@ uint64_t network_icmpv6_reply_count(void);
 uint64_t network_ndp_reply_count(void);
 uint64_t network_ipv6_rx_count(void);
 uint32_t network_stack_local_ipv4(void);
+/* Solicit a router and poll until a global IPv6 address is configured, or the
+   timeout expires. Returns XAIOS_ERR_NOT_FOUND on a link with no router
+   advertising a prefix, which leaves the link-local address in place. */
+xaios_status_t network_wait_for_ipv6_slaac(uint64_t timeout_ns);
 xaios_status_t network_stack_local_mac(uint8_t mac[6]);
 /* Returns the current SLAAC global-unicast address, never link-local or ULA. */
 xaios_status_t network_stack_local_public_ipv6(xaios_ip_addr_t *address);
+/* The address this host sends IPv6 from: the one configured from a router
+   advertisement when there is one, whether globally routable or unique-local,
+   and otherwise the link-local address. */
+xaios_status_t network_stack_local_ipv6(xaios_ip_addr_t *address);
 xaios_status_t network_stack_ping_start(uint32_t target_ip);
 xaios_network_ping_status_t network_stack_ping_status(void);
 

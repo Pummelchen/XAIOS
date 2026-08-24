@@ -5,11 +5,11 @@ the fourth target: Apple's Virtualization.framework, where the guest executes
 on the host's own cores with the real interrupt controller and timer rather
 than a software model.
 
-**Status: XAIOS boots, with a working console.** The loader runs, the kernel
-starts, initialisation completes, and the kernel log streams to this
-program's stdout over the virtio console. Networking does not come up yet:
-the device refuses the feature set the driver asks for, and the machine
-carries on without it.
+**Status: XAIOS boots and runs.** The loader runs, the kernel starts,
+initialisation completes, the kernel log streams to this program's stdout over
+the virtio console, MutableFS mounts a durable volume read-write, IPv4 comes
+up by DHCP and sshd listens on port 22. IPv6 configures an address from the
+router advertisement this platform sends; see *IPv6* below.
 
 ## Why this target exists
 
@@ -83,48 +83,21 @@ EFI_LOAD_ERROR and the machine powers off having printed nothing.
 
 ## How far it gets
 
-Everything except networking. Storage, entropy, the initial filesystem, the
-VFS, the scheduler and the userspace services all come up, and the boot log
+All the way. Storage, entropy, the initial filesystem, a writable persistent
+volume, the network and the userspace services all come up, and the boot log
 arrives on stdout:
 
 ```
-PCI: enumerated 5 devices (virtio=4 net=1 bridge=1)
+PCI: enumerated 11 devices (virtio=10 net=1 bridge=1)
 virtio-console: modern PCI transport index=2 slot=0 common=0x180010000
-virtio-rng: secure entropy source initialized
-initramfs: mounted rofs version=2 files=52 source=virtio-blk
-vfs: MutableFS mounted at /
-kernel: preemptive scheduler infrastructure enabled
+virtio-blk-h: slot=1 capacity_sectors=32768 event_idx=0
+mutable-fs: persistent mounted v5 nodes=256 sectors=8192
+kernel: persistent fsck valid=1 v5 files=15 dirs=22
+virtio-net: guest offload negotiated; receive buffers hold 65550 bytes
+network: DHCP lease ip=c0a84002 mask=ffffff00 gw=c0a84001 dns=c0a84001
+IPv4: 192.168.64.2
+SSH server: up and running (tcp/22)
 ```
-
-Networking stops at feature negotiation, and what it would take to finish is
-now known precisely. The device offers:
-
-```
-offered = 0x5:0x300119ab   VERSION_1, RING_PACKED; CSUM, GUEST_CSUM, MTU,
-                           MAC, GUEST_TSO4/6, HOST_TSO4/6, STATUS,
-                           INDIRECT_DESC, EVENT_IDX
-```
-
-and it clears FEATURES_OK for every subset the driver has reason to want:
-`MAC` alone, `MAC | INDIRECT_DESC | EVENT_IDX`, and either of those with
-`RING_PACKED` added. Selecting *everything* offered is accepted, so this
-device wants the whole set rather than a subset.
-
-Taking the whole set is not safe as things stand. `GUEST_TSO4` and
-`GUEST_TSO6` let the device deliver segments far larger than the 2048-byte
-receive buffer this driver posts, and `GUEST_CSUM` means a received frame may
-carry a partial checksum the driver would have to finish. Finishing
-networking here therefore means, in order:
-
-1. Establish the minimum set this device will actually accept, by bisecting
-   the offered bits rather than taking all of them.
-2. Honour whatever that set implies: larger receive buffers if a guest TSO
-   bit is required, and checksum completion if a guest checksum bit is.
-3. Replace the QEMU addresses in the ARP self-test. It builds a request from
-   `10.0.2.15` to `10.0.2.2`, which are user-mode QEMU's, and then asserts on
-   the reply; this platform's NAT uses a different subnet, so the assertion
-   fires even once negotiation succeeds. A self-test should report an
-   unexpected environment, not halt in it.
 
 ## What had to be fixed
 
@@ -149,6 +122,66 @@ machine happen to accommodate each one:
   declined the driver's feature set halted the kernel outright. Negotiation
   is the device's decision, so it now degrades exactly as an absent device
   already did.
+- Both the block and network drivers treated a missing interrupt as fatal.
+  There is no message-signalled interrupt support for PCI on aarch64 here, so
+  a machine that could have served requests had neither storage nor network.
+  Completion is polled on every submission path in both drivers, so neither
+  needs the notification.
+- This network device runs only on the full feature set it offers, which
+  includes both guest segmentation offload bits. Taking those obliges the
+  driver to post receive buffers of at least 65550 bytes, and it silently
+  wedged *both* queues when given smaller ones: one frame went out, then
+  nothing moved and no receive buffer was ever used. A buffer that size spans
+  seventeen pages and a descriptor covers one contiguous run, which the kernel
+  heap cannot promise, so each receive buffer is now an indirect descriptor
+  chain of one page per entry.
+- The MutableFS self-test formats whichever block device is currently
+  selected, which before any volume is bound is the boot device. QEMU attaches
+  that with snapshot=on so formatting it costs nothing; here it is read-only
+  removable media, and the test failed on it. It now runs only where a
+  throwaway write is safe, and never against the durable volume.
+- DHCP was attempted only for the Intel NIC, so a virtio guest kept the
+  compiled-in QEMU address of 10.0.2.15 and was simply off-net. Every device
+  now asks the network first and falls back to that address.
+
+## IPv6
+
+Working, on both this platform and QEMU:
+
+```
+IPv4: 192.168.64.7
+IPv6: fd4a:250c:3b3c:9412:8c2f:92ff:fe41:4d79
+```
+
+Three defects stood between the stack and a usable address, all of them in
+XAIOS rather than in either hypervisor.
+
+`ndp_send_router_solicitation` built a correct solicitation, discarded the
+frame, logged that it had sent one and returned success, so no router was ever
+asked. Its own self-test asserted on that fabricated success, which is what
+kept it looking healthy. Construction is now separate from transmission: the
+self-test checks the frame that gets built, and the boot path puts it on the
+wire.
+
+Nothing then read the interface between bringing it up and starting services,
+so an advertisement that did arrive sat unread in the receive ring. The boot
+path now polls for the reply, re-soliciting up to three times the way RFC 4861
+does.
+
+Finally, only globally routable prefixes were accepted. Neither of these
+networks offers one -- Virtualization.framework's router advertises
+`fd4a:25c::/64` and QEMU's slirp advertises `fec0::/64` -- so a machine that
+had a perfectly usable prefix on offer ended up with a link-local address and
+nothing else. A unique-local prefix is a real address within its network, so it
+is now configured and used as the source address for outbound IPv6. Whether an
+address is *globally* routable remains a separate question, and
+`network_stack_local_public_ipv6` still answers only that one; what changed is
+that the address the host sends from, and reports, is the one it actually has.
+
+Before this, outbound IPv6 to a non-link-local destination invented a source
+address by copying the destination's prefix and appending our own interface
+identifier -- right only when the peer happened to share our link. That guess
+now applies only when no advertisement has been accepted.
 
 ## Why the kernel has no framebuffer here
 
