@@ -23,6 +23,7 @@
 - [[ISO C99 Library|C99-Libc]]
 - [[Testing XAIOS|Testing-XAIOS]]
 - [[VMware Fusion|VMware-Fusion]]
+- [[Virtualization Framework|Virtualization-Framework]]
 - [[Firmware Profiles|Firmware-Profiles]]
 - [[Current Limitations|Current-Limitations]]
 - [[FAQ]]

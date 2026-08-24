@@ -52,6 +52,17 @@ logits, deterministic decode, and physical-hardware acceptance.
 QEMU provides reproducible boot, ABI, fault, protocol, CPU-count, and device
 correctness tests on ARM and x86_64. It cannot establish physical performance.
 
+## Can I run the x86_64 build on an Apple Silicon Mac?
+
+Not under Apple Virtualization.framework. It does not emulate a guest CPU
+architecture: the guest executes on the host's own cores, so on Apple Silicon
+the guest is AArch64 and an x86_64 kernel cannot boot, in any macOS release.
+
+Rosetta in that framework does not change this. It translates x86_64 **Linux
+userspace** binaries inside an **AArch64 Linux** guest and needs `binfmt_misc`,
+a virtiofs share and the Linux syscall ABI; it does not run a foreign kernel.
+Use QEMU x86_64 on the Mac, or an Intel host.
+
 ## Where is project progress tracked?
 
 Only in [[Project Tracker|Project-Tracker]]. GitHub issues may hold discussion,

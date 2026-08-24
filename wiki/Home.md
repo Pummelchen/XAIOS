@@ -68,6 +68,7 @@ single [[Project Tracker|Project-Tracker]] for remaining work.
 - [[ISO C99 Library|C99-Libc]]
 - [[Testing XAIOS|Testing-XAIOS]]
 - [[VMware Fusion|VMware-Fusion]]
+- [[Virtualization Framework|Virtualization-Framework]]
 - [[Current Limitations|Current-Limitations]]
 - [[FAQ]]
 - [[Project Tracker|Project-Tracker]]
@@ -98,6 +99,7 @@ and API contracts remain in the source repository:
 - [Storage benchmarking](https://github.com/Pummelchen/XAIOS/blob/main/docs/STORAGE-BENCHMARKING.md)
 - [Hardware readiness contract](https://github.com/Pummelchen/XAIOS/blob/main/HARDWARE-READINESS.md)
 - [VMware Fusion details](https://github.com/Pummelchen/XAIOS/blob/main/docs/VMWARE-FUSION.md)
+- [Virtualization.framework harness](https://github.com/Pummelchen/XAIOS/blob/main/tools/vz/README.md)
 - [Complete test inventory](https://github.com/Pummelchen/XAIOS/blob/main/tests/README.md)
 
 [Source repository](https://github.com/Pummelchen/XAIOS) | [API reference](https://github.com/Pummelchen/XAIOS/blob/main/docs/API.md) | [License](https://github.com/Pummelchen/XAIOS/blob/main/LICENSE)

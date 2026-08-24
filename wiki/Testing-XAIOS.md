@@ -113,6 +113,23 @@ The four-endpoint gate coordinates macOS, Debian 13, FreeBSD 15.1, and the
 remote Intel Debian/QEMU endpoint when explicitly configured. Credentials are
 runtime inputs and must never be stored in the repository.
 
+## Manual host-platform runs
+
+Two targets have no automated gate and are exercised by hand. Neither produces
+qualification evidence.
+
+```sh
+make vmware-fusion-smoke
+```
+
+For Apple Virtualization.framework, build the image, the harness and a boot
+disk as described in
+[`tools/vz/README.md`](https://github.com/Pummelchen/XAIOS/blob/main/tools/vz/README.md),
+then attach every volume in bus order. Refresh those volumes from the current
+build first: the loader prefers the kernel on the A/B system volume over the one
+on the ESP, so a stale copy boots a stale kernel and the run tests nothing. See
+[[Virtualization Framework|Virtualization-Framework]].
+
 ## Update repository validation
 
 `make xapt-repository` creates a deterministic OS-update repository for both

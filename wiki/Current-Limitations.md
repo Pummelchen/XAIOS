@@ -13,6 +13,18 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   public-key SSH/SFTP, recovery, reboot, clean shutdown and repeat-boot
   evidence. Multi-vCPU startup, VMXNET3, live DNSSEC interoperability, IPv6,
   outbound-client, snapshot semantics and physical qualification remain open.
+- Apple Virtualization.framework runs XAIOS to a login with storage and
+  dual-stack networking, but is a development target with no automated gate, so
+  none of it is qualification evidence. Its firmware describes no GIC ITS, so
+  message-signalled interrupts cannot be delivered and every virtio queue runs
+  polled; its GOP is `PixelBltOnly`, so the kernel has no linear framebuffer and
+  renders to the virtio console; and it presents no PL011. Its router advertises
+  a unique-local IPv6 prefix, so the address configured there is unique-local
+  rather than globally routable.
+- MSI-X for virtio on PCI is implemented against the GIC ITS but is exercised by
+  no target available here: Virtualization.framework has no ITS, and QEMU's
+  `virt` machine puts virtio on MMIO, where interrupts arrive through the
+  distributor. It is unverified until it meets ARM PCIe hardware.
 - The x86_64 QEMU image executes the complete common process/thread, filesystem,
   networking, SSH/SFTP, control, security, AI Cell and telemetry service set.
   Modern PCI VirtIO block/network and emulated NVMe pass focused correctness

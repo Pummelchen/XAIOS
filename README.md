@@ -5,8 +5,8 @@
 
 XAIOS is an experimental freestanding Unix-like operating system and portable
 inference-engine foundation being developed as an SSH-administered distributed
-CPU AI model server. The current OS boots under QEMU and exercises deterministic
-kernel/runtime contracts. Real-model inference and the dedicated inference
+CPU AI model server. The current OS boots under QEMU, VMware Fusion and Apple
+Virtualization.framework, and exercises deterministic kernel/runtime contracts. Real-model inference and the dedicated inference
 network service are under development and are not production supported.
 
 Human-facing project documentation is maintained in the
@@ -69,6 +69,15 @@ only on Apple Silicon with **VMware Fusion 26H1 (26.0.0)**. It is not a
 compatibility claim for other Fusion versions, x86_64 guests, multi-vCPU
 Fusion guests, or physical Apple hardware; see
 [`docs/VMWARE-FUSION.md`](./docs/VMWARE-FUSION.md).
+
+Apple Virtualization.framework runs XAIOS to a login on Apple Silicon, with
+MutableFS on a durable volume, DHCP IPv4, SLAAC IPv6 and SSH. It is a
+development and verification target rather than a qualification profile: there
+is no automated gate for it, so none of that is qualification evidence. The
+platform provides no PL011, no linear framebuffer and no GIC interrupt
+translation service, so the kernel logs over a virtio console and every virtio
+queue runs polled; see
+[`tools/vz/README.md`](./tools/vz/README.md).
 
 ## Firmware profiles
 

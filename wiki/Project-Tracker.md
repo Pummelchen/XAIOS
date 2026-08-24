@@ -83,6 +83,21 @@ are intentionally not implied by that passing profile.
 | F-05 | Fusion entropy and production-credential boundary | `BLOCKED` | Fusion 26H1 exposes neither `EFI_RNG_PROTOCOL` nor AArch64 RNDR in this profile, so current images use a unique local development seed. Production requires an operator-approved entropy/key-provisioning design and credentials. |
 | F-06 | Fusion release-version coverage | `NOT STARTED` | Qualify each additional Fusion release independently. Fusion 26H1 evidence is not a compatibility claim for earlier/later releases, x86_64 guests, or physical Apple hardware. |
 
+## Apple Virtualization.framework ARM64 remaining work
+
+XAIOS boots to a login on this platform with MutableFS on a durable volume,
+DHCP IPv4, SLAAC IPv6 and SSH. It is a development target: there is no
+automated gate, so none of that is qualification evidence.
+
+| ID | Item | Status | Evidence / remaining gate |
+|---|---|---|---|
+| V-01 | Automated Virtualization.framework gate | `NOT STARTED` | Every run today is manual. Define a scripted boot/login/storage/network gate and the evidence it must emit before any status here counts for more than development. |
+| V-02 | MSI-X delivery for virtio on PCI | `BLOCKED` | Implemented against the GIC ITS alongside NVMe, but this platform's firmware describes no ITS and QEMU's `virt` machine puts virtio on MMIO, so no available target exercises the path. It stays unverified until it meets ARM PCIe hardware. |
+| V-03 | Globally routable IPv6 | `BLOCKED` | The NAT attachment advertises the unique-local prefix `fd4a:25c::/64`, so no globally routable address is on offer. A bridged attachment would carry real IPv6 but needs the `com.apple.vm.networking` entitlement, which Apple issues only with a provisioning profile; ad-hoc signing cannot provide it. |
+| V-04 | Multi-vCPU qualification | `NOT STARTED` | Runs to date are one vCPU. Qualify secondary bring-up, scheduler behaviour and lifecycle at higher core counts, and record what the framework offers for interrupt affinity. |
+| V-05 | Receive path beyond one coalesced segment | `NOT STARTED` | Guest segmentation offload is mandatory on this device, and each receive buffer is an indirect descriptor chain holding 65550 bytes. A segment larger than that is dropped rather than reassembled; decide whether that bound needs lifting and gate it if so. |
+| V-06 | Graphical console | `BLOCKED` | The GOP is `PixelBltOnly`, so no linear framebuffer exists and `GOP->Blt()` does not outlive `ExitBootServices`. A graphical console here would need a kernel virtio-GPU driver rather than the framebuffer path the other targets use. |
+
 ## Core OS, network, and SSH phases
 
 | ID | Item | Status | Evidence / remaining boundary |

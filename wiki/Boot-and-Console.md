@@ -32,6 +32,19 @@ SSH is not opened until networking is active and a bounded IPv4 TCP connection
 to `1.1.1.1:443` succeeds. This checks configured external reachability without
 making SSH startup depend on public DNS. Failure leaves the listener closed.
 
+## Console transport
+
+The console follows whatever the platform actually provides rather than a
+compiled-in assumption. QEMU and VMware Fusion present a PL011, which firmware
+describes in the ACPI SPCR table. Firmware that publishes ACPI tables but no
+SPCR has no console UART at all, and the kernel takes it at its word instead of
+writing to an address nothing answers at.
+
+Apple's Virtualization.framework is such a platform, and it also has no linear
+framebuffer, so the kernel attaches a virtio console and replays what was
+logged before that console existed. See
+[[Virtualization Framework|Virtualization-Framework]].
+
 ## Local console policy
 
 The default development image presents:

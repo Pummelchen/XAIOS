@@ -32,6 +32,22 @@ database and development-image opt-in; release builds reject it.
   64 asynchronous child-channel records, with explicit saturation errors and
   reclamation after disconnect.
 
+## Address configuration
+
+Every network device asks the network for an IPv4 address by DHCP before
+falling back to the compiled-in QEMU address of `10.0.2.15`. A guest that
+assumes that address is simply off-net anywhere else; Virtualization.framework
+hands out a different subnet entirely.
+
+IPv6 derives a link-local address from the hardware address, then solicits a
+router and polls briefly for the advertisement, because nothing else reads the
+interface between bringing it up and starting services. A prefix that is
+globally routable or unique-local is configured and used as the source address
+for outbound IPv6; whether an address is *globally* routable stays a separate
+question. Both hypervisors available here advertise unique-local prefixes
+(`fd4a:25c::/64` under Virtualization.framework, `fec0::/64` under QEMU's
+slirp), so the address configured on those is unique-local.
+
 ## Network behavior
 
 The QEMU-tested stack includes IPv4/IPv6 fragment reassembly and source

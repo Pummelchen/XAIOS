@@ -1,7 +1,8 @@
 # Getting Started
 
 This guide builds and starts the AArch64 XAIOS image under QEMU. See
-[[Hardware Support|Hardware-Support]] for x86_64 and VMware Fusion boundaries.
+[[Hardware Support|Hardware-Support]] for x86_64, VMware Fusion and Apple
+Virtualization.framework boundaries.
 
 ## Prerequisites
 
