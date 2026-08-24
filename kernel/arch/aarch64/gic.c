@@ -204,14 +204,17 @@ xaios_status_t gic_register_interrupt(uint32_t intid,
   return XAIOS_OK;
 }
 
-/* NVMe numbers its LPIs from the base by hand, which works only while it is
-   the one driver doing so. Hand out the first free one instead, so a second
-   user of message-signalled interrupts does not quietly land on the first
-   one's identifiers. */
+/* Drivers used to number their LPIs from the base by hand, which works only
+   while one driver does it. Hand them out here instead, and never twice: a
+   free-slot search would reissue an identifier whose owner polls and so never
+   registers a handler, and two devices sharing one identifier deliver each
+   other's interrupts. */
+static uint32_t g_next_lpi = GIC_LPI_BASE;
+
 xaios_status_t gic_allocate_lpi(uint32_t *intid) {
   if (intid == 0) return XAIOS_ERR_INVALID;
-  for (uint32_t candidate = GIC_LPI_BASE; candidate < GIC_MAX_INTIDS;
-       ++candidate) {
+  while (g_next_lpi < GIC_MAX_INTIDS) {
+    uint32_t candidate = g_next_lpi++;
     if (g_irq_handlers[candidate] == 0) {
       *intid = candidate;
       return XAIOS_OK;

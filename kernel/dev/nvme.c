@@ -420,7 +420,11 @@ static xaios_status_t configure_queue_interrupts(
   uint32_t use_its = 1U;
   for (uint32_t index = 0U; index < controller->io_queue_count; ++index) {
     nvme_queue_t *queue = &controller->io[index];
-    uint32_t interrupt_id = 8192U + index;
+    uint32_t interrupt_id = 0U;
+    if (gic_allocate_lpi(&interrupt_id) != XAIOS_OK) {
+      klog("nvme: no LPI available for queue %u\n", index);
+      return XAIOS_ERR_IO;
+    }
     uint64_t message_address = 0U;
     uint32_t message_data = 0U;
     xaios_status_t status =

@@ -246,7 +246,14 @@ static uint64_t *ensure_l3_table(uint64_t virtual_address) {
   uint64_t l0_index = (virtual_address >> 39) & 0x1ffU;
   uint64_t l1_index = (virtual_address >> 30) & 0x1ffU;
   uint64_t l2_index = (virtual_address >> 21) & 0x1ffU;
-  kassert(l0_index == 0);
+  /* This kernel maps a single level-0 entry, so nothing above 512 GiB has a
+     table to live in. Report that rather than assert: the address usually
+     comes from a device BAR the firmware placed, and QEMU's virt machine puts
+     64-bit PCI windows up there. A layout this kernel cannot map should cost
+     the driver that asked, not the machine. */
+  if (l0_index != 0U) {
+    return 0;
+  }
 
   /* Ensure L1 entry exists (allocate L2 table if needed) */
   uint64_t l1_desc = g_l1_table[l1_index];
@@ -578,6 +585,9 @@ xaios_status_t vmm_map_page(uint64_t virtual_address, uint64_t physical_address,
   }
 
   uint64_t *l3 = ensure_l3_table(virtual_address);
+  if (l3 == 0) {
+    return XAIOS_ERR_INVALID;
+  }
   uint64_t l3_index = (virtual_address >> 12) & 0x1ffU;
   l3[l3_index] = page_descriptor(physical_address, attrs_from_flags(flags));
   if (user_address(virtual_address) == 0U) {
@@ -593,6 +603,9 @@ xaios_status_t vmm_unmap_page(uint64_t virtual_address) {
   }
 
   uint64_t *l3 = ensure_l3_table(virtual_address);
+  if (l3 == 0) {
+    return XAIOS_ERR_INVALID;
+  }
   uint64_t l3_index = (virtual_address >> 12) & 0x1ffU;
   l3[l3_index] = 0;
   if (user_address(virtual_address) == 0U) {

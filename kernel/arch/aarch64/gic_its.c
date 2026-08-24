@@ -57,6 +57,18 @@ typedef struct its_command {
   uint64_t words[4];
 } its_command_t;
 
+/* One interrupt translation table per device. The driver used to keep a single
+   one, so the first device to ask for a vector took the translation service and
+   every other was refused: a machine with both NVMe and virtio on PCI could
+   give message-signalled interrupts to exactly one of them. */
+#define ITS_MAX_DEVICES 16U
+
+typedef struct its_device {
+  uint32_t device_id;
+  uint32_t used;
+  void *itt;
+} its_device_t;
+
 typedef struct its_state {
   uint32_t initialized;
   uint32_t device_capacity;
@@ -65,9 +77,7 @@ typedef struct its_state {
   its_command_t *commands;
   uint64_t command_write;
   uint8_t *properties;
-  uint32_t mapped_device_id;
-  uint32_t device_ready;
-  void *device_itt;
+  its_device_t devices[ITS_MAX_DEVICES];
   void **pending;
   uint8_t *collection_ready;
   uint32_t cpu_capacity;
@@ -362,10 +372,25 @@ xaios_status_t gic_its_configure_msi(uint32_t device_id, uint32_t event_id,
   status = map_collection(cpu_id);
   if (status != XAIOS_OK) return status;
 
-  if (g_its.device_ready == 0U) {
-    g_its.device_itt = kheap_calloc(UINT64_C(0x2000), UINT64_C(0x100));
-    if (g_its.device_itt == 0) return XAIOS_ERR_NO_MEMORY;
-    uint64_t itt_physical = physical_address(g_its.device_itt);
+  its_device_t *entry = 0;
+  for (uint32_t index = 0U; index < ITS_MAX_DEVICES; ++index) {
+    if (g_its.devices[index].used != 0U &&
+        g_its.devices[index].device_id == device_id) {
+      entry = &g_its.devices[index];
+      break;
+    }
+  }
+  if (entry == 0) {
+    for (uint32_t index = 0U; index < ITS_MAX_DEVICES; ++index) {
+      if (g_its.devices[index].used == 0U) {
+        entry = &g_its.devices[index];
+        break;
+      }
+    }
+    if (entry == 0) return XAIOS_ERR_NO_MEMORY;
+    void *itt = kheap_calloc(UINT64_C(0x2000), UINT64_C(0x100));
+    if (itt == 0) return XAIOS_ERR_NO_MEMORY;
+    uint64_t itt_physical = physical_address(itt);
     if (itt_physical == 0U) return XAIOS_ERR_IO;
     its_command_t mapd = {
         {GITS_CMD_MAPD | ((uint64_t)device_id << 32U), UINT64_C(4),
@@ -374,10 +399,9 @@ xaios_status_t gic_its_configure_msi(uint32_t device_id, uint32_t event_id,
          0U}};
     status = send_command(&mapd);
     if (status != XAIOS_OK) return status;
-    g_its.mapped_device_id = device_id;
-    g_its.device_ready = 1U;
-  } else if (g_its.mapped_device_id != device_id) {
-    return XAIOS_ERR_UNSUPPORTED;
+    entry->itt = itt;
+    entry->device_id = device_id;
+    entry->used = 1U;
   }
   its_command_t mapti = {
       {GITS_CMD_MAPTI | ((uint64_t)device_id << 32U),
