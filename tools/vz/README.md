@@ -63,6 +63,38 @@ no PL011, so the kernel's serial log has nowhere to go, and Apple's firmware
 does not route EFI console output to the virtio console. Silence on the
 serial port is not evidence of failure here.
 
+## Checking it
+
+```sh
+make vz-gate
+```
+
+Boots the current image and requires the kernel, the virtio console, a mounted
+and checked durable volume, a DHCP lease, an IPv6 address and a listening SSH
+server, failing on a panic or any missing check. The report lands in
+`build/vz-gate.json`. It refreshes every attached volume from the current build
+first, for the stale-kernel reason below.
+
+It runs only on macOS with a signed harness, so it is not part of CI and its
+result is not qualification evidence.
+
+## Reaching it from the host
+
+You cannot, with the NAT attachment this harness uses. Guest-initiated traffic
+works in both directions -- DHCP completes, the router solicitation is answered,
+and an ICMP round trip to the gateway returns in well under a millisecond -- but
+host-initiated frames are not delivered to the guest at all: an ARP request for
+its address never arrives. sshd therefore listens on TCP 22 without being
+reachable from the Mac, which is a property of the attachment rather than of
+XAIOS.
+
+A bridged attachment would expose the guest, and needs the
+`com.apple.vm.networking` entitlement that Apple issues only with a provisioning
+profile; ad-hoc signing cannot provide it.
+
+The console is the way in meanwhile, and it is interactive: log in on it and the
+usual shell is there.
+
 ## Why the disk differs from the QEMU image
 
 The QEMU boot image cannot be used directly, for two reasons:
