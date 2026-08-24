@@ -726,13 +726,15 @@ static efi_status_t load_kernel_segments(efi_system_table_t *system_table,
                                          uint64_t kernel_size,
                                          const elf64_ehdr_t *ehdr,
                                          uint64_t *kernel_base,
-                                         uint64_t *kernel_end) {
+                                         uint64_t *kernel_end,
+                                         uint64_t *kernel_vaddr_base) {
   efi_boot_services_t *bs = system_table->boot_services;
   const elf64_phdr_t *phdrs =
       (const elf64_phdr_t *)((const unsigned char *)kernel_buffer + ehdr->e_phoff);
 
   *kernel_base = UINT64_MAX;
   *kernel_end = 0;
+  *kernel_vaddr_base = UINT64_MAX;
 
   for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
     const elf64_phdr_t *phdr = &phdrs[i];
@@ -769,12 +771,16 @@ static efi_status_t load_kernel_segments(efi_system_table_t *system_table,
     if (phdr->p_paddr < *kernel_base) {
       *kernel_base = phdr->p_paddr;
     }
+    if (phdr->p_vaddr < *kernel_vaddr_base) {
+      *kernel_vaddr_base = phdr->p_vaddr;
+    }
     if (phdr->p_paddr + phdr->p_memsz > *kernel_end) {
       *kernel_end = phdr->p_paddr + phdr->p_memsz;
     }
   }
 
-  if (*kernel_base == UINT64_MAX || *kernel_end == 0) {
+  if (*kernel_base == UINT64_MAX || *kernel_end == 0 ||
+      *kernel_vaddr_base == UINT64_MAX) {
     return EFI_LOAD_ERROR;
   }
 
@@ -932,8 +938,10 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
 
   uint64_t kernel_base = 0;
   uint64_t kernel_end = 0;
+  uint64_t kernel_vaddr_base = 0;
   status = load_kernel_segments(system_table, kernel_buffer, kernel_size, ehdr,
-                                &kernel_base, &kernel_end);
+                                &kernel_base, &kernel_end,
+                                &kernel_vaddr_base);
   if (is_error(status)) {
     loader_puts(system_table, u"XAIOS loader error: failed to load kernel segments\r\n");
     return status;
@@ -1069,7 +1077,12 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
   }
 
   sync_instruction_cache(kernel_base, kernel_end);
-  kernel_entry_t kernel_entry = (kernel_entry_t)ehdr->e_entry;
+  /* e_entry is a link-time address. It equals the load address only while the
+     kernel is loaded exactly where it was linked, which is true today and
+     silently stops being true the moment it is not. Rebase it on where the
+     segments actually landed. */
+  kernel_entry_t kernel_entry =
+      (kernel_entry_t)(kernel_base + (ehdr->e_entry - kernel_vaddr_base));
   kernel_entry(&g_boot_info);
 
   for (;;) {
