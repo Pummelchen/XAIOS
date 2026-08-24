@@ -5,6 +5,7 @@
 
 #define EI_NIDENT 16
 #define PT_LOAD 1
+#define PF_X 0x1U
 #define ELFCLASS64 2
 #define ELFDATA2LSB 1
 #define EM_X86_64 62
@@ -201,7 +202,12 @@ static void select_display_mode(efi_graphics_output_protocol_t *gop) {
       best_mode = candidate;
     }
   }
-  if (best_mode != gop->mode->mode) {
+  /* Firmware need not publish a framebuffer before a mode is set, and
+     Apple's Virtualization.framework does not: FrameBufferBase and
+     FrameBufferSize both read zero until SetMode runs. Set the mode when it
+     differs, and also when no framebuffer has been published yet. */
+  if (best_mode != gop->mode->mode || gop->mode->framebuffer_base == 0U ||
+      gop->mode->framebuffer_size == 0U) {
     (void)gop->set_mode(gop, best_mode);
   }
 }
@@ -218,11 +224,17 @@ static void collect_framebuffer(efi_system_table_t *system_table,
   efi_status_t status = locate_protocol(
       (efi_guid_t *)&EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID, 0, (void **)&gop);
   if (is_error(status) || gop == 0 || gop->mode == 0 ||
-      gop->mode->info == 0 || gop->mode->framebuffer_base == 0U ||
-      gop->mode->framebuffer_size == 0U) {
+      gop->mode->max_mode == 0U) {
     return;
   }
   select_display_mode(gop);
+  /* Validate only after the mode is set, because that is when firmware
+     publishes the framebuffer. A PixelBltOnly device never publishes one and
+     is correctly rejected here: it has no linear framebuffer to hand on. */
+  if (gop->mode->info == 0 || gop->mode->framebuffer_base == 0U ||
+      gop->mode->framebuffer_size == 0U) {
+    return;
+  }
   const efi_graphics_output_mode_information_t *info = gop->mode->info;
   if (info->horizontal_resolution == 0U || info->vertical_resolution == 0U ||
       info->pixels_per_scan_line < info->horizontal_resolution ||
@@ -737,10 +749,13 @@ static efi_status_t load_kernel_segments(efi_system_table_t *system_table,
     uint64_t allocation_size = segment_offset + phdr->p_memsz;
     efi_physical_address_t segment_address = segment_start;
 
-    /* Kernel segments are executed, not merely read. Allocating them as
-       loader data leaves them execute-never on firmware that enforces W^X. */
+    /* Executable segments must be loader code, or firmware that enforces W^X
+       leaves them execute-never. Writable segments must be loader data, for
+       the same reason in reverse. */
+    uint32_t segment_memory_type =
+        (phdr->p_flags & PF_X) != 0U ? EFI_LOADER_CODE : EFI_LOADER_DATA;
     efi_status_t status = bs->allocate_pages(
-        EFI_ALLOCATE_ADDRESS, EFI_LOADER_CODE,
+        EFI_ALLOCATE_ADDRESS, segment_memory_type,
         EFI_SIZE_TO_PAGES(allocation_size), &segment_address);
     if (is_error(status)) {
       return status;
@@ -943,7 +958,28 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
   uint32_t pci_ecam_start_bus = 0U;
   uint32_t pci_ecam_end_bus = 0U;
 #if !defined(XAIOS_UEFI_TARGET_X86_64)
-  discover_uart(acpi_rsdp, &uart_base, &uart_kind, &uart_reg_shift);
+  /* The compiled-in default is QEMU's PL011. Firmware that describes its
+     hardware in ACPI is authoritative: when it publishes tables but no SPCR,
+     the platform has no console UART, and handing the kernel the QEMU address
+     makes its first klog() write to a device that is not there. With the MMU
+     still off that aborts, and on a platform with no framebuffer it does so
+     silently. Report no UART instead; klog treats a zero base as "no
+     console". Platforms providing no ACPI at all keep the default, because
+     there is nothing better to go on. */
+  uint64_t discovered_uart = 0U;
+  uint32_t discovered_kind = XAIOS_UART_NONE;
+  uint32_t discovered_shift = 0U;
+  discover_uart(acpi_rsdp, &discovered_uart, &discovered_kind,
+                &discovered_shift);
+  if (discovered_kind != XAIOS_UART_NONE) {
+    uart_base = discovered_uart;
+    uart_kind = discovered_kind;
+    uart_reg_shift = discovered_shift;
+  } else if (acpi_rsdp != 0U) {
+    uart_base = 0U;
+    uart_kind = XAIOS_UART_NONE;
+    uart_reg_shift = 0U;
+  }
   discover_pci_ecam(acpi_rsdp, &pci_ecam_base, &pci_ecam_start_bus,
                     &pci_ecam_end_bus);
 #endif
