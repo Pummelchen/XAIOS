@@ -122,12 +122,17 @@ qualification evidence.
 make vmware-fusion-smoke
 ```
 
-For Apple Virtualization.framework, build the image, the harness and a boot
-disk as described in
-[`tools/vz/README.md`](https://github.com/Pummelchen/XAIOS/blob/main/tools/vz/README.md),
-then attach every volume in bus order. Refresh those volumes from the current
-build first: the loader prefers the kernel on the A/B system volume over the one
-on the ESP, so a stale copy boots a stale kernel and the run tests nothing. See
+```sh
+make vz-gate
+```
+
+The Virtualization.framework gate boots the current image, waits for the kernel,
+the virtio console, a mounted and checked durable volume, a DHCP lease, an IPv6
+address and a listening SSH server, and fails on a panic or a missing check. It
+writes `build/vz-gate.json`, refreshes every attached volume from the current
+build first -- the loader prefers the kernel on the A/B system volume over the
+one on the ESP, so a stale copy boots a stale kernel and the run tests nothing
+-- and needs macOS on Apple Silicon with a signed harness. See
 [[Virtualization Framework|Virtualization-Framework]].
 
 ## Update repository validation

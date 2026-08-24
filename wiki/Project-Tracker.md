@@ -86,16 +86,16 @@ are intentionally not implied by that passing profile.
 ## Apple Virtualization.framework ARM64 remaining work
 
 XAIOS boots to a login on this platform with MutableFS on a durable volume,
-DHCP IPv4, SLAAC IPv6 and SSH. It is a development target: there is no
-automated gate, so none of that is qualification evidence.
+DHCP IPv4, SLAAC IPv6 and SSH. `make vz-gate` checks that boot and writes
+`build/vz-gate.json`. It is a development target: the gate needs macOS on Apple
+Silicon and a signed harness, so it cannot run in CI and its result is not
+qualification evidence.
 
 | ID | Item | Status | Evidence / remaining gate |
 |---|---|---|---|
-| V-01 | Automated Virtualization.framework gate | `NOT STARTED` | Every run today is manual. Define a scripted boot/login/storage/network gate and the evidence it must emit before any status here counts for more than development. |
 | V-02 | MSI-X delivery for virtio on PCI | `BLOCKED` | Implemented against the GIC ITS alongside NVMe, but this platform's firmware describes no ITS and QEMU's `virt` machine puts virtio on MMIO, so no available target exercises the path. It stays unverified until it meets ARM PCIe hardware. |
 | V-03 | Globally routable IPv6 | `BLOCKED` | The NAT attachment advertises the unique-local prefix `fd4a:25c::/64`, so no globally routable address is on offer. A bridged attachment would carry real IPv6 but needs the `com.apple.vm.networking` entitlement, which Apple issues only with a provisioning profile; ad-hoc signing cannot provide it. |
 | V-04 | Multi-vCPU qualification | `IN PROGRESS` | Secondaries now start: the firmware reports four enabled CPUs and answers PSCI 1.1 without advertising it in the FADT, and all four come online once PSCI is probed rather than trusted. DHCP then fails at four vCPUs and succeeds at one, repeatably, so the network path does not survive the transition; see V-09. Scheduler behaviour, lifecycle and interrupt affinity at higher counts remain unqualified. |
-| V-05 | Receive path beyond one coalesced segment | `NOT STARTED` | Guest segmentation offload is mandatory on this device, and each receive buffer is an indirect descriptor chain holding 65550 bytes. A segment larger than that is dropped rather than reassembled; decide whether that bound needs lifting and gate it if so. |
 | V-07 | Reachable from the host | `BLOCKED` | The NAT attachment carries guest-initiated traffic in both directions -- DHCP, router solicitation and an ICMP round trip to the gateway all work -- but host-initiated frames never arrive: an ARP request for the guest is not delivered at all, so sshd listens on TCP 22 without being reachable. A bridged attachment would expose it, and needs the same `com.apple.vm.networking` entitlement that V-03 waits on. |
 | V-09 | Networking under multiple vCPUs | `IN PROGRESS` | DHCP completes at one vCPU and fails at four, repeatably, on the same image and host. Secondaries are admitted and come online, so the failure is in the network or VirtIO path rather than in bring-up. Find the race, gate it, and only then qualify multi-vCPU networking. |
 | V-06 | Graphical console | `BLOCKED` | The GOP is `PixelBltOnly`, so no linear framebuffer exists and `GOP->Blt()` does not outlive `ExitBootServices`. A graphical console here would need a kernel virtio-GPU driver rather than the framebuffer path the other targets use. |
