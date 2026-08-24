@@ -16,6 +16,9 @@
 #define EFI_FILE_MODE_READ UINT64_C(0x0000000000000001)
 #define EFI_ALLOCATE_ANY_PAGES 0
 #define EFI_ALLOCATE_ADDRESS 2
+/* Firmware that enforces W^X maps EfiLoaderData execute-never, so anything
+   the loader intends to jump into has to be allocated as code. */
+#define EFI_LOADER_CODE 1
 #define EFI_LOADER_DATA 2
 #define EFI_SIZE_TO_PAGES(size) (((size) + 0xfffULL) >> 12)
 

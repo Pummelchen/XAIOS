@@ -737,8 +737,10 @@ static efi_status_t load_kernel_segments(efi_system_table_t *system_table,
     uint64_t allocation_size = segment_offset + phdr->p_memsz;
     efi_physical_address_t segment_address = segment_start;
 
+    /* Kernel segments are executed, not merely read. Allocating them as
+       loader data leaves them execute-never on firmware that enforces W^X. */
     efi_status_t status = bs->allocate_pages(
-        EFI_ALLOCATE_ADDRESS, EFI_LOADER_DATA,
+        EFI_ALLOCATE_ADDRESS, EFI_LOADER_CODE,
         EFI_SIZE_TO_PAGES(allocation_size), &segment_address);
     if (is_error(status)) {
       return status;
@@ -788,6 +790,36 @@ static efi_status_t get_memory_map(efi_system_table_t *system_table,
 
   return bs->get_memory_map(memory_map_size, *memory_map, map_key,
                             descriptor_size, descriptor_version);
+}
+
+/* Make freshly written kernel code visible to instruction fetch.
+
+   Segments are copied as data, so the bytes land in the data cache, and
+   instruction fetch does not look there. On real hardware the core can fetch
+   stale memory at the entry point; emulation without caches cannot show this.
+   Clean to the point of unification and invalidate before handing over. */
+static void sync_instruction_cache(uint64_t base, uint64_t end) {
+#if !defined(__aarch64__)
+  /* x86 keeps instruction and data caches coherent in hardware, and the
+     maintenance instructions below do not exist there. */
+  (void)base;
+  (void)end;
+#else
+  uint64_t ctr = 0U;
+  __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
+  uint64_t data_line = (uint64_t)4U << ((ctr >> 16U) & 0xFU);
+  uint64_t inst_line = (uint64_t)4U << (ctr & 0xFU);
+  if (data_line == 0U || inst_line == 0U || end <= base) return;
+  for (uint64_t p = base & ~(data_line - 1U); p < end; p += data_line) {
+    __asm__ volatile("dc cvau, %0" :: "r"(p) : "memory");
+  }
+  __asm__ volatile("dsb ish" ::: "memory");
+  for (uint64_t p = base & ~(inst_line - 1U); p < end; p += inst_line) {
+    __asm__ volatile("ic ivau, %0" :: "r"(p) : "memory");
+  }
+  __asm__ volatile("dsb ish" ::: "memory");
+  __asm__ volatile("isb" ::: "memory");
+#endif
 }
 
 efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
@@ -1000,6 +1032,7 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
     g_boot_info.memory_descriptor_version = descriptor_version;
   }
 
+  sync_instruction_cache(kernel_base, kernel_end);
   kernel_entry_t kernel_entry = (kernel_entry_t)ehdr->e_entry;
   kernel_entry(&g_boot_info);
 

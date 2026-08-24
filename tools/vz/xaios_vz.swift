@@ -15,6 +15,7 @@
 // firmware load and run the XAIOS loader — and prints whatever the firmware
 // and loader write to the virtio console.
 
+import AppKit
 import Foundation
 import Virtualization
 
@@ -56,6 +57,11 @@ guard arguments.count >= 2 else {
 var positional: [String] = []
 var cpuCount = 1
 var memoryMiB: UInt64 = 2048
+// Without a display there is nothing to watch: XAIOS draws its boot progress
+// through the UEFI framebuffer, and Apple's firmware does not appear to route
+// EFI console output to the virtio console.
+var showWindow = false
+var usbBoot = false
 var index = 1
 while index < arguments.count {
     switch arguments[index] {
@@ -65,6 +71,13 @@ while index < arguments.count {
     case "--memory-mib":
         index += 1
         memoryMiB = UInt64(arguments[safe: index] ?? "") ?? memoryMiB
+    case "--gui":
+        showWindow = true
+    case "--usb-boot":
+        // Firmware tries the removable-media path, \EFI\BOOT\BOOTAA64.EFI,
+        // for removable devices. A virtio disk is fixed storage, for which it
+        // may instead expect a boot entry naming the loader explicitly.
+        usbBoot = true
     default:
         positional.append(arguments[index])
     }
@@ -93,7 +106,25 @@ configuration.bootLoader = bootLoader
 
 // The boot image is read-only: it is the same artifact the QEMU and Fusion
 // paths consume, and nothing here should be able to modify it.
-var storage: [VZStorageDeviceConfiguration] = [blockDevice(bootImage, readOnly: true)]
+var storage: [VZStorageDeviceConfiguration] = []
+if usbBoot {
+    if #available(macOS 15.0, *) {
+        let controller = VZXHCIControllerConfiguration()
+        configuration.usbControllers = [controller]
+        do {
+            let attachment = try VZDiskImageStorageDeviceAttachment(
+                url: bootImage, readOnly: true)
+            let usb = VZUSBMassStorageDeviceConfiguration(attachment: attachment)
+            storage.append(usb)
+        } catch {
+            fail("could not attach boot disk over USB: \(error)")
+        }
+    } else {
+        fail("--usb-boot needs macOS 15 or newer")
+    }
+} else {
+    storage.append(blockDevice(bootImage, readOnly: true))
+}
 if positional.count > 1 {
     storage.append(blockDevice(URL(fileURLWithPath: positional[1]), readOnly: false))
 }
@@ -104,6 +135,15 @@ network.attachment = VZNATNetworkDeviceAttachment()
 configuration.networkDevices = [network]
 
 configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
+
+if showWindow {
+    let graphics = VZVirtioGraphicsDeviceConfiguration()
+    graphics.scanouts = [
+        VZVirtioGraphicsScanoutConfiguration(widthInPixels: 1280,
+                                             heightInPixels: 800)
+    ]
+    configuration.graphicsDevices = [graphics]
+}
 
 // XAIOS logs to PL011, which this platform does not have, so nothing from the
 // kernel proper will appear here yet. The firmware and the UEFI loader write
@@ -132,14 +172,13 @@ final class Observer: NSObject, VZVirtualMachineDelegate {
     }
 }
 
-let queue = DispatchQueue(label: "xaios.vz")
+// VZVirtualMachineView requires the machine to live on the main queue, so
+// both modes use it rather than keeping two lifetimes to reason about.
 let observer = Observer()
-var machine: VZVirtualMachine!
-queue.sync {
-    machine = VZVirtualMachine(configuration: configuration, queue: queue)
-    machine.delegate = observer
-}
-queue.async {
+let machine = VZVirtualMachine(configuration: configuration)
+machine.delegate = observer
+
+func startMachine() {
     machine.start { result in
         if case .failure(let error) = result {
             fail("start failed: \(error)")
@@ -148,4 +187,23 @@ queue.async {
             "xaios-vz: started cpus=\(cpuCount) memory=\(memoryMiB)MiB\n".utf8))
     }
 }
-RunLoop.main.run()
+
+if showWindow {
+    let application = NSApplication.shared
+    application.setActivationPolicy(.regular)
+    let view = VZVirtualMachineView(frame: NSRect(x: 0, y: 0, width: 1280, height: 800))
+    view.virtualMachine = machine
+    let window = NSWindow(
+        contentRect: view.frame,
+        styleMask: [.titled, .closable, .resizable],
+        backing: .buffered, defer: false)
+    window.title = "XAIOS"
+    window.contentView = view
+    window.makeKeyAndOrderFront(nil)
+    application.activate(ignoringOtherApps: true)
+    DispatchQueue.main.async { startMachine() }
+    application.run()
+} else {
+    DispatchQueue.main.async { startMachine() }
+    RunLoop.main.run()
+}
