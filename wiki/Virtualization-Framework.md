@@ -98,8 +98,8 @@ PSCI flag clear, so a kernel that trusts that flag brings up none of them. It
 answers `PSCI_VERSION` with 1.1 regardless, so XAIOS asks rather than trusts,
 and four vCPUs come online.
 
-Networking does not survive that transition: DHCP completes at one vCPU and
-fails at four, repeatably. The harness defaults to one vCPU for that reason.
+DHCP failed twice at four vCPUs early in that work and has not recurred in
+later runs, so no cause is attributed to it. The harness defaults to one vCPU.
 
 ## Running the Intel build here
 
