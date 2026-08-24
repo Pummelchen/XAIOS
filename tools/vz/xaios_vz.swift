@@ -51,11 +51,12 @@ func blockDevice(_ url: URL, readOnly: Bool) -> VZVirtioBlockDeviceConfiguration
 
 let arguments = CommandLine.arguments
 guard arguments.count >= 2 else {
-    fail("usage: xaios-vz <boot-image> [persistent-image] [--cpus N] [--memory-mib N]")
+    fail("usage: xaios-vz <boot-image> [more-images...] [--vmnet socket] [--cpus N] [--memory-mib N]")
 }
 
 var positional: [String] = []
 var cpuCount = 1
+var vmnetSocket: String? = nil
 var memoryMiB: UInt64 = 2048
 // Without a display there is nothing to watch: XAIOS draws its boot progress
 // through the UEFI framebuffer, and Apple's firmware does not appear to route
@@ -65,6 +66,9 @@ var usbBoot = false
 var index = 1
 while index < arguments.count {
     switch arguments[index] {
+    case "--vmnet":
+        index += 1
+        vmnetSocket = arguments[safe: index]
     case "--cpus":
         index += 1
         cpuCount = Int(arguments[safe: index] ?? "") ?? cpuCount
@@ -136,8 +140,72 @@ for path in positional.dropFirst() {
 }
 configuration.storageDevices = storage
 
+// Apple's NAT attachment carries guest-initiated traffic only, so the Mac
+// cannot reach a guest behind it and a listening sshd is unreachable. Given a
+// --vmnet path, attach instead to the datagram socket that vmnet-helper relays
+// vmnet frames over: the guest then sits on a real vmnet network the host can
+// reach. Only the helper needs root; this process does not.
+func vmnetAttachment(_ path: String) -> VZFileHandleNetworkDeviceAttachment {
+    let descriptor = socket(AF_UNIX, SOCK_DGRAM, 0)
+    if descriptor < 0 { fail("could not create the vmnet socket") }
+
+    // Each side binds a known path and sends to the other's, so neither has to
+    // start first.
+    func address(_ value: String) -> sockaddr_un {
+        var storage = sockaddr_un()
+        storage.sun_family = sa_family_t(AF_UNIX)
+        storage.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        let capacity = MemoryLayout.size(ofValue: storage.sun_path)
+        let offset = MemoryLayout<sockaddr_un>.offset(of: \.sun_path)!
+        withUnsafeMutablePointer(to: &storage) { pointer in
+            let bytes = UnsafeMutableRawPointer(pointer)
+                .advanced(by: offset)
+                .assumingMemoryBound(to: CChar.self)
+            _ = strncpy(bytes, value, capacity - 1)
+        }
+        return storage
+    }
+
+    let localPath = path + ".vm"
+    unlink(localPath)
+    var local = address(localPath)
+    let bound = withUnsafePointer(to: &local) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { generic in
+            bind(descriptor, generic, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+    }
+    if bound < 0 { fail("could not bind \(localPath): \(String(cString: strerror(errno)))") }
+
+    var peer = address(path)
+    let connected = withUnsafePointer(to: &peer) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { generic in
+            connect(descriptor, generic, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+    }
+    if connected < 0 {
+        fail("could not reach \(path): \(String(cString: strerror(errno))). Start vmnet-helper first.")
+    }
+
+    // Virtualization.framework expects the receive buffer to be at least double
+    // the send buffer, and recommends four times. Sizing them equally leaves it
+    // reading nothing: frames written to this socket never reach the guest,
+    // while the guest's own traffic still flows out, which looks like a one-way
+    // network rather than a misconfigured socket.
+    var sendBuffer: Int32 = 1 << 18
+    var receiveBuffer: Int32 = sendBuffer * 4
+    setsockopt(descriptor, SOL_SOCKET, SO_SNDBUF, &sendBuffer, socklen_t(MemoryLayout<Int32>.size))
+    setsockopt(descriptor, SOL_SOCKET, SO_RCVBUF, &receiveBuffer, socklen_t(MemoryLayout<Int32>.size))
+
+    return VZFileHandleNetworkDeviceAttachment(
+        fileHandle: FileHandle(fileDescriptor: descriptor, closeOnDealloc: false))
+}
+
 let network = VZVirtioNetworkDeviceConfiguration()
-network.attachment = VZNATNetworkDeviceAttachment()
+if let vmnetSocket {
+    network.attachment = vmnetAttachment(vmnetSocket)
+} else {
+    network.attachment = VZNATNetworkDeviceAttachment()
+}
 configuration.networkDevices = [network]
 
 configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]

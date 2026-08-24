@@ -80,20 +80,45 @@ result is not qualification evidence.
 
 ## Reaching it from the host
 
-You cannot, with the NAT attachment this harness uses. Guest-initiated traffic
-works in both directions -- DHCP completes, the router solicitation is answered,
-and an ICMP round trip to the gateway returns in well under a millisecond -- but
-host-initiated frames are not delivered to the guest at all: an ARP request for
-its address never arrives. sshd therefore listens on TCP 22 without being
-reachable from the Mac, which is a property of the attachment rather than of
-XAIOS.
+Not with the NAT attachment this harness uses by default. Guest-initiated
+traffic works in both directions -- DHCP completes, the router solicitation is
+answered, and an ICMP round trip to the gateway returns in well under a
+millisecond -- but host-initiated frames are not delivered to the guest at all:
+an ARP request for its address never arrives. sshd therefore listens on TCP 22
+without being reachable from the Mac, which is a property of the attachment
+rather than of XAIOS.
 
-A bridged attachment would expose the guest, and needs the
-`com.apple.vm.networking` entitlement that Apple issues only with a provisioning
-profile; ad-hoc signing cannot provide it.
+The console is interactive, and is the way in meanwhile.
 
-The console is the way in meanwhile, and it is interactive: log in on it and the
-usual shell is there.
+### The vmnet route, which is unfinished
+
+A bridged attachment would expose the guest but needs the
+`com.apple.vm.networking` entitlement, which Apple issues only with a
+provisioning profile. vmnet itself needs no entitlement, only root, so
+`vmnet-helper.c` starts a vmnet interface as root and relays Ethernet frames to
+an unprivileged datagram socket that the harness hands to
+Virtualization.framework. Only the helper runs privileged; the virtual machine
+does not. This is the arrangement `socket_vmnet` uses for rootless QEMU.
+
+```sh
+sudo ./build/vz/vmnet-helper --socket "$PWD/build/vz/vmnet.sock"
+./build/vz/xaios-vz ... --vmnet "$PWD/build/vz/vmnet.sock"
+```
+
+It half works, and the half that does not is understood but unsolved. The guest
+joins the real vmnet network and takes an address from it by DHCP, outbound
+traffic flows, and the Mac sees the guest in its ARP table with the correct
+hardware address. Inbound frames do not arrive: the helper reads them from
+vmnet and writes them to the socket without error -- 120 frames in one
+measurement -- while the guest's device reports having received four all boot,
+with its receive ring free and twenty-six million polls behind it. So
+Virtualization.framework delivers the first few datagrams and then stops
+reading, with buffers available on both sides.
+
+Sizing `SO_RCVBUF` at four times `SO_SNDBUF`, which the attachment's
+documentation requires, did not change it. What has not been tried is a
+`socketpair` rather than a bound pair of paths, a smaller MTU, or driving the
+socket from the harness rather than a separate privileged process.
 
 ## Why the disk differs from the QEMU image
 
