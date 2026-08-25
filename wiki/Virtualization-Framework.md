@@ -31,7 +31,7 @@ SSH server: up and running (tcp/22)
 ## Running it
 
 Full instructions, including the disk layout this platform needs, are in
-[`tools/vz/README.md`](https://github.com/Pummelchen/XAIOS/blob/main/tools/vz/README.md).
+[`platform/virtualization-framework/README.md`](https://github.com/Pummelchen/XAIOS/blob/main/platform/virtualization-framework/README.md).
 Two constraints are easy to trip over:
 
 - The framework takes an exclusive lock on each image, so the same file cannot
@@ -92,11 +92,11 @@ XAIOS.
 A bridged attachment would expose the guest directly, and needs the
 `com.apple.vm.networking` entitlement that Apple issues only with a provisioning
 profile; ad-hoc signing cannot provide it. vmnet needs no entitlement, only
-root, so `tools/vz/vmnet-helper` runs a vmnet interface privileged and relays
+root, so `platform/virtualization-framework/vmnet-helper` runs a vmnet interface privileged and relays
 frames to the machine over a socket -- the arrangement `socket_vmnet` uses for
 rootless QEMU. Its host mode carries host/guest traffic and reaches no further;
 its shared mode reaches the internet and carries only what the guest starts.
-Pick the one that matches the errand. `tools/vz/README.md` records what the
+Pick the one that matches the errand. `platform/virtualization-framework/README.md` records what the
 relay had to get right, none of which is obvious.
 
 The console is interactive too, and needs no helper. Log in on it and the usual
@@ -139,4 +139,4 @@ foreign kernel. Use QEMU or an Intel host for the x86_64 image; see
 
 Several obvious instruments mislead here and two work. That is development
 detail rather than a property of XAIOS, so it lives with the harness in
-[`tools/vz/README.md`](https://github.com/Pummelchen/XAIOS/blob/main/tools/vz/README.md).
+[`platform/virtualization-framework/README.md`](https://github.com/Pummelchen/XAIOS/blob/main/platform/virtualization-framework/README.md).

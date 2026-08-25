@@ -34,7 +34,7 @@ def run_boot(label: str, targets: List[str], timeout_seconds: int) -> int:
     env["XAIOS_QEMU_HOSTFWD_PORT"] = "none"
     env["XAIOS_PERSISTENT_IMAGE"] = str(PERSISTENT_IMAGE)
     proc = subprocess.Popen(
-        ["./scripts/run-qemu-aarch64.sh"],
+        ["./platform/qemu/run-qemu-aarch64.sh"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

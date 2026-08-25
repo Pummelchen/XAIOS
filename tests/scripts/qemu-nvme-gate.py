@@ -74,11 +74,11 @@ def run_architecture(architecture: str) -> dict[str, object]:
     if architecture == "aarch64":
         environment["XAIOS_QEMU_MSI_CONTROLLER"] = "its"
         environment["XAIOS_NVME_IMAGE"] = str(image)
-        runner = "./scripts/run-qemu-aarch64.sh"
+        runner = "./platform/qemu/run-qemu-aarch64.sh"
     else:
         environment["XAIOS_X86_PERSISTENT_IMAGE"] = str(persistent)
         environment["XAIOS_QEMU_X86_NVME_IMAGE"] = str(image)
-        runner = "./scripts/run-qemu-x86_64.sh"
+        runner = "./platform/qemu/run-qemu-x86_64.sh"
     required_markers = list(MARKERS)
     required_markers.append(
         "nvme: MSI-X interrupt self-test passed queues=4 all_queues=1"

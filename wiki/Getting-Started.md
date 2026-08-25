@@ -77,8 +77,8 @@ The repository helper keeps host-key verification enabled and accepts a remote
 command after `--`:
 
 ```sh
-scripts/ssh-xaios-qemu.sh
-scripts/ssh-xaios-qemu.sh -- htop
+platform/qemu/ssh-xaios-qemu.sh
+platform/qemu/ssh-xaios-qemu.sh -- htop
 ```
 
 ## First commands

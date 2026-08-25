@@ -73,8 +73,8 @@ def fail(message: str) -> int:
 
 def prepare() -> str | None:
     if not (VZ / "xaios-vz").is_file():
-        return "harness missing; build and sign tools/vz/xaios_vz.swift first"
-    subprocess.run([str(ROOT / "tools/vz/build-vz-disk.sh")], check=True,
+        return "harness missing; build and sign platform/virtualization-framework/xaios_vz.swift first"
+    subprocess.run([str(ROOT / "platform/virtualization-framework/build-vz-disk.sh")], check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     shutil.copy(VZ / "xaios-vz-disk.img", VZ / "run-disk.img")
     for target, source in VOLUMES:

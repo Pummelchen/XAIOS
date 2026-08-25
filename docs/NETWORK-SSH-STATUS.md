@@ -289,8 +289,8 @@ OpenSSH-version-gated `WarnWeakCrypto=no`; it does not discard host identity via
 `UserKnownHostsFile=/dev/null`:
 
 ```sh
-scripts/ssh-xaios-qemu.sh
-scripts/ssh-xaios-qemu.sh -- htop
+platform/qemu/ssh-xaios-qemu.sh
+platform/qemu/ssh-xaios-qemu.sh -- htop
 ssh -p 7788 admin@127.0.0.1
 sftp -i build/local-ssh/admin -o IdentitiesOnly=yes -P 7788 admin@127.0.0.1
 ```
@@ -302,7 +302,7 @@ forward it to guest TCP port `22`. Override it with
 instead use `ssh ssh://admin@127.0.0.1:7788`.
 
 Pass a non-default key with `--identity`, for example
-`scripts/ssh-xaios-qemu.sh --identity /tmp/xaios-htop-key -- htop`.
+`platform/qemu/ssh-xaios-qemu.sh --identity /tmp/xaios-htop-key -- htop`.
 If a rebuilt guest intentionally rotates its host key, remove only the matching
 entry from `build/local-ssh/known_hosts` after verifying the rotation.
 

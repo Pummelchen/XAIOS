@@ -61,7 +61,7 @@ def main() -> int:
             shutil.copyfile(source, destination)
             environment[variable] = str(destination)
         process = subprocess.Popen(
-            [str(ROOT / "scripts/run-qemu-x86_64.sh")],
+            [str(ROOT / "platform/qemu/run-qemu-x86_64.sh")],
             cwd=ROOT,
             env=environment,
             stdout=subprocess.PIPE,

@@ -57,7 +57,7 @@ for arch in $ARCHES; do
   rm -rf "$build" "$install" "$sysroot"
 
   meson setup "$build" "$SOURCE" \
-    --cross-file "$ROOT/libc/cross/xaios-$arch.txt" \
+    --cross-file "$ROOT/config/cross/xaios-$arch.txt" \
     --prefix / \
     --libdir lib \
     --buildtype release \

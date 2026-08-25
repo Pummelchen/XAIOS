@@ -78,7 +78,7 @@ def main() -> int:
         env["XAIOS_X86_PERSISTENT_IMAGE"] = str(persistent_image)
 
     proc = subprocess.Popen(
-        ["./scripts/run-qemu-x86_64.sh"],
+        ["./platform/qemu/run-qemu-x86_64.sh"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=False,

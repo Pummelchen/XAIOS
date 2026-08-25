@@ -84,7 +84,7 @@ def main() -> int:
     timeout = int(env.get("XAIOS_QEMU_SMMU_TIMEOUT", "90"))
     started = time.monotonic()
     process = subprocess.Popen(
-        ["./scripts/run-qemu-aarch64.sh"],
+        ["./platform/qemu/run-qemu-aarch64.sh"],
         cwd=ROOT,
         env=env,
         stdout=subprocess.PIPE,

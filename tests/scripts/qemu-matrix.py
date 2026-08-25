@@ -14,8 +14,8 @@ SCENARIOS = [
     ("qemu-x86_64-smoke", ["make", "qemu-x86_64-smoke"], 120, 0),
     ("intel-desktop-gate", ["python3", "./tests/scripts/intel-desktop-gate.py"], 140, 1),
     ("qemu-cpu-matrix", ["make", "qemu-cpu-matrix"], 900, 0),
-    ("qemu-dry-run-aarch64", ["./scripts/run-qemu-aarch64.sh", "--dry-run"], 10, 0),
-    ("qemu-dry-run-x86_64", ["./scripts/run-qemu-x86_64.sh", "--dry-run"], 10, 0),
+    ("qemu-dry-run-aarch64", ["./platform/qemu/run-qemu-aarch64.sh", "--dry-run"], 10, 0),
+    ("qemu-dry-run-x86_64", ["./platform/qemu/run-qemu-x86_64.sh", "--dry-run"], 10, 0),
 ]
 
 

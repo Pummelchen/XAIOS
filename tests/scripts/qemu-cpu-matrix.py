@@ -216,7 +216,7 @@ def run_x86_tier(tier: Dict[str, Any], supported: Set[str],
         env.setdefault("XAIOS_QEMU_SMOKE_TIMEOUT", "90")
         proc = run(["python3", "./tests/scripts/qemu-x86_64-smoke.py"], env, 140)
     else:
-        proc = run(["./scripts/run-qemu-x86_64.sh", "--dry-run"], env, 20)
+        proc = run(["./platform/qemu/run-qemu-x86_64.sh", "--dry-run"], env, 20)
     return {
         "name": tier["name"],
         "architecture": "x86_64",

@@ -26,7 +26,7 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 - A guest on Apple Virtualization.framework is reachable from the host only over
   vmnet, and then in one direction at a time. The NAT attachment carries
   guest-initiated traffic but delivers no host-initiated frame, so sshd listens
-  there without being reachable. `tools/vz/vmnet-helper` fixes that at the cost
+  there without being reachable. `platform/virtualization-framework/vmnet-helper` fixes that at the cost
   of a privileged helper and a choice: its host mode carries host/guest traffic
   but reaches no further, its shared mode reaches the internet but carries only
   what the guest starts. Bridging, which would do both, needs the

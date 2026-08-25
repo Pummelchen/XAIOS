@@ -56,7 +56,7 @@ def run_fault_boot(name: str, targets) -> int:
         env = os.environ.copy()
         env["XAIOS_QEMU_HOSTFWD_PORT"] = "none"
         proc = subprocess.Popen(
-            ["./scripts/run-qemu-aarch64.sh"],
+            ["./platform/qemu/run-qemu-aarch64.sh"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
+PLATFORM = ROOT / "platform"
 TESTS = ROOT / "tests"
 
 RUNTIME_SCRIPTS = {
@@ -21,18 +22,13 @@ RUNTIME_SCRIPTS = {
     "build-xapt-repository.sh",
     "build-libc-runtime-test.sh",
     "build-libc.sh",
-    "build-vmware-fusion.sh",
     "create-initfs.py",
     "create-persistent-image.sh",
     "create-sshd-user-config.py",
     "macos-bootstrap.sh",
     "prepare-libc-sysroot.py",
     "publish-xapt-repository.sh",
-    "run-qemu-aarch64.sh",
-    "run-qemu-x86_64.sh",
-    "run-vmware-fusion.sh",
     "run-xaios-ssh-bridge.sh",
-    "ssh-xaios-qemu.sh",
     "xaios-ssh-bridge.py",
 }
 
@@ -41,6 +37,24 @@ def main() -> int:
     failures: list[str] = []
     script_files = {path.name for path in SCRIPTS.iterdir() if path.is_file()}
     unexpected = sorted(script_files - RUNTIME_SCRIPTS)
+    # One directory per supported environment, each holding that environment's
+    # own launcher. Before this, Fusion's assets sat in platform/, its scripts
+    # in scripts/, and the Virtualization.framework harness in tools/ -- three
+    # environments in three unrelated places, with QEMU having no home at all.
+    for environment, launcher in (
+        ("qemu", "run-qemu-aarch64.sh"),
+        ("vmware-fusion", "run-vmware-fusion.sh"),
+        ("virtualization-framework", "build-vz-disk.sh"),
+    ):
+        directory = PLATFORM / environment
+        if not directory.is_dir():
+            failures.append(f"platform/{environment}/ is missing")
+        elif not (directory / launcher).is_file():
+            failures.append(
+                f"platform/{environment}/{launcher} is missing; each "
+                f"environment keeps its own launcher beside its assets"
+            )
+
     missing = sorted(RUNTIME_SCRIPTS - script_files)
     if unexpected:
         failures.append("non-runtime files remain in scripts/: " + ", ".join(unexpected))

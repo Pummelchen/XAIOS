@@ -186,7 +186,7 @@ def validate_memory_map_contract(_rc_contract):
 
 
 def validate_qemu_launcher_contract(_rc_contract):
-    launcher = (ROOT / "scripts/run-qemu-aarch64.sh").read_text(encoding="utf-8")
+    launcher = (ROOT / "platform/qemu/run-qemu-aarch64.sh").read_text(encoding="utf-8")
     failures = []
     if 'accel="${XAIOS_QEMU_ACCEL:-tcg}"' not in launcher:
         failures.append("AArch64 QEMU launcher must default to TCG")

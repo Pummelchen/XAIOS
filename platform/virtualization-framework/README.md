@@ -30,11 +30,11 @@ timing behaviour on real silicon, not to many-core scaling work.
 
 ```sh
 ./scripts/build-image.sh                       # kernel, loader, initfs
-xcrun swiftc -O -o build/vz/xaios-vz tools/vz/xaios_vz.swift
-codesign --force --sign - --entitlements tools/vz/xaios-vz.entitlements \
+xcrun swiftc -O -o build/vz/xaios-vz platform/virtualization-framework/xaios_vz.swift
+codesign --force --sign - --entitlements platform/virtualization-framework/xaios-vz.entitlements \
   build/vz/xaios-vz
 make vmnet-helper                               # privileged vmnet relay
-./tools/vz/build-vz-disk.sh                    # ESP + GPT boot disk
+./platform/virtualization-framework/build-vz-disk.sh                    # ESP + GPT boot disk
 ./build/vz/xaios-vz build/vz/xaios-vz-disk.img --memory-mib 4096 --gui
 ```
 

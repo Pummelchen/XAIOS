@@ -45,6 +45,6 @@ mcopy -i "$ESP_IMAGE" "$BUILD_DIR/kernel/kernel.elf" ::/EFI/XAIOS/kernel.elf
 mcopy -i "$ESP_IMAGE" "$BUILD_DIR/xaios-virtio-test.img" ::/EFI/XAIOS/initfs.img
 mcopy -i "$ESP_IMAGE" "$ENTROPY_SEED" ::/EFI/XAIOS/entropy.seed
 
-python3 "$ROOT_DIR/tools/vz/make_vz_disk.py" "$ESP_IMAGE" "$DISK_IMAGE"
+python3 "$ROOT_DIR/platform/virtualization-framework/make_vz_disk.py" "$ESP_IMAGE" "$DISK_IMAGE"
 printf 'ESP contents:\n'
 mdir -i "$ESP_IMAGE" ::/EFI/XAIOS

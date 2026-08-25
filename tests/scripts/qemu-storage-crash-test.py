@@ -42,7 +42,7 @@ def boot_until(
     env: dict[str, str], targets: tuple[str, ...], timeout: int, hard: bool
 ) -> str:
     process = subprocess.Popen(
-        ["./scripts/run-qemu-aarch64.sh"],
+        ["./platform/qemu/run-qemu-aarch64.sh"],
         cwd=ROOT,
         env=env,
         stdout=subprocess.PIPE,

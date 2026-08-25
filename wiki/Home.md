@@ -99,7 +99,7 @@ and API contracts remain in the source repository:
 - [Storage benchmarking](https://github.com/Pummelchen/XAIOS/blob/main/docs/STORAGE-BENCHMARKING.md)
 - [Hardware readiness contract](https://github.com/Pummelchen/XAIOS/blob/main/HARDWARE-READINESS.md)
 - [VMware Fusion details](https://github.com/Pummelchen/XAIOS/blob/main/docs/VMWARE-FUSION.md)
-- [Virtualization.framework harness](https://github.com/Pummelchen/XAIOS/blob/main/tools/vz/README.md)
+- [Virtualization.framework harness](https://github.com/Pummelchen/XAIOS/blob/main/platform/virtualization-framework/README.md)
 - [Complete test inventory](https://github.com/Pummelchen/XAIOS/blob/main/tests/README.md)
 
 [Source repository](https://github.com/Pummelchen/XAIOS) | [API reference](https://github.com/Pummelchen/XAIOS/blob/main/docs/API.md) | [License](https://github.com/Pummelchen/XAIOS/blob/main/LICENSE)

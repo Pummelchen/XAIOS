@@ -86,8 +86,8 @@ def run_arch(arch: str, command: str) -> None:
 
 
 def main() -> int:
-    run_arch("aarch64", "./scripts/run-qemu-aarch64.sh")
-    run_arch("x86_64", "./scripts/run-qemu-x86_64.sh")
+    run_arch("aarch64", "./platform/qemu/run-qemu-aarch64.sh")
+    run_arch("x86_64", "./platform/qemu/run-qemu-x86_64.sh")
     print("qemu-libc-gate: PASS: hosted runtime executed on both architectures")
     return 0
 

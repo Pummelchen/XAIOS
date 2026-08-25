@@ -60,8 +60,8 @@ watching early boot. Build with the serial port as a pipe, then attach a
 terminal to the socket VMware creates:
 
 ```sh
-XAIOS_FUSION_SERIAL=pipe ./scripts/build-vmware-fusion.sh
-./scripts/run-vmware-fusion.sh
+XAIOS_FUSION_SERIAL=pipe ./platform/vmware-fusion/build-vmware-fusion.sh
+./platform/vmware-fusion/run-vmware-fusion.sh
 nc -U /tmp/xaios-fusion-console
 ```
 

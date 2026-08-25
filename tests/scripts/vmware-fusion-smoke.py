@@ -87,7 +87,7 @@ def build_guest() -> None:
     })
     build = run(["./scripts/build-image.sh"], env=environment, timeout=600)
     print(build.stdout, end="")
-    package = run(["./scripts/build-vmware-fusion.sh"], env=environment, timeout=600)
+    package = run(["./platform/vmware-fusion/build-vmware-fusion.sh"], env=environment, timeout=600)
     print(package.stdout, end="")
 
 

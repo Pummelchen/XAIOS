@@ -45,10 +45,10 @@ qemu-xapt-gate:
 	python3 tests/scripts/qemu-xapt-gate.py
 
 vmware-fusion-image: image
-	./scripts/build-vmware-fusion.sh
+	./platform/vmware-fusion/build-vmware-fusion.sh
 
 vmware-fusion: vmware-fusion-image
-	./scripts/run-vmware-fusion.sh
+	./platform/vmware-fusion/run-vmware-fusion.sh
 
 vmware-fusion-smoke:
 	python3 ./tests/scripts/vmware-fusion-smoke.py
@@ -57,8 +57,8 @@ vmware-fusion-smoke:
 # part of CI and its result is not qualification evidence.
 vz-harness:
 	mkdir -p build/vz
-	xcrun swiftc -O -o build/vz/xaios-vz tools/vz/xaios_vz.swift
-	codesign --force --sign - --entitlements tools/vz/xaios-vz.entitlements build/vz/xaios-vz
+	xcrun swiftc -O -o build/vz/xaios-vz platform/virtualization-framework/xaios_vz.swift
+	codesign --force --sign - --entitlements platform/virtualization-framework/xaios-vz.entitlements build/vz/xaios-vz
 
 # The gate reads the kernel log, which boot_ui silences on a quiet boot, so it
 # builds a verbose image rather than depending on the default one.
@@ -71,7 +71,7 @@ vz-gate: vz-harness
 # silently disappears and the next run fails with "command not found".
 vmnet-helper:
 	mkdir -p build/vz
-	cc -O2 -Wall -Wextra -o build/vz/vmnet-helper tools/vz/vmnet-helper.c \
+	cc -O2 -Wall -Wextra -o build/vz/vmnet-helper platform/virtualization-framework/vmnet-helper.c \
 	  -framework vmnet
 
 # Sustained multi-core load on real cores. Repeats the boot because every
@@ -81,7 +81,7 @@ vz-stress-gate: vz-harness
 	python3 ./tests/scripts/vz-stress-gate.py
 
 vmware-fusion-dry-run:
-	./scripts/run-vmware-fusion.sh --dry-run
+	./platform/vmware-fusion/run-vmware-fusion.sh --dry-run
 
 firmware-profiles-check:
 	python3 tests/scripts/check-firmware-platform-profiles.py
@@ -124,13 +124,13 @@ libc-check: libc
 	./scripts/build-c99-app.sh --arch x86_64 --main void tests/libc/c99_main_void.c build/libc/x86_64/c99-app-builder-probe.elf
 
 qemu:
-	./scripts/run-qemu-aarch64.sh
+	./platform/qemu/run-qemu-aarch64.sh
 
 qemu-aarch64:
-	./scripts/run-qemu-aarch64.sh
+	./platform/qemu/run-qemu-aarch64.sh
 
 qemu-x86_64: image-x86_64
-	./scripts/run-qemu-x86_64.sh
+	./platform/qemu/run-qemu-x86_64.sh
 
 qemu-x86_64-numa-gate:
 	XAIOS_TARGET_ARCH=x86_64 XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
@@ -140,8 +140,8 @@ qemu-aarch64-sve2-gate: image-qemu-test
 	python3 tests/scripts/qemu-aarch64-sve2-gate.py
 
 qemu-dry-run:
-	./scripts/run-qemu-aarch64.sh --dry-run
-	./scripts/run-qemu-x86_64.sh --dry-run
+	./platform/qemu/run-qemu-aarch64.sh --dry-run
+	./platform/qemu/run-qemu-x86_64.sh --dry-run
 
 qemu-smoke: image-qemu-test
 	python3 ./tests/scripts/qemu-smoke.py

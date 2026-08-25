@@ -137,7 +137,7 @@ are intentionally not implied by that passing profile.
 XAIOS boots to a login on this platform with MutableFS on a durable volume,
 DHCP IPv4, SLAAC IPv6, SSH and all four vCPUs online, and the Mac can ssh into
 the guest over vmnet
-through `tools/vz/vmnet-helper`, which is the only route in: the built-in NAT
+through `platform/virtualization-framework/vmnet-helper`, which is the only route in: the built-in NAT
 attachment delivers no host-initiated frame, and bridging needs an entitlement
 V-03 also waits on. `make vz-gate` checks that boot and writes
 `build/vz-gate.json`. It is a development target: the gate needs macOS on Apple
