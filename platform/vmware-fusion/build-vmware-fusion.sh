@@ -62,7 +62,11 @@ mkdir -p "$STAGE_DIR/EFI/BOOT" "$STAGE_DIR/EFI/XAIOS" "$VM_BUNDLE"
 # cannot reach Docker Hub fails even when the finished image is sitting in the
 # local store. Reusing it keeps the build working offline; the tag carries the
 # distribution and architecture, so what gets reused is not ambiguous.
-if ! docker build --platform linux/arm64 \
+# Bounded, because an unreachable registry does not fail fast: it blocks until
+# Docker's own deadline, which was long enough to consume a gate's entire time
+# budget and get the build killed rather than falling back.
+GRUB_BUILD_TIMEOUT="${XAIOS_FUSION_GRUB_BUILD_TIMEOUT:-90}"
+if ! timeout "$GRUB_BUILD_TIMEOUT" docker build --platform linux/arm64 \
   --file "$ROOT_DIR/platform/vmware-fusion/Dockerfile.grub" \
   --tag "$GRUB_IMAGE" "$ROOT_DIR/platform/vmware-fusion"; then
   if docker image inspect "$GRUB_IMAGE" >/dev/null 2>&1; then
