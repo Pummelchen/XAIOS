@@ -81,6 +81,61 @@ static void bump_online(void) {
   __asm__ volatile("sev" ::: "memory");
 }
 
+/* PSCI starts a secondary at reset state, with translation off, while UEFI
+ * handed the boot CPU an MMU that was already on and the kernel's own tables
+ * do not exist until vmm_init() runs, long after this. So a secondary spends
+ * its first instructions seeing every address as Device memory, and two things
+ * follow that cost a boot each.
+ *
+ * Exclusives are architecturally unsupported on Device memory, so the atomic
+ * increment these CPUs used to announce themselves with took a data abort --
+ * ESR 0x96000035, DFSC 0b110101 -- before it could announce anything. QEMU's
+ * TCG permits the access, which is why this survived every gate. A secondary
+ * therefore publishes itself with plain stores, which Device memory does
+ * allow, and the boot CPU does the counting.
+ *
+ * Those stores then go straight to memory and never enter the caches the boot
+ * CPU is using -- and the boot CPU filled those lines itself when it zeroed
+ * the array -- so it would read its own stale zeros and conclude that nothing
+ * came up. The array is pushed out to memory before the first CPU_ON and read
+ * back from memory while waiting. */
+static uint64_t dcache_line_bytes(void) {
+  uint64_t ctr = 0U;
+  __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
+  return UINT64_C(4) << ((ctr >> 16U) & UINT64_C(0xf));
+}
+
+static void cpu_states_to_memory(void) {
+  if (g_cpu_states == 0 || g_cpu_capacity == 0U) return;
+  uint64_t line = dcache_line_bytes();
+  uintptr_t start = (uintptr_t)g_cpu_states & ~(uintptr_t)(line - 1U);
+  uintptr_t end = (uintptr_t)g_cpu_states +
+                  (uintptr_t)g_cpu_capacity * sizeof(xaios_cpu_state_t);
+  for (uintptr_t address = start; address < end; address += line) {
+    __asm__ volatile("dc cvac, %0" : : "r"(address) : "memory");
+  }
+  __asm__ volatile("dsb sy" : : : "memory");
+}
+
+static uint32_t observe_online(void) {
+  if (g_cpu_states == 0 || g_cpu_capacity == 0U) return count_online();
+  uint64_t line = dcache_line_bytes();
+  uintptr_t start = (uintptr_t)g_cpu_states & ~(uintptr_t)(line - 1U);
+  uintptr_t end = (uintptr_t)g_cpu_states +
+                  (uintptr_t)g_cpu_capacity * sizeof(xaios_cpu_state_t);
+  __asm__ volatile("dsb sy" : : : "memory");
+  for (uintptr_t address = start; address < end; address += line) {
+    __asm__ volatile("dc ivac, %0" : : "r"(address) : "memory");
+  }
+  __asm__ volatile("dsb sy" : : : "memory");
+  uint32_t online = 0U;
+  for (uint32_t cpu = 0U; cpu < g_cpu_capacity; ++cpu) {
+    if (g_cpu_states[cpu].online != 0U) ++online;
+  }
+  g_online_count = online;
+  return online;
+}
+
 /* QEMU virt exposes one contiguous GICv3 redistributor frame per vCPU. */
 static uint32_t detect_cpu_count(void) {
   uint64_t frames = (QEMU_VIRT_GICR_END - QEMU_VIRT_GICR_BASE) / GICR_STRIDE;
@@ -264,6 +319,9 @@ static void bytes_zero(void *buffer, uint64_t bytes) {
 }
 
 void smp_secondary_main(uint64_t cpu_id) {
+  /* Everything up to the rendezvous below runs with translation off: no
+   * exclusives, and nothing published here is visible to the boot CPU until it
+   * reads past its caches. See cpu_states_to_memory() for why. */
   if (aarch64_sve_enabled() != 0U) {
     uint64_t cpacr = 0U;
     __asm__ volatile("mrs %0, cpacr_el1" : "=r"(cpacr));
@@ -282,10 +340,14 @@ void smp_secondary_main(uint64_t cpu_id) {
     g_cpu_states[cpu_id].lease_owner_id = 0;
     g_cpu_states[cpu_id].irq_routed_away = 0;
     g_cpu_states[cpu_id].tick_suppressed = 0;
-    g_cpu_states[cpu_id].online = 1;
     g_cpu_states[cpu_id].scheduling_enabled = 0;
     g_cpu_states[cpu_id].steal_count = 0;
-    bump_online();
+    /* Online last, and only once everything it describes has landed: it is
+     * what the boot CPU waits on, and an entry seen half-written is worse
+     * than one not seen at all. */
+    __asm__ volatile("dsb sy" : : : "memory");
+    g_cpu_states[cpu_id].online = 1;
+    __asm__ volatile("dsb sy\nsev" : : : "memory");
   }
 
   while (__atomic_load_n(&g_secondary_scheduler_release, __ATOMIC_ACQUIRE) ==
@@ -295,7 +357,8 @@ void smp_secondary_main(uint64_t cpu_id) {
     __asm__ volatile("yield" ::: "memory");
   }
 
-  /* Secondary CPUs start on the firmware/bootstrap translation tables. */
+  /* Re-activate now that this CPU is online and findable by MPIDR, so any
+   * kernel mapping published while it waited at the rendezvous takes effect. */
   vmm_activate_kernel();
 
   /* Initialize this CPU's GIC redistributor and CPU interface */
@@ -373,6 +436,10 @@ void smp_init_platform(const xaios_boot_info_t *boot) {
        candidate_capacity > 1U ? (psci_use_hvc != 0U ? "hvc" : "smc") : "unavailable",
        state_bytes, stack_bytes);
 
+  /* Secondaries read this array with translation off, so it has to be in
+   * memory rather than in this CPU's caches before any of them starts. */
+  cpu_states_to_memory();
+
   /* Wake secondary CPUs via PSCI */
   uint32_t admitted_count = 1U;
   uint32_t rejected_count = 0U;
@@ -396,7 +463,7 @@ void smp_init_platform(const xaios_boot_info_t *boot) {
   uint64_t timeout_ms = SECONDARY_BOOT_BASE_TIMEOUT_MS +
                         (uint64_t)admitted_count * UINT64_C(250);
   uint64_t timeout = timer_frequency_hz() * timeout_ms / 1000U;
-  while (count_online() < admitted_count) {
+  while (observe_online() < admitted_count) {
     if (timer_counter() - start_time > timeout) {
       klog("smp: boot timeout — %u/%u CPUs online\n",
            count_online(), admitted_count);

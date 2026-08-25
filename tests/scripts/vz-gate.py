@@ -43,6 +43,7 @@ EXPECTED = (
     ("IPv4 configured by DHCP", re.compile(r"network: DHCP lease ip=")),
     ("IPv6 address configured", re.compile(r"IPv6 address configured from advertised")),
     ("SSH server listening", re.compile(r"SSH server: up and running")),
+    ("all four vCPUs online", re.compile(r"smp: online cpus=4/4")),
 )
 
 # What it must never say.
@@ -81,7 +82,9 @@ def run() -> tuple[str, bool]:
     log = VZ / "vz-gate.log"
     command = [str(VZ / "xaios-vz"), str(VZ / "run-disk.img")]
     command += [str(VZ / target) for target, _ in VOLUMES]
-    command += ["--memory-mib", "4096"]
+    # Four vCPUs, not one: secondaries start with translation off, and every
+    # defect that state causes is invisible on a single-CPU boot.
+    command += ["--memory-mib", "4096", "--cpus", "4"]
     with log.open("wb") as handle:
         process = subprocess.Popen(command, stdout=handle,
                                    stderr=subprocess.STDOUT,
