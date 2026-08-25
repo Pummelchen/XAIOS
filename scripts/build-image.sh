@@ -170,8 +170,15 @@ fi
 cleanup() {
   if [ $? -ne 0 ]; then
     printf '%s\n' "Build failed, cleaning up partial artifacts..." >&2
-    rm -rf "$BUILD_DIR"
-    printf '%s\n' "Cleaned up $BUILD_DIR" >&2
+    # What this build produced, and nothing else that happens to live in
+    # build/. The Virtualization.framework harness, the vmnet helper and its
+    # socket, SSH test keys and durable volumes are all created by other
+    # tooling and kept here; taking them out on an unrelated build failure has
+    # cost real time more than once. A running helper ends up holding an
+    # unlinked socket that nothing can connect to, and the next run fails with
+    # nothing more useful than "command not found".
+    find "$BUILD_DIR" -mindepth 1 -maxdepth 1 ! -name vz -exec rm -rf {} +
+    printf '%s\n' "Cleaned up $BUILD_DIR (kept $BUILD_DIR/vz)" >&2
   fi
 }
 trap cleanup EXIT

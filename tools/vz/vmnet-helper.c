@@ -58,6 +58,10 @@ static void note(const char *message) {
     fflush(stderr);
 }
 
+/* 192.168.18.0/24 was what vmnet chose unprompted, and it collided with a real
+   LAN. This is deliberately somewhere less popular. */
+#define XAIOS_VMNET_DEFAULT_SUBNET "192.168.201"
+
 static void report(const char *reason) {
     char line[256];
     snprintf(line, sizeof(line),
@@ -154,6 +158,7 @@ static void relay_to_vmnet(int client) {
 
 int main(int argc, char **argv) {
     const char *path = NULL;
+    const char *subnet = NULL;
     uint64_t mode = VMNET_SHARED_MODE;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
@@ -162,13 +167,17 @@ int main(int argc, char **argv) {
             ++i;
             mode = strcmp(argv[i], "host") == 0 ? VMNET_HOST_MODE
                                                 : VMNET_SHARED_MODE;
+        } else if (strcmp(argv[i], "--subnet") == 0 && i + 1 < argc) {
+            subnet = argv[++i];
         } else {
             fprintf(stderr,
-                    "usage: vmnet-helper --socket <path> [--mode shared|host]\n");
+                    "usage: vmnet-helper --socket <path> [--mode shared|host] "
+                    "[--subnet A.B.C]\n");
             return 2;
         }
     }
     struct sockaddr_un address_limit;
+    if (subnet == NULL) subnet = XAIOS_VMNET_DEFAULT_SUBNET;
     if (path == NULL || strlen(path) + sizeof(HELPER_SUFFIX) >
                             sizeof(address_limit.sun_path)) {
         fprintf(stderr, "vmnet-helper: a usable --socket path is required\n");
@@ -177,6 +186,24 @@ int main(int argc, char **argv) {
 
     xpc_object_t description = xpc_dictionary_create(NULL, NULL, 0);
     xpc_dictionary_set_uint64(description, vmnet_operation_mode_key, mode);
+    /* Ask for a subnet nobody is likely to be using. Left to choose, vmnet
+       picked 192.168.18.0/24 on this machine and took 192.168.18.1 for the
+       bridge -- which was also the address of the real router on the operator's
+       own LAN. The host then had two interfaces on one subnet, resolved the
+       guest through the physical one, and every packet went out to the real
+       network and died there. Nothing in the guest or the helper looked wrong:
+       the guest took a DHCP lease and answered router advertisements, while
+       ping and ssh from the host simply never arrived. */
+    if (subnet != NULL) {
+      char start[32];
+      char end[32];
+      snprintf(start, sizeof(start), "%s.2", subnet);
+      snprintf(end, sizeof(end), "%s.254", subnet);
+      xpc_dictionary_set_string(description, vmnet_start_address_key, start);
+      xpc_dictionary_set_string(description, vmnet_end_address_key, end);
+      xpc_dictionary_set_string(description, vmnet_subnet_mask_key,
+                                "255.255.255.0");
+    }
     g_queue = dispatch_queue_create("xaios.vmnet", DISPATCH_QUEUE_SERIAL);
     dispatch_semaphore_t started = dispatch_semaphore_create(0);
     __block vmnet_return_t status = VMNET_FAILURE;
