@@ -84,15 +84,13 @@ typedef struct dns_pending {
   uint8_t tcp_reply[DNS_TCP_MESSAGE_SIZE + 2U];
 } dns_pending_t;
 
-/* C-01: the resolver cache is reached from the NET_RESOLVE syscall, which
-   runs on the calling thread's CPU. See xaios_reentrant_lock. */
-static xaios_reentrant_lock_t g_dns_guard = XAIOS_REENTRANT_LOCK_INIT;
-
-static void dns_lock(void) {
-  xaios_reentrant_lock(&g_dns_guard, smp_cpu_id());
-}
-
-static void dns_unlock(void) { xaios_reentrant_unlock(&g_dns_guard); }
+/* C-01: the resolver cache is reached from the NET_RESOLVE syscall, which runs
+   on the calling thread's CPU. It takes the network stack's guard rather than
+   one of its own: this code calls tcp_open, send, recv and close, and
+   network_poll_tick calls back into dns_tick, so a separate guard would invert
+   the two orders the moment anyone added a call. */
+static void dns_lock(void) { network_stack_lock(); }
+static void dns_unlock(void) { network_stack_unlock(); }
 
 static uint32_t g_dns_server_ip = UINT32_C(0x08080808);
 static uint16_t g_next_dns_id = 1U;

@@ -286,6 +286,11 @@ static void network_lock(void) {
 
 static void network_unlock(void) { xaios_reentrant_unlock(&g_network_guard); }
 
+/* The resolver lives inside this stack and must share its guard; see the
+   declaration in network_stack.h. */
+void network_stack_lock(void) { network_lock(); }
+void network_stack_unlock(void) { network_unlock(); }
+
 /* Bound half-open state so SYN floods cannot exhaust the flow table. */
 #define NETWORK_TCP_MAX_HALF_OPEN 16U
 

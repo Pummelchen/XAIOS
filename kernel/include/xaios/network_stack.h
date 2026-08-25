@@ -107,6 +107,13 @@ void network_stack_self_test(void);
 
 /* Persistent network mode: real TX/RX via VirtIO-net */
 void network_init_persistent(void);
+/* The resolver runs inside this stack: it calls tcp_open, send, recv and close
+   to carry queries, and network_poll_tick drives its timers. Two guards across
+   that boundary would be a lock-order inversion waiting for one added call, so
+   the resolver takes this one. Reentrant, so nesting either way is safe. */
+void network_stack_lock(void);
+void network_stack_unlock(void);
+
 void network_poll_tick(void);
 uint64_t network_poll_tick_count(void);
 uint64_t network_icmp_reply_count(void);

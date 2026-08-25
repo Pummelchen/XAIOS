@@ -123,6 +123,15 @@ static inline int xaios_spin_held(xaios_spinlock_t *lock) {
  * whether these subsystems are correct under parallelism at all; finer
  * locking belongs after that, with measurements to justify it.
  *
+ * Guards can nest across subsystems, and where they do the order is fixed:
+ * service before network. Nothing takes them the other way, and nothing else
+ * crosses at all -- the CPU-AI runtime touches neither, and the resolver
+ * deliberately shares the network guard rather than holding a second one,
+ * because it calls tcp_open, send, recv and close while network_poll_tick
+ * calls back into its timers. Two guards across that boundary would invert
+ * the moment somebody added one call. Check this list before introducing
+ * another guard; a coarse lock is only simple while its order is.
+ *
  * Never take this from interrupt context. The depth check identifies the
  * holder by CPU, so an interrupt that lands on a CPU already inside the guard
  * and calls a guarded function would be told it holds the lock and would walk
