@@ -12,6 +12,7 @@
 #include <xaios/ntp.h>
 #include <xaios/operations.h>
 #include <xaios/network_stack.h>
+#include <xaios/smp.h>
 #include <xaios/spinlock.h>
 #include <xaios/routing.h>
 #include <xaios/socket_buffer.h>
@@ -272,7 +273,48 @@ static network_udp_flow_t g_udp_flows[NETWORK_UDP_FLOWS];
 static network_tcp_flow_t g_tcp_flows[NETWORK_TCP_CONNECTIONS];
 
 /* VirtIO RX/TX and the TCP table are shared by service and child CPUs. */
-static xaios_spinlock_t g_network_poll_lock = XAIOS_SPINLOCK_INIT;
+
+/* C-01. This stack was written when one CPU ran the whole kernel, so its flow
+   and listener tables carry roughly a hundred and seventy field writes and
+   almost no serialisation. That held while secondaries never came online. Now
+   a syscall runs on whichever CPU the calling thread occupies, so two threads
+   in one process can be inside these tables at the same time.
+   
+   A plain spinlock at each entry point would deadlock: ten of the exported
+   functions call other exported ones -- external_session calls
+   app_tcp_connect, tcp_close_flow calls tcp_abort_flow, and so on. So the
+   guard counts depth per CPU. The first acquisition on a CPU takes the lock
+   and nested ones only count, which leaves every internal call site and every
+   table write exactly as it was.
+   
+   Reading owner and depth outside the lock is safe in the only direction that
+   matters: a CPU can conclude it does *not* already hold the guard and fall
+   through to the real lock, which blocks correctly. It cannot wrongly conclude
+   that it does, because a CPU only ever writes its own id there while holding
+   the lock, and clears it before releasing. */
+static xaios_spinlock_t g_network_lock = XAIOS_SPINLOCK_INIT;
+static uint32_t g_network_lock_owner = UINT32_MAX;
+static uint32_t g_network_lock_depth;
+
+static void network_lock(void) {
+  uint32_t cpu = smp_cpu_id();
+  if (__atomic_load_n(&g_network_lock_depth, __ATOMIC_ACQUIRE) != 0U &&
+      __atomic_load_n(&g_network_lock_owner, __ATOMIC_ACQUIRE) == cpu) {
+    ++g_network_lock_depth;
+    return;
+  }
+  xaios_spin_lock(&g_network_lock);
+  __atomic_store_n(&g_network_lock_owner, cpu, __ATOMIC_RELEASE);
+  __atomic_store_n(&g_network_lock_depth, 1U, __ATOMIC_RELEASE);
+}
+
+static void network_unlock(void) {
+  if (g_network_lock_depth == 0U) return;
+  if (--g_network_lock_depth != 0U) return;
+  __atomic_store_n(&g_network_lock_owner, UINT32_MAX, __ATOMIC_RELEASE);
+  __atomic_store_n(&g_network_lock_depth, 0U, __ATOMIC_RELEASE);
+  xaios_spin_unlock(&g_network_lock);
+}
 
 /* Bound half-open state so SYN floods cannot exhaust the flow table. */
 #define NETWORK_TCP_MAX_HALF_OPEN 16U
@@ -1729,7 +1771,7 @@ static network_tcp_flow_t *alloc_tcp_flow(
   return 0;
 }
 
-xaios_status_t network_stack_tcp_open(const xaios_ip_addr_t *remote_addr,
+static xaios_status_t network_stack_tcp_open_unlocked(const xaios_ip_addr_t *remote_addr,
                                       uint16_t remote_port,
                                       uint16_t local_port,
                                       uint32_t *out_flow_id) {
@@ -1739,7 +1781,7 @@ xaios_status_t network_stack_tcp_open(const xaios_ip_addr_t *remote_addr,
       (remote_addr->family != XAIOS_IP_FAMILY_V4 &&
        remote_addr->family != XAIOS_IP_FAMILY_V6))
     return XAIOS_ERR_INVALID;
-  xaios_spin_lock(&g_network_poll_lock);
+  network_lock();
   uint32_t remote_address = 0U;
   uint32_t local_address = 0U;
   if (remote_addr->family == XAIOS_IP_FAMILY_V4) {
@@ -1844,13 +1886,23 @@ xaios_status_t network_stack_tcp_open(const xaios_ip_addr_t *remote_addr,
 busy:
   status = XAIOS_ERR_BUSY;
 out:
-  xaios_spin_unlock(&g_network_poll_lock);
+  network_unlock();
   return status;
 }
 
-xaios_status_t network_stack_tcp_open_status(uint32_t flow_id) {
+xaios_status_t network_stack_tcp_open(const xaios_ip_addr_t *remote_addr,
+                                      uint16_t remote_port,
+                                      uint16_t local_port,
+                                      uint32_t *out_flow_id) {
+  network_lock();
+  xaios_status_t result = network_stack_tcp_open_unlocked(remote_addr, remote_port, local_port, out_flow_id);
+  network_unlock();
+  return result;
+}
+
+static xaios_status_t network_stack_tcp_open_status_unlocked(uint32_t flow_id) {
   xaios_status_t status = XAIOS_ERR_NOT_FOUND;
-  xaios_spin_lock(&g_network_poll_lock);
+  network_lock();
   for (uint32_t i = 0U; i < NETWORK_TCP_CONNECTIONS; ++i) {
     if (g_tcp_flows[i].flow_id != flow_id) continue;
     if (g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_ESTABLISHED) {
@@ -1862,11 +1914,18 @@ xaios_status_t network_stack_tcp_open_status(uint32_t flow_id) {
     }
     break;
   }
-  xaios_spin_unlock(&g_network_poll_lock);
+  network_unlock();
   return status;
 }
 
-xaios_status_t network_stack_tcp_abort_flow(uint32_t flow_id) {
+xaios_status_t network_stack_tcp_open_status(uint32_t flow_id) {
+  network_lock();
+  xaios_status_t result = network_stack_tcp_open_status_unlocked(flow_id);
+  network_unlock();
+  return result;
+}
+
+static xaios_status_t network_stack_tcp_abort_flow_unlocked(uint32_t flow_id) {
   for (uint32_t i = 0U; i < NETWORK_TCP_CONNECTIONS; ++i) {
     network_tcp_flow_t *flow = &g_tcp_flows[i];
     if (flow->flow_id != flow_id) continue;
@@ -1882,8 +1941,14 @@ xaios_status_t network_stack_tcp_abort_flow(uint32_t flow_id) {
   return XAIOS_ERR_NOT_FOUND;
 }
 
+xaios_status_t network_stack_tcp_abort_flow(uint32_t flow_id) {
+  network_lock();
+  xaios_status_t result = network_stack_tcp_abort_flow_unlocked(flow_id);
+  network_unlock();
+  return result;
+}
+
 void network_stack_init(void) {
-  xaios_spin_init(&g_network_poll_lock);
   g_tcp_drain_cursor = 0U;
   for (uint32_t i = 0; i < XAIOS_NETWORK_MAX_QUEUE_BINDINGS; ++i) {
     g_queue_bindings[i].cell_id = 0;
@@ -2435,7 +2500,7 @@ static void tcp_drain_pending(void) {
 
 /* ---- Listener Registry Functions ---- */
 
-void network_stack_register_listener(uint16_t port, uint64_t sockfd) {
+static void network_stack_register_listener_unlocked(uint16_t port, uint64_t sockfd) {
   for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
     if (!g_listeners_ex[i].active) {
       g_listeners_ex[i].port = port;
@@ -2449,7 +2514,13 @@ void network_stack_register_listener(uint16_t port, uint64_t sockfd) {
   klog("network: listener registry full (port=%u)\n", port);
 }
 
-void network_stack_register_udp_listener(uint16_t port, uint64_t sockfd) {
+void network_stack_register_listener(uint16_t port, uint64_t sockfd) {
+  network_lock();
+  network_stack_register_listener_unlocked(port, sockfd);
+  network_unlock();
+}
+
+static void network_stack_register_udp_listener_unlocked(uint16_t port, uint64_t sockfd) {
   for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
     if (!g_listeners_ex[i].active) {
       g_listeners_ex[i].port = port;
@@ -2463,7 +2534,13 @@ void network_stack_register_udp_listener(uint16_t port, uint64_t sockfd) {
   klog("network: UDP listener registry full (port=%u)\n", port);
 }
 
-void network_stack_unregister_listener(uint16_t port) {
+void network_stack_register_udp_listener(uint16_t port, uint64_t sockfd) {
+  network_lock();
+  network_stack_register_udp_listener_unlocked(port, sockfd);
+  network_unlock();
+}
+
+static void network_stack_unregister_listener_unlocked(uint16_t port) {
   for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
     if (g_listeners_ex[i].active && g_listeners_ex[i].port == port &&
         g_listeners_ex[i].protocol == NETWORK_IP_PROTO_TCP) {
@@ -2474,7 +2551,13 @@ void network_stack_unregister_listener(uint16_t port) {
   }
 }
 
-void network_stack_unregister_udp_listener(uint16_t port) {
+void network_stack_unregister_listener(uint16_t port) {
+  network_lock();
+  network_stack_unregister_listener_unlocked(port);
+  network_unlock();
+}
+
+static void network_stack_unregister_udp_listener_unlocked(uint16_t port) {
   for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
     if (g_listeners_ex[i].active && g_listeners_ex[i].port == port &&
         g_listeners_ex[i].protocol == NETWORK_IP_PROTO_UDP) {
@@ -2483,6 +2566,12 @@ void network_stack_unregister_udp_listener(uint16_t port) {
       return;
     }
   }
+}
+
+void network_stack_unregister_udp_listener(uint16_t port) {
+  network_lock();
+  network_stack_unregister_udp_listener_unlocked(port);
+  network_unlock();
 }
 
 int network_stack_has_listener(uint16_t port) {
@@ -2498,7 +2587,7 @@ static int accept_queue_enqueue(uint32_t flow_id, uint32_t peer_ip,
                                   peer_addr);
 }
 
-xaios_status_t network_stack_accept_connection(uint16_t listen_port,
+static xaios_status_t network_stack_accept_connection_unlocked(uint16_t listen_port,
                                                 uint32_t *out_flow_id,
                                                 uint32_t *out_peer_ip,
                                                 uint16_t *out_peer_port,
@@ -2511,9 +2600,20 @@ xaios_status_t network_stack_accept_connection(uint16_t listen_port,
   return XAIOS_ERR_NOT_FOUND;
 }
 
+xaios_status_t network_stack_accept_connection(uint16_t listen_port,
+                                                uint32_t *out_flow_id,
+                                                uint32_t *out_peer_ip,
+                                                uint16_t *out_peer_port,
+                                                xaios_ip_addr_t *out_peer_addr) {
+  network_lock();
+  xaios_status_t result = network_stack_accept_connection_unlocked(listen_port, out_flow_id, out_peer_ip, out_peer_port, out_peer_addr);
+  network_unlock();
+  return result;
+}
+
 /* ---- Socket-to-Flow Mapping Functions ---- */
 
-void network_stack_map_socket(uint64_t sockfd, uint32_t flow_id,
+static void network_stack_map_socket_unlocked(uint64_t sockfd, uint32_t flow_id,
                                 uint8_t protocol) {
   for (uint32_t i = 0; i < NETWORK_SOCK_FLOW_MAP_SIZE; ++i) {
     if (g_socket_flow_map[i].active != 0 &&
@@ -2534,7 +2634,14 @@ void network_stack_map_socket(uint64_t sockfd, uint32_t flow_id,
   }
 }
 
-socket_flow_mapping_t *network_stack_get_socket_mapping(uint64_t sockfd) {
+void network_stack_map_socket(uint64_t sockfd, uint32_t flow_id,
+                                uint8_t protocol) {
+  network_lock();
+  network_stack_map_socket_unlocked(sockfd, flow_id, protocol);
+  network_unlock();
+}
+
+static socket_flow_mapping_t *network_stack_get_socket_mapping_unlocked(uint64_t sockfd) {
   for (uint32_t i = 0; i < NETWORK_SOCK_FLOW_MAP_SIZE; ++i) {
     if (g_socket_flow_map[i].active != 0 &&
         g_socket_flow_map[i].sockfd == sockfd) {
@@ -2544,7 +2651,14 @@ socket_flow_mapping_t *network_stack_get_socket_mapping(uint64_t sockfd) {
   return 0;
 }
 
-void network_stack_unmap_socket(uint64_t sockfd) {
+socket_flow_mapping_t * network_stack_get_socket_mapping(uint64_t sockfd) {
+  network_lock();
+  socket_flow_mapping_t * result = network_stack_get_socket_mapping_unlocked(sockfd);
+  network_unlock();
+  return result;
+}
+
+static void network_stack_unmap_socket_unlocked(uint64_t sockfd) {
   for (uint32_t i = 0; i < NETWORK_SOCK_FLOW_MAP_SIZE; ++i) {
     if (g_socket_flow_map[i].active != 0 &&
         g_socket_flow_map[i].sockfd == sockfd) {
@@ -2554,9 +2668,15 @@ void network_stack_unmap_socket(uint64_t sockfd) {
   }
 }
 
+void network_stack_unmap_socket(uint64_t sockfd) {
+  network_lock();
+  network_stack_unmap_socket_unlocked(sockfd);
+  network_unlock();
+}
+
 /* ---- TCP Send / Close API ---- */
 
-xaios_status_t network_stack_tcp_send(uint32_t flow_id, const uint8_t *data,
+static xaios_status_t network_stack_tcp_send_unlocked(uint32_t flow_id, const uint8_t *data,
                                        uint32_t len, uint32_t *bytes_written) {
   if (data == 0 || bytes_written == 0 || len == 0U) return XAIOS_ERR_INVALID;
   *bytes_written = 0U;
@@ -2574,7 +2694,15 @@ xaios_status_t network_stack_tcp_send(uint32_t flow_id, const uint8_t *data,
   return XAIOS_ERR_NOT_FOUND;
 }
 
-xaios_status_t network_stack_tcp_close_flow(uint32_t flow_id) {
+xaios_status_t network_stack_tcp_send(uint32_t flow_id, const uint8_t *data,
+                                       uint32_t len, uint32_t *bytes_written) {
+  network_lock();
+  xaios_status_t result = network_stack_tcp_send_unlocked(flow_id, data, len, bytes_written);
+  network_unlock();
+  return result;
+}
+
+static xaios_status_t network_stack_tcp_close_flow_unlocked(uint32_t flow_id) {
   for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
     if (g_tcp_flows[i].flow_id == flow_id) {
       if (g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_SYN_RECV ||
@@ -2589,7 +2717,14 @@ xaios_status_t network_stack_tcp_close_flow(uint32_t flow_id) {
   return XAIOS_ERR_NOT_FOUND;
 }
 
-xaios_status_t network_stack_udp_send(uint32_t flow_id, const uint8_t *data,
+xaios_status_t network_stack_tcp_close_flow(uint32_t flow_id) {
+  network_lock();
+  xaios_status_t result = network_stack_tcp_close_flow_unlocked(flow_id);
+  network_unlock();
+  return result;
+}
+
+static xaios_status_t network_stack_udp_send_unlocked(uint32_t flow_id, const uint8_t *data,
                                        uint32_t len, uint32_t *bytes_written) {
   if (data == 0 || bytes_written == 0 || len == 0U) return XAIOS_ERR_INVALID;
   *bytes_written = 0U;
@@ -2678,7 +2813,15 @@ xaios_status_t network_stack_udp_send(uint32_t flow_id, const uint8_t *data,
   return XAIOS_ERR_NOT_FOUND;
 }
 
-uint32_t network_stack_tcp_recv(uint32_t flow_id, uint8_t *buffer,
+xaios_status_t network_stack_udp_send(uint32_t flow_id, const uint8_t *data,
+                                       uint32_t len, uint32_t *bytes_written) {
+  network_lock();
+  xaios_status_t result = network_stack_udp_send_unlocked(flow_id, data, len, bytes_written);
+  network_unlock();
+  return result;
+}
+
+static uint32_t network_stack_tcp_recv_unlocked(uint32_t flow_id, uint8_t *buffer,
                                   uint32_t buffer_size) {
   if (buffer == 0 || buffer_size == 0U) return 0U;
   for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
@@ -2697,7 +2840,15 @@ uint32_t network_stack_tcp_recv(uint32_t flow_id, uint8_t *buffer,
   return 0;
 }
 
-int network_stack_tcp_peer_closed(uint32_t flow_id) {
+uint32_t network_stack_tcp_recv(uint32_t flow_id, uint8_t *buffer,
+                                  uint32_t buffer_size) {
+  network_lock();
+  uint32_t result = network_stack_tcp_recv_unlocked(flow_id, buffer, buffer_size);
+  network_unlock();
+  return result;
+}
+
+static int network_stack_tcp_peer_closed_unlocked(uint32_t flow_id) {
   for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
     if (g_tcp_flows[i].flow_id == flow_id) {
       return g_tcp_flows[i].state == XAIOS_NETWORK_FLOW_CLOSE_WAIT ||
@@ -2708,7 +2859,14 @@ int network_stack_tcp_peer_closed(uint32_t flow_id) {
   return 1;
 }
 
-uint32_t network_stack_udp_recv(uint64_t sockfd, uint8_t *buffer,
+int network_stack_tcp_peer_closed(uint32_t flow_id) {
+  network_lock();
+  int result = network_stack_tcp_peer_closed_unlocked(flow_id);
+  network_unlock();
+  return result;
+}
+
+static uint32_t network_stack_udp_recv_unlocked(uint64_t sockfd, uint8_t *buffer,
                                 uint32_t buffer_size,
                                 xaios_ip_addr_t *source_addr,
                                 uint16_t *source_port,
@@ -2753,6 +2911,17 @@ uint32_t network_stack_udp_recv(uint64_t sockfd, uint8_t *buffer,
     }
   }
   return 0;
+}
+
+uint32_t network_stack_udp_recv(uint64_t sockfd, uint8_t *buffer,
+                                uint32_t buffer_size,
+                                xaios_ip_addr_t *source_addr,
+                                uint16_t *source_port,
+                                uint32_t *flow_id) {
+  network_lock();
+  uint32_t result = network_stack_udp_recv_unlocked(sockfd, buffer, buffer_size, source_addr, source_port, flow_id);
+  network_unlock();
+  return result;
 }
 
 xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
@@ -4106,7 +4275,7 @@ static void tcp_sliding_window_self_test(void) {
   klog("network: TCP sliding-window self-test passed segments=3 cumulative_ack=1 partial_ack=1 sack=1 fast_retransmit=1 zero_window=1 reorder=1 rto_backoff=1\n");
 }
 
-xaios_status_t network_stack_app_udp_echo(const uint8_t *payload,
+static xaios_status_t network_stack_app_udp_echo_unlocked(const uint8_t *payload,
                                          uint64_t payload_len,
                                          uint64_t *echoed_bytes) {
   if (payload == 0 || echoed_bytes == 0 || payload_len == 0 ||
@@ -4136,7 +4305,16 @@ xaios_status_t network_stack_app_udp_echo(const uint8_t *payload,
   return XAIOS_OK;
 }
 
-xaios_status_t network_stack_app_tcp_connect(uint64_t *round_trips) {
+xaios_status_t network_stack_app_udp_echo(const uint8_t *payload,
+                                         uint64_t payload_len,
+                                         uint64_t *echoed_bytes) {
+  network_lock();
+  xaios_status_t result = network_stack_app_udp_echo_unlocked(payload, payload_len, echoed_bytes);
+  network_unlock();
+  return result;
+}
+
+static xaios_status_t network_stack_app_tcp_connect_unlocked(uint64_t *round_trips) {
   if (round_trips == 0) {
     return XAIOS_ERR_INVALID;
   }
@@ -4214,6 +4392,13 @@ xaios_status_t network_stack_app_tcp_connect(uint64_t *round_trips) {
   return XAIOS_OK;
 }
 
+xaios_status_t network_stack_app_tcp_connect(uint64_t *round_trips) {
+  network_lock();
+  xaios_status_t result = network_stack_app_tcp_connect_unlocked(round_trips);
+  network_unlock();
+  return result;
+}
+
 static void network_append(char *output, uint64_t capacity, uint64_t *offset,
                            const char *text) {
   if (output == 0 || offset == 0 || text == 0 || capacity == 0) {
@@ -4247,7 +4432,7 @@ static void network_append_u64(char *output, uint64_t capacity,
   }
 }
 
-xaios_status_t network_stack_external_session(uint64_t protocol, uint64_t port,
+static xaios_status_t network_stack_external_session_unlocked(uint64_t protocol, uint64_t port,
                                              const uint8_t *payload,
                                              uint64_t payload_len,
                                              char *output,
@@ -4294,6 +4479,18 @@ xaios_status_t network_stack_external_session(uint64_t protocol, uint64_t port,
   }
 
   return XAIOS_ERR_INVALID;
+}
+
+xaios_status_t network_stack_external_session(uint64_t protocol, uint64_t port,
+                                             const uint8_t *payload,
+                                             uint64_t payload_len,
+                                             char *output,
+                                             uint64_t output_capacity,
+                                             uint64_t *output_bytes) {
+  network_lock();
+  xaios_status_t result = network_stack_external_session_unlocked(protocol, port, payload, payload_len, output, output_capacity, output_bytes);
+  network_unlock();
+  return result;
 }
 
 void network_stack_self_test(void) {
@@ -4965,9 +5162,9 @@ static void network_poll_tick_locked(void) {
 }
 
 void network_poll_tick(void) {
-  xaios_spin_lock(&g_network_poll_lock);
+  network_lock();
   network_poll_tick_locked();
-  xaios_spin_unlock(&g_network_poll_lock);
+  network_unlock();
   dns_transport_tick(timer_now_ns());
 }
 
