@@ -8,7 +8,8 @@ than a software model.
 **Status: XAIOS boots and runs.** The loader runs, the kernel starts,
 initialisation completes, the kernel log streams to this program's stdout over
 the virtio console, MutableFS mounts a durable volume read-write, IPv4 comes
-up by DHCP and sshd listens on port 22. IPv6 configures an address from the
+up by DHCP, sshd listens on port 22, and over vmnet you can ssh into it from
+the Mac. IPv6 configures an address from the
 router advertisement this platform sends; see *IPv6* below.
 
 ## Why this target exists
@@ -32,6 +33,7 @@ timing behaviour on real silicon, not to many-core scaling work.
 xcrun swiftc -O -o build/vz/xaios-vz tools/vz/xaios_vz.swift
 codesign --force --sign - --entitlements tools/vz/xaios-vz.entitlements \
   build/vz/xaios-vz
+cc -O2 -o build/vz/vmnet-helper tools/vz/vmnet-helper.c -framework vmnet
 ./tools/vz/build-vz-disk.sh                    # ESP + GPT boot disk
 ./build/vz/xaios-vz build/vz/xaios-vz-disk.img --memory-mib 4096 --gui
 ```
@@ -80,45 +82,79 @@ result is not qualification evidence.
 
 ## Reaching it from the host
 
-Not with the NAT attachment this harness uses by default. Guest-initiated
-traffic works in both directions -- DHCP completes, the router solicitation is
-answered, and an ICMP round trip to the gateway returns in well under a
-millisecond -- but host-initiated frames are not delivered to the guest at all:
-an ARP request for its address never arrives. sshd therefore listens on TCP 22
-without being reachable from the Mac, which is a property of the attachment
-rather than of XAIOS.
-
-The console is interactive, and is the way in meanwhile.
-
-### The vmnet route, which is unfinished
-
-A bridged attachment would expose the guest but needs the
-`com.apple.vm.networking` entitlement, which Apple issues only with a
-provisioning profile. vmnet itself needs no entitlement, only root, so
-`vmnet-helper.c` starts a vmnet interface as root and relays Ethernet frames to
-an unprivileged datagram socket that the harness hands to
-Virtualization.framework. Only the helper runs privileged; the virtual machine
-does not. This is the arrangement `socket_vmnet` uses for rootless QEMU.
+Yes, over vmnet, with one privileged helper and a choice of network mode:
 
 ```sh
-sudo ./build/vz/vmnet-helper --socket "$PWD/build/vz/vmnet.sock"
+sudo ./build/vz/vmnet-helper --socket "$PWD/build/vz/vmnet.sock" --mode host
 ./build/vz/xaios-vz ... --vmnet "$PWD/build/vz/vmnet.sock"
 ```
 
-It half works, and the half that does not is understood but unsolved. The guest
-joins the real vmnet network and takes an address from it by DHCP, outbound
-traffic flows, and the Mac sees the guest in its ARP table with the correct
-hardware address. Inbound frames do not arrive: the helper reads them from
-vmnet and writes them to the socket without error -- 120 frames in one
-measurement -- while the guest's device reports having received four all boot,
-with its receive ring free and twenty-six million polls behind it. So
-Virtualization.framework delivers the first few datagrams and then stops
-reading, with buffers available on both sides.
+```
+$ ssh admin@192.168.18.2 ifconfig
+vtnet0: flags=UP,RUNNING mtu 1500
+  inet 192.168.18.2 netmask 255.255.255.0
+  ether 8a:66:71:6e:fd:5a
+```
 
-Sizing `SO_RCVBUF` at four times `SO_SNDBUF`, which the attachment's
-documentation requires, did not change it. What has not been tried is a
-`socketpair` rather than a bound pair of paths, a smaller MTU, or driving the
-socket from the harness rather than a separate privileged process.
+Not with the NAT attachment the harness uses by default. Guest-initiated
+traffic works in both directions there -- DHCP completes, the router
+solicitation is answered, an ICMP round trip to the gateway returns in well
+under a millisecond -- but host-initiated frames are not delivered at all: an
+ARP request for the guest's address never arrives. sshd listens on TCP 22
+without being reachable, which is a property of the attachment rather than of
+XAIOS.
+
+A bridged attachment would expose the guest directly but needs the
+`com.apple.vm.networking` entitlement, which Apple issues only with a
+provisioning profile against a paid membership. vmnet itself needs no
+entitlement, only root, so `vmnet-helper.c` starts a vmnet interface as root
+and relays Ethernet frames over a socket that the harness hands to
+Virtualization.framework. Only the helper runs privileged; the virtual machine
+does not. This is the arrangement `socket_vmnet` uses for rootless QEMU.
+
+### Which mode to ask for
+
+`--mode host` is `VMNET_HOST_MODE`, a private network between this Mac and its
+guests: the host reaches the guest and the guest reaches the host, with no
+route off the machine. `--mode shared` is `VMNET_SHARED_MODE`, which is NAT
+with internet access and, like the built-in attachment, carries only what the
+guest itself starts.
+
+So: host mode to log in, shared mode to fetch something. Neither does both,
+and XAIOS drives one interface at a time.
+
+### What it took
+
+The helper is eighty lines of vmnet calls and rather more lifecycle care, and
+almost everything that went wrong was in the second part.
+
+**The socket must be a `socketpair`, not a bound pair of paths.** Both are
+`AF_UNIX SOCK_DGRAM` and both look right. With two bound paths,
+Virtualization.framework delivered four frames to the guest and then stopped
+reading, with buffers free on both sides -- which is what "inbound is broken"
+meant for most of the time it was broken. With a `socketpair`, the same guest
+took 3159. The helper therefore creates the pair itself and passes one end to
+the harness over `SCM_RIGHTS`, which is also what makes the privilege split
+work: the harness never opens anything, it receives an already-connected
+descriptor from a process that had root and dropped nothing to get it.
+
+**The guest's MAC must be the interface's MAC.** vmnet assigns a hardware
+address when the interface starts and drops frames addressed to anything else,
+so a guest with a different address is invisible inbound while looking fine
+outbound. The helper sends its MAC as the first payload on the socket and the
+harness sets it on the virtio device before starting the machine.
+
+**`SO_RCVBUF` must be at least twice `SO_SNDBUF`,** which the attachment
+documents and which was wrong here for a while. It was not the cause of
+anything, but it is a real requirement.
+
+Four further bugs were all in the helper's own lifecycle and all mine: it
+accepted a single connection and exited, it never noticed a client leaving
+because `SOCK_DGRAM` reports no EOF, `poll` with `events = 0` never reports
+`POLLHUP`, and a backlog of one refused the second run. The helper now accepts
+in a loop, polls both descriptors for `POLLIN`, and logs to
+`<socket>.log` so a privileged process started in another terminal can still
+be diagnosed from here.
 
 ## Why the disk differs from the QEMU image
 

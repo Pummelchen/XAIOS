@@ -145,52 +145,89 @@ configuration.storageDevices = storage
 // --vmnet path, attach instead to the datagram socket that vmnet-helper relays
 // vmnet frames over: the guest then sits on a real vmnet network the host can
 // reach. Only the helper needs root; this process does not.
+var vmnetMACAddress: String? = nil
+var vmnetRendezvous: Int32 = -1
+
 func vmnetAttachment(_ path: String) -> VZFileHandleNetworkDeviceAttachment {
-    let descriptor = socket(AF_UNIX, SOCK_DGRAM, 0)
-    if descriptor < 0 { fail("could not create the vmnet socket") }
+    // The helper holds a socketpair and passes this end over a rendezvous
+    // socket. Binding two paths and connecting them looks equivalent and is
+    // not: Virtualization.framework delivers a handful of frames into a guest
+    // attached that way and then stops reading it, while the guest's own
+    // traffic keeps flowing out, so the network appears to work in one
+    // direction only.
+    // Kept open for the lifetime of the machine: the helper watches this
+    // stream to know the guest is still there, because a datagram socketpair
+    // reports nothing when its far end goes away. Closing it here told the
+    // helper the guest had left the moment it arrived.
+    let rendezvous = socket(AF_UNIX, SOCK_STREAM, 0)
+    if rendezvous < 0 { fail("could not create the rendezvous socket") }
+    vmnetRendezvous = rendezvous
 
-    // Each side binds a known path and sends to the other's, so neither has to
-    // start first.
-    func address(_ value: String) -> sockaddr_un {
-        var storage = sockaddr_un()
-        storage.sun_family = sa_family_t(AF_UNIX)
-        storage.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-        let capacity = MemoryLayout.size(ofValue: storage.sun_path)
-        let offset = MemoryLayout<sockaddr_un>.offset(of: \.sun_path)!
-        withUnsafeMutablePointer(to: &storage) { pointer in
-            let bytes = UnsafeMutableRawPointer(pointer)
-                .advanced(by: offset)
-                .assumingMemoryBound(to: CChar.self)
-            _ = strncpy(bytes, value, capacity - 1)
-        }
-        return storage
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+    let capacity = MemoryLayout.size(ofValue: address.sun_path)
+    let offset = MemoryLayout<sockaddr_un>.offset(of: \.sun_path)!
+    withUnsafeMutablePointer(to: &address) { pointer in
+        let bytes = UnsafeMutableRawPointer(pointer)
+            .advanced(by: offset)
+            .assumingMemoryBound(to: CChar.self)
+        _ = strncpy(bytes, path, capacity - 1)
     }
-
-    let localPath = path + ".vm"
-    unlink(localPath)
-    var local = address(localPath)
-    let bound = withUnsafePointer(to: &local) { pointer in
+    let connected = withUnsafePointer(to: &address) { pointer in
         pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { generic in
-            bind(descriptor, generic, socklen_t(MemoryLayout<sockaddr_un>.size))
-        }
-    }
-    if bound < 0 { fail("could not bind \(localPath): \(String(cString: strerror(errno)))") }
-
-    var peer = address(path)
-    let connected = withUnsafePointer(to: &peer) { pointer in
-        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { generic in
-            connect(descriptor, generic, socklen_t(MemoryLayout<sockaddr_un>.size))
+            connect(rendezvous, generic, socklen_t(MemoryLayout<sockaddr_un>.size))
         }
     }
     if connected < 0 {
         fail("could not reach \(path): \(String(cString: strerror(errno))). Start vmnet-helper first.")
     }
 
-    // Virtualization.framework expects the receive buffer to be at least double
-    // the send buffer, and recommends four times. Sizing them equally leaves it
-    // reading nothing: frames written to this socket never reach the guest,
-    // while the guest's own traffic still flows out, which looks like a one-way
-    // network rather than a misconfigured socket.
+    // Allocated rather than a local, because the iovec must outlive the call.
+    // The helper sends the hardware address vmnet assigned alongside the
+    // socket; the guest has to present it or the switch will not deliver
+    // anything aimed at the guest.
+    let addressBytes = 32
+    let payloadStorage = UnsafeMutablePointer<CChar>.allocate(capacity: addressBytes)
+    payloadStorage.initialize(repeating: 0, count: addressBytes)
+    defer { payloadStorage.deallocate() }
+    var payload = iovec(iov_base: UnsafeMutableRawPointer(payloadStorage),
+                        iov_len: addressBytes)
+    // CMSG_FIRSTHDR and CMSG_DATA are C macros Swift does not import, so the
+    // control-message layout is walked directly: a header, then the descriptor,
+    // each padded to a four-byte boundary as Darwin's CMSG_SPACE does.
+    let headerBytes = (MemoryLayout<cmsghdr>.size + 3) & ~3
+    let descriptorBytes = (MemoryLayout<Int32>.size + 3) & ~3
+    let controlSize = headerBytes + descriptorBytes
+    var control = [UInt8](repeating: 0, count: controlSize)
+    var descriptor: Int32 = -1
+    control.withUnsafeMutableBytes { controlBuffer in
+        var message = msghdr()
+        message.msg_iov = withUnsafeMutablePointer(to: &payload) { $0 }
+        message.msg_iovlen = 1
+        message.msg_control = controlBuffer.baseAddress
+        message.msg_controllen = socklen_t(controlBuffer.count)
+        if recvmsg(rendezvous, &message, 0) < 0 {
+            fail("the helper did not hand over its socket: \(String(cString: strerror(errno)))")
+        }
+        guard message.msg_controllen >= socklen_t(controlSize),
+              let base = controlBuffer.baseAddress else {
+            fail("the helper sent no socket")
+        }
+        let header = base.assumingMemoryBound(to: cmsghdr.self)
+        guard header.pointee.cmsg_level == SOL_SOCKET,
+              header.pointee.cmsg_type == SCM_RIGHTS else {
+            fail("the helper sent something other than a socket")
+        }
+        memcpy(&descriptor, base.advanced(by: headerBytes), MemoryLayout<Int32>.size)
+    }
+    payloadStorage[addressBytes - 1] = 0
+    let announced = String(cString: payloadStorage)
+    if !announced.isEmpty { vmnetMACAddress = announced }
+    if descriptor < 0 { fail("the helper sent an unusable socket") }
+
+    // The attachment requires the receive buffer to be at least double the
+    // send buffer, and recommends four times.
     var sendBuffer: Int32 = 1 << 18
     var receiveBuffer: Int32 = sendBuffer * 4
     setsockopt(descriptor, SOL_SOCKET, SO_SNDBUF, &sendBuffer, socklen_t(MemoryLayout<Int32>.size))
@@ -203,6 +240,13 @@ func vmnetAttachment(_ path: String) -> VZFileHandleNetworkDeviceAttachment {
 let network = VZVirtioNetworkDeviceConfiguration()
 if let vmnetSocket {
     network.attachment = vmnetAttachment(vmnetSocket)
+    if let announced = vmnetMACAddress, let mac = VZMACAddress(string: announced) {
+        network.macAddress = mac
+        FileHandle.standardError.write(Data(
+            "xaios-vz: presenting the vmnet address \(announced)\n".utf8))
+    } else {
+        fail("the helper did not announce a usable hardware address")
+    }
 } else {
     network.attachment = VZNATNetworkDeviceAttachment()
 }

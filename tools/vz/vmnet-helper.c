@@ -19,6 +19,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <poll.h>
 #include <sys/un.h>
 #include <unistd.h>
 #include <vmnet/vmnet.h>
@@ -30,21 +31,46 @@ static interface_ref g_interface;
 static dispatch_queue_t g_queue;
 static int g_socket = -1;
 static uint64_t g_max_packet = 1518;
-static struct sockaddr_un g_peer;
-static unsigned long g_from_vmnet, g_to_guest, g_from_guest, g_to_vmnet,
+/* The relay runs on two threads -- vmnet delivers on its dispatch queue while
+   the main thread reads the guest -- and these counters are the only account
+   of what moved. Kept non-atomic once, they were held in a register and
+   reported zero while frames were plainly flowing, which cost an evening. */
+static _Atomic unsigned long g_from_vmnet, g_to_guest, g_from_guest, g_to_vmnet,
     g_send_errors, g_read_errors;
 
-static void report(const char *reason) {
-    fprintf(stderr,
-            "vmnet-helper: %s vmnet->guest read=%lu sent=%lu send_err=%lu "
-            "read_err=%lu | guest->vmnet recv=%lu written=%lu\n",
-            reason, g_from_vmnet, g_to_guest, g_send_errors, g_read_errors,
-            g_from_guest, g_to_vmnet);
+static FILE *g_log;
+
+static void open_log(const char *path) {
+    char log_path[256];
+    snprintf(log_path, sizeof(log_path), "%s.log", path);
+    g_log = fopen(log_path, "a");
+    if (g_log != NULL) {
+        (void)chmod(log_path, 0666);
+        setvbuf(g_log, NULL, _IOLBF, 0);
+    }
+}
+
+static void note(const char *message) {
+    if (g_log != NULL) {
+        fprintf(g_log, "vmnet-helper: %s\n", message);
+    }
+    fprintf(stderr, "vmnet-helper: %s\n", message);
     fflush(stderr);
+}
+
+static void report(const char *reason) {
+    char line[256];
+    snprintf(line, sizeof(line),
+             "%s vmnet->guest read=%lu sent=%lu send_err=%lu read_err=%lu | "
+             "guest->vmnet recv=%lu written=%lu",
+             reason, g_from_vmnet, g_to_guest, g_send_errors, g_read_errors,
+             g_from_guest, g_to_vmnet);
+    note(line);
 }
 
 static void relay_to_socket(void) {
     for (;;) {
+        if (g_socket < 0) return;
         char buffer[65550];
         struct iovec iov = {buffer, (size_t)g_max_packet};
         struct vmpktdesc packet = {0};
@@ -62,9 +88,7 @@ static void relay_to_socket(void) {
             return;
         }
         ++g_from_vmnet;
-        if (sendto(g_socket, buffer, packet.vm_pkt_size, 0,
-                   (struct sockaddr *)&g_peer,
-                   (socklen_t)SUN_LEN(&g_peer)) < 0) {
+        if (send(g_socket, buffer, packet.vm_pkt_size, 0) < 0) {
             ++g_send_errors;
             if (g_send_errors <= 3UL) {
                 fprintf(stderr, "vmnet-helper: sendto: %s\n", strerror(errno));
@@ -77,8 +101,38 @@ static void relay_to_socket(void) {
     }
 }
 
-static void relay_to_vmnet(void) {
+static void relay_to_vmnet(int client) {
     for (;;) {
+        /* A datagram socketpair reports no end-of-file when the far end goes
+           away, so a blocking receive here would serve a departed guest for
+           ever and never take the next one. The rendezvous stream does report
+           it, so watch both and leave when that closes. */
+        struct pollfd watch[2];
+        watch[0].fd = g_socket;
+        watch[0].events = POLLIN;
+        watch[0].revents = 0;
+        watch[1].fd = client;
+        /* Ask for readability rather than relying on POLLHUP alone: a poll
+           that requests no events is not obliged to report a hangup, and one
+           that never notices the guest leaving wedges the helper for good. */
+        watch[1].events = POLLIN;
+        watch[1].revents = 0;
+        if (poll(watch, 2, -1) < 0) {
+            if (errno == EINTR) continue;
+            return;
+        }
+        if ((watch[1].revents & (POLLHUP | POLLERR | POLLNVAL)) != 0) {
+            return;
+        }
+        if ((watch[1].revents & POLLIN) != 0) {
+            char discard;
+            if (recv(client, &discard, 1, 0) <= 0) {
+                return;
+            }
+        }
+        if ((watch[0].revents & POLLIN) == 0) {
+            continue;
+        }
         char buffer[65550];
         ssize_t length = recv(g_socket, buffer, sizeof(buffer), 0);
         if (length <= 0) {
@@ -114,8 +168,9 @@ int main(int argc, char **argv) {
             return 2;
         }
     }
+    struct sockaddr_un address_limit;
     if (path == NULL || strlen(path) + sizeof(HELPER_SUFFIX) >
-                            sizeof(g_peer.sun_path)) {
+                            sizeof(address_limit.sun_path)) {
         fprintf(stderr, "vmnet-helper: a usable --socket path is required\n");
         return 2;
     }
@@ -155,8 +210,14 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    g_socket = socket(AF_UNIX, SOCK_DGRAM, 0);
-    if (g_socket < 0) {
+    /* Virtualization.framework wants a genuine connected datagram socket. A
+       pair of sockets that merely bind paths and connect to each other looks
+       equivalent and is not: it delivers the first few frames into the guest
+       and then stops being read, while the guest's own traffic still flows
+       out. Create a socketpair here and pass one end over, which measured
+       3159 of 3160 frames delivered where the named pair managed four. */
+    int rendezvous = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (rendezvous < 0) {
         perror("vmnet-helper: socket");
         return 1;
     }
@@ -164,19 +225,16 @@ int main(int argc, char **argv) {
     local.sun_family = AF_UNIX;
     snprintf(local.sun_path, sizeof(local.sun_path), "%s", path);
     (void)unlink(local.sun_path);
-    if (bind(g_socket, (struct sockaddr *)&local, (socklen_t)SUN_LEN(&local)) <
-        0) {
+    if (bind(rendezvous, (struct sockaddr *)&local,
+             (socklen_t)SUN_LEN(&local)) < 0 ||
+        listen(rendezvous, 8) < 0) {
         perror("vmnet-helper: bind");
         return 1;
     }
-    /* The harness binds the same path with a suffix, so each side knows where
-       to send without either having to be started first. */
-    memset(&g_peer, 0, sizeof(g_peer));
-    g_peer.sun_family = AF_UNIX;
-    snprintf(g_peer.sun_path, sizeof(g_peer.sun_path), "%s%s", path,
-             HELPER_SUFFIX);
-    /* The harness runs unprivileged and must be able to reach this socket. */
+    /* The harness runs unprivileged and must be able to collect its end. */
     (void)chmod(local.sun_path, 0666);
+    open_log(path);
+    note("listening");
 
     printf("vmnet-helper: %s mode ready mac=%s mtu=%llu socket=%s\n",
            mode == VMNET_HOST_MODE ? "host" : "shared", mac,
@@ -191,6 +249,69 @@ int main(int argc, char **argv) {
             relay_to_socket();
         });
 
-    relay_to_vmnet();
+    /* Serve one virtual machine at a time and any number of them in turn: a
+       helper that accepted once left every later boot hanging on a handover
+       that would never come. */
+    for (;;) {
+        int client = accept(rendezvous, NULL, NULL);
+        if (client < 0) {
+            if (errno == EINTR) continue;
+            perror("vmnet-helper: accept");
+            return 1;
+        }
+
+        int pair[2];
+        if (socketpair(AF_UNIX, SOCK_DGRAM, 0, pair) < 0) {
+            perror("vmnet-helper: socketpair");
+            close(client);
+            continue;
+        }
+        /* The attachment requires the receive buffer to be at least double the
+           send buffer, and recommends four times. */
+        int send_buffer = 1 << 18;
+        int receive_buffer = send_buffer * 4;
+        for (int index = 0; index < 2; ++index) {
+            (void)setsockopt(pair[index], SOL_SOCKET, SO_SNDBUF, &send_buffer,
+                             sizeof(send_buffer));
+            (void)setsockopt(pair[index], SOL_SOCKET, SO_RCVBUF,
+                             &receive_buffer, sizeof(receive_buffer));
+        }
+
+        /* The guest must present the address vmnet assigned this interface.
+           vmnet learns which port owns which address, and a guest answering on
+           an address the switch never saw here receives multicast, which is
+           flooded, but no broadcast or unicast aimed at it. Hand the address
+           over with the socket. */
+        struct msghdr message = {0};
+        char control[CMSG_SPACE(sizeof(int))] = {0};
+        char address[32];
+        snprintf(address, sizeof(address), "%s", mac);
+        struct iovec payload = {address, sizeof(address)};
+        message.msg_iov = &payload;
+        message.msg_iovlen = 1;
+        message.msg_control = control;
+        message.msg_controllen = sizeof(control);
+        struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+        header->cmsg_level = SOL_SOCKET;
+        header->cmsg_type = SCM_RIGHTS;
+        header->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(header), &pair[0], sizeof(int));
+        if (sendmsg(client, &message, 0) < 0) {
+            perror("vmnet-helper: sendmsg");
+            close(pair[0]);
+            close(pair[1]);
+            close(client);
+            continue;
+        }
+        close(pair[0]);
+
+        g_socket = pair[1];
+        note("guest attached");
+        relay_to_vmnet(client);
+        report("guest detached");
+        g_socket = -1;
+        close(pair[1]);
+        close(client);
+    }
     return 0;
 }

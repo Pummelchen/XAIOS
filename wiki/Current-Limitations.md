@@ -21,10 +21,15 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   renders to the virtio console; and it presents no PL011. Its router advertises
   a unique-local IPv6 prefix, so the address configured there is unique-local
   rather than globally routable.
-- A guest on Apple Virtualization.framework is not reachable from the host with
-  the NAT attachment: guest-initiated traffic works, but host-initiated frames
-  are not delivered, so sshd listens without being reachable and the console is
-  output-only. Use the QEMU targets for anything that must be connected to.
+- A guest on Apple Virtualization.framework is reachable from the host only over
+  vmnet, and then in one direction at a time. The NAT attachment carries
+  guest-initiated traffic but delivers no host-initiated frame, so sshd listens
+  there without being reachable. `tools/vz/vmnet-helper` fixes that at the cost
+  of a privileged helper and a choice: its host mode carries host/guest traffic
+  but reaches no further, its shared mode reaches the internet but carries only
+  what the guest starts. Bridging, which would do both, needs the
+  `com.apple.vm.networking` entitlement Apple issues only with a provisioning
+  profile.
 - MSI-X for virtio on PCI is implemented against the GIC ITS but is exercised by
   no target available here: Virtualization.framework has no ITS, and QEMU's
   `virt` machine puts virtio on MMIO, where interrupts arrive through the

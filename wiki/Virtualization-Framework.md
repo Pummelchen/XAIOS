@@ -65,21 +65,34 @@ much as this platform does.
 
 ## Reaching it from the host
 
-You cannot, with the NAT attachment this harness uses. Guest-initiated traffic
-works in both directions -- DHCP completes, the router solicitation is answered,
-and an ICMP round trip to the gateway returns in well under a millisecond -- but
-host-initiated frames are not delivered to the guest at all: an ARP request for
-its address never arrives. sshd therefore listens on TCP 22 without being
-reachable from the Mac, which is a property of the attachment rather than of
+Over vmnet, with a privileged helper:
+
+```sh
+sudo ./build/vz/vmnet-helper --socket "$PWD/build/vz/vmnet.sock" --mode host
+./build/vz/xaios-vz ... --vmnet "$PWD/build/vz/vmnet.sock"
+ssh admin@192.168.18.2
+```
+
+Not with the NAT attachment the harness uses by default. Guest-initiated
+traffic works in both directions there -- DHCP completes, the router
+solicitation is answered, and an ICMP round trip to the gateway returns in well
+under a millisecond -- but host-initiated frames are not delivered to the guest
+at all: an ARP request for its address never arrives. sshd listens on TCP 22
+without being reachable, which is a property of the attachment rather than of
 XAIOS.
 
-A bridged attachment would expose the guest, and needs the
+A bridged attachment would expose the guest directly, and needs the
 `com.apple.vm.networking` entitlement that Apple issues only with a provisioning
-profile; ad-hoc signing cannot provide it. Until then, use the QEMU targets for
-anything that has to be connected to.
+profile; ad-hoc signing cannot provide it. vmnet needs no entitlement, only
+root, so `tools/vz/vmnet-helper` runs a vmnet interface privileged and relays
+frames to the machine over a socket -- the arrangement `socket_vmnet` uses for
+rootless QEMU. Its host mode carries host/guest traffic and reaches no further;
+its shared mode reaches the internet and carries only what the guest starts.
+Pick the one that matches the errand. `tools/vz/README.md` records what the
+relay had to get right, none of which is obvious.
 
-The console is interactive, which is the way in while the network is not. Log
-in on it and the usual shell is there:
+The console is interactive too, and needs no helper. Log in on it and the usual
+shell is there:
 
 ```
 xaios login: admin

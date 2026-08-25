@@ -60,7 +60,10 @@ vz-harness:
 	xcrun swiftc -O -o build/vz/xaios-vz tools/vz/xaios_vz.swift
 	codesign --force --sign - --entitlements tools/vz/xaios-vz.entitlements build/vz/xaios-vz
 
-vz-gate: image vz-harness
+# The gate reads the kernel log, which boot_ui silences on a quiet boot, so it
+# builds a verbose image rather than depending on the default one.
+vz-gate: vz-harness
+	XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
 	python3 ./tests/scripts/vz-gate.py
 
 vmware-fusion-dry-run:
