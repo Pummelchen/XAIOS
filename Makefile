@@ -66,6 +66,12 @@ vz-gate: vz-harness
 	XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
 	python3 ./tests/scripts/vz-gate.py
 
+# Sustained multi-core load on real cores. Repeats the boot because every
+# defect it has found so far appeared on some runs and not others.
+vz-stress-gate: vz-harness
+	XAIOS_STRESS_TEST=1 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
+	python3 ./tests/scripts/vz-stress-gate.py
+
 vmware-fusion-dry-run:
 	./scripts/run-vmware-fusion.sh --dry-run
 

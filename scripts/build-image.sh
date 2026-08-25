@@ -74,7 +74,7 @@ WORKER_ELF="$INIT_BUILD_DIR/worker.elf"
 USER_START_OBJ="$INIT_BUILD_DIR/user-start.o"
 USER_LIB_OBJ="$INIT_BUILD_DIR/xaios-user.o"
 USER_CONTROL_OBJ="$INIT_BUILD_DIR/xaios-control-client.o"
-USER_APPS="xaios-shell xaiosctl xapt nano htop pong hello sysinfo systest smptest nettest lstm-xor sshtest mltest posix-shell agenttest"
+USER_APPS="xaios-shell xaiosctl xapt nano htop pong hello sysinfo systest smptest smpstress nettest lstm-xor sshtest mltest posix-shell agenttest"
 UTILITY_APPS="ls mkdir touch cp mv rm rmdir stat cat head tail less grep find sed write tar cpio zip unzip ps df du"
 HOSTED_USER_APPS="helloworldc99"
 
@@ -341,6 +341,17 @@ fi
 if [ "$TARGET_ARCH" = x86_64 ]; then
   KERNEL_CFLAGS="$KERNEL_CFLAGS -mno-red-zone -DXAIOS_X86_COMMON_RUNTIME=1"
 fi
+
+# The stress app soaks for fifteen seconds by default, so it runs only when
+# asked for rather than in every test-apps boot.
+case "${XAIOS_STRESS_TEST:-0}" in
+  0) ;;
+  1) KERNEL_CFLAGS="$KERNEL_CFLAGS -DXAIOS_STRESS_TEST=1" ;;
+  *)
+    printf '%s\n' "error: XAIOS_STRESS_TEST must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
 
 case "${XAIOS_FAULT_TEST:-}" in
   "") ;;

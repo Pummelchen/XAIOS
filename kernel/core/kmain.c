@@ -811,6 +811,9 @@ persistent_network_done:
   run_user_app("/bin/sysinfo", 9, sysinfo_caps);
   run_user_app("/bin/systest", 10, systest_caps);
   run_user_app("/bin/smptest", 11, smptest_caps);
+#if XAIOS_STRESS_TEST
+  run_user_app("/bin/smpstress", 11, smptest_caps | XAIOS_CAP_TIME);
+#endif
   run_user_app("/bin/nettest", 12, nettest_caps);
   run_user_app("/bin/lstm-xor", 13, lstm_caps);
   run_user_app("/bin/sshtest", 14, sshtest_caps);

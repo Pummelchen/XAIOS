@@ -132,8 +132,21 @@ address and a listening SSH server, and fails on a panic or a missing check. It
 writes `build/vz-gate.json`, refreshes every attached volume from the current
 build first -- the loader prefers the kernel on the A/B system volume over the
 one on the ESP, so a stale copy boots a stale kernel and the run tests nothing
--- and needs macOS on Apple Silicon with a signed harness. See
-[[Virtualization Framework|Virtualization-Framework]].
+-- and needs macOS on Apple Silicon with a signed harness. It boots four vCPUs
+and requires all four, because the defects a secondary CPU can have are
+invisible on a single-core boot.
+
+```sh
+make vz-stress-gate
+```
+
+The stress gate is the same platform under sustained load rather than a single
+pass. It boots repeatedly with `/bin/smpstress`, which pins threads across the
+cores and runs them to a deadline, then checks invariants that admit no
+tolerance: a contended counter against tallies each thread kept privately, and
+per-thread words against the neighbours sharing their cache line. It repeats
+because the defects it finds are intermittent -- the first one appeared on one
+boot in six. See [[Virtualization Framework|Virtualization-Framework]].
 
 ## Update repository validation
 

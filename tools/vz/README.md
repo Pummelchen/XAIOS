@@ -300,10 +300,28 @@ signatures, which is the useful invariant here: the worker and thread
 checksums are deterministic for a given CPU count, so any deviation across
 runs is a concurrency defect rather than scheduling noise.
 
-Two things this does not show. The host has eight cores against a target two
-orders of magnitude larger, and every run above is functional rather than
-sustained -- it demonstrates the paths work, not that they hold under
-contention.
+For load rather than function:
+
+```sh
+make vz-stress-gate
+```
+
+That boots repeatedly with `/bin/smpstress`, which pins threads across the
+cores and hammers them until a deadline, then checks two things that admit no
+tolerance: a contended counter must equal the sum of tallies each thread kept
+privately, and a word owned by one thread must hold exactly that thread's
+count whatever shares its cache line. Both are the failure modes this port has
+actually had. Four runs at eight vCPUs do around 570 million contended
+increments between them. `XAIOS_VZ_STRESS_RUNS` and `XAIOS_VZ_STRESS_CPUS`
+change the shape of it.
+
+It repeats because it has to. The defect it found first -- a transmit
+completion that arrived late on a loaded host, which the network self-test
+treated as fatal -- appeared on one boot in six and none of the five before
+it. A single green run here means very little.
+
+What none of this shows is scale: the host has eight cores against a target
+two orders of magnitude larger.
 
 ## Why interrupts are polled here
 
