@@ -1,6 +1,6 @@
 # Project Tracker
 
-Last reviewed: 2026-08-15.
+Last reviewed: 2026-08-25.
 
 The current QEMU closure revision passes hosted, AArch64/x86_64 smoke, libc,
 dual-architecture all-queue NVMe interrupt, SVE2 per-task context, x86 HMAT/
@@ -8,9 +8,14 @@ dual-architecture all-queue NVMe interrupt, SVE2 per-task context, x86 HMAT/
 The final consolidated report deliberately retains
 `physical_qualification=false`.
 
-The current three-profile virtual-platform evidence set passes at
+The three-profile virtual-platform evidence set passes at
 `adc0b69a1b4e6eb8f1c123fcc25aa3a73d6a881e`: macOS QEMU ARM64, macOS VMware
-Fusion ARM64, and Intel VPS QEMU x86_64. The completed Fusion 26H1 (26.0.0)
+Fusion ARM64, and Intel VPS QEMU x86_64. **That evidence is behind the current
+tree.** 113 commits have landed since, touching kernel and boot sources 153
+times, including secondary-CPU bring-up, subsystem serialisation and the virtio
+transports. The profiles must be re-run before their result is quoted as
+current; a profile report names the commit it was taken at for exactly this
+reason. The completed Fusion 26H1 (26.0.0)
 one-vCPU profile is removed from the open-work tables; it covers UEFI/GRUB
 boot, E1000E DHCP IPv4, AHCI MutableFS, public-key SSH/SFTP, abrupt-stop
 recovery, reboot, shutdown, and repeat boot.
