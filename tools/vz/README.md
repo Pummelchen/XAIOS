@@ -236,6 +236,15 @@ machine happen to accommodate each one:
 - DHCP was attempted only for the Intel NIC, so a virtio guest kept the
   compiled-in QEMU address of 10.0.2.15 and was simply off-net. Every device
   now asks the network first and falls back to that address.
+- Secondary CPUs never came online. PSCI starts them at reset state with
+  translation off, so every address they see is Device memory, where exclusives
+  are architecturally unsupported: the atomic each one used to announce itself
+  aborted with DFSC 0b110101 before announcing anything. The plain stores that
+  remained went straight to memory and never entered the caches the boot CPU
+  was reading, which it had filled itself when it zeroed the array, so it read
+  back stale zeros. Every boot said `online cpus=1/4` and most panicked. This
+  is the defect this target exists to find: TCG permits the exclusive and
+  models no caches, so QEMU shows none of it, including at 130 cores.
 
 ## IPv6
 

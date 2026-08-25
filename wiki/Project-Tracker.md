@@ -86,7 +86,8 @@ are intentionally not implied by that passing profile.
 ## Apple Virtualization.framework ARM64 remaining work
 
 XAIOS boots to a login on this platform with MutableFS on a durable volume,
-DHCP IPv4, SLAAC IPv6 and SSH, and the Mac can ssh into the guest over vmnet
+DHCP IPv4, SLAAC IPv6, SSH and all four vCPUs online, and the Mac can ssh into
+the guest over vmnet
 through `tools/vz/vmnet-helper`, which is the only route in: the built-in NAT
 attachment delivers no host-initiated frame, and bridging needs an entitlement
 V-03 also waits on. `make vz-gate` checks that boot and writes
@@ -98,8 +99,7 @@ qualification evidence.
 |---|---|---|---|
 | V-02 | MSI-X delivery for virtio on PCI | `TESTING` | Exercised by attaching QEMU's virtio devices on PCI, with modern identifiers and the 32-bit window, against a real translation service: every device on the bus receives a distinct vector. Three defects were fixed to get there -- one translation table shared by all devices, identifiers reissued to a second device because the first polls and never registers a handler, and an assertion on any BAR above 512 GiB. Physical ARM PCIe hardware remains the qualifying case; Virtualization.framework still has no ITS, so its queues stay polled. |
 | V-03 | Globally routable IPv6 | `BLOCKED` | The NAT attachment advertises the unique-local prefix `fd4a:25c::/64`, so no globally routable address is on offer. A bridged attachment would carry real IPv6 but needs the `com.apple.vm.networking` entitlement, which Apple issues only with a provisioning profile; ad-hoc signing cannot provide it. |
-| V-04 | Multi-vCPU qualification | `IN PROGRESS` | Secondaries now start: the firmware reports four enabled CPUs and answers PSCI 1.1 without advertising it in the FADT, and all four come online once PSCI is probed rather than trusted. DHCP failed twice at four vCPUs early on and has not recurred since; see V-09. Scheduler behaviour, lifecycle and interrupt affinity at higher counts remain unqualified. |
-| V-09 | Networking under multiple vCPUs | `TESTING` | DHCP failed twice at four vCPUs while succeeding at one, which was recorded here as reproducible on two samples. It has not recurred in four subsequent runs at four vCPUs, taken after unrelated interrupt and page-table fixes landed, so the original claim is withdrawn: two failures and no attributed cause. DHCP allows six seconds for an offer, which host load can exhaust, and that remains the likeliest explanation. Sample it across boots before treating multi-vCPU networking as either sound or broken. |
+| V-04 | Multi-vCPU qualification | `IN PROGRESS` | Secondaries genuinely run here now, which they never did before: PSCI starts them with translation off, where exclusives are unsupported, so the atomic each one used to announce itself aborted, and the plain stores that remained never reached the caches the boot CPU was reading. Every boot reported `online cpus=1/4` and most panicked. With the exclusive removed and the CPU-state array made coherent across that window, eleven consecutive four-vCPU boots report `4/4` with no panic, and `make vz-gate` boots four rather than one and requires it. What remains is qualification rather than function: scheduler behaviour, lifecycle, work stealing and interrupt affinity at higher counts are unverified here, and this platform offers no control over affinity. |
 | V-06 | Graphical console | `BLOCKED` | The GOP is `PixelBltOnly`, so no linear framebuffer exists and `GOP->Blt()` does not outlive `ExitBootServices`. A graphical console here would need a kernel virtio-GPU driver rather than the framebuffer path the other targets use. |
 
 ## Core OS, network, and SSH phases

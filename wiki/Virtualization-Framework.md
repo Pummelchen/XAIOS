@@ -63,6 +63,14 @@ virtio is presented entirely on PCI, with no MMIO window, so the kernel probes
 MMIO first and falls back to PCI. Real ARM PCIe hardware needs that fallback as
 much as this platform does.
 
+It is also the only target here that runs XAIOS on more than one real core.
+Secondary CPUs start under PSCI with translation off, where exclusives are
+architecturally unsupported and stores bypass the caches the boot CPU reads;
+both cost this port a defect that QEMU cannot show, since TCG permits the
+exclusive and models no caches. Four vCPUs now come online on every boot, and
+`make vz-gate` requires it. Interrupt affinity is not offered here, so this
+target answers correctness on real cores rather than scaling.
+
 ## Reaching it from the host
 
 Over vmnet, with a privileged helper:
