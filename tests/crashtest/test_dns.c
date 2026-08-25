@@ -38,6 +38,11 @@ xaios_status_t virtio_net_tx(const uint8_t *data, uint64_t length) {
   if (data == 0 || length > sizeof(g_tx_frame)) return XAIOS_ERR_INVALID;
   memcpy(g_tx_frame, data, (size_t)length); g_tx_length = (uint32_t)length; return XAIOS_OK;
 }
+/* The resolver shares the network stack's guard rather than holding one of its
+   own, because it calls into the stack while the stack calls back into its
+   timers. Hosted, there is one thread and no stack to serialise against. */
+void network_stack_lock(void) {}
+void network_stack_unlock(void) {}
 xaios_status_t network_stack_tcp_open(const xaios_ip_addr_t *a, uint16_t b, uint16_t c, uint32_t *d) { (void)a; (void)b; (void)c; *d = 1U; return XAIOS_OK; }
 xaios_status_t network_stack_tcp_open_status(uint32_t id) { return id == 1U ? XAIOS_OK : XAIOS_ERR_NOT_FOUND; }
 xaios_status_t network_stack_tcp_abort_flow(uint32_t id) { (void)id; return XAIOS_OK; }

@@ -67,8 +67,39 @@ def in_our_history(commit: str) -> bool:
     return result.returncode == 0
 
 
+def check_version_identity(failures: list[str]) -> None:
+    """VERSION, the changelog and the build must name the same release.
+
+    Three places state the version and they drift independently: a release is
+    cut, the changelog is written later, and the build keeps whatever it had.
+    A version that disagrees with itself is worse than none, because it is
+    believed.
+    """
+    version_file = ROOT / "VERSION"
+    if not version_file.is_file():
+        failures.append("VERSION is missing; the product has no version")
+        return
+    version = version_file.read_text().strip()
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        failures.append(f"VERSION is not MAJOR.MINOR.PATCH: {version!r}")
+        return
+    changelog = ROOT / "CHANGELOG.md"
+    if not changelog.is_file():
+        failures.append("CHANGELOG.md is missing")
+        return
+    entries = re.findall(r"^## (\d+\.\d+\.\d+)", changelog.read_text(), re.M)
+    if not entries:
+        failures.append("CHANGELOG.md records no released version")
+    elif entries[0] != version:
+        failures.append(
+            f"VERSION says {version} but the newest changelog entry is "
+            f"{entries[0]}"
+        )
+
+
 def main() -> int:
     failures: list[str] = []
+    check_version_identity(failures)
     upstream_pins = 0
     checked = 0
 
@@ -122,7 +153,8 @@ def main() -> int:
 
     print(
         f"doc-freshness: {checked} commit references checked "
-        f"({upstream_pins} upstream pins, old by design), review dates current"
+        f"({upstream_pins} upstream pins, old by design), review dates "
+        f"current, version identity consistent"
     )
     return 0
 

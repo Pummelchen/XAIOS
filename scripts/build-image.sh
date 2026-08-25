@@ -395,13 +395,21 @@ if [ -n "${XAIOS_BUILD_REVISION_OVERRIDE:-}" ]; then
 else
   BUILD_REVISION="$(git -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || printf '%s' unknown)"
 fi
+# The product version, single-sourced from VERSION at the repository root so a
+# build, a running system and the changelog cannot disagree about what this is.
+PRODUCT_VERSION="$(tr -d ' \n' < "$ROOT_DIR/VERSION" 2>/dev/null || printf '%s' unknown)"
+if ! printf '%s' "$PRODUCT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+  printf '%s\n' "error: VERSION must be MAJOR.MINOR.PATCH, found '$PRODUCT_VERSION'" >&2
+  exit 2
+fi
+
 BUILD_IDENTIFIER="xaios-admin-control"
 if [ -n "${XAIOS_BUILD_REVISION_OVERRIDE:-}" ] ||
    ! git -C "$ROOT_DIR" diff-index --quiet HEAD -- 2>/dev/null ||
    [ -n "$(git -C "$ROOT_DIR" ls-files --others --exclude-standard 2>/dev/null)" ]; then
   BUILD_IDENTIFIER="${BUILD_IDENTIFIER}-dirty"
 fi
-KERNEL_CFLAGS="$KERNEL_CFLAGS $PASSWORD_AUTH_CFLAG -DXAIOS_BOOT_TEST_APPS=$BOOT_TEST_APPS -DXAIOS_BOOT_VERBOSE=$BOOT_VERBOSE -DXAIOS_FAILURE_TEST_APP=$FAILURE_TEST_APP -DXAIOS_LIBC_TEST=$LIBC_TEST"
+KERNEL_CFLAGS="$KERNEL_CFLAGS $PASSWORD_AUTH_CFLAG -DXAIOS_BOOT_TEST_APPS=$BOOT_TEST_APPS -DXAIOS_BOOT_VERBOSE=$BOOT_VERBOSE -DXAIOS_FAILURE_TEST_APP=$FAILURE_TEST_APP -DXAIOS_LIBC_TEST=$LIBC_TEST -DXAIOS_PRODUCT_VERSION=\"$PRODUCT_VERSION\""
 
 # Files that use FP/SIMD on purpose opt back in; everything else is built
 # without it. See KERNEL_NO_SIMD_CFLAGS below for why.

@@ -10,7 +10,8 @@
 #include <xaios/vfs_model.h>
 
 #define XAIOS_CONTROL_MAGIC UINT32_C(0x58414350)
-#define XAIOS_CONTROL_VERSION UINT16_C(1)
+/* 2 adds product_version to the version payload. */
+#define XAIOS_CONTROL_VERSION UINT16_C(2)
 #define XAIOS_CONTROL_KERNEL_ABI_VERSION UINT32_C(1)
 #define XAIOS_CONTROL_MODEL_PACKAGE_VERSION UINT32_C(2)
 #define XAIOS_CONTROL_MODEL_VOLUME_VERSION UINT32_C(1)
@@ -199,6 +200,10 @@ typedef char xaios_control_response_header_must_be_40_bytes[
     sizeof(xaios_control_response_header_t) == 40U ? 1 : -1];
 
 typedef struct xaios_control_version_payload {
+  /* The product version, as in VERSION and the changelog. A build identifier
+     and a commit say which tree this came from; neither tells a customer what
+     they are running or lets an advisory name affected releases. */
+  char product_version[16];
   char build_identifier[32];
   char git_commit[48];
   char architecture[16];

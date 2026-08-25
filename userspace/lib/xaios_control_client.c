@@ -542,6 +542,8 @@ static int render_version(const void *payload, int json, char *output,
     int first = 1;
     return json_envelope_begin(output, capacity, offset, request_id) ||
            json_field_string(output, capacity, offset, &first,
+                             "product_version", value.product_version) ||
+           json_field_string(output, capacity, offset, &first,
                              "build_identifier", value.build_identifier) ||
            json_field_string(output, capacity, offset, &first, "git_commit",
                              value.git_commit) ||
@@ -565,6 +567,9 @@ static int render_version(const void *payload, int json, char *output,
            json_envelope_end(output, capacity, offset);
   }
   return append_text(output, capacity, offset, "XAIOS version\n") ||
+         append_text(output, capacity, offset, "product_version=") ||
+         append_text(output, capacity, offset, value.product_version) ||
+         append_char(output, capacity, offset, '\n') ||
          append_text(output, capacity, offset, "build_identifier=") ||
          append_text(output, capacity, offset, value.build_identifier) ||
          append_char(output, capacity, offset, '\n') ||

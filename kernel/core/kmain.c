@@ -34,6 +34,7 @@
 #include <xaios/klog_ring.h>
 #include <xaios/git_workspace.h>
 #include <xaios/klog.h>
+#include <xaios/version.h>
 #include <xaios/model_arena.h>
 #include <xaios/mutable_fs.h>
 #include <xaios/pmm.h>
@@ -213,7 +214,7 @@ void kmain(const xaios_boot_info_t *boot) {
   boot_ui_begin(boot);
   boot_ui_self_test();
   boot_ui_update(25U, "hardware handoff", "CPU and interrupts", 5U);
-  klog("XAIOS kernel starting\n");
+  klog("XAIOS %s kernel starting\n", XAIOS_PRODUCT_VERSION);
   kassert(boot->magic == XAIOS_BOOT_INFO_MAGIC);
   kassert(boot->version == XAIOS_BOOT_INFO_VERSION);
 

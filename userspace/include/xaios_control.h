@@ -229,6 +229,9 @@ typedef char xaios_control_response_header_user_must_be_40_bytes[
     sizeof(xaios_control_response_header_user_t) == 40U ? 1 : -1];
 
 typedef struct xaios_control_version_payload_user {
+  /* Must match xaios_control_version_payload in the kernel field for field:
+     this is the same wire payload seen from the other side. */
+  char product_version[16];
   char build_identifier[32];
   char git_commit[48];
   char architecture[16];

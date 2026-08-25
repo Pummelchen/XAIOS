@@ -14,7 +14,7 @@ REPORT_PATH = os.environ.get(
 )
 SCHEMA = "xaios.qemu.cpu_matrix.v1"
 BOOT_PROBE_MARKERS = [
-    "XAIOS kernel starting",
+    "kernel starting",  # "XAIOS <version> kernel starting"
     "smp: per-core registry self-test passed",
     "VMM map/unmap self-test passed",
     "VMM translation test passed",

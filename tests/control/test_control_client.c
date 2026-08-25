@@ -124,6 +124,7 @@ int xaios_control_query(const void *request_bytes, u64 request_size,
   if (request.operation == XAIOS_CONTROL_OP_VERSION) {
     xaios_control_version_payload_user_t value;
     xaios_memzero(&value, sizeof(value));
+    strcpy(value.product_version, "9.9.9");
     strcpy(value.build_identifier, "host-test");
     strcpy(value.git_commit, "abc123");
     strcpy(value.architecture, "aarch64");
@@ -566,7 +567,8 @@ int main(void) {
   u64 exact_size = 0ULL;
   static const char expected[] =
       "{\"schema_version\":1,\"request_id\":\"1\",\"status\":\"ok\","
-      "\"data\":{\"build_identifier\":\"host-test\",\"git_commit\":"
+      "\"data\":{\"product_version\":\"9.9.9\","
+      "\"build_identifier\":\"host-test\",\"git_commit\":"
       "\"abc123\",\"kernel_abi_version\":1,\"control_protocol_version\":1,"
       "\"model_package_version\":2,\"model_volume_version\":1,"
       "\"architecture\":\"aarch64\",\"build_mode\":\"development\"}}\n";

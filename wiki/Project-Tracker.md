@@ -86,12 +86,6 @@ passes; the reasoning stays in the commit that closed them.
 | B-01 | Outbound ProxyJump fails host key verification | x86_64 builds | `OPEN` | `ssh -J` reports "host key verification failed" on an emulated x86_64 host and succeeds natively, with the same command and known_hosts state. It fails immediately, so it is not a timeout. Reproduction needs an x86_64 host; it cannot be exercised on Apple Silicon. One hypothesis is eliminated: the tunneled session restores the target's own host, user and port before its handshake, so it does not verify against the jump endpoint. Do not "fix" it by skipping malformed known_hosts lines -- that falls through to the append path and stores a fresh key for a host that already had one, which is a host key verification downgrade. |
 | B-02 | Thread join failed once under sustained load | Virtualization.framework | `OPEN` | One stress run at fifteen seconds had a worker thread never complete, and the join timed out. It has not recurred in roughly twenty-five subsequent runs of the same harness, and no cause is attributed. `make vz-stress-gate` would catch a recurrence. Recorded rather than closed, because an intermittent hang under contention is exactly what that gate exists to find. |
 
-## Release identity
-
-| ID | Item | Status | Boundary |
-|---|---|---|---|
-| REL-01 | The product has no version | `NOT STARTED` | XAIOS identifies itself by git commit and nothing else: no version string in the kernel, no `VERSION` file, no CHANGELOG, no tags. `xaiosctl version` reports `git_commit=` and a control-protocol number. That is workable while the only consumers are gates, and not workable for a commercial product: a customer cannot state what they are running, a support case cannot be tied to a release, and an advisory cannot say which versions are affected. Deciding the scheme is a product decision rather than an engineering one -- what the first number is, what counts as a breaking change for an OS whose ABI is its syscall surface, and whether the inference engine versions separately. |
-
 ## Delivery order
 
 | Order | Workstream | Status | Current boundary / exit gate |

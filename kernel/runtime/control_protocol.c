@@ -6,6 +6,7 @@
 #include <xaios/cpu_ai_runtime.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
+#include <xaios/version.h>
 #include <xaios/klog_ring.h>
 #include <xaios/mutable_fs.h>
 #include <xaios/network_stack.h>
@@ -377,6 +378,8 @@ static uint64_t readiness_reasons(void) {
 
 static void fill_version(xaios_control_version_payload_t *payload) {
   bytes_zero(payload, sizeof(*payload));
+  string_copy(payload->product_version, sizeof(payload->product_version),
+              XAIOS_PRODUCT_VERSION);
   string_copy(payload->build_identifier, sizeof(payload->build_identifier),
               XAIOS_BUILD_IDENTIFIER);
   string_copy(payload->git_commit, sizeof(payload->git_commit),
