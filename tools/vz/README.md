@@ -33,7 +33,7 @@ timing behaviour on real silicon, not to many-core scaling work.
 xcrun swiftc -O -o build/vz/xaios-vz tools/vz/xaios_vz.swift
 codesign --force --sign - --entitlements tools/vz/xaios-vz.entitlements \
   build/vz/xaios-vz
-cc -O2 -o build/vz/vmnet-helper tools/vz/vmnet-helper.c -framework vmnet
+make vmnet-helper                               # privileged vmnet relay
 ./tools/vz/build-vz-disk.sh                    # ESP + GPT boot disk
 ./build/vz/xaios-vz build/vz/xaios-vz-disk.img --memory-mib 4096 --gui
 ```
@@ -85,9 +85,14 @@ result is not qualification evidence.
 Yes, over vmnet, with one privileged helper and a choice of network mode:
 
 ```sh
+make vmnet-helper
 sudo ./build/vz/vmnet-helper --socket "$PWD/build/vz/vmnet.sock" --mode host
 ./build/vz/xaios-vz ... --vmnet "$PWD/build/vz/vmnet.sock"
 ```
+
+`make vmnet-helper` first, every time: the binary lives in `build/`, which the
+image build recreates, so it disappears without warning and the next run fails
+with nothing more helpful than "command not found".
 
 ```
 $ ssh admin@192.168.18.2 ifconfig

@@ -66,6 +66,14 @@ vz-gate: vz-harness
 	XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
 	python3 ./tests/scripts/vz-gate.py
 
+# The privileged vmnet relay. It lives in build/, which image builds recreate,
+# so it needs a target rather than a command in a README: without one it
+# silently disappears and the next run fails with "command not found".
+vmnet-helper:
+	mkdir -p build/vz
+	cc -O2 -Wall -Wextra -o build/vz/vmnet-helper tools/vz/vmnet-helper.c \
+	  -framework vmnet
+
 # Sustained multi-core load on real cores. Repeats the boot because every
 # defect it has found so far appeared on some runs and not others.
 vz-stress-gate: vz-harness
