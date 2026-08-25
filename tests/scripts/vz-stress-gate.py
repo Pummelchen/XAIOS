@@ -87,7 +87,31 @@ def prepare() -> str | None:
     return None
 
 
+ATTACH_FAILED = "The storage device attachment is invalid"
+
+
 def run_once(index: int) -> tuple[str, bool]:
+    """One boot, retried if the framework has not released the last one's images.
+
+    Waiting for the previous process to leave the process table is not enough:
+    it disappears from pgrep while the framework still holds an exclusive lock
+    on every image it attached, and under a saturated host that gap is wide
+    enough for the next start to be refused. Predicting when the locks clear is
+    guesswork, so a refused attachment is retried instead. It is a property of
+    the host, not of XAIOS, and recording it as a guest failure sent one hunt
+    chasing a thread bug that was not there.
+    """
+    for attempt in range(4):
+        text, settled = run_once_attempt(index)
+        if ATTACH_FAILED not in text:
+            return text, settled
+        time.sleep(3.0 * (attempt + 1))
+        print(f"  note: run {index} could not attach; the previous machine "
+              f"still holds its images, retrying")
+    return text, settled
+
+
+def run_once_attempt(index: int) -> tuple[str, bool]:
     log = VZ / f"vz-stress-{index:02d}.log"
     shutil.copy(VZ / "xaios-vz-disk.img", VZ / "run-disk.img")
     command = [str(VZ / "xaios-vz"), str(VZ / "run-disk.img")]
@@ -117,10 +141,21 @@ def run_once(index: int) -> tuple[str, bool]:
                 process.kill()
     # The framework holds an exclusive lock on every image until the process is
     # gone, so the next run cannot attach until this one has finished dying.
-    while subprocess.run(["pgrep", "-f", "xaios-vz build/vz/run-disk.img"],
-                         stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL).returncode == 0:
+    # The pattern has to match what the process was actually launched with,
+    # which is absolute paths: matching "xaios-vz build/vz/run-disk.img" never
+    # matched anything, so this wait did nothing at all. On an idle host the
+    # process exits fast enough to hide that; under load the next run collided
+    # with the last one and failed to attach, which looked like a guest fault
+    # and was not.
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        if subprocess.run(["pgrep", "-f", str(VZ / "xaios-vz")],
+                          stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode != 0:
+            break
         time.sleep(1.0)
+    else:
+        print("  note: a previous machine is still holding its images")
     return log.read_bytes().decode("utf-8", "replace"), settled
 
 

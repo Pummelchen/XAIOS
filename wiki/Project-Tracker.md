@@ -1,6 +1,6 @@
 # Project Tracker
 
-Last reviewed: 2026-08-25.
+Last reviewed: 2026-08-26.
 
 The current QEMU closure revision passes hosted, AArch64/x86_64 smoke, libc,
 dual-architecture all-queue NVMe interrupt, SVE2 per-task context, x86 HMAT/
@@ -84,7 +84,7 @@ passes; the reasoning stays in the commit that closed them.
 | ID | Defect | Affects | Status | Notes |
 |---|---|---|---|---|
 | B-01 | Outbound ProxyJump fails host key verification | x86_64 builds | `OPEN` | `ssh -J` reports "host key verification failed" on an emulated x86_64 host and succeeds natively, with the same command and known_hosts state. It fails immediately, so it is not a timeout. Reproduction needs an x86_64 host; it cannot be exercised on Apple Silicon. One hypothesis is eliminated: the tunneled session restores the target's own host, user and port before its handshake, so it does not verify against the jump endpoint. Do not "fix" it by skipping malformed known_hosts lines -- that falls through to the append path and stores a fresh key for a host that already had one, which is a host key verification downgrade. |
-| B-02 | Thread join fails under sustained load | `OPEN` | Seen twice, both times under sustained load rather than repetition: an EL0 thread returns `UINT64_MAX` and the joiner reports a failed result. Twenty-five runs of the stress gate on an idle machine never reproduced it, which is why the first sighting went unexplained -- load is the variable, not repetition, and the firmware profile running six gates back to back is what produced both. Why it stayed opaque: `user_thread_worker` collapsed five distinct failures into that one sentinel, so a joiner learned only that something went wrong. Each path now names itself in the log. The case to watch is `cpu_id >= capacity`, which means `smp_cpu_id()` returned `UINT32_MAX` -- a CPU running a thread while its own state says it is not online -- with a failed `user_bind_current_process` the other likely candidate under load. Next occurrence should identify itself. |
+| B-02 | Thread join failed once under load, on QEMU | `OPEN` | One confirmed sighting: `smptest` reported `EL0 thread join/result failed` with `result=0xFFFFFFFFFFFFFFFF` during a firmware profile run on QEMU. A hunt on Virtualization.framework under a deliberately saturated host -- six boots at eight vCPUs against eight busy cores, 1.15 billion contended increments -- did not reproduce it, and neither did twenty-five earlier runs on an idle host. What the hunt did find was a defect in the harness: the framework holds image locks after its process leaves the process table, so under load the next boot was refused and recorded as a guest failure. That is what the earlier stress-gate sighting most likely was, so it is withdrawn as evidence. What remains is the QEMU occurrence, which no lock collision explains. `user_thread_worker` now names which of its five failure paths fired instead of returning one indistinguishable sentinel, so a recurrence identifies itself; the case to watch is `cpu_id >= capacity`, meaning `smp_cpu_id()` found no entry for the running CPU. |
 
 ## Delivery order
 
