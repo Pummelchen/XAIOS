@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MARKERS = (
-    b"SVE2: QEMU arithmetic canary passed vector_bytes=256 el0=enabled",
+    b"SVE2: arithmetic canary passed vector_bytes=256 el0=enabled",
     b"scheduler: SVE Z/P/FFR interrupt preservation passed EL0-task-state=1",
 )
 

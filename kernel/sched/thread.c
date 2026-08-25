@@ -228,8 +228,26 @@ static uint64_t user_thread_worker(void *opaque) {
   xaios_user_thread_context_t *context =
       (xaios_user_thread_context_t *)opaque;
   uint32_t cpu_id = smp_cpu_id();
-  if (context == 0 || cpu_id >= g_current_user_thread_capacity ||
-      user_bind_current_process(context->owner_pid) != XAIOS_OK) {
+  /* B-02. Five conditions here used to return the same UINT64_MAX, so a thread
+     that failed told the joiner only that something went wrong -- which is why
+     an intermittent failure under load has twice been recorded and twice gone
+     unexplained. Each one now names itself. The cost is a klog on paths that
+     already end in failure.
+     A cpu_id of UINT32_MAX is the case to watch: smp_cpu_id() returns that
+     when the running CPU cannot find itself among the online ones, which would
+     mean a CPU executing a thread while its own state says it is not there. */
+  if (context == 0) {
+    klog("threads: worker abandoned; no context\n");
+    return UINT64_MAX;
+  }
+  if (cpu_id >= g_current_user_thread_capacity) {
+    klog("threads: worker abandoned; cpu_id=%u capacity=%u owner=%u\n", cpu_id,
+         g_current_user_thread_capacity, context->owner_pid);
+    return UINT64_MAX;
+  }
+  if (user_bind_current_process(context->owner_pid) != XAIOS_OK) {
+    klog("threads: worker abandoned; cannot bind owner=%u on cpu=%u\n",
+         context->owner_pid, cpu_id);
     return UINT64_MAX;
   }
   user_switch_address_space(context->owner_pid);
@@ -244,8 +262,14 @@ static uint64_t user_thread_worker(void *opaque) {
   g_current_user_thread_by_cpu[cpu_id] = 0;
   user_clear_current_process();
   vmm_activate_kernel();
-  if ((encoded & XAIOS_USER_EXIT_RETURN_MASK) != XAIOS_USER_EXIT_RETURN_MAGIC ||
-      context->exited == 0U) {
+  if ((encoded & XAIOS_USER_EXIT_RETURN_MASK) != XAIOS_USER_EXIT_RETURN_MAGIC) {
+    klog("threads: worker returned without the exit magic; encoded=0x%lx "
+         "owner=%u cpu=%u\n", encoded, context->owner_pid, cpu_id);
+    return UINT64_MAX;
+  }
+  if (context->exited == 0U) {
+    klog("threads: worker exit magic present but exited=0; owner=%u cpu=%u\n",
+         context->owner_pid, cpu_id);
     return UINT64_MAX;
   }
   return context->exit_result;
