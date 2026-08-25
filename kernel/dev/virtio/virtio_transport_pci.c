@@ -449,6 +449,14 @@ xaios_status_t virtio_transport_setup_queue(virtio_mmio_device_t *device,
   mmio_write16(device->common_config + 28U, 1U);
   virtio_mmio_barrier();
   if (mmio_read16(device->common_config + 28U) != 1U) return XAIOS_ERR_IO;
+  /* This queue is selected right now, which is the only safe moment to read
+     its notify offset: it is fixed for the life of the queue, so notifying
+     later needs no access to the shared selector at all. */
+  if (queue_index < VIRTIO_NOTIFY_SLOTS) {
+    device->notify_offset[queue_index] =
+        mmio_read16(device->common_config + 30U);
+    device->notify_offset_valid |= UINT32_C(1) << queue_index;
+  }
   if (interrupt_status == XAIOS_OK) {
     klog("%s: MSI-X queue=%u vector=%u enabled\n", device->name, queue_index,
          device->interrupt_id);
@@ -480,8 +488,16 @@ void virtio_transport_set_driver_ok(const virtio_mmio_device_t *device) {
 void virtio_transport_notify(const virtio_mmio_device_t *device,
                              uint32_t queue_index) {
   if (device == 0 || queue_index > UINT16_MAX) return;
-  mmio_write16(device->common_config + 22U, (uint16_t)queue_index);
-  uint16_t offset = mmio_read16(device->common_config + 30U);
+  uint16_t offset;
+  if (queue_index < VIRTIO_NOTIFY_SLOTS &&
+      (device->notify_offset_valid & (UINT32_C(1) << queue_index)) != 0U) {
+    offset = device->notify_offset[queue_index];
+  } else {
+    /* No cached offset, so fall back to asking. This touches the shared queue
+       selector and is safe only while nothing else notifies this device. */
+    mmio_write16(device->common_config + 22U, (uint16_t)queue_index);
+    offset = mmio_read16(device->common_config + 30U);
+  }
   virtio_mmio_barrier();
   mmio_write16(device->notify_base +
                    (uint64_t)offset * device->notify_multiplier,

@@ -37,6 +37,9 @@ typedef struct virtq_used {
   uint16_t avail_event;
 } virtq_used_t;
 
+/* Queue indices any driver here uses; virtio-net has two, the rest one. */
+#define VIRTIO_NOTIFY_SLOTS 4U
+
 typedef struct virtio_mmio_device {
   uint64_t base;
   uint64_t common_config;
@@ -52,6 +55,14 @@ typedef struct virtio_mmio_device {
      virtio over MMIO, Virtualization.framework and real PCIe hardware over
      PCI. Set by virtio_transport_find and honoured by every later call. */
   uint32_t backend;
+  /* queue_notify_off per queue, captured while the queue is selected during
+     setup. Notification used to select the queue and read this back on every
+     call, but queue_select is shared device state: two CPUs notifying
+     different queues of the same device can interleave there, and the loser
+     reads an offset belonging to the other queue. Nothing could reach that
+     before secondary CPUs actually ran. */
+  uint16_t notify_offset[VIRTIO_NOTIFY_SLOTS];
+  uint32_t notify_offset_valid;
   const char *name;
 } virtio_mmio_device_t;
 
