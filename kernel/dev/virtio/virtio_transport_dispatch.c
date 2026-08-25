@@ -156,6 +156,13 @@ void virtio_mmio_write32(uint64_t base, uint32_t offset, uint32_t value) {
 
 void virtio_mmio_barrier(void) { virtio_mmio_backend_mmio_barrier(); }
 
+uint32_t virtio_transport_device_status(const virtio_mmio_device_t *device) {
+  if (device != 0 && device->backend == VIRTIO_BACKEND_PCI) {
+    return virtio_pci_backend_transport_device_status(device);
+  }
+  return virtio_mmio_backend_transport_device_status(device);
+}
+
 xaios_status_t virtio_transport_wait_used(volatile uint16_t *used_idx,
                                           uint16_t expected) {
   return virtio_mmio_backend_transport_wait_used(used_idx, expected);

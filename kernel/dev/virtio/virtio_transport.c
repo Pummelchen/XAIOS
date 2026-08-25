@@ -17,6 +17,7 @@
 #define virtio_transport_set_driver_ok_checked virtio_mmio_backend_transport_set_driver_ok_checked
 #define virtio_transport_notify virtio_mmio_backend_transport_notify
 #define virtio_transport_wait_used virtio_mmio_backend_transport_wait_used
+#define virtio_transport_device_status virtio_mmio_backend_transport_device_status
 #define virtio_transport_ack_interrupts virtio_mmio_backend_transport_ack_interrupts
 #define virtio_transport_interrupt_id virtio_mmio_backend_transport_interrupt_id
 #define virtio_transport_register_interrupt virtio_mmio_backend_transport_register_interrupt
@@ -302,6 +303,11 @@ xaios_status_t virtio_transport_set_driver_ok_checked(
                  (VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK)
              ? XAIOS_OK
              : XAIOS_ERR_IO;
+}
+
+uint32_t virtio_transport_device_status(const virtio_mmio_device_t *device) {
+  if (device == 0) return 0U;
+  return virtio_mmio_read32(device->base, VIRTIO_MMIO_STATUS);
 }
 
 void virtio_transport_notify(const virtio_mmio_device_t *device,

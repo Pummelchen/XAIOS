@@ -84,6 +84,11 @@ xaios_status_t virtio_transport_find_at(uint32_t device_id, const char *name,
                                        uint32_t slot,
                                        virtio_mmio_device_t *device);
 void virtio_transport_reset(const virtio_mmio_device_t *device);
+/* The device's own status byte. Worth reading when a queue stops completing:
+   bit 6, DEVICE_NEEDS_RESET, is the device saying it has given up, which
+   distinguishes a device that failed from a notification that never landed.
+   Reads nothing that clears on read. */
+uint32_t virtio_transport_device_status(const virtio_mmio_device_t *device);
 xaios_status_t virtio_transport_reset_checked(
     const virtio_mmio_device_t *device);
 xaios_status_t virtio_transport_negotiate_no_features(

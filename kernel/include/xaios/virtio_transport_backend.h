@@ -37,6 +37,8 @@ xaios_status_t virtio_mmio_backend_transport_set_driver_ok_checked(
     const virtio_mmio_device_t *device);
 void virtio_mmio_backend_transport_notify(const virtio_mmio_device_t *device,
                              uint32_t queue_index);
+uint32_t virtio_mmio_backend_transport_device_status(
+    const virtio_mmio_device_t *device);
 xaios_status_t virtio_mmio_backend_transport_wait_used(volatile uint16_t *used_idx,
                                          uint16_t expected);
 void virtio_mmio_backend_transport_ack_interrupts(const virtio_mmio_device_t *device);
@@ -82,6 +84,8 @@ xaios_status_t virtio_pci_backend_transport_set_driver_ok_checked(
     const virtio_mmio_device_t *device);
 void virtio_pci_backend_transport_notify(const virtio_mmio_device_t *device,
                              uint32_t queue_index);
+uint32_t virtio_pci_backend_transport_device_status(
+    const virtio_mmio_device_t *device);
 xaios_status_t virtio_pci_backend_transport_wait_used(volatile uint16_t *used_idx,
                                          uint16_t expected);
 void virtio_pci_backend_transport_ack_interrupts(const virtio_mmio_device_t *device);

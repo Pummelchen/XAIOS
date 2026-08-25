@@ -236,6 +236,16 @@ machine happen to accommodate each one:
 - DHCP was attempted only for the Intel NIC, so a virtio guest kept the
   compiled-in QEMU address of 10.0.2.15 and was simply off-net. Every device
   now asks the network first and falls back to that address.
+- A transmit went unanswered on about one boot in eighteen, and the driver
+  waited five seconds and gave up. Caught by repeating the boot with the
+  device's own state recorded: `DRIVER_OK` set, `DEVICE_NEEDS_RESET` clear, a
+  buffer offered on each queue and neither consumed. That is not a device that
+  failed, it is a device that was never told -- both queues waited on a single
+  doorbell ring, so a notification that did not take effect was lost for good.
+  Every wait now re-rings on a slow cadence, which the specification permits
+  and which costs one MMIO write against a lost transmit. The self-test also
+  stopped treating the timeout as fatal: it had halted the machine outright.
+
 - Secondary CPUs never came online. PSCI starts them at reset state with
   translation off, so every address they see is Device memory, where exclusives
   are architecturally unsupported: the atomic each one used to announce itself
