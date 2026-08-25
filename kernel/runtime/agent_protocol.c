@@ -10,6 +10,8 @@
 #define AGENT_RESPONSE_MAGIC UINT32_C(0x41475253)
 #define AGENT_PROTOCOL_VERSION UINT32_C(1)
 
+/* C-01: two totals and no tables, reached from the agent dispatch syscall on
+   whichever CPU took it. Atomic for the same reason as security.c. */
 static uint64_t g_request_count;
 static uint64_t g_error_count;
 
@@ -71,7 +73,7 @@ static xaios_status_t handle_inference(const xaios_agent_request_t *request,
                                       uint64_t *output_bytes) {
   if (payload == 0 || request->payload_size < 1) {
     fill_response(response, XAIOS_AGENT_STATUS_INVALID, request->command, 0);
-    ++g_error_count;
+    __sync_fetch_and_add(&g_error_count, 1U);
     return XAIOS_ERR_INVALID;
   }
   uint64_t model_kind = (uint64_t)payload[0];
@@ -84,7 +86,7 @@ static xaios_status_t handle_inference(const xaios_agent_request_t *request,
   if (status != XAIOS_OK) {
     fill_response(response, XAIOS_AGENT_STATUS_INTERNAL_ERROR,
                   request->command, 0);
-    ++g_error_count;
+    __sync_fetch_and_add(&g_error_count, 1U);
     return status;
   }
   fill_response(response, XAIOS_AGENT_STATUS_OK, request->command,
@@ -171,21 +173,21 @@ xaios_status_t agent_protocol_dispatch(const xaios_agent_request_t *request,
   }
   if (request->magic != AGENT_REQUEST_MAGIC) {
     fill_response(response, XAIOS_AGENT_STATUS_INVALID, request->command, 0);
-    ++g_error_count;
+    __sync_fetch_and_add(&g_error_count, 1U);
     return XAIOS_ERR_INVALID;
   }
   if (request->version != AGENT_PROTOCOL_VERSION) {
     fill_response(response, XAIOS_AGENT_STATUS_INVALID, request->command, 0);
-    ++g_error_count;
+    __sync_fetch_and_add(&g_error_count, 1U);
     return XAIOS_ERR_INVALID;
   }
   if (payload_size > XAIOS_AGENT_MAX_PAYLOAD) {
     fill_response(response, XAIOS_AGENT_STATUS_INVALID, request->command, 0);
-    ++g_error_count;
+    __sync_fetch_and_add(&g_error_count, 1U);
     return XAIOS_ERR_INVALID;
   }
 
-  ++g_request_count;
+  __sync_fetch_and_add(&g_request_count, 1U);
   *output_bytes = 0;
   output[0] = '\0';
 
@@ -221,11 +223,11 @@ xaios_status_t agent_protocol_dispatch(const xaios_agent_request_t *request,
         }
         fill_response(response, XAIOS_AGENT_STATUS_INTERNAL_ERROR,
                       request->command, 0);
-        ++g_error_count;
+        __sync_fetch_and_add(&g_error_count, 1U);
         return st;
       }
       fill_response(response, XAIOS_AGENT_STATUS_INVALID, request->command, 0);
-      ++g_error_count;
+      __sync_fetch_and_add(&g_error_count, 1U);
       return XAIOS_ERR_INVALID;
     case XAIOS_AGENT_CMD_BUILD:
       return handle_build(request, response, output, output_capacity,
@@ -240,7 +242,7 @@ xaios_status_t agent_protocol_dispatch(const xaios_agent_request_t *request,
     }
     default:
       fill_response(response, XAIOS_AGENT_STATUS_INVALID, request->command, 0);
-      ++g_error_count;
+      __sync_fetch_and_add(&g_error_count, 1U);
       return XAIOS_ERR_INVALID;
   }
 }

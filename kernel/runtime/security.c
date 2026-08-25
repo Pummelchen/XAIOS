@@ -32,6 +32,11 @@ extern int xaios_ed25519_verify(const uint8_t signature[64],
                                 uint32_t message_len,
                                 const uint8_t public_key[32]);
 
+/* C-01: these are audit totals, updated from whichever CPU took the
+   syscall, and this file holds no tables at all. That makes atomics the
+   right instrument rather than a guard: the capability checks here sit on
+   the syscall path, and serialising every one of them across all cores to
+   protect a set of counters would cost far more than it buys. */
 static uint64_t g_denied_operations;
 static uint64_t g_capability_denials;
 static uint64_t g_fs_denials;
@@ -145,7 +150,7 @@ static int contains_buffer(const char *text, uint64_t length,
 }
 
 static xaios_status_t reject_security_operation(const char *reason) {
-  ++g_denied_operations;
+  __sync_fetch_and_add(&g_denied_operations, 1U);
   klog("security: denied operation reason=%s\n", reason);
   return XAIOS_ERR_INVALID;
 }
@@ -202,18 +207,18 @@ static xaios_status_t parse_generation(const char **cursor,
 }
 
 static xaios_status_t reject_update_signature(const char *reason) {
-  ++g_signature_rejects;
-  ++g_update_policy_rejects;
+  __sync_fetch_and_add(&g_signature_rejects, 1U);
+  __sync_fetch_and_add(&g_update_policy_rejects, 1U);
   return reject_security_operation(reason);
 }
 
 static xaios_status_t reject_update_key(const char *reason) {
-  ++g_key_rejects;
+  __sync_fetch_and_add(&g_key_rejects, 1U);
   return reject_update_signature(reason);
 }
 
 static xaios_status_t reject_update_replay(void) {
-  ++g_update_replay_rejects;
+  __sync_fetch_and_add(&g_update_replay_rejects, 1U);
   return reject_update_signature("update-replay-denied");
 }
 
@@ -241,7 +246,7 @@ void security_policy_init(void) {
 }
 
 void security_record_denied_operation(void) {
-  ++g_denied_operations;
+  __sync_fetch_and_add(&g_denied_operations, 1U);
 }
 
 xaios_status_t security_authorize_capability(const char *operation,
@@ -251,13 +256,13 @@ xaios_status_t security_authorize_capability(const char *operation,
   if ((granted & required) == required) {
     return XAIOS_OK;
   }
-  ++g_capability_denials;
+  __sync_fetch_and_add(&g_capability_denials, 1U);
   return reject_security_operation("missing-capability");
 }
 
 xaios_status_t security_authorize_fs_read(const char *path) {
   if (security_reject_credential_material(path) != XAIOS_OK) {
-    ++g_fs_denials;
+    __sync_fetch_and_add(&g_fs_denials, 1U);
     return XAIOS_ERR_INVALID;
   }
   if ((path[0] == '/' && path[1] == '\0') || path_in_tree(path, "/bin") ||
@@ -267,18 +272,18 @@ xaios_status_t security_authorize_fs_read(const char *path) {
       path_in_tree(path, "/models") || path_in_tree(path, "/update")) {
     return XAIOS_OK;
   }
-  ++g_fs_denials;
+  __sync_fetch_and_add(&g_fs_denials, 1U);
   return reject_security_operation("fs-read-denied");
 }
 
 xaios_status_t security_authorize_fs_write(const char *path) {
   if (security_reject_credential_material(path) != XAIOS_OK) {
-    ++g_fs_denials;
+    __sync_fetch_and_add(&g_fs_denials, 1U);
     return XAIOS_ERR_INVALID;
   }
   if (starts_with(path, "/etc/xaios_ssh_client_identity") &&
       path[sizeof("/etc/xaios_ssh_client_identity") - 1U] == '\0') {
-    ++g_fs_denials;
+    __sync_fetch_and_add(&g_fs_denials, 1U);
     return reject_security_operation("credential-write-denied");
   }
   if (path_in_tree(path, "/tmp") || path_in_tree(path, "/home") ||
@@ -287,7 +292,7 @@ xaios_status_t security_authorize_fs_write(const char *path) {
       path_in_tree(path, "/models/.staging")) {
     return XAIOS_OK;
   }
-  ++g_fs_denials;
+  __sync_fetch_and_add(&g_fs_denials, 1U);
   return reject_security_operation("fs-write-denied");
 }
 
@@ -297,13 +302,13 @@ xaios_status_t security_authorize_git_workspace(uint32_t workspace_id,
                                                const char *operation) {
   (void)workspace_id;
   if (security_reject_credential_material(operation) != XAIOS_OK) {
-    ++g_workspace_denials;
+    __sync_fetch_and_add(&g_workspace_denials, 1U);
     return XAIOS_ERR_INVALID;
   }
   if (actor_cell_id == owner_cell_id) {
     return XAIOS_OK;
   }
-  ++g_workspace_denials;
+  __sync_fetch_and_add(&g_workspace_denials, 1U);
   return reject_security_operation("git-workspace-owner-mismatch");
 }
 
@@ -313,46 +318,46 @@ xaios_status_t security_authorize_sandbox(uint32_t sandbox_id,
                                          const char *operation) {
   (void)sandbox_id;
   if (security_reject_credential_material(operation) != XAIOS_OK) {
-    ++g_sandbox_denials;
+    __sync_fetch_and_add(&g_sandbox_denials, 1U);
     return XAIOS_ERR_INVALID;
   }
   if (actor_cell_id == owner_cell_id) {
     return XAIOS_OK;
   }
-  ++g_sandbox_denials;
+  __sync_fetch_and_add(&g_sandbox_denials, 1U);
   return reject_security_operation("sandbox-owner-mismatch");
 }
 
 xaios_status_t security_authorize_rollback(const char *target,
                                           uint32_t authorized) {
   if (security_reject_credential_material(target) != XAIOS_OK) {
-    ++g_rollback_denials;
+    __sync_fetch_and_add(&g_rollback_denials, 1U);
     return XAIOS_ERR_INVALID;
   }
   if (authorized != 0) {
     return XAIOS_OK;
   }
-  ++g_rollback_denials;
+  __sync_fetch_and_add(&g_rollback_denials, 1U);
   return reject_security_operation("rollback-denied");
 }
 
 xaios_status_t security_authorize_admin(const char *operation,
                                        uint64_t granted) {
   if (security_reject_credential_material(operation) != XAIOS_OK) {
-    ++g_admin_denials;
+    __sync_fetch_and_add(&g_admin_denials, 1U);
     return XAIOS_ERR_INVALID;
   }
   if ((granted & XAIOS_CAP_ADMIN) == XAIOS_CAP_ADMIN) {
     return XAIOS_OK;
   }
-  ++g_admin_denials;
-  ++g_capability_denials;
+  __sync_fetch_and_add(&g_admin_denials, 1U);
+  __sync_fetch_and_add(&g_capability_denials, 1U);
   return reject_security_operation("admin-capability-denied");
 }
 
 xaios_status_t security_reject_credential_material(const char *text) {
   if (text == 0) {
-    ++g_credential_rejects;
+    __sync_fetch_and_add(&g_credential_rejects, 1U);
     return reject_security_operation("null-input");
   }
 
@@ -363,7 +368,7 @@ xaios_status_t security_reject_credential_material(const char *text) {
       contains(text, k_pass_field_pattern) ||
       contains(text, k_token_field_pattern) ||
       contains(text, k_secret_field_pattern)) {
-    ++g_credential_rejects;
+    __sync_fetch_and_add(&g_credential_rejects, 1U);
     return reject_security_operation("credential-material");
   }
 
@@ -373,7 +378,7 @@ xaios_status_t security_reject_credential_material(const char *text) {
 xaios_status_t security_reject_credential_material_buffer(const char *text,
                                                          uint64_t length) {
   if (text == 0) {
-    ++g_credential_rejects;
+    __sync_fetch_and_add(&g_credential_rejects, 1U);
     return reject_security_operation("null-input");
   }
   if (contains_buffer(text, length, k_pat_credential_pattern) ||
@@ -383,7 +388,7 @@ xaios_status_t security_reject_credential_material_buffer(const char *text,
       contains_buffer(text, length, k_pass_field_pattern) ||
       contains_buffer(text, length, k_token_field_pattern) ||
       contains_buffer(text, length, k_secret_field_pattern)) {
-    ++g_credential_rejects;
+    __sync_fetch_and_add(&g_credential_rejects, 1U);
     return reject_security_operation("credential-material");
   }
   return XAIOS_OK;
@@ -396,8 +401,8 @@ static xaios_status_t validate_update_signature(
   uint8_t signature_bytes[XAIOS_UPDATE_SIGNATURE_BYTES];
   uint8_t signed_hash[32];
   if (security_reject_credential_material(signature) != XAIOS_OK) {
-    ++g_signature_rejects;
-    ++g_update_policy_rejects;
+    __sync_fetch_and_add(&g_signature_rejects, 1U);
+    __sync_fetch_and_add(&g_update_policy_rejects, 1U);
     return XAIOS_ERR_INVALID;
   }
 
@@ -471,8 +476,8 @@ static xaios_status_t validate_update_signature(
       expected_hash[index] = signed_hash[index];
     }
   }
-  ++g_key_accepts;
-  ++g_signature_accepts;
+  __sync_fetch_and_add(&g_key_accepts, 1U);
+  __sync_fetch_and_add(&g_signature_accepts, 1U);
   klog("security: update signature accepted policy=ed25519 generation=%lu key=qemu-test-public\n",
        generation);
   return XAIOS_OK;
@@ -488,10 +493,10 @@ xaios_status_t security_verify_release_signature(
   if (message == 0 || message_size == 0U || signature == 0 ||
       xaios_ed25519_verify(signature, (const uint8_t *)message, message_size,
                            g_release_public_key) != 0) {
-    ++g_signature_rejects;
+    __sync_fetch_and_add(&g_signature_rejects, 1U);
     return XAIOS_ERR_INVALID;
   }
-  ++g_signature_accepts;
+  __sync_fetch_and_add(&g_signature_accepts, 1U);
   return XAIOS_OK;
 }
 
@@ -502,10 +507,10 @@ xaios_status_t security_verify_signature_with_key(
       public_key == 0 ||
       xaios_ed25519_verify(signature, (const uint8_t *)message, message_size,
                            public_key) != 0) {
-    ++g_signature_rejects;
+    __sync_fetch_and_add(&g_signature_rejects, 1U);
     return XAIOS_ERR_INVALID;
   }
-  ++g_signature_accepts;
+  __sync_fetch_and_add(&g_signature_accepts, 1U);
   return XAIOS_OK;
 }
 
@@ -547,7 +552,7 @@ xaios_status_t security_authorize_update_signature(const char *signature,
   if (security_validate_update_signature(signature) != XAIOS_OK) {
     return XAIOS_ERR_INVALID;
   }
-  ++g_update_authorizations;
+  __sync_fetch_and_add(&g_update_authorizations, 1U);
   return XAIOS_OK;
 }
 
@@ -565,29 +570,29 @@ xaios_status_t security_authorize_update_signature_for_generation(
                                 expected_hash) != XAIOS_OK) {
     return XAIOS_ERR_INVALID;
   }
-  ++g_update_authorizations;
+  __sync_fetch_and_add(&g_update_authorizations, 1U);
   return XAIOS_OK;
 }
 
 xaios_status_t security_validate_sandbox_path(const char *path) {
   const char *cursor = path;
   if (security_reject_credential_material(path) != XAIOS_OK) {
-    ++g_sandbox_escape_rejects;
+    __sync_fetch_and_add(&g_sandbox_escape_rejects, 1U);
     return XAIOS_ERR_INVALID;
   }
   if (path == 0 || path[0] != '/') {
-    ++g_sandbox_escape_rejects;
+    __sync_fetch_and_add(&g_sandbox_escape_rejects, 1U);
     return reject_security_operation("sandbox-path-relative");
   }
   while (*cursor != '\0') {
     if (cursor[0] == '/' && cursor[1] == '/') {
-      ++g_sandbox_escape_rejects;
+      __sync_fetch_and_add(&g_sandbox_escape_rejects, 1U);
       return reject_security_operation("sandbox-path-escape");
     }
     if (cursor[0] == '.' && cursor[1] == '.' &&
         (cursor == path || cursor[-1] == '/') &&
         (cursor[2] == '/' || cursor[2] == '\0')) {
-      ++g_sandbox_escape_rejects;
+      __sync_fetch_and_add(&g_sandbox_escape_rejects, 1U);
       return reject_security_operation("sandbox-path-escape");
     }
     ++cursor;
