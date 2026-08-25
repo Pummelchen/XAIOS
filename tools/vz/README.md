@@ -285,6 +285,26 @@ address by copying the destination's prefix and appending our own interface
 identifier -- right only when the peer happened to share our link. That guess
 now applies only when no advertisement has been accepted.
 
+## Running on more than one core
+
+This is the only target here that runs XAIOS on real cores, and it is worth
+using that way rather than at one vCPU:
+
+```sh
+./build/vz/xaios-vz build/vz/xaios-vz-disk.img ... --cpus 8
+```
+
+Boots come up `1/1`, `4/4` and `8/8` with the secondary worker barrier passing
+at each. Ten consecutive eight-vCPU boots produce byte-identical `smptest`
+signatures, which is the useful invariant here: the worker and thread
+checksums are deterministic for a given CPU count, so any deviation across
+runs is a concurrency defect rather than scheduling noise.
+
+Two things this does not show. The host has eight cores against a target two
+orders of magnitude larger, and every run above is functional rather than
+sustained -- it demonstrates the paths work, not that they hold under
+contention.
+
 ## Why interrupts are polled here
 
 Message-signalled interrupts on aarch64 are delivered through the GIC's
