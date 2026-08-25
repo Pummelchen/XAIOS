@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 host="${XAIOS_SSH_HOST:-127.0.0.1}"
 port="${XAIOS_SSH_PORT:-7788}"
 user="${XAIOS_SSH_USER:-admin}"

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 VMX="$ROOT_DIR/build/vmware-fusion/XAIOS.vmwarevm/XAIOS.vmx"
 VMRUN="${XAIOS_VMRUN:-/Applications/VMware Fusion.app/Contents/Library/vmrun}"
 

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 BUILD_DIR="$ROOT_DIR/build/vmware-fusion"
 STAGE_DIR="$BUILD_DIR/iso-root"
 VM_BUNDLE="$BUILD_DIR/XAIOS.vmwarevm"
@@ -57,9 +57,21 @@ path.mkdir(parents=True)
 PY
 mkdir -p "$STAGE_DIR/EFI/BOOT" "$STAGE_DIR/EFI/XAIOS" "$VM_BUNDLE"
 
-docker build --platform linux/arm64 \
+# Build the chainloader image, or reuse the one already here. The build reads
+# metadata for its base image from the registry every time, so a machine that
+# cannot reach Docker Hub fails even when the finished image is sitting in the
+# local store. Reusing it keeps the build working offline; the tag carries the
+# distribution and architecture, so what gets reused is not ambiguous.
+if ! docker build --platform linux/arm64 \
   --file "$ROOT_DIR/platform/vmware-fusion/Dockerfile.grub" \
-  --tag "$GRUB_IMAGE" "$ROOT_DIR/platform/vmware-fusion"
+  --tag "$GRUB_IMAGE" "$ROOT_DIR/platform/vmware-fusion"; then
+  if docker image inspect "$GRUB_IMAGE" >/dev/null 2>&1; then
+    printf '%s\n' "note: could not rebuild $GRUB_IMAGE; using the cached image" >&2
+  else
+    printf '%s\n' "error: cannot build $GRUB_IMAGE and none is cached" >&2
+    exit 2
+  fi
+fi
 docker run --rm --platform linux/arm64 \
   --volume "$ROOT_DIR:/workspace" \
   "$GRUB_IMAGE" \
