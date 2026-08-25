@@ -122,6 +122,14 @@ static inline int xaios_spin_held(xaios_spinlock_t *lock) {
  * This is a coarse instrument. It is the right one while the question is
  * whether these subsystems are correct under parallelism at all; finer
  * locking belongs after that, with measurements to justify it.
+ *
+ * Never take this from interrupt context. The depth check identifies the
+ * holder by CPU, so an interrupt that lands on a CPU already inside the guard
+ * and calls a guarded function would be told it holds the lock and would walk
+ * straight into the critical section it interrupted. Every subsystem using it
+ * today is entered from syscalls and kernel threads only -- the timer path
+ * reaches scheduler_tick, and the virtio handlers touch nothing but their own
+ * driver state -- and that is a property to preserve rather than assume.
  */
 typedef struct xaios_reentrant_lock {
   xaios_spinlock_t lock;

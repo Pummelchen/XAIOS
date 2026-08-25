@@ -3,6 +3,8 @@
 #include <xaios/dnssec.h>
 #include <xaios/ipv4.h>
 #include <xaios/klog.h>
+#include <xaios/spinlock.h>
+#include <xaios/smp.h>
 #include <xaios/network_stack.h>
 #include <xaios/timer.h>
 #include <xaios/net_device.h>
@@ -81,6 +83,16 @@ typedef struct dns_pending {
   uint8_t query[DNS_UDP_FRAME_SIZE];
   uint8_t tcp_reply[DNS_TCP_MESSAGE_SIZE + 2U];
 } dns_pending_t;
+
+/* C-01: the resolver cache is reached from the NET_RESOLVE syscall, which
+   runs on the calling thread's CPU. See xaios_reentrant_lock. */
+static xaios_reentrant_lock_t g_dns_guard = XAIOS_REENTRANT_LOCK_INIT;
+
+static void dns_lock(void) {
+  xaios_reentrant_lock(&g_dns_guard, smp_cpu_id());
+}
+
+static void dns_unlock(void) { xaios_reentrant_unlock(&g_dns_guard); }
 
 static uint32_t g_dns_server_ip = UINT32_C(0x08080808);
 static uint16_t g_next_dns_id = 1U;
@@ -423,7 +435,7 @@ static xaios_status_t start_query(dns_pending_t *pending, const char *name,
   return XAIOS_OK;
 }
 
-xaios_status_t dns_resolve_address(const char *hostname, uint8_t family,
+static xaios_status_t dns_resolve_address_unlocked(const char *hostname, uint8_t family,
                                    xaios_ip_addr_t *out_address) {
   if (hostname == 0 || out_address == 0 ||
       (family != XAIOS_IP_FAMILY_V4 && family != XAIOS_IP_FAMILY_V6)) {
@@ -459,6 +471,14 @@ xaios_status_t dns_resolve_address(const char *hostname, uint8_t family,
   klog("dns: resolve %s type=%u dnssec=local-chain\n", hostname,
        family == XAIOS_IP_FAMILY_V4 ? XAIOS_DNS_TYPE_A : XAIOS_DNS_TYPE_AAAA);
   return XAIOS_ERR_BUSY;
+}
+
+xaios_status_t dns_resolve_address(const char *hostname, uint8_t family,
+                                   xaios_ip_addr_t *out_address) {
+  dns_lock();
+  xaios_status_t result = dns_resolve_address_unlocked(hostname, family, out_address);
+  dns_unlock();
+  return result;
 }
 
 xaios_status_t dns_resolve(const char *hostname, uint32_t *out_ip) {

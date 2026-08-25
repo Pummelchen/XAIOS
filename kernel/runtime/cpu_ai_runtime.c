@@ -4,6 +4,8 @@
 #include <xaios/cpu_ai_runtime.h>
 #include <xaios/initramfs.h>
 #include <xaios/klog.h>
+#include <xaios/spinlock.h>
+#include <xaios/smp.h>
 #include <xaios/model_arena.h>
 
 /* Picard — “I am Locutus of Borg. Resistance is futile.” */
@@ -74,6 +76,17 @@ typedef struct {
   xaios_quantization_t quant_format;
   const char *model_name;
 } xaios_cpu_ai_runtime_cell_t;
+
+/* C-01: the runtime's model binding and key-value state is reached from
+   the decode and run syscalls, which execute on whichever CPU the calling
+   thread occupies. See xaios_reentrant_lock. */
+static xaios_reentrant_lock_t g_cpu_ai_guard = XAIOS_REENTRANT_LOCK_INIT;
+
+static void cpu_ai_lock(void) {
+  xaios_reentrant_lock(&g_cpu_ai_guard, smp_cpu_id());
+}
+
+static void cpu_ai_unlock(void) { xaios_reentrant_unlock(&g_cpu_ai_guard); }
 
 static xaios_cpu_ai_runtime_cell_t g_cells[XAIOS_CPU_AI_RUNTIME_MAX_CELLS];
 static const char k_hex[] = "0123456789ABCDEF";
@@ -421,7 +434,7 @@ xaios_status_t cpu_ai_runtime_bind_model(uint32_t cell_id,
                                            UINT64_C(0), UINT64_C(0));
 }
 
-xaios_status_t cpu_ai_runtime_bind_model_with_kv(uint32_t cell_id,
+static xaios_status_t cpu_ai_runtime_bind_model_with_kv_unlocked(uint32_t cell_id,
                                                 uint32_t model_arena_id,
                                                 uint64_t kv_base,
                                                 uint64_t kv_bytes) {
@@ -504,6 +517,16 @@ xaios_status_t cpu_ai_runtime_bind_model_with_kv(uint32_t cell_id,
   return XAIOS_OK;
 }
 
+xaios_status_t cpu_ai_runtime_bind_model_with_kv(uint32_t cell_id,
+                                                uint32_t model_arena_id,
+                                                uint64_t kv_base,
+                                                uint64_t kv_bytes) {
+  cpu_ai_lock();
+  xaios_status_t result = cpu_ai_runtime_bind_model_with_kv_unlocked(cell_id, model_arena_id, kv_base, kv_bytes);
+  cpu_ai_unlock();
+  return result;
+}
+
 xaios_status_t cpu_ai_runtime_unbind_model(uint32_t cell_id) {
   if (!validate_cell_id(cell_id)) {
     return XAIOS_ERR_INVALID;
@@ -568,7 +591,7 @@ xaios_status_t cpu_ai_runtime_fixture_decode_piece(
   return XAIOS_OK;
 }
 
-xaios_status_t cpu_ai_runtime_decode_piece(uint32_t cell_id,
+static xaios_status_t cpu_ai_runtime_decode_piece_unlocked(uint32_t cell_id,
                                          const uint8_t *piece,
                                          uint64_t piece_bytes, char *output,
                                          uint64_t output_capacity,
@@ -583,6 +606,17 @@ xaios_status_t cpu_ai_runtime_decode_piece(uint32_t cell_id,
     *output_bytes = 0;
   }
   return XAIOS_ERR_UNSUPPORTED;
+}
+
+xaios_status_t cpu_ai_runtime_decode_piece(uint32_t cell_id,
+                                         const uint8_t *piece,
+                                         uint64_t piece_bytes, char *output,
+                                         uint64_t output_capacity,
+                                         uint64_t *output_bytes) {
+  cpu_ai_lock();
+  xaios_status_t result = cpu_ai_runtime_decode_piece_unlocked(cell_id, piece, piece_bytes, output, output_capacity, output_bytes);
+  cpu_ai_unlock();
+  return result;
 }
 
 static void runtime_append(char *output, uint64_t capacity, uint64_t *offset,
@@ -618,7 +652,7 @@ static void runtime_append_u64(char *output, uint64_t capacity,
   }
 }
 
-xaios_status_t cpu_ai_runtime_run_model(uint32_t cell_id, uint64_t model_kind,
+static xaios_status_t cpu_ai_runtime_run_model_unlocked(uint32_t cell_id, uint64_t model_kind,
                                        const uint8_t *input,
                                        uint64_t input_bytes, char *output,
                                        uint64_t output_capacity,
@@ -739,6 +773,17 @@ xaios_status_t cpu_ai_runtime_run_model(uint32_t cell_id, uint64_t model_kind,
   klog("cpu-ai-runtime: generic ml model kind=%lu input=%lu output=%lu cpu_only=1\n",
        model_kind, input_bytes, offset);
   return XAIOS_OK;
+}
+
+xaios_status_t cpu_ai_runtime_run_model(uint32_t cell_id, uint64_t model_kind,
+                                       const uint8_t *input,
+                                       uint64_t input_bytes, char *output,
+                                       uint64_t output_capacity,
+                                       uint64_t *output_bytes) {
+  cpu_ai_lock();
+  xaios_status_t result = cpu_ai_runtime_run_model_unlocked(cell_id, model_kind, input, input_bytes, output, output_capacity, output_bytes);
+  cpu_ai_unlock();
+  return result;
 }
 
 uint64_t cpu_ai_runtime_decode_count(uint32_t cell_id) {
