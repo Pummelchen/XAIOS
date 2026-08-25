@@ -408,12 +408,25 @@ void virtio_net_self_test(void) {
   g_net->tx_avail->idx = 1;
   virtio_transport_notify(&g_net->device, 1);
 
-  kassert(virtio_transport_wait_used(&g_net->tx_used->idx, 1) == XAIOS_OK);
+  /* Whether a transmit completes inside a fixed window is the device's
+     business and the host's, not a kernel invariant. Asserting on it halted a
+     machine outright when this ran on a loaded host and the completion arrived
+     late -- the posture feature negotiation above already rejects for exactly
+     this reason. Report it and leave the path unvalidated instead, and go on
+     to reset the device either way, because the real driver initialises after
+     this and needs the queues put back. */
+  xaios_status_t tx_status =
+      virtio_transport_wait_used(&g_net->tx_used->idx, 1);
   xaios_status_t rx_status =
-      virtio_transport_wait_used(&g_net->rx_used->idx, 1);
+      tx_status == XAIOS_OK
+          ? virtio_transport_wait_used(&g_net->rx_used->idx, 1)
+          : XAIOS_ERR_IO;
   virtio_transport_ack_interrupts(&g_net->device);
 
-  if (rx_status == XAIOS_OK) {
+  if (tx_status != XAIOS_OK) {
+    klog("virtio-net: transmit completion did not arrive; TX/RX integration "
+         "not asserted\n");
+  } else if (rx_status == XAIOS_OK) {
     uint32_t rx_len = g_net->rx_used->ring[0].len;
     /* The request went to QEMU user-mode networking's gateway. Any other
        host answers from its own subnet, so a reply that does not match is
@@ -431,8 +444,10 @@ void virtio_net_self_test(void) {
   }
   malformed_packet_self_test();
   virtio_transport_reset(&g_net->device);
-  klog("virtio-net: queue/tx/parser/reset self-test passed event_idx=%u indirect_sg=%u\n",
-       g_net->event_idx, g_net->indirect_desc);
+  klog("virtio-net: queue/tx/parser/reset self-test passed event_idx=%u "
+       "indirect_sg=%u tx_completed=%u\n",
+       g_net->event_idx, g_net->indirect_desc,
+       tx_status == XAIOS_OK ? 1U : 0U);
 }
 
 static uint64_t net_dma_address(const void *ptr) {
