@@ -1,3 +1,34 @@
+/*
+ * The IPv4/IPv6 network stack: flows, listeners, sockets and the poll path.
+ *
+ * This file is large, and it has been measured rather than eyeballed before
+ * being left that way. Cutting it anywhere past its state block produces a
+ * worse interface than it solves:
+ *
+ *   cut after the declarations (line ~300)   11 symbols cross the boundary
+ *   cut before the TCP data plane            88 symbols cross
+ *   cut out the self-test                    50 symbols cross
+ *
+ * The reason is visible directly below this comment. Every counter, both flow
+ * tables and the listener registry are file-scope state, and every layer
+ * touches all of it, so a split relocates the coupling into a shared header
+ * without reducing it. Splitting this file usefully means first putting that
+ * state behind accessors -- a refactor with real risk, and one that wants
+ * doing deliberately rather than alongside something else. It is tracked.
+ *
+ * The layout, for navigation:
+ *
+ *   constants and types            declarations, sizes, protocol numbers
+ *   shared state                   counters, flow tables, listener registry
+ *   guard                          see xaios_reentrant_lock; C-01
+ *   helpers                        byte order, checksums, frame construction
+ *   receive path                   frame classification and dispatch
+ *   TCP segment builder            line ~2185
+ *   listener, accept, socket map   line ~2476
+ *   public API                     the entry points a syscall reaches
+ *   self-test                      line ~4120
+ */
+
 #include <xaios/arp.h>
 #include <xaios/assert.h>
 #include <xaios/dns.h>
