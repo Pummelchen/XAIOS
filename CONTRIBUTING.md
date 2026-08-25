@@ -4,6 +4,37 @@ XAIOS is an experimental freestanding operating system and portable inference
 engine. Keep changes focused, reviewable, and tied to the current project
 tracker.
 
+## The rule that outranks the others
+
+**XAIOS behaves the same everywhere it boots.** Firmware supplies capabilities,
+never identity, and never behaviour.
+
+A hypervisor may lack a framebuffer, a serial port, an interrupt translation
+service or an entropy protocol. XAIOS may not notice *which* hypervisor it is,
+and may never behave differently because of the answer. What the boot display,
+the prompts, the shell and the SSH server say is XAIOS's, and reads identically
+on every target that can run them. Where a capability is absent, the system
+degrades the same way everywhere.
+
+This is not style. The loader once advertised a hard-coded QEMU serial port to
+every machine it booted, so on a platform with no serial hardware the kernel's
+first log write went to a device that was not there. That was recorded as
+"XAIOS does not boot" for a long time; the port was fine and the assumption was
+not.
+
+`make platform-neutrality-check` enforces it and runs inside `make docs-check`.
+Two things fail review: a platform-branded constant used as the initial value
+of something discovery fills in, and a user-visible string naming a hypervisor.
+The test to apply is whether the sentence could name a vendor -- "this machine
+has no framebuffer" is a capability, "this is Fusion, so draw differently" is
+identity. Read
+[`docs/PLATFORM-NEUTRALITY.md`](./docs/PLATFORM-NEUTRALITY.md) before touching
+`kernel/`, `boot/` or `userspace/`.
+
+Harnesses in `tools/`, run scripts in `scripts/`, gates in `tests/` and
+firmware profiles in `contracts/` are exempt: driving or asserting one specific
+platform is their purpose.
+
 ## Getting Started
 
 See [Getting Started](docs/GETTING-STARTED.md) for toolchain setup, building,
@@ -58,6 +89,7 @@ All C code is freestanding C99 compiled with `-Wall -Wextra -Werror`:
 ## Contribution Rules
 
 - Use one task per commit or pull request.
+- Keep firmware out of XAIOS's behaviour. See the rule above; `make platform-neutrality-check` will reject the obvious violations, but it cannot see a new code path that quietly does something different on one platform.
 - Run the relevant tests, build checks, or QEMU boot command before submitting.
 - Keep boot logs and benchmark outputs when they support the change.
 - Update the Wiki under `wiki/` when code changes alter architecture, build steps, APIs, or benchmark methodology. Edit it there rather than on GitHub: `make docs-check` gates its page set and links, and CI publishes it to the GitHub Wiki on merge to `main`, so an edit made on the published pages is overwritten by the next merge.

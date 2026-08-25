@@ -14,17 +14,25 @@
 - [[xapt Package Updates|Xapt-Package-Updates]]
 - [[Operations and Recovery|Operations-and-Recovery]]
 
+## Where it runs
+
+QEMU is the default and is covered in [[Getting Started|Getting-Started]].
+
+- [[VMware Fusion|VMware-Fusion]]
+- [[Virtualization Framework|Virtualization-Framework]]
+- [[Firmware Profiles|Firmware-Profiles]]
+- [[Hardware Support|Hardware-Support]]
+
 ## Reference
 
-- [[Hardware Support|Hardware-Support]]
 - [[Architecture|Architecture]]
 - [[Security Model|Security-Model]]
 - [[Unix Compatibility|Unix-Compatibility]]
 - [[ISO C99 Library|C99-Libc]]
-- [[Testing XAIOS|Testing-XAIOS]]
-- [[VMware Fusion|VMware-Fusion]]
-- [[Virtualization Framework|Virtualization-Framework]]
-- [[Firmware Profiles|Firmware-Profiles]]
 - [[Current Limitations|Current-Limitations]]
 - [[FAQ]]
+
+## Project
+
+- [[Testing XAIOS|Testing-XAIOS]]
 - [[Project Tracker|Project-Tracker]]

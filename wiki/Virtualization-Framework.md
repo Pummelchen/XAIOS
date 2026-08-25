@@ -137,16 +137,6 @@ foreign kernel. Use QEMU or an Intel host for the x86_64 image; see
 
 ## Debugging on a platform with no console
 
-Two instruments work here and several obvious ones do not.
-
-- The EFI console is not a witness. Firmware renders it by `Blt` into the
-  virtio GPU, so it can stop updating while the CPU runs on perfectly well.
-  Output that stops mid-way reads exactly like a hang and usually is not one.
-- Process liveness distinguishes nothing: the framework exits only when the
-  guest powers off, so a wedged guest and a running one look identical.
-- Host CPU percentage is useless; a guest spinning in a tight loop reports 0.0%.
-
-What does work is a trace file written to the ESP by the loader, which survives
-console death, and PSCI `SYSTEM_OFF` as a one-bit probe after
-`ExitBootServices`, where no output channel exists at all: place the call at the
-point of interest and a guest that powers off reached it.
+Several obvious instruments mislead here and two work. That is development
+detail rather than a property of XAIOS, so it lives with the harness in
+[`tools/vz/README.md`](https://github.com/Pummelchen/XAIOS/blob/main/tools/vz/README.md).
