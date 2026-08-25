@@ -116,7 +116,7 @@ def start_qemu_ready(
     for attempt in range(2):
         log_file = log_path.open("wb")
         process = subprocess.Popen(
-            [str(ROOT / "scripts" / "run-qemu-aarch64.sh")],
+            [str(ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh")],
             cwd=ROOT,
             env=environment,
             stdin=subprocess.DEVNULL,

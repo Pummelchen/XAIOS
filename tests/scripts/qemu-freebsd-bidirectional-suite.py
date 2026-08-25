@@ -388,7 +388,7 @@ def xaios_process(
                 ),
             }
         )
-        runner = ROOT / "scripts" / "run-qemu-aarch64.sh"
+        runner = ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh"
     else:
         env.update(
             {
@@ -399,7 +399,7 @@ def xaios_process(
                 ),
             }
         )
-        runner = ROOT / "scripts" / "run-qemu-x86_64.sh"
+        runner = ROOT / "platform" / "qemu" / "run-qemu-x86_64.sh"
     Path(env.get("XAIOS_PERSISTENT_IMAGE", env.get("XAIOS_X86_PERSISTENT_IMAGE", ""))).unlink(missing_ok=True)
     return subprocess.Popen(
         [str(runner)],

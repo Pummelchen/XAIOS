@@ -109,14 +109,14 @@ def start_guest(arch: str, port: int, persistent: Path,
             "XAIOS_QEMU_SMP": "4",
             "XAIOS_PERSISTENT_IMAGE": str(persistent),
         })
-        runner = ROOT / "scripts" / "run-qemu-aarch64.sh"
+        runner = ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh"
     else:
         env.update({
             "XAIOS_QEMU_X86_ACCEL": "tcg",
             "XAIOS_QEMU_X86_SMP": "4",
             "XAIOS_X86_PERSISTENT_IMAGE": str(persistent),
         })
-        runner = ROOT / "scripts" / "run-qemu-x86_64.sh"
+        runner = ROOT / "platform" / "qemu" / "run-qemu-x86_64.sh"
     log_file = log_path.open("ab")
     process = subprocess.Popen([str(runner)], cwd=ROOT, env=env,
                                stdin=subprocess.DEVNULL, stdout=log_file,

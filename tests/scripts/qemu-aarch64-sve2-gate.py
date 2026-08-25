@@ -50,7 +50,7 @@ def main() -> int:
             }
         )
         process = subprocess.Popen(
-            [str(ROOT / "scripts" / "run-qemu-aarch64.sh")],
+            [str(ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh")],
             cwd=ROOT,
             env=environment,
             stdout=subprocess.PIPE,

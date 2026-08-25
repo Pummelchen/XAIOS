@@ -374,7 +374,7 @@ def main() -> int:
     )
     xaios_log_file = xaios_log.open("wb")
     xaios = subprocess.Popen(
-        [str(ROOT / "scripts" / "run-qemu-aarch64.sh")],
+        [str(ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh")],
         cwd=ROOT,
         env=xaios_env,
         stdin=subprocess.DEVNULL,

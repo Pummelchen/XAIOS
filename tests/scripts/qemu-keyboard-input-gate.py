@@ -125,10 +125,10 @@ def main() -> int:
     build_env.pop("XAIOS_SSH_PASSWORD_AUTH", None)
     build_env["XAIOS_BOOT_VERBOSE"] = "1"
     build_command = ["make", "image"]
-    runner = ROOT / "scripts" / "run-qemu-aarch64.sh"
+    runner = ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh"
     if args.arch == "x86_64":
         build_command = ["make", "image-x86_64"]
-        runner = ROOT / "scripts" / "run-qemu-x86_64.sh"
+        runner = ROOT / "platform" / "qemu" / "run-qemu-x86_64.sh"
     run_checked(build_command, f"build {args.arch} keyboard image", build_env)
 
     qmp_socket = gate_dir / "qmp.sock"

@@ -54,9 +54,9 @@ def run_architecture(architecture: str) -> dict[str, object]:
     persistent = BUILD / f"qemu-outbound-fragmentation-{architecture}.img"
     persistent.unlink(missing_ok=True)
     runner = (
-        ROOT / "scripts" / "run-qemu-aarch64.sh"
+        ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh"
         if architecture == "aarch64"
-        else ROOT / "scripts" / "run-qemu-x86_64.sh"
+        else ROOT / "platform" / "qemu" / "run-qemu-x86_64.sh"
     )
     environment = os.environ.copy()
     environment.update(

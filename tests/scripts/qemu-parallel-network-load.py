@@ -70,7 +70,7 @@ def start_qemu(
         )
         env.update(env_updates)
         process = subprocess.Popen(
-            [str(ROOT / "scripts" / "run-qemu-aarch64.sh")],
+            [str(ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh")],
             cwd=ROOT,
             env=env,
             stdin=subprocess.DEVNULL,

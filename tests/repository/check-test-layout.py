@@ -75,6 +75,26 @@ def main() -> int:
                 f"in tests/repository/"
             )
 
+    # A path a test builds at runtime is invisible to a search for the literal
+    # string, so moving a script can leave a gate pointing at nothing and the
+    # break only shows when that gate runs. That happened: three profile gates
+    # failed on a runner that had moved, after a grep for the old path came
+    # back clean.
+    for source in sorted(TESTS.rglob("*.py")) + sorted(TESTS.rglob("*.sh")):
+        if any(part in source.parts for part in (".git", "build")):
+            continue
+        text = source.read_text(encoding="utf-8", errors="replace")
+        for first, second in re.findall(
+            r'ROOT\s*/\s*"([^"]+)"\s*/\s*"([^"]+)"', text
+        ):
+            if not second.endswith((".sh", ".py")):
+                continue
+            if not (ROOT / first / second).exists():
+                failures.append(
+                    f"{source.relative_to(ROOT)}: builds a path to "
+                    f"{first}/{second}, which does not exist"
+                )
+
     missing = sorted(RUNTIME_SCRIPTS - script_files)
     if unexpected:
         failures.append("non-runtime files remain in scripts/: " + ", ".join(unexpected))
