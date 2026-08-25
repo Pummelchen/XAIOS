@@ -8,17 +8,18 @@ dual-architecture all-queue NVMe interrupt, SVE2 per-task context, x86 HMAT/
 The final consolidated report deliberately retains
 `physical_qualification=false`.
 
-The ARM QEMU profile passes at `afaf3c231bf5a18124eca16cd0915e54775b86f9`, which is the current tree: boot, CPU,
-network and SSH; USB keyboard console; SVE2 per-task context; storage recovery;
-operations and shutdown; repeat boot. That run qualifies the secondary-CPU
-bring-up, subsystem serialisation and virtio notification work on one profile.
+Two of the three virtual-platform profiles pass at `b173e42c558e`, which is the
+same tree for both: **macOS QEMU ARM64** across boot/CPU/network/SSH, USB
+keyboard console, SVE2 per-task context, storage recovery, operations and
+shutdown, and repeat boot; and **macOS VMware Fusion ARM64** across its
+one-vCPU boot, storage, network and SSH lifecycle. Between them they qualify
+the secondary-CPU bring-up, the subsystem serialisation and the virtio
+notification work on real firmware rather than on none.
 
-The other two profiles are behind it. **macOS VMware Fusion ARM64 and Intel VPS
-QEMU x86_64 were last collected at `adc0b69a1b4e6eb8f1c123fcc25aa3a73d6a881e`
-and must be re-run before their result is quoted as current**; neither can run
-on the machine the ARM profile was collected on, since one needs a built Fusion
-VM and the other the designated Intel host. A passing ARM result does not stand
-in for either.
+**Intel VPS QEMU x86_64 is still behind, last collected at
+`adc0b69a1b4e6eb8f1c123fcc25aa3a73d6a881e`, and must be re-run before its
+result is quoted as current.** It needs the designated Intel host; no ARM
+result stands in for it.
 
 This is the only human-maintained XAIOS project tracker. Roadmaps, milestones,
 phase plans, open decisions, and risks are consolidated here. The Wiki does not
