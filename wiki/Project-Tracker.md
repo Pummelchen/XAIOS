@@ -8,17 +8,17 @@ dual-architecture all-queue NVMe interrupt, SVE2 per-task context, x86 HMAT/
 The final consolidated report deliberately retains
 `physical_qualification=false`.
 
-The three-profile virtual-platform evidence set passes at
-`adc0b69a1b4e6eb8f1c123fcc25aa3a73d6a881e`: macOS QEMU ARM64, macOS VMware
-Fusion ARM64, and Intel VPS QEMU x86_64. **That evidence is behind the current
-tree.** 113 commits have landed since, touching kernel and boot sources 153
-times, including secondary-CPU bring-up, subsystem serialisation and the virtio
-transports. The profiles must be re-run before their result is quoted as
-current; a profile report names the commit it was taken at for exactly this
-reason. The completed Fusion 26H1 (26.0.0)
-one-vCPU profile is removed from the open-work tables; it covers UEFI/GRUB
-boot, E1000E DHCP IPv4, AHCI MutableFS, public-key SSH/SFTP, abrupt-stop
-recovery, reboot, shutdown, and repeat boot.
+The ARM QEMU profile passes at `afaf3c231bf5a18124eca16cd0915e54775b86f9`, which is the current tree: boot, CPU,
+network and SSH; USB keyboard console; SVE2 per-task context; storage recovery;
+operations and shutdown; repeat boot. That run qualifies the secondary-CPU
+bring-up, subsystem serialisation and virtio notification work on one profile.
+
+The other two profiles are behind it. **macOS VMware Fusion ARM64 and Intel VPS
+QEMU x86_64 were last collected at `adc0b69a1b4e6eb8f1c123fcc25aa3a73d6a881e`
+and must be re-run before their result is quoted as current**; neither can run
+on the machine the ARM profile was collected on, since one needs a built Fusion
+VM and the other the designated Intel host. A passing ARM result does not stand
+in for either.
 
 This is the only human-maintained XAIOS project tracker. Roadmaps, milestones,
 phase plans, open decisions, and risks are consolidated here. The Wiki does not
@@ -84,7 +84,7 @@ passes; the reasoning stays in the commit that closed them.
 | ID | Defect | Affects | Status | Notes |
 |---|---|---|---|---|
 | B-01 | Outbound ProxyJump fails host key verification | x86_64 builds | `OPEN` | `ssh -J` reports "host key verification failed" on an emulated x86_64 host and succeeds natively, with the same command and known_hosts state. It fails immediately, so it is not a timeout. Reproduction needs an x86_64 host; it cannot be exercised on Apple Silicon. One hypothesis is eliminated: the tunneled session restores the target's own host, user and port before its handshake, so it does not verify against the jump endpoint. Do not "fix" it by skipping malformed known_hosts lines -- that falls through to the append path and stores a fresh key for a host that already had one, which is a host key verification downgrade. |
-| B-02 | Thread join failed once under sustained load | Virtualization.framework | `OPEN` | One stress run at fifteen seconds had a worker thread never complete, and the join timed out. It has not recurred in roughly twenty-five subsequent runs of the same harness, and no cause is attributed. `make vz-stress-gate` would catch a recurrence. Recorded rather than closed, because an intermittent hang under contention is exactly what that gate exists to find. |
+| B-02 | Thread join fails under sustained load | `OPEN` | Seen twice, both times under sustained load rather than repetition: an EL0 thread returns `UINT64_MAX` and the joiner reports a failed result. Twenty-five runs of the stress gate on an idle machine never reproduced it, which is why the first sighting went unexplained -- load is the variable, not repetition, and the firmware profile running six gates back to back is what produced both. Why it stayed opaque: `user_thread_worker` collapsed five distinct failures into that one sentinel, so a joiner learned only that something went wrong. Each path now names itself in the log. The case to watch is `cpu_id >= capacity`, which means `smp_cpu_id()` returned `UINT32_MAX` -- a CPU running a thread while its own state says it is not online -- with a failed `user_bind_current_process` the other likely candidate under load. Next occurrence should identify itself. |
 
 ## Delivery order
 
