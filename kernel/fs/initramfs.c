@@ -512,7 +512,7 @@ void initramfs_self_test(void) {
   kassert(str_eq(parsed->service_manager_path, "/bin/service-manager"));
   kassert(str_eq(parsed->service_descriptor_path,
                  "/etc/services/source-index.svc"));
-  kassert(str_eq(parsed->mode, "qemu-mvp"));
+  kassert(str_eq(parsed->mode, "standard"));
   kassert(str_eq(parsed->child_service_path, "/svc/source-index"));
   kassert(str_eq(parsed->child_service_parent, "/init"));
   kassert(str_eq(parsed->child_service_restart, "never"));

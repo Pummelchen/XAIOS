@@ -243,7 +243,7 @@ static uint32_t g_active_path_max = MFS_V3_PATH_MAX;
 static xaios_block_device_t *g_persistent_device;
 static uint64_t g_persistent_mount_count;
 
-static const char k_config_v1[] = "mode=qemu-full-os\nmutable=true\n";
+static const char k_config_v1[] = "mode=full-os\nmutable=true\n";
 static const char k_service_running[] =
     "service=/svc/source-index\nstate=running\n";
 static const char k_service_restarting[] =

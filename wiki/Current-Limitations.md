@@ -14,8 +14,10 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   evidence. Multi-vCPU startup, VMXNET3, live DNSSEC interoperability, IPv6,
   outbound-client, snapshot semantics and physical qualification remain open.
 - Apple Virtualization.framework runs XAIOS to a login with storage and
-  dual-stack networking, but is a development target with no automated gate, so
-  none of it is qualification evidence. Its firmware describes no GIC ITS, so
+  dual-stack networking. `make vz-gate` checks that boot at four vCPUs and
+  `make vz-stress-gate` soaks it at eight, but both need macOS on Apple Silicon
+  and a signed harness, so neither runs in CI and neither is qualification
+  evidence. Its firmware describes no GIC ITS, so
   message-signalled interrupts cannot be delivered and every virtio queue runs
   polled; its GOP is `PixelBltOnly`, so the kernel has no linear framebuffer and
   renders to the virtio console; and it presents no PL011. Its router advertises

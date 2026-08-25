@@ -1074,7 +1074,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
         3, input, request.input_size, (char *)(uintptr_t)request.output,
         request.output_size, &out_size);
     if (decode_status == XAIOS_ERR_UNSUPPORTED) {
-      klog("syscall: production CPU-AI decode is not implemented; QEMU fixture decode is available only through explicit ML fixture mode\n");
+      klog("syscall: production CPU-AI decode is not implemented; fixture decode is available only through explicit ML fixture mode\n");
       bytes_copy((void *)(uintptr_t)request.out_size, &out_size,
                  sizeof(out_size));
       (void)reject_syscall(syscall, arg0, arg1,

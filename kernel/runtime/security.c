@@ -242,7 +242,7 @@ void security_policy_init(void) {
   g_last_update_generation = 0;
   for (uint32_t i = 0U; i < sizeof(g_release_public_key); ++i)
     g_release_public_key[i] = k_update_public_key[i];
-  klog("security: policy initialized mode=qemu-dev signed_updates=dev-public-key admin=required replay=monotonic\n");
+  klog("security: policy initialized mode=development signed_updates=dev-public-key admin=required replay=monotonic\n");
 }
 
 void security_record_denied_operation(void) {
@@ -478,7 +478,7 @@ static xaios_status_t validate_update_signature(
   }
   __sync_fetch_and_add(&g_key_accepts, 1U);
   __sync_fetch_and_add(&g_signature_accepts, 1U);
-  klog("security: update signature accepted policy=ed25519 generation=%lu key=qemu-test-public\n",
+  klog("security: update signature accepted policy=ed25519 generation=%lu key=development-test-public\n",
        generation);
   return XAIOS_OK;
 }

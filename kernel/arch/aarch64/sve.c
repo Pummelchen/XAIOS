@@ -50,6 +50,6 @@ void aarch64_sve2_self_test(void) {
           (vector_bytes & (vector_bytes - 1U)) == 0U);
   kassert(aarch64_sve2_known_answer() == UINT64_C(7));
   g_aarch64_sve_enabled = vector_bytes;
-  klog("SVE2: QEMU arithmetic canary passed vector_bytes=%lu el0=enabled\n",
+  klog("SVE2: arithmetic canary passed vector_bytes=%lu el0=enabled\n",
        vector_bytes);
 }

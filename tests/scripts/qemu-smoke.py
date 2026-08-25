@@ -59,7 +59,7 @@ TARGETS = [
     "ipv6: self-test passed",
     "icmpv6: self-test passed",
     "ndp: self-test passed",
-    "initramfs: config service=/init mode=qemu-mvp",
+    "initramfs: config service=/init mode=standard",
     "initramfs: service-manager path=/bin/service-manager descriptor=/etc/services/source-index.svc",
     "initramfs: child service=/svc/source-index parent=/init restart=never",
     "initramfs: mounted rofs version=2 files=",

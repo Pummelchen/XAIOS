@@ -195,7 +195,7 @@ void smmu_init(const xaios_boot_info_t *boot) {
   for (uint32_t index = 0U; index < XAIOS_SMMU_MAX_STREAMS; ++index) {
     g_smmu_streams[index] = (xaios_smmu_stream_t){0};
   }
-  klog("IOMMU: x86 DMA uses identity mappings in current QEMU scope\n");
+  klog("IOMMU: x86 DMA uses identity mappings in the current scope\n");
 }
 
 uint32_t smmu_initialized(void) { return 0U; }

@@ -478,7 +478,7 @@ void kmain(const xaios_boot_info_t *boot) {
                             ? mutable_fs_mount_device("/dev/vblk1")
                             : virtio_status;
     if (persistent_status == XAIOS_OK) {
-      klog("mutable-fs: using registered QEMU persistent data disk\n");
+      klog("mutable-fs: using registered persistent data disk\n");
     }
   }
   if (persistent_status == XAIOS_OK) {

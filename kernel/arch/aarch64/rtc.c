@@ -22,7 +22,7 @@ void rtc_init(void) {
   if (cr == UINT32_MAX || epoch == UINT32_MAX) {
     g_rtc_base = 0;
     g_rtc_initialized = 0U;
-    klog("rtc: QEMU fixed-address PL031 unavailable\n");
+    klog("rtc: fixed-address PL031 unavailable\n");
     return;
   }
   if ((cr & 1U) == 0) {

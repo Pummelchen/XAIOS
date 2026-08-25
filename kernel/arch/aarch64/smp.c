@@ -18,13 +18,21 @@
 #define SECONDARY_WORKER_READY_TIMEOUT_MS UINT64_C(30000)
 
 /* QEMU virt GICv3 redistributor region used for early CPU discovery. */
-#define QEMU_VIRT_GICR_BASE UINT64_C(0x080A0000)
+/* The layout the ARM virtual-machine convention places a GICv3 at. It is a
+   last resort, used only when firmware describes no interrupt controller, and
+   the choice is reported: the boot line reads "built-in-fallback" rather than
+   "ACPI" whenever these apply. They were named for the hypervisor they were
+   taken from, which made one vendor's memory map look like the definition of
+   normal -- the same habit that had the loader advertise a serial port to a
+   machine with none, and cost this port a boot. See
+   docs/PLATFORM-NEUTRALITY.md. */
+#define GIC_ARM_VIRT_REDISTRIBUTOR_BASE UINT64_C(0x080A0000)
 #define GICR_STRIDE UINT64_C(0x20000)
 #define GICR_TYPER 0x0008U
 #define GICR_TYPER_LAST (UINT64_C(1) << 4U)
-#define QEMU_VIRT_GICR_END UINT64_C(0x09000000)
-#define QEMU_VIRT_GICR_HIGH_BASE UINT64_C(0x4000000000)
-#define QEMU_VIRT_GICR_HIGH_FRAMES UINT32_C(512)
+#define GIC_ARM_VIRT_REDISTRIBUTOR_END UINT64_C(0x09000000)
+#define GIC_ARM_VIRT_REDISTRIBUTOR_HIGH_BASE UINT64_C(0x4000000000)
+#define GIC_ARM_VIRT_REDISTRIBUTOR_HIGH_FRAMES UINT32_C(512)
 #define PAGE_SIZE UINT64_C(4096)
 #define EARLY_IDENTITY_LIMIT UINT64_C(0x100000000)
 
@@ -135,14 +143,14 @@ static uint32_t observe_online(void) {
 
 /* QEMU virt exposes one contiguous GICv3 redistributor frame per vCPU. */
 static uint32_t detect_cpu_count(void) {
-  uint64_t frames = (QEMU_VIRT_GICR_END - QEMU_VIRT_GICR_BASE) / GICR_STRIDE;
+  uint64_t frames = (GIC_ARM_VIRT_REDISTRIBUTOR_END - GIC_ARM_VIRT_REDISTRIBUTOR_BASE) / GICR_STRIDE;
   for (uint32_t cpu = 0; cpu < frames; ++cpu) {
-    uint64_t base = QEMU_VIRT_GICR_BASE + (uint64_t)cpu * GICR_STRIDE;
+    uint64_t base = GIC_ARM_VIRT_REDISTRIBUTOR_BASE + (uint64_t)cpu * GICR_STRIDE;
     if ((mmio_read64(base, GICR_TYPER) & GICR_TYPER_LAST) != 0) {
       if ((uint64_t)cpu + 1U < frames) return cpu + 1U;
       /* UEFI does not map QEMU's high redistributor window. Admit the
        * architectural window here and let PSCI determine populated CPUs. */
-      return (uint32_t)frames + QEMU_VIRT_GICR_HIGH_FRAMES;
+      return (uint32_t)frames + GIC_ARM_VIRT_REDISTRIBUTOR_HIGH_FRAMES;
     }
   }
   return 1U;
@@ -429,7 +437,7 @@ void smp_init_platform(const xaios_boot_info_t *boot) {
 
   klog("smp: source=%s candidate_capacity=%u psci=%s dynamic_registry_bytes=%lu stack_bytes=%lu\n",
        acpi_info.madt != 0U ? (acpi_info.psci_compliant != 0U ? "ACPI-PSCI" :
-                               (qemu_virt != 0U ? "QEMU-ACPI-PSCI" : "ACPI-bootstrap-only")) : "QEMU-fallback", candidate_capacity,
+                               (qemu_virt != 0U ? "ACPI-PSCI-inferred" : "ACPI-bootstrap-only")) : "built-in-fallback", candidate_capacity,
        candidate_capacity > 1U ? (psci_use_hvc != 0U ? "hvc" : "smc") : "unavailable",
        state_bytes, stack_bytes);
 

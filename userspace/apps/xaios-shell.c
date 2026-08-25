@@ -98,6 +98,6 @@ int main(void) {
       "commands\n");
   xaios_log(
       "/bin/xaios-shell: standalone applications validated by SSH gates\n");
-  xaios_log("/bin/xaios-shell: command engine ready for QEMU remote-login surface\n");
+  xaios_log("/bin/xaios-shell: command engine ready for the remote-login surface\n");
   return 0;
 }

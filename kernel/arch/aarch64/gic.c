@@ -3,10 +3,18 @@
 #include <xaios/klog.h>
 #include <xaios/smp.h>
 
-#define QEMU_VIRT_GICD_BASE UINT64_C(0x08000000)
-#define QEMU_VIRT_GICR_BASE UINT64_C(0x080A0000)
-#define QEMU_VIRT_GICR_LOW_FRAMES UINT32_C(123)
-#define QEMU_VIRT_GICR_HIGH_BASE UINT64_C(0x4000000000)
+/* The layout the ARM virtual-machine convention places a GICv3 at. It is a
+   last resort, used only when firmware describes no interrupt controller, and
+   the choice is reported: the boot line reads "built-in-fallback" rather than
+   "ACPI" whenever these apply. They were named for the hypervisor they were
+   taken from, which made one vendor's memory map look like the definition of
+   normal -- the same habit that had the loader advertise a serial port to a
+   machine with none, and cost this port a boot. See
+   docs/PLATFORM-NEUTRALITY.md. */
+#define GIC_ARM_VIRT_DISTRIBUTOR_BASE UINT64_C(0x08000000)
+#define GIC_ARM_VIRT_REDISTRIBUTOR_BASE UINT64_C(0x080A0000)
+#define GIC_ARM_VIRT_REDISTRIBUTOR_LOW_FRAMES UINT32_C(123)
+#define GIC_ARM_VIRT_REDISTRIBUTOR_HIGH_BASE UINT64_C(0x4000000000)
 #define GICR_STRIDE UINT64_C(0x20000)
 
 /* GIC Distributor registers */
@@ -47,12 +55,12 @@
 
 static xaios_gic_info_t g_gic_info;
 static uint32_t g_gic_full_init;
-static uint64_t g_distributor_base = QEMU_VIRT_GICD_BASE;
-static uint64_t g_redistributor_base = QEMU_VIRT_GICR_BASE;
+static uint64_t g_distributor_base = GIC_ARM_VIRT_DISTRIBUTOR_BASE;
+static uint64_t g_redistributor_base = GIC_ARM_VIRT_REDISTRIBUTOR_BASE;
 static uint64_t g_redistributor_length =
-    (uint64_t)QEMU_VIRT_GICR_LOW_FRAMES * GICR_STRIDE;
-static uint64_t g_redistributor_high_base = QEMU_VIRT_GICR_HIGH_BASE;
-static uint32_t g_redistributor_low_frames = QEMU_VIRT_GICR_LOW_FRAMES;
+    (uint64_t)GIC_ARM_VIRT_REDISTRIBUTOR_LOW_FRAMES * GICR_STRIDE;
+static uint64_t g_redistributor_high_base = GIC_ARM_VIRT_REDISTRIBUTOR_HIGH_BASE;
+static uint32_t g_redistributor_low_frames = GIC_ARM_VIRT_REDISTRIBUTOR_LOW_FRAMES;
 static uint32_t g_platform_firmware_described;
 static xaios_irq_handler_t g_irq_handlers[GIC_MAX_INTIDS];
 static void *g_irq_contexts[GIC_MAX_INTIDS];
@@ -172,14 +180,14 @@ void gic_init_platform(void) {
     g_gic_info.interrupt_lines = 0U;
     g_gic_info.cpu_count_hint = 0U;
     klog("gic: platform controller unavailable source=%s\n",
-         g_platform_firmware_described != 0U ? "ACPI" : "QEMU-fallback");
+         g_platform_firmware_described != 0U ? "ACPI" : "built-in-fallback");
     return;
   }
   g_gic_info.interrupt_lines = ((g_gic_info.typer & 0x1fU) + 1U) * 32U;
   g_gic_info.cpu_count_hint = ((g_gic_info.typer >> 5U) & 0x7U) + 1U;
 
   klog("gic: source=%s distributor=0x%lx redistributor=0x%lx bytes=%lu typer=0x%x iidr=0x%x lines=%u cpu_hint=%u\n",
-       g_platform_firmware_described != 0U ? "ACPI" : "QEMU-fallback",
+       g_platform_firmware_described != 0U ? "ACPI" : "built-in-fallback",
        g_gic_info.distributor_base, g_redistributor_base,
        g_redistributor_length, g_gic_info.typer, g_gic_info.iidr,
        g_gic_info.interrupt_lines, g_gic_info.cpu_count_hint);
