@@ -503,6 +503,35 @@ void vmm_init(const xaios_boot_info_t *boot) {
   }
 }
 
+static uint64_t dcache_line_bytes(void) {
+  uint64_t ctr = 0U;
+  __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
+  return UINT64_C(4) << ((ctr >> 16U) & UINT64_C(0xf));
+}
+
+void vmm_clean_to_memory(const void *buffer, uint64_t bytes) {
+  if (buffer == 0 || bytes == 0U) return;
+  uint64_t line = dcache_line_bytes();
+  uintptr_t start = (uintptr_t)buffer & ~(uintptr_t)(line - 1U);
+  uintptr_t end = (uintptr_t)buffer + (uintptr_t)bytes;
+  for (uintptr_t address = start; address < end; address += line) {
+    __asm__ volatile("dc cvac, %0" : : "r"(address) : "memory");
+  }
+  __asm__ volatile("dsb sy" : : : "memory");
+}
+
+void vmm_invalidate_from_memory(const void *buffer, uint64_t bytes) {
+  if (buffer == 0 || bytes == 0U) return;
+  uint64_t line = dcache_line_bytes();
+  uintptr_t start = (uintptr_t)buffer & ~(uintptr_t)(line - 1U);
+  uintptr_t end = (uintptr_t)buffer + (uintptr_t)bytes;
+  __asm__ volatile("dsb sy" : : : "memory");
+  for (uintptr_t address = start; address < end; address += line) {
+    __asm__ volatile("dc ivac, %0" : : "r"(address) : "memory");
+  }
+  __asm__ volatile("dsb sy" : : : "memory");
+}
+
 void vmm_activate_kernel(void) {
   aarch64_enable_mmu((uint64_t)(uintptr_t)current_root());
 }

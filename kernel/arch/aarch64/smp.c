@@ -97,37 +97,34 @@ static void bump_online(void) {
  * Those stores then go straight to memory and never enter the caches the boot
  * CPU is using -- and the boot CPU filled those lines itself when it zeroed
  * the array -- so it would read its own stale zeros and conclude that nothing
- * came up. The array is pushed out to memory before the first CPU_ON and read
- * back from memory while waiting. */
-static uint64_t dcache_line_bytes(void) {
-  uint64_t ctr = 0U;
-  __asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
-  return UINT64_C(4) << ((ctr >> 16U) & UINT64_C(0xf));
-}
-
-static void cpu_states_to_memory(void) {
-  if (g_cpu_states == 0 || g_cpu_capacity == 0U) return;
-  uint64_t line = dcache_line_bytes();
-  uintptr_t start = (uintptr_t)g_cpu_states & ~(uintptr_t)(line - 1U);
-  uintptr_t end = (uintptr_t)g_cpu_states +
-                  (uintptr_t)g_cpu_capacity * sizeof(xaios_cpu_state_t);
-  for (uintptr_t address = start; address < end; address += line) {
-    __asm__ volatile("dc cvac, %0" : : "r"(address) : "memory");
-  }
-  __asm__ volatile("dsb sy" : : : "memory");
+ * came up. So everything a secondary reads before it enables translation is
+ * pushed out to memory before the first CPU_ON, and read back from memory
+ * while waiting.
+ *
+ * That is more than the state array. The whole bootstrap region counts: this
+ * CPU zeroed all of it with caches on, including the stacks the secondaries
+ * are about to run on, so those lines sit here dirty over memory that is
+ * about to become somebody else's live stack, and evicting one later would
+ * write zeros across it. The pointers count too -- the assembly entry stub
+ * loads g_secondary_stacks with translation still off, and gets whatever
+ * memory holds rather than what this CPU last wrote. */
+static void bootstrap_to_memory(void) {
+  if (g_bootstrap_start == 0U || g_bootstrap_end <= g_bootstrap_start) return;
+  vmm_clean_to_memory((const void *)(uintptr_t)g_bootstrap_start,
+                      g_bootstrap_end - g_bootstrap_start);
+  vmm_clean_to_memory(&g_secondary_stacks, sizeof(g_secondary_stacks));
+  vmm_clean_to_memory(&g_cpu_states, sizeof(g_cpu_states));
+  vmm_clean_to_memory(&g_cpu_capacity, sizeof(g_cpu_capacity));
+  /* A secondary reads this to decide whether to enable SVE on itself, while
+   * the context switcher reads it later with translation on. Left stale, the
+   * two would disagree and a CPU would save state it had trapped. */
+  aarch64_sve_publish_to_memory();
 }
 
 static uint32_t observe_online(void) {
   if (g_cpu_states == 0 || g_cpu_capacity == 0U) return count_online();
-  uint64_t line = dcache_line_bytes();
-  uintptr_t start = (uintptr_t)g_cpu_states & ~(uintptr_t)(line - 1U);
-  uintptr_t end = (uintptr_t)g_cpu_states +
-                  (uintptr_t)g_cpu_capacity * sizeof(xaios_cpu_state_t);
-  __asm__ volatile("dsb sy" : : : "memory");
-  for (uintptr_t address = start; address < end; address += line) {
-    __asm__ volatile("dc ivac, %0" : : "r"(address) : "memory");
-  }
-  __asm__ volatile("dsb sy" : : : "memory");
+  vmm_invalidate_from_memory(
+      g_cpu_states, (uint64_t)g_cpu_capacity * sizeof(xaios_cpu_state_t));
   uint32_t online = 0U;
   for (uint32_t cpu = 0U; cpu < g_cpu_capacity; ++cpu) {
     if (g_cpu_states[cpu].online != 0U) ++online;
@@ -436,9 +433,7 @@ void smp_init_platform(const xaios_boot_info_t *boot) {
        candidate_capacity > 1U ? (psci_use_hvc != 0U ? "hvc" : "smc") : "unavailable",
        state_bytes, stack_bytes);
 
-  /* Secondaries read this array with translation off, so it has to be in
-   * memory rather than in this CPU's caches before any of them starts. */
-  cpu_states_to_memory();
+  bootstrap_to_memory();
 
   /* Wake secondary CPUs via PSCI */
   uint32_t admitted_count = 1U;
@@ -486,6 +481,12 @@ void smp_init_platform(const xaios_boot_info_t *boot) {
 
 xaios_status_t smp_release_secondary_schedulers(void) {
   __atomic_store_n(&g_secondary_scheduler_release, 1U, __ATOMIC_RELEASE);
+  /* The secondaries waiting on this still have translation off, so they read
+   * it from memory and never from the caches this store lands in. They spin
+   * rather than sleep, so a late arrival costs nothing, but nothing else would
+   * ever push this out -- and the caller asserts on the barrier it gates. */
+  vmm_clean_to_memory(&g_secondary_scheduler_release,
+                  sizeof(g_secondary_scheduler_release));
   __asm__ volatile("sev" ::: "memory");
   uint64_t started = timer_counter();
   uint64_t timeout = timer_frequency_hz() *

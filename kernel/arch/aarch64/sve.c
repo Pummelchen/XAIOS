@@ -1,4 +1,5 @@
 #include <xaios/aarch64_sve.h>
+#include <xaios/vmm.h>
 #include <xaios/assert.h>
 #include <xaios/klog.h>
 
@@ -6,6 +7,10 @@ extern uint64_t aarch64_sve_vector_bytes(void);
 extern uint64_t aarch64_sve2_known_answer(void);
 
 uint64_t g_aarch64_sve_enabled;
+
+void aarch64_sve_publish_to_memory(void) {
+  vmm_clean_to_memory(&g_aarch64_sve_enabled, sizeof(g_aarch64_sve_enabled));
+}
 
 uint32_t aarch64_sve_enabled(void) {
   return g_aarch64_sve_enabled != 0U;

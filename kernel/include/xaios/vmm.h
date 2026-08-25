@@ -21,6 +21,10 @@
 
 void vmm_init(const xaios_boot_info_t *boot);
 void vmm_activate_kernel(void);
+/* Cache maintenance for memory shared with a CPU that has translation off,
+ * where accesses bypass these caches entirely. Sizes come from CTR_EL0. */
+void vmm_clean_to_memory(const void *buffer, uint64_t bytes);
+void vmm_invalidate_from_memory(const void *buffer, uint64_t bytes);
 xaios_status_t vmm_translate(uint64_t virtual_address, uint64_t *physical_address,
                             uint32_t *flags);
 xaios_status_t vmm_validate_range_flags(uint64_t virtual_address, uint64_t size,
