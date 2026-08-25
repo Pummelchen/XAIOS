@@ -87,7 +87,12 @@ def build_guest() -> None:
     })
     build = run(["./scripts/build-image.sh"], env=environment, timeout=600)
     print(build.stdout, end="")
-    package = run(["./platform/vmware-fusion/build-vmware-fusion.sh"], env=environment, timeout=600)
+    # Measured at roughly 200s on an eight-core host, and variable: the build
+    # probes a registry it may not reach before falling back to the cached
+    # chainloader image. 600 was tight enough that a slow probe failed the gate
+    # rather than the guest.
+    package = run(["./platform/vmware-fusion/build-vmware-fusion.sh"],
+                  env=environment, timeout=900)
     print(package.stdout, end="")
 
 

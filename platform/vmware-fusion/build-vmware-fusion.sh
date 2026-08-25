@@ -65,7 +65,7 @@ mkdir -p "$STAGE_DIR/EFI/BOOT" "$STAGE_DIR/EFI/XAIOS" "$VM_BUNDLE"
 # Bounded, because an unreachable registry does not fail fast: it blocks until
 # Docker's own deadline, which was long enough to consume a gate's entire time
 # budget and get the build killed rather than falling back.
-GRUB_BUILD_TIMEOUT="${XAIOS_FUSION_GRUB_BUILD_TIMEOUT:-90}"
+GRUB_BUILD_TIMEOUT="${XAIOS_FUSION_GRUB_BUILD_TIMEOUT:-30}"
 if ! timeout "$GRUB_BUILD_TIMEOUT" docker build --platform linux/arm64 \
   --file "$ROOT_DIR/platform/vmware-fusion/Dockerfile.grub" \
   --tag "$GRUB_IMAGE" "$ROOT_DIR/platform/vmware-fusion"; then
