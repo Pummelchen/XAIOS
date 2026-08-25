@@ -85,7 +85,7 @@ TARGETS = [
     "ai-cell: resource contract self-test passed admissions=2 rejects=10 arena_pages=160 arena_bytes=655360 queue_binds=3 queue_releases=3 workspace_binds=2 workspace_releases=2 conflicts=3",
     "ai-cell: lifecycle self-test passed",
     "agent-protocol: self-test passed",
-    "control: protocol self-test passed version=1 malformed=5 denied=1 redaction=1",
+    "control: protocol self-test passed version=2 malformed=5 denied=1 redaction=1",
     "admin-control: self-test passed schema=1 invalid=1 principal=2 transactional=1",
     "elf_loader: self-test passed dynamic_page_capacity=513",
     "cpu-ai-runtime: Q8.8 kernel self-test passed",

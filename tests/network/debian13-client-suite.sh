@@ -320,7 +320,7 @@ def load(name):
 
 
 version = load("version")
-if version["control_protocol_version"] != 1:
+if version["control_protocol_version"] != 2:
     raise SystemExit("version: unexpected control protocol version")
 if version["kernel_abi_version"] != 1 or version["model_package_version"] != 2:
     raise SystemExit("version: unexpected kernel/model ABI versions")

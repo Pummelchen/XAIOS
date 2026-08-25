@@ -113,7 +113,7 @@ def validate_control_protocol_contract(rc_contract):
     )
     expected_literals = {
         "XAIOS_CONTROL_MAGIC": "0x58414350",
-        "XAIOS_CONTROL_VERSION": "1",
+        "XAIOS_CONTROL_VERSION": "2",
         "XAIOS_CONTROL_MAX_REQUEST_BYTES": "512",
         "XAIOS_CONTROL_MAX_RESPONSE_BYTES": "8192",
     }

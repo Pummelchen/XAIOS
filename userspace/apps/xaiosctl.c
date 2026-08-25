@@ -134,7 +134,7 @@ int main(int argc, char **argv) {
     int expected_result;
   } tests[] = {
       {"xaiosctl version", "xaiosctl version --json", "git_commit=",
-       "\"control_protocol_version\":1", 0},
+       "\"control_protocol_version\":2", 0},
       {"xaiosctl status", "xaiosctl status --json", "readiness=degraded",
        "\"production_models_loaded\":0", 0},
       {"xaiosctl health", "xaiosctl health --json", "overall=degraded",

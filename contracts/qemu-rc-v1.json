@@ -406,7 +406,7 @@
   "control_protocol": {
     "schema": "xaios.control.v1",
     "magic": "0x58414350",
-    "version": 1,
+    "version": 2,
     "request_header_bytes": 48,
     "response_header_bytes": 40,
     "max_request_bytes": 512,
