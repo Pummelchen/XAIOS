@@ -329,43 +329,6 @@ static void malformed_packet_self_test(void) {
   klog("virtio-net: malformed packet/drop self-test passed\n");
 }
 
-/* V-10: a completion that never arrives because the device was never told.
-   Caught in the act after fourteen boots -- DRIVER_OK set, no NEEDS_RESET, a
-   buffer offered on each queue and neither consumed. That is not a device that
-   failed; it is a device with nothing to react to. Both queues waited on a
-   single doorbell ring, so a notification that does not take effect is lost
-   for good and the wait can only time out.
-
-   Every wait here now re-rings on a slow cadence. The specification permits
-   notifying whenever the driver likes, so a redundant ring costs one MMIO
-   write and the loss costs a transmit. */
-#define VIRTIO_NET_RENOTIFY_NS UINT64_C(200000000)
-#define VIRTIO_NET_WAIT_NS UINT64_C(5000000000)
-
-static xaios_status_t wait_used_renotifying(volatile uint16_t *used_idx,
-                                            uint16_t expected,
-                                            uint32_t queue_index) {
-  uint64_t started = timer_now_ns();
-  if (started == 0U) {
-    /* No usable clock, so the cadence cannot be paced. The transport's own
-       spin-bounded wait is the honest fallback. */
-    return virtio_transport_wait_used(used_idx, expected);
-  }
-  uint64_t last_notify = started;
-  for (;;) {
-    if (__atomic_load_n(used_idx, __ATOMIC_ACQUIRE) >= expected) {
-      virtio_mmio_barrier();
-      return XAIOS_OK;
-    }
-    uint64_t now = timer_now_ns();
-    if (now - started >= VIRTIO_NET_WAIT_NS) return XAIOS_ERR_IO;
-    if (now - last_notify >= VIRTIO_NET_RENOTIFY_NS) {
-      virtio_transport_notify(&g_net->device, queue_index);
-      last_notify = now;
-    }
-    xaios_cpu_relax();
-  }
-}
 
 void virtio_net_self_test(void) {
   kassert(allocate_driver() == XAIOS_OK);
@@ -454,10 +417,10 @@ void virtio_net_self_test(void) {
      to reset the device either way, because the real driver initialises after
      this and needs the queues put back. */
   xaios_status_t tx_status =
-      wait_used_renotifying(&g_net->tx_used->idx, 1, 1U);
+      virtio_transport_wait_used_notifying(&g_net->device, 1U, &g_net->tx_used->idx, 1);
   xaios_status_t rx_status =
       tx_status == XAIOS_OK
-          ? wait_used_renotifying(&g_net->rx_used->idx, 1, 0U)
+          ? virtio_transport_wait_used_notifying(&g_net->device, 0U, &g_net->rx_used->idx, 1)
           : XAIOS_ERR_IO;
   virtio_transport_ack_interrupts(&g_net->device);
 
@@ -756,12 +719,12 @@ static xaios_status_t wait_tx_token(uint64_t token, uint64_t started) {
                     (uint16_t)token) >= UINT16_C(0x8000)) {
     (void)virtio_net_drain_tx_completions();
     uint64_t now = timer_now_ns();
-    if (now - started >= VIRTIO_NET_WAIT_NS) {
+    if (now - started >= VIRTIO_WAIT_NS) {
       return XAIOS_ERR_IO;
     }
     /* Re-ring for the reason given at wait_used_renotifying: this queue is
        waiting on a doorbell that may never have registered. */
-    if (now - last_notify >= VIRTIO_NET_RENOTIFY_NS) {
+    if (now - last_notify >= VIRTIO_RENOTIFY_NS) {
       virtio_transport_notify(&g_net->device, 1U);
       last_notify = now;
     }

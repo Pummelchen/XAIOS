@@ -128,8 +128,8 @@ xaios_status_t virtio_rng_read(void *buffer, uint64_t size) {
     g_rng->avail->idx = g_rng->avail_idx;
     virtio_transport_notify(&g_rng->device, 0);
     uint16_t expected = (uint16_t)(g_rng->used_idx + 1U);
-    xaios_status_t status =
-        virtio_transport_wait_used(&g_rng->used->idx, expected);
+    xaios_status_t status = virtio_transport_wait_used_notifying(
+        &g_rng->device, 0U, &g_rng->used->idx, expected);
     if (status != XAIOS_OK) {
       bytes_zero(out, size);
       xaios_spin_unlock(&g_rng->lock);

@@ -17,6 +17,8 @@
 #define VRING_DESC_F_WRITE UINT16_C(2)
 
 typedef struct virtio_console_queue {
+  /* Which virtqueue this is, so a wait can ring the right doorbell. */
+  uint32_t index;
   virtq_desc_t *desc;
   virtq_avail_t *avail;
   virtq_used_t *used;
@@ -124,6 +126,8 @@ xaios_status_t virtio_console_init(void) {
 
   reset_queue(&g_console->receive);
   reset_queue(&g_console->transmit);
+  g_console->receive.index = 0U;
+  g_console->transmit.index = 1U;
   status = virtio_transport_setup_queue(
       &g_console->device, VIRTIO_CONSOLE_RECEIVE_QUEUE, 1U,
       g_console->receive.desc, g_console->receive.avail,
@@ -228,7 +232,9 @@ static void transmit_chunk(const char *data, uint32_t length) {
   virtio_transport_notify(&g_console->device, VIRTIO_CONSOLE_TRANSMIT_QUEUE);
 
   uint16_t expected = (uint16_t)(queue->used_idx + 1U);
-  if (virtio_transport_wait_used(&queue->used->idx, expected) != XAIOS_OK) {
+  if (virtio_transport_wait_used_notifying(&g_console->device, queue->index,
+                                          &queue->used->idx,
+                                          expected) != XAIOS_OK) {
     /* A console that stops draining must not take the kernel down with it,
        and must not be retried forever either. Give up on it. */
     g_console->initialized = 0U;

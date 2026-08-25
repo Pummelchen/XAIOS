@@ -617,39 +617,6 @@ static xaios_status_t wait_idle(virtio_block_driver_t *drv) {
   return XAIOS_OK;
 }
 
-/* A completion that never arrives because the device was never told. This is
-   the same defect virtio-net carried: the queue is notified once and then
-   polled for five seconds, so a doorbell that does not register is lost for
-   good and the wait can only time out. It cost a filesystem metadata write
-   under sustained load -- the request timed out, the queue recovered as
-   designed, and the write was gone.
-
-   Re-ringing while waiting is always permitted, so a redundant notification
-   costs one MMIO write and a lost one costs a block. */
-#define VIRTIO_BLK_RENOTIFY_NS UINT64_C(200000000)
-#define VIRTIO_BLK_WAIT_NS UINT64_C(5000000000)
-
-static xaios_status_t blk_wait_used_renotifying(virtio_block_driver_t *drv,
-                                                uint16_t used_target) {
-  uint64_t started = timer_now_ns();
-  if (started == 0U) {
-    return virtio_transport_wait_used(&drv->used->idx, used_target);
-  }
-  uint64_t last_notify = started;
-  for (;;) {
-    if (__atomic_load_n(&drv->used->idx, __ATOMIC_ACQUIRE) >= used_target) {
-      virtio_mmio_barrier();
-      return XAIOS_OK;
-    }
-    uint64_t now = timer_now_ns();
-    if (now - started >= VIRTIO_BLK_WAIT_NS) return XAIOS_ERR_IO;
-    if (now - last_notify >= VIRTIO_BLK_RENOTIFY_NS) {
-      virtio_transport_notify(&drv->device, 0U);
-      last_notify = now;
-    }
-    xaios_cpu_relax();
-  }
-}
 
 static xaios_status_t flush_h(virtio_block_driver_t *drv) {
   if (drv == 0 || drv->initialized == 0 || drv->supports_flush == 0U) {
@@ -683,7 +650,7 @@ static xaios_status_t flush_h(virtio_block_driver_t *drv) {
   drv->avail->idx = drv->next_avail;
   xaios_spin_unlock(&drv->queue_lock);
   virtio_transport_notify(&drv->device, 0U);
-  if (blk_wait_used_renotifying(drv, used_target) != XAIOS_OK) {
+  if (virtio_transport_wait_used_notifying(&drv->device, 0U, &drv->used->idx, used_target) != XAIOS_OK) {
     klog("virtio-blk: flush completion timeout avail=%u used=%u target=%u\n",
          drv->next_avail, drv->used->idx, used_target);
     (void)recover_queue(drv);
@@ -755,7 +722,7 @@ static xaios_status_t range_command_h(virtio_block_driver_t *drv,
   drv->avail->idx = drv->next_avail;
   xaios_spin_unlock(&drv->queue_lock);
   virtio_transport_notify(&drv->device, 0U);
-  if (blk_wait_used_renotifying(drv, used_target) != XAIOS_OK) {
+  if (virtio_transport_wait_used_notifying(&drv->device, 0U, &drv->used->idx, used_target) != XAIOS_OK) {
     klog("virtio-blk: range completion timeout type=%u sector=%lu count=%u\n",
          type, sector, sector_count);
     (void)recover_queue(drv);
