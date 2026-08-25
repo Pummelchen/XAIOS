@@ -3,99 +3,68 @@
 
 # XAIOS
 
-XAIOS is an experimental freestanding Unix-like operating system and portable
-inference-engine foundation being developed as an SSH-administered distributed
-CPU AI model server. The current OS boots under QEMU, VMware Fusion and Apple
-Virtualization.framework, and exercises deterministic kernel/runtime contracts. Real-model inference and the dedicated inference
-network service are under development and are not production supported.
+An experimental freestanding Unix-like operating system, written in C99, built
+towards an SSH-administered distributed CPU inference server. It boots to a
+login with durable storage, dual-stack networking and SSH. Real-model inference
+is not implemented.
 
-Human-facing project documentation is maintained in the
-[XAIOS Wiki](https://github.com/Pummelchen/XAIOS/wiki). The repository keeps
-the complete curated Wiki page set under [`wiki/`](./wiki/) so operating,
-architecture, testing, security, and status claims can be checked with source.
+Everything about *what XAIOS does* lives in the
+[XAIOS Wiki](https://github.com/Pummelchen/XAIOS/wiki), mirrored under
+[`wiki/`](./wiki/) so every claim can be checked against source. Everything
+about *what remains* lives in one place, the
+[Project Tracker](./wiki/Project-Tracker.md).
 
-## Unix compatibility boundary
+## Where it runs
 
-FreeBSD is the primary external behavioral reference for portable command,
-SSH/SFTP and network interoperability work. XAIOS is not FreeBSD-derived and
-does not provide a FreeBSD or Linux binary ABI: guest programs use native XAIOS
-syscalls, and passing host-client tests proves wire behavior only. The official
-FreeBSD 15.1 AArch64 QEMU gate covers public-key acceptance/rejection,
-`xaiosctl`, SFTP, PTY ANSI `htop`, and UDP echo. The Debian 13 client remains an
-independent Linux/OpenSSH cross-family gate with broader administration and
-load coverage. See [Unix compatibility](./wiki/Unix-Compatibility.md).
+| Hypervisor | Qualification profile | Gate | Evidence class |
+|---|---|---|---|
+| QEMU ARM64 | macOS QEMU ARM64 | full CI | correctness and ABI only |
+| QEMU x86_64 | Intel VPS QEMU x86_64 | full CI | correctness and ABI only |
+| VMware Fusion | macOS VMware Fusion ARM64 | `make vmware-fusion-smoke` | Fusion 26H1 one-vCPU lifecycle |
+| Apple Virtualization.framework | none; development target | `make vz-gate`, `make vz-stress-gate` | not qualification evidence |
 
-XAIOS provides a statically linked hosted ISO C99 library for AArch64 and
-x86_64 without a public POSIX API or new syscall identifiers. Standard images
-ship the on-demand `helloworldc99` demonstration; custom hosted applications
-remain an explicit build choice. The project conformance boundary and evidence
-are documented in the [C99 libc Wiki page](./wiki/C99-Libc.md).
+XAIOS behaves the same on all of them. Firmware supplies capabilities, never
+identity and never behaviour, and `make platform-neutrality-check` enforces it.
+Where a capability is absent the system degrades the same way everywhere. The
+per-environment feature matrix is in the
+[Project Tracker](./wiki/Project-Tracker.md); no ARM result stands in for Intel
+evidence, and each profile records its own firmware hashes, device inventory
+and gates — see
+[Firmware Platform Profiles](./docs/FIRMWARE-PLATFORM-PROFILES.md).
 
-The native [`xapt` updater](./wiki/Xapt-Package-Updates.md) installs and updates
-independently signed XAIOS applications without rebooting and stages signed OS
-images into the inactive A/B slot. Its current trust root is for development
-and QEMU use; production key custody and an operator-approved rotation process
-remain explicit gates.
+No result here is physical-hardware evidence. Emulators prove correctness, not
+performance or firmware behaviour.
 
-ModelFS can repair a quarantined package from an administrator-selected,
-unmounted signed replica after complete identity and payload verification. This
-offline recovery path does not establish production replica enrollment or
-private signing-key custody; see [ModelFS recovery](./docs/MODELFS-RECOVERY.md).
+## Boundaries worth knowing before you read further
 
-## Model support status
+**Unix compatibility.** FreeBSD is the behavioural reference for commands,
+SSH/SFTP and network interoperability. XAIOS is not FreeBSD-derived and offers
+no FreeBSD or Linux binary ABI — guest programs use native syscalls, so passing
+host-client tests proves wire behaviour only. See
+[Unix compatibility](./wiki/Unix-Compatibility.md).
 
-The deterministic QEMU model-v1 path is **Fixture only**, and model-v2 is a
-format/interface foundation; neither executes a transformer. Qwen 3.8 is
-the next real-model correctness target. Kimi K3 text, Kimi K3 multimodal,
-and DeepSeek V4 Flash 0731 remain later targets, and no listed model is
-production supported. K3 text and multimodal support are separate milestones.
+**C99 libc.** A statically linked hosted ISO C99 library for AArch64 and
+x86_64, with no public POSIX API and no new syscall identifiers. See
+[C99 libc](./wiki/C99-Libc.md).
 
-XAIOS is designed around official architecture adapters rather than a
-hard-coded Qwen graph. Exact target-model semantics are the default;
-approximate modes, if introduced, will be explicit and opt-in. The single
-authoritative delivery order, progress code, support boundary, acceptance gate,
-open-decision list, and risk register are in the
-[Project Tracker](./wiki/Project-Tracker.md). The machine-readable model catalog
-at [`docs/MODEL-SUPPORT.json`](./docs/MODEL-SUPPORT.json) contains identifiers,
-not an independent status mirror.
+**Model support status.** The deterministic model-v1 path is fixture only and
+model-v2 is a format foundation; neither executes a transformer. Qwen 3.8 is
+the next correctness target, with Kimi K3 and DeepSeek V4 later. Nothing listed
+is production supported. XAIOS is built around official architecture adapters
+rather than a hard-coded graph, and exact target-model semantics are the
+default. See [Model support](./wiki/Applications.md) and the
+[Project Tracker](./wiki/Project-Tracker.md).
 
-The consolidated QEMU qualification-readiness gate is documented in
-[`docs/PHYSICAL-QUALIFICATION-READINESS.md`](./docs/PHYSICAL-QUALIFICATION-READINESS.md).
-It collects the strongest emulated SSH/network, NVMe, diagnostics, topology,
-and sustained-soak evidence without treating QEMU as physical hardware.
-
-VMware Fusion has a qualified one-vCPU ARM64 virtual guest profile, tested
-only on Apple Silicon with **VMware Fusion 26H1 (26.0.0)**. It is not a
-compatibility claim for other Fusion versions, x86_64 guests, multi-vCPU
-Fusion guests, or physical Apple hardware; see
-[`docs/VMWARE-FUSION.md`](./docs/VMWARE-FUSION.md).
-
-Apple Virtualization.framework runs XAIOS to a login on Apple Silicon, with
-MutableFS on a durable volume, DHCP IPv4, SLAAC IPv6 and SSH. It is a
-development and verification target rather than a qualification profile: there
-is no automated gate for it, so none of that is qualification evidence. The
-platform provides no PL011, no linear framebuffer and no GIC interrupt
-translation service, so the kernel logs over a virtio console and every virtio
-queue runs polled; see
-[`tools/vz/README.md`](./tools/vz/README.md).
-
-## Firmware profiles
-
-XAIOS keeps **macOS QEMU ARM64**, **macOS VMware Fusion ARM64**, and
-**Intel VPS QEMU x86_64** as separate qualification profiles. Each records its
-own firmware and emulator hashes, device inventory, lifecycle gates and explicit
-unavailable capabilities; a passing ARM result cannot stand in for Intel VPS
-evidence. See [Firmware Platform Profiles](./docs/FIRMWARE-PLATFORM-PROFILES.md).
+**Updates.** The native [`xapt` updater](./wiki/Xapt-Package-Updates.md)
+installs signed applications without rebooting and stages OS images into the
+inactive A/B slot. Its trust root is for development use; production key
+custody and rotation remain open gates.
 
 ## License
 
-XAIOS is source-available under the
-[PolyForm Noncommercial License 1.0.0](./LICENSE). The license permits private,
-personal, educational and noncommercial research use, including use by
-universities and public research organizations. It does not grant commercial
-use.
-
-Commercial use requires a separate written commercial license obtained before
-use. See [`COMMERCIAL-LICENSE.md`](./COMMERCIAL-LICENSE.md) for the licensing
-route. XAIOS is not MIT-licensed because the MIT License permits unrestricted
-commercial use.
+Source-available under the
+[PolyForm Noncommercial License 1.0.0](./LICENSE): private, personal,
+educational and noncommercial research use, including by universities and
+public research organisations. It does not grant commercial use, which requires
+a separate written licence obtained beforehand — see
+[`COMMERCIAL-LICENSE.md`](./COMMERCIAL-LICENSE.md).

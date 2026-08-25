@@ -37,6 +37,50 @@ QEMU status proves correctness and ABI behavior only. Physical support and
 performance require immutable evidence under the
 [benchmark contract](https://github.com/Pummelchen/XAIOS/blob/main/docs/BENCHMARK-CONTRACT.md).
 
+## Supported environments
+
+XAIOS runs on three hypervisors. QEMU covers two architectures, so four
+targets exist, but the platform contract is per hypervisor.
+
+Firmware differences below are the hypervisor's, not XAIOS's: the system
+behaves identically wherever a capability exists, and where one is absent it
+degrades the same way everywhere. See
+[Platform neutrality](https://github.com/Pummelchen/XAIOS/blob/main/docs/PLATFORM-NEUTRALITY.md),
+which the build enforces.
+
+| Function | QEMU ARM64 | QEMU x86_64 | VMware Fusion ARM64 | Virtualization.framework |
+|---|---|---|---|---|
+| Boots to a login | yes | yes | yes | yes |
+| Durable MutableFS volume | yes | yes | yes | yes |
+| IPv4 by DHCP | yes | yes | yes | yes |
+| IPv6 by SLAAC | yes | yes | `F-03` not qualified | yes, unique-local only (`V-03`) |
+| SSH server | yes | yes | yes | yes |
+| SSH client, SFTP | yes | yes | yes | yes |
+| Reachable from the host | yes | yes | yes | vmnet helper only, one direction at a time |
+| Multiple vCPUs | yes, 130 gated | yes, 128/256 scenarios | `F-01` one vCPU only | yes, 8/8 |
+| Message-signalled interrupts | distributor | yes | PCI | none; every queue polls (`V-02`) |
+| Framebuffer console | no, serial | no, serial | yes | none published; renders to virtio console |
+| USB keyboard input | yes | yes | provisioned, not gated | console input over virtio |
+| Entropy protocol | virtio-rng | virtio-rng | `F-05` none exposed | yes |
+| Storage transport | virtio-MMIO | virtio-PCI, NVMe | AHCI | virtio-PCI |
+| Network transport | virtio-MMIO | virtio-PCI | E1000E (`F-02` no VMXNET3) | virtio-PCI |
+| Automated gate | full CI | full CI | `make vmware-fusion-smoke` | `make vz-gate`, `make vz-stress-gate` |
+| Evidence class | correctness only | correctness only | Fusion 26H1 lifecycle | development target, not evidence |
+
+Device inventory differs because the hypervisors differ; the kernel discovers
+what is present rather than assuming a platform, so those rows are not defects.
+The rows carrying an item identifier are.
+
+## Open bugs
+
+Defects with no fix in place. Fixed defects leave this table when their gate
+passes; the reasoning stays in the commit that closed them.
+
+| ID | Defect | Affects | Status | Notes |
+|---|---|---|---|---|
+| B-01 | Outbound ProxyJump fails host key verification | x86_64 builds | `OPEN` | `ssh -J` reports "host key verification failed" on an emulated x86_64 host and succeeds natively, with the same command and known_hosts state. It fails immediately, so it is not a timeout. Reproduction needs an x86_64 host; it cannot be exercised on Apple Silicon. One hypothesis is eliminated: the tunneled session restores the target's own host, user and port before its handshake, so it does not verify against the jump endpoint. Do not "fix" it by skipping malformed known_hosts lines -- that falls through to the append path and stores a fresh key for a host that already had one, which is a host key verification downgrade. |
+| B-02 | Thread join failed once under sustained load | Virtualization.framework | `OPEN` | One stress run at fifteen seconds had a worker thread never complete, and the join timed out. It has not recurred in roughly twenty-five subsequent runs of the same harness, and no cause is attributed. `make vz-stress-gate` would catch a recurrence. Recorded rather than closed, because an intermittent hang under contention is exactly what that gate exists to find. |
+
 ## Delivery order
 
 | Order | Workstream | Status | Current boundary / exit gate |
