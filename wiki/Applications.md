@@ -116,6 +116,7 @@ acceptance.
 | `/bin/sysinfo` | Legacy compatibility diagnostic that directs administrators to `xaiosctl status` and `xaiosctl hardware`. |
 | `/bin/systest` | Syscall, descriptor-width validation, and MutableFS create/read/stat/list/rename/delete suite. |
 | `/bin/smptest` | SMP scheduler visibility, worker groups, and EL0 thread create/join/validation test. |
+| `/bin/perfbench` | Measures what XAIOS costs to use: syscall latency at one, four and eight threads, socket bind/close through the serialised network path, and thread create/join. Reports nanoseconds per operation and asserts nothing. Built only when `XAIOS_STRESS_TEST=1`. |
 | `/bin/smpstress` | Sustained multi-core load. Pins threads across the cores until a deadline, then checks a contended counter against tallies each thread kept privately and each thread's word against the neighbours sharing its cache line. Built only when `XAIOS_STRESS_TEST=1`, because it soaks rather than returns. |
 | `/bin/nettest` | App-callable UDP/TCP, external session, and asynchronous DNS/cache telemetry test. |
 | `/bin/lstm-xor` | Deterministic CPU-only LSTM/XOR fixture. It also verifies that production model decode fails closed; it is not real-model inference. |

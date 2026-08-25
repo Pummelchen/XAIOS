@@ -74,7 +74,7 @@ WORKER_ELF="$INIT_BUILD_DIR/worker.elf"
 USER_START_OBJ="$INIT_BUILD_DIR/user-start.o"
 USER_LIB_OBJ="$INIT_BUILD_DIR/xaios-user.o"
 USER_CONTROL_OBJ="$INIT_BUILD_DIR/xaios-control-client.o"
-USER_APPS="xaios-shell xaiosctl xapt nano htop pong hello sysinfo systest smptest smpstress nettest lstm-xor sshtest mltest posix-shell agenttest"
+USER_APPS="xaios-shell xaiosctl xapt nano htop pong hello sysinfo systest smptest smpstress perfbench nettest lstm-xor sshtest mltest posix-shell agenttest"
 UTILITY_APPS="ls mkdir touch cp mv rm rmdir stat cat head tail less grep find sed write tar cpio zip unzip ps df du"
 HOSTED_USER_APPS="helloworldc99"
 
