@@ -6,6 +6,8 @@
 #include <xaios/network_stack.h>
 #include <xaios/persistence.h>
 #include <xaios/security.h>
+#include <xaios/smp.h>
+#include <xaios/spinlock.h>
 #include <xaios/service.h>
 #include <xaios/syscall.h>
 #include <xaios/timer.h>
@@ -27,6 +29,19 @@ static const char k_manager_service_name[] = "/bin/service-manager";
 static const char k_worker_service_name[] = "/bin/xaios-worker";
 static const char k_child_service_name[] = "/svc/source-index";
 static const char k_child_parent_name[] = "/init";
+
+/* C-01: these service records and the crash-dump table are reached from
+   service_start, service_stop, service_restart, service_rollback and
+   service_update, all of which are syscalls and so run on whichever CPU the
+   calling thread occupies. A few of these functions call each other, so the
+   guard counts depth; see xaios_reentrant_lock. */
+static xaios_reentrant_lock_t g_service_guard = XAIOS_REENTRANT_LOCK_INIT;
+
+static void service_lock(void) {
+  xaios_reentrant_lock(&g_service_guard, smp_cpu_id());
+}
+
+static void service_unlock(void) { xaios_reentrant_unlock(&g_service_guard); }
 
 static xaios_service_t g_init_service;
 static xaios_service_t g_manager_service;
@@ -856,8 +871,15 @@ xaios_status_t service_start_init(void) {
   return service_start(k_init_service_name);
 }
 
-xaios_status_t service_status(const char *name) {
+static xaios_status_t service_status_unlocked(const char *name) {
   return handle_status(name);
+}
+
+xaios_status_t service_status(const char *name) {
+  service_lock();
+  xaios_status_t result = service_status_unlocked(name);
+  service_unlock();
+  return result;
 }
 
 xaios_status_t service_snapshot(const char *name, xaios_service_t *snapshot) {
@@ -891,7 +913,7 @@ xaios_status_t service_snapshot_at(uint32_t index,
   return XAIOS_OK;
 }
 
-xaios_status_t service_start(const char *name) {
+static xaios_status_t service_start_unlocked(const char *name) {
   xaios_service_t *service = find_service(name);
   if (service == 0) {
     return XAIOS_ERR_INVALID;
@@ -899,25 +921,67 @@ xaios_status_t service_start(const char *name) {
   return start_service(service);
 }
 
-xaios_status_t service_stop(const char *name) {
+xaios_status_t service_start(const char *name) {
+  service_lock();
+  xaios_status_t result = service_start_unlocked(name);
+  service_unlock();
+  return result;
+}
+
+static xaios_status_t service_stop_unlocked(const char *name) {
   return handle_stop(name);
 }
 
-xaios_status_t service_restart(const char *name) {
+xaios_status_t service_stop(const char *name) {
+  service_lock();
+  xaios_status_t result = service_stop_unlocked(name);
+  service_unlock();
+  return result;
+}
+
+static xaios_status_t service_restart_unlocked(const char *name) {
   return handle_restart(name);
 }
 
-xaios_status_t service_rollback(const char *name) {
+xaios_status_t service_restart(const char *name) {
+  service_lock();
+  xaios_status_t result = service_restart_unlocked(name);
+  service_unlock();
+  return result;
+}
+
+static xaios_status_t service_rollback_unlocked(const char *name) {
   return handle_rollback(name);
 }
 
-xaios_status_t service_update(const char *signature) {
+xaios_status_t service_rollback(const char *name) {
+  service_lock();
+  xaios_status_t result = service_rollback_unlocked(name);
+  service_unlock();
+  return result;
+}
+
+static xaios_status_t service_update_unlocked(const char *signature) {
   return handle_update(signature);
 }
 
-xaios_status_t service_exit(const char *name, int exit_code) {
+xaios_status_t service_update(const char *signature) {
+  service_lock();
+  xaios_status_t result = service_update_unlocked(signature);
+  service_unlock();
+  return result;
+}
+
+static xaios_status_t service_exit_unlocked(const char *name, int exit_code) {
   xaios_service_t *service = find_service(name);
   return mark_service_exit(service, exit_code, 0);
+}
+
+xaios_status_t service_exit(const char *name, int exit_code) {
+  service_lock();
+  xaios_status_t result = service_exit_unlocked(name, exit_code);
+  service_unlock();
+  return result;
 }
 
 xaios_status_t service_heartbeat(const char *name) {

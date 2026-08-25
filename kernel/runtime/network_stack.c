@@ -274,47 +274,17 @@ static network_tcp_flow_t g_tcp_flows[NETWORK_TCP_CONNECTIONS];
 
 /* VirtIO RX/TX and the TCP table are shared by service and child CPUs. */
 
-/* C-01. This stack was written when one CPU ran the whole kernel, so its flow
-   and listener tables carry roughly a hundred and seventy field writes and
-   almost no serialisation. That held while secondaries never came online. Now
-   a syscall runs on whichever CPU the calling thread occupies, so two threads
-   in one process can be inside these tables at the same time.
-   
-   A plain spinlock at each entry point would deadlock: ten of the exported
-   functions call other exported ones -- external_session calls
-   app_tcp_connect, tcp_close_flow calls tcp_abort_flow, and so on. So the
-   guard counts depth per CPU. The first acquisition on a CPU takes the lock
-   and nested ones only count, which leaves every internal call site and every
-   table write exactly as it was.
-   
-   Reading owner and depth outside the lock is safe in the only direction that
-   matters: a CPU can conclude it does *not* already hold the guard and fall
-   through to the real lock, which blocks correctly. It cannot wrongly conclude
-   that it does, because a CPU only ever writes its own id there while holding
-   the lock, and clears it before releasing. */
-static xaios_spinlock_t g_network_lock = XAIOS_SPINLOCK_INIT;
-static uint32_t g_network_lock_owner = UINT32_MAX;
-static uint32_t g_network_lock_depth;
+/* C-01: this stack's tables are mutated in about a hundred and seventy places
+   with almost no serialisation, and ten of its exported functions call other
+   exported ones. See xaios_reentrant_lock for why that combination needs a
+   depth-counting guard rather than a plain lock at each entry point. */
+static xaios_reentrant_lock_t g_network_guard = XAIOS_REENTRANT_LOCK_INIT;
 
 static void network_lock(void) {
-  uint32_t cpu = smp_cpu_id();
-  if (__atomic_load_n(&g_network_lock_depth, __ATOMIC_ACQUIRE) != 0U &&
-      __atomic_load_n(&g_network_lock_owner, __ATOMIC_ACQUIRE) == cpu) {
-    ++g_network_lock_depth;
-    return;
-  }
-  xaios_spin_lock(&g_network_lock);
-  __atomic_store_n(&g_network_lock_owner, cpu, __ATOMIC_RELEASE);
-  __atomic_store_n(&g_network_lock_depth, 1U, __ATOMIC_RELEASE);
+  xaios_reentrant_lock(&g_network_guard, smp_cpu_id());
 }
 
-static void network_unlock(void) {
-  if (g_network_lock_depth == 0U) return;
-  if (--g_network_lock_depth != 0U) return;
-  __atomic_store_n(&g_network_lock_owner, UINT32_MAX, __ATOMIC_RELEASE);
-  __atomic_store_n(&g_network_lock_depth, 0U, __ATOMIC_RELEASE);
-  xaios_spin_unlock(&g_network_lock);
-}
+static void network_unlock(void) { xaios_reentrant_unlock(&g_network_guard); }
 
 /* Bound half-open state so SYN floods cannot exhaust the flow table. */
 #define NETWORK_TCP_MAX_HALF_OPEN 16U

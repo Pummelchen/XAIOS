@@ -100,4 +100,56 @@ static inline int xaios_spin_held(xaios_spinlock_t *lock) {
          __atomic_load_n(&lock->next_ticket, __ATOMIC_RELAXED);
 }
 
+/*
+ * Reentrant guard for a subsystem whose entry points call one another.
+ *
+ * Several subsystems here were written when one CPU ran the kernel, so their
+ * shared tables are mutated in hundreds of places with no serialisation, and
+ * their exported functions call each other freely. Both facts are now
+ * problems: a syscall runs on whichever CPU the calling thread occupies, and
+ * a plain spinlock taken at each entry point would deadlock on the nesting.
+ *
+ * This counts depth per CPU. The first acquisition on a CPU takes the lock and
+ * nested ones only count, which serialises the subsystem without touching the
+ * call graph or the writes inside it.
+ *
+ * Reading owner and depth outside the lock is safe in the only direction that
+ * matters: a CPU can conclude it does *not* already hold the guard and fall
+ * through to the real lock, which blocks correctly. It cannot conclude the
+ * opposite, because a CPU writes its own id there only while holding the lock
+ * and clears it before releasing.
+ *
+ * This is a coarse instrument. It is the right one while the question is
+ * whether these subsystems are correct under parallelism at all; finer
+ * locking belongs after that, with measurements to justify it.
+ */
+typedef struct xaios_reentrant_lock {
+  xaios_spinlock_t lock;
+  volatile uint32_t owner;
+  volatile uint32_t depth;
+} xaios_reentrant_lock_t;
+
+#define XAIOS_REENTRANT_LOCK_INIT \
+  { XAIOS_SPINLOCK_INIT, 0xffffffffU, 0 }
+
+static inline void xaios_reentrant_lock(xaios_reentrant_lock_t *guard,
+                                        uint32_t cpu_id) {
+  if (__atomic_load_n(&guard->depth, __ATOMIC_ACQUIRE) != 0U &&
+      __atomic_load_n(&guard->owner, __ATOMIC_ACQUIRE) == cpu_id) {
+    ++guard->depth;
+    return;
+  }
+  xaios_spin_lock(&guard->lock);
+  __atomic_store_n(&guard->owner, cpu_id, __ATOMIC_RELEASE);
+  __atomic_store_n(&guard->depth, 1U, __ATOMIC_RELEASE);
+}
+
+static inline void xaios_reentrant_unlock(xaios_reentrant_lock_t *guard) {
+  if (guard->depth == 0U) return;
+  if (--guard->depth != 0U) return;
+  __atomic_store_n(&guard->owner, 0xffffffffU, __ATOMIC_RELEASE);
+  __atomic_store_n(&guard->depth, 0U, __ATOMIC_RELEASE);
+  xaios_spin_unlock(&guard->lock);
+}
+
 #endif
