@@ -84,7 +84,7 @@ vmware-fusion-dry-run:
 	./platform/vmware-fusion/run-vmware-fusion.sh --dry-run
 
 firmware-profiles-check:
-	python3 tests/scripts/check-firmware-platform-profiles.py
+	python3 tests/repository/check-firmware-platform-profiles.py
 
 firmware-profile-macos-qemu-aarch64:
 	python3 tests/scripts/firmware-platform-profiles.py --profile macos-qemu-aarch64
@@ -119,7 +119,7 @@ libc:
 	./scripts/build-libc.sh
 
 libc-check: libc
-	python3 tests/scripts/check-libc-contract.py
+	python3 tests/repository/check-libc-contract.py
 	./scripts/build-c99-app.sh --arch aarch64 --main void tests/libc/c99_main_void.c build/libc/aarch64/c99-app-builder-probe.elf
 	./scripts/build-c99-app.sh --arch x86_64 --main void tests/libc/c99_main_void.c build/libc/x86_64/c99-app-builder-probe.elf
 
@@ -535,31 +535,31 @@ model-v2-test: hosted-test
 # XAIOS behaves the same everywhere it boots; firmware supplies capabilities,
 # never identity. See docs/PLATFORM-NEUTRALITY.md.
 platform-neutrality-check:
-	python3 tests/scripts/check-platform-neutrality.py
+	python3 tests/repository/check-platform-neutrality.py
 
 # Prose cannot be enforced by shape, so this checks the claims that expire:
 # evidence commits that have fallen behind, and review dates that predate the
 # page's own last edit.
 doc-freshness-check:
-	python3 tests/scripts/check-doc-freshness.py
+	python3 tests/repository/check-doc-freshness.py
 
 docs-check:
-	python3 tests/scripts/check-platform-neutrality.py
-	python3 tests/scripts/check-doc-freshness.py
-	python3 tests/scripts/check-test-layout.py
-	python3 tests/scripts/check-firmware-platform-profiles.py
-	python3 tests/scripts/check-code-scanning-contract.py
-	python3 tests/scripts/check-wiki-layout.py
-	python3 tests/scripts/check-user-docs.py
-	python3 tests/scripts/check-model-support.py
-	python3 tests/scripts/check-platform-support.py
-	python3 tests/scripts/check-core-os-status.py
+	python3 tests/repository/check-platform-neutrality.py
+	python3 tests/repository/check-doc-freshness.py
+	python3 tests/repository/check-test-layout.py
+	python3 tests/repository/check-firmware-platform-profiles.py
+	python3 tests/repository/check-code-scanning-contract.py
+	python3 tests/repository/check-wiki-layout.py
+	python3 tests/repository/check-user-docs.py
+	python3 tests/repository/check-model-support.py
+	python3 tests/repository/check-platform-support.py
+	python3 tests/repository/check-core-os-status.py
 
 code-scanning-contract:
-	python3 tests/scripts/check-code-scanning-contract.py
+	python3 tests/repository/check-code-scanning-contract.py
 
 production-source-audit:
-	python3 tests/scripts/check-production-source.py
+	python3 tests/repository/check-production-source.py
 
 qemu-baseline: image
 	python3 ./tests/scripts/benchmark-baseline.py

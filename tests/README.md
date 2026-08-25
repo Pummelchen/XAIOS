@@ -17,7 +17,7 @@ bridge utilities.
 | `tests/fuzz/` | Parser fuzz entrypoints and corpora. |
 | `tests/fixtures/` | Deterministic test inputs that are safe to version. |
 
-`tests/scripts/check-test-layout.py` rejects test runners in `scripts/`, missing
+`tests/repository/check-test-layout.py` rejects test runners in `scripts/`, missing
 Docker build inputs, and test-image inputs outside `tests/`. It runs through
 `make docs-check`.
 

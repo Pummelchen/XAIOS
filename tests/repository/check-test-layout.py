@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
 PLATFORM = ROOT / "platform"
+REPOSITORY_CHECKS = ROOT / "tests" / "repository"
 TESTS = ROOT / "tests"
 
 RUNTIME_SCRIPTS = {
@@ -53,6 +54,25 @@ def main() -> int:
             failures.append(
                 f"platform/{environment}/{launcher} is missing; each "
                 f"environment keeps its own launcher beside its assets"
+            )
+
+    # Checks about the repository live apart from gates that boot XAIOS. They
+    # answer different questions -- is this tree consistent, versus does the
+    # system work -- and mixing them put seventy-four files in one directory
+    # where the only clue was a filename prefix.
+    if not REPOSITORY_CHECKS.is_dir():
+        failures.append("tests/repository/ is missing")
+    else:
+        for stray in sorted(REPOSITORY_CHECKS.glob("*.py")):
+            if not stray.name.startswith("check-"):
+                failures.append(
+                    f"tests/repository/{stray.name} is not a repository check; "
+                    f"gates that boot XAIOS belong in tests/scripts/"
+                )
+        for stray in sorted((ROOT / "tests" / "scripts").glob("check-*.py")):
+            failures.append(
+                f"tests/scripts/{stray.name} is a repository check and belongs "
+                f"in tests/repository/"
             )
 
     missing = sorted(RUNTIME_SCRIPTS - script_files)

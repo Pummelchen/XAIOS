@@ -44,7 +44,7 @@ platform is their purpose.
 | `userspace/` | init, the shell, applications, the C library, sshd |
 | `engine/` | the inference engine |
 | `platform/<environment>/` | one directory per supported hypervisor: its assets and its launchers, nothing else |
-| `tests/` | gates in `tests/scripts/`, fixtures in `tests/fixtures/`, network harnesses in `tests/network/` |
+| `tests/` | gates that boot XAIOS in `tests/scripts/`, checks about the repository itself in `tests/repository/`, fixtures in `tests/fixtures/`, network harnesses in `tests/network/` |
 | `contracts/` | versioned machine-readable contracts, `<name>-v<n>.json` |
 | `docs/` | versioned specifications and formats |
 | `wiki/` | the published Wiki: what XAIOS does, not how it was built |
