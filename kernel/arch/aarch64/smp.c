@@ -105,7 +105,7 @@ static void bump_online(void) {
  * CPU zeroed all of it with caches on, including the stacks the secondaries
  * are about to run on, so those lines sit here dirty over memory that is
  * about to become somebody else's live stack, and evicting one later would
- * write zeros across it. The pointers count too -- the assembly entry stub
+ * write zeros across it. The pointers count too -- the assembly entry path
  * loads g_secondary_stacks with translation still off, and gets whatever
  * memory holds rather than what this CPU last wrote. */
 static void bootstrap_to_memory(void) {
