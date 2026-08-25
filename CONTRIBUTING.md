@@ -35,6 +35,31 @@ Harnesses in `tools/`, run scripts in `scripts/`, gates in `tests/` and
 firmware profiles in `contracts/` are exempt: driving or asserting one specific
 platform is their purpose.
 
+## Where things live
+
+| Directory | Holds |
+|---|---|
+| `boot/` | UEFI loader |
+| `kernel/` | the kernel, with `arch/<architecture>/` for anything architecture-specific |
+| `userspace/` | init, the shell, applications, the C library, sshd |
+| `engine/` | the inference engine |
+| `platform/<environment>/` | one directory per supported hypervisor: its assets and its launchers, nothing else |
+| `tests/` | gates in `tests/scripts/`, fixtures in `tests/fixtures/`, network harnesses in `tests/network/` |
+| `contracts/` | versioned machine-readable contracts, `<name>-v<n>.json` |
+| `docs/` | versioned specifications and formats |
+| `wiki/` | the published Wiki: what XAIOS does, not how it was built |
+| `scripts/` | build and release automation the build system invokes |
+| `tools/` | standalone utilities a person runs by hand |
+| `config/` | build cross-files, development credentials, deployment configuration |
+
+`scripts/` and `tools/` are not interchangeable. If the build calls it, it is a
+script; if you call it, it is a tool. `check-test-layout.py` enforces the
+contents of `scripts/` and the shape of `platform/`, so a new file in either
+needs a deliberate decision rather than a convenient one.
+
+Anything that exists to drive or assert one specific hypervisor belongs under
+`platform/` or `tests/`, never in the kernel. See the rule above.
+
 ## Getting Started
 
 See [Getting Started](docs/GETTING-STARTED.md) for toolchain setup, building,

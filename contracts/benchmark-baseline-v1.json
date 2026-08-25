@@ -26,5 +26,5 @@
     "note": "Linux baseline not available. Set XAIOS_LINUX_KERNEL and XAIOS_LINUX_INITRD env vars to enable comparison."
   },
   "performance_claims_allowed": false,
-  "methodology_ref": "benchmarks/METHODOLOGY.md"
+  "methodology_ref": "docs/BENCHMARK-METHODOLOGY.md"
 }

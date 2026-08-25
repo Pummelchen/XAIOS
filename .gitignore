@@ -13,3 +13,33 @@ dist/
 .cache/
 __pycache__/
 compile_commands.json
+
+# Credentials and secrets.
+#
+# This repository is heading towards commercial use and will carry financial
+# data. Nothing matching these patterns belongs in it. The exceptions at the
+# end are deliberate: a throwaway TLS pair the packaging gate needs and the
+# public ISRG root certificates the trust store ships. Both are documented in
+# tests/fixtures/README.md, and the private key there is public by definition.
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+.env
+.env.*
+.netrc
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+*_rsa
+*_ecdsa
+*_ed25519
+secrets.*
+credentials.*
+service-account*.json
+!tests/fixtures/xapt-tls-key.pem
+!tests/fixtures/xapt-tls-cert.pem
+!userspace/apps/trust/*.pem

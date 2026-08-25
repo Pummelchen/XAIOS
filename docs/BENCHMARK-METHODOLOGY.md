@@ -2,7 +2,7 @@
 
 ## Overview
 
-XAIOS QEMU benchmarks measure **correctness**, not raw performance. The QEMU environment validates that subsystems boot, self-test, and produce expected telemetry counters. Physical performance claims must satisfy [`docs/BENCHMARK-CONTRACT.md`](../docs/BENCHMARK-CONTRACT.md) with a relevant tuned baseline.
+XAIOS QEMU benchmarks measure **correctness**, not raw performance. The QEMU environment validates that subsystems boot, self-test, and produce expected telemetry counters. Physical performance claims must satisfy [`docs/BENCHMARK-CONTRACT.md`](./BENCHMARK-CONTRACT.md) with a relevant tuned baseline.
 
 ## What We Measure
 
@@ -90,4 +90,4 @@ XAIOS_BENCHMARK_OUTPUT=/tmp/results.json make qemu-baseline
 
 ## Baseline Result Format
 
-See `benchmarks/baseline-v1.json` for the JSON schema.
+See `contracts/benchmark-baseline-v1.json` for the JSON schema.
