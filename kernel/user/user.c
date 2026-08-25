@@ -297,6 +297,11 @@ static xaios_status_t validate_process_transition(xaios_user_process_state_t fro
   return XAIOS_ERR_INVALID;
 }
 
+/* These totals are incremented from whichever CPU the process is running on,
+   and this file already keeps the per-process counters beside them atomic. A
+   plain increment loses counts when two CPUs transition at once, which now
+   actually happens; the boot gates check these totals against thresholds, so
+   an undercount reads as a failure that never occurred. */
 static void transition_process(xaios_user_process_t *process,
                                xaios_user_process_state_t state,
                                int exit_code) {
@@ -308,26 +313,26 @@ static void transition_process(xaios_user_process_t *process,
 
   process->state = state;
   process->exit_code = exit_code;
-  ++g_process_transition_count;
+  __sync_fetch_and_add(&g_process_transition_count, 1U);
 
   switch (state) {
   case XAIOS_USER_PROCESS_LOADED:
-    ++g_process_loaded_count;
+    __sync_fetch_and_add(&g_process_loaded_count, 1U);
     break;
   case XAIOS_USER_PROCESS_RUNNABLE:
-    ++g_process_runnable_count;
+    __sync_fetch_and_add(&g_process_runnable_count, 1U);
     break;
   case XAIOS_USER_PROCESS_RUNNING:
-    ++g_process_running_count;
+    __sync_fetch_and_add(&g_process_running_count, 1U);
     break;
   case XAIOS_USER_PROCESS_WAITING:
-    ++g_process_waiting_count;
+    __sync_fetch_and_add(&g_process_waiting_count, 1U);
     break;
   case XAIOS_USER_PROCESS_EXITED:
-    ++g_process_exited_count;
+    __sync_fetch_and_add(&g_process_exited_count, 1U);
     break;
   case XAIOS_USER_PROCESS_FAILED:
-    ++g_process_failed_count;
+    __sync_fetch_and_add(&g_process_failed_count, 1U);
     break;
   default:
     break;
@@ -810,7 +815,7 @@ xaios_status_t user_process_wait(uint32_t pid) {
   }
 
   transition_process(process, XAIOS_USER_PROCESS_WAITING, process->exit_code);
-  ++g_process_wait_count;
+  __sync_fetch_and_add(&g_process_wait_count, 1U);
   klog("scheduler: process pid=%u waiting waits=%lu\n", pid,
        g_process_wait_count);
   return XAIOS_OK;
@@ -827,7 +832,7 @@ xaios_status_t user_process_wake(uint32_t pid) {
   }
 
   transition_process(process, XAIOS_USER_PROCESS_RUNNABLE, process->exit_code);
-  ++g_process_wake_count;
+  __sync_fetch_and_add(&g_process_wake_count, 1U);
   klog("scheduler: process pid=%u woken wakes=%lu\n", pid,
        g_process_wake_count);
   return XAIOS_OK;
@@ -845,7 +850,7 @@ int user_process_run(const xaios_user_process_t *process) {
   uint64_t stack = g_current_process->stack_top;
   transition_process(g_current_process, XAIOS_USER_PROCESS_RUNNING, 0);
   ++g_current_process->scheduler_ticks;
-  ++g_process_scheduled_count;
+  __sync_fetch_and_add(&g_process_scheduled_count, 1U);
   user_process_runtime_start(g_current_process->pid, smp_cpu_id(),
                              timer_now_ns());
 
@@ -881,7 +886,7 @@ int user_process_run_concurrent(const xaios_user_process_t *process) {
   uint64_t entry = g_current_process->entry;
   uint64_t stack = g_current_process->stack_top;
   transition_process(g_current_process, XAIOS_USER_PROCESS_RUNNING, 0);
-  ++g_process_scheduled_count;
+  __sync_fetch_and_add(&g_process_scheduled_count, 1U);
   user_process_runtime_start(g_current_process->pid, smp_cpu_id(),
                              timer_now_ns());
 
@@ -1115,7 +1120,7 @@ void user_process_reclaim_address_space(const xaios_user_process_t *process) {
       slot->resident_pages = 0U;
       bytes_zero(&slot->aspace, sizeof(slot->aspace));
     }
-    ++g_process_reclaim_count;
+    __sync_fetch_and_add(&g_process_reclaim_count, 1U);
     klog("user: reclaimed aspace pid=%u pages=%u\n",
          process->pid, reclaimed_pages);
     return;
@@ -1137,7 +1142,7 @@ void user_process_reclaim_address_space(const xaios_user_process_t *process) {
       pmm_free_page((void *)(uintptr_t)physical);
     }
   }
-  ++g_process_reclaim_count;
+  __sync_fetch_and_add(&g_process_reclaim_count, 1U);
   klog("user: reclaimed address space pid=%u range=[0x%lx,0x%lx)\n",
        process->pid, process->mapped_low, process->mapped_high);
 }

@@ -1847,7 +1847,17 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     } else if (socket_snapshot.state == KERNEL_SOCK_DATAGRAM) {
       network_stack_unregister_udp_listener(socket_snapshot.port);
     }
-    kassert(kernel_socket_free(arg0, owner_token) == XAIOS_OK);
+    /* The ownership check above and this free take the socket lock separately,
+       so a sibling thread closing the same descriptor can land between them.
+       Both callers pass the check, one frees it, and the other used to find
+       nothing and halt the kernel on the assertion that stood here -- a panic
+       any two threads could cause with a descriptor of their own. Losing that
+       race is not an error worth a machine: the socket is closed, which is
+       what this caller asked for, and the rejection path already used above
+       for a descriptor that is not there says so. */
+    if (kernel_socket_free(arg0, owner_token) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "net-close-raced");
+    }
     klog("syscall: net_close sockfd=%lu\n", arg0);
     return XAIOS_OK;
   }
