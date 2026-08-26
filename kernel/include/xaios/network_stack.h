@@ -174,7 +174,10 @@ typedef struct socket_flow_mapping {
 } socket_flow_mapping_t;
 void network_stack_map_socket(uint64_t sockfd, uint32_t flow_id,
                                 uint8_t protocol);
-socket_flow_mapping_t *network_stack_get_socket_mapping(uint64_t sockfd);
+/* Copies the mapping and returns non-zero when one exists. Never hands out a
+   pointer into the table: see the definition. */
+int network_stack_get_socket_mapping(uint64_t sockfd,
+                                     socket_flow_mapping_t *out);
 void network_stack_unmap_socket(uint64_t sockfd);
 
 #endif

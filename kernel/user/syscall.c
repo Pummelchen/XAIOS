@@ -323,8 +323,11 @@ void syscall_release_process_resources(uint32_t owner_token) {
     xaios_spin_unlock(&g_kernel_socket_lock);
     if (found == 0U) return;
 
+    socket_flow_mapping_t mapping_copy;
     socket_flow_mapping_t *mapping =
-        network_stack_get_socket_mapping(snapshot.id);
+        network_stack_get_socket_mapping(snapshot.id, &mapping_copy)
+            ? &mapping_copy
+            : 0;
     if (mapping != 0) {
       if (mapping->protocol == XAIOS_NETWORK_PROTOCOL_TCP) {
         (void)network_stack_tcp_close_flow(mapping->flow_id);
@@ -1747,7 +1750,11 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1, "net-recv-not-connected");
     }
     /* Look up a connected TCP socket. */
-    socket_flow_mapping_t *mapping = network_stack_get_socket_mapping(request.sockfd);
+    socket_flow_mapping_t mapping_storage;
+    socket_flow_mapping_t *mapping =
+        network_stack_get_socket_mapping(request.sockfd, &mapping_storage)
+            ? &mapping_storage
+            : 0;
     if (mapping == 0) {
       *(uint64_t *)(uintptr_t)request.out_bytes = 0;
       return XAIOS_OK;
@@ -1792,8 +1799,11 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
                                      &socket_snapshot) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "net-send-no-socket");
     }
+    socket_flow_mapping_t snd_mapping_storage;
     socket_flow_mapping_t *snd_mapping =
-        network_stack_get_socket_mapping(request.sockfd);
+        network_stack_get_socket_mapping(request.sockfd, &snd_mapping_storage)
+            ? &snd_mapping_storage
+            : 0;
     if (snd_mapping == 0 ||
         !((socket_snapshot.state == KERNEL_SOCK_CONNECTED &&
            snd_mapping->protocol == XAIOS_NETWORK_PROTOCOL_TCP) ||
@@ -1834,8 +1844,11 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1, "net-close-no-socket");
     }
     /* Clean up flow mapping if this is a connected socket */
+    socket_flow_mapping_t close_mapping_copy;
     socket_flow_mapping_t *close_mapping =
-        network_stack_get_socket_mapping(arg0);
+        network_stack_get_socket_mapping(arg0, &close_mapping_copy)
+            ? &close_mapping_copy
+            : 0;
     if (close_mapping != 0) {
       if (close_mapping->protocol == 6) {
         network_stack_tcp_close_flow(close_mapping->flow_id);

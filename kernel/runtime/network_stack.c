@@ -2693,11 +2693,21 @@ static socket_flow_mapping_t *network_stack_get_socket_mapping_unlocked(uint64_t
   return 0;
 }
 
-socket_flow_mapping_t * network_stack_get_socket_mapping(uint64_t sockfd) {
+/* Copy the row out under the guard rather than handing back a pointer into the
+   table. The old signature released the guard and returned an interior pointer,
+   so a caller read the row with nothing holding it still: a concurrent close
+   could clear that row between the lookup and the dereference, and the caller
+   would then act on a flow that had already been released. Harmless while one
+   CPU ran the kernel; reachable the moment syscalls run on several. */
+int network_stack_get_socket_mapping(uint64_t sockfd,
+                                     socket_flow_mapping_t *out) {
+  if (out == 0) return 0;
   network_lock();
-  socket_flow_mapping_t * result = network_stack_get_socket_mapping_unlocked(sockfd);
+  socket_flow_mapping_t *found = network_stack_get_socket_mapping_unlocked(sockfd);
+  int present = found != 0;
+  if (present) *out = *found;
   network_unlock();
-  return result;
+  return present;
 }
 
 static void network_stack_unmap_socket_unlocked(uint64_t sockfd) {
