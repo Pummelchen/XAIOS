@@ -133,6 +133,12 @@ xaios_status_t network_stack_local_public_ipv6(xaios_ip_addr_t *address);
    advertisement when there is one, whether globally routable or unique-local,
    and otherwise the link-local address. */
 xaios_status_t network_stack_local_ipv6(xaios_ip_addr_t *address);
+
+/* Install an address obtained from a DHCPv6 server. Separate from the SLAAC
+   path because a lease and a derived address are different things with
+   different obligations, even though both end up on the same send path. */
+xaios_status_t network_stack_adopt_dhcpv6(const xaios_ip_addr_t *address,
+                                          uint32_t valid_lifetime_s);
 xaios_status_t network_stack_ping_start(uint32_t target_ip);
 xaios_network_ping_status_t network_stack_ping_status(void);
 

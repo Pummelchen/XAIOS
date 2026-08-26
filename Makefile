@@ -65,6 +65,11 @@ vz-harness:
 # Boot by hand, with every volume refreshed first. Attaching a volume older
 # than the last build can boot the kernel that volume carries instead of the
 # one just built, silently. See platform/virtualization-framework/run-vz.sh.
+# DHCPv6 against a real server on the guest's link. No environment XAIOS boots
+# in runs one, so the gate supplies it; see tests/network/qemu-dhcpv6-server.py.
+qemu-dhcpv6-gate: image-qemu-test
+	python3 ./tests/scripts/qemu-dhcpv6-gate.py
+
 vz-run: vz-harness
 	./platform/virtualization-framework/run-vz.sh $(VZ_RUN_ARGS)
 

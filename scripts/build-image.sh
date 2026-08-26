@@ -567,6 +567,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/ipv6.o
   $KERNEL_BUILD_DIR/icmpv6.o
   $KERNEL_BUILD_DIR/ndp.o
+  $KERNEL_BUILD_DIR/dhcpv6.o
   $KERNEL_BUILD_DIR/socket_buffer.o
   $KERNEL_BUILD_DIR/routing.o
   $KERNEL_BUILD_DIR/dns.o
@@ -710,6 +711,7 @@ compile_kernel "$ROOT_DIR/kernel/net/icmp.c" "$KERNEL_BUILD_DIR/icmp.o"
 compile_kernel "$ROOT_DIR/kernel/net/ipv6.c" "$KERNEL_BUILD_DIR/ipv6.o"
 compile_kernel "$ROOT_DIR/kernel/net/icmpv6.c" "$KERNEL_BUILD_DIR/icmpv6.o"
 compile_kernel "$ROOT_DIR/kernel/net/ndp.c" "$KERNEL_BUILD_DIR/ndp.o"
+compile_kernel "$ROOT_DIR/kernel/net/dhcpv6.c" "$KERNEL_BUILD_DIR/dhcpv6.o"
 compile_kernel "$ROOT_DIR/kernel/net/socket_buffer.c" "$KERNEL_BUILD_DIR/socket_buffer.o"
 compile_kernel "$ROOT_DIR/kernel/net/routing.c" "$KERNEL_BUILD_DIR/routing.o"
 compile_kernel "$ROOT_DIR/kernel/net/dns.c" "$KERNEL_BUILD_DIR/dns.o"

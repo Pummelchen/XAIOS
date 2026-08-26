@@ -358,6 +358,15 @@ static uint64_t g_public_v6_valid_until_ns;
    from; g_public_v6 stays reserved for genuinely global addresses. */
 static xaios_ip_addr_t g_slaac_v6;
 static uint64_t g_slaac_valid_until_ns;
+/* An address assigned by a DHCPv6 server rather than derived from a router
+   advertisement. Kept apart from the SLAAC address because the two are not
+   interchangeable: a lease is held on this host's behalf and has to be given
+   back, where a SLAAC address is derived and simply expires. Both feed the
+   same send path, and a lease wins when both exist -- a network that runs
+   DHCPv6 has expressed a preference about which address a host should use. */
+static xaios_ip_addr_t g_dhcpv6_v6;
+static uint64_t g_dhcpv6_valid_until_ns;
+
 static xaios_network_ping_status_t g_ping;
 static uint64_t g_ping_sent_ns;
 static uint16_t g_ping_sequence;
@@ -986,6 +995,31 @@ static void network_ipv6_apply_router_advertisement(const uint8_t *frame,
     }
     offset += option_len;
   }
+}
+
+xaios_status_t network_stack_adopt_dhcpv6(const xaios_ip_addr_t *address,
+                                          uint32_t valid_lifetime_s) {
+  if (address == 0 || address->family != XAIOS_IP_FAMILY_V6) {
+    return XAIOS_ERR_INVALID;
+  }
+  if (valid_lifetime_s == 0U) return XAIOS_ERR_INVALID;
+  uint64_t now_ns = timer_now_ns();
+  uint64_t lifetime_ns = (uint64_t)valid_lifetime_s * UINT64_C(1000000000);
+  network_lock();
+  g_dhcpv6_v6 = *address;
+  g_dhcpv6_valid_until_ns =
+      lifetime_ns > UINT64_MAX - now_ns ? UINT64_MAX : now_ns + lifetime_ns;
+  /* A leased address that is globally routable is the public one, on the same
+     terms a SLAAC address would be. */
+  if (network_ipv6_is_global_unicast(address) != 0) {
+    g_public_v6 = *address;
+    g_public_v6_valid_until_ns = g_dhcpv6_valid_until_ns;
+  }
+  network_unlock();
+  klog("network: IPv6 address configured by DHCPv6 valid_s=%u (%s)\n",
+       valid_lifetime_s,
+       network_ipv6_is_global_unicast(address) != 0 ? "global" : "local");
+  return XAIOS_OK;
 }
 
 static uint32_t tcp_generate_isn(uint32_t flow_id) {

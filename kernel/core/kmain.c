@@ -15,6 +15,7 @@
 #include <xaios/child_channel.h>
 #include <xaios/dns.h>
 #include <xaios/elf_loader.h>
+#include <xaios/dhcpv6.h>
 #include <xaios/entropy.h>
 #include <xaios/exception.h>
 #include <xaios/gic.h>
@@ -586,6 +587,7 @@ void kmain(const xaios_boot_info_t *boot) {
   ipv6_self_test();
   icmpv6_self_test();
   ndp_self_test();
+  dhcpv6_self_test();
   sockbuf_self_test();
   routing_self_test();
   dns_self_test();
@@ -685,7 +687,12 @@ void kmain(const xaios_boot_info_t *boot) {
        assumes it is simply off-net anywhere else: Virtualization.framework
        hands out a different subnet entirely. QEMU answers DHCP with the same
        address it always did, so nothing changes there. */
-    if (network_config_dhcp(UINT64_C(6000000000)) != XAIOS_OK) {
+    /* Six seconds left room for barely two attempts once retransmission
+       backs off, and a server that is slow rather than absent was being
+       written off as absent. Fifteen costs nothing when a lease arrives on
+       the first try, and is only ever paid in full where there is no DHCP
+       server at all. */
+    if (network_config_dhcp(UINT64_C(15000000000)) != XAIOS_OK) {
       if (network_device_kind() == XAIOS_NETWORK_DEVICE_E1000E) {
         klog("kernel: DHCP configuration failed for e1000e\n");
         boot_ui_error("network DHCP", XAIOS_ERR_IO);
@@ -695,6 +702,23 @@ void kmain(const xaios_boot_info_t *boot) {
     }
     network_init_persistent();
     (void)network_wait_for_ipv6_slaac(UINT64_C(3000000000));
+    /* Ask for a lease as well. SLAAC and DHCPv6 answer different questions --
+       one derives an address from an announced prefix, the other has a server
+       assign and record one -- and a guest does not get to choose which its
+       network offers. A network with no DHCPv6 server simply never answers,
+       which is why this is not allowed to fail the boot: the budget is short
+       and the outcome is logged either way. */
+    {
+      xaios_dhcpv6_lease_t lease;
+      if (dhcpv6_acquire(UINT64_C(4000000000), &lease) == XAIOS_OK &&
+          lease.have_address != 0U) {
+        (void)network_stack_adopt_dhcpv6(&lease.address,
+                                         lease.valid_lifetime_s);
+      } else {
+        klog("kernel: no DHCPv6 lease; IPv6 stays as router advertisement "
+             "configured it\n");
+      }
+    }
     dns_init();
     dns_configure(network_config_dns_server());
     klog("kernel: persistent network stack enabled device=%s\n",

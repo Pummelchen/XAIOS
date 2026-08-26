@@ -1,4 +1,5 @@
 #include <xaios/arch_cpu.h>
+#include <xaios/entropy.h>
 #include <xaios/ipv4.h>
 #include <xaios/klog.h>
 #include <xaios/net_device.h>
@@ -14,12 +15,39 @@
 #define DHCP_COOKIE UINT32_C(0x63825363)
 #define DHCP_CLIENT_PORT UINT16_C(68)
 #define DHCP_SERVER_PORT UINT16_C(67)
-#define DHCP_XID UINT32_C(0x5841494f)
+/* RFC 2131 requires a client to pick a new, randomly chosen transaction ID for
+ * each exchange. This used to be one fixed constant, which meant every boot of
+ * every XAIOS guest offered the same xid. A server is entitled to treat a
+ * DISCOVER carrying an xid it has already completed for that MAC as a
+ * retransmission and stay silent, and that is what roughly one Fusion boot in
+ * three looked like: link up, DISCOVER sent, no OFFER, three times over. It
+ * depended on whether the server still remembered the last transaction, which
+ * is why it was intermittent and why it worsened across the gate's reboot.
+ *
+ * Drawn from the entropy source, with the timer as a fallback: this runs
+ * before the network is up, and a boot that cannot produce randomness must
+ * still be able to get an address. The MAC is mixed in so two guests booting
+ * from the same image at the same moment do not collide. */
+static uint32_t g_dhcp_xid;
+
+static uint32_t dhcp_new_xid(const uint8_t mac[6]) {
+  uint32_t xid = 0U;
+  if (entropy_read(&xid, sizeof(xid)) != XAIOS_OK || xid == 0U) {
+    uint64_t now = timer_now_ns();
+    xid = (uint32_t)(now ^ (now >> 32));
+  }
+  for (uint32_t i = 0U; i < 6U; ++i) {
+    xid = (xid * UINT32_C(16777619)) ^ mac[i];
+  }
+  if (xid == 0U) xid = UINT32_C(0x5841494f);
+  return xid;
+}
 #define DHCP_DISCOVER UINT8_C(1)
 #define DHCP_OFFER UINT8_C(2)
 #define DHCP_REQUEST UINT8_C(3)
 #define DHCP_ACK UINT8_C(5)
 #define DHCP_RETRY_INTERVAL_NS UINT64_C(1000000000)
+#define DHCP_RETRY_MAX_INTERVAL_NS UINT64_C(4000000000)
 
 typedef struct network_config_state {
   uint32_t local_ipv4;
@@ -87,7 +115,7 @@ static uint32_t build_request(uint8_t frame[DHCP_FRAME_CAPACITY],
   bootp[0] = 1U;
   bootp[1] = 1U;
   bootp[2] = 6U;
-  put_be32(bootp + 4U, DHCP_XID);
+  put_be32(bootp + 4U, g_dhcp_xid);
   put_be16(bootp + 10U, UINT16_C(0x8000));
   copy_bytes(bootp + 28U, mac, 6U);
   put_be32(bootp + DHCP_BOOTP_BYTES, DHCP_COOKIE);
@@ -148,7 +176,7 @@ static int parse_reply(const uint8_t *frame, uint32_t length,
       get_be16(frame + 12U) != UINT16_C(0x0800) || frame[23U] != XAIOS_IPV4_PROTO_UDP ||
       get_be16(frame + DHCP_ETHERNET_BYTES + DHCP_IPV4_BYTES) != DHCP_SERVER_PORT ||
       get_be16(frame + DHCP_ETHERNET_BYTES + DHCP_IPV4_BYTES + 2U) != DHCP_CLIENT_PORT ||
-      frame[bootp_offset] != 2U || get_be32(frame + bootp_offset + 4U) != DHCP_XID ||
+      frame[bootp_offset] != 2U || get_be32(frame + bootp_offset + 4U) != g_dhcp_xid ||
       get_be32(frame + bootp_offset + DHCP_BOOTP_BYTES) != DHCP_COOKIE) {
     return 0;
   }
@@ -199,6 +227,12 @@ static xaios_status_t exchange_request(uint8_t request_type,
                                        dhcp_reply_t *reply) {
   uint8_t frame[DHCP_FRAME_CAPACITY];
   uint32_t attempts = 0U;
+  /* RFC 2131 section 4.1 asks for a retransmission delay that doubles and
+   * carries a little randomness, rather than a fixed interval: a server that
+   * is briefly busy is more likely to answer the second attempt if the second
+   * attempt is not immediately on top of the first, and jitter keeps several
+   * guests booting together from retrying in lockstep. */
+  uint64_t interval = DHCP_RETRY_INTERVAL_NS;
   while (timer_now_ns() < deadline) {
     uint32_t request_size = build_request(frame, request_type, requested_ip,
                                           server_ip, mac);
@@ -207,7 +241,9 @@ static xaios_status_t exchange_request(uint8_t request_type,
     xaios_status_t status = network_device_tx(frame, request_size);
     if (status == XAIOS_OK) {
       uint64_t now = timer_now_ns();
-      uint64_t attempt_deadline = now + DHCP_RETRY_INTERVAL_NS;
+      uint64_t jitter = (now % (DHCP_RETRY_INTERVAL_NS / 4U));
+      uint64_t attempt_deadline = now + interval + jitter;
+      if (interval < DHCP_RETRY_MAX_INTERVAL_NS) interval *= 2U;
       if (attempt_deadline < now || attempt_deadline > deadline) {
         attempt_deadline = deadline;
       }
@@ -227,6 +263,9 @@ xaios_status_t network_config_dhcp(uint64_t timeout_ns) {
   if (network_device_get_mac(mac) != XAIOS_OK || timeout_ns == 0U) {
     return XAIOS_ERR_INVALID;
   }
+  /* One transaction, one xid, chosen here: DISCOVER and the REQUEST that
+   * follows the OFFER are the same exchange and must carry the same id. */
+  g_dhcp_xid = dhcp_new_xid(mac);
   uint64_t started = timer_now_ns();
   uint64_t offer_deadline = started + timeout_ns / 2U;
   if (offer_deadline < started) return XAIOS_ERR_INVALID;
