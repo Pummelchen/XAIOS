@@ -57,6 +57,7 @@ REQUIRED = (
 
 FORBIDDEN = (
     ("kernel panic", re.compile(r"CYAN SCREEN OF DEATH")),
+    ("booted into rescue mode", re.compile(r"lifecycle initialized[^\n]*rescue=1")),
     ("assertion failure", re.compile(r"ERROR: assertion failed")),
     ("lost updates", re.compile(r"/bin/smpstress: contended counter lost updates")),
     ("neighbour corrupted",
@@ -77,8 +78,24 @@ def prepare() -> str | None:
     subprocess.run([str(ROOT / "platform/virtualization-framework/build-vz-disk.sh")], check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     shutil.copy(VZ / "xaios-vz-disk.img", VZ / "run-disk.img")
+
+    # A fresh durable volume, for the reason vz-gate builds one: the lifecycle
+    # record lives there, rescue mode is latched by a marker file on it, and
+    # build/xaios-persistent.img collects unclean boots from every gate that
+    # touches it. This gate ends each of its runs by terminating the machine,
+    # so it is one of the larger contributors to that count -- and a run that
+    # silently drops into rescue mode would still satisfy every marker below.
+    (VZ / "vz-persistent.img").unlink(missing_ok=True)
+    subprocess.run([str(ROOT / "scripts/create-persistent-image.sh")],
+                   env={**os.environ,
+                        "XAIOS_PERSISTENT_IMAGE": str(VZ / "vz-persistent.img")},
+                   check=True, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+
     for target, source in VOLUMES:
         destination = VZ / target
+        if target == "vz-persistent.img":
+            continue
         if source is None:
             if not destination.is_file():
                 destination.write_bytes(b"\0" * (16384 * 512))
