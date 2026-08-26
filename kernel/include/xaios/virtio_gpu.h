@@ -19,6 +19,13 @@ uint32_t *virtio_gpu_framebuffer(uint32_t *width, uint32_t *height);
 
 /* Copy the buffer to the host and show it. Nothing drawn is visible until
    this runs: the device reads the backing when told to, not continuously. */
-xaios_status_t virtio_gpu_present(void);
+/* Make the given region of the framebuffer visible. Coordinates are pixels
+   from the top left; the region is clamped to the scanout. */
+xaios_status_t virtio_gpu_present(uint32_t x, uint32_t y, uint32_t width,
+                                  uint32_t height);
+
+/* Log how many pixels the region tracking actually saved. Call once, after the
+   boot drawing is done. */
+void virtio_gpu_report_transfer_cost(void);
 
 #endif

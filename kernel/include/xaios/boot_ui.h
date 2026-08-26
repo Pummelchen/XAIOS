@@ -36,7 +36,10 @@ void boot_ui_console_write(const char *text, uint64_t length);
 uint32_t boot_ui_has_framebuffer(void);
 void boot_ui_adopt_framebuffer(uint32_t *pixels, uint32_t width,
                                uint32_t height,
-                               xaios_status_t (*present)(void));
+                               xaios_status_t (*present)(uint32_t x,
+                                                         uint32_t y,
+                                                         uint32_t width,
+                                                         uint32_t height));
 void boot_ui_console_text(const char *text);
 void boot_ui_self_test(void);
 

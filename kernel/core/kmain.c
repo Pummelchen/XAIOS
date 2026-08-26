@@ -877,6 +877,11 @@ persistent_network_done:
 
   boot_sync_wall_clock();
 
+  /* Boot drawing is finished here: what follows is a service that runs until
+     the machine stops. Report what the display cost while the figure still
+     covers a bounded, comparable amount of work. */
+  virtio_gpu_report_transfer_cost();
+
   klog("kernel: starting persistent /bin/sshd service\n");
   int sshd_exit =
       run_user_app("/bin/sshd", XAIOS_BOOT_TEST_APPS ? 18U : 3U, sshd_caps);

@@ -150,6 +150,42 @@ static uint32_t fb_color(uint8_t red, uint8_t green, uint8_t blue) {
   return ((uint32_t)blue << 16U) | ((uint32_t)green << 8U) | red;
 }
 
+/* Which part of the buffer has been drawn on since it was last made visible.
+   A device that copies on demand has to be told what to copy, and telling it
+   "all of it" costs a transfer of the whole screen for a one-glyph change: at
+   1280x800 that is 4 MiB pushed to redraw a cursor. Held as a bounding box
+   rather than a list of rectangles, because console output is one or two
+   regions at a time and a box costs four words to track.
+
+   Empty is width == 0, which is why the box is not initialised to the whole
+   screen: a present with nothing drawn should do nothing at all. */
+static struct {
+  uint32_t x;
+  uint32_t y;
+  uint32_t width;
+  uint32_t height;
+} g_dirty;
+
+static void fb_mark_dirty(uint32_t x, uint32_t y, uint32_t width,
+                          uint32_t height) {
+  if (width == 0U || height == 0U) return;
+  if (g_dirty.width == 0U) {
+    g_dirty.x = x;
+    g_dirty.y = y;
+    g_dirty.width = width;
+    g_dirty.height = height;
+    return;
+  }
+  uint32_t right = g_dirty.x + g_dirty.width;
+  uint32_t bottom = g_dirty.y + g_dirty.height;
+  if (x + width > right) right = x + width;
+  if (y + height > bottom) bottom = y + height;
+  if (x < g_dirty.x) g_dirty.x = x;
+  if (y < g_dirty.y) g_dirty.y = y;
+  g_dirty.width = right - g_dirty.x;
+  g_dirty.height = bottom - g_dirty.y;
+}
+
 static void fb_rect(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
                     uint32_t color) {
   if (g_framebuffer.pixels == 0 || x >= g_framebuffer.width ||
@@ -161,6 +197,11 @@ static void fb_rect(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
         &g_framebuffer.pixels[(uint64_t)(y + row) * g_framebuffer.stride + x];
     for (uint32_t column = 0U; column < width; ++column) pixel[column] = color;
   }
+  /* Marked here rather than at each caller: every drawing primitive in this
+     file reaches the buffer through this function, so one mark covers them
+     all and none can be forgotten. The exception is term_scroll, which moves
+     pixels rather than painting them and marks its own region. */
+  fb_mark_dirty(x, y, width, height);
 }
 
 static uint32_t glyph_index(char value) {
@@ -250,6 +291,9 @@ static void fb_ipv6(uint32_t x, uint32_t y, const xaios_ip_addr_t *address,
   }
 }
 
+/* Whether anything has been drawn over the display's initial contents yet. */
+static uint32_t g_status_painted;
+
 static void fb_draw_status(uint32_t percent, const char *loaded,
                            const char *loading, uint32_t remaining) {
   if (g_framebuffer.pixels == 0) return;
@@ -262,7 +306,18 @@ static void fb_draw_status(uint32_t percent, const char *loaded,
   uint32_t bar_width = g_framebuffer.width - margin * 2U;
   if (bar_width > FB_BAR_MAX_WIDTH) bar_width = FB_BAR_MAX_WIDTH;
   const uint32_t bar_y = margin + 28U;
-  fb_rect(0U, 0U, g_framebuffer.width, g_framebuffer.height, fb_color(0U, 0U, 0U));
+  /* The first draw clears the whole screen, because whatever the display held
+     before the kernel claimed it is not ours. After that only the band the
+     status occupies is repainted: clearing the rest each time would dirty the
+     entire framebuffer and force a full-screen transfer to the device for a
+     progress bar that moves a few pixels. Nothing else draws here during
+     boot, so the band is the whole of what changes. */
+  uint32_t band = bar_y + 88U + FB_GLYPH_HEIGHT * FB_GLYPH_Y_SCALE + 4U;
+  if (band > g_framebuffer.height || g_status_painted == 0U) {
+    band = g_framebuffer.height;
+  }
+  g_status_painted = 1U;
+  fb_rect(0U, 0U, g_framebuffer.width, band, fb_color(0U, 0U, 0U));
   fb_text(margin, margin, "XAI", purple);
   fb_text(margin + 36U, margin, "OS", cyan);
   fb_rect(margin, bar_y, bar_width, 10U, dim);
@@ -396,6 +451,10 @@ static void term_scroll(void) {
         &g_framebuffer.pixels[(uint64_t)(y + shift) * stride];
     for (uint32_t x = 0U; x < g_framebuffer.width; ++x) destination[x] = source[x];
   }
+  /* Everything from the top margin down moved, and the strip below is repainted
+     by the fb_rect that follows, which marks itself. */
+  fb_mark_dirty(0U, TERM_MARGIN_Y, g_framebuffer.width,
+                g_framebuffer.height - TERM_MARGIN_Y);
   fb_rect(0U, g_framebuffer.height - shift, g_framebuffer.width, shift,
           term_background());
 }
@@ -621,11 +680,14 @@ uint32_t boot_ui_has_framebuffer(void) {
 /* How to make what was drawn visible, for a device that copies on demand
    rather than scanning memory continuously. Held as a callback so this file
    stays independent of which device supplied the buffer. */
-static xaios_status_t (*g_present)(void);
+static xaios_status_t (*g_present)(uint32_t x, uint32_t y, uint32_t width,
+                                   uint32_t height);
 
 void boot_ui_adopt_framebuffer(uint32_t *pixels, uint32_t width,
                                uint32_t height,
-                               xaios_status_t (*present)(void)) {
+                               xaios_status_t (*present)(uint32_t x, uint32_t y,
+                                                         uint32_t width,
+                                                         uint32_t height)) {
   if (pixels == 0 || width == 0U || height == 0U) return;
   g_present = present;
   g_framebuffer.pixels = (volatile uint32_t *)pixels;
@@ -637,9 +699,14 @@ void boot_ui_adopt_framebuffer(uint32_t *pixels, uint32_t width,
        height);
 }
 
-/* Drawing into the buffer changes nothing a viewer can see until this runs. */
+/* Drawing into the buffer changes nothing a viewer can see until this runs.
+   Only the region drawn since the last call is sent, and a call with nothing
+   drawn does not reach the device at all. */
 static void fb_present(void) {
-  if (g_present != 0) (void)g_present();
+  if (g_present == 0 || g_dirty.width == 0U) return;
+  (void)g_present(g_dirty.x, g_dirty.y, g_dirty.width, g_dirty.height);
+  g_dirty.width = 0U;
+  g_dirty.height = 0U;
 }
 
 void boot_ui_console_write(const char *text, uint64_t length) {

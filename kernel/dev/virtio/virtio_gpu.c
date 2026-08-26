@@ -302,17 +302,50 @@ static xaios_status_t set_scanout(void) {
   return submit(sizeof(*request), sizeof(virtio_gpu_ctrl_header_t));
 }
 
-xaios_status_t virtio_gpu_present(void) {
+/* Copy one region of the guest buffer into the host's resource and show it.
+   The region is what changed since the last call, not the whole screen: the
+   device copies on demand, so a full-screen transfer to repaint one glyph
+   moves the entire buffer -- 4 MiB at 1280x800 -- for a few hundred bytes of
+   change. A caller that asks for nothing is a caller with nothing to show.
+
+   The rectangle is clamped rather than rejected. A region partly off-screen is
+   a drawing bug in the caller, not a reason to leave the display stale, and
+   the device would reject the command outright. */
+/* What the region tracking is worth, counted rather than assumed: how many
+   pixels were actually sent, against how many a whole-screen flush per present
+   would have sent. Reported once at handoff to userspace. */
+static uint64_t g_pixels_sent;
+static uint64_t g_presents;
+
+void virtio_gpu_report_transfer_cost(void) {
+  if (g_gpu == 0 || g_gpu->initialized == 0U || g_presents == 0U) return;
+  uint64_t whole_screen = g_presents * (uint64_t)g_gpu->width * g_gpu->height;
+  klog("virtio-gpu: presents=%lu pixels_sent=%lu whole_screen_would_be=%lu\n",
+       g_presents, g_pixels_sent, whole_screen);
+}
+
+xaios_status_t virtio_gpu_present(uint32_t x, uint32_t y, uint32_t width,
+                                  uint32_t height) {
   if (g_gpu == 0 || g_gpu->initialized == 0U) return XAIOS_ERR_UNSUPPORTED;
+  if (x >= g_gpu->width || y >= g_gpu->height) return XAIOS_ERR_INVALID;
+  if (width > g_gpu->width - x) width = g_gpu->width - x;
+  if (height > g_gpu->height - y) height = g_gpu->height - y;
+  if (width == 0U || height == 0U) return XAIOS_OK;
   xaios_spin_lock(&g_gpu->lock);
+  ++g_presents;
+  g_pixels_sent += (uint64_t)width * height;
 
   virtio_gpu_transfer_to_host_2d_t *transfer =
       (virtio_gpu_transfer_to_host_2d_t *)g_gpu->request;
   bytes_zero(transfer, sizeof(*transfer));
   transfer->header.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
-  transfer->rect.width = g_gpu->width;
-  transfer->rect.height = g_gpu->height;
-  transfer->offset = 0U;
+  transfer->rect.x = x;
+  transfer->rect.y = y;
+  transfer->rect.width = width;
+  transfer->rect.height = height;
+  /* Where this rectangle's first pixel sits in the backing, which is linear at
+     the full scanout width whatever the rectangle is. */
+  transfer->offset = ((uint64_t)y * g_gpu->width + x) * 4U;
   transfer->resource_id = VIRTIO_GPU_RESOURCE_ID;
   xaios_status_t status =
       submit(sizeof(*transfer), sizeof(virtio_gpu_ctrl_header_t));
@@ -325,8 +358,10 @@ xaios_status_t virtio_gpu_present(void) {
       (virtio_gpu_resource_flush_t *)g_gpu->request;
   bytes_zero(flush, sizeof(*flush));
   flush->header.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
-  flush->rect.width = g_gpu->width;
-  flush->rect.height = g_gpu->height;
+  flush->rect.x = x;
+  flush->rect.y = y;
+  flush->rect.width = width;
+  flush->rect.height = height;
   flush->resource_id = VIRTIO_GPU_RESOURCE_ID;
   status = submit(sizeof(*flush), sizeof(virtio_gpu_ctrl_header_t));
   xaios_spin_unlock(&g_gpu->lock);

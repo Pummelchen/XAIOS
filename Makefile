@@ -62,6 +62,12 @@ vz-harness:
 
 # The gate reads the kernel log, which boot_ui silences on a quiet boot, so it
 # builds a verbose image rather than depending on the default one.
+# Boot by hand, with every volume refreshed first. Attaching a volume older
+# than the last build can boot the kernel that volume carries instead of the
+# one just built, silently. See platform/virtualization-framework/run-vz.sh.
+vz-run: vz-harness
+	./platform/virtualization-framework/run-vz.sh $(VZ_RUN_ARGS)
+
 vz-gate: vz-harness
 	XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
 	python3 ./tests/scripts/vz-gate.py
