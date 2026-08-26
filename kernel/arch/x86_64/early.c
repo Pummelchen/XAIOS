@@ -365,6 +365,14 @@ uint32_t smp_online_count(void) {
   }
   return online == 0U ? 1U : online;
 }
+
+/* x86_64 has no equivalent of the window this guards on AArch64: long mode
+ * requires paging, so a secondary is never running with translation off, and
+ * every CPU that is online already agrees on the memory attributes. Online is
+ * therefore the right question here, and this just answers it in the shape the
+ * lock asks for. */
+uint32_t smp_locking_active(void) { return smp_online_count() > 1U ? 1U : 0U; }
+
 #endif
 
 uint64_t x86_64_platform_tsc(void) { return rdtsc(); }

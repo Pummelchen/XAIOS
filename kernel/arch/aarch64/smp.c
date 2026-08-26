@@ -80,6 +80,30 @@ static uint64_t psci_cpu_on(uint64_t mpidr, uint64_t entry, uint64_t context,
 static uint32_t g_online_count; /* cached for O(1) reads */
 static uint32_t g_secondary_scheduler_release;
 
+/* Whether more than one CPU is running kernel code under the kernel's own
+ * translation tables -- which is a different question from how many CPUs are
+ * online, and it is the one a lock has to ask.
+ *
+ * A secondary publishes online=1 while its MMU is still off, and stays that
+ * way until it is released below. During that window it is not in kernel code
+ * and takes no locks: it spins on one plain acquire load. But it does view
+ * every address as Device memory, because that is what translation being off
+ * means, while the boot CPU views the same addresses as Normal cacheable. An
+ * exclusive or atomic on a location that different PEs see under mismatched
+ * attributes is not architecturally supported, and a platform is entitled to
+ * refuse it -- VMware Fusion does, with DFSC 0b110101, which is what stopped
+ * XAIOS running more than one vCPU there. QEMU and Apple's hypervisor permit
+ * it, so the defect was invisible on both.
+ *
+ * Set before the release store, so the switch to real atomics happens while
+ * the boot CPU is still the only one running: no CPU can be part-way through
+ * the cheap path when another starts using the expensive one. */
+static uint32_t g_smp_locking_active;
+
+uint32_t smp_locking_active(void) {
+  return __atomic_load_n(&g_smp_locking_active, __ATOMIC_ACQUIRE);
+}
+
 static uint32_t count_online(void) {
   return g_online_count;
 }
@@ -424,6 +448,7 @@ void smp_init_platform(const xaios_boot_info_t *boot) {
   xaios_spin_init(&g_smp_lock);
   g_online_count = 0;
   g_secondary_scheduler_release = 0;
+  g_smp_locking_active = 0U;
 
   g_cpu_states[0].online = 1;
   g_cpu_states[0].mpidr = boot_mpidr;
@@ -488,6 +513,10 @@ void smp_init_platform(const xaios_boot_info_t *boot) {
 }
 
 xaios_status_t smp_release_secondary_schedulers(void) {
+  /* Locks become real atomics from here, before anything else can run: past
+   * this point every CPU that reaches kernel code activates the kernel's
+   * translation first, so all of them agree the memory is Normal cacheable. */
+  __atomic_store_n(&g_smp_locking_active, 1U, __ATOMIC_RELEASE);
   __atomic_store_n(&g_secondary_scheduler_release, 1U, __ATOMIC_RELEASE);
   /* The secondaries waiting on this still have translation off, so they read
    * it from memory and never from the caches this store lands in. They spin

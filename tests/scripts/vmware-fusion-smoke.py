@@ -37,11 +37,23 @@ BOOT_MARKERS = [
     "ahci: ready pci=",
     "mutable-fs: persistent mounted v5",
     "kernel: persistent network stack enabled device=e1000e",
-    "telemetry: boot_summary cpu_online=1",
     "kernel: starting persistent /bin/sshd service",
     READY_MARKER,
 ]
 FATAL_MARKERS = ["System halted", "assertion failed", "CYAN SCREEN OF DEATH"]
+# The boot summary used to be matched as the literal "cpu_online=1", which was
+# true only while Fusion was restricted to one vCPU and silently stopped
+# matching anything the moment that restriction lifted -- the guest booted
+# perfectly and the gate reported it never became ready. Read the number the
+# profile actually asks for and require the guest to report that many.
+CPU_ONLINE_PATTERN = re.compile(r"telemetry: boot_summary cpu_online=(\d+)")
+
+
+def configured_vcpus() -> int:
+    for line in VMX.read_text(encoding="utf-8").splitlines():
+        if line.strip().startswith("numvcpus"):
+            return int(line.split("=", 1)[1].strip().strip('"'))
+    return 1
 IPV4_PATTERN = re.compile(r"^IPv4: ([0-9]{1,3}(?:\.[0-9]{1,3}){3})$", re.MULTILINE)
 
 
@@ -122,6 +134,14 @@ def wait_for_boot(after_ready_count: int) -> tuple[str, str]:
             raise RuntimeError(f"Fusion guest reported fatal markers {fatal!r}\n{serial_tail()}")
         if output.count(READY_MARKER) > after_ready_count:
             missing = [marker for marker in BOOT_MARKERS if marker not in output]
+            expected_cpus = configured_vcpus()
+            reported = [int(count) for count in CPU_ONLINE_PATTERN.findall(output)]
+            if not reported:
+                missing.append("telemetry: boot_summary cpu_online=")
+            elif reported[-1] != expected_cpus:
+                missing.append(
+                    f"boot summary reported cpu_online={reported[-1]}, "
+                    f"but the profile asks for {expected_cpus}")
             addresses = IPV4_PATTERN.findall(output)
             if not missing and addresses:
                 return addresses[-1], output

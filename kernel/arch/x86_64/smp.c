@@ -99,6 +99,13 @@ xaios_status_t smp_set_scheduling_enabled(uint32_t cpu_id, uint32_t enabled) {
 
 uint32_t smp_online_count(void) { return g_online == 0U ? 1U : g_online; }
 uint32_t smp_capacity(void) { return g_capacity == 0U ? 1U : g_capacity; }
+/* x86_64 has no equivalent of the window this guards on AArch64: long mode
+ * requires paging, so a secondary is never running with translation off, and
+ * every CPU that is online already agrees on the memory attributes. Online is
+ * therefore the right question here, and this just answers it in the shape the
+ * lock asks for. */
+uint32_t smp_locking_active(void) { return smp_online_count() > 1U ? 1U : 0U; }
+
 
 xaios_status_t smp_bootstrap_reserved_range(uint64_t *start, uint64_t *end) {
   if (start == 0 || end == 0 || x86_64_platform_bootstrap_start() == 0U ||

@@ -16,6 +16,13 @@
 /* Forward declaration — defined in smp.c */
 extern uint32_t smp_online_count(void);
 
+/* Whether more than one CPU is executing kernel code under the kernel's own
+   translation tables. Not the same as how many are online: a CPU brought up
+   but still waiting with translation off is online, sees memory as Device
+   rather than Normal cacheable, and makes an atomic on shared memory
+   unsupported rather than merely contended. See kernel/arch/aarch64/smp.c. */
+extern uint32_t smp_locking_active(void);
+
 /* Whether translation is on, defined in the architecture's MMU code.
  *
  * Exclusives are architecturally unsupported on Device memory, and with the
@@ -45,7 +52,7 @@ static inline void xaios_spin_init(xaios_spinlock_t *lock) {
 }
 
 static inline void xaios_spin_lock(xaios_spinlock_t *lock) {
-  if (smp_online_count() <= 1 || xaios_translation_enabled() == 0U) {
+  if (smp_locking_active() == 0U || xaios_translation_enabled() == 0U) {
     /* One core, or no translation yet: plain memory operations, because an
        exclusive monitor needs either neither or both. */
     lock->guard = 1;
@@ -72,7 +79,7 @@ static inline void xaios_spin_unlock(xaios_spinlock_t *lock) {
 
 /* Non-blocking try-lock. Returns 1 on success, 0 if already held. */
 static inline int xaios_spin_trylock(xaios_spinlock_t *lock) {
-  if (smp_online_count() <= 1 || xaios_translation_enabled() == 0U) {
+  if (smp_locking_active() == 0U || xaios_translation_enabled() == 0U) {
     if (lock->guard != 0) {
       return 0;
     }
@@ -107,7 +114,7 @@ static inline void xaios_spin_unlock_guard(xaios_spinlock_t *lock) {
 }
 
 static inline int xaios_spin_held(xaios_spinlock_t *lock) {
-  if (smp_online_count() <= 1) {
+  if (smp_locking_active() == 0U) {
     return __atomic_load_n(&lock->guard, __ATOMIC_RELAXED) != 0U;
   }
   return __atomic_load_n(&lock->serve, __ATOMIC_RELAXED) !=

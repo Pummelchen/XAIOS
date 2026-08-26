@@ -27,6 +27,7 @@ void klog(const char *fmt, ...) { (void)fmt; }
    one CPU, translation on -- which is the configuration these tests run in. */
 uint32_t smp_online_count(void) { return 1U; }
 uint32_t xaios_translation_enabled(void) { return 1U; }
+uint32_t smp_locking_active(void) { return 0U; }
 void panic_at(const char *file, int line, const char *fmt, ...) {
   (void)fmt;
   fprintf(stderr, "panic at %s:%d\n", file, line);

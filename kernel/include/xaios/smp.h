@@ -39,6 +39,7 @@ xaios_status_t smp_release_secondary_schedulers(void);
 const xaios_cpu_state_t *smp_cpu_state(uint32_t cpu_id);
 xaios_status_t smp_set_scheduling_enabled(uint32_t cpu_id, uint32_t enabled);
 uint32_t smp_online_count(void);
+uint32_t smp_locking_active(void);
 uint32_t smp_capacity(void);
 xaios_status_t smp_bootstrap_reserved_range(uint64_t *start, uint64_t *end);
 xaios_status_t smp_cpu_id_at(uint32_t ordinal, uint32_t *cpu_id);

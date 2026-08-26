@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import re
 from pathlib import Path
 
 
@@ -50,8 +51,14 @@ def main() -> int:
     vmx = (ROOT / "platform/vmware-fusion/XAIOS.vmx.in").read_text(
         encoding="utf-8"
     )
-    if 'numvcpus = "1"' not in vmx:
-        failures.append("Fusion VMX must remain an explicit one-vCPU profile")
+    # This used to require exactly one vCPU, which was right while F-01 stood:
+    # a secondary published itself online with its MMU still off, the boot CPU
+    # started using real atomics, and Fusion refused an exclusive on memory
+    # whose attributes disagreed between CPUs. That is fixed, so the rule is no
+    # longer "one" but "stated": the profile must say how many vCPUs it asks
+    # for, in a form the smoke gate can read back and hold the guest to.
+    if not re.search(r'^numvcpus = "\d+"$', vmx, re.MULTILINE):
+        failures.append("Fusion VMX must state numvcpus explicitly")
     if failures:
         print("firmware-profiles-check: failed")
         for failure in failures:

@@ -18,7 +18,7 @@ uefi.secureBoot.enabled = "FALSE"
 # changed nothing. The refusal is therefore Fusion's, not XAIOS's, and the guest
 # cannot see or change it. See F-01. Raise this to reproduce; leave it at one
 # for a profile that passes.
-numvcpus = "1"
+numvcpus = "4"
 memsize = "2048"
 sata0.present = "TRUE"
 sata0:0.present = "TRUE"
