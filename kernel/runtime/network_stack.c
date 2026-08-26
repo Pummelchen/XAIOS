@@ -317,6 +317,28 @@ static void network_lock(void) {
 
 static void network_unlock(void) { xaios_reentrant_unlock(&g_network_guard); }
 
+/* C-02/C-03: the listener registry gets its own guard.
+ *
+ * Binding and closing a socket does nothing but add or remove a row here, and
+ * measurement showed those operations costing 97us alone and 437us with four
+ * threads, with wall time flat from four threads to eight -- the whole stack
+ * serialised to mutate one array. The registry is a leaf: register and
+ * unregister walk it and call nothing, so a guard of its own cannot invert
+ * against anything.
+ *
+ * Order where both are held: the network guard first, then this one. The
+ * receive path and flow teardown already hold the network guard when they look
+ * a listener up; nothing takes this one and then reaches for the network guard.
+ */
+static xaios_reentrant_lock_t g_listener_guard = XAIOS_REENTRANT_LOCK_INIT;
+
+static void listener_lock(void) {
+  xaios_reentrant_lock(&g_listener_guard, smp_cpu_id());
+}
+
+static void listener_unlock(void) { xaios_reentrant_unlock(&g_listener_guard); }
+
+
 /* The resolver lives inside this stack and must share its guard; see the
    declaration in network_stack.h. */
 void network_stack_lock(void) { network_lock(); }
@@ -825,9 +847,10 @@ static network_listener_ex_t *find_listener_by_socket(uint64_t sockfd,
 static int listener_enqueue_backlog(uint16_t port, uint32_t flow_id,
                                      uint32_t peer_ip, uint16_t peer_port,
                                      const xaios_ip_addr_t *peer_addr) {
+  listener_lock();
   network_listener_ex_t *l = find_listener_ex(port, NETWORK_IP_PROTO_TCP);
-  if (!l) return 0;
-  if (l->backlog_count >= NETWORK_LISTENER_BACKLOG) return 0;
+  if (!l) { listener_unlock(); return 0; }
+  if (l->backlog_count >= NETWORK_LISTENER_BACKLOG) { listener_unlock(); return 0; }
   listener_accept_entry_t *e = &l->backlog[l->backlog_count++];
   e->flow_id = flow_id;
   e->peer_ip = peer_ip;
@@ -837,15 +860,17 @@ static int listener_enqueue_backlog(uint16_t port, uint32_t flow_id,
   e->local_port = port;
   e->payload_len = 0;
   e->active = 1;
-  return 1;
+  { listener_unlock(); return 1; }
+  listener_unlock();
 }
 
 static int listener_dequeue_backlog(uint16_t port, uint32_t *out_flow_id,
                                      uint32_t *out_peer_ip,
                                      uint16_t *out_peer_port,
                                      xaios_ip_addr_t *out_peer_addr) {
+  listener_lock();
   network_listener_ex_t *l = find_listener_ex(port, NETWORK_IP_PROTO_TCP);
-  if (!l || l->backlog_count == 0) return 0;
+  if (!l || l->backlog_count == 0) { listener_unlock(); return 0; }
   listener_accept_entry_t *e = &l->backlog[0];
   if (out_flow_id) *out_flow_id = e->flow_id;
   if (out_peer_ip) *out_peer_ip = e->peer_ip;
@@ -854,20 +879,22 @@ static int listener_dequeue_backlog(uint16_t port, uint32_t *out_flow_id,
   for (uint32_t i = 1; i < l->backlog_count; ++i)
     l->backlog[i - 1] = l->backlog[i];
   l->backlog_count--;
-  return 1;
+  { listener_unlock(); return 1; }
+  listener_unlock();
 }
 
 static int udp_listener_enqueue(uint16_t port, uint32_t flow_id,
                                 uint16_t peer_port,
                                 const xaios_ip_addr_t *peer_addr,
                                 uint16_t payload_len) {
+  listener_lock();
   network_listener_ex_t *listener =
       find_listener_ex(port, NETWORK_IP_PROTO_UDP);
   if (listener == 0) {
-    return 0;
+    { listener_unlock(); return 0; }
   }
   if (listener->backlog_count >= NETWORK_LISTENER_BACKLOG) {
-    return 0;
+    { listener_unlock(); return 0; }
   }
   listener_accept_entry_t *entry =
       &listener->backlog[listener->backlog_count++];
@@ -878,7 +905,8 @@ static int udp_listener_enqueue(uint16_t port, uint32_t flow_id,
   entry->local_port = port;
   entry->payload_len = payload_len;
   entry->active = 1;
-  return 1;
+  { listener_unlock(); return 1; }
+  listener_unlock();
 }
 
 static uint16_t read_u16_be(const uint8_t *bytes) {
@@ -2190,6 +2218,9 @@ xaios_status_t network_stack_process_udp_frame(const uint8_t *frame,
     for (uint32_t i = 4U; i < 16U; ++i) {
       peer_addr.addr[i] = 0;
     }
+    /* The row stays live for the length of this block, so the registry guard
+       covers the use and not merely the lookup. */
+    listener_lock();
     network_listener_ex_t *listener =
         find_listener_ex(dst_port, NETWORK_IP_PROTO_UDP);
     if (listener != 0) {
@@ -2198,11 +2229,13 @@ xaios_status_t network_stack_process_udp_frame(const uint8_t *frame,
           sockbuf_write(flow->rx_buf, udp_payload, data_len) != data_len ||
           !udp_listener_enqueue(dst_port, flow->flow_id, src_port, &peer_addr,
                                 (uint16_t)data_len)) {
+        listener_unlock();
         ++g_udp_dropped_count;
         packet_mark_dropped(packet);
         return XAIOS_ERR_BUSY;
       }
     }
+    listener_unlock();
   }
   
   packet_mark_tx(packet);
@@ -2521,9 +2554,9 @@ static void network_stack_register_listener_unlocked(uint16_t port, uint64_t soc
 }
 
 void network_stack_register_listener(uint16_t port, uint64_t sockfd) {
-  network_lock();
+  listener_lock();
   network_stack_register_listener_unlocked(port, sockfd);
-  network_unlock();
+  listener_unlock();
 }
 
 static void network_stack_register_udp_listener_unlocked(uint16_t port, uint64_t sockfd) {
@@ -2541,9 +2574,9 @@ static void network_stack_register_udp_listener_unlocked(uint16_t port, uint64_t
 }
 
 void network_stack_register_udp_listener(uint16_t port, uint64_t sockfd) {
-  network_lock();
+  listener_lock();
   network_stack_register_udp_listener_unlocked(port, sockfd);
-  network_unlock();
+  listener_unlock();
 }
 
 static void network_stack_unregister_listener_unlocked(uint16_t port) {
@@ -2558,9 +2591,9 @@ static void network_stack_unregister_listener_unlocked(uint16_t port) {
 }
 
 void network_stack_unregister_listener(uint16_t port) {
-  network_lock();
+  listener_lock();
   network_stack_unregister_listener_unlocked(port);
-  network_unlock();
+  listener_unlock();
 }
 
 static void network_stack_unregister_udp_listener_unlocked(uint16_t port) {
@@ -2575,13 +2608,16 @@ static void network_stack_unregister_udp_listener_unlocked(uint16_t port) {
 }
 
 void network_stack_unregister_udp_listener(uint16_t port) {
-  network_lock();
+  listener_lock();
   network_stack_unregister_udp_listener_unlocked(port);
-  network_unlock();
+  listener_unlock();
 }
 
 int network_stack_has_listener(uint16_t port) {
-  return find_listener_ex(port, NETWORK_IP_PROTO_TCP) != 0;
+  listener_lock();
+  int found = find_listener_ex(port, NETWORK_IP_PROTO_TCP) != 0;
+  listener_unlock();
+  return found;
 }
 
 /* ---- Accept Queue Functions ---- */
@@ -2877,11 +2913,12 @@ static uint32_t network_stack_udp_recv_unlocked(uint64_t sockfd, uint8_t *buffer
                                 xaios_ip_addr_t *source_addr,
                                 uint16_t *source_port,
                                 uint32_t *flow_id) {
+  listener_lock();
   network_listener_ex_t *listener =
       find_listener_by_socket(sockfd, NETWORK_IP_PROTO_UDP);
   if (listener == 0 || listener->backlog_count == 0 || buffer == 0 ||
       buffer_size == 0) {
-    return 0;
+    { listener_unlock(); return 0; }
   }
 
   listener_accept_entry_t entry = listener->backlog[0];
@@ -2912,11 +2949,18 @@ static uint32_t network_stack_udp_recv_unlocked(uint64_t sockfd, uint8_t *buffer
       if (flow_id != 0) {
         *flow_id = entry.flow_id;
       }
-      network_stack_map_socket(sockfd, entry.flow_id, NETWORK_IP_PROTO_UDP);
-      return bytes_read;
+      /* The unlocked variant: this function already runs under the network
+         guard, and calling the public wrapper from here would take that guard
+         from inside a listener-guard section, inverting the order the two
+         guards are documented to keep. Reentrancy hid this while there was
+         only one guard. */
+      network_stack_map_socket_unlocked(sockfd, entry.flow_id,
+                                        NETWORK_IP_PROTO_UDP);
+      { listener_unlock(); return bytes_read; }
     }
   }
-  return 0;
+  { listener_unlock(); return 0; }
+  listener_unlock();
 }
 
 uint32_t network_stack_udp_recv(uint64_t sockfd, uint8_t *buffer,
@@ -3383,6 +3427,8 @@ xaios_status_t network_stack_process_udp_frame_v6(const uint8_t *frame,
     /* IPv6 header is 40 bytes at offset 14 */
     const uint8_t *udp_payload = frame + 14U + 40U + 8U;
     uint32_t data_len = (uint32_t)(payload_len - 8U);
+    /* Same as the IPv4 path: the row is live for this whole block. */
+    listener_lock();
     network_listener_ex_t *listener =
         find_listener_ex(dst_port, NETWORK_IP_PROTO_UDP);
     if (listener != 0) {
@@ -3391,11 +3437,13 @@ xaios_status_t network_stack_process_udp_frame_v6(const uint8_t *frame,
           sockbuf_write(flow->rx_buf, udp_payload, data_len) != data_len ||
           !udp_listener_enqueue(dst_port, flow->flow_id, src_port, &src_addr,
                                 (uint16_t)data_len)) {
+        listener_unlock();
         ++g_udp_dropped_count;
         packet_mark_dropped(packet);
         return XAIOS_ERR_BUSY;
       }
     }
+    listener_unlock();
   }
   
   packet_mark_tx(packet);
