@@ -74,7 +74,6 @@ static void report(const char *reason) {
 
 static void relay_to_socket(void) {
     for (;;) {
-        if (g_socket < 0) return;
         char buffer[65550];
         struct iovec iov = {buffer, (size_t)g_max_packet};
         struct vmpktdesc packet = {0};
@@ -92,6 +91,15 @@ static void relay_to_socket(void) {
             return;
         }
         ++g_from_vmnet;
+        /* Read first, then decide. Returning early when no machine is attached
+           left the packet sitting in vmnet's queue, so the event never cleared
+           and the callback fired again immediately: the helper held a core busy
+           for as long as anything was on the network, with its counters frozen
+           because nothing was ever read. A frame with nowhere to go is dropped
+           here, which is what an unattached interface should do anyway. */
+        if (g_socket < 0) {
+            continue;
+        }
         if (send(g_socket, buffer, packet.vm_pkt_size, 0) < 0) {
             ++g_send_errors;
             if (g_send_errors <= 3UL) {
