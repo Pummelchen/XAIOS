@@ -33,6 +33,15 @@ TARGETS = [
     "threads: concurrent group complete",
     "/bin/smptest: complete",
     "/bin/nettest: complete",
+    # The surface markers, not just the exit codes. An application that exits
+    # zero has not necessarily done its work, and the other three images assert
+    # these by name -- x86_64 was the one checking the weaker thing.
+    "/bin/xaios-shell: command surface passed 1..15",
+    "/bin/systest: syscall and filesystem suite passed",
+    "/bin/sysinfo: complete",
+    "/bin/agenttest: agent protocol dispatch passed",
+    "/bin/posix-shell: pipe and redirect surface passed",
+    "/bin/hello: C toolchain and EL0 runtime integration passed",
     "kernel: /bin/xaios-shell returned to kernel exit_code=0",
     "kernel: /bin/sshtest returned to kernel exit_code=0",
     "kernel: /bin/posix-shell returned to kernel exit_code=0",
@@ -49,6 +58,10 @@ FORBIDDEN = [
     "x86_64: panic:",
     "Triple fault",
     "Cyan Screen of Death",
+    # See tests/scripts/vz-gate.py: a guest in rescue mode reaches a login
+    # prompt and refuses the commands a person would type, so every marker
+    # above can pass while the system is not usable.
+    "rescue=1",
 ]
 
 OR_TARGETS = [
