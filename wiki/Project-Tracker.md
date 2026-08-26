@@ -73,7 +73,7 @@ which the build enforces.
 | Reachable from the host | yes | yes | yes | vmnet helper only, one direction at a time |
 | Multiple vCPUs | yes, 130 gated | yes, 128/256 scenarios | `F-01` one vCPU only (host) | yes, 8/8 |
 | Message-signalled interrupts | distributor | yes | PCI | none; every queue polls (`V-02`) |
-| Framebuffer console | no, serial | no, serial | yes | none published; renders to virtio console |
+| Framebuffer console | no, serial | no, serial | yes | yes when a display device is attached (`--gui`), driven directly over virtio-GPU because firmware publishes none; serial otherwise |
 | USB keyboard input | yes | yes | provisioned, not gated | console input over virtio |
 | Entropy protocol | virtio-rng | virtio-rng | `F-05` none exposed | yes |
 | Storage transport | virtio-MMIO | virtio-PCI, NVMe | AHCI | virtio-PCI |
