@@ -611,11 +611,43 @@ void boot_ui_self_test(void) {
        lit != 0U ? "passed" : "FAILED");
 }
 
+uint32_t boot_ui_has_framebuffer(void) {
+  return g_framebuffer.pixels != 0 ? 1U : 0U;
+}
+
+/* Adopt a framebuffer discovered after the loader handed off. fb_init() only
+   ever saw what firmware published, which on a platform reporting PixelBltOnly
+   is nothing; a virtio-GPU scanout is the same thing arriving later. */
+/* How to make what was drawn visible, for a device that copies on demand
+   rather than scanning memory continuously. Held as a callback so this file
+   stays independent of which device supplied the buffer. */
+static xaios_status_t (*g_present)(void);
+
+void boot_ui_adopt_framebuffer(uint32_t *pixels, uint32_t width,
+                               uint32_t height,
+                               xaios_status_t (*present)(void)) {
+  if (pixels == 0 || width == 0U || height == 0U) return;
+  g_present = present;
+  g_framebuffer.pixels = (volatile uint32_t *)pixels;
+  g_framebuffer.width = width;
+  g_framebuffer.height = height;
+  g_framebuffer.stride = width;
+  g_framebuffer.format = XAIOS_FRAMEBUFFER_BGRX8;
+  klog("boot-ui: adopted a %ux%u framebuffer from the display device\n", width,
+       height);
+}
+
+/* Drawing into the buffer changes nothing a viewer can see until this runs. */
+static void fb_present(void) {
+  if (g_present != 0) (void)g_present();
+}
+
 void boot_ui_console_write(const char *text, uint64_t length) {
   if (g_term_active == 0U || text == 0) return;
   term_erase_cursor();
   for (uint64_t i = 0U; i < length; ++i) term_putc((uint8_t)text[i]);
   term_draw_cursor();
+  fb_present();
 }
 
 void boot_ui_console_text(const char *text) {
@@ -672,6 +704,7 @@ void boot_ui_update(uint32_t percent, const char *loaded,
                     const char *loading, uint32_t remaining) {
   if (percent > 100U) percent = 100U;
   fb_draw_status(percent, loaded, loading, remaining);
+  fb_present();
 #if XAIOS_BOOT_TEST_APPS || XAIOS_BOOT_VERBOSE
   write_text("boot-ui: progress=");
   write_uint(percent);

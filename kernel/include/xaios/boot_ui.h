@@ -2,6 +2,7 @@
 #define XAIOS_BOOT_UI_H
 
 #include <xaios/boot_info.h>
+#include <xaios/status.h>
 #include <xaios/types.h>
 
 #define XAIOS_BOOT_UI_CONTROL_MAGIC UINT32_C(0x58425549)
@@ -32,6 +33,10 @@ uint32_t boot_ui_handle_control(const xaios_boot_ui_control_t *control);
 /* Mirror console bytes onto the framebuffer terminal, once boot hands the
    display over. No-ops when there is no framebuffer or before handover. */
 void boot_ui_console_write(const char *text, uint64_t length);
+uint32_t boot_ui_has_framebuffer(void);
+void boot_ui_adopt_framebuffer(uint32_t *pixels, uint32_t width,
+                               uint32_t height,
+                               xaios_status_t (*present)(void));
 void boot_ui_console_text(const char *text);
 void boot_ui_self_test(void);
 

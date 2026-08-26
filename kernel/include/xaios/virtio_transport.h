@@ -12,6 +12,7 @@
 #define VIRTIO_DEVICE_BLOCK UINT32_C(2)
 #define VIRTIO_DEVICE_CONSOLE UINT32_C(3)
 #define VIRTIO_DEVICE_RNG UINT32_C(4)
+#define VIRTIO_DEVICE_GPU UINT32_C(16)
 
 typedef struct virtq_desc {
   uint64_t addr;

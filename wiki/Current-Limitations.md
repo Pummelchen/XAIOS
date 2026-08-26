@@ -19,8 +19,8 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   and a signed harness, so neither runs in CI and neither is qualification
   evidence. Its firmware describes no GIC ITS, so
   message-signalled interrupts cannot be delivered and every virtio queue runs
-  polled; its GOP is `PixelBltOnly`, so the kernel has no linear framebuffer and
-  renders to the virtio console; and it presents no PL011. Its router advertises
+  polled; its GOP is `PixelBltOnly`, so firmware leaves no linear
+  framebuffer, and the kernel drives the virtio-GPU directly to get one; and it presents no PL011. Its router advertises
   a unique-local IPv6 prefix, so the address configured there is unique-local
   rather than globally routable.
 - A guest on Apple Virtualization.framework is reachable from the host only over

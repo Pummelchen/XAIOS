@@ -495,6 +495,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/e1000e.o
   $KERNEL_BUILD_DIR/net_device.o
   $KERNEL_BUILD_DIR/virtio_rng.o
+  $KERNEL_BUILD_DIR/virtio_gpu.o
   $KERNEL_BUILD_DIR/virtio_console.o
   $KERNEL_BUILD_DIR/arch_random.o
   $KERNEL_BUILD_DIR/entropy.o
@@ -635,6 +636,7 @@ compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_net.c" "$KERNEL_BUILD_DIR/vir
 compile_kernel "$ROOT_DIR/kernel/dev/e1000e.c" "$KERNEL_BUILD_DIR/e1000e.o"
 compile_kernel "$ROOT_DIR/kernel/dev/net_device.c" "$KERNEL_BUILD_DIR/net_device.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_rng.c" "$KERNEL_BUILD_DIR/virtio_rng.o"
+compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_gpu.c" "$KERNEL_BUILD_DIR/virtio_gpu.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_console.c" "$KERNEL_BUILD_DIR/virtio_console.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/arch_random.c" "$KERNEL_BUILD_DIR/arch_random.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/entropy.c" "$KERNEL_BUILD_DIR/entropy.o"

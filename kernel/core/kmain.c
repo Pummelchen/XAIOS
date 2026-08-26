@@ -35,6 +35,7 @@
 #include <xaios/git_workspace.h>
 #include <xaios/klog.h>
 #include <xaios/version.h>
+#include <xaios/virtio_gpu.h>
 #include <xaios/model_arena.h>
 #include <xaios/mutable_fs.h>
 #include <xaios/pmm.h>
@@ -411,6 +412,25 @@ void kmain(const xaios_boot_info_t *boot) {
   xaios_status_t ahci_status = ahci_init();
   if (ahci_status != XAIOS_OK && ahci_status != XAIOS_ERR_NOT_FOUND) {
     klog("ahci: initialization failed status=%d\n", (int)ahci_status);
+  }
+
+  /* V-06: claim a virtio-GPU if the platform has one. A machine whose firmware
+     published a usable framebuffer already has a console and needs nothing
+     here; one that did not -- Apple's hypervisor reports PixelBltOnly with a
+     zero base -- can still have a display, because the device is on the bus
+     even when the protocol to use it died at ExitBootServices. No device, or a
+     disabled scanout, leaves the console exactly where it was. */
+  if (boot_ui_has_framebuffer() == 0U) {
+    xaios_status_t gpu_status = virtio_gpu_init();
+    if (gpu_status == XAIOS_OK) {
+      uint32_t gpu_width = 0U;
+      uint32_t gpu_height = 0U;
+      uint32_t *gpu_pixels = virtio_gpu_framebuffer(&gpu_width, &gpu_height);
+      if (gpu_pixels != 0) {
+        boot_ui_adopt_framebuffer(gpu_pixels, gpu_width, gpu_height,
+                                  virtio_gpu_present);
+      }
+    }
   }
 
   boot_ui_update(49U, "storage discovery", "entropy and boot storage", 3U);
