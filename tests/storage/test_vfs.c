@@ -162,10 +162,13 @@ static const xaios_vfs_backend_ops_t k_mock_ops = {
     mock_path_ok, mock_path_ok, mock_rename,  mock_list,
 };
 
-/* vfs.c serialises its handle table with the kernel ticket lock, whose
-   single-CPU fast path asks how many CPUs are online. The hosted test links
-   only the filesystem translation unit, so provide the one symbol it needs. */
+/* The kernel ticket lock has a fast path for the cases where it cannot or need
+   not spin: one CPU online, or translation still off, where exclusives are
+   unsupported. Both questions are answered by the kernel proper. The hosted
+   test links only the filesystem translation unit, so it answers them here --
+   one CPU, translation on -- which is the configuration these tests run in. */
 uint32_t smp_online_count(void) { return 1U; }
+uint32_t xaios_translation_enabled(void) { return 1U; }
 
 int main(void) {
   mock_fs_t root;

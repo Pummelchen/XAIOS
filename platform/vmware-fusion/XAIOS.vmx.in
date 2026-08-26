@@ -10,9 +10,14 @@ uefi.secureBoot.enabled = "FALSE"
 # generated profile at the one CPU that XAIOS can bring online correctly.
 # One, deliberately. Fusion starts four perfectly well -- PSCI accepts CPU_ON
 # for all of them and they come online -- but the first lock taken after the
-# kernel enables translation aborts with "unsupported exclusive" on ordinary
-# .bss that the tables describe as Normal Inner-Shareable. See F-01. Raise this
-# to reproduce that; leave it at one for a profile that passes.
+# kernel enables translation aborts with "unsupported exclusive or atomic" on
+# ordinary .bss. The stage-1 descriptor for that page was read back rather than
+# assumed: Normal Write-Back, Inner Shareable, access flag set, writable at EL1,
+# with caches on -- the conditions under which atomics are supported. Rebuilding
+# every atomic as an LSE instruction rather than a load/store-exclusive pair
+# changed nothing. The refusal is therefore Fusion's, not XAIOS's, and the guest
+# cannot see or change it. See F-01. Raise this to reproduce; leave it at one
+# for a profile that passes.
 numvcpus = "1"
 memsize = "2048"
 sata0.present = "TRUE"

@@ -20,7 +20,13 @@
    needs. The virtio path is unreachable here: this test mounts a registered
    block device, never the in-image volume. */
 void klog(const char *fmt, ...) { (void)fmt; }
+/* The kernel ticket lock has a fast path for the cases where it cannot or need
+   not spin: one CPU online, or translation still off, where exclusives are
+   unsupported. Both questions are answered by the kernel proper. The hosted
+   test links only the filesystem translation unit, so it answers them here --
+   one CPU, translation on -- which is the configuration these tests run in. */
 uint32_t smp_online_count(void) { return 1U; }
+uint32_t xaios_translation_enabled(void) { return 1U; }
 void panic_at(const char *file, int line, const char *fmt, ...) {
   (void)fmt;
   fprintf(stderr, "panic at %s:%d\n", file, line);

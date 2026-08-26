@@ -1,8 +1,20 @@
 #include "../../kernel/include/xaios/aarch64_acpi.h"
 
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+/* The parser logs one line per CPU it finds, which is how the parking-protocol
+   fields became visible on real firmware. The kernel's klog is not linkable
+   here, so the test supplies one: it goes to stdout, where it documents what
+   the parser saw for anyone reading a failing run. */
+void klog(const char *format, ...) {
+  va_list arguments;
+  va_start(arguments, format);
+  (void)vprintf(format, arguments);
+  va_end(arguments);
+}
 
 static void put32(uint8_t *output, uint32_t value) {
   output[0] = (uint8_t)value;

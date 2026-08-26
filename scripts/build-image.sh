@@ -344,6 +344,14 @@ KERNEL_CFLAGS="
 KERNEL_NO_SIMD_CFLAGS=""
 if [ "$TARGET_ARCH" = aarch64 ]; then
   KERNEL_NO_SIMD_CFLAGS="-mgeneral-regs-only"
+  # No -march bump here. Every atomic therefore compiles to a load-exclusive
+  # and store-exclusive pair rather than an LSE LDADD or CAS. LSE is the better
+  # instruction selection on paper -- one instruction instead of two, and no
+  # retry loop -- but it needs ARMv8.1, and QEMU's default aarch64 CPU model is
+  # ARMv8.0: LDADD does not decode there and the kernel takes an undefined
+  # instruction before it finishes booting. That is the platform every gate
+  # runs on, so the baseline stays at ARMv8.0. Raising it means giving QEMU an
+  # explicit -cpu with LSE across every gate first.
 fi
 if [ "$TARGET_ARCH" = x86_64 ]; then
   KERNEL_CFLAGS="$KERNEL_CFLAGS -mno-red-zone -DXAIOS_X86_COMMON_RUNTIME=1"
