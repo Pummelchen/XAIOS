@@ -120,6 +120,15 @@ esac
 
 machine="${XAIOS_QEMU_MACHINE:-virt}"
 iommu="${XAIOS_QEMU_IOMMU:-none}"
+# Two gibibytes, and not one, for a reason that is arithmetic rather than
+# taste. The kernel is linked at a fixed 0x90000000 (kernel/arch/aarch64/
+# linker.ld), and the three hypervisors do not agree on where usable memory
+# starts: QEMU's begins at 0x40000000, Virtualization.framework's at
+# 0x70000000, VMware Fusion's at 0x80000000. A guest given one gibibyte on
+# QEMU therefore owns [0x40000000, 0x80000000) -- which ends exactly where
+# Fusion's memory begins, so no single fixed link address can sit inside both.
+# Lowering the figure means making the kernel relocatable first. Until then
+# this is the smallest number that boots everywhere.
 memory="${XAIOS_QEMU_MEMORY:-2G}"
 smp="${XAIOS_QEMU_SMP:-4}"
 image="${XAIOS_AARCH64_IMAGE:-build/xaios-aarch64.img}"

@@ -19,6 +19,8 @@ uefi.secureBoot.enabled = "FALSE"
 # cannot see or change it. See F-01. Raise this to reproduce; leave it at one
 # for a profile that passes.
 numvcpus = "4"
+# Two gibibytes: see the note in platform/qemu/run-qemu-aarch64.sh for why
+# one is not currently reachable on all four profiles.
 memsize = "2048"
 sata0.present = "TRUE"
 sata0:0.present = "TRUE"
