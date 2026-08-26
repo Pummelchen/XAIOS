@@ -1,3 +1,4 @@
+#include <xaios/klog.h>
 #include <xaios/aarch64_acpi.h>
 
 #define ACPI_MAX_TABLE_BYTES UINT32_C(0x01000000)
@@ -272,6 +273,14 @@ int aarch64_acpi_cpu_mpidr(const aarch64_acpi_info_t *info,
     }
     if (current++ == ordinal) {
       *mpidr = read_le64(entry + 68U);
+      /* F-01: firmware that does not offer PSCI may still offer the ARM
+         parking protocol, which the GICC entry describes in the two fields
+         below. Reporting them turns "Fusion cannot start secondaries" from an
+         assumption into something the boot log answers. */
+      klog("acpi: cpu%u mpidr=0x%lx parking_version=%u parked_address=0x%lx\n",
+           (unsigned)ordinal, (unsigned long)*mpidr,
+           (unsigned)read_le32(entry + 16U),
+           (unsigned long)read_le64(entry + 24U));
       return 1;
     }
   }

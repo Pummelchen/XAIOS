@@ -90,7 +90,11 @@ cp "$ROOT_DIR/build/kernel/kernel.elf" "$STAGE_DIR/EFI/XAIOS/kernel.elf"
 cp "$ROOT_DIR/build/xaios-virtio-test.img" "$STAGE_DIR/EFI/XAIOS/initfs.img"
 cp "$ENTROPY_SEED" "$STAGE_DIR/EFI/XAIOS/entropy.seed"
 
-dd if=/dev/zero of="$ESP_IMAGE" bs=1m count=16 status=none
+# 16 MiB left no headroom: GRUB is 5.6, the initial filesystem 9.3, and the
+# kernel about 1, so adding one application to the image failed the build with
+# nothing but "Disk full" from mtools. Sized for the contents plus room to grow.
+ESP_MIB="${XAIOS_FUSION_ESP_MIB:-48}"
+dd if=/dev/zero of="$ESP_IMAGE" bs=1m count="$ESP_MIB" status=none
 mformat -i "$ESP_IMAGE" -v XAIOS_ESP ::
 mmd -i "$ESP_IMAGE" ::/EFI ::/EFI/BOOT ::/EFI/XAIOS
 mcopy -i "$ESP_IMAGE" "$GRUB_EFI" ::/EFI/BOOT/BOOTAA64.EFI

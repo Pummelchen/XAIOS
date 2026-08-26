@@ -3,6 +3,11 @@
 #include <xaios/pmm.h>
 #include <xaios/smp.h>
 #include <xaios/vmm.h>
+/* x86_64 enters long mode with paging already on -- there is no untranslated
+   window here -- so exclusives are always legal. The predicate exists because
+   the shared spinlock asks; see kernel/include/xaios/spinlock.h. */
+uint32_t xaios_translation_enabled(void) { return 1U; }
+
 
 #include "platform.h"
 

@@ -16,6 +16,19 @@
 /* Forward declaration — defined in smp.c */
 extern uint32_t smp_online_count(void);
 
+/* Whether translation is on, defined in the architecture's MMU code.
+ *
+ * Exclusives are architecturally unsupported on Device memory, and with the
+ * MMU off every address is Device memory. Firmware differs on where it leaves
+ * the kernel: QEMU and Apple's hypervisor hand off with translation already
+ * enabled, VMware Fusion hands off with it disabled. On Fusion the kernel
+ * therefore runs untranslated until vmm_init, and the moment secondaries came
+ * online the lock below switched from plain operations to exclusives and the
+ * next klog aborted -- inside the very function that would have reported it.
+ * Only the boot CPU is running in that window; the secondaries are parked at
+ * their rendezvous and take no locks. */
+extern uint32_t xaios_translation_enabled(void);
+
 typedef struct xaios_spinlock {
   volatile uint32_t next_ticket;
   volatile uint32_t serve;
@@ -32,8 +45,9 @@ static inline void xaios_spin_init(xaios_spinlock_t *lock) {
 }
 
 static inline void xaios_spin_lock(xaios_spinlock_t *lock) {
-  if (smp_online_count() <= 1) {
-    /* Single-core: use plain memory ops — no exclusive monitors needed */
+  if (smp_online_count() <= 1 || xaios_translation_enabled() == 0U) {
+    /* One core, or no translation yet: plain memory operations, because an
+       exclusive monitor needs either neither or both. */
     lock->guard = 1;
     xaios_cpu_memory_barrier();
     return;
@@ -58,7 +72,7 @@ static inline void xaios_spin_unlock(xaios_spinlock_t *lock) {
 
 /* Non-blocking try-lock. Returns 1 on success, 0 if already held. */
 static inline int xaios_spin_trylock(xaios_spinlock_t *lock) {
-  if (smp_online_count() <= 1) {
+  if (smp_online_count() <= 1 || xaios_translation_enabled() == 0U) {
     if (lock->guard != 0) {
       return 0;
     }

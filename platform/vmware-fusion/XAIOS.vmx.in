@@ -8,6 +8,11 @@ firmware = "efi"
 uefi.secureBoot.enabled = "FALSE"
 # Fusion UEFI does not expose PSCI CPU_ON after ExitBootServices. Keep the
 # generated profile at the one CPU that XAIOS can bring online correctly.
+# One, deliberately. Fusion starts four perfectly well -- PSCI accepts CPU_ON
+# for all of them and they come online -- but the first lock taken after the
+# kernel enables translation aborts with "unsupported exclusive" on ordinary
+# .bss that the tables describe as Normal Inner-Shareable. See F-01. Raise this
+# to reproduce that; leave it at one for a profile that passes.
 numvcpus = "1"
 memsize = "2048"
 sata0.present = "TRUE"

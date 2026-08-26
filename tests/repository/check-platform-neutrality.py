@@ -65,12 +65,24 @@ def main() -> int:
     for path in guarded_sources():
         scanned += 1
         relative = path.relative_to(ROOT)
+        in_block_comment = False
         for number, line in enumerate(
             path.read_text(errors="replace").splitlines(), start=1
         ):
             stripped = line.lstrip()
-            # Comments explain history; they assume nothing.
-            if stripped.startswith(("*", "/*", "//")):
+            # Comments explain history; they assume nothing. Tracking block
+            # state matters: checking only how a line starts flags the middle
+            # of a paragraph that happens to name a hypervisor while explaining
+            # why naming one is wrong, which is a false positive that teaches
+            # people to route around the check.
+            was_in_block = in_block_comment
+            if "/*" in line and "*/" not in line.split("/*", 1)[1]:
+                in_block_comment = True
+            if "*/" in line:
+                in_block_comment = False
+                if was_in_block:
+                    continue
+            if was_in_block or stripped.startswith(("*", "/*", "//")):
                 continue
 
             assumed = ASSUMED_DEFAULT.match(line)

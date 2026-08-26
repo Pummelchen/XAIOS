@@ -1,5 +1,6 @@
 #include <xaios/assert.h>
 #include <xaios/klog.h>
+#include <xaios/spinlock.h>
 #include <xaios/pmm.h>
 #include <xaios/smp.h>
 #include <xaios/vmm.h>
@@ -431,6 +432,21 @@ static void sync_kernel_hierarchy(uint64_t virtual_address) {
         (uint64_t *)(uintptr_t)(root[0] & PTE_ADDR_MASK);
     l1[l1_index] = g_l1_table[l1_index];
   }
+}
+
+/* Ask the hardware, not our own call path.
+ *
+ * A flag set by aarch64_enable_mmu below answers the wrong question: firmware
+ * may have enabled translation before the kernel ever ran, which QEMU and
+ * Apple's hypervisor both do, and secondaries come online before vmm_init. A
+ * flag would have read "off" there while four CPUs were running, and the
+ * spinlock would have quietly used plain loads and stores where it needed
+ * exclusives -- locks that do not lock. SCTLR_EL1.M is the truth on every
+ * platform and costs one system register read. */
+uint32_t xaios_translation_enabled(void) {
+  uint64_t sctlr = 0U;
+  __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+  return (sctlr & UINT64_C(1)) != 0U ? 1U : 0U;
 }
 
 static void aarch64_enable_mmu(uint64_t root_table) {
