@@ -317,26 +317,17 @@ static void network_lock(void) {
 
 static void network_unlock(void) { xaios_reentrant_unlock(&g_network_guard); }
 
-/* C-02/C-03: the listener registry gets its own guard.
- *
- * Binding and closing a socket does nothing but add or remove a row here, and
- * measurement showed those operations costing 97us alone and 437us with four
- * threads, with wall time flat from four threads to eight -- the whole stack
- * serialised to mutate one array. The registry is a leaf: register and
- * unregister walk it and call nothing, so a guard of its own cannot invert
- * against anything.
- *
- * Order where both are held: the network guard first, then this one. The
- * receive path and flow teardown already hold the network guard when they look
- * a listener up; nothing takes this one and then reaches for the network guard.
- */
-static xaios_reentrant_lock_t g_listener_guard = XAIOS_REENTRANT_LOCK_INIT;
+/* The listener registry had its own guard for a while. Measurement on a quiet
+   machine says it bought nothing: socket bind and close cost the same at four
+   and eight threads with one guard or two, and the "socket path does not
+   scale" finding that justified the split turned out to be contention with an
+   unrelated process on the host rather than anything in this stack. A second
+   lock order is a real cost -- it produced an inversion during the work -- so
+   the registry is back under the stack's own guard, and the readers keep the
+   coverage the split gave them. */
+static void listener_lock(void) { network_lock(); }
 
-static void listener_lock(void) {
-  xaios_reentrant_lock(&g_listener_guard, smp_cpu_id());
-}
-
-static void listener_unlock(void) { xaios_reentrant_unlock(&g_listener_guard); }
+static void listener_unlock(void) { network_unlock(); }
 
 
 /* The resolver lives inside this stack and must share its guard; see the
