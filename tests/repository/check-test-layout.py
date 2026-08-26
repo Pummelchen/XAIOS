@@ -34,6 +34,75 @@ RUNTIME_SCRIPTS = {
 }
 
 
+# A path assembled from pieces -- ROOT / "platform" / "qemu" / RUNNER -- does
+# not appear anywhere as the string it resolves to, so moving the file it names
+# leaves the reference behind and grep for the old location finds nothing. That
+# has now happened twice: once across the repository reorganisation, and again
+# in qemu-docker-network-suite.py, which kept building scripts/ after the QEMU
+# runners moved to platform/qemu/ and only failed on a CI job that runs Docker.
+#
+# This resolves the composed paths instead of searching for them, and has to
+# cope with the last component being a variable, because that is exactly what
+# the case above looked like: the directory was a literal and the filename was
+# chosen by architecture. So when the chain ends in a name rather than a
+# string, every script-looking literal in the file is treated as a candidate
+# and at least one of them has to be found in the composed directory. A first
+# version of this check required all components to be literals and passed the
+# very bug it was written for.
+COMPOSED_PATH = re.compile(
+    r"\b(?:ROOT|PROJECT_ROOT|REPO_ROOT)\s*((?:/\s*(?:\"[^\"]+\"|[A-Za-z_][A-Za-z0-9_]*)\s*)+)")
+# Parts in order, so a quoted fragment is never split on a slash it contains:
+# ROOT / "wiki/Testing-XAIOS.md" is one literal, not a literal and a variable.
+COMPOSED_PART = re.compile(r"\"([^\"]+)\"|([A-Za-z_][A-Za-z0-9_]*)")
+SCRIPT_LITERAL = re.compile(r"\"([A-Za-z0-9_.-]+\.(?:sh|py))\"")
+
+
+def check_composed_script_paths() -> list[str]:
+    failures = []
+    sources = sorted(ROOT.glob("tests/**/*.py")) + sorted(ROOT.glob("tools/**/*.py"))
+    for path in sources:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        candidates = set(SCRIPT_LITERAL.findall(text))
+        for match in COMPOSED_PATH.finditer(text):
+            segments = []
+            trailing_variable = False
+            for literal, name in COMPOSED_PART.findall(match.group(1)):
+                if literal:
+                    if trailing_variable:
+                        # A variable in the middle: the rest cannot be resolved.
+                        segments = []
+                        break
+                    segments.extend(part for part in literal.split("/") if part)
+                else:
+                    trailing_variable = True
+            if not segments:
+                continue
+            # Anything under build/ is produced by a build, so its absence in a
+            # clean tree says nothing about the reference being stale.
+            if segments[0] == "build":
+                continue
+            if trailing_variable:
+                directory = ROOT.joinpath(*segments)
+                if not candidates or any((directory / name).exists()
+                                         for name in candidates):
+                    continue
+                failures.append(
+                    f"{path.relative_to(ROOT)}: composed path builds "
+                    f"{'/'.join(segments)}/, where none of the scripts it names "
+                    f"exist: {', '.join(sorted(candidates))}")
+                continue
+            if not segments[-1].endswith((".sh", ".py")):
+                continue
+            if not ROOT.joinpath(*segments).exists():
+                failures.append(
+                    f"{path.relative_to(ROOT)}: composed path names a script "
+                    f"that is not there: {'/'.join(segments)}")
+    return failures
+
+
 def main() -> int:
     failures: list[str] = []
     script_files = {path.name for path in SCRIPTS.iterdir() if path.is_file()}
@@ -115,6 +184,8 @@ def main() -> int:
                 failures.append(
                     f"{path.relative_to(ROOT)}: test image source is outside tests/: {source}"
                 )
+
+    failures.extend(check_composed_script_paths())
 
     required_docs = (TESTS / "README.md", ROOT / "wiki/Testing-XAIOS.md")
     for path in required_docs:

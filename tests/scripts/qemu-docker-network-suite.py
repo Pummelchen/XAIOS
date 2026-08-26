@@ -132,7 +132,7 @@ def start_qemu(
         )
     env.update(extra_env)
     process = subprocess.Popen(
-        [str(ROOT / "scripts" / QEMU_RUNNER)],
+        [str(ROOT / "platform" / "qemu" / QEMU_RUNNER)],
         cwd=ROOT,
         env=env,
         stdin=subprocess.DEVNULL,
