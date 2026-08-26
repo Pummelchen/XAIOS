@@ -74,7 +74,7 @@ vz-run: vz-harness
 	./platform/virtualization-framework/run-vz.sh $(VZ_RUN_ARGS)
 
 vz-gate: vz-harness
-	XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
+	XAIOS_BOOT_VERBOSE=1 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
 	python3 ./tests/scripts/vz-gate.py
 
 # The privileged vmnet relay. It lives in build/, which image builds recreate,

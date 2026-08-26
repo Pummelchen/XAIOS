@@ -4292,14 +4292,27 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
   if (string_equal(cmd, "ls") == 1U) {
     return handle_ls(args, output, output_capacity, output_bytes);
   }
-  if (string_equal(cmd, "l") == 1U) {
-    return handle_ls("-la", output, output_capacity, output_bytes);
-  }
-  if (string_equal(cmd, "ll") == 1U) {
-    return handle_ls("-l", output, output_capacity, output_bytes);
-  }
-  if (string_equal(cmd, "la") == 1U) {
-    return handle_ls("-la", output, output_capacity, output_bytes);
+  if (string_equal(cmd, "l") == 1U || string_equal(cmd, "ll") == 1U ||
+      string_equal(cmd, "la") == 1U) {
+    /* The alias has to carry its argument. This branch used to pass the flags
+       alone -- so "l /" listed the working directory rather than the root, and
+       "ll /tmp" quietly ignored /tmp. The other branch of this #if built the
+       argument string properly, which is how the two configurations came to
+       disagree about what the same command does. */
+    char alias_args[XAIOS_MFS_PATH_MAX];
+    const char *flags = string_equal(cmd, "ll") == 1U ? "-l" : "-la";
+    uint64_t used = cstr_len(flags);
+    if (used + (args[0] != '\0' ? cstr_len(args) + 2U : 1U) >
+        sizeof(alias_args)) {
+      return command_fail(output, output_capacity, output_bytes,
+                          "ls: arguments exceed limit");
+    }
+    (void)copy_cstr(alias_args, sizeof(alias_args), flags);
+    if (args[0] != '\0') {
+      alias_args[used++] = ' ';
+      (void)copy_cstr(alias_args + used, sizeof(alias_args) - used, args);
+    }
+    return handle_ls(alias_args, output, output_capacity, output_bytes);
   }
 #else
   if (string_equal(cmd, "l") == 1U || string_equal(cmd, "ll") == 1U ||

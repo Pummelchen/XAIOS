@@ -40,7 +40,28 @@ BOOT_MARKERS = [
     "kernel: starting persistent /bin/sshd service",
     READY_MARKER,
 ]
-FATAL_MARKERS = ["System halted", "assertion failed", "CYAN SCREEN OF DEATH"]
+# The userspace applications, which until now ran only under QEMU. Fusion and
+# Virtualization.framework booted the same image but built it without the test
+# applications, so everything above the shell's own command surface -- the
+# syscall suite, the network and SMP tests, the agent protocol, the pipe and
+# redirect surface, the control tool -- had never executed on either. A gate
+# that checks a kernel reached a login prompt does not tell you the programs a
+# person will actually run still work there.
+APP_MARKERS = [
+    "/bin/xaios-shell: command surface passed",
+    "/bin/systest: syscall and filesystem suite passed",
+    "/bin/hello: C toolchain and EL0 runtime integration passed",
+    "/bin/sysinfo: complete",
+    "/bin/nettest: complete",
+    "/bin/smptest: complete",
+    "/bin/agenttest: agent protocol dispatch passed",
+    "/bin/posix-shell: pipe and redirect surface passed",
+]
+BOOT_MARKERS.extend(APP_MARKERS)
+FATAL_MARKERS = ["System halted", "assertion failed", "CYAN SCREEN OF DEATH",
+                 # See the note in vz-gate.py: a guest in rescue mode reaches a
+                 # login prompt and refuses the commands a person would type.
+                 "rescue=1"]
 # The boot summary used to be matched as the literal "cpu_online=1", which was
 # true only while Fusion was restricted to one vCPU and silently stopped
 # matching anything the moment that restriction lifted -- the guest booted
@@ -95,6 +116,7 @@ def build_guest() -> None:
     environment = os.environ.copy()
     environment.update({
         "XAIOS_BOOT_VERBOSE": "1",
+        "XAIOS_BOOT_TEST_APPS": "1",
         "XAIOS_AUTHORIZED_KEYS_FILE": str(TEST_KEY_PUBLIC),
     })
     build = run(["./scripts/build-image.sh"], env=environment, timeout=600)

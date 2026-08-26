@@ -44,12 +44,30 @@ EXPECTED = (
     ("IPv6 address configured", re.compile(r"IPv6 address configured from advertised")),
     ("SSH server listening", re.compile(r"SSH server: up and running")),
     ("all four vCPUs online", re.compile(r"smp: online cpus=4/4")),
+    ("shell command surface",
+     re.compile(r"/bin/xaios-shell: command surface passed")),
+    ("syscall and filesystem suite",
+     re.compile(r"/bin/systest: syscall and filesystem suite passed")),
+    ("C toolchain and EL0 runtime",
+     re.compile(r"/bin/hello: C toolchain and EL0 runtime integration passed")),
+    ("system information tool", re.compile(r"/bin/sysinfo: complete")),
+    ("network test application", re.compile(r"/bin/nettest: complete")),
+    ("multi-core test application", re.compile(r"/bin/smptest: complete")),
+    ("agent protocol dispatch",
+     re.compile(r"/bin/agenttest: agent protocol dispatch passed")),
+    ("pipe and redirect surface",
+     re.compile(r"/bin/posix-shell: pipe and redirect surface passed")),
 )
 
 # What it must never say.
 FORBIDDEN = (
     ("kernel panic", re.compile(r"CYAN SCREEN OF DEATH")),
     ("assertion failure", re.compile(r"ERROR: assertion failed")),
+    # Rescue mode is a healthy response to a damaged system and a wrong state
+    # to declare a boot good in: it refuses ordinary commands while still
+    # reaching a login prompt, so every kernel-level marker above can pass
+    # while the applications a person would run do not work.
+    ("booted into rescue mode", re.compile(r"lifecycle initialized[^\n]*rescue=1")),
 )
 
 
@@ -65,8 +83,26 @@ def prepare() -> str | None:
     subprocess.run([str(ROOT / "platform/virtualization-framework/build-vz-disk.sh")], check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     shutil.copy(VZ / "xaios-vz-disk.img", VZ / "run-disk.img")
+    # A fresh durable volume, not a copy of the shared one. The lifecycle
+    # record lives on it -- boot counts, and the marker that puts the system
+    # into rescue mode -- and build/xaios-persistent.img is written by every
+    # QEMU boot as well. Enough hard power-offs across any of those gates and
+    # the marker is set, after which the guest still boots, mounts, gets a
+    # lease and runs sshd, but refuses ordinary commands. Copying that state in
+    # made this gate depend on how many times unrelated gates had run.
+    # The generator declines to overwrite, so remove it first: leaving the old
+    # file in place is exactly the accumulation this is meant to end.
+    (VZ / "vz-persistent.img").unlink(missing_ok=True)
+    subprocess.run([str(ROOT / "scripts/create-persistent-image.sh")],
+                   env={**os.environ,
+                        "XAIOS_PERSISTENT_IMAGE": str(VZ / "vz-persistent.img")},
+                   check=True, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+
     for target, source in VOLUMES:
         destination = VZ / target
+        if target == "vz-persistent.img":
+            continue
         if source is None:
             if not destination.is_file():
                 destination.write_bytes(b"\0" * (16384 * 512))

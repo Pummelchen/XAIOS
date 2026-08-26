@@ -12,6 +12,15 @@ static int shell_run(const char *command, char *output, u64 output_capacity,
   log_command(command);
   if (xaios_remote_login("admin", command, output, output_capacity,
                         &command_out_size) < 0) {
+    /* A rejected command still writes its reason into the output buffer, and
+       throwing that away turned every failure here into the same three words.
+       One divergence between platforms went undiagnosed behind them. */
+    if (output_capacity > 0U && command_out_size != 0U) {
+      u64 effective = command_out_size;
+      if (effective >= output_capacity) effective = output_capacity - 1U;
+      output[effective] = '\0';
+      xaios_log(output);
+    }
     return -1;
   }
   if (out_size != 0) {
