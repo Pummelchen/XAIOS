@@ -79,6 +79,7 @@ which the build enforces.
 | Entropy protocol | virtio-rng | virtio-rng | `F-05` none exposed | yes |
 | Storage transport | virtio-MMIO | virtio-PCI, NVMe | AHCI | virtio-PCI |
 | Network transport | virtio-MMIO | virtio-PCI | E1000E (`F-02` no VMXNET3) | virtio-PCI |
+| Applications gated | yes, by name | yes, by name | yes, by name | yes, by name |
 | Automated gate | full CI | full CI | `make vmware-fusion-smoke` | `make vz-gate`, `make vz-stress-gate` |
 | Evidence class | correctness only | correctness only | Fusion 26H1 lifecycle | development target, not evidence |
 
