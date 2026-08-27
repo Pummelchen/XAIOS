@@ -1,7 +1,7 @@
 # XAIOS build 1
 
 `xaios_b1.iso` — 227,880,960 bytes
-SHA-256 `e778ae7e0b9b09f7d3307af2753ccef267855ed10b3034679a33db499fc0423e`
+SHA-256 `d09aeaa82b05890bc8d0728f297728f652b1c59a3d4c8f6bf3d6448b09f7cc76`
 
 One file. It carries both an AArch64 and an x86-64 kernel, and firmware selects
 the right one. It is an ISO 9660 filesystem and a GPT-partitioned disk at the
