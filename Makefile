@@ -87,6 +87,23 @@ unified-image-gate: unified-image
 local-gates:
 	python3 ./tests/scripts/local-gates.py
 
+# Everything that must be true before this commit is tagged or shipped.
+#
+# CI already proves the part a Linux runner can reach, on every push. What it
+# cannot reach is either hypervisor, so two of the four environments XAIOS
+# names are covered only by make local-gates -- and until this target existed
+# nothing required that to have happened. A release could be cut having been
+# tested on half the platforms it claims.
+#
+# This does not automate the hypervisors. It makes shipping without them a
+# deliberate override rather than an oversight.
+release-check: docs-check
+	python3 ./tests/repository/check-local-gate-record.py
+	@printf '%s\n' "release-check: this commit is verified on all four environments"
+
+local-gate-record-check:
+	python3 ./tests/repository/check-local-gate-record.py
+
 vz-run: vz-harness
 	./platform/virtualization-framework/run-vz.sh $(VZ_RUN_ARGS)
 

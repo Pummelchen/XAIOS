@@ -84,7 +84,7 @@ which the build enforces.
 | Boots the unified image | yes, gated | yes, gated | yes, gated | yes, gated |
 | Automated gate | full CI | full CI | `make vmware-fusion-smoke` | `make vz-gate`, `make vz-stress-gate` |
 | Unified-image gate | `make unified-image-gate` covers all four from one file; CI runs the two QEMU rows and reports the hypervisors as skipped | | | |
-| Verified by | CI, every push | CI, every push | `make local-gates`, by hand | `make local-gates`, by hand |
+| Verified by | CI, every push | CI, every push | `make local-gates`, required by `make release-check` | `make local-gates`, required by `make release-check` |
 | Evidence class | correctness only | correctness only | Fusion 26H1 lifecycle | development target, not evidence |
 
 Device inventory differs because the hypervisors differ; the kernel discovers
