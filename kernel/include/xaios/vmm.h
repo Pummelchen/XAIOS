@@ -15,9 +15,29 @@
 #define XAIOS_VMM_LARGE_PAGE_SIZE UINT64_C(0x200000)
 #define XAIOS_VMM_GIGANTIC_PAGE_SIZE UINT64_C(0x40000000)
 
-#define XAIOS_USER_BASE UINT64_C(0x100000000)
-#define XAIOS_USER_LIMIT UINT64_C(0x140000000)
-#define XAIOS_USER_STACK_TOP UINT64_C(0x13f000000)
+/*
+ * Userspace occupies the last gibibyte this kernel can address, and the
+ * identity map is stopped one gibibyte short of it. That is the whole
+ * arrangement, and it exists because the two used to overlap.
+ *
+ * Userspace began at 4 GiB. The kernel identity-maps physical memory in 1 GiB
+ * blocks, and the per-CPU roots copy that map and then replace the entry
+ * covering this window with the user directory -- so a machine with 4 GiB of
+ * RAM handed the kernel's own 4-5 GiB of physical memory to userspace and lost
+ * it. VMware Fusion faulted at level 1 on the first access to it; QEMU booted
+ * and failed self-tests further in. Nothing was wrong with either platform:
+ * the two address spaces were literally the same addresses, and which machines
+ * noticed depended only on how much RAM they had.
+ *
+ * The kernel walks a single level-0 entry, so everything has to live below
+ * 512 GiB and moving userspace above the identity map is not available. The
+ * top slot is, and vmm_init caps the identity map at XAIOS_USER_BASE, so the
+ * identity map cannot grow into userspace however much memory the machine has
+ * -- the collision is now impossible rather than merely unlikely.
+ */
+#define XAIOS_USER_BASE UINT64_C(0x7fc0000000)
+#define XAIOS_USER_LIMIT UINT64_C(0x8000000000)
+#define XAIOS_USER_STACK_TOP UINT64_C(0x7fff000000)
 
 void vmm_init(const xaios_boot_info_t *boot);
 void vmm_activate_kernel(void);

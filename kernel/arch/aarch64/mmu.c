@@ -380,6 +380,13 @@ static void build_tables(const xaios_boot_info_t *boot) {
   }
   if (highest_physical > L0_SPAN) highest_physical = L0_SPAN;
   uint64_t l1_limit = align_up(highest_physical, L1_BLOCK_SIZE);
+  /* Never identity-map into the user window. Physical memory that reaches this
+     far is dropped rather than mapped over userspace, because the per-CPU
+     roots replace this entry with the user directory and whatever the identity
+     map had put there would vanish. Losing the top gibibyte of an enormous
+     machine is a cost; handing the kernel's own memory to userspace is a
+     fault, and that is what used to happen at 4 GiB. */
+  if (l1_limit > XAIOS_USER_BASE) l1_limit = XAIOS_USER_BASE;
   for (uint64_t address = EARLY_IDENTITY_SIZE; address < l1_limit;
        address += L1_BLOCK_SIZE) {
     g_l1_table[address / L1_BLOCK_SIZE] =
@@ -406,6 +413,8 @@ static void build_per_cpu_roots(void) {
       l1[index] = g_l1_table[index];
     }
     root[0] = table_descriptor(l1);
+    /* Safe to overwrite because vmm_init stops the identity map at
+       XAIOS_USER_BASE: this slot is never physical memory. */
     l1[user_l1_index] = table_descriptor(user_directory);
     aarch64_platform_set_page_tables(cpu, root, user_directory);
   }

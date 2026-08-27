@@ -32,6 +32,15 @@ uint32_t xaios_translation_enabled(void) { return 1U; }
 #define EFER_NXE (UINT64_C(1) << 11)
 #define CR0_WP (UINT64_C(1) << 16)
 
+/* Which top-level-but-one slot userspace occupies. This was written out as a
+   literal 4 in three places, which was correct only while the user window
+   began at 4 GiB, and silently wrong the moment it moved: the kernel
+   hierarchy sync overwrote the user entry and installed the user directory
+   somewhere nothing looked, so the first instruction fetch in userspace
+   faulted. Derived from the one constant that defines it. */
+#define USER_PDPT_INDEX \
+  ((uint32_t)((XAIOS_USER_BASE >> 30U) & UINT64_C(0x1ff)))
+
 #define USER_CODE_PD_INDEX \
   ((uint32_t)((XAIOS_USER_BASE >> 21U) & UINT64_C(0x1ff)))
 #define USER_STACK_PD_INDEX \
@@ -298,7 +307,9 @@ static void sync_kernel_hierarchy(uint64_t virtual_address) {
     }
     uint64_t *pdpt =
         (uint64_t *)(uintptr_t)(root[0] & PTE_ADDRESS_MASK);
-    if (pdpt_index != 4U) pdpt[pdpt_index] = g_low_pdpt[pdpt_index];
+    if (pdpt_index != USER_PDPT_INDEX) {
+      pdpt[pdpt_index] = g_low_pdpt[pdpt_index];
+    }
   }
 }
 
@@ -322,7 +333,7 @@ static void build_tables(const xaios_boot_info_t *boot) {
                              PTE_LARGE | PTE_GLOBAL | PTE_NX;
     }
   }
-  g_low_pdpt[4] = table_entry(g_user_pd, PTE_USER);
+  g_low_pdpt[USER_PDPT_INDEX] = table_entry(g_user_pd, PTE_USER);
 
   uint64_t kernel_start = align_down(boot->kernel_phys_base, LARGE_PAGE_SIZE);
   uint64_t kernel_end = align_up(boot->kernel_phys_end, LARGE_PAGE_SIZE);
@@ -352,7 +363,7 @@ static void build_per_cpu_roots(void) {
       pdpt[index] = g_low_pdpt[index];
     }
     root[0] = table_entry(pdpt, PTE_USER);
-    pdpt[4] = table_entry(user_directory, PTE_USER);
+    pdpt[USER_PDPT_INDEX] = table_entry(user_directory, PTE_USER);
     x86_64_platform_set_page_tables(cpu, root, user_directory);
   }
 }

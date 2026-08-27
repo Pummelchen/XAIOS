@@ -50,4 +50,4 @@ SECTIONS
 
 /* Static process metadata currently requires more than the original 16 MB cap. */
 ASSERT(__kernel_end - __kernel_start < 32M, "Kernel too large (max 32 MB)")
-ASSERT(__kernel_end <= 0x100000000, "Kernel overlaps userspace virtual range")
+ASSERT(__kernel_end <= 0x7fc0000000, "Kernel overlaps userspace virtual range")

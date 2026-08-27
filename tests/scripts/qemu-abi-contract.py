@@ -170,17 +170,17 @@ def validate_memory_map_contract(_rc_contract):
         encoding="utf-8"
     )
     expected = {
-        "XAIOS_USER_BASE": "0x100000000",
-        "XAIOS_USER_LIMIT": "0x140000000",
-        "XAIOS_USER_STACK_TOP": "0x13f000000",
+        "XAIOS_USER_BASE": "0x7fc0000000",
+        "XAIOS_USER_LIMIT": "0x8000000000",
+        "XAIOS_USER_STACK_TOP": "0x7fff000000",
     }
     for name, value in expected.items():
         declaration = f"#define {name} UINT64_C({value})"
         if declaration not in vmm_header:
             failures.append(f"memory map missing {declaration}")
-    if ". = 0x100000000;" not in user_linker:
+    if ". = 0x7fc0000000;" not in user_linker:
         failures.append("userspace linker base does not match XAIOS_USER_BASE")
-    if "ASSERT(__kernel_end <= 0x100000000" not in kernel_linker:
+    if "ASSERT(__kernel_end <= 0x7fc0000000" not in kernel_linker:
         failures.append("kernel linker does not guard the userspace VA boundary")
     return failures
 
