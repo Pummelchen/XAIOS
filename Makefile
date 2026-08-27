@@ -102,8 +102,14 @@ local-gates:
 #
 # This does not automate the hypervisors. It makes shipping without them a
 # deliberate override rather than an oversight.
+#
+# It also requires the release package, because the archive is what people
+# actually receive: the image is too large for git, so the zip is the release
+# as far as anyone downloading it is concerned, and a zip is a copy that can go
+# stale without looking any different. Build 1's first one did, within an hour.
 release-check: docs-check
 	python3 ./tests/repository/check-local-gate-record.py
+	python3 ./tests/repository/check-release-package.py
 	@printf '%s\n' "release-check: this commit is verified on all four environments"
 
 local-gate-record-check:
