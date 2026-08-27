@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -38,6 +39,25 @@ GATES = (
     ("unified-image-gate", "unified-image-gate", 3600),
     ("vz-stress-gate", "vz-stress-gate", 3600),
 )
+
+
+# VMware Fusion writes its guest console to one file inside the VM bundle, and
+# every gate that drives Fusion writes to the same one. Run them in sequence
+# and each overwrites the last, so a failure in the first gate is unreadable by
+# the time the run finishes -- which is exactly what happened to an
+# intermittent assertion here: it failed, four later runs passed, and there was
+# nothing left to say what it had been. Keep each gate's console beside its
+# output.
+FUSION_SERIAL = BUILD / "vmware-fusion" / "XAIOS.vmwarevm" / "fusion-serial.log"
+
+
+def preserve_serial(name: str) -> None:
+    if not FUSION_SERIAL.is_file():
+        return
+    try:
+        shutil.copy(FUSION_SERIAL, BUILD / f"local-gate-{name}-console.log")
+    except OSError:
+        pass
 
 
 def git(*arguments: str) -> str:
@@ -80,6 +100,7 @@ def main() -> int:
         passed = completed.returncode == 0
         log = BUILD / f"local-gate-{name}.log"
         log.write_text(completed.stdout + completed.stderr, encoding="utf-8")
+        preserve_serial(name)
         results.append({"gate": name, "passed": passed,
                         "exit_code": completed.returncode,
                         "seconds": elapsed, "log": str(log)})
