@@ -39,22 +39,12 @@ cp "$BUILD/xaios-system.img"       "$VZ/vz-system2.img"
 [ -f "$VZ/vz-storage-admin.img" ] || \
   dd if=/dev/zero of="$VZ/vz-storage-admin.img" bs=512 count=16384 status=none
 
-# Below roughly 3.5 GiB this platform boots to nothing at all: the harness
-# starts, the guest produces no serial output whatever, and there is no error
-# to read. Measured, not guessed -- 3584 MiB boots, 3328 MiB does not, and the
-# RAM arithmetic does not explain the difference (see B-06). Refuse the range
-# rather than hand someone a black screen, because a silent guest is the
-# hardest thing to diagnose in front of an audience, and set XAIOS_VZ_MEMORY_MIB
-# deliberately if you are investigating that floor.
+# Memory is the caller's choice again. This used to refuse anything under
+# 3584 MiB, because below that the guest produced no output whatever -- B-06.
+# The cause was the same fixed kernel link address as B-05: the kernel was
+# built to load at 0x90000000 and this platform has no memory there until it
+# has enough of it. The kernel relocates now, so the floor is gone.
 VZ_MEMORY_MIB="${XAIOS_VZ_MEMORY_MIB:-4096}"
-if [ "$VZ_MEMORY_MIB" -lt 3584 ] && [ "${XAIOS_VZ_ALLOW_LOW_MEMORY:-0}" != "1" ]; then
-  printf '%s\n' \
-    "error: ${VZ_MEMORY_MIB} MiB is below the 3584 MiB this platform is known to boot at." \
-    "       Virtualization.framework starts and the guest prints nothing at all below" \
-    "       that; it is tracked as B-06 and is not a fault in your invocation." \
-    "       Set XAIOS_VZ_ALLOW_LOW_MEMORY=1 to try it anyway." >&2
-  exit 1
-fi
 
 exec "$VZ/xaios-vz" "$VZ/run-disk.img" "$VZ/vz-test.img" \
   "$VZ/vz-persistent.img" "$VZ/vz-model.img" "$VZ/vz-storage-admin.img" \

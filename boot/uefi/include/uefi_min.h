@@ -15,6 +15,7 @@
 #define EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL 0x00000001U
 #define EFI_FILE_MODE_READ UINT64_C(0x0000000000000001)
 #define EFI_ALLOCATE_ANY_PAGES 0
+#define EFI_ALLOCATE_MAX_ADDRESS 1
 #define EFI_ALLOCATE_ADDRESS 2
 /* Firmware that enforces W^X maps EfiLoaderData execute-never, so anything
    the loader intends to jump into has to be allocated as code. */

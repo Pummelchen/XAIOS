@@ -342,7 +342,22 @@ KERNEL_CFLAGS="
 # The few files that use SIMD deliberately are built with compile_kernel_simd
 # and manage the register state themselves.
 KERNEL_NO_SIMD_CFLAGS=""
+# Whether this kernel can be loaded anywhere, or must land where it was linked.
+#
+# AArch64 builds position-independent: it emits nothing but R_AARCH64_RELATIVE
+# relocations, which the UEFI loader applies after choosing an address. That is
+# what lets one image boot on machines whose memory starts in three different
+# places and at any size -- a fixed 0x90000000 is simply absent on a QEMU guest
+# with a gibibyte, and on Virtualization.framework until it has enough memory.
+#
+# x86_64 stays fixed-address. Its code model emits R_X86_64_32 relocations that
+# cannot appear in a position-independent link at all, and it does not need to
+# move: it already boots at every size tested. The loader accepts both, and
+# applies no bias to a fixed-address kernel.
+KERNEL_LDFLAGS=""
 if [ "$TARGET_ARCH" = aarch64 ]; then
+  KERNEL_CFLAGS="$KERNEL_CFLAGS -fpie"
+  KERNEL_LDFLAGS="-pie -z notext --no-dynamic-linker"
   KERNEL_NO_SIMD_CFLAGS="-mgeneral-regs-only"
   # No -march bump here. Every atomic therefore compiles to a load-exclusive
   # and store-exclusive pair rather than an LSE LDADD or CAS. LSE is the better
@@ -738,6 +753,7 @@ printf '"%s"\n' "$KERNEL_BEARSSL" >> "$KERNEL_RESPONSE_FILE"
 
 "$LD_LLD" \
   -nostdlib \
+  $KERNEL_LDFLAGS \
   -T "$ARCH_LINKER" \
   -o "$KERNEL_ELF" \
   @"$KERNEL_RESPONSE_FILE"

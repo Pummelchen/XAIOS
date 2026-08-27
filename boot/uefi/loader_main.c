@@ -5,12 +5,25 @@
 
 #define EI_NIDENT 16
 #define PT_LOAD 1
+#define PT_DYNAMIC 2
+/* Matches EARLY_IDENTITY_SIZE in kernel/arch/aarch64/mmu.c. */
+#define XAIOS_LOADER_MAX_KERNEL_ADDRESS UINT64_C(0x100000000)
+#define DT_NULL 0
+#define DT_RELA 7
+#define DT_RELASZ 8
+#define DT_RELAENT 9
+/* The only relocation either architecture's kernel emits: add the load bias to
+   a stored address. Everything else would need a symbol table the kernel does
+   not carry. */
+#define R_AARCH64_RELATIVE 1027
+#define R_X86_64_RELATIVE 8
 #define PF_X 0x1U
 #define ELFCLASS64 2
 #define ELFDATA2LSB 1
 #define EM_X86_64 62
 #define EM_AARCH64 183
 #define ET_EXEC 2
+#define ET_DYN 3
 #define KERNEL_MAX_SIZE (16ULL * 1024ULL * 1024ULL)
 /*
  * The initfs is loaded by the UEFI path before a block driver is available.
@@ -59,6 +72,17 @@ typedef struct elf64_ehdr {
   uint16_t e_shnum;
   uint16_t e_shstrndx;
 } elf64_ehdr_t;
+
+typedef struct elf64_dyn {
+  uint64_t d_tag;
+  uint64_t d_val;
+} elf64_dyn_t;
+
+typedef struct elf64_rela {
+  uint64_t r_offset;
+  uint64_t r_info;
+  int64_t r_addend;
+} elf64_rela_t;
 
 typedef struct elf64_phdr {
   uint32_t p_type;
@@ -704,7 +728,11 @@ static int validate_elf(const void *kernel_buffer, uint64_t kernel_size,
   if (ehdr->e_ident[4] != ELFCLASS64 || ehdr->e_ident[5] != ELFDATA2LSB) {
     return 0;
   }
-  if (ehdr->e_type != ET_EXEC ||
+  /* ET_DYN is what the kernel is built as now: position-independent, so it can
+     be placed wherever this machine actually has memory. ET_EXEC is still
+     accepted because it loads identically -- it simply has no relocations to
+     apply, and its segments land where they always did. */
+  if ((ehdr->e_type != ET_EXEC && ehdr->e_type != ET_DYN) ||
       ehdr->e_machine != XAIOS_LOADER_EXPECTED_MACHINE) {
     return 0;
   }
@@ -736,6 +764,64 @@ static efi_status_t load_kernel_segments(efi_system_table_t *system_table,
   *kernel_end = 0;
   *kernel_vaddr_base = UINT64_MAX;
 
+  /* Where the kernel was linked, and how much room the whole image needs.
+     Nothing is loaded yet: this pass only measures. */
+  uint64_t link_low = UINT64_MAX;
+  uint64_t link_high = 0;
+  for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
+    const elf64_phdr_t *phdr = &phdrs[i];
+    if (phdr->p_type != PT_LOAD) continue;
+    uint64_t start = phdr->p_paddr & ~UINT64_C(0xfff);
+    if (start < link_low) link_low = start;
+    if (phdr->p_paddr + phdr->p_memsz > link_high) {
+      link_high = phdr->p_paddr + phdr->p_memsz;
+    }
+  }
+  if (link_low == UINT64_MAX || link_high <= link_low) {
+    return EFI_LOAD_ERROR;
+  }
+
+  /* The bias between where the kernel was linked and where it will run.
+     Zero for a fixed-address kernel; for a position-independent one it is
+     whatever this machine had room for.
+
+     Asking firmware for a specific address is what used to fail: the kernel
+     was linked at 0x90000000, and a QEMU guest with a gibibyte of memory has
+     none there -- its RAM ends at 0x80000000. The three hypervisors start
+     their memory in three different places, so no fixed address could suit
+     them all. Let firmware choose, and move the kernel to meet it.
+
+     The span is reserved in one piece and released immediately, purely to
+     find a contiguous run that fits. Segments are then placed inside it with
+     their own memory types, because firmware that enforces W^X needs
+     executable segments to be loader code and writable ones loader data, and
+     a single allocation could only be one of the two. Nothing else runs
+     between the release and the placement: UEFI boot services are
+     single-threaded and this loader is the only thing executing. */
+  uint64_t span = link_high - link_low;
+  /* Below four gibibytes, because that is how far the kernel's early identity
+     map reaches: it maps the first 4 GiB before it has parsed anything, and a
+     kernel placed above that cannot address itself while bringing the real
+     tables up. Firmware picks the address, this only bounds it -- asked for
+     anywhere at all, a machine with plenty of memory puts the kernel high and
+     the early self-tests fail with no obvious cause. */
+  efi_physical_address_t placement = XAIOS_LOADER_MAX_KERNEL_ADDRESS;
+  efi_status_t reserve = bs->allocate_pages(EFI_ALLOCATE_MAX_ADDRESS,
+                                            EFI_LOADER_DATA,
+                                            EFI_SIZE_TO_PAGES(span),
+                                            &placement);
+  if (is_error(reserve)) {
+    /* A machine with nothing free down there is not one this kernel can boot,
+       but say so by failing the allocation rather than by faulting later. */
+    return reserve;
+  }
+  (void)bs->free_pages(placement, EFI_SIZE_TO_PAGES(span));
+  uint64_t bias = (uint64_t)placement - link_low;
+  if (ehdr->e_type != ET_DYN) {
+    /* A fixed-address kernel must still land where it was linked. */
+    bias = 0;
+  }
+
   for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
     const elf64_phdr_t *phdr = &phdrs[i];
     if (phdr->p_type != PT_LOAD) {
@@ -746,8 +832,9 @@ static efi_status_t load_kernel_segments(efi_system_table_t *system_table,
       return EFI_LOAD_ERROR;
     }
 
-    uint64_t segment_start = phdr->p_paddr & ~UINT64_C(0xfff);
-    uint64_t segment_offset = phdr->p_paddr - segment_start;
+    uint64_t load_paddr = phdr->p_paddr + bias;
+    uint64_t segment_start = load_paddr & ~UINT64_C(0xfff);
+    uint64_t segment_offset = load_paddr - segment_start;
     uint64_t allocation_size = segment_offset + phdr->p_memsz;
     efi_physical_address_t segment_address = segment_start;
 
@@ -763,19 +850,59 @@ static efi_status_t load_kernel_segments(efi_system_table_t *system_table,
       return status;
     }
 
-    mem_set((void *)phdr->p_paddr, 0, phdr->p_memsz);
-    mem_copy((void *)phdr->p_paddr,
+    mem_set((void *)load_paddr, 0, phdr->p_memsz);
+    mem_copy((void *)load_paddr,
              (const unsigned char *)kernel_buffer + phdr->p_offset,
              phdr->p_filesz);
 
-    if (phdr->p_paddr < *kernel_base) {
-      *kernel_base = phdr->p_paddr;
+    if (load_paddr < *kernel_base) {
+      *kernel_base = load_paddr;
     }
+    /* Unbiased on purpose. The caller computes the entry as
+       kernel_base + (e_entry - kernel_vaddr_base), where kernel_base already
+       carries the bias -- adding it here too cancels it out, and the first
+       attempt at this jumped to the link address and took an exception on the
+       first instruction. */
     if (phdr->p_vaddr < *kernel_vaddr_base) {
       *kernel_vaddr_base = phdr->p_vaddr;
     }
-    if (phdr->p_paddr + phdr->p_memsz > *kernel_end) {
-      *kernel_end = phdr->p_paddr + phdr->p_memsz;
+    if (load_paddr + phdr->p_memsz > *kernel_end) {
+      *kernel_end = load_paddr + phdr->p_memsz;
+    }
+  }
+
+  /* Apply the relocations the kernel carries, now that it is in place. Only
+     RELATIVE entries exist -- each says "the value stored here is an address
+     that must be moved by the same bias" -- so this needs no symbol table. */
+  if (bias != 0U) {
+    for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
+      const elf64_phdr_t *phdr = &phdrs[i];
+      if (phdr->p_type != PT_DYNAMIC) continue;
+      const elf64_dyn_t *dyn =
+          (const elf64_dyn_t *)(uintptr_t)(phdr->p_vaddr + bias);
+      uint64_t rela = 0;
+      uint64_t rela_size = 0;
+      uint64_t rela_entry = sizeof(elf64_rela_t);
+      for (; dyn->d_tag != DT_NULL; ++dyn) {
+        if (dyn->d_tag == DT_RELA) rela = dyn->d_val;
+        else if (dyn->d_tag == DT_RELASZ) rela_size = dyn->d_val;
+        else if (dyn->d_tag == DT_RELAENT) rela_entry = dyn->d_val;
+      }
+      if (rela == 0 || rela_size == 0 || rela_entry == 0) continue;
+      for (uint64_t offset = 0; offset + rela_entry <= rela_size;
+           offset += rela_entry) {
+        const elf64_rela_t *entry =
+            (const elf64_rela_t *)(uintptr_t)(rela + bias + offset);
+        uint32_t type = (uint32_t)(entry->r_info & UINT64_C(0xffffffff));
+        if (type != R_AARCH64_RELATIVE && type != R_X86_64_RELATIVE) {
+          /* Anything else needs information this loader does not have, and
+             silently skipping it would produce a kernel that runs with a
+             wrong address in it. Refuse instead. */
+          return EFI_LOAD_ERROR;
+        }
+        *(uint64_t *)(uintptr_t)(entry->r_offset + bias) =
+            (uint64_t)(entry->r_addend + (int64_t)bias);
+      }
     }
   }
 

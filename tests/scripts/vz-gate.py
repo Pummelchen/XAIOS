@@ -120,7 +120,7 @@ def run() -> tuple[str, bool]:
     command += [str(VZ / target) for target, _ in VOLUMES]
     # Four vCPUs, not one: secondaries start with translation off, and every
     # defect that state causes is invisible on a single-CPU boot.
-    command += ["--memory-mib", "4096", "--cpus", "4"]
+    command += ["--memory-mib", "2048", "--cpus", "4"]
     with log.open("wb") as handle:
         process = subprocess.Popen(command, stdout=handle,
                                    stderr=subprocess.STDOUT,
