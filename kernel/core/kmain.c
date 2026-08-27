@@ -244,6 +244,23 @@ void kmain(const xaios_boot_info_t *boot) {
 
   pmm_init(boot);
   vmm_init(boot);
+  /* The firmware framebuffer, before anything draws on it again.
+   *
+   * Until translation was enabled, writing to it worked because firmware's
+   * tables covered it. The kernel's own tables identity-map physical memory
+   * and the handful of device windows it knows the addresses of; a
+   * framebuffer firmware placed outside RAM is neither. On a VMware Fusion
+   * guest with four gibibytes it sits at 0xff0000000, well past the end of
+   * memory, and the next line boot_ui drew took a translation fault -- while
+   * the same guest with one or two gibibytes had the framebuffer low enough
+   * to fall inside the identity map and worked. Nothing about the framebuffer
+   * changed; only how much RAM was underneath it.
+   *
+   * Mapped here rather than in boot_ui because boot_ui runs before there are
+   * page tables to map anything into, and the very next statement draws. */
+  if (boot->framebuffer_base != 0U && boot->framebuffer_size != 0U) {
+    map_mmio_range(boot->framebuffer_base, boot->framebuffer_size);
+  }
   vmm_self_test();
   boot_ui_update(45U, "memory management", "devices and storage", 3U);
 
