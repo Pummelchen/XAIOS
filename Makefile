@@ -81,6 +81,12 @@ unified-image:
 unified-image-gate: unified-image
 	python3 ./tests/scripts/unified-image-gate.py
 
+# Everything CI cannot run: the two hypervisors and the half of the unified
+# image gate that drives them. Writes build/local-gates.json naming the commit
+# it checked, so "was this verified on the hypervisors?" has an answer.
+local-gates:
+	python3 ./tests/scripts/local-gates.py
+
 vz-run: vz-harness
 	./platform/virtualization-framework/run-vz.sh $(VZ_RUN_ARGS)
 
