@@ -195,18 +195,18 @@ static int parse_semver(const char *version, uint32_t parts[3]) {
   return 1;
 }
 
-static int version_at_least(const char *current, const char *minimum) {
-  uint32_t current_parts[3];
-  uint32_t minimum_parts[3];
-  if (!parse_semver(current, current_parts) ||
-      !parse_semver(minimum, minimum_parts)) {
-    return 0;
+/* Whether this build satisfies a package's declared minimum. The minimum is a
+   whole number in text; anything that is not one is refused rather than
+   assumed to be zero, so a malformed manifest cannot install everywhere. */
+static int build_at_least(uint32_t current, const char *minimum) {
+  if (minimum == 0 || minimum[0] == '\0') return 0;
+  uint32_t value = 0U;
+  for (const char *cursor = minimum; *cursor != '\0'; ++cursor) {
+    if (*cursor < '0' || *cursor > '9') return 0;
+    if (value > (UINT32_MAX - (uint32_t)(*cursor - '0')) / 10U) return 0;
+    value = value * 10U + (uint32_t)(*cursor - '0');
   }
-  for (uint32_t i = 0U; i < 3U; ++i) {
-    if (current_parts[i] != minimum_parts[i])
-      return current_parts[i] > minimum_parts[i];
-  }
-  return 1;
+  return current >= value;
 }
 
 static int architecture_matches(const char *architecture) {
@@ -515,7 +515,7 @@ static xaios_status_t parse_manifest(const char *data, uint64_t size,
   if (!app_name_valid(manifest->name) ||
       !parse_semver(manifest->version, (uint32_t[3]){0U, 0U, 0U}) ||
       !architecture_matches(manifest->architecture) ||
-      !version_at_least(XAIOS_APP_OS_VERSION, manifest->minimum_os) ||
+      !build_at_least(XAIOS_APP_OS_BUILD, manifest->minimum_os) ||
       manifest->minimum_abi > XAIOS_APP_KERNEL_ABI_VERSION ||
       manifest->binary_size == 0U ||
       manifest->binary_size > XAIOS_MFS_MAX_FILE_BYTES_V5) {
@@ -628,8 +628,8 @@ void app_store_init(void) {
     }
   }
   (void)security_set_release_key(trust.active_key);
-  klog("app-store: initialized format=%u os=%s abi=%u\n",
-       XAIOS_APP_FORMAT_VERSION, XAIOS_APP_OS_VERSION,
+  klog("app-store: initialized format=%u os_build=%u abi=%u\n",
+       XAIOS_APP_FORMAT_VERSION, (unsigned)XAIOS_APP_OS_BUILD,
        XAIOS_APP_KERNEL_ABI_VERSION);
 }
 

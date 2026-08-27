@@ -3,7 +3,7 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 REPOSITORY=${XAIOS_XAPT_REPOSITORY:-"$ROOT/build/xapt/repository"}
-VERSION=${XAIOS_VERSION:-0.1.0}
+BUILD=${XAIOS_BUILD_NUMBER:-1}
 GENERATION=${XAIOS_UPDATE_GENERATION:-100}
 
 cd "$ROOT"
@@ -20,15 +20,15 @@ for arch in aarch64 x86_64; do
   python3 tools/xaios_xapt_repo.py system \
     --repository "$REPOSITORY" \
     --image "$kernel" \
-    --version "$VERSION" \
+    --version "$BUILD" \
     --generation "$GENERATION" \
     --arch "$arch"
   python3 tools/xaios_xapt_repo.py catalog \
     --repository "$REPOSITORY" \
     --arch "$arch" \
     --generation 1 \
-    --generated "xaios-$VERSION" \
-    --os-record "$REPOSITORY/os/$arch/$VERSION/record.json"
+    --generated "xaios-$BUILD" \
+    --os-record "$REPOSITORY/os/$arch/$BUILD/record.json"
 done
 
 python3 tools/xaios_xapt_repo.py verify --repository "$REPOSITORY"

@@ -58,7 +58,7 @@ VMRUN = Path(os.environ.get(
 # per-platform gates assert far more, and should -- device inventories differ,
 # so a marker list long enough to be thorough here would be four lists.
 EXPECTED = (
-    ("kernel started", re.compile(r"XAIOS \d+\.\d+\.\d+ kernel starting")),
+    ("kernel started", re.compile(r"XAIOS Build \d+ kernel starting")),
     ("shell command surface",
      re.compile(r"/bin/xaios-shell: command surface passed")),
     ("SSH server listening", re.compile(r"SSH server: up and running")),

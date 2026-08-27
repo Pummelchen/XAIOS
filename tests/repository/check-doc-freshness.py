@@ -67,39 +67,36 @@ def in_our_history(commit: str) -> bool:
     return result.returncode == 0
 
 
-def check_version_identity(failures: list[str]) -> None:
-    """VERSION, the changelog and the build must name the same release.
+def check_build_identity(failures: list[str]) -> None:
+    """BUILD_NUMBER and the changelog must name the same build.
 
-    Three places state the version and they drift independently: a release is
-    cut, the changelog is written later, and the build keeps whatever it had.
-    A version that disagrees with itself is worse than none, because it is
-    believed.
+    XAIOS is identified by build number. There was a MAJOR.MINOR.PATCH version
+    and it was invented rather than earned -- nothing had shipped, so the three
+    numbers recorded no history and implied compatibility rules nobody had
+    agreed to. What still matters is that the number a build stamps into an
+    image and the number the changelog describes cannot drift apart.
     """
-    version_file = ROOT / "VERSION"
-    if not version_file.is_file():
-        failures.append("VERSION is missing; the product has no version")
+    build_file = ROOT / "BUILD_NUMBER"
+    if not build_file.is_file():
+        failures.append("BUILD_NUMBER is missing; the product cannot name itself")
         return
-    version = version_file.read_text().strip()
-    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
-        failures.append(f"VERSION is not MAJOR.MINOR.PATCH: {version!r}")
+    build = build_file.read_text(encoding="utf-8").strip()
+    if not build.isdigit():
+        failures.append(f"BUILD_NUMBER is not a whole number: {build!r}")
         return
+
     changelog = ROOT / "CHANGELOG.md"
     if not changelog.is_file():
         failures.append("CHANGELOG.md is missing")
         return
-    entries = re.findall(r"^## (\d+\.\d+\.\d+)", changelog.read_text(), re.M)
-    if not entries:
-        failures.append("CHANGELOG.md records no released version")
-    elif entries[0] != version:
+    if f"## Build {build}" not in changelog.read_text(encoding="utf-8"):
         failures.append(
-            f"VERSION says {version} but the newest changelog entry is "
-            f"{entries[0]}"
-        )
-
+            f"CHANGELOG.md has no entry for build {build}; a build nobody has "
+            f"described is one nobody can find out what changed in")
 
 def main() -> int:
     failures: list[str] = []
-    check_version_identity(failures)
+    check_build_identity(failures)
     upstream_pins = 0
     checked = 0
 

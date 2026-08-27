@@ -418,24 +418,20 @@ if [ -n "${XAIOS_BUILD_REVISION_OVERRIDE:-}" ]; then
 else
   BUILD_REVISION="$(git -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || printf '%s' unknown)"
 fi
-# The product version, single-sourced from VERSION at the repository root so a
-# build, a running system and the changelog cannot disagree about what this is.
-PRODUCT_VERSION="$(tr -d ' \n' < "$ROOT_DIR/VERSION" 2>/dev/null || printf '%s' unknown)"
-# The build number, single-sourced from BUILD_NUMBER at the repository root.
-# This is what a release is named and referred to by: build 1 ships as
-# xaios_b1.iso. The version above still exists because the boot banner, the
-# gates that match it and xaiosctl all read it; replacing that is a separate
-# job from cutting a release. The file is not called BUILD because this repo is
-# developed on a case-insensitive filesystem, where that name is the build
-# directory.
+# What this build is, single-sourced from BUILD_NUMBER at the repository root.
+#
+# XAIOS is identified by build number, not by a MAJOR.MINOR.PATCH version.
+# There was one, 0.1.0, and it was invented rather than earned: nothing had
+# been released, so the three numbers encoded no history and promised
+# compatibility rules nobody had agreed. A build number says the one true
+# thing -- which build this is -- and says it without implying the rest.
+#
+# The file is not called BUILD because this repository is developed on a
+# case-insensitive filesystem, where that name is already the build directory.
 BUILD_NUMBER="$(tr -d ' \n' < "$ROOT_DIR/BUILD_NUMBER" 2>/dev/null || printf '%s' 0)"
 if ! printf '%s' "$BUILD_NUMBER" | grep -Eq '^[0-9]+$'; then
   printf '%s\n' "error: BUILD_NUMBER must be a whole number, found '$BUILD_NUMBER'" >&2
   exit 1
-fi
-if ! printf '%s' "$PRODUCT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-  printf '%s\n' "error: VERSION must be MAJOR.MINOR.PATCH, found '$PRODUCT_VERSION'" >&2
-  exit 2
 fi
 
 BUILD_IDENTIFIER="xaios-admin-control"
@@ -444,7 +440,7 @@ if [ -n "${XAIOS_BUILD_REVISION_OVERRIDE:-}" ] ||
    [ -n "$(git -C "$ROOT_DIR" ls-files --others --exclude-standard 2>/dev/null)" ]; then
   BUILD_IDENTIFIER="${BUILD_IDENTIFIER}-dirty"
 fi
-KERNEL_CFLAGS="$KERNEL_CFLAGS $PASSWORD_AUTH_CFLAG -DXAIOS_BOOT_TEST_APPS=$BOOT_TEST_APPS -DXAIOS_BOOT_VERBOSE=$BOOT_VERBOSE -DXAIOS_FAILURE_TEST_APP=$FAILURE_TEST_APP -DXAIOS_LIBC_TEST=$LIBC_TEST -DXAIOS_PRODUCT_VERSION=\"$PRODUCT_VERSION\" -DXAIOS_BUILD_NUMBER=$BUILD_NUMBER"
+KERNEL_CFLAGS="$KERNEL_CFLAGS $PASSWORD_AUTH_CFLAG -DXAIOS_BOOT_TEST_APPS=$BOOT_TEST_APPS -DXAIOS_BOOT_VERBOSE=$BOOT_VERBOSE -DXAIOS_FAILURE_TEST_APP=$FAILURE_TEST_APP -DXAIOS_LIBC_TEST=$LIBC_TEST -DXAIOS_BUILD_NUMBER=$BUILD_NUMBER"
 
 # Files that use FP/SIMD on purpose opt back in; everything else is built
 # without it. See KERNEL_NO_SIMD_CFLAGS below for why.

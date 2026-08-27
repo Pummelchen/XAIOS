@@ -1,4 +1,6 @@
 #ifndef XAIOS_APP_STORE_H
+#include <xaios/version.h>
+
 #define XAIOS_APP_STORE_H
 
 #include <xaios/initramfs.h>
@@ -11,7 +13,10 @@
 #define XAIOS_APP_ARCH_MAX 16U
 #define XAIOS_APP_MANIFEST_MAX 512U
 #define XAIOS_APP_CATALOG_MAX 131072U
-#define XAIOS_APP_OS_VERSION "0.1.0"
+/* The build a package must be able to run on. Packages declare a minimum as
+   a whole number, which is what XAIOS is versioned by; their own versions stay
+   MAJOR.MINOR.PATCH, because a package's history is its own. */
+#define XAIOS_APP_OS_BUILD XAIOS_BUILD_NUMBER
 #define XAIOS_APP_KERNEL_ABI_VERSION 1U
 
 typedef struct xaios_app_manifest {

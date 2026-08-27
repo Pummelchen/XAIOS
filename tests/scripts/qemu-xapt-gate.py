@@ -126,10 +126,10 @@ def build_repository(arch: str, repository: Path) -> None:
     subprocess.run(
         ["python3", "tools/xaios_xapt_repo.py", "system",
          "--repository", str(repository), "--image", str(kernel),
-         "--version", "0.1.1", "--generation", "100", "--arch", arch],
+         "--version", "2", "--generation", "100", "--arch", arch],
         cwd=ROOT, check=True,
     )
-    system_record = repository / "os" / arch / "0.1.1" / "record.json"
+    system_record = repository / "os" / arch / "2" / "record.json"
     subprocess.run(
         ["python3", "tools/xaios_xapt_repo.py", "catalog", "--repository",
          str(repository), "--arch", arch, "--generation", "1",
@@ -158,14 +158,14 @@ def publish_test_app(arch: str, repository: Path, version: str,
     subprocess.run(
         ["python3", "tools/xaios_xapt_repo.py", "system",
          "--repository", str(repository), "--image", str(kernel),
-         "--version", "0.1.1", "--generation", "100", "--arch", arch,
+         "--version", "2", "--generation", "100", "--arch", arch,
          "--key", key_name], cwd=ROOT, check=True,
     )
     subprocess.run(
         ["python3", "tools/xaios_xapt_repo.py", "catalog", "--repository",
          str(repository), "--arch", arch, "--generation", str(generation),
          "--generated", f"qemu-gate-{generation}", "--os-record",
-         str(repository / "os" / arch / "0.1.1" / "record.json"),
+         str(repository / "os" / arch / "2" / "record.json"),
          "--key", key_name],
         cwd=ROOT, check=True,
     )
@@ -252,7 +252,7 @@ def exercise(arch: str, key: Path) -> None:
             listing = ssh(key, ssh_port, "xapt list")
             if "xapt-test-app 1.0.0 [available]" not in listing:
                 raise RuntimeError(f"new app not offered: {listing!r}")
-            if "xaios 0.1.1 [OS upgrade; reboot required]" not in listing:
+            if "xaios 2 [OS upgrade; reboot required]" not in listing:
                 raise RuntimeError(f"OS update not offered: {listing!r}")
             install = ssh(key, ssh_port, "xapt install xapt-test-app", 180)
             if "activated xapt-test-app 1.0.0 without reboot" not in install:

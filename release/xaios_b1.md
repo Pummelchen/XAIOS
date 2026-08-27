@@ -77,12 +77,11 @@ otherwise.
 
 ## Identifying a running build
 
-    kernel: build 1
+    XAIOS Build 1 kernel starting
 
-is printed on the boot console. The banner line above it still reports a
-`MAJOR.MINOR.PATCH` version, which is what the boot gates match and what
-`xaiosctl version` prints; the build number is the identifier a release is
-named by.
+is the first line on the boot console, and `xaiosctl version` reports the same
+string. There is no separate `MAJOR.MINOR.PATCH` version: XAIOS is identified
+by build number and nothing else.
 
 ## What is in it
 

@@ -50,6 +50,18 @@ def valid_token(value: str, limit: int) -> bool:
     )
 
 
+def build_number(value: str) -> int:
+    """The oldest XAIOS build a package declares it runs on.
+
+    A whole number, not a three-part version: XAIOS is identified by build
+    number, and a field that accepted both would let a manifest be compared
+    against nothing at install time.
+    """
+    if not value.isdigit():
+        raise ValueError(f"minimum OS build must be a whole number: {value}")
+    return int(value)
+
+
 def semver(value: str) -> tuple[int, int, int]:
     parts = value.split(".")
     if len(parts) != 3 or any(not part.isdigit() for part in parts):
@@ -139,7 +151,9 @@ def package(args: argparse.Namespace) -> None:
     if not valid_token(args.name, 32):
         raise ValueError("invalid application name")
     semver(args.version)
-    semver(args.minimum_os)
+    # The package's own version is MAJOR.MINOR.PATCH; the oldest XAIOS it runs
+    # on is a build number, because that is what XAIOS is identified by.
+    build_number(args.minimum_os)
     if args.arch not in ARCHES:
         raise ValueError("unsupported architecture")
     binary = args.elf.read_bytes()
@@ -184,7 +198,9 @@ def package(args: argparse.Namespace) -> None:
 
 
 def system(args: argparse.Namespace) -> None:
-    semver(args.version)
+    # An OS image is a build, so its version is a build number. Packages keep
+    # MAJOR.MINOR.PATCH -- a package's history is its own.
+    build_number(args.version)
     if args.arch not in ARCHES:
         raise ValueError("unsupported architecture")
     if args.generation <= 0 or args.generation > 0xFFFFFFFF:
@@ -302,7 +318,9 @@ def verify(args: argparse.Namespace) -> None:
         generation = int(record["generation"])
         if arch not in ARCHES or record_path.parts[-3:-1] != (arch, version):
             raise ValueError(f"system record path mismatch: {record_path}")
-        semver(version)
+        # An OS record names a build. Packages under apps/ keep their own
+        # MAJOR.MINOR.PATCH versions and are checked as such above.
+        build_number(version)
         image = record_path.parent / "kernel.elf"
         payload = image.read_bytes()
         digest = hashlib.sha256(payload).hexdigest()
@@ -363,7 +381,9 @@ def main() -> None:
     package_parser.add_argument("--name", required=True)
     package_parser.add_argument("--version", required=True)
     package_parser.add_argument("--arch", required=True)
-    package_parser.add_argument("--minimum-os", default="0.1.0")
+    package_parser.add_argument(
+        "--minimum-os", default="1",
+        help="oldest XAIOS build this package runs on, as a whole number")
     package_parser.add_argument("--minimum-abi", type=int, default=1)
     package_parser.add_argument("--capabilities", type=int, required=True)
     package_parser.add_argument("--description", required=True)

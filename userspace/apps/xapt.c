@@ -10,7 +10,24 @@
 #define XAPT_CATALOG_PATH "/state/xapt/catalog"
 #define XAPT_STAGED_CATALOG_PATH "/update/xapt/catalog"
 #define XAPT_STAGED_TRUST_PATH "/update/xapt/trust"
-#define XAPT_OS_VERSION "0.1.0"
+/* The build this tool reports as the running system's, matching what the
+   kernel's app store compares a package's minimum against. */
+#define XAPT_OS_BUILD 1
+
+/* A build number from a catalog record. Returns -1 for anything that is not a
+   whole number, so a malformed record reads as older than this system rather
+   than newer -- refusing an upgrade is recoverable, installing one described
+   by a field nobody could parse is not. */
+static long parse_build(const char *text) {
+  if (text == 0 || *text == '\0') return -1;
+  long value = 0;
+  for (const char *cursor = text; *cursor != '\0'; ++cursor) {
+    if (*cursor < '0' || *cursor > '9') return -1;
+    if (value > (2147483647L - (*cursor - '0')) / 10) return -1;
+    value = value * 10 + (*cursor - '0');
+  }
+  return value;
+}
 #define XAPT_TLS_MODULUS_HEX_BYTES 512U
 
 typedef struct xapt_config {
@@ -774,7 +791,7 @@ static int list_apps(const char *filter, int upgradable_only) {
   }
   if (filter == 0) {
     xapt_os_record_t os;
-    if (find_os(&os) == 0 && version_compare(os.version, XAPT_OS_VERSION) > 0) {
+    if (find_os(&os) == 0 && parse_build(os.version) > (long)XAPT_OS_BUILD) {
       print("xaios ");
       print(os.version);
       print(" [OS upgrade; reboot required]\n");
@@ -819,7 +836,7 @@ static int os_upgrade(const xapt_config_t *config) {
     print("xapt: no compatible OS image in active catalog\n");
     return -1;
   }
-  if (version_compare(os.version, XAPT_OS_VERSION) <= 0) {
+  if (parse_build(os.version) <= (long)XAPT_OS_BUILD) {
     print("xapt: OS is already up to date\n");
     return 0;
   }

@@ -36,7 +36,7 @@ VOLUMES = (
 
 # What a healthy boot says. Each is required.
 EXPECTED = (
-    ("kernel started", re.compile(r"XAIOS \d+\.\d+\.\d+ kernel starting")),
+    ("kernel started", re.compile(r"XAIOS Build \d+ kernel starting")),
     ("virtio console attached", re.compile(r"virtio-console: kernel log attached")),
     ("durable volume mounted", re.compile(r"mutable-fs: persistent mounted")),
     ("filesystem checked", re.compile(r"persistent fsck valid=1")),
