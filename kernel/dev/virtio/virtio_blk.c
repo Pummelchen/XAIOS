@@ -876,6 +876,14 @@ uint32_t virtio_block_is_read_only(void) {
   return g_blk != 0 && g_blk->initialized != 0U && g_blk->read_only != 0U;
 }
 
+/* Whether the block device is a real virtio device or a region of memory the
+   loader handed over. The interrupt canary asks a device to complete a request
+   and raise an interrupt; there is nothing to ask when the "device" is memory,
+   so callers have to be able to tell the difference rather than assert. */
+uint32_t virtio_block_is_memory_backed(void) {
+  return g_blk != 0 && g_blk->memory_backed != 0U ? 1U : 0U;
+}
+
 xaios_status_t virtio_block_interrupt_canary_arm(uint64_t sector,
                                                  void *buffer,
                                                  uint64_t buffer_size) {

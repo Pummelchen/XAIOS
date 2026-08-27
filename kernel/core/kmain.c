@@ -758,24 +758,36 @@ persistent_network_done:
     kassert(nvme_interrupt_self_test() == XAIOS_OK);
   }
 #if defined(__x86_64__)
-  uint64_t interrupt_drain_deadline =
-      timer_now_ns() + UINT64_C(100000000);
-  while (virtio_block_interrupt_count() == initial_block_interrupts &&
-         timer_now_ns() < interrupt_drain_deadline)
-    xaios_cpu_relax();
-  uint8_t interrupt_sector[512];
-  kassert(virtio_block_interrupt_canary_arm(
-      0U, interrupt_sector, sizeof(interrupt_sector)) == XAIOS_OK);
-  xaios_status_t interrupt_status =
-      virtio_block_interrupt_canary_wait(UINT64_C(1000000000));
-  if (interrupt_status == XAIOS_OK) {
-    klog("virtio-blk: x86 completion canary passed mode=msix count=%lu\n",
-         virtio_block_interrupt_count());
+  /* The canary asks the block device to complete a request and raise an
+     interrupt. When the loader supplied the initial filesystem in memory there
+     is no device to ask, and every step below fails on that rather than on
+     anything being wrong -- which is what happened the first time this kernel
+     booted from the unified image, where the initial filesystem rides on the
+     boot medium instead of arriving as a separate drive. Report that the test
+     did not apply; do not assert that memory can raise interrupts. */
+  if (virtio_block_is_memory_backed() != 0U) {
+    klog("virtio-blk: x86 completion canary skipped; the block device is "
+         "loader memory, which raises no interrupts\n");
   } else {
-    kassert(virtio_block_read_sector(0U, interrupt_sector,
-                                    sizeof(interrupt_sector)) == XAIOS_OK);
-    klog("virtio-blk: x86 completion canary passed mode=bounded-poll status=%d\n",
-         (int)interrupt_status);
+    uint64_t interrupt_drain_deadline = timer_now_ns() + UINT64_C(100000000);
+    while (virtio_block_interrupt_count() == initial_block_interrupts &&
+           timer_now_ns() < interrupt_drain_deadline)
+      xaios_cpu_relax();
+    uint8_t interrupt_sector[512];
+    kassert(virtio_block_interrupt_canary_arm(
+        0U, interrupt_sector, sizeof(interrupt_sector)) == XAIOS_OK);
+    xaios_status_t interrupt_status =
+        virtio_block_interrupt_canary_wait(UINT64_C(1000000000));
+    if (interrupt_status == XAIOS_OK) {
+      klog("virtio-blk: x86 completion canary passed mode=msix count=%lu\n",
+           virtio_block_interrupt_count());
+    } else {
+      kassert(virtio_block_read_sector(0U, interrupt_sector,
+                                       sizeof(interrupt_sector)) == XAIOS_OK);
+      klog("virtio-blk: x86 completion canary passed mode=bounded-poll "
+           "status=%d\n",
+           (int)interrupt_status);
+    }
   }
 #endif
   timer_enable_periodic(XAIOS_SCHEDULER_DEFAULT_TICK_HZ);

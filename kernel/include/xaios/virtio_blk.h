@@ -20,6 +20,10 @@ xaios_status_t virtio_block_flush(void);
 uint64_t virtio_block_capacity_sectors(void);
 uint64_t virtio_block_interrupt_count(void);
 uint32_t virtio_block_is_read_only(void);
+/* Non-zero when the block device is memory supplied by the loader rather than
+   a virtio device. See virtio_blk.c. */
+uint32_t virtio_block_is_memory_backed(void);
+
 xaios_status_t virtio_block_interrupt_canary_arm(uint64_t sector,
                                                  void *buffer,
                                                  uint64_t buffer_size);
