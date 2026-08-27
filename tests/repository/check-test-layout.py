@@ -19,6 +19,7 @@ RUNTIME_SCRIPTS = {
     "build-compiler-rt.sh",
     "build-image-x86_64.sh",
     "build-image.sh",
+    "build-unified-image.sh",
     "build-user-app.sh",
     "build-xapt-repository.sh",
     "build-libc-runtime-test.sh",

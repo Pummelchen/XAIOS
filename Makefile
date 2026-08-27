@@ -70,6 +70,11 @@ vz-harness:
 qemu-dhcpv6-gate: image-qemu-test
 	python3 ./tests/scripts/qemu-dhcpv6-gate.py
 
+# One bootable file for every environment: hybrid ISO 9660 and GPT, both
+# architectures, bootable as optical media, as a disk, or from a USB stick.
+unified-image:
+	./scripts/build-unified-image.sh
+
 vz-run: vz-harness
 	./platform/virtualization-framework/run-vz.sh $(VZ_RUN_ARGS)
 

@@ -6,6 +6,27 @@
 #define EI_NIDENT 16
 #define PT_LOAD 1
 #define PT_DYNAMIC 2
+/* Where this loader looks for its kernel.
+ *
+ * One boot medium carries both architectures, and the two kernels cannot both
+ * be called kernel.elf. Each loader asks for its own name first and falls back
+ * to the shared one, so a single-architecture image built the old way still
+ * boots: the fallback is what those images have always contained. */
+#if defined(XAIOS_UEFI_TARGET_X86_64)
+#define XAIOS_KERNEL_PATH u"\\EFI\\XAIOS\\kernel-x86_64.elf"
+#else
+#define XAIOS_KERNEL_PATH u"\\EFI\\XAIOS\\kernel-aarch64.elf"
+#endif
+#define XAIOS_KERNEL_PATH_SHARED u"\\EFI\\XAIOS\\kernel.elf"
+/* The initial filesystem is architecture-specific too -- it holds userspace
+   ELFs -- so a medium carrying both needs two of them. Same primary/fallback
+   shape as the kernel, so an image built the old way still boots. */
+#if defined(XAIOS_UEFI_TARGET_X86_64)
+#define XAIOS_INITFS_PATH u"\\EFI\\XAIOS\\initfs-x86_64.img"
+#else
+#define XAIOS_INITFS_PATH u"\\EFI\\XAIOS\\initfs-aarch64.img"
+#endif
+#define XAIOS_INITFS_PATH_SHARED u"\\EFI\\XAIOS\\initfs.img"
 /* Matches EARLY_IDENTITY_SIZE in kernel/arch/aarch64/mmu.c. */
 #define XAIOS_LOADER_MAX_KERNEL_ADDRESS UINT64_C(0x100000000)
 #define DT_NULL 0
@@ -592,8 +613,12 @@ static efi_status_t open_root(efi_handle_t image_handle,
       continue;
     }
     status = candidate_root->open(candidate_root, &kernel_file,
-                                  u"\\EFI\\XAIOS\\kernel.elf",
-                                  EFI_FILE_MODE_READ, 0);
+                                  XAIOS_KERNEL_PATH, EFI_FILE_MODE_READ, 0);
+    if (is_error(status)) {
+      status = candidate_root->open(candidate_root, &kernel_file,
+                                    XAIOS_KERNEL_PATH_SHARED,
+                                    EFI_FILE_MODE_READ, 0);
+    }
     if (!is_error(status)) {
       (void)kernel_file->close(kernel_file);
       *root = candidate_root;
@@ -616,9 +641,12 @@ static efi_status_t read_kernel_file(efi_system_table_t *system_table,
   efi_physical_address_t kernel_storage = 0;
   uint64_t read_size = KERNEL_MAX_SIZE;
 
-  efi_status_t status = root->open(root, &kernel_file,
-                                   u"\\EFI\\XAIOS\\kernel.elf",
+  efi_status_t status = root->open(root, &kernel_file, XAIOS_KERNEL_PATH,
                                    EFI_FILE_MODE_READ, 0);
+  if (is_error(status)) {
+    status = root->open(root, &kernel_file, XAIOS_KERNEL_PATH_SHARED,
+                        EFI_FILE_MODE_READ, 0);
+  }
   if (is_error(status)) {
     return status;
   }
@@ -654,9 +682,13 @@ static efi_status_t read_optional_boot_image(
 
   *image_base = 0U;
   *image_size = 0U;
-  efi_status_t status = root->open(root, &image_file,
-                                   u"\\EFI\\XAIOS\\initfs.img",
+  efi_status_t status = root->open(root, &image_file, XAIOS_INITFS_PATH,
                                    EFI_FILE_MODE_READ, 0);
+  if (status == EFI_NOT_FOUND) {
+    status = root->open(root, &image_file, XAIOS_INITFS_PATH_SHARED,
+                        EFI_FILE_MODE_READ, 0);
+  }
+  /* Still absent is not an error: a machine can boot without one. */
   if (status == EFI_NOT_FOUND) return EFI_SUCCESS;
   if (is_error(status)) return status;
 
