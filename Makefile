@@ -75,6 +75,12 @@ qemu-dhcpv6-gate: image-qemu-test
 unified-image:
 	./scripts/build-unified-image.sh
 
+# Boot that one file on every environment available here. Shallower than the
+# per-platform gates by design: they each boot their own image, so all four can
+# pass while the unified image boots nothing.
+unified-image-gate: unified-image
+	python3 ./tests/scripts/unified-image-gate.py
+
 vz-run: vz-harness
 	./platform/virtualization-framework/run-vz.sh $(VZ_RUN_ARGS)
 

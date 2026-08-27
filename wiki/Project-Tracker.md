@@ -81,8 +81,9 @@ which the build enforces.
 | Storage transport | virtio-MMIO | virtio-PCI, NVMe | AHCI | virtio-PCI |
 | Network transport | virtio-MMIO | virtio-PCI | E1000E (`F-02` no VMXNET3) | virtio-PCI |
 | Applications gated | yes, by name | yes, by name | yes, by name | yes, by name |
-| Boots the unified image | yes | yes | yes | yes |
+| Boots the unified image | yes, gated | yes, gated | yes, gated | yes, gated |
 | Automated gate | full CI | full CI | `make vmware-fusion-smoke` | `make vz-gate`, `make vz-stress-gate` |
+| Unified-image gate | `make unified-image-gate` covers all four from one file | | | |
 | Evidence class | correctness only | correctness only | Fusion 26H1 lifecycle | development target, not evidence |
 
 Device inventory differs because the hypervisors differ; the kernel discovers
