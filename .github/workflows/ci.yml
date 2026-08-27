@@ -125,6 +125,52 @@ jobs:
             build/uefi/BOOTAA64.EFI
           retention-days: 7
 
+  unified-image:
+    name: Unified Image (one file, every environment available)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      # xorriso builds the hybrid image; both QEMU architectures and both
+      # firmwares are needed because the point of this job is that one file
+      # boots more than one of them.
+      - name: Install toolchain and both QEMU architectures
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm meson ninja-build \
+            qemu-system-arm qemu-efi-aarch64 qemu-system-x86 ovmf \
+            xorriso mtools python3 python3-cryptography
+
+      # Both architectures, with the applications, because the gate asserts
+      # the shell command surface and that only exists in a test-apps build.
+      - name: Build both architectures
+        run: |
+          XAIOS_BOOT_VERBOSE=1 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
+          XAIOS_TARGET_ARCH=x86_64 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
+
+      # VMware Fusion and Virtualization.framework do not exist on a Linux
+      # runner, so the gate reports them as skipped and passes on the two it
+      # can run. That is the honest result: it proves the file boots both
+      # architectures, and claims nothing about the hypervisors, which are
+      # covered by make unified-image-gate on a macOS host.
+      - name: Boot the unified image on every environment available here
+        run: make unified-image-gate
+        env:
+          XAIOS_UNIFIED_QEMU_TIMEOUT: "600"
+
+      - name: Upload the unified image and its report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unified-image
+          path: |
+            build/xaios.iso
+            build/unified-image-gate.json
+            build/unified-qemu-*.log
+          retention-days: 7
+
   x86-bring-up:
     name: x86_64 Bring-up
     runs-on: ubuntu-latest
