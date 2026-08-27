@@ -3,6 +3,13 @@
 `xaios_b1.iso` — 227,880,960 bytes
 SHA-256 `d09aeaa82b05890bc8d0728f297728f652b1c59a3d4c8f6bf3d6448b09f7cc76`
 
+`xaios_b1.iso.zip` — 19,361,032 bytes
+SHA-256 `0cbd037b595fdef8780dfdbbc0f82ef5b228d304f0500513b65d4ea832bc7f73`
+
+The zip contains the image and nothing else. It exists because the ISO is larger than
+GitHub will accept as a file, and compressed it is not — so the release can travel
+with the repository. Unzip it and check the image against the checksum above.
+
 One file. It carries both an AArch64 and an x86-64 kernel, and firmware selects
 the right one. It is an ISO 9660 filesystem and a GPT-partitioned disk at the
 same time, so the same file boots as optical media, boots as a disk, and mounts

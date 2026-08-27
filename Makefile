@@ -75,6 +75,11 @@ qemu-dhcpv6-gate: image-qemu-test
 unified-image:
 	./scripts/build-unified-image.sh
 
+# The release package: the image, and the zip that carries it where a 220 MB
+# file cannot go.
+release-package: unified-image
+	./scripts/build-release.sh
+
 # Boot that one file on every environment available here. Shallower than the
 # per-platform gates by design: they each boot their own image, so all four can
 # pass while the unified image boots nothing.

@@ -51,3 +51,6 @@ service-account*.json
 # make unified-image. Its SHA-256 is recorded in the note, so a downloaded
 # image can be checked against what was gated.
 release/*.iso
+# The zip is tracked. It is about a tenth the size of the image, which puts it
+# under GitHub's 100 MB limit, so the release can travel with the repository.
+!release/*.iso.zip
