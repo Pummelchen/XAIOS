@@ -29,7 +29,10 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 BUILD_DIR="$ROOT_DIR/build"
 STAGE_DIR="$BUILD_DIR/unified-root"
 ESP_IMAGE="$BUILD_DIR/unified-esp.img"
-OUTPUT="${XAIOS_UNIFIED_IMAGE:-$BUILD_DIR/xaios.iso}"
+# Named for the build it is, so a file that has left this repository still
+# says which one it came from. BUILD_NUMBER is the single source.
+BUILD_NUMBER="$(tr -d ' \n' < "$ROOT_DIR/BUILD_NUMBER" 2>/dev/null || printf '%s' 0)"
+OUTPUT="${XAIOS_UNIFIED_IMAGE:-$BUILD_DIR/xaios_b${BUILD_NUMBER}.iso}"
 ESP_MIB="${XAIOS_UNIFIED_ESP_MIB:-96}"
 
 for tool in xorriso mformat mmd mcopy; do
@@ -161,6 +164,7 @@ xorriso -as mkisofs -quiet \
 
 printf '%s\n' "XAIOS unified image: $OUTPUT"
 printf '%s\n' "  size:          $(wc -c < "$OUTPUT") bytes"
+printf '%s\n' "  build:         $BUILD_NUMBER"
 printf '%s\n' "  architectures: aarch64$([ "$INCLUDE_X86" -eq 1 ] && printf ', x86_64')"
 printf '%s\n' "  boot as:       optical media, or a disk with an EFI System Partition"
 printf '%s\n' "  usb stick:     dd if=$OUTPUT of=/dev/rdiskN bs=4m"

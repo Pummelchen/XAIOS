@@ -43,3 +43,11 @@ service-account*.json
 !tests/fixtures/xapt-tls-key.pem
 !tests/fixtures/xapt-tls-cert.pem
 !userspace/apps/trust/*.pem
+
+# Release images are not committed. GitHub refuses any file over 100 MB, and a
+# 227 MB ISO in history would be carried by every clone of this repository
+# forever. The release note beside them is tracked; the image itself is
+# published as a GitHub release asset and rebuilt from a tagged commit with
+# make unified-image. Its SHA-256 is recorded in the note, so a downloaded
+# image can be checked against what was gated.
+release/*.iso

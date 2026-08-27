@@ -217,6 +217,10 @@ void kmain(const xaios_boot_info_t *boot) {
   boot_ui_self_test();
   boot_ui_update(25U, "hardware handoff", "CPU and interrupts", 5U);
   klog("XAIOS %s kernel starting\n", XAIOS_PRODUCT_VERSION);
+  /* Separate line on purpose: the boot banner above is matched verbatim
+     by gates on four platforms, and a release needs to be identifiable
+     from a boot log without changing what they match. */
+  klog("kernel: build %u\n", (unsigned)XAIOS_BUILD_NUMBER);
   kassert(boot->magic == XAIOS_BOOT_INFO_MAGIC);
   kassert(boot->version == XAIOS_BOOT_INFO_VERSION);
 

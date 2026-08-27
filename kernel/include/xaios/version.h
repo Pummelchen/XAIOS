@@ -18,4 +18,15 @@
 #define XAIOS_PRODUCT_VERSION "unknown"
 #endif
 
+/*
+ * The build number, single-sourced from BUILD_NUMBER at the repository root.
+ * Releases are named and referred to by this -- build 1 ships as xaios_b1.iso
+ * -- while the version string above remains what the boot banner and the tools
+ * report. A build not produced by scripts/build-image.sh has no number and
+ * says 0 rather than claiming one.
+ */
+#ifndef XAIOS_BUILD_NUMBER
+#define XAIOS_BUILD_NUMBER 0
+#endif
+
 #endif

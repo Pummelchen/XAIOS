@@ -37,7 +37,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
-IMAGE = Path(os.environ.get("XAIOS_UNIFIED_IMAGE", BUILD / "xaios.iso"))
+def _build_number() -> str:
+    """The build this tree produces, so the gate looks for the right file."""
+    try:
+        return (ROOT / "BUILD_NUMBER").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "0"
+
+
+IMAGE = Path(os.environ.get(
+    "XAIOS_UNIFIED_IMAGE", BUILD / f"xaios_b{_build_number()}.iso"))
 VZ = BUILD / "vz"
 FUSION_VM = BUILD / "vmware-fusion" / "XAIOS.vmwarevm"
 REPORT = BUILD / "unified-image-gate.json"
