@@ -1,7 +1,7 @@
 # XAIOS build 1
 
 `xaios_b1.iso` — 227,880,960 bytes
-SHA-256 `9a1e3ec6ed563bf7396b4669d0ff6d57f80a39808408e4987dc4838e17f21a50`
+SHA-256 `e778ae7e0b9b09f7d3307af2753ccef267855ed10b3034679a33db499fc0423e`
 
 One file. It carries both an AArch64 and an x86-64 kernel, and firmware selects
 the right one. It is an ISO 9660 filesystem and a GPT-partitioned disk at the
@@ -10,9 +10,17 @@ for reading.
 
 ## Where this was tested
 
-Every environment below booted **this exact file** — same SHA-256 — to a login
-prompt with the SSH server listening, under `make unified-image-gate`. Nothing
-in this table is inferred from a similar configuration.
+Every environment below booted **this exact file** — the one with the SHA-256
+above — to a login prompt with the SSH server listening, under
+`make unified-image-gate`. Nothing in this table is inferred from a similar
+configuration, from a rebuild, or from a copy: the checksum above was
+taken before the gate ran and again after it, and is the same both times.
+
+That distinction matters here, because the image is deliberately not
+reproducible: each build embeds a fresh boot entropy seed, so rebuilding this
+commit produces a working image with a different checksum. The checksum above
+identifies one artifact, not the commit. Verify a download against it; do not
+expect a rebuild to match it.
 
 | Environment | Version tested | Attached as | Firmware |
 |---|---|---|---|

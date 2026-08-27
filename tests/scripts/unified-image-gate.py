@@ -130,11 +130,20 @@ def boot_qemu(arch: str) -> tuple[str, str | None]:
     # AArch64 spelling left x86_64 booting the shared durable volume -- which
     # was already in rescue mode, so the gate failed on state rather than on
     # the image. Set the pair each runner actually reads.
+    # Boot a copy, never the artifact. The x86_64 guest writes to the medium
+    # it booted from -- its virtio-blk self-test exercises write, error and
+    # reset against device zero -- so pointing a runner at a release image
+    # changes that image. It was noticed when a release checksum moved between
+    # being gated and being published, and the file that had been verified was
+    # no longer the file on disk. Copying costs a second and makes "this exact
+    # file booted" true rather than nearly true.
+    scratch = BUILD / f"unified-boot-{arch}.img"
+    shutil.copy(IMAGE, scratch)
     image_variable = ("XAIOS_AARCH64_IMAGE" if arch == "aarch64"
                       else "XAIOS_X86_64_IMAGE")
     persistent_variable = ("XAIOS_PERSISTENT_IMAGE" if arch == "aarch64"
                            else "XAIOS_X86_PERSISTENT_IMAGE")
-    environment = {**os.environ, image_variable: str(IMAGE),
+    environment = {**os.environ, image_variable: str(scratch),
                    persistent_variable:
                        str(fresh_persistent(f"unified-{arch}-persistent.img"))}
     # x86_64 has no hardware acceleration on an ARM host, so it boots through
