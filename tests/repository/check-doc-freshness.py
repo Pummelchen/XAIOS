@@ -67,6 +67,22 @@ def in_our_history(commit: str) -> bool:
     return result.returncode == 0
 
 
+def history_is_shallow() -> bool:
+    """Whether this clone has enough history to say when a file last changed.
+
+    In a depth-1 clone there is exactly one commit, so `git log -1 -- <path>`
+    reports that commit's date for every file in the tree rather than the date
+    the file actually changed. The comparison below then reads as "every
+    document was modified at HEAD", which is wrong in both directions: it fails
+    a document nobody touched as soon as a commit lands on a later day, and it
+    can never notice a document that really has gone stale.
+
+    CI clones shallow by default, so this went unseen until a session crossed
+    midnight and the next commit failed a tracker that had not been edited.
+    """
+    return run("git", "rev-parse", "--is-shallow-repository") == "true"
+
+
 def check_build_identity(failures: list[str]) -> None:
     """BUILD_NUMBER and the changelog must name the same build.
 
@@ -99,6 +115,7 @@ def main() -> int:
     check_build_identity(failures)
     upstream_pins = 0
     checked = 0
+    shallow = history_is_shallow()
 
     for surface in SURFACES:
         base = ROOT / surface
@@ -128,7 +145,7 @@ def main() -> int:
             reviewed = REVIEWED.search(text)
             if reviewed:
                 claimed = reviewed.group(1)
-                changed = run(
+                changed = "" if shallow else run(
                     "git", "log", "-1", "--format=%ad", "--date=short", "--", str(relative)
                 )
                 if changed and changed > claimed:
@@ -148,10 +165,13 @@ def main() -> int:
             print(f"  - {failure}")
         return 1
 
+    review_state = ("review dates not checked: history is shallow, so git "
+                    "cannot say when a file last changed"
+                    if shallow else "review dates current")
     print(
         f"doc-freshness: {checked} commit references checked "
-        f"({upstream_pins} upstream pins, old by design), review dates "
-        f"current, version identity consistent"
+        f"({upstream_pins} upstream pins, old by design), {review_state}, "
+        f"version identity consistent"
     )
     return 0
 

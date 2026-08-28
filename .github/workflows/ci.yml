@@ -74,7 +74,15 @@ jobs:
     name: Documentation Contract
     runs-on: ubuntu-latest
     steps:
+      # Full history. docs-check asks when each document last changed, and a
+      # depth-1 clone has one commit, so git answers "at HEAD" for every file
+      # in the tree -- which fails a document nobody touched as soon as a
+      # commit lands on a later day, and never notices one that really is
+      # stale. The check now declines to guess when history is shallow, so
+      # without this it would pass without checking anything.
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Check documentation and contract synchronization
         run: make docs-check
@@ -254,9 +262,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 50
     steps:
+      # Full history, for the same reason as the Documentation Contract job:
+      # this aggregate runs docs-check, and the review-date comparison inside
+      # it needs to be able to see when a file actually changed.
       - uses: actions/checkout@v6
         with:
           submodules: recursive
+          fetch-depth: 0
 
       - name: Install AArch64 and x86_64 test dependencies
         run: |
