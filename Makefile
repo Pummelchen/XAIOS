@@ -504,6 +504,10 @@ hosted-test: engine-cli
 	  -o build/hosted/test-storage-admin
 	./build/hosted/test-storage-admin
 	$(HOST_CC) $(HOST_CFLAGS) \
+	  -Ikernel/include kernel/dev/block_device.c kernel/fs/fat.c \
+	  tests/storage/test_fat.c -o build/hosted/test-fat
+	./build/hosted/test-fat
+	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Ikernel/include -Iengine/include -Iengine/src -Iuserspace/include \
 	  -Iuserspace/sshd kernel/dev/block_device.c kernel/lib/crc32.c \
 	  kernel/storage/gpt.c kernel/storage/partition_device.c \
