@@ -338,8 +338,21 @@ static void render_sys_regs(uint64_t elr, uint64_t esr, uint64_t far,
 #endif
 }
 
+extern char __kernel_start[];
+
 static void render_backtrace(const uint64_t *trace, uint32_t depth) {
   panic_puts("  --- Stack Backtrace ---\r\n");
+  /* Where this kernel was loaded, printed with the addresses rather than left
+     to be found elsewhere. The kernel is position-independent and the loader
+     places it wherever the machine has room, so the same build lands at a
+     different address every boot and a bare address means nothing without
+     this. An intermittent fault on VMware Fusion was recorded exactly once,
+     as fifteen addresses and no base, and could not be turned back into
+     function names at all. Subtract this from an address and give the result
+     to llvm-symbolizer against kernel.elf. */
+  panic_puts("  load base ");
+  panic_u64_hex((uint64_t)(uintptr_t)__kernel_start);
+  panic_puts("  (subtract from the addresses below)\r\n");
   for (uint32_t i = 0; i < depth; ++i) {
     panic_puts("  #");
     panic_u32(i);
