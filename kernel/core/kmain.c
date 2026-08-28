@@ -34,6 +34,8 @@
 #include <xaios/kheap.h>
 #include <xaios/klog_ring.h>
 #include <xaios/git_workspace.h>
+#include <xaios/gpt.h>
+#include <xaios/partition_device.h>
 #include <xaios/klog.h>
 #include <xaios/version.h>
 #include <xaios/virtio_gpu.h>
@@ -174,6 +176,67 @@ static int run_user_app(const char *path, uint32_t pid, uint64_t capabilities) {
    Bounded and non-fatal. The default server is a bare address, so this needs
    no DNS, but UDP/123 is filtered on some networks and a boot must not stall
    waiting for a reply that will never arrive. */
+/* Mount xaibootFS from a partition of a disk the machine already booted from.
+ *
+ * Until now durable state had to arrive on a separate device: the boot medium
+ * carried the kernel and something else carried the writable volume, which is
+ * how every hypervisor here is configured and is not how an installed machine
+ * works. A disk that has been partitioned holds both, and nothing looked --
+ * gpt_read and partition_device_register were both written and neither was
+ * ever called on the boot path.
+ *
+ * Returns XAIOS_OK once a partition typed as xaibootFS storage has been
+ * registered and mounted. Anything else leaves the caller to go on probing
+ * the separate devices it always did, because a disk without a partition
+ * table is the normal case here and not an error.
+ */
+static xaios_partition_device_t g_boot_partitions[XAIOS_GPT_MAX_PARTITIONS];
+static uint8_t g_gpt_scratch[4096] __attribute__((aligned(64)));
+static xaios_gpt_table_t g_boot_gpt;
+
+static xaios_status_t mount_xaibootfs_from_boot_disk(const char *disk) {
+  xaios_block_device_t *device = 0;
+  if (block_device_open(disk, &device) != XAIOS_OK || device == 0) {
+    return XAIOS_ERR_NOT_FOUND;
+  }
+  xaios_status_t status =
+      gpt_read(device, &g_boot_gpt, g_gpt_scratch, sizeof(g_gpt_scratch));
+  if (status != XAIOS_OK ||
+      (g_boot_gpt.primary_valid == 0U && g_boot_gpt.backup_valid == 0U)) {
+    (void)block_device_close(device);
+    return XAIOS_ERR_NOT_FOUND;
+  }
+
+  uint32_t mounted = 0U;
+  for (uint32_t index = 0U;
+       index < XAIOS_GPT_MAX_PARTITIONS && mounted == 0U; ++index) {
+    const xaios_gpt_partition_t *entry = &g_boot_gpt.partitions[index];
+    if (gpt_guid_is_zero(&entry->type_guid)) continue;
+    if (!gpt_guid_equal(&entry->type_guid, &XAIOS_GPT_TYPE_STATEFS)) continue;
+
+    char identifier[XAIOS_BLOCK_DEVICE_ID_MAX];
+    uint64_t used = 0U;
+    for (const char *cursor = disk; *cursor != '\0'; ++cursor) {
+      if (used + 4U >= sizeof(identifier)) break;
+      identifier[used++] = *cursor;
+    }
+    identifier[used++] = 'p';
+    identifier[used++] = (char)('0' + (char)(index % 10U));
+    identifier[used] = '\0';
+
+    if (partition_device_register(&g_boot_partitions[index], device, identifier,
+                                  entry, 0U) != XAIOS_OK) {
+      continue;
+    }
+    if (xaiboot_fs_mount_device(identifier) == XAIOS_OK) {
+      klog("xaibootfs: mounted from %s, a partition of the disk this machine "
+           "booted from\n", identifier);
+      mounted = 1U;
+    }
+  }
+  return mounted != 0U ? XAIOS_OK : XAIOS_ERR_NOT_FOUND;
+}
+
 static void boot_sync_wall_clock(void) {
   if (ntp_sync(0U) != XAIOS_ERR_BUSY) {
     klog("kernel: boot ntp not started state=%u\n",
@@ -505,6 +568,14 @@ void kmain(const xaios_boot_info_t *boot) {
     if (persistent_status == XAIOS_OK) {
       klog("xaibootfs: using registered AHCI persistent data disk\n");
     }
+  }
+  /* A disk the machine booted from may carry its own state in a partition,
+     which is what an installed system looks like as opposed to an image with
+     volumes attached beside it. Tried before the separate devices below, so a
+     machine that has been installed uses its own disk rather than whatever
+     else happens to be plugged in. */
+  if (persistent_status != XAIOS_OK) {
+    persistent_status = mount_xaibootfs_from_boot_disk("/dev/vblk0");
   }
   if (persistent_status != XAIOS_OK) {
     /* vblk0 remains the immutable initramfs/test image. Open the dedicated
