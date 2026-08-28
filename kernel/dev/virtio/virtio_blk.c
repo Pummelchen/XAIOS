@@ -1248,16 +1248,35 @@ void virtio_block_self_test(void) {
          g_blk->capacity_sectors);
     return;
   }
+  /* A device that says it is read-only is asked to prove it refuses writes,
+     and is not asked to accept one.
+     
+     This test wrote to the device the machine booted from. That is harmless
+     where the boot medium is a writable disk image, which is every emulator
+     configuration here, and it is not harmless generally: a machine booting a
+     CD or a write-protected stick would panic on this assertion rather than
+     skip it, and testing a release image modified the artifact under test.
+     The driver has always refused writes to a read-only device; the self-test
+     simply never asked whether this one was. */
+  uint32_t writable = g_blk->read_only == 0U ? 1U : 0U;
   kassert(virtio_block_read_sector(write_test_sector, original_sector,
                                    SECTOR_SIZE) == XAIOS_OK);
-  kassert(virtio_block_write_sector(write_test_sector, write_sector,
-                                    SECTOR_SIZE) == XAIOS_OK);
-  kassert(virtio_block_flush() == XAIOS_OK);
-  bytes_zero(sector, SECTOR_SIZE);
-  kassert(virtio_block_read_sector(write_test_sector, sector, SECTOR_SIZE) ==
-          XAIOS_OK);
-  for (uint64_t i = 0; i < SECTOR_SIZE; ++i) {
-    kassert(sector[i] == (uint8_t)(i & 0xffU));
+  if (writable == 0U) {
+    /* A device that says it is read-only is asked to prove it refuses a write,
+       and is not asked to accept one. Everything below that does not depend on
+       having written still runs, so the device is exercised either way. */
+    kassert(virtio_block_write_sector(write_test_sector, write_sector,
+                                      SECTOR_SIZE) == XAIOS_ERR_INVALID);
+  } else {
+    kassert(virtio_block_write_sector(write_test_sector, write_sector,
+                                      SECTOR_SIZE) == XAIOS_OK);
+    kassert(virtio_block_flush() == XAIOS_OK);
+    bytes_zero(sector, SECTOR_SIZE);
+    kassert(virtio_block_read_sector(write_test_sector, sector, SECTOR_SIZE) ==
+            XAIOS_OK);
+    for (uint64_t i = 0; i < SECTOR_SIZE; ++i) {
+      kassert(sector[i] == (uint8_t)(i & 0xffU));
+    }
   }
   kassert(g_blk->uses_indirect != 0U);
   kassert(virtio_block_queue_depth_h(g_blk) ==
@@ -1282,16 +1301,20 @@ void virtio_block_self_test(void) {
     kassert(wait_sync(g_blk, &waits[i]) == XAIOS_OK);
   }
   kassert(virtio_block_outstanding_h(g_blk) == 0U);
-  kassert(async_sectors[0][0] == 'X' && async_sectors[0][1] == 'A' &&
-          async_sectors[1][0] == 0U && async_sectors[1][1] == 1U);
-  kassert(virtio_block_write_sector(write_test_sector, original_sector,
-                                    SECTOR_SIZE) == XAIOS_OK);
-  kassert(virtio_block_flush() == XAIOS_OK);
-  bytes_zero(sector, SECTOR_SIZE);
-  kassert(virtio_block_read_sector(write_test_sector, sector, SECTOR_SIZE) ==
-          XAIOS_OK);
-  for (uint64_t i = 0U; i < SECTOR_SIZE; ++i) {
-    kassert(sector[i] == original_sector[i]);
+  kassert(async_sectors[0][0] == 'X' && async_sectors[0][1] == 'A');
+  if (writable != 0U) {
+    kassert(async_sectors[1][0] == 0U && async_sectors[1][1] == 1U);
+    /* Put back what was there. Nothing was changed on a read-only device, so
+       there is nothing to restore. */
+    kassert(virtio_block_write_sector(write_test_sector, original_sector,
+                                      SECTOR_SIZE) == XAIOS_OK);
+    kassert(virtio_block_flush() == XAIOS_OK);
+    bytes_zero(sector, SECTOR_SIZE);
+    kassert(virtio_block_read_sector(write_test_sector, sector, SECTOR_SIZE) ==
+            XAIOS_OK);
+    for (uint64_t i = 0U; i < SECTOR_SIZE; ++i) {
+      kassert(sector[i] == original_sector[i]);
+    }
   }
   klog("virtio-blk: asynchronous queue self-test passed depth=%u indirect=%u direct-or-bounce=verified\n",
        virtio_block_queue_depth_h(g_blk), g_blk->uses_indirect);
@@ -1316,6 +1339,7 @@ void virtio_block_self_test(void) {
           sector[3] == 'O');
   kassert(block_device_close(block) == XAIOS_OK);
   klog("virtio-blk: read/write/error/reset self-test passed discovery=1 ");
+  klog("medium=%s ", writable != 0U ? "writable" : "read-only");
   klog("logical=%lu physical=%lu flush=%u discard=%u zeroes=%u\n",
        info.logical_sector_size, info.physical_block_size,
        info.flush_supported, info.discard_supported,

@@ -113,6 +113,10 @@ cpu="${XAIOS_QEMU_X86_CPU:-max}"
 # this is the smallest number that boots everywhere.
 memory="${XAIOS_QEMU_X86_MEMORY:-2G}"
 smp="${XAIOS_QEMU_X86_SMP:-4}"
+# The boot medium is attached read-only, as the AArch64 runner has always
+# attached it. A guest must not be able to write to the medium it booted from:
+# testing an image would modify it, and a machine booting a CD or a
+# write-protected stick cannot offer a writable one anyway.
 image="${XAIOS_X86_64_IMAGE:-build/xaios-x86_64.img}"
 test_block_image="${XAIOS_X86_TEST_BLOCK_IMAGE:-build/xaios-x86-virtio-test.img}"
 persistent_image="${XAIOS_X86_PERSISTENT_IMAGE:-build/xaios-x86-persistent.img}"
@@ -183,7 +187,7 @@ set -- "$qemu" \
   -nographic \
   -serial mon:stdio \
   -drive "if=pflash,format=raw,readonly=on,file=$firmware" \
-  -drive "if=none,format=raw,id=xaios_x86_boot,file=$image" \
+  -drive "if=none,format=raw,readonly=on,id=xaios_x86_boot,file=$image" \
   -device virtio-blk-pci,drive=xaios_x86_boot,bootindex=0,disable-legacy=on \
   -drive "if=none,format=raw,id=xaios_x86_test,file=$test_block_image" \
   -device virtio-blk-pci,drive=xaios_x86_test,disable-legacy=on \
