@@ -243,21 +243,55 @@ static uint64_t attrs_from_flags(uint32_t flags) {
   return attrs;
 }
 
+/* The level-1 table covering a level-0 slot, created if this is the first
+   mapping to land in that slot.
+
+   The kernel used to have exactly one, covering the low 512 GiB, and every
+   walker below refused anything above that outright. Refusing was survivable
+   for a long time because everything the kernel touches -- memory, the UART,
+   the GIC, the MMIO virtio windows -- is far below the line. A PCI BAR is not:
+   QEMU's virt machine has a 64-bit PCI window that begins at exactly 512 GiB,
+   and firmware is free to place a device there. It placed the disk of a
+   single-disk machine there, the mapping was refused, and the machine came up
+   with no durable storage and no way to say why.
+
+   TCR_EL1.T0SZ is 16, so the hardware has been walking a full 48-bit address
+   space all along, and sync_kernel_hierarchy already copies a new level-0
+   entry into every per-CPU root. The only thing missing was the table. */
+static uint64_t *ensure_l1_table(uint64_t l0_index) {
+  if (l0_index == 0U) return g_l1_table;
+  uint64_t descriptor = g_l0_table[l0_index];
+  if ((descriptor & (PTE_VALID | PTE_TABLE)) == (PTE_VALID | PTE_TABLE)) {
+    return (uint64_t *)(uintptr_t)(descriptor & PTE_ADDR_MASK);
+  }
+  /* A level-0 block descriptor is not architecturally available at a 4 KiB
+     granule, so a valid non-table entry here would mean the table is corrupt.
+     Decline rather than write through it. */
+  if ((descriptor & PTE_VALID) != 0U) return 0;
+  uint64_t *l1 = allocate_table();
+  if (l1 == 0) return 0;
+  g_l0_table[l0_index] = table_descriptor(l1);
+  return l1;
+}
+
+static uint64_t *find_l1_table(uint64_t l0_index) {
+  if (l0_index == 0U) return g_l1_table;
+  uint64_t descriptor = g_l0_table[l0_index];
+  if ((descriptor & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE)) {
+    return 0;
+  }
+  return (uint64_t *)(uintptr_t)(descriptor & PTE_ADDR_MASK);
+}
+
 static uint64_t *ensure_l3_table(uint64_t virtual_address) {
   uint64_t l0_index = (virtual_address >> 39) & 0x1ffU;
   uint64_t l1_index = (virtual_address >> 30) & 0x1ffU;
   uint64_t l2_index = (virtual_address >> 21) & 0x1ffU;
-  /* This kernel maps a single level-0 entry, so nothing above 512 GiB has a
-     table to live in. Report that rather than assert: the address usually
-     comes from a device BAR the firmware placed, and QEMU's virt machine puts
-     64-bit PCI windows up there. A layout this kernel cannot map should cost
-     the driver that asked, not the machine. */
-  if (l0_index != 0U) {
-    return 0;
-  }
+  uint64_t *l1_table = ensure_l1_table(l0_index);
+  if (l1_table == 0) return 0;
 
   /* Ensure L1 entry exists (allocate L2 table if needed) */
-  uint64_t l1_desc = g_l1_table[l1_index];
+  uint64_t l1_desc = l1_table[l1_index];
   if ((l1_desc & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE)) {
     uint64_t *new_l2 = (uint64_t *)pmm_alloc_page();
     kassert(new_l2 != 0);
@@ -272,9 +306,9 @@ static uint64_t *ensure_l3_table(uint64_t virtual_address) {
         new_l2[i] = 0;
       }
     }
-    g_l1_table[l1_index] = table_descriptor(new_l2);
+    l1_table[l1_index] = table_descriptor(new_l2);
   }
-  uint64_t *l2 = (uint64_t *)(uintptr_t)(g_l1_table[l1_index] & PTE_ADDR_MASK);
+  uint64_t *l2 = (uint64_t *)(uintptr_t)(l1_table[l1_index] & PTE_ADDR_MASK);
 
   uint64_t l2_desc = l2[l2_index];
   if ((l2_desc & (PTE_VALID | PTE_TABLE)) == (PTE_VALID | PTE_TABLE)) {
@@ -302,13 +336,14 @@ static uint64_t *ensure_l3_table(uint64_t virtual_address) {
 static uint64_t *ensure_l2_table(uint64_t virtual_address) {
   uint64_t l0_index = (virtual_address >> 39U) & 0x1ffU;
   uint64_t l1_index = (virtual_address >> 30U) & 0x1ffU;
-  if (l0_index != 0U) return 0;
+  uint64_t *l1_table = ensure_l1_table(l0_index);
+  if (l1_table == 0) return 0;
 
-  uint64_t l1_desc = g_l1_table[l1_index];
+  uint64_t l1_desc = l1_table[l1_index];
   if ((l1_desc & PTE_VALID) == 0U) {
     uint64_t *l2 = allocate_table();
     if (l2 == 0) return 0;
-    g_l1_table[l1_index] = table_descriptor(l2);
+    l1_table[l1_index] = table_descriptor(l2);
     return l2;
   }
   if ((l1_desc & PTE_TABLE) == 0U) return 0;
@@ -318,8 +353,9 @@ static uint64_t *ensure_l2_table(uint64_t virtual_address) {
 static uint64_t *find_l2_table(uint64_t virtual_address) {
   uint64_t l0_index = (virtual_address >> 39U) & 0x1ffU;
   uint64_t l1_index = (virtual_address >> 30U) & 0x1ffU;
-  if (l0_index != 0U) return 0;
-  uint64_t l1_desc = g_l1_table[l1_index];
+  const uint64_t *l1_table = find_l1_table(l0_index);
+  if (l1_table == 0) return 0;
+  uint64_t l1_desc = l1_table[l1_index];
   if ((l1_desc & (PTE_VALID | PTE_TABLE)) !=
       (PTE_VALID | PTE_TABLE)) {
     return 0;
@@ -764,6 +800,35 @@ void vmm_self_test(void) {
   kassert(vmm_unmap_large_page(large_va) == XAIOS_OK);
   kassert(vmm_translate(large_va, &translated, &flags) == XAIOS_ERR_INVALID);
   klog("VMM: ARM64 2 MiB large-page map/unmap self-test passed\n");
+
+  /* Above the first level-0 slot. QEMU's virt machine puts its 64-bit PCI
+     window at exactly this address, and firmware placed a disk's registers
+     there on a machine with one disk -- which the kernel then could not map,
+     leaving it with no durable storage. The mapping is what makes such a
+     machine usable, so check that it still works rather than trusting that
+     nobody reintroduces the single-slot assumption. */
+  const uint64_t high_va = UINT64_C(0x8000004000);
+  void *high_page = pmm_alloc_page();
+  kassert(high_page != 0);
+  kassert(vmm_map_page(high_va, (uint64_t)(uintptr_t)high_page,
+                       XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
+                           XAIOS_VMM_DEVICE) == XAIOS_OK);
+  kassert(vmm_translate(high_va, &translated, &flags) == XAIOS_OK);
+  kassert(translated == (uint64_t)(uintptr_t)high_page);
+  kassert((flags & XAIOS_VMM_DEVICE) != 0U);
+  /* A second page in the same slot must reuse the level-1 table the first one
+     created, not allocate over it. */
+  kassert(vmm_map_page(high_va + PAGE_SIZE, (uint64_t)(uintptr_t)high_page,
+                       XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
+                           XAIOS_VMM_DEVICE) == XAIOS_OK);
+  kassert(vmm_translate(high_va, &translated, &flags) == XAIOS_OK);
+  kassert(translated == (uint64_t)(uintptr_t)high_page);
+  kassert(vmm_unmap_page(high_va + PAGE_SIZE) == XAIOS_OK);
+  kassert(vmm_unmap_page(high_va) == XAIOS_OK);
+  invalidate_tlb_page(high_va);
+  kassert(vmm_translate(high_va, &translated, &flags) == XAIOS_ERR_INVALID);
+  pmm_free_page(high_page);
+  klog("VMM: mapping above the first level-0 slot passed va=0x%lx\n", high_va);
 
   uint64_t process_tables[USER_ASPACE_L3_TABLES];
   uint32_t process_table_count = 0U;

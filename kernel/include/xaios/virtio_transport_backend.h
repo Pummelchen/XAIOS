@@ -17,6 +17,11 @@ xaios_status_t virtio_mmio_backend_transport_find_from(uint32_t device_id, const
 xaios_status_t virtio_mmio_backend_transport_find_at(uint32_t device_id, const char *name,
                                        uint32_t slot,
                                        virtio_mmio_device_t *device);
+xaios_status_t virtio_mmio_backend_transport_find_nth(uint32_t device_id,
+                                    const char *name,
+                                    uint32_t ordinal,
+                                    uint32_t logical_slot,
+                                    virtio_mmio_device_t *device);
 void virtio_mmio_backend_transport_reset(const virtio_mmio_device_t *device);
 xaios_status_t virtio_mmio_backend_transport_reset_checked(
     const virtio_mmio_device_t *device);
@@ -64,6 +69,11 @@ xaios_status_t virtio_pci_backend_transport_find_from(uint32_t device_id, const 
 xaios_status_t virtio_pci_backend_transport_find_at(uint32_t device_id, const char *name,
                                        uint32_t slot,
                                        virtio_mmio_device_t *device);
+xaios_status_t virtio_pci_backend_transport_find_nth(uint32_t device_id,
+                                    const char *name,
+                                    uint32_t ordinal,
+                                    uint32_t logical_slot,
+                                    virtio_mmio_device_t *device);
 void virtio_pci_backend_transport_reset(const virtio_mmio_device_t *device);
 xaios_status_t virtio_pci_backend_transport_reset_checked(
     const virtio_mmio_device_t *device);

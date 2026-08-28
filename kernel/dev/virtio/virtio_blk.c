@@ -976,16 +976,27 @@ xaios_status_t virtio_block_flush(void) {
   return flush_h(g_blk);
 }
 
-xaios_status_t virtio_block_open_slot(uint32_t start_slot,
-                                     virtio_block_handle_t **out_handle) {
-  if (out_handle == 0) {
-    return XAIOS_ERR_INVALID;
+/* Everything a handle owns, in one place, so that a probe that finds no device
+   gives it all back. The scan below calls this once per ordinal and stops on
+   the first miss, and a leak per miss would be a leak on every boot. */
+static void release_handle(virtio_block_driver_t *drv) {
+  if (drv == 0) return;
+  for (uint32_t i = 0U; i < VIRTIO_BLK_MAX_ASYNC_DEPTH; ++i) {
+    kheap_free(drv->async_slots[i]);
   }
+  kheap_free(drv->status);
+  kheap_free(drv->dma_sector);
+  kheap_free(drv->request);
+  kheap_free(drv->used);
+  kheap_free(drv->avail);
+  kheap_free(drv->desc);
+  kheap_free(drv);
+}
+
+static virtio_block_driver_t *allocate_handle(void) {
   virtio_block_driver_t *drv =
       (virtio_block_driver_t *)kheap_calloc(sizeof(*drv), 16);
-  if (drv == 0) {
-    return XAIOS_ERR_NO_MEMORY;
-  }
+  if (drv == 0) return 0;
   drv->desc = (virtq_desc_t *)kheap_calloc(
       sizeof(virtq_desc_t) * VIRTQ_SIZE, DMA_ALIGNMENT);
   drv->avail = (virtq_avail_t *)kheap_calloc(
@@ -999,21 +1010,27 @@ xaios_status_t virtio_block_open_slot(uint32_t start_slot,
   drv->status = (uint8_t *)kheap_calloc(1, DMA_ALIGNMENT);
   if (drv->desc == 0 || drv->avail == 0 || drv->used == 0 ||
       drv->request == 0 || drv->dma_sector == 0 || drv->status == 0) {
-    return XAIOS_ERR_NO_MEMORY;
+    release_handle(drv);
+    return 0;
   }
   for (uint32_t i = 0U; i < VIRTIO_BLK_MAX_ASYNC_DEPTH; ++i) {
     drv->async_slots[i] = (virtio_blk_async_slot_t *)kheap_calloc(
         sizeof(virtio_blk_async_slot_t), DMA_ALIGNMENT);
-    if (drv->async_slots[i] == 0) return XAIOS_ERR_NO_MEMORY;
+    if (drv->async_slots[i] == 0) {
+      release_handle(drv);
+      return 0;
+    }
   }
   xaios_spin_init(&drv->queue_lock);
+  return drv;
+}
 
-  if (virtio_transport_find_at(VIRTIO_DEVICE_BLOCK, "virtio-blk-h",
-                               start_slot, &drv->device) != XAIOS_OK) {
-    return XAIOS_ERR_NOT_FOUND;
-  }
+/* Bring up a device the caller has already located. Shared by both entry
+   points below so that a disk found by ordinal is configured, checked and
+   registered exactly the way a disk found by slot is. */
+static xaios_status_t start_handle(virtio_block_driver_t *drv, uint32_t slot) {
   if (configure_queue(drv) != XAIOS_OK) {
-    klog("virtio-blk-h: slot=%u queue configuration failed\n", start_slot);
+    klog("virtio-blk-h: slot=%u queue configuration failed\n", slot);
     return XAIOS_ERR_IO;
   }
   drv->capacity_sectors = read_capacity(&drv->device);
@@ -1027,15 +1044,83 @@ xaios_status_t virtio_block_open_slot(uint32_t start_slot,
           &drv->device, virtio_block_interrupt, drv) != XAIOS_OK) {
     klog("virtio-blk-h: slot=%u no interrupt available; completions are "
          "polled\n",
-         start_slot);
+         slot);
   }
   if (register_block_device(drv) != XAIOS_OK) {
-    klog("virtio-blk-h: slot=%u registration failed\n", start_slot);
+    klog("virtio-blk-h: slot=%u registration failed\n", slot);
     drv->initialized = 0U;
     return XAIOS_ERR_INVALID;
   }
-  klog("virtio-blk-h: slot=%u capacity_sectors=%lu event_idx=%u\n",
-       start_slot, drv->capacity_sectors, drv->uses_event_idx);
+  klog("virtio-blk-h: slot=%u capacity_sectors=%lu event_idx=%u\n", slot,
+       drv->capacity_sectors, drv->uses_event_idx);
+  return XAIOS_OK;
+}
+
+xaios_status_t virtio_block_open_slot(uint32_t start_slot,
+                                     virtio_block_handle_t **out_handle) {
+  if (out_handle == 0) {
+    return XAIOS_ERR_INVALID;
+  }
+  virtio_block_driver_t *drv = allocate_handle();
+  if (drv == 0) return XAIOS_ERR_NO_MEMORY;
+  if (virtio_transport_find_at(VIRTIO_DEVICE_BLOCK, "virtio-blk-h",
+                               start_slot, &drv->device) != XAIOS_OK) {
+    release_handle(drv);
+    return XAIOS_ERR_NOT_FOUND;
+  }
+  xaios_status_t status = start_handle(drv, start_slot);
+  if (status != XAIOS_OK) {
+    release_handle(drv);
+    return status;
+  }
+  *out_handle = drv;
+  return XAIOS_OK;
+}
+
+/* How many virtio block devices this machine presents, counted without
+   claiming any of them.
+
+   The distinction this answers is the one between an installed machine and a
+   test bench. An installed machine has one disk, and its durable state is a
+   partition of that disk because there is nowhere else for it to be. A test
+   bench has a disk per volume, each pinned to a known window, and every one of
+   them already belongs to a driver. Scanning and opening devices on a test
+   bench takes volumes away from the drivers that own them -- which is exactly
+   what happened when this scan first ran there, and the machine came up
+   without a working shell.
+
+   Finding a device is a read of its identity registers and does not configure
+   or claim it, so asking this question costs nothing. */
+uint32_t virtio_block_present_count(uint32_t limit) {
+  virtio_mmio_device_t probe;
+  uint32_t count = 0U;
+  while (count < limit) {
+    if (virtio_transport_find_nth(VIRTIO_DEVICE_BLOCK, "virtio-blk-count",
+                                  count, count, &probe) != XAIOS_OK) {
+      break;
+    }
+    ++count;
+  }
+  return count;
+}
+
+xaios_status_t virtio_block_open_ordinal(uint32_t ordinal, uint32_t slot,
+                                        virtio_block_handle_t **out_handle) {
+  if (out_handle == 0) {
+    return XAIOS_ERR_INVALID;
+  }
+  virtio_block_driver_t *drv = allocate_handle();
+  if (drv == 0) return XAIOS_ERR_NO_MEMORY;
+  if (virtio_transport_find_nth(VIRTIO_DEVICE_BLOCK, "virtio-blk-h", ordinal,
+                                slot, &drv->device) != XAIOS_OK) {
+    release_handle(drv);
+    return XAIOS_ERR_NOT_FOUND;
+  }
+  xaios_status_t status = start_handle(drv, slot);
+  if (status != XAIOS_OK) {
+    release_handle(drv);
+    return status;
+  }
   *out_handle = drv;
   return XAIOS_OK;
 }

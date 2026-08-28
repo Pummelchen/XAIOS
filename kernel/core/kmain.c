@@ -245,6 +245,13 @@ static xaios_status_t mount_xaibootfs_from_disk(const char *disk) {
  * reads a GPT out of an initfs image on exactly the configuration this is for.
  * A partition typed as xaibootFS storage is unambiguous wherever it is found,
  * so look for that instead of guessing where to look. */
+/* How far to count disks before concluding there is more than one, and what
+   to name the disk of a machine that has exactly one. The slot map in the PCI
+   transport runs to 6; naming well above it keeps an installed disk's name
+   distinct from an attached volume's. */
+#define BOOT_DISK_SCAN_LIMIT 4U
+#define BOOT_DISK_SLOT_BASE 16U
+
 static xaios_status_t mount_xaibootfs_from_any_disk(void) {
   xaios_block_device_info_t devices[8];
   uint64_t count = 0U;
@@ -597,12 +604,24 @@ void kmain(const xaios_boot_info_t *boot) {
      machine that has been installed uses its own disk rather than whatever
      else happens to be plugged in. */
   if (persistent_status != XAIOS_OK) {
-    /* Enumerate the physical disks first: when the loader supplied the
-       initial filesystem in memory, virtio_block_init returns before probing
-       the transport at all, and the machine's own disk is never registered. */
-    virtio_block_handle_t *installed = 0;
-    (void)virtio_block_open_slot(0U, &installed);
-    persistent_status = mount_xaibootfs_from_any_disk();
+    /* Enumerate the physical disks first. When the loader supplied the initial
+       filesystem in memory, virtio_block_init returns before probing the
+       transport at all, so the machine's own disk is not registered and there
+       is nothing to search. Enumerating by ordinal rather than by slot is what
+       makes this work on an installed machine: the slot map exists to describe
+       the test bench, and its first rule is that the firmware's boot disk is
+       ordinal zero and belongs to nobody -- which on a machine with one disk
+       excludes the only disk there is. Names start above the slot map so that
+       a disk found here can never take the name of one attached beside it. */
+    /* Only where the machine has a single disk. With more than one, the
+       volumes are attached separately and each already belongs to a driver;
+       opening them here takes them away from their owners, which cost the
+       test bench its working shell the first time this scan ran there. */
+    if (virtio_block_present_count(BOOT_DISK_SCAN_LIMIT) == 1U) {
+      virtio_block_handle_t *installed = 0;
+      (void)virtio_block_open_ordinal(0U, BOOT_DISK_SLOT_BASE, &installed);
+      persistent_status = mount_xaibootfs_from_any_disk();
+    }
   }
   if (persistent_status != XAIOS_OK) {
     /* vblk0 remains the immutable initramfs/test image. Open the dedicated

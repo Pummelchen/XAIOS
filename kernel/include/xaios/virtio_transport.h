@@ -86,6 +86,13 @@ xaios_status_t virtio_transport_find_from(uint32_t device_id, const char *name,
 xaios_status_t virtio_transport_find_at(uint32_t device_id, const char *name,
                                        uint32_t slot,
                                        virtio_mmio_device_t *device);
+/* The nth device of this type that is present on either transport, named by
+   logical_slot. Use this when the machine's disk layout is not known ahead of
+   time; the slot-addressed lookups above assume the test bench's. */
+xaios_status_t virtio_transport_find_nth(uint32_t device_id, const char *name,
+                                        uint32_t ordinal,
+                                        uint32_t logical_slot,
+                                        virtio_mmio_device_t *device);
 void virtio_transport_reset(const virtio_mmio_device_t *device);
 /* The device's own status byte. Worth reading when a queue stops completing:
    bit 6, DEVICE_NEEDS_RESET, is the device saying it has given up, which

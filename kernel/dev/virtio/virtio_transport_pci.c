@@ -8,6 +8,7 @@
 #define virtio_transport_find virtio_pci_backend_transport_find
 #define virtio_transport_find_from virtio_pci_backend_transport_find_from
 #define virtio_transport_find_at virtio_pci_backend_transport_find_at
+#define virtio_transport_find_nth virtio_pci_backend_transport_find_nth
 #define virtio_transport_reset virtio_pci_backend_transport_reset
 #define virtio_transport_reset_checked virtio_pci_backend_transport_reset_checked
 #define virtio_transport_negotiate_no_features virtio_pci_backend_transport_negotiate_no_features
@@ -40,6 +41,36 @@
 #define VIRTIO_PCI_CAP_ISR UINT8_C(3)
 #define VIRTIO_PCI_CAP_DEVICE UINT8_C(4)
 #define VIRTIO_PCI_DEVICE_BASE UINT16_C(0x1040)
+
+/* A transitional device -- one that can be driven by a legacy driver as well
+   as a modern one -- carries a PCI device ID from the 0x1000 block instead of
+   0x1040 + type, and the two blocks are not in the same order, so the mapping
+   is a table rather than an offset. QEMU's virtio-blk-pci is transitional
+   unless it is asked not to be, which means a disk attached the way a person
+   would attach one identifies itself as 0x1001 and was, until this table
+   existed, simply not found. The gates never showed it: their durable volumes
+   are all MMIO, and the one PCI disk they attach belongs to the firmware.
+
+   Matching the ID says only that the type is right. Whether the device can
+   actually be driven is decided below, by looking for the modern capability
+   structures -- a transitional device has them, a purely legacy one does not
+   and is rejected there with a reason. */
+static uint32_t matches_device_type(uint16_t pci_device_id,
+                                    uint32_t virtio_device_id) {
+  if (pci_device_id == VIRTIO_PCI_DEVICE_BASE + virtio_device_id) return 1U;
+  uint16_t transitional;
+  switch (virtio_device_id) {
+    case 1U: transitional = 0x1000U; break; /* network */
+    case 2U: transitional = 0x1001U; break; /* block */
+    case 3U: transitional = 0x1003U; break; /* console */
+    case 4U: transitional = 0x1005U; break; /* entropy source */
+    case 5U: transitional = 0x1002U; break; /* memory balloon */
+    case 8U: transitional = 0x1004U; break; /* SCSI host */
+    case 9U: transitional = 0x1009U; break; /* 9P transport */
+    default: return 0U;
+  }
+  return pci_device_id == transitional ? 1U : 0U;
+}
 #define VIRTIO_PCI_CAP_MSIX UINT8_C(0x11)
 #define VIRTIO_PCI_MSIX_ENABLE UINT16_C(0x8000)
 #define VIRTIO_PCI_MSIX_FUNCTION_MASK UINT16_C(0x4000)
@@ -140,7 +171,7 @@ static xaios_status_t probe_device(uint32_t pci_index, uint32_t device_id,
                                    virtio_mmio_device_t *result) {
   const xaios_pci_device_t *pci = pci_device(pci_index);
   if (pci == 0 || pci->vendor_id != XAIOS_PCI_VENDOR_VIRTIO ||
-      pci->device_id != VIRTIO_PCI_DEVICE_BASE + device_id) {
+      matches_device_type(pci->device_id, device_id) == 0U) {
     return XAIOS_ERR_NOT_FOUND;
   }
 
@@ -164,6 +195,8 @@ static xaios_status_t probe_device(uint32_t pci_index, uint32_t device_id,
           region_length != 0U) {
         uint64_t address = bar_address + offset;
         if (map_register(address, region_length) != XAIOS_OK) {
+          klog("%s: pci index=%u cannot map capability type=%u at 0x%lx\n",
+               name, pci_index, (unsigned)type, address);
           return XAIOS_ERR_IO;
         }
         if (type == VIRTIO_PCI_CAP_COMMON) common = address;
@@ -185,9 +218,19 @@ static xaios_status_t probe_device(uint32_t pci_index, uint32_t device_id,
      one regardless, which is why requiring it went unnoticed. Only the common,
      notify and ISR structures are actually needed to drive a queue. */
   if (common == 0U || notify == 0U || notify_multiplier == 0U) {
+    /* A device that publishes no modern capability structures is legacy-only
+       and cannot be driven here. Saying so is the difference between a machine
+       that explains why it found no disk and one that just has none. */
+    klog("%s: pci index=%u id=0x%x not usable: common=0x%lx notify=0x%lx "
+         "multiplier=%u\n",
+         name, pci_index, (unsigned)pci->device_id, common, notify,
+         notify_multiplier);
     return XAIOS_ERR_UNSUPPORTED;
   }
-  if (pci_enable_device(pci_index) != XAIOS_OK) return XAIOS_ERR_IO;
+  if (pci_enable_device(pci_index) != XAIOS_OK) {
+    klog("%s: pci index=%u cannot be enabled\n", name, pci_index);
+    return XAIOS_ERR_IO;
+  }
   *result = (virtio_mmio_device_t){
       .base = config != 0U ? config - UINT64_C(0x100) : 0U,
       .common_config = common,
@@ -214,13 +257,15 @@ static xaios_status_t find_ordinal(uint32_t device_id, const char *name,
   for (uint32_t index = 0U; index < pci_device_count(); ++index) {
     const xaios_pci_device_t *candidate = pci_device(index);
     if (candidate == 0 || candidate->vendor_id != XAIOS_PCI_VENDOR_VIRTIO ||
-        candidate->device_id != VIRTIO_PCI_DEVICE_BASE + device_id) {
+        matches_device_type(candidate->device_id, device_id) == 0U) {
       continue;
     }
     if (found++ == ordinal) {
       return probe_device(index, device_id, name, logical_slot, device);
     }
   }
+  klog("%s: no pci device of type %u at ordinal %u; %u present\n", name,
+       device_id, ordinal, found);
   return XAIOS_ERR_NOT_FOUND;
 }
 
@@ -243,6 +288,19 @@ xaios_status_t virtio_transport_find_at(uint32_t device_id, const char *name,
                                        virtio_mmio_device_t *device) {
   return find_ordinal(device_id, name, matching_ordinal_for_slot(slot), slot,
                       device);
+}
+
+/* The nth virtio function of this type on the bus, with no slot map applied.
+   Every other entry point here goes through matching_ordinal_for_slot, which
+   encodes the test bench's disk order -- and its first rule is that ordinal
+   zero is the firmware's boot disk and belongs to nobody. On a machine XAIOS
+   has been installed onto there is one disk, it is ordinal zero, and it is the
+   one being looked for. */
+xaios_status_t virtio_transport_find_nth(uint32_t device_id, const char *name,
+                                         uint32_t ordinal,
+                                         uint32_t logical_slot,
+                                         virtio_mmio_device_t *device) {
+  return find_ordinal(device_id, name, ordinal, logical_slot, device);
 }
 
 static void set_status(const virtio_mmio_device_t *device, uint8_t status) {

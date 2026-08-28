@@ -28,6 +28,7 @@ RUNTIME_SCRIPTS = {
     "create-initfs.py",
     "create-persistent-image.sh",
     "create-sshd-user-config.py",
+    "make-installed-disk.sh",
     "macos-bootstrap.sh",
     "prepare-libc-sysroot.py",
     "publish-xapt-repository.sh",

@@ -32,6 +32,18 @@ void virtio_block_self_test(void);
 
 xaios_status_t virtio_block_open_slot(uint32_t start_slot,
                                      virtio_block_handle_t **out_handle);
+
+/* Open the nth virtio block device present, rather than the one pinned to a
+   given slot. An installed machine has one disk and no fixed layout, so the
+   slot map the test bench relies on -- which reserves ordinal zero for the
+   firmware's boot disk -- finds nothing there. slot names the device. */
+xaios_status_t virtio_block_open_ordinal(uint32_t ordinal, uint32_t slot,
+                                        virtio_block_handle_t **out_handle);
+
+/* How many virtio block devices are present, up to limit, without claiming
+   any. One disk means an installed machine whose state is a partition of it;
+   several mean volumes attached separately, each already owned. */
+uint32_t virtio_block_present_count(uint32_t limit);
 xaios_status_t virtio_block_read_sector_h(virtio_block_handle_t *handle,
                                          uint64_t sector, void *buffer,
                                          uint64_t buffer_size);

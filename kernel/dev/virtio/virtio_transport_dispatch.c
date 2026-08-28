@@ -63,6 +63,23 @@ xaios_status_t virtio_transport_find_at(uint32_t device_id, const char *name,
   return find_with_fallback(device_id, name, device, 2U, slot);
 }
 
+xaios_status_t virtio_transport_find_nth(uint32_t device_id, const char *name,
+                                         uint32_t ordinal,
+                                         uint32_t logical_slot,
+                                         virtio_mmio_device_t *device) {
+  if (device == 0) return XAIOS_ERR_INVALID;
+  xaios_status_t status = virtio_mmio_backend_transport_find_nth(
+      device_id, name, ordinal, logical_slot, device);
+  if (status == XAIOS_OK) {
+    device->backend = VIRTIO_BACKEND_MMIO;
+    return status;
+  }
+  status = virtio_pci_backend_transport_find_nth(device_id, name, ordinal,
+                                                 logical_slot, device);
+  if (status == XAIOS_OK) device->backend = VIRTIO_BACKEND_PCI;
+  return status;
+}
+
 #define DISPATCH(device, call, args)                     \
   ((device) != 0 && (device)->backend == VIRTIO_BACKEND_PCI \
        ? virtio_pci_backend_##call args                  \

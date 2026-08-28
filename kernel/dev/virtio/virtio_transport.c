@@ -8,6 +8,7 @@
 #define virtio_transport_find virtio_mmio_backend_transport_find
 #define virtio_transport_find_from virtio_mmio_backend_transport_find_from
 #define virtio_transport_find_at virtio_mmio_backend_transport_find_at
+#define virtio_transport_find_nth virtio_mmio_backend_transport_find_nth
 #define virtio_transport_reset virtio_mmio_backend_transport_reset
 #define virtio_transport_reset_checked virtio_mmio_backend_transport_reset_checked
 #define virtio_transport_negotiate_no_features virtio_mmio_backend_transport_negotiate_no_features
@@ -145,6 +146,47 @@ xaios_status_t virtio_transport_find_from(uint32_t device_id, const char *name,
     }
   }
 
+  return XAIOS_ERR_NOT_FOUND;
+}
+
+/* The nth device of this type that is actually present, counted over the
+   windows that answer rather than over the address space. The slot-addressed
+   lookups above ask "what is in this window", which is the right question on a
+   machine whose layout is fixed and known -- the test bench pins each volume
+   to a window on purpose. It is the wrong question on a machine XAIOS has been
+   installed onto, where the only thing known about the disk is that it exists.
+
+   The caller names the device through logical_slot; the interrupt still comes
+   from the window the device really occupies. */
+xaios_status_t virtio_transport_find_nth(uint32_t device_id, const char *name,
+                                         uint32_t ordinal,
+                                         uint32_t logical_slot,
+                                         virtio_mmio_device_t *device) {
+  if (device == 0 || name == 0) {
+    return XAIOS_ERR_INVALID;
+  }
+  uint32_t seen = 0U;
+  for (uint32_t slot = 0U; slot < VIRTIO_MMIO_SLOTS; ++slot) {
+    uint64_t base = VIRTIO_MMIO_BASE + (slot * VIRTIO_MMIO_STRIDE);
+    if (virtio_mmio_read32(base, VIRTIO_MMIO_MAGIC) != VIRTIO_MAGIC ||
+        virtio_mmio_read32(base, VIRTIO_MMIO_VERSION) < 2U ||
+        virtio_mmio_read32(base, VIRTIO_MMIO_DEVICE_ID) != device_id) {
+      continue;
+    }
+    if (seen++ != ordinal) continue;
+    device->base = base;
+    device->common_config = base;
+    device->notify_base = base;
+    device->isr_config = base;
+    device->notify_multiplier = 0U;
+    device->transport_slot = logical_slot;
+    device->interrupt_id = VIRTIO_MMIO_FIRST_INTID + slot;
+    device->device_id = device_id;
+    device->name = name;
+    klog("%s: mmio ordinal=%u window=%u slot=%u base=0x%lx\n", name, ordinal,
+         slot, logical_slot, base);
+    return XAIOS_OK;
+  }
   return XAIOS_ERR_NOT_FOUND;
 }
 
