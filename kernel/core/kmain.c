@@ -701,6 +701,7 @@ void kmain(const xaios_boot_info_t *boot) {
   }
   if (storage_admin_status == XAIOS_OK) {
     klog("storage-admin: scratch device attached slot=5 mutation=enabled\n");
+    storage_admin_self_test();
   } else {
     klog("storage-admin: scratch device unavailable status=%d\n",
          (int)storage_admin_status);

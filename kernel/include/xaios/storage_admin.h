@@ -99,4 +99,10 @@ xaios_status_t storage_admin_partition_repair(
     const xaios_storage_partition_request_t *request,
     xaios_storage_partition_plan_t *result);
 
+/* Create, confirm and delete a partition on the attached scratch device, so
+   that the partition table writer is exercised against a real disk on every
+   boot rather than only by hosted tests of its arguments. Survivable: a
+   machine with no scratch device says so and carries on. */
+void storage_admin_self_test(void);
+
 #endif

@@ -1,4 +1,5 @@
 #include <xaios/storage_admin.h>
+#include <xaios/klog.h>
 
 #include <xaios/partition_device.h>
 
@@ -906,4 +907,119 @@ xaios_status_t storage_admin_partition_repair(
   result->changed = 1U;
   result->dry_run = 0U;
   return XAIOS_OK;
+}
+
+/* Partition a real disk at boot, the way an installer would.
+
+   Everything below this line was written, reachable from the control protocol,
+   and never once run against a device. The hosted tests cover argument
+   parsing; the ABI contract checks the command names exist. Neither writes a
+   partition table, so "XAIOS can partition a disk" rested on code nobody had
+   watched work. It does now, on the scratch device the boot path already
+   attaches, on every gate run.
+
+   The test creates a partition, reads the table back to confirm it is there,
+   and deletes it again. Leaving it behind would make each boot find the disk
+   in the state the last one left it, which is how a test stops testing
+   anything. Failure is reported and survivable: a machine with no scratch
+   device is normal, and losing one is not worth refusing to boot over. */
+void storage_admin_self_test(void) {
+  if (g_storage.attached == 0U) {
+    klog("storage-admin: partition self-test skipped no attached device\n");
+    return;
+  }
+
+  xaios_storage_partition_report_t report;
+  xaios_storage_partition_record_t records[XAIOS_GPT_MAX_PARTITIONS];
+  uint64_t before = 0U;
+  /* A disk with no partition table cannot be listed, and that is correct
+     rather than a failure: there is nothing to list. It is also the state a
+     disk is in when someone installs XAIOS onto it, so this test starts by
+     tolerating it instead of requiring a table it may be about to create. */
+  if (storage_admin_partition_list(g_storage.info.identifier, records,
+                                   XAIOS_GPT_MAX_PARTITIONS, &before,
+                                   &report) != XAIOS_OK) {
+    before = 0U;
+  }
+
+  xaios_storage_partition_request_t request;
+  bytes_zero(&request, sizeof(request));
+  string_copy(request.target, sizeof(request.target),
+              g_storage.info.identifier);
+  string_copy(request.name, sizeof(request.name), "xaios-self-test");
+  request.partition_type = XAIOS_STORAGE_PARTITION_STATE;
+  request.size_bytes = UINT64_C(1048576);
+  request.operation_id = UINT64_C(1);
+
+  xaios_storage_partition_plan_t plan;
+  xaios_status_t status = storage_admin_partition_plan_create(&request, &plan);
+  if (status != XAIOS_OK) {
+    klog("storage-admin: partition self-test plan failed status=%d\n",
+         (int)status);
+    return;
+  }
+  if (plan.dry_run == 0U || plan.changed == 0U) {
+    klog("storage-admin: partition self-test plan is not a dry run\n");
+    return;
+  }
+
+  /* The disk's own GUID, which is what the confirmation is: an operator who
+     has not looked at the disk cannot name it, and a request naming the wrong
+     one is refused rather than applied to whatever is there. The plan reports
+     it, which is the only way to learn it for a disk that has no table yet. */
+  string_copy(request.confirmation, sizeof(request.confirmation),
+              plan.report.disk_guid);
+
+  xaios_storage_partition_plan_t created;
+  status = storage_admin_partition_create(&request, &created);
+  if (status != XAIOS_OK) {
+    klog("storage-admin: partition self-test create failed status=%d\n",
+         (int)status);
+    return;
+  }
+
+  uint64_t after = 0U;
+  if (storage_admin_partition_list(g_storage.info.identifier, records,
+                                   XAIOS_GPT_MAX_PARTITIONS, &after,
+                                   &report) != XAIOS_OK ||
+      after != before + 1U) {
+    klog("storage-admin: partition self-test created partition not in the "
+         "table count=%lu expected=%lu\n",
+         after, before + 1U);
+    return;
+  }
+
+  /* Deleting confirms against the partition's own GUID, not the disk's --
+     creating changes a disk, deleting destroys a particular partition, and
+     each names the thing it is about to affect. */
+  string_copy(request.target, sizeof(request.target),
+              created.partition.identifier);
+  string_copy(request.confirmation, sizeof(request.confirmation),
+              created.partition.unique_guid);
+  request.operation_id = UINT64_C(2);
+  status = storage_admin_partition_delete(&request, &created);
+  if (status != XAIOS_OK) {
+    klog("storage-admin: partition self-test delete failed status=%d; the "
+         "scratch disk keeps %s\n",
+         (int)status, created.partition.identifier);
+    return;
+  }
+
+  /* The table survives the delete even when the disk had none to begin with:
+     creating the partition wrote one, and deleting the partition does not take
+     it away again. So this must succeed either way, with the count back where
+     it started. */
+  uint64_t restored = 0U;
+  if (storage_admin_partition_list(g_storage.info.identifier, records,
+                                   XAIOS_GPT_MAX_PARTITIONS, &restored,
+                                   &report) != XAIOS_OK ||
+      restored != before) {
+    klog("storage-admin: partition self-test left the table at %lu, not %lu\n",
+         restored, before);
+    return;
+  }
+
+  klog("storage-admin: partition create/verify/delete self-test passed "
+       "device=%s partitions=%lu\n",
+       g_storage.info.identifier, before);
 }

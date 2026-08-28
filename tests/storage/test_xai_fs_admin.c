@@ -7,6 +7,11 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+/* The kernel logs; a hosted test has no kernel log. Swallowing the output
+   keeps this test linking against the same translation unit the kernel
+   builds, which is the point of it. */
+void klog(const char *fmt, ...) { (void)fmt; }
+
 #include <xaios/xai_fs_admin.h>
 
 typedef struct file_disk {

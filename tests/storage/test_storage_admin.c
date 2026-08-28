@@ -4,6 +4,11 @@
 
 #include <xaios/storage_admin.h>
 
+/* The kernel logs; a hosted test has no kernel log. Swallowing the output
+   keeps this test linking against the same translation unit the kernel builds,
+   which is the point of it. */
+void klog(const char *fmt, ...) { (void)fmt; }
+
 #define MOCK_RECORDS 96U
 #define MOCK_SECTOR_SIZE 512U
 

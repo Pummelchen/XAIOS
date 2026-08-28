@@ -167,6 +167,10 @@ TARGETS = [
     "osctl: telemetry cpu_ai_loads=",
     "osctl: update transactions=",
     "osctl: rollback persistence=",
+    # The partition table writer, run against a real blank disk rather than
+    # only by hosted tests of its arguments. Required so it cannot quietly
+    # stop running the way it had never started.
+    "storage-admin: partition create/verify/delete self-test passed",
     "/service-manager: osctl command surface passed",
     "/service-manager: mutable fs syscalls passed",
     "/service-manager: control plane complete",
@@ -254,6 +258,17 @@ def main() -> int:
     persistent_image = Path("build/xaios-smoke-persistent.img")
     persistent_image.unlink(missing_ok=True)
     env["XAIOS_PERSISTENT_IMAGE"] = str(persistent_image)
+    # A blank disk for the partition self-test to write a table onto. Without
+    # one the kernel says the scratch device is unavailable and skips the
+    # test, which is how the partition table writer went this long without
+    # ever running against a device. Fresh every run: the test deletes what it
+    # creates, and a disk carrying the last run's leftovers would let a broken
+    # cleanup pass unnoticed.
+    scratch_image = Path("build/xaios-smoke-storage-admin.img")
+    scratch_image.unlink(missing_ok=True)
+    with scratch_image.open("wb") as handle:
+        handle.truncate(16 * 1024 * 1024)
+    env["XAIOS_STORAGE_ADMIN_IMAGE"] = str(scratch_image)
     proc = subprocess.Popen(
         ["make", "qemu-aarch64"],
         stdout=subprocess.PIPE,
