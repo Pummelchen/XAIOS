@@ -7,7 +7,7 @@
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
 #include <xaios/klog_ring.h>
-#include <xaios/mutable_fs.h>
+#include <xaios/xaiboot_fs.h>
 #include <xaios/ndp.h>
 #include <xaios/network_stack.h>
 #include <xaios/ntp.h>
@@ -232,8 +232,8 @@ static void persist_lifecycle(const char *state) {
   append(record, sizeof(record), &used, "\n");
   if (g_persistent != 0U) {
     xaios_status_t status =
-        mutable_fs_write(OPERATIONS_RECORD_PATH, record, used);
-    if (status == XAIOS_OK) status = mutable_fs_commit("lifecycle");
+        xaiboot_fs_write(OPERATIONS_RECORD_PATH, record, used);
+    if (status == XAIOS_OK) status = xaiboot_fs_commit("lifecycle");
     if (status == XAIOS_OK) {
       /* A running marker must survive host-side power loss before SSH starts. */
       status = block_flush_all(&flushed, &unsupported, &failed);
@@ -248,7 +248,7 @@ static void persist_lifecycle(const char *state) {
 void operations_init(uint32_t persistent_available) {
   char record[160];
   uint64_t bytes = 0U;
-  xaios_mfs_stat_t rescue;
+  xaios_xbfs_stat_t rescue;
   g_persistent = persistent_available != 0U;
   g_boot_ready = 0U;
   g_rescue = 0U;
@@ -257,9 +257,9 @@ void operations_init(uint32_t persistent_available) {
   g_power_action = OPERATIONS_POWER_NONE;
   g_power_deadline_ns = 0U;
   if (g_persistent != 0U) {
-    (void)mutable_fs_mkdir("/state");
-    (void)mutable_fs_mkdir("/state/lifecycle");
-    if (mutable_fs_read(OPERATIONS_RECORD_PATH, record, sizeof(record) - 1U,
+    (void)xaiboot_fs_mkdir("/state");
+    (void)xaiboot_fs_mkdir("/state/lifecycle");
+    if (xaiboot_fs_read(OPERATIONS_RECORD_PATH, record, sizeof(record) - 1U,
                         &bytes) == XAIOS_OK) {
       record[bytes] = '\0';
       g_unclean_boots = (uint32_t)find_decimal(record, "unclean=");
@@ -267,7 +267,7 @@ void operations_init(uint32_t persistent_available) {
       if (record_running(record) != 0U) ++g_unclean_boots;
       else g_unclean_boots = 0U;
     }
-    if (mutable_fs_stat(OPERATIONS_RESCUE_PATH, &rescue) == XAIOS_OK)
+    if (xaiboot_fs_stat(OPERATIONS_RESCUE_PATH, &rescue) == XAIOS_OK)
       g_rescue = 1U;
   }
   if (g_unclean_boots >= 3U) g_rescue = 1U;
@@ -430,7 +430,7 @@ static void append_resource_status(char *output, uint64_t capacity,
   append(output, capacity, used, " processes_max=");
   append_u64(output, capacity, used, XAIOS_MAX_USER_PROCESSES);
   append(output, capacity, used, " files=");
-  append_u64(output, capacity, used, mutable_fs_file_count());
+  append_u64(output, capacity, used, xaiboot_fs_file_count());
   append(output, capacity, used, " cpus=");
   append_u64(output, capacity, used, smp_online_count());
   append(output, capacity, used, "\n");
@@ -642,14 +642,14 @@ xaios_status_t operations_execute(const char *command, char *output,
     if (str_equal(arg1, "enter")) {
       if (g_persistent == 0U) status = XAIOS_ERR_UNSUPPORTED;
       else {
-        status = mutable_fs_write(OPERATIONS_RESCUE_PATH, "enabled\n", 8U);
-        if (status == XAIOS_OK) (void)mutable_fs_commit("rescue-enter");
+        status = xaiboot_fs_write(OPERATIONS_RESCUE_PATH, "enabled\n", 8U);
+        if (status == XAIOS_OK) (void)xaiboot_fs_commit("rescue-enter");
         if (status == XAIOS_OK) { g_rescue = 1U; request_power(OPERATIONS_POWER_REBOOT); }
       }
     } else if (str_equal(arg1, "clear")) {
-      status = mutable_fs_delete(OPERATIONS_RESCUE_PATH);
+      status = xaiboot_fs_delete(OPERATIONS_RESCUE_PATH);
       if (status == XAIOS_ERR_NOT_FOUND) status = XAIOS_OK;
-      if (status == XAIOS_OK) (void)mutable_fs_commit("rescue-clear");
+      if (status == XAIOS_OK) (void)xaiboot_fs_commit("rescue-clear");
       if (status == XAIOS_OK) { g_rescue = 0U; g_unclean_boots = 0U; }
     } else if (arg1[0] != '\0' && !str_equal(arg1, "status"))
       status = XAIOS_ERR_INVALID;
@@ -706,7 +706,7 @@ xaios_status_t operations_execute(const char *command, char *output,
         append(text, sizeof(text), &text_bytes,
                config.password_auth == XAIOS_ADMIN_PASSWORD_DEVELOPMENT
                    ? "development\n" : "disabled\n");
-        status = mutable_fs_write(arg2, text, text_bytes);
+        status = xaiboot_fs_write(arg2, text, text_bytes);
       }
     } else if (str_equal(arg1, "import") && arg2[0] != '\0') {
       status = admin_control_config_apply(arg2, "ssh-admin",

@@ -32,7 +32,7 @@ All wrapper functions below are built on this primitive.
 
 ## Filesystem
 
-Filesystem operations route through the VFS. MutableFS is mounted at `/` for
+Filesystem operations route through the VFS. xaibootFS is mounted at `/` for
 small mutable state. When the dedicated model volume is present, ModelFS is
 mounted at `/models`; active signed packages appear as
 `/models/<64-hex-package-id>` and are immutable. Signed staging packages appear
@@ -44,11 +44,11 @@ uses the longest matching component.
 
 | Syscall | Number | Wrapper | Description |
 |---------|-------:|---------|-------------|
-| `XAIOS_SYSCALL_FS_OPEN` | 11 | `xaios_fs_open(path, flags)` | Open a file. Flags: `XAIOS_MFS_OPEN_READ` (1), `XAIOS_MFS_OPEN_WRITE` (2), `XAIOS_MFS_OPEN_CREATE` (4), `XAIOS_MFS_OPEN_TRUNCATE` (8). Returns fd >= 0 on success. |
+| `XAIOS_SYSCALL_FS_OPEN` | 11 | `xaios_fs_open(path, flags)` | Open a file. Flags: `XAIOS_XBFS_OPEN_READ` (1), `XAIOS_XBFS_OPEN_WRITE` (2), `XAIOS_XBFS_OPEN_CREATE` (4), `XAIOS_XBFS_OPEN_TRUNCATE` (8). Returns fd >= 0 on success. |
 | `XAIOS_SYSCALL_FS_READ` | 12 | `xaios_fs_read(fd, buf, size)` | Read up to `size` bytes from `fd` into `buf`. Returns bytes read. One call is limited to 65,536 bytes. |
 | `XAIOS_SYSCALL_FS_WRITE` | 13 | `xaios_fs_write(fd, buf, size)` | Write `size` bytes from `buf` to `fd`. Returns bytes written. One call is limited to 65,536 bytes. |
 | `XAIOS_SYSCALL_FS_CLOSE` | 14 | `xaios_fs_close(fd)` | Durably close an open writable handle according to the mounted backend. |
-| `XAIOS_SYSCALL_FS_STAT` | 15 | `xaios_fs_stat(path, stat)` | Populate `xaios_mfs_stat_user_t` with file metadata. |
+| `XAIOS_SYSCALL_FS_STAT` | 15 | `xaios_fs_stat(path, stat)` | Populate `xaios_xbfs_stat_user_t` with file metadata. |
 | `XAIOS_SYSCALL_FS_MKDIR` | 16 | `xaios_fs_mkdir(path)` | Create a directory. |
 | `XAIOS_SYSCALL_FS_DELETE` | 17 | `xaios_fs_delete(path)` | Delete a file or empty directory. |
 | `XAIOS_SYSCALL_FS_RENAME` | 18 | `xaios_fs_rename(old, new)` | Rename a file or directory. |
@@ -64,18 +64,18 @@ int xaios_read_file(const char *path, char *buffer, u64 buffer_size);
 ### Stat structure
 
 ```c
-typedef struct xaios_mfs_stat_user {
+typedef struct xaios_xbfs_stat_user {
     u32 type;           // 1 = file, 2 = directory
     u32 block_count;    // blocks allocated
     u64 size;           // file size in bytes
     u64 generation;     // modification generation counter
     u64 content_hash;   // content hash
-} xaios_mfs_stat_user_t;
+} xaios_xbfs_stat_user_t;
 ```
 
 `XAIOS_FS_TYPE_FILE` and `XAIOS_FS_TYPE_DIRECTORY` are the public stat type
 constants. File sizes and positional offsets are unsigned 64-bit values.
-MutableFS v5 supports 256 nodes, 256 open handles, paths up to 255 bytes,
+xaibootFS v5 supports 256 nodes, 256 open handles, paths up to 255 bytes,
 256 KiB per file and 4 MiB of data extents. It atomically renames complete
 non-empty directory trees after collision/path validation. The recursive shell
 forms `rm -r`, `rm -R`, `rm -rf`, and `rm -fr` remove trees; the filesystem

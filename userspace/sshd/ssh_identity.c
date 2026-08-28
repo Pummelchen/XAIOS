@@ -212,7 +212,7 @@ int ssh_identity_parse_openssh(const char *pem, uint32_t pem_length,
 #if !defined(XAIOS_IDENTITY_HOSTED)
 int ssh_identity_load(const char *path, const char *passphrase,
                       ssh_identity_t *identity) {
-  int descriptor = xaios_fs_open(path, XAIOS_MFS_OPEN_READ);
+  int descriptor = xaios_fs_open(path, XAIOS_XBFS_OPEN_READ);
   if (descriptor < 0) return -1;
   uint64_t used = 0U;
   int result = 0;

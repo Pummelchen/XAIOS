@@ -194,12 +194,12 @@ static int path_protected(const char *path) {
 }
 
 static int read_file(const char *path, u64 *size, int *exists) {
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   *size = 0U;
   *exists = xaios_fs_stat(path, &stat) == 0;
   if (!*exists) return 0;
   if (stat.type != XAIOS_FS_TYPE_FILE || stat.size >= sizeof(g_data)) return -1;
-  int fd = xaios_fs_open(path, XAIOS_MFS_OPEN_READ);
+  int fd = xaios_fs_open(path, XAIOS_XBFS_OPEN_READ);
   if (fd < 0) return -1;
   while (*size < stat.size) {
     int bytes = xaios_fs_read(fd, g_data + *size, stat.size - *size);
@@ -215,8 +215,8 @@ static int read_file(const char *path, u64 *size, int *exists) {
 }
 
 static int write_file(const char *path, const char *data, u64 size) {
-  int fd = xaios_fs_open(path, XAIOS_MFS_OPEN_WRITE | XAIOS_MFS_OPEN_CREATE |
-                                   XAIOS_MFS_OPEN_TRUNCATE);
+  int fd = xaios_fs_open(path, XAIOS_XBFS_OPEN_WRITE | XAIOS_XBFS_OPEN_CREATE |
+                                   XAIOS_XBFS_OPEN_TRUNCATE);
   if (fd < 0) return -1;
   u64 written = 0U;
   while (written < size) {

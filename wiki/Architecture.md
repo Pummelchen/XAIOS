@@ -43,7 +43,7 @@ they do not prove physical performance or production readiness.
 | Kernel core | `kernel/core/` | Initialization, logging, telemetry, panic handling, and self-test sequencing. |
 | Memory | `kernel/mm/` | Physical and virtual memory, NUMA metadata, heaps, arenas, and ELF ownership. |
 | Devices and storage | `kernel/dev/`, `kernel/storage/` | VirtIO, focused NVMe, block devices, GPT, and partitions. |
-| Filesystems | `kernel/fs/` | Initramfs, VFS, MutableFS, and immutable active ModelFS packages. |
+| Filesystems | `kernel/fs/` | Initramfs, VFS, xaibootFS, and immutable active ModelFS packages. |
 | Processes and ABI | `kernel/user/`, `userspace/` | Process ownership, service supervision, syscalls, applications, and SSH/SFTP. |
 | Network | `kernel/net/`, `kernel/runtime/network_stack.c` | IPv4/IPv6, TCP/UDP, DNS, routing, and socket state. |
 | Administration | `kernel/runtime/admin_control.c`, `kernel/runtime/control_protocol.c` | Typed role-based configuration, key, audit, storage, and model operations. |
@@ -123,7 +123,7 @@ The AArch64 QEMU path provides the broadest OS-service coverage. Each discovered
 CPU has a private translation root and user directory, preventing concurrent
 EL0 workers from replacing another core's mappings. VMware Fusion on Apple
 Silicon now reaches public-key SSH through PCI-discovered E1000E networking and
-AHCI MutableFS persistence, public-key SSH/SFTP, recovery, reboot and orderly
+AHCI xaibootFS persistence, public-key SSH/SFTP, recovery, reboot and orderly
 shutdown. Fusion multi-vCPU qualification remains open because its UEFI path
 does not expose PSCI CPU_ON.
 

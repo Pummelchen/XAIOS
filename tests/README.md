@@ -80,7 +80,7 @@ round trips, recursive filesystem work, typed `ps`/`df` snapshots, and nested
 transient launches before continuing into SSH, SFTP, rekey, concurrency, IPv6,
 UDP, and administration coverage.
 
-The same suite cold-boots MutableFS v3/v4 migration fixtures into v5 and tests
+The same suite cold-boots xaibootFS v3/v4 migration fixtures into v5 and tests
 the v5 limits: exact 256 KiB SFTP round trip, 256 KiB + 1 rejection, 180
 directories, and persistence across a second boot. `qemu-parallel-network-load`
 holds 32 SSH transports with two channels each across native macOS and Debian,

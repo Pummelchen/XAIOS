@@ -7,7 +7,7 @@ than a software model.
 
 **Status: XAIOS boots and runs.** The loader runs, the kernel starts,
 initialisation completes, the kernel log streams to this program's stdout over
-the virtio console, MutableFS mounts a durable volume read-write, IPv4 comes
+the virtio console, xaibootFS mounts a durable volume read-write, IPv4 comes
 up by DHCP, sshd listens on port 22, and over vmnet you can ssh into it from
 the Mac. IPv6 configures an address from the
 router advertisement this platform sends; see *IPv6* below.
@@ -40,7 +40,7 @@ make vmnet-helper                               # privileged vmnet relay
 
 Every path after the boot image is attached as a further volume, in order,
 because the kernel identifies its volumes by position on the bus: the
-deterministic test volume, the persistent MutableFS volume, the model volume,
+deterministic test volume, the persistent xaibootFS volume, the model volume,
 the storage administration scratch volume, then the A/B system volume twice.
 That is the order `run-qemu-x86_64.sh` uses and the one the slot mapping in
 the PCI transport expects.
@@ -189,7 +189,7 @@ arrives on stdout:
 PCI: enumerated 11 devices (virtio=10 net=1 bridge=1)
 virtio-console: modern PCI transport index=2 slot=0 common=0x180010000
 virtio-blk-h: slot=1 capacity_sectors=32768 event_idx=0
-mutable-fs: persistent mounted v5 nodes=256 sectors=8192
+xaibootfs: persistent mounted v5 nodes=256 sectors=8192
 kernel: persistent fsck valid=1 v5 files=15 dirs=22
 virtio-net: guest offload negotiated; receive buffers hold 65550 bytes
 network: DHCP lease ip=c0a84002 mask=ffffff00 gw=c0a84001 dns=c0a84001
@@ -233,7 +233,7 @@ machine happen to accommodate each one:
   seventeen pages and a descriptor covers one contiguous run, which the kernel
   heap cannot promise, so each receive buffer is now an indirect descriptor
   chain of one page per entry.
-- The MutableFS self-test formats whichever block device is currently
+- The xaibootFS self-test formats whichever block device is currently
   selected, which before any volume is bound is the boot device. QEMU attaches
   that with snapshot=on so formatting it costs nothing; here it is read-only
   removable media, and the test failed on it. It now runs only where a

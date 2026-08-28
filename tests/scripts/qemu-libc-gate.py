@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 REQUIREMENTS = json.loads((ROOT / "tests/libc/c99-requirements.json").read_text())
 MARKERS = tuple(REQUIREMENTS["runtime_markers"])
 FORBIDDEN = ("Cyan Screen of Death", "panic:", "assertion failed")
-TMPFILE_EVENT = re.compile(r"mutable-fs: (?:write|delete) path=(/tmp/T\S+)")
+TMPFILE_EVENT = re.compile(r"xaibootfs: (?:write|delete) path=(/tmp/T\S+)")
 
 
 def assert_tmpfiles_removed(text: str, arch: str) -> None:
@@ -23,7 +23,7 @@ def assert_tmpfiles_removed(text: str, arch: str) -> None:
     for line in text.splitlines():
         match = TMPFILE_EVENT.search(line)
         if match is not None:
-            action = "delete" if "mutable-fs: delete " in line else "write"
+            action = "delete" if "xaibootfs: delete " in line else "write"
             events.setdefault(match.group(1), []).append(action)
     created = {path: actions for path, actions in events.items() if "write" in actions}
     leaked = [path for path, actions in created.items() if actions[-1] != "delete"]

@@ -4,7 +4,7 @@ Last reviewed: 2026-08-28.
 
 The current QEMU closure revision passes hosted, AArch64/x86_64 smoke, libc,
 dual-architecture all-queue NVMe interrupt, SVE2 per-task context, x86 HMAT/
-1-GiB/TLB, MutableFS-v5 migration/scale, TLS xapt, and external network gates.
+1-GiB/TLB, xaibootFS-v5 migration/scale, TLS xapt, and external network gates.
 The final consolidated report deliberately retains
 `physical_qualification=false`.
 
@@ -65,7 +65,7 @@ which the build enforces.
 | Function | QEMU ARM64 | QEMU x86_64 | VMware Fusion ARM64 | Virtualization.framework |
 |---|---|---|---|---|
 | Boots to a login | yes | yes | yes | yes |
-| Durable MutableFS volume | yes | yes | yes | yes |
+| Durable xaibootFS volume | yes | yes | yes | yes |
 | IPv4 by DHCP | yes | yes | yes | yes |
 | IPv6 by SLAAC | yes | yes | `F-03` not qualified | yes, unique-local only (`V-03`) |
 | IPv6 by DHCPv6 | client present, gated | client present | client present | client present |
@@ -168,7 +168,7 @@ are intentionally not implied by that passing profile.
 
 ## Apple Virtualization.framework ARM64 remaining work
 
-XAIOS boots to a login on this platform with MutableFS on a durable volume,
+XAIOS boots to a login on this platform with xaibootFS on a durable volume,
 DHCP IPv4, SLAAC IPv6, SSH and all four vCPUs online, and the Mac can ssh into
 the guest over vmnet
 through `platform/virtualization-framework/vmnet-helper`, which is the only route in: the built-in NAT

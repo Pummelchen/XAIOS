@@ -53,7 +53,7 @@ reserved private headers remain available to the library implementation.
 |---|---|
 | Language | Clang strict hosted C99 with VLAs, `restrict`, designated initializers, compound literals, flexible arrays, variadic macros, complex arithmetic and hexadecimal floating point tested. |
 | Allocation | Userspace Picolibc allocator over a bounded 256 KiB application heap. AI-scale allocation remains native XAIOS runtime work. |
-| Stdio | Narrow/wide formatting, scanning and buffering in userspace; private descriptors map streams to existing MutableFS operations. |
+| Stdio | Narrow/wide formatting, scanning and buffering in userspace; private descriptors map streams to existing xaibootFS operations. |
 | Time | `time()` uses UTC realtime and `clock()` uses process runtime through selectors on existing syscall 20. |
 | Signals | ISO `signal()` and `raise()` use process-local handling. No POSIX signal delivery API is exposed. |
 | Termination | Return from both standard `main` forms, `atexit`, `exit`, `_Exit`, and `abort` are exercised as separate processes. |
@@ -101,7 +101,7 @@ the report, manifests, linked ELFs and QEMU logs.
 | `long double` | IEEE binary128 on AArch64; x87 extended precision in 16-byte storage on x86_64. |
 | Execution character set | ASCII-compatible execution set; the required `C` locale is always available. |
 | Text and binary streams | Identical byte representation; no newline translation. |
-| Temporary files | Created in `/tmp/` through MutableFS and removed on close where required by the library. |
+| Temporary files | Created in `/tmp/` through xaibootFS and removed on close where required by the library. |
 | Command processor | None. `system(NULL)` returns zero; a non-null command returns `-1` with `ENOSYS`. |
 | Environment | No predefined environment variables are promised. |
 | Clock epoch | `time_t` is signed 64-bit seconds from the Unix epoch; realtime comes from the XAIOS wall clock. |

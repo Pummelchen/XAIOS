@@ -1,6 +1,6 @@
 #include <xaios/assert.h>
 #include <xaios/klog.h>
-#include <xaios/mutable_fs.h>
+#include <xaios/xaiboot_fs.h>
 #include <xaios/persistence.h>
 #include <xaios/security.h>
 #include <xaios/sha256.h>
@@ -146,7 +146,7 @@ static const char *state_name(xaios_update_state_t state) {
 }
 
 static xaios_status_t persist_update_state(void) {
-  if (mutable_fs_record_update_transaction(
+  if (xaiboot_fs_record_update_transaction(
           g_update.generation, state_name(g_update.state), g_update.target,
           g_update.rollback_label) != XAIOS_OK) {
     ++g_rejects;
@@ -174,7 +174,7 @@ void update_runtime_init(void) {
   g_delivery.hash_verified = 0;
   g_delivery.last_error = XAIOS_OK;
   g_chunk_staging_active = 0;
-  mutable_fs_mkdir("/update");
+  xaiboot_fs_mkdir("/update");
   klog("update: runtime initialized\n");
 }
 
@@ -264,7 +264,7 @@ xaios_status_t update_stage(void) {
   }
   g_update.state = XAIOS_UPDATE_STAGED;
   if (persist_update_state() != XAIOS_OK ||
-      mutable_fs_commit("update-stage") != XAIOS_OK) {
+      xaiboot_fs_commit("update-stage") != XAIOS_OK) {
     ++g_rejects;
     return XAIOS_ERR_IO;
   }
@@ -285,7 +285,7 @@ xaios_status_t update_commit(void) {
   }
   g_update.state = XAIOS_UPDATE_COMMITTED;
   if (persist_update_state() != XAIOS_OK ||
-      mutable_fs_commit("update-commit") != XAIOS_OK) {
+      xaiboot_fs_commit("update-commit") != XAIOS_OK) {
     ++g_rejects;
     return XAIOS_ERR_IO;
   }
@@ -318,7 +318,7 @@ xaios_status_t update_recover_boot(void) {
     return XAIOS_ERR_INVALID;
   }
   if (persistence_rollback(XAIOS_SNAPSHOT_UPDATE, 0) != XAIOS_OK ||
-      mutable_fs_rollback() != XAIOS_OK) {
+      xaiboot_fs_rollback() != XAIOS_OK) {
     ++g_rejects;
     return XAIOS_ERR_IO;
   }
@@ -346,7 +346,7 @@ xaios_status_t update_rollback(void) {
     return XAIOS_ERR_IO;
   }
   if (persistence_rollback(XAIOS_SNAPSHOT_UPDATE, 0) != XAIOS_OK ||
-      mutable_fs_rollback() != XAIOS_OK) {
+      xaiboot_fs_rollback() != XAIOS_OK) {
     ++g_rejects;
     return XAIOS_ERR_IO;
   }
@@ -415,26 +415,26 @@ xaios_status_t update_stage_chunk(const void *data, uint32_t size) {
       return XAIOS_ERR_IO;
     }
   } else {
-  /* Append fixture/non-system chunks to MutableFS. */
-  uint32_t open_flags = XAIOS_MFS_OPEN_WRITE | XAIOS_MFS_OPEN_CREATE;
+  /* Append fixture/non-system chunks to xaibootFS. */
+  uint32_t open_flags = XAIOS_XBFS_OPEN_WRITE | XAIOS_XBFS_OPEN_CREATE;
   if (g_delivery.bytes_received == 0U) {
-    open_flags |= XAIOS_MFS_OPEN_TRUNCATE;
+    open_flags |= XAIOS_XBFS_OPEN_TRUNCATE;
   }
-  int64_t fd = mutable_fs_open(XAIOS_UPDATE_STAGING_PATH, open_flags);
+  int64_t fd = xaiboot_fs_open(XAIOS_UPDATE_STAGING_PATH, open_flags);
   if (fd < 0) {
     ++g_rejects;
     g_delivery.last_error = XAIOS_ERR_IO;
     return XAIOS_ERR_IO;
   }
 
-  if (mutable_fs_seek((uint32_t)fd, g_delivery.bytes_received) != XAIOS_OK) {
-    mutable_fs_close((uint32_t)fd);
+  if (xaiboot_fs_seek((uint32_t)fd, g_delivery.bytes_received) != XAIOS_OK) {
+    xaiboot_fs_close((uint32_t)fd);
     ++g_rejects;
     g_delivery.last_error = XAIOS_ERR_IO;
     return XAIOS_ERR_IO;
   }
-  int64_t written = mutable_fs_write_fd((uint32_t)fd, data, size);
-  mutable_fs_close((uint32_t)fd);
+  int64_t written = xaiboot_fs_write_fd((uint32_t)fd, data, size);
+  xaiboot_fs_close((uint32_t)fd);
 
   if (written < 0 || (uint32_t)written != size) {
     ++g_rejects;
@@ -497,7 +497,7 @@ xaios_status_t update_verify_hash(const uint8_t expected_hash[32]) {
   g_delivery.hash_verified = 1;
   g_update.state = XAIOS_UPDATE_STAGED;
   if (persist_update_state() != XAIOS_OK ||
-      mutable_fs_commit("update-stage-verified") != XAIOS_OK) {
+      xaiboot_fs_commit("update-stage-verified") != XAIOS_OK) {
     ++g_rejects;
     g_delivery.last_error = XAIOS_ERR_IO;
     return XAIOS_ERR_IO;
@@ -705,13 +705,13 @@ void update_delivery_self_test(void) {
   kassert(status.bytes_received == 3);
   kassert(status.chunks_written == 2);
   kassert(status.hash_verified == 1);
-  int64_t staged_fd = mutable_fs_open(XAIOS_UPDATE_STAGING_PATH,
-                                      XAIOS_MFS_OPEN_READ);
+  int64_t staged_fd = xaiboot_fs_open(XAIOS_UPDATE_STAGING_PATH,
+                                      XAIOS_XBFS_OPEN_READ);
   char staged_bytes[3] = {0, 0, 0};
   kassert(staged_fd > 0);
-  kassert(mutable_fs_read_fd((uint32_t)staged_fd, staged_bytes,
+  kassert(xaiboot_fs_read_fd((uint32_t)staged_fd, staged_bytes,
                              sizeof(staged_bytes)) == 3);
-  kassert(mutable_fs_close((uint32_t)staged_fd) == XAIOS_OK);
+  kassert(xaiboot_fs_close((uint32_t)staged_fd) == XAIOS_OK);
   kassert(staged_bytes[0] == 'a' && staged_bytes[1] == 'b' &&
           staged_bytes[2] == 'c');
 

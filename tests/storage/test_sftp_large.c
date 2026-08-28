@@ -62,7 +62,7 @@ int ssh_channel_send_data(int sockfd, uint32_t remote_id,
 int xaios_fs_open(const char *path, u32 flags) {
   if (strcmp(path, "/tmp/large.bin") != 0) return -1;
   g_open_flags = flags;
-  if ((flags & XAIOS_MFS_OPEN_TRUNCATE) != 0U) {
+  if ((flags & XAIOS_XBFS_OPEN_TRUNCATE) != 0U) {
     g_file_size = 0U;
     g_data_base = UINT64_MAX;
     memset(g_data, 0, sizeof(g_data));
@@ -120,7 +120,7 @@ int xaios_fs_fsync(int fd) {
   return 0;
 }
 
-int xaios_fs_stat(const char *path, xaios_mfs_stat_user_t *value) {
+int xaios_fs_stat(const char *path, xaios_xbfs_stat_user_t *value) {
   memset(value, 0, sizeof(*value));
   if (strcmp(path, "/tmp") == 0 || strcmp(path, "/") == 0) {
     value->type = XAIOS_FS_TYPE_DIRECTORY;
@@ -237,7 +237,7 @@ int main(void) {
   assert(response_status() == 8U);
 
   uint32_t handle = open_file("/tmp/large.bin");
-  assert((g_open_flags & XAIOS_MFS_OPEN_TRUNCATE) != 0U);
+  assert((g_open_flags & XAIOS_XBFS_OPEN_TRUNCATE) != 0U);
   static uint8_t large_payload[32768];
   for (uint32_t index = 0U; index < sizeof(large_payload); ++index) {
     large_payload[index] = (uint8_t)index;

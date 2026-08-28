@@ -16,9 +16,9 @@ MARKER_GROUPS = {
         "kernel: /bin/service-manager returned to kernel exit_code=0",
     ],
     "filesystem_rollback": [
-        "mutable-fs: snapshot committed",
-        "mutable-fs: snapshot rollback",
-        "mutable-fs: journal replay self-test passed",
+        "xaibootfs: snapshot committed",
+        "xaibootfs: snapshot rollback",
+        "xaibootfs: journal replay self-test passed",
         "persistence: disk reload/rollback self-test passed",
     ],
     "ai_cell_conflicts": [

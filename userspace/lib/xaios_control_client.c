@@ -750,8 +750,8 @@ static int render_capabilities(const void *payload, int json, char *output,
                             value.ipv6) ||
            json_field_state(output, capacity, offset, &first, "udp",
                             value.udp) ||
-           json_field_state(output, capacity, offset, &first, "mutable_fs",
-                            value.mutable_fs) ||
+           json_field_state(output, capacity, offset, &first, "xaiboot_fs",
+                            value.xaiboot_fs) ||
            json_field_state(output, capacity, offset, &first,
                             "model_v1_fixture", value.model_v1_fixture) ||
            json_field_state(output, capacity, offset, &first, "model_v2",
@@ -774,8 +774,8 @@ static int render_capabilities(const void *payload, int json, char *output,
          human_field_state(output, capacity, offset, "ipv4", value.ipv4) ||
          human_field_state(output, capacity, offset, "ipv6", value.ipv6) ||
          human_field_state(output, capacity, offset, "udp", value.udp) ||
-         human_field_state(output, capacity, offset, "mutable_fs",
-                           value.mutable_fs) ||
+         human_field_state(output, capacity, offset, "xaiboot_fs",
+                           value.xaiboot_fs) ||
          human_field_state(output, capacity, offset, "model_v1_fixture",
                            value.model_v1_fixture) ||
          human_field_state(output, capacity, offset, "model_v2",

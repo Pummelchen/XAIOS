@@ -169,8 +169,8 @@ static uint64_t persistence_sector_checksum(xaios_persistence_disk_sector_t *sec
 /* Durable snapshot storage.
    vblk0 is the initramfs/test image and the QEMU launcher attaches it with
    snapshot=on, so every write to it is discarded when the machine stops. The
-   snapshot sector has to live on the same durable volume MutableFS uses, which
-   is why PERSISTENCE_SECTOR (3000) sits just below MFS_START_SECTOR (3072).
+   snapshot sector has to live on the same durable volume xaibootFS uses, which
+   is why PERSISTENCE_SECTOR (3000) sits just below XBFS_START_SECTOR (3072).
    Until a durable device is bound the default device is used, which keeps the
    pre-storage self-test working on machines that expose no writable volume. */
 static virtio_block_handle_t *g_persistence_device;

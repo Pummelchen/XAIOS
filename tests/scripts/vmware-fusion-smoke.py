@@ -35,7 +35,7 @@ READY_MARKER = "SSH server: up and running (tcp/22)"
 BOOT_MARKERS = [
     "e1000e: ready pci=",
     "ahci: ready pci=",
-    "mutable-fs: persistent mounted v5",
+    "xaibootfs: persistent mounted v5",
     "kernel: persistent network stack enabled device=e1000e",
     "kernel: starting persistent /bin/sshd service",
     READY_MARKER,
@@ -325,7 +325,7 @@ def main() -> int:
         "checks": checks,
         "failures": failures,
         "scope": (
-            "Fusion 26H1 ARM64 UEFI boot, ACPI/PCI E1000E DHCP, AHCI MutableFS, "
+            "Fusion 26H1 ARM64 UEFI boot, ACPI/PCI E1000E DHCP, AHCI xaibootFS, "
             "Mac-local public-key SSH/SFTP, crash recovery, guest reboot, orderly "
             "shutdown, and repeat-boot persistence; not physical-performance evidence"
         ),

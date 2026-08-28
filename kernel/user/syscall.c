@@ -12,7 +12,7 @@
 #include <xaios/network_config.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
-#include <xaios/mutable_fs.h>
+#include <xaios/xaiboot_fs.h>
 #include <xaios/network_stack.h>
 #include <xaios/remote_login.h>
 #include <xaios/security.h>
@@ -728,11 +728,11 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
   }
 
   if (syscall == XAIOS_SYSCALL_FS_OPEN) {
-    char path[XAIOS_MFS_PATH_MAX];
+    char path[XAIOS_XBFS_PATH_MAX];
     if (copy_user_string(arg0, arg1, path, sizeof(path)) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "bad-fs-path");
     }
-    if ((arg2 & XAIOS_MFS_OPEN_WRITE) != 0 &&
+    if ((arg2 & XAIOS_XBFS_OPEN_WRITE) != 0 &&
         user_process_has_capability(XAIOS_CAP_FS_WRITE) != XAIOS_OK) {
       const xaios_user_process_t *process = user_current_process();
       uint64_t granted = process != 0 ? process->capability_mask : 0;
@@ -745,11 +745,11 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1,
                             "missing-credential-read");
     }
-    if ((arg2 & XAIOS_MFS_OPEN_WRITE) != 0 &&
+    if ((arg2 & XAIOS_XBFS_OPEN_WRITE) != 0 &&
         security_authorize_fs_write(path) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-open-write-denied");
     }
-    if ((arg2 & XAIOS_MFS_OPEN_WRITE) == 0 &&
+    if ((arg2 & XAIOS_XBFS_OPEN_WRITE) == 0 &&
         security_authorize_fs_read(path) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-open-read-denied");
     }
@@ -887,9 +887,9 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
   }
 
   if (syscall == XAIOS_SYSCALL_FS_STAT) {
-    char path[XAIOS_MFS_PATH_MAX];
+    char path[XAIOS_XBFS_PATH_MAX];
     if (copy_user_string(arg0, arg1, path, sizeof(path)) != XAIOS_OK ||
-        vmm_validate_user_buffer(arg2, sizeof(xaios_mfs_stat_t),
+        vmm_validate_user_buffer(arg2, sizeof(xaios_xbfs_stat_t),
                                  XAIOS_VMM_WRITABLE) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "bad-fs-stat");
     }
@@ -897,17 +897,17 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     if (vfs_stat(path, &vfs_value) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-stat-denied");
     }
-    xaios_mfs_stat_t *value = (xaios_mfs_stat_t *)(uintptr_t)arg2;
+    xaios_xbfs_stat_t *value = (xaios_xbfs_stat_t *)(uintptr_t)arg2;
     value->type = vfs_value.type;
     value->block_count = vfs_value.block_count;
     value->size = vfs_value.size;
     value->generation = vfs_value.generation;
     value->content_hash = vfs_value.content_hash;
-    return complete_control_syscall(sizeof(xaios_mfs_stat_t));
+    return complete_control_syscall(sizeof(xaios_xbfs_stat_t));
   }
 
   if (syscall == XAIOS_SYSCALL_FS_MKDIR) {
-    char path[XAIOS_MFS_PATH_MAX];
+    char path[XAIOS_XBFS_PATH_MAX];
     if (copy_user_string(arg0, arg1, path, sizeof(path)) != XAIOS_OK ||
         security_authorize_fs_write(path) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-mkdir-denied");
@@ -919,7 +919,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
   }
 
   if (syscall == XAIOS_SYSCALL_FS_DELETE) {
-    char path[XAIOS_MFS_PATH_MAX];
+    char path[XAIOS_XBFS_PATH_MAX];
     if (copy_user_string(arg0, arg1, path, sizeof(path)) != XAIOS_OK ||
         security_authorize_fs_write(path) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-delete-denied");
@@ -932,8 +932,8 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
 
   if (syscall == XAIOS_SYSCALL_FS_RENAME) {
     xaios_syscall_rename_request_t request;
-    char old_path[XAIOS_MFS_PATH_MAX];
-    char new_path[XAIOS_MFS_PATH_MAX];
+    char old_path[XAIOS_XBFS_PATH_MAX];
+    char new_path[XAIOS_XBFS_PATH_MAX];
     if (arg1 != sizeof(request) ||
         vmm_validate_user_buffer(arg0, sizeof(request), 0) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "bad-fs-rename-request");
@@ -955,7 +955,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
 
   if (syscall == XAIOS_SYSCALL_FS_LIST) {
     xaios_syscall_list_request_t request;
-    char path[XAIOS_MFS_PATH_MAX];
+    char path[XAIOS_XBFS_PATH_MAX];
     uint64_t out_size = 0;
     if (copy_user_string(arg0, arg1, path, sizeof(path)) != XAIOS_OK ||
         vmm_validate_user_buffer(arg2, sizeof(request), 0) != XAIOS_OK) {

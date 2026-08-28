@@ -290,12 +290,12 @@ static int handle_open(int sockfd, const uint8_t *data, uint32_t len) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid OPEN");
   }
   
-  if (path_len >= XAIOS_MFS_PATH_MAX) {
+  if (path_len >= XAIOS_XBFS_PATH_MAX) {
     return send_status(sockfd, request_id, SSH_FX_FAILURE, "Path too long");
   }
   
   /* Validate path */
-  char local_path[XAIOS_MFS_PATH_MAX];
+  char local_path[XAIOS_XBFS_PATH_MAX];
   ssh_mem_copy(local_path, path_data, path_len);
   local_path[path_len] = '\0';
   
@@ -326,11 +326,11 @@ static int handle_open(int sockfd, const uint8_t *data, uint32_t len) {
                        "Invalid open flags");
   }
   int fs_flags = 0;
-  if ((flags & SSH_FXF_READ) != 0)  fs_flags |= XAIOS_MFS_OPEN_READ;
-  if ((flags & SSH_FXF_WRITE) != 0) fs_flags |= XAIOS_MFS_OPEN_WRITE;
-  if ((flags & SSH_FXF_CREAT) != 0) fs_flags |= XAIOS_MFS_OPEN_CREATE;
-  if ((flags & SSH_FXF_TRUNC) != 0) fs_flags |= XAIOS_MFS_OPEN_TRUNCATE;
-  if (fs_flags == 0) fs_flags = XAIOS_MFS_OPEN_READ;
+  if ((flags & SSH_FXF_READ) != 0)  fs_flags |= XAIOS_XBFS_OPEN_READ;
+  if ((flags & SSH_FXF_WRITE) != 0) fs_flags |= XAIOS_XBFS_OPEN_WRITE;
+  if ((flags & SSH_FXF_CREAT) != 0) fs_flags |= XAIOS_XBFS_OPEN_CREATE;
+  if ((flags & SSH_FXF_TRUNC) != 0) fs_flags |= XAIOS_XBFS_OPEN_TRUNCATE;
+  if (fs_flags == 0) fs_flags = XAIOS_XBFS_OPEN_READ;
   
   /* Allocate handle */
   sftp_file_handle_t *handle = alloc_handle(sockfd);
@@ -349,7 +349,7 @@ static int handle_open(int sockfd, const uint8_t *data, uint32_t len) {
     return send_status(sockfd, request_id, SSH_FX_FAILURE, "Open failed");
   }
   if (handle->is_append != 0) {
-    xaios_mfs_stat_user_t file_stat;
+    xaios_xbfs_stat_user_t file_stat;
     if (xaios_fs_stat(handle->path, &file_stat) != 0 ||
         file_stat.type != XAIOS_FS_TYPE_FILE) {
       (void)xaios_fs_close(handle->fd);
@@ -389,7 +389,7 @@ static int handle_close(int sockfd, const uint8_t *data, uint32_t len) {
   int close_failed = 0;
   if (handle->fd >= 0) {
     /* The VFS backend owns durable-close semantics. ModelFS commits pending
-     * chunks from close(), while MutableFS persists each mutation eagerly. */
+     * chunks from close(), while xaibootFS persists each mutation eagerly. */
     if (xaios_fs_close(handle->fd) != 0) close_failed = 1;
     handle->fd = -1;
   }
@@ -517,11 +517,11 @@ static int handle_opendir(int sockfd, const uint8_t *data, uint32_t len) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid OPENDIR");
   }
   
-  if (path_len >= XAIOS_MFS_PATH_MAX) {
+  if (path_len >= XAIOS_XBFS_PATH_MAX) {
     return send_status(sockfd, request_id, SSH_FX_FAILURE, "Path too long");
   }
   
-  char local_path[XAIOS_MFS_PATH_MAX];
+  char local_path[XAIOS_XBFS_PATH_MAX];
   ssh_mem_copy(local_path, path, path_len);
   local_path[path_len] = '\0';
   
@@ -537,7 +537,7 @@ static int handle_opendir(int sockfd, const uint8_t *data, uint32_t len) {
   
   ssh_mem_copy(handle->path, local_path, path_len + 1);
   handle->is_dir = 1;
-  xaios_mfs_stat_user_t directory_stat;
+  xaios_xbfs_stat_user_t directory_stat;
   if (xaios_fs_stat(local_path, &directory_stat) != 0 ||
       directory_stat.type != XAIOS_FS_TYPE_DIRECTORY) {
     ssh_mem_zero(handle, sizeof(*handle));
@@ -631,11 +631,11 @@ static int handle_mkdir(int sockfd, const uint8_t *data, uint32_t len) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid MKDIR");
   }
   
-  if (path_len >= XAIOS_MFS_PATH_MAX) {
+  if (path_len >= XAIOS_XBFS_PATH_MAX) {
     return send_status(sockfd, request_id, SSH_FX_FAILURE, "Path too long");
   }
   
-  char local_path[XAIOS_MFS_PATH_MAX];
+  char local_path[XAIOS_XBFS_PATH_MAX];
   ssh_mem_copy(local_path, path, path_len);
   local_path[path_len] = '\0';
   
@@ -662,11 +662,11 @@ static int handle_remove(int sockfd, const uint8_t *data, uint32_t len) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid REMOVE");
   }
   
-  if (path_len >= XAIOS_MFS_PATH_MAX) {
+  if (path_len >= XAIOS_XBFS_PATH_MAX) {
     return send_status(sockfd, request_id, SSH_FX_FAILURE, "Path too long");
   }
   
-  char local_path[XAIOS_MFS_PATH_MAX];
+  char local_path[XAIOS_XBFS_PATH_MAX];
   ssh_mem_copy(local_path, path, path_len);
   local_path[path_len] = '\0';
   
@@ -700,10 +700,10 @@ static int handle_rename(int sockfd, const uint8_t *data, uint32_t len) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid RENAME");
   }
   
-  char old_local[XAIOS_MFS_PATH_MAX];
-  char new_local[XAIOS_MFS_PATH_MAX];
+  char old_local[XAIOS_XBFS_PATH_MAX];
+  char new_local[XAIOS_XBFS_PATH_MAX];
   
-  if (old_len >= XAIOS_MFS_PATH_MAX || new_len >= XAIOS_MFS_PATH_MAX) {
+  if (old_len >= XAIOS_XBFS_PATH_MAX || new_len >= XAIOS_XBFS_PATH_MAX) {
     return send_status(sockfd, request_id, SSH_FX_FAILURE, "Path too long");
   }
   
@@ -738,11 +738,11 @@ static int handle_stat(int sockfd, const uint8_t *data, uint32_t len) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid STAT");
   }
   
-  if (path_len >= XAIOS_MFS_PATH_MAX) {
+  if (path_len >= XAIOS_XBFS_PATH_MAX) {
     return send_status(sockfd, request_id, SSH_FX_FAILURE, "Path too long");
   }
   
-  char local_path[XAIOS_MFS_PATH_MAX];
+  char local_path[XAIOS_XBFS_PATH_MAX];
   ssh_mem_copy(local_path, path, path_len);
   local_path[path_len] = '\0';
   
@@ -751,7 +751,7 @@ static int handle_stat(int sockfd, const uint8_t *data, uint32_t len) {
   }
   
   /* Get file stat via userspace FS API */
-  xaios_mfs_stat_user_t file_stat;
+  xaios_xbfs_stat_user_t file_stat;
   int fs_status = xaios_fs_stat(local_path, &file_stat);
   
   uint8_t buf[64];
@@ -786,7 +786,7 @@ static int handle_fstat(int sockfd, const uint8_t *data, uint32_t len) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE, "Invalid handle ID");
   }
 
-  xaios_mfs_stat_user_t file_stat;
+  xaios_xbfs_stat_user_t file_stat;
   if (xaios_fs_stat(handle->path, &file_stat) != 0) {
     return send_status(sockfd, request_id, SSH_FX_NO_SUCH_FILE, "File not found");
   }
@@ -831,7 +831,7 @@ static int handle_fsetstat(int sockfd, const uint8_t *data, uint32_t len) {
   }
   uint64_t requested_size = ((uint64_t)read_u32(data + next_offset) << 32U) |
                             read_u32(data + next_offset + 4U);
-  xaios_mfs_stat_user_t file_stat;
+  xaios_xbfs_stat_user_t file_stat;
   if (xaios_fs_stat(handle->path, &file_stat) != 0) {
     return send_status(sockfd, request_id, SSH_FX_NO_SUCH_FILE,
                        "File not found");
@@ -849,12 +849,12 @@ static int handle_realpath(int sockfd, const uint8_t *data, uint32_t len) {
   }
   uint32_t request_id = read_u32(data);
   uint32_t path_len = read_u32(data + 4U);
-  if (path_len > len - 8U || path_len >= XAIOS_MFS_PATH_MAX) {
+  if (path_len > len - 8U || path_len >= XAIOS_XBFS_PATH_MAX) {
     return send_status(sockfd, request_id, SSH_FX_BAD_MESSAGE,
                        "Invalid path");
   }
 
-  char path[XAIOS_MFS_PATH_MAX];
+  char path[XAIOS_XBFS_PATH_MAX];
   if (path_len == 0U || (path_len == 1U && data[8] == '.')) {
     path[0] = '/';
     path[1] = '\0';
@@ -875,7 +875,7 @@ static int handle_realpath(int sockfd, const uint8_t *data, uint32_t len) {
                        "Invalid path");
   }
 
-  uint8_t response[2U * XAIOS_MFS_PATH_MAX + 32U];
+  uint8_t response[2U * XAIOS_XBFS_PATH_MAX + 32U];
   uint32_t pos = 0;
   response[pos++] = SSH_FXP_NAME;
   write_u32(response + pos, request_id); pos += 4U;

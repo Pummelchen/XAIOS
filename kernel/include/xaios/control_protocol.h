@@ -2,7 +2,7 @@
 #define XAIOS_CONTROL_PROTOCOL_H
 
 #include <xaios/admin_control.h>
-#include <xaios/mutable_fs.h>
+#include <xaios/xaiboot_fs.h>
 #include <xaios/model_volume_admin.h>
 #include <xaios/status.h>
 #include <xaios/storage_admin.h>
@@ -255,7 +255,7 @@ typedef struct xaios_control_capabilities_payload {
   uint32_t ipv4;
   uint32_t ipv6;
   uint32_t udp;
-  uint32_t mutable_fs;
+  uint32_t xaiboot_fs;
   uint32_t model_v1_fixture;
   uint32_t model_v2;
   uint32_t real_model_inference;

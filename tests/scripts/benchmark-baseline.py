@@ -146,9 +146,9 @@ def extract_xaios_metrics(telemetry):
         "migration_total": telemetry.get("migration_total", 0),
         "network_rx_packets": telemetry.get("network_rx_packets", 0),
         "network_tx_packets": telemetry.get("network_tx_packets", 0),
-        "mutable_fs_files": telemetry.get("mutable_fs_files", 0),
-        "mutable_fs_writes": telemetry.get("mutable_fs_writes", 0),
-        "mutable_fs_reads": telemetry.get("mutable_fs_reads", 0),
+        "xaiboot_fs_files": telemetry.get("xaiboot_fs_files", 0),
+        "xaiboot_fs_writes": telemetry.get("xaiboot_fs_writes", 0),
+        "xaiboot_fs_reads": telemetry.get("xaiboot_fs_reads", 0),
     }
 
 

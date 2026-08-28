@@ -25,7 +25,7 @@ primary Unix behavior reference for commands and network interoperability.
 - Runtime-sized CPU, cpuset, scheduler, NUMA, and process metadata.
 - EL0 processes and threads with capability-checked syscalls.
 - VirtIO block/network/RNG plus focused emulated NVMe and SMMUv3 gates.
-- MutableFS for bounded writable state and ModelFS for immutable model data.
+- xaibootFS for bounded writable state and ModelFS for immutable model data.
 - IPv4, IPv6, TCP, UDP, DNS, reassembly, and SACK-aware transport behavior.
 - Concurrent SSH sessions, SFTP, outbound SSH/SCP, and authenticated local
   console sessions in explicitly provisioned development images.

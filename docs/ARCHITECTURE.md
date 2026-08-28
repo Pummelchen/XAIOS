@@ -6,7 +6,7 @@ XAIOS combines a freestanding AArch64 operating-system prototype with a
 portable C99 inference-engine foundation. The current complete OS correctness
 path boots through UEFI on QEMU virt. An experimental VMware Fusion ARM64 path
 on Apple Silicon reaches SSH through PCI-discovered E1000E networking and AHCI
-MutableFS; `docs/VMWARE-FUSION.md` records its narrower device/platform
+xaibootFS; `docs/VMWARE-FUSION.md` records its narrower device/platform
 boundary. The x86_64 QEMU image executes the common kernel and
 complete userspace/service image. It starts MADT-discovered APs, uses per-CPU
 user address-space roots, validates ring-3 threads and XSAVE/FXSAVE interrupt
@@ -53,7 +53,7 @@ services, and jumps to `kmain`. The kernel establishes its own page tables.
 15. source_index / git_ws     — AI agent source indexing
 16. sandbox / core_lease      — Isolation primitives
 17. gic_init()                — GICv3 interrupt controller
-18. virtio_blk / persistence  — Generic block devices and MutableFS
+18. virtio_blk / persistence  — Generic block devices and xaibootFS
 19. VFS / ModelFS             — Mutable root, immutable models, bounded staging
 20. klog_ring / boot_counter  — Persistent logging and crash recovery
 21. update_self_test()        — Package delivery with SHA-256
@@ -116,7 +116,7 @@ XAIOS/
 │   │   ├── kheap.c       — Kernel heap allocator
 │   │   ├── arena.c       — Arena allocator for model weights
 │   │   └── elf_loader.c  — ELF64 parser and process loader
-│   ├── fs/               — Initramfs, VFS, MutableFS and ModelFS adapters
+│   ├── fs/               — Initramfs, VFS, xaibootFS and ModelFS adapters
 │   ├── storage/          — GPT and bounded partition devices
 │   ├── net/              — Network protocols
 │   │   ├── arp.c         — ARP cache and resolution

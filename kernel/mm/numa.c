@@ -793,6 +793,25 @@ void numa_self_test(void) {
     kassert(node1 != 0 && numa_distance(0U, 1U) >= 10U);
     void *remote_page = numa_alloc_page_on_node(1U);
     kassert(remote_page != 0);
+    /* The page must be in the node it was asked for. Node 0 was checked this
+       way and node 1 was not, which left the case that matters untested: an
+       allocator that ignored the node argument and always served node 0 would
+       have passed everything above, and the whole point of asking for a node
+       is that memory comes from it. */
+    kassert(numa_node_of_phys((uint64_t)(uintptr_t)remote_page) == 1U);
+    kassert((uint64_t)(uintptr_t)remote_page >= node1->phys_start &&
+            (uint64_t)(uintptr_t)remote_page < node1->phys_end);
+    /* Every CPU belongs to exactly the node that claims it, on both nodes.
+       numa_node_has_cpu and numa_preferred_node_for_cpu are separate lookups
+       and nothing checked they agree beyond CPU 0. */
+    for (uint32_t cpu = 0U; cpu < smp_capacity(); ++cpu) {
+      uint32_t preferred = numa_preferred_node_for_cpu(cpu);
+      kassert(preferred < g_numa_node_count);
+      kassert(numa_node_has_cpu(preferred, cpu));
+      for (uint32_t node = 0U; node < g_numa_node_count; ++node) {
+        if (node != preferred) kassert(!numa_node_has_cpu(node, cpu));
+      }
+    }
     numa_record_access(0U, (uint64_t)(uintptr_t)remote_page, 128U);
     kassert(numa_remote_bytes() == 128U);
     kassert(numa_free_page(remote_page) == 1);

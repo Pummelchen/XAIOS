@@ -2,7 +2,7 @@
 #include <xaios/ai_cell.h>
 #include <xaios/cpu_ai_runtime.h>
 #include <xaios/klog.h>
-#include <xaios/mutable_fs.h>
+#include <xaios/xaiboot_fs.h>
 #include <xaios/network_stack.h>
 #include <xaios/persistence.h>
 #include <xaios/security.h>
@@ -223,7 +223,7 @@ static void persist_service_state(xaios_service_t *service) {
   if (service == 0 || !str_eq(service->name, k_child_service_name)) {
     return;
   }
-  xaios_status_t status = mutable_fs_record_service_state(
+  xaios_status_t status = xaiboot_fs_record_service_state(
       service->name, service_state_name(service->state));
   if (status == XAIOS_OK) {
     klog("service: %s mutable-state persisted state=%s\n", service->name,
@@ -455,7 +455,7 @@ static xaios_status_t handle_admin_status(const char *service_name,
        service->restart_attempts, service->log_records, service->crash_count,
        service->cleanup_count);
   if (persist != 0 &&
-      mutable_fs_record_admin_status(service->name,
+      xaiboot_fs_record_admin_status(service->name,
                                      service_state_name(service->state),
                                      (uint32_t)service->starts,
                                      (uint32_t)service->restart_attempts,
@@ -1061,10 +1061,10 @@ static xaios_status_t handle_osctl_command(const char *action,
   }
   if (str_eq(action, "fs")) {
     klog("osctl: fs files=%lu directories=%lu writes=%lu reads=%lu commits=%lu rollbacks=%lu checksum_errors=%lu\n",
-         mutable_fs_file_count(), mutable_fs_directory_count(),
-         mutable_fs_write_count(), mutable_fs_read_count(),
-         mutable_fs_commit_count(), mutable_fs_rollback_count(),
-         mutable_fs_checksum_error_count());
+         xaiboot_fs_file_count(), xaiboot_fs_directory_count(),
+         xaiboot_fs_write_count(), xaiboot_fs_read_count(),
+         xaiboot_fs_commit_count(), xaiboot_fs_rollback_count(),
+         xaiboot_fs_checksum_error_count());
     return XAIOS_OK;
   }
   if (str_eq(action, "net")) {
@@ -1091,8 +1091,8 @@ static xaios_status_t handle_osctl_command(const char *action,
     return XAIOS_OK;
   }
   if (str_eq(action, "rollback")) {
-    klog("osctl: rollback persistence=%lu mutable_fs=%lu update=%lu boot_fallbacks=%lu\n",
-         persistence_rollback_count(), mutable_fs_rollback_count(),
+    klog("osctl: rollback persistence=%lu xaiboot_fs=%lu update=%lu boot_fallbacks=%lu\n",
+         persistence_rollback_count(), xaiboot_fs_rollback_count(),
          update_rollback_count(), update_boot_fallback_count());
     return XAIOS_OK;
   }

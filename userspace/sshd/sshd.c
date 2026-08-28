@@ -79,12 +79,12 @@ static uint64_t fnv1a64_zero_range(const void *data, uint64_t size,
 }
 
 static int read_exact_file(const char *path, void *buffer, uint64_t size) {
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   if (path == 0 || buffer == 0 || size == 0U ||
       xaios_fs_stat(path, &stat) != 0 || stat.size != size) {
     return -1;
   }
-  int fd = xaios_fs_open(path, XAIOS_MFS_OPEN_READ);
+  int fd = xaios_fs_open(path, XAIOS_XBFS_OPEN_READ);
   if (fd < 0) return -1;
   int bytes = xaios_fs_read(fd, buffer, size);
   int close_result = xaios_fs_close(fd);
@@ -187,8 +187,8 @@ static int ssh_log_reopen(void) {
     g_log_fd = -1;
   }
   g_log_fd = xaios_fs_open(
-      "/state/sshd.log", XAIOS_MFS_OPEN_WRITE | XAIOS_MFS_OPEN_CREATE |
-                             XAIOS_MFS_OPEN_TRUNCATE);
+      "/state/sshd.log", XAIOS_XBFS_OPEN_WRITE | XAIOS_XBFS_OPEN_CREATE |
+                             XAIOS_XBFS_OPEN_TRUNCATE);
   g_log_bytes = 0;
   return g_log_fd < 0 ? -1 : 0;
 }
@@ -1582,7 +1582,7 @@ static int managed_auth_database_valid(
 }
 
 static int load_authorized_keys(void) {
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   ssh_mem_zero(g_authorized_keys, sizeof(g_authorized_keys));
   g_authorized_key_count = 0U;
   g_authorized_database_invalid = 0U;

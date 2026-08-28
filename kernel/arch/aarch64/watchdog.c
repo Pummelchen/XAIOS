@@ -1,7 +1,7 @@
 #include <xaios/assert.h>
 #include <xaios/arch_power.h>
 #include <xaios/klog.h>
-#include <xaios/mutable_fs.h>
+#include <xaios/xaiboot_fs.h>
 #include <xaios/timer.h>
 #include <xaios/watchdog.h>
 
@@ -51,7 +51,7 @@ void watchdog_self_test(void) {
        g_watchdog_active, g_watchdog_deadline_ns);
 }
 
-/* ---- Boot counter (persisted to mutable_fs) ---- */
+/* ---- Boot counter (persisted to xaiboot_fs) ---- */
 
 static uint32_t parse_u32_simple(const char *buf, uint64_t size) {
   uint32_t value = 0;
@@ -91,7 +91,7 @@ uint32_t boot_counter_read(void) {
     buf[i] = 0;
   }
   xaios_status_t status =
-      mutable_fs_read(XAIOS_BOOT_COUNTER_PATH, buf, sizeof(buf) - 1U, &read_size);
+      xaiboot_fs_read(XAIOS_BOOT_COUNTER_PATH, buf, sizeof(buf) - 1U, &read_size);
   if (status != XAIOS_OK || read_size == 0) {
     return 0;
   }
@@ -106,13 +106,13 @@ void boot_counter_increment(void) {
     buf[i] = 0;
   }
   format_u32(count, buf, &len);
-  mutable_fs_write(XAIOS_BOOT_COUNTER_PATH, buf, len);
+  xaiboot_fs_write(XAIOS_BOOT_COUNTER_PATH, buf, len);
   klog("boot: counter incremented count=%u\n", count);
 }
 
 void boot_counter_reset(void) {
   char buf[2] = {'0', 0};
-  mutable_fs_write(XAIOS_BOOT_COUNTER_PATH, buf, 1);
+  xaiboot_fs_write(XAIOS_BOOT_COUNTER_PATH, buf, 1);
   klog("boot: counter reset\n");
 }
 

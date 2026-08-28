@@ -398,8 +398,8 @@ if (device["identifier"] != "/dev/vblk4" or
 
 filesystems = load("storage-filesystems")
 mounts = {record["mount_path"]: record for record in filesystems["filesystems"]}
-if mounts.get("/", {}).get("filesystem") != "MutableFS":
-    raise SystemExit("storage filesystems: MutableFS root is absent")
+if mounts.get("/", {}).get("filesystem") != "xaibootFS":
+    raise SystemExit("storage filesystems: xaibootFS root is absent")
 if (mounts.get("/models", {}).get("filesystem") != "ModelFS" or
         mounts["/models"]["device_identifier"] != "/dev/vblk4" or
         mounts["/models"]["staging_writable"] != 1):

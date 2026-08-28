@@ -1,7 +1,7 @@
 #include <xaios/assert.h>
 #include <xaios/arch_power.h>
 #include <xaios/klog.h>
-#include <xaios/mutable_fs.h>
+#include <xaios/xaiboot_fs.h>
 #include <xaios/timer.h>
 #include <xaios/watchdog.h>
 
@@ -70,7 +70,7 @@ static uint64_t format_u32(uint32_t value, char *buffer) {
 uint32_t boot_counter_read(void) {
   char buffer[16] = {0};
   uint64_t size = 0U;
-  if (mutable_fs_read(XAIOS_BOOT_COUNTER_PATH, buffer, sizeof(buffer) - 1U,
+  if (xaiboot_fs_read(XAIOS_BOOT_COUNTER_PATH, buffer, sizeof(buffer) - 1U,
                       &size) != XAIOS_OK) {
     return 0U;
   }
@@ -81,12 +81,12 @@ void boot_counter_increment(void) {
   char buffer[16] = {0};
   uint32_t value = boot_counter_read() + 1U;
   uint64_t size = format_u32(value, buffer);
-  (void)mutable_fs_write(XAIOS_BOOT_COUNTER_PATH, buffer, size);
+  (void)xaiboot_fs_write(XAIOS_BOOT_COUNTER_PATH, buffer, size);
   klog("boot: counter incremented count=%u\n", value);
 }
 
 void boot_counter_reset(void) {
-  (void)mutable_fs_write(XAIOS_BOOT_COUNTER_PATH, "0", 1U);
+  (void)xaiboot_fs_write(XAIOS_BOOT_COUNTER_PATH, "0", 1U);
   klog("boot: counter reset\n");
 }
 

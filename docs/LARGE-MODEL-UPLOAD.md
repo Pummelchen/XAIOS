@@ -81,7 +81,7 @@ while ModelFS handles or maintenance operations are active.
   every negotiated queue. Physical-device durability is not established.
 - Registration and cleanup are administrator-controlled and capacity-checked,
   but there is no fleet-wide tenant quota or background expiry policy.
-- ModelFS activation and the MutableFS audit append are separately durable.
+- ModelFS activation and the xaibootFS audit append are separately durable.
   If audit persistence fails after ModelFS publication, activation cannot be
   rolled back; the kernel logs this explicit cross-filesystem failure.
 - The sparse hosted 128 GiB fixture proves 64-bit addressing and bounded memory,

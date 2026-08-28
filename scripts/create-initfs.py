@@ -12,7 +12,7 @@ PATH_MAX = 64
 HEADER_SECTOR = 1
 HEADER_BYTES = 8192
 # Sectors 3000 through 3185 are reserved for the kernel's persistence and
-# MutableFS boot self-tests. Keep the immutable payload beyond that scratch
+# xaibootFS boot self-tests. Keep the immutable payload beyond that scratch
 # range so repeated boots cannot overwrite executable data.
 DATA_OFFSET = 2097152
 FLAG_READ_ONLY = 1

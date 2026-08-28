@@ -8,7 +8,7 @@
 #include <xaios/klog.h>
 #include <xaios/version.h>
 #include <xaios/klog_ring.h>
-#include <xaios/mutable_fs.h>
+#include <xaios/xaiboot_fs.h>
 #include <xaios/network_stack.h>
 #include <xaios/numa.h>
 #include <xaios/pmm.h>
@@ -370,7 +370,7 @@ static uint64_t readiness_reasons(void) {
   if (!network_stack_has_listener(2222U)) {
     reasons |= XAIOS_CONTROL_READINESS_NETWORK;
   }
-  if (mutable_fs_persistent_mount_count() == 0U) {
+  if (xaiboot_fs_persistent_mount_count() == 0U) {
     reasons |= XAIOS_CONTROL_READINESS_STORAGE;
   }
   return reasons;
@@ -421,7 +421,7 @@ static void fill_status(xaios_control_status_payload_t *payload) {
   payload->network_state = network_stack_has_listener(2222U)
                                ? XAIOS_CONTROL_STATE_RUNNING
                                : XAIOS_CONTROL_STATE_STOPPED;
-  payload->storage_state = mutable_fs_persistent_mount_count() != 0U
+  payload->storage_state = xaiboot_fs_persistent_mount_count() != 0U
                                ? XAIOS_CONTROL_STATE_READY
                                : XAIOS_CONTROL_STATE_STOPPED;
   payload->model_state = XAIOS_CONTROL_STATE_FIXTURE_ONLY;
@@ -443,7 +443,7 @@ static void fill_health(xaios_control_health_payload_t *payload) {
       current != 0 ? XAIOS_CONTROL_STATE_RUNNING : XAIOS_CONTROL_STATE_UNKNOWN;
   payload->node_readiness =
       smp_online_count() != 0U && payload->memory_free_pages != 0U &&
-              mutable_fs_persistent_mount_count() != 0U
+              xaiboot_fs_persistent_mount_count() != 0U
           ? XAIOS_CONTROL_STATE_READY
           : XAIOS_CONTROL_STATE_DEGRADED;
   payload->model_readiness = XAIOS_CONTROL_STATE_FIXTURE_ONLY;
@@ -461,7 +461,7 @@ static void fill_capabilities(xaios_control_capabilities_payload_t *payload) {
   payload->ipv4 = XAIOS_CONTROL_STATE_AVAILABLE;
   payload->ipv6 = XAIOS_CONTROL_STATE_AVAILABLE;
   payload->udp = XAIOS_CONTROL_STATE_AVAILABLE;
-  payload->mutable_fs = XAIOS_CONTROL_STATE_AVAILABLE;
+  payload->xaiboot_fs = XAIOS_CONTROL_STATE_AVAILABLE;
   payload->model_v1_fixture = XAIOS_CONTROL_STATE_FIXTURE_ONLY;
   payload->model_v2 = XAIOS_CONTROL_STATE_INTERFACE_ONLY;
   payload->real_model_inference = XAIOS_CONTROL_STATE_UNSUPPORTED;
@@ -553,7 +553,7 @@ static void fill_metrics(xaios_control_metrics_payload_t *payload) {
   payload->model_resident_bytes = XAIOS_CONTROL_UNKNOWN_U64;
   payload->kv_cache_bytes = XAIOS_CONTROL_UNKNOWN_U64;
   payload->kv_cache_evictions = XAIOS_CONTROL_UNKNOWN_U64;
-  payload->storage_reads = mutable_fs_read_count();
+  payload->storage_reads = xaiboot_fs_read_count();
   payload->storage_read_bytes = XAIOS_CONTROL_UNKNOWN_U64;
   payload->network_rx_packets = network_stack_rx_packet_count();
   payload->network_tx_packets = network_stack_tx_packet_count();
@@ -1306,7 +1306,7 @@ static xaios_status_t fill_storage_filesystem(
   if (string_equal(path, "/") || string_equal(path, "/config") ||
       string_equal(path, "/state") || string_equal(path, "/logs")) {
     mount_path = "/";
-    filesystem = "MutableFS";
+    filesystem = "xaibootFS";
     stat_path = "/";
     string_copy(record->device_identifier, sizeof(record->device_identifier),
                 "unknown");

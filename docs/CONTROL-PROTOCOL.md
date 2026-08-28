@@ -42,7 +42,7 @@ and responses to 8,192 bytes. All length arithmetic is bounds-checked.
 | `model activate` | 18 | administrator | Replay-protected ModelFS generation publication. |
 | `storage device list` | 19 | observer | Bounded live block-device records with explicit truncation. |
 | `storage device show` | 20 | observer | One exact device and its capacity, capabilities, counters and errors. |
-| `storage filesystem list` | 21 | observer | Mounted MutableFS/ModelFS records and usage. |
+| `storage filesystem list` | 21 | observer | Mounted xaibootFS/ModelFS records and usage. |
 | `storage filesystem show` | 22 | observer | One exact mount record; also used by `storage usage`. |
 | `storage partition list` | 23 | observer | Bounded GPT entries. |
 | `storage partition verify` | 24 | observer | Primary/backup validation report. |

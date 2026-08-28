@@ -87,7 +87,7 @@ Mount to read the contents:
 
     hdiutil attach xaios_b1.iso
 
-The image is read-only. XAIOS keeps its durable state on a writable MutableFS
+The image is read-only. XAIOS keeps its durable state on a writable xaibootFS
 volume, which is a separate disk the platform attaches; the three hypervisor
 configurations above each provide one. Booting without one is supported — the
 system comes up and reports the volume as missing rather than pretending

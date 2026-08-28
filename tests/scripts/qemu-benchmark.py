@@ -55,29 +55,29 @@ def main() -> int:
         "persistence_disk_loads",
         "persistence_boot_loads",
         "persistence_checksum_errors",
-        "mutable_fs_mounts",
-        "mutable_fs_formats",
-        "mutable_fs_boot_loads",
-        "mutable_fs_files",
-        "mutable_fs_directories",
-        "mutable_fs_writes",
-        "mutable_fs_reads",
-        "mutable_fs_deletes",
-        "mutable_fs_commits",
-        "mutable_fs_rollbacks",
-        "mutable_fs_replays",
-        "mutable_fs_journal_writes",
-        "mutable_fs_allocations",
-        "mutable_fs_frees",
-        "mutable_fs_multi_sector_files",
-        "mutable_fs_state_records",
-        "mutable_fs_renames",
-        "mutable_fs_lists",
-        "mutable_fs_stats",
-        "mutable_fs_opens",
-        "mutable_fs_closes",
-        "mutable_fs_rejects",
-        "mutable_fs_checksum_errors",
+        "xaiboot_fs_mounts",
+        "xaiboot_fs_formats",
+        "xaiboot_fs_boot_loads",
+        "xaiboot_fs_files",
+        "xaiboot_fs_directories",
+        "xaiboot_fs_writes",
+        "xaiboot_fs_reads",
+        "xaiboot_fs_deletes",
+        "xaiboot_fs_commits",
+        "xaiboot_fs_rollbacks",
+        "xaiboot_fs_replays",
+        "xaiboot_fs_journal_writes",
+        "xaiboot_fs_allocations",
+        "xaiboot_fs_frees",
+        "xaiboot_fs_multi_sector_files",
+        "xaiboot_fs_state_records",
+        "xaiboot_fs_renames",
+        "xaiboot_fs_lists",
+        "xaiboot_fs_stats",
+        "xaiboot_fs_opens",
+        "xaiboot_fs_closes",
+        "xaiboot_fs_rejects",
+        "xaiboot_fs_checksum_errors",
         "update_transactions",
         "update_staged",
         "update_committed",
@@ -251,27 +251,27 @@ def main() -> int:
         "disk_persistence_reloaded": telemetry["persistence_disk_writes"] >= 1
         and telemetry["persistence_disk_loads"] >= 1
         and telemetry["persistence_checksum_errors"] == 0,
-        "mutable_filesystem_active": telemetry["mutable_fs_mounts"] >= 2
-        and telemetry["mutable_fs_files"] >= 8
-        and telemetry["mutable_fs_directories"] >= 11
-        and telemetry["mutable_fs_writes"] >= 26
-        and telemetry["mutable_fs_reads"] >= 8
-        and telemetry["mutable_fs_deletes"] >= 1
-        and telemetry["mutable_fs_commits"] >= 1
-        and telemetry["mutable_fs_rollbacks"] >= 1
-        and telemetry["mutable_fs_replays"] >= 1
-        and telemetry["mutable_fs_journal_writes"] >= 1
-        and telemetry["mutable_fs_allocations"] >= 1
-        and telemetry["mutable_fs_frees"] >= 1
-        and telemetry["mutable_fs_multi_sector_files"] >= 1
-        and telemetry["mutable_fs_state_records"] >= 4
-        and telemetry["mutable_fs_renames"] >= 1
-        and telemetry["mutable_fs_lists"] >= 1
-        and telemetry["mutable_fs_stats"] >= 4
-        and telemetry["mutable_fs_opens"] >= 5
-        and telemetry["mutable_fs_closes"] >= 5
-        and telemetry["mutable_fs_rejects"] >= 8
-        and telemetry["mutable_fs_checksum_errors"] == 0,
+        "mutable_filesystem_active": telemetry["xaiboot_fs_mounts"] >= 2
+        and telemetry["xaiboot_fs_files"] >= 8
+        and telemetry["xaiboot_fs_directories"] >= 11
+        and telemetry["xaiboot_fs_writes"] >= 26
+        and telemetry["xaiboot_fs_reads"] >= 8
+        and telemetry["xaiboot_fs_deletes"] >= 1
+        and telemetry["xaiboot_fs_commits"] >= 1
+        and telemetry["xaiboot_fs_rollbacks"] >= 1
+        and telemetry["xaiboot_fs_replays"] >= 1
+        and telemetry["xaiboot_fs_journal_writes"] >= 1
+        and telemetry["xaiboot_fs_allocations"] >= 1
+        and telemetry["xaiboot_fs_frees"] >= 1
+        and telemetry["xaiboot_fs_multi_sector_files"] >= 1
+        and telemetry["xaiboot_fs_state_records"] >= 4
+        and telemetry["xaiboot_fs_renames"] >= 1
+        and telemetry["xaiboot_fs_lists"] >= 1
+        and telemetry["xaiboot_fs_stats"] >= 4
+        and telemetry["xaiboot_fs_opens"] >= 5
+        and telemetry["xaiboot_fs_closes"] >= 5
+        and telemetry["xaiboot_fs_rejects"] >= 8
+        and telemetry["xaiboot_fs_checksum_errors"] == 0,
         "no_hot_path_migration": telemetry["migration_total"] == 0,
         "no_hot_path_context_switches": telemetry["context_switch_total"] == 0,
         "udp_path_exercised": telemetry["network_udp_tx"] >= 3

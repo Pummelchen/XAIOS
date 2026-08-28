@@ -26,21 +26,21 @@ typedef uint64_t xaios_u64;
 
 #define XAIOS_CLOCK_REALTIME 1ULL
 #define XAIOS_CLOCK_PROCESS_CPU 2ULL
-#define XAIOS_MFS_OPEN_READ 1U
-#define XAIOS_MFS_OPEN_WRITE 2U
-#define XAIOS_MFS_OPEN_CREATE 4U
-#define XAIOS_MFS_OPEN_TRUNCATE 8U
+#define XAIOS_XBFS_OPEN_READ 1U
+#define XAIOS_XBFS_OPEN_WRITE 2U
+#define XAIOS_XBFS_OPEN_CREATE 4U
+#define XAIOS_XBFS_OPEN_TRUNCATE 8U
 #define XAIOS_FS_TYPE_DIRECTORY 1U
 #define XAIOS_LIBC_FD_COUNT 32
 #define XAIOS_LIBC_PATH_MAX 256U
 
-typedef struct xaios_mfs_stat_user {
+typedef struct xaios_xbfs_stat_user {
   uint32_t type;
   uint32_t block_count;
   uint64_t size;
   uint64_t generation;
   uint64_t content_hash;
-} xaios_mfs_stat_user_t;
+} xaios_xbfs_stat_user_t;
 
 typedef struct xaios_rename_request {
   uint64_t old_path;
@@ -79,7 +79,7 @@ static xaios_libc_fd_t *descriptor_for(int fd) {
   return &descriptors[fd];
 }
 
-static int stat_path(const char *path, xaios_mfs_stat_user_t *value) {
+static int stat_path(const char *path, xaios_xbfs_stat_user_t *value) {
   xaios_u64 result;
   size_t length = path_length(path);
   if (length == 0U || length >= XAIOS_LIBC_PATH_MAX) {
@@ -104,7 +104,7 @@ __attribute__((constructor)) static void initialize_descriptors(void) {
 
 int open(const char *path, int flags, ...) {
   uint32_t xaios_flags = 0U;
-  xaios_mfs_stat_user_t existing;
+  xaios_xbfs_stat_user_t existing;
   int slot;
   xaios_u64 result;
   size_t length = path_length(path);
@@ -120,13 +120,13 @@ int open(const char *path, int flags, ...) {
     return -1;
   }
   if ((flags & O_ACCMODE) == O_RDONLY || (flags & O_ACCMODE) == O_RDWR) {
-    xaios_flags |= XAIOS_MFS_OPEN_READ;
+    xaios_flags |= XAIOS_XBFS_OPEN_READ;
   }
   if ((flags & O_ACCMODE) == O_WRONLY || (flags & O_ACCMODE) == O_RDWR) {
-    xaios_flags |= XAIOS_MFS_OPEN_WRITE;
+    xaios_flags |= XAIOS_XBFS_OPEN_WRITE;
   }
-  if ((flags & O_CREAT) != 0) xaios_flags |= XAIOS_MFS_OPEN_CREATE;
-  if ((flags & O_TRUNC) != 0) xaios_flags |= XAIOS_MFS_OPEN_TRUNCATE;
+  if ((flags & O_CREAT) != 0) xaios_flags |= XAIOS_XBFS_OPEN_CREATE;
+  if ((flags & O_TRUNC) != 0) xaios_flags |= XAIOS_XBFS_OPEN_TRUNCATE;
 
   for (slot = 3; slot < XAIOS_LIBC_FD_COUNT; ++slot) {
     if (descriptors[slot].kernel_fd < 0) break;
@@ -148,7 +148,7 @@ int open(const char *path, int flags, ...) {
   descriptors[slot].offset = 0;
   memcpy(descriptors[slot].path, path, length + 1U);
   if ((flags & O_APPEND) != 0) {
-    xaios_mfs_stat_user_t value;
+    xaios_xbfs_stat_user_t value;
     if (stat_path(path, &value) == 0 && value.size <= (uint64_t)INT64_MAX) {
       descriptors[slot].offset = (off_t)value.size;
       (void)__xaios_libc_syscall3(XAIOS_SYSCALL_FS_SEEK, result, value.size,
@@ -227,7 +227,7 @@ ssize_t write(int fd, const void *buffer, size_t count) {
 
 off_t lseek(int fd, off_t offset, int whence) {
   xaios_libc_fd_t *descriptor = descriptor_for(fd);
-  xaios_mfs_stat_user_t value;
+  xaios_xbfs_stat_user_t value;
   off_t absolute;
   if (descriptor == NULL) return (off_t)-1;
   if (whence == SEEK_SET) {
@@ -330,7 +330,7 @@ int system(const char *command) {
 }
 
 int stat(const char *path, struct stat *value) {
-  xaios_mfs_stat_user_t source;
+  xaios_xbfs_stat_user_t source;
   if (value == NULL) {
     errno = EINVAL;
     return -1;

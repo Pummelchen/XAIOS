@@ -25,7 +25,7 @@ SMOKE_FAILURE_MARKERS = {
     ],
     "corrupt_state_integrity": [
         "\"persistence_checksum_errors\":0",
-        "\"mutable_fs_checksum_errors\":0",
+        "\"xaiboot_fs_checksum_errors\":0",
     ],
     "failed_update_and_rollback": [
         "update: self-test passed transactions=2 staged=2 committed=1 failed=1 recovered=1 rollbacks=1",
@@ -64,13 +64,13 @@ def main() -> int:
             telemetry = parse_telemetry(smoke_proc.stdout)
         except ValueError as exc:
             failures.append(str(exc))
-    mutable_rejects = telemetry.get("mutable_fs_rejects")
+    mutable_rejects = telemetry.get("xaiboot_fs_rejects")
     rejection_ok = isinstance(mutable_rejects, int) and mutable_rejects >= 8
     checks.append(result("corrupt_state_rejection", rejection_ok,
-                         mutable_fs_rejects=mutable_rejects, minimum=8))
+                         xaiboot_fs_rejects=mutable_rejects, minimum=8))
     if not rejection_ok:
         failures.append(
-            f"mutable_fs_rejects expected >= 8, got {mutable_rejects!r}"
+            f"xaiboot_fs_rejects expected >= 8, got {mutable_rejects!r}"
         )
 
     report = {

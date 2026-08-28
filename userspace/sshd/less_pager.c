@@ -158,11 +158,11 @@ int less_pager_open(less_pager_t *pager, const char *command, const char *cwd,
   ssh_mem_copy(argument, token, token_length + 1U);
   if (next_token(command, &position, token, sizeof(token)) == 0 ||
       resolve_path(cwd, argument, pager->path) != 0) return -1;
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   if (xaios_fs_stat(pager->path, &stat) != 0 ||
       stat.type != XAIOS_FS_TYPE_FILE || stat.size > LESS_PAGER_FILE_MAX)
     return -1;
-  pager->fd = xaios_fs_open(pager->path, XAIOS_MFS_OPEN_READ);
+  pager->fd = xaios_fs_open(pager->path, XAIOS_XBFS_OPEN_READ);
   if (pager->fd < 0) return -1;
   pager->size = stat.size;
   pager->columns = columns == 0U ? 80U : columns;

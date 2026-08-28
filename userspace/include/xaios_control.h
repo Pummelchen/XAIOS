@@ -284,7 +284,7 @@ typedef struct xaios_control_capabilities_payload_user {
   u32 ipv4;
   u32 ipv6;
   u32 udp;
-  u32 mutable_fs;
+  u32 xaiboot_fs;
   u32 model_v1_fixture;
   u32 model_v2;
   u32 real_model_inference;

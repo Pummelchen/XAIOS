@@ -5,8 +5,8 @@ reader/writer, with dynamic signed staging, cleanup/reuse, immutable active
 reads, scrub/quarantine and trim validated under QEMU. The canonical byte layout is
 [`MODELFS-FORMAT.md`](./MODELFS-FORMAT.md).
 
-The format is separate from MutableFS and from `xaios.model.v2`. A model volume
-stores one or more immutable model package objects; MutableFS stores only small
+The format is separate from xaibootFS and from `xaios.model.v2`. A model volume
+stores one or more immutable model package objects; xaibootFS stores only small
 control records.
 
 ## Byte order and addressing
@@ -159,4 +159,4 @@ source package identity and signature must survive migration unchanged unless
 the logical package bytes change.
 
 Format v1 deliberately does not provide in-place mutable package metadata,
-database rows, fixed per-file block arrays, or weight payloads in MutableFS.
+database rows, fixed per-file block arrays, or weight payloads in xaibootFS.

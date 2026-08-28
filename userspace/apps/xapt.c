@@ -369,9 +369,9 @@ static int file_sink(const unsigned char *data, u32 size, void *context) {
 static int download_file(const xapt_config_t *config, const char *remote_path,
                          const char *local_path, u64 *size) {
   file_sink_context_t context;
-  context.fd = xaios_fs_open(local_path, XAIOS_MFS_OPEN_WRITE |
-                                             XAIOS_MFS_OPEN_CREATE |
-                                             XAIOS_MFS_OPEN_TRUNCATE);
+  context.fd = xaios_fs_open(local_path, XAIOS_XBFS_OPEN_WRITE |
+                                             XAIOS_XBFS_OPEN_CREATE |
+                                             XAIOS_XBFS_OPEN_TRUNCATE);
   if (context.fd < 0) {
     g_http_error = 9U;
     return -1;
@@ -508,7 +508,7 @@ static int read_file_bounded(const char *path, char *buffer, u64 capacity) {
   u64 used = 0U;
   int fd;
   if (capacity < 2U) return -1;
-  fd = xaios_fs_open(path, XAIOS_MFS_OPEN_READ);
+  fd = xaios_fs_open(path, XAIOS_XBFS_OPEN_READ);
   if (fd < 0) return -1;
   while (used + 1U < capacity) {
     u64 available = capacity - used - 1U;

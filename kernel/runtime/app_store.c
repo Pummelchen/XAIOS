@@ -1,7 +1,7 @@
 #include <xaios/app_store.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
-#include <xaios/mutable_fs.h>
+#include <xaios/xaiboot_fs.h>
 #include <xaios/security.h>
 #include <xaios/sha256.h>
 
@@ -518,7 +518,7 @@ static xaios_status_t parse_manifest(const char *data, uint64_t size,
       !build_at_least(XAIOS_APP_OS_BUILD, manifest->minimum_os) ||
       manifest->minimum_abi > XAIOS_APP_KERNEL_ABI_VERSION ||
       manifest->binary_size == 0U ||
-      manifest->binary_size > XAIOS_MFS_MAX_FILE_BYTES_V5) {
+      manifest->binary_size > XAIOS_XBFS_MAX_FILE_BYTES_V5) {
     return XAIOS_ERR_INVALID;
   }
   return XAIOS_OK;
@@ -526,15 +526,15 @@ static xaios_status_t parse_manifest(const char *data, uint64_t size,
 
 static xaios_status_t read_file_alloc(const char *path, uint64_t maximum,
                                       void **data, uint64_t *size) {
-  xaios_mfs_stat_t stat;
-  if (mutable_fs_stat(path, &stat) != XAIOS_OK || stat.type != 2U ||
+  xaios_xbfs_stat_t stat;
+  if (xaiboot_fs_stat(path, &stat) != XAIOS_OK || stat.type != 2U ||
       stat.size == 0U || stat.size > maximum) {
     return XAIOS_ERR_INVALID;
   }
   void *buffer = kheap_alloc(stat.size + 1U, 16U);
   if (buffer == 0) return XAIOS_ERR_NO_MEMORY;
   uint64_t read_size = 0U;
-  if (mutable_fs_read(path, buffer, stat.size, &read_size) != XAIOS_OK ||
+  if (xaiboot_fs_read(path, buffer, stat.size, &read_size) != XAIOS_OK ||
       read_size != stat.size) {
     kheap_free(buffer);
     return XAIOS_ERR_IO;
@@ -575,7 +575,7 @@ static xaios_status_t load_version(const char *name, const char *leaf_prefix,
       parse_manifest((const char *)manifest_data, manifest_size, &manifest) !=
           XAIOS_OK ||
       !text_equal(name, manifest.name) ||
-      read_file_alloc(binary_path, XAIOS_MFS_MAX_FILE_BYTES_V5, &binary_data,
+      read_file_alloc(binary_path, XAIOS_XBFS_MAX_FILE_BYTES_V5, &binary_data,
                       &binary_size) != XAIOS_OK ||
       binary_size != manifest.binary_size) {
     kheap_free(manifest_data);
@@ -608,19 +608,19 @@ void app_store_init(void) {
   static const char previous_trust_path[] = "/state/xapt/trust.previous";
   static const char previous_catalog_path[] = "/state/xapt/catalog.previous";
   app_trust_state_t trust;
-  (void)mutable_fs_mkdir("/apps");
-  (void)mutable_fs_mkdir("/update");
-  (void)mutable_fs_mkdir("/update/xapt");
-  (void)mutable_fs_mkdir("/state/xapt");
+  (void)xaiboot_fs_mkdir("/apps");
+  (void)xaiboot_fs_mkdir("/update");
+  (void)xaiboot_fs_mkdir("/update/xapt");
+  (void)xaiboot_fs_mkdir("/state/xapt");
   if (load_trust_and_catalog(trust_path, catalog_path, &trust) != XAIOS_OK) {
     klog("app-store: interrupted trust/catalog activation detected\n");
     if (copy_if_present(previous_trust_path, trust_path) != XAIOS_OK)
-      (void)mutable_fs_delete(trust_path);
+      (void)xaiboot_fs_delete(trust_path);
     if (copy_if_present(previous_catalog_path, catalog_path) != XAIOS_OK)
-      (void)mutable_fs_delete(catalog_path);
+      (void)xaiboot_fs_delete(catalog_path);
     if (load_trust_and_catalog(trust_path, catalog_path, &trust) != XAIOS_OK) {
-      (void)mutable_fs_delete(trust_path);
-      (void)mutable_fs_delete(catalog_path);
+      (void)xaiboot_fs_delete(trust_path);
+      (void)xaiboot_fs_delete(catalog_path);
       default_trust_state(&trust);
       klog("app-store: no verified rollback pair; bootstrap root retained\n");
     } else {
@@ -648,10 +648,10 @@ void app_store_release(xaios_app_image_t *image) {
 static xaios_status_t copy_if_present(const char *source, const char *target) {
   void *data = 0;
   uint64_t size = 0U;
-  xaios_status_t status = read_file_alloc(source, XAIOS_MFS_MAX_FILE_BYTES_V5,
+  xaios_status_t status = read_file_alloc(source, XAIOS_XBFS_MAX_FILE_BYTES_V5,
                                           &data, &size);
   if (status != XAIOS_OK) return status;
-  status = mutable_fs_write(target, data, size);
+  status = xaiboot_fs_write(target, data, size);
   kheap_free(data);
   return status;
 }
@@ -685,13 +685,13 @@ xaios_status_t app_store_activate(const char *name) {
   app_dir[0] = '\0';
   if (!append_text(app_dir, sizeof(app_dir), &offset, "/apps/") ||
       !append_text(app_dir, sizeof(app_dir), &offset, name) ||
-      mutable_fs_mkdir(app_dir) != XAIOS_OK ||
+      xaiboot_fs_mkdir(app_dir) != XAIOS_OK ||
       read_file_alloc(staged_manifest, XAIOS_APP_MANIFEST_MAX, &manifest_data,
                       &manifest_size) != XAIOS_OK ||
       parse_manifest((const char *)manifest_data, manifest_size, &manifest) !=
           XAIOS_OK ||
       !text_equal(name, manifest.name) ||
-      read_file_alloc(staged_binary, XAIOS_MFS_MAX_FILE_BYTES_V5, &binary_data,
+      read_file_alloc(staged_binary, XAIOS_XBFS_MAX_FILE_BYTES_V5, &binary_data,
                       &binary_size) != XAIOS_OK ||
       binary_size != manifest.binary_size) {
     kheap_free(manifest_data);
@@ -719,15 +719,15 @@ xaios_status_t app_store_activate(const char *name) {
   }
 
   /* The manifest is written last and is therefore the activation marker. */
-  if (mutable_fs_write(current_binary, binary_data, binary_size) != XAIOS_OK ||
-      mutable_fs_write(current_manifest, manifest_data, manifest_size) !=
+  if (xaiboot_fs_write(current_binary, binary_data, binary_size) != XAIOS_OK ||
+      xaiboot_fs_write(current_manifest, manifest_data, manifest_size) !=
       XAIOS_OK) {
     kheap_free(manifest_data);
     kheap_free(binary_data);
     return XAIOS_ERR_IO;
   }
-  (void)mutable_fs_delete(staged_binary);
-  (void)mutable_fs_delete(staged_manifest);
+  (void)xaiboot_fs_delete(staged_binary);
+  (void)xaiboot_fs_delete(staged_manifest);
   kheap_free(manifest_data);
   kheap_free(binary_data);
   klog("app-store: activated name=%s version=%s bytes=%lu\n", name,
@@ -743,7 +743,7 @@ xaios_status_t app_store_remove(const char *name) {
       !append_text(path, sizeof(path), &offset, name)) {
     return XAIOS_ERR_INVALID;
   }
-  return mutable_fs_delete_tree(path);
+  return xaiboot_fs_delete_tree(path);
 }
 
 xaios_status_t app_store_rollback(const char *name) {
@@ -767,7 +767,7 @@ xaios_status_t app_store_rollback(const char *name) {
       load_version(name, "previous", &previous) != XAIOS_OK ||
       read_file_alloc(previous_manifest, XAIOS_APP_MANIFEST_MAX, &manifest,
                       &manifest_size) != XAIOS_OK ||
-      read_file_alloc(previous_binary, XAIOS_MFS_MAX_FILE_BYTES_V5, &binary,
+      read_file_alloc(previous_binary, XAIOS_XBFS_MAX_FILE_BYTES_V5, &binary,
                       &binary_size) != XAIOS_OK) {
     app_store_release(&previous);
     kheap_free(manifest);
@@ -775,8 +775,8 @@ xaios_status_t app_store_rollback(const char *name) {
     return XAIOS_ERR_INVALID;
   }
   app_store_release(&previous);
-  if (mutable_fs_write(current_binary, binary, binary_size) != XAIOS_OK ||
-      mutable_fs_write(current_manifest, manifest, manifest_size) != XAIOS_OK) {
+  if (xaiboot_fs_write(current_binary, binary, binary_size) != XAIOS_OK ||
+      xaiboot_fs_write(current_manifest, manifest, manifest_size) != XAIOS_OK) {
     kheap_free(manifest);
     kheap_free(binary);
     return XAIOS_ERR_IO;
@@ -877,16 +877,16 @@ xaios_status_t app_store_activate_catalog(void) {
       kheap_free(active_trust_data);
       kheap_free(trust_data);
       kheap_free(data);
-      (void)mutable_fs_delete(staged_path);
-      (void)mutable_fs_delete(staged_trust_path);
+      (void)xaiboot_fs_delete(staged_path);
+      (void)xaiboot_fs_delete(staged_trust_path);
       return XAIOS_OK;
     }
   }
   if ((active_trust_data != 0 &&
-       mutable_fs_write(previous_trust_path, active_trust_data,
+       xaiboot_fs_write(previous_trust_path, active_trust_data,
                         active_trust_size) != XAIOS_OK) ||
       (active != 0 &&
-       mutable_fs_write(previous_path, active, active_size) != XAIOS_OK)) {
+       xaiboot_fs_write(previous_path, active, active_size) != XAIOS_OK)) {
     (void)security_set_release_key(original_key);
     kheap_free(active_trust_data);
     kheap_free(trust_data);
@@ -894,19 +894,19 @@ xaios_status_t app_store_activate_catalog(void) {
     return XAIOS_ERR_IO;
   }
   if ((trust_data != 0 &&
-       mutable_fs_write(active_trust_path, trust_data, trust_size) !=
+       xaiboot_fs_write(active_trust_path, trust_data, trust_size) !=
            XAIOS_OK) ||
-      mutable_fs_write(active_path, data, size) != XAIOS_OK) {
+      xaiboot_fs_write(active_path, data, size) != XAIOS_OK) {
     klog("app-store: catalog reject stage=write\n");
     if (active_trust_data != 0)
-      (void)mutable_fs_write(active_trust_path, active_trust_data,
+      (void)xaiboot_fs_write(active_trust_path, active_trust_data,
                              active_trust_size);
     else
-      (void)mutable_fs_delete(active_trust_path);
+      (void)xaiboot_fs_delete(active_trust_path);
     if (active != 0)
-      (void)mutable_fs_write(active_path, active, active_size);
+      (void)xaiboot_fs_write(active_path, active, active_size);
     else
-      (void)mutable_fs_delete(active_path);
+      (void)xaiboot_fs_delete(active_path);
     (void)security_set_release_key(original_key);
     kheap_free(active_trust_data);
     kheap_free(trust_data);
@@ -917,8 +917,8 @@ xaios_status_t app_store_activate_catalog(void) {
   kheap_free(active);
   kheap_free(trust_data);
   kheap_free(data);
-  (void)mutable_fs_delete(staged_path);
-  (void)mutable_fs_delete(staged_trust_path);
+  (void)xaiboot_fs_delete(staged_path);
+  (void)xaiboot_fs_delete(staged_trust_path);
   klog("app-store: activated catalog generation=%u trust_generation=%u\n",
        generation, candidate_trust.generation);
   return XAIOS_OK;

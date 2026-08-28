@@ -43,7 +43,7 @@ fail explicitly rather than being silently ignored.
 | `zip`, `unzip` | `zip [-r] ARCHIVE PATH...` writes standards-compliant stored ZIP entries with CRC32 and Unix attributes. `unzip [-l] ARCHIVE [-d DIR]` reads stored or Deflate entries from Unix, Windows or macOS tools. Encryption and ZIP64 are rejected. |
 | `ssh`, `scp` | Dedicated PTY outbound `ssh [-A] [-i KEY] [-p PORT] [-J user@host[:port]] user@host [command]` and SFTP-backed `scp [-r] [-A] [-i KEY] [-P PORT] SOURCE DESTINATION`. Password, Ed25519 identity-file and forwarded-agent authentication, encrypted OpenSSH private keys, persistent Ed25519 TOFU checks, IPv4/IPv6 literals and DNS A/AAAA are implemented. `-J` supports one password-authenticated jump host and a separately password- or identity-authenticated target over `direct-tcpip`; multi-hop `-J`, agent authentication with `-J`, `ProxyCommand`, and the complete OpenSSH matrix are not. |
 
-MutableFS v5 bounds this surface to 256 nodes, 256 open handles, 256 KiB per
+xaibootFS v5 bounds this surface to 256 nodes, 256 open handles, 256 KiB per
 file, 4 MiB data capacity and 256-byte paths. Archive containers must fit in a
 256 KiB file. These are explicit XAIOS storage limits, not tar/ZIP format
 limits. Extraction rejects absolute paths, `..`, Windows drive prefixes,

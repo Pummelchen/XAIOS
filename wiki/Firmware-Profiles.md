@@ -47,11 +47,11 @@ The shared architecture boundary is UEFI loader -> architecture firmware parser
 `kernel/arch/aarch64/`.
 
 On both QEMU profiles, `vblk0` is the immutable initramfs/test volume and the
-separately discovered durable MutableFS volume is mounted as `vblk1`. This
+separately discovered durable xaibootFS volume is mounted as `vblk1`. This
 prevents fixture writes from being mistaken for durable lifecycle state.
 An NVMe namespace added for controller validation or model data is preserved
-when it is not a valid MutableFS volume; the kernel continues to the dedicated
-durable volume. A valid NVMe MutableFS namespace remains eligible for root
+when it is not a valid xaibootFS volume; the kernel continues to the dedicated
+durable volume. A valid NVMe xaibootFS namespace remains eligible for root
 persistence.
 
 The 128- and 256-vCPU x86 QEMU topology scenarios have a 480-second TCG

@@ -28,7 +28,7 @@ These UUIDs are stable format identifiers:
 
 | Type | GUID | Purpose |
 | --- | --- | --- |
-| StateFS/MutableFS | `1f3b2d7a-6e91-4a52-9c7d-5841494f5301` | Small mutable configuration, state, audit, and logs |
+| StateFS/xaibootFS | `1f3b2d7a-6e91-4a52-9c7d-5841494f5301` | Small mutable configuration, state, audit, and logs |
 | ModelFS | `1f3b2d7a-6e91-4a52-9c7d-5841494f5302` | Large staged and immutable model packages |
 | Update/recovery | `1f3b2d7a-6e91-4a52-9c7d-5841494f5303` | Explicit update or recovery storage |
 

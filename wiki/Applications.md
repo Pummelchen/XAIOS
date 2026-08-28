@@ -76,7 +76,7 @@ kernel.
 | `/bin/mkdir` | `mkdir [-p] DIR...`; create directories and optional parents. |
 | `/bin/touch` | `touch FILE...`; create or truncate regular files. |
 | `/bin/cp` | `cp [-R|-r] SOURCE... DEST`; copy files or bounded directory trees. |
-| `/bin/mv` | `mv SOURCE DEST`; rename or move within MutableFS. |
+| `/bin/mv` | `mv SOURCE DEST`; rename or move within xaibootFS. |
 | `/bin/rm` | `rm [-r] [-f] PATH...`; remove files or trees. |
 | `/bin/rmdir` | `rmdir DIR...`; remove empty directories. |
 | `/bin/stat` | `stat PATH`; show type, size, blocks, generation, and content hash. |
@@ -93,12 +93,12 @@ kernel.
 | `/bin/zip` | Create standards-readable stored ZIP archives. |
 | `/bin/unzip` | List or extract stored and Deflate ZIP entries. |
 | `/bin/ps` | Render the typed kernel process snapshot. |
-| `/bin/df` | Render typed MutableFS and ModelFS capacity records. |
+| `/bin/df` | Render typed xaibootFS and ModelFS capacity records. |
 | `/bin/du` | Report bounded recursive block usage with summary and human-readable options. |
 
 Archive extraction rejects absolute and traversal paths, corrupt checksums,
 encrypted ZIP, ZIP64, links, device nodes, and unsupported required features.
-MutableFS limits regular files to 256 KiB, so these utilities are intended for
+xaibootFS limits regular files to 256 KiB, so these utilities are intended for
 configuration and small exchange archives rather than model payloads.
 
 ## Diagnostic applications
@@ -114,7 +114,7 @@ acceptance.
 | `/bin/hello` | Minimal userspace toolchain, ELF loader, logging, and exit integration check. |
 | `/bin/helloworldc99` | Hosted ISO C99 demonstration built against the XAIOS libc. It prints `Hello, World!` through `stdio` and is available on demand as `helloworldc99`. |
 | `/bin/sysinfo` | Legacy compatibility diagnostic that directs administrators to `xaiosctl status` and `xaiosctl hardware`. |
-| `/bin/systest` | Syscall, descriptor-width validation, and MutableFS create/read/stat/list/rename/delete suite. |
+| `/bin/systest` | Syscall, descriptor-width validation, and xaibootFS create/read/stat/list/rename/delete suite. |
 | `/bin/smptest` | SMP scheduler visibility, worker groups, and EL0 thread create/join/validation test. |
 | `/bin/perfbench` | Measures what XAIOS costs to use: syscall latency at one, four and eight threads, socket bind/close through the serialised network path, and thread create/join. Reports nanoseconds per operation and asserts nothing. Built only when `XAIOS_STRESS_TEST=1`. |
 | `/bin/smpstress` | Sustained multi-core load. Pins threads across the cores until a deadline, then checks a contended counter against tallies each thread kept privately and each thread's word against the neighbours sharing its cache line. Built only when `XAIOS_STRESS_TEST=1`, because it soaks rather than returns. |

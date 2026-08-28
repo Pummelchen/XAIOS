@@ -147,8 +147,8 @@ static int resolve_path(const char *cwd, const char *argument, char *output) {
 
 static int editor_save(nano_editor_t *editor) {
   int fd = xaios_fs_open(editor->path,
-                         XAIOS_MFS_OPEN_WRITE | XAIOS_MFS_OPEN_CREATE |
-                             XAIOS_MFS_OPEN_TRUNCATE);
+                         XAIOS_XBFS_OPEN_WRITE | XAIOS_XBFS_OPEN_CREATE |
+                             XAIOS_XBFS_OPEN_TRUNCATE);
   if (fd < 0) {
     copy_text(editor->status, sizeof(editor->status), "Error writing file");
     return -1;
@@ -226,7 +226,7 @@ int nano_editor_open(nano_editor_t *editor, const char *argument,
               "Invalid or protected path");
     return -1;
   }
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   if (xaios_fs_stat(editor->path, &stat) == 0) {
     if (stat.type != XAIOS_FS_TYPE_FILE ||
         stat.size >= NANO_EDITOR_BUFFER_SIZE) {
@@ -234,7 +234,7 @@ int nano_editor_open(nano_editor_t *editor, const char *argument,
                 "File is not editable or exceeds 32 KiB");
       return -1;
     }
-    int fd = xaios_fs_open(editor->path, XAIOS_MFS_OPEN_READ);
+    int fd = xaios_fs_open(editor->path, XAIOS_XBFS_OPEN_READ);
     if (fd < 0) return -1;
     while (editor->length < stat.size) {
       int result = xaios_fs_read(fd, editor->data + editor->length,

@@ -41,16 +41,16 @@ def main() -> int:
     if 'print(f"  - {failure}")' in readiness:
         failures.append("readiness gate logs unsanitized validation values")
 
-    mutable_fs = (ROOT / "kernel/fs/mutable_fs.c").read_text(encoding="utf-8")
+    xaiboot_fs = (ROOT / "kernel/fs/xaiboot_fs.c").read_text(encoding="utf-8")
     narrow_loop = (
         "for (uint16_t i = 0; i < g_active_data_sectors && found < count; ++i)"
     )
-    if narrow_loop in mutable_fs:
-        failures.append("mutable filesystem block scan uses a narrowing loop index")
-    if "g_active_data_sectors > (uint32_t)UINT16_MAX + 1U" not in mutable_fs:
-        failures.append("mutable filesystem does not guard its 16-bit block format")
-    if "blocks[found++] = (uint16_t)i;" not in mutable_fs:
-        failures.append("mutable filesystem block-index conversion is not explicit")
+    if narrow_loop in xaiboot_fs:
+        failures.append("xaibootFS block scan uses a narrowing loop index")
+    if "g_active_data_sectors > (uint32_t)UINT16_MAX + 1U" not in xaiboot_fs:
+        failures.append("xaibootFS does not guard its 16-bit block format")
+    if "blocks[found++] = (uint16_t)i;" not in xaiboot_fs:
+        failures.append("xaibootFS block-index conversion is not explicit")
 
     if failures:
         print("code-scanning-contract: failed")

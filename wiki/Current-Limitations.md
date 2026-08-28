@@ -9,7 +9,7 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 - AArch64 QEMU provides the broadest complete OS-service path. QEMU validates
   behavior, not physical ARM performance, firmware behavior, or scaling.
 - VMware Fusion on Apple Silicon has a qualified one-vCPU ARM64 profile with a
-  generated compatibility stage, PCI-discovered E1000E DHCP, AHCI MutableFS,
+  generated compatibility stage, PCI-discovered E1000E DHCP, AHCI xaibootFS,
   public-key SSH/SFTP, recovery, reboot, clean shutdown and repeat-boot
   evidence. Multi-vCPU startup, VMXNET3, live DNSSEC interoperability, IPv6,
   outbound-client, snapshot semantics and physical qualification remain open.
@@ -128,10 +128,10 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   ModelFS partition with exact signed package identity and full payload
   verification. Production signing/key custody, replica enrollment, physical
   multi-terabyte transfer, and model-v2 execution admission are not complete.
-- ModelFS activation and MutableFS audit persistence are separate durability
+- ModelFS activation and xaibootFS audit persistence are separate durability
   domains. A post-publication audit failure cannot roll back an already
   published active generation.
-- MutableFS v5 keeps two metadata copies and alternates writes between them,
+- xaibootFS v5 keeps two metadata copies and alternates writes between them,
   so a write interrupted by power loss damages only the copy that is not
   currently authoritative and mount falls back to the survivor. The mirror
   sits past the data region, so volumes written before it keep mounting, and
@@ -139,7 +139,7 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   damaged the mount still refuses rather than formatting, because falling
   back is a recovery and not a licence to discard data. Host tests damage
   each copy in turn and require the volume to mount with contents intact.
-- MutableFS v5 is intentionally bounded to 256 nodes, 256 open handles, 256 KiB
+- xaibootFS v5 is intentionally bounded to 256 nodes, 256 open handles, 256 KiB
   files and 4 MiB of data space. Interactive `nano` is further bounded to a
   32 KiB editing buffer. This is suitable for OS state and small user files,
   not general bulk storage or model weights.
@@ -168,7 +168,7 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   fixtures are public; production key custody and release authorization remain
   unresolved. Transfer encoding, compression, proxies, mirrors, deltas,
   dependencies, and unattended updates are not supported.
-- External applications are bounded to 256 KiB by the current MutableFS/app
+- External applications are bounded to 256 KiB by the current xaibootFS/app
   loader, and only one previous version is retained. Shipped applications,
   including `xapt`, `nano`, `htop`, and `pong`, are standalone ELFs; publishing
   them as independently upgradable repository packages still requires signed

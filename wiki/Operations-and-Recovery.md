@@ -8,7 +8,7 @@ ACPI/reset-port operations on x86_64.
 ## Clean shutdown and reboot
 
 An authenticated `shutdown` or `reboot` request is acknowledged first. After a
-bounded delay, XAIOS writes the lifecycle record, commits MutableFS, flushes the
+bounded delay, XAIOS writes the lifecycle record, commits xaibootFS, flushes the
 persistent log, flushes every registered block device that advertises flush
 support, and invokes the requested power operation. Unsupported flush capability
 is reported separately from I/O failure. QEMU tests reopen the same disk after

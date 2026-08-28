@@ -286,6 +286,16 @@ if [ "$nvme_image" != "" ]; then
     -device nvme,drive=xaios_x86_nvme,serial=XAIOSNVME
 fi
 
+# Extra QEMU arguments, for gates that need a machine configured differently
+# without a second copy of this runner drifting from it. The instruction-count
+# gate uses it for -icount, which changes how the virtual clock advances and so
+# must not be on by default.
+if [ "${XAIOS_QEMU_EXTRA_ARGS:-}" != "" ]; then
+  # Deliberately unquoted: this carries several arguments.
+  # shellcheck disable=SC2086
+  set -- "$@" $XAIOS_QEMU_EXTRA_ARGS
+fi
+
 if [ "$dry_run" -eq 1 ]; then
   print_command "$@"
   exit 0

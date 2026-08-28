@@ -24,7 +24,7 @@ gates. PL011 serial remains the headless-console fallback.
 
 - PCI bridge traversal and Intel 82574L/E1000E-compatible NIC discovery.
 - Bridged DHCP IPv4 configuration and the boot-screen lease address.
-- Standard AHCI SATA discovery, ATA identify, writable MutableFS format, and
+- Standard AHCI SATA discovery, ATA identify, writable xaibootFS format, and
   reload of the same VMDK after reboot.
 - Mac-local public-key SSH command execution and SFTP upload/download.
 - Persistent SSH writes across hard-stop recovery, guest reboot, orderly

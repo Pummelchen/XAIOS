@@ -38,12 +38,12 @@ filesystem and SSH services must not select a platform by hypervisor name.
 
 For the QEMU profiles, `vblk0` remains the immutable initramfs/test volume.
 The kernel opens the separately discovered durable VirtIO volume as `vblk1`
-before mounting MutableFS. This keeps fixture self-tests out of the persistence
+before mounting xaibootFS. This keeps fixture self-tests out of the persistence
 and lifecycle-recovery path on both ARM VirtIO-MMIO and x86 VirtIO-PCI.
 When a QEMU NVMe namespace is present only for controller validation or model
 data, an incompatible or unformatted namespace is not reformatted or selected
-as the root: the kernel continues to the dedicated MutableFS volume. A valid
-NVMe MutableFS volume remains eligible for root persistence.
+as the root: the kernel continues to the dedicated xaibootFS volume. A valid
+NVMe xaibootFS volume remains eligible for root persistence.
 
 The 128- and 256-vCPU x86 QEMU topology scenarios receive a 480-second
 correctness budget under TCG. This accommodates emulated AP startup and the

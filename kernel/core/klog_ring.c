@@ -1,7 +1,7 @@
 #include <xaios/assert.h>
 #include <xaios/klog.h>
 #include <xaios/klog_ring.h>
-#include <xaios/mutable_fs.h>
+#include <xaios/xaiboot_fs.h>
 #include <xaios/spinlock.h>
 #include <xaios/timer.h>
 
@@ -21,7 +21,7 @@ typedef struct xaios_klog_ring {
 static xaios_klog_ring_t g_ring;
 static uint32_t g_ring_initialized;
 /* Capturing to memory and being able to persist are separate capabilities.
-   Conflating them meant the ring stayed switched off until MutableFS was
+   Conflating them meant the ring stayed switched off until xaibootFS was
    mounted, so nothing from early boot was ever captured and a boot whose
    persistent mount failed captured nothing at all. */
 static uint32_t g_persist_ready;
@@ -48,12 +48,12 @@ void klog_ring_init(void) {
   klog("klog_ring: capture enabled size=%u\n", XAIOS_KLOG_RING_SIZE);
 }
 
-/* Enable the persistent path once MutableFS is mounted. Capture continues
+/* Enable the persistent path once xaibootFS is mounted. Capture continues
    regardless; only flushing depends on this. */
 xaios_status_t klog_ring_enable_persistence(void) {
   if (g_ring_initialized == 0) return XAIOS_ERR_INVALID;
-  if (mutable_fs_mkdir("/var") != XAIOS_OK ||
-      mutable_fs_mkdir("/var/log") != XAIOS_OK) {
+  if (xaiboot_fs_mkdir("/var") != XAIOS_OK ||
+      xaiboot_fs_mkdir("/var/log") != XAIOS_OK) {
     g_persist_ready = 0;
     klog("klog_ring: persistent path unavailable; capture continues\n");
     return XAIOS_ERR_IO;
@@ -200,10 +200,10 @@ xaios_status_t klog_rotate(void) {
   }
 
   /* Delete old rotated log (ignore error) */
-  mutable_fs_delete(KLOG_ROTATED_PATH);
+  xaiboot_fs_delete(KLOG_ROTATED_PATH);
 
   /* Rename current log to .1 */
-  xaios_status_t status = mutable_fs_rename(KLOG_PATH, KLOG_ROTATED_PATH);
+  xaios_status_t status = xaiboot_fs_rename(KLOG_PATH, KLOG_ROTATED_PATH);
   if (status != XAIOS_OK) {
     return status;
   }
@@ -220,9 +220,9 @@ xaios_status_t klog_flush(void) {
   }
 
   /* Check if rotation is needed */
-  xaios_mfs_stat_t stat;
-  if (mutable_fs_stat(KLOG_PATH, &stat) == XAIOS_OK) {
-    if (stat.size > XAIOS_MFS_MAX_FILE_BYTES_V5 - XAIOS_KLOG_FLUSH_MAX) {
+  xaios_xbfs_stat_t stat;
+  if (xaiboot_fs_stat(KLOG_PATH, &stat) == XAIOS_OK) {
+    if (stat.size > XAIOS_XBFS_MAX_FILE_BYTES_V5 - XAIOS_KLOG_FLUSH_MAX) {
       if (klog_rotate() != XAIOS_OK) {
         return XAIOS_ERR_IO;
       }
@@ -239,19 +239,19 @@ xaios_status_t klog_flush(void) {
   }
 
   /* Open or create the log file */
-  int64_t fd = mutable_fs_open(KLOG_PATH,
-                                XAIOS_MFS_OPEN_WRITE | XAIOS_MFS_OPEN_CREATE);
+  int64_t fd = xaiboot_fs_open(KLOG_PATH,
+                                XAIOS_XBFS_OPEN_WRITE | XAIOS_XBFS_OPEN_CREATE);
   if (fd < 0) {
     return XAIOS_ERR_IO;
   }
   if (append_offset != 0U &&
-      mutable_fs_seek((uint32_t)fd, append_offset) != XAIOS_OK) {
-    mutable_fs_close((uint32_t)fd);
+      xaiboot_fs_seek((uint32_t)fd, append_offset) != XAIOS_OK) {
+    xaiboot_fs_close((uint32_t)fd);
     return XAIOS_ERR_IO;
   }
 
-  int64_t written = mutable_fs_write_fd((uint32_t)fd, flush_buf, bytes);
-  mutable_fs_close((uint32_t)fd);
+  int64_t written = xaiboot_fs_write_fd((uint32_t)fd, flush_buf, bytes);
+  xaiboot_fs_close((uint32_t)fd);
 
   if (written < 0 || (uint32_t)written != bytes) {
     return XAIOS_ERR_IO;

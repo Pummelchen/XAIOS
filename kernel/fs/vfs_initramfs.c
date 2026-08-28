@@ -11,7 +11,7 @@
    Backend handles are the file's table index plus one, so zero stays the
    "no handle" value. */
 
-#define INITRAMFS_VFS_NAME_MAX 64U
+#define INITRAXBFS_VFS_NAME_MAX 64U
 
 static char g_mount_prefix[XAIOS_VFS_PATH_MAX];
 
@@ -151,7 +151,7 @@ static xaios_status_t initramfs_vfs_list(void *context, const char *path,
   }
   if (initramfs_directory_exists(absolute) == 0) return XAIOS_ERR_NOT_FOUND;
   for (uint32_t i = 0U; i < initramfs_file_count(); ++i) {
-    char name[INITRAMFS_VFS_NAME_MAX];
+    char name[INITRAXBFS_VFS_NAME_MAX];
     int is_directory = 0;
     if (initramfs_child_at(absolute, i, name, sizeof(name), &is_directory) ==
         0) {
@@ -159,7 +159,7 @@ static xaios_status_t initramfs_vfs_list(void *context, const char *path,
     }
     if (is_directory != 0) {
       /* Subdirectories repeat for every file below them; keep the first. */
-      char earlier[INITRAMFS_VFS_NAME_MAX];
+      char earlier[INITRAXBFS_VFS_NAME_MAX];
       int earlier_directory = 0;
       uint32_t seen = 0U;
       for (uint32_t j = 0U; j < i && seen == 0U; ++j) {

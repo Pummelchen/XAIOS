@@ -520,7 +520,7 @@ def main() -> int:
             for record in filesystems.get("filesystems", [])
         }
         if (
-            mounts.get("/", {}).get("filesystem") != "MutableFS"
+            mounts.get("/", {}).get("filesystem") != "xaibootFS"
             or mounts.get("/models", {}).get("filesystem") != "ModelFS"
             or mounts.get("/models", {}).get("device_identifier")
             != "/dev/vblk4"

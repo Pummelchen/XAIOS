@@ -1,6 +1,6 @@
 #include <xaios/block_device.h>
 #include <xaios/klog.h>
-#include <xaios/mutable_fs.h>
+#include <xaios/xaiboot_fs.h>
 #include <xaios/spinlock.h>
 #include <xaios/status.h>
 #include <xaios/vfs.h>
@@ -584,14 +584,14 @@ static xaios_status_t scrub_persist_locked(void) {
   record.version = MODEL_SCRUB_VERSION;
   record.size = sizeof(record);
   record.status = g_model_scrub;
-  return mutable_fs_write(MODEL_SCRUB_STATE_PATH, &record, sizeof(record));
+  return xaiboot_fs_write(MODEL_SCRUB_STATE_PATH, &record, sizeof(record));
 }
 
 static void scrub_load(void) {
   model_scrub_record_t record;
   uint64_t size = 0U;
   memset(&g_model_scrub, 0, sizeof(g_model_scrub));
-  if (mutable_fs_read(MODEL_SCRUB_STATE_PATH, &record, sizeof(record),
+  if (xaiboot_fs_read(MODEL_SCRUB_STATE_PATH, &record, sizeof(record),
                       &size) != XAIOS_OK ||
       size != sizeof(record) || record.magic != MODEL_SCRUB_MAGIC ||
       record.version != MODEL_SCRUB_VERSION || record.size != sizeof(record) ||
@@ -814,14 +814,14 @@ static xaios_status_t trim_persist_locked(void) {
   record.version = MODEL_TRIM_VERSION;
   record.size = sizeof(record);
   record.status = g_model_trim;
-  return mutable_fs_write(MODEL_TRIM_STATE_PATH, &record, sizeof(record));
+  return xaiboot_fs_write(MODEL_TRIM_STATE_PATH, &record, sizeof(record));
 }
 
 static void trim_load(void) {
   model_trim_record_t record;
   uint64_t size = 0U;
   memset(&g_model_trim, 0, sizeof(g_model_trim));
-  if (mutable_fs_read(MODEL_TRIM_STATE_PATH, &record, sizeof(record), &size) !=
+  if (xaiboot_fs_read(MODEL_TRIM_STATE_PATH, &record, sizeof(record), &size) !=
           XAIOS_OK ||
       size != sizeof(record) || record.magic != MODEL_TRIM_MAGIC ||
       record.version != MODEL_TRIM_VERSION || record.size != sizeof(record) ||

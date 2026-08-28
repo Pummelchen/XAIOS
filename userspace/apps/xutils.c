@@ -227,11 +227,11 @@ static int basename_of(const char *path, char *name) {
 
 static int read_file(const char *path, unsigned char *buffer, u64 capacity,
                      u64 *size) {
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   if (xaios_fs_stat(path, &stat) != 0 || stat.type != XAIOS_FS_TYPE_FILE ||
       stat.size > capacity)
     return -1;
-  int fd = xaios_fs_open(path, XAIOS_MFS_OPEN_READ);
+  int fd = xaios_fs_open(path, XAIOS_XBFS_OPEN_READ);
   if (fd < 0) return -1;
   u64 used = 0U;
   while (used < capacity) {
@@ -248,8 +248,8 @@ static int read_file(const char *path, unsigned char *buffer, u64 capacity,
 }
 
 static int write_file(const char *path, const void *buffer, u64 size) {
-  int fd = xaios_fs_open(path, XAIOS_MFS_OPEN_WRITE | XAIOS_MFS_OPEN_CREATE |
-                                   XAIOS_MFS_OPEN_TRUNCATE);
+  int fd = xaios_fs_open(path, XAIOS_XBFS_OPEN_WRITE | XAIOS_XBFS_OPEN_CREATE |
+                                   XAIOS_XBFS_OPEN_TRUNCATE);
   if (fd < 0) return -1;
   u64 done = 0U;
   while (done < size) {
@@ -274,7 +274,7 @@ static int ensure_parents(const char *path) {
     if (current[i] == '/') {
       current[i] = '\0';
       if (xaios_fs_mkdir(current) != 0) {
-        xaios_mfs_stat_user_t stat;
+        xaios_xbfs_stat_user_t stat;
         if (xaios_fs_stat(current, &stat) != 0 ||
             stat.type != XAIOS_FS_TYPE_DIRECTORY) return -1;
       }
@@ -310,7 +310,7 @@ static int glob_match(const char *text, const char *pattern) {
 }
 
 static int remove_tree(const char *path) {
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   if (xaios_fs_stat(path, &stat) != 0) return -1;
   if (stat.type == XAIOS_FS_TYPE_FILE) return xaios_fs_delete(path);
   char listing[LIST_MAX];
@@ -327,7 +327,7 @@ static int remove_tree(const char *path) {
 }
 
 static int copy_tree(const char *source, const char *destination, int recursive) {
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   if (xaios_fs_stat(source, &stat) != 0) return -1;
   if (stat.type == XAIOS_FS_TYPE_FILE) {
     u64 size = 0U;
@@ -337,7 +337,7 @@ static int copy_tree(const char *source, const char *destination, int recursive)
   }
   if (!recursive || stat.type != XAIOS_FS_TYPE_DIRECTORY) return -1;
   if (xaios_fs_mkdir(destination) != 0) {
-    xaios_mfs_stat_user_t dst;
+    xaios_xbfs_stat_user_t dst;
     if (xaios_fs_stat(destination, &dst) != 0 ||
         dst.type != XAIOS_FS_TYPE_DIRECTORY) return -1;
   }
@@ -378,7 +378,7 @@ static int cmd_ls(const char *args) {
   }
   char path[PATH_MAX];
   if (resolve_path(operand, path) != 0) return fail("invalid path");
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   if (xaios_fs_stat(path, &stat) == 0 && stat.type == XAIOS_FS_TYPE_FILE) {
     if (long_form) { (void)append("- "); (void)append_u64(stat.size); (void)append(" "); }
     (void)append(operand); (void)append("\n");
@@ -415,7 +415,7 @@ static int cmd_mkdir(const char *args) {
     char path[PATH_MAX];
     if (resolve_path(token, path) != 0 ||
         (parents && ensure_parents(path) != 0) || xaios_fs_mkdir(path) != 0) {
-      xaios_mfs_stat_user_t stat;
+      xaios_xbfs_stat_user_t stat;
       if (!parents || xaios_fs_stat(path, &stat) != 0 ||
           stat.type != XAIOS_FS_TYPE_DIRECTORY) return fail("cannot create directory");
     }
@@ -453,7 +453,7 @@ static int cmd_cp(const char *args) {
   char destination[PATH_MAX];
   if (resolve_path(operands[count - 1U], destination) != 0)
     return fail("invalid destination");
-  xaios_mfs_stat_user_t dst_stat;
+  xaios_xbfs_stat_user_t dst_stat;
   int dst_dir = xaios_fs_stat(destination, &dst_stat) == 0 &&
                 dst_stat.type == XAIOS_FS_TYPE_DIRECTORY;
   if (count > 2U && !dst_dir) return fail("destination is not a directory");
@@ -486,7 +486,7 @@ static int cmd_mv(const char *args) {
   if (resolve_path(source_arg, source) != 0 ||
       resolve_path(destination_arg, destination) != 0 ||
       ensure_parents(destination) != 0) return fail("invalid path");
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   if (xaios_fs_stat(destination, &stat) == 0 &&
       stat.type == XAIOS_FS_TYPE_DIRECTORY) {
     char name[PATH_MAX];
@@ -514,7 +514,7 @@ static int cmd_rm(const char *args, int directories_only) {
       continue;
     }
     char path[PATH_MAX];
-    xaios_mfs_stat_user_t stat;
+    xaios_xbfs_stat_user_t stat;
     if (resolve_path(token, path) != 0 || equal(path, "/")) return fail("invalid path");
     if (xaios_fs_stat(path, &stat) != 0) {
       if (!force) return fail("not found");
@@ -536,7 +536,7 @@ static int cmd_stat(const char *args) {
     return fail("missing operand");
   do {
     char path[PATH_MAX];
-    xaios_mfs_stat_user_t stat;
+    xaios_xbfs_stat_user_t stat;
     if (resolve_path(token, path) != 0 || xaios_fs_stat(path, &stat) != 0)
       return fail("not found");
     (void)append("File: "); (void)append(path);
@@ -773,7 +773,7 @@ static int find_walk(const char *path, const char *display,
   if (pattern == 0 || glob_match(name, pattern)) {
     (void)append(display); (void)append("\n");
   }
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   if (xaios_fs_stat(path, &stat) != 0 || stat.type != XAIOS_FS_TYPE_DIRECTORY)
     return 0;
   char listing[LIST_MAX];
@@ -937,7 +937,7 @@ static int octal_get(const char *field, u64 width, u64 *value) {
 }
 
 static int tar_add(const char *source, const char *name, u64 *used) {
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   if (xaios_fs_stat(source, &stat) != 0 || length(name) > 99U ||
       *used + USTAR_BLOCK > sizeof(g_data)) return -1;
   unsigned char *header = g_data + *used;
@@ -1179,7 +1179,7 @@ static int cmd_tar(const char *args) {
         return fail("unsafe path");
       if (type == '5') {
         if (xaios_fs_mkdir(target) != 0) {
-          xaios_mfs_stat_user_t stat;
+          xaios_xbfs_stat_user_t stat;
           if (xaios_fs_stat(target, &stat) != 0) return fail("mkdir failed");
         }
       } else if (type == '0') {
@@ -1211,7 +1211,7 @@ static int from_hex8(const unsigned char *src, u32 *value) {
 }
 
 static int cpio_add(const char *source, const char *name, u64 *used, u32 *ino) {
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   if (xaios_fs_stat(source, &stat) != 0 || !archive_safe(name)) return -1;
   u32 namesize = (u32)length(name) + 1U;
   u32 filesize = stat.type == XAIOS_FS_TYPE_FILE ? (u32)stat.size : 0U;
@@ -1329,7 +1329,7 @@ static int cmd_cpio(const char *args) {
         return fail("unsafe path");
       if ((mode & 0170000U) == 0040000U) {
         if (xaios_fs_mkdir(target) != 0) {
-          xaios_mfs_stat_user_t stat;
+          xaios_xbfs_stat_user_t stat;
           if (xaios_fs_stat(target, &stat) != 0) return fail("mkdir failed");
         }
       } else if ((mode & 0170000U) == 0100000U) {
@@ -1344,7 +1344,7 @@ static int cmd_cpio(const char *args) {
 
 static int zip_add(const char *source, const char *name, int recursive,
                    u64 *used, u32 *count) {
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   if (*count >= ENTRY_MAX || xaios_fs_stat(source, &stat) != 0) return -1;
   int directory = stat.type == XAIOS_FS_TYPE_DIRECTORY;
   if (directory && !recursive) return -1;
@@ -1461,7 +1461,7 @@ static int cmd_unzip(const char *args) {
         return fail("unsafe path");
       if (name[name_size - 1U] == '/') {
         if (xaios_fs_mkdir(target) != 0) {
-          xaios_mfs_stat_user_t stat; if (xaios_fs_stat(target, &stat) != 0) return fail("mkdir failed");
+          xaios_xbfs_stat_user_t stat; if (xaios_fs_stat(target, &stat) != 0) return fail("mkdir failed");
         }
       } else {
         const unsigned char *payload = g_data + data_at; u64 output_size = packed;
@@ -1646,7 +1646,7 @@ static int cmd_df(const char *args) {
 }
 
 static int du_walk(const char *path, int human, int summary, u64 *total) {
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   if (xaios_fs_stat(path, &stat) != 0) return -1;
   if (stat.type == XAIOS_FS_TYPE_FILE) { *total = (u64)stat.block_count * 512U; return 0; }
   char listing[LIST_MAX]; u64 size = 0U;

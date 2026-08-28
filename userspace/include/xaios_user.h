@@ -128,20 +128,20 @@ void *xaios_memcpy(void *dst, const void *src, u64 size);
 #define XAIOS_AGENT_STATUS_NOT_FOUND 3U
 #define XAIOS_AGENT_STATUS_INTERNAL_ERROR 4U
 
-#define XAIOS_MFS_OPEN_READ 1U
-#define XAIOS_MFS_OPEN_WRITE 2U
-#define XAIOS_MFS_OPEN_CREATE 4U
-#define XAIOS_MFS_OPEN_TRUNCATE 8U
+#define XAIOS_XBFS_OPEN_READ 1U
+#define XAIOS_XBFS_OPEN_WRITE 2U
+#define XAIOS_XBFS_OPEN_CREATE 4U
+#define XAIOS_XBFS_OPEN_TRUNCATE 8U
 #define XAIOS_FS_TYPE_DIRECTORY 1U
 #define XAIOS_FS_TYPE_FILE 2U
 
-typedef struct xaios_mfs_stat_user {
+typedef struct xaios_xbfs_stat_user {
   u32 type;
   u32 block_count;
   u64 size;
   u64 generation;
   u64 content_hash;
-} xaios_mfs_stat_user_t;
+} xaios_xbfs_stat_user_t;
 
 typedef struct xaios_rename_request {
   u64 old_path;
@@ -337,7 +337,7 @@ s64 xaios_fs_pwrite(int fd, const void *buffer, u64 size, u64 offset);
 int xaios_fs_fsync(int fd);
 int xaios_fs_seek(int fd, u64 offset);
 int xaios_fs_close(int fd);
-int xaios_fs_stat(const char *path, xaios_mfs_stat_user_t *stat);
+int xaios_fs_stat(const char *path, xaios_xbfs_stat_user_t *stat);
 int xaios_net_udp_echo(const void *payload, u64 payload_size, u64 *echoed_bytes);
 int xaios_net_tcp_connect(u64 *round_trips);
 int xaios_smp_run(u64 worker_count, u64 iterations, u64 *ran_workers,

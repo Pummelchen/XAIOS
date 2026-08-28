@@ -12,7 +12,7 @@ int main(void) {
   char read_buffer[96];
   char list_buffer[256];
   u64 list_size = 0;
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   xaios_memzero(read_buffer, sizeof(read_buffer));
   xaios_memzero(list_buffer, sizeof(list_buffer));
   xaios_memzero(&stat, sizeof(stat));

@@ -297,6 +297,11 @@ qemu-x86_64-platform-matrix: image-x86_64-qemu-test
 qemu-x86_64-repeat-boot: image-x86_64-qemu-test
 	python3 ./tests/scripts/qemu-x86_64-repeat-boot.py
 
+# What an operation costs in instructions, which is the same number on every
+# machine. Regression detection now, and a baseline for when hardware arrives.
+qemu-instruction-cost-gate: image-qemu-test
+	python3 ./tests/scripts/qemu-instruction-cost-gate.py
+
 qemu-benchmark: image-qemu-test
 	python3 ./tests/scripts/qemu-benchmark.py
 
@@ -514,8 +519,8 @@ hosted-test: engine-cli
 	  -o build/hosted/test-vfs
 	./build/hosted/test-vfs
 	$(HOST_CC) $(HOST_CFLAGS) \
-	  -Ikernel/include kernel/fs/mutable_fs.c kernel/dev/block_device.c \
-	  tests/storage/test_mutable_fs_mirror.c \
+	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/dev/block_device.c \
+	  tests/storage/test_xaiboot_fs_mirror.c \
 	  -o build/hosted/test-mutable-fs-mirror
 	./build/hosted/test-mutable-fs-mirror
 	$(HOST_CC) $(HOST_CFLAGS) \

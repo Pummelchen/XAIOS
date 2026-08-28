@@ -38,7 +38,7 @@ VOLUMES = (
 EXPECTED = (
     ("kernel started", re.compile(r"XAIOS Build \d+ kernel starting")),
     ("virtio console attached", re.compile(r"virtio-console: kernel log attached")),
-    ("durable volume mounted", re.compile(r"mutable-fs: persistent mounted")),
+    ("durable volume mounted", re.compile(r"xaibootfs: persistent mounted")),
     ("filesystem checked", re.compile(r"persistent fsck valid=1")),
     ("IPv4 configured by DHCP", re.compile(r"network: DHCP lease ip=")),
     ("IPv6 address configured", re.compile(r"IPv6 address configured from advertised")),

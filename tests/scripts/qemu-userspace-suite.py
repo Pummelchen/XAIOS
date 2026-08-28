@@ -22,7 +22,7 @@ COMMAND_MARKERS = {
         "\"ai_cell_transitions\":14",
     ],
     "osctl_rollback": [
-        "mutable-fs: snapshot rollback",
+        "xaibootfs: snapshot rollback",
         "\"persistence_rollbacks\":7",
         "\"update_rollbacks\":1",
     ],

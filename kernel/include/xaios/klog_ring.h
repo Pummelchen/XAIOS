@@ -19,7 +19,7 @@ typedef enum xaios_log_level {
 /* Start in-memory capture. Safe to call as soon as klog works; depends on
    no other subsystem. */
 void klog_ring_init(void);
-/* Enable the persistent flush path once MutableFS is mounted. Capture is
+/* Enable the persistent flush path once xaibootFS is mounted. Capture is
    unaffected by this failing. */
 xaios_status_t klog_ring_enable_persistence(void);
 void klog_ring_write(const char *data, uint32_t length);

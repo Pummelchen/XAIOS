@@ -45,7 +45,7 @@ PL011 serial remains the headless-console path when no usable framebuffer or
 USB keyboard is present.
 
 The bundle includes a 256 MiB SATA VMDK. The AHCI driver registers
-`/dev/ahci0p0` through the generic block-device interface; MutableFS formats a
+`/dev/ahci0p0` through the generic block-device interface; xaibootFS formats a
 new disk and loads the existing volume on later boots. No filesystem behavior
 is special-cased for Fusion.
 
@@ -54,7 +54,7 @@ On the current Apple Silicon host, Fusion 26H1 (26.0.0) ARM64 evidence covers:
 - UEFI-to-kernel boot through normal services.
 - PCI bridge traversal, E1000E discovery, DHCP lease acquisition and IPv4
   stack initialization.
-- AHCI ATA identify, writable MutableFS format, and subsequent persistent
+- AHCI ATA identify, writable xaibootFS format, and subsequent persistent
   volume reload.
 - Mac-local public-key SSH command execution and SFTP upload/download to the
   bridged guest.
@@ -86,7 +86,7 @@ ssh -i /path/to/test-key admin@guest-address
 ```
 
 The build VMDK is recreated when `make vmware-fusion-image` rebuilds the
-bundle. Reboots and recovery of the same generated bundle preserve MutableFS
+bundle. Reboots and recovery of the same generated bundle preserve xaibootFS
 state. `make vmware-fusion-smoke` builds a disposable public-key image and
 proves SSH, SFTP, crash recovery, reboot, clean shutdown and repeat boot.
 

@@ -19,7 +19,7 @@
 # than one file per instruction set.
 #
 # What it deliberately does not carry is the durable volume. An ISO is
-# read-only, and XAIOS keeps its state on a writable MutableFS volume; that
+# read-only, and XAIOS keeps its state on a writable xaibootFS volume; that
 # stays a separate disk the platform attaches. Booting from read-only media
 # without one is a supported thing to do -- the system comes up and says the
 # volume is missing rather than pretending otherwise.

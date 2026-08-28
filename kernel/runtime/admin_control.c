@@ -2,7 +2,7 @@
 #include <xaios/assert.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
-#include <xaios/mutable_fs.h>
+#include <xaios/xaiboot_fs.h>
 #include <xaios/vfs_model.h>
 #include <xaios/sha256.h>
 #include <xaios/virtio_rng.h>
@@ -233,7 +233,7 @@ static int staging_path_valid(const char *path) {
   static const char prefix[] = "/tmp/";
   uint64_t length = string_length(path);
   if (path == 0 || length <= sizeof(prefix) - 1U ||
-      length >= XAIOS_MFS_PATH_MAX) {
+      length >= XAIOS_XBFS_PATH_MAX) {
     return 0;
   }
   return bytes_equal(path, prefix, sizeof(prefix) - 1U);
@@ -403,7 +403,7 @@ static xaios_admin_result_t load_config_source(
   char source[XAIOS_ADMIN_SOURCE_BYTES];
   uint64_t size = 0U;
   if (!staging_path_valid(path) || candidate == 0 || change_mask == 0 ||
-      mutable_fs_read(path, source, sizeof(source), &size) != XAIOS_OK ||
+      xaiboot_fs_read(path, source, sizeof(source), &size) != XAIOS_OK ||
       size == 0U || parse_config_text(source, size, candidate) != 0) {
     return XAIOS_ADMIN_RESULT_INVALID;
   }
@@ -515,7 +515,7 @@ static int parse_single_key_file(const char *path, uint8_t public_key[32]) {
   uint64_t size = 0U;
   uint32_t found = 0U;
   if (!staging_path_valid(path) ||
-      mutable_fs_read(path, source, sizeof(source), &size) != XAIOS_OK ||
+      xaiboot_fs_read(path, source, sizeof(source), &size) != XAIOS_OK ||
       size == 0U) {
     return -1;
   }
@@ -547,7 +547,7 @@ static void key_fingerprint(const uint8_t public_key[32],
 static void import_legacy_keys(xaios_admin_auth_database_t *database) {
   char source[4096];
   uint64_t size = 0U;
-  if (mutable_fs_read(XAIOS_ADMIN_LEGACY_KEYS_PATH, source, sizeof(source),
+  if (xaiboot_fs_read(XAIOS_ADMIN_LEGACY_KEYS_PATH, source, sizeof(source),
                       &size) != XAIOS_OK) {
     return;
   }
@@ -588,7 +588,7 @@ static xaios_admin_result_t load_auth_database(
     xaios_admin_auth_database_t *database) {
   uint64_t size = 0U;
   if (database == 0) return XAIOS_ADMIN_RESULT_INVALID;
-  if (mutable_fs_read(XAIOS_ADMIN_AUTH_PATH, database, sizeof(*database),
+  if (xaiboot_fs_read(XAIOS_ADMIN_AUTH_PATH, database, sizeof(*database),
                       &size) == XAIOS_OK) {
     return size == sizeof(*database) && auth_valid(database)
                ? XAIOS_ADMIN_RESULT_OK
@@ -615,7 +615,7 @@ static void initialize_audit(xaios_admin_audit_log_t *audit) {
 static xaios_admin_result_t load_audit(xaios_admin_audit_log_t *audit) {
   uint64_t size = 0U;
   if (audit == 0) return XAIOS_ADMIN_RESULT_INVALID;
-  if (mutable_fs_read(XAIOS_ADMIN_AUDIT_PATH, audit, sizeof(*audit), &size) ==
+  if (xaiboot_fs_read(XAIOS_ADMIN_AUDIT_PATH, audit, sizeof(*audit), &size) ==
       XAIOS_OK) {
     uint64_t expected = sizeof(*audit) - sizeof(audit->records) +
                         ((uint64_t)audit->record_count *
@@ -689,7 +689,7 @@ static xaios_admin_result_t append_audit(const char *actor, uint32_t role,
                    ((uint64_t)audit->record_count * sizeof(audit->records[0]));
   xaios_status_t status =
       audit->checksum != 0U
-          ? mutable_fs_write(XAIOS_ADMIN_AUDIT_PATH, audit, bytes)
+          ? xaiboot_fs_write(XAIOS_ADMIN_AUDIT_PATH, audit, bytes)
           : XAIOS_ERR_NO_MEMORY;
   kheap_free(audit);
   return status == XAIOS_OK ? XAIOS_ADMIN_RESULT_OK : XAIOS_ADMIN_RESULT_IO;
@@ -705,13 +705,13 @@ static xaios_admin_result_t audit_only(const char *actor, uint32_t role,
       role < XAIOS_ADMIN_ROLE_OBSERVER || role > XAIOS_ADMIN_ROLE_ADMIN) {
     return result;
   }
-  if (mutable_fs_commit("admin-audit-pre") != XAIOS_OK) {
+  if (xaiboot_fs_commit("admin-audit-pre") != XAIOS_OK) {
     return XAIOS_ADMIN_RESULT_IO;
   }
   if (append_audit(actor, role, operation_id, operation, (uint32_t)result,
                    object_hash) != XAIOS_ADMIN_RESULT_OK ||
-      mutable_fs_commit("admin-audit-post") != XAIOS_OK) {
-    (void)mutable_fs_rollback();
+      xaiboot_fs_commit("admin-audit-post") != XAIOS_OK) {
+    (void)xaiboot_fs_rollback();
     return XAIOS_ADMIN_RESULT_IO;
   }
   return result;
@@ -731,7 +731,7 @@ static xaios_admin_result_t begin_mutation(const char *actor, uint32_t role,
     return audit_only(actor, role, operation_id, operation,
                       XAIOS_ADMIN_RESULT_DENIED);
   }
-  return mutable_fs_commit("admin-mutation-pre") == XAIOS_OK
+  return xaiboot_fs_commit("admin-mutation-pre") == XAIOS_OK
              ? XAIOS_ADMIN_RESULT_OK
              : XAIOS_ADMIN_RESULT_IO;
 }
@@ -748,8 +748,8 @@ static xaios_admin_result_t finish_mutation(
   if (append_audit(actor, role, operation_id, operation,
                    XAIOS_ADMIN_RESULT_OK, object_hash) !=
           XAIOS_ADMIN_RESULT_OK ||
-      mutable_fs_commit("admin-mutation-post") != XAIOS_OK) {
-    (void)mutable_fs_rollback();
+      xaiboot_fs_commit("admin-mutation-post") != XAIOS_OK) {
+    (void)xaiboot_fs_rollback();
     return XAIOS_ADMIN_RESULT_IO;
   }
   return XAIOS_ADMIN_RESULT_OK;
@@ -762,7 +762,7 @@ xaios_admin_result_t admin_control_mutation_complete(
 }
 
 static void abort_mutation(void) {
-  (void)mutable_fs_rollback();
+  (void)xaiboot_fs_rollback();
 }
 
 static xaios_admin_result_t abort_and_audit(
@@ -783,20 +783,20 @@ void admin_control_init(void) {
   uint64_t size = 0U;
   default_config(&g_active_config);
   g_initialized = 0U;
-  if (mutable_fs_mkdir("/state/control") != XAIOS_OK) {
+  if (xaiboot_fs_mkdir("/state/control") != XAIOS_OK) {
     klog("admin-control: persistent state directory unavailable\n");
     return;
   }
-  if (mutable_fs_read(XAIOS_ADMIN_CONFIG_PATH, &stored, sizeof(stored),
+  if (xaiboot_fs_read(XAIOS_ADMIN_CONFIG_PATH, &stored, sizeof(stored),
                       &size) == XAIOS_OK) {
     if (size != sizeof(stored) || !config_valid(&stored)) {
       klog("admin-control: active configuration invalid; safe defaults only\n");
       return;
     }
     g_active_config = stored;
-  } else if (mutable_fs_write(XAIOS_ADMIN_CONFIG_PATH, &g_active_config,
+  } else if (xaiboot_fs_write(XAIOS_ADMIN_CONFIG_PATH, &g_active_config,
                               sizeof(g_active_config)) != XAIOS_OK ||
-             mutable_fs_commit("admin-initial-state") != XAIOS_OK) {
+             xaiboot_fs_commit("admin-initial-state") != XAIOS_OK) {
     klog("admin-control: failed to initialize active configuration\n");
     return;
   }
@@ -836,7 +836,7 @@ xaios_admin_result_t admin_control_config_apply(
     return abort_and_audit(actor, role, operation_id, "config.apply",
                            validation);
   }
-  if (mutable_fs_write(XAIOS_ADMIN_CONFIG_PATH, &candidate,
+  if (xaiboot_fs_write(XAIOS_ADMIN_CONFIG_PATH, &candidate,
                        sizeof(candidate)) != XAIOS_OK) {
     return abort_and_audit(actor, role, operation_id, "config.apply",
                            XAIOS_ADMIN_RESULT_IO);
@@ -941,7 +941,7 @@ xaios_admin_result_t admin_control_auth_add(
   ++database->generation;
   database->checksum = auth_checksum(database);
   if (database->checksum == 0U ||
-      mutable_fs_write(XAIOS_ADMIN_AUTH_PATH, database, sizeof(*database)) !=
+      xaiboot_fs_write(XAIOS_ADMIN_AUTH_PATH, database, sizeof(*database)) !=
           XAIOS_OK) {
     kheap_free(database);
     bytes_zero(public_key, sizeof(public_key));
@@ -1040,7 +1040,7 @@ xaios_admin_result_t admin_control_auth_remove(
   ++database->generation;
   database->checksum = auth_checksum(database);
   if (database->checksum == 0U ||
-      mutable_fs_write(XAIOS_ADMIN_AUTH_PATH, database, sizeof(*database)) !=
+      xaiboot_fs_write(XAIOS_ADMIN_AUTH_PATH, database, sizeof(*database)) !=
           XAIOS_OK) {
     kheap_free(database);
     return abort_and_audit(actor, actor_role, operation_id,
@@ -1077,7 +1077,7 @@ xaios_admin_result_t admin_control_host_key_rotate(
                            "auth.host.rotate", XAIOS_ADMIN_RESULT_IO);
   }
   bytes_to_hex(private_seed, sizeof(private_seed), encoded);
-  if (mutable_fs_write(XAIOS_ADMIN_HOST_KEY_PATH, encoded, sizeof(encoded)) !=
+  if (xaiboot_fs_write(XAIOS_ADMIN_HOST_KEY_PATH, encoded, sizeof(encoded)) !=
       XAIOS_OK) {
     bytes_zero(private_seed, sizeof(private_seed));
     bytes_zero(encoded, sizeof(encoded));

@@ -42,7 +42,7 @@ rejection. Destructive write/read verification is restricted to the dedicated
 writable VirtIO test disk and restores the original sector afterward.
 
 The deterministic VirtIO fixture reserves sector `2999` for the block write
-probe and sectors `3000..3185` for persistence and MutableFS diagnostics.
+probe and sectors `3000..3185` for persistence and xaibootFS diagnostics.
 Immutable initramfs payloads start at sector `4096`. The ABI gate enforces this
 separation so repeated boot tests cannot overwrite executable data.
 

@@ -13,7 +13,7 @@ userspace filesystem syscalls and SFTP
 VFS: path routing, owner-scoped handles, 64-bit positional I/O
         |                              |
         v                              v
-MutableFS root                    ModelFS /models
+xaibootFS root                    ModelFS /models
 small state                       immutable active + bounded staging
                                        |
                                        v
@@ -81,7 +81,7 @@ ModelFS is the placement and lifecycle container.
 ## Current limits
 
 - The block registry is bounded to 32 boot-time devices, the VFS to its
-  compile-time mount/handle counts, and MutableFS remains suitable only for
+  compile-time mount/handle counts, and xaibootFS remains suitable only for
   small state.
 - The QEMU VirtIO path is interrupt-dispatched with eight request slots,
   direct-or-bounce DMA, event-index suppression and indirect descriptors. The
@@ -102,7 +102,7 @@ ModelFS is the placement and lifecycle container.
   or trim is active; reads continue between work units.
 - The current allocator reuses a sufficiently large coalesced free extent. It
   does not compact old catalog snapshots or move active package data.
-- ModelFS activation and MutableFS audit persistence are not one distributed
+- ModelFS activation and xaibootFS audit persistence are not one distributed
   transaction. An audit failure after publication is logged but cannot revert
   an already durable ModelFS generation.
 

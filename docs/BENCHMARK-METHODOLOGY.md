@@ -13,7 +13,7 @@ Every `make qemu-smoke` run validates 330+ boot markers covering:
 - Exception handling and timer self-tests
 - Memory management (PMM, VMM, NUMA, kheap, arena)
 - SMMU and PCIe enumeration
-- Filesystem operations (initramfs, mutable_fs, persistence)
+- Filesystem operations (initramfs, xaiboot_fs, persistence)
 - Network stack (ARP, IPv4, ICMP, UDP, TCP, queue-backed flow)
 - Security enforcement (capabilities, sandbox, credential rejection)
 - AI cell lifecycle (admission, arena, KV store, conflict detection)
@@ -28,7 +28,7 @@ The kernel emits a JSON telemetry payload at boot completion. Key categories:
 | Category | Example Metrics |
 |----------|----------------|
 | Memory | `pmm_total_pages`, `pmm_free_pages`, `kheap_pages`, `arena_committed_pages` |
-| Filesystem | `mutable_fs_files`, `mutable_fs_writes`, `mutable_fs_commits`, `mutable_fs_rollbacks` |
+| Filesystem | `xaiboot_fs_files`, `xaiboot_fs_writes`, `xaiboot_fs_commits`, `xaiboot_fs_rollbacks` |
 | Network | `network_rx_packets`, `network_tx_packets`, `network_udp_p999`, `network_tcp_p999` |
 | Security | `security_denied_ops`, `security_capability_denials`, `security_sandbox_escape_rejects` |
 | AI/ML | `cpu_ai_model_loads`, `cpu_ai_runtime_calls`, `ai_cell_transitions` |

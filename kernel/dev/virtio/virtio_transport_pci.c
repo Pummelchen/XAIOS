@@ -123,7 +123,7 @@ static uint32_t matching_ordinal_for_slot(uint32_t slot) {
   case 0U:
     return 1U; /* deterministic test volume; ordinal zero is the EFI disk */
   case 1U:
-    return 2U; /* persistent MutableFS */
+    return 2U; /* persistent xaibootFS */
   case 4U:
     return 3U; /* model volume */
   case 5U:

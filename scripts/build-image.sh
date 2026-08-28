@@ -531,9 +531,9 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/arch_random.o
   $KERNEL_BUILD_DIR/entropy.o
   $KERNEL_BUILD_DIR/initramfs.o
-  $KERNEL_BUILD_DIR/mutable_fs.o
+  $KERNEL_BUILD_DIR/xaiboot_fs.o
   $KERNEL_BUILD_DIR/vfs.o
-  $KERNEL_BUILD_DIR/vfs_mutable.o
+  $KERNEL_BUILD_DIR/vfs_xaiboot.o
   $KERNEL_BUILD_DIR/vfs_initramfs.o
   $KERNEL_BUILD_DIR/vfs_model.o
   $KERNEL_BUILD_DIR/model_volume_admin.o
@@ -673,9 +673,9 @@ compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_console.c" "$KERNEL_BUILD_DIR
 compile_kernel "$ROOT_DIR/kernel/runtime/arch_random.c" "$KERNEL_BUILD_DIR/arch_random.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/entropy.c" "$KERNEL_BUILD_DIR/entropy.o"
 compile_kernel "$ROOT_DIR/kernel/fs/initramfs.c" "$KERNEL_BUILD_DIR/initramfs.o"
-compile_kernel "$ROOT_DIR/kernel/fs/mutable_fs.c" "$KERNEL_BUILD_DIR/mutable_fs.o"
+compile_kernel "$ROOT_DIR/kernel/fs/xaiboot_fs.c" "$KERNEL_BUILD_DIR/xaiboot_fs.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs.c" "$KERNEL_BUILD_DIR/vfs.o"
-compile_kernel "$ROOT_DIR/kernel/fs/vfs_mutable.c" "$KERNEL_BUILD_DIR/vfs_mutable.o"
+compile_kernel "$ROOT_DIR/kernel/fs/vfs_xaiboot.c" "$KERNEL_BUILD_DIR/vfs_xaiboot.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs_initramfs.c" "$KERNEL_BUILD_DIR/vfs_initramfs.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs_model.c" "$KERNEL_BUILD_DIR/vfs_model.o"
 compile_kernel "$ROOT_DIR/kernel/fs/model_volume_admin.c" "$KERNEL_BUILD_DIR/model_volume_admin.o"

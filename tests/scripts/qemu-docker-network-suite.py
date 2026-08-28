@@ -246,13 +246,13 @@ def run_scale_sftp(
     )
     if (result.returncode == 0) != expect_success:
         raise RuntimeError(
-            "MutableFS v5 SFTP result did not match expectation: "
+            "xaibootFS v5 SFTP result did not match expectation: "
             + (result.stdout + result.stderr).decode(errors="replace")
         )
     return result
 
 
-def prepare_mutable_fs_v5_scale(key_dir: Path, port: int) -> dict[str, object]:
+def prepare_xaiboot_fs_v5_scale(key_dir: Path, port: int) -> dict[str, object]:
     payload = key_dir / "mutablefs-v5-limit.bin"
     overflow = key_dir / "mutablefs-v5-overflow.bin"
     downloaded = key_dir / "mutablefs-v5-download.bin"
@@ -274,11 +274,11 @@ def prepare_mutable_fs_v5_scale(key_dir: Path, port: int) -> dict[str, object]:
     commands.extend([f"ls -1 {node_root}", "quit", ""])
     listing = run_scale_sftp(key_dir, port, "\n".join(commands))
     if downloaded.read_bytes() != payload.read_bytes():
-        raise RuntimeError("MutableFS v5 256 KiB SFTP round trip changed payload bytes")
+        raise RuntimeError("xaibootFS v5 256 KiB SFTP round trip changed payload bytes")
     listing_text = (listing.stdout + listing.stderr).decode(errors="replace")
     if sum(f"d{index:03d}" in listing_text for index in range(directory_count)) \
             != directory_count:
-        raise RuntimeError("MutableFS v5 directory-pressure listing was incomplete")
+        raise RuntimeError("xaibootFS v5 directory-pressure listing was incomplete")
 
     run_scale_sftp(
         key_dir,
@@ -294,7 +294,7 @@ def prepare_mutable_fs_v5_scale(key_dir: Path, port: int) -> dict[str, object]:
     }
 
 
-def verify_mutable_fs_v5_scale_after_reboot(
+def verify_xaiboot_fs_v5_scale_after_reboot(
     key_dir: Path, port: int, expected: dict[str, object]
 ) -> None:
     downloaded = key_dir / "mutablefs-v5-reboot.bin"
@@ -318,11 +318,11 @@ def verify_mutable_fs_v5_scale_after_reboot(
     listing = run_scale_sftp(key_dir, port, "\n".join(commands))
     digest = hashlib.sha256(downloaded.read_bytes()).hexdigest()
     if digest != expected["sha256"]:
-        raise RuntimeError("MutableFS v5 persisted payload changed after reboot")
+        raise RuntimeError("xaibootFS v5 persisted payload changed after reboot")
     listing_text = (listing.stdout + listing.stderr).decode(errors="replace")
     if sum(f"d{index:03d}" in listing_text for index in range(directory_count)) \
             != directory_count:
-        raise RuntimeError("MutableFS v5 pressure directories did not persist")
+        raise RuntimeError("xaibootFS v5 pressure directories did not persist")
 
 
 def scan_host_key(key_dir: Path, port: int) -> tuple[str, str]:
@@ -371,7 +371,7 @@ def fnv1a64(data: bytes | bytearray) -> int:
     return value
 
 
-def create_mutable_fs_fixture(path: Path, version: int) -> bytes:
+def create_xaiboot_fs_fixture(path: Path, version: int) -> bytes:
     sector_size = 512
     start_sector = 3072
     if version == 3:
@@ -387,9 +387,9 @@ def create_mutable_fs_fixture(path: Path, version: int) -> bytes:
         file_max_blocks = 256
         path_bytes = 256
     else:
-        raise ValueError(f"unsupported MutableFS fixture version: {version}")
+        raise ValueError(f"unsupported xaibootFS fixture version: {version}")
     node_size = (68 + file_max_blocks * 4 + path_bytes + 7) & ~7
-    payload = (f"XAIOS MutableFS v{version} migration payload\n".encode() * 40)[:1400]
+    payload = (f"XAIOS xaibootFS v{version} migration payload\n".encode() * 40)[:1400]
     block_count = (len(payload) + sector_size - 1) // sector_size
     metadata = bytearray(metadata_sectors * sector_size)
     struct_header = (
@@ -408,7 +408,7 @@ def create_mutable_fs_fixture(path: Path, version: int) -> bytes:
         + (0).to_bytes(8, "little")
     )
     if len(struct_header) != 88:
-        raise RuntimeError(f"MutableFS v{version} fixture header layout drifted")
+        raise RuntimeError(f"xaibootFS v{version} fixture header layout drifted")
     metadata[:len(struct_header)] = struct_header
     metadata[88:88 + block_count] = b"\x01" * block_count
     nodes_offset = 88 + data_sectors
@@ -417,7 +417,7 @@ def create_mutable_fs_fixture(path: Path, version: int) -> bytes:
                  content: bytes = b"") -> None:
         encoded_path = node_path.encode("ascii")
         if len(encoded_path) >= path_bytes:
-            raise RuntimeError(f"MutableFS v{version} fixture path is too long")
+            raise RuntimeError(f"xaibootFS v{version} fixture path is too long")
         node = bytearray(node_size)
         node[0:4] = (1).to_bytes(4, "little")
         node[8:12] = node_type.to_bytes(4, "little")
@@ -1025,7 +1025,7 @@ def main() -> int:
         migration_path = BUILD / (
             f"qemu-mutable-fs-v{source_version}-migration{ARTIFACT_SUFFIX}.img"
         )
-        migration_payload = create_mutable_fs_fixture(migration_path, source_version)
+        migration_payload = create_xaiboot_fs_fixture(migration_path, source_version)
         migration_port = reserve_port(socket.SOCK_STREAM)
         migration_qemu, migration_log, _, _ = start_qemu_ready(
             f"qemu-mutable-fs-v{source_version}-migration" + ARTIFACT_SUFFIX,
@@ -1054,7 +1054,7 @@ def main() -> int:
             )
             if migrated.returncode != 0 or migrated.stdout != migration_payload:
                 raise RuntimeError(
-                    f"MutableFS v{source_version} migration did not preserve "
+                    f"xaibootFS v{source_version} migration did not preserve "
                     "file data: "
                     + (migrated.stdout + migrated.stderr).decode(errors="replace")
                 )
@@ -1066,11 +1066,11 @@ def main() -> int:
             migrated_version = int.from_bytes(fixture.read(4), "little")
         if migrated_version != 5:
             raise RuntimeError(
-                f"MutableFS v{source_version} migration did not publish v5 "
+                f"xaibootFS v{source_version} migration did not publish v5 "
                 f"metadata: {migrated_version}"
             )
         migration_path.unlink(missing_ok=True)
-        results[f"mutable_fs_v{source_version}_to_v5_migration"] = "passed"
+        results[f"xaiboot_fs_v{source_version}_to_v5_migration"] = "passed"
 
     ssh_port = reserve_port(socket.SOCK_STREAM)
     udp_port = reserve_port(socket.SOCK_DGRAM)
@@ -1139,7 +1139,7 @@ def main() -> int:
         results["sensitive_state_remote_denial"] = "passed"
         results["log_secret_redaction"] = "passed"
         results["password_build_profiles"] = "passed"
-        results["mutable_fs_v5_scale"] = prepare_mutable_fs_v5_scale(
+        results["xaiboot_fs_v5_scale"] = prepare_xaiboot_fs_v5_scale(
             key_dir, ssh_port
         )
     finally:
@@ -1221,12 +1221,12 @@ def main() -> int:
         )
         if revoked_attempt.returncode == 0:
             raise RuntimeError("revoked operator key became valid after reboot")
-        verify_mutable_fs_v5_scale_after_reboot(
-            key_dir, ssh_port, results["mutable_fs_v5_scale"]
+        verify_xaiboot_fs_v5_scale_after_reboot(
+            key_dir, ssh_port, results["xaiboot_fs_v5_scale"]
         )
         results["host_key_persistence"] = "passed"
         results["admin_state_persistence"] = "passed"
-        results["mutable_fs_v5_reboot_persistence"] = "passed"
+        results["xaiboot_fs_v5_reboot_persistence"] = "passed"
     finally:
         stop_qemu(reboot_qemu)
         reboot_log_file.close()

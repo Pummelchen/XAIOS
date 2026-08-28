@@ -503,7 +503,7 @@ static int verify_known_host(ssh_client_context_t *client,
   while (digit_count != 0U) expected[expected_length++] = digits[--digit_count];
   expected[expected_length] = '\0';
 
-  int fd = xaios_fs_open(path, XAIOS_MFS_OPEN_READ);
+  int fd = xaios_fs_open(path, XAIOS_XBFS_OPEN_READ);
   if (fd >= 0) {
     int length = xaios_fs_read(fd, contents, sizeof(contents) - 1U);
     (void)xaios_fs_close(fd);
@@ -536,9 +536,9 @@ static int verify_known_host(ssh_client_context_t *client,
   }
 
   (void)xaios_fs_mkdir("/home/admin/.ssh");
-  fd = xaios_fs_open(path, XAIOS_MFS_OPEN_WRITE | XAIOS_MFS_OPEN_CREATE);
+  fd = xaios_fs_open(path, XAIOS_XBFS_OPEN_WRITE | XAIOS_XBFS_OPEN_CREATE);
   if (fd < 0) return -1;
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   uint64_t offset = 0U;
   if (xaios_fs_stat(path, &stat) == 0) offset = stat.size;
   char line[SSH_CLIENT_HOST_MAX + 80U];
@@ -2216,12 +2216,12 @@ static int sftp_read_directory(ssh_client_context_t *client,
 
 static int scp_upload_file(ssh_client_context_t *client, const char *local_path,
                            const char *remote_path, uint64_t deadline) {
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   if (xaios_fs_stat(local_path, &stat) != 0 || stat.type != 2U) {
     xaios_log("ssh-client: scp local source stat failed\n");
     return -21;
   }
-  int local = xaios_fs_open(local_path, XAIOS_MFS_OPEN_READ);
+  int local = xaios_fs_open(local_path, XAIOS_XBFS_OPEN_READ);
   if (local < 0) {
     xaios_log("ssh-client: scp local source open failed\n");
     return -22;
@@ -2292,8 +2292,8 @@ static int scp_download_file(ssh_client_context_t *client,
   if (sftp_open_remote(client, remote_path, 1U, handle,
                        &handle_length, deadline) != 0) return -1;
   int local = xaios_fs_open(local_path,
-                            XAIOS_MFS_OPEN_WRITE | XAIOS_MFS_OPEN_CREATE |
-                                XAIOS_MFS_OPEN_TRUNCATE);
+                            XAIOS_XBFS_OPEN_WRITE | XAIOS_XBFS_OPEN_CREATE |
+                                XAIOS_XBFS_OPEN_TRUNCATE);
   if (local < 0) {
     (void)sftp_close_remote(client, handle, handle_length, deadline);
     return -32;
@@ -2341,7 +2341,7 @@ static int scp_download_file(ssh_client_context_t *client,
 
 static int ensure_local_directory(const char *path) {
   if (xaios_fs_mkdir(path) == 0) return 0;
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   return xaios_fs_stat(path, &stat) == 0 &&
                  stat.type == XAIOS_FS_TYPE_DIRECTORY
              ? 0
@@ -2351,7 +2351,7 @@ static int ensure_local_directory(const char *path) {
 static int scp_upload_path(ssh_client_context_t *client,
                            const char *local_path, const char *remote_path,
                            uint32_t depth) {
-  xaios_mfs_stat_user_t stat;
+  xaios_xbfs_stat_user_t stat;
   if (xaios_fs_stat(local_path, &stat) != 0) return -21;
   if (stat.type == XAIOS_FS_TYPE_FILE)
     return scp_upload_file(client, local_path, remote_path, client_deadline());
@@ -2487,7 +2487,7 @@ static int client_scp_transfer(ssh_client_context_t *client) {
   }
   char local_path[SSH_CLIENT_PATH_MAX];
   string_copy(local_path, sizeof(local_path), client->local_path);
-  xaios_mfs_stat_user_t destination;
+  xaios_xbfs_stat_user_t destination;
   if (xaios_fs_stat(local_path, &destination) == 0 &&
       destination.type == XAIOS_FS_TYPE_DIRECTORY &&
       path_join(local_path, sizeof(local_path), client->local_path,

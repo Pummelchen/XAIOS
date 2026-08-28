@@ -89,7 +89,7 @@ lists are bounded to eight records per response and report `total_count` plus
 `truncated`, so a large server never silently appears to have only the returned
 devices. `mount-status` aliases `storage filesystem list`; `usage` aliases
 `storage filesystem show`. The current guest exposes live block capabilities,
-I/O counters, and the `/` MutableFS and `/models` ModelFS mounts. Typed guest
+I/O counters, and the `/` xaibootFS and `/models` ModelFS mounts. Typed guest
 operations cover GPT plan/mutation, format/mount/unmount, fsck/repair, grow-only
 resize, persistent scrub/quarantine, offline trusted-replica payload repair,
 and free-only trim/discard. Replica repair requires two distinct unmounted

@@ -56,7 +56,7 @@ client passed the explicitly identified subset below on 2026-08-10:
 - the focused suite completed four simultaneous SSH connections and 20
   sequential reconnects; the load gate separately holds all 32 transports;
 - storage discovery reported the expected writable `/dev/vblk4` ModelFS
-  device, the MutableFS root, the `/models` mount, and consistent staging/active
+  device, the xaibootFS root, the `/models` mount, and consistent staging/active
   package accounting before and after activation;
 - a 24-byte UDP payload reached the guest application buffer and was echoed
   byte-for-byte; kernel self-tests also verify that a short receive discards the
@@ -182,7 +182,7 @@ analysis and physical deployment qualification remain required.
 
 Fresh randomness comes from a VirtIO RNG-backed ChaCha20 DRBG. SSH startup is
 fail-closed when secure entropy is unavailable. The host key is created once,
-stored on the persistent mutable filesystem, flushed to the block device, and
+stored on the persistent xaibootFS, flushed to the block device, and
 reused on reboot. If it cannot be written, the service keeps the key it has
 and reports that the key is ephemeral rather than refusing to start: an
 unwritable filesystem is exactly when an operator needs remote access to
@@ -307,7 +307,7 @@ If a rebuilt guest intentionally rotates its host key, remove only the matching
 entry from `build/local-ssh/known_hosts` after verifying the rotation.
 
 Do not package development private keys or plaintext passwords into the image.
-MutableFS v5 limits a state file to 262,144 bytes; interactive `nano` accepts
+xaibootFS v5 limits a state file to 262,144 bytes; interactive `nano` accepts
 at most 32 KiB so its complete editing buffer remains bounded.
 
 ## Remaining Non-QEMU Gates

@@ -12,7 +12,7 @@ see [[Firmware Profiles|Firmware-Profiles]] for the profiles that are.
 
 ## Status
 
-XAIOS boots to a login. The loader runs, the kernel starts, MutableFS mounts a
+XAIOS boots to a login. The loader runs, the kernel starts, xaibootFS mounts a
 durable volume read-write and survives reboots, IPv4 comes up by DHCP, IPv6
 configures an address from the router advertisement, and sshd listens on
 TCP 22.
@@ -20,7 +20,7 @@ TCP 22.
 ```
 PCI: enumerated 11 devices (virtio=10 net=1 bridge=1)
 virtio-console: modern PCI transport index=2 slot=0
-mutable-fs: persistent mounted v5 nodes=256 sectors=8192
+xaibootfs: persistent mounted v5 nodes=256 sectors=8192
 kernel: persistent fsck valid=1 v5 files=15 dirs=23
 network: DHCP lease ip=c0a84002 mask=ffffff00 gw=c0a84001
 IPv4: 192.168.64.2

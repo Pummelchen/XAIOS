@@ -1,5 +1,5 @@
-#ifndef XAIOS_INITRAMFS_H
-#define XAIOS_INITRAMFS_H
+#ifndef XAIOS_INITRAXBFS_H
+#define XAIOS_INITRAXBFS_H
 
 #include <xaios/status.h>
 #include <xaios/types.h>

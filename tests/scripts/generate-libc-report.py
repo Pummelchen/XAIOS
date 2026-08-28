@@ -14,7 +14,7 @@ REQUIREMENTS = json.loads((ROOT / "tests/libc/c99-requirements.json").read_text(
 FUNCTIONS = json.loads((ROOT / "tests/libc/c99-library-functions.json").read_text())
 OUTPUT = ROOT / "build/libc/c99-conformance-report.json"
 FORBIDDEN_LOG_TEXT = ("Cyan Screen of Death", "panic:", "assertion failed")
-TMPFILE_EVENT = re.compile(r"mutable-fs: (?:write|delete) path=(/tmp/T\S+)")
+TMPFILE_EVENT = re.compile(r"xaibootfs: (?:write|delete) path=(/tmp/T\S+)")
 
 
 def tmpfile_cleanup_valid(log: str) -> bool:
@@ -22,7 +22,7 @@ def tmpfile_cleanup_valid(log: str) -> bool:
     for line in log.splitlines():
         match = TMPFILE_EVENT.search(line)
         if match is not None:
-            action = "delete" if "mutable-fs: delete " in line else "write"
+            action = "delete" if "xaibootfs: delete " in line else "write"
             events.setdefault(match.group(1), []).append(action)
     created = [actions for actions in events.values() if "write" in actions]
     return len(created) >= 2 and all(actions[-1] == "delete" for actions in created)

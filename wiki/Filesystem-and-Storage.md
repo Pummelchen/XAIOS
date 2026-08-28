@@ -9,10 +9,10 @@ security rules.
 | Surface | Purpose | Current boundary |
 |---|---|---|
 | Initramfs | `/init`, `/bin`, configuration, and service descriptors | Built into the image and immutable at runtime. |
-| MutableFS v5 | `/`, `/state`, `/config`, `/logs`, `/tmp`, and `/home` state | 256 nodes, 256 handles, 256 KiB per file, 4 MiB data capacity, 256-byte paths. |
+| xaibootFS v5 | `/`, `/state`, `/config`, `/logs`, `/tmp`, and `/home` state | 256 nodes, 256 handles, 256 KiB per file, 4 MiB data capacity, 256-byte paths. |
 | ModelFS | `/models` package catalog and immutable active model extents | Signed registration, resumable staging, verification, activation, scrub, quarantine, cleanup, and free-only trim. |
 
-MutableFS is intended for configuration, logs, shell files, and compact
+xaibootFS is intended for configuration, logs, shell files, and compact
 archives. It is not a general bulk filesystem and must not hold model weights.
 
 ## Everyday file operations
@@ -42,11 +42,11 @@ macOS, FreeBSD, Debian, and Windows tools. Extraction rejects traversal,
 absolute paths, Windows drive prefixes, links, devices, encrypted ZIP, ZIP64,
 bad checksums, and unsupported required features.
 
-Archive files remain subject to the 256 KiB MutableFS file limit.
+Archive files remain subject to the 256 KiB xaibootFS file limit.
 
 ## Persistence and integrity
 
-MutableFS uses checksum-protected metadata, journal replay, bounded rollback
+xaibootFS uses checksum-protected metadata, journal replay, bounded rollback
 snapshots, and negotiated block flushes. ModelFS uses signed metadata,
 copy-on-write publication, per-extent integrity, and immutable active mappings.
 QEMU crash gates cover selected interruption points; they do not prove physical
@@ -61,7 +61,7 @@ direct aligned buffers, cancellation, malformed completions, and queue
 affinity. Both architectures require interrupt delivery for every negotiated
 queue: x86_64 through APIC/MSI-X and AArch64 through GICv3 ITS LPIs.
 
-Persistent images are formatted as MutableFS v5. Mounting a valid v3 or v4
+Persistent images are formatted as xaibootFS v5. Mounting a valid v3 or v4
 image performs a checked in-place migration to v5 before normal operation.
 The Debian/OpenSSH integration gate verifies exact 256 KiB upload/download,
 rejects a one-byte overflow, creates 180 directories, cold-boots the same disk,

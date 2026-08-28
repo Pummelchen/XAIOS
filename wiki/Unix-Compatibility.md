@@ -20,7 +20,7 @@ The core command subset now includes `ls`, `cd`, `pwd`, `mkdir`, `rm`, `cp`,
 `mv`, `cat`, alternate-screen `less`, `grep`, `find`, `ps`, `df`, `du`, `tar`,
 `zip`, `unzip`, outbound `ssh`, and recursive `scp`. POSIX ustar/PAX, GNU
 long-name tar, gzip-wrapped tar, stored/Deflate ZIP and Unix/Windows ZIP origin
-metadata are validated within MutableFS limits. XAIOS-created archives pass
+metadata are validated within xaibootFS limits. XAIOS-created archives pass
 macOS and Debian readers. Recursive SFTP-backed `scp` passes in both directions
 against Debian OpenSSH.
 

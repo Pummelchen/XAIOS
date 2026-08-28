@@ -14,7 +14,7 @@
 #include <string.h>
 
 #include <xaios/block_device.h>
-#include <xaios/mutable_fs.h>
+#include <xaios/xaiboot_fs.h>
 
 /* Kernel dependencies the filesystem pulls in, reduced to what a hosted run
    needs. The virtio path is unreachable here: this test mounts a registered
@@ -102,7 +102,7 @@ static uint64_t primary_start(void) { return 3072U; }
 static uint64_t mirror_start(void) { return 3072U + 1280U + 2U + 8192U; }
 
 static void mount_fresh(void) {
-  assert(mutable_fs_mount_device("/dev/mirror0") == XAIOS_OK);
+  assert(xaiboot_fs_mount_device("/dev/mirror0") == XAIOS_OK);
 }
 
 int main(void) {
@@ -110,46 +110,46 @@ int main(void) {
 
   /* Create a volume with real content and commit it. */
   mount_fresh();
-  assert(mutable_fs_mkdir("/state") == XAIOS_OK);
-  assert(mutable_fs_write("/state/keep", "durable", 7U) == XAIOS_OK);
-  assert(mutable_fs_commit("initial") == XAIOS_OK);
+  assert(xaiboot_fs_mkdir("/state") == XAIOS_OK);
+  assert(xaiboot_fs_write("/state/keep", "durable", 7U) == XAIOS_OK);
+  assert(xaiboot_fs_commit("initial") == XAIOS_OK);
   /* Several writes, so the slots have alternated and both hold real images. */
   for (uint32_t i = 0U; i < 4U; ++i) {
-    assert(mutable_fs_write("/state/keep", "durable", 7U) == XAIOS_OK);
+    assert(xaiboot_fs_write("/state/keep", "durable", 7U) == XAIOS_OK);
   }
-  mutable_fs_unmount();
+  xaiboot_fs_unmount();
 
   /* A torn primary must not stop the volume mounting. */
   tear_slot(primary_start());
   mount_fresh();
   char buffer[32];
   uint64_t read_bytes = 0U;
-  assert(mutable_fs_read("/state/keep", buffer, sizeof(buffer), &read_bytes) ==
+  assert(xaiboot_fs_read("/state/keep", buffer, sizeof(buffer), &read_bytes) ==
          XAIOS_OK);
   assert(read_bytes == 7U && memcmp(buffer, "durable", 7U) == 0);
   printf("mutable-fs-mirror: torn primary recovered, contents intact\n");
 
   /* Writing after that recovery must restore a good second copy, so the
      volume is not left one tear away from being unmountable. */
-  assert(mutable_fs_write("/state/keep", "durable", 7U) == XAIOS_OK);
-  assert(mutable_fs_commit("after-recovery") == XAIOS_OK);
-  mutable_fs_unmount();
+  assert(xaiboot_fs_write("/state/keep", "durable", 7U) == XAIOS_OK);
+  assert(xaiboot_fs_commit("after-recovery") == XAIOS_OK);
+  xaiboot_fs_unmount();
 
   /* Now tear the other copy and require the same outcome. */
   tear_slot(mirror_start());
   mount_fresh();
   read_bytes = 0U;
-  assert(mutable_fs_read("/state/keep", buffer, sizeof(buffer), &read_bytes) ==
+  assert(xaiboot_fs_read("/state/keep", buffer, sizeof(buffer), &read_bytes) ==
          XAIOS_OK);
   assert(read_bytes == 7U && memcmp(buffer, "durable", 7U) == 0);
   printf("mutable-fs-mirror: torn mirror recovered, contents intact\n");
-  mutable_fs_unmount();
+  xaiboot_fs_unmount();
 
   /* Both copies damaged must still refuse rather than format over the
      volume: falling back is a recovery, not a licence to discard data. */
   tear_slot(primary_start());
   tear_slot(mirror_start());
-  assert(mutable_fs_mount_device("/dev/mirror0") != XAIOS_OK);
+  assert(xaiboot_fs_mount_device("/dev/mirror0") != XAIOS_OK);
   printf("mutable-fs-mirror: both copies damaged still refuses to format\n");
 
   printf("mutable-fs-mirror: all A/B metadata recovery tests passed\n");

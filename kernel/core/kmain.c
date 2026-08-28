@@ -38,7 +38,7 @@
 #include <xaios/version.h>
 #include <xaios/virtio_gpu.h>
 #include <xaios/model_arena.h>
-#include <xaios/mutable_fs.h>
+#include <xaios/xaiboot_fs.h>
 #include <xaios/pmm.h>
 #include <xaios/persistence.h>
 #include <xaios/rate_limit.h>
@@ -72,7 +72,7 @@
 #include <xaios/virtio_blk.h>
 #include <xaios/virtio_console.h>
 #include <xaios/virtio_rng.h>
-#include <xaios/vfs_mutable.h>
+#include <xaios/vfs_xaiboot.h>
 #include <xaios/vfs_model.h>
 #include <xaios/vmm.h>
 #include <xaios/watchdog.h>
@@ -100,8 +100,8 @@ static virtio_block_handle_t *g_persistent_handle;
 
 static void provision_read_only_config(const char *path) {
   const xaios_initramfs_file_t *file = 0;
-  xaios_mfs_stat_t existing;
-  if (mutable_fs_stat(path, &existing) == XAIOS_OK) {
+  xaios_xbfs_stat_t existing;
+  if (xaiboot_fs_stat(path, &existing) == XAIOS_OK) {
     klog("kernel: preserved persistent config path=%s bytes=%lu\n", path,
          existing.size);
     return;
@@ -109,8 +109,8 @@ static void provision_read_only_config(const char *path) {
   xaios_status_t status = initramfs_lookup(path, &file);
   if (status == XAIOS_ERR_NOT_FOUND) return;
   if (status != XAIOS_OK || file == 0 || file->base == 0 || file->size == 0U ||
-      file->size > XAIOS_MFS_MAX_FILE_BYTES_V3 ||
-      mutable_fs_write(path, file->base, file->size) != XAIOS_OK) {
+      file->size > XAIOS_XBFS_MAX_FILE_BYTES_V3 ||
+      xaiboot_fs_write(path, file->base, file->size) != XAIOS_OK) {
     klog("kernel: failed to provision config path=%s\n", path);
     return;
   }
@@ -122,8 +122,8 @@ static void provision_ephemeral_credential(const char *path) {
   xaios_status_t status = initramfs_lookup(path, &file);
   if (status == XAIOS_ERR_NOT_FOUND) return;
   if (status != XAIOS_OK || file == 0 || file->base == 0 || file->size == 0U ||
-      file->size > XAIOS_MFS_MAX_FILE_BYTES_V3 ||
-      mutable_fs_write(path, file->base, file->size) != XAIOS_OK) {
+      file->size > XAIOS_XBFS_MAX_FILE_BYTES_V3 ||
+      xaiboot_fs_write(path, file->base, file->size) != XAIOS_OK) {
     klog("kernel: failed to provision credential path=%s\n", path);
     return;
   }
@@ -468,17 +468,17 @@ void kmain(const xaios_boot_info_t *boot) {
      carries the initramfs/test image and the QEMU launcher attaches it with
      snapshot=on, so its writes are thrown away when the machine stops. Bind
      the dedicated persistent slot before the self-test runs, and reuse the
-     same handle for MutableFS below. */
+     same handle for xaibootFS below. */
   if (virtio_block_open_slot(1U, &g_persistent_handle) == XAIOS_OK) {
     persistence_bind_block_device(g_persistent_handle);
   }
   if (virtio_block_is_read_only() != 0U && g_persistent_handle == 0) {
     persistence_runtime_init();
     klog("persistence: writable self-test skipped boot device is read-only\n");
-    klog("mutable-fs: writable self-test deferred no persistent block device\n");
+    klog("xaibootfs: writable self-test deferred no persistent block device\n");
   } else {
     persistence_self_test();
-    /* The MutableFS self-test formats whichever block device is currently
+    /* The xaibootFS self-test formats whichever block device is currently
        selected, and until a volume is bound that is the boot device. Under
        QEMU that device is attached with snapshot=on, so formatting it costs
        nothing; on firmware that boots from read-only removable media there is
@@ -486,42 +486,42 @@ void kmain(const xaios_boot_info_t *boot) {
        merely to exercise the filesystem. Run it only where a throwaway write
        is safe. */
     if (virtio_block_is_read_only() == 0U) {
-      mutable_fs_self_test();
+      xaiboot_fs_self_test();
     } else {
-      klog("mutable-fs: self-test skipped no disposable writable device\n");
+      klog("xaibootfs: self-test skipped no disposable writable device\n");
     }
   }
   boot_ui_update(52U, "boot storage", "persistent filesystem", 3U);
   /* Prefer a standards-enumerated NVMe namespace when one has completed its
    * controller canary; QEMU retains its explicit VirtIO compatibility slot. */
   xaios_status_t persistent_status = nvme_status == XAIOS_OK
-                                         ? mutable_fs_mount_device("/dev/nvme0n1")
+                                         ? xaiboot_fs_mount_device("/dev/nvme0n1")
                                          : XAIOS_ERR_NOT_FOUND;
   /* An enumerated NVMe namespace may be a test or model volume rather than
-   * MutableFS storage. Preserve its contents and continue probing the
+   * xaibootFS storage. Preserve its contents and continue probing the
    * explicitly provisioned persistence devices instead of suppressing SSH. */
   if (persistent_status != XAIOS_OK && ahci_status == XAIOS_OK) {
-    persistent_status = mutable_fs_mount_device("/dev/ahci0p0");
+    persistent_status = xaiboot_fs_mount_device("/dev/ahci0p0");
     if (persistent_status == XAIOS_OK) {
-      klog("mutable-fs: using registered AHCI persistent data disk\n");
+      klog("xaibootfs: using registered AHCI persistent data disk\n");
     }
   }
   if (persistent_status != XAIOS_OK) {
     /* vblk0 remains the immutable initramfs/test image. Open the dedicated
-     * second VirtIO block device for durable MutableFS state. */
+     * second VirtIO block device for durable xaibootFS state. */
     xaios_status_t virtio_status =
         g_persistent_handle != 0
             ? XAIOS_OK
             : virtio_block_open_slot(1U, &g_persistent_handle);
     persistent_status = virtio_status == XAIOS_OK
-                            ? mutable_fs_mount_device("/dev/vblk1")
+                            ? xaiboot_fs_mount_device("/dev/vblk1")
                             : virtio_status;
     if (persistent_status == XAIOS_OK) {
-      klog("mutable-fs: using registered persistent data disk\n");
+      klog("xaibootfs: using registered persistent data disk\n");
     }
   }
   if (persistent_status == XAIOS_OK) {
-    xaios_mfs_fsck_result_t fsck = mutable_fs_fsck();
+    xaios_xbfs_fsck_result_t fsck = xaiboot_fs_fsck();
     klog("kernel: persistent fsck valid=%u v%u files=%lu dirs=%lu\n",
          fsck.valid, fsck.version, fsck.files, fsck.directories);
     provision_read_only_config("/etc/xaios_authorized_keys");
@@ -548,7 +548,7 @@ void kmain(const xaios_boot_info_t *boot) {
   /* Expose the boot image's /bin read-only, so the userspace ls that ships
      as /bin/ls can list the directory it lives in. */
   kassert(vfs_mount_initramfs("/bin") == XAIOS_OK);
-  klog("vfs: MutableFS mounted at /\n");
+  klog("vfs: xaibootFS mounted at /\n");
 
   /* The boot loader selected this immutable system slot. Admit and validate
    * its redundant metadata before optional model-volume discovery so recovery

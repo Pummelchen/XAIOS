@@ -227,7 +227,7 @@ int xaios_fs_close(int fd) {
   return rc == ~0ULL ? -1 : 0;
 }
 
-int xaios_fs_stat(const char *path, xaios_mfs_stat_user_t *stat) {
+int xaios_fs_stat(const char *path, xaios_xbfs_stat_user_t *stat) {
   u64 rc = xaios_syscall3(XAIOS_SYSCALL_FS_STAT, (u64)path, xaios_strlen(path),
                          (u64)stat);
   return rc == ~0ULL ? -1 : 0;
@@ -645,8 +645,8 @@ int xaios_net_resolve(const char *hostname, u32 *out_ipv4) {
 }
 
 int xaios_write_file(const char *path, const char *content) {
-  int fd = xaios_fs_open(path, XAIOS_MFS_OPEN_WRITE | XAIOS_MFS_OPEN_CREATE |
-                                  XAIOS_MFS_OPEN_TRUNCATE);
+  int fd = xaios_fs_open(path, XAIOS_XBFS_OPEN_WRITE | XAIOS_XBFS_OPEN_CREATE |
+                                  XAIOS_XBFS_OPEN_TRUNCATE);
   if (fd < 0) {
     return -1;
   }
@@ -667,7 +667,7 @@ int xaios_write_file(const char *path, const char *content) {
 }
 
 int xaios_read_file(const char *path, char *buffer, u64 buffer_size) {
-  int fd = xaios_fs_open(path, XAIOS_MFS_OPEN_READ);
+  int fd = xaios_fs_open(path, XAIOS_XBFS_OPEN_READ);
   if (fd < 0) {
     return -1;
   }

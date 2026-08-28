@@ -3,11 +3,11 @@
 
 #include <xaios/types.h>
 
-#define XAIOS_MFS_PATH_MAX 256U
+#define XAIOS_XBFS_PATH_MAX 256U
 
 typedef struct {
   uint32_t handle_id;
-  char path[XAIOS_MFS_PATH_MAX];
+  char path[XAIOS_XBFS_PATH_MAX];
   uint64_t offset;
   int open_flags;
   int fd;
