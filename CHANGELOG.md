@@ -64,6 +64,8 @@ tested on.
 - No physical-hardware evidence. Every result is from an emulator or a
   hypervisor and establishes correctness, not performance.
 - Real-model inference is not implemented; the model paths are fixtures.
-- Outbound SSH `ProxyJump` fails host key verification on x86_64 (`B-01`).
-- The x86_64 guest writes to the medium it booted from (`B-14`), so genuinely
-  read-only media would fail one self-test.
+- Two faults have been seen once each and not since, so neither is understood:
+  a fatal assertion on VMware Fusion (`B-15`) and a thread join failing under
+  load on QEMU (`B-02`). Both now record enough to be diagnosed if they recur.
+- The read-only boot path (`B-14`) is written and unexercised, because no
+  hypervisor here advertises a read-only block device.

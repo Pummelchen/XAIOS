@@ -1,10 +1,10 @@
 # XAIOS build 1
 
 `xaios_b1.iso` — 227,880,960 bytes
-SHA-256 `d09aeaa82b05890bc8d0728f297728f652b1c59a3d4c8f6bf3d6448b09f7cc76`
+SHA-256 `ee1895e4a3ca3d54a0dac2b6cfedd3ce42bf1f743914052c40fd073237b23c68`
 
-`xaios_b1.iso.zip` — 19,361,032 bytes
-SHA-256 `0cbd037b595fdef8780dfdbbc0f82ef5b228d304f0500513b65d4ea832bc7f73`
+`xaios_b1.iso.zip` — 19,358,495 bytes
+SHA-256 `5f5ec1337da117267d229351bc4edfc6a8c2868b4f052255f1be0b1110a7e525`
 
 The zip contains the image and nothing else. It exists because the ISO is larger than
 GitHub will accept as a file, and compressed it is not — so the release can travel
@@ -59,6 +59,17 @@ to be broken.
   untested until it has been run.
 - **x86-64 was tested only under emulation.** It ran on an ARM host through
   QEMU's interpreter, never on an Intel or AMD processor executing natively.
+- **Two faults have been seen once each and never since**, so neither is
+  understood: a fatal assertion on VMware Fusion (`B-15`, not reproduced in 17
+  runs) and a thread join failing under load on QEMU (`B-02`, not reproduced in
+  8). Both now record enough to be diagnosed if they recur — the panic screen
+  prints the kernel's load base, without which a backtrace from a
+  position-independent kernel resolves to nothing, and the thread test says
+  which of timeout, error or wrong result occurred rather than one message for
+  all three.
+- **The read-only boot path is written and unexercised** (`B-14`). No
+  hypervisor here advertises a read-only block device, so a machine booting a
+  CD or a write-protected stick takes a path nothing has run.
 - **Not tested from a USB stick.** The image contains a GPT with an EFI System
   Partition, which is what firmware boots from a stick, and the same partition
   is what QEMU and Virtualization.framework booted here. Writing it to a stick
