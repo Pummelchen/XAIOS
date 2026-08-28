@@ -28,7 +28,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -116,6 +116,8 @@ def main() -> int:
     upstream_pins = 0
     checked = 0
     shallow = history_is_shallow()
+    today = date.today().isoformat()
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
 
     for surface in SURFACES:
         base = ROOT / surface
@@ -153,10 +155,19 @@ def main() -> int:
                         f"{relative}: claims review on {claimed} but was "
                         f"modified on {changed}."
                     )
-                elif claimed > date.today().isoformat():
+                elif claimed > tomorrow:
+                    # A day of slack, because "today" is not one date. The
+                    # zones in use span about a full day either side of UTC, so
+                    # a review recorded in the evening in UTC+7 is tomorrow to a
+                    # runner on UTC, and a check that compared against its own
+                    # local clock would fail every contributor east of it every
+                    # evening -- which is exactly what it did. A date further
+                    # ahead than that is a claim about a review that has not
+                    # happened, which is what this is for.
                     failures.append(
-                        f"{relative}: claims review on {claimed}, which is in "
-                        f"the future."
+                        f"{relative}: claims review on {claimed}, which is "
+                        f"more than a day ahead of {today} and so describes a "
+                        f"review that has not happened."
                     )
 
     if failures:
