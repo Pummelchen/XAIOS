@@ -1,7 +1,7 @@
 # Storage Architecture
 
 Status: the hosted and QEMU-testable storage path is implemented, including
-dynamic online ModelFS lifecycle, persisted scrub and free-space trim. Physical
+dynamic online xaiFS lifecycle, persisted scrub and free-space trim. Physical
 device validation and durability remain pending.
 
 ## Layers
@@ -13,18 +13,18 @@ userspace filesystem syscalls and SFTP
 VFS: path routing, owner-scoped handles, 64-bit positional I/O
         |                              |
         v                              v
-xaibootFS root                    ModelFS /models
+xaibootFS root                    xaiFS /models
 small state                       immutable active + bounded staging
                                        |
                                        v
-portable model_volume/model_file reader
+portable xai_fs/model_file reader
                                        |
                                        v
 block_device sync/async API -> partition device -> VirtIO-blk, NVMe, or hosted backend
 ```
 
 GPT is the standard partition-map layer between whole devices and bounded
-partition devices. The QEMU image currently supplies ModelFS as a dedicated
+partition devices. The QEMU image currently supplies xaiFS as a dedicated
 VirtIO device at slot 4 instead of discovering it through GPT. That preserves
 the existing state disk and makes the current boot contract deterministic.
 
@@ -38,9 +38,9 @@ catalog publication, extent allocation/reuse, prefetch hints, quarantine, and
 streaming into caller-owned arenas. The hosted Python tool owns offline volume
 creation and administration.
 
-ModelFS does not parse tensors or identify a model architecture beyond signed
+xaiFS does not parse tensors or identify a model architecture beyond signed
 package metadata. `xaios.model.v2` remains the model package format, while
-ModelFS is the placement and lifecycle container.
+xaiFS is the placement and lifecycle container.
 
 ## Current guarantees
 
@@ -53,7 +53,7 @@ ModelFS is the placement and lifecycle container.
   from being mistaken for `/models`.
 - VFS handles are scoped by owner and mount generation. Positional I/O does not
   change the per-handle cursor.
-- Active ModelFS packages are immutable. Opening a package verifies its signed
+- Active xaiFS packages are immutable. Opening a package verifies its signed
   manifest; every read verifies all touched chunks before returning bytes.
 - A signed staging record created by authenticated online registration accepts
   only the package ID, logical length and content authorized by its signature.
@@ -102,9 +102,9 @@ ModelFS is the placement and lifecycle container.
   or trim is active; reads continue between work units.
 - The current allocator reuses a sufficiently large coalesced free extent. It
   does not compact old catalog snapshots or move active package data.
-- ModelFS activation and xaibootFS audit persistence are not one distributed
+- xaiFS activation and xaibootFS audit persistence are not one distributed
   transaction. An audit failure after publication is logged but cannot revert
-  an already durable ModelFS generation.
+  an already durable xaiFS generation.
 
 See [the canonical project tracker](../wiki/Project-Tracker.md) for phase status
 and [storage security](./STORAGE-SECURITY.md) for mutation policy.

@@ -21,16 +21,16 @@ static void metric_add(uint64_t *metric, uint64_t value) {
 
 static xaios_engine_status_t read_chunk(
     xaios_model_file_t *file, uint64_t relative,
-    xaios_model_volume_chunk_t *chunk) {
+    xaios_xai_fs_chunk_t *chunk) {
   if (relative >= file->package.chunk_count ||
       file->package.chunk_start > UINT64_MAX - relative) {
     return XAIOS_ENGINE_ERR_OVERFLOW;
   }
-  xaios_engine_status_t status = xaios_model_volume_read_chunk(
+  xaios_engine_status_t status = xaios_xai_fs_read_chunk(
       file->volume, file->package.chunk_start + relative, chunk);
   if (status != XAIOS_ENGINE_OK ||
       chunk->record_id != file->package.record_id ||
-      (chunk->flags & XAIOS_MODEL_VOLUME_CHUNK_FREE) != 0U) {
+      (chunk->flags & XAIOS_XAI_FS_CHUNK_FREE) != 0U) {
     return XAIOS_ENGINE_ERR_INVALID;
   }
   return XAIOS_ENGINE_OK;
@@ -44,7 +44,7 @@ static xaios_engine_status_t verification_bytes_for_range(
   if (out_bytes == NULL) return XAIOS_ENGINE_ERR_INVALID;
   for (uint64_t relative = 0U; relative < file->package.chunk_count;
        ++relative) {
-    xaios_model_volume_chunk_t chunk;
+    xaios_xai_fs_chunk_t chunk;
     if (read_chunk(file, relative, &chunk) != XAIOS_ENGINE_OK ||
         chunk.logical_offset > UINT64_MAX - chunk.length) {
       return XAIOS_ENGINE_ERR_INVALID;
@@ -61,7 +61,7 @@ static xaios_engine_status_t verification_bytes_for_range(
 }
 
 xaios_engine_status_t xaios_model_file_open(
-    const xaios_model_volume_t *volume, const uint8_t package_id[32],
+    const xaios_xai_fs_t *volume, const uint8_t package_id[32],
     uint32_t allow_staging, xaios_model_file_t *file) {
   if (volume == NULL || package_id == NULL || file == NULL ||
       allow_staging > 1U) {
@@ -69,17 +69,17 @@ xaios_engine_status_t xaios_model_file_open(
   }
   memset(file, 0, sizeof(*file));
   for (uint64_t index = 0U; index < volume->package_count; ++index) {
-    xaios_model_volume_package_t package;
+    xaios_xai_fs_package_t package;
     xaios_engine_status_t status =
-        xaios_model_volume_read_package(volume, index, &package);
+        xaios_xai_fs_read_package(volume, index, &package);
     if (status != XAIOS_ENGINE_OK) return status;
     if (!bytes_equal(package.package_id, package_id, 32U)) continue;
-    if (package.state != XAIOS_MODEL_VOLUME_PACKAGE_ACTIVE &&
+    if (package.state != XAIOS_XAI_FS_PACKAGE_ACTIVE &&
         !(allow_staging != 0U &&
-          package.state == XAIOS_MODEL_VOLUME_PACKAGE_STAGING)) {
+          package.state == XAIOS_XAI_FS_PACKAGE_STAGING)) {
       return XAIOS_ENGINE_ERR_CAPABILITY;
     }
-    status = xaios_model_volume_verify_package_manifest(volume, &package);
+    status = xaios_xai_fs_verify_package_manifest(volume, &package);
     if (status != XAIOS_ENGINE_OK) return status;
     file->volume = volume;
     file->package = package;
@@ -97,7 +97,7 @@ xaios_engine_status_t xaios_model_file_verify_range(
       !range_valid(offset, length, file->package.logical_size)) {
     return XAIOS_ENGINE_ERR_INVALID;
   }
-  xaios_engine_status_t status = xaios_model_volume_verify_range(
+  xaios_engine_status_t status = xaios_xai_fs_verify_range(
       file->volume, &file->package, offset, length, scratch, scratch_size,
       bad_logical_offset);
   if (status == XAIOS_ENGINE_OK) {
@@ -128,7 +128,7 @@ xaios_engine_status_t xaios_model_file_pread(
       file, offset, (uint64_t)length, scratch, scratch_size,
       bad_logical_offset);
   if (status != XAIOS_ENGINE_OK) return status;
-  status = xaios_model_volume_pread(file->volume, &file->package, offset,
+  status = xaios_xai_fs_pread(file->volume, &file->package, offset,
                                     destination, length);
   if (status == XAIOS_ENGINE_OK)
     metric_add(&file->metrics.delivered_bytes, (uint64_t)length);
@@ -148,14 +148,14 @@ xaios_engine_status_t xaios_model_file_extent_map(
   if (capacity < file->package.chunk_count) return XAIOS_ENGINE_ERR_CAPABILITY;
   for (uint64_t relative = 0U; relative < file->package.chunk_count;
        ++relative) {
-    xaios_model_volume_chunk_t chunk;
+    xaios_xai_fs_chunk_t chunk;
     xaios_engine_status_t status = read_chunk(file, relative, &chunk);
     if (status != XAIOS_ENGINE_OK) return status;
     extents[relative].logical_offset = chunk.logical_offset;
     extents[relative].physical_offset = chunk.physical_offset;
     extents[relative].length = chunk.length;
     extents[relative].zero =
-        (chunk.flags & XAIOS_MODEL_VOLUME_CHUNK_ZERO) != 0U;
+        (chunk.flags & XAIOS_XAI_FS_CHUNK_ZERO) != 0U;
   }
   return XAIOS_ENGINE_OK;
 }
@@ -170,7 +170,7 @@ xaios_engine_status_t xaios_model_file_prefetch(
   uint64_t end = offset + length;
   for (uint64_t relative = 0U; relative < file->package.chunk_count;
        ++relative) {
-    xaios_model_volume_chunk_t chunk;
+    xaios_xai_fs_chunk_t chunk;
     xaios_engine_status_t status = read_chunk(file, relative, &chunk);
     if (status != XAIOS_ENGINE_OK) return status;
     if (chunk.logical_offset > UINT64_MAX - chunk.length) {
@@ -178,7 +178,7 @@ xaios_engine_status_t xaios_model_file_prefetch(
     }
     uint64_t chunk_end = chunk.logical_offset + chunk.length;
     if (chunk_end <= offset || chunk.logical_offset >= end ||
-        (chunk.flags & XAIOS_MODEL_VOLUME_CHUNK_ZERO) != 0U) {
+        (chunk.flags & XAIOS_XAI_FS_CHUNK_ZERO) != 0U) {
       continue;
     }
     uint64_t logical_start = offset > chunk.logical_offset

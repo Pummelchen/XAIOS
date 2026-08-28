@@ -10,7 +10,7 @@ security rules.
 |---|---|---|
 | Initramfs | `/init`, `/bin`, configuration, and service descriptors | Built into the image and immutable at runtime. |
 | xaibootFS v5 | `/`, `/state`, `/config`, `/logs`, `/tmp`, and `/home` state | 256 nodes, 256 handles, 256 KiB per file, 4 MiB data capacity, 256-byte paths. |
-| ModelFS | `/models` package catalog and immutable active model extents | Signed registration, resumable staging, verification, activation, scrub, quarantine, cleanup, and free-only trim. |
+| xaiFS | `/models` package catalog and immutable active model extents | Signed registration, resumable staging, verification, activation, scrub, quarantine, cleanup, and free-only trim. |
 
 xaibootFS is intended for configuration, logs, shell files, and compact
 archives. It is not a general bulk filesystem and must not hold model weights.
@@ -47,7 +47,7 @@ Archive files remain subject to the 256 KiB xaibootFS file limit.
 ## Persistence and integrity
 
 xaibootFS uses checksum-protected metadata, journal replay, bounded rollback
-snapshots, and negotiated block flushes. ModelFS uses signed metadata,
+snapshots, and negotiated block flushes. xaiFS uses signed metadata,
 copy-on-write publication, per-extent integrity, and immutable active mappings.
 QEMU crash gates cover selected interruption points; they do not prove physical
 controller-cache or power-loss behavior.

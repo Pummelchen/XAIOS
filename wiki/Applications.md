@@ -26,7 +26,7 @@ renames, and deletions under it are rejected; mutable data belongs under
 
 | Path | Purpose |
 |---|---|
-| `/bin/xaiosctl` | Administrative client for the versioned `xaios.control.v1` protocol. It exposes status, health, hardware, metrics, logs, configuration, identity, audit, storage, and signed ModelFS lifecycle, scrub, trim, and offline trusted-replica repair paths. The interactive shell exposes a bounded compatibility command family. |
+| `/bin/xaiosctl` | Administrative client for the versioned `xaios.control.v1` protocol. It exposes status, health, hardware, metrics, logs, configuration, identity, audit, storage, and signed xaiFS lifecycle, scrub, trim, and offline trusted-replica repair paths. The interactive shell exposes a bounded compatibility command family. |
 | `/bin/xapt` | Signed application and system updater. It refreshes a monotonic architecture-specific catalog, installs or upgrades individual applications without rebooting, and streams an OS image to the inactive A/B slot. |
 | `/bin/xaios-shell` | Scripted acceptance application for built-in remote-login commands and archives; it is not the persistent interactive shell process. Standalone applications are covered by the SSH gates. |
 
@@ -93,7 +93,7 @@ kernel.
 | `/bin/zip` | Create standards-readable stored ZIP archives. |
 | `/bin/unzip` | List or extract stored and Deflate ZIP entries. |
 | `/bin/ps` | Render the typed kernel process snapshot. |
-| `/bin/df` | Render typed xaibootFS and ModelFS capacity records. |
+| `/bin/df` | Render typed xaibootFS and xaiFS capacity records. |
 | `/bin/du` | Report bounded recursive block usage with summary and human-readable options. |
 
 Archive extraction rejects absolute and traversal paths, corrupt checksums,

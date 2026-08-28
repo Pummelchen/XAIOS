@@ -7,13 +7,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from xaios_model_volume import (
+from xaios_xai_fs import (
     BLOCK_SIZE,
     PACKAGE_ACTIVE,
     SUPERBLOCK_SIZE,
     ManifestChunk,
-    ModelVolume,
-    ModelVolumeIntegrityError,
+    XaiFs,
+    XaiFsIntegrityError,
     PackageManifest,
     manifest_for_file,
     sign_manifest,
@@ -29,7 +29,7 @@ SEED = bytes(range(32))
 VOLUME_UUID = bytes.fromhex("00112233445566778899aabbccddeeff")
 
 
-class ModelVolumeTests(unittest.TestCase):
+class XaiFsTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -59,14 +59,14 @@ class ModelVolumeTests(unittest.TestCase):
         return source, manifest
 
     def format(self, size: int = VOLUME_SIZE, chunk_size: int = CHUNK_SIZE):
-        return ModelVolume.format(
+        return XaiFs.format(
             self.volume_path,
             size,
             chunk_size,
             VOLUME_UUID,
         )
 
-    def stage_complete(self, volume: ModelVolume, tag: int = 1):
+    def stage_complete(self, volume: XaiFs, tag: int = 1):
         source, manifest = self.source_and_manifest(tag)
         package_id = volume.stage_begin(manifest)
         volume.pwrite_from_file(package_id, source)
@@ -82,7 +82,7 @@ class ModelVolumeTests(unittest.TestCase):
             volume.pwrite(package_id, 0, first)
             self.assertEqual(volume.inspect(package_id)["complete_chunks"], 1)
 
-        with ModelVolume(self.volume_path) as volume:
+        with XaiFs(self.volume_path) as volume:
             volume.pwrite_from_file(package_id, source)
             volume.stage_verify(package_id)
             volume.activate(package_id)
@@ -92,11 +92,11 @@ class ModelVolumeTests(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 volume.pwrite(package_id, 0, first)
 
-        with ModelVolume(self.volume_path, read_only=True) as volume:
+        with XaiFs(self.volume_path, read_only=True) as volume:
             self.assertEqual(volume.pread(package_id, 0, 32), source.read_bytes()[:32])
             with self.assertRaises(PermissionError):
                 volume.remove(package_id, allow_active=True)
-        self.assertEqual(ModelVolume.fsck(self.volume_path, True)["status"], "clean")
+        self.assertEqual(XaiFs.fsck(self.volume_path, True)["status"], "clean")
 
     def test_activation_power_loss_keeps_previous_staging_generation(self):
         with self.format() as volume:
@@ -105,7 +105,7 @@ class ModelVolumeTests(unittest.TestCase):
             with self.assertRaises(InterruptedError):
                 volume.activate(package_id, fail_before_superblock=True)
 
-        with ModelVolume(self.volume_path) as recovered:
+        with XaiFs(self.volume_path) as recovered:
             self.assertEqual(recovered.generation, generation)
             self.assertEqual(recovered.inspect(package_id)["state"], "staging")
             recovered.activate(package_id)
@@ -128,11 +128,11 @@ class ModelVolumeTests(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 volume.pread(package_one, 0, 1)
             self.assertEqual(volume.pread(package_two, 0, 32), source_two.read_bytes()[:32])
-            with self.assertRaises(ModelVolumeIntegrityError):
+            with self.assertRaises(XaiFsIntegrityError):
                 volume.stage_verify(package_one)
             self.assertEqual(source_one.stat().st_size, volume.inspect(package_one)["logical_size"])
         self.assertEqual(
-            ModelVolume.fsck(self.volume_path, verify_data=True)["status"],
+            XaiFs.fsck(self.volume_path, verify_data=True)["status"],
             "corrupt_unrepairable",
         )
 
@@ -147,29 +147,29 @@ class ModelVolumeTests(unittest.TestCase):
             os.fsync(stream.fileno())
 
         before = self.volume_path.stat().st_mtime_ns
-        report = ModelVolume.fsck(self.volume_path)
+        report = XaiFs.fsck(self.volume_path)
         after = self.volume_path.stat().st_mtime_ns
         self.assertEqual(report["status"], "repairable")
         self.assertEqual(before, after)
-        with ModelVolume(self.volume_path) as volume:
+        with XaiFs(self.volume_path) as volume:
             with self.assertRaises(PermissionError):
                 volume.repair_superblock(bytes(16))
             self.assertTrue(volume.repair_superblock(volume_uuid))
             self.assertFalse(volume.repair_superblock(volume_uuid))
-        self.assertEqual(ModelVolume.fsck(self.volume_path)["status"], "clean")
+        self.assertEqual(XaiFs.fsck(self.volume_path)["status"], "clean")
 
     def test_grow_is_transactional_and_shrink_is_rejected(self):
         with self.format() as volume:
             with self.assertRaises(InterruptedError):
                 volume.grow(96 * MIB, fail_before_superblock=True)
-        with ModelVolume(self.volume_path) as recovered:
+        with XaiFs(self.volume_path) as recovered:
             self.assertEqual(recovered.volume_size, VOLUME_SIZE)
             self.assertEqual(recovered.backing_size, 96 * MIB)
             recovered.grow(96 * MIB)
             self.assertEqual(recovered.volume_size, 96 * MIB)
             with self.assertRaisesRegex(ValueError, "shrink_not_supported"):
                 recovered.grow(VOLUME_SIZE)
-        self.assertEqual(ModelVolume.fsck(self.volume_path)["status"], "clean")
+        self.assertEqual(XaiFs.fsck(self.volume_path)["status"], "clean")
 
     def test_removed_staging_extents_are_coalesced_and_reused(self):
         with self.format() as volume:
@@ -212,7 +212,7 @@ class ModelVolumeTests(unittest.TestCase):
                 self.assertEqual(volume.pread(package_id, offset, BLOCK_SIZE), bytes(BLOCK_SIZE))
             self.assertEqual(volume.inspect(package_id)["logical_size"], logical_size)
             self.assertLess(self.volume_path.stat().st_blocks * 512, 64 * MIB)
-        report = ModelVolume.fsck(self.volume_path, verify_data=True)
+        report = XaiFs.fsck(self.volume_path, verify_data=True)
         self.assertEqual(report["status"], "clean")
         self.assertEqual(report["checked_bytes"], logical_size)
 
@@ -252,7 +252,7 @@ class ModelVolumeTests(unittest.TestCase):
                 stream.write(b"BROKEN!!")
             os.fsync(stream.fileno())
         self.assertEqual(
-            ModelVolume.fsck(self.volume_path)["status"], "corrupt_unrepairable"
+            XaiFs.fsck(self.volume_path)["status"], "corrupt_unrepairable"
         )
 
     def test_manifest_json_round_trip_and_trim_safety(self):
@@ -279,11 +279,11 @@ class ModelVolumeTests(unittest.TestCase):
                     lambda _offset, _length: None,
                     requested_range=(0, BLOCK_SIZE),
                 )
-        with ModelVolume(self.volume_path, read_only=True) as volume:
+        with XaiFs(self.volume_path, read_only=True) as volume:
             self.assertEqual(volume.trim(dry_run=True)["status"], "planned")
 
     def test_admin_cli_confirmations_and_stable_json_status(self):
-        tool = Path(__file__).parents[2] / "tools" / "xaios_model_volume.py"
+        tool = Path(__file__).parents[2] / "tools" / "xaios_xai_fs.py"
         command = [
             sys.executable,
             str(tool),

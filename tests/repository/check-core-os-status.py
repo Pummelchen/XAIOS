@@ -61,7 +61,7 @@ FORBIDDEN = {
         "AArch64 remains bypass-only",
     ],
     "docs/STORAGE-ARCHITECTURE.md": ["QEMU VirtIO path is synchronous and copied"],
-    "docs/MODEL-VOLUME.md": ["QEMU VirtIO adapter remains synchronous and copied"],
+    "docs/XAI-FS.md": ["QEMU VirtIO adapter remains synchronous and copied"],
     "wiki/Home.md": ["two-request block batching"],
 }
 

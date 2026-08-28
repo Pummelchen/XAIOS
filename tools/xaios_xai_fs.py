@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Crash-consistent host implementation of the XAIOS model volume v1.
+"""Crash-consistent host implementation of the XAIOS xaiFS volume v1.
 
 The module is intentionally file-offset based. Host files are the reference
 backend; the kernel uses the same binary format through a VirtIO block reader.
@@ -57,7 +57,7 @@ TARGETS = (
 _ZERO_DIGESTS: dict[int, bytes] = {}
 
 
-class ModelVolumeIntegrityError(ValueError):
+class XaiFsIntegrityError(ValueError):
     """Identifies the package and logical chunk that failed verification."""
 
     def __init__(self, package_id: bytes, logical_offset: Optional[int], reason: str):
@@ -219,7 +219,7 @@ class PackageManifest:
 
     def to_json(self) -> dict[str, object]:
         return {
-            "schema": "xaios.model-volume.package-manifest.v1",
+            "schema": "xaios.xaifs.package-manifest.v1",
             "model_uuid": self.model_uuid.hex(),
             "source_revision": self.source_revision.hex(),
             "architecture_id": self.architecture_id,
@@ -242,7 +242,7 @@ class PackageManifest:
 
     @classmethod
     def from_json(cls, value: dict[str, object]) -> "PackageManifest":
-        if value.get("schema") != "xaios.model-volume.package-manifest.v1":
+        if value.get("schema") != "xaios.xaifs.package-manifest.v1":
             raise ValueError("unsupported package manifest schema")
         raw_chunks = value.get("chunks")
         if not isinstance(raw_chunks, list):
@@ -454,7 +454,7 @@ def sparse_zero_manifest(
     )
 
 
-class ModelVolume:
+class XaiFs:
     def __init__(self, path: Path, read_only: bool = False) -> None:
         self.path = path
         self.read_only = read_only
@@ -478,7 +478,7 @@ class ModelVolume:
             os.close(self.fd)
             self.fd = -1
 
-    def __enter__(self) -> "ModelVolume":
+    def __enter__(self) -> "XaiFs":
         return self
 
     def __exit__(self, *_args: object) -> None:
@@ -491,10 +491,10 @@ class ModelVolume:
         volume_size: int,
         chunk_size: int = 4 * 1024 * 1024,
         volume_uuid: Optional[bytes] = None,
-    ) -> "ModelVolume":
+    ) -> "XaiFs":
         _validate_chunk_size(chunk_size)
         if volume_size < 4 * chunk_size or volume_size >= 1 << 64:
-            raise ValueError("model volume is too small or exceeds 64 bits")
+            raise ValueError("xaiFS volume is too small or exceeds 64 bits")
         identity = volume_uuid or uuid.uuid4().bytes
         if len(identity) != 16 or not any(identity):
             raise ValueError("volume UUID must contain 16 nonzero bytes")
@@ -535,7 +535,7 @@ class ModelVolume:
             except ValueError:
                 continue
         if not candidates:
-            raise ValueError("no valid model-volume superblock/catalog pair")
+            raise ValueError("no valid xaifs superblock/catalog pair")
         candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
         if (
             len(candidates) > 1
@@ -558,7 +558,7 @@ class ModelVolume:
 
     def _ensure_writable(self) -> None:
         if self.read_only:
-            raise PermissionError("model volume is mounted read-only")
+            raise PermissionError("xaiFS volume is mounted read-only")
 
     def _publish(
         self,
@@ -847,7 +847,7 @@ class ModelVolume:
         manifest_chunks = []
         for chunk in chunks:
             if not chunk.flags & CHUNK_COMPLETE:
-                raise ModelVolumeIntegrityError(
+                raise XaiFsIntegrityError(
                     record.package_id, chunk.logical_offset, "chunk is incomplete"
                 )
             if chunk.flags & CHUNK_ZERO:
@@ -865,7 +865,7 @@ class ModelVolume:
                     cursor += len(data)
                 digest = digest.digest()
             if digest != chunk.checksum:
-                raise ModelVolumeIntegrityError(
+                raise XaiFsIntegrityError(
                     record.package_id, chunk.logical_offset, "chunk checksum mismatch"
                 )
             manifest_chunks.append(
@@ -888,7 +888,7 @@ class ModelVolume:
         if identity != record.package_id or not verify_ed25519(
             record.signer_public_key, record.signature, identity
         ):
-            raise ModelVolumeIntegrityError(
+            raise XaiFsIntegrityError(
                 record.package_id, None, "identity or Ed25519 signature is invalid"
             )
 
@@ -990,7 +990,7 @@ class ModelVolume:
                 )
         tail_free = self.volume_size - self.data_tail
         return {
-            "schema": "xaios.model-volume.usage.v1",
+            "schema": "xaios.xaifs.usage.v1",
             "volume_uuid": self.volume_uuid.hex(),
             "format_version": f"{VERSION_MAJOR}.{VERSION_MINOR}",
             "total_bytes": self.volume_size,
@@ -1057,7 +1057,7 @@ class ModelVolume:
             checked_bytes += record.logical_size
             try:
                 self._verify_record(record)
-            except ModelVolumeIntegrityError as error:
+            except XaiFsIntegrityError as error:
                 damaged_ids.add(record.record_id)
                 errors.append(
                     {
@@ -1083,7 +1083,7 @@ class ModelVolume:
                     self.data_tail,
                 )
         return {
-            "schema": "xaios.model-volume.scrub.v1",
+            "schema": "xaios.xaifs.scrub.v1",
             "status": "corrupt" if errors else "clean",
             "generation": self.generation,
             "checked_packages": len(self.records) - skipped_staging,
@@ -1152,7 +1152,7 @@ class ModelVolume:
                 requests.append({"offset": start, "length": count})
                 start += count
         result: dict[str, object] = {
-            "schema": "xaios.model-volume.trim.v1",
+            "schema": "xaios.xaifs.trim.v1",
             "status": "planned" if dry_run else "complete",
             "volume_uuid": self.volume_uuid.hex(),
             "generation": generation,
@@ -1228,7 +1228,7 @@ class ModelVolume:
             os.close(fd)
         if not valid:
             return {
-                "schema": "xaios.model-volume.fsck.v1",
+                "schema": "xaios.xaifs.fsck.v1",
                 "status": "corrupt_unrepairable",
                 "valid_superblocks": 0,
                 "invalid_superblocks": invalid,
@@ -1249,7 +1249,7 @@ class ModelVolume:
                     checked_bytes += record.logical_size
                     try:
                         volume._verify_record(record)
-                    except ModelVolumeIntegrityError as error:
+                    except XaiFsIntegrityError as error:
                         errors.append(
                             {
                                 "package_id": error.package_id.hex(),
@@ -1261,7 +1261,7 @@ class ModelVolume:
             "repairable" if len(valid) == 1 else "clean"
         )
         return {
-            "schema": "xaios.model-volume.fsck.v1",
+            "schema": "xaios.xaifs.fsck.v1",
             "status": status,
             "volume_uuid": selected[0]["volume_uuid"].hex(),
             "generation": selected[0]["generation"],
@@ -1366,7 +1366,7 @@ def _encode_superblock(
 
 def _decode_superblock(raw: bytes, actual_size: int) -> dict[str, object]:
     if len(raw) != SUPERBLOCK_SIZE or raw[:8] != MAGIC:
-        raise ValueError("invalid model-volume superblock")
+        raise ValueError("invalid xaifs superblock")
     expected_hash = raw[136:168]
     checked = bytearray(raw)
     checked[136:168] = bytes(32)
@@ -1710,7 +1710,7 @@ def _load_manifest(path: Path) -> PackageManifest:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Manage XAIOS model-volume v1 files")
+    parser = argparse.ArgumentParser(description="Manage XAIOS xaifs v1 files")
     commands = parser.add_subparsers(dest="command", required=True)
     format_parser = commands.add_parser("format")
     format_parser.add_argument("volume", type=Path)
@@ -1777,23 +1777,23 @@ def main() -> int:
             if os.path.abspath(args.confirm_path) != os.path.abspath(args.volume):
                 raise PermissionError("format target confirmation mismatch")
             volume_uuid = bytes.fromhex(args.volume_uuid) if args.volume_uuid else None
-            with ModelVolume.format(
+            with XaiFs.format(
                 args.volume, args.size, args.chunk_size, volume_uuid
             ) as volume:
                 result = volume.usage()
-            check = ModelVolume.fsck(args.volume)
+            check = XaiFs.fsck(args.volume)
             if check["status"] != "clean":
                 raise IOError("formatted volume failed read-back verification")
             result["format_verification"] = check["status"]
         elif args.command == "fsck":
-            result = ModelVolume.fsck(args.volume, args.verify_data)
+            result = XaiFs.fsck(args.volume, args.verify_data)
         else:
             read_only = args.command in (
                 "list", "inspect", "verify", "usage", "resize-plan", "trim-plan"
             ) or (args.command == "scrub" and args.check_only) or (
                 args.command == "trim" and args.dry_run
             )
-            with ModelVolume(args.volume, read_only=read_only) as volume:
+            with XaiFs(args.volume, read_only=read_only) as volume:
                 volume_hex = volume.volume_uuid.hex()
                 if args.command == "list":
                     result = volume.list_packages()
@@ -1807,7 +1807,7 @@ def main() -> int:
                 elif args.command == "verify":
                     volume.stage_verify(args.package_id)
                     result = {
-                        "schema": "xaios.model-volume.verify.v1",
+                        "schema": "xaios.xaifs.verify.v1",
                         "status": "verified",
                         "package_id": args.package_id,
                     }
@@ -1819,7 +1819,7 @@ def main() -> int:
                         raise PermissionError("package confirmation mismatch")
                     volume.remove(args.package_id, allow_active=args.allow_active)
                     result = {
-                        "schema": "xaios.model-volume.remove.v1",
+                        "schema": "xaios.xaifs.remove.v1",
                         "status": "removed",
                         "package_id": args.package_id,
                     }
@@ -1828,14 +1828,14 @@ def main() -> int:
                 elif args.command == "resize-plan":
                     if args.grow_to < volume.volume_size:
                         result = {
-                            "schema": "xaios.model-volume.resize-plan.v1",
+                            "schema": "xaios.xaifs.resize-plan.v1",
                             "status": "shrink_not_supported",
                             "current_bytes": volume.volume_size,
                             "requested_bytes": args.grow_to,
                         }
                     else:
                         result = {
-                            "schema": "xaios.model-volume.resize-plan.v1",
+                            "schema": "xaios.xaifs.resize-plan.v1",
                             "status": "grow" if args.grow_to > volume.volume_size else "unchanged",
                             "current_bytes": volume.volume_size,
                             "requested_bytes": args.grow_to,
@@ -1849,7 +1849,7 @@ def main() -> int:
                 elif args.command == "repair-superblock":
                     repaired = volume.repair_superblock(args.confirm_volume)
                     result = {
-                        "schema": "xaios.model-volume.repair.v1",
+                        "schema": "xaios.xaifs.repair.v1",
                         "status": "repaired" if repaired else "clean",
                         "volume_uuid": volume_hex,
                     }
@@ -1862,7 +1862,7 @@ def main() -> int:
                     result = volume.scrub(quarantine=not args.check_only)
                 elif args.command == "trim-plan":
                     result = {
-                        "schema": "xaios.model-volume.trim-plan.v1",
+                        "schema": "xaios.xaifs.trim-plan.v1",
                         "volume_uuid": volume_hex,
                         "generation": volume.generation,
                         "ranges": volume.trim_plan(),
@@ -1901,21 +1901,21 @@ def main() -> int:
         return 0
     except PermissionError as error:
         result = {
-            "schema": "xaios.model-volume.error.v1",
+            "schema": "xaios.xaifs.error.v1",
             "status": "unsafe_target",
             "error": str(error),
         }
         exit_code = 2
     except (ValueError, OverflowError) as error:
         result = {
-            "schema": "xaios.model-volume.error.v1",
+            "schema": "xaios.xaifs.error.v1",
             "status": "invalid_request",
             "error": str(error),
         }
         exit_code = 2
     except OSError as error:
         result = {
-            "schema": "xaios.model-volume.error.v1",
+            "schema": "xaios.xaifs.error.v1",
             "status": "io_error",
             "error": str(error),
         }

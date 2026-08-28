@@ -1,7 +1,7 @@
-# ModelFS v1 Format
+# xaiFS v1 Format
 
-Status: implemented by `tools/xaios_model_volume.py` and parsed by
-`engine/src/model_volume.c`. This document is the canonical v1 byte contract.
+Status: implemented by `tools/xaios_xai_fs.py` and parsed by
+`engine/src/xai_fs.c`. This document is the canonical v1 byte contract.
 
 ## Common rules
 

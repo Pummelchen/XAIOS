@@ -38,7 +38,7 @@ BOOT_TIMEOUT_S = int(os.environ.get("XAIOS_VZ_STRESS_TIMEOUT", "420"))
 VOLUMES = (
     ("vz-test.img", "xaios-virtio-test.img"),
     ("vz-persistent.img", "xaios-persistent.img"),
-    ("vz-model.img", "xaios-model-volume.img"),
+    ("vz-model.img", "xaios-xaifs.img"),
     ("vz-storage-admin.img", None),
     ("vz-system.img", "xaios-system.img"),
     ("vz-system2.img", "xaios-system.img"),

@@ -44,11 +44,11 @@ EFI_BUILD_DIR="$BUILD_DIR/uefi$ARCH_BUILD_SUFFIX"
 KERNEL_BUILD_DIR="$BUILD_DIR/kernel$ARCH_BUILD_SUFFIX"
 INIT_BUILD_DIR="$BUILD_DIR/init$ARCH_BUILD_SUFFIX"
 
-MODEL_VOLUME_IMAGE_CONFIGURED="${XAIOS_MODEL_VOLUME_IMAGE:-}"
+XAI_FS_IMAGE_CONFIGURED="${XAIOS_XAI_FS_IMAGE:-}"
 if [ "$TARGET_ARCH" = x86_64 ]; then
-  MODEL_VOLUME_IMAGE="${MODEL_VOLUME_IMAGE_CONFIGURED:-$BUILD_DIR/xaios-x86-model-volume.img}"
+  XAI_FS_IMAGE="${XAI_FS_IMAGE_CONFIGURED:-$BUILD_DIR/xaios-x86-xaifs.img}"
 else
-  MODEL_VOLUME_IMAGE="${MODEL_VOLUME_IMAGE_CONFIGURED:-$BUILD_DIR/xaios-model-volume.img}"
+  XAI_FS_IMAGE="${XAI_FS_IMAGE_CONFIGURED:-$BUILD_DIR/xaios-xaifs.img}"
 fi
 SYSTEM_VOLUME_IMAGE_CONFIGURED="${XAIOS_SYSTEM_VOLUME_IMAGE:-}"
 if [ "$TARGET_ARCH" = x86_64 ]; then
@@ -535,8 +535,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/vfs.o
   $KERNEL_BUILD_DIR/vfs_xaiboot.o
   $KERNEL_BUILD_DIR/vfs_initramfs.o
-  $KERNEL_BUILD_DIR/vfs_model.o
-  $KERNEL_BUILD_DIR/model_volume_admin.o
+  $KERNEL_BUILD_DIR/vfs_xaifs.o
+  $KERNEL_BUILD_DIR/xai_fs_admin.o
   $KERNEL_BUILD_DIR/service.o
   $KERNEL_BUILD_DIR/syscall.o
   $KERNEL_BUILD_DIR/core_lease.o
@@ -599,8 +599,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/elf_loader.o
   $KERNEL_BUILD_DIR/string.o
   $KERNEL_BUILD_DIR/bpe_tokenizer.o
-  $KERNEL_BUILD_DIR/engine_model_volume.o
-  $KERNEL_BUILD_DIR/engine_model_volume_writer.o
+  $KERNEL_BUILD_DIR/engine_xai_fs.o
+  $KERNEL_BUILD_DIR/engine_xai_fs_writer.o
   $KERNEL_BUILD_DIR/engine_sha256.o
   $KERNEL_BUILD_DIR/kernel_ssh_crypto.o
   $KERNEL_BUILD_DIR/kernel_tweetnacl_subset.o
@@ -677,8 +677,8 @@ compile_kernel "$ROOT_DIR/kernel/fs/xaiboot_fs.c" "$KERNEL_BUILD_DIR/xaiboot_fs.
 compile_kernel "$ROOT_DIR/kernel/fs/vfs.c" "$KERNEL_BUILD_DIR/vfs.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs_xaiboot.c" "$KERNEL_BUILD_DIR/vfs_xaiboot.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs_initramfs.c" "$KERNEL_BUILD_DIR/vfs_initramfs.o"
-compile_kernel "$ROOT_DIR/kernel/fs/vfs_model.c" "$KERNEL_BUILD_DIR/vfs_model.o"
-compile_kernel "$ROOT_DIR/kernel/fs/model_volume_admin.c" "$KERNEL_BUILD_DIR/model_volume_admin.o"
+compile_kernel "$ROOT_DIR/kernel/fs/vfs_xaifs.c" "$KERNEL_BUILD_DIR/vfs_xaifs.o"
+compile_kernel "$ROOT_DIR/kernel/fs/xai_fs_admin.c" "$KERNEL_BUILD_DIR/xai_fs_admin.o"
 compile_kernel "$ROOT_DIR/kernel/user/service.c" "$KERNEL_BUILD_DIR/service.o"
 compile_kernel "$ROOT_DIR/kernel/user/syscall.c" "$KERNEL_BUILD_DIR/syscall.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/core_lease.c" "$KERNEL_BUILD_DIR/core_lease.o"
@@ -743,8 +743,8 @@ compile_kernel "$ROOT_DIR/kernel/net/ntp.c" "$KERNEL_BUILD_DIR/ntp.o"
 compile_kernel "$ROOT_DIR/kernel/mm/elf_loader.c" "$KERNEL_BUILD_DIR/elf_loader.o"
 compile_kernel "$ROOT_DIR/kernel/lib/string.c" "$KERNEL_BUILD_DIR/string.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/bpe_tokenizer.c" "$KERNEL_BUILD_DIR/bpe_tokenizer.o"
-compile_kernel "$ROOT_DIR/engine/src/model_volume.c" "$KERNEL_BUILD_DIR/engine_model_volume.o"
-compile_kernel "$ROOT_DIR/engine/src/model_volume_writer.c" "$KERNEL_BUILD_DIR/engine_model_volume_writer.o"
+compile_kernel "$ROOT_DIR/engine/src/xai_fs.c" "$KERNEL_BUILD_DIR/engine_xai_fs.o"
+compile_kernel "$ROOT_DIR/engine/src/xai_fs_writer.c" "$KERNEL_BUILD_DIR/engine_xai_fs_writer.o"
 compile_kernel "$ROOT_DIR/engine/src/sha256.c" "$KERNEL_BUILD_DIR/engine_sha256.o"
 compile_kernel "$ROOT_DIR/userspace/sshd/ssh_crypto.c" "$KERNEL_BUILD_DIR/kernel_ssh_crypto.o"
 compile_kernel "$ROOT_DIR/userspace/sshd/tweetnacl_subset.c" "$KERNEL_BUILD_DIR/kernel_tweetnacl_subset.o"
@@ -1276,16 +1276,16 @@ if [ "$TARGET_ARCH" = x86_64 ] && [ ! -f "$STORAGE_ADMIN_IMAGE" ]; then
   printf '%s\n' "Created $STORAGE_ADMIN_IMAGE (8 MB, 16384 sectors)"
 fi
 
-if [ "$MODEL_VOLUME_IMAGE_CONFIGURED" = "" ]; then
-  printf '%s\n' "Creating signed ModelFS fixture: $MODEL_VOLUME_IMAGE"
+if [ "$XAI_FS_IMAGE_CONFIGURED" = "" ]; then
+  printf '%s\n' "Creating signed xaiFS fixture: $XAI_FS_IMAGE"
   PYTHONPATH="$ROOT_DIR/tools" "$PYTHON3" \
-    "$ROOT_DIR/tests/model_volume/create_c_fixture.py" "$MODEL_VOLUME_IMAGE"
-  printf '%s\n' "Created $MODEL_VOLUME_IMAGE"
-elif [ ! -f "$MODEL_VOLUME_IMAGE" ]; then
-  printf '%s\n' "error: configured ModelFS image not found: $MODEL_VOLUME_IMAGE" >&2
+    "$ROOT_DIR/tests/xai_fs/create_c_fixture.py" "$XAI_FS_IMAGE"
+  printf '%s\n' "Created $XAI_FS_IMAGE"
+elif [ ! -f "$XAI_FS_IMAGE" ]; then
+  printf '%s\n' "error: configured xaiFS image not found: $XAI_FS_IMAGE" >&2
   exit 1
 else
-  printf '%s\n' "Using configured ModelFS image: $MODEL_VOLUME_IMAGE"
+  printf '%s\n' "Using configured xaiFS image: $XAI_FS_IMAGE"
 fi
 
 if [ "$SYSTEM_VOLUME_IMAGE_CONFIGURED" = "" ]; then

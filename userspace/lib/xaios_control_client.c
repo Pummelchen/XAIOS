@@ -556,10 +556,10 @@ static int render_version(const void *payload, int json, char *output,
                           "model_package_version",
                           value.model_package_version) ||
            json_field_u64(output, capacity, offset, &first,
-                          "model_volume_version",
-                          value.model_volume_version == 0U
+                          "xai_fs_version",
+                          value.xai_fs_version == 0U
                               ? XAIOS_CONTROL_UNKNOWN_U64
-                              : value.model_volume_version) ||
+                              : value.xai_fs_version) ||
            json_field_string(output, capacity, offset, &first,
                              "architecture", value.architecture) ||
            json_field_string(output, capacity, offset, &first, "build_mode",
@@ -582,10 +582,10 @@ static int render_version(const void *payload, int json, char *output,
                          value.control_protocol_version) ||
          human_field_u64(output, capacity, offset, "model_package_version",
                          value.model_package_version) ||
-         human_field_u64(output, capacity, offset, "model_volume_version",
-                         value.model_volume_version == 0U
+         human_field_u64(output, capacity, offset, "xai_fs_version",
+                         value.xai_fs_version == 0U
                              ? XAIOS_CONTROL_UNKNOWN_U64
-                             : value.model_volume_version) ||
+                             : value.xai_fs_version) ||
          append_text(output, capacity, offset, "architecture=") ||
          append_text(output, capacity, offset, value.architecture) ||
          append_char(output, capacity, offset, '\n') ||
@@ -1665,20 +1665,20 @@ static int render_storage_partition_plan(
   return 0;
 }
 
-static const char *model_volume_check_name(u32 state) {
-  if (state == XAIOS_MODEL_VOLUME_CHECK_CLEAN) return "clean";
-  if (state == XAIOS_MODEL_VOLUME_CHECK_REPAIRABLE) return "repairable";
-  if (state == XAIOS_MODEL_VOLUME_CHECK_CORRUPT_UNREPAIRABLE) {
+static const char *xai_fs_check_name(u32 state) {
+  if (state == XAIOS_XAI_FS_CHECK_CLEAN) return "clean";
+  if (state == XAIOS_XAI_FS_CHECK_REPAIRABLE) return "repairable";
+  if (state == XAIOS_XAI_FS_CHECK_CORRUPT_UNREPAIRABLE) {
     return "corrupt_unrepairable";
   }
-  if (state == XAIOS_MODEL_VOLUME_CHECK_REPAIRED) return "repaired";
+  if (state == XAIOS_XAI_FS_CHECK_REPAIRED) return "repaired";
   return "unknown";
 }
 
 static int render_storage_volume_report(
     const void *payload, u64 payload_length, int json, char *output,
     u64 capacity, u64 *offset, u64 request_id) {
-  xaios_model_volume_admin_report_user_t report;
+  xaios_xai_fs_admin_report_user_t report;
   if (payload_length != sizeof(report)) return -1;
   bytes_copy(&report, payload, sizeof(report));
   if (!fixed_string_valid(report.target, sizeof(report.target)) ||
@@ -1693,10 +1693,10 @@ static int render_storage_volume_report(
       !storage_boolean_valid(report.copies_compatible) ||
       !storage_boolean_valid(report.discard_supported) ||
       !storage_boolean_valid(report.dry_run) ||
-      report.check_state > XAIOS_MODEL_VOLUME_CHECK_REPAIRED) {
+      report.check_state > XAIOS_XAI_FS_CHECK_REPAIRED) {
     return -1;
   }
-  const char *check = model_volume_check_name(report.check_state);
+  const char *check = xai_fs_check_name(report.check_state);
   if (json != 0) {
     int first = 1;
     return json_envelope_begin(output, capacity, offset, request_id) ||
@@ -2492,7 +2492,7 @@ static int parse_options(const char *command, xaios_control_options_t *options,
           parse_storage_size(value, &options->block_size) != 0 ||
           options->block_size != 4096ULL) {
         *error_code = "invalid_block_size";
-        *error_message = "ModelFS v1 requires a 4096-byte block size.";
+        *error_message = "xaiFS v1 requires a 4096-byte block size.";
         return -1;
       }
     } else if (string_equal(token, "--checksum-data")) {
@@ -2798,7 +2798,7 @@ static int parse_options(const char *command, xaios_control_options_t *options,
             SEEN_CHECKSUM_DATA) ||
        options->storage_partition_type != XAIOS_STORAGE_PARTITION_MODEL)) {
     *error_code = "format_layout_required";
-    *error_message = "ModelFS format requires --type modelfs, --label, --block-size 4096, and --checksum-data.";
+    *error_message = "xaiFS format requires --type modelfs, --label, --block-size 4096, and --checksum-data.";
     return -1;
   }
   if (format_command == 0 &&

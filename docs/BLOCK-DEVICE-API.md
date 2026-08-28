@@ -103,7 +103,7 @@ completion fields, repeated concurrent queue stress, flush, and host backing
 bytes. x86_64 verifies one MSI-X completion after interrupt activation;
 AArch64 currently polls because no GICv3 ITS backend exists.
 
-The model-volume drive defaults to conservative file semantics. Set
+The xaifs drive defaults to conservative file semantics. Set
 `XAIOS_QEMU_MODEL_DISCARD=unmap` to launch QEMU with
 `discard=unmap,detect-zeroes=unmap`; any other non-default value is rejected.
 `make qemu-model-sftp-gate` uses this explicit mode and requires the guest's

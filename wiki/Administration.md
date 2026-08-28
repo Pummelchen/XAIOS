@@ -17,8 +17,8 @@ by `xapt`; see [[xapt Package Updates|Xapt-Package-Updates]].
 | `auth key list|add|remove` | Manage role-mapped administrative keys and revocation. |
 | `auth host-key rotate` | Rotate the persistent SSH host key. |
 | `audit show` | Read bounded, redacted audit history by sequence. |
-| `storage device|partition|format|mount|unmount|fsck|repair-from-replica|resize|scrub|trim` | Inspect and manage GPT, filesystems, ModelFS integrity, trusted-replica recovery, and free extents. |
-| `model register|verify|activate|cleanup` | Manage signed ModelFS package lifecycle around resumable SFTP staging. |
+| `storage device|partition|format|mount|unmount|fsck|repair-from-replica|resize|scrub|trim` | Inspect and manage GPT, filesystems, xaiFS integrity, trusted-replica recovery, and free extents. |
+| `model register|verify|activate|cleanup` | Manage signed xaiFS package lifecycle around resumable SFTP staging. |
 
 Examples:
 

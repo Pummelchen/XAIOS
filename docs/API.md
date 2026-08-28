@@ -33,7 +33,7 @@ All wrapper functions below are built on this primitive.
 ## Filesystem
 
 Filesystem operations route through the VFS. xaibootFS is mounted at `/` for
-small mutable state. When the dedicated model volume is present, ModelFS is
+small mutable state. When the dedicated xaiFS volume is present, xaiFS is
 mounted at `/models`; active signed packages appear as
 `/models/<64-hex-package-id>` and are immutable. Signed staging packages appear
 under `/models/.staging` after authenticated `model register` allocates their
@@ -81,7 +81,7 @@ non-empty directory trees after collision/path validation. The recursive shell
 forms `rm -r`, `rm -R`, `rm -rf`, and `rm -fr` remove trees; the filesystem
 delete syscall itself still removes one file or empty directory. Valid v2/v3
 volumes are migrated to v5 during mount. These remain bounded state-filesystem
-limits; the 64-bit API and separate ModelFS are used for large model packages.
+limits; the 64-bit API and separate xaiFS are used for large model packages.
 
 ## Networking
 
@@ -334,13 +334,13 @@ Each process is launched with a capability bitmask. Syscalls are rejected if the
 | `XAIOS_CAP_CONTROL_QUERY` | 524288 | Bounded read operations in `control_query` |
 | `XAIOS_CAP_CONTROL_ADMIN` | 1048576 | Permit administrator control operations when the request's authenticated role also authorizes them |
 | `XAIOS_CAP_STORAGE_READ` | 2097152 | Storage device, partition and filesystem inspection plus read-only checks |
-| `XAIOS_CAP_STORAGE_MOUNT` | 4194304 | ModelFS mount and unmount |
-| `XAIOS_CAP_STORAGE_FORMAT` | 8388608 | ModelFS format planning and confirmed format |
+| `XAIOS_CAP_STORAGE_MOUNT` | 4194304 | xaiFS mount and unmount |
+| `XAIOS_CAP_STORAGE_FORMAT` | 8388608 | xaiFS format planning and confirmed format |
 | `XAIOS_CAP_STORAGE_PARTITION` | 16777216 | GPT planning, mutation and repair |
-| `XAIOS_CAP_STORAGE_REPAIR` | 33554432 | ModelFS repair and online scrub lifecycle |
-| `XAIOS_CAP_STORAGE_RESIZE` | 67108864 | Grow-only ModelFS resize |
+| `XAIOS_CAP_STORAGE_REPAIR` | 33554432 | xaiFS repair and online scrub lifecycle |
+| `XAIOS_CAP_STORAGE_RESIZE` | 67108864 | Grow-only xaiFS resize |
 | `XAIOS_CAP_STORAGE_TRIM` | 134217728 | Free-space trim/discard lifecycle |
-| `XAIOS_CAP_MODEL_STAGE` | 268435456 | ModelFS registration, staging cleanup and package verification |
+| `XAIOS_CAP_MODEL_STAGE` | 268435456 | xaiFS registration, staging cleanup and package verification |
 | `XAIOS_CAP_MODEL_ACTIVATE` | 536870912 | Verified package activation |
 | `XAIOS_CAP_CONSOLE` | 1073741824 | Direct serial-console input/output; reserved for the persistent console owner |
 
@@ -377,7 +377,7 @@ Request structures passed by pointer via syscall arguments:
 with magic, version, operation, flags, request ID, role, node, timeout, status,
 payload type and 64-bit payload length fields. Requests are limited to 512
 bytes and responses to 8,192 bytes. Operations 1-58 cover measured queries,
-configuration/authentication/audit, ModelFS registration/verification/
+configuration/authentication/audit, xaiFS registration/verification/
 activation/cleanup, block/GPT/filesystem lifecycle, persisted scrub, safe
 trim/discard administration, application/system update transactions, and a
 read-only paged runtime snapshot for userspace monitoring.

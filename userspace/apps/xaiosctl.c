@@ -162,7 +162,7 @@ int main(int argc, char **argv) {
        "xaiosctl storage device show /dev/vblk4 --json", "capacity_bytes=",
        "\"logical_sector_size\":512", 0},
       {"xaiosctl storage filesystem list",
-       "xaiosctl storage filesystem list --json", "filesystem=ModelFS",
+       "xaiosctl storage filesystem list --json", "filesystem=xaiFS",
        "\"filesystems\":[", 0},
       {"xaiosctl storage usage /models",
        "xaiosctl storage usage /models --json", "mount=/models",

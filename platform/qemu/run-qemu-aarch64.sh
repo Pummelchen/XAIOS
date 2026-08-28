@@ -134,9 +134,9 @@ smp="${XAIOS_QEMU_SMP:-4}"
 image="${XAIOS_AARCH64_IMAGE:-build/xaios-aarch64.img}"
 test_block_image="${XAIOS_TEST_BLOCK_IMAGE:-build/xaios-virtio-test.img}"
 persistent_image="${XAIOS_PERSISTENT_IMAGE:-build/xaios-persistent.img}"
-model_volume_image="${XAIOS_MODEL_VOLUME_IMAGE:-build/xaios-model-volume.img}"
+xai_fs_image="${XAIOS_XAI_FS_IMAGE:-build/xaios-xaifs.img}"
 system_volume_image="${XAIOS_SYSTEM_VOLUME_IMAGE:-build/xaios-system.img}"
-model_volume_discard="${XAIOS_QEMU_MODEL_DISCARD:-none}"
+xai_fs_discard="${XAIOS_QEMU_MODEL_DISCARD:-none}"
 storage_admin_image="${XAIOS_STORAGE_ADMIN_IMAGE:-none}"
 nvme_image="${XAIOS_NVME_IMAGE:-none}"
 hostfwd_port="${XAIOS_QEMU_HOSTFWD_PORT:-7788}"
@@ -247,9 +247,9 @@ if [ "$dry_run" -eq 0 ] && [ ! -f "$persistent_image" ]; then
   dd if=/dev/zero of="$persistent_image" bs=512 count=32768 status=none
 fi
 
-if [ "$dry_run" -eq 0 ] && [ ! -f "$model_volume_image" ]; then
-  printf '%s\n' "error: missing ModelFS image: $model_volume_image" >&2
-  printf '%s\n' "       Run make image first, or set XAIOS_MODEL_VOLUME_IMAGE=/path/to/image.img." >&2
+if [ "$dry_run" -eq 0 ] && [ ! -f "$xai_fs_image" ]; then
+  printf '%s\n' "error: missing xaiFS image: $xai_fs_image" >&2
+  printf '%s\n' "       Run make image first, or set XAIOS_XAI_FS_IMAGE=/path/to/image.img." >&2
   exit 1
 fi
 
@@ -271,7 +271,7 @@ if [ "$nvme_image" != "none" ] && [ "$dry_run" -eq 0 ] &&
   exit 1
 fi
 
-case "$model_volume_discard" in
+case "$xai_fs_discard" in
   none) model_drive_options="" ;;
   unmap) model_drive_options=",discard=unmap,detect-zeroes=unmap" ;;
   *)
@@ -295,7 +295,7 @@ set -- "$qemu" \
   -device virtio-blk-device,drive=xaios_test_block,bus=virtio-mmio-bus.0 \
   -drive "if=none,format=raw,id=xaios_persistent,file=$persistent_image" \
   -device virtio-blk-device,drive=xaios_persistent,bus=virtio-mmio-bus.1 \
-  -drive "if=none,format=raw,id=xaios_models,file=$model_volume_image$model_drive_options" \
+  -drive "if=none,format=raw,id=xaios_models,file=$xai_fs_image$model_drive_options" \
   -device virtio-blk-device,drive=xaios_models,bus=virtio-mmio-bus.4 \
   -blockdev "driver=file,node-name=xaios_system_uefi_file,filename=$system_volume_image,locking=off,cache.direct=on" \
   -blockdev driver=raw,node-name=xaios_system_uefi,file=xaios_system_uefi_file \

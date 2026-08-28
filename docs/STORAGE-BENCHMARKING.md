@@ -1,6 +1,6 @@
 # Storage Benchmarking
 
-Status: evidence contract defined; no qualifying physical ModelFS benchmark is
+Status: evidence contract defined; no qualifying physical xaiFS benchmark is
 present.
 
 QEMU storage tests establish parser, ABI, ordering, and failure-handling

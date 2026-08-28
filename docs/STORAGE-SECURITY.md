@@ -11,7 +11,7 @@ remain incomplete.
   additions, multiplications, alignments, counts, and reserved fields are
   validated before allocation or I/O.
 - GPT CRC protects structural integrity, not authenticity.
-- ModelFS SHA-256 protects metadata and chunk integrity. Ed25519 authenticates
+- xaiFS SHA-256 protects metadata and chunk integrity. Ed25519 authenticates
   the signed package identity. Signature verification occurs before package
   admission; touched chunks are hashed before bytes are delivered.
 - Package content is immutable after activation. Corruption quarantines or
@@ -36,7 +36,7 @@ target identity, result and range counts without logging model bytes or keys.
 
 Existing SSH/SFTP policy denies private host keys, password databases,
 authorized-key sources, and `/state/control`. Model package data is not a
-credential, but signer private keys must never be stored in ModelFS images or
+credential, but signer private keys must never be stored in xaiFS images or
 passed through guest SFTP. Only public verification keys and signatures are in
 the format.
 
@@ -48,15 +48,15 @@ allocates checked extents and cannot modify active data. Active package
 replacement is impossible: active files are immutable and activation rejects a
 duplicate active model UUID. Registration, cleanup and activation require an
 authenticated administrator, replay-protected operation ID and a durable
-copy-on-write ModelFS generation; activation additionally requires complete
+copy-on-write xaiFS generation; activation additionally requires complete
 package verification.
 
 ## Remaining review requirements
 
 - Pin a production trust-root and key rotation/revocation design.
 - Security-review the shared Ed25519 implementation currently linked by both
-  SSH and the kernel ModelFS verifier.
-- Fuzz the portable ModelFS and SFTP packet parsers continuously.
+  SSH and the kernel xaiFS verifier.
+- Fuzz the portable xaiFS and SFTP packet parsers continuously.
 - Add fleet-scale tenant quota, package-expiry and trust-root rotation policy
   before accepting arbitrary untrusted tenants.
 - Validate discard, failure recovery, and DMA/IOMMU behavior on physical

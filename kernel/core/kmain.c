@@ -73,7 +73,7 @@
 #include <xaios/virtio_console.h>
 #include <xaios/virtio_rng.h>
 #include <xaios/vfs_xaiboot.h>
-#include <xaios/vfs_model.h>
+#include <xaios/vfs_xaifs.h>
 #include <xaios/vmm.h>
 #include <xaios/watchdog.h>
 #if defined(__aarch64__)
@@ -497,7 +497,7 @@ void kmain(const xaios_boot_info_t *boot) {
   xaios_status_t persistent_status = nvme_status == XAIOS_OK
                                          ? xaiboot_fs_mount_device("/dev/nvme0n1")
                                          : XAIOS_ERR_NOT_FOUND;
-  /* An enumerated NVMe namespace may be a test or model volume rather than
+  /* An enumerated NVMe namespace may be a test or xaiFS volume rather than
    * xaibootFS storage. Preserve its contents and continue probing the
    * explicitly provisioned persistence devices instead of suppressing SSH. */
   if (persistent_status != XAIOS_OK && ahci_status == XAIOS_OK) {
@@ -551,7 +551,7 @@ void kmain(const xaios_boot_info_t *boot) {
   klog("vfs: xaibootFS mounted at /\n");
 
   /* The boot loader selected this immutable system slot. Admit and validate
-   * its redundant metadata before optional model-volume discovery so recovery
+   * its redundant metadata before optional xaifs discovery so recovery
    * remains independent of model fixture work. */
   xaios_status_t system_slot_status = system_slot_init(boot);
   if (system_slot_status != XAIOS_OK) {
@@ -570,11 +570,11 @@ void kmain(const xaios_boot_info_t *boot) {
 #endif
 
   boot_ui_update(55U, "persistent filesystem", "model and system volumes", 2U);
-  xaios_status_t model_volume_status = vfs_mount_model_volume(4U);
-  if (model_volume_status == XAIOS_OK) {
-    vfs_model_self_test();
+  xaios_status_t xai_fs_status = vfs_mount_xai_fs(4U);
+  if (xai_fs_status == XAIOS_OK) {
+    vfs_xaifs_self_test();
   } else {
-    klog("modelfs: mount skipped status=%d\n", (int)model_volume_status);
+    klog("xaifs: mount skipped status=%d\n", (int)xai_fs_status);
   }
   xaios_status_t storage_admin_status =
       virtio_block_open_slot(5U, &g_storage_admin_handle);

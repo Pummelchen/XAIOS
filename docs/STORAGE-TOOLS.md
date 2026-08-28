@@ -1,10 +1,10 @@
 # Storage Tools
 
-Status: the hosted ModelFS administration CLI is implemented in
-`tools/xaios_model_volume.py`; capability-gated guest lifecycle commands are
+Status: the hosted xaiFS administration CLI is implemented in
+`tools/xaios_xai_fs.py`; capability-gated guest lifecycle commands are
 implemented through `xaiosctl storage` and `xaiosctl model`.
 
-Run commands with `PYTHONPATH=tools python3 tools/xaios_model_volume.py` from
+Run commands with `PYTHONPATH=tools python3 tools/xaios_xai_fs.py` from
 the repository root. Every command emits one JSON object. Exit codes are 0 for
 success, 1 for detected corruption/repairable state, 2 for invalid or unsafe
 requests, 3 for unsupported operations or shrink, and 4 for I/O failure.
@@ -12,15 +12,15 @@ requests, 3 for unsupported operations or shrink, and 4 for I/O failure.
 ## Lifecycle
 
 ```sh
-PYTHONPATH=tools python3 tools/xaios_model_volume.py format \
+PYTHONPATH=tools python3 tools/xaios_xai_fs.py format \
   build/models.img --size 137438953472 --chunk-size 16777216 \
   --confirm-path build/models.img
 
-PYTHONPATH=tools python3 tools/xaios_model_volume.py stage \
+PYTHONPATH=tools python3 tools/xaios_xai_fs.py stage \
   build/models.img model.xaios manifest.json
-PYTHONPATH=tools python3 tools/xaios_model_volume.py verify \
+PYTHONPATH=tools python3 tools/xaios_xai_fs.py verify \
   build/models.img PACKAGE_ID
-PYTHONPATH=tools python3 tools/xaios_model_volume.py activate \
+PYTHONPATH=tools python3 tools/xaios_xai_fs.py activate \
   build/models.img PACKAGE_ID
 ```
 
@@ -36,19 +36,19 @@ requires `--confirm-package PACKAGE_ID`; active removal additionally requires
 ## Capacity and recovery
 
 ```sh
-PYTHONPATH=tools python3 tools/xaios_model_volume.py resize-plan \
+PYTHONPATH=tools python3 tools/xaios_xai_fs.py resize-plan \
   build/models.img --grow-to NEW_SIZE
-PYTHONPATH=tools python3 tools/xaios_model_volume.py resize \
+PYTHONPATH=tools python3 tools/xaios_xai_fs.py resize \
   build/models.img --grow-to NEW_SIZE --confirm-volume VOLUME_UUID
-PYTHONPATH=tools python3 tools/xaios_model_volume.py fsck \
+PYTHONPATH=tools python3 tools/xaios_xai_fs.py fsck \
   build/models.img --verify-data
-PYTHONPATH=tools python3 tools/xaios_model_volume.py repair-superblock \
+PYTHONPATH=tools python3 tools/xaios_xai_fs.py repair-superblock \
   build/models.img --confirm-volume VOLUME_UUID
 ```
 
 Resize is grow-only. Shrink returns `shrink_not_supported` and makes no change.
 `recover --drop-incomplete` and mutating `scrub` also require exact volume UUID
-confirmation. See [ModelFS recovery](./MODELFS-RECOVERY.md).
+confirmation. See [xaiFS recovery](./MODELFS-RECOVERY.md).
 
 ## Trim
 

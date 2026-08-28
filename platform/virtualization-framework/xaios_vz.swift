@@ -131,7 +131,7 @@ if usbBoot {
 }
 // Every disk after the boot image is attached in the order given, because
 // the kernel identifies its volumes by position on the bus: the deterministic
-// test volume, the persistent xaibootFS volume, the model volume, the storage
+// test volume, the persistent xaibootFS volume, the xaiFS volume, the storage
 // administration scratch volume and the A/B system volume, in that order.
 // This mirrors the order run-qemu-x86_64.sh uses, which is the layout the
 // slot-to-ordinal mapping in the PCI transport expects.

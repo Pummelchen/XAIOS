@@ -32,7 +32,7 @@ cp "$VZ/xaios-vz-disk.img" "$VZ/run-disk.img"
 # Same list, same order, as the gates use.
 cp "$BUILD/xaios-virtio-test.img"  "$VZ/vz-test.img"
 cp "$BUILD/xaios-persistent.img"   "$VZ/vz-persistent.img"
-cp "$BUILD/xaios-model-volume.img" "$VZ/vz-model.img"
+cp "$BUILD/xaios-xaifs.img" "$VZ/vz-model.img"
 cp "$BUILD/xaios-system.img"       "$VZ/vz-system.img"
 cp "$BUILD/xaios-system.img"       "$VZ/vz-system2.img"
 # Not built by the image build; created empty once and kept.

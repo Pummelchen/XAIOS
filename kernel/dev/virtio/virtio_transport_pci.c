@@ -125,7 +125,7 @@ static uint32_t matching_ordinal_for_slot(uint32_t slot) {
   case 1U:
     return 2U; /* persistent xaibootFS */
   case 4U:
-    return 3U; /* model volume */
+    return 3U; /* xaiFS volume */
   case 5U:
     return 4U; /* storage administration scratch volume */
   case 6U:

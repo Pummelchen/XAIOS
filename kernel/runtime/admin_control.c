@@ -3,7 +3,7 @@
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
 #include <xaios/xaiboot_fs.h>
-#include <xaios/vfs_model.h>
+#include <xaios/vfs_xaifs.h>
 #include <xaios/sha256.h>
 #include <xaios/virtio_rng.h>
 
@@ -1150,7 +1150,7 @@ xaios_admin_result_t admin_control_model_activate(
       "model.package.activate");
   if (result != XAIOS_ADMIN_RESULT_OK) return result;
   result = model_status_result(
-      vfs_model_activate_staging(package_id, generation));
+      vfs_xaifs_activate_staging(package_id, generation));
   if (result != XAIOS_ADMIN_RESULT_OK) {
     return abort_and_audit(actor, actor_role, operation_id,
                            "model.package.activate", result);
@@ -1158,7 +1158,7 @@ xaios_admin_result_t admin_control_model_activate(
   result = finish_mutation(actor, actor_role, operation_id,
                            "model.package.activate", object_hash);
   if (result != XAIOS_ADMIN_RESULT_OK) {
-    klog("admin-control: ModelFS activation committed but audit commit failed operation=%lu generation=%lu\n",
+    klog("admin-control: xaiFS activation committed but audit commit failed operation=%lu generation=%lu\n",
          operation_id, *generation);
   }
   return result;

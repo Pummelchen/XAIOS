@@ -25,7 +25,7 @@ primary Unix behavior reference for commands and network interoperability.
 - Runtime-sized CPU, cpuset, scheduler, NUMA, and process metadata.
 - EL0 processes and threads with capability-checked syscalls.
 - VirtIO block/network/RNG plus focused emulated NVMe and SMMUv3 gates.
-- xaibootFS for bounded writable state and ModelFS for immutable model data.
+- xaibootFS for bounded writable state and xaiFS for immutable model data.
 - IPv4, IPv6, TCP, UDP, DNS, reassembly, and SACK-aware transport behavior.
 - Concurrent SSH sessions, SFTP, outbound SSH/SCP, and authenticated local
   console sessions in explicitly provisioned development images.
@@ -91,8 +91,8 @@ and API contracts remain in the source repository:
 - [Network and SSH status](https://github.com/Pummelchen/XAIOS/blob/main/docs/NETWORK-SSH-STATUS.md)
 - [Unix compatibility boundary](https://github.com/Pummelchen/XAIOS/blob/main/docs/UNIX-COMPATIBILITY.md)
 - [Storage architecture](https://github.com/Pummelchen/XAIOS/blob/main/docs/STORAGE-ARCHITECTURE.md)
-- [ModelFS format](https://github.com/Pummelchen/XAIOS/blob/main/docs/MODELFS-FORMAT.md)
-- [ModelFS recovery](https://github.com/Pummelchen/XAIOS/blob/main/docs/MODELFS-RECOVERY.md)
+- [xaiFS format](https://github.com/Pummelchen/XAIOS/blob/main/docs/MODELFS-FORMAT.md)
+- [xaiFS recovery](https://github.com/Pummelchen/XAIOS/blob/main/docs/MODELFS-RECOVERY.md)
 - [Storage tools](https://github.com/Pummelchen/XAIOS/blob/main/docs/STORAGE-TOOLS.md)
 - [Large-model upload](https://github.com/Pummelchen/XAIOS/blob/main/docs/LARGE-MODEL-UPLOAD.md)
 - [Storage security](https://github.com/Pummelchen/XAIOS/blob/main/docs/STORAGE-SECURITY.md)

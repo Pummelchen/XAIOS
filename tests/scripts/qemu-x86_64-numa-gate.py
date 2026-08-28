@@ -36,7 +36,7 @@ def main() -> int:
         "XAIOS_X86_64_IMAGE": ROOT / "build/xaios-x86_64.img",
         "XAIOS_X86_TEST_BLOCK_IMAGE": ROOT / "build/xaios-x86-virtio-test.img",
         "XAIOS_X86_PERSISTENT_IMAGE": ROOT / "build/xaios-x86-persistent.img",
-        "XAIOS_MODEL_VOLUME_IMAGE": ROOT / "build/xaios-x86-model-volume.img",
+        "XAIOS_XAI_FS_IMAGE": ROOT / "build/xaios-x86-xaifs.img",
         "XAIOS_SYSTEM_VOLUME_IMAGE": ROOT / "build/xaios-x86-system.img",
         "XAIOS_X86_STORAGE_ADMIN_IMAGE": ROOT / "build/xaios-x86-storage-admin.img",
     }

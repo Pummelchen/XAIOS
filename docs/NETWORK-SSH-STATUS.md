@@ -34,7 +34,7 @@ client passed the explicitly identified subset below on 2026-08-10:
   password failed;
 - the typed `xaios.control.v1` administration surface was exercised through the shared
   `xaiosctl` parser, including strict config show/validate/diff/apply,
-  role-mapped key list/add/remove, host-key rotation, audit reads, ModelFS
+  role-mapped key list/add/remove, host-key rotation, audit reads, xaiFS
   lifecycle and storage device/filesystem administration;
 - observer/operator/administrator permissions, mutation replay rejection,
   failed-config rollback, key revocation, per-connection cwd isolation,
@@ -55,7 +55,7 @@ client passed the explicitly identified subset below on 2026-08-10:
   interrupting SFTP;
 - the focused suite completed four simultaneous SSH connections and 20
   sequential reconnects; the load gate separately holds all 32 transports;
-- storage discovery reported the expected writable `/dev/vblk4` ModelFS
+- storage discovery reported the expected writable `/dev/vblk4` xaiFS
   device, the xaibootFS root, the `/models` mount, and consistent staging/active
   package accounting before and after activation;
 - a 24-byte UDP payload reached the guest application buffer and was echoed
@@ -258,7 +258,7 @@ The parallel gate requires a macOS host plus Docker because it verifies native
 macOS and Debian clients at the same time. It is a local release gate and is not
 currently run by Linux GitHub Actions.
 
-The ModelFS gate also requires macOS plus Docker. Against one XAIOS instance it
+The xaiFS gate also requires macOS plus Docker. Against one XAIOS instance it
 runs concurrent native macOS and Debian 13 SFTP upload/download, exact byte
 comparison, dynamic package lifecycle, abandoned-staging cleanup and reuse,
 online scrub, free-space trim and VirtIO discard accounting. Its transfer rate

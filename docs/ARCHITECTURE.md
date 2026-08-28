@@ -54,7 +54,7 @@ services, and jumps to `kmain`. The kernel establishes its own page tables.
 16. sandbox / core_lease      — Isolation primitives
 17. gic_init()                — GICv3 interrupt controller
 18. virtio_blk / persistence  — Generic block devices and xaibootFS
-19. VFS / ModelFS             — Mutable root, immutable models, bounded staging
+19. VFS / xaiFS             — Mutable root, immutable models, bounded staging
 20. klog_ring / boot_counter  — Persistent logging and crash recovery
 21. update_self_test()        — Package delivery with SHA-256
 22. virtio_net / ARP / IPv4   — Network stack
@@ -116,7 +116,7 @@ XAIOS/
 │   │   ├── kheap.c       — Kernel heap allocator
 │   │   ├── arena.c       — Arena allocator for model weights
 │   │   └── elf_loader.c  — ELF64 parser and process loader
-│   ├── fs/               — Initramfs, VFS, xaibootFS and ModelFS adapters
+│   ├── fs/               — Initramfs, VFS, xaibootFS and xaiFS adapters
 │   ├── storage/          — GPT and bounded partition devices
 │   ├── net/              — Network protocols
 │   │   ├── arp.c         — ARP cache and resolution
@@ -157,9 +157,9 @@ XAIOS/
 │   ├── init/             — /init process, service-manager, worker
 │   ├── apps/             — User applications (hello, systest, etc.)
 │   └── sshd/             — Userspace SSH daemon
-├── engine/               — Portable model-v2, ModelFS, adapter and backend APIs
+├── engine/               — Portable model-v2, xaiFS, adapter and backend APIs
 ├── tests/storage/        — Hosted block/GPT/VFS/SFTP tests
-├── tests/model_volume/   — ModelFS lifecycle and portable reader tests
+├── tests/xai_fs/   — xaiFS lifecycle and portable reader tests
 ├── scripts/              — Build, test, and gate scripts
 ├── platform/vmware-fusion/ — Generated-VM inputs and GRUB build definition
 ├── contracts/            — ABI contract (qemu-rc-v1.json)
@@ -214,7 +214,7 @@ make image       — Build UEFI loader + kernel ELF + userspace → disk image
 make image-qemu-test — Build the deterministic boot-diagnostic fixture image
 make qemu        — Boot in QEMU (interactive)
 make qemu-smoke  — Automated smoke test (330+ boot markers)
-make hosted-test — Portable engine, ModelFS and storage correctness tests
+make hosted-test — Portable engine, xaiFS and storage correctness tests
 make qemu-core-os-rc — Aggregate cross-architecture core correctness gate
 make vmware-fusion-smoke — Fusion ARM64 E1000E/AHCI/SSH readiness gate
 make test        — bootstrap + image + dry-run

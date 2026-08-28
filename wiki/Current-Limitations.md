@@ -121,14 +121,14 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
   affinity, and host backing-byte verification. Every queue must deliver its
   canary through APIC/MSI-X on x86_64 or GICv3 ITS LPIs on AArch64. Physical
   durability, discard behavior, and throughput remain open.
-- ModelFS supports signed registration, resumable staging, verification,
+- xaiFS supports signed registration, resumable staging, verification,
   immutable activation, scrub/quarantine, cleanup/reuse, and free-only trim
   under hosted and QEMU tests.
 - Offline trusted-replica repair is implemented for a selected unmounted
-  ModelFS partition with exact signed package identity and full payload
+  xaiFS partition with exact signed package identity and full payload
   verification. Production signing/key custody, replica enrollment, physical
   multi-terabyte transfer, and model-v2 execution admission are not complete.
-- ModelFS activation and xaibootFS audit persistence are separate durability
+- xaiFS activation and xaibootFS audit persistence are separate durability
   domains. A post-publication audit failure cannot roll back an already
   published active generation.
 - xaibootFS v5 keeps two metadata copies and alternates writes between them,

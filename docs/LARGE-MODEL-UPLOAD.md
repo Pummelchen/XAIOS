@@ -10,7 +10,7 @@ The operator obtains the package identity and Ed25519 signature from the model
 compiler. For a new package:
 
 1. Register the bounded signed identity with `xaiosctl model register ...
-   --operation-id ID`; ModelFS allocates or reuses aligned staging extents.
+   --operation-id ID`; xaiFS allocates or reuses aligned staging extents.
 2. Upload to `/models/.staging/<64-hex-package-id>` with OpenSSH `sftp`.
 3. After interruption, use `reput`; `stat` reports the largest contiguous,
    checksum-complete prefix, so OpenSSH resumes only at a committed chunk
@@ -21,11 +21,11 @@ compiler. For a new package:
 
 Registration requires the model UUID, signer public key, signature, source
 revision, architecture, target layout, logical size and expected package ID.
-ModelFS derives bounded 2-16 MiB chunk records and records each digest only after
+xaiFS derives bounded 2-16 MiB chunk records and records each digest only after
 the corresponding bytes are durably written. Final verification recomputes the
 package identity and validates the supplied signature.
 
-Each write must match the predeclared chunk offset and length. ModelFS verifies
+Each write must match the predeclared chunk offset and length. xaiFS verifies
 its SHA-256 before publishing a new copy-on-write catalog generation. `fsync`
 flushes package bytes, the catalog, and the alternate superblock in commit
 order. Activation repeats complete package identity, signature and chunk
@@ -46,15 +46,15 @@ protocol, ABI, recovery-ordering and correctness evidence only.
 
 ## Host/offline workflow
 
-The hosted `tools/xaios_model_volume.py` path provides equivalent offline image
+The hosted `tools/xaios_xai_fs.py` path provides equivalent offline image
 creation, registration and recovery administration:
 
 1. Produce a signed package manifest and package file.
-2. Format or open a dedicated offline ModelFS image.
+2. Format or open a dedicated offline xaiFS image.
 3. Run `stage`; the tool processes one configured 2-16 MiB chunk at a time.
 4. Re-run `stage` after interruption; committed chunks are not rewritten.
 5. Run `verify`, then `activate`.
-6. Boot XAIOS with that image as `XAIOS_MODEL_VOLUME_IMAGE`.
+6. Boot XAIOS with that image as `XAIOS_XAI_FS_IMAGE`.
 
 ## SFTP boundary
 
@@ -68,7 +68,7 @@ and the rest of `/models` reject mutation.
 If an online upload is abandoned, an administrator can run `xaiosctl model
 cleanup PACKAGE_ID --operation-id ID`. Cleanup accepts staging packages only,
 publishes a new catalog generation, coalesces the released extents, and refuses
-while ModelFS handles or maintenance operations are active.
+while xaiFS handles or maintenance operations are active.
 
 ## Remaining hardware limits
 
@@ -81,8 +81,8 @@ while ModelFS handles or maintenance operations are active.
   every negotiated queue. Physical-device durability is not established.
 - Registration and cleanup are administrator-controlled and capacity-checked,
   but there is no fleet-wide tenant quota or background expiry policy.
-- ModelFS activation and the xaibootFS audit append are separately durable.
-  If audit persistence fails after ModelFS publication, activation cannot be
+- xaiFS activation and the xaibootFS audit append are separately durable.
+  If audit persistence fails after xaiFS publication, activation cannot be
   rolled back; the kernel logs this explicit cross-filesystem failure.
 - The sparse hosted 128 GiB fixture proves 64-bit addressing and bounded memory,
   not physical capacity, throughput, media flush behavior, or a real 100+ GiB

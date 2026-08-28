@@ -6,7 +6,7 @@
 #define XAIOS_CONTROL_VERSION 2U
 #define XAIOS_CONTROL_KERNEL_ABI_VERSION 1U
 #define XAIOS_CONTROL_MODEL_PACKAGE_VERSION 2U
-#define XAIOS_CONTROL_MODEL_VOLUME_VERSION 1U
+#define XAIOS_CONTROL_XAI_FS_VERSION 1U
 #define XAIOS_CONTROL_MAX_REQUEST_BYTES 512U
 #define XAIOS_CONTROL_MAX_RESPONSE_BYTES 8192U
 #define XAIOS_CONTROL_LOG_COMPONENT_MAX 32U
@@ -136,11 +136,11 @@
 #define XAIOS_STORAGE_PARTITION_MODEL 2U
 #define XAIOS_STORAGE_PARTITION_RECOVERY 3U
 
-#define XAIOS_MODEL_VOLUME_CHECK_UNKNOWN 0U
-#define XAIOS_MODEL_VOLUME_CHECK_CLEAN 1U
-#define XAIOS_MODEL_VOLUME_CHECK_REPAIRABLE 2U
-#define XAIOS_MODEL_VOLUME_CHECK_CORRUPT_UNREPAIRABLE 3U
-#define XAIOS_MODEL_VOLUME_CHECK_REPAIRED 4U
+#define XAIOS_XAI_FS_CHECK_UNKNOWN 0U
+#define XAIOS_XAI_FS_CHECK_CLEAN 1U
+#define XAIOS_XAI_FS_CHECK_REPAIRABLE 2U
+#define XAIOS_XAI_FS_CHECK_CORRUPT_UNREPAIRABLE 3U
+#define XAIOS_XAI_FS_CHECK_REPAIRED 4U
 
 #define XAIOS_CONTROL_STATUS_OK 0U
 #define XAIOS_CONTROL_STATUS_INVALID_REQUEST 1U
@@ -240,7 +240,7 @@ typedef struct xaios_control_version_payload_user {
   u32 kernel_abi_version;
   u32 control_protocol_version;
   u32 model_package_version;
-  u32 model_volume_version;
+  u32 xai_fs_version;
 } xaios_control_version_payload_user_t;
 
 typedef struct xaios_control_status_payload_user {
@@ -742,7 +742,7 @@ typedef struct xaios_control_model_cleanup_report_user {
   u32 reserved;
 } xaios_control_model_cleanup_report_user_t;
 
-typedef struct xaios_model_volume_admin_report_user {
+typedef struct xaios_xai_fs_admin_report_user {
   char target[48];
   char partition_uuid[37];
   char volume_uuid[37];
@@ -765,7 +765,7 @@ typedef struct xaios_model_volume_admin_report_user {
   u32 check_state;
   u32 discard_supported;
   u32 dry_run;
-} xaios_model_volume_admin_report_user_t;
+} xaios_xai_fs_admin_report_user_t;
 
 typedef char xaios_admin_config_user_must_be_48_bytes[
     sizeof(xaios_admin_config_user_t) == 48U ? 1 : -1];

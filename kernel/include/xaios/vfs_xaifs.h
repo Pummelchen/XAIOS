@@ -62,35 +62,35 @@ typedef struct xaios_model_trim_status {
   uint32_t all_free;
 } xaios_model_trim_status_t;
 
-xaios_status_t vfs_mount_model_volume(uint32_t virtio_slot);
+xaios_status_t vfs_mount_xai_fs(uint32_t virtio_slot);
 xaios_status_t vfs_mount_model_device(const char *device_identifier,
                                       const char *mount_path,
                                       uint32_t read_only);
-xaios_status_t vfs_unmount_model_volume(const char *mount_path);
-xaios_status_t vfs_model_target_mounted(const char *device_identifier,
+xaios_status_t vfs_unmount_xai_fs(const char *mount_path);
+xaios_status_t vfs_xaifs_target_mounted(const char *device_identifier,
                                         uint32_t *mounted);
-xaios_status_t vfs_model_verify_staging(const char *package_id,
+xaios_status_t vfs_xaifs_verify_staging(const char *package_id,
                                         uint64_t *generation);
-xaios_status_t vfs_model_activate_staging(const char *package_id,
+xaios_status_t vfs_xaifs_activate_staging(const char *package_id,
                                            uint64_t *generation);
-xaios_status_t vfs_model_register_staging(
+xaios_status_t vfs_xaifs_register_staging(
     const xaios_model_registration_t *registration, uint64_t *generation);
-xaios_status_t vfs_model_cleanup_staging(const char *package_id,
+xaios_status_t vfs_xaifs_cleanup_staging(const char *package_id,
                                           uint64_t *generation,
                                           uint64_t *reclaimed_bytes);
-xaios_status_t vfs_model_scrub_start(xaios_model_scrub_status_t *status);
-xaios_status_t vfs_model_scrub_step(xaios_model_scrub_status_t *status);
-xaios_status_t vfs_model_scrub_status(xaios_model_scrub_status_t *status);
-xaios_status_t vfs_model_scrub_pause(xaios_model_scrub_status_t *status);
-xaios_status_t vfs_model_scrub_resume(xaios_model_scrub_status_t *status);
-xaios_status_t vfs_model_scrub_cancel(xaios_model_scrub_status_t *status);
-xaios_status_t vfs_model_trim_start(uint32_t dry_run, uint32_t all_free,
+xaios_status_t vfs_xaifs_scrub_start(xaios_model_scrub_status_t *status);
+xaios_status_t vfs_xaifs_scrub_step(xaios_model_scrub_status_t *status);
+xaios_status_t vfs_xaifs_scrub_status(xaios_model_scrub_status_t *status);
+xaios_status_t vfs_xaifs_scrub_pause(xaios_model_scrub_status_t *status);
+xaios_status_t vfs_xaifs_scrub_resume(xaios_model_scrub_status_t *status);
+xaios_status_t vfs_xaifs_scrub_cancel(xaios_model_scrub_status_t *status);
+xaios_status_t vfs_xaifs_trim_start(uint32_t dry_run, uint32_t all_free,
                                     uint64_t offset, uint64_t length,
                                     xaios_model_trim_status_t *status);
-xaios_status_t vfs_model_trim_step(xaios_model_trim_status_t *status);
-xaios_status_t vfs_model_trim_status(xaios_model_trim_status_t *status);
-xaios_status_t vfs_model_trim_cancel(xaios_model_trim_status_t *status);
-xaios_status_t vfs_model_mount_status(xaios_model_mount_status_t *status);
-void vfs_model_self_test(void);
+xaios_status_t vfs_xaifs_trim_step(xaios_model_trim_status_t *status);
+xaios_status_t vfs_xaifs_trim_status(xaios_model_trim_status_t *status);
+xaios_status_t vfs_xaifs_trim_cancel(xaios_model_trim_status_t *status);
+xaios_status_t vfs_xaifs_mount_status(xaios_model_mount_status_t *status);
+void vfs_xaifs_self_test(void);
 
 #endif

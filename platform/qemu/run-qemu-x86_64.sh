@@ -120,7 +120,7 @@ smp="${XAIOS_QEMU_X86_SMP:-4}"
 image="${XAIOS_X86_64_IMAGE:-build/xaios-x86_64.img}"
 test_block_image="${XAIOS_X86_TEST_BLOCK_IMAGE:-build/xaios-x86-virtio-test.img}"
 persistent_image="${XAIOS_X86_PERSISTENT_IMAGE:-build/xaios-x86-persistent.img}"
-model_volume_image="${XAIOS_MODEL_VOLUME_IMAGE:-build/xaios-x86-model-volume.img}"
+xai_fs_image="${XAIOS_XAI_FS_IMAGE:-build/xaios-x86-xaifs.img}"
 system_volume_image="${XAIOS_SYSTEM_VOLUME_IMAGE:-build/xaios-x86-system.img}"
 storage_admin_image="${XAIOS_X86_STORAGE_ADMIN_IMAGE:-build/xaios-x86-storage-admin.img}"
 hostfwd_port="${XAIOS_QEMU_HOSTFWD_PORT:-7788}"
@@ -169,7 +169,7 @@ if [ "$dry_run" -eq 0 ] && [ ! -f "$persistent_image" ]; then
 fi
 
 for required_image in "$test_block_image" \
-  "$model_volume_image" "$system_volume_image" "$storage_admin_image"
+  "$xai_fs_image" "$system_volume_image" "$storage_admin_image"
 do
   if [ "$dry_run" -eq 0 ] && [ ! -f "$required_image" ]; then
     printf '%s\n' "error: missing x86_64 runtime image: $required_image" >&2
@@ -193,7 +193,7 @@ set -- "$qemu" \
   -device virtio-blk-pci,drive=xaios_x86_test,disable-legacy=on \
   -drive "if=none,format=raw,id=xaios_x86_persistent,file=$persistent_image" \
   -device virtio-blk-pci,drive=xaios_x86_persistent,disable-legacy=on \
-  -drive "if=none,format=raw,id=xaios_x86_models,file=$model_volume_image" \
+  -drive "if=none,format=raw,id=xaios_x86_models,file=$xai_fs_image" \
   -device virtio-blk-pci,drive=xaios_x86_models,disable-legacy=on \
   -drive "if=none,format=raw,id=xaios_x86_admin,file=$storage_admin_image" \
   -device virtio-blk-pci,drive=xaios_x86_admin,disable-legacy=on \

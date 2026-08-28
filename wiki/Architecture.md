@@ -43,12 +43,12 @@ they do not prove physical performance or production readiness.
 | Kernel core | `kernel/core/` | Initialization, logging, telemetry, panic handling, and self-test sequencing. |
 | Memory | `kernel/mm/` | Physical and virtual memory, NUMA metadata, heaps, arenas, and ELF ownership. |
 | Devices and storage | `kernel/dev/`, `kernel/storage/` | VirtIO, focused NVMe, block devices, GPT, and partitions. |
-| Filesystems | `kernel/fs/` | Initramfs, VFS, xaibootFS, and immutable active ModelFS packages. |
+| Filesystems | `kernel/fs/` | Initramfs, VFS, xaibootFS, and immutable active xaiFS packages. |
 | Processes and ABI | `kernel/user/`, `userspace/` | Process ownership, service supervision, syscalls, applications, and SSH/SFTP. |
 | Network | `kernel/net/`, `kernel/runtime/network_stack.c` | IPv4/IPv6, TCP/UDP, DNS, routing, and socket state. |
 | Administration | `kernel/runtime/admin_control.c`, `kernel/runtime/control_protocol.c` | Typed role-based configuration, key, audit, storage, and model operations. |
 | Applications | `userspace/apps/`, `userspace/apps/terminal/` | Standalone ELFs and app-owned terminal modules. The kernel supplies generic capability-gated primitives rather than application implementations. |
-| Portable engine | `engine/` | Model-v2 and ModelFS parsing, adapters, backends, model/session ownership, and asynchronous range I/O. |
+| Portable engine | `engine/` | Model-v2 and xaiFS parsing, adapters, backends, model/session ownership, and asynchronous range I/O. |
 
 The engine's hosted cluster reference authenticates bounded peer messages,
 rejects replay, and deterministically assigns and reduces expert work. It does
@@ -66,7 +66,7 @@ not yet have an XAIOS multi-guest transport; see
   owning address space.
 - Administrative mutations are role- and capability-gated, replay-protected,
   audited, and bounded.
-- Active ModelFS packages are immutable. Registration, staging, verification,
+- Active xaiFS packages are immutable. Registration, staging, verification,
   activation, scrub, quarantine, and trim use explicit typed operations.
 - QEMU host forwarding and external OpenSSH/SFTP clients cross the network
   trust boundary; FreeBSD is the primary Unix behavioral reference.
@@ -111,7 +111,7 @@ local or SSH xaiosctl
 ```text
 block device
   -> optional GPT partition
-  -> ModelFS volume
+  -> xaiFS volume
   -> immutable package extent
   -> verified range read
   -> caller-owned engine buffer or arena

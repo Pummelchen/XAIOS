@@ -21,7 +21,7 @@ security claims.
   capability checks.
 - Credential-like material is rejected from protected logging and persistence
   paths.
-- Active ModelFS packages are immutable; publication uses verified,
+- Active xaiFS packages are immutable; publication uses verified,
   crash-consistent state transitions.
 
 ## Sensitive source areas
@@ -71,7 +71,7 @@ and signing keys are public QEMU fixtures, not production trust roots.
 Production key generation, custody, authorization, and compromise-response
 procedures remain open.
 
-System-slot metadata and ModelFS use redundant or copy-on-write publication
+System-slot metadata and xaiFS use redundant or copy-on-write publication
 where implemented. QEMU crash gates test selected interruption points, not all
 physical power-loss, controller-cache, firmware, or storage-device behavior.
 

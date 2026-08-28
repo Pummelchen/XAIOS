@@ -3,18 +3,18 @@
 
 #include <xaios/admin_control.h>
 #include <xaios/xaiboot_fs.h>
-#include <xaios/model_volume_admin.h>
+#include <xaios/xai_fs_admin.h>
 #include <xaios/status.h>
 #include <xaios/storage_admin.h>
 #include <xaios/types.h>
-#include <xaios/vfs_model.h>
+#include <xaios/vfs_xaifs.h>
 
 #define XAIOS_CONTROL_MAGIC UINT32_C(0x58414350)
 /* 2 adds product_version to the version payload. */
 #define XAIOS_CONTROL_VERSION UINT16_C(2)
 #define XAIOS_CONTROL_KERNEL_ABI_VERSION UINT32_C(1)
 #define XAIOS_CONTROL_MODEL_PACKAGE_VERSION UINT32_C(2)
-#define XAIOS_CONTROL_MODEL_VOLUME_VERSION UINT32_C(1)
+#define XAIOS_CONTROL_XAI_FS_VERSION UINT32_C(1)
 #define XAIOS_CONTROL_MAX_REQUEST_BYTES UINT32_C(512)
 #define XAIOS_CONTROL_MAX_RESPONSE_BYTES UINT32_C(8192)
 #define XAIOS_CONTROL_LOG_COMPONENT_MAX UINT32_C(32)
@@ -211,7 +211,7 @@ typedef struct xaios_control_version_payload {
   uint32_t kernel_abi_version;
   uint32_t control_protocol_version;
   uint32_t model_package_version;
-  uint32_t model_volume_version;
+  uint32_t xai_fs_version;
 } xaios_control_version_payload_t;
 
 typedef struct xaios_control_status_payload {

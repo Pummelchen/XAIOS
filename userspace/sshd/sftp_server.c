@@ -388,7 +388,7 @@ static int handle_close(int sockfd, const uint8_t *data, uint32_t len) {
   /* Close handle */
   int close_failed = 0;
   if (handle->fd >= 0) {
-    /* The VFS backend owns durable-close semantics. ModelFS commits pending
+    /* The VFS backend owns durable-close semantics. xaiFS commits pending
      * chunks from close(), while xaibootFS persists each mutation eagerly. */
     if (xaios_fs_close(handle->fd) != 0) close_failed = 1;
     handle->fd = -1;

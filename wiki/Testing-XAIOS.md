@@ -37,7 +37,7 @@ AArch64 or x86_64 UEFI firmware. Setup details are in
 | `make qemu-full-os-rc` | Aggregate mandatory QEMU core-OS release-candidate gate. |
 
 Focused gates cover boot loops, faults, security, local console, storage,
-ModelFS, SMMUv3, NVMe, CPU-count/topology, x86_64, VMware Fusion, and developer
+xaiFS, SMMUv3, NVMe, CPU-count/topology, x86_64, VMware Fusion, and developer
 UX. The exact current inventory and prerequisites are maintained in
 [`tests/README.md`](https://github.com/Pummelchen/XAIOS/blob/main/tests/README.md).
 
@@ -81,7 +81,7 @@ XAIOS_INTEL_VPS=root@VPS make qemu-four-endpoint-network-suite
 make vmware-fusion-smoke
 ```
 
-The ModelFS and parallel-network gates require macOS plus Docker because they
+The xaiFS and parallel-network gates require macOS plus Docker because they
 run native macOS and Debian 13 clients against one guest. The focused high-core
 gate validates runtime-sized SMP/NUMA metadata; it is not a scalability test.
 

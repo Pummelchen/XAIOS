@@ -1,11 +1,11 @@
-# XAIOS model volume v1
+# XAIOS xaiFS volume v1
 
 Status: v1 is implemented in the hosted writer/administrator and portable C
 reader/writer, with dynamic signed staging, cleanup/reuse, immutable active
 reads, scrub/quarantine and trim validated under QEMU. The canonical byte layout is
 [`MODELFS-FORMAT.md`](./MODELFS-FORMAT.md).
 
-The format is separate from xaibootFS and from `xaios.model.v2`. A model volume
+The format is separate from xaibootFS and from `xaios.model.v2`. A xaiFS volume
 stores one or more immutable model package objects; xaibootFS stores only small
 control records.
 
@@ -93,28 +93,28 @@ signature; unsigned package records are rejected.
 
 ## Lifecycle and ordering
 
-`model_volume_stage_begin` validates the signed logical manifest, allocates
+`xai_fs_stage_begin` validates the signed logical manifest, allocates
 aligned physical extents, writes a staging catalog, flushes it, then publishes
-the alternate superblock and flushes again. `model_volume_pwrite` accepts one
+the alternate superblock and flushes again. `xai_fs_pwrite` accepts one
 complete expected chunk, verifies its checksum before publication and records
 completion in a new catalog snapshot. Reopening the volume resumes from the
 last published chunk bitmap.
 
-`model_volume_stage_verify` rereads every physical chunk, verifies all hashes,
+`xai_fs_stage_verify` rereads every physical chunk, verifies all hashes,
 recomputes package identity and verifies the Ed25519 signature.
-`model_volume_activate` publishes a new catalog containing the active state;
+`xai_fs_activate` publishes a new catalog containing the active state;
 the previous superblock remains a valid pre-activation recovery point until a
 later transaction. A failure before the final superblock flush leaves the old
 catalog authoritative.
 
-The kernel exposes the same C commit and activation path through ModelFS.
+The kernel exposes the same C commit and activation path through xaiFS.
 Administrator-only registration creates a signed staging record and allocates
 or reuses aligned extents. SFTP `stat` reports the contiguous committed prefix
 so OpenSSH `reput` resumes at a verified chunk boundary. `xaiosctl model verify`,
 cleanup and replay-protected activation are administrator-only; active package
 files never accept writes.
 
-`model_volume_remove` and staging garbage collection remove catalog references
+`xai_fs_remove` and staging garbage collection remove catalog references
 and return payload extents to a coalesced free list. Old catalog snapshots are
 append-only recovery metadata and are not reused by format v1.
 
@@ -123,17 +123,17 @@ append-only recovery metadata and are not reused by format v1.
 The portable boundary provides operations equivalent to:
 
 ```c
-model_volume_open(...)
-model_volume_stage_begin(...)
-model_volume_pwrite(...)
-model_volume_pread(...)
-model_volume_stage_verify(...)
-model_volume_activate(...)
-model_volume_remove(...)
-model_volume_extent_map(...)
-model_volume_prefetch(...)
-model_volume_sync(...)
-model_volume_recover(...)
+xai_fs_open(...)
+xai_fs_stage_begin(...)
+xai_fs_pwrite(...)
+xai_fs_pread(...)
+xai_fs_stage_verify(...)
+xai_fs_activate(...)
+xai_fs_remove(...)
+xai_fs_extent_map(...)
+xai_fs_prefetch(...)
+xai_fs_sync(...)
+xai_fs_recover(...)
 ```
 
 Kernel reads use a 64-bit positional block callback. Hosted files use

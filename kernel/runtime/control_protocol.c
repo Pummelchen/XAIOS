@@ -20,7 +20,7 @@
 #include <xaios/user.h>
 #include <xaios/update.h>
 #include <xaios/vfs.h>
-#include <xaios/vfs_model.h>
+#include <xaios/vfs_xaifs.h>
 
 #ifndef XAIOS_BUILD_REVISION
 #define XAIOS_BUILD_REVISION "unknown"
@@ -399,7 +399,7 @@ static void fill_version(xaios_control_version_payload_t *payload) {
   payload->kernel_abi_version = XAIOS_CONTROL_KERNEL_ABI_VERSION;
   payload->control_protocol_version = XAIOS_CONTROL_VERSION;
   payload->model_package_version = XAIOS_CONTROL_MODEL_PACKAGE_VERSION;
-  payload->model_volume_version = XAIOS_CONTROL_MODEL_VOLUME_VERSION;
+  payload->xai_fs_version = XAIOS_CONTROL_XAI_FS_VERSION;
 }
 
 static void fill_status(xaios_control_status_payload_t *payload) {
@@ -1096,7 +1096,7 @@ static xaios_status_t handle_model_operation(
                sizeof(registration.target_id));
     value.operation_id = query.operation_id;
     result = model_control_result(
-        vfs_model_register_staging(&registration, &value.generation));
+        vfs_xaifs_register_staging(&registration, &value.generation));
     if (result != XAIOS_ADMIN_RESULT_OK) {
       result = admin_control_mutation_fail(
           query.actor, request->principal_role, query.operation_id,
@@ -1121,7 +1121,7 @@ static xaios_status_t handle_model_operation(
                                response_bytes);
     }
     result = model_control_result(
-        vfs_model_verify_staging(query.path, &value.generation));
+        vfs_xaifs_verify_staging(query.path, &value.generation));
   } else {
     xaios_control_mutation_request_payload_t mutation;
     if (request->payload_type != XAIOS_CONTROL_PAYLOAD_MUTATION_REQUEST ||
@@ -1147,7 +1147,7 @@ static xaios_status_t handle_model_operation(
                                  response_bytes);
       }
       cleanup.operation_id = mutation.operation_id;
-      result = model_control_result(vfs_model_cleanup_staging(
+      result = model_control_result(vfs_xaifs_cleanup_staging(
           mutation.argument, &cleanup.generation, &cleanup.reclaimed_bytes));
       if (result != XAIOS_ADMIN_RESULT_OK) {
         result = admin_control_mutation_fail(
@@ -1311,11 +1311,11 @@ static xaios_status_t fill_storage_filesystem(
     string_copy(record->device_identifier, sizeof(record->device_identifier),
                 "unknown");
   } else if (string_equal(path, "/models")) {
-    if (vfs_model_mount_status(&model) != XAIOS_OK) {
+    if (vfs_xaifs_mount_status(&model) != XAIOS_OK) {
       return XAIOS_ERR_NOT_FOUND;
     }
     mount_path = "/models";
-    filesystem = "ModelFS";
+    filesystem = "xaiFS";
     stat_path = "/models";
     string_copy(record->device_identifier, sizeof(record->device_identifier),
                 model.device.identifier);
@@ -1685,20 +1685,20 @@ static xaios_status_t handle_storage_volume_operation(
     }
   }
 
-  xaios_model_volume_admin_report_t report;
+  xaios_xai_fs_admin_report_t report;
   bytes_zero(&report, sizeof(report));
   xaios_status_t status = XAIOS_ERR_INVALID;
   if (request->operation == XAIOS_CONTROL_OP_STORAGE_FORMAT_PLAN) {
-    status = model_volume_admin_format_plan(query.target, query.chunk_size,
+    status = xai_fs_admin_format_plan(query.target, query.chunk_size,
                                             &report);
   } else if (request->operation == XAIOS_CONTROL_OP_STORAGE_FORMAT) {
-    status = model_volume_admin_format(query.target, query.confirmation,
+    status = xai_fs_admin_format(query.target, query.confirmation,
                                        query.chunk_size, &report);
   } else if (request->operation == XAIOS_CONTROL_OP_STORAGE_MOUNT) {
     if (string_equal(query.mount_path, "/models")) {
-      status = model_volume_admin_fsck(query.target, 0U, &report);
+      status = xai_fs_admin_fsck(query.target, 0U, &report);
       if (status == XAIOS_OK &&
-          report.check_state != XAIOS_MODEL_VOLUME_CHECK_CLEAN) {
+          report.check_state != XAIOS_XAI_FS_CHECK_CLEAN) {
         status = XAIOS_ERR_IO;
       }
       if (status == XAIOS_OK) {
@@ -1708,22 +1708,22 @@ static xaios_status_t handle_storage_volume_operation(
     }
   } else if (request->operation == XAIOS_CONTROL_OP_STORAGE_UNMOUNT) {
     if (string_equal(query.target, "/models")) {
-      status = vfs_unmount_model_volume(query.target);
+      status = vfs_unmount_xai_fs(query.target);
       if (status == XAIOS_OK) {
         bytes_copy(report.target, query.target, sizeof(report.target));
       }
     }
   } else if (request->operation == XAIOS_CONTROL_OP_STORAGE_FSCK) {
-    status = model_volume_admin_fsck(query.target, query.verify_data, &report);
+    status = xai_fs_admin_fsck(query.target, query.verify_data, &report);
   } else if (request->operation == XAIOS_CONTROL_OP_STORAGE_FS_REPAIR) {
-    status = model_volume_admin_repair(query.target, query.confirmation,
+    status = xai_fs_admin_repair(query.target, query.confirmation,
                                        &report);
   } else if (request->operation ==
              XAIOS_CONTROL_OP_STORAGE_FS_RESIZE_PLAN) {
-    status = model_volume_admin_grow_plan(query.target, query.size_bytes,
+    status = xai_fs_admin_grow_plan(query.target, query.size_bytes,
                                           &report);
   } else if (request->operation == XAIOS_CONTROL_OP_STORAGE_FS_RESIZE) {
-    status = model_volume_admin_grow(query.target, query.confirmation,
+    status = xai_fs_admin_grow(query.target, query.confirmation,
                                      query.size_bytes, &report);
   }
 
@@ -1798,9 +1798,9 @@ static xaios_status_t handle_storage_replica_repair(
     return write_admin_error(request, begin, response, response_capacity,
                              response_bytes);
   }
-  xaios_model_volume_admin_report_t report;
+  xaios_xai_fs_admin_report_t report;
   bytes_zero(&report, sizeof(report));
-  xaios_status_t status = model_volume_admin_repair_from_replica(
+  xaios_status_t status = xai_fs_admin_repair_from_replica(
       query.target, query.confirmation, query.replica, query.package_id,
       &report);
   if (status != XAIOS_OK) {
@@ -1893,16 +1893,16 @@ static xaios_status_t handle_storage_scrub_operation(
   bytes_zero(&report, sizeof(report));
   xaios_status_t status = XAIOS_ERR_INVALID;
   if (request->operation == XAIOS_CONTROL_OP_STORAGE_SCRUB_START) {
-    status = vfs_model_scrub_start(&report.status);
-    if (status == XAIOS_OK) status = vfs_model_scrub_step(&report.status);
+    status = vfs_xaifs_scrub_start(&report.status);
+    if (status == XAIOS_OK) status = vfs_xaifs_scrub_step(&report.status);
   } else if (request->operation == XAIOS_CONTROL_OP_STORAGE_SCRUB_STATUS) {
-    status = vfs_model_scrub_step(&report.status);
+    status = vfs_xaifs_scrub_step(&report.status);
   } else if (request->operation == XAIOS_CONTROL_OP_STORAGE_SCRUB_PAUSE) {
-    status = vfs_model_scrub_pause(&report.status);
+    status = vfs_xaifs_scrub_pause(&report.status);
   } else if (request->operation == XAIOS_CONTROL_OP_STORAGE_SCRUB_RESUME) {
-    status = vfs_model_scrub_resume(&report.status);
+    status = vfs_xaifs_scrub_resume(&report.status);
   } else if (request->operation == XAIOS_CONTROL_OP_STORAGE_SCRUB_CANCEL) {
-    status = vfs_model_scrub_cancel(&report.status);
+    status = vfs_xaifs_scrub_cancel(&report.status);
   }
   if (status != XAIOS_OK &&
       report.status.state != XAIOS_MODEL_MAINTENANCE_FAILED) {
@@ -1992,13 +1992,13 @@ static xaios_status_t handle_storage_trim_operation(
   bytes_zero(&report, sizeof(report));
   xaios_status_t status = XAIOS_ERR_INVALID;
   if (request->operation == XAIOS_CONTROL_OP_STORAGE_TRIM_START) {
-    status = vfs_model_trim_start(query.dry_run, query.all_free, query.offset,
+    status = vfs_xaifs_trim_start(query.dry_run, query.all_free, query.offset,
                                   query.length, &report.status);
-    if (status == XAIOS_OK) status = vfs_model_trim_step(&report.status);
+    if (status == XAIOS_OK) status = vfs_xaifs_trim_step(&report.status);
   } else if (request->operation == XAIOS_CONTROL_OP_STORAGE_TRIM_STATUS) {
-    status = vfs_model_trim_step(&report.status);
+    status = vfs_xaifs_trim_step(&report.status);
   } else if (request->operation == XAIOS_CONTROL_OP_STORAGE_TRIM_CANCEL) {
-    status = vfs_model_trim_cancel(&report.status);
+    status = vfs_xaifs_trim_cancel(&report.status);
   }
   if (status != XAIOS_OK &&
       report.status.state != XAIOS_MODEL_MAINTENANCE_FAILED) {

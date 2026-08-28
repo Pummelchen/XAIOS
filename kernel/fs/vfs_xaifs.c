@@ -4,11 +4,11 @@
 #include <xaios/spinlock.h>
 #include <xaios/status.h>
 #include <xaios/vfs.h>
-#include <xaios/vfs_model.h>
+#include <xaios/vfs_xaifs.h>
 #include <xaios/virtio_blk.h>
 #include <xaios/virtio_rng.h>
 
-#include <xaios_engine/model_volume.h>
+#include <xaios_engine/xai_fs.h>
 
 #include <string.h>
 
@@ -36,7 +36,7 @@ typedef struct model_vfs_context {
   virtio_block_handle_t *handle;
   xaios_block_device_t *device;
   xaios_block_device_info_t device_info;
-  xaios_model_volume_t volume;
+  xaios_xai_fs_t volume;
   xaios_spinlock_t lock;
   uint8_t bounce[MODEL_READER_MAX_SECTOR_SIZE];
   uint8_t scratch[MODEL_READER_SCRATCH_SIZE];
@@ -217,10 +217,10 @@ static int parse_package_path(const char *path, uint32_t *required_state,
                               uint8_t package_id[32]) {
   const char *name = 0;
   if (strncmp(path, "/.staging/", 10U) == 0) {
-    *required_state = XAIOS_MODEL_VOLUME_PACKAGE_STAGING;
+    *required_state = XAIOS_XAI_FS_PACKAGE_STAGING;
     name = path + 10U;
   } else if (path[0] == '/') {
-    *required_state = XAIOS_MODEL_VOLUME_PACKAGE_ACTIVE;
+    *required_state = XAIOS_XAI_FS_PACKAGE_ACTIVE;
     name = path + 1U;
   } else {
     return 0;
@@ -247,7 +247,7 @@ static int package_id_equal(const uint8_t left[32], const uint8_t right[32]) {
 
 static xaios_status_t find_package(model_vfs_context_t *model,
                                    const char *path, uint64_t *index,
-                                   xaios_model_volume_package_t *package) {
+                                   xaios_xai_fs_package_t *package) {
   uint32_t required_state = 0U;
   uint8_t package_id[32];
   if (!parse_package_path(path, &required_state, package_id)) {
@@ -256,7 +256,7 @@ static xaios_status_t find_package(model_vfs_context_t *model,
   for (uint64_t current = 0U; current < model->volume.package_count;
        ++current) {
     xaios_engine_status_t status =
-        xaios_model_volume_read_package(&model->volume, current, package);
+        xaios_xai_fs_read_package(&model->volume, current, package);
     if (status != XAIOS_ENGINE_OK) return map_engine_status(status);
     if (package->state == required_state &&
         package_id_equal(package->package_id, package_id)) {
@@ -269,15 +269,15 @@ static xaios_status_t find_package(model_vfs_context_t *model,
 
 static xaios_status_t package_has_pending_hashes(
     model_vfs_context_t *model,
-    const xaios_model_volume_package_t *package, uint32_t *pending) {
+    const xaios_xai_fs_package_t *package, uint32_t *pending) {
   if (model == 0 || package == 0 || pending == 0) return XAIOS_ERR_INVALID;
   *pending = 0U;
   for (uint64_t relative = 0U; relative < package->chunk_count; ++relative) {
-    xaios_model_volume_chunk_t chunk;
-    xaios_engine_status_t status = xaios_model_volume_read_chunk(
+    xaios_xai_fs_chunk_t chunk;
+    xaios_engine_status_t status = xaios_xai_fs_read_chunk(
         &model->volume, package->chunk_start + relative, &chunk);
     if (status != XAIOS_ENGINE_OK) return map_engine_status(status);
-    if ((chunk.flags & XAIOS_MODEL_VOLUME_CHUNK_HASH_PENDING) != 0U) {
+    if ((chunk.flags & XAIOS_XAI_FS_CHUNK_HASH_PENDING) != 0U) {
       *pending = 1U;
       return XAIOS_OK;
     }
@@ -295,7 +295,7 @@ static xaios_status_t model_open(void *context, const char *path,
   if (!writable && flags != XAIOS_VFS_OPEN_READ) {
     return XAIOS_ERR_UNSUPPORTED;
   }
-  xaios_model_volume_package_t package;
+  xaios_xai_fs_package_t package;
   memset(&package, 0, sizeof(package));
   uint64_t index = 0U;
   xaios_spin_lock(&model->lock);
@@ -304,26 +304,26 @@ static xaios_status_t model_open(void *context, const char *path,
     uint32_t pending = 0U;
     status = package_has_pending_hashes(model, &package, &pending);
     if (status == XAIOS_OK && pending == 0U) {
-      status = map_engine_status(xaios_model_volume_verify_package_manifest(
+      status = map_engine_status(xaios_xai_fs_verify_package_manifest(
           &model->volume, &package));
     }
   }
   if (status == XAIOS_OK && writable &&
-      package.state != XAIOS_MODEL_VOLUME_PACKAGE_STAGING) {
+      package.state != XAIOS_XAI_FS_PACKAGE_STAGING) {
     status = XAIOS_ERR_UNSUPPORTED;
   }
   if (status == XAIOS_OK && writable &&
       (flags & XAIOS_VFS_OPEN_TRUNCATE) != 0U) {
     for (uint64_t relative = 0U; relative < package.chunk_count; ++relative) {
-      xaios_model_volume_chunk_t chunk;
-      xaios_engine_status_t engine_status = xaios_model_volume_read_chunk(
+      xaios_xai_fs_chunk_t chunk;
+      xaios_engine_status_t engine_status = xaios_xai_fs_read_chunk(
           &model->volume, package.chunk_start + relative, &chunk);
       if (engine_status != XAIOS_ENGINE_OK) {
         status = map_engine_status(engine_status);
         break;
       }
-      if ((chunk.flags & XAIOS_MODEL_VOLUME_CHUNK_COMPLETE) != 0U &&
-          (chunk.flags & XAIOS_MODEL_VOLUME_CHUNK_ZERO) == 0U) {
+      if ((chunk.flags & XAIOS_XAI_FS_CHUNK_COMPLETE) != 0U &&
+          (chunk.flags & XAIOS_XAI_FS_CHUNK_ZERO) == 0U) {
         status = XAIOS_ERR_BUSY;
         break;
       }
@@ -350,7 +350,7 @@ static xaios_status_t model_open(void *context, const char *path,
     *handle = (uint64_t)available + 1U;
   }
   if (status != XAIOS_OK) {
-    klog("modelfs: open rejected path=%s flags=0x%x status=%d state=%u\n",
+    klog("xaifs: open rejected path=%s flags=0x%x status=%d state=%u\n",
          path, flags, (int)status, package.state);
   }
   xaios_spin_unlock(&model->lock);
@@ -366,22 +366,22 @@ static model_vfs_handle_t *model_find_handle(model_vfs_context_t *model,
 
 static xaios_status_t model_sync_handle_locked(model_vfs_context_t *model,
                                                 model_vfs_handle_t *opened) {
-  xaios_model_volume_writer_t writer = {
+  xaios_xai_fs_writer_t writer = {
       model, model_write_at, model_flush};
   if (opened->written_start == UINT64_MAX) {
     return map_engine_status(model_flush(model));
   }
-  xaios_model_volume_package_t package;
-  xaios_engine_status_t engine_status = xaios_model_volume_read_package(
+  xaios_xai_fs_package_t package;
+  xaios_engine_status_t engine_status = xaios_xai_fs_read_package(
       &model->volume, opened->package_index, &package);
   if (engine_status != XAIOS_ENGINE_OK) return map_engine_status(engine_status);
   uint64_t completed = 0U;
-  engine_status = xaios_model_volume_commit_staging_range(
+  engine_status = xaios_xai_fs_commit_staging_range(
       &model->volume, &package, &writer, opened->written_start,
       opened->written_end - opened->written_start, model->scratch,
       sizeof(model->scratch), &completed);
   if (engine_status != XAIOS_ENGINE_OK) return map_engine_status(engine_status);
-  klog("modelfs: staging fsync record=%lu range=%lu:%lu completed=%lu generation=%lu\n",
+  klog("xaifs: staging fsync record=%lu range=%lu:%lu completed=%lu generation=%lu\n",
        package.record_id, opened->written_start,
        opened->written_end - opened->written_start, completed,
        model->volume.generation);
@@ -419,11 +419,11 @@ static int64_t model_pread(void *context, uint64_t handle, void *buffer,
     xaios_spin_unlock(&model->lock);
     return XAIOS_ERR_INVALID;
   }
-  xaios_model_volume_package_t package;
-  xaios_engine_status_t engine_status = xaios_model_volume_read_package(
+  xaios_xai_fs_package_t package;
+  xaios_engine_status_t engine_status = xaios_xai_fs_read_package(
       &model->volume, opened->package_index, &package);
   if (engine_status != XAIOS_ENGINE_OK ||
-      package.state == XAIOS_MODEL_VOLUME_PACKAGE_QUARANTINED) {
+      package.state == XAIOS_XAI_FS_PACKAGE_QUARANTINED) {
     xaios_spin_unlock(&model->lock);
     return engine_status == XAIOS_ENGINE_OK ? XAIOS_ERR_IO
                                             : map_engine_status(engine_status);
@@ -436,12 +436,12 @@ static int64_t model_pread(void *context, uint64_t handle, void *buffer,
     length = package.logical_size - offset;
   }
   uint64_t bad_offset = UINT64_MAX;
-  engine_status = xaios_model_volume_pread_verified(
+  engine_status = xaios_xai_fs_pread_verified(
       &model->volume, &package, offset, buffer, (size_t)length,
       model->scratch, sizeof(model->scratch), &bad_offset);
   xaios_spin_unlock(&model->lock);
   if (engine_status != XAIOS_ENGINE_OK) {
-    klog("modelfs: package read rejected record=%lu offset=%lu bad=%lu status=%d\n",
+    klog("xaifs: package read rejected record=%lu offset=%lu bad=%lu status=%d\n",
          package.record_id, offset, bad_offset, (int)engine_status);
     return map_engine_status(engine_status);
   }
@@ -462,8 +462,8 @@ static int64_t model_pwrite(void *context, uint64_t handle,
     xaios_spin_unlock(&model->lock);
     return XAIOS_ERR_INVALID;
   }
-  xaios_model_volume_package_t package;
-  xaios_engine_status_t engine_status = xaios_model_volume_read_package(
+  xaios_xai_fs_package_t package;
+  xaios_engine_status_t engine_status = xaios_xai_fs_read_package(
       &model->volume, opened->package_index, &package);
   if (engine_status == XAIOS_ENGINE_OK) {
     uint64_t end = offset + length;
@@ -475,9 +475,9 @@ static int64_t model_pwrite(void *context, uint64_t handle,
         return sync_status;
       }
     }
-    xaios_model_volume_writer_t writer = {
+    xaios_xai_fs_writer_t writer = {
         model, model_write_at, model_flush};
-    engine_status = xaios_model_volume_pwrite_staging(
+    engine_status = xaios_xai_fs_pwrite_staging(
         &model->volume, &package, &writer, offset, buffer, (size_t)length);
   }
   if (engine_status == XAIOS_ENGINE_OK) {
@@ -488,7 +488,7 @@ static int64_t model_pwrite(void *context, uint64_t handle,
     if (end > opened->written_end) opened->written_end = end;
   }
   if (engine_status != XAIOS_ENGINE_OK) {
-    klog("modelfs: staging pwrite rejected record=%lu offset=%lu length=%lu status=%d\n",
+    klog("xaifs: staging pwrite rejected record=%lu offset=%lu length=%lu status=%d\n",
          package.record_id, offset, length, (int)engine_status);
   }
   xaios_spin_unlock(&model->lock);
@@ -496,7 +496,7 @@ static int64_t model_pwrite(void *context, uint64_t handle,
                                            : map_engine_status(engine_status);
 }
 
-xaios_status_t vfs_model_register_staging(
+xaios_status_t vfs_xaifs_register_staging(
     const xaios_model_registration_t *registration, uint64_t *generation) {
   if (registration == 0 || generation == 0 || g_model_vfs.mounted == 0U) {
     return XAIOS_ERR_INVALID;
@@ -507,7 +507,7 @@ xaios_status_t vfs_model_register_staging(
     return g_model_vfs.read_only != 0U ? XAIOS_ERR_UNSUPPORTED
                                        : XAIOS_ERR_BUSY;
   }
-  xaios_model_volume_package_t package_template;
+  xaios_xai_fs_package_t package_template;
   memset(&package_template, 0, sizeof(package_template));
   memcpy(package_template.model_uuid, registration->model_uuid, 16U);
   memcpy(package_template.package_id, registration->package_id, 32U);
@@ -521,22 +521,22 @@ xaios_status_t vfs_model_register_staging(
          sizeof(package_template.architecture_id));
   memcpy(package_template.target_id, registration->target_id,
          sizeof(package_template.target_id));
-  xaios_model_volume_writer_t writer = {
+  xaios_xai_fs_writer_t writer = {
       &g_model_vfs, model_write_at, model_flush};
-  xaios_model_volume_package_t registered;
-  xaios_status_t status = map_engine_status(xaios_model_volume_register_staging(
+  xaios_xai_fs_package_t registered;
+  xaios_status_t status = map_engine_status(xaios_xai_fs_register_staging(
       &g_model_vfs.volume, &package_template, &writer, g_model_vfs.scratch,
       sizeof(g_model_vfs.scratch), &registered));
   if (status == XAIOS_OK) *generation = g_model_vfs.volume.generation;
   xaios_spin_unlock(&g_model_vfs.lock);
   if (status == XAIOS_OK) {
-    klog("modelfs: registered dynamic staging package record=%lu bytes=%lu generation=%lu\n",
+    klog("xaifs: registered dynamic staging package record=%lu bytes=%lu generation=%lu\n",
          registered.record_id, registered.logical_size, *generation);
   }
   return status;
 }
 
-xaios_status_t vfs_model_cleanup_staging(const char *package_id,
+xaios_status_t vfs_xaifs_cleanup_staging(const char *package_id,
                                           uint64_t *generation,
                                           uint64_t *reclaimed_bytes) {
   char path[82];
@@ -558,20 +558,20 @@ xaios_status_t vfs_model_cleanup_staging(const char *package_id,
     }
   }
   uint64_t package_index = 0U;
-  xaios_model_volume_package_t package;
+  xaios_xai_fs_package_t package;
   xaios_status_t status =
       find_package(&g_model_vfs, path, &package_index, &package);
   if (status == XAIOS_OK) {
-    xaios_model_volume_writer_t writer = {
+    xaios_xai_fs_writer_t writer = {
         &g_model_vfs, model_write_at, model_flush};
-    status = map_engine_status(xaios_model_volume_remove_staging(
+    status = map_engine_status(xaios_xai_fs_remove_staging(
         &g_model_vfs.volume, &package, &writer, g_model_vfs.scratch,
         sizeof(g_model_vfs.scratch), reclaimed_bytes));
   }
   if (status == XAIOS_OK) *generation = g_model_vfs.volume.generation;
   xaios_spin_unlock(&g_model_vfs.lock);
   if (status == XAIOS_OK) {
-    klog("modelfs: cleaned staging package=%s reclaimed=%lu generation=%lu\n",
+    klog("xaifs: cleaned staging package=%s reclaimed=%lu generation=%lu\n",
          package_id, *reclaimed_bytes, *generation);
   }
   return status;
@@ -604,12 +604,12 @@ static void scrub_load(void) {
     return;
   }
   g_model_scrub = record.status;
-  klog("modelfs: resumed scrub state=%u package=%lu chunk=%lu checked=%lu\n",
+  klog("xaifs: resumed scrub state=%u package=%lu chunk=%lu checked=%lu\n",
        g_model_scrub.state, g_model_scrub.package_index,
        g_model_scrub.chunk_index, g_model_scrub.checked_bytes);
 }
 
-xaios_status_t vfs_model_scrub_start(xaios_model_scrub_status_t *status) {
+xaios_status_t vfs_xaifs_scrub_start(xaios_model_scrub_status_t *status) {
   if (status == 0 || g_model_vfs.mounted == 0U) return XAIOS_ERR_INVALID;
   xaios_spin_lock(&g_model_vfs.lock);
   if (maintenance_active(g_model_scrub.state) ||
@@ -624,24 +624,24 @@ xaios_status_t vfs_model_scrub_start(xaios_model_scrub_status_t *status) {
   g_model_scrub.state = XAIOS_MODEL_MAINTENANCE_RUNNING;
   for (uint64_t package_index = 0U;
        package_index < g_model_vfs.volume.package_count; ++package_index) {
-    xaios_model_volume_package_t package;
-    if (xaios_model_volume_read_package(&g_model_vfs.volume, package_index,
+    xaios_xai_fs_package_t package;
+    if (xaios_xai_fs_read_package(&g_model_vfs.volume, package_index,
                                         &package) != XAIOS_ENGINE_OK) {
       g_model_scrub.state = XAIOS_MODEL_MAINTENANCE_FAILED;
       ++g_model_scrub.error_count;
       break;
     }
-    if (package.state == XAIOS_MODEL_VOLUME_PACKAGE_QUARANTINED) continue;
+    if (package.state == XAIOS_XAI_FS_PACKAGE_QUARANTINED) continue;
     for (uint64_t relative = 0U; relative < package.chunk_count; ++relative) {
-      xaios_model_volume_chunk_t chunk;
-      if (xaios_model_volume_read_chunk(
+      xaios_xai_fs_chunk_t chunk;
+      if (xaios_xai_fs_read_chunk(
               &g_model_vfs.volume, package.chunk_start + relative, &chunk) !=
           XAIOS_ENGINE_OK) {
         g_model_scrub.state = XAIOS_MODEL_MAINTENANCE_FAILED;
         ++g_model_scrub.error_count;
         break;
       }
-      if ((chunk.flags & XAIOS_MODEL_VOLUME_CHUNK_COMPLETE) != 0U) {
+      if ((chunk.flags & XAIOS_XAI_FS_CHUNK_COMPLETE) != 0U) {
         if (chunk.length > UINT64_MAX - g_model_scrub.total_bytes) {
           g_model_scrub.state = XAIOS_MODEL_MAINTENANCE_FAILED;
           ++g_model_scrub.error_count;
@@ -659,11 +659,11 @@ xaios_status_t vfs_model_scrub_start(xaios_model_scrub_status_t *status) {
   return persist;
 }
 
-xaios_status_t vfs_model_scrub_step(xaios_model_scrub_status_t *status) {
+xaios_status_t vfs_xaifs_scrub_step(xaios_model_scrub_status_t *status) {
   if (status == 0 || g_model_vfs.mounted == 0U) return XAIOS_ERR_INVALID;
-  xaios_model_volume_t snapshot;
-  xaios_model_volume_package_t package;
-  xaios_model_volume_chunk_t chunk;
+  xaios_xai_fs_t snapshot;
+  xaios_xai_fs_package_t package;
+  xaios_xai_fs_chunk_t chunk;
   xaios_spin_lock(&g_model_vfs.lock);
   if (g_model_scrub.state != XAIOS_MODEL_MAINTENANCE_RUNNING) {
     *status = g_model_scrub;
@@ -686,7 +686,7 @@ xaios_status_t vfs_model_scrub_step(xaios_model_scrub_status_t *status) {
       xaios_spin_unlock(&g_model_vfs.lock);
       return persist;
     }
-    xaios_engine_status_t package_status = xaios_model_volume_read_package(
+    xaios_engine_status_t package_status = xaios_xai_fs_read_package(
         &g_model_vfs.volume, g_model_scrub.package_index, &package);
     if (package_status != XAIOS_ENGINE_OK) {
       g_model_scrub.state = XAIOS_MODEL_MAINTENANCE_FAILED;
@@ -696,13 +696,13 @@ xaios_status_t vfs_model_scrub_step(xaios_model_scrub_status_t *status) {
       xaios_spin_unlock(&g_model_vfs.lock);
       return map_engine_status(package_status);
     }
-    if (package.state == XAIOS_MODEL_VOLUME_PACKAGE_QUARANTINED ||
+    if (package.state == XAIOS_XAI_FS_PACKAGE_QUARANTINED ||
         g_model_scrub.chunk_index >= package.chunk_count) {
       ++g_model_scrub.package_index;
       g_model_scrub.chunk_index = 0U;
       continue;
     }
-    xaios_engine_status_t chunk_status = xaios_model_volume_read_chunk(
+    xaios_engine_status_t chunk_status = xaios_xai_fs_read_chunk(
         &g_model_vfs.volume, package.chunk_start + g_model_scrub.chunk_index,
         &chunk);
     if (chunk_status != XAIOS_ENGINE_OK) {
@@ -713,7 +713,7 @@ xaios_status_t vfs_model_scrub_step(xaios_model_scrub_status_t *status) {
       xaios_spin_unlock(&g_model_vfs.lock);
       return map_engine_status(chunk_status);
     }
-    if ((chunk.flags & XAIOS_MODEL_VOLUME_CHUNK_COMPLETE) == 0U) {
+    if ((chunk.flags & XAIOS_XAI_FS_CHUNK_COMPLETE) == 0U) {
       ++g_model_scrub.chunk_index;
       xaios_status_t persist = scrub_persist_locked();
       *status = g_model_scrub;
@@ -726,7 +726,7 @@ xaios_status_t vfs_model_scrub_step(xaios_model_scrub_status_t *status) {
   xaios_spin_unlock(&g_model_vfs.lock);
 
   uint64_t bad_offset = UINT64_MAX;
-  xaios_engine_status_t verified = xaios_model_volume_verify_range(
+  xaios_engine_status_t verified = xaios_xai_fs_verify_range(
       &snapshot, &package, chunk.logical_offset, chunk.length,
       g_model_scrub_scratch, sizeof(g_model_scrub_scratch), &bad_offset);
 
@@ -738,10 +738,10 @@ xaios_status_t vfs_model_scrub_step(xaios_model_scrub_status_t *status) {
     return XAIOS_ERR_BUSY;
   }
   if (verified != XAIOS_ENGINE_OK) {
-    xaios_model_volume_writer_t writer = {
+    xaios_xai_fs_writer_t writer = {
         &g_model_vfs, model_write_at, model_flush};
     xaios_engine_status_t quarantined =
-        xaios_model_volume_quarantine_package(
+        xaios_xai_fs_quarantine_package(
             &g_model_vfs.volume, &package, &writer, g_model_vfs.scratch,
             sizeof(g_model_vfs.scratch));
     memcpy(g_model_scrub.bad_package_id, package.package_id, 32U);
@@ -765,7 +765,7 @@ xaios_status_t vfs_model_scrub_step(xaios_model_scrub_status_t *status) {
   return persist;
 }
 
-xaios_status_t vfs_model_scrub_status(xaios_model_scrub_status_t *status) {
+xaios_status_t vfs_xaifs_scrub_status(xaios_model_scrub_status_t *status) {
   if (status == 0 || g_model_vfs.mounted == 0U) return XAIOS_ERR_INVALID;
   xaios_spin_lock(&g_model_vfs.lock);
   *status = g_model_scrub;
@@ -788,17 +788,17 @@ static xaios_status_t scrub_set_state(uint32_t required, uint32_t next,
   return persist;
 }
 
-xaios_status_t vfs_model_scrub_pause(xaios_model_scrub_status_t *status) {
+xaios_status_t vfs_xaifs_scrub_pause(xaios_model_scrub_status_t *status) {
   return scrub_set_state(XAIOS_MODEL_MAINTENANCE_RUNNING,
                          XAIOS_MODEL_MAINTENANCE_PAUSED, status);
 }
 
-xaios_status_t vfs_model_scrub_resume(xaios_model_scrub_status_t *status) {
+xaios_status_t vfs_xaifs_scrub_resume(xaios_model_scrub_status_t *status) {
   return scrub_set_state(XAIOS_MODEL_MAINTENANCE_PAUSED,
                          XAIOS_MODEL_MAINTENANCE_RUNNING, status);
 }
 
-xaios_status_t vfs_model_scrub_cancel(xaios_model_scrub_status_t *status) {
+xaios_status_t vfs_xaifs_scrub_cancel(xaios_model_scrub_status_t *status) {
   if (g_model_scrub.state == XAIOS_MODEL_MAINTENANCE_RUNNING) {
     return scrub_set_state(XAIOS_MODEL_MAINTENANCE_RUNNING,
                            XAIOS_MODEL_MAINTENANCE_CANCELLED, status);
@@ -833,7 +833,7 @@ static void trim_load(void) {
     return;
   }
   g_model_trim = record.status;
-  klog("modelfs: resumed trim chunk=%lu cursor=%lu processed=%lu eligible=%lu dry_run=%u\n",
+  klog("xaifs: resumed trim chunk=%lu cursor=%lu processed=%lu eligible=%lu dry_run=%u\n",
        g_model_trim.chunk_index, g_model_trim.cursor_offset,
        g_model_trim.trimmed_bytes, g_model_trim.eligible_bytes,
        g_model_trim.dry_run);
@@ -866,13 +866,13 @@ static xaios_status_t trim_extent_for_index(uint64_t index, uint64_t *offset,
                                             uint64_t *length) {
   if (offset == 0 || length == 0) return XAIOS_ERR_INVALID;
   if (index < g_model_vfs.volume.chunk_count) {
-    xaios_model_volume_chunk_t chunk;
-    xaios_engine_status_t engine_status = xaios_model_volume_read_chunk(
+    xaios_xai_fs_chunk_t chunk;
+    xaios_engine_status_t engine_status = xaios_xai_fs_read_chunk(
         &g_model_vfs.volume, index, &chunk);
     if (engine_status != XAIOS_ENGINE_OK) {
       return map_engine_status(engine_status);
     }
-    if ((chunk.flags & XAIOS_MODEL_VOLUME_CHUNK_FREE) == 0U) {
+    if ((chunk.flags & XAIOS_XAI_FS_CHUNK_FREE) == 0U) {
       return XAIOS_ERR_NOT_FOUND;
     }
     return trim_aligned_extent(chunk.physical_offset, chunk.extent_length,
@@ -899,7 +899,7 @@ static int range_contains(uint64_t extent_offset, uint64_t extent_length,
          offset + length <= extent_offset + extent_length;
 }
 
-xaios_status_t vfs_model_trim_start(uint32_t dry_run, uint32_t all_free,
+xaios_status_t vfs_xaifs_trim_start(uint32_t dry_run, uint32_t all_free,
                                     uint64_t offset, uint64_t length,
                                     xaios_model_trim_status_t *status) {
   if (status == 0 || g_model_vfs.mounted == 0U || dry_run > 1U ||
@@ -991,7 +991,7 @@ xaios_status_t vfs_model_trim_start(uint32_t dry_run, uint32_t all_free,
   return persist;
 }
 
-xaios_status_t vfs_model_trim_step(xaios_model_trim_status_t *status) {
+xaios_status_t vfs_xaifs_trim_step(xaios_model_trim_status_t *status) {
   if (status == 0 || g_model_vfs.mounted == 0U) return XAIOS_ERR_INVALID;
   xaios_spin_lock(&g_model_vfs.lock);
   if (g_model_trim.state != XAIOS_MODEL_MAINTENANCE_RUNNING) {
@@ -1107,7 +1107,7 @@ xaios_status_t vfs_model_trim_step(xaios_model_trim_status_t *status) {
   return persist;
 }
 
-xaios_status_t vfs_model_trim_status(xaios_model_trim_status_t *status) {
+xaios_status_t vfs_xaifs_trim_status(xaios_model_trim_status_t *status) {
   if (status == 0 || g_model_vfs.mounted == 0U) return XAIOS_ERR_INVALID;
   xaios_spin_lock(&g_model_vfs.lock);
   *status = g_model_trim;
@@ -1115,7 +1115,7 @@ xaios_status_t vfs_model_trim_status(xaios_model_trim_status_t *status) {
   return XAIOS_OK;
 }
 
-xaios_status_t vfs_model_trim_cancel(xaios_model_trim_status_t *status) {
+xaios_status_t vfs_xaifs_trim_cancel(xaios_model_trim_status_t *status) {
   if (status == 0 || g_model_vfs.mounted == 0U) return XAIOS_ERR_INVALID;
   xaios_spin_lock(&g_model_vfs.lock);
   if (g_model_trim.state != XAIOS_MODEL_MAINTENANCE_RUNNING) {
@@ -1158,26 +1158,26 @@ static xaios_status_t model_stat(void *context, const char *path,
     stat->generation = model->volume.generation;
     return XAIOS_OK;
   }
-  xaios_model_volume_package_t package;
+  xaios_xai_fs_package_t package;
   uint64_t index = 0U;
   uint64_t visible_size = 0U;
   xaios_spin_lock(&model->lock);
   xaios_status_t status = find_package(model, path, &index, &package);
   if (status == XAIOS_OK) {
     visible_size = package.logical_size;
-    if (package.state == XAIOS_MODEL_VOLUME_PACKAGE_STAGING) {
+    if (package.state == XAIOS_XAI_FS_PACKAGE_STAGING) {
       visible_size = 0U;
       for (uint64_t relative = 0U; relative < package.chunk_count;
            ++relative) {
-        xaios_model_volume_chunk_t chunk;
-        xaios_engine_status_t engine_status = xaios_model_volume_read_chunk(
+        xaios_xai_fs_chunk_t chunk;
+        xaios_engine_status_t engine_status = xaios_xai_fs_read_chunk(
             &model->volume, package.chunk_start + relative, &chunk);
         if (engine_status != XAIOS_ENGINE_OK) {
           status = map_engine_status(engine_status);
           break;
         }
         if (chunk.logical_offset != visible_size ||
-            (chunk.flags & XAIOS_MODEL_VOLUME_CHUNK_COMPLETE) == 0U) {
+            (chunk.flags & XAIOS_XAI_FS_CHUNK_COMPLETE) == 0U) {
           break;
         }
         visible_size += chunk.length;
@@ -1232,20 +1232,20 @@ static xaios_status_t model_list(void *context, const char *path, char *buffer,
   uint32_t state = 0U;
   uint64_t used = 0U;
   if (strcmp(path, "/") == 0) {
-    state = XAIOS_MODEL_VOLUME_PACKAGE_ACTIVE;
+    state = XAIOS_XAI_FS_PACKAGE_ACTIVE;
     xaios_status_t status =
         append_listing(buffer, capacity, &used, ".staging\n", 9U);
     if (status != XAIOS_OK) return status;
   } else if (strcmp(path, "/.staging") == 0) {
-    state = XAIOS_MODEL_VOLUME_PACKAGE_STAGING;
+    state = XAIOS_XAI_FS_PACKAGE_STAGING;
   } else {
     return XAIOS_ERR_NOT_FOUND;
   }
   xaios_spin_lock(&model->lock);
   for (uint64_t index = 0U; index < model->volume.package_count; ++index) {
-    xaios_model_volume_package_t package;
+    xaios_xai_fs_package_t package;
     xaios_engine_status_t engine_status =
-        xaios_model_volume_read_package(&model->volume, index, &package);
+        xaios_xai_fs_read_package(&model->volume, index, &package);
     if (engine_status != XAIOS_ENGINE_OK) {
       xaios_spin_unlock(&model->lock);
       return map_engine_status(engine_status);
@@ -1304,9 +1304,9 @@ static xaios_status_t mount_model_device(xaios_block_device_t *device,
           MODEL_READER_MAX_SECTOR_SIZE) {
     return XAIOS_ERR_UNSUPPORTED;
   }
-  xaios_model_volume_reader_t reader = {
+  xaios_xai_fs_reader_t reader = {
       &g_model_vfs, model_read_at, g_model_vfs.device_info.capacity_bytes};
-  xaios_engine_status_t engine_status = xaios_model_volume_open(
+  xaios_engine_status_t engine_status = xaios_xai_fs_open(
       &reader, verify_signature, 0, g_model_vfs.scratch,
       sizeof(g_model_vfs.scratch), &g_model_vfs.volume);
   if (engine_status != XAIOS_ENGINE_OK) {
@@ -1322,7 +1322,7 @@ static xaios_status_t mount_model_device(xaios_block_device_t *device,
   copy_mount_path(g_model_vfs.mount_path, mount_path);
   scrub_load();
   trim_load();
-  klog("modelfs: mounted %s device=%s generation=%lu packages=%lu bytes=%lu policy=%s\n",
+  klog("xaifs: mounted %s device=%s generation=%lu packages=%lu bytes=%lu policy=%s\n",
        mount_path, g_model_vfs.device_info.identifier,
        g_model_vfs.volume.generation,
        g_model_vfs.volume.package_count, g_model_vfs.volume.volume_size,
@@ -1330,7 +1330,7 @@ static xaios_status_t mount_model_device(xaios_block_device_t *device,
   return XAIOS_OK;
 }
 
-xaios_status_t vfs_mount_model_volume(uint32_t virtio_slot) {
+xaios_status_t vfs_mount_xai_fs(uint32_t virtio_slot) {
   if (g_model_vfs.mounted != 0U) return XAIOS_ERR_BUSY;
   virtio_block_handle_t *handle = 0;
   xaios_status_t status = virtio_block_open_slot(virtio_slot, &handle);
@@ -1353,7 +1353,7 @@ xaios_status_t vfs_mount_model_device(const char *device_identifier,
   return status;
 }
 
-xaios_status_t vfs_unmount_model_volume(const char *mount_path) {
+xaios_status_t vfs_unmount_xai_fs(const char *mount_path) {
   if (mount_path == 0 || g_model_vfs.mounted == 0U ||
       strcmp(mount_path, g_model_vfs.mount_path) != 0) {
     return XAIOS_ERR_NOT_FOUND;
@@ -1374,7 +1374,7 @@ xaios_status_t vfs_unmount_model_volume(const char *mount_path) {
   return XAIOS_OK;
 }
 
-xaios_status_t vfs_model_target_mounted(const char *device_identifier,
+xaios_status_t vfs_xaifs_target_mounted(const char *device_identifier,
                                         uint32_t *mounted) {
   if (device_identifier == 0 || mounted == 0) return XAIOS_ERR_INVALID;
   *mounted =
@@ -1400,7 +1400,7 @@ static xaios_status_t staging_path_from_id(const char *package_id,
   return XAIOS_OK;
 }
 
-xaios_status_t vfs_model_verify_staging(const char *package_id,
+xaios_status_t vfs_xaifs_verify_staging(const char *package_id,
                                          uint64_t *generation) {
   char path[82];
   if (generation == 0 || g_model_vfs.mounted == 0U ||
@@ -1413,25 +1413,25 @@ xaios_status_t vfs_model_verify_staging(const char *package_id,
     return XAIOS_ERR_BUSY;
   }
   uint64_t package_index = 0U;
-  xaios_model_volume_package_t package;
+  xaios_xai_fs_package_t package;
   xaios_status_t status =
       find_package(&g_model_vfs, path, &package_index, &package);
   uint64_t bad_offset = UINT64_MAX;
   if (status == XAIOS_OK) {
-    status = map_engine_status(xaios_model_volume_verify_package(
+    status = map_engine_status(xaios_xai_fs_verify_package(
         &g_model_vfs.volume, &package, g_model_vfs.scratch,
         sizeof(g_model_vfs.scratch), &bad_offset));
   }
   if (status == XAIOS_OK) *generation = g_model_vfs.volume.generation;
   xaios_spin_unlock(&g_model_vfs.lock);
   if (status != XAIOS_OK) {
-    klog("modelfs: verify rejected package=%s bad_offset=%lu status=%d\n",
+    klog("xaifs: verify rejected package=%s bad_offset=%lu status=%d\n",
          package_id, bad_offset, (int)status);
   }
   return status;
 }
 
-xaios_status_t vfs_model_activate_staging(const char *package_id,
+xaios_status_t vfs_xaifs_activate_staging(const char *package_id,
                                            uint64_t *generation) {
   char path[82];
   if (generation == 0 || g_model_vfs.mounted == 0U ||
@@ -1444,7 +1444,7 @@ xaios_status_t vfs_model_activate_staging(const char *package_id,
     return XAIOS_ERR_BUSY;
   }
   uint64_t package_index = 0U;
-  xaios_model_volume_package_t package;
+  xaios_xai_fs_package_t package;
   xaios_status_t status =
       find_package(&g_model_vfs, path, &package_index, &package);
   if (status == XAIOS_OK) {
@@ -1458,25 +1458,25 @@ xaios_status_t vfs_model_activate_staging(const char *package_id,
     }
   }
   if (status == XAIOS_OK) {
-    xaios_model_volume_writer_t writer = {
+    xaios_xai_fs_writer_t writer = {
         &g_model_vfs, model_write_at, model_flush};
-    status = map_engine_status(xaios_model_volume_activate_staging(
+    status = map_engine_status(xaios_xai_fs_activate_staging(
         &g_model_vfs.volume, &package, &writer, g_model_vfs.scratch,
         sizeof(g_model_vfs.scratch)));
   }
   if (status == XAIOS_OK) *generation = g_model_vfs.volume.generation;
   xaios_spin_unlock(&g_model_vfs.lock);
   if (status == XAIOS_OK) {
-    klog("modelfs: activated package=%s generation=%lu\n", package_id,
+    klog("xaifs: activated package=%s generation=%lu\n", package_id,
          *generation);
   } else {
-    klog("modelfs: activation rejected package=%s status=%d\n", package_id,
+    klog("xaifs: activation rejected package=%s status=%d\n", package_id,
          (int)status);
   }
   return status;
 }
 
-xaios_status_t vfs_model_mount_status(xaios_model_mount_status_t *status) {
+xaios_status_t vfs_xaifs_mount_status(xaios_model_mount_status_t *status) {
   if (status == 0 || g_model_vfs.mounted == 0U) {
     return status == 0 ? XAIOS_ERR_INVALID : XAIOS_ERR_NOT_FOUND;
   }
@@ -1486,19 +1486,19 @@ xaios_status_t vfs_model_mount_status(xaios_model_mount_status_t *status) {
   status->generation = g_model_vfs.volume.generation;
   status->package_count = g_model_vfs.volume.package_count;
   for (uint64_t index = 0U; index < g_model_vfs.volume.package_count; ++index) {
-    xaios_model_volume_package_t package;
+    xaios_xai_fs_package_t package;
     xaios_engine_status_t engine_status =
-        xaios_model_volume_read_package(&g_model_vfs.volume, index, &package);
+        xaios_xai_fs_read_package(&g_model_vfs.volume, index, &package);
     if (engine_status != XAIOS_ENGINE_OK) {
       xaios_spin_unlock(&g_model_vfs.lock);
       memset(status, 0, sizeof(*status));
       return map_engine_status(engine_status);
     }
-    if (package.state == XAIOS_MODEL_VOLUME_PACKAGE_ACTIVE) {
+    if (package.state == XAIOS_XAI_FS_PACKAGE_ACTIVE) {
       ++status->active_packages;
-    } else if (package.state == XAIOS_MODEL_VOLUME_PACKAGE_STAGING) {
+    } else if (package.state == XAIOS_XAI_FS_PACKAGE_STAGING) {
       ++status->staging_packages;
-    } else if (package.state == XAIOS_MODEL_VOLUME_PACKAGE_QUARANTINED) {
+    } else if (package.state == XAIOS_XAI_FS_PACKAGE_QUARANTINED) {
       ++status->quarantined_packages;
     }
   }
@@ -1507,25 +1507,25 @@ xaios_status_t vfs_model_mount_status(xaios_model_mount_status_t *status) {
   return XAIOS_OK;
 }
 
-void vfs_model_self_test(void) {
+void vfs_xaifs_self_test(void) {
   char listing[128];
   uint64_t listing_size = 0U;
   if (g_model_vfs.mounted == 0U) {
-    klog("modelfs: self-test skipped no volume\n");
+    klog("xaifs: self-test skipped no volume\n");
     return;
   }
   if (vfs_list("/models", listing, sizeof(listing), &listing_size) !=
           XAIOS_OK ||
       listing_size < 9U || strncmp(listing, ".staging\n", 9U) != 0) {
-    klog("modelfs: self-test failed listing\n");
+    klog("xaifs: self-test failed listing\n");
     return;
   }
   if (listing_size == 9U) {
-    klog("modelfs: self-test metadata passed; no active packages\n");
+    klog("xaifs: self-test metadata passed; no active packages\n");
     return;
   }
   if (listing_size < 74U) {
-    klog("modelfs: self-test failed package name\n");
+    klog("xaifs: self-test failed package name\n");
     return;
   }
   char path[73];
@@ -1536,7 +1536,7 @@ void vfs_model_self_test(void) {
   int64_t fd = vfs_open(path, XAIOS_VFS_OPEN_READ, UINT32_C(0x4d4f444c));
   uint8_t data[8192];
   if (fd <= 0 || vfs_stat(path, &stat) != XAIOS_OK) {
-    klog("modelfs: self-test failed package open/stat\n");
+    klog("xaifs: self-test failed package open/stat\n");
     if (fd > 0) (void)vfs_close((uint32_t)fd, UINT32_C(0x4d4f444c));
     return;
   }
@@ -1545,14 +1545,14 @@ void vfs_model_self_test(void) {
   if (count == 0U ||
       vfs_pread((uint32_t)fd, UINT32_C(0x4d4f444c), data, count, offset) !=
           (int64_t)count) {
-    klog("modelfs: self-test failed package read\n");
+    klog("xaifs: self-test failed package read\n");
     (void)vfs_close((uint32_t)fd, UINT32_C(0x4d4f444c));
     return;
   }
   if (vfs_close((uint32_t)fd, UINT32_C(0x4d4f444c)) != XAIOS_OK ||
       vfs_open(path, XAIOS_VFS_OPEN_WRITE, UINT32_C(0x4d4f444c)) !=
           XAIOS_ERR_UNSUPPORTED) {
-    klog("modelfs: self-test failed active immutability policy\n");
+    klog("xaifs: self-test failed active immutability policy\n");
     return;
   }
 
@@ -1561,7 +1561,7 @@ void vfs_model_self_test(void) {
   if (vfs_list("/models/.staging", staging_listing,
                sizeof(staging_listing), &staging_listing_size) != XAIOS_OK ||
       staging_listing_size < MODEL_PACKAGE_NAME_LENGTH + 1U) {
-    klog("modelfs: self-test failed staging listing\n");
+    klog("xaifs: self-test failed staging listing\n");
     return;
   }
   char staging_path[82];
@@ -1596,13 +1596,13 @@ void vfs_model_self_test(void) {
                       XAIOS_VFS_OPEN_TRUNCATE,
                   UINT32_C(0x4d4f444c));
     if (fd <= 0) {
-      klog("modelfs: self-test failed staging open status=%d\n", (int)fd);
+      klog("xaifs: self-test failed staging open status=%d\n", (int)fd);
       return;
     }
     int64_t written = vfs_pwrite((uint32_t)fd, UINT32_C(0x4d4f444c),
                                  data, 4096U, 0U);
     if (written != 4096) {
-      klog("modelfs: self-test failed staging write status=%d\n",
+      klog("xaifs: self-test failed staging write status=%d\n",
            (int)written);
       (void)vfs_close((uint32_t)fd, UINT32_C(0x4d4f444c));
       return;
@@ -1610,7 +1610,7 @@ void vfs_model_self_test(void) {
     xaios_status_t sync_status =
         vfs_fsync((uint32_t)fd, UINT32_C(0x4d4f444c));
     if (sync_status != XAIOS_OK) {
-      klog("modelfs: self-test failed staging fsync status=%d\n",
+      klog("xaifs: self-test failed staging fsync status=%d\n",
            (int)sync_status);
       (void)vfs_close((uint32_t)fd, UINT32_C(0x4d4f444c));
       return;
@@ -1618,7 +1618,7 @@ void vfs_model_self_test(void) {
     xaios_status_t close_status =
         vfs_close((uint32_t)fd, UINT32_C(0x4d4f444c));
     if (close_status != XAIOS_OK) {
-      klog("modelfs: self-test failed staging close status=%d\n",
+      klog("xaifs: self-test failed staging close status=%d\n",
            (int)close_status);
       return;
     }
@@ -1630,22 +1630,22 @@ void vfs_model_self_test(void) {
       vfs_pread((uint32_t)fd, UINT32_C(0x4d4f444c), data, 4096U, 0U) !=
           4096 ||
       vfs_close((uint32_t)fd, UINT32_C(0x4d4f444c)) != XAIOS_OK) {
-    klog("modelfs: self-test failed committed staging read\n");
+    klog("xaifs: self-test failed committed staging read\n");
     if (fd > 0) (void)vfs_close((uint32_t)fd, UINT32_C(0x4d4f444c));
     return;
   }
   for (uint64_t index = 0U; index < 4096U; ++index) {
     if (data[index] != (uint8_t)((index * 7U + 3U) & 0xffU)) {
-      klog("modelfs: self-test failed staging data index=%lu\n", index);
+      klog("xaifs: self-test failed staging data index=%lu\n", index);
       return;
     }
   }
   if (vfs_open(staging_path,
                XAIOS_VFS_OPEN_WRITE | XAIOS_VFS_OPEN_TRUNCATE,
                UINT32_C(0x4d4f444c)) != XAIOS_ERR_BUSY) {
-    klog("modelfs: self-test failed resumable truncate protection\n");
+    klog("xaifs: self-test failed resumable truncate protection\n");
     return;
   }
-  klog("modelfs: signed active read and crash-consistent staging write self-test passed active_bytes=%lu staging_bytes=4096\n",
+  klog("xaifs: signed active read and crash-consistent staging write self-test passed active_bytes=%lu staging_bytes=4096\n",
        count);
 }

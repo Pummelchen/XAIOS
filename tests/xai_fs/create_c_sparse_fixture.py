@@ -4,7 +4,7 @@ import hashlib
 import sys
 from pathlib import Path
 
-from xaios_model_volume import ModelVolume, sparse_zero_manifest
+from xaios_xai_fs import XaiFs, sparse_zero_manifest
 
 
 def main() -> int:
@@ -23,7 +23,7 @@ def main() -> int:
         "portable",
         bytes(range(32)),
     )
-    with ModelVolume.format(
+    with XaiFs.format(
         output,
         128 * gib,
         chunk_size,

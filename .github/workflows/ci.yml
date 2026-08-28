@@ -354,7 +354,7 @@ jobs:
           XAIOS_QEMU_PERSISTENCE_TIMEOUT: "180"
 
   model-storage-interoperability:
-    name: ModelFS SFTP Interoperability
+    name: xaiFS SFTP Interoperability
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -367,10 +367,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang lld llvm meson ninja-build qemu-system-arm qemu-efi-aarch64 mtools openssh-client python3 python3-cryptography
 
-      - name: Run concurrent host and Debian ModelFS lifecycle gate
+      - name: Run concurrent host and Debian xaiFS lifecycle gate
         run: make qemu-model-sftp-gate
 
-      - name: Upload ModelFS evidence
+      - name: Upload xaiFS evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:

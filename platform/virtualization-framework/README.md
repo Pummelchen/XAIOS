@@ -40,7 +40,7 @@ make vmnet-helper                               # privileged vmnet relay
 
 Every path after the boot image is attached as a further volume, in order,
 because the kernel identifies its volumes by position on the bus: the
-deterministic test volume, the persistent xaibootFS volume, the model volume,
+deterministic test volume, the persistent xaibootFS volume, the xaiFS volume,
 the storage administration scratch volume, then the A/B system volume twice.
 That is the order `run-qemu-x86_64.sh` uses and the one the slot mapping in
 the PCI transport expects.
@@ -48,7 +48,7 @@ the PCI transport expects.
 ```sh
 ./build/vz/xaios-vz build/vz/xaios-vz-disk.img \
   build/xaios-virtio-test.img build/vz/persistent.img \
-  build/xaios-model-volume.img build/vz/scratch.img \
+  build/xaios-xaifs.img build/vz/scratch.img \
   build/vz/system-a.img build/vz/system-b.img --memory-mib 4096
 ```
 

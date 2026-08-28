@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <xaios_engine/model_volume.h>
+#include <xaios_engine/xai_fs.h>
 
 typedef xaios_engine_status_t (*xaios_model_file_prefetch_fn)(
     void *context, uint64_t physical_offset, uint64_t length);
@@ -27,15 +27,15 @@ typedef struct xaios_model_file_metrics {
 } xaios_model_file_metrics_t;
 
 typedef struct xaios_model_file {
-  const xaios_model_volume_t *volume;
-  xaios_model_volume_package_t package;
+  const xaios_xai_fs_t *volume;
+  xaios_xai_fs_package_t package;
   uint64_t package_index;
   xaios_model_file_metrics_t metrics;
   uint32_t open;
 } xaios_model_file_t;
 
 xaios_engine_status_t xaios_model_file_open(
-    const xaios_model_volume_t *volume, const uint8_t package_id[32],
+    const xaios_xai_fs_t *volume, const uint8_t package_id[32],
     uint32_t allow_staging, xaios_model_file_t *file);
 xaios_engine_status_t xaios_model_file_pread(
     xaios_model_file_t *file, uint64_t offset, void *destination,

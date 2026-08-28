@@ -27,7 +27,7 @@ def main() -> int:
             "xaios-aarch64.img",
             "xaios-virtio-test.img",
             "xaios-persistent.img",
-            "xaios-model-volume.img",
+            "xaios-xaifs.img",
             "xaios-system.img",
         )
         for name in image_names:
@@ -43,7 +43,7 @@ def main() -> int:
                 "XAIOS_AARCH64_IMAGE": str(temp / "xaios-aarch64.img"),
                 "XAIOS_TEST_BLOCK_IMAGE": str(temp / "xaios-virtio-test.img"),
                 "XAIOS_PERSISTENT_IMAGE": str(temp / "xaios-persistent.img"),
-                "XAIOS_MODEL_VOLUME_IMAGE": str(temp / "xaios-model-volume.img"),
+                "XAIOS_XAI_FS_IMAGE": str(temp / "xaios-xaifs.img"),
                 "XAIOS_SYSTEM_VOLUME_IMAGE": str(temp / "xaios-system.img"),
                 "XAIOS_QEMU_HOSTFWD_PORT": "none",
                 "XAIOS_QEMU_RNG": "none",

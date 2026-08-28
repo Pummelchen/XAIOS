@@ -1,8 +1,8 @@
-#include <xaios/model_volume_admin.h>
+#include <xaios/xai_fs_admin.h>
 
 #include <xaios/gpt.h>
 
-#include <xaios_engine/model_volume.h>
+#include <xaios_engine/xai_fs.h>
 
 #include <string.h>
 
@@ -221,7 +221,7 @@ static void hex_id(const uint8_t id[32], char output[65]) {
 
 static void fill_base_report(
     const xaios_storage_partition_record_t *partition,
-    xaios_model_volume_admin_report_t *report) {
+    xaios_xai_fs_admin_report_t *report) {
   bytes_zero(report, sizeof(*report));
   memcpy(report->target, partition->identifier, sizeof(report->target));
   memcpy(report->partition_uuid, partition->unique_guid,
@@ -233,9 +233,9 @@ static void fill_base_report(
 
 static xaios_status_t fill_volume_report(
     const xaios_storage_partition_record_t *partition,
-    const xaios_model_volume_t *volume,
-    const xaios_model_volume_probe_t *probe,
-    xaios_model_volume_admin_report_t *report) {
+    const xaios_xai_fs_t *volume,
+    const xaios_xai_fs_probe_t *probe,
+    xaios_xai_fs_admin_report_t *report) {
   fill_base_report(partition, report);
   xaios_guid_t volume_guid;
   memcpy(volume_guid.bytes, volume->volume_uuid, sizeof(volume_guid.bytes));
@@ -252,15 +252,15 @@ static xaios_status_t fill_volume_report(
   report->second_superblock_valid = probe->second_valid;
   report->copies_compatible = probe->copies_compatible;
   for (uint64_t index = 0U; index < volume->package_count; ++index) {
-    xaios_model_volume_package_t package;
+    xaios_xai_fs_package_t package;
     xaios_engine_status_t status =
-        xaios_model_volume_read_package(volume, index, &package);
+        xaios_xai_fs_read_package(volume, index, &package);
     if (status != XAIOS_ENGINE_OK) return map_engine_status(status);
-    if (package.state == XAIOS_MODEL_VOLUME_PACKAGE_ACTIVE) {
+    if (package.state == XAIOS_XAI_FS_PACKAGE_ACTIVE) {
       ++report->active_packages;
-    } else if (package.state == XAIOS_MODEL_VOLUME_PACKAGE_STAGING) {
+    } else if (package.state == XAIOS_XAI_FS_PACKAGE_STAGING) {
       ++report->staging_packages;
-    } else if (package.state == XAIOS_MODEL_VOLUME_PACKAGE_QUARANTINED) {
+    } else if (package.state == XAIOS_XAI_FS_PACKAGE_QUARANTINED) {
       ++report->quarantined_packages;
     }
   }
@@ -268,21 +268,21 @@ static xaios_status_t fill_volume_report(
 }
 
 static xaios_status_t open_volume_into(model_admin_io_t *io,
-                                       xaios_model_volume_t *volume,
-                                       xaios_model_volume_probe_t *probe) {
+                                       xaios_xai_fs_t *volume,
+                                       xaios_xai_fs_probe_t *probe) {
   if (io == 0 || volume == 0 || probe == 0) return XAIOS_ERR_INVALID;
-  xaios_model_volume_reader_t reader = {
+  xaios_xai_fs_reader_t reader = {
       io, read_at, io->info.capacity_bytes};
-  xaios_engine_status_t status = xaios_model_volume_probe(
+  xaios_engine_status_t status = xaios_xai_fs_probe(
       &reader, io->scratch, sizeof(io->scratch), probe);
   if (status != XAIOS_ENGINE_OK) return map_engine_status(status);
-  status = xaios_model_volume_open(
+  status = xaios_xai_fs_open(
       &reader, verify_signature, 0, io->scratch, sizeof(io->scratch), volume);
   return map_engine_status(status);
 }
 
-static xaios_status_t open_volume(xaios_model_volume_t *volume,
-                                  xaios_model_volume_probe_t *probe) {
+static xaios_status_t open_volume(xaios_xai_fs_t *volume,
+                                  xaios_xai_fs_probe_t *probe) {
   return open_volume_into(&g_admin_io, volume, probe);
 }
 
@@ -317,21 +317,21 @@ static int parse_package_id(const char *text, uint8_t package_id[32]) {
 }
 
 static xaios_status_t find_package(
-    const xaios_model_volume_t *volume, const uint8_t package_id[32],
-    xaios_model_volume_package_t *package) {
+    const xaios_xai_fs_t *volume, const uint8_t package_id[32],
+    xaios_xai_fs_package_t *package) {
   if (volume == 0 || package_id == 0 || package == 0) return XAIOS_ERR_INVALID;
   for (uint64_t index = 0U; index < volume->package_count; ++index) {
     xaios_engine_status_t status =
-        xaios_model_volume_read_package(volume, index, package);
+        xaios_xai_fs_read_package(volume, index, package);
     if (status != XAIOS_ENGINE_OK) return map_engine_status(status);
     if (memcmp(package->package_id, package_id, 32U) == 0) return XAIOS_OK;
   }
   return XAIOS_ERR_NOT_FOUND;
 }
 
-xaios_status_t model_volume_admin_format_plan(
+xaios_status_t xai_fs_admin_format_plan(
     const char *partition_identifier, uint64_t chunk_size,
-    xaios_model_volume_admin_report_t *report) {
+    xaios_xai_fs_admin_report_t *report) {
   if (report == 0) return XAIOS_ERR_INVALID;
   if (chunk_size == 0U) chunk_size = MODEL_ADMIN_DEFAULT_CHUNK_SIZE;
   xaios_storage_partition_record_t partition;
@@ -340,7 +340,7 @@ xaios_status_t model_volume_admin_format_plan(
   fill_base_report(&partition, report);
   report->chunk_size = chunk_size;
   report->volume_bytes = g_admin_io.info.capacity_bytes;
-  report->allocated_bytes = XAIOS_MODEL_VOLUME_DATA_START;
+  report->allocated_bytes = XAIOS_XAI_FS_DATA_START;
   report->free_bytes = report->volume_bytes > report->allocated_bytes
                            ? report->volume_bytes - report->allocated_bytes
                            : 0U;
@@ -356,8 +356,8 @@ xaios_status_t model_volume_admin_format_plan(
       chunk_size > report->volume_bytes / 4U) {
     status = XAIOS_ERR_INVALID;
   }
-  xaios_model_volume_t existing;
-  xaios_model_volume_probe_t probe;
+  xaios_xai_fs_t existing;
+  xaios_xai_fs_probe_t probe;
   if (status == XAIOS_OK && open_volume(&existing, &probe) == XAIOS_OK &&
       existing.package_count != 0U) {
     status = XAIOS_ERR_BUSY;
@@ -366,11 +366,11 @@ xaios_status_t model_volume_admin_format_plan(
   return status;
 }
 
-xaios_status_t model_volume_admin_format(
+xaios_status_t xai_fs_admin_format(
     const char *partition_identifier, const char *partition_confirmation,
-    uint64_t chunk_size, xaios_model_volume_admin_report_t *report) {
-  xaios_model_volume_admin_report_t plan;
-  xaios_status_t status = model_volume_admin_format_plan(
+    uint64_t chunk_size, xaios_xai_fs_admin_report_t *report) {
+  xaios_xai_fs_admin_report_t plan;
+  xaios_status_t status = xai_fs_admin_format_plan(
       partition_identifier, chunk_size, &plan);
   if (status != XAIOS_OK ||
       confirmation_matches(partition_confirmation, plan.partition_uuid) !=
@@ -388,13 +388,13 @@ xaios_status_t model_volume_admin_format(
   if (chunk_size == 0U) chunk_size = MODEL_ADMIN_DEFAULT_CHUNK_SIZE;
   uint8_t volume_uuid[16];
   derive_volume_uuid(partition.unique_guid, volume_uuid);
-  xaios_model_volume_writer_t writer = {&g_admin_io, write_at, flush};
-  status = map_engine_status(xaios_model_volume_format(
+  xaios_xai_fs_writer_t writer = {&g_admin_io, write_at, flush};
+  status = map_engine_status(xaios_xai_fs_format(
       &writer, g_admin_io.info.capacity_bytes, chunk_size, volume_uuid,
       g_admin_io.scratch, sizeof(g_admin_io.scratch)));
   if (status == XAIOS_OK) {
-    xaios_model_volume_t volume;
-    xaios_model_volume_probe_t probe;
+    xaios_xai_fs_t volume;
+    xaios_xai_fs_probe_t probe;
     status = open_volume(&volume, &probe);
     if (status == XAIOS_OK &&
         (probe.first_valid == 0U || probe.second_valid == 0U ||
@@ -404,7 +404,7 @@ xaios_status_t model_volume_admin_format(
     if (status == XAIOS_OK && report != 0) {
       status = fill_volume_report(&partition, &volume, &probe, report);
       if (status == XAIOS_OK) {
-        report->check_state = XAIOS_MODEL_VOLUME_CHECK_CLEAN;
+        report->check_state = XAIOS_XAI_FS_CHECK_CLEAN;
         report->dry_run = 0U;
       }
     }
@@ -413,56 +413,56 @@ xaios_status_t model_volume_admin_format(
   return status;
 }
 
-xaios_status_t model_volume_admin_fsck(
+xaios_status_t xai_fs_admin_fsck(
     const char *partition_identifier, uint32_t verify_data,
-    xaios_model_volume_admin_report_t *report) {
+    xaios_xai_fs_admin_report_t *report) {
   if (report == 0 || verify_data > 1U) return XAIOS_ERR_INVALID;
   xaios_storage_partition_record_t partition;
   xaios_status_t status = open_partition(partition_identifier, 1U, &partition);
   if (status != XAIOS_OK) return status;
   fill_base_report(&partition, report);
-  xaios_model_volume_reader_t reader = {
+  xaios_xai_fs_reader_t reader = {
       &g_admin_io, read_at, g_admin_io.info.capacity_bytes};
-  xaios_model_volume_probe_t probe;
-  xaios_engine_status_t engine_status = xaios_model_volume_probe(
+  xaios_xai_fs_probe_t probe;
+  xaios_engine_status_t engine_status = xaios_xai_fs_probe(
       &reader, g_admin_io.scratch, sizeof(g_admin_io.scratch), &probe);
   if (engine_status != XAIOS_ENGINE_OK) {
-    report->check_state = XAIOS_MODEL_VOLUME_CHECK_CORRUPT_UNREPAIRABLE;
+    report->check_state = XAIOS_XAI_FS_CHECK_CORRUPT_UNREPAIRABLE;
     close_partition();
     return XAIOS_OK;
   }
-  xaios_model_volume_t volume;
-  engine_status = xaios_model_volume_open(
+  xaios_xai_fs_t volume;
+  engine_status = xaios_xai_fs_open(
       &reader, verify_signature, 0, g_admin_io.scratch,
       sizeof(g_admin_io.scratch), &volume);
   if (engine_status != XAIOS_ENGINE_OK ||
       fill_volume_report(&partition, &volume, &probe, report) != XAIOS_OK) {
-    report->check_state = XAIOS_MODEL_VOLUME_CHECK_CORRUPT_UNREPAIRABLE;
+    report->check_state = XAIOS_XAI_FS_CHECK_CORRUPT_UNREPAIRABLE;
     close_partition();
     return XAIOS_OK;
   }
   report->check_state =
       probe.first_valid != 0U && probe.second_valid != 0U &&
               probe.copies_compatible != 0U
-          ? XAIOS_MODEL_VOLUME_CHECK_CLEAN
-          : XAIOS_MODEL_VOLUME_CHECK_REPAIRABLE;
+          ? XAIOS_XAI_FS_CHECK_CLEAN
+          : XAIOS_XAI_FS_CHECK_REPAIRABLE;
   if (verify_data != 0U) {
     for (uint64_t index = 0U; index < volume.package_count; ++index) {
-      xaios_model_volume_package_t package;
-      engine_status = xaios_model_volume_read_package(&volume, index, &package);
+      xaios_xai_fs_package_t package;
+      engine_status = xaios_xai_fs_read_package(&volume, index, &package);
       if (engine_status != XAIOS_ENGINE_OK) {
-        report->check_state = XAIOS_MODEL_VOLUME_CHECK_CORRUPT_UNREPAIRABLE;
+        report->check_state = XAIOS_XAI_FS_CHECK_CORRUPT_UNREPAIRABLE;
         break;
       }
-      if (package.state == XAIOS_MODEL_VOLUME_PACKAGE_STAGING) {
+      if (package.state == XAIOS_XAI_FS_PACKAGE_STAGING) {
         uint32_t complete = 1U;
         for (uint64_t relative = 0U; relative < package.chunk_count;
              ++relative) {
-          xaios_model_volume_chunk_t chunk;
-          engine_status = xaios_model_volume_read_chunk(
+          xaios_xai_fs_chunk_t chunk;
+          engine_status = xaios_xai_fs_read_chunk(
               &volume, package.chunk_start + relative, &chunk);
           if (engine_status != XAIOS_ENGINE_OK ||
-              (chunk.flags & XAIOS_MODEL_VOLUME_CHUNK_COMPLETE) == 0U) {
+              (chunk.flags & XAIOS_XAI_FS_CHUNK_COMPLETE) == 0U) {
             complete = 0U;
             break;
           }
@@ -470,17 +470,17 @@ xaios_status_t model_volume_admin_fsck(
         if (complete == 0U) continue;
       }
       uint64_t bad_offset = UINT64_MAX;
-      engine_status = xaios_model_volume_verify_package(
+      engine_status = xaios_xai_fs_verify_package(
           &volume, &package, g_admin_io.scratch, sizeof(g_admin_io.scratch),
           &bad_offset);
       if (engine_status != XAIOS_ENGINE_OK) {
-        report->check_state = XAIOS_MODEL_VOLUME_CHECK_CORRUPT_UNREPAIRABLE;
+        report->check_state = XAIOS_XAI_FS_CHECK_CORRUPT_UNREPAIRABLE;
         report->bad_logical_offset = bad_offset;
         hex_id(package.package_id, report->bad_package_id);
         break;
       }
       if (report->checked_bytes > UINT64_MAX - package.logical_size) {
-        report->check_state = XAIOS_MODEL_VOLUME_CHECK_CORRUPT_UNREPAIRABLE;
+        report->check_state = XAIOS_XAI_FS_CHECK_CORRUPT_UNREPAIRABLE;
         break;
       }
       report->checked_bytes += package.logical_size;
@@ -490,9 +490,9 @@ xaios_status_t model_volume_admin_fsck(
   return XAIOS_OK;
 }
 
-xaios_status_t model_volume_admin_repair(
+xaios_status_t xai_fs_admin_repair(
     const char *partition_identifier, const char *partition_confirmation,
-    xaios_model_volume_admin_report_t *report) {
+    xaios_xai_fs_admin_report_t *report) {
   if (report == 0) return XAIOS_ERR_INVALID;
   xaios_storage_partition_record_t partition;
   xaios_status_t status = open_partition(partition_identifier, 1U, &partition);
@@ -502,15 +502,15 @@ xaios_status_t model_volume_admin_repair(
     close_partition();
     return XAIOS_ERR_INVALID;
   }
-  xaios_model_volume_t volume;
-  xaios_model_volume_probe_t probe;
+  xaios_xai_fs_t volume;
+  xaios_xai_fs_probe_t probe;
   status = open_volume(&volume, &probe);
   if (status != XAIOS_OK || probe.first_valid == probe.second_valid) {
     close_partition();
     return status != XAIOS_OK ? status : XAIOS_ERR_UNSUPPORTED;
   }
-  xaios_model_volume_writer_t writer = {&g_admin_io, write_at, flush};
-  status = map_engine_status(xaios_model_volume_repair_superblock(
+  xaios_xai_fs_writer_t writer = {&g_admin_io, write_at, flush};
+  status = map_engine_status(xaios_xai_fs_repair_superblock(
       &volume, &writer, g_admin_io.scratch, sizeof(g_admin_io.scratch)));
   if (status == XAIOS_OK) {
     status = open_volume(&volume, &probe);
@@ -523,17 +523,17 @@ xaios_status_t model_volume_admin_repair(
   if (status == XAIOS_OK) {
     status = fill_volume_report(&partition, &volume, &probe, report);
     if (status == XAIOS_OK) {
-      report->check_state = XAIOS_MODEL_VOLUME_CHECK_REPAIRED;
+      report->check_state = XAIOS_XAI_FS_CHECK_REPAIRED;
     }
   }
   close_partition();
   return status;
 }
 
-xaios_status_t model_volume_admin_repair_from_replica(
+xaios_status_t xai_fs_admin_repair_from_replica(
     const char *target_identifier, const char *target_confirmation,
     const char *replica_identifier, const char *package_id,
-    xaios_model_volume_admin_report_t *report) {
+    xaios_xai_fs_admin_report_t *report) {
   if (report == 0 || target_identifier == 0 || replica_identifier == 0 ||
       package_id == 0 || strcmp(target_identifier, replica_identifier) == 0) {
     return XAIOS_ERR_INVALID;
@@ -568,16 +568,16 @@ xaios_status_t model_volume_admin_repair_from_replica(
     return XAIOS_ERR_INVALID;
   }
 
-  xaios_model_volume_t target;
-  xaios_model_volume_t replica;
-  xaios_model_volume_probe_t target_probe;
-  xaios_model_volume_probe_t replica_probe;
+  xaios_xai_fs_t target;
+  xaios_xai_fs_t replica;
+  xaios_xai_fs_probe_t target_probe;
+  xaios_xai_fs_probe_t replica_probe;
   status = open_volume(&target, &target_probe);
   if (status == XAIOS_OK) {
     status = open_volume_into(&replica_io, &replica, &replica_probe);
   }
-  xaios_model_volume_package_t target_package;
-  xaios_model_volume_package_t replica_package;
+  xaios_xai_fs_package_t target_package;
+  xaios_xai_fs_package_t replica_package;
   if (status == XAIOS_OK) {
     status = find_package(&target, requested_package_id, &target_package);
   }
@@ -585,9 +585,9 @@ xaios_status_t model_volume_admin_repair_from_replica(
     status = find_package(&replica, requested_package_id, &replica_package);
   }
   if (status == XAIOS_OK) {
-    xaios_model_volume_writer_t writer = {&g_admin_io, write_at, flush};
+    xaios_xai_fs_writer_t writer = {&g_admin_io, write_at, flush};
     uint64_t copied = 0U;
-    status = map_engine_status(xaios_model_volume_repair_from_replica(
+    status = map_engine_status(xaios_xai_fs_repair_from_replica(
         &target, &target_package, &replica, &replica_package, &writer,
         g_admin_io.scratch, sizeof(g_admin_io.scratch), &copied));
     if (status == XAIOS_OK) {
@@ -599,7 +599,7 @@ xaios_status_t model_volume_admin_repair_from_replica(
     }
     if (status == XAIOS_OK) {
       report->checked_bytes = copied;
-      report->check_state = XAIOS_MODEL_VOLUME_CHECK_REPAIRED;
+      report->check_state = XAIOS_XAI_FS_CHECK_REPAIRED;
     }
   }
   close_partition_io(&replica_io);
@@ -607,9 +607,9 @@ xaios_status_t model_volume_admin_repair_from_replica(
   return status;
 }
 
-xaios_status_t model_volume_admin_grow(
+xaios_status_t xai_fs_admin_grow(
     const char *partition_identifier, const char *partition_confirmation,
-    uint64_t new_size, xaios_model_volume_admin_report_t *report) {
+    uint64_t new_size, xaios_xai_fs_admin_report_t *report) {
   if (report == 0) return XAIOS_ERR_INVALID;
   xaios_storage_partition_record_t partition;
   xaios_status_t status = open_partition(partition_identifier, 1U, &partition);
@@ -619,16 +619,16 @@ xaios_status_t model_volume_admin_grow(
     close_partition();
     return XAIOS_ERR_INVALID;
   }
-  xaios_model_volume_t volume;
-  xaios_model_volume_probe_t probe;
+  xaios_xai_fs_t volume;
+  xaios_xai_fs_probe_t probe;
   status = open_volume(&volume, &probe);
   if (status != XAIOS_OK) {
     close_partition();
     return status;
   }
   if (new_size == 0U) new_size = g_admin_io.info.capacity_bytes;
-  xaios_model_volume_writer_t writer = {&g_admin_io, write_at, flush};
-  status = map_engine_status(xaios_model_volume_grow(
+  xaios_xai_fs_writer_t writer = {&g_admin_io, write_at, flush};
+  status = map_engine_status(xaios_xai_fs_grow(
       &volume, &writer, new_size, g_admin_io.scratch,
       sizeof(g_admin_io.scratch)));
   if (status == XAIOS_OK) status = open_volume(&volume, &probe);
@@ -637,21 +637,21 @@ xaios_status_t model_volume_admin_grow(
   }
   if (status == XAIOS_OK) {
     status = fill_volume_report(&partition, &volume, &probe, report);
-    if (status == XAIOS_OK) report->check_state = XAIOS_MODEL_VOLUME_CHECK_CLEAN;
+    if (status == XAIOS_OK) report->check_state = XAIOS_XAI_FS_CHECK_CLEAN;
   }
   close_partition();
   return status;
 }
 
-xaios_status_t model_volume_admin_grow_plan(
+xaios_status_t xai_fs_admin_grow_plan(
     const char *partition_identifier, uint64_t new_size,
-    xaios_model_volume_admin_report_t *report) {
+    xaios_xai_fs_admin_report_t *report) {
   if (report == 0) return XAIOS_ERR_INVALID;
   xaios_storage_partition_record_t partition;
   xaios_status_t status = open_partition(partition_identifier, 1U, &partition);
   if (status != XAIOS_OK) return status;
-  xaios_model_volume_t volume;
-  xaios_model_volume_probe_t probe;
+  xaios_xai_fs_t volume;
+  xaios_xai_fs_probe_t probe;
   status = open_volume(&volume, &probe);
   if (status == XAIOS_OK) {
     if (new_size == 0U) new_size = g_admin_io.info.capacity_bytes;
@@ -668,7 +668,7 @@ xaios_status_t model_volume_admin_grow_plan(
       report->free_bytes = new_size - report->allocated_bytes;
       report->generation = volume.generation + 1U;
       report->dry_run = 1U;
-      report->check_state = XAIOS_MODEL_VOLUME_CHECK_CLEAN;
+      report->check_state = XAIOS_XAI_FS_CHECK_CLEAN;
     }
   }
   close_partition();

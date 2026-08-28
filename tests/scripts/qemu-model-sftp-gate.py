@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise resumable ModelFS SFTP against one real XAIOS QEMU guest."""
+"""Exercise resumable xaiFS SFTP against one real XAIOS QEMU guest."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ READY_MARKER = "SSH server: up and running (tcp/22)"
 MODEL_CHUNK_SIZE = 2 * 1024 * 1024
 sys.path.insert(0, str(ROOT / "tools"))
 
-from xaios_model_volume import manifest_for_file
+from xaios_xai_fs import manifest_for_file
 
 
 def reserve_port() -> int:
@@ -496,7 +496,7 @@ def main() -> int:
         ]
         if len(model_devices) != 1:
             raise RuntimeError(
-                f"storage inventory does not identify ModelFS device: {devices!r}"
+                f"storage inventory does not identify xaiFS device: {devices!r}"
             )
         model_device = run_ssh_json(
             key, port, "xaiosctl storage device show /dev/vblk4 --json"
@@ -510,7 +510,7 @@ def main() -> int:
             or records[0].get("discard_supported") != 1
         ):
             raise RuntimeError(
-                f"ModelFS block geometry/capabilities are invalid: {model_device!r}"
+                f"xaiFS block geometry/capabilities are invalid: {model_device!r}"
             )
         filesystems = run_ssh_json(
             key, port, "xaiosctl storage filesystem list --json"
@@ -521,7 +521,7 @@ def main() -> int:
         }
         if (
             mounts.get("/", {}).get("filesystem") != "xaibootFS"
-            or mounts.get("/models", {}).get("filesystem") != "ModelFS"
+            or mounts.get("/models", {}).get("filesystem") != "xaiFS"
             or mounts.get("/models", {}).get("device_identifier")
             != "/dev/vblk4"
             or mounts.get("/models", {}).get("staging_writable") != 1
@@ -543,7 +543,7 @@ def main() -> int:
                 f"resumed staging package has wrong size: {resumed!r}"
             )
         if source.read_bytes() != downloaded.read_bytes():
-            raise RuntimeError("resumed ModelFS SFTP payload mismatch")
+            raise RuntimeError("resumed xaiFS SFTP payload mismatch")
 
         package_id = remote_path.rsplit("/", 1)[1]
         verified = run_ssh(
@@ -573,7 +573,7 @@ def main() -> int:
         if not re.search(r"(?:^|\s)2162688(?:\s|$)", active):
             raise RuntimeError(f"active package has wrong size: {active!r}")
         if source.read_bytes() != active_download.read_bytes():
-            raise RuntimeError("activated ModelFS payload mismatch")
+            raise RuntimeError("activated xaiFS payload mismatch")
         usage = run_ssh_json(
             key, port, "xaiosctl storage usage /models --json"
         )
@@ -591,7 +591,7 @@ def main() -> int:
             or usage_records[0].get("allocated_bytes", 0)
             > usage_records[0].get("total_bytes", 0)
         ):
-            raise RuntimeError(f"activated ModelFS usage is invalid: {usage!r}")
+            raise RuntimeError(f"activated xaiFS usage is invalid: {usage!r}")
 
         for manifest, operation_id in (
             (mac_manifest, 9101),
@@ -645,9 +645,9 @@ def main() -> int:
             f"/work/{debian_download.name}\n",
         )
         if mac_source.read_bytes() != mac_download.read_bytes():
-            raise RuntimeError("concurrent macOS ModelFS download mismatch")
+            raise RuntimeError("concurrent macOS xaiFS download mismatch")
         if debian_source.read_bytes() != debian_download.read_bytes():
-            raise RuntimeError("concurrent Debian ModelFS download mismatch")
+            raise RuntimeError("concurrent Debian xaiFS download mismatch")
 
         cleanup_registered = run_ssh_json(
             key, port, register_command(cleanup_manifest, 9301)
@@ -696,14 +696,14 @@ def main() -> int:
             if scrub.get("state") == "complete":
                 break
             if scrub.get("state") == "failed":
-                raise RuntimeError(f"ModelFS scrub failed: {scrub!r}")
+                raise RuntimeError(f"xaiFS scrub failed: {scrub!r}")
             scrub = run_ssh_json(
                 key, port, "xaiosctl storage scrub /models --status --json"
             )
         else:
-            raise RuntimeError(f"ModelFS scrub did not complete: {scrub!r}")
+            raise RuntimeError(f"xaiFS scrub did not complete: {scrub!r}")
         if scrub.get("checked_bytes") != scrub.get("total_bytes"):
-            raise RuntimeError(f"ModelFS scrub byte accounting is invalid: {scrub!r}")
+            raise RuntimeError(f"xaiFS scrub byte accounting is invalid: {scrub!r}")
 
         trim = run_ssh_json(
             key,
@@ -714,14 +714,14 @@ def main() -> int:
             if trim.get("state") == "complete":
                 break
             if trim.get("state") == "failed":
-                raise RuntimeError(f"ModelFS trim dry-run failed: {trim!r}")
+                raise RuntimeError(f"xaiFS trim dry-run failed: {trim!r}")
             trim = run_ssh_json(
                 key, port, "xaiosctl storage trim-status /models --json"
             )
         else:
-            raise RuntimeError(f"ModelFS trim dry-run did not complete: {trim!r}")
+            raise RuntimeError(f"xaiFS trim dry-run did not complete: {trim!r}")
         if trim.get("dry_run") != 1 or trim.get("processed_bytes", 0) == 0:
-            raise RuntimeError(f"ModelFS trim dry-run reported no work: {trim!r}")
+            raise RuntimeError(f"xaiFS trim dry-run reported no work: {trim!r}")
 
         trim = run_ssh_json(
             key,
@@ -733,14 +733,14 @@ def main() -> int:
             if trim.get("state") == "complete":
                 break
             if trim.get("state") == "failed":
-                raise RuntimeError(f"ModelFS trim failed: {trim!r}")
+                raise RuntimeError(f"xaiFS trim failed: {trim!r}")
             trim = run_ssh_json(
                 key, port, "xaiosctl storage trim-status /models --json"
             )
         else:
-            raise RuntimeError(f"ModelFS trim did not complete: {trim!r}")
+            raise RuntimeError(f"xaiFS trim did not complete: {trim!r}")
         if trim.get("processed_bytes") != trim.get("eligible_bytes"):
-            raise RuntimeError(f"ModelFS trim byte accounting is invalid: {trim!r}")
+            raise RuntimeError(f"xaiFS trim byte accounting is invalid: {trim!r}")
         post_trim_device = run_ssh_json(
             key, port, "xaiosctl storage device show /dev/vblk4 --json"
         )["devices"][0]
@@ -767,11 +767,11 @@ def main() -> int:
     log = log_path.read_text(errors="replace")
     if (
         "staging fsync record=3" not in log
-        or "modelfs: activated package=" not in log
-        or "modelfs: registered dynamic staging package" not in log
-        or "modelfs: cleaned staging package=" not in log
+        or "xaifs: activated package=" not in log
+        or "xaifs: registered dynamic staging package" not in log
+        or "xaifs: cleaned staging package=" not in log
     ):
-        raise RuntimeError("guest log lacks ModelFS commit/activation evidence")
+        raise RuntimeError("guest log lacks xaiFS commit/activation evidence")
     print(
         "qemu-model-sftp: one XAIOS VM passed concurrent "
         f"{'macOS' if platform.system() == 'Darwin' else platform.system()}/Debian 13 "

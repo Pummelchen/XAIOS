@@ -7,7 +7,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <xaios/model_volume_admin.h>
+#include <xaios/xai_fs_admin.h>
 
 typedef struct file_disk {
   FILE *file;
@@ -109,29 +109,29 @@ int main(void) {
   confirm(&create, partition_plan.report.disk_guid);
   assert(storage_admin_partition_create(&create, &partition_plan) == XAIOS_OK);
 
-  xaios_model_volume_admin_report_t report;
+  xaios_xai_fs_admin_report_t report;
   uint64_t writes_before = disk.writes;
-  assert(model_volume_admin_format_plan("/dev/vblk5p1", UINT64_C(2097152),
+  assert(xai_fs_admin_format_plan("/dev/vblk5p1", UINT64_C(2097152),
                                         &report) == XAIOS_OK);
   assert(report.dry_run == 1U && report.volume_bytes == (UINT64_C(64) << 20U));
   assert(disk.writes == writes_before);
-  assert(model_volume_admin_format(
+  assert(xai_fs_admin_format(
              "/dev/vblk5p1", "00000000-0000-0000-0000-000000000001",
              UINT64_C(2097152), &report) == XAIOS_ERR_INVALID);
   assert(disk.writes == writes_before);
-  assert(model_volume_admin_format("/dev/vblk5p1", report.partition_uuid,
+  assert(xai_fs_admin_format("/dev/vblk5p1", report.partition_uuid,
                                    UINT64_C(2097152), &report) == XAIOS_OK);
-  assert(report.check_state == XAIOS_MODEL_VOLUME_CHECK_CLEAN &&
+  assert(report.check_state == XAIOS_XAI_FS_CHECK_CLEAN &&
          report.first_superblock_valid == 1U &&
          report.second_superblock_valid == 1U && report.generation == 1U);
 
-  assert(model_volume_admin_fsck("/dev/vblk5p1", 1U, &report) == XAIOS_OK);
-  assert(report.check_state == XAIOS_MODEL_VOLUME_CHECK_CLEAN &&
+  assert(xai_fs_admin_fsck("/dev/vblk5p1", 1U, &report) == XAIOS_OK);
+  assert(report.check_state == XAIOS_XAI_FS_CHECK_CLEAN &&
          report.checked_bytes == 0U);
 
   xaios_block_device_t *busy = 0;
   assert(block_device_open("/dev/vblk5p1", &busy) == XAIOS_OK);
-  assert(model_volume_admin_format_plan("/dev/vblk5p1", UINT64_C(2097152),
+  assert(xai_fs_admin_format_plan("/dev/vblk5p1", UINT64_C(2097152),
                                         &report) == XAIOS_ERR_BUSY);
   assert(block_device_close(busy) == XAIOS_OK);
 
@@ -146,16 +146,16 @@ int main(void) {
   assert(fseeko(file, (off_t)partition_offset, SEEK_SET) == 0);
   assert(fwrite(&corrupt, 1U, 1U, file) == 1U);
   assert(fflush(file) == 0);
-  assert(model_volume_admin_fsck("/dev/vblk5p1", 0U, &report) == XAIOS_OK);
-  assert(report.check_state == XAIOS_MODEL_VOLUME_CHECK_REPAIRABLE &&
+  assert(xai_fs_admin_fsck("/dev/vblk5p1", 0U, &report) == XAIOS_OK);
+  assert(report.check_state == XAIOS_XAI_FS_CHECK_REPAIRABLE &&
          report.first_superblock_valid == 0U &&
          report.second_superblock_valid == 1U);
-  assert(model_volume_admin_repair(
+  assert(xai_fs_admin_repair(
              "/dev/vblk5p1", "00000000-0000-0000-0000-000000000001",
              &report) == XAIOS_ERR_INVALID);
-  assert(model_volume_admin_repair("/dev/vblk5p1", records[0].unique_guid,
+  assert(xai_fs_admin_repair("/dev/vblk5p1", records[0].unique_guid,
                                    &report) == XAIOS_OK);
-  assert(report.check_state == XAIOS_MODEL_VOLUME_CHECK_REPAIRED &&
+  assert(report.check_state == XAIOS_XAI_FS_CHECK_REPAIRED &&
          report.first_superblock_valid == 1U &&
          report.second_superblock_valid == 1U);
 
@@ -165,23 +165,23 @@ int main(void) {
          XAIOS_OK);
   confirm(&resize, partition_plan.partition.unique_guid);
   assert(storage_admin_partition_resize(&resize, &partition_plan) == XAIOS_OK);
-  assert(model_volume_admin_grow("/dev/vblk5p1",
+  assert(xai_fs_admin_grow("/dev/vblk5p1",
                                  partition_plan.partition.unique_guid, 0U,
                                  &report) == XAIOS_OK);
   assert(report.volume_bytes == (UINT64_C(96) << 20U) &&
          report.generation == 2U);
-  assert(model_volume_admin_grow("/dev/vblk5p1",
+  assert(xai_fs_admin_grow("/dev/vblk5p1",
                                  partition_plan.partition.unique_guid,
                                  UINT64_C(64) << 20U,
                                  &report) == XAIOS_ERR_UNSUPPORTED);
-  assert(model_volume_admin_fsck("/dev/vblk5p1", 1U, &report) == XAIOS_OK);
-  assert(report.check_state == XAIOS_MODEL_VOLUME_CHECK_CLEAN &&
+  assert(xai_fs_admin_fsck("/dev/vblk5p1", 1U, &report) == XAIOS_OK);
+  assert(report.check_state == XAIOS_XAI_FS_CHECK_CLEAN &&
          report.volume_bytes == (UINT64_C(96) << 20U));
 
   assert(storage_admin_detach() == XAIOS_OK);
   assert(block_device_unregister(&device) == XAIOS_OK);
   assert(block_device_test_reset() == XAIOS_OK);
   fclose(file);
-  puts("model-volume-admin: guarded format, fsck, repair, and grow passed");
+  puts("xaifs-admin: guarded format, fsck, repair, and grow passed");
   return 0;
 }

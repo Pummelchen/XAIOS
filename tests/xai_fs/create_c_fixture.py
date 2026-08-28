@@ -4,7 +4,7 @@ import hashlib
 import sys
 from pathlib import Path
 
-from xaios_model_volume import ModelVolume, manifest_for_file
+from xaios_xai_fs import XaiFs, manifest_for_file
 
 
 def main() -> int:
@@ -29,7 +29,7 @@ def main() -> int:
         2 * 1024 * 1024,
         bytes(range(32)),
     )
-    with ModelVolume.format(
+    with XaiFs.format(
         output,
         64 * 1024 * 1024,
         2 * 1024 * 1024,

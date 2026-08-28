@@ -1,8 +1,8 @@
-# ModelFS Recovery
+# xaiFS Recovery
 
 Status: hosted and guest administrative fsck, superblock repair, and offline
 trusted-replica payload repair are implemented. Repair requires unmounted
-target and replica volumes. Mounted ModelFS supports persistent online scrub,
+target and replica volumes. Mounted xaiFS supports persistent online scrub,
 quarantine, staging cleanup and free-extent reuse.
 
 ## Commit ordering
@@ -44,7 +44,7 @@ catalogs or model bytes.
 ## Trusted-replica payload repair
 
 `xaiosctl storage repair-from-replica TARGET REPLICA PACKAGE_ID` repairs a
-quarantined target package from one administrator-selected ModelFS replica.
+quarantined target package from one administrator-selected xaiFS replica.
 It requires `--confirm-partition TARGET_UUID` and a nonzero
 `--operation-id`. Both partitions must be distinct and unmounted.
 
@@ -74,7 +74,7 @@ scrub pins volume UUID and catalog generation, stores progress in
 `/state/modelfs-scrub.bin`, verifies one chunk per cooperative control step, and
 supports pause, resume and cancel. A damaged package is atomically quarantined.
 Quarantined packages cannot activate, open through the portable model-file API,
-or be read through the kernel ModelFS namespace.
+or be read through the kernel xaiFS namespace.
 
 ## Remaining recovery boundaries
 
@@ -83,7 +83,7 @@ or be read through the kernel ModelFS namespace.
 - Scrub uses cooperative chunk-sized work units, not an autonomous background
   thread or a wall-clock bandwidth-rate controller. Reads continue between
   units; registration, cleanup, activation and trim are rejected while it runs.
-- Replica selection is currently an offline, administrator-specified ModelFS
+- Replica selection is currently an offline, administrator-specified xaiFS
   partition. Network retrieval, replica discovery, quorum policy, and
   automatic repair remain out of scope.
 - Production signer private-key custody, operator authorization, trust-root

@@ -1,25 +1,25 @@
-#ifndef XAIOS_MODEL_VOLUME_ADMIN_H
-#define XAIOS_MODEL_VOLUME_ADMIN_H
+#ifndef XAIOS_XAI_FS_ADMIN_H
+#define XAIOS_XAI_FS_ADMIN_H
 
 #include <xaios/status.h>
 #include <xaios/storage_admin.h>
 #include <xaios/types.h>
 
-#define XAIOS_MODEL_VOLUME_PACKAGE_ID_TEXT_MAX 65U
+#define XAIOS_XAI_FS_PACKAGE_ID_TEXT_MAX 65U
 
-typedef enum xaios_model_volume_check_state {
-  XAIOS_MODEL_VOLUME_CHECK_UNKNOWN = 0,
-  XAIOS_MODEL_VOLUME_CHECK_CLEAN = 1,
-  XAIOS_MODEL_VOLUME_CHECK_REPAIRABLE = 2,
-  XAIOS_MODEL_VOLUME_CHECK_CORRUPT_UNREPAIRABLE = 3,
-  XAIOS_MODEL_VOLUME_CHECK_REPAIRED = 4,
-} xaios_model_volume_check_state_t;
+typedef enum xaios_xai_fs_check_state {
+  XAIOS_XAI_FS_CHECK_UNKNOWN = 0,
+  XAIOS_XAI_FS_CHECK_CLEAN = 1,
+  XAIOS_XAI_FS_CHECK_REPAIRABLE = 2,
+  XAIOS_XAI_FS_CHECK_CORRUPT_UNREPAIRABLE = 3,
+  XAIOS_XAI_FS_CHECK_REPAIRED = 4,
+} xaios_xai_fs_check_state_t;
 
-typedef struct xaios_model_volume_admin_report {
+typedef struct xaios_xai_fs_admin_report {
   char target[XAIOS_BLOCK_DEVICE_ID_MAX];
   char partition_uuid[XAIOS_STORAGE_GUID_TEXT_MAX];
   char volume_uuid[XAIOS_STORAGE_GUID_TEXT_MAX];
-  char bad_package_id[XAIOS_MODEL_VOLUME_PACKAGE_ID_TEXT_MAX];
+  char bad_package_id[XAIOS_XAI_FS_PACKAGE_ID_TEXT_MAX];
   uint64_t partition_bytes;
   uint64_t volume_bytes;
   uint64_t allocated_bytes;
@@ -38,29 +38,29 @@ typedef struct xaios_model_volume_admin_report {
   uint32_t check_state;
   uint32_t discard_supported;
   uint32_t dry_run;
-} xaios_model_volume_admin_report_t;
+} xaios_xai_fs_admin_report_t;
 
-xaios_status_t model_volume_admin_format_plan(
+xaios_status_t xai_fs_admin_format_plan(
     const char *partition_identifier, uint64_t chunk_size,
-    xaios_model_volume_admin_report_t *report);
-xaios_status_t model_volume_admin_format(
+    xaios_xai_fs_admin_report_t *report);
+xaios_status_t xai_fs_admin_format(
     const char *partition_identifier, const char *partition_confirmation,
-    uint64_t chunk_size, xaios_model_volume_admin_report_t *report);
-xaios_status_t model_volume_admin_fsck(
+    uint64_t chunk_size, xaios_xai_fs_admin_report_t *report);
+xaios_status_t xai_fs_admin_fsck(
     const char *partition_identifier, uint32_t verify_data,
-    xaios_model_volume_admin_report_t *report);
-xaios_status_t model_volume_admin_repair(
+    xaios_xai_fs_admin_report_t *report);
+xaios_status_t xai_fs_admin_repair(
     const char *partition_identifier, const char *partition_confirmation,
-    xaios_model_volume_admin_report_t *report);
-xaios_status_t model_volume_admin_repair_from_replica(
+    xaios_xai_fs_admin_report_t *report);
+xaios_status_t xai_fs_admin_repair_from_replica(
     const char *target_identifier, const char *target_confirmation,
     const char *replica_identifier, const char *package_id,
-    xaios_model_volume_admin_report_t *report);
-xaios_status_t model_volume_admin_grow(
+    xaios_xai_fs_admin_report_t *report);
+xaios_status_t xai_fs_admin_grow(
     const char *partition_identifier, const char *partition_confirmation,
-    uint64_t new_size, xaios_model_volume_admin_report_t *report);
-xaios_status_t model_volume_admin_grow_plan(
+    uint64_t new_size, xaios_xai_fs_admin_report_t *report);
+xaios_status_t xai_fs_admin_grow_plan(
     const char *partition_identifier, uint64_t new_size,
-    xaios_model_volume_admin_report_t *report);
+    xaios_xai_fs_admin_report_t *report);
 
 #endif

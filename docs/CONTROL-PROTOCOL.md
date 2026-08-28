@@ -39,10 +39,10 @@ and responses to 8,192 bytes. All length arithmetic is bounds-checked.
 | `auth host-key rotate` | 15 | administrator | Mutation result; never key bytes. |
 | `audit show` | 16 | observer | Cursor metadata and bounded audit records. |
 | `model verify` | 17 | administrator | Revalidated signed staging metadata and every uploaded chunk. |
-| `model activate` | 18 | administrator | Replay-protected ModelFS generation publication. |
+| `model activate` | 18 | administrator | Replay-protected xaiFS generation publication. |
 | `storage device list` | 19 | observer | Bounded live block-device records with explicit truncation. |
 | `storage device show` | 20 | observer | One exact device and its capacity, capabilities, counters and errors. |
-| `storage filesystem list` | 21 | observer | Mounted xaibootFS/ModelFS records and usage. |
+| `storage filesystem list` | 21 | observer | Mounted xaibootFS/xaiFS records and usage. |
 | `storage filesystem show` | 22 | observer | One exact mount record; also used by `storage usage`. |
 | `storage partition list` | 23 | observer | Bounded GPT entries. |
 | `storage partition verify` | 24 | observer | Primary/backup validation report. |
@@ -50,10 +50,10 @@ and responses to 8,192 bytes. All length arithmetic is bounds-checked.
 | `storage partition plan-delete/delete` | 27/28 | observer/administrator | Deterministic plan and confirmed GPT deletion. |
 | `storage partition plan-resize/resize` | 29/30 | observer/administrator | Deterministic plan and confirmed GPT resize. |
 | `storage partition repair` | 31 | administrator | Confirmed redundant GPT repair. |
-| `storage format-plan/format` | 32/33 | observer/administrator | ModelFS format plan and confirmed format. |
-| `storage mount/unmount` | 34/35 | administrator | Validated ModelFS mount lifecycle. |
+| `storage format-plan/format` | 32/33 | observer/administrator | xaiFS format plan and confirmed format. |
+| `storage mount/unmount` | 34/35 | administrator | Validated xaiFS mount lifecycle. |
 | `storage fsck/fs-repair` | 36/37 | observer/administrator | Structural check and confirmed redundant-superblock repair. |
-| `storage resize-plan/resize` | 38/39 | observer/administrator | Grow-only ModelFS plan and mutation. |
+| `storage resize-plan/resize` | 38/39 | observer/administrator | Grow-only xaiFS plan and mutation. |
 | `model register` | 40 | administrator | Signed staging allocation/publication. |
 | `storage scrub start/status/pause/resume/cancel` | 41-45 | administrator/observer | Persisted cooperative scrub and quarantine. |
 | `storage trim start/status/cancel` | 46-48 | observer or administrator | Dry-run/status or confirmed free-space discard. |
@@ -76,7 +76,7 @@ lowercase 64-hex expected package ID, then allocates or reuses aligned staging
 extents. `model verify` accepts the package identity. `model activate` accepts
 the same identity plus a nonzero operation ID. Activation first verifies
 the signed manifest and every non-zero chunk, rejects an existing active model
-UUID or live writable staging handle, then publishes a copy-on-write ModelFS
+UUID or live writable staging handle, then publishes a copy-on-write xaiFS
 catalog generation. Active package bytes are immutable. `model cleanup` accepts
 staging packages only and publishes reclaimed extents through a new generation.
 

@@ -507,13 +507,13 @@ hosted-test: engine-cli
 	  -Ikernel/include -Iengine/include -Iengine/src -Iuserspace/include \
 	  -Iuserspace/sshd kernel/dev/block_device.c kernel/lib/crc32.c \
 	  kernel/storage/gpt.c kernel/storage/partition_device.c \
-	  kernel/storage/storage_admin.c kernel/fs/model_volume_admin.c \
-	  engine/src/model_volume.c engine/src/model_volume_writer.c \
+	  kernel/storage/storage_admin.c kernel/fs/xai_fs_admin.c \
+	  engine/src/xai_fs.c engine/src/xai_fs_writer.c \
 	  engine/src/sha256.c userspace/sshd/ssh_crypto.c \
 	  userspace/sshd/tweetnacl_subset.c \
-	  tests/storage/test_model_volume_admin.c \
-	  -o build/hosted/test-model-volume-admin
-	./build/hosted/test-model-volume-admin
+	  tests/storage/test_xai_fs_admin.c \
+	  -o build/hosted/test-xaifs-admin
+	./build/hosted/test-xaifs-admin
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Ikernel/include kernel/fs/vfs.c tests/storage/test_vfs.c \
 	  -o build/hosted/test-vfs
@@ -573,23 +573,23 @@ hosted-test: engine-cli
 	./build/hosted/test-pong-game
 	PYTHONPATH=. python3 -m unittest discover -s tests/system -p 'test_*.py'
 	PYTHONPATH=tools python3 -m unittest discover -s tests/model_v2 -p 'test_*.py'
-	PYTHONPATH=tools python3 -m unittest discover -s tests/model_volume -p 'test_*.py'
-	PYTHONPATH=tools python3 tests/model_volume/create_c_fixture.py \
-	  build/hosted/model-volume-c-fixture.img
-	PYTHONPATH=tools python3 tests/model_volume/create_c_sparse_fixture.py \
-	  build/hosted/model-volume-c-sparse.img
+	PYTHONPATH=tools python3 -m unittest discover -s tests/xai_fs -p 'test_*.py'
+	PYTHONPATH=tools python3 tests/xai_fs/create_c_fixture.py \
+	  build/hosted/xaifs-c-fixture.img
+	PYTHONPATH=tools python3 tests/xai_fs/create_c_sparse_fixture.py \
+	  build/hosted/xaifs-c-sparse.img
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Iengine/include -Iengine/src -Iuserspace/include -Iuserspace/sshd \
 	  -Iuserspace/apps/terminal \
-	  -Ikernel/include engine/src/model_volume.c \
-	  engine/src/model_volume_writer.c engine/src/model_file.c \
+	  -Ikernel/include engine/src/xai_fs.c \
+	  engine/src/xai_fs_writer.c engine/src/model_file.c \
 	  engine/src/sha256.c \
 	  userspace/sshd/ssh_crypto.c userspace/sshd/tweetnacl_subset.c \
-	  tests/model_volume/test_model_volume_reader.c \
-	  -o build/hosted/test-model-volume-reader
-	./build/hosted/test-model-volume-reader \
-	  build/hosted/model-volume-c-fixture.img \
-	  build/hosted/model-volume-c-sparse.img
+	  tests/xai_fs/test_xai_fs_reader.c \
+	  -o build/hosted/test-xaifs-reader
+	./build/hosted/test-xaifs-reader \
+	  build/hosted/xaifs-c-fixture.img \
+	  build/hosted/xaifs-c-sparse.img
 
 hosted-sanitizer-test:
 	ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \

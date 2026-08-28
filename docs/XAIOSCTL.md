@@ -79,7 +79,7 @@ Model package IDs are exactly 64 lowercase hexadecimal characters. Registration
 accepts bounded signed identity fields, checks capacity, allocates or reuses
 aligned extents, and publishes a staging record. Verification rechecks the
 signed identity and all completed chunks without publishing a new generation.
-Activation repeats verification, atomically publishes a copy-on-write ModelFS
+Activation repeats verification, atomically publishes a copy-on-write xaiFS
 generation and records `model.package.activate`. Cleanup accepts incomplete
 staging only and reclaims its extents. These lifecycle mutations are
 administrator-only and replay protected.
@@ -89,11 +89,11 @@ lists are bounded to eight records per response and report `total_count` plus
 `truncated`, so a large server never silently appears to have only the returned
 devices. `mount-status` aliases `storage filesystem list`; `usage` aliases
 `storage filesystem show`. The current guest exposes live block capabilities,
-I/O counters, and the `/` xaibootFS and `/models` ModelFS mounts. Typed guest
+I/O counters, and the `/` xaibootFS and `/models` xaiFS mounts. Typed guest
 operations cover GPT plan/mutation, format/mount/unmount, fsck/repair, grow-only
 resize, persistent scrub/quarantine, offline trusted-replica payload repair,
 and free-only trim/discard. Replica repair requires two distinct unmounted
-ModelFS partitions. It accepts only an active replica whose signed immutable
+xaiFS partitions. It accepts only an active replica whose signed immutable
 package identity and complete payload verify exactly against an existing
 quarantined target package; it never overwrites active bytes. Destructive
 operations require their dedicated capability, administrator role, nonzero
@@ -103,7 +103,7 @@ defaults to all catalog-owned free extents; actual trim requires explicit scope.
 Scrub persists UUID/generation-pinned progress and supports pause, resume and
 cancel. Trim persists its free-extent cursor and supports status/cancel. Both
 use bounded cooperative work units. Registration, activation and cleanup reject
-live ModelFS handles or incompatible maintenance rather than racing metadata.
+live xaiFS handles or incompatible maintenance rather than racing metadata.
 
 ## Roles
 
@@ -201,7 +201,7 @@ make qemu-docker-network-suite
 These gates cover deterministic parsing/rendering, ABI behavior, valid and
 invalid roles/keys/configs, revocation, replay, rollback, persistent and rotated
 host identity, rekey, concurrent session isolation and secret redaction through
-Debian 13 OpenSSH against QEMU. The ModelFS gate additionally runs concurrent
+Debian 13 OpenSSH against QEMU. The xaiFS gate additionally runs concurrent
 native macOS and Debian 13 package lifecycle traffic, cleanup/reuse, scrub and
 VirtIO discard against one guest. They do not prove hostile-network resistance,
 physical-hardware behavior, independent security review or production safety.

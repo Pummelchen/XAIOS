@@ -132,7 +132,7 @@ int xaios_control_query(const void *request_bytes, u64 request_size,
     value.kernel_abi_version = 1U;
     value.control_protocol_version = 1U;
     value.model_package_version = 2U;
-    value.model_volume_version = 1U;
+    value.xai_fs_version = 1U;
     return respond(&request, XAIOS_CONTROL_PAYLOAD_VERSION, &value,
                    sizeof(value), response, response_size, out_size);
   }
@@ -312,7 +312,7 @@ int xaios_control_query(const void *request_bytes, u64 request_size,
     value.metadata.record_count = 1U;
     value.metadata.total_count = 1U;
     strcpy(value.record.mount_path, "/models");
-    strcpy(value.record.filesystem, "ModelFS");
+    strcpy(value.record.filesystem, "xaiFS");
     strcpy(value.record.device_identifier, "/dev/vblk4");
     value.record.total_bytes = 137438953472ULL;
     value.record.allocated_bytes = 2097152ULL;
@@ -414,7 +414,7 @@ int xaios_control_query(const void *request_bytes, u64 request_size,
   if ((request.operation >= XAIOS_CONTROL_OP_STORAGE_FORMAT_PLAN &&
        request.operation <= XAIOS_CONTROL_OP_STORAGE_FS_RESIZE) ||
       request.operation == XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA) {
-    xaios_model_volume_admin_report_user_t value;
+    xaios_xai_fs_admin_report_user_t value;
     xaios_memzero(&value, sizeof(value));
     strcpy(value.target, request.operation == XAIOS_CONTROL_OP_STORAGE_UNMOUNT
                              ? "/models"
@@ -437,8 +437,8 @@ int xaios_control_query(const void *request_bytes, u64 request_size,
     value.check_state =
         request.operation == XAIOS_CONTROL_OP_STORAGE_FS_REPAIR ||
                 request.operation == XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA
-            ? XAIOS_MODEL_VOLUME_CHECK_REPAIRED
-            : XAIOS_MODEL_VOLUME_CHECK_CLEAN;
+            ? XAIOS_XAI_FS_CHECK_REPAIRED
+            : XAIOS_XAI_FS_CHECK_CLEAN;
     value.discard_supported = 1U;
     value.dry_run =
         request.operation == XAIOS_CONTROL_OP_STORAGE_FORMAT_PLAN ||
@@ -570,7 +570,7 @@ int main(void) {
       "\"data\":{\"product_version\":\"9.9.9\","
       "\"build_identifier\":\"host-test\",\"git_commit\":"
       "\"abc123\",\"kernel_abi_version\":1,\"control_protocol_version\":1,"
-      "\"model_package_version\":2,\"model_volume_version\":1,"
+      "\"model_package_version\":2,\"xai_fs_version\":1,"
       "\"architecture\":\"aarch64\",\"build_mode\":\"development\"}}\n";
   static const char expected_error[] =
       "{\"schema_version\":1,\"request_id\":\"2\",\"status\":\"error\","
@@ -657,7 +657,7 @@ int main(void) {
       run_case("xaiosctl storage device show /dev/vblk4", 0,
                "capacity_bytes=137438953472") != 0 ||
       run_case("xaiosctl storage filesystem list --json", 0,
-               "\"filesystem\":\"ModelFS\"") != 0 ||
+               "\"filesystem\":\"xaiFS\"") != 0 ||
       run_case("xaiosctl storage mount-status", 0,
                "mount=/models") != 0 ||
       run_case("xaiosctl storage filesystem show /models --json", 0,

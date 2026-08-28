@@ -1,13 +1,13 @@
-#include <xaios_engine/model_volume.h>
+#include <xaios_engine/xai_fs.h>
 
 #include <string.h>
 
 #include "sha256.h"
 
-#define MODEL_VOLUME_BLOCK_SIZE UINT64_C(4096)
-#define MODEL_VOLUME_WRITER_SCRATCH_MIN UINT64_C(8192)
-#define MODEL_VOLUME_MIN_CHUNK_SIZE UINT64_C(2097152)
-#define MODEL_VOLUME_MAX_CHUNK_SIZE UINT64_C(16777216)
+#define XAI_FS_BLOCK_SIZE UINT64_C(4096)
+#define XAI_FS_WRITER_SCRATCH_MIN UINT64_C(8192)
+#define XAI_FS_MIN_CHUNK_SIZE UINT64_C(2097152)
+#define XAI_FS_MAX_CHUNK_SIZE UINT64_C(16777216)
 
 static void store_le16(uint8_t output[2], uint16_t value) {
   output[0] = (uint8_t)value;
@@ -56,7 +56,7 @@ static xaios_engine_status_t align_up(uint64_t value, uint64_t alignment,
 }
 
 static xaios_engine_status_t read_exact(
-    const xaios_model_volume_t *volume, uint64_t offset, void *destination,
+    const xaios_xai_fs_t *volume, uint64_t offset, void *destination,
     size_t length) {
   uint64_t end = 0U;
   if (volume == NULL || volume->reader.read_at == NULL || destination == NULL ||
@@ -70,7 +70,7 @@ static xaios_engine_status_t read_exact(
 }
 
 static xaios_engine_status_t write_exact(
-    const xaios_model_volume_writer_t *writer, uint64_t offset,
+    const xaios_xai_fs_writer_t *writer, uint64_t offset,
     const void *source, size_t length) {
   if (writer == NULL || writer->write_at == NULL || source == NULL ||
       length == 0U) {
@@ -99,8 +99,8 @@ static int ranges_intersect(uint64_t first_offset, uint64_t first_length,
 }
 
 static int valid_chunk_size(uint64_t value) {
-  return value >= MODEL_VOLUME_MIN_CHUNK_SIZE &&
-         value <= MODEL_VOLUME_MAX_CHUNK_SIZE &&
+  return value >= XAI_FS_MIN_CHUNK_SIZE &&
+         value <= XAI_FS_MAX_CHUNK_SIZE &&
          (value & (value - 1U)) == 0U;
 }
 
@@ -147,7 +147,7 @@ static void encode_ascii(uint8_t output[32], const char *value) {
 }
 
 static void encode_package_record(
-    const xaios_model_volume_package_t *package, uint8_t raw[384]) {
+    const xaios_xai_fs_package_t *package, uint8_t raw[384]) {
   memset(raw, 0, 384U);
   store_le32(raw, package->state);
   store_le64(raw + 8U, package->record_id);
@@ -164,7 +164,7 @@ static void encode_package_record(
   encode_ascii(raw + 256U, package->target_id);
 }
 
-static void encode_chunk_record(const xaios_model_volume_chunk_t *chunk,
+static void encode_chunk_record(const xaios_xai_fs_chunk_t *chunk,
                                 uint8_t raw[128]) {
   memset(raw, 0, 128U);
   store_le64(raw, chunk->record_id);
@@ -177,7 +177,7 @@ static void encode_chunk_record(const xaios_model_volume_chunk_t *chunk,
 }
 
 static xaios_engine_status_t hash_physical_range(
-    const xaios_model_volume_t *volume, uint64_t physical_offset,
+    const xaios_xai_fs_t *volume, uint64_t physical_offset,
     uint64_t length, void *scratch, size_t scratch_size, uint8_t digest[32]) {
   if (scratch == NULL || scratch_size == 0U || length == 0U) {
     return XAIOS_ENGINE_ERR_INVALID;
@@ -201,9 +201,9 @@ static xaios_engine_status_t hash_physical_range(
 }
 
 static xaios_engine_status_t chunk_completion_status(
-    const xaios_model_volume_t *volume,
-    const xaios_model_volume_package_t *package,
-    const xaios_model_volume_chunk_t *chunk, uint64_t offset, uint64_t length,
+    const xaios_xai_fs_t *volume,
+    const xaios_xai_fs_package_t *package,
+    const xaios_xai_fs_chunk_t *chunk, uint64_t offset, uint64_t length,
     void *scratch, size_t scratch_size, int *should_complete,
     uint8_t learned_checksum[32]) {
   if (should_complete == NULL || learned_checksum == NULL) {
@@ -212,13 +212,13 @@ static xaios_engine_status_t chunk_completion_status(
   *should_complete = 0;
   memset(learned_checksum, 0, 32U);
   if (chunk->record_id != package->record_id ||
-      (chunk->flags & (XAIOS_MODEL_VOLUME_CHUNK_COMPLETE |
-                       XAIOS_MODEL_VOLUME_CHUNK_ZERO |
-                       XAIOS_MODEL_VOLUME_CHUNK_FREE)) != 0U ||
+      (chunk->flags & (XAIOS_XAI_FS_CHUNK_COMPLETE |
+                       XAIOS_XAI_FS_CHUNK_ZERO |
+                       XAIOS_XAI_FS_CHUNK_FREE)) != 0U ||
       !ranges_intersect(chunk->logical_offset, chunk->length, offset, length)) {
     return XAIOS_ENGINE_OK;
   }
-  if ((chunk->flags & XAIOS_MODEL_VOLUME_CHUNK_HASH_PENDING) != 0U &&
+  if ((chunk->flags & XAIOS_XAI_FS_CHUNK_HASH_PENDING) != 0U &&
       (offset > chunk->logical_offset ||
        length < chunk->length ||
        offset + length < chunk->logical_offset + chunk->length)) {
@@ -229,7 +229,7 @@ static xaios_engine_status_t chunk_completion_status(
       volume, chunk->physical_offset, chunk->length, scratch, scratch_size,
       digest);
   if (status != XAIOS_ENGINE_OK) return status;
-  if ((chunk->flags & XAIOS_MODEL_VOLUME_CHUNK_HASH_PENDING) != 0U) {
+  if ((chunk->flags & XAIOS_XAI_FS_CHUNK_HASH_PENDING) != 0U) {
     memcpy(learned_checksum, digest, sizeof(digest));
     *should_complete = 1;
   } else {
@@ -238,15 +238,15 @@ static xaios_engine_status_t chunk_completion_status(
   return XAIOS_ENGINE_OK;
 }
 
-xaios_engine_status_t xaios_model_volume_pwrite_staging(
-    const xaios_model_volume_t *volume,
-    const xaios_model_volume_package_t *package,
-    const xaios_model_volume_writer_t *writer, uint64_t offset,
+xaios_engine_status_t xaios_xai_fs_pwrite_staging(
+    const xaios_xai_fs_t *volume,
+    const xaios_xai_fs_package_t *package,
+    const xaios_xai_fs_writer_t *writer, uint64_t offset,
     const void *source, size_t length) {
   uint64_t end = 0U;
   if (volume == NULL || package == NULL || writer == NULL ||
       writer->write_at == NULL || source == NULL || length == 0U ||
-      package->state != XAIOS_MODEL_VOLUME_PACKAGE_STAGING ||
+      package->state != XAIOS_XAI_FS_PACKAGE_STAGING ||
       checked_add(offset, (uint64_t)length, &end) != XAIOS_ENGINE_OK ||
       end > package->logical_size) {
     return XAIOS_ENGINE_ERR_INVALID;
@@ -256,8 +256,8 @@ xaios_engine_status_t xaios_model_volume_pwrite_staging(
   uint64_t remaining = (uint64_t)length;
   for (uint64_t relative = 0U;
        relative < package->chunk_count && remaining != 0U; ++relative) {
-    xaios_model_volume_chunk_t chunk;
-    xaios_engine_status_t status = xaios_model_volume_read_chunk(
+    xaios_xai_fs_chunk_t chunk;
+    xaios_engine_status_t status = xaios_xai_fs_read_chunk(
         volume, package->chunk_start + relative, &chunk);
     if (status != XAIOS_ENGINE_OK) return status;
     uint64_t chunk_end = 0U;
@@ -267,9 +267,9 @@ xaios_engine_status_t xaios_model_volume_pwrite_staging(
     }
     if (cursor >= chunk_end) continue;
     if (cursor < chunk.logical_offset || chunk.record_id != package->record_id ||
-        (chunk.flags & (XAIOS_MODEL_VOLUME_CHUNK_COMPLETE |
-                        XAIOS_MODEL_VOLUME_CHUNK_ZERO |
-                        XAIOS_MODEL_VOLUME_CHUNK_FREE)) != 0U) {
+        (chunk.flags & (XAIOS_XAI_FS_CHUNK_COMPLETE |
+                        XAIOS_XAI_FS_CHUNK_ZERO |
+                        XAIOS_XAI_FS_CHUNK_FREE)) != 0U) {
       return XAIOS_ENGINE_ERR_CAPABILITY;
     }
     uint64_t within = cursor - chunk.logical_offset;
@@ -285,7 +285,7 @@ xaios_engine_status_t xaios_model_volume_pwrite_staging(
   return remaining == 0U ? XAIOS_ENGINE_OK : XAIOS_ENGINE_ERR_INVALID;
 }
 
-static void encode_catalog_header(const xaios_model_volume_t *volume,
+static void encode_catalog_header(const xaios_xai_fs_t *volume,
                                   uint64_t generation, uint64_t data_tail,
                                   uint8_t raw[256]) {
   memset(raw, 0, 256U);
@@ -294,12 +294,12 @@ static void encode_catalog_header(const xaios_model_volume_t *volume,
   store_le16(raw + 10U, 0U);
   raw[12] = 1U;
   raw[13] = 1U;
-  store_le64(raw + 16U, XAIOS_MODEL_VOLUME_CATALOG_HEADER_SIZE);
+  store_le64(raw + 16U, XAIOS_XAI_FS_CATALOG_HEADER_SIZE);
   store_le64(raw + 24U, generation);
   memcpy(raw + 32U, volume->volume_uuid, 16U);
-  store_le64(raw + 48U, XAIOS_MODEL_VOLUME_PACKAGE_RECORD_SIZE);
+  store_le64(raw + 48U, XAIOS_XAI_FS_PACKAGE_RECORD_SIZE);
   store_le64(raw + 56U, volume->package_count);
-  store_le64(raw + 64U, XAIOS_MODEL_VOLUME_CHUNK_RECORD_SIZE);
+  store_le64(raw + 64U, XAIOS_XAI_FS_CHUNK_RECORD_SIZE);
   store_le64(raw + 72U, volume->chunk_count);
   store_le64(raw + 80U, volume->package_offset);
   store_le64(raw + 88U, volume->chunk_offset);
@@ -311,7 +311,7 @@ static void encode_catalog_header(const xaios_model_volume_t *volume,
   memcpy(raw + 144U, digest, sizeof(digest));
 }
 
-static void encode_superblock(const xaios_model_volume_t *volume,
+static void encode_superblock(const xaios_xai_fs_t *volume,
                               uint64_t generation, uint64_t catalog_offset,
                               uint64_t catalog_generation,
                               uint64_t data_tail,
@@ -323,8 +323,8 @@ static void encode_superblock(const xaios_model_volume_t *volume,
   store_le16(raw + 10U, 0U);
   raw[12] = 1U;
   raw[13] = 1U;
-  store_le64(raw + 16U, XAIOS_MODEL_VOLUME_SUPERBLOCK_SIZE);
-  store_le64(raw + 24U, MODEL_VOLUME_BLOCK_SIZE);
+  store_le64(raw + 16U, XAIOS_XAI_FS_SUPERBLOCK_SIZE);
+  store_le64(raw + 24U, XAI_FS_BLOCK_SIZE);
   store_le64(raw + 32U, volume->chunk_size);
   store_le64(raw + 40U, volume->volume_size);
   store_le64(raw + 48U, generation);
@@ -339,30 +339,30 @@ static void encode_superblock(const xaios_model_volume_t *volume,
   memcpy(raw + 136U, digest, sizeof(digest));
 }
 
-xaios_engine_status_t xaios_model_volume_format(
-    const xaios_model_volume_writer_t *writer, uint64_t volume_size,
+xaios_engine_status_t xaios_xai_fs_format(
+    const xaios_xai_fs_writer_t *writer, uint64_t volume_size,
     uint64_t chunk_size, const uint8_t volume_uuid[16], void *scratch,
     size_t scratch_size) {
   if (writer == NULL || writer->write_at == NULL || writer->flush == NULL ||
-      scratch == NULL || scratch_size < MODEL_VOLUME_WRITER_SCRATCH_MIN ||
+      scratch == NULL || scratch_size < XAI_FS_WRITER_SCRATCH_MIN ||
       !valid_chunk_size(chunk_size) || !valid_uuid(volume_uuid) ||
-      volume_size < XAIOS_MODEL_VOLUME_DATA_START ||
+      volume_size < XAIOS_XAI_FS_DATA_START ||
       chunk_size > volume_size / 4U) {
     return XAIOS_ENGINE_ERR_INVALID;
   }
 
-  xaios_model_volume_t volume;
+  xaios_xai_fs_t volume;
   memset(&volume, 0, sizeof(volume));
   memcpy(volume.volume_uuid, volume_uuid, sizeof(volume.volume_uuid));
   volume.volume_size = volume_size;
   volume.generation = 1U;
-  volume.catalog_offset = 2U * XAIOS_MODEL_VOLUME_SUPERBLOCK_SIZE;
-  volume.catalog_length = XAIOS_MODEL_VOLUME_CATALOG_HEADER_SIZE;
+  volume.catalog_offset = 2U * XAIOS_XAI_FS_SUPERBLOCK_SIZE;
+  volume.catalog_length = XAIOS_XAI_FS_CATALOG_HEADER_SIZE;
   volume.catalog_generation = 1U;
-  volume.data_tail = XAIOS_MODEL_VOLUME_DATA_START;
+  volume.data_tail = XAIOS_XAI_FS_DATA_START;
   volume.chunk_size = chunk_size;
-  volume.package_offset = XAIOS_MODEL_VOLUME_CATALOG_HEADER_SIZE;
-  volume.chunk_offset = XAIOS_MODEL_VOLUME_CATALOG_HEADER_SIZE;
+  volume.package_offset = XAIOS_XAI_FS_CATALOG_HEADER_SIZE;
+  volume.chunk_offset = XAIOS_XAI_FS_CATALOG_HEADER_SIZE;
 
   uint64_t catalog_end = 0U;
   if (checked_add(volume.catalog_offset, volume.catalog_length,
@@ -372,7 +372,7 @@ xaios_engine_status_t xaios_model_volume_format(
   }
 
   uint8_t *superblock = (uint8_t *)scratch;
-  uint8_t *catalog = superblock + XAIOS_MODEL_VOLUME_SUPERBLOCK_SIZE;
+  uint8_t *catalog = superblock + XAIOS_XAI_FS_SUPERBLOCK_SIZE;
   encode_catalog_header(&volume, volume.catalog_generation, volume.data_tail,
                         catalog);
   sha256(catalog, (size_t)volume.catalog_length, volume.catalog_hash);
@@ -385,20 +385,20 @@ xaios_engine_status_t xaios_model_volume_format(
   if (status != XAIOS_ENGINE_OK) return status;
   status = writer->flush(writer->context);
   if (status != XAIOS_ENGINE_OK) return status;
-  status = write_exact(writer, XAIOS_MODEL_VOLUME_SUPERBLOCK_SIZE,
-                       superblock, (size_t)XAIOS_MODEL_VOLUME_SUPERBLOCK_SIZE);
+  status = write_exact(writer, XAIOS_XAI_FS_SUPERBLOCK_SIZE,
+                       superblock, (size_t)XAIOS_XAI_FS_SUPERBLOCK_SIZE);
   if (status != XAIOS_ENGINE_OK) return status;
   status = writer->flush(writer->context);
   if (status != XAIOS_ENGINE_OK) return status;
   status = write_exact(writer, 0U, superblock,
-                       (size_t)XAIOS_MODEL_VOLUME_SUPERBLOCK_SIZE);
+                       (size_t)XAIOS_XAI_FS_SUPERBLOCK_SIZE);
   if (status != XAIOS_ENGINE_OK) return status;
   return writer->flush(writer->context);
 }
 
-xaios_engine_status_t xaios_model_volume_grow(
-    xaios_model_volume_t *volume,
-    const xaios_model_volume_writer_t *writer, uint64_t new_volume_size,
+xaios_engine_status_t xaios_xai_fs_grow(
+    xaios_xai_fs_t *volume,
+    const xaios_xai_fs_writer_t *writer, uint64_t new_volume_size,
     void *scratch, size_t scratch_size) {
   if (volume == NULL || writer == NULL || writer->write_at == NULL ||
       writer->flush == NULL || scratch == NULL || scratch_size < 4096U ||
@@ -410,7 +410,7 @@ xaios_engine_status_t xaios_model_volume_grow(
                : XAIOS_ENGINE_ERR_INVALID;
   }
   if (volume->generation == UINT64_MAX) return XAIOS_ENGINE_ERR_OVERFLOW;
-  xaios_model_volume_t grown = *volume;
+  xaios_xai_fs_t grown = *volume;
   grown.volume_size = new_volume_size;
   grown.generation = volume->generation + 1U;
   uint32_t next_slot = 1U - volume->selected_superblock;
@@ -419,8 +419,8 @@ xaios_engine_status_t xaios_model_volume_grow(
                     grown.catalog_generation, grown.data_tail,
                     grown.catalog_hash, superblock);
   xaios_engine_status_t status = write_exact(
-      writer, (uint64_t)next_slot * XAIOS_MODEL_VOLUME_SUPERBLOCK_SIZE,
-      superblock, (size_t)XAIOS_MODEL_VOLUME_SUPERBLOCK_SIZE);
+      writer, (uint64_t)next_slot * XAIOS_XAI_FS_SUPERBLOCK_SIZE,
+      superblock, (size_t)XAIOS_XAI_FS_SUPERBLOCK_SIZE);
   if (status != XAIOS_ENGINE_OK) return status;
   status = writer->flush(writer->context);
   if (status != XAIOS_ENGINE_OK) return status;
@@ -430,9 +430,9 @@ xaios_engine_status_t xaios_model_volume_grow(
   return XAIOS_ENGINE_OK;
 }
 
-xaios_engine_status_t xaios_model_volume_repair_superblock(
-    xaios_model_volume_t *volume,
-    const xaios_model_volume_writer_t *writer, void *scratch,
+xaios_engine_status_t xaios_xai_fs_repair_superblock(
+    xaios_xai_fs_t *volume,
+    const xaios_xai_fs_writer_t *writer, void *scratch,
     size_t scratch_size) {
   if (volume == NULL || writer == NULL || writer->write_at == NULL ||
       writer->flush == NULL || scratch == NULL || scratch_size < 4096U) {
@@ -444,20 +444,20 @@ xaios_engine_status_t xaios_model_volume_repair_superblock(
                     volume->catalog_generation, volume->data_tail,
                     volume->catalog_hash, superblock);
   xaios_engine_status_t status = write_exact(
-      writer, (uint64_t)repair_slot * XAIOS_MODEL_VOLUME_SUPERBLOCK_SIZE,
-      superblock, (size_t)XAIOS_MODEL_VOLUME_SUPERBLOCK_SIZE);
+      writer, (uint64_t)repair_slot * XAIOS_XAI_FS_SUPERBLOCK_SIZE,
+      superblock, (size_t)XAIOS_XAI_FS_SUPERBLOCK_SIZE);
   if (status != XAIOS_ENGINE_OK) return status;
   return writer->flush(writer->context);
 }
 
-xaios_engine_status_t xaios_model_volume_register_staging(
-    xaios_model_volume_t *volume,
-    const xaios_model_volume_package_t *package_template,
-    const xaios_model_volume_writer_t *writer, void *scratch,
-    size_t scratch_size, xaios_model_volume_package_t *registered_package) {
+xaios_engine_status_t xaios_xai_fs_register_staging(
+    xaios_xai_fs_t *volume,
+    const xaios_xai_fs_package_t *package_template,
+    const xaios_xai_fs_writer_t *writer, void *scratch,
+    size_t scratch_size, xaios_xai_fs_package_t *registered_package) {
   if (volume == NULL || package_template == NULL || writer == NULL ||
       writer->write_at == NULL || writer->flush == NULL || scratch == NULL ||
-      scratch_size < MODEL_VOLUME_WRITER_SCRATCH_MIN ||
+      scratch_size < XAI_FS_WRITER_SCRATCH_MIN ||
       registered_package == NULL ||
       !bytes_nonzero(package_template->model_uuid, 16U) ||
       !bytes_nonzero(package_template->package_id, 32U) ||
@@ -479,9 +479,9 @@ xaios_engine_status_t xaios_model_volume_register_staging(
 
   uint64_t record_id = 1U;
   for (uint64_t index = 0U; index < volume->package_count; ++index) {
-    xaios_model_volume_package_t current;
+    xaios_xai_fs_package_t current;
     xaios_engine_status_t status =
-        xaios_model_volume_read_package(volume, index, &current);
+        xaios_xai_fs_read_package(volume, index, &current);
     if (status != XAIOS_ENGINE_OK) return status;
     if (memcmp(current.package_id, package_template->package_id, 32U) == 0) {
       return XAIOS_ENGINE_ERR_CAPABILITY;
@@ -498,19 +498,19 @@ xaios_engine_status_t xaios_model_volume_register_staging(
     ++added_chunks;
   }
   uint64_t required_data_bytes = 0U;
-  if (align_up(package_template->logical_size, MODEL_VOLUME_BLOCK_SIZE,
+  if (align_up(package_template->logical_size, XAI_FS_BLOCK_SIZE,
                &required_data_bytes) != XAIOS_ENGINE_OK) {
     return XAIOS_ENGINE_ERR_OVERFLOW;
   }
   uint64_t selected_free_index = UINT64_MAX;
-  xaios_model_volume_chunk_t selected_free;
+  xaios_xai_fs_chunk_t selected_free;
   memset(&selected_free, 0, sizeof(selected_free));
   for (uint64_t index = 0U; index < volume->chunk_count; ++index) {
-    xaios_model_volume_chunk_t current;
+    xaios_xai_fs_chunk_t current;
     xaios_engine_status_t status =
-        xaios_model_volume_read_chunk(volume, index, &current);
+        xaios_xai_fs_read_chunk(volume, index, &current);
     if (status != XAIOS_ENGINE_OK) return status;
-    if ((current.flags & XAIOS_MODEL_VOLUME_CHUNK_FREE) != 0U &&
+    if ((current.flags & XAIOS_XAI_FS_CHUNK_FREE) != 0U &&
         current.extent_length >= required_data_bytes) {
       selected_free_index = index;
       selected_free = current;
@@ -535,11 +535,11 @@ xaios_engine_status_t xaios_model_volume_register_staging(
                   added_chunks, &owned_chunk_count) != XAIOS_ENGINE_OK ||
       checked_add(new_free_count, owned_chunk_count, &new_chunk_count) !=
           XAIOS_ENGINE_OK ||
-      checked_multiply(new_package_count, XAIOS_MODEL_VOLUME_PACKAGE_RECORD_SIZE,
+      checked_multiply(new_package_count, XAIOS_XAI_FS_PACKAGE_RECORD_SIZE,
                        &package_bytes) != XAIOS_ENGINE_OK ||
-      checked_multiply(new_chunk_count, XAIOS_MODEL_VOLUME_CHUNK_RECORD_SIZE,
+      checked_multiply(new_chunk_count, XAIOS_XAI_FS_CHUNK_RECORD_SIZE,
                        &chunk_bytes) != XAIOS_ENGINE_OK ||
-      checked_add(XAIOS_MODEL_VOLUME_CATALOG_HEADER_SIZE, package_bytes,
+      checked_add(XAIOS_XAI_FS_CATALOG_HEADER_SIZE, package_bytes,
                   &catalog_length) != XAIOS_ENGINE_OK ||
       checked_add(catalog_length, chunk_bytes, &catalog_length) !=
           XAIOS_ENGINE_OK) {
@@ -559,17 +559,17 @@ xaios_engine_status_t xaios_model_volume_register_staging(
   uint64_t catalog_offset = 0U;
   uint64_t catalog_end = 0U;
   uint64_t final_tail = 0U;
-  if (align_up(data_end, MODEL_VOLUME_BLOCK_SIZE, &catalog_offset) !=
+  if (align_up(data_end, XAI_FS_BLOCK_SIZE, &catalog_offset) !=
           XAIOS_ENGINE_OK ||
       checked_add(catalog_offset, catalog_length, &catalog_end) !=
           XAIOS_ENGINE_OK ||
-      align_up(catalog_end, MODEL_VOLUME_BLOCK_SIZE, &final_tail) !=
+      align_up(catalog_end, XAI_FS_BLOCK_SIZE, &final_tail) !=
           XAIOS_ENGINE_OK ||
       final_tail > volume->volume_size) {
     return XAIOS_ENGINE_ERR_CAPABILITY;
   }
 
-  xaios_model_volume_t next = *volume;
+  xaios_xai_fs_t next = *volume;
   next.generation = volume->generation + 1U;
   next.catalog_generation = volume->catalog_generation + 1U;
   next.catalog_offset = catalog_offset;
@@ -578,8 +578,8 @@ xaios_engine_status_t xaios_model_volume_register_staging(
   next.package_count = new_package_count;
   next.chunk_count = new_chunk_count;
   next.free_extent_count = new_free_count;
-  next.package_offset = XAIOS_MODEL_VOLUME_CATALOG_HEADER_SIZE;
-  next.chunk_offset = XAIOS_MODEL_VOLUME_CATALOG_HEADER_SIZE + package_bytes;
+  next.package_offset = XAIOS_XAI_FS_CATALOG_HEADER_SIZE;
+  next.chunk_offset = XAIOS_XAI_FS_CATALOG_HEADER_SIZE + package_bytes;
 
   uint8_t header[256];
   encode_catalog_header(&next, next.catalog_generation, final_tail, header);
@@ -594,8 +594,8 @@ xaios_engine_status_t xaios_model_volume_register_staging(
   uint64_t destination = catalog_offset + next.package_offset;
   uint64_t owned_cursor = new_free_count;
   for (uint64_t index = 0U; index < volume->package_count; ++index) {
-    xaios_model_volume_package_t current;
-    status = xaios_model_volume_read_package(volume, index, &current);
+    xaios_xai_fs_package_t current;
+    status = xaios_xai_fs_read_package(volume, index, &current);
     if (status != XAIOS_ENGINE_OK) return status;
     current.chunk_start = owned_cursor;
     if (checked_add(owned_cursor, current.chunk_count, &owned_cursor) !=
@@ -609,8 +609,8 @@ xaios_engine_status_t xaios_model_volume_register_staging(
     xaios_engine_sha256_update(&catalog_sha, raw_package, sizeof(raw_package));
   }
 
-  xaios_model_volume_package_t package = *package_template;
-  package.state = XAIOS_MODEL_VOLUME_PACKAGE_STAGING;
+  xaios_xai_fs_package_t package = *package_template;
+  package.state = XAIOS_XAI_FS_PACKAGE_STAGING;
   package.record_id = record_id;
   package.chunk_size = volume->chunk_size;
   package.chunk_start = owned_cursor;
@@ -626,10 +626,10 @@ xaios_engine_status_t xaios_model_volume_register_staging(
   destination = catalog_offset + next.chunk_offset;
   uint64_t written_chunks = 0U;
   for (uint64_t index = 0U; index < volume->chunk_count; ++index) {
-    xaios_model_volume_chunk_t current;
-    status = xaios_model_volume_read_chunk(volume, index, &current);
+    xaios_xai_fs_chunk_t current;
+    status = xaios_xai_fs_read_chunk(volume, index, &current);
     if (status != XAIOS_ENGINE_OK) return status;
-    if ((current.flags & XAIOS_MODEL_VOLUME_CHUNK_FREE) == 0U) continue;
+    if ((current.flags & XAIOS_XAI_FS_CHUNK_FREE) == 0U) continue;
     if (index == selected_free_index) {
       if (current.extent_length == required_data_bytes) continue;
       current.physical_offset += required_data_bytes;
@@ -646,17 +646,17 @@ xaios_engine_status_t xaios_model_volume_register_staging(
 
   for (uint64_t package_index = 0U;
        package_index < volume->package_count; ++package_index) {
-    xaios_model_volume_package_t current_package;
-    status = xaios_model_volume_read_package(volume, package_index,
+    xaios_xai_fs_package_t current_package;
+    status = xaios_xai_fs_read_package(volume, package_index,
                                              &current_package);
     if (status != XAIOS_ENGINE_OK) return status;
     for (uint64_t relative = 0U; relative < current_package.chunk_count;
          ++relative) {
-      xaios_model_volume_chunk_t current;
-      status = xaios_model_volume_read_chunk(
+      xaios_xai_fs_chunk_t current;
+      status = xaios_xai_fs_read_chunk(
           volume, current_package.chunk_start + relative, &current);
       if (status != XAIOS_ENGINE_OK ||
-          (current.flags & XAIOS_MODEL_VOLUME_CHUNK_FREE) != 0U) {
+          (current.flags & XAIOS_XAI_FS_CHUNK_FREE) != 0U) {
         return status == XAIOS_ENGINE_OK ? XAIOS_ENGINE_ERR_INVALID : status;
       }
       encode_chunk_record(&current, raw_chunk);
@@ -672,18 +672,18 @@ xaios_engine_status_t xaios_model_volume_register_staging(
   uint64_t data_cursor = package_data_offset;
   uint64_t logical_cursor = 0U;
   for (uint64_t index = 0U; index < added_chunks; ++index) {
-    xaios_model_volume_chunk_t chunk;
+    xaios_xai_fs_chunk_t chunk;
     memset(&chunk, 0, sizeof(chunk));
     chunk.record_id = record_id;
     chunk.logical_offset = logical_cursor;
     chunk.physical_offset = data_cursor;
     chunk.length = package.logical_size - logical_cursor;
     if (chunk.length > volume->chunk_size) chunk.length = volume->chunk_size;
-    if (align_up(chunk.length, MODEL_VOLUME_BLOCK_SIZE,
+    if (align_up(chunk.length, XAI_FS_BLOCK_SIZE,
                  &chunk.extent_length) != XAIOS_ENGINE_OK) {
       return XAIOS_ENGINE_ERR_OVERFLOW;
     }
-    chunk.flags = XAIOS_MODEL_VOLUME_CHUNK_HASH_PENDING;
+    chunk.flags = XAIOS_XAI_FS_CHUNK_HASH_PENDING;
     encode_chunk_record(&chunk, raw_chunk);
     status = write_exact(writer,
                          destination + written_chunks * sizeof(raw_chunk),
@@ -707,7 +707,7 @@ xaios_engine_status_t xaios_model_volume_register_staging(
   uint32_t next_slot = 1U - volume->selected_superblock;
   status = write_exact(writer,
                        (uint64_t)next_slot *
-                           XAIOS_MODEL_VOLUME_SUPERBLOCK_SIZE,
+                           XAIOS_XAI_FS_SUPERBLOCK_SIZE,
                        superblock, 4096U);
   if (status != XAIOS_ENGINE_OK) return status;
   status = writer->flush(writer->context);
@@ -721,27 +721,27 @@ xaios_engine_status_t xaios_model_volume_register_staging(
 }
 
 static xaios_engine_status_t remove_package_in_state(
-    xaios_model_volume_t *volume,
-    const xaios_model_volume_package_t *package,
-    const xaios_model_volume_writer_t *writer, void *scratch,
+    xaios_xai_fs_t *volume,
+    const xaios_xai_fs_package_t *package,
+    const xaios_xai_fs_writer_t *writer, void *scratch,
     size_t scratch_size, uint32_t required_state,
     uint64_t *reclaimed_bytes) {
   if (reclaimed_bytes != NULL) *reclaimed_bytes = 0U;
   if (volume == NULL || package == NULL || writer == NULL ||
       writer->write_at == NULL || writer->flush == NULL || scratch == NULL ||
-      scratch_size < MODEL_VOLUME_WRITER_SCRATCH_MIN ||
+      scratch_size < XAI_FS_WRITER_SCRATCH_MIN ||
       package->state != required_state ||
       volume->package_count == 0U || volume->generation == UINT64_MAX ||
       volume->catalog_generation == UINT64_MAX) {
     return XAIOS_ENGINE_ERR_INVALID;
   }
   uint64_t target_index = UINT64_MAX;
-  xaios_model_volume_package_t target;
+  xaios_xai_fs_package_t target;
   memset(&target, 0, sizeof(target));
   for (uint64_t index = 0U; index < volume->package_count; ++index) {
-    xaios_model_volume_package_t current;
+    xaios_xai_fs_package_t current;
     xaios_engine_status_t status =
-        xaios_model_volume_read_package(volume, index, &current);
+        xaios_xai_fs_read_package(volume, index, &current);
     if (status != XAIOS_ENGINE_OK) return status;
     if (current.record_id == package->record_id) {
       if (current.state != required_state ||
@@ -759,8 +759,8 @@ static xaios_engine_status_t remove_package_in_state(
   uint64_t run_end = 0U;
   int run_active = 0;
   for (uint64_t relative = 0U; relative < target.chunk_count; ++relative) {
-    xaios_model_volume_chunk_t chunk;
-    xaios_engine_status_t status = xaios_model_volume_read_chunk(
+    xaios_xai_fs_chunk_t chunk;
+    xaios_engine_status_t status = xaios_xai_fs_read_chunk(
         volume, target.chunk_start + relative, &chunk);
     if (status != XAIOS_ENGINE_OK) return status;
     if (chunk.extent_length == 0U) continue;
@@ -798,11 +798,11 @@ static xaios_engine_status_t remove_package_in_state(
   uint64_t chunk_bytes = 0U;
   uint64_t catalog_length = 0U;
   if (checked_multiply(new_package_count,
-                       XAIOS_MODEL_VOLUME_PACKAGE_RECORD_SIZE,
+                       XAIOS_XAI_FS_PACKAGE_RECORD_SIZE,
                        &package_bytes) != XAIOS_ENGINE_OK ||
-      checked_multiply(new_chunk_count, XAIOS_MODEL_VOLUME_CHUNK_RECORD_SIZE,
+      checked_multiply(new_chunk_count, XAIOS_XAI_FS_CHUNK_RECORD_SIZE,
                        &chunk_bytes) != XAIOS_ENGINE_OK ||
-      checked_add(XAIOS_MODEL_VOLUME_CATALOG_HEADER_SIZE, package_bytes,
+      checked_add(XAIOS_XAI_FS_CATALOG_HEADER_SIZE, package_bytes,
                   &catalog_length) != XAIOS_ENGINE_OK ||
       checked_add(catalog_length, chunk_bytes, &catalog_length) !=
           XAIOS_ENGINE_OK) {
@@ -811,17 +811,17 @@ static xaios_engine_status_t remove_package_in_state(
   uint64_t catalog_offset = 0U;
   uint64_t catalog_end = 0U;
   uint64_t final_tail = 0U;
-  if (align_up(volume->data_tail, MODEL_VOLUME_BLOCK_SIZE, &catalog_offset) !=
+  if (align_up(volume->data_tail, XAI_FS_BLOCK_SIZE, &catalog_offset) !=
           XAIOS_ENGINE_OK ||
       checked_add(catalog_offset, catalog_length, &catalog_end) !=
           XAIOS_ENGINE_OK ||
-      align_up(catalog_end, MODEL_VOLUME_BLOCK_SIZE, &final_tail) !=
+      align_up(catalog_end, XAI_FS_BLOCK_SIZE, &final_tail) !=
           XAIOS_ENGINE_OK ||
       final_tail > volume->volume_size) {
     return XAIOS_ENGINE_ERR_CAPABILITY;
   }
 
-  xaios_model_volume_t next = *volume;
+  xaios_xai_fs_t next = *volume;
   next.generation = volume->generation + 1U;
   next.catalog_generation = volume->catalog_generation + 1U;
   next.catalog_offset = catalog_offset;
@@ -829,8 +829,8 @@ static xaios_engine_status_t remove_package_in_state(
   next.data_tail = final_tail;
   next.package_count = new_package_count;
   next.chunk_count = new_chunk_count;
-  next.package_offset = XAIOS_MODEL_VOLUME_CATALOG_HEADER_SIZE;
-  next.chunk_offset = XAIOS_MODEL_VOLUME_CATALOG_HEADER_SIZE + package_bytes;
+  next.package_offset = XAIOS_XAI_FS_CATALOG_HEADER_SIZE;
+  next.chunk_offset = XAIOS_XAI_FS_CATALOG_HEADER_SIZE + package_bytes;
   next.free_extent_count = new_free_count;
 
   uint8_t header[256];
@@ -848,8 +848,8 @@ static xaios_engine_status_t remove_package_in_state(
   uint64_t owned_cursor = new_free_count;
   for (uint64_t index = 0U; index < volume->package_count; ++index) {
     if (index == target_index) continue;
-    xaios_model_volume_package_t current;
-    status = xaios_model_volume_read_package(volume, index, &current);
+    xaios_xai_fs_package_t current;
+    status = xaios_xai_fs_read_package(volume, index, &current);
     if (status != XAIOS_ENGINE_OK) return status;
     current.chunk_start = owned_cursor;
     if (checked_add(owned_cursor, current.chunk_count, &owned_cursor) !=
@@ -870,10 +870,10 @@ static xaios_engine_status_t remove_package_in_state(
   uint64_t chunk_destination = catalog_offset + next.chunk_offset;
   uint64_t written_chunks = 0U;
   for (uint64_t index = 0U; index < volume->chunk_count; ++index) {
-    xaios_model_volume_chunk_t current;
-    status = xaios_model_volume_read_chunk(volume, index, &current);
+    xaios_xai_fs_chunk_t current;
+    status = xaios_xai_fs_read_chunk(volume, index, &current);
     if (status != XAIOS_ENGINE_OK) return status;
-    if ((current.flags & XAIOS_MODEL_VOLUME_CHUNK_FREE) == 0U) continue;
+    if ((current.flags & XAIOS_XAI_FS_CHUNK_FREE) == 0U) continue;
     encode_chunk_record(&current, raw_chunk);
     status = write_exact(writer,
                          chunk_destination + written_chunks * sizeof(raw_chunk),
@@ -886,10 +886,10 @@ static xaios_engine_status_t remove_package_in_state(
   uint64_t run_start = 0U;
   uint64_t run_length = 0U;
   for (uint64_t relative = 0U; relative <= target.chunk_count; ++relative) {
-    xaios_model_volume_chunk_t current;
+    xaios_xai_fs_chunk_t current;
     memset(&current, 0, sizeof(current));
     if (relative < target.chunk_count) {
-      status = xaios_model_volume_read_chunk(
+      status = xaios_xai_fs_read_chunk(
           volume, target.chunk_start + relative, &current);
       if (status != XAIOS_ENGINE_OK) return status;
     }
@@ -903,13 +903,13 @@ static xaios_engine_status_t remove_package_in_state(
       continue;
     }
     if (run_length != 0U) {
-      xaios_model_volume_chunk_t free_chunk;
+      xaios_xai_fs_chunk_t free_chunk;
       memset(&free_chunk, 0, sizeof(free_chunk));
       free_chunk.physical_offset = run_start;
       free_chunk.length = run_length;
       free_chunk.extent_length = run_length;
-      free_chunk.flags = XAIOS_MODEL_VOLUME_CHUNK_COMPLETE |
-                         XAIOS_MODEL_VOLUME_CHUNK_FREE;
+      free_chunk.flags = XAIOS_XAI_FS_CHUNK_COMPLETE |
+                         XAIOS_XAI_FS_CHUNK_FREE;
       encode_chunk_record(&free_chunk, raw_chunk);
       status = write_exact(
           writer, chunk_destination + written_chunks * sizeof(raw_chunk),
@@ -928,17 +928,17 @@ static xaios_engine_status_t remove_package_in_state(
   for (uint64_t package_index = 0U;
        package_index < volume->package_count; ++package_index) {
     if (package_index == target_index) continue;
-    xaios_model_volume_package_t current_package;
-    status = xaios_model_volume_read_package(volume, package_index,
+    xaios_xai_fs_package_t current_package;
+    status = xaios_xai_fs_read_package(volume, package_index,
                                              &current_package);
     if (status != XAIOS_ENGINE_OK) return status;
     for (uint64_t relative = 0U; relative < current_package.chunk_count;
          ++relative) {
-      xaios_model_volume_chunk_t current;
-      status = xaios_model_volume_read_chunk(
+      xaios_xai_fs_chunk_t current;
+      status = xaios_xai_fs_read_chunk(
           volume, current_package.chunk_start + relative, &current);
       if (status != XAIOS_ENGINE_OK ||
-          (current.flags & XAIOS_MODEL_VOLUME_CHUNK_FREE) != 0U) {
+          (current.flags & XAIOS_XAI_FS_CHUNK_FREE) != 0U) {
         return status == XAIOS_ENGINE_OK ? XAIOS_ENGINE_ERR_INVALID : status;
       }
       encode_chunk_record(&current, raw_chunk);
@@ -963,7 +963,7 @@ static xaios_engine_status_t remove_package_in_state(
   uint32_t next_slot = 1U - volume->selected_superblock;
   status = write_exact(writer,
                        (uint64_t)next_slot *
-                           XAIOS_MODEL_VOLUME_SUPERBLOCK_SIZE,
+                           XAIOS_XAI_FS_SUPERBLOCK_SIZE,
                        superblock, 4096U);
   if (status != XAIOS_ENGINE_OK) return status;
   status = writer->flush(writer->context);
@@ -975,29 +975,29 @@ static xaios_engine_status_t remove_package_in_state(
   return XAIOS_ENGINE_OK;
 }
 
-xaios_engine_status_t xaios_model_volume_remove_staging(
-    xaios_model_volume_t *volume,
-    const xaios_model_volume_package_t *package,
-    const xaios_model_volume_writer_t *writer, void *scratch,
+xaios_engine_status_t xaios_xai_fs_remove_staging(
+    xaios_xai_fs_t *volume,
+    const xaios_xai_fs_package_t *package,
+    const xaios_xai_fs_writer_t *writer, void *scratch,
     size_t scratch_size, uint64_t *reclaimed_bytes) {
   return remove_package_in_state(
       volume, package, writer, scratch, scratch_size,
-      XAIOS_MODEL_VOLUME_PACKAGE_STAGING, reclaimed_bytes);
+      XAIOS_XAI_FS_PACKAGE_STAGING, reclaimed_bytes);
 }
 
-xaios_engine_status_t xaios_model_volume_remove_quarantined(
-    xaios_model_volume_t *volume,
-    const xaios_model_volume_package_t *package,
-    const xaios_model_volume_writer_t *writer, void *scratch,
+xaios_engine_status_t xaios_xai_fs_remove_quarantined(
+    xaios_xai_fs_t *volume,
+    const xaios_xai_fs_package_t *package,
+    const xaios_xai_fs_writer_t *writer, void *scratch,
     size_t scratch_size, uint64_t *reclaimed_bytes) {
   return remove_package_in_state(
       volume, package, writer, scratch, scratch_size,
-      XAIOS_MODEL_VOLUME_PACKAGE_QUARANTINED, reclaimed_bytes);
+      XAIOS_XAI_FS_PACKAGE_QUARANTINED, reclaimed_bytes);
 }
 
 static int replica_identity_matches(
-    const xaios_model_volume_package_t *target,
-    const xaios_model_volume_package_t *replica) {
+    const xaios_xai_fs_package_t *target,
+    const xaios_xai_fs_package_t *replica) {
   return target != NULL && replica != NULL &&
          target->logical_size == replica->logical_size &&
          target->chunk_size == replica->chunk_size &&
@@ -1017,45 +1017,45 @@ static int replica_identity_matches(
                 sizeof(target->target_id)) == 0;
 }
 
-xaios_engine_status_t xaios_model_volume_repair_from_replica(
-    xaios_model_volume_t *target,
-    const xaios_model_volume_package_t *target_package,
-    const xaios_model_volume_t *replica,
-    const xaios_model_volume_package_t *replica_package,
-    const xaios_model_volume_writer_t *target_writer, void *scratch,
+xaios_engine_status_t xaios_xai_fs_repair_from_replica(
+    xaios_xai_fs_t *target,
+    const xaios_xai_fs_package_t *target_package,
+    const xaios_xai_fs_t *replica,
+    const xaios_xai_fs_package_t *replica_package,
+    const xaios_xai_fs_writer_t *target_writer, void *scratch,
     size_t scratch_size, uint64_t *copied_bytes) {
   if (copied_bytes != NULL) *copied_bytes = 0U;
   if (target == NULL || target_package == NULL || replica == NULL ||
       replica_package == NULL || target_writer == NULL ||
       target_writer->write_at == NULL || target_writer->flush == NULL ||
-      scratch == NULL || scratch_size < MODEL_VOLUME_WRITER_SCRATCH_MIN ||
+      scratch == NULL || scratch_size < XAI_FS_WRITER_SCRATCH_MIN ||
       target == replica || target->reader.context == replica->reader.context ||
-      target_package->state != XAIOS_MODEL_VOLUME_PACKAGE_QUARANTINED ||
-      replica_package->state != XAIOS_MODEL_VOLUME_PACKAGE_ACTIVE ||
+      target_package->state != XAIOS_XAI_FS_PACKAGE_QUARANTINED ||
+      replica_package->state != XAIOS_XAI_FS_PACKAGE_ACTIVE ||
       !replica_identity_matches(target_package, replica_package) ||
       target->chunk_size != replica->chunk_size) {
     return XAIOS_ENGINE_ERR_INVALID;
   }
 
   uint64_t bad_offset = UINT64_MAX;
-  xaios_engine_status_t status = xaios_model_volume_verify_package(
+  xaios_engine_status_t status = xaios_xai_fs_verify_package(
       replica, replica_package, scratch, scratch_size, &bad_offset);
   if (status != XAIOS_ENGINE_OK) return status;
 
-  status = xaios_model_volume_remove_quarantined(
+  status = xaios_xai_fs_remove_quarantined(
       target, target_package, target_writer, scratch, scratch_size, NULL);
   if (status != XAIOS_ENGINE_OK) return status;
 
-  xaios_model_volume_package_t replacement;
-  status = xaios_model_volume_register_staging(
+  xaios_xai_fs_package_t replacement;
+  status = xaios_xai_fs_register_staging(
       target, replica_package, target_writer, scratch, scratch_size,
       &replacement);
   if (status != XAIOS_ENGINE_OK) return status;
 
   uint8_t *buffer = (uint8_t *)scratch;
   for (uint64_t relative = 0U; relative < replacement.chunk_count; ++relative) {
-    xaios_model_volume_chunk_t chunk;
-    status = xaios_model_volume_read_chunk(target,
+    xaios_xai_fs_chunk_t chunk;
+    status = xaios_xai_fs_read_chunk(target,
                                            replacement.chunk_start + relative,
                                            &chunk);
     if (status != XAIOS_ENGINE_OK || chunk.record_id != replacement.record_id) {
@@ -1068,42 +1068,42 @@ xaios_engine_status_t xaios_model_volume_repair_from_replica(
                           ? (size_t)remaining
                           : scratch_size;
       uint64_t offset = chunk.logical_offset + copied_chunk;
-      status = xaios_model_volume_pread(replica, replica_package, offset,
+      status = xaios_xai_fs_pread(replica, replica_package, offset,
                                         buffer, length);
       if (status != XAIOS_ENGINE_OK) return status;
-      status = xaios_model_volume_pwrite_staging(target, &replacement,
+      status = xaios_xai_fs_pwrite_staging(target, &replacement,
                                                  target_writer, offset, buffer,
                                                  length);
       if (status != XAIOS_ENGINE_OK) return status;
       copied_chunk += (uint64_t)length;
     }
     uint64_t completed = 0U;
-    status = xaios_model_volume_commit_staging_range(
+    status = xaios_xai_fs_commit_staging_range(
         target, &replacement, target_writer, chunk.logical_offset, chunk.length,
         scratch, scratch_size, &completed);
     if (status != XAIOS_ENGINE_OK) return status;
     if (completed != 1U) return XAIOS_ENGINE_ERR_INVALID;
   }
 
-  status = xaios_model_volume_activate_staging(
+  status = xaios_xai_fs_activate_staging(
       target, &replacement, target_writer, scratch, scratch_size);
   if (status != XAIOS_ENGINE_OK) return status;
   if (copied_bytes != NULL) *copied_bytes = replacement.logical_size;
   return XAIOS_ENGINE_OK;
 }
 
-xaios_engine_status_t xaios_model_volume_commit_staging_range(
-    xaios_model_volume_t *volume,
-    const xaios_model_volume_package_t *package,
-    const xaios_model_volume_writer_t *writer, uint64_t offset,
+xaios_engine_status_t xaios_xai_fs_commit_staging_range(
+    xaios_xai_fs_t *volume,
+    const xaios_xai_fs_package_t *package,
+    const xaios_xai_fs_writer_t *writer, uint64_t offset,
     uint64_t length, void *scratch, size_t scratch_size,
     uint64_t *completed_chunks) {
   uint64_t end = 0U;
   if (completed_chunks != NULL) *completed_chunks = 0U;
   if (volume == NULL || package == NULL || writer == NULL ||
       writer->write_at == NULL || writer->flush == NULL || scratch == NULL ||
-      scratch_size < MODEL_VOLUME_WRITER_SCRATCH_MIN || length == 0U ||
-      package->state != XAIOS_MODEL_VOLUME_PACKAGE_STAGING ||
+      scratch_size < XAI_FS_WRITER_SCRATCH_MIN || length == 0U ||
+      package->state != XAIOS_XAI_FS_PACKAGE_STAGING ||
       checked_add(offset, length, &end) != XAIOS_ENGINE_OK ||
       end > package->logical_size) {
     return XAIOS_ENGINE_ERR_INVALID;
@@ -1114,8 +1114,8 @@ xaios_engine_status_t xaios_model_volume_commit_staging_range(
   size_t io_scratch_size = scratch_size - 4096U;
   uint64_t ready = 0U;
   for (uint64_t relative = 0U; relative < package->chunk_count; ++relative) {
-    xaios_model_volume_chunk_t chunk;
-    status = xaios_model_volume_read_chunk(
+    xaios_xai_fs_chunk_t chunk;
+    status = xaios_xai_fs_read_chunk(
         volume, package->chunk_start + relative, &chunk);
     if (status != XAIOS_ENGINE_OK) return status;
     int should_complete = 0;
@@ -1133,11 +1133,11 @@ xaios_engine_status_t xaios_model_volume_commit_staging_range(
   uint64_t catalog_offset = 0U;
   uint64_t catalog_end = 0U;
   uint64_t final_tail = 0U;
-  if (align_up(volume->data_tail, MODEL_VOLUME_BLOCK_SIZE, &catalog_offset) !=
+  if (align_up(volume->data_tail, XAI_FS_BLOCK_SIZE, &catalog_offset) !=
           XAIOS_ENGINE_OK ||
       checked_add(catalog_offset, volume->catalog_length, &catalog_end) !=
           XAIOS_ENGINE_OK ||
-      align_up(catalog_end, MODEL_VOLUME_BLOCK_SIZE, &final_tail) !=
+      align_up(catalog_end, XAI_FS_BLOCK_SIZE, &final_tail) !=
           XAIOS_ENGINE_OK ||
       final_tail > volume->volume_size) {
     return XAIOS_ENGINE_ERR_CAPABILITY;
@@ -1207,8 +1207,8 @@ xaios_engine_status_t xaios_model_volume_commit_staging_range(
     }
     status = read_exact(volume, source, chunk_raw, sizeof(chunk_raw));
     if (status != XAIOS_ENGINE_OK) return status;
-    xaios_model_volume_chunk_t chunk;
-    status = xaios_model_volume_read_chunk(volume, index, &chunk);
+    xaios_xai_fs_chunk_t chunk;
+    status = xaios_xai_fs_read_chunk(volume, index, &chunk);
     if (status != XAIOS_ENGINE_OK) return status;
     int should_complete = 0;
     uint8_t learned_checksum[32];
@@ -1218,9 +1218,9 @@ xaios_engine_status_t xaios_model_volume_commit_staging_range(
     if (status != XAIOS_ENGINE_OK) return status;
     if (should_complete) {
       uint32_t learned =
-          chunk.flags & XAIOS_MODEL_VOLUME_CHUNK_HASH_PENDING;
-      chunk.flags |= XAIOS_MODEL_VOLUME_CHUNK_COMPLETE;
-      chunk.flags &= ~XAIOS_MODEL_VOLUME_CHUNK_HASH_PENDING;
+          chunk.flags & XAIOS_XAI_FS_CHUNK_HASH_PENDING;
+      chunk.flags |= XAIOS_XAI_FS_CHUNK_COMPLETE;
+      chunk.flags &= ~XAIOS_XAI_FS_CHUNK_HASH_PENDING;
       store_le32(chunk_raw + 32U, chunk.flags);
       if (learned != 0U) {
         memcpy(chunk_raw + 40U, learned_checksum, 32U);
@@ -1241,7 +1241,7 @@ xaios_engine_status_t xaios_model_volume_commit_staging_range(
   uint32_t next_slot = 1U - volume->selected_superblock;
   status = write_exact(writer,
                        (uint64_t)next_slot *
-                           XAIOS_MODEL_VOLUME_SUPERBLOCK_SIZE,
+                           XAIOS_XAI_FS_SUPERBLOCK_SIZE,
                        superblock, 4096U);
   if (status != XAIOS_ENGINE_OK) return status;
   status = writer->flush(writer->context);
@@ -1258,22 +1258,22 @@ xaios_engine_status_t xaios_model_volume_commit_staging_range(
 }
 
 static xaios_engine_status_t publish_package_state(
-    xaios_model_volume_t *volume,
-    const xaios_model_volume_package_t *package, uint32_t new_state,
-    const xaios_model_volume_writer_t *writer, void *scratch,
+    xaios_xai_fs_t *volume,
+    const xaios_xai_fs_package_t *package, uint32_t new_state,
+    const xaios_xai_fs_writer_t *writer, void *scratch,
     size_t scratch_size) {
   if (volume == NULL || package == NULL || writer == NULL ||
       writer->write_at == NULL || writer->flush == NULL || scratch == NULL ||
-      scratch_size < MODEL_VOLUME_WRITER_SCRATCH_MIN ||
-      (new_state != XAIOS_MODEL_VOLUME_PACKAGE_ACTIVE &&
-       new_state != XAIOS_MODEL_VOLUME_PACKAGE_QUARANTINED)) {
+      scratch_size < XAI_FS_WRITER_SCRATCH_MIN ||
+      (new_state != XAIOS_XAI_FS_PACKAGE_ACTIVE &&
+       new_state != XAIOS_XAI_FS_PACKAGE_QUARANTINED)) {
     return XAIOS_ENGINE_ERR_INVALID;
   }
   uint64_t target_index = UINT64_MAX;
   for (uint64_t index = 0U; index < volume->package_count; ++index) {
-    xaios_model_volume_package_t current;
+    xaios_xai_fs_package_t current;
     xaios_engine_status_t status =
-        xaios_model_volume_read_package(volume, index, &current);
+        xaios_xai_fs_read_package(volume, index, &current);
     if (status != XAIOS_ENGINE_OK) return status;
     if (current.record_id == package->record_id) {
       if (memcmp(current.package_id, package->package_id, 32U) != 0 ||
@@ -1290,11 +1290,11 @@ static xaios_engine_status_t publish_package_state(
   uint64_t catalog_offset = 0U;
   uint64_t catalog_end = 0U;
   uint64_t final_tail = 0U;
-  if (align_up(volume->data_tail, MODEL_VOLUME_BLOCK_SIZE, &catalog_offset) !=
+  if (align_up(volume->data_tail, XAI_FS_BLOCK_SIZE, &catalog_offset) !=
           XAIOS_ENGINE_OK ||
       checked_add(catalog_offset, volume->catalog_length, &catalog_end) !=
           XAIOS_ENGINE_OK ||
-      align_up(catalog_end, MODEL_VOLUME_BLOCK_SIZE, &final_tail) !=
+      align_up(catalog_end, XAI_FS_BLOCK_SIZE, &final_tail) !=
           XAIOS_ENGINE_OK ||
       final_tail > volume->volume_size || volume->generation == UINT64_MAX ||
       volume->catalog_generation == UINT64_MAX) {
@@ -1348,7 +1348,7 @@ static xaios_engine_status_t publish_package_state(
   uint32_t next_slot = 1U - volume->selected_superblock;
   status = write_exact(writer,
                        (uint64_t)next_slot *
-                           XAIOS_MODEL_VOLUME_SUPERBLOCK_SIZE,
+                           XAIOS_XAI_FS_SUPERBLOCK_SIZE,
                        superblock, 4096U);
   if (status != XAIOS_ENGINE_OK) return status;
   status = writer->flush(writer->context);
@@ -1362,56 +1362,56 @@ static xaios_engine_status_t publish_package_state(
   return XAIOS_ENGINE_OK;
 }
 
-xaios_engine_status_t xaios_model_volume_quarantine_package(
-    xaios_model_volume_t *volume,
-    const xaios_model_volume_package_t *package,
-    const xaios_model_volume_writer_t *writer, void *scratch,
+xaios_engine_status_t xaios_xai_fs_quarantine_package(
+    xaios_xai_fs_t *volume,
+    const xaios_xai_fs_package_t *package,
+    const xaios_xai_fs_writer_t *writer, void *scratch,
     size_t scratch_size) {
   if (package == NULL ||
-      (package->state != XAIOS_MODEL_VOLUME_PACKAGE_ACTIVE &&
-       package->state != XAIOS_MODEL_VOLUME_PACKAGE_STAGING)) {
+      (package->state != XAIOS_XAI_FS_PACKAGE_ACTIVE &&
+       package->state != XAIOS_XAI_FS_PACKAGE_STAGING)) {
     return XAIOS_ENGINE_ERR_INVALID;
   }
   return publish_package_state(
-      volume, package, XAIOS_MODEL_VOLUME_PACKAGE_QUARANTINED, writer,
+      volume, package, XAIOS_XAI_FS_PACKAGE_QUARANTINED, writer,
       scratch, scratch_size);
 }
 
-xaios_engine_status_t xaios_model_volume_activate_staging(
-    xaios_model_volume_t *volume,
-    const xaios_model_volume_package_t *package,
-    const xaios_model_volume_writer_t *writer, void *scratch,
+xaios_engine_status_t xaios_xai_fs_activate_staging(
+    xaios_xai_fs_t *volume,
+    const xaios_xai_fs_package_t *package,
+    const xaios_xai_fs_writer_t *writer, void *scratch,
     size_t scratch_size) {
   if (volume == NULL || package == NULL || writer == NULL ||
       writer->write_at == NULL || writer->flush == NULL || scratch == NULL ||
-      scratch_size < MODEL_VOLUME_WRITER_SCRATCH_MIN ||
-      package->state != XAIOS_MODEL_VOLUME_PACKAGE_STAGING) {
+      scratch_size < XAI_FS_WRITER_SCRATCH_MIN ||
+      package->state != XAIOS_XAI_FS_PACKAGE_STAGING) {
     return XAIOS_ENGINE_ERR_INVALID;
   }
   xaios_engine_status_t status = writer->flush(writer->context);
   if (status != XAIOS_ENGINE_OK) return status;
-  if (xaios_model_volume_verify_package_manifest(volume, package) !=
+  if (xaios_xai_fs_verify_package_manifest(volume, package) !=
       XAIOS_ENGINE_OK) {
     return XAIOS_ENGINE_ERR_CHECKSUM;
   }
   uint64_t bad_offset = UINT64_MAX;
-  status = xaios_model_volume_verify_package(
+  status = xaios_xai_fs_verify_package(
       volume, package, scratch, scratch_size, &bad_offset);
   if (status != XAIOS_ENGINE_OK) return status;
 
   uint64_t target_index = UINT64_MAX;
   for (uint64_t index = 0U; index < volume->package_count; ++index) {
-    xaios_model_volume_package_t current;
-    status = xaios_model_volume_read_package(volume, index, &current);
+    xaios_xai_fs_package_t current;
+    status = xaios_xai_fs_read_package(volume, index, &current);
     if (status != XAIOS_ENGINE_OK) return status;
     if (current.record_id == package->record_id) {
       if (memcmp(current.package_id, package->package_id,
                  sizeof(current.package_id)) != 0 ||
-          current.state != XAIOS_MODEL_VOLUME_PACKAGE_STAGING) {
+          current.state != XAIOS_XAI_FS_PACKAGE_STAGING) {
         return XAIOS_ENGINE_ERR_INVALID;
       }
       target_index = index;
-    } else if (current.state == XAIOS_MODEL_VOLUME_PACKAGE_ACTIVE &&
+    } else if (current.state == XAIOS_XAI_FS_PACKAGE_ACTIVE &&
                memcmp(current.model_uuid, package->model_uuid,
                       sizeof(current.model_uuid)) == 0) {
       return XAIOS_ENGINE_ERR_CAPABILITY;
@@ -1422,11 +1422,11 @@ xaios_engine_status_t xaios_model_volume_activate_staging(
   uint64_t catalog_offset = 0U;
   uint64_t catalog_end = 0U;
   uint64_t final_tail = 0U;
-  if (align_up(volume->data_tail, MODEL_VOLUME_BLOCK_SIZE, &catalog_offset) !=
+  if (align_up(volume->data_tail, XAI_FS_BLOCK_SIZE, &catalog_offset) !=
           XAIOS_ENGINE_OK ||
       checked_add(catalog_offset, volume->catalog_length, &catalog_end) !=
           XAIOS_ENGINE_OK ||
-      align_up(catalog_end, MODEL_VOLUME_BLOCK_SIZE, &final_tail) !=
+      align_up(catalog_end, XAI_FS_BLOCK_SIZE, &final_tail) !=
           XAIOS_ENGINE_OK ||
       final_tail > volume->volume_size) {
     return XAIOS_ENGINE_ERR_CAPABILITY;
@@ -1469,7 +1469,7 @@ xaios_engine_status_t xaios_model_volume_activate_staging(
     status = read_exact(volume, source, package_raw, sizeof(package_raw));
     if (status != XAIOS_ENGINE_OK) return status;
     if (index == target_index) {
-      store_le32(package_raw, XAIOS_MODEL_VOLUME_PACKAGE_ACTIVE);
+      store_le32(package_raw, XAIOS_XAI_FS_PACKAGE_ACTIVE);
     }
     status = write_exact(writer, destination, package_raw, sizeof(package_raw));
     if (status != XAIOS_ENGINE_OK) return status;
@@ -1514,7 +1514,7 @@ xaios_engine_status_t xaios_model_volume_activate_staging(
   uint32_t next_slot = 1U - volume->selected_superblock;
   status = write_exact(writer,
                        (uint64_t)next_slot *
-                           XAIOS_MODEL_VOLUME_SUPERBLOCK_SIZE,
+                           XAIOS_XAI_FS_SUPERBLOCK_SIZE,
                        superblock, 4096U);
   if (status != XAIOS_ENGINE_OK) return status;
   status = writer->flush(writer->context);

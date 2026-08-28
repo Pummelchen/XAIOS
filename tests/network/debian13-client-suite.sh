@@ -337,8 +337,8 @@ if version["build_identifier"] not in (
     "xaios-admin-control", "xaios-admin-control-dirty"
 ):
     raise SystemExit("version: build identifier does not disclose source state")
-if version["model_volume_version"] != 1:
-    raise SystemExit("version: ModelFS volume version must be 1")
+if version["xai_fs_version"] != 1:
+    raise SystemExit("version: xaiFS volume version must be 1")
 
 status = load("status")
 for field in ("uptime_ns", "online_cpus", "physical_pages", "managed_pages", "free_pages"):
@@ -394,16 +394,16 @@ if (device["identifier"] != "/dev/vblk4" or
         device["capacity_bytes"] <= 0 or
         device["capacity_logical_sectors"] * 512 != device["capacity_bytes"] or
         device["read_only"] != 0):
-    raise SystemExit("storage device: invalid ModelFS device geometry")
+    raise SystemExit("storage device: invalid xaiFS device geometry")
 
 filesystems = load("storage-filesystems")
 mounts = {record["mount_path"]: record for record in filesystems["filesystems"]}
 if mounts.get("/", {}).get("filesystem") != "xaibootFS":
     raise SystemExit("storage filesystems: xaibootFS root is absent")
-if (mounts.get("/models", {}).get("filesystem") != "ModelFS" or
+if (mounts.get("/models", {}).get("filesystem") != "xaiFS" or
         mounts["/models"]["device_identifier"] != "/dev/vblk4" or
         mounts["/models"]["staging_writable"] != 1):
-    raise SystemExit("storage filesystems: ModelFS mount identity/policy is invalid")
+    raise SystemExit("storage filesystems: xaiFS mount identity/policy is invalid")
 
 usage = load("storage-usage")
 if len(usage["filesystems"]) != 1:
@@ -412,7 +412,7 @@ usage = usage["filesystems"][0]
 if (usage["mount_path"] != "/models" or usage["format_version"] != 1 or
         usage["allocated_bytes"] > usage["total_bytes"] or
         usage["free_bytes"] > usage["total_bytes"]):
-    raise SystemExit("storage usage: invalid ModelFS accounting")
+    raise SystemExit("storage usage: invalid xaiFS accounting")
 
 health = load("health")
 if health["overall"] != "degraded" or health["fatal"] != 0:
