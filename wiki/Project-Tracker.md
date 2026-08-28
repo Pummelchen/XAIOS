@@ -121,6 +121,30 @@ passes; the reasoning stays in the commit that closed them.
 | B-04 | Fusion intermittently gets no DHCP offer | VMware Fusion ARM64 | `TESTING` | Recurred after being called fixed. The first fix was real -- every boot of every guest had used one hard-coded transaction id, which a server may ignore as a repeat -- and it was not the whole cause. A later run failed the same way: three DISCOVERs, no offer, the boot continuing without an address. Three attempts is what every occurrence has looked like, and that number was not a coincidence: the budget was split evenly between waiting for an OFFER and waiting for an ACK, which with doubling retransmission is three attempts in the first phase. The failures are all in that phase, so it now gets everything except a fixed reserve for the REQUEST -- a server that answers at all answers that one at once, having already chosen the address; a server still starting up is the case needing patience. Total budget raised from 15 to 30 seconds, paid only where there is no server. |
 | B-03 | vmnet-helper spins a core while idle | `TESTING` | The relay returned as soon as it saw no machine attached, without reading the packet that woke it, so vmnet's event never cleared and the callback fired again immediately. The helper held a core busy for as long as anything was on the network, with its counters frozen because nothing was ever read -- 88% of a core with no guest, which is what corrupted the C-03 measurement. It now reads first and drops the frame if there is nowhere to send it, which is what an unattached interface should do. Fixed and rebuilt; unverified, because the running helper is the old binary and restarting it needs root. |
 
+## What ships, and how far along it is
+
+Three bootable deliveries, and the engineering each one waits on. Status is
+what has been demonstrated, not what has been designed: `PARTIAL` means some of
+it runs and the rest has not been tried, and is never a way of saying nearly
+done.
+
+| # | Deliverable | Status | Where it actually stands |
+|---:|---|---|---|
+| D1 | USB image, every architecture | `PARTIAL` | `xaios_b1.iso` is a hybrid ISO 9660 and GPT disk carrying both an AArch64 and an x86-64 kernel, and firmware picks its own. The GPT and its EFI System Partition are what a stick booted from, so `dd` should produce one. Never written to a stick and booted: nothing physical has run this. |
+| D2 | Network boot for blank machines | `NOT STARTED` | Nothing exists -- no PXE, no HTTP boot, no netboot path of any kind. Needs D3's installer to be worth anything, since network boot that cannot install leaves a machine with nothing on its disk. |
+| D3 | Ready-to-run images per environment | `PARTIAL` | VMware Fusion has a complete `.vmwarevm` bundle and Virtualization.framework has a disk plus a signed harness, both built and gated. QEMU has runner scripts rather than an image. None of the three is packaged as something a person downloads and starts. |
+
+## Engineering these wait on
+
+| # | Work | Status | Where it actually stands |
+|---:|---|---|---|
+| E1 | Disk partitioning, formatting and install tooling | `NOT STARTED` | Delivery item 1c. A blank disk cannot currently become a system that boots: images are written whole and writable volumes are attached beside them by a hypervisor. D2 and D3 both depend on this. |
+| E2 | Instruction-cost metric | `IN PROGRESS` | The metric works and is reproducible: under `-icount shift=0` the guest clock counts instructions, and a syscall costs **494** of them across two identical runs. `make qemu-instruction-cost-gate` is written; the baseline has not been recorded yet, because the boot takes far longer under `-icount` than the gate first allowed. |
+| E3 | NUMA correctness | `TESTING` | Done this session. The self-test proved node-0 placement and never checked node 1, so an allocator ignoring its node argument would have passed; it now asserts placement inside node 1's range and that every CPU maps to exactly one node through both lookups. `core_lease` is *not* covered and cannot be: it leases a CPU you name, so there is no topology decision to test until node-aware selection exists. |
+| E4 | Multiqueue and RSS networking | `NOT STARTED` | Confirmed absent -- virtio-net sets up queues 0 and 1 only. Blocked first: per-queue interrupts need MSI-X, and ARM64 carries virtio-net on virtio-MMIO, which has one interrupt line. That transport move is a prerequisite, not a detail. Only QEMU x86-64 can demonstrate it today, and there both queues currently share one vector. |
+| E5 | xaibootFS and xaiFS at scale | `NOT STARTED` | xaibootFS addresses blocks with 16-bit numbers: 32 MiB per volume, 256 KiB per file, 512 direct blocks and no extents. Reaching the target sizes is a new on-disk format, not tuning. xaiFS is tested to 128 GiB sparse, which derisks xaiFS and nothing about xaibootFS. |
+| E6 | Cluster data plane | `NOT STARTED` | `engine/src/cluster.c` has framing, peer state and owner selection, and no transport -- no socket, connect or send. The MacBook-to-VPS topology also needs the Intel VPS, which is 117 commits behind and shared with other services. |
+
 ## Delivery order
 
 | Order | Workstream | Status | Current boundary / exit gate |
