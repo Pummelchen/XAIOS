@@ -93,6 +93,40 @@ jobs:
       - name: Validate ABI contract
         run: python3 tests/scripts/qemu-abi-contract.py
 
+  installed-disk:
+    name: Installed Disk (one drive, nothing attached)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm meson ninja-build qemu-system-arm qemu-efi-aarch64 mtools python3 python3-cryptography
+
+      # Boots a machine XAIOS has been installed onto rather than the test
+      # bench: one disk, a GPT, an EFI System Partition and a state partition
+      # the kernel finds by type because nothing tells it where to look. The
+      # transport lookup by ordinal, transitional virtio PCI device IDs and
+      # mapping above 512 GiB are all exercised here and nowhere else, so
+      # without this job they can break with every other job still green.
+      - name: Installed disk boot
+        run: python3 tests/scripts/qemu-installed-disk-gate.py
+        env:
+          XAIOS_INSTALLED_DISK_TIMEOUT: "240"
+
+      - name: Upload boot logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: installed-disk-logs
+          path: |
+            build/installed-disk-boot*.log
+            build/qemu-installed-disk-gate.json
+          if-no-files-found: ignore
+
   build-and-smoke:
     name: Build & QEMU Smoke Test
     runs-on: ubuntu-latest
