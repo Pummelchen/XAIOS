@@ -44,9 +44,27 @@ int main(void) {
     }
     for (u64 i = 0; i < USER_THREAD_COUNT; ++i) {
       u64 result = 0;
-      if (xaios_thread_join(user_thread_ids[i], 5000000000ULL, &result) < 0 ||
-          result != user_thread_worker((void *)i)) {
-        xaios_log("/bin/smptest: EL0 thread join/result failed\n");
+      /* Report which of the three things went wrong, because they mean
+         different things and one message for all of them made a sighting
+         unclassifiable. A join that returns an error under a saturated host is
+         most likely the five-second timeout expiring -- the kernel logs
+         "threads: user join timeout" when it does -- and says nothing about
+         thread correctness. A join that succeeds and hands back the wrong
+         value is a real defect. B-02 is one sighting that could have been
+         either, and the log did not distinguish them. */
+      int status = xaios_thread_join(user_thread_ids[i], 5000000000ULL,
+                                     &result);
+      if (status < 0) {
+        xaios_log_u64("/bin/smptest: EL0 thread join failed thread=", i, "");
+        xaios_log_u64(" status=", (u64)(long)status, "");
+        xaios_log(" (a timeout here is host slowness, not a thread defect)\n");
+        return 1;
+      }
+      u64 expected = user_thread_worker((void *)i);
+      if (result != expected) {
+        xaios_log_u64("/bin/smptest: EL0 thread result wrong thread=", i, "");
+        xaios_log_u64(" expected=", expected, "");
+        xaios_log_u64(" got=", result, "\n");
         return 1;
       }
     }
