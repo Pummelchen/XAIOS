@@ -22,6 +22,10 @@ typedef struct xaios_guid {
 extern const xaios_guid_t XAIOS_GPT_TYPE_STATEFS;
 extern const xaios_guid_t XAIOS_GPT_TYPE_MODELFS;
 extern const xaios_guid_t XAIOS_GPT_TYPE_RECOVERY;
+/* C12A7328-F81F-11D2-BA4B-00A0C93EC93B, the EFI System Partition. Not a XAIOS
+   type: firmware looks for this exact value, so a partition XAIOS creates for
+   its own loader has to carry the one everybody else uses. */
+extern const xaios_guid_t XAIOS_GPT_TYPE_ESP;
 
 typedef struct xaios_gpt_partition {
   xaios_guid_t type_guid;

@@ -135,6 +135,9 @@
 #define XAIOS_STORAGE_PARTITION_STATE 1U
 #define XAIOS_STORAGE_PARTITION_MODEL 2U
 #define XAIOS_STORAGE_PARTITION_RECOVERY 3U
+/* The EFI System Partition. Firmware looks for one specific type GUID, so a
+   partition XAIOS creates for its own loader carries the standard one. */
+#define XAIOS_STORAGE_PARTITION_ESP 4U
 
 #define XAIOS_XAI_FS_CHECK_UNKNOWN 0U
 #define XAIOS_XAI_FS_CHECK_CLEAN 1U

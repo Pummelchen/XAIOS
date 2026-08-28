@@ -500,7 +500,8 @@ hosted-test: engine-cli
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Ikernel/include kernel/dev/block_device.c kernel/lib/crc32.c \
 	  kernel/storage/gpt.c kernel/storage/partition_device.c \
-	  kernel/storage/storage_admin.c tests/storage/test_storage_admin.c \
+	  kernel/storage/storage_admin.c kernel/fs/fat.c \
+	  tests/storage/test_storage_admin.c \
 	  -o build/hosted/test-storage-admin
 	./build/hosted/test-storage-admin
 	$(HOST_CC) $(HOST_CFLAGS) \
@@ -511,7 +512,8 @@ hosted-test: engine-cli
 	  -Ikernel/include -Iengine/include -Iengine/src -Iuserspace/include \
 	  -Iuserspace/sshd kernel/dev/block_device.c kernel/lib/crc32.c \
 	  kernel/storage/gpt.c kernel/storage/partition_device.c \
-	  kernel/storage/storage_admin.c kernel/fs/xai_fs_admin.c \
+	  kernel/storage/storage_admin.c kernel/fs/fat.c \
+	  kernel/fs/xai_fs_admin.c \
 	  engine/src/xai_fs.c engine/src/xai_fs_writer.c \
 	  engine/src/sha256.c userspace/sshd/ssh_crypto.c \
 	  userspace/sshd/tweetnacl_subset.c \

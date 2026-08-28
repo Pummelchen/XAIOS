@@ -1,4 +1,5 @@
 #include <xaios/storage_admin.h>
+#include <xaios/fat.h>
 #include <xaios/klog.h>
 
 #include <xaios/partition_device.h>
@@ -112,6 +113,9 @@ static uint32_t known_type(const xaios_guid_t *type) {
   if (gpt_guid_equal(type, &XAIOS_GPT_TYPE_RECOVERY)) {
     return XAIOS_STORAGE_PARTITION_RECOVERY;
   }
+  if (gpt_guid_equal(type, &XAIOS_GPT_TYPE_ESP)) {
+    return XAIOS_STORAGE_PARTITION_ESP;
+  }
   return 0U;
 }
 
@@ -121,6 +125,7 @@ static const xaios_guid_t *type_guid(uint32_t type) {
   if (type == XAIOS_STORAGE_PARTITION_RECOVERY) {
     return &XAIOS_GPT_TYPE_RECOVERY;
   }
+  if (type == XAIOS_STORAGE_PARTITION_ESP) return &XAIOS_GPT_TYPE_ESP;
   return 0;
 }
 
@@ -923,6 +928,158 @@ xaios_status_t storage_admin_partition_repair(
    in the state the last one left it, which is how a test stops testing
    anything. Failure is reported and survivable: a machine with no scratch
    device is normal, and losing one is not worth refusing to boot over. */
+static int bytes_equal_const(const void *left, const void *right,
+                             uint64_t length) {
+  const uint8_t *a = (const uint8_t *)left;
+  const uint8_t *b = (const uint8_t *)right;
+  for (uint64_t index = 0U; index < length; ++index) {
+    if (a[index] != b[index]) return 0;
+  }
+  return 1;
+}
+
+/* Put the disk back the way it was found. A test that leaves its partition
+   behind makes every later boot start from what the last one left, which is
+   how a test stops testing anything. */
+static void esp_self_test_cleanup(xaios_storage_partition_request_t *request,
+                                  const xaios_storage_partition_plan_t *created,
+                                  uint64_t baseline) {
+  string_copy(request->target, sizeof(request->target),
+              created->partition.identifier);
+  string_copy(request->confirmation, sizeof(request->confirmation),
+              created->partition.unique_guid);
+  request->operation_id = UINT64_C(4);
+  xaios_storage_partition_plan_t deleted;
+  xaios_status_t status = storage_admin_partition_delete(request, &deleted);
+  if (status != XAIOS_OK) {
+    klog("storage-admin: esp self-test could not remove %s status=%d\n",
+         created->partition.identifier, (int)status);
+    return;
+  }
+  xaios_storage_partition_report_t report;
+  uint64_t count = 0U;
+  if (storage_admin_partition_verify(g_storage.info.identifier, &report) ==
+          XAIOS_OK &&
+      storage_admin_partition_list(g_storage.info.identifier, 0, 0U, &count,
+                                   &report) == XAIOS_OK &&
+      count != baseline) {
+    klog("storage-admin: esp self-test left the table at %lu, not %lu\n",
+         count, baseline);
+  }
+}
+
+/* Make a partition of this disk bootable, which is the whole reason the
+   partition writer and the FAT writer exist.
+
+   A machine XAIOS installs onto needs an EFI System Partition: a partition of
+   the standard type, holding a FAT filesystem, holding the loader at the path
+   firmware looks for. Each of those three is a separate thing that can be
+   wrong, and until now XAIOS could do none of them -- every bootable disk was
+   built by a script on someone else's operating system. This runs all three
+   against the scratch disk on every boot and reads the result back, so the
+   claim "XAIOS can make a disk that boots itself" is checked rather than
+   asserted.
+
+   What it deliberately does not check is that firmware agrees, because
+   firmware is not here. The hosted FAT test does the closest available thing
+   by having mtools read the same writer's output. */
+static void esp_install_self_test(uint64_t baseline) {
+  xaios_storage_partition_request_t request;
+  bytes_zero(&request, sizeof(request));
+  string_copy(request.target, sizeof(request.target),
+              g_storage.info.identifier);
+  string_copy(request.name, sizeof(request.name), "XAIOS ESP");
+  request.partition_type = XAIOS_STORAGE_PARTITION_ESP;
+  /* Large enough that FAT16 has somewhere to put 4085 clusters, which is the
+     smallest volume the format actually permits. */
+  request.size_bytes = UINT64_C(8388608);
+  request.operation_id = UINT64_C(3);
+
+  xaios_storage_partition_plan_t plan;
+  xaios_status_t status = storage_admin_partition_plan_create(&request, &plan);
+  if (status != XAIOS_OK) {
+    klog("storage-admin: esp self-test plan failed status=%d\n", (int)status);
+    return;
+  }
+  string_copy(request.confirmation, sizeof(request.confirmation),
+              plan.report.disk_guid);
+  xaios_storage_partition_plan_t created;
+  status = storage_admin_partition_create(&request, &created);
+  if (status != XAIOS_OK) {
+    klog("storage-admin: esp self-test create failed status=%d\n",
+         (int)status);
+    return;
+  }
+
+  xaios_block_device_t *partition = 0;
+  xaios_storage_partition_record_t record;
+  status = storage_admin_partition_open(created.partition.identifier,
+                                        XAIOS_STORAGE_PARTITION_ESP, 1U,
+                                        &partition, &record);
+  if (status != XAIOS_OK) {
+    klog("storage-admin: esp self-test open failed status=%d\n", (int)status);
+    esp_self_test_cleanup(&request, &created, baseline);
+    return;
+  }
+
+  xaios_fat_volume_t volume;
+  status = fat_format(partition, "XAIOS", &volume);
+  if (status == XAIOS_OK) status = fat_mkdir(&volume, "/EFI/BOOT");
+  if (status == XAIOS_OK) status = fat_mkdir(&volume, "/EFI/XAIOS");
+  if (status != XAIOS_OK) {
+    klog("storage-admin: esp self-test format failed status=%d\n",
+         (int)status);
+    (void)storage_admin_partition_close(partition);
+    esp_self_test_cleanup(&request, &created, baseline);
+    return;
+  }
+
+  /* Not the real loader -- the kernel does not have a copy of it to hand --
+     but written to the path firmware actually opens, so the directory tree and
+     the 8.3 name are the ones that have to work. */
+  static const char marker[] =
+      "XAIOS EFI System Partition written by the running system.";
+  status = fat_write_file(&volume, "/EFI/BOOT/BOOTAA64.EFI", marker,
+                          sizeof(marker));
+  if (status == XAIOS_OK) {
+    status = fat_write_file(&volume, "/EFI/XAIOS/XAIOS.EFI", marker,
+                            sizeof(marker));
+  }
+  if (status != XAIOS_OK) {
+    klog("storage-admin: esp self-test write failed status=%d\n",
+         (int)status);
+    (void)storage_admin_partition_close(partition);
+    esp_self_test_cleanup(&request, &created, baseline);
+    return;
+  }
+
+  /* Read back through a mount that shares no state with the writer, which is
+     what shows the geometry reached the disk rather than only the struct. */
+  xaios_fat_volume_t reopened;
+  char readback[sizeof(marker)];
+  uint64_t length = 0U;
+  status = fat_mount(partition, &reopened);
+  if (status == XAIOS_OK) {
+    status = fat_read_file(&reopened, "/EFI/BOOT/BOOTAA64.EFI", readback,
+                           sizeof(readback), &length);
+  }
+  if (status != XAIOS_OK || length != sizeof(marker) ||
+      !bytes_equal_const(readback, marker, sizeof(marker))) {
+    klog("storage-admin: esp self-test read back wrong status=%d length=%lu\n",
+         (int)status, length);
+    (void)storage_admin_partition_close(partition);
+    esp_self_test_cleanup(&request, &created, baseline);
+    return;
+  }
+
+  (void)storage_admin_partition_close(partition);
+  klog("storage-admin: esp create/format/install self-test passed "
+       "partition=%s clusters=%lu bytes_per_cluster=%lu\n",
+       created.partition.identifier, reopened.cluster_count,
+       reopened.sectors_per_cluster * reopened.sector_size);
+  esp_self_test_cleanup(&request, &created, baseline);
+}
+
 void storage_admin_self_test(void) {
   if (g_storage.attached == 0U) {
     klog("storage-admin: partition self-test skipped no attached device\n");
@@ -1022,4 +1179,6 @@ void storage_admin_self_test(void) {
   klog("storage-admin: partition create/verify/delete self-test passed "
        "device=%s partitions=%lu\n",
        g_storage.info.identifier, before);
+
+  esp_install_self_test(before);
 }

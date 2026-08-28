@@ -314,6 +314,9 @@ static u32 parse_partition_type(const char *name) {
   if (string_equal(name, "recovery")) {
     return XAIOS_STORAGE_PARTITION_RECOVERY;
   }
+  if (string_equal(name, "esp") || string_equal(name, "efi")) {
+    return XAIOS_STORAGE_PARTITION_ESP;
+  }
   return 0U;
 }
 
@@ -1426,6 +1429,7 @@ static const char *partition_type_name(u32 type) {
   if (type == XAIOS_STORAGE_PARTITION_STATE) return "state";
   if (type == XAIOS_STORAGE_PARTITION_MODEL) return "model";
   if (type == XAIOS_STORAGE_PARTITION_RECOVERY) return "recovery";
+  if (type == XAIOS_STORAGE_PARTITION_ESP) return "esp";
   return "unknown";
 }
 
@@ -1449,7 +1453,7 @@ static int partition_record_valid(
          fixed_string_valid(record->unique_guid,
                             sizeof(record->unique_guid)) &&
          record->first_lba <= record->last_lba &&
-         record->known_type <= XAIOS_STORAGE_PARTITION_RECOVERY;
+         record->known_type <= XAIOS_STORAGE_PARTITION_ESP;
 }
 
 static int append_partition_record_json(

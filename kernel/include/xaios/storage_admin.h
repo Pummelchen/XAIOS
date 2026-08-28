@@ -13,6 +13,10 @@ typedef enum xaios_storage_partition_type {
   XAIOS_STORAGE_PARTITION_STATE = 1,
   XAIOS_STORAGE_PARTITION_MODEL = 2,
   XAIOS_STORAGE_PARTITION_RECOVERY = 3,
+  /* The EFI System Partition, so that XAIOS can create the partition its own
+     firmware boots from rather than depending on a host tool to have made
+     one. Formatted with fat.h, which is why it exists. */
+  XAIOS_STORAGE_PARTITION_ESP = 4,
 } xaios_storage_partition_type_t;
 
 typedef struct xaios_storage_partition_request {

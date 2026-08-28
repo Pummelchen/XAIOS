@@ -28,6 +28,12 @@ const xaios_guid_t XAIOS_GPT_TYPE_MODELFS = {
 const xaios_guid_t XAIOS_GPT_TYPE_RECOVERY = {
     {0x1f, 0x3b, 0x2d, 0x7a, 0x6e, 0x91, 0x4a, 0x52,
      0x9c, 0x7d, 0x58, 0x41, 0x49, 0x4f, 0x53, 0x03}};
+/* The EFI System Partition, C12A7328-F81F-11D2-BA4B-00A0C93EC93B. Stored in
+   the same big-endian byte order as the types above; gpt_read and gpt_write
+   handle the mixed-endian on-disk encoding. */
+const xaios_guid_t XAIOS_GPT_TYPE_ESP = {
+    {0xc1, 0x2a, 0x73, 0x28, 0xf8, 0x1f, 0x11, 0xd2,
+     0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b}};
 
 static void bytes_zero(void *buffer, uint64_t length) {
   uint8_t *bytes = (uint8_t *)buffer;

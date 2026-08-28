@@ -171,6 +171,9 @@ TARGETS = [
     # only by hosted tests of its arguments. Required so it cannot quietly
     # stop running the way it had never started.
     "storage-admin: partition create/verify/delete self-test passed",
+    # And the three things that make a partition bootable: the standard EFI
+    # type, a FAT filesystem on it, and files at the paths firmware opens.
+    "storage-admin: esp create/format/install self-test passed",
     "/service-manager: osctl command surface passed",
     "/service-manager: mutable fs syscalls passed",
     "/service-manager: control plane complete",
