@@ -857,3 +857,158 @@ xaios_status_t fat_stat(xaios_fat_volume_t *volume, const char *path,
   }
   return XAIOS_OK;
 }
+
+/* A second buffer, holding payload while g_sector holds metadata.
+ *
+ * Every function above borrows g_sector for whatever sector it is currently
+ * reading or writing, which is fine while one volume is being touched at a
+ * time. A copy is not that: it reads a data sector from the source, and then,
+ * before that data has been written anywhere, it reads and writes FAT entries
+ * and directory entries on the destination. Each of those lands in g_sector.
+ * Sharing one buffer would copy the destination's own metadata into the file
+ * instead of the source's contents. */
+static uint8_t g_payload[FAT_SECTOR_SIZE];
+
+/*
+ * Copy a file from one mounted volume to another, a sector at a time.
+ *
+ * Whole-file read and write cannot do this: an installer copies a kernel and
+ * an initial filesystem, which are megabytes, and a kernel that had to hold
+ * one entirely in memory to copy it would need the memory for the largest file
+ * it might ever meet. Streaming needs a fixed sector and a cluster chain that
+ * grows as it goes.
+ *
+ * The destination entry is written last, after every byte is on the disk. A
+ * directory entry that appears before its contents is a file that reads as
+ * whatever the clusters held before, and on a partition firmware is about to
+ * boot from, that is worse than no file.
+ */
+xaios_status_t fat_copy_file(xaios_fat_volume_t *destination,
+                             const char *destination_path,
+                             xaios_fat_volume_t *source,
+                             const char *source_path) {
+  if (destination == 0 || destination->mounted == 0U || source == 0 ||
+      source->mounted == 0U || destination_path == 0 || source_path == 0) {
+    return XAIOS_ERR_INVALID;
+  }
+
+  directory_cursor_t source_parent;
+  uint8_t source_name[FAT_NAME_LENGTH];
+  xaios_status_t status =
+      resolve_parent(source, source_path, &source_parent, source_name);
+  if (status != XAIOS_OK) return status;
+  directory_entry_t source_entry;
+  status = find_entry(source, &source_parent, source_name, &source_entry);
+  if (status != XAIOS_OK) return status;
+  if ((source_entry.attributes & FAT_ATTR_DIRECTORY) != 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+
+  directory_cursor_t parent;
+  uint8_t name[FAT_NAME_LENGTH];
+  status = resolve_parent(destination, destination_path, &parent, name);
+  if (status != XAIOS_OK) return status;
+  directory_entry_t existing;
+  uint64_t slot = 0U;
+  status = find_entry(destination, &parent, name, &existing);
+  if (status == XAIOS_OK) {
+    if ((existing.attributes & FAT_ATTR_DIRECTORY) != 0U) {
+      return XAIOS_ERR_INVALID;
+    }
+    if (existing.first_cluster >= 2U) {
+      status = free_chain(destination, existing.first_cluster);
+      if (status != XAIOS_OK) return status;
+    }
+    slot = existing.index;
+  } else {
+    status = find_free_slot(destination, &parent, &slot);
+    if (status != XAIOS_OK) return status;
+  }
+
+  uint32_t first = 0U;
+  uint32_t previous = 0U;
+  uint32_t source_cluster = source_entry.first_cluster;
+  uint64_t remaining = source_entry.size;
+  uint64_t source_offset = 0U;
+  while (remaining != 0U) {
+    if (source_cluster < 2U ||
+        (uint64_t)source_cluster >= source->cluster_count + 2U) {
+      if (first >= 2U) (void)free_chain(destination, first);
+      return XAIOS_ERR_INVALID;
+    }
+    uint32_t cluster = 0U;
+    status = allocate_cluster(destination, &cluster);
+    if (status != XAIOS_OK) {
+      if (first >= 2U) (void)free_chain(destination, first);
+      return status;
+    }
+    if (first == 0U) {
+      first = cluster;
+    } else {
+      status = fat_entry_set(destination, previous, cluster);
+      if (status != XAIOS_OK) {
+        (void)free_chain(destination, first);
+        return status;
+      }
+    }
+    previous = cluster;
+
+    uint64_t source_base = cluster_sector(source, source_cluster);
+    uint64_t destination_base = cluster_sector(destination, cluster);
+    /* The two volumes need not agree on cluster size, so the inner loop is
+       bounded by the destination's cluster and by whatever is left of the
+       source's -- whichever runs out first decides when to follow a chain. */
+    for (uint64_t index = 0U;
+         index < destination->sectors_per_cluster && remaining != 0U;
+         ++index) {
+      uint64_t within = source_offset % source->sectors_per_cluster;
+      status = read_sector(source, source_base + within, g_payload);
+      if (status != XAIOS_OK) {
+        (void)free_chain(destination, first);
+        return status;
+      }
+      uint64_t chunk = remaining < destination->sector_size
+                           ? remaining
+                           : destination->sector_size;
+      if (chunk < destination->sector_size) {
+        /* The tail of the last sector is whatever the source sector held past
+           the end of the file. Clear it rather than copy it: the file's size
+           says those bytes are not part of it, and writing them out would put
+           unrelated contents of another disk onto this one. */
+        for (uint64_t index2 = chunk; index2 < destination->sector_size;
+             ++index2) {
+          g_payload[index2] = 0U;
+        }
+      }
+      status = write_sector(destination, destination_base + index, g_payload);
+      if (status != XAIOS_OK) {
+        (void)free_chain(destination, first);
+        return status;
+      }
+      remaining -= chunk;
+      ++source_offset;
+      if (source_offset % source->sectors_per_cluster == 0U) {
+        uint32_t next = 0U;
+        status = fat_entry_get(source, source_cluster, &next);
+        if (status != XAIOS_OK) {
+          (void)free_chain(destination, first);
+          return status;
+        }
+        source_cluster = next;
+        source_base = remaining != 0U && next >= 2U &&
+                              (uint64_t)next < source->cluster_count + 2U
+                          ? cluster_sector(source, next)
+                          : 0U;
+      }
+    }
+  }
+
+  status = write_entry(destination, &parent, slot, name, 0U, first,
+                       source_entry.size);
+  if (status != XAIOS_OK) {
+    if (first >= 2U) (void)free_chain(destination, first);
+    return status;
+  }
+  (void)block_flush(destination->device);
+  return XAIOS_OK;
+}

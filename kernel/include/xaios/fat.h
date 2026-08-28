@@ -95,6 +95,18 @@ xaios_status_t fat_read_file(xaios_fat_volume_t *volume, const char *path,
 xaios_status_t fat_stat(xaios_fat_volume_t *volume, const char *path,
                         uint64_t *out_size, uint32_t *out_is_directory);
 
+/*
+ * Copy a file between two mounted volumes without holding it in memory. An
+ * installer copies a kernel and an initial filesystem, which are megabytes;
+ * whole-file read and write would need memory for the largest file that might
+ * ever be met. The destination's directory entry is written last, after every
+ * byte is on the disk, so a file never appears before its contents.
+ */
+xaios_status_t fat_copy_file(xaios_fat_volume_t *destination,
+                             const char *destination_path,
+                             xaios_fat_volume_t *source,
+                             const char *source_path);
+
 /* Format, populate and read back a volume in memory, checked without a disk. */
 void fat_self_test(void);
 

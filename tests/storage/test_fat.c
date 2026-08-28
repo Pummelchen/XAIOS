@@ -28,6 +28,8 @@ static unsigned char *g_image;
 static unsigned long g_reads;
 static unsigned long g_writes;
 
+
+
 static xaios_status_t image_read(void *context, uint64_t offset, void *buffer,
                                  uint64_t length) {
   (void)context;
@@ -53,6 +55,32 @@ static xaios_status_t image_flush(void *context) {
 
 static const xaios_block_backend_ops_t k_ops = {image_read, image_write,
                                                 image_flush, 0, 0};
+
+/* A second disk, deliberately a different size so that the format picks a
+   different cluster size for it. A copy between two volumes that happen to
+   agree on geometry exercises none of the chain-following the general case
+   needs. */
+#define DISK2_BYTES (24U * 1024U * 1024U)
+static unsigned char *g_image2;
+
+static xaios_status_t image2_read(void *context, uint64_t offset, void *buffer,
+                                  uint64_t length) {
+  (void)context;
+  if (offset + length > DISK2_BYTES) return XAIOS_ERR_INVALID;
+  memcpy(buffer, g_image2 + offset, (size_t)length);
+  return XAIOS_OK;
+}
+
+static xaios_status_t image2_write(void *context, uint64_t offset,
+                                   const void *buffer, uint64_t length) {
+  (void)context;
+  if (offset + length > DISK2_BYTES) return XAIOS_ERR_INVALID;
+  memcpy(g_image2 + offset, buffer, (size_t)length);
+  return XAIOS_OK;
+}
+
+static const xaios_block_backend_ops_t k_ops2 = {image2_read, image2_write,
+                                                 image_flush, 0, 0};
 
 static xaios_block_device_info_t image_info(void) {
   xaios_block_device_info_t info;
@@ -96,11 +124,16 @@ static void check_boot_sector(const xaios_fat_volume_t *volume) {
 /* Both copies of the FAT must be identical. A volume whose copies disagree is
    read one way by one implementation and another way by another, which is the
    failure that cannot be diagnosed from a machine that will not boot. */
-static void check_fat_copies_agree(const xaios_fat_volume_t *volume) {
+static void check_fat_copies_agree_on(const xaios_fat_volume_t *volume,
+                                      const unsigned char *image) {
   uint64_t first = volume->reserved_sectors * SECTOR;
   uint64_t second = first + volume->sectors_per_fat * SECTOR;
-  assert(memcmp(g_image + first, g_image + second,
+  assert(memcmp(image + first, image + second,
                 (size_t)(volume->sectors_per_fat * SECTOR)) == 0);
+}
+
+static void check_fat_copies_agree(const xaios_fat_volume_t *volume) {
+  check_fat_copies_agree_on(volume, g_image);
 }
 
 static void write_and_verify(xaios_fat_volume_t *volume, const char *path,
@@ -263,14 +296,92 @@ int main(int argc, char **argv) {
   assert(fat_format(&tiny_device, "SMALL", &tiny_volume) ==
          XAIOS_ERR_UNSUPPORTED);
 
+  /* Copy between two volumes, which is what installing onto another disk is.
+     The second disk is a different size, so the format gives it a different
+     cluster size and the copy has to follow two chains that advance at
+     different rates rather than one. */
+  g_image2 = calloc(DISK2_BYTES, 1U);
+  assert(g_image2 != 0);
+  xaios_block_device_t device2;
+  memset(&device2, 0, sizeof(device2));
+  xaios_block_device_info_t info2 = image_info();
+  memcpy(info2.identifier, "/dev/vblk7", 11U);
+  info2.capacity_bytes = DISK2_BYTES;
+  info2.capacity_logical_sectors = DISK2_BYTES / SECTOR;
+  assert(block_device_register(&device2, &info2, &k_ops2, 0) == XAIOS_OK);
+  xaios_fat_volume_t target;
+  assert(fat_format(&device2, "XAIOS", &target) == XAIOS_OK);
+  assert(target.sectors_per_cluster != reopened.sectors_per_cluster);
+  assert(fat_mkdir(&target, "/EFI/BOOT") == XAIOS_OK);
+  assert(fat_mkdir(&target, "/EFI/XAIOS") == XAIOS_OK);
+
+  assert(fat_copy_file(&target, "/EFI/BOOT/BOOTAA64.EFI", &reopened,
+                       "/EFI/BOOT/BOOTAA64.EFI") == XAIOS_OK);
+  assert(fat_copy_file(&target, "/EFI/XAIOS/ENTROPY.SED", &reopened,
+                       "/EFI/XAIOS/ENTROPY.SED") == XAIOS_OK);
+  /* A file that is exactly a whole number of sectors, and an empty one: the
+     first is where a tail-handling off-by-one shows up, the second is where a
+     loop that assumes at least one cluster does. */
+  assert(fat_copy_file(&target, "/EFI/XAIOS/KERNEL.ELF", &reopened,
+                       "/EFI/XAIOS/KERNEL.ELF") == XAIOS_OK);
+  assert(fat_copy_file(&target, "/EFI/XAIOS/EMPTY.TXT", &reopened,
+                       "/EFI/XAIOS/EMPTY.TXT") == XAIOS_OK);
+
+  /* Read the copies back through a mount that shares nothing with the copier,
+     and compare against the originals rather than against the source volume --
+     a copy that faithfully reproduced a corrupt source would pass otherwise. */
+  xaios_fat_volume_t target_reopened;
+  assert(fat_mount(&device2, &target_reopened) == XAIOS_OK);
+  reported = 0U;
+  assert(fat_read_file(&target_reopened, "/EFI/BOOT/BOOTAA64.EFI", back,
+                       large_length, &reported) == XAIOS_OK);
+  assert(reported == large_length);
+  assert(memcmp(back, large, (size_t)large_length) == 0);
+  reported = 0U;
+  assert(fat_read_file(&target_reopened, "/EFI/XAIOS/ENTROPY.SED", back,
+                       sizeof(small), &reported) == XAIOS_OK);
+  assert(reported == sizeof(small));
+  assert(memcmp(back, small, sizeof(small)) == 0);
+  reported = 0U;
+  assert(fat_read_file(&target_reopened, "/EFI/XAIOS/KERNEL.ELF", back,
+                       exact_length, &reported) == XAIOS_OK);
+  assert(reported == exact_length);
+  assert(memcmp(back, exact, (size_t)exact_length) == 0);
+  size = 1U;
+  assert(fat_stat(&target_reopened, "/EFI/XAIOS/EMPTY.TXT", &size, 0) ==
+         XAIOS_OK);
+  assert(size == 0U);
+  check_fat_copies_agree_on(&target_reopened, g_image2);
+
+  /* Copying over an existing file replaces it and frees what was there;
+     copying a directory, or a file that is not there, is refused. */
+  assert(fat_copy_file(&target, "/EFI/BOOT/BOOTAA64.EFI", &reopened,
+                       "/EFI/XAIOS/ENTROPY.SED") == XAIOS_OK);
+  reported = 0U;
+  assert(fat_read_file(&target_reopened, "/EFI/BOOT/BOOTAA64.EFI", back,
+                       large_length, &reported) == XAIOS_OK);
+  assert(reported == sizeof(small));
+  assert(fat_copy_file(&target, "/EFI/BOOT/X.EFI", &reopened, "/EFI/BOOT") !=
+         XAIOS_OK);
+  assert(fat_copy_file(&target, "/EFI/BOOT/X.EFI", &reopened,
+                       "/EFI/BOOT/NOPE.BIN") != XAIOS_OK);
+
   if (argc > 1) dump_image(argv[1]);
+  if (argc > 2) {
+    FILE *handle = fopen(argv[2], "wb");
+    if (handle != 0) {
+      (void)fwrite(g_image2, 1U, DISK2_BYTES, handle);
+      (void)fclose(handle);
+    }
+  }
 
   free(back);
   free(exact);
   free(large);
+  free(g_image2);
   free(g_image);
-  printf("fat: format, directory tree, file write/read, replace and remount "
-         "tests passed clusters=%llu bytes_per_cluster=%llu\n",
+  printf("fat: format, directory tree, file write/read, replace, remount and "
+         "cross-volume copy tests passed clusters=%llu bytes_per_cluster=%llu\n",
          (unsigned long long)volume.cluster_count,
          (unsigned long long)(volume.sectors_per_cluster * SECTOR));
   return 0;
