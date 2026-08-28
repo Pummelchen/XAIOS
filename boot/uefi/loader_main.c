@@ -830,6 +830,21 @@ static efi_status_t load_kernel_segments(efi_system_table_t *system_table,
      a single allocation could only be one of the two. Nothing else runs
      between the release and the placement: UEFI boot services are
      single-threaded and this loader is the only thing executing. */
+  /* The strongest alignment any segment asks for. Firmware hands back
+     page-aligned memory and nothing more, and placing a kernel at a merely
+     page-aligned address quietly breaks every object inside it that needs
+     more: the SMMU stream table wants 16 KiB, and landing it 4 KiB off made
+     the hardware reject the stream table entry and the guest panic. That
+     failure appeared only on the machines whose spare memory happened to
+     start at the wrong offset, which is the worst way for it to appear. */
+  uint64_t alignment = 0x1000U;
+  for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
+    const elf64_phdr_t *phdr = &phdrs[i];
+    if (phdr->p_type != PT_LOAD) continue;
+    if (phdr->p_align > alignment) alignment = phdr->p_align;
+  }
+  if ((alignment & (alignment - 1U)) != 0U) alignment = 0x1000U;
+
   uint64_t span = link_high - link_low;
   /* Below four gibibytes, because that is how far the kernel's early identity
      map reaches: it maps the first 4 GiB before it has parsed anything, and a
@@ -838,17 +853,20 @@ static efi_status_t load_kernel_segments(efi_system_table_t *system_table,
      anywhere at all, a machine with plenty of memory puts the kernel high and
      the early self-tests fail with no obvious cause. */
   efi_physical_address_t placement = XAIOS_LOADER_MAX_KERNEL_ADDRESS;
+  /* Ask for enough extra to round the base up to that alignment, since
+     firmware chooses the address and will not align it for us. */
   efi_status_t reserve = bs->allocate_pages(EFI_ALLOCATE_MAX_ADDRESS,
                                             EFI_LOADER_DATA,
-                                            EFI_SIZE_TO_PAGES(span),
+                                            EFI_SIZE_TO_PAGES(span + alignment),
                                             &placement);
   if (is_error(reserve)) {
     /* A machine with nothing free down there is not one this kernel can boot,
        but say so by failing the allocation rather than by faulting later. */
     return reserve;
   }
-  (void)bs->free_pages(placement, EFI_SIZE_TO_PAGES(span));
-  uint64_t bias = (uint64_t)placement - link_low;
+  (void)bs->free_pages(placement, EFI_SIZE_TO_PAGES(span + alignment));
+  uint64_t aligned = ((uint64_t)placement + alignment - 1U) & ~(alignment - 1U);
+  uint64_t bias = aligned - link_low;
   if (ehdr->e_type != ET_DYN) {
     /* A fixed-address kernel must still land where it was linked. */
     bias = 0;
