@@ -72,7 +72,16 @@ qemu-dhcpv6-gate: image-qemu-test
 
 # One bootable file for every environment: hybrid ISO 9660 and GPT, both
 # architectures, bootable as optical media, as a disk, or from a USB stick.
+# Both architectures are built here rather than taken from whatever build/
+# happens to hold. The kernel's console behaviour is a build-time choice: a
+# non-verbose build sends its log to the boot display instead of the console,
+# so an image assembled from one boots perfectly and satisfies none of the
+# markers the gates look for. That is not a stale image and the staleness
+# check does not catch it -- it is a correct image of the wrong build, and it
+# happened when make vmware-fusion-image rebuilt the kernel in passing.
 unified-image:
+	XAIOS_BOOT_VERBOSE=1 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
+	XAIOS_TARGET_ARCH=x86_64 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
 	./scripts/build-unified-image.sh
 
 # The release package: the image, and the zip that carries it where a 220 MB

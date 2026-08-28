@@ -31,6 +31,29 @@ command -v zip >/dev/null 2>&1 || {
   exit 1
 }
 
+# A release must boot every environment it claims. The unified builder warns
+# and continues when the VMware Fusion chainloader is absent, which is right
+# for a developer on a machine without Docker and wrong for a release: the
+# image it produces boots three of the four and says so only in a line that
+# scrolls past. This was nearly published once, after a clean of build/ took
+# the chainloader with it.
+if ! mdir -i "$BUILD_DIR/unified-esp.img" ::/EFI/BOOT 2>/dev/null |
+     grep -q "BOOTAA64"; then
+  printf '%s\n' "error: the image has no EFI boot loader" >&2
+  exit 1
+fi
+chainloader_bytes=0
+if [ -f "$BUILD_DIR/vmware-fusion/BOOTAA64.EFI" ]; then
+  chainloader_bytes=$(wc -c < "$BUILD_DIR/vmware-fusion/BOOTAA64.EFI")
+fi
+if [ "$chainloader_bytes" -lt 1000000 ]; then
+  printf '%s\n' \
+    "error: no VMware Fusion chainloader; this image would boot three of the" \
+    "       four environments the release note claims." \
+    "       Run: make vmware-fusion-image, then make unified-image" >&2
+  exit 1
+fi
+
 mkdir -p "$RELEASE_DIR"
 cp "$IMAGE" "$RELEASE_IMAGE"
 

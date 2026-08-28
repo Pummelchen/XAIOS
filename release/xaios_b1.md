@@ -1,10 +1,10 @@
 # XAIOS build 1
 
 `xaios_b1.iso` — 227,880,960 bytes
-SHA-256 `ee13d9567930f3677ef0cd3e684e3fb01f0e2b8d8f81efc95da57a6667a2862a`
+SHA-256 `8770e277c4c3636a1cf410a19b313da5d1a531060d57c9c1a51a21b336670bae`
 
-`xaios_b1.iso.zip` — 19,361,450 bytes
-SHA-256 `11e153a9ee7931bd6a30b3bc60d2b4409da72404e600079d2d8c26c5b5764223`
+`xaios_b1.iso.zip` — 19,360,689 bytes
+SHA-256 `071ea2438187bfeeb618b4f209ba659652b13871d504efc23a80b64e65c75b8b`
 
 The zip contains the image and nothing else. It exists because the ISO is larger than
 GitHub will accept as a file, and compressed it is not — so the release can travel
