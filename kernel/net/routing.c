@@ -21,8 +21,18 @@ void routing_init(void) {
   uint32_t gateway = network_config_gateway_ipv4();
   routing_add(0x00000000U, 0x00000000U, gateway);
 
-  klog("routing: initialized (local=%08x/24 gw=%08x)\n",
-       local_net, gateway);
+  /* The prefix as it actually is, not as it usually is. This printed "/24"
+     unconditionally, so a guest handed 255.255.248.0 by DHCP reported a /24 it
+     was not using -- the routing table had the right mask all along. Anyone
+     reading this line while debugging a network problem was being told
+     something false about the one thing they were checking. */
+  uint32_t prefix = 0U;
+  for (uint32_t bit = 0U; bit < 32U; ++bit) {
+    if ((local_mask & (UINT32_C(1) << (31U - bit))) == 0U) break;
+    ++prefix;
+  }
+  klog("routing: initialized (local=%08x/%u gw=%08x)\n",
+       local_net, prefix, gateway);
 }
 
 xaios_status_t routing_add(uint32_t dest_network, uint32_t netmask,

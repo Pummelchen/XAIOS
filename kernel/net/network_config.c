@@ -48,6 +48,9 @@ static uint32_t dhcp_new_xid(const uint8_t mac[6]) {
 #define DHCP_ACK UINT8_C(5)
 #define DHCP_RETRY_INTERVAL_NS UINT64_C(1000000000)
 #define DHCP_RETRY_MAX_INTERVAL_NS UINT64_C(4000000000)
+/* What is held back for DISCOVER's follow-up REQUEST, which a server that
+   has already answered replies to at once. */
+#define DHCP_REQUEST_RESERVE_NS UINT64_C(4000000000)
 
 typedef struct network_config_state {
   uint32_t local_ipv4;
@@ -267,7 +270,20 @@ xaios_status_t network_config_dhcp(uint64_t timeout_ns) {
    * follows the OFFER are the same exchange and must carry the same id. */
   g_dhcp_xid = dhcp_new_xid(mac);
   uint64_t started = timer_now_ns();
-  uint64_t offer_deadline = started + timeout_ns / 2U;
+  /* Nearly all of the budget goes to waiting for an OFFER, and only what the
+     REQUEST needs is held back.
+     
+     Splitting it in half gave the OFFER about seven seconds, which with
+     doubling retransmission is three attempts, and three attempts is what
+     every failure of this has looked like: DISCOVER sent three times, no
+     answer, boot continues without an address. A server that answers at all
+     answers the REQUEST immediately, because by then it has already chosen the
+     address; a server that is still starting up is the case that needs the
+     patience. Reserving a fixed slice for the second exchange spends the
+     budget where the failures are. */
+  uint64_t reserve = DHCP_REQUEST_RESERVE_NS;
+  if (reserve > timeout_ns / 2U) reserve = timeout_ns / 2U;
+  uint64_t offer_deadline = started + (timeout_ns - reserve);
   if (offer_deadline < started) return XAIOS_ERR_INVALID;
   xaios_status_t status = exchange_request(DHCP_DISCOVER, DHCP_OFFER, 0U, 0U,
                                             offer_deadline, mac, &offer);

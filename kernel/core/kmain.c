@@ -709,7 +709,7 @@ void kmain(const xaios_boot_info_t *boot) {
        written off as absent. Fifteen costs nothing when a lease arrives on
        the first try, and is only ever paid in full where there is no DHCP
        server at all. */
-    if (network_config_dhcp(UINT64_C(15000000000)) != XAIOS_OK) {
+    if (network_config_dhcp(UINT64_C(30000000000)) != XAIOS_OK) {
       if (network_device_kind() == XAIOS_NETWORK_DEVICE_E1000E) {
         klog("kernel: DHCP configuration failed for e1000e\n");
         boot_ui_error("network DHCP", XAIOS_ERR_IO);

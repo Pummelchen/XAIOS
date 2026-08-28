@@ -191,6 +191,24 @@ def boot_fusion() -> tuple[str, str | None]:
     # the VM is pointed at it. The original setting is restored afterwards
     # whatever happens -- leaving a developer's VM pointed at a gate artifact
     # would be a rude thing for a test to do.
+    # A fresh data disk, for the reason vz-gate builds a fresh durable volume:
+    # the lifecycle record lives on it and rescue mode is latched by a marker
+    # there, so enough hard stops -- which is how every gate run ends -- put
+    # the guest into a state where it boots, mounts, listens and refuses
+    # ordinary commands. This gate inherited whatever previous runs left, and
+    # eventually reported a failure caused by how often it had been run.
+    data_disk = FUSION_VM / "xaios-fusion.vmdk"
+    manager = Path(os.environ.get(
+        "XAIOS_FUSION_VDISK_MANAGER",
+        "/Applications/VMware Fusion.app/Contents/Library/vmware-vdiskmanager"))
+    if manager.is_file():
+        for stale in FUSION_VM.glob("xaios-fusion*.vmdk"):
+            stale.unlink(missing_ok=True)
+        subprocess.run(
+            [str(manager), "-c", "-s", "256MB", "-a", "lsilogic", "-t", "0",
+             str(data_disk)],
+            check=False, capture_output=True, timeout=120)
+
     staged = FUSION_VM / "unified-gate.iso"
     shutil.copy(IMAGE, staged)
     original = vmx.read_text(encoding="utf-8")
@@ -228,9 +246,33 @@ ENVIRONMENTS = (
 )
 
 
-def main() -> int:
+def staleness() -> str | None:
+    """Whether the image is older than what it is supposed to contain.
+
+    make unified-image-gate rebuilds the image first; running this script
+    directly does not, and then it tests whatever is on disk. That is how an
+    hour went into diagnosing three Fusion failures that were a stale image
+    and nothing else -- the guest under test was not the code under test.
+    Refuse rather than report a result about the wrong bytes.
+    """
     if not IMAGE.is_file():
-        print(f"unified-image-gate: {IMAGE} is missing; run make unified-image")
+        return f"{IMAGE} is missing"
+    built = IMAGE.stat().st_mtime
+    for source in (BUILD / "kernel" / "kernel.elf",
+                   BUILD / "kernel-x86_64" / "kernel.elf",
+                   BUILD / "xaios-virtio-test.img",
+                   BUILD / "x86-virtio-test.img"):
+        if source.is_file() and source.stat().st_mtime > built:
+            return (f"{IMAGE.name} is older than "
+                    f"{source.relative_to(BUILD)}, so it does not contain it")
+    return None
+
+
+def main() -> int:
+    stale = staleness()
+    if stale is not None:
+        print(f"unified-image-gate: {stale}")
+        print("  Run: make unified-image")
         return 1
 
     only = os.environ.get("XAIOS_UNIFIED_ONLY")
