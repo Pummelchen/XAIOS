@@ -40,7 +40,14 @@ AARCH64_CAPABILITIES = {
     ],
     "interrupt_driven_virtio": [
         "virtio-blk: asynchronous queue self-test passed depth=8 indirect=1 direct-or-bounce=verified",
-        "gic: registered interrupt intid=50 handlers=5",
+        # intid 50 is the virtio-net device, and that it registers a
+        # handler at all is the point of this check. The number after
+        # "handlers=" is a count of every interrupt registered so far
+        # anywhere in the kernel, so pinning it made this gate fail
+        # whenever an unrelated device was added to the boot -- which is
+        # exactly what attaching a scratch disk to the smoke
+        # configuration did. Match the registration, not the tally.
+        "gic: registered interrupt intid=50 handlers=",
         "virtio-net: persistent mode initialized rx=8 tx=4 event_idx=1 indirect_sg=1",
     ],
     "general_threads": [
