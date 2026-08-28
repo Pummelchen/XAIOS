@@ -194,7 +194,7 @@ static xaios_partition_device_t g_boot_partitions[XAIOS_GPT_MAX_PARTITIONS];
 static uint8_t g_gpt_scratch[4096] __attribute__((aligned(64)));
 static xaios_gpt_table_t g_boot_gpt;
 
-static xaios_status_t mount_xaibootfs_from_boot_disk(const char *disk) {
+static xaios_status_t mount_xaibootfs_from_disk(const char *disk) {
   xaios_block_device_t *device = 0;
   if (block_device_open(disk, &device) != XAIOS_OK || device == 0) {
     return XAIOS_ERR_NOT_FOUND;
@@ -235,6 +235,28 @@ static xaios_status_t mount_xaibootfs_from_boot_disk(const char *disk) {
     }
   }
   return mounted != 0U ? XAIOS_OK : XAIOS_ERR_NOT_FOUND;
+}
+
+/* Try every block device the machine has registered, rather than naming one.
+ *
+ * Which device holds the system depends on how the machine was configured:
+ * /dev/vblk0 is the loader's in-memory initial filesystem when there is one
+ * and the first physical disk when there is not, so a probe that names it
+ * reads a GPT out of an initfs image on exactly the configuration this is for.
+ * A partition typed as xaibootFS storage is unambiguous wherever it is found,
+ * so look for that instead of guessing where to look. */
+static xaios_status_t mount_xaibootfs_from_any_disk(void) {
+  xaios_block_device_info_t devices[8];
+  uint64_t count = 0U;
+  if (block_device_list(devices, 8U, &count) != XAIOS_OK) {
+    return XAIOS_ERR_NOT_FOUND;
+  }
+  for (uint64_t index = 0U; index < count; ++index) {
+    if (mount_xaibootfs_from_disk(devices[index].identifier) == XAIOS_OK) {
+      return XAIOS_OK;
+    }
+  }
+  return XAIOS_ERR_NOT_FOUND;
 }
 
 static void boot_sync_wall_clock(void) {
@@ -575,7 +597,12 @@ void kmain(const xaios_boot_info_t *boot) {
      machine that has been installed uses its own disk rather than whatever
      else happens to be plugged in. */
   if (persistent_status != XAIOS_OK) {
-    persistent_status = mount_xaibootfs_from_boot_disk("/dev/vblk0");
+    /* Enumerate the physical disks first: when the loader supplied the
+       initial filesystem in memory, virtio_block_init returns before probing
+       the transport at all, and the machine's own disk is never registered. */
+    virtio_block_handle_t *installed = 0;
+    (void)virtio_block_open_slot(0U, &installed);
+    persistent_status = mount_xaibootfs_from_any_disk();
   }
   if (persistent_status != XAIOS_OK) {
     /* vblk0 remains the immutable initramfs/test image. Open the dedicated
