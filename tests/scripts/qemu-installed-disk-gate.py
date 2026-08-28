@@ -58,6 +58,17 @@ FIRST_BOOT = (
      re.compile(r"/bin/xaios-shell: command surface passed")),
     ("syscall and filesystem suite",
      re.compile(r"/bin/systest: syscall and filesystem suite passed")),
+    # The system reads its own EFI System Partition. That volume was written
+    # by mtools on the build host and is read here by the kernel's own FAT
+    # code, so this checks the reader against an implementation that is not
+    # itself -- the reciprocal of the hosted test, where mtools reads what
+    # XAIOS wrote. Four files, and the kernel is the large one, so a reader
+    # that returned plausible nonsense would not reach this size.
+    ("boot files readable from the ESP",
+     re.compile(r"boot-esp: readable volume=/dev/vblk16p\d+ files=4 "
+                r"bytes=\d{7,}")),
+    ("kernel image found on the ESP",
+     re.compile(r"boot-esp: /EFI/XAIOS/KERNEL\.ELF size=\d{6,}")),
 )
 
 # The second boot must load what the first one wrote. "persistent loaded" is

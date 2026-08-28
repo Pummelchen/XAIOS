@@ -51,6 +51,7 @@
 #include <xaios/security.h>
 #include <xaios/sha256.h>
 #include <xaios/source_index.h>
+#include <xaios/fat.h>
 #include <xaios/storage_admin.h>
 #include <xaios/system_slot.h>
 #include <xaios/service.h>
@@ -194,6 +195,54 @@ static xaios_partition_device_t g_boot_partitions[XAIOS_GPT_MAX_PARTITIONS];
 static uint8_t g_gpt_scratch[4096] __attribute__((aligned(64)));
 static xaios_gpt_table_t g_boot_gpt;
 
+/* Read the boot files out of the EFI System Partition this machine started
+   from, and say what is there.
+
+   This is the source half of installing XAIOS onto another disk. The target
+   half already works: the system can create a partition of the right type,
+   format FAT16 onto it and write files at the paths firmware opens. What it
+   could not do was find the bytes to write, because the loader and the kernel
+   live on the ESP the machine booted from and nothing had ever opened it.
+
+   Reporting sizes rather than copying anything keeps this a check rather than
+   an install: an install needs a target disk and an operator who chose it. */
+static void report_boot_esp(const char *identifier) {
+  xaios_block_device_t *device = 0;
+  if (block_device_open(identifier, &device) != XAIOS_OK || device == 0) {
+    klog("boot-esp: %s cannot be opened\n", identifier);
+    return;
+  }
+  xaios_fat_volume_t volume;
+  if (fat_mount(device, &volume) != XAIOS_OK) {
+    /* An ESP that is not FAT16 is legal -- firmware also accepts FAT32 -- and
+       this reader does not handle it. Say so rather than imply the partition
+       is broken. */
+    klog("boot-esp: %s is not a FAT16 volume this kernel can read\n",
+         identifier);
+    (void)block_device_close(device);
+    return;
+  }
+  static const char *const k_boot_files[] = {
+      "/EFI/BOOT/BOOTAA64.EFI",
+      "/EFI/XAIOS/XAIOS.EFI",
+      "/EFI/XAIOS/KERNEL.ELF",
+      "/EFI/XAIOS/INITFS.IMG",
+  };
+  uint32_t found = 0U;
+  uint64_t total = 0U;
+  for (uint64_t index = 0U;
+       index < sizeof(k_boot_files) / sizeof(k_boot_files[0]); ++index) {
+    uint64_t size = 0U;
+    if (fat_stat(&volume, k_boot_files[index], &size, 0) != XAIOS_OK) continue;
+    ++found;
+    total += size;
+    klog("boot-esp: %s size=%lu\n", k_boot_files[index], size);
+  }
+  klog("boot-esp: readable volume=%s files=%u bytes=%lu clusters=%lu\n",
+       identifier, found, total, volume.cluster_count);
+  (void)block_device_close(device);
+}
+
 static xaios_status_t mount_xaibootfs_from_disk(const char *disk) {
   xaios_block_device_t *device = 0;
   if (block_device_open(disk, &device) != XAIOS_OK || device == 0) {
@@ -208,11 +257,21 @@ static xaios_status_t mount_xaibootfs_from_disk(const char *disk) {
   }
 
   uint32_t mounted = 0U;
-  for (uint32_t index = 0U;
-       index < XAIOS_GPT_MAX_PARTITIONS && mounted == 0U; ++index) {
+  for (uint32_t index = 0U; index < XAIOS_GPT_MAX_PARTITIONS; ++index) {
     const xaios_gpt_partition_t *entry = &g_boot_gpt.partitions[index];
     if (gpt_guid_is_zero(&entry->type_guid)) continue;
-    if (!gpt_guid_equal(&entry->type_guid, &XAIOS_GPT_TYPE_STATEFS)) continue;
+    uint32_t is_state =
+        gpt_guid_equal(&entry->type_guid, &XAIOS_GPT_TYPE_STATEFS) ? 1U : 0U;
+    /* The EFI System Partition is registered too, not only the state
+       partition. It holds the loader, the kernel and the initial filesystem
+       this machine booted from, which is precisely what installing XAIOS onto
+       another disk has to copy. Registering it is what lets the running system
+       read its own boot files rather than depending on a host tool to have
+       kept a copy. */
+    uint32_t is_esp =
+        gpt_guid_equal(&entry->type_guid, &XAIOS_GPT_TYPE_ESP) ? 1U : 0U;
+    if (is_state == 0U && is_esp == 0U) continue;
+    if (is_state != 0U && mounted != 0U) continue;
 
     char identifier[XAIOS_BLOCK_DEVICE_ID_MAX];
     uint64_t used = 0U;
@@ -226,6 +285,12 @@ static xaios_status_t mount_xaibootfs_from_disk(const char *disk) {
 
     if (partition_device_register(&g_boot_partitions[index], device, identifier,
                                   entry, 0U) != XAIOS_OK) {
+      continue;
+    }
+    if (is_esp != 0U) {
+      klog("boot-esp: registered %s, the partition this machine booted from\n",
+           identifier);
+      report_boot_esp(identifier);
       continue;
     }
     if (xaiboot_fs_mount_device(identifier) == XAIOS_OK) {
