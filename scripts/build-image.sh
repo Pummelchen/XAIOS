@@ -74,7 +74,7 @@ WORKER_ELF="$INIT_BUILD_DIR/worker.elf"
 USER_START_OBJ="$INIT_BUILD_DIR/user-start.o"
 USER_LIB_OBJ="$INIT_BUILD_DIR/xaios-user.o"
 USER_CONTROL_OBJ="$INIT_BUILD_DIR/xaios-control-client.o"
-USER_APPS="xaios-shell xaiosctl xapt nano htop pong hello sysinfo systest smptest smpstress perfbench nettest lstm-xor sshtest mltest posix-shell agenttest"
+USER_APPS="xaios-shell xaiosctl xapt nano htop pong hello sysinfo systest smptest smpstress perfbench nettest lstm-xor sshtest mltest posix-shell agenttest clustertest"
 UTILITY_APPS="ls mkdir touch cp mv rm rmdir stat cat head tail less grep find sed write tar cpio zip unzip ps df du"
 HOSTED_USER_APPS="helloworldc99"
 
@@ -905,8 +905,30 @@ for app in $USER_APPS; do
     -Werror \
     -DXAIOS_BOOT_TEST_APPS="$BOOT_TEST_APPS" \
     -I"$ROOT_DIR/userspace/include" \
+    -I"$ROOT_DIR/engine/include" \
     -c "$ROOT_DIR/userspace/apps/$app.c" \
     -o "$app_obj"
+
+  if [ "$app" = "clustertest" ]; then
+    # The cluster framing lives in engine/ and has never been built for a
+    # target before -- every test of it ran hosted, which is how it kept a
+    # transport-shaped hole for as long as it did. It needs the engine headers
+    # and its hash; memcpy and memset come from the userspace library, which
+    # provides both under their standard names.
+    CLUSTER_OBJ="$INIT_BUILD_DIR/cluster.o"
+    CLUSTER_SHA_OBJ="$INIT_BUILD_DIR/cluster-sha256.o"
+    for source in cluster sha256; do
+      "$CLANG" --target="$TARGET_TRIPLE" $USER_ARCH_CFLAGS -std=c99 \
+        -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+        -Wall -Wextra -Werror \
+        -I"$ROOT_DIR/engine/include" -I"$ROOT_DIR/engine/src" \
+        -I"$ROOT_DIR/userspace/include" \
+        -c "$ROOT_DIR/engine/src/$source.c" \
+        -o "$INIT_BUILD_DIR/cluster-$source.o"
+    done
+    CLUSTER_OBJ="$INIT_BUILD_DIR/cluster-cluster.o"
+    CLUSTER_SHA_OBJ="$INIT_BUILD_DIR/cluster-sha256.o"
+  fi
 
   if [ "$app" = "xapt" ]; then
     XAPT_TLS_OBJ="$INIT_BUILD_DIR/xapt-tls.o"
@@ -942,6 +964,16 @@ for app in $USER_APPS; do
       "$USER_LIB_OBJ" \
       "$USER_CONTROL_OBJ" \
       "$app_obj"
+  elif [ "$app" = "clustertest" ]; then
+    "$LD_LLD" \
+      -nostdlib \
+      -T "$ROOT_DIR/userspace/init/linker.ld" \
+      -o "$app_elf" \
+      "$USER_START_OBJ" \
+      "$USER_LIB_OBJ" \
+      "$app_obj" \
+      "$CLUSTER_OBJ" \
+      "$CLUSTER_SHA_OBJ"
   else
     "$LD_LLD" \
       -nostdlib \

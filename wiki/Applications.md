@@ -124,6 +124,7 @@ acceptance.
 | `/bin/mltest` | Deterministic CPU ML dispatcher test for XOR, sum, parity, and fixed-point matrix multiplication fixtures. |
 | `/bin/posix-shell` | Scripted FreeBSD/POSIX-like shell-subset compatibility suite for redirects, pipelines, filters, and filesystem operations. |
 | `/bin/agenttest` | Bounded agent protocol dispatch test for ping, source-index, Git status, build, denial, and validation cases. |
+| `/bin/clustertest` | Carries a sealed cluster frame to a peer over TCP and opens the reply, then refuses that frame a second time. Says so and exits cleanly when no peer is reachable, which is the ordinary case: most boots are not part of a cluster. |
 
 Two applications exist only in the explicit failure-fixture image and are not
 shipped in the normal image:

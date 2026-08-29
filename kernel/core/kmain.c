@@ -1189,6 +1189,10 @@ persistent_network_done:
   run_user_app("/bin/mltest", 15, mltest_caps);
   run_user_app("/bin/posix-shell", 16, posix_shell_caps);
   run_user_app("/bin/agenttest", 17, agenttest_caps);
+  /* The cluster data plane, which needs a socket rather than a simulated one:
+     the framing has been exercised hosted since it was written, and never over
+     a network. Runs where nettest runs and wants what nettest wants. */
+  run_user_app("/bin/clustertest", 18, nettest_caps | XAIOS_CAP_NET_SOCKET);
   kassert(run_user_app("/bin/helloworldc99", 23U, c99_demo_caps) == 0);
 #else
   klog("kernel: boot diagnostics disabled; utilities are SSH on-demand\n");

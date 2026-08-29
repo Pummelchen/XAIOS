@@ -1,6 +1,18 @@
 #include "sha256.h"
 
+/* <string.h> is a hosted header, and this file is now built for XAIOS itself
+   as well as for the hosted tests. A freestanding compiler defines
+   __STDC_HOSTED__ as 0 and offers no such header, so declare the two functions
+   this needs rather than depend on one. XAIOS's userspace library provides
+   both under their standard names, which is what lets the linker resolve them
+   there. */
+#if defined(__STDC_HOSTED__) && __STDC_HOSTED__
 #include <string.h>
+#else
+#include <stddef.h>
+void *memcpy(void *destination, const void *source, size_t length);
+void *memset(void *destination, int value, size_t length);
+#endif
 
 static const uint32_t k_round[64] = {
     UINT32_C(0x428a2f98), UINT32_C(0x71374491), UINT32_C(0xb5c0fbcf),
