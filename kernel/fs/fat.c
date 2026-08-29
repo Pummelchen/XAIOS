@@ -18,6 +18,10 @@
    bounds is what makes the volume actually be the thing it claims. */
 #define FAT_MIN_CLUSTERS UINT64_C(4085)
 #define FAT_MAX_CLUSTERS UINT64_C(65524)
+/* What the format aims for when it can. Not a limit of the format -- a limit
+   on how much work writing a file costs, since every cluster is an allocation
+   and three FAT sector operations. */
+#define FAT_PREFERRED_MAX_CLUSTERS UINT64_C(8192)
 
 #define FAT_ATTR_READ_ONLY UINT8_C(0x01)
 #define FAT_ATTR_VOLUME_ID UINT8_C(0x08)
@@ -177,18 +181,47 @@ static xaios_status_t fat_entry_set(const xaios_fat_volume_t *volume,
   return XAIOS_OK;
 }
 
+/* Where the last allocation stopped. Resuming from there rather than from the
+   start is the difference between a copy that finishes and one that does not:
+   allocating n clusters by scanning from the beginning each time reads the FAT
+   O(n^2) times, and copying a 10 MB initial filesystem onto a 32 MB volume
+   needs about twenty thousand clusters. Measured as a machine that printed its
+   last line and then sat there until the gate's timeout killed it -- no panic,
+   no progress, nothing to see.
+
+   Only a hint. It is never trusted: the scan below wraps and re-checks, so a
+   stale value costs one wasted pass and never returns a cluster that is in
+   use. */
+static uint32_t g_next_free_hint = 2U;
+
 static xaios_status_t allocate_cluster(const xaios_fat_volume_t *volume,
                                        uint32_t *out_cluster) {
-  for (uint64_t cluster = 2U; cluster < volume->cluster_count + 2U;
-       ++cluster) {
-    uint32_t value = 0U;
-    xaios_status_t status = fat_entry_get(volume, (uint32_t)cluster, &value);
-    if (status != XAIOS_OK) return status;
-    if (value != FAT_FREE) continue;
-    status = fat_entry_set(volume, (uint32_t)cluster, FAT_EOC);
-    if (status != XAIOS_OK) return status;
-    *out_cluster = (uint32_t)cluster;
-    return XAIOS_OK;
+  uint64_t limit = volume->cluster_count + 2U;
+  uint64_t hint = g_next_free_hint;
+  if (hint < 2U || hint >= limit) hint = 2U;
+  uint64_t entries_per_sector = volume->sector_size / 2U;
+  /* From the hint to the end, then from the start back to the hint. Two passes
+     cover every cluster exactly once, and the second only runs on a volume
+     that is nearly full. */
+  for (uint32_t pass = 0U; pass < 2U; ++pass) {
+    uint64_t cluster = pass == 0U ? hint : 2U;
+    uint64_t end = pass == 0U ? limit : hint;
+    while (cluster < end) {
+      uint64_t sector =
+          volume->reserved_sectors + (cluster * 2U) / volume->sector_size;
+      xaios_status_t status = read_sector(volume, sector, g_sector);
+      if (status != XAIOS_OK) return status;
+      uint64_t within = ((cluster * 2U) % volume->sector_size) / 2U;
+      for (; within < entries_per_sector && cluster < end;
+           ++within, ++cluster) {
+        if (get16(&g_sector[within * 2U]) != FAT_FREE) continue;
+        status = fat_entry_set(volume, (uint32_t)cluster, FAT_EOC);
+        if (status != XAIOS_OK) return status;
+        g_next_free_hint = (uint32_t)(cluster + 1U);
+        *out_cluster = (uint32_t)cluster;
+        return XAIOS_OK;
+      }
+    }
   }
   return XAIOS_ERR_NO_MEMORY;
 }
@@ -483,6 +516,7 @@ xaios_status_t fat_mount(xaios_block_device_t *device,
     return XAIOS_ERR_UNSUPPORTED;
   }
   volume->mounted = 1U;
+  g_next_free_hint = 2U;
   return XAIOS_OK;
 }
 
@@ -507,45 +541,66 @@ xaios_status_t fat_format(xaios_block_device_t *device, const char *label,
        1U) /
       volume->sector_size;
 
-  /* Choose the smallest cluster that keeps the count inside the FAT16 range.
-     Starting small and doubling wastes the least space on a small volume,
-     which an EFI System Partition is. */
+  /* Choose a cluster size that keeps the cluster count moderate, not the
+     smallest one that is merely legal.
+
+     The smallest legal choice wastes the least space, which is why it was the
+     original rule, and it is the wrong trade for this volume. Cluster count is
+     what the work of writing a file is measured in: every cluster costs an
+     allocation, a FAT read and a write to each copy of the FAT, and the block
+     driver moves one sector per request. A 32 MiB EFI partition formatted with
+     512-byte clusters has 65,000 of them, and copying a 10 MiB initial
+     filesystem onto it came to roughly eighty-five thousand synchronous
+     requests -- enough that one of them passed the driver's five-second
+     deadline and the queue was reset out from under the copy. The install
+     failed with an I/O error that was really a throughput problem.
+
+     Targeting a bounded cluster count instead is what every real formatter
+     does, and it cuts the metadata work on that volume eightfold. The floor of
+     4085 still binds: below it the volume is FAT12 whatever the boot sector
+     says. */
   uint64_t chosen = 0U;
-  for (uint64_t sectors_per_cluster = 1U; sectors_per_cluster <= 64U;
-       sectors_per_cluster *= 2U) {
-    /* The FAT has to hold two bytes per cluster plus the two reserved
-       entries, and it comes out of the same space the clusters do, so this
-       converges rather than solving in one step. */
-    uint64_t fat_sectors = 1U;
-    for (uint64_t attempt = 0U; attempt < 8U; ++attempt) {
+  for (uint32_t pass = 0U; pass < 2U && chosen == 0U; ++pass) {
+    /* First pass insists on a moderate cluster count; the second accepts any
+       legal one, for a volume too large for the first to satisfy. */
+    uint64_t ceiling = pass == 0U ? FAT_PREFERRED_MAX_CLUSTERS
+                                  : FAT_MAX_CLUSTERS;
+    for (uint64_t sectors_per_cluster = 1U; sectors_per_cluster <= 64U;
+         sectors_per_cluster *= 2U) {
+      /* The FAT has to hold two bytes per cluster plus the two reserved
+         entries, and it comes out of the same space the clusters do, so this
+         converges rather than solving in one step. */
+      uint64_t fat_sectors = 1U;
+      for (uint64_t attempt = 0U; attempt < 8U; ++attempt) {
+        uint64_t data_start = volume->reserved_sectors +
+                              volume->fat_count * fat_sectors +
+                              volume->root_sectors;
+        if (data_start >= volume->total_sectors) {
+          fat_sectors = 0U;
+          break;
+        }
+        uint64_t clusters =
+            (volume->total_sectors - data_start) / sectors_per_cluster;
+        uint64_t needed = ((clusters + 2U) * 2U + volume->sector_size - 1U) /
+                          volume->sector_size;
+        if (needed <= fat_sectors) break;
+        fat_sectors = needed;
+      }
+      if (fat_sectors == 0U) continue;
       uint64_t data_start = volume->reserved_sectors +
                             volume->fat_count * fat_sectors +
                             volume->root_sectors;
-      if (data_start >= volume->total_sectors) {
-        fat_sectors = 0U;
-        break;
-      }
+      if (data_start >= volume->total_sectors) continue;
       uint64_t clusters =
           (volume->total_sectors - data_start) / sectors_per_cluster;
-      uint64_t needed = ((clusters + 2U) * 2U + volume->sector_size - 1U) /
-                        volume->sector_size;
-      if (needed <= fat_sectors) break;
-      fat_sectors = needed;
+      if (clusters < FAT_MIN_CLUSTERS || clusters > ceiling) continue;
+      volume->sectors_per_cluster = sectors_per_cluster;
+      volume->sectors_per_fat = fat_sectors;
+      volume->data_start_sector = data_start;
+      volume->cluster_count = clusters;
+      chosen = 1U;
+      break;
     }
-    if (fat_sectors == 0U) continue;
-    uint64_t data_start = volume->reserved_sectors +
-                          volume->fat_count * fat_sectors +
-                          volume->root_sectors;
-    if (data_start >= volume->total_sectors) continue;
-    uint64_t clusters =
-        (volume->total_sectors - data_start) / sectors_per_cluster;
-    if (clusters < FAT_MIN_CLUSTERS || clusters > FAT_MAX_CLUSTERS) continue;
-    volume->sectors_per_cluster = sectors_per_cluster;
-    volume->sectors_per_fat = fat_sectors;
-    volume->data_start_sector = data_start;
-    volume->cluster_count = clusters;
-    chosen = 1U;
-    break;
   }
   if (chosen == 0U) {
     /* No cluster size produces a legal FAT16 volume here. Refuse rather than
@@ -619,6 +674,9 @@ xaios_status_t fat_format(xaios_block_device_t *device, const char *label,
     if (status != XAIOS_OK) return status;
   }
   volume->mounted = 1U;
+  /* A new volume is empty, so the hint from whatever was allocated last on
+     some other volume is meaningless here. */
+  g_next_free_hint = 2U;
 
   /* The label, again, as a directory entry in the root. The boot sector field
      written above is where firmware looks; this is where every tool that
@@ -964,6 +1022,10 @@ xaios_status_t fat_copy_file(xaios_fat_volume_t *destination,
       uint64_t within = source_offset % source->sectors_per_cluster;
       status = read_sector(source, source_base + within, g_payload);
       if (status != XAIOS_OK) {
+        klog("fat: copy read failed sector=%lu cluster=%u offset=%lu "
+             "remaining=%lu status=%d\n",
+             source_base + within, source_cluster, source_offset, remaining,
+             (int)status);
         (void)free_chain(destination, first);
         return status;
       }
@@ -982,6 +1044,10 @@ xaios_status_t fat_copy_file(xaios_fat_volume_t *destination,
       }
       status = write_sector(destination, destination_base + index, g_payload);
       if (status != XAIOS_OK) {
+        klog("fat: copy write failed sector=%lu cluster=%u of %lu "
+             "remaining=%lu status=%d\n",
+             destination_base + index, cluster, destination->cluster_count,
+             remaining, (int)status);
         (void)free_chain(destination, first);
         return status;
       }

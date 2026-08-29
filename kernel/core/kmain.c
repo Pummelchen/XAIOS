@@ -52,6 +52,7 @@
 #include <xaios/sha256.h>
 #include <xaios/source_index.h>
 #include <xaios/fat.h>
+#include <xaios/install.h>
 #include <xaios/storage_admin.h>
 #include <xaios/system_slot.h>
 #include <xaios/service.h>
@@ -194,6 +195,9 @@ static int run_user_app(const char *path, uint32_t pid, uint64_t capabilities) {
 static xaios_partition_device_t g_boot_partitions[XAIOS_GPT_MAX_PARTITIONS];
 static uint8_t g_gpt_scratch[4096] __attribute__((aligned(64)));
 static xaios_gpt_table_t g_boot_gpt;
+/* The EFI System Partition this machine started from, once one has been
+   found. It is the source an install copies from, and there is exactly one. */
+static char g_boot_esp[XAIOS_BLOCK_DEVICE_ID_MAX];
 
 /* Read the boot files out of the EFI System Partition this machine started
    from, and say what is there.
@@ -227,6 +231,7 @@ static void report_boot_esp(const char *identifier) {
       "/EFI/XAIOS/XAIOS.EFI",
       "/EFI/XAIOS/KERNEL.ELF",
       "/EFI/XAIOS/INITFS.IMG",
+      "/EFI/XAIOS/ENTROPY.SED",
   };
   uint32_t found = 0U;
   uint64_t total = 0U;
@@ -290,6 +295,14 @@ static xaios_status_t mount_xaibootfs_from_disk(const char *disk) {
     if (is_esp != 0U) {
       klog("boot-esp: registered %s, the partition this machine booted from\n",
            identifier);
+      if (g_boot_esp[0] == '\0') {
+        uint64_t copy = 0U;
+        while (copy + 1U < sizeof(g_boot_esp) && identifier[copy] != '\0') {
+          g_boot_esp[copy] = identifier[copy];
+          ++copy;
+        }
+        g_boot_esp[copy] = '\0';
+      }
       report_boot_esp(identifier);
       continue;
     }
@@ -316,6 +329,8 @@ static xaios_status_t mount_xaibootfs_from_disk(const char *disk) {
    distinct from an attached volume's. */
 #define BOOT_DISK_SCAN_LIMIT 4U
 #define BOOT_DISK_SLOT_BASE 16U
+/* The scratch disk the boot path attaches for storage administration. */
+#define XAIOS_INSTALL_TARGET "/dev/vblk5"
 
 static xaios_status_t mount_xaibootfs_from_any_disk(void) {
   xaios_block_device_info_t devices[8];
@@ -329,6 +344,44 @@ static xaios_status_t mount_xaibootfs_from_any_disk(void) {
     }
   }
   return XAIOS_ERR_NOT_FOUND;
+}
+
+/* Install XAIOS onto the scratch disk, when the machine has both an EFI System
+   Partition to copy from and a disk to copy onto.
+
+   This is the one operation the whole partition and filesystem effort exists
+   for, and the only way to know it works is to do it. It runs when both halves
+   are present -- an installed machine has a boot ESP, and the gate attaches a
+   spare disk -- and says why it is skipping when they are not, rather than
+   passing silently on a machine where it never ran.
+
+   What it does not do is verify by booting the result. That needs firmware and
+   a second machine, so the installed-disk gate does it from outside. */
+static void install_self_test(void) {
+  if (g_boot_esp[0] == '\0') {
+    klog("install: self-test skipped, this machine has no EFI System "
+         "Partition to copy from\n");
+    return;
+  }
+  char confirmation[XAIOS_STORAGE_GUID_TEXT_MAX];
+  xaios_status_t status = install_target_confirmation(
+      XAIOS_INSTALL_TARGET, confirmation, sizeof(confirmation));
+  if (status != XAIOS_OK) {
+    klog("install: cannot determine what to confirm for %s status=%d\n",
+         XAIOS_INSTALL_TARGET, (int)status);
+    return;
+  }
+  xaios_install_report_t report;
+  status = install_to_disk(XAIOS_INSTALL_TARGET, g_boot_esp, confirmation, 16U,
+                           &report);
+  if (status != XAIOS_OK) {
+    klog("install: self-test failed status=%d target=%s source=%s\n",
+         (int)status, XAIOS_INSTALL_TARGET, g_boot_esp);
+    return;
+  }
+  klog("install: self-test passed target=%s files=%lu bytes=%lu esp=%s\n",
+       XAIOS_INSTALL_TARGET, report.file_count, report.bytes_copied,
+       report.esp_identifier);
 }
 
 static void boot_sync_wall_clock(void) {
@@ -678,15 +731,25 @@ void kmain(const xaios_boot_info_t *boot) {
        ordinal zero and belongs to nobody -- which on a machine with one disk
        excludes the only disk there is. Names start above the slot map so that
        a disk found here can never take the name of one attached beside it. */
-    /* Only where the machine has a single disk. With more than one, the
-       volumes are attached separately and each already belongs to a driver;
-       opening them here takes them away from their owners, which cost the
-       test bench its working shell the first time this scan ran there. */
-    if (virtio_block_present_count(BOOT_DISK_SCAN_LIMIT) == 1U) {
-      virtio_block_handle_t *installed = 0;
-      (void)virtio_block_open_ordinal(0U, BOOT_DISK_SLOT_BASE, &installed);
-      persistent_status = mount_xaibootfs_from_any_disk();
-    }
+    /* The first PCI block device, and only that one.
+
+       Firmware boots from a PCI disk, so that is where an installed machine's
+       partitions are. Restricting the scan to it replaces an earlier rule --
+       "only when the machine has exactly one disk" -- which was wrong twice
+       over. It stopped an installed machine recognising its own disk the
+       moment a second was attached, which is precisely the install case. And
+       counting ordinals across both transports could not address the boot disk
+       at all once an MMIO device existed, because every MMIO device is counted
+       first; a machine with one of each opened the spare and never saw the disk
+       it had booted from.
+
+       On the test bench this opens the firmware's own boot volume, which is
+       safe because nothing else does: the PCI slot map reserves ordinal zero
+       and hands it to no driver. It carries no XAIOS partition table, so the
+       search below simply finds nothing there. */
+    virtio_block_handle_t *installed = 0;
+    (void)virtio_block_open_pci_ordinal(0U, BOOT_DISK_SLOT_BASE, &installed);
+    persistent_status = mount_xaibootfs_from_any_disk();
   }
   if (persistent_status != XAIOS_OK) {
     /* vblk0 remains the immutable initramfs/test image. Open the dedicated
@@ -767,6 +830,7 @@ void kmain(const xaios_boot_info_t *boot) {
   if (storage_admin_status == XAIOS_OK) {
     klog("storage-admin: scratch device attached slot=5 mutation=enabled\n");
     storage_admin_self_test();
+    install_self_test();
   } else {
     klog("storage-admin: scratch device unavailable status=%d\n",
          (int)storage_admin_status);

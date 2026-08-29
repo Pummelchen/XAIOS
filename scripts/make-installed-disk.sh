@@ -68,7 +68,7 @@ mcopy -i "$ESP_IMAGE" "$LOADER" ::/EFI/BOOT/BOOTAA64.EFI
 mcopy -i "$ESP_IMAGE" "$LOADER" ::/EFI/XAIOS/XAIOS.EFI
 mcopy -i "$ESP_IMAGE" "$KERNEL" ::/EFI/XAIOS/kernel.elf
 mcopy -i "$ESP_IMAGE" "$INITFS" ::/EFI/XAIOS/initfs.img
-mcopy -i "$ESP_IMAGE" "$ENTROPY_SEED" ::/EFI/XAIOS/entropy.seed
+mcopy -i "$ESP_IMAGE" "$ENTROPY_SEED" ::/EFI/XAIOS/entropy.sed
 
 # A freshly formatted durable volume, not a copy of the shared one: the
 # lifecycle record lives on it, and inheriting another gate's boot counts is

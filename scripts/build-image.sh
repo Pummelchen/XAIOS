@@ -571,6 +571,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/gpt.o
   $KERNEL_BUILD_DIR/partition_device.o
   $KERNEL_BUILD_DIR/storage_admin.o
+  $KERNEL_BUILD_DIR/install.o
   $KERNEL_BUILD_DIR/rate_limit.o
   $KERNEL_BUILD_DIR/source_index.o
   $KERNEL_BUILD_DIR/network_stack.o
@@ -714,6 +715,7 @@ compile_kernel "$ROOT_DIR/kernel/lib/inflate.c" "$KERNEL_BUILD_DIR/inflate.o"
 compile_kernel "$ROOT_DIR/kernel/storage/gpt.c" "$KERNEL_BUILD_DIR/gpt.o"
 compile_kernel "$ROOT_DIR/kernel/storage/partition_device.c" "$KERNEL_BUILD_DIR/partition_device.o"
 compile_kernel "$ROOT_DIR/kernel/storage/storage_admin.c" "$KERNEL_BUILD_DIR/storage_admin.o"
+compile_kernel "$ROOT_DIR/kernel/storage/install.c" "$KERNEL_BUILD_DIR/install.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/rate_limit.c" "$KERNEL_BUILD_DIR/rate_limit.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/source_index.c" "$KERNEL_BUILD_DIR/source_index.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack.c" "$KERNEL_BUILD_DIR/network_stack.o"

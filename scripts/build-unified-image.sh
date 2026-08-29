@@ -123,7 +123,7 @@ fi
 # instruction. The ARM copy keeps the plain name for the same reason the ARM
 # kernel does.
 mcopy -i "$ESP_IMAGE" "$INITFS" ::/EFI/XAIOS/initfs.img
-mcopy -i "$ESP_IMAGE" "$ENTROPY_SEED" ::/EFI/XAIOS/entropy.seed
+mcopy -i "$ESP_IMAGE" "$ENTROPY_SEED" ::/EFI/XAIOS/entropy.sed
 
 # The ISO 9660 side carries the same files so that mounting the image shows
 # what it contains, rather than one opaque efi.img.
@@ -142,7 +142,7 @@ if [ "$INCLUDE_X86" -eq 1 ]; then
   cp "$INITFS_X86" "$STAGE_DIR/EFI/XAIOS/initfs-x86_64.img"
 fi
 cp "$INITFS" "$STAGE_DIR/EFI/XAIOS/initfs.img"
-cp "$ENTROPY_SEED" "$STAGE_DIR/EFI/XAIOS/entropy.seed"
+cp "$ENTROPY_SEED" "$STAGE_DIR/EFI/XAIOS/entropy.sed"
 
 # -e efi.img            the El Torito EFI entry, for firmware booting media
 # -append_partition     the same image again as a real GPT partition of type

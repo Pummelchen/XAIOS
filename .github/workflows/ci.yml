@@ -120,10 +120,10 @@ jobs:
       # transport lookup by ordinal, transitional virtio PCI device IDs and
       # mapping above 512 GiB are all exercised here and nowhere else, so
       # without this job they can break with every other job still green.
-      - name: Installed disk boot
+      - name: Installed disk boot and self-install
         run: python3 tests/scripts/qemu-installed-disk-gate.py
         env:
-          XAIOS_INSTALLED_DISK_TIMEOUT: "240"
+          XAIOS_INSTALLED_DISK_TIMEOUT: "300"
 
       - name: Upload boot logs
         if: always()
@@ -132,6 +132,8 @@ jobs:
           name: installed-disk-logs
           path: |
             build/installed-disk-boot*.log
+            build/install-run.log
+            build/installed-by-xaios.log
             build/qemu-installed-disk-gate.json
           if-no-files-found: ignore
 

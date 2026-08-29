@@ -93,6 +93,14 @@ xaios_status_t virtio_transport_find_nth(uint32_t device_id, const char *name,
                                         uint32_t ordinal,
                                         uint32_t logical_slot,
                                         virtio_mmio_device_t *device);
+/* The nth PCI device of this type, ignoring the MMIO window. A machine boots
+   from a PCI disk, and counting across both transports cannot address it when
+   an MMIO device is also present. */
+xaios_status_t virtio_transport_find_nth_pci(uint32_t device_id,
+                                            const char *name,
+                                            uint32_t ordinal,
+                                            uint32_t logical_slot,
+                                            virtio_mmio_device_t *device);
 void virtio_transport_reset(const virtio_mmio_device_t *device);
 /* The device's own status byte. Worth reading when a queue stops completing:
    bit 6, DEVICE_NEEDS_RESET, is the device saying it has given up, which

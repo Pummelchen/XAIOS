@@ -33,6 +33,8 @@ ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
 REPORT = BUILD / "qemu-installed-disk-gate.json"
 DISK = BUILD / "installed-disk.img"
+TARGET = BUILD / "install-target.img"
+TARGET_BYTES = 256 * 1024 * 1024
 BOOT_TIMEOUT_S = int(os.environ.get("XAIOS_INSTALLED_DISK_TIMEOUT", "180"))
 
 FIRMWARE_CANDIDATES = (
@@ -64,9 +66,14 @@ FIRST_BOOT = (
     # itself -- the reciprocal of the hosted test, where mtools reads what
     # XAIOS wrote. Four files, and the kernel is the large one, so a reader
     # that returned plausible nonsense would not reach this size.
+    # The byte total is the substantive claim, not the file count: a reader
+    # returning plausible nonsense does not reach ten megabytes. Pinning the
+    # count instead broke this gate the moment a file was added to the list --
+    # the same brittleness that made an unrelated gate assert on a running
+    # tally of every interrupt in the kernel.
     ("boot files readable from the ESP",
-     re.compile(r"boot-esp: readable volume=/dev/vblk16p\d+ files=4 "
-                r"bytes=\d{7,}")),
+     re.compile(r"boot-esp: readable volume=/dev/vblk16p\d+ files=[1-9]\d* "
+                r"bytes=\d{8,}")),
     ("kernel image found on the ESP",
      re.compile(r"boot-esp: /EFI/XAIOS/KERNEL\.ELF size=\d{6,}")),
 )
@@ -77,6 +84,38 @@ FIRST_BOOT = (
 SECOND_BOOT = FIRST_BOOT + (
     ("state written by the previous boot survived",
      re.compile(r"xaibootfs: persistent loaded files=[1-9]\d* ")),
+)
+
+# The install itself: a running XAIOS writes a bootable disk, and then that
+# disk is booted on its own. Nothing short of booting the result proves it,
+# because every earlier check is the installer marking its own work.
+INSTALL = (
+    ("installed onto the blank disk",
+     re.compile(r"install: self-test passed target=/dev/vblk5 files=5 "
+                r"bytes=\d{8,}")),
+    ("every boot file copied",
+     re.compile(r"install: /dev/vblk5 is bootable esp=/dev/vblk5p\d+ "
+                r"state=/dev/vblk5p\d+ files=5")),
+)
+
+# What the disk XAIOS wrote must do when booted on its own. The state
+# partition is left empty by the installer on purpose, so this boot formats it
+# exactly as the first boot of any installation does.
+INSTALLED_RESULT = (
+    ("kernel started", re.compile(r"XAIOS Build \d+ kernel starting")),
+    ("state partition found by type",
+     re.compile(r"xaibootfs: mounted from /dev/vblk16p\d+, a partition of the "
+                r"disk this machine booted from")),
+    ("all four vCPUs online", re.compile(r"smp: online cpus=4/4")),
+    ("shell command surface",
+     re.compile(r"/bin/xaios-shell: command surface passed")),
+    ("syscall and filesystem suite",
+     re.compile(r"/bin/systest: syscall and filesystem suite passed")),
+    # The seed the installer copied. Without it there is no secure entropy and
+    # sshd refuses to start -- which is how a filename that cannot be written
+    # as 8.3 was found in the first place.
+    ("SSH server running on the installed system",
+     re.compile(r"SSH server: up and running")),
 )
 
 FORBIDDEN = (
@@ -103,7 +142,8 @@ def find_firmware() -> str | None:
     return None
 
 
-def boot(firmware: str, log: Path) -> str:
+def boot(firmware: str, log: Path, disk: Path = DISK,
+         spare: Path | None = None) -> str:
     log.unlink(missing_ok=True)
     command = [
         "qemu-system-aarch64",
@@ -115,8 +155,18 @@ def boot(firmware: str, log: Path) -> str:
         "-drive", f"if=pflash,format=raw,readonly=on,file={firmware}",
         # One drive and nothing else. Attaching anything beside it would make
         # this the test bench again and prove nothing.
-        "-drive", f"if=none,format=raw,id=xaios_disk,file={DISK}",
+        "-drive", f"if=none,format=raw,id=xaios_disk,file={disk}",
         "-device", "virtio-blk-pci,drive=xaios_disk,bootindex=0",
+    ]
+    if spare is not None:
+        # A blank disk for the running system to install onto, on the window
+        # the boot path attaches for storage administration.
+        command += [
+            "-drive", f"if=none,format=raw,id=xaios_target,file={spare}",
+            "-device",
+            "virtio-blk-device,drive=xaios_target,bus=virtio-mmio-bus.5",
+        ]
+    command += [
         "-display", "none",
         "-serial", f"file:{log}",
     ]
@@ -189,6 +239,48 @@ def main() -> int:
         for fault in faults:
             if fault["seen"]:
                 print(f"    FAULT {fault['name']}")
+
+    # Now the part that is not about this disk at all: a running XAIOS writes a
+    # bootable disk of its own, and that disk is booted alone. Only the second
+    # boot is evidence -- everything before it is the installer describing its
+    # own work.
+    if passed:
+        with TARGET.open("wb") as handle:
+            handle.truncate(TARGET_BYTES)
+        text = boot(firmware, BUILD / "install-run.log", spare=TARGET)
+        checks, faults = evaluate(text, INSTALL)
+        # Formatting is expected here: this boot formats the spare disk's new
+        # state partition as part of installing onto it.
+        faults = [f for f in faults if f["name"] != "state partition reformatted"]
+        install_ok = all(c["passed"] for c in checks) and \
+            not any(f["seen"] for f in faults)
+        boots.append({"boot": "install", "checks": checks, "faults": faults,
+                      "passed": install_ok})
+        passed = passed and install_ok
+        print("  install:")
+        for check in checks:
+            print(f"    {'ok  ' if check['passed'] else 'MISS'} {check['name']}")
+        for fault in faults:
+            if fault["seen"]:
+                print(f"    FAULT {fault['name']}")
+
+        if install_ok:
+            text = boot(firmware, BUILD / "installed-by-xaios.log", disk=TARGET)
+            checks, faults = evaluate(text, INSTALLED_RESULT)
+            faults = [f for f in faults
+                      if f["name"] != "state partition reformatted"]
+            result_ok = all(c["passed"] for c in checks) and \
+                not any(f["seen"] for f in faults)
+            boots.append({"boot": "installed-result", "checks": checks,
+                          "faults": faults, "passed": result_ok})
+            passed = passed and result_ok
+            print("  the disk XAIOS installed, booted on its own:")
+            for check in checks:
+                print(f"    {'ok  ' if check['passed'] else 'MISS'} "
+                      f"{check['name']}")
+            for fault in faults:
+                if fault["seen"]:
+                    print(f"    FAULT {fault['name']}")
 
     REPORT.write_text(json.dumps({
         "target": "qemu-aarch64-installed-disk",

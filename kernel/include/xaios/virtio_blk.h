@@ -40,6 +40,12 @@ xaios_status_t virtio_block_open_slot(uint32_t start_slot,
 xaios_status_t virtio_block_open_ordinal(uint32_t ordinal, uint32_t slot,
                                         virtio_block_handle_t **out_handle);
 
+/* The nth PCI block device, ignoring the MMIO window. A machine boots from a
+   PCI disk; counting across both transports cannot reach it when an MMIO
+   device is present, which is the case as soon as a spare disk is attached. */
+xaios_status_t virtio_block_open_pci_ordinal(uint32_t ordinal, uint32_t slot,
+                                            virtio_block_handle_t **out_handle);
+
 /* How many virtio block devices are present, up to limit, without claiming
    any. One disk means an installed machine whose state is a partition of it;
    several mean volumes attached separately, each already owned. */

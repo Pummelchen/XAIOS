@@ -366,6 +366,42 @@ int main(int argc, char **argv) {
   assert(fat_copy_file(&target, "/EFI/BOOT/X.EFI", &reopened,
                        "/EFI/BOOT/NOPE.BIN") != XAIOS_OK);
 
+  /* Force the allocator's free-cluster hint to wrap. It resumes where the
+     last allocation stopped, which is what makes copying a large file finish
+     at all, and the pass that starts again from the front only runs once a
+     volume has been filled and emptied. Writing far more than the small
+     volume holds, one file at a time, is the cheapest way to get there --
+     without it the wrap would never be executed by any test. */
+  uint64_t churn_length = 2U * 1024U * 1024U;
+  unsigned char *churn = malloc((size_t)churn_length);
+  assert(churn != 0);
+  for (uint64_t index = 0U; index < churn_length; ++index) {
+    churn[index] = (unsigned char)(index ^ 0x5AU);
+  }
+  for (int round = 0; round < 30; ++round) {
+    /* Vary the byte so a round that silently wrote nothing is visible. */
+    churn[0] = (unsigned char)round;
+    assert(fat_write_file(&target, "/EFI/XAIOS/CHURN.BIN", churn,
+                          churn_length) == XAIOS_OK);
+  }
+  unsigned char *churn_back = malloc((size_t)churn_length);
+  assert(churn_back != 0);
+  reported = 0U;
+  assert(fat_read_file(&target_reopened, "/EFI/XAIOS/CHURN.BIN", churn_back,
+                       churn_length, &reported) == XAIOS_OK);
+  assert(reported == churn_length);
+  assert(memcmp(churn_back, churn, (size_t)churn_length) == 0);
+  /* And the files written before the churn are untouched by it: an allocator
+     that handed out a cluster already in use would corrupt one of them. */
+  reported = 0U;
+  assert(fat_read_file(&target_reopened, "/EFI/XAIOS/KERNEL.ELF", back,
+                       exact_length, &reported) == XAIOS_OK);
+  assert(reported == exact_length);
+  assert(memcmp(back, exact, (size_t)exact_length) == 0);
+  check_fat_copies_agree_on(&target_reopened, g_image2);
+  free(churn_back);
+  free(churn);
+
   if (argc > 1) dump_image(argv[1]);
   if (argc > 2) {
     FILE *handle = fopen(argv[2], "wb");

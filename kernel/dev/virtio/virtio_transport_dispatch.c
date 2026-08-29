@@ -63,6 +63,30 @@ xaios_status_t virtio_transport_find_at(uint32_t device_id, const char *name,
   return find_with_fallback(device_id, name, device, 2U, slot);
 }
 
+/* The nth PCI device of this type, skipping the MMIO window entirely.
+ *
+ * find_nth below counts every MMIO device before it looks at PCI at all, which
+ * makes a machine with one of each unable to reach the PCI one: ordinal zero is
+ * the MMIO device, and ordinal one finds nothing because neither transport has
+ * a second. That is not hypothetical -- it is the shape of an installed machine
+ * with a spare disk attached, where the boot disk is PCI and the spare is MMIO,
+ * and the kernel opened the spare and never saw the disk it had booted from.
+ *
+ * A machine's boot disk is on PCI. Firmware boots from it, so asking for a PCI
+ * device by ordinal says what is meant rather than counting past whatever else
+ * happens to be plugged in. */
+xaios_status_t virtio_transport_find_nth_pci(uint32_t device_id,
+                                             const char *name,
+                                             uint32_t ordinal,
+                                             uint32_t logical_slot,
+                                             virtio_mmio_device_t *device) {
+  if (device == 0) return XAIOS_ERR_INVALID;
+  xaios_status_t status = virtio_pci_backend_transport_find_nth(
+      device_id, name, ordinal, logical_slot, device);
+  if (status == XAIOS_OK) device->backend = VIRTIO_BACKEND_PCI;
+  return status;
+}
+
 xaios_status_t virtio_transport_find_nth(uint32_t device_id, const char *name,
                                          uint32_t ordinal,
                                          uint32_t logical_slot,

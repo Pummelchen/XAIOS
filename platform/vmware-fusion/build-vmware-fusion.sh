@@ -88,7 +88,7 @@ cp "$GRUB_EFI" "$STAGE_DIR/EFI/BOOT/BOOTAA64.EFI"
 cp "$ROOT_DIR/build/uefi/BOOTAA64.EFI" "$STAGE_DIR/EFI/XAIOS/XAIOS.EFI"
 cp "$ROOT_DIR/build/kernel/kernel.elf" "$STAGE_DIR/EFI/XAIOS/kernel.elf"
 cp "$ROOT_DIR/build/xaios-virtio-test.img" "$STAGE_DIR/EFI/XAIOS/initfs.img"
-cp "$ENTROPY_SEED" "$STAGE_DIR/EFI/XAIOS/entropy.seed"
+cp "$ENTROPY_SEED" "$STAGE_DIR/EFI/XAIOS/entropy.sed"
 
 # 16 MiB left no headroom: GRUB is 5.6, the initial filesystem 9.3, and the
 # kernel about 1, so adding one application to the image failed the build with
@@ -101,7 +101,7 @@ mcopy -i "$ESP_IMAGE" "$GRUB_EFI" ::/EFI/BOOT/BOOTAA64.EFI
 mcopy -i "$ESP_IMAGE" "$ROOT_DIR/build/uefi/BOOTAA64.EFI" ::/EFI/XAIOS/XAIOS.EFI
 mcopy -i "$ESP_IMAGE" "$ROOT_DIR/build/kernel/kernel.elf" ::/EFI/XAIOS/kernel.elf
 mcopy -i "$ESP_IMAGE" "$ROOT_DIR/build/xaios-virtio-test.img" ::/EFI/XAIOS/initfs.img
-mcopy -i "$ESP_IMAGE" "$ENTROPY_SEED" ::/EFI/XAIOS/entropy.seed
+mcopy -i "$ESP_IMAGE" "$ENTROPY_SEED" ::/EFI/XAIOS/entropy.sed
 
 xorriso -as mkisofs -quiet -R -V XAIOS_FUSION \
   -e efi.img -no-emul-boot \

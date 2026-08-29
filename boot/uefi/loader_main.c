@@ -724,9 +724,25 @@ static efi_status_t read_optional_entropy_seed(
   efi_file_protocol_t *seed_file = 0;
   uint64_t read_size = XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES;
   if (root == 0 || seed == 0 || seed_size == 0) return EFI_INVALID_PARAMETER;
+  /* Two names, and the shorter one first.
+   *
+   * "entropy.seed" has a four-character extension, which cannot be written as
+   * an 8.3 name -- so on disk it needs a long-name entry, and only tools that
+   * implement those can read or write it. XAIOS's own FAT writer is 8.3 only
+   * on purpose, that being the subset every implementation agrees on, and it
+   * therefore could not copy this file when installing onto another disk. The
+   * installed machine came up with no secure entropy and refused to start its
+   * SSH server, which is a strange way to learn about a filename.
+   *
+   * Images now carry "entropy.sed". The old name is still tried, so a disk
+   * built before this change still boots with its seed intact. */
   efi_status_t status = root->open(root, &seed_file,
-                                   u"\\EFI\\XAIOS\\entropy.seed",
+                                   u"\\EFI\\XAIOS\\entropy.sed",
                                    EFI_FILE_MODE_READ, 0);
+  if (status == EFI_NOT_FOUND) {
+    status = root->open(root, &seed_file, u"\\EFI\\XAIOS\\entropy.seed",
+                        EFI_FILE_MODE_READ, 0);
+  }
   if (status == EFI_NOT_FOUND) return EFI_SUCCESS;
   if (is_error(status)) return status;
   status = seed_file->read(seed_file, &read_size, seed);

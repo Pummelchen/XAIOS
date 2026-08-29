@@ -1104,6 +1104,28 @@ uint32_t virtio_block_present_count(uint32_t limit) {
   return count;
 }
 
+xaios_status_t virtio_block_open_pci_ordinal(
+    uint32_t ordinal, uint32_t slot, virtio_block_handle_t **out_handle) {
+  if (out_handle == 0) {
+    return XAIOS_ERR_INVALID;
+  }
+  virtio_block_driver_t *drv = allocate_handle();
+  if (drv == 0) return XAIOS_ERR_NO_MEMORY;
+  if (virtio_transport_find_nth_pci(VIRTIO_DEVICE_BLOCK, "virtio-blk-h",
+                                    ordinal, slot,
+                                    &drv->device) != XAIOS_OK) {
+    release_handle(drv);
+    return XAIOS_ERR_NOT_FOUND;
+  }
+  xaios_status_t status = start_handle(drv, slot);
+  if (status != XAIOS_OK) {
+    release_handle(drv);
+    return status;
+  }
+  *out_handle = drv;
+  return XAIOS_OK;
+}
+
 xaios_status_t virtio_block_open_ordinal(uint32_t ordinal, uint32_t slot,
                                         virtio_block_handle_t **out_handle) {
   if (out_handle == 0) {
