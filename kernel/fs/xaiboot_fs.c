@@ -2470,12 +2470,31 @@ static int64_t xaiboot_fs_read_fd_locked(uint32_t fd, void *buffer, uint64_t siz
   return (int64_t)copy;
 }
 
+/* How large a file this path can actually write. Two limits, and the smaller
+   one binds.
+
+   g_active_max_file_bytes is what the mounted volume format allows: a
+   gibibyte on v6. sizeof(g_file_buffer) is what this path can stage, and it
+   is still the v5 figure of 256 KiB. Checking only the first was a kernel
+   .bss overflow reachable from userspace -- write past 256 KiB to any file on
+   a v6 mutable root and the staging copy ran off the end of a static array
+   into whatever the linker had placed after it. v6 raised the format's limit
+   without raising the buffer's, and nothing here noticed.
+
+   Refusing is the honest answer until this path streams instead of staging
+   whole files. A caller gets XAIOS_ERR_INVALID at 256 KiB, which is where it
+   got one before v6 and what the documentation has always said. */
+static uint64_t write_limit(void) {
+  uint64_t staging = (uint64_t)sizeof(g_file_buffer);
+  return g_active_max_file_bytes < staging ? g_active_max_file_bytes : staging;
+}
+
 static int64_t xaiboot_fs_write_fd_locked(uint32_t fd, const void *buffer, uint64_t size) {
   xaios_xbfs_file_handle_t *handle = handle_for_fd(fd);
+  uint64_t limit = write_limit();
   if (handle == 0 || buffer == 0 || size == 0 ||
       (handle->flags & XAIOS_XBFS_OPEN_WRITE) == 0 ||
-      handle->cursor > g_active_max_file_bytes ||
-      size > g_active_max_file_bytes - handle->cursor) {
+      handle->cursor > limit || size > limit - handle->cursor) {
     ++g_reject_count;
     return (int64_t)XAIOS_ERR_INVALID;
   }
@@ -3127,6 +3146,46 @@ void xaiboot_fs_self_test(void) {
   kassert(xaiboot_fs_stat_count() == 3);
   kassert(xaiboot_fs_open_count() == 3);
   kassert(xaiboot_fs_close_count() == 3);
+  /* A write that would run off the end of the staging buffer must be refused,
+     not staged. v6 raised the format's per-file limit to a gibibyte while the
+     buffer this path copies through stayed at the v5 figure of 256 KiB, and
+     for a while the guard checked only the former: on a v6 volume, a seek past
+     256 KiB and a write corrupted whatever the linker had placed after a
+     static array.
+
+     The invariant is the check that holds whatever volume is mounted -- this
+     self-test runs against a v2 volume, where the format's own limit is eight
+     kibibytes and far below the buffer, so a probe at 256 KiB would prove
+     nothing here. The probe that follows works at whatever the binding limit
+     is. */
+  kassert(write_limit() <= (uint64_t)sizeof(g_file_buffer));
+  {
+    int64_t guard_fd = xaiboot_fs_open("/state/overflow-guard",
+                                       XAIOS_XBFS_OPEN_WRITE |
+                                           XAIOS_XBFS_OPEN_CREATE);
+    kassert(guard_fd >= 0);
+    uint8_t probe[64];
+    for (uint32_t index = 0U; index < sizeof(probe); ++index) {
+      probe[index] = (uint8_t)index;
+    }
+    uint64_t limit = write_limit();
+    /* One byte inside the limit, so the write would straddle it. */
+    kassert(xaiboot_fs_seek((uint32_t)guard_fd, limit - 1U) == XAIOS_OK);
+    kassert(xaiboot_fs_write_fd((uint32_t)guard_fd, probe, sizeof(probe)) ==
+            (int64_t)XAIOS_ERR_INVALID);
+    /* And exactly at it, which is the off-by-one on the other side. */
+    kassert(xaiboot_fs_seek((uint32_t)guard_fd, limit) == XAIOS_OK);
+    kassert(xaiboot_fs_write_fd((uint32_t)guard_fd, probe, 1U) ==
+            (int64_t)XAIOS_ERR_INVALID);
+    /* And the last byte that does fit still goes in, so the guard is a bound
+       and not a blanket refusal. */
+    kassert(xaiboot_fs_seek((uint32_t)guard_fd, limit - 1U) == XAIOS_OK);
+    kassert(xaiboot_fs_write_fd((uint32_t)guard_fd, probe, 1U) == 1);
+    kassert(xaiboot_fs_close((uint32_t)guard_fd) == XAIOS_OK);
+    kassert(xaiboot_fs_delete("/state/overflow-guard") == XAIOS_OK);
+  }
+  klog("xaibootfs: write bound self-test passed limit=%lu staging_buffer=%lu\n",
+       write_limit(), (uint64_t)sizeof(g_file_buffer));
   klog("xaibootfs: allocator self-test passed allocations=%lu frees=%lu blocks=%lu\n",
        xaiboot_fs_allocation_count(), xaiboot_fs_free_count(),
        block_count_used());
