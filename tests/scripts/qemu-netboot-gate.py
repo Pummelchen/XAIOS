@@ -86,6 +86,101 @@ FORBIDDEN = (
     ("assertion failure", re.compile(r"ERROR: assertion failed")),
 )
 
+# The fetch itself, on the architecture where a UEFI network stack is available
+# as an option ROM. The firmware asks DHCP for a filename, pulls it over TFTP
+# and runs it -- exactly what a blank machine on a network does.
+PXE = (
+    ("firmware chose network boot",
+     re.compile(r'BdsDxe: starting Boot\d+ "UEFI PXEv4')),
+    ("loader found its embedded kernel",
+     re.compile(r"XAIOS loader using embedded kernel image")),
+    ("loader found its embedded initial filesystem",
+     re.compile(r"XAIOS loader using embedded initfs image")),
+    ("kernel started", re.compile(r"XAIOS Build \d+ kernel starting")),
+    ("initial filesystem mounted",
+     re.compile(r"initramfs: mounted rofs version=\d+ files=[1-9]\d*")),
+)
+
+IPXE_ROM = Path("/opt/homebrew/share/qemu/efi-e1000.rom")
+X86_FIRMWARE_CANDIDATES = (
+    "/opt/homebrew/share/qemu/edk2-x86_64-code.fd",
+    "/usr/share/OVMF/OVMF_CODE.fd",
+    "/usr/share/ovmf/OVMF.fd",
+)
+
+
+def pxe_stage(stages: list) -> None:
+    """Fetch the image over TFTP and boot it, rather than handing it over."""
+    if shutil.which("qemu-system-x86_64") is None:
+        print("  a real TFTP fetch: not run -- qemu-system-x86_64 not installed")
+        return
+    rom = IPXE_ROM
+    if not rom.is_file():
+        for candidate in Path("/usr/share/qemu").glob("efi-e1000.rom"):
+            rom = candidate
+            break
+    if not rom.is_file():
+        print("  a real TFTP fetch: not run -- no UEFI network option ROM")
+        return
+    fw = None
+    for candidate in X86_FIRMWARE_CANDIDATES:
+        if Path(candidate).is_file():
+            fw = candidate
+            break
+    if fw is None:
+        print("  a real TFTP fetch: not run -- no x86-64 UEFI firmware")
+        return
+
+    built = subprocess.run([str(ROOT / "scripts/build-netboot-image.sh")],
+                           cwd=str(ROOT), stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, check=False,
+                           env={**os.environ, "XAIOS_TARGET_ARCH": "x86_64"})
+    image = BUILD / "netboot" / "BOOTX64.EFI"
+    if built.returncode != 0 or not image.is_file():
+        print("  a real TFTP fetch: not run -- no x86-64 netboot image; "
+              "run XAIOS_TARGET_ARCH=x86_64 make image-qemu-test first")
+        return
+
+    root = BUILD / "tftproot"
+    root.mkdir(parents=True, exist_ok=True)
+    shutil.copy(image, root / "BOOTX64.EFI")
+    log = BUILD / "netboot-gate-pxe.log"
+    log.unlink(missing_ok=True)
+    command = [
+        "qemu-system-x86_64",
+        "-machine", "q35", "-cpu", "max", "-smp", "4", "-m", "2048",
+        "-drive", f"if=pflash,format=raw,readonly=on,file={fw}",
+        "-netdev", f"user,id=net0,tftp={root},bootfile=BOOTX64.EFI",
+        "-device",
+        f"e1000,netdev=net0,romfile={rom},bootindex=0",
+        "-display", "none", "-serial", f"file:{log}",
+    ]
+    process = subprocess.Popen(command, cwd=str(ROOT),
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL,
+                               start_new_session=True)
+    deadline = time.monotonic() + TIMEOUT_S
+    try:
+        while time.monotonic() < deadline:
+            time.sleep(5)
+            if not log.exists():
+                continue
+            text = log.read_bytes().decode("utf-8", "replace")
+            if all(p.search(text) for _, p in PXE):
+                break
+            if any(p.search(text) for _, p in FORBIDDEN):
+                break
+            if process.poll() is not None:
+                break
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    text = log.read_bytes().decode("utf-8", "replace") if log.exists() else ""
+    stages.append(evaluate("a real TFTP fetch, over DHCP and PXE", text, PXE))
+
 
 def fail(message: str) -> int:
     print(f"netboot-gate: {message}")
@@ -215,10 +310,12 @@ def main() -> int:
         stages.append(evaluate("the disk it installed, booted alone", text,
                                RESULT))
 
+    pxe_stage(stages)
+
     passed = all(s["passed"] for s in stages)
     REPORT.write_text(json.dumps({
-        "target": "qemu-aarch64-netboot",
-        "transport": "medium; this firmware has no network boot drivers",
+        "target": "qemu-netboot",
+        "transport": "medium on aarch64; DHCP and TFTP on x86_64",
         "stages": stages,
         "passed": passed,
     }, indent=2) + "\n", encoding="utf-8")

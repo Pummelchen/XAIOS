@@ -331,8 +331,19 @@ xaios_status_t pci_config_write32(uint32_t index, uint16_t offset,
 }
 
 void pci_self_test(void) {
+  /* That enumeration works is a property of this code. How many virtio
+     devices a machine has is a property of the machine, and asserting on it
+     halts a machine that is working.
+
+     This required two, which every profile in this tree happens to provide,
+     and which a machine booted over the network does not: firmware fetched one
+     file and the machine has an e1000 and no virtio devices at all. It came up
+     correctly and then panicked on the count -- a kernel refusing to run on a
+     machine because of what is plugged into it.
+
+     Enumeration having found nothing at all is still a fault: the bus exists,
+     and a scan of it that returns nothing did not work. */
   kassert(g_device_count != 0U);
-  kassert(g_virtio_count >= 2U);
   klog("PCI: x86 enumeration self-test passed devices=%u virtio=%u\n",
        g_device_count, g_virtio_count);
 }
