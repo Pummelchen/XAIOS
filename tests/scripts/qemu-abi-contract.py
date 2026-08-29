@@ -155,6 +155,7 @@ def validate_control_protocol_contract(rc_contract):
         "storage scrub-pause", "storage scrub-resume",
         "storage scrub-cancel", "storage trim-start",
         "storage trim-status", "storage trim-cancel", "model cleanup",
+        "storage install",
         "runtime snapshot"
     ]
     if control.get("operations") != expected_operations:

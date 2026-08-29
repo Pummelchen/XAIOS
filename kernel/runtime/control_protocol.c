@@ -3,6 +3,7 @@
 #include <xaios/assert.h>
 #include <xaios/block_device.h>
 #include <xaios/control_protocol.h>
+#include <xaios/install.h>
 #include <xaios/cpu_ai_runtime.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
@@ -1515,6 +1516,98 @@ static xaios_status_t handle_storage_partition_read(
                         payload_size);
 }
 
+/* Install XAIOS onto another disk.
+ *
+ * The most destructive operation this protocol exposes: it writes a partition
+ * table over whatever the target held. It therefore takes the same shape as the
+ * partition mutations -- an admin role on both the connection and the
+ * principal, a named actor, an operation id, an audited begin and end, and the
+ * target disk's own GUID as confirmation. install_to_disk refuses outright to
+ * install onto the disk the source partition lives on, so the running system
+ * cannot be overwritten by a mistyped device name.
+ */
+static xaios_status_t handle_storage_install(
+    const xaios_control_request_header_t *request, const uint8_t *payload,
+    void *response, uint64_t response_capacity, uint64_t *response_bytes,
+    xaios_control_role_t authenticated_role) {
+  xaios_control_storage_install_request_payload_t query;
+  if (request->payload_type !=
+          XAIOS_CONTROL_PAYLOAD_STORAGE_INSTALL_REQUEST ||
+      request->payload_length != sizeof(query)) {
+    return write_error(response, response_capacity, response_bytes,
+                       request->operation, request->request_id,
+                       XAIOS_CONTROL_STATUS_INVALID_REQUEST);
+  }
+  bytes_copy(&query, payload, sizeof(query));
+  if (!fixed_string_valid(query.request.target,
+                          sizeof(query.request.target)) ||
+      !fixed_string_valid(query.request.source,
+                          sizeof(query.request.source)) ||
+      !fixed_string_terminated(query.request.confirmation,
+                               sizeof(query.request.confirmation)) ||
+      !fixed_string_terminated(query.actor, sizeof(query.actor))) {
+    return write_error(response, response_capacity, response_bytes,
+                       request->operation, request->request_id,
+                       XAIOS_CONTROL_STATUS_INVALID_REQUEST);
+  }
+  if (authenticated_role < XAIOS_CONTROL_ROLE_ADMIN ||
+      request->principal_role < XAIOS_CONTROL_ROLE_ADMIN ||
+      query.actor[0] == '\0') {
+    return write_admin_error(request, XAIOS_ADMIN_RESULT_DENIED, response,
+                             response_capacity, response_bytes);
+  }
+  xaios_admin_result_t begin = admin_control_mutation_begin(
+      query.actor, request->principal_role, XAIOS_CONTROL_ROLE_ADMIN,
+      query.request.operation_id, "storage.install");
+  if (begin != XAIOS_ADMIN_RESULT_OK) {
+    return write_admin_error(request, begin, response, response_capacity,
+                             response_bytes);
+  }
+
+  xaios_install_report_t report;
+  xaios_status_t status =
+      install_to_disk(query.request.target, query.request.source,
+                      query.request.confirmation,
+                      query.request.operation_id, &report);
+  if (status != XAIOS_OK) {
+    xaios_admin_result_t failed = admin_control_mutation_fail(
+        query.actor, request->principal_role, query.request.operation_id,
+        "storage.install", XAIOS_ADMIN_RESULT_DENIED);
+    (void)failed;
+    return write_error(response, response_capacity, response_bytes,
+                       request->operation, request->request_id,
+                       XAIOS_CONTROL_STATUS_INVALID_REQUEST);
+  }
+  /* The audit record identifies the disk that was written, which is the thing
+     an operator would later need to account for. */
+  uint8_t object_hash[32];
+  bytes_zero(object_hash, sizeof(object_hash));
+  string_copy((char *)object_hash, sizeof(object_hash), query.request.target);
+  xaios_admin_result_t completed = admin_control_mutation_complete(
+      query.actor, request->principal_role, query.request.operation_id,
+      "storage.install", object_hash);
+  if (completed != XAIOS_ADMIN_RESULT_OK) {
+    return write_admin_error(request, completed, response, response_capacity,
+                             response_bytes);
+  }
+
+  xaios_control_storage_install_result_t result;
+  bytes_zero(&result, sizeof(result));
+  string_copy(result.esp_identifier, sizeof(result.esp_identifier),
+              report.esp_identifier);
+  string_copy(result.state_identifier, sizeof(result.state_identifier),
+              report.state_identifier);
+  result.files_copied = report.file_count;
+  result.bytes_copied = report.bytes_copied;
+  result.esp_bytes = report.esp_bytes;
+  result.state_bytes = report.state_bytes;
+  return write_response(response, response_capacity, response_bytes,
+                        request->operation, request->request_id,
+                        XAIOS_CONTROL_STATUS_OK,
+                        XAIOS_CONTROL_PAYLOAD_STORAGE_INSTALL_RESULT, &result,
+                        sizeof(result));
+}
+
 static xaios_status_t handle_storage_partition_operation(
     const xaios_control_request_header_t *request, const uint8_t *payload,
     void *response, uint64_t response_capacity, uint64_t *response_bytes,
@@ -2371,6 +2464,10 @@ xaios_status_t control_protocol_dispatch(
   case XAIOS_CONTROL_OP_STORAGE_PARTITION_DELETE:
   case XAIOS_CONTROL_OP_STORAGE_PARTITION_PLAN_RESIZE:
   case XAIOS_CONTROL_OP_STORAGE_PARTITION_RESIZE:
+  case XAIOS_CONTROL_OP_STORAGE_INSTALL:
+    return handle_storage_install(&request, payload, response,
+                                  response_capacity, response_bytes,
+                                  authenticated_role);
   case XAIOS_CONTROL_OP_STORAGE_PARTITION_REPAIR:
     return handle_storage_partition_operation(
         &request, payload, response, response_capacity, response_bytes,

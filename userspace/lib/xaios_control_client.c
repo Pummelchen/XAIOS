@@ -26,6 +26,9 @@ typedef struct xaios_control_options {
   char component[XAIOS_CONTROL_LOG_COMPONENT_MAX];
   char argument[XAIOS_CONTROL_PATH_MAX];
   char replica[XAIOS_CONTROL_PATH_MAX];
+  /* The EFI System Partition an install copies from. Named rather
+     than inferred: a machine can have more than one. */
+  char install_source[XAIOS_CONTROL_PATH_MAX];
   char replica_package_id[65];
   char storage_name[37];
   char confirmation[37];
@@ -1609,6 +1612,55 @@ static int render_storage_partitions(const void *payload, u64 payload_length,
   return 0;
 }
 
+/* What an install did, in the terms an operator would check it by: which
+   partitions now exist on the target, and how much was actually copied. */
+static int render_storage_install(const void *payload, u64 payload_length,
+                                  int json, char *output, u64 capacity,
+                                  u64 *offset, u64 request_id) {
+  xaios_control_storage_install_result_user_t result;
+  if (payload_length != sizeof(result)) return -1;
+  bytes_copy(&result, payload, sizeof(result));
+  if (result.esp_identifier[0] == '\0' ||
+      result.state_identifier[0] == '\0' || result.files_copied == 0ULL) {
+    return -1;
+  }
+  if (json != 0) {
+    int first = 1;
+    if (json_envelope_begin(output, capacity, offset, request_id) != 0 ||
+        json_field_string(output, capacity, offset, &first, "esp",
+                          result.esp_identifier) != 0 ||
+        json_field_string(output, capacity, offset, &first, "state",
+                          result.state_identifier) != 0 ||
+        json_field_u64(output, capacity, offset, &first, "files_copied",
+                       result.files_copied) != 0 ||
+        json_field_u64(output, capacity, offset, &first, "bytes_copied",
+                       result.bytes_copied) != 0 ||
+        json_field_u64(output, capacity, offset, &first, "esp_bytes",
+                       result.esp_bytes) != 0 ||
+        json_field_u64(output, capacity, offset, &first, "state_bytes",
+                       result.state_bytes) != 0) {
+      return -1;
+    }
+    return json_envelope_end(output, capacity, offset);
+  }
+  if (append_text(output, capacity, offset, "esp=") != 0 ||
+      append_text(output, capacity, offset, result.esp_identifier) != 0 ||
+      append_text(output, capacity, offset, " state=") != 0 ||
+      append_text(output, capacity, offset, result.state_identifier) != 0 ||
+      append_text(output, capacity, offset, "\n") != 0 ||
+      human_field_u64(output, capacity, offset, "files_copied",
+                      result.files_copied) != 0 ||
+      human_field_u64(output, capacity, offset, "bytes_copied",
+                      result.bytes_copied) != 0 ||
+      human_field_u64(output, capacity, offset, "esp_bytes",
+                      result.esp_bytes) != 0 ||
+      human_field_u64(output, capacity, offset, "state_bytes",
+                      result.state_bytes) != 0) {
+    return -1;
+  }
+  return 0;
+}
+
 static int render_storage_partition_plan(
     const void *payload, u64 payload_length, int json, char *output,
     u64 capacity, u64 *offset, u64 request_id) {
@@ -2143,6 +2195,7 @@ static int parse_options(const char *command, xaios_control_options_t *options,
   int needs_argument = 0;
   int needs_mount_path = 0;
   int needs_replica = 0;
+  int needs_install_source = 0;
   xaios_memzero(options, sizeof(*options));
   options->timeout_ms = 1000ULL;
   if (next_token(command, &index, token, sizeof(token)) != 0 ||
@@ -2283,6 +2336,10 @@ static int parse_options(const char *command, xaios_control_options_t *options,
     } else if (string_equal(token, "fsck")) {
       options->operation = XAIOS_CONTROL_OP_STORAGE_FSCK;
       needs_argument = 1;
+    } else if (string_equal(token, "install")) {
+      options->operation = XAIOS_CONTROL_OP_STORAGE_INSTALL;
+      needs_argument = 1;
+      needs_install_source = 1;
     } else if (string_equal(token, "repair-from-replica")) {
       options->operation = XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA;
       needs_argument = 1;
@@ -2333,6 +2390,22 @@ static int parse_options(const char *command, xaios_control_options_t *options,
     if (string_copy(options->mount_path, sizeof(options->mount_path),
                     options->argument) != 0) {
       goto usage;
+    }
+  }
+  if (needs_install_source != 0) {
+    /* "storage install <disk> from <esp>". The word is required rather than
+       positional-only so that a command that destroys a disk reads as a
+       sentence at the point it is typed. */
+    if (next_token(command, &index, token, sizeof(token)) != 0 ||
+        !string_equal(token, "from") ||
+        next_token(command, &index, token, sizeof(token)) != 0 ||
+        token[0] == '-' ||
+        string_copy(options->install_source, sizeof(options->install_source),
+                    token) != 0) {
+      *error_code = "invalid_install";
+      *error_message =
+          "Install requires a target disk and \"from\" a source EFI partition.";
+      return -1;
     }
   }
   if (needs_replica != 0) {
@@ -2680,6 +2753,7 @@ static int parse_options(const char *command, xaios_control_options_t *options,
                  options->operation == XAIOS_CONTROL_OP_STORAGE_UNMOUNT ||
                  options->operation == XAIOS_CONTROL_OP_STORAGE_FS_REPAIR ||
                  options->operation == XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA ||
+                 options->operation == XAIOS_CONTROL_OP_STORAGE_INSTALL ||
                  options->operation == XAIOS_CONTROL_OP_STORAGE_FS_RESIZE ||
                  options->operation == XAIOS_CONTROL_OP_STORAGE_SCRUB_START ||
                  options->operation == XAIOS_CONTROL_OP_STORAGE_SCRUB_PAUSE ||
@@ -2758,6 +2832,18 @@ static int parse_options(const char *command, xaios_control_options_t *options,
   int partition_resize =
       options->operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_PLAN_RESIZE ||
       options->operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_RESIZE;
+  if (options->operation == XAIOS_CONTROL_OP_STORAGE_INSTALL) {
+    /* Same bar as any other operation that destroys a disk: a named actor and
+       the disk's own GUID, or it does not go. */
+    if (options->principal[0] == '\0' || options->confirmation[0] == '\0' ||
+        options->operation_id == 0ULL) {
+      *error_code = "invalid_install";
+      *error_message =
+          "Install requires --principal, --confirm with the target disk GUID, "
+          "and --operation-id.";
+      return -1;
+    }
+  }
   if (partition_command == 0 && volume_command == 0 && replica_repair == 0 &&
       model_register == 0 &&
       trim_command == 0 &&
@@ -3015,6 +3101,24 @@ static u64 build_request(const xaios_control_options_t *options,
     bytes_copy(request, &header, sizeof(header));
     bytes_copy(request + sizeof(header), &storage, sizeof(storage));
     return sizeof(header) + sizeof(storage);
+  }
+  if (options->operation == XAIOS_CONTROL_OP_STORAGE_INSTALL) {
+    xaios_control_storage_install_request_payload_user_t install;
+    xaios_memzero(&install, sizeof(install));
+    bytes_copy(install.request.target, options->argument,
+               xaios_strlen(options->argument) + 1ULL);
+    bytes_copy(install.request.source, options->install_source,
+               xaios_strlen(options->install_source) + 1ULL);
+    bytes_copy(install.request.confirmation, options->confirmation,
+               xaios_strlen(options->confirmation) + 1ULL);
+    bytes_copy(install.actor, options->principal,
+               xaios_strlen(options->principal) + 1ULL);
+    install.request.operation_id = options->operation_id;
+    header.payload_type = XAIOS_CONTROL_PAYLOAD_STORAGE_INSTALL_REQUEST;
+    header.payload_length = sizeof(install);
+    bytes_copy(request, &header, sizeof(header));
+    bytes_copy(request + sizeof(header), &install, sizeof(install));
+    return sizeof(header) + sizeof(install);
   }
   if (options->operation == XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA) {
     xaios_control_storage_replica_repair_request_payload_user_t repair;
@@ -3384,6 +3488,12 @@ int xaios_control_run_as(const char *command, u32 principal_role,
     render_result = render_storage_partitions(
         payload, header.payload_length, json, output, output_capacity, &offset,
         request_id);
+  } else if (options.operation == XAIOS_CONTROL_OP_STORAGE_INSTALL &&
+             header.payload_type ==
+                 XAIOS_CONTROL_PAYLOAD_STORAGE_INSTALL_RESULT) {
+    render_result = render_storage_install(payload, header.payload_length,
+                                           json, output, output_capacity,
+                                           &offset, request_id);
   } else if (options.operation >=
                  XAIOS_CONTROL_OP_STORAGE_PARTITION_PLAN_CREATE &&
              options.operation <= XAIOS_CONTROL_OP_STORAGE_PARTITION_REPAIR &&

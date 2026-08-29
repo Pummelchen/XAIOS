@@ -86,6 +86,11 @@ typedef enum xaios_control_operation {
   XAIOS_CONTROL_OP_SYSTEM_UPDATE_ABORT = 57,
   XAIOS_CONTROL_OP_RUNTIME_SNAPSHOT = 58,
   XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA = 59,
+  /* Partition a disk, format its EFI System Partition and copy this machine's
+     own boot files onto it. Destroys whatever the target held, so it carries
+     the same confirmation, actor and audit requirements as the partition
+     mutations above. */
+  XAIOS_CONTROL_OP_STORAGE_INSTALL = 60,
 } xaios_control_operation_t;
 
 typedef enum xaios_control_payload_type {
@@ -123,6 +128,8 @@ typedef enum xaios_control_payload_type {
   XAIOS_CONTROL_PAYLOAD_RUNTIME_SNAPSHOT_REQUEST = 31,
   XAIOS_CONTROL_PAYLOAD_RUNTIME_SNAPSHOT = 32,
   XAIOS_CONTROL_PAYLOAD_STORAGE_REPLICA_REPAIR_REQUEST = 33,
+  XAIOS_CONTROL_PAYLOAD_STORAGE_INSTALL_REQUEST = 34,
+  XAIOS_CONTROL_PAYLOAD_STORAGE_INSTALL_RESULT = 35,
 } xaios_control_payload_type_t;
 
 typedef enum xaios_control_status {
@@ -529,6 +536,31 @@ typedef struct xaios_control_storage_partition_request_payload {
   xaios_storage_partition_request_t request;
   char actor[XAIOS_ADMIN_PRINCIPAL_MAX];
 } xaios_control_storage_partition_request_payload_t;
+
+/* What an install needs: the disk to install onto, the EFI System Partition to
+   copy from, and the target disk's own GUID as confirmation. The source is
+   named rather than inferred -- a machine can have more than one, and the most
+   destructive argument of an operation should not be a guess. */
+typedef struct xaios_control_storage_install_request {
+  char target[XAIOS_BLOCK_DEVICE_ID_MAX];
+  char source[XAIOS_BLOCK_DEVICE_ID_MAX];
+  char confirmation[XAIOS_STORAGE_GUID_TEXT_MAX];
+  uint64_t operation_id;
+} xaios_control_storage_install_request_t;
+
+typedef struct xaios_control_storage_install_request_payload {
+  xaios_control_storage_install_request_t request;
+  char actor[XAIOS_ADMIN_PRINCIPAL_MAX];
+} xaios_control_storage_install_request_payload_t;
+
+typedef struct xaios_control_storage_install_result {
+  char esp_identifier[XAIOS_BLOCK_DEVICE_ID_MAX];
+  char state_identifier[XAIOS_BLOCK_DEVICE_ID_MAX];
+  uint64_t files_copied;
+  uint64_t bytes_copied;
+  uint64_t esp_bytes;
+  uint64_t state_bytes;
+} xaios_control_storage_install_result_t;
 
 typedef struct xaios_control_storage_partitions_payload {
   xaios_storage_partition_report_t report;

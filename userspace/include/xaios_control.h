@@ -89,6 +89,10 @@
 #define XAIOS_CONTROL_OP_SYSTEM_UPDATE_ABORT 57U
 #define XAIOS_CONTROL_OP_RUNTIME_SNAPSHOT 58U
 #define XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA 59U
+/* Partition a disk, format its EFI System Partition and copy this machine's
+   own boot files onto it. Destroys the target, so it carries the same
+   confirmation, actor and audit requirements as a partition mutation. */
+#define XAIOS_CONTROL_OP_STORAGE_INSTALL 60U
 
 #define XAIOS_CONTROL_PAYLOAD_NONE 0U
 #define XAIOS_CONTROL_PAYLOAD_VERSION 1U
@@ -124,6 +128,8 @@
 #define XAIOS_CONTROL_PAYLOAD_RUNTIME_SNAPSHOT_REQUEST 31U
 #define XAIOS_CONTROL_PAYLOAD_RUNTIME_SNAPSHOT 32U
 #define XAIOS_CONTROL_PAYLOAD_STORAGE_REPLICA_REPAIR_REQUEST 33U
+#define XAIOS_CONTROL_PAYLOAD_STORAGE_INSTALL_REQUEST 34U
+#define XAIOS_CONTROL_PAYLOAD_STORAGE_INSTALL_RESULT 35U
 
 #define XAIOS_MODEL_MAINTENANCE_IDLE 0U
 #define XAIOS_MODEL_MAINTENANCE_RUNNING 1U
@@ -616,6 +622,27 @@ typedef struct xaios_control_storage_partition_request_payload_user {
   xaios_storage_partition_request_user_t request;
   char actor[XAIOS_ADMIN_PRINCIPAL_MAX];
 } xaios_control_storage_partition_request_payload_user_t;
+
+typedef struct xaios_control_storage_install_request_user {
+  char target[48];
+  char source[48];
+  char confirmation[37];
+  u64 operation_id;
+} xaios_control_storage_install_request_user_t;
+
+typedef struct xaios_control_storage_install_request_payload_user {
+  xaios_control_storage_install_request_user_t request;
+  char actor[XAIOS_ADMIN_PRINCIPAL_MAX];
+} xaios_control_storage_install_request_payload_user_t;
+
+typedef struct xaios_control_storage_install_result_user {
+  char esp_identifier[48];
+  char state_identifier[48];
+  u64 files_copied;
+  u64 bytes_copied;
+  u64 esp_bytes;
+  u64 state_bytes;
+} xaios_control_storage_install_result_user_t;
 
 typedef struct xaios_storage_partition_record_user {
   char identifier[48];

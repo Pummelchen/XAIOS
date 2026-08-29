@@ -752,6 +752,18 @@ int main(void) {
                   "--operation-id 51 --json",
                   XAIOS_CONTROL_ROLE_ADMIN, "ci-admin", 0,
                   "\"dry_run\":0") != 0 ||
+      /* Installing is the most destructive thing this surface can do, so the
+         cases that matter are the refusals: no named actor, no confirmation,
+         and no source. A parser that let any of those through would let a
+         mistyped device name overwrite a disk. */
+      run_case("xaiosctl storage install /dev/vblk5 from /dev/vblk16p0",
+               -1, "invalid_install") != 0 ||
+      run_case("xaiosctl storage install /dev/vblk5", -1,
+               "invalid_install") != 0 ||
+      run_case_as("xaiosctl storage install /dev/vblk5 from /dev/vblk16p0 "
+                  "--operation-id 60 --json",
+                  XAIOS_CONTROL_ROLE_ADMIN, "ci-admin", -1,
+                  "invalid_install") != 0 ||
       run_case_as("xaiosctl storage partition resize /dev/vblk5p1 "
                   "--grow-to 3GiB "
                   "--confirm-partition aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee "
