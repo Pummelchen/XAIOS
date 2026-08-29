@@ -25,6 +25,18 @@
 #define BENCH_BYTES UINT64_C(67108864)
 #define BENCH_BUFFER UINT64_C(262144)
 
+#if !XAIOS_STORAGE_BENCH
+
+/* Not a benchmark build, so nothing here is compiled but these two stubs.
+   The measurement writes to a device and takes time, and neither belongs in
+   an ordinary boot -- and neither do its buffers, which used to sit in .bss
+   unconditionally. On x86_64 the kernel is linked at a fixed address, so
+   every byte of .bss is a byte of low memory it has to win from firmware. */
+void storage_bench_run(const char *identifier) { (void)identifier; }
+void storage_bench_model(void) {}
+
+#else
+
 static uint8_t g_bench_buffer[BENCH_BUFFER] __attribute__((aligned(4096)));
 
 static uint64_t rate_kb_per_s(uint64_t bytes, uint64_t nanoseconds) {
@@ -133,15 +145,12 @@ void storage_bench_run(const char *identifier) {
 #define BENCH_MODEL_CHUNK UINT64_C(2097152)
 #define BENCH_MODEL_ROUNDS 4U
 
-#if XAIOS_STORAGE_BENCH
 static uint8_t g_model_buffer[BENCH_MODEL_CHUNK] __attribute__((aligned(4096)));
-#endif
 
 #define MODEL_OWNER UINT32_C(0x4d4f444c)
 
 static void bench_model_window(const char *path, uint64_t size, uint64_t window,
                                const char *label) {
-#if XAIOS_STORAGE_BENCH
   if (window > sizeof(g_model_buffer)) return;
   int64_t fd = vfs_open(path, XAIOS_VFS_OPEN_READ, MODEL_OWNER);
   if (fd <= 0) {
@@ -172,12 +181,6 @@ static void bench_model_window(const char *path, uint64_t size, uint64_t window,
        "window=%lu\n",
        label, delivered, elapsed / UINT64_C(1000000),
        rate_kb_per_s(delivered, elapsed), requests, window);
-#else
-  (void)path;
-  (void)size;
-  (void)window;
-  (void)label;
-#endif
 }
 
 void storage_bench_model(void) {
@@ -206,3 +209,5 @@ void storage_bench_model(void) {
   bench_model_window(path, stat.size, BENCH_MODEL_CHUNK, "aligned");
   bench_model_window(path, stat.size, BENCH_BUFFER, "window");
 }
+
+#endif

@@ -321,6 +321,25 @@ static void loader_diagnostic(efi_system_table_t *system_table,
 #endif
 }
 
+/* Say a number out loud, because "failed to load kernel segments" on its own
+   sends the reader to a bisect. The loader has no formatting library and this
+   needs none: sixteen hex digits, leading zeros and all, appended to a fixed
+   prefix. */
+static void loader_puts_hex(efi_system_table_t *system_table,
+                            const efi_char16_t *prefix, uint64_t value) {
+  static const char digits[] = "0123456789abcdef";
+  efi_char16_t text[24];
+  uint32_t at = 0U;
+  for (int shift = 60; shift >= 0; shift -= 4) {
+    text[at++] = (efi_char16_t)digits[(value >> (uint32_t)shift) & 0xfU];
+  }
+  text[at++] = u'\r';
+  text[at++] = u'\n';
+  text[at] = 0;
+  loader_puts(system_table, prefix);
+  loader_puts(system_table, text);
+}
+
 static void loader_set_color(efi_system_table_t *system_table,
                              uint64_t color) {
   if (system_table != 0 && system_table->con_out != 0 &&
@@ -876,6 +895,54 @@ static int validate_elf(const void *kernel_buffer, uint64_t kernel_size,
   return 1;
 }
 
+/* Claim a fixed physical range, even one that crosses a boundary in the
+   firmware's own bookkeeping.
+   
+   AllocatePages(AllocateAddress) only succeeds when the whole requested range
+   lies inside a single free descriptor. Firmware is free to describe one
+   contiguous run of usable memory as several adjacent descriptors, and then a
+   request spanning two of them is refused although every page in it is free.
+   
+   That is what took x86_64 down. Its kernel is linked at a fixed address and
+   must land there; as it grew past ten megabytes its writable segment started
+   spanning such a boundary on one firmware and not on another, and the loader
+   reported "failed to load kernel segments" with nothing to say about which.
+   
+   So: ask for the whole thing, and if that is refused, ask page by page. A
+   page that is genuinely spoken for still fails, and that failure is a real
+   conflict worth reporting; a range that was only split fills in. Pages are
+   claimed in ascending order and firmware merges adjacent claims of the same
+   type, so this does not leave the memory map in shreds before
+   ExitBootServices has to copy it. */
+static efi_status_t claim_fixed_range(efi_system_table_t *system_table,
+                                      uint64_t start, uint64_t bytes,
+                                      uint32_t memory_type,
+                                      uint64_t *conflict) {
+  efi_boot_services_t *bs = system_table->boot_services;
+  uint64_t pages = EFI_SIZE_TO_PAGES(bytes);
+  efi_physical_address_t whole = start;
+  *conflict = 0;
+  efi_status_t status = bs->allocate_pages(EFI_ALLOCATE_ADDRESS, memory_type,
+                                           pages, &whole);
+  if (!is_error(status)) return status;
+  for (uint64_t page = 0; page < pages; ++page) {
+    efi_physical_address_t one = start + (page * 0x1000U);
+    status = bs->allocate_pages(EFI_ALLOCATE_ADDRESS, memory_type, 1, &one);
+    if (is_error(status)) {
+      *conflict = start + (page * 0x1000U);
+      /* Give back what this attempt took. A caller that responds to the
+         conflict by asking for a smaller range would otherwise be refused its
+         own pages, which is how the first version of this reported a conflict
+         at the very first page of a segment it had just allocated itself. */
+      for (uint64_t claimed = 0; claimed < page; ++claimed) {
+        (void)bs->free_pages(start + (claimed * 0x1000U), 1);
+      }
+      return status;
+    }
+  }
+  return EFI_SUCCESS;
+}
+
 static efi_status_t load_kernel_segments(efi_system_table_t *system_table,
                                          const void *kernel_buffer,
                                          uint64_t kernel_size,
@@ -941,30 +1008,39 @@ static efi_status_t load_kernel_segments(efi_system_table_t *system_table,
   if ((alignment & (alignment - 1U)) != 0U) alignment = 0x1000U;
 
   uint64_t span = link_high - link_low;
-  /* Below four gibibytes, because that is how far the kernel's early identity
-     map reaches: it maps the first 4 GiB before it has parsed anything, and a
-     kernel placed above that cannot address itself while bringing the real
-     tables up. Firmware picks the address, this only bounds it -- asked for
-     anywhere at all, a machine with plenty of memory puts the kernel high and
-     the early self-tests fail with no obvious cause. */
-  efi_physical_address_t placement = XAIOS_LOADER_MAX_KERNEL_ADDRESS;
-  /* Ask for enough extra to round the base up to that alignment, since
-     firmware chooses the address and will not align it for us. */
-  efi_status_t reserve = bs->allocate_pages(EFI_ALLOCATE_MAX_ADDRESS,
-                                            EFI_LOADER_DATA,
-                                            EFI_SIZE_TO_PAGES(span + alignment),
-                                            &placement);
-  if (is_error(reserve)) {
-    /* A machine with nothing free down there is not one this kernel can boot,
-       but say so by failing the allocation rather than by faulting later. */
-    return reserve;
-  }
-  (void)bs->free_pages(placement, EFI_SIZE_TO_PAGES(span + alignment));
-  uint64_t aligned = ((uint64_t)placement + alignment - 1U) & ~(alignment - 1U);
-  uint64_t bias = aligned - link_low;
-  if (ehdr->e_type != ET_DYN) {
-    /* A fixed-address kernel must still land where it was linked. */
-    bias = 0;
+  uint64_t bias = 0;
+  /* Only a position-independent kernel is asking to be moved. A fixed-address
+     one must land where it was linked whatever this probe returns, so running
+     the probe for it is not merely wasted: it fails the boot on a machine that
+     has no contiguous run that large free, for a figure that would have been
+     discarded on the next line. That is what took x86_64 down. The kernel had
+     grown past thirteen megabytes, one firmware's low memory could no longer
+     offer that in one piece, and the loader reported "failed to load kernel
+     segments" without ever having tried to load one. */
+  if (ehdr->e_type == ET_DYN) {
+    /* Below four gibibytes, because that is how far the kernel's early
+       identity map reaches: it maps the first 4 GiB before it has parsed
+       anything, and a kernel placed above that cannot address itself while
+       bringing the real tables up. Firmware picks the address, this only
+       bounds it -- asked for anywhere at all, a machine with plenty of memory
+       puts the kernel high and the early self-tests fail with no obvious
+       cause. */
+    efi_physical_address_t placement = XAIOS_LOADER_MAX_KERNEL_ADDRESS;
+    /* Ask for enough extra to round the base up to that alignment, since
+       firmware chooses the address and will not align it for us. */
+    efi_status_t reserve = bs->allocate_pages(
+        EFI_ALLOCATE_MAX_ADDRESS, EFI_LOADER_DATA,
+        EFI_SIZE_TO_PAGES(span + alignment), &placement);
+    if (is_error(reserve)) {
+      /* A machine with nothing free down there is not one this kernel can
+         boot, but say so by failing the allocation rather than by faulting
+         later. */
+      return reserve;
+    }
+    (void)bs->free_pages(placement, EFI_SIZE_TO_PAGES(span + alignment));
+    uint64_t aligned =
+        ((uint64_t)placement + alignment - 1U) & ~(alignment - 1U);
+    bias = aligned - link_low;
   }
 
   for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
@@ -988,14 +1064,58 @@ static efi_status_t load_kernel_segments(efi_system_table_t *system_table,
        the same reason in reverse. */
     uint32_t segment_memory_type =
         (phdr->p_flags & PF_X) != 0U ? EFI_LOADER_CODE : EFI_LOADER_DATA;
-    efi_status_t status = bs->allocate_pages(
-        EFI_ALLOCATE_ADDRESS, segment_memory_type,
-        EFI_SIZE_TO_PAGES(allocation_size), &segment_address);
+    /* The part of the segment that comes out of the file, page-rounded. The
+       loader writes here and so must own it. Everything past it is .bss: no
+       file content, and nothing touches it until the kernel's own entry code
+       zeroes it, which happens after ExitBootServices. */
+    uint64_t file_end = segment_offset + phdr->p_filesz;
+    uint64_t file_bytes = (file_end + 0xfffU) & ~UINT64_C(0xfff);
+    if (file_bytes == 0U) file_bytes = 0x1000U;
+
+    uint64_t conflict = 0;
+    efi_status_t status = claim_fixed_range(system_table, segment_start,
+                                            allocation_size,
+                                            segment_memory_type, &conflict);
+    if (is_error(status) && conflict >= segment_start + file_bytes) {
+      /* Firmware holds a page in the .bss tail. It holds it for boot
+         services, which are gone by the time the kernel runs and whose memory
+         the kernel then owns; the loader never writes there, and the kernel's
+         page manager already excludes its own .bss from what it hands out. So
+         take what is needed and leave the tail to the kernel.
+
+         This is what x86_64 needed. Its kernel is linked at a fixed address
+         and its .bss reaches twelve megabytes, and one firmware keeps a page
+         at eight -- a page the kernel is entitled to and was being refused
+         because the loader asked for it too early. */
+      loader_puts_hex(system_table, u"XAIOS loader bss tail left to kernel 0x",
+                      conflict);
+      status = claim_fixed_range(system_table, segment_start, file_bytes,
+                                 segment_memory_type, &conflict);
+    }
     if (is_error(status)) {
+      /* Firmware already owns a page the loader has to write to. Which
+         segment, how large, and which page -- the whole of the diagnosis, and
+         all of it used to be absent from the one line this printed. */
+      loader_puts_hex(system_table, u"XAIOS loader segment address 0x",
+                      segment_start);
+      loader_puts_hex(system_table, u"XAIOS loader segment bytes   0x",
+                      allocation_size);
+      loader_puts_hex(system_table, u"XAIOS loader conflict at     0x",
+                      conflict);
+      loader_puts_hex(system_table, u"XAIOS loader file buffer at  0x",
+                      (uint64_t)(uintptr_t)kernel_buffer);
+      loader_puts_hex(system_table, u"XAIOS loader file bytes      0x",
+                      kernel_size);
       return status;
     }
+    (void)segment_address;
 
-    mem_set((void *)load_paddr, 0, phdr->p_memsz);
+    /* Only what came out of the file, and only into memory this loader owns.
+       Zeroing the whole of p_memsz would write into the .bss tail, which is
+       exactly the memory firmware may still be using. Both kernels zero their
+       own .bss at entry -- see the entry.S of either architecture -- so the
+       tail is not left uninitialised, only left alone until it is safe. */
+    mem_set((void *)load_paddr, 0, phdr->p_filesz);
     mem_copy((void *)load_paddr,
              (const unsigned char *)kernel_buffer + phdr->p_offset,
              phdr->p_filesz);
