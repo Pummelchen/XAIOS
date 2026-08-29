@@ -383,6 +383,18 @@ case "${XAIOS_STRESS_TEST:-0}" in
     ;;
 esac
 
+# The cluster data plane test dials a peer, so it is built into the image only
+# when something is going to answer. See kmain for what an unanswered dial
+# costs a gate that counts packets.
+case "${XAIOS_CLUSTER_TEST:-0}" in
+  0) ;;
+  1) KERNEL_CFLAGS="$KERNEL_CFLAGS -DXAIOS_CLUSTER_TEST=1" ;;
+  *)
+    printf '%s\n' "error: XAIOS_CLUSTER_TEST must be 0 or 1" >&2
+    exit 1
+    ;;
+esac
+
 case "${XAIOS_FAULT_TEST:-}" in
   "") ;;
   page) KERNEL_CFLAGS="$KERNEL_CFLAGS -DXAIOS_FAULT_TEST_PAGE=1" ;;

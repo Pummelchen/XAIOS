@@ -231,7 +231,8 @@ qemu-netboot-gate: image-qemu-test
 
 # Two nodes exchanging a sealed frame over a real network, one of them on the
 # host with its own reading of the wire format.
-qemu-cluster-gate: image-qemu-test
+qemu-cluster-gate:
+	XAIOS_CLUSTER_TEST=1 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
 	python3 ./tests/scripts/qemu-cluster-gate.py
 
 qemu-process-gate: image-qemu-test

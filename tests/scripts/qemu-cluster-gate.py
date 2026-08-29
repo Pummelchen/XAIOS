@@ -74,7 +74,13 @@ def main() -> int:
     time.sleep(2)
 
     try:
-        boot = subprocess.run(["make", "qemu-smoke"], cwd=str(ROOT),
+        # The smoke script rather than the make target: the target rebuilds
+        # the image, and this gate needs the one built with the cluster test
+        # in it. Rebuilding here would replace that image with an ordinary
+        # one and then boot a machine that does not dial anybody.
+        boot = subprocess.run([sys.executable,
+                               str(ROOT / "tests/scripts/qemu-smoke.py")],
+                              cwd=str(ROOT),
                               stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True,
                               timeout=TIMEOUT_S * 2, check=False)
