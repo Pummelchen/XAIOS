@@ -3,6 +3,16 @@ out/
 dist/
 *.img
 *.iso
+# The per-environment kits are not committed either, and for the same reason
+# the ISO is not: each carries a copy of the same image, so three of them would
+# put roughly sixty megabytes of duplicate content into every clone of this
+# repository forever. They are built by scripts/build-vm-packages.sh and
+# published as release assets. The single xaios_b<n>.iso.zip stays tracked so
+# the release can travel with the repository; three more copies of it earn
+# nothing.
+release/xaios_b*-qemu.zip
+release/xaios_b*-vmware-fusion.zip
+release/xaios_b*-virtualization-framework.zip
 *.efi
 *.elf
 *.bin

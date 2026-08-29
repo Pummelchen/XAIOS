@@ -462,6 +462,7 @@
       "storage trim-status",
       "storage trim-cancel",
       "model cleanup",
+      "storage install",
       "runtime snapshot"
     ]
   },
