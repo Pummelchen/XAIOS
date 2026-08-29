@@ -1,6 +1,7 @@
 #include <xaios/assert.h>
 #include <xaios/initramfs.h>
 #include <xaios/kheap.h>
+#include <xaios/ram_residency.h>
 #include <xaios/klog.h>
 #include <xaios/virtio_blk.h>
 
@@ -381,7 +382,11 @@ xaios_status_t initramfs_init(void) {
       }
     }
 
-    void *content = kheap_alloc(entry->size, 16);
+    /* Through the residency budget rather than straight at the heap: this is
+       the memory the system itself occupies for the rest of the boot, and it
+       is worth knowing how much of it there is before the day it does not
+       fit. */
+    void *content = ram_residency_alloc(entry->size, 16, entry->path);
     if (content == 0) {
       klog("initramfs: allocation failed path=%s size=%lu\n",
            entry->path, entry->size);
@@ -420,6 +425,7 @@ xaios_status_t initramfs_init(void) {
     return XAIOS_ERR_INVALID;
   }
 
+  ram_residency_report();
   klog("initramfs: mounted rofs version=%u files=%u manifest=%s source=virtio-blk\n",
        header->version, g_file_count, g_files[header->manifest_index].path);
   return XAIOS_OK;
