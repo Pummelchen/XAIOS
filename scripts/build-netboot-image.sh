@@ -71,7 +71,20 @@ rm -f "$OUTPUT"
 # Section names are eight bytes in PE, which is why these are terse rather
 # than descriptive. Read-only data: nothing writes to them, and a section the
 # firmware need not make writable is one fewer thing to get wrong.
+#
+# .xaiosl is a copy of the loader as a file, and it is here because a netbooted
+# machine installing onto a disk has to write one. It cannot write the binary
+# it is running: firmware maps a PE with its sections at their virtual
+# addresses, so the image in memory is not the file it came from, and writing
+# that back out produces something firmware faults on rather than boots --
+# measured, as a synchronous exception in ArmCpuDxe before any of our code ran.
+#
+# Carrying the plain loader avoids the circularity of embedding a copy of the
+# finished file inside itself, and produces a better installed disk: an
+# ordinary EFI System Partition with a loader, a kernel and an initial
+# filesystem, exactly as an installer from media would write.
 "$OBJCOPY" \
+  --add-section .xaiosl="$LOADER" --set-section-flags .xaiosl=readonly,data \
   --add-section .xaiosk="$KERNEL" --set-section-flags .xaiosk=readonly,data \
   --add-section .xaiosi="$INITFS" --set-section-flags .xaiosi=readonly,data \
   --add-section .xaiose="$SEED" --set-section-flags .xaiose=readonly,data \
@@ -80,6 +93,7 @@ rm -f "$OUTPUT"
 printf '%s\n' "XAIOS netboot image: $OUTPUT"
 printf '%s\n' "  architecture: $ARCH"
 printf '%s\n' "  size:         $(wc -c < "$OUTPUT" | tr -d ' ') bytes"
+printf '%s\n' "  loader:       $(wc -c < "$LOADER" | tr -d ' ') bytes"
 printf '%s\n' "  kernel:       $(wc -c < "$KERNEL" | tr -d ' ') bytes"
 printf '%s\n' "  initfs:       $(wc -c < "$INITFS" | tr -d ' ') bytes"
 printf '%s\n' "  serve as:     the DHCP boot filename, over TFTP"

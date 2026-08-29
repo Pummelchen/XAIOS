@@ -73,4 +73,33 @@ xaios_status_t install_to_disk(const char *target, const char *source_esp,
                                uint64_t operation_id,
                                xaios_install_report_t *report);
 
+/*
+ * Install onto target from files held in memory, for a machine that arrived
+ * over the network and has no EFI System Partition to copy from.
+ *
+ * The loader that booted such a machine carries an unmodified copy of itself,
+ * the kernel and the initial filesystem as its own sections, and reports where
+ * they are through the boot information. It cannot offer the binary it is
+ * running: firmware maps a PE with its sections at their virtual addresses, so
+ * the image in memory is not the file it came from.
+ *
+ * What this writes is an ordinary EFI System Partition. A machine installed
+ * over the network is not a special kind of machine afterwards.
+ */
+typedef struct xaios_install_payload {
+  const void *loader;
+  uint64_t loader_bytes;
+  const void *kernel;
+  uint64_t kernel_bytes;
+  const void *initfs;
+  uint64_t initfs_bytes;
+  const void *seed;
+  uint64_t seed_bytes;
+} xaios_install_payload_t;
+
+xaios_status_t install_to_disk_from_payload(
+    const char *target, const xaios_install_payload_t *payload,
+    const char *confirmation, uint64_t operation_id,
+    xaios_install_report_t *report);
+
 #endif

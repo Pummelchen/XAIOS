@@ -67,6 +67,24 @@ typedef struct xaios_boot_info {
   uint32_t framebuffer_height;
   uint32_t framebuffer_pixels_per_scan_line;
   uint32_t framebuffer_format;
+  /* The files a self-contained loader carries, for a machine that arrived over
+   * the network and has no EFI System Partition to copy from.
+   *
+   * The loader cannot offer the binary it is running: firmware maps a PE with
+   * its sections at their virtual addresses, so the image in memory is not the
+   * file it came from, and writing that back out produces something firmware
+   * faults on rather than boots. It carries an unmodified copy of itself
+   * instead, alongside the kernel and the initial filesystem, and an install
+   * writes the three of them as an ordinary EFI System Partition.
+   *
+   * All zero on a boot from a volume, where those files are on the volume and
+   * the installer copies them from there. */
+  uint64_t payload_loader_base;
+  uint64_t payload_loader_size;
+  uint64_t payload_kernel_base;
+  uint64_t payload_kernel_size;
+  uint64_t payload_initfs_base;
+  uint64_t payload_initfs_size;
 } xaios_boot_info_t;
 
 #endif

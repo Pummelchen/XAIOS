@@ -1145,6 +1145,9 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
       find_embedded_section(image_base, ".xaiosi", &embedded_initfs_size);
   const void *embedded_seed =
       find_embedded_section(image_base, ".xaiose", &embedded_seed_size);
+  uint64_t embedded_loader_size = 0U;
+  const void *embedded_loader =
+      find_embedded_section(image_base, ".xaiosl", &embedded_loader_size);
 
   void *kernel_buffer = 0;
   uint64_t kernel_size = 0;
@@ -1352,6 +1355,18 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
   g_boot_info.acpi_rsdp = acpi_rsdp;
   g_boot_info.device_tree = device_tree;
   g_boot_info.ap_trampoline = ap_trampoline;
+  /* Only when this binary is self-contained. On a boot from a volume the
+     installer copies the files that are on the volume, and pointing it at a
+     loader with no payload inside would produce an EFI System Partition whose
+     loader has no kernel to find. */
+  if (embedded_loader != 0 && embedded_kernel != 0 && embedded_initfs != 0) {
+    g_boot_info.payload_loader_base = (uint64_t)(uintptr_t)embedded_loader;
+    g_boot_info.payload_loader_size = embedded_loader_size;
+    g_boot_info.payload_kernel_base = (uint64_t)(uintptr_t)embedded_kernel;
+    g_boot_info.payload_kernel_size = embedded_kernel_size;
+    g_boot_info.payload_initfs_base = (uint64_t)(uintptr_t)embedded_initfs;
+    g_boot_info.payload_initfs_size = embedded_initfs_size;
+  }
   g_boot_info.boot_image_base = boot_image_base;
   g_boot_info.boot_image_size = boot_image_size;
   g_boot_info.pci_ecam_base = pci_ecam_base;

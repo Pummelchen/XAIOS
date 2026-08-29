@@ -198,6 +198,10 @@ static xaios_gpt_table_t g_boot_gpt;
 /* The EFI System Partition this machine started from, once one has been
    found. It is the source an install copies from, and there is exactly one. */
 static char g_boot_esp[XAIOS_BLOCK_DEVICE_ID_MAX];
+/* What the loader handed over. Kept because the install path runs long after
+   kmain's argument has gone out of scope, and it needs to know whether this
+   machine booted from a self-contained loader. */
+static const xaios_boot_info_t *g_boot;
 
 /* Read the boot files out of the EFI System Partition this machine started
    from, and say what is there.
@@ -358,9 +362,48 @@ static xaios_status_t mount_xaibootfs_from_any_disk(void) {
    What it does not do is verify by booting the result. That needs firmware and
    a second machine, so the installed-disk gate does it from outside. */
 static void install_self_test(void) {
+  /* A machine that arrived over the network has no EFI System Partition to
+     copy from, and does not need one: the loader that booted it carries the
+     kernel and the initial filesystem inside itself, so writing that one
+     binary to a new EFI System Partition is the whole install. This is the
+     case network boot exists for -- a blank machine, brought up with no disk,
+     putting XAIOS on the disk it has. */
+  if (g_boot != 0 && g_boot->payload_loader_base != 0U &&
+      g_boot->payload_kernel_base != 0U && g_boot->payload_initfs_base != 0U) {
+    char confirmation[XAIOS_STORAGE_GUID_TEXT_MAX];
+    xaios_status_t status = install_target_confirmation(
+        XAIOS_INSTALL_TARGET, confirmation, sizeof(confirmation));
+    if (status != XAIOS_OK) {
+      klog("install: cannot determine what to confirm for %s status=%d\n",
+           XAIOS_INSTALL_TARGET, (int)status);
+      return;
+    }
+    xaios_install_payload_t payload;
+    payload.loader = (const void *)(uintptr_t)g_boot->payload_loader_base;
+    payload.loader_bytes = g_boot->payload_loader_size;
+    payload.kernel = (const void *)(uintptr_t)g_boot->payload_kernel_base;
+    payload.kernel_bytes = g_boot->payload_kernel_size;
+    payload.initfs = (const void *)(uintptr_t)g_boot->payload_initfs_base;
+    payload.initfs_bytes = g_boot->payload_initfs_size;
+    payload.seed = g_boot->entropy_seed_size != 0U ? g_boot->entropy_seed : 0;
+    payload.seed_bytes = g_boot->entropy_seed_size;
+    xaios_install_report_t netboot_report;
+    status = install_to_disk_from_payload(XAIOS_INSTALL_TARGET, &payload,
+                                          confirmation, 24U, &netboot_report);
+    if (status != XAIOS_OK) {
+      klog("install: netboot self-test failed status=%d target=%s\n",
+           (int)status, XAIOS_INSTALL_TARGET);
+      return;
+    }
+    klog("install: netboot self-test passed target=%s files=%lu bytes=%lu "
+         "esp=%s\n",
+         XAIOS_INSTALL_TARGET, netboot_report.file_count,
+         netboot_report.bytes_copied, netboot_report.esp_identifier);
+    return;
+  }
   if (g_boot_esp[0] == '\0') {
     klog("install: self-test skipped, this machine has no EFI System "
-         "Partition to copy from\n");
+         "Partition to copy from and did not arrive over the network\n");
     return;
   }
   char confirmation[XAIOS_STORAGE_GUID_TEXT_MAX];
@@ -415,6 +458,7 @@ static void map_mmio_range(uint64_t start, uint64_t size) {
 }
 
 void kmain(const xaios_boot_info_t *boot) {
+  g_boot = boot;
   uint32_t persistent_network_ready = 0U;
   klog_init(boot);
   /* Start capturing before any subsystem can fail. A normal boot redraws the

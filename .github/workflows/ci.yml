@@ -101,6 +101,41 @@ jobs:
       - name: Validate ABI contract
         run: python3 tests/scripts/qemu-abi-contract.py
 
+  netboot:
+    name: Network Boot (no kernel on the medium)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm meson ninja-build qemu-system-arm qemu-efi-aarch64 mtools python3 python3-cryptography
+
+      - name: Build disk image
+        run: make image-qemu-test
+
+      # A medium holding the loader and nothing else, a machine that installs
+      # itself onto a blank disk from what it booted with, and that disk booted
+      # alone. Nothing else exercises the embedded-payload path, and its
+      # failure mode is a machine that boots and then cannot find a kernel.
+      - name: Network boot and self-install
+        run: python3 tests/scripts/qemu-netboot-gate.py
+        env:
+          XAIOS_NETBOOT_TIMEOUT: "360"
+
+      - name: Upload boot logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: netboot-logs
+          path: |
+            build/netboot-gate-*.log
+            build/qemu-netboot-gate.json
+          if-no-files-found: ignore
+
   installed-disk:
     name: Installed Disk (one drive, nothing attached)
     runs-on: ubuntu-latest

@@ -32,6 +32,15 @@ static const char *const k_boot_files[] = {
 #define ESP_MINIMUM_BYTES UINT64_C(33554432)
 #define STATE_BYTES UINT64_C(67108864)
 
+/* Where firmware looks on removable media. The architecture in the name is
+   the one this kernel was built for, because a loader carrying an AArch64
+   kernel is of no use to a machine that would open BOOTX64.EFI. */
+#if defined(__aarch64__)
+#define XAIOS_INSTALL_REMOVABLE_LOADER "/EFI/BOOT/BOOTAA64.EFI"
+#else
+#define XAIOS_INSTALL_REMOVABLE_LOADER "/EFI/BOOT/BOOTX64.EFI"
+#endif
+
 static void bytes_zero(void *buffer, uint64_t length) {
   uint8_t *out = (uint8_t *)buffer;
   for (uint64_t index = 0U; index < length; ++index) out[index] = 0U;
@@ -128,6 +137,142 @@ xaios_status_t install_target_confirmation(const char *target, char *out,
   if (status != XAIOS_OK) return status;
   if (plan.report.disk_guid[0] == '\0') return XAIOS_ERR_NOT_FOUND;
   string_copy(out, capacity, plan.report.disk_guid);
+  return XAIOS_OK;
+}
+
+/* Partition the target and hand back a formatted EFI filesystem on it.
+ *
+ * Shared by both installs, because what differs between them is only where the
+ * bytes come from: a machine with an EFI System Partition copies files off it,
+ * and a machine that arrived over the network writes the loader it booted with.
+ * Everything before that -- the partition table, the two partitions, the FAT
+ * volume and the directories firmware opens -- is the same work. */
+static xaios_status_t prepare_target(const char *target,
+                                     const char *confirmation,
+                                     uint64_t payload, uint64_t operation_id,
+                                     xaios_install_report_t *report,
+                                     xaios_block_device_t **out_esp,
+                                     xaios_fat_volume_t *volume) {
+  uint64_t esp_bytes = payload + ESP_SLACK_BYTES;
+  if (esp_bytes < ESP_MINIMUM_BYTES) esp_bytes = ESP_MINIMUM_BYTES;
+
+  xaios_storage_partition_plan_t esp;
+  xaios_status_t status =
+      create_partition(target, confirmation, "XAIOS ESP",
+                       XAIOS_STORAGE_PARTITION_ESP, esp_bytes, operation_id,
+                       &esp);
+  if (status != XAIOS_OK) {
+    klog("install: could not create the EFI partition status=%d\n",
+         (int)status);
+    return status;
+  }
+  xaios_storage_partition_plan_t state;
+  status = create_partition(target, confirmation, "xaibootFS",
+                            XAIOS_STORAGE_PARTITION_STATE, STATE_BYTES,
+                            operation_id + 1U, &state);
+  if (status != XAIOS_OK) {
+    klog("install: could not create the state partition status=%d\n",
+         (int)status);
+    return status;
+  }
+
+  xaios_storage_partition_record_t record;
+  status = storage_admin_partition_open(esp.partition.identifier,
+                                        XAIOS_STORAGE_PARTITION_ESP, 1U,
+                                        out_esp, &record);
+  if (status != XAIOS_OK) {
+    klog("install: could not open %s status=%d\n", esp.partition.identifier,
+         (int)status);
+    return status;
+  }
+  status = fat_format(*out_esp, "XAIOS", volume);
+  if (status == XAIOS_OK) status = fat_mkdir(volume, "/EFI/BOOT");
+  if (status == XAIOS_OK) status = fat_mkdir(volume, "/EFI/XAIOS");
+  if (status != XAIOS_OK) {
+    klog("install: could not prepare the EFI filesystem status=%d\n",
+         (int)status);
+    (void)storage_admin_partition_close(*out_esp);
+    *out_esp = 0;
+    return status;
+  }
+
+  string_copy(report->esp_identifier, sizeof(report->esp_identifier),
+              esp.partition.identifier);
+  string_copy(report->state_identifier, sizeof(report->state_identifier),
+              state.partition.identifier);
+  report->esp_bytes = esp.partition.size_bytes;
+  report->state_bytes = state.partition.size_bytes;
+  return XAIOS_OK;
+}
+
+xaios_status_t install_to_disk_from_payload(
+    const char *target, const xaios_install_payload_t *payload,
+    const char *confirmation, uint64_t operation_id,
+    xaios_install_report_t *report) {
+  if (target == 0 || payload == 0 || confirmation == 0 || report == 0 ||
+      operation_id == 0U || payload->loader == 0 ||
+      payload->loader_bytes == 0U || payload->kernel == 0 ||
+      payload->kernel_bytes == 0U || payload->initfs == 0 ||
+      payload->initfs_bytes == 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  bytes_zero(report, sizeof(report[0]));
+
+  uint64_t total = payload->loader_bytes + payload->kernel_bytes +
+                   payload->initfs_bytes;
+  xaios_block_device_t *esp_device = 0;
+  xaios_fat_volume_t volume;
+  xaios_status_t status = prepare_target(target, confirmation, total,
+                                         operation_id, report, &esp_device,
+                                         &volume);
+  if (status != XAIOS_OK) return status;
+
+  /* The same three files an installer from media writes, at the same paths --
+     the loader where firmware opens it on removable media, and the kernel and
+     initial filesystem where that loader then looks for them. The result is an
+     ordinary EFI System Partition, indistinguishable from one written by any
+     other route, which is the point: a machine installed over the network is
+     not a special kind of machine afterwards. */
+  static const char *const k_paths[3] = {
+      XAIOS_INSTALL_REMOVABLE_LOADER,
+      "/EFI/XAIOS/KERNEL.ELF",
+      "/EFI/XAIOS/INITFS.IMG",
+  };
+  const void *const sources[3] = {payload->loader, payload->kernel,
+                                  payload->initfs};
+  const uint64_t sizes[3] = {payload->loader_bytes, payload->kernel_bytes,
+                             payload->initfs_bytes};
+  for (uint64_t index = 0U; index < 3U; ++index) {
+    status = fat_write_file(&volume, k_paths[index], sources[index],
+                            sizes[index]);
+    if (status != XAIOS_OK) {
+      klog("install: writing %s failed status=%d\n", k_paths[index],
+           (int)status);
+      (void)storage_admin_partition_close(esp_device);
+      return status;
+    }
+    report->files[report->file_count].path = k_paths[index];
+    report->files[report->file_count].bytes = sizes[index];
+    report->files[report->file_count].copied = 1U;
+    ++report->file_count;
+    report->bytes_copied += sizes[index];
+  }
+  if (payload->seed != 0 && payload->seed_bytes != 0U) {
+    if (fat_write_file(&volume, "/EFI/XAIOS/ENTROPY.SED", payload->seed,
+                       payload->seed_bytes) == XAIOS_OK) {
+      report->files[report->file_count].path = "/EFI/XAIOS/ENTROPY.SED";
+      report->files[report->file_count].bytes = payload->seed_bytes;
+      report->files[report->file_count].copied = 1U;
+      ++report->file_count;
+      report->bytes_copied += payload->seed_bytes;
+    }
+  }
+
+  (void)storage_admin_partition_close(esp_device);
+  klog("install: %s is bootable esp=%s state=%s files=%lu bytes=%lu "
+       "source=embedded\n",
+       target, report->esp_identifier, report->state_identifier,
+       report->file_count, report->bytes_copied);
   return XAIOS_OK;
 }
 

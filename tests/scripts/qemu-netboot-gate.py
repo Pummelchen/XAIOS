@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""Bring up a machine with no kernel on its medium, and let it install itself.
+
+This is what network boot has to be able to do. Firmware fetches one file and
+runs it; there is no filesystem behind it and nowhere to go back to for a
+kernel, so the file has to be the whole system. Then the machine it brought up
+has to be able to put XAIOS on the blank disk in front of it, because a system
+that can only ever run from the network has not set anything up.
+
+Three steps, and only the third is evidence:
+
+  1. Boot a medium holding the loader and nothing else -- no kernel.elf, no
+     initfs.img. If the loader finds its kernel, the embedded payload works.
+  2. Have that machine install onto a blank disk.
+  3. Boot that disk on its own. Everything before this is the installer
+     describing its own work.
+
+What this does not test is the fetch itself. The EDK2 build shipped with QEMU
+here has no network boot drivers compiled in, so the file is delivered on a
+medium rather than over TFTP. That substitutes the transport and keeps
+everything that depends on the file being self-contained, which is the half
+that belongs to XAIOS -- the other half is the firmware's, and a firmware with
+those drivers serves this file unchanged.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+BUILD = ROOT / "build"
+REPORT = BUILD / "qemu-netboot-gate.json"
+NETBOOT = BUILD / "netboot" / "BOOTAA64.EFI"
+MEDIUM = BUILD / "netboot-gate-medium.img"
+TARGET = BUILD / "netboot-gate-target.img"
+TIMEOUT_S = int(os.environ.get("XAIOS_NETBOOT_TIMEOUT", "300"))
+TARGET_BYTES = 256 * 1024 * 1024
+
+FIRMWARE_CANDIDATES = (
+    "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
+    "/usr/share/AAVMF/AAVMF_CODE.fd",
+    "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
+    "/usr/share/edk2/aarch64/QEMU_EFI.fd",
+)
+
+DISKLESS = (
+    ("loader found its embedded kernel",
+     re.compile(r"XAIOS loader using embedded kernel image")),
+    ("loader found its embedded initial filesystem",
+     re.compile(r"XAIOS loader using embedded initfs image")),
+    ("kernel started", re.compile(r"XAIOS Build \d+ kernel starting")),
+    ("initial filesystem mounted",
+     re.compile(r"initramfs: mounted rofs version=\d+ files=[1-9]\d*")),
+)
+
+INSTALLED_FROM_NETWORK = (
+    ("installed onto the blank disk",
+     re.compile(r"install: netboot self-test passed target=/dev/vblk5 "
+                r"files=[1-9]\d* bytes=\d{7,}")),
+)
+
+# The disk that machine wrote, booted alone. An ordinary EFI System Partition
+# is the point: a machine installed over the network is not a special kind of
+# machine afterwards, so this asserts what any installed machine asserts.
+RESULT = (
+    ("kernel started", re.compile(r"XAIOS Build \d+ kernel starting")),
+    ("state partition found by type",
+     re.compile(r"xaibootfs: mounted from /dev/vblk16p\d+, a partition of the "
+                r"disk this machine booted from")),
+    ("shell command surface",
+     re.compile(r"/bin/xaios-shell: command surface passed")),
+    ("syscall and filesystem suite",
+     re.compile(r"/bin/systest: syscall and filesystem suite passed")),
+    ("SSH server listening", re.compile(r"SSH server: up and running")),
+)
+
+FORBIDDEN = (
+    ("kernel panic", re.compile(r"CYAN SCREEN OF DEATH")),
+    ("firmware refused the image", re.compile(r"Synchronous Exception at")),
+    ("assertion failure", re.compile(r"ERROR: assertion failed")),
+)
+
+
+def fail(message: str) -> int:
+    print(f"netboot-gate: {message}")
+    return 1
+
+
+def firmware() -> str | None:
+    for candidate in FIRMWARE_CANDIDATES:
+        if Path(candidate).is_file():
+            return candidate
+    return None
+
+
+def build_medium() -> str | None:
+    """An EFI System Partition holding the loader and nothing else."""
+    for tool in ("mformat", "mmd", "mcopy"):
+        if shutil.which(tool) is None:
+            return f"{tool} is required"
+    MEDIUM.unlink(missing_ok=True)
+    with MEDIUM.open("wb") as handle:
+        handle.truncate(48 * 1024 * 1024)
+    for command in (["mformat", "-i", str(MEDIUM), "-v", "XAIOSNET", "::"],
+                    ["mmd", "-i", str(MEDIUM), "::/EFI", "::/EFI/BOOT"],
+                    ["mcopy", "-i", str(MEDIUM), str(NETBOOT),
+                     "::/EFI/BOOT/BOOTAA64.EFI"]):
+        if subprocess.run(command, check=False,
+                          stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode != 0:
+            return f"could not build the medium: {' '.join(command[:1])}"
+    return None
+
+
+def boot(fw: str, log: Path, boot_disk: Path, spare: Path | None,
+         expected, writable: bool = False) -> str:
+    log.unlink(missing_ok=True)
+    command = [
+        "qemu-system-aarch64",
+        "-machine", "virt,gic-version=3",
+        "-cpu", "cortex-a72", "-smp", "4", "-m", "2048",
+        "-global", "virtio-mmio.force-legacy=false",
+        "-drive", f"if=pflash,format=raw,readonly=on,file={fw}",
+        # The medium is read-only because a netboot medium is; the disk this
+        # machine installed is not, and booting it read-only leaves it unable
+        # to format the state partition it was given. That failure looks like
+        # a broken install and is a wrong flag in the test.
+        "-drive", ("if=none,format=raw,id=boot,file=" + str(boot_disk)) if
+        writable else
+        ("if=none,format=raw,readonly=on,id=boot,file=" + str(boot_disk)),
+        "-device", "virtio-blk-pci,drive=boot,bootindex=0",
+    ]
+    if spare is not None:
+        command += [
+            "-drive", f"if=none,format=raw,id=target,file={spare}",
+            "-device", "virtio-blk-device,drive=target,bus=virtio-mmio-bus.5",
+        ]
+    command += ["-display", "none", "-serial", f"file:{log}"]
+    process = subprocess.Popen(command, cwd=str(ROOT),
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL,
+                               start_new_session=True)
+    deadline = time.monotonic() + TIMEOUT_S
+    try:
+        while time.monotonic() < deadline:
+            time.sleep(5)
+            if not log.exists():
+                continue
+            text = log.read_bytes().decode("utf-8", "replace")
+            if all(p.search(text) for _, p in expected):
+                break
+            if any(p.search(text) for _, p in FORBIDDEN):
+                break
+            if process.poll() is not None:
+                break
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    return log.read_bytes().decode("utf-8", "replace") if log.exists() else ""
+
+
+def evaluate(stage: str, text: str, expected) -> dict:
+    checks = [{"name": n, "passed": bool(p.search(text))} for n, p in expected]
+    faults = [{"name": n, "seen": bool(p.search(text))} for n, p in FORBIDDEN]
+    passed = all(c["passed"] for c in checks) and \
+        not any(f["seen"] for f in faults)
+    print(f"  {stage}:")
+    for check in checks:
+        print(f"    {'ok  ' if check['passed'] else 'MISS'} {check['name']}")
+    for fault in faults:
+        if fault["seen"]:
+            print(f"    FAULT {fault['name']}")
+    return {"stage": stage, "checks": checks, "faults": faults,
+            "passed": passed}
+
+
+def main() -> int:
+    if shutil.which("qemu-system-aarch64") is None:
+        return fail("qemu-system-aarch64 is not installed")
+    fw = firmware()
+    if fw is None:
+        return fail("no AArch64 UEFI firmware found")
+
+    built = subprocess.run([str(ROOT / "scripts/build-netboot-image.sh")],
+                           cwd=str(ROOT), stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True, check=False)
+    if built.returncode != 0:
+        print(built.stdout)
+        return fail("could not build the netboot image")
+    problem = build_medium()
+    if problem is not None:
+        return fail(problem)
+
+    stages = []
+    with TARGET.open("wb") as handle:
+        handle.truncate(TARGET_BYTES)
+    text = boot(fw, BUILD / "netboot-gate-diskless.log", MEDIUM, TARGET,
+                DISKLESS + INSTALLED_FROM_NETWORK)
+    stages.append(evaluate("a medium holding only the loader", text, DISKLESS))
+    stages.append(evaluate("that machine installing onto a blank disk", text,
+                           INSTALLED_FROM_NETWORK))
+
+    if all(s["passed"] for s in stages):
+        text = boot(fw, BUILD / "netboot-gate-installed.log", TARGET, None,
+                    RESULT, writable=True)
+        stages.append(evaluate("the disk it installed, booted alone", text,
+                               RESULT))
+
+    passed = all(s["passed"] for s in stages)
+    REPORT.write_text(json.dumps({
+        "target": "qemu-aarch64-netboot",
+        "transport": "medium; this firmware has no network boot drivers",
+        "stages": stages,
+        "passed": passed,
+    }, indent=2) + "\n", encoding="utf-8")
+    print(f"netboot-gate: report written to {REPORT}")
+    if not passed:
+        return fail("the network boot path did not complete")
+    print("netboot-gate: passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
