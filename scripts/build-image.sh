@@ -395,6 +395,17 @@ case "${XAIOS_CLUSTER_TEST:-0}" in
     ;;
 esac
 
+# Storage throughput measurement. Behind a flag because it writes to a device
+# and takes time, and an ordinary boot should do neither.
+case "${XAIOS_STORAGE_BENCH:-0}" in
+  0) ;;
+  1) KERNEL_CFLAGS="$KERNEL_CFLAGS -DXAIOS_STORAGE_BENCH=1" ;;
+  *)
+    printf '%s\n' "error: XAIOS_STORAGE_BENCH must be 0 or 1" >&2
+    exit 1
+    ;;
+esac
+
 case "${XAIOS_FAULT_TEST:-}" in
   "") ;;
   page) KERNEL_CFLAGS="$KERNEL_CFLAGS -DXAIOS_FAULT_TEST_PAGE=1" ;;
@@ -453,6 +464,18 @@ if [ -n "${XAIOS_BUILD_REVISION_OVERRIDE:-}" ] ||
   BUILD_IDENTIFIER="${BUILD_IDENTIFIER}-dirty"
 fi
 KERNEL_CFLAGS="$KERNEL_CFLAGS $PASSWORD_AUTH_CFLAG -DXAIOS_BOOT_TEST_APPS=$BOOT_TEST_APPS -DXAIOS_BOOT_VERBOSE=$BOOT_VERBOSE -DXAIOS_FAILURE_TEST_APP=$FAILURE_TEST_APP -DXAIOS_LIBC_TEST=$LIBC_TEST -DXAIOS_BUILD_NUMBER=$BUILD_NUMBER"
+
+# Extra flags for the kernel only, appended last so they win.
+#
+# This exists so a tunable can be rebuilt at a different setting and measured,
+# rather than argued about: the storage benchmark reconstructs the old
+# one-sector transfer path with -DVIRTIO_BLK_MAX_TRANSFER=512ULL and compares
+# against the same tree. Nothing in CI sets it; a build with it set is not the
+# build that ships.
+if [ -n "${XAIOS_KERNEL_CFLAGS_EXTRA:-}" ]; then
+  KERNEL_CFLAGS="$KERNEL_CFLAGS $XAIOS_KERNEL_CFLAGS_EXTRA"
+  printf '%s\n' "Kernel built with extra flags: $XAIOS_KERNEL_CFLAGS_EXTRA"
+fi
 
 # Files that use FP/SIMD on purpose opt back in; everything else is built
 # without it. See KERNEL_NO_SIMD_CFLAGS below for why.
@@ -584,6 +607,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/partition_device.o
   $KERNEL_BUILD_DIR/storage_admin.o
   $KERNEL_BUILD_DIR/install.o
+  $KERNEL_BUILD_DIR/storage_bench.o
   $KERNEL_BUILD_DIR/rate_limit.o
   $KERNEL_BUILD_DIR/source_index.o
   $KERNEL_BUILD_DIR/network_stack.o
@@ -728,6 +752,7 @@ compile_kernel "$ROOT_DIR/kernel/storage/gpt.c" "$KERNEL_BUILD_DIR/gpt.o"
 compile_kernel "$ROOT_DIR/kernel/storage/partition_device.c" "$KERNEL_BUILD_DIR/partition_device.o"
 compile_kernel "$ROOT_DIR/kernel/storage/storage_admin.c" "$KERNEL_BUILD_DIR/storage_admin.o"
 compile_kernel "$ROOT_DIR/kernel/storage/install.c" "$KERNEL_BUILD_DIR/install.o"
+compile_kernel "$ROOT_DIR/kernel/storage/storage_bench.c" "$KERNEL_BUILD_DIR/storage_bench.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/rate_limit.c" "$KERNEL_BUILD_DIR/rate_limit.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/source_index.c" "$KERNEL_BUILD_DIR/source_index.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack.c" "$KERNEL_BUILD_DIR/network_stack.o"

@@ -54,6 +54,7 @@
 #include <xaios/fat.h>
 #include <xaios/install.h>
 #include <xaios/storage_admin.h>
+#include <xaios/storage_bench.h>
 #include <xaios/system_slot.h>
 #include <xaios/service.h>
 #include <xaios/smp.h>
@@ -875,6 +876,9 @@ void kmain(const xaios_boot_info_t *boot) {
     klog("storage-admin: scratch device attached slot=5 mutation=enabled\n");
     storage_admin_self_test();
     install_self_test();
+#if XAIOS_STORAGE_BENCH
+    storage_bench_run(XAIOS_INSTALL_TARGET);
+#endif
   } else {
     klog("storage-admin: scratch device unavailable status=%d\n",
          (int)storage_admin_status);

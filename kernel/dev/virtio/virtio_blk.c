@@ -37,6 +37,21 @@
 #define VIRTIO_BLK_CONFIG_MAX_WRITE_ZEROES_SECTORS 48U
 #define VIRTIO_BLK_DIRECT_DEPTH 2U
 #define VIRTIO_BLK_MAX_ASYNC_DEPTH VIRTQ_SIZE
+/* The largest span one request may carry.
+   
+   Bounded rather than unlimited: a descriptor length is 32 bits, the buffer
+   has to be physically contiguous across the whole of it, and a single
+   enormous request occupies a queue slot for as long as it takes. One
+   mebibyte is large enough that the per-request cost stops mattering --
+   4 MiB becomes four requests instead of eight thousand -- and small enough
+   that several fit in the queue at once.
+
+   Overridable at build time so the old one-sector behaviour can be rebuilt
+   and measured against, which is the only way a claim about the improvement
+   is checkable rather than asserted. */
+#ifndef VIRTIO_BLK_MAX_TRANSFER
+#define VIRTIO_BLK_MAX_TRANSFER UINT64_C(1048576)
+#endif
 #define VIRTIO_BLK_WAIT_TIMEOUT_NS UINT64_C(5000000000)
 #define VIRTIO_BLK_SELF_TEST_SECTOR UINT64_C(2999)
 
@@ -61,6 +76,10 @@ typedef struct virtio_blk_async_slot {
   uint8_t type;
   uint8_t direct_dma;
   uint8_t reserved;
+  /* How much this request moved. The completion has to copy exactly that
+     much back out of the bounce buffer, and a caller asking how far it got
+     needs the real figure rather than the one it requested. */
+  uint64_t transfer;
   void *buffer;
   virtio_block_completion_t completion;
   void *completion_context;
@@ -352,10 +371,16 @@ static void virtio_block_interrupt(uint32_t intid, void *context) {
   virtio_transport_ack_interrupts(&drv->device);
 }
 
+/* Submit one request. `moved`, when given, receives how many bytes the request
+   actually covers, which is at most buffer_size and may be less -- the device
+   ceiling, the end of the disk, or memory that stops being contiguous all
+   shorten it. A caller walking a large span must advance by that figure and
+   not by what it asked for. */
 static xaios_status_t submit_sector_h(
     virtio_block_driver_t *drv, uint64_t sector, void *buffer,
     uint64_t buffer_size, uint32_t type,
-    virtio_block_completion_t completion, void *context, uint64_t *token) {
+    virtio_block_completion_t completion, void *context, uint64_t *token,
+    uint64_t *moved) {
   if (drv == 0 || drv->initialized == 0U || buffer == 0 ||
       buffer_size < SECTOR_SIZE || completion == 0 || token == 0 ||
       sector >= drv->capacity_sectors ||
@@ -364,15 +389,37 @@ static xaios_status_t submit_sector_h(
     return XAIOS_ERR_INVALID;
   }
 
+  /* How much this request actually moves.
+     
+     buffer_size has always been a parameter here and was always ignored: every
+     descriptor carried exactly one sector, so a four-megabyte read cost eight
+     thousand round trips and ran at seven megabytes a second. The device will
+     take as much as the descriptor says, and the only real constraint is that
+     the memory be physically contiguous across the whole span -- which is
+     checked below rather than assumed.
+     
+     A request that cannot go directly to the caller's memory still moves one
+     sector, because the bounce buffer is one sector. That path is the
+     exception now rather than the rule. */
+  uint64_t transfer = buffer_size - (buffer_size % SECTOR_SIZE);
+  if (transfer == 0U) return XAIOS_ERR_INVALID;
+  if (transfer > VIRTIO_BLK_MAX_TRANSFER) transfer = VIRTIO_BLK_MAX_TRANSFER;
+  uint64_t remaining_sectors = drv->capacity_sectors - sector;
+  if (transfer / SECTOR_SIZE > remaining_sectors) {
+    transfer = remaining_sectors * SECTOR_SIZE;
+  }
+
   if (drv->memory_backed != 0U) {
     uint64_t offset = sector * SECTOR_SIZE;
+    if (offset + transfer > drv->memory_size) return XAIOS_ERR_INVALID;
     if (type == VIRTIO_BLK_T_IN) {
-      bytes_copy(buffer, drv->memory_base + offset, SECTOR_SIZE);
+      bytes_copy(buffer, drv->memory_base + offset, transfer);
     } else {
-      bytes_copy(drv->memory_base + offset, buffer, SECTOR_SIZE);
+      bytes_copy(drv->memory_base + offset, buffer, transfer);
     }
     *token = ++drv->next_token;
     if (*token == 0U) *token = ++drv->next_token;
+    if (moved != 0) *moved = transfer;
     completion(*token, XAIOS_OK, context);
     return XAIOS_OK;
   }
@@ -396,9 +443,13 @@ static xaios_status_t submit_sector_h(
 
   virtio_blk_async_slot_t *slot = drv->async_slots[slot_index];
   uint64_t data_physical = 0U;
-  int direct = dma_range(buffer, SECTOR_SIZE,
-                         type == VIRTIO_BLK_T_IN, &data_physical);
+  int direct = dma_range(buffer, transfer, type == VIRTIO_BLK_T_IN,
+                         &data_physical);
   if (direct == 0) {
+    /* Not one physically contiguous span, so it cannot be handed to the
+       device whole. Fall back to a single sector through the bounce buffer,
+       which is what every request used to do. */
+    transfer = SECTOR_SIZE;
     data_physical = dma_address(slot->dma_sector);
     if (type == VIRTIO_BLK_T_OUT) {
       bytes_copy(slot->dma_sector, buffer, SECTOR_SIZE);
@@ -412,6 +463,8 @@ static xaios_status_t submit_sector_h(
   slot->status = 0xffU;
   slot->type = (uint8_t)type;
   slot->direct_dma = direct != 0 ? 1U : 0U;
+  slot->transfer = transfer;
+  if (moved != 0) *moved = transfer;
   slot->buffer = buffer;
   slot->completion = completion;
   slot->completion_context = context;
@@ -430,7 +483,7 @@ static xaios_status_t submit_sector_h(
   chain[0].flags = VRING_DESC_F_NEXT;
   chain[0].next = drv->uses_indirect != 0U ? 1U : (uint16_t)(head + 1U);
   chain[1].addr = data_physical;
-  chain[1].len = SECTOR_SIZE;
+  chain[1].len = (uint32_t)transfer;
   chain[1].flags = VRING_DESC_F_NEXT;
   if (type == VIRTIO_BLK_T_IN) {
     chain[1].flags |= VRING_DESC_F_WRITE;
@@ -488,7 +541,8 @@ uint32_t virtio_block_poll_h(virtio_block_handle_t *handle) {
     xaios_status_t status = slot->status == 0U ? XAIOS_OK : XAIOS_ERR_IO;
     if (status == XAIOS_OK && slot->type == VIRTIO_BLK_T_IN &&
         slot->direct_dma == 0U) {
-      bytes_copy(slot->buffer, slot->dma_sector, SECTOR_SIZE);
+      bytes_copy(slot->buffer, slot->dma_sector,
+                 slot->transfer < SECTOR_SIZE ? slot->transfer : SECTOR_SIZE);
     }
     virtio_block_completion_t callback = slot->completion;
     void *callback_context = slot->completion_context;
@@ -766,7 +820,12 @@ static xaios_status_t register_block_device(virtio_block_driver_t *drv) {
   info.capacity_logical_sectors = capacity_bytes / drv->logical_sector_size;
   info.logical_sector_size = drv->logical_sector_size;
   info.physical_block_size = drv->physical_block_size;
-  info.max_transfer_bytes = drv->logical_sector_size;
+  /* What the block layer may hand down in one call. It used to be one sector,
+     which meant a four-megabyte read was eight thousand round trips and ran at
+     seven megabytes a second. The driver splits anything larger itself and
+     falls back to a sector when the memory is not contiguous, so this is a
+     preference rather than a promise. */
+  info.max_transfer_bytes = VIRTIO_BLK_MAX_TRANSFER;
   info.read_only = drv->read_only;
   info.flush_supported = drv->supports_flush;
   info.discard_supported = drv->supports_discard;
@@ -898,7 +957,7 @@ xaios_status_t virtio_block_interrupt_canary_arm(uint64_t sector,
   __atomic_store_n(&g_interrupt_canary_complete, 0U, __ATOMIC_RELEASE);
   xaios_status_t status = submit_sector_h(
       g_blk, sector, buffer, buffer_size, VIRTIO_BLK_T_IN,
-      interrupt_canary_completion, 0, &token);
+      interrupt_canary_completion, 0, &token, 0);
   if (status != XAIOS_OK)
     __atomic_store_n(&g_interrupt_canary_complete, 1U, __ATOMIC_RELEASE);
   (void)token;
@@ -942,8 +1001,15 @@ static xaios_status_t transfer_sector_h(virtio_block_driver_t *drv,
   uint64_t token = 0U;
   xaios_status_t status;
   do {
-    status = submit_sector_h(drv, sector, buffer, buffer_size, type,
-                             sync_completion, &wait, &token);
+    /* One sector, whatever the buffer holds. This is the single-sector API
+       and its callers size their buffers generously; taking more than a
+       sector here would write past what they meant. Callers that want a
+       whole span go through the block backend. */
+    status = submit_sector_h(drv, sector, buffer,
+                             buffer_size < SECTOR_SIZE ? buffer_size
+                                                       : SECTOR_SIZE,
+                             type,
+                             sync_completion, &wait, &token, 0);
     if (status == XAIOS_ERR_BUSY) (void)virtio_block_poll_h(drv);
   } while (status == XAIOS_ERR_BUSY);
   if (status != XAIOS_OK) return status;
@@ -1164,16 +1230,20 @@ xaios_status_t virtio_block_submit_read_h(
     virtio_block_handle_t *handle, uint64_t sector, void *buffer,
     uint64_t buffer_size, virtio_block_completion_t completion, void *context,
     uint64_t *token) {
-  return submit_sector_h(handle, sector, buffer, buffer_size,
-                         VIRTIO_BLK_T_IN, completion, context, token);
+  /* One sector, as this entry point has always meant, but a buffer smaller
+     than that still has to be rejected rather than clamped into range. */
+  return submit_sector_h(handle, sector, buffer,
+                         buffer_size < SECTOR_SIZE ? buffer_size : SECTOR_SIZE,
+                         VIRTIO_BLK_T_IN, completion, context, token, 0);
 }
 
 xaios_status_t virtio_block_submit_write_h(
     virtio_block_handle_t *handle, uint64_t sector, const void *buffer,
     uint64_t buffer_size, virtio_block_completion_t completion, void *context,
     uint64_t *token) {
-  return submit_sector_h(handle, sector, (void *)(uintptr_t)buffer, buffer_size,
-                         VIRTIO_BLK_T_OUT, completion, context, token);
+  return submit_sector_h(handle, sector, (void *)(uintptr_t)buffer,
+                         buffer_size < SECTOR_SIZE ? buffer_size : SECTOR_SIZE,
+                         VIRTIO_BLK_T_OUT, completion, context, token, 0);
 }
 
 xaios_status_t virtio_block_flush_h(virtio_block_handle_t *handle) {
@@ -1211,36 +1281,75 @@ void virtio_block_close(virtio_block_handle_t *handle) {
   }
 }
 
+/* Move a span in as few requests as the device and the memory allow.
+ *
+ * Each submission takes whatever remains, up to the driver's ceiling; the
+ * driver clamps to what is physically contiguous and reports back how much it
+ * actually took, so a run of pages that stops being contiguous costs one
+ * short request rather than a wrong one. Requests are issued up to the queue
+ * depth before waiting, which is what turns latency into throughput. */
+static xaios_status_t backend_transfer(virtio_block_driver_t *drv,
+                                       uint64_t byte_offset, void *buffer,
+                                       uint64_t length, uint32_t type) {
+  uint8_t *bytes = (uint8_t *)buffer;
+  uint64_t completed = 0U;
+  while (completed < length) {
+    virtio_block_sync_wait_t waits[VIRTIO_BLK_MAX_ASYNC_DEPTH];
+    uint64_t issued[VIRTIO_BLK_MAX_ASYNC_DEPTH];
+    uint32_t submitted = 0U;
+    uint64_t batch = 0U;
+    while (submitted < drv->queue_depth && completed + batch < length) {
+      uint64_t remaining = length - (completed + batch);
+      waits[submitted].complete = 0U;
+      waits[submitted].status = XAIOS_ERR_IO;
+      uint64_t token = 0U;
+      uint64_t moved = 0U;
+      xaios_status_t status = submit_sector_h(
+          drv, (byte_offset + completed + batch) / SECTOR_SIZE,
+          bytes + completed + batch, remaining, type, sync_completion,
+          &waits[submitted], &token, &moved);
+      if (status == XAIOS_ERR_BUSY) {
+        /* No free queue slot, or the driver is in the middle of a special
+           request. If this batch already has work in flight, stop filling it
+           and go wait -- draining is what frees a slot. If it has nothing in
+           flight there is nothing to wait for, so poll the queue and try
+           again, which is what the single-sector path has always done. */
+        if (submitted != 0U) break;
+        (void)virtio_block_poll_h(drv);
+        continue;
+      }
+      if (status != XAIOS_OK) {
+        for (uint32_t i = 0U; i < submitted; ++i) {
+          (void)wait_sync(drv, &waits[i]);
+        }
+        return status;
+      }
+      issued[submitted] = moved;
+      batch += moved;
+      ++submitted;
+    }
+    if (submitted == 0U) return XAIOS_ERR_IO;
+    for (uint32_t i = 0U; i < submitted; ++i) {
+      xaios_status_t status = wait_sync(drv, &waits[i]);
+      if (status != XAIOS_OK) {
+        for (uint32_t j = i + 1U; j < submitted; ++j) {
+          (void)wait_sync(drv, &waits[j]);
+        }
+        return status;
+      }
+    }
+    for (uint32_t i = 0U; i < submitted; ++i) completed += issued[i];
+  }
+  return XAIOS_OK;
+}
+
 static xaios_status_t block_backend_read(void *context, uint64_t byte_offset,
                                          void *buffer, uint64_t length) {
   virtio_block_driver_t *drv = (virtio_block_driver_t *)context;
   if (byte_offset % SECTOR_SIZE != 0U || length % SECTOR_SIZE != 0U) {
     return XAIOS_ERR_INVALID;
   }
-  uint8_t *out = (uint8_t *)buffer;
-  for (uint64_t completed = 0U; completed < length;) {
-    virtio_block_sync_wait_t waits[VIRTIO_BLK_MAX_ASYNC_DEPTH];
-    uint32_t submitted = 0U;
-    for (; submitted < drv->queue_depth && completed < length;
-         ++submitted, completed += SECTOR_SIZE) {
-      waits[submitted].complete = 0U;
-      waits[submitted].status = XAIOS_ERR_IO;
-      uint64_t token = 0U;
-      xaios_status_t status = submit_sector_h(
-          drv, (byte_offset + completed) / SECTOR_SIZE, out + completed,
-          SECTOR_SIZE, VIRTIO_BLK_T_IN, sync_completion, &waits[submitted],
-          &token);
-      if (status != XAIOS_OK) {
-        for (uint32_t i = 0U; i < submitted; ++i) (void)wait_sync(drv, &waits[i]);
-        return status;
-      }
-    }
-    for (uint32_t i = 0U; i < submitted; ++i) {
-      xaios_status_t status = wait_sync(drv, &waits[i]);
-      if (status != XAIOS_OK) return status;
-    }
-  }
-  return XAIOS_OK;
+  return backend_transfer(drv, byte_offset, buffer, length, VIRTIO_BLK_T_IN);
 }
 
 static xaios_status_t block_backend_write(void *context, uint64_t byte_offset,
@@ -1250,30 +1359,10 @@ static xaios_status_t block_backend_write(void *context, uint64_t byte_offset,
   if (byte_offset % SECTOR_SIZE != 0U || length % SECTOR_SIZE != 0U) {
     return XAIOS_ERR_INVALID;
   }
-  const uint8_t *input = (const uint8_t *)buffer;
-  for (uint64_t completed = 0U; completed < length;) {
-    virtio_block_sync_wait_t waits[VIRTIO_BLK_MAX_ASYNC_DEPTH];
-    uint32_t submitted = 0U;
-    for (; submitted < drv->queue_depth && completed < length;
-         ++submitted, completed += SECTOR_SIZE) {
-      waits[submitted].complete = 0U;
-      waits[submitted].status = XAIOS_ERR_IO;
-      uint64_t token = 0U;
-      xaios_status_t status = submit_sector_h(
-          drv, (byte_offset + completed) / SECTOR_SIZE,
-          (void *)(uintptr_t)(input + completed), SECTOR_SIZE,
-          VIRTIO_BLK_T_OUT, sync_completion, &waits[submitted], &token);
-      if (status != XAIOS_OK) {
-        for (uint32_t i = 0U; i < submitted; ++i) (void)wait_sync(drv, &waits[i]);
-        return status;
-      }
-    }
-    for (uint32_t i = 0U; i < submitted; ++i) {
-      xaios_status_t status = wait_sync(drv, &waits[i]);
-      if (status != XAIOS_OK) return status;
-    }
-  }
-  return XAIOS_OK;
+  /* The device does not write through this pointer; the const is the block
+     layer's promise to the caller, not a property of the buffer. */
+  return backend_transfer(drv, byte_offset, (void *)(uintptr_t)buffer, length,
+                          VIRTIO_BLK_T_OUT);
 }
 
 static xaios_status_t block_backend_flush(void *context) {
