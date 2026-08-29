@@ -842,6 +842,27 @@ class XaiFs:
                 os.POSIX_FADV_WILLNEED,
             )
 
+    def _verify_chunk(self, record: _PackageRecord, chunk: _ChunkRecord) -> None:
+        """Hash one chunk's bytes on the volume and compare to its record."""
+        if chunk.flags & CHUNK_ZERO:
+            digest = _zero_digest(chunk.length)
+        else:
+            digest = hashlib.sha256()
+            remaining = chunk.length
+            cursor = chunk.physical_offset
+            while remaining:
+                data = os.pread(self.fd, min(remaining, 1024 * 1024), cursor)
+                if not data:
+                    raise IOError("short chunk verification read")
+                digest.update(data)
+                remaining -= len(data)
+                cursor += len(data)
+            digest = digest.digest()
+        if digest != chunk.checksum:
+            raise XaiFsIntegrityError(
+                record.package_id, chunk.logical_offset, "chunk checksum mismatch"
+            )
+
     def _verify_record(self, record: _PackageRecord) -> None:
         chunks = self._record_chunks(record)
         manifest_chunks = []
@@ -850,24 +871,7 @@ class XaiFs:
                 raise XaiFsIntegrityError(
                     record.package_id, chunk.logical_offset, "chunk is incomplete"
                 )
-            if chunk.flags & CHUNK_ZERO:
-                digest = _zero_digest(chunk.length)
-            else:
-                digest = hashlib.sha256()
-                remaining = chunk.length
-                cursor = chunk.physical_offset
-                while remaining:
-                    data = os.pread(self.fd, min(remaining, 1024 * 1024), cursor)
-                    if not data:
-                        raise IOError("short chunk verification read")
-                    digest.update(data)
-                    remaining -= len(data)
-                    cursor += len(data)
-                digest = digest.digest()
-            if digest != chunk.checksum:
-                raise XaiFsIntegrityError(
-                    record.package_id, chunk.logical_offset, "chunk checksum mismatch"
-                )
+            self._verify_chunk(record, chunk)
             manifest_chunks.append(
                 ManifestChunk(
                     chunk.logical_offset,
@@ -1238,15 +1242,46 @@ class XaiFs:
         selected = valid[0][1]
         errors = []
         checked_bytes = 0
+        verified_chunks = 0
+        partial_packages = 0
         if verify_data:
             with cls(path, read_only=True) as volume:
                 for record in volume.records:
-                    if record.state == PACKAGE_STAGING and any(
-                        not chunk.flags & CHUNK_COMPLETE
-                        for chunk in volume._record_chunks(record)
-                    ):
+                    chunks = volume._record_chunks(record)
+                    incomplete = [
+                        chunk
+                        for chunk in chunks
+                        if not chunk.flags & CHUNK_COMPLETE
+                    ]
+                    if record.state == PACKAGE_STAGING and incomplete:
+                        # A package caught mid-ingest: some chunks committed,
+                        # the rest never written. Skipping it outright, as
+                        # this used to, is what makes a crash test vacuous --
+                        # the interesting case is precisely a volume where
+                        # some chunk claims to be complete. So verify the
+                        # ones that make the claim and let the rest be
+                        # missing, which is the property that matters: a
+                        # chunk is either absent or right, never half
+                        # written.
+                        partial_packages += 1
+                        for chunk in chunks:
+                            if not chunk.flags & CHUNK_COMPLETE:
+                                continue
+                            checked_bytes += chunk.length
+                            verified_chunks += 1
+                            try:
+                                volume._verify_chunk(record, chunk)
+                            except XaiFsIntegrityError as error:
+                                errors.append(
+                                    {
+                                        "package_id": error.package_id.hex(),
+                                        "logical_offset": error.logical_offset,
+                                        "reason": error.reason,
+                                    }
+                                )
                         continue
                     checked_bytes += record.logical_size
+                    verified_chunks += len(chunks)
                     try:
                         volume._verify_record(record)
                     except XaiFsIntegrityError as error:
@@ -1271,6 +1306,8 @@ class XaiFs:
             "package_count": len(selected[2]),
             "chunk_count": len(selected[3]),
             "checked_bytes": checked_bytes,
+            "verified_chunks": verified_chunks,
+            "partial_packages": partial_packages,
             "errors": errors,
         }
 

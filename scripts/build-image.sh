@@ -395,6 +395,17 @@ case "${XAIOS_CLUSTER_TEST:-0}" in
     ;;
 esac
 
+# Ingest a staged xaiFS package continuously so the crash gate has something
+# to interrupt. Behind a flag because it never returns on its own.
+case "${XAIOS_CRASH_WRITER:-0}" in
+  0) ;;
+  1) KERNEL_CFLAGS="$KERNEL_CFLAGS -DXAIOS_CRASH_WRITER=1" ;;
+  *)
+    printf '%s\n' "error: XAIOS_CRASH_WRITER must be 0 or 1" >&2
+    exit 1
+    ;;
+esac
+
 # Storage throughput measurement. Behind a flag because it writes to a device
 # and takes time, and an ordinary boot should do neither.
 case "${XAIOS_STORAGE_BENCH:-0}" in
@@ -608,6 +619,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/storage_admin.o
   $KERNEL_BUILD_DIR/install.o
   $KERNEL_BUILD_DIR/storage_bench.o
+  $KERNEL_BUILD_DIR/crash_writer.o
   $KERNEL_BUILD_DIR/rate_limit.o
   $KERNEL_BUILD_DIR/source_index.o
   $KERNEL_BUILD_DIR/network_stack.o
@@ -753,6 +765,7 @@ compile_kernel "$ROOT_DIR/kernel/storage/partition_device.c" "$KERNEL_BUILD_DIR/
 compile_kernel "$ROOT_DIR/kernel/storage/storage_admin.c" "$KERNEL_BUILD_DIR/storage_admin.o"
 compile_kernel "$ROOT_DIR/kernel/storage/install.c" "$KERNEL_BUILD_DIR/install.o"
 compile_kernel "$ROOT_DIR/kernel/storage/storage_bench.c" "$KERNEL_BUILD_DIR/storage_bench.o"
+compile_kernel "$ROOT_DIR/kernel/storage/crash_writer.c" "$KERNEL_BUILD_DIR/crash_writer.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/rate_limit.c" "$KERNEL_BUILD_DIR/rate_limit.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/source_index.c" "$KERNEL_BUILD_DIR/source_index.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack.c" "$KERNEL_BUILD_DIR/network_stack.o"

@@ -54,6 +54,7 @@
 #include <xaios/fat.h>
 #include <xaios/install.h>
 #include <xaios/storage_admin.h>
+#include <xaios/crash_writer.h>
 #include <xaios/storage_bench.h>
 #include <xaios/system_slot.h>
 #include <xaios/service.h>
@@ -862,7 +863,16 @@ void kmain(const xaios_boot_info_t *boot) {
   boot_ui_update(55U, "persistent filesystem", "model and system volumes", 2U);
   xaios_status_t xai_fs_status = vfs_mount_xai_fs(4U);
   if (xai_fs_status == XAIOS_OK) {
+#if XAIOS_CRASH_WRITER
+    /* Instead of the self-test, not alongside it: the crash gate boots a
+       volume whose one staging package is the thing being ingested, and the
+       self-test would write its own pattern into that package's first chunk
+       and fail the manifest the fixture signed. This call does not return
+       until the ingest finishes or the machine dies, which is the point. */
+    crash_writer_run();
+#else
     vfs_xaifs_self_test();
+#endif
   } else {
     klog("xaifs: mount skipped status=%d\n", (int)xai_fs_status);
   }
