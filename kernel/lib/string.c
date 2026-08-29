@@ -10,10 +10,37 @@
 #include <xaios/types.h>
 #include <string.h>
 
+/* Eight bytes at a time where the addresses allow it.
+ *
+ * These were byte loops, which is every copy the kernel makes: block bounce
+ * buffers, filesystem reads, the model cache serving a hit. A two-mebibyte
+ * chunk copied a byte at a time is two million iterations, and it showed --
+ * the read cache measured 232 MB/s serving hits out of RAM, which is not a
+ * memory bandwidth, it is the cost of the loop.
+ *
+ * Only when both addresses are eight-aligned. Unaligned wide accesses are
+ * fine on normal memory on both architectures, but the kernel also copies to
+ * and from device memory, where an unaligned access faults on AArch64 and
+ * reports no syndrome to a hypervisor. Aligning the destination first and
+ * then requiring both to agree keeps the wide path to the case that is
+ * certainly safe, which is also the common one: pages, sectors and chunks are
+ * all aligned far past eight. */
 void *memcpy(void *dst, const void *src, size_t n) {
   uint8_t *d = (uint8_t *)dst;
   const uint8_t *s = (const uint8_t *)src;
-  for (uint64_t i = 0; i < n; ++i) {
+  uint64_t i = 0;
+
+  while (i < n && (((uintptr_t)(d + i)) & 7U) != 0U) {
+    d[i] = s[i];
+    ++i;
+  }
+  if ((((uintptr_t)(s + i)) & 7U) == 0U) {
+    while (i + 8U <= n) {
+      *(uint64_t *)(void *)(d + i) = *(const uint64_t *)(const void *)(s + i);
+      i += 8U;
+    }
+  }
+  for (; i < n; ++i) {
     d[i] = s[i];
   }
   return dst;
@@ -22,7 +49,21 @@ void *memcpy(void *dst, const void *src, size_t n) {
 void *memset(void *dst, int value, size_t n) {
   uint8_t *d = (uint8_t *)dst;
   uint8_t v = (uint8_t)value;
-  for (uint64_t i = 0; i < n; ++i) {
+  uint64_t i = 0;
+
+  while (i < n && (((uintptr_t)(d + i)) & 7U) != 0U) {
+    d[i] = v;
+    ++i;
+  }
+  uint64_t wide = (uint64_t)v;
+  wide |= wide << 8U;
+  wide |= wide << 16U;
+  wide |= wide << 32U;
+  while (i + 8U <= n) {
+    *(uint64_t *)(void *)(d + i) = wide;
+    i += 8U;
+  }
+  for (; i < n; ++i) {
     d[i] = v;
   }
   return dst;

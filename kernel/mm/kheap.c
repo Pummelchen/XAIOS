@@ -91,7 +91,11 @@ void *kheap_alloc(uint64_t size, uint64_t align) {
     /* Remove from free list */
     *best_prev = best->next_free;
     best->next_free = 0;
-    g_heap_bytes_allocated += size;
+    /* The block keeps the capacity it was created with, which is what free()
+       will hand back. Accounting the smaller request here and the larger
+       capacity there made the running total drift downward on every reuse of
+       a block by a smaller allocation. */
+    g_heap_bytes_allocated += best->size;
     xaios_spin_unlock(&g_kheap_lock);
     return (void *)((uint8_t *)best + KHEAP_HEADER_SIZE);
   }
