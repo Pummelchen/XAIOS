@@ -24,6 +24,12 @@
 #define VIRTIO_NET_F_GUEST_CSUM (UINT32_C(1) << 1U)
 #define VIRTIO_NET_F_MTU (UINT32_C(1) << 3U)
 #define VIRTIO_NET_F_MAC (UINT32_C(1) << 5U)
+/* Multiple receive/transmit pairs, and the control queue a driver needs to
+   tell the device how many of them to use. Reported here whether or not this
+   driver drives them: what a device offers is worth knowing before anyone
+   writes the code to use it, and a count nobody has read is a guess. */
+#define VIRTIO_NET_F_CTRL_VQ (UINT32_C(1) << 17U)
+#define VIRTIO_NET_F_MQ (UINT32_C(1) << 22U)
 #define VIRTIO_NET_F_GUEST_TSO4 (UINT32_C(1) << 7U)
 #define VIRTIO_NET_F_GUEST_TSO6 (UINT32_C(1) << 8U)
 #define VIRTIO_NET_F_GUEST_ECN (UINT32_C(1) << 9U)
@@ -88,6 +94,8 @@ typedef struct virtio_net_driver {
   virtq_desc_t *rx_indirect[VIRTIO_NET_PERSISTENT_RX_DESCS];
   uint8_t *rx_pages[VIRTIO_NET_PERSISTENT_RX_DESCS][VIRTIO_NET_RX_PAGES];
   uint32_t rx_chained;
+  uint32_t multiqueue;
+  uint32_t max_queue_pairs;
   uint8_t *tx_bufs[VIRTIO_NET_PERSISTENT_TX_DESCS];
   virtq_desc_t *tx_indirect[VIRTIO_NET_PERSISTENT_TX_DESCS];
 } virtio_net_driver_t;
@@ -226,7 +234,13 @@ static xaios_status_t negotiate_net_features(virtio_net_driver_t *driver) {
      so offer to take all of it on a second attempt. Mergeable receive
      buffers stay out of both: this driver does not reassemble a packet
      spread across several buffers. */
-  static const uint32_t attempts[2] = {
+  static const uint32_t attempts[3] = {
+      /* Tried first, and only a device offering multiple queue pairs accepts
+         it. Everything below is what this driver asked for before, so a device
+         without multiqueue negotiates exactly as it always did -- the first
+         attempt simply fails and the second is the old first. */
+      VIRTIO_NET_F_MAC | VIRTIO_F_RING_INDIRECT_DESC |
+          VIRTIO_F_RING_EVENT_IDX | VIRTIO_NET_F_MQ | VIRTIO_NET_F_CTRL_VQ,
       VIRTIO_NET_F_MAC | VIRTIO_F_RING_INDIRECT_DESC |
           VIRTIO_F_RING_EVENT_IDX,
       VIRTIO_NET_F_CSUM | VIRTIO_NET_F_GUEST_CSUM | VIRTIO_NET_F_MTU |
@@ -236,7 +250,7 @@ static xaios_status_t negotiate_net_features(virtio_net_driver_t *driver) {
           VIRTIO_NET_F_HOST_TSO6 | VIRTIO_NET_F_STATUS |
           VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX,
   };
-  for (uint32_t attempt = 0U; attempt < 2U; ++attempt) {
+  for (uint32_t attempt = 0U; attempt < 3U; ++attempt) {
     uint32_t accepted_low = 0U;
     uint32_t accepted_high = 0U;
     xaios_status_t status = virtio_transport_negotiate_features(
@@ -254,6 +268,22 @@ static xaios_status_t negotiate_net_features(virtio_net_driver_t *driver) {
         (accepted_low & VIRTIO_NET_GUEST_GSO_MASK) != 0U ? 1U : 0U;
     driver->rx_chained =
         driver->large_rx != 0U && driver->indirect_desc != 0U ? 1U : 0U;
+    driver->multiqueue =
+        (accepted_low & VIRTIO_NET_F_MQ) != 0U &&
+        (accepted_low & VIRTIO_NET_F_CTRL_VQ) != 0U ? 1U : 0U;
+    if (driver->multiqueue != 0U) {
+      /* max_virtqueue_pairs sits at offset 8 of the device configuration,
+         after the six MAC bytes and the two status bytes. */
+      /* Device configuration begins at 0x100 from base on both transports:
+         the PCI probe sets base so that this offset lands on the device
+         configuration structure, which is what the MAC read below relies on
+         too. max_virtqueue_pairs is at offset 8, after six MAC bytes and two
+         status bytes, little-endian. */
+      driver->max_queue_pairs =
+          (uint32_t)virtio_mmio_read8(driver->device.base, 0x100U + 8U) |
+          ((uint32_t)virtio_mmio_read8(driver->device.base, 0x100U + 9U) << 8);
+      if (driver->max_queue_pairs == 0U) driver->multiqueue = 0U;
+    }
     if (driver->large_rx != 0U && driver->rx_chained == 0U) {
       klog("virtio-net: guest offload without indirect descriptors; receive "
            "buffers cannot reach %u bytes\n",
@@ -503,20 +533,34 @@ xaios_status_t virtio_net_init_persistent(void) {
     g_net->tx_avail->used_event = 0U;
   }
 
-  status = virtio_transport_setup_queue(&g_net->device, 0, VIRTQ_SIZE,
-                                        g_net->rx_desc, g_net->rx_avail,
-                                        g_net->rx_used);
+  /* Ask for a vector per queue rather than one for the device. Receive and
+     transmit completions are then distinguishable at the interrupt, which is
+     what steering needs and what one shared vector cannot give: it says only
+     that something happened somewhere. Falls back to the shared vector where
+     the transport cannot give per-queue ones -- virtio-MMIO has a single
+     interrupt line for the whole device -- so this is an improvement where it
+     is available and unchanged where it is not. */
+  status = virtio_transport_setup_queue_vectored(&g_net->device, 0, VIRTQ_SIZE,
+                                                 g_net->rx_desc,
+                                                 g_net->rx_avail,
+                                                 g_net->rx_used);
   if (status != XAIOS_OK) {
     klog("virtio-net-persist: RX queue setup failed status=%d\n", (int)status);
     return status;
   }
-  status = virtio_transport_setup_queue(&g_net->device, 1, VIRTQ_SIZE,
-                                        g_net->tx_desc, g_net->tx_avail,
-                                        g_net->tx_used);
+  status = virtio_transport_setup_queue_vectored(&g_net->device, 1, VIRTQ_SIZE,
+                                                 g_net->tx_desc,
+                                                 g_net->tx_avail,
+                                                 g_net->tx_used);
   if (status != XAIOS_OK) {
     klog("virtio-net-persist: TX queue setup failed status=%d\n", (int)status);
     return status;
   }
+  klog("virtio-net-persist: queues rx_vector=%u tx_vector=%u multiqueue=%u "
+       "max_queue_pairs=%u\n",
+       virtio_transport_queue_has_vector(&g_net->device, 0U),
+       virtio_transport_queue_has_vector(&g_net->device, 1U),
+       g_net->multiqueue, g_net->max_queue_pairs);
   status = virtio_transport_set_driver_ok_checked(&g_net->device);
   if (status != XAIOS_OK) {
     klog("virtio-net-persist: DRIVER_OK failed status=%d\n", (int)status);

@@ -9,6 +9,9 @@
 #define virtio_transport_find_from virtio_mmio_backend_transport_find_from
 #define virtio_transport_find_at virtio_mmio_backend_transport_find_at
 #define virtio_transport_find_nth virtio_mmio_backend_transport_find_nth
+#define virtio_transport_setup_queue_vectored virtio_mmio_backend_transport_setup_queue_vectored
+#define virtio_transport_queue_has_vector virtio_mmio_backend_transport_queue_has_vector
+#define virtio_transport_register_queue_interrupt virtio_mmio_backend_transport_register_queue_interrupt
 #define virtio_transport_reset virtio_mmio_backend_transport_reset
 #define virtio_transport_reset_checked virtio_mmio_backend_transport_reset_checked
 #define virtio_transport_negotiate_no_features virtio_mmio_backend_transport_negotiate_no_features
@@ -411,4 +414,33 @@ xaios_status_t virtio_transport_unregister_interrupt(
 
 uint32_t virtio_transport_slot(const virtio_mmio_device_t *device) {
   return device == 0 ? UINT32_MAX : device->transport_slot;
+}
+
+/* virtio-MMIO has one interrupt line for the whole device, so a queue cannot
+   have a vector of its own here. Setting up such a queue is the ordinary setup;
+   asking whether it has its own interrupt is answered no, and registering one
+   is refused. A driver that wants steering has to be on PCI, and finds that out
+   by asking rather than by an interrupt that never arrives. */
+xaios_status_t virtio_transport_setup_queue_vectored(
+    virtio_mmio_device_t *device, uint32_t queue_index, uint32_t queue_size,
+    virtq_desc_t *desc, virtq_avail_t *avail, virtq_used_t *used) {
+  return virtio_transport_setup_queue(device, queue_index, queue_size, desc,
+                                      avail, used);
+}
+
+uint32_t virtio_transport_queue_has_vector(const virtio_mmio_device_t *device,
+                                           uint32_t queue_index) {
+  (void)device;
+  (void)queue_index;
+  return 0U;
+}
+
+xaios_status_t virtio_transport_register_queue_interrupt(
+    const virtio_mmio_device_t *device, uint32_t queue_index,
+    virtio_interrupt_handler_t handler, void *context) {
+  (void)device;
+  (void)queue_index;
+  (void)handler;
+  (void)context;
+  return XAIOS_ERR_UNSUPPORTED;
 }

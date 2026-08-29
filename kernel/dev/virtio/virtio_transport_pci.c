@@ -9,6 +9,9 @@
 #define virtio_transport_find_from virtio_pci_backend_transport_find_from
 #define virtio_transport_find_at virtio_pci_backend_transport_find_at
 #define virtio_transport_find_nth virtio_pci_backend_transport_find_nth
+#define virtio_transport_setup_queue_vectored virtio_pci_backend_transport_setup_queue_vectored
+#define virtio_transport_queue_has_vector virtio_pci_backend_transport_queue_has_vector
+#define virtio_transport_register_queue_interrupt virtio_pci_backend_transport_register_queue_interrupt
 #define virtio_transport_reset virtio_pci_backend_transport_reset
 #define virtio_transport_reset_checked virtio_pci_backend_transport_reset_checked
 #define virtio_transport_negotiate_no_features virtio_pci_backend_transport_negotiate_no_features
@@ -471,6 +474,51 @@ static xaios_status_t configure_msix(virtio_mmio_device_t *device,
 #endif
 }
 
+/* Configure one MSI-X table entry for a queue of its own.
+ *
+ * configure_msix above returns early once the device has any interrupt, which
+ * is right for a device driven through a single vector and wrong here: every
+ * queue needs its own entry, its own LPI, and its own message. Sharing one
+ * vector across four queues tells a handler that something happened somewhere,
+ * which is the thing multiple queues exist to avoid. */
+static xaios_status_t configure_queue_msix(virtio_mmio_device_t *device,
+                                           uint32_t queue_index) {
+  if (device == 0 || queue_index >= VIRTIO_NOTIFY_SLOTS) {
+    return XAIOS_ERR_INVALID;
+  }
+  if ((device->queue_interrupt_configured & (UINT32_C(1) << queue_index)) !=
+      0U) {
+    return XAIOS_OK;
+  }
+#if !defined(__x86_64__)
+  uint32_t its_device_id = pci_stream_id(device->transport_index);
+  uint32_t lpi = 0U;
+  if (gic_allocate_lpi(&lpi) != XAIOS_OK) return XAIOS_ERR_UNSUPPORTED;
+  uint64_t message_address = 0U;
+  uint32_t message_data = 0U;
+  if (gic_its_configure_msi(its_device_id, (uint16_t)queue_index, lpi,
+                            smp_cpu_id(), &message_address,
+                            &message_data) != XAIOS_OK) {
+    return XAIOS_ERR_UNSUPPORTED;
+  }
+  if (pci_configure_msix(device->transport_index, (uint16_t)queue_index,
+                         message_address, message_data) != XAIOS_OK) {
+    return XAIOS_ERR_IO;
+  }
+  device->queue_interrupt_id[queue_index] = lpi;
+  device->queue_interrupt_configured |= UINT32_C(1) << queue_index;
+  return XAIOS_OK;
+#else
+  /* x86 routes MSI-X through the APIC rather than an ITS, and the shared-vector
+     path already programs that. Per-queue vectors there are the same mechanism
+     with a different table entry, and are not wired up here: nothing in this
+     tree steers queues on x86 yet, and an untested second interrupt path is
+     worse than one honest refusal. */
+  (void)queue_index;
+  return XAIOS_ERR_UNSUPPORTED;
+#endif
+}
+
 xaios_status_t virtio_transport_setup_queue(virtio_mmio_device_t *device,
                                            uint32_t queue_index,
                                            uint32_t queue_size,
@@ -652,3 +700,91 @@ xaios_status_t virtio_transport_find_nth_pci(uint32_t device_id,
                                    device);
 }
 #endif
+
+xaios_status_t virtio_transport_setup_queue_vectored(
+    virtio_mmio_device_t *device, uint32_t queue_index, uint32_t queue_size,
+    virtq_desc_t *desc, virtq_avail_t *avail, virtq_used_t *used) {
+  if (device == 0 || queue_index >= VIRTIO_NOTIFY_SLOTS) {
+    return XAIOS_ERR_INVALID;
+  }
+  /* Ask for a vector of this queue's own first. If the device cannot give one
+     -- too few table entries, no ITS, an architecture this is not wired for --
+     fall back to the shared vector rather than refusing: a driver that wanted
+     several queues still works with one interrupt between them, more slowly,
+     and can ask which it got. */
+  if (configure_queue_msix(device, queue_index) != XAIOS_OK) {
+    return virtio_transport_setup_queue(device, queue_index, queue_size, desc,
+                                        avail, used);
+  }
+  if (queue_size == 0U || queue_size > VIRTQ_SIZE ||
+      (queue_size & (queue_size - 1U)) != 0U || desc == 0 || avail == 0 ||
+      used == 0) {
+    return XAIOS_ERR_INVALID;
+  }
+  uint64_t desc_address = dma_address(desc);
+  uint64_t avail_address = dma_address(avail);
+  uint64_t used_address = dma_address(used);
+  if (desc_address == 0U || avail_address == 0U || used_address == 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  mmio_write16(device->common_config + 22U, (uint16_t)queue_index);
+  uint16_t maximum = mmio_read16(device->common_config + 24U);
+  if (maximum < queue_size ||
+      mmio_read16(device->common_config + 28U) != 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  mmio_write16(device->common_config + 24U, (uint16_t)queue_size);
+  mmio_write16(device->common_config + 26U, (uint16_t)queue_index);
+  if (mmio_read16(device->common_config + 26U) != (uint16_t)queue_index) {
+    /* The device declined the vector. Undo the claim so the fallback does not
+       believe this queue has one. */
+    device->queue_interrupt_configured &= ~(UINT32_C(1) << queue_index);
+    return virtio_transport_setup_queue(device, queue_index, queue_size, desc,
+                                        avail, used);
+  }
+  mmio_write64(device->common_config + 32U, desc_address);
+  mmio_write64(device->common_config + 40U, avail_address);
+  mmio_write64(device->common_config + 48U, used_address);
+  mmio_write16(device->common_config + 28U, 1U);
+  virtio_mmio_barrier();
+  if (mmio_read16(device->common_config + 28U) != 1U) return XAIOS_ERR_IO;
+  device->notify_offset[queue_index] =
+      mmio_read16(device->common_config + 30U);
+  device->notify_offset_valid |= UINT32_C(1) << queue_index;
+  klog("%s: queue=%u has its own MSI-X vector=%u\n", device->name,
+       queue_index, device->queue_interrupt_id[queue_index]);
+  return XAIOS_OK;
+}
+
+uint32_t virtio_transport_queue_has_vector(const virtio_mmio_device_t *device,
+                                           uint32_t queue_index) {
+  if (device == 0 || queue_index >= VIRTIO_NOTIFY_SLOTS) return 0U;
+  return (device->queue_interrupt_configured &
+          (UINT32_C(1) << queue_index)) != 0U ? 1U : 0U;
+}
+
+xaios_status_t virtio_transport_register_queue_interrupt(
+    const virtio_mmio_device_t *device, uint32_t queue_index,
+    virtio_interrupt_handler_t handler, void *context) {
+  if (device == 0 || handler == 0 || queue_index >= VIRTIO_NOTIFY_SLOTS) {
+    return XAIOS_ERR_INVALID;
+  }
+  if (virtio_transport_queue_has_vector(device, queue_index) == 0U) {
+    return XAIOS_ERR_UNSUPPORTED;
+  }
+#if !defined(__x86_64__)
+  uint32_t intid = device->queue_interrupt_id[queue_index];
+  xaios_status_t status = gic_register_lpi(intid, smp_cpu_id(), handler,
+                                           context);
+  if (status != XAIOS_OK) return status;
+  status = pci_unmask_msix(device->transport_index, (uint16_t)queue_index);
+  if (status != XAIOS_OK) {
+    (void)gic_unregister_interrupt(intid, handler, context);
+    return status;
+  }
+  return XAIOS_OK;
+#else
+  (void)context;
+  return XAIOS_ERR_UNSUPPORTED;
+#endif
+}

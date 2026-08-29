@@ -208,3 +208,22 @@ xaios_status_t virtio_transport_wait_used(volatile uint16_t *used_idx,
                                           uint16_t expected) {
   return virtio_mmio_backend_transport_wait_used(used_idx, expected);
 }
+
+xaios_status_t virtio_transport_setup_queue_vectored(
+    virtio_mmio_device_t *device, uint32_t queue_index, uint32_t queue_size,
+    virtq_desc_t *desc, virtq_avail_t *avail, virtq_used_t *used) {
+  return DISPATCH(device, transport_setup_queue_vectored,
+                  (device, queue_index, queue_size, desc, avail, used));
+}
+
+uint32_t virtio_transport_queue_has_vector(const virtio_mmio_device_t *device,
+                                           uint32_t queue_index) {
+  return DISPATCH(device, transport_queue_has_vector, (device, queue_index));
+}
+
+xaios_status_t virtio_transport_register_queue_interrupt(
+    const virtio_mmio_device_t *device, uint32_t queue_index,
+    virtio_interrupt_handler_t handler, void *context) {
+  return DISPATCH(device, transport_register_queue_interrupt,
+                  (device, queue_index, handler, context));
+}

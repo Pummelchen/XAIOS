@@ -40,8 +40,14 @@ typedef struct virtq_used {
   uint16_t avail_event;
 } virtq_used_t;
 
-/* Queue indices any driver here uses; virtio-net has two, the rest one. */
-#define VIRTIO_NOTIFY_SLOTS 4U
+/* Queue indices any driver here uses. virtio-net asks for a receive and a
+   transmit queue per pair plus a control queue; the rest use one. */
+#define VIRTIO_NOTIFY_SLOTS 16U
+
+/* How many receive/transmit pairs a driver may ask this transport to steer
+   independently. Each pair costs an MSI-X table entry and, on aarch64, an LPI,
+   so this is a ceiling on what a device may consume rather than a target. */
+#define VIRTIO_MAX_QUEUE_PAIRS 4U
 
 typedef struct virtio_mmio_device {
   uint64_t base;
@@ -66,6 +72,19 @@ typedef struct virtio_mmio_device {
      before secondary CPUs actually ran. */
   uint16_t notify_offset[VIRTIO_NOTIFY_SLOTS];
   uint32_t notify_offset_valid;
+  /* One interrupt per queue, for a device that asked for them.
+
+     interrupt_id above is the device's single vector, which is what every
+     driver here used and what a device with one queue pair needs. Steering
+     traffic across queues needs each queue to raise its own interrupt: one
+     vector shared by four queues tells a handler that something happened
+     somewhere, which is exactly what multiple queues exist to avoid.
+
+     Empty unless a driver called the vectored setup, so nothing that did not
+     ask for this pays for it -- an LPI per queue is a real cost on a machine
+     with several devices. */
+  uint32_t queue_interrupt_id[VIRTIO_NOTIFY_SLOTS];
+  uint32_t queue_interrupt_configured;
   const char *name;
 } virtio_mmio_device_t;
 
@@ -101,6 +120,29 @@ xaios_status_t virtio_transport_find_nth_pci(uint32_t device_id,
                                             uint32_t ordinal,
                                             uint32_t logical_slot,
                                             virtio_mmio_device_t *device);
+
+/*
+ * Set up a queue that raises its own interrupt, rather than sharing the
+ * device's single vector.
+ *
+ * Identical to virtio_transport_setup_queue except for the MSI-X table entry
+ * it programs. Falls back to the shared vector when per-queue vectors are not
+ * available -- a device with fewer table entries than queues, or a transport
+ * with no MSI-X at all -- so a driver that asks for this still works where it
+ * cannot be given, and can ask afterwards what it got.
+ */
+xaios_status_t virtio_transport_setup_queue_vectored(
+    virtio_mmio_device_t *device, uint32_t queue_index, uint32_t queue_size,
+    virtq_desc_t *desc, virtq_avail_t *avail, virtq_used_t *used);
+
+/* Whether that queue ended up with an interrupt of its own. */
+uint32_t virtio_transport_queue_has_vector(const virtio_mmio_device_t *device,
+                                           uint32_t queue_index);
+
+/* Register a handler for one queue's own interrupt. */
+xaios_status_t virtio_transport_register_queue_interrupt(
+    const virtio_mmio_device_t *device, uint32_t queue_index,
+    virtio_interrupt_handler_t handler, void *context);
 void virtio_transport_reset(const virtio_mmio_device_t *device);
 /* The device's own status byte. Worth reading when a queue stops completing:
    bit 6, DEVICE_NEEDS_RESET, is the device saying it has given up, which

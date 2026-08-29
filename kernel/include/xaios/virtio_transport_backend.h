@@ -110,3 +110,19 @@ uint32_t virtio_pci_backend_transport_slot(const virtio_mmio_device_t *device);
 
 
 #endif
+xaios_status_t virtio_mmio_backend_transport_setup_queue_vectored(
+    virtio_mmio_device_t *device, uint32_t queue_index, uint32_t queue_size,
+    virtq_desc_t *desc, virtq_avail_t *avail, virtq_used_t *used);
+uint32_t virtio_mmio_backend_transport_queue_has_vector(
+    const virtio_mmio_device_t *device, uint32_t queue_index);
+xaios_status_t virtio_mmio_backend_transport_register_queue_interrupt(
+    const virtio_mmio_device_t *device, uint32_t queue_index,
+    virtio_interrupt_handler_t handler, void *context);
+xaios_status_t virtio_pci_backend_transport_setup_queue_vectored(
+    virtio_mmio_device_t *device, uint32_t queue_index, uint32_t queue_size,
+    virtq_desc_t *desc, virtq_avail_t *avail, virtq_used_t *used);
+uint32_t virtio_pci_backend_transport_queue_has_vector(
+    const virtio_mmio_device_t *device, uint32_t queue_index);
+xaios_status_t virtio_pci_backend_transport_register_queue_interrupt(
+    const virtio_mmio_device_t *device, uint32_t queue_index,
+    virtio_interrupt_handler_t handler, void *context);
