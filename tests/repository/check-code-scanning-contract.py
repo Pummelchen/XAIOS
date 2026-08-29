@@ -47,9 +47,19 @@ def main() -> int:
     )
     if narrow_loop in xaiboot_fs:
         failures.append("xaibootFS block scan uses a narrowing loop index")
-    if "g_active_data_sectors > (uint32_t)UINT16_MAX + 1U" not in xaiboot_fs:
-        failures.append("xaibootFS does not guard its 16-bit block format")
-    if "blocks[found++] = (uint16_t)i;" not in xaiboot_fs:
+    # The invariant these guard is that a block number never silently loses
+    # bits on its way onto a volume that records sixteen of them. It used to
+    # live in the allocator, which numbered blocks directly; v6 records extents
+    # and 32-bit starts, so the only place a block is narrowed is the
+    # conversion written when an older volume's metadata is stored. Two checks
+    # moved rather than removed: dropping them because the code moved would
+    # leave the truncation they exist to prevent unguarded.
+    if "if (block > UINT16_MAX) return UINT32_MAX;" not in xaiboot_fs:
+        failures.append(
+            "xaibootFS does not refuse a block that will not fit a 16-bit "
+            "volume's metadata"
+        )
+    if "blocks[written++] = (uint16_t)block;" not in xaiboot_fs:
         failures.append("xaibootFS block-index conversion is not explicit")
 
     if failures:

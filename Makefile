@@ -560,6 +560,11 @@ hosted-test: engine-cli
 	  -o build/hosted/test-mutable-fs-mirror
 	./build/hosted/test-mutable-fs-mirror
 	$(HOST_CC) $(HOST_CFLAGS) \
+	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/dev/block_device.c \
+	  tests/storage/test_xaiboot_fs_v6.c \
+	  -o build/hosted/test-xaiboot-fs-v6
+	./build/hosted/test-xaiboot-fs-v6
+	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Iuserspace/include -Iuserspace/sshd -Iuserspace/apps/terminal \
 	  -Ikernel/include \
 	  userspace/sshd/sftp_server.c tests/storage/test_sftp_large.c \
