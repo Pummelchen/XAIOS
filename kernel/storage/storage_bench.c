@@ -16,6 +16,7 @@
 #include <xaios/block_device.h>
 #include <xaios/klog.h>
 #include <xaios/timer.h>
+#include <xaios/model_cache.h>
 #include <xaios/vfs.h>
 #include <xaios/virtio_blk.h>
 
@@ -155,7 +156,7 @@ static uint8_t g_model_buffer[BENCH_MODEL_CHUNK] __attribute__((aligned(4096)));
 #define MODEL_OWNER UINT32_C(0x4d4f444c)
 
 static void bench_model_window(const char *path, uint64_t size, uint64_t window,
-                               const char *label) {
+                               uint32_t rounds, const char *label) {
   if (window > sizeof(g_model_buffer)) return;
   int64_t fd = vfs_open(path, XAIOS_VFS_OPEN_READ, MODEL_OWNER);
   if (fd <= 0) {
@@ -166,7 +167,7 @@ static void bench_model_window(const char *path, uint64_t size, uint64_t window,
   uint64_t delivered = 0U;
   uint64_t requests = 0U;
   uint64_t started = timer_now_ns();
-  for (uint32_t round = 0U; round < BENCH_MODEL_ROUNDS; ++round) {
+  for (uint32_t round = 0U; round < rounds; ++round) {
     for (uint64_t at = 0U; at + window <= size; at += window) {
       int64_t count = vfs_pread((uint32_t)fd, MODEL_OWNER, g_model_buffer,
                                 window, at);
@@ -211,8 +212,27 @@ void storage_bench_model(void) {
     return;
   }
   klog("storage-bench: model package=%s bytes=%lu\n", path, stat.size);
-  bench_model_window(path, stat.size, BENCH_MODEL_CHUNK, "aligned");
-  bench_model_window(path, stat.size, BENCH_BUFFER, "window");
+  /* Cold means one pass over an empty cache, and nothing else. Timing several
+     passes and calling the total cold is how the first version of this
+     reported a windowed cold read four times faster than it is: the later
+     passes were hits. */
+  model_cache_drop();
+  bench_model_window(path, stat.size, BENCH_MODEL_CHUNK, 1U, "aligned-cold");
+  /* A chunk is admitted on its second read, so one more pass populates. */
+  bench_model_window(path, stat.size, BENCH_MODEL_CHUNK, 1U, "aligned-fill");
+  bench_model_window(path, stat.size, BENCH_MODEL_CHUNK, BENCH_MODEL_ROUNDS,
+                     "aligned-warm");
+  model_cache_report("aligned");
+
+  /* The case the cache was built for: a window smaller than a chunk. Cold, it
+     hashes a whole chunk to deliver a fraction of it. Warm, the chunk is in
+     memory and every other window in it costs a copy. */
+  model_cache_drop();
+  bench_model_window(path, stat.size, BENCH_BUFFER, 1U, "window-cold");
+  bench_model_window(path, stat.size, BENCH_BUFFER, 1U, "window-fill");
+  bench_model_window(path, stat.size, BENCH_BUFFER, BENCH_MODEL_ROUNDS,
+                     "window-warm");
+  model_cache_report("window");
 }
 
 #endif

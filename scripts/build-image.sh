@@ -583,6 +583,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/vfs_xaiboot.o
   $KERNEL_BUILD_DIR/vfs_initramfs.o
   $KERNEL_BUILD_DIR/vfs_xaifs.o
+  $KERNEL_BUILD_DIR/model_cache.o
+  $KERNEL_BUILD_DIR/ram_residency.o
   $KERNEL_BUILD_DIR/xai_fs_admin.o
   $KERNEL_BUILD_DIR/service.o
   $KERNEL_BUILD_DIR/syscall.o
@@ -731,6 +733,8 @@ compile_kernel "$ROOT_DIR/kernel/fs/vfs.c" "$KERNEL_BUILD_DIR/vfs.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs_xaiboot.c" "$KERNEL_BUILD_DIR/vfs_xaiboot.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs_initramfs.c" "$KERNEL_BUILD_DIR/vfs_initramfs.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs_xaifs.c" "$KERNEL_BUILD_DIR/vfs_xaifs.o"
+compile_kernel "$ROOT_DIR/kernel/fs/model_cache.c" "$KERNEL_BUILD_DIR/model_cache.o"
+compile_kernel "$ROOT_DIR/kernel/mm/ram_residency.c" "$KERNEL_BUILD_DIR/ram_residency.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xai_fs_admin.c" "$KERNEL_BUILD_DIR/xai_fs_admin.o"
 compile_kernel "$ROOT_DIR/kernel/user/service.c" "$KERNEL_BUILD_DIR/service.o"
 compile_kernel "$ROOT_DIR/kernel/user/syscall.c" "$KERNEL_BUILD_DIR/syscall.o"

@@ -55,6 +55,7 @@
 #include <xaios/install.h>
 #include <xaios/storage_admin.h>
 #include <xaios/crash_writer.h>
+#include <xaios/ram_residency.h>
 #include <xaios/engine_sha256_dispatch.h>
 #include <xaios/storage_bench.h>
 #include <xaios/system_slot.h>
@@ -594,6 +595,8 @@ void kmain(const xaios_boot_info_t *boot) {
 
   /* PCI drivers allocate DMA rings, so establish the heap before probing. */
   kheap_self_test();
+  /* Before anything becomes resident, so the first reservation is counted. */
+  ram_residency_init();
 
   /* Map ECAM and enumerate PCIe. */
   pci_init();
@@ -892,12 +895,17 @@ void kmain(const xaios_boot_info_t *boot) {
     install_self_test();
 #if XAIOS_STORAGE_BENCH
     storage_bench_run(XAIOS_INSTALL_TARGET);
-    storage_bench_model();
 #endif
   } else {
     klog("storage-admin: scratch device unavailable status=%d\n",
          (int)storage_admin_status);
   }
+#if XAIOS_STORAGE_BENCH
+  /* Not inside the storage-administration branch above: that branch depends
+     on a scratch disk being attached, and whether /models can be measured has
+     nothing to do with whether one is. */
+  storage_bench_model();
+#endif
   if (persistent_status == XAIOS_OK) {
     update_self_test();
     update_delivery_self_test();

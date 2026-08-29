@@ -1,5 +1,14 @@
 #include <xaios/block_device.h>
 #include <xaios/klog.h>
+#include <xaios/model_cache.h>
+
+/* How much RAM /models may hold. Two hundred and fifty-six mebibytes by
+   default; a machine serving a large working set is expected to raise it, and
+   the cache clamps whatever it is told to a quarter of free memory so that a
+   generous figure on a small guest is an intention rather than a failure. */
+#ifndef XAIOS_MODEL_CACHE_MB
+#define XAIOS_MODEL_CACHE_MB 256U
+#endif
 #include <xaios/xaiboot_fs.h>
 #include <xaios/spinlock.h>
 #include <xaios/status.h>
@@ -44,6 +53,16 @@ typedef struct model_vfs_context {
   uint32_t mounted;
   uint32_t owns_block_open;
   uint32_t read_only;
+  /* The chunk record most recently looked up, and which index it is.
+     Reading a chunk record is a read off the volume, and a run of small
+     reads inside one chunk asked for the same record every time -- eight
+     volume reads to serve eight windows out of RAM. Consecutive reads are
+     overwhelmingly in the same chunk, so one entry catches almost all of it.
+     Valid only while `chunk_memo_generation` matches the volume's. */
+  xaios_xai_fs_chunk_t chunk_memo;
+  uint64_t chunk_memo_index;
+  uint64_t chunk_memo_generation;
+  uint32_t chunk_memo_valid;
   char mount_path[XAIOS_VFS_PATH_MAX];
 } model_vfs_context_t;
 
@@ -406,6 +425,130 @@ static xaios_status_t model_close(void *context, uint64_t handle) {
   return status;
 }
 
+/* Read a package range, serving whole chunks out of RAM where they are held.
+ *
+ * The engine's verified read is the reference and does all the work that
+ * matters: it hashes a chunk before it hands any of it over. What this adds is
+ * the observation that a chunk which has already passed that test does not
+ * need to pass it again while nothing has written to the volume -- so a chunk
+ * read often enough is kept, and a hit is a copy rather than a read plus a
+ * megabyte of SHA-256.
+ *
+ * The cache is consulted a chunk at a time because a chunk is what the
+ * checksum covers. That also fixes the case the measurements were worst on: a
+ * small window inside a large chunk used to hash the whole chunk to deliver a
+ * fraction of it, and now pays that once and serves the neighbours from
+ * memory.
+ *
+ * Only active packages. A staging package is being written and its chunks
+ * change underneath; the cache refuses them rather than tracking mutations it
+ * cannot see.
+ *
+ * Called with the model lock held, which is the only thing serialising the
+ * cache. */
+static xaios_engine_status_t model_pread_cached(
+    model_vfs_context_t *model, const xaios_xai_fs_package_t *package,
+    uint64_t offset, void *destination, size_t length,
+    uint64_t *bad_logical_offset) {
+  /* A new catalog moves chunks, so a key from the old one means nothing. */
+  model_cache_invalidate(model->volume.generation);
+
+  if (package->state != XAIOS_XAI_FS_PACKAGE_ACTIVE) {
+    return xaios_xai_fs_pread_verified(&model->volume, package, offset,
+                                       destination, length, model->scratch,
+                                       sizeof(model->scratch),
+                                       bad_logical_offset);
+  }
+
+  uint8_t *out = (uint8_t *)destination;
+  uint64_t requested_end = offset + (uint64_t)length;
+  uint64_t delivered = 0U;
+
+  /* Which chunks the request touches, by arithmetic rather than by looking.
+     A package's chunks tile its logical space in order and all but the last
+     are exactly chunk_size, so the index is a division -- and walking the
+     whole table instead was O(chunk_count) volume reads per request. That is
+     invisible on a package with one chunk and ruinous on one with thirty-two
+     thousand, which is what half a terabyte comes to. */
+  if (package->chunk_size == 0U) return XAIOS_ENGINE_ERR_INVALID;
+  uint64_t first = offset / package->chunk_size;
+  uint64_t last = (requested_end - 1U) / package->chunk_size;
+  if (first >= package->chunk_count) return XAIOS_ENGINE_ERR_INVALID;
+  if (last >= package->chunk_count) last = package->chunk_count - 1U;
+
+  for (uint64_t relative = first; relative <= last; ++relative) {
+    uint64_t chunk_index = package->chunk_start + relative;
+    xaios_xai_fs_chunk_t chunk;
+    if (model->chunk_memo_valid != 0U &&
+        model->chunk_memo_generation == model->volume.generation &&
+        model->chunk_memo_index == chunk_index) {
+      chunk = model->chunk_memo;
+    } else if (xaios_xai_fs_read_chunk(&model->volume, chunk_index, &chunk) !=
+               XAIOS_ENGINE_OK) {
+      return XAIOS_ENGINE_ERR_INVALID;
+    } else {
+      model->chunk_memo = chunk;
+      model->chunk_memo_index = chunk_index;
+      model->chunk_memo_generation = model->volume.generation;
+      model->chunk_memo_valid = 1U;
+    }
+    /* The arithmetic above assumed the tiling. Check it rather than trust it:
+       a catalog that disagreed would otherwise serve one chunk's bytes as
+       another's, which is precisely the quietly-wrong answer this path exists
+       to prevent. */
+    if (chunk.logical_offset != relative * package->chunk_size ||
+        chunk.record_id != package->record_id ||
+        (chunk.flags & XAIOS_XAI_FS_CHUNK_COMPLETE) == 0U) {
+      return XAIOS_ENGINE_ERR_INVALID;
+    }
+    uint64_t chunk_end = chunk.logical_offset + chunk.length;
+    if (chunk_end <= offset || chunk.logical_offset >= requested_end) continue;
+
+    uint64_t slice_start = offset > chunk.logical_offset ? offset
+                                                         : chunk.logical_offset;
+    uint64_t slice_end = requested_end < chunk_end ? requested_end : chunk_end;
+    uint64_t within = slice_start - chunk.logical_offset;
+    uint64_t count = slice_end - slice_start;
+    uint8_t *slice = out + (slice_start - offset);
+
+    if (model_cache_read(chunk.physical_offset, within, slice, count) != 0) {
+      delivered += count;
+      continue;
+    }
+
+    /* Not held. If this chunk has been wanted often enough to earn the RAM,
+       read all of it into the cache -- verified, because that is the only way
+       it goes in -- and serve this slice out of what was read. */
+    void *room = model_cache_reserve(chunk.physical_offset, chunk.length);
+    if (room != 0) {
+      uint64_t bad = UINT64_MAX;
+      xaios_engine_status_t status = xaios_xai_fs_pread_verified(
+          &model->volume, package, chunk.logical_offset, room,
+          (size_t)chunk.length, model->scratch, sizeof(model->scratch), &bad);
+      if (status != XAIOS_ENGINE_OK) {
+        model_cache_abandon(chunk.physical_offset);
+        *bad_logical_offset = bad;
+        return status;
+      }
+      model_cache_commit(chunk.physical_offset);
+      (void)model_cache_read(chunk.physical_offset, within, slice, count);
+      delivered += count;
+      continue;
+    }
+
+    xaios_engine_status_t status = xaios_xai_fs_pread_verified(
+        &model->volume, package, slice_start, slice, (size_t)count,
+        model->scratch, sizeof(model->scratch), bad_logical_offset);
+    if (status != XAIOS_ENGINE_OK) return status;
+    delivered += count;
+  }
+  /* The engine's read makes the same check, and for the same reason: a gap in
+     the extent map would leave part of the buffer untouched, and handing that
+     back is exactly the quietly-wrong result this path exists to prevent. */
+  return delivered == (uint64_t)length ? XAIOS_ENGINE_OK
+                                       : XAIOS_ENGINE_ERR_INVALID;
+}
+
 static int64_t model_pread(void *context, uint64_t handle, void *buffer,
                            uint64_t length, uint64_t offset) {
   model_vfs_context_t *model = (model_vfs_context_t *)context;
@@ -436,9 +579,8 @@ static int64_t model_pread(void *context, uint64_t handle, void *buffer,
     length = package.logical_size - offset;
   }
   uint64_t bad_offset = UINT64_MAX;
-  engine_status = xaios_xai_fs_pread_verified(
-      &model->volume, &package, offset, buffer, (size_t)length,
-      model->scratch, sizeof(model->scratch), &bad_offset);
+  engine_status = model_pread_cached(model, &package, offset, buffer,
+                                     (size_t)length, &bad_offset);
   xaios_spin_unlock(&model->lock);
   if (engine_status != XAIOS_ENGINE_OK) {
     klog("xaifs: package read rejected record=%lu offset=%lu bad=%lu status=%d\n",
@@ -1320,6 +1462,11 @@ static xaios_status_t mount_model_device(xaios_block_device_t *device,
   }
   g_model_vfs.mounted = 1U;
   copy_mount_path(g_model_vfs.mount_path, mount_path);
+  /* The read cache, sized for a machine that streams model weights. The
+     figure is a reservation rather than a consumption: memory is taken as
+     chunks earn it and handed back as they lose it, so a volume nobody reads
+     costs nothing. */
+  model_cache_init((uint64_t)XAIOS_MODEL_CACHE_MB * UINT64_C(1048576));
   scrub_load();
   trim_load();
   klog("xaifs: mounted %s device=%s generation=%lu packages=%lu bytes=%lu policy=%s\n",
