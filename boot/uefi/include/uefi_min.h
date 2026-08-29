@@ -147,6 +147,22 @@ struct efi_loaded_image_protocol {
   efi_handle_t parent_handle;
   efi_system_table_t *system_table;
   efi_handle_t device_handle;
+  /* The rest of the structure as the specification defines it. Only
+     device_handle was needed while the loader read its kernel from a
+     filesystem; image_base and image_size are what let it find a kernel
+     embedded in its own binary, which is how it boots a machine that has no
+     filesystem to read from because it arrived over the network. Truncating a
+     protocol structure is safe to read and unsafe to extend: every field here
+     is at the offset the firmware wrote it to. */
+  void *file_path;
+  void *reserved;
+  uint32_t load_options_size;
+  void *load_options;
+  void *image_base;
+  uint64_t image_size;
+  uint32_t image_code_type;
+  uint32_t image_data_type;
+  void *unload;
 };
 
 struct efi_simple_file_system_protocol {
