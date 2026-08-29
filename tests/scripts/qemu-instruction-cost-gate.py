@@ -42,16 +42,35 @@ TIMEOUT_S = int(os.environ.get("XAIOS_ICOUNT_TIMEOUT", "900"))
 
 # Under -icount shift=0 the guest's clock counts instructions, so perfbench's
 # "ns_per_op" is instructions per operation.
+# Single-threaded work only. One vCPU executing a fixed sequence of
+# instructions produces the same count every time, which is what makes a
+# baseline meaningful; these three were byte-identical across two runs of the
+# same image.
 MEASUREMENTS = (
     ("syscall_1_thread",
      re.compile(r"/bin/perfbench: syscall threads=1 ops=\d+ ns_per_op=(\d+)")),
-    ("syscall_4_threads",
-     re.compile(r"/bin/perfbench: syscall threads=4 ops=\d+ ns_per_op=(\d+)")),
     ("socket_bind_close_1_thread",
      re.compile(r"/bin/perfbench: socket_bind_close threads=1 ops=\d+ "
                 r"ns_per_op=(\d+)")),
     ("thread_create_join",
      re.compile(r"/bin/perfbench: thread_create_join ops=\d+ ns_per_op=(\d+)")),
+)
+
+# Reported, never pinned.
+#
+# The four-thread figure is the slowest thread's elapsed virtual time divided
+# by the operations one thread did. Under -icount the virtual clock advances
+# for every vCPU, so that number describes how the four interleaved, not what
+# an operation costs -- and interleaving is not reproducible. Two runs of the
+# same image, with nothing changed between them, gave 1842 and 1131: a 38.6%
+# move that a pinned baseline would have reported as a regression on every
+# other run, for ever.
+#
+# It is worth printing because serialisation is worth watching. It is not
+# worth failing on, and the distinction is the whole reason this gate exists.
+OBSERVED = (
+    ("syscall_4_threads",
+     re.compile(r"/bin/perfbench: syscall threads=4 ops=\d+ ns_per_op=(\d+)")),
 )
 
 # How far a measurement may move before this fails. Wide enough that a
@@ -92,7 +111,7 @@ def measure() -> dict[str, int]:
 
     text = log.read_bytes().decode("utf-8", "replace")
     found = {}
-    for name, pattern in MEASUREMENTS:
+    for name, pattern in MEASUREMENTS + OBSERVED:
         match = pattern.search(text)
         if match:
             found[name] = int(match.group(1))
@@ -108,21 +127,29 @@ def main() -> int:
         print(f"  see {(BUILD / 'qemu-instruction-cost.log').relative_to(ROOT)}")
         return 1
 
+    pinned = {name: measured[name] for name, _ in MEASUREMENTS
+              if name in measured}
+    observed = {name: measured[name] for name, _ in OBSERVED
+                if name in measured}
+
     if not BASELINE.is_file():
         BASELINE.parent.mkdir(parents=True, exist_ok=True)
         BASELINE.write_text(json.dumps(
-            {"instructions_per_operation": measured}, indent=2) + "\n",
+            {"instructions_per_operation": pinned}, indent=2) + "\n",
             encoding="utf-8")
         print(f"qemu-instruction-cost: no baseline; recorded one at "
               f"{BASELINE.relative_to(ROOT)}")
-        for name, value in measured.items():
+        for name, value in pinned.items():
             print(f"  {name}: {value}")
+        for name, value in observed.items():
+            print(f"  {name}: {value} (reported, not pinned: not reproducible "
+                  f"under -icount)")
         return 0
 
     baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
     expected = baseline["instructions_per_operation"]
     regressions = []
-    for name, value in measured.items():
+    for name, value in pinned.items():
         if name not in expected:
             continue
         reference = expected[name]
@@ -133,10 +160,15 @@ def main() -> int:
             regressions.append(
                 f"{name} moved {drift:+.1%}, from {reference} to {value}")
 
+    for name, value in observed.items():
+        print(f"  {name}: {value} (reported, not pinned: not reproducible "
+              f"under -icount)")
+
     REPORT.write_text(json.dumps({
         "target": "qemu-aarch64-icount",
         "qualification_evidence": False,
-        "instructions_per_operation": measured,
+        "instructions_per_operation": pinned,
+        "observed_not_pinned": observed,
         "baseline": expected,
         "tolerance": TOLERANCE,
         "passed": not regressions,

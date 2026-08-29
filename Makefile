@@ -304,7 +304,12 @@ qemu-x86_64-repeat-boot: image-x86_64-qemu-test
 
 # What an operation costs in instructions, which is the same number on every
 # machine. Regression detection now, and a baseline for when hardware arrives.
-qemu-instruction-cost-gate: image-qemu-test
+# perfbench runs only under XAIOS_STRESS_TEST, so an ordinary test image does
+# not contain the measurement this gate reads. Depending on image-qemu-test
+# meant the gate booted a machine that never reported anything and failed for
+# a reason that looked like a timeout.
+qemu-instruction-cost-gate:
+	XAIOS_STRESS_TEST=1 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
 	python3 ./tests/scripts/qemu-instruction-cost-gate.py
 
 qemu-benchmark: image-qemu-test

@@ -631,3 +631,24 @@ xaios_status_t virtio_transport_unregister_interrupt(
 uint32_t virtio_transport_slot(const virtio_mmio_device_t *device) {
   return device == 0 ? UINT32_MAX : device->transport_slot;
 }
+
+#ifndef XAIOS_VIRTIO_PCI_BACKEND
+/* Where PCI is the only transport, there is no dispatcher and the names in
+   this file are already the public ones. "The nth PCI device" and "the nth
+   device" are then the same question, so the PCI-specific entry point is a
+   thin alias rather than absent.
+
+   Code shared with aarch64 calls it -- the boot disk is addressed on PCI
+   because counting across both transports cannot reach it when an MMIO device
+   is present, and a machine that has only ever seen PCI should not have to
+   know why that distinction exists. Leaving it out failed the x86_64 link
+   with an undefined symbol, which a per-file compile check cannot see. */
+xaios_status_t virtio_transport_find_nth_pci(uint32_t device_id,
+                                             const char *name,
+                                             uint32_t ordinal,
+                                             uint32_t logical_slot,
+                                             virtio_mmio_device_t *device) {
+  return virtio_transport_find_nth(device_id, name, ordinal, logical_slot,
+                                   device);
+}
+#endif
