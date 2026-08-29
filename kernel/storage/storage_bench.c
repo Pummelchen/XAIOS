@@ -17,6 +17,7 @@
 #include <xaios/klog.h>
 #include <xaios/timer.h>
 #include <xaios/vfs.h>
+#include <xaios/virtio_blk.h>
 
 /* Enough to time rather than to fill. Sixty-four mebibytes rather than four:
    once the path stopped costing one request per sector, four megabytes went
@@ -124,6 +125,10 @@ void storage_bench_run(const char *identifier) {
     if (g_bench_buffer[i] != (uint8_t)(i * 31U)) ++mismatches;
   }
   klog("storage-bench: verify mismatches=%u\n", mismatches);
+  /* Whether those requests went straight to the device out of this buffer or
+     were copied through the driver's staging sector. A benchmark that does
+     not say which is measuring an unknown path. */
+  virtio_block_report_transfers();
   (void)block_device_close(device);
 }
 

@@ -99,6 +99,14 @@ typedef struct virtio_block_driver {
   uint32_t outstanding;
   uint32_t special_active;
   uint32_t queue_depth;
+  /* How the data actually reached the device. A direct request handed the
+     caller's own memory to it; a bounce request copied a sector through the
+     driver's staging buffer because the caller's memory was not one
+     physically contiguous span. The second is correct and slow, and it used
+     to be every request; counting both is what turns "reads land in the
+     consumer's buffer" from a claim into a number. */
+  uint64_t direct_transfers;
+  uint64_t bounce_transfers;
   uint32_t uses_indirect;
   uint32_t uses_event_idx;
   uint64_t reset_count;
@@ -463,6 +471,11 @@ static xaios_status_t submit_sector_h(
   slot->status = 0xffU;
   slot->type = (uint8_t)type;
   slot->direct_dma = direct != 0 ? 1U : 0U;
+  if (direct != 0) {
+    ++drv->direct_transfers;
+  } else {
+    ++drv->bounce_transfers;
+  }
   slot->transfer = transfer;
   if (moved != 0) *moved = transfer;
   slot->buffer = buffer;
@@ -567,6 +580,12 @@ uint32_t virtio_block_poll_h(virtio_block_handle_t *handle) {
 
 uint32_t virtio_block_outstanding_h(const virtio_block_handle_t *handle) {
   return handle == 0 ? 0U : handle->outstanding;
+}
+
+void virtio_block_report_transfers(void) {
+  if (g_blk == 0) return;
+  klog("virtio-blk: transfers direct=%lu bounced=%lu\n",
+       g_blk->direct_transfers, g_blk->bounce_transfers);
 }
 
 uint32_t virtio_block_queue_depth_h(const virtio_block_handle_t *handle) {
@@ -1512,8 +1531,10 @@ void virtio_block_self_test(void) {
       kassert(sector[i] == original_sector[i]);
     }
   }
-  klog("virtio-blk: asynchronous queue self-test passed depth=%u indirect=%u direct-or-bounce=verified\n",
-       virtio_block_queue_depth_h(g_blk), g_blk->uses_indirect);
+  klog("virtio-blk: asynchronous queue self-test passed depth=%u indirect=%u "
+       "direct-or-bounce=verified direct=%lu bounced=%lu\n",
+       virtio_block_queue_depth_h(g_blk), g_blk->uses_indirect,
+       g_blk->direct_transfers, g_blk->bounce_transfers);
   uint64_t resets_before = g_blk->reset_count;
   kassert(recover_queue(g_blk) == XAIOS_OK);
   kassert(g_blk->reset_count == resets_before + 1U);

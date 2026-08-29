@@ -310,6 +310,40 @@ class Extent:
     zero: bool
 
 
+def chunk_size_for(logical_size: int) -> int:
+    """The chunk size a package of this size should be written with.
+
+    A chunk is the unit of three separate things, and they do not want the
+    same answer, which is why this is a policy and not a constant.
+
+    It is the unit of verification: a read of any part of a chunk hashes the
+    whole chunk, because that is what the checksum covers. Small chunks are
+    better for reading a little.
+
+    It is the unit of the catalog, and the catalog is rewritten in full on
+    every commit -- a new copy at a fresh offset, then the superblock flips to
+    it. At 128 bytes a chunk, a 500 GB package cut into 2 MiB chunks carries a
+    32 MB catalog, and an ingest that commits per chunk rewrites it a quarter
+    of a million times: eight terabytes of catalog to land half a terabyte of
+    weights. The same package at 16 MiB chunks carries a 4 MB catalog and
+    commits 32k times, which is 128 GB. Sixty-four times less, from one
+    number.
+
+    So: small chunks while a package is small enough for the catalog not to
+    matter, growing as it does, capped where the format caps. Past about a
+    terabyte the cap binds and chunk count starts growing again -- that is a
+    limit of the on-disk format, not of this policy, and it is the thing to
+    revisit before packages get that large.
+    """
+    if logical_size < 8 * 1024 * 1024 * 1024:
+        return MIN_CHUNK_SIZE
+    if logical_size < 32 * 1024 * 1024 * 1024:
+        return 4 * 1024 * 1024
+    if logical_size < 128 * 1024 * 1024 * 1024:
+        return 8 * 1024 * 1024
+    return MAX_CHUNK_SIZE
+
+
 def _validate_chunk_size(chunk_size: int) -> None:
     if (
         chunk_size < MIN_CHUNK_SIZE
@@ -400,11 +434,16 @@ def manifest_for_file(
     source_revision: bytes,
     architecture_id: str,
     target_id: str,
-    chunk_size: int,
-    signing_seed: bytes,
+    chunk_size: Optional[int] = None,
+    signing_seed: bytes = b"",
 ) -> PackageManifest:
-    _validate_chunk_size(chunk_size)
     logical_size = package.stat().st_size
+    # A caller that names a chunk size gets it -- fixtures pin theirs so their
+    # hashes stay put. A caller that does not gets the one that suits the
+    # package, which is the case that matters for anything large.
+    if chunk_size is None:
+        chunk_size = chunk_size_for(logical_size)
+    _validate_chunk_size(chunk_size)
     if logical_size <= 0:
         raise ValueError("package is empty")
     chunks = []

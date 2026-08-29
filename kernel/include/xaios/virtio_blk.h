@@ -73,4 +73,16 @@ uint64_t virtio_block_capacity_sectors_h(virtio_block_handle_t *handle);
 xaios_block_device_t *virtio_block_device_h(virtio_block_handle_t *handle);
 void virtio_block_close(virtio_block_handle_t *handle);
 
+
+/*
+ * Print how many requests went straight to the device out of the caller's own
+ * memory, and how many had to be copied a sector at a time through the
+ * driver's staging buffer because that memory was not one physically
+ * contiguous span.
+ *
+ * Cumulative since boot. The benchmark prints it so that "reads land in the
+ * consumer's buffer" is a number in the log rather than a claim in a comment.
+ */
+void virtio_block_report_transfers(void);
+
 #endif

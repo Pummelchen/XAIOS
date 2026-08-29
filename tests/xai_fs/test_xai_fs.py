@@ -9,12 +9,15 @@ from pathlib import Path
 
 from xaios_xai_fs import (
     BLOCK_SIZE,
+    MAX_CHUNK_SIZE,
+    MIN_CHUNK_SIZE,
     PACKAGE_ACTIVE,
     SUPERBLOCK_SIZE,
     ManifestChunk,
     XaiFs,
     XaiFsIntegrityError,
     PackageManifest,
+    chunk_size_for,
     manifest_for_file,
     sign_manifest,
     sparse_zero_manifest,
@@ -348,3 +351,41 @@ class XaiFsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChunkSizePolicyTest(unittest.TestCase):
+    """The chunk size a package gets, and why the answer changes with size.
+
+    A chunk is the unit of verification, of allocation, and of the catalog --
+    and the catalog is rewritten whole on every commit, so its size is the one
+    that decides whether ingesting half a terabyte is possible at all.
+    """
+
+    def test_small_packages_keep_the_smallest_chunk(self):
+        # Below the point where the catalog costs anything, smaller chunks are
+        # strictly better: a partial read hashes one chunk, not more.
+        self.assertEqual(chunk_size_for(4096), MIN_CHUNK_SIZE)
+        self.assertEqual(chunk_size_for(2 * 1024**3), MIN_CHUNK_SIZE)
+
+    def test_chunk_size_never_leaves_the_format(self):
+        for size in (0, 1, 4096, 2 * 1024**3, 500 * 1024**3, 4 * 1024**4):
+            chunk = chunk_size_for(size)
+            self.assertGreaterEqual(chunk, MIN_CHUNK_SIZE)
+            self.assertLessEqual(chunk, MAX_CHUNK_SIZE)
+            self.assertEqual(chunk & (chunk - 1), 0)
+
+    def test_it_grows_and_never_shrinks(self):
+        sizes = [1 << bit for bit in range(12, 45)]
+        chunks = [chunk_size_for(size) for size in sizes]
+        self.assertEqual(chunks, sorted(chunks))
+
+    def test_a_half_terabyte_package_keeps_its_catalog_small(self):
+        # 128 bytes of catalog per chunk, rewritten in full on every commit.
+        # At the smallest chunk this package would carry a 32 MB catalog; the
+        # policy is what keeps it in single-digit megabytes.
+        size = 500 * 1024**3
+        chunk = chunk_size_for(size)
+        catalog = 256 + 384 + 128 * ((size + chunk - 1) // chunk)
+        self.assertLess(catalog, 8 * 1024 * 1024)
+
+
