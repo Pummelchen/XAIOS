@@ -717,6 +717,85 @@ static efi_status_t read_optional_boot_image(
   return EFI_SUCCESS;
 }
 
+/*
+ * A payload carried inside this loader's own binary.
+ *
+ * A machine booting over the network has no filesystem to read a kernel from.
+ * Firmware fetches one file by TFTP and runs it, and that is the whole of what
+ * it will do -- so for network boot to work, the one file has to contain
+ * everything. The kernel and the initial filesystem are added to this binary as
+ * PE sections after it is linked, and the loader finds them by parsing the
+ * headers of the image the firmware just mapped for it.
+ *
+ * Parsing our own headers rather than exporting symbols from the sections is
+ * deliberate. A symbol would have to be linked in whether or not the payload is
+ * there, and this same binary boots from a filesystem when there is one: the
+ * ordinary image has no such sections, this returns nothing, and the
+ * file-reading path runs exactly as before.
+ */
+static const void *find_embedded_section(const void *image_base,
+                                         const char *name,
+                                         uint64_t *out_size) {
+  if (image_base == 0 || name == 0 || out_size == 0) return 0;
+  *out_size = 0U;
+  const uint8_t *base = (const uint8_t *)image_base;
+  /* MZ, then the offset of the PE header at 0x3c. */
+  if (base[0] != 'M' || base[1] != 'Z') return 0;
+  uint32_t pe_offset = (uint32_t)base[0x3c] | ((uint32_t)base[0x3d] << 8) |
+                       ((uint32_t)base[0x3e] << 16) |
+                       ((uint32_t)base[0x3f] << 24);
+  /* A bound that keeps a corrupt or hostile header from walking away: the
+     stub before the PE header is small, and anything claiming otherwise is
+     not an image this firmware loaded. */
+  if (pe_offset < 0x40U || pe_offset > 0x400U) return 0;
+  const uint8_t *pe = base + pe_offset;
+  if (pe[0] != 'P' || pe[1] != 'E' || pe[2] != 0 || pe[3] != 0) return 0;
+  uint16_t sections = (uint16_t)((uint16_t)pe[6] | ((uint16_t)pe[7] << 8));
+  uint16_t optional_size =
+      (uint16_t)((uint16_t)pe[20] | ((uint16_t)pe[21] << 8));
+  if (sections == 0U || sections > 96U) return 0;
+  const uint8_t *table = pe + 24U + optional_size;
+  for (uint16_t index = 0U; index < sections; ++index) {
+    const uint8_t *entry = table + (uint64_t)index * 40U;
+    int match = 1;
+    for (uint64_t byte = 0U; byte < 8U; ++byte) {
+      char wanted = name[byte];
+      if ((char)entry[byte] != wanted) { match = 0; break; }
+      if (wanted == '\0') break;
+    }
+    if (!match) continue;
+    uint32_t virtual_size = (uint32_t)entry[8] | ((uint32_t)entry[9] << 8) |
+                            ((uint32_t)entry[10] << 16) |
+                            ((uint32_t)entry[11] << 24);
+    uint32_t virtual_address = (uint32_t)entry[12] | ((uint32_t)entry[13] << 8) |
+                               ((uint32_t)entry[14] << 16) |
+                               ((uint32_t)entry[15] << 24);
+    uint32_t raw_size = (uint32_t)entry[16] | ((uint32_t)entry[17] << 8) |
+                        ((uint32_t)entry[18] << 16) |
+                        ((uint32_t)entry[19] << 24);
+    /* VirtualSize is what the section holds; SizeOfRawData is that rounded up
+       to file alignment. Trust the smaller of the two that is non-zero, so a
+       payload is never read past its end into alignment padding. */
+    uint64_t size = virtual_size != 0U ? virtual_size : raw_size;
+    if (raw_size != 0U && raw_size < size) size = raw_size;
+    if (size == 0U || virtual_address == 0U) return 0;
+    *out_size = size;
+    return (const void *)(base + virtual_address);
+  }
+  return 0;
+}
+
+/* Where the firmware mapped this loader, or nothing if it will not say. */
+static const void *loader_image_base(efi_handle_t image_handle,
+                                     efi_system_table_t *system_table) {
+  efi_loaded_image_protocol_t *loaded_image = 0;
+  efi_status_t status = system_table->boot_services->handle_protocol(
+      image_handle, (efi_guid_t *)&EFI_LOADED_IMAGE_PROTOCOL_GUID,
+      (void **)&loaded_image);
+  if (is_error(status) || loaded_image == 0) return 0;
+  return loaded_image->image_base;
+}
+
 static efi_status_t read_optional_entropy_seed(
     efi_file_protocol_t *root,
     uint8_t seed[XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES],
@@ -1051,6 +1130,22 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
                   u"UEFI firmware", u"system image", u"9");
 #endif
 
+  /* Whatever this binary carries inside itself. An ordinary loader on an EFI
+     System Partition carries nothing and these stay null; a netboot image
+     carries the kernel, the initial filesystem and an entropy seed, because
+     firmware fetches exactly one file over the network and that file has to be
+     the whole system. */
+  const void *image_base = loader_image_base(image_handle, system_table);
+  uint64_t embedded_kernel_size = 0U;
+  uint64_t embedded_initfs_size = 0U;
+  uint64_t embedded_seed_size = 0U;
+  const void *embedded_kernel =
+      find_embedded_section(image_base, ".xaiosk", &embedded_kernel_size);
+  const void *embedded_initfs =
+      find_embedded_section(image_base, ".xaiosi", &embedded_initfs_size);
+  const void *embedded_seed =
+      find_embedded_section(image_base, ".xaiose", &embedded_seed_size);
+
   void *kernel_buffer = 0;
   uint64_t kernel_size = 0;
   efi_file_protocol_t *root = 0;
@@ -1068,6 +1163,16 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
     }
     loader_diagnostic(
         system_table, u"XAIOS loader loaded verified A/B system slot\r\n");
+  } else if (embedded_kernel != 0) {
+    /* Carried inside this binary, which is how a machine boots with no disk
+       and no filesystem: firmware fetched one file over the network and this
+       is what was in it. Preferred over the volume only when there is no
+       verified A/B slot -- an installed machine still boots the slot it has
+       been updated to, and a netboot image simply has none. */
+    kernel_buffer = (void *)(uintptr_t)embedded_kernel;
+    kernel_size = embedded_kernel_size;
+    loader_diagnostic(system_table,
+                      u"XAIOS loader using embedded kernel image\r\n");
   } else {
     status = open_root(image_handle, system_table, &root);
     if (is_error(status)) {
@@ -1092,28 +1197,48 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
   uint8_t optional_entropy_seed[XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES];
   uint32_t optional_entropy_seed_size = 0U;
   mem_set(optional_entropy_seed, 0, sizeof(optional_entropy_seed));
-  if (root == 0) {
-    status = open_root(image_handle, system_table, &root);
-    if (is_error(status)) return status;
-  }
-  status = read_optional_boot_image(system_table, root, &boot_image_base,
-                                    &boot_image_size);
-  if (is_error(status)) {
-    loader_puts(system_table,
-                u"XAIOS loader error: invalid initfs boot image\r\n");
-    return status;
-  }
-  if (boot_image_size != 0U) {
+  if (embedded_initfs != 0) {
+    boot_image_base = (uint64_t)(uintptr_t)embedded_initfs;
+    boot_image_size = embedded_initfs_size;
     loader_diagnostic(system_table,
-                      u"XAIOS loader loaded initfs boot image\r\n");
+                      u"XAIOS loader using embedded initfs image\r\n");
   }
-  status = read_optional_entropy_seed(root, optional_entropy_seed,
-                                      &optional_entropy_seed_size);
-  (void)root->close(root);
-  if (is_error(status)) {
-    loader_puts(system_table,
-                u"XAIOS loader error: invalid entropy seed\r\n");
-    return status;
+  if (embedded_kernel != 0 && root == 0) {
+    /* Nothing to open. A machine that arrived over the network has no boot
+       volume, and looking for one would fail where there is no failure: the
+       entropy seed is optional, and the initfs is already in hand. */
+    if (embedded_seed != 0 &&
+        embedded_seed_size == XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES) {
+      mem_copy(optional_entropy_seed, embedded_seed,
+               XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES);
+      optional_entropy_seed_size = XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES;
+    }
+  } else {
+    if (root == 0) {
+      status = open_root(image_handle, system_table, &root);
+      if (is_error(status)) return status;
+    }
+    if (boot_image_size == 0U) {
+      status = read_optional_boot_image(system_table, root, &boot_image_base,
+                                        &boot_image_size);
+      if (is_error(status)) {
+        loader_puts(system_table,
+                    u"XAIOS loader error: invalid initfs boot image\r\n");
+        return status;
+      }
+      if (boot_image_size != 0U) {
+        loader_diagnostic(system_table,
+                          u"XAIOS loader loaded initfs boot image\r\n");
+      }
+    }
+    status = read_optional_entropy_seed(root, optional_entropy_seed,
+                                        &optional_entropy_seed_size);
+    (void)root->close(root);
+    if (is_error(status)) {
+      loader_puts(system_table,
+                  u"XAIOS loader error: invalid entropy seed\r\n");
+      return status;
+    }
   }
   loader_progress(system_table,
                   u"[####....................................] 10%",
