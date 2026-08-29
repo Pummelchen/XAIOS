@@ -59,6 +59,8 @@ make image
 make qemu-smoke
 make qemu-keyboard-input-gate
 make qemu-storage-crash-test
+make qemu-crash-safety-gate
+make qemu-storage-bench
 make qemu-smmu-gate
 make qemu-nvme-gate
 make qemu-x86_64-numa-gate
@@ -165,6 +167,18 @@ public fixture and is not production trust evidence.
 ## Evidence policy
 
 - QEMU and VMware results are correctness and ABI evidence.
+- `make qemu-crash-safety-gate` is power-loss evidence for ordering and
+  tearing: it kills the emulator outright at random points while a package is
+  being ingested, then hashes every chunk the surviving catalog still calls
+  complete. It also tears a superblock directly, because a kill almost never
+  lands inside one. It does not prove behaviour against a device that
+  acknowledges a write and loses it from a volatile cache; the emulator never
+  loses an acknowledged write.
+- `make qemu-storage-bench` reports throughput rather than asserting it — these
+  are emulator figures. What it does assert is that a warm read beats a cold
+  one, which is the claim the read cache exists to make and the one that would
+  silently stop being true if the cache were bypassed or invalidated on every
+  access.
 - Sparse files prove address width and bounded memory, not storage throughput.
 - High virtual CPU counts prove dynamic metadata sizing, not server speed.
 - Performance claims require physical hardware and immutable artifacts meeting

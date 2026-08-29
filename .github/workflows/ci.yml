@@ -204,6 +204,51 @@ jobs:
             build/uefi/BOOTAA64.EFI
           retention-days: 7
 
+  storage-crash-safety:
+    name: Storage Crash Safety (power cut mid-write)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install toolchain and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm meson ninja-build \
+            qemu-system-arm qemu-efi-aarch64 mtools python3 \
+            python3-cryptography
+
+      # Kills the emulator outright at random points while a model package is
+      # being ingested, then hashes every chunk the surviving catalog still
+      # calls complete. Four trials rather than the default eight: each is a
+      # full boot, and four is enough for the surviving generations to differ,
+      # which the gate requires.
+      - name: Cut power to a machine mid-write
+        run: make qemu-crash-safety-gate
+        env:
+          XAIOS_CRASH_TRIALS: "4"
+          XAIOS_CRASH_BOOT_TIMEOUT: "420"
+
+      # Throughput, and the one assertion that has teeth: a warm read must beat
+      # a cold one, or the read cache is not doing anything.
+      - name: Measure storage throughput and the read cache
+        run: make qemu-storage-bench
+        env:
+          XAIOS_STORAGE_BENCH_TIMEOUT: "900"
+
+      - name: Upload the crash and throughput reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: storage-evidence
+          path: |
+            build/qemu-crash-safety-gate.json
+            build/qemu-storage-bench.json
+            build/crash-trial-*.log
+            build/qemu-storage-bench.log
+          retention-days: 7
+
   unified-image:
     name: Unified Image (one file, every environment available)
     runs-on: ubuntu-latest
