@@ -16,6 +16,7 @@
 #include <xaios/block_device.h>
 #include <xaios/klog.h>
 #include <xaios/timer.h>
+#include <xaios/vfs.h>
 
 /* Enough to time rather than to fill. Sixty-four mebibytes rather than four:
    once the path stopped costing one request per sector, four megabytes went
@@ -112,4 +113,96 @@ void storage_bench_run(const char *identifier) {
   }
   klog("storage-bench: verify mismatches=%u\n", mismatches);
   (void)block_device_close(device);
+}
+
+/* What a model actually reads at, which is not what the block device reads at.
+ *
+ * Every byte handed out of /models is hashed on the way past: the chunk it
+ * came from is verified against the checksum the signed manifest fixed, so a
+ * bit that rotted on the disk is a failed read rather than a wrong answer.
+ * That is the property worth having and it is not free, and the raw device
+ * figure above says nothing about it.
+ *
+ * Two numbers, because the difference between them is the whole story. A read
+ * that covers a whole chunk hashes each byte once. A read of a small window
+ * inside a chunk still has to hash the entire chunk, because that is what the
+ * checksum covers -- so a 256 KiB window inside a 2 MiB chunk pays eight times
+ * over. Anything streaming a model should be reading chunk-aligned, and the
+ * gap between these two lines is what it costs not to.
+ */
+#define BENCH_MODEL_CHUNK UINT64_C(2097152)
+#define BENCH_MODEL_ROUNDS 4U
+
+#if XAIOS_STORAGE_BENCH
+static uint8_t g_model_buffer[BENCH_MODEL_CHUNK] __attribute__((aligned(4096)));
+#endif
+
+#define MODEL_OWNER UINT32_C(0x4d4f444c)
+
+static void bench_model_window(const char *path, uint64_t size, uint64_t window,
+                               const char *label) {
+#if XAIOS_STORAGE_BENCH
+  if (window > sizeof(g_model_buffer)) return;
+  int64_t fd = vfs_open(path, XAIOS_VFS_OPEN_READ, MODEL_OWNER);
+  if (fd <= 0) {
+    klog("storage-bench: model open failed path=%s status=%d\n", path,
+         (int)fd);
+    return;
+  }
+  uint64_t delivered = 0U;
+  uint64_t requests = 0U;
+  uint64_t started = timer_now_ns();
+  for (uint32_t round = 0U; round < BENCH_MODEL_ROUNDS; ++round) {
+    for (uint64_t at = 0U; at + window <= size; at += window) {
+      int64_t count = vfs_pread((uint32_t)fd, MODEL_OWNER, g_model_buffer,
+                                window, at);
+      if (count != (int64_t)window) {
+        klog("storage-bench: model read failed offset=%lu status=%d\n", at,
+             (int)count);
+        (void)vfs_close((uint32_t)fd, MODEL_OWNER);
+        return;
+      }
+      delivered += (uint64_t)count;
+      ++requests;
+    }
+  }
+  uint64_t elapsed = timer_now_ns() - started;
+  (void)vfs_close((uint32_t)fd, MODEL_OWNER);
+  klog("storage-bench: model-%s bytes=%lu ms=%lu kb_per_s=%lu requests=%lu "
+       "window=%lu\n",
+       label, delivered, elapsed / UINT64_C(1000000),
+       rate_kb_per_s(delivered, elapsed), requests, window);
+#else
+  (void)path;
+  (void)size;
+  (void)window;
+  (void)label;
+#endif
+}
+
+void storage_bench_model(void) {
+  char listing[256];
+  uint64_t listing_size = 0U;
+  if (vfs_list("/models", listing, sizeof(listing), &listing_size) !=
+          XAIOS_OK ||
+      listing_size < 74U) {
+    klog("storage-bench: no active model package to measure\n");
+    return;
+  }
+  /* The listing starts with a nine-byte header before the first name; the
+     self-test in vfs_xaifs.c reads it the same way. */
+  char path[73];
+  for (uint32_t index = 0U; index < 8U; ++index) path[index] = "/models/"[index];
+  for (uint32_t index = 0U; index < 64U; ++index) {
+    path[8U + index] = listing[9U + index];
+  }
+  path[72] = '\0';
+  xaios_vfs_stat_t stat;
+  if (vfs_stat(path, &stat) != XAIOS_OK || stat.size < BENCH_MODEL_CHUNK) {
+    klog("storage-bench: model package too small to measure path=%s\n", path);
+    return;
+  }
+  klog("storage-bench: model package=%s bytes=%lu\n", path, stat.size);
+  bench_model_window(path, stat.size, BENCH_MODEL_CHUNK, "aligned");
+  bench_model_window(path, stat.size, BENCH_BUFFER, "window");
 }

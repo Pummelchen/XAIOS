@@ -1092,6 +1092,60 @@ xaios_engine_status_t xaios_xai_fs_repair_from_replica(
   return XAIOS_ENGINE_OK;
 }
 
+/* What one commit learned about a chunk, so it does not have to learn it
+   twice.
+   
+   A commit walks the chunk table once to find out whether anything is ready
+   -- there is no point writing a new catalog otherwise -- and then again to
+   write it. Both walks asked the same question of the same chunks, and the
+   question costs a full read of the chunk off the volume and a SHA-256 over
+   it. For a two mebibyte chunk that was four mebibytes of reading and hashing
+   per commit where two would do.
+   
+   The window a single fsync covers is one dirty range, which in practice is
+   the one chunk that was just written. Sixteen entries is far more than that
+   and still small enough to sit on the stack. A range wider than the memo
+   falls back to asking again, which is slower and correct, rather than
+   wrong. */
+#define COMMIT_MEMO_ENTRIES 16U
+
+typedef struct commit_memo_entry {
+  uint64_t chunk_index;
+  uint8_t learned_checksum[32];
+  uint8_t should_complete;
+  uint8_t valid;
+} commit_memo_entry_t;
+
+typedef struct commit_memo {
+  commit_memo_entry_t entries[COMMIT_MEMO_ENTRIES];
+  uint32_t used;
+} commit_memo_t;
+
+static void commit_memo_record(commit_memo_t *memo, uint64_t chunk_index,
+                               int should_complete,
+                               const uint8_t learned_checksum[32]) {
+  if (memo->used >= COMMIT_MEMO_ENTRIES) return;
+  commit_memo_entry_t *entry = &memo->entries[memo->used++];
+  entry->chunk_index = chunk_index;
+  entry->should_complete = should_complete != 0 ? 1U : 0U;
+  entry->valid = 1U;
+  memcpy(entry->learned_checksum, learned_checksum, 32U);
+}
+
+static int commit_memo_lookup(const commit_memo_t *memo, uint64_t chunk_index,
+                              int *should_complete,
+                              uint8_t learned_checksum[32]) {
+  for (uint32_t index = 0U; index < memo->used; ++index) {
+    const commit_memo_entry_t *entry = &memo->entries[index];
+    if (entry->valid != 0U && entry->chunk_index == chunk_index) {
+      *should_complete = entry->should_complete != 0U ? 1 : 0;
+      memcpy(learned_checksum, entry->learned_checksum, 32U);
+      return 1;
+    }
+  }
+  return 0;
+}
+
 xaios_engine_status_t xaios_xai_fs_commit_staging_range(
     xaios_xai_fs_t *volume,
     const xaios_xai_fs_package_t *package,
@@ -1113,10 +1167,12 @@ xaios_engine_status_t xaios_xai_fs_commit_staging_range(
   uint8_t *io_scratch = (uint8_t *)scratch + 4096U;
   size_t io_scratch_size = scratch_size - 4096U;
   uint64_t ready = 0U;
+  commit_memo_t memo;
+  memset(&memo, 0, sizeof(memo));
   for (uint64_t relative = 0U; relative < package->chunk_count; ++relative) {
+    uint64_t chunk_index = package->chunk_start + relative;
     xaios_xai_fs_chunk_t chunk;
-    status = xaios_xai_fs_read_chunk(
-        volume, package->chunk_start + relative, &chunk);
+    status = xaios_xai_fs_read_chunk(volume, chunk_index, &chunk);
     if (status != XAIOS_ENGINE_OK) return status;
     int should_complete = 0;
     uint8_t learned_checksum[32];
@@ -1124,6 +1180,12 @@ xaios_engine_status_t xaios_xai_fs_commit_staging_range(
                                      io_scratch, io_scratch_size,
                                      &should_complete, learned_checksum);
     if (status != XAIOS_ENGINE_OK) return status;
+    /* Only chunks the range touched cost anything to decide, and only those
+       are worth remembering; the rest answered from their flags alone. */
+    if (ranges_intersect(chunk.logical_offset, chunk.length, offset, length)) {
+      commit_memo_record(&memo, chunk_index, should_complete,
+                         learned_checksum);
+    }
     if (should_complete) {
       ++ready;
     }
@@ -1212,10 +1274,13 @@ xaios_engine_status_t xaios_xai_fs_commit_staging_range(
     if (status != XAIOS_ENGINE_OK) return status;
     int should_complete = 0;
     uint8_t learned_checksum[32];
-    status = chunk_completion_status(volume, package, &chunk, offset, length,
-                                     io_scratch, io_scratch_size,
-                                     &should_complete, learned_checksum);
-    if (status != XAIOS_ENGINE_OK) return status;
+    if (!commit_memo_lookup(&memo, index, &should_complete,
+                            learned_checksum)) {
+      status = chunk_completion_status(volume, package, &chunk, offset, length,
+                                       io_scratch, io_scratch_size,
+                                       &should_complete, learned_checksum);
+      if (status != XAIOS_ENGINE_OK) return status;
+    }
     if (should_complete) {
       uint32_t learned =
           chunk.flags & XAIOS_XAI_FS_CHUNK_HASH_PENDING;

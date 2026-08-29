@@ -55,6 +55,7 @@
 #include <xaios/install.h>
 #include <xaios/storage_admin.h>
 #include <xaios/crash_writer.h>
+#include <xaios/engine_sha256_dispatch.h>
 #include <xaios/storage_bench.h>
 #include <xaios/system_slot.h>
 #include <xaios/service.h>
@@ -861,6 +862,9 @@ void kmain(const xaios_boot_info_t *boot) {
 #endif
 
   boot_ui_update(55U, "persistent filesystem", "model and system volumes", 2U);
+  /* Before the model volume, because mounting it verifies a signed manifest
+     and every read after that hashes what it returns. */
+  engine_sha256_dispatch_init();
   xaios_status_t xai_fs_status = vfs_mount_xai_fs(4U);
   if (xai_fs_status == XAIOS_OK) {
 #if XAIOS_CRASH_WRITER
@@ -888,6 +892,7 @@ void kmain(const xaios_boot_info_t *boot) {
     install_self_test();
 #if XAIOS_STORAGE_BENCH
     storage_bench_run(XAIOS_INSTALL_TARGET);
+    storage_bench_model();
 #endif
   } else {
     klog("storage-admin: scratch device unavailable status=%d\n",

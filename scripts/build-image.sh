@@ -652,6 +652,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/engine_xai_fs.o
   $KERNEL_BUILD_DIR/engine_xai_fs_writer.o
   $KERNEL_BUILD_DIR/engine_sha256.o
+  $KERNEL_BUILD_DIR/engine_sha256_accel.o
+  $KERNEL_BUILD_DIR/engine_sha256_dispatch.o
   $KERNEL_BUILD_DIR/kernel_ssh_crypto.o
   $KERNEL_BUILD_DIR/kernel_tweetnacl_subset.o
 "
@@ -800,6 +802,12 @@ compile_kernel "$ROOT_DIR/kernel/runtime/bpe_tokenizer.c" "$KERNEL_BUILD_DIR/bpe
 compile_kernel "$ROOT_DIR/engine/src/xai_fs.c" "$KERNEL_BUILD_DIR/engine_xai_fs.o"
 compile_kernel "$ROOT_DIR/engine/src/xai_fs_writer.c" "$KERNEL_BUILD_DIR/engine_xai_fs_writer.o"
 compile_kernel "$ROOT_DIR/engine/src/sha256.c" "$KERNEL_BUILD_DIR/engine_sha256.o"
+# The accelerated compressor is the one file here that needs SIMD registers,
+# and it asks clang for the SHA2 instructions in that function alone rather
+# than raising the baseline for anything else. It runs only on a CPU that
+# reported the extension; see engine_sha256_dispatch.c.
+compile_kernel_simd "$ROOT_DIR/engine/src/sha256_accel.c" "$KERNEL_BUILD_DIR/engine_sha256_accel.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/engine_sha256_dispatch.c" "$KERNEL_BUILD_DIR/engine_sha256_dispatch.o"
 compile_kernel "$ROOT_DIR/userspace/sshd/ssh_crypto.c" "$KERNEL_BUILD_DIR/kernel_ssh_crypto.o"
 compile_kernel "$ROOT_DIR/userspace/sshd/tweetnacl_subset.c" "$KERNEL_BUILD_DIR/kernel_tweetnacl_subset.o"
 

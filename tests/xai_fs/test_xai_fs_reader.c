@@ -793,6 +793,8 @@ int main(int argc, char **argv) {
   assert(xaios_xai_fs_verify_package_manifest(&volume, &sftp_staging) ==
          XAIOS_ENGINE_OK);
 
+  /* Straddling a chunk boundary: the tail of one chunk and the head of the
+     next, so neither is read whole and both have to be hashed whole anyway. */
   uint8_t data[8192];
   uint64_t offset = UINT64_C(2093056);
   assert(xaios_xai_fs_pread_verified(
@@ -802,6 +804,27 @@ int main(int argc, char **argv) {
   for (uint64_t index = 0U; index < sizeof(data); ++index) {
     assert(data[index] == (uint8_t)((offset + index) % 4096U % 251U));
   }
+
+  /* A request covering exactly one whole chunk, which is the case the read
+     path optimises: the bytes go straight into the caller's buffer and are
+     hashed there, so the scratch is never touched. Poison the scratch first
+     so a version that quietly went through it would return the poison. */
+  static uint8_t whole_chunk[2U * 1024U * 1024U];
+  memset(scratch, 0xa5, sizeof(scratch));
+  assert(xaios_xai_fs_pread_verified(
+             &volume, &package, 0U, whole_chunk, sizeof(whole_chunk), scratch,
+             sizeof(scratch), &bad_offset) == XAIOS_ENGINE_OK);
+  assert(bad_offset == UINT64_MAX);
+  for (uint64_t index = 0U; index < sizeof(whole_chunk); ++index) {
+    assert(whole_chunk[index] == (uint8_t)(index % 4096U % 251U));
+  }
+
+  /* A read the extent map cannot satisfy in full must fail rather than hand
+     back a buffer that is right in front and untouched behind. */
+  assert(xaios_xai_fs_pread_verified(
+             &volume, &package, package.logical_size - 8U, data, 4096U,
+             scratch, sizeof(scratch), &bad_offset) ==
+         XAIOS_ENGINE_ERR_INVALID);
 
   xaios_model_file_t model;
   assert(xaios_model_file_open(&volume, package.package_id, 0U, &model) ==

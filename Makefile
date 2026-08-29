@@ -632,6 +632,11 @@ hosted-test: engine-cli
 	./build/hosted/test-xaifs-reader \
 	  build/hosted/xaifs-c-fixture.img \
 	  build/hosted/xaifs-c-sparse.img
+	$(HOST_CC) $(HOST_CFLAGS) -Iengine/src \
+	  tests/engine/test_sha256_accel.c \
+	  engine/src/sha256.c engine/src/sha256_accel.c \
+	  -o build/hosted/test-sha256-accel
+	./build/hosted/test-sha256-accel
 
 hosted-sanitizer-test:
 	ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \

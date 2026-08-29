@@ -108,6 +108,29 @@ static void transform(xaios_engine_sha256_context_t *context,
   context->state[7] += h;
 }
 
+/* The compressor in use, or null for the scalar reference below.
+ *
+ * A plain pointer with no locking. It is installed once during start-up, from
+ * one thread, before anything hashes; making it atomic would suggest it can be
+ * changed while hashes are in flight, and it cannot. */
+static xaios_engine_sha256_compress_fn g_compress = 0;
+
+void xaios_engine_sha256_install_compressor(
+    xaios_engine_sha256_compress_fn compress) {
+  g_compress = compress;
+}
+
+static void compress(xaios_engine_sha256_context_t *context,
+                     const uint8_t *blocks, size_t count) {
+  if (g_compress != 0) {
+    g_compress(context->state, blocks, count);
+    return;
+  }
+  for (size_t index = 0U; index < count; ++index) {
+    transform(context, blocks + (index * 64U));
+  }
+}
+
 void xaios_engine_sha256_init(xaios_engine_sha256_context_t *context) {
   static const uint32_t initial[8] = {
       UINT32_C(0x6a09e667), UINT32_C(0xbb67ae85), UINT32_C(0x3c6ef372),
@@ -123,6 +146,19 @@ void xaios_engine_sha256_update(xaios_engine_sha256_context_t *context, const vo
   const uint8_t *bytes = (const uint8_t *)data;
   context->total_bytes += (uint64_t)length;
   while (length > 0U) {
+    /* Whole blocks straight out of the caller's buffer once the partial block
+       is drained. Everything used to be copied into `block` one 64-byte
+       instalment at a time, which meant every byte of a two mebibyte chunk was
+       copied before it was hashed, for no reason -- the compression function
+       reads the block and does not keep it. */
+    if (context->block_size == 0U && length >= sizeof(context->block)) {
+      size_t blocks = length / sizeof(context->block);
+      compress(context, bytes, blocks);
+      size_t consumed = blocks * sizeof(context->block);
+      bytes += consumed;
+      length -= consumed;
+      continue;
+    }
     size_t available = sizeof(context->block) - context->block_size;
     size_t count = length < available ? length : available;
     memcpy(context->block + context->block_size, bytes, count);
@@ -130,7 +166,7 @@ void xaios_engine_sha256_update(xaios_engine_sha256_context_t *context, const vo
     bytes += count;
     length -= count;
     if (context->block_size == sizeof(context->block)) {
-      transform(context, context->block);
+      compress(context, context->block, 1U);
       context->block_size = 0;
     }
   }
