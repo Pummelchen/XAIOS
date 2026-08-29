@@ -234,13 +234,25 @@ FUSION_DIR="$STAGE_ROOT/xaios_b${BUILD_NUMBER}-vmware-fusion"
 BUNDLE="$FUSION_DIR/XAIOS.vmwarevm"
 mkdir -p "$BUNDLE"
 cp "$IMAGE" "$BUNDLE/$IMAGE_NAME"
-# The generated profile points at the packaged image and drops the writable
-# data disk: a downloaded kit should start without the recipient first having
-# to create one, and XAIOS boots read-only and says its durable volume is
-# missing rather than refusing.
+# The profile points at the packaged image and keeps the writable disk. An
+# earlier version of this script dropped the disk, on the theory that a kit
+# should start without the recipient creating one first. That was wrong twice
+# over: XAIOS refuses to start its SSH server without durable storage, because
+# the configuration sshd loads lives there -- so the kit would have booted to a
+# console and nothing else -- and Fusion creates the disk itself on first power
+# on when the descriptor names a file that is not there.
 sed -e "s|sata0:0.fileName = \"xaios-fusion.iso\"|sata0:0.fileName = \"$IMAGE_NAME\"|" \
-    -e '/sata0:1\./d' \
+    -e "s|sata0:1.fileName = \"xaios-fusion.vmdk\"|sata0:1.fileName = \"xaios-data.vmdk\"|" \
     "$ROOT_DIR/platform/vmware-fusion/XAIOS.vmx.in" > "$BUNDLE/XAIOS.vmx"
+# Build the disk here if this machine can, so the kit arrives complete.
+VDISK_MANAGER="${XAIOS_FUSION_VDISK_MANAGER:-/Applications/VMware Fusion.app/Contents/Library/vmware-vdiskmanager}"
+if [ -x "$VDISK_MANAGER" ]; then
+  "$VDISK_MANAGER" -c -s "${XAIOS_FUSION_DISK_SIZE:-256MB}" -a lsilogic -t 0 \
+    "$BUNDLE/xaios-data.vmdk" >/dev/null
+else
+  printf '%s\n' "note: no vmware-vdiskmanager here; the Fusion kit ships without" \
+    "      its data disk and Fusion will create one on first power on." >&2
+fi
 
 {
   cat <<EOF
@@ -253,18 +265,16 @@ Double-click \`XAIOS.vmwarevm\`, or:
 Fusion boots the image from a SATA CD-ROM. The console appears in the Fusion
 window.
 
-## Two things worth knowing before you change the profile
+The profile runs four vCPUs and attaches a 256 MB writable disk beside the
+image. XAIOS formats that disk on the boot that first finds it, and keeps its
+SSH host key and configuration there afterwards.
 
-**One vCPU.** The profile requests four and Fusion starts them, but the first
-lock taken after the kernel enables translation aborts with "unsupported
-exclusive or atomic" on ordinary memory whose descriptor is exactly what
-atomics require. That refusal is Fusion's and the guest cannot see or change
-it. Raising the count reproduces it.
+## If you are editing the profile
 
-**No writable volume.** This kit attaches the image and nothing else, so XAIOS
-comes up and reports that its durable volume is missing, which is a supported
-state rather than a failure. To give it one, add a second SATA disk in Fusion's
-settings; XAIOS formats it on the next boot.
+Keep the writable disk. Without durable storage XAIOS starts, takes an address,
+and then declines to run its SSH server, because the configuration sshd loads
+lives on that disk and a machine with nowhere to keep it has none to load. The
+machine looks healthy and is unreachable.
 EOF
   common_footer
 } > "$FUSION_DIR/README.md"
@@ -287,6 +297,21 @@ cat > "$VZ_DIR/build-and-run.sh" <<EOF
 set -eu
 DIR=\$(CDPATH= cd -- "\$(dirname "\$0")" && pwd)
 IMAGE="\${XAIOS_IMAGE:-\$DIR/$IMAGE_NAME}"
+SCRATCH="\${XAIOS_SCRATCH:-\$DIR/xaios-scratch.img}"
+DATA="\${XAIOS_DATA:-\$DIR/xaios-data.img}"
+
+# The harness takes the boot disk first and then volumes in a fixed order, of
+# which durable storage is the second. Both are created empty the first time
+# and kept afterwards; XAIOS formats a blank one on the boot that finds it.
+# Without them the machine boots, gets an address on vmnet, and then refuses to
+# start its SSH server, because the configuration sshd loads lives on durable
+# storage and there is none.
+for volume in "\$SCRATCH" "\$DATA"; do
+  if [ ! -f "\$volume" ]; then
+    printf '%s\n' "creating a 64 MiB volume: \$volume"
+    dd if=/dev/zero of="\$volume" bs=1048576 count=64 status=none
+  fi
+done
 
 command -v swiftc >/dev/null 2>&1 || {
   printf '%s\n' "error: swiftc is required; install the Xcode command line tools" >&2
@@ -295,7 +320,8 @@ command -v swiftc >/dev/null 2>&1 || {
 swiftc -O -o "\$DIR/xaios-vz" "\$DIR/xaios_vz.swift"
 codesign --sign - --entitlements "\$DIR/xaios-vz.entitlements" \\
   --force "\$DIR/xaios-vz"
-exec "\$DIR/xaios-vz" "\$IMAGE" --memory-mib 2048 --cpus 4
+exec "\$DIR/xaios-vz" "\$IMAGE" "\$SCRATCH" "\$DATA" \\
+  --memory-mib 2048 --cpus 4
 EOF
 chmod +x "$VZ_DIR/build-and-run.sh"
 
@@ -313,7 +339,13 @@ would not run there, so the harness is compiled and ad-hoc signed on the Mac
 that will run it. Needs the Xcode command line tools.
 
 The kernel log streams to the terminal over the virtio console. XAIOS reaches a
-login prompt, brings up IPv4 by DHCP and listens for SSH on port 22.
+login prompt, takes an address on vmnet by DHCP and listens for SSH on port 22
+of that address.
+
+Two 64 MiB volumes are created beside the image on the first run and kept
+afterwards. The harness takes them in a fixed order and durable storage is the
+second; without it the machine boots and gets an address, then refuses to start
+its SSH server, because the configuration sshd loads lives on durable storage.
 
 ## Why this target exists
 
