@@ -744,9 +744,9 @@ static const void *find_embedded_section(const void *image_base,
   uint32_t pe_offset = (uint32_t)base[0x3c] | ((uint32_t)base[0x3d] << 8) |
                        ((uint32_t)base[0x3e] << 16) |
                        ((uint32_t)base[0x3f] << 24);
-  /* A bound that keeps a corrupt or hostile header from walking away: the
-     stub before the PE header is small, and anything claiming otherwise is
-     not an image this firmware loaded. */
+  /* A bound that keeps a corrupt or hostile header from walking away: the DOS
+     header block ahead of the PE signature is small, and anything claiming
+     otherwise is not an image this firmware loaded. */
   if (pe_offset < 0x40U || pe_offset > 0x400U) return 0;
   const uint8_t *pe = base + pe_offset;
   if (pe[0] != 'P' || pe[1] != 'E' || pe[2] != 0 || pe[3] != 0) return 0;
