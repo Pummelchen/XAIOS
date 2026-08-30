@@ -244,7 +244,8 @@ fi
 
 if [ "$dry_run" -eq 0 ] && [ ! -f "$persistent_image" ]; then
   printf '%s\n' "note: persistent image not found, creating: $persistent_image"
-  dd if=/dev/zero of="$persistent_image" bs=512 count=32768 status=none
+  dd if=/dev/zero of="$persistent_image" bs=512 \
+    count="${XAIOS_PERSISTENT_SECTORS:-32768}" status=none
 fi
 
 if [ "$dry_run" -eq 0 ] && [ ! -f "$xai_fs_image" ]; then

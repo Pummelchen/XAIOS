@@ -15,6 +15,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
 POINTS = ("system-backup-flushed", "system-primary-written")
+
+# The durable volume, at both sizes that decide its format.
+#
+# xaibootFS formats v6 on a device with room for a gibibyte of data and v5 on
+# anything smaller, and every profile in this tree creates the smaller one --
+# so until now every power-loss trial this gate ran had been against a v5
+# volume, and v6's extent records, its thousand nodes and its bit-packed
+# bitmap had never been interrupted at all. Both, now: the format is chosen by
+# the size, so asking for both sizes is what exercises both formats.
+VOLUME_SIZES = (
+    ("v5", 32768),
+    ("v6", 2400000),
+)
 sys.path.insert(0, str(ROOT))
 
 from tools.xaios_system_volume import NO_SLOT, read_best_metadata
@@ -119,46 +132,70 @@ def main() -> int:
     # The injected commit point follows the deterministic diagnostic boot
     # workload. On TCG this may take materially longer than a normal service
     # boot, so retain a bounded but realistic per-boot deadline.
-    timeout = int(os.environ.get("XAIOS_QEMU_STORAGE_CRASH_TIMEOUT", "240"))
+    # A v6 volume is a gibibyte of data region: formatting it and running fsck
+    # over two million sectors under TCG takes materially longer than the same
+    # boot against v5, and 240 seconds is not enough for it. The v5 passes are
+    # unaffected -- this is a deadline, not a delay.
+    timeout = int(os.environ.get("XAIOS_QEMU_STORAGE_CRASH_TIMEOUT", "720"))
     work = BUILD / "storage-crash"
     work.mkdir(parents=True, exist_ok=True)
     try:
         for point in POINTS:
             print(f"qemu-storage-crash: preparing point={point}", flush=True)
             system_image = work / f"{point}.img"
-            persistent_image = work / f"{point}-persistent.img"
-            persistent_image.unlink(missing_ok=True)
-            build_crash_image(point, system_image)
-            env = os.environ.copy()
-            env.update(
-                {
-                    "XAIOS_QEMU_ACCEL": "tcg",
-                    "XAIOS_QEMU_HOSTFWD_PORT": "none",
-                    "XAIOS_SYSTEM_VOLUME_IMAGE": str(system_image),
-                    "XAIOS_PERSISTENT_IMAGE": str(persistent_image),
-                }
-            )
-            marker = f"storage-crash: reached point={point}"
-            boot_until(env, (marker,), timeout, hard=True)
-            validate_committed_metadata(system_image)
-            print(f"qemu-storage-crash: power loss observed point={point}", flush=True)
-            boot_until(
-                env,
-                (
-                    "system-slot: attached active=1 pending=4294967295",
-                    "system-slot: self-test passed",
-                ),
-                timeout,
-                hard=False,
-            )
-            print(f"qemu-storage-crash: recovered point={point}", flush=True)
+            for label, sectors in VOLUME_SIZES:
+                # Rebuilt and re-armed for every pass, not once per point.
+                # The crash point fires while the pending slot is being
+                # committed, and the pass that crashes then recovers commits
+                # it -- so a second pass against the same system volume finds
+                # nothing pending, never reaches the point, and fails having
+                # tested nothing. That is exactly how the first v6 run failed.
+                build_crash_image(point, system_image)
+                persistent_image = work / f"{point}-persistent-{label}.img"
+                persistent_image.unlink(missing_ok=True)
+                env = os.environ.copy()
+                env.update(
+                    {
+                        "XAIOS_QEMU_ACCEL": "tcg",
+                        "XAIOS_QEMU_HOSTFWD_PORT": "none",
+                        "XAIOS_SYSTEM_VOLUME_IMAGE": str(system_image),
+                        "XAIOS_PERSISTENT_IMAGE": str(persistent_image),
+                        "XAIOS_PERSISTENT_SECTORS": str(sectors),
+                    }
+                )
+                marker = f"storage-crash: reached point={point}"
+                # The volume has to have been formatted as the version this
+                # pass is for, or the pass is a second v5 trial wearing a
+                # label. The kill happens after the format, so the marker is
+                # in the same boot.
+                format_marker = f"formatting {label}"
+                boot_until(env, (marker, format_marker), timeout, hard=True)
+                validate_committed_metadata(system_image)
+                print(f"qemu-storage-crash: power loss observed point={point} "
+                      f"volume={label}", flush=True)
+                boot_until(
+                    env,
+                    (
+                        "system-slot: attached active=1 pending=4294967295",
+                        "system-slot: self-test passed",
+                        # And the durable volume came back rather than being
+                        # reformatted, which is the claim a power-loss test on
+                        # a filesystem is actually making.
+                        "xaibootfs: persistent loaded",
+                    ),
+                    timeout,
+                    hard=False,
+                )
+                print(f"qemu-storage-crash: recovered point={point} "
+                      f"volume={label}", flush=True)
     finally:
         restore_env = os.environ.copy()
         restore_env["XAIOS_BOOT_TEST_APPS"] = "1"
         restore_env.pop("XAIOS_STORAGE_CRASH_POINT", None)
         restore_env.pop("XAIOS_SYSTEM_VOLUME_IMAGE", None)
         run(["./scripts/build-image.sh"], restore_env)
-    print("qemu-storage-crash: all metadata kill points recovered")
+    print("qemu-storage-crash: all metadata kill points recovered on "
+          "v5 and v6 durable volumes")
     return 0
 
 
