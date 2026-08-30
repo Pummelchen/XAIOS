@@ -311,6 +311,74 @@ static void encode_catalog_header(const xaios_xai_fs_t *volume,
   memcpy(raw + 144U, digest, sizeof(digest));
 }
 
+/* Where the package data ends, independent of where the catalog happens to be.
+ *
+ * data_tail has served as both the allocation cursor and the end of the live
+ * catalog, and because a commit wrote its new catalog *at* data_tail and then
+ * moved data_tail past it, every commit permanently consumed a catalog's worth
+ * of volume that nothing ever reclaimed. Measured on a 256 MB volume: 8192
+ * bytes a commit, 23799 commits until the volume is full. A 500 GB package
+ * ingested a chunk at a time would strand something like 131 GB of dead
+ * catalogs behind it, and the ingest after that would have nowhere to go.
+ *
+ * The two ideas had to be separated. This is the first: the highest byte any
+ * extent actually occupies, which is what the catalog must sit above and what
+ * new extents must be allocated above. */
+static xaios_engine_status_t data_high_water(const xaios_xai_fs_t *volume,
+                                             uint64_t *high_water) {
+  uint64_t highest = XAIOS_XAI_FS_DATA_START;
+  for (uint64_t index = 0U; index < volume->chunk_count; ++index) {
+    xaios_xai_fs_chunk_t chunk;
+    xaios_engine_status_t status =
+        xaios_xai_fs_read_chunk(volume, index, &chunk);
+    if (status != XAIOS_ENGINE_OK) return status;
+    /* A sparse-zero chunk owns no bytes on the volume. */
+    if ((chunk.flags & XAIOS_XAI_FS_CHUNK_ZERO) != 0U &&
+        chunk.extent_length == 0U) {
+      continue;
+    }
+    uint64_t end = 0U;
+    if (checked_add(chunk.physical_offset, chunk.extent_length, &end) !=
+        XAIOS_ENGINE_OK) {
+      return XAIOS_ENGINE_ERR_OVERFLOW;
+    }
+    if (end > highest) highest = end;
+  }
+  *high_water = highest;
+  return XAIOS_ENGINE_OK;
+}
+
+/* Pick which of two catalog slots to write, and where the volume then ends.
+ *
+ * Two fixed slots directly above the data, used alternately. The new catalog
+ * never lands on the live one, which is what the whole crash-safety argument
+ * needs -- a reader following the old superblock must still find the old
+ * catalog intact until the superblock flips. And because there are two of them
+ * rather than a fresh one each time, a run of commits that allocates no new
+ * data consumes no new volume, which is every commit of an ingest. */
+static xaios_engine_status_t choose_catalog_slot(
+    const xaios_xai_fs_t *volume, uint64_t data_floor, uint64_t catalog_length,
+    uint64_t *catalog_offset, uint64_t *final_tail) {
+  uint64_t first = 0U;
+  uint64_t second = 0U;
+  uint64_t second_end = 0U;
+  uint64_t tail = 0U;
+  if (align_up(data_floor, XAI_FS_BLOCK_SIZE, &first) != XAIOS_ENGINE_OK ||
+      checked_add(first, catalog_length, &second) != XAIOS_ENGINE_OK ||
+      align_up(second, XAI_FS_BLOCK_SIZE, &second) != XAIOS_ENGINE_OK ||
+      checked_add(second, catalog_length, &second_end) != XAIOS_ENGINE_OK ||
+      align_up(second_end, XAI_FS_BLOCK_SIZE, &tail) != XAIOS_ENGINE_OK ||
+      tail > volume->volume_size) {
+    return XAIOS_ENGINE_ERR_CAPABILITY;
+  }
+  /* Anything but the slot in use. A volume whose live catalog is somewhere
+     else entirely -- one written before this scheme existed -- takes the first
+     slot, which is equally not where it is now. */
+  *catalog_offset = volume->catalog_offset == first ? second : first;
+  *final_tail = tail;
+  return XAIOS_ENGINE_OK;
+}
+
 static void encode_superblock(const xaios_xai_fs_t *volume,
                               uint64_t generation, uint64_t catalog_offset,
                               uint64_t catalog_generation,
@@ -557,15 +625,17 @@ xaios_engine_status_t xaios_xai_fs_register_staging(
     }
   }
   uint64_t catalog_offset = 0U;
-  uint64_t catalog_end = 0U;
   uint64_t final_tail = 0U;
-  if (align_up(data_end, XAI_FS_BLOCK_SIZE, &catalog_offset) !=
-          XAIOS_ENGINE_OK ||
-      checked_add(catalog_offset, catalog_length, &catalog_end) !=
-          XAIOS_ENGINE_OK ||
-      align_up(catalog_end, XAI_FS_BLOCK_SIZE, &final_tail) !=
-          XAIOS_ENGINE_OK ||
-      final_tail > volume->volume_size) {
+  uint64_t existing_high_water = 0U;
+  if (data_high_water(volume, &existing_high_water) != XAIOS_ENGINE_OK) {
+    return XAIOS_ENGINE_ERR_OVERFLOW;
+  }
+  /* This call may be extending the data itself, so the floor is whichever is
+     higher: what the volume already holds, or what this staging just took. */
+  uint64_t data_floor =
+      data_end > existing_high_water ? data_end : existing_high_water;
+  if (choose_catalog_slot(volume, data_floor, catalog_length, &catalog_offset,
+                          &final_tail) != XAIOS_ENGINE_OK) {
     return XAIOS_ENGINE_ERR_CAPABILITY;
   }
 
@@ -809,15 +879,11 @@ static xaios_engine_status_t remove_package_in_state(
     return XAIOS_ENGINE_ERR_OVERFLOW;
   }
   uint64_t catalog_offset = 0U;
-  uint64_t catalog_end = 0U;
   uint64_t final_tail = 0U;
-  if (align_up(volume->data_tail, XAI_FS_BLOCK_SIZE, &catalog_offset) !=
-          XAIOS_ENGINE_OK ||
-      checked_add(catalog_offset, catalog_length, &catalog_end) !=
-          XAIOS_ENGINE_OK ||
-      align_up(catalog_end, XAI_FS_BLOCK_SIZE, &final_tail) !=
-          XAIOS_ENGINE_OK ||
-      final_tail > volume->volume_size) {
+  uint64_t data_floor = 0U;
+  if (data_high_water(volume, &data_floor) != XAIOS_ENGINE_OK ||
+      choose_catalog_slot(volume, data_floor, catalog_length, &catalog_offset,
+                          &final_tail) != XAIOS_ENGINE_OK) {
     return XAIOS_ENGINE_ERR_CAPABILITY;
   }
 
@@ -1193,15 +1259,11 @@ xaios_engine_status_t xaios_xai_fs_commit_staging_range(
   if (ready == 0U) return XAIOS_ENGINE_OK;
 
   uint64_t catalog_offset = 0U;
-  uint64_t catalog_end = 0U;
   uint64_t final_tail = 0U;
-  if (align_up(volume->data_tail, XAI_FS_BLOCK_SIZE, &catalog_offset) !=
-          XAIOS_ENGINE_OK ||
-      checked_add(catalog_offset, volume->catalog_length, &catalog_end) !=
-          XAIOS_ENGINE_OK ||
-      align_up(catalog_end, XAI_FS_BLOCK_SIZE, &final_tail) !=
-          XAIOS_ENGINE_OK ||
-      final_tail > volume->volume_size) {
+  uint64_t data_floor = 0U;
+  if (data_high_water(volume, &data_floor) != XAIOS_ENGINE_OK ||
+      choose_catalog_slot(volume, data_floor, volume->catalog_length,
+                          &catalog_offset, &final_tail) != XAIOS_ENGINE_OK) {
     return XAIOS_ENGINE_ERR_CAPABILITY;
   }
 
@@ -1297,6 +1359,12 @@ xaios_engine_status_t xaios_xai_fs_commit_staging_range(
   }
   uint8_t catalog_hash[32];
   xaios_engine_sha256_final(&catalog_sha, catalog_hash);
+  /* Before the superblock, not after. A device with a volatile write cache is
+     free to persist these in any order, and publishing a superblock that
+     points at a catalog the device has not written yet is exactly the failure
+     the A/B scheme cannot recover from. qemu-write-ordering-gate checks that
+     this flush is actually issued; removing it makes that gate fail on every
+     commit, which is how it was verified to be capable of failing. */
   status = writer->flush(writer->context);
   if (status != XAIOS_ENGINE_OK) return status;
 
@@ -1353,15 +1421,11 @@ static xaios_engine_status_t publish_package_state(
   }
 
   uint64_t catalog_offset = 0U;
-  uint64_t catalog_end = 0U;
   uint64_t final_tail = 0U;
-  if (align_up(volume->data_tail, XAI_FS_BLOCK_SIZE, &catalog_offset) !=
-          XAIOS_ENGINE_OK ||
-      checked_add(catalog_offset, volume->catalog_length, &catalog_end) !=
-          XAIOS_ENGINE_OK ||
-      align_up(catalog_end, XAI_FS_BLOCK_SIZE, &final_tail) !=
-          XAIOS_ENGINE_OK ||
-      final_tail > volume->volume_size || volume->generation == UINT64_MAX ||
+  uint64_t data_floor = 0U;
+  if (data_high_water(volume, &data_floor) != XAIOS_ENGINE_OK ||
+      choose_catalog_slot(volume, data_floor, volume->catalog_length,
+                          &catalog_offset, &final_tail) != XAIOS_ENGINE_OK || volume->generation == UINT64_MAX ||
       volume->catalog_generation == UINT64_MAX) {
     return XAIOS_ENGINE_ERR_CAPABILITY;
   }
@@ -1485,15 +1549,11 @@ xaios_engine_status_t xaios_xai_fs_activate_staging(
   if (target_index == UINT64_MAX) return XAIOS_ENGINE_ERR_INVALID;
 
   uint64_t catalog_offset = 0U;
-  uint64_t catalog_end = 0U;
   uint64_t final_tail = 0U;
-  if (align_up(volume->data_tail, XAI_FS_BLOCK_SIZE, &catalog_offset) !=
-          XAIOS_ENGINE_OK ||
-      checked_add(catalog_offset, volume->catalog_length, &catalog_end) !=
-          XAIOS_ENGINE_OK ||
-      align_up(catalog_end, XAI_FS_BLOCK_SIZE, &final_tail) !=
-          XAIOS_ENGINE_OK ||
-      final_tail > volume->volume_size) {
+  uint64_t data_floor = 0U;
+  if (data_high_water(volume, &data_floor) != XAIOS_ENGINE_OK ||
+      choose_catalog_slot(volume, data_floor, volume->catalog_length,
+                          &catalog_offset, &final_tail) != XAIOS_ENGINE_OK) {
     return XAIOS_ENGINE_ERR_CAPABILITY;
   }
   uint64_t catalog_generation = volume->catalog_generation + 1U;

@@ -34,7 +34,7 @@ CATALOG_HEADER_SIZE = 256
 PACKAGE_RECORD_SIZE = 384
 CHUNK_RECORD_SIZE = 128
 MIN_CHUNK_SIZE = 2 * 1024 * 1024
-MAX_CHUNK_SIZE = 16 * 1024 * 1024
+MAX_CHUNK_SIZE = 64 * 1024 * 1024
 DATA_START = 1024 * 1024
 
 PACKAGE_STAGING = 1
@@ -330,10 +330,12 @@ def chunk_size_for(logical_size: int) -> int:
     number.
 
     So: small chunks while a package is small enough for the catalog not to
-    matter, growing as it does, capped where the format caps. Past about a
-    terabyte the cap binds and chunk count starts growing again -- that is a
-    limit of the on-disk format, not of this policy, and it is the thing to
-    revisit before packages get that large.
+    matter, growing as it does, capped where the format caps. The format's cap
+    is 64 MiB, which holds the chunk count under 65536 out to four terabytes;
+    past that it binds again and the catalog grows with the package. Raising it
+    further is a one-line change on both sides -- nothing is sized by it -- but
+    it costs partial reads, which hash a whole chunk to return any of it, so it
+    is not worth doing before something needs it.
     """
     if logical_size < 8 * 1024 * 1024 * 1024:
         return MIN_CHUNK_SIZE
@@ -341,6 +343,10 @@ def chunk_size_for(logical_size: int) -> int:
         return 4 * 1024 * 1024
     if logical_size < 128 * 1024 * 1024 * 1024:
         return 8 * 1024 * 1024
+    if logical_size < 1024 * 1024 * 1024 * 1024:
+        return 16 * 1024 * 1024
+    if logical_size < 4 * 1024 * 1024 * 1024 * 1024:
+        return 32 * 1024 * 1024
     return MAX_CHUNK_SIZE
 
 
@@ -350,7 +356,7 @@ def _validate_chunk_size(chunk_size: int) -> None:
         or chunk_size > MAX_CHUNK_SIZE
         or chunk_size & (chunk_size - 1)
     ):
-        raise ValueError("chunk size must be a 2..16 MiB power of two")
+        raise ValueError("chunk size must be a 2..64 MiB power of two")
 
 
 def _validate_logical_chunks(
@@ -599,6 +605,22 @@ class XaiFs:
         if self.read_only:
             raise PermissionError("xaiFS volume is mounted read-only")
 
+    def _data_high_water(self, chunks: list[_ChunkRecord]) -> int:
+        """The highest byte any extent occupies, which the catalog must clear.
+
+        data_tail used to mean both "where to allocate next" and "where the
+        catalog ends", and conflating them is what leaked a catalog per commit.
+        This is the first half on its own.
+        """
+        highest = DATA_START
+        for chunk in chunks:
+            if chunk.flags & CHUNK_ZERO and chunk.extent_length == 0:
+                continue
+            end = chunk.physical_offset + chunk.extent_length
+            if end > highest:
+                highest = end
+        return highest
+
     def _publish(
         self,
         records: list[_PackageRecord],
@@ -613,12 +635,28 @@ class XaiFs:
             raise ValueError("logical volume exceeds its backing device")
         catalog_generation = self.catalog_generation + 1
         generation = self.generation + 1
-        catalog_offset = _align(data_tail)
         provisional = _encode_catalog(
             catalog_generation, self.volume_uuid, records, chunks, 0
         )
-        final_tail = _align(catalog_offset + len(provisional))
+        # Two catalog slots directly above the data, used alternately, rather
+        # than a fresh one at the end of the volume every time.
+        #
+        # Writing each new catalog past the last one and then moving data_tail
+        # over it meant every commit permanently consumed a catalog's worth of
+        # volume that nothing reclaimed: measured at 8192 bytes a commit, which
+        # is 23799 commits before a 256 MB volume is full and something like
+        # 131 GB stranded behind a 500 GB package ingested a chunk at a time.
+        #
+        # The new catalog must never land on the live one -- a reader following
+        # the old superblock has to keep finding the old catalog until the
+        # superblock flips -- so two slots is the minimum, and it is enough.
+        data_floor = _align(self._data_high_water(chunks))
+        first = data_floor
+        second = _align(first + len(provisional))
+        catalog_offset = second if self.catalog_offset == first else first
+        final_tail = _align(second + len(provisional))
         _checked_end(catalog_offset, len(provisional), published_size)
+        _checked_end(second, len(provisional), published_size)
         catalog = _encode_catalog(
             catalog_generation, self.volume_uuid, records, chunks, final_tail
         )
