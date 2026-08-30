@@ -47,6 +47,10 @@ def main() -> int:
     if len(sys.argv) != 2:
         raise SystemExit("usage: create_cache_fixture.py OUTPUT")
     output = Path(sys.argv[1])
+    # A fresh checkout has no build directory, and every path below is a
+    # sibling of the output. Making it here rather than relying on a build
+    # having happened first is what lets this run as the first step of a gate.
+    output.parent.mkdir(parents=True, exist_ok=True)
 
     source = output.with_suffix(".cache-active")
     with source.open("wb") as stream:
