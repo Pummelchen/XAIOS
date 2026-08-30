@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import re
 import select
 import signal
 import subprocess
@@ -9,6 +10,32 @@ from pathlib import Path
 
 from qemu_gate_lib import contract, parse_telemetry, validate_telemetry_against_contract
 
+
+# Markers whose line carries a running tally beside the figures worth pinning.
+#
+# A tally counts everything the kernel has done since boot, so it moves the
+# moment any test is added anywhere near it -- and pinning one has broken this
+# repository's gates twice already, once on a cumulative interrupt count and
+# once on a file count. The structural figures still have to be exact, because
+# those are the claim; the tallies are matched as numbers.
+PATTERN_TARGETS = [
+    re.compile(
+        r"xaibootfs: self-test passed files=7 directories=15 "
+        r"writes=[1-9]\d* reads=[1-9]\d* deletes=[1-9]\d* commits=1 "
+        r"rollbacks=1 replays=1 rejects=[1-9]\d* "
+        r"checksum_errors=0"),
+    # open and close are tallies for the same reason: any test that opens a
+    # file moves them. list, stat and rename are the claim here.
+    re.compile(
+        r"xaibootfs: public API self-test passed list=1 stat=3 rename=1 "
+        r"open=\d+ close=\d+"),
+    # At least one multi-sector file, not exactly one: the claim is that the
+    # multi-sector path was exercised, and a second test that happens to
+    # create one does not weaken it.
+    re.compile(
+        r"xaibootfs: multi-sector file self-test passed files=7 "
+        r"multi_sector=[1-9]\d*"),
+]
 
 TARGETS = [
     "exceptions: self-test",
@@ -36,11 +63,8 @@ TARGETS = [
     "xaibootfs: snapshot rollback",
     "xaibootfs: allocator self-test passed",
     "xaibootfs: directory tree self-test passed directories=15",
-    "xaibootfs: multi-sector file self-test passed files=7 multi_sector=1",
     "xaibootfs: journal replay self-test passed replays=1 journal_writes=1",
-    "xaibootfs: public API self-test passed list=1 stat=3 rename=1 open=3 close=3",
     "xaibootfs: subsystem records self-test passed records=4",
-    "xaibootfs: self-test passed files=7 directories=15 writes=12 reads=6 deletes=1 commits=1 rollbacks=1 replays=1 rejects=8 checksum_errors=0",
     "xaifs: mounted /models device=/dev/vblk4 generation=",
     "xaifs: signed active read and crash-consistent staging write self-test passed active_bytes=8192 staging_bytes=4096",
     "update: self-test passed transactions=2 staged=2 committed=1 failed=1 recovered=1 rollbacks=1 boot_fallbacks=1 records=8 rollback_points=2 rejects=2",
@@ -305,6 +329,7 @@ def main() -> int:
                     except (ValueError, KeyError) as error:
                         telemetry_failures = [str(error)]
                 if (all(target in text for target in TARGETS) and
+                        all(pattern.search(text) for pattern in PATTERN_TARGETS) and
                         all(any(alt in text for alt in group) for group in OR_TARGETS) and
                         telemetry_line_complete(text) and not telemetry_failures):
                     echo_best_effort(
@@ -338,6 +363,8 @@ def main() -> int:
 
     text = "".join(seen)
     missing = [target for target in TARGETS if target not in text]
+    missing.extend(pattern.pattern for pattern in PATTERN_TARGETS
+                   if not pattern.search(text))
     for group in OR_TARGETS:
         if not any(alt in text for alt in group):
             missing.append(f"({' | '.join(group)})")
