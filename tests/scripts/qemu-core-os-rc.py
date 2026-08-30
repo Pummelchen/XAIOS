@@ -16,7 +16,10 @@ COMMANDS = [
     ("abi", ["python3", "tests/scripts/qemu-abi-contract.py"], 180),
     ("aarch64", ["make", "qemu-smoke"], 300),
     ("fault_injection", ["make", "qemu-fault-injection"], 600),
-    ("storage_crash", ["make", "qemu-storage-crash-test"], 700),
+    # Two crash points against two durable volume formats, one of which is a
+    # gibibyte that has to be formatted and checked under emulation. It was 700
+    # when the gate ran v5 only, and overran the moment v6 was added.
+    ("storage_crash", ["make", "qemu-storage-crash-test"], 1800),
     ("smmuv3", ["make", "qemu-smmu-gate"], 300),
     ("nvme", ["make", "qemu-nvme-gate"], 300),
     ("fragmentation", ["make", "qemu-outbound-fragmentation-gate"], 360),

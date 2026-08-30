@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import signal
 import re
 import subprocess
 import time
@@ -19,16 +20,34 @@ def run(cmd: Sequence[str], timeout: int = 180,
     if env:
         merged_env.update(env)
     print(f"qemu-gate: running {' '.join(cmd)}", flush=True)
-    return subprocess.run(
+    # Its own process group, so a timeout can take the whole tree down.
+    #
+    # subprocess.run kills only the direct child, which is make -- and make's
+    # emulator keeps running, holding its images and its ports. The next gate
+    # in the list then fails for reasons that have nothing to do with it, and
+    # the report blames it. That is exactly what happened when the storage
+    # crash gate grew a second volume format and overran its budget: two gates
+    # went red and only one of them was slow.
+    process = subprocess.Popen(
         list(cmd),
         cwd=ROOT,
         env=merged_env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        timeout=timeout,
-        check=False,
+        start_new_session=True,
     )
+    try:
+        output, _ = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        output, _ = process.communicate()
+        raise subprocess.TimeoutExpired(cmd, timeout, output=output)
+    return subprocess.CompletedProcess(list(cmd), process.returncode, output,
+                                       None)
 
 
 def write_report(path: Path, report: Dict[str, Any]) -> None:
