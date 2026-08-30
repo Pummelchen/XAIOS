@@ -107,6 +107,9 @@ typedef struct virtio_block_driver {
      consumer's buffer" from a claim into a number. */
   uint64_t direct_transfers;
   uint64_t bounce_transfers;
+  /* A monotonic count of every write and every flush this device has issued,
+     used only when the write-ordering trace is built in. */
+  uint64_t io_sequence;
   uint32_t uses_indirect;
   uint32_t uses_event_idx;
   uint64_t reset_count;
@@ -384,6 +387,39 @@ static void virtio_block_interrupt(uint32_t intid, void *context) {
    ceiling, the end of the disk, or memory that stops being contiguous all
    shorten it. A caller walking a large span must advance by that figure and
    not by what it asked for. */
+/* A trace of what was written and when it was flushed.
+ *
+ * The crash gate proves that an interrupted write leaves nothing broken, and
+ * it proves it against an emulator that never loses a write it has
+ * acknowledged. A device with a volatile write cache does lose those, and what
+ * makes xaiFS safe on one is ordering: chunk data is flushed before the
+ * catalog that refers to it, and the catalog is flushed before the superblock
+ * that points at it. If any of those flushes went missing, the emulator would
+ * not notice and neither would any gate.
+ *
+ * So the driver says what it did, in order, and a gate reads the log back and
+ * checks that no superblock write appears without a flush between it and the
+ * catalog write before it. That is not a proof that a real disk behaves; it is
+ * a proof that the ordering the proof depends on is actually being issued.
+ *
+ * Built only under XAIOS_IO_TRACE=1, because it is one klog line per request
+ * and an ordinary boot should not pay for that. */
+#if XAIOS_IO_TRACE
+static void io_trace(virtio_block_driver_t *drv, const char *what,
+                     uint64_t sector, uint64_t bytes) {
+  klog("io-trace: seq=%lu op=%s sector=%lu bytes=%lu\n", ++drv->io_sequence,
+       what, sector, bytes);
+}
+#else
+static void io_trace(virtio_block_driver_t *drv, const char *what,
+                     uint64_t sector, uint64_t bytes) {
+  (void)drv;
+  (void)what;
+  (void)sector;
+  (void)bytes;
+}
+#endif
+
 static xaios_status_t submit_sector_h(
     virtio_block_driver_t *drv, uint64_t sector, void *buffer,
     uint64_t buffer_size, uint32_t type,
@@ -478,6 +514,7 @@ static xaios_status_t submit_sector_h(
   }
   slot->transfer = transfer;
   if (moved != 0) *moved = transfer;
+  if (type == VIRTIO_BLK_T_OUT) io_trace(drv, "write", sector, transfer);
   slot->buffer = buffer;
   slot->completion = completion;
   slot->completion_context = context;
@@ -695,6 +732,7 @@ static xaios_status_t flush_h(virtio_block_driver_t *drv) {
   if (drv == 0 || drv->initialized == 0 || drv->supports_flush == 0U) {
     return XAIOS_ERR_UNSUPPORTED;
   }
+  io_trace(drv, "flush", 0U, 0U);
   if (drv->memory_backed != 0U) return XAIOS_OK;
   if (wait_idle(drv) != XAIOS_OK) return XAIOS_ERR_BUSY;
   xaios_spin_lock(&drv->queue_lock);
