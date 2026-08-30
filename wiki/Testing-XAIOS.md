@@ -59,6 +59,7 @@ make image
 make qemu-smoke
 make qemu-keyboard-input-gate
 make qemu-storage-crash-test
+make qemu-cluster-two-node-gate
 make qemu-crash-safety-gate
 make qemu-write-ordering-gate
 make qemu-storage-bench
@@ -168,6 +169,13 @@ public fixture and is not production trust evidence.
 ## Evidence policy
 
 - QEMU and VMware results are correctness and ABI evidence.
+- `make qemu-cluster-two-node-gate` is cluster evidence between two XAIOS
+  machines rather than between XAIOS and a program written from the wire
+  format. One image is built to listen and one to dial, each guest gets its
+  own copy of every volume, and the gate requires the lines only a listening
+  XAIOS produces. The same pair has been run across a real network with the
+  dialling machine on the Intel VPS; that run is manual, because it needs a
+  second host and a tunnel between them.
 - `make qemu-crash-safety-gate` is power-loss evidence for ordering and
   tearing: it kills the emulator outright at random points while a package is
   being ingested, then hashes every chunk the surviving catalog still calls
