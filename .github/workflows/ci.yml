@@ -230,6 +230,14 @@ jobs:
           XAIOS_CRASH_TRIALS: "4"
           XAIOS_CRASH_BOOT_TIMEOUT: "420"
 
+      # The other half of power-loss safety: that the flushes the argument
+      # depends on are actually issued. The emulator never loses an
+      # acknowledged write, so nothing else would notice if one went missing.
+      - name: Check the write ordering a volatile cache would expose
+        run: make qemu-write-ordering-gate
+        env:
+          XAIOS_WRITE_ORDERING_TIMEOUT: "600"
+
       # Throughput, and the one assertion that has teeth: a warm read must beat
       # a cold one, or the read cache is not doing anything.
       - name: Measure storage throughput and the read cache
@@ -244,6 +252,7 @@ jobs:
           name: storage-evidence
           path: |
             build/qemu-crash-safety-gate.json
+            build/qemu-write-ordering-gate.json
             build/qemu-storage-bench.json
             build/crash-trial-*.log
             build/qemu-storage-bench.log

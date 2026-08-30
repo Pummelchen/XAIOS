@@ -130,8 +130,21 @@ static xaios_engine_status_t hash_reader_range(
   return XAIOS_ENGINE_OK;
 }
 
+/* Two mebibytes to sixty-four, a power of two.
+   
+   The ceiling used to be sixteen, and it was the thing that made a package
+   past about a terabyte start growing its chunk count again -- the catalog is
+   rewritten on every commit and is 128 bytes a chunk, so chunk count is what
+   decides whether ingesting one is possible at all. Nothing was sized by this
+   figure: every path that touches a chunk streams it through a fixed scratch
+   buffer, and the read cache allocates per chunk against a budget. So the cap
+   was a limit on nothing but itself.
+   
+   It is still a cap. Bigger chunks cost more on a partial read, which has to
+   hash a whole chunk to hand back any of it, so the policy in the writer only
+   reaches for the larger sizes when the catalog would otherwise be worse. */
 static int valid_chunk_size(uint64_t value) {
-  return value >= UINT64_C(2097152) && value <= UINT64_C(16777216) &&
+  return value >= UINT64_C(2097152) && value <= UINT64_C(67108864) &&
          power_of_two(value);
 }
 

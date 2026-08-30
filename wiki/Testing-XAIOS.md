@@ -60,6 +60,7 @@ make qemu-smoke
 make qemu-keyboard-input-gate
 make qemu-storage-crash-test
 make qemu-crash-safety-gate
+make qemu-write-ordering-gate
 make qemu-storage-bench
 make qemu-smmu-gate
 make qemu-nvme-gate
@@ -174,6 +175,13 @@ public fixture and is not production trust evidence.
   lands inside one. It does not prove behaviour against a device that
   acknowledges a write and loses it from a volatile cache; the emulator never
   loses an acknowledged write.
+- `make qemu-write-ordering-gate` covers the half the crash gate cannot: it
+  has the block driver log every write and every flush, then checks that no
+  superblock write — the write that publishes a commit — is issued without a
+  flush since the previous write. That ordering is what keeps a device with a
+  volatile write cache from persisting a superblock before the catalog it
+  points at. Removing the flush makes the gate fail on every commit, which is
+  how it was checked to be capable of failing.
 - `make qemu-storage-bench` reports throughput rather than asserting it — these
   are emulator figures. What it does assert is that a warm read beats a cold
   one, which is the claim the read cache exists to make and the one that would

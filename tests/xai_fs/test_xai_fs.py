@@ -379,6 +379,15 @@ class ChunkSizePolicyTest(unittest.TestCase):
         chunks = [chunk_size_for(size) for size in sizes]
         self.assertEqual(chunks, sorted(chunks))
 
+    def test_the_cap_reaches_terabytes_before_it_binds(self):
+        # The cap used to be 16 MiB, which is where chunk count started growing
+        # again past about a terabyte. It is the catalog -- rewritten whole on
+        # every commit, 128 bytes a chunk -- that this is really about.
+        for size in (1024**4, 2 * 1024**4, 4 * 1024**4):
+            chunk = chunk_size_for(size)
+            chunks = (size + chunk - 1) // chunk
+            self.assertLessEqual(chunks, 65536, f"{size} bytes -> {chunks}")
+
     def test_a_half_terabyte_package_keeps_its_catalog_small(self):
         # 128 bytes of catalog per chunk, rewritten in full on every commit.
         # At the smallest chunk this package would carry a 32 MB catalog; the

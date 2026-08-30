@@ -35,6 +35,15 @@ PATTERN_TARGETS = [
     re.compile(
         r"xaibootfs: multi-sector file self-test passed files=7 "
         r"multi_sector=[1-9]\d*"),
+    # The accelerated SHA-256 agreeing with the scalar reference. This is the
+    # only place that comparison happens on an architecture that has an
+    # accelerated compressor: CI's runners are x86_64, where there is none and
+    # the hosted test skips. A machine without the extension says so instead,
+    # and that is also a pass -- what must never happen is the fast path being
+    # installed without having been checked.
+    re.compile(
+        r"engine-sha256: (accelerated path installed, verified against the "
+        r"scalar reference on [1-9]\d* lengths|scalar path)"),
 ]
 
 TARGETS = [

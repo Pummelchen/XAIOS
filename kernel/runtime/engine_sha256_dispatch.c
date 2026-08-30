@@ -66,6 +66,10 @@ static void digest_of(const uint8_t *data, uint64_t length,
    64, so the tail path and the whole-block path are both exercised. */
 #define PROBE_BYTES 1000U
 
+/* Every length from nothing to this, which crosses the 64-byte block boundary
+   four times over and puts the tail at every offset within one. */
+#define SWEEP_BYTES 300U
+
 void engine_sha256_dispatch_init(void) {
   static const uint8_t expected_abc[32] = {
       0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40,
@@ -117,6 +121,30 @@ void engine_sha256_dispatch_init(void) {
          "staying scalar\n");
     return;
   }
+
+  /* Every length across several block boundaries, not just two samples.
+     A compressor can be right on one input and wrong on the tail handling of
+     another, and this is the only place the two implementations are compared
+     on the architecture that actually runs the fast one -- CI's runners are
+     x86_64, where there is no accelerated compressor to compare against, so
+     the hosted test skips. If this check is weak, nothing else is looking. */
+  uint32_t checked = 0U;
+  for (uint32_t length = 0U; length <= SWEEP_BYTES; ++length) {
+    uint8_t scalar_digest[32];
+    uint8_t hardware_digest[32];
+    xaios_engine_sha256_install_compressor(0);
+    digest_of(probe, length, scalar_digest);
+    xaios_engine_sha256_install_compressor(candidate);
+    digest_of(probe, length, hardware_digest);
+    if (digests_differ(scalar_digest, hardware_digest)) {
+      xaios_engine_sha256_install_compressor(0);
+      klog("engine-sha256: accelerated compressor disagreed with the "
+           "reference at %u bytes; staying scalar\n", length);
+      return;
+    }
+    ++checked;
+  }
   klog("engine-sha256: accelerated path installed, verified against the "
-       "scalar reference on %u bytes\n", PROBE_BYTES);
+       "scalar reference on %u lengths up to %u bytes\n", checked,
+       SWEEP_BYTES);
 }

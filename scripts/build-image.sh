@@ -395,6 +395,18 @@ case "${XAIOS_CLUSTER_TEST:-0}" in
     ;;
 esac
 
+# One log line per block write and per flush, so a gate can check that the
+# ordering volatile-cache safety depends on is actually being issued. Behind a
+# flag because an ordinary boot should not pay a klog per request.
+case "${XAIOS_IO_TRACE:-0}" in
+  0) ;;
+  1) KERNEL_CFLAGS="$KERNEL_CFLAGS -DXAIOS_IO_TRACE=1" ;;
+  *)
+    printf '%s\n' "error: XAIOS_IO_TRACE must be 0 or 1" >&2
+    exit 1
+    ;;
+esac
+
 # Ingest a staged xaiFS package continuously so the crash gate has something
 # to interrupt. Behind a flag because it never returns on its own.
 case "${XAIOS_CRASH_WRITER:-0}" in

@@ -2,7 +2,7 @@ SHELL := /bin/sh
 HOST_CC ?= clang
 HOST_CFLAGS ?= -std=c99 -Wall -Wextra -Werror -pedantic
 
-.PHONY: all bootstrap test image image-qemu-test image-x86_64 image-x86_64-qemu-test image-libc-test qemu-libc-gate xapt-test xapt-repository qemu-xapt-gate engine-cli libc libc-check initfs-format-test vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-dry-run vz-harness vz-gate qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-numa-gate qemu-aarch64-sve2-gate qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-operations-closure qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-outbound-fragmentation-gate qemu-qualification-readiness qemu-dry-run qemu-smoke qemu-installed-disk-gate vm-packages vm-package-gate qemu-netboot-gate qemu-cluster-gate qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-crash-safety-gate qemu-storage-bench qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-freebsd-bidirectional-suite qemu-four-endpoint-network-suite qemu-parallel-network-load qemu-network-adversarial-gate qemu-local-console-gate qemu-keyboard-input-gate qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc parser-fuzz compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test code-scanning-contract docs-check platform-neutrality-check doc-freshness-check production-source-audit qemu-baseline clean clean-persistent
+.PHONY: all bootstrap test image image-qemu-test image-x86_64 image-x86_64-qemu-test image-libc-test qemu-libc-gate xapt-test xapt-repository qemu-xapt-gate engine-cli libc libc-check initfs-format-test vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-dry-run vz-harness vz-gate qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-numa-gate qemu-aarch64-sve2-gate qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-operations-closure qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-outbound-fragmentation-gate qemu-qualification-readiness qemu-dry-run qemu-smoke qemu-installed-disk-gate vm-packages vm-package-gate qemu-netboot-gate qemu-cluster-gate qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-crash-safety-gate qemu-write-ordering-gate qemu-storage-bench qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-freebsd-bidirectional-suite qemu-four-endpoint-network-suite qemu-parallel-network-load qemu-network-adversarial-gate qemu-local-console-gate qemu-keyboard-input-gate qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc parser-fuzz compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test code-scanning-contract docs-check platform-neutrality-check doc-freshness-check production-source-audit qemu-baseline clean clean-persistent
 .PHONY: firmware-profiles-check firmware-profile-macos-qemu-aarch64 firmware-profile-macos-vmware-fusion-aarch64 firmware-profile-intel-vps-qemu-x86_64 firmware-profiles qemu-x86_64-nvme-gate
 
 all: bootstrap image
@@ -349,6 +349,16 @@ qemu-crash-safety-gate:
 	PYTHONPATH=tools python3 ./tests/xai_fs/create_crash_fixture.py 	  build/xaios-crash-fixture.img
 	XAIOS_BOOT_VERBOSE=1 XAIOS_CRASH_WRITER=1 ./scripts/build-image.sh
 	python3 ./tests/scripts/qemu-crash-safety-gate.py
+
+# The flushes that volatile-cache safety depends on, checked from a trace the
+# driver emits. Needs the crash writer for something to commit and the trace
+# for something to read.
+qemu-write-ordering-gate:
+	PYTHONPATH=tools python3 ./tests/xai_fs/create_crash_fixture.py \
+	  build/xaios-crash-fixture.img
+	XAIOS_BOOT_VERBOSE=1 XAIOS_CRASH_WRITER=1 XAIOS_IO_TRACE=1 \
+	  ./scripts/build-image.sh
+	python3 ./tests/scripts/qemu-write-ordering-gate.py
 
 # Throughput of the block path and of /models, cold and warm. Reports rather
 # than asserts: the absolute figures are an emulator's, and pinning them would

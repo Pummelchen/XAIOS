@@ -93,6 +93,23 @@ commit with one thing changed.
 `make qemu-storage-bench` reproduces these and writes
 `build/qemu-storage-bench.json`.
 
+## Catalog placement
+
+A commit writes a whole new catalog and then flips a superblock to it, so the
+new catalog must never land on the live one. It used to be written past the end
+of everything and the volume's tail moved over it, which meant every commit
+permanently consumed a catalog's worth of space that nothing reclaimed —
+measured at 8192 bytes per commit on a 256 MB volume, or about 131 GB stranded
+behind a 500 GB package ingested a chunk at a time, with the next ingest having
+nowhere to go.
+
+There are two catalog slots now, directly above the highest byte any extent
+occupies, used alternately. A run of commits that allocates no new data — which
+is every commit of an ingest — consumes no new volume: 32 commits in a guest
+move the tail by zero bytes. The crash-safety argument is unchanged, because
+the new catalog still never overwrites the one a reader could still be
+following.
+
 ## What lives in RAM
 
 XAIOS runs from memory. Every file in `/bin` — each application, the C library,
