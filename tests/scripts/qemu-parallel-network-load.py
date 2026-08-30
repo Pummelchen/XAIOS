@@ -121,6 +121,10 @@ def wait_for_ssh_recovery(key: Path, ssh_port: int, timeout: float = 30.0) -> No
         "-o", "IdentitiesOnly=yes",
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
+        # See qemu-model-sftp-gate: a ~/.ssh/config that disables public key
+        # authentication for this host would otherwise stop the key being
+        # offered at all, on that machine only.
+        "-o", "PubkeyAuthentication=yes",
         "-o", "PreferredAuthentications=publickey",
         "-o", "PasswordAuthentication=no",
         "-o", "ConnectTimeout=3",

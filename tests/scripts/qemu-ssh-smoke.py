@@ -35,6 +35,11 @@ def run_ssh(command: str) -> str:
             "StrictHostKeyChecking=no",
             "-o",
             "UserKnownHostsFile=/dev/null",
+            # See qemu-model-sftp-gate: a ~/.ssh/config that disables public
+            # key authentication for this host would otherwise stop the key
+            # being offered at all, on that machine only.
+            "-o",
+            "PubkeyAuthentication=yes",
             "-o",
             "PreferredAuthentications=none,publickey",
             "-p",

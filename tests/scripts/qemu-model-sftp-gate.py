@@ -208,6 +208,15 @@ def sftp_arguments(key: Path, port: int, host: str) -> list[str]:
         "StrictHostKeyChecking=no",
         "-o",
         "UserKnownHostsFile=/dev/null",
+        # Explicitly on. PreferredAuthentications names the order to try;
+        # PubkeyAuthentication decides whether the key is offered at all. A
+        # Host block in a developer's ~/.ssh/config that turns it off for
+        # 127.0.0.1 -- a reasonable thing to have when logging into the guest
+        # by password -- otherwise leaves the client loading the key and never
+        # attempting it. CI runners have no such file, which is why this
+        # failed on one machine and nowhere else.
+        "-o",
+        "PubkeyAuthentication=yes",
         "-o",
         "PreferredAuthentications=publickey",
         "-o",
@@ -306,6 +315,8 @@ def run_ssh(key: Path, port: int, command: str) -> str:
             "StrictHostKeyChecking=no",
             "-o",
             "UserKnownHostsFile=/dev/null",
+            "-o",
+            "PubkeyAuthentication=yes",
             "-o",
             "PreferredAuthentications=publickey",
             "-o",
