@@ -75,6 +75,49 @@ USER_START_OBJ="$INIT_BUILD_DIR/user-start.o"
 USER_LIB_OBJ="$INIT_BUILD_DIR/xaios-user.o"
 USER_CONTROL_OBJ="$INIT_BUILD_DIR/xaios-control-client.o"
 USER_APPS="xaios-shell xaiosctl xapt nano htop pong hello sysinfo systest smptest smpstress perfbench nettest lstm-xor sshtest mltest posix-shell agenttest clustertest"
+
+# Which end of a cluster this image is, and where its peer is.
+#
+# The two ends are mirror images: one listens, the other dials, and each is the
+# other's peer. A server image needs no address; a client image is pointed at
+# one, which is what lets a machine here reach a machine somewhere else rather
+# than only the host process on the other side of the QEMU user network.
+CLUSTER_ROLE_SERVER="${XAIOS_CLUSTER_ROLE_SERVER:-0}"
+case "$CLUSTER_ROLE_SERVER" in
+  0|1) ;;
+  *)
+    printf '%s\n' "error: XAIOS_CLUSTER_ROLE_SERVER must be 0 or 1" >&2
+    exit 1
+    ;;
+esac
+CLUSTER_APP_CFLAGS="-DXAIOS_CLUSTER_ROLE_SERVER=$CLUSTER_ROLE_SERVER"
+if [ -n "${XAIOS_CLUSTER_PEER_IPV4:-}" ]; then
+  # Four octets, checked here rather than discovered as a link failure or, far
+  # worse, as a machine quietly dialling the wrong address.
+  cluster_peer_ok=$(printf '%s' "$XAIOS_CLUSTER_PEER_IPV4" | awk -F. '
+    NF == 4 {
+      for (i = 1; i <= 4; ++i) {
+        if ($i !~ /^[0-9]+$/ || $i + 0 > 255) { print "no"; exit }
+      }
+      print "yes"; exit
+    }
+    { print "no" }')
+  if [ "$cluster_peer_ok" != yes ]; then
+    printf '%s\n' "error: XAIOS_CLUSTER_PEER_IPV4 must be a dotted IPv4 address" >&2
+    exit 1
+  fi
+  cluster_a=$(printf '%s' "$XAIOS_CLUSTER_PEER_IPV4" | cut -d. -f1)
+  cluster_b=$(printf '%s' "$XAIOS_CLUSTER_PEER_IPV4" | cut -d. -f2)
+  cluster_c=$(printf '%s' "$XAIOS_CLUSTER_PEER_IPV4" | cut -d. -f3)
+  cluster_d=$(printf '%s' "$XAIOS_CLUSTER_PEER_IPV4" | cut -d. -f4)
+  CLUSTER_APP_CFLAGS="$CLUSTER_APP_CFLAGS -DXAIOS_CLUSTER_PEER_IPV4_A=${cluster_a}U"
+  CLUSTER_APP_CFLAGS="$CLUSTER_APP_CFLAGS -DXAIOS_CLUSTER_PEER_IPV4_B=${cluster_b}U"
+  CLUSTER_APP_CFLAGS="$CLUSTER_APP_CFLAGS -DXAIOS_CLUSTER_PEER_IPV4_C=${cluster_c}U"
+  CLUSTER_APP_CFLAGS="$CLUSTER_APP_CFLAGS -DXAIOS_CLUSTER_PEER_IPV4_D=${cluster_d}U"
+fi
+if [ -n "${XAIOS_CLUSTER_PEER_PORT:-}" ]; then
+  CLUSTER_APP_CFLAGS="$CLUSTER_APP_CFLAGS -DCLUSTER_PEER_PORT=${XAIOS_CLUSTER_PEER_PORT}U"
+fi
 UTILITY_APPS="ls mkdir touch cp mv rm rmdir stat cat head tail less grep find sed write tar cpio zip unzip ps df du"
 HOSTED_USER_APPS="helloworldc99"
 
@@ -978,6 +1021,7 @@ for app in $USER_APPS; do
     -Wextra \
     -Werror \
     -DXAIOS_BOOT_TEST_APPS="$BOOT_TEST_APPS" \
+    $([ "$app" = clustertest ] && printf '%s' "$CLUSTER_APP_CFLAGS") \
     -I"$ROOT_DIR/userspace/include" \
     -I"$ROOT_DIR/engine/include" \
     -c "$ROOT_DIR/userspace/apps/$app.c" \

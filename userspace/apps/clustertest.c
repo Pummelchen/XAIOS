@@ -14,15 +14,45 @@
  *
  * The peer is told to us rather than discovered. Discovery is a separate
  * problem and inventing one here would test the invention.
+ *
+ * Either end. Built with XAIOS_CLUSTER_ROLE_SERVER this listens instead of
+ * dialling, which is what lets the peer be a second XAIOS machine rather than
+ * a program on a host reading the format out of a header file. Two XAIOS
+ * machines agreeing is a different claim from XAIOS and a Python script
+ * agreeing, and it is the one a cluster rests on.
+ *
+ * The address to dial is a build-time figure so that one image can be pointed
+ * at a peer across a real network -- XAIOS_CLUSTER_PEER_IPV4_{A,B,C,D} -- and
+ * defaults to the host side of the QEMU user network, which is where the
+ * host-process peer has always been.
  */
 
 #include <xaios_user.h>
 
 #include <xaios_engine/cluster.h>
 
+#ifndef CLUSTER_PEER_PORT
 #define CLUSTER_PEER_PORT 7799U
-#define CLUSTER_PEER_NODE_ID 2ULL
+#endif
+
+/* The two ends are mirror images: each is the other's peer, so the node ids
+   swap with the role and the sealing keys stay shared. */
+#if XAIOS_CLUSTER_ROLE_SERVER
+#define CLUSTER_LOCAL_NODE_ID 2ULL
+#define CLUSTER_PEER_NODE_ID 1ULL
+#else
 #define CLUSTER_LOCAL_NODE_ID 1ULL
+#define CLUSTER_PEER_NODE_ID 2ULL
+#endif
+
+/* Where a client dials. The default is the host side of the QEMU user
+   network, the same address the DHCP server and the resolver live at. */
+#ifndef XAIOS_CLUSTER_PEER_IPV4_A
+#define XAIOS_CLUSTER_PEER_IPV4_A 10U
+#define XAIOS_CLUSTER_PEER_IPV4_B 0U
+#define XAIOS_CLUSTER_PEER_IPV4_C 2U
+#define XAIOS_CLUSTER_PEER_IPV4_D 2U
+#endif
 
 static xaios_cluster_peer_t g_peers[1];
 static xaios_cluster_t g_cluster;
@@ -36,6 +66,50 @@ static const u8 k_shared_key[XAIOS_CLUSTER_KEY_SIZE] = {
     0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x5a, 0x69, 0x78,
     0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1, 0xf0,
 };
+
+
+/* Read exactly `want` bytes, or give up when the deadline passes.
+ *
+ * A stream returns what it has rather than what was asked for. Busy and zero
+ * both mean "nothing yet" rather than "no more": the first is the stack saying
+ * it has not finished, the second that nothing arrived in this instant.
+ * Treating either as the end is how a protocol works in testing and fails on a
+ * real network -- and a deadline rather than an iteration count is the same
+ * lesson, since a tight loop finishes millions of turns before a frame has
+ * crossed the Atlantic. */
+static int read_exactly(u64 socket, u8 *buffer, u64 want, u64 timeout_nanos,
+                        u64 *out_total) {
+  u64 total = 0;
+  u64 deadline = xaios_clock_nanos() + timeout_nanos;
+  int last_status = 0;
+  while (total < want && xaios_clock_nanos() < deadline) {
+    u64 received = 0;
+    int status = xaios_net_recv(socket, buffer + total, want - total,
+                                &received);
+    last_status = status;
+    if (status == XAIOS_ERR_BUSY) continue;
+    if (status != 0) break;
+    if (received == 0U) continue;
+    total += received;
+  }
+  *out_total = total;
+  return total == want ? 0 : (last_status != 0 ? last_status : -1);
+}
+
+#if XAIOS_CLUSTER_ROLE_SERVER
+/* The frame's own length, read out of the header it starts with.
+ *
+ * A client knows how many bytes to expect because it sealed them. A server
+ * does not, so it reads the fixed header, takes the payload length from it,
+ * and reads exactly the rest. Guessing instead -- reading "whatever arrives"
+ * and treating it as a frame -- is how two machines agree on a busy day and
+ * disagree on a slow one. */
+static u64 frame_length_from_header(const u8 *header) {
+  u64 payload_length = (u64)header[40] | ((u64)header[41] << 8);
+  return (u64)XAIOS_CLUSTER_HEADER_SIZE + payload_length +
+         (u64)XAIOS_CLUSTER_TAG_SIZE;
+}
+#endif
 
 static int fail(const char *why) {
   xaios_log("/bin/clustertest: ");
@@ -67,6 +141,119 @@ int main(void) {
     return fail("cluster init failed");
   }
 
+#if XAIOS_CLUSTER_ROLE_SERVER
+  /* Listen, open what arrives, and seal the same payload back addressed to
+     the sender. The client's checks are the mirror of these, so a run that
+     passes on both ends has had every frame verified twice by two independent
+     machines rather than once by a program that also wrote it. */
+  u64 listener = 0;
+  if (xaios_net_listen(CLUSTER_PEER_PORT, &listener) != 0) {
+    return fail("could not listen for a cluster peer");
+  }
+  xaios_log_u64("/bin/clustertest: listening port=", (u64)CLUSTER_PEER_PORT,
+                "\n");
+
+  u64 socket = 0;
+  /* Long enough for the other machine to finish booting and dial. Both ends
+     are emulated and one of them may be on another continent. */
+  u64 accept_deadline = xaios_clock_nanos() + 600000000000ULL;
+  int accepted = -1;
+  /* Any non-zero means "nothing yet", not "never": the accept syscall reports
+     an empty backlog as an error rather than blocking, which is why sshd
+     treats a failed accept as a reason to come round again rather than a
+     reason to stop. Distinguishing BUSY from the rest, as the first version
+     did, gave up on the first turn of the loop and reported no peer -- with
+     the peer still booting. The deadline is what ends this, not the first
+     unsuccessful call. */
+  while (xaios_clock_nanos() < accept_deadline) {
+    accepted = xaios_net_accept(listener, &socket);
+    if (accepted == 0) break;
+  }
+  if (accepted != 0) {
+    (void)xaios_net_close(listener);
+    xaios_log("/bin/clustertest: no cluster peer connected; data plane not "
+              "exercised\n");
+    return 0;
+  }
+
+  u8 inbound[XAIOS_CLUSTER_MAX_MESSAGE];
+  u64 got = 0;
+  if (read_exactly(socket, inbound, (u64)XAIOS_CLUSTER_HEADER_SIZE,
+                   30000000000ULL, &got) != 0) {
+    (void)xaios_net_close(socket);
+    (void)xaios_net_close(listener);
+    return fail("the peer sent no frame header");
+  }
+  u64 inbound_length = frame_length_from_header(inbound);
+  if (inbound_length > sizeof(inbound) ||
+      inbound_length < (u64)XAIOS_CLUSTER_HEADER_SIZE) {
+    (void)xaios_net_close(socket);
+    (void)xaios_net_close(listener);
+    return fail("the peer announced an impossible frame length");
+  }
+  u64 rest = inbound_length - (u64)XAIOS_CLUSTER_HEADER_SIZE;
+  if (rest != 0U &&
+      read_exactly(socket, inbound + XAIOS_CLUSTER_HEADER_SIZE, rest,
+                   30000000000ULL, &got) != 0) {
+    (void)xaios_net_close(socket);
+    (void)xaios_net_close(listener);
+    return fail("the peer's frame was shorter than its header claimed");
+  }
+
+  xaios_cluster_message_t inbound_message;
+  xaios_memzero(&inbound_message, sizeof(inbound_message));
+  if (xaios_cluster_open(&g_cluster, inbound, (size_t)inbound_length,
+                         &inbound_message) != XAIOS_ENGINE_OK) {
+    (void)xaios_net_close(socket);
+    (void)xaios_net_close(listener);
+    return fail("the peer's frame did not open");
+  }
+  if (inbound_message.sender_node_id != CLUSTER_PEER_NODE_ID ||
+      inbound_message.receiver_node_id != CLUSTER_LOCAL_NODE_ID) {
+    (void)xaios_net_close(socket);
+    (void)xaios_net_close(listener);
+    return fail("the frame was not addressed to this node");
+  }
+  xaios_log_u64("/bin/clustertest: opened peer frame bytes=", inbound_length,
+                "");
+  xaios_log_u64(" opcode=", (u64)inbound_message.opcode, "");
+  xaios_log_u64(" nonce=", inbound_message.nonce, "\n");
+
+  /* The same frame a second time must be refused here too. The client checks
+     its own replay; this checks that a node refuses one arriving from the
+     network, which is the direction an attacker would use. */
+  xaios_cluster_message_t inbound_replay;
+  xaios_memzero(&inbound_replay, sizeof(inbound_replay));
+  if (xaios_cluster_open(&g_cluster, inbound, (size_t)inbound_length,
+                         &inbound_replay) == XAIOS_ENGINE_OK) {
+    (void)xaios_net_close(socket);
+    (void)xaios_net_close(listener);
+    return fail("a replayed frame from the network was accepted");
+  }
+
+  u8 outbound[XAIOS_CLUSTER_MAX_MESSAGE];
+  size_t resealed = 0;
+  if (xaios_cluster_seal(&g_cluster, CLUSTER_PEER_NODE_ID,
+                         inbound_message.opcode, inbound_message.payload,
+                         inbound_message.payload_length, outbound,
+                         sizeof(outbound), &resealed) != XAIOS_ENGINE_OK) {
+    (void)xaios_net_close(socket);
+    (void)xaios_net_close(listener);
+    return fail("sealing the reply failed");
+  }
+  u64 replied = 0;
+  if (xaios_net_send(socket, outbound, (u64)resealed, &replied) != 0 ||
+      replied != (u64)resealed) {
+    (void)xaios_net_close(socket);
+    (void)xaios_net_close(listener);
+    return fail("could not send the sealed reply");
+  }
+  (void)xaios_net_close(socket);
+  (void)xaios_net_close(listener);
+  xaios_log_u64("/bin/clustertest: sealed reply bytes=", (u64)resealed, "\n");
+  xaios_log("/bin/clustertest: cluster data plane over TCP passed\n");
+  return 0;
+#else
   u8 wire[XAIOS_CLUSTER_MAX_MESSAGE];
   u64 wire_length = 0;
   static const char payload[] = "xaios-cluster-join";
@@ -86,10 +273,10 @@ int main(void) {
   xaios_ip_addr_user_t address;
   xaios_memzero(&address, sizeof(address));
   address.family = 4U;
-  address.addr[0] = 10U;
-  address.addr[1] = 0U;
-  address.addr[2] = 2U;
-  address.addr[3] = 2U;
+  address.addr[0] = (u8)XAIOS_CLUSTER_PEER_IPV4_A;
+  address.addr[1] = (u8)XAIOS_CLUSTER_PEER_IPV4_B;
+  address.addr[2] = (u8)XAIOS_CLUSTER_PEER_IPV4_C;
+  address.addr[3] = (u8)XAIOS_CLUSTER_PEER_IPV4_D;
 
   u64 socket = 0;
   if (xaios_net_connect(&address, CLUSTER_PEER_PORT, &socket) != 0) {
@@ -110,33 +297,13 @@ int main(void) {
   }
 
   u8 reply[XAIOS_CLUSTER_MAX_MESSAGE];
-  u64 received = 0;
   u64 total = 0;
-  /* Read until the whole frame is in hand. A stream gives back what it has,
-     not what was asked for, and treating a short read as the message is how a
-     protocol works in testing and fails on a busy network.
-     
-     Busy and zero both mean "nothing yet" rather than "no more": the first is
-     the stack saying it has not finished, the second that no bytes have
-     arrived in this instant. Treating either as the end gave up on a frame the
-     peer had already sent, and the attempt bound is what keeps that from
-     becoming a machine that never stops waiting. */
-  int last_status = 0;
-  /* A deadline rather than a number of attempts. Four thousand tight
-     iterations complete in microseconds, long before a frame has crossed to
-     the host and back, so the first version of this gave up before the peer
-     had answered and reported a short read of zero bytes -- which reads as the
-     peer failing and was this loop being faster than a network. */
-  u64 deadline = xaios_clock_nanos() + 10000000000ULL;
-  while (total < wire_length && xaios_clock_nanos() < deadline) {
-    int status = xaios_net_recv(socket, reply + total,
-                                sizeof(reply) - total, &received);
-    last_status = status;
-    if (status == XAIOS_ERR_BUSY) continue;
-    if (status != 0) break;
-    if (received == 0U) continue;
-    total += received;
-  }
+  /* Ten seconds, which is a network's timescale rather than a loop's. The
+     first version of this counted iterations instead, finished four thousand
+     of them in microseconds, and reported a short read of zero bytes -- which
+     read as the peer failing and was this loop being faster than a wire. */
+  int last_status = read_exactly(socket, reply, wire_length, 10000000000ULL,
+                                 &total);
   (void)xaios_net_close(socket);
   if (total != wire_length) {
     xaios_log_u64("/bin/clustertest: short read bytes=", total, "");
@@ -179,4 +346,5 @@ int main(void) {
   xaios_log_u64(" nonce=", message.nonce, "\n");
   xaios_log("/bin/clustertest: cluster data plane over TCP passed\n");
   return 0;
+#endif
 }

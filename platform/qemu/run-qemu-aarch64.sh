@@ -141,6 +141,18 @@ storage_admin_image="${XAIOS_STORAGE_ADMIN_IMAGE:-none}"
 nvme_image="${XAIOS_NVME_IMAGE:-none}"
 hostfwd_port="${XAIOS_QEMU_HOSTFWD_PORT:-7788}"
 hostfwd_udp_port="${XAIOS_QEMU_HOSTFWD_UDP_PORT:-none}"
+# A host port carried to the guest's cluster listener.
+#
+# The other forwards here are fixed to the services they serve -- 22 for ssh,
+# 2223 for the UDP echo. A machine acting as the listening end of a cluster
+# needs its cluster port reachable from outside the guest, which is what lets
+# the peer be another machine rather than a process on this host.
+cluster_hostfwd_port="${XAIOS_QEMU_CLUSTER_HOSTFWD_PORT:-none}"
+cluster_guest_port="${XAIOS_QEMU_CLUSTER_GUEST_PORT:-7799}"
+# Which host address that forward binds. Loopback by default, because a port
+# reachable from the network is a decision rather than a default; a machine
+# serving a peer on another continent sets 0.0.0.0 deliberately.
+cluster_hostfwd_bind="${XAIOS_QEMU_CLUSTER_HOSTFWD_BIND:-127.0.0.1}"
 network_device="${XAIOS_QEMU_NETWORK_DEVICE:-virtio-net-device}"
 net_socket_port="${XAIOS_QEMU_NET_SOCKET_PORT:-none}"
 net_socket_port_2="${XAIOS_QEMU_NET_SOCKET_PORT_2:-none}"
@@ -351,6 +363,9 @@ if [ "$net_socket_port" != "none" ] && {
     if [ "$hostfwd_udp_port" != "none" ]; then
       net1_user_options="${net1_user_options},hostfwd=udp::${hostfwd_udp_port}-:2223"
     fi
+    if [ "$cluster_hostfwd_port" != "none" ]; then
+      net1_user_options="${net1_user_options},hostfwd=tcp:${cluster_hostfwd_bind}:${cluster_hostfwd_port}-:${cluster_guest_port}"
+    fi
     set -- "$@" \
       -netdev "$net1_user_options" \
       -netdev "hubport,id=net1_user_hub,hubid=1,netdev=net1_user"
@@ -374,6 +389,9 @@ else
   fi
   if [ "$hostfwd_udp_port" != "none" ]; then
     net1_options="${net1_options},hostfwd=udp::${hostfwd_udp_port}-:2223"
+  fi
+  if [ "$cluster_hostfwd_port" != "none" ]; then
+    net1_options="${net1_options},hostfwd=tcp:${cluster_hostfwd_bind}:${cluster_hostfwd_port}-:${cluster_guest_port}"
   fi
   set -- "$@" -netdev "$net1_options"
 fi
