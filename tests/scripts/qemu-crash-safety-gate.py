@@ -58,16 +58,26 @@ WORKING = BUILD / "crash-trial.img"
 TOOLS = ROOT / "tools"
 
 TRIALS = int(os.environ.get("XAIOS_CRASH_TRIALS", "8"))
-# How long to let the ingest run before pulling the plug, as a window rather
-# than a constant: a fixed delay would cut at the same phase of the same
-# commit every time and prove only that one instant is safe.
-MIN_RUN_S = float(os.environ.get("XAIOS_CRASH_MIN_RUN", "0.20"))
-MAX_RUN_S = float(os.environ.get("XAIOS_CRASH_MAX_RUN", "6.0"))
+# Where in the ingest to cut, counted in commits rather than in seconds.
+#
+# A wall-clock delay measures the host, not the guest. Six seconds is most of
+# an ingest on a fast machine and not one commit on a loaded CI runner, and a
+# trial that kills before anything has been committed proves nothing and fails
+# the gate for a reason that has nothing to do with the code. Waiting for a
+# given number of commits lands at the same place in the sequence whatever the
+# machine is doing.
+MIN_COMMITS = int(os.environ.get("XAIOS_CRASH_MIN_COMMITS", "1"))
+MAX_COMMITS = int(os.environ.get("XAIOS_CRASH_MAX_COMMITS", "30"))
+# And then a moment longer, so the kill lands at an arbitrary phase within the
+# commit that follows rather than always just after one finished.
+MIN_JITTER_S = float(os.environ.get("XAIOS_CRASH_MIN_JITTER", "0.0"))
+MAX_JITTER_S = float(os.environ.get("XAIOS_CRASH_MAX_JITTER", "0.4"))
 BOOT_TIMEOUT_S = float(os.environ.get("XAIOS_CRASH_BOOT_TIMEOUT", "240"))
 SEED = int(os.environ.get("XAIOS_CRASH_SEED", "20260829"))
 
 STARTED = re.compile(rb"crash-writer: ingest started")
 COMMITTED = re.compile(rb"crash-writer: committed chunk=(\d+)")
+FINISHED = re.compile(rb"crash-writer: ingest finished")
 SUPERBLOCK_BYTES = 4096
 
 
@@ -101,17 +111,25 @@ def fsck(image: Path) -> dict:
                 "errors": [result.stderr.strip() or result.stdout.strip()]}
 
 
-def run_until_killed(log: Path, delay_s: float) -> tuple[int, bool]:
-    """Boot, wait for the ingest to be under way, then kill at `delay_s`.
+def run_until_killed(log: Path, after_commits: int,
+                     jitter_s: float) -> tuple[int, bool]:
+    """Boot, wait for `after_commits` commits, wait `jitter_s`, then kill.
 
     Returns the highest chunk number the guest reported committing and whether
-    the ingest was still running when the kill landed. Timing from the first
-    committed chunk rather than from process start keeps the window aimed at
-    the writes instead of at the several seconds of boot in front of them.
+    the ingest was still running when the kill landed. Counting commits rather
+    than seconds keeps the cut at the same point in the sequence on a fast
+    machine and a slow one; the jitter afterwards is what puts it at an
+    arbitrary phase inside the commit that follows, which is the case that
+    matters.
     """
     log.unlink(missing_ok=True)
     environment = dict(os.environ)
     environment["XAIOS_XAI_FS_IMAGE"] = str(WORKING)
+    # No host port forwarding. Neither gate uses SSH, and claiming a fixed
+    # host port means one stale emulator anywhere on the machine turns every
+    # trial into a boot that never happened -- reported, unhelpfully, as a
+    # guest that never committed anything.
+    environment["XAIOS_QEMU_HOSTFWD_PORT"] = "none"
     with log.open("wb") as sink:
         process = subprocess.Popen(
             [str(ROOT / "platform/qemu/run-qemu-aarch64.sh")],
@@ -120,14 +138,25 @@ def run_until_killed(log: Path, delay_s: float) -> tuple[int, bool]:
             start_new_session=True)
     try:
         deadline = time.monotonic() + BOOT_TIMEOUT_S
-        armed = None
+        # If the ingest never starts, the kernel was built without the crash
+        # writer and no amount of waiting will produce a commit. Say so in
+        # seconds rather than burning the boot timeout once per trial.
+        started_deadline = time.monotonic() + BOOT_TIMEOUT_S / 2.0
+        reached = None
         while True:
             if process.poll() is not None:
                 break
             text = log.read_bytes()
-            if armed is None and STARTED.search(text):
-                armed = time.monotonic()
-            if armed is not None and time.monotonic() - armed >= delay_s:
+            if not STARTED.search(text) and time.monotonic() > started_deadline:
+                break
+            committed = len(COMMITTED.findall(text))
+            if reached is None and committed >= after_commits:
+                reached = time.monotonic()
+            if reached is not None and time.monotonic() - reached >= jitter_s:
+                break
+            # An ingest that has finished will never reach a higher count, so
+            # stop waiting for one rather than burning the whole timeout.
+            if FINISHED.search(text):
                 break
             if time.monotonic() > deadline:
                 break
@@ -241,13 +270,16 @@ def main() -> int:
 
     for index in range(TRIALS):
         shutil.copyfile(PRISTINE, WORKING)
-        delay = rng.uniform(MIN_RUN_S, MAX_RUN_S)
+        after_commits = rng.randint(MIN_COMMITS, MAX_COMMITS)
+        jitter = rng.uniform(MIN_JITTER_S, MAX_JITTER_S)
         log = BUILD / f"crash-trial-{index}.log"
-        committed, killed_while_running = run_until_killed(log, delay)
+        committed, killed_while_running = run_until_killed(log, after_commits,
+                                                           jitter)
         check = fsck(WORKING)
         record = {
             "trial": index,
-            "kill_after_s": round(delay, 3),
+            "kill_after_commits": after_commits,
+            "kill_jitter_s": round(jitter, 3),
             "chunks_committed_by_guest": committed,
             "killed_while_running": killed_while_running,
             "status": check.get("status"),
@@ -263,8 +295,11 @@ def main() -> int:
         elif committed == 0:
             failures.append(
                 f"trial {index}: the guest never committed a chunk, so the "
-                f"kill proved nothing")
-        print(f"crash-safety-gate: trial {index} kill_after={delay:.2f}s "
+                f"kill proved nothing -- check that the kernel was built with "
+                f"XAIOS_CRASH_WRITER=1, which is what `make "
+                f"qemu-crash-safety-gate` does")
+        print(f"crash-safety-gate: trial {index} "
+              f"kill_after={after_commits} commits +{jitter:.2f}s "
               f"guest_committed={committed} fsck={check.get('status')} "
               f"generation={check.get('generation')} "
               f"verified_chunks={check.get('verified_chunks')}")

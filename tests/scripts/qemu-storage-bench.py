@@ -72,6 +72,11 @@ def main() -> int:
 
     environment = dict(os.environ)
     environment["XAIOS_XAI_FS_IMAGE"] = str(CACHE_FIXTURE)
+    # No host port forwarding. Neither gate uses SSH, and claiming a fixed
+    # host port means one stale emulator anywhere on the machine turns every
+    # trial into a boot that never happened -- reported, unhelpfully, as a
+    # guest that never committed anything.
+    environment["XAIOS_QEMU_HOSTFWD_PORT"] = "none"
     environment["XAIOS_STORAGE_ADMIN_IMAGE"] = str(SCRATCH)
     LOG.unlink(missing_ok=True)
     with LOG.open("wb") as sink:
