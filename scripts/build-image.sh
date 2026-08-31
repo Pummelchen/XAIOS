@@ -461,6 +461,19 @@ case "${XAIOS_CRASH_WRITER:-0}" in
     ;;
 esac
 
+# Install onto the scratch disk at boot, unasked. Behind a flag because it
+# writes a partition table and a filesystem onto whatever is in slot 5 with
+# nobody confirming it -- correct for a gate that attaches a scratch disk,
+# wrong for an image anyone boots on a machine of their own.
+case "${XAIOS_INSTALL_SELF_TEST:-0}" in
+  0) ;;
+  1) KERNEL_CFLAGS="$KERNEL_CFLAGS -DXAIOS_INSTALL_SELF_TEST=1" ;;
+  *)
+    printf '%s\n' "error: XAIOS_INSTALL_SELF_TEST must be 0 or 1" >&2
+    exit 1
+    ;;
+esac
+
 # Storage throughput measurement. Behind a flag because it writes to a device
 # and takes time, and an ordinary boot should do neither.
 case "${XAIOS_STORAGE_BENCH:-0}" in

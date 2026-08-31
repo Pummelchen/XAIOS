@@ -339,6 +339,10 @@ static xaios_status_t mount_xaibootfs_from_disk(const char *disk) {
 #define BOOT_DISK_SLOT_BASE 16U
 /* The scratch disk the boot path attaches for storage administration. */
 #define XAIOS_INSTALL_TARGET "/dev/vblk5"
+/* Off unless a gate asks for it. See the call site. */
+#ifndef XAIOS_INSTALL_SELF_TEST
+#define XAIOS_INSTALL_SELF_TEST 0
+#endif
 
 static xaios_status_t mount_xaibootfs_from_any_disk(void) {
   xaios_block_device_info_t devices[8];
@@ -365,6 +369,7 @@ static xaios_status_t mount_xaibootfs_from_any_disk(void) {
 
    What it does not do is verify by booting the result. That needs firmware and
    a second machine, so the installed-disk gate does it from outside. */
+#if XAIOS_INSTALL_SELF_TEST
 static void install_self_test(void) {
   /* A machine that arrived over the network has no EFI System Partition to
      copy from, and does not need one: the loader that booted it carries the
@@ -430,6 +435,7 @@ static void install_self_test(void) {
        XAIOS_INSTALL_TARGET, report.file_count, report.bytes_copied,
        report.esp_identifier);
 }
+#endif
 
 static void boot_sync_wall_clock(void) {
   if (ntp_sync(0U) != XAIOS_ERR_BUSY) {
@@ -843,6 +849,23 @@ void kmain(const xaios_boot_info_t *boot) {
   /* Expose the boot image's /bin read-only, so the userspace ls that ships
      as /bin/ls can list the directory it lives in. */
   kassert(vfs_mount_initramfs("/bin") == XAIOS_OK);
+  /* A machine with no durable volume has no /etc at all: xaibootFS mounts but
+     backs nothing, so every read under / fails and the credentials
+     provision_read_only_config would have copied were never copied. sshd then
+     finds no users, locks the local console and refuses to start its network
+     server -- a live boot with no way in, which is precisely the boot a USB
+     stick performs on a machine that has not been installed yet.
+
+     The credentials exist; they are in the initramfs, which is where the copy
+     reads them from. So serve /etc from there when there is nowhere to copy
+     them to. Read-only is not a compromise here -- a live boot has nowhere to
+     persist a change to them anyway, and saying so is better than appearing
+     to accept one. */
+  if (persistent_status != XAIOS_OK) {
+    xaios_status_t etc_status = vfs_mount_initramfs("/etc");
+    klog("vfs: no durable volume; /etc served read-only from initramfs "
+         "status=%d\n", (int)etc_status);
+  }
   klog("vfs: xaibootFS mounted at /\n");
 
   /* The boot loader selected this immutable system slot. Admit and validate
@@ -892,7 +915,16 @@ void kmain(const xaios_boot_info_t *boot) {
   if (storage_admin_status == XAIOS_OK) {
     klog("storage-admin: scratch device attached slot=5 mutation=enabled\n");
     storage_admin_self_test();
+#if XAIOS_INSTALL_SELF_TEST
+    /* Gate-only. This writes a partition table and a filesystem onto whatever
+       is in slot 5 without an operator asking for it, which is the right
+       thing for a gate that attaches a scratch disk and exactly the wrong
+       thing to compile into an image people boot on their own machines. The
+       operator-driven install is the control-protocol path, which requires
+       the target's own GUID as confirmation; this one confirms nothing
+       because there is nobody to confirm with. */
     install_self_test();
+#endif
 #if XAIOS_STORAGE_BENCH
     storage_bench_run(XAIOS_INSTALL_TARGET);
 #endif

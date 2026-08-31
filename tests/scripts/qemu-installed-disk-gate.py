@@ -201,7 +201,11 @@ def main() -> int:
     # apps the boot splash owns the console and suppresses the kernel log, so
     # the machine comes up perfectly and the gate sees none of it -- which is
     # exactly what happened the first time this gate ran.
+    # The install at boot is what produces the disk this gate then boots, and
+    # it is behind a flag because an image that installs onto slot 5 unasked
+    # has no business on anyone's machine. Ask for it here.
     image = subprocess.run(["make", "image-qemu-test"], cwd=ROOT,
+                           env={**os.environ, "XAIOS_INSTALL_SELF_TEST": "1"},
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            text=True, check=False)
     if image.returncode != 0:
