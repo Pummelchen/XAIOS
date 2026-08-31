@@ -16,4 +16,9 @@ uint64_t remote_login_command_count(void);
 uint64_t remote_login_denial_count(void);
 void remote_login_self_test(void);
 
+/* Drop the cached local account name, so the next command re-reads it. Called
+   when setup installs an account, because boot self-tests have already cached
+   the name the machine had before it had one. */
+void remote_login_forget_account(void);
+
 #endif

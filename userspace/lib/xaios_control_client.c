@@ -2835,17 +2835,31 @@ static int parse_options(const char *command, xaios_control_options_t *options,
   if (options->operation == XAIOS_CONTROL_OP_STORAGE_INSTALL) {
     /* Same bar as any other operation that destroys a disk: a named actor and
        the disk's own GUID, or it does not go. */
-    if (options->principal[0] == '\0' || options->confirmation[0] == '\0' ||
-        options->operation_id == 0ULL) {
+    /* The confirmation and the operation id come from the command line, so
+       this is where they are checked. The actor does not: it is the identity
+       of whoever is calling, which xaios_control_run_as sets *after* parsing
+       and refuses to leave empty. Requiring it here made the check impossible
+       to satisfy -- options.principal is always empty at this point -- so
+       every install through this client was rejected for want of a principal
+       it was carrying. Nothing caught it because the install the gates
+       exercise is the kernel's own, which does not come through here. */
+    if (options->confirmation[0] == '\0' || options->operation_id == 0ULL) {
       *error_code = "invalid_install";
       *error_message =
-          "Install requires --principal, --confirm with the target disk GUID, "
-          "and --operation-id.";
+          "Install requires --confirm-device with the target disk GUID and "
+          "--operation-id.";
       return -1;
     }
   }
+  /* Install is a storage command like the rest, and takes a confirmation like
+     the rest. It was in none of the categories this guard recognises, so the
+     confirmation it requires was itself rejected as an option without a
+     command to belong to -- an install could satisfy neither the check that
+     demanded the flag nor the one that refused it. */
+  int install_command =
+      options->operation == XAIOS_CONTROL_OP_STORAGE_INSTALL;
   if (partition_command == 0 && volume_command == 0 && replica_repair == 0 &&
-      model_register == 0 &&
+      model_register == 0 && install_command == 0 &&
       trim_command == 0 &&
       (seen & (SEEN_STORAGE_TYPE | SEEN_STORAGE_SIZE | SEEN_STORAGE_NAME |
                SEEN_CONFIRMATION | SEEN_DRY_RUN | SEEN_CHUNK_SIZE |
@@ -2949,7 +2963,13 @@ static int parse_options(const char *command, xaios_control_options_t *options,
       options->operation == XAIOS_CONTROL_OP_STORAGE_FORMAT ||
       options->operation == XAIOS_CONTROL_OP_STORAGE_FS_REPAIR ||
       options->operation == XAIOS_CONTROL_OP_STORAGE_FS_RESIZE ||
-      options->operation == XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA;
+      options->operation == XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA ||
+      /* Install writes a partition table and formats what it creates, so it
+         is a mutation and takes the same confirmation as one. Leaving it out
+         made the confirmation it separately required into an option that
+         "applies only to mutations" -- the third of three checks an install
+         could not satisfy at once. */
+      options->operation == XAIOS_CONTROL_OP_STORAGE_INSTALL;
   if ((partition_mutation != 0 || volume_confirmation != 0) &&
       (seen & SEEN_CONFIRMATION) == 0U) {
     *error_code = "confirmation_required";

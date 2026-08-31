@@ -55,6 +55,11 @@ static int console_input_is_pin(const char *text, uint32_t length);
 static int authenticate_console_pin(const char *pin);
 /* Defined below with the console session state it enters. */
 static void console_auth_succeeded(void);
+static uint32_t console_hostname(char *out, uint32_t capacity);
+
+/* Where the machine's name lives, and the most it can be. */
+#define SSHD_HOSTNAME_PATH "/etc/xaios_hostname"
+#define SSHD_HOSTNAME_MAX 33U
 
 enum {
   SSHD_CONSOLE_AUTH_LOCKED = 0U,
@@ -64,6 +69,11 @@ enum {
 };
 
 static int authenticate_password(const char *username, const char *password);
+/* Defined with the user database they read. */
+static int sshd_user_exists(const char *username);
+static void console_set_username(const char *username);
+static const char *console_only_username(void);
+static const char *console_username(void);
 
 static uint64_t fnv1a64_zero_range(const void *data, uint64_t size,
                                    uint64_t zero_offset,
@@ -531,7 +541,8 @@ static void console_prompt(void) {
   char cwd[256];
   u64 cwd_size = 0U;
   xaios_memzero(cwd, sizeof(cwd));
-  if (xaios_remote_login_session(SSHD_CONSOLE_SESSION_ID, "admin", "pwd", cwd,
+  if (xaios_remote_login_session(SSHD_CONSOLE_SESSION_ID, console_username(),
+                                 "pwd", cwd,
                                  sizeof(cwd), &cwd_size) < 0 ||
       cwd_size == 0U || cwd_size >= sizeof(cwd)) {
     cwd[0] = '/';
@@ -542,7 +553,23 @@ static void console_prompt(void) {
          (cwd[cwd_size - 1U] == '\n' || cwd[cwd_size - 1U] == '\r')) {
     --cwd_size;
   }
-  console_write("\x1b[1;32madmin@xaios\x1b[0m:\x1b[1;34m");
+  /* Whoever is logged in, on the machine as it is named -- this read
+     "admin@xaios" whatever either actually was -- composed into one write so
+     a kernel log line cannot land inside it. */
+  char who[SSHD_USERNAME_MAX + SSHD_HOSTNAME_MAX + 24U];
+  uint32_t used = 0U;
+  static const char green[] = "\x1b[1;32m";
+  for (uint32_t i = 0U; i < sizeof(green) - 1U; ++i) who[used++] = green[i];
+  const char *user = console_username();
+  for (uint32_t i = 0U; user[i] != '\0' && used + 1U < sizeof(who); ++i) {
+    who[used++] = user[i];
+  }
+  who[used++] = '@';
+  used += console_hostname(who + used, SSHD_HOSTNAME_MAX);
+  static const char reset[] = "\x1b[0m:\x1b[1;34m";
+  for (uint32_t i = 0U; i < sizeof(reset) - 1U; ++i) who[used++] = reset[i];
+  who[used] = '\0';
+  console_write(who);
   (void)xaios_console_write(cwd, cwd_size);
   console_write("\x1b[0m$ ");
 }
@@ -551,26 +578,87 @@ static void console_prompt(void) {
    can tell which machine they are typing at. Setup writes the name; a machine
    nobody has renamed keeps the default, which is what every image did before
    this and what a read of the file failing falls back to. */
-#define SSHD_HOSTNAME_PATH "/etc/xaios_hostname"
-#define SSHD_HOSTNAME_MAX 33U
 
-static void console_write_login_prompt(void) {
+/* The machine's name, or "xaios" when it has not been given one.
+
+   Written as its own function because the login prompt and the shell prompt
+   both need it, and because the version that did not have one recursed into
+   itself on the no-name path -- a machine nobody renamed would have spun
+   here forever. */
+/* Which background services this machine was told to start.
+
+   One list, one name per line, written by setup. A machine that has never
+   been set up has no file and everything starts, which is what every image
+   did before this.
+
+   Only the network listener is selectable today. The console is not a service
+   in this sense -- it is how a person reaches a machine that has no network,
+   and a switch that could turn it off is a switch that can strand a machine
+   nobody can reach. */
+#define SSHD_SERVICES_PATH "/etc/xaios_services"
+
+static int service_enabled(const char *name) {
+  char list[256];
+  int length = xaios_read_file(SSHD_SERVICES_PATH, list, sizeof(list) - 1U);
+  if (length <= 0) return 1; /* never configured: start everything */
+  list[length] = '\0';
+  uint32_t start = 0U;
+  for (uint32_t i = 0U; i <= (uint32_t)length; ++i) {
+    if (i != (uint32_t)length && list[i] != '\n' && list[i] != ',') continue;
+    uint32_t end = i;
+    while (end > start && (list[end - 1U] == '\r' || list[end - 1U] == ' ')) {
+      --end;
+    }
+    uint32_t j = 0U;
+    while (start + j < end && name[j] != '\0' && list[start + j] == name[j]) {
+      ++j;
+    }
+    if (name[j] == '\0' && start + j == end) return 1;
+    start = i + 1U;
+  }
+  return 0;
+}
+
+/* Copy the machine's name out, or "xaios" when it has not been given one. */
+static uint32_t console_hostname(char *out, uint32_t capacity) {
   char name[SSHD_HOSTNAME_MAX];
   int length = xaios_read_file(SSHD_HOSTNAME_PATH, name, sizeof(name));
   uint32_t used = 0U;
   if (length > 0) {
-    while (used < (uint32_t)length && used + 1U < sizeof(name) &&
+    while (used < (uint32_t)length && used < sizeof(name) &&
            name[used] != '\n' && name[used] != '\r' && name[used] > 0x20) {
       ++used;
     }
   }
-  if (used == 0U) {
-    console_write_login_prompt();
-    return;
+  if (used == 0U || used >= capacity) {
+    static const char fallback[] = "xaios";
+    used = 0U;
+    while (used < sizeof(fallback) - 1U && used + 1U < capacity) {
+      out[used] = fallback[used];
+      ++used;
+    }
+    out[used] = '\0';
+    return used;
   }
-  name[used] = '\0';
-  console_write(name);
-  console_write(" login: ");
+  for (uint32_t i = 0U; i < used; ++i) out[i] = name[i];
+  out[used] = '\0';
+  return used;
+}
+
+/* One write, not several.
+
+   The kernel logs to the same console, so a prompt assembled from four writes
+   can have a log line land in the middle of it -- and a person reading
+   "operator@" followed by a filesystem trace has no idea what their machine
+   is called. Composing first and writing once makes the prompt atomic as far
+   as anything interleaving with it is concerned. */
+static void console_write_login_prompt(void) {
+  char line[SSHD_HOSTNAME_MAX + 16U];
+  uint32_t used = console_hostname(line, SSHD_HOSTNAME_MAX);
+  static const char suffix[] = " login: ";
+  for (uint32_t i = 0U; i < sizeof(suffix) - 1U; ++i) line[used++] = suffix[i];
+  line[used] = '\0';
+  console_write(line);
 }
 
 /* Whether this machine was set up to open a shell without asking.
@@ -605,6 +693,7 @@ static void console_begin_login(void) {
     console_write(
         "Automatic login is enabled on this console.\n"
         "Type \"exit\" to return to a login prompt.\n");
+    console_set_username(console_only_username());
     console_auth_succeeded();
     return;
   }
@@ -638,7 +727,8 @@ static int console_start_less(const char *command) {
   char cwd[LESS_PAGER_PATH_MAX];
   u64 cwd_size = 0U;
   uint32_t frame_size = 0U;
-  if (xaios_remote_login_session(SSHD_CONSOLE_SESSION_ID, "admin", "pwd", cwd,
+  if (xaios_remote_login_session(SSHD_CONSOLE_SESSION_ID, console_username(),
+                                 "pwd", cwd,
                                  sizeof(cwd), &cwd_size) < 0 ||
       cwd_size == 0U || cwd_size >= sizeof(cwd)) {
     return -1;
@@ -675,7 +765,8 @@ static int console_start_nano(const char *command) {
   u64 cwd_size = 0U;
   uint32_t frame_size = 0U;
   if (console_nano_argument(command, argument, sizeof(argument)) != 0 ||
-      xaios_remote_login_session(SSHD_CONSOLE_SESSION_ID, "admin", "pwd", cwd,
+      xaios_remote_login_session(SSHD_CONSOLE_SESSION_ID, console_username(),
+                                 "pwd", cwd,
                                  sizeof(cwd), &cwd_size) < 0 ||
       cwd_size == 0U || cwd_size >= sizeof(cwd)) {
     return -1;
@@ -788,7 +879,8 @@ static int console_htop_run(void *context, const char *command, char *output,
                             unsigned long long capacity,
                             unsigned long long *output_length) {
   (void)context;
-  return xaios_remote_login_session(SSHD_CONSOLE_SESSION_ID, "admin", command,
+  return xaios_remote_login_session(SSHD_CONSOLE_SESSION_ID,
+                                    console_username(), command,
                                     output, capacity, output_length);
 }
 
@@ -938,7 +1030,8 @@ static void console_execute_command(void) {
                                        SSHD_CONSOLE_ROWS);
     xaios_memzero(g_console_output, sizeof(g_console_output));
     int status = xaios_remote_login_session(
-        SSHD_CONSOLE_SESSION_ID, "admin", g_console_command, g_console_output,
+        SSHD_CONSOLE_SESSION_ID, console_username(), g_console_command,
+        g_console_output,
         sizeof(g_console_output), &output_bytes);
     if (output_bytes != 0U) {
       (void)console_write_bytes(g_console_output, output_bytes);
@@ -1020,18 +1113,22 @@ static void console_submit_auth(void) {
       if (authenticate_console_pin(g_console_command) != 0) {
         console_auth_failed();
       } else {
+        /* A PIN identifies the machine's account rather than naming one, so
+           it logs in as that account. */
+        console_set_username(console_only_username());
         console_auth_succeeded();
       }
-    } else if (!ssh_str_eq(g_console_command, "admin")) {
+    } else if (!sshd_user_exists(g_console_command)) {
       console_write("Login incorrect\n");
-  console_write_login_prompt();
+      console_write_login_prompt();
       console_record_auth_failure();
     } else {
+      console_set_username(g_console_command);
       g_console_auth_state = SSHD_CONSOLE_AUTH_PASSWORD;
       console_write("Password: ");
     }
   } else if (g_console_auth_state == SSHD_CONSOLE_AUTH_PASSWORD) {
-    if (authenticate_password("admin", g_console_command) != 0) {
+    if (authenticate_password(console_username(), g_console_command) != 0) {
       console_auth_failed();
     } else {
       console_auth_succeeded();
@@ -1211,10 +1308,17 @@ static int parse_user_line(const char *line, uint32_t line_len,
   }
   if (separator_count != 4U || separator[0] == 0U ||
       separator[0] >= SSHD_USERNAME_MAX) return -1;
-  if (separator[0] != 5U) return -1;
-  static const char admin_name[] = "admin";
-  for (uint32_t i = 0; i < sizeof(admin_name) - 1U; ++i) {
-    if (line[i] != admin_name[i]) return -1;
+  /* Any name the grammar allows, not one name. The record used to be required
+     to begin "admin", which meant a machine could only ever have the account
+     the build shipped -- and once a released image stopped shipping one, no
+     account at all. What matters is that the name cannot forge the rest of
+     the record or the prompt it is echoed to, so the character class is the
+     check: lower-case letters, digits, - and _. */
+  for (uint32_t i = 0; i < separator[0]; ++i) {
+    char c = line[i];
+    int ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
+             c == '_';
+    if (!ok) return -1;
   }
   static const char scheme[] = "pbkdf2-sha256";
   uint32_t scheme_start = separator[0] + 1U;
@@ -1241,7 +1345,8 @@ static int parse_user_line(const char *line, uint32_t line_len,
                       &hash_len) != 0 || hash_len != SSHD_PASSWORD_HASH_SIZE) {
     return -1;
   }
-  ssh_mem_copy(user->username, admin_name, sizeof(admin_name));
+  for (uint32_t i = 0; i < separator[0]; ++i) user->username[i] = line[i];
+  user->username[separator[0]] = '\0';
   user->password_salt_len = salt_len;
   user->password_iterations = iterations;
   user->active = 1;
@@ -1293,6 +1398,50 @@ static int load_user_database(void) {
   if (g_user_count == 0U) return -1;
   ssh_log(SSH_LOG_INFO, "Loaded %u SSH password users\n", g_user_count);
   return 0;
+}
+
+/* Whether this machine has an account by that name. The console and the SSH
+   path both used to compare against the literal "admin"; they ask this now, so
+   a machine set up with another name can be logged into with it. */
+static int sshd_user_exists(const char *username) {
+  for (uint32_t i = 0U; i < g_user_count; ++i) {
+    if (g_users[i].active && ssh_str_eq(g_users[i].username, username)) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/* The console's own idea of who is at it. Set when a name is accepted at the
+   prompt, and when a PIN is -- a PIN identifies the machine's single account
+   rather than naming one, so it authenticates as that account. Commands the
+   console dispatches run as this user, which is what makes the name mean
+   anything past the prompt. */
+static char g_console_username[SSHD_USERNAME_MAX];
+
+static void console_set_username(const char *username) {
+  uint32_t i = 0U;
+  while (username[i] != '\0' && i + 1U < sizeof(g_console_username)) {
+    g_console_username[i] = username[i];
+    ++i;
+  }
+  g_console_username[i] = '\0';
+}
+
+/* The account a PIN logs in as: the first active one. A machine has one
+   account today; if that changes, a PIN will need to say which. */
+/* Who the console is acting as. Falls back to the machine's single account
+   so a command dispatched before a name was recorded still names someone. */
+static const char *console_username(void) {
+  return g_console_username[0] != '\0' ? g_console_username
+                                        : console_only_username();
+}
+
+static const char *console_only_username(void) {
+  for (uint32_t i = 0U; i < g_user_count; ++i) {
+    if (g_users[i].active) return g_users[i].username;
+  }
+  return "";
 }
 
 static int authenticate_password(const char *username, const char *password) {
@@ -2398,7 +2547,7 @@ static int process_connection(ssh_connection_t *conn) {
 
       /* ---- "publickey" method (RFC 4252 Section 7) ---- */
       if (ssh_str_eq(method, "publickey")) {
-        if (!ssh_str_eq(username, "admin")) {
+        if (!sshd_user_exists(username)) {
           conn->auth_attempts++;
           record_auth_failure(&conn->client_addr);
           if (send_auth_failure(conn) != 0) return -1;
@@ -2668,6 +2817,18 @@ int sshd_run(void) {
   ssh_mem_zero(&g_server_stats, sizeof(g_server_stats));
 
   ssh_conn_pool_init();
+
+  /* A machine set up without remote access serves its console and nothing
+     else. It says so, because "SSH is not running" should never be something
+     a person has to discover by trying it. */
+  if (!service_enabled("ssh")) {
+    ssh_log(SSH_LOG_INFO,
+            "Remote access is turned off for this machine; console only\n");
+    console_write(
+        "Remote access is turned off for this machine.\n"
+        "The console below is the only way in.\n");
+    goto service_loop;
+  }
 
   if (xaios_net_listen(SSHD_PORT, &listen_fd) != 0) {
     ssh_log(SSH_LOG_ERROR, "Failed to listen on port %u\n", SSHD_PORT);

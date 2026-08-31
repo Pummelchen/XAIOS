@@ -20,6 +20,7 @@
 #include <xaios/setup_apply.h>
 
 #include <xaios/klog.h>
+#include <xaios/remote_login.h>
 #include <xaios/xaiboot_fs.h>
 
 #define SETUP_PENDING_PATH "/state/setup-pending"
@@ -27,6 +28,7 @@
 #define SETUP_PIN_PATH "/etc/xaios_console_pin"
 #define SETUP_HOSTNAME_PATH "/etc/xaios_hostname"
 #define SETUP_AUTOLOGIN_PATH "/etc/xaios_autologin"
+#define SETUP_SERVICES_PATH "/etc/xaios_services"
 #define SETUP_PENDING_MAX 2048U
 
 static int text_starts_with(const char *text, uint64_t length,
@@ -108,6 +110,9 @@ void setup_apply_pending(void) {
   uint64_t pin_length = 0U;
   const char *hostname = 0;
   uint64_t hostname_length = 0U;
+  const char *services = 0;
+  uint64_t services_length = 0U;
+  int services_seen = 0;
   int autologin = 0;
   int malformed = 0;
 
@@ -128,6 +133,12 @@ void setup_apply_pending(void) {
     } else if (text_starts_with(line, length, "hostname=", &value)) {
       hostname = line + value;
       hostname_length = length - value;
+    } else if (text_starts_with(line, length, "services=", &value)) {
+      /* An empty value is a machine told to start none of them, which is a
+         real answer and not a missing one. */
+      services = line + value;
+      services_length = length - value;
+      services_seen = 1;
     } else if (text_starts_with(line, length, "autologin=", &value)) {
       /* Only the exact word enables it. Anything else is a handoff that did
          not come from setup, and the safe reading of a value nobody
@@ -160,6 +171,9 @@ void setup_apply_pending(void) {
     discard_pending();
     return;
   }
+  /* The command dispatcher caches which account this machine has, and boot
+     self-tests filled that cache before this account existed. */
+  remote_login_forget_account();
   klog("setup: account installed\n");
 
   if (pin != 0) {
@@ -184,6 +198,25 @@ void setup_apply_pending(void) {
     line[used++] = '\n';
     if (xaiboot_fs_write(SETUP_HOSTNAME_PATH, line, used) != XAIOS_OK) {
       klog("setup: could not write the hostname\n");
+    }
+  }
+
+  if (services_seen != 0) {
+    used = 0U;
+    for (uint64_t i = 0U; i < services_length && used + 2U < sizeof(line);
+         ++i) {
+      char c = services[i];
+      /* Names only, and the separator between them. */
+      int ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
+               c == '_' || c == ',';
+      if (!ok) { used = 0U; break; }
+      line[used++] = c;
+    }
+    line[used++] = '\n';
+    if (xaiboot_fs_write(SETUP_SERVICES_PATH, line, used) != XAIOS_OK) {
+      klog("setup: could not record which services to start\n");
+    } else {
+      klog("setup: services recorded bytes=%lu\n", used);
     }
   }
 

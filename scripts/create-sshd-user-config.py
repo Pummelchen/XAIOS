@@ -15,11 +15,20 @@ MAX_ITERATIONS = 1_000_000
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--username", default="admin", choices=("admin",))
+    # Any name sshd's record grammar accepts. It was pinned to "admin" while
+    # that was the only name sshd would parse; it now parses the character
+    # class, so this validates the same one rather than a single literal.
+    parser.add_argument("--username", default="admin")
     parser.add_argument("--password-file", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--iterations", type=int, default=200_000)
     args = parser.parse_args()
+    if not args.username or len(args.username) > 32 or not all(
+            c.islower() and c.isascii() or c.isdigit() or c in "-_"
+            for c in args.username):
+        parser.error(
+            "--username must be lower-case ASCII letters, digits, - or _, "
+            "up to 32 characters")
     if not MIN_ITERATIONS <= args.iterations <= MAX_ITERATIONS:
         parser.error(
             f"--iterations must be between {MIN_ITERATIONS} and {MAX_ITERATIONS}"

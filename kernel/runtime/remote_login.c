@@ -4574,6 +4574,68 @@ static xaios_status_t parse_and_execute_pipeline(const char *command,
   return parse_and_execute(command, output, output_capacity, output_bytes);
 }
 
+/* The name of the account this machine has.
+
+   This used to be the literal "admin", which was true of every image because
+   every image packaged the same credential. A machine that makes its own
+   account during setup can be called something else, and refusing that name
+   would let a person log in at the console and then have every command they
+   typed denied.
+
+   Read from the account file sshd authenticates against, so the two cannot
+   disagree about who exists, and cached after the first read: it changes only
+   when a machine is set up, which happens before anything dispatches a
+   command. Falls back to "admin", the account every packaged image has. */
+#define REMOTE_LOGIN_ACCOUNT_MAX 64U
+
+static char g_local_account[REMOTE_LOGIN_ACCOUNT_MAX];
+static uint32_t g_local_account_loaded;
+
+static int local_account_is(const char *user) {
+  if (g_local_account_loaded == 0U) {
+    char record[256];
+    uint64_t read_bytes = 0U;
+    uint64_t used = 0U;
+    if (xaiboot_fs_read("/etc/xaios_sshd_users", record, sizeof(record) - 1U,
+                        &read_bytes) == XAIOS_OK && read_bytes != 0U) {
+      record[read_bytes] = '\0';
+      /* Comment lines are not the account. Take the first record's name,
+         which is the text before its first colon. */
+      uint64_t start = 0U;
+      while (start < read_bytes) {
+        uint64_t end = start;
+        while (end < read_bytes && record[end] != '\n') ++end;
+        if (record[start] != '#' && end > start) {
+          for (uint64_t i = start; i < end; ++i) {
+            if (record[i] == ':') break;
+            if (used + 1U >= sizeof(g_local_account)) { used = 0U; break; }
+            g_local_account[used++] = record[i];
+          }
+          if (used != 0U) break;
+        }
+        start = end + 1U;
+      }
+    }
+    if (used == 0U) {
+      static const char fallback[] = "admin";
+      for (used = 0U; used < sizeof(fallback) - 1U; ++used) {
+        g_local_account[used] = fallback[used];
+      }
+    }
+    g_local_account[used] = '\0';
+    g_local_account_loaded = 1U;
+  }
+  return string_equal(user, g_local_account);
+}
+
+/* Forget the cached name.
+
+   The cache is filled by the first command dispatched, and boot self-tests
+   dispatch several before setup has run -- so without this the machine
+   remembers "admin" from its own self-test and then denies every command the
+   person who just set it up types. Called when an account is installed. */
+void remote_login_forget_account(void) { g_local_account_loaded = 0U; }
+
 xaios_status_t remote_login_execute(const char *user, const char *command,
                                   char *output, uint64_t output_capacity,
                                   uint64_t *output_bytes) {
@@ -4582,7 +4644,7 @@ xaios_status_t remote_login_execute(const char *user, const char *command,
     ++g_remote_login_denials;
     return XAIOS_ERR_INVALID;
   }
-  if (!string_equal(user, "admin")) {
+  if (!local_account_is(user)) {
     ++g_remote_login_denials;
     klog("remote-login: denied reason=unknown-user\n");
     return XAIOS_ERR_INVALID;

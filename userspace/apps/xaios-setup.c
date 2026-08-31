@@ -261,7 +261,20 @@ static int control(const char *command) {
   g_output[0] = '\0';
   append(line, sizeof(line), &offset, "xaiosctl ");
   append(line, sizeof(line), &offset, command);
-  int result = xaios_control_run(line, g_output, sizeof(g_output), &size);
+  /* As an administrator, and saying who is asking.
+
+     xaios_control_run runs as "local-observer" with the observer role, which
+     can read but cannot partition a disk -- and the actor is not something a
+     --principal flag sets: that flag names the principal being *managed* by
+     an auth command, which is a different field entirely. Passing it and
+     expecting the install to be authorised is how this first failed, with the
+     client reporting a missing principal for a command that carried one.
+
+     "setup" is the actor recorded in the audit trail, which is what should
+     appear against a partition table written before the machine had a
+     person. */
+  int result = xaios_control_run_as(line, XAIOS_CONTROL_ROLE_ADMIN, "setup",
+                                    g_output, sizeof(g_output), &size);
   return result;
 }
 
@@ -275,28 +288,26 @@ static void show_disks(void) {
 
 /* ---------------------------------------------------------------- steps */
 
-/* The account XAIOS authenticates is named "admin", and that name is not a
-   parser detail -- it is threaded through the console session, the SSH
-   username check and the remote-login identity. Asking for a name here and
-   then writing a record sshd refuses would produce a machine that completes
-   setup and still cannot be logged into, which is worse than saying so. */
-#define SETUP_ACCOUNT_NAME "admin"
-
 static void step_account(void) {
+  char username[SETUP_LINE_MAX];
   char password[SETUP_LINE_MAX];
   char record[512];
   u64 offset = 0ULL;
 
   say("\n-- Account --\n"
-      "The account you will log in with, on this console and over SSH.\n"
-      "It is named " SETUP_ACCOUNT_NAME " on this build; only the password is\n"
-      "yours to choose.\n\n"
-      "Passwords are not shown as you type them, and must be at least eight\n"
-      "characters.\n\n");
+      "The account you will log in with, on this console and over SSH.\n\n");
+  for (;;) {
+    u64 length = prompt("Username: ", username, sizeof(username), 0);
+    if (username_valid(username, length)) break;
+    say("  Use lower-case letters, digits, - or _, up to 32 characters.\n");
+  }
+
+  say("\nPasswords are not shown as you type them, and must be at least\n"
+      "eight characters.\n\n");
   int length = read_secret_twice("Password: ", "Repeat password: ", password,
                                  sizeof(password), SETUP_PASSWORD_MIN, 0);
 
-  append(record, sizeof(record), &offset, SETUP_ACCOUNT_NAME);
+  append(record, sizeof(record), &offset, username);
   append(record, sizeof(record), &offset, ":");
   if (length <= 0 ||
       build_credential(password, (u64)length, record, sizeof(record),
@@ -345,6 +356,31 @@ static void step_pin(void) {
   pending_add("pin", record);
   for (u64 i = 0ULL; i < sizeof(record); ++i) record[i] = '\0';
   say("Quick login set.\n");
+}
+
+/* Which background services this machine starts.
+
+   Only remote access is selectable today. The console is not offered as a
+   choice: it is how a person reaches a machine whose network is wrong, and a
+   switch that turns it off can strand a machine nobody can reach. The
+   machine's other background work is not optional either, so listing it here
+   as though it were would be a menu that does nothing.
+
+   Written as an enabled list, so a service added later is off until a machine
+   is told to run it rather than appearing on machines already in service. */
+static void step_services(void) {
+  say("\n-- Background services --\n"
+      "The console is always available. What is optional is whether this\n"
+      "machine answers on the network.\n\n");
+  if (prompt_yes("Allow logging in over SSH? [Y/n]: ") ||
+      !prompt_yes("Are you sure you want SSH off? [y/N]: ")) {
+    pending_add("services", "ssh");
+    say("Remote access enabled.\n");
+    return;
+  }
+  pending_add("services", "");
+  say("Remote access off. The console will be the only way into this\n"
+      "machine, so do not lose access to it.\n");
 }
 
 /* Skipping the login prompt on this machine.
@@ -440,10 +476,34 @@ static void step_install(void) {
     say("Nothing was installed.\n");
     return;
   }
-  if (prompt("EFI partition to copy from: ", source, sizeof(source), 0) ==
-      0ULL) {
-    say("Nothing was installed.\n");
-    return;
+  /* The partition this machine booted, which is what an install copies. The
+     kernel records it because only the kernel knows it, and a person should
+     not have to work it out from a list of block devices. */
+  char boot_esp[SETUP_LINE_MAX];
+  int esp_length = xaios_read_file("/state/boot-esp", boot_esp,
+                                   sizeof(boot_esp) - 1U);
+  u64 esp_used = 0ULL;
+  if (esp_length > 0) {
+    while (esp_used < (u64)esp_length && boot_esp[esp_used] > 0x20) ++esp_used;
+  }
+  boot_esp[esp_used] = '\0';
+
+  if (esp_used != 0ULL) {
+    say("\nCopying from ");
+    say(boot_esp);
+    say(", the partition this machine booted.\n");
+    say("Press enter to accept it, or name another.\n\n");
+  } else {
+    say("\nThis machine did not boot from an EFI System Partition, so there\n"
+        "is nothing here to copy. An install needs media that has one.\n\n");
+  }
+  u64 typed = prompt("EFI partition to copy from: ", source, sizeof(source), 0);
+  if (typed == 0ULL) {
+    if (esp_used == 0ULL) {
+      say("Nothing was installed.\n");
+      return;
+    }
+    for (u64 i = 0ULL; i <= esp_used; ++i) source[i] = boot_esp[i];
   }
 
   offset = 0ULL;
@@ -451,7 +511,6 @@ static void step_install(void) {
   append(command, sizeof(command), &offset, target);
   append(command, sizeof(command), &offset, " from ");
   append(command, sizeof(command), &offset, source);
-  append(command, sizeof(command), &offset, " --principal setup");
   append(command, sizeof(command), &offset, " --confirm-device ");
   append(command, sizeof(command), &offset, confirmation);
   append(command, sizeof(command), &offset, " --operation-id 1");
@@ -547,6 +606,7 @@ int main(void) {
   step_identity();
   step_account();
   step_pin();
+  step_services();
   step_autologin();
 
   /* Hand what was collected to the kernel, which installs it. Nothing was

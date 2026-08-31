@@ -1330,6 +1330,24 @@ persistent_network_done:
      image and every development build. */
   if (xaiboot_fs_stat("/etc/xaios_sshd_users", &(xaios_xbfs_stat_t){0}) !=
       XAIOS_OK) {
+    /* Setup offers to install, and an install copies from the partition this
+       machine booted. Only the kernel knows which that is -- it is found
+       while walking the boot disk's partition table -- so record it where
+       setup can read it rather than asking a person to work it out from a
+       device list. A machine booted from something with no EFI System
+       Partition records nothing, and setup then has to ask. */
+    if (g_boot_esp[0] != '\0') {
+      char line[XAIOS_BLOCK_DEVICE_ID_MAX + 2U];
+      uint64_t used = 0U;
+      while (g_boot_esp[used] != '\0' && used + 2U < sizeof(line)) {
+        line[used] = g_boot_esp[used];
+        ++used;
+      }
+      line[used++] = '\n';
+      if (xaiboot_fs_write("/state/boot-esp", line, used) != XAIOS_OK) {
+        klog("kernel: could not record the boot ESP for setup\n");
+      }
+    }
     klog("kernel: no account on this machine; starting /bin/xaios-setup\n");
     const uint64_t setup_caps =
         XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_CONSOLE |
