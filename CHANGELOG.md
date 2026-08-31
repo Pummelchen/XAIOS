@@ -19,6 +19,71 @@ deferred; see the [project tracker](./wiki/Project-Tracker.md).
 Entries record what changed for someone *running* XAIOS. The commit history
 records how it was built.
 
+## Build 3 — 2026-08-31
+
+Build 2 could be installed onto a disk by an operator who knew the command.
+This one can be set up by a person who does not.
+
+Released as `xaios_b3.iso` with the same five kits. See
+[the release note](./release/xaios_b3.md).
+
+### A machine sets itself up
+
+- **A machine with no account now asks for one.** On the first boot of a
+  machine nobody has configured, XAIOS offers to run from the medium it booted
+  or to install onto a disk, then takes a username and password, an optional
+  six digit console PIN, the machine's name, whether it should answer on the
+  network, and whether this console should log in automatically. Nothing is
+  written until every question has been answered, so an interrupted setup
+  leaves the machine as it was.
+- **Nothing secret ships in an image any more.** A release image used to be
+  forbidden password authentication outright, which meant a released machine
+  could never have an account at all. It now carries the code and no
+  credential; the account is made on the machine, with a salt from that
+  machine's own entropy, and packaging a credential into a release image is
+  what the build refuses.
+- **A machine can be called something.** The name a person gives it appears on
+  the login prompt and in the shell prompt, which read `xaios` and
+  `admin@xaios` before, whatever either actually was.
+- **An account can be called something.** The username was required to be
+  `admin` by the record parser, the console, the SSH path and the kernel's
+  command dispatcher. All four now work from the account the machine has.
+
+### Fixed
+
+- **XAIOS could not read a GPT that another tool wrote.** The reader required
+  a header to declare exactly 128 partition entries; the specification fixes
+  only the array's minimum size and leaves the count to whoever made the
+  table. XAIOS's own unified image declares 248, so a machine booted from a
+  USB stick could not find the EFI System Partition an install copies from --
+  the install path that build 2's USB kit documents had never worked.
+- **`xaiosctl storage install` could not be run at all.** Three checks in the
+  client each rejected it: one required the caller's identity before the
+  caller had been identified, and two disagreed about whether an install may
+  carry the confirmation it separately requires. No install could satisfy any
+  two at once.
+- **A released image installed onto a disk nobody offered it.** A boot-time
+  self-test wrote a partition table and a filesystem onto whatever was in
+  virtio slot 5, confirming with nobody. It is now behind a build flag that
+  only the gates that need it set.
+- **A machine booted from read-only media had no writable state**, so it
+  locked its console and refused to start its SSH server. It now keeps state
+  in memory when it has no disk to keep it on.
+- **The initial filesystem could only be mounted once.** A single global held
+  the mount prefix, so a second mount silently redirected the first.
+
+### Known gaps
+
+- Still no physical-hardware evidence. The USB kit has never been written to a
+  stick and booted on a real machine, and `serve-netboot.sh` has never served
+  one.
+- **`B-02` recurred.** A thread join under load failed once on VMware Fusion
+  during this build's gate runs and did not reproduce on the next. It had been
+  seen once before and not since; that is now twice, on two different
+  hypervisors, and it remains not understood.
+- Real-model inference is not implemented; the model paths are fixtures.
+- The read-only boot path (`B-14`) remains written and unexercised.
+
 ## Build 2 — 2026-08-31
 
 Build 1 was a system you could boot. This is one you can put on a machine and
