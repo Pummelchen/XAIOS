@@ -347,6 +347,32 @@ static void step_pin(void) {
   say("Quick login set.\n");
 }
 
+/* Skipping the login prompt on this machine.
+
+   Worth being blunt about: the console is a physical thing, and a machine
+   that opens a shell without asking gives one to whoever is standing at it.
+   That is a reasonable trade for an appliance in a locked rack and a bad one
+   for a laptop, and only the person setting it up knows which this is. So the
+   question says what it costs and the default is no.
+
+   It does not touch SSH. A remote login still authenticates; this is the
+   local console only, which is the one an attacker has to be present to
+   use. */
+static void step_autologin(void) {
+  say("\n-- Automatic login --\n"
+      "This machine can skip the console login prompt and open a shell when\n"
+      "it finishes booting, with its background services started.\n\n"
+      "Anyone who can reach the keyboard then has that shell, without the\n"
+      "password or the PIN. SSH is unaffected and still authenticates.\n\n");
+  if (!prompt_yes("Log in automatically on this console? [y/N]: ")) {
+    say("The login prompt stays. This is the safer answer.\n");
+    return;
+  }
+  pending_add("autologin", "yes");
+  say("Automatic login enabled. The password and PIN still work over SSH and\n"
+      "after logging out.\n");
+}
+
 static void step_identity(void) {
   char hostname[SETUP_LINE_MAX];
 
@@ -521,6 +547,7 @@ int main(void) {
   step_identity();
   step_account();
   step_pin();
+  step_autologin();
 
   /* Hand what was collected to the kernel, which installs it. Nothing was
      saved before this point, so a setup that is interrupted leaves the

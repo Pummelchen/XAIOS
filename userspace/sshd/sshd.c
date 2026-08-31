@@ -53,6 +53,8 @@ static uint32_t g_console_pin_available;
 static int console_input_is_pin_prefix(const char *text, uint32_t length);
 static int console_input_is_pin(const char *text, uint32_t length);
 static int authenticate_console_pin(const char *pin);
+/* Defined below with the console session state it enters. */
+static void console_auth_succeeded(void);
 
 enum {
   SSHD_CONSOLE_AUTH_LOCKED = 0U,
@@ -571,6 +573,21 @@ static void console_write_login_prompt(void) {
   console_write(" login: ");
 }
 
+/* Whether this machine was set up to open a shell without asking.
+
+   Read fresh at each login rather than cached, so logging out of an
+   auto-login machine returns to a prompt that reflects the file as it is now.
+   Only the exact word enables it: a truncated or unreadable file leaves the
+   prompt in place, which is the answer that costs nothing if it is wrong. */
+#define SSHD_AUTOLOGIN_PATH "/etc/xaios_autologin"
+
+static int console_autologin_enabled(void) {
+  char value[8];
+  int length = xaios_read_file(SSHD_AUTOLOGIN_PATH, value, sizeof(value));
+  if (length < 3) return 0;
+  return value[0] == 'y' && value[1] == 'e' && value[2] == 's';
+}
+
 static void console_begin_login(void) {
   g_console_command_length = 0U;
   g_console_ignore_lf = 0U;
@@ -579,6 +596,16 @@ static void console_begin_login(void) {
     console_write(
         "Local console locked: password authentication is not configured.\n"
         "Use SSH public-key authentication for administration.\n");
+    return;
+  }
+  /* Asked for during setup, and only ever for this console: an SSH session
+     still authenticates. The machine says it is doing this, so a shell that
+     appeared without a password is never a mystery. */
+  if (console_autologin_enabled()) {
+    console_write(
+        "Automatic login is enabled on this console.\n"
+        "Type \"exit\" to return to a login prompt.\n");
+    console_auth_succeeded();
     return;
   }
   g_console_auth_state = SSHD_CONSOLE_AUTH_USER;

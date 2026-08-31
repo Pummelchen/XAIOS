@@ -26,6 +26,7 @@
 #define SETUP_USERS_PATH "/etc/xaios_sshd_users"
 #define SETUP_PIN_PATH "/etc/xaios_console_pin"
 #define SETUP_HOSTNAME_PATH "/etc/xaios_hostname"
+#define SETUP_AUTOLOGIN_PATH "/etc/xaios_autologin"
 #define SETUP_PENDING_MAX 2048U
 
 static int text_starts_with(const char *text, uint64_t length,
@@ -107,6 +108,7 @@ void setup_apply_pending(void) {
   uint64_t pin_length = 0U;
   const char *hostname = 0;
   uint64_t hostname_length = 0U;
+  int autologin = 0;
   int malformed = 0;
 
   uint64_t start = 0U;
@@ -126,6 +128,12 @@ void setup_apply_pending(void) {
     } else if (text_starts_with(line, length, "hostname=", &value)) {
       hostname = line + value;
       hostname_length = length - value;
+    } else if (text_starts_with(line, length, "autologin=", &value)) {
+      /* Only the exact word enables it. Anything else is a handoff that did
+         not come from setup, and the safe reading of a value nobody
+         recognises is "no". */
+      autologin = (length - value == 3U && line[value] == 'y' &&
+                   line[value + 1U] == 'e' && line[value + 2U] == 's');
     } else {
       malformed = 1;
     }
@@ -176,6 +184,16 @@ void setup_apply_pending(void) {
     line[used++] = '\n';
     if (xaiboot_fs_write(SETUP_HOSTNAME_PATH, line, used) != XAIOS_OK) {
       klog("setup: could not write the hostname\n");
+    }
+  }
+
+  if (autologin != 0) {
+    static const char enabled[] = "yes\n";
+    if (xaiboot_fs_write(SETUP_AUTOLOGIN_PATH, enabled,
+                         sizeof(enabled) - 1U) != XAIOS_OK) {
+      klog("setup: could not enable automatic login\n");
+    } else {
+      klog("setup: automatic console login enabled\n");
     }
   }
 
