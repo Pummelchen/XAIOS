@@ -1,5 +1,25 @@
 # XAIOS build 3
 
+> **Superseded by build 4. Do not use these artifacts.**
+>
+> A machine configured with SSH keys and no password account refuses every
+> key login. Generalising the username turned the public-key check from "is
+> this name `admin`" into "is this name in the password database", and on a
+> key-only machine that database is empty by design — so the name it claimed
+> did not exist and the login was refused.
+>
+> It affects only key-only configurations: a machine set up through the setup
+> routine has a password account and is unaffected, which is why the four
+> environment boots, the installed-disk gate and the setup gate all passed.
+> Two interoperability gates caught it, after these artifacts were published.
+>
+> This build was also cut from a commit whose CI was red — three jobs were
+> failing, and the fault above is the one of them that reached the image.
+> Build 4 is the same work with that fixed, cut from a green commit. This note
+> is left as it was written, below, so the record of what was claimed and what
+> was actually true stays legible.
+
+
 A machine you can hand to somebody. Build 2 could be installed onto a disk by
 an operator who already knew the command; this one asks.
 

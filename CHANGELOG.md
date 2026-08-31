@@ -19,6 +19,44 @@ deferred; see the [project tracker](./wiki/Project-Tracker.md).
 Entries record what changed for someone *running* XAIOS. The commit history
 records how it was built.
 
+## Build 4 — 2026-09-01
+
+Build 3 with the fault that should have stopped it from being released, and
+cut from a commit whose CI is green.
+
+Released as `xaios_b4.iso` with the same five kits. See
+[the release note](./release/xaios_b4.md). **Build 3's artifacts should not be
+used**; its note records why.
+
+### Fixed
+
+- **A machine configured with SSH keys and no password account refused every
+  key login.** Generalising the username in build 3 turned the public-key
+  check from "is this name `admin`" into "is this name in the password
+  database", and a key-only machine has no password database by design. What
+  authorises a public-key login is the key; the username is the identity it
+  claims, and it is now accepted when it names an account the machine has or
+  the name the machine's account goes by.
+- **Setup ran on machines that were already configured.** It asked whether
+  there was a password account, which is not the same question as whether the
+  machine has been set up. On a key-only image it stopped the boot at a prompt
+  with nobody in front of it, so the SSH server never started. It now runs
+  only when there is neither credential.
+- **Four dead globals stopped the tree building on current toolchains.**
+  Homebrew Clang 23 reports a variable that is assigned and never read, and
+  four had accumulated -- a directory counter superseded by the node table, a
+  DHCPv6 address recorded and never consulted, a symbol tally nothing
+  reported, and the loader hand-off kept only for a self-test that is now
+  compiled out. None were reachable behaviour; all four are gone.
+
+### Known gaps
+
+Unchanged from build 3: no physical-hardware evidence, the USB kit has never
+been written to a stick and booted, `serve-netboot.sh` has never served a real
+machine, real-model inference is not implemented, and the read-only boot path
+(`B-14`) remains unexercised. `B-02` has now been seen twice, on two
+hypervisors, and is still not understood.
+
 ## Build 3 — 2026-08-31
 
 Build 2 could be installed onto a disk by an operator who knew the command.

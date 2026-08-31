@@ -204,10 +204,13 @@ static xaios_gpt_table_t g_boot_gpt;
 /* The EFI System Partition this machine started from, once one has been
    found. It is the source an install copies from, and there is exactly one. */
 static char g_boot_esp[XAIOS_BLOCK_DEVICE_ID_MAX];
+#if XAIOS_INSTALL_SELF_TEST
 /* What the loader handed over. Kept because the install path runs long after
    kmain's argument has gone out of scope, and it needs to know whether this
-   machine booted from a self-contained loader. */
+   machine booted from a self-contained loader. Nothing else reads it, so it
+   lives and dies with the self-test that does. */
 static const xaios_boot_info_t *g_boot;
+#endif
 
 /* Read the boot files out of the EFI System Partition this machine started
    from, and say what is there.
@@ -341,11 +344,6 @@ static xaios_status_t mount_xaibootfs_from_disk(const char *disk) {
 #define BOOT_DISK_SLOT_BASE 16U
 /* The scratch disk the boot path attaches for storage administration. */
 #define XAIOS_INSTALL_TARGET "/dev/vblk5"
-
-/* Set when the state volume is memory rather than a disk, so the boot path
-   and the setup program can tell "nothing has been installed here yet" from
-   "this machine is installed". */
-static uint32_t g_state_is_ephemeral;
 /* Off unless a gate asks for it. See the call site. */
 #ifndef XAIOS_INSTALL_SELF_TEST
 #define XAIOS_INSTALL_SELF_TEST 0
@@ -475,7 +473,9 @@ static void map_mmio_range(uint64_t start, uint64_t size) {
 }
 
 void kmain(const xaios_boot_info_t *boot) {
+#if XAIOS_INSTALL_SELF_TEST
   g_boot = boot;
+#endif
   uint32_t persistent_network_ready = 0U;
   klog_init(boot);
   /* Start capturing before any subsystem can fail. A normal boot redraws the
@@ -839,7 +839,6 @@ void kmain(const xaios_boot_info_t *boot) {
       persistent_status = xaiboot_fs_mount_device("/dev/ram0");
       klog("kernel: no durable volume; state kept in memory status=%d\n",
            (int)persistent_status);
-      g_state_is_ephemeral = persistent_status == XAIOS_OK ? 1U : 0U;
     }
   }
   if (persistent_status == XAIOS_OK) {

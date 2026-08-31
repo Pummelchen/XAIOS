@@ -276,7 +276,6 @@ static uint64_t g_reject_count;
 static uint64_t g_checksum_error_count;
 static uint64_t g_allocation_count;
 static uint64_t g_free_count;
-static uint64_t g_directory_count;
 static uint64_t g_replay_count;
 static uint64_t g_journal_write_count;
 static uint64_t g_multi_sector_file_count;
@@ -1570,7 +1569,6 @@ static xaios_status_t create_dir(const char *path) {
   node->extent_count = 0;
   bytes_zero(node->extents, sizeof(node->extents));
   copy_path(node->path, path);
-  ++g_directory_count;
   klog("xaibootfs: mkdir path=%s generation=%lu\n",
        node->path, node->generation);
   return write_metadata();
@@ -2998,7 +2996,6 @@ void xaiboot_fs_self_test(void) {
   g_checksum_error_count = 0;
   g_allocation_count = 0;
   g_free_count = 0;
-  g_directory_count = 0;
   g_replay_count = 0;
   g_journal_write_count = 0;
   g_multi_sector_file_count = 0;

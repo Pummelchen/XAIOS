@@ -312,7 +312,6 @@ static volatile uint32_t g_expected_exception_vector = UINT32_MAX;
 static volatile uint64_t g_exception_test_count;
 static uint32_t g_page_tables_loaded;
 static uint16_t g_code_selector;
-static volatile uint32_t *g_lapic;
 static uint32_t g_lapic_ready;
 static uint32_t g_lapic_x2apic;
 volatile uint64_t g_x86_lapic_timer_interrupts;
@@ -1474,12 +1473,6 @@ static void validate_lapic_timer_interrupt(uint16_t serial_base) {
   }
   g_lapic_x2apic =
       (apic_msr & APIC_BASE_X2APIC) != 0U ? UINT32_C(1) : UINT32_C(0);
-  if (g_lapic_x2apic != 0U) {
-    g_lapic = 0;
-  } else {
-    g_lapic = (volatile uint32_t *)(uintptr_t)(apic_msr &
-                                                UINT64_C(0xfffff000));
-  }
   g_lapic_ready = 1U;
   uint32_t apic_id = lapic_read(APIC_ID);
   if (g_lapic_x2apic == 0U) apic_id >>= 24U;

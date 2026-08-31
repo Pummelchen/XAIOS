@@ -364,7 +364,6 @@ static uint64_t g_slaac_valid_until_ns;
    back, where a SLAAC address is derived and simply expires. Both feed the
    same send path, and a lease wins when both exist -- a network that runs
    DHCPv6 has expressed a preference about which address a host should use. */
-static xaios_ip_addr_t g_dhcpv6_v6;
 static uint64_t g_dhcpv6_valid_until_ns;
 
 static xaios_network_ping_status_t g_ping;
@@ -1006,7 +1005,6 @@ xaios_status_t network_stack_adopt_dhcpv6(const xaios_ip_addr_t *address,
   uint64_t now_ns = timer_now_ns();
   uint64_t lifetime_ns = (uint64_t)valid_lifetime_s * UINT64_C(1000000000);
   network_lock();
-  g_dhcpv6_v6 = *address;
   g_dhcpv6_valid_until_ns =
       lifetime_ns > UINT64_MAX - now_ns ? UINT64_MAX : now_ns + lifetime_ns;
   /* A leased address that is globally routable is the public one, on the same

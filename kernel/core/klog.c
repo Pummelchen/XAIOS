@@ -27,8 +27,15 @@ typedef struct xaios_console_capture {
 } xaios_console_capture_t;
 
 static volatile uint32_t *g_uart_base;
+#if defined(__aarch64__)
+/* Which UART, and how far apart its registers sit. Only the AArch64 console
+   reaches a UART through memory -- the x86 one uses port I/O and never reads
+   either of these -- so they are declared where they are used. Current Clang
+   reports a global that is assigned and never read, and on x86 these were
+   both. */
 static uint32_t g_uart_kind;
 static uint32_t g_uart_reg_shift;
+#endif
 static xaios_spinlock_t g_klog_lock;
 static uint32_t g_log_output_enabled = 1U;
 static xaios_console_capture_t
@@ -141,8 +148,10 @@ static void klog_line_flush(void) {
 
 void klog_init(const xaios_boot_info_t *boot) {
   g_uart_base = (volatile uint32_t *)(uintptr_t)boot->uart_base;
+#if defined(__aarch64__)
   g_uart_kind = boot->uart_kind;
   g_uart_reg_shift = boot->uart_reg_shift;
+#endif
   xaios_spin_init(&g_klog_lock);
   g_log_output_enabled = 1U;
 }

@@ -55,7 +55,6 @@ static uint64_t g_total_files;
 static uint64_t g_total_symbols;
 static uint64_t g_total_updates;
 static uint64_t g_scan_count;
-static uint64_t g_scan_symbol_count;
 
 static int str_nonempty(const char *value) {
   return value != 0 && value[0] != '\0';
@@ -165,7 +164,6 @@ void source_index_runtime_init(void) {
   g_total_symbols = 0;
   g_total_updates = 0;
   g_scan_count = 0;
-  g_scan_symbol_count = 0;
   klog("source-index: runtime initialized\n");
 }
 
@@ -571,7 +569,6 @@ xaios_status_t source_index_scan_source(uint32_t index_id, uint32_t file_id,
   }
 
   ++g_scan_count;
-  g_scan_symbol_count += scanned;
   klog("source-index: %u scanned file=%u symbols=%lu lines=%u\n",
        index_id, file_id, (unsigned long)scanned, line);
   return XAIOS_OK;
