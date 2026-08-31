@@ -246,11 +246,10 @@ qemu-setup-gate:
 	python3 ./tests/scripts/qemu-setup-gate.py
 
 # A machine with no kernel on its medium, installing itself onto a blank disk.
-# The install at boot is what this gate is for, so it asks for it explicitly;
-# an ordinary image does not carry it. Building here rather than depending on
-# image-qemu-test, because the flag has to reach that build.
+# The install at boot is what this gate is for, and an ordinary image does not
+# carry it. The gate builds its own image and asks for it, so it behaves the
+# same however it is invoked -- CI runs the script directly.
 qemu-netboot-gate:
-	XAIOS_INSTALL_SELF_TEST=1 $(MAKE) image-qemu-test
 	python3 ./tests/scripts/qemu-netboot-gate.py
 
 # Two nodes exchanging a sealed frame over a real network, one of them on the

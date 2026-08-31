@@ -1010,8 +1010,11 @@ def main() -> int:
     )
     release_env = build_env.copy()
     release_env["XAIOS_BUILD_MODE"] = "release"
+    # The rule is now narrower and the message with it: a release image may
+    # carry the password code, because setup needs it to make an account, but
+    # must not package a credential every copy of the download would share.
     require_rejected_build(
-        release_env, "password authentication is forbidden in release builds"
+        release_env, "a release image must not package a password credential"
     )
     run_checked(["make", BUILD_TARGET], 180, build_env)
 

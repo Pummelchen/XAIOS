@@ -1328,8 +1328,23 @@ persistent_network_done:
 
      An image that packages credentials never gets here, which is every gate
      image and every development build. */
-  if (xaiboot_fs_stat("/etc/xaios_sshd_users", &(xaios_xbfs_stat_t){0}) !=
-      XAIOS_OK) {
+  /* Only when there is no way in at all.
+
+     "No password account" is not the same question. An image that ships
+     authorized keys and no password database is a configured machine -- it is
+     how a fleet is built, and how the interoperability gates build theirs --
+     and running setup on it stops the boot at a prompt nobody is standing in
+     front of, so its SSH server never starts and the machine hangs. That is
+     what happened to three CI jobs.
+
+     A machine with either credential can be reached by whoever has it, and is
+     not this program's business. */
+  xaios_xbfs_stat_t credential;
+  int has_password_account =
+      xaiboot_fs_stat("/etc/xaios_sshd_users", &credential) == XAIOS_OK;
+  int has_authorized_keys =
+      xaiboot_fs_stat("/etc/xaios_authorized_keys", &credential) == XAIOS_OK;
+  if (has_password_account == 0 && has_authorized_keys == 0) {
     /* Setup offers to install, and an install copies from the partition this
        machine booted. Only the kernel knows which that is -- it is found
        while walking the boot disk's partition table -- so record it where

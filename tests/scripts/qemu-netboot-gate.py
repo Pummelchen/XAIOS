@@ -278,7 +278,21 @@ def evaluate(stage: str, text: str, expected) -> dict:
             "passed": passed}
 
 
+def build_image() -> None:
+    """Build the kernel this gate needs, asking for the boot-time install.
+
+    That install is what the later stages watch, and it is behind a flag
+    because an image that partitions slot 5 unasked has no business on
+    anybody's machine. Asked for here rather than by the make target, because
+    CI runs this script directly and a flag only the Makefile sets is a flag
+    that is not set when it matters."""
+    subprocess.run(["make", "image-qemu-test"], cwd=ROOT, check=True,
+                   env={**os.environ, "XAIOS_INSTALL_SELF_TEST": "1"},
+                   stdout=subprocess.DEVNULL)
+
+
 def main() -> int:
+    build_image()
     if shutil.which("qemu-system-aarch64") is None:
         return fail("qemu-system-aarch64 is not installed")
     fw = firmware()
