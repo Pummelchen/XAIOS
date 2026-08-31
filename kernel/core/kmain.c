@@ -56,6 +56,8 @@
 #include <xaios/storage_admin.h>
 #include <xaios/crash_writer.h>
 #include <xaios/ram_residency.h>
+#include <xaios/ram_block.h>
+#include <xaios/setup_apply.h>
 #include <xaios/engine_sha256_dispatch.h>
 #include <xaios/storage_bench.h>
 #include <xaios/system_slot.h>
@@ -339,6 +341,11 @@ static xaios_status_t mount_xaibootfs_from_disk(const char *disk) {
 #define BOOT_DISK_SLOT_BASE 16U
 /* The scratch disk the boot path attaches for storage administration. */
 #define XAIOS_INSTALL_TARGET "/dev/vblk5"
+
+/* Set when the state volume is memory rather than a disk, so the boot path
+   and the setup program can tell "nothing has been installed here yet" from
+   "this machine is installed". */
+static uint32_t g_state_is_ephemeral;
 /* Off unless a gate asks for it. See the call site. */
 #ifndef XAIOS_INSTALL_SELF_TEST
 #define XAIOS_INSTALL_SELF_TEST 0
@@ -821,6 +828,20 @@ void kmain(const xaios_boot_info_t *boot) {
       klog("xaibootfs: using registered persistent data disk\n");
     }
   }
+  /* No disk to keep state on. Give the machine one made of memory rather than
+     letting everything above the block layer fail in its own way: without it
+     admin_control_init never runs, sshd rejects its runtime configuration and
+     the console locks, and a live boot has no way in at all. What is lost is
+     that none of it survives the power going off, which is what a live boot
+     means and is now the only thing it means. */
+  if (persistent_status != XAIOS_OK) {
+    if (ram_block_create("/dev/ram0") == XAIOS_OK) {
+      persistent_status = xaiboot_fs_mount_device("/dev/ram0");
+      klog("kernel: no durable volume; state kept in memory status=%d\n",
+           (int)persistent_status);
+      g_state_is_ephemeral = persistent_status == XAIOS_OK ? 1U : 0U;
+    }
+  }
   if (persistent_status == XAIOS_OK) {
     xaios_xbfs_fsck_result_t fsck = xaiboot_fs_fsck();
     klog("kernel: persistent fsck valid=%u v%u files=%lu dirs=%lu\n",
@@ -1296,6 +1317,32 @@ persistent_network_done:
      the machine stops. Report what the display cost while the figure still
      covers a bounded, comparable amount of work. */
   virtio_gpu_report_transfer_cost();
+
+  /* A machine with no user database has no account, so nobody can log into
+     it -- the login prompt would ask for a username that does not exist. Run
+     setup first and let the person make one.
+
+     Before sshd, not beside it: the console is a single shared ring and
+     whoever reads it takes the keystroke, so two programs on it would race
+     for every character. Setup runs to completion and exits.
+
+     An image that packages credentials never gets here, which is every gate
+     image and every development build. */
+  if (xaiboot_fs_stat("/etc/xaios_sshd_users", &(xaios_xbfs_stat_t){0}) !=
+      XAIOS_OK) {
+    klog("kernel: no account on this machine; starting /bin/xaios-setup\n");
+    const uint64_t setup_caps =
+        XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_CONSOLE |
+        XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE | XAIOS_CAP_RANDOM |
+        XAIOS_CAP_TIME | XAIOS_CAP_NET | XAIOS_CAP_CONTROL_QUERY |
+        XAIOS_CAP_CONTROL_ADMIN | XAIOS_CAP_STORAGE_READ |
+        XAIOS_CAP_STORAGE_MOUNT | XAIOS_CAP_STORAGE_FORMAT |
+        XAIOS_CAP_STORAGE_PARTITION | XAIOS_CAP_ADMIN;
+    (void)run_user_app("/bin/xaios-setup", 2U, setup_caps);
+    /* Setup cannot write /etc -- no userspace process can -- so it leaves
+       what it collected under /state and this installs it. */
+    setup_apply_pending();
+  }
 
   klog("kernel: starting persistent /bin/sshd service\n");
   int sshd_exit =

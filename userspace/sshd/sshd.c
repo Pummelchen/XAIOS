@@ -545,6 +545,32 @@ static void console_prompt(void) {
   console_write("\x1b[0m$ ");
 }
 
+/* The login prompt carries the machine's name, so a person in front of a rack
+   can tell which machine they are typing at. Setup writes the name; a machine
+   nobody has renamed keeps the default, which is what every image did before
+   this and what a read of the file failing falls back to. */
+#define SSHD_HOSTNAME_PATH "/etc/xaios_hostname"
+#define SSHD_HOSTNAME_MAX 33U
+
+static void console_write_login_prompt(void) {
+  char name[SSHD_HOSTNAME_MAX];
+  int length = xaios_read_file(SSHD_HOSTNAME_PATH, name, sizeof(name));
+  uint32_t used = 0U;
+  if (length > 0) {
+    while (used < (uint32_t)length && used + 1U < sizeof(name) &&
+           name[used] != '\n' && name[used] != '\r' && name[used] > 0x20) {
+      ++used;
+    }
+  }
+  if (used == 0U) {
+    console_write_login_prompt();
+    return;
+  }
+  name[used] = '\0';
+  console_write(name);
+  console_write(" login: ");
+}
+
 static void console_begin_login(void) {
   g_console_command_length = 0U;
   g_console_ignore_lf = 0U;
@@ -556,7 +582,7 @@ static void console_begin_login(void) {
     return;
   }
   g_console_auth_state = SSHD_CONSOLE_AUTH_USER;
-  console_write("xaios login: ");
+  console_write_login_prompt();
 }
 
 static int console_nano_argument(const char *command, char *argument,
@@ -872,7 +898,7 @@ static void console_execute_command(void) {
     console_write("logout\n");
     g_console_auth_state = SSHD_CONSOLE_AUTH_USER;
     g_console_command_length = 0U;
-    console_write("xaios login: ");
+    console_write_login_prompt();
     return;
   } else {
     u64 output_bytes = 0U;
@@ -933,11 +959,12 @@ static void console_auth_failed(void) {
   if (g_console_lockout_until_ns != 0U) {
     console_write(
         "Login incorrect\n"
-        "Too many failed attempts. Try again in 60 seconds.\n"
-        "xaios login: ");
+        "Too many failed attempts. Try again in 60 seconds.\n");
+    console_write_login_prompt();
     return;
   }
-  console_write("Login incorrect\nxaios login: ");
+  console_write("Login incorrect\n");
+  console_write_login_prompt();
 }
 
 static void console_auth_succeeded(void) {
@@ -953,7 +980,8 @@ static void console_submit_auth(void) {
   g_console_command[g_console_command_length] = '\0';
   console_write("\n");
   if (console_locked_out()) {
-    console_write("Locked out. Try again in a moment.\nxaios login: ");
+    console_write("Locked out. Try again in a moment.\n");
+    console_write_login_prompt();
     g_console_auth_state = SSHD_CONSOLE_AUTH_USER;
     xaios_memzero(g_console_command, sizeof(g_console_command));
     g_console_command_length = 0U;
@@ -968,7 +996,8 @@ static void console_submit_auth(void) {
         console_auth_succeeded();
       }
     } else if (!ssh_str_eq(g_console_command, "admin")) {
-      console_write("Login incorrect\nxaios login: ");
+      console_write("Login incorrect\n");
+  console_write_login_prompt();
       console_record_auth_failure();
     } else {
       g_console_auth_state = SSHD_CONSOLE_AUTH_PASSWORD;
@@ -1071,7 +1100,7 @@ static void console_tick(void) {
       if (g_console_auth_state == SSHD_CONSOLE_AUTH_SHELL) {
         console_prompt();
       } else if (g_console_auth_state == SSHD_CONSOLE_AUTH_USER) {
-        console_write("xaios login: ");
+        console_write_login_prompt();
       } else if (g_console_auth_state == SSHD_CONSOLE_AUTH_PASSWORD) {
         console_write("Password: ");
       }

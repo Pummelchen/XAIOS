@@ -74,7 +74,7 @@ WORKER_ELF="$INIT_BUILD_DIR/worker.elf"
 USER_START_OBJ="$INIT_BUILD_DIR/user-start.o"
 USER_LIB_OBJ="$INIT_BUILD_DIR/xaios-user.o"
 USER_CONTROL_OBJ="$INIT_BUILD_DIR/xaios-control-client.o"
-USER_APPS="xaios-shell xaiosctl xapt nano htop pong hello sysinfo systest smptest smpstress perfbench nettest lstm-xor sshtest mltest posix-shell agenttest clustertest"
+USER_APPS="xaios-shell xaiosctl xapt nano htop pong hello sysinfo systest smptest smpstress perfbench nettest lstm-xor sshtest mltest posix-shell agenttest clustertest xaios-setup"
 
 # Which end of a cluster this image is, and where its peer is.
 #
@@ -169,10 +169,28 @@ if [ "${XAIOS_SSH_PASSWORD_AUTH+x}" = "x" ]; then
 else
   SSH_PASSWORD_AUTH_EXPLICIT=0
 fi
-if [ "$BUILD_MODE" = "development" ] && [ "$SSH_USERS_FILE" = "" ] && \
+# "none" asks for a development image that packages no account, so the first
+# boot runs setup exactly as a release image does. Without it every
+# development build has the development credential and setup is unreachable.
+if [ "$SSH_USERS_FILE" = "none" ]; then
+  SSH_USERS_FILE=""
+  SSH_PASSWORD_AUTH_EXPLICIT=1
+elif [ "$BUILD_MODE" = "development" ] && [ "$SSH_USERS_FILE" = "" ] && \
    [ "$SSH_PASSWORD_AUTH_EXPLICIT" = 0 ]; then
   SSH_USERS_FILE="$ROOT_DIR/config/development-sshd-users"
 fi
+# The rule here used to be "release images have no password authentication".
+# That forbade the code, which forbade the only way a released machine could
+# ever get an account: a person making one on it. The property worth keeping
+# is narrower and is the one that actually matters -- a released image
+# contains no credential anybody outside this build has. So the code is
+# always compiled, and packaging a credential into a release image is what is
+# refused.
+#
+# /bin/xaios-setup creates the account on first boot, with a salt from the
+# machine's own entropy, and writes it to that machine's state volume. Nothing
+# secret is in the download, which is what the old rule was protecting.
+PASSWORD_AUTH_CFLAG="-DXAIOS_PASSWORD_AUTH_AVAILABLE=1"
 if [ "$SSH_USERS_FILE" != "" ]; then
   if [ "${XAIOS_SSH_PASSWORD_AUTH:-}" != "1" ]; then
     if [ "$SSH_USERS_FILE" != "$ROOT_DIR/config/development-sshd-users" ]; then
@@ -181,10 +199,13 @@ if [ "$SSH_USERS_FILE" != "" ]; then
     fi
   fi
   if [ "$BUILD_MODE" = "release" ]; then
-    printf '%s\n' "error: password authentication is forbidden in release builds" >&2
+    printf '%s\n' \
+      "error: a release image must not package a password credential." \
+      "       Password support is compiled in and /bin/xaios-setup creates" \
+      "       the account on first boot; a packaged record would be a" \
+      "       credential every copy of the download shares." >&2
     exit 2
   fi
-  PASSWORD_AUTH_CFLAG="-DXAIOS_PASSWORD_AUTH_AVAILABLE=1"
 elif [ "${XAIOS_SSH_PASSWORD_AUTH:-0}" != "0" ]; then
   printf '%s\n' "error: XAIOS_SSH_PASSWORD_AUTH requires XAIOS_SSH_USERS_FILE" >&2
   exit 2
@@ -200,7 +221,9 @@ if [ "$BUILD_MODE" = "development" ] && [ "$CONSOLE_PIN_FILE" = "" ] && \
 fi
 if [ "$CONSOLE_PIN_FILE" != "" ]; then
   if [ "$BUILD_MODE" = "release" ]; then
-    printf '%s\n' "error: console PIN authentication is forbidden in release builds" >&2
+    printf '%s\n' \
+      "error: a release image must not package a console PIN." \
+      "       Setup enrols one on first boot; see the password rule above." >&2
     exit 2
   fi
   if [ "$SSH_USERS_FILE" = "" ]; then
@@ -653,6 +676,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/vfs_xaifs.o
   $KERNEL_BUILD_DIR/model_cache.o
   $KERNEL_BUILD_DIR/ram_residency.o
+  $KERNEL_BUILD_DIR/ram_block.o
+  $KERNEL_BUILD_DIR/setup_apply.o
   $KERNEL_BUILD_DIR/xai_fs_admin.o
   $KERNEL_BUILD_DIR/service.o
   $KERNEL_BUILD_DIR/syscall.o
@@ -803,6 +828,8 @@ compile_kernel "$ROOT_DIR/kernel/fs/vfs_initramfs.c" "$KERNEL_BUILD_DIR/vfs_init
 compile_kernel "$ROOT_DIR/kernel/fs/vfs_xaifs.c" "$KERNEL_BUILD_DIR/vfs_xaifs.o"
 compile_kernel "$ROOT_DIR/kernel/fs/model_cache.c" "$KERNEL_BUILD_DIR/model_cache.o"
 compile_kernel "$ROOT_DIR/kernel/mm/ram_residency.c" "$KERNEL_BUILD_DIR/ram_residency.o"
+compile_kernel "$ROOT_DIR/kernel/dev/ram_block.c" "$KERNEL_BUILD_DIR/ram_block.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/setup_apply.c" "$KERNEL_BUILD_DIR/setup_apply.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xai_fs_admin.c" "$KERNEL_BUILD_DIR/xai_fs_admin.o"
 compile_kernel "$ROOT_DIR/kernel/user/service.c" "$KERNEL_BUILD_DIR/service.o"
 compile_kernel "$ROOT_DIR/kernel/user/syscall.c" "$KERNEL_BUILD_DIR/syscall.o"
@@ -1036,6 +1063,7 @@ for app in $USER_APPS; do
     -DXAIOS_BOOT_TEST_APPS="$BOOT_TEST_APPS" \
     $([ "$app" = clustertest ] && printf '%s' "$CLUSTER_APP_CFLAGS") \
     -I"$ROOT_DIR/userspace/include" \
+    -I"$ROOT_DIR/userspace/sshd" \
     -I"$ROOT_DIR/engine/include" \
     -c "$ROOT_DIR/userspace/apps/$app.c" \
     -o "$app_obj"
@@ -1085,6 +1113,33 @@ for app in $USER_APPS; do
       -o "$app_elf" "$USER_START_OBJ" "$USER_LIB_OBJ" \
       "$USER_CONTROL_OBJ" "$app_obj" "$XAPT_TLS_OBJ" "$XAPT_TRUST_OBJ" \
       "$XAPT_BEARSSL"
+  elif [ "$app" = "xaios-setup" ]; then
+    # Setup writes the credential records sshd reads, so it hashes them with
+    # the same code sshd verifies them with. Two implementations of PBKDF2
+    # that disagree produce an account that cannot be logged into, and the
+    # disagreement would only show at the login prompt.
+    SETUP_CRYPTO_OBJ="$INIT_BUILD_DIR/setup-ssh-crypto.o"
+    SETUP_NACL_OBJ="$INIT_BUILD_DIR/setup-tweetnacl.o"
+    for setup_src in ssh_crypto tweetnacl_subset; do
+      "$CLANG" --target="$TARGET_TRIPLE" $USER_ARCH_CFLAGS -std=c99 \
+        -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+        -Wall -Wextra -Werror \
+        -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/sshd" \
+        -c "$ROOT_DIR/userspace/sshd/$setup_src.c" \
+        -o "$INIT_BUILD_DIR/setup-$setup_src.o"
+    done
+    SETUP_CRYPTO_OBJ="$INIT_BUILD_DIR/setup-ssh_crypto.o"
+    SETUP_NACL_OBJ="$INIT_BUILD_DIR/setup-tweetnacl_subset.o"
+    "$LD_LLD" \
+      -nostdlib \
+      -T "$ROOT_DIR/userspace/init/linker.ld" \
+      -o "$app_elf" \
+      "$USER_START_OBJ" \
+      "$USER_LIB_OBJ" \
+      "$USER_CONTROL_OBJ" \
+      "$app_obj" \
+      "$SETUP_CRYPTO_OBJ" \
+      "$SETUP_NACL_OBJ"
   elif [ "$app" = "xaiosctl" ] ||
       [ "$app" = "htop" ]; then
     "$LD_LLD" \

@@ -20,6 +20,7 @@ renames, and deletions under it are rejected; mutable data belongs under
 | `/init` | First userspace process. Establishes the initial service lifecycle and returns status to the kernel. | Started once during boot. |
 | `/bin/service-manager` | Exercises and owns the bounded service-manager protocol used for managed workers. | Started during boot. |
 | `/bin/xaios-worker` | Joinable worker process used for scheduler, CPU-assignment, and service-lifecycle work. | Started by the service manager; count follows the boot profile. |
+| `/bin/xaios-setup` | First-boot setup. Offers running from the boot medium or installing onto a disk, then takes the account password, an optional six digit console PIN, and the machine's name. It cannot write `/etc` -- no userspace process can -- so it leaves what it collected under `/state` and the kernel installs it. | Started before `sshd`, and only when the machine has no account, so an image that packages credentials never reaches it. |
 | `/bin/sshd` | Persistent SSH/SFTP server, authenticated PTY transport, forwarding endpoint, and userspace adapter for the kernel command dispatcher. | Started only after networking and the bounded external IPv4 TCP readiness check succeeds. |
 
 ## Administrative applications
