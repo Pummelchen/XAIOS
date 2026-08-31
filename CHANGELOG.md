@@ -19,6 +19,88 @@ deferred; see the [project tracker](./wiki/Project-Tracker.md).
 Entries record what changed for someone *running* XAIOS. The commit history
 records how it was built.
 
+## Build 2 — 2026-08-31
+
+Build 1 was a system you could boot. This is one you can put on a machine and
+leave there.
+
+Released as `xaios_b2.iso`, with five kits beside it — QEMU, VMware Fusion,
+Apple Virtualization.framework, a bootable USB stick, and a network boot for a
+machine with no disk. See [the release note](./release/xaios_b2.md) for the
+exact environments and versions each was tested on, and for what was not.
+
+### Installs
+
+- **XAIOS installs itself onto a disk.** `xaiosctl storage install DISK from
+  ESP` writes a partition table, sizes and formats an EFI System Partition from
+  what is actually being copied, writes the loader, kernel, initial filesystem
+  and entropy seed, and adds a partition for durable state. It refuses to
+  install onto the disk the source lives on, and requires the target's own GPT
+  identity as confirmation, so a command that destroys a disk is one you have
+  to look at the disk to type.
+- **A machine with no disk installs the same way.** The network boot image
+  carries a plain copy of the loader inside itself, because a running PE cannot
+  be copied back out of memory — so a machine that arrived over TFTP can write
+  a bootable disk without fetching anything more.
+- **The installed machine finds its own storage.** Every gate before this
+  attached each volume as a separate device at a known address. An installed
+  machine has one disk and has to look: XAIOS now finds xaibootFS on a
+  partition of whatever disk it booted from, accepts transitional virtio PCI
+  device IDs, and maps above 512 GiB, where firmware puts the 64-bit PCI window.
+
+### Storage
+
+- **Reads and writes no longer cost one device request per sector.** Transfers
+  go out in chains of up to 1 MiB, with several in flight at once, and skip the
+  bounce buffer when the caller's memory is already reachable by the device.
+- **Model bytes are hashed on the CPU's own instructions** where the processor
+  has the ARMv8 SHA2 extensions, and on the portable code where it does not.
+  The choice is made once at boot and checked against the scalar result.
+- **The chunks read most often stay in RAM.** A 256 MiB read cache admits a
+  chunk on its second read, and re-reading an admitted chunk skips both the
+  device and the hash. Under sustained pressure it now evicts rather than
+  freezing full, which is what it did when first measured.
+- **XAIOS moves itself into RAM at boot**, in steps of 64, 128 and 256 MiB, and
+  says which step it took and why.
+- **xaibootFS records extents**, so a volume can be a gigabyte rather than four
+  megabytes.
+
+### Survives losing power
+
+- **Power was cut to a machine mid-write, repeatedly**, and what was on the
+  volume afterwards was checked rather than assumed. A commit either happened
+  or did not; no half-written chunk was ever readable as a whole one.
+- **The flushes that safety argument rests on are now checked.** A device with
+  a volatile write cache is free to persist a superblock before the catalog it
+  points at, which no emulator would ever show. The driver reports every write
+  and flush in order, and a gate reads it back and requires a flush between the
+  last catalog write and the superblock that publishes it.
+
+### Fixed
+
+- **A userspace write could overflow a static kernel buffer.** The write limit
+  was taken from the volume's maximum file size rather than from the buffer
+  actually holding the data.
+- **The heap lost count of itself**, because a byte-at-a-time copy was replaced
+  without the accounting following it.
+- **The loader kept memory the kernel needed.** The kernel's `.bss` tail is now
+  left to the kernel instead of being claimed by firmware that has finished
+  with it.
+- **A machine that is not in a cluster dialled one on every boot**, and waited.
+- **One slow gate failed the gate after it**, by leaving an emulator running
+  when its own timeout killed only the build around it.
+
+### Known gaps
+
+- Still no physical-hardware evidence. Every result is from an emulator or a
+  hypervisor and establishes correctness, not performance.
+- The USB kit has never been written to a stick and booted on a real machine,
+  and `serve-netboot.sh` has never served a real one. The image's EFI System
+  Partition and the netboot binaries are both gated; the physical last mile is
+  not.
+- Real-model inference is not implemented; the model paths are fixtures.
+- The read-only boot path (`B-14`) remains written and unexercised.
+
 ## Build 1 — 2026-08-27
 
 First released build. XAIOS has been buildable and bootable for some time; what

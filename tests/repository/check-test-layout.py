@@ -23,6 +23,7 @@ RUNTIME_SCRIPTS = {
     "build-release.sh",
     "build-user-app.sh",
     "build-vm-packages.sh",
+    "build-boot-media.sh",
     "build-xapt-repository.sh",
     "build-libc-runtime-test.sh",
     "build-libc.sh",

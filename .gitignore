@@ -13,6 +13,13 @@ dist/
 release/xaios_b*-qemu.zip
 release/xaios_b*-vmware-fusion.zip
 release/xaios_b*-virtualization-framework.zip
+# The same reasoning for the two hardware kits from build-boot-media.sh. The
+# USB kit is a fourth copy of the image. The netboot kit is not a copy of
+# anything -- it is the only artifact here that the tracked zip cannot be
+# turned into -- but make boot-media rebuilds it byte-for-byte from the tree,
+# so tracking it would buy nothing a tag does not already give.
+release/xaios_b*-usb.zip
+release/xaios_b*-netboot.zip
 *.efi
 *.elf
 *.bin
