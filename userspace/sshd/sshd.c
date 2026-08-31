@@ -73,6 +73,7 @@ static int authenticate_password(const char *username, const char *password);
 static int sshd_user_exists(const char *username);
 static void console_set_username(const char *username);
 static const char *console_only_username(void);
+static const char *sshd_account_name(void);
 static const char *console_username(void);
 
 static uint64_t fnv1a64_zero_range(const void *data, uint64_t size,
@@ -1428,20 +1429,27 @@ static void console_set_username(const char *username) {
   g_console_username[i] = '\0';
 }
 
-/* The account a PIN logs in as: the first active one. A machine has one
-   account today; if that changes, a PIN will need to say which. */
-/* Who the console is acting as. Falls back to the machine's single account
-   so a command dispatched before a name was recorded still names someone. */
-static const char *console_username(void) {
-  return g_console_username[0] != '\0' ? g_console_username
-                                        : console_only_username();
-}
-
-static const char *console_only_username(void) {
+/* The name this machine's account goes by: the password database when there
+   is one, and "admin" when there is not. A key-only image has no password
+   database at all -- authorized keys and nothing else, which is a configured
+   machine rather than an unconfigured one -- and its logins have always been
+   "admin". */
+static const char *sshd_account_name(void) {
   for (uint32_t i = 0U; i < g_user_count; ++i) {
     if (g_users[i].active) return g_users[i].username;
   }
-  return "";
+  return "admin";
+}
+
+/* The account a PIN logs in as. A machine has one account today; if that
+   changes, a PIN will need to say which. */
+static const char *console_only_username(void) { return sshd_account_name(); }
+
+/* Who the console is acting as. Falls back to the machine's account so a
+   command dispatched before a name was recorded still names someone. */
+static const char *console_username(void) {
+  return g_console_username[0] != '\0' ? g_console_username
+                                        : console_only_username();
 }
 
 static int authenticate_password(const char *username, const char *password) {
@@ -2547,7 +2555,14 @@ static int process_connection(ssh_connection_t *conn) {
 
       /* ---- "publickey" method (RFC 4252 Section 7) ---- */
       if (ssh_str_eq(method, "publickey")) {
-        if (!sshd_user_exists(username)) {
+        /* What authorises a public-key login is the key, checked below
+           against the authorized keys; the username is the identity it
+           claims. Asking the *password* database whether that name exists
+           refuses every key login on a key-only image, where that database is
+           empty by design -- which is what this did, and what stopped two
+           interoperability gates. */
+        if (!sshd_user_exists(username) &&
+            !ssh_str_eq(username, sshd_account_name())) {
           conn->auth_attempts++;
           record_auth_failure(&conn->client_addr);
           if (send_auth_failure(conn) != 0) return -1;
