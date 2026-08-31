@@ -264,7 +264,8 @@ static int parse_header(xaios_block_device_t *device, uint64_t header_lba,
       header->backup_lba != expected_other_lba ||
       header->first_usable_lba > header->last_usable_lba ||
       gpt_guid_is_zero(&header->disk_guid) ||
-      header->entry_count != XAIOS_GPT_ENTRY_COUNT ||
+      header->entry_count < XAIOS_GPT_ENTRY_COUNT ||
+      header->entry_count > XAIOS_GPT_ENTRY_COUNT_MAX ||
       header->entry_size != XAIOS_GPT_ENTRY_SIZE ||
       !checked_multiply(header->entry_count, header->entry_size,
                         &array_bytes) ||

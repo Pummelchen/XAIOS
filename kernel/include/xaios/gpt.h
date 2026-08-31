@@ -5,7 +5,18 @@
 #include <xaios/status.h>
 #include <xaios/types.h>
 
+/* What XAIOS writes when it creates a table. Reading is deliberately not
+   pinned to it: the UEFI specification lets whoever made a table declare its
+   own entry count, requiring only that the array reserve at least 16384 bytes
+   -- 128 entries of 128 -- and tools do differ. xorriso writes 248, so a
+   reader that insisted on exactly 128 rejected the GPT in XAIOS's own unified
+   image, which is the table a machine booted from a USB stick has to read to
+   find the partition an install copies from. */
 #define XAIOS_GPT_ENTRY_COUNT 128U
+/* The most a declared count may be before the table is refused as unreasonable
+   rather than merely large. Bounds the array walk; the entries themselves are
+   still capped by XAIOS_GPT_MAX_PARTITIONS. */
+#define XAIOS_GPT_ENTRY_COUNT_MAX 1024U
 #define XAIOS_GPT_ENTRY_SIZE 128U
 #define XAIOS_GPT_MAX_PARTITIONS 128U
 #define XAIOS_GPT_NAME_CODE_UNITS 36U
