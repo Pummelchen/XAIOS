@@ -86,7 +86,7 @@ It is correctness evidence, not production or hardware-performance evidence.
 
 ### VMware Fusion on Apple Silicon
 
-VMware Fusion on Apple Silicon has a qualified one-vCPU ARM64 guest profile.
+VMware Fusion on Apple Silicon has a qualified four-vCPU ARM64 guest profile.
 Docker builds the reproducible Debian 13 ARM64 GRUB compatibility stage; XAIOS
 uses PCI-discovered E1000E networking and AHCI SATA storage.
 
@@ -118,7 +118,7 @@ validate x86_64 guests. See [`VMWARE-FUSION.md`](./VMWARE-FUSION.md).
 | `make qemu-regression-suite` | Full regression suite |
 | `make qemu-benchmark` | QEMU correctness telemetry collection |
 | `make qemu-readiness-gate` | QEMU correctness-readiness validation |
-| `make vmware-fusion-smoke` | Fusion one-vCPU boot, E1000E DHCP, AHCI xaibootFS, SSH/SFTP, recovery, reboot, shutdown and repeat boot |
+| `make vmware-fusion-smoke` | Fusion four-vCPU boot, E1000E DHCP, AHCI xaibootFS, SSH/SFTP, recovery, reboot, shutdown and repeat boot |
 
 ### Mac client interoperability
 

@@ -20,7 +20,7 @@ Two of the three virtual-platform profiles pass at `b173e42c558e`, which is the
 same tree for both: **macOS QEMU ARM64** across boot/CPU/network/SSH, USB
 keyboard console, SVE2 per-task context, storage recovery, operations and
 shutdown, and repeat boot; and **macOS VMware Fusion ARM64** across its
-one-vCPU boot, storage, network and SSH lifecycle. Between them they qualify
+four-vCPU boot, storage, network and SSH lifecycle. Between them they qualify
 the secondary-CPU bring-up, the subsystem serialisation and the virtio
 notification work on real firmware rather than on none.
 
@@ -200,7 +200,7 @@ status.
 ## VMware Fusion ARM64 remaining work
 
 The qualified Fusion boundary is Apple Silicon VMware Fusion 26H1 (26.0.0),
-one vCPU, E1000E, AHCI, DHCP IPv4, and public-key SSH/SFTP. The items below
+four vCPUs, E1000E, AHCI, DHCP IPv4, and public-key SSH/SFTP. The items below
 are intentionally not implied by that passing profile.
 
 | ID | Item | Status | Evidence / remaining gate |

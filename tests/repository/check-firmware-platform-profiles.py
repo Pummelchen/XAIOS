@@ -33,7 +33,7 @@ def main() -> int:
         if item["id"] == "macos-vmware-fusion-aarch64"
     )
     expected_capabilities = {
-        "cpu": "required-single-vcpu",
+        "cpu": "required-as-configured",
         "shutdown": "required",
         "repeat_boot": "required",
     }
@@ -57,8 +57,22 @@ def main() -> int:
     # whose attributes disagreed between CPUs. That is fixed, so the rule is no
     # longer "one" but "stated": the profile must say how many vCPUs it asks
     # for, in a form the smoke gate can read back and hold the guest to.
-    if not re.search(r'^numvcpus = "\d+"$', vmx, re.MULTILINE):
+    stated = re.search(r'^numvcpus = "(\d+)"$', vmx, re.MULTILINE)
+    if not stated:
         failures.append("Fusion VMX must state numvcpus explicitly")
+    else:
+        # And the contract must name the same number. The capability said
+        # "required-single-vcpu" for a while after the VMX had moved to four
+        # and the smoke gate was booting four, so the contract described a
+        # profile that no longer existed anywhere else in the tree. Checking
+        # the two against each other is what stops that recurring: neither can
+        # be edited alone.
+        cpu = fusion["emulator"]["cpu"]
+        if f"{stated.group(1)} vCPU" not in cpu:
+            failures.append(
+                f"Fusion contract cpu {cpu!r} must name the "
+                f"{stated.group(1)} vCPUs the VMX asks for"
+            )
     if failures:
         print("firmware-profiles-check: failed")
         for failure in failures:

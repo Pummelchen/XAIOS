@@ -120,7 +120,7 @@ answers `PSCI_VERSION` with 1.1 regardless, so XAIOS asks rather than trusts,
 and four vCPUs come online.
 
 DHCP failed twice at four vCPUs early in that work and has not recurred in
-later runs, so no cause is attributed to it. The harness defaults to one vCPU.
+later runs, so no cause is attributed to it. The harness defaults to four vCPUs.
 
 ## Running the Intel build here
 

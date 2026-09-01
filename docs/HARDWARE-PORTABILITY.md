@@ -30,7 +30,7 @@ hypervisor or board identity into core services.
 ## Current Status
 
 QEMU is the broadest operating-system correctness environment. VMware Fusion
-ARM64 is a qualified one-vCPU guest path tested only on VMware Fusion 26H1
+ARM64 is a qualified four-vCPU guest path tested only on VMware Fusion 26H1
 (26.0.0), with PCI-discovered E1000E DHCP, AHCI xaibootFS, public-key SSH/SFTP,
 recovery, reboot and shutdown evidence on the current Apple Silicon host. It
 remains incomplete for multi-vCPU, VMXNET3, live DNSSEC interoperability and

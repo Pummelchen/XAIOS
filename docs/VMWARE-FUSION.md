@@ -1,7 +1,7 @@
 # VMware Fusion ARM64
 
 Status: qualified virtual ARM64 guest profile, tested only with VMware Fusion
-26H1 (26.0.0) on Apple Silicon. The qualified VM uses one vCPU, E1000E and
+26H1 (26.0.0) on Apple Silicon. The qualified VM uses four vCPUs, E1000E and
 AHCI. VMware Fusion is a distinct virtual-hardware target, not a QEMU mode.
 No virtual result establishes physical hardware performance or support.
 

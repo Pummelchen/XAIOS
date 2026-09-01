@@ -1,7 +1,7 @@
 # VMware Fusion
 
 XAIOS has a qualified virtual ARM64 guest profile for VMware Fusion 26H1
-(26.0.0) on Apple Silicon. The supported profile is one vCPU with E1000E and
+(26.0.0) on Apple Silicon. The supported profile is four vCPUs with E1000E and
 AHCI. It remains virtual-platform correctness evidence, not a compatibility
 claim for other Fusion releases, physical Apple Silicon performance, or
 production certification.

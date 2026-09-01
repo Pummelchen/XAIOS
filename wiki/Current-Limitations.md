@@ -8,7 +8,7 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 
 - AArch64 QEMU provides the broadest complete OS-service path. QEMU validates
   behavior, not physical ARM performance, firmware behavior, or scaling.
-- VMware Fusion on Apple Silicon has a qualified one-vCPU ARM64 profile with a
+- VMware Fusion on Apple Silicon has a qualified four-vCPU ARM64 profile with a
   generated compatibility stage, PCI-discovered E1000E DHCP, AHCI xaibootFS,
   public-key SSH/SFTP, recovery, reboot, clean shutdown and repeat-boot
   evidence. Multi-vCPU startup, VMXNET3, live DNSSEC interoperability, IPv6,

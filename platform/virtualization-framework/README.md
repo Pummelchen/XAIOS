@@ -303,7 +303,7 @@ now applies only when no advertisement has been accepted.
 ## Running on more than one core
 
 This is the only target here that runs XAIOS on real cores, and it is worth
-using that way rather than at one vCPU:
+using more of them than the four the harness defaults to:
 
 ```sh
 ./build/vz/xaios-vz build/vz/xaios-vz-disk.img ... --cpus 8

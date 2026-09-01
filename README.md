@@ -49,7 +49,7 @@ booted on, and what was *not* tested — see the
 |---|---|---|---|
 | QEMU ARM64 | macOS QEMU ARM64 | full CI | correctness and ABI only |
 | QEMU x86_64 | Intel VPS QEMU x86_64 | full CI | correctness and ABI only |
-| VMware Fusion | macOS VMware Fusion ARM64 | `make vmware-fusion-smoke` | Fusion 26H1 one-vCPU lifecycle |
+| VMware Fusion | macOS VMware Fusion ARM64 | `make vmware-fusion-smoke` | Fusion 26H1 four-vCPU lifecycle |
 | Apple Virtualization.framework | none; development target | `make vz-gate`, `make vz-stress-gate` | not qualification evidence |
 
 XAIOS behaves the same on all of them. Firmware supplies capabilities, never

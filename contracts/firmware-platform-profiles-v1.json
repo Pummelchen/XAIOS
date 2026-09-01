@@ -53,7 +53,7 @@
       "emulator": {
         "binary": "vmrun",
         "machine": "VMware Fusion ARM64",
-        "cpu": "single vCPU; Fusion UEFI does not provide PSCI CPU_ON",
+        "cpu": "4 vCPUs; Fusion UEFI answers PSCI without advertising it",
         "accelerator": "Fusion managed"
       },
       "required_firmware_tables": ["RSDP", "XSDT/RSDT", "MADT GICC/GICD/GICR", "MCFG"],
@@ -63,7 +63,7 @@
       ],
       "capabilities": {
         "boot": "required",
-        "cpu": "required-single-vcpu",
+        "cpu": "required-as-configured",
         "storage": "required",
         "network_ssh": "required",
         "shutdown": "required",
