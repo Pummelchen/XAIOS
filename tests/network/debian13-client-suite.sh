@@ -175,6 +175,25 @@ run_ssh 'find /tmp/utility-migration -name moved.txt' \
   || fail 'find utility omitted the migrated file'
 run_ssh 'll /tmp/utility-migration' | grep -q 'moved.txt' \
   || fail 'ls alias did not dispatch to /bin/ls'
+
+# B-10: a command that fails has to say why. The shell used to discard the
+# output buffer the kernel writes its reason into and print "command failed"
+# -- two words that hid a genuine cross-platform divergence until someone
+# thought to look past them. Two failures are checked, because they arrive by
+# different routes: one the shell refuses to dispatch at all, and one that
+# dispatches and fails inside the utility. `|| true` because both are expected
+# to exit non-zero; what is asserted is what they said on the way out.
+unknown_output="$(run_ssh 'definitely-not-a-real-command' 2>/dev/null || true)"
+printf '%s' "$unknown_output" | grep -q 'command not found' \
+  || fail "an unknown command gave no reason: ${unknown_output:-<nothing>}"
+denied_output="$(run_ssh 'cat /etc/shadow' 2>/dev/null || true)"
+printf '%s' "$denied_output" | grep -q 'cannot read file' \
+  || fail "a refused read gave no reason: ${denied_output:-<nothing>}"
+for output in "$unknown_output" "$denied_output"; do
+  test "$(printf '%s' "$output" | tr -d '[:space:]')" != 'commandfailed' \
+    || fail 'a failure reported only "command failed", which is B-10'
+done
+printf 'PASS: failing commands report why they failed\n'
 run_ssh 'mkdir -p /tmp/utility-migration/tar-out'
 run_ssh 'tar -cf /tmp/utility-migration/files.tar /tmp/utility-migration/moved.txt'
 run_ssh 'tar -tf /tmp/utility-migration/files.tar' | grep -q 'moved.txt' \
