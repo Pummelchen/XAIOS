@@ -416,9 +416,18 @@ int main(int argc, char **argv) {
   free(large);
   free(g_image2);
   free(g_image);
+  /* The device counters are reported rather than discarded. They were
+     counted and never read, which newer compilers reject outright, and the
+     cheap fix would have been to delete them -- but they are the measurement
+     that shows the FAT being rescanned from the start on every allocation,
+     which once hung a 10 MB copy for the twenty thousand clusters it needs.
+     A count that grows out of proportion to the bytes moved is visible here;
+     a deleted counter is not. */
   printf("fat: format, directory tree, file write/read, replace, remount and "
-         "cross-volume copy tests passed clusters=%llu bytes_per_cluster=%llu\n",
+         "cross-volume copy tests passed clusters=%llu bytes_per_cluster=%llu "
+         "device_reads=%lu device_writes=%lu\n",
          (unsigned long long)volume.cluster_count,
-         (unsigned long long)(volume.sectors_per_cluster * SECTOR));
+         (unsigned long long)(volume.sectors_per_cluster * SECTOR),
+         g_reads, g_writes);
   return 0;
 }
