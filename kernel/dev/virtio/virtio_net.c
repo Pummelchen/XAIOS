@@ -30,6 +30,12 @@
    writes the code to use it, and a count nobody has read is a guess. */
 #define VIRTIO_NET_F_CTRL_VQ (UINT32_C(1) << 17U)
 #define VIRTIO_NET_F_MQ (UINT32_C(1) << 22U)
+/* The control queue's multiqueue class, and its one command: how many pairs
+   the driver is actually servicing. Until it is sent, a device uses one pair
+   however many it advertises. */
+#define VIRTIO_NET_CTRL_MQ 4U
+#define VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET 0U
+#define VIRTIO_NET_CTRL_ACK_OK 0U
 #define VIRTIO_NET_F_GUEST_TSO4 (UINT32_C(1) << 7U)
 #define VIRTIO_NET_F_GUEST_TSO6 (UINT32_C(1) << 8U)
 #define VIRTIO_NET_F_GUEST_ECN (UINT32_C(1) << 9U)
@@ -119,6 +125,16 @@ typedef struct virtio_net_driver {
   uint32_t active_pairs;
   /* Where the next receive poll starts, so no pair starves another. */
   uint32_t rx_cursor;
+  /* The control queue, when the device has one. It is not a pair: there is a
+     single one, and it sits after the last pair the device advertises. */
+  virtq_desc_t *ctrl_desc;
+  virtq_avail_t *ctrl_avail;
+  virtq_used_t *ctrl_used;
+  uint8_t *ctrl_buffer;
+  uint16_t ctrl_avail_idx;
+  uint16_t ctrl_last_used;
+  uint32_t ctrl_ready;
+  uint32_t ctrl_queue_index;
   virtio_net_queue_pair_t pairs[VIRTIO_NET_MAX_QUEUE_PAIRS];
 } virtio_net_driver_t;
 
@@ -533,6 +549,61 @@ static uint64_t net_dma_address(const void *ptr) {
 }
 
 
+/* Tell the device how many pairs are in service.
+ *
+ * The control queue carries a three-part request: a two-byte header naming
+ * the class and command, the payload, and one byte the device writes its
+ * acknowledgement into. The first two are device-readable and the third is
+ * device-writable, which is why they are separate descriptors rather than one
+ * buffer -- a device may not write into a descriptor the driver did not mark
+ * writable.
+ *
+ * Sent only after every pair it names has been brought up. A device told to
+ * use four pairs starts delivering on four immediately, so sending this while
+ * three of them have no buffers posted would drop the frames that landed
+ * there. That ordering is the whole reason the servicing work came first. */
+static xaios_status_t set_queue_pairs(uint16_t pairs) {
+  if (g_net->ctrl_ready == 0U) return XAIOS_ERR_UNSUPPORTED;
+  uint8_t *request = g_net->ctrl_buffer;
+  request[0] = (uint8_t)VIRTIO_NET_CTRL_MQ;
+  request[1] = (uint8_t)VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET;
+  request[2] = (uint8_t)(pairs & 0xffU);
+  request[3] = (uint8_t)(pairs >> 8U);
+  request[4] = 0xffU; /* not an acknowledgement the device could have written */
+
+  g_net->ctrl_desc[0].addr = net_dma_address(request);
+  g_net->ctrl_desc[0].len = 2U;
+  g_net->ctrl_desc[0].flags = VRING_DESC_F_NEXT;
+  g_net->ctrl_desc[0].next = 1U;
+  g_net->ctrl_desc[1].addr = net_dma_address(request + 2U);
+  g_net->ctrl_desc[1].len = 2U;
+  g_net->ctrl_desc[1].flags = VRING_DESC_F_NEXT;
+  g_net->ctrl_desc[1].next = 2U;
+  g_net->ctrl_desc[2].addr = net_dma_address(request + 4U);
+  g_net->ctrl_desc[2].len = 1U;
+  g_net->ctrl_desc[2].flags = VRING_DESC_F_WRITE;
+  g_net->ctrl_desc[2].next = 0U;
+
+  g_net->ctrl_avail->ring[g_net->ctrl_avail_idx % VIRTQ_SIZE] = 0U;
+  virtio_mmio_barrier();
+  ++g_net->ctrl_avail_idx;
+  g_net->ctrl_avail->idx = g_net->ctrl_avail_idx;
+  virtio_transport_notify(&g_net->device, g_net->ctrl_queue_index);
+
+  xaios_status_t status = virtio_transport_wait_used(
+      (volatile uint16_t *)(void *)&g_net->ctrl_used->idx,
+      g_net->ctrl_avail_idx);
+  if (status != XAIOS_OK) return status;
+  g_net->ctrl_last_used = g_net->ctrl_avail_idx;
+  virtio_mmio_barrier();
+  if (request[4] != (uint8_t)VIRTIO_NET_CTRL_ACK_OK) {
+    klog("virtio-net-persist: the device refused %u queue pairs ack=%u\n",
+         (uint32_t)pairs, request[4]);
+    return XAIOS_ERR_IO;
+  }
+  return XAIOS_OK;
+}
+
 /* Bring one pair's queues up and fill its receive ring.
  *
  * virtio-net numbers its queues in pairs: receive is 2i, transmit 2i+1, and
@@ -757,6 +828,43 @@ xaios_status_t virtio_net_init_persistent(void) {
       break;
     }
     g_net->active_pairs = index + 1U;
+  }
+  /* Now that every pair named below has buffers posted and is being polled,
+     the device can be told to use them. The control queue sits after the last
+     pair the device advertises -- not after the last one in service -- so its
+     index comes from max_queue_pairs. */
+  if (g_net->active_pairs > 1U && g_net->multiqueue != 0U) {
+    g_net->ctrl_queue_index = g_net->max_queue_pairs * 2U;
+    g_net->ctrl_desc = (virtq_desc_t *)kheap_calloc(
+        sizeof(virtq_desc_t) * VIRTQ_SIZE, VIRTIO_DMA_ALIGNMENT);
+    g_net->ctrl_avail = (virtq_avail_t *)kheap_calloc(
+        sizeof(virtq_avail_t), VIRTIO_DMA_ALIGNMENT);
+    g_net->ctrl_used = (virtq_used_t *)kheap_calloc(
+        sizeof(virtq_used_t), VIRTIO_DMA_ALIGNMENT);
+    g_net->ctrl_buffer = (uint8_t *)kheap_calloc(64U, VIRTIO_DMA_ALIGNMENT);
+    if (g_net->ctrl_desc == 0 || g_net->ctrl_avail == 0 ||
+        g_net->ctrl_used == 0 || g_net->ctrl_buffer == 0) {
+      klog("virtio-net-persist: no control queue memory; staying at one "
+           "pair\n");
+    } else if (virtio_transport_setup_queue_vectored(
+                   &g_net->device, g_net->ctrl_queue_index, VIRTQ_SIZE,
+                   g_net->ctrl_desc, g_net->ctrl_avail,
+                   g_net->ctrl_used) != XAIOS_OK) {
+      klog("virtio-net-persist: control queue %u setup failed; staying at one "
+           "pair\n", g_net->ctrl_queue_index);
+    } else {
+      g_net->ctrl_ready = 1U;
+      xaios_status_t mq_status =
+          set_queue_pairs((uint16_t)g_net->active_pairs);
+      if (mq_status != XAIOS_OK) {
+        /* The pairs stay set up and polled; the device simply keeps
+           delivering on one. Nothing is lost by that, so a refusal is not a
+           reason to fail the link. */
+        klog("virtio-net-persist: VQ_PAIRS_SET failed status=%d; the device "
+             "keeps using one pair\n", (int)mq_status);
+        g_net->active_pairs = 1U;
+      }
+    }
   }
   klog("virtio-net-persist: queue pairs serviced=%u offered=%u\n",
        g_net->active_pairs,
