@@ -16,7 +16,8 @@ because the queue was notified once and then only polled. Every virtio wait now
 re-rings while waiting, in all four drivers; the block driver had the same
 defect and had lost a filesystem metadata write to it.
 
-Two of the three virtual-platform profiles pass at `b173e42c558e`, which is the
+Two of the three virtual-platform profiles pass at `b173e42c558e`, **which is
+behind the current tree and is being re-collected**; it is the
 same tree for both: **macOS QEMU ARM64** across boot/CPU/network/SSH, USB
 keyboard console, SVE2 per-task context, storage recovery, operations and
 shutdown, and repeat boot; and **macOS VMware Fusion ARM64** across its
@@ -24,10 +25,23 @@ four-vCPU boot, storage, network and SSH lifecycle. Between them they qualify
 the secondary-CPU bring-up, the subsystem serialisation and the virtio
 notification work on real firmware rather than on none.
 
-**Intel VPS QEMU x86_64 is still behind, last collected at
-`adc0b69a1b4e6eb8f1c123fcc25aa3a73d6a881e`, and must be re-run before its
-result is quoted as current.** It needs the designated Intel host; no ARM
-result stands in for it.
+**Intel VPS QEMU x86_64 has been re-collected and is current**, at
+`ee9c621edde5315e0da37fb3ae328baf717318ee`, on the designated host
+(`deltasona`, Linux x86_64) with OVMF/EDK2
+`624e06de18b4fa535e90db7160d00d3d07d206422b89999bf1e27d920264e4e0` and QEMU
+10.0.11 under TCG. All eight profile gates pass: boot/network/SSH, USB
+keyboard console, CPU matrix, platform inventory, NUMA firmware, NVMe storage,
+operations/shutdown and repeat boot. It needs that host; no ARM result stands
+in for it.
+
+Collecting it found nothing wrong with XAIOS and one thing wrong with a gate.
+`q35-high-core-256-x2apic` boots 256 vCPUs under TCG, which costs about 517
+seconds on an eight-core host against a budget of 480 hardcoded into the
+scenario -- so the matrix killed a machine that was booting correctly and
+reported missing markers. Given the time it needs, the same configuration
+passes outright with all 256 processors online. The budgets are now scaled by
+`XAIOS_QEMU_MATRIX_TIMEOUT_SCALE`, which is what this run used; unset, nothing
+changes. Nothing the scenario asserts was relaxed.
 
 This is the only human-maintained XAIOS project tracker. Roadmaps, milestones,
 phase plans, open decisions, and risks are consolidated here. The Wiki does not
