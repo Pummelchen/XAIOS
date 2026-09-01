@@ -155,8 +155,21 @@ SPECIAL_CAPABILITIES = {
     "storage_crash_consistency": (
         "storage_crash",
         [
-            "qemu-storage-crash: recovered point=system-backup-flushed",
-            "qemu-storage-crash: recovered point=system-primary-written",
+            # Named down to the volume format, because the gate crosses both
+            # kill points with both formats and prints the format it used.
+            # Without the suffix these are substrings that a v5 pass satisfies
+            # on its own: a run where v5 recovered and v6 did not reported the
+            # v6 point as present and the *next* point as missing, which sent
+            # the reader to a kill point the run never reached. Four crossings
+            # are tested, so four are required.
+            "qemu-storage-crash: recovered point=system-backup-flushed "
+            "volume=v5",
+            "qemu-storage-crash: recovered point=system-backup-flushed "
+            "volume=v6",
+            "qemu-storage-crash: recovered point=system-primary-written "
+            "volume=v5",
+            "qemu-storage-crash: recovered point=system-primary-written "
+            "volume=v6",
             "qemu-storage-crash: all metadata kill points recovered",
         ],
     ),

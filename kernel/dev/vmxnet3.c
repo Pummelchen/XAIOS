@@ -245,12 +245,6 @@ static void put64(uint8_t *base, uint32_t offset, uint64_t value) {
   put32(base, offset + 4U, (uint32_t)(value >> 32U));
 }
 
-static uint32_t get32(const uint8_t *base, uint32_t offset) {
-  return (uint32_t)base[offset] | ((uint32_t)base[offset + 1U] << 8U) |
-         ((uint32_t)base[offset + 2U] << 16U) |
-         ((uint32_t)base[offset + 3U] << 24U);
-}
-
 static void put16(uint8_t *base, uint32_t offset, uint16_t value) {
   base[offset] = (uint8_t)(value & 0xffU);
   base[offset + 1U] = (uint8_t)((value >> 8U) & 0xffU);
@@ -543,6 +537,9 @@ static xaios_status_t activate_device(void) {
   put32(tqd, VMXNET3_TQD_COMP_RING_SIZE, VMXNET3_RING_SIZE);
   put32(tqd, VMXNET3_TQD_DATA_RING_SIZE, 0U);
   put32(tqd, VMXNET3_TQD_INTR_INDEX, 0U);
+  /* Ring the doorbell for a single descriptor. */
+  put32(tqd, VMXNET3_TQD_NUM_DEFERRED, 0U);
+  put32(tqd, VMXNET3_TQD_THRESHOLD, 1U);
 
   put64(rqd, VMXNET3_RQD_RX_RING1_PA, rx_ring_pa);
   put64(rqd, VMXNET3_RQD_RX_RING2_PA, rx_ring2_pa);
@@ -647,14 +644,17 @@ xaios_status_t vmxnet3_tx(const uint8_t *data, uint64_t length) {
      descriptors are actually there, and the device is entitled to believe it:
      the ring filled, the doorbell rang, and every send timed out waiting for
      a completion that was never going to come. */
-  uint32_t deferred = get32(g_vmxnet3->tqd, VMXNET3_TQD_NUM_DEFERRED) + 1U;
-  uint32_t threshold = get32(g_vmxnet3->tqd, VMXNET3_TQD_THRESHOLD);
-  put32(g_vmxnet3->tqd, VMXNET3_TQD_NUM_DEFERRED, deferred);
-  if (deferred >= threshold) {
-    put32(g_vmxnet3->tqd, VMXNET3_TQD_NUM_DEFERRED, 0U);
-    xaios_cpu_io_barrier();
-    write_bar0(VMXNET3_REG_TXPROD, g_vmxnet3->tx_produce);
-  }
+  /* One descriptor pending, and say so every time.
+     `txThreshold` is how many the driver will let accumulate before ringing,
+     and it belongs to the driver -- it is written at activation, not read
+     back. Reading it instead meant obeying whatever the device had left in
+     that word: any value above one and a lone DHCP discover sits in the ring
+     with the doorbell never rung, which is a send that times out while
+     everything about the descriptor is correct. Batching buys nothing at this
+     traffic rate, so the count is set and the doorbell rung on every frame. */
+  put32(g_vmxnet3->tqd, VMXNET3_TQD_NUM_DEFERRED, 0U);
+  xaios_cpu_io_barrier();
+  write_bar0(VMXNET3_REG_TXPROD, g_vmxnet3->tx_produce);
 
   /* Wait for the completion carrying the driver's current sense. Bounded,
      because a device that never answers must not take the machine with it. */
