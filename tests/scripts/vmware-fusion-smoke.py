@@ -147,6 +147,47 @@ def serial_tail() -> str:
     return "\n".join(serial_text().splitlines()[-80:])
 
 
+def cpu_capability() -> dict[str, object]:
+    """Report the vCPU result this run produced, rather than a fixed sentence.
+
+    This field used to read "qualified single-vCPU profile; Fusion firmware
+    does not advertise PSCI CPU_ON". It was written when Fusion secondaries
+    did not start, and it stayed behind when they did: F-01 was a defect of
+    ours, not a platform limit, and the guest has been coming up on four vCPUs
+    since. The gate was publishing evidence that understated the machine it
+    had just booted, which is worse than publishing nothing -- a reader has no
+    way to tell a stale claim from a measured one.
+
+    The second half was never wrong, only irrelevant. Firmware does not
+    advertise PSCI, and answers it anyway; the guest says so itself. So that
+    is read from the log too rather than asserted here.
+    """
+    text = serial_text()
+    configured = None
+    if VMX.exists():
+        match = re.search(
+            r'^\s*numvcpus\s*=\s*"(\d+)"',
+            VMX.read_text(encoding="utf-8", errors="replace"),
+            re.MULTILINE,
+        )
+        configured = int(match.group(1)) if match else None
+    online = re.search(r"cpu_online=(\d+)", text)
+    admitted = re.search(r"smp: PSCI admitted=(\d+) rejected=(\d+)", text)
+    return {
+        "vcpus_configured": configured,
+        "vcpus_online": int(online.group(1)) if online else None,
+        "psci_admitted": int(admitted.group(1)) if admitted else None,
+        "psci_rejected": int(admitted.group(2)) if admitted else None,
+        "psci_advertised": "firmware answers PSCI" not in text,
+        "note": (
+            "Read from this run's serial log and .vmx. Fusion firmware does "
+            "not advertise PSCI and answers it regardless, so secondaries "
+            "start; a run that brings up fewer vCPUs than are configured is "
+            "the signal, not this sentence."
+        ),
+    }
+
+
 def wait_for_boot(after_ready_count: int) -> tuple[str, str]:
     deadline = time.monotonic() + TIMEOUT_SECONDS
     while time.monotonic() < deadline:
@@ -329,7 +370,7 @@ def main() -> int:
             "Mac-local public-key SSH/SFTP, crash recovery, guest reboot, orderly "
             "shutdown, and repeat-boot persistence; not physical-performance evidence"
         ),
-        "cpu_capability": "qualified single-vCPU profile; Fusion firmware does not advertise PSCI CPU_ON",
+        "cpu_capability": cpu_capability(),
         "performance_evidence": False,
     }
     FUSION_BUILD.mkdir(parents=True, exist_ok=True)
