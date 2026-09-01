@@ -431,7 +431,7 @@ def main() -> int:
             "-machine", f"virt,accel={accel},gic-version=3",
             "-cpu", "host" if accel == "hvf" else "max",
             "-m", os.environ.get("XAIOS_FREEBSD_QEMU_MEMORY", "2048"),
-            "-smp", os.environ.get("XAIOS_FREEBSD_QEMU_SMP", "2"),
+            "-smp", os.environ.get("XAIOS_FREEBSD_QEMU_SMP", "4"),
             "-display", "none",
             "-monitor", "none",
             "-serial", "stdio",

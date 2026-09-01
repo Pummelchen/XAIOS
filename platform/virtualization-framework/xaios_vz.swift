@@ -55,7 +55,13 @@ guard arguments.count >= 2 else {
 }
 
 var positional: [String] = []
-var cpuCount = 1
+// Four, because four is what everything here tests on. The harness defaulting
+// to one meant a person running it by hand got a machine unlike every gated
+// one, and single-CPU is the configuration where the spinlock takes a fast
+// path that skips the atomic entirely -- so it is the least likely to show a
+// concurrency defect. `run-vz.sh` and both gates already pass `--cpus`; this
+// is for the invocation that does not.
+var cpuCount = 4
 var vmnetSocket: String? = nil
 var memoryMiB: UInt64 = 2048
 // Without a display there is nothing to watch: XAIOS draws its boot progress
