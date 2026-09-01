@@ -43,6 +43,36 @@ static uint64_t isar0(void) {
 static int cpu_has_sha256(void) {
   return ((isar0() >> SHA2_FIELD_SHIFT) & SHA2_FIELD_MASK) != 0U;
 }
+#elif defined(__x86_64__)
+/* CPUID is not privileged, so unlike the ARM path this same question could be
+   asked from userspace. It is asked here anyway, because the answer has to be
+   acted on in the one place that installs the compressor. */
+static void cpuid_count(uint32_t leaf, uint32_t subleaf, uint32_t *eax,
+                        uint32_t *ebx, uint32_t *ecx, uint32_t *edx) {
+  __asm__ volatile("cpuid"
+                   : "=a"(*eax), "=b"(*ebx), "=c"(*ecx), "=d"(*edx)
+                   : "a"(leaf), "c"(subleaf));
+}
+
+/* CPUID.(EAX=07H,ECX=0):EBX[29] is the SHA extension. CPUID.(EAX=01H):ECX[19]
+   is SSE4.1, which the compressor also uses -- for the byte shuffle, the
+   blend and the alignr that assemble the state and the schedule. No CPU ships
+   one without the other, but the compressor needs both to run and asking for
+   what it needs costs one more read. Leaf 7 does not exist on every CPU that
+   answers CPUID at all, so the maximum leaf is checked first; reading past it
+   returns another leaf's contents rather than zero. */
+#define X86_LEAF7_SHA_BIT (UINT32_C(1) << 29)
+#define X86_LEAF1_SSE41_BIT (UINT32_C(1) << 19)
+
+static int cpu_has_sha256(void) {
+  uint32_t eax = 0U, ebx = 0U, ecx = 0U, edx = 0U;
+  cpuid_count(0U, 0U, &eax, &ebx, &ecx, &edx);
+  if (eax < 7U) return 0;
+  cpuid_count(1U, 0U, &eax, &ebx, &ecx, &edx);
+  if ((ecx & X86_LEAF1_SSE41_BIT) == 0U) return 0;
+  cpuid_count(7U, 0U, &eax, &ebx, &ecx, &edx);
+  return (ebx & X86_LEAF7_SHA_BIT) != 0U;
+}
 #else
 static int cpu_has_sha256(void) { return 0; }
 #endif
@@ -105,7 +135,17 @@ void engine_sha256_dispatch_init(void) {
   return;
 #endif
   if (candidate == 0) {
-    klog("engine-sha256: scalar path; this CPU reports no SHA2 extension\n");
+    /* Two different answers, and saying which matters. "This CPU reports no
+       SHA2 extension" was printed on x86-64 for as long as there was no x86
+       compressor at all -- a statement about the CPU that nothing had asked
+       it, on a target whose emulated CPU advertises the extension. */
+    if (xaios_engine_sha256_hardware_compressor() == 0) {
+      klog("engine-sha256: scalar path; no accelerated compressor is built "
+           "for this architecture\n");
+    } else {
+      klog("engine-sha256: scalar path; this CPU reports no SHA2 "
+           "extension\n");
+    }
     return;
   }
 
@@ -124,10 +164,11 @@ void engine_sha256_dispatch_init(void) {
 
   /* Every length across several block boundaries, not just two samples.
      A compressor can be right on one input and wrong on the tail handling of
-     another, and this is the only place the two implementations are compared
-     on the architecture that actually runs the fast one -- CI's runners are
-     x86_64, where there is no accelerated compressor to compare against, so
-     the hosted test skips. If this check is weak, nothing else is looking. */
+     another, and for either architecture this may be the only place the two
+     implementations are ever compared: the hosted test runs whichever the
+     build host can execute, and a host without the extension -- most x86-64
+     CPUs, including the Xeon this project qualifies against -- skips it.
+     If this check is weak, nothing else is looking. */
   uint32_t checked = 0U;
   for (uint32_t length = 0U; length <= SWEEP_BYTES; ++length) {
     uint8_t scalar_digest[32];

@@ -40,15 +40,28 @@ int main(void) {
       xaios_engine_sha256_hardware_compressor();
   if (hardware == 0) {
     /* No accelerated compressor exists for this architecture, so there is
-       nothing to compare against and nothing to get wrong. CI's runners are
-       x86_64 and land here; the comparison runs on an ARM host, and inside
-       XAIOS itself at every boot -- engine_sha256_dispatch refuses to install
-       the accelerated path unless it reproduces the scalar one first, and
-       says which it chose. */
+       nothing to compare against and nothing to get wrong. The comparison
+       still runs inside XAIOS at every boot -- engine_sha256_dispatch refuses
+       to install the accelerated path unless it reproduces the scalar one
+       first, and says which it chose. */
     printf("engine sha256: no accelerated compressor for this architecture, "
            "scalar path is the only one\n");
     return 0;
   }
+#if defined(__x86_64__)
+  /* Having a compressor is not the same as being able to run it. SHA-NI is
+     optional on x86-64 and plenty of hosts lack it -- the Intel Xeon this
+     project qualifies against is a Skylake, which does not have it at all --
+     so installing it unconditionally would execute an undefined instruction
+     rather than fail a comparison. This is the caller's question to ask, and
+     the header says so; inside XAIOS the dispatcher asks CPUID for the same
+     thing. */
+  if (!__builtin_cpu_supports("sha")) {
+    printf("engine sha256: this host has no SHA extension, scalar path is "
+           "the only one it can run\n");
+    return 0;
+  }
+#endif
 
   static const unsigned char abc[32] = {
       0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,

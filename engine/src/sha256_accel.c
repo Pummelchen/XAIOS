@@ -124,6 +124,130 @@ xaios_engine_sha256_compress_fn xaios_engine_sha256_hardware_compressor(void) {
   return compress_blocks;
 }
 
+#elif defined(__x86_64__)
+
+#include <immintrin.h>
+
+/* x86-64 has the same function in four instructions of its own, and the same
+   caveat: SHA-NI is not in the base architecture, so this is asked for in one
+   function rather than raised for the build, and a CPU without it never
+   reaches this code because the dispatcher never installs it.
+
+   The state layout is not the one the algorithm is written in. SHA256RNDS2
+   wants ABEF in one register and CDGH in the other, so the eight words are
+   shuffled into that order once on entry and back out once at the end --
+   between those two points the loop never touches memory. The message
+   schedule is SHA256MSG1 and SHA256MSG2 with an alignr supplying the word
+   that straddles two vectors, which is why each round names the vector before
+   it as well as its own. */
+__attribute__((target("sha,sse4.1")))
+static void compress_blocks(uint32_t state[8], const uint8_t *blocks,
+                            size_t count) {
+  /* Big-endian message words, which the algorithm is defined in and x86 is
+     not. */
+  const __m128i byte_order = _mm_set_epi64x((long long)0x0c0d0e0f08090a0bLL,
+                                            (long long)0x0405060700010203LL);
+  __m128i tmp = _mm_loadu_si128((const __m128i *)(const void *)state);
+  __m128i state1 = _mm_loadu_si128((const __m128i *)(const void *)(state + 4));
+
+  tmp = _mm_shuffle_epi32(tmp, 0xB1);              /* CDAB */
+  state1 = _mm_shuffle_epi32(state1, 0x1B);        /* EFGH */
+  __m128i state0 = _mm_alignr_epi8(tmp, state1, 8); /* ABEF */
+  state1 = _mm_blend_epi16(state1, tmp, 0xF0);     /* CDGH */
+
+/* Eight rounds' worth of constants ride in one vector, high half first. */
+#define SHA256_K(high, low) \
+  _mm_set_epi64x((long long)(high##ULL), (long long)(low##ULL))
+
+/* Four rounds against a message vector already in hand, no scheduling. */
+#define SHA256_PLAIN(current, k_high, k_low)                                 \
+  do {                                                                       \
+    message = _mm_add_epi32((current), SHA256_K(k_high, k_low));             \
+    state1 = _mm_sha256rnds2_epu32(state1, state0, message);                 \
+    message = _mm_shuffle_epi32(message, 0x0E);                              \
+    state0 = _mm_sha256rnds2_epu32(state0, state1, message);                 \
+  } while (0)
+
+/* The same, plus the half of the schedule that needs the vector before it.
+   `previous` is both the source of the straddling word and the vector
+   SHA256MSG1 advances, which is why it appears twice. */
+#define SHA256_SCHEDULED(current, next, previous, k_high, k_low, extend)      \
+  do {                                                                       \
+    message = _mm_add_epi32((current), SHA256_K(k_high, k_low));             \
+    state1 = _mm_sha256rnds2_epu32(state1, state0, message);                 \
+    carry = _mm_alignr_epi8((current), (previous), 4);                       \
+    (next) = _mm_add_epi32((next), carry);                                   \
+    (next) = _mm_sha256msg2_epu32((next), (current));                        \
+    message = _mm_shuffle_epi32(message, 0x0E);                              \
+    state0 = _mm_sha256rnds2_epu32(state0, state1, message);                 \
+    if (extend) (previous) = _mm_sha256msg1_epu32((previous), (current));    \
+  } while (0)
+
+  while (count-- > 0U) {
+    const __m128i abef = state0;
+    const __m128i cdgh = state1;
+    __m128i message;
+    __m128i carry;
+    __m128i w0 = _mm_shuffle_epi8(
+        _mm_loadu_si128((const __m128i *)(const void *)(blocks)), byte_order);
+    __m128i w1 = _mm_shuffle_epi8(
+        _mm_loadu_si128((const __m128i *)(const void *)(blocks + 16)),
+        byte_order);
+    __m128i w2 = _mm_shuffle_epi8(
+        _mm_loadu_si128((const __m128i *)(const void *)(blocks + 32)),
+        byte_order);
+    __m128i w3 = _mm_shuffle_epi8(
+        _mm_loadu_si128((const __m128i *)(const void *)(blocks + 48)),
+        byte_order);
+
+    SHA256_PLAIN(w0, 0xE9B5DBA5B5C0FBCF, 0x71374491428A2F98);
+    SHA256_PLAIN(w1, 0xAB1C5ED5923F82A4, 0x59F111F13956C25B);
+    w0 = _mm_sha256msg1_epu32(w0, w1);
+    SHA256_PLAIN(w2, 0x550C7DC3243185BE, 0x12835B01D807AA98);
+    w1 = _mm_sha256msg1_epu32(w1, w2);
+
+    SHA256_SCHEDULED(w3, w0, w2, 0xC19BF1749BDC06A7, 0x80DEB1FE72BE5D74, 1);
+    SHA256_SCHEDULED(w0, w1, w3, 0x240CA1CC0FC19DC6, 0xEFBE4786E49B69C1, 1);
+    SHA256_SCHEDULED(w1, w2, w0, 0x76F988DA5CB0A9DC, 0x4A7484AA2DE92C6F, 1);
+    SHA256_SCHEDULED(w2, w3, w1, 0xBF597FC7B00327C8, 0xA831C66D983E5152, 1);
+    SHA256_SCHEDULED(w3, w0, w2, 0x1429296706CA6351, 0xD5A79147C6E00BF3, 1);
+    SHA256_SCHEDULED(w0, w1, w3, 0x53380D134D2C6DFC, 0x2E1B213827B70A85, 1);
+    SHA256_SCHEDULED(w1, w2, w0, 0x92722C8581C2C92E, 0x766A0ABB650A7354, 1);
+    SHA256_SCHEDULED(w2, w3, w1, 0xC76C51A3C24B8B70, 0xA81A664BA2BFE8A1, 1);
+    SHA256_SCHEDULED(w3, w0, w2, 0x106AA070F40E3585, 0xD6990624D192E819, 1);
+    /* This one still extends, and getting that wrong is the whole of the bug
+       this was written with. W60..63 needs W44..47 + sigma0(W45..48), and
+       W48..51 only lands in its vector during the round before this one --
+       so this is the earliest point that SHA256MSG1 can be taken, not a
+       leftover from the rounds that no longer need it. The two after it are
+       the ones with nothing left to extend. */
+    SHA256_SCHEDULED(w0, w1, w3, 0x34B0BCB52748774C, 0x1E376C0819A4C116, 1);
+    SHA256_SCHEDULED(w1, w2, w0, 0x682E6FF35B9CCA4F, 0x4ED8AA4A391C0CB3, 0);
+    SHA256_SCHEDULED(w2, w3, w1, 0x8CC7020884C87814, 0x78A5636F748F82EE, 0);
+    SHA256_PLAIN(w3, 0xC67178F2BEF9A3F7, 0xA4506CEB90BEFFFA);
+
+    state0 = _mm_add_epi32(state0, abef);
+    state1 = _mm_add_epi32(state1, cdgh);
+    blocks += 64;
+  }
+
+#undef SHA256_SCHEDULED
+#undef SHA256_PLAIN
+#undef SHA256_K
+
+  tmp = _mm_shuffle_epi32(state0, 0x1B);           /* FEBA */
+  state1 = _mm_shuffle_epi32(state1, 0xB1);        /* DCHG */
+  state0 = _mm_blend_epi16(tmp, state1, 0xF0);     /* DCBA */
+  state1 = _mm_alignr_epi8(state1, tmp, 8);        /* HGFE */
+
+  _mm_storeu_si128((__m128i *)(void *)state, state0);
+  _mm_storeu_si128((__m128i *)(void *)(state + 4), state1);
+}
+
+xaios_engine_sha256_compress_fn xaios_engine_sha256_hardware_compressor(void) {
+  return compress_blocks;
+}
+
 #else
 
 xaios_engine_sha256_compress_fn xaios_engine_sha256_hardware_compressor(void) {
