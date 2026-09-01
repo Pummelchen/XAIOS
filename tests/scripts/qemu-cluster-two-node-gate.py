@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -34,6 +35,9 @@ WORK = BUILD / "cluster-two-node"
 REPORT = BUILD / "qemu-cluster-two-node-gate.json"
 CLUSTER_PORT = int(os.environ.get("XAIOS_CLUSTER_PEER_PORT", "7799"))
 BOOT_TIMEOUT_S = int(os.environ.get("XAIOS_CLUSTER_TWO_NODE_TIMEOUT", "600"))
+# The node ids clustertest.c gives each role.
+SERVER_NODE_ID = 2
+CLIENT_NODE_ID = 1
 
 # What each end has to say. The server's lines are the ones that could not be
 # produced by the old host-process peer, so they are the evidence that the
@@ -43,12 +47,22 @@ SERVER_MARKERS = (
     "/bin/clustertest: opened peer frame bytes=",
     "/bin/clustertest: sealed reply bytes=",
     "/bin/clustertest: cluster data plane over TCP passed",
+    "/bin/clustertest: membership join/partition/recovery passed",
 )
 CLIENT_MARKERS = (
     "/bin/clustertest: sealed frame bytes=",
     "/bin/clustertest: round trip verified bytes=",
     "/bin/clustertest: cluster data plane over TCP passed",
+    "/bin/clustertest: membership join/partition/recovery passed",
 )
+
+# The membership half. Each end logs the owner of one fixed expert at three
+# points, and what has to hold is a relationship between the two logs rather
+# than anything either one says alone -- which is why it is checked here and
+# not inside the guests.
+OWNERSHIP = re.compile(
+    r"/bin/clustertest: ownership phase=(\w+) version=(\d+) owner=(\d+) "
+    r"peer_online=(\d+)")
 FORBIDDEN = (
     "/bin/clustertest: no cluster peer",
     "CYAN SCREEN OF DEATH",
@@ -187,11 +201,70 @@ def main() -> int:
         if banned.encode() in client_log:
             failures.append(f"the dialling machine reported: {banned}")
 
+    # Ownership, compared across the two machines. Neither log can be judged
+    # on its own: the claim is that two independent nodes name the same owner
+    # while both are online, each names itself while partitioned, and the
+    # original answer returns when the peer does. A node that simply cached
+    # its first answer would satisfy the first and third and fail the second;
+    # one that recomputed from a stale membership would fail the third.
+    def phases(log: bytes) -> dict[str, dict[str, int]]:
+        found: dict[str, dict[str, int]] = {}
+        for phase, version, owner, online in OWNERSHIP.findall(
+                log.decode("utf-8", "replace")):
+            found[phase] = {"version": int(version), "owner": int(owner),
+                            "online": int(online)}
+        return found
+
+    server_phases = phases(server_log)
+    client_phases = phases(client_log)
+    ownership = {"server": server_phases, "client": client_phases}
+    for name, seen in (("listening", server_phases), ("dialling",
+                                                      client_phases)):
+        missing = [p for p in ("joined", "partitioned", "recovered")
+                   if p not in seen]
+        if missing:
+            failures.append(
+                f"the {name} machine never reported ownership for {missing}")
+    if not [f for f in failures if "ownership" in f]:
+        if server_phases["joined"]["owner"] != client_phases["joined"]["owner"]:
+            failures.append(
+                f"the two machines disagreed about who owns the expert while "
+                f"both were online: listening said "
+                f"{server_phases['joined']['owner']}, dialling said "
+                f"{client_phases['joined']['owner']}")
+        if server_phases["partitioned"]["owner"] != SERVER_NODE_ID:
+            failures.append(
+                f"the listening machine did not take ownership when "
+                f"partitioned; it named "
+                f"{server_phases['partitioned']['owner']}")
+        if client_phases["partitioned"]["owner"] != CLIENT_NODE_ID:
+            failures.append(
+                f"the dialling machine did not take ownership when "
+                f"partitioned; it named "
+                f"{client_phases['partitioned']['owner']}")
+        for name, seen in (("listening", server_phases),
+                           ("dialling", client_phases)):
+            if seen["partitioned"]["online"] != 0:
+                failures.append(
+                    f"the {name} machine still called the peer online while "
+                    f"partitioned")
+            if seen["recovered"]["owner"] != seen["joined"]["owner"]:
+                failures.append(
+                    f"the {name} machine did not restore the original owner "
+                    f"after the peer returned: {seen['joined']['owner']} "
+                    f"became {seen['recovered']['owner']}")
+            if not (seen["joined"]["version"] < seen["partitioned"]["version"]
+                    < seen["recovered"]["version"]):
+                failures.append(
+                    f"the {name} machine's ownership version did not advance "
+                    f"across the three phases: {seen}")
+
     report = {
         "schema": "xaios.cluster-two-node.v1",
         "cluster_port": CLUSTER_PORT,
         "server_log": str(server_images["log"].relative_to(ROOT)),
         "client_log": str(client_images["log"].relative_to(ROOT)),
+        "ownership": ownership,
         "failures": failures,
         "passed": not failures,
     }

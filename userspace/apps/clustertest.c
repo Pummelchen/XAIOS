@@ -96,7 +96,6 @@ static int read_exactly(u64 socket, u8 *buffer, u64 want, u64 timeout_nanos,
   return total == want ? 0 : (last_status != 0 ? last_status : -1);
 }
 
-#if XAIOS_CLUSTER_ROLE_SERVER
 /* The frame's own length, read out of the header it starts with.
  *
  * A client knows how many bytes to expect because it sealed them. A server
@@ -109,7 +108,102 @@ static u64 frame_length_from_header(const u8 *header) {
   return (u64)XAIOS_CLUSTER_HEADER_SIZE + payload_length +
          (u64)XAIOS_CLUSTER_TAG_SIZE;
 }
-#endif
+
+/* Membership, and the ownership it decides.
+ *
+ * The framing tests above prove two machines can exchange a sealed frame. A
+ * cluster needs more than that: the two ends have to agree on who owns what,
+ * and go on agreeing across a peer leaving and coming back. That agreement is
+ * the thing worth testing, because it is the thing a wrong answer silently
+ * breaks -- two nodes each believing they own an expert is not an error
+ * anywhere, it is just work done twice and a result nobody reconciles.
+ *
+ * `xaios_cluster_open` already moves membership: it marks the sender ONLINE
+ * for any opcode but LEAVE, and OFFLINE for that one. So the transitions come
+ * from frames that actually arrived rather than from a test asserting its own
+ * bookkeeping.
+ *
+ * The version is local and deliberately not the wire epoch. `open` refuses a
+ * frame whose epoch is not its own, so bumping the epoch to mark a membership
+ * change would stop the two ends being able to speak -- the very thing being
+ * measured. This counts observed changes instead, which is what an ownership
+ * version is for. */
+static u64 g_ownership_version;
+
+/* One fixed expert, so both ends are asking the same question. Its owner is a
+   hash of the identity against each candidate node, so which node wins is not
+   predictable from here -- only that both ends must name the same one. */
+static void log_ownership(const char *phase) {
+  xaios_expert_identity_t identity;
+  xaios_memzero(&identity, sizeof(identity));
+  for (u64 i = 0; i < 16U; ++i) identity.model_uuid[i] = (u8)(i + 1U);
+  identity.layer_id = 7ULL;
+  identity.expert_id = 3ULL;
+  identity.layout_id = 1U;
+  /* The engine's own width, not the userspace alias: `u64` is unsigned long
+     long here and `uint64_t` is unsigned long, which are the same size and
+     not the same type. */
+  uint64_t owner = 0;
+  if (xaios_cluster_select_owner(&g_cluster, &identity, &owner) !=
+      XAIOS_ENGINE_OK) {
+    xaios_log("/bin/clustertest: owner selection failed\n");
+    return;
+  }
+  ++g_ownership_version;
+  xaios_log("/bin/clustertest: ownership phase=");
+  xaios_log(phase);
+  xaios_log_u64(" version=", g_ownership_version, "");
+  xaios_log_u64(" owner=", (u64)owner, "");
+  xaios_log_u64(" peer_online=",
+                (u64)(g_peers[0].state == XAIOS_CLUSTER_NODE_ONLINE ? 1U : 0U),
+                "\n");
+}
+
+static u8 g_outbound[XAIOS_CLUSTER_MAX_MESSAGE];
+
+static int send_sealed(u64 socket, u16 opcode, const void *payload,
+                       u16 length) {
+  size_t sealed = 0;
+  if (xaios_cluster_seal(&g_cluster, CLUSTER_PEER_NODE_ID, opcode, payload,
+                         length, g_outbound, sizeof(g_outbound),
+                         &sealed) != XAIOS_ENGINE_OK) {
+    return -1;
+  }
+  u64 sent = 0;
+  if (xaios_net_send(socket, g_outbound, (u64)sealed, &sent) != 0 ||
+      sent != (u64)sealed) {
+    return -1;
+  }
+  return 0;
+}
+
+/* Read one whole frame and open it. The length comes out of the header rather
+   than from whatever arrived, for the reason frame_length_from_header gives. */
+static int recv_sealed(u64 socket, xaios_cluster_message_t *message,
+                       u64 timeout_nanos) {
+  u8 buffer[XAIOS_CLUSTER_MAX_MESSAGE];
+  u64 got = 0;
+  if (read_exactly(socket, buffer, (u64)XAIOS_CLUSTER_HEADER_SIZE,
+                   timeout_nanos, &got) != 0) {
+    return -1;
+  }
+  u64 length = frame_length_from_header(buffer);
+  if (length > sizeof(buffer) || length < (u64)XAIOS_CLUSTER_HEADER_SIZE) {
+    return -1;
+  }
+  u64 rest = length - (u64)XAIOS_CLUSTER_HEADER_SIZE;
+  if (rest != 0U &&
+      read_exactly(socket, buffer + XAIOS_CLUSTER_HEADER_SIZE, rest,
+                   timeout_nanos, &got) != 0) {
+    return -1;
+  }
+  xaios_memzero(message, sizeof(*message));
+  if (xaios_cluster_open(&g_cluster, buffer, (size_t)length, message) !=
+      XAIOS_ENGINE_OK) {
+    return -1;
+  }
+  return 0;
+}
 
 static int fail(const char *why) {
   xaios_log("/bin/clustertest: ");
@@ -248,10 +342,69 @@ int main(void) {
     (void)xaios_net_close(listener);
     return fail("could not send the sealed reply");
   }
-  (void)xaios_net_close(socket);
-  (void)xaios_net_close(listener);
   xaios_log_u64("/bin/clustertest: sealed reply bytes=", (u64)resealed, "\n");
+
+  /* The peer is online because a frame from it arrived and opened. */
+  log_ownership("joined");
+  (void)xaios_net_close(socket);
+
+  /* Partition and recovery each arrive on their own connection, so this
+     accepts until it has seen both rather than assuming what the next one
+     carries. The first version assumed, took the client's LEAVE for its
+     rejoin, and failed a machine that was behaving correctly -- which is the
+     shape of most distributed-systems test bugs: an ordering the code did not
+     expect but the network is entitled to produce. */
+  int partitioned = 0;
+  int recovered = 0;
+  u64 membership_deadline = xaios_clock_nanos() + 180000000000ULL;
+  while (recovered == 0 && xaios_clock_nanos() < membership_deadline) {
+    u64 next_socket = 0;
+    if (xaios_net_accept(listener, &next_socket) != 0) continue;
+    xaios_cluster_message_t frame;
+    if (recv_sealed(next_socket, &frame, 30000000000ULL) != 0) {
+      (void)xaios_net_close(next_socket);
+      continue;
+    }
+    if (frame.opcode == (u16)XAIOS_CLUSTER_LEAVE) {
+      (void)xaios_net_close(next_socket);
+      if (g_peers[0].state != XAIOS_CLUSTER_NODE_OFFLINE) {
+        (void)xaios_net_close(listener);
+        return fail("a leave did not take the peer offline");
+      }
+      if (partitioned == 0) {
+        log_ownership("partitioned");
+        partitioned = 1;
+      }
+      continue;
+    }
+    if (frame.opcode == (u16)XAIOS_CLUSTER_JOIN) {
+      if (partitioned == 0) {
+        (void)xaios_net_close(next_socket);
+        (void)xaios_net_close(listener);
+        return fail("the peer rejoined without ever having left");
+      }
+      if (send_sealed(next_socket, (u16)XAIOS_CLUSTER_JOIN_ACK, 0, 0) != 0) {
+        (void)xaios_net_close(next_socket);
+        (void)xaios_net_close(listener);
+        return fail("could not acknowledge the rejoin");
+      }
+      (void)xaios_net_close(next_socket);
+      if (g_peers[0].state != XAIOS_CLUSTER_NODE_ONLINE) {
+        (void)xaios_net_close(listener);
+        return fail("a rejoin did not bring the peer back online");
+      }
+      log_ownership("recovered");
+      recovered = 1;
+      continue;
+    }
+    (void)xaios_net_close(next_socket);
+  }
+  (void)xaios_net_close(listener);
+  if (partitioned == 0) return fail("the peer never left");
+  if (recovered == 0) return fail("the peer never came back");
+
   xaios_log("/bin/clustertest: cluster data plane over TCP passed\n");
+  xaios_log("/bin/clustertest: membership join/partition/recovery passed\n");
   return 0;
 #else
   u8 wire[XAIOS_CLUSTER_MAX_MESSAGE];
@@ -344,7 +497,56 @@ int main(void) {
                 "");
   xaios_log_u64(" opcode=", (u64)message.opcode, "");
   xaios_log_u64(" nonce=", message.nonce, "\n");
+  log_ownership("joined");
+
+  /* Leave, on the connection that is still open from the exchange above.
+     Saying so is better than vanishing: both are partitions to the other end,
+     and only one of them tells it why. The socket from the round trip was
+     closed already, so this opens another -- which is also what makes the
+     next phase a reconnection rather than a continuation. */
+  u64 leave_socket = 0;
+  if (xaios_net_connect(&address, CLUSTER_PEER_PORT, &leave_socket) != 0) {
+    return fail("could not reconnect to announce leaving");
+  }
+  if (send_sealed(leave_socket, (u16)XAIOS_CLUSTER_LEAVE, 0, 0) != 0) {
+    (void)xaios_net_close(leave_socket);
+    return fail("could not send the leave frame");
+  }
+  (void)xaios_net_close(leave_socket);
+  (void)xaios_cluster_set_peer_state(&g_cluster, CLUSTER_PEER_NODE_ID,
+                                     XAIOS_CLUSTER_NODE_OFFLINE);
+  log_ownership("partitioned");
+
+  /* Rejoin. The peer has been offline on both sides; ownership has to come
+     back to what it was, because the membership has. If it does not, the two
+     ends will disagree about who owns an expert the moment one of them
+     forgets a node it once knew. */
+  u64 rejoin_socket = 0;
+  if (xaios_net_connect(&address, CLUSTER_PEER_PORT, &rejoin_socket) != 0) {
+    return fail("could not reconnect to rejoin");
+  }
+  static const char rejoin_payload[] = "xaios-cluster-rejoin";
+  if (send_sealed(rejoin_socket, (u16)XAIOS_CLUSTER_JOIN, rejoin_payload,
+                  (u16)(sizeof(rejoin_payload) - 1U)) != 0) {
+    (void)xaios_net_close(rejoin_socket);
+    return fail("could not send the rejoin frame");
+  }
+  xaios_cluster_message_t acknowledgement;
+  if (recv_sealed(rejoin_socket, &acknowledgement, 30000000000ULL) != 0) {
+    (void)xaios_net_close(rejoin_socket);
+    return fail("the peer did not acknowledge the rejoin");
+  }
+  (void)xaios_net_close(rejoin_socket);
+  if (acknowledgement.opcode != (u16)XAIOS_CLUSTER_JOIN_ACK) {
+    return fail("the rejoin was answered with the wrong opcode");
+  }
+  if (g_peers[0].state != XAIOS_CLUSTER_NODE_ONLINE) {
+    return fail("an acknowledged rejoin did not bring the peer back online");
+  }
+  log_ownership("recovered");
+
   xaios_log("/bin/clustertest: cluster data plane over TCP passed\n");
+  xaios_log("/bin/clustertest: membership join/partition/recovery passed\n");
   return 0;
 #endif
 }
