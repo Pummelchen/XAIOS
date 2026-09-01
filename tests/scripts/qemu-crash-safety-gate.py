@@ -211,6 +211,38 @@ def tear_superblock(image: Path, slot: int, rng: random.Random) -> int:
     return keep
 
 
+def lose_catalog_write(image: Path, slot: int) -> int:
+    """Discard the catalog a slot points at, leaving the slot itself intact.
+
+    This is the state a device with a volatile write cache produces when the
+    power goes between the catalog write and the superblock that publishes it:
+    the superblock reached the platter and the thing it points at did not. A
+    commit writes its catalog at an unused offset, so what a lost write leaves
+    behind is the region as it was -- unwritten -- which is why this zeroes it
+    rather than scribbling on it.
+
+    `qemu-write-ordering-gate` proves the flush that prevents this is issued.
+    This is the other half: what the volume does if a device ignores it anyway.
+    Returns how many bytes were discarded.
+    """
+    sys.path.insert(0, str(TOOLS))
+    from xaios_xai_fs import _decode_superblock  # noqa: PLC0415
+
+    handle = os.open(image, os.O_RDONLY)
+    try:
+        size = os.fstat(handle).st_size
+        raw = os.pread(handle, SUPERBLOCK_BYTES, slot * SUPERBLOCK_BYTES)
+        superblock = _decode_superblock(raw, size)
+    finally:
+        os.close(handle)
+    offset = int(superblock["catalog_offset"])
+    length = int(superblock["catalog_length"])
+    with image.open("r+b") as stream:
+        stream.seek(offset)
+        stream.write(bytes(length))
+    return length
+
+
 def prove_the_check_can_fail(rng: random.Random) -> str | None:
     """Flip one byte inside a complete chunk and require fsck to notice.
 
@@ -361,11 +393,58 @@ def main() -> int:
               f"generation {before.get('generation')} -> "
               f"{after.get('generation')}")
 
+    # **A catalog write that never landed.** The case above is a superblock
+    # caught half-written. This is its mirror and the one a volatile write
+    # cache actually produces: the superblock is whole and on the platter, and
+    # the catalog it points at is not there at all. The superblock carries a
+    # hash of that catalog, so the slot must fail its own check and the volume
+    # must come back from the other one -- a commit lost, which is the trade,
+    # rather than a superblock followed to a catalog that was never written.
+    lost = []
+    for slot in sorted(generations_by_slot):
+        shutil.copyfile(PRISTINE, WORKING)
+        before = fsck(WORKING)
+        discarded = lose_catalog_write(WORKING, slot)
+        after = fsck(WORKING)
+        rejected = [entry["slot"] for entry in after.get(
+            "invalid_superblocks", [])]
+        other = 1 - slot
+        record = {
+            "slot_orphaned": slot,
+            "catalog_bytes_discarded": discarded,
+            "status": after.get("status"),
+            "generation_before": before.get("generation"),
+            "generation_after": after.get("generation"),
+            "expected_generation": generations_by_slot[other],
+            "rejected_slots": rejected,
+            "errors": after.get("errors", []),
+        }
+        lost.append(record)
+        if after.get("status") == "tool_failed":
+            failures.append(f"orphaned slot {slot}: fsck could not run: {after}")
+        elif after.get("errors"):
+            failures.append(f"orphaned slot {slot}: {after['errors']}")
+        elif rejected != [slot]:
+            failures.append(
+                f"orphaned slot {slot}: expected exactly that slot to be "
+                f"rejected, got {rejected} -- a superblock pointing at a "
+                f"catalog that was never written was accepted")
+        elif after.get("generation") != generations_by_slot[other]:
+            failures.append(
+                f"orphaned slot {slot}: fell back to generation "
+                f"{after.get('generation')}, expected "
+                f"{generations_by_slot[other]}")
+        print(f"crash-safety-gate: catalog lost slot={slot} "
+              f"discarded={discarded}B fsck={after.get('status')} "
+              f"rejected={rejected} generation "
+              f"{before.get('generation')} -> {after.get('generation')}")
+
     report = {
         "schema": "xaios.crash-safety.v1",
         "falsifiability_checked": True,
         "trials": trials,
         "torn_superblocks": torn,
+        "lost_catalog_writes": lost,
         "failures": failures,
         "passed": not failures,
     }

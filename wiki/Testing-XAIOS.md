@@ -179,10 +179,15 @@ public fixture and is not production trust evidence.
 - `make qemu-crash-safety-gate` is power-loss evidence for ordering and
   tearing: it kills the emulator outright at random points while a package is
   being ingested, then hashes every chunk the surviving catalog still calls
-  complete. It also tears a superblock directly, because a kill almost never
-  lands inside one. It does not prove behaviour against a device that
-  acknowledges a write and loses it from a volatile cache; the emulator never
-  loses an acknowledged write.
+  complete. It also constructs two states directly, because a kill almost
+  never lands on either: a superblock caught half-written, and a superblock
+  that is whole while the catalog it points at was never written — which is
+  what a device with a volatile write cache leaves behind if it persists the
+  publish before the thing it publishes. Both must be rejected by the slot's
+  own hash and the volume must come back from the other slot, a commit lost.
+  What it still does not do is run against a device that actually acknowledges
+  a write and then loses it: the emulator never loses an acknowledged write,
+  so the state is constructed rather than provoked.
 - `make qemu-write-ordering-gate` covers the half the crash gate cannot: it
   has the block driver log every write and every flush, then checks that no
   superblock write — the write that publishes a commit — is issued without a
