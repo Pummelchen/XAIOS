@@ -117,6 +117,8 @@ typedef struct virtio_net_driver {
   /* How many pairs are set up and serviced. One until the rest of E4 lands;
      the device may still advertise more. */
   uint32_t active_pairs;
+  /* Where the next receive poll starts, so no pair starves another. */
+  uint32_t rx_cursor;
   virtio_net_queue_pair_t pairs[VIRTIO_NET_MAX_QUEUE_PAIRS];
 } virtio_net_driver_t;
 
@@ -198,6 +200,46 @@ static uint16_t get_be16(const uint8_t *src) {
   return (uint16_t)(((uint16_t)src[0] << 8U) | src[1]);
 }
 
+/* One pair's rings and scratch buffers. Pair zero is allocated with the
+   driver; the rest only once a device says it has them, so a single-queue
+   device costs exactly what it did before. */
+static xaios_status_t allocate_pair(uint32_t index) {
+  virtio_net_queue_pair_t *pair = &g_net->pairs[index];
+  if (pair->rx_desc != 0) return XAIOS_OK;
+  xaios_spin_init(&pair->tx_lock);
+  /* Legacy VirtIO descriptors contain one physical extent. Keep every DMA
+   * object inside one page because kheap virtual pages need not be physically
+   * contiguous. */
+  pair->rx_desc = (virtq_desc_t *)kheap_calloc(
+      sizeof(virtq_desc_t) * VIRTQ_SIZE, VIRTIO_DMA_ALIGNMENT);
+  pair->rx_avail = (virtq_avail_t *)kheap_calloc(
+      sizeof(virtq_avail_t), VIRTIO_DMA_ALIGNMENT);
+  pair->rx_used = (virtq_used_t *)kheap_calloc(
+      sizeof(virtq_used_t), VIRTIO_DMA_ALIGNMENT);
+  pair->tx_desc = (virtq_desc_t *)kheap_calloc(
+      sizeof(virtq_desc_t) * VIRTQ_SIZE, VIRTIO_DMA_ALIGNMENT);
+  pair->tx_avail = (virtq_avail_t *)kheap_calloc(
+      sizeof(virtq_avail_t), VIRTIO_DMA_ALIGNMENT);
+  pair->tx_used = (virtq_used_t *)kheap_calloc(
+      sizeof(virtq_used_t), VIRTIO_DMA_ALIGNMENT);
+  pair->rx_packet =
+      (uint8_t *)kheap_calloc(VIRTIO_NET_GSO_RX_BUFFER, VIRTIO_DMA_ALIGNMENT);
+  pair->tx_packet = (uint8_t *)kheap_calloc(
+      VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME, VIRTIO_DMA_ALIGNMENT);
+  if (pair->rx_desc == 0 || pair->rx_avail == 0 || pair->rx_used == 0 ||
+      pair->tx_desc == 0 || pair->tx_avail == 0 || pair->tx_used == 0 ||
+      pair->rx_packet == 0 || pair->tx_packet == 0) {
+    return XAIOS_ERR_NO_MEMORY;
+  }
+  for (uint32_t i = 0U; i < VIRTIO_NET_PERSISTENT_TX_DESCS; ++i) {
+    pair->tx_indirect[i] = (virtq_desc_t *)kheap_calloc(
+        sizeof(virtq_desc_t) * (VIRTIO_NET_MAX_TX_FRAGMENTS + 1U),
+        VIRTIO_DMA_ALIGNMENT);
+    if (pair->tx_indirect[i] == 0) return XAIOS_ERR_NO_MEMORY;
+  }
+  return XAIOS_OK;
+}
+
 static xaios_status_t allocate_driver(void) {
   if (g_net != 0) {
     return XAIOS_OK;
@@ -206,38 +248,8 @@ static xaios_status_t allocate_driver(void) {
   if (g_net == 0) {
     return XAIOS_ERR_NO_MEMORY;
   }
-  xaios_spin_init(&g_net->pairs[0].tx_lock);
-  /* Legacy VirtIO descriptors contain one physical extent. Keep every DMA
-   * object inside one page because kheap virtual pages need not be physically
-   * contiguous. */
-  g_net->pairs[0].rx_desc = (virtq_desc_t *)kheap_calloc(
-      sizeof(virtq_desc_t) * VIRTQ_SIZE, VIRTIO_DMA_ALIGNMENT);
-  g_net->pairs[0].rx_avail = (virtq_avail_t *)kheap_calloc(
-      sizeof(virtq_avail_t), VIRTIO_DMA_ALIGNMENT);
-  g_net->pairs[0].rx_used = (virtq_used_t *)kheap_calloc(
-      sizeof(virtq_used_t), VIRTIO_DMA_ALIGNMENT);
-  g_net->pairs[0].tx_desc = (virtq_desc_t *)kheap_calloc(
-      sizeof(virtq_desc_t) * VIRTQ_SIZE, VIRTIO_DMA_ALIGNMENT);
-  g_net->pairs[0].tx_avail = (virtq_avail_t *)kheap_calloc(
-      sizeof(virtq_avail_t), VIRTIO_DMA_ALIGNMENT);
-  g_net->pairs[0].tx_used = (virtq_used_t *)kheap_calloc(
-      sizeof(virtq_used_t), VIRTIO_DMA_ALIGNMENT);
-  g_net->pairs[0].rx_packet =
-      (uint8_t *)kheap_calloc(VIRTIO_NET_GSO_RX_BUFFER, VIRTIO_DMA_ALIGNMENT);
-  g_net->pairs[0].tx_packet = (uint8_t *)kheap_calloc(
-      VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME, VIRTIO_DMA_ALIGNMENT);
-  if (g_net->pairs[0].rx_desc == 0 || g_net->pairs[0].rx_avail == 0 || g_net->pairs[0].rx_used == 0 ||
-      g_net->pairs[0].tx_desc == 0 || g_net->pairs[0].tx_avail == 0 || g_net->pairs[0].tx_used == 0 ||
-      g_net->pairs[0].rx_packet == 0 || g_net->pairs[0].tx_packet == 0) {
-    return XAIOS_ERR_NO_MEMORY;
-  }
-  for (uint32_t i = 0U; i < VIRTIO_NET_PERSISTENT_TX_DESCS; ++i) {
-    g_net->pairs[0].tx_indirect[i] = (virtq_desc_t *)kheap_calloc(
-        sizeof(virtq_desc_t) * (VIRTIO_NET_MAX_TX_FRAGMENTS + 1U),
-        VIRTIO_DMA_ALIGNMENT);
-    if (g_net->pairs[0].tx_indirect[i] == 0) return XAIOS_ERR_NO_MEMORY;
-  }
-  return XAIOS_OK;
+  g_net->active_pairs = 1U;
+  return allocate_pair(0U);
 }
 
 static uint32_t rx_buffer_bytes(const virtio_net_driver_t *driver) {
@@ -520,6 +532,85 @@ static uint64_t net_dma_address(const void *ptr) {
   return physical;
 }
 
+
+/* Bring one pair's queues up and fill its receive ring.
+ *
+ * virtio-net numbers its queues in pairs: receive is 2i, transmit 2i+1, and
+ * the control queue -- when negotiated -- sits after the last pair. Pair zero
+ * is done inline in `virtio_net_init_persistent` because it is the path that
+ * has always run; this is the same sequence for the pairs after it.
+ *
+ * Setting a pair up is not the same as the device using it. A device starts
+ * with one pair in use whatever it advertises, and only begins delivering on
+ * the rest when told to by `VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET`. That ordering
+ * is the whole reason this lands first: buffers exist and are serviced before
+ * anything asks the device to fill them. */
+static xaios_status_t bring_up_pair(uint32_t index) {
+  xaios_status_t status = allocate_pair(index);
+  if (status != XAIOS_OK) return status;
+  virtio_net_queue_pair_t *pair = &g_net->pairs[index];
+
+  bytes_zero(pair->rx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
+  bytes_zero(pair->rx_avail, sizeof(*pair->rx_avail));
+  bytes_zero(pair->rx_used, sizeof(*pair->rx_used));
+  bytes_zero(pair->tx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
+  bytes_zero(pair->tx_avail, sizeof(*pair->tx_avail));
+  bytes_zero(pair->tx_used, sizeof(*pair->tx_used));
+  if (g_net->event_idx != 0U) {
+    pair->rx_avail->used_event = 0U;
+    pair->tx_avail->used_event = 0U;
+  }
+
+  status = virtio_transport_setup_queue_vectored(
+      &g_net->device, index * 2U, VIRTQ_SIZE, pair->rx_desc, pair->rx_avail,
+      pair->rx_used);
+  if (status != XAIOS_OK) {
+    klog("virtio-net-persist: RX queue %u setup failed status=%d\n",
+         index * 2U, (int)status);
+    return status;
+  }
+  status = virtio_transport_setup_queue_vectored(
+      &g_net->device, index * 2U + 1U, VIRTQ_SIZE, pair->tx_desc,
+      pair->tx_avail, pair->tx_used);
+  if (status != XAIOS_OK) {
+    klog("virtio-net-persist: TX queue %u setup failed status=%d\n",
+         index * 2U + 1U, (int)status);
+    return status;
+  }
+
+  for (uint32_t i = 0; i < VIRTIO_NET_PERSISTENT_RX_DESCS; ++i) {
+    pair->rx_bufs[i] =
+        (uint8_t *)kheap_calloc(rx_buffer_bytes(g_net), VIRTIO_DMA_ALIGNMENT);
+    if (pair->rx_bufs[i] == 0) {
+      klog("virtio-net-persist: pair %u receive buffer %u unavailable\n",
+           index, i);
+      return XAIOS_ERR_NO_MEMORY;
+    }
+    pair->rx_desc[i].addr = net_dma_address(pair->rx_bufs[i]);
+    pair->rx_desc[i].len = rx_buffer_bytes(g_net);
+    pair->rx_desc[i].flags = VRING_DESC_F_WRITE;
+    pair->rx_avail->ring[i] = (uint16_t)i;
+  }
+  virtio_mmio_barrier();
+  pair->rx_avail->idx = VIRTIO_NET_PERSISTENT_RX_DESCS;
+  pair->rx_avail_idx = VIRTIO_NET_PERSISTENT_RX_DESCS;
+  pair->rx_last_used = 0;
+  virtio_transport_notify(&g_net->device, index * 2U);
+
+  for (uint32_t i = 0; i < VIRTIO_NET_PERSISTENT_TX_DESCS; ++i) {
+    pair->tx_bufs[i] = (uint8_t *)kheap_calloc(
+        VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME, VIRTIO_DMA_ALIGNMENT);
+    if (pair->tx_bufs[i] == 0) {
+      klog("virtio-net-persist: pair %u transmit buffer %u unavailable\n",
+           index, i);
+      return XAIOS_ERR_NO_MEMORY;
+    }
+  }
+  pair->tx_avail_idx = 0;
+  pair->tx_last_used = 0;
+  return XAIOS_OK;
+}
+
 xaios_status_t virtio_net_init_persistent(void) {
   xaios_status_t status = allocate_driver();
   if (status != XAIOS_OK) return status;
@@ -648,6 +739,29 @@ xaios_status_t virtio_net_init_persistent(void) {
   }
   g_net->pairs[0].tx_avail_idx = 0;
   g_net->pairs[0].tx_last_used = 0;
+
+  /* The pairs after the first, where the device has them. Setting them up
+     does not put them into service: a virtio-net device uses one pair until
+     `VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET` says otherwise, so this is the half
+     that has to exist before that is ever sent. A pair that will not come up
+     is not fatal -- the link is already carrying traffic on pair zero, and
+     losing the machine over an optimisation would be a poor trade. */
+  uint32_t wanted = g_net->multiqueue != 0U ? g_net->max_queue_pairs : 1U;
+  if (wanted > VIRTIO_NET_MAX_QUEUE_PAIRS) wanted = VIRTIO_NET_MAX_QUEUE_PAIRS;
+  if (wanted == 0U) wanted = 1U;
+  for (uint32_t index = 1U; index < wanted; ++index) {
+    xaios_status_t pair_status = bring_up_pair(index);
+    if (pair_status != XAIOS_OK) {
+      klog("virtio-net-persist: pair %u unavailable status=%d; continuing "
+           "with %u\n", index, (int)pair_status, g_net->active_pairs);
+      break;
+    }
+    g_net->active_pairs = index + 1U;
+  }
+  klog("virtio-net-persist: queue pairs serviced=%u offered=%u\n",
+       g_net->active_pairs,
+       g_net->multiqueue != 0U ? g_net->max_queue_pairs : 1U);
+
   g_net->persistent = 1;
   g_net->interrupt_count = 0U;
   g_net->tx_completion_count = 0U;
@@ -905,25 +1019,24 @@ uint32_t virtio_net_tx_poll_completions(void) {
   return virtio_net_drain_tx_completions();
 }
 
-uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size) {
-  if (g_net == 0 || g_net->persistent == 0 || buffer == 0 ||
-      buffer_size == 0) {
-    return 0;
-  }
+/* One pair's receive ring. Returns the frame length, or zero when that
+   pair had nothing -- which is not the same as the device having nothing,
+   so the interrupt is acknowledged by the caller once every pair has been
+   looked at rather than by whichever one is checked first. */
+static uint32_t rx_poll_pair(uint32_t index, uint8_t *buffer,
+                             uint64_t buffer_size) {
+  virtio_net_queue_pair_t *pair = &g_net->pairs[index];
 
   /* The device publishes used-ring entries before updating idx. Force a fresh
    * device-owned index load, then order the entry reads after it. */
   virtio_mmio_barrier();
   uint16_t used_idx =
-      *(volatile uint16_t *)(void *)&g_net->pairs[0].rx_used->idx;
-  if (used_idx == g_net->pairs[0].rx_last_used) {
-    virtio_transport_ack_interrupts(&g_net->device);
-    return 0;
-  }
+      *(volatile uint16_t *)(void *)&pair->rx_used->idx;
+  if (used_idx == pair->rx_last_used) return 0;
   virtio_mmio_barrier();
 
   virtq_used_elem_t *elem =
-      &g_net->pairs[0].rx_used->ring[g_net->pairs[0].rx_last_used % VIRTQ_SIZE];
+      &pair->rx_used->ring[pair->rx_last_used % VIRTQ_SIZE];
   uint16_t desc = (uint16_t)elem->id;
   uint32_t rx_len = elem->len;
   uint32_t frame_len = 0;
@@ -931,9 +1044,9 @@ uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size) {
   if (rx_len > VIRTIO_NET_HDR_SIZE &&
       rx_len - VIRTIO_NET_HDR_SIZE <= buffer_size) {
     frame_len = rx_len - VIRTIO_NET_HDR_SIZE;
-    if (g_net->pairs[0].rx_chained == 0U) {
+    if (pair->rx_chained == 0U) {
       for (uint32_t i = 0; i < frame_len; ++i) {
-        buffer[i] = g_net->pairs[0].rx_bufs[desc][VIRTIO_NET_HDR_SIZE + i];
+        buffer[i] = pair->rx_bufs[desc][VIRTIO_NET_HDR_SIZE + i];
       }
     } else {
       /* The device fills the chain in order, so skip the header wherever it
@@ -946,7 +1059,7 @@ uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size) {
           skip -= VIRTIO_NET_RX_PAGE_BYTES;
           continue;
         }
-        const uint8_t *source = g_net->pairs[0].rx_pages[desc][page] + skip;
+        const uint8_t *source = pair->rx_pages[desc][page] + skip;
         uint32_t available = VIRTIO_NET_RX_PAGE_BYTES - skip;
         uint32_t remaining = frame_len - copied;
         uint32_t take = remaining < available ? remaining : available;
@@ -959,27 +1072,51 @@ uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size) {
   }
 
   /* Every used entry must be returned, including malformed/oversized input. */
-  ++g_net->pairs[0].rx_last_used;
+  ++pair->rx_last_used;
   if (g_net->event_idx != 0U) {
-    g_net->pairs[0].rx_avail->used_event = g_net->pairs[0].rx_last_used;
+    pair->rx_avail->used_event = pair->rx_last_used;
   }
-  if (g_net->pairs[0].rx_chained != 0U) {
-    g_net->pairs[0].rx_desc[desc].addr = net_dma_address(g_net->pairs[0].rx_indirect[desc]);
-    g_net->pairs[0].rx_desc[desc].len =
+  if (pair->rx_chained != 0U) {
+    pair->rx_desc[desc].addr = net_dma_address(pair->rx_indirect[desc]);
+    pair->rx_desc[desc].len =
         (uint32_t)(sizeof(virtq_desc_t) * VIRTIO_NET_RX_PAGES);
-    g_net->pairs[0].rx_desc[desc].flags = VRING_DESC_F_INDIRECT;
+    pair->rx_desc[desc].flags = VRING_DESC_F_INDIRECT;
   } else {
-    g_net->pairs[0].rx_desc[desc].addr = net_dma_address(g_net->pairs[0].rx_bufs[desc]);
-    g_net->pairs[0].rx_desc[desc].len = rx_buffer_bytes(g_net);
-    g_net->pairs[0].rx_desc[desc].flags = VRING_DESC_F_WRITE;
+    pair->rx_desc[desc].addr = net_dma_address(pair->rx_bufs[desc]);
+    pair->rx_desc[desc].len = rx_buffer_bytes(g_net);
+    pair->rx_desc[desc].flags = VRING_DESC_F_WRITE;
   }
-  g_net->pairs[0].rx_avail->ring[g_net->pairs[0].rx_avail_idx % VIRTQ_SIZE] = desc;
+  pair->rx_avail->ring[pair->rx_avail_idx % VIRTQ_SIZE] = desc;
   virtio_mmio_barrier();
-  ++g_net->pairs[0].rx_avail_idx;
-  g_net->pairs[0].rx_avail->idx = g_net->pairs[0].rx_avail_idx;
-  virtio_transport_notify(&g_net->device, 0);
+  ++pair->rx_avail_idx;
+  pair->rx_avail->idx = pair->rx_avail_idx;
+  virtio_transport_notify(&g_net->device, index * 2U);
   virtio_transport_ack_interrupts(&g_net->device);
   return frame_len;
+}
+
+/* Every pair that is in service, starting where the last call left off.
+ *
+ * Round-robin rather than always from zero: a pair with a steady stream would
+ * otherwise be the only one ever read, and frames on the others would sit in
+ * their rings until it went quiet. With one pair in service this is the same
+ * single ring it has always been. */
+uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size) {
+  if (g_net == 0 || g_net->persistent == 0 || buffer == 0 ||
+      buffer_size == 0) {
+    return 0;
+  }
+  uint32_t pairs = g_net->active_pairs != 0U ? g_net->active_pairs : 1U;
+  for (uint32_t step = 0U; step < pairs; ++step) {
+    uint32_t index = (g_net->rx_cursor + step) % pairs;
+    uint32_t frame_len = rx_poll_pair(index, buffer, buffer_size);
+    if (frame_len != 0U) {
+      g_net->rx_cursor = (uint32_t)((index + 1U) % pairs);
+      return frame_len;
+    }
+  }
+  virtio_transport_ack_interrupts(&g_net->device);
+  return 0;
 }
 
 xaios_status_t virtio_net_get_mac(uint8_t mac[6]) {
