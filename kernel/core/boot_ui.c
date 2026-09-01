@@ -814,8 +814,20 @@ uint32_t boot_ui_handle_control(const xaios_boot_ui_control_t *control) {
       control->version != XAIOS_BOOT_UI_CONTROL_VERSION) {
     return 0U;
   }
+  /* Every branch below draws, so every branch below has to present. Drawing
+     changes the buffer and nothing else: until the dirty region is handed to
+     the device, a viewer sees the frame before it. `boot_ui_update` has
+     always done both, and this function did only the first half -- so the
+     kernel's last `boot_ui_update(90, ...)` was the last thing to reach the
+     screen. Everything after it, which is the whole end of boot, was drawn
+     into a buffer nobody sent: 95%, 100%, the ready summary with the machine's
+     addresses, and the handover to the terminal. A machine sitting at a login
+     prompt showed a progress bar stopped at 90% for as long as it was left
+     there. It was invisible from the console side, because the serial log
+     reported every one of those stages. */
   if (control->stage == XAIOS_BOOT_UI_STAGE_SSH_LOADING) {
     fb_draw_status(95U, "IPv4 network configuration", "SSH server", 1U);
+    fb_present();
     return 1U;
   }
   if (control->stage == XAIOS_BOOT_UI_STAGE_SSH_READY) {
@@ -825,6 +837,7 @@ uint32_t boot_ui_handle_control(const xaios_boot_ui_control_t *control) {
       /* Boot is finished, so hand the display over to a real terminal. From
          here the framebuffer mirrors the console instead of summarising it. */
       term_activate(control);
+      fb_present();
       return 1U;
     }
     /* In terminal mode the control record only drives the cursor; the text
@@ -834,6 +847,7 @@ uint32_t boot_ui_handle_control(const xaios_boot_ui_control_t *control) {
     } else {
       term_erase_cursor();
     }
+    fb_present();
     return 1U;
   }
   if (control->stage == XAIOS_BOOT_UI_STAGE_SSH_FAILED) {
