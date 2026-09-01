@@ -344,6 +344,19 @@ if [ "$nvme_image" != "none" ]; then
     -device nvme,serial=XAIOSNVME,drive=xaios_nvme
 fi
 
+# The address range SLIRP hands the guest on its routed interface. Default
+# unset, which leaves QEMU's own 10.0.2.0/24 and every existing gate
+# unchanged. It exists because a /24 is the only thing a guest here has ever
+# been given, so anything that reads a netmask and gets it wrong looks correct
+# in every test: B-18 was a routing log that printed "/24" whatever the lease
+# said, and no gate could have caught it.
+#
+# It applies to net1 rather than net0. net1 is the interface the persistent
+# network stack configures and routes through -- `routing: initialized` reports
+# its network -- and net0 is a second, unrouted one. Setting it on net0 changes
+# an address nothing reads.
+user_net_cidr="${XAIOS_QEMU_USER_NET_CIDR:-none}"
+
 set -- "$@" \
   -netdev user,id=net0 \
   -device virtio-net-pci,netdev=net0
@@ -384,6 +397,9 @@ elif [ "$net_socket_port" != "none" ]; then
   set -- "$@" -netdev "$net1_options"
 else
   net1_options="user,id=net1"
+  if [ "$user_net_cidr" != "none" ]; then
+    net1_options="${net1_options},net=${user_net_cidr}"
+  fi
   if [ "$hostfwd_port" != "none" ]; then
     net1_options="${net1_options},hostfwd=tcp::${hostfwd_port}-:22"
   fi
