@@ -62,11 +62,23 @@
 #define VIRTIO_F_RING_INDIRECT_DESC (UINT32_C(1) << 28U)
 #define VIRTIO_F_RING_EVENT_IDX (UINT32_C(1) << 29U)
 #define VIRTIO_F_VERSION_1_HIGH UINT32_C(1)
+/* The most pairs this driver will set up. The device may offer more; it
+   is told how many are in use, so offering more is not an error. */
+#define VIRTIO_NET_MAX_QUEUE_PAIRS 4U
 #define VIRTIO_NET_MAX_TX_FRAGMENTS 4U
 #define VIRTIO_NET_FRAGMENT_BUFFER 4096U
 
-typedef struct virtio_net_driver {
-  virtio_mmio_device_t device;
+/* Everything that belongs to one receive/transmit pair.
+ *
+ * This was eighteen fields spread through the driver, which was correct while
+ * there could only ever be one pair of them. `VIRTIO_NET_F_MQ` makes that
+ * false: a device may offer several, and a driver that services one while the
+ * device delivers on all of them loses every packet that lands on a queue
+ * nobody is reading. Gathering the state into a pair is the first half of
+ * E4 -- buffers and servicing for N pairs -- and has to come before asking a
+ * device to use more than one, because a device told to use four pairs will
+ * deliver on four whether or not anything is listening. */
+typedef struct virtio_net_queue_pair {
   virtq_desc_t *rx_desc;
   virtq_avail_t *rx_avail;
   virtq_used_t *rx_used;
@@ -75,12 +87,23 @@ typedef struct virtio_net_driver {
   virtq_used_t *tx_used;
   uint8_t *rx_packet;
   uint8_t *tx_packet;
-  /* persistent mode state */
-  uint32_t persistent;
   uint16_t rx_avail_idx;
   uint16_t rx_last_used;
   uint16_t tx_avail_idx;
   uint16_t tx_last_used;
+  xaios_spinlock_t tx_lock;
+  uint8_t *rx_bufs[VIRTIO_NET_PERSISTENT_RX_DESCS];
+  virtq_desc_t *rx_indirect[VIRTIO_NET_PERSISTENT_RX_DESCS];
+  uint8_t *rx_pages[VIRTIO_NET_PERSISTENT_RX_DESCS][VIRTIO_NET_RX_PAGES];
+  uint32_t rx_chained;
+  uint8_t *tx_bufs[VIRTIO_NET_PERSISTENT_TX_DESCS];
+  virtq_desc_t *tx_indirect[VIRTIO_NET_PERSISTENT_TX_DESCS];
+} virtio_net_queue_pair_t;
+
+typedef struct virtio_net_driver {
+  virtio_mmio_device_t device;
+  /* persistent mode state */
+  uint32_t persistent;
   uint64_t interrupt_count;
   uint64_t tx_completion_count;
   uint32_t event_idx;
@@ -89,15 +112,12 @@ typedef struct virtio_net_driver {
   uint32_t device_present;
   uint64_t scatter_gather_submissions;
   uint64_t copy_fallbacks;
-  xaios_spinlock_t tx_lock;
-  uint8_t *rx_bufs[VIRTIO_NET_PERSISTENT_RX_DESCS];
-  virtq_desc_t *rx_indirect[VIRTIO_NET_PERSISTENT_RX_DESCS];
-  uint8_t *rx_pages[VIRTIO_NET_PERSISTENT_RX_DESCS][VIRTIO_NET_RX_PAGES];
-  uint32_t rx_chained;
   uint32_t multiqueue;
   uint32_t max_queue_pairs;
-  uint8_t *tx_bufs[VIRTIO_NET_PERSISTENT_TX_DESCS];
-  virtq_desc_t *tx_indirect[VIRTIO_NET_PERSISTENT_TX_DESCS];
+  /* How many pairs are set up and serviced. One until the rest of E4 lands;
+     the device may still advertise more. */
+  uint32_t active_pairs;
+  virtio_net_queue_pair_t pairs[VIRTIO_NET_MAX_QUEUE_PAIRS];
 } virtio_net_driver_t;
 
 static virtio_net_driver_t *g_net;
@@ -109,20 +129,20 @@ static uint16_t read_be16(const uint8_t *value) {
 static uint32_t drain_tx_completions_locked(void) {
   if (g_net == 0 || g_net->persistent == 0U) return 0U;
   virtio_mmio_barrier();
-  uint16_t used = *(volatile uint16_t *)(void *)&g_net->tx_used->idx;
-  uint32_t completed = (uint16_t)(used - g_net->tx_last_used);
-  g_net->tx_last_used = used;
+  uint16_t used = *(volatile uint16_t *)(void *)&g_net->pairs[0].tx_used->idx;
+  uint32_t completed = (uint16_t)(used - g_net->pairs[0].tx_last_used);
+  g_net->pairs[0].tx_last_used = used;
   if (g_net->event_idx != 0U) {
-    g_net->tx_avail->used_event = used;
+    g_net->pairs[0].tx_avail->used_event = used;
   }
   g_net->tx_completion_count += completed;
   return completed;
 }
 
 static uint32_t virtio_net_drain_tx_completions(void) {
-  if (g_net == 0 || xaios_spin_trylock(&g_net->tx_lock) == 0) return 0U;
+  if (g_net == 0 || xaios_spin_trylock(&g_net->pairs[0].tx_lock) == 0) return 0U;
   uint32_t completed = drain_tx_completions_locked();
-  xaios_spin_unlock(&g_net->tx_lock);
+  xaios_spin_unlock(&g_net->pairs[0].tx_lock);
   return completed;
 }
 
@@ -186,36 +206,36 @@ static xaios_status_t allocate_driver(void) {
   if (g_net == 0) {
     return XAIOS_ERR_NO_MEMORY;
   }
-  xaios_spin_init(&g_net->tx_lock);
+  xaios_spin_init(&g_net->pairs[0].tx_lock);
   /* Legacy VirtIO descriptors contain one physical extent. Keep every DMA
    * object inside one page because kheap virtual pages need not be physically
    * contiguous. */
-  g_net->rx_desc = (virtq_desc_t *)kheap_calloc(
+  g_net->pairs[0].rx_desc = (virtq_desc_t *)kheap_calloc(
       sizeof(virtq_desc_t) * VIRTQ_SIZE, VIRTIO_DMA_ALIGNMENT);
-  g_net->rx_avail = (virtq_avail_t *)kheap_calloc(
+  g_net->pairs[0].rx_avail = (virtq_avail_t *)kheap_calloc(
       sizeof(virtq_avail_t), VIRTIO_DMA_ALIGNMENT);
-  g_net->rx_used = (virtq_used_t *)kheap_calloc(
+  g_net->pairs[0].rx_used = (virtq_used_t *)kheap_calloc(
       sizeof(virtq_used_t), VIRTIO_DMA_ALIGNMENT);
-  g_net->tx_desc = (virtq_desc_t *)kheap_calloc(
+  g_net->pairs[0].tx_desc = (virtq_desc_t *)kheap_calloc(
       sizeof(virtq_desc_t) * VIRTQ_SIZE, VIRTIO_DMA_ALIGNMENT);
-  g_net->tx_avail = (virtq_avail_t *)kheap_calloc(
+  g_net->pairs[0].tx_avail = (virtq_avail_t *)kheap_calloc(
       sizeof(virtq_avail_t), VIRTIO_DMA_ALIGNMENT);
-  g_net->tx_used = (virtq_used_t *)kheap_calloc(
+  g_net->pairs[0].tx_used = (virtq_used_t *)kheap_calloc(
       sizeof(virtq_used_t), VIRTIO_DMA_ALIGNMENT);
-  g_net->rx_packet =
+  g_net->pairs[0].rx_packet =
       (uint8_t *)kheap_calloc(VIRTIO_NET_GSO_RX_BUFFER, VIRTIO_DMA_ALIGNMENT);
-  g_net->tx_packet = (uint8_t *)kheap_calloc(
+  g_net->pairs[0].tx_packet = (uint8_t *)kheap_calloc(
       VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME, VIRTIO_DMA_ALIGNMENT);
-  if (g_net->rx_desc == 0 || g_net->rx_avail == 0 || g_net->rx_used == 0 ||
-      g_net->tx_desc == 0 || g_net->tx_avail == 0 || g_net->tx_used == 0 ||
-      g_net->rx_packet == 0 || g_net->tx_packet == 0) {
+  if (g_net->pairs[0].rx_desc == 0 || g_net->pairs[0].rx_avail == 0 || g_net->pairs[0].rx_used == 0 ||
+      g_net->pairs[0].tx_desc == 0 || g_net->pairs[0].tx_avail == 0 || g_net->pairs[0].tx_used == 0 ||
+      g_net->pairs[0].rx_packet == 0 || g_net->pairs[0].tx_packet == 0) {
     return XAIOS_ERR_NO_MEMORY;
   }
   for (uint32_t i = 0U; i < VIRTIO_NET_PERSISTENT_TX_DESCS; ++i) {
-    g_net->tx_indirect[i] = (virtq_desc_t *)kheap_calloc(
+    g_net->pairs[0].tx_indirect[i] = (virtq_desc_t *)kheap_calloc(
         sizeof(virtq_desc_t) * (VIRTIO_NET_MAX_TX_FRAGMENTS + 1U),
         VIRTIO_DMA_ALIGNMENT);
-    if (g_net->tx_indirect[i] == 0) return XAIOS_ERR_NO_MEMORY;
+    if (g_net->pairs[0].tx_indirect[i] == 0) return XAIOS_ERR_NO_MEMORY;
   }
   return XAIOS_OK;
 }
@@ -266,7 +286,7 @@ static xaios_status_t negotiate_net_features(virtio_net_driver_t *driver) {
         (accepted_low & VIRTIO_F_RING_INDIRECT_DESC) != 0U ? 1U : 0U;
     driver->large_rx =
         (accepted_low & VIRTIO_NET_GUEST_GSO_MASK) != 0U ? 1U : 0U;
-    driver->rx_chained =
+    driver->pairs[0].rx_chained =
         driver->large_rx != 0U && driver->indirect_desc != 0U ? 1U : 0U;
     driver->multiqueue =
         (accepted_low & VIRTIO_NET_F_MQ) != 0U &&
@@ -284,7 +304,7 @@ static xaios_status_t negotiate_net_features(virtio_net_driver_t *driver) {
           ((uint32_t)virtio_mmio_read8(driver->device.base, 0x100U + 9U) << 8);
       if (driver->max_queue_pairs == 0U) driver->multiqueue = 0U;
     }
-    if (driver->large_rx != 0U && driver->rx_chained == 0U) {
+    if (driver->large_rx != 0U && driver->pairs[0].rx_chained == 0U) {
       klog("virtio-net: guest offload without indirect descriptors; receive "
            "buffers cannot reach %u bytes\n",
            VIRTIO_NET_GSO_RX_BUFFER);
@@ -380,63 +400,63 @@ void virtio_net_self_test(void) {
     return;
   }
 
-  bytes_zero(g_net->rx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
-  bytes_zero(g_net->rx_avail, sizeof(*g_net->rx_avail));
-  bytes_zero(g_net->rx_used, sizeof(*g_net->rx_used));
-  bytes_zero(g_net->tx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
-  bytes_zero(g_net->tx_avail, sizeof(*g_net->tx_avail));
-  bytes_zero(g_net->tx_used, sizeof(*g_net->tx_used));
+  bytes_zero(g_net->pairs[0].rx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
+  bytes_zero(g_net->pairs[0].rx_avail, sizeof(*g_net->pairs[0].rx_avail));
+  bytes_zero(g_net->pairs[0].rx_used, sizeof(*g_net->pairs[0].rx_used));
+  bytes_zero(g_net->pairs[0].tx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
+  bytes_zero(g_net->pairs[0].tx_avail, sizeof(*g_net->pairs[0].tx_avail));
+  bytes_zero(g_net->pairs[0].tx_used, sizeof(*g_net->pairs[0].tx_used));
   if (g_net->event_idx != 0U) {
-    g_net->rx_avail->used_event = 0U;
-    g_net->tx_avail->used_event = 0U;
+    g_net->pairs[0].rx_avail->used_event = 0U;
+    g_net->pairs[0].tx_avail->used_event = 0U;
   }
-  bytes_zero(g_net->rx_packet, rx_buffer_bytes(g_net));
-  bytes_zero(g_net->tx_packet, 128);
+  bytes_zero(g_net->pairs[0].rx_packet, rx_buffer_bytes(g_net));
+  bytes_zero(g_net->pairs[0].tx_packet, 128);
 
   kassert(virtio_transport_setup_queue(&g_net->device, 0, VIRTQ_SIZE,
-                                       g_net->rx_desc, g_net->rx_avail,
-                                       g_net->rx_used) == XAIOS_OK);
+                                       g_net->pairs[0].rx_desc, g_net->pairs[0].rx_avail,
+                                       g_net->pairs[0].rx_used) == XAIOS_OK);
   kassert(virtio_transport_setup_queue(&g_net->device, 1, VIRTQ_SIZE,
-                                       g_net->tx_desc, g_net->tx_avail,
-                                       g_net->tx_used) == XAIOS_OK);
+                                       g_net->pairs[0].tx_desc, g_net->pairs[0].tx_avail,
+                                       g_net->pairs[0].tx_used) == XAIOS_OK);
   virtio_transport_set_driver_ok(&g_net->device);
 
-  g_net->rx_desc[0].addr = dma_address(g_net->rx_packet);
-  g_net->rx_desc[0].len = rx_buffer_bytes(g_net);
-  g_net->rx_desc[0].flags = VRING_DESC_F_WRITE;
-  g_net->rx_avail->ring[0] = 0;
+  g_net->pairs[0].rx_desc[0].addr = dma_address(g_net->pairs[0].rx_packet);
+  g_net->pairs[0].rx_desc[0].len = rx_buffer_bytes(g_net);
+  g_net->pairs[0].rx_desc[0].flags = VRING_DESC_F_WRITE;
+  g_net->pairs[0].rx_avail->ring[0] = 0;
   virtio_mmio_barrier();
-  g_net->rx_avail->idx = 1;
+  g_net->pairs[0].rx_avail->idx = 1;
   virtio_transport_notify(&g_net->device, 0);
 
   uint64_t tx_len = 0;
-  build_arp_request(g_net->tx_packet, &tx_len);
+  build_arp_request(g_net->pairs[0].tx_packet, &tx_len);
   if (g_net->indirect_desc != 0U) {
-    virtq_desc_t *indirect = g_net->tx_indirect[0];
-    indirect[0].addr = dma_address(g_net->tx_packet);
+    virtq_desc_t *indirect = g_net->pairs[0].tx_indirect[0];
+    indirect[0].addr = dma_address(g_net->pairs[0].tx_packet);
     indirect[0].len = VIRTIO_NET_HDR_SIZE;
     indirect[0].flags = VRING_DESC_F_NEXT;
     indirect[0].next = 1U;
-    indirect[1].addr = dma_address(g_net->tx_packet + VIRTIO_NET_HDR_SIZE);
+    indirect[1].addr = dma_address(g_net->pairs[0].tx_packet + VIRTIO_NET_HDR_SIZE);
     indirect[1].len = 21U;
     indirect[1].flags = VRING_DESC_F_NEXT;
     indirect[1].next = 2U;
     indirect[2].addr =
-        dma_address(g_net->tx_packet + VIRTIO_NET_HDR_SIZE + 21U);
+        dma_address(g_net->pairs[0].tx_packet + VIRTIO_NET_HDR_SIZE + 21U);
     indirect[2].len = 21U;
     indirect[2].flags = 0U;
     indirect[2].next = 0U;
-    g_net->tx_desc[0].addr = dma_address(indirect);
-    g_net->tx_desc[0].len = 3U * sizeof(virtq_desc_t);
-    g_net->tx_desc[0].flags = VRING_DESC_F_INDIRECT;
+    g_net->pairs[0].tx_desc[0].addr = dma_address(indirect);
+    g_net->pairs[0].tx_desc[0].len = 3U * sizeof(virtq_desc_t);
+    g_net->pairs[0].tx_desc[0].flags = VRING_DESC_F_INDIRECT;
   } else {
-    g_net->tx_desc[0].addr = dma_address(g_net->tx_packet);
-    g_net->tx_desc[0].len = (uint32_t)tx_len;
-    g_net->tx_desc[0].flags = 0U;
+    g_net->pairs[0].tx_desc[0].addr = dma_address(g_net->pairs[0].tx_packet);
+    g_net->pairs[0].tx_desc[0].len = (uint32_t)tx_len;
+    g_net->pairs[0].tx_desc[0].flags = 0U;
   }
-  g_net->tx_avail->ring[0] = 0;
+  g_net->pairs[0].tx_avail->ring[0] = 0;
   virtio_mmio_barrier();
-  g_net->tx_avail->idx = 1;
+  g_net->pairs[0].tx_avail->idx = 1;
   virtio_transport_notify(&g_net->device, 1);
 
   /* Whether a transmit completes inside a fixed window is the device's
@@ -447,10 +467,10 @@ void virtio_net_self_test(void) {
      to reset the device either way, because the real driver initialises after
      this and needs the queues put back. */
   xaios_status_t tx_status =
-      virtio_transport_wait_used_notifying(&g_net->device, 1U, &g_net->tx_used->idx, 1);
+      virtio_transport_wait_used_notifying(&g_net->device, 1U, &g_net->pairs[0].tx_used->idx, 1);
   xaios_status_t rx_status =
       tx_status == XAIOS_OK
-          ? virtio_transport_wait_used_notifying(&g_net->device, 0U, &g_net->rx_used->idx, 1)
+          ? virtio_transport_wait_used_notifying(&g_net->device, 0U, &g_net->pairs[0].rx_used->idx, 1)
           : XAIOS_ERR_IO;
   virtio_transport_ack_interrupts(&g_net->device);
 
@@ -464,16 +484,16 @@ void virtio_net_self_test(void) {
          "not asserted\n");
     klog("virtio-net: V-10 tx_avail=%u tx_used=%u rx_avail=%u rx_used=%u "
          "device_status=0x%x event_idx=%u indirect=%u\n",
-         g_net->tx_avail->idx, g_net->tx_used->idx, g_net->rx_avail->idx,
-         g_net->rx_used->idx,
+         g_net->pairs[0].tx_avail->idx, g_net->pairs[0].tx_used->idx, g_net->pairs[0].rx_avail->idx,
+         g_net->pairs[0].rx_used->idx,
          virtio_transport_device_status(&g_net->device), g_net->event_idx,
          g_net->indirect_desc);
   } else if (rx_status == XAIOS_OK) {
-    uint32_t rx_len = g_net->rx_used->ring[0].len;
+    uint32_t rx_len = g_net->pairs[0].rx_used->ring[0].len;
     /* The request went to QEMU user-mode networking's gateway. Any other
        host answers from its own subnet, so a reply that does not match is
        evidence of a different network rather than of a broken driver. */
-    if (is_expected_arp_reply(g_net->rx_packet, rx_len)) {
+    if (is_expected_arp_reply(g_net->pairs[0].rx_packet, rx_len)) {
       klog("virtio-net: host arp reply validated len=%u from=10.0.2.2\n",
            rx_len);
     } else {
@@ -522,15 +542,15 @@ xaios_status_t virtio_net_init_persistent(void) {
     return status;
   }
 
-  bytes_zero(g_net->rx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
-  bytes_zero(g_net->rx_avail, sizeof(*g_net->rx_avail));
-  bytes_zero(g_net->rx_used, sizeof(*g_net->rx_used));
-  bytes_zero(g_net->tx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
-  bytes_zero(g_net->tx_avail, sizeof(*g_net->tx_avail));
-  bytes_zero(g_net->tx_used, sizeof(*g_net->tx_used));
+  bytes_zero(g_net->pairs[0].rx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
+  bytes_zero(g_net->pairs[0].rx_avail, sizeof(*g_net->pairs[0].rx_avail));
+  bytes_zero(g_net->pairs[0].rx_used, sizeof(*g_net->pairs[0].rx_used));
+  bytes_zero(g_net->pairs[0].tx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
+  bytes_zero(g_net->pairs[0].tx_avail, sizeof(*g_net->pairs[0].tx_avail));
+  bytes_zero(g_net->pairs[0].tx_used, sizeof(*g_net->pairs[0].tx_used));
   if (g_net->event_idx != 0U) {
-    g_net->rx_avail->used_event = 0U;
-    g_net->tx_avail->used_event = 0U;
+    g_net->pairs[0].rx_avail->used_event = 0U;
+    g_net->pairs[0].tx_avail->used_event = 0U;
   }
 
   /* Ask for a vector per queue rather than one for the device. Receive and
@@ -541,17 +561,17 @@ xaios_status_t virtio_net_init_persistent(void) {
      interrupt line for the whole device -- so this is an improvement where it
      is available and unchanged where it is not. */
   status = virtio_transport_setup_queue_vectored(&g_net->device, 0, VIRTQ_SIZE,
-                                                 g_net->rx_desc,
-                                                 g_net->rx_avail,
-                                                 g_net->rx_used);
+                                                 g_net->pairs[0].rx_desc,
+                                                 g_net->pairs[0].rx_avail,
+                                                 g_net->pairs[0].rx_used);
   if (status != XAIOS_OK) {
     klog("virtio-net-persist: RX queue setup failed status=%d\n", (int)status);
     return status;
   }
   status = virtio_transport_setup_queue_vectored(&g_net->device, 1, VIRTQ_SIZE,
-                                                 g_net->tx_desc,
-                                                 g_net->tx_avail,
-                                                 g_net->tx_used);
+                                                 g_net->pairs[0].tx_desc,
+                                                 g_net->pairs[0].tx_avail,
+                                                 g_net->pairs[0].tx_used);
   if (status != XAIOS_OK) {
     klog("virtio-net-persist: TX queue setup failed status=%d\n", (int)status);
     return status;
@@ -569,65 +589,65 @@ xaios_status_t virtio_net_init_persistent(void) {
 
   /* Allocate and post RX buffers */
   for (uint32_t i = 0; i < VIRTIO_NET_PERSISTENT_RX_DESCS; ++i) {
-    if (g_net->rx_chained != 0U) {
-      g_net->rx_indirect[i] = (virtq_desc_t *)kheap_calloc(
+    if (g_net->pairs[0].rx_chained != 0U) {
+      g_net->pairs[0].rx_indirect[i] = (virtq_desc_t *)kheap_calloc(
           sizeof(virtq_desc_t) * VIRTIO_NET_RX_PAGES, VIRTIO_DMA_ALIGNMENT);
-      if (g_net->rx_indirect[i] == 0) {
+      if (g_net->pairs[0].rx_indirect[i] == 0) {
         klog("virtio-net-persist: receive descriptor table %u unavailable\n", i);
         return XAIOS_ERR_NO_MEMORY;
       }
       for (uint32_t page = 0U; page < VIRTIO_NET_RX_PAGES; ++page) {
-        g_net->rx_pages[i][page] = (uint8_t *)kheap_calloc(
+        g_net->pairs[0].rx_pages[i][page] = (uint8_t *)kheap_calloc(
             VIRTIO_NET_RX_PAGE_BYTES, VIRTIO_DMA_ALIGNMENT);
-        if (g_net->rx_pages[i][page] == 0) {
+        if (g_net->pairs[0].rx_pages[i][page] == 0) {
           klog("virtio-net-persist: receive page %u/%u unavailable\n", i, page);
           return XAIOS_ERR_NO_MEMORY;
         }
-        g_net->rx_indirect[i][page].addr =
-            net_dma_address(g_net->rx_pages[i][page]);
-        g_net->rx_indirect[i][page].len = VIRTIO_NET_RX_PAGE_BYTES;
-        g_net->rx_indirect[i][page].flags =
+        g_net->pairs[0].rx_indirect[i][page].addr =
+            net_dma_address(g_net->pairs[0].rx_pages[i][page]);
+        g_net->pairs[0].rx_indirect[i][page].len = VIRTIO_NET_RX_PAGE_BYTES;
+        g_net->pairs[0].rx_indirect[i][page].flags =
             page + 1U < VIRTIO_NET_RX_PAGES
                 ? (uint16_t)(VRING_DESC_F_WRITE | VRING_DESC_F_NEXT)
                 : VRING_DESC_F_WRITE;
-        g_net->rx_indirect[i][page].next = (uint16_t)(page + 1U);
+        g_net->pairs[0].rx_indirect[i][page].next = (uint16_t)(page + 1U);
       }
-      g_net->rx_bufs[i] = g_net->rx_pages[i][0];
-      g_net->rx_desc[i].addr = net_dma_address(g_net->rx_indirect[i]);
-      g_net->rx_desc[i].len =
+      g_net->pairs[0].rx_bufs[i] = g_net->pairs[0].rx_pages[i][0];
+      g_net->pairs[0].rx_desc[i].addr = net_dma_address(g_net->pairs[0].rx_indirect[i]);
+      g_net->pairs[0].rx_desc[i].len =
           (uint32_t)(sizeof(virtq_desc_t) * VIRTIO_NET_RX_PAGES);
-      g_net->rx_desc[i].flags = VRING_DESC_F_INDIRECT;
+      g_net->pairs[0].rx_desc[i].flags = VRING_DESC_F_INDIRECT;
     } else {
-      g_net->rx_bufs[i] = (uint8_t *)kheap_calloc(rx_buffer_bytes(g_net),
+      g_net->pairs[0].rx_bufs[i] = (uint8_t *)kheap_calloc(rx_buffer_bytes(g_net),
                                                   VIRTIO_DMA_ALIGNMENT);
-      if (g_net->rx_bufs[i] == 0) {
+      if (g_net->pairs[0].rx_bufs[i] == 0) {
         klog("virtio-net-persist: receive buffer %u of %u bytes unavailable\n",
              i, rx_buffer_bytes(g_net));
         return XAIOS_ERR_NO_MEMORY;
       }
-      g_net->rx_desc[i].addr = net_dma_address(g_net->rx_bufs[i]);
-      g_net->rx_desc[i].len = rx_buffer_bytes(g_net);
-      g_net->rx_desc[i].flags = VRING_DESC_F_WRITE;
+      g_net->pairs[0].rx_desc[i].addr = net_dma_address(g_net->pairs[0].rx_bufs[i]);
+      g_net->pairs[0].rx_desc[i].len = rx_buffer_bytes(g_net);
+      g_net->pairs[0].rx_desc[i].flags = VRING_DESC_F_WRITE;
     }
-    g_net->rx_avail->ring[i] = (uint16_t)i;
+    g_net->pairs[0].rx_avail->ring[i] = (uint16_t)i;
   }
   virtio_mmio_barrier();
-  g_net->rx_avail->idx = VIRTIO_NET_PERSISTENT_RX_DESCS;
-  g_net->rx_avail_idx = VIRTIO_NET_PERSISTENT_RX_DESCS;
-  g_net->rx_last_used = 0;
+  g_net->pairs[0].rx_avail->idx = VIRTIO_NET_PERSISTENT_RX_DESCS;
+  g_net->pairs[0].rx_avail_idx = VIRTIO_NET_PERSISTENT_RX_DESCS;
+  g_net->pairs[0].rx_last_used = 0;
   virtio_transport_notify(&g_net->device, 0);
 
   /* Allocate TX buffers */
   for (uint32_t i = 0; i < VIRTIO_NET_PERSISTENT_TX_DESCS; ++i) {
-    g_net->tx_bufs[i] = (uint8_t *)kheap_calloc(
+    g_net->pairs[0].tx_bufs[i] = (uint8_t *)kheap_calloc(
         VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME, VIRTIO_DMA_ALIGNMENT);
-    if (g_net->tx_bufs[i] == 0) {
+    if (g_net->pairs[0].tx_bufs[i] == 0) {
       klog("virtio-net-persist: transmit buffer %u unavailable\n", i);
       return XAIOS_ERR_NO_MEMORY;
     }
   }
-  g_net->tx_avail_idx = 0;
-  g_net->tx_last_used = 0;
+  g_net->pairs[0].tx_avail_idx = 0;
+  g_net->pairs[0].tx_last_used = 0;
   g_net->persistent = 1;
   g_net->interrupt_count = 0U;
   g_net->tx_completion_count = 0U;
@@ -679,17 +699,17 @@ static xaios_status_t tx_submit_vectors(const xaios_net_iovec_t *vectors,
   }
   if (total_payload > VIRTIO_NET_MAX_FRAME) return XAIOS_ERR_INVALID;
 
-  xaios_spin_lock(&g_net->tx_lock);
+  xaios_spin_lock(&g_net->pairs[0].tx_lock);
   (void)drain_tx_completions_locked();
   uint16_t outstanding =
-      (uint16_t)(g_net->tx_avail_idx - g_net->tx_last_used);
+      (uint16_t)(g_net->pairs[0].tx_avail_idx - g_net->pairs[0].tx_last_used);
   if (outstanding >= VIRTIO_NET_PERSISTENT_TX_DESCS) {
-    xaios_spin_unlock(&g_net->tx_lock);
+    xaios_spin_unlock(&g_net->pairs[0].tx_lock);
     return XAIOS_ERR_BUSY;
   }
   uint16_t desc_idx =
-      g_net->tx_avail_idx % VIRTIO_NET_PERSISTENT_TX_DESCS;
-  bytes_zero(g_net->tx_bufs[desc_idx], VIRTIO_NET_HDR_SIZE);
+      g_net->pairs[0].tx_avail_idx % VIRTIO_NET_PERSISTENT_TX_DESCS;
+  bytes_zero(g_net->pairs[0].tx_bufs[desc_idx], VIRTIO_NET_HDR_SIZE);
 
   uint64_t fragment_physical[VIRTIO_NET_MAX_TX_FRAGMENTS];
   uint32_t direct = allow_direct != 0U && g_net->indirect_desc != 0U;
@@ -700,8 +720,8 @@ static xaios_status_t tx_submit_vectors(const xaios_net_iovec_t *vectors,
     }
   }
   if (direct != 0U) {
-    virtq_desc_t *indirect = g_net->tx_indirect[desc_idx];
-    indirect[0].addr = net_dma_address(g_net->tx_bufs[desc_idx]);
+    virtq_desc_t *indirect = g_net->pairs[0].tx_indirect[desc_idx];
+    indirect[0].addr = net_dma_address(g_net->pairs[0].tx_bufs[desc_idx]);
     indirect[0].len = VIRTIO_NET_HDR_SIZE;
     indirect[0].flags = VRING_DESC_F_NEXT;
     indirect[0].next = 1U;
@@ -713,31 +733,31 @@ static xaios_status_t tx_submit_vectors(const xaios_net_iovec_t *vectors,
           i + 1U < vector_count ? VRING_DESC_F_NEXT : 0U;
       indirect[entry].next = (uint16_t)(entry + 1U);
     }
-    g_net->tx_desc[desc_idx].addr = net_dma_address(indirect);
-    g_net->tx_desc[desc_idx].len =
+    g_net->pairs[0].tx_desc[desc_idx].addr = net_dma_address(indirect);
+    g_net->pairs[0].tx_desc[desc_idx].len =
         (vector_count + 1U) * sizeof(virtq_desc_t);
-    g_net->tx_desc[desc_idx].flags = VRING_DESC_F_INDIRECT;
+    g_net->pairs[0].tx_desc[desc_idx].flags = VRING_DESC_F_INDIRECT;
     ++g_net->scatter_gather_submissions;
   } else {
     uint64_t offset = VIRTIO_NET_HDR_SIZE;
     for (uint32_t i = 0U; i < vector_count; ++i) {
       const uint8_t *source = (const uint8_t *)vectors[i].base;
       for (uint64_t j = 0U; j < vectors[i].length; ++j) {
-        g_net->tx_bufs[desc_idx][offset++] = source[j];
+        g_net->pairs[0].tx_bufs[desc_idx][offset++] = source[j];
       }
     }
-    g_net->tx_desc[desc_idx].addr = net_dma_address(g_net->tx_bufs[desc_idx]);
-    g_net->tx_desc[desc_idx].len =
+    g_net->pairs[0].tx_desc[desc_idx].addr = net_dma_address(g_net->pairs[0].tx_bufs[desc_idx]);
+    g_net->pairs[0].tx_desc[desc_idx].len =
         (uint32_t)(VIRTIO_NET_HDR_SIZE + total_payload);
-    g_net->tx_desc[desc_idx].flags = 0U;
+    g_net->pairs[0].tx_desc[desc_idx].flags = 0U;
     ++g_net->copy_fallbacks;
   }
-  g_net->tx_avail->ring[g_net->tx_avail_idx % VIRTQ_SIZE] = desc_idx;
+  g_net->pairs[0].tx_avail->ring[g_net->pairs[0].tx_avail_idx % VIRTQ_SIZE] = desc_idx;
   virtio_mmio_barrier();
-  ++g_net->tx_avail_idx;
-  g_net->tx_avail->idx = g_net->tx_avail_idx;
-  *token = g_net->tx_avail_idx;
-  xaios_spin_unlock(&g_net->tx_lock);
+  ++g_net->pairs[0].tx_avail_idx;
+  g_net->pairs[0].tx_avail->idx = g_net->pairs[0].tx_avail_idx;
+  *token = g_net->pairs[0].tx_avail_idx;
+  xaios_spin_unlock(&g_net->pairs[0].tx_lock);
   virtio_transport_notify(&g_net->device, 1U);
   return XAIOS_OK;
 }
@@ -759,7 +779,7 @@ xaios_status_t virtio_net_tx_submit(const uint8_t *data, uint64_t len,
 
 static xaios_status_t wait_tx_token(uint64_t token, uint64_t started) {
   uint64_t last_notify = started;
-  while ((uint16_t)(__atomic_load_n(&g_net->tx_last_used, __ATOMIC_ACQUIRE) -
+  while ((uint16_t)(__atomic_load_n(&g_net->pairs[0].tx_last_used, __ATOMIC_ACQUIRE) -
                     (uint16_t)token) >= UINT16_C(0x8000)) {
     (void)virtio_net_drain_tx_completions();
     uint64_t now = timer_now_ns();
@@ -895,15 +915,15 @@ uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size) {
    * device-owned index load, then order the entry reads after it. */
   virtio_mmio_barrier();
   uint16_t used_idx =
-      *(volatile uint16_t *)(void *)&g_net->rx_used->idx;
-  if (used_idx == g_net->rx_last_used) {
+      *(volatile uint16_t *)(void *)&g_net->pairs[0].rx_used->idx;
+  if (used_idx == g_net->pairs[0].rx_last_used) {
     virtio_transport_ack_interrupts(&g_net->device);
     return 0;
   }
   virtio_mmio_barrier();
 
   virtq_used_elem_t *elem =
-      &g_net->rx_used->ring[g_net->rx_last_used % VIRTQ_SIZE];
+      &g_net->pairs[0].rx_used->ring[g_net->pairs[0].rx_last_used % VIRTQ_SIZE];
   uint16_t desc = (uint16_t)elem->id;
   uint32_t rx_len = elem->len;
   uint32_t frame_len = 0;
@@ -911,9 +931,9 @@ uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size) {
   if (rx_len > VIRTIO_NET_HDR_SIZE &&
       rx_len - VIRTIO_NET_HDR_SIZE <= buffer_size) {
     frame_len = rx_len - VIRTIO_NET_HDR_SIZE;
-    if (g_net->rx_chained == 0U) {
+    if (g_net->pairs[0].rx_chained == 0U) {
       for (uint32_t i = 0; i < frame_len; ++i) {
-        buffer[i] = g_net->rx_bufs[desc][VIRTIO_NET_HDR_SIZE + i];
+        buffer[i] = g_net->pairs[0].rx_bufs[desc][VIRTIO_NET_HDR_SIZE + i];
       }
     } else {
       /* The device fills the chain in order, so skip the header wherever it
@@ -926,7 +946,7 @@ uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size) {
           skip -= VIRTIO_NET_RX_PAGE_BYTES;
           continue;
         }
-        const uint8_t *source = g_net->rx_pages[desc][page] + skip;
+        const uint8_t *source = g_net->pairs[0].rx_pages[desc][page] + skip;
         uint32_t available = VIRTIO_NET_RX_PAGE_BYTES - skip;
         uint32_t remaining = frame_len - copied;
         uint32_t take = remaining < available ? remaining : available;
@@ -939,24 +959,24 @@ uint32_t virtio_net_rx_poll(uint8_t *buffer, uint64_t buffer_size) {
   }
 
   /* Every used entry must be returned, including malformed/oversized input. */
-  ++g_net->rx_last_used;
+  ++g_net->pairs[0].rx_last_used;
   if (g_net->event_idx != 0U) {
-    g_net->rx_avail->used_event = g_net->rx_last_used;
+    g_net->pairs[0].rx_avail->used_event = g_net->pairs[0].rx_last_used;
   }
-  if (g_net->rx_chained != 0U) {
-    g_net->rx_desc[desc].addr = net_dma_address(g_net->rx_indirect[desc]);
-    g_net->rx_desc[desc].len =
+  if (g_net->pairs[0].rx_chained != 0U) {
+    g_net->pairs[0].rx_desc[desc].addr = net_dma_address(g_net->pairs[0].rx_indirect[desc]);
+    g_net->pairs[0].rx_desc[desc].len =
         (uint32_t)(sizeof(virtq_desc_t) * VIRTIO_NET_RX_PAGES);
-    g_net->rx_desc[desc].flags = VRING_DESC_F_INDIRECT;
+    g_net->pairs[0].rx_desc[desc].flags = VRING_DESC_F_INDIRECT;
   } else {
-    g_net->rx_desc[desc].addr = net_dma_address(g_net->rx_bufs[desc]);
-    g_net->rx_desc[desc].len = rx_buffer_bytes(g_net);
-    g_net->rx_desc[desc].flags = VRING_DESC_F_WRITE;
+    g_net->pairs[0].rx_desc[desc].addr = net_dma_address(g_net->pairs[0].rx_bufs[desc]);
+    g_net->pairs[0].rx_desc[desc].len = rx_buffer_bytes(g_net);
+    g_net->pairs[0].rx_desc[desc].flags = VRING_DESC_F_WRITE;
   }
-  g_net->rx_avail->ring[g_net->rx_avail_idx % VIRTQ_SIZE] = desc;
+  g_net->pairs[0].rx_avail->ring[g_net->pairs[0].rx_avail_idx % VIRTQ_SIZE] = desc;
   virtio_mmio_barrier();
-  ++g_net->rx_avail_idx;
-  g_net->rx_avail->idx = g_net->rx_avail_idx;
+  ++g_net->pairs[0].rx_avail_idx;
+  g_net->pairs[0].rx_avail->idx = g_net->pairs[0].rx_avail_idx;
   virtio_transport_notify(&g_net->device, 0);
   virtio_transport_ack_interrupts(&g_net->device);
   return frame_len;
