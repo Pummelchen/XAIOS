@@ -16,14 +16,21 @@ because the queue was notified once and then only polled. Every virtio wait now
 re-rings while waiting, in all four drivers; the block driver had the same
 defect and had lost a filesystem metadata write to it.
 
-Two of the three virtual-platform profiles pass at `b173e42c558e`, **which is
-behind the current tree and is being re-collected**; it is the
-same tree for both: **macOS QEMU ARM64** across boot/CPU/network/SSH, USB
-keyboard console, SVE2 per-task context, storage recovery, operations and
-shutdown, and repeat boot; and **macOS VMware Fusion ARM64** across its
-four-vCPU boot, storage, network and SSH lifecycle. Between them they qualify
-the secondary-CPU bring-up, the subsystem serialisation and the virtio
-notification work on real firmware rather than on none.
+Both ARM virtual-platform profiles pass at `8a1a8a9`, the same tree for both:
+**macOS QEMU ARM64** across boot/CPU/network/SSH, USB keyboard console, SVE2
+per-task context, storage recovery, operations and shutdown, and repeat boot,
+on AAVMF/EDK2 `47765fe344818cbc464b1c14ae658fb4b854f5c2ceffa982411731eb4865594d`;
+and **macOS VMware Fusion ARM64** across its four-vCPU boot, storage, network
+and SSH lifecycle, on Fusion 26.0.0 with chainloader
+`b7fb993edf80e301b148a2076f8a9919c3d31936d2273f592d19c06b5ec1d3a5`. Between
+them they qualify the secondary-CPU bring-up, the subsystem serialisation and
+the virtio notification work on real firmware rather than on none.
+
+With the Intel result below, **all three profiles are current at the same
+tree** -- which had not been true for 140 commits. The ARM pair had been quoted
+at a much older commit, and was only noticed as stale when the sentence that
+happened to be hedging it was rewritten: `check-doc-freshness.py` then refused
+the page and named the commit it could no longer vouch for.
 
 **Intel VPS QEMU x86_64 has been re-collected and is current**, at
 `ee9c621edde5315e0da37fb3ae328baf717318ee`, on the designated host
