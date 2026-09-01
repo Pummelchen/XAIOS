@@ -65,8 +65,25 @@ mkdir -p "$STAGE_DIR/EFI/BOOT" "$STAGE_DIR/EFI/XAIOS" "$VM_BUNDLE"
 # Bounded, because an unreachable registry does not fail fast: it blocks until
 # Docker's own deadline, which was long enough to consume a gate's entire time
 # budget and get the build killed rather than falling back.
+# The bound needs a command to impose it, and `timeout` is GNU coreutils,
+# which a stock macOS does not carry -- on the only platform this script runs
+# on. Homebrew installs it as `gtimeout` unless its gnubin directory is on
+# PATH, so both names are looked for. Without either, the build proceeds
+# unbounded and says so: an unbounded build still works whenever the registry
+# answers, whereas failing here reports a missing tool as a Docker fault and
+# sends the reader after the wrong thing.
 GRUB_BUILD_TIMEOUT="${XAIOS_FUSION_GRUB_BUILD_TIMEOUT:-30}"
-if ! timeout "$GRUB_BUILD_TIMEOUT" docker build --platform linux/arm64 \
+if command -v timeout >/dev/null 2>&1; then
+  GRUB_BUILD_BOUND="timeout $GRUB_BUILD_TIMEOUT"
+elif command -v gtimeout >/dev/null 2>&1; then
+  GRUB_BUILD_BOUND="gtimeout $GRUB_BUILD_TIMEOUT"
+else
+  GRUB_BUILD_BOUND=""
+  printf '%s\n' \
+    "note: no timeout command found; building $GRUB_IMAGE unbounded" >&2
+fi
+
+if ! $GRUB_BUILD_BOUND docker build --platform linux/arm64 \
   --file "$ROOT_DIR/platform/vmware-fusion/Dockerfile.grub" \
   --tag "$GRUB_IMAGE" "$ROOT_DIR/platform/vmware-fusion"; then
   if docker image inspect "$GRUB_IMAGE" >/dev/null 2>&1; then
