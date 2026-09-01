@@ -123,7 +123,19 @@ mcopy -i "$ESP_IMAGE" "$ENTROPY_SEED" ::/EFI/XAIOS/entropy.sed
 xorriso -as mkisofs -quiet -R -V XAIOS_FUSION \
   -e efi.img -no-emul-boot \
   -o "$ISO_IMAGE" "$STAGE_DIR"
-cp "$ROOT_DIR/platform/vmware-fusion/XAIOS.vmx.in" "$VM_BUNDLE/XAIOS.vmx"
+# Which NIC Fusion presents. E1000E is the qualified profile and stays the
+# default; VMXNET3 is what F-02 is about, and asking for it is a deliberate
+# act rather than something a release build can drift into.
+FUSION_NIC="${XAIOS_FUSION_NIC:-e1000e}"
+case "$FUSION_NIC" in
+  e1000e|vmxnet3) ;;
+  *)
+    printf '%s\n' "error: XAIOS_FUSION_NIC must be e1000e or vmxnet3" >&2
+    exit 2
+    ;;
+esac
+sed "s/@@XAIOS_FUSION_NIC@@/$FUSION_NIC/" \
+  "$ROOT_DIR/platform/vmware-fusion/XAIOS.vmx.in" > "$VM_BUNDLE/XAIOS.vmx"
 # Serial console wiring. "file" is the default and keeps the automated Fusion
 # smoke gate reading fusion-serial.log. "pipe" makes the console bidirectional
 # so an operator can actually log in and type; VMware creates a UNIX socket at

@@ -8,6 +8,7 @@ typedef enum xaios_network_device_kind {
   XAIOS_NETWORK_DEVICE_NONE = 0,
   XAIOS_NETWORK_DEVICE_VIRTIO = 1,
   XAIOS_NETWORK_DEVICE_E1000E = 2,
+  XAIOS_NETWORK_DEVICE_VMXNET3 = 3,
 } xaios_network_device_kind_t;
 
 void network_device_self_test(void);

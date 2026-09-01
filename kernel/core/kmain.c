@@ -85,6 +85,7 @@
 #include <xaios/vfs_xaiboot.h>
 #include <xaios/vfs_xaifs.h>
 #include <xaios/vmm.h>
+#include <xaios/vmxnet3.h>
 #include <xaios/watchdog.h>
 #if defined(__aarch64__)
 #include <xaios/aarch64_acpi.h>
@@ -700,6 +701,11 @@ void kmain(const xaios_boot_info_t *boot) {
   if (nvme_status != XAIOS_OK && nvme_status != XAIOS_ERR_NOT_FOUND) {
     klog("nvme: self-test failed status=%d\n", (int)nvme_status);
   }
+  /* F-02: say whether this platform has a VMXNET3, and what it reports if so.
+     Nothing selects it -- the driver cannot carry a frame yet -- so this is a
+     statement about the platform rather than a device coming into service. */
+  vmxnet3_self_test();
+
   xaios_status_t ahci_status = ahci_init();
   if (ahci_status != XAIOS_OK && ahci_status != XAIOS_ERR_NOT_FOUND) {
     klog("ahci: initialization failed status=%d\n", (int)ahci_status);

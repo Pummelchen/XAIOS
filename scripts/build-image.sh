@@ -661,6 +661,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/virtio_blk.o
   $KERNEL_BUILD_DIR/virtio_net.o
   $KERNEL_BUILD_DIR/e1000e.o
+  $KERNEL_BUILD_DIR/vmxnet3.o
   $KERNEL_BUILD_DIR/net_device.o
   $KERNEL_BUILD_DIR/virtio_rng.o
   $KERNEL_BUILD_DIR/virtio_gpu.o
@@ -813,6 +814,7 @@ compile_kernel "$ROOT_DIR/kernel/dev/block_device.c" "$KERNEL_BUILD_DIR/block_de
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_blk.c" "$KERNEL_BUILD_DIR/virtio_blk.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_net.c" "$KERNEL_BUILD_DIR/virtio_net.o"
 compile_kernel "$ROOT_DIR/kernel/dev/e1000e.c" "$KERNEL_BUILD_DIR/e1000e.o"
+compile_kernel "$ROOT_DIR/kernel/dev/vmxnet3.c" "$KERNEL_BUILD_DIR/vmxnet3.o"
 compile_kernel "$ROOT_DIR/kernel/dev/net_device.c" "$KERNEL_BUILD_DIR/net_device.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_rng.c" "$KERNEL_BUILD_DIR/virtio_rng.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_gpu.c" "$KERNEL_BUILD_DIR/virtio_gpu.o"
