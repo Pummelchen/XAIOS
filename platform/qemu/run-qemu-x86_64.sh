@@ -124,6 +124,21 @@ xai_fs_image="${XAIOS_XAI_FS_IMAGE:-build/xaios-x86-xaifs.img}"
 system_volume_image="${XAIOS_SYSTEM_VOLUME_IMAGE:-build/xaios-x86-system.img}"
 storage_admin_image="${XAIOS_X86_STORAGE_ADMIN_IMAGE:-build/xaios-x86-storage-admin.img}"
 hostfwd_port="${XAIOS_QEMU_HOSTFWD_PORT:-7788}"
+# A tap interface instead of SLIRP, and how many queues it carries.
+#
+# SLIRP is single-queue, so on it a device can only ever offer one virtqueue
+# pair and a driver that services several is indistinguishable from one that
+# services one. A multi-queue tap is the only thing here that can tell them
+# apart, and it needs Linux -- macOS has no tap device. Default unset, so
+# every existing gate keeps the user network it has always had.
+x86_tap="${XAIOS_QEMU_X86_TAP:-none}"
+x86_tap_queues="${XAIOS_QEMU_X86_TAP_QUEUES:-1}"
+# A device offering N pairs needs a vector for each direction of each pair
+# plus one for configuration changes, which is what 2N+1 is.
+net0_device_extra=""
+if [ "$x86_tap" != "none" ] && [ "$x86_tap_queues" -gt 1 ]; then
+  net0_device_extra=",mq=on,vectors=$((2 * x86_tap_queues + 1))"
+fi
 hostfwd_udp_port="${XAIOS_QEMU_HOSTFWD_UDP_PORT:-none}"
 net_socket_host="${XAIOS_QEMU_NET_SOCKET_HOST:-127.0.0.1}"
 net_socket_port="${XAIOS_QEMU_NET_SOCKET_PORT:-none}"
@@ -203,7 +218,7 @@ set -- "$qemu" \
   -blockdev "driver=file,node-name=xaios_x86_system_kernel_file,filename=$system_volume_image,locking=off" \
   -blockdev driver=raw,node-name=xaios_x86_system_kernel,file=xaios_x86_system_kernel_file \
   -device virtio-blk-pci,drive=xaios_x86_system_kernel,disable-legacy=on \
-  -device virtio-net-pci,netdev=net0,mac=52:54:00:12:34:57,disable-legacy=on
+  -device "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:57,disable-legacy=on$net0_device_extra"
 
 if [ "$keyboard_device" = "usb" ]; then
   set -- "$@" \
@@ -251,6 +266,15 @@ if [ "$net_socket_port" != "none" ]; then
     -netdev "hubport,id=net0_socket_hub,hubid=1,netdev=net0_socket" \
     -netdev "hubport,id=net0,hubid=1"
 else
+  if [ "$x86_tap" != "none" ]; then
+    net0_options="tap,id=net0,ifname=${x86_tap},script=no,downscript=no,queues=${x86_tap_queues}"
+    set -- "$@" -netdev "$net0_options"
+    if [ "$pcap_file" != "none" ]; then
+      set -- "$@" \
+        -object "filter-dump,id=xaios_x86_net_capture,netdev=net0,file=$pcap_file"
+    fi
+    exec_qemu_with_tap=1
+  else
   net0_options="user,id=net0"
   if [ "$hostfwd_port" != "none" ]; then
     net0_options="${net0_options},hostfwd=tcp::${hostfwd_port}-:22"
@@ -259,9 +283,10 @@ else
     net0_options="${net0_options},hostfwd=udp::${hostfwd_udp_port}-:2223"
   fi
   set -- "$@" -netdev "$net0_options"
+  fi
 fi
 
-if [ "$pcap_file" != "none" ]; then
+if [ "$pcap_file" != "none" ] && [ "${exec_qemu_with_tap:-0}" != "1" ]; then
   set -- "$@" \
     -object "filter-dump,id=xaios_x86_net_capture,netdev=net0,file=$pcap_file"
 fi
