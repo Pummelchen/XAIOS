@@ -51,6 +51,12 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 
 ## Networking and SSH
 
+- Networking uses one virtqueue pair, whatever the device offers. The driver
+  negotiates `VIRTIO_NET_F_MQ` and reads `max_virtqueue_pairs`, and a
+  multi-queue tap has been shown to report four pairs to the guest, but the
+  buffers, control queue and steering that would use more than one are not
+  written. A device advertising several pairs is driven exactly as a
+  single-pair device is. RSS is not implemented.
 - FreeBSD 15.1, native macOS, and Debian 13 OpenSSH clients pass bounded QEMU
   interoperability suites. This is not a production Internet deployment or an
   independent security audit.
@@ -109,6 +115,18 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 
 ## Storage and persistence
 
+- Power-loss behaviour is covered in three ways and none of them is a device
+  that loses a write. The crash gate kills the emulator mid-ingest, and
+  constructs two states directly because a kill almost never lands on either:
+  a superblock caught half-written, and a superblock that is whole while the
+  catalog it points at was never written -- the state a volatile write cache
+  leaves behind. Both must be rejected by the slot's own hash, with the volume
+  coming back from the other slot a commit older. The ordering gate separately
+  requires a flush between the catalog and the superblock that publishes it.
+  What none of this does is run against a device that acknowledges a write and
+  then loses it: the emulator never loses an acknowledged write, so those
+  states are constructed rather than provoked, and physical controller-cache
+  behaviour remains unproven.
 - VirtIO block/network use interrupt-assisted completions, indirect
   descriptors, and bounded queued work. The x86 block gate records whether
   the post-reset completion arrived through MSI-X and otherwise verifies the

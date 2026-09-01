@@ -31,8 +31,13 @@ primary Unix behavior reference for commands and network interoperability.
 - VirtIO block/network/RNG plus focused emulated NVMe and SMMUv3 gates.
 - xaibootFS for bounded writable state and xaiFS for immutable model data.
 - IPv4, IPv6, TCP, UDP, DNS, reassembly, and SACK-aware transport behavior.
+- First-boot setup on a machine that has no account: run from the medium or
+  install onto a disk, then an account name and password, an optional six
+  digit console PIN, the machine's name, and whether the console logs in
+  automatically.
 - Concurrent SSH sessions, SFTP, outbound SSH/SCP, and authenticated local
-  console sessions in explicitly provisioned development images.
+  console sessions — from a credential the machine was set up with, or one a
+  development image packaged.
 - FreeBSD-style command behavior, archive exchange, `nano`, `less`, `htop`,
   and terminal Pong.
 - Typed `xaiosctl` administration for status, configuration, identity, audit,

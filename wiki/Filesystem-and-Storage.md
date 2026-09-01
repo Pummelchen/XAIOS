@@ -49,8 +49,10 @@ Archive files remain subject to the 256 KiB xaibootFS file limit.
 xaibootFS uses checksum-protected metadata, journal replay, bounded rollback
 snapshots, and negotiated block flushes. xaiFS uses signed metadata,
 copy-on-write publication, per-extent integrity, and immutable active mappings.
-QEMU crash gates cover selected interruption points; they do not prove physical
-controller-cache or power-loss behavior.
+QEMU crash gates cover selected interruption points, and construct two states a
+kill rarely lands on -- a half-written superblock, and a whole superblock whose
+catalog was never written. Neither is a device that loses an acknowledged
+write, so they do not prove physical controller-cache or power-loss behavior.
 
 The current QEMU VirtIO block path is interrupt-driven and supports
 eight-request block batching, indirect descriptors, and event-index

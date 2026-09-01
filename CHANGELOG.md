@@ -19,6 +19,30 @@ deferred; see the [project tracker](./wiki/Project-Tracker.md).
 Entries record what changed for someone *running* XAIOS. The commit history
 records how it was built.
 
+## Unreleased
+
+Landed since build 4 and not in any released image.
+
+- **A thread join could lose the context of the process that called it.** A
+  process waiting in `xaios_thread_join` runs pending threads on its own CPU,
+  so a thread worker could be entered from inside that process's syscall and
+  then cleared the CPU to the kernel on its way out. The outer syscall carried
+  on with no current process and the kernel's address space, which returns a
+  wrong answer rather than an error. It needed a thread still pending when
+  join ran, which is what a loaded machine produces. This is the shape of
+  `B-02`, recorded twice and explained neither time; the fix is in and the
+  link to those sightings is inference, not a reproduction, so `B-02` stays
+  open.
+- **Power-loss coverage gained the case a volatile write cache produces.** The
+  crash gate now also constructs a volume whose newest superblock is whole and
+  whose catalog was never written, and requires that slot to fail its own hash
+  and the volume to come back from the other one. No device here loses an
+  acknowledged write, so the state is constructed rather than provoked.
+- **Networking multiqueue has somewhere to be developed.** A multi-queue tap
+  reports four virtqueue pairs to the guest, where every profile in this tree
+  previously reported one. Nothing uses the extra pairs yet; the driver still
+  drives one.
+
 ## Build 4 — 2026-09-01
 
 Build 3 with the fault that should have stopped it from being released, and

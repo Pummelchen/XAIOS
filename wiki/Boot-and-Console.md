@@ -55,8 +55,26 @@ xaios login:
 
 Its public development account is `admin` with password `xaios`. It is for
 isolated QEMU/Fusion development only; use `XAIOS_SSH_PASSWORD_AUTH=0` to make
-a development build key-only. Release images keep the local serial console
-locked and never package a password database.
+a development build key-only.
+
+A release image packages no credential of any kind — that is the point, since
+one packaged password would be shared by every copy of the download. Such a
+machine does not present this prompt on its first boot. It runs
+`/bin/xaios-setup` (see [[Applications]]) instead, which offers to run from the
+medium it booted or to install onto a disk, and then takes the account name
+and password, an optional six digit console PIN, the machine's name, whether
+the machine answers on the network, and whether this console should log in
+without asking. Nothing is written until every question is answered, so an
+interrupted setup leaves the machine as it was. Setup runs only when the
+machine has neither a password account nor authorized keys — a key-only image
+is a configured machine and is left alone.
+
+Once a machine has been named, the prompt carries that name rather than the
+default:
+
+```text
+rackbox login:
+```
 
 The same prompt also accepts a six-digit console PIN, `012345` by default.
 Entering six digits authenticates directly, without a password prompt; any
@@ -70,11 +88,17 @@ failures lock the prompt for 60 seconds, which applies to password and PIN
 attempts alike. Override the record with `XAIOS_CONSOLE_PIN_FILE`; release
 builds refuse to package one at all.
 
-After successful authentication the prompt is:
+After successful authentication the prompt names the account and the machine:
 
 ```text
 admin@xaios:/$
 ```
+
+Both halves follow what the machine actually is, so an account created as
+`operator` on a machine named `rackbox` gives `operator@rackbox`. If setup
+enabled automatic login, the console says so and opens the shell without
+asking; that applies to this console only, and an SSH session still
+authenticates.
 
 The serial console supports independent working-directory state, line editing,
 `Backspace`, `Ctrl-C`, `Ctrl-L`, logout, filesystem commands, `nano`, `less`,
