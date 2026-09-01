@@ -14,6 +14,35 @@ Everything about *what XAIOS does* lives in the
 about *what remains* lives in one place, the
 [Project Tracker](./wiki/Project-Tracker.md).
 
+## Get a build
+
+Released builds are on the
+[releases page](https://github.com/Pummelchen/XAIOS/releases); the current one
+is [**build 4**](https://github.com/Pummelchen/XAIOS/releases/tag/b4). You do
+not need to compile anything to try XAIOS.
+
+Six downloads, and **five of them contain the same image** — what differs is
+what is packaged around it:
+
+| To run XAIOS | Take |
+|---|---|
+| in QEMU | `xaios_b4-qemu.zip` — image plus a launch script per architecture |
+| in VMware Fusion | `xaios_b4-vmware-fusion.zip` — image plus a `.vmx` |
+| in Apple Virtualization.framework | `xaios_b4-virtualization-framework.zip` — image plus a harness you build and sign |
+| on a real machine, from a USB stick | `xaios_b4-usb.zip` — image plus a writer that names the target disk back before it writes |
+| on a real machine with no disk, over the network | `xaios_b4-netboot.zip` — two boot binaries plus a DHCP/TFTP server script |
+| with your own tooling | `xaios_b4.iso.zip` — the image, and nothing else |
+
+Unzip before use. The image is one file that is an ISO 9660 filesystem, a
+GPT-partitioned disk and a bootable USB image at once, which is why a single
+download covers CD-ROM, hard disk and stick. On first boot the machine has no
+account and asks how to set itself up; there is no default password.
+
+Each release note records exactly which hypervisors and firmware that build was
+booted on, and what was *not* tested — see the
+[build 4 note](./release/xaios_b4.md). To build from source instead, see
+[Getting Started](./wiki/Getting-Started.md).
+
 ## Where it runs
 
 | Hypervisor | Qualification profile | Gate | Evidence class |
