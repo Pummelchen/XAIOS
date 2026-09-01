@@ -103,7 +103,18 @@ def run_scenario(scenario: Dict[str, Any]) -> Dict[str, Any]:
     name = str(scenario["name"])
     log_path = BUILD / f"qemu-x86_64-platform-{name}.log"
     env = os.environ.copy()
-    smoke_timeout = int(scenario.get("smoke_timeout", 180))
+    # The budgets below are what a scenario costs on the host this matrix was
+    # written against. They are not a property of XAIOS, and treating them as
+    # one makes the gate report a defect when it has measured a slower
+    # machine: the 256-vCPU scenario takes about 517 seconds on an eight-core
+    # VPS emulating 256 CPUs under TCG, against a budget of 480, and failed
+    # there for thirty-seven seconds while booting perfectly -- `SMP AP
+    # startup passed online=256 madt_cpus=256` and every readiness marker.
+    # A slower host scales the budgets rather than being told it has a bug.
+    scale = float(os.environ.get("XAIOS_QEMU_MATRIX_TIMEOUT_SCALE", "1"))
+    if scale < 1.0:
+        scale = 1.0
+    smoke_timeout = int(int(scenario.get("smoke_timeout", 180)) * scale)
     env.update({
         "XAIOS_QEMU_X86_ACCEL": str(scenario["accelerator"]),
         "XAIOS_QEMU_X86_MACHINE": str(scenario["machine"]),
