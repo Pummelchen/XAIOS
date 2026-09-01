@@ -25,6 +25,25 @@
 #include <stdio.h>
 #include <string.h>
 
+#if defined(__x86_64__)
+/* CPUID.(EAX=07H,ECX=0):EBX[29] is the SHA extension; CPUID.(EAX=01H):ECX[19]
+   is the SSE4.1 the compressor also uses. Leaf 7 is read only after the
+   maximum leaf says it exists, because reading past it returns another leaf's
+   contents rather than zero. */
+static int host_has_sha(void) {
+  unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+  __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                   : "a"(0u), "c"(0u));
+  if (eax < 7u) return 0;
+  __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                   : "a"(1u), "c"(0u));
+  if ((ecx & (1u << 19)) == 0u) return 0;
+  __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                   : "a"(7u), "c"(0u));
+  return (ebx & (1u << 29)) != 0u;
+}
+#endif
+
 static void digest_of(const unsigned char *data, size_t length,
                       unsigned char out[32]) {
   xaios_engine_sha256_context_t context;
@@ -55,8 +74,15 @@ int main(void) {
      so installing it unconditionally would execute an undefined instruction
      rather than fail a comparison. This is the caller's question to ask, and
      the header says so; inside XAIOS the dispatcher asks CPUID for the same
-     thing. */
-  if (!__builtin_cpu_supports("sha")) {
+     thing, and so does this.
+
+     Asked with CPUID rather than `__builtin_cpu_supports("sha")`, which is
+     not a portable question: clang accepts that feature string only from a
+     certain version, and the older one CI builds with rejects it outright --
+     "invalid cpu feature string for builtin", a compile error rather than a
+     wrong answer. The instruction is in every x86-64 that could run this
+     test. */
+  if (!host_has_sha()) {
     printf("engine sha256: this host has no SHA extension, scalar path is "
            "the only one it can run\n");
     return 0;
