@@ -250,6 +250,25 @@ static uint64_t user_thread_worker(void *opaque) {
          context->owner_pid, cpu_id);
     return UINT64_MAX;
   }
+  /* Save what this CPU was doing before borrowing it.
+
+     A user process waiting in xaios_thread_join runs pending threads on its
+     own CPU while it waits, so this worker can be entered from inside that
+     process's syscall -- the CPU already has a current process bound and its
+     address space active. Clearing to the kernel on the way out, which is
+     what this did, left the outer syscall with no current process and the
+     kernel's address space: every later capability check on it fails and
+     every user pointer it touches resolves in the wrong space.
+
+     That is B-02's shape. The failure needs a thread still pending when join
+     runs, which is what a loaded host produces and why it was intermittent,
+     and it lands on a later thread than the one that caused it, which is why
+     it never pointed at itself. */
+  const xaios_user_process_t *previous_process = user_current_process();
+  uint32_t previous_pid = previous_process != 0 ? previous_process->pid : 0U;
+  xaios_user_thread_context_t *previous_context =
+      g_current_user_thread_by_cpu[cpu_id];
+
   user_switch_address_space(context->owner_pid);
   g_current_user_thread_by_cpu[cpu_id] = context;
   uint64_t started_ns = timer_now_ns();
@@ -259,9 +278,16 @@ static uint64_t user_thread_worker(void *opaque) {
       context->return_address);
   user_thread_runtime_stop(context->owner_pid, cpu_id, started_ns,
                            timer_now_ns());
-  g_current_user_thread_by_cpu[cpu_id] = 0;
-  user_clear_current_process();
-  vmm_activate_kernel();
+  /* Put back what was there rather than clearing, so a nested run is
+     invisible to whatever was interrupted. */
+  g_current_user_thread_by_cpu[cpu_id] = previous_context;
+  if (previous_pid != 0U &&
+      user_bind_current_process(previous_pid) == XAIOS_OK) {
+    user_switch_address_space(previous_pid);
+  } else {
+    user_clear_current_process();
+    vmm_activate_kernel();
+  }
   if ((encoded & XAIOS_USER_EXIT_RETURN_MASK) != XAIOS_USER_EXIT_RETURN_MAGIC) {
     klog("threads: worker returned without the exit magic; encoded=0x%lx "
          "owner=%u cpu=%u\n", encoded, context->owner_pid, cpu_id);
@@ -352,6 +378,7 @@ static xaios_status_t thread_join_owned(uint64_t thread_id, uint64_t timeout_ns,
   }
   uint64_t start = timer_now_ns();
   uint32_t current_cpu = smp_cpu_id();
+  uint32_t reported_context_loss = 0U;
   for (;;) {
     xaios_spin_lock(&g_thread_lock);
     xaios_thread_record_t *thread = find_thread_locked(thread_id);
@@ -383,7 +410,25 @@ static xaios_status_t thread_join_owned(uint64_t thread_id, uint64_t timeout_ns,
     }
     xaios_spin_unlock(&g_thread_lock);
 
-    if (current_cpu != UINT32_MAX) (void)xaios_thread_run_pending(current_cpu);
+    if (current_cpu != UINT32_MAX) {
+      /* Running a pending thread here borrows this CPU, which may already be
+         inside the calling process's syscall. The worker restores what it
+         found; this checks that it did, because the cost of it not having is
+         a syscall that carries on with no process bound and the kernel's
+         address space -- which returns a wrong answer rather than an error,
+         and took two sightings to even name. Reported once per join so a
+         recurrence says so instead of being inferred later. */
+      const xaios_user_process_t *before = user_current_process();
+      (void)xaios_thread_run_pending(current_cpu);
+      const xaios_user_process_t *after = user_current_process();
+      if (after != before && reported_context_loss == 0U) {
+        reported_context_loss = 1U;
+        klog("threads: join lost its process context id=%lu owner=%u cpu=%u "
+             "before=%u after=%u\n",
+             thread_id, owner_pid, current_cpu,
+             before != 0 ? before->pid : 0U, after != 0 ? after->pid : 0U);
+      }
+    }
     if (timeout_ns != 0U && timer_now_ns() - start >= timeout_ns) {
       if (enforce_owner != 0U) {
         xaios_spin_lock(&g_thread_lock);
