@@ -7,6 +7,7 @@ SOURCE="$ROOT/third_party/bearssl"
 case "$ARCH" in
   aarch64) TARGET=aarch64-none-elf ;;
   x86_64) TARGET=x86_64-none-elf; ARCH_CFLAGS="-mcmodel=large -march=core2" ;;
+  riscv64) TARGET=riscv64-unknown-elf; ARCH_CFLAGS="-march=rv64gc -mabi=lp64d -mcmodel=medany -mno-relax" ;;
   *) printf 'error: unsupported BearSSL architecture: %s\n' "$ARCH" >&2; exit 2 ;;
 esac
 ARCH_CFLAGS=${ARCH_CFLAGS:-}

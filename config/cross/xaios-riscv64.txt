@@ -1,0 +1,19 @@
+[binaries]
+c = ['clang', '-target', 'riscv64-unknown-elf', '-march=rv64gc', '-mabi=lp64d', '-mno-relax', '-nostdlib', '-fuse-ld=lld']
+cpp = ['clang++', '-target', 'riscv64-unknown-elf', '-march=rv64gc', '-mabi=lp64d', '-mno-relax', '-nostdlib', '-fuse-ld=lld']
+c_ld = 'lld'
+cpp_ld = 'lld'
+ar = 'llvm-ar'
+as = 'clang'
+nm = 'llvm-nm'
+strip = 'llvm-strip'
+
+[host_machine]
+system = 'none'
+cpu_family = 'riscv64'
+cpu = 'riscv64'
+endian = 'little'
+
+[properties]
+skip_sanity_check = true
+needs_exe_wrapper = true

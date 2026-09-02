@@ -1,5 +1,18 @@
+/* Enumerating PCI Express through the configuration space the firmware
+ * describes.
+ *
+ * This lived under arch/aarch64 until RISC-V needed it, and moving it is the
+ * point rather than a tidy-up: nothing in it was ever specific to AArch64.
+ * ECAM is memory-mapped configuration space -- a bus, device and function
+ * shifted into an address and read -- and the only architecture-dependent
+ * thing here was four barriers, now the shared one. A generic mechanism
+ * filed under one architecture's name is the same identity-versus-capability
+ * confusion this codebase has a rule against; it just happened to be inside
+ * the codebase rather than coming from firmware.
+ */
 #include <xaios/assert.h>
 #include <xaios/klog.h>
+#include <xaios/arch_cpu.h>
 #include <xaios/pci.h>
 #include <xaios/vmm.h>
 
@@ -48,7 +61,7 @@ static void ecam_write16(uint8_t bus, uint8_t dev, uint8_t func,
   volatile uint16_t *p =
       (volatile uint16_t *)(uintptr_t)ecam_addr(bus, dev, func, offset);
   *p = value;
-  __asm__ volatile("dsb sy" ::: "memory");
+  xaios_cpu_io_barrier();
 }
 
 static void ecam_write32(uint8_t bus, uint8_t dev, uint8_t func,
@@ -56,7 +69,7 @@ static void ecam_write32(uint8_t bus, uint8_t dev, uint8_t func,
   volatile uint32_t *p =
       (volatile uint32_t *)(uintptr_t)ecam_addr(bus, dev, func, offset);
   *p = value;
-  __asm__ volatile("dsb sy" ::: "memory");
+  xaios_cpu_io_barrier();
 }
 
 static int map_ecam_bus(uint8_t bus) {
@@ -119,6 +132,119 @@ static int walk_pcie_caps(uint8_t bus, uint8_t dev, uint8_t func) {
   return 0;
 }
 
+
+/* Giving devices somewhere to live, when nothing else has.
+ *
+ * On every machine this kernel ran on before, firmware assigned PCI base
+ * addresses before handing over: UEFI does it, and so does the firmware in a
+ * hypervisor's virtual machine. A board booted straight from a supervisor-mode
+ * SBI has no such stage, and its devices arrive with every base address still
+ * zero -- present, enumerable, correctly identified, and unreachable. The
+ * symptom is precise and misleading: a virtio device found by vendor and
+ * device id whose capability structures all resolve to address zero, which
+ * reads as a broken driver rather than an unfinished bus.
+ *
+ * Assignment only touches a base address that is zero, so a machine whose
+ * firmware did this work keeps that firmware's layout untouched. Sizing is the
+ * architectural method: write all-ones, read back, and the lowest bit still
+ * set is the size, because the bits below it are hardwired to zero.
+ */
+static uint64_t g_mmio_next;
+static uint64_t g_mmio_limit;
+static uint64_t g_mmio64_next;
+static uint64_t g_mmio64_limit;
+
+void pci_configure_mmio_window(uint64_t base, uint64_t size, uint64_t base64,
+                               uint64_t size64) {
+  g_mmio_next = base;
+  g_mmio_limit = base + size;
+  g_mmio64_next = base64;
+  g_mmio64_limit = base64 + size64;
+}
+
+static uint64_t allocate_window(uint64_t size, int wide) {
+  if (size == 0U) return 0U;
+  uint64_t *next = wide != 0 ? &g_mmio64_next : &g_mmio_next;
+  uint64_t limit = wide != 0 ? g_mmio64_limit : g_mmio_limit;
+  /* Naturally aligned, which the specification requires and which a device
+     silently ignores rather than reporting: an unaligned base has its low
+     bits read back as zero and the device answers somewhere else. */
+  uint64_t aligned = (*next + size - 1U) & ~(size - 1U);
+  if (aligned + size > limit || limit == 0U) return 0U;
+  *next = aligned + size;
+  return aligned;
+}
+
+static void assign_bars(uint8_t bus, uint8_t dev, uint8_t func) {
+  if (g_mmio_limit == 0U && g_mmio64_limit == 0U) return;
+  for (uint32_t bar = 0; bar < XAIOS_PCI_MAX_BARS; ++bar) {
+    uint16_t offset = (uint16_t)(XAIOS_PCI_BAR0 + bar * 4U);
+    uint32_t low = ecam_read32(bus, dev, func, offset);
+    if ((low & 1U) != 0U) continue; /* an I/O port range, not memory */
+    uint32_t type = (low >> 1U) & 3U;
+    int wide = type == 2U ? 1 : 0;
+    if (wide != 0 && bar + 1U >= XAIOS_PCI_MAX_BARS) break;
+
+    uint64_t assigned = low & ~UINT64_C(0xf);
+    if (wide != 0) {
+      assigned |= (uint64_t)ecam_read32(bus, dev, func,
+                                        (uint16_t)(offset + 4U)) << 32U;
+    }
+    if (assigned != 0U) {
+      /* Already placed by firmware. Left exactly where it was. */
+      if (wide != 0) ++bar;
+      continue;
+    }
+
+    ecam_write32(bus, dev, func, offset, UINT32_C(0xffffffff));
+    uint32_t probe_low = ecam_read32(bus, dev, func, offset);
+    uint64_t mask = (uint64_t)(probe_low & ~UINT32_C(0xf));
+    if (wide != 0) {
+      ecam_write32(bus, dev, func, (uint16_t)(offset + 4U),
+                   UINT32_C(0xffffffff));
+      mask |= (uint64_t)ecam_read32(bus, dev, func, (uint16_t)(offset + 4U))
+              << 32U;
+    } else {
+      mask |= ~UINT64_C(0xffffffff); /* sign-extend so ~mask+1 is the size */
+    }
+    uint64_t size = (~mask) + 1U;
+    if (size == 0U || mask == ~UINT64_C(0)) {
+      /* An unimplemented BAR reads back as all-zero once masked. Restored to
+         zero rather than left holding the probe pattern. */
+      ecam_write32(bus, dev, func, offset, 0U);
+      if (wide != 0) {
+        ecam_write32(bus, dev, func, (uint16_t)(offset + 4U), 0U);
+        ++bar;
+      }
+      continue;
+    }
+
+    uint64_t address = allocate_window(size, wide);
+    if (address == 0U) {
+      klog("PCI: [%u:%u.%u] bar%u wants 0x%lx and the window is exhausted\n",
+           bus, dev, func, bar, size);
+      ecam_write32(bus, dev, func, offset, 0U);
+      if (wide != 0) ecam_write32(bus, dev, func, (uint16_t)(offset + 4U), 0U);
+      if (wide != 0) ++bar;
+      continue;
+    }
+    ecam_write32(bus, dev, func, offset,
+                 (uint32_t)(address & UINT64_C(0xffffffff)) | (low & 0xfU));
+    if (wide != 0) {
+      ecam_write32(bus, dev, func, (uint16_t)(offset + 4U),
+                   (uint32_t)(address >> 32U));
+      ++bar;
+    }
+  }
+
+  /* Decoding has to be switched on, or every one of those addresses answers
+     with all-ones exactly as an absent device would. */
+  uint16_t command = ecam_read16(bus, dev, func, XAIOS_PCI_COMMAND);
+  ecam_write16(bus, dev, func, XAIOS_PCI_COMMAND,
+               (uint16_t)(command | XAIOS_PCI_COMMAND_MEMORY |
+                          XAIOS_PCI_COMMAND_BUS_MASTER));
+}
+
 static void add_device(uint8_t bus, uint8_t dev, uint8_t func) {
   if (g_device_count >= XAIOS_PCI_MAX_DEVICES) {
     return;
@@ -139,8 +265,9 @@ static void add_device(uint8_t bus, uint8_t dev, uint8_t func) {
   uint8_t hdr = ecam_read8(bus, dev, func, XAIOS_PCI_HEADER_TYPE);
   d->header_type = hdr & 0x7F;
 
-  /* Read BARs for type 0 headers */
+  /* Read BARs for type 0 headers, assigning any the firmware left empty. */
   if (d->header_type == 0) {
+    assign_bars(bus, dev, func);
     for (uint32_t bar = 0; bar < XAIOS_PCI_MAX_BARS; ++bar) {
       d->bars[bar] =
           ecam_read32(bus, dev, func, XAIOS_PCI_BAR0 + (uint16_t)(bar * 4));
@@ -295,6 +422,8 @@ void pci_init(void) {
     klog("PCI: [%u:%u.%u] vendor=0x%x device=0x%x class=0x%x.%x hdr=%u pcie=%u virtio=%u\n",
          d->bus, d->device, d->function, d->vendor_id, d->device_id,
          d->class_code, d->subclass, d->header_type, d->is_pcie, d->is_virtio);
+    klog("PCI: [%u:%u.%u] bar0=0x%lx bar1=0x%lx bar4=0x%lx\n", d->bus,
+         d->device, d->function, d->bars[0], d->bars[1], d->bars[4]);
   }
 }
 
@@ -385,7 +514,7 @@ xaios_status_t pci_configure_msix(uint32_t index, uint16_t table_entry,
       words[0] = (uint32_t)message_address;
       words[1] = (uint32_t)(message_address >> 32U);
       words[2] = message_data;
-      __asm__ volatile("dsb sy" ::: "memory");
+      xaios_cpu_io_barrier();
       control = (control | UINT16_C(0x8000)) &
                 (uint16_t)~UINT16_C(0x4000);
       if (pci_config_write16(index, pointer + 2U, control) != XAIOS_OK) {
@@ -440,7 +569,7 @@ xaios_status_t pci_unmask_msix(uint32_t index, uint16_t table_entry) {
       volatile uint32_t *words = (volatile uint32_t *)(uintptr_t)(
           virtual_page + (physical_entry & UINT64_C(0xfff)));
       words[3] = 0U;
-      __asm__ volatile("dsb sy" ::: "memory");
+      xaios_cpu_io_barrier();
       return words[3] == 0U ? XAIOS_OK : XAIOS_ERR_IO;
     }
     if (next == 0U || next == pointer) break;

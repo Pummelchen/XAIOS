@@ -16,6 +16,13 @@ LOADER_EFI="$EFI_BUILD_DIR/BOOTX64.EFI"
 KERNEL_ENTRY_OBJ="$KERNEL_BUILD_DIR/entry.o"
 KERNEL_EARLY_OBJ="$KERNEL_BUILD_DIR/early.o"
 KERNEL_ACPI_OBJ="$KERNEL_BUILD_DIR/acpi.o"
+# mmu.c and platform.c define what shared code calls into: the translation
+# query every spinlock makes, and the interrupt dispatch the vector table
+# reaches. Both files existed and neither was compiled, so this image stopped
+# linking the moment a shared header started calling one of them -- a build
+# that was broken by a change nowhere near it.
+KERNEL_ARCH_MMU_OBJ="$KERNEL_BUILD_DIR/arch_mmu.o"
+KERNEL_ARCH_PLATFORM_OBJ="$KERNEL_BUILD_DIR/arch_platform.o"
 KERNEL_PACKED_OBJ="$KERNEL_BUILD_DIR/packed.o"
 KERNEL_STRING_OBJ="$KERNEL_BUILD_DIR/string.o"
 KERNEL_CRC32_OBJ="$KERNEL_BUILD_DIR/crc32.o"
@@ -225,6 +232,10 @@ KERNEL_CFLAGS="
   -c "$ROOT_DIR/kernel/arch/x86_64/early.c" -o "$KERNEL_EARLY_OBJ"
 "$CLANG" $KERNEL_CFLAGS -I"$ROOT_DIR/kernel/include" \
   -c "$ROOT_DIR/kernel/arch/x86_64/acpi.c" -o "$KERNEL_ACPI_OBJ"
+"$CLANG" $KERNEL_CFLAGS -I"$ROOT_DIR/kernel/include" \
+  -c "$ROOT_DIR/kernel/arch/x86_64/mmu.c" -o "$KERNEL_ARCH_MMU_OBJ"
+"$CLANG" $KERNEL_CFLAGS -I"$ROOT_DIR/kernel/include" \
+  -c "$ROOT_DIR/kernel/arch/x86_64/platform.c" -o "$KERNEL_ARCH_PLATFORM_OBJ"
 "$CLANG" $KERNEL_CFLAGS -I"$ROOT_DIR/engine/include" \
   -c "$ROOT_DIR/engine/src/packed.c" -o "$KERNEL_PACKED_OBJ"
 for common_source in \
@@ -260,6 +271,8 @@ done
   "$KERNEL_ENTRY_OBJ" \
   "$KERNEL_EARLY_OBJ" \
   "$KERNEL_ACPI_OBJ" \
+  "$KERNEL_ARCH_MMU_OBJ" \
+  "$KERNEL_ARCH_PLATFORM_OBJ" \
   "$KERNEL_PACKED_OBJ" \
   "$KERNEL_STRING_OBJ" \
   "$KERNEL_CRC32_OBJ" \

@@ -214,3 +214,210 @@ int fdt_find_node_address(const void *blob, const char *node_name,
   *address = search.value;
   return 1;
 }
+
+
+/* Find a device by what it *is*, not by what it is called.
+ *
+ * Node names are a convention and not a contract. The PLIC on QEMU's virt
+ * board is called `interrupt-controller@c000000`, not `plic@...` -- and
+ * `interrupt-controller` on its own is a different node entirely, the hart's
+ * local controller under /cpus. Looking it up by name found neither, and the
+ * kernel reported "no plic in the device tree" on a board that has one.
+ *
+ * `compatible` is the contract. Two passes, because a node's compatible and
+ * its reg arrive in whatever order the tree was written and one pass would
+ * have to assume which comes first.
+ */
+typedef struct compatible_search {
+  const char *wanted;
+  const char *node_name;
+  uint64_t address;
+  int matched;
+  int have_address;
+} compatible_search_t;
+
+/* `compatible` is a list of NUL-separated strings, so a prefix match against
+   the whole value would miss every entry but the first. */
+static int compatible_contains(const uint8_t *value, uint32_t length,
+                               const char *wanted) {
+  uint32_t offset = 0U;
+  while (offset < length) {
+    const char *entry = (const char *)(value + offset);
+    if (string_equal(entry, wanted)) return 1;
+    while (offset < length && value[offset] != 0U) ++offset;
+    ++offset;
+  }
+  return 0;
+}
+
+static void find_compatible_node(const fdt_property_t *property,
+                                 void *context) {
+  compatible_search_t *search = (compatible_search_t *)context;
+  if (search->matched != 0) return;
+  if (!string_equal(property->name, "compatible")) return;
+  if (!compatible_contains(property->value, property->length, search->wanted)) {
+    return;
+  }
+  search->node_name = property->node_name;
+  search->matched = 1;
+}
+
+static void find_matched_reg(const fdt_property_t *property, void *context) {
+  compatible_search_t *search = (compatible_search_t *)context;
+  if (search->have_address != 0) return;
+  if (search->node_name == 0) return;
+  if (!string_equal(property->node_name, search->node_name)) return;
+  if (!string_equal(property->name, "reg")) return;
+  if (property->length < property->address_cells * 4U) return;
+  search->address = read_cells(property->value, property->address_cells);
+  search->have_address = 1;
+}
+
+int fdt_find_compatible(const void *blob, const char *compatible,
+                        uint64_t *address) {
+  compatible_search_t search = {compatible, 0, 0U, 0, 0};
+  fdt_walk(blob, find_compatible_node, &search);
+  if (search.matched == 0) return 0;
+  fdt_walk(blob, find_matched_reg, &search);
+  if (search.have_address == 0 || address == 0) return 0;
+  *address = search.address;
+  return 1;
+}
+
+
+typedef struct compatible_count {
+  const char *wanted;
+  uint32_t count;
+} compatible_count_t;
+
+static void count_compatible(const fdt_property_t *property, void *context) {
+  compatible_count_t *counter = (compatible_count_t *)context;
+  if (!string_equal(property->name, "compatible")) return;
+  if (compatible_contains(property->value, property->length, counter->wanted)) {
+    ++counter->count;
+  }
+}
+
+uint32_t fdt_count_compatible(const void *blob, const char *compatible) {
+  compatible_count_t counter = {compatible, 0U};
+  fdt_walk(blob, count_compatible, &counter);
+  return counter.count;
+}
+
+
+/* The lowest address among nodes with this compatible string.
+ *
+ * Not the first one found, which is what fdt_find_compatible gives and what
+ * is wrong for a window: this tree lists virtio_mmio@10008000 before
+ * @10001000, so taking the first put the scan base at the last slot and every
+ * probe after it ran off the end of the devices that exist.
+ *
+ * Two passes, for the reason the earlier two-pass search already gave and
+ * this one initially ignored: a node's `reg` and its `compatible` arrive in
+ * whatever order the tree was written, and in this tree `reg` comes first.
+ * A single pass that waits to see `compatible` before accepting a `reg`
+ * therefore matched nothing at all, and the window silently kept its default
+ * -- which is a worse failure than not finding it, because it looks like
+ * success.
+ */
+#define FDT_MAX_MATCHES 32U
+
+typedef struct lowest_search {
+  const char *wanted;
+  const char *names[FDT_MAX_MATCHES];
+  uint32_t name_count;
+  uint64_t lowest;
+  int found;
+} lowest_search_t;
+
+static void collect_matching_names(const fdt_property_t *property,
+                                   void *context) {
+  lowest_search_t *search = (lowest_search_t *)context;
+  if (!string_equal(property->name, "compatible")) return;
+  if (!compatible_contains(property->value, property->length, search->wanted)) {
+    return;
+  }
+  if (search->name_count < FDT_MAX_MATCHES) {
+    search->names[search->name_count++] = property->node_name;
+  }
+}
+
+static void lowest_reg_of_matches(const fdt_property_t *property,
+                                  void *context) {
+  lowest_search_t *search = (lowest_search_t *)context;
+  if (!string_equal(property->name, "reg")) return;
+  if (property->length < property->address_cells * 4U) return;
+  for (uint32_t i = 0U; i < search->name_count; ++i) {
+    if (!string_equal(property->node_name, search->names[i])) continue;
+    uint64_t address = read_cells(property->value, property->address_cells);
+    if (search->found == 0 || address < search->lowest) {
+      search->lowest = address;
+      search->found = 1;
+    }
+    return;
+  }
+}
+
+int fdt_find_compatible_lowest(const void *blob, const char *compatible,
+                               uint64_t *address) {
+  lowest_search_t search;
+  search.wanted = compatible;
+  search.name_count = 0U;
+  search.lowest = 0U;
+  search.found = 0;
+  fdt_walk(blob, collect_matching_names, &search);
+  if (search.name_count == 0U) return 0;
+  fdt_walk(blob, lowest_reg_of_matches, &search);
+  if (search.found == 0 || address == 0) return 0;
+  *address = search.lowest;
+  return 1;
+}
+
+/* A named property of the node matching a compatible string.
+ *
+ * Two passes for the same reason fdt_find_compatible needs them: properties
+ * arrive in the order the tree stores them, and `ranges` can precede
+ * `compatible` in the very node being looked for. */
+typedef struct property_search {
+  const char *wanted;
+  const char *property;
+  const char *node_name;
+  const uint8_t *value;
+  uint32_t length;
+  int matched;
+  int found;
+} property_search_t;
+
+static void find_named_property(const fdt_property_t *property, void *context) {
+  property_search_t *search = (property_search_t *)context;
+  if (search->found != 0 || search->node_name == 0) return;
+  if (!string_equal(property->node_name, search->node_name)) return;
+  if (!string_equal(property->name, search->property)) return;
+  search->value = property->value;
+  search->length = property->length;
+  search->found = 1;
+}
+
+static void find_property_node(const fdt_property_t *property, void *context) {
+  property_search_t *search = (property_search_t *)context;
+  if (search->matched != 0) return;
+  if (!string_equal(property->name, "compatible")) return;
+  if (!compatible_contains(property->value, property->length, search->wanted)) {
+    return;
+  }
+  search->node_name = property->node_name;
+  search->matched = 1;
+}
+
+int fdt_find_compatible_property(const void *blob, const char *compatible,
+                                 const char *name, const uint8_t **value,
+                                 uint32_t *length) {
+  property_search_t search = {compatible, name, 0, 0, 0U, 0, 0};
+  fdt_walk(blob, find_property_node, &search);
+  if (search.matched == 0) return 0;
+  fdt_walk(blob, find_named_property, &search);
+  if (search.found == 0 || value == 0 || length == 0) return 0;
+  *value = search.value;
+  *length = search.length;
+  return 1;
+}

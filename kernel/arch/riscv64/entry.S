@@ -98,3 +98,135 @@ riscv64_trap_entry:
   ld    a5, 48(sp)
   addi  sp, sp, 64
   sret
+
+/* The SIMD/FP interrupt canary the scheduler checks before enabling
+   preemption.
+ *
+ * Named aarch64_* and called unconditionally from shared code, which is the
+ * same identity leak the interrupt-controller interface has: x86-64 already
+ * defines it under this name in its own entry.S for exactly this reason. The
+ * name is inherited rather than chosen.
+ *
+ * What it means is "floating-point state survives a trap". This writes a
+ * known value into an FP register, takes a trap, and checks the value came
+ * back -- which is a real test on RISC-V, where fs in sstatus can leave the
+ * FP unit off and a save that never happened looks identical to one that did
+ * until something reads a register.
+ */
+  .globl aarch64_simd_irq_self_test
+  .type aarch64_simd_irq_self_test, @function
+aarch64_simd_irq_self_test:
+  /* Enable the FP unit if it is off: fs = Initial. A kernel that traps on
+     its first FP instruction cannot report why. */
+  li    t0, 0x2000
+  csrs  sstatus, t0
+
+  li    t1, 0x5A
+  fcvt.d.l fa0, t1          /* a value only this test would produce */
+  ebreak                    /* take a trap with it live */
+  fcvt.l.d t2, fa0, rtz     /* and read it back afterwards */
+
+  li    t3, 0x5A
+  li    a0, 1
+  beq   t2, t3, 1f
+  li    a0, 0               /* the value did not survive the trap */
+1:
+  ret
+  .size aarch64_simd_irq_self_test, . - aarch64_simd_irq_self_test
+
+/* Enter a user thread, and come back when it is done.
+ *
+ * Named aarch64_* for the same inherited reason as the SIMD canary: the
+ * shared scheduler declares it that way and x86-64 defines it under that
+ * name too.
+ *
+ * a0 entry, a1 stack top, a2 argument, a3 return address.
+ *
+ * The mechanism is sret with sstatus.SPP cleared, which is what takes a hart
+ * to user mode -- the same instruction that returns from a trap, because
+ * RISC-V has only the one. Coming back therefore arrives as a trap, not as a
+ * return, so the kernel's context has to be somewhere the trap handler can
+ * find it: saved on this stack, with the stack pointer parked in sscratch.
+ */
+  .globl aarch64_enter_user_thread
+  .type aarch64_enter_user_thread, @function
+aarch64_enter_user_thread:
+  addi  sp, sp, -112
+  sd    ra, 0(sp)
+  sd    s0, 8(sp)
+  sd    s1, 16(sp)
+  sd    s2, 24(sp)
+  sd    s3, 32(sp)
+  sd    s4, 40(sp)
+  sd    s5, 48(sp)
+  sd    s6, 56(sp)
+  sd    s7, 64(sp)
+  sd    s8, 72(sp)
+  sd    s9, 80(sp)
+  sd    s10, 88(sp)
+  sd    s11, 96(sp)
+
+  /* Where the trap handler finds the kernel stack to return onto. */
+  csrw  sscratch, sp
+
+  /* SPP = 0 selects user mode for the sret below; SPIE = 1 so interrupts are
+     enabled once there. A user thread entered with interrupts off cannot be
+     preempted, which is a scheduler that does not schedule. */
+  li    t0, 0x100           /* SSTATUS_SPP */
+  csrc  sstatus, t0
+  li    t0, 0x20            /* SSTATUS_SPIE */
+  csrs  sstatus, t0
+
+  csrw  sepc, a0            /* entry */
+  mv    t1, a1              /* user stack top */
+  mv    t2, a2              /* argument */
+  mv    t3, a3              /* return address the thread exits through */
+  mv    sp, t1
+  mv    a0, t2
+  mv    ra, t3
+  sret
+
+/* Where a user thread comes back to, entered from the trap handler once it
+   has decided the thread is finished. a0 carries the encoded result the
+   scheduler expects. */
+  .globl riscv64_leave_user_thread
+  .type riscv64_leave_user_thread, @function
+riscv64_leave_user_thread:
+  csrr  sp, sscratch
+  ld    ra, 0(sp)
+  ld    s0, 8(sp)
+  ld    s1, 16(sp)
+  ld    s2, 24(sp)
+  ld    s3, 32(sp)
+  ld    s4, 40(sp)
+  ld    s5, 48(sp)
+  ld    s6, 56(sp)
+  ld    s7, 64(sp)
+  ld    s8, 72(sp)
+  ld    s9, 80(sp)
+  ld    s10, 88(sp)
+  ld    s11, 96(sp)
+  addi  sp, sp, 112
+  ret
+  .size aarch64_enter_user_thread, . - aarch64_enter_user_thread
+
+/* The other user entry, taking argc and argv rather than a single argument.
+   Two entry points exist because processes and threads are started
+   differently; the mechanism is identical, so this forwards rather than
+   duplicating the register dance above. */
+  .globl aarch64_enter_user
+  .type aarch64_enter_user, @function
+aarch64_enter_user:
+  /* a0 entry, a1 stack, a2 argc, a3 argv -> entry, stack, argument=argc,
+     return=argv is wrong; a process returns through its own exit syscall, so
+     the return address is not used and argv goes in a1 of the user frame.
+     Passing argc as the argument and leaving argv where the ABI puts a second
+     parameter keeps the same convention userspace already expects. */
+  mv    t4, a3
+  mv    a3, zero
+  addi  sp, sp, -16
+  sd    t4, 0(sp)
+  call  aarch64_enter_user_thread
+  addi  sp, sp, 16
+  ret
+  .size aarch64_enter_user, . - aarch64_enter_user

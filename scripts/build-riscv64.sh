@@ -32,11 +32,48 @@ mkdir -p "$BUILD_DIR"
 # -mno-relax because linker relaxation needs a global pointer this kernel does
 # not set up; medany because the code has to run at 0x80200000 rather than in
 # the low two gibibytes medlow assumes.
-CFLAGS="-std=c99 -Wall -Wextra -Werror -pedantic -ffreestanding \
+# Two flag sets, on purpose.
+#
+# Architecture code written for this port is held to -pedantic, because it is
+# new and there is no reason to start it below the bar. Shared kernel code is
+# not: it is compiled here with the same warnings AArch64 and x86-64 use, and
+# imposing a stricter standard on it from this file would mean editing a
+# hundred files that three architectures already agree on -- to satisfy a flag
+# only one of them passes. The shared code's standard is the shared code's to
+# set.
+BASE_CFLAGS="-std=c99 -Wall -Wextra -Werror -ffreestanding \
 -fno-stack-protector -mno-relax -march=rv64gc -mabi=lp64d -mcmodel=medany \
---target=riscv64-unknown-elf -I$ROOT_DIR/kernel/include -I$ROOT_DIR/engine/include"
+--target=riscv64-unknown-elf -I$ROOT_DIR/kernel/include \
+-I$ROOT_DIR/engine/include -I$ROOT_DIR/engine/src \
+-I$ROOT_DIR/userspace/include -I$ROOT_DIR/userspace/sshd \
+-I$ROOT_DIR/third_party/bearssl/inc"
+# The defines the shared kernel expects from a build. Verbose defaults on
+# here, unlike the other architectures: this port has no login to reach yet,
+# so the console log is the only way to see how far it got, and a silent boot
+# would be indistinguishable from a hung one.
+BOOT_VERBOSE="${XAIOS_BOOT_VERBOSE:-1}"
+BASE_CFLAGS="$BASE_CFLAGS -DXAIOS_BOOT_VERBOSE=$BOOT_VERBOSE \
+-DXAIOS_BOOT_TEST_APPS=0 -DXAIOS_FAILURE_TEST_APP=0 -DXAIOS_LIBC_TEST=0 \
+-DXAIOS_BUILD_NUMBER=4"
+CFLAGS="$BASE_CFLAGS -pedantic"
 
 OBJECTS=""
+compile_shared() {
+  source_path="$1"
+  # Named from the path, not the basename.
+  #
+  # Two different sha256.c files exist -- kernel/runtime/ and engine/src/ --
+  # and naming objects after the basename made the second silently overwrite
+  # the first. The link then failed on duplicate symbols from what looked
+  # like one file, which is a confusing way to be told the build is losing
+  # objects.
+  relative="${source_path#"$ROOT_DIR"/}"
+  object_path="$BUILD_DIR/$(printf '%s' "$relative" | tr '/.' '__').o"
+  # shellcheck disable=SC2086
+  $CC $BASE_CFLAGS -c "$source_path" -o "$object_path"
+  OBJECTS="$OBJECTS $object_path"
+}
+
 compile() {
   source_path="$1"
   object_path="$BUILD_DIR/$(basename "${source_path%.*}").o"
@@ -47,27 +84,69 @@ compile() {
 
 compile "$ROOT_DIR/kernel/arch/riscv64/entry.S"
 compile "$ROOT_DIR/kernel/arch/riscv64/sbi.c"
-compile "$ROOT_DIR/kernel/arch/riscv64/console.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/fdt.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/boot_info.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/mmu.c"
-compile "$ROOT_DIR/kernel/arch/riscv64/boot.c"
-# Shared memory management, unchanged from what the other two architectures
-# link. If these needed an edit to work here the neutrality rule would have
-# been contradicted rather than tested.
 compile "$ROOT_DIR/kernel/arch/riscv64/smp.c"
-compile "$ROOT_DIR/kernel/core/klog.c"
-compile "$ROOT_DIR/kernel/core/klog_ring.c"
-compile "$ROOT_DIR/kernel/mm/pmm.c"
-compile "$ROOT_DIR/kernel/mm/numa.c"
-compile "$ROOT_DIR/kernel/mm/kheap.c"
-# Shared kernel source, compiled from the same file the other two
-# architectures use. Building it here is the point of the exercise: if it
-# needed an edit to work on a third architecture, the platform-neutrality
-# rule would have been contradicted rather than tested.
-compile "$ROOT_DIR/kernel/runtime/sha256.c"
+compile "$ROOT_DIR/kernel/arch/riscv64/timer.c"
+compile "$ROOT_DIR/kernel/arch/riscv64/exception.c"
+compile "$ROOT_DIR/kernel/arch/riscv64/irq.c"
+compile "$ROOT_DIR/kernel/arch/riscv64/platform.c"
+compile "$ROOT_DIR/kernel/arch/riscv64/boot.c"
+
+# Every shared kernel source, not a chosen subset.
+#
+# The subset was how this started, and it stopped working the moment klog was
+# used: shared code depends on shared code, and picking files one at a time
+# turns into hand-resolving a dependency graph the linker resolves for free.
+# All 102 of these compile for RISC-V, so the honest thing is to build them
+# all and let what is still undefined be the actual architecture gap rather
+# than a curated list of what has been tried.
+# virtio_transport.c is compiled twice by the real build -- once as the MMIO
+# backend and once, from a different file, as the PCI one -- with a dispatcher
+# choosing between them. Globbing it plainly produced a third copy that
+# collided with both. Built the same way here, because this board offers
+# virtio on both transports exactly as AArch64 does.
+for source in $(find "$ROOT_DIR/kernel" -name '*.c' ! -path '*/arch/*' \
+    ! -name 'virtio_transport.c' ! -name 'virtio_transport_pci.c' | sort); do
+  compile_shared "$source"
+done
+# Each backend needs its own define, and both need to stay out of the glob:
+# compiled plainly they each provide the same MMIO accessors and collide with
+# the other.
+$CC $BASE_CFLAGS -DXAIOS_VIRTIO_MMIO_BACKEND=1 \
+  -c "$ROOT_DIR/kernel/dev/virtio/virtio_transport.c" \
+  -o "$BUILD_DIR/virtio_transport_mmio.o"
+$CC $BASE_CFLAGS -DXAIOS_VIRTIO_PCI_BACKEND=1 \
+  -c "$ROOT_DIR/kernel/dev/virtio/virtio_transport_pci.c" \
+  -o "$BUILD_DIR/virtio_transport_pci.o"
+OBJECTS="$OBJECTS $BUILD_DIR/virtio_transport_mmio.o \
+  $BUILD_DIR/virtio_transport_pci.o"
+# Only the engine sources the kernel actually needs symbols from. sha256 and
+# model_v2 are reached through the kernel's own copies, and adding them here
+# produced duplicates rather than more capability.
+# The same non-kernel sources the AArch64 and x86-64 kernels link: the engine
+# pieces the kernel calls into, the xaiFS reader and writer, and the crypto
+# the update and SSH paths verify signatures with.
+for source in "$ROOT_DIR/engine/src/architecture.c" \
+    "$ROOT_DIR/engine/src/backend_scalar.c" \
+    "$ROOT_DIR/engine/src/packed.c" \
+    "$ROOT_DIR/engine/src/sha256.c" \
+    "$ROOT_DIR/engine/src/sha256_accel.c" \
+    "$ROOT_DIR/engine/src/backend_neon.c" \
+    "$ROOT_DIR/engine/src/backend_avx2.c" \
+    "$ROOT_DIR/engine/src/xai_fs.c" \
+    "$ROOT_DIR/engine/src/xai_fs_writer.c" \
+    "$ROOT_DIR/userspace/sshd/ssh_crypto.c" \
+    "$ROOT_DIR/userspace/sshd/tweetnacl_subset.c"; do
+  compile_shared "$source"
+done
+
+BEARSSL="$ROOT_DIR/build/bearssl/riscv64/libbearssl-xapt.a"
+[ -f "$BEARSSL" ] || "$ROOT_DIR/scripts/build-bearssl.sh" riscv64
 
 # shellcheck disable=SC2086
-$LD -T "$ROOT_DIR/kernel/arch/riscv64/linker.ld" -o "$KERNEL_ELF" $OBJECTS
+$LD -T "$ROOT_DIR/kernel/arch/riscv64/linker.ld" -o "$KERNEL_ELF" $OBJECTS \
+  "$BEARSSL"
 
 printf '%s\n' "Built RISC-V bring-up kernel: $KERNEL_ELF"

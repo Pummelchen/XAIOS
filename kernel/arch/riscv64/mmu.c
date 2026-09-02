@@ -30,6 +30,10 @@ void panic_at(const char *file, int line, const char *fmt, ...)
 
 extern char __kernel_start[];
 extern char __kernel_end[];
+extern char __text_start[];
+extern char __text_end[];
+extern char __rodata_start[];
+extern char __rodata_end[];
 
 #define PTE_V (UINT64_C(1) << 0)
 #define PTE_R (UINT64_C(1) << 1)
@@ -39,6 +43,14 @@ extern char __kernel_end[];
 #define PTE_G (UINT64_C(1) << 5)
 #define PTE_A (UINT64_C(1) << 6)
 #define PTE_D (UINT64_C(1) << 7)
+/* Bits 8 and 9 are reserved for software, which is what makes the device
+   attribute expressible after all. RISC-V has no hardware memory-type field
+   -- device versus normal follows the physical address -- so the earlier
+   version simply could not report XAIOS_VMM_DEVICE back, and the shared
+   vmm self-test is right to insist that a mapping made as device reads back
+   as device. Recording it in RSW keeps the kernel's own bookkeeping honest
+   without claiming the hardware enforces anything it does not. */
+#define PTE_RSW_DEVICE (UINT64_C(1) << 8)
 #define PTE_LEAF (PTE_R | PTE_W | PTE_X)
 #define PTE_PPN_SHIFT 10U
 
@@ -51,7 +63,9 @@ extern char __kernel_end[];
    the memory the map describes, before the physical allocator can be asked
    for more. Sized rather than grown: this runs before there is anything to
    grow with. */
-#define EARLY_TABLES 24U
+/* Page-granular kernel sections need a table per 2 MiB of image, plus the
+   levels above them. Sized from a ten-megabyte kernel with room to grow. */
+#define EARLY_TABLES 64U
 
 static uint64_t g_root[ENTRIES] __attribute__((aligned(4096)));
 static uint64_t g_early[EARLY_TABLES][ENTRIES] __attribute__((aligned(4096)));
@@ -108,6 +122,7 @@ static uint64_t flags_to_pte(uint32_t flags) {
   else bits |= PTE_R;
   if ((flags & XAIOS_VMM_EXECUTABLE) != 0U) bits |= PTE_X;
   if ((flags & XAIOS_VMM_USER) != 0U) bits |= PTE_U;
+  if ((flags & XAIOS_VMM_DEVICE) != 0U) bits |= PTE_RSW_DEVICE;
   /* Global for kernel mappings only. A global entry survives an address-space
      switch, which is what makes it wrong for a user page: the next process
      would inherit it. */
@@ -115,11 +130,21 @@ static uint64_t flags_to_pte(uint32_t flags) {
   return bits;
 }
 
+/* XAIOS_VMM_DEVICE has no representation here, and that is the architecture
+   rather than an omission.
+   AArch64 carries the memory type in the entry through MAIR, and x86-64 has
+   the cache-disable bits. RISC-V has neither: whether an access is device or
+   normal memory follows the physical address, decided by the platform's
+   memory map, not by the page table. So a mapping cannot report DEVICE back,
+   and a caller asking for it is asking for something the entry cannot say
+   either way -- which is why the already-satisfied check above compares
+   everything except that bit. */
 static uint32_t pte_to_flags(uint64_t entry) {
   uint32_t flags = XAIOS_VMM_PRESENT;
   if ((entry & PTE_W) != 0U) flags |= XAIOS_VMM_WRITABLE;
   if ((entry & PTE_X) != 0U) flags |= XAIOS_VMM_EXECUTABLE;
   if ((entry & PTE_U) != 0U) flags |= XAIOS_VMM_USER;
+  if ((entry & PTE_RSW_DEVICE) != 0U) flags |= XAIOS_VMM_DEVICE;
   if ((entry & PTE_G) == 0U) flags |= XAIOS_VMM_NG;
   return flags;
 }
@@ -146,16 +171,39 @@ static uint64_t *walk(uint64_t *root, uint64_t virtual_address,
       if (next == 0) return 0;
       *entry = pte_for((uint64_t)(uintptr_t)next, 0U);
     } else if ((*entry & PTE_LEAF) != 0U) {
-      /* A larger page already covers this address. Splitting it is a
-         different operation from mapping into it, and doing it implicitly
-         here would silently change the memory type of a range somebody else
-         mapped deliberately. */
-      return 0;
+      /* A larger page covers this address, and the caller wants a smaller
+         one inside it. Split rather than refuse.
+         Refusing was the first version, on the reasoning that an implicit
+         split changes a range somebody mapped deliberately. It does not: the
+         replacement describes exactly the same memory with exactly the same
+         permissions, just at a finer granularity, and every address that
+         resolved before resolves identically after. What refusing actually
+         produced was a kernel that could not unmap a device page it had
+         mapped, because vmm_init covers the device window with gigantic
+         leaves and the shared code then works in pages.
+         Splitting is only safe because it is total -- every entry of the new
+         table is filled from the leaf before the leaf is replaced, so no
+         address is briefly unmapped. */
+      if (create == 0) return 0;
+      uint64_t *split = allocate_table();
+      if (split == 0) return 0;
+      uint64_t covered = pte_physical(*entry);
+      uint64_t child_span = PAGE_SIZE << (9U * (level - 1U));
+      uint64_t leaf_bits =
+          *entry & (PTE_LEAF | PTE_U | PTE_G | PTE_A | PTE_D | PTE_RSW_DEVICE);
+      for (uint32_t i = 0U; i < ENTRIES; ++i) {
+        split[i] = pte_for(covered + (uint64_t)i * child_span, leaf_bits);
+      }
+      *entry = pte_for((uint64_t)(uintptr_t)split, 0U);
+      flush_all();
     }
     table = (uint64_t *)(uintptr_t)pte_physical(*entry);
   }
   return &table[index_at(virtual_address, target_level)];
 }
+
+xaios_status_t vmm_translate(uint64_t virtual_address,
+                             uint64_t *physical_address, uint32_t *flags);
 
 static xaios_status_t map_at_level(uint64_t *root, uint64_t virtual_address,
                                    uint64_t physical_address, uint32_t flags,
@@ -166,7 +214,27 @@ static xaios_status_t map_at_level(uint64_t *root, uint64_t virtual_address,
     return XAIOS_ERR_INVALID;
   }
   uint64_t *entry = walk(root, virtual_address, level, 1);
-  if (entry == 0) return XAIOS_ERR_NO_MEMORY;
+  if (entry == 0) {
+    /* The walk refuses to descend into a larger page, which is right --
+       splitting one silently would change the memory type of a range
+       somebody mapped deliberately. But refusing outright is wrong when the
+       larger page already says exactly what the caller is asking for.
+       kmain maps the device window a page at a time after vmm_init has
+       already covered it with gigantic identity leaves, and every one of
+       those requests is asking for a mapping that is present and correct. So
+       a request already satisfied is answered rather than refused; anything
+       else -- a different physical address, or flags the existing mapping
+       does not grant -- still fails, because that is a real conflict. */
+    uint64_t existing_physical = 0U;
+    uint32_t existing_flags = 0U;
+    if (vmm_translate(virtual_address, &existing_physical, &existing_flags) ==
+            XAIOS_OK &&
+        existing_physical == physical_address &&
+        (existing_flags & flags) == flags) {
+      return XAIOS_OK;
+    }
+    return XAIOS_ERR_NO_MEMORY;
+  }
   *entry = pte_for(physical_address, flags_to_pte(flags));
   flush_one(virtual_address);
   return XAIOS_OK;
@@ -174,11 +242,25 @@ static xaios_status_t map_at_level(uint64_t *root, uint64_t virtual_address,
 
 static xaios_status_t unmap_at_level(uint64_t *root, uint64_t virtual_address,
                                      uint32_t level) {
-  uint64_t *entry = walk(root, virtual_address, level, 0);
+  /* Splitting is permitted while unmapping, which reads oddly and is right:
+     removing one page from inside a larger mapping means the larger mapping
+     has to become a table first. Without it, unmapping a device page the
+     boot map covered with a gigantic leaf reports not-found on a page that
+     is very much mapped. */
+  uint64_t *entry = walk(root, virtual_address, level, 1);
   if (entry == 0 || (*entry & PTE_V) == 0U) return XAIOS_ERR_NOT_FOUND;
   *entry = 0U;
   flush_one(virtual_address);
   return XAIOS_OK;
+}
+
+/* Page-granular, for ranges whose permissions have to be exact. */
+static void identity_map_pages(uint64_t start, uint64_t end, uint32_t flags) {
+  start &= ~(PAGE_SIZE - 1U);
+  end = (end + PAGE_SIZE - 1U) & ~(PAGE_SIZE - 1U);
+  for (uint64_t address = start; address < end; address += PAGE_SIZE) {
+    if (map_at_level(g_root, address, address, flags, 0U) != XAIOS_OK) return;
+  }
 }
 
 static void identity_map_range(uint64_t start, uint64_t end, uint32_t flags) {
@@ -218,10 +300,28 @@ void vmm_init(const xaios_boot_info_t *boot) {
      after enabling translation has nothing to report the failure with. */
   identity_map_range(0U, UINT64_C(0x80000000), kernel_flags | XAIOS_VMM_DEVICE);
 
-  /* The kernel image, and the firmware below it -- OpenSBI is still mapped
-     because ecall returns into it. */
-  identity_map_range(UINT64_C(0x80000000), (uint64_t)(uintptr_t)__kernel_end,
+  /* The kernel image, one section at a time.
+   *
+   * Not one RWX range, which is what this did first and what the shared
+   * kernel refuses: it checks that .rodata comes back read-only and
+   * non-executable and that .text comes back executable, and a uniform
+   * mapping fails both. Those checks are right -- a kernel whose constants
+   * are writable and whose data is executable has given away most of what
+   * page permissions are for -- so the sections are mapped as what they are.
+   *
+   * In 4 KiB pages, deliberately, because a 2 MiB leaf spanning the boundary
+   * between .text and .rodata would have to be granted the union of their
+   * permissions and the finer mapping is the whole point here. */
+  identity_map_range(UINT64_C(0x80000000), (uint64_t)(uintptr_t)__text_start,
                      kernel_flags);
+  identity_map_pages((uint64_t)(uintptr_t)__text_start,
+                     (uint64_t)(uintptr_t)__text_end,
+                     XAIOS_VMM_PRESENT | XAIOS_VMM_EXECUTABLE);
+  identity_map_pages((uint64_t)(uintptr_t)__rodata_start,
+                     (uint64_t)(uintptr_t)__rodata_end, XAIOS_VMM_PRESENT);
+  identity_map_pages((uint64_t)(uintptr_t)__rodata_end,
+                     (uint64_t)(uintptr_t)__kernel_end,
+                     XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE);
 
   if (boot != 0 && boot->memory_map != 0U && boot->memory_descriptor_size != 0U) {
     const uint8_t *entries = (const uint8_t *)(uintptr_t)boot->memory_map;

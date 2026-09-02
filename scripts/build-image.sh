@@ -792,7 +792,7 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/power.c" "$KERNEL_BUILD_DIR/power.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/watchdog.c" "$KERNEL_BUILD_DIR/watchdog.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/smmu.c" "$KERNEL_BUILD_DIR/smmu.o"
-  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/pci.c" "$KERNEL_BUILD_DIR/pci.o"
+  compile_kernel "$ROOT_DIR/kernel/dev/pci_ecam.c" "$KERNEL_BUILD_DIR/pci.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/gic.c" "$KERNEL_BUILD_DIR/gic.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/gic_its.c" "$KERNEL_BUILD_DIR/gic_its.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/smp.c" "$KERNEL_BUILD_DIR/smp.o"

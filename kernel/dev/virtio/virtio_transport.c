@@ -37,9 +37,43 @@
 #include <xaios/virtio_transport.h>
 #include <xaios/vmm.h>
 
-#define VIRTIO_MMIO_BASE UINT64_C(0x0a000000)
-#define VIRTIO_MMIO_STRIDE UINT64_C(0x200)
-#define VIRTIO_MMIO_SLOTS 32U
+/* Where the virtio-mmio slots are, and how far apart.
+ *
+ * These were constants naming one board's layout: 0x0a000000 with a 0x200
+ * stride is QEMU's AArch64 `virt`. QEMU's RISC-V `virt` puts them at
+ * 0x10001000 with a 0x1000 stride, so a kernel carrying the constant took a
+ * load access fault the first time it probed for a device -- on hardware
+ * that has virtio, at an address that does not.
+ *
+ * A default keeps every existing caller unchanged, and an architecture that
+ * knows better says so before probing. This is the same rule the rest of the
+ * codebase follows and this file had quietly opted out of: firmware supplies
+ * the address, the driver does not assume it. */
+#define VIRTIO_MMIO_DEFAULT_BASE UINT64_C(0x0a000000)
+#define VIRTIO_MMIO_DEFAULT_STRIDE UINT64_C(0x200)
+#define VIRTIO_MMIO_SLOT_LIMIT 32U
+#define VIRTIO_MMIO_SLOTS g_virtio_mmio_slots
+
+static uint64_t g_virtio_mmio_base = VIRTIO_MMIO_DEFAULT_BASE;
+static uint64_t g_virtio_mmio_stride = VIRTIO_MMIO_DEFAULT_STRIDE;
+static uint32_t g_virtio_mmio_slots = VIRTIO_MMIO_SLOT_LIMIT;
+
+/* The slot count matters as much as the base. Probing a slot that does not
+   exist reads an unassigned physical address, and a machine that faults on
+   those -- RISC-V does -- takes a load access fault instead of reading the
+   zero an absent device would give. AArch64's board happens to present all
+   thirty-two, which is why a fixed count survived this long. */
+void virtio_transport_set_mmio_window(uint64_t base, uint64_t stride,
+                                      uint32_t slots) {
+  if (base == 0U || stride == 0U || slots == 0U) return;
+  g_virtio_mmio_base = base;
+  g_virtio_mmio_stride = stride;
+  g_virtio_mmio_slots = slots > VIRTIO_MMIO_SLOT_LIMIT ? VIRTIO_MMIO_SLOT_LIMIT
+                                                       : slots;
+}
+
+#define VIRTIO_MMIO_BASE g_virtio_mmio_base
+#define VIRTIO_MMIO_STRIDE g_virtio_mmio_stride
 #define VIRTIO_MMIO_FIRST_INTID 48U
 #define VIRTIO_WAIT_TIMEOUT_NS UINT64_C(5000000000)
 #define VIRTIO_WAIT_FALLBACK_SPINS UINT64_C(100000000)

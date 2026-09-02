@@ -13,6 +13,8 @@
 #define XAIOS_PCI_VENDOR_ID UINT16_C(0x00)
 #define XAIOS_PCI_DEVICE_ID UINT16_C(0x02)
 #define XAIOS_PCI_COMMAND UINT16_C(0x04)
+#define XAIOS_PCI_COMMAND_MEMORY UINT16_C(0x0002)
+#define XAIOS_PCI_COMMAND_BUS_MASTER UINT16_C(0x0004)
 #define XAIOS_PCI_STATUS UINT16_C(0x06)
 #define XAIOS_PCI_CLASS_REV UINT16_C(0x08)
 #define XAIOS_PCI_HEADER_TYPE UINT16_C(0x0E)
@@ -53,6 +55,11 @@ typedef struct xaios_pci_device {
 
 void pci_init(void);
 void pci_configure_ecam(uint64_t base, uint32_t start_bus, uint32_t end_bus);
+/* The address ranges a device's base registers may be placed in, for boards
+   whose firmware leaves that work undone. Never called on a machine whose
+   firmware assigns them, and assignment skips anything already placed. */
+void pci_configure_mmio_window(uint64_t base, uint64_t size, uint64_t base64,
+                               uint64_t size64);
 uint32_t pci_ecam_mapped(void);
 uint32_t pci_device_count(void);
 const xaios_pci_device_t *pci_device(uint32_t index);

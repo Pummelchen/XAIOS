@@ -357,6 +357,11 @@ xaios_engine_status_t xaios_packed_gemv_avx2(
 #endif
 }
 
+/* Used only by the differential checks that gate an accelerated backend, all
+   of which are compiled out on an architecture that has none. Guarded the
+   same way they are, so a scalar-only target does not carry a function
+   nothing calls -- and does not fail its build over it. */
+#if XAIOS_PACKED_HAS_NEON || XAIOS_PACKED_HAS_X86_64 || XAIOS_PACKED_HAS_SVE
 static int close_enough(float left, float right) {
   float difference = left > right ? left - right : right - left;
   float magnitude = left < 0.0f ? -left : left;
@@ -365,6 +370,7 @@ static int close_enough(float left, float right) {
   }
   return difference <= 0.0001f * (1.0f + magnitude);
 }
+#endif
 
 int xaios_packed_neon_available(void) {
 #if XAIOS_PACKED_HAS_NEON

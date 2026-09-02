@@ -151,6 +151,11 @@ void virtio_transport_reset(const virtio_mmio_device_t *device);
 uint32_t virtio_transport_device_status(const virtio_mmio_device_t *device);
 xaios_status_t virtio_transport_reset_checked(
     const virtio_mmio_device_t *device);
+/* Tell the MMIO transport where this board's virtio slots are, before
+   anything probes. Unset means QEMU's AArch64 layout, which is what every
+   caller assumed when it was a constant. */
+void virtio_transport_set_mmio_window(uint64_t base, uint64_t stride,
+                                      uint32_t slots);
 xaios_status_t virtio_transport_negotiate_no_features(
     const virtio_mmio_device_t *device);
 xaios_status_t virtio_transport_negotiate_features(

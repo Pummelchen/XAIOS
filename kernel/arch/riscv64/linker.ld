@@ -19,15 +19,21 @@ SECTIONS {
   . = 0x80200000;
   __kernel_start = .;
 
+  __text_start = .;
   .text : ALIGN(0x1000) {
     *(.text.entry)
     *(.text .text.*)
   }
+  . = ALIGN(0x1000);
+  __text_end = .;
 
+  __rodata_start = .;
   .rodata : ALIGN(0x1000) {
     *(.rodata .rodata.*)
     *(.srodata .srodata.*)
   }
+  . = ALIGN(0x1000);
+  __rodata_end = .;
 
   .data : ALIGN(0x1000) {
     *(.data .data.*)

@@ -64,7 +64,8 @@ NON_C99_MACROS = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--arch", required=True, choices=("aarch64", "x86_64"))
+    parser.add_argument("--arch", required=True,
+                        choices=("aarch64", "x86_64", "riscv64"))
     parser.add_argument("--install", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     return parser.parse_args()

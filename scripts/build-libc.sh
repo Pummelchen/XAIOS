@@ -47,7 +47,7 @@ fi
 
 for arch in $ARCHES; do
   case "$arch" in
-    aarch64|x86_64) ;;
+    aarch64|x86_64|riscv64) ;;
     *) printf 'error: unsupported libc architecture: %s\n' "$arch" >&2; exit 1 ;;
   esac
 

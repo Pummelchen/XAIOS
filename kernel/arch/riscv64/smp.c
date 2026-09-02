@@ -84,3 +84,74 @@ xaios_status_t smp_bootstrap_reserved_range(uint64_t *start, uint64_t *end) {
   if (end != 0) *end = 0U;
   return XAIOS_ERR_UNSUPPORTED;
 }
+
+/* Which cores are held for latency-sensitive work, and which have interrupts
+   steered away from them. Both are empty on one hart: there is nothing to
+   isolate work onto and nothing to isolate it from. */
+uint32_t smp_hot_core_mask(void) { return 0U; }
+
+uint32_t smp_irq_isolated_mask(void) { return 0U; }
+
+static xaios_cpu_state_t g_state;
+
+const xaios_cpu_state_t *smp_cpu_state(uint32_t cpu_id) {
+  if (cpu_id != g_boot_hart) return 0;
+  g_state.cpu_id = g_boot_hart;
+  g_state.online = 1U;
+  /* mpidr is AArch64's identifier; the hart id is what means the same thing
+     here, and reporting it under that name beats reporting zero. */
+  g_state.mpidr = g_boot_hart;
+  g_state.role = XAIOS_CPU_ROLE_SCHEDULING;
+  return &g_state;
+}
+
+/* Leasing a core to the AI runtime needs a second core to lease. Refused
+   rather than granted: a lease that reports success and leaves the caller
+   sharing the only hart is worse than no leasing at all. */
+xaios_status_t smp_mark_core_leased(uint32_t cpu_id, uint32_t owner_id) {
+  (void)cpu_id;
+  (void)owner_id;
+  return XAIOS_ERR_UNSUPPORTED;
+}
+
+xaios_status_t smp_release_core_lease(uint32_t cpu_id, uint32_t owner_id) {
+  (void)cpu_id;
+  (void)owner_id;
+  return XAIOS_ERR_UNSUPPORTED;
+}
+
+xaios_status_t smp_wake_cpu(uint32_t cpu_id) {
+  (void)cpu_id;
+  /* SBI's HSM extension starts a hart; using it is the next piece of work.
+     Until then there is no hart to wake. */
+  return XAIOS_ERR_UNSUPPORTED;
+}
+
+uint64_t smp_total_migration_count(void) { return 0U; }
+
+uint64_t smp_total_involuntary_context_switch_count(void) { return 0U; }
+
+/* Running work across several harts needs several harts. Refused rather than
+   run on one and reported as if spread: a caller measuring parallel speedup
+   would record a number that means nothing. */
+xaios_status_t smp_run_user_task_set(uint64_t requested_workers,
+                                     uint64_t iterations,
+                                     uint64_t *ran_workers,
+                                     uint64_t *checksum) {
+  (void)requested_workers;
+  (void)iterations;
+  if (ran_workers != 0) *ran_workers = 0U;
+  if (checksum != 0) *checksum = 0U;
+  return XAIOS_ERR_UNSUPPORTED;
+}
+
+xaios_status_t smp_run_user_thread_group(uint64_t requested_threads,
+                                         uint64_t iterations,
+                                         uint64_t *ran_threads,
+                                         uint64_t *checksum) {
+  (void)requested_threads;
+  (void)iterations;
+  if (ran_threads != 0) *ran_threads = 0U;
+  if (checksum != 0) *checksum = 0U;
+  return XAIOS_ERR_UNSUPPORTED;
+}

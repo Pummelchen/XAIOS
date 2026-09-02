@@ -32,4 +32,28 @@ int fdt_find_memory(const void *blob, uint64_t *base, uint64_t *size);
 int fdt_find_node_address(const void *blob, const char *node_name,
                           uint64_t *address);
 
+/* The address of the first node whose `compatible` list contains this
+   string. Preferred over a name lookup: names are a convention, compatible
+   is the contract. */
+int fdt_find_compatible(const void *blob, const char *compatible,
+                        uint64_t *address);
+
+/* How many nodes declare this compatible string. A scan that assumes a fixed
+   number of slots reads past the ones that exist, and an unassigned address
+   faults rather than reading as absent. */
+uint32_t fdt_count_compatible(const void *blob, const char *compatible);
+
+/* The lowest address among matching nodes -- what a window starts at. The
+   tree's node order is not sorted, so the first match is not the first
+   slot. */
+/* A named property of the node matching a compatible string, returned as the
+   raw big-endian bytes the tree holds. Used for `ranges`, whose layout the
+   caller knows and this parser does not. */
+int fdt_find_compatible_property(const void *blob, const char *compatible,
+                                 const char *name, const uint8_t **value,
+                                 uint32_t *length);
+
+int fdt_find_compatible_lowest(const void *blob, const char *compatible,
+                               uint64_t *address);
+
 #endif
