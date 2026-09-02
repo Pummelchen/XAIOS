@@ -395,6 +395,50 @@ static const xaios_ip_addr_t *local_ipv6_for(const xaios_ip_addr_t *wanted) {
   return &g_link_local_v6;
 }
 static uint64_t g_slaac_valid_until_ns;
+/* The router that advertised the prefix, and the prefix itself.
+ *
+ * Configuring an address from a router advertisement and then ignoring the
+ * router that sent it leaves a host that can speak to its own link and
+ * nowhere else. Everything off-link needs a first hop, and for IPv6 that hop
+ * is this router -- resolved by neighbour discovery like any other neighbour,
+ * because it is one. Without it the transmit path looks up the destination
+ * itself in the neighbour cache, which for an address on another network no
+ * neighbour will ever answer for, so the flow waits forever rather than
+ * failing: exactly the symptom of an outbound connection that hangs. */
+static xaios_ip_addr_t g_ipv6_router;
+static uint64_t g_ipv6_router_valid_until_ns;
+static uint8_t g_ipv6_onlink_prefix[8];
+static uint32_t g_ipv6_onlink_prefix_valid;
+
+/* Whether an address is reachable without going through the router: our own
+   /64, or link-local, or multicast. Anything else is off-link. */
+static int network_ipv6_is_onlink(const xaios_ip_addr_t *address) {
+  if (address == 0 || address->family != XAIOS_IP_FAMILY_V6) return 0;
+  if (address->addr[0] == 0xfeU && (address->addr[1] & 0xc0U) == 0x80U) return 1;
+  if (address->addr[0] == 0xffU) return 1;
+  if (g_ipv6_onlink_prefix_valid == 0U) return 1;
+  for (uint32_t i = 0U; i < 8U; ++i) {
+    if (address->addr[i] != g_ipv6_onlink_prefix[i]) return 0;
+  }
+  return 1;
+}
+
+/* The address whose link-layer address a frame to `destination` should be
+   sent to. Itself when on-link, otherwise the default router. */
+static const xaios_ip_addr_t *network_ipv6_next_hop(
+    const xaios_ip_addr_t *destination, uint64_t now_ns) {
+  if (destination == 0) return destination;
+  if (network_ipv6_is_onlink(destination) != 0) return destination;
+  if (g_ipv6_router.family == XAIOS_IP_FAMILY_V6 &&
+      (g_ipv6_router_valid_until_ns == UINT64_MAX ||
+       now_ns < g_ipv6_router_valid_until_ns)) {
+    return &g_ipv6_router;
+  }
+  /* No router known. Returning the destination keeps the previous behaviour
+     -- the neighbour lookup fails and the frame is not sent -- rather than
+     inventing a hop that does not exist. */
+  return destination;
+}
 /* An address assigned by a DHCPv6 server rather than derived from a router
    advertisement. Kept apart from the SLAAC address because the two are not
    interchangeable: a lease is held on this host's behalf and has to be given
@@ -998,6 +1042,30 @@ static void network_ipv6_apply_router_advertisement(const uint8_t *frame,
   if (payload_len < 16U || payload_len > frame_len - XAIOS_ICMPV6_OFFSET) return;
 
   const uint8_t *icmpv6 = frame + XAIOS_ICMPV6_OFFSET;
+  /* The advertising router, taken from the frame's own source address, and
+     kept for as long as the Router Lifetime field says. A lifetime of zero
+     means "not a default router" and withdraws it. */
+  {
+    uint16_t router_lifetime_s = read_u16_be(icmpv6 + 6U);
+    if (router_lifetime_s != 0U) {
+      xaios_ip_addr_t router;
+      xaios_ip_addr_from_raw_ipv6(&router, frame + 22U);
+      uint64_t lifetime_ns =
+          (uint64_t)router_lifetime_s * UINT64_C(1000000000);
+      if (g_ipv6_router.family != XAIOS_IP_FAMILY_V6 ||
+          xaios_ip_addr_equal(&g_ipv6_router, &router) == 0) {
+        klog("network: IPv6 default router learned lifetime=%us\n",
+             (unsigned)router_lifetime_s);
+      }
+      g_ipv6_router = router;
+      g_ipv6_router_valid_until_ns =
+          lifetime_ns > UINT64_MAX - now_ns ? UINT64_MAX : now_ns + lifetime_ns;
+    } else if (g_ipv6_router.family == XAIOS_IP_FAMILY_V6) {
+      klog("network: IPv6 default router withdrawn (lifetime=0)\n");
+      g_ipv6_router.family = 0U; /* no family constant for "unset" */
+      g_ipv6_router_valid_until_ns = 0U;
+    }
+  }
   for (uint32_t offset = 16U; offset + 2U <= payload_len;) {
     uint32_t option_len = (uint32_t)icmpv6[offset + 1U] * 8U;
     if (option_len == 0U || option_len > payload_len - offset) return;
@@ -1021,6 +1089,13 @@ static void network_ipv6_apply_router_advertisement(const uint8_t *frame,
         }
         g_slaac_v6 = candidate;
         g_slaac_valid_until_ns = valid_until;
+        /* The /64 this address sits in is what "on-link" means here, so a
+           destination inside it is reached directly and everything else via
+           the router. */
+        for (uint32_t i = 0U; i < 8U; ++i) {
+          g_ipv6_onlink_prefix[i] = icmpv6[offset + 16U + i];
+        }
+        g_ipv6_onlink_prefix_valid = 1U;
         if (global != 0) {
           g_public_v6 = candidate;
           g_public_v6_valid_until_ns = valid_until;
@@ -1961,9 +2036,13 @@ static xaios_status_t network_stack_tcp_open_unlocked(const xaios_ip_addr_t *rem
   if (remote_addr->family == XAIOS_IP_FAMILY_V6) {
     uint8_t solicitation[128];
     uint64_t solicitation_length = 0U;
+    /* Solicit the first hop, not the far end. For an on-link peer they are
+       the same address; for anything else the far end is on somebody else's
+       network and no neighbour here will ever answer for it. */
     if (ndp_build_neighbor_solicitation(
             solicitation, &solicitation_length, g_local_mac,
-            &flow->local_addr, remote_addr) != XAIOS_OK ||
+            &flow->local_addr,
+            network_ipv6_next_hop(remote_addr, timer_now_ns())) != XAIOS_OK ||
         network_device_tx(solicitation, solicitation_length) != XAIOS_OK) {
       if (g_half_open_count > 0U) --g_half_open_count;
       release_tcp_flow(flow);
@@ -2491,8 +2570,19 @@ static void tcp_drain_pending(void) {
     if (!flow->remote_mac_valid) {
       if (flow->local_addr.family == XAIOS_IP_FAMILY_V6) {
         /* IPv6: use NDP cache for MAC resolution */
-        if (ndp_cache_lookup(&flow->remote_addr, flow->remote_mac) != XAIOS_OK) {
-          continue; /* MAC not yet resolved via NDP */
+        const xaios_ip_addr_t *hop =
+            network_ipv6_next_hop(&flow->remote_addr, timer_now_ns());
+        if (ndp_cache_lookup(hop, flow->remote_mac) != XAIOS_OK) {
+          /* Ask for it. An off-link destination resolves to the router, and
+             nothing else on this path would ever solicit the router. */
+          uint8_t solicitation[128];
+          uint64_t solicitation_length = 0U;
+          if (ndp_build_neighbor_solicitation(
+                  solicitation, &solicitation_length, g_local_mac,
+                  &flow->local_addr, hop) == XAIOS_OK) {
+            (void)network_device_tx(solicitation, solicitation_length);
+          }
+          continue; /* link-layer address not yet known */
         }
         flow->remote_mac_valid = 1;
       } else {
