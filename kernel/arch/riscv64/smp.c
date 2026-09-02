@@ -62,9 +62,19 @@ xaios_status_t smp_release_secondary_schedulers(void) {
   return XAIOS_ERR_UNSUPPORTED;
 }
 
+static xaios_cpu_state_t g_state;
+
 xaios_status_t smp_set_scheduling_enabled(uint32_t cpu_id, uint32_t enabled) {
-  (void)enabled;
-  return cpu_id == g_boot_hart ? XAIOS_OK : XAIOS_ERR_NOT_FOUND;
+  /* The value is recorded, which it was not: this discarded `enabled`, said
+     XAIOS_OK, and left the flag the scheduler reads at zero. The kernel duly
+     enabled scheduling, was told it had worked, and every tick then returned
+     without picking anything -- a scheduler that ran, held no lock, had three
+     runnable tasks, and chose none of them. A setter that reports success and
+     stores nothing is worse than one that fails. */
+  if (cpu_id != g_boot_hart) return XAIOS_ERR_NOT_FOUND;
+  __atomic_store_n(&g_state.scheduling_enabled, enabled == 0U ? 0U : 1U,
+                   __ATOMIC_RELEASE);
+  return XAIOS_OK;
 }
 
 void smp_self_test(void) {
@@ -92,10 +102,13 @@ uint32_t smp_hot_core_mask(void) { return 0U; }
 
 uint32_t smp_irq_isolated_mask(void) { return 0U; }
 
-static xaios_cpu_state_t g_state;
 
 const xaios_cpu_state_t *smp_cpu_state(uint32_t cpu_id) {
   if (cpu_id != g_boot_hart) return 0;
+  /* Fields refreshed here are the ones that describe the hart. Anything a
+     caller has set -- scheduling_enabled -- is left alone, because rebuilding
+     the whole structure on every read would undo the setter above on the very
+     next call. */
   g_state.cpu_id = g_boot_hart;
   g_state.online = 1U;
   /* mpidr is AArch64's identifier; the hart id is what means the same thing

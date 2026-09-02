@@ -89,6 +89,18 @@ static xaios_status_t validate_elf(const xaios_initramfs_file_t *file,
   }
 
   const elf64_ehdr_t *ehdr = (const elf64_ehdr_t *)file->base;
+  /* Said out loud, because the alternative is a boot that stops at "could not
+     load /init" with no reason given. A binary built for another architecture
+     is a well-formed ELF that fails one field, and it is by far the most
+     likely thing to be wrong when an initial filesystem and a kernel were
+     built separately -- exactly the case this rejected in silence. */
+  if (elf_magic_value(ehdr->ident) == ELF_MAGIC &&
+      ehdr->machine != XAIOS_ELF_MACHINE) {
+    klog("elf: %s is built for machine %u, this kernel runs %u\n",
+         file->path == 0 ? "(unnamed)" : file->path, ehdr->machine,
+         XAIOS_ELF_MACHINE);
+    return XAIOS_ERR_INVALID;
+  }
   if (elf_magic_value(ehdr->ident) != ELF_MAGIC || ehdr->ident[4] != 2 ||
       ehdr->ident[5] != 1 || ehdr->type != ET_EXEC ||
       ehdr->machine != XAIOS_ELF_MACHINE ||

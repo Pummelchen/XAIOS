@@ -361,6 +361,17 @@ static void klog_vformat(const char *fmt, va_list args) {
       klog_u64_width((uint64_t)va_arg(args, unsigned), 16, width, padding);
     } else if (*p == 'd') {
       klog_i64((int64_t)va_arg(args, int), width, padding);
+    } else if (*p == 'c') {
+      /* A single character, which this understood nowhere until a diagnostic
+         needed it. initramfs prints the four magic bytes it found when a
+         volume header does not validate, and without %c that line reported
+         the literal text %c%c%c%c -- the one message whose whole job was to
+         say what was actually on the disk said nothing at all. A format this
+         does not implement is not a missing feature, it is a diagnostic that
+         lies at exactly the moment it is read.
+         Promoted to int by the default argument promotions, so read as int. */
+      char c = (char)va_arg(args, int);
+      klog_char(c);
     } else if (*p == 'p') {
       klog_puts("0x");
       klog_u64((uint64_t)(uintptr_t)va_arg(args, void *), 16);
