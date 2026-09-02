@@ -1,3 +1,4 @@
+#include <xaios_engine/packed.h>
 #include <xaios/aarch64_sve.h>
 #include <xaios/vmm.h>
 #include <xaios/assert.h>
@@ -50,6 +51,12 @@ void aarch64_sve2_self_test(void) {
           (vector_bytes & (vector_bytes - 1U)) == 0U);
   kassert(aarch64_sve2_known_answer() == UINT64_C(7));
   g_aarch64_sve_enabled = vector_bytes;
-  klog("SVE2: arithmetic canary passed vector_bytes=%lu el0=enabled\n",
-       vector_bytes);
+  /* Tell the engine it may execute SVE at all. It will still refuse to use
+     the SVE kernel until that kernel has reproduced the scalar reference --
+     this only says the instructions will not trap. */
+  xaios_packed_declare_sve_supported(1);
+  klog("SVE2: arithmetic canary passed vector_bytes=%lu el0=enabled packed=%s\n",
+       vector_bytes,
+       xaios_packed_sve_available() != 0 ? "verified against scalar"
+                                         : "declined by differential check");
 }

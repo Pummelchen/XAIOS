@@ -635,6 +635,7 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   $KERNEL_BUILD_DIR/gic.o
   $KERNEL_BUILD_DIR/gic_its.o
   $KERNEL_BUILD_DIR/smp.o
+  $KERNEL_BUILD_DIR/engine_packed.o
   $KERNEL_BUILD_DIR/sve.o
   $KERNEL_BUILD_DIR/sve_canary.o
   $KERNEL_BUILD_DIR/virtio_transport_mmio.o
@@ -795,6 +796,11 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/gic.c" "$KERNEL_BUILD_DIR/gic.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/gic_its.c" "$KERNEL_BUILD_DIR/gic_its.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/smp.c" "$KERNEL_BUILD_DIR/smp.o"
+  # The packed engine, which until now was compiled for x86_64 only. The
+  # AArch64 kernel could not reach a packed kernel of any kind, so the NEON
+  # path in it had never been linked into a running system on this
+  # architecture -- and the SVE path could not have been.
+  compile_kernel_simd "$ROOT_DIR/engine/src/packed.c" "$KERNEL_BUILD_DIR/engine_packed.o"
   compile_kernel_simd "$ROOT_DIR/kernel/arch/aarch64/sve.c" "$KERNEL_BUILD_DIR/sve.o"
   compile_kernel_simd "$ROOT_DIR/kernel/arch/aarch64/sve_canary.S" "$KERNEL_BUILD_DIR/sve_canary.o"
 else
