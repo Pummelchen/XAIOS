@@ -303,6 +303,17 @@ def main() -> int:
         if not shutil.which(tool):
             raise SystemExit(f"required macOS client tool unavailable: {tool}")
 
+    # Discard the previous run's console before anything else can fail.
+    #
+    # This was cleared inside start_vm, which happens after the image build.
+    # So a build that failed -- a missing tool, a broken submodule, anything
+    # before the guest exists -- reported the *previous* run's boot underneath
+    # its error, and that boot ends at a healthy login prompt. A missing
+    # docker on PATH read as a guest fault for exactly this reason. Clearing
+    # it here means the console shown beside a failure is either this run's or
+    # visibly absent.
+    SERIAL.unlink(missing_ok=True)
+
     started = time.monotonic()
     result = "failed"
     failures: list[str] = []
@@ -376,7 +387,15 @@ def main() -> int:
     FUSION_BUILD.mkdir(parents=True, exist_ok=True)
     EVIDENCE.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if result != "passed":
-        print("Fusion guest closure failed:\n" + "\n".join(failures) + "\n" + serial_tail(), file=sys.stderr)
+        console = serial_tail()
+        print(
+            "Fusion guest closure failed:\n" + "\n".join(failures) + "\n"
+            + ("guest console (last 80 lines of this run):\n" + console
+               if console.strip()
+               else "no guest console: the failure is before the guest booted, "
+                    "so this is a host-side or build problem, not a guest one"),
+            file=sys.stderr,
+        )
         return 1
     print(
         "VMware Fusion guest closure passed: "
