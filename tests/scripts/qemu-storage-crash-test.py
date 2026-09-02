@@ -84,8 +84,24 @@ def boot_until(
         stop_process(process, hard)
     text = output.decode("utf-8", errors="replace")
     missing = [target for target in targets if target not in text]
+    # The whole boot, kept on disk, not just the end of it.
+    #
+    # This used to raise with the last four thousand characters and nothing
+    # else. The filesystem mounts early, so on a failed recovery every line
+    # explaining why had already scrolled out of that window by the time the
+    # guest reached a login prompt -- which is exactly the failure this gate
+    # exists to catch. B-23 sat undiagnosed behind it: the tail showed a
+    # machine booting perfectly, with no way to tell a volume that was refused
+    # from one that was silently reformatted.
+    BUILD.mkdir(parents=True, exist_ok=True)
+    failure_log = BUILD / "qemu-storage-crash-failure.log"
+    failure_log.write_text(text, encoding="utf-8")
+    mount_lines = [line for line in text.splitlines()
+                   if "xaibootfs:" in line or "formatting" in line]
     raise RuntimeError(
-        f"QEMU did not reach {missing}; serial tail:\n{text[-4000:]}"
+        f"QEMU did not reach {missing}; whole boot saved to {failure_log}\n"
+        f"filesystem lines from that boot:\n"
+        + "\n".join(mount_lines[-40:])
     )
 
 
