@@ -2,7 +2,7 @@ SHELL := /bin/sh
 HOST_CC ?= clang
 HOST_CFLAGS ?= -std=c99 -Wall -Wextra -Werror -pedantic
 
-.PHONY: all bootstrap test image image-qemu-test image-x86_64 image-x86_64-qemu-test image-libc-test qemu-libc-gate xapt-test xapt-repository qemu-xapt-gate engine-cli libc libc-check initfs-format-test vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-panic-capture vmware-fusion-boot-soak vmware-fusion-dry-run vz-harness vz-gate qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-numa-gate qemu-aarch64-sve2-gate qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-operations-closure qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-outbound-fragmentation-gate qemu-qualification-readiness qemu-dry-run qemu-smoke qemu-installed-disk-gate vm-packages vm-package-gate boot-media boot-media-gate qemu-setup-gate qemu-netboot-gate qemu-cluster-gate qemu-cluster-two-node-gate qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-crash-safety-gate qemu-write-ordering-gate qemu-storage-bench qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-freebsd-bidirectional-suite qemu-four-endpoint-network-suite qemu-parallel-network-load qemu-network-adversarial-gate qemu-local-console-gate qemu-keyboard-input-gate qemu-framebuffer-gate qemu-routing-prefix-gate qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc parser-fuzz compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test code-scanning-contract docs-check platform-neutrality-check doc-freshness-check production-source-audit qemu-baseline clean clean-persistent
+.PHONY: all bootstrap test image image-qemu-test image-x86_64 image-x86_64-qemu-test image-libc-test qemu-libc-gate xapt-test xapt-repository qemu-xapt-gate engine-cli libc libc-check initfs-format-test vmware-fusion-image vmware-fusion vmware-fusion-smoke riscv64 qemu-riscv64-gate vmware-fusion-panic-capture vmware-fusion-boot-soak vmware-fusion-dry-run vz-harness vz-gate qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-numa-gate qemu-aarch64-sve2-gate qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-operations-closure qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-outbound-fragmentation-gate qemu-qualification-readiness qemu-dry-run qemu-smoke qemu-installed-disk-gate vm-packages vm-package-gate boot-media boot-media-gate qemu-setup-gate qemu-netboot-gate qemu-cluster-gate qemu-cluster-two-node-gate qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-crash-safety-gate qemu-write-ordering-gate qemu-storage-bench qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-freebsd-bidirectional-suite qemu-four-endpoint-network-suite qemu-parallel-network-load qemu-network-adversarial-gate qemu-local-console-gate qemu-keyboard-input-gate qemu-framebuffer-gate qemu-routing-prefix-gate qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc parser-fuzz compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test code-scanning-contract docs-check platform-neutrality-check doc-freshness-check production-source-audit qemu-baseline clean clean-persistent
 .PHONY: firmware-profiles-check firmware-profile-macos-qemu-aarch64 firmware-profile-macos-vmware-fusion-aarch64 firmware-profile-intel-vps-qemu-x86_64 firmware-profiles qemu-x86_64-nvme-gate
 
 all: bootstrap image
@@ -52,6 +52,14 @@ vmware-fusion: vmware-fusion-image
 
 vmware-fusion-smoke:
 	python3 ./tests/scripts/vmware-fusion-smoke.py
+
+# RISC-V rv64gc bring-up. Boots via OpenSBI on the QEMU `virt` board rather
+# than UEFI, which is why it has its own build script and no boot medium.
+riscv64:
+	./scripts/build-riscv64.sh
+
+qemu-riscv64-gate: riscv64
+	python3 ./tests/scripts/qemu-riscv64-gate.py
 
 # Proves a panic on Fusion can be read, by causing one. Builds a kernel that
 # asserts on purpose, so it leaves a deliberately broken image in build/ --
@@ -497,11 +505,19 @@ qemu-full-os-rc:
 compile-check: libc
 	@mkdir -p build/compile-check/x86-kernel build/compile-check/x86-userspace
 	@failed=0; \
-	for f in $$(find kernel -name '*.c' ! -path '*/x86_64/*'); do \
+	for f in $$(find kernel -name '*.c' ! -path '*/x86_64/*' ! -path '*/riscv64/*'); do \
 	  clang --target=aarch64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
 	    -Wall -Wextra -Werror -Ikernel/include -Iengine/include \
 	    -Iengine/src -Iuserspace/include -Iuserspace/sshd -Ithird_party/bearssl/inc \
+	    -fsyntax-only "$$f" \
+	    || failed=$$((failed + 1)); \
+	done; \
+	for f in $$(find kernel/arch/riscv64 -name '*.c'); do \
+	  clang --target=riscv64-unknown-elf -std=c99 -ffreestanding \
+	    -fno-stack-protector -mno-relax -march=rv64gc -mabi=lp64d \
+	    -mcmodel=medany \
+	    -Wall -Wextra -Werror -pedantic -Ikernel/include -Iengine/include \
 	    -fsyntax-only "$$f" \
 	    || failed=$$((failed + 1)); \
 	done; \
@@ -513,7 +529,7 @@ compile-check: libc
 	    || failed=$$((failed + 1)); \
 	done; \
 	for f in $$(find kernel -name '*.c' ! -path '*/arch/aarch64/*' \
-	    ! -path '*/arch/x86_64/*'); do \
+	    ! -path '*/arch/x86_64/*' ! -path '*/arch/riscv64/*'); do \
 	  object=build/compile-check/x86-kernel/$$(printf '%s' "$$f" | tr / _).o; \
 	  clang --target=x86_64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie -mno-red-zone \

@@ -1,6 +1,6 @@
 # Project Tracker
 
-Last reviewed: 2026-09-02.
+Last reviewed: 2026-09-03.
 
 The current QEMU closure revision passes hosted, AArch64/x86_64 smoke, libc,
 dual-architecture all-queue NVMe interrupt, SVE2 per-task context, x86 HMAT/

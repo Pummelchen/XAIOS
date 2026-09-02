@@ -19,6 +19,7 @@ RUNTIME_SCRIPTS = {
     "build-compiler-rt.sh",
     "build-image-x86_64.sh",
     "build-image.sh",
+    "build-riscv64.sh",
     "build-unified-image.sh",
     "build-release.sh",
     "build-user-app.sh",
