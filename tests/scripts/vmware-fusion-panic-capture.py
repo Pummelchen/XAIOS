@@ -53,7 +53,11 @@ def required_parts(console: str) -> list[str]:
     for label, marker in (
         ("cyan screen banner", "CYAN SCREEN OF DEATH"),
         ("the assertion and its expression", "assertion failed: 0 == 1"),
-        ("the kernel load base", "load base 0x"),
+        # Not "load base 0x": the kernel prints that on every ordinary boot
+        # now, so matching it reported the load base as present on a guest
+        # that had never panicked at all. The resolver line is printed only
+        # by the panic path.
+        ("the panic's own load base line", "resolve with: tests/scripts/resolve-panic.py"),
         ("a stack backtrace", "--- Stack Backtrace ---"),
         ("the replayed kernel log", "--- Recent Kernel Log ---"),
         ("the halt line", "System halted"),
@@ -95,13 +99,22 @@ def resolve_like_an_operator(console: str) -> tuple[str, str]:
 def main() -> int:
     environment = os.environ.copy()
     environment["XAIOS_PANIC_SELFTEST"] = "1"
-    build = subprocess.run(["./platform/vmware-fusion/build-vmware-fusion.sh"],
-                           cwd=ROOT, env=environment, text=True,
-                           capture_output=True, timeout=1800)
-    if build.returncode != 0:
-        print("build failed:\n" + build.stdout[-2000:] + build.stderr[-2000:],
-              file=sys.stderr)
-        return 2
+    # The kernel has to be built here, first.
+    #
+    # build-vmware-fusion.sh only packages what is already in build/ -- it
+    # refuses outright if the artifacts are missing and tells you to run
+    # `make image`. Handing it XAIOS_PANIC_SELFTEST therefore did nothing
+    # whatsoever, and the first run of this gate boxed up an ordinary kernel,
+    # booted it to a login prompt, and reported no panic. Which was the right
+    # answer to the question it asked, and not the question intended.
+    for step in (["./scripts/build-image.sh"],
+                 ["./platform/vmware-fusion/build-vmware-fusion.sh"]):
+        build = subprocess.run(step, cwd=ROOT, env=environment, text=True,
+                               capture_output=True, timeout=1800)
+        if build.returncode != 0:
+            print(f"{step[0]} failed:\n"
+                  + build.stdout[-2000:] + build.stderr[-2000:], file=sys.stderr)
+            return 2
 
     if smoke.vm_running():
         smoke.vmrun(["stop", str(smoke.VMX), "hard"], check=False)
@@ -151,8 +164,9 @@ def main() -> int:
                   "and kernel log, and a frame resolves to a function name"),
     }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    print("fusion-panic-capture: the panic is diagnosable on Fusion -- "
-          f"{provenance} resolves to {function}")
+    print("fusion-panic-capture: the panic is diagnosable on Fusion --\n"
+          f"  {function}\n"
+          f"{provenance}")
     return 0
 
 

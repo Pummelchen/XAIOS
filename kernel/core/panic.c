@@ -339,6 +339,7 @@ static void render_sys_regs(uint64_t elr, uint64_t esr, uint64_t far,
 }
 
 extern char __kernel_start[];
+extern char __kernel_end[];
 
 static void render_backtrace(const uint64_t *trace, uint32_t depth) {
   panic_puts("  --- Stack Backtrace ---\r\n");
@@ -364,12 +365,37 @@ static void render_backtrace(const uint64_t *trace, uint32_t depth) {
   panic_u64_hex((uint64_t)(uintptr_t)__kernel_start);
   panic_puts("\r\n  resolve with: tests/scripts/resolve-panic.py "
              "(paste this panic on stdin)\r\n");
+  /* Stop at the first frame that is not in this kernel.
+     A frame-pointer walk that leaves the kernel stack does not find the
+     caller, it finds whatever words are lying there. On Fusion that is
+     firmware memory, and a deliberate assertion in kmain produced sixteen
+     frames of which two were real and fourteen were residue -- printed with
+     the same formatting and the same authority as the two that meant
+     something. The one recorded occurrence of B-15 was fifteen addresses,
+     which is what that looks like when nobody can tell which is which.
+     The count of what was dropped is printed, because silently showing two
+     frames where sixteen were captured would be its own kind of lie. */
+  uint64_t low = (uint64_t)(uintptr_t)__kernel_start;
+  uint64_t high = (uint64_t)(uintptr_t)__kernel_end;
+  uint32_t shown = 0;
   for (uint32_t i = 0; i < depth; ++i) {
+    if (trace[i] < low || trace[i] >= high) break;
     panic_puts("  #");
     panic_u32(i);
     panic_puts("  ");
     panic_u64_hex(trace[i]);
     panic_puts("\r\n");
+    ++shown;
+  }
+  if (shown < depth) {
+    panic_puts("  (");
+    panic_u32(depth - shown);
+    panic_puts(" further frames captured, outside this kernel: stack residue "
+               "past the end of the call chain, not callers)\r\n");
+  }
+  if (shown == 0) {
+    panic_puts("  (no frame was inside this kernel: the frame pointer was "
+               "not usable here)\r\n");
   }
   panic_puts("\r\n");
 }
