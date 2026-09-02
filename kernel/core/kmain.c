@@ -536,6 +536,22 @@ void kmain(const xaios_boot_info_t *boot) {
   vmm_self_test();
   boot_ui_update(45U, "memory management", "devices and storage", 3U);
 
+#if defined(XAIOS_PANIC_SELFTEST)
+  /* A deliberate assertion, so the panic path can be proven on the machine
+     where it matters rather than argued about.
+     B-15 fired once on VMware Fusion and left fifteen stack addresses and
+     nothing else. The panic screen was then taught to print the kernel's
+     load base and to replay the end of the log ring, which together turn
+     those addresses back into function names and say what the kernel was
+     doing. None of that had ever been exercised on Fusion -- only reasoned
+     about -- and a diagnostic that has never run is not evidence.
+     Placed here on purpose: late enough that the console, the framebuffer
+     and the log ring all exist, so the panic goes out over the serial line
+     and to the cyan screen exactly as the real one did. Compiled out of
+     every build that does not ask for it. */
+  kassert(0 == 1);
+#endif
+
   /* Map architecture interrupt/IOMMU resources and initialize. */
 #if defined(__aarch64__)
   map_mmio_range(XAIOS_SMMU_MMIO_BASE, 0x10000);

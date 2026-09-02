@@ -519,6 +519,18 @@ case "${XAIOS_FAULT_TEST:-}" in
     ;;
 esac
 
+case "${XAIOS_PANIC_SELFTEST:-}" in
+  "") ;;
+  1)
+    KERNEL_CFLAGS="$KERNEL_CFLAGS -DXAIOS_PANIC_SELFTEST=1"
+    ;;
+  *)
+    printf '%s\n' \
+      "error: XAIOS_PANIC_SELFTEST must be unset or 1, got ${XAIOS_PANIC_SELFTEST}" >&2
+    exit 2
+    ;;
+esac
+
 case "${XAIOS_STORAGE_CRASH_POINT:-}" in
   "") ;;
   system-backup-flushed)

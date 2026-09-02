@@ -348,11 +348,22 @@ static void render_backtrace(const uint64_t *trace, uint32_t depth) {
      different address every boot and a bare address means nothing without
      this. An intermittent fault on VMware Fusion was recorded exactly once,
      as fifteen addresses and no base, and could not be turned back into
-     function names at all. Subtract this from an address and give the result
-     to llvm-symbolizer against kernel.elf. */
+     function names at all.
+
+     This used to say "subtract from the addresses below" and to name
+     llvm-symbolizer, and both halves were wrong -- which was found by
+     causing a panic and following the instruction, not by reading it.
+     Subtracting alone gives an offset from the start of the image, while
+     kernel.elf is linked at 0x90000000, so the result lands nowhere. And
+     the kernel is built without DWARF, so llvm-symbolizer answers "??" even
+     when handed the right address. The one operation that works is
+     runtime - load_base + link_base, resolved against the ELF symbol table.
+     Rather than ask an operator to know that, the line below names the
+     script that does it. */
   panic_puts("  load base ");
   panic_u64_hex((uint64_t)(uintptr_t)__kernel_start);
-  panic_puts("  (subtract from the addresses below)\r\n");
+  panic_puts("\r\n  resolve with: tests/scripts/resolve-panic.py "
+             "(paste this panic on stdin)\r\n");
   for (uint32_t i = 0; i < depth; ++i) {
     panic_puts("  #");
     panic_u32(i);
