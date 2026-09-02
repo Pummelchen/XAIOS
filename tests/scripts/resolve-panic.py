@@ -74,6 +74,32 @@ def link_base(table: list[tuple[int, str]]) -> int:
     return table[0][0]
 
 
+def elf_machine(kernel: Path) -> str:
+    tool = shutil.which("llvm-readelf") or shutil.which("readelf")
+    if not tool:
+        return ""
+    result = subprocess.run([tool, "-h", str(kernel)], text=True,
+                            capture_output=True, timeout=60)
+    for line in result.stdout.splitlines():
+        if line.strip().startswith("Machine:"):
+            value = line.split(":", 1)[1].strip()
+            if "AArch64" in value:
+                return "aarch64"
+            if "X86-64" in value or "x86-64" in value:
+                return "x86_64"
+            return value
+    return ""
+
+
+def panic_machine(text: str) -> str:
+    """Which architecture produced this panic, read off its register dump."""
+    if "ELR_EL1" in text or "CurrentEL" in text:
+        return "aarch64"
+    if "RFLAGS" in text or "RIP      =" in text:
+        return "x86_64"
+    return ""
+
+
 def resolve(vma: int, table: list[tuple[int, str]]) -> str | None:
     best = None
     for address, name in table:
@@ -82,6 +108,8 @@ def resolve(vma: int, table: list[tuple[int, str]]) -> str | None:
         else:
             break
     if best is None or vma - best[0] >= MAX_FUNCTION_SPAN:
+        return None
+    if vma < table[0][0] or vma > table[-1][0] + MAX_FUNCTION_SPAN:
         return None
     return f"{best[1]}+0x{vma - best[0]:x}"
 
@@ -117,8 +145,34 @@ def main() -> int:
     if not frames:
         raise SystemExit("no backtrace frames found in that text")
 
+    # Refuse a kernel that cannot be the one that panicked.
+    #
+    # Checked because the negative control caught this script resolving an
+    # AArch64 panic against the x86_64 kernel and reporting, with no hedging
+    # whatsoever, "boot_ui_update+0x63". Names arrive whether or not they
+    # mean anything: every address lands somewhere in some symbol table, so
+    # a wrong build does not fail, it lies. For a bug whose entire remaining
+    # evidence is a backtrace, that is worse than returning nothing.
+    #
+    # Architecture is the one mismatch detectable from a panic alone -- the
+    # kernel embeds no build identifier, so a same-architecture build from a
+    # different commit still resolves to confident nonsense. Hence the
+    # warning as well as the check.
+    from_panic = panic_machine(text)
+    from_elf = elf_machine(arguments.kernel)
+    if from_panic and from_elf and from_panic != from_elf:
+        raise SystemExit(
+            f"this panic came from {from_panic} but {arguments.kernel} is "
+            f"{from_elf}. Every address resolves to some symbol in some "
+            f"table, so continuing would print names that look right and are "
+            f"not. Pass --kernel for the build that panicked.")
+
     table = symbols(arguments.kernel)
     linked = link_base(table)
+    print("note: nothing in a panic identifies which build produced it, so "
+          "check that this kernel.elf is the one that was running -- a "
+          "different build of the same architecture resolves to plausible "
+          "nonsense.", file=sys.stderr)
 
     print(f"load base 0x{base:x}, kernel.elf linked at 0x{linked:x}, "
           f"{len(frames)} frames")
