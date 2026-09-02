@@ -154,6 +154,86 @@ int main(void) {
   assert(fsck.valid == 1U && fsck.errors == 0U);
   assert(fsck.version == 6U);
 
+  /* Rename the directory holding all 401 of them.
+   *
+   * This is the case that never existed: every rename test in the suite ran
+   * on a v5 volume, so the staging table `rename_node` walks was only ever
+   * indexed to 256. On v6 it walks 1024 rows of a table sized for 256 --
+   * 191 KiB past the end, into whatever .bss follows. Renaming a directory
+   * with entries above row 256 is what makes the walk reach that far with
+   * real work to do rather than just clearing.
+   *
+   * Renamed back afterwards so the sections below still find /state. */
+  assert(xaiboot_fs_rename("/state", "/moved") == XAIOS_OK);
+  for (uint32_t i = 0U; i < 400U; ++i) {
+    snprintf(path, sizeof(path), "/moved/f%u", i);
+    uint32_t value = 0U;
+    uint64_t got = 0U;
+    assert(xaiboot_fs_read(path, &value, sizeof(value), &got) == XAIOS_OK);
+    assert(got == sizeof(value));
+    assert(value == i * 2654435761U);
+    snprintf(path, sizeof(path), "/state/f%u", i);
+    assert(xaiboot_fs_read(path, &value, sizeof(value), &got) != XAIOS_OK);
+  }
+  fsck = xaiboot_fs_fsck();
+  assert(fsck.valid == 1U && fsck.errors == 0U);
+  assert(xaiboot_fs_rename("/moved", "/state") == XAIOS_OK);
+  for (uint32_t i = 0U; i < 400U; ++i) {
+    snprintf(path, sizeof(path), "/state/f%u", i);
+    uint32_t value = 0U;
+    uint64_t got = 0U;
+    assert(xaiboot_fs_read(path, &value, sizeof(value), &got) == XAIOS_OK);
+    assert(value == i * 2654435761U);
+  }
+  assert(xaiboot_fs_read("/state/large.bin", read_back, large, &out) ==
+         XAIOS_OK);
+  assert(out == large);
+  fsck = xaiboot_fs_fsck();
+  assert(fsck.valid == 1U && fsck.errors == 0U);
+  assert(fsck.version == 6U);
+  printf("xaibootfs-v6: renamed a directory holding 401 nodes across the "
+         "full 1024-row table, both ways, contents intact\n");
+
+  /* A torn primary on a v6 volume must fall back to the mirror.
+   *
+   * The equivalent case for v5 lives in test_xaiboot_fs_mirror.c and has
+   * always passed. This one is v6, and it is B-23: the mirror sits
+   * immediately after the data region, so its sector follows from the format
+   * -- 12546 on v5, 2102786 on v6 -- and the fallback that runs when the
+   * primary cannot be read assumed v5. On a v6 volume that looked for the
+   * second copy in an ordinary data block, found nothing, and refused a
+   * volume that was intact. Writes alternate slots, so it happened whenever a
+   * power cut damaged the primary rather than the mirror: about half of them.
+   *
+   * The sector arithmetic is written out rather than hardcoded, because a
+   * constant would still pass if the geometry moved. */
+  xaiboot_fs_unmount();
+  assert(xaiboot_fs_mount_device("/dev/v6disk") == XAIOS_OK);
+  assert(xaiboot_fs_write("/state/durable.txt", "durable", 7U) == XAIOS_OK);
+  assert(xaiboot_fs_commit("v6-mirror") == XAIOS_OK);
+  /* Several writes, so both slots hold real images and the tear below cannot
+     land on a copy that was never written. */
+  for (uint32_t i = 0U; i < 4U; ++i) {
+    assert(xaiboot_fs_write("/state/durable.txt", "durable", 7U) == XAIOS_OK);
+  }
+  xaiboot_fs_unmount();
+
+  const uint64_t v6_primary_start = 3072U;
+  const uint64_t v6_mirror_start = 3072U + 2560U + 2U + 2097152U;
+  for (uint32_t i = 0U; i < 8U; ++i) {
+    memset(g_disk + (v6_primary_start + i) * SECTOR, 0xA5, SECTOR);
+  }
+  assert(xaiboot_fs_mount_device("/dev/v6disk") == XAIOS_OK);
+  char durable[16];
+  uint64_t durable_bytes = 0U;
+  assert(xaiboot_fs_read("/state/durable.txt", durable, sizeof(durable),
+                         &durable_bytes) == XAIOS_OK);
+  assert(durable_bytes == 7U && memcmp(durable, "durable", 7U) == 0);
+  fsck = xaiboot_fs_fsck();
+  assert(fsck.version == 6U);
+  printf("xaibootfs-v6: torn primary recovered from the mirror at sector "
+         "%llu, contents intact\n", (unsigned long long)v6_mirror_start);
+
   /* And the case that matters more than any of the above: a volume too small
      for v6 is still formatted, mounted and written as v5. Nothing that exists
      today changes format, and a v5 volume stays readable by a kernel that has

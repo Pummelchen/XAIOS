@@ -298,7 +298,27 @@ static uint64_t g_metadata_mirror_recoveries;
 static uint8_t g_metadata_buffer[XBFS_V6_METADATA_SECTORS * XBFS_SECTOR_SIZE];
 static xaios_spinlock_t g_xaiboot_fs_lock = XAIOS_SPINLOCK_INIT;
 static uint8_t g_file_buffer[XBFS_V5_MAX_FILE_BYTES];
-static char g_path_transaction[XBFS_V5_MAX_NODES][XBFS_PATH_MAX];
+/* Sized for the largest format, not for the one that existed when it was
+   written. `rename_node` walks `g_active_max_nodes`, which v6 raised to 1024
+   while this stayed at v5's 256 -- so a rename on a v6 volume cleared and
+   read back rows 256 through 1023, running 191 KiB past a 64 KiB array. That
+   is the same mistake `write_limit` exists to prevent for `g_file_buffer`,
+   made once more here and missed because no v6 volume in any test had ever
+   been renamed on.
+
+   Sized rather than clamped, because clamping is wrong for this one: a rename
+   that skips the nodes past the limit leaves them holding paths under a
+   directory that no longer exists, which is worse than refusing. */
+static char g_path_transaction[XBFS_V6_MAX_NODES][XBFS_PATH_MAX];
+
+/* Every format's node count has to fit, so a future one cannot quietly
+   reintroduce the overflow by raising the maximum alone. */
+typedef char xbfs_path_transaction_fits
+    [(XBFS_V6_MAX_NODES >= XBFS_V5_MAX_NODES &&
+      XBFS_V6_MAX_NODES >= XBFS_V4_MAX_NODES &&
+      XBFS_V6_MAX_NODES >= XBFS_MAX_NODES)
+         ? 1
+         : -1];
 
 static uint32_t g_active_metadata_sectors = XBFS_METADATA_SECTORS;
 static uint32_t g_active_max_nodes = XBFS_MAX_NODES;
@@ -1066,21 +1086,52 @@ static xaios_status_t read_metadata(void) {
   uint32_t chosen;
   usable[0] = metadata_slot_probe(0U, &sequence[0]);
   if (g_metadata_mirror_enabled != 0U) {
-    /* The mirror's position depends on the geometry, which normally comes
-       from the primary. A torn primary is exactly the case this exists for,
-       and its version field is unreadable then, so assume the only layout
-       that ever has a mirror rather than giving up on the copy that is
-       still intact. */
-    if (usable[0] == 0) set_active_v5();
-    /* v5 and v6 both keep a mirror, and both must be probed. Checking only
-       for v5 meant a v6 volume never looked at its second copy -- and since
-       writes alternate slots, the reader took the older one every time and
-       the volume came back exactly one write behind. One file short after a
-       remount, with fsck reporting no errors, because nothing was wrong with
-       what it read: it was simply the wrong copy. */
-    if (g_active_version == XBFS_V5_VERSION ||
-        g_active_version == XBFS_V6_VERSION) {
-      usable[1] = metadata_slot_probe(1U, &sequence[1]);
+    if (usable[0] != 0) {
+      /* The primary read, so the geometry it declares is the volume's, and
+         the mirror is where that geometry says. v5 and v6 both keep one, and
+         both must be probed: checking only for v5 meant a v6 volume never
+         looked at its second copy, and since writes alternate slots the
+         reader took the older one every time -- one file short after a
+         remount, with fsck reporting no errors, because nothing was wrong
+         with what it read. It was simply the wrong copy. */
+      if (g_active_version == XBFS_V5_VERSION ||
+          g_active_version == XBFS_V6_VERSION) {
+        usable[1] = metadata_slot_probe(1U, &sequence[1]);
+      }
+    } else {
+      /* A torn primary is the case the mirror exists for, and it is exactly
+         the case where the volume cannot say what shape it is: the version
+         lives in the copy that is unreadable. The mirror sits immediately
+         after the data region, so its sector follows from the format --
+         sector 12546 on v5, 2102786 on v6 -- and guessing wrong reads an
+         ordinary data block and concludes the volume has no second copy.
+
+         This used to assume v5, which was true when v5 was the only format
+         with a mirror and silently wrong afterwards: a v6 volume with a torn
+         primary was refused while intact, about half the time a power cut
+         landed on the wrong slot, because writes alternate.
+
+         So each layout the device is large enough to hold is tried, largest
+         first. Trying rather than deducing is deliberate -- a probe verifies
+         a checksum over the region it read, so a layout that is not there
+         fails to probe rather than being mistaken for one that is. */
+      static const uint32_t k_mirror_layouts[] = {XBFS_V6_VERSION,
+                                                  XBFS_V5_VERSION};
+      uint64_t capacity = blk_capacity();
+      for (uint32_t i = 0U;
+           i < sizeof(k_mirror_layouts) / sizeof(k_mirror_layouts[0]); ++i) {
+        if (k_mirror_layouts[i] == XBFS_V6_VERSION) {
+          set_active_v6();
+        } else {
+          set_active_v5();
+        }
+        if (capacity <
+            metadata_mirror_start_sector() + g_active_metadata_sectors) {
+          continue; /* the device is too small to hold this layout's mirror */
+        }
+        usable[1] = metadata_slot_probe(1U, &sequence[1]);
+        if (usable[1] != 0) break;
+      }
     }
   }
   if (usable[0] == 0 && usable[1] == 0) {
@@ -3156,6 +3207,10 @@ void xaiboot_fs_self_test(void) {
      nothing here. The probe that follows works at whatever the binding limit
      is. */
   kassert(write_limit() <= (uint64_t)sizeof(g_file_buffer));
+  /* The same question for the rename staging table, which walks every node
+     the active format allows. */
+  kassert((uint64_t)g_active_max_nodes <=
+          (uint64_t)(sizeof(g_path_transaction) / sizeof(g_path_transaction[0])));
   {
     int64_t guard_fd = xaiboot_fs_open("/state/overflow-guard",
                                        XAIOS_XBFS_OPEN_WRITE |
