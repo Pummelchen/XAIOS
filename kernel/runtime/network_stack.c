@@ -357,6 +357,43 @@ static uint64_t g_public_v6_valid_until_ns;
    network still has working IPv6 within it, so this is what packets are sent
    from; g_public_v6 stays reserved for genuinely global addresses. */
 static xaios_ip_addr_t g_slaac_v6;
+
+/* Answer from the address that was asked for.
+ *
+ * An ICMPv6 reply and a neighbour advertisement both have to be sourced from
+ * the address the peer addressed, not from whichever address the stack
+ * happens to keep first. RFC 4861 is explicit for the solicited
+ * advertisement -- its source is the solicited target -- and a host that
+ * asked about a global address discards an advertisement arriving from a
+ * link-local one, because as far as it can tell that answer is about a
+ * different machine. Ping behaves the same way: a reply from an address the
+ * request was not sent to does not match the request.
+ *
+ * That is why this guest could hold a globally routable address and still be
+ * unreachable on it. It replied, correctly formed, from the wrong address,
+ * every time. Returns the matching local address, or the link-local one when
+ * the peer asked about something that is not ours to answer for. */
+static const xaios_ip_addr_t *local_ipv6_for(const xaios_ip_addr_t *wanted) {
+  if (wanted != 0) {
+    if (xaios_ip_addr_equal(wanted, &g_link_local_v6) != 0) {
+      return &g_link_local_v6;
+    }
+    if (g_slaac_v6.family == XAIOS_IP_FAMILY_V6 &&
+        xaios_ip_addr_equal(wanted, &g_slaac_v6) != 0) {
+      return &g_slaac_v6;
+    }
+    /* Checked as well as the SLAAC address, not instead of it. The two hold
+       the same value when a router advertisement carries a globally routable
+       prefix, but they are set independently -- a DHCPv6 lease reaches
+       g_public_v6 without going near g_slaac_v6 -- and an address this stack
+       answers on is one it must answer *from*. */
+    if (g_public_v6.family == XAIOS_IP_FAMILY_V6 &&
+        xaios_ip_addr_equal(wanted, &g_public_v6) != 0) {
+      return &g_public_v6;
+    }
+  }
+  return &g_link_local_v6;
+}
 static uint64_t g_slaac_valid_until_ns;
 /* An address assigned by a DHCPv6 server rather than derived from a router
    advertisement. Kept apart from the SLAAC address because the two are not
@@ -5204,7 +5241,8 @@ static void network_poll_tick_locked(void) {
             uint8_t reply_buf[NETWORK_BUFFER_SIZE];
             uint64_t reply_len = 0;
             if (icmpv6_build_echo_reply(reply_buf, &reply_len, g_local_mac,
-                                         rx_buf + 6, &g_link_local_v6,
+                                         rx_buf + 6,
+                                         local_ipv6_for(&echo_dst),
                                          &echo_src, rx_buf,
                                          frame_len) == XAIOS_OK) {
               network_device_tx(reply_buf, reply_len);
@@ -5216,7 +5254,7 @@ static void network_poll_tick_locked(void) {
           xaios_ip_addr_t ns_target;
           xaios_ip_addr_from_raw_ipv6(&ns_target, rx_buf + XAIOS_ICMPV6_OFFSET + 8);
           /* Build NA: source = our link-local, dest = NS source */
-          xaios_ip_addr_t na_src = g_link_local_v6;
+          xaios_ip_addr_t na_src = *local_ipv6_for(&ns_target);
           xaios_ip_addr_t na_dst;
           xaios_ip_addr_from_raw_ipv6(&na_dst, rx_buf + 22); /* IPv6 src */
           uint8_t na_frame[128];
