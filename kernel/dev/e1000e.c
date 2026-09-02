@@ -44,6 +44,24 @@
 #define E1000_CTRL_RST UINT32_C(0x04000000)
 #define E1000_RCTL_EN UINT32_C(0x00000002)
 #define E1000_RCTL_BAM UINT32_C(0x00008000)
+/* Multicast Promiscuous Enable.
+ *
+ * Without it this receiver took unicast and broadcast and nothing else, and
+ * the multicast table it would otherwise be filtered by is empty, so every
+ * multicast frame was dropped in the NIC. IPv4 never noticed: DHCP is
+ * broadcast. IPv6 is multicast almost everywhere it matters -- a router
+ * advertisement goes to ff02::1 and arrives as 33:33:00:00:00:01, a DHCPv6
+ * reply to ff02::1:2, and neighbour solicitation to the solicited-node group
+ * -- so the guest sent router solicitations onto a network that answered
+ * them and never saw a single reply. That is what "no usable IPv6 prefix
+ * after 3 solicitations" was reporting: not a network without IPv6, and not
+ * a hypervisor limitation, but a receive filter that discarded the answer.
+ *
+ * Promiscuous for multicast rather than a programmed table because the set
+ * of groups this host needs is not static -- every address it configures
+ * adds a solicited-node group -- and a table that is a subset of what the
+ * stack has joined drops frames for reasons no layer above can see. */
+#define E1000_RCTL_MPE UINT32_C(0x00000010)
 #define E1000_RCTL_SECRC UINT32_C(0x04000000)
 #define E1000_TCTL_EN UINT32_C(0x00000002)
 #define E1000_TCTL_PSP UINT32_C(0x00000008)
@@ -225,7 +243,8 @@ static xaios_status_t configure_controller(void) {
   write32(E1000_REG_TCTL, E1000_TCTL_EN | E1000_TCTL_PSP |
                                 (UINT32_C(0x10) << 4U) |
                                 (UINT32_C(0x40) << 12U));
-  write32(E1000_REG_RCTL, E1000_RCTL_EN | E1000_RCTL_BAM | E1000_RCTL_SECRC);
+  write32(E1000_REG_RCTL,
+          E1000_RCTL_EN | E1000_RCTL_BAM | E1000_RCTL_MPE | E1000_RCTL_SECRC);
   write32(E1000_REG_CTRL, read32(E1000_REG_CTRL) | E1000_CTRL_SLU |
                                E1000_CTRL_ASDE);
   return XAIOS_OK;
