@@ -147,6 +147,31 @@ static void capture_gp_regs(uint64_t *r) {
   __asm__ volatile("mov %%r14, %0" : "=m"(r[13]));
   __asm__ volatile("mov %%r15, %0" : "=m"(r[14]));
   __asm__ volatile("mov %%rsp, %0" : "=m"(r[31]));
+#elif defined(__riscv)
+  /* The caller-visible integer registers, by name rather than by number.
+     RISC-V has no instruction that spills them as a block, so each is moved
+     individually -- which is also why only the ones a backtrace or a fault
+     report actually uses are captured, rather than all thirty-two. */
+  __asm__ volatile("sd ra, 0(%0)\n\t"
+                   "sd sp, 8(%0)\n\t"
+                   "sd gp, 16(%0)\n\t"
+                   "sd tp, 24(%0)\n\t"
+                   "sd t0, 32(%0)\n\t"
+                   "sd t1, 40(%0)\n\t"
+                   "sd t2, 48(%0)\n\t"
+                   "sd s0, 56(%0)\n\t"
+                   "sd s1, 64(%0)\n\t"
+                   "sd a0, 72(%0)\n\t"
+                   "sd a1, 80(%0)\n\t"
+                   "sd a2, 88(%0)\n\t"
+                   "sd a3, 96(%0)\n\t"
+                   "sd a4, 104(%0)\n\t"
+                   "sd a5, 112(%0)\n\t"
+                   "sd a6, 120(%0)\n\t"
+                   "sd a7, 128(%0)"
+                   :
+                   : "r"(r)
+                   : "memory");
 #else
 #error "Unsupported XAIOS panic architecture"
 #endif
@@ -172,6 +197,19 @@ static void capture_sys_regs(uint64_t *elr, uint64_t *esr, uint64_t *far,
   __asm__ volatile("pushfq; popq %0" : "=r"(*spsr));
   __asm__ volatile("mov %%rsp, %0" : "=r"(*sp_el0));
   *current_el = 0U;
+#elif defined(__riscv)
+  /* The supervisor CSRs that carry the same meaning under different names:
+     sepc is where the fault happened, scause why, stval the address or value
+     it faulted on, and sstatus the mode it happened in. Mapped onto the
+     AArch64 names the renderer already prints, because inventing a fourth
+     vocabulary for the same four facts would help nobody reading a panic. */
+  __asm__ volatile("csrr %0, sepc" : "=r"(*elr));
+  __asm__ volatile("csrr %0, scause" : "=r"(*esr));
+  __asm__ volatile("csrr %0, stval" : "=r"(*far));
+  __asm__ volatile("csrr %0, sstatus" : "=r"(*spsr));
+  __asm__ volatile("mv %0, sp" : "=r"(*sp_el0));
+  /* Supervisor mode, which is the only mode this kernel runs in. */
+  *current_el = 1U;
 #else
 #error "Unsupported XAIOS panic architecture"
 #endif

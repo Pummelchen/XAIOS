@@ -1,29 +1,28 @@
-/* klog and panic for RISC-V, on top of SBI.
+/* The panic screen for RISC-V, on top of SBI.
  *
- * These two functions are the entire reason shared kernel code can run here
- * unmodified. `kernel/runtime/sha256.c` calls `klog` and `kassert` and
- * nothing else architectural; provide those against the console this machine
- * actually has and the same source file that runs on AArch64 and x86-64
- * compiles and runs on RISC-V with no edit. That is the platform-neutrality
- * rule stated as a test rather than as a claim -- and it is worth noting
- * which direction the test runs: it does not prove the rule holds
- * everywhere, only that a third architecture failed to contradict it.
+ * klog used to live here as well. It does not any more: kernel/core/klog.c
+ * drives a memory-mapped 16550 directly, which is exactly the console this
+ * board has, and the only thing keeping it from being used was a guard
+ * naming AArch64 where it meant "reaches its UART through memory". Using the
+ * shared logger brings the log ring with it, which is what a panic replays.
  *
- * The formatter is deliberately smaller than the real klog. It carries the
- * specifiers the shared code being exercised actually uses, and an unknown
- * one prints itself rather than being silently dropped, so a caller that
- * needs more finds out by reading the output instead of by wondering where
- * its argument went.
+ * The panic path stays here, and stays on SBI, for a reason worth stating: a
+ * panic has to print when the machine is already broken. Reaching for a lock
+ * or a ring buffer at that moment is how a panic becomes a hang, and an
+ * ecall to firmware needs neither.
  */
 #include <stdarg.h>
 #include <stdint.h>
 
 #include <xaios/riscv64_sbi.h>
 
-void klog(const char *fmt, ...);
 void panic_at(const char *file, int line, const char *fmt, ...)
     __attribute__((noreturn));
 
+/* Deliberately smaller than the real formatter: it carries the specifiers the
+   panic path uses, and an unknown one prints itself rather than being
+   silently dropped, so a caller that needs more finds out by reading the
+   output instead of wondering where its argument went. */
 static void emit(const char *fmt, va_list args) {
   if (fmt == 0) return;
   for (const char *p = fmt; *p != '\0'; ++p) {
@@ -63,20 +62,10 @@ static void emit(const char *fmt, va_list args) {
     } else if (*p == '%') {
       sbi_putchar('%');
     } else {
-      /* Unrecognised. Printed rather than eaten, because a specifier this
-         formatter does not know is a caller expecting something it will not
-         get, and silence is the worst way to report that. */
       sbi_putchar('%');
       sbi_putchar(*p);
     }
   }
-}
-
-void klog(const char *fmt, ...) {
-  va_list args;
-  va_start(args, fmt);
-  emit(fmt, args);
-  va_end(args);
 }
 
 void panic_at(const char *file, int line, const char *fmt, ...) {

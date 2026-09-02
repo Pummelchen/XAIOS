@@ -17,11 +17,14 @@
  * - Multiple quantization formats (FP32, FP16, INT8, INT4, Q8.8)
  */
 
-/* NEON SIMD support is selected only for AArch64 builds. */
+/* NEON where it exists; the scalar path everywhere else.
+   The guard used to refuse to compile on anything but AArch64 and x86-64,
+   which conflated "has a vector unit this file uses" with "is a supported
+   architecture". The scalar implementations below are complete and correct
+   on their own -- they are what the accelerated paths are checked against --
+   so an architecture without a vector backend here is slower, not unbuilt. */
 #if defined(__aarch64__)
 #include <arm_neon.h>
-#elif !defined(__x86_64__)
-#error "Unsupported XAIOS AI-kernel architecture"
 #endif
 
 typedef union xaios_float32_bits {

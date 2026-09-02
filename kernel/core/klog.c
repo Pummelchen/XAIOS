@@ -2,7 +2,21 @@
 #include <xaios/klog.h>
 #include <xaios/input.h>
 #include <xaios/boot_ui.h>
-#if defined(__aarch64__)
+/* Whether this architecture reaches its console through memory.
+ *
+ * The guards here used to say __aarch64__, which was true and named the wrong
+ * thing: what the code below actually depends on is a UART addressed through
+ * memory rather than through port I/O. x86-64 uses ports; AArch64 and RISC-V
+ * both use MMIO. Naming the capability instead of one architecture that has
+ * it is what let RISC-V use this file unchanged -- and is the rule this
+ * codebase claims to follow, applied to itself. */
+#if defined(__aarch64__) || defined(__riscv)
+#define XAIOS_KLOG_MMIO_UART 1
+#else
+#define XAIOS_KLOG_MMIO_UART 0
+#endif
+
+#if XAIOS_KLOG_MMIO_UART
 #include <xaios/klog_ring.h>
 #endif
 #include <xaios/spinlock.h>
@@ -27,7 +41,7 @@ typedef struct xaios_console_capture {
 } xaios_console_capture_t;
 
 static volatile uint32_t *g_uart_base;
-#if defined(__aarch64__)
+#if XAIOS_KLOG_MMIO_UART
 /* Which UART, and how far apart its registers sit. Only the AArch64 console
    reaches a UART through memory -- the x86 one uses port I/O and never reads
    either of these -- so they are declared where they are used. Current Clang
@@ -96,7 +110,7 @@ static void uart_putc(char c) {
     return;
   }
 
-#if defined(__aarch64__)
+#if XAIOS_KLOG_MMIO_UART
   if (g_uart_kind == XAIOS_UART_PL011) {
     for (uint32_t spin = 0U; spin < UINT32_C(1000000); ++spin) {
       if ((g_uart_base[PL011_UARTFR / 4] & PL011_UARTFR_TXFF) == 0U) break;
@@ -139,7 +153,7 @@ static void klog_char(char c) {
 
 static void klog_line_flush(void) {
   if (g_klog_line_pos > 0) {
-#if defined(__aarch64__)
+#if XAIOS_KLOG_MMIO_UART
     klog_ring_write(g_klog_line, g_klog_line_pos);
 #endif
     g_klog_line_pos = 0;
@@ -148,7 +162,7 @@ static void klog_line_flush(void) {
 
 void klog_init(const xaios_boot_info_t *boot) {
   g_uart_base = (volatile uint32_t *)(uintptr_t)boot->uart_base;
-#if defined(__aarch64__)
+#if XAIOS_KLOG_MMIO_UART
   g_uart_kind = boot->uart_kind;
   g_uart_reg_shift = boot->uart_reg_shift;
 #endif
@@ -225,7 +239,7 @@ int klog_console_read_char(uint8_t *value) {
   if (input_read_char(value)) return 1;
   if (g_console_source != 0 && g_console_source(value) != 0) return 1;
   if (g_uart_base == 0) return 0;
-#if defined(__aarch64__)
+#if XAIOS_KLOG_MMIO_UART
   if (g_uart_kind == XAIOS_UART_PL011) {
     if ((g_uart_base[PL011_UARTFR / 4] & PL011_UARTFR_RXFE) != 0U) return 0;
     *value = (uint8_t)g_uart_base[PL011_UARTDR / 4];
@@ -411,7 +425,7 @@ void klog_level(xaios_log_level_t level, const char *fmt, ...) {
 
   /* Flush ring immediately on panic */
   if (level == XAIOS_LOG_PANIC) {
-#if defined(__aarch64__)
+#if XAIOS_KLOG_MMIO_UART
     klog_flush();
 #endif
   }

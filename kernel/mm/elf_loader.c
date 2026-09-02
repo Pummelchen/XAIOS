@@ -14,10 +14,13 @@
 #define ET_EXEC UINT16_C(2)
 #define EM_AARCH64 UINT16_C(183)
 #define EM_X86_64 UINT16_C(62)
+#define EM_RISCV UINT16_C(243)
 #if defined(__aarch64__)
 #define XAIOS_ELF_MACHINE EM_AARCH64
 #elif defined(__x86_64__)
 #define XAIOS_ELF_MACHINE EM_X86_64
+#elif defined(__riscv)
+#define XAIOS_ELF_MACHINE EM_RISCV
 #else
 #error "Unsupported XAIOS ELF target architecture"
 #endif

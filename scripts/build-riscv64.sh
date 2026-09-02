@@ -56,6 +56,8 @@ compile "$ROOT_DIR/kernel/arch/riscv64/boot.c"
 # link. If these needed an edit to work here the neutrality rule would have
 # been contradicted rather than tested.
 compile "$ROOT_DIR/kernel/arch/riscv64/smp.c"
+compile "$ROOT_DIR/kernel/core/klog.c"
+compile "$ROOT_DIR/kernel/core/klog_ring.c"
 compile "$ROOT_DIR/kernel/mm/pmm.c"
 compile "$ROOT_DIR/kernel/mm/numa.c"
 compile "$ROOT_DIR/kernel/mm/kheap.c"
