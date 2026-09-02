@@ -4,6 +4,16 @@ This page records verified implementation gaps and explicit non-claims. It is
 kept consistent with current source and the QEMU release-candidate contract.
 Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 
+## Architectures
+
+AArch64 and x86_64 are the pair XAIOS runs as an operating system on. RISC-V
+(rv64gc) is a bring-up and not a third supported architecture: console, traps,
+Sv39 paging, the timer and shared kernel code are gated by
+`make qemu-riscv64-gate`, and SMP, PCI, VirtIO, storage, networking and
+userspace do not exist there. The guest prints that list itself so a clean boot
+cannot be read as support. It boots via OpenSBI rather than UEFI, so it has no
+boot medium and is not part of any released image.
+
 ## Platform and hardware
 
 - AArch64 QEMU provides the broadest complete OS-service path. QEMU validates

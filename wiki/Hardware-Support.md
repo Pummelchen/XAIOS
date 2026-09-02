@@ -6,6 +6,7 @@
 |---|---|
 | QEMU AArch64 `virt` | Complete core-OS correctness target with UEFI, SMP, GICv3/ITS, VirtIO, SMMUv3 gates, filesystems, network, SSH/SFTP, and userspace. NVMe requires LPI delivery on every negotiated queue. |
 | QEMU x86_64 `q35` | Common kernel/userspace service parity with AArch64, including ACPI/MADT AP startup, xAPIC, XSAVE/FXSAVE, PCI VirtIO, network, SSH/SFTP, storage, and userspace. NVMe requires APIC/MSI-X delivery on every negotiated queue. |
+| QEMU RISC-V `virt` (rv64gc) | Bring-up only, and not an operating system on this architecture. `make qemu-riscv64-gate` boots via OpenSBI and verifies SBI console and power, trap entry and return, Sv39 paging, the timer, and shared kernel code (`kernel/runtime/sha256.c`, the same source AArch64 and x86_64 compile, asserting its own vectors). Absent, and printed by the guest itself so a clean boot is not mistaken for support: SMP, PCI, VirtIO, storage, network, userspace. Run on QEMU 11.1.1 (macOS/arm64) and 10.0.11 (Debian/x86_64). |
 | Apple Virtualization.framework ARM64 | Development target, not a qualification profile and not gated. Boots to a login: virtio-PCI console, xaibootFS on a durable volume, DHCP IPv4, SLAAC IPv6 and SSH. No PL011, no linear framebuffer (`PixelBltOnly` GOP) and no GIC ITS, so every virtio queue runs polled. See [[Virtualization Framework|Virtualization-Framework]]. |
 | VMware Fusion ARM64 | Qualified four-vCPU guest profile tested only on Fusion 26H1 (26.0.0): PCI-discovered E1000E DHCP, AHCI xaibootFS persistence/recovery, public-key SSH, SFTP, reboot, shutdown and repeat boot. VMXNET3, IPv6, outbound-client and physical qualification remain open. |
 
@@ -22,6 +23,10 @@ is complete for the declared common core-OS scope.
   interfaces, and an SVE2 QEMU arithmetic canary. EL0 SVE is enabled only when
   supported, and scheduler/interrupt gates preserve scalable Z/P/FFR state per
   task. A production SVE inference backend and physical qualification remain.
+- RISC-V: rv64gc with the compressed extension, which the trap path has to
+  account for -- resuming from a trap reads the faulting instruction's width
+  from its low two bits rather than assuming four bytes, because the assembler
+  encodes a bare `ebreak` as the 16-bit `c.ebreak`. No vector extension work.
 - x86_64: CPUID/topology discovery, AVX2 packed-kernel interfaces, XSAVE state,
   and conservative FXSAVE fallback. AVX-512, VNNI, and AMX production backends
   remain incomplete.

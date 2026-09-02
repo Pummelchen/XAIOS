@@ -21,6 +21,8 @@ AArch64 or x86_64 UEFI firmware. Setup details are in
 | `make hosted-test` | Hosted model-v2, engine, parser, kernel, and utility tests. |
 | `make libc-check` | Strict hosted C99 headers, 464-function namespace/link, ELF layout, source pin, non-POSIX surface, and syscall-budget contract. |
 | `make qemu-libc-gate` | Complete libc contract plus AArch64/x86_64 runtime and termination probes; emits the conformance report. |
+| `make qemu-riscv64-gate` | RISC-V rv64gc bring-up on the QEMU `virt` board: SBI console, a trap provoked and returned from, Sv39 paging, the timer, and shared kernel SHA-256. Requires the guest's own line naming what is absent, so a pass cannot read as architecture support. |
+| `make vmware-fusion-snapshot-gate` | Fusion snapshot and resume semantics: a snapshot is a point in time (pre-snapshot data survives a revert, post-snapshot data does not), a revert boots onto a filesystem the guest trusts, and a suspend is not counted as an unclean boot. Reads files over SFTP rather than the shell, because of B-25. |
 | `make xapt-test` | Host-side signed package/catalog/system-image construction, verification, tamper, and malformed-input tests. |
 | `make qemu-xapt-gate` | AArch64/x86_64 pinned TLS, trust rotation/revocation/recovery, install, execute, upgrade, rollback, corruption rejection, OS-slot update, reboot persistence, and removal. |
 | `make code-scanning-contract` | Read-only workflow permissions, loopback-only test port reservation, bounded diagnostics, and integer-width regression checks for resolved CodeQL findings. |

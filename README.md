@@ -34,9 +34,9 @@ what is packaged around it:
 | with your own tooling | `xaios_b4.iso.zip` — the image, and nothing else |
 
 Unzip before use. The image is one file that is an ISO 9660 filesystem, a
-GPT-partitioned disk and a bootable USB image at once, which is why a single
-download covers CD-ROM, hard disk and stick. On first boot the machine has no
-account and asks how to set itself up; there is no default password.
+GPT-partitioned disk and a bootable USB image at once, which is why one
+download covers CD-ROM, hard disk and stick. On first boot there is no account
+and no default password; the machine asks how to set itself up.
 
 Each release note records exactly which hypervisors and firmware that build was
 booted on, and what was *not* tested — see the
@@ -72,17 +72,23 @@ no FreeBSD or Linux binary ABI — guest programs use native syscalls, so passin
 host-client tests proves wire behaviour only. See
 [Unix compatibility](./wiki/Unix-Compatibility.md).
 
+**Architectures.** AArch64 and x86_64 are the pair XAIOS runs as an operating
+system on. RISC-V (rv64gc) is a bring-up, not a third supported architecture:
+`make qemu-riscv64-gate` proves console, traps, Sv39 paging, the timer and
+shared kernel code on the QEMU `virt` board, and the guest itself prints that
+SMP, PCI, virtio, storage, networking and userspace are absent. It exists to
+test the platform-neutrality rule against an architecture that agrees with
+neither of the others.
+
 **C99 libc.** A statically linked hosted ISO C99 library for AArch64 and
 x86_64, with no public POSIX API and no new syscall identifiers. See
 [C99 libc](./wiki/C99-Libc.md).
 
-**Model support status.** The deterministic model-v1 path is fixture only and
-model-v2 is a format foundation; neither executes a transformer. Qwen 3.8 is
-the next correctness target, with Kimi K3 and DeepSeek V4 later. Nothing listed
-is production supported. XAIOS is built around official architecture adapters
-rather than a hard-coded graph, and exact target-model semantics are the
-default. See [Model support](./wiki/Applications.md) and the
-[Project Tracker](./wiki/Project-Tracker.md).
+**Model support status.** Neither the deterministic model-v1 path nor the
+model-v2 format foundation executes a transformer. Qwen 3.8 is the next
+correctness target, Kimi K3 and DeepSeek V4 later; nothing is production
+supported. XAIOS is built around official architecture adapters rather than a
+hard-coded graph. See [Model support](./wiki/Applications.md).
 
 **Updates.** The native [`xapt` updater](./wiki/Xapt-Package-Updates.md)
 installs signed applications without rebooting and stages OS images into the

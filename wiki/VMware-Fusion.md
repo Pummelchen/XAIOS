@@ -88,9 +88,19 @@ fails.
 ## Remaining Boundary
 
 - Fusion multi-vCPU startup remains bootstrap-only.
-- VMXNET3 is not implemented; the qualified device is E1000E.
-- IPv6, outbound SSH/SCP, VM snapshot semantics and long-duration Fusion
-  service gates remain separate work.
+- VMXNET3 is discovered, self-tested and activated, but cannot yet carry a
+  frame; the qualified device remains E1000E. See `F-02`.
+- IPv6 works on a bridged guest whose network offers it: a globally routable
+  SLAAC address, inbound SSH/SFTP/UDP and outbound SSH/SCP. It did not until
+  the E1000E receive filter stopped discarding all multicast, which is where
+  router advertisements arrive.
+- Snapshot and resume semantics are defined and gated -- see
+  `make vmware-fusion-snapshot-gate`. A snapshot taken powered off is a point
+  in time; a revert boots onto a filesystem the guest trusts; a suspend is not
+  counted as an unclean boot. A revert intermittently leaves the guest
+  refusing shell commands while SFTP still works (`B-25`).
+- Long-duration Fusion service load, repeat-boot at volume and crash recovery
+  against generated VMDKs remain separate work.
 - Fusion on Apple Silicon does not validate x86_64 guests or physical hardware.
 
 See the repository [Fusion detail document](https://github.com/Pummelchen/XAIOS/blob/main/docs/VMWARE-FUSION.md),

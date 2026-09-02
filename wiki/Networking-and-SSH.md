@@ -43,10 +43,18 @@ IPv6 derives a link-local address from the hardware address, then solicits a
 router and polls briefly for the advertisement, because nothing else reads the
 interface between bringing it up and starting services. A prefix that is
 globally routable or unique-local is configured and used as the source address
-for outbound IPv6; whether an address is *globally* routable stays a separate
-question. Both hypervisors available here advertise unique-local prefixes
-(`fd4a:25c::/64` under Virtualization.framework, `fec0::/64` under QEMU's
-slirp), so the address configured on those is unique-local.
+for outbound IPv6. The router that sent the advertisement is kept as the
+default route for as long as its Router Lifetime says, and traffic to anything
+outside the advertised /64 is sent to it -- without that a host configures an
+address and can still only reach its own link, because the neighbour lookup
+asks about a destination no neighbour will answer for.
+
+Which prefix arrives depends on the network. Virtualization.framework
+(`fd4a:25c::/64`) and QEMU's slirp (`fec0::/64`) both advertise unique-local
+prefixes, so an address configured on those is unique-local. A bridged Fusion
+guest on a network with real IPv6 takes a globally routable address, and has
+been shown end to end on one: ICMPv6, inbound SSH and SFTP, inbound UDP, and
+outbound SSH and SCP to a host in another country.
 
 ## Network behavior
 
