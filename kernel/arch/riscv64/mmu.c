@@ -362,6 +362,19 @@ void vmm_init(const xaios_boot_info_t *boot) {
 
 void vmm_activate_kernel(void) {
   flush_all();
+  /* Supervisor access to user pages, which is off after reset.
+   *
+   * Without this the kernel cannot read or write a single byte of a user
+   * process: loading an ELF segment, copying a syscall argument, and reading
+   * a path all fault, and the fault reports a user address the kernel plainly
+   * has mapped, which reads as a broken page table rather than a permission
+   * bit. AArch64 spells the same idea backwards -- it clears PAN around the
+   * syscall path and leaves it set elsewhere -- and that narrower window is
+   * the better shape. It needs an interface the shared code does not have
+   * yet, so this opens the access for the whole kernel and the difference is
+   * recorded rather than hidden: on this architecture a stray kernel
+   * dereference of a user pointer is not caught by hardware. */
+  __asm__ volatile("csrs sstatus, %0" : : "r"(UINT64_C(1) << 18) : "memory");
   __asm__ volatile("csrw satp, %0" : : "r"(g_satp) : "memory");
   flush_all();
 }
@@ -421,7 +434,17 @@ xaios_status_t vmm_map_page(uint64_t virtual_address, uint64_t physical_address,
 }
 
 xaios_status_t vmm_unmap_page(uint64_t virtual_address) {
-  return unmap_at_level(g_root, virtual_address, 0U);
+  if ((virtual_address & (PAGE_SIZE - 1U)) != 0U) return XAIOS_ERR_INVALID;
+  /* Unmapping an address that is already unmapped is success, which this got
+     wrong by being stricter than the interface it implements. The other two
+     architectures zero the entry and return OK either way, and shared code
+     relies on it: a process's stack guard pages are unmapped before they are
+     ever mapped, precisely so that nothing is mapped there, and that call is
+     asserted. Reporting not-found for a page that is absent describes the
+     state accurately and answers a question nobody asked -- the caller wants
+     the address to be unmapped afterwards, and it is. */
+  xaios_status_t status = unmap_at_level(g_root, virtual_address, 0U);
+  return status == XAIOS_ERR_NOT_FOUND ? XAIOS_OK : status;
 }
 
 xaios_status_t vmm_map_large_page(uint64_t virtual_address,

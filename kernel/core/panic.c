@@ -227,13 +227,30 @@ static uint32_t capture_backtrace(uint64_t *trace, uint32_t max_depth) {
     if (!panic_valid_addr(fp_val)) {
       break;
     }
-    /* fp[0] = previous FP, fp[1] = return address (LR) */
+    /* Where the two words are depends on the architecture, and getting it
+       wrong is not a wrong backtrace -- it is a second fault inside the panic
+       handler, which replaces the message that was about to be printed with
+       one about the handler. That is the worst possible time to lose a
+       diagnostic, and it is exactly what happened here.
+
+       AArch64 and x86-64 point the frame pointer at the saved pair, so the
+       previous frame is at [0] and the return address at [1]. RISC-V points
+       it just above the frame instead: the return address is at [-1] and the
+       previous frame pointer at [-2]. */
+#if defined(__riscv)
+    if (!panic_valid_addr(fp_val - 16U)) {
+      break;
+    }
+    uint64_t ret_addr = fp[-1];
+    uint64_t prev_fp = fp[-2];
+#else
     uint64_t ret_addr = fp[1];
+    uint64_t prev_fp = fp[0];
+#endif
     if (ret_addr == 0) {
       break;
     }
     trace[depth++] = ret_addr;
-    uint64_t prev_fp = fp[0];
     if (!panic_valid_addr(prev_fp) || prev_fp <= fp_val) {
       break; /* chain ended or going backwards */
     }
