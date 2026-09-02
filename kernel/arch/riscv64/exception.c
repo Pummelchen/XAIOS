@@ -112,9 +112,37 @@ static void handle_external(void) {
   }
 }
 
-/* Called from the assembly stub with the cause, the faulting address and the
-   trap value. Returns where to resume. */
-uint64_t riscv64_trap_handler(uint64_t cause, uint64_t epc, uint64_t tval) {
+/* The register frame the trap stub builds, in the order it stores them. */
+typedef struct riscv64_trap_frame {
+  uint64_t ra, sp, gp, tp;
+  uint64_t t0, t1, t2;
+  uint64_t s0, s1;
+  uint64_t a0, a1, a2, a3, a4, a5, a6, a7;
+  uint64_t s2, s3, s4, s5, s6, s7, s8, s9, s10, s11;
+  uint64_t t3, t4, t5, t6;
+  uint64_t sepc, scause, stval, sstatus;
+} riscv64_trap_frame_t;
+
+#define SSTATUS_SPP (UINT64_C(1) << 8)
+
+#define CAUSE_ECALL_FROM_USER 8U
+
+uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
+                          uint64_t arg2);
+uint64_t user_process_note_fault(void);
+
+/* An instruction's length, from its own first two bits.
+ *
+ * The compressed extension makes this a question rather than a constant: a
+ * c.ebreak is two bytes and a full ebreak is four, and advancing by four
+ * either way resumes in the middle of the next instruction. */
+static uint64_t instruction_width(uint64_t pc) {
+  const uint16_t *halfword = (const uint16_t *)(uintptr_t)pc;
+  return ((*halfword & 0x3U) == 0x3U) ? 4U : 2U;
+}
+
+void riscv64_trap_handler(riscv64_trap_frame_t *frame) {
+  uint64_t cause = frame->scause;
   if ((cause & SCAUSE_INTERRUPT) != 0U) {
     uint64_t which = cause & ~SCAUSE_INTERRUPT;
     if (which < 16U) ++g_trap_counts[which];
@@ -124,18 +152,47 @@ uint64_t riscv64_trap_handler(uint64_t cause, uint64_t epc, uint64_t tval) {
       handle_external();
     }
     /* An interrupt resumes the instruction it interrupted, which has not
-       run. An exception resumes after the one that faulted. Getting these
-       the same way round is the difference between continuing and looping. */
-    return epc;
+       run, so sepc is left exactly as it arrived. */
+    return;
   }
 
-  /* A synchronous exception the kernel did not arrange is fatal, and saying
-     which one is the whole value of getting here. */
-  exception_panic("unhandled trap cause=%lu epc=%lx stval=%lx", cause, epc,
-                  tval);
+  /* A system call. The number is in a7 and the arguments in a0 upwards,
+     which is the calling convention userspace assembly already uses, and the
+     result goes back in a0 where the caller will read it. */
+  if (cause == CAUSE_ECALL_FROM_USER) {
+    uint64_t result =
+        syscall_dispatch(frame->a7, frame->a0, frame->a1, frame->a2);
+    frame->a0 = result;
+    /* ecall is never compressed, so four is right here and only here --
+       past the instruction, or the syscall is made again forever. */
+    frame->sepc += 4U;
+    return;
+  }
+
+  /* A fault in user mode is the process's problem, not the machine's. Killing
+     the process and continuing is what the other architectures do; panicking
+     would let any user program halt the system. */
+  if ((frame->sstatus & SSTATUS_SPP) == 0U) {
+    klog("user exception: cause=%lu sepc=0x%lx stval=0x%lx\n", cause,
+         frame->sepc, frame->stval);
+    frame->a0 = user_process_note_fault();
+    frame->sepc += instruction_width(frame->sepc);
+    return;
+  }
+
+  /* A synchronous exception in the kernel is fatal, and saying which one is
+     the whole value of getting here. */
+  exception_panic("unhandled trap cause=%lu epc=%lx stval=%lx", cause,
+                  frame->sepc, frame->stval);
 }
 
 void exception_init(void) {
+  /* Zeroed before the vector is armed, because the trap stub reads it to
+     decide which stack to land on and reset leaves it undefined. A boot that
+     takes its first trap with garbage here switches to an address nothing
+     chose, which presents as a fault whose reported cause is itself
+     nonsense -- the frame was written to a stack that does not exist. */
+  __asm__ volatile("csrw sscratch, zero" ::: "memory");
   __asm__ volatile("csrw stvec, %0"
                    :
                    : "r"((uint64_t)(uintptr_t)riscv64_trap_entry)
