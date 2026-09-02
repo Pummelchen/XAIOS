@@ -473,6 +473,8 @@ static void map_mmio_range(uint64_t start, uint64_t size) {
   }
 }
 
+extern char __kernel_start[];
+
 void kmain(const xaios_boot_info_t *boot) {
 #if XAIOS_INSTALL_SELF_TEST
   g_boot = boot;
@@ -489,6 +491,21 @@ void kmain(const xaios_boot_info_t *boot) {
   boot_ui_self_test();
   boot_ui_update(25U, "hardware handoff", "CPU and interrupts", 5U);
   klog("XAIOS %s kernel starting\n", XAIOS_BUILD_LABEL);
+  /* Where this kernel landed, on every boot rather than only in a panic.
+     The kernel is position-independent, so a backtrace address means nothing
+     without this number, and until now the only thing that printed it was the
+     panic screen -- which is to say it was available exactly when the machine
+     was already too broken to be sure of anything. B-15 was recorded as
+     fifteen addresses with no base for that reason. With it in the ordinary
+     console, any console kept from a boot that later dies is enough to read
+     its trace, and a panic that fails to print its own header is no longer
+     the end of the enquiry.
+     It also makes the placement itself observable: this address is the one
+     firmware chose, rounded up to the strongest alignment the segments ask
+     for, which is what B-19 turned out to be about. */
+  klog("kernel: load base %p offset_in_64k %lu\n",
+       (void *)(uintptr_t)__kernel_start,
+       (unsigned long)((uintptr_t)__kernel_start & 0xFFFFU));
   kassert(boot->magic == XAIOS_BOOT_INFO_MAGIC);
   kassert(boot->version == XAIOS_BOOT_INFO_VERSION);
 
