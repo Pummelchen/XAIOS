@@ -96,12 +96,35 @@ def boot_until(
     BUILD.mkdir(parents=True, exist_ok=True)
     failure_log = BUILD / "qemu-storage-crash-failure.log"
     failure_log.write_text(text, encoding="utf-8")
-    mount_lines = [line for line in text.splitlines()
-                   if "xaibootfs:" in line or "formatting" in line]
+    #
+    #
+    # The excerpt is the mount, and only the mount. Keeping the whole log
+    # fixed half the problem; the first attempt at this then printed the last
+    # forty filesystem lines, which on a guest that boots to a shell are the
+    # POSIX test tidying its scratch files -- the same uninformative tail,
+    # filtered. Printing the first forty was no better: a small early volume
+    # mounts before the persistent one and fills the window with itself.
+    #
+    # What actually answers the question is five lines out of three and a
+    # half thousand, and a failed recovery is diagnosed by which of them are
+    # missing: `persistent mounted v5 nodes=256` against `v6 nodes=1024` says
+    # which format came back, and `no valid filesystem at sector=N; formatting`
+    # says a volume was reformatted rather than refused. They are named
+    # exactly rather than matched loosely -- a looser pass matched "slot" and
+    # returned the ACPI CPU table.
+    mount_lines = [line for line in text.splitlines() if any(
+        token in line for token in
+        ("xaibootfs: persistent", "xaibootfs: mounted",
+         "xaibootfs: no valid", "xaibootfs: mirror",
+         "xaibootfs: formatting"))]
     raise RuntimeError(
         f"QEMU did not reach {missing}; whole boot saved to {failure_log}\n"
-        f"filesystem lines from that boot:\n"
-        + "\n".join(mount_lines[-40:])
+        f"every mount decision in that boot -- which format came back, and\n"
+        f"whether a volume was refused or silently reformatted:\n"
+        + ("\n".join(mount_lines) if mount_lines else
+           "  (none: the guest never reached a filesystem mount)")
+        + "\nand where the boot stopped:\n"
+        + "\n".join(text.splitlines()[-12:])
     )
 
 

@@ -256,6 +256,7 @@ jobs:
             build/qemu-storage-bench.json
             build/crash-trial-*.log
             build/qemu-storage-bench.log
+            build/qemu-storage-crash-failure.log
           retention-days: 7
 
   unified-image:
@@ -392,6 +393,7 @@ jobs:
           path: |
             build/qemu-core-os-rc-*.log
             build/qemu-core-os-rc-report.json
+            build/qemu-storage-crash-failure.log
             build/qemu-smmu-gate-report.json
             build/qemu-smmu-gate.log
             build/qemu-nvme-gate-report.json
