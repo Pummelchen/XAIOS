@@ -1,3 +1,4 @@
+#include <xaios/entropy.h>
 #include <xaios/admin_control.h>
 #include <xaios/assert.h>
 #include <xaios/kheap.h>
@@ -1072,6 +1073,20 @@ xaios_admin_result_t admin_control_host_key_rotate(
   if (begin != XAIOS_ADMIN_RESULT_OK) return begin;
   uint8_t private_seed[32];
   char encoded[64];
+  /* Say so at the moment it matters.
+     A host key is exactly the kind of secret F-05 is about: it outlives the
+     boot, it identifies the machine to everyone who connects, and on a
+     platform whose only entropy is a seed file baked into the image it is
+     reproducible by anyone holding that image. This warns rather than
+     refuses, because refusing would take working machines off the network
+     over a property they have always had; what turns this into a gate is an
+     operator deciding which entropy source production requires, which is the
+     half of F-05 that is not ours to choose. */
+  if (entropy_is_production_grade() == 0U) {
+    klog("admin: WARNING minting a host key on development-grade entropy "
+         "(source=%u) -- this key is reproducible from the image it was "
+         "built into\n", entropy_source());
+  }
   if (virtio_rng_read(private_seed, sizeof(private_seed)) != XAIOS_OK) {
     return abort_and_audit(actor, actor_role, operation_id,
                            "auth.host.rotate", XAIOS_ADMIN_RESULT_IO);

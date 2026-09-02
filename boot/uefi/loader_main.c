@@ -202,6 +202,7 @@ static void collect_firmware_entropy(efi_system_table_t *system_table,
     return;
   }
   boot_info->entropy_seed_size = XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES;
+  boot_info->entropy_seed_source = XAIOS_ENTROPY_SOURCE_FIRMWARE_RNG;
 }
 
 /* Firmware hands over whatever mode it happened to be in, which on VMware
@@ -1496,6 +1497,10 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
     mem_copy(g_boot_info.entropy_seed, optional_entropy_seed,
              optional_entropy_seed_size);
     g_boot_info.entropy_seed_size = optional_entropy_seed_size;
+    /* Recorded as what it is. collect_firmware_entropy below will say
+       otherwise if the firmware has a real source, and on a machine where it
+       does not this is what the kernel ends up running on. */
+    g_boot_info.entropy_seed_source = XAIOS_ENTROPY_SOURCE_SEED_FILE;
   }
   mem_set(optional_entropy_seed, 0, sizeof(optional_entropy_seed));
   collect_firmware_entropy(system_table, &g_boot_info);

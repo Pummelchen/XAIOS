@@ -1,3 +1,4 @@
+#include <xaios/boot_info.h>
 #include <xaios/assert.h>
 #include <xaios/arch_random.h>
 #include <xaios/entropy.h>
@@ -13,6 +14,9 @@ typedef struct entropy_provider {
   uint8_t state[XAIOS_ENTROPY_STATE_BYTES];
   uint64_t counter;
   uint32_t seeded;
+  /* Where the seed came from, kept so anything about to mint a long-lived
+     secret can ask rather than assume. */
+  uint32_t source;
   xaios_spinlock_t lock;
 } entropy_provider_t;
 
@@ -69,13 +73,31 @@ void entropy_init(const xaios_boot_info_t *boot) {
       boot->entropy_seed_size == XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES) {
     seed_from_material("xaios.entropy.efi.v1", boot->entropy_seed,
                        XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES);
-    klog("entropy: EFI RNG seed accepted\n");
+    g_entropy.source = boot->entropy_seed_source;
+    /* Say which. This used to report "EFI RNG seed accepted" for a seed the
+       loader had read out of a file on the EFI System Partition, because the
+       size is the same either way and nothing carried the difference. A
+       development seed that logs as a hardware one is worse than no log. */
+    if (boot->entropy_seed_source == XAIOS_ENTROPY_SOURCE_FIRMWARE_RNG) {
+      klog("entropy: firmware RNG seed accepted\n");
+    } else {
+      klog("entropy: DEVELOPMENT seed file accepted -- reproducible by "
+           "construction, not fit for secrets that must survive contact with "
+           "anyone else\n");
+    }
   }
   if (arch_random_read(hardware_seed, sizeof(hardware_seed)) == XAIOS_OK) {
     seed_from_material("xaios.entropy.arch.v1", hardware_seed,
                        sizeof(hardware_seed));
+    /* An architectural source upgrades the answer whatever came before it:
+       mixing it in means the state no longer depends only on a file. */
+    g_entropy.source = XAIOS_ENTROPY_SOURCE_FIRMWARE_RNG;
     klog("entropy: architectural RNG seed accepted\n");
   }
+  klog("entropy: source=%s\n",
+       g_entropy.source == XAIOS_ENTROPY_SOURCE_FIRMWARE_RNG ? "hardware"
+       : g_entropy.source == XAIOS_ENTROPY_SOURCE_SEED_FILE  ? "development-seed-file"
+                                                             : "none");
   bytes_zero(hardware_seed, sizeof(hardware_seed));
 }
 
@@ -132,4 +154,19 @@ void entropy_self_test(void) {
   bytes_zero(first, sizeof(first));
   bytes_zero(second, sizeof(second));
   klog("entropy: provider self-test passed\n");
+}
+
+uint32_t entropy_source(void) { return g_entropy.source; }
+
+/* Whether this machine's randomness is fit for a secret that outlives the
+   boot: an SSH host key, a cluster identity, anything an operator would be
+   upset to find reproducible.
+   A development seed file is not. It is the same on every boot and on every
+   machine built from the same image, so a key derived from it is a key
+   anyone holding that image already has. This is the question F-05 exists to
+   make askable; what an operator does about the answer -- which entropy
+   source to provision, and how -- remains theirs to decide. */
+uint32_t entropy_is_production_grade(void) {
+  return g_entropy.seeded != 0U &&
+         g_entropy.source == XAIOS_ENTROPY_SOURCE_FIRMWARE_RNG;
 }

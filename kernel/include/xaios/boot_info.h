@@ -20,6 +20,14 @@
 #define XAIOS_FRAMEBUFFER_RGBX8 UINT32_C(1)
 #define XAIOS_FRAMEBUFFER_BGRX8 UINT32_C(2)
 
+#define XAIOS_ENTROPY_SOURCE_NONE 0U
+/* A cryptographic random source the firmware vouches for. */
+#define XAIOS_ENTROPY_SOURCE_FIRMWARE_RNG 1U
+/* A file carried on the EFI System Partition. Reproducible by construction,
+   which makes it useful for development and unfit for anything that has to
+   stay secret. */
+#define XAIOS_ENTROPY_SOURCE_SEED_FILE 2U
+
 typedef struct xaios_memory_descriptor {
   uint32_t type;
   uint32_t pad;
@@ -55,10 +63,21 @@ typedef struct xaios_boot_info {
   uint64_t pci_ecam_base;
   uint32_t pci_ecam_start_bus;
   uint32_t pci_ecam_end_bus;
-  /* A loader-provided seed from EFI_RNG_PROTOCOL. It is absent when the
-   * firmware does not offer a cryptographic random source. */
+  /* A loader-provided seed, and -- separately -- where it came from.
+   *
+   * The size alone cannot answer that, and the difference is the whole of
+   * F-05. The loader copies a seed file off the EFI System Partition if one
+   * is there, then overwrites it from EFI_RNG_PROTOCOL if the firmware
+   * offers one. On a machine where it does not -- VMware Fusion 26H1 is one
+   * -- what survives is a file baked into the image: identical on every boot
+   * and on every machine built from that image. The kernel logged "EFI RNG
+   * seed accepted" for both, which is how a development seed comes to look
+   * like a hardware one in the record.
+   *
+   * `entropy_seed_source` is one of XAIOS_ENTROPY_SOURCE_*. It occupies what
+   * was reserved padding, so the structure's layout is unchanged. */
   uint32_t entropy_seed_size;
-  uint32_t entropy_reserved;
+  uint32_t entropy_seed_source;
   uint8_t entropy_seed[XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES];
   /* Optional UEFI GOP framebuffer. Serial remains the universal console. */
   uint64_t framebuffer_base;

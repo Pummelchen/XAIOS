@@ -1,4 +1,5 @@
 #include <xaios/arch_cpu.h>
+#include <xaios/smp.h>
 #include <xaios/assert.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
@@ -120,10 +121,21 @@ typedef struct virtio_net_driver {
   uint64_t copy_fallbacks;
   uint32_t multiqueue;
   uint32_t max_queue_pairs;
-  /* How many pairs are set up and serviced. One until the rest of E4 lands;
-     the device may still advertise more. */
+  /* How many pairs are set up and serviced. Receive polls all of them round
+     robin; transmit picks one per CPU. The device may advertise more than
+     were successfully brought up, which is why this is the count that was
+     achieved rather than the count that was offered. */
   uint32_t active_pairs;
-  /* Where the next receive poll starts, so no pair starves another. */
+  /* Which pairs have actually carried a frame. A driver that selects a pair
+     per CPU and a driver that always picks zero are indistinguishable from
+     the outside unless this is counted, and "it should fan out" is not
+     evidence that it did. */
+  uint64_t tx_frames_by_pair[VIRTIO_NET_MAX_QUEUE_PAIRS];
+  uint32_t tx_fanout_reported;
+  /* Where the next receive poll starts, so no pair starves another. Receive
+     has no CPU affinity to follow -- the device chooses which queue a frame
+     lands on -- so a cursor is right here where it would be wrong for
+     transmit. */
   uint32_t rx_cursor;
   /* The control queue, when the device has one. It is not a pair: there is a
      single one, and it sits after the last pair the device advertises. */
@@ -144,23 +156,45 @@ static uint16_t read_be16(const uint8_t *value) {
   return (uint16_t)(((uint16_t)value[0] << 8U) | value[1]);
 }
 
-static uint32_t drain_tx_completions_locked(void) {
-  if (g_net == 0 || g_net->persistent == 0U) return 0U;
+static uint32_t drain_tx_completions_locked(virtio_net_queue_pair_t *pair) {
+  if (g_net == 0 || g_net->persistent == 0U || pair == 0) return 0U;
   virtio_mmio_barrier();
-  uint16_t used = *(volatile uint16_t *)(void *)&g_net->pairs[0].tx_used->idx;
-  uint32_t completed = (uint16_t)(used - g_net->pairs[0].tx_last_used);
-  g_net->pairs[0].tx_last_used = used;
+  uint16_t used = *(volatile uint16_t *)(void *)&pair->tx_used->idx;
+  uint32_t completed = (uint16_t)(used - pair->tx_last_used);
+  pair->tx_last_used = used;
   if (g_net->event_idx != 0U) {
-    g_net->pairs[0].tx_avail->used_event = used;
+    pair->tx_avail->used_event = used;
   }
   g_net->tx_completion_count += completed;
   return completed;
 }
 
+/* Which pair this CPU transmits on.
+ *
+ * By CPU rather than round-robin, because the point of a second transmit
+ * queue is not that frames alternate between them -- it is that two CPUs
+ * sending at once do not queue behind the same lock. A shared cursor would
+ * reintroduce exactly the contention the queues exist to remove, and would
+ * do it in a line of code that looks like fairness. */
+static uint32_t tx_pair_index(void) {
+  if (g_net == 0 || g_net->active_pairs <= 1U) return 0U;
+  return smp_cpu_id() % g_net->active_pairs;
+}
+
+/* Every pair, not just the one this CPU sends on: completions belong to
+   whichever queue carried the frame, and a pair nobody drains stops
+   accepting work once its ring fills. trylock so a busy pair is skipped
+   rather than waited on -- this runs from the interrupt path. */
 static uint32_t virtio_net_drain_tx_completions(void) {
-  if (g_net == 0 || xaios_spin_trylock(&g_net->pairs[0].tx_lock) == 0) return 0U;
-  uint32_t completed = drain_tx_completions_locked();
-  xaios_spin_unlock(&g_net->pairs[0].tx_lock);
+  if (g_net == 0) return 0U;
+  uint32_t completed = 0U;
+  uint32_t pairs = g_net->active_pairs == 0U ? 1U : g_net->active_pairs;
+  for (uint32_t i = 0U; i < pairs; ++i) {
+    virtio_net_queue_pair_t *pair = &g_net->pairs[i];
+    if (xaios_spin_trylock(&pair->tx_lock) == 0) continue;
+    completed += drain_tx_completions_locked(pair);
+    xaios_spin_unlock(&pair->tx_lock);
+  }
   return completed;
 }
 
@@ -921,17 +955,20 @@ static xaios_status_t tx_submit_vectors(const xaios_net_iovec_t *vectors,
   }
   if (total_payload > VIRTIO_NET_MAX_FRAME) return XAIOS_ERR_INVALID;
 
-  xaios_spin_lock(&g_net->pairs[0].tx_lock);
-  (void)drain_tx_completions_locked();
+  /* One pair per CPU, chosen before the lock is taken. */
+  uint32_t pair_index = tx_pair_index();
+  virtio_net_queue_pair_t *pair = &g_net->pairs[pair_index];
+  xaios_spin_lock(&pair->tx_lock);
+  (void)drain_tx_completions_locked(pair);
   uint16_t outstanding =
-      (uint16_t)(g_net->pairs[0].tx_avail_idx - g_net->pairs[0].tx_last_used);
+      (uint16_t)(pair->tx_avail_idx - pair->tx_last_used);
   if (outstanding >= VIRTIO_NET_PERSISTENT_TX_DESCS) {
-    xaios_spin_unlock(&g_net->pairs[0].tx_lock);
+    xaios_spin_unlock(&pair->tx_lock);
     return XAIOS_ERR_BUSY;
   }
   uint16_t desc_idx =
-      g_net->pairs[0].tx_avail_idx % VIRTIO_NET_PERSISTENT_TX_DESCS;
-  bytes_zero(g_net->pairs[0].tx_bufs[desc_idx], VIRTIO_NET_HDR_SIZE);
+      pair->tx_avail_idx % VIRTIO_NET_PERSISTENT_TX_DESCS;
+  bytes_zero(pair->tx_bufs[desc_idx], VIRTIO_NET_HDR_SIZE);
 
   uint64_t fragment_physical[VIRTIO_NET_MAX_TX_FRAGMENTS];
   uint32_t direct = allow_direct != 0U && g_net->indirect_desc != 0U;
@@ -942,8 +979,8 @@ static xaios_status_t tx_submit_vectors(const xaios_net_iovec_t *vectors,
     }
   }
   if (direct != 0U) {
-    virtq_desc_t *indirect = g_net->pairs[0].tx_indirect[desc_idx];
-    indirect[0].addr = net_dma_address(g_net->pairs[0].tx_bufs[desc_idx]);
+    virtq_desc_t *indirect = pair->tx_indirect[desc_idx];
+    indirect[0].addr = net_dma_address(pair->tx_bufs[desc_idx]);
     indirect[0].len = VIRTIO_NET_HDR_SIZE;
     indirect[0].flags = VRING_DESC_F_NEXT;
     indirect[0].next = 1U;
@@ -955,32 +992,50 @@ static xaios_status_t tx_submit_vectors(const xaios_net_iovec_t *vectors,
           i + 1U < vector_count ? VRING_DESC_F_NEXT : 0U;
       indirect[entry].next = (uint16_t)(entry + 1U);
     }
-    g_net->pairs[0].tx_desc[desc_idx].addr = net_dma_address(indirect);
-    g_net->pairs[0].tx_desc[desc_idx].len =
+    pair->tx_desc[desc_idx].addr = net_dma_address(indirect);
+    pair->tx_desc[desc_idx].len =
         (vector_count + 1U) * sizeof(virtq_desc_t);
-    g_net->pairs[0].tx_desc[desc_idx].flags = VRING_DESC_F_INDIRECT;
+    pair->tx_desc[desc_idx].flags = VRING_DESC_F_INDIRECT;
     ++g_net->scatter_gather_submissions;
   } else {
     uint64_t offset = VIRTIO_NET_HDR_SIZE;
     for (uint32_t i = 0U; i < vector_count; ++i) {
       const uint8_t *source = (const uint8_t *)vectors[i].base;
       for (uint64_t j = 0U; j < vectors[i].length; ++j) {
-        g_net->pairs[0].tx_bufs[desc_idx][offset++] = source[j];
+        pair->tx_bufs[desc_idx][offset++] = source[j];
       }
     }
-    g_net->pairs[0].tx_desc[desc_idx].addr = net_dma_address(g_net->pairs[0].tx_bufs[desc_idx]);
-    g_net->pairs[0].tx_desc[desc_idx].len =
+    pair->tx_desc[desc_idx].addr = net_dma_address(pair->tx_bufs[desc_idx]);
+    pair->tx_desc[desc_idx].len =
         (uint32_t)(VIRTIO_NET_HDR_SIZE + total_payload);
-    g_net->pairs[0].tx_desc[desc_idx].flags = 0U;
+    pair->tx_desc[desc_idx].flags = 0U;
     ++g_net->copy_fallbacks;
   }
-  g_net->pairs[0].tx_avail->ring[g_net->pairs[0].tx_avail_idx % VIRTQ_SIZE] = desc_idx;
+  pair->tx_avail->ring[pair->tx_avail_idx % VIRTQ_SIZE] = desc_idx;
   virtio_mmio_barrier();
-  ++g_net->pairs[0].tx_avail_idx;
-  g_net->pairs[0].tx_avail->idx = g_net->pairs[0].tx_avail_idx;
-  *token = g_net->pairs[0].tx_avail_idx;
-  xaios_spin_unlock(&g_net->pairs[0].tx_lock);
-  virtio_transport_notify(&g_net->device, 1U);
+  ++pair->tx_avail_idx;
+  pair->tx_avail->idx = pair->tx_avail_idx;
+  /* The token has to say which pair as well as which slot, or a waiter
+     watches the wrong queue's used index and the frame it is waiting for
+     completes somewhere it never looks. */
+  *token = ((uint64_t)pair_index << 32U) | (uint64_t)pair->tx_avail_idx;
+  uint64_t sent = ++g_net->tx_frames_by_pair[pair_index];
+  xaios_spin_unlock(&pair->tx_lock);
+  /* Report the distribution once, rather than only when it is flattering.
+     A line that appears only if a second pair is used would be silent in the
+     ordinary case and read as an absent feature; this says which pairs
+     carried frames whatever the answer, so "all on pair zero" is visible as
+     a measurement rather than as nothing. It is the expected answer here:
+     the pair follows the sending CPU, and a boot sends from one. */
+  if (g_net->tx_fanout_reported == 0U && sent >= 4U) {
+    g_net->tx_fanout_reported = 1U;
+    klog("virtio-net-persist: transmit pairs=%u frames_by_pair=%lu,%lu,%lu,%lu "
+         "(pair follows the sending CPU)\n",
+         g_net->active_pairs, g_net->tx_frames_by_pair[0],
+         g_net->tx_frames_by_pair[1], g_net->tx_frames_by_pair[2],
+         g_net->tx_frames_by_pair[3]);
+  }
+  virtio_transport_notify(&g_net->device, 2U * pair_index + 1U);
   return XAIOS_OK;
 }
 
@@ -1001,7 +1056,12 @@ xaios_status_t virtio_net_tx_submit(const uint8_t *data, uint64_t len,
 
 static xaios_status_t wait_tx_token(uint64_t token, uint64_t started) {
   uint64_t last_notify = started;
-  while ((uint16_t)(__atomic_load_n(&g_net->pairs[0].tx_last_used, __ATOMIC_ACQUIRE) -
+  uint32_t pair_index = (uint32_t)(token >> 32U);
+  if (g_net == 0 || pair_index >= VIRTIO_NET_MAX_QUEUE_PAIRS) {
+    return XAIOS_ERR_INVALID;
+  }
+  virtio_net_queue_pair_t *pair = &g_net->pairs[pair_index];
+  while ((uint16_t)(__atomic_load_n(&pair->tx_last_used, __ATOMIC_ACQUIRE) -
                     (uint16_t)token) >= UINT16_C(0x8000)) {
     (void)virtio_net_drain_tx_completions();
     uint64_t now = timer_now_ns();
@@ -1011,7 +1071,7 @@ static xaios_status_t wait_tx_token(uint64_t token, uint64_t started) {
     /* Re-ring for the reason given at wait_used_renotifying: this queue is
        waiting on a doorbell that may never have registered. */
     if (now - last_notify >= VIRTIO_RENOTIFY_NS) {
-      virtio_transport_notify(&g_net->device, 1U);
+      virtio_transport_notify(&g_net->device, 2U * pair_index + 1U);
       last_notify = now;
     }
     xaios_cpu_relax();
