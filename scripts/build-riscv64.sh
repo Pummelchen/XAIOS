@@ -48,6 +48,8 @@ compile() {
 compile "$ROOT_DIR/kernel/arch/riscv64/entry.S"
 compile "$ROOT_DIR/kernel/arch/riscv64/sbi.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/console.c"
+compile "$ROOT_DIR/kernel/arch/riscv64/fdt.c"
+compile "$ROOT_DIR/kernel/arch/riscv64/boot_info.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/boot.c"
 # Shared kernel source, compiled from the same file the other two
 # architectures use. Building it here is the point of the exercise: if it

@@ -13,10 +13,12 @@
  */
 #include <stdint.h>
 
+#include <xaios/boot_info.h>
 #include <xaios/riscv64_sbi.h>
 #include <xaios/sha256.h>
 
 void klog(const char *fmt, ...);
+xaios_boot_info_t *riscv64_build_boot_info(uint64_t device_tree);
 void riscv64_boot(uint64_t hart_id, uint64_t device_tree);
 uint64_t riscv64_trap_handler(uint64_t cause, uint64_t epc, uint64_t tval);
 extern void riscv64_trap_entry(void);
@@ -121,6 +123,27 @@ void riscv64_boot(uint64_t hart_id, uint64_t device_tree) {
        sbi_implementation_id(), sbi_probe_extension(SBI_EXT_DBCN),
        sbi_probe_extension(SBI_EXT_SRST), sbi_probe_extension(SBI_EXT_TIME));
   klog("riscv64: sbi console ready\n");
+
+  /* Describe this machine from its device tree, which is the first step
+     towards running shared kernel code that expects a boot structure. */
+  {
+    xaios_boot_info_t *boot = riscv64_build_boot_info(device_tree);
+    if (boot == 0) {
+      klog("riscv64: BOOT INFO FAILED -- cannot describe this machine\n");
+      sbi_shutdown();
+    }
+    const xaios_memory_descriptor_t *map =
+        (const xaios_memory_descriptor_t *)(uintptr_t)boot->memory_map;
+    uint64_t regions = boot->memory_map_size / boot->memory_descriptor_size;
+    uint64_t total_pages = 0U;
+    for (uint64_t i = 0U; i < regions; ++i) total_pages += map[i].number_of_pages;
+    klog("riscv64: device tree parsed uart=%lx regions=%lu free=%lu MiB\n",
+         boot->uart_base, regions, (total_pages * 0x1000U) / (1024U * 1024U));
+    for (uint64_t i = 0U; i < regions; ++i) {
+      klog("riscv64:   region %lu %lx..%lx\n", i, map[i].physical_start,
+           map[i].physical_start + map[i].number_of_pages * 0x1000U);
+    }
+  }
 
   /* Traps. Provoked on purpose, because a trap vector that has never been
      entered is a guess. */

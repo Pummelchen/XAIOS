@@ -32,6 +32,10 @@ REQUIRED = [
     # The console itself: nothing else can be reported without it.
     "XAIOS riscv64 bring-up starting",
     "riscv64: sbi console ready",
+    # The machine described from its own device tree rather than from
+    # constants: a UART address that was read, and free memory that excludes
+    # the kernel and the tree itself.
+    "riscv64: device tree parsed uart=0x10000000 regions=2",
     # A trap that was provoked, taken, identified and returned from. cause=3
     # is a breakpoint, which is what the guest deliberately raised.
     "riscv64: trap taken and returned from cause=3",
@@ -55,6 +59,8 @@ FORBIDDEN = [
     "SV39 REFUSED",
     "TIMER DID NOT ADVANCE",
     "XAIOS panic",
+    "BOOT INFO FAILED",
+    "declares no memory",
 ]
 
 
