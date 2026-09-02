@@ -53,11 +53,15 @@
 #define VMXNET3_REG_DSAH UINT32_C(0x018) /* and high */
 #define VMXNET3_REG_CMD UINT32_C(0x020)
 #define VMXNET3_REG_MACL UINT32_C(0x028)
+#define VMXNET3_REG_ICR UINT32_C(0x038) /* interrupt cause */
+#define VMXNET3_REG_ECR UINT32_C(0x040) /* event cause: what the device objected to */
 #define VMXNET3_REG_MACH UINT32_C(0x030)
 
 /* Commands. The device distinguishes those that set something from those that
    ask, by the constant they start from. */
 #define VMXNET3_CMD_FIRST_GET UINT32_C(0xf00d0000)
+#define VMXNET3_CMD_GET_QUEUE_STATUS (VMXNET3_CMD_FIRST_GET + 0U)
+#define VMXNET3_CMD_GET_STATS (VMXNET3_CMD_FIRST_GET + 1U)
 #define VMXNET3_CMD_GET_LINK (VMXNET3_CMD_FIRST_GET + 2U)
 #define VMXNET3_CMD_GET_PERM_MAC_LO (VMXNET3_CMD_FIRST_GET + 3U)
 #define VMXNET3_CMD_GET_PERM_MAC_HI (VMXNET3_CMD_FIRST_GET + 4U)
@@ -222,6 +226,22 @@ typedef char vmxnet3_size_check[(sizeof(vmxnet3_tx_desc_t) == 16U &&
 #define VMXNET3_TQD_COMP_RING_SIZE 0x040U
 #define VMXNET3_TQD_DRIVER_DATA_LEN 0x044U
 #define VMXNET3_TQD_INTR_INDEX 0x048U
+/* The device writes these; the driver only reads them. `stopped` and `error`
+   are how a queue says it refused the work rather than merely not finishing
+   it, and the counters separate "sent nothing" from "sent and threw away". */
+#define VMXNET3_TQD_STATUS_STOPPED 0x050U
+#define VMXNET3_TQD_STATUS_ERROR 0x054U
+#define VMXNET3_TQD_STAT_UCAST_PKTS 0x068U
+#define VMXNET3_TQD_STAT_BCAST_PKTS 0x088U
+#define VMXNET3_TQD_STAT_ERROR_PKTS 0x098U
+#define VMXNET3_TQD_STAT_DISCARD_PKTS 0x0a0U
+/* The same fields in the receive queue, used as a control on the reading
+   above: receive demonstrably works, so if its counters are also zero the
+   offsets are wrong and the transmit zeros mean nothing. */
+#define VMXNET3_RQD_STAT_UCAST_PKTS 0x068U
+#define VMXNET3_RQD_STAT_BCAST_PKTS 0x088U
+#define VMXNET3_RQD_STAT_OUT_OF_BUF 0x098U
+#define VMXNET3_RQD_STAT_ERROR_PKTS 0x0a0U
 
 #define VMXNET3_RQD_RX_RING1_PA 0x010U
 #define VMXNET3_RQD_RX_RING2_PA 0x018U
@@ -250,6 +270,20 @@ static void put16(uint8_t *base, uint32_t offset, uint16_t value) {
   base[offset + 1U] = (uint8_t)((value >> 8U) & 0xffU);
 }
 
+/* Reading back the same way it is written. The queue descriptor is a byte
+   array on purpose, so the fields the device writes have to be reassembled
+   little-endian rather than cast to a struct. */
+static uint32_t get32(const uint8_t *base, uint32_t offset) {
+  return (uint32_t)base[offset] | ((uint32_t)base[offset + 1U] << 8U) |
+         ((uint32_t)base[offset + 2U] << 16U) |
+         ((uint32_t)base[offset + 3U] << 24U);
+}
+
+static uint64_t get64(const uint8_t *base, uint32_t offset) {
+  return (uint64_t)get32(base, offset) |
+         ((uint64_t)get32(base, offset + 4U) << 32U);
+}
+
 typedef struct vmxnet3_driver {
   volatile uint8_t *bar0;
   volatile uint8_t *bar1;
@@ -274,6 +308,7 @@ typedef struct vmxnet3_driver {
   uint32_t tx_gen;
   uint32_t tx_comp_consume;
   uint32_t tx_comp_gen;
+  uint32_t timeout_reported;
   uint32_t rx_produce;
   uint32_t rx_gen;
   uint32_t rx_comp_consume;
@@ -281,6 +316,14 @@ typedef struct vmxnet3_driver {
 } vmxnet3_driver_t;
 
 static vmxnet3_driver_t *g_vmxnet3;
+
+static uint32_t read_bar0(uint32_t offset) {
+  return *(volatile uint32_t *)(void *)(g_vmxnet3->bar0 + offset);
+}
+
+static void write_bar0(uint32_t offset, uint32_t value) {
+  *(volatile uint32_t *)(void *)(g_vmxnet3->bar0 + offset) = value;
+}
 
 static uint32_t read_bar1(uint32_t offset) {
   return *(volatile uint32_t *)(void *)(g_vmxnet3->bar1 + offset);
@@ -387,6 +430,29 @@ xaios_status_t vmxnet3_probe(void) {
   }
   write_bar1(VMXNET3_REG_UVRS, UINT32_C(1) << (g_vmxnet3->upt_version - 1U));
 
+  /* Prove the doorbell window before trusting a doorbell.
+     The control window proves itself: revision, link and the permanent
+     address all read back correct values, so a wrong BAR1 would be obvious
+     immediately. The doorbell window proves nothing by being written -- every
+     store to it succeeds whether or not the device is on the other end, and a
+     transmit that is never picked up looks exactly like a protocol bug. IMR
+     is the one BAR0 register that reads back what was written, so it is what
+     separates "the device ignored the descriptor" from "the device was never
+     told there was one". */
+  {
+    uint64_t bar0_pa = pci_bar_address(index, 0U);
+    uint64_t bar1_pa = pci_bar_address(index, 1U);
+    uint32_t imr_before = read_bar0(VMXNET3_REG_IMR);
+    write_bar0(VMXNET3_REG_IMR, 1U);
+    uint32_t imr_masked = read_bar0(VMXNET3_REG_IMR);
+    write_bar0(VMXNET3_REG_IMR, 0U);
+    uint32_t imr_cleared = read_bar0(VMXNET3_REG_IMR);
+    klog("vmxnet3: bar0_pa=0x%lx bar1_pa=0x%lx imr before=0x%x set=0x%x "
+         "cleared=0x%x doorbell_window=%s\n",
+         bar0_pa, bar1_pa, imr_before, imr_masked, imr_cleared,
+         (imr_masked == 1U && imr_cleared == 0U) ? "live" : "NOT RESPONDING");
+  }
+
   /* The permanent address, asked for rather than read out of MACL/MACH: those
      hold whatever a driver last wrote, which before activation is nothing. */
   uint32_t low = command_result(VMXNET3_CMD_GET_PERM_MAC_LO);
@@ -428,10 +494,6 @@ static uint64_t dma_address(const void *pointer, uint64_t length) {
     return 0U;
   }
   return physical;
-}
-
-static void write_bar0(uint32_t offset, uint32_t value) {
-  *(volatile uint32_t *)(void *)(g_vmxnet3->bar0 + offset) = value;
 }
 
 /* Rings, buffers, the shared area and the queue descriptors.
@@ -531,11 +593,19 @@ static xaios_status_t activate_device(void) {
     return XAIOS_ERR_IO;
   }
 
+  klog("vmxnet3: dma tx_ring=0x%lx tx_comp=0x%lx rx_ring=0x%lx rx_ring2=0x%lx "
+       "rx_comp=0x%lx queues=0x%lx shared=0x%lx\n",
+       tx_ring_pa, tx_comp_pa, rx_ring_pa, rx_ring2_pa, rx_comp_pa, queues_pa,
+       shared_pa);
   put64(tqd, VMXNET3_TQD_TX_RING_PA, tx_ring_pa);
   put64(tqd, VMXNET3_TQD_COMP_RING_PA, tx_comp_pa);
   put32(tqd, VMXNET3_TQD_TX_RING_SIZE, VMXNET3_RING_SIZE);
   put32(tqd, VMXNET3_TQD_COMP_RING_SIZE, VMXNET3_RING_SIZE);
   put32(tqd, VMXNET3_TQD_DATA_RING_SIZE, 0U);
+  /* "No driver data here" is all-ones, not zero. Zero is a valid physical
+     address and a device entitled to read it will. */
+  put64(tqd, VMXNET3_TQD_DRIVER_DATA_PA, UINT64_C(0xffffffffffffffff));
+  put32(tqd, VMXNET3_TQD_DRIVER_DATA_LEN, 0U);
   put32(tqd, VMXNET3_TQD_INTR_INDEX, 0U);
   /* Ring the doorbell for a single descriptor. */
   put32(tqd, VMXNET3_TQD_NUM_DEFERRED, 0U);
@@ -548,6 +618,8 @@ static xaios_status_t activate_device(void) {
   put32(rqd, VMXNET3_RQD_RX_RING2_SIZE, VMXNET3_RING_SIZE);
   put32(rqd, VMXNET3_RQD_COMP_RING_SIZE, VMXNET3_RX_COMP_SIZE);
   put32(rqd, VMXNET3_RQD_INTR_INDEX, 0U);
+  put64(rqd, VMXNET3_RQD_DRIVER_DATA_PA, UINT64_C(0xffffffffffffffff));
+  put32(rqd, VMXNET3_RQD_DRIVER_DATA_LEN, 0U);
 
   put32(shared, VMXNET3_DS_MAGIC, VMXNET3_DRIVER_SHARED_MAGIC);
   put32(shared, VMXNET3_DS_VERSION, 1U);
@@ -586,7 +658,33 @@ static xaios_status_t activate_device(void) {
      index wraps at the ring size, so handing over the whole ring means
      writing the last slot rather than the count. */
   write_bar0(VMXNET3_REG_RXPROD, VMXNET3_RING_SIZE - 1U);
+  /* The second receive ring has a producer index of its own, and a device
+     given a ring it is never told the fill level of has nowhere to put a
+     frame that lands on it. */
+  write_bar0(VMXNET3_REG_RXPROD2, VMXNET3_RING_SIZE - 1U);
   g_vmxnet3->active = 1U;
+  /* What the device actually reads for the transmit queue, read back from the
+     bytes rather than from the values that were meant to be written. */
+  klog("vmxnet3: tqd conf ring_pa=0x%lx data_pa=0x%lx comp_pa=0x%lx "
+       "dd_pa=0x%lx\n",
+       get64(tqd, VMXNET3_TQD_TX_RING_PA), get64(tqd, VMXNET3_TQD_DATA_RING_PA),
+       get64(tqd, VMXNET3_TQD_COMP_RING_PA),
+       get64(tqd, VMXNET3_TQD_DRIVER_DATA_PA));
+  klog("vmxnet3: tqd sizes tx=%u data=%u comp=%u ddlen=%u intr=%u "
+       "deferred=%u threshold=%u\n",
+       get32(tqd, VMXNET3_TQD_TX_RING_SIZE),
+       get32(tqd, VMXNET3_TQD_DATA_RING_SIZE),
+       get32(tqd, VMXNET3_TQD_COMP_RING_SIZE),
+       get32(tqd, VMXNET3_TQD_DRIVER_DATA_LEN),
+       get32(tqd, VMXNET3_TQD_INTR_INDEX) & 0xffU,
+       get32(tqd, VMXNET3_TQD_NUM_DEFERRED),
+       get32(tqd, VMXNET3_TQD_THRESHOLD));
+  klog("vmxnet3: ds numTx=%u numRx=%u qdesc_pa=0x%lx qdesc_len=%u mtu=%u\n",
+       shared[VMXNET3_DS_NUM_TX_QUEUES], shared[VMXNET3_DS_NUM_RX_QUEUES],
+       get64(shared, VMXNET3_DS_QUEUE_DESC_PA),
+       get32(shared, VMXNET3_DS_QUEUE_DESC_LEN),
+       get32(shared, VMXNET3_DS_MTU));
+
   klog("vmxnet3: activated tx_ring=%u rx_ring=%u mtu=1500\n",
        VMXNET3_RING_SIZE, VMXNET3_RING_SIZE);
   return XAIOS_OK;
@@ -672,6 +770,56 @@ xaios_status_t vmxnet3_tx(const uint8_t *data, uint64_t length) {
       return XAIOS_OK;
     }
     if (started != 0U && timer_now_ns() - started >= UINT64_C(100000000)) {
+      /* Ask the device why, once.
+         "transmit timed out" repeated 284 times says only that a completion
+         never arrived, which was already the symptom. The device keeps the
+         answer in registers and in the queue it was given: whether it stopped
+         the queue and with what error, what it counted as sent, errored and
+         discarded, and what is actually sitting in the completion slot the
+         driver is watching. Printed once because a driver that floods the
+         console during a failure destroys the log that would explain it. */
+      if (g_vmxnet3->timeout_reported == 0U) {
+        g_vmxnet3->timeout_reported = 1U;
+        klog("vmxnet3: transmit timed out; device state follows\n");
+        /* Ask before reading.
+           The queue's status and statistics are marked in VMware's own
+           definitions as "driver read after a GET command": the device does
+           not keep them live in guest memory, it writes them when asked. The
+           first version of this read them without asking and reported
+           `queue_stopped=0 queue_error=0 ucast=0 error=0 discard=0`, which is
+           what freshly zeroed memory says whatever the device thinks. Every
+           one of those numbers was the calloc, not an answer. */
+        (void)command_result(VMXNET3_CMD_GET_QUEUE_STATUS);
+        (void)command_result(VMXNET3_CMD_GET_STATS);
+        klog("vmxnet3:   ecr=0x%x icr=0x%x queue_stopped=%u queue_error=0x%x\n",
+             read_bar1(VMXNET3_REG_ECR), read_bar1(VMXNET3_REG_ICR),
+             get32(g_vmxnet3->tqd, VMXNET3_TQD_STATUS_STOPPED) & 0xffU,
+             get32(g_vmxnet3->tqd, VMXNET3_TQD_STATUS_ERROR));
+        klog("vmxnet3:   device counted ucast=%lu bcast=%lu error=%lu "
+             "discard=%lu\n",
+             get64(g_vmxnet3->tqd, VMXNET3_TQD_STAT_UCAST_PKTS),
+             get64(g_vmxnet3->tqd, VMXNET3_TQD_STAT_BCAST_PKTS),
+             get64(g_vmxnet3->tqd, VMXNET3_TQD_STAT_ERROR_PKTS),
+             get64(g_vmxnet3->tqd, VMXNET3_TQD_STAT_DISCARD_PKTS));
+        klog("vmxnet3:   waiting slot=%u want_gen=%u comp=[0x%x 0x%x 0x%x "
+             "0x%x] txprod=%u deferred=%u\n",
+             g_vmxnet3->tx_comp_consume, g_vmxnet3->tx_comp_gen,
+             comp->word0, comp->word1, comp->word2, comp->word3,
+             g_vmxnet3->tx_produce,
+             get32(g_vmxnet3->tqd, VMXNET3_TQD_NUM_DEFERRED));
+        klog("vmxnet3:   descriptor sent word2=0x%x word3=0x%x\n",
+             g_vmxnet3->tx_ring[slot].word2, g_vmxnet3->tx_ring[slot].word3);
+        {
+          const uint8_t *rqd = g_vmxnet3->queues + VMXNET3_TQD_BYTES;
+          klog("vmxnet3:   control -- receive counted ucast=%lu bcast=%lu "
+               "out_of_buf=%lu error=%lu (nonzero here means the transmit "
+               "zeros above are real)\n",
+               get64(rqd, VMXNET3_RQD_STAT_UCAST_PKTS),
+               get64(rqd, VMXNET3_RQD_STAT_BCAST_PKTS),
+               get64(rqd, VMXNET3_RQD_STAT_OUT_OF_BUF),
+               get64(rqd, VMXNET3_RQD_STAT_ERROR_PKTS));
+        }
+      }
       klog("vmxnet3: transmit timed out\n");
       return XAIOS_ERR_IO;
     }
