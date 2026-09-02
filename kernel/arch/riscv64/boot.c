@@ -14,6 +14,11 @@
 #include <stdint.h>
 
 #include <xaios/boot_info.h>
+#include <xaios/kheap.h>
+#include <xaios/numa.h>
+#include <xaios/pmm.h>
+#include <xaios/smp.h>
+#include <xaios/vmm.h>
 #include <xaios/riscv64_sbi.h>
 #include <xaios/sha256.h>
 
@@ -28,6 +33,7 @@ extern char __kernel_end[];
 /* Set by the trap handler so the code that caused a trap can prove one was
    taken rather than assuming it. Volatile because the only writer is a trap
    the compiler cannot see happening. */
+static xaios_boot_info_t *g_boot;
 static volatile uint64_t g_traps_taken;
 static volatile uint64_t g_last_cause;
 
@@ -58,50 +64,6 @@ uint64_t riscv64_trap_handler(uint64_t cause, uint64_t epc, uint64_t tval) {
   return epc + (((*instruction & 0x3U) == 0x3U) ? 4U : 2U);
 }
 
-/* Sv39: three levels, 512 entries each, 4 KiB pages.
- *
- * The map built here is a single gibibyte-aligned identity mapping made of
- * level-1 leaves, which Sv39 allows and which covers all of QEMU virt's RAM
- * and its device window in a handful of entries. A full page-table walker
- * belongs with the memory manager this port has not written; what is being
- * proven here is narrower and worth stating exactly: that translation can be
- * turned on, that execution survives it, and that the kernel can still reach
- * its own memory afterwards.
- */
-#define PTE_V UINT64_C(0x001)
-#define PTE_R UINT64_C(0x002)
-#define PTE_W UINT64_C(0x004)
-#define PTE_X UINT64_C(0x008)
-#define PTE_A UINT64_C(0x040)
-#define PTE_D UINT64_C(0x080)
-#define SATP_MODE_SV39 (UINT64_C(8) << 60)
-
-static uint64_t g_root_table[512] __attribute__((aligned(4096)));
-
-static int enable_sv39(void) {
-  /* One gibibyte per entry, identity mapped, read/write/execute. Entry 2
-     covers 0x80000000 where RAM and this kernel live; entry 0 covers the
-     device window below it, which includes the UART and the PLIC. */
-  for (uint64_t gib = 0U; gib < 4U; ++gib) {
-    uint64_t physical = gib << 30;
-    g_root_table[gib] = ((physical >> 12) << 10) | PTE_V | PTE_R | PTE_W |
-                        PTE_X | PTE_A | PTE_D;
-  }
-  uint64_t satp = SATP_MODE_SV39 |
-                  (((uint64_t)(uintptr_t)g_root_table) >> 12);
-  __asm__ volatile("sfence.vma zero, zero" ::: "memory");
-  __asm__ volatile("csrw satp, %0" : : "r"(satp) : "memory");
-  __asm__ volatile("sfence.vma zero, zero" ::: "memory");
-
-  /* Read satp back. A write the hardware declined leaves the old value, and
-     without this check a machine that ignored the request would look
-     identical to one that honoured it -- the identity map means nothing
-     visibly changes either way. */
-  uint64_t observed = 0U;
-  __asm__ volatile("csrr %0, satp" : "=r"(observed));
-  return observed == satp;
-}
-
 static uint64_t read_time(void) {
   uint64_t value = 0U;
   __asm__ volatile("rdtime %0" : "=r"(value));
@@ -128,6 +90,7 @@ void riscv64_boot(uint64_t hart_id, uint64_t device_tree) {
      towards running shared kernel code that expects a boot structure. */
   {
     xaios_boot_info_t *boot = riscv64_build_boot_info(device_tree);
+    g_boot = boot;
     if (boot == 0) {
       klog("riscv64: BOOT INFO FAILED -- cannot describe this machine\n");
       sbi_shutdown();
@@ -161,17 +124,34 @@ void riscv64_boot(uint64_t hart_id, uint64_t device_tree) {
   klog("riscv64: trap taken and returned from cause=%lu total=%lu\n",
        g_last_cause, g_traps_taken);
 
-  /* Paging. */
-  if (enable_sv39() == 0) {
-    klog("riscv64: SV39 REFUSED -- satp did not take the written value\n");
-    sbi_shutdown();
+  /* Real memory management, from here on shared with the other two
+     architectures: the physical allocator, Sv48 page tables, and the kernel
+     heap. The bring-up's four gibibyte identity leaves are gone -- they were
+     enough to prove translation could be turned on and nothing more. */
+  /* NUMA first: the physical allocator takes its regions from the node table
+     rather than from the boot map directly, and pmm_init says so in its own
+     comment. Calling them the other way round produces a working-looking
+     allocator with nothing in it. */
+  numa_init(g_boot);
+  pmm_init(g_boot);
+  klog("riscv64: pmm total=%lu free=%lu pages\n", pmm_total_pages(),
+       pmm_free_pages());
+  vmm_init(g_boot);
+  smp_init_platform(g_boot);
+  smp_self_test();
+  vmm_self_test();
+  kheap_init();
+  {
+    /* The heap, exercised rather than assumed: a kernel that reports a heap
+       and cannot hand out a byte of it has reported nothing. */
+    void *block = kheap_alloc(4096U, 64U);
+    if (block == 0) {
+      klog("riscv64: KHEAP FAILED to allocate\n");
+      sbi_shutdown();
+    }
+    *(volatile uint64_t *)block = UINT64_C(0x5849414f53);
+    klog("riscv64: kheap serving allocations\n");
   }
-  /* Touch the kernel's own memory through the new translation. If the map
-     were wrong this faults rather than returning, which the trap counter
-     then reports. */
-  volatile uint64_t probe = *(volatile uint64_t *)(void *)__kernel_start;
-  (void)probe;
-  klog("riscv64: sv39 paging enabled, kernel still addressable\n");
 
   /* The timer has to be seen to move. A counter read once is a number; read
      twice with work between is a clock. */
@@ -191,9 +171,9 @@ void riscv64_boot(uint64_t hart_id, uint64_t device_tree) {
   sha256_self_test();
   klog("riscv64: shared kernel sha256 verified on this architecture\n");
 
-  klog("riscv64: bring-up complete -- console, traps, sv39, timer and "
-       "shared kernel code\n");
-  klog("riscv64: NOT present on this architecture: smp, pci, virtio, "
+  klog("riscv64: bring-up complete -- console, traps, sv48 paging, physical "
+       "and heap allocators, smp identity, timer and shared kernel code\n");
+  klog("riscv64: NOT present on this architecture: pci, virtio, "
        "storage, network, userspace\n");
   klog("riscv64: halting\n");
   sbi_shutdown();

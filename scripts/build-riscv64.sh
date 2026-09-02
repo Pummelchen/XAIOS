@@ -50,7 +50,15 @@ compile "$ROOT_DIR/kernel/arch/riscv64/sbi.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/console.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/fdt.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/boot_info.c"
+compile "$ROOT_DIR/kernel/arch/riscv64/mmu.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/boot.c"
+# Shared memory management, unchanged from what the other two architectures
+# link. If these needed an edit to work here the neutrality rule would have
+# been contradicted rather than tested.
+compile "$ROOT_DIR/kernel/arch/riscv64/smp.c"
+compile "$ROOT_DIR/kernel/mm/pmm.c"
+compile "$ROOT_DIR/kernel/mm/numa.c"
+compile "$ROOT_DIR/kernel/mm/kheap.c"
 # Shared kernel source, compiled from the same file the other two
 # architectures use. Building it here is the point of the exercise: if it
 # needed an edit to work on a third architecture, the platform-neutrality

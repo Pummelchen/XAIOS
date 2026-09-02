@@ -29,6 +29,12 @@ _start:
   /* Park every hart but the first. */
   bnez  a0, park
 
+  /* tp carries this hart's id for the rest of the kernel's life. Supervisor
+     mode cannot read mhartid -- that CSR is machine mode only -- so the value
+     firmware passed in a0 is the only chance to learn it, and a register is
+     where it has to live. */
+  mv    tp, a0
+
   la    sp, __stack_top
 
   /* Zero .bss before any C touches it. The C code below assumes static

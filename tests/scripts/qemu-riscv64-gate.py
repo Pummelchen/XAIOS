@@ -39,8 +39,17 @@ REQUIRED = [
     # A trap that was provoked, taken, identified and returned from. cause=3
     # is a breakpoint, which is what the guest deliberately raised.
     "riscv64: trap taken and returned from cause=3",
-    # Translation on, and the kernel still able to reach itself through it.
-    "riscv64: sv39 paging enabled, kernel still addressable",
+
+    # The shared memory stack, unmodified: NUMA regions, the physical
+    # allocator, Sv48 page tables proven by mapping, translating, writing
+    # through and unmapping, and a kernel heap that actually serves.
+    "NUMA: node 0 regions=2",
+    "PMM total pages=",
+    "vmm: sv48 enabled",
+    "vmm: self-test passed (map, translate, write, unmap)",
+    "smp: riscv64 single-hart self-test passed",
+    "kheap: initialized",
+    "riscv64: kheap serving allocations",
     # A clock, not a constant.
     "riscv64: timer advancing",
     # The claim this port exists to test: kernel/runtime/sha256.c, the same
@@ -49,7 +58,7 @@ REQUIRED = [
     "riscv64: shared kernel sha256 verified on this architecture",
     # The guest saying what it is not, so a passing gate cannot be read as
     # more than it is.
-    "riscv64: NOT present on this architecture: smp, pci, virtio, storage, "
+    "riscv64: NOT present on this architecture: pci, virtio, storage, "
     "network, userspace",
     "riscv64: halting",
 ]
@@ -61,6 +70,8 @@ FORBIDDEN = [
     "XAIOS panic",
     "BOOT INFO FAILED",
     "declares no memory",
+    "KHEAP FAILED",
+    "Sv48 refused",
 ]
 
 
@@ -110,8 +121,9 @@ def main() -> int:
 
     version = subprocess.run([qemu, "--version"], text=True,
                              capture_output=True).stdout.splitlines()
-    print("qemu-riscv64-gate: console, traps, sv39, timer and shared kernel "
-          "sha256 all verified on rv64gc")
+    print("qemu-riscv64-gate: console, traps, sv48 paging, physical and heap "
+          "allocators, smp identity, timer and shared kernel code verified "
+          "on rv64gc")
     print(f"  {version[0] if version else 'qemu-system-riscv64'}")
     return 0
 
