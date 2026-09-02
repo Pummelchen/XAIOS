@@ -36,6 +36,26 @@
    however many it advertises. */
 #define VIRTIO_NET_CTRL_MQ 4U
 #define VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET 0U
+#define VIRTIO_NET_CTRL_MQ_RSS_CONFIG 1U
+/* Receive-side scaling sits at feature bit 60, which is bit 28 of the high
+   word -- the first feature this driver wants that does not fit in the low
+   one. */
+#define VIRTIO_NET_F_RSS_HIGH (UINT32_C(1) << 28U)
+/* Which parts of a packet the device hashes. Only the four-tuple types are
+   asked for: hashing on addresses alone puts every flow between the same two
+   machines on one queue, which is the case multiqueue exists to spread. */
+#define VIRTIO_NET_HASH_TYPE_IPV4 (UINT32_C(1) << 0U)
+#define VIRTIO_NET_HASH_TYPE_TCPV4 (UINT32_C(1) << 1U)
+#define VIRTIO_NET_HASH_TYPE_UDPV4 (UINT32_C(1) << 2U)
+#define VIRTIO_NET_HASH_TYPE_IPV6 (UINT32_C(1) << 3U)
+#define VIRTIO_NET_HASH_TYPE_TCPV6 (UINT32_C(1) << 4U)
+#define VIRTIO_NET_HASH_TYPE_UDPV6 (UINT32_C(1) << 5U)
+/* Sixteen entries is a mask of fifteen, which is the smallest power of two
+   that still spreads evenly over the four pairs this driver supports. The
+   table has to be a power of two because the device indexes it by masking a
+   hash, not by dividing one. */
+#define VIRTIO_NET_RSS_TABLE_ENTRIES 16U
+#define VIRTIO_NET_RSS_KEY_BYTES 40U
 #define VIRTIO_NET_CTRL_ACK_OK 0U
 #define VIRTIO_NET_F_GUEST_TSO4 (UINT32_C(1) << 7U)
 #define VIRTIO_NET_F_GUEST_TSO6 (UINT32_C(1) << 8U)
@@ -120,6 +140,9 @@ typedef struct virtio_net_driver {
   uint64_t scatter_gather_submissions;
   uint64_t copy_fallbacks;
   uint32_t multiqueue;
+  /* Whether the device accepted VIRTIO_NET_F_RSS. Separate from multiqueue:
+     a device can offer several pairs and no hashing at all. */
+  uint32_t rss;
   uint32_t max_queue_pairs;
   /* How many pairs are set up and serviced. Receive polls all of them round
      robin; transmit picks one per CPU. The device may advertise more than
@@ -316,7 +339,21 @@ static xaios_status_t negotiate_net_features(virtio_net_driver_t *driver) {
      so offer to take all of it on a second attempt. Mergeable receive
      buffers stay out of both: this driver does not reassemble a packet
      spread across several buffers. */
-  static const uint32_t attempts[3] = {
+  /* The high word each attempt asks for, alongside `attempts` below. RSS is
+     the first feature this driver wants that lives above bit 31, so the high
+     word stopped being a constant. */
+  static const uint32_t attempts_high[4] = {
+      VIRTIO_F_VERSION_1_HIGH | VIRTIO_NET_F_RSS_HIGH,
+      VIRTIO_F_VERSION_1_HIGH,
+      VIRTIO_F_VERSION_1_HIGH,
+      VIRTIO_F_VERSION_1_HIGH,
+  };
+  static const uint32_t attempts[4] = {
+      /* Multiqueue with hashing. Tried first because a device that steers by
+         hash makes the queues after the first carry traffic; without it they
+         exist and may stay empty, which looks the same from here. */
+      VIRTIO_NET_F_MAC | VIRTIO_F_RING_INDIRECT_DESC |
+          VIRTIO_F_RING_EVENT_IDX | VIRTIO_NET_F_MQ | VIRTIO_NET_F_CTRL_VQ,
       /* Tried first, and only a device offering multiple queue pairs accepts
          it. Everything below is what this driver asked for before, so a device
          without multiqueue negotiates exactly as it always did -- the first
@@ -332,11 +369,11 @@ static xaios_status_t negotiate_net_features(virtio_net_driver_t *driver) {
           VIRTIO_NET_F_HOST_TSO6 | VIRTIO_NET_F_STATUS |
           VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX,
   };
-  for (uint32_t attempt = 0U; attempt < 3U; ++attempt) {
+  for (uint32_t attempt = 0U; attempt < 4U; ++attempt) {
     uint32_t accepted_low = 0U;
     uint32_t accepted_high = 0U;
     xaios_status_t status = virtio_transport_negotiate_features(
-        &driver->device, attempts[attempt], VIRTIO_F_VERSION_1_HIGH,
+        &driver->device, attempts[attempt], attempts_high[attempt],
         &accepted_low, &accepted_high);
     if (status != XAIOS_OK ||
         (accepted_high & VIRTIO_F_VERSION_1_HIGH) == 0U) {
@@ -353,6 +390,12 @@ static xaios_status_t negotiate_net_features(virtio_net_driver_t *driver) {
     driver->multiqueue =
         (accepted_low & VIRTIO_NET_F_MQ) != 0U &&
         (accepted_low & VIRTIO_NET_F_CTRL_VQ) != 0U ? 1U : 0U;
+    /* Read from what the device accepted, not from what was asked for. The
+       first attempt requests RSS and a device that has no hashing simply
+       does not return the bit, which is the same negotiation as any other
+       optional feature and needs no special case beyond looking. */
+    driver->rss = (accepted_high & VIRTIO_NET_F_RSS_HIGH) != 0U &&
+                  driver->multiqueue != 0U ? 1U : 0U;
     if (driver->multiqueue != 0U) {
       /* max_virtqueue_pairs sits at offset 8 of the device configuration,
          after the six MAC bytes and the two status bytes. */
@@ -638,6 +681,103 @@ static xaios_status_t set_queue_pairs(uint16_t pairs) {
   return XAIOS_OK;
 }
 
+/* Ask the device to steer by hash instead of by whatever it was doing.
+ *
+ * Without this, a device with several receive queues is free to put every
+ * frame on the first one, and the driver polling four queues round robin
+ * cannot tell the difference between fair spreading and an empty ring. RSS
+ * is what makes the spread a property of the traffic rather than of the
+ * device's mood: the device hashes each packet's four-tuple, masks the hash
+ * into an indirection table, and the table names the queue.
+ *
+ * The table is filled round robin over the pairs actually in service, so the
+ * queues that exist all get used and the ones that do not are never named.
+ * The key is fixed rather than drawn from the entropy pool on purpose: a
+ * random key spreads exactly as well and makes a capture impossible to
+ * reproduce, and reproducibility is worth more here than unpredictability --
+ * this steers receive queues inside one machine, it does not defend
+ * anything.
+ */
+static xaios_status_t configure_rss(void) {
+  if (g_net->ctrl_ready == 0U || g_net->rss == 0U) {
+    return XAIOS_ERR_UNSUPPORTED;
+  }
+  uint8_t *request = g_net->ctrl_buffer;
+  uint32_t offset = 0U;
+  request[offset++] = (uint8_t)VIRTIO_NET_CTRL_MQ;
+  request[offset++] = (uint8_t)VIRTIO_NET_CTRL_MQ_RSS_CONFIG;
+
+  uint32_t hash_types = VIRTIO_NET_HASH_TYPE_IPV4 | VIRTIO_NET_HASH_TYPE_TCPV4 |
+                        VIRTIO_NET_HASH_TYPE_UDPV4 | VIRTIO_NET_HASH_TYPE_IPV6 |
+                        VIRTIO_NET_HASH_TYPE_TCPV6 | VIRTIO_NET_HASH_TYPE_UDPV6;
+  for (uint32_t i = 0U; i < 4U; ++i) {
+    request[offset++] = (uint8_t)((hash_types >> (8U * i)) & 0xffU);
+  }
+  /* The mask, not the length: the device adds one. */
+  uint16_t table_mask = (uint16_t)(VIRTIO_NET_RSS_TABLE_ENTRIES - 1U);
+  request[offset++] = (uint8_t)(table_mask & 0xffU);
+  request[offset++] = (uint8_t)(table_mask >> 8U);
+  /* Where a packet goes when no hash type matched -- an ARP frame, say.
+     Queue zero, because something has to take it and pair zero is the one
+     guaranteed to exist. */
+  request[offset++] = 0U;
+  request[offset++] = 0U;
+  uint32_t pairs = g_net->active_pairs == 0U ? 1U : g_net->active_pairs;
+  for (uint32_t entry = 0U; entry < VIRTIO_NET_RSS_TABLE_ENTRIES; ++entry) {
+    uint16_t queue = (uint16_t)(entry % pairs);
+    request[offset++] = (uint8_t)(queue & 0xffU);
+    request[offset++] = (uint8_t)(queue >> 8U);
+  }
+  /* The highest transmit queue the device may use. Transmit selection is the
+     driver's, by CPU, so this only has to permit the pairs in service. */
+  uint16_t max_tx = (uint16_t)(pairs - 1U);
+  request[offset++] = (uint8_t)(max_tx & 0xffU);
+  request[offset++] = (uint8_t)(max_tx >> 8U);
+  request[offset++] = (uint8_t)VIRTIO_NET_RSS_KEY_BYTES;
+  for (uint32_t i = 0U; i < VIRTIO_NET_RSS_KEY_BYTES; ++i) {
+    /* A fixed, non-degenerate key. Zeros would hash every packet alike and
+       defeat the whole arrangement while still being accepted. */
+    request[offset++] = (uint8_t)(0x6dU + i * 0x1fU);
+  }
+  uint32_t ack_offset = offset;
+  request[ack_offset] = 0xffU; /* not a value the device could have written */
+
+  g_net->ctrl_desc[0].addr = net_dma_address(request);
+  g_net->ctrl_desc[0].len = 2U;
+  g_net->ctrl_desc[0].flags = VRING_DESC_F_NEXT;
+  g_net->ctrl_desc[0].next = 1U;
+  g_net->ctrl_desc[1].addr = net_dma_address(request + 2U);
+  g_net->ctrl_desc[1].len = ack_offset - 2U;
+  g_net->ctrl_desc[1].flags = VRING_DESC_F_NEXT;
+  g_net->ctrl_desc[1].next = 2U;
+  g_net->ctrl_desc[2].addr = net_dma_address(request + ack_offset);
+  g_net->ctrl_desc[2].len = 1U;
+  g_net->ctrl_desc[2].flags = VRING_DESC_F_WRITE;
+  g_net->ctrl_desc[2].next = 0U;
+
+  g_net->ctrl_avail->ring[g_net->ctrl_avail_idx % VIRTQ_SIZE] = 0U;
+  virtio_mmio_barrier();
+  ++g_net->ctrl_avail_idx;
+  g_net->ctrl_avail->idx = g_net->ctrl_avail_idx;
+  virtio_transport_notify(&g_net->device, g_net->ctrl_queue_index);
+
+  xaios_status_t status = virtio_transport_wait_used(
+      (volatile uint16_t *)(void *)&g_net->ctrl_used->idx,
+      g_net->ctrl_avail_idx);
+  if (status != XAIOS_OK) return status;
+  g_net->ctrl_last_used = g_net->ctrl_avail_idx;
+  virtio_mmio_barrier();
+  if (request[ack_offset] != (uint8_t)VIRTIO_NET_CTRL_ACK_OK) {
+    klog("virtio-net-persist: the device refused the RSS configuration "
+         "ack=%u\n", request[ack_offset]);
+    return XAIOS_ERR_IO;
+  }
+  klog("virtio-net-persist: rss configured hash_types=0x%x table=%u pairs=%u "
+       "key_bytes=%u\n", hash_types, VIRTIO_NET_RSS_TABLE_ENTRIES, pairs,
+       VIRTIO_NET_RSS_KEY_BYTES);
+  return XAIOS_OK;
+}
+
 /* Bring one pair's queues up and fill its receive ring.
  *
  * virtio-net numbers its queues in pairs: receive is 2i, transmit 2i+1, and
@@ -875,7 +1015,11 @@ xaios_status_t virtio_net_init_persistent(void) {
         sizeof(virtq_avail_t), VIRTIO_DMA_ALIGNMENT);
     g_net->ctrl_used = (virtq_used_t *)kheap_calloc(
         sizeof(virtq_used_t), VIRTIO_DMA_ALIGNMENT);
-    g_net->ctrl_buffer = (uint8_t *)kheap_calloc(64U, VIRTIO_DMA_ALIGNMENT);
+    /* 64 bytes was enough while the only control command was a two-byte
+       queue-pair count. The RSS configuration carries an indirection table
+       and a hash key and needs about ninety; sized to 256 so the next
+       command is not another silent overflow. */
+    g_net->ctrl_buffer = (uint8_t *)kheap_calloc(256U, VIRTIO_DMA_ALIGNMENT);
     if (g_net->ctrl_desc == 0 || g_net->ctrl_avail == 0 ||
         g_net->ctrl_used == 0 || g_net->ctrl_buffer == 0) {
       klog("virtio-net-persist: no control queue memory; staying at one "
@@ -900,9 +1044,21 @@ xaios_status_t virtio_net_init_persistent(void) {
       }
     }
   }
-  klog("virtio-net-persist: queue pairs serviced=%u offered=%u\n",
+  /* Steering is configured after the pair count, not before: the
+     indirection table names queues, and naming a queue the device has not
+     been told to service is a request it is entitled to refuse. */
+  if (g_net->rss != 0U && g_net->active_pairs > 1U) {
+    if (configure_rss() != XAIOS_OK) {
+      /* Hashing declined. The pairs stay up and are still polled; the device
+         decides where frames land by whatever rule it had before. That is a
+         weaker arrangement, not a broken one, so it is reported rather than
+         treated as a link failure. */
+      g_net->rss = 0U;
+    }
+  }
+  klog("virtio-net-persist: queue pairs serviced=%u offered=%u rss=%u\n",
        g_net->active_pairs,
-       g_net->multiqueue != 0U ? g_net->max_queue_pairs : 1U);
+       g_net->multiqueue != 0U ? g_net->max_queue_pairs : 1U, g_net->rss);
 
   g_net->persistent = 1;
   g_net->interrupt_count = 0U;

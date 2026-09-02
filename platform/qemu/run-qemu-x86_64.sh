@@ -136,8 +136,13 @@ x86_tap_queues="${XAIOS_QEMU_X86_TAP_QUEUES:-1}"
 # A device offering N pairs needs a vector for each direction of each pair
 # plus one for configuration changes, which is what 2N+1 is.
 net0_device_extra=""
+# rss=on as well as mq=on. Multiple queues and hashing are separate
+# features: without rss the device is free to deliver everything on the
+# first queue, and a driver polling four of them cannot tell that apart
+# from traffic that happened to hash one way. QEMU defaults it off, so a
+# harness that only asks for mq tests half of what it looks like it does.
 if [ "$x86_tap" != "none" ] && [ "$x86_tap_queues" -gt 1 ]; then
-  net0_device_extra=",mq=on,vectors=$((2 * x86_tap_queues + 1))"
+  net0_device_extra=",mq=on,rss=on,hash=on,vectors=$((2 * x86_tap_queues + 1))"
 fi
 hostfwd_udp_port="${XAIOS_QEMU_HOSTFWD_UDP_PORT:-none}"
 net_socket_host="${XAIOS_QEMU_NET_SOCKET_HOST:-127.0.0.1}"
