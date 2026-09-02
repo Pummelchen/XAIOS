@@ -3211,6 +3211,15 @@ void xaiboot_fs_self_test(void) {
      the active format allows. */
   kassert((uint64_t)g_active_max_nodes <=
           (uint64_t)(sizeof(g_path_transaction) / sizeof(g_path_transaction[0])));
+  /* And for the two remaining buffers a format's own numbers index into.
+     Both are sized for v6 today and neither has ever been wrong; they are
+     asserted because the two that were wrong were wrong the same way -- a
+     static sized for the format that existed when it was written, indexed
+     by a later format's larger maximum -- and nothing else would catch the
+     third instance of it. */
+  kassert((uint64_t)g_active_metadata_sectors * XBFS_SECTOR_SIZE <=
+          (uint64_t)sizeof(g_metadata_buffer));
+  kassert((uint64_t)g_active_path_max <= (uint64_t)XBFS_PATH_MAX);
   {
     int64_t guard_fd = xaiboot_fs_open("/state/overflow-guard",
                                        XAIOS_XBFS_OPEN_WRITE |
