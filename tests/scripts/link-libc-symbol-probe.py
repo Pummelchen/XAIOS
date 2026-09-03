@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("arch", choices=("aarch64", "x86_64"))
+    parser.add_argument("arch", choices=("aarch64", "x86_64", "riscv64"))
     args = parser.parse_args()
     runtime = ROOT / f"build/libc/{args.arch}/runtime-test"
     sysroot = ROOT / f"build/libc/{args.arch}/sysroot"

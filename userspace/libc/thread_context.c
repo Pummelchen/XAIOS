@@ -20,6 +20,8 @@ static uintptr_t current_stack_pointer(void) {
   __asm__ volatile("mov %0, sp" : "=r"(value));
 #elif defined(__x86_64__)
   __asm__ volatile("mov %%rsp, %0" : "=r"(value));
+#elif defined(__riscv)
+  __asm__ volatile("mv %0, sp" : "=r"(value));
 #else
 #error "Unsupported XAIOS userspace architecture"
 #endif
@@ -32,6 +34,8 @@ static void lock_contexts(void) {
     __asm__ volatile("yield");
 #elif defined(__x86_64__)
     __asm__ volatile("pause");
+#elif defined(__riscv)
+    __asm__ volatile("" ::: "memory");
 #endif
   }
 }

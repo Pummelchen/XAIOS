@@ -36,6 +36,16 @@ xaios_u64 __xaios_libc_syscall3(xaios_u64 number, xaios_u64 arg0,
                    : "D"(rdi), "S"(rsi), "d"(rdx)
                    : "rcx", "r11", "memory");
   return rax;
+#elif defined(__riscv)
+  register xaios_u64 a0 __asm__("a0") = arg0;
+  register xaios_u64 a1 __asm__("a1") = arg1;
+  register xaios_u64 a2 __asm__("a2") = arg2;
+  register xaios_u64 a7 __asm__("a7") = number;
+  __asm__ volatile("ecall"
+                   : "+r"(a0)
+                   : "r"(a1), "r"(a2), "r"(a7)
+                   : "memory");
+  return a0;
 #else
 #error "Unsupported XAIOS userspace architecture"
 #endif
@@ -80,6 +90,10 @@ void _exit(int status) {
     __asm__ volatile("wfe");
 #elif defined(__x86_64__)
     __asm__ volatile("pause");
+#elif defined(__riscv)
+    /* Not wfi: it is privileged and would trap out of the process that ran
+       it. There is no unprivileged hint to give here, so this spins. */
+    __asm__ volatile("" ::: "memory");
 #endif
   }
 }

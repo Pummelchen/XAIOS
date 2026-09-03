@@ -6,7 +6,8 @@ ARCH=${1:-}
 case "$ARCH" in
   aarch64) TARGET=aarch64-none-elf ;;
   x86_64) TARGET=x86_64-none-elf ;;
-  *) printf '%s\n' 'usage: build-libc-runtime-test.sh aarch64|x86_64' >&2; exit 2 ;;
+  riscv64) TARGET=riscv64-unknown-elf ;;
+  *) printf '%s\n' 'usage: build-libc-runtime-test.sh aarch64|x86_64|riscv64' >&2; exit 2 ;;
 esac
 
 SYSROOT="$ROOT/build/libc/$ARCH/sysroot"
@@ -17,6 +18,8 @@ mkdir -p "$OUT"
 ARCH_FLAGS=""
 if [ "$ARCH" = x86_64 ]; then
   ARCH_FLAGS="-mcmodel=large -mno-red-zone -march=core2 -mfpmath=sse -msse2"
+elif [ "$ARCH" = riscv64 ]; then
+  ARCH_FLAGS="-march=rv64gc -mabi=lp64d -mcmodel=medany"
 fi
 
 compile() {

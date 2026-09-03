@@ -15,6 +15,7 @@
 #include <xaios/riscv64_sbi.h>
 #include <xaios/virtio_transport.h>
 
+void riscv64_platform_set_device_tree(const void *blob);
 void kmain(const xaios_boot_info_t *boot);
 xaios_boot_info_t *riscv64_build_boot_info(uint64_t device_tree);
 void riscv64_smp_record_boot_hart(uint32_t hart_id);
@@ -42,6 +43,7 @@ void riscv64_boot(uint64_t hart_id, uint64_t device_tree) {
   const void *blob = (const void *)(uintptr_t)device_tree;
   riscv64_timer_set_device_tree(blob);
   riscv64_exception_set_device_tree(blob);
+  riscv64_platform_set_device_tree(blob);
 
   /* Where this board keeps its virtio slots. The tree lists them as
      separate nodes -- virtio_mmio@10001000 upwards -- so the first one's

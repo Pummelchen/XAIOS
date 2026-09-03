@@ -94,6 +94,60 @@ for app in $USER_APPS; do
   APP_ARGS="$APP_ARGS /bin/$app=$BUILD_DIR/$app.elf"
 done
 
+# The hosted ISO C99 demonstration and the termination probes, built against
+# the same picolibc sysroot the other architectures use. The kernel launches
+# these when XAIOS_LIBC_TEST is set, which build-riscv64.sh now defaults on.
+HOSTED_ARGS=""
+LIBC_RUNTIME="$ROOT_DIR/build/libc/riscv64/runtime-test"
+if [ -f "$ROOT_DIR/build/libc/riscv64/sysroot/lib/libc.a" ] &&
+   [ -f "$LIBC_RUNTIME/crt0.o" ]; then
+  printf '%s\n' "Building hosted C99 /bin/helloworldc99..."
+  "$ROOT_DIR/scripts/build-c99-app.sh" --arch riscv64 --main void \
+    "$ROOT_DIR/userspace/apps/hosted/helloworldc99.c" \
+    "$BUILD_DIR/helloworldc99.elf"
+  HOSTED_ARGS="/bin/helloworldc99=$BUILD_DIR/helloworldc99.elf"
+  for probe in c99-runtime-smoke:c99-runtime-smoke \
+      c99-main-void:c99-main_void c99-exit-probe:c99-exit_probe \
+      c99-abort-probe:c99-abort_probe \
+      c99-thread-context:c99-thread-context; do
+    guest=${probe%%:*}
+    host=${probe#*:}
+    HOSTED_ARGS="$HOSTED_ARGS /bin/$guest=$LIBC_RUNTIME/$host.elf"
+  done
+else
+  printf '%s\n' "warning: no riscv64 libc; C99 applications omitted" >&2
+fi
+
+# xapt, which needs TLS and therefore BearSSL and the libc sysroot. Built
+# separately from the loop above because it is the only application with
+# dependencies outside the userspace tree.
+XAPT_ARGS=""
+XAPT_BEARSSL="$ROOT_DIR/build/bearssl/riscv64/libbearssl-xapt.a"
+if [ -f "$XAPT_BEARSSL" ] &&
+   [ -f "$ROOT_DIR/build/libc/riscv64/sysroot/lib/libc.a" ]; then
+  printf '%s\n' "Building /bin/xapt..."
+  for xapt_src in xapt xapt_tls xapt_trust_anchors; do
+    "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
+      -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \
+      -fno-pie -Os -Wall -Wextra -Werror \
+      -isystem "$ROOT_DIR/build/libc/riscv64/sysroot/include" \
+      -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/apps" \
+      -I"$ROOT_DIR/third_party/bearssl/inc" \
+      -c "$ROOT_DIR/userspace/apps/$xapt_src.c" -o "$BUILD_DIR/$xapt_src.o"
+  done
+  "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
+    -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+    -c "$ROOT_DIR/userspace/lib/start.S" -o "$BUILD_DIR/start-xapt.o"
+  "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
+    -o "$BUILD_DIR/xapt.elf" "$BUILD_DIR/start-xapt.o" \
+    "$BUILD_DIR/lib-hello.o" "$BUILD_DIR/control-hello.o" \
+    "$BUILD_DIR/xapt.o" "$BUILD_DIR/xapt_tls.o" \
+    "$BUILD_DIR/xapt_trust_anchors.o" "$XAPT_BEARSSL"
+  XAPT_ARGS="/bin/xapt=$BUILD_DIR/xapt.elf"
+else
+  printf '%s\n' "warning: no riscv64 BearSSL or libc; xapt omitted" >&2
+fi
+
 # The same 4 MiB volume shape the other architectures' test image uses, with
 # the marker the boot-storage check reads in sector zero and the rofs from
 # sector one.
@@ -109,5 +163,8 @@ printf 'XAIOS-VIRTIO-BLOCK-TEST\n' | \
   "$ROOT_DIR/userspace/init/xaios-init.conf" \
   "$ROOT_DIR/userspace/service-manager/source-index.svc" \
   $APP_ARGS \
+  $HOSTED_ARGS \
+  $XAPT_ARGS \
+  "/etc/xapt.conf=$ROOT_DIR/userspace/init/xapt.conf" \
   "$@"
 printf '%s\n' "Created $IMAGE"

@@ -1,6 +1,6 @@
 [binaries]
-c = ['clang', '-target', 'riscv64-unknown-elf', '-march=rv64gc', '-mabi=lp64d', '-mno-relax', '-nostdlib', '-fuse-ld=lld']
-cpp = ['clang++', '-target', 'riscv64-unknown-elf', '-march=rv64gc', '-mabi=lp64d', '-mno-relax', '-nostdlib', '-fuse-ld=lld']
+c = ['clang', '-target', 'riscv64-unknown-elf', '-march=rv64gc', '-mabi=lp64d', '-mcmodel=medany', '-mno-relax', '-nostdlib', '-fuse-ld=lld']
+cpp = ['clang++', '-target', 'riscv64-unknown-elf', '-march=rv64gc', '-mabi=lp64d', '-mcmodel=medany', '-mno-relax', '-nostdlib', '-fuse-ld=lld']
 c_ld = 'lld'
 cpp_ld = 'lld'
 ar = 'llvm-ar'

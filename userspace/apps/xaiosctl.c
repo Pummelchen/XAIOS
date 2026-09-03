@@ -175,11 +175,19 @@ int main(int argc, char **argv) {
 
   xaios_log("/bin/xaiosctl: starting control protocol client tests\n");
   for (u64 i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
-    if (run_checked(tests[i].human, tests[i].expected_result,
-                    tests[i].human_marker) != 0 ||
-        run_checked(tests[i].json, tests[i].expected_result,
-                    tests[i].json_marker) != 0) {
-      xaios_log("/bin/xaiosctl: command rendering test failed\n");
+    int human_failed = run_checked(tests[i].human, tests[i].expected_result,
+                                   tests[i].human_marker) != 0;
+    int json_failed = run_checked(tests[i].json, tests[i].expected_result,
+                                  tests[i].json_marker) != 0;
+    if (human_failed || json_failed) {
+      /* Named, because "command rendering test failed" is true of any one of
+         fourteen commands and says which of them only by elimination. Several
+         of these depend on what the machine actually has -- a device that is
+         not present renders differently from one that is -- so the command
+         is the first thing worth knowing. */
+      xaios_log("/bin/xaiosctl: command rendering test failed: ");
+      xaios_log(human_failed ? tests[i].human : tests[i].json);
+      xaios_log("\n");
       return 1;
     }
   }

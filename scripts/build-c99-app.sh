@@ -7,7 +7,7 @@ MAIN_FORM=args
 
 usage() {
   printf '%s\n' \
-    'usage: build-c99-app.sh --arch aarch64|x86_64 [--main args|void] SOURCE OUTPUT' >&2
+    'usage: build-c99-app.sh --arch aarch64|x86_64|riscv64 [--main args|void] SOURCE OUTPUT' >&2
   exit 2
 }
 
@@ -30,6 +30,13 @@ case "$ARCH" in
   x86_64)
     TARGET=x86_64-none-elf
     ARCH_FLAGS="-mcmodel=large -mno-red-zone -march=core2 -mfpmath=sse -msse2"
+    ;;
+  riscv64)
+    TARGET=riscv64-unknown-elf
+    # medany because hosted applications link where every other XAIOS
+    # userspace image does, past what the default code model can address
+    # through lui.
+    ARCH_FLAGS="-march=rv64gc -mabi=lp64d -mcmodel=medany"
     ;;
   *) usage ;;
 esac

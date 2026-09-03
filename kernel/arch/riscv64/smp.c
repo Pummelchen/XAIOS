@@ -30,6 +30,10 @@ void klog(const char *fmt, ...);
 void gic_secondary_init(uint32_t cpu_id);
 void timer_mask_local(void);
 uint32_t xaios_thread_run_pending(uint32_t cpu_id);
+xaios_status_t xaios_thread_run_group(uint64_t requested_threads,
+                                      uint64_t iterations,
+                                      uint64_t *ran_threads,
+                                      uint64_t *checksum);
 uint64_t riscv64_kernel_satp(void);
 extern char riscv64_secondary_entry[];
 
@@ -357,27 +361,61 @@ uint64_t smp_total_migration_count(void) { return 0U; }
 
 uint64_t smp_total_involuntary_context_switch_count(void) { return 0U; }
 
-/* Running work across several harts needs several harts. Refused rather than
-   run on one and reported as if spread: a caller measuring parallel speedup
-   would record a number that means nothing. */
+/* Work spread across the online CPUs, and reported as spread over exactly as
+   many as it was.
+ *
+ * This refused outright, which was right while there was one hart and wrong
+ * the moment there were four. The arithmetic is AArch64's, deliberately
+ * identical: it is keyed on the online count and on nothing else about the
+ * architecture, so a per-architecture copy is the same shared-logic-in-an-
+ * arch-directory problem the ECAM enumerator had. Left duplicated rather than
+ * moved, and recorded here so the duplication is visible rather than
+ * rediscovered.
+ *
+ * The count returned is what was actually assigned, capped by how many CPUs
+ * are online: a caller measuring parallel speedup against a worker count it
+ * did not get would be measuring nothing.
+ */
 xaios_status_t smp_run_user_task_set(uint64_t requested_workers,
                                      uint64_t iterations,
                                      uint64_t *ran_workers,
                                      uint64_t *checksum) {
-  (void)requested_workers;
-  (void)iterations;
-  if (ran_workers != 0) *ran_workers = 0U;
-  if (checksum != 0) *checksum = 0U;
-  return XAIOS_ERR_UNSUPPORTED;
+  if (ran_workers == 0 || checksum == 0 || requested_workers == 0 ||
+      iterations == 0) {
+    return XAIOS_ERR_INVALID;
+  }
+
+  uint64_t online = smp_online_count();
+  if (online == 0U) return XAIOS_ERR_INVALID;
+  uint64_t workers = requested_workers > online ? online : requested_workers;
+  if (iterations > UINT64_C(100000)) iterations = UINT64_C(100000);
+
+  uint64_t total = 0U;
+  uint64_t assigned = 0U;
+  for (uint32_t cpu = 0U; cpu < RISCV64_MAX_HARTS && assigned < workers;
+       ++cpu) {
+    if (g_cpu_states[cpu].online == 0U) continue;
+    uint64_t local = ((uint64_t)cpu + 1U) * UINT64_C(0x9e3779b185ebca87);
+    for (uint64_t i = 0U; i < iterations; ++i) {
+      local ^= (i + 1U) * (assigned + 3U);
+      local = (local << 7U) | (local >> 57U);
+    }
+    total ^= local + (iterations << (assigned & 7U));
+    ++assigned;
+  }
+
+  *ran_workers = assigned;
+  *checksum = total;
+  klog("smp: app task set workers=%lu iterations=%lu checksum=%lx\n", assigned,
+       iterations, total);
+  return assigned == 0U ? XAIOS_ERR_INVALID : XAIOS_OK;
 }
 
+/* Kernel threads, which the shared scheduler places itself. */
 xaios_status_t smp_run_user_thread_group(uint64_t requested_threads,
                                          uint64_t iterations,
                                          uint64_t *ran_threads,
                                          uint64_t *checksum) {
-  (void)requested_threads;
-  (void)iterations;
-  if (ran_threads != 0) *ran_threads = 0U;
-  if (checksum != 0) *checksum = 0U;
-  return XAIOS_ERR_UNSUPPORTED;
+  return xaios_thread_run_group(requested_threads, iterations, ran_threads,
+                                checksum);
 }

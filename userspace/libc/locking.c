@@ -22,6 +22,8 @@ static void spin_lock(struct __lock *lock) {
     __asm__ volatile("yield");
 #elif defined(__x86_64__)
     __asm__ volatile("pause");
+#elif defined(__riscv)
+    __asm__ volatile("" ::: "memory");
 #endif
   }
 }

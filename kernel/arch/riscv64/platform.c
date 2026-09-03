@@ -7,12 +7,22 @@
  * in the way its caller already handles, which is the same thing the other
  * architectures do where a capability is missing.
  */
+#include <xaios/riscv64_fdt.h>
 #include <xaios/riscv64_sbi.h>
+#include <xaios/timer.h>
 #include <xaios/topology.h>
 #include <xaios/status.h>
 #include <xaios/types.h>
 
 void klog(const char *fmt, ...);
+
+/* The tree, shared with the pieces below that read it. Set by boot.c before
+   any of this runs. */
+static const void *g_device_tree;
+
+void riscv64_platform_set_device_tree(const void *blob) {
+  g_device_tree = blob;
+}
 
 /* PCI is no longer stubbed here. The ECAM enumerator that used to live under
    arch/aarch64 is shared code now, and this board's host bridge is described
@@ -31,14 +41,75 @@ void smmu_init(void) {
 
 void smmu_self_test(void) {}
 
-/* The Goldfish RTC on this board is not driven yet. Wall time therefore
-   advances from an unknown epoch, which timer.c says plainly rather than
-   inventing a date. */
-void rtc_init(void) {
-  klog("rtc: riscv64 goldfish clock not driven; the epoch is unknown\n");
+/* The Goldfish real-time clock.
+ *
+ * Two 32-bit registers holding one 64-bit nanosecond count since the Unix
+ * epoch: the low half latches the high half, so they have to be read in that
+ * order and in that order only. Reading high first returns a value that is
+ * correct except across a rollover of the low word, which is the kind of bug
+ * that appears once every four seconds and never in a test.
+ *
+ * Found in the device tree rather than assumed, like everything else on this
+ * board. Before this, wall time advanced from zero and the kernel said so
+ * plainly -- which was honest, and meant every timestamp on the machine was
+ * wrong by fifty-six years.
+ */
+#define GOLDFISH_TIME_LOW UINT64_C(0x00)
+#define GOLDFISH_TIME_HIGH UINT64_C(0x04)
+
+static uint64_t g_rtc_base;
+
+static uint64_t goldfish_now_ns(void) {
+  if (g_rtc_base == 0U) return 0U;
+  volatile const uint32_t *low =
+      (volatile const uint32_t *)(uintptr_t)(g_rtc_base + GOLDFISH_TIME_LOW);
+  volatile const uint32_t *high =
+      (volatile const uint32_t *)(uintptr_t)(g_rtc_base + GOLDFISH_TIME_HIGH);
+  uint32_t low_value = *low;
+  uint32_t high_value = *high;
+  return ((uint64_t)high_value << 32) | (uint64_t)low_value;
 }
 
-void rtc_self_test(void) {}
+void rtc_init(void) {
+  uint64_t base = 0U;
+  if (g_device_tree == 0 ||
+      !fdt_find_compatible(g_device_tree, "google,goldfish-rtc", &base)) {
+    klog("rtc: no goldfish clock in the device tree; the epoch stays "
+         "unknown and timestamps will be wrong by decades\n");
+    return;
+  }
+  g_rtc_base = base;
+  uint64_t now = goldfish_now_ns();
+  if (now == 0U) {
+    klog("rtc: goldfish clock at %lx reads zero; treating it as absent "
+         "rather than believing 1970\n", base);
+    g_rtc_base = 0U;
+    return;
+  }
+  /* Told to the shared clock as an absolute epoch, which is what
+     wall_time_set_ns takes; source 2 is the same identifier the other
+     architectures use for a hardware clock. */
+  (void)wall_time_set_ns(now, 2U);
+  klog("rtc: goldfish at %lx epoch_ns=%lu\n", base, now);
+}
+
+void rtc_self_test(void) {
+  if (g_rtc_base == 0U) {
+    klog("rtc: self-test skipped, no clock on this machine\n");
+    return;
+  }
+  /* It has to move, and it has to move forward. A latched pair read in the
+     wrong order fails here rather than four seconds later. */
+  uint64_t first = goldfish_now_ns();
+  for (volatile uint32_t spin = 0U; spin < 200000U; ++spin) {
+  }
+  uint64_t second = goldfish_now_ns();
+  if (second <= first) {
+    klog("rtc: the clock did not advance: %lu then %lu\n", first, second);
+    return;
+  }
+  klog("rtc: self-test passed advance=%lu ns\n", second - first);
+}
 
 /* Message-signalled interrupts, the stream identifier an IOMMU would use to
    tell devices apart, and the rest of the configuration-space work all come
