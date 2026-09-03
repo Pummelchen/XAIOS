@@ -148,6 +148,66 @@ else
   printf '%s\n' "warning: no riscv64 BearSSL or libc; xapt omitted" >&2
 fi
 
+# /bin/sshd, and the terminal applications it hosts. This is what turns a
+# machine that boots into a machine anyone can reach: without it the boot
+# stops at a setup prompt and there is nothing to log into.
+printf '%s\n' "Building /bin/sshd..."
+SSHD_OBJS=""
+for sshd_src in sshd ssh_crypto ssh_mlkem tweetnacl_subset ssh_protocol \
+    ssh_channel ssh_client_proxy ssh_host_key ssh_connection sftp_server \
+    less_pager; do
+  sshd_opt=""
+  [ "$sshd_src" = sshd ] && sshd_opt="-Os"
+  # shellcheck disable=SC2086
+  "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
+    -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \
+    -fno-pie $sshd_opt -Wall -Wextra -Werror \
+    -DXAIOS_PASSWORD_AUTH_AVAILABLE=1 \
+    -DMLK_CONFIG_FILE='"mlkem_xaios_config.h"' \
+    -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/sshd" \
+    -I"$ROOT_DIR/third_party/mlkem-native/mlkem" \
+    -I"$ROOT_DIR/userspace/apps/terminal" \
+    -c "$ROOT_DIR/userspace/sshd/$sshd_src.c" -o "$BUILD_DIR/sshd-$sshd_src.o"
+  SSHD_OBJS="$SSHD_OBJS $BUILD_DIR/sshd-$sshd_src.o"
+done
+"$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
+  -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+  -Wall -Wextra -Werror -DMLK_CONFIG_FILE='"mlkem_xaios_config.h"' \
+  -I"$ROOT_DIR/userspace/sshd" -I"$ROOT_DIR/third_party/mlkem-native/mlkem" \
+  -c "$ROOT_DIR/third_party/mlkem-native/mlkem/mlkem_native.c" \
+  -o "$BUILD_DIR/sshd-mlkem.o"
+SSHD_OBJS="$SSHD_OBJS $BUILD_DIR/sshd-mlkem.o"
+for app_src in nano_editor pong_game; do
+  app_opt=""
+  [ "$app_src" = pong_game ] && app_opt="-Os"
+  # shellcheck disable=SC2086
+  "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
+    -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \
+    -fno-pie $app_opt -Wall -Wextra -Werror \
+    -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/apps/terminal" \
+    -c "$ROOT_DIR/userspace/apps/terminal/$app_src.c" \
+    -o "$BUILD_DIR/sshd-$app_src.o"
+  SSHD_OBJS="$SSHD_OBJS $BUILD_DIR/sshd-$app_src.o"
+done
+"$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
+  -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+  -c "$ROOT_DIR/userspace/lib/start.S" -o "$BUILD_DIR/start-sshd.o"
+# shellcheck disable=SC2086
+"$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
+  -o "$BUILD_DIR/sshd.elf" "$BUILD_DIR/start-sshd.o" \
+  "$BUILD_DIR/lib-hello.o" "$BUILD_DIR/control-hello.o" $SSHD_OBJS
+SSHD_ARGS="/bin/sshd=$BUILD_DIR/sshd.elf"
+
+# The development account, so the machine has something to log into and the
+# boot does not stop at a setup prompt with nobody standing in front of it.
+# Development only: a release medium packages no credential anybody outside
+# the build has, and setup makes one on first boot instead.
+CREDENTIAL_ARGS=""
+if [ "${XAIOS_RISCV64_MODE:-development}" = development ]; then
+  CREDENTIAL_ARGS="/etc/xaios_sshd_users=$ROOT_DIR/config/development-sshd-users"
+  CREDENTIAL_ARGS="$CREDENTIAL_ARGS /etc/xaios_console_pin=$ROOT_DIR/config/development-console-pin"
+fi
+
 # The same 4 MiB volume shape the other architectures' test image uses, with
 # the marker the boot-storage check reads in sector zero and the rofs from
 # sector one.
@@ -165,6 +225,8 @@ printf 'XAIOS-VIRTIO-BLOCK-TEST\n' | \
   $APP_ARGS \
   $HOSTED_ARGS \
   $XAPT_ARGS \
+  $SSHD_ARGS \
+  $CREDENTIAL_ARGS \
   "/etc/xapt.conf=$ROOT_DIR/userspace/init/xapt.conf" \
   "$@"
 printf '%s\n' "Created $IMAGE"
