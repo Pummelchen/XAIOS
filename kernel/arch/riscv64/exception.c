@@ -12,10 +12,12 @@
  * capability mistake again.
  */
 #include <xaios/riscv64_fdt.h>
+#include <xaios/smp.h>
 #include <xaios/status.h>
 #include <xaios/timer.h>
 
 void klog(const char *fmt, ...);
+uint32_t riscv64_hart_of_cpu(uint32_t cpu_id);
 void panic_at(const char *file, int line, const char *fmt, ...)
     __attribute__((noreturn));
 #define exception_panic(...) panic_at(__FILE__, __LINE__, __VA_ARGS__)
@@ -66,7 +68,17 @@ static volatile uint32_t *plic_register(uint64_t offset) {
    context and a supervisor context, interleaved, so supervisor is the odd
    one. Hardcoded to hart 0 for as long as this port runs one hart; when
    secondaries arrive this becomes a function of the hart id. */
-static uint64_t supervisor_context(void) { return 1U; }
+static uint64_t supervisor_context(void) {
+  /* QEMU's virt board gives every hart a machine context and a supervisor
+     context, interleaved, so hart N's supervisor context is 2N+1. This
+     returned 1 unconditionally, which is right only for hart 0 -- and
+     firmware does not always boot on hart 0, so on the runs where it did not
+     the kernel set the threshold on another hart's context and enabled
+     interrupts on a context that was not its own. Indexed by hart, because
+     that is what the controller is indexed by; the kernel's own CPU number is
+     a different thing. */
+  return 2U * (uint64_t)riscv64_hart_of_cpu(smp_cpu_id()) + 1U;
+}
 
 void riscv64_plic_enable(uint32_t source, uint32_t priority) {
   if (g_plic_base == 0U || source == 0U || source >= PLIC_MAX_SOURCES) return;
@@ -126,6 +138,7 @@ typedef struct riscv64_trap_frame {
 #define SSTATUS_SPP (UINT64_C(1) << 8)
 
 #define CAUSE_ECALL_FROM_USER 8U
+#define CAUSE_BREAKPOINT 3U
 
 uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
                           uint64_t arg2);
@@ -141,7 +154,17 @@ static uint64_t instruction_width(uint64_t pc) {
   return ((*halfword & 0x3U) == 0x3U) ? 4U : 2U;
 }
 
-void riscv64_trap_handler(riscv64_trap_frame_t *frame) {
+/* Returns zero to resume the interrupted context, or the encoded result of a
+   process that has just exited -- which the stub uses to leave user mode for
+   good rather than returning into a process that is finished. AArch64 makes
+   the same decision in its vector, comparing the top half of the syscall
+   result against the same marker. Without it the exit syscall returns to a
+   program that has already said goodbye, which then spins in the idle loop
+   after its own exit and never yields: the kernel logs the process as exited
+   and then waits forever for it to leave. */
+#define USER_EXIT_MARKER UINT64_C(0x4f534149)
+
+uint64_t riscv64_trap_handler(riscv64_trap_frame_t *frame) {
   uint64_t cause = frame->scause;
   if ((cause & SCAUSE_INTERRUPT) != 0U) {
     uint64_t which = cause & ~SCAUSE_INTERRUPT;
@@ -153,7 +176,7 @@ void riscv64_trap_handler(riscv64_trap_frame_t *frame) {
     }
     /* An interrupt resumes the instruction it interrupted, which has not
        run, so sepc is left exactly as it arrived. */
-    return;
+    return 0U;
   }
 
   /* A system call. The number is in a7 and the arguments in a0 upwards,
@@ -166,7 +189,18 @@ void riscv64_trap_handler(riscv64_trap_frame_t *frame) {
     /* ecall is never compressed, so four is right here and only here --
        past the instruction, or the syscall is made again forever. */
     frame->sepc += 4U;
-    return;
+    return (result >> 32U) == USER_EXIT_MARKER ? result : 0U;
+  }
+
+  /* A breakpoint the kernel placed deliberately -- the SIMD-across-a-trap
+     check executes one to provoke a trap it can survive. Stepping past it is
+     the whole point, and the width has to be read from the instruction
+     because the compressed c.ebreak is two bytes where ebreak is four:
+     advancing by four either way resumes in the middle of the next
+     instruction. */
+  if (cause == CAUSE_BREAKPOINT) {
+    frame->sepc += instruction_width(frame->sepc);
+    return 0U;
   }
 
   /* A fault in user mode is the process's problem, not the machine's. Killing
@@ -175,9 +209,10 @@ void riscv64_trap_handler(riscv64_trap_frame_t *frame) {
   if ((frame->sstatus & SSTATUS_SPP) == 0U) {
     klog("user exception: cause=%lu sepc=0x%lx stval=0x%lx\n", cause,
          frame->sepc, frame->stval);
-    frame->a0 = user_process_note_fault();
+    uint64_t note = user_process_note_fault();
+    frame->a0 = note;
     frame->sepc += instruction_width(frame->sepc);
-    return;
+    return (note >> 32U) == USER_EXIT_MARKER ? note : 0U;
   }
 
   /* A synchronous exception in the kernel is fatal, and saying which one is

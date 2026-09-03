@@ -123,3 +123,24 @@ void sbi_shutdown(void) {
   }
   (void)sbi_call(SBI_EXT_LEGACY_SHUTDOWN, 0U, 0U, 0U, 0U);
 }
+
+/* Starting another hart.
+ *
+ * A supervisor-mode kernel cannot take a hart out of reset itself -- that is
+ * machine-mode work -- so the HSM extension is the supported route and not a
+ * workaround. The hart arrives at the given physical address with translation
+ * off and its own id in a0, which is why the entry point has to be reachable
+ * without a page table.
+ */
+int64_t sbi_hart_start(uint64_t hart_id, uint64_t start_address,
+                       uint64_t opaque) {
+  sbi_result_t result =
+      sbi_call(SBI_EXT_HSM, SBI_HSM_HART_START, hart_id, start_address, opaque);
+  return result.error;
+}
+
+int64_t sbi_hart_status(uint64_t hart_id) {
+  sbi_result_t result =
+      sbi_call(SBI_EXT_HSM, SBI_HSM_HART_STATUS, hart_id, 0U, 0U);
+  return result.error == 0 ? (int64_t)result.value : result.error;
+}

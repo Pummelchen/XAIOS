@@ -499,6 +499,8 @@ static const char *architecture(void) {
   return "aarch64";
 #elif defined(__x86_64__)
   return "x86_64";
+#elif defined(__riscv)
+  return "riscv64";
 #else
   return "unknown";
 #endif

@@ -21,6 +21,19 @@ u64 xaios_syscall3(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                    : "D"(rdi), "S"(rsi), "d"(rdx)
                    : "rcx", "r11", "memory");
   return rax;
+#elif defined(__riscv)
+  /* Number in a7, arguments from a0, result back in a0 -- the same shape as
+     an SBI call one privilege level up, and what the kernel's ecall handler
+     reads. */
+  register u64 a0 __asm__("a0") = arg0;
+  register u64 a1 __asm__("a1") = arg1;
+  register u64 a2 __asm__("a2") = arg2;
+  register u64 a7 __asm__("a7") = number;
+  __asm__ volatile("ecall"
+                   : "+r"(a0)
+                   : "r"(a1), "r"(a2), "r"(a7)
+                   : "memory");
+  return a0;
 #else
 #error "Unsupported XAIOS userspace architecture"
 #endif
@@ -117,6 +130,11 @@ void xaios_exit(int code) {
     __asm__ volatile("wfe");
 #elif defined(__x86_64__)
     __asm__ volatile("pause");
+#elif defined(__riscv)
+    /* Not wfi: that is privileged and would trap out of the process that
+       executed it. A program that has already asked to exit and been given
+       nothing back has nothing better to do than spin. */
+    __asm__ volatile("" ::: "memory");
 #else
 #error "Unsupported XAIOS userspace architecture"
 #endif

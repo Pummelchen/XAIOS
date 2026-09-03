@@ -71,6 +71,11 @@ static uint64_t g_root[ENTRIES] __attribute__((aligned(4096)));
 static uint64_t g_early[EARLY_TABLES][ENTRIES] __attribute__((aligned(4096)));
 static uint32_t g_early_used;
 static uint64_t g_satp;
+
+/* The value a secondary hart writes into satp to join the kernel's address
+   space. Read before that hart has an address space, so it is handed over as
+   a number rather than reached through a pointer. */
+uint64_t riscv64_kernel_satp(void) { return g_satp; }
 static uint32_t g_initialized;
 
 static uint64_t *early_table(void) {

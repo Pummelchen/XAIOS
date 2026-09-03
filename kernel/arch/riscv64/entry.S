@@ -26,14 +26,35 @@ _start:
   mv    s0, a0              /* hart id, preserved across the clear below */
   mv    s1, a1              /* device tree pointer */
 
-  /* Park every hart but the first. */
-  bnez  a0, park
+  /* Which hart continues, decided by a race rather than by number.
+   *
+   * This parked every hart whose id was not zero, which is wrong on any
+   * machine with more than one: firmware picks its own boot hart, and on
+   * QEMU's virt board with four harts that is whichever one wins OpenSBI's
+   * internal race -- observed as 0, 1 and 2 across consecutive runs of the
+   * same command. Three times in four the kernel therefore parked the one
+   * hart that had been given control and nothing ran at all, with not one
+   * character of output to say so. It looked like a hang before the first
+   * instruction; it was the first instruction.
+   *
+   * The lottery lives in .data because .bss has not been zeroed yet -- and
+   * the winner is what zeroes it, so a flag kept there would be cleared out
+   * from under the harts still reading it. */
+  la    t0, riscv64_boot_lottery
+  li    t1, 1
+  amoswap.w t2, t1, (t0)
+  bnez  t2, park
 
-  /* tp carries this hart's id for the rest of the kernel's life. Supervisor
-     mode cannot read mhartid -- that CSR is machine mode only -- so the value
-     firmware passed in a0 is the only chance to learn it, and a register is
-     where it has to live. */
-  mv    tp, a0
+  /* tp carries this hart's *logical* CPU number, not its hart id.
+   *
+   * They are not the same thing and conflating them was a bug: firmware
+   * numbers harts however it likes and hands over on whichever one it chose,
+   * so a kernel that used the hart id as its CPU index reported a machine
+   * whose only CPU was number 3 -- and shared code, reasonably, expects CPU 0
+   * to exist. The hart id is hardware identity and belongs in the table that
+   * makes SBI calls; the CPU number is the kernel's own index and starts at
+   * zero. The hart that wins the lottery is CPU 0 by definition. */
+  mv    tp, zero
 
   la    sp, __stack_top
 
@@ -55,9 +76,27 @@ _start:
 
   /* riscv64_boot asks SBI to power the machine off and does not return. If
      it ever does, stop here rather than executing whatever follows. */
+/* Where every hart that lost the lottery goes.
+ *
+ * Stopped through SBI rather than spun, so firmware puts it back in the state
+ * it started from and smp_release_secondary_schedulers can start it later at
+ * the secondary entry point. A hart parked in a wait loop is still "started"
+ * as far as SBI is concerned, and asking to start it again is refused -- so
+ * spinning here would have cost the machine every core but one, quietly. The
+ * wait loop remains as the fallback for firmware without hart state
+ * management, where spinning is all there is. */
 park:
+  li    a7, 0x48534D        /* "HSM" */
+  li    a6, 1               /* hart_stop */
+  ecall
+1:
   wfi
-  j     park
+  j     1b
+
+  .section .data, "aw"
+  .align 2
+riscv64_boot_lottery:
+  .word 0
 
 /* Trap entry.
  *
@@ -140,6 +179,9 @@ riscv64_trap_entry:
 
   mv    a0, sp
   call  riscv64_trap_handler
+  /* Non-zero means the process this trap came from has exited and there is
+     nothing to return to. */
+  bnez  a0, riscv64_return_from_user_exit
 
   /* sepc is restored from the frame, which the handler may have advanced past
      the faulting instruction or left alone for an interrupt. */
@@ -281,10 +323,18 @@ aarch64_enter_user_thread:
 /* Where a user thread comes back to, entered from the trap handler once it
    has decided the thread is finished. a0 carries the encoded result the
    scheduler expects. */
-  .globl riscv64_leave_user_thread
-  .type riscv64_leave_user_thread, @function
-riscv64_leave_user_thread:
-  csrr  sp, sscratch
+/* Leaving user mode for good.
+ *
+ * Entered from the trap stub with sp still pointing at the trap frame and a0
+ * holding the encoded exit result, which is what aarch64_enter_user returns.
+ * The kernel stack that entered user mode is exactly 288 bytes above the
+ * frame -- the stub subtracted that much from the value sscratch held -- so
+ * unwinding is arithmetic rather than another saved pointer.
+ */
+  .globl riscv64_return_from_user_exit
+  .type riscv64_return_from_user_exit, @function
+riscv64_return_from_user_exit:
+  addi  sp, sp, 288
   ld    ra, 0(sp)
   ld    s0, 8(sp)
   ld    s1, 16(sp)
@@ -314,11 +364,64 @@ aarch64_enter_user:
      the return address is not used and argv goes in a1 of the user frame.
      Passing argc as the argument and leaving argv where the ABI puts a second
      parameter keeps the same convention userspace already expects. */
-  mv    t4, a3
-  mv    a3, zero
+  /* Its own return address, saved -- which it was not.
+   *
+   * `call` puts the return address in ra, and aarch64_enter_user_thread
+   * restores ra from its own frame when the process exits, which is the
+   * address just after that call. So this returned into itself, executed
+   * `ret` with ra still pointing at that same instruction, and looped between
+   * two instructions forever. From outside it looked like a process that had
+   * exited -- the kernel had logged it as exited -- and never came back. */
   addi  sp, sp, -16
-  sd    t4, 0(sp)
+  sd    ra, 0(sp)
+  /* argv is not passed through: the thread entry uses a1 for the user stack
+     and a3 for the address a thread returns through, and a process returns
+     through its own exit syscall instead. Zeroed rather than left holding a
+     pointer the user frame would never read. */
+  mv    a3, zero
   call  aarch64_enter_user_thread
+  ld    ra, 0(sp)
   addi  sp, sp, 16
   ret
   .size aarch64_enter_user, . - aarch64_enter_user
+
+/* Where a secondary hart begins.
+ *
+ * SBI hands control here with translation off, this hart's id in a0 and the
+ * opaque value from hart_start in a1 -- which is why the record it points at
+ * has to be reachable without a page table, and why this runs from the
+ * identity-mapped kernel image rather than anywhere clever.
+ *
+ * The order matters. A stack has to exist before any call, translation has to
+ * be on before the C code touches anything the boot hart published through
+ * the kernel mapping, and the trap vector has to be armed before interrupts
+ * are enabled -- a secondary that takes a trap with stvec still zero
+ * disappears into address zero with no message.
+ */
+  .globl riscv64_secondary_entry
+  .type riscv64_secondary_entry, @function
+riscv64_secondary_entry:
+  /* a1 points at { stack_top, satp, cpu_id } for this hart. */
+  ld    sp, 0(a1)
+  ld    t0, 8(a1)
+  ld    tp, 16(a1)          /* logical CPU number, not the hart id */
+
+  csrw  satp, t0
+  sfence.vma zero, zero
+
+  /* Supervisor access to user pages, matching the boot hart. Set per hart
+     because sstatus is per hart: a secondary that ran a syscall without it
+     would fault on the first user pointer it touched. */
+  li    t1, 0x40000
+  csrs  sstatus, t1
+
+  csrw  sscratch, zero
+  la    t2, riscv64_trap_entry
+  csrw  stvec, t2
+
+  mv    a0, tp
+  call  smp_secondary_main
+1:
+  wfi
+  j     1b
+  .size riscv64_secondary_entry, . - riscv64_secondary_entry

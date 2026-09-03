@@ -38,6 +38,21 @@ xaios_thread_return_trampoline:
 2:
   pause
   jmp 2b
+#elif defined(__riscv)
+_start:
+  call  main
+  /* main's return value is already in a0, which is where the exit syscall
+     wants it. */
+  li    a7, 2
+  ecall
+1:
+  j     1b
+
+xaios_thread_return_trampoline:
+  li    a7, 45
+  ecall
+2:
+  j     2b
 #else
 #error "Unsupported XAIOS userspace architecture"
 #endif

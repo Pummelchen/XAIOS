@@ -162,6 +162,11 @@ static void early_spinlock_self_test(void) {
 static int run_user_app(const char *path, uint32_t pid, uint64_t capabilities) {
   const xaios_initramfs_file_t *file = 0;
   xaios_user_process_t process;
+  if (initramfs_lookup(path, &file) != XAIOS_OK) {
+    /* Named, because the assertion alone says only that some application is
+       missing from an image holding twenty of them. */
+    klog("kernel: %s is not in the initial filesystem\n", path);
+  }
   kassert(initramfs_lookup(path, &file) == XAIOS_OK);
   kassert(user_load_process(file, pid, capabilities, &process) == XAIOS_OK);
   int exit_code = user_process_run(&process);
