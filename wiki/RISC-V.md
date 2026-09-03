@@ -48,6 +48,11 @@ they can be started properly later.
 hart id is hardware identity and lives in a table used for SBI calls; the CPU
 number is the kernel's own index and starts at zero on whichever hart won.
 
+**The real-time clock latches.** The Goldfish RTC's two registers must be
+read low half first, because the low half latches the high one. Reading the
+other way round is correct except across a rollover of the low word -- a bug
+that appears once every four seconds and never in a test.
+
 **The timer has no acknowledge.** A pending supervisor timer interrupt is
 cleared by writing a new comparator and by nothing else, so the rearm path
 always reprograms even when no period is set.
@@ -58,27 +63,74 @@ device attribute in the two bits the specification reserves for software --
 which keeps its own bookkeeping honest without claiming the hardware enforces
 anything it does not.
 
+## The hosted C99 library
+
+picolibc, compiler-rt's quad-precision builtins and the XAIOS runtime all
+build for riscv64, and the symbol probe force-links all 464 mandatory ISO C99
+functions with nothing unresolved. The kernel runs the termination probes
+during boot: the runtime smoke test and the void-main form exit zero, the exit
+probe returns 23 and the abort probe 134.
+
+Two things this needed that the other architectures did not. picolibc has to
+be built with `-mcmodel=medany`, because userspace links at `0x7fc0000000` and
+the default code model addresses through `lui`, which reaches only the lowest
+and highest two gigabytes. And the quad-precision builtins call two
+floating-point mode helpers with no RISC-V implementation -- riscv64 lp64d has
+a 128-bit `long double` like AArch64, so it needs the same soft-float set, and
+without those two functions the library does not link at all.
+
+`xapt` builds and is packaged, with BearSSL and the libc sysroot it needs.
+
+## The boot medium
+
+`scripts/build-riscv64-boot-media.sh` produces an EFI System Partition with a
+loader at the removable-media path and the kernel beside it. Under EDK2 on the
+virt board, firmware loads that loader, the loader loads the kernel off the
+same disk, exits boot services and starts it.
+
+The loader's container is the part that is genuinely different. UEFI loads
+PE/COFF images and LLVM has no RISC-V COFF backend -- `clang --target=
+riscv64-unknown-windows` silently produces ELF and `lld-link` cannot link it
+-- so `scripts/elf-to-efi.py` wraps a position-independent ELF in a PE
+container instead, the way the Linux EFI stub does. `R_RISCV_RELATIVE` and
+PE's `DIR64` relocation mean the same thing, with one difference: RELA keeps
+the addend in the relocation entry and leaves the target word zero, while PE
+adds the delta to whatever the target holds. So the addend is written into the
+image and `ImageBase` is zero.
+
+Run it with `-machine virt,acpi=off`. With ACPI on, this EDK2 build publishes
+no device tree, and the RISC-V port reads the interrupt controller, the
+timebase and the virtio window from one.
+
+**This path is not finished.** It boots to 45% and stalls: the loader, PCI
+enumeration, storage discovery and the security self-tests all run, and then
+the kernel stops inside a heap zeroing loop that the SBI path executes without
+trouble at the same memory size. It has been localised -- `kheap_calloc`, a
+deterministic offset about 1.5 MB into a 4 MB allocation, roughly a byte every
+six seconds, with ordinary RAM behind the address, no fault raised and the
+timer behaving -- and it is not explained. The SBI path is unaffected.
+
 ## What is missing
 
 - **Hardware qualification of any kind.** One emulated board is the whole
   evidence.
+- **A complete UEFI boot**, for the reason above.
 - **Inter-processor interrupts.** Nothing in the shared kernel signals a CPU
   when it queues work for it, so secondary harts spin rather than sleep.
 - **A narrower user-access window.** `sstatus.SUM` is set for the whole
   kernel rather than only around the syscall path, so a stray kernel
   dereference of a user pointer is not caught by hardware here.
-- **`xapt` and the C99 libc**, which have not been built for this
-  architecture.
-- **A boot medium.** It boots via OpenSBI rather than UEFI, so it is not part
-  of any released image.
-- **A real-time clock.** Wall time advances from an unknown epoch.
+- **One application.** `xaiosctl`'s rendering tests include
+  `storage device show /dev/vblk4`, and this machine has no fourth block
+  device -- a machine-shape difference rather than a defect.
 
 ## Building and running
 
 ```
-scripts/build-riscv64.sh          # the kernel
-scripts/build-riscv64-image.sh    # the initial filesystem and its applications
-make qemu-riscv64-gate            # both, then boot and check what ran
+scripts/build-riscv64.sh             # the kernel
+scripts/build-riscv64-image.sh       # the initial filesystem and its applications
+scripts/build-riscv64-boot-media.sh  # the UEFI boot medium
+make qemu-riscv64-gate               # kernel and filesystem, then boot and check
 ```
 
 The gate runs with four harts deliberately, so every run draws a different

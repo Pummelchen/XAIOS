@@ -12,12 +12,16 @@ section-accurate kernel permissions, PLIC interrupts, PCI enumerated through
 ECAM with base addresses assigned by the kernel, virtio disks, the initial
 filesystem, IPv6, userspace over a full trap frame, and four harts scheduling.
 
+It also has the hosted ISO C99 library, `xapt`, a real-time clock, and a UEFI
+boot medium built by `scripts/build-riscv64-boot-media.sh`.
+
 What it does not have is hardware qualification. AArch64 and x86_64 are
 qualified on real machines and hypervisors; RISC-V has been run on one
 emulated board and nothing else, so no claim about firmware behaviour, timing
-or scaling on RISC-V hardware is supported by anything here. It boots via
-OpenSBI rather than UEFI, so it has no boot medium and is not part of any
-released image, and `xapt` and the C99 libc have not been built for it.
+or scaling on RISC-V hardware is supported by anything here. The UEFI path is
+also unfinished: it loads and starts the kernel off the disk and stalls at 45%
+of boot, for a reason that has been localised and not explained. The SBI path
+is complete. It is not part of any released image.
 
 ## Platform and hardware
 
