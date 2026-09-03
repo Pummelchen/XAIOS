@@ -65,7 +65,12 @@ extern char __rodata_end[];
    grow with. */
 /* Page-granular kernel sections need a table per 2 MiB of image, plus the
    levels above them. Sized from a ten-megabyte kernel with room to grow. */
-#define EARLY_TABLES 64U
+/* Sized for the largest memory map this kernel is handed, not the smallest.
+   A UEFI boot arrives with about two dozen memory descriptors where an SBI
+   boot has two, and each one costs tables. Running out used to be silent --
+   the mapping simply did not happen and the fault appeared much later
+   somewhere else -- which is why the exhaustion check below is loud. */
+#define EARLY_TABLES 192U
 
 static uint64_t g_root[ENTRIES] __attribute__((aligned(4096)));
 static uint64_t g_early[EARLY_TABLES][ENTRIES] __attribute__((aligned(4096)));
@@ -79,7 +84,16 @@ uint64_t riscv64_kernel_satp(void) { return g_satp; }
 static uint32_t g_initialized;
 
 static uint64_t *early_table(void) {
-  if (g_early_used >= EARLY_TABLES) return 0;
+  if (g_early_used >= EARLY_TABLES) {
+    /* Said out loud, because the alternative is a page that was asked for and
+       never mapped: every caller here returns void or ignores the status, so
+       exhaustion produced a fault at the unmapped address long afterwards
+       with nothing connecting the two. Under UEFI that was a store to the
+       interrupt controller, twenty log lines after the mapping that failed. */
+    klog("vmm: early page-table pool exhausted after %u tables; some of the "
+         "identity map was not created\n", (uint64_t)g_early_used);
+    return 0;
+  }
   uint64_t *table = g_early[g_early_used++];
   for (uint32_t i = 0U; i < ENTRIES; ++i) table[i] = 0U;
   return table;

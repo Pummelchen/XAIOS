@@ -139,6 +139,28 @@ typedef struct riscv64_trap_frame {
 
 #define CAUSE_ECALL_FROM_USER 8U
 #define CAUSE_BREAKPOINT 3U
+#define CAUSE_LOAD_ACCESS_FAULT 5U
+#define CAUSE_STORE_ACCESS_FAULT 7U
+
+/* Probing for a device that may not be there.
+ *
+ * Reading configuration space at an address nothing answers is a fault on
+ * this architecture, not a read of all-ones, so the shared "did that come
+ * back as 0xffffffff" test cannot tell an absent host bridge from a present
+ * one. AArch64 solved the same problem the same way for its IOMMU probe.
+ * Between begin and end, an access fault sets the flag and steps over the
+ * instruction instead of killing the machine. */
+static volatile int g_mmio_probe_active;
+static volatile int g_mmio_probe_faulted;
+
+void exception_mmio_probe_begin(void) {
+  g_mmio_probe_faulted = 0;
+  g_mmio_probe_active = 1;
+}
+
+void exception_mmio_probe_end(void) { g_mmio_probe_active = 0; }
+
+int exception_mmio_probe_faulted(void) { return g_mmio_probe_faulted; }
 
 uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
                           uint64_t arg2);
@@ -190,6 +212,15 @@ uint64_t riscv64_trap_handler(riscv64_trap_frame_t *frame) {
        past the instruction, or the syscall is made again forever. */
     frame->sepc += 4U;
     return (result >> 32U) == USER_EXIT_MARKER ? result : 0U;
+  }
+
+  /* An access fault the kernel went looking for. Recovered rather than
+     fatal, and only while a probe is in progress. */
+  if (g_mmio_probe_active != 0 && (cause == CAUSE_LOAD_ACCESS_FAULT ||
+                                   cause == CAUSE_STORE_ACCESS_FAULT)) {
+    g_mmio_probe_faulted = 1;
+    frame->sepc += instruction_width(frame->sepc);
+    return 0U;
   }
 
   /* A breakpoint the kernel placed deliberately -- the SIMD-across-a-trap

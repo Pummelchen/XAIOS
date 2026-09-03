@@ -13,6 +13,7 @@
 #include <xaios/assert.h>
 #include <xaios/klog.h>
 #include <xaios/arch_cpu.h>
+#include <xaios/exception.h>
 #include <xaios/pci.h>
 #include <xaios/vmm.h>
 
@@ -386,8 +387,22 @@ void pci_init(void) {
   }
   g_ecam_mapped = 1;
 
-  /* Verify ECAM accessibility before probing a firmware device range. */
+  /* Verify ECAM accessibility before probing a firmware device range.
+   *
+   * Guarded, because "not present" has two shapes and only one of them is a
+   * value. A machine whose firmware describes no window leaves this pointing
+   * at a compiled-in default belonging to another board, and reading there
+   * faults rather than returning all-ones -- which killed a RISC-V boot at
+   * the address AArch64's QEMU uses for its host bridge. A read that faults
+   * and a read of all-ones mean the same thing here, and neither is fatal. */
+  exception_mmio_probe_begin();
   uint32_t bdf0 = ecam_read32(g_ecam_start_bus, 0, 0, 0);
+  exception_mmio_probe_end();
+  if (exception_mmio_probe_faulted() != 0) {
+    klog("PCI: no host bridge answers at 0x%lx\n", g_ecam_base);
+    g_ecam_mapped = 0;
+    return;
+  }
   if (bdf0 == UINT32_C(0xFFFFFFFF)) {
     klog("PCI: ECAM reads all-ones, PCIe host not present\n");
     g_ecam_mapped = 0;

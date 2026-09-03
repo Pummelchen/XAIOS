@@ -23,6 +23,23 @@ _start:
   csrw  sie, zero
   csrci sstatus, 2          /* clear SIE */
 
+  /* Translation off, whatever the previous stage left on.
+   *
+   * SBI firmware hands over with satp already zero, so this is a no-op there
+   * and was easy to leave out. UEFI does not: EDK2 runs in supervisor mode
+   * with its own page tables and does not tear them down at ExitBootServices,
+   * so the kernel inherited a map covering firmware's world and not the
+   * board's. The first write to the interrupt controller then took a store
+   * page fault at an address the kernel had every right to expect, twenty
+   * lines before vmm_init would have mapped it itself. Both entry paths now
+   * start bare, and the kernel's map is the only one it ever runs under.
+   *
+   * Safe from either path because EDK2's mapping of this range is one to one
+   * -- the instruction after this one is at the same address with translation
+   * off as with it on. */
+  csrw  satp, zero
+  sfence.vma zero, zero
+
   mv    s0, a0              /* hart id, preserved across the clear below */
   mv    s1, a1              /* device tree pointer */
 

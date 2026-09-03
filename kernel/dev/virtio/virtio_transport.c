@@ -65,7 +65,17 @@ static uint32_t g_virtio_mmio_slots = VIRTIO_MMIO_SLOT_LIMIT;
    thirty-two, which is why a fixed count survived this long. */
 void virtio_transport_set_mmio_window(uint64_t base, uint64_t stride,
                                       uint32_t slots) {
-  if (base == 0U || stride == 0U || slots == 0U) return;
+  /* Zero slots means this machine has no MMIO virtio window, which is a
+     different statement from "leave the default alone" and has to be
+     expressible: firmware that publishes no device tree leaves a caller
+     unable to discover a window, and the compiled-in default belongs to
+     another board. Scanning it there is a load access fault, not an empty
+     slot. */
+  if (slots == 0U) {
+    g_virtio_mmio_slots = 0U;
+    return;
+  }
+  if (base == 0U || stride == 0U) return;
   g_virtio_mmio_base = base;
   g_virtio_mmio_stride = stride;
   g_virtio_mmio_slots = slots > VIRTIO_MMIO_SLOT_LIMIT ? VIRTIO_MMIO_SLOT_LIMIT

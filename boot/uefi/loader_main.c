@@ -14,6 +14,8 @@
  * boots: the fallback is what those images have always contained. */
 #if defined(XAIOS_UEFI_TARGET_X86_64)
 #define XAIOS_KERNEL_PATH u"\\EFI\\XAIOS\\kernel-x86_64.elf"
+#elif defined(__riscv)
+#define XAIOS_KERNEL_PATH u"\\EFI\\XAIOS\\kernel-riscv64.elf"
 #else
 #define XAIOS_KERNEL_PATH u"\\EFI\\XAIOS\\kernel-aarch64.elf"
 #endif
@@ -23,6 +25,8 @@
    shape as the kernel, so an image built the old way still boots. */
 #if defined(XAIOS_UEFI_TARGET_X86_64)
 #define XAIOS_INITFS_PATH u"\\EFI\\XAIOS\\initfs-x86_64.img"
+#elif defined(__riscv)
+#define XAIOS_INITFS_PATH u"\\EFI\\XAIOS\\initfs-riscv64.img"
 #else
 #define XAIOS_INITFS_PATH u"\\EFI\\XAIOS\\initfs-aarch64.img"
 #endif
@@ -43,6 +47,7 @@
 #define ELFDATA2LSB 1
 #define EM_X86_64 62
 #define EM_AARCH64 183
+#define EM_RISCV 243
 #define ET_EXEC 2
 #define ET_DYN 3
 #define KERNEL_MAX_SIZE (16ULL * 1024ULL * 1024ULL)
@@ -58,6 +63,16 @@
 #define XAIOS_LOADER_EXPECTED_MACHINE EM_X86_64
 #define XAIOS_LOADER_UART_BASE UINT64_C(0x000003f8)
 #define XAIOS_LOADER_UART_KIND XAIOS_UART_16550_IO
+#elif defined(__riscv)
+#define XAIOS_LOADER_TARGET_MESSAGE u"XAIOS loader target: RISC-V UEFI\r\n"
+#define XAIOS_LOADER_INVALID_MESSAGE u"XAIOS loader error: invalid RISC-V ELF64 kernel\r\n"
+#define XAIOS_LOADER_EXPECTED_MACHINE EM_RISCV
+/* The 16550 the virt board puts at the bottom of its device range. The device
+   tree says so too, and the kernel reads it from there; this is only what the
+   loader itself prints through before the kernel exists. */
+#define QEMU_VIRT_RISCV_UART0_BASE UINT64_C(0x10000000)
+#define XAIOS_LOADER_UART_BASE QEMU_VIRT_RISCV_UART0_BASE
+#define XAIOS_LOADER_UART_KIND XAIOS_UART_16550_MMIO
 #else
 #define XAIOS_LOADER_TARGET_MESSAGE u"XAIOS loader target: AArch64 UEFI\r\n"
 #define XAIOS_LOADER_INVALID_MESSAGE u"XAIOS loader error: invalid AArch64 ELF64 kernel\r\n"
@@ -1400,6 +1415,14 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
       system_table, &EFI_ACPI_20_TABLE_GUID, &EFI_ACPI_TABLE_GUID);
   uint64_t device_tree = configuration_table_pointer(
       system_table, &EFI_DTB_TABLE_GUID, 0);
+  /* Said out loud, because a kernel that depends on the device tree for the
+     addresses of its interrupt controller and its PCI window has no way to
+     report the difference between "firmware published no tree" and "the tree
+     said nothing useful". RISC-V depends on it for both. */
+  loader_diagnostic(system_table,
+                    device_tree != 0U
+                        ? u"XAIOS loader: firmware published a device tree\r\n"
+                        : u"XAIOS loader: firmware published no device tree\r\n");
   uint64_t ap_trampoline = 0U;
   uint64_t uart_base = XAIOS_LOADER_UART_BASE;
   uint32_t uart_kind = XAIOS_LOADER_UART_KIND;
