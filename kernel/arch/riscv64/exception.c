@@ -139,6 +139,7 @@ typedef struct riscv64_trap_frame {
 
 #define CAUSE_ECALL_FROM_USER 8U
 #define CAUSE_BREAKPOINT 3U
+#define CAUSE_ILLEGAL_INSTRUCTION 2U
 #define CAUSE_LOAD_ACCESS_FAULT 5U
 #define CAUSE_STORE_ACCESS_FAULT 7U
 
@@ -149,7 +150,11 @@ typedef struct riscv64_trap_frame {
  * back as 0xffffffff" test cannot tell an absent host bridge from a present
  * one. AArch64 solved the same problem the same way for its IOMMU probe.
  * Between begin and end, an access fault sets the flag and steps over the
- * instruction instead of killing the machine. */
+ * instruction instead of killing the machine.
+ *
+ * Illegal instruction counts too, because the same question gets asked about
+ * optional CSRs: reading one the hardware does not implement traps exactly
+ * like this, and asking is the only way to find out. */
 static volatile int g_mmio_probe_active;
 static volatile int g_mmio_probe_faulted;
 
@@ -217,7 +222,8 @@ uint64_t riscv64_trap_handler(riscv64_trap_frame_t *frame) {
   /* An access fault the kernel went looking for. Recovered rather than
      fatal, and only while a probe is in progress. */
   if (g_mmio_probe_active != 0 && (cause == CAUSE_LOAD_ACCESS_FAULT ||
-                                   cause == CAUSE_STORE_ACCESS_FAULT)) {
+                                   cause == CAUSE_STORE_ACCESS_FAULT ||
+                                   cause == CAUSE_ILLEGAL_INSTRUCTION)) {
     g_mmio_probe_faulted = 1;
     frame->sepc += instruction_width(frame->sepc);
     return 0U;

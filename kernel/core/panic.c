@@ -262,8 +262,15 @@ static uint32_t capture_backtrace(uint64_t *trace, uint32_t max_depth) {
 /* ---- cyan screen rendering ---- */
 
 static void render_banner(void) {
-  /* ANSI: clear screen, cyan bg, white bold fg */
-  panic_puts("\033[2J\033[H\033[37;46;1m");
+  /* ANSI: cyan bg and white bold fg first, then clear.
+   *
+   * The order is the point. Erase-in-display fills with whatever background
+   * is selected at the time, so clearing before choosing cyan paints the
+   * screen in the old colour and leaves cyan behind the characters only --
+   * which is what a terminal shows when it honours background codes at all.
+   * Selecting first makes the whole screen cyan, on a framebuffer console and
+   * over a serial line alike. */
+  panic_puts("\033[37;46;1m\033[2J\033[H");
   panic_puts("\r\n");
   panic_puts("  =====================================================\r\n");
   panic_puts("  =                                                  =\r\n");

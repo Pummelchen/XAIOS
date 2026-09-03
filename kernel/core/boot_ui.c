@@ -401,8 +401,40 @@ static uint32_t g_term_params[TERM_CSI_PARAM_MAX];
 static uint32_t g_term_param_count;
 static uint32_t g_term_cursor_drawn;
 
-static uint32_t term_background(void) { return fb_color(4U, 6U, 10U); }
+static uint32_t term_default_background(void) { return fb_color(4U, 6U, 10U); }
 static uint32_t term_foreground(void) { return fb_color(222U, 230U, 236U); }
+
+/* The background the terminal is currently painting with.
+ *
+ * This used to be a function returning one fixed colour, and the escape
+ * parser below understood foreground codes only. The consequence was that the
+ * panic screen -- which asks for white on cyan and is called the cyan screen
+ * of death in its own banner -- came out as white on the ordinary background
+ * on any machine with a framebuffer, which is every local console on x86-64
+ * and on Fusion. It was cyan over a serial line and nowhere else, and the two
+ * consoles disagreeing about what a crash looks like is worth more than the
+ * few lines it takes to fix. */
+static uint32_t g_term_bg_set;
+static uint32_t g_term_bg;
+
+static uint32_t term_background(void) {
+  return g_term_bg_set != 0U ? g_term_bg : term_default_background();
+}
+
+/* Background codes, in the same order as the foreground ones above. */
+static uint32_t term_sgr_background(uint32_t code) {
+  switch (code) {
+    case 40U: case 100U: return fb_color(12U, 14U, 18U);
+    case 41U: case 101U: return fb_color(150U, 40U, 35U);
+    case 42U: case 102U: return fb_color(30U, 120U, 60U);
+    case 43U: case 103U: return fb_color(150U, 120U, 40U);
+    case 44U: case 104U: return fb_color(35U, 60U, 160U);
+    case 45U: case 105U: return fb_color(120U, 40U, 140U);
+    case 46U: case 106U: return fb_color(0U, 150U, 165U);
+    case 47U: case 107U: return fb_color(190U, 196U, 202U);
+    default: return term_default_background();
+  }
+}
 
 static uint32_t term_sgr_color(uint32_t code) {
   switch (code) {
@@ -478,8 +510,13 @@ static void term_apply_csi(char final) {
       uint32_t code = g_term_params[i];
       if (code == 0U) {
         g_term_color = term_foreground();
+        g_term_bg_set = 0U;
       } else if ((code >= 30U && code <= 37U) || (code >= 90U && code <= 97U)) {
         g_term_color = term_sgr_color(code);
+      } else if ((code >= 40U && code <= 47U) ||
+                 (code >= 100U && code <= 107U)) {
+        g_term_bg = term_sgr_background(code);
+        g_term_bg_set = 1U;
       }
     }
     return;

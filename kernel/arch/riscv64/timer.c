@@ -11,6 +11,7 @@
  * precisely for that, and asking firmware is the supported path rather than a
  * workaround.
  */
+#include <xaios/exception.h>
 #include <xaios/riscv64_fdt.h>
 #include <xaios/riscv64_sbi.h>
 #include <xaios/status.h>
@@ -67,11 +68,48 @@ uint64_t timer_counter(void) {
 
 uint64_t timer_frequency_hz(void) { return g_frequency_hz; }
 
+/* Where the next timer interrupt is scheduled, and by which of the two
+ * mechanisms this machine actually has.
+ *
+ * Sstc gives supervisor mode its own comparator, `stimecmp`, and the pending
+ * bit is then derived from it directly: writing it is both the way to arm the
+ * timer and the only way to acknowledge one. SBI's TIME extension is the
+ * older route, and asks firmware to do the same thing one privilege level up.
+ *
+ * Preferring stimecmp is not only about the ecall it saves on every tick. On
+ * a machine where firmware has enabled Sstc, the pending bit follows
+ * stimecmp and an SBI call that programs the machine-mode comparator instead
+ * moves a register nothing is looking at -- so the interrupt is never
+ * acknowledged, fires again the instant it returns, and the kernel makes
+ * about one instruction of progress per tick. That is not hypothetical: it is
+ * what booting under EDK2 did, and it presented as a kernel frozen inside a
+ * memset with no fault and a healthy-looking timer.
+ */
+static int g_have_stimecmp;
+
+#define CSR_STIMECMP 0x14D
+
 static void set_timer(uint64_t absolute_ticks) {
+  if (g_have_stimecmp != 0) {
+    __asm__ volatile("csrw 0x14d, %0" : : "r"(absolute_ticks) : "memory");
+    return;
+  }
   register uint64_t a0 __asm__("a0") = absolute_ticks;
   register uint64_t a6 __asm__("a6") = SBI_TIME_SET_TIMER;
   register uint64_t a7 __asm__("a7") = SBI_EXT_TIME;
   __asm__ volatile("ecall" : "+r"(a0) : "r"(a6), "r"(a7) : "memory");
+}
+
+/* Whether this hart has stimecmp, asked rather than assumed. Reading a CSR
+   the hardware does not implement raises an illegal instruction, which the
+   probe turns into an answer instead of a panic. */
+static int detect_stimecmp(void) {
+  uint64_t value = 0U;
+  exception_mmio_probe_begin();
+  __asm__ volatile("csrr %0, 0x14d" : "=r"(value) : : "memory");
+  exception_mmio_probe_end();
+  (void)value;
+  return exception_mmio_probe_faulted() == 0;
 }
 
 void timer_init(void) {
@@ -85,8 +123,9 @@ void timer_init(void) {
          "machine's rate\n", FALLBACK_FREQUENCY_HZ);
   }
   g_boot_counter = timer_counter();
-  klog("timer: riscv64 rdtime frequency=%lu Hz sbi_time=%d\n", g_frequency_hz,
-       sbi_probe_extension(SBI_EXT_TIME));
+  g_have_stimecmp = detect_stimecmp();
+  klog("timer: riscv64 rdtime frequency=%lu Hz sbi_time=%d stimecmp=%d\n",
+       g_frequency_hz, sbi_probe_extension(SBI_EXT_TIME), g_have_stimecmp);
 }
 
 uint64_t timer_now_ns(void) {
