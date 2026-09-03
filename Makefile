@@ -59,6 +59,7 @@ riscv64:
 	./scripts/build-riscv64.sh
 
 qemu-riscv64-gate: riscv64
+	./scripts/build-riscv64-image.sh
 	python3 ./tests/scripts/qemu-riscv64-gate.py
 
 # Proves a panic on Fusion can be read, by causing one. Builds a kernel that

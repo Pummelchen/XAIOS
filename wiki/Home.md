@@ -1,7 +1,7 @@
 # XAIOS
 
 XAIOS is a freestanding Unix-like operating system for dedicated AI and
-high-performance server workloads. It boots on AArch64 and x86_64 under QEMU,
+high-performance server workloads. It boots on AArch64, x86_64 and RISC-V under QEMU,
 provides a native kernel/userspace ABI, persistent filesystems, IPv4/IPv6,
 OpenSSH-compatible SSH/SFTP, local and remote shells, administration controls,
 and a portable inference-engine foundation.
@@ -71,6 +71,7 @@ single [[Project Tracker|Project-Tracker]] for remaining work.
 ### Understand and validate it
 
 - [[Hardware Support|Hardware-Support]]
+- [[RISC-V|RISC-V]]
 - [[Architecture|Architecture]]
 - [[Security Model|Security-Model]]
 - [[Unix Compatibility|Unix-Compatibility]]

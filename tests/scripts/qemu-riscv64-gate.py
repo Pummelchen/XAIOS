@@ -1,78 +1,88 @@
 #!/usr/bin/env python3
-"""Boot the RISC-V bring-up under QEMU and require it to prove each claim.
+"""Boot XAIOS on the QEMU RISC-V `virt` board and check what actually ran.
 
-What this gate is for is narrower than "RISC-V works", and the difference
-matters. The port covers console, traps, paging, the timer, and shared kernel
-code. It does not cover SMP, PCI, virtio, storage, networking or userspace.
-A gate that only checked the guest reached its last line would pass equally
-well on a kernel that printed the lines and did nothing, so each marker below
-corresponds to something the guest verified about itself before printing it:
-a trap it provoked and counted, a satp it wrote and read back, a clock it
-sampled twice, and known-answer vectors it asserted.
+This gate used to assert a bring-up: a console, a trap, a page table and a
+hash, printed by a short program that ran instead of the kernel. The kernel
+boots on this architecture now, so the gate asserts the boot -- and the
+markers below are chosen so that a kernel which printed them and did nothing
+would be caught by another one. "PCI: enumerated" without "virtio-blk:
+capacity_sectors=" would mean a bus with nothing on it; the mount line without
+"/init returned to kernel exit_code=0" would mean a filesystem nobody read.
 
-The forbidden markers are the other half. The bring-up prints a specific line
-when a self-test fails rather than halting silently, and a gate that matched
-only on success would treat "TRAP SELF-TEST FAILED" followed by a clean
-shutdown as a pass, since the absence it was looking for is indistinguishable
-from a guest that stopped early.
+Four harts, deliberately. Firmware picks its own boot hart and it is not
+always hart 0 -- on this board it has been observed as 0, 1, 2 and 3 across
+consecutive runs of an identical command -- so a single-hart gate cannot see
+the class of bug where the kernel assumes which one it is. Running with four
+means every run draws again.
+
+The output goes to a file through QEMU's own serial sink rather than through a
+pipe. QEMU block-buffers its console when stdout is redirected and drops the
+buffer when it is killed, so a timed-out run read back as a kernel that
+printed nothing at all -- and a whole session went into bisecting an
+application that was never at fault.
 """
-from __future__ import annotations
-
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 KERNEL = ROOT / "build" / "kernel-riscv64" / "kernel.elf"
+INITFS = ROOT / "build" / "xaios-riscv64-initfs.img"
+IMAGE_BUILDER = ROOT / "scripts" / "build-riscv64-image.sh"
 LOG = ROOT / "build" / "qemu-riscv64-gate.log"
 
 REQUIRED = [
-    # The console itself: nothing else can be reported without it.
-    "XAIOS riscv64 bring-up starting",
-    "riscv64: sbi console ready",
     # The machine described from its own device tree rather than from
-    # constants: a UART address that was read, and free memory that excludes
-    # the kernel and the tree itself.
-    "riscv64: device tree parsed uart=0x10000000 regions=2",
-    # A trap that was provoked, taken, identified and returned from. cause=3
-    # is a breakpoint, which is what the guest deliberately raised.
-    "riscv64: trap taken and returned from cause=3",
-
-    # The shared memory stack, unmodified: NUMA regions, the physical
-    # allocator, Sv48 page tables proven by mapping, translating, writing
-    # through and unmapping, and a kernel heap that actually serves.
-    "NUMA: node 0 regions=2",
-    "PMM total pages=",
+    # constants, and free memory that excludes the kernel and the tree itself.
+    "boot: memory_map=",
+    # Sv48, because XAIOS_USER_BASE is past what Sv39 can address.
     "vmm: sv48 enabled",
     "vmm: self-test passed (map, translate, write, unmap)",
-    "smp: riscv64 single-hart self-test passed",
-    "kheap: initialized",
-    "riscv64: kheap serving allocations",
-    # A clock, not a constant.
-    "riscv64: timer advancing",
-    # The claim this port exists to test: kernel/runtime/sha256.c, the same
-    # file AArch64 and x86-64 compile, asserting its own vectors here.
-    "sha256: self-test passed",
-    "riscv64: shared kernel sha256 verified on this architecture",
-    # The guest saying what it is not, so a passing gate cannot be read as
-    # more than it is.
-    "riscv64: NOT present on this architecture: pci, virtio, storage, "
-    "network, userspace",
-    "riscv64: halting",
+    # A bus that was enumerated, and a device on it that answered. The second
+    # line is what stops the first from being a bus with nothing attached.
+    "PCI: ECAM mapped bus=0",
+    "PCI: enumerated",
+    "virtio-blk: modern PCI transport",
+    "virtio-blk: capacity_sectors=",
+    # A filesystem that was read, and the applications in it.
+    "initramfs: mounted rofs version=2",
+    # Every hart, scheduling. Not "started" -- scheduling.
+    "smp: riscv64 4 harts scheduling online=4",
+    # Userspace: loaded, run, and returned from through its own exit syscall.
+    "/init: service setup complete",
+    "kernel: /init returned to kernel exit_code=0",
+    "kernel: /bin/service-manager returned to kernel exit_code=0",
+    # The end of a boot with no account packaged, which is the installer
+    # asking which way to go. Reaching a prompt is the proof that everything
+    # before it worked.
+    "kernel: no account on this machine; starting /bin/xaios-setup",
+    "Choose [1/2]:",
 ]
 
 FORBIDDEN = [
-    "TRAP SELF-TEST FAILED",
-    "SV39 REFUSED",
-    "TIMER DID NOT ADVANCE",
-    "XAIOS panic",
-    "BOOT INFO FAILED",
-    "declares no memory",
-    "KHEAP FAILED",
+    "ERROR:",
+    "CYAN SCREEN OF DEATH",
+    "assertion failed",
+    "is not in the initial filesystem",
     "Sv48 refused",
+    # Only the block device: this board genuinely has no virtio console, GPU
+    # or entropy device, and those drivers say so on every healthy boot. A
+    # blanket "no pci device" made the gate fail on a working machine.
+    "virtio-blk: no pci device",
 ]
+
+# How many self-tests the shared kernel is expected to pass. A floor rather
+# than an exact count, so adding a test does not fail the gate -- but a boot
+# that quietly stopped running them does.
+MINIMUM_SELF_TESTS = 70
+
+# The last thing a complete boot prints. Watched for, so a good run ends when
+# the boot ends rather than when the timeout does.
+FINAL_MARKER = "Choose [1/2]:"
 
 
 def main() -> int:
@@ -84,47 +94,87 @@ def main() -> int:
         print(f"no kernel at {KERNEL}; run scripts/build-riscv64.sh first",
               file=sys.stderr)
         return 2
+    if not INITFS.is_file():
+        print(f"no initial filesystem at {INITFS}; run "
+              f"{IMAGE_BUILDER.relative_to(ROOT)} first", file=sys.stderr)
+        return 2
 
-    timeout = int(os.environ.get("XAIOS_RISCV64_TIMEOUT", "120"))
-    command = [
-        qemu, "-machine", "virt", "-cpu", "rv64", "-smp", "1", "-m", "256",
-        "-nographic", "-bios", "default", "-kernel", str(KERNEL),
-    ]
-    try:
-        finished = subprocess.run(command, cwd=str(ROOT), text=True,
-                                  capture_output=True, timeout=timeout)
-        output = finished.stdout + finished.stderr
-    except subprocess.TimeoutExpired as expired:
-        output = (expired.stdout or "") + (expired.stderr or "")
-        if isinstance(output, bytes):
-            output = output.decode("utf-8", errors="replace")
-        LOG.parent.mkdir(parents=True, exist_ok=True)
-        LOG.write_text(output, encoding="utf-8")
-        print(f"the guest did not halt within {timeout}s -- it should power "
-              f"itself off through SBI rather than needing to be killed.\n"
-              f"whole boot saved to {LOG.relative_to(ROOT)}", file=sys.stderr)
-        return 1
-
+    timeout = int(os.environ.get("XAIOS_RISCV64_TIMEOUT", "600"))
     LOG.parent.mkdir(parents=True, exist_ok=True)
-    LOG.write_text(output, encoding="utf-8")
+    if LOG.exists():
+        LOG.unlink()
+
+    # A scratch copy, because the guest writes to its volumes and a gate that
+    # mutates its own inputs passes differently the second time.
+    with tempfile.TemporaryDirectory() as scratch:
+        # Two copies, not one file opened twice: QEMU takes a write lock per
+        # drive and refuses the second, which produced an empty log and a gate
+        # that reported every marker missing rather than saying the guest had
+        # never started. The boot disk the kernel opens is the second virtio
+        # block device, so both have to be there.
+        payload = INITFS.read_bytes()
+        disk0 = Path(scratch) / "hd0.img"
+        disk1 = Path(scratch) / "hd1.img"
+        disk0.write_bytes(payload)
+        disk1.write_bytes(payload)
+        command = [
+            qemu, "-machine", "virt", "-cpu", "rv64", "-smp", "4",
+            "-m", "512", "-display", "none", "-bios", "default",
+            "-serial", f"file:{LOG}",
+            "-kernel", str(KERNEL),
+            "-drive", f"file={disk0},format=raw,if=none,id=hd0",
+            "-device", "virtio-blk-pci,drive=hd0,disable-legacy=on",
+            "-drive", f"file={disk1},format=raw,if=none,id=hd1",
+            "-device", "virtio-blk-pci,drive=hd1,disable-legacy=on",
+            "-netdev", "user,id=n0",
+            "-device", "virtio-net-pci,netdev=n0,disable-legacy=on",
+        ]
+        # The guest stops at an interactive prompt rather than powering off,
+        # so waiting for it to exit means waiting out the whole timeout on
+        # every successful run. Watching the log for the last thing the boot
+        # prints ends a good run in the time the boot actually takes, and
+        # leaves the timeout to do its real job -- ending a bad one.
+        guest = subprocess.Popen(command, cwd=str(ROOT),
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+        deadline = time.monotonic() + timeout
+        try:
+            while time.monotonic() < deadline:
+                if guest.poll() is not None:
+                    break
+                if LOG.is_file():
+                    tail = LOG.read_text(encoding="utf-8", errors="replace")
+                    if FINAL_MARKER in tail or "CYAN SCREEN" in tail:
+                        break
+                time.sleep(1.0)
+        finally:
+            if guest.poll() is None:
+                guest.kill()
+                guest.wait()
+
+    if not LOG.is_file() or LOG.stat().st_size == 0:
+        print("the guest produced no serial output at all -- qemu did not "
+              "start, or started and printed nothing", file=sys.stderr)
+        return 1
+    output = LOG.read_text(encoding="utf-8", errors="replace")
 
     missing = [marker for marker in REQUIRED if marker not in output]
     present = [marker for marker in FORBIDDEN if marker in output]
-    if missing or present:
-        print("riscv64 gate failed", file=sys.stderr)
+    self_tests = output.count("self-test passed")
+
+    if missing or present or self_tests < MINIMUM_SELF_TESTS:
         for marker in missing:
             print(f"  missing: {marker}", file=sys.stderr)
         for marker in present:
             print(f"  forbidden: {marker}", file=sys.stderr)
+        if self_tests < MINIMUM_SELF_TESTS:
+            print(f"  only {self_tests} self-tests passed, expected at least "
+                  f"{MINIMUM_SELF_TESTS}", file=sys.stderr)
         print(f"whole boot saved to {LOG.relative_to(ROOT)}", file=sys.stderr)
         return 1
 
-    version = subprocess.run([qemu, "--version"], text=True,
-                             capture_output=True).stdout.splitlines()
-    print("qemu-riscv64-gate: console, traps, sv48 paging, physical and heap "
-          "allocators, smp identity, timer and shared kernel code verified "
-          "on rv64gc")
-    print(f"  {version[0] if version else 'qemu-system-riscv64'}")
+    print(f"qemu-riscv64-gate: booted to the setup prompt on 4 harts, "
+          f"{self_tests} self-tests passed, no errors")
     return 0
 
 

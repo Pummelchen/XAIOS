@@ -6,13 +6,18 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 
 ## Architectures
 
-AArch64 and x86_64 are the pair XAIOS runs as an operating system on. RISC-V
-(rv64gc) is a bring-up and not a third supported architecture: console, traps,
-Sv39 paging, the timer and shared kernel code are gated by
-`make qemu-riscv64-gate`, and SMP, PCI, VirtIO, storage, networking and
-userspace do not exist there. The guest prints that list itself so a clean boot
-cannot be read as support. It boots via OpenSBI rather than UEFI, so it has no
-boot medium and is not part of any released image.
+AArch64, x86_64 and RISC-V (rv64gc) all run the same shared kernel. On the
+QEMU `virt` board RISC-V boots to the first-run setup prompt: Sv48 paging with
+section-accurate kernel permissions, PLIC interrupts, PCI enumerated through
+ECAM with base addresses assigned by the kernel, virtio disks, the initial
+filesystem, IPv6, userspace over a full trap frame, and four harts scheduling.
+
+What it does not have is hardware qualification. AArch64 and x86_64 are
+qualified on real machines and hypervisors; RISC-V has been run on one
+emulated board and nothing else, so no claim about firmware behaviour, timing
+or scaling on RISC-V hardware is supported by anything here. It boots via
+OpenSBI rather than UEFI, so it has no boot medium and is not part of any
+released image, and `xapt` and the C99 libc have not been built for it.
 
 ## Platform and hardware
 

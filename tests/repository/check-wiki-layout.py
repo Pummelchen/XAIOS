@@ -23,6 +23,7 @@ EXPECTED_PAGES = {
     "Filesystem-and-Storage.md",
     "Getting-Started.md",
     "Hardware-Support.md",
+    "RISC-V.md",
     "Home.md",
     "Networking-and-SSH.md",
     "Operations-and-Recovery.md",

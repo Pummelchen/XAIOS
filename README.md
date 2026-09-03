@@ -72,13 +72,14 @@ no FreeBSD or Linux binary ABI — guest programs use native syscalls, so passin
 host-client tests proves wire behaviour only. See
 [Unix compatibility](./wiki/Unix-Compatibility.md).
 
-**Architectures.** AArch64 and x86_64 are the pair XAIOS runs as an operating
-system on. RISC-V (rv64gc) is a bring-up, not a third supported architecture:
-`make qemu-riscv64-gate` proves console, traps, Sv39 paging, the timer and
-shared kernel code on the QEMU `virt` board, and the guest itself prints that
-SMP, PCI, virtio, storage, networking and userspace are absent. It exists to
-test the platform-neutrality rule against an architecture that agrees with
-neither of the others.
+**Architectures.** AArch64, x86_64 and RISC-V (rv64gc). AArch64 and x86_64 run
+on real machines and hypervisors; RISC-V runs on the QEMU `virt` board, where
+it boots the same shared kernel to the first-run setup prompt across four
+harts — PCI, virtio disks, the filesystem, IPv6, userspace and the scheduler,
+with the applications built by `scripts/build-riscv64-image.sh`. What it does
+not have is hardware qualification: no RISC-V machine or hypervisor is in the
+test set, so its evidence is one board. See
+[RISC-V](./wiki/RISC-V.md).
 
 **C99 libc.** A statically linked hosted ISO C99 library for AArch64 and
 x86_64, with no public POSIX API and no new syscall identifiers. See
