@@ -891,31 +891,8 @@ static int console_command_is_xtop(const char *command) {
   return 1;
 }
 
-/* Give the core up for a while: the kernel's runtime snapshot with a wait is
-   the one sleep a user process has, and its answer is discarded. */
 static void sshd_idle_ms(uint32_t milliseconds) {
-  struct {
-    xaios_control_request_header_user_t header;
-    xaios_control_runtime_snapshot_request_user_t payload;
-  } request;
-  static union {
-    u64 alignment;
-    unsigned char bytes[XAIOS_CONTROL_MAX_RESPONSE_BYTES];
-  } response;
-  static u32 request_id;
-  u64 response_size = 0U;
-  xaios_memzero(&request, sizeof(request));
-  request.header.magic = XAIOS_CONTROL_MAGIC;
-  request.header.version = XAIOS_CONTROL_VERSION;
-  request.header.header_size = (u16)sizeof(request.header);
-  request.header.operation = XAIOS_CONTROL_OP_RUNTIME_SNAPSHOT;
-  request.header.payload_type = XAIOS_CONTROL_PAYLOAD_RUNTIME_SNAPSHOT_REQUEST;
-  request.header.request_id = request_id++;
-  request.header.principal_role = XAIOS_CONTROL_ROLE_OBSERVER;
-  request.header.payload_length = sizeof(request.payload);
-  request.payload.wait_ms = milliseconds;
-  (void)xaios_control_query(&request, sizeof(request), response.bytes,
-                            sizeof(response.bytes), &response_size);
+  (void)xaios_sleep_ns((u64)milliseconds * UINT64_C(1000000));
 }
 
 static void console_child_release(int cancel) {
@@ -3075,7 +3052,23 @@ close_conn:
        monitor, once it was honest about who was running, showed on every
        machine -- so an empty iteration yields the core for a millisecond.
        That is the most a keystroke or a packet waits. */
-    if (timer_now() - now < UINT64_C(200000)) sshd_idle_ms(1U);
+    {
+      /* How long an empty iteration takes is a property of the machine --
+         a few microseconds native, hundreds under emulation -- so the
+         shortest iteration seen is the measure, and one within twice of it
+         found nothing to do. Consecutive empty iterations sleep longer,
+         up to eight milliseconds, and any work resets the pause. */
+      static uint64_t shortest_ns = UINT64_MAX;
+      static uint32_t idle_ms = 1U;
+      uint64_t elapsed = timer_now() - now;
+      if (elapsed < shortest_ns) shortest_ns = elapsed;
+      if (elapsed <= shortest_ns * 2U + UINT64_C(50000)) {
+        sshd_idle_ms(idle_ms);
+        if (idle_ms < 8U) idle_ms *= 2U;
+      } else {
+        idle_ms = 1U;
+      }
+    }
   }
 
   return 0;

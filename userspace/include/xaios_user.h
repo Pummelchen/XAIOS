@@ -80,6 +80,7 @@ void *xaios_memcpy(void *dst, const void *src, u64 size);
 #define XAIOS_SYSCALL_NET_CONNECT 50ULL
 #define XAIOS_SYSCALL_NET_LOCAL_IPV6 51ULL
 #define XAIOS_SYSCALL_CONSOLE_SIZE 52ULL
+#define XAIOS_SYSCALL_SLEEP_NANOS 53ULL
 #define XAIOS_THREAD_CPU_ANY (~0ULL)
 
 #define XAIOS_CLOCK_MONOTONIC 0ULL
@@ -371,6 +372,11 @@ int xaios_console_write(const char *buffer, u64 size);
    to the whole screen instead of to a guessed eighty columns in the corner
    of it. */
 int xaios_console_size(u32 *columns, u32 *rows);
+/* Give the CPU up for at least this long (at most one second per call).
+   The one sleep a user process has: everything that waited by polling a
+   clock, or by asking for a runtime snapshot with a wait in it, burned a
+   core to do nothing. Requires XAIOS_CAP_TIME. */
+int xaios_sleep_ns(u64 nanoseconds);
 u32 xaios_net_local_ipv4(void);
 /* Copies the public IPv6 address out and returns 1, or returns 0 when the
    guest has no public IPv6 address configured. */

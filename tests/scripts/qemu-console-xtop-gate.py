@@ -212,12 +212,16 @@ class Screen:
             distinct = set(colors)
             if len(distinct) == 1:
                 color = colors[0]
-                if color in (row_background, DEFAULT_BACKGROUND):
+                # The field, the row's own background and the screen's are
+                # backgrounds wherever they appear; a solid run in any other
+                # colour is a bar, which a row full of bar must not turn
+                # into "background" for the blanks beside it.
+                if color in (row_background, DEFAULT_BACKGROUND, FIELD_BACKGROUND):
                     text += " "
                 else:
                     text += self.glyphs.get(self._bits(colors, None), "�")
                 continue
-            candidates = [row_background] if row_background in distinct else []
+            candidates = [c for c in (FIELD_BACKGROUND, row_background) if c in distinct]
             candidates += [c for c in distinct if c not in candidates]
             glyph = None
             for background in candidates:
@@ -374,6 +378,9 @@ def ssh_frame(key: Path, port: int, columns: int, rows: int) -> list[str]:
     os.close(child)
     collected = bytearray()
     deadline = time.monotonic() + 45.0
+    # Four seconds of updates after the first frame: enough for the screen
+    # to have settled into its steady state.
+    settle_at = time.monotonic() + 8.0
     try:
         while time.monotonic() < deadline:
             ready, _, _ = select.select([parent], [], [], 0.25)
@@ -385,7 +392,7 @@ def ssh_frame(key: Path, port: int, columns: int, rows: int) -> list[str]:
                 if not chunk:
                     break
                 collected.extend(chunk)
-            if collected.count(b"\x1b[2J") >= 3:
+            if TITLE.encode() in collected and time.monotonic() > settle_at:
                 break
         try:
             os.write(parent, b"q")
@@ -419,11 +426,9 @@ def ssh_frame(key: Path, port: int, columns: int, rows: int) -> list[str]:
             + stderr_path.read_text(errors="replace")[-2000:]
             + "\nsshd log:\n" + journal
         )
-    # Frames begin with a clear; the last piece is a frame still being
-    # written, so the one before it is the last complete frame.
-    frames = collected.split(b"\x1b[2J")
-    frame = frames[-2] if len(frames) > 2 else frames[-1]
-    return render_terminal(frame, columns)
+    # The whole stream, applied in order: one full frame, then the cells
+    # that changed since. What the terminal shows at the end is the screen.
+    return render_terminal(bytes(collected), columns)
 
 
 # --------------------------------------------------------- terminal model
@@ -440,13 +445,29 @@ def render_terminal(data: bytes, columns: int) -> list[str]:
     text = data.decode("utf-8", errors="replace")
     lines: list[list[str]] = [[]]
     column = 0
+    current_row = 0
     index = 0
     while index < len(text):
         char = text[index]
         if char == "\x1b":
-            match = re.match(r"\x1b\[[0-9;?]*[A-Za-z]", text[index:])
+            match = re.match(r"\x1b\[([0-9;?]*)([A-Za-z])", text[index:])
             if match:
                 index += len(match.group(0))
+                params, final = match.group(1), match.group(2)
+                if final == "H":
+                    # Cursor position: a partial update lands here. The
+                    # monitor sends only the cells that changed, so the
+                    # screen is the result of every update applied in order.
+                    numbers = [int(n) if n else 1 for n in params.split(";")] if params else [1]
+                    row = max(numbers[0], 1) - 1
+                    column = max(numbers[1], 1) - 1 if len(numbers) > 1 else 0
+                    while len(lines) <= row:
+                        lines.append([])
+                    current_row = row
+                elif final == "J":
+                    lines[:] = [[]]
+                    current_row = 0
+                    column = 0
                 continue
             index += 1
             continue
@@ -455,13 +476,17 @@ def render_terminal(data: bytes, columns: int) -> list[str]:
             column = 0
             continue
         if char == "\n":
-            lines.append([])
+            current_row += 1
+            while len(lines) <= current_row:
+                lines.append([])
             column = 0
             continue
         if column >= columns:
-            lines.append([])
+            current_row += 1
+            while len(lines) <= current_row:
+                lines.append([])
             column = 0
-        row = lines[-1]
+        row = lines[current_row]
         while len(row) <= column:
             row.append(" ")
         row[column] = char
@@ -635,9 +660,11 @@ def main() -> int:
             qmp.command("screendump", filename=str(screendump))
             console.drain(0.15)
             candidate = Screen(screendump, glyphs, geometry)
-            complete = any(TITLE in line for line in candidate.lines) and any(
-                "F1Help" in line for line in candidate.lines
-            )
+            has_title = any(TITLE in line for line in candidate.lines)
+            has_keys = any("F1Help" in line for line in candidate.lines)
+            print(f"+ screendump {attempt}: title={has_title} keys={has_keys} "
+                  f"rows={sum(1 for l in candidate.lines if l.strip())}", flush=True)
+            complete = has_title and has_keys
             if complete:
                 screen = candidate
                 break

@@ -20,6 +20,11 @@ static uint32_t g_wall_calibrated;
 static uint32_t g_wall_source;
 static uint64_t g_wall_last_sync_ns;
 static uint32_t g_periodic_active;
+static uint32_t g_periodic_hz;
+/* Set while a CPU idles on a one-shot: the interrupt that ends the wait must
+   not tick the scheduler, because it lands inside a syscall's wait, not
+   between two instructions of a process. */
+static uint32_t g_idle_wait;
 static xaios_context_frame_t g_irq_frame;
 
 static uint64_t ticks_to_ns(uint64_t ticks) {
@@ -66,6 +71,7 @@ void timer_enable_periodic(uint32_t hz) {
   if (count == 0U) count = 1U;
   if (count > UINT32_MAX) count = UINT32_MAX;
   g_periodic_active = 1U;
+  g_periodic_hz = hz;
   x86_64_platform_timer_start((uint32_t)count, 1U);
   klog("timer: periodic enabled hz=%u interval=%lu\n", hz, count);
 }
@@ -82,9 +88,38 @@ void timer_rearm(void) {
   if (g_periodic_active == 0U) x86_64_platform_timer_stop();
 }
 
+/* Wait for a deadline with the CPU halted.
+ *
+ * This was a `pause` loop, which waits with the CPU fully busy: every idle
+ * wait a process made -- sshd's between two polls, the process monitor's
+ * between two frames -- burned the core it made it on, and the monitor,
+ * once it was honest about who was running, showed sshd at a hundred
+ * percent on an idle machine. AArch64 and RISC-V arm a one-shot at the
+ * deadline and sleep; this is the same: the local APIC timer is set to fire
+ * at the deadline, the CPU halts with interrupts enabled, and the periodic
+ * tick, if this CPU had one, is put back afterwards. The interrupt that
+ * ends the wait is counted but does not tick the scheduler. */
 void timer_idle_until(uint64_t deadline_ns) {
-  while (timer_now_ns() < deadline_ns) {
-    __asm__ volatile("pause" ::: "memory");
+  uint32_t had_periodic = g_periodic_active;
+  for (;;) {
+    uint64_t now_ns = timer_now_ns();
+    if (now_ns >= deadline_ns) break;
+    uint64_t wait_ns = deadline_ns - now_ns;
+    uint64_t count = (wait_ns * g_lapic_frequency) / UINT64_C(1000000000);
+    if (count == 0U) count = 1U;
+    if (count > UINT32_MAX) count = UINT32_MAX;
+    g_idle_wait = 1U;
+    x86_64_platform_timer_start((uint32_t)count, 0U);
+    __asm__ volatile("sti; hlt; cli" ::: "memory");
+    g_idle_wait = 0U;
+  }
+  if (had_periodic != 0U && g_periodic_hz != 0U) {
+    uint64_t period = g_lapic_frequency / g_periodic_hz;
+    if (period == 0U) period = 1U;
+    if (period > UINT32_MAX) period = UINT32_MAX;
+    x86_64_platform_timer_start((uint32_t)period, 1U);
+  } else {
+    x86_64_platform_timer_stop();
   }
 }
 
@@ -212,5 +247,7 @@ void timer_self_test(void) {
 }
 
 void x86_64_platform_timer_irq(void) {
-  if (g_periodic_active != 0U) scheduler_tick(&g_irq_frame, 0);
+  if (g_periodic_active != 0U && g_idle_wait == 0U) {
+    scheduler_tick(&g_irq_frame, 0);
+  }
 }

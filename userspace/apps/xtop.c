@@ -2353,9 +2353,8 @@ typedef struct xtop_serve_state {
 } xtop_serve_state_t;
 
 static void serve_pause_ms(uint32_t ms) {
-  xaios_control_runtime_snapshot_payload_user_t ignored;
   if (ms == 0U) ms = 1U;
-  (void)runtime_query(0U, 0U, 0U, 0U, ms, &ignored);
+  (void)xaios_sleep_ns((u64)ms * UINT64_C(1000000));
 }
 
 /* Written whole, however many channel frames that takes; a full channel is
@@ -2443,7 +2442,7 @@ static void serve_build_args(const xtop_serve_state_t *st) {
                "--serve-frame --color --interactive --sample-ms ");
   serve_append_u32(g_serve_args, sizeof(g_serve_args), &used, st->sample_ms);
   serve_append(g_serve_args, sizeof(g_serve_args), &used, " --refresh-ms ");
-  serve_append_u32(g_serve_args, sizeof(g_serve_args), &used, st->refresh_ms);
+  serve_append_u32(g_serve_args, sizeof(g_serve_args), &used, st->sample_ms);
   serve_append(g_serve_args, sizeof(g_serve_args), &used, " --columns ");
   serve_append_u32(g_serve_args, sizeof(g_serve_args), &used, st->columns);
   serve_append(g_serve_args, sizeof(g_serve_args), &used, " --rows ");
@@ -2525,6 +2524,193 @@ static void serve_push_load_history(uint16_t cpu_tenths, uint16_t mem_tenths) {
   if (g_extras.history_count < XTOP_HISTORY) ++g_extras.history_count;
 }
 
+/* ---- Sending only what changed.
+ *
+ * A frame is rendered whole into a buffer, as before, and then read back
+ * into a grid of cells -- glyph and attributes -- and compared with the
+ * grid the terminal is known to show. What goes down the channel is the
+ * cells that differ, each run positioned with a cursor move and preceded by
+ * its attributes only when they change. A frame that changed nothing sends
+ * nothing; a tick of the clock sends the clock. Sixty frames a second is
+ * then a promise about latency, not a stream of screens: sshd encrypts a
+ * few hundred bytes a frame instead of twenty-four kilobytes, and the
+ * console draws a few cells instead of six thousand. */
+#define XTOP_GRID_COLUMNS 240U
+#define XTOP_GRID_ROWS 100U
+#define XTOP_ATTR_DEFAULT 256U
+typedef struct xtop_cell {
+  uint8_t glyph[4]; /* UTF-8, unused bytes zero */
+  uint16_t fg;      /* palette index, or XTOP_ATTR_DEFAULT */
+  uint16_t bg;
+  uint8_t bold;
+  uint8_t pad[3];
+} xtop_cell_t;
+static xtop_cell_t g_shown[XTOP_GRID_ROWS][XTOP_GRID_COLUMNS];
+static xtop_cell_t g_next[XTOP_GRID_ROWS][XTOP_GRID_COLUMNS];
+static int g_shown_valid;
+static char g_diff[XAIOS_XTOP_OUTPUT_BYTES];
+
+static int cell_equal(const xtop_cell_t *a, const xtop_cell_t *b) {
+  return a->glyph[0] == b->glyph[0] && a->glyph[1] == b->glyph[1] &&
+         a->glyph[2] == b->glyph[2] && a->glyph[3] == b->glyph[3] &&
+         a->fg == b->fg && a->bg == b->bg && a->bold == b->bold;
+}
+
+static void grid_clear(xtop_cell_t grid[XTOP_GRID_ROWS][XTOP_GRID_COLUMNS],
+                       uint16_t bg, uint32_t rows, uint32_t columns) {
+  for (uint32_t r = 0U; r < rows && r < XTOP_GRID_ROWS; ++r) {
+    for (uint32_t c = 0U; c < columns && c < XTOP_GRID_COLUMNS; ++c) {
+      xtop_cell_t *cell = &grid[r][c];
+      cell->glyph[0] = ' '; cell->glyph[1] = 0U; cell->glyph[2] = 0U;
+      cell->glyph[3] = 0U;
+      cell->fg = XTOP_ATTR_DEFAULT; cell->bg = bg; cell->bold = 0U;
+    }
+  }
+}
+
+/* Read a rendered frame into the grid: the escapes this program itself
+   emits, and no others. */
+static void grid_from_frame(const char *frame, uint64_t length, uint32_t rows,
+                            uint32_t columns) {
+  uint16_t fg = XTOP_ATTR_DEFAULT, bg = XTOP_ATTR_DEFAULT;
+  uint8_t bold = 0U;
+  uint32_t row = 0U, column = 0U;
+  grid_clear(g_next, XTOP_ATTR_DEFAULT, rows, columns);
+  for (uint64_t i = 0U; i < length;) {
+    uint8_t byte = (uint8_t)frame[i];
+    if (byte == 0x1bU) {
+      if (i + 1U < length && frame[i + 1U] == '[') {
+        uint64_t j = i + 2U;
+        uint32_t params[8]; uint32_t count = 0U; uint32_t value = 0U;
+        int have = 0;
+        while (j < length && ((frame[j] >= '0' && frame[j] <= '9') ||
+                              frame[j] == ';' || frame[j] == '?')) {
+          if (frame[j] == ';') {
+            if (count < 8U) params[count++] = value;
+            value = 0U; have = 0;
+          } else if (frame[j] != '?') {
+            value = value * 10U + (uint32_t)(frame[j] - '0'); have = 1;
+          }
+          ++j;
+        }
+        if (have && count < 8U) params[count++] = value;
+        char final = j < length ? frame[j] : '\0';
+        if (final == 'm') {
+          if (count == 0U) { fg = XTOP_ATTR_DEFAULT; bg = XTOP_ATTR_DEFAULT; bold = 0U; }
+          for (uint32_t k = 0U; k < count; ++k) {
+            uint32_t v = params[k];
+            if (v == 0U) { fg = XTOP_ATTR_DEFAULT; bg = XTOP_ATTR_DEFAULT; bold = 0U; }
+            else if (v == 1U) bold = 1U;
+            else if (v >= 30U && v <= 37U) fg = (uint16_t)(v - 30U);
+            else if (v >= 90U && v <= 97U) fg = (uint16_t)(v - 90U + 8U);
+            else if (v >= 40U && v <= 47U) bg = (uint16_t)(v - 40U);
+            else if (v >= 100U && v <= 107U) bg = (uint16_t)(v - 100U + 8U);
+            else if ((v == 38U || v == 48U) && k + 2U < count && params[k + 1U] == 5U) {
+              if (v == 38U) fg = (uint16_t)params[k + 2U]; else bg = (uint16_t)params[k + 2U];
+              k += 2U;
+            } else if (v == 39U) fg = XTOP_ATTR_DEFAULT;
+            else if (v == 49U) bg = XTOP_ATTR_DEFAULT;
+          }
+        } else if (final == 'H') {
+          row = count >= 1U && params[0] != 0U ? params[0] - 1U : 0U;
+          column = count >= 2U && params[1] != 0U ? params[1] - 1U : 0U;
+        } else if (final == 'J') {
+          grid_clear(g_next, bg, rows, columns);
+        }
+        i = j < length ? j + 1U : length;
+        continue;
+      }
+      ++i;
+      continue;
+    }
+    ++i;
+    if (byte == '\r') { column = 0U; continue; }
+    if (byte == '\n') { ++row; column = 0U; continue; }
+    if (byte < 0x20U) continue;
+    uint32_t glyph_bytes = byte < 0x80U ? 1U : (byte & 0xe0U) == 0xc0U ? 2U
+                           : (byte & 0xf0U) == 0xe0U ? 3U : 4U;
+    if (column >= columns) { ++row; column = 0U; }
+    if (row < rows && row < XTOP_GRID_ROWS && column < XTOP_GRID_COLUMNS) {
+      xtop_cell_t *cell = &g_next[row][column];
+      for (uint32_t k = 0U; k < 4U; ++k) {
+        cell->glyph[k] = k < glyph_bytes && i - 1U + k < length
+                             ? (uint8_t)frame[i - 1U + k] : 0U;
+      }
+      cell->fg = fg; cell->bg = bg; cell->bold = bold;
+    }
+    ++column;
+    i += glyph_bytes - 1U;
+  }
+}
+
+static void diff_append_attrs(uint64_t *used, const xtop_cell_t *cell) {
+  output_append(g_diff, sizeof(g_diff), used, "\033[0");
+  if (cell->bold) output_append(g_diff, sizeof(g_diff), used, ";1");
+  if (cell->fg != XTOP_ATTR_DEFAULT) {
+    output_append(g_diff, sizeof(g_diff), used, ";38;5;");
+    output_append_u64(g_diff, sizeof(g_diff), used, cell->fg);
+  }
+  if (cell->bg != XTOP_ATTR_DEFAULT) {
+    output_append(g_diff, sizeof(g_diff), used, ";48;5;");
+    output_append_u64(g_diff, sizeof(g_diff), used, cell->bg);
+  }
+  output_append(g_diff, sizeof(g_diff), used, "m");
+}
+
+/* The bytes that turn what the terminal shows into the next grid. Returns
+   the length, zero when nothing changed. `full` sends everything, for the
+   first frame and after anything that invalidates the terminal. */
+static uint64_t diff_build(uint32_t rows, uint32_t columns, int full) {
+  uint64_t used = 0U;
+  int attrs_known = 0;
+  xtop_cell_t current;
+  g_diff[0] = '\0';
+  bytes_zero(&current, sizeof(current));
+  if (full) {
+    output_append(g_diff, sizeof(g_diff), &used, "\033[0;48;5;68m\033[2J\033[H\033[?25l");
+    grid_clear(g_shown, 68U, rows, columns);
+  }
+  for (uint32_t r = 0U; r < rows && r < XTOP_GRID_ROWS; ++r) {
+    uint32_t c = 0U;
+    while (c < columns && c < XTOP_GRID_COLUMNS) {
+      if (cell_equal(&g_next[r][c], &g_shown[r][c])) { ++c; continue; }
+      /* A run of changed cells, allowing up to two unchanged cells inside
+         it: a cursor move costs more than two glyphs. */
+      uint32_t end = c;
+      uint32_t last_changed = c;
+      while (end < columns && end < XTOP_GRID_COLUMNS) {
+        if (!cell_equal(&g_next[r][end], &g_shown[r][end])) last_changed = end;
+        else if (end - last_changed > 2U) break;
+        ++end;
+      }
+      end = last_changed + 1U;
+      output_append(g_diff, sizeof(g_diff), &used, "\033[");
+      output_append_u64(g_diff, sizeof(g_diff), &used, r + 1U);
+      output_append(g_diff, sizeof(g_diff), &used, ";");
+      output_append_u64(g_diff, sizeof(g_diff), &used, c + 1U);
+      output_append(g_diff, sizeof(g_diff), &used, "H");
+      for (uint32_t k = c; k < end; ++k) {
+        const xtop_cell_t *cell = &g_next[r][k];
+        if (!attrs_known || cell->fg != current.fg || cell->bg != current.bg ||
+            cell->bold != current.bold) {
+          diff_append_attrs(&used, cell);
+          current = *cell; attrs_known = 1;
+        }
+        for (uint32_t b = 0U; b < 4U && cell->glyph[b] != 0U; ++b) {
+          output_append_char(g_diff, sizeof(g_diff), &used, (char)cell->glyph[b]);
+        }
+        g_shown[r][k] = *cell;
+      }
+      c = end;
+    }
+  }
+  if (used != 0U) {
+    output_append(g_diff, sizeof(g_diff), &used, "\033[0;48;5;68;38;5;120m\033[?25l");
+  }
+  g_shown_valid = 1;
+  return used;
+}
+
 static int serve_render(xtop_serve_state_t *st) {
   uint64_t frame_bytes = 0U;
   g_serve_frame[0] = '\0';
@@ -2533,7 +2719,10 @@ static int serve_render(xtop_serve_state_t *st) {
                   &frame_bytes) != XAIOS_OK) {
     return -1;
   }
-  return serve_write(g_serve_frame, frame_bytes);
+  grid_from_frame(g_serve_frame, frame_bytes, st->rows, st->columns);
+  uint64_t diff_bytes = diff_build(st->rows, st->columns, g_shown_valid == 0);
+  if (diff_bytes == 0U) return 0;
+  return serve_write(g_diff, diff_bytes);
 }
 
 static int serve_send_help(const xtop_serve_state_t *st) {
@@ -2572,6 +2761,7 @@ static int serve_send_help(const xtop_serve_state_t *st) {
     output_append(out, cap, &used, "\r\n");
   }
   xtop_append_rule(out, cap, &used, XTOP_BOX_BL, XTOP_BOX_BR, 0, 0, width);
+  g_shown_valid = 0;
   return serve_write(out, used);
 }
 
@@ -2600,6 +2790,7 @@ static int serve_send_filter_prompt(const xtop_serve_state_t *st) {
   xtop_append_edge(out, cap, &used);
   output_append(out, cap, &used, "\r\n");
   xtop_append_rule(out, cap, &used, XTOP_BOX_BL, XTOP_BOX_BR, 0, 0, width);
+  g_shown_valid = 0;
   return serve_write(out, used);
 }
 
@@ -2672,8 +2863,8 @@ static int serve_key(xtop_serve_state_t *st, uint8_t key, int *screen_changed) {
               st->cpu_start = st->cpu_start > page ? st->cpu_start - page : 0U; return 1; }
   case ']': { uint32_t page = st->cpu_count == UINT32_MAX ? 8U : st->cpu_count;
               if (UINT32_MAX - st->cpu_start >= page) st->cpu_start += page; return 1; }
-  case '+': case '=': if (st->refresh_ms > 16U) { st->refresh_ms /= 2U; if (st->refresh_ms < 16U) st->refresh_ms = 16U; } return 1;
-  case '-': if (st->refresh_ms < 5000U) { st->refresh_ms *= 2U; if (st->refresh_ms > 5000U) st->refresh_ms = 5000U; } return 1;
+  case '+': case '=': if (st->sample_ms > 16U) { st->sample_ms /= 2U; if (st->sample_ms < 16U) st->sample_ms = 16U; } return 1;
+  case '-': if (st->sample_ms < 5000U) { st->sample_ms *= 2U; if (st->sample_ms > 5000U) st->sample_ms = 5000U; } return 1;
   case 'r': return 1;
   default: return 0;
   }
@@ -2749,7 +2940,7 @@ static int xtop_serve(u64 channel_id, const char *command) {
     uint32_t value = 0U;
     if (string_equal(option, "--columns")) { if (xtop_parse_u32_option(command, &index, &value) == XAIOS_OK && value >= 40U && value <= 240U) st.columns = value; }
     else if (string_equal(option, "--rows")) { if (xtop_parse_u32_option(command, &index, &value) == XAIOS_OK && value >= 12U && value <= 100U) st.rows = value; }
-    else if (string_equal(option, "--refresh-ms")) { if (xtop_parse_u32_option(command, &index, &value) == XAIOS_OK && value >= 16U && value <= 5000U) st.refresh_ms = value; }
+    else if (string_equal(option, "--refresh-ms")) { if (xtop_parse_u32_option(command, &index, &value) == XAIOS_OK && value >= 16U && value <= 5000U) { st.refresh_ms = value; st.sample_ms = value; } }
     else if (string_equal(option, "--sample-ms")) { if (xtop_parse_u32_option(command, &index, &value) == XAIOS_OK && value >= 1U && value <= 1000U) st.sample_ms = value; }
     else if (string_equal(option, "--layout")) { if (xtop_parse_u32_option(command, &index, &value) == XAIOS_OK && value >= 1U && value <= XTOP_LAYOUT_COUNT) st.layout = value; }
     else if (string_equal(option, "--cpu-start")) { if (xtop_parse_u32_option(command, &index, &value) == XAIOS_OK) st.cpu_start = value; }
@@ -2763,6 +2954,7 @@ static int xtop_serve(u64 channel_id, const char *command) {
     else if (string_equal(option, "--filter")) { if (token_next(command, &index, st.filter, sizeof(st.filter)) == XAIOS_OK) st.filter_length = (uint32_t)cstr_len(st.filter); }
   }
   g_arena_used = 0U;
+  g_shown_valid = 0;
   if (serve_write("\033[?1049h\033[?25l", 14U) != 0) return 1;
   for (;;) {
     uint64_t now_ns = xaios_clock_nanos();
@@ -2790,16 +2982,20 @@ static int xtop_serve(u64 channel_id, const char *command) {
       serve_pause_ms(20U);
       continue;
     }
+    /* A new sample when the sampling interval has passed, or at once when
+       a key changed what is shown; between samples the process sleeps, and
+       a frame that changed nothing was not sent. Sixty frames a second is
+       how soon a change is on the screen, not how often the screen is
+       written. */
     if (redraw != 0 || now_ns >= next_frame_ns) {
       serve_update_extras(now_ns, &last_metrics_ns, &last_metrics,
                           &have_last_metrics, st.sample_ms);
       if (serve_render(&st) != 0) break;
       if (now_ns - last_history_ns >= (uint64_t)st.sample_ms * 1000000U) {
-        /* The figures the last frame computed, kept for the charts. */
         serve_push_load_history(g_last_cpu_tenths, g_last_mem_tenths);
         last_history_ns = now_ns;
       }
-      next_frame_ns = xaios_clock_nanos() + (uint64_t)st.refresh_ms * 1000000U;
+      next_frame_ns = xaios_clock_nanos() + (uint64_t)st.sample_ms * 1000000U;
       continue;
     }
     uint64_t wait_ns = next_frame_ns - now_ns;

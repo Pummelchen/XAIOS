@@ -88,6 +88,7 @@ static const xaios_syscall_entry_t g_syscall_table[] = {
     {XAIOS_SYSCALL_CONSOLE_READ, "console_read", XAIOS_CAP_CONSOLE},
     {XAIOS_SYSCALL_CONSOLE_WRITE, "console_write", XAIOS_CAP_CONSOLE},
     {XAIOS_SYSCALL_CONSOLE_SIZE, "console_size", XAIOS_CAP_CONSOLE},
+    {XAIOS_SYSCALL_SLEEP_NANOS, "sleep_nanos", XAIOS_CAP_TIME},
     {XAIOS_SYSCALL_NET_LOCAL_IPV4, "net_local_ipv4", XAIOS_CAP_NET},
     {XAIOS_SYSCALL_NET_CONNECT, "net_connect", XAIOS_CAP_NET_SOCKET},
     {XAIOS_SYSCALL_NET_LOCAL_IPV6, "net_local_ipv6", XAIOS_CAP_NET},
@@ -508,6 +509,17 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     bytes_copy((void *)(uintptr_t)arg0, &value, 1U);
     user_process_note_syscall(0);
     return 1U;
+  }
+
+  if (syscall == XAIOS_SYSCALL_SLEEP_NANOS) {
+    /* Bounded to a second so a caller cannot park itself for ever by
+       mistake; the idle wait gives the CPU up, which is the whole point. */
+    uint64_t nanoseconds = arg0 > UINT64_C(1000000000) ? UINT64_C(1000000000)
+                                                       : arg0;
+    uint64_t now_ns = timer_now_ns();
+    user_process_idle_until(now_ns + nanoseconds);
+    user_process_note_syscall(0);
+    return 0U;
   }
 
   if (syscall == XAIOS_SYSCALL_CONSOLE_SIZE) {
@@ -2089,6 +2101,7 @@ void syscall_self_test(void) {
   kassert(lookup_syscall(XAIOS_SYSCALL_CONSOLE_READ) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_CONSOLE_WRITE) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_CONSOLE_SIZE) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_SLEEP_NANOS) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_NET_LOCAL_IPV4) != 0);
   kassert(lookup_syscall(99) == 0);
   klog("syscall: socket ownership self-test passed capacity=%u per_port=%u\n",

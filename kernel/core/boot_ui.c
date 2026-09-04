@@ -1,4 +1,5 @@
 #include <xaios/boot_ui.h>
+#include <xaios/kheap.h>
 #include <xaios/klog.h>
 #include <xaios/timer.h>
 #include <xaios/network_stack.h>
@@ -524,6 +525,44 @@ static uint32_t g_term_utf8_remaining;
 static uint32_t g_term_bg_set;
 static uint32_t g_term_bg;
 
+/* What each cell shows, so a write that changes nothing draws nothing.
+ *
+ * A full-screen program redraws its whole frame several times a second, and
+ * most of a frame is the frame before it. Drawing every cell anyway -- six
+ * thousand glyphs and their backgrounds, then a present -- was most of what
+ * the process monitor cost this machine, charged to sshd, which is where the
+ * console's bytes come from. With the cells remembered, a frame costs the
+ * cells that changed. A cell the cursor has been drawn or erased in is
+ * forgotten, because the cursor paints over the glyph's last rows. */
+typedef struct term_cell {
+  uint32_t code_point;
+  uint32_t fg;
+  uint32_t bg;
+} term_cell_t;
+#define TERM_CELL_UNKNOWN UINT32_C(0xffffffff)
+static term_cell_t *g_term_cells;
+static uint32_t g_term_cell_count;
+
+static term_cell_t *term_cell(uint32_t column, uint32_t row) {
+  if (g_term_cells == 0 || column >= g_term_columns || row >= g_term_rows) {
+    return 0;
+  }
+  return &g_term_cells[row * g_term_columns + column];
+}
+
+static void term_cell_forget(uint32_t column, uint32_t row) {
+  term_cell_t *cell = term_cell(column, row);
+  if (cell != 0) cell->code_point = TERM_CELL_UNKNOWN;
+}
+
+static void term_cells_reset(uint32_t background) {
+  for (uint32_t i = 0U; i < g_term_cell_count; ++i) {
+    g_term_cells[i].code_point = (uint32_t)' ';
+    g_term_cells[i].fg = 0U;
+    g_term_cells[i].bg = background;
+  }
+}
+
 static uint32_t term_background(void) {
   return g_term_bg_set != 0U ? g_term_bg : term_default_background();
 }
@@ -614,6 +653,7 @@ static uint32_t term_y(uint32_t row) {
 
 static void term_erase_cursor(void) {
   if (g_term_cursor_drawn == 0U) return;
+  term_cell_forget(g_term_column, g_term_row);
   fb_rect(term_x(g_term_column), term_y(g_term_row) + FB_GLYPH_HEIGHT *
               FB_GLYPH_Y_SCALE - UINT32_C(2),
           FB_GLYPH_WIDTH, UINT32_C(2), term_background());
@@ -622,6 +662,7 @@ static void term_erase_cursor(void) {
 
 static void term_draw_cursor(void) {
   if (g_term_active == 0U || g_term_cursor_drawn != 0U) return;
+  term_cell_forget(g_term_column, g_term_row);
   fb_rect(term_x(g_term_column), term_y(g_term_row) + FB_GLYPH_HEIGHT *
               FB_GLYPH_Y_SCALE - UINT32_C(2),
           FB_GLYPH_WIDTH, UINT32_C(2), term_foreground());
@@ -644,6 +685,20 @@ static void term_scroll(void) {
                 g_framebuffer.height - TERM_MARGIN_Y);
   fb_rect(0U, g_framebuffer.height - shift, g_framebuffer.width, shift,
           term_background());
+  if (g_term_cells != 0 && g_term_rows > 1U) {
+    for (uint32_t row = 1U; row < g_term_rows; ++row) {
+      for (uint32_t column = 0U; column < g_term_columns; ++column) {
+        g_term_cells[(row - 1U) * g_term_columns + column] =
+            g_term_cells[row * g_term_columns + column];
+      }
+    }
+    for (uint32_t column = 0U; column < g_term_columns; ++column) {
+      term_cell_t *cell = &g_term_cells[(g_term_rows - 1U) * g_term_columns + column];
+      cell->code_point = (uint32_t)' ';
+      cell->fg = 0U;
+      cell->bg = term_background();
+    }
+  }
 }
 
 static void term_newline(void) {
@@ -694,15 +749,31 @@ static void term_apply_csi(char final) {
     }
     return;
   }
-  if (final == 'J' || final == 'H') {
-    /* Clear and home are the only cursor controls the shell emits that must
-       affect this display; the remainder are ignored deliberately. */
-    if (final == 'J') {
-      fb_rect(0U, 0U, g_framebuffer.width, g_framebuffer.height,
-              term_background());
-    }
+  if (final == 'J') {
+    fb_rect(0U, 0U, g_framebuffer.width, g_framebuffer.height,
+            term_background());
+    if (g_term_cells != 0) term_cells_reset(term_background());
     g_term_column = 0U;
     g_term_row = 0U;
+    return;
+  }
+  if (final == 'H' || final == 'f') {
+    /* Cursor position, row;column, one-based, with a missing or zero
+       parameter meaning the first. This was "home" whatever the parameters
+       said, because nothing on this machine positioned the cursor when it
+       was written. The process monitor now sends only the cells that
+       changed, each run positioned -- and a terminal that puts every run at
+       the top-left showed one run, the last, and nothing else. */
+    uint32_t row = g_term_param_count >= 1U && g_term_params[0] != 0U
+                       ? g_term_params[0] - 1U : 0U;
+    uint32_t column = g_term_param_count >= 2U && g_term_params[1] != 0U
+                          ? g_term_params[1] - 1U : 0U;
+    if (row >= g_term_rows) row = g_term_rows != 0U ? g_term_rows - 1U : 0U;
+    if (column >= g_term_columns) {
+      column = g_term_columns != 0U ? g_term_columns - 1U : 0U;
+    }
+    g_term_row = row;
+    g_term_column = column;
   }
 }
 
@@ -720,6 +791,18 @@ static void term_put_code_point(uint32_t code_point) {
     if (rows == 0) return;
   }
   if (g_term_column >= g_term_columns) term_newline();
+  term_cell_t *cell = term_cell(g_term_column, g_term_row);
+  if (cell != 0 && cell->code_point == code_point &&
+      cell->fg == g_term_color && cell->bg == term_background()) {
+    /* Already showing exactly this. */
+    ++g_term_column;
+    return;
+  }
+  if (cell != 0) {
+    cell->code_point = code_point;
+    cell->fg = g_term_color;
+    cell->bg = term_background();
+  }
   fb_rect(term_x(g_term_column), term_y(g_term_row), FB_GLYPH_ADVANCE,
           TERM_LINE_HEIGHT, term_background());
   fb_glyph_rows(term_x(g_term_column), term_y(g_term_row), rows,
@@ -784,6 +867,7 @@ static void term_putc(uint8_t value) {
     if (g_term_column != 0U) --g_term_column;
     fb_rect(term_x(g_term_column), term_y(g_term_row), FB_GLYPH_ADVANCE,
             TERM_LINE_HEIGHT, term_background());
+    term_cell_forget(g_term_column, g_term_row);
     return;
   }
   if (value == '\t') {
@@ -795,6 +879,7 @@ static void term_putc(uint8_t value) {
       }
       fb_rect(term_x(g_term_column), term_y(g_term_row), FB_GLYPH_ADVANCE,
               TERM_LINE_HEIGHT, term_background());
+      term_cell_forget(g_term_column, g_term_row);
       ++g_term_column;
     }
     return;
@@ -835,6 +920,15 @@ static void term_activate(const xaios_boot_ui_control_t *control) {
   g_term_rows = (g_framebuffer.height - 2U * TERM_MARGIN_Y) / TERM_LINE_HEIGHT;
   if (g_term_columns == 0U || g_term_rows == 0U) return;
   if (g_term_columns > UINT32_C(512)) g_term_columns = UINT32_C(512);
+  g_term_cell_count = g_term_columns * g_term_rows;
+  g_term_cells = (term_cell_t *)kheap_calloc(
+      (uint64_t)g_term_cell_count * sizeof(term_cell_t), 16U);
+  if (g_term_cells == 0) {
+    /* Without the memory, every write draws, as it always did. */
+    g_term_cell_count = 0U;
+  } else {
+    term_cells_reset(term_default_background());
+  }
   fb_rect(0U, 0U, g_framebuffer.width, g_framebuffer.height, term_background());
   g_term_column = 0U;
   g_term_row = 0U;

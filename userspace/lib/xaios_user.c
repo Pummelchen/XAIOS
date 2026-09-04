@@ -141,6 +141,11 @@ int xaios_console_size(u32 *columns, u32 *rows) {
   return 0;
 }
 
+int xaios_sleep_ns(u64 nanoseconds) {
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_SLEEP_NANOS, nanoseconds, 0U, 0U);
+  return rc == ~0ULL ? -1 : 0;
+}
+
 u32 xaios_net_local_ipv4(void) {
   return (u32)xaios_syscall3(XAIOS_SYSCALL_NET_LOCAL_IPV4, 0U, 0U, 0U);
 }
