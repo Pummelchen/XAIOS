@@ -37,7 +37,14 @@ static boot_framebuffer_t g_framebuffer;
 
 /* Public-domain 8x8 IBM VGA bitmap glyphs, adapted from Daniel Hepper's
  * font8x8 collection. Keep the post-UEFI display allocation-free. */
-static const uint8_t g_font[UINT32_C(64)][FB_GLYPH_HEIGHT] = {
+/* 0x20 through 0x7f: printable ASCII, upper and lower case.
+ *
+ * This stopped at 0x5f and folded lowercase onto uppercase, which was fine
+ * while the only thing it drew was a boot progress screen in capitals. It is
+ * not fine now: a terminal application is read here, and one that renders
+ * "Tasks" as "TASKS" locally and "Tasks" over SSH is two different programs
+ * wearing the same name. */
+static const uint8_t g_font[UINT32_C(96)][FB_GLYPH_HEIGHT] = {
     {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, /* space */
     {0x18, 0x3c, 0x3c, 0x18, 0x18, 0x00, 0x18, 0x00}, /* ! */
     {0x36, 0x36, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, /* \" */
@@ -102,7 +109,77 @@ static const uint8_t g_font[UINT32_C(64)][FB_GLYPH_HEIGHT] = {
     {0x1e, 0x18, 0x18, 0x18, 0x18, 0x18, 0x1e, 0x00}, /* ] */
     {0x08, 0x1c, 0x36, 0x63, 0x00, 0x00, 0x00, 0x00}, /* ^ */
     {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff}, /* _ */
+     {0x0c, 0x0c, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00}, /* ` */
+     {0x00, 0x00, 0x1e, 0x30, 0x3e, 0x33, 0x6e, 0x00}, /* a */
+     {0x07, 0x06, 0x06, 0x3e, 0x66, 0x66, 0x3b, 0x00}, /* b */
+     {0x00, 0x00, 0x1e, 0x33, 0x03, 0x33, 0x1e, 0x00}, /* c */
+     {0x38, 0x30, 0x30, 0x3e, 0x33, 0x33, 0x6e, 0x00}, /* d */
+     {0x00, 0x00, 0x1e, 0x33, 0x3f, 0x03, 0x1e, 0x00}, /* e */
+     {0x1c, 0x36, 0x06, 0x0f, 0x06, 0x06, 0x0f, 0x00}, /* f */
+     {0x00, 0x00, 0x6e, 0x33, 0x33, 0x3e, 0x30, 0x1f}, /* g */
+     {0x07, 0x06, 0x36, 0x6e, 0x66, 0x66, 0x67, 0x00}, /* h */
+     {0x0c, 0x00, 0x0e, 0x0c, 0x0c, 0x0c, 0x1e, 0x00}, /* i */
+     {0x30, 0x00, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1e}, /* j */
+     {0x07, 0x06, 0x66, 0x36, 0x1e, 0x36, 0x67, 0x00}, /* k */
+     {0x0e, 0x0c, 0x0c, 0x0c, 0x0c, 0x0c, 0x1e, 0x00}, /* l */
+     {0x00, 0x00, 0x33, 0x7f, 0x7f, 0x6b, 0x63, 0x00}, /* m */
+     {0x00, 0x00, 0x1f, 0x33, 0x33, 0x33, 0x33, 0x00}, /* n */
+     {0x00, 0x00, 0x1e, 0x33, 0x33, 0x33, 0x1e, 0x00}, /* o */
+     {0x00, 0x00, 0x3b, 0x66, 0x66, 0x3e, 0x06, 0x0f}, /* p */
+     {0x00, 0x00, 0x6e, 0x33, 0x33, 0x3e, 0x30, 0x78}, /* q */
+     {0x00, 0x00, 0x3b, 0x6e, 0x66, 0x06, 0x0f, 0x00}, /* r */
+     {0x00, 0x00, 0x3e, 0x03, 0x1e, 0x30, 0x1f, 0x00}, /* s */
+     {0x08, 0x0c, 0x3e, 0x0c, 0x0c, 0x2c, 0x18, 0x00}, /* t */
+     {0x00, 0x00, 0x33, 0x33, 0x33, 0x33, 0x6e, 0x00}, /* u */
+     {0x00, 0x00, 0x33, 0x33, 0x33, 0x1e, 0x0c, 0x00}, /* v */
+     {0x00, 0x00, 0x63, 0x6b, 0x7f, 0x7f, 0x36, 0x00}, /* w */
+     {0x00, 0x00, 0x63, 0x36, 0x1c, 0x36, 0x63, 0x00}, /* x */
+     {0x00, 0x00, 0x33, 0x33, 0x33, 0x3e, 0x30, 0x1f}, /* y */
+     {0x00, 0x00, 0x3f, 0x19, 0x0c, 0x26, 0x3f, 0x00}, /* z */
+     {0x38, 0x0c, 0x0c, 0x07, 0x0c, 0x0c, 0x38, 0x00}, /* { */
+     {0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x18, 0x00}, /* | */
+     {0x07, 0x0c, 0x0c, 0x38, 0x0c, 0x0c, 0x07, 0x00}, /* } */
+     {0x6e, 0x3b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, /* ~ */
+     {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, /* 0x7f */
 };
+
+/* The glyphs a panelled terminal application draws its borders and gauges
+ * with.
+ *
+ * Beside the ASCII table rather than in it, because they are not ASCII: each
+ * arrives as a multi-byte UTF-8 sequence and is found by code point. The line
+ * pieces all meet at column three and row three, so a corner joins a rule
+ * without leaving a gap. */
+typedef struct fb_extra_glyph {
+  uint32_t code_point;
+  uint8_t rows[FB_GLYPH_HEIGHT];
+} fb_extra_glyph_t;
+
+static const fb_extra_glyph_t g_font_extra[] = {
+    {0x2500U, {0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00}},
+    {0x2502U, {0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08}},
+    {0x250cU, {0x00, 0x00, 0x00, 0xf8, 0x08, 0x08, 0x08, 0x08}},
+    {0x2510U, {0x00, 0x00, 0x00, 0x0f, 0x08, 0x08, 0x08, 0x08}},
+    {0x2514U, {0x08, 0x08, 0x08, 0xf8, 0x00, 0x00, 0x00, 0x00}},
+    {0x2518U, {0x08, 0x08, 0x08, 0x0f, 0x00, 0x00, 0x00, 0x00}},
+    {0x2588U, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}},
+    {0x2591U, {0x88, 0x22, 0x88, 0x22, 0x88, 0x22, 0x88, 0x22}},
+    {0x2592U, {0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa}},
+    {0x2014U, {0x00, 0x00, 0x00, 0x7e, 0x00, 0x00, 0x00, 0x00}},
+};
+
+#define FB_EXTRA_GLYPHS (sizeof(g_font_extra) / sizeof(g_font_extra[0]))
+
+/* The row pattern for a code point, or null when this font has none. */
+static const uint8_t *fb_extra_rows(uint32_t code_point) {
+  for (uint32_t i = 0U; i < FB_EXTRA_GLYPHS; ++i) {
+    if (g_font_extra[i].code_point == code_point) {
+      return g_font_extra[i].rows;
+    }
+  }
+  return 0;
+}
+
 
 static uint64_t text_length(const char *text) {
   uint64_t length = 0U;
@@ -205,13 +282,14 @@ static void fb_rect(uint32_t x, uint32_t y, uint32_t width, uint32_t height,
 }
 
 static uint32_t glyph_index(char value) {
-  if (value >= 'a' && value <= 'z') value = (char)(value - ('a' - 'A'));
-  if (value < ' ' || value > '_') return 0U;
-  return (uint32_t)(value - ' ');
+  unsigned char byte = (unsigned char)value;
+  if (byte < 0x20U || byte > 0x7fU) return 0U;
+  return (uint32_t)byte - 0x20U;
 }
 
-static void fb_glyph(uint32_t x, uint32_t y, char value, uint32_t color) {
-  const uint8_t *glyph = g_font[glyph_index(value)];
+/* Draw one cell from an explicit row pattern, whichever table it came from. */
+static void fb_glyph_rows(uint32_t x, uint32_t y, const uint8_t *glyph,
+                          uint32_t color) {
   for (uint32_t row = 0U; row < FB_GLYPH_HEIGHT; ++row) {
     for (uint32_t column = 0U; column < FB_GLYPH_WIDTH; ++column) {
       if ((glyph[row] & (UINT8_C(1) << column)) != 0U) {
@@ -220,6 +298,10 @@ static void fb_glyph(uint32_t x, uint32_t y, char value, uint32_t color) {
       }
     }
   }
+}
+
+static void fb_glyph(uint32_t x, uint32_t y, char value, uint32_t color) {
+  fb_glyph_rows(x, y, g_font[glyph_index(value)], color);
 }
 
 static void fb_text(uint32_t x, uint32_t y, const char *text, uint32_t color) {
@@ -414,6 +496,17 @@ static uint32_t term_foreground(void) { return fb_color(222U, 230U, 236U); }
  * and on Fusion. It was cyan over a serial line and nowhere else, and the two
  * consoles disagreeing about what a crash looks like is worth more than the
  * few lines it takes to fix. */
+/* A UTF-8 sequence in progress.
+ *
+ * The terminal used to drop every byte outside printable ASCII, which meant a
+ * program drawing a box left gaps where its borders should be and the local
+ * console showed a different picture from the one an SSH client showed of the
+ * same program. Sequences are gathered here and looked up by code point; one
+ * this font has no glyph for is drawn as a light shade rather than as
+ * nothing, so a hole in the font reads as a hole and not as a space. */
+static uint32_t g_term_utf8_code;
+static uint32_t g_term_utf8_remaining;
+
 static uint32_t g_term_bg_set;
 static uint32_t g_term_bg;
 
@@ -447,6 +540,54 @@ static uint32_t term_sgr_color(uint32_t code) {
     case 36U: case 96U: return fb_color(110U, 200U, 210U);
     default: return term_foreground();
   }
+}
+
+/* The xterm 256-colour palette: eight standard shades, eight bright ones, a
+   six by six by six cube, and a grey ramp. A program that names a shade by
+   index gets the same shade on this console that it gets in an SSH client,
+   which is the whole point of having the table. */
+static uint32_t term_sgr_indexed(uint32_t index) {
+  static const uint8_t cube[6] = {0U, 95U, 135U, 175U, 215U, 255U};
+  if (index < 8U) return term_sgr_color(30U + index);
+  if (index < 16U) return term_sgr_color(90U + (index - 8U));
+  if (index < 232U) {
+    uint32_t value = index - 16U;
+    return fb_color(cube[(value / 36U) % 6U], cube[(value / 6U) % 6U],
+                    cube[value % 6U]);
+  }
+  if (index < 256U) {
+    uint32_t grey = 8U + (index - 232U) * 10U;
+    return fb_color(grey, grey, grey);
+  }
+  return term_foreground();
+}
+
+/* Read one extended colour -- 38;5;<index>, 48;5;<index>, or the 2;<r>;<g>;<b>
+ * spelling -- starting at the parameter after the 38 or 48. Returns the number
+ * of parameters consumed, or zero if the sequence is malformed.
+ *
+ * Reading these one parameter at a time is not a harmless simplification. The
+ * process monitor asks for foreground 45 as 38;5;45, and a parser that walks
+ * the list looking at each number on its own sees the 45 and sets a magenta
+ * *background*: the whole display came out on a purple field, which is not
+ * what any SSH client shows for the same bytes. */
+static uint32_t term_sgr_extended(uint32_t first, uint32_t count,
+                                  uint32_t *color) {
+  if (count >= 2U && g_term_params[first] == 5U) {
+    *color = term_sgr_indexed(g_term_params[first + 1U]);
+    return 2U;
+  }
+  if (count >= 4U && g_term_params[first] == 2U) {
+    uint32_t red = g_term_params[first + 1U];
+    uint32_t green = g_term_params[first + 2U];
+    uint32_t blue = g_term_params[first + 3U];
+    if (red > 255U) red = 255U;
+    if (green > 255U) green = 255U;
+    if (blue > 255U) blue = 255U;
+    *color = fb_color(red, green, blue);
+    return 4U;
+  }
+  return 0U;
 }
 
 static uint32_t term_x(uint32_t column) {
@@ -517,6 +658,24 @@ static void term_apply_csi(char final) {
                  (code >= 100U && code <= 107U)) {
         g_term_bg = term_sgr_background(code);
         g_term_bg_set = 1U;
+      } else if (code == 38U || code == 48U) {
+        uint32_t color = term_foreground();
+        uint32_t consumed = term_sgr_extended(
+            i + 1U, g_term_param_count - i - 1U, &color);
+        /* A sequence that does not parse is not a licence to keep reading:
+           the numbers after it belong to the colour, not to the terminal. */
+        if (consumed == 0U) break;
+        if (code == 38U) {
+          g_term_color = color;
+        } else {
+          g_term_bg = color;
+          g_term_bg_set = 1U;
+        }
+        i += consumed;
+      } else if (code == 39U) {
+        g_term_color = term_foreground();
+      } else if (code == 49U) {
+        g_term_bg_set = 0U;
       }
     }
     return;
@@ -531,6 +690,27 @@ static void term_apply_csi(char final) {
     g_term_column = 0U;
     g_term_row = 0U;
   }
+}
+
+/* One character cell: clear it to the current background, then draw. */
+static void term_put_code_point(uint32_t code_point) {
+  const uint8_t *rows;
+  if (code_point >= 0x20U && code_point <= 0x7fU) {
+    rows = g_font[code_point - 0x20U];
+  } else {
+    rows = fb_extra_rows(code_point);
+    /* Not a space: a glyph this font lacks should look like a gap in the
+       font, which is a thing to fix, rather than like whitespace the program
+       asked for, which is not. */
+    if (rows == 0) rows = fb_extra_rows(0x2591U);
+    if (rows == 0) return;
+  }
+  if (g_term_column >= g_term_columns) term_newline();
+  fb_rect(term_x(g_term_column), term_y(g_term_row), FB_GLYPH_ADVANCE,
+          TERM_LINE_HEIGHT, term_background());
+  fb_glyph_rows(term_x(g_term_column), term_y(g_term_row), rows,
+                g_term_color);
+  ++g_term_column;
 }
 
 static void term_putc(uint8_t value) {
@@ -593,12 +773,33 @@ static void term_putc(uint8_t value) {
     }
     return;
   }
+  /* A continuation byte, or the start of a sequence. */
+  if ((value & 0xc0U) == 0x80U) {
+    if (g_term_utf8_remaining == 0U) return; /* stray continuation */
+    g_term_utf8_code = (g_term_utf8_code << 6) | (uint32_t)(value & 0x3fU);
+    if (--g_term_utf8_remaining == 0U) {
+      term_put_code_point(g_term_utf8_code);
+    }
+    return;
+  }
+  g_term_utf8_remaining = 0U;
+  if ((value & 0xe0U) == 0xc0U) {
+    g_term_utf8_code = (uint32_t)(value & 0x1fU);
+    g_term_utf8_remaining = 1U;
+    return;
+  }
+  if ((value & 0xf0U) == 0xe0U) {
+    g_term_utf8_code = (uint32_t)(value & 0x0fU);
+    g_term_utf8_remaining = 2U;
+    return;
+  }
+  if ((value & 0xf8U) == 0xf0U) {
+    g_term_utf8_code = (uint32_t)(value & 0x07U);
+    g_term_utf8_remaining = 3U;
+    return;
+  }
   if (value < ' ' || value > '~') return;
-  if (g_term_column >= g_term_columns) term_newline();
-  fb_rect(term_x(g_term_column), term_y(g_term_row), FB_GLYPH_ADVANCE,
-          TERM_LINE_HEIGHT, term_background());
-  fb_glyph(term_x(g_term_column), term_y(g_term_row), (char)value, g_term_color);
-  ++g_term_column;
+  term_put_code_point((uint32_t)value);
 }
 
 static void term_activate(const xaios_boot_ui_control_t *control) {
@@ -844,6 +1045,22 @@ void boot_ui_error(const char *component, int32_t status) {
   write_text(" code=");
   write_int(status);
   write_text("\n");
+}
+
+/* What the console can tell a program about its own shape.
+ *
+ * A terminal application has to lay itself out against a width, and the local
+ * console used to have none to offer: the shell handed every program a fixed
+ * eighty by twenty-four. On a serial line that is the right guess, because
+ * there is nothing to measure. On a framebuffer it is simply wrong -- the
+ * screen is a hundred and forty cells wide -- and a process monitor drew
+ * itself into the left half of the display with its rightmost columns cut
+ * off, which is not the picture the same program gives over SSH. */
+void boot_ui_terminal_size(uint32_t *columns, uint32_t *rows) {
+  uint32_t width = g_term_active != 0U ? g_term_columns : 0U;
+  uint32_t height = g_term_active != 0U ? g_term_rows : 0U;
+  if (columns != 0) *columns = width;
+  if (rows != 0) *rows = height;
 }
 
 uint32_t boot_ui_handle_control(const xaios_boot_ui_control_t *control) {

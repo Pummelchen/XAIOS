@@ -29,6 +29,7 @@ All wrapper functions below are built on this primitive.
 | `XAIOS_SYSCALL_FS_FSYNC` | 41 | `xaios_fs_fsync(fd)` | Request backend durability for writes completed through the handle. |
 | `XAIOS_SYSCALL_CONSOLE_READ` | 47 | `xaios_console_read(byte)` | Nonblocking read of one serial-console byte. Returns 0 when no byte is ready. Requires `XAIOS_CAP_CONSOLE`. |
 | `XAIOS_SYSCALL_CONSOLE_WRITE` | 48 | `xaios_console_write(buffer, size)` | Write at most 4096 bytes directly to the serial console. Requires `XAIOS_CAP_CONSOLE`. |
+| `XAIOS_SYSCALL_CONSOLE_SIZE` | 52 | `xaios_console_size(columns, rows)` | Report the console's size in character cells. Returns -1 when the console has no size to report, which is the answer over a serial line; a framebuffer console reports its own geometry so a terminal application lays itself out against the real screen. Requires `XAIOS_CAP_CONSOLE`. |
 
 ## Filesystem
 

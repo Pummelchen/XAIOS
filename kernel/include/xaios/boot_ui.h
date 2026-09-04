@@ -34,6 +34,9 @@ uint32_t boot_ui_handle_control(const xaios_boot_ui_control_t *control);
    display over. No-ops when there is no framebuffer or before handover. */
 void boot_ui_console_write(const char *text, uint64_t length);
 uint32_t boot_ui_has_framebuffer(void);
+/* The framebuffer terminal's size in character cells, or zero in both when
+   there is no framebuffer terminal to measure. */
+void boot_ui_terminal_size(uint32_t *columns, uint32_t *rows);
 void boot_ui_adopt_framebuffer(uint32_t *pixels, uint32_t width,
                                uint32_t height,
                                xaios_status_t (*present)(uint32_t x,

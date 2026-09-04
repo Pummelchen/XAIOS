@@ -87,6 +87,7 @@ static const xaios_syscall_entry_t g_syscall_table[] = {
     {XAIOS_SYSCALL_NET_RESOLVE, "net_resolve", XAIOS_CAP_NET},
     {XAIOS_SYSCALL_CONSOLE_READ, "console_read", XAIOS_CAP_CONSOLE},
     {XAIOS_SYSCALL_CONSOLE_WRITE, "console_write", XAIOS_CAP_CONSOLE},
+    {XAIOS_SYSCALL_CONSOLE_SIZE, "console_size", XAIOS_CAP_CONSOLE},
     {XAIOS_SYSCALL_NET_LOCAL_IPV4, "net_local_ipv4", XAIOS_CAP_NET},
     {XAIOS_SYSCALL_NET_CONNECT, "net_connect", XAIOS_CAP_NET_SOCKET},
     {XAIOS_SYSCALL_NET_LOCAL_IPV6, "net_local_ipv6", XAIOS_CAP_NET},
@@ -504,6 +505,16 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     bytes_copy((void *)(uintptr_t)arg0, &value, 1U);
     user_process_note_syscall(0);
     return 1U;
+  }
+
+  if (syscall == XAIOS_SYSCALL_CONSOLE_SIZE) {
+    /* Columns in the high half, rows in the low half; zero when the console
+       has no size to report, which is what a serial line answers. */
+    uint32_t columns = 0U;
+    uint32_t rows = 0U;
+    boot_ui_terminal_size(&columns, &rows);
+    user_process_note_syscall(0);
+    return ((uint64_t)columns << 32) | (uint64_t)rows;
   }
 
   if (syscall == XAIOS_SYSCALL_CONSOLE_WRITE) {
@@ -2049,6 +2060,7 @@ void syscall_self_test(void) {
   kassert(lookup_syscall(XAIOS_SYSCALL_NET_RESOLVE) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_CONSOLE_READ) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_CONSOLE_WRITE) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_CONSOLE_SIZE) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_NET_LOCAL_IPV4) != 0);
   kassert(lookup_syscall(99) == 0);
   klog("syscall: socket ownership self-test passed capacity=%u per_port=%u\n",

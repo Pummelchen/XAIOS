@@ -18,6 +18,25 @@
 #define SSH_PTY_MAX_COLUMNS 240U
 #define SSH_PTY_MIN_ROWS 12U
 #define SSH_PTY_MAX_ROWS 100U
+/* One rendered xtop frame.
+ *
+ * A frame costs a little under one and a half bytes per character cell: the
+ * text, plus the colour changes around it. Eight kilobytes was enough for the
+ * eighty by twenty-four terminal the local console used to claim to be, and
+ * for a modest SSH window, and it silently was not enough for anything
+ * larger. A frame that does not fit comes back truncated to its trailer, so a
+ * console reporting its real size -- a hundred and forty cells wide on a
+ * 1280 pixel framebuffer -- displayed nothing but "xtop: complete". The
+ * largest terminal xtop accepts is 240 by 100, which is about thirty-five
+ * kilobytes of frame, and a frame that renders has to be one a channel can
+ * also carry, so the ceiling is the channel's own.
+ *
+ * It is static because a stack frame this deep is not free in a userspace
+ * process and because rendering is synchronous: the buffer is filled and
+ * drained inside one call, and no two channels render at once. */
+#define SSH_XTOP_FRAME_BYTES SSH_CHANNEL_PENDING_SIZE
+static char g_xtop_frame[SSH_XTOP_FRAME_BYTES];
+
 #define SSH_XTOP_SAMPLE_MS 10U
 #define SSH_XTOP_MIN_REFRESH_MS 250U
 #define SSH_XTOP_DEFAULT_REFRESH_MS 250U
@@ -782,7 +801,7 @@ void xaios_xtop_frame_sent(xaios_xtop_session_t *session, uint64_t now_ns) {
 int xaios_xtop_render(xaios_xtop_session_t *session,
                       const xaios_xtop_sink_t *sink, uint64_t now_ns) {
   char command[256];
-  char output[8192];
+  char *output = g_xtop_frame;
   u64 out_size = 0U;
   if (session == 0 || sink == 0 || session->active == 0U) return 0;
   if (sink->busy != 0 && sink->busy(sink->context) != 0) return 0;
@@ -790,8 +809,9 @@ int xaios_xtop_render(xaios_xtop_session_t *session,
   if (xaios_xtop_build_command(session, command, sizeof(command)) != 0) {
     return -1;
   }
-  if (sink->run(sink->context, command, output, sizeof(output), &out_size) < 0 ||
-      out_size == 0U || out_size > sizeof(output)) {
+  if (sink->run(sink->context, command, output, SSH_XTOP_FRAME_BYTES,
+                &out_size) < 0 ||
+      out_size == 0U || out_size > SSH_XTOP_FRAME_BYTES) {
     return -1;
   }
   if (sink->write(sink->context, (const uint8_t *)output,
@@ -1216,15 +1236,15 @@ static int shell_send_prompt(ssh_channel_t *ch) {
 }
 
 static int shell_start_xtop(ssh_channel_t *ch, char *command) {
-  char output[8192];
+  char *output = g_xtop_frame;
   u64 out_size = 0U;
   static const char enter_screen[] = "\033[?1049h";
   if (prepare_terminal_command(ch, command, SSH_CHANNEL_SHELL_LINE_SIZE) != 0) {
     return -1;
   }
   int result = execute_admin_command((int)ch->owner_sockfd, command, output,
-                                     sizeof(output), &out_size);
-  if (result < 0 || out_size == 0U || out_size > sizeof(output)) {
+                                     SSH_XTOP_FRAME_BYTES, &out_size);
+  if (result < 0 || out_size == 0U || out_size > SSH_XTOP_FRAME_BYTES) {
     if (out_size != 0U &&
         shell_send_output(ch, (const uint8_t *)output,
                           (uint32_t)out_size) != 0) {
@@ -1790,11 +1810,11 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
 
     if (interactive_xtop != 0) {
       static const char enter_screen[] = "\033[?1049h";
-      char output[8192];
+      char *output = g_xtop_frame;
       u64 out_size = 0U;
       int result = execute_admin_command(sockfd, command, output,
-                                         sizeof(output), &out_size);
-      if (result < 0 || out_size == 0U || out_size > sizeof(output)) {
+                                         SSH_XTOP_FRAME_BYTES, &out_size);
+      if (result < 0 || out_size == 0U || out_size > SSH_XTOP_FRAME_BYTES) {
         const char *error = out_size != 0U
                                 ? output
                                 : "xtop: command validation failed\n";

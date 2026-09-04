@@ -109,9 +109,36 @@ int xaios_console_read(char *value) {
   return rc == ~0ULL ? -1 : (int)(s64)rc;
 }
 
+/* Write a buffer of any length, in pieces the kernel will take.
+ *
+ * The kernel copies a console write onto its own stack, so it refuses one
+ * larger than four kilobytes -- refuses, not truncates: nothing of it is
+ * written. An application that composes a screen and writes it in one call
+ * therefore worked while its screens were small and produced nothing at all
+ * once they were not. The process monitor's frame at eighty columns is three
+ * and a half kilobytes; at the hundred and forty a framebuffer console offers
+ * it is nine, and every byte of it was dropped. Splitting here means every
+ * program gets the whole of what it wrote, whatever its size. */
 int xaios_console_write(const char *buffer, u64 size) {
-  u64 rc = xaios_syscall3(XAIOS_SYSCALL_CONSOLE_WRITE, (u64)buffer, size, 0U);
-  return rc == ~0ULL ? -1 : (int)(s64)rc;
+  u64 written = 0U;
+  while (written < size) {
+    u64 chunk = size - written;
+    if (chunk > XAIOS_CONSOLE_WRITE_MAX) chunk = XAIOS_CONSOLE_WRITE_MAX;
+    u64 rc = xaios_syscall3(XAIOS_SYSCALL_CONSOLE_WRITE,
+                            (u64)(buffer + written), chunk, 0U);
+    if (rc == ~0ULL) return written == 0U ? -1 : (int)(s64)written;
+    written += rc;
+    if (rc != chunk) break;
+  }
+  return (int)(s64)written;
+}
+
+int xaios_console_size(u32 *columns, u32 *rows) {
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_CONSOLE_SIZE, 0U, 0U, 0U);
+  if (rc == 0U || rc == ~0ULL) return -1;
+  if (columns != 0) *columns = (u32)(rc >> 32);
+  if (rows != 0) *rows = (u32)(rc & 0xffffffffULL);
+  return 0;
 }
 
 u32 xaios_net_local_ipv4(void) {

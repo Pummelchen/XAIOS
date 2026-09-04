@@ -471,11 +471,28 @@ static void xtop_append_percent_width(char *output, uint64_t output_capacity,
   output_append(output, output_capacity, output_bytes, "%");
 }
 
+/* Terminal columns in a UTF-8 string: every byte that does not continue a
+   sequence starts one glyph, and every glyph this program prints is one
+   column wide. Measuring in bytes instead padded the title two columns short,
+   because the em dash in it is three bytes. */
+static uint32_t xtop_columns(const char *text) {
+  uint32_t columns = 0U;
+  for (uint64_t i = 0U; text[i] != '\0'; ++i) {
+    if (((uint8_t)text[i] & 0xc0U) != 0x80U) ++columns;
+  }
+  return columns;
+}
+
 static void xtop_append_bounded(char *output, uint64_t output_capacity,
                                 uint64_t *output_bytes, const char *text,
                                 uint32_t width) {
   uint32_t used = 0U;
-  while (text[used] != '\0' && used < width) {
+  uint32_t columns = 0U;
+  while (text[used] != '\0') {
+    if (((uint8_t)text[used] & 0xc0U) != 0x80U) {
+      if (columns == width) break;
+      ++columns;
+    }
     if (output_append_char(output, output_capacity, output_bytes, text[used]) !=
         XAIOS_OK) {
       return;
@@ -487,7 +504,7 @@ static void xtop_append_bounded(char *output, uint64_t output_capacity,
 static void xtop_append_ansi_line(char *output, uint64_t output_capacity,
                                   uint64_t *output_bytes, const char *style,
                                   const char *text, uint32_t columns) {
-  uint32_t visible = (uint32_t)cstr_len(text);
+  uint32_t visible = xtop_columns(text);
   if (visible > columns) visible = columns;
   output_append(output, output_capacity, output_bytes, style);
   xtop_append_bounded(output, output_capacity, output_bytes, text, columns);
@@ -506,7 +523,10 @@ static void xtop_append_ansi_line(char *output, uint64_t output_capacity,
  * a process monitor is read. Bending the design to that font would cost the
  * look everywhere to gain nothing anywhere. */
 #define XTOP_BAR_FULL "\xe2\x96\x88"  /* U+2588 FULL BLOCK */
-#define XTOP_BAR_EMPTY "\xe2\x96\x91" /* U+2591 LIGHT SHADE */
+#define XTOP_BAR_EMPTY "\xe2\x96\x91"
+/* Columns a meter uses around its bar: a space after the label, two before
+   the percentage, the six-column percentage, and a gutter after it. */
+#define XTOP_METER_OVERHEAD 10U /* U+2591 LIGHT SHADE */
 #define XTOP_BOX_H "\xe2\x94\x80"     /* U+2500 */
 #define XTOP_BOX_V "\xe2\x94\x82"     /* U+2502 */
 #define XTOP_BOX_TL "\xe2\x94\x8c"    /* U+250C */
@@ -568,10 +588,14 @@ static void xtop_append_meter(char *output, uint64_t output_capacity,
                               uint32_t bar_width, uint32_t cell_width) {
   /* Columns, not bytes. The block and shade glyphs are three bytes each and
      one column each, and every width below is a column count. The total is
-     label + 1 + bar + 2 + 5, which is the same as the bracketed meter this
-     replaced -- so the surrounding grid arithmetic is untouched. */
+     label + 1 + bar + 2 + 6 + 1: the percentage is six columns because
+     "100.0%" is six characters, and it was budgeted as five, which made every
+     meter row one column wider than the terminal. A row that is one column too
+     wide wraps -- on a real terminal that is a blank line under every meter,
+     and the same picture on the framebuffer console, which the local console
+     comparison caught. */
   uint32_t label_width = (uint32_t)cstr_len(label);
-  uint32_t visible = label_columns + bar_width + 9U;
+  uint32_t visible = label_columns + bar_width + XTOP_METER_OVERHEAD;
   uint64_t filled64 = (tenths * bar_width + 999U) / 1000U;
   uint32_t filled = filled64 > bar_width ? bar_width : (uint32_t)filled64;
   output_append(output, output_capacity, output_bytes, "\033[38;5;45m");
@@ -842,7 +866,7 @@ static void xtop_append_system_meter_cell(
     suffix_width = 0U;
   }
   uint32_t meter_columns = cell_width - suffix_width;
-  uint32_t meter_overhead = label_columns + 9U;
+  uint32_t meter_overhead = label_columns + XTOP_METER_OVERHEAD;
   uint32_t bar_width = meter_columns > meter_overhead
                            ? meter_columns - meter_overhead
                            : 1U;
@@ -1090,8 +1114,8 @@ static uint32_t xtop_render_color(
         label[0] = '\0';
         xtop_append_u64_width(label, sizeof(label), &label_bytes,
                               cpu_start + offset, label_columns);
-        uint32_t bar_width = cell_width > label_columns + 9U
-                                 ? cell_width - label_columns - 9U
+        uint32_t bar_width = cell_width > label_columns + XTOP_METER_OVERHEAD
+                                 ? cell_width - label_columns - XTOP_METER_OVERHEAD
                                  : 1U;
         xtop_append_meter(output, output_capacity, output_bytes, label,
                           label_columns, tenths, bar_width, cell_width);
@@ -1119,8 +1143,8 @@ static uint32_t xtop_render_color(
       label[0] = '\0';
       xtop_append_u64_width(label, sizeof(label), &label_bytes,
                             cpu_start + offset, label_columns);
-      uint32_t bar_width = left_width > label_columns + 9U
-                               ? left_width - label_columns - 9U
+      uint32_t bar_width = left_width > label_columns + XTOP_METER_OVERHEAD
+                               ? left_width - label_columns - XTOP_METER_OVERHEAD
                                : 1U;
       xtop_append_meter(output, output_capacity, output_bytes, label,
                         label_columns, tenths, bar_width, left_width);

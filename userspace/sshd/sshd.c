@@ -185,11 +185,30 @@ static void sha256_update_kex_secret(sha256_ctx_t *context,
     sha256_update_mpint(context, value);
 }
 
-/* The local console has no window-size protocol, so applications are given a
-   conservative terminal that renders correctly on a serial line and inside the
-   framebuffer terminal alike. */
-#define SSHD_CONSOLE_COLUMNS 80U
-#define SSHD_CONSOLE_ROWS 24U
+/* The local console has no window-size protocol the way SSH does, so it is
+   asked instead: a framebuffer console knows its own geometry and reports it,
+   and anything else -- a serial line -- reports nothing and gets the
+   conservative terminal below, which renders correctly at any real width. */
+#define SSHD_CONSOLE_FALLBACK_COLUMNS 80U
+#define SSHD_CONSOLE_FALLBACK_ROWS 24U
+
+static uint32_t console_columns(void) {
+  u32 columns = 0U;
+  u32 rows = 0U;
+  if (xaios_console_size(&columns, &rows) != 0 || columns < 40U) {
+    return SSHD_CONSOLE_FALLBACK_COLUMNS;
+  }
+  return columns > 240U ? 240U : columns;
+}
+
+static uint32_t console_rows(void) {
+  u32 columns = 0U;
+  u32 rows = 0U;
+  if (xaios_console_size(&columns, &rows) != 0 || rows < 12U) {
+    return SSHD_CONSOLE_FALLBACK_ROWS;
+  }
+  return rows > 100U ? 100U : rows;
+}
 
 static int g_log_fd = -1;
 static uint32_t g_log_bytes = 0;
@@ -738,8 +757,8 @@ static int console_start_less(const char *command) {
          (cwd[cwd_size - 1U] == '\n' || cwd[cwd_size - 1U] == '\r')) {
     cwd[--cwd_size] = '\0';
   }
-  if (less_pager_open(&g_console_less, command, cwd, SSHD_CONSOLE_COLUMNS,
-                      SSHD_CONSOLE_ROWS) != 0) {
+  if (less_pager_open(&g_console_less, command, cwd, console_columns(),
+                      console_rows()) != 0) {
     console_write(
         "less: usage: less [-N] FILE (regular files up to 128 KiB)\n");
     return -1;
@@ -902,8 +921,8 @@ static void console_finish_xtop(void) {
 
 static int console_start_xtop(const char *command) {
   xaios_xtop_sink_t sink = console_xtop_sink();
-  xaios_xtop_start(&g_console_xtop, command, SSHD_CONSOLE_COLUMNS,
-                   SSHD_CONSOLE_ROWS);
+  xaios_xtop_start(&g_console_xtop, command, console_columns(),
+                   console_rows());
   console_write("\033[?1049h\033[?25l");
   if (xaios_xtop_render(&g_console_xtop, &sink, xaios_clock_nanos()) != 0) {
     console_finish_xtop();
@@ -1027,8 +1046,8 @@ static void console_execute_command(void) {
        rather than falling back to their plain snapshot form here. */
     (void)ssh_terminal_promote_command(g_console_command,
                                        sizeof(g_console_command),
-                                       SSHD_CONSOLE_COLUMNS,
-                                       SSHD_CONSOLE_ROWS);
+                                       console_columns(),
+                                       console_rows());
     xaios_memzero(g_console_output, sizeof(g_console_output));
     int status = xaios_remote_login_session(
         SSHD_CONSOLE_SESSION_ID, console_username(), g_console_command,

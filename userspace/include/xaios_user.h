@@ -79,6 +79,7 @@ void *xaios_memcpy(void *dst, const void *src, u64 size);
 #define XAIOS_SYSCALL_NET_LOCAL_IPV4 49ULL
 #define XAIOS_SYSCALL_NET_CONNECT 50ULL
 #define XAIOS_SYSCALL_NET_LOCAL_IPV6 51ULL
+#define XAIOS_SYSCALL_CONSOLE_SIZE 52ULL
 #define XAIOS_THREAD_CPU_ANY (~0ULL)
 
 #define XAIOS_CLOCK_MONOTONIC 0ULL
@@ -360,7 +361,16 @@ int xaios_remote_login_child_status(u64 child_channel_id, u64 *out_status);
 int xaios_remote_login_child_cancel(u64 child_channel_id);
 int xaios_remote_login_child_release(u64 child_channel_id);
 int xaios_console_read(char *value);
+/* The kernel accepts at most this many bytes in one console write; the
+   wrapper below splits a longer buffer into calls of this size. */
+#define XAIOS_CONSOLE_WRITE_MAX 4096ULL
 int xaios_console_write(const char *buffer, u64 size);
+/* The console's size in character cells, or zero when the console cannot say
+   -- a serial line has no size to report and the caller keeps its own
+   default. A framebuffer console does know, and a program that asks renders
+   to the whole screen instead of to a guessed eighty columns in the corner
+   of it. */
+int xaios_console_size(u32 *columns, u32 *rows);
 u32 xaios_net_local_ipv4(void);
 /* Copies the public IPv6 address out and returns 1, or returns 0 when the
    guest has no public IPv6 address configured. */

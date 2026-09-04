@@ -4094,6 +4094,9 @@ static void append_app_log_lines(char *output, uint64_t output_capacity,
   }
 }
 
+/* The most console output one application run hands back. */
+#define REMOTE_APP_CONSOLE_CAPTURE_MAX UINT64_C(65536)
+
 static xaios_status_t handle_remote_app_file(
     const remote_app_definition_t *app, const xaios_initramfs_file_t *file,
     const char *args, char *output,
@@ -4111,6 +4114,7 @@ static xaios_status_t handle_remote_app_file(
   uint64_t latest_cursor = 0U;
   uint32_t log_bytes;
   uint64_t console_bytes;
+  uint64_t console_capacity;
   int exit_code = 0;
   xaios_status_t status;
 
@@ -4150,14 +4154,25 @@ static xaios_status_t handle_remote_app_file(
     return command_fail(output, output_capacity, output_bytes,
                         "application: output buffer unavailable");
   }
-  console = (char *)kheap_alloc(XAIOS_KLOG_FLUSH_MAX, 16U);
+  /* Capture as much as the caller can take back, rather than a fixed eight
+     kilobytes: a screen-sized frame from a terminal application is larger
+     than that, and a capture that stops early hands back a torn frame. The
+     ceiling keeps one command from asking for the whole heap. */
+  console_capacity = output_capacity;
+  if (console_capacity > REMOTE_APP_CONSOLE_CAPTURE_MAX) {
+    console_capacity = REMOTE_APP_CONSOLE_CAPTURE_MAX;
+  }
+  if (console_capacity < XAIOS_KLOG_FLUSH_MAX) {
+    console_capacity = XAIOS_KLOG_FLUSH_MAX;
+  }
+  console = (char *)kheap_alloc(console_capacity, 16U);
   if (console == 0) {
     kheap_free(log);
     return command_fail(output, output_capacity, output_bytes,
                         "application: output buffer unavailable");
   }
   cursor = klog_ring_total_written();
-  if (klog_console_capture_begin(console, XAIOS_KLOG_FLUSH_MAX) == 0) {
+  if (klog_console_capture_begin(console, console_capacity) == 0) {
     kheap_free(console);
     kheap_free(log);
     return command_fail(output, output_capacity, output_bytes,
