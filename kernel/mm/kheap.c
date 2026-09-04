@@ -152,7 +152,19 @@ void *kheap_calloc(uint64_t size, uint64_t align) {
   if (result == 0) {
     return 0;
   }
-  for (uint64_t i = 0; i < size; ++i) {
+  /* Word at a time where alignment allows, which it does here: kheap_alloc
+     honours the requested alignment and every caller of this asks for at
+     least eight. Zeroing several megabytes one byte at a time is eight times
+     the work for no reason, and the largest allocation on the boot path --
+     the child channel table -- is four megabytes. */
+  uint64_t offset = 0U;
+  if (((uint64_t)(uintptr_t)result % 8U) == 0U) {
+    uint64_t *words = (uint64_t *)(void *)result;
+    uint64_t whole = size / 8U;
+    for (uint64_t i = 0U; i < whole; ++i) words[i] = 0U;
+    offset = whole * 8U;
+  }
+  for (uint64_t i = offset; i < size; ++i) {
     result[i] = 0;
   }
   return result;
