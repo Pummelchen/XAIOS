@@ -20,12 +20,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-BUILD = ROOT / "build"
-RUNNER = ROOT / "platform/qemu/run-qemu-riscv64.sh"
+import riscv64_gate_lib as rvgate
+from qemu_gate_lib import BUILD, ROOT
+
 LOG_DIR = BUILD / "riscv64-matrix"
 
 HART_COUNTS = [int(value) for value in
@@ -33,7 +32,7 @@ HART_COUNTS = [int(value) for value in
 SSH_PORT = int(os.environ.get("XAIOS_RISCV64_SSH_PORT", "2298"))
 BOOT_TIMEOUT = int(os.environ.get("XAIOS_RISCV64_TIMEOUT", "700"))
 
-READY = "SSH server: up and running"
+READY = rvgate.READY
 REQUIRED = [
     "initramfs: mounted rofs version=2",
     "xaifs: mounted /models",
@@ -42,48 +41,19 @@ REQUIRED = [
     "xaios login:",
     READY,
 ]
-FORBIDDEN = ["ERROR: assertion failed", "CYAN SCREEN OF DEATH"]
 MINIMUM_SELF_TESTS = 70
 
 
-def boot(harts: int, log: Path, state: Path, ssh_port: int):
-    """Start one guest and wait for it to be reachable. Returns the process."""
-    environment = dict(os.environ)
-    environment["XAIOS_RISCV64_LOG"] = str(log)
-    environment["XAIOS_RISCV64_STATE"] = str(state)
-    environment["XAIOS_RISCV64_CPUS"] = str(harts)
-    environment["XAIOS_RISCV64_SSH_PORT"] = str(ssh_port)
-    guest = subprocess.Popen([str(RUNNER)], cwd=str(ROOT), env=environment,
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
-    deadline = time.monotonic() + BOOT_TIMEOUT
-    while time.monotonic() < deadline:
-        if guest.poll() is not None:
-            break
-        if log.is_file():
-            text = log.read_text(encoding="utf-8", errors="replace")
-            if READY in text or "CYAN SCREEN" in text:
-                break
-        time.sleep(1.0)
-    return guest
-
-
 def check(log: Path, harts: int) -> list:
-    if not log.is_file() or log.stat().st_size == 0:
-        return [f"{harts} harts: no serial output at all"]
-    text = log.read_text(encoding="utf-8", errors="replace")
-    problems = [f"{harts} harts: missing {marker}"
-                for marker in REQUIRED if marker not in text]
-    problems += [f"{harts} harts: forbidden {marker}"
-                 for marker in FORBIDDEN if marker in text]
-    tests = text.count("self-test passed")
-    if tests < MINIMUM_SELF_TESTS:
-        problems.append(f"{harts} harts: only {tests} self-tests passed")
+    text = rvgate.read(log)
+    found = rvgate.problems(text, REQUIRED,
+                           minimum_self_tests=MINIMUM_SELF_TESTS,
+                           label=f"{harts} harts")
     # The kernel should have brought up exactly the harts it was given.
-    if f"smp: riscv64 {harts} harts scheduling online={harts}" not in text:
-        problems.append(f"{harts} harts: the kernel did not report {harts} "
-                        f"harts scheduling")
-    return problems
+    if text and f"smp: riscv64 {harts} harts scheduling online={harts}" not in text:
+        found.append(f"{harts} harts: the kernel did not report {harts} harts "
+                     f"scheduling")
+    return found
 
 
 def ssh_check(port: int) -> list:
@@ -108,11 +78,11 @@ def ssh_check(port: int) -> list:
 
 
 def main() -> int:
-    if shutil.which("qemu-system-riscv64") is None:
+    if not rvgate.available():
         print("qemu-system-riscv64 is not installed; skipping", file=sys.stderr)
         return 0
-    if not RUNNER.is_file():
-        print(f"no runner at {RUNNER}", file=sys.stderr)
+    for missing in rvgate.prerequisites():
+        print(f"missing: {missing}", file=sys.stderr)
         return 2
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -124,8 +94,11 @@ def main() -> int:
         port = SSH_PORT + index
         status = "did not run"
         with tempfile.TemporaryDirectory() as scratch:
-            guest = boot(harts, log, Path(scratch), port)
+            process = rvgate.launch(log, Path(scratch), harts=harts,
+                                    ssh_port=port)
             try:
+                if not rvgate.wait_ready(process, log, timeout=BOOT_TIMEOUT):
+                    problems.append(f"{harts} harts: never came up")
                 found = check(log, harts)
                 # The login check runs against a live guest, so it has to
                 # happen before the guest is killed.
@@ -135,9 +108,7 @@ def main() -> int:
                 problems += found
                 status = "ok" if not found else f"{len(found)} problem(s)"
             finally:
-                if guest.poll() is None:
-                    guest.kill()
-                    guest.wait()
+                rvgate.stop(process)
         print(f"  {harts:>2} hart(s): {status}")
 
     if problems:

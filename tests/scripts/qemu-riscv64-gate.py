@@ -29,6 +29,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import riscv64_gate_lib as rvgate
+
 ROOT = Path(__file__).resolve().parents[2]
 KERNEL = ROOT / "build" / "kernel-riscv64" / "kernel.elf"
 INITFS = ROOT / "build" / "xaios-riscv64-initfs.img"
@@ -156,18 +158,13 @@ def main() -> int:
         return 1
     output = LOG.read_text(encoding="utf-8", errors="replace")
 
-    missing = [marker for marker in REQUIRED if marker not in output]
-    present = [marker for marker in FORBIDDEN if marker in output]
-    self_tests = output.count("self-test passed")
-
-    if missing or present or self_tests < MINIMUM_SELF_TESTS:
-        for marker in missing:
-            print(f"  missing: {marker}", file=sys.stderr)
-        for marker in present:
-            print(f"  forbidden: {marker}", file=sys.stderr)
-        if self_tests < MINIMUM_SELF_TESTS:
-            print(f"  only {self_tests} self-tests passed, expected at least "
-                  f"{MINIMUM_SELF_TESTS}", file=sys.stderr)
+    failures = rvgate.problems(output, REQUIRED,
+                              minimum_self_tests=MINIMUM_SELF_TESTS,
+                              forbidden=FORBIDDEN)
+    self_tests = rvgate.self_tests(output)
+    if failures:
+        for failure in failures:
+            print(f"  {failure}", file=sys.stderr)
         print(f"whole boot saved to {LOG.relative_to(ROOT)}", file=sys.stderr)
         return 1
 

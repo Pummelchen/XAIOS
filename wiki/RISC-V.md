@@ -137,15 +137,10 @@ the kernel comes up to a login prompt with sshd listening.
   about firmware behaviour, timing or scaling on a real machine is supported
   by anything here. This is the difference that matters and no amount of work
   on this machine closes it.
-- **Interrupt-driven virtio.** The interrupt each MMIO slot is wired to is
-  read from the device tree now -- the PLIC numbers them from 1 where the
-  compiled-in default was AArch64's 48 -- but the drivers still poll. Setting
-  the base does make them take interrupts, and then the shared asynchronous
-  queue self-test fails: it submits a full queue and asserts every request is
-  still outstanding and that one more is refused, and neither holds once the
-  device can complete during submission. Making that test independent of the
-  completion model is shared work on two architectures qualified on hardware
-  that cannot be re-qualified from here.
+- **Message-signalled interrupts for PCI.** MMIO virtio takes interrupts now;
+  the PCI devices still poll, because the PLIC takes wires and not messages.
+  The board can present AIA, and a driver for it is work nothing currently
+  needs.
 - **An IOMMU.** So has x86_64, whose `smmu_initialized()` also reports zero;
   this is an AArch64 capability rather than something RISC-V is behind the
   other two on.
@@ -162,8 +157,16 @@ Three gates, against roughly seventy for the other two:
 | `make qemu-riscv64-gate` | The kernel boots to a login prompt with sshd listening, 81 self-tests, no errors. |
 | `make qemu-riscv64-boot-media-gate` | The same machine boots from its own disk through EDK2 with no `-kernel`, from the verified signed A/B system slot. |
 | `make qemu-riscv64-matrix-gate` | It boots at 1, 2, 4 and 8 harts, four independent times, and answers an SSH login each time. |
+| `make qemu-riscv64-durability-gate` | State written on one boot is read back on the next, and survives a boot that is killed outright with no shutdown and no flush -- the filesystem reports no checksum errors afterwards. |
 
-That is far short of what AArch64 and x86_64 are held to -- network suites,
-storage crash safety, write ordering, soak, NUMA, NVMe, cluster and fault
-injection all run on those and not here. The features are present; the
-evidence that they hold under stress is not.
+That is still short of what AArch64 and x86_64 are held to -- network suites,
+write ordering, soak, NUMA, NVMe, cluster and fault injection all run on those
+and not here. The features are present; the evidence that they hold under
+every kind of stress is not.
+
+The four share `tests/scripts/riscv64_gate_lib.py` for booting the machine and
+`qemu_gate_lib.py` for comparing markers, rather than each carrying its own
+copy of the same thirty lines. Copies of a boot routine drift the way any
+other copies do, and the ways they drift -- a timeout generous in one and
+tight in another, a kill that terminates politely in one and not the other --
+are exactly the ways a gate stops testing what it says it tests.

@@ -19,19 +19,16 @@ the volumes are cut off mid-life rather than at a convenient moment, and boot 4
 is where a filesystem that only survives clean shutdowns says so.
 """
 import os
-import shutil
-import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-BUILD = ROOT / "build"
-RUNNER = ROOT / "platform/qemu/run-qemu-riscv64.sh"
+import riscv64_gate_lib as rvgate
+from qemu_gate_lib import BUILD, ROOT
+
 LOG_DIR = BUILD / "riscv64-durability"
 
-READY = "SSH server: up and running"
+READY = rvgate.READY
 BOOT_TIMEOUT = int(os.environ.get("XAIOS_RISCV64_TIMEOUT", "700"))
 
 # The kernel says which of the two it found, and the two statements are
@@ -47,65 +44,19 @@ LATER_BOOT = [
     '"persistence_boot_loads":1',
 ]
 ALWAYS = [READY, "xaios login:", '"xaiboot_fs_checksum_errors":0']
-FORBIDDEN = ["ERROR: assertion failed", "CYAN SCREEN OF DEATH"]
-
-
-def boot(state: Path, log: Path, kill_when_ready: bool = False):
-    if log.exists():
-        log.unlink()
-    environment = dict(os.environ)
-    environment["XAIOS_RISCV64_LOG"] = str(log)
-    environment["XAIOS_RISCV64_STATE"] = str(state)
-    # No port forward: these boots overlap nothing and need no login.
-    environment["XAIOS_RISCV64_SSH_PORT"] = "0"
-    guest = subprocess.Popen([str(RUNNER)], cwd=str(ROOT), env=environment,
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
-    deadline = time.monotonic() + BOOT_TIMEOUT
-    reached = False
-    try:
-        while time.monotonic() < deadline:
-            if guest.poll() is not None:
-                break
-            if log.is_file():
-                text = log.read_text(encoding="utf-8", errors="replace")
-                if READY in text:
-                    reached = True
-                    break
-                if "CYAN SCREEN" in text:
-                    break
-            time.sleep(1.0)
-        if kill_when_ready and reached:
-            # Straight to SIGKILL: a terminate would let QEMU flush, which is
-            # the opposite of what this boot is for.
-            guest.kill()
-    finally:
-        if guest.poll() is None:
-            guest.kill()
-        guest.wait()
-    return reached
 
 
 def check(log: Path, required, label: str) -> list:
-    if not log.is_file() or log.stat().st_size == 0:
-        return [f"{label}: no serial output at all"]
-    text = log.read_text(encoding="utf-8", errors="replace")
-    problems = [f"{label}: missing {marker}" for marker in required
-                if marker not in text]
-    problems += [f"{label}: forbidden {marker}" for marker in FORBIDDEN
-                 if marker in text]
-    return problems
+    return rvgate.problems(rvgate.read(log), required, label=label)
 
 
 def main() -> int:
-    if shutil.which("qemu-system-riscv64") is None:
+    if not rvgate.available():
         print("qemu-system-riscv64 is not installed; skipping", file=sys.stderr)
         return 0
-    for needed in (RUNNER, BUILD / "kernel-riscv64/kernel.elf",
-                   BUILD / "xaios-riscv64-initfs.img"):
-        if not Path(needed).exists():
-            print(f"missing: {needed}", file=sys.stderr)
-            return 2
+    for missing in rvgate.prerequisites():
+        print(f"missing: {missing}", file=sys.stderr)
+        return 2
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     problems = []
@@ -119,7 +70,8 @@ def main() -> int:
         ]
         for label, required, kill in stages:
             log = LOG_DIR / f"{label}.log"
-            reached = boot(state, log, kill_when_ready=kill)
+            reached = rvgate.boot(log, state, timeout=BOOT_TIMEOUT,
+                                 kill_when_ready=kill)
             if not reached:
                 problems.append(f"{label}: never reported {READY!r}")
             problems += check(log, required, label)
