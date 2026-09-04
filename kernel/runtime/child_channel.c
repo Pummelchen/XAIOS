@@ -18,6 +18,9 @@ typedef struct xaios_child_channel {
   uint32_t child_pid;
   uint32_t active;
   uint32_t state;
+  /* The parent has read a status that was not RUNNING, so the exit is no
+     longer news a wait should wake it for. */
+  uint32_t exit_seen;
   int exit_code;
   xaios_child_ring_t parent_to_child;
   xaios_child_ring_t child_to_parent;
@@ -176,8 +179,37 @@ xaios_status_t child_channel_status(uint64_t channel_id, uint32_t owner_pid,
   }
   *out_status = ((uint64_t)(uint32_t)channel->exit_code << 32U) |
                 (uint64_t)channel->state;
+  if (owner_pid == channel->parent_pid &&
+      channel->state != XAIOS_CHILD_CHANNEL_RUNNING) {
+    channel->exit_seen = 1U;
+  }
   xaios_spin_unlock(&g_channel_lock);
   return XAIOS_OK;
+}
+
+int child_channel_pending_for(uint32_t pid) {
+  if (pid == 0U || g_channels == 0) return 0;
+  int pending = 0;
+  xaios_spin_lock(&g_channel_lock);
+  for (uint32_t i = 0U; i < XAIOS_CHILD_CHANNEL_CAPACITY; ++i) {
+    xaios_child_channel_t *channel = &g_channels[i];
+    if (channel->active == 0U) continue;
+    if (channel->parent_pid == pid &&
+        (channel->child_to_parent.used != 0U ||
+         (channel->state != XAIOS_CHILD_CHANNEL_RUNNING &&
+          channel->exit_seen == 0U))) {
+      pending = 1;
+      break;
+    }
+    if (channel->child_pid == pid &&
+        (channel->parent_to_child.used != 0U ||
+         channel->state != XAIOS_CHILD_CHANNEL_RUNNING)) {
+      pending = 1;
+      break;
+    }
+  }
+  xaios_spin_unlock(&g_channel_lock);
+  return pending;
 }
 
 xaios_status_t child_channel_finish(uint64_t channel_id, uint32_t child_pid,

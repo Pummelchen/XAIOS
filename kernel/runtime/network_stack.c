@@ -3068,6 +3068,40 @@ int network_stack_tcp_peer_closed(uint32_t flow_id) {
   return result;
 }
 
+int network_stack_socket_ready(uint64_t sockfd, uint8_t protocol,
+                               uint16_t port, uint32_t listening) {
+  int ready = 0;
+  network_lock();
+  if (listening != 0U) {
+    network_listener_ex_t *listener =
+        protocol == NETWORK_IP_PROTO_UDP
+            ? find_listener_by_socket(sockfd, NETWORK_IP_PROTO_UDP)
+            : find_listener_ex(port, NETWORK_IP_PROTO_TCP);
+    ready = listener != 0 && listener->backlog_count != 0U;
+  } else {
+    socket_flow_mapping_t *mapping =
+        network_stack_get_socket_mapping_unlocked(sockfd);
+    if (mapping != 0 && mapping->protocol == XAIOS_NETWORK_PROTOCOL_TCP) {
+      int found = 0;
+      for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
+        if (g_tcp_flows[i].flow_id != mapping->flow_id) continue;
+        found = 1;
+        if (g_tcp_flows[i].rx_buf != 0 && g_tcp_flows[i].rx_buf->count != 0U) {
+          ready = 1;
+        }
+        break;
+      }
+      if (ready == 0 &&
+          (found == 0 ||
+           network_stack_tcp_peer_closed_unlocked(mapping->flow_id) != 0)) {
+        ready = 1;
+      }
+    }
+  }
+  network_unlock();
+  return ready;
+}
+
 static uint32_t network_stack_udp_recv_unlocked(uint64_t sockfd, uint8_t *buffer,
                                 uint32_t buffer_size,
                                 xaios_ip_addr_t *source_addr,

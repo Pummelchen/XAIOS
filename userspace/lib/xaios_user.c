@@ -146,6 +146,11 @@ int xaios_sleep_ns(u64 nanoseconds) {
   return rc == ~0ULL ? -1 : 0;
 }
 
+int xaios_wait_events(u64 timeout_ns) {
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_WAIT_EVENTS, timeout_ns, 0U, 0U);
+  return rc == ~0ULL ? -1 : (int)rc;
+}
+
 u32 xaios_net_local_ipv4(void) {
   return (u32)xaios_syscall3(XAIOS_SYSCALL_NET_LOCAL_IPV4, 0U, 0U, 0U);
 }

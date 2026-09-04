@@ -15,5 +15,8 @@ uint32_t virtio_console_ready(void);
 /* Take one byte of input if the device has delivered any. Returns 1 when a
    byte was taken, 0 when there is nothing waiting. */
 int virtio_console_read(uint8_t *value);
+/* Whether a read would take a byte: one already buffered, or one the
+   device has delivered and nobody has looked at yet. */
+int virtio_console_pending(void);
 
 #endif

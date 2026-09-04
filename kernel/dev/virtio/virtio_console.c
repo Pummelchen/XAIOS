@@ -176,6 +176,20 @@ static void post_receive_buffer(void) {
   virtio_transport_notify(&g_console->device, VIRTIO_CONSOLE_RECEIVE_QUEUE);
 }
 
+int virtio_console_pending(void) {
+  if (virtio_console_ready() == 0U || g_console->writing != 0U) return 0;
+  xaios_spin_lock(&g_console->lock);
+  virtio_console_queue_t *queue = &g_console->receive;
+  int pending = queue->offset < queue->pending;
+  if (!pending) {
+    virtio_mmio_barrier();
+    pending = *(volatile uint16_t *)(void *)&queue->used->idx !=
+              queue->used_idx;
+  }
+  xaios_spin_unlock(&g_console->lock);
+  return pending;
+}
+
 int virtio_console_read(uint8_t *value) {
   if (value == 0 || virtio_console_ready() == 0U) return 0;
   if (g_console->writing != 0U) return 0;

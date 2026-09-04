@@ -891,10 +891,6 @@ static int console_command_is_xtop(const char *command) {
   return 1;
 }
 
-static void sshd_idle_ms(uint32_t milliseconds) {
-  (void)xaios_sleep_ns((u64)milliseconds * UINT64_C(1000000));
-}
-
 static void console_child_release(int cancel) {
   if (g_console_child == 0U) return;
   if (cancel != 0) (void)xaios_remote_login_child_cancel(g_console_child);
@@ -3046,29 +3042,16 @@ close_conn:
     if (g_console_ssh_ready != 0U && ssh_channel_tick(timer_now()) != 0) {
       ssh_log(SSH_LOG_WARN, "Interactive channel refresh failed\n");
     }
-    /* An iteration that found nothing to do finishes in microseconds; one
-       that did work took longer. Spinning through the empty ones kept a
+    /* Nothing above blocks, so left to itself this loop spins and keeps a
        whole core at a hundred percent from boot -- which the process
-       monitor, once it was honest about who was running, showed on every
-       machine -- so an empty iteration yields the core for a millisecond.
-       That is the most a keystroke or a packet waits. */
-    {
-      /* How long an empty iteration takes is a property of the machine --
-         a few microseconds native, hundreds under emulation -- so the
-         shortest iteration seen is the measure, and one within twice of it
-         found nothing to do. Consecutive empty iterations sleep longer,
-         up to eight milliseconds, and any work resets the pause. */
-      static uint64_t shortest_ns = UINT64_MAX;
-      static uint32_t idle_ms = 1U;
-      uint64_t elapsed = timer_now() - now;
-      if (elapsed < shortest_ns) shortest_ns = elapsed;
-      if (elapsed <= shortest_ns * 2U + UINT64_C(50000)) {
-        sshd_idle_ms(idle_ms);
-        if (idle_ms < 8U) idle_ms *= 2U;
-      } else {
-        idle_ms = 1U;
-      }
-    }
+       monitor showed on every machine once it was honest about who was
+       running. The kernel wait returns the moment there is console input,
+       a packet or connection on a socket sshd owns, or output from a child;
+       otherwise after a timeout that only paces the timed housekeeping
+       above. A game on the console wants frames, and gets a shorter one. */
+    (void)xaios_wait_events(g_console_pong.active != 0U
+                                ? UINT64_C(16000000)
+                                : UINT64_C(50000000));
   }
 
   return 0;

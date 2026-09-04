@@ -104,6 +104,12 @@ void klog_set_console_source(xaios_klog_source_t source) {
   g_console_source = source;
 }
 
+static xaios_klog_poll_t g_console_poll;
+
+void klog_set_console_poll(xaios_klog_poll_t poll) {
+  g_console_poll = poll;
+}
+
 static void uart_putc(char c) {
   sink_putc(c);
   if (g_uart_base == 0) {
@@ -232,6 +238,29 @@ uint64_t klog_console_capture_end(void) {
   }
   xaios_spin_unlock(&g_klog_lock);
   return length;
+}
+
+int klog_console_input_pending(void) {
+  if (input_pending()) return 1;
+  if (g_console_poll != 0 && g_console_poll() != 0) return 1;
+  if (g_uart_base == 0) return 0;
+#if XAIOS_KLOG_MMIO_UART
+  if (g_uart_kind == XAIOS_UART_PL011) {
+    return (g_uart_base[PL011_UARTFR / 4] & PL011_UARTFR_RXFE) == 0U;
+  }
+  if (g_uart_kind == XAIOS_UART_16550_MMIO) {
+    volatile uint8_t *base = (volatile uint8_t *)(uintptr_t)g_uart_base;
+    uint32_t lsr_offset = UART_16550_LSR << g_uart_reg_shift;
+    return (base[lsr_offset] & UART_16550_LSR_DR) != 0U;
+  }
+#elif defined(__x86_64__)
+  uint16_t base = (uint16_t)(uintptr_t)g_uart_base;
+  uint8_t status;
+  __asm__ volatile("inb %1, %0" : "=a"(status)
+                   : "Nd"((uint16_t)(base + UART_16550_LSR)));
+  return (status & UART_16550_LSR_DR) != 0U;
+#endif
+  return 0;
 }
 
 int klog_console_read_char(uint8_t *value) {

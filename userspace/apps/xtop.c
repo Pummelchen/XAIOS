@@ -2972,14 +2972,15 @@ static int xtop_serve(u64 channel_id, const char *command) {
       if (serve_handle_input(&st, input, length, &redraw, &screen_changed) == 2) { quit = 1; break; }
     }
     if (quit != 0) break;
+    /* A screen that changes only on a key waits for one. */
     if (st.help != 0) {
       if (screen_changed != 0 && serve_send_help(&st) != 0) break;
-      serve_pause_ms(20U);
+      if (xaios_wait_events(UINT64_C(1000000000)) < 0) serve_pause_ms(20U);
       continue;
     }
     if (st.filter_mode != 0) {
       if (screen_changed != 0 && serve_send_filter_prompt(&st) != 0) break;
-      serve_pause_ms(20U);
+      if (xaios_wait_events(UINT64_C(1000000000)) < 0) serve_pause_ms(20U);
       continue;
     }
     /* A new sample when the sampling interval has passed, or at once when
@@ -2998,9 +2999,10 @@ static int xtop_serve(u64 channel_id, const char *command) {
       next_frame_ns = xaios_clock_nanos() + (uint64_t)st.sample_ms * 1000000U;
       continue;
     }
-    uint64_t wait_ns = next_frame_ns - now_ns;
-    uint32_t wait_ms = (uint32_t)(wait_ns / 1000000U);
-    serve_pause_ms(wait_ms > 16U ? 16U : (wait_ms == 0U ? 1U : wait_ms));
+    /* Until the next sample is due, or a key arrives on the channel --
+       whichever is first. Polling the channel every sixteen milliseconds
+       was most of what this process cost between samples. */
+    if (xaios_wait_events(next_frame_ns - now_ns) < 0) serve_pause_ms(16U);
   }
   (void)serve_write("\033[0m\033[?25h\033[?1049l\033[0m\033[?25h\r", 24U);
   return 0;

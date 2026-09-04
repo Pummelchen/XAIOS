@@ -13,6 +13,9 @@ void klog_set_console_sink(xaios_klog_sink_t sink);
 typedef int (*xaios_klog_source_t)(uint8_t *value);
 /* Attach the matching input source. Passing 0 detaches. */
 void klog_set_console_source(xaios_klog_source_t source);
+typedef int (*xaios_klog_poll_t)(void);
+/* The source's peek: whether a read from it would return a byte. */
+void klog_set_console_poll(xaios_klog_poll_t poll);
 void klog(const char *fmt, ...);
 void klog_level(xaios_log_level_t level, const char *fmt, ...);
 void klog_puts(const char *message);
@@ -23,5 +26,8 @@ void klog_console_write(const char *message, uint64_t length);
 int klog_console_capture_begin(char *buffer, uint64_t capacity);
 uint64_t klog_console_capture_end(void);
 int klog_console_read_char(uint8_t *value);
+/* Whether klog_console_read_char would return a byte, from any of the
+   places it reads, without taking it. */
+int klog_console_input_pending(void);
 
 #endif

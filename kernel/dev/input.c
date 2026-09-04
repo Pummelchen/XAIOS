@@ -726,6 +726,14 @@ int input_read_char(uint8_t *value) {
   xaios_spin_unlock(&g_input_lock);
   return 1;
 }
+int input_pending(void) {
+  xhci_poll();
+  xaios_spin_lock(&g_input_lock);
+  int pending = g_queue_tail != g_queue_head;
+  xaios_spin_unlock(&g_input_lock);
+  return pending;
+}
+
 uint32_t input_keyboard_available(void) {
   return g_keyboard != 0 && g_keyboard->initialized != 0U;
 }

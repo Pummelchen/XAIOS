@@ -89,6 +89,7 @@ static const xaios_syscall_entry_t g_syscall_table[] = {
     {XAIOS_SYSCALL_CONSOLE_WRITE, "console_write", XAIOS_CAP_CONSOLE},
     {XAIOS_SYSCALL_CONSOLE_SIZE, "console_size", XAIOS_CAP_CONSOLE},
     {XAIOS_SYSCALL_SLEEP_NANOS, "sleep_nanos", XAIOS_CAP_TIME},
+    {XAIOS_SYSCALL_WAIT_EVENTS, "wait_events", XAIOS_CAP_TIME},
     {XAIOS_SYSCALL_NET_LOCAL_IPV4, "net_local_ipv4", XAIOS_CAP_NET},
     {XAIOS_SYSCALL_NET_CONNECT, "net_connect", XAIOS_CAP_NET_SOCKET},
     {XAIOS_SYSCALL_NET_LOCAL_IPV6, "net_local_ipv6", XAIOS_CAP_NET},
@@ -168,6 +169,14 @@ static uint32_t g_cpu_ai_app_bound;
 #define XAIOS_SYSCALL_NETWORK_IO_MAX_BYTES ((uint64_t)SOCKET_BUFFER_SIZE)
 
 /* ---- Kernel socket table (for sshd) ---- */
+/* How long wait_events sleeps between looks at the things it waits for:
+   a millisecond at first, and each quiet look doubles the next, to eight.
+   Anything that raises no interrupt is noticed within the slice, and a
+   machine with nothing to do looks a hundred and twenty-five times a
+   second rather than a thousand. */
+#define XAIOS_WAIT_SLICE_NS UINT64_C(1000000)
+#define XAIOS_WAIT_SLICE_MAX_NS UINT64_C(8000000)
+
 #define KERNEL_SOCK_LISTEN UINT32_C(1)
 #define KERNEL_SOCK_CONNECTED UINT32_C(2)
 #define KERNEL_SOCK_DATAGRAM UINT32_C(3)
@@ -281,6 +290,34 @@ static xaios_status_t kernel_socket_snapshot_owned(uint64_t sockfd,
   *snapshot = *socket;
   xaios_spin_unlock(&g_kernel_socket_lock);
   return XAIOS_OK;
+}
+
+/* Whether any socket this owner holds has something a non-blocking call
+   would return. The owner's sockets are copied out under the table lock
+   first: the network stack has a lock of its own, and the two are never
+   held together. */
+#define KERNEL_SOCKETS_READY_SCAN UINT32_C(64)
+static int kernel_sockets_ready_for(uint32_t owner_token) {
+  kernel_socket_t owned[KERNEL_SOCKETS_READY_SCAN];
+  uint32_t count = 0U;
+  if (owner_token == 0U || g_kernel_sockets == 0) return 0;
+  xaios_spin_lock(&g_kernel_socket_lock);
+  for (uint32_t i = 0; i < g_kernel_socket_capacity &&
+                       count < KERNEL_SOCKETS_READY_SCAN; ++i) {
+    if (g_kernel_sockets[i].state != 0U &&
+        g_kernel_sockets[i].owner_token == owner_token) {
+      owned[count++] = g_kernel_sockets[i];
+    }
+  }
+  xaios_spin_unlock(&g_kernel_socket_lock);
+  for (uint32_t i = 0; i < count; ++i) {
+    uint32_t listening = owned[i].state != KERNEL_SOCK_CONNECTED;
+    if (network_stack_socket_ready(owned[i].id, owned[i].protocol,
+                                   owned[i].port, listening) != 0) {
+      return 1;
+    }
+  }
+  return 0;
 }
 
 static xaios_status_t kernel_socket_free(uint64_t sockfd, uint32_t owner_token) {
@@ -509,6 +546,53 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     bytes_copy((void *)(uintptr_t)arg0, &value, 1U);
     user_process_note_syscall(0);
     return 1U;
+  }
+
+  if (syscall == XAIOS_SYSCALL_WAIT_EVENTS) {
+    /* Block until there is something the caller could act on -- console
+       input, a packet or connection on a socket it owns, output or an exit
+       from a child it started -- or the timeout, bounded to a second. Each
+       kind is checked only for a process that could read it, or the wait
+       would return at once for ever. The network stack is driven from here
+       while the caller sleeps, as it is from the calls the caller is not
+       making; a sleep slice bounds how long anything that raises no
+       interrupt waits to be noticed. */
+    uint64_t timeout_ns = arg0 > UINT64_C(1000000000) ? UINT64_C(1000000000)
+                                                      : arg0;
+    const xaios_user_process_t *process = user_current_process();
+    uint32_t owner_token = process != 0 ? process->owner_token : 0U;
+    uint32_t pid = process != 0 ? process->pid : 0U;
+    uint64_t mask = process != 0 ? process->capability_mask : 0U;
+    int watch_console = (mask & XAIOS_CAP_CONSOLE) != 0U;
+    int watch_sockets = (mask & XAIOS_CAP_NET_SOCKET) != 0U;
+    int watch_children = (mask & XAIOS_CAP_REMOTE_LOGIN) != 0U;
+    uint64_t deadline_ns = timer_now_ns() + timeout_ns;
+    uint64_t events = 0U;
+    uint64_t slice_ns = XAIOS_WAIT_SLICE_NS;
+    for (;;) {
+      if (watch_console) boot_ui_present_pending();
+      /* Only a process that could receive drives the network stack: for
+         the others the tick is a cost with nothing to show for it, and
+         under emulation it is most of what a look costs. */
+      if (watch_sockets) network_poll_tick();
+      if (watch_console && klog_console_input_pending()) {
+        events |= XAIOS_WAIT_EVENT_CONSOLE;
+      }
+      if (watch_sockets && kernel_sockets_ready_for(owner_token)) {
+        events |= XAIOS_WAIT_EVENT_SOCKET;
+      }
+      if (watch_children && child_channel_pending_for(pid)) {
+        events |= XAIOS_WAIT_EVENT_CHILD;
+      }
+      uint64_t now_ns = timer_now_ns();
+      if (events != 0U || now_ns >= deadline_ns) break;
+      uint64_t slice_end_ns = now_ns + slice_ns;
+      user_process_idle_until(slice_end_ns < deadline_ns ? slice_end_ns
+                                                         : deadline_ns);
+      if (slice_ns < XAIOS_WAIT_SLICE_MAX_NS) slice_ns *= 2U;
+    }
+    user_process_note_syscall(0);
+    return events;
   }
 
   if (syscall == XAIOS_SYSCALL_SLEEP_NANOS) {
@@ -2085,6 +2169,7 @@ void syscall_self_test(void) {
   kassert(lookup_syscall(XAIOS_SYSCALL_NET_SEND) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_NET_CLOSE) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_NET_CONNECT) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_WAIT_EVENTS) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_AGENT_DISPATCH) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_RANDOM) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_FS_SEEK) != 0);

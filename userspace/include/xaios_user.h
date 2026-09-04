@@ -81,6 +81,10 @@ void *xaios_memcpy(void *dst, const void *src, u64 size);
 #define XAIOS_SYSCALL_NET_LOCAL_IPV6 51ULL
 #define XAIOS_SYSCALL_CONSOLE_SIZE 52ULL
 #define XAIOS_SYSCALL_SLEEP_NANOS 53ULL
+#define XAIOS_SYSCALL_WAIT_EVENTS 54ULL
+#define XAIOS_WAIT_EVENT_CONSOLE 1ULL
+#define XAIOS_WAIT_EVENT_SOCKET 2ULL
+#define XAIOS_WAIT_EVENT_CHILD 4ULL
 #define XAIOS_THREAD_CPU_ANY (~0ULL)
 
 #define XAIOS_CLOCK_MONOTONIC 0ULL
@@ -377,6 +381,13 @@ int xaios_console_size(u32 *columns, u32 *rows);
    clock, or by asking for a runtime snapshot with a wait in it, burned a
    core to do nothing. Requires XAIOS_CAP_TIME. */
 int xaios_sleep_ns(u64 nanoseconds);
+/* Block until there is console input, a packet or connection on a socket
+   this process owns, or output or an exit from a child it started -- or
+   until the timeout (at most one second) passes. Returns the
+   XAIOS_WAIT_EVENT_* bits that ended the wait, zero for the timeout, -1
+   when refused. A server that polls non-blocking calls in a loop spins a
+   core; one that waits here is idle between events. */
+int xaios_wait_events(u64 timeout_ns);
 u32 xaios_net_local_ipv4(void);
 /* Copies the public IPv6 address out and returns 1, or returns 0 when the
    guest has no public IPv6 address configured. */

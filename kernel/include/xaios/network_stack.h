@@ -156,6 +156,11 @@ uint32_t network_stack_udp_recv(uint64_t sockfd, uint8_t *buffer,
 uint32_t network_stack_tcp_recv(uint32_t flow_id, uint8_t *buffer,
                                   uint32_t buffer_size);
 int network_stack_tcp_peer_closed(uint32_t flow_id);
+/* Whether a non-blocking call on this socket would return something: a
+   queued connection or datagram on a listener, bytes on a connected
+   stream, or a peer that has closed. */
+int network_stack_socket_ready(uint64_t sockfd, uint8_t protocol,
+                               uint16_t port, uint32_t listening);
 
 /* Listener registry */
 void network_stack_register_listener(uint16_t port, uint64_t sockfd);

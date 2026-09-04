@@ -26,6 +26,10 @@ xaios_status_t child_channel_read(uint64_t channel_id, uint32_t reader_pid,
                                   uint64_t *out_size);
 xaios_status_t child_channel_status(uint64_t channel_id, uint32_t owner_pid,
                                     uint64_t *out_status);
+/* Whether any channel this process is a side of has something for it: as
+   the parent, output it has not read or an exit it has not yet asked the
+   status of; as the child, input it has not read or a cancellation. */
+int child_channel_pending_for(uint32_t pid);
 xaios_status_t child_channel_finish(uint64_t channel_id, uint32_t child_pid,
                                     int exit_code);
 xaios_status_t child_channel_cancel(uint64_t channel_id,
