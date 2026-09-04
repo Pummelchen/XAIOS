@@ -40,7 +40,17 @@ mkdir -p "$STATE"
 # that the wrong file was copied.
 RISCV_SYSTEM="$BUILD/xaios-riscv64-system.img"
 [ -f "$STATE/system.img" ] || cp "$RISCV_SYSTEM" "$STATE/system.img"
-[ -f "$STATE/storage-admin.img" ] || cp "$BUILD/xaios-smoke-storage-admin.img" "$STATE/storage-admin.img"
+# The administrative scratch disk. The aarch64 smoke gate leaves one behind in
+# build/, but a fresh tree has none, and a runner that fails at `cp` before
+# QEMU starts leaves no serial log and nothing to diagnose. Made here when
+# absent: it is a blank disk by definition.
+if [ ! -f "$STATE/storage-admin.img" ]; then
+  if [ -f "$BUILD/xaios-smoke-storage-admin.img" ]; then
+    cp "$BUILD/xaios-smoke-storage-admin.img" "$STATE/storage-admin.img"
+  else
+    dd if=/dev/zero of="$STATE/storage-admin.img" bs=1m count=16 status=none
+  fi
+fi
 BOOT_ARGS=""
 if [ -f "$BOOT_MEDIUM" ]; then
   BOOT_ARGS="-drive if=none,format=raw,readonly=on,id=xboot,file=$BOOT_MEDIUM -device virtio-blk-pci,drive=xboot,bootindex=0,disable-legacy=on"

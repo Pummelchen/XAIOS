@@ -217,14 +217,25 @@ static void capture_sys_regs(uint64_t *elr, uint64_t *esr, uint64_t *far,
 
 /* ---- stack backtrace via frame pointer ---- */
 
+/* A frame chain is followed only while it stays on the stack it started on.
+   A kernel stack is small, so anything more than this far above the first
+   frame is not a frame: a trap frame's saved register was written by a user
+   program, and following it into user memory took a second fault inside the
+   panic handler, which replaced the message about the first fault with one
+   about the handler. The address-range test below cannot tell the two apart
+   on its own, because user stacks sit at addresses the kernel also uses. */
+#define PANIC_BACKTRACE_STACK_SPAN UINT64_C(0x100000)
+
 static uint32_t capture_backtrace(uint64_t *trace, uint32_t max_depth) {
   volatile uint64_t *fp =
       (volatile uint64_t *)__builtin_frame_address(0);
+  uint64_t stack_base = (uint64_t)(uintptr_t)fp;
   uint32_t depth = 0;
 
   while (depth < max_depth) {
     uint64_t fp_val = (uint64_t)(uintptr_t)fp;
-    if (!panic_valid_addr(fp_val)) {
+    if (!panic_valid_addr(fp_val) || fp_val < stack_base ||
+        fp_val - stack_base > PANIC_BACKTRACE_STACK_SPAN) {
       break;
     }
     /* Where the two words are depends on the architecture, and getting it

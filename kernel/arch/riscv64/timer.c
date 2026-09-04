@@ -188,10 +188,52 @@ void timer_disable(void) {
   set_timer(UINT64_MAX);
 }
 
+/* Counter ticks for a duration, rounded up so a wait never ends early. */
+static uint64_t duration_ticks(uint64_t duration_ns) {
+  uint64_t seconds = duration_ns / NANOSECONDS_PER_SECOND;
+  uint64_t remainder = duration_ns % NANOSECONDS_PER_SECOND;
+  if (seconds > UINT64_MAX / g_frequency_hz) return UINT64_MAX;
+  uint64_t ticks = seconds * g_frequency_hz;
+  uint64_t fractional =
+      (remainder * g_frequency_hz + (NANOSECONDS_PER_SECOND - 1U)) /
+      NANOSECONDS_PER_SECOND;
+  return ticks > UINT64_MAX - fractional ? UINT64_MAX : ticks + fractional;
+}
+
+/* Wait for a deadline with the hart asleep, on any hart.
+ *
+ * This used to be `wfi` in a loop and nothing else, which waits for whatever
+ * interrupt happens to come. On the boot hart the periodic tick comes; on a
+ * worker hart the local timer is masked by design -- kernel workers are
+ * event-driven -- and nothing comes. A syscall that asked to idle from a
+ * worker hart therefore slept for ever, and the first program to ask was
+ * the process monitor: its first request is a quarter-second wait, and the
+ * machine went silent the moment it entered user mode.
+ *
+ * The same shape as AArch64: arm a one-shot comparator at the deadline,
+ * enable the timer interrupt around the wait so a pending timer is what wakes
+ * the hart, and put the mask and the periodic schedule back afterwards. The
+ * global interrupt enable is left as the caller had it, so a wait from inside
+ * a syscall wakes without taking the trap. */
 void timer_idle_until(uint64_t deadline_ns) {
-  while (timer_now_ns() < deadline_ns) {
+  uint64_t sie = 0U;
+  __asm__ volatile("csrr %0, sie" : "=r"(sie));
+  for (;;) {
+    uint64_t now_ns = timer_now_ns();
+    if (now_ns >= deadline_ns) break;
+    uint64_t ticks = duration_ticks(deadline_ns - now_ns);
+    uint64_t counter = timer_counter();
+    uint64_t compare = ticks > UINT64_MAX - counter
+                           ? UINT64_MAX
+                           : counter + (ticks == 0U ? 1U : ticks);
+    set_timer(compare);
+    __asm__ volatile("csrs sie, %0" : : "r"(UINT64_C(1) << 5) : "memory");
     __asm__ volatile("wfi" ::: "memory");
   }
+  if ((sie & (UINT64_C(1) << 5)) == 0U) timer_mask_local();
+  /* Back to the periodic schedule, or to nothing; either write clears the
+     pending bit the one-shot left behind. */
+  timer_rearm();
 }
 
 void timer_self_test(void) {

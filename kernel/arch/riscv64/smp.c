@@ -35,6 +35,8 @@ xaios_status_t xaios_thread_run_group(uint64_t requested_threads,
                                       uint64_t *ran_threads,
                                       uint64_t *checksum);
 uint64_t riscv64_kernel_satp(void);
+/* Each hart has its own root, so each hart is handed its own satp. */
+uint64_t riscv64_hart_satp(uint32_t cpu_id);
 extern char riscv64_secondary_entry[];
 
 #define RISCV64_MAX_HARTS 8U
@@ -252,13 +254,14 @@ void smp_init_platform(const xaios_boot_info_t *boot) {
 
 xaios_status_t smp_release_secondary_schedulers(void) {
   /* Start them here, for the reasons smp_init_platform records. */
-  uint64_t satp = riscv64_kernel_satp();
   uint32_t started = 0U;
   for (uint32_t cpu = 1U; cpu < g_cpu_count; ++cpu) {
     uint32_t hart = g_hart_of_cpu[cpu];
     g_handoff[cpu].stack_top =
         (uint64_t)(uintptr_t)&g_secondary_stacks[cpu][SECONDARY_STACK_BYTES];
-    g_handoff[cpu].satp = satp;
+    /* This hart's own root, which is what lets it run a different process
+       from the boot hart at the same time. */
+    g_handoff[cpu].satp = riscv64_hart_satp(cpu);
     g_handoff[cpu].cpu_id = cpu;
     int64_t status =
         sbi_hart_start(hart, (uint64_t)(uintptr_t)riscv64_secondary_entry,

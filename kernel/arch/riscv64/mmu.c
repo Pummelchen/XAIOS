@@ -19,7 +19,9 @@
  * needing a separate path.
  */
 #include <xaios/boot_info.h>
+#include <xaios/elf_loader.h>
 #include <xaios/pmm.h>
+#include <xaios/smp.h>
 #include <xaios/status.h>
 #include <xaios/vmm.h>
 
@@ -221,6 +223,123 @@ static uint64_t *walk(uint64_t *root, uint64_t virtual_address,
   return &table[index_at(virtual_address, target_level)];
 }
 
+/* Per-process user address spaces, and the per-hart tables that carry them.
+ *
+ * There were none. Every user page went into the one shared root, the
+ * per-process table list the shared interface hands around was allocated and
+ * ignored, and switching address spaces was a TLB flush. Two processes are
+ * linked at the same addresses -- every one of them is -- so loading a
+ * second while a first was alive overwrote the first's mappings, and
+ * reclaiming the second removed them. sshd ran an on-demand application at
+ * the same address it lives at itself and faulted on the first byte it wrote
+ * back to its own stack. The boot-test configuration never showed it: its
+ * processes run one after another in one address space that is never torn
+ * down between them.
+ *
+ * The shape is the one x86-64 uses, because the problem is the same one: the
+ * kernel and userspace share the first top-level slot, so a hart cannot have
+ * its own user mapping without its own copy of the tables above it. Each
+ * hart gets a root of its own, a copy of the table under slot zero, and a
+ * user directory -- the 2 MiB-granular table for the gibibyte userspace
+ * lives in -- that switching points at a process's leaf tables. Kernel
+ * mappings stay in the shared tables; a new entry at either of the two
+ * copied levels is mirrored into every hart's copies, and everything below
+ * those levels is reached through shared pointers and needs no mirroring.
+ * Sv48 puts userspace, at 511 GiB, under slot zero alongside the kernel;
+ * that is the same arithmetic x86-64 does with its PDPT. */
+#define USER_CODE_WINDOWS XAIOS_ELF_CODE_WINDOWS
+#define USER_ASPACE_L3_TABLES (USER_CODE_WINDOWS + 1U)
+/* Derived from the constants that define the layout, so the three cannot
+   disagree: the gibibyte slot userspace lives in, the first 2 MiB window of
+   code and data, and the 2 MiB window holding the stack. */
+#define USER_L1_INDEX index_at(XAIOS_USER_BASE, 2U)
+#define USER_CODE_L2_INDEX index_at(XAIOS_USER_BASE, 1U)
+#define USER_STACK_L2_INDEX index_at(XAIOS_USER_STACK_TOP - PAGE_SIZE, 1U)
+#define VMM_MAX_HARTS 64U
+
+typedef struct hart_tables {
+  uint64_t *root;           /* this hart's copy of the top level */
+  uint64_t *low;            /* this hart's copy of the table under slot 0 */
+  uint64_t *user_directory; /* the 2 MiB-level table for userspace's GiB */
+  uint64_t satp;
+} hart_tables_t;
+
+static hart_tables_t g_hart_tables[VMM_MAX_HARTS];
+static uint32_t g_hart_table_count;
+
+/* The root translation currently walks from: this hart's own, once it has
+   one, and the shared root before that -- which is also what satp says, so
+   satp is what is read. Walking the shared root for a user address would
+   answer about tables no hart is using. */
+static uint64_t *current_root(void) {
+  uint64_t satp = 0U;
+  __asm__ volatile("csrr %0, satp" : "=r"(satp));
+  if ((satp >> 60) == 0U) return g_root;
+  return (uint64_t *)(uintptr_t)((satp & ((UINT64_C(1) << 44) - 1U)) << 12);
+}
+
+/* A kernel mapping that added or replaced an entry at one of the two copied
+   levels has to reach every hart's copies, or the hart that did the mapping
+   sees it and the others fault on it. Called after every change to the
+   shared root; for anything at a lower level it finds nothing to do, because
+   those tables are shared by pointer. */
+static void sync_kernel_hierarchy(uint64_t virtual_address) {
+  if (virtual_address >= XAIOS_USER_BASE && virtual_address < XAIOS_USER_LIMIT) {
+    return;
+  }
+  uint32_t l0 = index_at(virtual_address, 3U);
+  uint32_t l1 = index_at(virtual_address, 2U);
+  for (uint32_t cpu = 0U; cpu < g_hart_table_count; ++cpu) {
+    hart_tables_t *tables = &g_hart_tables[cpu];
+    if (tables->root == 0) continue;
+    if (l0 != 0U) {
+      tables->root[l0] = g_root[l0];
+      continue;
+    }
+    if (l1 != USER_L1_INDEX && (g_root[0] & PTE_V) != 0U) {
+      uint64_t *shared_low = (uint64_t *)(uintptr_t)pte_physical(g_root[0]);
+      tables->low[l1] = shared_low[l1];
+    }
+  }
+}
+
+static void build_per_hart_roots(void) {
+  uint32_t capacity = smp_capacity();
+  if (capacity > VMM_MAX_HARTS) capacity = VMM_MAX_HARTS;
+  uint64_t *shared_low = (g_root[0] & PTE_V) != 0U
+                             ? (uint64_t *)(uintptr_t)pte_physical(g_root[0])
+                             : 0;
+  for (uint32_t cpu = 0U; cpu < capacity; ++cpu) {
+    hart_tables_t *tables = &g_hart_tables[cpu];
+    tables->root = allocate_table();
+    tables->low = allocate_table();
+    tables->user_directory = allocate_table();
+    if (tables->root == 0 || tables->low == 0 || tables->user_directory == 0) {
+      vmm_panic("no memory for hart %u page tables", (uint64_t)cpu);
+    }
+    for (uint32_t i = 0U; i < ENTRIES; ++i) {
+      tables->root[i] = g_root[i];
+      tables->low[i] = shared_low != 0 ? shared_low[i] : 0U;
+    }
+    tables->root[0] = pte_for((uint64_t)(uintptr_t)tables->low, 0U);
+    tables->low[USER_L1_INDEX] =
+        pte_for((uint64_t)(uintptr_t)tables->user_directory, 0U);
+    tables->satp =
+        SATP_MODE_SV48 | ((uint64_t)(uintptr_t)tables->root >> 12);
+  }
+  g_hart_table_count = capacity;
+}
+
+/* What a hart writes into satp: its own root once the per-hart tables exist,
+   the shared one before. Secondaries start after vmm_init, so they always get
+   their own; the boot hart moves onto its own at the end of vmm_init. */
+uint64_t riscv64_hart_satp(uint32_t cpu_id) {
+  if (cpu_id < g_hart_table_count && g_hart_tables[cpu_id].root != 0) {
+    return g_hart_tables[cpu_id].satp;
+  }
+  return g_satp;
+}
+
 xaios_status_t vmm_translate(uint64_t virtual_address,
                              uint64_t *physical_address, uint32_t *flags);
 
@@ -255,6 +374,7 @@ static xaios_status_t map_at_level(uint64_t *root, uint64_t virtual_address,
     return XAIOS_ERR_NO_MEMORY;
   }
   *entry = pte_for(physical_address, flags_to_pte(flags));
+  if (root == g_root) sync_kernel_hierarchy(virtual_address);
   flush_one(virtual_address);
   return XAIOS_OK;
 }
@@ -267,6 +387,9 @@ static xaios_status_t unmap_at_level(uint64_t *root, uint64_t virtual_address,
      boot map covered with a gigantic leaf reports not-found on a page that
      is very much mapped. */
   uint64_t *entry = walk(root, virtual_address, level, 1);
+  /* The walk may have split a larger page, which replaced an entry above
+     this one; mirror that whether or not there is anything to unmap. */
+  if (root == g_root) sync_kernel_hierarchy(virtual_address);
   if (entry == 0 || (*entry & PTE_V) == 0U) return XAIOS_ERR_NOT_FOUND;
   *entry = 0U;
   flush_one(virtual_address);
@@ -405,8 +528,12 @@ void vmm_init(const xaios_boot_info_t *boot) {
               observed, g_satp);
   }
   g_initialized = 1U;
-  klog("vmm: sv48 enabled root=%lx early_tables=%u/%u\n",
-       (uint64_t)(uintptr_t)g_root, g_early_used, EARLY_TABLES);
+  build_per_hart_roots();
+  vmm_activate_kernel();
+  klog("vmm: sv48 enabled root=%lx early_tables=%u/%u harts=%u "
+       "mode=per-hart-user-aspace\n",
+       (uint64_t)(uintptr_t)g_root, g_early_used, EARLY_TABLES,
+       g_hart_table_count);
 }
 
 void vmm_activate_kernel(void) {
@@ -424,7 +551,8 @@ void vmm_activate_kernel(void) {
    * recorded rather than hidden: on this architecture a stray kernel
    * dereference of a user pointer is not caught by hardware. */
   __asm__ volatile("csrs sstatus, %0" : : "r"(UINT64_C(1) << 18) : "memory");
-  __asm__ volatile("csrw satp, %0" : : "r"(g_satp) : "memory");
+  __asm__ volatile("csrw satp, %0" : : "r"(riscv64_hart_satp(smp_cpu_id()))
+                   : "memory");
   flush_all();
 }
 
@@ -446,8 +574,9 @@ void vmm_invalidate_from_memory(const void *buffer, uint64_t bytes) {
 
 xaios_status_t vmm_translate(uint64_t virtual_address,
                              uint64_t *physical_address, uint32_t *flags) {
+  uint64_t *root = current_root();
   for (uint32_t level = 0U; level < 3U; ++level) {
-    uint64_t *entry = walk(g_root, virtual_address, level, 0);
+    uint64_t *entry = walk(root, virtual_address, level, 0);
     if (entry == 0) continue;
     if ((*entry & PTE_V) == 0U) continue;
     if ((*entry & PTE_LEAF) == 0U) continue;
@@ -526,57 +655,120 @@ xaios_status_t vmm_validate_user_buffer(uint64_t virtual_address, uint64_t size,
                                   required_flags | XAIOS_VMM_USER, 0U);
 }
 
-/* User address spaces share the kernel's root table and differ only in the
-   entries covering the user range, which is why the shared interface hands
-   around a list of leaf tables rather than a root. */
+static xaios_status_t user_l3_slot(uint64_t virtual_address,
+                                   uint32_t *out_slot) {
+  uint32_t l2_index = index_at(virtual_address, 1U);
+  if (l2_index >= USER_CODE_L2_INDEX &&
+      l2_index < USER_CODE_L2_INDEX + USER_CODE_WINDOWS) {
+    *out_slot = l2_index - USER_CODE_L2_INDEX;
+    return XAIOS_OK;
+  }
+  if (l2_index == USER_STACK_L2_INDEX) {
+    *out_slot = USER_CODE_WINDOWS;
+    return XAIOS_OK;
+  }
+  return XAIOS_ERR_INVALID;
+}
+
+/* One leaf table per 2 MiB window a process may use: the code and data
+   windows from XAIOS_USER_BASE, and the one holding the stack. */
 void vmm_create_user_aspace(uint64_t l3_tables[], uint32_t max_tables,
                             uint32_t *out_count) {
   uint32_t count = 0U;
-  if (l3_tables != 0 && max_tables > 0U) {
-    void *page = pmm_alloc_page();
-    if (page != 0) {
-      uint64_t *table = (uint64_t *)page;
-      for (uint32_t i = 0U; i < ENTRIES; ++i) table[i] = 0U;
-      l3_tables[0] = (uint64_t)(uintptr_t)table;
-      count = 1U;
+  if (l3_tables == 0 || out_count == 0) return;
+  for (uint32_t i = 0U; i < max_tables; ++i) l3_tables[i] = 0U;
+  if (max_tables >= USER_ASPACE_L3_TABLES) {
+    for (uint32_t i = 0U; i < USER_ASPACE_L3_TABLES; ++i) {
+      uint64_t *table = allocate_table();
+      if (table == 0) {
+        vmm_destroy_user_aspace(l3_tables, i);
+        for (uint32_t j = 0U; j < i; ++j) l3_tables[j] = 0U;
+        *out_count = 0U;
+        return;
+      }
+      l3_tables[i] = (uint64_t)(uintptr_t)table;
     }
+    count = USER_ASPACE_L3_TABLES;
   }
-  if (out_count != 0) *out_count = count;
+  *out_count = count;
 }
 
 xaios_status_t vmm_map_user_page(uint64_t virtual_address,
                                  uint64_t physical_address, uint32_t flags,
                                  uint64_t l3_tables[], uint32_t l3_count) {
-  (void)l3_tables;
-  (void)l3_count;
+  uint32_t slot = 0U;
+  if ((virtual_address & (PAGE_SIZE - 1U)) != 0U ||
+      (physical_address & (PAGE_SIZE - 1U)) != 0U ||
+      (flags & XAIOS_VMM_PRESENT) == 0U) {
+    return XAIOS_ERR_INVALID;
+  }
   if (virtual_address < XAIOS_USER_BASE || virtual_address >= XAIOS_USER_LIMIT) {
     return XAIOS_ERR_INVALID;
   }
-  return map_at_level(g_root, virtual_address, physical_address,
-                      flags | XAIOS_VMM_USER, 0U);
+  if (l3_tables == 0 || user_l3_slot(virtual_address, &slot) != XAIOS_OK ||
+      slot >= l3_count || l3_tables[slot] == 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  uint64_t *l3 = (uint64_t *)(uintptr_t)l3_tables[slot];
+  l3[index_at(virtual_address, 0U)] =
+      pte_for(physical_address, flags_to_pte(flags | XAIOS_VMM_USER));
+  flush_one(virtual_address);
+  return XAIOS_OK;
 }
 
 xaios_status_t vmm_unmap_user_page(uint64_t virtual_address,
                                    uint64_t l3_tables[], uint32_t l3_count) {
-  (void)l3_tables;
-  (void)l3_count;
-  if (virtual_address < XAIOS_USER_BASE || virtual_address >= XAIOS_USER_LIMIT) {
+  uint32_t slot = 0U;
+  if ((virtual_address & (PAGE_SIZE - 1U)) != 0U) return XAIOS_ERR_INVALID;
+  if (user_l3_slot(virtual_address, &slot) != XAIOS_OK) {
     return XAIOS_ERR_INVALID;
   }
-  return unmap_at_level(g_root, virtual_address, 0U);
+  if (l3_tables != 0 && slot < l3_count && l3_tables[slot] != 0U) {
+    uint64_t *l3 = (uint64_t *)(uintptr_t)l3_tables[slot];
+    l3[index_at(virtual_address, 0U)] = 0U;
+  }
+  flush_one(virtual_address);
+  return XAIOS_OK;
 }
 
+/* Point this hart's user directory at a process's leaf tables, or at nothing.
+   Pointer entries carry no permission bits: on RISC-V a non-leaf entry with U
+   set is reserved, which is the one place this differs from x86-64. */
 void vmm_switch_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
-  (void)l3_tables;
-  (void)l3_count;
+  uint32_t cpu = smp_cpu_id();
+  if (cpu >= g_hart_table_count || g_hart_tables[cpu].user_directory == 0) {
+    flush_all();
+    return;
+  }
+  uint64_t *directory = g_hart_tables[cpu].user_directory;
+  for (uint32_t index = 0U; index < USER_CODE_WINDOWS; ++index) {
+    directory[USER_CODE_L2_INDEX + index] = 0U;
+  }
+  directory[USER_STACK_L2_INDEX] = 0U;
+  if (l3_tables != 0 && l3_count >= USER_ASPACE_L3_TABLES) {
+    for (uint32_t index = 0U; index < USER_CODE_WINDOWS; ++index) {
+      if (l3_tables[index] != 0U) {
+        directory[USER_CODE_L2_INDEX + index] = pte_for(l3_tables[index], 0U);
+      }
+    }
+    if (l3_tables[USER_CODE_WINDOWS] != 0U) {
+      directory[USER_STACK_L2_INDEX] =
+          pte_for(l3_tables[USER_CODE_WINDOWS], 0U);
+    }
+  }
   flush_all();
 }
 
 void vmm_destroy_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
-  for (uint32_t i = 0U; i < l3_count; ++i) {
-    if (l3_tables[i] != 0U) pmm_free_page((void *)(uintptr_t)l3_tables[i]);
-  }
+  /* Flushed before the pages go back, so no stale translation can point at
+     memory the allocator has handed to someone else. */
   flush_all();
+  for (uint32_t i = 0U; i < l3_count; ++i) {
+    if (l3_tables[i] != 0U) {
+      pmm_free_page((void *)(uintptr_t)l3_tables[i]);
+      l3_tables[i] = 0U;
+    }
+  }
 }
 
 void vmm_self_test(void) {

@@ -154,18 +154,37 @@ typedef struct riscv64_trap_frame {
  * open a window to touch anything. That is the case PAN exists for.
  *
  * The frame's sstatus is restored on the way out, so the kernel's own default
- * comes back without anyone having to put it back. */
-static uint32_t g_user_access_depth;
+ * comes back without anyone having to put it back.
+ *
+ * The depth is per hart, because sstatus is per hart. It was one counter
+ * shared by every hart, and four harts running syscalls interleaved their
+ * increments and decrements on it: a hart's inner `end` could find the count
+ * at zero because another hart had just decremented, and clear its own SUM
+ * while its outer syscall was still inside a user buffer. That only bites
+ * when one hart nests -- a syscall that runs a transient child, whose exit
+ * ecall is the nested window -- which is why every ordinary syscall worked
+ * and the first on-demand application launched over SSH faulted the kernel
+ * on the first byte it wrote back to the caller. */
+#define USER_ACCESS_MAX_HARTS 64U
+static uint32_t g_user_access_depth[USER_ACCESS_MAX_HARTS];
+
+static uint32_t *user_access_depth(void) {
+  uint32_t cpu = smp_cpu_id();
+  if (cpu >= USER_ACCESS_MAX_HARTS) cpu = USER_ACCESS_MAX_HARTS - 1U;
+  return &g_user_access_depth[cpu];
+}
 
 void xaios_user_access_begin(void) {
-  if (g_user_access_depth == UINT32_MAX) return;
-  ++g_user_access_depth;
+  uint32_t *depth = user_access_depth();
+  if (*depth == UINT32_MAX) return;
+  ++*depth;
   __asm__ volatile("csrs sstatus, %0" : : "r"(SSTATUS_SUM) : "memory");
 }
 
 void xaios_user_access_end(void) {
-  if (g_user_access_depth == 0U) return;
-  if (--g_user_access_depth == 0U) {
+  uint32_t *depth = user_access_depth();
+  if (*depth == 0U) return;
+  if (--*depth == 0U) {
     __asm__ volatile("csrc sstatus, %0" : : "r"(SSTATUS_SUM) : "memory");
   }
 }

@@ -875,8 +875,12 @@ static void xtop_append_system_meter_cell(
   if (suffix_width == 0U) return;
   output_append(output, output_capacity, output_bytes,
                 string_equal(label, "Mem") == 1 ? "\033[33m" : "\033[36m");
+  /* Right-aligned one column short of the cell's edge, so a gutter separates
+     the figure from whatever the next cell starts with. Flush against the
+     edge it read "20M/1011MLoad average" on a screen wide enough to put the
+     load average beside it. */
   xtop_append_repeat(output, output_capacity, output_bytes, ' ',
-                     suffix_width - value_width);
+                     suffix_width - value_width - 1U);
   if (string_equal(label, "Mem") == 1) {
     output_append_u64(output, output_capacity, output_bytes, used_mebibytes);
     output_append(output, output_capacity, output_bytes, "M/");
@@ -886,7 +890,7 @@ static void xtop_append_system_meter_cell(
   } else {
     output_append(output, output_capacity, output_bytes, "0K/0K");
   }
-  output_append(output, output_capacity, output_bytes, "\033[0m");
+  output_append(output, output_capacity, output_bytes, "\033[0m ");
 }
 
 static const char *xtop_cpu_role_name(uint32_t cpu_id) {

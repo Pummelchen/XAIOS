@@ -6,6 +6,7 @@
 #include <xaios/pmm.h>
 #include <xaios/scheduler.h>
 #include <xaios/smp.h>
+#include <xaios/spinlock.h>
 #include <xaios/syscall.h>
 #include <xaios/timer.h>
 #include <xaios/thread.h>
@@ -67,6 +68,8 @@ typedef struct xaios_cpu_usage_record {
 
 static xaios_cpu_usage_record_t *g_cpu_usage;
 static uint32_t g_cpu_usage_count;
+static uint32_t g_cpu_usage_capacity;
+static xaios_spinlock_t g_cpu_usage_lock;
 static uint64_t g_cpu_usage_started_ns;
 static uint64_t g_process_transition_count;
 static uint64_t g_process_loaded_count;
@@ -171,22 +174,40 @@ static void reset_process_slot(xaios_user_process_t *process) {
   bytes_zero(&process->aspace, sizeof(xaios_process_aspace_t));
 }
 
+/* The records are appended in the order CPUs turn up and searched linearly:
+   there are at most as many as the platform has CPUs, and an unsorted
+   append is what lets a CPU register after the table exists without a
+   reader ever seeing it half-moved. */
 static xaios_cpu_usage_record_t *find_cpu_usage(uint32_t cpu_id) {
-  uint32_t low = 0;
-  uint32_t high = g_cpu_usage_count;
-  while (low < high) {
-    uint32_t middle = low + ((high - low) / 2U);
-    uint32_t found = g_cpu_usage[middle].cpu_id;
-    if (found == cpu_id) {
-      return &g_cpu_usage[middle];
-    }
-    if (found < cpu_id) {
-      low = middle + 1U;
-    } else {
-      high = middle;
-    }
+  uint32_t count = __atomic_load_n(&g_cpu_usage_count, __ATOMIC_ACQUIRE);
+  for (uint32_t i = 0U; i < count; ++i) {
+    if (g_cpu_usage[i].cpu_id == cpu_id) return &g_cpu_usage[i];
   }
   return 0;
+}
+
+/* A CPU's record, made on first use if it has none.
+ *
+ * The table used to be built once, from the CPUs online when the process
+ * table was initialised, and that is every CPU on AArch64 and x86-64 -- their
+ * secondaries are up before then. RISC-V starts its secondaries later, at the
+ * scheduler rendezvous, so the table held one record and the process monitor
+ * reported a four-hart machine as having one CPU. A CPU that runs a process
+ * is a CPU, whenever it arrived; it gets its record then. */
+static xaios_cpu_usage_record_t *cpu_usage_for(uint32_t cpu_id) {
+  xaios_cpu_usage_record_t *usage = find_cpu_usage(cpu_id);
+  if (usage != 0 || g_cpu_usage == 0) return usage;
+  xaios_spin_lock(&g_cpu_usage_lock);
+  usage = find_cpu_usage(cpu_id);
+  if (usage == 0 && g_cpu_usage_count < g_cpu_usage_capacity) {
+    usage = &g_cpu_usage[g_cpu_usage_count];
+    bytes_zero(usage, sizeof(*usage));
+    usage->cpu_id = cpu_id;
+    __atomic_store_n(&g_cpu_usage_count, g_cpu_usage_count + 1U,
+                     __ATOMIC_RELEASE);
+  }
+  xaios_spin_unlock(&g_cpu_usage_lock);
+  return usage;
 }
 
 static void process_runtime_write_begin(xaios_user_process_t *process) {
@@ -368,18 +389,27 @@ void user_process_table_init(void) {
   g_transient_process_busy = 0U;
   g_transient_process_owner_cpu = UINT32_MAX;
   g_transient_process_depth = 0U;
-  g_cpu_usage_count = smp_online_count();
+  /* Room for every CPU the platform can have; records for the ones online
+     now, and the rest register themselves when they first run a process. */
+  g_cpu_usage_capacity = smp_capacity();
+  if (g_cpu_usage_capacity < smp_online_count()) {
+    g_cpu_usage_capacity = smp_online_count();
+  }
+  g_cpu_usage_count = 0U;
+  xaios_spin_init(&g_cpu_usage_lock);
   g_cpu_usage = (xaios_cpu_usage_record_t *)kheap_calloc(
-      (uint64_t)g_cpu_usage_count * sizeof(xaios_cpu_usage_record_t), 64U);
-  kassert(g_cpu_usage_count == 0U || g_cpu_usage != 0);
-  for (uint32_t ordinal = 0; ordinal < g_cpu_usage_count; ++ordinal) {
+      (uint64_t)g_cpu_usage_capacity * sizeof(xaios_cpu_usage_record_t),
+      64U);
+  kassert(g_cpu_usage_capacity == 0U || g_cpu_usage != 0);
+  for (uint32_t ordinal = 0; ordinal < smp_online_count(); ++ordinal) {
     uint32_t cpu_id = 0;
     kassert(smp_cpu_id_at(ordinal, &cpu_id) == XAIOS_OK);
-    g_cpu_usage[ordinal].cpu_id = cpu_id;
+    kassert(cpu_usage_for(cpu_id) != 0);
   }
   g_cpu_usage_started_ns = timer_now_ns();
-  klog("user: process table initialized slots=%u cpu_usage_records=%u\n",
-       XAIOS_MAX_USER_PROCESSES, g_cpu_usage_count);
+  klog("user: process table initialized slots=%u cpu_usage_records=%u "
+       "cpu_usage_capacity=%u\n",
+       XAIOS_MAX_USER_PROCESSES, g_cpu_usage_count, g_cpu_usage_capacity);
 }
 
 void user_process_lifecycle_self_test(void) {
@@ -489,7 +519,7 @@ void user_process_runtime_start(uint32_t pid, uint32_t cpu_id,
     return;
   }
   xaios_user_process_t *process = &g_process_table[pid - 1U];
-  xaios_cpu_usage_record_t *usage = find_cpu_usage(cpu_id);
+  xaios_cpu_usage_record_t *usage = cpu_usage_for(cpu_id);
   if (process->pid != pid || usage == 0) {
     return;
   }
@@ -543,7 +573,7 @@ void user_thread_runtime_start(uint32_t pid, uint32_t cpu_id,
                                uint64_t now_ns) {
   if (pid == 0U || pid > XAIOS_MAX_USER_PROCESSES || now_ns == 0U) return;
   xaios_user_process_t *process = &g_process_table[pid - 1U];
-  xaios_cpu_usage_record_t *usage = find_cpu_usage(cpu_id);
+  xaios_cpu_usage_record_t *usage = cpu_usage_for(cpu_id);
   if (process->pid != pid || usage == 0) return;
 
   cpu_usage_write_begin(usage);
@@ -576,14 +606,28 @@ void user_thread_runtime_stop(uint32_t pid, uint32_t cpu_id,
   cpu_usage_write_end(usage);
 }
 
+/* Every CPU that is online has a record, whether or not it has run a process
+   yet. Registering on first use alone left a hart that had not been handed a
+   process out of the table, so a four-hart machine reported three CPUs
+   depending on what the scheduler had done so far -- an answer that varied
+   with timing is not a count. */
+static void cpu_usage_sync_online(void) {
+  uint32_t online = smp_online_count();
+  for (uint32_t ordinal = 0U; ordinal < online; ++ordinal) {
+    uint32_t cpu_id = 0U;
+    if (smp_cpu_id_at(ordinal, &cpu_id) == XAIOS_OK) (void)cpu_usage_for(cpu_id);
+  }
+}
+
 uint32_t user_cpu_usage_count(void) {
-  return g_cpu_usage_count;
+  cpu_usage_sync_online();
+  return __atomic_load_n(&g_cpu_usage_count, __ATOMIC_ACQUIRE);
 }
 
 xaios_status_t user_cpu_usage_snapshot(
     uint32_t ordinal, uint64_t now_ns,
     xaios_cpu_usage_snapshot_t *snapshot) {
-  if (snapshot == 0 || ordinal >= g_cpu_usage_count || now_ns == 0U) {
+  if (snapshot == 0 || ordinal >= user_cpu_usage_count() || now_ns == 0U) {
     return XAIOS_ERR_INVALID;
   }
   const xaios_cpu_usage_record_t *usage = &g_cpu_usage[ordinal];

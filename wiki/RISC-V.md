@@ -81,6 +81,42 @@ device attribute in the two bits the specification reserves for software --
 which keeps its own bookkeeping honest without claiming the hardware enforces
 anything it does not.
 
+### What the release configuration found
+
+Every RISC-V gate booted the boot-test configuration, where the shell's
+commands are built into the kernel and no application is ever launched as a
+process. The first time the release configuration ran -- to take a screenshot
+of xtop over SSH -- the first on-demand application faulted the kernel, and
+three defects came out in a row, each hidden by the last:
+
+- **There were no per-process address spaces.** Every user page went into
+  the one shared root, the per-process table list the shared interface hands
+  around was allocated and ignored, and switching address spaces was a TLB
+  flush. Every process is linked at the same address, so loading a child
+  overwrote its parent's mappings and reclaiming it removed them. Sv48 now
+  does what x86-64 does: each hart has its own root, its own copy of the
+  table under slot zero, and a user directory that switching points at a
+  process's leaf tables; the kernel's own mappings stay shared, and a new
+  entry at either copied level is mirrored into every hart's copies.
+- **The supervisor-user-memory depth counter was one counter for all
+  harts.** Four harts interleaving their increments and decrements let one
+  hart's inner `end` see zero and clear its own SUM mid-syscall. It only
+  bites when a hart nests -- a syscall running a transient child, whose exit
+  is the nested window -- which is why every ordinary syscall worked. It is
+  per hart now, as `sstatus` is.
+- **The idle wait armed nothing.** `timer_idle_until` was `wfi` in a loop,
+  which waits for whatever interrupt comes; worker harts keep their timer
+  masked by design, so a wait from a syscall on one slept forever. xtop's
+  first request is a quarter-second wait. It now arms a one-shot comparator
+  at the deadline and enables the timer interrupt around the `wfi`, as
+  AArch64 does.
+
+A fourth, smaller one: the per-CPU usage table was sized when only the boot
+hart was online, because RISC-V starts its secondaries at the scheduler
+rendezvous rather than before the process table exists, so the monitor
+reported a four-hart machine as having one CPU. CPUs now register their
+record the first time they run a process.
+
 ## The hosted C99 library
 
 picolibc, compiler-rt's quad-precision builtins and the XAIOS runtime all
@@ -150,7 +186,7 @@ the kernel comes up to a login prompt with sshd listening.
 
 ## Test coverage
 
-Three gates, against roughly seventy for the other two:
+Five gates, against roughly seventy for the other two:
 
 | Gate | What it proves |
 | --- | --- |
@@ -158,13 +194,14 @@ Three gates, against roughly seventy for the other two:
 | `make qemu-riscv64-boot-media-gate` | The same machine boots from its own disk through EDK2 with no `-kernel`, from the verified signed A/B system slot. |
 | `make qemu-riscv64-matrix-gate` | It boots at 1, 2, 4 and 8 harts, four independent times, and answers an SSH login each time. |
 | `make qemu-riscv64-durability-gate` | State written on one boot is read back on the next, and survives a boot that is killed outright with no shutdown and no flush -- the filesystem reports no checksum errors afterwards. |
+| `make qemu-riscv64-release-gate` | The release configuration -- what the other architectures ship as `make image` -- logs in over SSH and runs `hello`, `sysinfo` and `xtop` as processes, reports every hart in the monitor, and keeps answering afterwards. The boot-test gates above never launch a process: the shell's commands are built into that kernel. |
 
 That is still short of what AArch64 and x86_64 are held to -- network suites,
 write ordering, soak, NUMA, NVMe, cluster and fault injection all run on those
 and not here. The features are present; the evidence that they hold under
 every kind of stress is not.
 
-The four share `tests/scripts/riscv64_gate_lib.py` for booting the machine and
+The five share `tests/scripts/riscv64_gate_lib.py` for booting the machine and
 `qemu_gate_lib.py` for comparing markers, rather than each carrying its own
 copy of the same thirty lines. Copies of a boot routine drift the way any
 other copies do, and the ways they drift -- a timeout generous in one and

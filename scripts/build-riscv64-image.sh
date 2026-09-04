@@ -49,13 +49,17 @@ build_program "$ROOT_DIR/userspace/worker/worker-riscv64.S" \
 # xtop is reached by typing its name at a login, not during boot, and a shell
 # that offers a command whose binary is not in the image is worse than one
 # that does not offer it.
+# The same switch the kernel builder reads: 1 is the boot-test configuration
+# the RISC-V gates run, 0 is the release configuration the other architectures
+# ship as `make image`, where sshd dispatches on-demand applications such as
+# xtop instead of the built-in test shell commands.
 USER_APPS="xaios-shell xaiosctl hello sysinfo systest smptest smpstress perfbench nettest lstm-xor sshtest mltest posix-shell agenttest xaios-setup xtop"
 APP_ARGS=""
 for app in $USER_APPS; do
   printf '%s\n' "Building /bin/$app..."
   "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
     -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \
-    -fno-pie -Wall -Wextra -Werror -DXAIOS_BOOT_TEST_APPS=1 \
+    -fno-pie -Wall -Wextra -Werror -DXAIOS_BOOT_TEST_APPS="${XAIOS_BOOT_TEST_APPS:-1}" \
     -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/sshd" \
     -I"$ROOT_DIR/engine/include" \
     -c "$ROOT_DIR/userspace/apps/$app.c" -o "$BUILD_DIR/$app.o"
