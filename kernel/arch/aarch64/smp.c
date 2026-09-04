@@ -700,49 +700,6 @@ xaios_status_t smp_cpu_id_at(uint32_t ordinal, uint32_t *cpu_id) {
   return XAIOS_ERR_INVALID;
 }
 
-xaios_status_t smp_run_user_task_set(uint64_t requested_workers,
-                                    uint64_t iterations,
-                                    uint64_t *ran_workers,
-                                    uint64_t *checksum) {
-  if (ran_workers == 0 || checksum == 0 || requested_workers == 0 ||
-      iterations == 0) {
-    return XAIOS_ERR_INVALID;
-  }
-
-  uint64_t online = count_online();
-  if (online == 0) {
-    return XAIOS_ERR_INVALID;
-  }
-  uint64_t workers = requested_workers;
-  if (workers > online) {
-    workers = online;
-  }
-  if (iterations > UINT64_C(100000)) {
-    iterations = UINT64_C(100000);
-  }
-
-  uint64_t total = 0;
-  uint64_t assigned = 0;
-  uint32_t limit = count_online();
-  for (uint32_t cpu = 0; cpu < limit && assigned < workers; ++cpu) {
-    if (g_cpu_states[cpu].online == 0) {
-      continue;
-    }
-    uint64_t local = ((uint64_t)cpu + 1U) * UINT64_C(0x9e3779b185ebca87);
-    for (uint64_t i = 0; i < iterations; ++i) {
-      local ^= (i + 1U) * (assigned + 3U);
-      local = (local << 7U) | (local >> 57U);
-    }
-    total ^= local + (iterations << (assigned & 7U));
-    ++assigned;
-  }
-
-  *ran_workers = assigned;
-  *checksum = total;
-  klog("smp: app task set workers=%lu iterations=%lu checksum=0x%lx\n",
-       assigned, iterations, total);
-  return assigned == 0 ? XAIOS_ERR_INVALID : XAIOS_OK;
-}
 
 xaios_status_t smp_run_user_thread_group(uint64_t requested_threads,
                                         uint64_t iterations,

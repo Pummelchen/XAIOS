@@ -212,29 +212,6 @@ uint64_t smp_total_involuntary_context_switch_count(void) {
   return total;
 }
 
-xaios_status_t smp_run_user_task_set(uint64_t requested_workers,
-                                    uint64_t iterations,
-                                    uint64_t *ran_workers,
-                                    uint64_t *checksum) {
-  if (requested_workers == 0U || iterations == 0U || ran_workers == 0 ||
-      checksum == 0) {
-    return XAIOS_ERR_INVALID;
-  }
-  uint64_t workers = requested_workers < g_online ? requested_workers : g_online;
-  if (iterations > UINT64_C(100000)) iterations = UINT64_C(100000);
-  uint64_t total = 0U;
-  for (uint64_t worker = 0U; worker < workers; ++worker) {
-    uint64_t value = (worker + 1U) * UINT64_C(0x9e3779b185ebca87);
-    for (uint64_t index = 0U; index < iterations; ++index) {
-      value ^= (index + 1U) * (worker + 3U);
-      value = (value << 7U) | (value >> 57U);
-    }
-    total ^= value + (iterations << (worker & 7U));
-  }
-  *ran_workers = workers;
-  *checksum = total;
-  return XAIOS_OK;
-}
 
 xaios_status_t smp_run_user_thread_group(uint64_t requested_threads,
                                         uint64_t iterations,

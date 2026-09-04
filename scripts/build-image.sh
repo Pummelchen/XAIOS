@@ -681,6 +681,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/virtio_console.o
   $KERNEL_BUILD_DIR/arch_random.o
   $KERNEL_BUILD_DIR/entropy.o
+  $KERNEL_BUILD_DIR/smp_task_set.o
   $KERNEL_BUILD_DIR/initramfs.o
   $KERNEL_BUILD_DIR/xaiboot_fs.o
   $KERNEL_BUILD_DIR/fat.o
@@ -839,6 +840,7 @@ compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_gpu.c" "$KERNEL_BUILD_DIR/vir
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_console.c" "$KERNEL_BUILD_DIR/virtio_console.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/arch_random.c" "$KERNEL_BUILD_DIR/arch_random.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/entropy.c" "$KERNEL_BUILD_DIR/entropy.o"
+compile_kernel "$ROOT_DIR/kernel/sched/smp_task_set.c" "$KERNEL_BUILD_DIR/smp_task_set.o"
 compile_kernel "$ROOT_DIR/kernel/fs/initramfs.c" "$KERNEL_BUILD_DIR/initramfs.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xaiboot_fs.c" "$KERNEL_BUILD_DIR/xaiboot_fs.o"
 compile_kernel "$ROOT_DIR/kernel/fs/fat.c" "$KERNEL_BUILD_DIR/fat.o"
