@@ -19,10 +19,9 @@ prompt, a working SSH server, and a UEFI boot medium built by
 What it does not have is hardware qualification. AArch64 and x86_64 are
 qualified on real machines and hypervisors; RISC-V has been run on one
 emulated board and nothing else, so no claim about firmware behaviour, timing
-or scaling on RISC-V hardware is supported by anything here. The UEFI path is
-also unfinished: it loads and starts the kernel off the disk and stalls at 45%
-of boot, for a reason that has been localised and not explained. The SBI path
-is complete. It is not part of any released image.
+or scaling on RISC-V hardware is supported by anything here. Both boot paths are complete: the kernel can be handed to QEMU directly, or
+booted from its own disk through UEFI firmware. It is not yet part of any
+released image.
 
 ## Platform and hardware
 

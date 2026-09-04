@@ -47,16 +47,32 @@ SECTIONS {
     *(COMMON)
     . = ALIGN(16);
     __bss_end = .;
+
+    /* The boot stack, inside .bss rather than after it.
+     *
+     * It sat outside every output section, which made it a range no program
+     * header covered: the ELF's last LOAD segment ended at __bss_end and the
+     * stack lived past it. Anything that computes the kernel's extent from
+     * the program headers -- which is what the UEFI loader does, and what it
+     * puts in kernel_phys_end -- therefore did not know the stack existed,
+     * and the page allocator, which excludes exactly that range, handed the
+     * kernel's own stack out as free memory. The heap got it and a memset
+     * wrote over the frame it was running on, which presented as a loop that
+     * restarted forever with no fault and no message.
+     *
+     * AArch64 has always placed its stack inside .bss for this reason. Being
+     * in a NOBITS section costs nothing in the file; it only makes the
+     * section's memory size tell the truth.
+     *
+     * __bss_end stays below it deliberately, so the entry code's zeroing loop
+     * still skips the stack rather than clearing 64 KiB nothing has used. */
+    . = ALIGN(0x1000);
+    __stack_bottom = .;
+    . += 0x10000;
+    __stack_top = .;
   }
 
-  /* The boot stack lives here rather than in .bss so its address is a
-     symbol the entry code can load before any C runs -- there is no stack
-     to call a helper on yet. */
   . = ALIGN(0x1000);
-  __stack_bottom = .;
-  . += 0x10000;
-  __stack_top = .;
-
   __kernel_end = .;
 
   /DISCARD/ : { *(.comment) *(.note.*) *(.eh_frame) }

@@ -62,6 +62,15 @@ read low half first, because the low half latches the high one. Reading the
 other way round is correct except across a rollover of the low word -- a bug
 that appears once every four seconds and never in a test.
 
+**The boot stack has to be inside a section.** It sat after `.bss`, outside
+every output section, so no program header covered it -- and anything that
+computes the kernel's extent from the program headers, which is what the UEFI
+loader does, did not know it existed. The page allocator excludes exactly that
+range, so it handed the kernel's own stack out as free memory, the heap got
+it, and a memset wrote over the frame it was running on. It presented as a
+loop that restarted forever with no fault and no message. AArch64 had always
+placed its stack inside `.bss`; RISC-V was the odd one out.
+
 **The timer has no acknowledge.** A pending supervisor timer interrupt is
 cleared by writing a new comparator and by nothing else, so the rearm path
 always reprograms even when no period is set.
@@ -111,19 +120,19 @@ Run it with `-machine virt,acpi=off`. With ACPI on, this EDK2 build publishes
 no device tree, and the RISC-V port reads the interrupt controller, the
 timebase and the virtio window from one.
 
-**This path is not finished.** It boots to 45% and stalls: the loader, PCI
-enumeration, storage discovery and the security self-tests all run, and then
-the kernel stops inside a heap zeroing loop that the SBI path executes without
-trouble at the same memory size. It has been localised -- `kheap_calloc`, a
-deterministic offset about 1.5 MB into a 4 MB allocation, roughly a byte every
-six seconds, with ordinary RAM behind the address, no fault raised and the
-timer behaving -- and it is not explained. The SBI path is unaffected.
+Run it with `-machine virt,acpi=off`. With ACPI on, this EDK2 build publishes
+no device tree, and the RISC-V port reads the interrupt controller, the
+timebase and the virtio window from one.
+
+`make qemu-riscv64-boot-media-gate` boots the medium under EDK2 with no
+`-kernel` at all and requires the whole chain: firmware finds the loader at
+the removable-media path, the loader reads the kernel off that same disk, and
+the kernel comes up to a login prompt with sshd listening.
 
 ## What is missing
 
 - **Hardware qualification of any kind.** One emulated board is the whole
   evidence.
-- **A complete UEFI boot**, for the reason above.
 - **Inter-processor interrupts.** Nothing in the shared kernel signals a CPU
   when it queues work for it, so secondary harts spin rather than sleep.
 - **A narrower user-access window.** `sstatus.SUM` is set for the whole

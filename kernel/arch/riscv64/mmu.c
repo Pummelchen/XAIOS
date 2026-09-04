@@ -342,6 +342,8 @@ void vmm_init(const xaios_boot_info_t *boot) {
                      (uint64_t)(uintptr_t)__kernel_end,
                      XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE);
 
+  const uint64_t kernel_image_start = (uint64_t)(uintptr_t)__text_start;
+  const uint64_t kernel_image_end = (uint64_t)(uintptr_t)__kernel_end;
   if (boot != 0 && boot->memory_map != 0U && boot->memory_descriptor_size != 0U) {
     const uint8_t *entries = (const uint8_t *)(uintptr_t)boot->memory_map;
     uint64_t count = boot->memory_map_size / boot->memory_descriptor_size;
@@ -358,10 +360,29 @@ void vmm_init(const xaios_boot_info_t *boot) {
          with the kernel unable to read what it was given. The allocator is
          where conventional-only matters, and the shared NUMA code already
          enforces it there. */
-      identity_map_range(descriptor->physical_start,
-                         descriptor->physical_start +
-                             descriptor->number_of_pages * PAGE_SIZE,
-                         kernel_flags);
+      uint64_t region_start = descriptor->physical_start;
+      uint64_t region_end =
+          region_start + descriptor->number_of_pages * PAGE_SIZE;
+      /* Around the kernel image, not over it.
+       *
+       * The sections above were mapped with the permissions they are
+       * supposed to have -- .rodata read-only, .text non-writable -- and a
+       * UEFI memory map describes the kernel's own pages as loader memory
+       * like any other, so mapping every descriptor read-write-execute put
+       * the blanket mapping back on top and made .rodata writable again. The
+       * shared kernel checks for exactly that and refuses. An SBI boot never
+       * showed it because the map it builds excludes the kernel to begin
+       * with. */
+      if (region_start < kernel_image_end && region_end > kernel_image_start) {
+        if (region_start < kernel_image_start) {
+          identity_map_range(region_start, kernel_image_start, kernel_flags);
+        }
+        if (region_end > kernel_image_end) {
+          identity_map_range(kernel_image_end, region_end, kernel_flags);
+        }
+        continue;
+      }
+      identity_map_range(region_start, region_end, kernel_flags);
     }
     /* The device tree itself, which sits between those regions and is read
        after translation is on. */

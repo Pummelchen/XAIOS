@@ -1324,8 +1324,16 @@ efi_status_t EFIAPI efi_main(efi_handle_t image_handle,
       loader_puts(system_table, u"XAIOS loader error: missing kernel.elf\r\n");
       return status;
     }
-    loader_diagnostic(system_table,
-                      u"XAIOS loader loaded kernel.elf fallback\r\n");
+    /* Says what happened rather than naming a file. This reported "loaded
+       kernel.elf fallback", which reads as a remark about a filename and is
+       really about where the kernel came from: there was no verified A/B
+       system slot to read it from, so it came off the EFI System Partition.
+       That is the normal path for a medium that carries no system volume,
+       and the old wording made it look like a degraded one. */
+    loader_diagnostic(
+        system_table,
+        u"XAIOS loader: no verified system slot; kernel read from the EFI "
+        u"System Partition\r\n");
   }
   loader_progress(system_table,
                   u"[##......................................] 5%",

@@ -75,8 +75,8 @@ host-client tests proves wire behaviour only. See
 **Architectures.** AArch64, x86_64 and RISC-V (rv64gc). AArch64 and x86_64 run
 on real machines and hypervisors; RISC-V runs the same shared kernel on the
 QEMU `virt` board, booting to 100% across four harts with a login prompt, a
-working SSH server and the hosted C99 library, and with a UEFI boot medium
-that is not yet finished. What it does not have is hardware qualification: no
+working SSH server and the hosted C99 library, either from a kernel handed to
+QEMU or from its own disk through UEFI firmware. What it does not have is hardware qualification: no
 RISC-V machine or hypervisor is in the test set, so its evidence is one board.
 See [RISC-V](./wiki/RISC-V.md).
 
