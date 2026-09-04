@@ -35,6 +35,9 @@ typedef struct xaios_user_process {
   const char *name;
   xaios_user_process_state_t state;
   int exit_code;
+  /* The exit code that means this process did what it was run to do. Zero
+     for everything but a probe whose job is to exit some other way. */
+  int expected_exit_code;
   uint64_t capability_mask;
   uint64_t syscall_count;
   uint64_t rejected_syscall_count;
@@ -122,6 +125,9 @@ xaios_status_t user_process_start_async(
 void user_process_reclaim_address_space(const xaios_user_process_t *process);
 xaios_status_t user_process_reap(uint32_t pid);
 xaios_status_t user_process_terminate(uint32_t pid, int exit_code);
+/* Declare, before a process runs, the exit code that is its success. A
+   process that exits with it is recorded as exited, not failed. */
+xaios_status_t user_process_expect_exit_code(uint32_t pid, int exit_code);
 void user_switch_address_space(uint32_t pid);
 uint64_t user_process_transition_count(void);
 uint64_t user_process_loaded_count(void);

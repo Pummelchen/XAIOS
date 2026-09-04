@@ -52,12 +52,14 @@ BASE_CFLAGS="-std=c99 -Wall -Wextra -Werror -ffreestanding \
 # so the console log is the only way to see how far it got, and a silent boot
 # would be indistinguishable from a hung one.
 BOOT_VERBOSE="${XAIOS_BOOT_VERBOSE:-1}"
-# The diagnostic applications and the hosted C99 probes default on here.
-# They were hardcoded off while there was no userspace to run them in; leaving
-# them off now would mean the applications are built into the image and never
-# launched, which is a worse kind of untested than not having them.
+# The diagnostic applications default on here, unlike the other builders,
+# because the RISC-V gates are boot-test gates. The hosted C99 probes follow
+# that switch rather than defaulting on by themselves: two of them exit
+# non-zero on purpose, and a release image that runs them at boot reports a
+# brand-new machine as having two failed tasks. The release configuration --
+# XAIOS_BOOT_TEST_APPS=0 -- is the other builders' `make image`, probes off.
 BOOT_TEST_APPS="${XAIOS_BOOT_TEST_APPS:-1}"
-LIBC_TEST="${XAIOS_LIBC_TEST:-1}"
+LIBC_TEST="${XAIOS_LIBC_TEST:-$BOOT_TEST_APPS}"
 FAILURE_TEST_APP="${XAIOS_FAILURE_TEST_APP:-0}"
 BASE_CFLAGS="$BASE_CFLAGS -DXAIOS_BOOT_VERBOSE=$BOOT_VERBOSE \
 -DXAIOS_BOOT_TEST_APPS=$BOOT_TEST_APPS \

@@ -43,11 +43,10 @@ TITLE = "XAIOS xtop — sampled kernel process monitor"
 # term_default_background() in boot_ui.c, and two xterm-256 shades xtop asks
 # for by index: 24 behind the title, 238 behind the process table header.
 DEFAULT_BACKGROUND = (4, 6, 10)
-TITLE_BACKGROUND = (0, 95, 135)
-HEADER_BACKGROUND = (68, 68, 68)
-# term_sgr_background() for the classic codes the footer uses: 46 and 42.
-FOOTER_KEY_BACKGROUND = (0, 150, 165)
-FOOTER_LABEL_BACKGROUND = (30, 120, 60)
+# xtop's field is xterm colour 68 and its header bar and gauge fill are 70;
+# both are extended-colour backgrounds, which is the parsing this pins down.
+FIELD_BACKGROUND = (95, 135, 215)
+HEADER_BACKGROUND = (95, 175, 0)
 
 
 # ---------------------------------------------------------------- font tables
@@ -439,18 +438,24 @@ def compare(local: list[str], remote: list[str], columns: int) -> None:
     check(TITLE in " ".join(remote), "SSH session is missing the title line")
 
     for name, predicate in (
-        ("CPU panel rule", lambda l: l.startswith("┌─ CPU ")),
-        ("panel bottom rule", lambda l: l.startswith("└─")),
-        ("process panel rule", lambda l: l.startswith("┌─ Processes ")),
-        ("column header", lambda l: l.strip().startswith("PID") and "COMMAND" in l),
-        ("footer", lambda l: l.startswith("F1Help")),
+        ("outer top rule", lambda l: l.startswith("┌─ XAIOS xtop")),
+        ("CPU panel rule", lambda l: "┌─ CPU" in l),
+        ("panel bottom rule", lambda l: l.startswith("│└─")),
+        ("process panel rule", lambda l: "┌─ Process List" in l),
+        ("column header", lambda l: l.strip("│ ").startswith("PID") and "COMMAND" in l),
+        ("key bar rule", lambda l: l.startswith("└─") and "F1Help" in l),
     ):
         local_line = find(local, predicate)
         remote_line = find(remote, predicate)
         check(local_line != "", f"local console has no {name}")
         check(remote_line != "", f"SSH session has no {name}")
+        # The panel names carry live figures -- the CPU load, the memory in
+        # use -- sampled at different instants on the two sides. Digits are
+        # masked so the comparison is of the layout, which is the claim.
+        masked_local = re.sub(r"[0-9]", "#", local_line)
+        masked_remote = re.sub(r"[0-9]", "#", remote_line)
         check(
-            local_line == remote_line,
+            masked_local == masked_remote,
             f"{name} differs between the two terminals\n"
             f"  local: {local_line!r}\n  ssh:   {remote_line!r}",
         )
@@ -536,7 +541,7 @@ def main() -> int:
             console.drain(0.15)
             candidate = Screen(screendump, glyphs, geometry)
             complete = any(TITLE in line for line in candidate.lines) and any(
-                line.startswith("F1Help") for line in candidate.lines
+                "F1Help" in line for line in candidate.lines
             )
             if complete:
                 screen = candidate
@@ -558,48 +563,52 @@ def main() -> int:
         # The colours the extended escape sequences ask for. Reading 38;5;45
         # one number at a time lands in the background arm and paints the whole
         # meter block magenta, which is exactly the bug this pins down.
+        # A cores row: the shade glyph is only drawn there, and its blanks
+        # must sit on the field. (A gauge row's blanks sit on the fill.)
         meter_row = next(
-            index
-            for index, line in enumerate(local_lines)
-            if "█" in line or "░" in line
+            index for index, line in enumerate(local_lines) if "░" in line
         )
         for column, glyph in enumerate(local_lines[meter_row]):
             if glyph != " ":
                 continue
             background = screen.cell_background(column, meter_row)
             check(
-                background == DEFAULT_BACKGROUND,
-                f"meter row cell {column} sits on {background}, not the "
-                f"default background",
+                background == FIELD_BACKGROUND,
+                f"meter row cell {column} sits on {background}, not the field",
             )
         header_row = next(
             index
             for index, line in enumerate(local_lines)
-            if line.strip().startswith("PID") and "COMMAND" in line
+            if line.strip("│ ").startswith("PID") and "COMMAND" in line
         )
-        header_background = screen.cell_background(2, header_row)
+        header_background = screen.cell_background(4, header_row)
         check(
             header_background == HEADER_BACKGROUND,
-            f"process header sits on {header_background}, not xterm colour 238",
+            f"process header sits on {header_background}, not xterm colour 70",
         )
         title_row = next(index for index, line in enumerate(local_lines) if TITLE in line)
         title_background = screen.cell_background(2, title_row)
         check(
-            title_background == TITLE_BACKGROUND,
-            f"title bar sits on {title_background}, not xterm colour 24",
+            title_background == FIELD_BACKGROUND,
+            f"title rule sits on {title_background}, not the field",
+        )
+        # A gauge interior: the fill colour or the field, nothing else.
+        gauge_row = next(
+            index for index, line in enumerate(local_lines) if "┌─ CPU" in line
+        ) + 1
+        gauge_background = screen.cell_background(2, gauge_row)
+        check(
+            gauge_background in (FIELD_BACKGROUND, HEADER_BACKGROUND),
+            f"gauge interior sits on {gauge_background}, neither field nor fill",
         )
         footer_row = next(
-            index for index, line in enumerate(local_lines) if line.startswith("F1Help")
+            index for index, line in enumerate(local_lines)
+            if line.startswith("└─") and "F1Help" in line
         )
-        key_background = screen.cell_background(0, footer_row)
-        label_background = screen.cell_background(3, footer_row)
+        key_background = screen.cell_background(3, footer_row)
         check(
-            key_background == FOOTER_KEY_BACKGROUND,
-            f"footer key sits on {key_background}, not SGR 46 cyan",
-        )
-        check(
-            label_background == FOOTER_LABEL_BACKGROUND,
-            f"footer label sits on {label_background}, not SGR 42 green",
+            key_background == FIELD_BACKGROUND,
+            f"key bar sits on {key_background}, not the field",
         )
         console.send(b"q")
     finally:

@@ -530,6 +530,8 @@ int xaios_xtop_build_command(const xaios_xtop_session_t *session,
   if (append_command_text(command, capacity,
                           "xtop --color --interactive --sample-ms ") != 0 ||
       append_command_u32(command, capacity, SSH_XTOP_SAMPLE_MS) != 0 ||
+      append_command_text(command, capacity, " --refresh-ms ") != 0 ||
+      append_command_u32(command, capacity, session->refresh_ms) != 0 ||
       append_command_text(command, capacity, " --columns ") != 0 ||
       append_command_u32(command, capacity, session->columns) != 0 ||
       append_command_text(command, capacity, " --rows ") != 0 ||
@@ -1242,9 +1244,16 @@ static int shell_start_xtop(ssh_channel_t *ch, char *command) {
   if (prepare_terminal_command(ch, command, SSH_CHANNEL_SHELL_LINE_SIZE) != 0) {
     return -1;
   }
-  int result = execute_admin_command((int)ch->owner_sockfd, command, output,
+  char built[256];
+  xaios_xtop_start(&ch->xtop, command, ch->terminal_columns,
+                   ch->terminal_rows);
+  if (xaios_xtop_build_command(&ch->xtop, built, sizeof(built)) != 0) {
+    return -1;
+  }
+  int result = execute_admin_command((int)ch->owner_sockfd, built, output,
                                      SSH_XTOP_FRAME_BYTES, &out_size);
   if (result < 0 || out_size == 0U || out_size > SSH_XTOP_FRAME_BYTES) {
+    ch->xtop.active = 0U;
     if (out_size != 0U &&
         shell_send_output(ch, (const uint8_t *)output,
                           (uint32_t)out_size) != 0) {
@@ -1252,8 +1261,6 @@ static int shell_start_xtop(ssh_channel_t *ch, char *command) {
     }
     return shell_send_prompt(ch);
   }
-  xaios_xtop_start(&ch->xtop, command, ch->terminal_columns,
-                     ch->terminal_rows);
   ch->interactive_returns_to_shell = 1U;
   if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
                             (const uint8_t *)enter_screen,
@@ -1811,8 +1818,19 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
     if (interactive_xtop != 0) {
       static const char enter_screen[] = "\033[?1049h";
       char *output = g_xtop_frame;
+      char built[256];
       u64 out_size = 0U;
-      int result = execute_admin_command(sockfd, command, output,
+      /* The first frame comes from the command the session builds, the same
+         one every later frame comes from. Running the request's own text
+         gave a first frame without the session's options -- the redraw
+         cadence among them -- and a screen that changed on its first
+         refresh. */
+      xaios_xtop_start(&ch->xtop, command, ch->terminal_columns,
+                       ch->terminal_rows);
+      if (xaios_xtop_build_command(&ch->xtop, built, sizeof(built)) != 0) {
+        return -1;
+      }
+      int result = execute_admin_command(sockfd, built, output,
                                          SSH_XTOP_FRAME_BYTES, &out_size);
       if (result < 0 || out_size == 0U || out_size > SSH_XTOP_FRAME_BYTES) {
         const char *error = out_size != 0U
@@ -1830,8 +1848,6 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
         ch->close_after_flush = 1U;
         return flush_channel(ch);
       }
-      xaios_xtop_start(&ch->xtop, command, ch->terminal_columns,
-                     ch->terminal_rows);
       if (ssh_channel_send_data(sockfd, ch->remote_id,
                                 (const uint8_t *)enter_screen,
                                 (uint32_t)(sizeof(enter_screen) - 1U)) != 0) {

@@ -91,7 +91,14 @@ def main() -> int:
         models = state / "models.img"
         models.write_bytes((BUILD / "xaios-xaifs.img").read_bytes())
         admin = state / "storage-admin.img"
-        admin.write_bytes((BUILD / "xaios-smoke-storage-admin.img").read_bytes())
+        # The aarch64 smoke gate leaves a scratch admin disk in build/; a fresh
+        # tree has none, and this disk is blank by definition either way.
+        scratch = BUILD / "xaios-smoke-storage-admin.img"
+        if scratch.exists():
+            admin.write_bytes(scratch.read_bytes())
+        else:
+            with admin.open("wb") as handle:
+                handle.truncate(16 * 1024 * 1024)
         system = state / "system.img"
         system.write_bytes((BUILD / "xaios-riscv64-system.img").read_bytes())
 

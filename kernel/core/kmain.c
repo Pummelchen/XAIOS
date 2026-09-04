@@ -159,7 +159,12 @@ static void early_spinlock_self_test(void) {
   klog("spinlock: early single-core try-lock self-test passed\n");
 }
 
-static int run_user_app(const char *path, uint32_t pid, uint64_t capabilities) {
+/* Run an application to completion and return its exit code. `expected` is
+   the code that means it did its job -- zero for nearly everything, and
+   something else for a probe whose job is to exit that way -- and is what
+   the process table judges it by. */
+static int run_user_app_expecting(const char *path, uint32_t pid,
+                                  uint64_t capabilities, int expected) {
   const xaios_initramfs_file_t *file = 0;
   xaios_user_process_t process;
   if (initramfs_lookup(path, &file) != XAIOS_OK) {
@@ -169,15 +174,20 @@ static int run_user_app(const char *path, uint32_t pid, uint64_t capabilities) {
   }
   kassert(initramfs_lookup(path, &file) == XAIOS_OK);
   kassert(user_load_process(file, pid, capabilities, &process) == XAIOS_OK);
+  kassert(user_process_expect_exit_code(pid, expected) == XAIOS_OK);
   int exit_code = user_process_run(&process);
-  if (exit_code != 0) {
-    klog("kernel: WARNING %s exited with non-zero status=%d\n",
-         path, exit_code);
+  if (exit_code != expected) {
+    klog("kernel: WARNING %s exited with status=%d, expected %d\n",
+         path, exit_code, expected);
   }
   klog("kernel: %s returned to kernel exit_code=%d\n",
        path, exit_code);
   user_process_reclaim_address_space(&process);
   return exit_code;
+}
+
+static int run_user_app(const char *path, uint32_t pid, uint64_t capabilities) {
+  return run_user_app_expecting(path, pid, capabilities, 0);
 }
 
 /* Set the wall clock from NTP before any service starts.
@@ -1335,8 +1345,10 @@ persistent_network_done:
       XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE | XAIOS_CAP_THREADS;
   kassert(run_user_app("/bin/c99-runtime-smoke", 19U, libc_test_caps) == 0);
   kassert(run_user_app("/bin/c99-main-void", 20U, libc_test_caps) == 0);
-  kassert(run_user_app("/bin/c99-exit-probe", 21U, libc_test_caps) == 23);
-  kassert(run_user_app("/bin/c99-abort-probe", 22U, libc_test_caps) == 134);
+  kassert(run_user_app_expecting("/bin/c99-exit-probe", 21U, libc_test_caps,
+                                 23) == 23);
+  kassert(run_user_app_expecting("/bin/c99-abort-probe", 22U, libc_test_caps,
+                                 134) == 134);
   /* The thread-context probe places a thread on a CPU other than the one it
      is running on, and there is no such CPU on a uniprocessor machine: the
      scheduler refuses, correctly, and the probe cannot test what it exists to

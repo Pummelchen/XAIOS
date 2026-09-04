@@ -501,32 +501,30 @@ static void xtop_append_bounded(char *output, uint64_t output_capacity,
   }
 }
 
-static void xtop_append_ansi_line(char *output, uint64_t output_capacity,
-                                  uint64_t *output_bytes, const char *style,
-                                  const char *text, uint32_t columns) {
-  uint32_t visible = xtop_columns(text);
-  if (visible > columns) visible = columns;
-  output_append(output, output_capacity, output_bytes, style);
-  xtop_append_bounded(output, output_capacity, output_bytes, text, columns);
-  if (visible < columns) {
-    xtop_append_repeat(output, output_capacity, output_bytes, ' ',
-                       columns - visible);
-  }
-  output_append(output, output_capacity, output_bytes, "\033[0m\r\n");
-}
-
-/* The box-drawing and block glyphs the panels are built from.
+/* The look is mactop's: a blue field, green rules with panel names set into
+ * them, tall solid gauges with the figure centred, a green header bar over
+ * the process list, and the keys in the bottom rule. Every line is padded to
+ * the full width in the field colour, so nothing depends on what a terminal
+ * does with an erase.
  *
- * UTF-8, deliberately. xtop is reached over SSH, where the client's terminal
- * draws these; the local framebuffer console has a sixty-four glyph
- * uppercase-only font and is a boot and status display rather than somewhere
- * a process monitor is read. Bending the design to that font would cost the
- * look everywhere to gain nothing anywhere. */
+ * UTF-8 for the rules and blocks, drawn identically by an SSH client and by
+ * the local framebuffer console, which carries these glyphs and parses the
+ * 256-colour escapes -- `make qemu-console-xtop-gate` reads the screen back
+ * as pixels to hold it to that. Nothing here emits a bare reset: the reset
+ * used everywhere re-asserts the field and text colours, or the blue would
+ * have holes wherever an attribute ended. */
+#define XTOP_BG "\033[48;5;68m"
+#define XTOP_FG "\033[38;5;120m"
+#define XTOP_RESET "\033[0;48;5;68;38;5;120m"
+#define XTOP_TITLE "\033[1;97m"
+#define XTOP_FILL_BG "\033[48;5;70m"
+#define XTOP_HEADER "\033[48;5;70;30m"
+#define XTOP_SELECTED "\033[48;5;70;30m"
 #define XTOP_BAR_FULL "\xe2\x96\x88"  /* U+2588 FULL BLOCK */
-#define XTOP_BAR_EMPTY "\xe2\x96\x91"
+#define XTOP_BAR_EMPTY "\xe2\x96\x91" /* U+2591 LIGHT SHADE */
 /* Columns a meter uses around its bar: a space after the label, two before
    the percentage, the six-column percentage, and a gutter after it. */
-#define XTOP_METER_OVERHEAD 10U /* U+2591 LIGHT SHADE */
+#define XTOP_METER_OVERHEAD 10U
 #define XTOP_BOX_H "\xe2\x94\x80"     /* U+2500 */
 #define XTOP_BOX_V "\xe2\x94\x82"     /* U+2502 */
 #define XTOP_BOX_TL "\xe2\x94\x8c"    /* U+250C */
@@ -544,36 +542,109 @@ static void xtop_append_repeat_str(char *output, uint64_t output_capacity,
   }
 }
 
-/* One panel edge, with its name set into the top rule. */
+/* A rule with an optional name set into it by the left corner and an
+   optional note by the right: exactly `width` columns and no line ending, so
+   two can share a screen row. */
+static void xtop_append_rule(char *output, uint64_t output_capacity,
+                             uint64_t *output_bytes, const char *left_corner,
+                             const char *right_corner, const char *title,
+                             const char *note, uint32_t width) {
+  if (width < 2U) return;
+  uint32_t inner = width - 2U;
+  uint32_t title_columns = title != 0 ? xtop_columns(title) + 3U : 0U;
+  uint32_t note_columns = note != 0 ? xtop_columns(note) + 3U : 0U;
+  if (title_columns + note_columns > inner) note_columns = 0U;
+  if (title_columns > inner) title_columns = 0U;
+  output_append(output, output_capacity, output_bytes, XTOP_RESET);
+  output_append(output, output_capacity, output_bytes, left_corner);
+  if (title_columns != 0U) {
+    output_append(output, output_capacity, output_bytes,
+                  XTOP_BOX_H " " XTOP_TITLE);
+    output_append(output, output_capacity, output_bytes, title);
+    output_append(output, output_capacity, output_bytes, XTOP_RESET " ");
+  }
+  if (inner > title_columns + note_columns) {
+    xtop_append_repeat_str(output, output_capacity, output_bytes, XTOP_BOX_H,
+                           inner - title_columns - note_columns);
+  }
+  if (note_columns != 0U) {
+    output_append(output, output_capacity, output_bytes, " " XTOP_TITLE);
+    output_append(output, output_capacity, output_bytes, note);
+    output_append(output, output_capacity, output_bytes,
+                  XTOP_RESET " " XTOP_BOX_H);
+  }
+  output_append(output, output_capacity, output_bytes, right_corner);
+}
+
 static void xtop_append_panel_top(char *output, uint64_t output_capacity,
                                   uint64_t *output_bytes, const char *title,
                                   uint32_t width) {
-  uint32_t title_columns = (uint32_t)cstr_len(title);
-  uint32_t used = 5U + title_columns; /* two corners, a rule, and two spaces */
-  output_append(output, output_capacity, output_bytes, "\033[38;5;38m");
-  output_append(output, output_capacity, output_bytes, XTOP_BOX_TL);
-  output_append(output, output_capacity, output_bytes, XTOP_BOX_H);
-  output_append(output, output_capacity, output_bytes, " \033[1;97m");
-  output_append(output, output_capacity, output_bytes, title);
-  output_append(output, output_capacity, output_bytes, "\033[0;38;5;38m ");
-  if (width > used) {
-    xtop_append_repeat_str(output, output_capacity, output_bytes, XTOP_BOX_H,
-                           width - used);
-  }
-  output_append(output, output_capacity, output_bytes, XTOP_BOX_TR);
-  output_append(output, output_capacity, output_bytes, "\033[0m\r\n");
+  xtop_append_rule(output, output_capacity, output_bytes, XTOP_BOX_TL,
+                   XTOP_BOX_TR, title, 0, width);
 }
 
 static void xtop_append_panel_bottom(char *output, uint64_t output_capacity,
                                      uint64_t *output_bytes, uint32_t width) {
-  output_append(output, output_capacity, output_bytes, "\033[38;5;38m");
-  output_append(output, output_capacity, output_bytes, XTOP_BOX_BL);
-  if (width > 2U) {
-    xtop_append_repeat_str(output, output_capacity, output_bytes, XTOP_BOX_H,
-                           width - 2U);
+  xtop_append_rule(output, output_capacity, output_bytes, XTOP_BOX_BL,
+                   XTOP_BOX_BR, 0, 0, width);
+}
+
+/* Text in a style, padded with the field to exactly `width` columns. */
+static void xtop_append_padded(char *output, uint64_t output_capacity,
+                               uint64_t *output_bytes, const char *style,
+                               const char *text, uint32_t width) {
+  uint32_t visible = xtop_columns(text);
+  if (visible > width) visible = width;
+  output_append(output, output_capacity, output_bytes, style);
+  xtop_append_bounded(output, output_capacity, output_bytes, text, width);
+  if (visible < width) {
+    xtop_append_repeat(output, output_capacity, output_bytes, ' ',
+                       width - visible);
   }
-  output_append(output, output_capacity, output_bytes, XTOP_BOX_BR);
-  output_append(output, output_capacity, output_bytes, "\033[0m\r\n");
+  output_append(output, output_capacity, output_bytes, XTOP_RESET);
+}
+
+/* One row of a solid gauge: the filled part in the fill colour, the rest the
+   field, and on the row that carries it the figure centred, drawn over
+   whichever of the two it lands on. That is mactop's gauge. */
+static void xtop_append_gauge_row(char *output, uint64_t output_capacity,
+                                  uint64_t *output_bytes, uint32_t width,
+                                  uint64_t tenths, const char *figure) {
+  uint64_t fill64 = ((uint64_t)width * tenths + 999U) / 1000U;
+  uint32_t fill = fill64 > width ? width : (uint32_t)fill64;
+  uint32_t figure_columns = figure != 0 ? xtop_columns(figure) : 0U;
+  uint32_t figure_start =
+      figure_columns < width ? (width - figure_columns) / 2U : 0U;
+  int filled = -1;
+  uint64_t figure_index = 0U;
+  for (uint32_t column = 0U; column < width; ++column) {
+    int here = column < fill ? 1 : 0;
+    if (here != filled) {
+      output_append(output, output_capacity, output_bytes,
+                    here != 0 ? XTOP_FILL_BG XTOP_TITLE
+                              : XTOP_RESET XTOP_TITLE);
+      filled = here;
+    }
+    if (figure != 0 && column >= figure_start &&
+        column < figure_start + figure_columns &&
+        figure[figure_index] != '\0') {
+      /* One glyph, however many bytes it is. */
+      do {
+        output_append_char(output, output_capacity, output_bytes,
+                           figure[figure_index++]);
+      } while (((uint8_t)figure[figure_index] & 0xc0U) == 0x80U);
+    } else {
+      output_append_char(output, output_capacity, output_bytes, ' ');
+    }
+  }
+  output_append(output, output_capacity, output_bytes, XTOP_RESET);
+}
+
+/* A panel's vertical edge. */
+static void xtop_append_edge(char *output, uint64_t output_capacity,
+                             uint64_t *output_bytes) {
+  output_append(output, output_capacity, output_bytes,
+                XTOP_RESET XTOP_BOX_V);
 }
 
 static const char *xtop_meter_color(uint64_t tenths) {
@@ -598,7 +669,7 @@ static void xtop_append_meter(char *output, uint64_t output_capacity,
   uint32_t visible = label_columns + bar_width + XTOP_METER_OVERHEAD;
   uint64_t filled64 = (tenths * bar_width + 999U) / 1000U;
   uint32_t filled = filled64 > bar_width ? bar_width : (uint32_t)filled64;
-  output_append(output, output_capacity, output_bytes, "\033[38;5;45m");
+  output_append(output, output_capacity, output_bytes, XTOP_FG);
   if (label_width < label_columns) {
     xtop_append_repeat(output, output_capacity, output_bytes, ' ',
                        label_columns - label_width);
@@ -609,66 +680,77 @@ static void xtop_append_meter(char *output, uint64_t output_capacity,
                 xtop_meter_color(tenths));
   xtop_append_repeat_str(output, output_capacity, output_bytes, XTOP_BAR_FULL,
                          filled);
-  output_append(output, output_capacity, output_bytes, "\033[38;5;238m");
+  output_append(output, output_capacity, output_bytes, "\033[38;5;75m");
   xtop_append_repeat_str(output, output_capacity, output_bytes, XTOP_BAR_EMPTY,
                          bar_width - filled);
-  output_append(output, output_capacity, output_bytes, "\033[0m  \033[1;97m");
+  output_append(output, output_capacity, output_bytes, XTOP_RESET "  \033[1;97m");
   xtop_append_percent_width(output, output_capacity, output_bytes, tenths);
-  output_append(output, output_capacity, output_bytes, "\033[0m ");
+  output_append(output, output_capacity, output_bytes, XTOP_RESET " ");
   if (visible < cell_width) {
     xtop_append_repeat(output, output_capacity, output_bytes, ' ',
                        cell_width - visible);
   }
 }
 
-static void xtop_append_footer_segment(char *output, uint64_t output_capacity,
-                                       uint64_t *output_bytes,
-                                       uint32_t *visible, const char *key,
-                                       const char *label) {
-  output_append(output, output_capacity, output_bytes, "\033[30;46m");
+static void xtop_append_key(char *output, uint64_t output_capacity,
+                            uint64_t *output_bytes, uint32_t *visible,
+                            const char *key, const char *label) {
+  output_append(output, output_capacity, output_bytes, XTOP_TITLE);
   output_append(output, output_capacity, output_bytes, key);
-  output_append(output, output_capacity, output_bytes, "\033[42;30m");
+  output_append(output, output_capacity, output_bytes, XTOP_RESET);
   output_append(output, output_capacity, output_bytes, label);
   output_append_char(output, output_capacity, output_bytes, ' ');
   *visible += (uint32_t)cstr_len(key) + (uint32_t)cstr_len(label) + 1U;
 }
 
-static void xtop_append_footer(char *output, uint64_t output_capacity,
-                               uint64_t *output_bytes, uint32_t columns,
-                               int interactive) {
-  uint32_t visible = 0U;
-  output_append(output, output_capacity, output_bytes, "\033[42;30m");
+/* The screen's bottom rule, with the keys set into it the way mactop sets
+   its own: a corner, a rule, the keys, and the rule out to the far corner. */
+static void xtop_append_key_bar(char *output, uint64_t output_capacity,
+                                uint64_t *output_bytes, uint32_t columns,
+                                int interactive, uint32_t refresh_ms) {
+  uint32_t visible = 3U;
+  /* The redraw cadence by the right corner, the way mactop shows its own
+     -/+ interval; nothing when the caller did not say. */
+  char cadence[32];
+  uint64_t cadence_used = 0U;
+  cadence[0] = '\0';
+  if (interactive != 0 && refresh_ms != 0U) {
+    output_append(cadence, sizeof(cadence), &cadence_used, "-/+ ");
+    output_append_u64(cadence, sizeof(cadence), &cadence_used, refresh_ms);
+    output_append(cadence, sizeof(cadence), &cadence_used, "ms");
+  }
+  uint32_t cadence_columns = cadence[0] != '\0' ? xtop_columns(cadence) + 3U : 0U;
+  output_append(output, output_capacity, output_bytes,
+                XTOP_RESET XTOP_BOX_BL XTOP_BOX_H " ");
   if (interactive != 0) {
-    xtop_append_footer_segment(output, output_capacity, output_bytes, &visible,
-                               "F1", "Help");
-    xtop_append_footer_segment(output, output_capacity, output_bytes, &visible,
-                               "F3", "Search");
-    xtop_append_footer_segment(output, output_capacity, output_bytes, &visible,
-                               "F4", "Filter");
-    xtop_append_footer_segment(output, output_capacity, output_bytes, &visible,
-                               "F5", "Tree");
+    xtop_append_key(output, output_capacity, output_bytes, &visible, "F1", "Help");
+    xtop_append_key(output, output_capacity, output_bytes, &visible, "F3", "Search");
+    xtop_append_key(output, output_capacity, output_bytes, &visible, "F4", "Filter");
+    xtop_append_key(output, output_capacity, output_bytes, &visible, "F5", "Tree");
     if (columns >= 80U) {
-      xtop_append_footer_segment(output, output_capacity, output_bytes,
-                                 &visible, "F6", "Sort");
-      xtop_append_footer_segment(output, output_capacity, output_bytes,
-                                 &visible, "I", "Reverse");
-      xtop_append_footer_segment(output, output_capacity, output_bytes,
-                                 &visible, "[/]", "CPUs");
+      xtop_append_key(output, output_capacity, output_bytes, &visible, "F6", "Sort");
+      xtop_append_key(output, output_capacity, output_bytes, &visible, "I", "Reverse");
+      xtop_append_key(output, output_capacity, output_bytes, &visible, "[/]", "CPUs");
     }
-    xtop_append_footer_segment(output, output_capacity, output_bytes, &visible,
-                               "F10", "Quit");
+    xtop_append_key(output, output_capacity, output_bytes, &visible, "F10", "Quit");
   } else {
     const char *text = columns < 60U
-                           ? " --active --all --sort KEY --plain"
-                           : " --active  --all  --sort KEY  --filter TEXT  --cpu-start N  --plain";
+                           ? "--active --all --sort KEY --plain "
+                           : "--active  --all  --sort KEY  --filter TEXT  --cpu-start N  --plain ";
     output_append(output, output_capacity, output_bytes, text);
-    visible = (uint32_t)cstr_len(text);
+    visible += (uint32_t)cstr_len(text);
   }
-  if (visible < columns) {
-    xtop_append_repeat(output, output_capacity, output_bytes, ' ',
-                       columns - visible);
+  if (columns < visible + cadence_columns + 1U) cadence_columns = 0U;
+  if (columns > visible + cadence_columns + 1U) {
+    xtop_append_repeat_str(output, output_capacity, output_bytes, XTOP_BOX_H,
+                           columns - visible - cadence_columns - 1U);
   }
-  output_append(output, output_capacity, output_bytes, "\033[0m\r\n");
+  if (cadence_columns != 0U) {
+    output_append(output, output_capacity, output_bytes, " " XTOP_TITLE);
+    output_append(output, output_capacity, output_bytes, cadence);
+    output_append(output, output_capacity, output_bytes, XTOP_RESET " " XTOP_BOX_H);
+  }
+  output_append(output, output_capacity, output_bytes, XTOP_BOX_BR XTOP_RESET);
 }
 
 static char xtop_state_character(uint32_t state) {
@@ -781,29 +863,33 @@ static void xtop_append_info_cell(
   uint32_t visible = 0U;
   if (row == 0U) {
     output_append(output, output_capacity, output_bytes,
-                  "\033[36mTasks: \033[32m");
+                  XTOP_FG "Tasks: \033[1;97m");
     output_append_u64(output, output_capacity, output_bytes, active_tasks);
     visible = 7U + (uint32_t)u64_digits(active_tasks);
     if (width >= 40U) {
-      output_append(output, output_capacity, output_bytes,
-                    "\033[36m active, \033[31m");
+      output_append(output, output_capacity, output_bytes, XTOP_FG " active, ");
+    /* Failures are the one figure that should shout, and only when there
+       are any. */
+    output_append(output, output_capacity, output_bytes,
+                  failed_tasks != 0U ? "\033[1;91m" : XTOP_TITLE);
       output_append_u64(output, output_capacity, output_bytes, failed_tasks);
       output_append(output, output_capacity, output_bytes,
-                    "\033[36m failed; CPUs: \033[32m");
+                    XTOP_FG " failed; CPUs: \033[1;97m");
       output_append_u64(output, output_capacity, output_bytes, cpu_total);
       visible += 24U + (uint32_t)u64_digits(failed_tasks) +
                  (uint32_t)u64_digits(cpu_total);
     } else {
-      output_append(output, output_capacity, output_bytes,
-                    "\033[36m  Fail: \033[31m");
+      output_append(output, output_capacity, output_bytes, XTOP_FG "  Fail: ");
+    output_append(output, output_capacity, output_bytes,
+                  failed_tasks != 0U ? "\033[1;91m" : XTOP_TITLE);
       output_append_u64(output, output_capacity, output_bytes, failed_tasks);
       visible += 8U + (uint32_t)u64_digits(failed_tasks);
     }
   } else if (row == 1U) {
     const char *caption = width >= 32U ? "Load average: " : "Load: ";
-    output_append(output, output_capacity, output_bytes, "\033[36m");
+    output_append(output, output_capacity, output_bytes, XTOP_FG "");
     output_append(output, output_capacity, output_bytes, caption);
-    output_append(output, output_capacity, output_bytes, "\033[32m");
+    output_append(output, output_capacity, output_bytes, XTOP_TITLE "");
     visible = (uint32_t)cstr_len(caption);
     uint32_t values = width >= 24U ? 3U : 2U;
     for (uint32_t i = 0U; i < values; ++i) {
@@ -819,7 +905,7 @@ static void xtop_append_info_cell(
     uint64_t seconds = now_ns / UINT64_C(1000000000);
     if (width >= 24U) {
       output_append(output, output_capacity, output_bytes,
-                    "\033[36mUptime: \033[32m");
+                    XTOP_FG "Uptime: \033[1;97m");
       visible = 8U + xtop_append_uptime(output, output_capacity, output_bytes,
                                         now_ns);
     } else {
@@ -828,7 +914,7 @@ static void xtop_append_info_cell(
       uint64_t minutes = (seconds / 60U) % 60U;
       seconds %= 60U;
       output_append(output, output_capacity, output_bytes,
-                    "\033[36mUptime: \033[32m");
+                    XTOP_FG "Uptime: \033[1;97m");
       output_append_u64(output, output_capacity, output_bytes, days);
       output_append(output, output_capacity, output_bytes, "d ");
       if (hours < 10U) output_append(output, output_capacity, output_bytes, "0");
@@ -842,55 +928,11 @@ static void xtop_append_info_cell(
       visible = 18U + (uint32_t)u64_digits(days);
     }
   }
-  output_append(output, output_capacity, output_bytes, "\033[0m");
+  output_append(output, output_capacity, output_bytes, XTOP_RESET);
   if (visible < width) {
     xtop_append_repeat(output, output_capacity, output_bytes, ' ',
                        width - visible);
   }
-}
-
-static void xtop_append_system_meter_cell(
-    char *output, uint64_t output_capacity, uint64_t *output_bytes,
-    const char *label, uint32_t label_columns, uint64_t tenths,
-    uint32_t cell_width, uint64_t used_mebibytes,
-    uint64_t managed_mebibytes) {
-  uint32_t value_width = string_equal(label, "Mem") == 1
-                             ? (uint32_t)u64_digits(used_mebibytes) +
-                                   (uint32_t)u64_digits(managed_mebibytes) + 3U
-                             : 5U;
-  uint32_t suffix_width = value_width > 5U ? value_width + 1U : 6U;
-  if (suffix_width < 14U) suffix_width = 14U;
-  uint32_t minimum_meter_columns = label_columns + 10U;
-  if (cell_width <= minimum_meter_columns ||
-      suffix_width > cell_width - minimum_meter_columns) {
-    suffix_width = 0U;
-  }
-  uint32_t meter_columns = cell_width - suffix_width;
-  uint32_t meter_overhead = label_columns + XTOP_METER_OVERHEAD;
-  uint32_t bar_width = meter_columns > meter_overhead
-                           ? meter_columns - meter_overhead
-                           : 1U;
-  xtop_append_meter(output, output_capacity, output_bytes, label,
-                    label_columns, tenths, bar_width, meter_columns);
-  if (suffix_width == 0U) return;
-  output_append(output, output_capacity, output_bytes,
-                string_equal(label, "Mem") == 1 ? "\033[33m" : "\033[36m");
-  /* Right-aligned one column short of the cell's edge, so a gutter separates
-     the figure from whatever the next cell starts with. Flush against the
-     edge it read "20M/1011MLoad average" on a screen wide enough to put the
-     load average beside it. */
-  xtop_append_repeat(output, output_capacity, output_bytes, ' ',
-                     suffix_width - value_width - 1U);
-  if (string_equal(label, "Mem") == 1) {
-    output_append_u64(output, output_capacity, output_bytes, used_mebibytes);
-    output_append(output, output_capacity, output_bytes, "M/");
-    output_append_u64(output, output_capacity, output_bytes,
-                      managed_mebibytes);
-    output_append(output, output_capacity, output_bytes, "M");
-  } else {
-    output_append(output, output_capacity, output_bytes, "0K/0K");
-  }
-  output_append(output, output_capacity, output_bytes, "\033[0m ");
 }
 
 static const char *xtop_cpu_role_name(uint32_t cpu_id) {
@@ -1054,7 +1096,7 @@ static uint32_t xtop_render_color(
     uint64_t free_pages, uint32_t active_tasks, uint32_t failed_tasks,
     const xtop_process_row_t *process_rows, uint32_t process_count,
     uint32_t process_start, uint32_t selected, xtop_sort_key_t sort_key,
-    int reverse, int interactive, const char *filter) {
+    int reverse, int interactive, const char *filter, uint32_t refresh_ms) {
   uint32_t process_shown = 0U;
   uint32_t label_columns = 3U;
   if (cpu_total != 0U && u64_digits((uint64_t)cpu_total - 1U) > label_columns) {
@@ -1082,159 +1124,234 @@ static uint32_t xtop_render_color(
   uint32_t load_average[3];
   scheduler_load_average_hundredths(load_average);
 
+  /* Per-CPU load for the cores panel and the gauge above it. */
+  uint64_t cpu_tenths[64];
+  uint64_t cpu_sum = 0U;
+  uint32_t cpu_counted = cpu_shown > 64U ? 64U : cpu_shown;
+  for (uint32_t offset = 0U; offset < cpu_counted; ++offset) {
+    xaios_cpu_usage_snapshot_t usage;
+    cpu_tenths[offset] = 0U;
+    if (user_cpu_usage_snapshot(cpu_start + offset, after_ns, &usage) ==
+        XAIOS_OK) {
+      uint64_t delta = usage.busy_ns >= before_cpu[offset]
+                           ? usage.busy_ns - before_cpu[offset]
+                           : 0U;
+      cpu_tenths[offset] = xtop_capacity_tenths(delta, elapsed_ns);
+    }
+    cpu_sum += cpu_tenths[offset];
+  }
+  uint64_t cpu_all_tenths = cpu_counted != 0U ? cpu_sum / cpu_counted : 0U;
+
+  /* Geometry: an outer frame, two panels abreast twice, then the process
+     list across the whole width. Rows the terminal does not have come out of
+     the process list, and a short terminal loses the detail panels. */
+  const uint32_t inner = columns >= 4U ? columns - 2U : 2U;
+  const uint32_t left = inner / 2U;
+  const uint32_t right = inner - left;
+  const uint32_t left_in = left >= 2U ? left - 2U : 0U;
+  const uint32_t right_in = right >= 2U ? right - 2U : 0U;
+  const uint32_t list_in = inner >= 2U ? inner - 2U : 0U;
+  const uint32_t gauge_rows = terminal_rows >= 30U ? 4U : 2U;
+  const int detail = terminal_rows >= 20U;
+  grid_columns = xtop_cpu_grid_columns(cpu_shown, left_in, label_columns);
+  cpu_line_count = xtop_cpu_grid_rows(cpu_shown, grid_columns);
+  uint32_t detail_rows = cpu_line_count > 4U ? cpu_line_count : 4U;
+  /* The two rows after the frame belong to the application runner, which
+     prints "xtop: complete" and a newline after every run. A frame the
+     full height of the terminal scrolled two rows up under that trailer and
+     lost its title rule; the frame is two rows short of the screen instead. */
+  uint32_t used_rows = 1U + (gauge_rows + 2U) +
+                       (detail != 0 ? detail_rows + 2U : 0U) + 3U + 1U + 2U;
+  process_budget = terminal_rows > used_rows ? terminal_rows - used_rows : 1U;
+  (void)header_lines;
+  (void)fixed_lines;
+  (void)left_width;
+  (void)right_width;
+
+  char cpu_title[64];
+  char mem_title[96];
+  char figure[16];
+  uint64_t used = 0U;
+  cpu_title[0] = '\0';
+  output_append(cpu_title, sizeof(cpu_title), &used, "CPU  ");
+  output_append_u64(cpu_title, sizeof(cpu_title), &used, cpu_total);
+  output_append(cpu_title, sizeof(cpu_title), &used,
+                cpu_total == 1U ? " core  " : " cores  ");
+  xtop_append_percent(cpu_title, sizeof(cpu_title), &used, cpu_all_tenths);
+  used = 0U;
+  mem_title[0] = '\0';
+  output_append(mem_title, sizeof(mem_title), &used, "Mem  ");
+  output_append_u64(mem_title, sizeof(mem_title), &used, used_mebibytes);
+  output_append(mem_title, sizeof(mem_title), &used, "M / ");
+  output_append_u64(mem_title, sizeof(mem_title), &used, managed_mebibytes);
+  output_append(mem_title, sizeof(mem_title), &used, "M  (Swap 0K / 0K)  ");
+  xtop_append_percent(mem_title, sizeof(mem_title), &used, memory_tenths);
+
+  output_append(output, output_capacity, output_bytes, XTOP_RESET "\033[2J\033[H");
   output_append(output, output_capacity, output_bytes,
-                interactive != 0 ? "\033[2J\033[H\033[?25l"
-                                 : "\033[2J\033[H\033[?25h");
-  xtop_append_ansi_line(output, output_capacity, output_bytes,
-                        "\033[48;5;24;97m",
-                        " XAIOS xtop \xe2\x80\x94 sampled kernel process monitor",
-                        columns);
-  xtop_append_panel_top(output, output_capacity, output_bytes, "CPU", columns);
+                interactive != 0 ? "\033[?25l" : "\033[?25h");
 
-  for (uint32_t line = 0U; line < header_lines; ++line) {
-    if (grid_columns > 1U && line < cpu_line_count) {
-      uint32_t base_width = columns / grid_columns;
-      for (uint32_t column = 0U; column < grid_columns; ++column) {
-        uint32_t cell_width = column + 1U == grid_columns
-                                  ? columns - base_width * column
-                                  : base_width;
-        uint32_t offset = column * cpu_line_count + line;
-        if (offset >= cpu_shown) {
-          xtop_append_repeat(output, output_capacity, output_bytes, ' ',
-                             cell_width);
-          continue;
+  /* Outer top: the title by the left corner, the tab strip by the right.
+     "[Main]" stays: the network suites read it to know the screen is up. */
+  xtop_append_rule(output, output_capacity, output_bytes, XTOP_BOX_TL,
+                   XTOP_BOX_TR,
+                   "XAIOS xtop \xe2\x80\x94 sampled kernel process monitor",
+                   "[Main]", columns);
+  output_append(output, output_capacity, output_bytes, "\r\n");
+
+  /* The two gauges. */
+  xtop_append_edge(output, output_capacity, output_bytes);
+  xtop_append_panel_top(output, output_capacity, output_bytes, cpu_title, left);
+  xtop_append_panel_top(output, output_capacity, output_bytes, mem_title, right);
+  xtop_append_edge(output, output_capacity, output_bytes);
+  output_append(output, output_capacity, output_bytes, "\r\n");
+  for (uint32_t row = 0U; row < gauge_rows; ++row) {
+    int carries = row == gauge_rows / 2U;
+    xtop_append_edge(output, output_capacity, output_bytes);
+    xtop_append_edge(output, output_capacity, output_bytes);
+    used = 0U; figure[0] = '\0';
+    xtop_append_percent(figure, sizeof(figure), &used, cpu_all_tenths);
+    xtop_append_gauge_row(output, output_capacity, output_bytes, left_in,
+                          cpu_all_tenths, carries ? figure : 0);
+    xtop_append_edge(output, output_capacity, output_bytes);
+    xtop_append_edge(output, output_capacity, output_bytes);
+    used = 0U; figure[0] = '\0';
+    xtop_append_percent(figure, sizeof(figure), &used, memory_tenths);
+    xtop_append_gauge_row(output, output_capacity, output_bytes, right_in,
+                          memory_tenths, carries ? figure : 0);
+    xtop_append_edge(output, output_capacity, output_bytes);
+    xtop_append_edge(output, output_capacity, output_bytes);
+    output_append(output, output_capacity, output_bytes, "\r\n");
+  }
+  xtop_append_edge(output, output_capacity, output_bytes);
+  xtop_append_panel_bottom(output, output_capacity, output_bytes, left);
+  xtop_append_panel_bottom(output, output_capacity, output_bytes, right);
+  xtop_append_edge(output, output_capacity, output_bytes);
+  output_append(output, output_capacity, output_bytes, "\r\n");
+
+  /* Cores beside the system figures. */
+  if (detail != 0) {
+    xtop_append_edge(output, output_capacity, output_bytes);
+    xtop_append_panel_top(output, output_capacity, output_bytes, "Cores", left);
+    xtop_append_panel_top(output, output_capacity, output_bytes, "System", right);
+    xtop_append_edge(output, output_capacity, output_bytes);
+    output_append(output, output_capacity, output_bytes, "\r\n");
+    for (uint32_t line = 0U; line < detail_rows; ++line) {
+      xtop_append_edge(output, output_capacity, output_bytes);
+      xtop_append_edge(output, output_capacity, output_bytes);
+      if (line < cpu_line_count) {
+        uint32_t base_width = left_in / grid_columns;
+        for (uint32_t column = 0U; column < grid_columns; ++column) {
+          uint32_t cell_width = column + 1U == grid_columns
+                                    ? left_in - base_width * column
+                                    : base_width;
+          uint32_t offset = column * cpu_line_count + line;
+          if (offset >= cpu_counted) {
+            xtop_append_repeat(output, output_capacity, output_bytes, ' ',
+                               cell_width);
+            continue;
+          }
+          char label[12];
+          uint64_t label_bytes = 0U;
+          label[0] = '\0';
+          xtop_append_u64_width(label, sizeof(label), &label_bytes,
+                                cpu_start + offset, label_columns);
+          uint32_t bar_width =
+              cell_width > label_columns + XTOP_METER_OVERHEAD
+                  ? cell_width - label_columns - XTOP_METER_OVERHEAD
+                  : 1U;
+          xtop_append_meter(output, output_capacity, output_bytes, label,
+                            label_columns, cpu_tenths[offset], bar_width,
+                            cell_width);
         }
-        xaios_cpu_usage_snapshot_t usage;
-        uint64_t tenths = 0U;
-        if (user_cpu_usage_snapshot(cpu_start + offset, after_ns, &usage) ==
-            XAIOS_OK) {
-          uint64_t delta = usage.busy_ns >= before_cpu[offset]
-                               ? usage.busy_ns - before_cpu[offset]
-                               : 0U;
-          tenths = xtop_capacity_tenths(delta, elapsed_ns);
-        }
-        char label[12];
-        uint64_t label_bytes = 0U;
-        label[0] = '\0';
-        xtop_append_u64_width(label, sizeof(label), &label_bytes,
-                              cpu_start + offset, label_columns);
-        uint32_t bar_width = cell_width > label_columns + XTOP_METER_OVERHEAD
-                                 ? cell_width - label_columns - XTOP_METER_OVERHEAD
-                                 : 1U;
-        xtop_append_meter(output, output_capacity, output_bytes, label,
-                          label_columns, tenths, bar_width, cell_width);
+      } else {
+        xtop_append_repeat(output, output_capacity, output_bytes, ' ', left_in);
       }
+      xtop_append_edge(output, output_capacity, output_bytes);
+      xtop_append_edge(output, output_capacity, output_bytes);
+      if (line < 3U) {
+        xtop_append_info_cell(output, output_capacity, output_bytes, line,
+                              right_in, active_tasks, failed_tasks, cpu_total,
+                              load_average, after_ns);
+      } else if (line == 3U) {
+        char view[128];
+        used = 0U; view[0] = '\0';
+        output_append(view, sizeof(view), &used, "View: ");
+        output_append(view, sizeof(view), &used,
+                      interactive != 0 ? "live" : "snapshot");
+        output_append(view, sizeof(view), &used, "  Sort: ");
+        output_append(view, sizeof(view), &used, xtop_sort_name(sort_key));
+        if (reverse != 0) output_append(view, sizeof(view), &used, " ascending");
+        if (filter[0] != '\0') {
+          output_append(view, sizeof(view), &used, "  Filter: ");
+          output_append(view, sizeof(view), &used, filter);
+        }
+        if (cpu_start != 0U || cpu_start + cpu_shown < cpu_total) {
+          output_append(view, sizeof(view), &used, "  CPU page: ");
+          output_append_u64(view, sizeof(view), &used, cpu_start);
+          output_append(view, sizeof(view), &used, "-");
+          output_append_u64(view, sizeof(view), &used,
+                            cpu_shown == 0U ? cpu_start
+                                            : cpu_start + cpu_shown - 1U);
+          output_append(view, sizeof(view), &used, "/");
+          output_append_u64(view, sizeof(view), &used, cpu_total);
+        }
+        xtop_append_padded(output, output_capacity, output_bytes, XTOP_FG,
+                           view, right_in);
+      } else {
+        xtop_append_repeat(output, output_capacity, output_bytes, ' ', right_in);
+      }
+      xtop_append_edge(output, output_capacity, output_bytes);
+      xtop_append_edge(output, output_capacity, output_bytes);
       output_append(output, output_capacity, output_bytes, "\r\n");
-      continue;
     }
-
-    uint32_t system_row = line >= cpu_line_count
-                              ? line - cpu_line_count
-                              : UINT32_MAX;
-    if (grid_columns == 1U && line < cpu_line_count) {
-      uint32_t offset = line;
-      xaios_cpu_usage_snapshot_t usage;
-      uint64_t tenths = 0U;
-      if (user_cpu_usage_snapshot(cpu_start + offset, after_ns, &usage) ==
-          XAIOS_OK) {
-        uint64_t delta = usage.busy_ns >= before_cpu[offset]
-                             ? usage.busy_ns - before_cpu[offset]
-                             : 0U;
-        tenths = xtop_capacity_tenths(delta, elapsed_ns);
-      }
-      char label[12];
-      uint64_t label_bytes = 0U;
-      label[0] = '\0';
-      xtop_append_u64_width(label, sizeof(label), &label_bytes,
-                            cpu_start + offset, label_columns);
-      uint32_t bar_width = left_width > label_columns + XTOP_METER_OVERHEAD
-                               ? left_width - label_columns - XTOP_METER_OVERHEAD
-                               : 1U;
-      xtop_append_meter(output, output_capacity, output_bytes, label,
-                        label_columns, tenths, bar_width, left_width);
-    } else if (system_row == 0U) {
-      xtop_append_system_meter_cell(
-          output, output_capacity, output_bytes, "Mem", label_columns,
-          memory_tenths, left_width, used_mebibytes, managed_mebibytes);
-    } else if (system_row == 1U) {
-      xtop_append_system_meter_cell(
-          output, output_capacity, output_bytes, "Swp", label_columns, 0U,
-          left_width, used_mebibytes, managed_mebibytes);
-    } else {
-      xtop_append_repeat(output, output_capacity, output_bytes, ' ', left_width);
-    }
-
-    uint32_t info_row = grid_columns == 1U ? line : system_row;
-    if (info_row < 3U) {
-      xtop_append_info_cell(output, output_capacity, output_bytes, info_row,
-                            right_width, active_tasks, failed_tasks, cpu_total,
-                            load_average, after_ns);
-    } else {
-      xtop_append_repeat(output, output_capacity, output_bytes, ' ', right_width);
-    }
+    xtop_append_edge(output, output_capacity, output_bytes);
+    xtop_append_panel_bottom(output, output_capacity, output_bytes, left);
+    xtop_append_panel_bottom(output, output_capacity, output_bytes, right);
+    xtop_append_edge(output, output_capacity, output_bytes);
     output_append(output, output_capacity, output_bytes, "\r\n");
   }
 
-  output_append(output, output_capacity, output_bytes,
-                "\033[36mView: \033[32m");
-  output_append(output, output_capacity, output_bytes,
-                interactive != 0 ? "live" : "snapshot");
-  output_append(output, output_capacity, output_bytes,
-                "\033[36m  Sort: \033[32m");
-  output_append(output, output_capacity, output_bytes, xtop_sort_name(sort_key));
-  if (reverse != 0) {
-    output_append(output, output_capacity, output_bytes, " ascending");
-  }
-  if (filter[0] != '\0') {
-    output_append(output, output_capacity, output_bytes,
-                  "\033[36m  Filter: \033[33m");
-    xtop_append_bounded(output, output_capacity, output_bytes, filter,
-                        columns > 40U ? columns - 40U : 1U);
-  }
-  if (cpu_start != 0U || cpu_start + cpu_shown < cpu_total) {
-    output_append(output, output_capacity, output_bytes,
-                  "\033[36m  CPU page: \033[32m");
-    output_append_u64(output, output_capacity, output_bytes, cpu_start);
-    output_append(output, output_capacity, output_bytes, "-");
-    output_append_u64(output, output_capacity, output_bytes,
-                      cpu_shown == 0U ? cpu_start
-                                      : cpu_start + cpu_shown - 1U);
-    output_append(output, output_capacity, output_bytes, "/");
-    output_append_u64(output, output_capacity, output_bytes, cpu_total);
-  }
-  output_append(output, output_capacity, output_bytes, "\033[0m\r\n");
-  xtop_append_panel_bottom(output, output_capacity, output_bytes, columns);
+  /* The process list, with its header on a bar. */
+  xtop_append_edge(output, output_capacity, output_bytes);
+  xtop_append_panel_top(
+      output, output_capacity, output_bytes,
+      inner >= 70U
+          ? "Process List  (\xe2\x86\x91/\xe2\x86\x93 scroll  F3 search  F4 filter  F5 tree)"
+          : "Process List",
+      inner);
+  xtop_append_edge(output, output_capacity, output_bytes);
+  output_append(output, output_capacity, output_bytes, "\r\n");
+  xtop_append_edge(output, output_capacity, output_bytes);
+  xtop_append_edge(output, output_capacity, output_bytes);
+  xtop_append_padded(
+      output, output_capacity, output_bytes, XTOP_HEADER,
+      list_in < 60U
+          ? " PID S   CPU%   MEM% COMMAND"
+          : (list_in < 100U
+                 ? "  PID  PPID S   CPU%   MEM%    TIME+ RES_KIB CPU COMMAND"
+                 : "  PID  PPID S   CPU%   MEM%    TIME+ RES_KIB CPU  SYSCALLS COMMAND"),
+      list_in);
+  xtop_append_edge(output, output_capacity, output_bytes);
+  xtop_append_edge(output, output_capacity, output_bytes);
   output_append(output, output_capacity, output_bytes, "\r\n");
 
-  /* "[Main]" stays: it is the tab strip, and the network suites read it to
-     know the screen has been drawn. Restyled, not removed. */
-  xtop_append_ansi_line(output, output_capacity, output_bytes,
-                        "\033[48;5;24;97m", "[Main]", columns);
-  xtop_append_panel_top(output, output_capacity, output_bytes, "Processes",
-                        columns);
-  xtop_append_ansi_line(output, output_capacity, output_bytes,
-                        "\033[48;5;238;97m",
-                        columns < 60U
-                            ? " PID S   CPU%   MEM% COMMAND"
-                            : (columns < 100U
-                                   ? "  PID  PPID S   CPU%   MEM%    TIME+ RES_KIB CPU COMMAND"
-                                   : "  PID  PPID S   CPU%   MEM%    TIME+ RES_KIB CPU  SYSCALLS COMMAND"),
-                        columns);
-
+  uint32_t list_rows = 0U;
   for (uint32_t i = process_start;
        i < process_count && process_shown < process_budget;
        ++i) {
-    uint64_t row_and_footer = ((uint64_t)columns + 64U) * 2U;
+    uint64_t row_and_footer = ((uint64_t)columns + 96U) * 2U;
     if (*output_bytes >= output_capacity ||
         row_and_footer >= output_capacity - *output_bytes) {
       break;
     }
     const xtop_process_row_t *row = &process_rows[i];
-    if (i == selected) output_append(output, output_capacity, output_bytes,
-                                    "\033[46;30m");
-    else output_append(output, output_capacity, output_bytes, "\033[36m");
+    xtop_append_edge(output, output_capacity, output_bytes);
+    xtop_append_edge(output, output_capacity, output_bytes);
+    output_append(output, output_capacity, output_bytes,
+                  i == selected ? XTOP_SELECTED : XTOP_FG);
     uint32_t fixed_visible;
-    if (columns < 60U) {
+    if (list_in < 60U) {
       xtop_append_u64_width(output, output_capacity, output_bytes, row->pid,
                             4U);
       output_append(output, output_capacity, output_bytes, " ");
@@ -1278,15 +1395,15 @@ static uint32_t xtop_render_color(
       }
       output_append(output, output_capacity, output_bytes, " ");
       fixed_visible = 49U;
-      if (columns >= 100U) {
+      if (list_in >= 100U) {
         xtop_append_u64_width(output, output_capacity, output_bytes,
                               row->syscall_count, 9U);
         output_append(output, output_capacity, output_bytes, " ");
         fixed_visible += 10U;
       }
     }
-    uint32_t command_width = columns > fixed_visible
-                                 ? columns - fixed_visible
+    uint32_t command_width = list_in > fixed_visible
+                                 ? list_in - fixed_visible
                                  : 0U;
     uint32_t prefix_length = 0U;
     if (sort_key == XTOP_SORT_PARENT && row->tree_depth != 0U) {
@@ -1311,17 +1428,30 @@ static uint32_t xtop_render_color(
       xtop_append_repeat(output, output_capacity, output_bytes, ' ',
                          name_width - command_length);
     }
-    output_append(output, output_capacity, output_bytes, "\033[0m\r\n");
+    xtop_append_edge(output, output_capacity, output_bytes);
+    xtop_append_edge(output, output_capacity, output_bytes);
+    output_append(output, output_capacity, output_bytes, "\r\n");
     ++process_shown;
+    ++list_rows;
   }
+  /* The list keeps its height whatever it holds, so the frame is stable. */
+  for (; list_rows < process_budget; ++list_rows) {
+    xtop_append_edge(output, output_capacity, output_bytes);
+    xtop_append_edge(output, output_capacity, output_bytes);
+    xtop_append_repeat(output, output_capacity, output_bytes, ' ', list_in);
+    xtop_append_edge(output, output_capacity, output_bytes);
+    xtop_append_edge(output, output_capacity, output_bytes);
+    output_append(output, output_capacity, output_bytes, "\r\n");
+  }
+  xtop_append_edge(output, output_capacity, output_bytes);
+  xtop_append_panel_bottom(output, output_capacity, output_bytes, inner);
+  xtop_append_edge(output, output_capacity, output_bytes);
+  output_append(output, output_capacity, output_bytes, "\r\n");
 
-  if (interactive != 0) {
-    xtop_append_footer(output, output_capacity, output_bytes, columns, 1);
-    output_append(output, output_capacity, output_bytes, "\033[0m\033[?25l");
-  } else {
-    xtop_append_footer(output, output_capacity, output_bytes, columns, 0);
-    output_append(output, output_capacity, output_bytes, "\033[0m\033[?25h");
-  }
+  xtop_append_key_bar(output, output_capacity, output_bytes, columns,
+                      interactive, refresh_ms);
+  output_append(output, output_capacity, output_bytes,
+                interactive != 0 ? "\033[?25l" : "\033[?25h");
   return process_shown;
 }
 
@@ -1380,6 +1510,7 @@ static xaios_status_t handle_xtop(const char *args, char *output,
   uint32_t process_start = 0U;
   uint32_t selected = 0U;
   uint32_t sample_ms = 250U;
+  uint32_t refresh_ms = 0U; /* the session's redraw cadence, shown only */
   uint32_t terminal_columns = 120U;
   uint32_t terminal_rows = 40U;
   uint32_t cpu_total;
@@ -1421,6 +1552,11 @@ static xaios_status_t handle_xtop(const char *args, char *output,
       if (xtop_parse_u32_option(args, &index, &selected) != XAIOS_OK)
         return command_fail(output, output_capacity, output_bytes,
                             "xtop: invalid --selected");
+    } else if (string_equal(option, "--refresh-ms")) {
+      if (xtop_parse_u32_option(args, &index, &refresh_ms) != XAIOS_OK ||
+          refresh_ms > 60000U)
+        return command_fail(output, output_capacity, output_bytes,
+                            "xtop: --refresh-ms must be 0..60000");
     } else if (string_equal(option, "--columns")) {
       if (xtop_parse_u32_option(args, &index, &terminal_columns) != XAIOS_OK ||
           terminal_columns < 40U || terminal_columns > 240U)
@@ -1562,7 +1698,7 @@ static xaios_status_t handle_xtop(const char *args, char *output,
         elapsed_ns, after_meta.managed_pages, after_meta.free_pages,
         after_meta.process_active, after_meta.process_failed, rows,
         process_count, process_start, selected, sort_key, reverse, interactive,
-        filter);
+        filter, refresh_ms);
     return XAIOS_OK;
   }
 

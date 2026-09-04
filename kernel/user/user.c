@@ -152,6 +152,7 @@ static void reset_process_slot(xaios_user_process_t *process) {
   process->name = 0;
   process->state = XAIOS_USER_PROCESS_EMPTY;
   process->exit_code = 0;
+  process->expected_exit_code = 0;
   process->capability_mask = 0;
   process->syscall_count = 0;
   process->rejected_syscall_count = 0;
@@ -495,9 +496,15 @@ uint64_t user_process_note_exit(int exit_code) {
   if (g_current_process != 0) {
     user_process_runtime_stop(g_current_process->pid, smp_cpu_id(),
                               timer_now_ns());
+    /* A process that exits the way it was told to has not failed. The
+       hosted C99 probes exist to exit 23 and to abort, the kernel asserts
+       that they do, and the process table called both of them failures --
+       so a machine on which everything had passed reported two failed
+       tasks. */
     transition_process(g_current_process,
-                       exit_code == 0 ? XAIOS_USER_PROCESS_EXITED
-                                      : XAIOS_USER_PROCESS_FAILED,
+                       exit_code == g_current_process->expected_exit_code
+                           ? XAIOS_USER_PROCESS_EXITED
+                           : XAIOS_USER_PROCESS_FAILED,
                        exit_code);
   }
   return XAIOS_USER_EXIT_RETURN_MAGIC | ((uint64_t)(uint32_t)exit_code);
@@ -758,6 +765,7 @@ xaios_status_t user_load_process(const xaios_initramfs_file_t *file,
   process->entry = entry;
   process->state = XAIOS_USER_PROCESS_LOADED;
   process->exit_code = 0;
+  process->expected_exit_code = 0;
   process->syscall_count = 0;
   process->rejected_syscall_count = 0;
   process->started_ns = timer_now_ns();
@@ -1208,6 +1216,14 @@ xaios_status_t user_process_reap(uint32_t pid) {
   }
   reset_process_slot(process);
   klog("user: reaped transient process pid=%u\n", pid);
+  return XAIOS_OK;
+}
+
+xaios_status_t user_process_expect_exit_code(uint32_t pid, int exit_code) {
+  if (pid == 0U || pid > XAIOS_MAX_USER_PROCESSES) return XAIOS_ERR_INVALID;
+  xaios_user_process_t *process = &g_process_table[pid - 1U];
+  if (process->pid != pid) return XAIOS_ERR_NOT_FOUND;
+  process->expected_exit_code = exit_code;
   return XAIOS_OK;
 }
 

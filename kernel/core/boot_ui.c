@@ -166,6 +166,10 @@ static const fb_extra_glyph_t g_font_extra[] = {
     {0x2591U, {0x88, 0x22, 0x88, 0x22, 0x88, 0x22, 0x88, 0x22}},
     {0x2592U, {0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa}},
     {0x2014U, {0x00, 0x00, 0x00, 0x7e, 0x00, 0x00, 0x00, 0x00}},
+    /* Arrows, for the process monitor's scroll hint. Bit 0 is the left
+       column, so 0x10 is the fourth from the left. */
+    {0x2191U, {0x10, 0x38, 0x54, 0x10, 0x10, 0x10, 0x10, 0x00}},
+    {0x2193U, {0x10, 0x10, 0x10, 0x10, 0x54, 0x38, 0x10, 0x00}},
 };
 
 #define FB_EXTRA_GLYPHS (sizeof(g_font_extra) / sizeof(g_font_extra[0]))
@@ -710,6 +714,18 @@ static void term_put_code_point(uint32_t code_point) {
           TERM_LINE_HEIGHT, term_background());
   fb_glyph_rows(term_x(g_term_column), term_y(g_term_row), rows,
                 g_term_color);
+  /* A vertical rule has to reach the next row. Each row is the glyph plus a
+     two-pixel gap beneath it, and a stroke that stops at the glyph's edge
+     leaves a gap in every rule -- a box drawn on this console came out
+     dashed where an SSH client drew it solid. The glyphs whose stroke
+     reaches their bottom edge carry it on through the gap; the ones whose
+     stroke starts at the top meet it there. */
+  if (code_point == 0x2502U || code_point == 0x250cU ||
+      code_point == 0x2510U) {
+    fb_rect(term_x(g_term_column) + UINT32_C(3) * FB_GLYPH_X_SCALE,
+            term_y(g_term_row) + FB_GLYPH_HEIGHT * FB_GLYPH_Y_SCALE,
+            FB_GLYPH_X_SCALE, UINT32_C(2), g_term_color);
+  }
   ++g_term_column;
 }
 
