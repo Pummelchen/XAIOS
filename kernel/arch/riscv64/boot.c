@@ -16,6 +16,7 @@
 #include <xaios/virtio_transport.h>
 
 void riscv64_platform_set_device_tree(const void *blob);
+void klog(const char *fmt, ...);
 void kmain(const xaios_boot_info_t *boot);
 xaios_boot_info_t *riscv64_build_boot_info(uint64_t device_tree);
 void riscv64_smp_record_boot_hart(uint32_t hart_id);
@@ -77,10 +78,18 @@ void riscv64_boot(uint64_t hart_id, uint64_t device_tree) {
   uint32_t virtio_slots = fdt_count_compatible(blob, "virtio,mmio");
   if (fdt_find_compatible_lowest(blob, "virtio,mmio", &virtio_base)) {
     virtio_transport_set_mmio_window(virtio_base, 0x1000U, virtio_slots);
+    /* Worth printing: a window that is wrong by a stride finds nothing and
+       reports it the same way a machine with no MMIO devices does. */
+    sbi_puts("riscv64: virtio mmio window base=");
+    sbi_put_u64_hex(virtio_base);
+    sbi_puts(" slots=");
+    sbi_put_u64(virtio_slots);
+    sbi_puts("\n");
   } else {
     /* No tree, so no window -- said explicitly rather than left at the
        default, which is another architecture's address and faults when
        probed. */
+    sbi_puts("riscv64: no virtio mmio window in the device tree\n");
     virtio_transport_set_mmio_window(0U, 0U, 0U);
   }
 

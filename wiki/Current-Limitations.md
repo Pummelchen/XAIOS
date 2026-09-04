@@ -12,8 +12,9 @@ section-accurate kernel permissions, PLIC interrupts, PCI enumerated through
 ECAM with base addresses assigned by the kernel, virtio disks, the initial
 filesystem, IPv6, userspace over a full trap frame, and four harts scheduling.
 
-It also has the hosted ISO C99 library, `xapt`, a real-time clock, and a UEFI
-boot medium built by `scripts/build-riscv64-boot-media.sh`.
+It also has the hosted ISO C99 library, `xapt`, a real-time clock, a login
+prompt, a working SSH server, and a UEFI boot medium built by
+`scripts/build-riscv64-boot-media.sh`.
 
 What it does not have is hardware qualification. AArch64 and x86_64 are
 qualified on real machines and hypervisors; RISC-V has been run on one

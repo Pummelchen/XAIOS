@@ -349,6 +349,15 @@ void vmm_init(const xaios_boot_info_t *boot) {
       const xaios_memory_descriptor_t *descriptor =
           (const xaios_memory_descriptor_t *)(const void *)
               (entries + i * boot->memory_descriptor_size);
+      /* Every descriptor, not only conventional memory, which is the
+         opposite of what AArch64 does and is deliberate here. A UEFI boot
+         hands the kernel its boot_info, its memory map, its device tree and
+         the initial filesystem image, and all four sit in loader and boot-
+         services memory rather than in conventional RAM. Filtering to
+         conventional alone unmaps them and the boot stops earlier, at 35%,
+         with the kernel unable to read what it was given. The allocator is
+         where conventional-only matters, and the shared NUMA code already
+         enforces it there. */
       identity_map_range(descriptor->physical_start,
                          descriptor->physical_start +
                              descriptor->number_of_pages * PAGE_SIZE,

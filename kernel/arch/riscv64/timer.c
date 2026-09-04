@@ -90,9 +90,17 @@ static int g_have_stimecmp;
 #define CSR_STIMECMP 0x14D
 
 static void set_timer(uint64_t absolute_ticks) {
+  /* Both, when both exist.
+   *
+   * Whether stimecmp drives the pending bit depends on menvcfg.STCE, which is
+   * a machine-mode bit a supervisor cannot read: the CSR is present and
+   * writable either way, so "does this register exist" is not the same
+   * question as "does writing it acknowledge the interrupt". Programming both
+   * costs one ecall on a machine that did not need it and is correct on both
+   * kinds; programming only the one that turns out to be inert is a timer
+   * that never stops firing. */
   if (g_have_stimecmp != 0) {
     __asm__ volatile("csrw 0x14d, %0" : : "r"(absolute_ticks) : "memory");
-    return;
   }
   register uint64_t a0 __asm__("a0") = absolute_ticks;
   register uint64_t a6 __asm__("a6") = SBI_TIME_SET_TIMER;

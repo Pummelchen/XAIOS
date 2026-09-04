@@ -1,11 +1,13 @@
 # RISC-V (rv64gc)
 
-**Status: boots as an operating system on one emulated board, and nowhere
-else.** XAIOS runs the same shared kernel on RISC-V that it runs on AArch64
-and x86_64. On the QEMU `virt` board it boots to the first-run setup prompt
-across four harts with 75 self-tests passing and no errors. It has never been
-run on RISC-V hardware or on a RISC-V hypervisor, so nothing here supports a
-claim about firmware behaviour, timing, or scaling on a real machine.
+**Status: functional parity on one emulated board, and nowhere else.** XAIOS
+runs the same shared kernel on RISC-V that it runs on AArch64 and x86_64. On
+the QEMU `virt` board it boots to 100% across four harts with 81 self-tests
+and no errors, offers a login prompt, and runs an SSH server that answers:
+logging in returns the machine's real service state and filesystem. It has
+never been run on RISC-V hardware or on a RISC-V hypervisor, so nothing here
+supports a claim about firmware behaviour, timing, or scaling on a real
+machine.
 
 Progress status and ownership live only in
 [[Project Tracker|Project-Tracker]].
@@ -27,6 +29,13 @@ Progress status and ownership live only in
 - **virtio** block and network devices over the modern PCI transport.
 - **The filesystem, IPv6 and userspace**, unchanged from the shared kernel.
 - **Four harts**, brought up through SBI's hart state management extension.
+- **Both virtio transports.** The boot volume arrives over MMIO at the window
+  read from the device tree, and the model volume over the other. QEMU's
+  virtio-mmio transports default to the legacy interface, which the driver
+  refuses, so `-global virtio-mmio.force-legacy=false` is required -- without
+  it every MMIO slot reads as empty and the model volume is simply absent.
+- **A login prompt and sshd**, with the terminal applications sshd hosts.
+- **A real-time clock**, so timestamps start from the actual Unix epoch.
 
 ## What this architecture required that no other did
 
@@ -130,8 +139,15 @@ timer behaving -- and it is not explained. The SBI path is unaffected.
 scripts/build-riscv64.sh             # the kernel
 scripts/build-riscv64-image.sh       # the initial filesystem and its applications
 scripts/build-riscv64-boot-media.sh  # the UEFI boot medium
-make qemu-riscv64-gate               # kernel and filesystem, then boot and check
+platform/qemu/run-qemu-riscv64.sh    # run it, in the shape the gate uses
+make qemu-riscv64-gate               # build both, boot, and check what ran
 ```
+
+The machine shape is not decoration. The kernel mounts its model volume from
+virtio transport slot 4 and opens `/dev/vblk0` for the initial filesystem, so
+a machine with two disks in the wrong places boots to a login prompt and still
+fails storage checks that are working correctly. The runner mirrors
+`run-qemu-aarch64.sh` bus for bus.
 
 The gate runs with four harts deliberately, so every run draws a different
 boot hart. It reads QEMU's serial output through a file sink rather than a

@@ -46,21 +46,36 @@ REQUIRED = [
     # line is what stops the first from being a bus with nothing attached.
     "PCI: ECAM mapped bus=0",
     "PCI: enumerated",
-    "virtio-blk: modern PCI transport",
+    # Both virtio transports carry a disk on this machine, and the gate
+    # names one line from each: the boot volume arrives over MMIO at the
+    # window read from the device tree, and version=2 is the part worth
+    # asserting because QEMU's transports default to a legacy interface the
+    # driver refuses, and every slot then reads as empty with nothing said.
+    "virtio-blk: mmio base=0x10001000 version=2",
     "virtio-blk: capacity_sectors=",
+    # The model volume, which is the one that arrives over the other
+    # transport -- a machine that finds only one of the two mounts no models.
+    "xaifs: mounted /models",
     # A filesystem that was read, and the applications in it.
     "initramfs: mounted rofs version=2",
     # Every hart, scheduling. Not "started" -- scheduling.
     "smp: riscv64 4 harts scheduling online=4",
+    # A clock with a real epoch rather than an assumed one.
+    "rtc: self-test passed",
     # Userspace: loaded, run, and returned from through its own exit syscall.
     "/init: service setup complete",
     "kernel: /init returned to kernel exit_code=0",
     "kernel: /bin/service-manager returned to kernel exit_code=0",
-    # The end of a boot with no account packaged, which is the installer
-    # asking which way to go. Reaching a prompt is the proof that everything
-    # before it worked.
-    "kernel: no account on this machine; starting /bin/xaios-setup",
-    "Choose [1/2]:",
+    # The hosted ISO C99 library, running rather than merely linking.
+    "kernel: /bin/helloworldc99 returned to kernel exit_code=0",
+    "C99-TERMINATION-PROBES-PASS",
+    # The control plane rendering every command it claims to.
+    "/bin/xaiosctl: control commands passed human=14 json=14",
+    # And the end of it: a complete boot, a login prompt and a server that is
+    # actually listening.
+    "[########################################] 100%",
+    "xaios login:",
+    "SSH server: up and running",
 ]
 
 FORBIDDEN = [
@@ -78,11 +93,11 @@ FORBIDDEN = [
 # How many self-tests the shared kernel is expected to pass. A floor rather
 # than an exact count, so adding a test does not fail the gate -- but a boot
 # that quietly stopped running them does.
-MINIMUM_SELF_TESTS = 70
+MINIMUM_SELF_TESTS = 78
 
 # The last thing a complete boot prints. Watched for, so a good run ends when
 # the boot ends rather than when the timeout does.
-FINAL_MARKER = "Choose [1/2]:"
+FINAL_MARKER = "SSH server: up and running"
 
 
 def main() -> int:
@@ -106,35 +121,18 @@ def main() -> int:
 
     # A scratch copy, because the guest writes to its volumes and a gate that
     # mutates its own inputs passes differently the second time.
+    # The machine shape lives in platform/qemu/run-qemu-riscv64.sh, next to
+    # the runners for the other two architectures, so the gate and a person
+    # debugging by hand drive exactly the same machine.
+    runner = ROOT / "platform/qemu/run-qemu-riscv64.sh"
+    if not runner.is_file():
+        print(f"no runner at {runner}", file=sys.stderr)
+        return 2
     with tempfile.TemporaryDirectory() as scratch:
-        # Two copies, not one file opened twice: QEMU takes a write lock per
-        # drive and refuses the second, which produced an empty log and a gate
-        # that reported every marker missing rather than saying the guest had
-        # never started. The boot disk the kernel opens is the second virtio
-        # block device, so both have to be there.
-        payload = INITFS.read_bytes()
-        disk0 = Path(scratch) / "hd0.img"
-        disk1 = Path(scratch) / "hd1.img"
-        disk0.write_bytes(payload)
-        disk1.write_bytes(payload)
-        command = [
-            qemu, "-machine", "virt", "-cpu", "rv64", "-smp", "4",
-            "-m", "512", "-display", "none", "-bios", "default",
-            "-serial", f"file:{LOG}",
-            "-kernel", str(KERNEL),
-            "-drive", f"file={disk0},format=raw,if=none,id=hd0",
-            "-device", "virtio-blk-pci,drive=hd0,disable-legacy=on",
-            "-drive", f"file={disk1},format=raw,if=none,id=hd1",
-            "-device", "virtio-blk-pci,drive=hd1,disable-legacy=on",
-            "-netdev", "user,id=n0",
-            "-device", "virtio-net-pci,netdev=n0,disable-legacy=on",
-        ]
-        # The guest stops at an interactive prompt rather than powering off,
-        # so waiting for it to exit means waiting out the whole timeout on
-        # every successful run. Watching the log for the last thing the boot
-        # prints ends a good run in the time the boot actually takes, and
-        # leaves the timeout to do its real job -- ending a bad one.
-        guest = subprocess.Popen(command, cwd=str(ROOT),
+        environment = dict(os.environ)
+        environment["XAIOS_RISCV64_LOG"] = str(LOG)
+        environment["XAIOS_RISCV64_STATE"] = scratch
+        guest = subprocess.Popen([str(runner)], cwd=str(ROOT), env=environment,
                                  stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL)
         deadline = time.monotonic() + timeout
@@ -173,8 +171,9 @@ def main() -> int:
         print(f"whole boot saved to {LOG.relative_to(ROOT)}", file=sys.stderr)
         return 1
 
-    print(f"qemu-riscv64-gate: booted to the setup prompt on 4 harts, "
-          f"{self_tests} self-tests passed, no errors")
+    print(f"qemu-riscv64-gate: booted to 100% on 4 harts with a login "
+          f"prompt and sshd listening, {self_tests} self-tests passed, "
+          f"no errors")
     return 0
 
 

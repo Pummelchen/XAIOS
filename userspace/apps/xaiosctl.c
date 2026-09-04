@@ -36,6 +36,69 @@ static int run_checked(const char *command, int expected_result,
   return 0;
 }
 
+
+/* Show a device this machine actually has, rather than one a different
+   machine had.
+ *
+ * This used to name /dev/vblk4, which is the fifth virtio block device on the
+ * reference machines and does not exist on every board -- device names follow
+ * the transport slot a disk is attached to, not a sequence, so a machine can
+ * have vblk5 and no vblk4. The check failed on hardware that was working
+ * correctly, which is the least useful kind of failure.
+ *
+ * Reading the id out of the list first is also a stronger test than the one
+ * it replaces: it proves list and show agree about what exists, which naming
+ * a device up front never did. */
+static int run_storage_device_show(void) {
+  char list[XAIOS_CONTROL_MAX_RESPONSE_BYTES];
+  u64 list_size = 0ULL;
+  if (xaios_control_run("xaiosctl storage device list", list, sizeof(list),
+                        &list_size) != 0 || list_size == 0ULL) {
+    return -1;
+  }
+
+  /* The first "device=<id>" in the listing. */
+  const char *marker = "device=";
+  u64 at = 0ULL;
+  while (list[at] != '\0') {
+    u64 j = 0ULL;
+    while (marker[j] != '\0' && list[at + j] == marker[j]) ++j;
+    if (marker[j] == '\0') break;
+    ++at;
+  }
+  if (list[at] == '\0') return -1;
+  at += 7ULL; /* past "device=" */
+
+  char human[96];
+  char json[112];
+  const char *prefix = "xaiosctl storage device show ";
+  u64 used = 0ULL;
+  while (prefix[used] != '\0' && used + 1ULL < sizeof(human)) {
+    human[used] = prefix[used];
+    ++used;
+  }
+  while (list[at] != '\0' && list[at] != ' ' && list[at] != '\n' &&
+         list[at] != '\r' && used + 1ULL < sizeof(human)) {
+    human[used++] = list[at++];
+  }
+  human[used] = '\0';
+
+  u64 json_used = 0ULL;
+  while (json_used < used && json_used + 1ULL < sizeof(json)) {
+    json[json_used] = human[json_used];
+    ++json_used;
+  }
+  const char *suffix = " --json";
+  u64 k = 0ULL;
+  while (suffix[k] != '\0' && json_used + 1ULL < sizeof(json)) {
+    json[json_used++] = suffix[k++];
+  }
+  json[json_used] = '\0';
+
+  if (run_checked(human, 0, "capacity_bytes=") != 0) return -1;
+  return run_checked(json, 0, "\"logical_sector_size\":512");
+}
+
 static u64 text_length(const char *text) {
   u64 length = 0ULL;
   while (text != 0 && text[length] != '\0') ++length;
@@ -158,9 +221,6 @@ int main(int argc, char **argv) {
        "\"records\":", 0},
       {"xaiosctl storage device list", "xaiosctl storage device list --json",
        "device=/dev/vblk", "\"devices\":[", 0},
-      {"xaiosctl storage device show /dev/vblk4",
-       "xaiosctl storage device show /dev/vblk4 --json", "capacity_bytes=",
-       "\"logical_sector_size\":512", 0},
       {"xaiosctl storage filesystem list",
        "xaiosctl storage filesystem list --json", "filesystem=xaiFS",
        "\"filesystems\":[", 0},
@@ -197,6 +257,10 @@ int main(int argc, char **argv) {
                   "\"code\":\"unknown_node\"") != 0 ||
       protocol_negative_tests() != 0) {
     xaios_log("/bin/xaiosctl: negative protocol test failed\n");
+    return 1;
+  }
+  if (run_storage_device_show() != 0) {
+    xaios_log("/bin/xaiosctl: storage device show test failed\n");
     return 1;
   }
   xaios_log("/bin/xaiosctl: control commands passed human=14 json=14\n");
