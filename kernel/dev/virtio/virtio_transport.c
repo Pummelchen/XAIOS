@@ -84,7 +84,21 @@ void virtio_transport_set_mmio_window(uint64_t base, uint64_t stride,
 
 #define VIRTIO_MMIO_BASE g_virtio_mmio_base
 #define VIRTIO_MMIO_STRIDE g_virtio_mmio_stride
-#define VIRTIO_MMIO_FIRST_INTID 48U
+/* Where this board's virtio-mmio interrupts start.
+ *
+ * 48 is the first shared peripheral interrupt on AArch64's GIC, and it was
+ * compiled in as though every machine numbered them that way. RISC-V's PLIC
+ * starts them at 1, so a driver that registered at 48 asked the controller
+ * about a source that does not exist, got nothing, and fell back to polling
+ * every completion -- which works, says so, and is several times slower than
+ * the machine can go. */
+static uint32_t g_virtio_mmio_first_intid = 48U;
+
+void virtio_transport_set_mmio_interrupt_base(uint32_t first_intid) {
+  g_virtio_mmio_first_intid = first_intid;
+}
+
+#define VIRTIO_MMIO_FIRST_INTID g_virtio_mmio_first_intid
 #define VIRTIO_WAIT_TIMEOUT_NS UINT64_C(5000000000)
 #define VIRTIO_WAIT_FALLBACK_SPINS UINT64_C(100000000)
 #define VIRTIO_RESET_TIMEOUT_NS UINT64_C(1000000000)

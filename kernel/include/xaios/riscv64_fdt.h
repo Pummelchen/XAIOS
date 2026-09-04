@@ -53,7 +53,10 @@ int fdt_find_compatible_property(const void *blob, const char *compatible,
                                  const char *name, const uint8_t **value,
                                  uint32_t *length);
 
+/* The lowest address among the nodes matching a compatible string, and the
+   first interrupt that node declares. `interrupt` may be null; it is set to
+   zero when the node declares none. */
 int fdt_find_compatible_lowest(const void *blob, const char *compatible,
-                               uint64_t *address);
+                               uint64_t *address, uint32_t *interrupt);
 
 #endif

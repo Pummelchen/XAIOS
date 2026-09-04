@@ -76,8 +76,26 @@ void riscv64_boot(uint64_t hart_id, uint64_t device_tree) {
      address and the spacing between them is what the transport needs. */
   uint64_t virtio_base = 0U;
   uint32_t virtio_slots = fdt_count_compatible(blob, "virtio,mmio");
-  if (fdt_find_compatible_lowest(blob, "virtio,mmio", &virtio_base)) {
+  uint32_t virtio_intid = 0U;
+  if (fdt_find_compatible_lowest(blob, "virtio,mmio", &virtio_base,
+                                 &virtio_intid)) {
     virtio_transport_set_mmio_window(virtio_base, 0x1000U, virtio_slots);
+    /* Not switched on yet, deliberately, and this is the note for whoever
+       does it.
+     *
+       The base is discovered correctly -- the PLIC numbers these from 1 where
+       the compiled-in default is AArch64's 48 -- and setting it does make the
+       drivers register and take interrupts instead of polling. What then
+       fails is the shared asynchronous queue self-test, which submits
+       queue_depth requests and asserts all of them are still outstanding and
+       that one more is refused. Both hold when completions are polled and
+       neither is guaranteed once the device can complete during submission.
+       Making that test independent of the completion model is the work, and
+       it is shared code on two architectures qualified on hardware I cannot
+       re-qualify from here, so it is not something to change as a side
+       effect of a RISC-V improvement. Polling is correct meanwhile, and the
+       guest says so. */
+    (void)virtio_intid;
     /* Worth printing: a window that is wrong by a stride finds nothing and
        reports it the same way a machine with no MMIO devices does. */
     sbi_puts("riscv64: virtio mmio window base=");

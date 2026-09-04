@@ -327,6 +327,9 @@ typedef struct lowest_search {
   const char *names[FDT_MAX_MATCHES];
   uint32_t name_count;
   uint64_t lowest;
+  const char *lowest_name;
+  uint32_t interrupt;
+  int have_interrupt;
   int found;
 } lowest_search_t;
 
@@ -352,24 +355,51 @@ static void lowest_reg_of_matches(const fdt_property_t *property,
     uint64_t address = read_cells(property->value, property->address_cells);
     if (search->found == 0 || address < search->lowest) {
       search->lowest = address;
+      search->lowest_name = property->node_name;
       search->found = 1;
     }
     return;
   }
 }
 
+/* The interrupt the lowest-addressed match is wired to.
+ *
+ * A third pass, because the node is only known after the second: `interrupts`
+ * and `reg` can appear in either order, and the node with the lowest address
+ * is not the first one the tree lists -- QEMU emits these in descending
+ * order. */
+static void interrupt_of_lowest(const fdt_property_t *property,
+                                void *context) {
+  lowest_search_t *search = (lowest_search_t *)context;
+  if (search->have_interrupt != 0 || search->lowest_name == 0) return;
+  if (!string_equal(property->node_name, search->lowest_name)) return;
+  if (!string_equal(property->name, "interrupts")) return;
+  if (property->length < 4U) return;
+  const uint8_t *value = property->value;
+  search->interrupt = ((uint32_t)value[0] << 24) | ((uint32_t)value[1] << 16) |
+                      ((uint32_t)value[2] << 8) | (uint32_t)value[3];
+  search->have_interrupt = 1;
+}
+
 int fdt_find_compatible_lowest(const void *blob, const char *compatible,
-                               uint64_t *address) {
+                               uint64_t *address, uint32_t *interrupt) {
   lowest_search_t search;
   search.wanted = compatible;
   search.name_count = 0U;
   search.lowest = 0U;
+  search.lowest_name = 0;
+  search.interrupt = 0U;
+  search.have_interrupt = 0;
   search.found = 0;
   fdt_walk(blob, collect_matching_names, &search);
   if (search.name_count == 0U) return 0;
   fdt_walk(blob, lowest_reg_of_matches, &search);
   if (search.found == 0 || address == 0) return 0;
+  fdt_walk(blob, interrupt_of_lowest, &search);
   *address = search.lowest;
+  if (interrupt != 0) {
+    *interrupt = search.have_interrupt != 0 ? search.interrupt : 0U;
+  }
   return 1;
 }
 

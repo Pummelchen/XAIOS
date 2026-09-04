@@ -154,6 +154,11 @@ xaios_status_t virtio_transport_reset_checked(
 /* Tell the MMIO transport where this board's virtio slots are, before
    anything probes. Unset means QEMU's AArch64 layout, which is what every
    caller assumed when it was a constant. */
+/* The interrupt the first MMIO slot is wired to. Boards number these
+   differently and the default is AArch64's; a board that starts elsewhere
+   must say so or its drivers fall back to polling. */
+void virtio_transport_set_mmio_interrupt_base(uint32_t first_intid);
+
 void virtio_transport_set_mmio_window(uint64_t base, uint64_t stride,
                                       uint32_t slots);
 xaios_status_t virtio_transport_negotiate_no_features(

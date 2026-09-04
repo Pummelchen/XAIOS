@@ -132,37 +132,38 @@ the kernel comes up to a login prompt with sshd listening.
 ## What is missing
 
 - **Hardware qualification of any kind.** One emulated board is the whole
-  evidence.
-- **Inter-processor interrupts.** Nothing in the shared kernel signals a CPU
-  when it queues work for it, so secondary harts spin rather than sleep.
-- **A narrower user-access window.** `sstatus.SUM` is set for the whole
-  kernel rather than only around the syscall path, so a stray kernel
-  dereference of a user pointer is not caught by hardware here.
-- **One application.** `xaiosctl`'s rendering tests include
-  `storage device show /dev/vblk4`, and this machine has no fourth block
-  device -- a machine-shape difference rather than a defect.
+  evidence. AArch64 is qualified on VMware Fusion and x86_64 on a physical
+  Intel host; RISC-V has run on QEMU's `virt` and nothing else, so no claim
+  about firmware behaviour, timing or scaling on a real machine is supported
+  by anything here. This is the difference that matters and no amount of work
+  on this machine closes it.
+- **Interrupt-driven virtio.** The interrupt each MMIO slot is wired to is
+  read from the device tree now -- the PLIC numbers them from 1 where the
+  compiled-in default was AArch64's 48 -- but the drivers still poll. Setting
+  the base does make them take interrupts, and then the shared asynchronous
+  queue self-test fails: it submits a full queue and asserts every request is
+  still outstanding and that one more is refused, and neither holds once the
+  device can complete during submission. Making that test independent of the
+  completion model is shared work on two architectures qualified on hardware
+  that cannot be re-qualified from here.
+- **An IOMMU.** So has x86_64, whose `smmu_initialized()` also reports zero;
+  this is an AArch64 capability rather than something RISC-V is behind the
+  other two on.
+- **Message-signalled interrupts.** The PLIC takes wires, not messages. The
+  board can present AIA, and a driver for it is real work that nothing
+  currently needs -- virtio reaches the kernel over wired interrupts.
 
-## Building and running
+## Test coverage
 
-```
-scripts/build-riscv64.sh             # the kernel
-scripts/build-riscv64-image.sh       # the initial filesystem and its applications
-scripts/build-riscv64-boot-media.sh  # the UEFI boot medium
-platform/qemu/run-qemu-riscv64.sh    # run it, in the shape the gate uses
-make qemu-riscv64-gate               # build both, boot, and check what ran
-```
+Three gates, against roughly seventy for the other two:
 
-The machine shape is not decoration. The kernel mounts its model volume from
-virtio transport slot 4 and opens `/dev/vblk0` for the initial filesystem, so
-a machine with two disks in the wrong places boots to a login prompt and still
-fails storage checks that are working correctly. The runner mirrors
-`run-qemu-aarch64.sh` bus for bus.
+| Gate | What it proves |
+| --- | --- |
+| `make qemu-riscv64-gate` | The kernel boots to a login prompt with sshd listening, 81 self-tests, no errors. |
+| `make qemu-riscv64-boot-media-gate` | The same machine boots from its own disk through EDK2 with no `-kernel`, from the verified signed A/B system slot. |
+| `make qemu-riscv64-matrix-gate` | It boots at 1, 2, 4 and 8 harts, four independent times, and answers an SSH login each time. |
 
-The gate runs with four harts deliberately, so every run draws a different
-boot hart. It reads QEMU's serial output through a file sink rather than a
-pipe: QEMU block-buffers its console when stdout is redirected and drops the
-buffer when it is killed, which makes a timed-out run read back as a kernel
-that printed nothing at all.
-
-See also [[Hardware Support|Hardware-Support]] and
-[[Testing XAIOS|Testing-XAIOS]].
+That is far short of what AArch64 and x86_64 are held to -- network suites,
+storage crash safety, write ordering, soak, NUMA, NVMe, cluster and fault
+injection all run on those and not here. The features are present; the
+evidence that they hold under stress is not.
