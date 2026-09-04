@@ -1337,8 +1337,16 @@ persistent_network_done:
   kassert(run_user_app("/bin/c99-main-void", 20U, libc_test_caps) == 0);
   kassert(run_user_app("/bin/c99-exit-probe", 21U, libc_test_caps) == 23);
   kassert(run_user_app("/bin/c99-abort-probe", 22U, libc_test_caps) == 134);
-  kassert(run_user_app("/bin/c99-thread-context", 24U, libc_test_caps) ==
-          0);
+  /* The thread-context probe places a thread on a CPU other than the one it
+     is running on, and there is no such CPU on a uniprocessor machine: the
+     scheduler refuses, correctly, and the probe cannot test what it exists to
+     test. Run where it means something and say so where it does not, rather
+     than asserting a result the machine cannot produce. */
+  if (smp_online_count() > 1U) {
+    kassert(run_user_app("/bin/c99-thread-context", 24U, libc_test_caps) == 0);
+  } else {
+    klog("C99-THREAD-CONTEXT-SKIPPED: one CPU, nowhere to place a thread\n");
+  }
   klog("C99-TERMINATION-PROBES-PASS\n");
 #endif
 

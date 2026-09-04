@@ -56,6 +56,9 @@ X86_64_LOADER="$BUILD_DIR/uefi-x86_64/BOOTX64.EFI"
 X86_64_KERNEL="$BUILD_DIR/kernel-x86_64/kernel.elf"
 INITFS="$BUILD_DIR/xaios-virtio-test.img"
 INITFS_X86="$BUILD_DIR/xaios-x86-virtio-test.img"
+RISCV64_LOADER="$BUILD_DIR/riscv64-uefi/BOOTRISCV64.EFI"
+RISCV64_KERNEL="$BUILD_DIR/kernel-riscv64/kernel.elf"
+INITFS_RISCV="$BUILD_DIR/xaios-riscv64-initfs.img"
 
 # The ARM half is required; the Intel half is included when it has been built.
 # Refusing to produce anything until both architectures are present would make
@@ -71,6 +74,14 @@ done
 INCLUDE_X86=0
 if [ -f "$X86_64_LOADER" ] && [ -f "$X86_64_KERNEL" ] && [ -f "$INITFS_X86" ]; then
   INCLUDE_X86=1
+fi
+# The RISC-V half, on the same terms as the Intel one: included when it has
+# been built, and its absence costs the image nothing but the machines it
+# would have booted on.
+INCLUDE_RISCV=0
+if [ -f "$RISCV64_LOADER" ] && [ -f "$RISCV64_KERNEL" ] && \
+   [ -f "$INITFS_RISCV" ]; then
+  INCLUDE_RISCV=1
 fi
 
 ENTROPY_SEED="$BUILD_DIR/unified-entropy.seed"
@@ -118,6 +129,11 @@ if [ "$INCLUDE_X86" -eq 1 ]; then
   mcopy -i "$ESP_IMAGE" "$X86_64_KERNEL" ::/EFI/XAIOS/kernel-x86_64.elf
   mcopy -i "$ESP_IMAGE" "$INITFS_X86" ::/EFI/XAIOS/initfs-x86_64.img
 fi
+if [ "$INCLUDE_RISCV" -eq 1 ]; then
+  mcopy -i "$ESP_IMAGE" "$RISCV64_LOADER" ::/EFI/BOOT/BOOTRISCV64.EFI
+  mcopy -i "$ESP_IMAGE" "$RISCV64_KERNEL" ::/EFI/XAIOS/kernel-riscv64.elf
+  mcopy -i "$ESP_IMAGE" "$INITFS_RISCV" ::/EFI/XAIOS/initfs-riscv64.img
+fi
 # The initial filesystem holds userspace ELFs, so it is per-architecture too:
 # booting x86_64 against the ARM one loads /init and faults on the first
 # instruction. The ARM copy keeps the plain name for the same reason the ARM
@@ -140,6 +156,11 @@ if [ "$INCLUDE_X86" -eq 1 ]; then
   cp "$X86_64_LOADER" "$STAGE_DIR/EFI/BOOT/BOOTX64.EFI"
   cp "$X86_64_KERNEL" "$STAGE_DIR/EFI/XAIOS/kernel-x86_64.elf"
   cp "$INITFS_X86" "$STAGE_DIR/EFI/XAIOS/initfs-x86_64.img"
+fi
+if [ "$INCLUDE_RISCV" -eq 1 ]; then
+  cp "$RISCV64_LOADER" "$STAGE_DIR/EFI/BOOT/BOOTRISCV64.EFI"
+  cp "$RISCV64_KERNEL" "$STAGE_DIR/EFI/XAIOS/kernel-riscv64.elf"
+  cp "$INITFS_RISCV" "$STAGE_DIR/EFI/XAIOS/initfs-riscv64.img"
 fi
 cp "$INITFS" "$STAGE_DIR/EFI/XAIOS/initfs.img"
 cp "$ENTROPY_SEED" "$STAGE_DIR/EFI/XAIOS/entropy.sed"
@@ -165,7 +186,7 @@ xorriso -as mkisofs -quiet \
 printf '%s\n' "XAIOS unified image: $OUTPUT"
 printf '%s\n' "  size:          $(wc -c < "$OUTPUT") bytes"
 printf '%s\n' "  build:         $BUILD_NUMBER"
-printf '%s\n' "  architectures: aarch64$([ "$INCLUDE_X86" -eq 1 ] && printf ', x86_64')"
+printf '%s\n' "  architectures: aarch64$([ "$INCLUDE_X86" -eq 1 ] && printf ', x86_64')$([ "$INCLUDE_RISCV" -eq 1 ] && printf ', riscv64')"
 printf '%s\n' "  boot as:       optical media, or a disk with an EFI System Partition"
 printf '%s\n' "  usb stick:     dd if=$OUTPUT of=/dev/rdiskN bs=4m"
 printf '%s\n' "  mount:         hdiutil attach $OUTPUT"
