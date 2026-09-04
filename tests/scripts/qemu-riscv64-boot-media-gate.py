@@ -33,6 +33,10 @@ REQUIRED = [
     "XAIOS loader starting",
     "XAIOS loader target: RISC-V UEFI",
     # And the loader read the kernel off that same disk and started it.
+    # The kernel came from the signed A/B slot, not from the fallback path a
+    # medium without a system volume uses. That is what a real machine does,
+    # and asserting it is what keeps the update path from rotting untested.
+    "XAIOS loader loaded verified A/B system slot",
     "XAIOS loader exiting boot services",
     "riscv64: booted through UEFI",
     "XAIOS Build 4 kernel starting",
@@ -86,6 +90,8 @@ def main() -> int:
         models.write_bytes((BUILD / "xaios-xaifs.img").read_bytes())
         admin = state / "storage-admin.img"
         admin.write_bytes((BUILD / "xaios-smoke-storage-admin.img").read_bytes())
+        system = state / "system.img"
+        system.write_bytes((BUILD / "xaios-riscv64-system.img").read_bytes())
 
         command = [
             qemu, "-machine", "virt,acpi=off", "-cpu", "rv64",
@@ -108,6 +114,14 @@ def main() -> int:
             "-device", "virtio-blk-device,drive=xmodels,bus=virtio-mmio-bus.4",
             "-drive", f"if=none,format=raw,id=xadmin,file={admin}",
             "-device", "virtio-blk-device,drive=xadmin,bus=virtio-mmio-bus.5",
+            # The signed A/B system volume, on both transports as the other
+            # architectures present it.
+            "-blockdev", f"driver=file,node-name=sysf,filename={system},locking=off",
+            "-blockdev", "driver=raw,node-name=sysraw,file=sysf",
+            "-device", "virtio-blk-pci,drive=sysraw,bootindex=1,disable-legacy=on",
+            "-blockdev", f"driver=file,node-name=sysf2,filename={system},locking=off",
+            "-blockdev", "driver=raw,node-name=sysraw2,file=sysf2",
+            "-device", "virtio-blk-device,drive=sysraw2,bus=virtio-mmio-bus.6",
             "-device", "virtio-rng-pci,disable-legacy=on",
             "-netdev", "user,id=n0",
             "-device", "virtio-net-pci,netdev=n0,disable-legacy=on",

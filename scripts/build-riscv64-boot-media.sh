@@ -60,6 +60,17 @@ done
 "$PYTHON3" "$ROOT_DIR/scripts/elf-to-efi.py" --machine riscv64 \
   "$BUILD_DIR/loader.elf" "$BUILD_DIR/BOOTRISCV64.EFI"
 
+# The signed A/B system volume, which is where a real machine reads its
+# kernel from: the EFI System Partition is the fallback for a medium that
+# carries no system volume. Building one for this architecture is what lets
+# the update and rollback path be exercised here at all.
+SYSTEM_VOLUME="$ROOT_DIR/build/xaios-riscv64-system.img"
+printf '%s\n' "Creating signed A/B system volume: $SYSTEM_VOLUME"
+PYTHONPATH="$ROOT_DIR" "$PYTHON3" "$ROOT_DIR/tools/xaios_system_volume.py" \
+  create "$SYSTEM_VOLUME" "$KERNEL"
+PYTHONPATH="$ROOT_DIR" "$PYTHON3" "$ROOT_DIR/tools/xaios_system_volume.py" \
+  verify "$SYSTEM_VOLUME"
+
 printf '%s\n' "Creating RISC-V boot medium: $IMAGE"
 rm -f "$IMAGE"
 dd if=/dev/zero of="$IMAGE" bs=1m count=128 status=none

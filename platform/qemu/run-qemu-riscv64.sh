@@ -34,7 +34,12 @@ STATE="${XAIOS_RISCV64_STATE:-$BUILD/riscv64-run}"
 mkdir -p "$STATE"
 [ -f "$STATE/persistent.img" ] || dd if=/dev/zero of="$STATE/persistent.img" bs=1m count=16 status=none
 [ -f "$STATE/models.img" ] || cp "$BUILD/xaios-xaifs.img" "$STATE/models.img"
-[ -f "$STATE/system.img" ] || cp "$BUILD/xaios-system.img" "$STATE/system.img"
+# This architecture's own signed system volume, not another architecture's:
+# the loader verifies the slot and then refuses a kernel built for a machine
+# this is not, which is the correct behaviour and a confusing way to discover
+# that the wrong file was copied.
+RISCV_SYSTEM="$BUILD/xaios-riscv64-system.img"
+[ -f "$STATE/system.img" ] || cp "$RISCV_SYSTEM" "$STATE/system.img"
 [ -f "$STATE/storage-admin.img" ] || cp "$BUILD/xaios-smoke-storage-admin.img" "$STATE/storage-admin.img"
 BOOT_ARGS=""
 if [ -f "$BOOT_MEDIUM" ]; then

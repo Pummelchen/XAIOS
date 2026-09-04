@@ -144,3 +144,16 @@ int64_t sbi_hart_status(uint64_t hart_id) {
       sbi_call(SBI_EXT_HSM, SBI_HSM_HART_STATUS, hart_id, 0U, 0U);
   return result.error == 0 ? (int64_t)result.value : result.error;
 }
+
+/* Waking another hart.
+ *
+ * A supervisor software interrupt is the only thing that brings a hart out of
+ * wfi when nothing else is pending, and supervisor mode cannot raise one on
+ * another hart itself -- that write lives in machine mode. This is what the
+ * IPI extension is for.
+ */
+int64_t sbi_send_ipi(uint64_t hart_mask, uint64_t hart_mask_base) {
+  sbi_result_t result =
+      sbi_call(SBI_EXT_IPI, SBI_IPI_SEND, hart_mask, hart_mask_base, 0U);
+  return result.error;
+}

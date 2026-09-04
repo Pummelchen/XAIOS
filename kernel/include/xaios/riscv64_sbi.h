@@ -14,6 +14,9 @@
 #define SBI_EXT_SRST UINT64_C(0x53525354)  /* "SRST" */
 #define SBI_EXT_DBCN UINT64_C(0x4442434E)  /* "DBCN" */
 #define SBI_EXT_HSM UINT64_C(0x48534D)     /* "HSM" */
+#define SBI_EXT_IPI UINT64_C(0x735049)     /* "sPI" */
+
+#define SBI_IPI_SEND UINT64_C(0)
 
 #define SBI_HSM_HART_START UINT64_C(0)
 #define SBI_HSM_HART_STATUS UINT64_C(2)
@@ -44,5 +47,9 @@ void sbi_shutdown(void);
 int64_t sbi_hart_start(uint64_t hart_id, uint64_t start_address,
                        uint64_t opaque);
 int64_t sbi_hart_status(uint64_t hart_id);
+
+/* Raise a supervisor software interrupt on the harts named by the mask,
+   which is relative to hart_mask_base. */
+int64_t sbi_send_ipi(uint64_t hart_mask, uint64_t hart_mask_base);
 
 #endif

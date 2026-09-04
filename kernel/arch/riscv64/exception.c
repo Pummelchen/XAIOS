@@ -136,6 +136,39 @@ typedef struct riscv64_trap_frame {
 } riscv64_trap_frame_t;
 
 #define SSTATUS_SPP (UINT64_C(1) << 8)
+#define SSTATUS_SUM (UINT64_C(1) << 18)
+
+/* Supervisor access to user pages, opened only where it is meant to be used.
+ *
+ * SUM was set once at startup and left on for the whole life of the kernel,
+ * which made a stray dereference of a user pointer anywhere in the kernel a
+ * silent success. AArch64 does the opposite with PAN: privileged access to
+ * user memory is refused by default and opened explicitly around the places
+ * that copy, with a depth counter so nested opens close correctly.
+ *
+ * The same shape here, in the place that matters most. Kernel-initiated
+ * access -- loading an ELF, setting up a process -- runs with SUM set,
+ * because the kernel is acting for itself and knows the address is one it
+ * just mapped. Kernel code running *on behalf of a user*, which is where an
+ * unvalidated pointer would be dereferenced, runs with SUM clear and has to
+ * open a window to touch anything. That is the case PAN exists for.
+ *
+ * The frame's sstatus is restored on the way out, so the kernel's own default
+ * comes back without anyone having to put it back. */
+static uint32_t g_user_access_depth;
+
+void xaios_user_access_begin(void) {
+  if (g_user_access_depth == UINT32_MAX) return;
+  ++g_user_access_depth;
+  __asm__ volatile("csrs sstatus, %0" : : "r"(SSTATUS_SUM) : "memory");
+}
+
+void xaios_user_access_end(void) {
+  if (g_user_access_depth == 0U) return;
+  if (--g_user_access_depth == 0U) {
+    __asm__ volatile("csrc sstatus, %0" : : "r"(SSTATUS_SUM) : "memory");
+  }
+}
 
 #define CAUSE_ECALL_FROM_USER 8U
 #define CAUSE_BREAKPOINT 3U
@@ -200,6 +233,14 @@ uint64_t riscv64_trap_handler(riscv64_trap_frame_t *frame) {
       timer_rearm();
     } else if (which == IRQ_EXTERNAL) {
       handle_external();
+    } else if (which == IRQ_SOFTWARE) {
+      /* Somebody queued work for this hart and woke it. The pending bit is
+         cleared here, by this hart, which is the only place it can be:
+         sip.SSIP is writable from supervisor mode and nothing else clears
+         it. Leaving it set would trap again the moment interrupts are
+         re-enabled, forever. There is nothing else to do -- the work is
+         found by looking, and waking is the whole message. */
+      __asm__ volatile("csrc sip, %0" : : "r"(UINT64_C(1) << 1) : "memory");
     }
     /* An interrupt resumes the instruction it interrupted, which has not
        run, so sepc is left exactly as it arrived. */
@@ -210,8 +251,13 @@ uint64_t riscv64_trap_handler(riscv64_trap_frame_t *frame) {
      which is the calling convention userspace assembly already uses, and the
      result goes back in a0 where the caller will read it. */
   if (cause == CAUSE_ECALL_FROM_USER) {
+    /* Closed for the duration of the handler, opened only across the
+       dispatch itself -- which is exactly the window AArch64 opens. */
+    __asm__ volatile("csrc sstatus, %0" : : "r"(SSTATUS_SUM) : "memory");
+    xaios_user_access_begin();
     uint64_t result =
         syscall_dispatch(frame->a7, frame->a0, frame->a1, frame->a2);
+    xaios_user_access_end();
     frame->a0 = result;
     /* ecall is never compressed, so four is right here and only here --
        past the instruction, or the syscall is made again forever. */
@@ -244,6 +290,9 @@ uint64_t riscv64_trap_handler(riscv64_trap_frame_t *frame) {
      the process and continuing is what the other architectures do; panicking
      would let any user program halt the system. */
   if ((frame->sstatus & SSTATUS_SPP) == 0U) {
+    /* A fault taken from user mode is handled with user access closed: the
+       kernel has no business following a pointer that just faulted. */
+    __asm__ volatile("csrc sstatus, %0" : : "r"(SSTATUS_SUM) : "memory");
     klog("user exception: cause=%lu sepc=0x%lx stval=0x%lx\n", cause,
          frame->sepc, frame->stval);
     uint64_t note = user_process_note_fault();
@@ -290,9 +339,11 @@ void exception_init(void) {
          "not be delivered\n");
   }
 
-  /* Timer and external enabled; software interrupts stay masked until there
-     is a second hart to send one. */
-  __asm__ volatile("csrs sie, %0" : : "r"(SIE_TIMER | SIE_EXTERNAL));
+  /* Timer, external and software. Software is what one hart uses to wake
+     another, so a hart that masked it would sleep through every job it was
+     given -- which is what spinning instead of sleeping was working around. */
+  __asm__ volatile("csrs sie, %0"
+                   : : "r"(SIE_TIMER | SIE_EXTERNAL | SIE_SOFTWARE));
   __asm__ volatile("csrs sstatus, %0" : : "r"(SSTATUS_SIE));
   klog("exception: stvec armed, timer and external interrupts enabled\n");
 }

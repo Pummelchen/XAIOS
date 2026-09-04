@@ -168,25 +168,22 @@ void smp_secondary_main(uint64_t cpu_id) {
 
   __asm__ volatile("csrs sstatus, %0" : : "r"(UINT64_C(2)) : "memory");
 
-  /* Spinning, not sleeping.
+  /* Sleeping, not spinning.
    *
-   * wfi was the obvious instruction here and it is the wrong one: it blocks
-   * until an interrupt is pending, and nothing makes one pending. The shared
-   * kernel queues work for another CPU without signalling it -- there is no
-   * wake hook in thread.c for any architecture -- and AArch64 gets away with
-   * a wfe next to the same queue because wfe is permitted to return without
-   * an event and does. RISC-V's wfi is not, so a hart that slept here slept
-   * through every job it was given: threads assigned to harts 2 and 3 were
-   * reported stalled having never run, on a machine where those harts were
-   * demonstrably online.
+   * This spun, because the first version of smp_wake_cpu here reported that
+   * there was no way to wake a hart -- so a hart that slept would have slept
+   * through every job it was given. There is a way: the shared scheduler
+   * already calls smp_wake_cpu whenever it queues work for a CPU other than
+   * the one it is running on, and SBI's IPI extension raises the supervisor
+   * software interrupt that brings a hart out of wfi. Spinning cost a core
+   * doing nothing on every idle machine.
    *
-   * Spinning costs a core doing nothing rather than a job never done. Waking
-   * on a software interrupt is the right answer and needs a way for the
-   * enqueueing side to say which CPU to wake, which the shared interface does
-   * not have yet. */
+   * The pending work is still checked before sleeping and after waking,
+   * because a wake that arrives between the two would otherwise be missed. */
   for (;;) {
-    (void)xaios_thread_run_pending((uint32_t)cpu_id);
-    __asm__ volatile("" ::: "memory");
+    if (xaios_thread_run_pending((uint32_t)cpu_id) == 0U) {
+      __asm__ volatile("wfi" ::: "memory");
+    }
   }
 }
 
@@ -351,10 +348,16 @@ xaios_status_t smp_release_core_lease(uint32_t cpu_id, uint32_t owner_id) {
 }
 
 xaios_status_t smp_wake_cpu(uint32_t cpu_id) {
-  (void)cpu_id;
-  /* SBI's HSM extension starts a hart; using it is the next piece of work.
-     Until then there is no hart to wake. */
-  return XAIOS_ERR_UNSUPPORTED;
+  if (cpu_id >= RISCV64_MAX_HARTS || g_cpu_states[cpu_id].online == 0U ||
+      __atomic_load_n(&g_cpu_states[cpu_id].scheduling_enabled,
+                      __ATOMIC_ACQUIRE) == 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  /* Addressed by hart, because that is what firmware knows about; the mask is
+     one bit relative to that hart rather than a bitmap based at zero, so this
+     says nothing about harts it was not asked to wake. */
+  uint64_t hart = g_hart_of_cpu[cpu_id];
+  return sbi_send_ipi(UINT64_C(1), hart) == 0 ? XAIOS_OK : XAIOS_ERR_IO;
 }
 
 uint64_t smp_total_migration_count(void) { return 0U; }
