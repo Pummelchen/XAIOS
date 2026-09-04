@@ -66,6 +66,12 @@ xaios_status_t virtio_block_submit_write_h(
     uint64_t *token);
 uint32_t virtio_block_poll_h(virtio_block_handle_t *handle);
 uint32_t virtio_block_outstanding_h(const virtio_block_handle_t *handle);
+/* Stop processing completions without stopping the device. Interrupts are
+   still acknowledged, so a level-triggered line does not re-raise. Used by
+   the queue-depth checks, which measure capacity and can only do so while
+   nothing is draining the queue. */
+void virtio_block_suspend_completions_h(virtio_block_handle_t *handle,
+                                        uint32_t suspended);
 uint32_t virtio_block_queue_depth_h(const virtio_block_handle_t *handle);
 uint64_t virtio_block_interrupt_count_h(const virtio_block_handle_t *handle);
 xaios_status_t virtio_block_flush_h(virtio_block_handle_t *handle);

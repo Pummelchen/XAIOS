@@ -97,6 +97,19 @@ typedef struct virtio_block_driver {
   uint16_t next_avail;
   uint16_t used_last;
   uint32_t outstanding;
+  /* When set, completions are acknowledged but not processed.
+   *
+   * The queue-depth checks in the self-test below fill the ring and then
+   * assert that everything they submitted is still outstanding and that one
+   * more request is refused. Both statements are about the queue's capacity,
+   * and both are only observable while nothing is draining it -- which is
+   * true when completions are polled and false the moment the device can
+   * interrupt. Rather than write assertions that are weaker on the machines
+   * that complete faster, the test suspends processing for exactly the window
+   * it is measuring. The interrupt is still acknowledged while suspended,
+   * because a device left asserting a level-triggered line re-raises it
+   * immediately and the machine spends the window in its own handler. */
+  uint32_t completions_suspended;
   uint32_t special_active;
   uint32_t queue_depth;
   /* How the data actually reached the device. A direct request handed the
@@ -568,6 +581,11 @@ uint32_t virtio_block_poll_h(virtio_block_handle_t *handle) {
       xaios_spin_trylock(&drv->queue_lock) == 0) {
     return 0U;
   }
+  if (drv->completions_suspended != 0U) {
+    xaios_spin_unlock(&drv->queue_lock);
+    virtio_transport_ack_interrupts(&drv->device);
+    return 0U;
+  }
   uint32_t completed = 0U;
   for (;;) {
     virtio_mmio_barrier();
@@ -617,6 +635,12 @@ uint32_t virtio_block_poll_h(virtio_block_handle_t *handle) {
 
 uint32_t virtio_block_outstanding_h(const virtio_block_handle_t *handle) {
   return handle == 0 ? 0U : handle->outstanding;
+}
+
+void virtio_block_suspend_completions_h(virtio_block_handle_t *handle,
+                                        uint32_t suspended) {
+  if (handle == 0) return;
+  handle->completions_suspended = suspended != 0U ? 1U : 0U;
 }
 
 void virtio_block_report_transfers(void) {
@@ -1536,6 +1560,11 @@ void virtio_block_self_test(void) {
           VIRTIO_BLK_MAX_ASYNC_DEPTH);
   virtio_block_sync_wait_t waits[VIRTIO_BLK_MAX_ASYNC_DEPTH];
   uint64_t tokens[VIRTIO_BLK_MAX_ASYNC_DEPTH];
+  /* Nothing may drain the queue while its capacity is being measured. On a
+     machine whose device completes by interrupt, requests finish during the
+     loop below and the two assertions after it -- that the queue is full and
+     that one more is refused -- stop being about capacity at all. */
+  virtio_block_suspend_completions_h(g_blk, 1U);
   for (uint32_t i = 0U; i < g_blk->queue_depth; ++i) {
     waits[i].complete = 0U;
     waits[i].status = XAIOS_ERR_IO;
@@ -1550,6 +1579,7 @@ void virtio_block_self_test(void) {
   kassert(virtio_block_submit_read_h(
               g_blk, 0U, sector, SECTOR_SIZE, sync_completion, &waits[0],
               &rejected_token) == XAIOS_ERR_BUSY);
+  virtio_block_suspend_completions_h(g_blk, 0U);
   for (uint32_t i = 0U; i < g_blk->queue_depth; ++i) {
     kassert(wait_sync(g_blk, &waits[i]) == XAIOS_OK);
   }
