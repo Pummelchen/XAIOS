@@ -34,7 +34,7 @@ SSH_READY_MARKER = "SSH server: up and running (tcp/22)"
 BOOT_TIMEOUT_SECONDS = float(os.environ.get("XAIOS_TEST_BOOT_TIMEOUT", "150"))
 CLIENT_TIMEOUT_SECONDS = float(os.environ.get("XAIOS_TEST_SUITE_TIMEOUT", "600"))
 CONNECT_TIMEOUT_SECONDS = os.environ.get("XAIOS_TEST_CONNECT_TIMEOUT", "60")
-HTOP_TIMEOUT_SECONDS = 180
+XTOP_TIMEOUT_SECONDS = 180
 FATAL_BOOT_MARKERS = (
     "CYAN SCREEN OF DEATH",
     "System halted. Manual reset required",
@@ -450,7 +450,7 @@ def create_xaiboot_fs_fixture(path: Path, version: int) -> bytes:
     return payload
 
 
-def verify_native_htop_pty(key_dir: Path, port: int) -> None:
+def verify_native_xtop_pty(key_dir: Path, port: int) -> None:
     ssh_base = [
         "ssh",
         "-i", "/keys/authorized",
@@ -462,7 +462,7 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
         "admin@host.docker.internal",
     ]
 
-    def run_guest(command: str, timeout: int = HTOP_TIMEOUT_SECONDS) -> bytes:
+    def run_guest(command: str, timeout: int = XTOP_TIMEOUT_SECONDS) -> bytes:
         completed = subprocess.run(
             docker_command(key_dir, *ssh_base, command),
             cwd=ROOT,
@@ -484,7 +484,7 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
         b"/bin/app-fail",
         b"/bin/app-crash",
     )
-    initial_processes = run_guest("htop --plain --sample-ms 10")
+    initial_processes = run_guest("xtop --plain --sample-ms 10")
     unexpected = [path for path in transient_paths if path in initial_processes]
     if unexpected:
         raise RuntimeError(
@@ -532,7 +532,7 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
     if run_guest("pwd").strip() != b"/":
         raise RuntimeError("SSH command engine did not survive a user fault")
 
-    final_processes = run_guest("htop --plain --sample-ms 10")
+    final_processes = run_guest("xtop --plain --sample-ms 10")
     unreaped = [path for path in transient_paths if path in final_processes]
     if unreaped:
         raise RuntimeError(f"transient applications were not reaped: {unreaped!r}")
@@ -543,7 +543,7 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
             *ssh_base[:1],
             "-tt",
             *ssh_base[1:],
-            "htop",
+            "xtop",
         ),
         cwd=ROOT,
         stdin=subprocess.PIPE,
@@ -574,19 +574,19 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
     if not dashboard_ready.wait(30):
         colored.kill()
         colored.wait(timeout=5)
-        raise RuntimeError("native htop PTY did not render its initial dashboard")
+        raise RuntimeError("native xtop PTY did not render its initial dashboard")
     assert colored.stdin is not None
     for keys in (b"M", b"/sshd\n", b"h", b"h", b"q"):
         colored.stdin.write(keys)
         colored.stdin.flush()
         time.sleep(0.075)
     colored.stdin.close()
-    returncode = colored.wait(timeout=HTOP_TIMEOUT_SECONDS)
+    returncode = colored.wait(timeout=XTOP_TIMEOUT_SECONDS)
     stdout_thread.join(timeout=5)
     stderr_thread.join(timeout=5)
     if returncode != 0:
         raise RuntimeError(
-            "native htop PTY command failed: "
+            "native xtop PTY command failed: "
             + bytes(colored_stderr).decode(errors="replace")
         )
     required = (
@@ -604,7 +604,7 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
         b"mem",
         b"Filter: ",
         b"sshd",
-        b"XAIOS htop help",
+        b"XAIOS xtop help",
         b"60 frames/s",
         b"F10",
         b"Quit",
@@ -613,13 +613,13 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
     )
     missing = [marker for marker in required if marker not in colored_stdout]
     if missing:
-        raise RuntimeError(f"native htop PTY output missing markers: {missing!r}")
+        raise RuntimeError(f"native xtop PTY output missing markers: {missing!r}")
 
     visible_output = re.sub(
         rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", bytes(colored_stdout)
     ).replace(b"\r", b"")
     if b"0 failed" not in visible_output:
-        raise RuntimeError("native htop visible task status did not report zero failures")
+        raise RuntimeError("native xtop visible task status did not report zero failures")
     visible_lines = visible_output.splitlines()
     cpu_line = next(
         (line for line in visible_lines if line.lstrip().startswith(b"0[")), None
@@ -638,30 +638,30 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
     )
     if (cpu_line is None or cpu_one_line is None or cpu_two_line is None or
             memory_line is None or swap_line is None):
-        raise RuntimeError("native htop output lacked aligned CPU/memory/swap meters")
+        raise RuntimeError("native xtop output lacked aligned CPU/memory/swap meters")
     bracket_columns = {
         cpu_line.index(b"["), memory_line.index(b"["), swap_line.index(b"[")
     }
     if len(bracket_columns) != 1:
         raise RuntimeError(
-            f"native htop meter brackets were not aligned: {bracket_columns!r}"
+            f"native xtop meter brackets were not aligned: {bracket_columns!r}"
         )
     left_cell_width = len(cpu_line) // 2
     if (cpu_line.find(b"Tasks:") != left_cell_width or
             cpu_one_line.find(b"Load average:") != left_cell_width or
             cpu_two_line.find(b"Uptime:") != left_cell_width):
         raise RuntimeError(
-            "native htop Debian-style status rows were not in the right column"
+            "native xtop Debian-style status rows were not in the right column"
         )
     if (len(memory_line) != len(cpu_line) or len(swap_line) != len(cpu_line) or
             memory_line[left_cell_width:].strip() or
             swap_line[left_cell_width:].strip()):
         raise RuntimeError(
-            "native htop memory/swap content escaped the left CPU column: "
+            "native xtop memory/swap content escaped the left CPU column: "
             f"cpu={len(cpu_line)} mem={len(memory_line)} swap={len(swap_line)}"
         )
     if b"F1Help" not in visible_output or b"F10Quit" not in visible_output:
-        raise RuntimeError("native htop footer did not use segmented key labels")
+        raise RuntimeError("native xtop footer did not use segmented key labels")
 
     shell = subprocess.Popen(
         docker_command(
@@ -679,7 +679,7 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
     shell_stderr = bytearray()
     shell_prompt_ready = threading.Event()
     shell_dashboard_ready = threading.Event()
-    shell_htop_returned = threading.Event()
+    shell_xtop_returned = threading.Event()
     shell_listing_ready = threading.Event()
 
     def drain_shell(stream: object, output: bytearray,
@@ -697,7 +697,7 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
             if b"[Main]" in output:
                 shell_dashboard_ready.set()
             if prompt_count >= 2:
-                shell_htop_returned.set()
+                shell_xtop_returned.set()
             if prompt_count >= 3 and b"etc\r\nbin\r\nstate\r\n" in output:
                 shell_listing_ready.set()
 
@@ -714,41 +714,41 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
         shell.kill()
         shell.wait(timeout=5)
         raise RuntimeError("interactive shell did not render its initial prompt")
-    shell.stdin.write(b"htop\n")
+    shell.stdin.write(b"xtop\n")
     shell.stdin.flush()
     if not shell_dashboard_ready.wait(30):
         shell.kill()
         shell.wait(timeout=5)
-        raise RuntimeError("shell-launched htop did not render its dashboard")
+        raise RuntimeError("shell-launched xtop did not render its dashboard")
     shell.stdin.write(b"q")
     shell.stdin.flush()
-    if not shell_htop_returned.wait(30):
+    if not shell_xtop_returned.wait(30):
         shell.kill()
         shell.wait(timeout=5)
-        raise RuntimeError("htop did not restore the interactive shell prompt")
+        raise RuntimeError("xtop did not restore the interactive shell prompt")
     shell.stdin.write(b"ls /\n")
     shell.stdin.flush()
     if not shell_listing_ready.wait(30):
         shell.kill()
         shell.wait(timeout=5)
-        raise RuntimeError("post-htop shell listing was not left aligned")
+        raise RuntimeError("post-xtop shell listing was not left aligned")
     shell.stdin.write(b"exit\n")
     shell.stdin.close()
-    shell_returncode = shell.wait(timeout=HTOP_TIMEOUT_SECONDS)
+    shell_returncode = shell.wait(timeout=XTOP_TIMEOUT_SECONDS)
     shell_stdout_thread.join(timeout=5)
     shell_stderr_thread.join(timeout=5)
     if shell_returncode != 0:
         raise RuntimeError(
-            "post-htop interactive shell failed: "
+            "post-xtop interactive shell failed: "
             + bytes(shell_stderr).decode(errors="replace")
         )
     restore = b"\x1b[?1049l\x1b[0m\x1b[?25h\r"
     if restore not in shell_stdout:
-        raise RuntimeError("htop did not fully reset the host terminal state")
+        raise RuntimeError("xtop did not fully reset the host terminal state")
     listing_start = shell_stdout.find(b"ls /\r\n")
     listing_end = shell_stdout.find(b"admin@xaios", listing_start + 6)
     if listing_start < 0 or listing_end < 0:
-        raise RuntimeError("post-htop shell listing boundaries were not found")
+        raise RuntimeError("post-xtop shell listing boundaries were not found")
     listing = shell_stdout[listing_start + 6:listing_end]
     bare_newline = next(
         (index for index, value in enumerate(listing)
@@ -757,33 +757,33 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
     )
     if bare_newline is not None:
         raise RuntimeError(
-            f"post-htop PTY output contained a bare LF at offset {bare_newline}"
+            f"post-xtop PTY output contained a bare LF at offset {bare_newline}"
         )
 
     plain = subprocess.run(
         docker_command(
             key_dir,
             *ssh_base,
-            "htop --all --sample-ms 10 --cpu-count 2 --plain",
+            "xtop --all --sample-ms 10 --cpu-count 2 --plain",
         ),
         cwd=ROOT,
         capture_output=True,
-        timeout=HTOP_TIMEOUT_SECONDS,
+        timeout=XTOP_TIMEOUT_SECONDS,
     )
     if plain.returncode != 0:
         raise RuntimeError(
-            "native htop plain command failed: "
+            "native xtop plain command failed: "
             + plain.stderr.decode(errors="replace")
         )
     if b"\x1b[" in plain.stdout or b"CPU CPU% BUSY_MS" not in plain.stdout:
-        raise RuntimeError("native htop non-PTY output did not remain plain text")
+        raise RuntimeError("native xtop non-PTY output did not remain plain text")
     cpu_zero = re.search(rb"(?m)^0 ([0-9]+\.[0-9])% ", plain.stdout)
     if cpu_zero is None:
-        raise RuntimeError("native htop plain output lacked CPU 0 utilization")
+        raise RuntimeError("native xtop plain output lacked CPU 0 utilization")
     cpu_zero_tenths = int(cpu_zero.group(1).replace(b".", b""))
     if cpu_zero_tenths >= 1000:
         raise RuntimeError(
-            "native htop sampling saturated housekeeping CPU 0: "
+            "native xtop sampling saturated housekeeping CPU 0: "
             + cpu_zero.group(1).decode()
             + "%"
         )
@@ -794,15 +794,15 @@ def verify_native_htop_pty(key_dir: Path, port: int) -> None:
             *ssh_base[:1],
             "-tt",
             *ssh_base[1:],
-            "htop --sort invalid",
+            "xtop --sort invalid",
         ),
         cwd=ROOT,
         capture_output=True,
-        timeout=HTOP_TIMEOUT_SECONDS,
+        timeout=XTOP_TIMEOUT_SECONDS,
     )
     invalid_output = invalid.stdout + invalid.stderr
-    if invalid.returncode == 0 or b"htop: invalid --sort key" not in invalid_output:
-        raise RuntimeError("native htop PTY accepted an invalid sort key")
+    if invalid.returncode == 0 or b"xtop: invalid --sort key" not in invalid_output:
+        raise RuntimeError("native xtop PTY accepted an invalid sort key")
 
     pong = subprocess.Popen(
         docker_command(
@@ -1101,7 +1101,7 @@ def main() -> int:
             ),
             CLIENT_TIMEOUT_SECONDS,
         )
-        verify_native_htop_pty(key_dir, ssh_port)
+        verify_native_xtop_pty(key_dir, ssh_port)
         run_checked(
             docker_command(
                 key_dir,
@@ -1120,10 +1120,10 @@ def main() -> int:
         results["sftp_file_directory_operations"] = "passed"
         results["ssh_rekey"] = "passed"
         results["ssh_shared_transport_channels"] = "passed"
-        results["native_htop_pty_ansi"] = "passed"
-        results["native_htop_shell_restore"] = "passed"
-        results["native_htop_non_pty_plain"] = "passed"
-        results["native_htop_invalid_option_rejected"] = "passed"
+        results["native_xtop_pty_ansi"] = "passed"
+        results["native_xtop_shell_restore"] = "passed"
+        results["native_xtop_non_pty_plain"] = "passed"
+        results["native_xtop_invalid_option_rejected"] = "passed"
         results["native_pong_pty"] = "passed"
         results["native_transient_apps_on_demand"] = "passed"
         results["native_user_fault_isolation"] = "passed"

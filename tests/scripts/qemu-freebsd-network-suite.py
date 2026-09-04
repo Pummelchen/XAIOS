@@ -268,18 +268,18 @@ cmp /tmp/sftp-source /tmp/sftp-renamed-result || fail "SFTP rename round trip di
 grep -q '/tmp/freebsd-sftp' /tmp/sftp.log || fail "SFTP stat/list output missing"
 echo "XAIOS_FREEBSD_INTEROP: SFTP read/write/stat/rename/remove PASS"
 
-{{ sleep 2; printf 'M'; sleep 0.1; printf '/sshd\n'; sleep 0.1; printf 'h'; sleep 0.1; printf 'h'; sleep 0.1; printf 'q'; }} | TERM=xterm ssh -tt $ssh_base admin@$host 'htop' >/tmp/htop.ansi 2>/tmp/htop.err || fail "PTY htop failed"
+{{ sleep 2; printf 'M'; sleep 0.1; printf '/sshd\n'; sleep 0.1; printf 'h'; sleep 0.1; printf 'h'; sleep 0.1; printf 'q'; }} | TERM=xterm ssh -tt $ssh_base admin@$host 'xtop' >/tmp/xtop.ansi 2>/tmp/xtop.err || fail "PTY xtop failed"
 printf '\\033[2J\\033[H' >/tmp/clear-sequence
 printf '\\033[?1049h' >/tmp/alternate-enter
 printf '\\033[?1049l' >/tmp/alternate-leave
-grep -F -f /tmp/alternate-enter /tmp/htop.ansi >/dev/null || fail "PTY htop did not enter alternate screen"
-grep -F -f /tmp/clear-sequence /tmp/htop.ansi >/dev/null || fail "PTY htop lacked ANSI clear sequence"
-grep -q 'Tasks:' /tmp/htop.ansi || fail "PTY htop lacked task meter"
-grep -q 'Filter:' /tmp/htop.ansi || fail "PTY htop lacked interactive filter"
-grep -q 'XAIOS htop help' /tmp/htop.ansi || fail "PTY htop lacked help screen"
-grep -q '60 frames/s' /tmp/htop.ansi || fail "PTY htop lacked frame-cap status"
-grep -F -f /tmp/alternate-leave /tmp/htop.ansi >/dev/null || fail "PTY htop did not leave alternate screen"
-echo "XAIOS_FREEBSD_INTEROP: SSH PTY interactive htop PASS"
+grep -F -f /tmp/alternate-enter /tmp/xtop.ansi >/dev/null || fail "PTY xtop did not enter alternate screen"
+grep -F -f /tmp/clear-sequence /tmp/xtop.ansi >/dev/null || fail "PTY xtop lacked ANSI clear sequence"
+grep -q 'Tasks:' /tmp/xtop.ansi || fail "PTY xtop lacked task meter"
+grep -q 'Filter:' /tmp/xtop.ansi || fail "PTY xtop lacked interactive filter"
+grep -q 'XAIOS xtop help' /tmp/xtop.ansi || fail "PTY xtop lacked help screen"
+grep -q '60 frames/s' /tmp/xtop.ansi || fail "PTY xtop lacked frame-cap status"
+grep -F -f /tmp/alternate-leave /tmp/xtop.ansi >/dev/null || fail "PTY xtop did not leave alternate screen"
+echo "XAIOS_FREEBSD_INTEROP: SSH PTY interactive xtop PASS"
 
 payload='freebsd-udp-echo'
 reply="$(printf '%s' "$payload" | nc -u -w 5 "$host" {udp_port})" || fail "UDP echo failed"
@@ -482,7 +482,7 @@ def main() -> int:
                 "unauthorized_key_rejection": "passed",
                 "xaiosctl": "passed",
                 "sftp_round_trip": "passed",
-                "ssh_pty_ansi_htop": "passed",
+                "ssh_pty_ansi_xtop": "passed",
                 "udp_echo": "passed",
             },
         }

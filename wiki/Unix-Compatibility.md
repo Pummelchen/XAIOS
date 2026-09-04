@@ -12,9 +12,9 @@ gate establishes only the tested command or wire behavior.
 
 | Client | Current QEMU evidence |
 |---|---|
-| FreeBSD 15.1 AArch64 | Official checksum-pinned VM; OpenSSH public-key acceptance and rejection, `xaiosctl`, SFTP write/stat/read/rename/remove, interactive PTY ANSI `htop`, and UDP echo. |
+| FreeBSD 15.1 AArch64 | Official checksum-pinned VM; OpenSSH public-key acceptance and rejection, `xaiosctl`, SFTP write/stat/read/rename/remove, interactive PTY ANSI `xtop`, and UDP echo. |
 | macOS | Native OpenSSH/SFTP administration and one-guest parallel load coverage. |
-| Debian 13 | Independent Linux/OpenSSH cross-client coverage for password policy, stateful shell prompts, interactive `nano`, recursive filesystem operations, command errors, rekey, administration, persistence, concurrency, interactive PTY `htop` and malformed network traffic. |
+| Debian 13 | Independent Linux/OpenSSH cross-client coverage for password policy, stateful shell prompts, interactive `nano`, recursive filesystem operations, command errors, rekey, administration, persistence, concurrency, interactive PTY `xtop` and malformed network traffic. |
 
 The core command subset now includes `ls`, `cd`, `pwd`, `mkdir`, `rm`, `cp`,
 `mv`, `cat`, alternate-screen `less`, `grep`, `find`, `ps`, `df`, `du`, `tar`,

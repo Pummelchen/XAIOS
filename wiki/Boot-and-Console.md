@@ -102,7 +102,7 @@ authenticates.
 
 The serial console supports independent working-directory state, line editing,
 `Backspace`, `Ctrl-C`, `Ctrl-L`, logout, filesystem commands, `nano`, `less`,
-`htop`, and `pong`. Password input is not echoed. Failed authentication does
+`xtop`, and `pong`. Password input is not echoed. Failed authentication does
 not create a shell session. The same byte-oriented console interface accepts
 USB HID boot-keyboard input from the default xHCI device on both QEMU ARM64 and
 QEMU x86_64; PL011 serial remains available when no USB keyboard is attached.

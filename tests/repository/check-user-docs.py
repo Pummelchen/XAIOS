@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-INTERACTIVE_APPLICATIONS = {"htop", "nano", "pong"}
+INTERACTIVE_APPLICATIONS = {"xtop", "nano", "pong"}
 ADMIN_APPLICATIONS = {"xaiosctl", "xapt"}
 
 
@@ -64,10 +64,10 @@ def main() -> int:
     source = (ROOT / "kernel/runtime/remote_login.c").read_text(encoding="utf-8")
     for forbidden in (
         "__xaios_nano_core",
-        "__xaios_htop_core",
+        "__xaios_xtop_core",
         "__xaios_pong_core",
         "handle_nano(",
-        "handle_htop(",
+        "handle_xtop(",
     ):
         if forbidden in source:
             failures.append(f"kernel retains private application logic: {forbidden}")

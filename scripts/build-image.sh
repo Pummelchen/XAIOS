@@ -74,7 +74,7 @@ WORKER_ELF="$INIT_BUILD_DIR/worker.elf"
 USER_START_OBJ="$INIT_BUILD_DIR/user-start.o"
 USER_LIB_OBJ="$INIT_BUILD_DIR/xaios-user.o"
 USER_CONTROL_OBJ="$INIT_BUILD_DIR/xaios-control-client.o"
-USER_APPS="xaios-shell xaiosctl xapt nano htop pong hello sysinfo systest smptest smpstress perfbench nettest lstm-xor sshtest mltest posix-shell agenttest clustertest xaios-setup"
+USER_APPS="xaios-shell xaiosctl xapt nano xtop pong hello sysinfo systest smptest smpstress perfbench nettest lstm-xor sshtest mltest posix-shell agenttest clustertest xaios-setup"
 
 # Which end of a cluster this image is, and where its peer is.
 #
@@ -1163,7 +1163,7 @@ for app in $USER_APPS; do
       "$SETUP_CRYPTO_OBJ" \
       "$SETUP_NACL_OBJ"
   elif [ "$app" = "xaiosctl" ] ||
-      [ "$app" = "htop" ]; then
+      [ "$app" = "xtop" ]; then
     "$LD_LLD" \
       -nostdlib \
       -T "$ROOT_DIR/userspace/init/linker.ld" \

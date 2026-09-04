@@ -3,7 +3,7 @@
 
 /* Read-only VFS view of the boot image, so userspace utilities can list and
    read what the kernel loads from it. Without this, /bin exists only as the
-   kernel's private launch table: the shell can run /bin/htop while ls shows
+   kernel's private launch table: the shell can run /bin/xtop while ls shows
    an empty directory, which reads as a broken system rather than a design.
 
    The image is immutable after initramfs_init and the mount is declared

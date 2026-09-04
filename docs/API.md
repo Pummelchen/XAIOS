@@ -135,7 +135,7 @@ limits; the 64-bit API and separate xaiFS are used for large model packages.
 `pwd`, `ls` (with `-l`/`-a`), `cd`, `mkdir`, `touch`, `cat`, `less`,
 `cp`, `mv`, `rm`, `rmdir`, `stat`, `write`, `echo`, `grep`, `find`, `head`,
 `tail`, `sed`, `tar`, `zip`, `unzip`, fixture-only `cpio`, outbound `ssh` and
-`scp`, `nano`, `htop`, `pong`, `xaiosctl`, `status`, `hello`, `sysinfo`, `systest`,
+`scp`, `nano`, `xtop`, `pong`, `xaiosctl`, `status`, `hello`, `sysinfo`, `systest`,
 `smptest`, `nettest`, `lstm-xor`, `mltest`, `posix-shell`, `agenttest`, `help`,
 and `exit`. Exact options and storage/archive limits are specified in
 [`UNIX-COMPATIBILITY.md`](./UNIX-COMPATIBILITY.md).
@@ -201,17 +201,17 @@ truncation, and modifying command-mode operations save immediately. The editor
 implementation is userspace-owned; the kernel provides only filesystem and
 console primitives.
 
-`htop` emits a sampled kernel CPU, memory, and process snapshot:
+`xtop` emits a sampled kernel CPU, memory, and process snapshot:
 
 ```text
-htop [--active|--all] [--sample-ms 1..1000]
+xtop [--active|--all] [--sample-ms 1..1000]
      [--cpu-start N] [--cpu-count N] [--no-cpus]
      [--color|--plain] [--columns 40..240] [--rows 12..100]
      [--sort cpu|mem|time|pid|state|syscalls|command|parent]
      [--reverse] [--tree] [--filter TEXT] [--process-start N] [--selected N]
 ```
 
-Bare `htop` defaults to all process slots, all detected CPUs, and a 250 ms
+Bare `xtop` defaults to all process slots, all detected CPUs, and a 250 ms
 sample interval. `--active` limits the process table to active slots, while
 `--all`, `--sample-ms`, and the CPU-range options remain available for explicit
 automation. The sample reports `%CPU` from monotonic runtime deltas, not
@@ -222,7 +222,7 @@ it follows the conventional per-core scale, where one fully occupied CPU is
 is the process's resident mapped pages divided by detected physical pages.
 The sampler waits through its complete interval on the architectural timer and
 excludes that idle interval from the calling process's runtime, so opening
-`htop` does not manufacture a 100% housekeeping-core reading.
+`xtop` does not manufacture a 100% housekeeping-core reading.
 The system `MEM managed` percentage is allocator pressure over pages the current
 NUMA allocator can manage; `physical_pages` separately reports detected
 physical capacity, so pages beyond a platform allocator's current tracking
@@ -234,20 +234,20 @@ limit in the monitoring ABI. Each userspace render page is bounded to 256 CPU
 records and subsequent invocations can retrieve every CPU exposed by platform
 discovery. The current QEMU AArch64 SMP implementation separately admits at
 most 256 CPUs.
-The ANSI header follows Debian htop's column-major scaling model: up to eight
+The ANSI header follows Debian xtop's column-major scaling model: up to eight
 CPUs remain in one left-hand column with Tasks, Load average and Uptime in the
 right-hand column; 9-16 CPUs use two columns, 17-32 use four, 33-64 use eight,
 and larger visible pages may use sixteen when the terminal is wide enough.
 Memory and swap follow the left CPU group. When more than one CPU column is
 needed, the three status rows move below the CPU grid beside Memory and Swap.
 Narrow terminals reduce the number of columns rather than allowing meters to
-overlap. Unlike Debian htop's stock default above 128 CPUs, XAIOS retains
+overlap. Unlike Debian xtop's stock default above 128 CPUs, XAIOS retains
 ordinal paging so every runtime CPU remains inspectable.
 `--active` shows loaded, runnable, running, and waiting processes; `--all` also
 includes exited and failed slots.
 
 The native SSH daemon validates `pty-req` and `window-change` dimensions. An
-exact `htop` command on a PTY channel automatically selects the guest-generated
+exact `xtop` command on a PTY channel automatically selects the guest-generated
 live ANSI monitor, uses the reported terminal size, and refreshes every 250 ms
 by default. It includes colored CPU,
 managed-memory and zero-capacity swap meters, task and uptime state,
@@ -257,7 +257,7 @@ CPU, `Mem`, and `Swp` labels use a shared width derived from the largest runtime
 CPU ID, keeping every opening meter bracket in one column on many-core systems.
 Memory and swap remain within the left meter column beneath the first CPU group;
 their capacity values are right-aligned there when terminal width permits. The
-footer uses distinct htop-style key and command color segments.
+footer uses distinct xtop-style key and command color segments.
 Resize requests trigger a new bounded frame. Each PTY channel owns independent
 view state and refreshes only after its previous output has drained. Interactive
 sessions use the terminal alternate-screen buffer and restore the original
@@ -385,7 +385,7 @@ read-only paged runtime snapshot for userspace monitoring.
 Operation 58 (`runtime snapshot`) returns raw timestamped CPU/process counters,
 memory pages, process states, CPU roles, load averages, and continuation
 cursors. It can wait for at most 1,000 ms without charging the caller's process
-runtime. `htop` performs delta calculation, sorting, filtering, paging, and ANSI
+runtime. `xtop` performs delta calculation, sorting, filtering, paging, and ANSI
 rendering in its standalone userspace ELF. This extends the existing control
 syscall rather than adding an application-specific syscall.
 

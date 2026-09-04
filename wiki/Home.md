@@ -38,7 +38,7 @@ primary Unix behavior reference for commands and network interoperability.
 - Concurrent SSH sessions, SFTP, outbound SSH/SCP, and authenticated local
   console sessions — from a credential the machine was set up with, or one a
   development image packaged.
-- FreeBSD-style command behavior, archive exchange, `nano`, `less`, `htop`,
+- FreeBSD-style command behavior, archive exchange, `nano`, `less`,
   and terminal Pong.
 - Typed `xaiosctl` administration for status, configuration, identity, audit,
   storage, and model-package lifecycle operations.

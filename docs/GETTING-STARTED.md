@@ -180,7 +180,7 @@ From a second terminal, use the repository launcher for a quiet OpenSSH session
 with persistent host-key checking. It accepts a remote command after `--`:
 
 ```sh
-platform/qemu/ssh-xaios-qemu.sh -- htop
+platform/qemu/ssh-xaios-qemu.sh -- xtop
 platform/qemu/ssh-xaios-qemu.sh -- pong
 ```
 

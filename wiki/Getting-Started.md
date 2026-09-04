@@ -116,7 +116,7 @@ command after `--`:
 
 ```sh
 platform/qemu/ssh-xaios-qemu.sh
-platform/qemu/ssh-xaios-qemu.sh -- htop
+platform/qemu/ssh-xaios-qemu.sh -- xtop
 ```
 
 ## First commands
@@ -127,7 +127,7 @@ ls -la /
 mkdir -p /home/admin/demo
 echo hello > /home/admin/demo/message.txt
 cat /home/admin/demo/message.txt
-htop
+xtop
 ```
 
 See [[Commands|Commands]] for the complete shell surface and

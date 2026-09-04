@@ -207,7 +207,7 @@ released image.
   dependencies, and unattended updates are not supported.
 - External applications are bounded to 256 KiB by the current xaibootFS/app
   loader, and only one previous version is retained. Shipped applications,
-  including `xapt`, `nano`, `htop`, and `pong`, are standalone ELFs; publishing
+  including `xapt`, `nano`, `xtop`, and `pong`, are standalone ELFs; publishing
   them as independently upgradable repository packages still requires signed
   package manifests and architecture-specific payloads.
 - QEMU verifies persistent clean/unclean lifecycle records, rescue selection,

@@ -3582,7 +3582,7 @@ static xaios_status_t handle_sed(const char *args, char *output,
   return XAIOS_OK;
 }
 
-static const char *htop_state_name(xaios_user_process_state_t state) {
+static const char *xtop_state_name(xaios_user_process_state_t state) {
   switch (state) {
   case XAIOS_USER_PROCESS_LOADED:
     return "loaded";
@@ -3601,7 +3601,7 @@ static const char *htop_state_name(xaios_user_process_state_t state) {
   }
 }
 
-static int htop_state_active(xaios_user_process_state_t state) {
+static int xtop_state_active(xaios_user_process_state_t state) {
   return state == XAIOS_USER_PROCESS_LOADED ||
          state == XAIOS_USER_PROCESS_RUNNABLE ||
          state == XAIOS_USER_PROCESS_RUNNING ||
@@ -3636,7 +3636,7 @@ static xaios_status_t handle_ps(const char *args, char *output,
   for (uint32_t pid = 1U; pid <= XAIOS_MAX_USER_PROCESSES; ++pid) {
     xaios_user_process_t process;
     if (user_process_snapshot_at(pid, now_ns, &process) != XAIOS_OK ||
-        (show_all == 0 && htop_state_active(process.state) == 0)) {
+        (show_all == 0 && xtop_state_active(process.state) == 0)) {
       continue;
     }
     if (long_format != 0) {
@@ -3650,7 +3650,7 @@ static xaios_status_t handle_ps(const char *args, char *output,
       output_append(output, output_capacity, output_bytes, " ");
     }
     output_append(output, output_capacity, output_bytes,
-                  htop_state_name(process.state));
+                  xtop_state_name(process.state));
     output_append(output, output_capacity, output_bytes, " ");
     if (long_format != 0) {
       if (process.running_cpu_id == UINT32_MAX) {
@@ -3967,7 +3967,7 @@ static const remote_app_definition_t g_remote_apps[] = {
     REMOTE_TERMINAL_APP("nano", "/bin/nano",
      XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT | XAIOS_CAP_FS_READ |
          XAIOS_CAP_FS_WRITE | XAIOS_CAP_REMOTE_LOGIN),
-    REMOTE_TERMINAL_APP("htop", "/bin/htop",
+    REMOTE_TERMINAL_APP("xtop", "/bin/xtop",
                         XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
                             XAIOS_CAP_CONTROL_QUERY),
     REMOTE_TERMINAL_APP("pong", "/bin/pong",
@@ -4239,7 +4239,7 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
     output_append(
         output, output_capacity, output_bytes,
         "XAIOS shell: pwd ls l la ll cd mkdir touch cp grep find head tail echo "
-        "tar zip unzip cpio cat less mv rm rmdir stat df du ps write sed nano htop pong "
+        "tar zip unzip cpio cat less mv rm rmdir stat df du ps write sed nano xtop pong "
         "ssh scp status sysinfo "
         "shutdown reboot power service kill ifconfig route arp ndp netstat "
         "ping nslookup date ntp limits recovery update config support "

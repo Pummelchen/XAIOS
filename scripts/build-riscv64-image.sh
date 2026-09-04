@@ -45,10 +45,11 @@ build_program "$ROOT_DIR/userspace/worker/worker-riscv64.S" \
 # freestanding C99 against the userspace library -- nothing in them was
 # architecture-specific once the syscall stub and the entry stub knew about
 # this one.
-# Exactly the applications kmain launches. xapt, nano, htop, pong and
-# xaios-setup are not among them and need BearSSL and a libc sysroot of
-# their own, which is separate work from booting.
-USER_APPS="xaios-shell xaiosctl hello sysinfo systest smptest smpstress perfbench nettest lstm-xor sshtest mltest posix-shell agenttest xaios-setup"
+# The applications kmain launches, plus the ones sshd launches on demand --
+# xtop is reached by typing its name at a login, not during boot, and a shell
+# that offers a command whose binary is not in the image is worse than one
+# that does not offer it.
+USER_APPS="xaios-shell xaiosctl hello sysinfo systest smptest smpstress perfbench nettest lstm-xor sshtest mltest posix-shell agenttest xaios-setup xtop"
 APP_ARGS=""
 for app in $USER_APPS; do
   printf '%s\n' "Building /bin/$app..."

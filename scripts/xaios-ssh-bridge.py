@@ -610,7 +610,7 @@ def _handle_nano_command(args, cwd):
     return 0, f"nano: saved {path} bytes={len(edited.encode('utf-8'))}\n"
 
 
-def _handle_htop_command(args):
+def _handle_xtop_command(args):
     show_all = True
     show_cpus = True
     cpu_start = 0
@@ -628,35 +628,35 @@ def _handle_htop_command(args):
             show_cpus = False
         elif option == "--help":
             return 0, (
-                "htop [--active|--all] [--sample-ms 1..1000] "
+                "xtop [--active|--all] [--sample-ms 1..1000] "
                 "[--cpu-start N] [--cpu-count N] [--no-cpus]\n"
             )
         elif option in ("--sample-ms", "--cpu-start", "--cpu-count"):
             if index >= len(args):
-                return 1, f"htop: missing value for {option}\n"
+                return 1, f"xtop: missing value for {option}\n"
             try:
                 value = int(args[index], 10)
             except ValueError:
-                return 1, f"htop: invalid {option}\n"
+                return 1, f"xtop: invalid {option}\n"
             index += 1
             if option == "--sample-ms":
                 if value < 1 or value > 1000:
-                    return 1, "htop: --sample-ms must be 1..1000\n"
+                    return 1, "xtop: --sample-ms must be 1..1000\n"
                 sample_ms = value
             elif option == "--cpu-start":
                 if value < 0:
-                    return 1, "htop: invalid --cpu-start\n"
+                    return 1, "xtop: invalid --cpu-start\n"
                 cpu_start = value
             else:
                 if value < 1:
-                    return 1, "htop: invalid --cpu-count\n"
+                    return 1, "xtop: invalid --cpu-count\n"
                 cpu_requested = value
         else:
-            return 1, "htop: unsupported option; use htop --help\n"
+            return 1, "xtop: unsupported option; use xtop --help\n"
 
     cpu_total = os.cpu_count() or 1
     if cpu_start > cpu_total:
-        return 1, "htop: --cpu-start exceeds online CPU count\n"
+        return 1, "xtop: --cpu-start exceeds online CPU count\n"
     cpu_shown = cpu_total - cpu_start
     if cpu_requested is not None:
         cpu_shown = min(cpu_shown, cpu_requested)
@@ -684,7 +684,7 @@ def _handle_htop_command(args):
     memory_percent = 100.0 * rss_bytes / total_bytes if total_bytes else 0.0
 
     lines = [
-        f"XAIOS htop source=ssh-bridge sample_ms={sample_ms} cpus={cpu_total} "
+        f"XAIOS xtop source=ssh-bridge sample_ms={sample_ms} cpus={cpu_total} "
         "tasks_active=1 failed=0",
         f"CPU all={system_cpu:.1f}% MEM bridge={memory_percent:.1f}% "
         f"bytes={rss_bytes}/{total_bytes}",
@@ -732,7 +732,7 @@ def xaios_remote_command(command, cwd="/"):
         return (
             0,
             "XAIOS SSH commands: pwd ls cd mkdir touch cp grep find head tail echo "
-            "l la ll tar cpio cat mv rm rmdir stat write nano htop status sysinfo "
+            "l la ll tar cpio cat mv rm rmdir stat write nano xtop status sysinfo "
             "exit quit logout help\n",
         )
 
@@ -845,8 +845,8 @@ def xaios_remote_command(command, cwd="/"):
     if cmd == "nano":
         return _handle_nano_command(args, cwd)
 
-    if cmd == "htop":
-        return _handle_htop_command(args)
+    if cmd == "xtop":
+        return _handle_xtop_command(args)
 
     if cmd == "cp":
         if len(args) < 2:

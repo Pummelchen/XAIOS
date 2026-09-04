@@ -60,7 +60,7 @@ into the kernel.
 | Path | Interactive transport | Purpose |
 |---|---|---|
 | `/bin/nano` | Dedicated ELF plus shared app-owned PTY module | Full-screen editor with cursor movement, insertion/deletion, save, search, and exit. The editing buffer is limited to 32 KiB. |
-| `/bin/htop` | Dedicated ELF using the typed runtime-snapshot control operation | Full-screen sampled process monitor with color, alternate-screen in-place refresh, runtime-sized CPU meters, sorting, filtering, tree view, keyboard navigation, and a 60 FPS rendering cap. |
+| `/bin/xtop` | Dedicated ELF using the typed runtime-snapshot control operation | Full-screen sampled process monitor: titled panels, solid-block CPU and memory gauges, alternate-screen in-place refresh, runtime-sized meters, sorting, filtering, tree view, keyboard navigation, and a 60 FPS rendering cap. It draws with UTF-8 box and block glyphs and is reached over SSH; the local framebuffer console has a sixty-four glyph uppercase font and is a boot and status display rather than somewhere a process monitor is read. Named `xtop` rather than `htop`: it is XAIOS's own monitor reading XAIOS's own runtime snapshot, and a Unix name would have implied a compatibility this does not claim. |
 | `/bin/pong` | Dedicated ELF plus shared app-owned PTY module | 60 FPS terminal Pong. `W`/`S` control the left paddle, the computer controls the right, and session win/loss counts adjust ball speed by one percent per round. |
 
 ## Utility applications

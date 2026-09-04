@@ -237,12 +237,12 @@ def exercise(arch: str, key: Path) -> None:
                 "tls=required\n"
                 "tls_rsa_modulus="
                 "b4cef411efa36fc7f79c728c9a792dd206a2c72a5eeeedca708ac7afa743c1cac9bf6fea56782ee92bc359861381f40b0db41968e5490ca2f214b5f29ab4c6144d8e24f453c2ed415d95b8789b71fd1fd33b8c491212d5865d31f135f2736f38cdef3aa13ad64ec7af59f2795f0ff944d3ea70018c8ec874e684dbc1c640123ea060a52e8101f9d87713e91ba77635f1e83321010dd56e01b652623b9dd9cd56ac516541640f3b9ef0e6ab84c98e4f667d75c5e7c547a584155eddba0d0e7ffe712a23b44f14166f4fe859473c2fc8f3c7ab25151e86ae53169f2aa8f8ef784d9c4a0251c3a5e54b2a3083f722c26df97f31c9b364bd840eef503029d91e00df\n")
-            htop = ssh(
+            xtop = ssh(
                 key, ssh_port,
-                "htop --plain --no-cpus --sample-ms 1 --filter htop",
+                "xtop --plain --no-cpus --sample-ms 1 --filter xtop",
             )
-            if "XAIOS htop sample_ms=1" not in htop or "/bin/htop" not in htop:
-                raise RuntimeError(f"dedicated htop binary did not execute: {htop!r}")
+            if "XAIOS xtop sample_ms=1" not in xtop or "/bin/xtop" not in xtop:
+                raise RuntimeError(f"dedicated xtop binary did not execute: {xtop!r}")
             pong = ssh_fails(key, ssh_port, "pong")
             if "pong: interactive terminal required" not in pong:
                 raise RuntimeError(f"dedicated pong binary did not reject non-PTY use: {pong!r}")

@@ -69,7 +69,7 @@ client passed the explicitly identified subset below on 2026-08-10:
   out-of-order IPv4 and IPv6 fragment pairs before processing their TCP SYNs;
 - guest userspace resolved `example.com` through the asynchronous DNS syscall,
   then completed an immediate cache hit.
-- a Debian 13 OpenSSH PTY drove the native guest-generated live ANSI `htop`,
+- a Debian 13 OpenSSH PTY drove the native guest-generated live ANSI `xtop`,
   including sort, filter, help, CPU/memory meters, process framing, a hard
   60-frame-per-second render cap and clean cursor-restoring exit, while a
   non-PTY command retained the plain automation format.
@@ -114,7 +114,7 @@ and algorithm matrix are not implemented.
 15.1 AArch64 cloud image beside one XAIOS guest. FreeBSD base-system OpenSSH
 10.0p2 and SFTP passed authorized login, unauthorized-key rejection, a typed
 `xaiosctl version` query, SFTP write/stat/read/rename/remove with exact byte
-comparison, interactive PTY ANSI `htop`, and UDP echo. The passing report is
+comparison, interactive PTY ANSI `xtop`, and UDP echo. The passing report is
 `build/qemu-freebsd-network-suite.json`.
 
 This is the primary external Unix behavioral-reference gate. It does not prove
@@ -290,7 +290,7 @@ OpenSSH-version-gated `WarnWeakCrypto=no`; it does not discard host identity via
 
 ```sh
 platform/qemu/ssh-xaios-qemu.sh
-platform/qemu/ssh-xaios-qemu.sh -- htop
+platform/qemu/ssh-xaios-qemu.sh -- xtop
 ssh -p 7788 admin@127.0.0.1
 sftp -i build/local-ssh/admin -o IdentitiesOnly=yes -P 7788 admin@127.0.0.1
 ```
@@ -302,7 +302,7 @@ forward it to guest TCP port `22`. Override it with
 instead use `ssh ssh://admin@127.0.0.1:7788`.
 
 Pass a non-default key with `--identity`, for example
-`platform/qemu/ssh-xaios-qemu.sh --identity /tmp/xaios-htop-key -- htop`.
+`platform/qemu/ssh-xaios-qemu.sh --identity /tmp/xaios-xtop-key -- xtop`.
 If a rebuilt guest intentionally rotates its host key, remove only the matching
 entry from `build/local-ssh/known_hosts` after verifying the rotation.
 
