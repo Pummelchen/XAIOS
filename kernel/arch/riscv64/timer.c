@@ -30,11 +30,14 @@ void panic_at(const char *file, int line, const char *fmt, ...)
 #define FALLBACK_FREQUENCY_HZ UINT64_C(10000000)
 
 static uint64_t g_frequency_hz = FALLBACK_FREQUENCY_HZ;
+static int g_have_stimecmp;
 static uint64_t g_boot_counter;
 static uint64_t g_period_ticks;
 static const void *g_device_tree;
 
 void riscv64_timer_set_device_tree(const void *blob) { g_device_tree = blob; }
+const void *riscv64_device_tree(void) { return g_device_tree; }
+int riscv64_timer_has_stimecmp(void) { return g_have_stimecmp; }
 
 typedef struct frequency_search {
   uint64_t hz;
@@ -85,7 +88,6 @@ uint64_t timer_frequency_hz(void) { return g_frequency_hz; }
  * what booting under EDK2 did, and it presented as a kernel frozen inside a
  * memset with no fault and a healthy-looking timer.
  */
-static int g_have_stimecmp;
 
 #define CSR_STIMECMP 0x14D
 

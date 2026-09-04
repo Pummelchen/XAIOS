@@ -3,6 +3,7 @@
 #include <xaios/assert.h>
 #include <xaios/block_device.h>
 #include <xaios/control_protocol.h>
+#include <xaios/cpu_features.h>
 #include <xaios/install.h>
 #include <xaios/cpu_ai_runtime.h>
 #include <xaios/kheap.h>
@@ -497,12 +498,18 @@ static void fill_hardware(xaios_control_hardware_payload_t *payload) {
   payload->thread_count = smp_online_count();
   payload->numa_nodes = numa_node_count();
   payload->page_size = 4096U;
-  payload->neon = XAIOS_CONTROL_STATE_UNKNOWN;
-  payload->sve = XAIOS_CONTROL_STATE_UNKNOWN;
-  payload->avx2 = XAIOS_CONTROL_STATE_UNKNOWN;
-  payload->avx512 = XAIOS_CONTROL_STATE_UNKNOWN;
-  payload->vnni = XAIOS_CONTROL_STATE_UNKNOWN;
-  payload->amx = XAIOS_CONTROL_STATE_UNKNOWN;
+  /* Asked of the hardware. These were "unknown" on every architecture,
+     which is the one answer a machine can always improve on. */
+  xaios_cpu_features_t features;
+  cpu_features_query(&features);
+  payload->neon = features.neon;
+  payload->sve = features.sve;
+  payload->avx2 = features.avx2;
+  payload->avx512 = features.avx512;
+  payload->vnni = features.vnni;
+  payload->amx = features.amx;
+  payload->rvv = features.rvv;
+  payload->sstc = features.sstc;
 }
 
 static uint64_t cpu_utilization_tenths(uint64_t now_ns) {
@@ -556,6 +563,8 @@ static void fill_metrics(xaios_control_metrics_payload_t *payload) {
   payload->kv_cache_evictions = XAIOS_CONTROL_UNKNOWN_U64;
   payload->storage_reads = xaiboot_fs_read_count();
   payload->storage_read_bytes = XAIOS_CONTROL_UNKNOWN_U64;
+  payload->storage_writes = xaiboot_fs_write_count();
+  payload->storage_write_bytes = XAIOS_CONTROL_UNKNOWN_U64;
   payload->network_rx_packets = network_stack_rx_packet_count();
   payload->network_tx_packets = network_stack_tx_packet_count();
   payload->network_rx_bytes = XAIOS_CONTROL_UNKNOWN_U64;

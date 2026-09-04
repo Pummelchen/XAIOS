@@ -494,6 +494,9 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
 
   if (syscall == XAIOS_SYSCALL_CONSOLE_READ) {
     uint8_t value = 0U;
+    /* The console's owner polls this constantly; it is where a present the
+       terminal deferred gets made. */
+    boot_ui_present_pending();
     if (arg1 != 1U ||
         vmm_validate_user_buffer(arg0, 1U, XAIOS_VMM_WRITABLE) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "bad-console-read-buffer");
@@ -1184,7 +1187,14 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
                                    XAIOS_VMM_WRITABLE) != XAIOS_OK) {
         return reject_syscall(syscall, arg0, arg1, "child-channel-open-denied");
       }
-      child_path = command_starts_with(command, "scp") ? "/bin/scp" : "/bin/ssh";
+      /* Which program the session wants as a child. The process monitor is
+         a child too now: one process that streams frames for as long as the
+         session lasts, rather than a launch per frame -- which is what
+         makes sixty frames a second a matter of writing them. */
+      int child_is_xtop = command_starts_with(command, "xtop");
+      child_path = child_is_xtop ? "/bin/xtop"
+                   : command_starts_with(command, "scp") ? "/bin/scp"
+                                                          : "/bin/ssh";
       xaios_status_t child_status = initramfs_lookup(child_path, &file);
       if (child_status != XAIOS_OK || file == 0 || file->executable == 0U) {
         return child_status == XAIOS_OK ? XAIOS_ERR_NOT_FOUND : child_status;
@@ -1197,12 +1207,17 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       argv[1] = channel_text;
       argv[2] = cwd;
       argv[3] = command;
+      uint64_t child_caps =
+          child_is_xtop
+              ? (XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_TIME |
+                 XAIOS_CAP_REMOTE_LOGIN | XAIOS_CAP_CONTROL_QUERY)
+              : (XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_NET |
+                 XAIOS_CAP_NET_SOCKET | XAIOS_CAP_FS_READ |
+                 XAIOS_CAP_FS_WRITE | XAIOS_CAP_TIME |
+                 XAIOS_CAP_REMOTE_LOGIN | XAIOS_CAP_RANDOM |
+                 XAIOS_CAP_CREDENTIAL_READ);
       child_status = user_process_start_async(
-              file, XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_NET |
-                        XAIOS_CAP_NET_SOCKET | XAIOS_CAP_FS_READ |
-                        XAIOS_CAP_FS_WRITE | XAIOS_CAP_TIME |
-                        XAIOS_CAP_REMOTE_LOGIN | XAIOS_CAP_RANDOM |
-                        XAIOS_CAP_CREDENTIAL_READ,
+              file, child_caps,
               4U, argv, caller_pid, child_process_ready,
               child_process_complete, (void *)(uintptr_t)channel_id,
               &child_pid, &child_thread);
@@ -1225,11 +1240,24 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
           request.out_size != 0U || request.metadata != 0U ||
           request.metadata_size != 0U ||
           vmm_validate_user_buffer(request.command, request.command_size, 0U) !=
-              XAIOS_OK ||
-          child_channel_write(request.session_id, caller_pid,
-                              (const void *)(uintptr_t)request.command,
-                              request.command_size) != XAIOS_OK) {
+              XAIOS_OK) {
         return reject_syscall(syscall, arg0, arg1, "child-channel-write-failed");
+      }
+      {
+        xaios_status_t write_status = child_channel_write(
+            request.session_id, caller_pid,
+            (const void *)(uintptr_t)request.command, request.command_size);
+        /* A full ring is flow control, not a violation: the writer is told
+           to wait and nothing is logged. A process monitor writing frames
+           faster than a slow link drained them logged a rejection every
+           millisecond, thousands of lines for a channel doing its job. */
+        if (write_status == XAIOS_ERR_BUSY) {
+          user_process_note_syscall(0);
+          return (uint64_t)(int64_t)XAIOS_ERR_BUSY;
+        }
+        if (write_status != XAIOS_OK) {
+          return reject_syscall(syscall, arg0, arg1, "child-channel-write-failed");
+        }
       }
       return complete_control_syscall(request.command_size);
     }

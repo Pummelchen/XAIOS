@@ -624,6 +624,7 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   $KERNEL_BUILD_DIR/secondary.o
   $KERNEL_BUILD_DIR/vectors.o
   $KERNEL_BUILD_DIR/acpi.o
+  $KERNEL_BUILD_DIR/cpu_features.o
   $KERNEL_BUILD_DIR/context.o
   $KERNEL_BUILD_DIR/exception.o
   $KERNEL_BUILD_DIR/timer.o
@@ -645,6 +646,7 @@ else
   ARCH_KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/entry.o
   $KERNEL_BUILD_DIR/acpi.o
+  $KERNEL_BUILD_DIR/cpu_features.o
   $KERNEL_BUILD_DIR/early.o
   $KERNEL_BUILD_DIR/engine_packed.o
   $KERNEL_BUILD_DIR/timer.o
@@ -773,9 +775,11 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/secondary.S" "$KERNEL_BUILD_DIR/secondary.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/vectors.S" "$KERNEL_BUILD_DIR/vectors.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/acpi.c" "$KERNEL_BUILD_DIR/acpi.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/aarch64/cpu_features.c" "$KERNEL_BUILD_DIR/cpu_features.o"
 else
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/entry.S" "$KERNEL_BUILD_DIR/entry.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/acpi.c" "$KERNEL_BUILD_DIR/acpi.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/x86_64/cpu_features.c" "$KERNEL_BUILD_DIR/cpu_features.o"
 fi
 compile_kernel "$ROOT_DIR/kernel/core/kmain.c" "$KERNEL_BUILD_DIR/kmain.o"
 compile_kernel "$ROOT_DIR/kernel/core/boot_ui.c" "$KERNEL_BUILD_DIR/boot_ui.o"

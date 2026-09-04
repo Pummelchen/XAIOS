@@ -171,11 +171,37 @@ xaios_status_t xaios_thread_create_off_current_cpu(
   return XAIOS_ERR_UNSUPPORTED;
 }
 
+/* Whether a worker CPU has a thread claimed or waiting. A worker runs one
+   thread to completion, so a CPU with one already is not somewhere a second
+   long-lived thread can go: it would sit pending until the first exits. */
+static uint32_t cpu_has_thread_locked(uint32_t cpu_id) {
+  for (uint32_t i = 0; i < g_thread_capacity; ++i) {
+    uint32_t state = __atomic_load_n(&g_threads[i].state, __ATOMIC_ACQUIRE);
+    if ((state == XAIOS_THREAD_RUNNING && g_threads[i].running_cpu == cpu_id) ||
+        (state == XAIOS_THREAD_PENDING && g_threads[i].target_cpu == cpu_id)) {
+      return 1U;
+    }
+  }
+  return 0U;
+}
+
+/* A worker CPU that is free, other than this one.
+ *
+ * This took the first eligible CPU every time, which is one CPU for every
+ * child a session starts. A worker runs a thread to completion, and a child
+ * such as the process monitor runs for the life of its session -- so the
+ * second child a machine started sat pending behind the first and never
+ * ran, while the sshd that launched it waited for frames that could not
+ * come. Free workers are preferred; when every one is taken the answer is
+ * "no worker CPU", said to the caller, rather than a thread that will never
+ * be dispatched. */
 xaios_status_t xaios_thread_create_detached_off_current_cpu(
     xaios_thread_entry_t entry, void *context) {
   uint32_t current_cpu = smp_cpu_id();
   uint32_t online = smp_online_count();
   uint64_t ignored_id = 0U;
+  uint32_t chosen = UINT32_MAX;
+  xaios_spin_lock(&g_thread_lock);
   for (uint32_t ordinal = 0U; ordinal < online; ++ordinal) {
     uint32_t target_cpu = 0U;
     if (smp_cpu_id_at(ordinal, &target_cpu) != XAIOS_OK ||
@@ -185,10 +211,28 @@ xaios_status_t xaios_thread_create_detached_off_current_cpu(
         cpu->role != XAIOS_CPU_ROLE_SCHEDULING || cpu->lease_owner_id != 0U) {
       continue;
     }
-    return thread_create_on_cpu(entry, context, target_cpu, 0U, 0U, 1U,
-                                &ignored_id);
+    if (cpu_has_thread_locked(target_cpu) != 0U) continue;
+    chosen = target_cpu;
+    break;
   }
-  return XAIOS_ERR_UNSUPPORTED;
+  if (chosen == UINT32_MAX) {
+    /* Said out loud, per CPU: a caller that is told "no worker CPU" needs
+       to know whether the machine is small or the workers are all taken. */
+    for (uint32_t ordinal = 0U; ordinal < online; ++ordinal) {
+      uint32_t target_cpu = 0U;
+      if (smp_cpu_id_at(ordinal, &target_cpu) != XAIOS_OK) continue;
+      const xaios_cpu_state_t *cpu = smp_cpu_state(target_cpu);
+      klog("threads: no free worker: cpu=%u %s role=%u lease=%u busy=%u\n",
+           target_cpu, target_cpu == current_cpu ? "(caller)" : "",
+           cpu != 0 ? (uint64_t)cpu->role : UINT64_MAX,
+           cpu != 0 ? (uint64_t)cpu->lease_owner_id : UINT64_MAX,
+           (uint64_t)cpu_has_thread_locked(target_cpu));
+    }
+  }
+  xaios_spin_unlock(&g_thread_lock);
+  if (chosen == UINT32_MAX) return XAIOS_ERR_UNSUPPORTED;
+  return thread_create_on_cpu(entry, context, chosen, 0U, 0U, 1U,
+                              &ignored_id);
 }
 
 static xaios_status_t select_user_cpu(uint32_t preferred_cpu,

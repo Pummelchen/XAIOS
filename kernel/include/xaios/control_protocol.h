@@ -292,6 +292,8 @@ typedef struct xaios_control_hardware_payload {
   uint32_t avx512;
   uint32_t vnni;
   uint32_t amx;
+  uint32_t rvv;
+  uint32_t sstc;
 } xaios_control_hardware_payload_t;
 
 typedef struct xaios_control_metrics_payload {
@@ -318,6 +320,8 @@ typedef struct xaios_control_metrics_payload {
   uint64_t kv_cache_evictions;
   uint64_t storage_reads;
   uint64_t storage_read_bytes;
+  uint64_t storage_writes;
+  uint64_t storage_write_bytes;
   uint64_t network_rx_packets;
   uint64_t network_tx_packets;
   uint64_t network_rx_bytes;

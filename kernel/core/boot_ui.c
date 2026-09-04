@@ -1,5 +1,6 @@
 #include <xaios/boot_ui.h>
 #include <xaios/klog.h>
+#include <xaios/timer.h>
 #include <xaios/network_stack.h>
 
 #ifndef XAIOS_BOOT_TEST_APPS
@@ -170,6 +171,15 @@ static const fb_extra_glyph_t g_font_extra[] = {
        column, so 0x10 is the fourth from the left. */
     {0x2191U, {0x10, 0x38, 0x54, 0x10, 0x10, 0x10, 0x10, 0x00}},
     {0x2193U, {0x10, 0x10, 0x10, 0x10, 0x54, 0x38, 0x10, 0x00}},
+    /* Lower blocks in eighths, for bar charts: row 7 is the bottom, so a
+       one-eighth block lights that row alone. */
+    {0x2581U, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff}},
+    {0x2582U, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff}},
+    {0x2583U, {0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff}},
+    {0x2584U, {0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff}},
+    {0x2585U, {0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff}},
+    {0x2586U, {0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}},
+    {0x2587U, {0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}},
 };
 
 #define FB_EXTRA_GLYPHS (sizeof(g_font_extra) / sizeof(g_font_extra[0]))
@@ -963,12 +973,45 @@ static void fb_present(void) {
   g_dirty.height = 0U;
 }
 
+/* How often the terminal hands its drawing to the display.
+ *
+ * Every console write used to end with a present of the dirty rectangle,
+ * and a screen-sized frame arrives in four-kilobyte writes: six transfers of
+ * most of the screen per frame, each a synchronous round trip to the device,
+ * all inside the single thread that also serves SSH. On the slower emulated
+ * machines that was most of a second per frame, and an SSH session starved.
+ * Writes still draw at once; the present is made at most once per sixteen
+ * milliseconds -- a frame at sixty a second -- except for a short write,
+ * which is someone typing and wants its echo now. Whatever is left dirty is
+ * presented by boot_ui_present_pending, called from the console-read syscall
+ * the console's owner polls continuously. */
+#define TERM_PRESENT_INTERVAL_NS UINT64_C(16000000)
+#define TERM_PRESENT_NOW_BYTES UINT64_C(256)
+static uint64_t g_term_last_present_ns;
+
+static void term_present(uint64_t now_ns) {
+  fb_present();
+  g_term_last_present_ns = now_ns;
+}
+
+void boot_ui_present_pending(void) {
+  if (g_term_active == 0U || g_dirty.width == 0U) return;
+  uint64_t now_ns = timer_now_ns();
+  if (now_ns - g_term_last_present_ns >= TERM_PRESENT_INTERVAL_NS) {
+    term_present(now_ns);
+  }
+}
+
 void boot_ui_console_write(const char *text, uint64_t length) {
   if (g_term_active == 0U || text == 0) return;
   term_erase_cursor();
   for (uint64_t i = 0U; i < length; ++i) term_putc((uint8_t)text[i]);
   term_draw_cursor();
-  fb_present();
+  uint64_t now_ns = timer_now_ns();
+  if (length < TERM_PRESENT_NOW_BYTES ||
+      now_ns - g_term_last_present_ns >= TERM_PRESENT_INTERVAL_NS) {
+    term_present(now_ns);
+  }
 }
 
 void boot_ui_console_text(const char *text) {

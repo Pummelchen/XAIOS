@@ -186,7 +186,7 @@ the kernel comes up to a login prompt with sshd listening.
 
 ## Test coverage
 
-Five gates, against roughly seventy for the other two:
+Six gates, against roughly seventy for the other two:
 
 | Gate | What it proves |
 | --- | --- |
@@ -195,13 +195,14 @@ Five gates, against roughly seventy for the other two:
 | `make qemu-riscv64-matrix-gate` | It boots at 1, 2, 4 and 8 harts, four independent times, and answers an SSH login each time. |
 | `make qemu-riscv64-durability-gate` | State written on one boot is read back on the next, and survives a boot that is killed outright with no shutdown and no flush -- the filesystem reports no checksum errors afterwards. |
 | `make qemu-riscv64-release-gate` | The release configuration -- what the other architectures ship as `make image` -- logs in over SSH and runs `hello`, `sysinfo` and `xtop` as processes, reports every hart in the monitor, and keeps answering afterwards. The boot-test gates above never launch a process: the shell's commands are built into that kernel. |
+| `make qemu-console-xtop-gate-riscv64` | With a virtio-gpu, xtop on the local console is read back as pixels, decoded through the kernel's font, and compared with an SSH session's frame at the same size: the same picture on both, as on the other two architectures. |
 
 That is still short of what AArch64 and x86_64 are held to -- network suites,
 write ordering, soak, NUMA, NVMe, cluster and fault injection all run on those
 and not here. The features are present; the evidence that they hold under
 every kind of stress is not.
 
-The five share `tests/scripts/riscv64_gate_lib.py` for booting the machine and
+The boot gates share `tests/scripts/riscv64_gate_lib.py` for booting the machine and
 `qemu_gate_lib.py` for comparing markers, rather than each carrying its own
 copy of the same thirty lines. Copies of a boot routine drift the way any
 other copies do, and the ways they drift -- a timeout generous in one and

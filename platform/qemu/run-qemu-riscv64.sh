@@ -56,11 +56,26 @@ if [ -f "$BOOT_MEDIUM" ]; then
   BOOT_ARGS="-drive if=none,format=raw,readonly=on,id=xboot,file=$BOOT_MEDIUM -device virtio-blk-pci,drive=xboot,bootindex=0,disable-legacy=on"
 fi
 
+# A QMP socket and extra devices, the way the other runners take them: the
+# screenshot gates add a virtio-gpu and read the screen back over QMP.
+# The serial line goes to the log file unless a gate wants to type on the
+# console, in which case it is the runner's own stdin and stdout.
+if [ "${XAIOS_RISCV64_SERIAL:-file}" = "stdio" ]; then
+  SERIAL_ARGS="-serial stdio -monitor none"
+else
+  SERIAL_ARGS="-serial file:$LOG"
+fi
+QMP_ARGS=""
+if [ "${XAIOS_RISCV64_QMP_SOCKET:-}" != "" ]; then
+  rm -f "$XAIOS_RISCV64_QMP_SOCKET"
+  QMP_ARGS="-qmp unix:${XAIOS_RISCV64_QMP_SOCKET},server=on,wait=off"
+fi
+EXTRA_ARGS="${XAIOS_RISCV64_EXTRA_ARGS:-}"
 # shellcheck disable=SC2086
 exec "$QEMU" \
   -machine virt -cpu rv64 -smp "$CPUS" -m "$MEMORY" -display none \
   -bios default -global virtio-mmio.force-legacy=false \
-  -serial "file:$LOG" \
+  $SERIAL_ARGS \
   -kernel "$KERNEL" \
   $BOOT_ARGS \
   -drive "if=none,format=raw,snapshot=on,id=xtest,file=$INITFS" \
@@ -80,4 +95,4 @@ exec "$QEMU" \
   -device virtio-rng-pci,disable-legacy=on \
   -netdev "user,id=n0,hostfwd=tcp::$SSH_PORT-:22" \
   -device virtio-net-pci,netdev=n0,disable-legacy=on \
-  "$@"
+  $QMP_ARGS $EXTRA_ARGS "$@"

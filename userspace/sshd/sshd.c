@@ -3,6 +3,7 @@
 #include "ssh_crypto.h"
 #include "ssh_protocol.h"
 #include "ssh_channel.h"
+#include "ssh_child_ipc.h"
 #include "ssh_host_key.h"
 #include "ssh_mlkem.h"
 #include "ssh_utils.h"
@@ -860,11 +861,15 @@ static int console_start_pong(void) {
   return 0;
 }
 
-/* Local console xtop session.
-   Drives the same xaios_xtop_session_t state machine the SSH channel uses, so
-   refresh cadence, sort keys, filtering, help and quit behave identically on
-   both surfaces. Only the sink differs: bytes go straight to the console and
-   sampling runs against the console's own remote-login session. */
+/* The local console runs xtop the way an SSH session does: as one child
+   process streaming frames over a child channel, driven by the keys typed
+   here. The two surfaces therefore run the same program the same way, and
+   there is no second copy of its behaviour to drift. */
+static u64 g_console_child;
+static uint8_t g_console_child_rx[SSH_CHILD_IPC_HEADER_SIZE +
+                                  SSH_CHILD_IPC_PAYLOAD_MAX];
+static uint32_t g_console_child_used;
+
 /* "xtop" with or without options, but not "xtop --plain": that form asks for
    the snapshot output on purpose, on either surface. */
 static int console_command_is_xtop(const char *command) {
@@ -886,71 +891,122 @@ static int console_command_is_xtop(const char *command) {
   return 1;
 }
 
-static xaios_xtop_session_t g_console_xtop;
-
-static int console_xtop_write(void *context, const uint8_t *data,
-                              uint32_t length) {
-  (void)context;
-  /* console_write_bytes reports success as 0, not a byte count. */
-  return console_write_bytes((const char *)data, length);
+/* Give the core up for a while: the kernel's runtime snapshot with a wait is
+   the one sleep a user process has, and its answer is discarded. */
+static void sshd_idle_ms(uint32_t milliseconds) {
+  struct {
+    xaios_control_request_header_user_t header;
+    xaios_control_runtime_snapshot_request_user_t payload;
+  } request;
+  static union {
+    u64 alignment;
+    unsigned char bytes[XAIOS_CONTROL_MAX_RESPONSE_BYTES];
+  } response;
+  static u32 request_id;
+  u64 response_size = 0U;
+  xaios_memzero(&request, sizeof(request));
+  request.header.magic = XAIOS_CONTROL_MAGIC;
+  request.header.version = XAIOS_CONTROL_VERSION;
+  request.header.header_size = (u16)sizeof(request.header);
+  request.header.operation = XAIOS_CONTROL_OP_RUNTIME_SNAPSHOT;
+  request.header.payload_type = XAIOS_CONTROL_PAYLOAD_RUNTIME_SNAPSHOT_REQUEST;
+  request.header.request_id = request_id++;
+  request.header.principal_role = XAIOS_CONTROL_ROLE_OBSERVER;
+  request.header.payload_length = sizeof(request.payload);
+  request.payload.wait_ms = milliseconds;
+  (void)xaios_control_query(&request, sizeof(request), response.bytes,
+                            sizeof(response.bytes), &response_size);
 }
 
-static int console_xtop_run(void *context, const char *command, char *output,
-                            unsigned long long capacity,
-                            unsigned long long *output_length) {
-  (void)context;
-  return xaios_remote_login_session(SSHD_CONSOLE_SESSION_ID,
-                                    console_username(), command,
-                                    output, capacity, output_length);
+static void console_child_release(int cancel) {
+  if (g_console_child == 0U) return;
+  if (cancel != 0) (void)xaios_remote_login_child_cancel(g_console_child);
+  (void)xaios_remote_login_child_release(g_console_child);
+  g_console_child = 0U;
+  g_console_child_used = 0U;
 }
 
-static xaios_xtop_sink_t console_xtop_sink(void) {
-  xaios_xtop_sink_t sink;
-  sink.write = console_xtop_write;
-  sink.run = console_xtop_run;
-  sink.busy = 0;
-  sink.context = 0;
-  return sink;
-}
-
-static void console_finish_xtop(void) {
-  xaios_xtop_sink_t sink = console_xtop_sink();
-  (void)xaios_xtop_stop(&g_console_xtop, &sink);
-  console_prompt();
-}
-
-static int console_start_xtop(const char *command) {
-  xaios_xtop_sink_t sink = console_xtop_sink();
-  xaios_xtop_start(&g_console_xtop, command, console_columns(),
-                   console_rows());
-  console_write("\033[?1049h\033[?25l");
-  if (xaios_xtop_render(&g_console_xtop, &sink, xaios_clock_nanos()) != 0) {
-    console_finish_xtop();
+static int console_start_child(char *command, uint32_t capacity) {
+  char cwd[256];
+  u64 cwd_size = 0U;
+  (void)ssh_terminal_promote_command(command, capacity, console_columns(),
+                                     console_rows());
+  if (xaios_remote_login_session(SSHD_CONSOLE_SESSION_ID, console_username(),
+                                 "pwd", cwd, sizeof(cwd), &cwd_size) != 0 ||
+      cwd_size == 0U || cwd_size >= sizeof(cwd)) {
+    cwd[0] = '/';
+    cwd[1] = '\0';
+    cwd_size = 1U;
+  }
+  while (cwd_size != 0U &&
+         (cwd[cwd_size - 1U] == '\n' || cwd[cwd_size - 1U] == '\r')) {
+    cwd[--cwd_size] = '\0';
+  }
+  if (xaios_remote_login_child_open(SSHD_CONSOLE_SESSION_ID, command, cwd,
+                                    &g_console_child) != 0) {
+    g_console_child = 0U;
+    console_write("xtop: launch failed\n");
     return -1;
   }
+  g_console_child_used = 0U;
   return 0;
 }
 
-static void console_service_xtop(uint64_t now_ns) {
-  xaios_xtop_sink_t sink = console_xtop_sink();
-  if (g_console_xtop.active == 0U) return;
-  if (g_console_xtop.help != 0U) {
-    if (now_ns >= g_console_xtop.next_refresh_ns &&
-        xaios_xtop_send_help(&g_console_xtop, &sink, now_ns) != 0) {
-      console_finish_xtop();
+static void console_child_input(char value) {
+  uint8_t frame[SSH_CHILD_IPC_HEADER_SIZE + 1U];
+  ssh_child_ipc_header(frame, SSH_CHILD_IPC_INPUT, 1U);
+  frame[SSH_CHILD_IPC_HEADER_SIZE] = (uint8_t)value;
+  (void)xaios_remote_login_child_write(g_console_child, frame, sizeof(frame));
+}
+
+static void console_child_finish(int cancel) {
+  console_child_release(cancel);
+  console_prompt();
+}
+
+static void console_service_child(void) {
+  if (g_console_child == 0U) return;
+  for (uint32_t iteration = 0U; iteration < 8U; ++iteration) {
+    u64 size = 0U;
+    if (g_console_child_used == sizeof(g_console_child_rx) ||
+        xaios_remote_login_child_read(
+            g_console_child, g_console_child_rx + g_console_child_used,
+            sizeof(g_console_child_rx) - g_console_child_used, &size) != 0 ||
+        size > sizeof(g_console_child_rx) - g_console_child_used) {
+      console_child_finish(1);
+      return;
     }
-    return;
-  }
-  if (g_console_xtop.filter_mode != 0U) {
-    if (now_ns >= g_console_xtop.next_refresh_ns &&
-        xaios_xtop_send_filter_prompt(&g_console_xtop, &sink, now_ns) != 0) {
-      console_finish_xtop();
+    if (size == 0U) break;
+    g_console_child_used += (uint32_t)size;
+    while (g_console_child_used >= SSH_CHILD_IPC_HEADER_SIZE) {
+      if (ssh_child_ipc_read_u32(g_console_child_rx) != SSH_CHILD_IPC_MAGIC) {
+        console_child_finish(1);
+        return;
+      }
+      uint32_t type = ssh_child_ipc_read_u32(g_console_child_rx + 4U);
+      uint32_t length = ssh_child_ipc_read_u32(g_console_child_rx + 8U);
+      if (length > SSH_CHILD_IPC_PAYLOAD_MAX) {
+        console_child_finish(1);
+        return;
+      }
+      uint32_t frame_length = SSH_CHILD_IPC_HEADER_SIZE + length;
+      if (g_console_child_used < frame_length) break;
+      if (type == SSH_CHILD_IPC_OUTPUT) {
+        (void)console_write_bytes(
+            (const char *)g_console_child_rx + SSH_CHILD_IPC_HEADER_SIZE,
+            length);
+      }
+      uint32_t remaining = g_console_child_used - frame_length;
+      for (uint32_t i = 0U; i < remaining; ++i) {
+        g_console_child_rx[i] = g_console_child_rx[frame_length + i];
+      }
+      g_console_child_used = remaining;
     }
-    return;
   }
-  if (now_ns >= g_console_xtop.next_refresh_ns &&
-      xaios_xtop_render(&g_console_xtop, &sink, now_ns) != 0) {
-    console_finish_xtop();
+  u64 status = 0U;
+  if (xaios_remote_login_child_status(g_console_child, &status) != 0 ||
+      (u32)status != 1U) {
+    console_child_finish(0);
   }
 }
 
@@ -1027,7 +1083,7 @@ static void console_execute_command(void) {
              (g_console_command[4] == '\0' || g_console_command[4] == ' ')) {
     (void)console_start_less(g_console_command);
   } else if (console_command_is_xtop(g_console_command)) {
-    (void)console_start_xtop(g_console_command);
+    (void)console_start_child(g_console_command, sizeof(g_console_command));
   } else if (ssh_str_eq(g_console_command, "clear")) {
     console_write("\x1b[2J\x1b[H");
   } else if (ssh_str_eq(g_console_command, "exit") ||
@@ -1065,7 +1121,7 @@ static void console_execute_command(void) {
   }
   g_console_command_length = 0U;
   if (g_console_nano.active == 0U && g_console_pong.active == 0U &&
-      g_console_xtop.active == 0U && g_console_less.active == 0U)
+      g_console_child == 0U && g_console_less.active == 0U)
     console_prompt();
 }
 
@@ -1198,13 +1254,8 @@ static void console_tick(void) {
       }
       continue;
     }
-    if (g_console_xtop.active != 0U) {
-      xaios_xtop_sink_t sink = console_xtop_sink();
-      (void)xaios_xtop_input(&g_console_xtop, &sink, xaios_clock_nanos(),
-                             (const uint8_t *)&value, 1U);
-      /* The session signals it is finished by clearing active; the surface
-         then does its own teardown, here reprinting the shell prompt. */
-      if (g_console_xtop.active == 0U) console_prompt();
+    if (g_console_child != 0U) {
+      console_child_input(value);
       continue;
     }
     if (g_console_pong.active != 0U) {
@@ -2894,7 +2945,7 @@ service_loop:
     uint64_t now = timer_now();
     console_refresh_boot_ui(now);
     console_service_pong(now);
-    console_service_xtop(now);
+    console_service_child();
     console_tick();
     for (uint32_t i = 0; g_console_ssh_ready != 0U && i < 4U; ++i) {
       uint8_t udp_buffer[1478];
@@ -3018,6 +3069,13 @@ close_conn:
     if (g_console_ssh_ready != 0U && ssh_channel_tick(timer_now()) != 0) {
       ssh_log(SSH_LOG_WARN, "Interactive channel refresh failed\n");
     }
+    /* An iteration that found nothing to do finishes in microseconds; one
+       that did work took longer. Spinning through the empty ones kept a
+       whole core at a hundred percent from boot -- which the process
+       monitor, once it was honest about who was running, showed on every
+       machine -- so an empty iteration yields the core for a millisecond.
+       That is the most a keystroke or a packet waits. */
+    if (timer_now() - now < UINT64_C(200000)) sshd_idle_ms(1U);
   }
 
   return 0;

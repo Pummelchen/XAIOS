@@ -323,6 +323,8 @@ typedef struct xaios_control_hardware_payload_user {
   u32 avx512;
   u32 vnni;
   u32 amx;
+  u32 rvv;
+  u32 sstc;
 } xaios_control_hardware_payload_user_t;
 
 typedef struct xaios_control_metrics_payload_user {
@@ -349,6 +351,8 @@ typedef struct xaios_control_metrics_payload_user {
   u64 kv_cache_evictions;
   u64 storage_reads;
   u64 storage_read_bytes;
+  u64 storage_writes;
+  u64 storage_write_bytes;
   u64 network_rx_packets;
   u64 network_tx_packets;
   u64 network_rx_bytes;

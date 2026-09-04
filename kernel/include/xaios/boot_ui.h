@@ -33,6 +33,9 @@ uint32_t boot_ui_handle_control(const xaios_boot_ui_control_t *control);
 /* Mirror console bytes onto the framebuffer terminal, once boot hands the
    display over. No-ops when there is no framebuffer or before handover. */
 void boot_ui_console_write(const char *text, uint64_t length);
+/* Present drawing a throttled console write left pending, once the present
+   interval has passed. Called from the console-read syscall. */
+void boot_ui_present_pending(void);
 uint32_t boot_ui_has_framebuffer(void);
 /* The framebuffer terminal's size in character cells, or zero in both when
    there is no framebuffer terminal to measure. */

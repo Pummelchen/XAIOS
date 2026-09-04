@@ -30,13 +30,25 @@ import struct
 import subprocess
 import sys
 import termios
+import threading
 import time
 import fcntl
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
-GATE_DIR = BUILD / "qemu-console-xtop-gate"
-BOOT_TIMEOUT_SECONDS = 240.0
+# Which machine. The three differ in how they are built and booted and in how
+# the SSH leg authenticates; the picture they must draw is the same.
+ARCH = "aarch64"
+for index, argument in enumerate(sys.argv[1:], start=1):
+    if argument == "--arch" and index < len(sys.argv) - 1:
+        ARCH = sys.argv[index + 1]
+    elif argument.startswith("--arch="):
+        ARCH = argument.split("=", 1)[1]
+if ARCH not in ("aarch64", "x86_64", "riscv64"):
+    raise SystemExit(f"unsupported --arch {ARCH!r}")
+GATE_DIR = BUILD / f"qemu-console-xtop-gate-{ARCH}"
+# RISC-V under TCG is the slow one to boot; the release gate allows the same.
+BOOT_TIMEOUT_SECONDS = 900.0 if ARCH == "riscv64" else 240.0
 STEP_TIMEOUT_SECONDS = 60.0
 
 TITLE = "XAIOS xtop — sampled kernel process monitor"
@@ -258,20 +270,50 @@ class Qmp:
 
 
 class Console:
+    """The guest's serial line, read continuously on its own thread.
+
+    Continuously, not on demand. The serial line carries the console, and the
+    console carries a process monitor drawing a hundred kilobytes a second;
+    a pipe nobody reads fills in under a second, QEMU's stdio character
+    device then stalls the virtual CPU on every write, and the guest freezes
+    for as long as the reader looks elsewhere -- which, during the SSH leg,
+    was the whole leg. The SSH session died of a full pipe on the host, and
+    it looked exactly like a kernel that could not run two children.
+    """
+
     def __init__(self, process: subprocess.Popen) -> None:
         self.process = process
         self.output = bytearray()
+        self.lock = threading.Lock()
+        self.reader = threading.Thread(target=self._read, daemon=True)
+        self.reader.start()
+
+    def _read(self) -> None:
+        while True:
+            try:
+                chunk = os.read(self.process.stdout.fileno(), 65536)
+            except OSError:
+                return
+            if not chunk:
+                return
+            with self.lock:
+                self.output.extend(chunk)
 
     def send(self, value: bytes) -> None:
         self.process.stdin.write(value)
         self.process.stdin.flush()
 
     def checkpoint(self) -> int:
-        return len(self.output)
+        with self.lock:
+            return len(self.output)
+
+    def snapshot(self) -> bytes:
+        with self.lock:
+            return bytes(self.output)
 
     def wait_for(self, marker: bytes, timeout: float, since: int = 0) -> None:
         deadline = time.monotonic() + timeout
-        while marker not in self.output[since:]:
+        while marker not in self.snapshot()[since:]:
             if self.process.poll() is not None:
                 raise RuntimeError(
                     f"QEMU exited rc={self.process.returncode} waiting for "
@@ -279,23 +321,13 @@ class Console:
                 )
             if time.monotonic() > deadline:
                 raise TimeoutError(f"timed out waiting for {marker!r}\n{self.tail()}")
-            ready, _, _ = select.select([self.process.stdout.fileno()], [], [], 0.25)
-            if ready:
-                chunk = os.read(self.process.stdout.fileno(), 65536)
-                if chunk:
-                    self.output.extend(chunk)
+            time.sleep(0.1)
 
     def drain(self, seconds: float) -> None:
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            ready, _, _ = select.select([self.process.stdout.fileno()], [], [], 0.1)
-            if ready:
-                chunk = os.read(self.process.stdout.fileno(), 65536)
-                if chunk:
-                    self.output.extend(chunk)
+        time.sleep(seconds)
 
     def tail(self) -> str:
-        return bytes(self.output[-8192:]).decode(errors="replace")
+        return self.snapshot()[-8192:].decode(errors="replace")
 
 
 # ------------------------------------------------------------------------ SSH
@@ -305,22 +337,35 @@ def ssh_frame(key: Path, port: int, columns: int, rows: int) -> list[str]:
     parent, child = pty.openpty()
     fcntl.ioctl(child, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
     stderr_path = GATE_DIR / "ssh.stderr"
+    if ARCH == "riscv64":
+        # The RISC-V image builder takes no authorized-keys file yet; its
+        # gates log in with the default password, and so does this leg.
+        command = [
+            "sshpass", "-p", "xaios", "ssh", "-tt",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "PreferredAuthentications=password",
+            "-o", "PubkeyAuthentication=no",
+            "-p", str(port), "admin@127.0.0.1", "xtop",
+        ]
+    else:
+        command = [
+            "ssh", "-tt",
+            "-i", str(key),
+            "-o", "IdentitiesOnly=yes",
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            # See qemu-model-sftp-gate: a ~/.ssh/config that disables public
+            # key authentication for this host would otherwise stop the key
+            # being offered at all, on that machine only.
+            "-o", "PubkeyAuthentication=yes",
+            "-o", "PreferredAuthentications=none,publickey",
+            "-p", str(port), "admin@127.0.0.1", "xtop",
+        ]
     with stderr_path.open("wb") as stderr:
         process = subprocess.Popen(
-            [
-                "ssh", "-tt",
-                "-i", str(key),
-                "-o", "IdentitiesOnly=yes",
-                "-o", "BatchMode=yes",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                # See qemu-model-sftp-gate: a ~/.ssh/config that disables public
-                # key authentication for this host would otherwise stop the key
-                # being offered at all, on that machine only.
-                "-o", "PubkeyAuthentication=yes",
-                "-o", "PreferredAuthentications=none,publickey",
-                "-p", str(port), "admin@127.0.0.1", "xtop",
-            ],
+            command,
             cwd=ROOT,
             stdin=child,
             stdout=child,
@@ -356,11 +401,23 @@ def ssh_frame(key: Path, port: int, columns: int, rows: int) -> list[str]:
         os.close(parent)
     (GATE_DIR / "ssh.raw").write_bytes(collected)
     if TITLE.encode() not in collected:
+        # sshd's own account of the session, fetched over a second session
+        # when the first got nowhere -- an unauthorized key or a failed
+        # child launch is written there and nowhere the client can see.
+        journal = ""
+        try:
+            fetch = command[:-1] + ["cat /state/sshd.log"]
+            fetch = [a for a in fetch if a != "-tt"]
+            journal = subprocess.run(fetch, capture_output=True, text=True,
+                                     timeout=30).stdout[-1500:]
+        except Exception:  # noqa: BLE001 - diagnostics must not mask the result
+            journal = "(unavailable)"
         raise RuntimeError(
             f"SSH session produced no xtop frame (rc={process.returncode}):\n"
             + collected.decode("utf-8", errors="replace")[-2000:]
             + "\nssh stderr:\n"
             + stderr_path.read_text(errors="replace")[-2000:]
+            + "\nsshd log:\n" + journal
         )
     # Frames begin with a clear; the last piece is a frame still being
     # written, so the one before it is the last complete frame.
@@ -452,8 +509,13 @@ def compare(local: list[str], remote: list[str], columns: int) -> None:
         # The panel names carry live figures -- the CPU load, the memory in
         # use -- sampled at different instants on the two sides. Digits are
         # masked so the comparison is of the layout, which is the claim.
-        masked_local = re.sub(r"[0-9]", "#", local_line)
-        masked_remote = re.sub(r"[0-9]", "#", remote_line)
+        # A figure that grew a digit between the two samples shortens the
+        # rule beside it by one column; runs of digits and runs of rule are
+        # each collapsed, so the comparison is of the layout alone.
+        def masked(line: str) -> str:
+            return re.sub("\u2500+", "\u2500", re.sub(r"[0-9]+", "#", line))
+        masked_local = masked(local_line)
+        masked_remote = masked(remote_line)
         check(
             masked_local == masked_remote,
             f"{name} differs between the two terminals\n"
@@ -495,21 +557,54 @@ def main() -> int:
     env.pop("XAIOS_SSH_USERS_FILE", None)
     env.pop("XAIOS_SSH_PASSWORD_AUTH", None)
     env["XAIOS_AUTHORIZED_KEYS_FILE"] = str(key.with_suffix(".pub"))
-    print("+ build image", flush=True)
-    subprocess.run(["make", "image"], cwd=ROOT, env=env, check=True, timeout=1800)
+    print(f"+ build image ({ARCH})", flush=True)
+    if ARCH == "riscv64":
+        # The release configuration, which is the one that launches programs
+        # as processes; the boot-test gates never do.
+        release = dict(env, XAIOS_BOOT_TEST_APPS="0")
+        for script in ("build-riscv64.sh", "build-riscv64-image.sh",
+                       "build-riscv64-boot-media.sh"):
+            subprocess.run([str(ROOT / "scripts" / script)], cwd=ROOT,
+                           env=release, check=True, timeout=1800)
+    else:
+        build = dict(env, XAIOS_TARGET_ARCH=ARCH)
+        subprocess.run([str(ROOT / "scripts" / "build-image.sh")], cwd=ROOT,
+                       env=build, check=True, timeout=1800)
 
-    env.update(
-        {
-            "XAIOS_QEMU_ACCEL": "tcg",
-            "XAIOS_QEMU_SMP": "4",
-            "XAIOS_QEMU_HOSTFWD_PORT": str(port),
-            "XAIOS_PERSISTENT_IMAGE": str(persistent),
-            "XAIOS_QEMU_QMP_SOCKET": str(qmp_socket),
-            "XAIOS_QEMU_EXTRA_ARGS": "-device virtio-gpu-pci",
-        }
-    )
+    if ARCH == "riscv64":
+        state = GATE_DIR / "state"
+        state.mkdir(exist_ok=True)
+        env.update(
+            {
+                "XAIOS_RISCV64_CPUS": "4",
+                "XAIOS_RISCV64_SSH_PORT": str(port),
+                "XAIOS_RISCV64_STATE": str(state),
+                "XAIOS_RISCV64_LOG": str(GATE_DIR / "serial.log"),
+                "XAIOS_RISCV64_SERIAL": "stdio",
+                "XAIOS_RISCV64_QMP_SOCKET": str(qmp_socket),
+                "XAIOS_RISCV64_EXTRA_ARGS": "-device virtio-gpu-pci",
+            }
+        )
+        runner = ROOT / "platform" / "qemu" / "run-qemu-riscv64.sh"
+    else:
+        env.update(
+            {
+                "XAIOS_QEMU_ACCEL": "tcg",
+                "XAIOS_QEMU_SMP": "4",
+                "XAIOS_QEMU_HOSTFWD_PORT": str(port),
+                # The two runners name the persistent disk differently. The
+                # disk carries /state, and with it the bootstrap key the
+                # image installs on first boot: a shared, stale one refuses
+                # every key but the run that created it.
+                "XAIOS_PERSISTENT_IMAGE": str(persistent),
+                "XAIOS_X86_PERSISTENT_IMAGE": str(persistent),
+                "XAIOS_QEMU_QMP_SOCKET": str(qmp_socket),
+                "XAIOS_QEMU_EXTRA_ARGS": "-device virtio-gpu-pci",
+            }
+        )
+        runner = ROOT / "platform" / "qemu" / f"run-qemu-{ARCH}.sh"
     process = subprocess.Popen(
-        [str(ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh")],
+        [str(runner)],
         cwd=ROOT,
         env=env,
         stdin=subprocess.PIPE,
@@ -547,7 +642,7 @@ def main() -> int:
                 screen = candidate
                 break
         check(screen is not None, "no screendump caught a complete xtop frame")
-        (GATE_DIR / "console.raw").write_bytes(bytes(console.output))
+        (GATE_DIR / "console.raw").write_bytes(console.snapshot())
         local_lines = screen.lines
         print(f"+ console is {screen.columns}x{screen.rows} cells", flush=True)
         for line in local_lines[:22]:
@@ -612,6 +707,13 @@ def main() -> int:
         )
         console.send(b"q")
     finally:
+        # Everything the serial line said, whatever happened: a failure in
+        # the SSH leg is diagnosed from the kernel's account of it.
+        try:
+            console.drain(1.0)
+            (GATE_DIR / "console.raw").write_bytes(console.snapshot())
+        except Exception:  # noqa: BLE001 - diagnostics must not mask the result
+            pass
         if process.poll() is None:
             process.terminate()
             try:
@@ -620,7 +722,7 @@ def main() -> int:
                 process.kill()
                 process.wait(timeout=10)
 
-    print("PASS: xtop renders the same on the local console and over SSH")
+    print(f"PASS: xtop renders the same on the local console and over SSH ({ARCH})")
     return 0
 
 

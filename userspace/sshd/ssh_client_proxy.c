@@ -38,6 +38,18 @@ static ssh_client_proxy_t *proxy_for(const ssh_channel_t *channel) {
   return proxy->active != 0U ? proxy : 0;
 }
 
+/* "--interactive", which the promoted command carries; a plain run is a
+   one-shot command like any other and not a child. */
+static int command_has_interactive(const char *command) {
+  const char *needle = "--interactive";
+  for (uint32_t i = 0U; command[i] != '\0'; ++i) {
+    uint32_t k = 0U;
+    while (needle[k] != '\0' && command[i + k] == needle[k]) ++k;
+    if (needle[k] == '\0') return 1;
+  }
+  return 0;
+}
+
 static int command_is_outbound(const char *command) {
   uint32_t offset = 0U;
   while (command[offset] == ' ' || command[offset] == '\t') ++offset;
@@ -46,8 +58,12 @@ static int command_is_outbound(const char *command) {
   while (name[length] != '\0' && name[length] != ' ' && name[length] != '\t') {
     ++length;
   }
+  /* xtop too: one process that streams frames for the life of the session,
+     driven over the same channel, rather than a launch per frame. */
   return (length == 3U && name[0] == 's' && name[1] == 's' && name[2] == 'h') ||
-         (length == 3U && name[0] == 's' && name[1] == 'c' && name[2] == 'p');
+         (length == 3U && name[0] == 's' && name[1] == 'c' && name[2] == 'p') ||
+         (length == 4U && name[0] == 'x' && name[1] == 't' && name[2] == 'o' &&
+          name[3] == 'p' && command_has_interactive(command));
 }
 
 static int proxy_write_frame(ssh_client_proxy_t *proxy, uint32_t type,
@@ -166,6 +182,14 @@ int ssh_client_tick(struct ssh_channel *channel, uint64_t now_ns) {
   if (proxy == 0) return 0;
   for (uint32_t iteration = 0U; iteration < 8U; ++iteration) {
     u64 output_size = 0U;
+    /* Back-pressure. Nothing more is taken from the child until what was
+       already taken has left for the client: the channel's pending buffer
+       holds one frame comfortably and not two, and a second frame arriving
+       before the first had drained overflowed it, which tore the connection
+       down. Left in the child's ring, the frame waits; the child blocks on
+       its next write; the rate becomes whatever the link carries. That is
+       the only sane meaning of sixty frames a second over SSH. */
+    if (channel->pending_used != 0U) break;
     if (proxy->receive_used == sizeof(proxy->receive) ||
         xaios_remote_login_child_read(
             proxy->child_channel_id, proxy->receive + proxy->receive_used,

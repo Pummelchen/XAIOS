@@ -115,6 +115,7 @@ validate x86_64 guests. See [`VMWARE-FUSION.md`](./VMWARE-FUSION.md).
 | `make qemu-docker-network-suite` | Debian 13 OpenSSH/SFTP/UDP/IPv6 interoperability plus xaibootFS v3/v4-to-v5 migration and reboot persistence |
 | `make qemu-local-console-gate` | Wrong/correct local login, stateful prompt, filesystem commands, command errors and logout |
 | `make qemu-console-xtop-gate` | xtop on the framebuffer console, read back as pixels and decoded through the kernel's font, matches the frame an SSH session of the same size shows |
+| `make qemu-console-xtop-gate-x86_64` / `-riscv64` | The same local-console-versus-SSH comparison on the other two architectures |
 | `make qemu-cpu-ai-suite` | CPU-only AI runtime |
 | `make qemu-regression-suite` | Full regression suite |
 | `make qemu-benchmark` | QEMU correctness telemetry collection |
