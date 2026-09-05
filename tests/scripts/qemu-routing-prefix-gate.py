@@ -40,7 +40,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
-REPORT = BUILD / "qemu-routing-prefix-gate.json"
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import (arch_from_argv, qemu_boot_environment, qemu_runner,
+                           smoke_timeout)
+
+ARCH = arch_from_argv(sys.argv)
+REPORT = BUILD / (f"qemu-routing-prefix-gate-{ARCH}.json" if ARCH != "aarch64"
+                  else "qemu-routing-prefix-gate.json")
 
 # Deliberately neither a /24 nor a /16, so a hard-coded prefix of either shape
 # fails rather than passing by coincidence. The assertion is not against this
@@ -50,7 +56,8 @@ REPORT = BUILD / "qemu-routing-prefix-gate.json"
 # changed for a reason having nothing to do with the routing log.
 NETWORK = os.environ.get("XAIOS_ROUTING_PREFIX_NET", "10.0.5.0/21")
 EXPECTED_PREFIX = int(NETWORK.split("/")[1])
-DEADLINE = int(os.environ.get("XAIOS_ROUTING_PREFIX_TIMEOUT", "420"))
+DEADLINE = smoke_timeout(
+    ARCH, int(os.environ.get("XAIOS_ROUTING_PREFIX_TIMEOUT", "420")))
 
 ROUTING = re.compile(r"routing: initialized \(local=([0-9a-f]{8})/(\d+) ")
 LEASE = re.compile(r"network: DHCP lease ip=([0-9a-f]{8}) mask=([0-9a-f]{8})")
@@ -69,9 +76,13 @@ def prefix_of(mask_hex: str) -> int:
 
 def boot() -> tuple[str, str]:
     """Boot with the requested range and return everything the guest said."""
-    environment = dict(os.environ, XAIOS_QEMU_USER_NET_CIDR=NETWORK)
+    environment = qemu_boot_environment(
+        ARCH, dict(os.environ), user_net_cidr=NETWORK,
+        # The routing line is read out of the runner's stdout, and RISC-V's
+        # runner writes the console to a file unless told otherwise.
+        serial_to_stdout=True)
     process = subprocess.Popen(
-        [str(ROOT / "platform/qemu/run-qemu-aarch64.sh")],
+        [qemu_runner(ARCH)],
         cwd=str(ROOT), env=environment, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     collected: list[str] = []
@@ -105,8 +116,12 @@ def boot() -> tuple[str, str]:
 
 
 def main() -> int:
-    if not (BUILD / "xaios-aarch64.img").is_file():
-        print("qemu-routing-prefix-gate: build the image first (make image)",
+    prerequisite = {"aarch64": ("xaios-aarch64.img", "make image-qemu-test"),
+                    "x86_64": ("xaios-x86_64.img", "make image-x86_64"),
+                    "riscv64": ("kernel-riscv64/kernel.elf",
+                                "make riscv64")}[ARCH]
+    if not (BUILD / prerequisite[0]).is_file():
+        print(f"qemu-routing-prefix-gate: build it first ({prerequisite[1]})",
               file=sys.stderr)
         return 2
     text, why = boot()
@@ -145,6 +160,7 @@ def main() -> int:
             f"the mask it was handed")
     report = {
         "schema": "xaios.routing-prefix.v1",
+        "arch": ARCH,
         "network_offered": NETWORK,
         "lease_mask": leased_mask,
         "prefix_leased": leased_prefix,

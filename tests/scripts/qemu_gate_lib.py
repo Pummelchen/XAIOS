@@ -219,6 +219,7 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
                           qmp_socket: Any = None,
                           keyboard: Any = None,
                           accel: Any = None,
+                          user_net_cidr: Any = None,
                           serial_to_stdout: bool = False) -> Dict[str, str]:
     """The knobs for one boot, under the names this architecture's runner reads.
 
@@ -242,6 +243,9 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
     if qmp_socket is not None:
         env["XAIOS_QEMU_QMP_SOCKET" if arch != "riscv64"
             else "XAIOS_RISCV64_QMP_SOCKET"] = str(qmp_socket)
+    if user_net_cidr is not None:
+        env["XAIOS_QEMU_USER_NET_CIDR" if arch != "riscv64"
+            else "XAIOS_RISCV64_USER_NET_CIDR"] = str(user_net_cidr)
     if keyboard is not None:
         env["XAIOS_QEMU_KEYBOARD" if arch != "riscv64"
             else "XAIOS_RISCV64_KEYBOARD"] = str(keyboard)

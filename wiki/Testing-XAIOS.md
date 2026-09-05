@@ -105,6 +105,7 @@ make qemu-riscv64-storage-crash-test
 make qemu-riscv64-crash-safety-gate
 make qemu-riscv64-framebuffer-gate
 make qemu-riscv64-keyboard-input-gate
+make qemu-riscv64-routing-prefix-gate
 make qemu-riscv64-write-ordering-gate
 make qemu-riscv64-local-console-gate
 make qemu-console-xtop-gate-riscv64

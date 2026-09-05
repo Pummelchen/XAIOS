@@ -152,6 +152,15 @@ EXTRA_ARGS="${XAIOS_RISCV64_EXTRA_ARGS:-}"
 # driver on every architecture; what differs is only whether a controller is
 # on the bus for it to find. Default off, because most gates here have no use
 # for one and every device costs boot time under an interpreter.
+# The address range SLIRP hands the guest. This machine has one NIC and the
+# persistent network stack configures it, so the range goes there -- unlike
+# the aarch64 runner, where net0 is a second unrouted interface and setting
+# it there changes an address nothing reads.
+USER_NET_CIDR="${XAIOS_RISCV64_USER_NET_CIDR:-none}"
+NET_OPTIONS="user,id=n0$HOSTFWD_ARG"
+if [ "$USER_NET_CIDR" != none ]; then
+  NET_OPTIONS="$NET_OPTIONS,net=$USER_NET_CIDR"
+fi
 KEYBOARD_ARGS=""
 case "${XAIOS_RISCV64_KEYBOARD:-none}" in
   none) ;;
@@ -186,7 +195,7 @@ exec "$QEMU" \
   -blockdev driver=raw,node-name=sysraw2,file=sysf2 \
   -device virtio-blk-device,drive=sysraw2,bus=virtio-mmio-bus.6 \
   -device virtio-rng-pci,disable-legacy=on \
-  -netdev "user,id=n0$HOSTFWD_ARG" \
+  -netdev "$NET_OPTIONS" \
   -device virtio-net-pci,netdev=n0,disable-legacy=on \
   $KEYBOARD_ARGS \
   $QMP_ARGS $EXTRA_ARGS "$@"
