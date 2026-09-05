@@ -497,6 +497,10 @@ static uint32_t g_term_esc_state;
 static uint32_t g_term_params[TERM_CSI_PARAM_MAX];
 static uint32_t g_term_param_count;
 static uint32_t g_term_cursor_drawn;
+/* ESC[?25l hides the cursor until ESC[?25h: a program drawing a screen
+   does not want a cursor wandering over it between updates. */
+static uint32_t g_term_cursor_hidden;
+static uint32_t g_term_csi_private;
 
 static uint32_t term_default_background(void) { return fb_color(4U, 6U, 10U); }
 static uint32_t term_foreground(void) { return fb_color(222U, 230U, 236U); }
@@ -651,18 +655,24 @@ static uint32_t term_y(uint32_t row) {
   return TERM_MARGIN_Y + row * TERM_LINE_HEIGHT;
 }
 
+static void term_repaint_cell(uint32_t column, uint32_t row);
+
+/* The cursor is an underline over a cell; erasing it paints the cell back
+   as the cache has it. Painting only the current background left a dark
+   underline on a coloured field wherever the cursor had been. */
 static void term_erase_cursor(void) {
   if (g_term_cursor_drawn == 0U) return;
-  term_cell_forget(g_term_column, g_term_row);
-  fb_rect(term_x(g_term_column), term_y(g_term_row) + FB_GLYPH_HEIGHT *
-              FB_GLYPH_Y_SCALE - UINT32_C(2),
-          FB_GLYPH_WIDTH, UINT32_C(2), term_background());
   g_term_cursor_drawn = 0U;
+  if (g_term_column < g_term_columns && g_term_row < g_term_rows) {
+    term_repaint_cell(g_term_column, g_term_row);
+  }
 }
 
 static void term_draw_cursor(void) {
-  if (g_term_active == 0U || g_term_cursor_drawn != 0U) return;
-  term_cell_forget(g_term_column, g_term_row);
+  if (g_term_active == 0U || g_term_cursor_drawn != 0U ||
+      g_term_cursor_hidden != 0U || g_term_column >= g_term_columns) {
+    return;
+  }
   fb_rect(term_x(g_term_column), term_y(g_term_row) + FB_GLYPH_HEIGHT *
               FB_GLYPH_Y_SCALE - UINT32_C(2),
           FB_GLYPH_WIDTH, UINT32_C(2), term_foreground());
@@ -711,6 +721,14 @@ static void term_newline(void) {
 }
 
 static void term_apply_csi(char final) {
+  if (g_term_csi_private != 0U) {
+    if ((final == 'l' || final == 'h') && g_term_param_count != 0U &&
+        g_term_params[0] == 25U) {
+      g_term_cursor_hidden = final == 'l' ? 1U : 0U;
+      if (g_term_cursor_hidden != 0U) term_erase_cursor();
+    }
+    return;
+  }
   if (final == 'm') {
     if (g_term_param_count == 0U) {
       g_term_color = term_foreground();
@@ -778,18 +796,53 @@ static void term_apply_csi(char final) {
 }
 
 /* One character cell: clear it to the current background, then draw. */
-static void term_put_code_point(uint32_t code_point) {
-  const uint8_t *rows;
+static const uint8_t *term_glyph_rows(uint32_t code_point) {
   if (code_point >= 0x20U && code_point <= 0x7fU) {
-    rows = g_font[code_point - 0x20U];
-  } else {
-    rows = fb_extra_rows(code_point);
-    /* Not a space: a glyph this font lacks should look like a gap in the
-       font, which is a thing to fix, rather than like whitespace the program
-       asked for, which is not. */
-    if (rows == 0) rows = fb_extra_rows(0x2591U);
-    if (rows == 0) return;
+    return g_font[code_point - 0x20U];
   }
+  const uint8_t *rows = fb_extra_rows(code_point);
+  /* Not a space: a glyph this font lacks should look like a gap in the
+     font, which is a thing to fix, rather than like whitespace the program
+     asked for, which is not. */
+  if (rows == 0) rows = fb_extra_rows(0x2591U);
+  return rows;
+}
+
+static void term_draw_cell(uint32_t column, uint32_t row, uint32_t code_point,
+                           uint32_t fg, uint32_t bg) {
+  const uint8_t *rows = term_glyph_rows(code_point);
+  fb_rect(term_x(column), term_y(row), FB_GLYPH_ADVANCE, TERM_LINE_HEIGHT, bg);
+  if (rows == 0) return;
+  fb_glyph_rows(term_x(column), term_y(row), rows, fg);
+  /* A vertical rule has to reach the next row. Each row is the glyph plus a
+     two-pixel gap beneath it, and a stroke that stops at the glyph's edge
+     leaves a gap in every rule -- a box drawn on this console came out
+     dashed where an SSH client drew it solid. The glyphs whose stroke
+     reaches their bottom edge carry it on through the gap; the ones whose
+     stroke starts at the top meet it there. */
+  if (code_point == 0x2502U || code_point == 0x250cU ||
+      code_point == 0x2510U) {
+    fb_rect(term_x(column) + UINT32_C(3) * FB_GLYPH_X_SCALE,
+            term_y(row) + FB_GLYPH_HEIGHT * FB_GLYPH_Y_SCALE,
+            FB_GLYPH_X_SCALE, UINT32_C(2), fg);
+  }
+}
+
+/* Paint a cell as the cache says it is: what erasing the cursor over it
+   needs. A cell the cache does not know is painted as a blank in the
+   current background. */
+static void term_repaint_cell(uint32_t column, uint32_t row) {
+  term_cell_t *cell = term_cell(column, row);
+  if (cell == 0 || cell->code_point == TERM_CELL_UNKNOWN) {
+    fb_rect(term_x(column), term_y(row), FB_GLYPH_ADVANCE, TERM_LINE_HEIGHT,
+            term_background());
+    return;
+  }
+  term_draw_cell(column, row, cell->code_point, cell->fg, cell->bg);
+}
+
+static void term_put_code_point(uint32_t code_point) {
+  if (term_glyph_rows(code_point) == 0) return;
   if (g_term_column >= g_term_columns) term_newline();
   term_cell_t *cell = term_cell(g_term_column, g_term_row);
   if (cell != 0 && cell->code_point == code_point &&
@@ -803,22 +856,8 @@ static void term_put_code_point(uint32_t code_point) {
     cell->fg = g_term_color;
     cell->bg = term_background();
   }
-  fb_rect(term_x(g_term_column), term_y(g_term_row), FB_GLYPH_ADVANCE,
-          TERM_LINE_HEIGHT, term_background());
-  fb_glyph_rows(term_x(g_term_column), term_y(g_term_row), rows,
-                g_term_color);
-  /* A vertical rule has to reach the next row. Each row is the glyph plus a
-     two-pixel gap beneath it, and a stroke that stops at the glyph's edge
-     leaves a gap in every rule -- a box drawn on this console came out
-     dashed where an SSH client drew it solid. The glyphs whose stroke
-     reaches their bottom edge carry it on through the gap; the ones whose
-     stroke starts at the top meet it there. */
-  if (code_point == 0x2502U || code_point == 0x250cU ||
-      code_point == 0x2510U) {
-    fb_rect(term_x(g_term_column) + UINT32_C(3) * FB_GLYPH_X_SCALE,
-            term_y(g_term_row) + FB_GLYPH_HEIGHT * FB_GLYPH_Y_SCALE,
-            FB_GLYPH_X_SCALE, UINT32_C(2), g_term_color);
-  }
+  term_draw_cell(g_term_column, g_term_row, code_point, g_term_color,
+                 term_background());
   ++g_term_column;
 }
 
@@ -828,6 +867,7 @@ static void term_putc(uint8_t value) {
       g_term_esc_state = TERM_ESC_CSI;
       g_term_param_count = 0U;
       g_term_params[0] = 0U;
+      g_term_csi_private = 0U;
     } else {
       g_term_esc_state = TERM_ESC_IDLE;
     }
@@ -846,7 +886,11 @@ static void term_putc(uint8_t value) {
       }
       return;
     }
-    if (value == '?' || value == ':') return;
+    if (value == '?') {
+      g_term_csi_private = 1U;
+      return;
+    }
+    if (value == ':') return;
     term_apply_csi((char)value);
     g_term_esc_state = TERM_ESC_IDLE;
     return;
