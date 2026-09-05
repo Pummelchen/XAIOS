@@ -152,15 +152,52 @@ EXTRA_ARGS="${XAIOS_RISCV64_EXTRA_ARGS:-}"
 # driver on every architecture; what differs is only whether a controller is
 # on the bus for it to find. Default off, because most gates here have no use
 # for one and every device costs boot time under an interpreter.
-# The address range SLIRP hands the guest. This machine has one NIC and the
-# persistent network stack configures it, so the range goes there -- unlike
-# the aarch64 runner, where net0 is a second unrouted interface and setting
-# it there changes an address nothing reads.
+# Two interfaces, in the shape the other two machines have.
+#
+# net0 is a plain SLIRP interface on PCI that nothing routes through; net1 is
+# on virtio-mmio-bus.2 and is the one the persistent network stack finds and
+# configures, because virtio_transport_find scans the MMIO windows before
+# falling back to PCI. That is not decoration: with one PCI NIC this machine
+# had no MMIO transport for its network at all, so it polled its queues where
+# the other two take an interrupt, and every gate that needs a second network
+# path -- a frame socket for a synthetic DHCPv6 server, a second hub port for
+# fragmentation -- had nowhere to attach one.
+#
+# net1 takes the host forwarding and the address range, for the same reason
+# it does on aarch64: it is the interface the guest actually uses.
 USER_NET_CIDR="${XAIOS_RISCV64_USER_NET_CIDR:-none}"
-NET_OPTIONS="user,id=n0$HOSTFWD_ARG"
-if [ "$USER_NET_CIDR" != none ]; then
-  NET_OPTIONS="$NET_OPTIONS,net=$USER_NET_CIDR"
+NET_SOCKET_PORT="${XAIOS_RISCV64_NET_SOCKET_PORT:-none}"
+NET_SOCKET_PORT_2="${XAIOS_RISCV64_NET_SOCKET_PORT_2:-none}"
+NET_SOCKET_HOST="${XAIOS_RISCV64_NET_SOCKET_HOST:-127.0.0.1}"
+
+NET1_ARGS=""
+if [ "$NET_SOCKET_PORT" != none ] && {
+  [ "$NET_SOCKET_PORT_2" != none ] || [ "$SSH_PORT" != none ]
+}; then
+  # A hub, so a synthetic client on a socket and the host forwarding can share
+  # one guest interface. SLIRP is told ipv6=off here: the framed clients on
+  # this hub speak IPv6 themselves and SLIRP would answer for them.
+  if [ "$SSH_PORT" != none ]; then
+    NET1_ARGS="$NET1_ARGS -netdev user,id=net1_user,ipv6=off,hostfwd=tcp::$SSH_PORT-:22"
+    NET1_ARGS="$NET1_ARGS -netdev hubport,id=net1_user_hub,hubid=1,netdev=net1_user"
+  fi
+  NET1_ARGS="$NET1_ARGS -netdev stream,id=net1_socket,server=on,addr.type=inet,addr.host=$NET_SOCKET_HOST,addr.port=$NET_SOCKET_PORT"
+  NET1_ARGS="$NET1_ARGS -netdev hubport,id=net1_socket_hub,hubid=1,netdev=net1_socket"
+  if [ "$NET_SOCKET_PORT_2" != none ]; then
+    NET1_ARGS="$NET1_ARGS -netdev stream,id=net1_socket_2,server=on,addr.type=inet,addr.host=$NET_SOCKET_HOST,addr.port=$NET_SOCKET_PORT_2"
+    NET1_ARGS="$NET1_ARGS -netdev hubport,id=net1_socket_2_hub,hubid=1,netdev=net1_socket_2"
+  fi
+  NET1_ARGS="$NET1_ARGS -netdev hubport,id=net1,hubid=1"
+elif [ "$NET_SOCKET_PORT" != none ]; then
+  NET1_ARGS="-netdev stream,id=net1,server=on,addr.type=inet,addr.host=$NET_SOCKET_HOST,addr.port=$NET_SOCKET_PORT"
+else
+  NET1_OPTIONS="user,id=net1$HOSTFWD_ARG"
+  if [ "$USER_NET_CIDR" != none ]; then
+    NET1_OPTIONS="$NET1_OPTIONS,net=$USER_NET_CIDR"
+  fi
+  NET1_ARGS="-netdev $NET1_OPTIONS"
 fi
+NET1_ARGS="$NET1_ARGS -device virtio-net-device,netdev=net1,mac=52:54:00:12:34:57,bus=virtio-mmio-bus.2"
 KEYBOARD_ARGS=""
 case "${XAIOS_RISCV64_KEYBOARD:-none}" in
   none) ;;
@@ -195,7 +232,8 @@ exec "$QEMU" \
   -blockdev driver=raw,node-name=sysraw2,file=sysf2 \
   -device virtio-blk-device,drive=sysraw2,bus=virtio-mmio-bus.6 \
   -device virtio-rng-pci,disable-legacy=on \
-  -netdev "$NET_OPTIONS" \
+  -netdev user,id=n0 \
   -device virtio-net-pci,netdev=n0,disable-legacy=on \
+  $NET1_ARGS \
   $KEYBOARD_ARGS \
   $QMP_ARGS $EXTRA_ARGS "$@"

@@ -32,11 +32,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
-REPORT = BUILD / "qemu-dhcpv6-gate.json"
-RUNNER = ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh"
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import (arch_from_argv, qemu_boot_environment, qemu_runner,
+                           smoke_timeout)
+
+ARCH = arch_from_argv(sys.argv)
+SUFFIX = "" if ARCH == "aarch64" else f"-{ARCH}"
+REPORT = BUILD / f"qemu-dhcpv6-gate{SUFFIX}.json"
+RUNNER = ROOT / qemu_runner(ARCH)
 SERVER = ROOT / "tests" / "network" / "qemu-dhcpv6-server.py"
 
-BOOT_TIMEOUT_S = float(os.environ.get("XAIOS_DHCPV6_BOOT_TIMEOUT", "180"))
+BOOT_TIMEOUT_S = float(smoke_timeout(
+    ARCH, int(os.environ.get("XAIOS_DHCPV6_BOOT_TIMEOUT", "180"))))
 LEASE_MARKER = "network: IPv6 address configured by DHCPv6"
 # 2001:db8::42, the address the server hands out, as the kernel prints it.
 LEASED_ADDRESS_MARKER = "dhcpv6: lease by"
@@ -62,10 +69,13 @@ def wait_for_listener(port: int, deadline: float) -> bool:
 
 def run_case(mode: str) -> dict:
     port = reserve_port()
-    log_path = BUILD / f"qemu-dhcpv6-{mode}.log"
-    environment = dict(os.environ)
-    environment["XAIOS_QEMU_NET_SOCKET_PORT"] = str(port)
-    environment["XAIOS_BOOT_VERBOSE"] = "1"
+    log_path = BUILD / f"qemu-dhcpv6{SUFFIX}-{mode}.log"
+    environment = dict(os.environ, XAIOS_BOOT_VERBOSE="1")
+    environment = qemu_boot_environment(
+        ARCH, environment, net_socket_port=port,
+        # The guest console is redirected into log_path below; RISC-V's
+        # runner writes it to a file of its own unless told otherwise.
+        serial_to_stdout=True)
 
     result = {"mode": mode, "server_exit": None, "markers": {}, "passed": False}
     with log_path.open("wb") as handle:
