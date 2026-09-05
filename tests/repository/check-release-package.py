@@ -42,15 +42,29 @@ def digest(handle) -> str:
 
 
 def recorded_checksums(note: Path, build: str) -> dict[str, str]:
-    """The checksums the release note publishes, by filename."""
+    """Every checksum the release note publishes, by filename.
+
+    Two layouts, because the notes have used both: a prose pair, and the
+    table build 4 introduced when the note grew to six downloads. Reading
+    only the first meant this check found nothing in a note full of
+    checksums and said so on every build since -- which is the right answer
+    to "are they verified" and the wrong reason for it.
+
+    Every file the note names is collected, not just the image and its
+    archive: a note that publishes a checksum for a kit is making a claim
+    about that kit, and an unverified claim is what this exists to catch.
+    """
     text = note.read_text(encoding="utf-8")
     found = {}
-    for name in (f"xaios_b{build}.iso", f"xaios_b{build}.iso.zip"):
-        match = re.search(
-            r"`" + re.escape(name) + r"` — [\d,]+ bytes\nSHA-256 `([0-9a-f]{64})`",
-            text)
-        if match:
-            found[name] = match.group(1)
+    prose = re.compile(
+        r"`(xaios_b" + re.escape(build) + r"[^`]*)` — [\d,]+ bytes\n"
+        r"SHA-256 `([0-9a-f]{64})`")
+    table = re.compile(
+        r"\|\s*`(xaios_b" + re.escape(build) + r"[^`]*)`\s*\|\s*[\d,]+\s*\|"
+        r"\s*`([0-9a-f]{64})`\s*\|")
+    for pattern in (prose, table):
+        for match in pattern.finditer(text):
+            found[match.group(1)] = match.group(2)
     return found
 
 
@@ -114,6 +128,24 @@ def main() -> int:
             failures.append(
                 f"{loose.relative_to(ROOT)} is {loose_digest[:12]} but the note "
                 f"publishes {published[image_name][:12]}")
+
+    # The kits the note publishes checksums for. They are not committed --
+    # five copies of one image would be five chances to disagree -- so they
+    # are checked where they exist, which on the machine cutting the build
+    # is all of them. A kit whose bytes have moved on since the note was
+    # written is the same fault as a stale archive, one download further out.
+    for name, expected in sorted(published.items()):
+        if name in (image_name, f"{image_name}.zip"):
+            continue
+        candidate = RELEASE / name
+        if not candidate.is_file():
+            continue
+        with candidate.open("rb") as handle:
+            found_digest = digest(handle)
+        if found_digest != expected:
+            failures.append(
+                f"{candidate.relative_to(ROOT)} is {found_digest[:12]} but "
+                f"the note publishes {expected[:12]}")
 
     if failures:
         print(f"release-package: build {build}'s package does not match its note")
