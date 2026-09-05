@@ -26,11 +26,14 @@ A program can be a user of the framework at either of two levels:
   editor, pager and game do this. Nothing in them changed to gain it, and any
   future program -- an OS command, a third-party application -- gets it the
   same way, by using the alternate screen.
-- **Hold a screen of its own.** `xtop` does this: it paints each rendered
-  frame into its screen with `xaios_screen_paint`, presents with
-  `xaios_screen_present`, and writes the result. It saves the session's
-  parse, and it can send at sixty frames a second down a child channel that
-  could not carry sixty whole frames.
+- **Hold a screen of its own.** `xtop` does this: it draws each frame
+  straight into the screen's cells with `xaios_screen_put` -- no escape-
+  coded frame is composed or parsed -- presents with
+  `xaios_screen_present`, and writes the result. Its one-shot text output
+  comes from the same drawing code through a byte-buffer canvas, so the
+  two never drift. It saves the session's parse, and it can send at sixty
+  frames a second down a child channel that could not carry sixty whole
+  frames.
 
 ## Pacing
 
