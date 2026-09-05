@@ -7,6 +7,7 @@
 #include <xaios/ipv6.h>
 #include <xaios/spinlock.h>
 #include <xaios/timer.h>
+#include <xaios/net_device.h>
 #include <xaios/virtio_net.h>
 #include <xaios/virtio_transport.h>
 #include <xaios/vmm.h>
@@ -227,6 +228,12 @@ static void virtio_net_interrupt(uint32_t intid, void *context) {
   if (driver == 0 || driver != g_net) return;
   ++driver->interrupt_count;
   (void)virtio_net_drain_tx_completions();
+  /* Receive is not drained here. Handing a frame to the stack takes a lock
+     that a thread on this CPU may already hold, and an interrupt is the one
+     context that cannot wait for it. What the interrupt does instead is end
+     the sleep of whoever was waiting for the link, and that thread drains
+     the ring with the lock takeable. */
+  network_device_note_interrupt();
   virtio_transport_ack_interrupts(&driver->device);
 }
 
@@ -1077,6 +1084,9 @@ xaios_status_t virtio_net_init_persistent(void) {
          "polls\n",
          (int)status);
   }
+  /* What the wait loop needs to know: whether anything will tell it a frame
+     arrived. Without that it has to keep asking. */
+  network_device_set_interrupt_driven(status == XAIOS_OK);
 
   {
     uint8_t mac[6];

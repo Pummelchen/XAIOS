@@ -940,6 +940,7 @@ static int listener_enqueue_backlog(uint16_t port, uint32_t flow_id,
   e->local_port = port;
   e->payload_len = 0;
   e->active = 1;
+  network_readiness_note();
   { listener_unlock(); return 1; }
   listener_unlock();
 }
@@ -3059,6 +3060,16 @@ static int network_stack_tcp_peer_closed_unlocked(uint32_t flow_id) {
     }
   }
   return 1;
+}
+
+static volatile uint64_t g_readiness_generation;
+
+void network_readiness_note(void) {
+  __atomic_add_fetch(&g_readiness_generation, 1U, __ATOMIC_RELAXED);
+}
+
+uint64_t network_readiness_generation(void) {
+  return __atomic_load_n(&g_readiness_generation, __ATOMIC_RELAXED);
 }
 
 int network_stack_tcp_peer_closed(uint32_t flow_id) {
@@ -5275,6 +5286,12 @@ static void network_poll_tick_locked(void) {
     if (frame_len == 0) {
       break;
     }
+    /* A frame is the only way an external peer makes a socket readable, so
+       this is where a waiter is told its answer has expired. Before the
+       frame is parsed rather than after: what it turns into -- data, a
+       connection, a close -- all change readiness, and none of them are
+       worth distinguishing here. */
+    network_readiness_note();
   if (frame_len < 14U) {
     return;
   }

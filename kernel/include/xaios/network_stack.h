@@ -156,6 +156,15 @@ uint32_t network_stack_udp_recv(uint64_t sockfd, uint8_t *buffer,
 uint32_t network_stack_tcp_recv(uint32_t flow_id, uint8_t *buffer,
                                   uint32_t buffer_size);
 int network_stack_tcp_peer_closed(uint32_t flow_id);
+/* Bumped wherever a socket could have become readable: bytes into a receive
+   buffer, a connection onto a listener's backlog, a peer closing. A waiter
+   that has seen this value knows the answer it computed is still current,
+   which is worth a great deal more than the counter costs -- deriving it
+   walks the socket table and then the flow table, per socket, under two
+   locks. Advisory: a path that forgets to bump delays a wake to the wait's
+   housekeeping cadence, it does not lose it. */
+void network_readiness_note(void);
+uint64_t network_readiness_generation(void);
 /* Whether a non-blocking call on this socket would return something: a
    queued connection or datagram on a listener, bytes on a connected
    stream, or a peer that has closed. */

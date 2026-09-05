@@ -13,6 +13,7 @@
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
 #include <xaios/xaiboot_fs.h>
+#include <xaios/net_device.h>
 #include <xaios/network_stack.h>
 #include <xaios/remote_login.h>
 #include <xaios/security.h>
@@ -176,6 +177,11 @@ static uint32_t g_cpu_ai_app_bound;
    second rather than a thousand. */
 #define XAIOS_WAIT_SLICE_NS UINT64_C(1000000)
 #define XAIOS_WAIT_SLICE_MAX_NS UINT64_C(8000000)
+/* How often the network stack is driven when nothing has arrived: retransmit
+   timers, ping timeouts, NTP and the operations tick all live behind it, and
+   none of them need a millisecond. Where the device raises no interrupt this
+   is not used -- such a link has to be emptied at the receive cadence. */
+#define XAIOS_WAIT_HOUSEKEEPING_NS UINT64_C(50000000)
 
 #define KERNEL_SOCK_LISTEN UINT32_C(1)
 #define KERNEL_SOCK_CONNECTED UINT32_C(2)
@@ -584,17 +590,49 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     uint64_t deadline_ns = timer_now_ns() + timeout_ns;
     uint64_t events = 0U;
     uint64_t slice_ns = XAIOS_WAIT_SLICE_NS;
+    /* Driving the stack is most of what a look costs under emulation, and
+       for a link that raises interrupts almost every look found nothing:
+       the tick now runs when a frame actually arrived, and otherwise on a
+       slow cadence that keeps the timers behind it moving. A link with no
+       interrupt is still polled every slice, because nothing else empties
+       its ring. */
+    int poll_every_slice =
+        watch_sockets != 0 && network_device_interrupt_driven() == 0;
+    uint64_t seen_activity = network_device_activity();
+    /* Whether asking "is any socket ready" could give a different answer than
+       last time. Deriving it walks the socket table under its lock and then,
+       per socket this caller owns, the flow table under the network lock --
+       thousands of iterations to say "no" while nothing is arriving. The
+       stack bumps a generation where a socket can become ready; until it
+       moves, the previous answer stands. UINT64_MAX so the first look always
+       derives one. */
+    uint64_t seen_readiness = UINT64_MAX;
+    int sockets_ready = 0;
+    uint64_t next_housekeeping_ns = 0U;
     for (;;) {
       if (watch_console) boot_ui_present_pending();
       /* Only a process that could receive drives the network stack: for
-         the others the tick is a cost with nothing to show for it, and
-         under emulation it is most of what a look costs. */
-      if (watch_sockets) network_poll_tick();
+         the others the tick is a cost with nothing to show for it. */
+      if (watch_sockets) {
+        uint64_t activity = network_device_activity();
+        uint64_t look_ns = timer_now_ns();
+        if (poll_every_slice != 0 || activity != seen_activity ||
+            look_ns >= next_housekeeping_ns) {
+          seen_activity = activity;
+          next_housekeeping_ns = look_ns + XAIOS_WAIT_HOUSEKEEPING_NS;
+          network_poll_tick();
+        }
+      }
       if (watch_console && klog_console_input_pending()) {
         events |= XAIOS_WAIT_EVENT_CONSOLE;
       }
-      if (watch_sockets && kernel_sockets_ready_for(owner_token)) {
-        events |= XAIOS_WAIT_EVENT_SOCKET;
+      if (watch_sockets) {
+        uint64_t readiness = network_readiness_generation();
+        if (readiness != seen_readiness) {
+          seen_readiness = readiness;
+          sockets_ready = kernel_sockets_ready_for(owner_token);
+        }
+        if (sockets_ready != 0) events |= XAIOS_WAIT_EVENT_SOCKET;
       }
       if (watch_children && child_channel_pending_for(pid)) {
         events |= XAIOS_WAIT_EVENT_CHILD;

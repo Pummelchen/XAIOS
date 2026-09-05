@@ -130,9 +130,13 @@ void timer_idle_until(uint64_t deadline_ns) {
   uint64_t outer_spsr;
   __asm__ volatile("mrs %0, elr_el1\n\tmrs %1, spsr_el1"
                    : "=r"(outer_elr), "=r"(outer_spsr));
+  uint64_t wake = timer_wake_generation();
   for (;;) {
     uint64_t now_ns = timer_now_ns();
     if (now_ns >= deadline_ns) break;
+    /* Something the sleeper was waiting for arrived. wfi returned for it
+       already; going back to sleep would hold the answer until the deadline. */
+    if (timer_wake_generation() != wake) break;
     uint64_t ticks = duration_ticks(deadline_ns - now_ns);
     uint64_t counter = timer_counter();
     uint64_t compare = ticks > UINT64_MAX - counter

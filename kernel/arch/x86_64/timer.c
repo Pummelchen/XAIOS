@@ -101,9 +101,11 @@ void timer_rearm(void) {
  * ends the wait is counted but does not tick the scheduler. */
 void timer_idle_until(uint64_t deadline_ns) {
   uint32_t had_periodic = g_periodic_active;
+  uint64_t wake = timer_wake_generation();
   for (;;) {
     uint64_t now_ns = timer_now_ns();
     if (now_ns >= deadline_ns) break;
+    if (timer_wake_generation() != wake) break;
     uint64_t wait_ns = deadline_ns - now_ns;
     uint64_t count = (wait_ns * g_lapic_frequency) / UINT64_C(1000000000);
     if (count == 0U) count = 1U;

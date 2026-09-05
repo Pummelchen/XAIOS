@@ -13,6 +13,12 @@ void timer_mask_local(void);
 void timer_disable(void);
 void timer_rearm(void);
 void timer_idle_until(uint64_t deadline_ns);
+/* An interrupt that whoever is sleeping was waiting for. The idle wait
+   samples the generation on entry and returns as soon as it changes, so a
+   frame that arrives early does not wait out a sleep sized for a timeout.
+   Signalled from interrupt context, so it does no more than count. */
+void timer_wake_signal(void);
+uint64_t timer_wake_generation(void);
 void wall_time_calibrate(void);
 uint64_t wall_time_now_ns(void);
 xaios_status_t wall_time_set_ns(uint64_t epoch_ns, uint32_t source);

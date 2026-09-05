@@ -1,6 +1,7 @@
 #include <xaios/e1000e.h>
 #include <xaios/klog.h>
 #include <xaios/net_device.h>
+#include <xaios/timer.h>
 #include <xaios/virtio_net.h>
 #include <xaios/vmxnet3.h>
 
@@ -58,6 +59,27 @@ xaios_status_t network_device_tx(const uint8_t *data, uint64_t length) {
     return vmxnet3_tx(data, length);
   }
   return XAIOS_ERR_NOT_FOUND;
+}
+
+static volatile uint64_t g_network_activity;
+static volatile uint32_t g_network_interrupt_driven;
+
+void network_device_note_interrupt(void) {
+  __atomic_add_fetch(&g_network_activity, 1U, __ATOMIC_RELAXED);
+  timer_wake_signal();
+}
+
+uint64_t network_device_activity(void) {
+  return __atomic_load_n(&g_network_activity, __ATOMIC_RELAXED);
+}
+
+int network_device_interrupt_driven(void) {
+  return __atomic_load_n(&g_network_interrupt_driven, __ATOMIC_RELAXED) != 0U;
+}
+
+void network_device_set_interrupt_driven(int enabled) {
+  __atomic_store_n(&g_network_interrupt_driven, enabled != 0 ? 1U : 0U,
+                   __ATOMIC_RELAXED);
 }
 
 uint32_t network_device_rx_poll(uint8_t *buffer, uint64_t capacity) {
