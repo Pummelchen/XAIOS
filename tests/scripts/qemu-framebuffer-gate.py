@@ -71,6 +71,17 @@ BOOT_DEADLINE = smoke_timeout(
 GREEN = (50, 210, 100)
 DIM = (110, 110, 110)
 
+# The name, in its colours. boot_ui writes "XAI" in bright magenta and "OS" in
+# bright cyan, and the kernel terminal resolves those SGR codes to these two
+# values. They are asserted rather than counted loosely because the brand is
+# the one thing on this screen that is a decision rather than a measurement:
+# a build that renders it in plain grey looks fine to every other check here
+# and is a different product to anyone looking at the machine. That is how it
+# was found -- the release console had the colours and every verbose build
+# printed the name flat.
+BRAND_XAI = (200, 140, 225)
+BRAND_OS = (110, 200, 210)
+
 
 def read_ppm(path: Path) -> tuple[int, int, bytes]:
     data = path.read_bytes()
@@ -104,10 +115,16 @@ def inspect(path: Path) -> dict:
     width, height, pixels = read_ppm(path)
     bar = 0
     drawn = 0
+    brand_xai = 0
+    brand_os = 0
     for offset in range(0, width * height * 3, 3):
         pixel = (pixels[offset], pixels[offset + 1], pixels[offset + 2])
         if pixel in (GREEN, DIM):
             bar += 1
+        elif pixel == BRAND_XAI:
+            brand_xai += 1
+        elif pixel == BRAND_OS:
+            brand_os += 1
         # The console background is near-black but not exactly black, so
         # "drawn" means visibly brighter than the background rather than
         # non-zero.
@@ -118,6 +135,8 @@ def inspect(path: Path) -> dict:
         "height": height,
         "bar_pixels": bar,
         "drawn_pixels": drawn,
+        "brand_xai_pixels": brand_xai,
+        "brand_os_pixels": brand_os,
     }
 
 
@@ -221,6 +240,15 @@ def main() -> int:
             failures.append(
                 f"the screen is effectively blank ({detail['drawn_pixels']} "
                 f"drawn pixels); nothing was presented to the display")
+        # A glyph at the smallest scale this console uses is a few dozen
+        # pixels, so a handful of matches would be a coincidence and none is
+        # the name rendered flat.
+        if detail["brand_xai_pixels"] < 30 or detail["brand_os_pixels"] < 20:
+            failures.append(
+                f"the name is not in its colours: XAI "
+                f"{detail['brand_xai_pixels']} px and OS "
+                f"{detail['brand_os_pixels']} px of the brand colours, which "
+                f"is what a build that prints it flat looks like")
     report = {
         "schema": "xaios.framebuffer.v1",
         "arch": ARCH,
@@ -241,7 +269,9 @@ def main() -> int:
         return 1
     print(f"qemu-framebuffer-gate: the screen shows the finished handover at "
           f"the login prompt -- no progress bar, "
-          f"{detail['drawn_pixels']} pixels drawn; capture at {SHOT}")
+          f"{detail['drawn_pixels']} pixels drawn, the name in its colours "
+          f"({detail['brand_xai_pixels']} px XAI, "
+          f"{detail['brand_os_pixels']} px OS); capture at {SHOT}")
     print(f"qemu-framebuffer-gate: report written to {REPORT}")
     return 0
 

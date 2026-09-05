@@ -987,7 +987,7 @@ static void term_activate(const xaios_boot_ui_control_t *control) {
   /* The login banner was written to the console before this display existed,
      so reproduce the reachability summary and the prompt for the state the
      console is actually in. */
-  boot_ui_console_text("XAI OS\n\n");
+  boot_ui_console_text("\x1b[1;35mXAI\x1b[0m \x1b[1;36mOS\x1b[0m\n\n");
   if (control != 0 && control->ipv4 != 0U) {
     boot_ui_console_text("IPv4: ");
     uint32_t address = control->ipv4;
@@ -1185,15 +1185,40 @@ static void fb_init(const xaios_boot_info_t *boot) {
   g_glyph_advance = (FB_GLYPH_WIDTH + 1U) * scale;
 }
 
-#if !XAIOS_BOOT_TEST_APPS && !XAIOS_BOOT_VERBOSE
-static void write_brand(void) {
-  write_text("\x1b[1;35mXAI\x1b[0m \x1b[1;36mOS\x1b[0m\n\n");
+/* The name, in its colours. Not conditional on the build: a verbose kernel is
+   still this operating system booting, and a machine that says "XAI OS" in
+   plain grey on one configuration and in purple and cyan on another is two
+   products as far as anyone looking at the screen is concerned. */
+static void write_brand_inline(void) {
+  write_text("\x1b[1;35mXAI\x1b[0m \x1b[1;36mOS\x1b[0m");
 }
-#endif
+
+static void write_brand(void) {
+  write_brand_inline();
+  write_text("\n\n");
+}
+
+/* The bar, drawn where it is rather than by repainting the screen.
+   The release console owns the whole display and redraws it; a verbose boot
+   is interleaving kernel log lines that a person and several gates are
+   reading, so the bar is one line among them and scrolls with them. */
+static void write_bar(uint32_t percent) {
+  uint32_t filled = (percent * BOOT_BAR_WIDTH) / 100U;
+  write_text("[\x1b[1;32m");
+  for (uint32_t i = 0U; i < BOOT_BAR_WIDTH; ++i) {
+    if (i == filled) write_text("\x1b[0m");
+    write_text(i < filled ? "#" : ".");
+  }
+  if (filled >= BOOT_BAR_WIDTH) write_text("\x1b[0m");
+  write_text("] ");
+  write_uint(percent);
+  write_text("%");
+}
 
 void boot_ui_begin(const xaios_boot_info_t *boot) {
   fb_init(boot);
 #if XAIOS_BOOT_TEST_APPS || XAIOS_BOOT_VERBOSE
+  write_brand();
   write_text("boot-ui: XAI OS\n");
 #else
   klog_console_set_log_output(0U);
@@ -1217,15 +1242,18 @@ void boot_ui_update(uint32_t percent, const char *loaded,
   write_text(" remaining=");
   write_uint(remaining);
   write_text("\n");
+  /* After the machine-readable line, never instead of it: gates match that
+     line exactly, and a bar drawn into the middle of it would break every
+     one of them while looking like a cosmetic change. */
+  write_brand_inline();
+  write_text(" ");
+  write_bar(percent);
+  write_text("\n");
 #else
   write_text("\x1b[H\x1b[J");
   write_brand();
-  write_text("[");
-  uint32_t filled = (percent * BOOT_BAR_WIDTH) / 100U;
-  for (uint32_t i = 0U; i < BOOT_BAR_WIDTH; ++i) write_text(i < filled ? "#" : ".");
-  write_text("] ");
-  write_uint(percent);
-  write_text("%\n\nLoaded: ");
+  write_bar(percent);
+  write_text("\n\nLoaded: ");
   write_text(loaded);
   write_text("\nLoading: ");
   write_text(loading);
