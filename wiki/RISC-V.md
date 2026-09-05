@@ -186,21 +186,51 @@ the kernel comes up to a login prompt with sshd listening.
 
 ## Test coverage
 
-Six gates, against roughly seventy for the other two:
+Twenty-seven `make` targets, of which twenty-five are gates. They fall into
+three groups, and the split matters more than the count.
+
+**Gates this architecture has of its own.** These exist because the shared
+suite cannot ask these questions, and a third architecture that is only ever
+asked the first two's questions is being tested as an imitation of them.
 
 | Gate | What it proves |
 | --- | --- |
+| `make qemu-riscv64-isa-gate` | Sv48 is live rather than the Sv39 a machine may default to; kernel text is executable and not writable and writable data is not executable, read back from the page tables that enforce it; `fence.i` is accepted; firmware answers a probe for an extension that cannot exist with "no", and hart state management refuses a hart that does not exist -- the two controls that make every other SBI answer mean something. What the machine reports about itself -- SBI version and extensions, whether a misaligned load completes, the PLIC's address -- is printed rather than asserted, because a different board may answer differently without anything being broken. |
 | `make qemu-riscv64-gate` | The kernel boots to a login prompt with sshd listening, 81 self-tests, no errors. |
-| `make qemu-riscv64-boot-media-gate` | The same machine boots from its own disk through EDK2 with no `-kernel`, from the verified signed A/B system slot. |
+| `make qemu-riscv64-durability-gate` | State written on one boot is read back on the next, and survives a boot killed outright with no shutdown and no flush -- the filesystem reports no checksum errors afterwards. |
+| `make qemu-riscv64-boot-media-gate` | The machine boots from its own disk through EDK2 with no `-kernel`, from the verified signed A/B system slot. |
 | `make qemu-riscv64-matrix-gate` | It boots at 1, 2, 4 and 8 harts, four independent times, and answers an SSH login each time. |
-| `make qemu-riscv64-durability-gate` | State written on one boot is read back on the next, and survives a boot that is killed outright with no shutdown and no flush -- the filesystem reports no checksum errors afterwards. |
-| `make qemu-riscv64-release-gate` | The release configuration -- what the other architectures ship as `make image` -- logs in over SSH and runs `hello`, `sysinfo` and `xtop` as processes, reports every hart in the monitor, and keeps answering afterwards. The boot-test gates above never launch a process: the shell's commands are built into that kernel. |
-| `make qemu-console-xtop-gate-riscv64` | With a virtio-gpu, xtop on the local console is read back as pixels, decoded through the kernel's font, and compared with an SSH session's frame at the same size: the same picture on both, as on the other two architectures. |
+| `make qemu-riscv64-release-gate` | The release configuration -- what the other architectures ship as `make image` -- logs in over SSH and runs `hello`, `sysinfo` and `xtop` as processes, reports every hart in the monitor, and keeps answering afterwards. The boot-test gates never launch a process: the shell's commands are built into that kernel. |
 
-That is still short of what AArch64 and x86_64 are held to -- network suites,
-write ordering, soak, NUMA, NVMe, cluster and fault injection all run on those
-and not here. The features are present; the evidence that they hold under
-every kind of stress is not.
+**The shared suite, run here.** `make qemu-riscv64-smoke` and the milestone
+gates behind it -- `filesystem`, `app-agent`, `network-full`,
+`cpu-ai-runtime`, `ai-cell`, `security`, `update` -- plus `process`, `osctl`,
+`fault-injection`, `persistence-reboot`, `local-console`, `write-ordering`,
+`storage-crash-test`, `console-xtop`, and the `userspace`, `network`,
+`cpu-ai` and `regression` suites that bundle them. Each is the same script
+the other two architectures run, taking `--arch riscv64`, rather than a
+RISC-V copy of it: one place decides what a boot is, and one place knows that
+this machine's runner reads `XAIOS_RISCV64_*`.
+
+Two of those needed the machine to grow something first, which is worth
+naming because it is the difference between porting a gate and pretending to:
+
+- `write-ordering` needed the builder to accept `XAIOS_IO_TRACE` and
+  `XAIOS_CRASH_WRITER`, which it did not offer at all. The kernel could
+  always do it; there was no way to ask.
+- `storage-crash-test` needed the runner to be able to start the machine
+  through UEFI. With `-kernel` there is no loader, so nothing has chosen a
+  system slot, the guest logs `system-slot: unavailable`, and a power-loss
+  test on A/B metadata would have watched a machine that never writes any.
+  `XAIOS_RISCV64_BOOT=uefi` is that switch, and the gate's negative control
+  is exactly this: the same armed volume booted with `-kernel` reaches no
+  crash point.
+
+**Still short.** Soak, NUMA, NVMe, cluster, parallel network load, storage
+benchmarking, the fault matrix and the routing and fragmentation gates run on
+AArch64 and x86_64 and not here. Nothing suggests the features are absent --
+they are the same code -- but the evidence that they hold under every kind of
+stress is not in yet.
 
 The boot gates share `tests/scripts/riscv64_gate_lib.py` for booting the machine and
 `qemu_gate_lib.py` for comparing markers, rather than each carrying its own

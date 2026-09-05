@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Kill QEMU at system-metadata write points and prove reboot recovery."""
+"""Kill QEMU at system-metadata write points and prove reboot recovery.
+
+Two architectures, because the code being tested is shared and the machine
+under it is not. The A/B metadata writer, its backup-first ordering and the
+durable filesystem's recovery are one implementation; what differs is the
+block device it writes through, the cache the emulator keeps in front of it,
+and -- on RISC-V -- the fact that the machine has to be started through UEFI
+firmware for a system volume to have been chosen at all. A power-loss test
+that only ever ran on one of those is a test of one driver.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +23,33 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import (arch_from_argv, qemu_boot_environment, qemu_runner,
+                           smoke_timeout)
+
 POINTS = ("system-backup-flushed", "system-primary-written")
+
+# What "build a kernel armed to die at this point" means, per architecture.
+#
+# The crash points themselves are shared kernel code; only the switch that
+# compiles them in, the kernel the signed slot is filled from, and the way the
+# machine starts differ. RISC-V must boot through UEFI: with -kernel nothing
+# has chosen a system slot, the guest logs "system-slot: unavailable", and
+# this gate would pass having watched a machine that never wrote metadata.
+ARCHITECTURES = {
+    "aarch64": {
+        "build": ["./scripts/build-image.sh"],
+        "system": BUILD / "xaios-system.img",
+        "kernel": "build/kernel/kernel.elf",
+        "boot_mode": None,
+    },
+    "riscv64": {
+        "build": ["./scripts/build-riscv64.sh"],
+        "system": BUILD / "xaios-riscv64-system.img",
+        "kernel": "build/kernel-riscv64/kernel.elf",
+        "boot_mode": "uefi",
+    },
+}
 
 # The durable volume, at both sizes that decide its format.
 #
@@ -52,10 +87,11 @@ def stop_process(process: subprocess.Popen[bytes], hard: bool) -> None:
 
 
 def boot_until(
-    env: dict[str, str], targets: tuple[str, ...], timeout: int, hard: bool
+    arch: str, env: dict[str, str], targets: tuple[str, ...], timeout: int,
+    hard: bool
 ) -> str:
     process = subprocess.Popen(
-        ["./platform/qemu/run-qemu-aarch64.sh"],
+        [qemu_runner(arch)],
         cwd=ROOT,
         env=env,
         stdout=subprocess.PIPE,
@@ -128,13 +164,14 @@ def boot_until(
     )
 
 
-def build_crash_image(point: str, system_image: Path) -> None:
-    shutil.copyfile(BUILD / "xaios-system.img", system_image)
+def build_crash_image(arch: str, point: str, system_image: Path) -> None:
+    profile = ARCHITECTURES[arch]
+    shutil.copyfile(profile["system"], system_image)
     env = os.environ.copy()
     env["XAIOS_BOOT_TEST_APPS"] = "1"
     env["XAIOS_STORAGE_CRASH_POINT"] = point
     env["XAIOS_SYSTEM_VOLUME_IMAGE"] = str(system_image)
-    run(["./scripts/build-image.sh"], env)
+    run(profile["build"], env)
     create_env = os.environ.copy()
     create_env["PYTHONPATH"] = str(ROOT)
     run(
@@ -143,7 +180,7 @@ def build_crash_image(point: str, system_image: Path) -> None:
             "tools/xaios_system_volume.py",
             "create",
             str(system_image),
-            "build/kernel/kernel.elf",
+            profile["kernel"],
             "--active",
             "0",
             "--pending",
@@ -168,6 +205,13 @@ def validate_committed_metadata(system_image: Path) -> None:
 
 
 def main() -> int:
+    arch = arch_from_argv(sys.argv)
+    if arch not in ARCHITECTURES:
+        raise SystemExit(
+            f"qemu-storage-crash: not ported to {arch}. The gate needs a "
+            f"builder that takes XAIOS_STORAGE_CRASH_POINT and a boot path "
+            f"that chooses a system slot; neither exists for {arch} yet.")
+    profile = ARCHITECTURES[arch]
     # The injected commit point follows the deterministic diagnostic boot
     # workload. On TCG this may take materially longer than a normal service
     # boot, so retain a bounded but realistic per-boot deadline.
@@ -175,12 +219,19 @@ def main() -> int:
     # over two million sectors under TCG takes materially longer than the same
     # boot against v5, and 240 seconds is not enough for it. The v5 passes are
     # unaffected -- this is a deadline, not a delay.
-    timeout = int(os.environ.get("XAIOS_QEMU_STORAGE_CRASH_TIMEOUT", "720"))
-    work = BUILD / "storage-crash"
+    #
+    # RISC-V gets the same deadline scaled for the machine, not a different
+    # one: it runs this closure through an interpreter with no acceleration
+    # available, and reusing AArch64's numbers would report a slower machine
+    # as a broken one.
+    timeout = smoke_timeout(
+        arch, int(os.environ.get("XAIOS_QEMU_STORAGE_CRASH_TIMEOUT", "720")))
+    work = BUILD / "storage-crash" / arch
     work.mkdir(parents=True, exist_ok=True)
     try:
         for point in POINTS:
-            print(f"qemu-storage-crash: preparing point={point}", flush=True)
+            print(f"qemu-storage-crash: preparing arch={arch} point={point}",
+                  flush=True)
             system_image = work / f"{point}.img"
             for label, sectors in VOLUME_SIZES:
                 # Rebuilt and re-armed for every pass, not once per point.
@@ -189,30 +240,37 @@ def main() -> int:
                 # it -- so a second pass against the same system volume finds
                 # nothing pending, never reaches the point, and fails having
                 # tested nothing. That is exactly how the first v6 run failed.
-                build_crash_image(point, system_image)
+                build_crash_image(arch, point, system_image)
                 persistent_image = work / f"{point}-persistent-{label}.img"
                 persistent_image.unlink(missing_ok=True)
                 env = os.environ.copy()
-                env.update(
-                    {
-                        "XAIOS_QEMU_ACCEL": "tcg",
-                        "XAIOS_QEMU_HOSTFWD_PORT": "none",
-                        "XAIOS_SYSTEM_VOLUME_IMAGE": str(system_image),
-                        "XAIOS_PERSISTENT_IMAGE": str(persistent_image),
-                        "XAIOS_PERSISTENT_SECTORS": str(sectors),
-                    }
-                )
+                # TCG on every architecture, deliberately: a hypervisor
+                # writes through host page cache the emulator does not
+                # control, and this gate's whole subject is what reached the
+                # platter before the power went.
+                env["XAIOS_QEMU_ACCEL"] = "tcg"
+                env = qemu_boot_environment(
+                    arch, env,
+                    system_volume=system_image,
+                    persistent=persistent_image,
+                    persistent_sectors=sectors,
+                    state_dir=work / f"{point}-{label}-state",
+                    hostfwd_port="none",
+                    boot_mode=profile["boot_mode"],
+                    serial_to_stdout=True)
                 marker = f"storage-crash: reached point={point}"
                 # The volume has to have been formatted as the version this
                 # pass is for, or the pass is a second v5 trial wearing a
                 # label. The kill happens after the format, so the marker is
                 # in the same boot.
                 format_marker = f"formatting {label}"
-                boot_until(env, (marker, format_marker), timeout, hard=True)
+                boot_until(arch, env, (marker, format_marker), timeout,
+                           hard=True)
                 validate_committed_metadata(system_image)
-                print(f"qemu-storage-crash: power loss observed point={point} "
-                      f"volume={label}", flush=True)
+                print(f"qemu-storage-crash: power loss observed "
+                      f"arch={arch} point={point} volume={label}", flush=True)
                 boot_until(
+                    arch,
                     env,
                     (
                         "system-slot: attached active=1 pending=4294967295",
@@ -225,16 +283,18 @@ def main() -> int:
                     timeout,
                     hard=False,
                 )
-                print(f"qemu-storage-crash: recovered point={point} "
-                      f"volume={label}", flush=True)
+                print(f"qemu-storage-crash: recovered arch={arch} "
+                      f"point={point} volume={label}", flush=True)
     finally:
+        # The tree is left holding a kernel that dies on purpose otherwise,
+        # and the next gate to run would inherit it.
         restore_env = os.environ.copy()
         restore_env["XAIOS_BOOT_TEST_APPS"] = "1"
         restore_env.pop("XAIOS_STORAGE_CRASH_POINT", None)
         restore_env.pop("XAIOS_SYSTEM_VOLUME_IMAGE", None)
-        run(["./scripts/build-image.sh"], restore_env)
-    print("qemu-storage-crash: all metadata kill points recovered on "
-          "v5 and v6 durable volumes")
+        run(profile["build"], restore_env)
+    print(f"qemu-storage-crash: all metadata kill points recovered on "
+          f"v5 and v6 durable volumes ({arch})")
     return 0
 
 

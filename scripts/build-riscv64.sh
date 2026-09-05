@@ -76,6 +76,20 @@ case "$CRASH_WRITER" in
   0|1) ;;
   *) printf '%s\n' "error: XAIOS_CRASH_WRITER must be 0 or 1" >&2; exit 2 ;;
 esac
+# The injected power-loss points the metadata durability gate crashes on.
+# The code they compile in lives in kernel/runtime/system_slot.c, which this
+# architecture links like the others; only the switch was missing.
+case "${XAIOS_STORAGE_CRASH_POINT:-}" in
+  "") ;;
+  system-backup-flushed)
+    BASE_CFLAGS="$BASE_CFLAGS -DXAIOS_STORAGE_CRASH_AFTER_SYSTEM_BACKUP=1" ;;
+  system-primary-written)
+    BASE_CFLAGS="$BASE_CFLAGS -DXAIOS_STORAGE_CRASH_AFTER_SYSTEM_PRIMARY=1" ;;
+  *)
+    printf '%s\n' \
+      "error: unsupported XAIOS_STORAGE_CRASH_POINT=${XAIOS_STORAGE_CRASH_POINT}" >&2
+    exit 2 ;;
+esac
 BASE_CFLAGS="$BASE_CFLAGS -DXAIOS_BOOT_VERBOSE=$BOOT_VERBOSE \
 -DXAIOS_BOOT_TEST_APPS=$BOOT_TEST_APPS \
 -DXAIOS_FAILURE_TEST_APP=$FAILURE_TEST_APP -DXAIOS_LIBC_TEST=$LIBC_TEST \

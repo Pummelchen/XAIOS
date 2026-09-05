@@ -208,26 +208,37 @@ def qemu_make_target(arch: str) -> str:
 
 def qemu_boot_environment(arch: str, env: Dict[str, str], *,
                           persistent: Any = None,
+                          persistent_sectors: Any = None,
                           storage_admin: Any = None,
+                          system_volume: Any = None,
                           state_dir: Any = None,
                           hostfwd_port: Any = None,
                           smp: Any = None,
+                          boot_mode: Any = None,
                           serial_to_stdout: bool = False) -> Dict[str, str]:
     """The knobs for one boot, under the names this architecture's runner reads.
 
-    `persistent` and `storage_admin` are files on aarch64 and x86_64. RISC-V
-    keeps both inside a state directory it populates itself -- copying the
-    scratch disk the other two leave in build/ when it finds one -- so the
-    file arguments select that directory's contents rather than naming disks.
+    Three of them -- the durable volume's file and size, and the signed A/B
+    system volume -- happen to share a name across all three runners, so they
+    are set unconditionally. The rest differ, and that is what this exists for.
 
     `serial_to_stdout` matters only on RISC-V, whose runner writes the console
     to a file by default. A gate that reads the boot from the runner's stdout,
     as the smoke helper does, needs it; one that reads the log file does not.
+
+    `boot_mode` also matters only on RISC-V, which is the one architecture
+    here that can start either way: "kernel" hands the ELF to QEMU, "uefi"
+    boots the medium through EDK2. A gate about the A/B system volume needs
+    uefi, because with -kernel nothing has chosen a slot.
     """
     env = dict(env)
+    if persistent is not None:
+        env["XAIOS_PERSISTENT_IMAGE"] = str(persistent)
+    if persistent_sectors is not None:
+        env["XAIOS_PERSISTENT_SECTORS"] = str(persistent_sectors)
+    if system_volume is not None:
+        env["XAIOS_SYSTEM_VOLUME_IMAGE"] = str(system_volume)
     if arch == "aarch64":
-        if persistent is not None:
-            env["XAIOS_PERSISTENT_IMAGE"] = str(persistent)
         if storage_admin is not None:
             env["XAIOS_STORAGE_ADMIN_IMAGE"] = str(storage_admin)
         if hostfwd_port is not None:
@@ -236,11 +247,10 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
             env["XAIOS_QEMU_SMP"] = str(smp)
     elif arch == "x86_64":
         if persistent is not None:
-            env["XAIOS_X86_PERSISTENT_IMAGE"] = str(persistent)
-            # Both names, deliberately: a gate that sets only the aarch64 one
+            # Both names, deliberately: a gate that sets only the shared one
             # for an x86_64 boot falls through to the shared image, whose
             # /state holds whichever run created it. That cost a day once.
-            env["XAIOS_PERSISTENT_IMAGE"] = str(persistent)
+            env["XAIOS_X86_PERSISTENT_IMAGE"] = str(persistent)
         if storage_admin is not None:
             env["XAIOS_X86_STORAGE_ADMIN_IMAGE"] = str(storage_admin)
         if hostfwd_port is not None:
@@ -257,6 +267,10 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
             env["XAIOS_RISCV64_SSH_PORT"] = str(hostfwd_port)
         if smp is not None:
             env["XAIOS_RISCV64_CPUS"] = str(smp)
+        if storage_admin is not None:
+            env["XAIOS_STORAGE_ADMIN_IMAGE"] = str(storage_admin)
+        if boot_mode is not None:
+            env["XAIOS_RISCV64_BOOT"] = str(boot_mode)
         if serial_to_stdout:
             env["XAIOS_RISCV64_SERIAL"] = "stdio"
     return env

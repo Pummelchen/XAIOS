@@ -89,6 +89,24 @@ XAIOS_INTEL_VPS=root@VPS make qemu-four-endpoint-network-suite
 make vmware-fusion-smoke
 ```
 
+RISC-V is held to its own set, listed in full on [[RISC-V]]; the short form is:
+
+```sh
+make riscv64
+make qemu-riscv64-gate
+make qemu-riscv64-isa-gate
+make qemu-riscv64-boot-media-gate
+make qemu-riscv64-matrix-gate
+make qemu-riscv64-durability-gate
+make qemu-riscv64-release-gate
+make qemu-riscv64-smoke
+make qemu-riscv64-regression-suite
+make qemu-riscv64-storage-crash-test
+make qemu-riscv64-write-ordering-gate
+make qemu-riscv64-local-console-gate
+make qemu-console-xtop-gate-riscv64
+```
+
 The xaiFS and parallel-network gates require macOS plus Docker because they
 run native macOS and Debian 13 clients against one guest. The focused high-core
 gate validates runtime-sized SMP/NUMA metadata; it is not a scalability test.
