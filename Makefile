@@ -261,6 +261,45 @@ qemu-riscv64-smoke:
 	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
 	python3 ./tests/scripts/qemu-smoke.py --arch riscv64
 
+# The same seven milestones on RISC-V. What each asserts is a property of
+# the system rather than of the machine, so the configuration is shared and
+# only the boot underneath it changes.
+
+qemu-riscv64-filesystem-gate:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-milestone-gate.py 62 --arch riscv64
+
+qemu-riscv64-app-agent-gate:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-milestone-gate.py 63 --arch riscv64
+
+qemu-riscv64-network-full-gate:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-milestone-gate.py 64 --arch riscv64
+
+qemu-riscv64-cpu-ai-runtime-gate:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-milestone-gate.py 65 --arch riscv64
+
+qemu-riscv64-ai-cell-gate:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-milestone-gate.py 66 --arch riscv64
+
+qemu-riscv64-security-gate:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-milestone-gate.py 67 --arch riscv64
+
+qemu-riscv64-update-gate:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-milestone-gate.py 68 --arch riscv64
+
 qemu-x86_64-numa-gate:
 	XAIOS_TARGET_ARCH=x86_64 XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
 	python3 tests/scripts/qemu-x86_64-numa-gate.py

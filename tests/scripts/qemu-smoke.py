@@ -363,7 +363,13 @@ def main() -> int:
     seen = []
     # A full QEMU boot includes the complete userspace/resource gate. Keep a
     # bounded timeout, but leave margin for an unloaded Apple Silicon host.
-    deadline = time.time() + int(os.environ.get("XAIOS_QEMU_SMOKE_TIMEOUT", "120"))
+    # RISC-V boots the same closure through an interpreter with no host
+    # acceleration available for it, so it needs longer for the same work.
+    # A shared number would either fail that machine or stop bounding the
+    # other two.
+    default_timeout = "420" if arch == "riscv64" else "120"
+    deadline = time.time() + int(
+        os.environ.get("XAIOS_QEMU_SMOKE_TIMEOUT", default_timeout))
     try:
         fd = proc.stdout.fileno()
         while time.time() < deadline:

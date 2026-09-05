@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 import sys
 from qemu_gate_lib import (BUILD, check_markers, now, parse_telemetry, result,
-                           run, status_from_failures, write_report)
+                           run, status_from_failures, write_report,
+                           arch_from_argv)
 
 
 GATES = {
@@ -216,13 +217,39 @@ GATES = {
 
 
 def main() -> int:
-    milestone = sys.argv[1] if len(sys.argv) == 2 else ""
+    """One milestone, on one architecture.
+
+    The markers and telemetry a milestone asserts are properties of the
+    system, not of the machine it runs on -- a filesystem that commits, a
+    security gate that denies -- so the same configuration is used for every
+    architecture and the boot underneath it is the part that varies. Where a
+    milestone genuinely cannot hold on a machine, that belongs in the
+    configuration as an exception with a reason, not in a second copy of this
+    file.
+    """
+    positional = []
+    skip = False
+    for index, argument in enumerate(sys.argv[1:]):
+        if skip:
+            skip = False
+            continue
+        if argument == "--arch":
+            skip = True          # its value is not a milestone number
+            continue
+        if argument.startswith("--"):
+            continue
+        positional.append(argument)
+    milestone = positional[0] if len(positional) == 1 else ""
+    arch = arch_from_argv(sys.argv[1:])
     config = GATES.get(milestone)
     if config is None:
-      print("usage: qemu-milestone-gate.py <62|63|64|65|66|67|68>")
+      print("usage: qemu-milestone-gate.py <62|63|64|65|66|67|68> [--arch ARCH]")
       return 2
 
-    proc = run(["python3", "./tests/scripts/qemu-smoke.py"], timeout=180)
+    command = ["python3", "./tests/scripts/qemu-smoke.py"]
+    if arch != "aarch64":
+        command += ["--arch", arch]
+    proc = run(command, timeout=900 if arch == "riscv64" else 180)
     failures = []
     checks = []
     if proc.returncode != 0:
