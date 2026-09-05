@@ -11,17 +11,17 @@ build instead.
 
 Released builds are on the
 [releases page](https://github.com/Pummelchen/XAIOS/releases), the current one
-being **build 4**. Six downloads, of which five contain the same image; what
+being **build 5**. Six downloads, of which five contain the same image; what
 differs is what is packaged around it.
 
 | To run XAIOS | Take |
 |---|---|
-| in QEMU | `xaios_b4-qemu.zip` — image plus a launch script per architecture |
-| in VMware Fusion | `xaios_b4-vmware-fusion.zip` — image plus a `.vmx` |
-| in Apple Virtualization.framework | `xaios_b4-virtualization-framework.zip` — image plus a harness you build and sign |
-| on a real machine, from a USB stick | `xaios_b4-usb.zip` — image plus a writer that names the target disk back before it writes |
-| on a real machine with no disk, over the network | `xaios_b4-netboot.zip` — two boot binaries plus a DHCP/TFTP server script |
-| with your own tooling | `xaios_b4.iso.zip` — the image alone |
+| in QEMU | `xaios_b5-qemu.zip` — image plus a launch script per architecture |
+| in VMware Fusion | `xaios_b5-vmware-fusion.zip` — image plus a `.vmx` |
+| in Apple Virtualization.framework | `xaios_b5-virtualization-framework.zip` — image plus a harness you build and sign |
+| on a real machine, from a USB stick | `xaios_b5-usb.zip` — image plus a writer that names the target disk back before it writes |
+| on a real machine with no disk, over the network | `xaios_b5-netboot.zip` — two boot binaries plus a DHCP/TFTP server script |
+| with your own tooling | `xaios_b5.iso.zip` — the image alone |
 
 Unzip before use; none of these are meant to be handed to a hypervisor while
 still zipped. The image is simultaneously an ISO 9660 filesystem, a

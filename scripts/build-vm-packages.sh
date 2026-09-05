@@ -241,9 +241,20 @@ cp "$IMAGE" "$BUNDLE/$IMAGE_NAME"
 # the configuration sshd loads lives there -- so the kit would have booted to a
 # console and nothing else -- and Fusion creates the disk itself on first power
 # on when the descriptor names a file that is not there.
+# The profile names its network device by a placeholder so that the F-02 work
+# can ask for VMXNET3 without editing the file. A kit is not the place for
+# that choice: E1000E is the qualified profile, and a .vmx that still holds
+# the placeholder is one Fusion refuses to power on at all -- which is what
+# it did, until the kit gate booted the archive rather than the profile.
 sed -e "s|sata0:0.fileName = \"xaios-fusion.iso\"|sata0:0.fileName = \"$IMAGE_NAME\"|" \
     -e "s|sata0:1.fileName = \"xaios-fusion.vmdk\"|sata0:1.fileName = \"xaios-data.vmdk\"|" \
+    -e "s/@@XAIOS_FUSION_NIC@@/e1000e/" \
     "$ROOT_DIR/platform/vmware-fusion/XAIOS.vmx.in" > "$BUNDLE/XAIOS.vmx"
+if grep -q '@@' "$BUNDLE/XAIOS.vmx"; then
+  printf '%s\n' "error: the Fusion profile still holds a placeholder:" >&2
+  grep -n '@@' "$BUNDLE/XAIOS.vmx" >&2
+  exit 1
+fi
 # Build the disk here if this machine can, so the kit arrives complete.
 VDISK_MANAGER="${XAIOS_FUSION_VDISK_MANAGER:-/Applications/VMware Fusion.app/Contents/Library/vmware-vdiskmanager}"
 if [ -x "$VDISK_MANAGER" ]; then

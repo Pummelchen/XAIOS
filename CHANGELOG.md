@@ -21,27 +21,141 @@ records how it was built.
 
 ## Unreleased
 
-Landed since build 4 and not in any released image.
+Nothing since build 5.
+
+## Build 5 — 2026-09-05
+
+XAIOS on a third architecture, a process monitor that costs almost nothing
+to watch, and a machine that is idle when nothing is happening.
+
+Released as `xaios_b5.iso` with the same five kits. See
+[the release note](./release/xaios_b5.md).
+
+### Added
+
+- **RISC-V (rv64gc) is a third architecture.** The image carries a RISC-V
+  kernel and initial filesystem beside the AArch64 and x86-64 ones, and
+  firmware picks among the three. On QEMU's `virt` board it boots to the
+  login prompt with sshd answering, runs programs as processes, boots from
+  its own signed A/B medium through EDK2, and does so at one, two, four and
+  eight harts, with six gates behind it. What it does not have is a
+  machine: no RISC-V hardware has run it, and the unified image itself has
+  not been booted on RISC-V by any gate — the RISC-V gates boot a RISC-V
+  medium built from the same commit.
+- **`xtop`, the process monitor, redrawn after mactop.** Renamed from
+  `htop`, because it reads XAIOS's own runtime snapshot and a Unix name
+  implied a compatibility it does not have. Three layouts (`L`): gauges and
+  per-core meters; a Platform panel that says what the machine has (NEON or
+  SVE, AVX2/AVX-512/VNNI/AMX, or the RISC-V vector extension and Sstc) beside
+  the AI runtime; and history charts with network and disk rates. `-` and
+  `+` set the sampling cadence from five seconds down to sixteen
+  milliseconds. It runs as one process per session and draws the same
+  picture on the framebuffer console as in an SSH client, which a gate holds
+  it to on all three architectures. A fresh machine reports no failed tasks:
+  the hosted C99 probes that exit non-zero on purpose are recorded as
+  exits.
+- **A screen framework for the whole system.** A program that draws a
+  screen no longer redraws it: what reaches the terminal is only the cells
+  that changed, positioned with cursor moves. Every program that uses the
+  alternate screen — the editor, the pager, the game, anything to come —
+  gets this from the session, over SSH and on the local console, without
+  code of its own; `xtop` draws into the framework's cells directly. `pong`
+  over SSH, which redraws its whole screen sixty times a second, went from a
+  screen clear per frame to about a hundred and forty bytes a second.
+- **Two ways for a process to wait.** A sleep, and a wait that blocks until
+  console input, activity on a socket the process owns, or data or an exit
+  on a child channel is there (syscalls 53 and 54, `XAIOS_CAP_TIME`).
+  Nothing in userspace had a way to wait that was not polling a clock.
+- **IPv6 reaches beyond the link.** The stack learns the default router
+  from router advertisements, sends off-link traffic through it, and answers
+  from the address that was asked for; the e1000e driver accepts multicast,
+  which is where all of IPv6 lives. F-03's IPv6 leg is qualified on the
+  platforms here.
+- **Two machines join, partition and recover.** `make
+  qemu-cluster-two-node-gate` now runs the membership half of D-06 on top
+  of the sealed transport it already had: each phase on its own connection,
+  both ends logging the owner of one fixed expert as the other joins,
+  leaves and dials back.
+- **Snapshot and resume semantics are demonstrated, not described** (F-04):
+  data committed before a snapshot survives a revert and data after it does
+  not, a revert lands on a volume the guest trusts, and a suspend is not
+  counted as a crash.
+- **A VMXNET3 driver that brings the device up on VMware Fusion.** Receive
+  works; transmit still does not, and F-02 is now bounded by measurement
+  rather than suspicion — the two leading theories were ruled out by
+  evidence. Fusion's traffic still goes over e1000e.
+- **virtio-net asks for every queue pair a device offers, and RSS with
+  them.** The driver still services one queue; this is where multiqueue is
+  developed (E4).
+- **An SVE packed kernel** for the quantized row product, selected ahead of
+  NEON where the CPU has SVE and only after reproducing the scalar
+  reference (P-07).
+
+### Changed
+
+- **An idle machine is idle.** `sshd`'s loop polled a dozen non-blocking
+  calls and went round again, holding a whole core from boot on every
+  machine. It now blocks in the kernel until something happens. On four
+  emulated cores the machine idles at about two percent with a monitor
+  running, where `sshd` alone was a hundred percent of one core; x86-64's
+  idle halts the processor rather than spinning on `pause`.
+- **The framebuffer console** speaks xterm-256 colours, draws the box, block
+  and arrow glyphs, positions its cursor, hides it on request, reports its
+  geometry, keeps a cell cache so an unchanged cell costs nothing, and
+  presents at most once per sixteen milliseconds. The cursor no longer
+  leaves a dark underline wherever it rested on a coloured field.
+- **The panic screen** is cyan on every console rather than only over
+  serial, its backtrace stops where the kernel ends instead of walking into
+  user memory, and the load base is printed on every boot, so a backtrace
+  can be resolved from a log alone.
+- **The netboot download is a binary that has been booted.** The shipped
+  AArch64 binary reaches the login prompt from an EFI System Partition under
+  `make boot-media-gate`; before, the only netboot binary any gate booted
+  was by construction not the one anybody downloads.
+- **Test machines default to four cores** everywhere a test machine is
+  started, and every profile says so.
+- **Networking, storage and control-plane copies move a word at a time**
+  where they were byte loops; the heap zeroes by words. Small under
+  emulation, invisible on hardware, and correct.
+
+### Fixed
 
 - **A thread join could lose the context of the process that called it.** A
-  process waiting in `xaios_thread_join` runs pending threads on its own CPU,
-  so a thread worker could be entered from inside that process's syscall and
-  then cleared the CPU to the kernel on its way out. The outer syscall carried
-  on with no current process and the kernel's address space, which returns a
-  wrong answer rather than an error. It needed a thread still pending when
-  join ran, which is what a loaded machine produces. This is the shape of
-  `B-02`, recorded twice and explained neither time; the fix is in and the
-  link to those sightings is inference, not a reproduction, so `B-02` stays
-  open.
+  process waiting in `xaios_thread_join` runs pending threads on its own
+  CPU, so a thread worker could be entered from inside that process's
+  syscall and then cleared the CPU to the kernel on its way out. The outer
+  syscall carried on with no current process and the kernel's address
+  space. It needed a thread still pending when join ran, which is what a
+  loaded machine produces. This is the shape of `B-02`, recorded twice and
+  explained neither time; the fix is in, the link is inference, and `B-02`
+  stays open.
+- **An AArch64 sleep could miss its wake-up.** The idle wait unmasked
+  interrupts and then executed `wfi`; a timer that fired in the gap was
+  taken first, and `wfi` then slept until some unrelated interrupt — on a
+  worker CPU, which has no periodic tick, for seconds. The sleep now runs
+  masked, which still wakes on a pending interrupt.
+- **xaibootFS v6 probed its mirror at the wrong sector, and a rename could
+  overflow.** Both found by the crash-recovery gate once a v6 failure was no
+  longer hidden behind a v5 pass.
 - **Power-loss coverage gained the case a volatile write cache produces.** The
-  crash gate now also constructs a volume whose newest superblock is whole and
-  whose catalog was never written, and requires that slot to fail its own hash
-  and the volume to come back from the other one. No device here loses an
-  acknowledged write, so the state is constructed rather than provoked.
-- **Networking multiqueue has somewhere to be developed.** A multi-queue tap
-  reports four virtqueue pairs to the guest, where every profile in this tree
-  previously reported one. Nothing uses the extra pairs yet; the driver still
-  drives one.
+  crash gate constructs a volume whose newest superblock is whole and whose
+  catalog was never written, and requires that slot to fail its own hash and
+  the volume to come back from the other one.
+- **The RISC-V release configuration had never run a program**: no
+  per-process address spaces, a global user-access depth, an idle wait that
+  slept with nothing armed, and a CPU table sized before the other harts
+  were online. All four are fixed and a gate now launches programs there.
+- **`B-09`, `B-10`, `B-18`, `B-22` and five older bugs are closed**, each with
+  a gate that asserts the exact defect and has been watched passing.
+
+### Known gaps
+
+- No physical hardware for any of the three architectures. Every result is
+  from an emulator or a hypervisor.
+- The network stack is polled, not interrupt-driven; the kernel's wait for
+  events looks at it every one to eight milliseconds.
+- `B-02` is fixed by inference only, and the read-only boot path (`B-14`)
+  remains written and unexercised.
 
 ## Build 4 — 2026-09-01
 

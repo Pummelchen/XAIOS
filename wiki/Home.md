@@ -13,7 +13,7 @@ primary Unix behavior reference for commands and network interoperability.
 
 0. Take a released build from the
    [releases page](https://github.com/Pummelchen/XAIOS/releases) — currently
-   **build 4** — or build one from source. Which download to take, and what is
+   **build 5** — or build one from source. Which download to take, and what is
    in each, is in [[Getting Started|Getting-Started]].
 1. Follow [[Getting Started|Getting-Started]] to build and boot an image.
 2. Read [[Boot and Console|Boot-and-Console]] for startup and local login.
