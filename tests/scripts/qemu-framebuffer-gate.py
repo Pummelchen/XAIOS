@@ -49,11 +49,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
-REPORT = BUILD / "qemu-framebuffer-gate.json"
-SHOT = BUILD / "qemu-framebuffer-gate.ppm"
-QMP_SOCKET = "/tmp/xaios-framebuffer-gate.qmp"
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import (arch_from_argv, qemu_boot_environment, qemu_runner,
+                           smoke_timeout)
 
-BOOT_DEADLINE = int(os.environ.get("XAIOS_FRAMEBUFFER_TIMEOUT", "420"))
+ARCH = arch_from_argv(sys.argv)
+SUFFIX = "" if ARCH == "aarch64" else f"-{ARCH}"
+REPORT = BUILD / f"qemu-framebuffer-gate{SUFFIX}.json"
+SHOT = BUILD / f"qemu-framebuffer-gate{SUFFIX}.ppm"
+# A unix socket path, which has a much shorter limit than a file path, so it
+# stays out of the build tree. Named per architecture: two runs sharing one
+# socket would each drive the other's emulator.
+QMP_SOCKET = f"/tmp/xaios-framebuffer-gate{SUFFIX}.qmp"
+
+BOOT_DEADLINE = smoke_timeout(
+    ARCH, int(os.environ.get("XAIOS_FRAMEBUFFER_TIMEOUT", "420")))
 
 # boot_ui's own palette, from kernel/core/boot_ui.c. The bar is drawn as a dim
 # full-width rectangle with a green one over the completed fraction, so these
@@ -115,13 +125,15 @@ def capture(shot: Path) -> tuple[bool, str, list[str]]:
     """Boot with a display attached and photograph it at the login prompt."""
     Path(QMP_SOCKET).unlink(missing_ok=True)
     shot.unlink(missing_ok=True)
-    environment = dict(
-        os.environ,
-        XAIOS_QEMU_EXTRA_ARGS="-device virtio-gpu-pci",
-        XAIOS_QEMU_QMP_SOCKET=QMP_SOCKET,
-    )
+    environment = qemu_boot_environment(
+        ARCH, dict(os.environ),
+        extra_args="-device virtio-gpu-pci",
+        qmp_socket=QMP_SOCKET,
+        # This reads the guest's console from the runner's stdout to know when
+        # the boot has finished; RISC-V's runner writes it to a file instead.
+        serial_to_stdout=True)
     process = subprocess.Popen(
-        [str(ROOT / "platform/qemu/run-qemu-aarch64.sh")],
+        [qemu_runner(ARCH)],
         cwd=str(ROOT), env=environment, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     interesting: list[str] = []
@@ -184,8 +196,11 @@ def capture(shot: Path) -> tuple[bool, str, list[str]]:
 
 
 def main() -> int:
-    if not (BUILD / "xaios-aarch64.img").is_file():
-        print("qemu-framebuffer-gate: build the image first (make image)",
+    prerequisite = {"aarch64": ("xaios-aarch64.img", "make image"),
+                    "x86_64": ("xaios-x86_64.img", "make image-x86_64"),
+                    "riscv64": ("kernel-riscv64/kernel.elf", "make riscv64")}[ARCH]
+    if not (BUILD / prerequisite[0]).is_file():
+        print(f"qemu-framebuffer-gate: build it first ({prerequisite[1]})",
               file=sys.stderr)
         return 2
     ok, why, seen = capture(SHOT)
@@ -208,6 +223,7 @@ def main() -> int:
                 f"drawn pixels); nothing was presented to the display")
     report = {
         "schema": "xaios.framebuffer.v1",
+        "arch": ARCH,
         "screenshot": str(SHOT),
         "display_lines": seen,
         "measurement": detail,

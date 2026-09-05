@@ -215,6 +215,8 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
                           hostfwd_port: Any = None,
                           smp: Any = None,
                           boot_mode: Any = None,
+                          extra_args: Any = None,
+                          qmp_socket: Any = None,
                           serial_to_stdout: bool = False) -> Dict[str, str]:
     """The knobs for one boot, under the names this architecture's runner reads.
 
@@ -232,6 +234,12 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
     uefi, because with -kernel nothing has chosen a slot.
     """
     env = dict(env)
+    if extra_args is not None:
+        env["XAIOS_QEMU_EXTRA_ARGS" if arch != "riscv64"
+            else "XAIOS_RISCV64_EXTRA_ARGS"] = str(extra_args)
+    if qmp_socket is not None:
+        env["XAIOS_QEMU_QMP_SOCKET" if arch != "riscv64"
+            else "XAIOS_RISCV64_QMP_SOCKET"] = str(qmp_socket)
     if persistent is not None:
         env["XAIOS_PERSISTENT_IMAGE"] = str(persistent)
     if persistent_sectors is not None:
