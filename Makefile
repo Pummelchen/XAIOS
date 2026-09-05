@@ -346,6 +346,15 @@ qemu-riscv64-persistence-reboot:
 	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
 	python3 ./tests/scripts/qemu-persistence-reboot.py --arch riscv64
 
+# What only this architecture has: SBI, hart state management, Sv48, the
+# permission bits RISC-V spells no-execute with, and a hart leased out of
+# the scheduler. The shared gates ask every machine the same questions,
+# which says nothing about the ones only this machine can answer.
+qemu-riscv64-isa-gate:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-riscv64-isa-gate.py
+
 qemu-x86_64-numa-gate:
 	XAIOS_TARGET_ARCH=x86_64 XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
 	python3 tests/scripts/qemu-x86_64-numa-gate.py

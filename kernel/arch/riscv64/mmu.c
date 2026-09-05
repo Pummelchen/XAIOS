@@ -771,6 +771,8 @@ void vmm_destroy_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
   }
 }
 
+void riscv64_isa_self_test(void);
+
 void vmm_self_test(void) {
   /* A mapping made, read back through the same walk a fault would take, and
      removed again. Proving translate agrees with map is the whole point:
@@ -807,6 +809,11 @@ void vmm_self_test(void) {
   }
   pmm_free_page(page);
   klog("vmm: self-test passed (map, translate, write, unmap)\n");
+  /* What only this architecture has, checked once its page tables are
+     live -- the satp mode is part of what is being reported, and a
+     reading taken before translation is on says nothing. Shared code
+     stays unaware of it, which is the rule. */
+  riscv64_isa_self_test();
 }
 
 /* Whether translation is on, which the spinlock implementation asks before
