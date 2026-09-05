@@ -215,7 +215,18 @@ SSHD_ARGS="/bin/sshd=$BUILD_DIR/sshd.elf"
 # Development only: a release medium packages no credential anybody outside
 # the build has, and setup makes one on first boot instead.
 CREDENTIAL_ARGS=""
-if [ "${XAIOS_RISCV64_MODE:-development}" = development ]; then
+if [ "${XAIOS_SSH_USERS_FILE:-}" != "" ]; then
+  # A caller's own account list wins over the development one. A gate that
+  # mints a credential and then expects to log in with it has to be able to
+  # put that credential in the image; without this it could reach two
+  # machines out of three and the third refused the password it was given.
+  if [ ! -f "$XAIOS_SSH_USERS_FILE" ]; then
+    printf '%s\n' "error: SSH users file not found: $XAIOS_SSH_USERS_FILE" >&2
+    exit 1
+  fi
+  CREDENTIAL_ARGS="/etc/xaios_sshd_users=$XAIOS_SSH_USERS_FILE"
+  CREDENTIAL_ARGS="$CREDENTIAL_ARGS /etc/xaios_console_pin=$ROOT_DIR/config/development-console-pin"
+elif [ "${XAIOS_RISCV64_MODE:-development}" = development ]; then
   CREDENTIAL_ARGS="/etc/xaios_sshd_users=$ROOT_DIR/config/development-sshd-users"
   CREDENTIAL_ARGS="$CREDENTIAL_ARGS /etc/xaios_console_pin=$ROOT_DIR/config/development-console-pin"
 fi

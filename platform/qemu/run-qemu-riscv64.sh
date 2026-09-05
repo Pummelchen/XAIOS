@@ -24,10 +24,15 @@ SSH_PORT="${XAIOS_RISCV64_SSH_PORT:-2222}"
 # understand. A gate that does not use SSH should not be holding a fixed port:
 # one stale emulator anywhere then turns every later run into a boot that
 # never happened.
-if [ "$SSH_PORT" = none ]; then
-  HOSTFWD_ARG=""
-else
-  HOSTFWD_ARG=",hostfwd=tcp::$SSH_PORT-:22"
+HOSTFWD_ARG=""
+if [ "$SSH_PORT" != none ]; then
+  HOSTFWD_ARG="$HOSTFWD_ARG,hostfwd=tcp::$SSH_PORT-:22"
+fi
+# The guest's UDP echo responder, for gates that drive one. Same guest port
+# the other two runners forward to.
+HOSTFWD_UDP_PORT="${XAIOS_RISCV64_HOSTFWD_UDP_PORT:-none}"
+if [ "$HOSTFWD_UDP_PORT" != none ]; then
+  HOSTFWD_ARG="$HOSTFWD_ARG,hostfwd=udp::$HOSTFWD_UDP_PORT-:2223"
 fi
 QEMU="${QEMU_SYSTEM_RISCV64:-qemu-system-riscv64}"
 
@@ -193,13 +198,14 @@ NET_SOCKET_HOST="${XAIOS_RISCV64_NET_SOCKET_HOST:-127.0.0.1}"
 
 NET1_ARGS=""
 if [ "$NET_SOCKET_PORT" != none ] && {
-  [ "$NET_SOCKET_PORT_2" != none ] || [ "$SSH_PORT" != none ]
+  [ "$NET_SOCKET_PORT_2" != none ] || [ "$SSH_PORT" != none ] ||
+  [ "$HOSTFWD_UDP_PORT" != none ]
 }; then
   # A hub, so a synthetic client on a socket and the host forwarding can share
   # one guest interface. SLIRP is told ipv6=off here: the framed clients on
   # this hub speak IPv6 themselves and SLIRP would answer for them.
-  if [ "$SSH_PORT" != none ]; then
-    NET1_ARGS="$NET1_ARGS -netdev user,id=net1_user,ipv6=off,hostfwd=tcp::$SSH_PORT-:22"
+  if [ "$SSH_PORT" != none ] || [ "$HOSTFWD_UDP_PORT" != none ]; then
+    NET1_ARGS="$NET1_ARGS -netdev user,id=net1_user,ipv6=off$HOSTFWD_ARG"
     NET1_ARGS="$NET1_ARGS -netdev hubport,id=net1_user_hub,hubid=1,netdev=net1_user"
   fi
   NET1_ARGS="$NET1_ARGS -netdev stream,id=net1_socket,server=on,addr.type=inet,addr.host=$NET_SOCKET_HOST,addr.port=$NET_SOCKET_PORT"
@@ -219,6 +225,11 @@ else
   NET1_ARGS="-netdev $NET1_OPTIONS"
 fi
 NET1_ARGS="$NET1_ARGS -device virtio-net-device,netdev=net1,mac=52:54:00:12:34:57,bus=virtio-mmio-bus.2"
+# Every frame on the routed interface, written to a file, when a gate wants to
+# read the wire rather than the guest's account of it.
+if [ "${XAIOS_QEMU_NET_DUMP:-}" != "" ]; then
+  NET1_ARGS="$NET1_ARGS -object filter-dump,id=xaios_net_dump,netdev=net1,file=${XAIOS_QEMU_NET_DUMP}"
+fi
 KEYBOARD_ARGS=""
 case "${XAIOS_RISCV64_KEYBOARD:-none}" in
   none) ;;

@@ -209,7 +209,7 @@ the kernel comes up to a login prompt with sshd listening.
 
 ## Test coverage
 
-Forty-three `make` targets, of which forty-one are gates. They fall into
+Forty-four `make` targets, of which forty-two are gates. They fall into
 three groups, and the split matters more than the count.
 
 **Gates this architecture has of its own.** These exist because the shared
@@ -232,7 +232,7 @@ gates behind it -- `filesystem`, `app-agent`, `network-full`,
 `storage-crash-test`, `crash-safety`, `framebuffer`,
 `keyboard-input`, `routing-prefix`, `storage-bench`,
 `instruction-cost`, `dhcpv6`, `outbound-fragmentation`, `model-sftp`,
-`boot-loop`, `benchmark`, `preview`, `libc`, `fault-matrix`, `nvme`, `soak`,
+`boot-loop`, `benchmark`, `preview`, `libc`, `fault-matrix`, `nvme`, `soak`, `parallel-network-load`,
 `console-xtop`, and the `userspace`, `network`,
 `cpu-ai` and `regression` suites that bundle them. Each is the same script
 the other two architectures run, taking `--arch riscv64`, rather than a

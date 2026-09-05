@@ -15,10 +15,15 @@ import time
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import (arch_from_argv, qemu_boot_environment, qemu_runner,
+                           smoke_timeout)
+
+ARCH = arch_from_argv(sys.argv)
 BUILD = ROOT / "build"
 IMAGE = "xaios-debian13-network-client:13"
 SSH_READY_MARKER = "SSH server: up and running (tcp/22)"
-BOOT_TIMEOUT_SECONDS = 150.0
+BOOT_TIMEOUT_SECONDS = float(smoke_timeout(ARCH, 150))
 CLIENT_TIMEOUT_SECONDS = 900.0
 
 
@@ -52,25 +57,33 @@ def stop_process(process: subprocess.Popen[bytes], timeout: float = 10.0) -> Non
 
 
 def start_qemu(
-    name: str, env_updates: dict[str, str]
+    name: str, knobs: dict[str, object], packet_capture: Path | None = None
 ) -> tuple[subprocess.Popen[bytes], object, Path, Path, int]:
+    """Boot the guest this gate loads, on whichever machine was asked for.
+
+    `knobs` are logical names -- hostfwd_port, net_socket_port and so on --
+    which qemu_boot_environment turns into whatever this architecture's runner
+    reads. The packet capture is the one knob all three runners already spell
+    the same way, so it is set directly.
+    """
     log_path = BUILD / f"{name}.log"
     persistent_path = BUILD / f"{name}-persistent.img"
     persistent_path.unlink(missing_ok=True)
     last_error: TimeoutError | None = None
     for attempt in range(2):
         log_file = log_path.open("wb")
-        env = os.environ.copy()
-        env.update(
-            {
-                "XAIOS_QEMU_ACCEL": "tcg",
-                "XAIOS_QEMU_SMP": "4",
-                "XAIOS_PERSISTENT_IMAGE": str(persistent_path),
-            }
-        )
-        env.update(env_updates)
+        env = qemu_boot_environment(
+            ARCH, os.environ.copy(), accel="tcg", smp=4,
+            persistent=persistent_path,
+            state_dir=BUILD / f"{name}-state",
+            # The console is redirected into log_path; the RISC-V runner
+            # writes it to a file of its own unless told otherwise.
+            serial_to_stdout=True,
+            **knobs)
+        if packet_capture is not None:
+            env["XAIOS_QEMU_NET_DUMP"] = str(packet_capture)
         process = subprocess.Popen(
-            [str(ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh")],
+            [str(ROOT / qemu_runner(ARCH))],
             cwd=ROOT,
             env=env,
             stdin=subprocess.DEVNULL,
@@ -478,24 +491,29 @@ def main() -> int:
     build_env["XAIOS_AUTHORIZED_KEYS_FILE"] = str(key_dir / "authorized.pub")
     build_env["XAIOS_SSH_USERS_FILE"] = str(users_file)
     build_env["XAIOS_SSH_PASSWORD_AUTH"] = "1"
-    run_checked(["make", "image"], 180, build_env)
+    for command in {"aarch64": [["make", "image"]],
+                    "x86_64": [["make", "image-x86_64"]],
+                    "riscv64": [["./scripts/build-riscv64.sh"],
+                                ["./scripts/build-riscv64-image.sh"]]}[ARCH]:
+        run_checked(command, smoke_timeout(ARCH, 180), build_env)
 
     ssh_port = reserve_port(socket.SOCK_STREAM)
     udp_port = reserve_port(socket.SOCK_DGRAM)
     socket_port_1 = reserve_port(socket.SOCK_STREAM)
     socket_port_2 = reserve_port(socket.SOCK_STREAM)
-    packet_capture = BUILD / "qemu-parallel-network-load.pcap"
+    suffix = "" if ARCH == "aarch64" else f"-{ARCH}"
+    packet_capture = BUILD / f"qemu-parallel-network-load{suffix}.pcap"
     packet_capture.unlink(missing_ok=True)
     qemu, qemu_log_file, qemu_log_path, persistent_path, launch_attempts = start_qemu(
-        "qemu-parallel-network-load",
+        f"qemu-parallel-network-load{suffix}",
         {
-            "XAIOS_QEMU_HOSTFWD_PORT": str(ssh_port),
-            "XAIOS_QEMU_HOSTFWD_UDP_PORT": str(udp_port),
-            "XAIOS_QEMU_NET_SOCKET_HOST": "0.0.0.0",
-            "XAIOS_QEMU_NET_SOCKET_PORT": str(socket_port_1),
-            "XAIOS_QEMU_NET_SOCKET_PORT_2": str(socket_port_2),
-            "XAIOS_QEMU_NET_DUMP": str(packet_capture),
+            "hostfwd_port": ssh_port,
+            "hostfwd_udp_port": udp_port,
+            "net_socket_host": "0.0.0.0",
+            "net_socket_port": socket_port_1,
+            "net_socket_port_2": socket_port_2,
         },
+        packet_capture,
     )
     phases: dict[str, str] = {}
     try:
@@ -607,6 +625,7 @@ def main() -> int:
 
         report = {
             "schema": "xaios.qemu.parallel_network_load.v1",
+        "arch": ARCH,
             "status": "pass",
             "guest_instances": 1,
             "guest_launch_attempts": launch_attempts,
@@ -636,7 +655,7 @@ def main() -> int:
             },
             "duration_seconds": round(time.monotonic() - started, 3),
         }
-        report_path = BUILD / "qemu-parallel-network-load.json"
+        report_path = BUILD / f"qemu-parallel-network-load{suffix}.json"
         report_path.write_text(
             json.dumps(report, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

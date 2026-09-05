@@ -213,6 +213,7 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
                           system_volume: Any = None,
                           state_dir: Any = None,
                           hostfwd_port: Any = None,
+                          hostfwd_udp_port: Any = None,
                           smp: Any = None,
                           boot_mode: Any = None,
                           extra_args: Any = None,
@@ -248,6 +249,9 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
     if qmp_socket is not None:
         env["XAIOS_QEMU_QMP_SOCKET" if arch != "riscv64"
             else "XAIOS_RISCV64_QMP_SOCKET"] = str(qmp_socket)
+    if hostfwd_udp_port is not None:
+        env["XAIOS_QEMU_HOSTFWD_UDP_PORT" if arch != "riscv64"
+            else "XAIOS_RISCV64_HOSTFWD_UDP_PORT"] = str(hostfwd_udp_port)
     if user_net_cidr is not None:
         env["XAIOS_QEMU_USER_NET_CIDR" if arch != "riscv64"
             else "XAIOS_RISCV64_USER_NET_CIDR"] = str(user_net_cidr)
