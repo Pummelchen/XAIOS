@@ -33,11 +33,15 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+import shutil
+import sys
+from qemu_gate_lib import (arch_from_argv, qemu_boot_environment,
+                           qemu_runner)
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
 REPORT = BUILD / "qemu-write-ordering-gate.json"
-LOG = BUILD / "qemu-write-ordering.log"
+LOG = BUILD / "qemu-write-ordering.log"  # rebound per arch in main
 FIXTURE = BUILD / "xaios-crash-fixture.img"
 WORKING = BUILD / "write-ordering-volume.img"
 TIMEOUT_S = int(os.environ.get("XAIOS_WRITE_ORDERING_TIMEOUT", "600"))
@@ -62,7 +66,14 @@ def fail(message: str) -> int:
     return 1
 
 
-def run_guest() -> bytes:
+def state_dir(arch: str) -> Path:
+    """RISC-V keeps its disks in a directory. Fresh each run: this gate
+    reads what a volume holds after a boot, and one carrying the last
+    run's answer would let a broken write pass."""
+    return BUILD / f"write-ordering-{arch}-state"
+
+
+def run_guest(arch: str) -> bytes:
     if not FIXTURE.is_file():
         raise SystemExit(
             f"no crash fixture at {FIXTURE}; run "
@@ -75,11 +86,17 @@ def run_guest() -> bytes:
     # No host port forwarding: this gate does not use SSH, and claiming a
     # fixed port makes one stale emulator anywhere turn the run into a boot
     # that never happened.
-    environment["XAIOS_QEMU_HOSTFWD_PORT"] = "none"
+    # serial_to_stdout matters here: this gate reads the boot from the
+    # process it started, and one runner writes its console to a file
+    # instead. Without it the log is empty and every assertion below reports
+    # a kernel that never traced anything, which is not what happened.
+    environment = qemu_boot_environment(
+        arch, environment, state_dir=state_dir(arch), hostfwd_port="none",
+        serial_to_stdout=True)
     LOG.unlink(missing_ok=True)
     with LOG.open("wb") as sink:
         process = subprocess.Popen(
-            [str(ROOT / "platform/qemu/run-qemu-aarch64.sh")],
+            [str(ROOT / qemu_runner(arch).lstrip("./"))],
             cwd=ROOT, env=environment, stdout=sink,
             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             start_new_session=True)
@@ -101,7 +118,14 @@ def run_guest() -> bytes:
 
 
 def main() -> int:
-    text = run_guest()
+    arch = arch_from_argv(sys.argv[1:])
+    global LOG, WORKING
+    if arch != "aarch64":
+        LOG = BUILD / f"qemu-write-ordering-{arch}.log"
+        WORKING = BUILD / f"write-ordering-volume-{arch}.img"
+    shutil.rmtree(state_dir(arch), ignore_errors=True)
+    state_dir(arch).mkdir(parents=True, exist_ok=True)
+    text = run_guest(arch)
     events = [
         {
             "seq": int(match.group(1)),

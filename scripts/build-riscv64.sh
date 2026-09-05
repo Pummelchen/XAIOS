@@ -61,10 +61,26 @@ BOOT_VERBOSE="${XAIOS_BOOT_VERBOSE:-1}"
 BOOT_TEST_APPS="${XAIOS_BOOT_TEST_APPS:-1}"
 LIBC_TEST="${XAIOS_LIBC_TEST:-$BOOT_TEST_APPS}"
 FAILURE_TEST_APP="${XAIOS_FAILURE_TEST_APP:-0}"
+# The two diagnostic builds the durability gates need. This builder did not
+# offer them, so those gates could not run on this architecture at all -- not
+# because the kernel could not do it, but because there was no way to ask.
+# Validated rather than passed through: a typo that silently built without
+# tracing would make a gate report a clean run it never watched.
+IO_TRACE="${XAIOS_IO_TRACE:-0}"
+CRASH_WRITER="${XAIOS_CRASH_WRITER:-0}"
+case "$IO_TRACE" in
+  0|1) ;;
+  *) printf '%s\n' "error: XAIOS_IO_TRACE must be 0 or 1" >&2; exit 2 ;;
+esac
+case "$CRASH_WRITER" in
+  0|1) ;;
+  *) printf '%s\n' "error: XAIOS_CRASH_WRITER must be 0 or 1" >&2; exit 2 ;;
+esac
 BASE_CFLAGS="$BASE_CFLAGS -DXAIOS_BOOT_VERBOSE=$BOOT_VERBOSE \
 -DXAIOS_BOOT_TEST_APPS=$BOOT_TEST_APPS \
 -DXAIOS_FAILURE_TEST_APP=$FAILURE_TEST_APP -DXAIOS_LIBC_TEST=$LIBC_TEST \
 -DXAIOS_PASSWORD_AUTH_AVAILABLE=${XAIOS_PASSWORD_AUTH_AVAILABLE:-1} \
+-DXAIOS_IO_TRACE=$IO_TRACE -DXAIOS_CRASH_WRITER=$CRASH_WRITER \
 -DXAIOS_BUILD_NUMBER=4"
 CFLAGS="$BASE_CFLAGS -pedantic"
 

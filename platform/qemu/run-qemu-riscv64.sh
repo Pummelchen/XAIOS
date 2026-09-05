@@ -20,6 +20,15 @@ LOG="${XAIOS_RISCV64_LOG:-$BUILD/qemu-riscv64.log}"
 CPUS="${XAIOS_RISCV64_CPUS:-4}"
 MEMORY="${XAIOS_RISCV64_MEMORY:-1024}"
 SSH_PORT="${XAIOS_RISCV64_SSH_PORT:-2222}"
+# "none" means claim no host port, which the other two runners already
+# understand. A gate that does not use SSH should not be holding a fixed port:
+# one stale emulator anywhere then turns every later run into a boot that
+# never happened.
+if [ "$SSH_PORT" = none ]; then
+  HOSTFWD_ARG=""
+else
+  HOSTFWD_ARG=",hostfwd=tcp::$SSH_PORT-:22"
+fi
 QEMU="${QEMU_SYSTEM_RISCV64:-qemu-system-riscv64}"
 
 KERNEL="$BUILD/kernel-riscv64/kernel.elf"
@@ -33,7 +42,16 @@ BOOT_MEDIUM="$BUILD/xaios-riscv64.img"
 STATE="${XAIOS_RISCV64_STATE:-$BUILD/riscv64-run}"
 mkdir -p "$STATE"
 [ -f "$STATE/persistent.img" ] || dd if=/dev/zero of="$STATE/persistent.img" bs=1m count=16 status=none
-[ -f "$STATE/models.img" ] || cp "$BUILD/xaios-xaifs.img" "$STATE/models.img"
+# The models volume. A caller may name its own, as the other two runners let
+# one -- a gate that writes to this volume and then checks what survived has
+# to supply the copy it is willing to have written. Without the override the
+# state directory keeps its own, seeded once from the build.
+if [ -n "${XAIOS_XAI_FS_IMAGE:-}" ]; then
+  MODELS_IMAGE="$XAIOS_XAI_FS_IMAGE"
+else
+  MODELS_IMAGE="$STATE/models.img"
+  [ -f "$MODELS_IMAGE" ] || cp "$BUILD/xaios-xaifs.img" "$MODELS_IMAGE"
+fi
 # This architecture's own signed system volume, not another architecture's:
 # the loader verifies the slot and then refuses a kernel built for a machine
 # this is not, which is the correct behaviour and a confusing way to discover
@@ -82,7 +100,7 @@ exec "$QEMU" \
   -device virtio-blk-device,drive=xtest,bus=virtio-mmio-bus.0 \
   -drive "if=none,format=raw,id=xpers,file=$STATE/persistent.img" \
   -device virtio-blk-device,drive=xpers,bus=virtio-mmio-bus.1 \
-  -drive "if=none,format=raw,id=xmodels,file=$STATE/models.img" \
+  -drive "if=none,format=raw,id=xmodels,file=$MODELS_IMAGE" \
   -device virtio-blk-device,drive=xmodels,bus=virtio-mmio-bus.4 \
   -drive "if=none,format=raw,id=xadmin,file=$STATE/storage-admin.img" \
   -device virtio-blk-device,drive=xadmin,bus=virtio-mmio-bus.5 \
@@ -93,6 +111,6 @@ exec "$QEMU" \
   -blockdev driver=raw,node-name=sysraw2,file=sysf2 \
   -device virtio-blk-device,drive=sysraw2,bus=virtio-mmio-bus.6 \
   -device virtio-rng-pci,disable-legacy=on \
-  -netdev "user,id=n0,hostfwd=tcp::$SSH_PORT-:22" \
+  -netdev "user,id=n0$HOSTFWD_ARG" \
   -device virtio-net-pci,netdev=n0,disable-legacy=on \
   $QMP_ARGS $EXTRA_ARGS "$@"

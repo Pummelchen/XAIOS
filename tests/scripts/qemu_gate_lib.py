@@ -250,7 +250,10 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
     else:
         if state_dir is not None:
             env["XAIOS_RISCV64_STATE"] = str(state_dir)
-        if hostfwd_port is not None and str(hostfwd_port) != "none":
+        if hostfwd_port is not None:
+            # "none" reaches the runner intact: it understands it, and a gate
+            # that wants no host port must be able to say so rather than get
+            # the default.
             env["XAIOS_RISCV64_SSH_PORT"] = str(hostfwd_port)
         if smp is not None:
             env["XAIOS_RISCV64_CPUS"] = str(smp)

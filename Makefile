@@ -361,6 +361,17 @@ qemu-riscv64-isa-gate:
 qemu-riscv64-local-console-gate:
 	python3 ./tests/scripts/qemu-local-console-gate.py --arch riscv64
 
+# Write ordering on RISC-V: what the driver actually issued, in what order,
+# and what the volume held afterwards. The runner takes a caller's own
+# models volume now, which is what this gate needs to read back.
+qemu-riscv64-write-ordering-gate:
+	PYTHONPATH=tools python3 ./tests/xai_fs/create_crash_fixture.py \
+	  build/xaios-crash-fixture.img
+	XAIOS_BOOT_TEST_APPS=1 XAIOS_CRASH_WRITER=1 XAIOS_IO_TRACE=1 \
+	  ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-write-ordering-gate.py --arch riscv64
+
 qemu-x86_64-numa-gate:
 	XAIOS_TARGET_ARCH=x86_64 XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
 	python3 tests/scripts/qemu-x86_64-numa-gate.py
