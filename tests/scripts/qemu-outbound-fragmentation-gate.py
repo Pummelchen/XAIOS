@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Verify source fragmentation on AArch64 and x86_64 QEMU guests."""
+"""Verify source fragmentation on every QEMU guest this project builds.
+
+The guest is asked for more than a link's worth of data over IPv6 and has to
+break it up itself. What differs per architecture is the driver underneath --
+the descriptor chain a fragment is handed to, and whether the queue is
+serviced by an interrupt or a poll -- so the same exchange run on three
+machines is three tests, not one repeated.
+"""
 
 from __future__ import annotations
 
@@ -14,8 +21,27 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import (QEMU_ARCHES, qemu_boot_environment, qemu_runner,
+                           smoke_timeout)
+
 READY = "SSH server: up and running (tcp/22)"
 REPORT = BUILD / "qemu-outbound-fragmentation-report.json"
+
+
+def requested_architectures(argv: list[str]) -> tuple[str, ...]:
+    """--arch NAME selects one; without it, every machine this builds for."""
+    for index, argument in enumerate(argv):
+        name = None
+        if argument == "--arch" and index + 1 < len(argv):
+            name = argv[index + 1]
+        elif argument.startswith("--arch="):
+            name = argument.split("=", 1)[1]
+        if name is not None:
+            if name not in QEMU_ARCHES:
+                raise SystemExit(f"unsupported --arch {name!r}")
+            return (name,)
+    return QEMU_ARCHES
 
 
 def reserve_port() -> int:
@@ -53,22 +79,16 @@ def run_architecture(architecture: str) -> dict[str, object]:
     log_path = BUILD / f"qemu-outbound-fragmentation-{architecture}.log"
     persistent = BUILD / f"qemu-outbound-fragmentation-{architecture}.img"
     persistent.unlink(missing_ok=True)
-    runner = (
-        ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh"
-        if architecture == "aarch64"
-        else ROOT / "platform" / "qemu" / "run-qemu-x86_64.sh"
-    )
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "XAIOS_QEMU_ACCEL": "tcg",
-            "XAIOS_QEMU_SMP": "4",
-            "XAIOS_QEMU_HOSTFWD_PORT": str(ssh_port),
-            "XAIOS_QEMU_NET_SOCKET_HOST": "127.0.0.1",
-            "XAIOS_QEMU_NET_SOCKET_PORT": str(socket_port),
-            "XAIOS_PERSISTENT_IMAGE": str(persistent),
-        }
-    )
+    runner = ROOT / qemu_runner(architecture)
+    environment = qemu_boot_environment(
+        architecture, os.environ.copy(),
+        accel="tcg", smp=4, hostfwd_port=ssh_port,
+        net_socket_host="127.0.0.1", net_socket_port=socket_port,
+        persistent=persistent,
+        state_dir=BUILD / f"qemu-outbound-fragmentation-{architecture}-state",
+        # The console goes into log_path below, and the RISC-V runner would
+        # otherwise write it to a file of its own and leave that empty.
+        serial_to_stdout=True)
     with log_path.open("wb") as log:
         process = subprocess.Popen(
             [str(runner)],
@@ -79,7 +99,8 @@ def run_architecture(architecture: str) -> dict[str, object]:
             stderr=subprocess.STDOUT,
         )
         try:
-            wait_for_marker(log_path, READY, 180.0)
+            wait_for_marker(log_path, READY,
+                            float(smoke_timeout(architecture, 180)))
             command = [
                 sys.executable,
                 str(ROOT / "tests" / "network" / "qemu-ipv6-tcp-client.py"),
@@ -128,8 +149,9 @@ def main() -> int:
     BUILD.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     results: dict[str, object] = {}
+    architectures = requested_architectures(sys.argv[1:])
     try:
-        for architecture in ("aarch64", "x86_64"):
+        for architecture in architectures:
             print(f"qemu-outbound-fragmentation: testing {architecture}", flush=True)
             results[architecture] = run_architecture(architecture)
     except (OSError, RuntimeError, subprocess.SubprocessError, TimeoutError) as error:
@@ -165,7 +187,8 @@ def main() -> int:
         + "\n",
         encoding="utf-8",
     )
-    print(f"PASS: AArch64/x86_64 outbound fragmentation report={REPORT}")
+    print(f"PASS: outbound fragmentation on "
+          f"{', '.join(architectures)}; report={REPORT}")
     return 0
 
 
