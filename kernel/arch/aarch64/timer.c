@@ -125,7 +125,7 @@ static uint64_t duration_ticks(uint64_t duration_ns) {
   return ticks > UINT64_MAX - fractional ? UINT64_MAX : ticks + fractional;
 }
 
-void timer_idle_until(uint64_t deadline_ns) {
+static void timer_idle_until_common(uint64_t deadline_ns, int break_on_wake) {
   uint64_t outer_elr;
   uint64_t outer_spsr;
   __asm__ volatile("mrs %0, elr_el1\n\tmrs %1, spsr_el1"
@@ -136,7 +136,7 @@ void timer_idle_until(uint64_t deadline_ns) {
     if (now_ns >= deadline_ns) break;
     /* Something the sleeper was waiting for arrived. wfi returned for it
        already; going back to sleep would hold the answer until the deadline. */
-    if (timer_wake_generation() != wake) break;
+    if (break_on_wake != 0 && timer_wake_generation() != wake) break;
     uint64_t ticks = duration_ticks(deadline_ns - now_ns);
     uint64_t counter = timer_counter();
     uint64_t compare = ticks > UINT64_MAX - counter
@@ -159,6 +159,14 @@ void timer_idle_until(uint64_t deadline_ns) {
                    :
                    : "r"(outer_elr), "r"(outer_spsr)
                    : "memory");
+}
+
+void timer_idle_until(uint64_t deadline_ns) {
+  timer_idle_until_common(deadline_ns, 0);
+}
+
+void timer_idle_until_event(uint64_t deadline_ns) {
+  timer_idle_until_common(deadline_ns, 1);
 }
 
 void wall_time_calibrate(void) {

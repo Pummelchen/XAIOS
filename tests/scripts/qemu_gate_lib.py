@@ -280,3 +280,13 @@ def smoke_timeout(arch: str, base: int) -> int:
     and reusing them would report a slower machine as a broken one.
     """
     return base * 4 if arch == "riscv64" else base
+
+
+def qemu_runner(arch: str) -> str:
+    """The script that starts this machine.
+
+    Gates that drive the boot themselves -- reading the console, cutting
+    power, rebooting -- cannot go through make, so they need the runner. They
+    should still not name one.
+    """
+    return f"./platform/qemu/run-qemu-{arch}.sh"

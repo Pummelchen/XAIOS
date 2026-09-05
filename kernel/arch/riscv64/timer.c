@@ -217,14 +217,14 @@ static uint64_t duration_ticks(uint64_t duration_ns) {
  * the hart, and put the mask and the periodic schedule back afterwards. The
  * global interrupt enable is left as the caller had it, so a wait from inside
  * a syscall wakes without taking the trap. */
-void timer_idle_until(uint64_t deadline_ns) {
+static void timer_idle_until_common(uint64_t deadline_ns, int break_on_wake) {
   uint64_t sie = 0U;
   __asm__ volatile("csrr %0, sie" : "=r"(sie));
   uint64_t wake = timer_wake_generation();
   for (;;) {
     uint64_t now_ns = timer_now_ns();
     if (now_ns >= deadline_ns) break;
-    if (timer_wake_generation() != wake) break;
+    if (break_on_wake != 0 && timer_wake_generation() != wake) break;
     uint64_t ticks = duration_ticks(deadline_ns - now_ns);
     uint64_t counter = timer_counter();
     uint64_t compare = ticks > UINT64_MAX - counter
@@ -238,6 +238,14 @@ void timer_idle_until(uint64_t deadline_ns) {
   /* Back to the periodic schedule, or to nothing; either write clears the
      pending bit the one-shot left behind. */
   timer_rearm();
+}
+
+void timer_idle_until(uint64_t deadline_ns) {
+  timer_idle_until_common(deadline_ns, 0);
+}
+
+void timer_idle_until_event(uint64_t deadline_ns) {
+  timer_idle_until_common(deadline_ns, 1);
 }
 
 void timer_self_test(void) {

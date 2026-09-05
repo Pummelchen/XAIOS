@@ -99,13 +99,13 @@ void timer_rearm(void) {
  * at the deadline, the CPU halts with interrupts enabled, and the periodic
  * tick, if this CPU had one, is put back afterwards. The interrupt that
  * ends the wait is counted but does not tick the scheduler. */
-void timer_idle_until(uint64_t deadline_ns) {
+static void timer_idle_until_common(uint64_t deadline_ns, int break_on_wake) {
   uint32_t had_periodic = g_periodic_active;
   uint64_t wake = timer_wake_generation();
   for (;;) {
     uint64_t now_ns = timer_now_ns();
     if (now_ns >= deadline_ns) break;
-    if (timer_wake_generation() != wake) break;
+    if (break_on_wake != 0 && timer_wake_generation() != wake) break;
     uint64_t wait_ns = deadline_ns - now_ns;
     uint64_t count = (wait_ns * g_lapic_frequency) / UINT64_C(1000000000);
     if (count == 0U) count = 1U;
@@ -123,6 +123,14 @@ void timer_idle_until(uint64_t deadline_ns) {
   } else {
     x86_64_platform_timer_stop();
   }
+}
+
+void timer_idle_until(uint64_t deadline_ns) {
+  timer_idle_until_common(deadline_ns, 0);
+}
+
+void timer_idle_until_event(uint64_t deadline_ns) {
+  timer_idle_until_common(deadline_ns, 1);
 }
 
 void wall_time_calibrate(void) {

@@ -658,7 +658,7 @@ uint64_t user_cpu_busy_total(uint64_t now_ns) {
   return total;
 }
 
-void user_process_idle_until(uint64_t deadline_ns) {
+static void user_process_idle_common(uint64_t deadline_ns, int wake_on_event) {
   xaios_user_process_t *process = g_current_process;
   uint32_t cpu_id = smp_cpu_id();
   uint64_t started_ns = timer_now_ns();
@@ -666,10 +666,22 @@ void user_process_idle_until(uint64_t deadline_ns) {
   if (process != 0) {
     user_process_runtime_stop(process->pid, cpu_id, started_ns);
   }
-  timer_idle_until(deadline_ns);
+  if (wake_on_event != 0) {
+    timer_idle_until_event(deadline_ns);
+  } else {
+    timer_idle_until(deadline_ns);
+  }
   if (process != 0) {
     user_process_runtime_start(process->pid, cpu_id, timer_now_ns());
   }
+}
+
+void user_process_idle_until(uint64_t deadline_ns) {
+  user_process_idle_common(deadline_ns, 0);
+}
+
+void user_process_idle_until_event(uint64_t deadline_ns) {
+  user_process_idle_common(deadline_ns, 1);
 }
 
 static uint64_t argument_length(const char *text) {

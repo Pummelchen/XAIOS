@@ -105,8 +105,8 @@
     "kernel: /bin/c99-thread-context returned to kernel exit_code=0"
   ],
   "syscall_budget": {
-    "baseline_count": 51,
-    "maximum_identifier": 51,
+    "baseline_count": 54,
+    "maximum_identifier": 54,
     "libc_specific_additions": 0
   }
 }

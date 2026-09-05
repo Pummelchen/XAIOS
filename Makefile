@@ -338,6 +338,14 @@ qemu-riscv64-regression-suite:
 	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
 	python3 ./tests/scripts/qemu-regression-suite.py --arch riscv64
 
+# Storage that survives a reboot, on RISC-V. The disks live in a state
+# directory there rather than in a named image, which is the whole reason
+# this gate could not simply be pointed at another runner.
+qemu-riscv64-persistence-reboot:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-persistence-reboot.py --arch riscv64
+
 qemu-x86_64-numa-gate:
 	XAIOS_TARGET_ARCH=x86_64 XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
 	python3 tests/scripts/qemu-x86_64-numa-gate.py

@@ -640,8 +640,13 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       uint64_t now_ns = timer_now_ns();
       if (events != 0U || now_ns >= deadline_ns) break;
       uint64_t slice_end_ns = now_ns + slice_ns;
-      user_process_idle_until(slice_end_ns < deadline_ns ? slice_end_ns
-                                                         : deadline_ns);
+      /* The one caller that wants an early return: everything it is waiting
+         for arrives as an interrupt, and a sleep that ran to its deadline
+         would hold the answer for the rest of the slice. A plain sleep must
+         not do this -- a program that asked for a second and got a packet
+         has not slept for a second. */
+      user_process_idle_until_event(slice_end_ns < deadline_ns ? slice_end_ns
+                                                               : deadline_ns);
       if (slice_ns < XAIOS_WAIT_SLICE_MAX_NS) slice_ns *= 2U;
     }
     user_process_note_syscall(0);
