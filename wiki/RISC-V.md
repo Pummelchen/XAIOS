@@ -209,7 +209,7 @@ the kernel comes up to a login prompt with sshd listening.
 
 ## Test coverage
 
-Forty-four `make` targets, of which forty-two are gates, plus a leg in the shared unified-image gate. They fall into
+Forty-five `make` targets, of which forty-three are gates, plus a leg in the shared unified-image gate. They fall into
 three groups, and the split matters more than the count.
 
 **Gates this architecture has of its own.** These exist because the shared
@@ -233,7 +233,7 @@ gates behind it -- `filesystem`, `app-agent`, `network-full`,
 `keyboard-input`, `routing-prefix`, `storage-bench`,
 `instruction-cost`, `dhcpv6`, `outbound-fragmentation`, `model-sftp`,
 `boot-loop`, `benchmark`, `preview`, `libc`, `fault-matrix`, `nvme`, `soak`, `parallel-network-load`,
-`console-xtop`, and the `userspace`, `network`,
+`docker-network-suite`, `console-xtop`, and the `userspace`, `network`,
 `cpu-ai` and `regression` suites that bundle them. Each is the same script
 the other two architectures run, taking `--arch riscv64`, rather than a
 RISC-V copy of it: one place decides what a boot is, and one place knows that
@@ -287,11 +287,8 @@ running a kernel from `build/`. All three QEMU legs now boot with no system
 volume, which is what a first boot on a real machine looks like, and all
 three report the fallback path and build 5.
 
-**Still short.** NUMA, cluster, the setup and installed-disk gates, and the
-external Debian client suite run on AArch64 and x86_64 and not here. The
-client suite is nearly ported: everything up to and including SSH, SFTP,
-concurrency, reconnect, UDP and the 23 utilities passes on this machine, and
-the one check left is failing on AArch64 too, so it is not a RISC-V question.
+**Still short.** NUMA, cluster, the setup and installed-disk gates and the
+FreeBSD interoperability suites run on AArch64 and x86_64 and not here.
 
 The boot gates share `tests/scripts/riscv64_gate_lib.py` for booting the machine and
 `qemu_gate_lib.py` for comparing markers, rather than each carrying its own

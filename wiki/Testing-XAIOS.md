@@ -119,6 +119,7 @@ make qemu-riscv64-fault-matrix
 make qemu-riscv64-nvme-gate
 make qemu-riscv64-soak-gate
 make qemu-riscv64-parallel-network-load
+make qemu-riscv64-docker-network-suite
 make qemu-riscv64-write-ordering-gate
 make qemu-riscv64-local-console-gate
 make qemu-console-xtop-gate-riscv64

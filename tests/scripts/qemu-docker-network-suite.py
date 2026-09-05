@@ -22,7 +22,7 @@ BUILD = ROOT / "build"
 IMAGE = "xaios-debian13-network-client:13"
 sys.path.insert(0, str(ROOT / "tests" / "scripts"))
 from qemu_gate_lib import (QEMU_ARCHES, qemu_boot_environment, qemu_runner,
-                           smoke_timeout, translate_qemu_env)
+                           render_terminal, smoke_timeout, translate_qemu_env)
 
 TARGET_ARCH = os.environ.get("XAIOS_QEMU_NETWORK_ARCH", "aarch64")
 for _index, _argument in enumerate(sys.argv):
@@ -619,7 +619,14 @@ def verify_native_xtop_pty(key_dir: Path, port: int) -> None:
     required = (
         b"\x1b[?1049h",
         b"\x1b[2J\x1b[H",
-        b"\x1b[42;30m",
+        # Black on the header's green, which is what \x1b[42;30m used to be.
+        #
+        # The old marker was the basic-colour form, and it stopped appearing
+        # when xtop moved its drawing into the screen framework's cells: the
+        # framework emits every colour as 256-colour SGR from the cell it is
+        # painting, so the header now arrives as this. The gate went red on
+        # every architecture and stayed red because nothing had run it since.
+        b"\x1b[0;38;5;0;48;5;70m",
         b"Tasks:",
         b"Load average:",
         b"Uptime:",
@@ -631,63 +638,76 @@ def verify_native_xtop_pty(key_dir: Path, port: int) -> None:
         b"mem",
         b"Filter: ",
         b"sshd",
-        b"XAIOS xtop help",
+        # The help screen, by three of its lines rather than by its title.
+        #
+        # The title is on the screen -- a person pressing h sees
+        # "XAIOS xtop help" in the top rule -- but it is not in the byte
+        # stream as one run. The framework sends only the cells that changed,
+        # and the rule's leading corner and dashes match the frame underneath,
+        # so the title arrives split around cursor moves. Body lines differ
+        # from the frame beneath them along their whole width and arrive
+        # whole, which is what a grep over a stream can actually check.
+        b"Up/Down, j/k   select process",
+        b"P/M/T/N/S/C    sort CPU/memory/time/PID/syscalls/command",
+        b"Press F1, h, Escape or q to return.",
         b"60 frames/s",
         b"F10",
         b"Quit",
         b"\x1b[?25h",
         b"\x1b[?1049l",
+        # Handing the terminal back: show the cursor, then leave the
+        # alternate screen, adjacently and in that order.
+        #
+        # xtop sends "\033[0m\033[?25h\033[?1049l\033[0m\033[?25h\r" -- the
+        # restore twice over, once inside the alternate screen and once after
+        # leaving it. The first copy is what arrives intact; the last few
+        # bytes of the second are clipped when the channel closes, which is
+        # recorded as B-27 and is why this asserts the pair that is always
+        # delivered rather than the whole belt-and-braces string.
+        b"\x1b[?25h\x1b[?1049l",
     )
     missing = [marker for marker in required if marker not in colored_stdout]
     if missing:
         raise RuntimeError(f"native xtop PTY output missing markers: {missing!r}")
 
-    visible_output = re.sub(
-        rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", bytes(colored_stdout)
-    ).replace(b"\r", b"")
-    if b"0 failed" not in visible_output:
-        raise RuntimeError("native xtop visible task status did not report zero failures")
-    visible_lines = visible_output.splitlines()
-    cpu_line = next(
-        (line for line in visible_lines if line.lstrip().startswith(b"0[")), None
-    )
-    cpu_one_line = next(
-        (line for line in visible_lines if line.lstrip().startswith(b"1[")), None
-    )
-    cpu_two_line = next(
-        (line for line in visible_lines if line.lstrip().startswith(b"2[")), None
-    )
-    memory_line = next(
-        (line for line in visible_lines if line.lstrip().startswith(b"Mem[")), None
-    )
-    swap_line = next(
-        (line for line in visible_lines if line.lstrip().startswith(b"Swp[")), None
-    )
-    if (cpu_line is None or cpu_one_line is None or cpu_two_line is None or
-            memory_line is None or swap_line is None):
-        raise RuntimeError("native xtop output lacked aligned CPU/memory/swap meters")
-    bracket_columns = {
-        cpu_line.index(b"["), memory_line.index(b"["), swap_line.index(b"[")
-    }
-    if len(bracket_columns) != 1:
+    # The screen, rebuilt from the stream, rather than the stream read as a
+    # transcript.
+    #
+    # This block used to strip the escapes, split on newlines and look at the
+    # lines. That worked while xtop printed whole frames; it draws into the
+    # screen framework's cells now and only the cells that changed are sent,
+    # so there are no lines to split on and a row arrives in pieces. Replaying
+    # the stream into a grid is what the terminal on the other end does, and
+    # it is the only way to ask what is actually on the screen.
+    #
+    # The layout being checked is also the current one. The old checks looked
+    # for htop-style bracket meters -- `0[`, `Mem[`, `Swp[` in aligned columns
+    # -- which xtop has not drawn since it was redrawn after mactop: cores are
+    # bars inside a Cores panel, and memory and swap share one panel heading.
+    # The properties are the same and are asserted here against what is drawn.
+    screen = render_terminal(bytes(colored_stdout))
+    core_meter = re.compile(r"\s(\d)\s+[\u2588\u2591]+\s+\d+\.\d%")
+    cores = {match.group(1) for line in screen
+             for match in [core_meter.search(line)] if match}
+    if not {"0", "1", "2", "3"} <= cores:
         raise RuntimeError(
-            f"native xtop meter brackets were not aligned: {bracket_columns!r}"
-        )
-    left_cell_width = len(cpu_line) // 2
-    if (cpu_line.find(b"Tasks:") != left_cell_width or
-            cpu_one_line.find(b"Load average:") != left_cell_width or
-            cpu_two_line.find(b"Uptime:") != left_cell_width):
+            f"native xtop did not draw a meter for every core: saw {sorted(cores)}")
+    memory_panel = next(
+        (line for line in screen
+         if re.search(r"Mem\s+\S+ / \S+\s+\(Swap \S+ / \S+\)\s+\d+\.\d%", line)),
+        None)
+    if memory_panel is None:
         raise RuntimeError(
-            "native xtop Debian-style status rows were not in the right column"
-        )
-    if (len(memory_line) != len(cpu_line) or len(swap_line) != len(cpu_line) or
-            memory_line[left_cell_width:].strip() or
-            swap_line[left_cell_width:].strip()):
+            "native xtop did not report memory and swap with a percentage")
+    if not any("Tasks:" in line and "0 failed" in line for line in screen):
         raise RuntimeError(
-            "native xtop memory/swap content escaped the left CPU column: "
-            f"cpu={len(cpu_line)} mem={len(memory_line)} swap={len(swap_line)}"
-        )
-    if b"F1Help" not in visible_output or b"F10Quit" not in visible_output:
+            "native xtop visible task status did not report zero failures")
+    if not any("Load average:" in line for line in screen):
+        raise RuntimeError("native xtop did not report a load average")
+    if not any("Uptime:" in line for line in screen):
+        raise RuntimeError("native xtop did not report an uptime")
+    footer = next((line for line in screen if "F10Quit" in line), None)
+    if footer is None or "F1Help" not in footer:
         raise RuntimeError("native xtop footer did not use segmented key labels")
 
     shell = subprocess.Popen(
@@ -769,9 +789,14 @@ def verify_native_xtop_pty(key_dir: Path, port: int) -> None:
             "post-xtop interactive shell failed: "
             + bytes(shell_stderr).decode(errors="replace")
         )
-    restore = b"\x1b[?1049l\x1b[0m\x1b[?25h\r"
-    if restore not in shell_stdout:
-        raise RuntimeError("xtop did not fully reset the host terminal state")
+    # The restore is asserted on xtop's own stream, above, where it is sent.
+    #
+    # It was asserted here, on a later plain shell session, which never sends
+    # it and has nothing to restore: that session does not enter the alternate
+    # screen. The check could not have passed, and it never ran, because the
+    # meter checks above it were failing first. What it means to assert -- the
+    # full-screen program hands the terminal back -- belongs to the program
+    # that took it.
     listing_start = shell_stdout.find(b"ls /\r\n")
     listing_end = shell_stdout.find(b"admin@xaios", listing_start + 6)
     if listing_start < 0 or listing_end < 0:

@@ -2936,7 +2936,33 @@ static int xtop_serve(u64 channel_id, const char *command) {
     else if (string_equal(option, "--layout")) { if (xtop_parse_u32_option(command, &index, &value) == XAIOS_OK && value >= 1U && value <= XTOP_LAYOUT_COUNT) st.layout = value; }
     else if (string_equal(option, "--cpu-start")) { if (xtop_parse_u32_option(command, &index, &value) == XAIOS_OK) st.cpu_start = value; }
     else if (string_equal(option, "--cpu-count")) { if (xtop_parse_u32_option(command, &index, &value) == XAIOS_OK && value != 0U) st.cpu_count = value; }
-    else if (string_equal(option, "--sort")) { if (token_next(command, &index, sort, sizeof(sort)) == XAIOS_OK) { xtop_sort_key_t key; uint64_t dummy = 0U; char text[48]; uint64_t tu = 0U; text[0] = '\0'; output_append(text, sizeof(text), &tu, "--sort "); output_append(text, sizeof(text), &tu, sort); (void)xtop_parse_sort_option(text, &dummy, &key); /* tolerant: a bad key leaves cpu */ st.sort_key = key; } }
+    else if (string_equal(option, "--sort")) {
+      /* Refused, not quietly ignored.
+       *
+       * This was tolerant -- a key it did not recognise left the sort on CPU
+       * -- so `xtop --sort invalid` opened the monitor instead of saying
+       * anything, and the person who mistyped it watched a screen sorted by
+       * something they had not asked for. The one-shot path has always
+       * refused the same input with the same words; a session is not a
+       * reason to accept it. Refused here, before the alternate screen is
+       * entered, so there is nothing to hand back. */
+      xtop_sort_key_t key = XTOP_SORT_CPU;
+      uint64_t dummy = 0U;
+      char text[48];
+      uint64_t tu = 0U;
+      text[0] = '\0';
+      if (token_next(command, &index, sort, sizeof(sort)) != XAIOS_OK) {
+        (void)serve_write("xtop: invalid --sort key\r\n", 26U);
+        return 1;
+      }
+      output_append(text, sizeof(text), &tu, "--sort ");
+      output_append(text, sizeof(text), &tu, sort);
+      if (xtop_parse_sort_option(text, &dummy, &key) != XAIOS_OK) {
+        (void)serve_write("xtop: invalid --sort key\r\n", 26U);
+        return 1;
+      }
+      st.sort_key = key;
+    }
     else if (string_equal(option, "--reverse")) st.reverse = 1;
     else if (string_equal(option, "--tree")) st.sort_key = XTOP_SORT_PARENT;
     else if (string_equal(option, "--active")) st.show_all = 0;
