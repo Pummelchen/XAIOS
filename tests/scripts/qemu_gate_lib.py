@@ -165,3 +165,95 @@ def result(name: str, ok: bool, **extra: Any) -> Dict[str, Any]:
 
 def now() -> int:
     return int(time.time())
+
+
+# --------------------------------------------------------------- architecture
+#
+# Three machines, three runners, and three sets of names for the same knobs:
+# aarch64 reads XAIOS_QEMU_* and XAIOS_PERSISTENT_IMAGE, x86_64 mixes
+# XAIOS_QEMU_* with XAIOS_QEMU_X86_* and XAIOS_X86_PERSISTENT_IMAGE, and
+# riscv64 reads XAIOS_RISCV64_* throughout and keeps its disks in a state
+# directory rather than naming an image. Renaming any of that would break
+# every existing caller for no gain, so the difference lives here instead:
+# one place that a gate asks "boot this architecture" and gets the right
+# names. A gate that hardcodes a runner can reach exactly one machine, which
+# is how a third architecture ends up with six gates against seventy.
+
+QEMU_ARCHES = ("aarch64", "x86_64", "riscv64")
+
+_MAKE_TARGETS = {
+    "aarch64": "qemu-aarch64",
+    "x86_64": "qemu-x86_64",
+    "riscv64": "qemu-riscv64",
+}
+
+
+def arch_from_argv(argv: Sequence[str], default: str = "aarch64") -> str:
+    """--arch NAME or --arch=NAME, validated. Gates take it the same way."""
+    arch = default
+    for index, argument in enumerate(argv):
+        if argument == "--arch" and index + 1 < len(argv):
+            arch = argv[index + 1]
+        elif argument.startswith("--arch="):
+            arch = argument.split("=", 1)[1]
+    if arch not in QEMU_ARCHES:
+        raise SystemExit(f"unsupported --arch {arch!r}; expected one of "
+                         f"{', '.join(QEMU_ARCHES)}")
+    return arch
+
+
+def qemu_make_target(arch: str) -> str:
+    return _MAKE_TARGETS[arch]
+
+
+def qemu_boot_environment(arch: str, env: Dict[str, str], *,
+                          persistent: Any = None,
+                          storage_admin: Any = None,
+                          state_dir: Any = None,
+                          hostfwd_port: Any = None,
+                          smp: Any = None,
+                          serial_to_stdout: bool = False) -> Dict[str, str]:
+    """The knobs for one boot, under the names this architecture's runner reads.
+
+    `persistent` and `storage_admin` are files on aarch64 and x86_64. RISC-V
+    keeps both inside a state directory it populates itself -- copying the
+    scratch disk the other two leave in build/ when it finds one -- so the
+    file arguments select that directory's contents rather than naming disks.
+
+    `serial_to_stdout` matters only on RISC-V, whose runner writes the console
+    to a file by default. A gate that reads the boot from the runner's stdout,
+    as the smoke helper does, needs it; one that reads the log file does not.
+    """
+    env = dict(env)
+    if arch == "aarch64":
+        if persistent is not None:
+            env["XAIOS_PERSISTENT_IMAGE"] = str(persistent)
+        if storage_admin is not None:
+            env["XAIOS_STORAGE_ADMIN_IMAGE"] = str(storage_admin)
+        if hostfwd_port is not None:
+            env["XAIOS_QEMU_HOSTFWD_PORT"] = str(hostfwd_port)
+        if smp is not None:
+            env["XAIOS_QEMU_SMP"] = str(smp)
+    elif arch == "x86_64":
+        if persistent is not None:
+            env["XAIOS_X86_PERSISTENT_IMAGE"] = str(persistent)
+            # Both names, deliberately: a gate that sets only the aarch64 one
+            # for an x86_64 boot falls through to the shared image, whose
+            # /state holds whichever run created it. That cost a day once.
+            env["XAIOS_PERSISTENT_IMAGE"] = str(persistent)
+        if storage_admin is not None:
+            env["XAIOS_X86_STORAGE_ADMIN_IMAGE"] = str(storage_admin)
+        if hostfwd_port is not None:
+            env["XAIOS_QEMU_HOSTFWD_PORT"] = str(hostfwd_port)
+        if smp is not None:
+            env["XAIOS_QEMU_X86_SMP"] = str(smp)
+    else:
+        if state_dir is not None:
+            env["XAIOS_RISCV64_STATE"] = str(state_dir)
+        if hostfwd_port is not None and str(hostfwd_port) != "none":
+            env["XAIOS_RISCV64_SSH_PORT"] = str(hostfwd_port)
+        if smp is not None:
+            env["XAIOS_RISCV64_CPUS"] = str(smp)
+        if serial_to_stdout:
+            env["XAIOS_RISCV64_SERIAL"] = "stdio"
+    return env

@@ -1045,6 +1045,9 @@ void kmain(const xaios_boot_info_t *boot) {
   xaios_thread_runtime_init();
   elf_loader_self_test();
   service_supervisor_init();
+  /* Secondaries become leasable here, before the self-tests that need one.
+     A platform that already had them online does nothing. */
+  kassert(smp_bring_secondaries_online() == XAIOS_OK);
   model_arena_self_test();
   ai_kernel_self_test();
   cpu_ai_runtime_self_test();

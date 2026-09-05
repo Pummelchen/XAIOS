@@ -2,13 +2,16 @@
 import os
 import re
 import select
+import shutil
 import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-from qemu_gate_lib import contract, parse_telemetry, validate_telemetry_against_contract
+from qemu_gate_lib import (arch_from_argv, contract, parse_telemetry,
+                           qemu_boot_environment, qemu_make_target,
+                           validate_telemetry_against_contract)
 
 
 # Markers whose line carries a running tally beside the figures worth pinning.
@@ -46,13 +49,47 @@ PATTERN_TARGETS = [
         r"scalar reference on [1-9]\d* lengths|scalar path)"),
 ]
 
+# What each machine has to say for itself.
+#
+# The six markers below used to sit in TARGETS, which made them a requirement
+# on every architecture and therefore unportable: an SMMU is an ARM thing, a
+# GIC is an ARM thing, and a machine without either cannot say it tested one.
+# The capability is shared -- every architecture must describe its interrupt
+# controller, prove its page tables map and unmap, show its timer advancing --
+# but the words are the machine's own, and a gate that demanded ARM's words
+# would be measuring how well RISC-V imitates ARM rather than whether it
+# works. RISC-V says PLIC because it has a PLIC.
+ARCH_TARGETS = {
+    "aarch64": [
+        "SMMU: self-test bypass mode streams=0 invalidations=1",
+        "VMM map/unmap self-test passed",
+        "exceptions: self-test",
+        "gic: discovery self-test passed",
+        "smp: per-core registry self-test passed",
+        "timer: monotonic self-test passed",
+    ],
+    "riscv64": [
+        # No IOMMU on this board, said out loud rather than skipped: an
+        # unmediated DMA path is a fact about the machine worth asserting.
+        "smmu: riscv64 has no IOMMU on this board; DMA is unmediated",
+        "vmm: self-test passed (map, translate, write, unmap)",
+        "exception: self-test passed",
+        "irq: riscv64 plic serving the interrupt-controller interface",
+        "smp: riscv64 self-test passed",
+        "timer: self-test passed",
+        # Only RISC-V has these, and they are the point of having a third
+        # architecture rather than a second copy of the first.
+        "vmm: sv48 enabled",
+        "smp: riscv64 boot hart=",
+        "smp: riscv64 4 harts online, scheduling held until the rendezvous",
+        "smp: hart1 leased owner=0 role=ai-hot",
+    ],
+    "x86_64": [],
+}
+
+
 TARGETS = [
-    "exceptions: self-test",
     "spinlock: early single-core try-lock self-test passed",
-    "SMMU: self-test bypass mode streams=0 invalidations=1",
-    "timer: monotonic self-test passed",
-    "smp: per-core registry self-test passed",
-    "VMM map/unmap self-test passed",
     "VMM architecture device mappings installed",
     "arena: self-test passed",
     "sandbox: lifecycle self-test passed",
@@ -124,7 +161,6 @@ TARGETS = [
     "cpu-ai-runtime: Q8.8 kernel self-test passed",
     "kheap: self-test passed",
     "VMM translation test passed",
-    "gic: discovery self-test passed",
     "nvme: self-test skipped no PCI NVMe controller",
     "PMM 1024 page allocate/free test passed",
     "cpu-ai-runtime: model manifest loaded",
@@ -288,12 +324,19 @@ def echo_best_effort(text: str) -> None:
 
 
 def main() -> int:
+    arch = arch_from_argv(sys.argv[1:])
+    targets = list(TARGETS) + list(ARCH_TARGETS.get(arch, []))
     env = os.environ.copy()
-    env["XAIOS_QEMU_HOSTFWD_PORT"] = "none"
-    log_path = Path("build/qemu-smoke.log")
-    persistent_image = Path("build/xaios-smoke-persistent.img")
+    log_path = Path(f"build/qemu-smoke-{arch}.log" if arch != "aarch64"
+                    else "build/qemu-smoke.log")
+    persistent_image = Path(f"build/xaios-smoke-persistent-{arch}.img"
+                            if arch != "aarch64"
+                            else "build/xaios-smoke-persistent.img")
     persistent_image.unlink(missing_ok=True)
-    env["XAIOS_PERSISTENT_IMAGE"] = str(persistent_image)
+    state_dir = Path(f"build/qemu-smoke-{arch}-state")
+    if arch == "riscv64":
+        shutil.rmtree(state_dir, ignore_errors=True)
+        state_dir.mkdir(parents=True, exist_ok=True)
     # A blank disk for the partition self-test to write a table onto. Without
     # one the kernel says the scratch device is unavailable and skips the
     # test, which is how the partition table writer went this long without
@@ -304,9 +347,12 @@ def main() -> int:
     scratch_image.unlink(missing_ok=True)
     with scratch_image.open("wb") as handle:
         handle.truncate(16 * 1024 * 1024)
-    env["XAIOS_STORAGE_ADMIN_IMAGE"] = str(scratch_image)
+    env = qemu_boot_environment(arch, env, persistent=persistent_image,
+                                storage_admin=scratch_image,
+                                state_dir=state_dir, hostfwd_port="none",
+                                serial_to_stdout=True)
     proc = subprocess.Popen(
-        ["make", "qemu-aarch64"],
+        ["make", qemu_make_target(arch)],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -337,7 +383,7 @@ def main() -> int:
                         )
                     except (ValueError, KeyError) as error:
                         telemetry_failures = [str(error)]
-                if (all(target in text for target in TARGETS) and
+                if (all(target in text for target in targets) and
                         all(pattern.search(text) for pattern in PATTERN_TARGETS) and
                         all(any(alt in text for alt in group) for group in OR_TARGETS) and
                         telemetry_line_complete(text) and not telemetry_failures):
@@ -371,7 +417,7 @@ def main() -> int:
         persistent_image.unlink(missing_ok=True)
 
     text = "".join(seen)
-    missing = [target for target in TARGETS if target not in text]
+    missing = [target for target in targets if target not in text]
     missing.extend(pattern.pattern for pattern in PATTERN_TARGETS
                    if not pattern.search(text))
     for group in OR_TARGETS:

@@ -35,6 +35,21 @@ uint32_t smp_cpu_id(void);
 xaios_status_t smp_wake_cpu(uint32_t cpu_id);
 
 void smp_init_platform(const xaios_boot_info_t *boot);
+/* Secondaries exist and can be leased, but do not schedule yet.
+ *
+ * The three architectures used to disagree about when a secondary was
+ * online. AArch64 and x86-64 bring theirs up in smp_init_platform and only
+ * enable scheduling at the rendezvous; RISC-V could not, because starting a
+ * hart needs an address space and an allocator that do not exist that early,
+ * so it did both at the rendezvous -- and every self-test between the two
+ * points saw a uniprocessor. One of them, the AI cell lifecycle, needs a
+ * leasable core and skipped itself on RISC-V for that reason alone.
+ *
+ * This is the point where "the address space, the allocator, the interrupt
+ * controller and the timer all exist" is true, which is what a secondary
+ * needs. A platform whose secondaries are already online answers OK and does
+ * nothing. */
+xaios_status_t smp_bring_secondaries_online(void);
 xaios_status_t smp_release_secondary_schedulers(void);
 const xaios_cpu_state_t *smp_cpu_state(uint32_t cpu_id);
 xaios_status_t smp_set_scheduling_enabled(uint32_t cpu_id, uint32_t enabled);

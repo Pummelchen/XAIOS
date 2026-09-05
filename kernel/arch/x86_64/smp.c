@@ -55,6 +55,14 @@ void smp_init_platform(const xaios_boot_info_t *boot) {
        g_capacity);
 }
 
+xaios_status_t smp_bring_secondaries_online(void) {
+  /* Already online: this platform starts its secondaries in
+     smp_init_platform, where firmware hands them over with an address space
+     they can run in. Nothing to do, and saying so is the point -- the caller
+     should not have to know which platforms need it. */
+  return XAIOS_OK;
+}
+
 xaios_status_t smp_release_secondary_schedulers(void) {
   for (uint32_t cpu = 0U; cpu < g_capacity; ++cpu) {
     if (cpu == g_housekeeping_cpu) continue;

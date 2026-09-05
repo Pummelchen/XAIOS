@@ -245,6 +245,22 @@ qemu-aarch64:
 qemu-x86_64: image-x86_64
 	./platform/qemu/run-qemu-x86_64.sh
 
+# The RISC-V machine, beside the other two. A gate that boots a guest asks
+# make for the machine rather than reaching for a runner, so an architecture
+# without this target cannot be reached by any of them -- which is one
+# reason this one had six gates against seventy.
+qemu-riscv64:
+	./platform/qemu/run-qemu-riscv64.sh
+
+# The full boot closure on RISC-V, through the same helper that runs it on
+# AArch64: the shared markers are shared, and each architecture is required
+# to describe its own interrupt controller, page tables and timer in its own
+# words rather than to imitate another's.
+qemu-riscv64-smoke:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-smoke.py --arch riscv64
+
 qemu-x86_64-numa-gate:
 	XAIOS_TARGET_ARCH=x86_64 XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
 	python3 tests/scripts/qemu-x86_64-numa-gate.py

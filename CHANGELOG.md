@@ -23,6 +23,19 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **RISC-V can lease a core, and its harts come online before the tests that
+  need one.** Leasing a hart out of the scheduler answered "unsupported" here,
+  and secondaries did not exist until the scheduler rendezvous -- so every
+  self-test between bring-up and that point saw a uniprocessor, and the AI
+  cell lifecycle skipped itself rather than failing, which read as an absence
+  of tests rather than an absence of a feature. Secondaries now come online
+  once the address space, allocator, interrupt controller and timer exist,
+  and hold at a gate they sleep on until scheduling opens; leasing is
+  implemented. RISC-V runs the same boot closure as AArch64: 206 of the 212
+  markers are shared, and the six that are not are each machine describing its
+  own hardware -- a PLIC is not a GIC, and a gate that demanded ARM's words
+  would measure imitation rather than function.
+
 - **An idle machine costs a fifth less.** Waiting for a socket re-derived the
   answer every millisecond: a walk of the whole socket table under its lock,
   then, per socket the waiter owned, the network lock and a walk of the flow

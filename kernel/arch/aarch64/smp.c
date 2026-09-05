@@ -512,6 +512,14 @@ void smp_init_platform(const xaios_boot_info_t *boot) {
   }
 }
 
+xaios_status_t smp_bring_secondaries_online(void) {
+  /* Already online: this platform starts its secondaries in
+     smp_init_platform, where firmware hands them over with an address space
+     they can run in. Nothing to do, and saying so is the point -- the caller
+     should not have to know which platforms need it. */
+  return XAIOS_OK;
+}
+
 xaios_status_t smp_release_secondary_schedulers(void) {
   /* Locks become real atomics from here, before anything else can run: past
    * this point every CPU that reaches kernel code activates the kernel's

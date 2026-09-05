@@ -23,6 +23,7 @@
 #include <xaios/riscv64_fdt.h>
 #include <xaios/riscv64_sbi.h>
 #include <xaios/smp.h>
+#include <xaios/spinlock.h>
 #include <xaios/status.h>
 #include <xaios/timer.h>
 
@@ -150,12 +151,23 @@ void smp_secondary_main(uint64_t cpu_id) {
     __atomic_add_fetch(&g_online, 1U, __ATOMIC_ACQ_REL);
   }
 
-  /* Spin rather than wfi: nothing sends an interrupt to open this gate, so a
-     hart that slept here would sleep until the first timer tick it has not
-     been given yet. */
+  /* Sleep rather than spin, and be woken by an IPI when the gate opens.
+     This used to spin, which was harmless while the gate opened immediately
+     after the harts were started. It stopped being harmless when they began
+     coming online early enough to be leased: three harts spinning through
+     everything between bring-up and the rendezvous starve the boot hart on
+     any machine with fewer real cores than harts, and under emulation, where
+     every hart is a thread on one host core, it turned a boot into a timeout.
+
+     Enabling the software interrupt first is what makes wfi safe here: a
+     hart whose sie has nothing enabled may wait for something that never
+     comes. Woken spuriously it simply re-reads the flag. */
+  __asm__ volatile("csrs sie, %0" : : "r"(UINT64_C(1) << 1) : "memory");
   while (__atomic_load_n(&g_secondary_release, __ATOMIC_ACQUIRE) == 0U) {
-    __asm__ volatile("" ::: "memory");
+    __asm__ volatile("wfi" ::: "memory");
   }
+  /* Whatever woke it has been consumed by the read above. */
+  __asm__ volatile("csrc sip, %0" : : "r"(UINT64_C(1) << 1) : "memory");
 
   gic_secondary_init((uint32_t)cpu_id);
 
@@ -252,9 +264,20 @@ void smp_init_platform(const xaios_boot_info_t *boot) {
        g_capacity);
 }
 
-xaios_status_t smp_release_secondary_schedulers(void) {
-  /* Start them here, for the reasons smp_init_platform records. */
+xaios_status_t smp_bring_secondaries_online(void) {
+  /* Start them here, for the reasons smp_init_platform records: by now the
+     address space, the allocator, the interrupt controller and the timer all
+     exist, which is what a hart needs to run kernel code at all. They land,
+     register themselves and then spin on the release flag, so they are
+     online and leasable without being in the scheduler. */
   uint32_t started = 0U;
+  if (g_cpu_count <= 1U) return XAIOS_OK;
+
+  /* Before the first one can land, not after the loop that starts them all:
+     a hart started early enough executes kernel code while later ones are
+     still being started, and a lock that is a no-op on one side and an
+     atomic on the other is not a lock. */
+  __atomic_store_n(&g_smp_locking_active, 1U, __ATOMIC_RELEASE);
   for (uint32_t cpu = 1U; cpu < g_cpu_count; ++cpu) {
     uint32_t hart = g_hart_of_cpu[cpu];
     g_handoff[cpu].stack_top =
@@ -274,14 +297,42 @@ xaios_status_t smp_release_secondary_schedulers(void) {
     ++started;
   }
   g_capacity = 1U + started;
+  if (started == 0U) {
+    /* Nothing started, so nothing else may take an atomic on its account. */
+    __atomic_store_n(&g_smp_locking_active, 0U, __ATOMIC_RELEASE);
+    return XAIOS_OK;
+  }
 
-  /* Locking becomes real the moment a second hart can execute kernel code,
-     and it has to be true before that hart is let past the gate rather than
-     after -- a lock that is a no-op on one side and an atomic on the other
-     is not a lock. */
-  __atomic_store_n(&g_smp_locking_active, started > 0U ? 1U : 0U,
-                   __ATOMIC_RELEASE);
+  /* Wait for them to be online before returning: a caller that leases a core
+     immediately after this would otherwise race the hart it is leasing. */
+  uint64_t online_frequency = timer_frequency_hz();
+  uint64_t online_deadline =
+      timer_counter() + (online_frequency == 0U
+                             ? UINT64_C(0)
+                             : online_frequency * SECONDARY_READY_TIMEOUT_MS /
+                                   UINT64_C(1000));
+  while (smp_online_count() < g_capacity) {
+    if (timer_counter() >= online_deadline) {
+      klog("smp: %u of %u harts came online\n", smp_online_count(),
+           g_capacity);
+      return XAIOS_ERR_IO;
+    }
+  }
+  klog("smp: riscv64 %u harts online, scheduling held until the rendezvous\n",
+       smp_online_count());
+  return XAIOS_OK;
+}
+
+xaios_status_t smp_release_secondary_schedulers(void) {
   __atomic_store_n(&g_secondary_release, 1U, __ATOMIC_RELEASE);
+  /* The flag is what they check; the interrupt is what ends their sleep.
+     Sent to every hart that was started, whether or not it has reached the
+     gate yet -- one that has not will read the flag on arrival. */
+  for (uint32_t cpu = 1U; cpu < g_cpu_count; ++cpu) {
+    if (g_cpu_states[cpu].online != 0U) {
+      (void)sbi_send_ipi(UINT64_C(1), g_hart_of_cpu[cpu]);
+    }
+  }
 
   uint64_t frequency = timer_frequency_hz();
   uint64_t deadline =
@@ -338,16 +389,66 @@ uint32_t smp_irq_isolated_mask(void) { return 0U; }
 /* Leasing a core to the AI runtime needs a second core to lease. Refused
    rather than granted: a lease that reports success and leaves the caller
    sharing the only hart is worse than no leasing at all. */
+/* Leasing a hart out of the scheduler, which this platform used to answer
+   "unsupported" to. That answer was made before secondaries existed early
+   enough to lease, and once they did it was the only thing standing between
+   this architecture and the cell lifecycle the other two exercise on every
+   boot -- the self-test skipped itself here rather than failing, so the gap
+   read as an absence of tests rather than an absence of a feature.
+
+   The state a lease changes is the same on every architecture, because it is
+   the shared scheduler that reads it. What differs is only that RISC-V has
+   no interrupt affinity to route away from a leased hart: the PLIC has
+   per-hart contexts and could, but nothing here programs them yet, so the
+   flag is set and the routing is not claimed. */
+static xaios_spinlock_t g_lease_lock = XAIOS_SPINLOCK_INIT;
+
 xaios_status_t smp_mark_core_leased(uint32_t cpu_id, uint32_t owner_id) {
-  (void)cpu_id;
-  (void)owner_id;
-  return XAIOS_ERR_UNSUPPORTED;
+  xaios_spin_lock(&g_lease_lock);
+  if (cpu_id == 0U || cpu_id >= g_capacity || owner_id == UINT32_MAX ||
+      g_cpu_states[cpu_id].online == 0U ||
+      g_cpu_states[cpu_id].role != XAIOS_CPU_ROLE_SCHEDULING) {
+    xaios_spin_unlock(&g_lease_lock);
+    return XAIOS_ERR_INVALID;
+  }
+  if (g_cpu_states[cpu_id].lease_owner_id != 0U &&
+      g_cpu_states[cpu_id].lease_owner_id != owner_id + 1U) {
+    ++g_cpu_states[cpu_id].migration_count;
+    xaios_spin_unlock(&g_lease_lock);
+    return XAIOS_ERR_BUSY;
+  }
+  g_cpu_states[cpu_id].role = XAIOS_CPU_ROLE_AI_HOT;
+  g_cpu_states[cpu_id].lease_owner_id = owner_id + 1U;
+  /* Not routed away, and saying so: see above. */
+  g_cpu_states[cpu_id].irq_routed_away = 0U;
+  g_cpu_states[cpu_id].tick_suppressed = 1U;
+  g_cpu_states[cpu_id].scheduling_enabled = 0U;
+  xaios_spin_unlock(&g_lease_lock);
+  klog("smp: hart%u leased owner=%u role=ai-hot irq_routed=0\n", cpu_id,
+       owner_id);
+  return XAIOS_OK;
 }
 
 xaios_status_t smp_release_core_lease(uint32_t cpu_id, uint32_t owner_id) {
-  (void)cpu_id;
-  (void)owner_id;
-  return XAIOS_ERR_UNSUPPORTED;
+  xaios_spin_lock(&g_lease_lock);
+  if (cpu_id == 0U || cpu_id >= g_capacity ||
+      g_cpu_states[cpu_id].online == 0U ||
+      g_cpu_states[cpu_id].role != XAIOS_CPU_ROLE_AI_HOT ||
+      g_cpu_states[cpu_id].lease_owner_id != owner_id + 1U) {
+    xaios_spin_unlock(&g_lease_lock);
+    return XAIOS_ERR_INVALID;
+  }
+  g_cpu_states[cpu_id].role = XAIOS_CPU_ROLE_SCHEDULING;
+  g_cpu_states[cpu_id].lease_owner_id = 0U;
+  g_cpu_states[cpu_id].tick_suppressed = 0U;
+  /* Back into the scheduler only if the scheduler has been opened at all: a
+     hart leased before the rendezvous must not start scheduling because a
+     lease ended. */
+  g_cpu_states[cpu_id].scheduling_enabled =
+      __atomic_load_n(&g_secondary_release, __ATOMIC_ACQUIRE);
+  xaios_spin_unlock(&g_lease_lock);
+  klog("smp: hart%u released owner=%u role=scheduling\n", cpu_id, owner_id);
+  return XAIOS_OK;
 }
 
 xaios_status_t smp_wake_cpu(uint32_t cpu_id) {
