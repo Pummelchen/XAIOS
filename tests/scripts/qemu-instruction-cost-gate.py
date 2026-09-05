@@ -57,14 +57,16 @@ TIMEOUT_S = smoke_timeout(
 # instructions produces the same count every time, which is what makes a
 # baseline meaningful; these three were byte-identical across two runs of the
 # same image.
+THREAD_CHURN = (
+    "thread_create_join",
+    re.compile(r"/bin/perfbench: thread_create_join ops=\d+ ns_per_op=(\d+)"))
+
 MEASUREMENTS = (
     ("syscall_1_thread",
      re.compile(r"/bin/perfbench: syscall threads=1 ops=\d+ ns_per_op=(\d+)")),
     ("socket_bind_close_1_thread",
      re.compile(r"/bin/perfbench: socket_bind_close threads=1 ops=\d+ "
                 r"ns_per_op=(\d+)")),
-    ("thread_create_join",
-     re.compile(r"/bin/perfbench: thread_create_join ops=\d+ ns_per_op=(\d+)")),
 )
 
 # Reported, never pinned.
@@ -83,6 +85,29 @@ OBSERVED = (
     ("syscall_4_threads",
      re.compile(r"/bin/perfbench: syscall threads=4 ops=\d+ ns_per_op=(\d+)")),
 )
+
+# Thread churn is pinned on AArch64 and reported on RISC-V, and the reason is
+# the emulator rather than either kernel.
+#
+# A user thread is always placed on a CPU other than the one asking, so the
+# joiner waits for another core to pick it up. On AArch64 that wait is `yield`
+# in the spin and `wfe` on the worker, both of which hand QEMU's scheduler an
+# exit, so the switch happens promptly and the count is stable: 23731, 23910
+# across runs. RISC-V's equivalent hint is Zihintpause, which this QEMU
+# executes as a plain fence and does not treat as a scheduling point, so the
+# joiner spins out a whole icount quantum and the figure is dominated by where
+# that quantum falls: 11882004, 13552084, 12828600 -- an 14% spread with
+# nothing changed. Pinning that would fail on most runs for ever.
+#
+# It is not a defect in the guest, and the wall-clock measurement is what says
+# so: without -icount the same operation is 527 us here against 399 us on
+# AArch64, a ratio of 1.3 that sits with the syscall ratio of 1.6 and the
+# socket ratio of 1.3. Nothing is 500x slower; one number is measured with a
+# ruler that does not work on this machine.
+if ARCH == "riscv64":
+    OBSERVED = OBSERVED + (THREAD_CHURN,)
+else:
+    MEASUREMENTS = MEASUREMENTS + (THREAD_CHURN,)
 
 # How far a measurement may move before this fails. Wide enough that a
 # scheduling difference or one more branch does not cry wolf, narrow enough

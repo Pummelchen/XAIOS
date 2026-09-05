@@ -1,7 +1,6 @@
 {
   "instructions_per_operation": {
     "syscall_1_thread": 1092,
-    "socket_bind_close_1_thread": 27086,
-    "thread_create_join": 11882004
+    "socket_bind_close_1_thread": 27086
   }
 }
