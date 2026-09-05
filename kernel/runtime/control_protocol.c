@@ -40,9 +40,18 @@ static uint64_t g_control_requests;
 static uint64_t g_control_failures;
 static uint64_t g_control_denials;
 
+/* A word that may alias anything: these helpers fill structs that are
+   then read through their own types, and a plain uint64_t store could
+   be reordered past those reads under strict aliasing. */
+typedef uint64_t __attribute__((may_alias)) xaios_copy_word_t;
+
 static void bytes_zero(void *buffer, uint64_t size) {
   uint8_t *bytes = (uint8_t *)buffer;
-  for (uint64_t i = 0; i < size; ++i) {
+  uint64_t i = 0;
+  if (((uintptr_t)bytes & 7U) == 0U) {
+    for (; i + 8U <= size; i += 8U) *(xaios_copy_word_t *)(void *)(bytes + i) = 0U;
+  }
+  for (; i < size; ++i) {
     bytes[i] = 0;
   }
 }
@@ -50,7 +59,17 @@ static void bytes_zero(void *buffer, uint64_t size) {
 static void bytes_copy(void *dst, const void *src, uint64_t size) {
   uint8_t *out = (uint8_t *)dst;
   const uint8_t *in = (const uint8_t *)src;
-  for (uint64_t i = 0; i < size; ++i) {
+  uint64_t i = 0;
+  /* A word at a time where both sides allow it: the control plane moves
+     several kilobytes per query, and under emulation a byte loop over them
+     was a measurable part of every query. */
+  if ((((uintptr_t)out | (uintptr_t)in) & 7U) == 0U) {
+    for (; i + 8U <= size; i += 8U) {
+      *(xaios_copy_word_t *)(void *)(out + i) =
+          *(const xaios_copy_word_t *)(const void *)(in + i);
+    }
+  }
+  for (; i < size; ++i) {
     out[i] = in[i];
   }
 }

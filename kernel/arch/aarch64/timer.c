@@ -140,7 +140,14 @@ void timer_idle_until(uint64_t deadline_ns) {
                            : counter + (ticks == 0U ? 1U : ticks);
     write_cntv_cval_el0(compare);
     write_cntv_ctl_el0(1U);
-    __asm__ volatile("msr daifclr, #2\n\twfi\n\tmsr daifset, #2"
+    /* Sleep with interrupts masked. wfi wakes on an interrupt that is
+       pending whether or not PSTATE masks it, so a timer that fires
+       between arming and here still ends the sleep; unmasking first let
+       it be taken before wfi, which then waited for the next interrupt
+       -- on a worker CPU, which has no periodic tick, for as long as it
+       took something unrelated to happen. The unmask afterwards takes
+       whatever woke us. */
+    __asm__ volatile("wfi\n\tmsr daifclr, #2\n\tisb\n\tmsr daifset, #2"
                      ::: "memory");
   }
   timer_mask_local();

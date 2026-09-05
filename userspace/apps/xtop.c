@@ -402,35 +402,6 @@ static void ring_push(
   slot->valid = 1;
 }
 
-static int gather_processes(
-    xaios_control_runtime_process_record_user_t *records, uint32_t capacity,
-    uint64_t *runtime_by_pid, uint32_t *count,
-    xaios_control_runtime_snapshot_payload_user_t *metadata) {
-  uint32_t cursor = 0U;
-  *count = 0U;
-  if (runtime_by_pid != 0)
-    for (uint32_t i = 0U; i <= XAIOS_XTOP_MAX_PROCESSES; ++i)
-      runtime_by_pid[i] = 0U;
-  for (;;) {
-    xaios_control_runtime_snapshot_payload_user_t page;
-    if (runtime_query(0U, 0U, cursor, XAIOS_CONTROL_RUNTIME_PROCESS_MAX, 0U,
-                      &page) != 0)
-      return -1;
-    *metadata = page;
-    for (uint32_t i = 0U; i < page.process_count; ++i) {
-      const xaios_control_runtime_process_record_user_t *source =
-          &page.processes[i];
-      if (source->pid <= XAIOS_XTOP_MAX_PROCESSES && runtime_by_pid != 0)
-        runtime_by_pid[source->pid] = source->runtime_ns;
-      if (*count < capacity) records[(*count)++] = *source;
-    }
-    if (page.process_next == UINT32_MAX) break;
-    if (page.process_next <= cursor) return -1;
-    cursor = page.process_next;
-  }
-  return 0;
-}
-
 static int gather_cpu_page(
     uint32_t cpu_start, uint32_t cpu_count,
     xaios_control_runtime_cpu_record_user_t *records, uint32_t capacity,
@@ -449,6 +420,71 @@ static int gather_cpu_page(
       records[(*record_count)++] = page.cpus[i];
     if (page.cpu_next == UINT32_MAX || page.cpu_next <= cursor) break;
     cursor = page.cpu_next;
+  }
+  return 0;
+}
+
+/* One snapshot for both pages: the kernel fills CPU and process records in
+   the same reply, and a frame that asked twice paid for the snapshot twice
+   -- most of what the monitor cost, under emulation. Pages beyond the first
+   are fetched only when there are more CPUs or processes than one reply
+   carries. */
+static int gather_snapshot(
+    uint32_t cpu_start, uint32_t cpu_want,
+    xaios_control_runtime_cpu_record_user_t *cpus, uint32_t cpu_capacity,
+    uint32_t *cpu_count,
+    xaios_control_runtime_process_record_user_t *records, uint32_t capacity,
+    uint64_t *runtime_by_pid, uint32_t *count,
+    xaios_control_runtime_snapshot_payload_user_t *metadata) {
+  xaios_control_runtime_snapshot_payload_user_t page;
+  uint32_t cpu_limit = cpu_want > XAIOS_CONTROL_RUNTIME_CPU_MAX
+                           ? XAIOS_CONTROL_RUNTIME_CPU_MAX : cpu_want;
+  *cpu_count = 0U;
+  *count = 0U;
+  if (runtime_by_pid != 0)
+    for (uint32_t i = 0U; i <= XAIOS_XTOP_MAX_PROCESSES; ++i)
+      runtime_by_pid[i] = 0U;
+  if (runtime_query(cpu_start, cpu_limit, 0U,
+                    XAIOS_CONTROL_RUNTIME_PROCESS_MAX, 0U, &page) != 0)
+    return -1;
+  *metadata = page;
+  for (uint32_t i = 0U; i < page.cpu_count && *cpu_count < cpu_capacity; ++i)
+    cpus[(*cpu_count)++] = page.cpus[i];
+  for (uint32_t i = 0U; i < page.process_count; ++i) {
+    const xaios_control_runtime_process_record_user_t *source =
+        &page.processes[i];
+    if (source->pid <= XAIOS_XTOP_MAX_PROCESSES && runtime_by_pid != 0)
+      runtime_by_pid[source->pid] = source->runtime_ns;
+    if (*count < capacity) records[(*count)++] = *source;
+  }
+  uint32_t cursor = page.process_next;
+  while (cursor != UINT32_MAX) {
+    xaios_control_runtime_snapshot_payload_user_t more;
+    if (runtime_query(0U, 0U, cursor, XAIOS_CONTROL_RUNTIME_PROCESS_MAX, 0U,
+                      &more) != 0)
+      return -1;
+    for (uint32_t i = 0U; i < more.process_count; ++i) {
+      const xaios_control_runtime_process_record_user_t *source =
+          &more.processes[i];
+      if (source->pid <= XAIOS_XTOP_MAX_PROCESSES && runtime_by_pid != 0)
+        runtime_by_pid[source->pid] = source->runtime_ns;
+      if (*count < capacity) records[(*count)++] = *source;
+    }
+    if (more.process_next == UINT32_MAX || more.process_next <= cursor) break;
+    cursor = more.process_next;
+  }
+  uint32_t cpu_cursor = page.cpu_next;
+  while (*cpu_count < cpu_want && *cpu_count < cpu_capacity &&
+         cpu_cursor != UINT32_MAX) {
+    xaios_control_runtime_snapshot_payload_user_t more;
+    uint32_t limit = cpu_want - *cpu_count;
+    if (limit > XAIOS_CONTROL_RUNTIME_CPU_MAX)
+      limit = XAIOS_CONTROL_RUNTIME_CPU_MAX;
+    if (runtime_query(cpu_cursor, limit, 0U, 0U, 0U, &more) != 0) return -1;
+    for (uint32_t i = 0U; i < more.cpu_count && *cpu_count < cpu_capacity; ++i)
+      cpus[(*cpu_count)++] = more.cpus[i];
+    if (more.cpu_next == UINT32_MAX || more.cpu_next <= cpu_cursor) break;
+    cpu_cursor = more.cpu_next;
   }
   return 0;
 }
@@ -2061,9 +2097,11 @@ static xaios_status_t handle_xtop(const char *args, char *output,
     }
   }
 
-  if (gather_processes(process_records, XAIOS_XTOP_MAX_PROCESSES,
-                       before_runtime, &before_process_count,
-                       &before_meta) != 0)
+  if (gather_snapshot(cpu_start, show_cpus != 0 ? cpu_requested : 0U,
+                      before_cpus, XAIOS_XTOP_CPU_PAGE_MAX, &before_cpu_count,
+                      process_records, XAIOS_XTOP_MAX_PROCESSES,
+                      before_runtime, &before_process_count,
+                      &before_meta) != 0)
     return command_fail(output, output_capacity, output_bytes,
                         "xtop: runtime snapshot unavailable");
   (void)before_process_count;
@@ -2088,7 +2126,11 @@ static xaios_status_t handle_xtop(const char *args, char *output,
     if (cpu_shown > output_budget) cpu_shown = output_budget;
   }
   if (show_cpus == 0) cpu_shown = 0U;
-  if (gather_cpu_page(cpu_start, cpu_shown, before_cpus,
+  /* The CPUs came with the processes; more of them than the page shows
+     are dropped, and a page wider than one reply is fetched whole. */
+  if (before_cpu_count > cpu_shown) before_cpu_count = cpu_shown;
+  if (before_cpu_count < cpu_shown &&
+      gather_cpu_page(cpu_start, cpu_shown, before_cpus,
                       XAIOS_XTOP_CPU_PAGE_MAX, &before_cpu_count,
                       &before_meta) != 0)
     return command_fail(output, output_capacity, output_bytes,
@@ -2118,15 +2160,12 @@ static xaios_status_t handle_xtop(const char *args, char *output,
     if (runtime_query(0U, 0U, 0U, 0U, sample_ms, &wait_result) != 0)
       return command_fail(output, output_capacity, output_bytes,
                           "xtop: sample wait failed");
-    if (gather_processes(process_records, XAIOS_XTOP_MAX_PROCESSES, 0,
-                         &after_process_count, &after_meta) != 0)
+    if (gather_snapshot(cpu_start, cpu_shown, g_cpu_records,
+                        XAIOS_XTOP_CPU_PAGE_MAX, &g_cpu_record_count,
+                        process_records, XAIOS_XTOP_MAX_PROCESSES, 0,
+                        &after_process_count, &after_meta) != 0)
       return command_fail(output, output_capacity, output_bytes,
                           "xtop: runtime snapshot unavailable");
-    if (gather_cpu_page(cpu_start, cpu_shown, g_cpu_records,
-                        XAIOS_XTOP_CPU_PAGE_MAX, &g_cpu_record_count,
-                        &after_meta) != 0)
-      return command_fail(output, output_capacity, output_bytes,
-                          "xtop: CPU snapshot unavailable");
   }
   if (serve_frame != 0) {
     ring_push(&after_meta, process_records, after_process_count,
