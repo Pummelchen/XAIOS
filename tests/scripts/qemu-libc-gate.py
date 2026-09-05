@@ -7,6 +7,7 @@ import os
 import json
 import re
 import select
+import sys
 import subprocess
 import time
 from pathlib import Path
@@ -97,11 +98,26 @@ def main() -> int:
     It ran on two, and said "both architectures" as though that were all of
     them. A third has carried the same picolibc sysroot since it gained
     userspace; nothing was asking it to prove the library worked there.
+
+    `--arch NAME` runs one of them. That is for working on a single machine:
+    each leg is a full boot, and paying for three to see whether the one just
+    changed still works is how a gate stops being run during development.
     """
-    run_arch("aarch64", "./platform/qemu/run-qemu-aarch64.sh")
-    run_arch("x86_64", "./platform/qemu/run-qemu-x86_64.sh")
-    run_arch("riscv64", "./platform/qemu/run-qemu-riscv64.sh")
-    print("qemu-libc-gate: PASS: hosted runtime executed on three architectures")
+    selected = None
+    for index, argument in enumerate(sys.argv):
+        if argument == "--arch" and index + 1 < len(sys.argv):
+            selected = sys.argv[index + 1]
+        elif argument.startswith("--arch="):
+            selected = argument.split("=", 1)[1]
+    arches = ("aarch64", "x86_64", "riscv64")
+    if selected is not None:
+        if selected not in arches:
+            raise SystemExit(f"unsupported --arch {selected!r}")
+        arches = (selected,)
+    for arch in arches:
+        run_arch(arch, f"./platform/qemu/run-qemu-{arch}.sh")
+    print(f"qemu-libc-gate: PASS: hosted runtime executed on "
+          f"{', '.join(arches)}")
     return 0
 
 

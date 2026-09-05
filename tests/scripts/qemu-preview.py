@@ -18,18 +18,32 @@ def run(cmd, env=None):
 
 
 def main() -> int:
+    arch = "aarch64"
+    for index, argument in enumerate(sys.argv):
+        if argument == "--arch" and index + 1 < len(sys.argv):
+            arch = sys.argv[index + 1]
+        elif argument.startswith("--arch="):
+            arch = argument.split("=", 1)[1]
+    if arch not in ("aarch64", "x86_64", "riscv64"):
+        raise SystemExit(f"unsupported --arch {arch!r}")
+    suffix = "" if arch == "aarch64" else f"-{arch}"
     root = os.getcwd()
     build_dir = os.path.join(root, "build")
     os.makedirs(build_dir, exist_ok=True)
 
-    benchmark_output = os.path.join(build_dir, "qemu-benchmark-report.json")
-    preview_output = os.path.join(build_dir, "qemu-preview-manifest.json")
+    benchmark_output = os.path.join(
+        build_dir, f"qemu-benchmark-report{suffix}.json")
+    preview_output = os.path.join(
+        build_dir, f"qemu-preview-manifest{suffix}.json")
 
     env = os.environ.copy()
     env.setdefault("XAIOS_QEMU_SMOKE_TIMEOUT", "60")
     env["XAIOS_QEMU_BENCHMARK_OUTPUT"] = benchmark_output
 
-    bench = run(["python3", "./tests/scripts/qemu-benchmark.py"], env=env)
+    command = ["python3", "./tests/scripts/qemu-benchmark.py"]
+    if arch != "aarch64":
+        command += ["--arch", arch]
+    bench = run(command, env=env)
     sys.stdout.write(bench.stdout)
     if bench.returncode != 0:
         print("qemu-preview: benchmark gate failed")
@@ -42,13 +56,19 @@ def main() -> int:
         "schema": "xaios.qemu.preview.v1",
         "created_unix": int(time.time()),
         "status": "pass",
-        "image": "build/xaios-aarch64.img",
+        "image": {
+            "aarch64": "build/xaios-aarch64.img",
+            "x86_64": "build/xaios-x86_64.img",
+            # RISC-V on the virt board is started from the ELF itself unless
+            # the medium is asked for by name; that is the artefact.
+            "riscv64": "build/kernel-riscv64/kernel.elf",
+        }[arch],
         "virtio_test_block": "build/xaios-virtio-test.img",
-        "benchmark_report": "build/qemu-benchmark-report.json",
+        "benchmark_report": f"build/qemu-benchmark-report{suffix}.json",
         "release_candidate_contract": "contracts/qemu-rc-v1.json",
         "contracts": {
-            "architecture": "aarch64",
-            "firmware": "UEFI",
+            "architecture": arch,
+            "firmware": "OpenSBI" if arch == "riscv64" else "UEFI",
             "machine": "qemu-virt",
             "release_candidate_contract_schema": "xaios.qemu.release_candidate_contract.v1",
             "userspace": "EL0 /init plus /bin/service-manager from VirtIO-backed read-only filesystem",
