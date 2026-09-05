@@ -6,18 +6,27 @@ displayName = "XAIOS"
 guestOS = "arm-other-64"
 firmware = "efi"
 uefi.secureBoot.enabled = "FALSE"
-# Fusion UEFI does not expose PSCI CPU_ON after ExitBootServices. Keep the
-# generated profile at the one CPU that XAIOS can bring online correctly.
-# One, deliberately. Fusion starts four perfectly well -- PSCI accepts CPU_ON
-# for all of them and they come online -- but the first lock taken after the
-# kernel enables translation aborts with "unsupported exclusive or atomic" on
-# ordinary .bss. The stage-1 descriptor for that page was read back rather than
-# assumed: Normal Write-Back, Inner Shareable, access flag set, writable at EL1,
-# with caches on -- the conditions under which atomics are supported. Rebuilding
-# every atomic as an LSE instruction rather than a load/store-exclusive pair
-# changed nothing. The refusal is therefore Fusion's, not XAIOS's, and the guest
-# cannot see or change it. See F-01. Raise this to reproduce; leave it at one
-# for a profile that passes.
+# Four, and all four come online. This comment used to say one, under two
+# diagnoses that were both wrong; they are worth recording as wrong rather than
+# deleting, because each looked convincing. The first was that Fusion would not
+# start secondaries: it starts all four, and always did. The second was that
+# Fusion refused atomics and the cause therefore sat below the guest. It did
+# not. The cause was ours.
+#
+# A secondary published `online = 1` while its MMU was still off, activating the
+# kernel's tables only after the rendezvous. In that window the boot CPU saw
+# `online > 1` and switched from the uniprocessor fast path to real atomics,
+# while other live CPUs viewed the same memory as Device rather than Normal
+# cacheable. An exclusive on a location whose attributes differ between PEs is
+# not architecturally supported, and a platform may refuse it -- Fusion does,
+# with DFSC 0b110101. QEMU and Apple's hypervisor permit it, which is why no
+# other profile ever showed it, and why every green Fusion boot had run with one
+# CPU online, where the fast path skips the atomic entirely.
+#
+# Locks switch to atomics at `smp_release_secondary_schedulers` now, before any
+# secondary enters kernel code, so every CPU agrees on the attributes by the
+# time one is taken. See F-01. `make vmware-fusion-smoke` requires
+# `cpu_online=4`, so a regression here fails a gate rather than a comment.
 numvcpus = "4"
 # Two gibibytes: see the note in platform/qemu/run-qemu-aarch64.sh for why
 # one is not currently reachable on all four profiles.
