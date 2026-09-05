@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed N-F3Q fuzz, fault, exhaustion, and dual-arch soak gate."""
+"""Fail-closed N-F3Q fuzz, fault, exhaustion, and three-architecture soak."""
 
 from __future__ import annotations
 
@@ -78,11 +78,26 @@ def main() -> int:
             soak_timeout,
             {"XAIOS_QEMU_X86_REPEAT_COUNT": str(boots)},
         ))
+    # The third machine, on the same terms. It was absent from this list for
+    # as long as it had no soak gate of its own, which made "dual-arch" the
+    # accurate name for a gate that is supposed to cover what this project
+    # ships -- and this project ships three.
+    checks.append(execute("riscv64_build", ["make", "riscv64"], 300))
+    if checks[-1]["status"] == "pass":
+        checks.append(execute(
+            "riscv64_repeated_soak",
+            ["python3", "tests/scripts/qemu-soak-gate.py", "--arch", "riscv64"],
+            soak_timeout, {
+                "XAIOS_QEMU_SOAK_BOOTS": str(boots),
+                "XAIOS_QEMU_SOAK_SMOKE_TIMEOUT": "120",
+            },
+        ))
     status = "pass" if all(c["status"] == "pass" for c in checks) else "fail"
     report = {
         "schema": "xaios.qemu.network_adversarial.v1",
         "status": status,
         "scope": "QEMU correctness only; no physical-network performance claim",
+        "architectures": ["aarch64", "x86_64", "riscv64"],
         "soak_boots_per_architecture": boots,
         "checks": checks,
     }
