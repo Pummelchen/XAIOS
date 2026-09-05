@@ -183,6 +183,15 @@ the kernel comes up to a login prompt with sshd listening.
 - **Message-signalled interrupts.** The PLIC takes wires, not messages. The
   board can present AIA, and a driver for it is real work that nothing
   currently needs -- virtio reaches the kernel over wired interrupts.
+- **An accelerated SHA-256.** AArch64 has the crypto extension and x86_64 has
+  SHA-NI; rv64gc has neither, so the engine dispatches its scalar backend and
+  every hashed read pays for it. `make qemu-riscv64-storage-bench` measures
+  the cost rather than leaving it to be guessed at: cold model reads run at
+  about 2 MB/s here against 123 MB/s on AArch64, while the block path -- which
+  hashes nothing -- is *faster* here, 3.5 GB/s against 1.6. Some of that
+  ratio is the emulator rather than the silicon; the shape of it is not.
+  Closing it means Zknh, which is not in this profile, or a faster scalar
+  core; neither is work anything currently needs.
 
 ## Test coverage
 
