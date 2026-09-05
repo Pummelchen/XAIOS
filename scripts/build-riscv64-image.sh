@@ -34,6 +34,39 @@ build_program() {
     -o "$elf_path" "$elf_path.o"
 }
 
+# The same credential policy the other builder enforces, because the rule is
+# about what an image is allowed to carry and not about which machine it runs
+# on. Without it this architecture would accept a packaged password record
+# that AArch64 and x86-64 refuse -- which is the kind of gap that only shows
+# up when someone ships from the wrong builder.
+BUILD_MODE="${XAIOS_BUILD_MODE:-development}"
+case "$BUILD_MODE" in
+  development|release) ;;
+  *)
+    printf '%s\n' "error: XAIOS_BUILD_MODE must be development or release" >&2
+    exit 2 ;;
+esac
+if [ "${XAIOS_SSH_USERS_FILE:-}" != "" ]; then
+  if [ "${XAIOS_SSH_PASSWORD_AUTH:-}" != "1" ] && \
+     [ "$XAIOS_SSH_USERS_FILE" != "$ROOT_DIR/config/development-sshd-users" ]; then
+    printf '%s\n' \
+      "error: password credentials require XAIOS_SSH_PASSWORD_AUTH=1" >&2
+    exit 2
+  fi
+  if [ "$BUILD_MODE" = release ]; then
+    printf '%s\n' \
+      "error: a release image must not package a password credential." \
+      "       Password support is compiled in and /bin/xaios-setup creates" \
+      "       the account on first boot; a packaged record would be a" \
+      "       credential every copy of the download shares." >&2
+    exit 2
+  fi
+elif [ "${XAIOS_SSH_PASSWORD_AUTH:-0}" != "0" ]; then
+  printf '%s\n' \
+    "error: XAIOS_SSH_PASSWORD_AUTH requires XAIOS_SSH_USERS_FILE" >&2
+  exit 2
+fi
+
 printf '%s\n' "Building riscv64 userspace..."
 build_program "$ROOT_DIR/userspace/init/init-riscv64.S" "$BUILD_DIR/init.elf"
 build_program "$ROOT_DIR/userspace/service-manager/service-manager-riscv64.S" \
@@ -54,6 +87,18 @@ build_program "$ROOT_DIR/userspace/worker/worker-riscv64.S" \
 # ship as `make image`, where sshd dispatches on-demand applications such as
 # xtop instead of the built-in test shell commands.
 USER_APPS="xaios-shell xaiosctl hello sysinfo systest smptest smpstress perfbench nettest lstm-xor sshtest mltest posix-shell agenttest xaios-setup xtop"
+# The two applications that fail on purpose, when a gate asks for them. The
+# kernel builder already took XAIOS_FAILURE_TEST_APP; the image did not carry
+# what that switch expects to launch, so a client asking the guest to run a
+# failing application was told the executable was unavailable -- which is a
+# true statement and not the failure the gate was testing for.
+case "${XAIOS_FAILURE_TEST_APP:-0}" in
+  0) ;;
+  1) USER_APPS="$USER_APPS app-fail app-crash" ;;
+  *)
+    printf '%s\n' "error: XAIOS_FAILURE_TEST_APP must be 0 or 1" >&2
+    exit 2 ;;
+esac
 APP_ARGS=""
 for app in $USER_APPS; do
   printf '%s\n' "Building /bin/$app..."
@@ -102,6 +147,34 @@ for app in $USER_APPS; do
     -o "$BUILD_DIR/$app.elf" "$BUILD_DIR/start-$app.o" "$BUILD_DIR/$app.o" \
     "$BUILD_DIR/lib-$app.o" "$BUILD_DIR/control-$app.o" \
     "$BUILD_DIR/screen-$app.o" $EXTRA_OBJS
+  APP_ARGS="$APP_ARGS /bin/$app=$BUILD_DIR/$app.elf"
+done
+
+# The file and archive utilities, which this image did not carry at all.
+#
+# They are one source compiled once per name -- XAIOS_UTILITY_NAME selects
+# which applet the binary is -- exactly as the other builder does it, and
+# nothing in them is architecture-specific. Their absence was invisible from
+# inside: the boot-test shell answers `ls` and `cat` with built-ins, so a
+# machine with none of these still looked like it had them until an external
+# client asked for `stat` over SSH and got nothing. That is what porting the
+# Debian client suite to this machine found.
+UTILITY_APPS="ls mkdir touch cp mv rm rmdir stat cat head tail less grep find sed write tar cpio zip unzip ps df du"
+"$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
+  -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+  -Wall -Wextra -Werror -I"$ROOT_DIR/kernel/include" \
+  -c "$ROOT_DIR/kernel/lib/inflate.c" -o "$BUILD_DIR/xutils-inflate.o"
+for app in $UTILITY_APPS; do
+  printf '%s\n' "Building /bin/$app utility..."
+  "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
+    -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+    -Wall -Wextra -Werror -DXAIOS_UTILITY_NAME=\"$app\" \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/apps/xutils.c" -o "$BUILD_DIR/xutils-$app.o"
+  "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
+    -o "$BUILD_DIR/$app.elf" "$BUILD_DIR/start-xaios-shell.o" \
+    "$BUILD_DIR/lib-xaios-shell.o" "$BUILD_DIR/control-xaios-shell.o" \
+    "$BUILD_DIR/xutils-inflate.o" "$BUILD_DIR/xutils-$app.o"
   APP_ARGS="$APP_ARGS /bin/$app=$BUILD_DIR/$app.elf"
 done
 

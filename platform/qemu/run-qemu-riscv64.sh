@@ -80,6 +80,15 @@ SYSTEM_IMAGE="${XAIOS_SYSTEM_VOLUME_IMAGE:-$STATE/system.img}"
 # absent: it is a blank disk by definition.
 # An NVMe controller, when a gate asks for one. Off by default: this machine
 # boots from virtio and nothing needs NVMe to come up.
+# The entropy source. A gate that wants to see what a machine does without one
+# says so; every other boot gets it, because setup refuses to mint a
+# credential without secure entropy and that refusal is correct.
+if [ "${XAIOS_QEMU_RNG:-virtio}" = none ]; then
+  RNG_ARGS=""
+else
+  RNG_ARGS="-device virtio-rng-pci,disable-legacy=on"
+fi
+
 NVME_ARGS=""
 NVME_IMAGE="${XAIOS_NVME_IMAGE:-none}"
 if [ "$NVME_IMAGE" != none ]; then
@@ -263,7 +272,7 @@ exec "$QEMU" \
   -blockdev "driver=file,node-name=sysf2,filename=$SYSTEM_IMAGE,locking=off" \
   -blockdev driver=raw,node-name=sysraw2,file=sysf2 \
   -device virtio-blk-device,drive=sysraw2,bus=virtio-mmio-bus.6 \
-  -device virtio-rng-pci,disable-legacy=on \
+  $RNG_ARGS \
   -netdev user,id=n0 \
   -device virtio-net-pci,netdev=n0,disable-legacy=on \
   $NET1_ARGS \

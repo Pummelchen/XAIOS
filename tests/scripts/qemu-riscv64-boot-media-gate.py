@@ -41,7 +41,12 @@ REQUIRED = [
     "XAIOS loader loaded verified A/B system slot",
     "XAIOS loader exiting boot services",
     "riscv64: booted through UEFI",
-    "XAIOS Build 4 kernel starting",
+    # Read from BUILD_NUMBER rather than written here: this line said
+    # "Build 4" while the repository said 5, and it passed -- because the
+    # RISC-V builder had the number hardcoded too, so the gate and the kernel
+    # were wrong together.
+    f"XAIOS Build {(ROOT / 'BUILD_NUMBER').read_text().strip()} "
+    f"kernel starting",
     # Then the ordinary boot, end to end.
     "vmm: sv48 enabled",
     "initramfs: mounted rofs version=2",

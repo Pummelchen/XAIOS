@@ -123,12 +123,57 @@ case "${XAIOS_STORAGE_CRASH_POINT:-}" in
       "error: unsupported XAIOS_STORAGE_CRASH_POINT=${XAIOS_STORAGE_CRASH_POINT}" >&2
     exit 2 ;;
 esac
+# Which build this is, and which commit it came from, exactly as the other
+# builder derives them.
+#
+# The number was hardcoded here, and had been since this port was written: it
+# said 4 while BUILD_NUMBER said 5, so a RISC-V machine reported a build it
+# was not. The revision was not passed at all, so `version` on a RISC-V guest
+# answered "unknown" where the other two answer a commit -- which is what
+# porting the external client suite to this machine found.
+BUILD_NUMBER="$(tr -d ' \n' < "$ROOT_DIR/BUILD_NUMBER" 2>/dev/null || printf '%s' 0)"
+if ! printf '%s' "$BUILD_NUMBER" | grep -Eq '^[0-9]+$'; then
+  printf '%s\n' \
+    "error: BUILD_NUMBER must be a whole number, found '$BUILD_NUMBER'" >&2
+  exit 1
+fi
+if [ -n "${XAIOS_BUILD_REVISION_OVERRIDE:-}" ]; then
+  if ! printf '%s' "$XAIOS_BUILD_REVISION_OVERRIDE" |
+       grep -Eq '^[0-9a-f]{40}$'; then
+    printf '%s\n' \
+      'error: XAIOS_BUILD_REVISION_OVERRIDE must be 40 lowercase hex characters' >&2
+    exit 2
+  fi
+  BUILD_REVISION="$XAIOS_BUILD_REVISION_OVERRIDE"
+else
+  BUILD_REVISION="$(git -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null ||
+    printf '%s' unknown)"
+fi
+# Development or release, which the version response discloses. Same values
+# and same default as the other builder; the image builder validates it too,
+# because the credential policy depends on it.
+KERNEL_BUILD_MODE="${XAIOS_BUILD_MODE:-development}"
+case "$KERNEL_BUILD_MODE" in
+  development|release) ;;
+  *)
+    printf '%s\n' "error: XAIOS_BUILD_MODE must be development or release" >&2
+    exit 2 ;;
+esac
+BUILD_IDENTIFIER="xaios-admin-control"
+if [ -n "${XAIOS_BUILD_REVISION_OVERRIDE:-}" ] ||
+   ! git -C "$ROOT_DIR" diff-index --quiet HEAD -- 2>/dev/null ||
+   [ -n "$(git -C "$ROOT_DIR" ls-files --others --exclude-standard 2>/dev/null)" ]; then
+  BUILD_IDENTIFIER="${BUILD_IDENTIFIER}-dirty"
+fi
 BASE_CFLAGS="$BASE_CFLAGS -DXAIOS_BOOT_VERBOSE=$BOOT_VERBOSE \
 -DXAIOS_BOOT_TEST_APPS=$BOOT_TEST_APPS \
 -DXAIOS_FAILURE_TEST_APP=$FAILURE_TEST_APP -DXAIOS_LIBC_TEST=$LIBC_TEST \
 -DXAIOS_PASSWORD_AUTH_AVAILABLE=${XAIOS_PASSWORD_AUTH_AVAILABLE:-1} \
 -DXAIOS_IO_TRACE=$IO_TRACE -DXAIOS_CRASH_WRITER=$CRASH_WRITER \
--DXAIOS_BUILD_NUMBER=4"
+-DXAIOS_BUILD_IDENTIFIER=\"$BUILD_IDENTIFIER\" \
+-DXAIOS_BUILD_MODE=\"$KERNEL_BUILD_MODE\" \
+-DXAIOS_BUILD_REVISION=\"$BUILD_REVISION\" \
+-DXAIOS_BUILD_NUMBER=$BUILD_NUMBER"
 CFLAGS="$BASE_CFLAGS -pedantic"
 
 OBJECTS=""

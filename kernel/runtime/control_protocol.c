@@ -411,6 +411,13 @@ static void fill_version(xaios_control_version_payload_t *payload) {
 #elif defined(__x86_64__)
   string_copy(payload->architecture, sizeof(payload->architecture),
               "x86_64");
+#elif defined(__riscv)
+  /* This answered "unknown" on a machine that knows perfectly well what it
+     is, because the list was written when there were two architectures and
+     never revisited. An external client asking a RISC-V guest what it was
+     got a shrug. */
+  string_copy(payload->architecture, sizeof(payload->architecture),
+              "riscv64");
 #else
   string_copy(payload->architecture, sizeof(payload->architecture),
               "unknown");
@@ -499,6 +506,13 @@ static void fill_hardware(xaios_control_hardware_payload_t *payload) {
 #elif defined(__x86_64__)
   string_copy(payload->architecture, sizeof(payload->architecture),
               "x86_64");
+#elif defined(__riscv)
+  /* This answered "unknown" on a machine that knows perfectly well what it
+     is, because the list was written when there were two architectures and
+     never revisited. An external client asking a RISC-V guest what it was
+     got a shrug. */
+  string_copy(payload->architecture, sizeof(payload->architecture),
+              "riscv64");
 #else
   string_copy(payload->architecture, sizeof(payload->architecture),
               "unknown");

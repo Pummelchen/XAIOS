@@ -324,6 +324,47 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
     return env
 
 
+# The environment names a gate may already be written against, and what each
+# means on a machine that spells it differently. Gates that grew up on one
+# architecture set XAIOS_QEMU_* directly at a dozen call sites; rewriting all
+# of them to logical names would be a bigger change than teaching one place
+# what they mean.
+_QEMU_ENV_ALIASES = {
+    "XAIOS_QEMU_HOSTFWD_PORT": "XAIOS_RISCV64_SSH_PORT",
+    "XAIOS_QEMU_HOSTFWD_UDP_PORT": "XAIOS_RISCV64_HOSTFWD_UDP_PORT",
+    "XAIOS_QEMU_NET_SOCKET_PORT": "XAIOS_RISCV64_NET_SOCKET_PORT",
+    "XAIOS_QEMU_NET_SOCKET_PORT_2": "XAIOS_RISCV64_NET_SOCKET_PORT_2",
+    "XAIOS_QEMU_NET_SOCKET_HOST": "XAIOS_RISCV64_NET_SOCKET_HOST",
+    "XAIOS_QEMU_USER_NET_CIDR": "XAIOS_RISCV64_USER_NET_CIDR",
+    "XAIOS_QEMU_KEYBOARD": "XAIOS_RISCV64_KEYBOARD",
+    "XAIOS_QEMU_EXTRA_ARGS": "XAIOS_RISCV64_EXTRA_ARGS",
+    "XAIOS_QEMU_QMP_SOCKET": "XAIOS_RISCV64_QMP_SOCKET",
+    "XAIOS_QEMU_SMP": "XAIOS_RISCV64_CPUS",
+    "XAIOS_QEMU_MEMORY": "XAIOS_RISCV64_MEMORY",
+}
+
+
+def translate_qemu_env(arch: str, env: Dict[str, str]) -> Dict[str, str]:
+    """Rewrite XAIOS_QEMU_* names into what this architecture's runner reads.
+
+    Names both runners already share -- XAIOS_PERSISTENT_IMAGE,
+    XAIOS_SYSTEM_VOLUME_IMAGE, XAIOS_QEMU_RNG, XAIOS_QEMU_NET_DUMP,
+    XAIOS_QEMU_MODEL_DISCARD, XAIOS_XAI_FS_IMAGE -- pass through untouched.
+    Names that mean nothing here, such as the accelerator, are dropped rather
+    than passed on: there is one accelerator on this machine and pretending to
+    choose it would be a lie in the environment.
+    """
+    if arch != "riscv64":
+        return dict(env)
+    translated: Dict[str, str] = {}
+    for name, value in env.items():
+        if name in ("XAIOS_QEMU_ACCEL", "XAIOS_QEMU_CPU",
+                    "XAIOS_QEMU_MSI_CONTROLLER", "XAIOS_QEMU_IOMMU"):
+            continue
+        translated[_QEMU_ENV_ALIASES.get(name, name)] = value
+    return translated
+
+
 def smoke_command(arch: str) -> List[str]:
     """The boot-closure helper, for this architecture.
 

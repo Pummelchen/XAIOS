@@ -20,16 +20,26 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
 IMAGE = "xaios-debian13-network-client:13"
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import (QEMU_ARCHES, qemu_boot_environment, qemu_runner,
+                           smoke_timeout, translate_qemu_env)
+
 TARGET_ARCH = os.environ.get("XAIOS_QEMU_NETWORK_ARCH", "aarch64")
-if TARGET_ARCH not in ("aarch64", "x86_64"):
-    raise SystemExit("error: XAIOS_QEMU_NETWORK_ARCH must be aarch64 or x86_64")
-BUILD_TARGET = "image" if TARGET_ARCH == "aarch64" else "image-x86_64"
-QEMU_RUNNER = (
-    "run-qemu-aarch64.sh"
-    if TARGET_ARCH == "aarch64"
-    else "run-qemu-x86_64.sh"
-)
-ARTIFACT_SUFFIX = "" if TARGET_ARCH == "aarch64" else "-x86_64"
+for _index, _argument in enumerate(sys.argv):
+    if _argument == "--arch" and _index + 1 < len(sys.argv):
+        TARGET_ARCH = sys.argv[_index + 1]
+    elif _argument.startswith("--arch="):
+        TARGET_ARCH = _argument.split("=", 1)[1]
+if TARGET_ARCH not in QEMU_ARCHES:
+    raise SystemExit(
+        f"error: architecture must be one of {', '.join(QEMU_ARCHES)}")
+BUILD_COMMANDS = {
+    "aarch64": [["make", "image"]],
+    "x86_64": [["make", "image-x86_64"]],
+    "riscv64": [["./scripts/build-riscv64.sh"],
+                ["./scripts/build-riscv64-image.sh"]],
+}[TARGET_ARCH]
+ARTIFACT_SUFFIX = "" if TARGET_ARCH == "aarch64" else f"-{TARGET_ARCH}"
 SSH_READY_MARKER = "SSH server: up and running (tcp/22)"
 BOOT_TIMEOUT_SECONDS = float(os.environ.get("XAIOS_TEST_BOOT_TIMEOUT", "150"))
 CLIENT_TIMEOUT_SECONDS = float(os.environ.get("XAIOS_TEST_SUITE_TIMEOUT", "600"))
@@ -70,6 +80,24 @@ def wait_for_marker(log_path: Path, marker: str, timeout: float) -> None:
     if log_path.exists():
         tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-40:])
     raise TimeoutError(f"timed out waiting for {marker!r}\n{tail}")
+
+
+def build_image(timeout: int, env: dict[str, str] | None = None) -> None:
+    """Rebuild the guest image for whichever machine this run is loading.
+
+    In the release configuration, deliberately. `make image` means that on the
+    other two architectures; the RISC-V builders default to the boot-test
+    configuration instead, where the shell's commands are kernel built-ins and
+    no application is launched as a process. A suite that asks an external
+    client to run /bin/stat over SSH would then be answered by a built-in that
+    does not exist, which is how this port found that the RISC-V image was
+    carrying none of the file utilities at all.
+    """
+    merged = dict(env) if env else dict(os.environ)
+    if TARGET_ARCH == "riscv64":
+        merged.setdefault("XAIOS_BOOT_TEST_APPS", "0")
+    for command in BUILD_COMMANDS:
+        run_checked(command, smoke_timeout(TARGET_ARCH, timeout), merged)
 
 
 def stop_qemu(process: subprocess.Popen[bytes]) -> None:
@@ -113,26 +141,19 @@ def start_qemu(
     if reset_persistent:
         persistent_path.unlink(missing_ok=True)
     log_file = log_path.open("wb")
-    env = os.environ.copy()
-    if TARGET_ARCH == "aarch64":
-        env.update(
-            {
-                "XAIOS_QEMU_ACCEL": "tcg",
-                "XAIOS_QEMU_SMP": "4",
-                "XAIOS_PERSISTENT_IMAGE": str(persistent_path),
-            }
-        )
-    else:
-        env.update(
-            {
-                "XAIOS_QEMU_X86_ACCEL": "tcg",
-                "XAIOS_QEMU_X86_SMP": "4",
-                "XAIOS_X86_PERSISTENT_IMAGE": str(persistent_path),
-            }
-        )
-    env.update(extra_env)
+    env = qemu_boot_environment(
+        TARGET_ARCH, os.environ.copy(), accel="tcg", smp=4,
+        persistent=persistent_path,
+        state_dir=BUILD / f"{name}-state",
+        # The console is redirected into log_path; the RISC-V runner writes it
+        # to a file of its own unless told otherwise.
+        serial_to_stdout=True)
+    # The scenarios below set XAIOS_QEMU_* names directly at a dozen call
+    # sites. Translating them here is smaller than rewriting all of them, and
+    # keeps the scenarios readable as what they are asking for.
+    env.update(translate_qemu_env(TARGET_ARCH, extra_env))
     process = subprocess.Popen(
-        [str(ROOT / "platform" / "qemu" / QEMU_RUNNER)],
+        [str(ROOT / qemu_runner(TARGET_ARCH))],
         cwd=ROOT,
         env=env,
         stdin=subprocess.DEVNULL,
@@ -576,10 +597,16 @@ def verify_native_xtop_pty(key_dir: Path, port: int) -> None:
         colored.wait(timeout=5)
         raise RuntimeError("native xtop PTY did not render its initial dashboard")
     assert colored.stdin is not None
+    # A pause between keystrokes, scaled to the machine. Seventy-five
+    # milliseconds is a comfortable gap for a program redrawing under one
+    # emulator and not for another: on RISC-V the help overlay had not been
+    # drawn before the next key arrived, and the gate reported a missing
+    # marker as though the overlay did not exist.
+    key_delay = 0.075 * (4 if TARGET_ARCH == "riscv64" else 1)
     for keys in (b"M", b"/sshd\n", b"h", b"h", b"q"):
         colored.stdin.write(keys)
         colored.stdin.flush()
-        time.sleep(0.075)
+        time.sleep(key_delay)
     colored.stdin.close()
     returncode = colored.wait(timeout=XTOP_TIMEOUT_SECONDS)
     stdout_thread.join(timeout=5)
@@ -872,8 +899,13 @@ def verify_native_xtop_pty(key_dir: Path, port: int) -> None:
 
 
 def require_rejected_build(env: dict[str, str], marker: str) -> None:
+    """The build that must refuse, and the reason it must give.
+
+    The credential policy lives in the image builder rather than the kernel
+    one, so on a machine whose build is two steps this is the last of them.
+    """
     completed = subprocess.run(
-        ["make", BUILD_TARGET],
+        BUILD_COMMANDS[-1],
         cwd=ROOT,
         env=env,
         capture_output=True,
@@ -1016,7 +1048,7 @@ def main() -> int:
     require_rejected_build(
         release_env, "a release image must not package a password credential"
     )
-    run_checked(["make", BUILD_TARGET], 180, build_env)
+    build_image(180, build_env)
 
     results: dict[str, object] = {
         "architecture": TARGET_ARCH,
@@ -1303,7 +1335,7 @@ def main() -> int:
     key_only_env["XAIOS_BOOT_VERBOSE"] = "1"
     key_only_env.pop("XAIOS_SSH_USERS_FILE", None)
     key_only_env["XAIOS_SSH_PASSWORD_AUTH"] = "0"
-    run_checked(["make", BUILD_TARGET], 180, key_only_env)
+    build_image(180, key_only_env)
     key_only_port = reserve_port(socket.SOCK_STREAM)
     qemu, log_file, key_only_log_path, persistent_path = start_qemu_ready(
         "qemu-docker-key-only-suite",
@@ -1357,7 +1389,7 @@ def main() -> int:
     invalid_env = key_only_env.copy()
     invalid_env["XAIOS_SSH_USERS_FILE"] = str(invalid_users)
     invalid_env["XAIOS_SSH_PASSWORD_AUTH"] = "1"
-    run_checked(["make", BUILD_TARGET], 180, invalid_env)
+    build_image(180, invalid_env)
     invalid_port = reserve_port(socket.SOCK_STREAM)
     qemu, log_file, invalid_log_path, persistent_path = start_qemu_ready(
         "qemu-docker-invalid-users-suite",

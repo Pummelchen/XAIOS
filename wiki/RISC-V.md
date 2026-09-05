@@ -253,11 +253,33 @@ naming because it is the difference between porting a gate and pretending to:
   is exactly this: the same armed volume booted with `-kernel` reaches no
   crash point.
 
-**Still short.** Soak, NUMA, NVMe, cluster, parallel network load, storage
-benchmarking, the fault matrix and the routing and fragmentation gates run on
-AArch64 and x86_64 and not here. Nothing suggests the features are absent --
-they are the same code -- but the evidence that they hold under every kind of
-stress is not in yet.
+**What the ports found.** Porting a gate here has repeatedly turned up
+something that was missing rather than something that was broken, and the
+pattern is worth naming: this architecture's builders and image were written
+alongside the port and never revisited against what the other two had grown.
+So far that has been the trace and crash-writer switches, the storage
+benchmark, the stress applications, the controlled-fault switch, an SSH
+account list and an authorized key, the applications that fail on purpose,
+and -- found by an external client asking for `stat` over SSH -- the twenty
+three file, text and archive utilities, which this image carried none of.
+
+Two were defects rather than omissions, both in the user-fault path and both
+invisible until something faulted a user process here on purpose:
+
+- The kernel read the faulting instruction to step over it, from a user
+  address, with user access just closed. A process that faulted took the
+  kernel down with it. Nothing needs stepping over -- noting the fault ends
+  the process -- and AArch64 has always advanced nothing.
+- The same path closed the user-access window without putting it back, so
+  the syscall that had entered user mode -- sshd running an application on
+  someone's behalf -- got its window closed underneath it and faulted on the
+  next byte it wrote to its own caller.
+
+**Still short.** NUMA, cluster, the setup and installed-disk gates, and the
+external Debian client suite run on AArch64 and x86_64 and not here. The
+client suite is nearly ported: everything up to and including SSH, SFTP,
+concurrency, reconnect, UDP and the 23 utilities passes on this machine, and
+the one check left is failing on AArch64 too, so it is not a RISC-V question.
 
 The boot gates share `tests/scripts/riscv64_gate_lib.py` for booting the machine and
 `qemu_gate_lib.py` for comparing markers, rather than each carrying its own

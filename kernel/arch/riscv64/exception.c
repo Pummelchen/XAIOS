@@ -356,13 +356,44 @@ uint64_t riscv64_trap_handler(riscv64_trap_frame_t *frame) {
      would let any user program halt the system. */
   if ((frame->sstatus & SSTATUS_SPP) == 0U) {
     /* A fault taken from user mode is handled with user access closed: the
-       kernel has no business following a pointer that just faulted. */
+       kernel has no business following a pointer that just faulted. Closed
+       for the handling and then put back, which is the part that was
+       missing.
+     *
+     * The kernel reaches user mode from inside a syscall -- sshd asks for an
+     * application to be run and the kernel enters EL0 on its behalf -- so
+     * the enclosing syscall may well have SUM open and a depth counter that
+     * says so. Clearing the live CSR and leaving it cleared handed that
+     * syscall a closed window it never closed: sshd's next write into its
+     * own output buffer faulted the kernel, at the byte after the crashed
+     * application was reaped. The depth counter is the authority on whether
+     * the window should be open on the way back. */
+    uint32_t *access_depth = user_access_depth();
     __asm__ volatile("csrc sstatus, %0" : : "r"(SSTATUS_SUM) : "memory");
     klog("user exception: cause=%lu sepc=0x%lx stval=0x%lx\n", cause,
          frame->sepc, frame->stval);
     uint64_t note = user_process_note_fault();
     frame->a0 = note;
-    frame->sepc += instruction_width(frame->sepc);
+    /* The faulting instruction is not stepped over, and the reason is worth
+       stating because the code here used to do it.
+     *
+     * Advancing meant reading the instruction to learn its width -- a kernel
+     * load from a user address, with SUM just closed two lines above, which
+     * is itself a fault. So a user process that faulted took the kernel down
+     * with it: "user: process fault pid=32 image=/bin/app-crash exit=128"
+     * and then a load-page-fault in the kernel at the dead process's own pc.
+     * Nothing here faulted a user process on purpose until the external
+     * client suite asked this machine to run /bin/app-crash, which is why it
+     * survived this long.
+     *
+     * There is nothing to step over anyway. Noting the fault terminates the
+     * process and returns an exit note, so the stub leaves user mode rather
+     * than resuming; AArch64 has always done exactly this and advances
+     * nothing. Resuming past a faulting instruction would be the wrong
+     * answer even if it were safe. */
+    if (*access_depth != 0U) {
+      __asm__ volatile("csrs sstatus, %0" : : "r"(SSTATUS_SUM) : "memory");
+    }
     return (note >> 32U) == USER_EXIT_MARKER ? note : 0U;
   }
 
