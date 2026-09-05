@@ -17,8 +17,21 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import qemu_boot_environment, qemu_runner, smoke_timeout
+
 BOOT_TIMEOUT_SECONDS = 180.0
 STEP_TIMEOUT_SECONDS = 30.0
+
+# The image each architecture types into, and how it is built. RISC-V has no
+# separate release image target here: the kernel is the artefact, and the
+# medium the local console boots is built from it.
+IMAGE_BUILD = {
+    "aarch64": [["make", "image"]],
+    "x86_64": [["make", "image-x86_64"]],
+    "riscv64": [["./scripts/build-riscv64.sh"],
+                ["./scripts/build-riscv64-image.sh"]],
+}
 
 
 class Console:
@@ -112,8 +125,11 @@ def send_key_sequence(qmp_socket: Path, keys: list[str]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--arch", choices=("aarch64", "x86_64"), required=True)
+    parser.add_argument("--arch",
+                        choices=("aarch64", "x86_64", "riscv64"), required=True)
     args = parser.parse_args()
+    boot_timeout = smoke_timeout(args.arch, int(BOOT_TIMEOUT_SECONDS))
+    step_timeout = smoke_timeout(args.arch, int(STEP_TIMEOUT_SECONDS))
 
     gate_dir = BUILD / f"qemu-keyboard-input-{args.arch}"
     if gate_dir.exists():
@@ -124,40 +140,25 @@ def main() -> int:
     build_env.pop("XAIOS_SSH_USERS_FILE", None)
     build_env.pop("XAIOS_SSH_PASSWORD_AUTH", None)
     build_env["XAIOS_BOOT_VERBOSE"] = "1"
-    build_command = ["make", "image"]
-    runner = ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh"
-    if args.arch == "x86_64":
-        build_command = ["make", "image-x86_64"]
-        runner = ROOT / "platform" / "qemu" / "run-qemu-x86_64.sh"
-    run_checked(build_command, f"build {args.arch} keyboard image", build_env)
+    for build_command in IMAGE_BUILD[args.arch]:
+        run_checked(build_command, f"build {args.arch} keyboard image",
+                    build_env)
 
     qmp_socket = gate_dir / "qmp.sock"
-    qemu_env = build_env.copy()
-    qemu_env.update(
-        {
-            "XAIOS_QEMU_KEYBOARD": "usb",
-            "XAIOS_QEMU_QMP_SOCKET": str(qmp_socket),
-            "XAIOS_PERSISTENT_IMAGE": str(gate_dir / "persistent.img"),
-        }
-    )
-    if args.arch == "aarch64":
-        qemu_env.update(
-            {
-                "XAIOS_QEMU_ACCEL": "tcg",
-                "XAIOS_QEMU_HOSTFWD_PORT": "none",
-            }
-        )
-    else:
-        qemu_env.update(
-            {
-                "XAIOS_QEMU_X86_ACCEL": "tcg",
-                "XAIOS_QEMU_HOSTFWD_PORT": "none",
-                "XAIOS_X86_PERSISTENT_IMAGE": str(gate_dir / "persistent.img"),
-            }
-        )
+    qemu_env = qemu_boot_environment(
+        args.arch, build_env.copy(),
+        keyboard="usb",
+        qmp_socket=qmp_socket,
+        persistent=gate_dir / "persistent.img",
+        state_dir=gate_dir / "state",
+        hostfwd_port="none",
+        accel="tcg",
+        # This reads the console out of the runner's stdout and types back
+        # over QMP; RISC-V's runner writes the console to a file by default.
+        serial_to_stdout=True)
 
     process = subprocess.Popen(
-        [str(runner)],
+        [qemu_runner(args.arch)],
         cwd=ROOT,
         env=qemu_env,
         stdin=subprocess.DEVNULL,
@@ -167,14 +168,16 @@ def main() -> int:
     )
     console = Console(process)
     try:
-        console.wait_for(b"input: xHCI HID boot keyboard initialized", BOOT_TIMEOUT_SECONDS)
-        console.wait_for(b"xaios login: ", BOOT_TIMEOUT_SECONDS)
+        console.wait_for(b"input: xHCI HID boot keyboard initialized",
+                         boot_timeout)
+        console.wait_for(b"xaios login: ", boot_timeout)
         send_key_sequence(
             qmp_socket,
             ["a", "d", "m", "i", "n", "ret", "x", "a", "i", "o", "s", "ret"],
         )
-        console.wait_for(b"XAIOS local console session opened", STEP_TIMEOUT_SECONDS)
-        console.wait_for(b"admin@xaios", STEP_TIMEOUT_SECONDS)
+        console.wait_for(b"XAIOS local console session opened",
+                         step_timeout)
+        console.wait_for(b"admin@xaios", step_timeout)
     finally:
         terminate(process)
 

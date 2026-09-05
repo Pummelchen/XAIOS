@@ -217,6 +217,8 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
                           boot_mode: Any = None,
                           extra_args: Any = None,
                           qmp_socket: Any = None,
+                          keyboard: Any = None,
+                          accel: Any = None,
                           serial_to_stdout: bool = False) -> Dict[str, str]:
     """The knobs for one boot, under the names this architecture's runner reads.
 
@@ -240,6 +242,9 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
     if qmp_socket is not None:
         env["XAIOS_QEMU_QMP_SOCKET" if arch != "riscv64"
             else "XAIOS_RISCV64_QMP_SOCKET"] = str(qmp_socket)
+    if keyboard is not None:
+        env["XAIOS_QEMU_KEYBOARD" if arch != "riscv64"
+            else "XAIOS_RISCV64_KEYBOARD"] = str(keyboard)
     if persistent is not None:
         env["XAIOS_PERSISTENT_IMAGE"] = str(persistent)
     if persistent_sectors is not None:
@@ -247,6 +252,8 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
     if system_volume is not None:
         env["XAIOS_SYSTEM_VOLUME_IMAGE"] = str(system_volume)
     if arch == "aarch64":
+        if accel is not None:
+            env["XAIOS_QEMU_ACCEL"] = str(accel)
         if storage_admin is not None:
             env["XAIOS_STORAGE_ADMIN_IMAGE"] = str(storage_admin)
         if hostfwd_port is not None:
@@ -254,6 +261,8 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
         if smp is not None:
             env["XAIOS_QEMU_SMP"] = str(smp)
     elif arch == "x86_64":
+        if accel is not None:
+            env["XAIOS_QEMU_X86_ACCEL"] = str(accel)
         if persistent is not None:
             # Both names, deliberately: a gate that sets only the shared one
             # for an x86_64 boot falls through to the shared image, whose
@@ -279,6 +288,10 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
             env["XAIOS_STORAGE_ADMIN_IMAGE"] = str(storage_admin)
         if boot_mode is not None:
             env["XAIOS_RISCV64_BOOT"] = str(boot_mode)
+        # accel has no RISC-V spelling: there is no hypervisor for this
+        # architecture on any host this runs on, so it is always TCG. A gate
+        # that asks for TCG gets it; one that asked for anything else would be
+        # asking for something that does not exist.
         if serial_to_stdout:
             env["XAIOS_RISCV64_SERIAL"] = "stdio"
     return env

@@ -186,7 +186,7 @@ the kernel comes up to a login prompt with sshd listening.
 
 ## Test coverage
 
-Twenty-nine `make` targets, of which twenty-seven are gates. They fall into
+Thirty `make` targets, of which twenty-eight are gates. They fall into
 three groups, and the split matters more than the count.
 
 **Gates this architecture has of its own.** These exist because the shared
@@ -206,7 +206,8 @@ asked the first two's questions is being tested as an imitation of them.
 gates behind it -- `filesystem`, `app-agent`, `network-full`,
 `cpu-ai-runtime`, `ai-cell`, `security`, `update` -- plus `process`, `osctl`,
 `fault-injection`, `persistence-reboot`, `local-console`, `write-ordering`,
-`storage-crash-test`, `crash-safety`, `framebuffer`, `console-xtop`, and the `userspace`, `network`,
+`storage-crash-test`, `crash-safety`, `framebuffer`,
+`keyboard-input`, `console-xtop`, and the `userspace`, `network`,
 `cpu-ai` and `regression` suites that bundle them. Each is the same script
 the other two architectures run, taking `--arch riscv64`, rather than a
 RISC-V copy of it: one place decides what a boot is, and one place knows that

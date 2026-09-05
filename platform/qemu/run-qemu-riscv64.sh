@@ -147,6 +147,22 @@ if [ "${XAIOS_RISCV64_QMP_SOCKET:-}" != "" ]; then
   QMP_ARGS="-qmp unix:${XAIOS_RISCV64_QMP_SOCKET},server=on,wait=off"
 fi
 EXTRA_ARGS="${XAIOS_RISCV64_EXTRA_ARGS:-}"
+# A USB keyboard on the PCI xHCI controller, the way the other two runners
+# attach one. The local console reads its keys through the same shared HID
+# driver on every architecture; what differs is only whether a controller is
+# on the bus for it to find. Default off, because most gates here have no use
+# for one and every device costs boot time under an interpreter.
+KEYBOARD_ARGS=""
+case "${XAIOS_RISCV64_KEYBOARD:-none}" in
+  none) ;;
+  usb)
+    KEYBOARD_ARGS="-device qemu-xhci,id=xaios_xhci -device usb-kbd,bus=xaios_xhci.0"
+    ;;
+  *)
+    printf '%s\n' "error: XAIOS_RISCV64_KEYBOARD must be usb or none" >&2
+    exit 2
+    ;;
+esac
 # shellcheck disable=SC2086
 exec "$QEMU" \
   -machine "$MACHINE" -cpu rv64 -smp "$CPUS" -m "$MEMORY" -display none \
@@ -172,4 +188,5 @@ exec "$QEMU" \
   -device virtio-rng-pci,disable-legacy=on \
   -netdev "user,id=n0$HOSTFWD_ARG" \
   -device virtio-net-pci,netdev=n0,disable-legacy=on \
+  $KEYBOARD_ARGS \
   $QMP_ARGS $EXTRA_ARGS "$@"
