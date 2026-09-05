@@ -194,6 +194,52 @@ void xaios_user_access_end(void) {
 #define CAUSE_ILLEGAL_INSTRUCTION 2U
 #define CAUSE_LOAD_ACCESS_FAULT 5U
 #define CAUSE_STORE_ACCESS_FAULT 7U
+#define CAUSE_INSTRUCTION_PAGE_FAULT 12U
+#define CAUSE_LOAD_PAGE_FAULT 13U
+#define CAUSE_STORE_PAGE_FAULT 15U
+
+/* What a trap was, in words.
+ *
+ * The number alone is not enough for a gate to hold this architecture to
+ * anything: "the kernel panicked" is true of a machine that faulted the way
+ * it was asked to and of one that fell over for an unrelated reason. AArch64
+ * prints an exception class name for exactly this, and the fault matrix
+ * asserts it. These are the names for the same purpose -- a store to
+ * read-only memory has to report a store page fault and not a load one, or
+ * the page tables are not doing what the boot said they were. */
+static const char *trap_cause_name(uint64_t cause) {
+  switch (cause) {
+    case 0U: return "instruction-address-misaligned";
+    case 1U: return "instruction-access-fault";
+    case CAUSE_ILLEGAL_INSTRUCTION: return "illegal-instruction";
+    case CAUSE_BREAKPOINT: return "breakpoint";
+    case 4U: return "load-address-misaligned";
+    case CAUSE_LOAD_ACCESS_FAULT: return "load-access-fault";
+    case 6U: return "store-address-misaligned";
+    case CAUSE_STORE_ACCESS_FAULT: return "store-access-fault";
+    case CAUSE_ECALL_FROM_USER: return "ecall-from-user";
+    case 9U: return "ecall-from-supervisor";
+    case CAUSE_INSTRUCTION_PAGE_FAULT: return "instruction-page-fault";
+    case CAUSE_LOAD_PAGE_FAULT: return "load-page-fault";
+    case CAUSE_STORE_PAGE_FAULT: return "store-page-fault";
+    default: return "unknown";
+  }
+}
+
+/* A read of an address nothing is mapped at, on purpose.
+ *
+ * The counterpart of AArch64's exception_trigger_page_fault_for_test: the
+ * fault matrix builds a kernel that ends its boot by faulting in a stated
+ * way, and requires the machine to report that way rather than any other.
+ * The address is above everything this port maps and below the top of Sv48's
+ * user half, so it is a translation failure rather than a malformed address
+ * -- which would be a different trap and would prove something else. */
+void exception_trigger_page_fault_for_test(void) {
+  volatile uint64_t *unmapped = (volatile uint64_t *)UINT64_C(0x1000000000);
+  klog("exceptions: triggering controlled page fault at 0x%lx\n",
+       (uint64_t)(uintptr_t)unmapped);
+  (void)*unmapped;
+}
 
 /* Probing for a device that may not be there.
  *
@@ -322,6 +368,16 @@ uint64_t riscv64_trap_handler(riscv64_trap_frame_t *frame) {
 
   /* A synchronous exception in the kernel is fatal, and saying which one is
      the whole value of getting here. */
+  klog("\nEXCEPTION: class=%s cause=%lu sepc=0x%lx stval=0x%lx\n",
+       trap_cause_name(cause), cause, frame->sepc, frame->stval);
+  if (cause == CAUSE_INSTRUCTION_PAGE_FAULT ||
+      cause == CAUSE_LOAD_PAGE_FAULT || cause == CAUSE_STORE_PAGE_FAULT) {
+    /* Named apart from every other fatal trap, and worded the way the other
+       architectures word it, because the fault matrix asks all three the
+       same question: did the machine fault where it was told to, in the way
+       it was told to. */
+    exception_panic("controlled page fault reported");
+  }
   exception_panic("unhandled trap cause=%lu epc=%lx stval=%lx", cause,
                   frame->sepc, frame->stval);
 }

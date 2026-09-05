@@ -115,6 +115,7 @@ make qemu-riscv64-boot-loop
 make qemu-riscv64-benchmark
 make qemu-riscv64-preview
 make qemu-riscv64-libc-gate
+make qemu-riscv64-fault-matrix
 make qemu-riscv64-write-ordering-gate
 make qemu-riscv64-local-console-gate
 make qemu-console-xtop-gate-riscv64

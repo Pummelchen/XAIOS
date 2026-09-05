@@ -1,18 +1,54 @@
 #!/usr/bin/env python3
+"""Fault the kernel on purpose, three ways, and require the stated report.
+
+The three faults are shared kernel code: read an address nothing is mapped
+at, write to read-only data, execute writable data. What differs per machine
+is what the trap is called, and that is exactly what has to be asserted --
+"the kernel panicked" is equally true of a machine that faulted the way it
+was asked to and of one that fell over for an unrelated reason. So the class
+name is per architecture and the rest is not.
+
+The distinction matters most on the read-only and no-execute cases: a store
+to read-only memory that reported a *load* fault, or an execute of data that
+reported a data fault, would mean the page tables are not carrying the
+permissions the boot said they were.
+"""
 import os
 import select
 import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from qemu_gate_lib import (arch_from_argv, qemu_boot_environment, qemu_runner,
+                           smoke_timeout)
+
+ARCH = arch_from_argv(sys.argv)
+
+# How each machine names the trap the fault produces.
+FAULT_CLASS = {
+    "aarch64": {"page": "class=data-abort-current",
+                "ro": "class=data-abort-current",
+                "nx": "class=instruction-abort-current"},
+    "x86_64": {"page": "class=data-abort-current",
+               "ro": "class=data-abort-current",
+               "nx": "class=instruction-abort-current"},
+    # RISC-V distinguishes the three, which is a stronger assertion than the
+    # other two can make: a store fault and a load fault are different causes
+    # here, so "the write was refused" is checkable rather than inferred.
+    "riscv64": {"page": "class=load-page-fault",
+                "ro": "class=store-page-fault",
+                "nx": "class=instruction-page-fault"},
+}[ARCH]
 
 FAULTS = [
     (
         "page",
         [
             "exceptions: triggering controlled page fault",
-            "class=data-abort-current",
+            FAULT_CLASS["page"],
             "controlled page fault reported",
         ],
     ),
@@ -20,7 +56,7 @@ FAULTS = [
         "ro",
         [
             "exceptions: triggering controlled rodata write fault",
-            "class=data-abort-current",
+            FAULT_CLASS["ro"],
             "controlled page fault reported",
         ],
     ),
@@ -28,35 +64,48 @@ FAULTS = [
         "nx",
         [
             "exceptions: triggering controlled NX execute fault",
-            "class=instruction-abort-current",
+            FAULT_CLASS["nx"],
             "controlled page fault reported",
         ],
     ),
 ]
+
+BUILD_COMMANDS = {
+    "aarch64": [["./scripts/build-image.sh"]],
+    "x86_64": [["./scripts/build-image.sh"]],
+    "riscv64": [["./scripts/build-riscv64.sh"],
+                ["./scripts/build-riscv64-image.sh"]],
+}[ARCH]
 
 
 def run_build(fault: str) -> int:
     env = os.environ.copy()
     env["XAIOS_FAULT_TEST"] = fault
     env["XAIOS_BOOT_TEST_APPS"] = "1"
-    proc = subprocess.run(
-        ["./scripts/build-image.sh"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        env=env,
-        check=False,
-    )
-    sys.stdout.write(proc.stdout)
-    return proc.returncode
+    for command in BUILD_COMMANDS:
+        proc = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+            check=False,
+        )
+        sys.stdout.write(proc.stdout)
+        if proc.returncode != 0:
+            return proc.returncode
+    return 0
 
 
 def run_fault_boot(name: str, targets) -> int:
     for attempt in range(2):
-        env = os.environ.copy()
-        env["XAIOS_QEMU_HOSTFWD_PORT"] = "none"
+        env = qemu_boot_environment(
+            ARCH, os.environ.copy(), hostfwd_port="none",
+            # The boot is read from the runner's stdout here, and RISC-V's
+            # runner writes the console to a file unless told otherwise.
+            serial_to_stdout=True)
         proc = subprocess.Popen(
-            ["./platform/qemu/run-qemu-aarch64.sh"],
+            [qemu_runner(ARCH)],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -66,9 +115,8 @@ def run_fault_boot(name: str, targets) -> int:
         )
 
         seen = []
-        deadline = time.time() + int(
-            os.environ.get("XAIOS_QEMU_FAULT_TIMEOUT", "60")
-        )
+        deadline = time.time() + smoke_timeout(
+            ARCH, int(os.environ.get("XAIOS_QEMU_FAULT_TIMEOUT", "60")))
         passed = False
         try:
             fd = proc.stdout.fileno()
@@ -114,18 +162,23 @@ def run_fault_boot(name: str, targets) -> int:
 
 
 def rebuild_normal_image() -> int:
+    """Leave the tree holding a kernel that does not fault on purpose."""
     env = os.environ.copy()
     env["XAIOS_BOOT_TEST_APPS"] = "1"
-    proc = subprocess.run(
-        ["./scripts/build-image.sh"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        env=env,
-        check=False,
-    )
-    sys.stdout.write(proc.stdout)
-    return proc.returncode
+    env.pop("XAIOS_FAULT_TEST", None)
+    for command in BUILD_COMMANDS:
+        proc = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+            check=False,
+        )
+        sys.stdout.write(proc.stdout)
+        if proc.returncode != 0:
+            return proc.returncode
+    return 0
 
 
 def main() -> int:

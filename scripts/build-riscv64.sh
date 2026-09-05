@@ -76,6 +76,20 @@ case "$CRASH_WRITER" in
   0|1) ;;
   *) printf '%s\n' "error: XAIOS_CRASH_WRITER must be 0 or 1" >&2; exit 2 ;;
 esac
+# The controlled fault the fault matrix boots into. Shared kernel code picks
+# the fault; what differs per architecture is only how the trap is reported,
+# which is why the gate asserts a different class name here.
+case "${XAIOS_FAULT_TEST:-}" in
+  "") ;;
+  page) BASE_CFLAGS="$BASE_CFLAGS -DXAIOS_FAULT_TEST_PAGE=1" ;;
+  ro) BASE_CFLAGS="$BASE_CFLAGS -DXAIOS_FAULT_TEST_RO=1" ;;
+  nx) BASE_CFLAGS="$BASE_CFLAGS -DXAIOS_FAULT_TEST_NX=1" ;;
+  *)
+    printf '%s\n' \
+      "error: unsupported XAIOS_FAULT_TEST=${XAIOS_FAULT_TEST}" >&2
+    exit 2 ;;
+esac
+
 # The stress and measurement applications. perfbench is the one that matters
 # to a gate: it reports what an operation costs and asserts nothing, so it
 # runs where the stress app runs and nowhere else.
