@@ -336,37 +336,114 @@ class Console:
 
 # ------------------------------------------------------------------------ SSH
 
-def ssh_frame(key: Path, port: int, columns: int, rows: int) -> list[str]:
-    """One xtop frame from an SSH session of the given size."""
-    parent, child = pty.openpty()
-    fcntl.ioctl(child, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
-    stderr_path = GATE_DIR / "ssh.stderr"
+def ssh_command(key: Path, port: int, program: str) -> list[str]:
+    """The SSH client invocation for one program on the guest."""
     if ARCH == "riscv64":
         # The RISC-V image builder takes no authorized-keys file yet; its
         # gates log in with the default password, and so does this leg.
-        command = [
+        return [
             "sshpass", "-p", "xaios", "ssh", "-tt",
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "PreferredAuthentications=password",
             "-o", "PubkeyAuthentication=no",
-            "-p", str(port), "admin@127.0.0.1", "xtop",
+            "-p", str(port), "admin@127.0.0.1", program,
         ]
-    else:
-        command = [
-            "ssh", "-tt",
-            "-i", str(key),
-            "-o", "IdentitiesOnly=yes",
-            "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            # See qemu-model-sftp-gate: a ~/.ssh/config that disables public
-            # key authentication for this host would otherwise stop the key
-            # being offered at all, on that machine only.
-            "-o", "PubkeyAuthentication=yes",
-            "-o", "PreferredAuthentications=none,publickey",
-            "-p", str(port), "admin@127.0.0.1", "xtop",
-        ]
+    return [
+        "ssh", "-tt",
+        "-i", str(key),
+        "-o", "IdentitiesOnly=yes",
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        # See qemu-model-sftp-gate: a ~/.ssh/config that disables public
+        # key authentication for this host would otherwise stop the key
+        # being offered at all, on that machine only.
+        "-o", "PubkeyAuthentication=yes",
+        "-o", "PreferredAuthentications=none,publickey",
+        "-p", str(port), "admin@127.0.0.1", program,
+    ]
+
+
+def ssh_session_filter_check(key: Path, port: int, columns: int, rows: int) -> None:
+    """A whole-frame program over SSH reaches the client as changed cells.
+
+    pong redraws its entire screen sixty times a second -- a clear and every
+    row -- and knows nothing of the screen framework. The session runs it
+    through a screen of its own, so the client sees one clear and then only
+    the cells that moved. Without the filter the stream carries a clear per
+    frame and more than a hundred kilobytes a second; with it, one clear and
+    a few kilobytes. The thresholds sit well clear of both.
+    """
+    parent, child = pty.openpty()
+    fcntl.ioctl(child, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+    stderr_path = GATE_DIR / "ssh-pong.stderr"
+    with stderr_path.open("wb") as stderr:
+        process = subprocess.Popen(ssh_command(key, port, "pong"), cwd=ROOT,
+                                   stdin=child, stdout=child, stderr=stderr)
+    os.close(child)
+    collected = bytearray()
+    started = time.monotonic()
+    first_frame_at = None
+    steady_from = 0
+    steady_started = None
+    try:
+        while time.monotonic() - started < 20.0:
+            ready, _, _ = select.select([parent], [], [], 0.25)
+            if ready:
+                try:
+                    chunk = os.read(parent, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                collected.extend(chunk)
+            if first_frame_at is None and b"\x1b[?1049h" in collected and b"\x1b[2J" in collected:
+                first_frame_at = time.monotonic()
+            # Two seconds for the game to settle, then four seconds measured.
+            if first_frame_at is not None and steady_started is None and \
+                    time.monotonic() - first_frame_at > 2.0:
+                steady_started = time.monotonic()
+                steady_from = len(collected)
+            if steady_started is not None and time.monotonic() - steady_started > 4.0:
+                break
+        try:
+            os.write(parent, b"q")
+            time.sleep(1.0)
+        except OSError:
+            pass
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        os.close(parent)
+    (GATE_DIR / "ssh-pong.raw").write_bytes(collected)
+    check(first_frame_at is not None and steady_started is not None,
+          "pong over SSH produced no frame:\n"
+          + collected.decode("utf-8", errors="replace")[-1500:]
+          + "\nssh stderr:\n" + stderr_path.read_text(errors="replace")[-1000:])
+    steady = bytes(collected[steady_from:])
+    seconds = time.monotonic() - steady_started
+    clears = steady.count(b"\x1b[2J")
+    moves = steady.count(b"H")
+    rate = len(steady) / seconds
+    print(f"+ pong over SSH: {len(steady)} bytes in {seconds:.1f} s "
+          f"({rate:.0f} B/s), {clears} clears, {moves} positioned runs", flush=True)
+    for line in render_terminal(bytes(collected), columns)[:6]:
+        print(f"  |{line}")
+    check(clears == 0, f"the session filter is not diffing: {clears} screen clears in steady state")
+    check(moves >= 60, f"too few positioned runs for a running game: {moves}")
+    check(rate < 30000, f"steady stream is {rate:.0f} B/s; whole frames are passing through")
+
+
+def ssh_frame(key: Path, port: int, columns: int, rows: int) -> list[str]:
+    """One xtop frame from an SSH session of the given size."""
+    parent, child = pty.openpty()
+    fcntl.ioctl(child, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+    stderr_path = GATE_DIR / "ssh.stderr"
+    command = ssh_command(key, port, "xtop")
     with stderr_path.open("wb") as stderr:
         process = subprocess.Popen(
             command,
@@ -681,6 +758,8 @@ def main() -> int:
             print(f"  |{line}")
 
         compare(local_lines, remote_lines, screen.columns)
+
+        ssh_session_filter_check(key, port, screen.columns, screen.rows)
 
         # The colours the extended escape sequences ask for. Reading 38;5;45
         # one number at a time lands in the background arm and paints the whole

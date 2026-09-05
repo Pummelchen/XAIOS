@@ -27,6 +27,7 @@ QEMU is the default and is covered in [[Getting Started|Getting-Started]].
 
 - [[Architecture|Architecture]]
 - [[Security Model|Security-Model]]
+- [[Screen Framework|Screen-Framework]]
 - [[Unix Compatibility|Unix-Compatibility]]
 - [[ISO C99 Library|C99-Libc]]
 - [[Current Limitations|Current-Limitations]]

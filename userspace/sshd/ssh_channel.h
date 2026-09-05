@@ -2,6 +2,7 @@
 #define SSH_CHANNEL_H
 
 #include <xaios/types.h>
+#include <xaios_screen.h>
 #include "less_pager.h"
 #include "nano_editor.h"
 #include "pong_game.h"
@@ -50,6 +51,13 @@ typedef struct ssh_channel {
   nano_editor_t nano;
   less_pager_t less;
   pong_game_t pong;
+  /* The session's screen while the program in it is on the alternate
+     screen: what the client shows, so only the cells that changed are
+     sent. Null when no screen is held. */
+  xaios_screen_t *screen;
+  uint32_t screen_slot;
+  uint32_t screen_carry_used;
+  uint8_t screen_carry[8];
   uint32_t sftp_rx_used;
   uint8_t sftp_rx[SSH_CHANNEL_SFTP_BUFFER_SIZE];
   uint8_t pending[SSH_CHANNEL_PENDING_SIZE];

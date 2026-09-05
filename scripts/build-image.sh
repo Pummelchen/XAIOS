@@ -73,6 +73,7 @@ WORKER_OBJ="$INIT_BUILD_DIR/worker.o"
 WORKER_ELF="$INIT_BUILD_DIR/worker.elf"
 USER_START_OBJ="$INIT_BUILD_DIR/user-start.o"
 USER_LIB_OBJ="$INIT_BUILD_DIR/xaios-user.o"
+USER_SCREEN_OBJ="$INIT_BUILD_DIR/xaios-screen.o"
 USER_CONTROL_OBJ="$INIT_BUILD_DIR/xaios-control-client.o"
 USER_APPS="xaios-shell xaiosctl xapt nano xtop pong hello sysinfo systest smptest smpstress perfbench nettest lstm-xor sshtest mltest posix-shell agenttest clustertest xaios-setup"
 
@@ -1069,6 +1070,26 @@ printf '%s\n' "Building userspace C runtime..."
   -c "$ROOT_DIR/userspace/lib/xaios_control_client.c" \
   -o "$USER_CONTROL_OBJ"
 
+# The screen framework: the grid, the present that writes only what
+# changed, and the key decoder. Linked into every program that draws a
+# screen, and into sshd, which runs every alternate-screen program through it.
+"$CLANG" \
+  --target="$TARGET_TRIPLE" \
+  $USER_ARCH_CFLAGS \
+  -std=c99 \
+  -ffreestanding \
+  -fno-stack-protector \
+  -fno-builtin \
+  -fno-pic \
+  -fno-pie \
+  -Os \
+  -Wall \
+  -Wextra \
+  -Werror \
+  -I"$ROOT_DIR/userspace/include" \
+  -c "$ROOT_DIR/userspace/lib/xaios_screen.c" \
+  -o "$USER_SCREEN_OBJ"
+
 set --
 for app in $USER_APPS; do
   app_obj="$INIT_BUILD_DIR/$app.o"
@@ -1175,6 +1196,7 @@ for app in $USER_APPS; do
       "$USER_START_OBJ" \
       "$USER_LIB_OBJ" \
       "$USER_CONTROL_OBJ" \
+      "$USER_SCREEN_OBJ" \
       "$app_obj"
   elif [ "$app" = "clustertest" ]; then
     "$LD_LLD" \
@@ -1347,6 +1369,7 @@ SSHD_MLKEM_OBJ="$INIT_BUILD_DIR/sshd-mlkem-native.o"
   -c "$ROOT_DIR/third_party/mlkem-native/mlkem/mlkem_native.c" \
   -o "$SSHD_MLKEM_OBJ"
 printf '"%s"\n' "$SSHD_MLKEM_OBJ" >> "$SSHD_RESPONSE_FILE"
+printf '"%s"\n' "$USER_SCREEN_OBJ" >> "$SSHD_RESPONSE_FILE"
 for app_src in nano_editor.c pong_game.c; do
   app_obj="$INIT_BUILD_DIR/sshd-${app_src%.c}.o"
   app_opt=""

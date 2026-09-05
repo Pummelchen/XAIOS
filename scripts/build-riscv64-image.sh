@@ -76,6 +76,11 @@ for app in $USER_APPS; do
     -I"$ROOT_DIR/userspace/include" \
     -c "$ROOT_DIR/userspace/lib/xaios_control_client.c" \
     -o "$BUILD_DIR/control-$app.o"
+  # The screen framework, for programs that draw a screen.
+  "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
+    -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie -Os \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/lib/xaios_screen.c" -o "$BUILD_DIR/screen-$app.o"
   # xaios-setup writes the credential records sshd reads, so it hashes them
   # with the same code sshd verifies them with -- two implementations of
   # PBKDF2 that disagree produce an account that cannot be logged into, and
@@ -95,7 +100,8 @@ for app in $USER_APPS; do
   # shellcheck disable=SC2086
   "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
     -o "$BUILD_DIR/$app.elf" "$BUILD_DIR/start-$app.o" "$BUILD_DIR/$app.o" \
-    "$BUILD_DIR/lib-$app.o" "$BUILD_DIR/control-$app.o" $EXTRA_OBJS
+    "$BUILD_DIR/lib-$app.o" "$BUILD_DIR/control-$app.o" \
+    "$BUILD_DIR/screen-$app.o" $EXTRA_OBJS
   APP_ARGS="$APP_ARGS /bin/$app=$BUILD_DIR/$app.elf"
 done
 
@@ -200,7 +206,8 @@ done
 # shellcheck disable=SC2086
 "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
   -o "$BUILD_DIR/sshd.elf" "$BUILD_DIR/start-sshd.o" \
-  "$BUILD_DIR/lib-hello.o" "$BUILD_DIR/control-hello.o" $SSHD_OBJS
+  "$BUILD_DIR/lib-hello.o" "$BUILD_DIR/control-hello.o" \
+  "$BUILD_DIR/screen-hello.o" $SSHD_OBJS
 SSHD_ARGS="/bin/sshd=$BUILD_DIR/sshd.elf"
 
 # The development account, so the machine has something to log into and the

@@ -398,3 +398,21 @@ mismatch or unknown nodes. Mutations also require a nonzero operation ID and
 are persisted with payload-redacted audit metadata. See
 [`CONTROL-PROTOCOL.md`](./CONTROL-PROTOCOL.md) for the frozen ABI and
 [`XAIOSCTL.md`](./XAIOSCTL.md) for command/output semantics.
+
+## Screen framework
+
+A program that draws a whole screen -- a monitor, an editor, a game -- does
+not redraw it. `userspace/include/xaios_screen.h` holds a screen as a grid of
+cells, paints escape-coded output into it (`xaios_screen_paint`) or takes
+cells directly (`xaios_screen_put`), and presents (`xaios_screen_present`)
+only the cells that changed since the last present, positioned with cursor
+moves; a present that does not fit its buffer is finished by the next. The
+same header decodes keys (`xaios_screen_read_key`). It is freestanding and
+allocates nothing: the caller supplies the two grids.
+
+The session server applies the same model to every program that enters the
+alternate screen (`ESC[?1049h`), over SSH and on the local console, so a
+program that writes whole frames still costs the terminal only what changed.
+The kernel's framebuffer terminal keeps a cell cache of its own. Between
+presents a program waits with `xaios_wait_events`. See
+[`wiki/Screen-Framework.md`](../wiki/Screen-Framework.md).

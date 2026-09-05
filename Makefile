@@ -654,6 +654,10 @@ hosted-test: engine-cli
 	  tests/control/test_control_client.c -o build/hosted/test-control-client
 	./build/hosted/test-control-client
 	$(HOST_CC) $(HOST_CFLAGS) \
+	  -Iuserspace/include -Ikernel/include userspace/lib/xaios_screen.c \
+	  tests/system/test_screen.c -o build/hosted/test-screen
+	./build/hosted/test-screen
+	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Ikernel/include kernel/dev/block_device.c \
 	  tests/storage/test_block_device.c -o build/hosted/test-block-device
 	./build/hosted/test-block-device

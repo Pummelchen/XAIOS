@@ -29,6 +29,7 @@ EXPECTED_PAGES = {
     "Operations-and-Recovery.md",
     "Project-Tracker.md",
     "Security-Model.md",
+    "Screen-Framework.md",
     "Testing-XAIOS.md",
     "Unix-Compatibility.md",
     "Virtualization-Framework.md",

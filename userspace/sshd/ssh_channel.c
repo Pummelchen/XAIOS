@@ -9,6 +9,11 @@
 #include "sshd.h"
 #include <xaios_control_client.h>
 #include <xaios_user.h>
+#include <xaios_screen.h>
+
+#define SSH_SCREEN_POOL 4U
+static uint32_t g_screen_used[SSH_SCREEN_POOL];
+static void screen_release(struct ssh_channel *ch);
 
 #define SFTP_REQUEST_READ 5U
 #define SFTP_REQUEST_WRITE 6U
@@ -129,6 +134,7 @@ static int nano_command_argument(const char *command, char *argument,
 }
 
 void ssh_channel_init(void) {
+  for (uint32_t i = 0U; i < SSH_SCREEN_POOL; ++i) g_screen_used[i] = 0U;
   ssh_mem_zero(g_channels, sizeof(g_channels));
   g_next_local_id = 1;
 }
@@ -482,6 +488,7 @@ void ssh_channel_close_connection(int sockfd) {
         (void)xaios_net_close(g_channels[i].forward_fd);
       if (g_channels[i].less.active != 0U)
         less_pager_close(&g_channels[i].less);
+      screen_release(&g_channels[i]);
       ssh_mem_zero(&g_channels[i], sizeof(g_channels[i]));
     }
   }
@@ -580,11 +587,45 @@ static int flush_channel(ssh_channel_t *ch) {
   return 0;
 }
 
-int ssh_channel_send_data(int sockfd, uint32_t remote_id,
-                          const uint8_t *data, uint32_t len) {
-  ssh_channel_t *ch = find_channel_by_remote(sockfd, remote_id);
-  if (ch == 0 || data == 0 || len == 0U ||
-      len > SSH_CHANNEL_PENDING_SIZE - ch->pending_used) return -1;
+/* The session filter of the screen framework: a program that enters the
+   alternate screen is run through a screen the session holds, and only
+   the cells that changed reach the client -- whether the program writes
+   whole frames or knows the framework. Four screens are kept; a fifth
+   full-screen session at once passes through as before. */
+static xaios_screen_cell_t g_screen_cells[SSH_SCREEN_POOL][2][XAIOS_SCREEN_MAX_CELLS];
+static xaios_screen_t g_screens[SSH_SCREEN_POOL];
+static char g_screen_out[SSH_CHANNEL_PENDING_SIZE];
+static uint8_t g_screen_in[SSH_CHANNEL_PENDING_SIZE + 8U];
+static const uint8_t k_alternate_enter[8] = {0x1b, '[', '?', '1', '0', '4', '9', 'h'};
+static const uint8_t k_alternate_leave[8] = {0x1b, '[', '?', '1', '0', '4', '9', 'l'};
+
+static void screen_release(ssh_channel_t *ch) {
+  if (ch->screen == 0) return;
+  g_screen_used[ch->screen_slot] = 0U;
+  ch->screen = 0;
+  ch->screen_slot = 0U;
+  ch->screen_carry_used = 0U;
+}
+
+static void screen_acquire(ssh_channel_t *ch) {
+  if (ch->screen != 0) return;
+  for (uint32_t i = 0U; i < SSH_SCREEN_POOL; ++i) {
+    if (g_screen_used[i] != 0U) continue;
+    g_screen_used[i] = 1U;
+    ch->screen = &g_screens[i];
+    ch->screen_slot = i;
+    ch->screen_carry_used = 0U;
+    xaios_screen_init(ch->screen, g_screen_cells[i][0], g_screen_cells[i][1],
+                      XAIOS_SCREEN_MAX_CELLS,
+                      ch->terminal_rows != 0U ? ch->terminal_rows : 24U,
+                      ch->terminal_columns != 0U ? ch->terminal_columns : 80U);
+    return;
+  }
+}
+
+static int queue_raw(ssh_channel_t *ch, const uint8_t *data, uint32_t len) {
+  if (len == 0U) return 0;
+  if (len > SSH_CHANNEL_PENDING_SIZE - ch->pending_used) return -1;
   if (ch->pending_used != 0U && ch->pending_offset != 0U) {
     for (uint32_t i = 0; i < ch->pending_used; ++i) {
       ch->pending[i] = ch->pending[ch->pending_offset + i];
@@ -594,6 +635,93 @@ int ssh_channel_send_data(int sockfd, uint32_t remote_id,
   ssh_mem_copy(ch->pending + ch->pending_used, data, len);
   ch->pending_used += len;
   return flush_channel(ch);
+}
+
+/* Present into the room the pending buffer has; what does not fit now is
+   presented from the tick once the buffer drains. */
+static int screen_flush(ssh_channel_t *ch) {
+  for (;;) {
+    uint32_t room = SSH_CHANNEL_PENDING_SIZE - ch->pending_used;
+    if (room < 64U) return 0;
+    if (room > sizeof(g_screen_out)) room = sizeof(g_screen_out);
+    uint64_t n = xaios_screen_present(ch->screen, g_screen_out, room);
+    if (n == 0U) return 0;
+    if (queue_raw(ch, (const uint8_t *)g_screen_out, (uint32_t)n) != 0) return -1;
+    if (ch->screen->incomplete == 0U) return 0;
+  }
+}
+
+static int64_t find_bytes(const uint8_t *data, uint32_t len,
+                          const uint8_t *needle, uint32_t n) {
+  for (uint32_t i = 0U; i + n <= len; ++i) {
+    uint32_t k = 0U;
+    while (k < n && data[i + k] == needle[k]) ++k;
+    if (k == n) return (int64_t)i;
+  }
+  return -1;
+}
+
+/* Bytes at the end that begin an escape sequence the paint cannot finish
+   are kept for the next write, so a leave sequence split across two
+   writes is still seen. */
+static uint32_t trailing_partial_escape(const uint8_t *data, uint32_t len) {
+  uint32_t back = len < 8U ? len : 8U;
+  for (uint32_t i = 0U; i < back; ++i) {
+    uint32_t at = len - 1U - i;
+    if (data[at] == 0x1bU) {
+      /* Complete if a final byte (0x40..0x7e) follows ESC [ ... */
+      if (at + 1U < len && data[at + 1U] == '[') {
+        for (uint32_t j = at + 2U; j < len; ++j) {
+          if (data[j] >= 0x40U && data[j] <= 0x7eU) return 0U;
+        }
+        return len - at;
+      }
+      return at + 1U == len ? 1U : 0U;
+    }
+  }
+  return 0U;
+}
+
+int ssh_channel_send_data(int sockfd, uint32_t remote_id,
+                          const uint8_t *data, uint32_t len) {
+  ssh_channel_t *ch = find_channel_by_remote(sockfd, remote_id);
+  if (ch == 0 || data == 0 || len == 0U) return -1;
+  while (len != 0U) {
+    if (ch->screen == 0) {
+      int64_t at = find_bytes(data, len, k_alternate_enter, 8U);
+      if (at < 0) return queue_raw(ch, data, len);
+      uint32_t head = (uint32_t)at + 8U;
+      if (queue_raw(ch, data, head) != 0) return -1;
+      data += head;
+      len -= head;
+      screen_acquire(ch);
+      if (ch->screen == 0) return queue_raw(ch, data, len);
+      continue;
+    }
+    /* Carried bytes first, then this write. */
+    uint32_t total = ch->screen_carry_used + len;
+    if (total > sizeof(g_screen_in)) return -1;
+    for (uint32_t i = 0U; i < ch->screen_carry_used; ++i) g_screen_in[i] = ch->screen_carry[i];
+    ssh_mem_copy(g_screen_in + ch->screen_carry_used, data, len);
+    ch->screen_carry_used = 0U;
+    data = g_screen_in;
+    len = total;
+    int64_t at = find_bytes(data, len, k_alternate_leave, 8U);
+    if (at < 0) {
+      uint32_t keep = trailing_partial_escape(data, len);
+      xaios_screen_paint(ch->screen, (const char *)data, len - keep);
+      for (uint32_t i = 0U; i < keep; ++i) ch->screen_carry[i] = data[len - keep + i];
+      ch->screen_carry_used = keep;
+      return screen_flush(ch);
+    }
+    xaios_screen_paint(ch->screen, (const char *)data, (uint32_t)at);
+    if (screen_flush(ch) != 0) return -1;
+    screen_release(ch);
+    if (queue_raw(ch, data + at, 8U) != 0) return -1;
+    data += (uint32_t)at + 8U;
+    len -= (uint32_t)at + 8U;
+  }
+  return 0;
 }
 
 int ssh_channel_agent_send(const ssh_channel_t *session, const uint8_t *data,
@@ -1008,6 +1136,8 @@ static int shell_handle_input(ssh_channel_t *ch, const uint8_t *data,
 int ssh_channel_tick(uint64_t now_ns) {
   for (uint32_t i = 0U; i < SSH_CHANNEL_MAX; ++i) {
     ssh_channel_t *ch = &g_channels[i];
+    if (ch->active != 0U && ch->screen != 0 && ch->pending_used == 0U &&
+        ch->screen->incomplete != 0U && screen_flush(ch) != 0) return -1;
     if (ch->active != 0U && ch->is_forward != 0U &&
         ch->pending_used == 0U && ch->remote_window != 0U) {
       u64 received = 0U;
@@ -1074,6 +1204,9 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
 
   if (ssh_str_eq(request_type, "window-change")) {
     int valid = parse_window_change(ch, pkt, data_start) == 0;
+    if (valid && ch->screen != 0) {
+      xaios_screen_resize(ch->screen, ch->terminal_rows, ch->terminal_columns);
+    }
     if (valid && ch->nano.active != 0U) {
       nano_editor_resize(&ch->nano, ch->terminal_columns, ch->terminal_rows);
       if (nano_render_frame(ch) != 0) return -1;
@@ -1360,6 +1493,7 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
         ssh_write_u32_be(failure + 5U, 2U);
         ssh_write_u32_be(failure + 9U, 0U);
         ssh_write_u32_be(failure + 13U, 0U);
+        screen_release(ch);
         ssh_mem_zero(ch, sizeof(*ch));
         return ssh_packet_write_encrypted(sockfd, failure, sizeof(failure));
       }
@@ -1572,6 +1706,7 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
           if (ssh_packet_write_encrypted(sockfd, close_msg,
                                          sizeof(close_msg)) != 0) return -1;
         }
+        screen_release(ch);
         ssh_mem_zero(ch, sizeof(*ch));
       }
     }
