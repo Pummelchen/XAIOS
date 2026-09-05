@@ -72,6 +72,27 @@ def fail(message: str) -> int:
     return 1
 
 
+def fresh_durable_volume() -> None:
+    """A durable volume with no history, for the run about to start.
+
+    The lifecycle record lives there, and a boot that finds the previous one
+    still marked running counts an unclean boot; three of those latch rescue
+    mode, which is the machine working as designed. This gate ends every run
+    by terminating the machine, so it manufactures exactly that sequence: on
+    one volume, run four boots into rescue and the gate reports the machine's
+    correct behaviour as a fault. It is an artefact of how the runs are
+    stopped, not a property of what they test, so each run gets its own
+    volume -- which is also what makes "this run dropped into rescue" mean
+    something if it ever appears.
+    """
+    (VZ / "vz-persistent.img").unlink(missing_ok=True)
+    subprocess.run([str(ROOT / "scripts/create-persistent-image.sh")],
+                   env={**os.environ,
+                        "XAIOS_PERSISTENT_IMAGE": str(VZ / "vz-persistent.img")},
+                   check=True, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+
+
 def prepare() -> str | None:
     if not (VZ / "xaios-vz").is_file():
         return "harness missing; build and sign platform/virtualization-framework/xaios_vz.swift first"
@@ -79,18 +100,7 @@ def prepare() -> str | None:
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     shutil.copy(VZ / "xaios-vz-disk.img", VZ / "run-disk.img")
 
-    # A fresh durable volume, for the reason vz-gate builds one: the lifecycle
-    # record lives there, rescue mode is latched by a marker file on it, and
-    # build/xaios-persistent.img collects unclean boots from every gate that
-    # touches it. This gate ends each of its runs by terminating the machine,
-    # so it is one of the larger contributors to that count -- and a run that
-    # silently drops into rescue mode would still satisfy every marker below.
-    (VZ / "vz-persistent.img").unlink(missing_ok=True)
-    subprocess.run([str(ROOT / "scripts/create-persistent-image.sh")],
-                   env={**os.environ,
-                        "XAIOS_PERSISTENT_IMAGE": str(VZ / "vz-persistent.img")},
-                   check=True, stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL)
+    fresh_durable_volume()
 
     for target, source in VOLUMES:
         destination = VZ / target
@@ -131,6 +141,7 @@ def run_once(index: int) -> tuple[str, bool]:
 def run_once_attempt(index: int) -> tuple[str, bool]:
     log = VZ / f"vz-stress-{index:02d}.log"
     shutil.copy(VZ / "xaios-vz-disk.img", VZ / "run-disk.img")
+    fresh_durable_volume()
     command = [str(VZ / "xaios-vz"), str(VZ / "run-disk.img")]
     command += [str(VZ / target) for target, _ in VOLUMES]
     command += ["--memory-mib", "4096", "--cpus", CPUS]
