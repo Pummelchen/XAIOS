@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
+import sys
 import json
 import re
 
-from qemu_gate_lib import BUILD, check_markers, now, result, run, status_from_failures, write_report
+from qemu_gate_lib import arch_from_argv, smoke_command, smoke_timeout, BUILD, check_markers, now, result, run, status_from_failures, write_report
 
 
 SCHEMA = "xaios.qemu.userspace_expansion.v1"
@@ -54,7 +55,8 @@ COMMAND_MARKERS = {
 
 
 def main() -> int:
-    proc = run(["python3", "./tests/scripts/qemu-smoke.py"], timeout=140)
+    arch = arch_from_argv(sys.argv[1:])
+    proc = run(smoke_command(arch), timeout=smoke_timeout(arch, 140))
     failures = []
     checks = []
     if proc.returncode != 0:

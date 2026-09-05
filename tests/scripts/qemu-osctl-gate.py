@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-from qemu_gate_lib import (BUILD, check_markers, now, parse_telemetry, result,
+import sys
+from qemu_gate_lib import (arch_from_argv, smoke_command,
+                           smoke_timeout, BUILD, check_markers, now, parse_telemetry, result,
                            run, status_from_failures, write_report)
 
 
@@ -30,7 +32,8 @@ MARKERS = [
 
 
 def main() -> int:
-    proc = run(["python3", "./tests/scripts/qemu-smoke.py"], timeout=160)
+    arch = arch_from_argv(sys.argv[1:])
+    proc = run(smoke_command(arch), timeout=smoke_timeout(arch, 160))
     failures = []
     checks = []
 

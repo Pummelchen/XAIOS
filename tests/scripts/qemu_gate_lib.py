@@ -257,3 +257,26 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
         if serial_to_stdout:
             env["XAIOS_RISCV64_SERIAL"] = "stdio"
     return env
+
+
+def smoke_command(arch: str) -> List[str]:
+    """The boot-closure helper, for this architecture.
+
+    Gates that need a full boot before they assert anything run the smoke
+    helper rather than a runner, which is what lets them follow the machine
+    rather than name it.
+    """
+    command = ["python3", "./tests/scripts/qemu-smoke.py"]
+    if arch != "aarch64":
+        command += ["--arch", arch]
+    return command
+
+
+def smoke_timeout(arch: str, base: int) -> int:
+    """A budget scaled to the machine rather than to the fastest one.
+
+    RISC-V runs the same closure through an interpreter with no host
+    acceleration available for it. Gates were written with AArch64's numbers,
+    and reusing them would report a slower machine as a broken one.
+    """
+    return base * 4 if arch == "riscv64" else base

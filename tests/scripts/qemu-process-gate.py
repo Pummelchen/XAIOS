@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-from qemu_gate_lib import (BUILD, check_markers, now, parse_telemetry, result,
+import sys
+from qemu_gate_lib import (arch_from_argv, smoke_command,
+                           smoke_timeout, BUILD, check_markers, now, parse_telemetry, result,
                            run, status_from_failures, write_report)
 
 
@@ -33,12 +35,30 @@ MINIMUMS = {
 
 EQUALS = {
     "user_process_failed": 0,
-    "user_process_active": 0,
 }
+
+# What "no process was left behind" actually means.
+#
+# This used to be `user_process_active == 0`, which asked whether any process
+# was still alive at the instant the boot summary was emitted. On AArch64 the
+# answer was zero and the check looked like an invariant. It was a
+# coincidence of speed: RISC-V reaches that instant with three service
+# workers still running, reaps them immediately afterwards, and was reported
+# as leaking processes it had not leaked.
+#
+# The property worth asserting is that nothing exits without being reclaimed,
+# which is true at every instant on every machine and is what a leak would
+# actually break. Both figures still have to clear their minimums above, so
+# this cannot be satisfied by a boot that ran nothing.
+RELATIONS = [
+    ("user_process_exited", "user_process_reclaims",
+     "every process that exited was reclaimed"),
+]
 
 
 def main() -> int:
-    proc = run(["python3", "./tests/scripts/qemu-smoke.py"], timeout=160)
+    arch = arch_from_argv(sys.argv[1:])
+    proc = run(smoke_command(arch), timeout=smoke_timeout(arch, 160))
     failures = []
     checks = []
 
@@ -65,6 +85,13 @@ def main() -> int:
             value = telemetry.get(key)
             if value != expected:
                 metric_failures.append(f"{key} expected {expected}, got {value!r}")
+        for left, right, why in RELATIONS:
+            first = telemetry.get(left)
+            second = telemetry.get(right)
+            if not isinstance(first, int) or not isinstance(second, int) or \
+                    first != second:
+                metric_failures.append(
+                    f"{why}: {left}={first!r} but {right}={second!r}")
         checks.append(result("process_telemetry", not metric_failures,
                              failures=metric_failures))
         failures.extend(metric_failures)

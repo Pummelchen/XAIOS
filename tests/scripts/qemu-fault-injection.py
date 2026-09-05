@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-from qemu_gate_lib import (BUILD, check_markers, now, parse_telemetry, result,
+import sys
+from qemu_gate_lib import (arch_from_argv, smoke_command,
+                           smoke_timeout, BUILD, check_markers, now, parse_telemetry, result,
                            run, status_from_failures, write_report)
 
 
@@ -40,6 +42,7 @@ SMOKE_FAILURE_MARKERS = {
 
 
 def main() -> int:
+    arch = arch_from_argv(sys.argv[1:])
     failures = []
     checks = []
 
@@ -49,7 +52,7 @@ def main() -> int:
     if fault_proc.returncode != 0:
         failures.append(f"qemu-fault-matrix exited {fault_proc.returncode}")
 
-    smoke_proc = run(["python3", "./tests/scripts/qemu-smoke.py"], timeout=140)
+    smoke_proc = run(smoke_command(arch), timeout=smoke_timeout(arch, 140))
     if smoke_proc.returncode != 0:
         failures.append(f"qemu-smoke exited {smoke_proc.returncode}")
 

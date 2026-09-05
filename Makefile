@@ -300,6 +300,44 @@ qemu-riscv64-update-gate:
 	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
 	python3 ./tests/scripts/qemu-milestone-gate.py 68 --arch riscv64
 
+# Seven more that only ever needed a boot they could name. Same assertions,
+# same helper, a different machine underneath.
+
+qemu-riscv64-process-gate:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-process-gate.py --arch riscv64
+
+qemu-riscv64-osctl-gate:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-osctl-gate.py --arch riscv64
+
+qemu-riscv64-userspace-suite:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-userspace-suite.py --arch riscv64
+
+qemu-riscv64-network-suite:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-network-suite.py --arch riscv64
+
+qemu-riscv64-cpu-ai-suite:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-cpu-ai-suite.py --arch riscv64
+
+qemu-riscv64-fault-injection:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-fault-injection.py --arch riscv64
+
+qemu-riscv64-regression-suite:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-regression-suite.py --arch riscv64
+
 qemu-x86_64-numa-gate:
 	XAIOS_TARGET_ARCH=x86_64 XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
 	python3 tests/scripts/qemu-x86_64-numa-gate.py
