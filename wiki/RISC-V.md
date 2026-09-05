@@ -209,7 +209,7 @@ the kernel comes up to a login prompt with sshd listening.
 
 ## Test coverage
 
-Forty-four `make` targets, of which forty-two are gates. They fall into
+Forty-four `make` targets, of which forty-two are gates, plus a leg in the shared unified-image gate. They fall into
 three groups, and the split matters more than the count.
 
 **Gates this architecture has of its own.** These exist because the shared
@@ -274,6 +274,18 @@ invisible until something faulted a user process here on purpose:
   the syscall that had entered user mode -- sshd running an application on
   someone's behalf -- got its window closed underneath it and faulted on the
   next byte it wrote to its own caller.
+
+**The shipped image, on this architecture.** `make unified-image-gate` boots
+the one release ISO on five environments and this is now the third of them.
+Getting there found two things. The image build did not build the RISC-V
+half at all -- it picked up whatever `build/` happened to hold, which is how
+build 5's ISO came to carry a build 4 RISC-V kernel. And the gate attached
+the tree's own A/B system volume, which the loader prefers over the kernel on
+the medium: every log it had ever produced said "loaded verified A/B system
+slot", so it had been proving that the image's *loader* boots and then
+running a kernel from `build/`. All three QEMU legs now boot with no system
+volume, which is what a first boot on a real machine looks like, and all
+three report the fallback path and build 5.
 
 **Still short.** NUMA, cluster, the setup and installed-disk gates, and the
 external Debian client suite run on AArch64 and x86_64 and not here. The

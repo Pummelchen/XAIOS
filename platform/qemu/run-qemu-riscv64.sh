@@ -38,7 +38,11 @@ QEMU="${QEMU_SYSTEM_RISCV64:-qemu-system-riscv64}"
 
 KERNEL="$BUILD/kernel-riscv64/kernel.elf"
 INITFS="$BUILD/xaios-riscv64-initfs.img"
-BOOT_MEDIUM="$BUILD/xaios-riscv64.img"
+# The medium this machine boots from, which a caller may name: the unified
+# release image carries a RISC-V loader, kernel and initial filesystem beside
+# the other two, and the only way to prove that half of what ships actually
+# boots is to point this at it.
+BOOT_MEDIUM="${XAIOS_RISCV64_IMAGE:-$BUILD/xaios-riscv64.img}"
 [ -f "$KERNEL" ] || { printf 'error: no kernel; run scripts/build-riscv64.sh\n' >&2; exit 1; }
 [ -f "$INITFS" ] || { printf 'error: no initial filesystem; run scripts/build-riscv64-image.sh\n' >&2; exit 1; }
 
@@ -72,8 +76,19 @@ fi
 # this is not, which is the correct behaviour and a confusing way to discover
 # that the wrong file was copied.
 RISCV_SYSTEM="$BUILD/xaios-riscv64-system.img"
+# "none" attaches no system volume at all, which is not the same as an empty
+# one. The loader prefers a verified A/B slot over the copy on the medium, so
+# a machine booted from a release image with a system volume attached runs the
+# kernel from the volume and not the one on the image -- which looks exactly
+# like the image booting, and is not. Proving what a shipped image does
+# requires taking the alternative away.
 SYSTEM_IMAGE="${XAIOS_SYSTEM_VOLUME_IMAGE:-$STATE/system.img}"
-[ -f "$SYSTEM_IMAGE" ] || cp "$RISCV_SYSTEM" "$SYSTEM_IMAGE"
+if [ "$SYSTEM_IMAGE" = none ]; then
+  SYSTEM_ARGS=""
+else
+  [ -f "$SYSTEM_IMAGE" ] || cp "$RISCV_SYSTEM" "$SYSTEM_IMAGE"
+  SYSTEM_ARGS="-blockdev driver=file,node-name=sysf,filename=$SYSTEM_IMAGE,locking=off -blockdev driver=raw,node-name=sysraw,file=sysf -device virtio-blk-pci,drive=sysraw,bootindex=1,disable-legacy=on -blockdev driver=file,node-name=sysf2,filename=$SYSTEM_IMAGE,locking=off -blockdev driver=raw,node-name=sysraw2,file=sysf2 -device virtio-blk-device,drive=sysraw2,bus=virtio-mmio-bus.6"
+fi
 # The administrative scratch disk. The aarch64 smoke gate leaves one behind in
 # build/, but a fresh tree has none, and a runner that fails at `cp` before
 # QEMU starts leaves no serial log and nothing to diagnose. Made here when
@@ -266,12 +281,7 @@ exec "$QEMU" \
   -device virtio-blk-device,drive=xmodels,bus=virtio-mmio-bus.4 \
   -drive "if=none,format=raw,id=xadmin,file=$ADMIN_IMAGE" \
   -device virtio-blk-device,drive=xadmin,bus=virtio-mmio-bus.5 \
-  -blockdev "driver=file,node-name=sysf,filename=$SYSTEM_IMAGE,locking=off" \
-  -blockdev driver=raw,node-name=sysraw,file=sysf \
-  -device virtio-blk-pci,drive=sysraw,bootindex=1,disable-legacy=on \
-  -blockdev "driver=file,node-name=sysf2,filename=$SYSTEM_IMAGE,locking=off" \
-  -blockdev driver=raw,node-name=sysraw2,file=sysf2 \
-  -device virtio-blk-device,drive=sysraw2,bus=virtio-mmio-bus.6 \
+  $SYSTEM_ARGS \
   $RNG_ARGS \
   -netdev user,id=n0 \
   -device virtio-net-pci,netdev=n0,disable-legacy=on \

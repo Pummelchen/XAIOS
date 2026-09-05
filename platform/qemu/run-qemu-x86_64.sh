@@ -191,6 +191,11 @@ fi
 for required_image in "$test_block_image" \
   "$xai_fs_image" "$system_volume_image" "$storage_admin_image"
 do
+  # "none" means the device is not attached at all, which for the system
+  # volume is how a gate arranges a first boot: the loader prefers a verified
+  # A/B slot over the kernel on the medium, so a release image booted with a
+  # developer's volume attached runs a kernel that is not on the image.
+  if [ "$required_image" = "none" ]; then continue; fi
   if [ "$dry_run" -eq 0 ] && [ ! -f "$required_image" ]; then
     printf '%s\n' "error: missing x86_64 runtime image: $required_image" >&2
     printf '%s\n' "       Run make image-x86_64 first." >&2
@@ -217,13 +222,17 @@ set -- "$qemu" \
   -device virtio-blk-pci,drive=xaios_x86_models,disable-legacy=on \
   -drive "if=none,format=raw,id=xaios_x86_admin,file=$storage_admin_image" \
   -device virtio-blk-pci,drive=xaios_x86_admin,disable-legacy=on \
-  -blockdev "driver=file,node-name=xaios_x86_system_uefi_file,filename=$system_volume_image,locking=off" \
-  -blockdev driver=raw,node-name=xaios_x86_system_uefi,file=xaios_x86_system_uefi_file \
-  -device virtio-blk-pci,drive=xaios_x86_system_uefi,bootindex=1,disable-legacy=on \
-  -blockdev "driver=file,node-name=xaios_x86_system_kernel_file,filename=$system_volume_image,locking=off" \
-  -blockdev driver=raw,node-name=xaios_x86_system_kernel,file=xaios_x86_system_kernel_file \
-  -device virtio-blk-pci,drive=xaios_x86_system_kernel,disable-legacy=on \
   -device "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:57,disable-legacy=on$net0_device_extra"
+
+if [ "$system_volume_image" != "none" ]; then
+  set -- "$@" \
+    -blockdev "driver=file,node-name=xaios_x86_system_uefi_file,filename=$system_volume_image,locking=off" \
+    -blockdev driver=raw,node-name=xaios_x86_system_uefi,file=xaios_x86_system_uefi_file \
+    -device virtio-blk-pci,drive=xaios_x86_system_uefi,bootindex=1,disable-legacy=on \
+    -blockdev "driver=file,node-name=xaios_x86_system_kernel_file,filename=$system_volume_image,locking=off" \
+    -blockdev driver=raw,node-name=xaios_x86_system_kernel,file=xaios_x86_system_kernel_file \
+    -device virtio-blk-pci,drive=xaios_x86_system_kernel,disable-legacy=on
+fi
 
 if [ "$keyboard_device" = "usb" ]; then
   set -- "$@" \

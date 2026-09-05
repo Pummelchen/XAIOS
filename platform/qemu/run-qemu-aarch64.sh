@@ -266,7 +266,15 @@ if [ "$dry_run" -eq 0 ] && [ ! -f "$xai_fs_image" ]; then
   exit 1
 fi
 
-if [ "$dry_run" -eq 0 ] && [ ! -f "$system_volume_image" ]; then
+# "none" attaches no system volume, which is not the same as an empty one.
+#
+# The loader prefers a verified A/B slot over the copy of the kernel on the
+# medium, so a machine booted from a release image with a developer's system
+# volume attached runs the kernel from that volume -- which looks exactly like
+# the image booting and is not. A first boot on a real machine has no such
+# volume, and this is how a gate arranges for the same thing.
+if [ "$system_volume_image" != "none" ] && [ "$dry_run" -eq 0 ] &&
+   [ ! -f "$system_volume_image" ]; then
   printf '%s\n' "error: missing A/B system volume: $system_volume_image" >&2
   printf '%s\n' "       Run make image first, or set XAIOS_SYSTEM_VOLUME_IMAGE=/path/to/image.img." >&2
   exit 1
@@ -309,13 +317,17 @@ set -- "$qemu" \
   -drive "if=none,format=raw,id=xaios_persistent,file=$persistent_image" \
   -device virtio-blk-device,drive=xaios_persistent,bus=virtio-mmio-bus.1 \
   -drive "if=none,format=raw,id=xaios_models,file=$xai_fs_image$model_drive_options" \
-  -device virtio-blk-device,drive=xaios_models,bus=virtio-mmio-bus.4 \
-  -blockdev "driver=file,node-name=xaios_system_uefi_file,filename=$system_volume_image,locking=off,cache.direct=on" \
-  -blockdev driver=raw,node-name=xaios_system_uefi,file=xaios_system_uefi_file \
-  -device virtio-blk-pci,drive=xaios_system_uefi,bootindex=1 \
-  -blockdev "driver=file,node-name=xaios_system_kernel_file,filename=$system_volume_image,locking=off,cache.direct=on" \
-  -blockdev driver=raw,node-name=xaios_system_kernel,file=xaios_system_kernel_file \
-  -device virtio-blk-device,drive=xaios_system_kernel,bus=virtio-mmio-bus.6
+  -device virtio-blk-device,drive=xaios_models,bus=virtio-mmio-bus.4
+
+if [ "$system_volume_image" != "none" ]; then
+  set -- "$@" \
+    -blockdev "driver=file,node-name=xaios_system_uefi_file,filename=$system_volume_image,locking=off,cache.direct=on" \
+    -blockdev driver=raw,node-name=xaios_system_uefi,file=xaios_system_uefi_file \
+    -device virtio-blk-pci,drive=xaios_system_uefi,bootindex=1 \
+    -blockdev "driver=file,node-name=xaios_system_kernel_file,filename=$system_volume_image,locking=off,cache.direct=on" \
+    -blockdev driver=raw,node-name=xaios_system_kernel,file=xaios_system_kernel_file \
+    -device virtio-blk-device,drive=xaios_system_kernel,bus=virtio-mmio-bus.6
+fi
 
 if [ "$keyboard_device" = "usb" ]; then
   set -- "$@" \

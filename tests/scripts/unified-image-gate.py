@@ -102,6 +102,19 @@ def run_until_settled(command, log_path, timeout_s, environment=None):
     return log_path.read_bytes().decode("utf-8", "replace")
 
 
+def fresh_state(name: str) -> Path:
+    """A scratch directory of this gate's own, emptied per run.
+
+    RISC-V keeps its writable volumes in a directory rather than naming each
+    one; a leftover from a previous run boots a machine that is already set
+    up, which is not what booting a release image should show.
+    """
+    directory = BUILD / name
+    shutil.rmtree(directory, ignore_errors=True)
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
 def fresh_persistent(name: str) -> Path:
     """A durable volume of this gate's own, regenerated per run.
 
@@ -139,17 +152,36 @@ def boot_qemu(arch: str) -> tuple[str, str | None]:
     # file booted" true rather than nearly true.
     scratch = BUILD / f"unified-boot-{arch}.img"
     shutil.copy(IMAGE, scratch)
-    image_variable = ("XAIOS_AARCH64_IMAGE" if arch == "aarch64"
-                      else "XAIOS_X86_64_IMAGE")
-    persistent_variable = ("XAIOS_PERSISTENT_IMAGE" if arch == "aarch64"
-                           else "XAIOS_X86_PERSISTENT_IMAGE")
+    image_variable = {"aarch64": "XAIOS_AARCH64_IMAGE",
+                      "x86_64": "XAIOS_X86_64_IMAGE",
+                      "riscv64": "XAIOS_RISCV64_IMAGE"}[arch]
+    persistent_variable = ("XAIOS_X86_PERSISTENT_IMAGE" if arch == "x86_64"
+                           else "XAIOS_PERSISTENT_IMAGE")
     environment = {**os.environ, image_variable: str(scratch),
                    persistent_variable:
-                       str(fresh_persistent(f"unified-{arch}-persistent.img"))}
+                       str(fresh_persistent(f"unified-{arch}-persistent.img")),
+                   # No A/B system volume, which is the whole point.
+                   #
+                   # The loader prefers a verified slot over the kernel on the
+                   # medium, so with the tree's own system volume attached this
+                   # gate booted the image's *loader* and then a kernel from
+                   # build/ -- "XAIOS loader loaded verified A/B system slot"
+                   # is in every log it ever produced. A first boot on a real
+                   # machine has no such volume, and taking it away is what
+                   # makes "this image boots" true rather than nearly true.
+                   "XAIOS_SYSTEM_VOLUME_IMAGE": "none"}
+    if arch == "riscv64":
+        # This board is started from the ELF unless told otherwise; the point
+        # here is the medium, so it boots through firmware like the others.
+        environment["XAIOS_RISCV64_BOOT"] = "uefi"
+        environment["XAIOS_RISCV64_SERIAL"] = "stdio"
+        environment["XAIOS_RISCV64_STATE"] = str(
+            fresh_state(f"unified-{arch}-state"))
     # x86_64 has no hardware acceleration on an ARM host, so it boots through
     # an interpreter and takes several times longer than anything else here.
     timeout = int(os.environ.get(
-        "XAIOS_UNIFIED_QEMU_TIMEOUT", "540" if arch == "x86_64" else "240"))
+        "XAIOS_UNIFIED_QEMU_TIMEOUT",
+        "540" if arch in ("x86_64", "riscv64") else "240"))
     log = BUILD / f"unified-qemu-{arch}.log"
     return run_until_settled([str(runner)], log, timeout, environment), None
 
@@ -241,6 +273,7 @@ def boot_fusion() -> tuple[str, str | None]:
 ENVIRONMENTS = (
     ("qemu-aarch64", lambda: boot_qemu("aarch64")),
     ("qemu-x86_64", lambda: boot_qemu("x86_64")),
+    ("qemu-riscv64", lambda: boot_qemu("riscv64")),
     ("virtualization-framework", boot_vz),
     ("vmware-fusion", boot_fusion),
 )
@@ -260,8 +293,10 @@ def staleness() -> str | None:
     built = IMAGE.stat().st_mtime
     for source in (BUILD / "kernel" / "kernel.elf",
                    BUILD / "kernel-x86_64" / "kernel.elf",
+                   BUILD / "kernel-riscv64" / "kernel.elf",
                    BUILD / "xaios-virtio-test.img",
-                   BUILD / "x86-virtio-test.img"):
+                   BUILD / "x86-virtio-test.img",
+                   BUILD / "xaios-riscv64-initfs.img"):
         if source.is_file() and source.stat().st_mtime > built:
             return (f"{IMAGE.name} is older than "
                     f"{source.relative_to(BUILD)}, so it does not contain it")

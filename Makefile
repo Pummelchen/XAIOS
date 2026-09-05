@@ -127,9 +127,19 @@ qemu-dhcpv6-gate: image-qemu-test
 # markers the gates look for. That is not a stale image and the staleness
 # check does not catch it -- it is a correct image of the wrong build, and it
 # happened when make vmware-fusion-image rebuilt the kernel in passing.
+# All three halves, built here rather than picked up from the tree.
+#
+# The RISC-V kernel and initial filesystem were taken from whatever build/
+# happened to contain, so the shipped image carried whichever configuration
+# someone had last built -- and, once, a kernel from an older build number
+# than the image it was inside. Nothing said so: the image was assembled from
+# files that existed, and files that exist look like files that were built.
 unified-image:
 	XAIOS_BOOT_VERBOSE=1 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
 	XAIOS_TARGET_ARCH=x86_64 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-boot-media.sh
 	./scripts/build-unified-image.sh
 
 # The release package: the image, and the zip that carries it where a 220 MB
