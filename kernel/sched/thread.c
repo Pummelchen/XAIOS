@@ -33,6 +33,14 @@ typedef struct xaios_user_thread_context {
   uint64_t exit_result;
   uint32_t owner_pid;
   uint32_t exited;
+  /* Which CPU the thread was started on, and which one its exit syscall was
+     serviced by. B-02 is a worker that returns the exit magic -- so the exit
+     path ran and found *a* context -- while its own context is still not
+     marked exited, which can only mean the exit marked a different one. The
+     per-CPU slot is the only link between the two, so record both ends of it
+     rather than inferring. */
+  uint32_t entry_cpu;
+  uint32_t exit_cpu;
 } xaios_user_thread_context_t;
 
 typedef struct xaios_group_context {
@@ -252,21 +260,55 @@ static xaios_status_t select_user_cpu(uint32_t preferred_cpu,
                        ? 0U
                        : __sync_fetch_and_add(&g_round_robin_ordinal, 1U) %
                              online;
-  for (uint32_t offset = 0U; offset < online; ++offset) {
-    uint32_t cpu_id = 0U;
-    if (smp_cpu_id_at((start + offset) % online, &cpu_id) != XAIOS_OK ||
-        cpu_id == current_cpu) {
-      continue;
-    }
-    const xaios_cpu_state_t *cpu = smp_cpu_state(cpu_id);
-    if (cpu != 0 && cpu->online != 0U &&
-        cpu->role == XAIOS_CPU_ROLE_SCHEDULING && cpu->lease_owner_id == 0U) {
+  /* Two passes: a CPU with nothing on it first, then any eligible CPU.
+   *
+   * A worker CPU runs one thread to completion, so a second thread placed on
+   * a busy CPU does not run alongside the first -- it waits behind it, and
+   * the waiting is invisible to the caller, which asked for a thread and got
+   * a queue entry. The kernel-side placement has refused to double-book a CPU
+   * since it was written (cpu_has_thread_locked); this path never asked.
+   *
+   * Round robin alone does not avoid it. The ordinal is shared with every
+   * other placement in the kernel and the current CPU is skipped, so two
+   * consecutive creates land on the same CPU whenever the ordinal wraps past
+   * it -- which is exactly what a run that failed showed: ids 7 and 8 both
+   * placed on CPU 1, id 9 on CPU 2, and the join for id 7 timing out at five
+   * seconds with it still marked running.
+   *
+   * The second pass keeps the old behaviour rather than failing: a machine
+   * with more runnable threads than worker CPUs has to queue somewhere, and
+   * refusing the create would be worse than queueing it. */
+  for (uint32_t pass = 0U; pass < 2U; ++pass) {
+    for (uint32_t offset = 0U; offset < online; ++offset) {
+      uint32_t cpu_id = 0U;
+      if (smp_cpu_id_at((start + offset) % online, &cpu_id) != XAIOS_OK ||
+          cpu_id == current_cpu) {
+        continue;
+      }
+      const xaios_cpu_state_t *cpu = smp_cpu_state(cpu_id);
+      if (cpu == 0 || cpu->online == 0U ||
+          cpu->role != XAIOS_CPU_ROLE_SCHEDULING ||
+          cpu->lease_owner_id != 0U) {
+        continue;
+      }
+      if (pass == 0U) {
+        xaios_spin_lock(&g_thread_lock);
+        uint32_t busy = cpu_has_thread_locked(cpu_id);
+        xaios_spin_unlock(&g_thread_lock);
+        if (busy != 0U) continue;
+      }
       *target_cpu = cpu_id;
       return XAIOS_OK;
     }
   }
   return XAIOS_ERR_UNSUPPORTED;
 }
+
+/* The last exit this kernel serviced, for the B-02 diagnostic below: a worker
+   whose own context was never marked needs to say which context was. */
+static volatile uint64_t g_last_exit_context;
+static volatile uint32_t g_last_exit_cpu = UINT32_MAX;
+static volatile uint64_t g_last_exit_count;
 
 static uint64_t user_thread_worker(void *opaque) {
   xaios_user_thread_context_t *context =
@@ -314,6 +356,8 @@ static uint64_t user_thread_worker(void *opaque) {
       g_current_user_thread_by_cpu[cpu_id];
 
   user_switch_address_space(context->owner_pid);
+  context->entry_cpu = cpu_id;
+  context->exit_cpu = UINT32_MAX;
   g_current_user_thread_by_cpu[cpu_id] = context;
   uint64_t started_ns = timer_now_ns();
   user_thread_runtime_start(context->owner_pid, cpu_id, started_ns);
@@ -338,8 +382,12 @@ static uint64_t user_thread_worker(void *opaque) {
     return UINT64_MAX;
   }
   if (context->exited == 0U) {
-    klog("threads: worker exit magic present but exited=0; owner=%u cpu=%u\n",
-         context->owner_pid, cpu_id);
+    klog("threads: worker exit magic present but exited=0; owner=%u cpu=%u "
+         "entry_cpu=%u exit_cpu=%u this=0x%lx last_exit=0x%lx last_cpu=%u "
+         "exits=%lu encoded=0x%lx\n",
+         context->owner_pid, cpu_id, context->entry_cpu, context->exit_cpu,
+         (uint64_t)(uintptr_t)context, g_last_exit_context, g_last_exit_cpu,
+         g_last_exit_count, encoded);
     return UINT64_MAX;
   }
   return context->exit_result;
@@ -578,8 +626,12 @@ uint64_t xaios_user_thread_exit(uint64_t result) {
     return UINT64_MAX;
   }
   xaios_user_thread_context_t *context = g_current_user_thread_by_cpu[cpu_id];
+  context->exit_cpu = cpu_id;
   context->exit_result = result;
   context->exited = 1U;
+  g_last_exit_context = (uint64_t)(uintptr_t)context;
+  g_last_exit_cpu = cpu_id;
+  __atomic_add_fetch(&g_last_exit_count, 1U, __ATOMIC_RELAXED);
   return XAIOS_USER_EXIT_RETURN_MAGIC;
 }
 
