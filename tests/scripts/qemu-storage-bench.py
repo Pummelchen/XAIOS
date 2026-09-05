@@ -26,12 +26,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
-REPORT = BUILD / "qemu-storage-bench.json"
-LOG = BUILD / "qemu-storage-bench.log"
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import (arch_from_argv, qemu_boot_environment, qemu_runner,
+                           smoke_timeout)
+
+ARCH = arch_from_argv(sys.argv)
+SUFFIX = "" if ARCH == "aarch64" else f"-{ARCH}"
+REPORT = BUILD / f"qemu-storage-bench{SUFFIX}.json"
+LOG = BUILD / f"qemu-storage-bench{SUFFIX}.log"
 CACHE_FIXTURE = BUILD / "xaios-cache-fixture.img"
-SCRATCH = BUILD / "storage-bench-scratch.img"
+SCRATCH = BUILD / f"storage-bench-scratch{SUFFIX}.img"
 SCRATCH_BYTES = 1024 * 1024 * 1024
-TIMEOUT_S = int(os.environ.get("XAIOS_STORAGE_BENCH_TIMEOUT", "900"))
+TIMEOUT_S = smoke_timeout(
+    ARCH, int(os.environ.get("XAIOS_STORAGE_BENCH_TIMEOUT", "900")))
 
 RATE = re.compile(
     rb"storage-bench: (\S+) (?:device|bytes)=\S* ?bytes=(\d+) ms=(\d+) "
@@ -72,16 +79,20 @@ def main() -> int:
 
     environment = dict(os.environ)
     environment["XAIOS_XAI_FS_IMAGE"] = str(CACHE_FIXTURE)
-    # No host port forwarding. Neither gate uses SSH, and claiming a fixed
-    # host port means one stale emulator anywhere on the machine turns every
-    # trial into a boot that never happened -- reported, unhelpfully, as a
-    # guest that never committed anything.
-    environment["XAIOS_QEMU_HOSTFWD_PORT"] = "none"
-    environment["XAIOS_STORAGE_ADMIN_IMAGE"] = str(SCRATCH)
+    # No host port forwarding. This gate does not use SSH, and claiming a
+    # fixed host port means one stale emulator anywhere on the machine turns
+    # the run into a boot that never happened.
+    #
+    # serial_to_stdout because the console is being redirected into LOG here;
+    # RISC-V's runner would otherwise write it to a file of its own and this
+    # would read an empty log.
+    environment = qemu_boot_environment(
+        ARCH, environment, hostfwd_port="none", storage_admin=SCRATCH,
+        serial_to_stdout=True)
     LOG.unlink(missing_ok=True)
     with LOG.open("wb") as sink:
         process = subprocess.Popen(
-            [str(ROOT / "platform/qemu/run-qemu-aarch64.sh")],
+            [qemu_runner(ARCH)],
             cwd=ROOT, env=environment, stdout=sink,
             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             start_new_session=True)
@@ -171,6 +182,7 @@ def main() -> int:
     transfers = TRANSFERS.search(text)
     report = {
         "schema": "xaios.storage-bench.v1",
+        "arch": ARCH,
         "block": block,
         "model": model,
         "cache": cache,

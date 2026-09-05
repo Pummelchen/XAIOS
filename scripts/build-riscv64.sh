@@ -76,6 +76,15 @@ case "$CRASH_WRITER" in
   0|1) ;;
   *) printf '%s\n' "error: XAIOS_CRASH_WRITER must be 0 or 1" >&2; exit 2 ;;
 esac
+# The self-measurement the storage benchmark reads. Same shared kernel code;
+# this builder simply had no way to turn it on.
+STORAGE_BENCH="${XAIOS_STORAGE_BENCH:-0}"
+case "$STORAGE_BENCH" in
+  0|1) ;;
+  *) printf '%s\n' "error: XAIOS_STORAGE_BENCH must be 0 or 1" >&2; exit 2 ;;
+esac
+BASE_CFLAGS="$BASE_CFLAGS -DXAIOS_STORAGE_BENCH=$STORAGE_BENCH"
+
 # The injected power-loss points the metadata durability gate crashes on.
 # The code they compile in lives in kernel/runtime/system_slot.c, which this
 # architecture links like the others; only the switch was missing.
