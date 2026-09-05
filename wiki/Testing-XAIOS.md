@@ -102,6 +102,7 @@ make qemu-riscv64-release-gate
 make qemu-riscv64-smoke
 make qemu-riscv64-regression-suite
 make qemu-riscv64-storage-crash-test
+make qemu-riscv64-crash-safety-gate
 make qemu-riscv64-write-ordering-gate
 make qemu-riscv64-local-console-gate
 make qemu-console-xtop-gate-riscv64

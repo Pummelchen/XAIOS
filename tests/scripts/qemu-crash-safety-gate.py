@@ -52,9 +52,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
-REPORT = BUILD / "qemu-crash-safety-gate.json"
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import (arch_from_argv, qemu_boot_environment, qemu_runner,
+                           smoke_timeout)
+
+ARCH = arch_from_argv(sys.argv)
+REPORT = BUILD / (f"qemu-crash-safety-gate-{ARCH}.json" if ARCH != "aarch64"
+                  else "qemu-crash-safety-gate.json")
 PRISTINE = BUILD / "xaios-crash-fixture.img"
-WORKING = BUILD / "crash-trial.img"
+# Per architecture: the pristine fixture is an input and shared, but the
+# copy being wrecked is not, and two runs sharing one would each report
+# the other's damage.
+WORKING = BUILD / (f"crash-trial-{ARCH}.img" if ARCH != "aarch64"
+                   else "crash-trial.img")
 TOOLS = ROOT / "tools"
 
 TRIALS = int(os.environ.get("XAIOS_CRASH_TRIALS", "8"))
@@ -72,7 +82,8 @@ MAX_COMMITS = int(os.environ.get("XAIOS_CRASH_MAX_COMMITS", "30"))
 # commit that follows rather than always just after one finished.
 MIN_JITTER_S = float(os.environ.get("XAIOS_CRASH_MIN_JITTER", "0.0"))
 MAX_JITTER_S = float(os.environ.get("XAIOS_CRASH_MAX_JITTER", "0.4"))
-BOOT_TIMEOUT_S = float(os.environ.get("XAIOS_CRASH_BOOT_TIMEOUT", "240"))
+BOOT_TIMEOUT_S = float(smoke_timeout(
+    ARCH, int(os.environ.get("XAIOS_CRASH_BOOT_TIMEOUT", "240"))))
 SEED = int(os.environ.get("XAIOS_CRASH_SEED", "20260829"))
 
 STARTED = re.compile(rb"crash-writer: ingest started")
@@ -129,10 +140,16 @@ def run_until_killed(log: Path, after_commits: int,
     # host port means one stale emulator anywhere on the machine turns every
     # trial into a boot that never happened -- reported, unhelpfully, as a
     # guest that never committed anything.
-    environment["XAIOS_QEMU_HOSTFWD_PORT"] = "none"
+    #
+    # serial_to_stdout because this reads the guest's console out of the pipe
+    # it is redirecting into `log`. The RISC-V runner writes the console to a
+    # file of its own by default, which would leave that pipe empty and every
+    # trial looking like a guest that never started.
+    environment = qemu_boot_environment(ARCH, environment, hostfwd_port="none",
+                                        serial_to_stdout=True)
     with log.open("wb") as sink:
         process = subprocess.Popen(
-            [str(ROOT / "platform/qemu/run-qemu-aarch64.sh")],
+            [qemu_runner(ARCH)],
             cwd=ROOT, env=environment, stdout=sink,
             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             start_new_session=True)
@@ -304,7 +321,7 @@ def main() -> int:
         shutil.copyfile(PRISTINE, WORKING)
         after_commits = rng.randint(MIN_COMMITS, MAX_COMMITS)
         jitter = rng.uniform(MIN_JITTER_S, MAX_JITTER_S)
-        log = BUILD / f"crash-trial-{index}.log"
+        log = BUILD / f"crash-trial-{ARCH}-{index}.log"
         committed, killed_while_running = run_until_killed(log, after_commits,
                                                            jitter)
         check = fsck(WORKING)
@@ -328,8 +345,8 @@ def main() -> int:
             failures.append(
                 f"trial {index}: the guest never committed a chunk, so the "
                 f"kill proved nothing -- check that the kernel was built with "
-                f"XAIOS_CRASH_WRITER=1, which is what `make "
-                f"qemu-crash-safety-gate` does")
+                f"XAIOS_CRASH_WRITER=1, which is what the make target for "
+                f"this architecture does")
         print(f"crash-safety-gate: trial {index} "
               f"kill_after={after_commits} commits +{jitter:.2f}s "
               f"guest_committed={committed} fsck={check.get('status')} "
@@ -455,7 +472,7 @@ def main() -> int:
         for message in failures:
             print(f"crash-safety-gate: FAIL {message}")
         return 1
-    print(f"crash-safety-gate: passed trials={TRIALS} "
+    print(f"crash-safety-gate: passed arch={ARCH} trials={TRIALS} "
           f"generations={sorted(generations)} report={REPORT}")
     return 0
 
