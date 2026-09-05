@@ -355,6 +355,12 @@ qemu-riscv64-isa-gate:
 	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
 	python3 ./tests/scripts/qemu-riscv64-isa-gate.py
 
+# The framebuffer console on RISC-V: a login typed at the machine's own
+# screen rather than over the network. The console parity gate already
+# proves this machine has a framebuffer; this proves a person can use it.
+qemu-riscv64-local-console-gate:
+	python3 ./tests/scripts/qemu-local-console-gate.py --arch riscv64
+
 qemu-x86_64-numa-gate:
 	XAIOS_TARGET_ARCH=x86_64 XAIOS_BOOT_VERBOSE=1 ./scripts/build-image.sh
 	python3 tests/scripts/qemu-x86_64-numa-gate.py

@@ -12,6 +12,9 @@ import subprocess
 import sys
 import time
 
+from qemu_gate_lib import (arch_from_argv, qemu_boot_environment,
+                           qemu_runner)
+
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
@@ -110,28 +113,42 @@ def terminate(process: subprocess.Popen[bytes]) -> None:
 
 
 def main() -> int:
-    if GATE_DIR.exists():
-        shutil.rmtree(GATE_DIR)
-    GATE_DIR.mkdir(parents=True, mode=0o700)
-    persistent = GATE_DIR / "persistent.img"
+    arch = arch_from_argv(sys.argv[1:])
+    # Every wait in this gate was sized against a machine with host
+    # acceleration behind it. RISC-V runs the same boot through an
+    # interpreter, and a login prompt that takes four times as long to answer
+    # is a slower machine, not a broken one. Scaled here rather than at each
+    # call site so no wait is left behind.
+    global BOOT_TIMEOUT_SECONDS, STEP_TIMEOUT_SECONDS
+    if arch == "riscv64":
+        BOOT_TIMEOUT_SECONDS *= 5
+        STEP_TIMEOUT_SECONDS *= 5
+    gate_dir = GATE_DIR if arch == "aarch64" else Path(f"{GATE_DIR}-{arch}")
+    if gate_dir.exists():
+        shutil.rmtree(gate_dir)
+    gate_dir.mkdir(parents=True, mode=0o700)
+    persistent = gate_dir / "persistent.img"
     build_env = os.environ.copy()
     build_env.pop("XAIOS_SSH_USERS_FILE", None)
     build_env.pop("XAIOS_SSH_PASSWORD_AUTH", None)
-    run_checked(
-        ["make", "image"], "build default local-console image", build_env
-    )
+    if arch == "riscv64":
+        build_env["XAIOS_BOOT_TEST_APPS"] = "1"
+        run_checked(["./scripts/build-riscv64.sh"],
+                    "build riscv64 kernel", build_env)
+        run_checked(["./scripts/build-riscv64-image.sh"],
+                    "build riscv64 image", build_env)
+    else:
+        run_checked(
+            ["make", "image"], "build default local-console image", build_env
+        )
 
-    qemu_env = build_env.copy()
-    qemu_env.update(
-        {
-            "XAIOS_QEMU_ACCEL": "tcg",
-            "XAIOS_QEMU_SMP": "4",
-            "XAIOS_QEMU_HOSTFWD_PORT": str(reserve_port()),
-            "XAIOS_PERSISTENT_IMAGE": str(persistent),
-        }
-    )
+    qemu_env = qemu_boot_environment(
+        arch, build_env, persistent=persistent, state_dir=gate_dir / "state",
+        hostfwd_port=reserve_port(), smp=4, serial_to_stdout=True)
+    if arch == "aarch64":
+        qemu_env["XAIOS_QEMU_ACCEL"] = "tcg"
     process = subprocess.Popen(
-        [str(ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh")],
+        [qemu_runner(arch)],
         cwd=ROOT,
         env=qemu_env,
         stdin=subprocess.PIPE,
@@ -145,7 +162,13 @@ def main() -> int:
 
         checkpoint = console.checkpoint()
         console.send(b"admin\rwrong-password\r")
-        console.wait_since(checkpoint, b"Login incorrect\r\nxaios login: ", STEP_TIMEOUT_SECONDS)
+        # Two waits, not one match across a line break. The kernel shares this
+        # console, so anything it logs between the refusal and the next prompt
+        # -- a denied open from the login program, say -- breaks a contiguous
+        # match while proving nothing about the refusal. What matters is that
+        # the wrong password was refused and that the machine asked again.
+        console.wait_since(checkpoint, b"Login incorrect", STEP_TIMEOUT_SECONDS)
+        console.wait_since(checkpoint, b"xaios login: ", STEP_TIMEOUT_SECONDS)
 
         checkpoint = console.checkpoint()
         console.send(b"admin\rxaios\r")
@@ -187,7 +210,10 @@ def main() -> int:
 
         checkpoint = console.checkpoint()
         console.send(b"logout\r")
-        console.wait_since(checkpoint, b"logout\r\nxaios login: ", STEP_TIMEOUT_SECONDS)
+        # Split for the same reason as the refusal above: the kernel shares
+        # this console and may log between the shell exiting and the prompt.
+        console.wait_since(checkpoint, b"logout", STEP_TIMEOUT_SECONDS)
+        console.wait_since(checkpoint, b"xaios login: ", STEP_TIMEOUT_SECONDS)
     finally:
         terminate(process)
         persistent.unlink(missing_ok=True)
