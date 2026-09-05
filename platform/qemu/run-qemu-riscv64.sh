@@ -73,6 +73,17 @@ SYSTEM_IMAGE="${XAIOS_SYSTEM_VOLUME_IMAGE:-$STATE/system.img}"
 # build/, but a fresh tree has none, and a runner that fails at `cp` before
 # QEMU starts leaves no serial log and nothing to diagnose. Made here when
 # absent: it is a blank disk by definition.
+# Whether the model volume passes discards through to the host, which is what
+# lets a gate see that space a deleted model occupied was actually released
+# rather than merely unreferenced.
+case "${XAIOS_QEMU_MODEL_DISCARD:-none}" in
+  none) MODEL_DRIVE_OPTIONS="" ;;
+  unmap) MODEL_DRIVE_OPTIONS=",discard=unmap,detect-zeroes=unmap" ;;
+  *)
+    printf '%s\n' "error: XAIOS_QEMU_MODEL_DISCARD must be none or unmap" >&2
+    exit 2 ;;
+esac
+
 ADMIN_IMAGE="${XAIOS_STORAGE_ADMIN_IMAGE:-$STATE/storage-admin.img}"
 if [ ! -f "$ADMIN_IMAGE" ]; then
   if [ -f "$BUILD/xaios-smoke-storage-admin.img" ]; then
@@ -221,7 +232,7 @@ exec "$QEMU" \
   -device virtio-blk-device,drive=xtest,bus=virtio-mmio-bus.0 \
   -drive "if=none,format=raw,id=xpers,file=$PERSISTENT_IMAGE" \
   -device virtio-blk-device,drive=xpers,bus=virtio-mmio-bus.1 \
-  -drive "if=none,format=raw,id=xmodels,file=$MODELS_IMAGE" \
+  -drive "if=none,format=raw,id=xmodels,file=$MODELS_IMAGE$MODEL_DRIVE_OPTIONS" \
   -device virtio-blk-device,drive=xmodels,bus=virtio-mmio-bus.4 \
   -drive "if=none,format=raw,id=xadmin,file=$ADMIN_IMAGE" \
   -device virtio-blk-device,drive=xadmin,bus=virtio-mmio-bus.5 \

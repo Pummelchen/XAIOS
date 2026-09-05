@@ -220,6 +220,20 @@ if [ "${XAIOS_RISCV64_MODE:-development}" = development ]; then
   CREDENTIAL_ARGS="$CREDENTIAL_ARGS /etc/xaios_console_pin=$ROOT_DIR/config/development-console-pin"
 fi
 
+# A public key the SSH server will accept, when a caller supplies one. The
+# other builder has taken this since sshd grew key authentication; this one
+# had not, so every gate that logs in with a key it generated itself could
+# reach two machines out of three.
+AUTHORIZED_KEYS_ARGS=""
+if [ "${XAIOS_AUTHORIZED_KEYS_FILE:-}" != "" ]; then
+  if [ ! -f "$XAIOS_AUTHORIZED_KEYS_FILE" ]; then
+    printf '%s\n' \
+      "error: authorized keys file not found: $XAIOS_AUTHORIZED_KEYS_FILE" >&2
+    exit 1
+  fi
+  AUTHORIZED_KEYS_ARGS="/etc/xaios_authorized_keys=$XAIOS_AUTHORIZED_KEYS_FILE"
+fi
+
 # The same 4 MiB volume shape the other architectures' test image uses, with
 # the marker the boot-storage check reads in sector zero and the rofs from
 # sector one.
@@ -239,6 +253,7 @@ printf 'XAIOS-VIRTIO-BLOCK-TEST\n' | \
   $XAPT_ARGS \
   $SSHD_ARGS \
   $CREDENTIAL_ARGS \
+  $AUTHORIZED_KEYS_ARGS \
   "/etc/xapt.conf=$ROOT_DIR/userspace/init/xapt.conf" \
   "$@"
 printf '%s\n' "Created $IMAGE"

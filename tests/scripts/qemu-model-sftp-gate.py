@@ -20,6 +20,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import (arch_from_argv, qemu_boot_environment, qemu_runner,
+                           smoke_timeout)
+
+ARCH = arch_from_argv(sys.argv)
+SUFFIX = "" if ARCH == "aarch64" else f"-{ARCH}"
 READY_MARKER = "SSH server: up and running (tcp/22)"
 MODEL_CHUNK_SIZE = 2 * 1024 * 1024
 sys.path.insert(0, str(ROOT / "tools"))
@@ -116,7 +122,7 @@ def start_qemu_ready(
     for attempt in range(2):
         log_file = log_path.open("wb")
         process = subprocess.Popen(
-            [str(ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh")],
+            [str(ROOT / qemu_runner(ARCH))],
             cwd=ROOT,
             env=environment,
             stdin=subprocess.DEVNULL,
@@ -125,7 +131,8 @@ def start_qemu_ready(
             preexec_fn=os.setsid,
         )
         try:
-            wait_for_marker(log_path, READY_MARKER, 150.0, process)
+            wait_for_marker(log_path, READY_MARKER,
+                            float(smoke_timeout(ARCH, 150)), process)
             return process, log_file
         except BaseException as error:
             stop_process(process)
@@ -405,7 +412,7 @@ def main() -> int:
         raise RuntimeError(f"expected Debian 13 client, got {debian_version!r}")
 
     BUILD.mkdir(parents=True, exist_ok=True)
-    gate_dir = BUILD / "qemu-model-sftp"
+    gate_dir = BUILD / f"qemu-model-sftp{SUFFIX}"
     if gate_dir.exists():
         shutil.rmtree(gate_dir)
     gate_dir.mkdir(mode=0o700)
@@ -430,13 +437,15 @@ def main() -> int:
 
     build_env = os.environ.copy()
     build_env["XAIOS_AUTHORIZED_KEYS_FILE"] = str(key.with_suffix(".pub"))
-    subprocess.run(
-        ["make", "image-qemu-test"],
-        cwd=ROOT,
-        env=build_env,
-        check=True,
-        timeout=180,
-    )
+    build_commands = {
+        "aarch64": [["make", "image-qemu-test"]],
+        "x86_64": [["make", "image-x86_64-qemu-test"]],
+        "riscv64": [["./scripts/build-riscv64.sh"],
+                    ["./scripts/build-riscv64-image.sh"]],
+    }[ARCH]
+    for command in build_commands:
+        subprocess.run(command, cwd=ROOT, env=build_env, check=True,
+                       timeout=smoke_timeout(ARCH, 180))
 
     source = gate_dir / "model.package"
     partial = gate_dir / "model.partial"
@@ -473,20 +482,17 @@ def main() -> int:
 
     port = reserve_port()
     persistent = gate_dir / "persistent.img"
-    log_path = BUILD / "qemu-model-sftp-gate.log"
-    qemu_env = os.environ.copy()
-    qemu_env.update(
-        {
-            "XAIOS_QEMU_ACCEL": "tcg",
-            "XAIOS_QEMU_SMP": "4",
-            "XAIOS_QEMU_HOSTFWD_PORT": str(port),
-            "XAIOS_PERSISTENT_IMAGE": str(persistent),
-            "XAIOS_QEMU_MODEL_DISCARD": "unmap",
-        }
-    )
+    log_path = BUILD / f"qemu-model-sftp-gate{SUFFIX}.log"
+    qemu_env = qemu_boot_environment(
+        ARCH, os.environ.copy(),
+        accel="tcg", smp=4, hostfwd_port=port, persistent=persistent,
+        state_dir=gate_dir / "state", model_discard="unmap",
+        # The console is redirected into log_path, and the RISC-V runner
+        # writes it to a file of its own unless told otherwise.
+        serial_to_stdout=True)
     qemu, log_file = start_qemu_ready(log_path, qemu_env)
     try:
-        wait_for_ssh(port, qemu, 120.0)
+        wait_for_ssh(port, qemu, float(smoke_timeout(ARCH, 120)))
         first = run_sftp(
             key,
             port,
