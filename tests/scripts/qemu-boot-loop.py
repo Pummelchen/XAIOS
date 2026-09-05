@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-from qemu_gate_lib import BUILD, now, parse_telemetry, result, run, status_from_failures, write_report
+import sys
 
+from qemu_gate_lib import (BUILD, arch_from_argv, now, parse_telemetry, result,
+                           run, smoke_command, smoke_timeout,
+                           status_from_failures, write_report)
+
+ARCH = arch_from_argv(sys.argv)
+SUFFIX = "" if ARCH == "aarch64" else f"-{ARCH}"
 
 SCHEMA = "xaios.qemu.deterministic_boot_loop.v1"
-REPORT = BUILD / "qemu-milestone-55-boot-loop.json"
+REPORT = BUILD / f"qemu-milestone-55-boot-loop{SUFFIX}.json"
 INVARIANT_KEYS = [
     "cpu_count",
     "pmm_total_pages",
@@ -23,8 +29,9 @@ def main() -> int:
     invariant_snapshots = []
 
     for index in range(iterations):
-        proc = run(["python3", "./tests/scripts/qemu-smoke.py"], timeout=200,
-                   env={"XAIOS_QEMU_SMOKE_TIMEOUT": "120"})
+        proc = run(smoke_command(ARCH), timeout=smoke_timeout(ARCH, 200),
+                   env={"XAIOS_QEMU_SMOKE_TIMEOUT":
+                        str(smoke_timeout(ARCH, 120))})
         if proc.returncode != 0:
             failures.append(f"boot {index + 1} qemu-smoke exited {proc.returncode}")
             boots.append(result(f"boot_{index + 1}", False,

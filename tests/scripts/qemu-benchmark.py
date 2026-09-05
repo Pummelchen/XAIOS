@@ -3,6 +3,12 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from qemu_gate_lib import arch_from_argv, smoke_command, smoke_timeout
+
+ARCH = arch_from_argv(sys.argv)
 
 
 def parse_telemetry(text: str):
@@ -21,9 +27,9 @@ def parse_telemetry(text: str):
 
 def main() -> int:
     env = os.environ.copy()
-    env.setdefault("XAIOS_QEMU_SMOKE_TIMEOUT", "60")
+    env.setdefault("XAIOS_QEMU_SMOKE_TIMEOUT", str(smoke_timeout(ARCH, 60)))
     proc = subprocess.run(
-        ["python3", "./tests/scripts/qemu-smoke.py"],
+        smoke_command(ARCH),
         check=False,
         env=env,
         stdout=subprocess.PIPE,
@@ -324,6 +330,7 @@ def main() -> int:
     report = {
         "schema": "xaios.qemu.correctness_benchmark.v1",
         "status": "pass",
+        "arch": ARCH,
         "benchmark_type": "qemu-correctness",
         "baseline_required_for_performance_claims": True,
         "performance_claims_allowed": False,

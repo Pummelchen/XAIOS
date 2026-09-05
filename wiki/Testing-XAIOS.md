@@ -111,6 +111,8 @@ make qemu-riscv64-instruction-cost-gate
 make qemu-riscv64-dhcpv6-gate
 make qemu-riscv64-outbound-fragmentation-gate
 make qemu-riscv64-model-sftp-gate
+make qemu-riscv64-boot-loop
+make qemu-riscv64-benchmark
 make qemu-riscv64-write-ordering-gate
 make qemu-riscv64-local-console-gate
 make qemu-console-xtop-gate-riscv64

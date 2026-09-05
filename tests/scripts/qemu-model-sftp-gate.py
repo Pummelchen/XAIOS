@@ -483,10 +483,22 @@ def main() -> int:
     port = reserve_port()
     persistent = gate_dir / "persistent.img"
     log_path = BUILD / f"qemu-model-sftp-gate{SUFFIX}.log"
+    models_volume = gate_dir / "models.img"
+    shutil.copyfile(BUILD / ("xaios-x86-xaifs.img" if ARCH == "x86_64"
+                             else "xaios-xaifs.img"), models_volume)
     qemu_env = qemu_boot_environment(
         ARCH, os.environ.copy(),
         accel="tcg", smp=4, hostfwd_port=port, persistent=persistent,
         state_dir=gate_dir / "state", model_discard="unmap",
+        # Its own copy of the model volume, not the one in build/.
+        #
+        # This gate uploads models, registers them and deletes them, so the
+        # volume it finishes with is not the signed fixture it started from --
+        # and without this it was writing into build/xaios-xaifs.img, which
+        # every other gate mounts read-only expecting exactly that fixture.
+        # The next smoke run then failed on the xaiFS self-test marker, on a
+        # different architecture, for a reason nothing in it had caused.
+        xai_fs=models_volume,
         # The console is redirected into log_path, and the RISC-V runner
         # writes it to a file of its own unless told otherwise.
         serial_to_stdout=True)

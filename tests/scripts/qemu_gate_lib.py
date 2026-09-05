@@ -224,6 +224,7 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
                           net_socket_port_2: Any = None,
                           net_socket_host: Any = None,
                           model_discard: Any = None,
+                          xai_fs: Any = None,
                           serial_to_stdout: bool = False) -> Dict[str, str]:
     """The knobs for one boot, under the names this architecture's runner reads.
 
@@ -250,6 +251,8 @@ def qemu_boot_environment(arch: str, env: Dict[str, str], *,
     if user_net_cidr is not None:
         env["XAIOS_QEMU_USER_NET_CIDR" if arch != "riscv64"
             else "XAIOS_RISCV64_USER_NET_CIDR"] = str(user_net_cidr)
+    if xai_fs is not None:
+        env["XAIOS_XAI_FS_IMAGE"] = str(xai_fs)
     if model_discard is not None:
         # The one knob all three runners already spell the same way, because
         # the RISC-V one was taught it under the existing name rather than
