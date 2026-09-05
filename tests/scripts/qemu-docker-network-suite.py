@@ -655,16 +655,15 @@ def verify_native_xtop_pty(key_dir: Path, port: int) -> None:
         b"Quit",
         b"\x1b[?25h",
         b"\x1b[?1049l",
-        # Handing the terminal back: show the cursor, then leave the
-        # alternate screen, adjacently and in that order.
-        #
-        # xtop sends "\033[0m\033[?25h\033[?1049l\033[0m\033[?25h\r" -- the
-        # restore twice over, once inside the alternate screen and once after
-        # leaving it. The first copy is what arrives intact; the last few
-        # bytes of the second are clipped when the channel closes, which is
-        # recorded as B-27 and is why this asserts the pair that is always
-        # delivered rather than the whole belt-and-braces string.
-        b"\x1b[?25h\x1b[?1049l",
+        # Handing the terminal back, in full: show the cursor, leave the
+        # alternate screen, reset attributes, show the cursor again, return
+        # to column one. xtop sends the restore twice over on purpose, once
+        # inside the alternate screen and once after leaving it, and both
+        # copies have to arrive -- the second was truncated for a while
+        # because its length was written out beside the string as 24 for 29
+        # bytes, and nothing noticed because the first copy is enough to make
+        # the terminal usable.
+        b"\x1b[?25h\x1b[?1049l\x1b[0m\x1b[?25h\r",
     )
     missing = [marker for marker in required if marker not in colored_stdout]
     if missing:

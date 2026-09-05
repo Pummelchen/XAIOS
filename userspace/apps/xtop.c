@@ -2524,6 +2524,8 @@ static void serve_pause_ms(uint32_t ms) {
 /* Written whole, however many channel frames that takes; a full channel is
    waited out rather than treated as an error, because sshd drains it as
    fast as it can and a frame is worth a millisecond. */
+static const char k_invalid_sort[] = "xtop: invalid --sort key\r\n";
+
 static int serve_write(const void *data, uint64_t length) {
   const uint8_t *bytes = (const uint8_t *)data;
   uint64_t offset = 0U;
@@ -2952,13 +2954,13 @@ static int xtop_serve(u64 channel_id, const char *command) {
       uint64_t tu = 0U;
       text[0] = '\0';
       if (token_next(command, &index, sort, sizeof(sort)) != XAIOS_OK) {
-        (void)serve_write("xtop: invalid --sort key\r\n", 26U);
+        (void)serve_write(k_invalid_sort, sizeof(k_invalid_sort) - 1U);
         return 1;
       }
       output_append(text, sizeof(text), &tu, "--sort ");
       output_append(text, sizeof(text), &tu, sort);
       if (xtop_parse_sort_option(text, &dummy, &key) != XAIOS_OK) {
-        (void)serve_write("xtop: invalid --sort key\r\n", 26U);
+        (void)serve_write(k_invalid_sort, sizeof(k_invalid_sort) - 1U);
         return 1;
       }
       st.sort_key = key;
@@ -2974,7 +2976,8 @@ static int xtop_serve(u64 channel_id, const char *command) {
   xaios_screen_init(&g_screen, g_screen_next, g_screen_shown,
                     XAIOS_SCREEN_MAX_CELLS, st.rows, st.columns);
   g_screen.cursor_hidden = 1U;
-  if (serve_write("\033[?1049h\033[?25l", 14U) != 0) return 1;
+  static const char enter[] = "\033[?1049h\033[?25l";
+  if (serve_write(enter, sizeof(enter) - 1U) != 0) return 1;
   for (;;) {
     uint64_t now_ns = xaios_clock_nanos();
     int redraw = 0;
@@ -3023,7 +3026,16 @@ static int xtop_serve(u64 channel_id, const char *command) {
        was most of what this process cost between samples. */
     if (xaios_wait_events(next_frame_ns - now_ns) < 0) serve_pause_ms(16U);
   }
-  (void)serve_write("\033[0m\033[?25h\033[?1049l\033[0m\033[?25h\r", 24U);
+  /* Length from the string, not written out beside it.
+   *
+   * It said 24 for a string of 29 bytes, so the last five never left -- the
+   * client saw the restore stop mid-escape at "\033[?1049l\033[0m\033[" and
+   * the belt-and-braces second copy was lost. The terminal came back anyway,
+   * because the cursor is shown before the alternate screen is left, which is
+   * why nothing noticed. A constant beside a literal is a constant that
+   * drifts when the literal changes. */
+  static const char restore[] = "\033[0m\033[?25h\033[?1049l\033[0m\033[?25h\r";
+  (void)serve_write(restore, sizeof(restore) - 1U);
   return 0;
 }
 
