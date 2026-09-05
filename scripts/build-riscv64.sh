@@ -76,6 +76,16 @@ case "$CRASH_WRITER" in
   0|1) ;;
   *) printf '%s\n' "error: XAIOS_CRASH_WRITER must be 0 or 1" >&2; exit 2 ;;
 esac
+# The stress and measurement applications. perfbench is the one that matters
+# to a gate: it reports what an operation costs and asserts nothing, so it
+# runs where the stress app runs and nowhere else.
+STRESS_TEST="${XAIOS_STRESS_TEST:-0}"
+case "$STRESS_TEST" in
+  0|1) ;;
+  *) printf '%s\n' "error: XAIOS_STRESS_TEST must be 0 or 1" >&2; exit 2 ;;
+esac
+BASE_CFLAGS="$BASE_CFLAGS -DXAIOS_STRESS_TEST=$STRESS_TEST"
+
 # The self-measurement the storage benchmark reads. Same shared kernel code;
 # this builder simply had no way to turn it on.
 STORAGE_BENCH="${XAIOS_STORAGE_BENCH:-0}"

@@ -36,9 +36,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
-REPORT = BUILD / "qemu-instruction-cost.json"
-BASELINE = ROOT / "tests" / "fixtures" / "instruction-cost-baseline.json"
-TIMEOUT_S = int(os.environ.get("XAIOS_ICOUNT_TIMEOUT", "900"))
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import (arch_from_argv, qemu_boot_environment, qemu_runner,
+                           smoke_timeout)
+
+ARCH = arch_from_argv(sys.argv)
+SUFFIX = "" if ARCH == "aarch64" else f"-{ARCH}"
+REPORT = BUILD / f"qemu-instruction-cost{SUFFIX}.json"
+# A baseline per architecture, because an instruction count is a count of
+# *this* architecture's instructions. A single shared file would either fail
+# everywhere but one machine or have a tolerance so wide it caught nothing.
+BASELINE = (ROOT / "tests" / "fixtures" /
+            f"instruction-cost-baseline{SUFFIX}.json")
+TIMEOUT_S = smoke_timeout(
+    ARCH, int(os.environ.get("XAIOS_ICOUNT_TIMEOUT", "900")))
 
 # Under -icount shift=0 the guest's clock counts instructions, so perfbench's
 # "ns_per_op" is instructions per operation.
@@ -80,9 +91,13 @@ TOLERANCE = float(os.environ.get("XAIOS_ICOUNT_TOLERANCE", "0.25"))
 
 
 def measure() -> dict[str, int]:
-    log = BUILD / "qemu-instruction-cost.log"
-    environment = {**os.environ,
-                   "XAIOS_QEMU_EXTRA_ARGS": "-icount shift=0,sleep=off"}
+    log = BUILD / f"qemu-instruction-cost{SUFFIX}.log"
+    environment = qemu_boot_environment(
+        ARCH, dict(os.environ),
+        extra_args="-icount shift=0,sleep=off",
+        # The console is redirected into `log` below, so the RISC-V runner
+        # has to be told to put it there rather than in a file of its own.
+        serial_to_stdout=True)
     with log.open("wb") as handle:
         # stdin is left alone and the process gets its own session, which is
         # what the other QEMU gates do. Handing /dev/null to a machine started
@@ -90,7 +105,7 @@ def measure() -> dict[str, int]:
         # and the boot stalls partway through the network bring-up every time
         # -- reliably enough to look like an instrumentation bug in the guest.
         process = subprocess.Popen(
-            [str(ROOT / "platform/qemu/run-qemu-aarch64.sh")],
+            [qemu_runner(ARCH)],
             stdout=handle, stderr=subprocess.STDOUT,
             env=environment, cwd=str(ROOT), start_new_session=True)
         deadline = time.monotonic() + TIMEOUT_S
