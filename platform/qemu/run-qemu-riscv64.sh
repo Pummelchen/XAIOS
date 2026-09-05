@@ -73,6 +73,16 @@ SYSTEM_IMAGE="${XAIOS_SYSTEM_VOLUME_IMAGE:-$STATE/system.img}"
 # build/, but a fresh tree has none, and a runner that fails at `cp` before
 # QEMU starts leaves no serial log and nothing to diagnose. Made here when
 # absent: it is a blank disk by definition.
+# An NVMe controller, when a gate asks for one. Off by default: this machine
+# boots from virtio and nothing needs NVMe to come up.
+NVME_ARGS=""
+NVME_IMAGE="${XAIOS_NVME_IMAGE:-none}"
+if [ "$NVME_IMAGE" != none ]; then
+  [ -f "$NVME_IMAGE" ] || {
+    printf 'error: missing NVMe test image: %s\n' "$NVME_IMAGE" >&2; exit 1; }
+  NVME_ARGS="-drive if=none,format=raw,id=xaios_nvme,file=$NVME_IMAGE -device nvme,serial=XAIOSNVME,drive=xaios_nvme"
+fi
+
 # Whether the model volume passes discards through to the host, which is what
 # lets a gate see that space a deleted model occupied was actually released
 # rather than merely unreferenced.
@@ -247,4 +257,5 @@ exec "$QEMU" \
   -device virtio-net-pci,netdev=n0,disable-legacy=on \
   $NET1_ARGS \
   $KEYBOARD_ARGS \
+  $NVME_ARGS \
   $QMP_ARGS $EXTRA_ARGS "$@"

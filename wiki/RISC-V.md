@@ -185,7 +185,18 @@ the kernel comes up to a login prompt with sshd listening.
   other two on.
 - **Message-signalled interrupts.** The PLIC takes wires, not messages. The
   board can present AIA, and a driver for it is real work that nothing
-  currently needs -- virtio reaches the kernel over wired interrupts.
+  currently needs -- virtio reaches the kernel over wired interrupts, and
+  NVMe runs its queues on polled completion, which is a mode the driver
+  already had rather than a concession: its wait path polls the completion
+  queues every turn while waiting. `make qemu-riscv64-nvme-gate` holds that
+  to the same answers as the other two -- controller ready, identify,
+  async round trip, cancellation, scatter-gather, four malformed commands
+  refused, and the bytes the guest wrote present on the host's disk.
+- **A second NVMe queue.** The driver asks for one per online CPU, and on
+  this architecture the secondary harts are not online yet when NVMe
+  initialises: one queue here, four on the other two. Nothing depends on it,
+  and moving hart bring-up ahead of device probing is a boot-order change
+  that would need its own evidence.
 - **An accelerated SHA-256.** AArch64 has the crypto extension and x86_64 has
   SHA-NI; rv64gc has neither, so the engine dispatches its scalar backend and
   every hashed read pays for it. `make qemu-riscv64-storage-bench` measures
@@ -198,7 +209,7 @@ the kernel comes up to a login prompt with sshd listening.
 
 ## Test coverage
 
-Forty-one `make` targets, of which thirty-nine are gates. They fall into
+Forty-two `make` targets, of which forty are gates. They fall into
 three groups, and the split matters more than the count.
 
 **Gates this architecture has of its own.** These exist because the shared
@@ -221,7 +232,7 @@ gates behind it -- `filesystem`, `app-agent`, `network-full`,
 `storage-crash-test`, `crash-safety`, `framebuffer`,
 `keyboard-input`, `routing-prefix`, `storage-bench`,
 `instruction-cost`, `dhcpv6`, `outbound-fragmentation`, `model-sftp`,
-`boot-loop`, `benchmark`, `preview`, `libc`, `fault-matrix`,
+`boot-loop`, `benchmark`, `preview`, `libc`, `fault-matrix`, `nvme`,
 `console-xtop`, and the `userspace`, `network`,
 `cpu-ai` and `regression` suites that bundle them. Each is the same script
 the other two architectures run, taking `--arch riscv64`, rather than a

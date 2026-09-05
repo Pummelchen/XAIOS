@@ -383,6 +383,12 @@ static xaios_status_t negotiate_io_queues(nvme_controller_t *controller) {
   return XAIOS_OK;
 }
 
+/* Only compiled where there is something to register it with. A machine whose
+   interrupt controller carries no messages never installs this, and a handler
+   defined and never referenced is a build error rather than dead weight --
+   which is the compiler being right: an unused interrupt handler is usually a
+   wiring mistake, not an intention. */
+#if !defined(__riscv)
 static void nvme_interrupt_handler(uint32_t intid, void *context) {
   nvme_queue_t *queue = (nvme_queue_t *)context;
   if (queue == 0 || queue->interrupt_id != intid || queue->controller == 0) {
@@ -391,6 +397,7 @@ static void nvme_interrupt_handler(uint32_t intid, void *context) {
   ++queue->interrupt_completions;
   (void)poll_queue(queue->controller, queue, NVME_QUEUE_DEPTH);
 }
+#endif
 
 static xaios_status_t configure_queue_interrupts(
     nvme_controller_t *controller) {
@@ -415,6 +422,24 @@ static xaios_status_t configure_queue_interrupts(
     queue->msix_entry = (uint16_t)index;
     ++controller->msix_queue_count;
   }
+#elif defined(__riscv)
+  /* No message-signalled interrupts on this machine.
+   *
+   * The PLIC takes wires, not messages, so there is no LPI to allocate and no
+   * GICv2m frame to write into. That is a property of the interrupt
+   * controller and not a defect: the driver's own wait path already polls the
+   * completion queues -- wait_request calls poll_controller every turn -- so
+   * the queues work, they are simply serviced by the caller rather than by an
+   * interrupt. Saying so is what stops this looking like a driver that failed
+   * to initialise, which is how it read before: "no LPI available for queue
+   * 0" and then nothing.
+   *
+   * virtio makes the same choice on the same board and logs it the same way.
+   * If this port grows an AIA driver, this is the branch that should stop
+   * being taken. */
+  (void)controller;
+  klog("nvme: no message-signalled interrupts on this machine; %u queues use "
+       "polled completion\n", controller->io_queue_count);
 #else
   uint32_t device_id = pci_stream_id(controller->pci_index);
   uint32_t use_its = 1U;
@@ -963,8 +988,19 @@ xaios_status_t nvme_self_test(xaios_nvme_self_test_result_t *result) {
 
 xaios_status_t nvme_interrupt_self_test(void) {
   nvme_controller_t *controller = g_nvme_controller;
-  if (controller == 0 || controller->interrupt_test_buffer == 0 ||
-      controller->msix_queue_count != controller->io_queue_count) {
+  if (controller == 0 || controller->interrupt_test_buffer == 0) {
+    return XAIOS_ERR_NOT_FOUND;
+  }
+  /* A machine with no message-signalled interrupts has nothing to test here,
+     and that is different from a machine that configured some and lost them.
+     The caller can accept the first and must not accept the second, so they
+     are different answers. */
+  if (controller->msix_queue_count == 0U) {
+    klog("nvme: MSI-X interrupt self-test skipped; queues=%u are polled\n",
+         controller->io_queue_count);
+    return XAIOS_ERR_UNSUPPORTED;
+  }
+  if (controller->msix_queue_count != controller->io_queue_count) {
     return XAIOS_ERR_NOT_FOUND;
   }
   uint64_t delivered = 0U;

@@ -1183,7 +1183,13 @@ persistent_network_done:
 #endif
   gic_enable_full();
   if (nvme_status == XAIOS_OK) {
-    kassert(nvme_interrupt_self_test() == XAIOS_OK);
+    /* UNSUPPORTED is the answer from a machine whose interrupt controller has
+       no messages to signal with -- the queues are polled and there is
+       nothing to canary. Anything else that is not OK means interrupts were
+       configured and did not arrive, which is a defect. */
+    xaios_status_t nvme_interrupts = nvme_interrupt_self_test();
+    kassert(nvme_interrupts == XAIOS_OK ||
+            nvme_interrupts == XAIOS_ERR_UNSUPPORTED);
   }
 #if defined(__x86_64__)
   /* The canary asks the block device to complete a request and raise an
