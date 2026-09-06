@@ -27,6 +27,7 @@ AArch64 or x86_64 UEFI firmware. Setup details are in
 | `make vz-bridged-gate` | V-03: a Virtualization.framework guest on the real LAN through the privileged vmnet relay, rather than through an entitlement Apple will not issue. Requires one root command the gate prints and will not run itself. Checks a lease from the LAN rather than the fallback address, a global IPv6 from a router advertisement, ICMP on both families, and that the guest's address is inside this host's own /24 -- a guest on vmnet's private range is reachable and not bridged. |
 | `make vmware-fusion-network-gate` | F-03: the guest's network on the LAN it is bridged to, checked from this host over the same wire -- a real DHCP lease rather than the fallback address, a global IPv6 address from a router advertisement, ICMPv6 answered and the neighbour cache resolving it, SSH on both address families, and an SFTP round trip on the IPv6 address. Negative control: the same reachability check against an unheld address in the same prefix reports nothing. Loss and reordering are not claimed -- the LAN is not a controlled link. |
 | `make vmware-fusion-snapshot-gate` | Fusion snapshot and resume semantics: a snapshot is a point in time (pre-snapshot data survives a revert, post-snapshot data does not), a revert boots onto a filesystem the guest trusts, and a suspend is not counted as an unclean boot. Reads files over SFTP rather than the shell -- a habit from B-25, which is now fixed. |
+| `make qemu-vmxnet3-gate` | F-02: the paravirtual NIC VMware offers, on a machine that boots in a loop. QEMU implements the same device, so a driver that could previously only be tried by hand on one laptop is held to the same standard as every other: the driver chosen, the device activated, the doorbell given a window of its own, no two drivers sharing a window, a real DHCP lease rather than the address an offer leaves behind, and an SSH key exchange completed from the far end of the wire. The lease is the load-bearing check -- an offer alone does not need the receive ring to work twice, and the acknowledgement does. |
 | `make qemu-ssh-session-exhaustion-gate` | B-25: a guest that boots perfectly and then refuses every command. Opens eighty SSH connections whose command the kernel refuses -- more than the sixty-four session contexts it keeps -- and then asks the guest to do something ordinary. Asserts that the kernel's session table never filled, not merely that commands still work, because the eviction backstop would otherwise hide a leaking sshd; and counts distinct accepted socket handles, because a stack that recycled them would make eighty connections one session repeated. `-x86_64` and `qemu-riscv64-` variants run the same gate on the other two architectures. |
 | `make xapt-test` | Host-side signed package/catalog/system-image construction, verification, tamper, and malformed-input tests. |
 | `make qemu-xapt-gate` | AArch64/x86_64 pinned TLS, trust rotation/revocation/recovery, install, execute, upgrade, rollback, corruption rejection, OS-slot update, reboot persistence, and removal. |
@@ -127,7 +128,26 @@ make qemu-riscv64-xapt-gate
 make qemu-riscv64-write-ordering-gate
 make qemu-riscv64-local-console-gate
 make qemu-console-xtop-gate-riscv64
+make qemu-riscv64-cluster-gate
+make qemu-riscv64-cluster-two-node-gate
+make qemu-riscv64-cpu-matrix
+make qemu-riscv64-installed-disk-gate
+make qemu-riscv64-netboot-gate
+make qemu-riscv64-setup-gate
+make qemu-riscv64-ssh-session-exhaustion-gate
+make qemu-riscv64-freebsd-network-suite
+make qemu-riscv64-freebsd-bidirectional-suite
 ```
+
+The last block is the shared gates this architecture gained rather than ones
+written for it, so what they assert is the same claim asked of a different
+machine. Two of them state it in this port's own words where the machine
+differs: `qemu-riscv64-cpu-matrix` requires seven harts to boot the kernel and
+five to *refuse* it in one line, because those five offer only Sv39 and this
+kernel's address-space layout needs Sv48; and `qemu-riscv64-installed-disk-gate`
+requires the harts that come online plus the ones firmware kept to equal the
+capacity, because which hart EDK2 keeps is not the same on two consecutive
+boots.
 
 The xaiFS and parallel-network gates require macOS plus Docker because they
 run native macOS and Debian 13 clients against one guest. The focused high-core
