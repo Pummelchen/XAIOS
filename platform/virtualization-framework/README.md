@@ -140,11 +140,19 @@ guest is bridged without the VM being privileged and without the entitlement,
 and only this eighty-line relay runs as root.
 
 ```sh
+cd /path/to/XAIOS                    # the relative paths below depend on it
 make vz-harness vmnet-helper
 sudo ./build/vz/vmnet-helper --socket "$PWD/build/vz/vmnet.sock" \
   --mode bridged --interface en0     # leave running
-make vz-bridged-gate                 # in another terminal
+make vz-bridged-gate                 # in another terminal, same directory
 ```
+
+The `cd` is not decoration. Run the sudo line from a home directory and
+`$PWD` names a build tree that is not there, so the shell answers
+`sudo: ./build/vz/vmnet-helper: command not found` -- which reads like a
+missing binary and is a missing directory. `make vz-bridged-gate` prints the
+command with absolute paths for that reason; copying it from there works from
+anywhere.
 
 ### What it took
 
