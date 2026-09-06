@@ -241,6 +241,20 @@ def stop_process(process: subprocess.Popen[bytes]) -> None:
 def freebsd_client_script(
     private_key: str, unauthorized_key: str, ssh_port: int, udp_port: int
 ) -> str:
+    # Keystrokes into a full-screen program are paced for the machine that has
+    # to draw between them.
+    #
+    # This drives xtop by typing and waiting, which is the only way to drive it
+    # from inside a shell script piping into ssh. Two tenths of a second is
+    # long enough for a guest running natively and is not long enough for one
+    # being interpreted instruction by instruction: on RISC-V the help key
+    # arrived before the program had finished starting, and the check for the
+    # help screen failed on a guest that would have drawn it. Scaled, not
+    # lengthened for everyone, because a suite that waits four times as long
+    # on every machine to accommodate the slowest is a suite people stop
+    # running.
+    xtop_settle = 8 if ARCH == "riscv64" else 2
+    xtop_step = "0.5" if ARCH == "riscv64" else "0.1"
     return f"""#!/bin/sh
 exec >/dev/console 2>&1
 set -eu
@@ -307,7 +321,7 @@ cmp /tmp/sftp-source /tmp/sftp-renamed-result || fail "SFTP rename round trip di
 grep -q '/tmp/freebsd-sftp' /tmp/sftp.log || fail "SFTP stat/list output missing"
 echo "XAIOS_FREEBSD_INTEROP: SFTP read/write/stat/rename/remove PASS"
 
-{{ sleep 2; printf 'M'; sleep 0.1; printf '/sshd\n'; sleep 0.1; printf 'h'; sleep 0.1; printf 'h'; sleep 0.1; printf 'q'; }} | TERM=xterm ssh -tt $ssh_base admin@$host 'xtop' >/tmp/xtop.ansi 2>/tmp/xtop.err || fail "PTY xtop failed"
+{{ sleep {xtop_settle}; printf 'M'; sleep {xtop_step}; printf '/sshd\n'; sleep {xtop_step}; printf 'h'; sleep {xtop_step}; printf 'h'; sleep {xtop_step}; printf 'q'; }} | TERM=xterm ssh -tt $ssh_base admin@$host 'xtop' >/tmp/xtop.ansi 2>/tmp/xtop.err || fail "PTY xtop failed"
 printf '\\033[2J\\033[H' >/tmp/clear-sequence
 printf '\\033[?1049h' >/tmp/alternate-enter
 printf '\\033[?1049l' >/tmp/alternate-leave
@@ -315,7 +329,20 @@ grep -F -f /tmp/alternate-enter /tmp/xtop.ansi >/dev/null || fail "PTY xtop did 
 grep -F -f /tmp/clear-sequence /tmp/xtop.ansi >/dev/null || fail "PTY xtop lacked ANSI clear sequence"
 grep -q 'Tasks:' /tmp/xtop.ansi || fail "PTY xtop lacked task meter"
 grep -q 'Filter:' /tmp/xtop.ansi || fail "PTY xtop lacked interactive filter"
-grep -q 'XAIOS xtop help' /tmp/xtop.ansi || fail "PTY xtop lacked help screen"
+# The help screen, by three of its lines rather than by its title.
+#
+# The title is on the screen -- a person pressing h sees "XAIOS xtop help" in
+# the top rule -- but it is not in the byte stream as one run. The screen
+# framework sends only the cells that changed, and the rule's leading corner
+# and dashes match the frame underneath, so the title arrives split around
+# cursor moves. Body lines differ from the frame beneath them along their
+# whole width and arrive whole, which is what a grep over a stream can check.
+# This is the same correction B-26 made to the Docker suite; this suite kept
+# the old assertion because nothing had run it since.
+grep -q 'Up/Down, j/k   select process' /tmp/xtop.ansi \
+    || fail "PTY xtop lacked the help screen's process-selection line"
+grep -q 'Press F1, h, Escape or q to return.' /tmp/xtop.ansi \
+    || fail "PTY xtop lacked the help screen's return line"
 grep -q '60 frames/s' /tmp/xtop.ansi || fail "PTY xtop lacked frame-cap status"
 grep -F -f /tmp/alternate-leave /tmp/xtop.ansi >/dev/null || fail "PTY xtop did not leave alternate screen"
 echo "XAIOS_FREEBSD_INTEROP: SSH PTY interactive xtop PASS"

@@ -374,7 +374,16 @@ void user_process_table_init(void) {
   g_current_process_by_cpu = (xaios_user_process_t **)kheap_calloc(
       (uint64_t)g_current_process_capacity * sizeof(*g_current_process_by_cpu),
       64U);
-  kassert(g_current_process_capacity == 0U || g_current_process_by_cpu != 0);
+  /* A capacity of zero is not a machine with no CPUs; it is this running
+     before the CPU count is known. The per-CPU bindings then fall back to a
+     single global, which works until two things want different ones -- and
+     then a worker finishing on any CPU clears the binding of the process
+     running on every other. Said out loud rather than tolerated. */
+  klog("user: process table for %u cpus, storage=%s\n",
+       g_current_process_capacity,
+       g_current_process_by_cpu != 0 ? "allocated" : "none");
+  kassert(g_current_process_capacity != 0U);
+  kassert(g_current_process_by_cpu != 0);
   g_boot_current_process = 0;
   g_process_transition_count = 0;
   g_process_loaded_count = 0;
@@ -474,6 +483,26 @@ xaios_status_t user_bind_current_process(uint32_t pid) {
 }
 
 void user_clear_current_process(void) { g_current_process = 0; }
+
+/* Every CPU's binding at once, for the case where one of them is not what the
+   running program thinks it is.
+   "missing-capability" with pid=0 says the binding on this CPU is empty; it
+   does not say whether it was cleared, never set, or is simply not the CPU
+   the program is running on -- and on a port where the trap path could get
+   the hart id wrong, the third would look exactly like the first two. */
+void user_current_process_debug(void) {
+  klog("user:   binding table capacity=%u storage=%s cpu_now=%u boot_slot=%u\n",
+       g_current_process_capacity,
+       g_current_process_by_cpu != 0 ? "present" : "MISSING", smp_cpu_id(),
+       g_boot_current_process != 0 ? g_boot_current_process->pid : 0U);
+  for (uint32_t cpu = 0U; cpu < g_current_process_capacity; ++cpu) {
+    const xaios_user_process_t *bound =
+        g_current_process_by_cpu != 0 ? g_current_process_by_cpu[cpu] : 0;
+    klog("user:   cpu=%u bound_pid=%u name=%s\n", cpu,
+         bound != 0 ? bound->pid : 0U,
+         bound != 0 && bound->name != 0 ? bound->name : "(none)");
+  }
+}
 
 xaios_status_t user_process_has_capability(uint64_t capability) {
   if (g_current_process == 0 ||

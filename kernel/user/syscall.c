@@ -544,6 +544,13 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
          process != 0 ? process->pid : 0U,
          process != 0 ? process->name : "(none)", granted,
          entry->required_capability);
+    if (process == 0) {
+      static uint32_t reported;
+      if (reported < 2U) {
+        ++reported;
+        user_current_process_debug();
+      }
+    }
     return reject_syscall(syscall, arg0, arg1, "missing-capability");
   }
 

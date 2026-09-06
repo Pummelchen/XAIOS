@@ -515,6 +515,18 @@ void vmm_init(const xaios_boot_info_t *boot) {
     }
   }
 
+  /* The page below the kernel stack goes away, so an overflow faults instead
+     of writing over whatever the linker put last in .bss. See linker.ld. */
+  {
+    extern uint8_t __stack_guard[];
+    uint64_t guard = (uint64_t)(uintptr_t)__stack_guard;
+    if (walk(g_root, guard, 0U, 1) != 0) {
+      uint64_t *entry = walk(g_root, guard, 0U, 1);
+      *entry = 0U;
+      klog("vmm: stack guard page at 0x%lx left unmapped\n", guard);
+    }
+  }
+
   g_satp = SATP_MODE_SV48 | ((uint64_t)(uintptr_t)g_root >> 12);
   vmm_activate_kernel();
 

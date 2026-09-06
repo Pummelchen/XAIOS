@@ -66,9 +66,36 @@ SECTIONS {
      *
      * __bss_end stays below it deliberately, so the entry code's zeroing loop
      * still skips the stack rather than clearing 64 KiB nothing has used. */
+    /* A page below the stack that nothing may touch.
+     *
+     * The stack grows down from __stack_top, and what lies below
+     * __stack_bottom is the tail of .bss -- the last few statics the linker
+     * happened to place there. An overflow therefore did not fault; it
+     * quietly overwrote them. The casualty was whatever came last, which was
+     * the per-CPU current-process table in kernel/user/user.c: a running
+     * program lost its binding, every later syscall was refused for a
+     * capability it had, and nothing connected that to the disk install whose
+     * call chain had done it. Found by printing the table and seeing
+     * capacity=0 on a machine that had logged "process table for 4 cpus,
+     * storage=allocated" at boot.
+     *
+     * vmm_init unmaps this page once paging is on, so the next overflow is a
+     * page fault at a named address instead of a corruption that surfaces
+     * somewhere else entirely. */
+    . = ALIGN(0x1000);
+    __stack_guard = .;
+    . += 0x1000;
+
+    /* And more of it. Sixty-four kilobytes was enough for every path this
+       kernel took until an installer walked a FAT directory from inside a
+       syscall from inside osctl; the deepest chain here is storage, and it is
+       deeper than anything AArch64 reaches because that architecture is
+       handed a stack by firmware rather than carving its own. Two hundred and
+       fifty-six with a guard below it is headroom that announces itself when
+       it runs out. */
     . = ALIGN(0x1000);
     __stack_bottom = .;
-    . += 0x10000;
+    . += 0x40000;
     __stack_top = .;
   }
 

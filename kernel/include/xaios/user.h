@@ -79,6 +79,8 @@ void user_scheduler_self_test(void);
 const xaios_user_process_t *user_current_process(void);
 xaios_status_t user_bind_current_process(uint32_t pid);
 void user_clear_current_process(void);
+/* Diagnostic: every CPU's current-process binding. */
+void user_current_process_debug(void);
 xaios_status_t user_process_has_capability(uint64_t capability);
 void user_process_note_syscall(uint32_t rejected);
 uint64_t user_process_note_exit(int exit_code);
