@@ -1,3 +1,4 @@
+#include <xaios/device_window.h>
 #include <xaios/assert.h>
 #include <xaios/admin_control.h>
 #include <xaios/agent_protocol.h>
@@ -255,8 +256,14 @@ static void report_boot_esp(const char *identifier) {
     (void)block_device_close(device);
     return;
   }
+  /* All three removable-media names, because a volume is read the same way
+     whichever machine is reading it and a reader that knew only its own would
+     report four files on a disk with five. Absence is not an error: a volume
+     carries the loader for the machines it is meant to boot. */
   static const char *const k_boot_files[] = {
       "/EFI/BOOT/BOOTAA64.EFI",
+      "/EFI/BOOT/BOOTX64.EFI",
+      "/EFI/BOOT/BOOTRISCV64.EFI",
       "/EFI/XAIOS/XAIOS.EFI",
       "/EFI/XAIOS/KERNEL.ELF",
       "/EFI/XAIOS/INITFS.IMG",
@@ -1023,6 +1030,10 @@ void kmain(const xaios_boot_info_t *boot) {
   boot_ui_update(60U, "devices and storage", "kernel services", 2U);
   network_config_reset_defaults();
   network_device_self_test();
+  /* After every driver has asked for its registers, and not before: the
+     property is that no two of them were given the same address, and that
+     cannot be checked until they have all asked. */
+  device_window_self_test();
   arp_self_test();
   ipv4_self_test();
   icmp_self_test();

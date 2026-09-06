@@ -26,6 +26,7 @@
  * rather than assuming a separate status word.
  */
 
+#include <xaios/device_window.h>
 #include <xaios/arch_cpu.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
@@ -40,8 +41,6 @@
 /* Two windows, mapped where nothing else is. E1000E takes 0x320000000 and
    0x6000 bytes; these sit above it with a gap rather than immediately after,
    so a mistake in either mapping faults instead of landing in the other. */
-#define VMXNET3_BAR0_VIRTUAL_BASE UINT64_C(0x330000000)
-#define VMXNET3_BAR1_VIRTUAL_BASE UINT64_C(0x331000000)
 #define VMXNET3_BAR0_BYTES UINT64_C(0x1000)
 #define VMXNET3_BAR1_BYTES UINT64_C(0x1000)
 #define VMXNET3_PAGE_SIZE UINT64_C(4096)
@@ -245,23 +244,58 @@ typedef char vmxnet3_size_check[(sizeof(vmxnet3_tx_desc_t) == 16U &&
 #define VMXNET3_TQD_STAT_BCAST_PKTS 0x088U
 #define VMXNET3_TQD_STAT_ERROR_PKTS 0x098U
 #define VMXNET3_TQD_STAT_DISCARD_PKTS 0x0a0U
-/* The same fields in the receive queue, used as a control on the reading
-   above: receive demonstrably works, so if its counters are also zero the
-   offsets are wrong and the transmit zeros mean nothing. */
-#define VMXNET3_RQD_STAT_UCAST_PKTS 0x068U
-#define VMXNET3_RQD_STAT_BCAST_PKTS 0x088U
-#define VMXNET3_RQD_STAT_OUT_OF_BUF 0x098U
-#define VMXNET3_RQD_STAT_ERROR_PKTS 0x0a0U
+/* The same fields in the receive queue -- and eight bytes lower than the
+   transmit ones, for the same reason every configuration field is: the
+   receive configuration block is eight bytes shorter, so the status word and
+   the statistics that follow it start earlier.
+   These were copied across from the transmit side too, which matters more
+   than it looks: they were being used as the control that said the transmit
+   counters were read from the right place. A control read from the wrong
+   offset is not a control. */
+#define VMXNET3_RQD_STATUS_STOPPED 0x048U
+#define VMXNET3_RQD_STATUS_ERROR 0x04cU
+#define VMXNET3_RQD_STAT_UCAST_PKTS 0x060U
+#define VMXNET3_RQD_STAT_BCAST_PKTS 0x080U
+#define VMXNET3_RQD_STAT_OUT_OF_BUF 0x090U
+#define VMXNET3_RQD_STAT_ERROR_PKTS 0x098U
 
+/* The receive queue configuration is NOT the transmit one with different
+   names, and treating it as though it were is what F-02 was.
+ *
+ * Vmxnet3_TxQueueConf carries an eight-byte reserved field after the driver
+ * data pointer and states all three of its ring sizes as 32-bit words.
+ * Vmxnet3_RxQueueConf has no such reserved field, and its two ring sizes are
+ * a `__le16[2]` pair, not two words. So every field after the driver data
+ * pointer sits eight bytes earlier here than it does there, and the first two
+ * are half the width.
+ *
+ * Laid out as a copy of the transmit block, the driver wrote 32 where the
+ * device reads the driver-data length, 32 where it reads the interrupt index,
+ * and 64 into the status word the device owns -- while the three fields that
+ * actually say how large the receive rings are were never written at all and
+ * stayed zero. A device told its receive rings hold no descriptors cannot
+ * obtain buffers for an arriving packet, which is what VMware's own log said,
+ * once per delivery attempt: `VMXNET3 hosted: Cannot retrieve the buffer
+ * descriptors per rx packet.`
+ *
+ * It plausibly accounts for the transmit half as well. An interrupt index of
+ * 32 is outside the single interrupt this driver declares, and a device given
+ * a queue pair it cannot configure has no reason to run either half of it --
+ * which fits every measurement recorded against this row: the queue not
+ * stopped, no error, no event, and nothing ever taken.
+ *
+ * Offsets below are from VMware's published definitions, with the sixteen
+ * bytes of Vmxnet3_RxQueueCtrl in front. */
 #define VMXNET3_RQD_RX_RING1_PA 0x010U
 #define VMXNET3_RQD_RX_RING2_PA 0x018U
 #define VMXNET3_RQD_COMP_RING_PA 0x020U
 #define VMXNET3_RQD_DRIVER_DATA_PA 0x028U
-#define VMXNET3_RQD_RX_RING1_SIZE 0x038U
-#define VMXNET3_RQD_RX_RING2_SIZE 0x03cU
-#define VMXNET3_RQD_COMP_RING_SIZE 0x040U
-#define VMXNET3_RQD_DRIVER_DATA_LEN 0x044U
-#define VMXNET3_RQD_INTR_INDEX 0x048U
+/* Sixteen bits each, side by side. */
+#define VMXNET3_RQD_RX_RING1_SIZE 0x030U
+#define VMXNET3_RQD_RX_RING2_SIZE 0x032U
+#define VMXNET3_RQD_COMP_RING_SIZE 0x034U
+#define VMXNET3_RQD_DRIVER_DATA_LEN 0x038U
+#define VMXNET3_RQD_INTR_INDEX 0x03cU
 
 static void put32(uint8_t *base, uint32_t offset, uint32_t value) {
   base[offset] = (uint8_t)(value & 0xffU);
@@ -283,6 +317,11 @@ static void put16(uint8_t *base, uint32_t offset, uint16_t value) {
 /* Reading back the same way it is written. The queue descriptor is a byte
    array on purpose, so the fields the device writes have to be reassembled
    little-endian rather than cast to a struct. */
+static uint16_t get16(const uint8_t *base, uint32_t offset) {
+  return (uint16_t)((uint32_t)base[offset] |
+                    ((uint32_t)base[offset + 1U] << 8U));
+}
+
 static uint32_t get32(const uint8_t *base, uint32_t offset) {
   return (uint32_t)base[offset] | ((uint32_t)base[offset + 1U] << 8U) |
          ((uint32_t)base[offset + 2U] << 16U) |
@@ -334,6 +373,9 @@ typedef struct vmxnet3_driver {
   uint32_t rx_gen;
   uint32_t rx_comp_consume;
   uint32_t rx_comp_gen;
+  /* How many frames this device has handed over. Kept because "one" is a
+     different fault from "none", and the two were indistinguishable. */
+  uint32_t rx_frames;
 } vmxnet3_driver_t;
 
 static vmxnet3_driver_t *g_vmxnet3;
@@ -367,21 +409,13 @@ static int supported_device(const xaios_pci_device_t *device) {
 }
 
 static xaios_status_t map_window(uint32_t pci_index, uint32_t bar,
-                                 uint64_t virtual_base, uint64_t bytes,
+                                 const char *owner, uint64_t bytes,
                                  volatile uint8_t **out) {
   uint64_t physical = pci_bar_address(pci_index, bar);
   if (physical == 0U || (physical & (VMXNET3_PAGE_SIZE - 1U)) != 0U) {
     return XAIOS_ERR_INVALID;
   }
-  for (uint64_t offset = 0U; offset < bytes; offset += VMXNET3_PAGE_SIZE) {
-    if (vmm_map_page(virtual_base + offset, physical + offset,
-                     XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
-                         XAIOS_VMM_DEVICE) != XAIOS_OK) {
-      return XAIOS_ERR_IO;
-    }
-  }
-  *out = (volatile uint8_t *)(uintptr_t)virtual_base;
-  return XAIOS_OK;
+  return device_window_map(owner, physical, bytes, out);
 }
 
 /* The highest revision both sides know.
@@ -422,13 +456,13 @@ xaios_status_t vmxnet3_probe(void) {
 
   if (pci_enable_device(index) != XAIOS_OK) return XAIOS_ERR_IO;
   xaios_status_t status =
-      map_window(index, 0U, VMXNET3_BAR0_VIRTUAL_BASE, VMXNET3_BAR0_BYTES,
+      map_window(index, 0U, "vmxnet3-doorbell", VMXNET3_BAR0_BYTES,
                  &g_vmxnet3->bar0);
   if (status != XAIOS_OK) {
     klog("vmxnet3: BAR0 mapping failed status=%d\n", (int)status);
     return status;
   }
-  status = map_window(index, 1U, VMXNET3_BAR1_VIRTUAL_BASE, VMXNET3_BAR1_BYTES,
+  status = map_window(index, 1U, "vmxnet3-control", VMXNET3_BAR1_BYTES,
                       &g_vmxnet3->bar1);
   if (status != XAIOS_OK) {
     klog("vmxnet3: BAR1 mapping failed status=%d\n", (int)status);
@@ -472,6 +506,17 @@ xaios_status_t vmxnet3_probe(void) {
          "cleared=0x%x doorbell_window=%s\n",
          bar0_pa, bar1_pa, imr_before, imr_masked, imr_cleared,
          (imr_masked == 1U && imr_cleared == 0U) ? "live" : "NOT RESPONDING");
+    /* What the configuration space actually says, beside what was made of
+       it. A window that reads a constant is either the wrong window or a
+       window nothing is decoding, and only the command register and the raw
+       base addresses separate the two. */
+    klog("vmxnet3: config command=0x%x bar0=0x%x bar1=0x%x bar2=0x%x "
+         "txprod_reads=0x%x bar1_vrrs=0x%x bar0_at_vrrs=0x%x\n",
+         pci_config_read16(index, 0x04U),
+         pci_config_read32(index, 0x10U), pci_config_read32(index, 0x14U),
+         pci_config_read32(index, 0x18U),
+         read_bar0(VMXNET3_REG_TXPROD), read_bar1(VMXNET3_REG_VRRS),
+         read_bar0(0x000U));
   }
 
   /* The permanent address, asked for rather than read out of MACL/MACH: those
@@ -571,8 +616,14 @@ static xaios_status_t build_rings(void) {
   g_vmxnet3->rx_comp_gen = 1U;
 
   /* Every receive descriptor points at a buffer and carries the driver's
-     generation, which is what tells the device it may write there. */
-  for (uint32_t i = 0U; i < VMXNET3_RING_SIZE; ++i) {
+     generation, which is what tells the device it may write there.
+   *
+     One short of the ring, deliberately, and the same as the reference
+     driver does it. The producer index means "the next slot I will fill",
+     so a ring with every slot filled has nowhere for that index to point
+     that does not also mean something else. Leaving the last slot empty
+     makes the index unambiguous for the whole of the first lap. */
+  for (uint32_t i = 0U; i + 1U < VMXNET3_RING_SIZE; ++i) {
     uint64_t physical =
         dma_address(g_vmxnet3->rx_buffers[i], VMXNET3_FRAME_BYTES);
     if (physical == 0U) return XAIOS_ERR_IO;
@@ -595,7 +646,8 @@ static xaios_status_t build_rings(void) {
         (g_vmxnet3->rx_gen << VMXNET3_RXD_W2_GEN_SHIFT);
     g_vmxnet3->rx_ring2[i].word3 = 0U;
   }
-  g_vmxnet3->rx_produce = 0U;
+  /* The slot left empty above is the next one to fill, on this same lap. */
+  g_vmxnet3->rx_produce = VMXNET3_RING_SIZE - 1U;
   return XAIOS_OK;
 }
 
@@ -650,12 +702,17 @@ static xaios_status_t activate_device(void) {
   put64(rqd, VMXNET3_RQD_RX_RING1_PA, rx_ring_pa);
   put64(rqd, VMXNET3_RQD_RX_RING2_PA, rx_ring2_pa);
   put64(rqd, VMXNET3_RQD_COMP_RING_PA, rx_comp_pa);
-  put32(rqd, VMXNET3_RQD_RX_RING1_SIZE, VMXNET3_RING_SIZE);
-  put32(rqd, VMXNET3_RQD_RX_RING2_SIZE, VMXNET3_RING_SIZE);
+  /* Sixteen bits each, because that is what the receive block says -- see
+     the offsets above. Written as thirty-two would put ring2's size where the
+     completion ring's belongs and leave the completion ring at zero. */
+  put16(rqd, VMXNET3_RQD_RX_RING1_SIZE, (uint16_t)VMXNET3_RING_SIZE);
+  put16(rqd, VMXNET3_RQD_RX_RING2_SIZE, (uint16_t)VMXNET3_RING_SIZE);
   put32(rqd, VMXNET3_RQD_COMP_RING_SIZE, VMXNET3_RX_COMP_SIZE);
-  put32(rqd, VMXNET3_RQD_INTR_INDEX, 0U);
   put64(rqd, VMXNET3_RQD_DRIVER_DATA_PA, UINT64_C(0xffffffffffffffff));
   put32(rqd, VMXNET3_RQD_DRIVER_DATA_LEN, 0U);
+  /* One byte, and the last field written, because it shares its word with
+     padding the device does not read. */
+  rqd[VMXNET3_RQD_INTR_INDEX] = 0U;
 
   put32(shared, VMXNET3_DS_MAGIC, VMXNET3_DRIVER_SHARED_MAGIC);
   put32(shared, VMXNET3_DS_VERSION, 1U);
@@ -693,7 +750,7 @@ static xaios_status_t activate_device(void) {
   /* Tell the device where the receive ring has been filled to. The producer
      index wraps at the ring size, so handing over the whole ring means
      writing the last slot rather than the count. */
-  write_bar0(VMXNET3_REG_RXPROD, VMXNET3_RING_SIZE - 1U);
+  write_bar0(VMXNET3_REG_RXPROD, g_vmxnet3->rx_produce);
   /* The second receive ring has a producer index of its own, and a device
      given a ring it is never told the fill level of has nowhere to put a
      frame that lands on it. */
@@ -863,6 +920,21 @@ xaios_status_t vmxnet3_tx(const uint8_t *data, uint64_t length) {
                get64(rqd, VMXNET3_RQD_STAT_BCAST_PKTS),
                get64(rqd, VMXNET3_RQD_STAT_OUT_OF_BUF),
                get64(rqd, VMXNET3_RQD_STAT_ERROR_PKTS));
+          /* Read back the sizes the device was given, from the bytes it
+             parses. This is the field that was wrong: written as two
+             thirty-two-bit words in the transmit block's positions, the
+             device read zero-length receive rings and said so in the host's
+             log rather than in the guest's. Printing them here means a
+             recurrence names itself. */
+          klog("vmxnet3:   receive queue conf rx1=%u rx2=%u comp=%u "
+               "intr_idx=%u ddlen=%u stopped=%u error=0x%x\n",
+               get16(rqd, VMXNET3_RQD_RX_RING1_SIZE),
+               get16(rqd, VMXNET3_RQD_RX_RING2_SIZE),
+               get32(rqd, VMXNET3_RQD_COMP_RING_SIZE),
+               (uint32_t)rqd[VMXNET3_RQD_INTR_INDEX],
+               get32(rqd, VMXNET3_RQD_DRIVER_DATA_LEN),
+               get32(rqd, VMXNET3_RQD_STATUS_STOPPED) & 0xffU,
+               get32(rqd, VMXNET3_RQD_STATUS_ERROR));
         }
       }
       klog("vmxnet3: transmit timed out\n");
@@ -885,9 +957,36 @@ uint32_t vmxnet3_rx_poll(uint8_t *buffer, uint64_t capacity) {
   }
   vmxnet3_rx_comp_desc_t *comp = &g_vmxnet3->rx_comp[g_vmxnet3->rx_comp_consume];
   uint32_t generation = comp->word3 >> VMXNET3_RXCD_W3_GEN_SHIFT;
-  if (generation != g_vmxnet3->rx_comp_gen) return 0U;
-  xaios_cpu_io_barrier();
-
+  if (generation != g_vmxnet3->rx_comp_gen) {
+    /* Nothing to take. Two things happen on the way out, both of them about
+       a receive path that stops after one frame -- which is where this driver
+       stands: transmit works, the first frame arrives, and the second does
+       not.
+       The doorbell is re-rung occasionally, because a device that refused a
+       frame for want of a buffer may not look again until it is told there is
+       one, and this is the driver's only chance to say so once the ring is
+       full. It does not clear the stall on QEMU's model, which is recorded
+       rather than hidden.
+       And the ring is described once, so a machine that stops says what it
+       stopped holding rather than merely going quiet. */
+    static uint32_t idle;
+    static uint32_t described;
+    if ((idle & 0xfffU) == 0U) {
+      write_bar0(VMXNET3_REG_RXPROD, g_vmxnet3->rx_produce);
+    }
+    if (++idle == 20000U && described == 0U) {
+      described = 1U;
+      klog("vmxnet3: receive idle at comp slot=%u want_gen=%u "
+           "words=[0x%x 0x%x 0x%x 0x%x] rxprod=%u rx_gen=%u "
+           "ring[0].w2=0x%x ring[1].w2=0x%x frames=%u\n",
+           g_vmxnet3->rx_comp_consume, g_vmxnet3->rx_comp_gen, comp->word0,
+           comp->word1, comp->word2, comp->word3, g_vmxnet3->rx_produce,
+           g_vmxnet3->rx_gen, g_vmxnet3->rx_ring[0].word2,
+           g_vmxnet3->rx_ring[1].word2, g_vmxnet3->rx_frames);
+    }
+    return 0U;
+  }
+  ++g_vmxnet3->rx_frames;
   uint32_t index = comp->word0 & UINT32_C(0xfff);
   uint32_t length = comp->word2 & VMXNET3_RXCD_W2_LEN_MASK;
   uint32_t error = (comp->word2 >> VMXNET3_RXCD_W2_ERR_SHIFT) & 1U;
@@ -900,25 +999,46 @@ uint32_t vmxnet3_rx_poll(uint8_t *buffer, uint64_t capacity) {
     copied = take;
   }
 
-  /* Hand the descriptor back whatever happened to the frame: a receive ring
-     that keeps a slot after a bad packet shrinks by one every time. */
-  if (index < VMXNET3_RING_SIZE) {
-    uint64_t physical =
-        dma_address(g_vmxnet3->rx_buffers[index], VMXNET3_FRAME_BYTES);
-    if (physical != 0U) {
-      vmxnet3_rx_desc_t *desc = &g_vmxnet3->rx_ring[index];
-      desc->address = physical;
-      xaios_cpu_io_barrier();
-      desc->word2 = (VMXNET3_FRAME_BYTES & VMXNET3_RXD_W2_LEN_MASK) |
-                    (g_vmxnet3->rx_gen << VMXNET3_RXD_W2_GEN_SHIFT);
-    }
+  /* Hand a descriptor back whatever happened to the frame: a receive ring
+     that keeps a slot after a bad packet shrinks by one every time.
+   *
+   * Refilled at the ring's own fill position rather than at the slot the
+   * completion named, and the fill position is what the doorbell is then
+   * told. Those are the same slot in steady state, but they are not the same
+   * *number*: the producer index means "the next slot I will fill", and
+   * writing the slot just completed rewinds it. After the first frame the
+   * device was told the ring was empty again and delivered nothing more --
+   * which looked like a receive path that worked once, and cost the DHCP
+   * acknowledgement after an offer that had arrived perfectly.
+   *
+   * The generation flips when the fill position wraps, because a descriptor
+   * on the second lap through the ring carries the opposite generation; a
+   * ring refilled forever with the first lap's value stops being readable to
+   * the device after one lap. */
+  uint32_t slot = g_vmxnet3->rx_produce;
+  uint64_t physical =
+      dma_address(g_vmxnet3->rx_buffers[slot], VMXNET3_FRAME_BYTES);
+  if (physical != 0U) {
+    vmxnet3_rx_desc_t *desc = &g_vmxnet3->rx_ring[slot];
+    desc->address = physical;
+    desc->word3 = 0U;
+    xaios_cpu_io_barrier();
+    desc->word2 = (VMXNET3_FRAME_BYTES & VMXNET3_RXD_W2_LEN_MASK) |
+                  (UINT32_C(0) << VMXNET3_RXD_W2_BTYPE_SHIFT) |
+                  (g_vmxnet3->rx_gen << VMXNET3_RXD_W2_GEN_SHIFT);
+  }
+  g_vmxnet3->rx_produce++;
+  if (g_vmxnet3->rx_produce >= VMXNET3_RING_SIZE) {
+    g_vmxnet3->rx_produce = 0U;
+    g_vmxnet3->rx_gen ^= 1U;
   }
   g_vmxnet3->rx_comp_consume++;
   if (g_vmxnet3->rx_comp_consume >= VMXNET3_RX_COMP_SIZE) {
     g_vmxnet3->rx_comp_consume = 0U;
     g_vmxnet3->rx_comp_gen ^= 1U;
   }
-  write_bar0(VMXNET3_REG_RXPROD, index);
+  xaios_cpu_io_barrier();
+  write_bar0(VMXNET3_REG_RXPROD, g_vmxnet3->rx_produce);
   return copied;
 }
 

@@ -1,3 +1,4 @@
+#include <xaios/device_window.h>
 #include <xaios/assert.h>
 #include <xaios/arch_cpu.h>
 #include <xaios/input.h>
@@ -10,7 +11,6 @@
 #include <xaios/vmm.h>
 
 #define INPUT_QUEUE_SIZE 128U
-#define INPUT_MMIO_VIRTUAL_BASE UINT64_C(0x340000000)
 #define XHCI_CLASS UINT8_C(0x0c)
 #define XHCI_SUBCLASS UINT8_C(0x03)
 #define XHCI_PROGIF UINT8_C(0x30)
@@ -128,23 +128,11 @@ static uint64_t dma_address(const void *pointer) {
 static int map_mmio(uint64_t physical_base, uint64_t bytes, uint64_t *virtual_base) {
   if (physical_base == 0U || bytes == 0U || virtual_base == 0 ||
       physical_base > UINT64_MAX - bytes) return 0;
-  uint64_t physical_page = physical_base & ~UINT64_C(0xfff);
-  uint64_t virtual_page = INPUT_MMIO_VIRTUAL_BASE;
-  uint64_t end = (physical_base + bytes + UINT64_C(0xfff)) & ~UINT64_C(0xfff);
-  while (physical_page < end) {
-    uint64_t physical = 0U;
-    uint32_t flags = 0U;
-    if (vmm_translate(virtual_page, &physical, &flags) != XAIOS_OK ||
-        physical != physical_page ||
-        (flags & XAIOS_VMM_DEVICE) == 0U) {
-      if (vmm_map_page(virtual_page, physical_page,
-                       XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
-                           XAIOS_VMM_DEVICE) != XAIOS_OK) return 0;
-    }
-    physical_page += UINT64_C(4096);
-    virtual_page += UINT64_C(4096);
+  volatile uint8_t *window = 0;
+  if (device_window_map("input", physical_base, bytes, &window) != XAIOS_OK) {
+    return 0;
   }
-  *virtual_base = INPUT_MMIO_VIRTUAL_BASE + (physical_base & UINT64_C(0xfff));
+  *virtual_base = (uint64_t)(uintptr_t)window;
   return 1;
 }
 static void queue_byte(uint8_t value) {

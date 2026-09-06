@@ -46,9 +46,18 @@ case "$BUILD_MODE" in
     printf '%s\n' "error: XAIOS_BUILD_MODE must be development or release" >&2
     exit 2 ;;
 esac
-if [ "${XAIOS_SSH_USERS_FILE:-}" != "" ]; then
+SSH_USERS_FILE="${XAIOS_SSH_USERS_FILE:-}"
+# "none" asks for a development image that packages no account, so the first
+# boot runs setup exactly as a release image does. The other builder has taken
+# it since setup existed; this one treated it as the *name of a file*, so the
+# credential policy demanded a password switch for an image that was asking
+# for no credential at all -- and the setup gate could not be run here.
+if [ "$SSH_USERS_FILE" = "none" ]; then
+  SSH_USERS_FILE=""
+fi
+if [ "$SSH_USERS_FILE" != "" ]; then
   if [ "${XAIOS_SSH_PASSWORD_AUTH:-}" != "1" ] && \
-     [ "$XAIOS_SSH_USERS_FILE" != "$ROOT_DIR/config/development-sshd-users" ]; then
+     [ "$SSH_USERS_FILE" != "$ROOT_DIR/config/development-sshd-users" ]; then
     printf '%s\n' \
       "error: password credentials require XAIOS_SSH_PASSWORD_AUTH=1" >&2
     exit 2
@@ -345,18 +354,19 @@ SSHD_ARGS="/bin/sshd=$BUILD_DIR/sshd.elf"
 # Development only: a release medium packages no credential anybody outside
 # the build has, and setup makes one on first boot instead.
 CREDENTIAL_ARGS=""
-if [ "${XAIOS_SSH_USERS_FILE:-}" != "" ]; then
+if [ "$SSH_USERS_FILE" != "" ]; then
   # A caller's own account list wins over the development one. A gate that
   # mints a credential and then expects to log in with it has to be able to
   # put that credential in the image; without this it could reach two
   # machines out of three and the third refused the password it was given.
-  if [ ! -f "$XAIOS_SSH_USERS_FILE" ]; then
-    printf '%s\n' "error: SSH users file not found: $XAIOS_SSH_USERS_FILE" >&2
+  if [ ! -f "$SSH_USERS_FILE" ]; then
+    printf '%s\n' "error: SSH users file not found: $SSH_USERS_FILE" >&2
     exit 1
   fi
-  CREDENTIAL_ARGS="/etc/xaios_sshd_users=$XAIOS_SSH_USERS_FILE"
+  CREDENTIAL_ARGS="/etc/xaios_sshd_users=$SSH_USERS_FILE"
   CREDENTIAL_ARGS="$CREDENTIAL_ARGS /etc/xaios_console_pin=$ROOT_DIR/config/development-console-pin"
-elif [ "${XAIOS_RISCV64_MODE:-development}" = development ]; then
+elif [ "${XAIOS_SSH_USERS_FILE:-}" != "none" ] && \
+     [ "${XAIOS_RISCV64_MODE:-development}" = development ]; then
   CREDENTIAL_ARGS="/etc/xaios_sshd_users=$ROOT_DIR/config/development-sshd-users"
   CREDENTIAL_ARGS="$CREDENTIAL_ARGS /etc/xaios_console_pin=$ROOT_DIR/config/development-console-pin"
 fi

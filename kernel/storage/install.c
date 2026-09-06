@@ -15,6 +15,7 @@
 static const char *const k_boot_files[] = {
     "/EFI/BOOT/BOOTAA64.EFI",
     "/EFI/BOOT/BOOTX64.EFI",
+    "/EFI/BOOT/BOOTRISCV64.EFI",
     "/EFI/XAIOS/XAIOS.EFI",
     "/EFI/XAIOS/KERNEL.ELF",
     "/EFI/XAIOS/INITFS.IMG",
@@ -35,10 +36,23 @@ static const char *const k_boot_files[] = {
 /* Where firmware looks on removable media. The architecture in the name is
    the one this kernel was built for, because a loader carrying an AArch64
    kernel is of no use to a machine that would open BOOTX64.EFI. */
+/* Named for each machine, with no default.
+ *
+ * "AArch64, otherwise x86-64" was the whole of this, so a RISC-V machine
+ * installing onto a disk looked for BOOTX64.EFI, found none on its own
+ * source volume, and wrote a disk with nothing on the path its firmware
+ * opens. It booted from the copy this repository builds and not from the one
+ * it installed, and the difference was invisible until a gate booted the
+ * result. An #error rather than a fallback, because the fallback is what
+ * turned a missing case into a silently unbootable disk. */
 #if defined(__aarch64__)
 #define XAIOS_INSTALL_REMOVABLE_LOADER "/EFI/BOOT/BOOTAA64.EFI"
-#else
+#elif defined(__x86_64__)
 #define XAIOS_INSTALL_REMOVABLE_LOADER "/EFI/BOOT/BOOTX64.EFI"
+#elif defined(__riscv)
+#define XAIOS_INSTALL_REMOVABLE_LOADER "/EFI/BOOT/BOOTRISCV64.EFI"
+#else
+#error "the removable-media loader name for this architecture is unknown"
 #endif
 
 static void bytes_zero(void *buffer, uint64_t length) {

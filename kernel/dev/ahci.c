@@ -1,3 +1,4 @@
+#include <xaios/device_window.h>
 #include <xaios/ahci.h>
 #include <xaios/arch_cpu.h>
 #include <xaios/block_device.h>
@@ -12,7 +13,6 @@
 #define AHCI_SUBCLASS_SATA UINT8_C(0x06)
 #define AHCI_PROGIF_AHCI UINT8_C(0x01)
 #define AHCI_BAR_INDEX 5U
-#define AHCI_MMIO_VIRTUAL_BASE UINT64_C(0x330000000)
 #define AHCI_MMIO_BYTES UINT64_C(0x2000)
 #define AHCI_PAGE_BYTES UINT64_C(4096)
 #define AHCI_SECTOR_BYTES UINT64_C(512)
@@ -180,16 +180,8 @@ static xaios_status_t map_controller(uint32_t pci_index) {
   if (physical == 0U || (physical & (AHCI_PAGE_BYTES - 1U)) != 0U) {
     return XAIOS_ERR_INVALID;
   }
-  for (uint64_t offset = 0U; offset < AHCI_MMIO_BYTES;
-       offset += AHCI_PAGE_BYTES) {
-    if (vmm_map_page(AHCI_MMIO_VIRTUAL_BASE + offset, physical + offset,
-                     XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
-                         XAIOS_VMM_DEVICE) != XAIOS_OK) {
-      return XAIOS_ERR_IO;
-    }
-  }
-  g_ahci->mmio = (volatile uint8_t *)(uintptr_t)AHCI_MMIO_VIRTUAL_BASE;
-  return XAIOS_OK;
+  return device_window_map("ahci", physical, AHCI_MMIO_BYTES,
+                           &g_ahci->mmio);
 }
 
 static xaios_status_t reset_controller(void) {

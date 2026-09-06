@@ -1,3 +1,4 @@
+#include <xaios/device_window.h>
 #include <xaios/arch_cpu.h>
 #include <xaios/block_device.h>
 #include <xaios/gic.h>
@@ -42,7 +43,6 @@
 #define NVME_MAX_TRANSFER_BYTES UINT32_C(16384)
 #define NVME_STRESS_ROUNDS 8U
 #define NVME_TIMEOUT_NS UINT64_C(5000000000)
-#define NVME_MMIO_VIRTUAL_BASE UINT64_C(0x300000000)
 
 typedef struct nvme_command {
   uint8_t opcode;
@@ -297,15 +297,10 @@ static xaios_status_t initialize_controller(nvme_controller_t *controller,
   if (pci_enable_device(pci_index) != XAIOS_OK) return XAIOS_ERR_IO;
   uint64_t bar = pci_bar_address(pci_index, 0U);
   if (bar == 0U || (bar & (NVME_PAGE_SIZE - 1U)) != 0U) return XAIOS_ERR_INVALID;
-  for (uint64_t offset = 0U; offset < NVME_PAGE_SIZE * 2U;
-       offset += NVME_PAGE_SIZE) {
-    if (vmm_map_page(NVME_MMIO_VIRTUAL_BASE + offset, bar + offset,
-                     XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
-                         XAIOS_VMM_DEVICE) != XAIOS_OK) {
-      return XAIOS_ERR_IO;
-    }
+  if (device_window_map("nvme", bar, NVME_PAGE_SIZE * 2U,
+                        &controller->bar) != XAIOS_OK) {
+    return XAIOS_ERR_IO;
   }
-  controller->bar = (volatile uint8_t *)(uintptr_t)NVME_MMIO_VIRTUAL_BASE;
   controller->cap = mmio_read64(controller, NVME_REG_CAP);
   uint32_t mqes = (uint32_t)(controller->cap & UINT64_C(0xffff)) + 1U;
   uint32_t mpsmin = (uint32_t)((controller->cap >> 48U) & UINT64_C(0xf));

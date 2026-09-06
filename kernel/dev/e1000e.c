@@ -1,3 +1,4 @@
+#include <xaios/device_window.h>
 #include <xaios/arch_cpu.h>
 #include <xaios/e1000e.h>
 #include <xaios/kheap.h>
@@ -12,7 +13,6 @@
 #define E1000_DEVICE_82545EM UINT16_C(0x100f)
 #define E1000_DEVICE_82545GM UINT16_C(0x10d9)
 
-#define E1000_MMIO_VIRTUAL_BASE UINT64_C(0x320000000)
 #define E1000_MMIO_BYTES UINT64_C(0x6000)
 #define E1000_PAGE_SIZE UINT64_C(4096)
 #define E1000_RING_SIZE 32U
@@ -158,16 +158,8 @@ static xaios_status_t map_controller(uint32_t pci_index) {
   if (physical == 0U || (physical & (E1000_PAGE_SIZE - 1U)) != 0U) {
     return XAIOS_ERR_INVALID;
   }
-  for (uint64_t offset = 0U; offset < E1000_MMIO_BYTES;
-       offset += E1000_PAGE_SIZE) {
-    if (vmm_map_page(E1000_MMIO_VIRTUAL_BASE + offset, physical + offset,
-                     XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
-                         XAIOS_VMM_DEVICE) != XAIOS_OK) {
-      return XAIOS_ERR_IO;
-    }
-  }
-  g_e1000->mmio = (volatile uint8_t *)(uintptr_t)E1000_MMIO_VIRTUAL_BASE;
-  return XAIOS_OK;
+  return device_window_map("e1000e", physical, E1000_MMIO_BYTES,
+                           &g_e1000->mmio);
 }
 
 static xaios_status_t reset_controller(void) {

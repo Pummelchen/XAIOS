@@ -744,6 +744,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/numa.o
   $KERNEL_BUILD_DIR/arena.o
   $KERNEL_BUILD_DIR/kheap.o
+  $KERNEL_BUILD_DIR/device_window.o
   $KERNEL_BUILD_DIR/mmu.o
   $KERNEL_BUILD_DIR/scheduler.o
   $KERNEL_BUILD_DIR/thread.o
@@ -906,6 +907,8 @@ compile_kernel "$ROOT_DIR/kernel/mm/pmm.c" "$KERNEL_BUILD_DIR/pmm.o"
 compile_kernel "$ROOT_DIR/kernel/mm/numa.c" "$KERNEL_BUILD_DIR/numa.o"
 compile_kernel "$ROOT_DIR/kernel/mm/arena.c" "$KERNEL_BUILD_DIR/arena.o"
 compile_kernel "$ROOT_DIR/kernel/mm/kheap.c" "$KERNEL_BUILD_DIR/kheap.o"
+compile_kernel "$ROOT_DIR/kernel/mm/device_window.c" \
+  "$KERNEL_BUILD_DIR/device_window.o"
 compile_kernel "$ROOT_DIR/kernel/arch/$ARCH_KERNEL_DIR/mmu.c" "$KERNEL_BUILD_DIR/mmu.o"
 compile_kernel "$ROOT_DIR/kernel/sched/scheduler.c" "$KERNEL_BUILD_DIR/scheduler.o"
 compile_kernel "$ROOT_DIR/kernel/sched/thread.c" "$KERNEL_BUILD_DIR/thread.o"

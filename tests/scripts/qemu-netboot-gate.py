@@ -63,6 +63,8 @@ ARCHITECTURES = {
         "firmware_vars": (),
         "build": [["make", "image-qemu-test"]],
         "slot": r"16",
+        "net": ["-device",
+                "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.2"],
     },
     "riscv64": {
         "qemu": "qemu-system-riscv64",
@@ -75,6 +77,7 @@ ARCHITECTURES = {
         "build": [["./scripts/build-riscv64.sh"],
                   ["./scripts/build-riscv64-image.sh"]],
         "slot": r"\d+",
+        "net": ["-device", "virtio-net-pci,netdev=net0,disable-legacy=on"],
     },
 }
 PROFILE = ARCHITECTURES[ARCH]
@@ -296,7 +299,13 @@ def boot(fw: str, log: Path, boot_disk: Path, spare: Path | None,
             "-drive", f"if=none,format=raw,id=target,file={spare}",
             "-device", "virtio-blk-device,drive=target,bus=virtio-mmio-bus.5",
         ]
-    command += ["-display", "none", "-serial", f"file:{log}"]
+    command += [
+        # A network card, because a machine installed over the network has
+        # one -- and without it sshd is correctly withheld for want of a
+        # network, which puts the last stage of this gate out of reach.
+        "-netdev", "user,id=net0", *PROFILE["net"],
+        "-display", "none", "-serial", f"file:{log}",
+    ]
     process = subprocess.Popen(command, cwd=str(ROOT),
                                stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL,

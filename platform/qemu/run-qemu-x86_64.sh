@@ -146,6 +146,28 @@ if [ "$x86_tap" != "none" ] && [ "$x86_tap_queues" -gt 1 ]; then
 fi
 hostfwd_udp_port="${XAIOS_QEMU_HOSTFWD_UDP_PORT:-none}"
 net_socket_host="${XAIOS_QEMU_NET_SOCKET_HOST:-127.0.0.1}"
+# Which network card this machine has.
+#
+# virtio-net by default, because that is the qualified path here. The other
+# two exist so the drivers written for real hypervisors can be exercised on a
+# machine that can be booted in a loop: QEMU implements both the Intel part
+# Fusion offers and VMware's own paravirtual one, and a driver that can only
+# be tested by hand on one laptop is a driver nothing checks.
+case "${XAIOS_QEMU_X86_NIC:-virtio}" in
+  virtio)
+    NET0_DEVICE="-device virtio-net-pci,netdev=net0,mac=52:54:00:12:34:57,disable-legacy=on$net0_device_extra"
+    ;;
+  e1000e)
+    NET0_DEVICE="-device e1000e,netdev=net0,mac=52:54:00:12:34:57"
+    ;;
+  vmxnet3)
+    NET0_DEVICE="-device vmxnet3,netdev=net0,mac=52:54:00:12:34:57"
+    ;;
+  *)
+    printf '%s\n' \
+      "error: XAIOS_QEMU_X86_NIC must be virtio, e1000e or vmxnet3" >&2
+    exit 2 ;;
+esac
 net_socket_port="${XAIOS_QEMU_NET_SOCKET_PORT:-none}"
 pcap_file="${XAIOS_QEMU_NET_DUMP:-none}"
 nvme_image="${XAIOS_QEMU_X86_NVME_IMAGE:-}"
@@ -222,7 +244,7 @@ set -- "$qemu" \
   -device virtio-blk-pci,drive=xaios_x86_models,disable-legacy=on \
   -drive "if=none,format=raw,id=xaios_x86_admin,file=$storage_admin_image" \
   -device virtio-blk-pci,drive=xaios_x86_admin,disable-legacy=on \
-  -device "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:57,disable-legacy=on$net0_device_extra"
+  $NET0_DEVICE
 
 if [ "$system_volume_image" != "none" ]; then
   set -- "$@" \
