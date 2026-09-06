@@ -94,8 +94,23 @@ void entropy_init(const xaios_boot_info_t *boot) {
     g_entropy.source = XAIOS_ENTROPY_SOURCE_FIRMWARE_RNG;
     klog("entropy: architectural RNG seed accepted\n");
   }
+  /* A random device on the bus, mixed in after the firmware's own sources.
+     Always mixed when present -- more real entropy is never worse -- but it
+     only names itself as the source when nothing better already did, so a
+     machine with a firmware RNG keeps saying so. */
+  uint8_t device_seed[32];
+  if (virtio_rng_read(device_seed, sizeof(device_seed)) == XAIOS_OK) {
+    seed_from_material("xaios.entropy.device.v1", device_seed,
+                       sizeof(device_seed));
+    if (g_entropy.source != XAIOS_ENTROPY_SOURCE_FIRMWARE_RNG) {
+      g_entropy.source = XAIOS_ENTROPY_SOURCE_DEVICE_RNG;
+    }
+    klog("entropy: device RNG seed accepted\n");
+    bytes_zero(device_seed, sizeof(device_seed));
+  }
   klog("entropy: source=%s\n",
        g_entropy.source == XAIOS_ENTROPY_SOURCE_FIRMWARE_RNG ? "hardware"
+       : g_entropy.source == XAIOS_ENTROPY_SOURCE_DEVICE_RNG ? "device-rng"
        : g_entropy.source == XAIOS_ENTROPY_SOURCE_SEED_FILE  ? "development-seed-file"
                                                              : "none");
   bytes_zero(hardware_seed, sizeof(hardware_seed));
@@ -167,6 +182,11 @@ uint32_t entropy_source(void) { return g_entropy.source; }
    make askable; what an operator does about the answer -- which entropy
    source to provision, and how -- remains theirs to decide. */
 uint32_t entropy_is_production_grade(void) {
+  /* A random device on the bus counts. It is not the firmware's word, but it
+     is a source the machine asked for and received, which is the distinction
+     this predicate exists to draw -- the one it must refuse is a file baked
+     into an image, identical on every copy. */
   return g_entropy.seeded != 0U &&
-         g_entropy.source == XAIOS_ENTROPY_SOURCE_FIRMWARE_RNG;
+         (g_entropy.source == XAIOS_ENTROPY_SOURCE_FIRMWARE_RNG ||
+          g_entropy.source == XAIOS_ENTROPY_SOURCE_DEVICE_RNG);
 }

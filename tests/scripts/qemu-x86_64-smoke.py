@@ -49,6 +49,7 @@ TARGETS = [
     "kernel: /bin/helloworldc99 returned to kernel exit_code=0",
     "kernel: starting persistent /bin/sshd service",
     "sshd: Phase 2 runtime ready",
+    "entropy: source=hardware",
     "boot-ui: progress=100 loaded=SSH-server loading=complete remaining=0",
     "IPv4: 10.0.2.15",
     "SSH server: up and running (tcp/22)",

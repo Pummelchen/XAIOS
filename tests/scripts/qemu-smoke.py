@@ -59,8 +59,15 @@ PATTERN_TARGETS = [
 # but the words are the machine's own, and a gate that demanded ARM's words
 # would be measuring how well RISC-V imitates ARM rather than whether it
 # works. RISC-V says PLIC because it has a PLIC.
+# Where each machine's entropy comes from, asserted per architecture because
+# the answer differs and the difference is the point. F-05's engineering half
+# made the provenance observable; this is what stops it drifting back. RISC-V
+# reported "none" while a working virtio-rng sat on its bus, which is the
+# failure the provenance work existed to end and was invisible until it was
+# gated.
 ARCH_TARGETS = {
     "aarch64": [
+        "entropy: source=hardware",
         "SMMU: self-test bypass mode streams=0 invalidations=1",
         "VMM map/unmap self-test passed",
         "exceptions: self-test",
@@ -69,6 +76,10 @@ ARCH_TARGETS = {
         "timer: monotonic self-test passed",
     ],
     "riscv64": [
+        # A real source the machine asked the host for, named apart from the
+        # firmware's own because it is not the firmware's word.
+        "entropy: device RNG seed accepted",
+        "entropy: source=device-rng",
         # No IOMMU on this board, said out loud rather than skipped: an
         # unmediated DMA path is a fact about the machine worth asserting.
         "smmu: riscv64 has no IOMMU on this board; DMA is unmediated",

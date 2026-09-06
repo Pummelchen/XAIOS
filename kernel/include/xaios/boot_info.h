@@ -27,6 +27,14 @@
    which makes it useful for development and unfit for anything that has to
    stay secret. */
 #define XAIOS_ENTROPY_SOURCE_SEED_FILE 2U
+/* A random device on the bus -- virtio-rng, today. Not the firmware's, so it
+   is named apart from it, but a real source and not a seed file: the machine
+   asks the host for entropy at boot and gets it. This exists because RISC-V
+   reported source=none while a working virtio-rng sat on its bus and served
+   every entropy_read: the pool the report describes was simply never seeded
+   from it, and a machine that has a source and says it has none is the exact
+   failure the provenance work was meant to end. */
+#define XAIOS_ENTROPY_SOURCE_DEVICE_RNG 3U
 
 typedef struct xaios_memory_descriptor {
   uint32_t type;

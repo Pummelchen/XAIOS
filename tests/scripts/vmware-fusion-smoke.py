@@ -38,6 +38,14 @@ BOOT_MARKERS = [
     "xaibootfs: persistent mounted v5",
     "kernel: persistent network stack enabled device=e1000e",
     "kernel: starting persistent /bin/sshd service",
+    # The other side of F-05's boundary, asserted rather than observed. This
+    # profile has no firmware RNG and no architectural one, so what seeds the
+    # pool is a file carried in the image -- identical on every copy -- and
+    # the machine has to say so. A build that quietly reported hardware
+    # entropy here would be indistinguishable from a real one in the record,
+    # which is worse than having no record.
+    "entropy: DEVELOPMENT seed file accepted",
+    "entropy: source=development-seed-file",
     READY_MARKER,
 ]
 # The userspace applications, which until now ran only under QEMU. Fusion and
