@@ -31,29 +31,71 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
-REPORT = BUILD / "qemu-installed-disk-gate.json"
-DISK = BUILD / "installed-disk.img"
-TARGET = BUILD / "install-target.img"
-TARGET_BYTES = 256 * 1024 * 1024
-BOOT_TIMEOUT_S = int(os.environ.get("XAIOS_INSTALLED_DISK_TIMEOUT", "180"))
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import arch_from_argv, smoke_timeout
 
-FIRMWARE_CANDIDATES = (
-    "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
-    "/usr/share/AAVMF/AAVMF_CODE.fd",
-    "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
-    "/usr/share/edk2/aarch64/QEMU_EFI.fd",
-    "/opt/homebrew/share/edk2/aarch64/QEMU_EFI.fd",
-)
+ARCH = arch_from_argv(sys.argv)
+SUFFIX = "" if ARCH == "aarch64" else f"-{ARCH}"
+REPORT = BUILD / f"qemu-installed-disk-gate{SUFFIX}.json"
+DISK = BUILD / f"installed-disk{SUFFIX}.img"
+TARGET = BUILD / f"install-target{SUFFIX}.img"
+TARGET_BYTES = 256 * 1024 * 1024
+BOOT_TIMEOUT_S = smoke_timeout(
+    ARCH, int(os.environ.get("XAIOS_INSTALLED_DISK_TIMEOUT", "180")))
+
+# What a machine of each kind is, and where its firmware lives.
+#
+# The property under test -- one disk, a GPT on it, an ESP and a state
+# partition found by type rather than by position -- is not architectural at
+# all. What is architectural is the emulator binary, the firmware image, the
+# machine type, and the ordinal the transport layer ends up giving the disk,
+# which is a fact about where QEMU puts the controller rather than about
+# XAIOS. So those are named here and everything else is shared.
+ARCHITECTURES = {
+    "aarch64": {
+        "qemu": "qemu-system-aarch64",
+        "machine": ["-machine", "virt,gic-version=3", "-cpu", "cortex-a72"],
+        "firmware_code": (
+            "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
+            "/usr/share/AAVMF/AAVMF_CODE.fd",
+            "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
+            "/usr/share/edk2/aarch64/QEMU_EFI.fd",
+            "/opt/homebrew/share/edk2/aarch64/QEMU_EFI.fd",
+        ),
+        "firmware_vars": (),
+        "build": [["make", "image-qemu-test"]],
+        "slot": r"16",
+    },
+    "riscv64": {
+        "qemu": "qemu-system-riscv64",
+        # acpi=off, because EDK2 on this board hands the kernel an ACPI set
+        # it cannot use and the device tree is what this port reads.
+        "machine": ["-machine", "virt,acpi=off", "-cpu", "rv64"],
+        "firmware_code": ("/opt/homebrew/share/qemu/edk2-riscv-code.fd",
+                          "/usr/share/qemu/edk2-riscv-code.fd"),
+        # A writable variable store, copied per run: the firmware writes it,
+        # and editing the one the package manager installed would change every
+        # later run on this host.
+        "firmware_vars": ("/opt/homebrew/share/qemu/edk2-riscv-vars.fd",
+                          "/usr/share/qemu/edk2-riscv-vars.fd"),
+        "build": [["./scripts/build-riscv64.sh"],
+                  ["./scripts/build-riscv64-image.sh"]],
+        "slot": r"\d+",
+    },
+}
+PROFILE = ARCHITECTURES[ARCH]
+FIRMWARE_CANDIDATES = PROFILE["firmware_code"]
+SLOT = PROFILE["slot"]
 
 # What booting from a single installed disk has to produce. The partition is
 # found by type rather than by position, which is the whole point.
 FIRST_BOOT = (
     ("kernel started", re.compile(r"XAIOS Build \d+ kernel starting")),
     ("disk found by ordinal, not by slot",
-     re.compile(r"virtio-blk-h: slot=16 capacity_sectors=\d+")),
+     re.compile(rf"virtio-blk-h: slot={SLOT} capacity_sectors=\d+")),
     ("state partition found by type",
-     re.compile(r"xaibootfs: mounted from /dev/vblk16p\d+, a partition of the "
-                r"disk this machine booted from")),
+     re.compile(rf"xaibootfs: mounted from /dev/vblk{SLOT}p\d+, a partition of "
+                rf"the disk this machine booted from")),
     ("filesystem checked", re.compile(r"persistent fsck valid=1")),
     ("all four vCPUs online", re.compile(r"smp: online cpus=4/4")),
     ("shell command surface",
@@ -72,8 +114,8 @@ FIRST_BOOT = (
     # the same brittleness that made an unrelated gate assert on a running
     # tally of every interrupt in the kernel.
     ("boot files readable from the ESP",
-     re.compile(r"boot-esp: readable volume=/dev/vblk16p\d+ files=[1-9]\d* "
-                r"bytes=\d{8,}")),
+     re.compile(rf"boot-esp: readable volume=/dev/vblk{SLOT}p\d+ "
+                rf"files=[1-9]\d* bytes=\d{{8,}}")),
     ("kernel image found on the ESP",
      re.compile(r"boot-esp: /EFI/XAIOS/KERNEL\.ELF size=\d{6,}")),
 )
@@ -104,8 +146,8 @@ INSTALL = (
 INSTALLED_RESULT = (
     ("kernel started", re.compile(r"XAIOS Build \d+ kernel starting")),
     ("state partition found by type",
-     re.compile(r"xaibootfs: mounted from /dev/vblk16p\d+, a partition of the "
-                r"disk this machine booted from")),
+     re.compile(rf"xaibootfs: mounted from /dev/vblk{SLOT}p\d+, a partition of "
+                rf"the disk this machine booted from")),
     ("all four vCPUs online", re.compile(r"smp: online cpus=4/4")),
     ("shell command surface",
      re.compile(r"/bin/xaios-shell: command surface passed")),
@@ -142,17 +184,39 @@ def find_firmware() -> str | None:
     return None
 
 
+def firmware_vars() -> str | None:
+    """A writable copy of the firmware's variable store, where one is needed.
+
+    AArch64's AAVMF build here runs from code alone; EDK2 on RISC-V keeps its
+    boot variables in a second pflash unit and writes to it. Copied per run
+    rather than used in place: the file belongs to whatever installed QEMU,
+    and a gate that edits it changes every later run on the host.
+    """
+    for candidate in PROFILE["firmware_vars"]:
+        if Path(candidate).is_file():
+            target = BUILD / f"installed-disk-vars{SUFFIX}.fd"
+            shutil.copyfile(candidate, target)
+            return str(target)
+    return None
+
+
 def boot(firmware: str, log: Path, disk: Path = DISK,
          spare: Path | None = None) -> str:
     log.unlink(missing_ok=True)
     command = [
-        "qemu-system-aarch64",
-        # gic-version=3 is not optional: without it the machine faults in the
-        # GIC redistributor and the failure looks like a kernel bug.
-        "-machine", "virt,gic-version=3",
-        "-cpu", "cortex-a72", "-smp", "4", "-m", "2048",
+        PROFILE["qemu"],
+        # AArch64: gic-version=3 is not optional -- without it the machine
+        # faults in the GIC redistributor and the failure looks like a kernel
+        # bug. RISC-V: acpi=off, because EDK2 hands the kernel an ACPI set it
+        # cannot use and the device tree is what this port reads.
+        *PROFILE["machine"], "-smp", "4", "-m", "2048",
         "-global", "virtio-mmio.force-legacy=false",
-        "-drive", f"if=pflash,format=raw,readonly=on,file={firmware}",
+        "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={firmware}",
+    ]
+    variables = firmware_vars()
+    if variables is not None:
+        command += ["-drive", f"if=pflash,format=raw,unit=1,file={variables}"]
+    command += [
         # One drive and nothing else. Attaching anything beside it would make
         # this the test bench again and prove nothing.
         "-drive", f"if=none,format=raw,id=xaios_disk,file={disk}",
@@ -191,11 +255,12 @@ def evaluate(text: str, expected) -> tuple[list, list]:
 
 
 def main() -> int:
-    if shutil.which("qemu-system-aarch64") is None:
-        return fail("qemu-system-aarch64 is not installed")
+    if shutil.which(PROFILE["qemu"]) is None:
+        return fail(f"{PROFILE['qemu']} is not installed")
     firmware = find_firmware()
     if firmware is None:
-        return fail("no AAVMF firmware found; install the edk2 aarch64 image")
+        return fail(f"no UEFI firmware found for {ARCH}; looked in "
+                    f"{list(FIRMWARE_CANDIDATES)}")
 
     # Build the kernel the way every other QEMU gate does. Without the test
     # apps the boot splash owns the console and suppresses the kernel log, so
@@ -204,18 +269,24 @@ def main() -> int:
     # The install at boot is what produces the disk this gate then boots, and
     # it is behind a flag because an image that installs onto slot 5 unasked
     # has no business on anyone's machine. Ask for it here.
-    image = subprocess.run(["make", "image-qemu-test"], cwd=ROOT,
-                           env={**os.environ, "XAIOS_INSTALL_SELF_TEST": "1"},
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           text=True, check=False)
-    if image.returncode != 0:
-        print(image.stdout[-4000:])
-        return fail("could not build the kernel image")
+    for command in PROFILE["build"]:
+        image = subprocess.run(
+            command, cwd=ROOT,
+            env={**os.environ, "XAIOS_INSTALL_SELF_TEST": "1",
+                 "XAIOS_BOOT_TEST_APPS": "1"},
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, check=False)
+        if image.returncode != 0:
+            print(image.stdout[-4000:])
+            return fail(f"could not build the kernel image: {command}")
 
     # Built fresh: the disk carries the kernel under test in its own ESP, and a
     # stale one would boot a stale kernel and prove nothing about this build.
     build = subprocess.run([str(ROOT / "scripts/make-installed-disk.sh")],
-                           cwd=ROOT, stdout=subprocess.PIPE,
+                           cwd=ROOT,
+                           env={**os.environ, "XAIOS_TARGET_ARCH": ARCH,
+                                "XAIOS_INSTALLED_DISK": str(DISK)},
+                           stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT, text=True, check=False)
     if build.returncode != 0:
         print(build.stdout)
@@ -224,7 +295,8 @@ def main() -> int:
     boots = []
     passed = True
     for index, expected in ((1, FIRST_BOOT), (2, SECOND_BOOT)):
-        text = boot(firmware, BUILD / f"installed-disk-boot{index}.log")
+        text = boot(firmware,
+                    BUILD / f"installed-disk-boot{index}{SUFFIX}.log")
         checks, faults = evaluate(text, expected)
         ok = all(check["passed"] for check in checks) and \
             not any(fault["seen"] for fault in faults)
@@ -251,7 +323,8 @@ def main() -> int:
     if passed:
         with TARGET.open("wb") as handle:
             handle.truncate(TARGET_BYTES)
-        text = boot(firmware, BUILD / "install-run.log", spare=TARGET)
+        text = boot(firmware, BUILD / f"install-run{SUFFIX}.log",
+                        spare=TARGET)
         checks, faults = evaluate(text, INSTALL)
         # Formatting is expected here: this boot formats the spare disk's new
         # state partition as part of installing onto it.
@@ -269,7 +342,8 @@ def main() -> int:
                 print(f"    FAULT {fault['name']}")
 
         if install_ok:
-            text = boot(firmware, BUILD / "installed-by-xaios.log", disk=TARGET)
+            text = boot(firmware,
+                        BUILD / f"installed-by-xaios{SUFFIX}.log", disk=TARGET)
             checks, faults = evaluate(text, INSTALLED_RESULT)
             faults = [f for f in faults
                       if f["name"] != "state partition reformatted"]
@@ -287,7 +361,7 @@ def main() -> int:
                     print(f"    FAULT {fault['name']}")
 
     REPORT.write_text(json.dumps({
-        "target": "qemu-aarch64-installed-disk",
+        "target": f"qemu-{ARCH}-installed-disk",
         "description": "one disk, GPT, ESP and a state partition found by type",
         "boots": boots,
         "passed": passed,

@@ -16,6 +16,19 @@ SCENARIOS = [
     ("qemu-cpu-matrix", ["make", "qemu-cpu-matrix"], 900, 0),
     ("qemu-dry-run-aarch64", ["./platform/qemu/run-qemu-aarch64.sh", "--dry-run"], 10, 0),
     ("qemu-dry-run-x86_64", ["./platform/qemu/run-qemu-x86_64.sh", "--dry-run"], 10, 0),
+    # The third architecture, on the same terms as the other two.
+    #
+    # This matrix is where the family is checked as a family, and RISC-V was
+    # missing from it -- so every scenario here was a statement about two
+    # architectures wearing the name of all three. The budgets are larger
+    # because the machine is: RISC-V runs this closure through an interpreter
+    # with no host acceleration, and reusing AArch64's numbers would report a
+    # slower machine as a broken one. They are deadlines, not delays.
+    ("qemu-riscv64-smoke", ["make", "qemu-riscv64-smoke"], 480, 0),
+    ("qemu-riscv64-benchmark", ["make", "qemu-riscv64-benchmark"], 600, 0),
+    ("qemu-riscv64-persistence-reboot",
+     ["make", "qemu-riscv64-persistence-reboot"], 700, 0),
+    ("qemu-dry-run-riscv64", ["./platform/qemu/run-qemu-riscv64.sh", "--dry-run"], 10, 0),
 ]
 
 

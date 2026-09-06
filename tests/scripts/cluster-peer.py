@@ -83,6 +83,34 @@ def seal_frame(opcode: int, epoch: int, nonce: int, payload: bytes) -> bytes:
     return body + tag_for(body)
 
 
+# Opcodes, from cluster.h.
+JOIN = 1
+JOIN_ACK = 2
+LEAVE = 4
+
+
+def read_frame(connection: socket.socket) -> bytes:
+    """One frame off the stream, or empty if the far end stopped.
+
+    A stream gives back what it has, not what was asked for, so this reads
+    until a whole frame is in hand or the sender pauses. A frame smaller than
+    the maximum is complete once the sender stops, so a short second read is
+    how it says so rather than blocking for the full timeout every time.
+    """
+    connection.settimeout(60)
+    frame = b""
+    while len(frame) < MAX_FRAME:
+        try:
+            chunk = connection.recv(MAX_FRAME - len(frame))
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        frame += chunk
+        connection.settimeout(2)
+    return frame
+
+
 def main() -> int:
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 7799
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -91,48 +119,78 @@ def main() -> int:
     listener.listen(4)
     listener.settimeout(240)
     print(f"cluster-peer: listening on {port}", flush=True)
+
+    # Three connections, not one.
+    #
+    # This used to accept once, answer, and exit, which was right when the
+    # guest's whole exercise was a round trip. It has not been for some time:
+    # the guest now announces that it is leaving and then rejoins, each on a
+    # connection of its own, because a partition a node explains is a
+    # different thing from a node that vanishes. Against a peer that had
+    # already gone, the second connect could not complete -- so the guest
+    # reported `could not reconnect to announce leaving` and the gate failed
+    # on every architecture, in the one place nothing was looking: the
+    # per-check output said the frame was sealed, crossed, was opened and
+    # answered, and only the last line was missing.
+    #
+    # Serving the whole sequence is also what makes the membership half
+    # testable at all. The guest's claim is that ownership returns to what it
+    # was once the peer comes back, and there is no peer coming back if this
+    # process exits after the first frame.
+    exchanges: list[str] = []
+    replies = 0
+    nonce = 0
     try:
-        connection, address = listener.accept()
-    except socket.timeout:
-        print("cluster-peer: no guest connected", flush=True)
-        return 1
-    with connection:
-        connection.settimeout(60)
-        frame = b""
-        # Read until the peer stops sending or a whole frame is in hand. A
-        # stream gives back what it has, not what was asked for.
-        while len(frame) < MAX_FRAME:
+        while len(exchanges) < 3:
             try:
-                chunk = connection.recv(MAX_FRAME - len(frame))
+                connection, address = listener.accept()
             except socket.timeout:
                 break
-            if not chunk:
-                break
-            frame += chunk
-            # A frame smaller than the maximum is complete once the sender
-            # stops; give it one short read to say so rather than blocking for
-            # the full timeout on every run.
-            connection.settimeout(2)
-        print(f"cluster-peer: {address[0]} sent {len(frame)} bytes", flush=True)
-        if not frame:
-            return 1
-        opened = open_frame(frame)
-        if opened is None:
-            print("cluster-peer: the frame did not verify", flush=True)
-            return 1
-        print(f"cluster-peer: opened opcode={opened['opcode']} "
-              f"nonce={opened['nonce']} payload={len(opened['payload'])}",
-              flush=True)
-        # A reply addressed back to the guest, with this node's own nonce.
-        # The guest's receive nonce starts at zero and must advance, so any
-        # value above it will do and one is the honest first.
-        reply = seal_frame(opened["opcode"], opened["epoch"], 1,
-                           opened["payload"])
-        connection.sendall(reply)
-        print(f"cluster-peer: sealed a reply of {len(reply)} bytes",
-              flush=True)
-    listener.close()
-    return 0
+            with connection:
+                frame = read_frame(connection)
+                print(f"cluster-peer: {address[0]} sent {len(frame)} bytes",
+                      flush=True)
+                if not frame:
+                    break
+                opened = open_frame(frame)
+                if opened is None:
+                    print("cluster-peer: the frame did not verify", flush=True)
+                    return 1
+                print(f"cluster-peer: opened opcode={opened['opcode']} "
+                      f"nonce={opened['nonce']} "
+                      f"payload={len(opened['payload'])}", flush=True)
+                exchanges.append(str(opened["opcode"]))
+
+                if opened["opcode"] == LEAVE:
+                    # Nothing goes back. A node that has said it is leaving is
+                    # not waiting to be answered, and the guest closes this
+                    # socket without reading.
+                    print("cluster-peer: the guest announced it is leaving",
+                          flush=True)
+                    continue
+
+                # The first JOIN is answered with the frame's own opcode and
+                # payload, which is what the guest verifies came back
+                # unchanged. The rejoin is answered with JOIN_ACK, which is
+                # what brings the peer back online on the guest's side.
+                rejoining = LEAVE in [int(op) for op in exchanges[:-1]]
+                opcode = JOIN_ACK if rejoining else opened["opcode"]
+                payload = b"" if rejoining else opened["payload"]
+                # Strictly advancing, because that is what the guest's replay
+                # check requires of every frame it opens from this node.
+                nonce += 1
+                reply = seal_frame(opcode, opened["epoch"], nonce, payload)
+                connection.sendall(reply)
+                replies += 1
+                print(f"cluster-peer: sealed a reply of {len(reply)} bytes "
+                      f"opcode={opcode} nonce={nonce}", flush=True)
+    finally:
+        listener.close()
+
+    print(f"cluster-peer: served {len(exchanges)} exchanges "
+          f"({'+'.join(exchanges) if exchanges else 'none'}) and sent "
+          f"{replies} replies", flush=True)
+    return 0 if exchanges else 1
 
 
 if __name__ == "__main__":

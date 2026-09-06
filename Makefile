@@ -2,7 +2,7 @@ SHELL := /bin/sh
 HOST_CC ?= clang
 HOST_CFLAGS ?= -std=c99 -Wall -Wextra -Werror -pedantic
 
-.PHONY: all bootstrap test image image-qemu-test image-x86_64 image-x86_64-qemu-test image-libc-test qemu-libc-gate xapt-test xapt-repository qemu-xapt-gate engine-cli libc libc-check initfs-format-test vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-network-gate vmware-fusion-snapshot-gate riscv64 qemu-riscv64 qemu-riscv64-xapt-gate qemu-riscv64-docker-network-suite qemu-riscv64-parallel-network-load qemu-riscv64-soak-gate qemu-riscv64-nvme-gate qemu-riscv64-fault-matrix qemu-riscv64-libc-gate qemu-riscv64-preview qemu-riscv64-boot-loop qemu-riscv64-benchmark qemu-riscv64-model-sftp-gate qemu-riscv64-outbound-fragmentation-gate qemu-riscv64-dhcpv6-gate qemu-riscv64-instruction-cost-gate qemu-riscv64-storage-bench qemu-riscv64-routing-prefix-gate qemu-riscv64-keyboard-input-gate qemu-riscv64-framebuffer-gate qemu-riscv64-crash-safety-gate qemu-riscv64-ai-cell-gate qemu-riscv64-app-agent-gate qemu-riscv64-cpu-ai-runtime-gate qemu-riscv64-cpu-ai-suite qemu-riscv64-fault-injection qemu-riscv64-filesystem-gate qemu-riscv64-isa-gate qemu-riscv64-local-console-gate qemu-riscv64-network-full-gate qemu-riscv64-network-suite qemu-riscv64-osctl-gate qemu-riscv64-persistence-reboot qemu-riscv64-process-gate qemu-riscv64-regression-suite qemu-riscv64-security-gate qemu-riscv64-smoke qemu-riscv64-storage-crash-test qemu-riscv64-update-gate qemu-riscv64-userspace-suite qemu-riscv64-write-ordering-gate qemu-riscv64-gate qemu-riscv64-boot-media-gate qemu-riscv64-matrix-gate qemu-riscv64-durability-gate qemu-riscv64-release-gate vmware-fusion-panic-capture vmware-fusion-boot-soak vmware-fusion-dry-run vz-harness vz-gate vz-bridged-gate qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-numa-gate qemu-aarch64-sve2-gate qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-operations-closure qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-outbound-fragmentation-gate qemu-qualification-readiness qemu-dry-run qemu-smoke qemu-installed-disk-gate vm-packages vm-package-gate boot-media boot-media-gate qemu-setup-gate qemu-netboot-gate qemu-cluster-gate qemu-cluster-two-node-gate qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-crash-safety-gate qemu-write-ordering-gate qemu-storage-bench qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-freebsd-bidirectional-suite qemu-four-endpoint-network-suite qemu-parallel-network-load qemu-network-adversarial-gate qemu-local-console-gate qemu-console-xtop-gate qemu-console-xtop-gate-x86_64 qemu-console-xtop-gate-riscv64 qemu-keyboard-input-gate qemu-framebuffer-gate qemu-routing-prefix-gate qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate qemu-ssh-session-exhaustion-gate qemu-x86_64-ssh-session-exhaustion-gate qemu-riscv64-ssh-session-exhaustion-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc parser-fuzz compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test code-scanning-contract docs-check platform-neutrality-check doc-freshness-check production-source-audit qemu-baseline clean clean-persistent
+.PHONY: all bootstrap test image image-qemu-test image-x86_64 image-x86_64-qemu-test image-libc-test qemu-libc-gate xapt-test xapt-repository qemu-xapt-gate engine-cli libc libc-check initfs-format-test vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-network-gate vmware-fusion-snapshot-gate riscv64 qemu-riscv64 qemu-riscv64-xapt-gate qemu-riscv64-docker-network-suite qemu-riscv64-parallel-network-load qemu-riscv64-soak-gate qemu-riscv64-nvme-gate qemu-riscv64-fault-matrix qemu-riscv64-libc-gate qemu-riscv64-preview qemu-riscv64-boot-loop qemu-riscv64-benchmark qemu-riscv64-model-sftp-gate qemu-riscv64-outbound-fragmentation-gate qemu-riscv64-dhcpv6-gate qemu-riscv64-instruction-cost-gate qemu-riscv64-storage-bench qemu-riscv64-routing-prefix-gate qemu-riscv64-keyboard-input-gate qemu-riscv64-framebuffer-gate qemu-riscv64-crash-safety-gate qemu-riscv64-ai-cell-gate qemu-riscv64-app-agent-gate qemu-riscv64-cpu-ai-runtime-gate qemu-riscv64-cpu-ai-suite qemu-riscv64-fault-injection qemu-riscv64-filesystem-gate qemu-riscv64-isa-gate qemu-riscv64-local-console-gate qemu-riscv64-network-full-gate qemu-riscv64-network-suite qemu-riscv64-osctl-gate qemu-riscv64-persistence-reboot qemu-riscv64-process-gate qemu-riscv64-regression-suite qemu-riscv64-security-gate qemu-riscv64-smoke qemu-riscv64-storage-crash-test qemu-riscv64-update-gate qemu-riscv64-userspace-suite qemu-riscv64-write-ordering-gate qemu-riscv64-gate qemu-riscv64-boot-media-gate qemu-riscv64-matrix-gate qemu-riscv64-durability-gate qemu-riscv64-release-gate vmware-fusion-panic-capture vmware-fusion-boot-soak vmware-fusion-dry-run vz-harness vz-gate vz-bridged-gate qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-numa-gate qemu-aarch64-sve2-gate qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-operations-closure qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-outbound-fragmentation-gate qemu-qualification-readiness qemu-dry-run qemu-smoke qemu-installed-disk-gate qemu-riscv64-installed-disk-gate vm-packages vm-package-gate boot-media boot-media-gate qemu-setup-gate qemu-netboot-gate qemu-riscv64-netboot-gate qemu-cluster-gate qemu-riscv64-cluster-gate qemu-cluster-two-node-gate qemu-riscv64-cluster-two-node-gate qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-riscv64-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-crash-safety-gate qemu-write-ordering-gate qemu-storage-bench qemu-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-freebsd-bidirectional-suite qemu-four-endpoint-network-suite qemu-parallel-network-load qemu-network-adversarial-gate qemu-local-console-gate qemu-console-xtop-gate qemu-console-xtop-gate-x86_64 qemu-console-xtop-gate-riscv64 qemu-keyboard-input-gate qemu-framebuffer-gate qemu-routing-prefix-gate qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate qemu-ssh-session-exhaustion-gate qemu-x86_64-ssh-session-exhaustion-gate qemu-riscv64-ssh-session-exhaustion-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc parser-fuzz compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test code-scanning-contract docs-check platform-neutrality-check doc-freshness-check production-source-audit qemu-baseline clean clean-persistent
 .PHONY: firmware-profiles-check firmware-profile-macos-qemu-aarch64 firmware-profile-macos-vmware-fusion-aarch64 firmware-profile-intel-vps-qemu-x86_64 firmware-profiles qemu-x86_64-nvme-gate
 
 all: bootstrap image
@@ -548,6 +548,7 @@ qemu-aarch64-sve2-gate: image-qemu-test
 qemu-dry-run:
 	./platform/qemu/run-qemu-aarch64.sh --dry-run
 	./platform/qemu/run-qemu-x86_64.sh --dry-run
+	./platform/qemu/run-qemu-riscv64.sh --dry-run
 
 qemu-smoke: image-qemu-test
 	python3 ./tests/scripts/qemu-smoke.py
@@ -556,6 +557,9 @@ qemu-smoke: image-qemu-test
 # gate builds its own image, so it is not listed as depending on one.
 qemu-installed-disk-gate:
 	python3 ./tests/scripts/qemu-installed-disk-gate.py
+
+qemu-riscv64-installed-disk-gate:
+	python3 ./tests/scripts/qemu-installed-disk-gate.py --arch riscv64
 
 # The kits a person downloads, booted from their own archives. Builds them
 # first: a gate that tested last week's kit would pass while this week's is
@@ -593,6 +597,9 @@ qemu-setup-gate:
 qemu-netboot-gate:
 	python3 ./tests/scripts/qemu-netboot-gate.py
 
+qemu-riscv64-netboot-gate:
+	python3 ./tests/scripts/qemu-netboot-gate.py --arch riscv64
+
 # Two nodes exchanging a sealed frame over a real network, one of them on the
 # host with its own reading of the wire format.
 # Two XAIOS machines rather than XAIOS and a host process: one listens, the
@@ -600,9 +607,17 @@ qemu-netboot-gate:
 qemu-cluster-two-node-gate:
 	python3 ./tests/scripts/qemu-cluster-two-node-gate.py
 
+qemu-riscv64-cluster-two-node-gate:
+	python3 ./tests/scripts/qemu-cluster-two-node-gate.py --arch riscv64
+
 qemu-cluster-gate:
 	XAIOS_CLUSTER_TEST=1 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
 	python3 ./tests/scripts/qemu-cluster-gate.py
+
+qemu-riscv64-cluster-gate:
+	XAIOS_CLUSTER_TEST=1 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
+	XAIOS_CLUSTER_TEST=1 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	python3 ./tests/scripts/qemu-cluster-gate.py --arch riscv64
 
 qemu-process-gate: image-qemu-test
 	python3 ./tests/scripts/qemu-process-gate.py
@@ -680,6 +695,10 @@ qemu-matrix:
 
 qemu-cpu-matrix: image-qemu-test image-x86_64-qemu-test
 	python3 ./tests/scripts/qemu-cpu-matrix.py
+
+qemu-riscv64-cpu-matrix:
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	XAIOS_QEMU_CPU_MATRIX_ARCH=riscv64 python3 ./tests/scripts/qemu-cpu-matrix.py
 
 qemu-x86_64-cpu-matrix: image-x86_64-qemu-test
 	XAIOS_QEMU_CPU_MATRIX_ARCH=x86_64 \

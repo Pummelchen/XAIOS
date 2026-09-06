@@ -1022,6 +1022,80 @@
         "required": false,
         "validation": "qemu-smoke"
       }
+    ],
+    "riscv64_boot_tiers": [
+      {
+        "name": "generic-rv64",
+        "cpu": "rv64",
+        "accelerator": "tcg",
+        "validation": "qemu-boot-probe"
+      },
+      {
+        "name": "future-max",
+        "cpu": "max",
+        "accelerator": "tcg",
+        "validation": "qemu-boot-probe"
+      },
+      {
+        "name": "server-veyron-v1",
+        "cpu": "veyron-v1",
+        "accelerator": "tcg",
+        "validation": "qemu-boot-probe"
+      },
+      {
+        "name": "vendor-thead-c908",
+        "cpu": "thead-c908",
+        "accelerator": "tcg",
+        "validation": "qemu-boot-probe"
+      },
+      {
+        "name": "server-xiangshan-kunminghu",
+        "cpu": "xiangshan-kunminghu",
+        "accelerator": "tcg",
+        "validation": "qemu-boot-probe"
+      },
+      {
+        "name": "server-tt-ascalon",
+        "cpu": "tt-ascalon",
+        "accelerator": "tcg",
+        "validation": "qemu-boot-probe"
+      },
+      {
+        "name": "vendor-mips-p8700",
+        "cpu": "mips-p8700",
+        "accelerator": "tcg",
+        "validation": "qemu-boot-probe"
+      },
+      {
+        "name": "profile-rva22s64",
+        "cpu": "rva22s64",
+        "accelerator": "tcg",
+        "validation": "qemu-boot-refusal"
+      },
+      {
+        "name": "profile-rva23s64",
+        "cpu": "rva23s64",
+        "accelerator": "tcg",
+        "validation": "qemu-boot-refusal"
+      },
+      {
+        "name": "embedded-sifive-u54",
+        "cpu": "sifive-u54",
+        "accelerator": "tcg",
+        "validation": "qemu-boot-refusal"
+      },
+      {
+        "name": "vendor-thead-c906",
+        "cpu": "thead-c906",
+        "accelerator": "tcg",
+        "validation": "qemu-boot-refusal"
+      },
+      {
+        "name": "server-xiangshan-nanhu",
+        "cpu": "xiangshan-nanhu",
+        "accelerator": "tcg",
+        "validation": "qemu-boot-refusal"
+      }
     ]
   },
   "out_of_scope_before_intel": [

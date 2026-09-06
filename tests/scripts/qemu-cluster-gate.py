@@ -30,9 +30,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
-REPORT = BUILD / "qemu-cluster-gate.json"
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import arch_from_argv, smoke_timeout
+
+ARCH = arch_from_argv(sys.argv)
+SUFFIX = "" if ARCH == "aarch64" else f"-{ARCH}"
+REPORT = BUILD / f"qemu-cluster-gate{SUFFIX}.json"
 PEER_PORT = int(os.environ.get("XAIOS_CLUSTER_PEER_PORT", "7799"))
-TIMEOUT_S = int(os.environ.get("XAIOS_CLUSTER_TIMEOUT", "240"))
+TIMEOUT_S = smoke_timeout(
+    ARCH, int(os.environ.get("XAIOS_CLUSTER_TIMEOUT", "240")))
 
 EXPECTED = (
     ("a frame was sealed",
@@ -79,7 +85,8 @@ def main() -> int:
         # in it. Rebuilding here would replace that image with an ordinary
         # one and then boot a machine that does not dial anybody.
         boot = subprocess.run([sys.executable,
-                               str(ROOT / "tests/scripts/qemu-smoke.py")],
+                               str(ROOT / "tests/scripts/qemu-smoke.py"),
+                               "--arch", ARCH],
                               cwd=str(ROOT),
                               stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True,
@@ -105,6 +112,18 @@ def main() -> int:
     checks.append({"name": "the peer verified the guest's frame",
                    "passed": peer_opened})
     checks.append({"name": "the peer sealed a reply", "passed": peer_replied})
+    # The membership half, from the far end. The guest's own log says it left
+    # and rejoined; only the peer can say those frames arrived. Asserted here
+    # because a peer that had exited after the first exchange -- which is what
+    # it used to do -- left the guest unable to connect at all, and the only
+    # visible symptom was the last line of the guest's log going missing.
+    checks.append({"name": "the peer was told the guest was leaving",
+                   "passed": "the guest announced it is leaving" in peer_text})
+    checks.append({
+        "name": "the peer served all three exchanges and acknowledged the "
+                "rejoin",
+        "passed": bool(re.search(r"cluster-peer: served 3 exchanges", peer_text))
+        and bool(re.search(r"opcode=2 nonce=", peer_text))})
     faults = [{"name": n, "seen": bool(p.search(text))}
               for n, p in FORBIDDEN[:1] + FORBIDDEN[2:]]
 
@@ -117,7 +136,7 @@ def main() -> int:
             print(f"  FAULT {fault['name']}")
 
     REPORT.write_text(json.dumps({
-        "target": "qemu-aarch64-cluster",
+        "target": f"qemu-{ARCH}-cluster",
         "peer": "host, independent implementation of the wire format",
         "checks": checks,
         "faults": faults,

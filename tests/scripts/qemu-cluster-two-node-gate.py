@@ -31,10 +31,63 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
-WORK = BUILD / "cluster-two-node"
-REPORT = BUILD / "qemu-cluster-two-node-gate.json"
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import arch_from_argv, qemu_runner, smoke_timeout
+
+ARCH = arch_from_argv(sys.argv)
+SUFFIX = "" if ARCH == "aarch64" else f"-{ARCH}"
+WORK = BUILD / f"cluster-two-node{SUFFIX}"
+REPORT = BUILD / f"qemu-cluster-two-node-gate{SUFFIX}.json"
+
+# What building one end means on each machine, and which artefacts carry the
+# result. The claim being tested -- two XAIOS machines sealing and opening
+# each other's frames -- is about the implementation, not the instruction
+# set, so the same claim has to be checkable on every machine that runs it.
+# What differs is the builder, the boot medium's name, and which volumes a
+# machine has: this board loads its kernel directly and takes its filesystem
+# as a disk, so there is no separate boot image to copy.
+ARCHITECTURES = {
+    "aarch64": {
+        "build": [["./scripts/build-image.sh"]],
+        "runner_env": {
+            "boot": "XAIOS_AARCH64_IMAGE",
+            "initfs": "XAIOS_TEST_BLOCK_IMAGE",
+            "xaifs": "XAIOS_XAI_FS_IMAGE",
+            "system": "XAIOS_SYSTEM_VOLUME_IMAGE",
+            "persistent": "XAIOS_PERSISTENT_IMAGE",
+        },
+        "hostfwd_env": "XAIOS_QEMU_HOSTFWD_PORT",
+        "volumes": {
+            "boot": BUILD / "xaios-aarch64.img",
+            "initfs": BUILD / "xaios-virtio-test.img",
+            "xaifs": BUILD / "xaios-xaifs.img",
+            "system": BUILD / "xaios-system.img",
+        },
+        "app": BUILD / "init" / "clustertest.elf",
+    },
+    "riscv64": {
+        "build": [["./scripts/build-riscv64.sh"],
+                  ["./scripts/build-riscv64-image.sh"]],
+        "runner_env": {
+            "boot": "XAIOS_RISCV64_IMAGE",
+            "initfs": "XAIOS_TEST_BLOCK_IMAGE",
+            "xaifs": "XAIOS_XAI_FS_IMAGE",
+            "system": "XAIOS_SYSTEM_VOLUME_IMAGE",
+            "persistent": "XAIOS_PERSISTENT_IMAGE",
+        },
+        "hostfwd_env": "XAIOS_RISCV64_SSH_PORT",
+        "volumes": {
+            "boot": BUILD / "xaios-riscv64.img",
+            "initfs": BUILD / "xaios-riscv64-initfs.img",
+            "xaifs": BUILD / "xaios-xaifs.img",
+            "system": BUILD / "xaios-riscv64-system.img",
+        },
+        "app": BUILD / "riscv64-userspace" / "clustertest.elf",
+    },
+}
 CLUSTER_PORT = int(os.environ.get("XAIOS_CLUSTER_PEER_PORT", "7799"))
-BOOT_TIMEOUT_S = int(os.environ.get("XAIOS_CLUSTER_TWO_NODE_TIMEOUT", "600"))
+BOOT_TIMEOUT_S = smoke_timeout(
+    ARCH, int(os.environ.get("XAIOS_CLUSTER_TWO_NODE_TIMEOUT", "600")))
 # The node ids clustertest.c gives each role.
 SERVER_NODE_ID = 2
 CLIENT_NODE_ID = 1
@@ -78,18 +131,19 @@ def build_role(server: bool) -> dict[str, Path]:
     that boot differently and run the same applications. That is exactly how
     the first attempt at this produced a 'server' that dialled.
     """
+    profile = ARCHITECTURES[ARCH]
     label = "server" if server else "client"
     environment = dict(os.environ)
     environment["XAIOS_BOOT_VERBOSE"] = "1"
     environment["XAIOS_BOOT_TEST_APPS"] = "1"
     environment["XAIOS_CLUSTER_TEST"] = "1"
     environment["XAIOS_CLUSTER_ROLE_SERVER"] = "1" if server else "0"
-    subprocess.run(["./scripts/build-image.sh"], cwd=ROOT, env=environment,
-                   check=True)
+    for command in profile["build"]:
+        subprocess.run(command, cwd=ROOT, env=environment, check=True)
 
     # The role is a compile-time choice, so check the artefact rather than
     # trusting that the variable reached the compiler.
-    app = (BUILD / "init" / "clustertest.elf").read_bytes()
+    app = profile["app"].read_bytes()
     listens = b"listening port=" in app
     if listens != server:
         raise SystemExit(
@@ -97,12 +151,7 @@ def build_role(server: bool) -> dict[str, Path]:
             f"(listening={listens}, expected {server})")
 
     images = {}
-    for name, source in (
-        ("boot", BUILD / "xaios-aarch64.img"),
-        ("initfs", BUILD / "xaios-virtio-test.img"),
-        ("xaifs", BUILD / "xaios-xaifs.img"),
-        ("system", BUILD / "xaios-system.img"),
-    ):
+    for name, source in profile["volumes"].items():
         target = WORK / f"{label}-{name}.img"
         shutil.copyfile(source, target)
         images[name] = target
@@ -115,17 +164,21 @@ def build_role(server: bool) -> dict[str, Path]:
 
 
 def launch(images: dict[str, Path], serve: bool) -> subprocess.Popen:
+    profile = ARCHITECTURES[ARCH]
     environment = dict(os.environ)
-    environment.update({
-        "XAIOS_AARCH64_IMAGE": str(images["boot"]),
-        "XAIOS_TEST_BLOCK_IMAGE": str(images["initfs"]),
-        "XAIOS_XAI_FS_IMAGE": str(images["xaifs"]),
-        "XAIOS_SYSTEM_VOLUME_IMAGE": str(images["system"]),
-        "XAIOS_PERSISTENT_IMAGE": str(images["persistent"]),
-        # Neither end needs ssh, and a fixed host port is how one stale
-        # emulator anywhere turns a run into a boot that never happened.
-        "XAIOS_QEMU_HOSTFWD_PORT": "none",
-    })
+    for name, variable in profile["runner_env"].items():
+        environment[variable] = str(images[name])
+    # Neither end needs ssh, and a fixed host port is how one stale emulator
+    # anywhere turns a run into a boot that never happened.
+    environment[profile["hostfwd_env"]] = "none"
+    # Each machine keeps its own state directory, or the two ends share one
+    # and the second to start overwrites the first's volumes.
+    environment["XAIOS_RISCV64_STATE"] = str(
+        images["log"].with_suffix(".state"))
+    # This gate reads each machine's console from the process it started, and
+    # the RISC-V runner writes the console to a file of its own unless told
+    # otherwise -- which would leave both logs empty and every marker missing.
+    environment["XAIOS_RISCV64_SERIAL"] = "stdio"
     if serve:
         # The listener's port has to leave the guest, which is the whole
         # difference between a peer on this machine and a peer on another.
@@ -134,7 +187,7 @@ def launch(images: dict[str, Path], serve: bool) -> subprocess.Popen:
     images["log"].unlink(missing_ok=True)
     with images["log"].open("wb") as sink:
         return subprocess.Popen(
-            [str(ROOT / "platform/qemu/run-qemu-aarch64.sh")],
+            [str(ROOT / qemu_runner(ARCH))],
             cwd=ROOT, env=environment, stdout=sink,
             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             start_new_session=True)

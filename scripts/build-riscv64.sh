@@ -100,6 +100,15 @@ case "$STRESS_TEST" in
 esac
 BASE_CFLAGS="$BASE_CFLAGS -DXAIOS_STRESS_TEST=$STRESS_TEST"
 
+# Whether this kernel launches the cluster data-plane test at boot. Behind a
+# switch on every architecture for the same reason: the test dials a peer, and
+# an unanswered dial costs a gate that counts packets.
+case "${XAIOS_CLUSTER_TEST:-0}" in
+  0) ;;
+  1) BASE_CFLAGS="$BASE_CFLAGS -DXAIOS_CLUSTER_TEST=1" ;;
+  *) printf '%s\n' "error: XAIOS_CLUSTER_TEST must be 0 or 1" >&2; exit 2 ;;
+esac
+
 # The self-measurement the storage benchmark reads. Same shared kernel code;
 # this builder simply had no way to turn it on.
 STORAGE_BENCH="${XAIOS_STORAGE_BENCH:-0}"

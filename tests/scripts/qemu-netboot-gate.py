@@ -30,24 +30,65 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
-REPORT = BUILD / "qemu-netboot-gate.json"
-NETBOOT = BUILD / "netboot" / "BOOTAA64.EFI"
-MEDIUM = BUILD / "netboot-gate-medium.img"
-TARGET = BUILD / "netboot-gate-target.img"
-TIMEOUT_S = int(os.environ.get("XAIOS_NETBOOT_TIMEOUT", "300"))
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import arch_from_argv, smoke_timeout
+
+ARCH = arch_from_argv(sys.argv)
+SUFFIX = "" if ARCH == "aarch64" else f"-{ARCH}"
+
+# One file that boots a machine with no disk, per architecture.
+#
+# UEFI names the removable-media path by machine type -- BOOTAA64.EFI on
+# AArch64, BOOTRISCV64.EFI on RISC-V -- and every other difference here is the
+# emulator and its firmware. The claim being tested is that the one file the
+# firmware fetches is the whole system, which is not an architectural claim at
+# all, so it is asked of each machine in the same words.
+ARCHITECTURES = {
+    "aarch64": {
+        "qemu": "qemu-system-aarch64",
+        "machine": ["-machine", "virt,gic-version=3", "-cpu", "cortex-a72"],
+        "removable": "BOOTAA64.EFI",
+        "firmware_code": (
+            "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
+            "/usr/share/AAVMF/AAVMF_CODE.fd",
+            "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
+            "/usr/share/edk2/aarch64/QEMU_EFI.fd",
+        ),
+        "firmware_vars": (),
+        "build": [["make", "image-qemu-test"]],
+        "slot": r"16",
+    },
+    "riscv64": {
+        "qemu": "qemu-system-riscv64",
+        "machine": ["-machine", "virt,acpi=off", "-cpu", "rv64"],
+        "removable": "BOOTRISCV64.EFI",
+        "firmware_code": ("/opt/homebrew/share/qemu/edk2-riscv-code.fd",
+                          "/usr/share/qemu/edk2-riscv-code.fd"),
+        "firmware_vars": ("/opt/homebrew/share/qemu/edk2-riscv-vars.fd",
+                          "/usr/share/qemu/edk2-riscv-vars.fd"),
+        "build": [["./scripts/build-riscv64.sh"],
+                  ["./scripts/build-riscv64-image.sh"]],
+        "slot": r"\d+",
+    },
+}
+PROFILE = ARCHITECTURES[ARCH]
+SLOT = PROFILE["slot"]
+
+REPORT = BUILD / f"qemu-netboot-gate{SUFFIX}.json"
+NETBOOT = BUILD / "netboot" / PROFILE["removable"]
+MEDIUM = BUILD / f"netboot-gate-medium{SUFFIX}.img"
+TARGET = BUILD / f"netboot-gate-target{SUFFIX}.img"
+TIMEOUT_S = smoke_timeout(
+    ARCH, int(os.environ.get("XAIOS_NETBOOT_TIMEOUT", "300")))
 TARGET_BYTES = 256 * 1024 * 1024
 
-FIRMWARE_CANDIDATES = (
-    "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
-    "/usr/share/AAVMF/AAVMF_CODE.fd",
-    "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
-    "/usr/share/edk2/aarch64/QEMU_EFI.fd",
-)
+FIRMWARE_CANDIDATES = PROFILE["firmware_code"]
 
 DISKLESS = (
     ("loader found its embedded kernel",
@@ -71,8 +112,8 @@ INSTALLED_FROM_NETWORK = (
 RESULT = (
     ("kernel started", re.compile(r"XAIOS Build \d+ kernel starting")),
     ("state partition found by type",
-     re.compile(r"xaibootfs: mounted from /dev/vblk16p\d+, a partition of the "
-                r"disk this machine booted from")),
+     re.compile(rf"xaibootfs: mounted from /dev/vblk{SLOT}p\d+, a partition "
+                rf"of the disk this machine booted from")),
     ("shell command surface",
      re.compile(r"/bin/xaios-shell: command surface passed")),
     ("syscall and filesystem suite",
@@ -194,6 +235,21 @@ def firmware() -> str | None:
     return None
 
 
+def firmware_vars() -> str | None:
+    """A writable copy of the firmware's variable store, where one is needed.
+
+    EDK2 on RISC-V keeps its boot variables in a second pflash unit and writes
+    to it; the AArch64 build here runs from code alone. Copied per run rather
+    than used in place: the file belongs to whatever installed QEMU.
+    """
+    for candidate in PROFILE["firmware_vars"]:
+        if Path(candidate).is_file():
+            target = BUILD / f"netboot-gate-vars{SUFFIX}.fd"
+            shutil.copyfile(candidate, target)
+            return str(target)
+    return None
+
+
 def build_medium() -> str | None:
     """An EFI System Partition holding the loader and nothing else."""
     for tool in ("mformat", "mmd", "mcopy"):
@@ -205,7 +261,7 @@ def build_medium() -> str | None:
     for command in (["mformat", "-i", str(MEDIUM), "-v", "XAIOSNET", "::"],
                     ["mmd", "-i", str(MEDIUM), "::/EFI", "::/EFI/BOOT"],
                     ["mcopy", "-i", str(MEDIUM), str(NETBOOT),
-                     "::/EFI/BOOT/BOOTAA64.EFI"]):
+                     f"::/EFI/BOOT/{PROFILE['removable']}"]):
         if subprocess.run(command, check=False,
                           stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL).returncode != 0:
@@ -217,11 +273,15 @@ def boot(fw: str, log: Path, boot_disk: Path, spare: Path | None,
          expected, writable: bool = False) -> str:
     log.unlink(missing_ok=True)
     command = [
-        "qemu-system-aarch64",
-        "-machine", "virt,gic-version=3",
-        "-cpu", "cortex-a72", "-smp", "4", "-m", "2048",
+        PROFILE["qemu"],
+        *PROFILE["machine"], "-smp", "4", "-m", "2048",
         "-global", "virtio-mmio.force-legacy=false",
-        "-drive", f"if=pflash,format=raw,readonly=on,file={fw}",
+        "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={fw}",
+    ]
+    variables = firmware_vars()
+    if variables is not None:
+        command += ["-drive", f"if=pflash,format=raw,unit=1,file={variables}"]
+    command += [
         # The medium is read-only because a netboot medium is; the disk this
         # machine installed is not, and booting it read-only leaves it unable
         # to format the state partition it was given. That failure looks like
@@ -286,22 +346,25 @@ def build_image() -> None:
     anybody's machine. Asked for here rather than by the make target, because
     CI runs this script directly and a flag only the Makefile sets is a flag
     that is not set when it matters."""
-    subprocess.run(["make", "image-qemu-test"], cwd=ROOT, check=True,
-                   env={**os.environ, "XAIOS_INSTALL_SELF_TEST": "1"},
-                   stdout=subprocess.DEVNULL)
+    for command in PROFILE["build"]:
+        subprocess.run(command, cwd=ROOT, check=True,
+                       env={**os.environ, "XAIOS_INSTALL_SELF_TEST": "1",
+                            "XAIOS_BOOT_TEST_APPS": "1"},
+                       stdout=subprocess.DEVNULL)
 
 
 def main() -> int:
     build_image()
-    if shutil.which("qemu-system-aarch64") is None:
-        return fail("qemu-system-aarch64 is not installed")
+    if shutil.which(PROFILE["qemu"]) is None:
+        return fail(f"{PROFILE['qemu']} is not installed")
     fw = firmware()
     if fw is None:
-        return fail("no AArch64 UEFI firmware found")
+        return fail(f"no UEFI firmware found for {ARCH}")
 
     built = subprocess.run([str(ROOT / "scripts/build-netboot-image.sh")],
                            cwd=str(ROOT), stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, text=True, check=False)
+                           stderr=subprocess.STDOUT, text=True, check=False,
+                           env={**os.environ, "XAIOS_TARGET_ARCH": ARCH})
     if built.returncode != 0:
         print(built.stdout)
         return fail("could not build the netboot image")
@@ -312,24 +375,31 @@ def main() -> int:
     stages = []
     with TARGET.open("wb") as handle:
         handle.truncate(TARGET_BYTES)
-    text = boot(fw, BUILD / "netboot-gate-diskless.log", MEDIUM, TARGET,
+    text = boot(fw, BUILD / f"netboot-gate-diskless{SUFFIX}.log", MEDIUM,
+                TARGET,
                 DISKLESS + INSTALLED_FROM_NETWORK)
     stages.append(evaluate("a medium holding only the loader", text, DISKLESS))
     stages.append(evaluate("that machine installing onto a blank disk", text,
                            INSTALLED_FROM_NETWORK))
 
     if all(s["passed"] for s in stages):
-        text = boot(fw, BUILD / "netboot-gate-installed.log", TARGET, None,
+        text = boot(fw, BUILD / f"netboot-gate-installed{SUFFIX}.log",
+                    TARGET, None,
                     RESULT, writable=True)
         stages.append(evaluate("the disk it installed, booted alone", text,
                                RESULT))
 
-    pxe_stage(stages)
+    # The real fetch is an x86-64 stage, because that is the only machine here
+    # whose firmware has a network stack. It belongs to the AArch64 run rather
+    # than to every run: repeating it under --arch riscv64 would put an x86
+    # result in a report about RISC-V and say nothing new.
+    if ARCH == "aarch64":
+        pxe_stage(stages)
 
     passed = all(s["passed"] for s in stages)
     REPORT.write_text(json.dumps({
-        "target": "qemu-netboot",
-        "transport": "medium on aarch64; DHCP and TFTP on x86_64",
+        "target": f"qemu-{ARCH}-netboot",
+        "transport": f"medium on {ARCH}; DHCP and TFTP on x86_64",
         "stages": stages,
         "passed": passed,
     }, indent=2) + "\n", encoding="utf-8")

@@ -86,7 +86,49 @@ build_program "$ROOT_DIR/userspace/worker/worker-riscv64.S" \
 # the RISC-V gates run, 0 is the release configuration the other architectures
 # ship as `make image`, where sshd dispatches on-demand applications such as
 # xtop instead of the built-in test shell commands.
-USER_APPS="xaios-shell xaiosctl nano pong hello sysinfo systest smptest smpstress perfbench nettest lstm-xor sshtest mltest posix-shell agenttest xaios-setup xtop"
+USER_APPS="xaios-shell xaiosctl nano pong hello sysinfo systest smptest smpstress perfbench nettest lstm-xor sshtest mltest posix-shell agenttest xaios-setup xtop clustertest"
+
+# Which end of a cluster this image is, and where its peer is.
+#
+# The same two switches build-image.sh takes, because the two ends of a
+# cluster are mirror images built from one source -- one listens, the other
+# dials -- and an architecture that can only be built as a client can only
+# ever be the junior half of a pair. This image carried no clustertest at
+# all, so the two-node gate had nothing on RISC-V to run.
+CLUSTER_ROLE_SERVER="${XAIOS_CLUSTER_ROLE_SERVER:-0}"
+case "$CLUSTER_ROLE_SERVER" in
+  0|1) ;;
+  *)
+    printf '%s\n' "error: XAIOS_CLUSTER_ROLE_SERVER must be 0 or 1" >&2
+    exit 1 ;;
+esac
+CLUSTER_APP_CFLAGS="-DXAIOS_CLUSTER_ROLE_SERVER=$CLUSTER_ROLE_SERVER"
+if [ -n "${XAIOS_CLUSTER_PEER_IPV4:-}" ]; then
+  cluster_peer_ok=$(printf '%s' "$XAIOS_CLUSTER_PEER_IPV4" | awk -F. '
+    NF == 4 {
+      for (i = 1; i <= 4; ++i) {
+        if ($i !~ /^[0-9]+$/ || $i + 0 > 255) { print "no"; exit }
+      }
+      print "yes"; exit
+    }
+    { print "no" }')
+  if [ "$cluster_peer_ok" != yes ]; then
+    printf '%s\n' \
+      "error: XAIOS_CLUSTER_PEER_IPV4 must be a dotted IPv4 address" >&2
+    exit 1
+  fi
+  cluster_a=$(printf '%s' "$XAIOS_CLUSTER_PEER_IPV4" | cut -d. -f1)
+  cluster_b=$(printf '%s' "$XAIOS_CLUSTER_PEER_IPV4" | cut -d. -f2)
+  cluster_c=$(printf '%s' "$XAIOS_CLUSTER_PEER_IPV4" | cut -d. -f3)
+  cluster_d=$(printf '%s' "$XAIOS_CLUSTER_PEER_IPV4" | cut -d. -f4)
+  CLUSTER_APP_CFLAGS="$CLUSTER_APP_CFLAGS -DXAIOS_CLUSTER_PEER_IPV4_A=${cluster_a}U"
+  CLUSTER_APP_CFLAGS="$CLUSTER_APP_CFLAGS -DXAIOS_CLUSTER_PEER_IPV4_B=${cluster_b}U"
+  CLUSTER_APP_CFLAGS="$CLUSTER_APP_CFLAGS -DXAIOS_CLUSTER_PEER_IPV4_C=${cluster_c}U"
+  CLUSTER_APP_CFLAGS="$CLUSTER_APP_CFLAGS -DXAIOS_CLUSTER_PEER_IPV4_D=${cluster_d}U"
+fi
+if [ -n "${XAIOS_CLUSTER_PEER_PORT:-}" ]; then
+  CLUSTER_APP_CFLAGS="$CLUSTER_APP_CFLAGS -DCLUSTER_PEER_PORT=${XAIOS_CLUSTER_PEER_PORT}U"
+fi
 # The two applications that fail on purpose, when a gate asks for them. The
 # kernel builder already took XAIOS_FAILURE_TEST_APP; the image did not carry
 # what that switch expects to launch, so a client asking the guest to run a
@@ -105,6 +147,7 @@ for app in $USER_APPS; do
   "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
     -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \
     -fno-pie -Wall -Wextra -Werror -DXAIOS_BOOT_TEST_APPS="${XAIOS_BOOT_TEST_APPS:-1}" \
+    $([ "$app" = clustertest ] && printf '%s' "$CLUSTER_APP_CFLAGS") \
     -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/sshd" \
     -I"$ROOT_DIR/engine/include" \
     -c "$ROOT_DIR/userspace/apps/$app.c" -o "$BUILD_DIR/$app.o"
@@ -131,6 +174,20 @@ for app in $USER_APPS; do
   # PBKDF2 that disagree produce an account that cannot be logged into, and
   # the disagreement would only show at the login prompt.
   EXTRA_OBJS=""
+  # The cluster framing and its hash, from engine/. clustertest links these
+  # rather than calling into the kernel, so the wire format it seals with is
+  # the same code the other end opens with -- which is the only reason two
+  # machines agreeing means anything.
+  if [ "$app" = "clustertest" ]; then
+    for cluster_src in cluster sha256; do
+      "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
+        -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \
+        -fno-pie -I"$ROOT_DIR/engine/include" -I"$ROOT_DIR/engine/src" \
+        -c "$ROOT_DIR/engine/src/$cluster_src.c" \
+        -o "$BUILD_DIR/cluster-$cluster_src.o"
+      EXTRA_OBJS="$EXTRA_OBJS $BUILD_DIR/cluster-$cluster_src.o"
+    done
+  fi
   if [ "$app" = "xaios-setup" ]; then
     for setup_src in ssh_crypto tweetnacl_subset; do
       "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \

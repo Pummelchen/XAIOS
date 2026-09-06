@@ -14,6 +14,54 @@
 # absent, with nothing said about why.
 set -eu
 
+# --dry-run prints the command this machine would be started with and stops,
+# which is the same contract the other two runners offer. It exists so the
+# machine's shape can be checked without an emulator, a build or a boot -- the
+# matrix uses it that way, and until now RISC-V was the one architecture whose
+# shape nothing could inspect.
+dry_run=0
+if [ "${1:-}" = "--dry-run" ]; then
+  dry_run=1
+  shift
+fi
+
+print_command() {
+  printf 'QEMU RISC-V command:\n'
+  printf '  '
+  for arg in "$@"; do
+    case "$arg" in
+      *[!A-Za-z0-9_./:=,+-]*|'')
+        printf "'%s' " "$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")"
+        ;;
+      *)
+        printf '%s ' "$arg"
+        ;;
+    esac
+  done
+  printf '\n'
+}
+
+# Under --dry-run nothing that the machine would read has to exist: the point
+# is the command, and requiring a built kernel to print it would make this
+# useless for exactly the check it is for.
+require_file() {
+  if [ "$dry_run" -eq 1 ]; then
+    return 0
+  fi
+  if [ ! -f "$1" ]; then
+    printf 'error: %s\n' "$2" >&2
+    exit 1
+  fi
+}
+
+run_qemu() {
+  if [ "$dry_run" -eq 1 ]; then
+    print_command "$@"
+    exit 0
+  fi
+  exec "$@"
+}
+
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 BUILD="$ROOT_DIR/build"
 LOG="${XAIOS_RISCV64_LOG:-$BUILD/qemu-riscv64.log}"
@@ -34,22 +82,52 @@ HOSTFWD_UDP_PORT="${XAIOS_RISCV64_HOSTFWD_UDP_PORT:-none}"
 if [ "$HOSTFWD_UDP_PORT" != none ]; then
   HOSTFWD_ARG="$HOSTFWD_ARG,hostfwd=udp::$HOSTFWD_UDP_PORT-:2223"
 fi
+# The listening end of a cluster, whose port has to leave the guest.
+#
+# The same three variables the AArch64 runner takes, spelled the same way,
+# because the two-node gate sets them without knowing which machine it is
+# starting. Loopback by default: a port reachable from the network is a
+# decision, not a default.
+CLUSTER_HOSTFWD_PORT="${XAIOS_QEMU_CLUSTER_HOSTFWD_PORT:-none}"
+CLUSTER_GUEST_PORT="${XAIOS_QEMU_CLUSTER_GUEST_PORT:-7799}"
+CLUSTER_HOSTFWD_BIND="${XAIOS_QEMU_CLUSTER_HOSTFWD_BIND:-127.0.0.1}"
+if [ "$CLUSTER_HOSTFWD_PORT" != none ]; then
+  HOSTFWD_ARG="$HOSTFWD_ARG,hostfwd=tcp:$CLUSTER_HOSTFWD_BIND:$CLUSTER_HOSTFWD_PORT-:$CLUSTER_GUEST_PORT"
+fi
 QEMU="${QEMU_SYSTEM_RISCV64:-qemu-system-riscv64}"
+# Which hart to be. The other two runners take this and RISC-V did not, which
+# meant every RISC-V boot in this tree was a statement about one CPU model.
+# rv64 is QEMU's generic hart with everything the kernel needs; the interesting
+# question is the named ones, which differ in exactly the way the kernel has
+# to survive -- the address translation depth most of all.
+CPU_MODEL="${XAIOS_RISCV64_CPU:-rv64}"
 
 KERNEL="$BUILD/kernel-riscv64/kernel.elf"
-INITFS="$BUILD/xaios-riscv64-initfs.img"
+# The volume /bin is read from, which a caller may name.
+#
+# Spelled the same as the AArch64 runner's, because a gate that starts two
+# machines with different application images should not have to know which
+# architecture it is starting. Without it the two ends of a cluster shared one
+# initial filesystem and so ran the same programs, which is exactly how a
+# "server" that dialled gets built.
+INITFS="${XAIOS_TEST_BLOCK_IMAGE:-$BUILD/xaios-riscv64-initfs.img}"
 # The medium this machine boots from, which a caller may name: the unified
 # release image carries a RISC-V loader, kernel and initial filesystem beside
 # the other two, and the only way to prove that half of what ships actually
 # boots is to point this at it.
 BOOT_MEDIUM="${XAIOS_RISCV64_IMAGE:-$BUILD/xaios-riscv64.img}"
-[ -f "$KERNEL" ] || { printf 'error: no kernel; run scripts/build-riscv64.sh\n' >&2; exit 1; }
-[ -f "$INITFS" ] || { printf 'error: no initial filesystem; run scripts/build-riscv64-image.sh\n' >&2; exit 1; }
+require_file "$KERNEL" "no kernel; run scripts/build-riscv64.sh"
+require_file "$INITFS" \
+  "no initial filesystem; run scripts/build-riscv64-image.sh"
 
 # Volumes the guest writes to, kept out of the build tree's inputs so a run
 # does not change what the next run starts from.
 STATE="${XAIOS_RISCV64_STATE:-$BUILD/riscv64-run}"
-mkdir -p "$STATE"
+# --dry-run makes nothing and writes nothing: it answers what this machine
+# would be, and a question should not change its subject.
+if [ "$dry_run" -eq 0 ]; then
+  mkdir -p "$STATE"
+fi
 # Each volume may be named by the caller, as the other two runners allow. A
 # gate that writes to a volume and then reads back what survived has to
 # supply the copy it is willing to have written, and one that crashes the
@@ -57,7 +135,7 @@ mkdir -p "$STATE"
 # directory keeps its own, made or seeded once.
 PERSISTENT_IMAGE="${XAIOS_PERSISTENT_IMAGE:-$STATE/persistent.img}"
 PERSISTENT_SECTORS="${XAIOS_PERSISTENT_SECTORS:-32768}"
-if [ ! -f "$PERSISTENT_IMAGE" ]; then
+if [ "$dry_run" -eq 0 ] && [ ! -f "$PERSISTENT_IMAGE" ]; then
   dd if=/dev/zero of="$PERSISTENT_IMAGE" bs=512 count="$PERSISTENT_SECTORS" \
     status=none
 fi
@@ -69,8 +147,9 @@ if [ -n "${XAIOS_XAI_FS_IMAGE:-}" ]; then
   MODELS_IMAGE="$XAIOS_XAI_FS_IMAGE"
 else
   MODELS_IMAGE="$STATE/models.img"
-  if [ ! -f "$MODELS_IMAGE" ] ||
-     [ "$BUILD/xaios-xaifs.img" -nt "$MODELS_IMAGE" ]; then
+  if [ "$dry_run" -eq 0 ] &&
+     { [ ! -f "$MODELS_IMAGE" ] ||
+       [ "$BUILD/xaios-xaifs.img" -nt "$MODELS_IMAGE" ]; }; then
     cp "$BUILD/xaios-xaifs.img" "$MODELS_IMAGE"
   fi
 fi
@@ -97,7 +176,8 @@ else
   # and reported an old kernel's behaviour. That cost a run to find -- a
   # freshly built guest answering "command not found" for a program that was
   # in the image it had just been given.
-  if [ ! -f "$SYSTEM_IMAGE" ] || [ "$RISCV_SYSTEM" -nt "$SYSTEM_IMAGE" ]; then
+  if [ "$dry_run" -eq 0 ] &&
+     { [ ! -f "$SYSTEM_IMAGE" ] || [ "$RISCV_SYSTEM" -nt "$SYSTEM_IMAGE" ]; }; then
     cp "$RISCV_SYSTEM" "$SYSTEM_IMAGE"
   fi
   SYSTEM_ARGS="-blockdev driver=file,node-name=sysf,filename=$SYSTEM_IMAGE,locking=off -blockdev driver=raw,node-name=sysraw,file=sysf -device virtio-blk-pci,drive=sysraw,bootindex=1,disable-legacy=on -blockdev driver=file,node-name=sysf2,filename=$SYSTEM_IMAGE,locking=off -blockdev driver=raw,node-name=sysraw2,file=sysf2 -device virtio-blk-device,drive=sysraw2,bus=virtio-mmio-bus.6"
@@ -120,8 +200,7 @@ fi
 NVME_ARGS=""
 NVME_IMAGE="${XAIOS_NVME_IMAGE:-none}"
 if [ "$NVME_IMAGE" != none ]; then
-  [ -f "$NVME_IMAGE" ] || {
-    printf 'error: missing NVMe test image: %s\n' "$NVME_IMAGE" >&2; exit 1; }
+  require_file "$NVME_IMAGE" "missing NVMe test image: $NVME_IMAGE"
   NVME_ARGS="-drive if=none,format=raw,id=xaios_nvme,file=$NVME_IMAGE -device nvme,serial=XAIOSNVME,drive=xaios_nvme"
 fi
 
@@ -137,7 +216,7 @@ case "${XAIOS_QEMU_MODEL_DISCARD:-none}" in
 esac
 
 ADMIN_IMAGE="${XAIOS_STORAGE_ADMIN_IMAGE:-$STATE/storage-admin.img}"
-if [ ! -f "$ADMIN_IMAGE" ]; then
+if [ "$dry_run" -eq 0 ] && [ ! -f "$ADMIN_IMAGE" ]; then
   if [ -f "$BUILD/xaios-smoke-storage-admin.img" ]; then
     cp "$BUILD/xaios-smoke-storage-admin.img" "$ADMIN_IMAGE"
   else
@@ -145,7 +224,7 @@ if [ ! -f "$ADMIN_IMAGE" ]; then
   fi
 fi
 BOOT_ARGS=""
-if [ -f "$BOOT_MEDIUM" ]; then
+if [ -f "$BOOT_MEDIUM" ] || [ "$dry_run" -eq 1 ]; then
   BOOT_ARGS="-drive if=none,format=raw,readonly=on,id=xboot,file=$BOOT_MEDIUM -device virtio-blk-pci,drive=xboot,bootindex=0,disable-legacy=on"
 fi
 
@@ -279,8 +358,8 @@ case "${XAIOS_RISCV64_KEYBOARD:-none}" in
     ;;
 esac
 # shellcheck disable=SC2086
-exec "$QEMU" \
-  -machine "$MACHINE" -cpu rv64 -smp "$CPUS" -m "$MEMORY" -display none \
+run_qemu "$QEMU" \
+  -machine "$MACHINE" -cpu "$CPU_MODEL" -smp "$CPUS" -m "$MEMORY" -display none \
   -global virtio-mmio.force-legacy=false \
   $SERIAL_ARGS \
   $FIRMWARE_ARGS \

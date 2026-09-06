@@ -34,8 +34,15 @@ case "$ARCH" in
     INITFS="$BUILD_DIR/xaios-x86-virtio-test.img"
     OUTPUT="${XAIOS_NETBOOT_IMAGE:-$BUILD_DIR/netboot/BOOTX64.EFI}"
     ;;
+  riscv64)
+    LOADER="$BUILD_DIR/riscv64-uefi/BOOTRISCV64.EFI"
+    KERNEL="$BUILD_DIR/kernel-riscv64/kernel.elf"
+    INITFS="$BUILD_DIR/xaios-riscv64-initfs.img"
+    OUTPUT="${XAIOS_NETBOOT_IMAGE:-$BUILD_DIR/netboot/BOOTRISCV64.EFI}"
+    ;;
   *)
-    printf '%s\n' "error: XAIOS_TARGET_ARCH must be aarch64 or x86_64" >&2
+    printf '%s\n' \
+      "error: XAIOS_TARGET_ARCH must be aarch64, x86_64 or riscv64" >&2
     exit 2
     ;;
 esac
