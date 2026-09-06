@@ -89,6 +89,21 @@ static int ensure_key(void) {
               "storage is repaired.\n");
     }
 
+    /* Said at the one moment the machine's identity is decided.
+       This is the first-boot mint, and unlike an operator-requested rotation
+       -- which the kernel now refuses outright on development-grade entropy
+       -- it cannot refuse: a machine with no host key has no SSH, and the
+       operator who would fix that is the one who cannot get in. So it says
+       what it did instead, next to the kernel's own `entropy: source=` line
+       from earlier in the same console. On a machine whose only randomness
+       is a seed file baked into its image, this key is reproducible by
+       anyone holding that image, and this line is where to notice it. */
+    ssh_log(SSH_LOG_WARN,
+            "Generated a new host key. Its strength is this machine's "
+            "entropy: see the kernel's `entropy: source=` line above. A key "
+            "minted on a development seed file is reproducible from the "
+            "image it was built into.\n");
+
     g_key_initialized = 1;
   }
   return 0;

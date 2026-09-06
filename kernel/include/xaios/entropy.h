@@ -16,5 +16,7 @@ void entropy_self_test(void);
    and whether it is fit for a secret that has to outlive this boot. */
 uint32_t entropy_source(void);
 uint32_t entropy_is_production_grade(void);
+/* Self-tests only, and only in matched pairs: see entropy.c. */
+uint32_t entropy_swap_source_for_test(uint32_t source);
 
 #endif

@@ -173,6 +173,22 @@ void entropy_self_test(void) {
 
 uint32_t entropy_source(void) { return g_entropy.source; }
 
+/* Swap the recorded provenance and hand back what was there.
+   Only the self-tests use this, and only in matched pairs. It exists because
+   the one behaviour F-05 turns on -- refusing to mint a host key when the
+   randomness is a file baked into the image -- is unreachable on every
+   machine this project can boot in a test: QEMU's firmware has an RNG, its
+   bus has a virtio-rng, and a RISC-V guest with neither does not start SSH
+   at all. Fusion is the machine that actually has this property, and a
+   decision that can only be checked by hand on one laptop is not gated.
+   It changes the label, never the pool: the bytes handed out are the same
+   bytes either way, so nothing is weakened by asking the question. */
+uint32_t entropy_swap_source_for_test(uint32_t source) {
+  uint32_t previous = g_entropy.source;
+  g_entropy.source = source;
+  return previous;
+}
+
 /* Whether this machine's randomness is fit for a secret that outlives the
    boot: an SSH host key, a cluster identity, anything an operator would be
    upset to find reproducible.

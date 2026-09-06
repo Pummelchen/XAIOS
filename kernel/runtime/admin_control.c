@@ -1065,6 +1065,44 @@ static void bytes_to_hex(const uint8_t *bytes, uint32_t size, char *text) {
   }
 }
 
+/* Whether this machine may mint a new long-lived identity. F-05, decided.
+
+   A host key is exactly the kind of secret F-05 is about: it outlives the
+   boot, it identifies the machine to everyone who connects, and on a
+   platform whose only entropy is a seed file baked into the image it is
+   reproducible by anyone holding that image. This used to warn, on the
+   reasoning that refusing would take working machines off the network over a
+   property they have always had.
+
+   That reasoning does not survive looking at what rotation actually does.
+   Rotation is not what gives a machine its first host key -- sshd mints that
+   at boot if none is stored (userspace/sshd/ssh_host_key.c), and nothing
+   here touches it. Refusing a rotation leaves the existing key in place and
+   the machine exactly as reachable as it was a second earlier. What it
+   declines to do is mint a *new* long-lived identity that anyone holding the
+   image can derive, at the moment an operator has deliberately asked for a
+   fresh one -- which is the moment they are least likely to read a warning,
+   because they have just been told it worked. The cost of refusing is
+   nothing; the cost of warning is a key an operator believes is new and is
+   not.
+
+   The first-boot mint is deliberately left alone. Refusing there would leave
+   a machine with no host key and no SSH, and the operator who would fix that
+   is the one who cannot get in. It names its provenance instead.
+
+   The other half of F-05 is unchanged and still the operator's: provisioning
+   a machine with real entropy. On every hypervisor this project supports but
+   Fusion that is a virtio-rng device; on Fusion it is the open question. */
+static xaios_admin_result_t host_key_entropy_gate(void) {
+  if (entropy_is_production_grade() != 0U) return XAIOS_ADMIN_RESULT_OK;
+  klog("admin: refusing to mint a host key on development-grade entropy "
+       "(source=%u). A key minted from a seed baked into the image is "
+       "reproducible by anyone holding that image. The existing key is "
+       "unchanged and this machine is still reachable; provision real "
+       "entropy and rotate again.\n", entropy_source());
+  return XAIOS_ADMIN_RESULT_DENIED;
+}
+
 xaios_admin_result_t admin_control_host_key_rotate(
     const char *actor, uint32_t actor_role, uint64_t operation_id) {
   xaios_admin_result_t begin = begin_mutation(
@@ -1073,19 +1111,10 @@ xaios_admin_result_t admin_control_host_key_rotate(
   if (begin != XAIOS_ADMIN_RESULT_OK) return begin;
   uint8_t private_seed[32];
   char encoded[64];
-  /* Say so at the moment it matters.
-     A host key is exactly the kind of secret F-05 is about: it outlives the
-     boot, it identifies the machine to everyone who connects, and on a
-     platform whose only entropy is a seed file baked into the image it is
-     reproducible by anyone holding that image. This warns rather than
-     refuses, because refusing would take working machines off the network
-     over a property they have always had; what turns this into a gate is an
-     operator deciding which entropy source production requires, which is the
-     half of F-05 that is not ours to choose. */
-  if (entropy_is_production_grade() == 0U) {
-    klog("admin: WARNING minting a host key on development-grade entropy "
-         "(source=%u) -- this key is reproducible from the image it was "
-         "built into\n", entropy_source());
+  xaios_admin_result_t entropy_gate = host_key_entropy_gate();
+  if (entropy_gate != XAIOS_ADMIN_RESULT_OK) {
+    return abort_and_audit(actor, actor_role, operation_id,
+                           "auth.host.rotate", entropy_gate);
   }
   if (virtio_rng_read(private_seed, sizeof(private_seed)) != XAIOS_OK) {
     return abort_and_audit(actor, actor_role, operation_id,
@@ -1225,6 +1254,34 @@ void admin_control_self_test(void) {
   kassert(parse_config_text(invalid, sizeof(invalid) - 1U, &candidate) != 0);
   kassert(principal_valid("ops.user-1"));
   kassert(!principal_valid("bad principal"));
+
+  /* F-05: minting a host key is refused when the randomness is a file baked
+     into the image, and permitted when it is a real source.
+     The decision is tested here rather than through a booted machine because
+     on every machine this project can boot in a test the answer is always
+     "permitted": QEMU's firmware offers an RNG, its bus offers a virtio-rng,
+     and a guest with neither does not start SSH at all. Fusion is the machine
+     that actually has a development seed file, and a decision that can only
+     be checked by hand on one laptop is not gated at all. So the provenance
+     is swapped and swapped back -- the label only; the pool and the bytes it
+     hands out are untouched -- and the gate is asked directly.
+     It is the gate that is called here and not the whole rotation, on
+     purpose: rotation opens a filesystem transaction before it reaches this
+     question, and a self-test that ran at every boot would commit and roll
+     back one on every machine to prove a decision that has nothing to do
+     with storage. The wiring between the two is a single call. */
+  uint32_t restore = entropy_swap_source_for_test(XAIOS_ENTROPY_SOURCE_SEED_FILE);
+  kassert(host_key_entropy_gate() == XAIOS_ADMIN_RESULT_DENIED);
+  (void)entropy_swap_source_for_test(XAIOS_ENTROPY_SOURCE_NONE);
+  kassert(host_key_entropy_gate() == XAIOS_ADMIN_RESULT_DENIED);
+  (void)entropy_swap_source_for_test(XAIOS_ENTROPY_SOURCE_DEVICE_RNG);
+  kassert(host_key_entropy_gate() == XAIOS_ADMIN_RESULT_OK);
+  (void)entropy_swap_source_for_test(XAIOS_ENTROPY_SOURCE_FIRMWARE_RNG);
+  kassert(host_key_entropy_gate() == XAIOS_ADMIN_RESULT_OK);
+  (void)entropy_swap_source_for_test(restore);
+  klog("admin-control: host-key rotation refuses development-grade entropy "
+       "and permits a real source\n");
+
   klog("admin-control: self-test passed schema=1 invalid=1 principal=2 "
        "transactional=1\n");
 }
