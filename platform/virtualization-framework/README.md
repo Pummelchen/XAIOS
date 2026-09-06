@@ -123,10 +123,28 @@ does not. This is the arrangement `socket_vmnet` uses for rootless QEMU.
 guests: the host reaches the guest and the guest reaches the host, with no
 route off the machine. `--mode shared` is `VMNET_SHARED_MODE`, which is NAT
 with internet access and, like the built-in attachment, carries only what the
-guest itself starts.
+guest itself starts. `--mode bridged` is `VMNET_BRIDGED_MODE`: the guest sits
+on the real wire beside this Mac, takes its address from the LAN's own DHCP
+server and router advertisements, and is reachable by anything on that LAN.
 
-So: host mode to log in, shared mode to fetch something. Neither does both,
-and XAIOS drives one interface at a time.
+So: host mode to log in, shared mode to fetch something, bridged mode when the
+guest has to be a machine on the network like any other. Bridged mode takes
+`--interface` for the host NIC to bridge onto and ignores `--subnet`, because
+there is no vmnet-run network to give a range to.
+
+Bridged mode is what V-03 needs, and it is worth being clear about why this
+route exists: `VZBridgedNetworkDeviceAttachment` needs the
+`com.apple.vm.networking` entitlement, which Apple issues only with a
+provisioning profile. vmnet itself needs no entitlement, only root. So the
+guest is bridged without the VM being privileged and without the entitlement,
+and only this eighty-line relay runs as root.
+
+```sh
+make vz-harness vmnet-helper
+sudo ./build/vz/vmnet-helper --socket "$PWD/build/vz/vmnet.sock" \
+  --mode bridged --interface en0     # leave running
+make vz-bridged-gate                 # in another terminal
+```
 
 ### What it took
 

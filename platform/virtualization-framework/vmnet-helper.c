@@ -167,19 +167,36 @@ static void relay_to_vmnet(int client) {
 int main(int argc, char **argv) {
     const char *path = NULL;
     const char *subnet = NULL;
+    /* The host interface to bridge onto, for bridged mode only. en0 is what
+       Fusion's own bridge selects on this machine; a Mac whose uplink is
+       elsewhere needs --interface. */
+    const char *bridge_interface = "en0";
     uint64_t mode = VMNET_SHARED_MODE;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
             path = argv[++i];
         } else if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
             ++i;
-            mode = strcmp(argv[i], "host") == 0 ? VMNET_HOST_MODE
-                                                : VMNET_SHARED_MODE;
+            if (strcmp(argv[i], "host") == 0) {
+                mode = VMNET_HOST_MODE;
+            } else if (strcmp(argv[i], "bridged") == 0) {
+                mode = VMNET_BRIDGED_MODE;
+            } else if (strcmp(argv[i], "shared") == 0) {
+                mode = VMNET_SHARED_MODE;
+            } else {
+                fprintf(stderr,
+                        "vmnet-helper: --mode must be shared, host or "
+                        "bridged\n");
+                return 2;
+            }
+        } else if (strcmp(argv[i], "--interface") == 0 && i + 1 < argc) {
+            bridge_interface = argv[++i];
         } else if (strcmp(argv[i], "--subnet") == 0 && i + 1 < argc) {
             subnet = argv[++i];
         } else {
             fprintf(stderr,
-                    "usage: vmnet-helper --socket <path> [--mode shared|host] "
+                    "usage: vmnet-helper --socket <path> "
+                    "[--mode shared|host|bridged] [--interface en0] "
                     "[--subnet A.B.C]\n");
             return 2;
         }
@@ -202,6 +219,18 @@ int main(int argc, char **argv) {
        network and died there. Nothing in the guest or the helper looked wrong:
        the guest took a DHCP lease and answered router advertisements, while
        ping and ssh from the host simply never arrived. */
+    /* Bridged mode puts the guest on the real wire, so it takes an interface
+       to bridge onto and no address range at all: the addresses come from
+       whatever DHCP server and router advertisements the LAN already has.
+       Setting a subnet here would be describing a network vmnet is not
+       running. This is the mode V-03 needs, and it needs no entitlement --
+       VZBridgedNetworkDeviceAttachment does, but vmnet itself only needs
+       root, which is the whole reason this helper exists. */
+    if (mode == VMNET_BRIDGED_MODE) {
+      xpc_dictionary_set_string(description, vmnet_shared_interface_name_key,
+                                bridge_interface);
+      subnet = NULL;
+    }
     if (subnet != NULL) {
       char start[32];
       char end[32];
@@ -272,7 +301,10 @@ int main(int argc, char **argv) {
     note("listening");
 
     printf("vmnet-helper: %s mode ready mac=%s mtu=%llu socket=%s\n",
-           mode == VMNET_HOST_MODE ? "host" : "shared", mac,
+           mode == VMNET_HOST_MODE      ? "host"
+           : mode == VMNET_BRIDGED_MODE ? "bridged"
+                                        : "shared",
+           mac,
            (unsigned long long)g_max_packet, path);
     fflush(stdout);
 
