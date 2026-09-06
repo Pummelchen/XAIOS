@@ -239,14 +239,69 @@ int main(int argc, char **argv) {
                        &reported) == XAIOS_ERR_NO_MEMORY);
   assert(reported == large_length);
 
-  /* Names that are not legal 8.3 are refused rather than truncated: two files
-     differing only past the eighth character would silently become one. */
-  assert(fat_write_file(&volume, "/EFI/BOOT/TOOLONGNAME.EFI", small, 4U) !=
+  /* Names that do not fit 8.3 are written as long names now, and read back
+     under the name they were written with.
+   *
+     They used to be refused, on the reasoning that truncating them would make
+     two files one. The reasoning was right and the conclusion had a cost
+     nobody had noticed: UEFI's removable-media path is named for the machine,
+     and \EFI\BOOT\BOOTRISCV64.EFI is eleven characters of base where 8.3
+     allows eight. A RISC-V machine could format an EFI System Partition
+     perfectly and had no way to put on it the one file its own firmware
+     opens. */
+  assert(fat_write_file(&volume, "/EFI/BOOT/BOOTRISCV64.EFI", small, 4U) ==
          XAIOS_OK);
-  assert(fat_write_file(&volume, "/EFI/BOOT/NAME.TOOLONG", small, 4U) !=
+  assert(fat_read_file(&volume, "/EFI/BOOT/BOOTRISCV64.EFI", back, 4U,
+                       &reported) == XAIOS_OK);
+  assert(reported == 4U && memcmp(back, small, 4U) == 0);
+  /* And by the alias it was given, which is what a reader with no long-name
+     support sees. Both names reach the same file. */
+  assert(fat_read_file(&volume, "/EFI/BOOT/BOOTRI~1.EFI", back, 4U,
+                       &reported) == XAIOS_OK);
+  assert(reported == 4U);
+  /* Case is not significant in either form. */
+  assert(fat_read_file(&volume, "/efi/boot/bootriscv64.efi", back, 4U,
+                       &reported) == XAIOS_OK);
+  assert(reported == 4U);
+  /* Rewriting one must reuse its entry rather than adding a second under the
+     same name -- a directory with two of those is one where the reader finds
+     the stale one. Forty rounds, the same count the 8.3 case above uses. */
+  for (int round = 0; round < 40; ++round) {
+    assert(fat_write_file(&volume, "/EFI/BOOT/BOOTRISCV64.EFI", small, 4U) ==
+           XAIOS_OK);
+  }
+  assert(fat_read_file(&volume, "/EFI/BOOT/BOOTRISCV64.EFI", back, 4U,
+                       &reported) == XAIOS_OK);
+  assert(reported == 4U && memcmp(back, small, 4U) == 0);
+  /* Other shapes 8.3 cannot hold. */
+  assert(fat_write_file(&volume, "/EFI/BOOT/TOOLONGNAME.EFI", small, 4U) ==
          XAIOS_OK);
-  assert(fat_write_file(&volume, "/EFI/BOOT/TWO.DOTS.X", small, 4U) !=
+  assert(fat_write_file(&volume, "/EFI/BOOT/NAME.TOOLONG", small, 4U) ==
          XAIOS_OK);
+  assert(fat_write_file(&volume, "/EFI/BOOT/TWO.DOTS.X", small, 4U) ==
+         XAIOS_OK);
+  assert(fat_read_file(&volume, "/EFI/BOOT/TWO.DOTS.X", back, 4U,
+                       &reported) == XAIOS_OK);
+  assert(reported == 4U);
+  /* Two names that agree for their first six characters get different
+     aliases, or the second would overwrite the first. */
+  assert(fat_write_file(&volume, "/EFI/BOOT/BOOTRISCV64.OLD", small, 4U) ==
+         XAIOS_OK);
+  assert(fat_read_file(&volume, "/EFI/BOOT/BOOTRISCV64.EFI", back, 4U,
+                       &reported) == XAIOS_OK);
+  assert(reported == 4U);
+  assert(fat_read_file(&volume, "/EFI/BOOT/BOOTRISCV64.OLD", back, 4U,
+                       &reported) == XAIOS_OK);
+  assert(reported == 4U);
+  /* A name longer than a path component may be is still refused. */
+  {
+    char absurd[XAIOS_FAT_PATH_MAX + 40U];
+    memset(absurd, 'A', sizeof(absurd) - 1U);
+    absurd[sizeof(absurd) - 1U] = '\0';
+    char path[sizeof(absurd) + 16U];
+    snprintf(path, sizeof(path), "/EFI/BOOT/%s", absurd);
+    assert(fat_write_file(&volume, path, small, 4U) != XAIOS_OK);
+  }
   /* A directory is not a file and a file is not a directory. */
   assert(fat_write_file(&volume, "/EFI/BOOT", small, 4U) != XAIOS_OK);
   assert(fat_mkdir(&volume, "/EFI/XAIOS/KERNEL.ELF") != XAIOS_OK);

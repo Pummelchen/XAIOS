@@ -105,6 +105,34 @@ static xaios_status_t write_sector(const xaios_fat_volume_t *volume,
  * refused rather than truncated -- two files whose names differ only past the
  * eighth character would silently become one.
  */
+/* A path component, in both the forms a directory can hold it.
+ *
+ * 8.3 was enough until RISC-V. UEFI's removable-media path is named for the
+ * machine -- \EFI\BOOT\BOOTAA64.EFI, \EFI\BOOT\BOOTX64.EFI, and
+ * \EFI\BOOT\BOOTRISCV64.EFI -- and the third does not fit: eleven
+ * characters of base where 8.3 allows eight. So a machine of this
+ * architecture could format an EFI System Partition perfectly and had no way
+ * to put on it the one file its own firmware opens. It installed a disk that
+ * booted only because the copy this repository builds with mtools had a long
+ * name on it, and the installer's own copy silently had four files where it
+ * should have had five.
+ *
+ * `text` is the name as asked for, `short_name` the 8.3 entry that always
+ * exists -- either the name itself, or a generated alias like BOOTRI~1 -- and
+ * `needs_long` says whether long-name entries have to accompany it. */
+typedef struct fat_name {
+  uint8_t short_name[FAT_NAME_LENGTH];
+  char text[XAIOS_FAT_PATH_MAX + 1U];
+  uint32_t text_length;
+  uint32_t needs_long;
+} fat_name_t;
+
+/* Thirteen UTF-16 characters per long-name entry, which is what fixes how
+   many entries a name of a given length costs. */
+#define FAT_LFN_CHARS 13U
+#define FAT_LFN_LAST UINT8_C(0x40)
+#define FAT_LFN_MAX_ENTRIES 20U
+
 static xaios_status_t encode_name(const char *component, uint64_t length,
                                   uint8_t out[FAT_NAME_LENGTH]) {
   if (length == 0U) return XAIOS_ERR_INVALID;
@@ -134,6 +162,55 @@ static xaios_status_t encode_name(const char *component, uint64_t length,
     out[8U + index] = (uint8_t)upper(component[dot + 1U + index]);
   }
   return XAIOS_OK;
+}
+
+/* The checksum a long-name entry carries, computed over the 8.3 alias it
+   belongs to. It is what ties the two together: a reader that finds long-name
+   entries whose checksum does not match the following 8.3 entry must ignore
+   them, because they are the remains of a file some other writer deleted. */
+static uint8_t lfn_checksum(const uint8_t name[FAT_NAME_LENGTH]) {
+  uint8_t sum = 0U;
+  for (uint32_t index = 0U; index < FAT_NAME_LENGTH; ++index) {
+    sum = (uint8_t)(((sum & 1U) != 0U ? 0x80U : 0U) + (sum >> 1) + name[index]);
+  }
+  return sum;
+}
+
+/* Is this character one an 8.3 name may hold? Anything else is dropped from a
+   generated alias rather than encoded, which is what every other writer does
+   and what keeps the alias a legal short name. */
+static uint32_t short_name_character(char value) {
+  if (value >= 'A' && value <= 'Z') return 1U;
+  if (value >= '0' && value <= '9') return 1U;
+  return value == '_' || value == '-' || value == '$' || value == '~';
+}
+
+/* Build the 8.3 alias for a name that does not fit: up to six legal
+   characters of the base, then "~N", then up to three of the extension.
+   BOOTRISCV64.EFI becomes BOOTRI~1.EFI, which is what mtools writes for it
+   and therefore what a volume built by this repository already carries. */
+static void short_alias(const char *component, uint64_t length,
+                        uint32_t ordinal, uint8_t out[FAT_NAME_LENGTH]) {
+  for (uint32_t index = 0U; index < FAT_NAME_LENGTH; ++index) out[index] = ' ';
+  uint64_t dot = length;
+  for (uint64_t index = 0U; index < length; ++index) {
+    if (component[index] == '.') dot = index;
+  }
+  uint32_t used = 0U;
+  for (uint64_t index = 0U; index < dot && used < 6U; ++index) {
+    char value = upper(component[index]);
+    if (short_name_character(value) == 0U) continue;
+    out[used++] = (uint8_t)value;
+  }
+  out[used++] = (uint8_t)'~';
+  out[used++] = (uint8_t)('0' + (char)(ordinal % 10U));
+  uint32_t extension = 0U;
+  for (uint64_t index = dot + 1U; index < length && extension < 3U; ++index) {
+    char value = upper(component[index]);
+    if (short_name_character(value) == 0U) continue;
+    out[8U + extension] = (uint8_t)value;
+    ++extension;
+  }
 }
 
 /* Where a cluster's first sector is. Cluster numbering starts at 2: entries 0
@@ -338,13 +415,119 @@ static void decode_entry(const uint8_t *raw, directory_entry_t *entry) {
   entry->size = get32(&raw[28]);
 }
 
-/* Find a named entry in a directory. Long-name entries and the volume label are
-   skipped: this writer never creates either, but a volume formatted elsewhere
-   may carry them and reading one as a file would be wrong. */
+/* Where in an assembled long name a given entry's characters belong, and how
+   to read them out of the entry. The thirteen characters are in three runs
+   rather than one, which is an artefact of the entry having been fitted
+   around the fields an 8.3 entry already used. */
+static const uint8_t k_lfn_offsets[FAT_LFN_CHARS] = {
+    1U, 3U, 5U, 7U, 9U, 14U, 16U, 18U, 20U, 22U, 24U, 28U, 30U};
+
+/* Take one long-name entry's characters into `out` at its ordinal's place.
+   Returns zero when the entry holds a character this reader will not
+   represent -- anything outside ASCII, which no name here uses and which
+   would otherwise be silently mangled into a name that matched nothing. */
+static uint32_t lfn_gather(const uint8_t *raw, char *out, uint32_t capacity,
+                           uint32_t *out_length) {
+  uint32_t ordinal = raw[0] & 0x3FU;
+  if (ordinal == 0U || ordinal > FAT_LFN_MAX_ENTRIES) return 0U;
+  uint32_t base = (ordinal - 1U) * FAT_LFN_CHARS;
+  for (uint32_t index = 0U; index < FAT_LFN_CHARS; ++index) {
+    uint16_t value = get16(&raw[k_lfn_offsets[index]]);
+    if (value == 0x0000U || value == 0xFFFFU) continue;
+    if (value > 0x7FU) return 0U;
+    uint32_t position = base + index;
+    if (position >= capacity) return 0U;
+    out[position] = (char)value;
+    if (position + 1U > *out_length) *out_length = position + 1U;
+  }
+  return 1U;
+}
+
+static uint32_t names_equal_fold(const char *a, uint32_t a_length,
+                                 const char *b, uint32_t b_length) {
+  if (a_length != b_length) return 0U;
+  for (uint32_t index = 0U; index < a_length; ++index) {
+    if (upper(a[index]) != upper(b[index])) return 0U;
+  }
+  return 1U;
+}
+
+/* Find a named entry in a directory, by its 8.3 name or by its long one.
+ *
+ * Long-name entries used to be skipped, on the reasoning that this writer
+ * never created any. That was true and it was not the same as never needing
+ * to read one: an EFI System Partition assembled by mtools carries
+ * BOOTRISCV64.EFI as a long name over a BOOTRI~1.EFI alias, and a reader that
+ * skipped them reported a volume with one fewer file than it has -- and an
+ * installer copying from it silently left the machine's own boot path off the
+ * disk it wrote. Assembled here and matched case-insensitively, which is how
+ * FAT names compare. */
 static xaios_status_t find_entry(const xaios_fat_volume_t *volume,
                                  const directory_cursor_t *cursor,
-                                 const uint8_t name[FAT_NAME_LENGTH],
+                                 const fat_name_t *name,
                                  directory_entry_t *entry) {
+  char assembled[XAIOS_FAT_PATH_MAX + 1U];
+  uint32_t assembled_length = 0U;
+  uint32_t assembled_valid = 0U;
+  uint8_t assembled_checksum = 0U;
+  for (uint64_t index = 0U;; ++index) {
+    uint64_t sector = 0U;
+    uint64_t offset = 0U;
+    xaios_status_t status =
+        directory_entry_sector(volume, cursor, index, &sector, &offset);
+    if (status != XAIOS_OK) return XAIOS_ERR_NOT_FOUND;
+    status = read_sector(volume, sector, g_sector);
+    if (status != XAIOS_OK) return status;
+    const uint8_t *raw = &g_sector[offset];
+    if (raw[0] == 0x00U) return XAIOS_ERR_NOT_FOUND;
+    if (raw[0] == 0xE5U) {
+      assembled_valid = 0U;
+      continue;
+    }
+    if ((raw[11] & FAT_ATTR_LONG_NAME) == FAT_ATTR_LONG_NAME) {
+      if ((raw[0] & FAT_LFN_LAST) != 0U) {
+        assembled_length = 0U;
+        assembled_valid = 1U;
+        assembled_checksum = raw[13];
+        for (uint32_t i = 0U; i < sizeof(assembled); ++i) assembled[i] = '\0';
+      }
+      if (assembled_valid != 0U && raw[13] == assembled_checksum) {
+        if (lfn_gather(raw, assembled, XAIOS_FAT_PATH_MAX,
+                       &assembled_length) == 0U) {
+          assembled_valid = 0U;
+        }
+      } else {
+        assembled_valid = 0U;
+      }
+      continue;
+    }
+    if ((raw[11] & FAT_ATTR_VOLUME_ID) != 0U) {
+      assembled_valid = 0U;
+      continue;
+    }
+    uint32_t matched =
+        bytes_equal(raw, name->short_name, FAT_NAME_LENGTH) != 0 ? 1U : 0U;
+    if (matched == 0U && assembled_valid != 0U && assembled_length != 0U &&
+        lfn_checksum(raw) == assembled_checksum) {
+      matched = names_equal_fold(assembled, assembled_length, name->text,
+                                 name->text_length);
+    }
+    assembled_valid = 0U;
+    if (matched == 0U) continue;
+    decode_entry(raw, entry);
+    entry->index = index;
+    entry->sector = sector;
+    entry->offset = offset;
+    return XAIOS_OK;
+  }
+}
+
+/* The same search, by 8.3 name alone. Used when checking whether a generated
+   alias is already taken, where the long name is exactly what must not be
+   consulted. */
+static xaios_status_t find_short_entry(const xaios_fat_volume_t *volume,
+                                       const directory_cursor_t *cursor,
+                                       const uint8_t name[FAT_NAME_LENGTH]) {
   for (uint64_t index = 0U;; ++index) {
     uint64_t sector = 0U;
     uint64_t offset = 0U;
@@ -357,21 +540,22 @@ static xaios_status_t find_entry(const xaios_fat_volume_t *volume,
     if (raw[0] == 0x00U) return XAIOS_ERR_NOT_FOUND;
     if (raw[0] == 0xE5U) continue;
     if ((raw[11] & FAT_ATTR_LONG_NAME) == FAT_ATTR_LONG_NAME) continue;
-    if ((raw[11] & FAT_ATTR_VOLUME_ID) != 0U) continue;
-    if (!bytes_equal(raw, name, FAT_NAME_LENGTH)) continue;
-    decode_entry(raw, entry);
-    entry->index = index;
-    entry->sector = sector;
-    entry->offset = offset;
-    return XAIOS_OK;
+    if (bytes_equal(raw, name, FAT_NAME_LENGTH) != 0) return XAIOS_OK;
   }
 }
 
-/* The first slot that has never been used or has been deleted, extending the
-   directory if it is full. */
-static xaios_status_t find_free_slot(const xaios_fat_volume_t *volume,
-                                     const directory_cursor_t *cursor,
-                                     uint64_t *out_index) {
+/* The first run of `count` consecutive slots that have never been used or have
+   been deleted, extending the directory as needed.
+ *
+ * A run rather than a slot, because a name that does not fit 8.3 occupies
+ * several: one entry per thirteen characters, and then the 8.3 entry they
+ * belong to, all adjacent and in that order. A writer that placed them
+ * anywhere else would produce a directory every reader mis-parses. */
+static xaios_status_t find_free_run(const xaios_fat_volume_t *volume,
+                                    const directory_cursor_t *cursor,
+                                    uint32_t count, uint64_t *out_index) {
+  uint64_t run_start = 0U;
+  uint32_t run = 0U;
   for (uint64_t index = 0U;; ++index) {
     uint64_t sector = 0U;
     uint64_t offset = 0U;
@@ -386,8 +570,14 @@ static xaios_status_t find_free_slot(const xaios_fat_volume_t *volume,
     status = read_sector(volume, sector, g_sector);
     if (status != XAIOS_OK) return status;
     if (g_sector[offset] == 0x00U || g_sector[offset] == 0xE5U) {
-      *out_index = index;
-      return XAIOS_OK;
+      if (run == 0U) run_start = index;
+      ++run;
+      if (run >= count) {
+        *out_index = run_start;
+        return XAIOS_OK;
+      }
+    } else {
+      run = 0U;
     }
   }
 }
@@ -425,6 +615,138 @@ static xaios_status_t write_entry(const xaios_fat_volume_t *volume,
   return write_sector(volume, sector, g_sector);
 }
 
+/* Fill in both forms of a component's name, and say whether the long one is
+   needed. A name that fits 8.3 needs no long-name entries at all, which is
+   every name this writer had ever been asked for until BOOTRISCV64.EFI. */
+static xaios_status_t encode_component(const char *component, uint64_t length,
+                                       fat_name_t *out) {
+  if (length == 0U || length > XAIOS_FAT_PATH_MAX) return XAIOS_ERR_INVALID;
+  for (uint64_t index = 0U; index < length; ++index) {
+    char value = component[index];
+    if (value == '/' || value == '\\' || (uint8_t)value < 0x20U ||
+        (uint8_t)value > 0x7EU) {
+      return XAIOS_ERR_INVALID;
+    }
+    out->text[index] = value;
+  }
+  out->text[length] = '\0';
+  out->text_length = (uint32_t)length;
+  if (encode_name(component, length, out->short_name) == XAIOS_OK) {
+    out->needs_long = 0U;
+    return XAIOS_OK;
+  }
+  out->needs_long = 1U;
+  short_alias(component, length, 1U, out->short_name);
+  return XAIOS_OK;
+}
+
+static uint32_t long_entry_count(const fat_name_t *name) {
+  if (name->needs_long == 0U) return 0U;
+  return (name->text_length + FAT_LFN_CHARS - 1U) / FAT_LFN_CHARS;
+}
+
+/* Choose an alias no other entry in this directory already has. Nine is
+   plenty for a boot partition and keeps the alias inside 8.3 without a second
+   digit; a directory holding nine files whose names collide in their first
+   six characters is not a case an installer meets. */
+static xaios_status_t unique_alias(const xaios_fat_volume_t *volume,
+                                   const directory_cursor_t *cursor,
+                                   fat_name_t *name) {
+  for (uint32_t ordinal = 1U; ordinal <= 9U; ++ordinal) {
+    short_alias(name->text, name->text_length, ordinal, name->short_name);
+    if (find_short_entry(volume, cursor, name->short_name) ==
+        XAIOS_ERR_NOT_FOUND) {
+      return XAIOS_OK;
+    }
+  }
+  return XAIOS_ERR_NO_MEMORY;
+}
+
+/* Write the long-name entries that precede an 8.3 entry.
+ *
+ * They go on disk in reverse: the entry holding the last characters comes
+ * first and carries the end marker, and the one holding the first characters
+ * sits immediately before the 8.3 entry. Every reader depends on that order,
+ * and on the checksum tying them to the alias that follows. */
+static xaios_status_t write_long_name(const xaios_fat_volume_t *volume,
+                                      const directory_cursor_t *cursor,
+                                      uint64_t first_index,
+                                      const fat_name_t *name) {
+  uint32_t entries = long_entry_count(name);
+  if (entries == 0U) return XAIOS_OK;
+  if (entries > FAT_LFN_MAX_ENTRIES) return XAIOS_ERR_INVALID;
+  uint8_t checksum = lfn_checksum(name->short_name);
+  for (uint32_t slot = 0U; slot < entries; ++slot) {
+    uint32_t ordinal = entries - slot;
+    uint64_t sector = 0U;
+    uint64_t offset = 0U;
+    xaios_status_t status = directory_entry_sector(
+        volume, cursor, first_index + slot, &sector, &offset);
+    if (status != XAIOS_OK) return status;
+    status = read_sector(volume, sector, g_sector);
+    if (status != XAIOS_OK) return status;
+    uint8_t *raw = &g_sector[offset];
+    bytes_zero(raw, FAT_DIR_ENTRY_SIZE);
+    raw[0] = (uint8_t)(ordinal | (slot == 0U ? FAT_LFN_LAST : 0U));
+    raw[11] = FAT_ATTR_LONG_NAME;
+    raw[12] = 0U;
+    raw[13] = checksum;
+    put16(&raw[26], 0U);
+    uint32_t base = (ordinal - 1U) * FAT_LFN_CHARS;
+    for (uint32_t index = 0U; index < FAT_LFN_CHARS; ++index) {
+      uint32_t position = base + index;
+      uint16_t value;
+      if (position < name->text_length) {
+        value = (uint16_t)(uint8_t)name->text[position];
+      } else if (position == name->text_length) {
+        value = 0x0000U; /* the terminator */
+      } else {
+        value = 0xFFFFU; /* unused, and 0xFFFF rather than zero by the spec */
+      }
+      put16(&raw[k_lfn_offsets[index]], value);
+    }
+    status = write_sector(volume, sector, g_sector);
+    if (status != XAIOS_OK) return status;
+  }
+  return XAIOS_OK;
+}
+
+#define FAT_NO_EXISTING_ENTRY UINT64_MAX
+
+/* Place a named entry: its long-name entries where it needs them, then the
+   8.3 entry they belong to.
+ *
+ * `existing_index` is where the entry already is when a file is being
+ * replaced. Replacing rewrites only the 8.3 entry, because the name has not
+ * changed: any long-name entries in front of it still spell it and still
+ * checksum to the same alias. Allocating a fresh run instead would leave the
+ * old entry in place under the same name, and a directory with two of those
+ * is one where the reader finds the stale one -- which is what forty
+ * rewrites of the same file produced while this was getting written. */
+static xaios_status_t write_named_entry(const xaios_fat_volume_t *volume,
+                                        const directory_cursor_t *cursor,
+                                        fat_name_t *name,
+                                        uint64_t existing_index,
+                                        uint8_t attributes,
+                                        uint32_t first_cluster, uint32_t size) {
+  if (existing_index != FAT_NO_EXISTING_ENTRY) {
+    return write_entry(volume, cursor, existing_index, name->short_name,
+                       attributes, first_cluster, size);
+  }
+  uint32_t entries = long_entry_count(name);
+  if (entries != 0U) {
+    xaios_status_t status = unique_alias(volume, cursor, name);
+    if (status != XAIOS_OK) return status;
+  }
+  uint64_t slot = 0U;
+  xaios_status_t status = find_free_run(volume, cursor, entries + 1U, &slot);
+  if (status != XAIOS_OK) return status;
+  status = write_long_name(volume, cursor, slot, name);
+  if (status != XAIOS_OK) return status;
+  return write_entry(volume, cursor, slot + entries, name->short_name,
+                     attributes, first_cluster, size);
+}
+
 /* Walk a path to the directory containing its last component, which is
    returned separately. The root is the starting point and '/' the separator,
    even though FAT itself uses '\\' -- the rest of XAIOS uses '/', and the
@@ -432,7 +754,7 @@ static xaios_status_t write_entry(const xaios_fat_volume_t *volume,
 static xaios_status_t resolve_parent(const xaios_fat_volume_t *volume,
                                      const char *path,
                                      directory_cursor_t *parent,
-                                     uint8_t final_name[FAT_NAME_LENGTH]) {
+                                     fat_name_t *final_name) {
   if (path == 0 || path[0] == '\0') return XAIOS_ERR_INVALID;
   parent->is_root = 1U;
   parent->first_cluster = 0U;
@@ -446,17 +768,17 @@ static xaios_status_t resolve_parent(const xaios_fat_volume_t *volume,
       ++index;
     }
     uint64_t length = index - start;
-    uint8_t name[FAT_NAME_LENGTH];
-    xaios_status_t status = encode_name(&path[start], length, name);
+    fat_name_t name;
+    xaios_status_t status = encode_component(&path[start], length, &name);
     if (status != XAIOS_OK) return status;
     uint64_t next = index;
     while (path[next] == '/') ++next;
     if (path[next] == '\0') {
-      bytes_copy(final_name, name, FAT_NAME_LENGTH);
+      *final_name = name;
       return XAIOS_OK;
     }
     directory_entry_t entry;
-    status = find_entry(volume, parent, name, &entry);
+    status = find_entry(volume, parent, &name, &entry);
     if (status != XAIOS_OK) return status;
     if ((entry.attributes & FAT_ATTR_DIRECTORY) == 0U) {
       return XAIOS_ERR_INVALID;
@@ -725,11 +1047,11 @@ xaios_status_t fat_mkdir(xaios_fat_volume_t *volume, const char *path) {
     partial[length] = '\0';
 
     directory_cursor_t parent;
-    uint8_t name[FAT_NAME_LENGTH];
-    xaios_status_t status = resolve_parent(volume, partial, &parent, name);
+    fat_name_t name;
+    xaios_status_t status = resolve_parent(volume, partial, &parent, &name);
     if (status != XAIOS_OK) return status;
     directory_entry_t existing;
-    status = find_entry(volume, &parent, name, &existing);
+    status = find_entry(volume, &parent, &name, &existing);
     if (status == XAIOS_OK) {
       /* Already there. A directory is fine and an installer that ran before
          should find it; a file of the same name is not. */
@@ -742,11 +1064,9 @@ xaios_status_t fat_mkdir(xaios_fat_volume_t *volume, const char *path) {
       if (status != XAIOS_OK) return status;
       status = zero_cluster(volume, cluster);
       if (status != XAIOS_OK) return status;
-      uint64_t slot = 0U;
-      status = find_free_slot(volume, &parent, &slot);
-      if (status != XAIOS_OK) return status;
-      status = write_entry(volume, &parent, slot, name, FAT_ATTR_DIRECTORY,
-                           cluster, 0U);
+      status = write_named_entry(volume, &parent, &name,
+                                 FAT_NO_EXISTING_ENTRY, FAT_ATTR_DIRECTORY,
+                                 cluster, 0U);
       if (status != XAIOS_OK) return status;
       /* "." and "..", which some firmware requires to be present and which
          cost two entries. ".." points at the root as cluster zero, which is
@@ -780,13 +1100,13 @@ xaios_status_t fat_write_file(xaios_fat_volume_t *volume, const char *path,
     return XAIOS_ERR_INVALID;
   }
   directory_cursor_t parent;
-  uint8_t name[FAT_NAME_LENGTH];
-  xaios_status_t status = resolve_parent(volume, path, &parent, name);
+  fat_name_t name;
+  xaios_status_t status = resolve_parent(volume, path, &parent, &name);
   if (status != XAIOS_OK) return status;
 
   directory_entry_t existing;
-  uint64_t slot = 0U;
-  status = find_entry(volume, &parent, name, &existing);
+  uint64_t existing_index = FAT_NO_EXISTING_ENTRY;
+  status = find_entry(volume, &parent, &name, &existing);
   if (status == XAIOS_OK) {
     if ((existing.attributes & FAT_ATTR_DIRECTORY) != 0U) {
       return XAIOS_ERR_INVALID;
@@ -797,10 +1117,7 @@ xaios_status_t fat_write_file(xaios_fat_volume_t *volume, const char *path,
       status = free_chain(volume, existing.first_cluster);
       if (status != XAIOS_OK) return status;
     }
-    slot = existing.index;
-  } else {
-    status = find_free_slot(volume, &parent, &slot);
-    if (status != XAIOS_OK) return status;
+    existing_index = existing.index;
   }
 
   uint32_t first = 0U;
@@ -842,8 +1159,8 @@ xaios_status_t fat_write_file(xaios_fat_volume_t *volume, const char *path,
     if (cluster_bytes == 0U) return XAIOS_ERR_INVALID;
   }
 
-  status = write_entry(volume, &parent, slot, name, 0U, first,
-                       (uint32_t)length);
+  status = write_named_entry(volume, &parent, &name, existing_index, 0U,
+                             first, (uint32_t)length);
   if (status != XAIOS_OK) {
     if (first >= 2U) (void)free_chain(volume, first);
     return status;
@@ -859,11 +1176,11 @@ xaios_status_t fat_read_file(xaios_fat_volume_t *volume, const char *path,
     return XAIOS_ERR_INVALID;
   }
   directory_cursor_t parent;
-  uint8_t name[FAT_NAME_LENGTH];
-  xaios_status_t status = resolve_parent(volume, path, &parent, name);
+  fat_name_t name;
+  xaios_status_t status = resolve_parent(volume, path, &parent, &name);
   if (status != XAIOS_OK) return status;
   directory_entry_t entry;
-  status = find_entry(volume, &parent, name, &entry);
+  status = find_entry(volume, &parent, &name, &entry);
   if (status != XAIOS_OK) return status;
   if ((entry.attributes & FAT_ATTR_DIRECTORY) != 0U) {
     return XAIOS_ERR_INVALID;
@@ -903,11 +1220,11 @@ xaios_status_t fat_stat(xaios_fat_volume_t *volume, const char *path,
     return XAIOS_ERR_INVALID;
   }
   directory_cursor_t parent;
-  uint8_t name[FAT_NAME_LENGTH];
-  xaios_status_t status = resolve_parent(volume, path, &parent, name);
+  fat_name_t name;
+  xaios_status_t status = resolve_parent(volume, path, &parent, &name);
   if (status != XAIOS_OK) return status;
   directory_entry_t entry;
-  status = find_entry(volume, &parent, name, &entry);
+  status = find_entry(volume, &parent, &name, &entry);
   if (status != XAIOS_OK) return status;
   if (out_size != 0) *out_size = entry.size;
   if (out_is_directory != 0) {
@@ -951,24 +1268,24 @@ xaios_status_t fat_copy_file(xaios_fat_volume_t *destination,
   }
 
   directory_cursor_t source_parent;
-  uint8_t source_name[FAT_NAME_LENGTH];
+  fat_name_t source_name;
   xaios_status_t status =
-      resolve_parent(source, source_path, &source_parent, source_name);
+      resolve_parent(source, source_path, &source_parent, &source_name);
   if (status != XAIOS_OK) return status;
   directory_entry_t source_entry;
-  status = find_entry(source, &source_parent, source_name, &source_entry);
+  status = find_entry(source, &source_parent, &source_name, &source_entry);
   if (status != XAIOS_OK) return status;
   if ((source_entry.attributes & FAT_ATTR_DIRECTORY) != 0U) {
     return XAIOS_ERR_INVALID;
   }
 
   directory_cursor_t parent;
-  uint8_t name[FAT_NAME_LENGTH];
-  status = resolve_parent(destination, destination_path, &parent, name);
+  fat_name_t name;
+  status = resolve_parent(destination, destination_path, &parent, &name);
   if (status != XAIOS_OK) return status;
   directory_entry_t existing;
-  uint64_t slot = 0U;
-  status = find_entry(destination, &parent, name, &existing);
+  uint64_t existing_index = FAT_NO_EXISTING_ENTRY;
+  status = find_entry(destination, &parent, &name, &existing);
   if (status == XAIOS_OK) {
     if ((existing.attributes & FAT_ATTR_DIRECTORY) != 0U) {
       return XAIOS_ERR_INVALID;
@@ -977,10 +1294,7 @@ xaios_status_t fat_copy_file(xaios_fat_volume_t *destination,
       status = free_chain(destination, existing.first_cluster);
       if (status != XAIOS_OK) return status;
     }
-    slot = existing.index;
-  } else {
-    status = find_free_slot(destination, &parent, &slot);
-    if (status != XAIOS_OK) return status;
+    existing_index = existing.index;
   }
 
   uint32_t first = 0U;
@@ -1069,8 +1383,8 @@ xaios_status_t fat_copy_file(xaios_fat_volume_t *destination,
     }
   }
 
-  status = write_entry(destination, &parent, slot, name, 0U, first,
-                       source_entry.size);
+  status = write_named_entry(destination, &parent, &name, existing_index, 0U,
+                             first, source_entry.size);
   if (status != XAIOS_OK) {
     if (first >= 2U) (void)free_chain(destination, first);
     return status;

@@ -29,9 +29,21 @@
  * recorded in scripts/build-unified-image.sh, was measured rather than read,
  * and applies with equal force to a volume written here.
  *
- * Names are 8.3, upper case, no long-name entries. The paths firmware looks
- * for -- \EFI\BOOT\BOOTAA64.EFI and \EFI\BOOT\BOOTX64.EFI -- fit 8.3 exactly,
- * which is not a coincidence.
+ * Names are 8.3 where they fit, with VFAT long-name entries where they do
+ * not. That second half was added late and for one reason: UEFI's
+ * removable-media path is named for the machine, and while
+ * \EFI\BOOT\BOOTAA64.EFI and \EFI\BOOT\BOOTX64.EFI fit 8.3 exactly,
+ * \EFI\BOOT\BOOTRISCV64.EFI has eleven characters of base where 8.3 allows
+ * eight. Two architectures out of three fitting looked like a property of the
+ * format and was a coincidence about two names.
+ *
+ * Without it a RISC-V machine could format an EFI System Partition perfectly
+ * and had no way to put on it the one file its own firmware opens -- and,
+ * reading, could not see that file on a volume this repository had built with
+ * mtools, so an installer copying from one silently wrote a disk with four
+ * files where it should have had five. Both halves are needed and both are
+ * here: long names are written with the alias they belong to, and read back
+ * by either name.
  */
 
 #define XAIOS_FAT_PATH_MAX 128U

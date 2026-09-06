@@ -219,10 +219,16 @@ def pxe_stage(stages: list) -> None:
         f"e1000,netdev=net0,romfile={rom},bootindex=0",
         "-display", "none", "-serial", f"file:{log}",
     ]
-    process = subprocess.Popen(command, cwd=str(ROOT),
-                               stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL,
-                               start_new_session=True)
+    # The emulator's own complaints go beside the console, not to /dev/null.
+    # A machine that never started -- a malformed device argument, a volume
+    # another stage still holds -- otherwise leaves an empty console and a
+    # list of missing markers, which reads as a broken kernel and is a broken
+    # bench.
+    errors = log.with_suffix(".qemu-stderr.log")
+    with errors.open("wb") as sink:
+        process = subprocess.Popen(command, cwd=str(ROOT), stdout=sink,
+                                   stderr=subprocess.STDOUT,
+                                   start_new_session=True)
     deadline = time.monotonic() + TIMEOUT_S
     try:
         while time.monotonic() < deadline:
@@ -326,10 +332,16 @@ def boot(fw: str, log: Path, boot_disk: Path, spare: Path | None,
         "-netdev", "user,id=net0", *PROFILE["net"],
         "-display", "none", "-serial", f"file:{log}",
     ]
-    process = subprocess.Popen(command, cwd=str(ROOT),
-                               stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL,
-                               start_new_session=True)
+    # The emulator's own complaints go beside the console, not to /dev/null.
+    # A machine that never started -- a malformed device argument, a volume
+    # another stage still holds -- otherwise leaves an empty console and a
+    # list of missing markers, which reads as a broken kernel and is a broken
+    # bench.
+    errors = log.with_suffix(".qemu-stderr.log")
+    with errors.open("wb") as sink:
+        process = subprocess.Popen(command, cwd=str(ROOT), stdout=sink,
+                                   stderr=subprocess.STDOUT,
+                                   start_new_session=True)
     deadline = time.monotonic() + TIMEOUT_S
     try:
         while time.monotonic() < deadline:

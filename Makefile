@@ -1024,7 +1024,18 @@ hosted-test: engine-cli
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Ikernel/include kernel/dev/block_device.c kernel/fs/fat.c \
 	  tests/storage/test_fat.c -o build/hosted/test-fat
-	./build/hosted/test-fat
+	./build/hosted/test-fat build/hosted/fat-long-names.img
+	@# The reciprocal check: an implementation that is not this one, reading
+	@# what this one wrote. mtools has long-name support and firmware does
+	@# too, so a volume whose long names only this code can see would be a
+	@# volume no machine can boot from.
+	@for name in BOOTRISCV64.EFI TOOLONGNAME.EFI NAME.TOOLONG TWO.DOTS.X; do \
+	  mdir -i build/hosted/fat-long-names.img -/ ::/EFI/BOOT \
+	    | grep -q "$$name" \
+	    || { echo "fat: mtools cannot see $$name on the volume XAIOS wrote"; \
+	         exit 1; }; \
+	done
+	@echo "fat: mtools reads every long name XAIOS wrote"
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Ikernel/include -Iengine/include -Iengine/src -Iuserspace/include \
 	  -Iuserspace/sshd kernel/dev/block_device.c kernel/lib/crc32.c \

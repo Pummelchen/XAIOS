@@ -532,6 +532,18 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     uint64_t granted = process != 0 ? process->capability_mask : 0;
     (void)security_authorize_capability(entry->name, granted,
                                         entry->required_capability);
+    /* Who was refused, and what they were holding.
+       "missing-capability" alone cannot tell a program that was never given
+       a capability from one whose current-process binding has been lost --
+       and the second is a kernel fault wearing the first's words. The pid is
+       what separates them: a program that has been printing happily and is
+       suddenly refused `console_write` with pid=0 was not denied anything,
+       it was unbound. */
+    klog("user: %s refused for cpu=%u pid=%u name=%s granted=0x%lx "
+         "needed=0x%lx\n", entry->name, smp_cpu_id(),
+         process != 0 ? process->pid : 0U,
+         process != 0 ? process->name : "(none)", granted,
+         entry->required_capability);
     return reject_syscall(syscall, arg0, arg1, "missing-capability");
   }
 

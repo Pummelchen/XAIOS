@@ -290,10 +290,14 @@ def boot(firmware: str, log: Path, disk: Path = DISK,
         "-display", "none",
         "-serial", f"file:{log}",
     ]
+    # The emulator's own complaints go beside the console, not to /dev/null.
+    # A machine that never started leaves an empty console and a list of
+    # missing markers, which reads as a broken kernel and is a broken bench.
+    errors = log.with_suffix(".qemu-stderr.log")
     try:
-        subprocess.run(command, cwd=ROOT, timeout=BOOT_TIMEOUT_S,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       check=False)
+        with errors.open("wb") as sink:
+            subprocess.run(command, cwd=ROOT, timeout=BOOT_TIMEOUT_S,
+                           stdout=sink, stderr=subprocess.STDOUT, check=False)
     except subprocess.TimeoutExpired:
         # A machine that reached a login prompt keeps running; the markers in
         # the log decide the outcome, not how the process ended.
