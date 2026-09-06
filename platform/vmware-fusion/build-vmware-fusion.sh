@@ -166,6 +166,16 @@ PYEOF
     exit 2
     ;;
 esac
+# The durable disk is recreated, not kept.
+#
+# vdiskmanager -c will not overwrite an existing file, so a build left
+# whatever the last run wrote -- including a lifecycle record latched into
+# rescue mode, which three unclean boots set and which no later boot clears.
+# Every gate then booted a machine that refuses commands, and the boot soak
+# reported twenty failures in a row that were the bench's doing and not the
+# guest's. A build produces a machine in a first-boot state; a run is what
+# gives it a history.
+rm -f "$DATA_DISK" "${DATA_DISK%.vmdk}"-*.vmdk
 "$VDISK_MANAGER" -c -s "${XAIOS_FUSION_DISK_SIZE:-256MB}" -a lsilogic -t 0 \
   "$DATA_DISK" >/dev/null
 

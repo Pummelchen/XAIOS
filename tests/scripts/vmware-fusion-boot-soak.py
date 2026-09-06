@@ -72,7 +72,27 @@ def one_boot(index: int) -> dict[str, object]:
         address, _ = smoke.wait_for_boot(0)
         outcome["result"] = "booted"
         outcome["address"] = address
-        smoke.ssh(address, "shutdown")
+        # The command is sent, not required to return zero.
+        #
+        # A shutdown that works closes the connection under the client, so
+        # ssh exits non-zero on the very command that succeeded. The smoke
+        # helper treats that as a failure and retries for a minute against a
+        # machine that has already gone, and the soak recorded every boot as
+        # failed with "Fusion SSH command failed: shutdown" -- while the
+        # guest had shut down perfectly each time. Worse, the retry loop left
+        # the machine to be hard-stopped, which counted as an unclean boot,
+        # so rescue mode latched on the fourth iteration and every later boot
+        # was a guest refusing commands rather than a sample.
+        #
+        # What says the shutdown worked is the machine stopping.
+        deadline = time.monotonic() + 90.0
+        while time.monotonic() < deadline:
+            subprocess.run(smoke.ssh_base(address) + ["shutdown"], cwd=ROOT,
+                           text=True, capture_output=True, timeout=30,
+                           check=False)
+            if not smoke.vm_running():
+                break
+            time.sleep(1.0)
         smoke.wait_for_stopped()
         outcome["shutdown"] = "clean"
     except Exception as error:  # noqa: BLE001 - every failure is a result here
@@ -112,12 +132,20 @@ def main() -> int:
     arguments = parser.parse_args()
 
     if not arguments.skip_build:
-        build = subprocess.run(
-            ["./platform/vmware-fusion/build-vmware-fusion.sh"],
-            cwd=ROOT, text=True, capture_output=True, timeout=1800)
-        if build.returncode != 0:
-            print("build failed, so no boot was attempted:\n"
-                  + build.stdout[-2000:] + build.stderr[-2000:], file=sys.stderr)
+        # The whole guest, the way the smoke gate builds it.
+        #
+        # This ran only the Fusion packaging step, which repackages whatever
+        # image happens to be in build/ -- so the VM booted with somebody
+        # else's authorized key and every SSH command was refused. The
+        # shutdown then never reached the guest, each boot was hard-stopped,
+        # and rescue mode latched on the fourth: twenty consecutive failures
+        # that were entirely the harness's doing. build_guest mints the key
+        # and builds the image around it.
+        try:
+            smoke.build_guest()
+        except Exception as error:  # noqa: BLE001 - report and stop
+            print(f"build failed, so no boot was attempted: {error}",
+                  file=sys.stderr)
             return 2
     if not smoke.VMX.is_file():
         print(f"no VM bundle at {smoke.VMX}; run without --skip-build",
