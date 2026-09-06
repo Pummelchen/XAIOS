@@ -244,58 +244,38 @@ typedef char vmxnet3_size_check[(sizeof(vmxnet3_tx_desc_t) == 16U &&
 #define VMXNET3_TQD_STAT_BCAST_PKTS 0x088U
 #define VMXNET3_TQD_STAT_ERROR_PKTS 0x098U
 #define VMXNET3_TQD_STAT_DISCARD_PKTS 0x0a0U
-/* The same fields in the receive queue -- and eight bytes lower than the
-   transmit ones, for the same reason every configuration field is: the
-   receive configuration block is eight bytes shorter, so the status word and
-   the statistics that follow it start earlier.
-   These were copied across from the transmit side too, which matters more
-   than it looks: they were being used as the control that said the transmit
-   counters were read from the right place. A control read from the wrong
-   offset is not a control. */
-#define VMXNET3_RQD_STATUS_STOPPED 0x048U
-#define VMXNET3_RQD_STATUS_ERROR 0x04cU
-#define VMXNET3_RQD_STAT_UCAST_PKTS 0x060U
-#define VMXNET3_RQD_STAT_BCAST_PKTS 0x080U
-#define VMXNET3_RQD_STAT_OUT_OF_BUF 0x090U
-#define VMXNET3_RQD_STAT_ERROR_PKTS 0x098U
+/* The same fields in the receive queue, at the same offsets, because the two
+   configuration blocks are the same size. Used as a control on the transmit
+   reading above: if receive is demonstrably working and its counters are
+   zero, the offsets are wrong and the transmit zeros mean nothing. */
+#define VMXNET3_RQD_STATUS_STOPPED 0x050U
+#define VMXNET3_RQD_STATUS_ERROR 0x054U
+#define VMXNET3_RQD_STAT_UCAST_PKTS 0x068U
+#define VMXNET3_RQD_STAT_BCAST_PKTS 0x088U
+#define VMXNET3_RQD_STAT_OUT_OF_BUF 0x098U
+#define VMXNET3_RQD_STAT_ERROR_PKTS 0x0a0U
 
-/* The receive queue configuration is NOT the transmit one with different
-   names, and treating it as though it were is what F-02 was.
+/* The receive queue configuration, from VMware's published definitions.
  *
- * Vmxnet3_TxQueueConf carries an eight-byte reserved field after the driver
- * data pointer and states all three of its ring sizes as 32-bit words.
- * Vmxnet3_RxQueueConf has no such reserved field, and its two ring sizes are
- * a `__le16[2]` pair, not two words. So every field after the driver data
- * pointer sits eight bytes earlier here than it does there, and the first two
- * are half the width.
- *
- * Laid out as a copy of the transmit block, the driver wrote 32 where the
- * device reads the driver-data length, 32 where it reads the interrupt index,
- * and 64 into the status word the device owns -- while the three fields that
- * actually say how large the receive rings are were never written at all and
- * stayed zero. A device told its receive rings hold no descriptors cannot
- * obtain buffers for an arriving packet, which is what VMware's own log said,
- * once per delivery attempt: `VMXNET3 hosted: Cannot retrieve the buffer
- * descriptors per rx packet.`
- *
- * It plausibly accounts for the transmit half as well. An interrupt index of
- * 32 is outside the single interrupt this driver declares, and a device given
- * a queue pair it cannot configure has no reason to run either half of it --
- * which fits every measurement recorded against this row: the queue not
- * stopped, no error, no event, and nothing ever taken.
- *
- * Offsets below are from VMware's published definitions, with the sixteen
- * bytes of Vmxnet3_RxQueueCtrl in front. */
+ * It has the same shape as the transmit one and the same size, which is not a
+ * coincidence to be suspicious of: `Vmxnet3_RxQueueConf` carries an eight-byte
+ * `rxDataRingBasePA` where the transmit block carries `reserved`, and both
+ * state their ring sizes as 32-bit words. These offsets were once "corrected"
+ * to a sixteen-bit pair on a misremembering of the structure, which is worth
+ * recording because the correction looked exactly like a finding: it produced
+ * a plausible story about the device being told its rings held nothing, and
+ * the device is in fact told nothing of the sort. Checked against the header
+ * rather than against memory, twice. */
 #define VMXNET3_RQD_RX_RING1_PA 0x010U
 #define VMXNET3_RQD_RX_RING2_PA 0x018U
 #define VMXNET3_RQD_COMP_RING_PA 0x020U
 #define VMXNET3_RQD_DRIVER_DATA_PA 0x028U
-/* Sixteen bits each, side by side. */
-#define VMXNET3_RQD_RX_RING1_SIZE 0x030U
-#define VMXNET3_RQD_RX_RING2_SIZE 0x032U
-#define VMXNET3_RQD_COMP_RING_SIZE 0x034U
-#define VMXNET3_RQD_DRIVER_DATA_LEN 0x038U
-#define VMXNET3_RQD_INTR_INDEX 0x03cU
+#define VMXNET3_RQD_DATA_RING_PA 0x030U
+#define VMXNET3_RQD_RX_RING1_SIZE 0x038U
+#define VMXNET3_RQD_RX_RING2_SIZE 0x03cU
+#define VMXNET3_RQD_COMP_RING_SIZE 0x040U
+#define VMXNET3_RQD_DRIVER_DATA_LEN 0x044U
+#define VMXNET3_RQD_INTR_INDEX 0x048U
 
 static void put32(uint8_t *base, uint32_t offset, uint32_t value) {
   base[offset] = (uint8_t)(value & 0xffU);
@@ -317,11 +297,6 @@ static void put16(uint8_t *base, uint32_t offset, uint16_t value) {
 /* Reading back the same way it is written. The queue descriptor is a byte
    array on purpose, so the fields the device writes have to be reassembled
    little-endian rather than cast to a struct. */
-static uint16_t get16(const uint8_t *base, uint32_t offset) {
-  return (uint16_t)((uint32_t)base[offset] |
-                    ((uint32_t)base[offset + 1U] << 8U));
-}
-
 static uint32_t get32(const uint8_t *base, uint32_t offset) {
   return (uint32_t)base[offset] | ((uint32_t)base[offset + 1U] << 8U) |
          ((uint32_t)base[offset + 2U] << 16U) |
@@ -702,17 +677,15 @@ static xaios_status_t activate_device(void) {
   put64(rqd, VMXNET3_RQD_RX_RING1_PA, rx_ring_pa);
   put64(rqd, VMXNET3_RQD_RX_RING2_PA, rx_ring2_pa);
   put64(rqd, VMXNET3_RQD_COMP_RING_PA, rx_comp_pa);
-  /* Sixteen bits each, because that is what the receive block says -- see
-     the offsets above. Written as thirty-two would put ring2's size where the
-     completion ring's belongs and leave the completion ring at zero. */
-  put16(rqd, VMXNET3_RQD_RX_RING1_SIZE, (uint16_t)VMXNET3_RING_SIZE);
-  put16(rqd, VMXNET3_RQD_RX_RING2_SIZE, (uint16_t)VMXNET3_RING_SIZE);
+  put32(rqd, VMXNET3_RQD_RX_RING1_SIZE, VMXNET3_RING_SIZE);
+  put32(rqd, VMXNET3_RQD_RX_RING2_SIZE, VMXNET3_RING_SIZE);
   put32(rqd, VMXNET3_RQD_COMP_RING_SIZE, VMXNET3_RX_COMP_SIZE);
+  put32(rqd, VMXNET3_RQD_INTR_INDEX, 0U);
   put64(rqd, VMXNET3_RQD_DRIVER_DATA_PA, UINT64_C(0xffffffffffffffff));
   put32(rqd, VMXNET3_RQD_DRIVER_DATA_LEN, 0U);
-  /* One byte, and the last field written, because it shares its word with
-     padding the device does not read. */
-  rqd[VMXNET3_RQD_INTR_INDEX] = 0U;
+  /* No receive data ring. Zero is a physical address a device is entitled to
+     read, so this says "none" the way the driver-data pointers do. */
+  put64(rqd, VMXNET3_RQD_DATA_RING_PA, UINT64_C(0xffffffffffffffff));
 
   put32(shared, VMXNET3_DS_MAGIC, VMXNET3_DRIVER_SHARED_MAGIC);
   put32(shared, VMXNET3_DS_VERSION, 1U);
@@ -928,10 +901,10 @@ xaios_status_t vmxnet3_tx(const uint8_t *data, uint64_t length) {
              recurrence names itself. */
           klog("vmxnet3:   receive queue conf rx1=%u rx2=%u comp=%u "
                "intr_idx=%u ddlen=%u stopped=%u error=0x%x\n",
-               get16(rqd, VMXNET3_RQD_RX_RING1_SIZE),
-               get16(rqd, VMXNET3_RQD_RX_RING2_SIZE),
+               get32(rqd, VMXNET3_RQD_RX_RING1_SIZE),
+               get32(rqd, VMXNET3_RQD_RX_RING2_SIZE),
                get32(rqd, VMXNET3_RQD_COMP_RING_SIZE),
-               (uint32_t)rqd[VMXNET3_RQD_INTR_INDEX],
+               get32(rqd, VMXNET3_RQD_INTR_INDEX),
                get32(rqd, VMXNET3_RQD_DRIVER_DATA_LEN),
                get32(rqd, VMXNET3_RQD_STATUS_STOPPED) & 0xffU,
                get32(rqd, VMXNET3_RQD_STATUS_ERROR));
