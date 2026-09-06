@@ -4,6 +4,7 @@
 #include "ssh_connection.h"
 #include "ssh_crypto.h"
 #include "ssh_identity.h"
+#include "ssh_known_hosts.h"
 #include "ssh_mlkem.h"
 #include "ssh_protocol.h"
 #include "ssh_utils.h"
@@ -482,10 +483,36 @@ static int hex_value(char character) {
   return -1;
 }
 
+/* Reading the file is in ssh_known_hosts.c, where it can be argued with
+   directly: what B-01 turned on is a property about text and chunk
+   boundaries, and a property like that should not need a booted guest and a
+   real peer to check. */
+struct known_hosts_file {
+  int fd;
+};
+
+static long long known_hosts_read(void *context, void *buffer,
+                                  unsigned long long size,
+                                  unsigned long long offset) {
+  struct known_hosts_file *file = (struct known_hosts_file *)context;
+  return (long long)xaios_fs_pread(file->fd, buffer, size, offset);
+}
+
+static ssh_known_host_result_t known_host_lookup(
+    const char *path, const char *expected, uint32_t expected_length,
+    const uint8_t public_key[32]) {
+  struct known_hosts_file file;
+  file.fd = xaios_fs_open(path, XAIOS_XBFS_OPEN_READ);
+  if (file.fd < 0) return SSH_KNOWN_HOST_ABSENT;
+  ssh_known_host_result_t result = ssh_known_hosts_scan(
+      known_hosts_read, &file, expected, expected_length, public_key);
+  (void)xaios_fs_close(file.fd);
+  return result;
+}
+
 static int verify_known_host(ssh_client_context_t *client,
                              const uint8_t public_key[32]) {
   static const char path[] = "/home/admin/.ssh/known_hosts";
-  char contents[4096];
   char expected[SSH_CLIENT_HOST_MAX + 8U];
   uint32_t expected_length = 0U;
   uint32_t port = client->port;
@@ -503,55 +530,41 @@ static int verify_known_host(ssh_client_context_t *client,
   while (digit_count != 0U) expected[expected_length++] = digits[--digit_count];
   expected[expected_length] = '\0';
 
-  int fd = xaios_fs_open(path, XAIOS_XBFS_OPEN_READ);
-  if (fd >= 0) {
-    int length = xaios_fs_read(fd, contents, sizeof(contents) - 1U);
-    (void)xaios_fs_close(fd);
-    if (length < 0) return -1;
-    contents[length] = '\0';
-    uint32_t position = 0U;
-    while (position < (uint32_t)length) {
-      uint32_t line_start = position;
-      while (position < (uint32_t)length && contents[position] != '\n')
-        ++position;
-      uint32_t line_end = position++;
-      uint32_t split = line_start;
-      while (split < line_end && contents[split] != ' ') ++split;
-      if (split - line_start != expected_length || split >= line_end ||
-          !bytes_equal((const uint8_t *)contents + line_start,
-                       (const uint8_t *)expected, expected_length)) {
-        continue;
-      }
-      if (line_end - split - 1U != 64U) return -1;
-      for (uint32_t i = 0U; i < 32U; ++i) {
-        int high = hex_value(contents[split + 1U + i * 2U]);
-        int low = hex_value(contents[split + 2U + i * 2U]);
-        if (high < 0 || low < 0 ||
-            public_key[i] != (uint8_t)((uint32_t)high * 16U + (uint32_t)low)) {
-          return -1;
-        }
-      }
-      return 0;
-    }
+  ssh_known_host_result_t known = known_host_lookup(path, expected,
+                                                    expected_length,
+                                                    public_key);
+  if (known == SSH_KNOWN_HOST_MATCH) return 0;
+  if (known == SSH_KNOWN_HOST_MISMATCH) return -1;
+  if (known == SSH_KNOWN_HOST_UNREADABLE) {
+    /* Refused, not appended. A file this program cannot read may already hold
+       a different key for this host, and adding a second line for it would
+       leave the machine trusting a key it has no reason to. */
+    (void)output_text(client,
+                      "ssh: cannot read /home/admin/.ssh/known_hosts; refusing "
+                      "to trust this host key\r\n");
+    return -1;
   }
 
   (void)xaios_fs_mkdir("/home/admin/.ssh");
-  fd = xaios_fs_open(path, XAIOS_XBFS_OPEN_WRITE | XAIOS_XBFS_OPEN_CREATE);
+  int fd = xaios_fs_open(path, XAIOS_XBFS_OPEN_WRITE | XAIOS_XBFS_OPEN_CREATE);
   if (fd < 0) return -1;
   xaios_xbfs_stat_user_t stat;
   uint64_t offset = 0U;
-  if (xaios_fs_stat(path, &stat) == 0) offset = stat.size;
-  char line[SSH_CLIENT_HOST_MAX + 80U];
-  uint32_t used = 0U;
-  ssh_mem_copy(line + used, expected, expected_length);
-  used += expected_length;
-  line[used++] = ' ';
-  static const char hex[] = "0123456789abcdef";
-  for (uint32_t i = 0U; i < 32U; ++i) {
-    line[used++] = hex[public_key[i] >> 4U];
-    line[used++] = hex[public_key[i] & UINT8_C(0x0f)];
+  if (xaios_fs_stat(path, &stat) != 0) {
+    /* Without a size there is no append offset, and writing at zero would
+       land on top of whatever the first entry is -- turning a file of known
+       hosts into a file with one mangled line at the front. */
+    (void)xaios_fs_close(fd);
+    return -1;
   }
-  line[used++] = '\n';
+  offset = stat.size;
+  char line[SSH_KNOWN_HOSTS_LINE_MAX];
+  uint32_t used = ssh_known_hosts_format(line, sizeof(line), expected,
+                                         expected_length, public_key);
+  if (used == 0U) {
+    (void)xaios_fs_close(fd);
+    return -1;
+  }
   int written = (int)xaios_fs_pwrite(fd, line, used, offset);
   int synced = xaios_fs_fsync(fd);
   (void)xaios_fs_close(fd);

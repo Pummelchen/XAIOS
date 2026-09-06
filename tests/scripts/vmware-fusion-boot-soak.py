@@ -112,6 +112,31 @@ def one_boot(index: int) -> dict[str, object]:
     outcome["console"] = str(kept.relative_to(ROOT))
     outcome["console_lines"] = len(console.splitlines())
     outcome["fatal_markers"] = [m for m in smoke.FATAL_MARKERS if m in console]
+
+    # Did this boot get a DHCP lease, and how hard was it?
+    #
+    # B-04 is a guest that intermittently gets no offer and carries on
+    # without an address. Nothing here was looking: `wait_for_boot` returns
+    # whatever address the guest ends up with, and a guest that fell back
+    # answers SSH on it, so forty boots could all have "passed" with a
+    # machine that never reached the network. The console is the only place
+    # that says which happened, and it is already being kept.
+    #
+    # Recorded per boot rather than only failed on, because the number of
+    # retries is the measurement: the fix widened the window for the offer
+    # phase, and what says it worked is offers arriving after two or three
+    # attempts rather than not at all.
+    outcome["dhcp_lease"] = "network: DHCP lease ip=" in console
+    outcome["dhcp_retries"] = console.count("network: DHCP retry request=")
+    outcome["dhcp_no_offer"] = "network: DHCP offer not received" in console
+    outcome["dhcp_no_ack"] = (
+        "network: DHCP acknowledgement not received" in console)
+    if outcome.get("result") == "booted" and not outcome["dhcp_lease"]:
+        outcome["result"] = "failed"
+        outcome["error"] = (
+            "the guest booted without a DHCP lease"
+            + (" (no offer)" if outcome["dhcp_no_offer"] else "")
+            + (" (no acknowledgement)" if outcome["dhcp_no_ack"] else ""))
     if smoke.vm_running():
         # Only reached when the clean shutdown above did not happen, which is
         # itself worth recording: the next boot will count as unclean.
@@ -176,16 +201,30 @@ def main() -> int:
             if not arguments.keep_going:
                 break
 
+    leased = sum(1 for r in results if r.get("dhcp_lease"))
+    retries = [int(r.get("dhcp_retries", 0)) for r in results]
     report = {
         "boots_attempted": len(results),
         "boots_requested": arguments.boots,
         "booted": sum(1 for r in results if r["result"] == "booted"),
         "failed": failures,
+        # B-04's measurement, kept whether or not it failed: how many boots
+        # took a lease, and how many attempts each needed. A run where every
+        # boot leases on the first try says something different from one
+        # where half of them need three, and only the second is evidence that
+        # the widened offer window is doing work.
+        "dhcp_leases": leased,
+        "dhcp_no_offer": sum(1 for r in results if r.get("dhcp_no_offer")),
+        "dhcp_retries_total": sum(retries),
+        "dhcp_retries_max": max(retries) if retries else 0,
         "results": results,
     }
     (SOAK / "report.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"fusion-boot-soak: {report['booted']} booted, {failures} failed, "
+          f"{leased} took a DHCP lease "
+          f"({report['dhcp_retries_total']} retries in all, at most "
+          f"{report['dhcp_retries_max']} in one boot), "
           f"consoles under {SOAK.relative_to(ROOT)}")
     return 1 if failures else 0
 

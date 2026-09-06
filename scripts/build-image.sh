@@ -1410,7 +1410,7 @@ set -- "$@" "/bin/sshd=$INIT_BUILD_DIR/sshd.elf"
 printf '%s\n' "Building userspace /bin/ssh child client ELF..."
 SSH_CLIENT_RESPONSE_FILE="$INIT_BUILD_DIR/ssh-client-objects.rsp"
 : > "$SSH_CLIENT_RESPONSE_FILE"
-for ssh_client_src in ssh.c ssh_client.c ssh_crypto.c ssh_identity.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_connection.c; do
+for ssh_client_src in ssh.c ssh_client.c ssh_known_hosts.c ssh_crypto.c ssh_identity.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_connection.c; do
   ssh_client_obj="$INIT_BUILD_DIR/ssh-client-${ssh_client_src%.c}.o"
   ssh_client_path="$ROOT_DIR/userspace/apps/$ssh_client_src"
   if [ "$ssh_client_src" != "ssh.c" ]; then

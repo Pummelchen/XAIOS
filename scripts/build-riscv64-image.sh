@@ -375,6 +375,23 @@ if [ "${XAIOS_AUTHORIZED_KEYS_FILE:-}" != "" ]; then
   AUTHORIZED_KEYS_ARGS="/etc/xaios_authorized_keys=$XAIOS_AUTHORIZED_KEYS_FILE"
 fi
 
+# A private key this machine dials *out* with, when a caller supplies one.
+#
+# The other builder has taken this for as long as the guest has had an SSH
+# client. Without it a RISC-V guest can be logged into and cannot log into
+# anything, which is half a network stack -- and it is the half the
+# bidirectional interoperability suite is entirely about.
+CLIENT_IDENTITY_ARGS=""
+if [ "${XAIOS_SSH_CLIENT_IDENTITY_FILE:-}" != "" ]; then
+  if [ ! -f "$XAIOS_SSH_CLIENT_IDENTITY_FILE" ]; then
+    printf '%s\n' \
+      "error: SSH client identity not found: $XAIOS_SSH_CLIENT_IDENTITY_FILE" \
+      >&2
+    exit 1
+  fi
+  CLIENT_IDENTITY_ARGS="/etc/xaios_ssh_client_identity=$XAIOS_SSH_CLIENT_IDENTITY_FILE"
+fi
+
 # The same 4 MiB volume shape the other architectures' test image uses, with
 # the marker the boot-storage check reads in sector zero and the rofs from
 # sector one.
@@ -395,6 +412,7 @@ printf 'XAIOS-VIRTIO-BLOCK-TEST\n' | \
   $SSHD_ARGS \
   $CREDENTIAL_ARGS \
   $AUTHORIZED_KEYS_ARGS \
+  $CLIENT_IDENTITY_ARGS \
   "/etc/xapt.conf=$ROOT_DIR/userspace/init/xapt.conf" \
   "$@"
 printf '%s\n' "Created $IMAGE"

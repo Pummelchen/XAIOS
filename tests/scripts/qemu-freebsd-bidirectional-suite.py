@@ -20,6 +20,9 @@ import urllib.request
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import smoke_timeout
+
 BUILD = ROOT / "build"
 FREEBSD_RELEASE = "15.1-RELEASE"
 DOCKER_IMAGE = "xaios-freebsd-qemu-endpoint:15.1"
@@ -52,6 +55,62 @@ CROSS_OUTBOUND_TIMEOUT = "600"
 
 HOST_ARCHITECTURES = {"arm64": "aarch64", "aarch64": "aarch64",
                       "amd64": "x86_64", "x86_64": "x86_64"}
+
+# Which XAIOS machines this suite can pair a FreeBSD one with, and how to
+# build and start each.
+#
+# The FreeBSD end is not one of these, and that is on purpose. What this suite
+# measures is XAIOS answering and dialling a real third-party stack in both
+# directions; OpenSSH on FreeBSD does not behave differently per instruction
+# set, and there is no FreeBSD cloud-init image for RISC-V at all -- so a
+# RISC-V FreeBSD would have to be driven over its console and emulated without
+# acceleration, adding an hour to every run to measure FreeBSD's port rather
+# than this one. The FreeBSD end therefore stays on whichever architecture
+# runs natively here, and the report says so rather than implying a pair.
+XAIOS_MACHINES = {
+    "aarch64": {
+        "build": [["make", "image"]],
+        "runner": "platform/qemu/run-qemu-aarch64.sh",
+        "env": {"XAIOS_QEMU_ACCEL": "tcg", "XAIOS_QEMU_SMP": "4"},
+        "persistent": "XAIOS_PERSISTENT_IMAGE",
+        "ssh_port": "XAIOS_QEMU_HOSTFWD_PORT",
+        "udp_port": "XAIOS_QEMU_HOSTFWD_UDP_PORT",
+        "log": None,
+    },
+    "x86_64": {
+        "build": [["make", "image-x86_64"]],
+        "runner": "platform/qemu/run-qemu-x86_64.sh",
+        "env": {"XAIOS_QEMU_X86_ACCEL": "tcg", "XAIOS_QEMU_X86_SMP": "4"},
+        "persistent": "XAIOS_X86_PERSISTENT_IMAGE",
+        "ssh_port": "XAIOS_QEMU_HOSTFWD_PORT",
+        "udp_port": "XAIOS_QEMU_HOSTFWD_UDP_PORT",
+        "log": None,
+    },
+    "riscv64": {
+        # The release configuration, which is what `make image` means on the
+        # other two. The boot-test build answers shell commands as kernel
+        # built-ins and never launches an application, so a suite that ran
+        # against it would be testing a different program.
+        "build": [["./scripts/build-riscv64.sh"],
+                  ["./scripts/build-riscv64-image.sh"]],
+        "runner": "platform/qemu/run-qemu-riscv64.sh",
+        "env": {"XAIOS_BOOT_TEST_APPS": "0", "XAIOS_RISCV64_CPUS": "4"},
+        "persistent": "XAIOS_PERSISTENT_IMAGE",
+        "ssh_port": "XAIOS_RISCV64_SSH_PORT",
+        "udp_port": "XAIOS_RISCV64_HOSTFWD_UDP_PORT",
+        "log": "XAIOS_RISCV64_LOG",
+    },
+}
+
+
+def freebsd_architecture() -> str:
+    """The architecture the FreeBSD end runs as: the host's, where possible.
+
+    It runs natively there. Anything else is emulated instruction by
+    instruction, and the FreeBSD end is not what is under test.
+    """
+    host = HOST_ARCHITECTURES.get(platform.machine().lower())
+    return host if host in IMAGES else "aarch64"
 
 
 def default_outbound_timeout(architecture: str) -> str:
@@ -378,31 +437,13 @@ def user_data(
 def xaios_process(
     architecture: str, env: dict[str, str], log_file: object
 ) -> subprocess.Popen[bytes]:
-    if architecture == "aarch64":
-        env.update(
-            {
-                "XAIOS_QEMU_ACCEL": "tcg",
-                "XAIOS_QEMU_SMP": "4",
-                "XAIOS_PERSISTENT_IMAGE": str(
-                    BUILD / "qemu-freebsd-bidirectional-xaios-persistent.img"
-                ),
-            }
-        )
-        runner = ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh"
-    else:
-        env.update(
-            {
-                "XAIOS_QEMU_X86_ACCEL": "tcg",
-                "XAIOS_QEMU_X86_SMP": "4",
-                "XAIOS_X86_PERSISTENT_IMAGE": str(
-                    BUILD / "qemu-freebsd-bidirectional-x86-persistent.img"
-                ),
-            }
-        )
-        runner = ROOT / "platform" / "qemu" / "run-qemu-x86_64.sh"
-    Path(env.get("XAIOS_PERSISTENT_IMAGE", env.get("XAIOS_X86_PERSISTENT_IMAGE", ""))).unlink(missing_ok=True)
+    machine = XAIOS_MACHINES[architecture]
+    env.update(machine["env"])
+    persistent = BUILD / f"qemu-freebsd-bidirectional-{architecture}-state.img"
+    persistent.unlink(missing_ok=True)
+    env[machine["persistent"]] = str(persistent)
     return subprocess.Popen(
-        [str(runner)],
+        [str(ROOT / machine["runner"])],
         cwd=ROOT,
         env=env,
         stdin=subprocess.DEVNULL,
@@ -413,8 +454,10 @@ def xaios_process(
 
 def main() -> int:
     architecture = os.environ.get("XAIOS_QEMU_NETWORK_ARCH", "aarch64")
-    if architecture not in IMAGES:
-        raise SystemExit("error: XAIOS_QEMU_NETWORK_ARCH must be aarch64 or x86_64")
+    if architecture not in XAIOS_MACHINES:
+        raise SystemExit("error: XAIOS_QEMU_NETWORK_ARCH must be one of "
+                         + ", ".join(sorted(XAIOS_MACHINES)))
+    client_architecture = freebsd_architecture()
     required = ("docker", "qemu-img", "xz", "ssh-keygen", "ssh", "ssh-agent", "ssh-add")
     missing = [tool for tool in required if shutil.which(tool) is None]
     if missing:
@@ -468,7 +511,8 @@ def main() -> int:
     )
     xaios_authorized_keys.chmod(0o600)
 
-    base_image, image_sha256, archive_identity = prepare_freebsd_image(architecture)
+    base_image, image_sha256, archive_identity = prepare_freebsd_image(
+        client_architecture)
     seed_dir = work / "cidata"
     seed_dir.mkdir()
     (seed_dir / "meta-data").write_text(
@@ -515,8 +559,9 @@ def main() -> int:
     # silences klog once boot finishes, so the captured evidence stopped at the
     # login prompt and every failure here had to be re-diagnosed blind.
     build_env.setdefault("XAIOS_BOOT_VERBOSE", "1")
-    build_target = "image" if architecture == "aarch64" else "image-x86_64"
-    run_checked(["make", build_target], 360, build_env)
+    for command in XAIOS_MACHINES[architecture]["build"]:
+        run_checked(command, smoke_timeout(architecture, 360),
+                    {**build_env, **XAIOS_MACHINES[architecture]["env"]})
 
     xaios_ssh_port = reserve_port(socket.SOCK_STREAM)
     xaios_udp_port = reserve_port(socket.SOCK_DGRAM)
@@ -524,19 +569,26 @@ def main() -> int:
     xaios_log = BUILD / f"qemu-freebsd-bidirectional-xaios-{architecture}.log"
     freebsd_log = BUILD / f"qemu-freebsd-docker-{architecture}.log"
     xaios_env = build_env.copy()
-    xaios_env.update(
-        {
-            "XAIOS_QEMU_HOSTFWD_PORT": str(xaios_ssh_port),
-            "XAIOS_QEMU_HOSTFWD_UDP_PORT": str(xaios_udp_port),
-        }
-    )
-    xaios_log_file = xaios_log.open("wb")
+    machine = XAIOS_MACHINES[architecture]
+    xaios_env.update({
+        machine["ssh_port"]: str(xaios_ssh_port),
+        machine["udp_port"]: str(xaios_udp_port),
+    })
+    xaios_log.unlink(missing_ok=True)
+    if machine["log"] is not None:
+        # This board's runner writes the console to a file of its own, and
+        # this suite watches the console for readiness and for evidence.
+        xaios_env[machine["log"]] = str(xaios_log)
+        xaios_log_file = open(os.devnull, "wb")
+    else:
+        xaios_log_file = xaios_log.open("wb")
     xaios = xaios_process(architecture, xaios_env, xaios_log_file)
     container_name = f"xaios-freebsd-{architecture}-{os.getpid()}"
     freebsd: subprocess.Popen[bytes] | None = None
     freebsd_log_file = None
     try:
-        wait_for_marker(xaios_log, (XAIOS_READY,), 240)
+        wait_for_marker(xaios_log, (XAIOS_READY,),
+                        smoke_timeout(architecture, 240))
         freebsd_log_file = freebsd_log.open("wb")
         command = [
             "docker",
@@ -555,7 +607,7 @@ def main() -> int:
             "--volume",
             f"{work}:/work",
             "--env",
-            f"XAIOS_FREEBSD_ARCH={architecture}",
+            f"XAIOS_FREEBSD_ARCH={client_architecture}",
             "--env",
             f"XAIOS_RELAY_SSH_PORT={xaios_ssh_port}",
             "--env",
@@ -707,9 +759,16 @@ def main() -> int:
             "xaios_architecture": architecture,
             "freebsd_release": FREEBSD_RELEASE,
             "freebsd_architecture": (
-                "arm64" if architecture == "aarch64" else "amd64"
+                "arm64" if client_architecture == "aarch64" else "amd64"
             ),
-            "freebsd_image": IMAGES[architecture]["name"],
+            "freebsd_architecture_note":
+                "the FreeBSD end runs on whichever architecture is native to "
+                "this host, which is not necessarily XAIOS's. What is under "
+                "test is XAIOS answering and dialling a third-party stack in "
+                "both directions; OpenSSH on FreeBSD does not behave "
+                "differently per instruction set, and emulating a foreign "
+                "FreeBSD would measure FreeBSD's port rather than this one.",
+            "freebsd_image": IMAGES[client_architecture]["name"],
             "freebsd_archive_sha256": archive_identity,
             "freebsd_image_sha256": image_sha256,
             "freebsd_runtime": "QEMU TCG inside Debian 13 Docker",

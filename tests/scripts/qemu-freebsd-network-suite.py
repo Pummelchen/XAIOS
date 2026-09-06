@@ -19,6 +19,45 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import arch_from_argv, qemu_runner, smoke_timeout
+
+# Which XAIOS is under test. The FreeBSD client is not parameterised, and that
+# is deliberate: what this suite measures is XAIOS's SSH, SFTP and UDP against
+# a real third-party implementation, and OpenSSH on FreeBSD behaves the same
+# whichever instruction set FreeBSD was built for. The client's architecture
+# is chosen for speed -- it runs natively under HVF on this host -- because
+# emulating a foreign FreeBSD would add an hour to every run and would be
+# testing FreeBSD's port rather than XAIOS's.
+ARCH = arch_from_argv(sys.argv)
+SUFFIX = "" if ARCH == "aarch64" else f"-{ARCH}"
+
+# How to build the machine under test, and how to start it. The runner
+# variables differ per architecture -- the same knob has a different name on
+# each -- which is what qemu_gate_lib exists to hide everywhere else; this
+# suite predates it and starts its guest itself.
+XAIOS_MACHINES = {
+    "aarch64": {
+        "build": [["make", "image"]],
+        "env": {"XAIOS_QEMU_ACCEL": "tcg", "XAIOS_QEMU_SMP": "4"},
+        "ssh_port": "XAIOS_QEMU_HOSTFWD_PORT",
+        "udp_port": "XAIOS_QEMU_HOSTFWD_UDP_PORT",
+        "log": None,
+    },
+    "riscv64": {
+        # The release configuration, which is what `make image` means on the
+        # other two. Without it this board builds the boot-test image, whose
+        # shell answers commands as built-ins and never launches xtop -- and
+        # the PTY check below would be testing a different program.
+        "build": [["./scripts/build-riscv64.sh"],
+                  ["./scripts/build-riscv64-image.sh"]],
+        "env": {"XAIOS_BOOT_TEST_APPS": "0", "XAIOS_RISCV64_CPUS": "4"},
+        "ssh_port": "XAIOS_RISCV64_SSH_PORT",
+        "udp_port": "XAIOS_RISCV64_HOSTFWD_UDP_PORT",
+        "log": "XAIOS_RISCV64_LOG",
+    },
+}
+
 FREEBSD_RELEASE = "15.1-RELEASE"
 FREEBSD_IMAGE_NAME = (
     "FreeBSD-15.1-RELEASE-arm64-aarch64-BASIC-CLOUDINIT-ufs.qcow2"
@@ -249,7 +288,7 @@ echo "XAIOS_FREEBSD_INTEROP: unauthorized key rejection PASS"
 
 ssh $ssh_base admin@$host 'xaiosctl version --json' >/tmp/version.json || fail "xaiosctl version failed"
 grep -q '"status":"ok"' /tmp/version.json || fail "xaiosctl response was not successful"
-grep -q '"architecture":"aarch64"' /tmp/version.json || fail "xaiosctl did not report AArch64"
+grep -q '"architecture":"{ARCH}"' /tmp/version.json || fail "xaiosctl did not report {ARCH}"
 echo "XAIOS_FREEBSD_INTEROP: xaiosctl PASS"
 
 printf 'freebsd-sftp-roundtrip\\nsecond-line\\n' >/tmp/sftp-source
@@ -323,13 +362,16 @@ def freebsd_user_data(
 
 def main() -> int:
     required = ("qemu-system-aarch64", "qemu-img", "xz", "ssh-keygen")
+    if ARCH != "aarch64":
+        required += (f"qemu-system-{ARCH}",)
     missing = [tool for tool in required if shutil.which(tool) is None]
     if missing:
         raise SystemExit(f"error: missing required tools: {', '.join(missing)}")
 
     BUILD.mkdir(parents=True, exist_ok=True)
     base_image, image_identity = prepare_freebsd_image()
-    work = BUILD / "qemu-freebsd-network-suite"
+    machine = XAIOS_MACHINES[ARCH]
+    work = BUILD / f"qemu-freebsd-network-suite{SUFFIX}"
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(mode=0o700)
@@ -356,25 +398,31 @@ def main() -> int:
     build_env["XAIOS_AUTHORIZED_KEYS_FILE"] = str(key_dir / "authorized.pub")
     build_env.pop("XAIOS_SSH_USERS_FILE", None)
     build_env["XAIOS_SSH_PASSWORD_AUTH"] = "0"
-    run_checked(["make", "image"], 240, env=build_env)
+    for command in machine["build"]:
+        run_checked(command, smoke_timeout(ARCH, 240),
+                    env={**build_env, **machine["env"]})
 
     ssh_port = reserve_port(socket.SOCK_STREAM)
     udp_port = reserve_port(socket.SOCK_DGRAM)
-    xaios_log = BUILD / "qemu-freebsd-xaios.log"
+    xaios_log = BUILD / f"qemu-freebsd-xaios{SUFFIX}.log"
+    xaios_log.unlink(missing_ok=True)
     xaios_persistent = work / "xaios-persistent.img"
     xaios_env = build_env.copy()
-    xaios_env.update(
-        {
-            "XAIOS_QEMU_ACCEL": "tcg",
-            "XAIOS_QEMU_SMP": "4",
-            "XAIOS_QEMU_HOSTFWD_PORT": str(ssh_port),
-            "XAIOS_QEMU_HOSTFWD_UDP_PORT": str(udp_port),
-            "XAIOS_PERSISTENT_IMAGE": str(xaios_persistent),
-        }
-    )
-    xaios_log_file = xaios_log.open("wb")
+    xaios_env.update(machine["env"])
+    xaios_env.update({
+        machine["ssh_port"]: str(ssh_port),
+        machine["udp_port"]: str(udp_port),
+        "XAIOS_PERSISTENT_IMAGE": str(xaios_persistent),
+    })
+    if machine["log"] is not None:
+        # This board's runner writes the console to a file of its own, and
+        # this suite watches the console for the readiness marker.
+        xaios_env[machine["log"]] = str(xaios_log)
+        xaios_log_file = open(os.devnull, "wb")
+    else:
+        xaios_log_file = xaios_log.open("wb")
     xaios = subprocess.Popen(
-        [str(ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh")],
+        [str(ROOT / qemu_runner(ARCH))],
         cwd=ROOT,
         env=xaios_env,
         stdin=subprocess.DEVNULL,
@@ -385,7 +433,8 @@ def main() -> int:
     freebsd: subprocess.Popen[bytes] | None = None
     freebsd_log_file = None
     try:
-        wait_for_marker(xaios_log, (XAIOS_READY_MARKER,), 180)
+        wait_for_marker(xaios_log, (XAIOS_READY_MARKER,),
+                        smoke_timeout(ARCH, 180))
         seed_dir = work / "cidata"
         seed_dir.mkdir()
         (seed_dir / "meta-data").write_text(
@@ -420,7 +469,7 @@ def main() -> int:
             30,
         )
 
-        freebsd_log = BUILD / "qemu-freebsd-client.log"
+        freebsd_log = BUILD / f"qemu-freebsd-client{SUFFIX}.log"
         freebsd_log_file = freebsd_log.open("wb")
         accel = os.environ.get(
             "XAIOS_FREEBSD_QEMU_ACCEL",
@@ -455,7 +504,8 @@ def main() -> int:
         marker = wait_for_marker(
             freebsd_log,
             (FREEBSD_PASS_MARKER, FREEBSD_FAIL_MARKER),
-            float(os.environ.get("XAIOS_FREEBSD_TIMEOUT", "600")),
+            float(os.environ.get("XAIOS_FREEBSD_TIMEOUT",
+                                 str(smoke_timeout(ARCH, 600)))),
         )
         if marker != FREEBSD_PASS_MARKER:
             tail = "\n".join(
@@ -467,6 +517,14 @@ def main() -> int:
 
         report = {
             "status": "pass",
+            "xaios_architecture": ARCH,
+            "client_architecture_note":
+                "the client runs on the host's own architecture, natively. "
+                "What is under test is XAIOS's SSH, SFTP and UDP against a "
+                "third-party implementation; OpenSSH on FreeBSD does not "
+                "behave differently per instruction set, and emulating a "
+                "foreign FreeBSD would measure FreeBSD's port rather than "
+                "this one.",
             "client_os": "FreeBSD",
             "client_release": FREEBSD_RELEASE,
             "client_architecture": "aarch64",
@@ -486,14 +544,14 @@ def main() -> int:
                 "udp_echo": "passed",
             },
         }
-        report_path = BUILD / "qemu-freebsd-network-suite.json"
+        report_path = BUILD / f"qemu-freebsd-network-suite{SUFFIX}.json"
         report_path.write_text(
             json.dumps(report, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         print(
-            "PASS: FreeBSD 15.1 OpenSSH/SFTP/UDP interoperability "
-            f"({report_path})"
+            f"PASS: FreeBSD 15.1 OpenSSH/SFTP/UDP interoperability against "
+            f"XAIOS on {ARCH} ({report_path})"
         )
         return 0
     finally:

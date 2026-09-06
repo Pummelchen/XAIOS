@@ -65,6 +65,13 @@ ARCHITECTURES = {
         "firmware_vars": (),
         "build": [["make", "image-qemu-test"]],
         "slot": r"16",
+        "cpus": lambda: (
+            ("all four vCPUs online",
+             re.compile(r"smp: online cpus=4/4")),
+        ),
+        "net": ["-netdev", "user,id=net0",
+                "-device",
+                "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.2"],
     },
     "riscv64": {
         "qemu": "qemu-system-riscv64",
@@ -81,11 +88,54 @@ ARCHITECTURES = {
         "build": [["./scripts/build-riscv64.sh"],
                   ["./scripts/build-riscv64-image.sh"]],
         "slot": r"\d+",
+        # Every hart the firmware let go of, and no more.
+        #
+        # EDK2 parks a hart on its own multiprocessor services and does not
+        # give it back, so a machine started through this firmware may come up
+        # with three of its four -- and *which* hart, or whether it happens at
+        # all, is not deterministic: three consecutive boots of the same disk
+        # here kept hart 3, kept hart 2, and kept none. So there is no fixed
+        # number to assert and no fixed hart to name.
+        #
+        # What does hold is a relationship: the harts that come online are
+        # exactly the capacity minus the ones firmware refused to release, and
+        # every refusal says ALREADY_AVAILABLE, which is firmware claiming the
+        # hart rather than the hart failing. A hart that simply never arrived
+        # -- the case this check exists for -- breaks that sum and fails.
+        "cpus": lambda: (("every hart not held by firmware came online",
+                          HartAccounting()),),
+        "net": ["-netdev", "user,id=net0",
+                "-device", "virtio-net-pci,netdev=net0,disable-legacy=on"],
     },
 }
 PROFILE = ARCHITECTURES[ARCH]
 FIRMWARE_CANDIDATES = PROFILE["firmware_code"]
 SLOT = PROFILE["slot"]
+
+CAPACITY = re.compile(r"smp: riscv64 boot hart=\d+ harts=\d+ capacity=(\d+)")
+ONLINE = re.compile(r"smp: riscv64 (\d+) harts online")
+# ALREADY_AVAILABLE, spelled as SBI returns it. Any other error is a hart that
+# failed to start, which is not the same thing and must not pass.
+HELD = re.compile(r"smp: hart=(\d+) refused to start "
+                  r"sbi_error=fffffffffffffffa")
+
+
+class HartAccounting:
+    """Online harts plus firmware-held harts must equal the capacity.
+
+    Shaped like a compiled pattern so it can sit in the same list as one --
+    the gate asks every expectation the same question, and this one's answer
+    happens to need arithmetic rather than a match.
+    """
+
+    def search(self, text: str):
+        capacity = CAPACITY.search(text)
+        online = ONLINE.search(text)
+        if capacity is None or online is None:
+            return None
+        held = len(HELD.findall(text))
+        return self if int(online.group(1)) + held == int(
+            capacity.group(1)) else None
 
 # What booting from a single installed disk has to produce. The partition is
 # found by type rather than by position, which is the whole point.
@@ -97,7 +147,7 @@ FIRST_BOOT = (
      re.compile(rf"xaibootfs: mounted from /dev/vblk{SLOT}p\d+, a partition of "
                 rf"the disk this machine booted from")),
     ("filesystem checked", re.compile(r"persistent fsck valid=1")),
-    ("all four vCPUs online", re.compile(r"smp: online cpus=4/4")),
+    *PROFILE["cpus"](),
     ("shell command surface",
      re.compile(r"/bin/xaios-shell: command surface passed")),
     ("syscall and filesystem suite",
@@ -148,7 +198,7 @@ INSTALLED_RESULT = (
     ("state partition found by type",
      re.compile(rf"xaibootfs: mounted from /dev/vblk{SLOT}p\d+, a partition of "
                 rf"the disk this machine booted from")),
-    ("all four vCPUs online", re.compile(r"smp: online cpus=4/4")),
+    *PROFILE["cpus"](),
     ("shell command surface",
      re.compile(r"/bin/xaios-shell: command surface passed")),
     ("syscall and filesystem suite",
@@ -231,6 +281,12 @@ def boot(firmware: str, log: Path, disk: Path = DISK,
             "virtio-blk-device,drive=xaios_target,bus=virtio-mmio-bus.5",
         ]
     command += [
+        # One network card, because an installed machine has one -- and
+        # without it sshd is correctly withheld for want of a network, which
+        # would make the last stage of this gate unreachable. The "one drive
+        # and nothing else" rule above is about disks: attaching a second
+        # volume would turn this back into the test bench, and a NIC does not.
+        *PROFILE["net"],
         "-display", "none",
         "-serial", f"file:{log}",
     ]

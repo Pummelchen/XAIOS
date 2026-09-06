@@ -40,10 +40,67 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
-WORK = BUILD / "setup-gate"
-REPORT = BUILD / "qemu-setup-gate.json"
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import arch_from_argv, smoke_timeout
 
-TIMEOUT_S = int(os.environ.get("XAIOS_SETUP_GATE_TIMEOUT", "1500"))
+ARCH = arch_from_argv(sys.argv)
+SUFFIX = "" if ARCH == "aarch64" else f"-{ARCH}"
+WORK = BUILD / f"setup-gate{SUFFIX}"
+REPORT = BUILD / f"qemu-setup-gate{SUFFIX}.json"
+
+TIMEOUT_S = smoke_timeout(
+    ARCH, int(os.environ.get("XAIOS_SETUP_GATE_TIMEOUT", "1500")))
+
+# Setting a machine up is a conversation with a person, and the questions do
+# not change with the instruction set. What changes is how the machine is
+# started: which emulator, which firmware, which bus each volume hangs off,
+# and -- on this board -- that the kernel is handed to the machine directly
+# rather than found by a loader on the medium. All of that is named here so
+# the conversation itself stays one script.
+ARCHITECTURES = {
+    "aarch64": {
+        "qemu": "qemu-system-aarch64",
+        "machine": ["-machine", "virt,gic-version=3", "-cpu", "cortex-a72"],
+        "build": [["./scripts/build-image.sh"]],
+        "boot_image": BUILD / "xaios-aarch64.img",
+        "initfs": BUILD / "xaios-virtio-test.img",
+        "firmware_code": (
+            "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
+            "/usr/local/share/qemu/edk2-aarch64-code.fd",
+            "/usr/share/AAVMF/AAVMF_CODE.fd",
+            "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
+        ),
+        "firmware_vars": (),
+        # The medium carries a loader; firmware finds it and it finds the
+        # kernel.
+        "direct_kernel": None,
+        "install_machine": ["-machine", "virt,gic-version=3",
+                            "-cpu", "cortex-a72"],
+        "rng": ["-device", "virtio-rng-device,bus=virtio-mmio-bus.3"],
+        "net": ["-device",
+                "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.2"],
+    },
+    "riscv64": {
+        "qemu": "qemu-system-riscv64",
+        "machine": ["-machine", "virt", "-cpu", "rv64", "-bios", "default"],
+        "build": [["./scripts/build-riscv64.sh"],
+                  ["./scripts/build-riscv64-image.sh"]],
+        "boot_image": BUILD / "xaios-riscv64.img",
+        "initfs": BUILD / "xaios-riscv64-initfs.img",
+        "firmware_code": ("/opt/homebrew/share/qemu/edk2-riscv-code.fd",
+                          "/usr/share/qemu/edk2-riscv-code.fd"),
+        "firmware_vars": ("/opt/homebrew/share/qemu/edk2-riscv-vars.fd",
+                          "/usr/share/qemu/edk2-riscv-vars.fd"),
+        # SBI hands the kernel over; there is no loader in the way for the
+        # run-from-the-medium half. The install half needs one, and gets
+        # firmware instead.
+        "direct_kernel": BUILD / "kernel-riscv64" / "kernel.elf",
+        "install_machine": ["-machine", "virt,acpi=off", "-cpu", "rv64"],
+        "rng": ["-device", "virtio-rng-pci,disable-legacy=on"],
+        "net": ["-device", "virtio-net-pci,netdev=net0,disable-legacy=on"],
+    },
+}
+PROFILE = ARCHITECTURES[ARCH]
 
 HOSTNAME = "rackbox"
 USERNAME = "operator"
@@ -78,19 +135,31 @@ def build_image() -> None:
     # "none" is what asks for a development image with no packaged credential;
     # without it every development build has one and setup never runs.
     environment["XAIOS_SSH_USERS_FILE"] = "none"
-    subprocess.run(["./scripts/build-image.sh"], cwd=ROOT, env=environment,
-                   check=True, stdout=subprocess.DEVNULL)
+    for command in PROFILE["build"]:
+        subprocess.run(command, cwd=ROOT, env=environment, check=True,
+                       stdout=subprocess.DEVNULL)
 
 
 def firmware() -> str | None:
-    for candidate in (
-        "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
-        "/usr/local/share/qemu/edk2-aarch64-code.fd",
-        "/usr/share/AAVMF/AAVMF_CODE.fd",
-        "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
-    ):
+    for candidate in PROFILE["firmware_code"]:
         if Path(candidate).is_file():
             return candidate
+    return None
+
+
+def firmware_vars() -> str | None:
+    """A writable copy of the variable store, where the firmware keeps one.
+
+    EDK2 on RISC-V writes its boot variables to a second pflash unit. Copied
+    per run: the file belongs to whatever installed QEMU, and a gate that
+    edits it in place changes every later run on the host.
+    """
+    for candidate in PROFILE["firmware_vars"]:
+        if Path(candidate).is_file():
+            target = WORK / "vars.fd"
+            WORK.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(candidate, target)
+            return str(target)
     return None
 
 
@@ -105,6 +174,8 @@ def build_unified() -> Path:
     installer refuses what it should refuse."""
     environment = dict(os.environ)
     environment["XAIOS_SSH_USERS_FILE"] = "none"
+    # One image carries all three architectures' loaders and kernels, so the
+    # same file is what a RISC-V machine installs from too.
     subprocess.run(["make", "unified-image"], cwd=ROOT, env=environment,
                    check=True, stdout=subprocess.DEVNULL)
     number = (ROOT / "BUILD_NUMBER").read_text().strip()
@@ -119,24 +190,38 @@ def run(script: list, spare_disk: bool = False,
     data = WORK / "data.img"
     # Each guest gets its own copy: two emulators cannot open one image, and
     # a leftover from a previous run boots a machine that is already set up.
-    shutil.copyfile(image if image is not None
-                    else BUILD / "xaios-aarch64.img", boot)
-    shutil.copyfile(BUILD / "xaios-virtio-test.img", initfs)
+    shutil.copyfile(image if image is not None else PROFILE["boot_image"],
+                    boot)
+    shutil.copyfile(PROFILE["initfs"], initfs)
     data.unlink(missing_ok=True)
     with data.open("wb") as sink:
         sink.truncate(64 * 1024 * 1024)
 
-    code = firmware()
-    if code is None:
-        raise SystemExit("no AArch64 UEFI firmware found; install qemu")
-
     unified = image is not None
-    command = [
-        "qemu-system-aarch64",
-        "-machine", "virt,gic-version=3", "-cpu", "cortex-a72",
-        "-smp", "4", "-m", "2048",
-        "-global", "virtio-mmio.force-legacy=false",
-        "-drive", f"if=pflash,format=raw,readonly=on,file={code}",
+    # Firmware for the install run, which has to find a loader on the medium.
+    # The run-from-the-medium half on this board needs none: SBI hands the
+    # kernel over directly, which is how every other RISC-V gate starts a
+    # machine and is what a person setting one up here would see.
+    direct = PROFILE["direct_kernel"] if not unified else None
+    command = [PROFILE["qemu"]]
+    if direct is not None:
+        command += [*PROFILE["machine"], "-smp", "4", "-m", "2048",
+                    "-global", "virtio-mmio.force-legacy=false",
+                    "-kernel", str(direct)]
+    else:
+        code = firmware()
+        if code is None:
+            raise SystemExit(
+                f"no UEFI firmware found for {ARCH}; install qemu")
+        command += [*PROFILE["install_machine"], "-smp", "4", "-m", "2048",
+                    "-global", "virtio-mmio.force-legacy=false",
+                    "-drive",
+                    f"if=pflash,format=raw,unit=0,readonly=on,file={code}"]
+        variables = firmware_vars()
+        if variables is not None:
+            command += ["-drive",
+                        f"if=pflash,format=raw,unit=1,file={variables}"]
+    command += [
         "-drive", f"if=none,format=raw,readonly=on,id=xaios,file={boot}",
         "-device", "virtio-blk-pci,drive=xaios,bootindex=0",
     ]
@@ -151,10 +236,10 @@ def run(script: list, spare_disk: bool = False,
     command += [
         # Setup refuses to mint a credential without secure entropy, which is
         # correct and means the machine needs a source of it.
-        "-device", "virtio-rng-device,bus=virtio-mmio-bus.3",
+        *PROFILE["rng"],
         "-netdev", "user,id=net0",
-        "-device", "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.2",
-        "-nographic", "-serial", "mon:stdio",
+        *PROFILE["net"],
+        "-display", "none", "-serial", "mon:stdio",
     ]
 
     if spare_disk:
@@ -315,7 +400,8 @@ def main() -> int:
           "assertion failed" not in install_text)
 
     REPORT.write_text(json.dumps(
-        {"schema": "xaios.setup.v1", "hostname": HOSTNAME,
+        {"schema": "xaios.setup.v1", "architecture": ARCH,
+         "hostname": HOSTNAME,
          "username": USERNAME, "checks": checks, "failures": failures,
          "passed": not failures, "console": str(WORK / "console.log")},
         indent=2) + "\n")

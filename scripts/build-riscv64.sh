@@ -100,6 +100,16 @@ case "$STRESS_TEST" in
 esac
 BASE_CFLAGS="$BASE_CFLAGS -DXAIOS_STRESS_TEST=$STRESS_TEST"
 
+# Whether this kernel installs itself onto the blank disk in front of it at
+# boot. Behind a switch on every architecture for the same reason: an image
+# that partitions a disk unasked has no business on anybody's machine.
+case "${XAIOS_INSTALL_SELF_TEST:-0}" in
+  0) ;;
+  1) BASE_CFLAGS="$BASE_CFLAGS -DXAIOS_INSTALL_SELF_TEST=1" ;;
+  *) printf '%s\n' "error: XAIOS_INSTALL_SELF_TEST must be 0 or 1" >&2
+     exit 2 ;;
+esac
+
 # Whether this kernel launches the cluster data-plane test at boot. Behind a
 # switch on every architecture for the same reason: the test dials a peer, and
 # an unanswered dial costs a gate that counts packets.
