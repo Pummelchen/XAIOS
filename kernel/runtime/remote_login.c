@@ -43,7 +43,13 @@ typedef struct remote_login_context {
   uint64_t session_id;
   char cwd[XAIOS_XBFS_PATH_MAX];
   uint32_t active;
+  /* When this context was last named, on a counter that only goes up. It
+     exists so a full table can give up its oldest entry instead of refusing
+     everything -- see remote_login_context_get. */
+  uint64_t last_used;
 } remote_login_context_t;
+static uint64_t g_remote_login_context_clock;
+static uint64_t g_remote_login_context_evictions;
 static remote_login_context_t
     g_remote_login_contexts[XAIOS_REMOTE_LOGIN_MAX_SESSIONS];
 static char g_remote_login_default_cwd[XAIOS_XBFS_PATH_MAX] = "/";
@@ -4705,6 +4711,7 @@ static remote_login_context_t *remote_login_context_find(uint64_t session_id) {
   for (uint32_t i = 0U; i < XAIOS_REMOTE_LOGIN_MAX_SESSIONS; ++i) {
     if (g_remote_login_contexts[i].active != 0U &&
         g_remote_login_contexts[i].session_id == session_id) {
+      g_remote_login_contexts[i].last_used = ++g_remote_login_context_clock;
       return &g_remote_login_contexts[i];
     }
   }
@@ -4714,17 +4721,54 @@ static remote_login_context_t *remote_login_context_find(uint64_t session_id) {
 static remote_login_context_t *remote_login_context_get(uint64_t session_id) {
   remote_login_context_t *context = remote_login_context_find(session_id);
   if (context != 0) return context;
+  remote_login_context_t *oldest = &g_remote_login_contexts[0];
   for (uint32_t i = 0U; i < XAIOS_REMOTE_LOGIN_MAX_SESSIONS; ++i) {
     if (g_remote_login_contexts[i].active == 0U) {
       context = &g_remote_login_contexts[i];
-      context->session_id = session_id;
-      context->active = 1U;
-      context->cwd[0] = '/';
-      context->cwd[1] = '\0';
-      return context;
+      break;
+    }
+    if (g_remote_login_contexts[i].last_used < oldest->last_used) {
+      oldest = &g_remote_login_contexts[i];
     }
   }
-  return 0;
+  if (context == 0) {
+    /* The table is full, and the oldest entry gives way rather than the new
+       session being refused.
+       Refusing was the old behaviour and it is what made B-25 unrecoverable.
+       A context here is a cache of one thing -- a session's working directory
+       -- and losing one costs a shell its cwd, which resets to /. Refusing
+       one costs the machine every command, for as long as it stays up, with
+       SFTP still answering so it does not even look broken. Between a
+       forgotten directory and a machine that will not take a command, the
+       directory is the cheaper thing to lose.
+       This is a backstop, not the fix: sshd closes what it opens now, so a
+       table that fills means something is leaking again. Hence the log --
+       the original defect's whole difficulty was that it was silent. */
+    context = oldest;
+    ++g_remote_login_context_evictions;
+    klog("remote-login: session table full at %u; evicting session=%lu to "
+         "admit session=%lu (evictions=%lu)\n",
+         XAIOS_REMOTE_LOGIN_MAX_SESSIONS, context->session_id, session_id,
+         g_remote_login_context_evictions);
+  }
+  context->session_id = session_id;
+  context->active = 1U;
+  context->last_used = ++g_remote_login_context_clock;
+  context->cwd[0] = '/';
+  context->cwd[1] = '\0';
+  return context;
+}
+
+uint64_t remote_login_open_session_count(void) {
+  uint64_t open = 0U;
+  for (uint32_t i = 0U; i < XAIOS_REMOTE_LOGIN_MAX_SESSIONS; ++i) {
+    if (g_remote_login_contexts[i].active != 0U) ++open;
+  }
+  return open;
+}
+
+uint64_t remote_login_session_eviction_count(void) {
+  return g_remote_login_context_evictions;
 }
 
 xaios_status_t remote_login_execute_session(
@@ -4790,6 +4834,39 @@ void remote_login_self_test(void) {
   kassert(remote_login_close_session(202U) == XAIOS_OK);
   kassert(remote_login_close_session(202U) == XAIOS_ERR_NOT_FOUND);
   klog("remote-login: isolated session cwd self-test passed\n");
+
+  /* What a full table does, which is B-25's other half.
+     Before, the sixty-fifth session was refused and so was every session
+     after it, for the life of the machine -- a guest that booted perfectly
+     and answered "Command execution failed" to everything. Now the table
+     gives up its least recently used entry, so a leak degrades to a lost
+     working directory instead of a machine that will not take a command.
+     Filled the long way round, through the same entry point sshd uses, so
+     this tests the path rather than the table. */
+  uint64_t evictions_before = remote_login_session_eviction_count();
+  for (uint64_t id = 1000U;
+       id < 1000U + (uint64_t)XAIOS_REMOTE_LOGIN_MAX_SESSIONS; ++id) {
+    kassert(remote_login_execute_session(id, "admin", "pwd", output,
+                                         sizeof(output), &out) == XAIOS_OK);
+  }
+  kassert(remote_login_open_session_count() ==
+          (uint64_t)XAIOS_REMOTE_LOGIN_MAX_SESSIONS);
+  kassert(remote_login_session_eviction_count() == evictions_before);
+  /* The sixty-fifth. It must be served, not refused. */
+  kassert(remote_login_execute_session(2000U, "admin", "pwd", output,
+                                       sizeof(output), &out) == XAIOS_OK);
+  kassert(remote_login_session_eviction_count() == evictions_before + 1U);
+  /* And the one evicted is the oldest -- 1000, which nothing has named since
+     it was created -- rather than one still in use. */
+  kassert(remote_login_close_session(1000U) == XAIOS_ERR_NOT_FOUND);
+  kassert(remote_login_close_session(2000U) == XAIOS_OK);
+  for (uint64_t id = 1001U;
+       id < 1000U + (uint64_t)XAIOS_REMOTE_LOGIN_MAX_SESSIONS; ++id) {
+    kassert(remote_login_close_session(id) == XAIOS_OK);
+  }
+  kassert(remote_login_open_session_count() == 0U);
+  klog("remote-login: a full session table evicts its oldest entry rather "
+       "than refusing every session after it\n");
   kassert(remote_login_execute("admin", "cat /state/xaios_host_key", output,
                                sizeof(output), &out) == XAIOS_ERR_INVALID);
   kassert(remote_login_execute("admin", "cat /state/control/config.bin", output,

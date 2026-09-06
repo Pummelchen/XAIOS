@@ -97,8 +97,10 @@ fails.
 - Snapshot and resume semantics are defined and gated -- see
   `make vmware-fusion-snapshot-gate`. A snapshot taken powered off is a point
   in time; a revert boots onto a filesystem the guest trusts; a suspend is not
-  counted as an unclean boot. A revert intermittently leaves the guest
-  refusing shell commands while SFTP still works (`B-25`).
+  counted as an unclean boot. A revert used to leave the guest refusing shell
+  commands while SFTP still worked (`B-25`); that was sshd leaking one of the
+  kernel's sixty-four session contexts per connection whose command failed,
+  and it is fixed and gated -- see `make qemu-ssh-session-exhaustion-gate`.
 - Long-duration Fusion service load, repeat-boot at volume and crash recovery
   against generated VMDKs remain separate work.
 - Fusion on Apple Silicon does not validate x86_64 guests or physical hardware.

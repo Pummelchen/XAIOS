@@ -473,12 +473,10 @@ static int execute_admin_command(int sockfd, const char *command, char *output,
   }
   int result = xaios_remote_login_session(
       connection->sockfd, "admin", command, output, output_capacity, out_size);
-  if (result >= 0) connection->remote_login_session_active = 1U;
   return result < 0 ? -1 : 0;
 }
 
 void ssh_channel_close_connection(int sockfd) {
-  ssh_connection_t *connection = ssh_conn_find((u64)(uint32_t)sockfd);
   for (uint32_t i = 0; i < SSH_CHANNEL_MAX; ++i) {
     if (g_channels[i].active &&
         g_channels[i].owner_sockfd == (uint64_t)(uint32_t)sockfd) {
@@ -492,10 +490,31 @@ void ssh_channel_close_connection(int sockfd) {
       ssh_mem_zero(&g_channels[i], sizeof(g_channels[i]));
     }
   }
-  if (connection != 0 && connection->remote_login_session_active != 0U) {
-    (void)xaios_remote_login_session_close(connection->sockfd);
-    connection->remote_login_session_active = 0U;
-  }
+  /* Unconditionally, and this is B-25.
+   *
+   * The kernel allocates a session context on the first call that names a
+   * session id, because the context holds the working directory and that has
+   * to survive between commands. sshd used to close it only when a flag said
+   * a session had been opened, and the flag was set in exactly one place --
+   * after a command had *succeeded*. Every other way of reaching the kernel
+   * with this id allocated a context and set nothing: a command that failed,
+   * and, more often, an interactive shell, whose prompt asks the kernel for
+   * the working directory before the user has typed anything. Those contexts
+   * were never freed. The connection went away; the context stayed, for the
+   * life of the machine.
+   *
+   * There are sixty-four of them. After sixty-four such connections every
+   * later session is refused before remote_login_execute runs, so the guest
+   * boots perfectly, keeps answering SFTP -- which does not take this path --
+   * and answers "Command execution failed" to every command, with nothing in
+   * the console to say why. That is B-25's signature exactly, and its
+   * intermittency is just how long a machine takes to reach sixty-four.
+   *
+   * Closing is idempotent: a session the kernel never opened answers
+   * NOT_FOUND and we ignore it. So the flag is gone rather than corrected --
+   * it was a record of one caller's belief about a table it did not own, and
+   * the next caller added would have got it wrong the same way. */
+  (void)xaios_remote_login_session_close((u64)(uint32_t)sockfd);
 }
 
 /* Send window adjust: type 93, recipient_channel, bytes_to_add */

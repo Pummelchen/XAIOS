@@ -60,7 +60,6 @@ typedef struct {
   uint64_t command_window_start;
   uint32_t command_count;
   uint32_t close_requested;
-  uint32_t remote_login_session_active;
   uint32_t kex_hybrid;
   int state;
   uint8_t session_id[32];

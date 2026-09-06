@@ -1313,11 +1313,19 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
           request.command != 0U || request.command_size != 0U ||
           request.output != 0U || request.output_size != 0U ||
           request.out_size != 0U || request.metadata != 0U ||
-          request.metadata_size != 0U ||
-          remote_login_close_session(request.session_id) != XAIOS_OK) {
+          request.metadata_size != 0U) {
         return reject_syscall(syscall, arg0, arg1,
-                              "remote-login-session-close-failed");
+                              "remote-login-session-close-malformed");
       }
+      /* Closing a session that was never opened is not a denial.
+         sshd closes the session of every connection it tears down, because
+         it cannot know whether the kernel allocated a context for it -- that
+         is the B-25 fix, and the alternative was the flag that got it wrong.
+         Counting each of those as a rejected syscall would put a line in the
+         log and a denial in the control-plane count for every connection
+         that never ran a command, which is most of them. A malformed request
+         is still refused above; this is the ordinary case. */
+      (void)remote_login_close_session(request.session_id);
       return complete_control_syscall(0U);
     }
     const xaios_user_process_t *caller = user_current_process();
