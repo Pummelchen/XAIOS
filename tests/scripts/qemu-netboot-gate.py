@@ -93,11 +93,31 @@ TARGET_BYTES = 256 * 1024 * 1024
 
 FIRMWARE_CANDIDATES = PROFILE["firmware_code"]
 
-DISKLESS = (
-    ("loader found its embedded kernel",
-     re.compile(r"XAIOS loader using embedded kernel image")),
-    ("loader found its embedded initial filesystem",
-     re.compile(r"XAIOS loader using embedded initfs image")),
+# The loader says what it did, where the machine lets it be heard.
+#
+# On AArch64 the loader's UEFI console is the serial line the gate reads, so
+# it can be held to its own words. On RISC-V it is not: EDK2 on this board
+# puts its console somewhere the gate never sees, and not one line the loader
+# prints reaches the log -- while the kernel's do, because the kernel drives
+# the UART itself.
+#
+# The property is asserted anyway, by what is on the medium. This gate builds
+# a medium holding the loader and nothing else: no kernel.elf, no initfs.img.
+# A machine that starts a kernel and mounts an initial filesystem from that
+# medium can only have got both out of the loader's own image, because there
+# is nowhere else on the volume for them to have come from. That is the same
+# claim, argued from what was supplied rather than from what was said.
+LOADER_SAID = {
+    "aarch64": (
+        ("loader found its embedded kernel",
+         re.compile(r"XAIOS loader using embedded kernel image")),
+        ("loader found its embedded initial filesystem",
+         re.compile(r"XAIOS loader using embedded initfs image")),
+    ),
+    "riscv64": (),
+}
+
+DISKLESS = LOADER_SAID[ARCH] + (
     ("kernel started", re.compile(r"XAIOS Build \d+ kernel starting")),
     ("initial filesystem mounted",
      re.compile(r"initramfs: mounted rofs version=\d+ files=[1-9]\d*")),
@@ -387,6 +407,23 @@ def main() -> int:
     text = boot(fw, BUILD / f"netboot-gate-diskless{SUFFIX}.log", MEDIUM,
                 TARGET,
                 DISKLESS + INSTALLED_FROM_NETWORK)
+    # Named rather than assumed: the medium is built above with the loader and
+    # nothing else, and the check is worth stating because everything the
+    # first stage claims rests on it.
+    contents = subprocess.run(["mdir", "-i", str(MEDIUM), "-/", "::"],
+                              capture_output=True, text=True, check=False)
+    listing = contents.stdout
+    carried_kernel = "KERNEL" in listing.upper() or "INITFS" in listing.upper()
+    stages.append({
+        "stage": "the medium carries the loader and nothing else",
+        "checks": [{"name": "no kernel or initial filesystem on the volume",
+                    "passed": not carried_kernel}],
+        "faults": [],
+        "passed": not carried_kernel,
+    })
+    print("  the medium carries the loader and nothing else:")
+    print(f"    {'ok  ' if not carried_kernel else 'MISS'} no kernel or "
+          f"initial filesystem on the volume")
     stages.append(evaluate("a medium holding only the loader", text, DISKLESS))
     stages.append(evaluate("that machine installing onto a blank disk", text,
                            INSTALLED_FROM_NETWORK))
