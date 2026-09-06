@@ -7,7 +7,7 @@ WITH_CONTROL=0
 
 usage() {
   printf '%s\n' \
-    'usage: build-user-app.sh --arch aarch64|x86_64 [--with-control] SOURCE OUTPUT' >&2
+    'usage: build-user-app.sh --arch aarch64|x86_64|riscv64 [--with-control] SOURCE OUTPUT' >&2
   exit 2
 }
 
@@ -30,6 +30,13 @@ case "$ARCH" in
   x86_64)
     TARGET=x86_64-none-elf
     ARCH_FLAGS="-mcmodel=large -mno-red-zone -march=core2 -mfpmath=sse -msse2"
+    ;;
+  riscv64)
+    # The same flags the RISC-V userspace is built with. medany is required
+    # rather than a preference: applications are linked above the small
+    # code model's reach, and the default one relocates them out of range.
+    TARGET=riscv64-unknown-elf
+    ARCH_FLAGS="-march=rv64gc -mabi=lp64d -mcmodel=medany"
     ;;
   *) usage ;;
 esac

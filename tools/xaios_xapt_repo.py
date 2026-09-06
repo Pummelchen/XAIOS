@@ -40,7 +40,11 @@ PUBLIC_KEY_BYTES = {
     "v2": PUBLIC_KEY_V2,
     "recovery": RECOVERY_PUBLIC_KEY,
 }
-ARCHES = {"aarch64", "x86_64"}
+# The architectures this project builds for. The guest half of xapt has
+# known about all three since RISC-V gained userspace -- it reports
+# "riscv64" for its own -- so a repository that could not publish for it
+# was the only reason a RISC-V machine could not install a package.
+ARCHES = {"aarch64", "x86_64", "riscv64"}
 SYSTEM_SLOT_BYTES = 16 * 1024 * 1024
 
 

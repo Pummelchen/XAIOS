@@ -597,9 +597,34 @@ static void copy_descriptor(xaios_ai_cell_descriptor_v1_t *dst,
   }
 }
 
+/* A core this machine actually has, rather than the one numbered 1.
+ *
+ * The mask maps bit N to CPU id N, and this test used 0x2 -- CPU 1 -- which
+ * is right on a machine whose ids run 0,1,2,3 and wrong on one where a
+ * middle id is missing. That is not hypothetical: booting RISC-V through
+ * UEFI can leave a hart already started by firmware, which the kernel cannot
+ * take over, so the machine comes up with ids 0,2,3 and every lease of "core
+ * 1" fails. The boot then died on an assertion in this self-test, which is a
+ * test asserting an identity firmware never promised. */
+static uint32_t self_test_worker_mask(uint32_t wanted) {
+  uint32_t current = smp_cpu_id();
+  uint32_t online = smp_online_count();
+  uint32_t seen = 0U;
+  for (uint32_t ordinal = 0U; ordinal < online; ++ordinal) {
+    uint32_t cpu_id = 0U;
+    if (smp_cpu_id_at(ordinal, &cpu_id) != XAIOS_OK) continue;
+    if (cpu_id == current || cpu_id == 0U || cpu_id >= 32U) continue;
+    if (seen++ != wanted) continue;
+    return UINT32_C(1) << cpu_id;
+  }
+  return 0U;
+}
+
 void ai_cell_self_test(void) {
   ai_cell_runtime_init();
-  if (smp_online_count() < 2U) {
+  uint32_t core_mask = self_test_worker_mask(0U);
+  uint32_t second_mask = self_test_worker_mask(1U);
+  if (smp_online_count() < 2U || core_mask == 0U) {
     klog("ai-cell: lifecycle self-test skipped (no leasable worker core)\n");
     return;
   }
@@ -624,7 +649,7 @@ void ai_cell_self_test(void) {
 
   xaios_ai_cell_descriptor_v1_t descriptor;
   xaios_ai_cell_descriptor_v1_t bad_descriptor;
-  fill_descriptor(&descriptor, 0, "codex-app-agent", 0x2, 2, 1, 1,
+  fill_descriptor(&descriptor, 0, "codex-app-agent", core_mask, 2, 1, 1,
                   64 * 1024, 128 * 1024);
 
   copy_descriptor(&bad_descriptor, &descriptor);
@@ -668,27 +693,29 @@ void ai_cell_self_test(void) {
   kassert(output[8] == '\0');
 
   xaios_ai_cell_descriptor_v1_t conflict;
-  fill_descriptor(&conflict, 1, "core-conflict-agent", 0x2, 2, 2, 2,
+  fill_descriptor(&conflict, 1, "core-conflict-agent", core_mask, 2, 2, 2,
                   64 * 1024, 128 * 1024);
   kassert(ai_cell_create_from_descriptor(&conflict) == XAIOS_OK);
   kassert(ai_cell_prepare(1) == XAIOS_ERR_INVALID);
 
-  uint32_t multi_worker = smp_online_count() >= 3U;
+  /* Two leasable workers, by whether this machine has two -- not by counting
+     to three and assuming their ids. */
+  uint32_t multi_worker = second_mask != 0U;
   if (multi_worker != 0U) {
     xaios_ai_cell_descriptor_v1_t nic_conflict;
-    fill_descriptor(&nic_conflict, 2, "nic-conflict-agent", 0x4, 2, 1, 2,
+    fill_descriptor(&nic_conflict, 2, "nic-conflict-agent", second_mask, 2, 1, 2,
                     64 * 1024, 128 * 1024);
     kassert(ai_cell_create_from_descriptor(&nic_conflict) == XAIOS_OK);
     kassert(ai_cell_prepare(2) == XAIOS_ERR_INVALID);
 
     xaios_ai_cell_descriptor_v1_t workspace_conflict;
-    fill_descriptor(&workspace_conflict, 4, "workspace-conflict-agent", 0x4,
-                    2, 2, 1, 64 * 1024, 128 * 1024);
+    fill_descriptor(&workspace_conflict, 4, "workspace-conflict-agent",
+                    second_mask, 2, 2, 1, 64 * 1024, 128 * 1024);
     kassert(ai_cell_create_from_descriptor(&workspace_conflict) == XAIOS_OK);
     kassert(ai_cell_prepare(4) == XAIOS_ERR_INVALID);
 
     xaios_ai_cell_descriptor_v1_t shared;
-    fill_descriptor(&shared, 3, "shared-weight-agent", 0x4, 2, 2, 2,
+    fill_descriptor(&shared, 3, "shared-weight-agent", second_mask, 2, 2, 2,
                     64 * 1024, 128 * 1024);
     kassert(ai_cell_create_from_descriptor(&shared) == XAIOS_OK);
     kassert(ai_cell_prepare(3) == XAIOS_OK);

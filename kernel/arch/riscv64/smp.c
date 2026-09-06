@@ -60,7 +60,21 @@ static uint32_t g_boot_hart;
 static uint32_t g_hart_of_cpu[RISCV64_MAX_HARTS];
 static uint32_t g_cpu_count = 1U;
 static uint32_t g_online = 1U;
+/* Two different numbers that were one.
+ *
+ * g_capacity bounds the *identifier* space: smp_cpu_state and everything that
+ * indexes by CPU id -- the core lease table among them -- treats it as "ids
+ * below this". g_online_target is how many harts are expected to arrive, and
+ * is what the rendezvous loops wait for.
+ *
+ * They were the same variable, set to a count. That is right only while ids
+ * run 0,1,2,... with no gaps, and firmware does not promise that: booting
+ * through UEFI can leave one hart already started, which this kernel cannot
+ * take over, so the machine comes up with ids 0,2,3 and a capacity of 3 --
+ * and every lease of CPU 3 was refused as out of range. Identity is the
+ * firmware's to choose; counting is ours. */
 static uint32_t g_capacity = 1U;
+static uint32_t g_online_target = 1U;
 static uint32_t g_secondary_release;
 static uint32_t g_smp_locking_active;
 static xaios_cpu_state_t g_cpu_states[RISCV64_MAX_HARTS];
@@ -230,6 +244,7 @@ void smp_init_platform(const xaios_boot_info_t *boot) {
 
   if (sbi_probe_extension(SBI_EXT_HSM) == 0) {
     g_capacity = 1U;
+    g_online_target = 1U;
     klog("smp: riscv64 firmware offers no hart state management; boot "
          "hart=%u runs alone\n", g_boot_hart);
     return;
@@ -271,6 +286,7 @@ xaios_status_t smp_bring_secondaries_online(void) {
      register themselves and then spin on the release flag, so they are
      online and leasable without being in the scheduler. */
   uint32_t started = 0U;
+  uint32_t highest_started = 0U;
   if (g_cpu_count <= 1U) return XAIOS_OK;
 
   /* Before the first one can land, not after the loop that starts them all:
@@ -294,9 +310,11 @@ xaios_status_t smp_bring_secondaries_online(void) {
            (uint64_t)status);
       continue;
     }
+    if (cpu > highest_started) highest_started = cpu;
     ++started;
   }
-  g_capacity = 1U + started;
+  g_online_target = 1U + started;
+  if (highest_started + 1U > g_capacity) g_capacity = highest_started + 1U;
   if (started == 0U) {
     /* Nothing started, so nothing else may take an atomic on its account. */
     __atomic_store_n(&g_smp_locking_active, 0U, __ATOMIC_RELEASE);
@@ -311,10 +329,10 @@ xaios_status_t smp_bring_secondaries_online(void) {
                              ? UINT64_C(0)
                              : online_frequency * SECONDARY_READY_TIMEOUT_MS /
                                    UINT64_C(1000));
-  while (smp_online_count() < g_capacity) {
+  while (smp_online_count() < g_online_target) {
     if (timer_counter() >= online_deadline) {
       klog("smp: %u of %u harts came online\n", smp_online_count(),
-           g_capacity);
+           g_online_target);
       return XAIOS_ERR_IO;
     }
   }
@@ -347,14 +365,14 @@ xaios_status_t smp_release_secondary_schedulers(void) {
         ++ready;
       }
     }
-    if (ready >= g_capacity) break;
+    if (ready >= g_online_target) break;
     if (timer_counter() >= deadline) {
       klog("smp: %u of %u harts reached the scheduler rendezvous\n", ready,
-           g_capacity);
+           g_online_target);
       return XAIOS_ERR_IO;
     }
   }
-  klog("smp: riscv64 %u harts scheduling online=%u\n", g_capacity,
+  klog("smp: riscv64 %u harts scheduling online=%u\n", g_online_target,
        smp_online_count());
   return XAIOS_OK;
 }

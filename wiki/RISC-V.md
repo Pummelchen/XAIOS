@@ -197,6 +197,13 @@ the kernel comes up to a login prompt with sshd listening.
   initialises: one queue here, four on the other two. Nothing depends on it,
   and moving hart bring-up ahead of device probing is a boot-order change
   that would need its own evidence.
+- **A fourth hart, when booting through UEFI.** EDK2 starts one secondary for
+  its own multiprocessor services and leaves it started, and SBI has no way
+  to take a running hart back: `sbi_hart_start` answers ALREADY_AVAILABLE and
+  the machine comes up with three. Which hart it keeps varies between boots.
+  This is visible in every UEFI boot here and costs a core, not correctness --
+  and it is what exposed two shared defects that assumed CPU ids run 0,1,2,3
+  with no gaps.
 - **An accelerated SHA-256.** AArch64 has the crypto extension and x86_64 has
   SHA-NI; rv64gc has neither, so the engine dispatches its scalar backend and
   every hashed read pays for it. `make qemu-riscv64-storage-bench` measures
@@ -209,7 +216,7 @@ the kernel comes up to a login prompt with sshd listening.
 
 ## Test coverage
 
-Forty-five `make` targets, of which forty-three are gates, plus a leg in the shared unified-image gate. They fall into
+Forty-six `make` targets, of which forty-four are gates, plus legs in the shared unified-image and xapt gates. They fall into
 three groups, and the split matters more than the count.
 
 **Gates this architecture has of its own.** These exist because the shared
@@ -233,7 +240,7 @@ gates behind it -- `filesystem`, `app-agent`, `network-full`,
 `keyboard-input`, `routing-prefix`, `storage-bench`,
 `instruction-cost`, `dhcpv6`, `outbound-fragmentation`, `model-sftp`,
 `boot-loop`, `benchmark`, `preview`, `libc`, `fault-matrix`, `nvme`, `soak`, `parallel-network-load`,
-`docker-network-suite`, `console-xtop`, and the `userspace`, `network`,
+`docker-network-suite`, `xapt`, `console-xtop`, and the `userspace`, `network`,
 `cpu-ai` and `regression` suites that bundle them. Each is the same script
 the other two architectures run, taking `--arch riscv64`, rather than a
 RISC-V copy of it: one place decides what a boot is, and one place knows that

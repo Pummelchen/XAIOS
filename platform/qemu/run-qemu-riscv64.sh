@@ -69,7 +69,10 @@ if [ -n "${XAIOS_XAI_FS_IMAGE:-}" ]; then
   MODELS_IMAGE="$XAIOS_XAI_FS_IMAGE"
 else
   MODELS_IMAGE="$STATE/models.img"
-  [ -f "$MODELS_IMAGE" ] || cp "$BUILD/xaios-xaifs.img" "$MODELS_IMAGE"
+  if [ ! -f "$MODELS_IMAGE" ] ||
+     [ "$BUILD/xaios-xaifs.img" -nt "$MODELS_IMAGE" ]; then
+    cp "$BUILD/xaios-xaifs.img" "$MODELS_IMAGE"
+  fi
 fi
 # This architecture's own signed system volume, not another architecture's:
 # the loader verifies the slot and then refuses a kernel built for a machine
@@ -86,7 +89,17 @@ SYSTEM_IMAGE="${XAIOS_SYSTEM_VOLUME_IMAGE:-$STATE/system.img}"
 if [ "$SYSTEM_IMAGE" = none ]; then
   SYSTEM_ARGS=""
 else
-  [ -f "$SYSTEM_IMAGE" ] || cp "$RISCV_SYSTEM" "$SYSTEM_IMAGE"
+  # Copied when absent, and again when the build is newer than the copy.
+  #
+  # "Only if absent" meant a state directory that outlived a rebuild kept
+  # booting the kernel it was first given: the loader prefers the A/B slot on
+  # this volume, so a gate that rebuilt everything still ran the old kernel
+  # and reported an old kernel's behaviour. That cost a run to find -- a
+  # freshly built guest answering "command not found" for a program that was
+  # in the image it had just been given.
+  if [ ! -f "$SYSTEM_IMAGE" ] || [ "$RISCV_SYSTEM" -nt "$SYSTEM_IMAGE" ]; then
+    cp "$RISCV_SYSTEM" "$SYSTEM_IMAGE"
+  fi
   SYSTEM_ARGS="-blockdev driver=file,node-name=sysf,filename=$SYSTEM_IMAGE,locking=off -blockdev driver=raw,node-name=sysraw,file=sysf -device virtio-blk-pci,drive=sysraw,bootindex=1,disable-legacy=on -blockdev driver=file,node-name=sysf2,filename=$SYSTEM_IMAGE,locking=off -blockdev driver=raw,node-name=sysraw2,file=sysf2 -device virtio-blk-device,drive=sysraw2,bus=virtio-mmio-bus.6"
 fi
 # The administrative scratch disk. The aarch64 smoke gate leaves one behind in

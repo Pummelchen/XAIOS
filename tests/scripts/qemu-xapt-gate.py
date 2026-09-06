@@ -12,6 +12,7 @@ import signal
 import shutil
 import socket
 import ssl
+import sys
 import subprocess
 import threading
 import tempfile
@@ -20,6 +21,26 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
+sys.path.insert(0, str(ROOT / "tests" / "scripts"))
+from qemu_gate_lib import qemu_boot_environment, qemu_runner, smoke_timeout
+
+# Where each machine's kernel lands, and what builds the image it boots.
+# RISC-V takes two steps and no `make image`, which is the only difference.
+KERNEL_PATH = {
+    "aarch64": "kernel/kernel.elf",
+    "x86_64": "kernel-x86_64/kernel.elf",
+    "riscv64": "kernel-riscv64/kernel.elf",
+}
+IMAGE_BUILD = {
+    "aarch64": [["make", "image"]],
+    "x86_64": [["make", "image-x86_64"]],
+    # The boot media too, because this gate takes an OS slot update: RISC-V
+    # only has an A/B system volume when it boots through firmware, and with
+    # -kernel nothing has chosen a slot for xapt to write the other half of.
+    "riscv64": [["./scripts/build-riscv64.sh"],
+                ["./scripts/build-riscv64-image.sh"],
+                ["./scripts/build-riscv64-boot-media.sh"]],
+}
 READY = "SSH server: up and running (tcp/22)"
 
 
@@ -121,8 +142,7 @@ def build_repository(arch: str, repository: Path) -> None:
         "Test-only package lifecycle fixture",
     ]
     subprocess.run(common, cwd=ROOT, check=True)
-    kernel = BUILD / ("kernel/kernel.elf" if arch == "aarch64" else
-                      "kernel-x86_64/kernel.elf")
+    kernel = BUILD / KERNEL_PATH[arch]
     subprocess.run(
         ["python3", "tools/xaios_xapt_repo.py", "system",
          "--repository", str(repository), "--image", str(kernel),
@@ -153,8 +173,7 @@ def publish_test_app(arch: str, repository: Path, version: str,
          "Test-only package lifecycle fixture", "--key", key_name],
         cwd=ROOT, check=True,
     )
-    kernel = BUILD / ("kernel/kernel.elf" if arch == "aarch64" else
-                      "kernel-x86_64/kernel.elf")
+    kernel = BUILD / KERNEL_PATH[arch]
     subprocess.run(
         ["python3", "tools/xaios_xapt_repo.py", "system",
          "--repository", str(repository), "--image", str(kernel),
@@ -176,16 +195,15 @@ def publish_test_app(arch: str, repository: Path, version: str,
 
 
 def start_guest(arch: str, port: int, persistent: Path, log: Path) -> subprocess.Popen[bytes]:
-    env = os.environ.copy()
-    env["XAIOS_QEMU_HOSTFWD_PORT"] = str(port)
-    if arch == "aarch64":
-        env.update({"XAIOS_QEMU_ACCEL": "tcg", "XAIOS_QEMU_SMP": "4",
-                    "XAIOS_PERSISTENT_IMAGE": str(persistent)})
-        runner = ROOT / "platform/qemu/run-qemu-aarch64.sh"
-    else:
-        env.update({"XAIOS_QEMU_X86_ACCEL": "tcg", "XAIOS_QEMU_X86_SMP": "4",
-                    "XAIOS_X86_PERSISTENT_IMAGE": str(persistent)})
-        runner = ROOT / "platform/qemu/run-qemu-x86_64.sh"
+    env = qemu_boot_environment(
+        arch, os.environ.copy(), hostfwd_port=port, accel="tcg", smp=4,
+        persistent=persistent,
+        state_dir=BUILD / f"qemu-xapt-{arch}-state",
+        boot_mode="uefi" if arch == "riscv64" else None,
+        # The console is redirected into `log`; the RISC-V runner writes it to
+        # a file of its own unless told otherwise.
+        serial_to_stdout=True)
+    runner = ROOT / qemu_runner(arch)
     handle = log.open("wb")
     process = subprocess.Popen(
         [str(runner)], cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
@@ -229,7 +247,7 @@ def exercise(arch: str, key: Path) -> None:
     try:
         guest = start_guest(arch, ssh_port, persistent, log)
         try:
-            wait_marker(log, READY)
+            wait_marker(log, READY, float(smoke_timeout(arch, 180)))
             wait_ssh(key, ssh_port)
             upload_config(
                 key, ssh_port,
@@ -335,7 +353,7 @@ def exercise(arch: str, key: Path) -> None:
 
         guest = start_guest(arch, ssh_port, persistent, log)
         try:
-            wait_marker(log, READY)
+            wait_marker(log, READY, float(smoke_timeout(arch, 180)))
             wait_ssh(key, ssh_port)
             if "xapt-test-app 1.2.0 [installed]" not in ssh(key, ssh_port, "xapt list"):
                 raise RuntimeError("catalog or recovered version did not persist across reboot")
@@ -357,7 +375,9 @@ def exercise(arch: str, key: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--arch", choices=("aarch64", "x86_64", "all"), default="all")
+    parser.add_argument("--arch",
+                        choices=("aarch64", "x86_64", "riscv64", "all"),
+                        default="all")
     args = parser.parse_args()
     BUILD.mkdir(parents=True, exist_ok=True)
     key = BUILD / "xapt-gate-key"
@@ -366,12 +386,19 @@ def main() -> int:
     subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
     env = os.environ.copy()
     env["XAIOS_AUTHORIZED_KEYS_FILE"] = f"{key}.pub"
-    arches = ("aarch64", "x86_64") if args.arch == "all" else (args.arch,)
+    arches = (("aarch64", "x86_64", "riscv64") if args.arch == "all"
+              else (args.arch,))
     for arch in arches:
-        subprocess.run(
-            ["make", "image" if arch == "aarch64" else "image-x86_64"],
-            cwd=ROOT, env=env, check=True,
-        )
+        build_env = dict(env)
+        if arch == "riscv64":
+            # `make image` means the release configuration on the other two.
+            # The RISC-V builders default to the boot-test one, where the
+            # shell's commands are kernel built-ins and sshd dispatches no
+            # application on demand -- so the guest answers "xtop: command not
+            # found" for a program that is in its own image.
+            build_env.setdefault("XAIOS_BOOT_TEST_APPS", "0")
+        for command in IMAGE_BUILD[arch]:
+            subprocess.run(command, cwd=ROOT, env=build_env, check=True)
         exercise(arch, key)
     print("qemu-xapt-gate: PASS: signed test package lifecycle on all requested architectures")
     return 0

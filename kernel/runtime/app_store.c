@@ -214,6 +214,13 @@ static int architecture_matches(const char *architecture) {
   return text_equal(architecture, "aarch64");
 #elif defined(__x86_64__)
   return text_equal(architecture, "x86_64");
+#elif defined(__riscv)
+  /* This returned zero here, so a RISC-V machine refused every package and
+     every catalog -- including ones published for it. The refusal is the
+     right shape and the list it consulted was two architectures old; xapt's
+     own client has reported "riscv64" for its architecture since this port
+     gained userspace. */
+  return text_equal(architecture, "riscv64");
 #else
   (void)architecture;
   return 0;
