@@ -65,6 +65,16 @@
 #define VMXNET3_CMD_GET_LINK (VMXNET3_CMD_FIRST_GET + 2U)
 #define VMXNET3_CMD_GET_PERM_MAC_LO (VMXNET3_CMD_FIRST_GET + 3U)
 #define VMXNET3_CMD_GET_PERM_MAC_HI (VMXNET3_CMD_FIRST_GET + 4U)
+#define VMXNET3_CMD_GET_DID_LO (VMXNET3_CMD_FIRST_GET + 5U)
+#define VMXNET3_CMD_GET_DID_HI (VMXNET3_CMD_FIRST_GET + 6U)
+#define VMXNET3_CMD_GET_DEV_EXTRA_INFO (VMXNET3_CMD_FIRST_GET + 7U)
+/* What interrupt arrangement the device would like. The low two bits are the
+   type it expects -- 0 auto, 1 INTx, 2 MSI, 3 MSI-X -- and bits 8..15 how
+   many vectors. Never asked before, and it is the one thing the driver
+   configures without ever checking what the device wanted: transmit
+   completions are DMA writes and should not depend on interrupts, which is an
+   argument rather than a measurement until this is read. */
+#define VMXNET3_CMD_GET_CONF_INTR (VMXNET3_CMD_FIRST_GET + 8U)
 
 /* ---------------------------------------------------------------------------
  * Rings.
@@ -304,6 +314,17 @@ typedef struct vmxnet3_driver {
   vmxnet3_rx_comp_desc_t *rx_comp;
   uint8_t *tx_buffers[VMXNET3_RING_SIZE];
   uint8_t *rx_buffers[VMXNET3_RING_SIZE];
+  /* The body ring's own buffers.
+   *
+   * VMXNET3 receives into two rings: ring1 carries the head of a packet and
+   * ring2 its body. Both were allocated and only ring1 was ever filled, while
+   * the doorbell told the device thirty-one body descriptors were ready -- so
+   * the device was pointed at thirty-one descriptors of zeroes with the
+   * generation bit clear. The host said so, in VMware's own log, once per
+   * attempt: "VMXNET3 hosted: Cannot retrieve the buffer descriptors per rx
+   * packet." Nothing in the guest could see that; it is the first thing this
+   * device has said about itself from the outside. */
+  uint8_t *rx_body_buffers[VMXNET3_RING_SIZE];
   uint32_t tx_produce;
   uint32_t tx_gen;
   uint32_t tx_comp_consume;
@@ -536,7 +557,10 @@ static xaios_status_t build_rings(void) {
         (uint8_t *)kheap_calloc(VMXNET3_FRAME_BYTES, VMXNET3_PAGE_SIZE);
     g_vmxnet3->rx_buffers[i] =
         (uint8_t *)kheap_calloc(VMXNET3_FRAME_BYTES, VMXNET3_PAGE_SIZE);
-    if (g_vmxnet3->tx_buffers[i] == 0 || g_vmxnet3->rx_buffers[i] == 0) {
+    g_vmxnet3->rx_body_buffers[i] =
+        (uint8_t *)kheap_calloc(VMXNET3_FRAME_BYTES, VMXNET3_PAGE_SIZE);
+    if (g_vmxnet3->tx_buffers[i] == 0 || g_vmxnet3->rx_buffers[i] == 0 ||
+        g_vmxnet3->rx_body_buffers[i] == 0) {
       return XAIOS_ERR_NO_MEMORY;
     }
   }
@@ -558,6 +582,18 @@ static xaios_status_t build_rings(void) {
         (UINT32_C(0) << VMXNET3_RXD_W2_BTYPE_SHIFT) |
         (g_vmxnet3->rx_gen << VMXNET3_RXD_W2_GEN_SHIFT);
     g_vmxnet3->rx_ring[i].word3 = 0U;
+
+    /* The body ring, with the same shape and btype 1. A device told it has
+       thirty-one of these must find thirty-one of these. */
+    uint64_t body = dma_address(g_vmxnet3->rx_body_buffers[i],
+                                VMXNET3_FRAME_BYTES);
+    if (body == 0U) return XAIOS_ERR_IO;
+    g_vmxnet3->rx_ring2[i].address = body;
+    g_vmxnet3->rx_ring2[i].word2 =
+        (VMXNET3_FRAME_BYTES & VMXNET3_RXD_W2_LEN_MASK) |
+        (UINT32_C(1) << VMXNET3_RXD_W2_BTYPE_SHIFT) |
+        (g_vmxnet3->rx_gen << VMXNET3_RXD_W2_GEN_SHIFT);
+    g_vmxnet3->rx_ring2[i].word3 = 0U;
   }
   g_vmxnet3->rx_produce = 0U;
   return XAIOS_OK;
@@ -791,6 +827,15 @@ xaios_status_t vmxnet3_tx(const uint8_t *data, uint64_t length) {
            one of those numbers was the calloc, not an answer. */
         (void)command_result(VMXNET3_CMD_GET_QUEUE_STATUS);
         (void)command_result(VMXNET3_CMD_GET_STATS);
+        uint32_t conf_intr = command_result(VMXNET3_CMD_GET_CONF_INTR);
+        klog("vmxnet3:   device wants intr type=%u vectors=%u raw=0x%x; "
+             "driver set num=%u mask_mode=%u ctrl=0x%x did=%x%x\n",
+             conf_intr & 0x3U, (conf_intr >> 8U) & 0xffU, conf_intr,
+             g_vmxnet3->shared[VMXNET3_DS_INTR_NUM_INTRS],
+             g_vmxnet3->shared[VMXNET3_DS_INTR_MASK_MODE],
+             get32(g_vmxnet3->shared, VMXNET3_DS_INTR_CTRL),
+             command_result(VMXNET3_CMD_GET_DID_HI),
+             command_result(VMXNET3_CMD_GET_DID_LO));
         klog("vmxnet3:   ecr=0x%x icr=0x%x queue_stopped=%u queue_error=0x%x\n",
              read_bar1(VMXNET3_REG_ECR), read_bar1(VMXNET3_REG_ICR),
              get32(g_vmxnet3->tqd, VMXNET3_TQD_STATUS_STOPPED) & 0xffU,
