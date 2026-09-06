@@ -22,6 +22,17 @@ from qemu_gate_lib import (arch_from_argv, contract, parse_telemetry,
 # once on a file count. The structural figures still have to be exact, because
 # those are the claim; the tallies are matched as numbers.
 PATTERN_TARGETS = [
+    # Counts, not a tally.
+    #
+    # This pinned sessions=6 commands=6 in TARGETS, and then the remote-login
+    # self-test grew a case -- filling the session table to prove a full one
+    # evicts its oldest entry rather than refusing every session after it,
+    # which is B-25 -- and the numbers became 71. Nothing about the machine
+    # had changed. A marker that breaks when a self-test is extended asserts
+    # the size of the test rather than the behaviour of the system. The denial
+    # count stays exact, because that one is the security property.
+    re.compile(r"remote-login: self-test passed sessions=[1-9]\d+ "
+               r"commands=[1-9]\d+ denials=4"),
     re.compile(
         r"xaibootfs: self-test passed files=7 directories=15 "
         r"writes=[1-9]\d* reads=[1-9]\d* deletes=[1-9]\d* commits=1 "
@@ -153,7 +164,7 @@ TARGETS = [
     "user: process pid=1 name=/init state=loaded",
     "security: self-test passed denied=15 capability_denials=3 fs_denials=2 workspace_denials=1 sandbox_denials=1 rollback_denials=1 update_policy_rejects=4 credential_rejects=2 signature_accepts=1 signature_rejects=4 admin_denials=2 update_authorizations=1 update_replay_rejects=1 key_accepts=1 key_rejects=1 sandbox_escape_rejects=1",
     "remote-login: isolated session cwd self-test passed",
-    "remote-login: self-test passed sessions=6 commands=6 denials=4",
+
     "threads: runtime initialized capacity=",
     "threads: concurrent scheduler self-test passed threads=",
     "scheduler: SIMD/FP interrupt preservation passed",
