@@ -45,15 +45,30 @@ if [ "$(wc -c < "$ENTROPY_SEED" | tr -d '[:space:]')" != "64" ]; then
 fi
 chmod 600 "$ENTROPY_SEED"
 
-python3 - "$BUILD_DIR" <<'PY'
+# Clear what this script builds, and only that.
+#
+# This used to remove build/vmware-fusion entirely, which also removed
+# everything the gates had written into it: fusion-network-gate.json, and the
+# hundred consoles vmware-fusion-boot-soak keeps precisely so the boot that
+# fails is not overwritten by the next one. Every gate builds the guest before
+# it runs, and the soak does too, so each run destroyed the previous run's
+# evidence as its first act. A report that does not outlive the next run is
+# not a record.
+#
+# The staging tree and the VM bundle are this script's own output and are
+# still replaced wholesale, so nothing stale survives into a new bundle.
+mkdir -p "$BUILD_DIR"
+python3 - "$STAGE_DIR" "$VM_BUNDLE" "$GRUB_EFI" <<'PY'
 import shutil
 import sys
 from pathlib import Path
 
-path = Path(sys.argv[1])
-if path.exists():
-    shutil.rmtree(path)
-path.mkdir(parents=True)
+for argument in sys.argv[1:]:
+    path = Path(argument)
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
 PY
 mkdir -p "$STAGE_DIR/EFI/BOOT" "$STAGE_DIR/EFI/XAIOS" "$VM_BUNDLE"
 

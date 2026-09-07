@@ -13,7 +13,7 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD_DIR="$ROOT_DIR/build/riscv64-userspace"
 IMAGE="$ROOT_DIR/build/xaios-riscv64-initfs.img"
 TARGET=riscv64-unknown-elf
-# medany, because userspace links at 0x7fc0000000. The default medlow code
+# medany, because userspace links at 0x3fc0000000. The default medlow code
 # model addresses through lui, which reaches only the lowest and highest two
 # gigabytes, and every string constant in every app is a relocation out of
 # range. medany is pc-relative and has no such limit.
@@ -249,6 +249,10 @@ done
 # these when XAIOS_LIBC_TEST is set, which build-riscv64.sh now defaults on.
 HOSTED_ARGS=""
 LIBC_RUNTIME="$ROOT_DIR/build/libc/riscv64/runtime-test"
+# See scripts/build-image.sh: the binaries, not the linker script. A stale
+# user ELF here panics the kernel a full boot away from the mistake.
+"${XAIOS_PYTHON3:-python3}" "$ROOT_DIR/tools/check_user_elf_base.py" \
+  "$ROOT_DIR/build/riscv64-userspace" "$LIBC_RUNTIME"
 if [ -f "$ROOT_DIR/build/libc/riscv64/sysroot/lib/libc.a" ] &&
    [ -f "$LIBC_RUNTIME/crt0.o" ]; then
   printf '%s\n' "Building hosted C99 /bin/helloworldc99..."

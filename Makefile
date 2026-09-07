@@ -44,6 +44,12 @@ initfs-format-test:
 qemu-xapt-gate:
 	python3 tests/scripts/qemu-xapt-gate.py
 
+# B-05, B-06 and B-11: every architecture at 1, 2 and 4 GiB, asserting that
+# each one manages the memory it was actually given. The address-space bugs
+# these rows record were all invisible at the one size the gates ran at.
+qemu-memory-matrix:
+	python3 ./tests/scripts/qemu-memory-matrix.py
+
 vmware-fusion-image: image
 	./platform/vmware-fusion/build-vmware-fusion.sh
 

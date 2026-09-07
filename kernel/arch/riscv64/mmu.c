@@ -1,16 +1,25 @@
-/* Sv48 paging for RISC-V.
+/* Sv48 and Sv39 paging for RISC-V.
  *
- * Sv48 rather than Sv39, and the reason is the shared kernel rather than any
- * preference. `XAIOS_USER_BASE` is 0x7fc0000000 -- 511 GiB -- and Sv39
- * addresses 256. So a kernel using Sv39 could not place userspace where every
- * other architecture places it, and the choice was between a third paging
- * mode and a per-architecture user layout. The layout is shared on purpose;
- * the paging mode is not visible above this file. Sv48 keeps the constant
- * that matters and hides the difference that does not.
+ * Sv48 where the hart has it, Sv39 where it does not, chosen at run time and
+ * not visible above this file.
+ *
+ * This used to be Sv48 only, and panicked on a hart that refused it. The
+ * reason was `XAIOS_USER_BASE`: at 511 GiB it was not a representable Sv39
+ * address, so falling back would have booted a kernel that failed later and
+ * further away. Six of the thirteen CPU models QEMU implements offer Sv39 and
+ * nothing more -- rva22s64 and rva23s64 among them, the profiles real silicon
+ * is certified against -- so a constant was excluding most of the family.
+ *
+ * The window moved to 255 GiB, which both modes can address, and the two
+ * modes then differ by exactly one level. `index_at` is the same arithmetic
+ * either way, so Sv48's level-2 table under root slot 0 *is* Sv39's root
+ * table: same entries, same meaning, same user slot 255. Selecting Sv39 is
+ * therefore not a different set of tables but the same tables entered one
+ * level down, which is why almost nothing below here is conditional.
  *
  * The bring-up used Sv39 with four gibibyte leaves, which was right for
  * proving translation could be turned on and wrong for everything after it.
- * This replaces it.
+ * That is not what this is.
  *
  * Page table entry, low to high: V R W X U G A D, then the physical page
  * number from bit 10. An entry with none of R, W or X is a pointer to the
@@ -57,6 +66,7 @@ extern char __rodata_end[];
 #define PTE_PPN_SHIFT 10U
 
 #define SATP_MODE_SV48 (UINT64_C(9) << 60)
+#define SATP_MODE_SV39 (UINT64_C(8) << 60)
 #define PAGE_SIZE UINT64_C(0x1000)
 #define ENTRIES 512U
 #define LEVELS 4U
@@ -78,6 +88,13 @@ static uint64_t g_root[ENTRIES] __attribute__((aligned(4096)));
 static uint64_t g_early[EARLY_TABLES][ENTRIES] __attribute__((aligned(4096)));
 static uint32_t g_early_used;
 static uint64_t g_satp;
+/* Which mode this machine ended up in, and the two things that follow from
+   it: the level a walk starts at, and the table it starts from. Both are set
+   once, in vmm_init, and describe Sv48 until then -- which is what the tables
+   are built as, and what Sv39 then enters one level below. */
+static uint64_t g_satp_mode = SATP_MODE_SV48;
+static uint32_t g_root_level = LEVELS - 1U;
+static uint64_t *g_kernel_root;
 
 /* The value a secondary hart writes into satp to join the kernel's address
    space. Read before that hart has an address space, so it is handed over as
@@ -184,7 +201,7 @@ static void flush_one(uint64_t virtual_address) {
 static uint64_t *walk(uint64_t *root, uint64_t virtual_address,
                       uint32_t target_level, int create) {
   uint64_t *table = root;
-  for (uint32_t level = LEVELS - 1U; level > target_level; --level) {
+  for (uint32_t level = g_root_level; level > target_level; --level) {
     uint64_t *entry = &table[index_at(virtual_address, level)];
     if ((*entry & PTE_V) == 0U) {
       if (create == 0) return 0;
@@ -274,7 +291,7 @@ static uint32_t g_hart_table_count;
 static uint64_t *current_root(void) {
   uint64_t satp = 0U;
   __asm__ volatile("csrr %0, satp" : "=r"(satp));
-  if ((satp >> 60) == 0U) return g_root;
+  if ((satp >> 60) == 0U) return g_kernel_root;
   return (uint64_t *)(uintptr_t)((satp & ((UINT64_C(1) << 44) - 1U)) << 12);
 }
 
@@ -287,8 +304,19 @@ static void sync_kernel_hierarchy(uint64_t virtual_address) {
   if (virtual_address >= XAIOS_USER_BASE && virtual_address < XAIOS_USER_LIMIT) {
     return;
   }
-  uint32_t l0 = index_at(virtual_address, 3U);
   uint32_t l1 = index_at(virtual_address, 2U);
+  /* Sv39 has only the one copied level: its root is the table Sv48 reaches
+     through slot zero, so there is no level above the user slot to mirror
+     and `low` is the root itself. */
+  if (g_root_level == 2U) {
+    for (uint32_t cpu = 0U; cpu < g_hart_table_count; ++cpu) {
+      hart_tables_t *tables = &g_hart_tables[cpu];
+      if (tables->root == 0) continue;
+      if (l1 != USER_L1_INDEX) tables->root[l1] = g_kernel_root[l1];
+    }
+    return;
+  }
+  uint32_t l0 = index_at(virtual_address, 3U);
   for (uint32_t cpu = 0U; cpu < g_hart_table_count; ++cpu) {
     hart_tables_t *tables = &g_hart_tables[cpu];
     if (tables->root == 0) continue;
@@ -317,15 +345,29 @@ static void build_per_hart_roots(void) {
     if (tables->root == 0 || tables->low == 0 || tables->user_directory == 0) {
       vmm_panic("no memory for hart %u page tables", (uint64_t)cpu);
     }
-    for (uint32_t i = 0U; i < ENTRIES; ++i) {
-      tables->root[i] = g_root[i];
-      tables->low[i] = shared_low != 0 ? shared_low[i] : 0U;
+    if (g_root_level == 2U) {
+      /* Sv39: the root is the level Sv48 calls `low`, so the hart needs one
+         copied table rather than two and the slot-zero indirection does not
+         exist. The table allocated for `low` above is left unused rather
+         than special-cased away -- one page per hart, against a boot path
+         that would otherwise need a second shape. */
+      for (uint32_t i = 0U; i < ENTRIES; ++i) {
+        tables->root[i] = g_kernel_root[i];
+      }
+      tables->low = tables->root;
+      tables->root[USER_L1_INDEX] =
+          pte_for((uint64_t)(uintptr_t)tables->user_directory, 0U);
+    } else {
+      for (uint32_t i = 0U; i < ENTRIES; ++i) {
+        tables->root[i] = g_root[i];
+        tables->low[i] = shared_low != 0 ? shared_low[i] : 0U;
+      }
+      tables->root[0] = pte_for((uint64_t)(uintptr_t)tables->low, 0U);
+      tables->low[USER_L1_INDEX] =
+          pte_for((uint64_t)(uintptr_t)tables->user_directory, 0U);
     }
-    tables->root[0] = pte_for((uint64_t)(uintptr_t)tables->low, 0U);
-    tables->low[USER_L1_INDEX] =
-        pte_for((uint64_t)(uintptr_t)tables->user_directory, 0U);
     tables->satp =
-        SATP_MODE_SV48 | ((uint64_t)(uintptr_t)tables->root >> 12);
+        g_satp_mode | ((uint64_t)(uintptr_t)tables->root >> 12);
   }
   g_hart_table_count = capacity;
 }
@@ -374,7 +416,7 @@ static xaios_status_t map_at_level(uint64_t *root, uint64_t virtual_address,
     return XAIOS_ERR_NO_MEMORY;
   }
   *entry = pte_for(physical_address, flags_to_pte(flags));
-  if (root == g_root) sync_kernel_hierarchy(virtual_address);
+  if (root == g_kernel_root) sync_kernel_hierarchy(virtual_address);
   flush_one(virtual_address);
   return XAIOS_OK;
 }
@@ -389,7 +431,7 @@ static xaios_status_t unmap_at_level(uint64_t *root, uint64_t virtual_address,
   uint64_t *entry = walk(root, virtual_address, level, 1);
   /* The walk may have split a larger page, which replaced an entry above
      this one; mirror that whether or not there is anything to unmap. */
-  if (root == g_root) sync_kernel_hierarchy(virtual_address);
+  if (root == g_kernel_root) sync_kernel_hierarchy(virtual_address);
   if (entry == 0 || (*entry & PTE_V) == 0U) return XAIOS_ERR_NOT_FOUND;
   *entry = 0U;
   flush_one(virtual_address);
@@ -401,30 +443,39 @@ static void identity_map_pages(uint64_t start, uint64_t end, uint32_t flags) {
   start &= ~(PAGE_SIZE - 1U);
   end = (end + PAGE_SIZE - 1U) & ~(PAGE_SIZE - 1U);
   for (uint64_t address = start; address < end; address += PAGE_SIZE) {
-    if (map_at_level(g_root, address, address, flags, 0U) != XAIOS_OK) return;
+    if (map_at_level(g_kernel_root, address, address, flags, 0U) != XAIOS_OK) return;
   }
 }
 
 static void identity_map_range(uint64_t start, uint64_t end, uint32_t flags) {
   start &= ~(PAGE_SIZE - 1U);
   end = (end + PAGE_SIZE - 1U) & ~(PAGE_SIZE - 1U);
+  /* Never into userspace, whatever the machine has. AArch64 caps its identity
+     map at XAIOS_USER_BASE for exactly the reason B-11 records -- the two
+     address spaces were literally the same addresses, and which machines
+     noticed depended only on how much RAM they had -- and this architecture
+     had no such cap. It was unreachable at 511 GiB and it is still
+     unreachable at 255, but "no machine is that big yet" is the assumption
+     B-11 was, so it is a bound now rather than a hope. */
+  if (end > XAIOS_USER_BASE) end = XAIOS_USER_BASE;
+  if (start >= end) return;
   for (uint64_t address = start; address < end;) {
     /* Gigantic where it fits, which is what keeps the early table pool small
        enough to be static. A 256 MiB machine mapped in 4 KiB pages would need
        more tables than a kernel has before it can allocate any. */
     uint64_t gigantic = XAIOS_VMM_GIGANTIC_PAGE_SIZE;
     if ((address & (gigantic - 1U)) == 0U && end - address >= gigantic) {
-      if (map_at_level(g_root, address, address, flags, 2U) != XAIOS_OK) return;
+      if (map_at_level(g_kernel_root, address, address, flags, 2U) != XAIOS_OK) return;
       address += gigantic;
       continue;
     }
     uint64_t large = XAIOS_VMM_LARGE_PAGE_SIZE;
     if ((address & (large - 1U)) == 0U && end - address >= large) {
-      if (map_at_level(g_root, address, address, flags, 1U) != XAIOS_OK) return;
+      if (map_at_level(g_kernel_root, address, address, flags, 1U) != XAIOS_OK) return;
       address += large;
       continue;
     }
-    if (map_at_level(g_root, address, address, flags, 0U) != XAIOS_OK) return;
+    if (map_at_level(g_kernel_root, address, address, flags, 0U) != XAIOS_OK) return;
     address += PAGE_SIZE;
   }
 }
@@ -433,6 +484,12 @@ void vmm_init(const xaios_boot_info_t *boot) {
   for (uint32_t i = 0U; i < ENTRIES; ++i) g_root[i] = 0U;
   g_early_used = 0U;
   g_initialized = 0U;
+  /* Built as Sv48 whatever the hart turns out to support. The tables are the
+     same either way; only which of them the hardware is pointed at differs,
+     and that is decided below once there is something to point it at. */
+  g_kernel_root = g_root;
+  g_root_level = LEVELS - 1U;
+  g_satp_mode = SATP_MODE_SV48;
 
   uint32_t kernel_flags =
       XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE | XAIOS_VMM_EXECUTABLE;
@@ -520,31 +577,57 @@ void vmm_init(const xaios_boot_info_t *boot) {
   {
     extern uint8_t __stack_guard[];
     uint64_t guard = (uint64_t)(uintptr_t)__stack_guard;
-    if (walk(g_root, guard, 0U, 1) != 0) {
-      uint64_t *entry = walk(g_root, guard, 0U, 1);
+    if (walk(g_kernel_root, guard, 0U, 1) != 0) {
+      uint64_t *entry = walk(g_kernel_root, guard, 0U, 1);
       *entry = 0U;
       klog("vmm: stack guard page at 0x%lx left unmapped\n", guard);
     }
   }
 
+  /* Ask for Sv48, take Sv39 if that is what the hart has.
+   *
+   * satp is WARL: a write naming a mode the implementation does not have is
+   * ignored entirely, so the write either turns translation on or does
+   * nothing, and reading satp back is what says which happened. Everything
+   * executing here is identity-mapped, so both outcomes leave this code
+   * running at the same address and the second attempt is safe to make.
+   *
+   * The Sv39 root is not a second set of tables. It is the level-2 table
+   * Sv48 reaches through slot zero, entered directly -- the same entries
+   * describing the same memory, one level down. */
   g_satp = SATP_MODE_SV48 | ((uint64_t)(uintptr_t)g_root >> 12);
   vmm_activate_kernel();
 
   uint64_t observed = 0U;
   __asm__ volatile("csrr %0, satp" : "=r"(observed));
   if (observed != g_satp) {
-    /* Sv48 declined. Reported rather than silently falling back to Sv39,
-       because Sv39 cannot address where this kernel puts userspace -- a
-       fallback would boot and then fail somewhere far less obvious. */
-    vmm_panic("Sv48 refused by this hart: satp reads %lx, wanted %lx",
-              observed, g_satp);
+    if ((g_root[0] & PTE_V) == 0U) {
+      vmm_panic("Sv48 refused and no level-2 table to fall back to: satp "
+                "reads %lx, wanted %lx", observed, g_satp);
+    }
+    /* Translation is still off -- the write was ignored -- but say so
+       explicitly rather than relying on it, then point the hardware one
+       level down. */
+    __asm__ volatile("csrw satp, zero" : : : "memory");
+    flush_all();
+    g_kernel_root = (uint64_t *)(uintptr_t)pte_physical(g_root[0]);
+    g_root_level = 2U;
+    g_satp_mode = SATP_MODE_SV39;
+    g_satp = SATP_MODE_SV39 | ((uint64_t)(uintptr_t)g_kernel_root >> 12);
+    vmm_activate_kernel();
+    __asm__ volatile("csrr %0, satp" : "=r"(observed));
+    if (observed != g_satp) {
+      vmm_panic("this hart offers neither Sv48 nor Sv39: satp reads %lx, "
+                "wanted %lx", observed, g_satp);
+    }
   }
   g_initialized = 1U;
   build_per_hart_roots();
   vmm_activate_kernel();
-  klog("vmm: sv48 enabled root=%lx early_tables=%u/%u harts=%u "
+  klog("vmm: %s enabled root=%lx early_tables=%u/%u harts=%u "
        "mode=per-hart-user-aspace\n",
-       (uint64_t)(uintptr_t)g_root, g_early_used, EARLY_TABLES,
+       g_root_level == 2U ? "sv39" : "sv48",
+       (uint64_t)(uintptr_t)g_kernel_root, g_early_used, EARLY_TABLES,
        g_hart_table_count);
 }
 
@@ -620,7 +703,7 @@ xaios_status_t vmm_validate_range_flags(uint64_t virtual_address, uint64_t size,
 
 xaios_status_t vmm_map_page(uint64_t virtual_address, uint64_t physical_address,
                             uint32_t flags) {
-  return map_at_level(g_root, virtual_address, physical_address, flags, 0U);
+  return map_at_level(g_kernel_root, virtual_address, physical_address, flags, 0U);
 }
 
 xaios_status_t vmm_unmap_page(uint64_t virtual_address) {
@@ -633,27 +716,27 @@ xaios_status_t vmm_unmap_page(uint64_t virtual_address) {
      asserted. Reporting not-found for a page that is absent describes the
      state accurately and answers a question nobody asked -- the caller wants
      the address to be unmapped afterwards, and it is. */
-  xaios_status_t status = unmap_at_level(g_root, virtual_address, 0U);
+  xaios_status_t status = unmap_at_level(g_kernel_root, virtual_address, 0U);
   return status == XAIOS_ERR_NOT_FOUND ? XAIOS_OK : status;
 }
 
 xaios_status_t vmm_map_large_page(uint64_t virtual_address,
                                   uint64_t physical_address, uint32_t flags) {
-  return map_at_level(g_root, virtual_address, physical_address, flags, 1U);
+  return map_at_level(g_kernel_root, virtual_address, physical_address, flags, 1U);
 }
 
 xaios_status_t vmm_unmap_large_page(uint64_t virtual_address) {
-  return unmap_at_level(g_root, virtual_address, 1U);
+  return unmap_at_level(g_kernel_root, virtual_address, 1U);
 }
 
 xaios_status_t vmm_map_gigantic_page(uint64_t virtual_address,
                                      uint64_t physical_address,
                                      uint32_t flags) {
-  return map_at_level(g_root, virtual_address, physical_address, flags, 2U);
+  return map_at_level(g_kernel_root, virtual_address, physical_address, flags, 2U);
 }
 
 xaios_status_t vmm_unmap_gigantic_page(uint64_t virtual_address) {
-  return unmap_at_level(g_root, virtual_address, 2U);
+  return unmap_at_level(g_kernel_root, virtual_address, 2U);
 }
 
 xaios_status_t vmm_validate_user_buffer(uint64_t virtual_address, uint64_t size,

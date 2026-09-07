@@ -1506,6 +1506,15 @@ fi
 rm -f "$IMAGE_PATH"
 mkdir -p "$(dirname -- "$IMAGE_PATH")"
 
+# Every user binary about to be packed has to agree with the kernel about
+# where userspace lives. The linker scripts are checked from source by the ABI
+# contract; these are build artefacts, and a stale one is produced by a
+# perfectly correct linker script that simply was not re-run. Packing it
+# yields a kernel that boots, passes its self-tests and then dies inside
+# user_load_process.
+"${XAIOS_PYTHON3:-python3}" "$ROOT_DIR/tools/check_user_elf_base.py" \
+  "$INIT_BUILD_DIR" "$BUILD_DIR/libc/$TARGET_ARCH/runtime-test"
+
 printf '%s\n' "Creating FAT boot image: $IMAGE_PATH"
 dd if=/dev/zero of="$IMAGE_PATH" bs=1048576 count=64 status=none
 "$MFORMAT" -i "$IMAGE_PATH" -F -v XAIOS ::

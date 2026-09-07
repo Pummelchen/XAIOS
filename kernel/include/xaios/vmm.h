@@ -34,10 +34,28 @@
  * top slot is, and vmm_init caps the identity map at XAIOS_USER_BASE, so the
  * identity map cannot grow into userspace however much memory the machine has
  * -- the collision is now impossible rather than merely unlikely.
+ *
+ * The window sits at 255 GiB rather than 511, and that is the RISC-V paging
+ * modes talking. Sv39 gives 39 bits of virtual address, so its low half stops
+ * at 256 GiB: 0x7fc0000000 is not a representable address there at all, and a
+ * kernel that put userspace at 511 GiB could only ever run on a hart offering
+ * Sv48. Six of the thirteen CPU models QEMU implements offer Sv39 and no more
+ * -- rva22s64 and rva23s64 among them, which are the profiles real hardware is
+ * being certified against -- so that was most of the family excluded by a
+ * constant.
+ *
+ * At 255 GiB the window is addressable in both modes and, more usefully,
+ * lands on the same table index in both: Sv48's level-2 slot 255 under root
+ * slot 0 is Sv39's root slot 255. Sv39 becomes Sv48 with the top level
+ * removed rather than a second layout, and one set of user binaries runs on
+ * either. The cost is stated rather than hidden: the identity map can now
+ * describe 255 GiB of physical memory instead of 511. No machine this kernel
+ * targets is within two orders of magnitude of that, and every architecture
+ * keeps one shared layout, which is what this constant exists to protect.
  */
-#define XAIOS_USER_BASE UINT64_C(0x7fc0000000)
-#define XAIOS_USER_LIMIT UINT64_C(0x8000000000)
-#define XAIOS_USER_STACK_TOP UINT64_C(0x7fff000000)
+#define XAIOS_USER_BASE UINT64_C(0x3fc0000000)
+#define XAIOS_USER_LIMIT UINT64_C(0x4000000000)
+#define XAIOS_USER_STACK_TOP UINT64_C(0x3fff000000)
 
 void vmm_init(const xaios_boot_info_t *boot);
 void vmm_activate_kernel(void);
