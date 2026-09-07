@@ -121,6 +121,10 @@ image="${XAIOS_X86_64_IMAGE:-build/xaios-x86_64.img}"
 test_block_image="${XAIOS_X86_TEST_BLOCK_IMAGE:-build/xaios-x86-virtio-test.img}"
 persistent_image="${XAIOS_X86_PERSISTENT_IMAGE:-build/xaios-x86-persistent.img}"
 xai_fs_image="${XAIOS_XAI_FS_IMAGE:-build/xaios-x86-xaifs.img}"
+# Every write and flush the guest sends the models volume, recorded. Unset by
+# default; see the same knob in run-qemu-aarch64.sh and tools/xaios_write_log.py
+# for why a recording is what an honest power cut needs here.
+xai_fs_write_log="${XAIOS_XAI_FS_WRITE_LOG:-none}"
 system_volume_image="${XAIOS_SYSTEM_VOLUME_IMAGE:-build/xaios-x86-system.img}"
 storage_admin_image="${XAIOS_X86_STORAGE_ADMIN_IMAGE:-build/xaios-x86-storage-admin.img}"
 hostfwd_port="${XAIOS_QEMU_HOSTFWD_PORT:-7788}"
@@ -224,6 +228,13 @@ if [ "$dry_run" -eq 0 ] && [ ! -f "$persistent_image" ]; then
   dd if=/dev/zero of="$persistent_image" bs=512 count=32768 status=none
 fi
 
+if [ "$xai_fs_write_log" != "none" ] && [ "$dry_run" -eq 0 ] &&
+   [ ! -f "$xai_fs_write_log" ]; then
+  printf '%s\n' "error: missing write log file: $xai_fs_write_log" >&2
+  printf '%s\n' "       Create it first (an empty file is fine); QEMU's file driver does not." >&2
+  exit 2
+fi
+
 for required_image in "$test_block_image" \
   "$xai_fs_image" "$system_volume_image" "$storage_admin_image"
 do
@@ -253,9 +264,26 @@ set -- "$qemu" \
   -drive "if=none,format=raw,id=xaios_x86_test,file=$test_block_image" \
   -device virtio-blk-pci,drive=xaios_x86_test,disable-legacy=on \
   -drive "if=none,format=raw,id=xaios_x86_persistent,file=$persistent_image" \
-  -device virtio-blk-pci,drive=xaios_x86_persistent,disable-legacy=on \
-  -drive "if=none,format=raw,id=xaios_x86_models,file=$xai_fs_image" \
-  -device virtio-blk-pci,drive=xaios_x86_models,disable-legacy=on \
+  -device virtio-blk-pci,drive=xaios_x86_persistent,disable-legacy=on
+
+# The models volume, in the position it has always occupied. Order is not
+# cosmetic here: these are PCI devices enumerated in the order they are
+# declared, and the kernel mounts the model volume by slot number, so moving
+# this device would mount the administration volume as /models.
+if [ "$xai_fs_write_log" = "none" ]; then
+  set -- "$@" \
+    -drive "if=none,format=raw,id=xaios_x86_models,file=$xai_fs_image" \
+    -device virtio-blk-pci,drive=xaios_x86_models,disable-legacy=on
+else
+  set -- "$@" \
+    -blockdev "driver=file,node-name=xaios_x86_models_file,filename=$xai_fs_image,locking=off" \
+    -blockdev "driver=raw,node-name=xaios_x86_models_raw,file=xaios_x86_models_file" \
+    -blockdev "driver=file,node-name=xaios_x86_models_log_file,filename=$xai_fs_write_log,locking=off" \
+    -blockdev "driver=blklogwrites,node-name=xaios_x86_models,file=xaios_x86_models_raw,log=xaios_x86_models_log_file,log-append=off,log-sector-size=512" \
+    -device virtio-blk-pci,drive=xaios_x86_models,disable-legacy=on
+fi
+
+set -- "$@" \
   -drive "if=none,format=raw,id=xaios_x86_admin,file=$storage_admin_image" \
   -device virtio-blk-pci,drive=xaios_x86_admin,disable-legacy=on \
   $NET0_DEVICE

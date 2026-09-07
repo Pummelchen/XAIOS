@@ -1228,6 +1228,14 @@ xaios_engine_status_t xaios_xai_fs_commit_staging_range(
       end > package->logical_size) {
     return XAIOS_ENGINE_ERR_INVALID;
   }
+  /* The data before the catalog that will vouch for it, and before the
+     superblock that publishes the catalog. The flush lower down, between the
+     catalog and the superblock, separates data from superblock too, so on a
+     device that loses only unflushed writes either one alone is enough --
+     qemu-power-loss-gate passes with either deleted and fails with both, and
+     that is the whole of what was measured. Keep both anyway: the redundancy
+     is a fact about today's write order rather than a property anyone
+     designed, and it costs one flush per commit to not depend on it. */
   xaios_engine_status_t status = writer->flush(writer->context);
   if (status != XAIOS_ENGINE_OK) return status;
   uint8_t *io_scratch = (uint8_t *)scratch + 4096U;

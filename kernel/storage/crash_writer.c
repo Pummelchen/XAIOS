@@ -14,6 +14,12 @@
  * then asks fsck whether every chunk still marked complete hashes to what its
  * record says. Nothing here checks anything itself; it exists to be
  * interrupted, and the log line is what tells the gate how far it got.
+ *
+ * It also resumes. A chunk that was committed before the power went is
+ * immutable and the write path refuses to overwrite it, so an ingest started
+ * again on a recovered volume has to skip what is already there -- which is
+ * what a real ingest after a power cut does, and what qemu-power-loss-gate
+ * needs in order to ask whether the recovered volume can still be written to.
  */
 #include <xaios/crash_writer.h>
 
@@ -77,9 +83,23 @@ void crash_writer_run(void) {
     fill_block(chunk);
     uint64_t base = chunk * CRASH_CHUNK_BYTES;
     uint64_t written = 0U;
+    int resumed = 0;
     while (written < CRASH_CHUNK_BYTES) {
       int64_t count = vfs_pwrite((uint32_t)fd, MODEL_OWNER, g_block,
                                  sizeof(g_block), base + written);
+      if (count == XAIOS_ERR_UNSUPPORTED && written == 0U) {
+        /* This chunk was already committed, which the format makes immutable
+           and which the write path is right to refuse. That is not the end of
+           the ingest -- it is what an ingest resuming after a power cut finds,
+           and skipping to the next incomplete chunk is what resuming means.
+           Before qemu-power-loss-gate booted a volume that had actually lost
+           writes there was nothing that ever restarted an ingest, so this
+           read as "the volume came back readable and not writable" when what
+           had happened was the writer trying to rewrite chunk zero. */
+        klog("crash-writer: resumed past complete chunk=%lu\n", chunk);
+        resumed = 1;
+        break;
+      }
       if (count != (int64_t)sizeof(g_block)) {
         /* Past the end of the package, or the volume ran out of room for
            another catalog. Either way the ingest is over; the gate reads the
@@ -91,6 +111,7 @@ void crash_writer_run(void) {
       }
       written += (uint64_t)count;
     }
+    if (resumed) continue;
     /* The commit. Everything before this point is bytes on the volume that no
        catalog refers to; this is what publishes them. */
     xaios_status_t sync_status = vfs_fsync((uint32_t)fd, MODEL_OWNER);

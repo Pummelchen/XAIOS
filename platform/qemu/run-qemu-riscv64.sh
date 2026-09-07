@@ -215,6 +215,22 @@ case "${XAIOS_QEMU_MODEL_DISCARD:-none}" in
     exit 2 ;;
 esac
 
+# Every write and flush the guest sends the models volume, recorded through
+# QEMU's blklogwrites driver in the dm-log-writes format. Unset by default;
+# tools/xaios_write_log.py says why a recording is the only honest way to lose
+# an acknowledged write here, and run-qemu-aarch64.sh carries the long note.
+MODELS_WRITE_LOG="${XAIOS_XAI_FS_WRITE_LOG:-none}"
+if [ "$MODELS_WRITE_LOG" != none ]; then
+  if [ -n "$MODEL_DRIVE_OPTIONS" ]; then
+    printf '%s\n' "error: XAIOS_XAI_FS_WRITE_LOG cannot be combined with XAIOS_QEMU_MODEL_DISCARD" >&2
+    exit 2
+  fi
+  require_file "$MODELS_WRITE_LOG" "missing write log file: $MODELS_WRITE_LOG (create it first; QEMU's file driver does not)"
+  MODELS_ARGS="-blockdev driver=file,node-name=xmodelsf,filename=$MODELS_IMAGE,locking=off -blockdev driver=raw,node-name=xmodelsraw,file=xmodelsf -blockdev driver=file,node-name=xmodelslog,filename=$MODELS_WRITE_LOG,locking=off -blockdev driver=blklogwrites,node-name=xmodels,file=xmodelsraw,log=xmodelslog,log-append=off,log-sector-size=512 -device virtio-blk-device,drive=xmodels,bus=virtio-mmio-bus.4"
+else
+  MODELS_ARGS="-drive if=none,format=raw,id=xmodels,file=$MODELS_IMAGE$MODEL_DRIVE_OPTIONS -device virtio-blk-device,drive=xmodels,bus=virtio-mmio-bus.4"
+fi
+
 ADMIN_IMAGE="${XAIOS_STORAGE_ADMIN_IMAGE:-$STATE/storage-admin.img}"
 if [ "$dry_run" -eq 0 ] && [ ! -f "$ADMIN_IMAGE" ]; then
   if [ -f "$BUILD/xaios-smoke-storage-admin.img" ]; then
@@ -379,8 +395,7 @@ run_qemu "$QEMU" \
   -device virtio-blk-device,drive=xtest,bus=virtio-mmio-bus.0 \
   -drive "if=none,format=raw,id=xpers,file=$PERSISTENT_IMAGE" \
   -device virtio-blk-device,drive=xpers,bus=virtio-mmio-bus.1 \
-  -drive "if=none,format=raw,id=xmodels,file=$MODELS_IMAGE$MODEL_DRIVE_OPTIONS" \
-  -device virtio-blk-device,drive=xmodels,bus=virtio-mmio-bus.4 \
+  $MODELS_ARGS \
   -drive "if=none,format=raw,id=xadmin,file=$ADMIN_IMAGE" \
   -device virtio-blk-device,drive=xadmin,bus=virtio-mmio-bus.5 \
   $SYSTEM_ARGS \

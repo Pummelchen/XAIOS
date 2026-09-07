@@ -71,6 +71,7 @@ make qemu-cluster-two-node-gate
 make qemu-cluster-three-node-gate
 make qemu-crash-safety-gate
 make qemu-write-ordering-gate
+make qemu-power-loss-gate
 make qemu-storage-bench
 make qemu-smmu-gate
 make qemu-nvme-gate
@@ -273,9 +274,10 @@ public fixture and is not production trust evidence.
   what a device with a volatile write cache leaves behind if it persists the
   publish before the thing it publishes. Both must be rejected by the slot's
   own hash and the volume must come back from the other slot, a commit lost.
-  What it still does not do is run against a device that actually acknowledges
-  a write and then loses it: the emulator never loses an acknowledged write,
-  so the state is constructed rather than provoked.
+  What it does not do is run against a device that actually acknowledges a
+  write and then loses it — the emulator never loses an acknowledged write, so
+  those two states are constructed rather than provoked. That is what
+  `make qemu-power-loss-gate` is for.
 - `make qemu-write-ordering-gate` covers the half the crash gate cannot: it
   has the block driver log every write and every flush, then checks that no
   superblock write — the write that publishes a commit — is issued without a
@@ -283,6 +285,30 @@ public fixture and is not production trust evidence.
   volatile write cache from persisting a superblock before the catalog it
   points at. Removing the flush makes the gate fail on every commit, which is
   how it was checked to be capable of failing.
+- `make qemu-power-loss-gate` is the loop the other two could not close: a
+  device that acknowledges writes and then genuinely loses the unflushed ones,
+  and a machine that boots what is left. No cache mode does this. `cache=unsafe`
+  and `cache.no-flush=on` only make flushes no-ops; a write QEMU has
+  acknowledged already went to the host through `pwrite`, and killing QEMU does
+  not take the host's page cache with it — measured with `qemu-io` on the same
+  block layer, a raw image survives the kill at `writeback` and at `unsafe`
+  alike. `make qemu-write-cache-probe` is that measurement, kept runnable so
+  the claim can be rechecked against a future QEMU rather than believed. So the models volume is attached through QEMU's `blklogwrites` filter,
+  which passes every request through and records header, payload and flush
+  markers in issue order; the emulator is killed mid-ingest; and
+  `tools/xaios_write_log.py` replays the recording while honouring the one
+  promise a volatile cache makes — everything before the last completed flush
+  is durable, everything since survived or did not, independently. Every byte
+  written is a byte the guest wrote. The volume must come back with no error,
+  a surviving superblock, and a generation no lower than the last commit that
+  was flushed; then it is booted, and the kernel's reader has to agree with the
+  host tool about which commit survived and accept a fresh commit on top. Every
+  case is replayed a second time through a device that ignores flushes, which
+  must corrupt, or the gate reports itself worthless. Deleting both flushes the
+  commit path issues before it publishes makes it fail on a chunk the surviving
+  catalog calls complete whose bytes are not there; deleting either one alone
+  does not, because each separates the data writes from the superblock and the
+  pair is redundant.
 - `make qemu-storage-bench` reports throughput rather than asserting it — these
   are emulator figures. What it does assert is that a warm read beats a cold
   one, which is the claim the read cache exists to make and the one that would

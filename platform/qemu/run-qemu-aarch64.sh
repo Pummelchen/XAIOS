@@ -154,6 +154,21 @@ persistent_image="${XAIOS_PERSISTENT_IMAGE:-build/xaios-persistent.img}"
 xai_fs_image="${XAIOS_XAI_FS_IMAGE:-build/xaios-xaifs.img}"
 system_volume_image="${XAIOS_SYSTEM_VOLUME_IMAGE:-build/xaios-system.img}"
 xai_fs_discard="${XAIOS_QEMU_MODEL_DISCARD:-none}"
+# Where to record every write and flush the guest sends the models volume.
+#
+# Unset by default and off every ordinary path. When set, the models drive is
+# attached through QEMU's blklogwrites driver, which passes each request
+# through to the image and also appends it -- header and full payload -- to
+# this file, in the dm-log-writes format the kernel's power-failure testing
+# harness uses. That log is the only thing that makes an honest power cut
+# possible here: no cache mode loses a write when the emulator is killed,
+# because the write already reached the host's page cache and the host
+# outlives the process. Replaying the log while dropping what was never
+# flushed is the device that loses it. See tools/xaios_write_log.py.
+#
+# The file must already exist and is overwritten from its first byte; QEMU's
+# file driver will not create it.
+xai_fs_write_log="${XAIOS_XAI_FS_WRITE_LOG:-none}"
 storage_admin_image="${XAIOS_STORAGE_ADMIN_IMAGE:-none}"
 nvme_image="${XAIOS_NVME_IMAGE:-none}"
 hostfwd_port="${XAIOS_QEMU_HOSTFWD_PORT:-7788}"
@@ -318,6 +333,22 @@ case "$xai_fs_discard" in
     ;;
 esac
 
+# Discard and the write log together would be a quiet lie: blklogwrites does
+# record discards, but the replayer has no way to know which bytes a hole
+# reads back as on a device it never saw, so it would drop them and the volume
+# it produced would not be the one the guest wrote. Rather than pick a
+# plausible answer, refuse the combination.
+if [ "$xai_fs_write_log" != "none" ] && [ "$xai_fs_discard" != "none" ]; then
+  printf '%s\n' "error: XAIOS_XAI_FS_WRITE_LOG cannot be combined with XAIOS_QEMU_MODEL_DISCARD=$xai_fs_discard" >&2
+  exit 2
+fi
+if [ "$xai_fs_write_log" != "none" ] && [ "$dry_run" -eq 0 ] &&
+   [ ! -f "$xai_fs_write_log" ]; then
+  printf '%s\n' "error: missing write log file: $xai_fs_write_log" >&2
+  printf '%s\n' "       Create it first (an empty file is fine); QEMU's file driver does not." >&2
+  exit 2
+fi
+
 set -- "$qemu" \
   -machine "$machine_options" \
   -cpu "$cpu" \
@@ -332,9 +363,28 @@ set -- "$qemu" \
   -drive "if=none,format=raw,$test_block_mode,id=xaios_test_block,file=$test_block_image" \
   -device virtio-blk-device,drive=xaios_test_block,bus=virtio-mmio-bus.0 \
   -drive "if=none,format=raw,id=xaios_persistent,file=$persistent_image" \
-  -device virtio-blk-device,drive=xaios_persistent,bus=virtio-mmio-bus.1 \
-  -drive "if=none,format=raw,id=xaios_models,file=$xai_fs_image$model_drive_options" \
-  -device virtio-blk-device,drive=xaios_models,bus=virtio-mmio-bus.4
+  -device virtio-blk-device,drive=xaios_persistent,bus=virtio-mmio-bus.1
+
+if [ "$xai_fs_write_log" = "none" ]; then
+  set -- "$@" \
+    -drive "if=none,format=raw,id=xaios_models,file=$xai_fs_image$model_drive_options" \
+    -device virtio-blk-device,drive=xaios_models,bus=virtio-mmio-bus.4
+else
+  # Same device on the same bus slot, so the guest cannot tell the difference
+  # and the kernel needs no knowledge of this at all -- blklogwrites sits
+  # between the virtio-blk device and the image, passes every request through,
+  # and writes what it saw to the log.
+  #
+  # log-append=off starts a fresh log: this is a per-boot recording, and
+  # appending to whatever a previous run left would replay another run's
+  # writes into this run's volume.
+  set -- "$@" \
+    -blockdev "driver=file,node-name=xaios_models_file,filename=$xai_fs_image,locking=off" \
+    -blockdev "driver=raw,node-name=xaios_models_raw,file=xaios_models_file" \
+    -blockdev "driver=file,node-name=xaios_models_log_file,filename=$xai_fs_write_log,locking=off" \
+    -blockdev "driver=blklogwrites,node-name=xaios_models,file=xaios_models_raw,log=xaios_models_log_file,log-append=off,log-sector-size=512" \
+    -device virtio-blk-device,drive=xaios_models,bus=virtio-mmio-bus.4
+fi
 
 if [ "$system_volume_image" != "none" ]; then
   set -- "$@" \
