@@ -24,7 +24,8 @@ they do not prove physical performance or production readiness.
    telemetry in dependency order.
 5. A normal AArch64, x86_64 or RISC-V image loads `/init`, the service manager, and the
    persistent console/SSH service from initramfs. Before opening TCP port 22, that service
-   requires a successful external IPv4 DNS response. It then prints the local
+   requires the interface to hold a usable IPv4 address, and deliberately
+   probes no external DNS name or TCP endpoint. It then prints the local
    IPv4 address and verified SSH state at 100% and leaves a functional serial
    prompt active beside the SSH event loop. Exact allowlisted diagnostics load in
    separate transient address spaces only when invoked over SSH, then reaped.
@@ -124,8 +125,10 @@ CPU has a private translation root and user directory, preventing concurrent
 EL0 workers from replacing another core's mappings. VMware Fusion on Apple
 Silicon now reaches public-key SSH through PCI-discovered E1000E networking and
 AHCI xaibootFS persistence, public-key SSH/SFTP, recovery, reboot and orderly
-shutdown. Fusion multi-vCPU qualification remains open because its UEFI path
-does not expose PSCI CPU_ON.
+shutdown. Fusion runs four vCPUs -- its UEFI answers `PSCI_VERSION` without
+advertising PSCI in the FADT, so the kernel asks rather than trusts -- and
+`make vmware-fusion-smoke` reads `numvcpus` out of the VMX it is about to boot
+and requires the guest to report that many CPUs online (`F-01`).
 
 The x86_64 QEMU image executes the common kernel and complete userspace/service
 image. MADT-discovered application processors run EL0 workers with per-CPU user

@@ -63,7 +63,11 @@ design.
 
 ## Updates and persistence
 
-The update client requires TLS 1.2 with an exact operator RSA-key pin. Signed
+With `tls=required` the update client uses TLS 1.2 and validates the
+certificate chain against compiled-in ISRG roots, or an exact operator RSA-key
+pin instead for a private origin; the shipped configuration currently sets
+`tls=off` and fetches over plain HTTP, so signed catalogs and per-artifact
+hashes carry authenticity on their own until TLS is restored. Signed
 trust records provide monotonic Ed25519 release-root rotation and revocation;
 a separate pinned offline key authorizes recovery, and interrupted
 trust/catalog activation restores the previous verified pair. Checked-in TLS

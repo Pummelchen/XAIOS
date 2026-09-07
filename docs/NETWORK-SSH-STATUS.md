@@ -9,8 +9,11 @@ expose XAIOS directly to the Internet.
 
 Normal boot now treats SSH readiness as a checked state rather than a startup
 claim. After the persistent VirtIO network is initialized, `/bin/sshd` first
-resolves `example.com` through the configured IPv4 DNS path. It opens TCP port
-22 only after receiving a nonzero A record, then initializes crypto, host keys,
+checks that the local IPv4 address is configured -- `verify_ipv4_ready` in
+userspace/sshd/sshd.c, which asks the stack and nothing else. It deliberately
+does not resolve or connect to any external endpoint: SSH availability must not
+depend on a third party being reachable. It opens TCP port
+22 only after that check, then initializes crypto, host keys,
 configuration, users, channels, and the listener before printing `SSH server:
 up and running`. A failed stage is shown on the serial console with a numeric
 error code and leaves the local command prompt running without an SSH listener.

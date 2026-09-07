@@ -29,8 +29,9 @@ still zipped. The image is simultaneously an ISO 9660 filesystem, a
 GPT-partitioned disk with an EFI System Partition, and a bootable USB image,
 which is why one file covers CD-ROM, hard disk and stick, and why the ISO and
 USB downloads differ only by the writer script and its instructions. It carries
-both an AArch64 and an x86-64 kernel and firmware picks the right one, so there
-is no architecture to choose when downloading.
+an AArch64, an x86-64 and a RISC-V kernel and firmware picks the one for the
+machine in front of it, so there is no architecture to choose when
+downloading.
 
 On first boot the machine has no account and asks how to set itself up — run
 from the medium, or install onto a disk — then takes an account name and

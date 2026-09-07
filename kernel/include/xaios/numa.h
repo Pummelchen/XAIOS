@@ -47,10 +47,26 @@ int numa_node_has_cpu(uint32_t node_id, uint32_t cpu_id);
 uint32_t numa_node_of_cpu(uint32_t cpu_id);
 uint8_t numa_distance(uint32_t from_node, uint32_t to_node);
 uint32_t numa_preferred_node_for_cpu(uint32_t cpu_id);
+/* Every node, ordered as a placement policy should walk them when starting
+   from `from_node`: the node itself, then the rest by ascending SLIT distance
+   with ties broken by ascending node id so two boots of the same machine make
+   the same choice. Returns how many entries were written, which is
+   numa_node_count() unless `capacity` is smaller. */
+uint32_t numa_nodes_by_distance(uint32_t from_node, uint32_t *out_nodes,
+                                uint32_t capacity);
 void numa_record_access(uint32_t cpu_id, uint64_t physical_address,
                         uint64_t bytes);
 uint64_t numa_local_bytes(void);
 uint64_t numa_remote_bytes(void);
+/* Bytes of physical memory handed out on the node that the requesting CPU
+   belongs to, and bytes handed out anywhere else. This is placement, not
+   access: nothing in this kernel counts a load or a store, so these two
+   figures say where memory was put relative to who asked for it and say
+   nothing about how often it was later touched from where. Counting actual
+   remote traffic needs performance-monitoring counters, which exist only on
+   physical hardware. */
+uint64_t numa_local_placement_bytes(void);
+uint64_t numa_remote_placement_bytes(void);
 void *numa_alloc_page_on_node(uint32_t node_id);
 int numa_free_page(void *page);
 void numa_self_test(void);

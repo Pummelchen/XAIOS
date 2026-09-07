@@ -8,9 +8,9 @@ not test runners.
 Gate orchestration is under `tests/scripts/`; protocol clients and reproducible
 Debian/FreeBSD environments are under `tests/network/`.
 
-Host prerequisites are Clang, LLD, Python 3, mtools, QEMU, and the applicable
-AArch64 or x86_64 UEFI firmware. Setup details are in
-[[Getting Started|Getting-Started]].
+Host prerequisites are Clang, LLD, Python 3, mtools, QEMU, and the UEFI
+firmware for whichever of AArch64, x86_64 and RISC-V is being run. Setup
+details are in [[Getting Started|Getting-Started]].
 
 ## Core validation
 
@@ -30,15 +30,15 @@ AArch64 or x86_64 UEFI firmware. Setup details are in
 | `make qemu-vmxnet3-gate` | F-02: the paravirtual NIC VMware offers, on a machine that boots in a loop. QEMU implements the same device, so a driver that could previously only be tried by hand on one laptop is held to the same standard as every other: the driver chosen, the device activated, the doorbell given a window of its own, no two drivers sharing a window, a real DHCP lease rather than the address an offer leaves behind, and an SSH key exchange completed from the far end of the wire. The lease is the load-bearing check -- an offer alone does not need the receive ring to work twice, and the acknowledgement does. |
 | `make qemu-ssh-session-exhaustion-gate` | B-25: a guest that boots perfectly and then refuses every command. Opens eighty SSH connections whose command the kernel refuses -- more than the sixty-four session contexts it keeps -- and then asks the guest to do something ordinary. Asserts that the kernel's session table never filled, not merely that commands still work, because the eviction backstop would otherwise hide a leaking sshd; and counts distinct accepted socket handles, because a stack that recycled them would make eighty connections one session repeated. `-x86_64` and `qemu-riscv64-` variants run the same gate on the other two architectures. |
 | `make xapt-test` | Host-side signed package/catalog/system-image construction, verification, tamper, and malformed-input tests. |
-| `make qemu-xapt-gate` | AArch64/x86_64 pinned TLS, trust rotation/revocation/recovery, install, execute, upgrade, rollback, corruption rejection, OS-slot update, reboot persistence, and removal. |
+| `make qemu-xapt-gate` | Pinned TLS, trust rotation/revocation/recovery, install, execute, upgrade, rollback, corruption rejection, OS-slot update, reboot persistence, and removal, on all three architectures. |
 | `make code-scanning-contract` | Read-only workflow permissions, loopback-only test port reservation, bounded diagnostics, and integer-width regression checks for resolved CodeQL findings. |
 | `make qemu-abi-contract` | Syscall, image, service, telemetry, and fixture ABI contract. |
 | `make qemu-smoke` | Primary AArch64 boot and deterministic self-test gate. |
 | `make qemu-keyboard-input-gate` | QMP-injected USB HID boot-keyboard login through the local console on both ARM64 and x86_64 QEMU. |
 | `make qemu-regression-suite` | Broader process, filesystem, network, and runtime regression suite. |
-| `make qemu-network-adversarial-gate` | N-F3Q parser fuzzing, packet-fault handling, concurrent load/recovery, and 20 fresh ARM64 plus 20 fresh x86_64 QEMU boots. Set `XAIOS_NF3Q_BOOTS` only for bounded development reruns. |
-| `make qemu-nvme-gate` | AArch64/x86_64 async four-queue PRP/SGL, direct-buffer, cancellation, malformed-completion, stress, backing-byte, and every-queue MSI-X/LPI delivery checks. |
-| `make qemu-x86_64-numa-gate` | Two-node x86 SRAT/SLIT/HMAT, 2 MiB/1 GiB mappings, targeted SMP TLB invalidation, placement, and byte accounting. |
+| `make qemu-network-adversarial-gate` | N-F3Q parser fuzzing, packet-fault handling, concurrent load/recovery, and 20 fresh QEMU boots on each of ARM64, x86_64 and RISC-V. Set `XAIOS_NF3Q_BOOTS` only for bounded development reruns. |
+| `make qemu-nvme-gate` | Async PRP/SGL, direct-buffer, cancellation, malformed-completion, stress and backing-byte checks on all three architectures: four queues with every-queue MSI-X/LPI delivery on AArch64 and x86_64, and one polled queue on RISC-V, which has no message-signalled interrupt to receive (`P-16`). |
+| `make qemu-x86_64-numa-gate` | Two boots. Two-node x86 SRAT/SLIT/HMAT, 2 MiB/1 GiB mappings, targeted SMP TLB invalidation, placement, byte accounting, node-aware core leasing and stealing that stops at the node; then a four-node machine with no HMAT, where the SLIT fallback order from node 3 is the reverse of the node-id order and is the only arrangement here that tells a distance-ordered walk from a node-id walk. |
 | `make qemu-aarch64-sve2-gate` | SVE2 arithmetic plus per-task Z/P/FFR scheduler/interrupt preservation under QEMU TCG; it does not qualify an inference backend or physical hardware. |
 | `make qemu-operations-closure` | Both-architecture abrupt-stop, power, recovery, diagnostics, clock, pressure, update/config, support, and Debian-client gate. |
 | `make qemu-qualification-readiness` | Consolidated QEMU evidence packet for SSH/network, NVMe, storage recovery, diagnostics, high-core topology, x86 parity, and repeated soak; physical qualification remains open. |

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Boot the one unified image on every environment that can run it.
 
-build/xaios.iso is a single file meant to boot four different environments --
+build/xaios.iso is a single file meant to boot five different environments --
 QEMU on two architectures, VMware Fusion, Apple Virtualization.framework -- as
 optical media, as a disk, or from a USB stick. Nothing checked that until this
 gate existed: the per-platform gates each boot their own per-platform image, so
@@ -56,7 +56,7 @@ VMRUN = Path(os.environ.get(
 
 # The common ground: what every environment says when this image works. The
 # per-platform gates assert far more, and should -- device inventories differ,
-# so a marker list long enough to be thorough here would be four lists.
+# so a marker list long enough to be thorough here would be five lists.
 EXPECTED = (
     ("kernel started", re.compile(r"XAIOS Build \d+ kernel starting")),
     ("shell command surface",

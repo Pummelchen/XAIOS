@@ -185,8 +185,22 @@ case "$numa_profile" in
     fi
     machine="${machine},hmat=on"
     ;;
+  four-node)
+    if [ "$memory" != "2G" ] || [ "$smp" != "4" ]; then
+      printf '%s\n' "error: four-node NUMA profile requires XAIOS_QEMU_X86_MEMORY=2G and XAIOS_QEMU_X86_SMP=4" >&2
+      exit 2
+    fi
+    # No hmat=on here, deliberately. Two nodes are enough to check that HMAT
+    # is parsed and that its preferred-node choice is used; what two nodes
+    # cannot check is an ordering, because from either of them there is only
+    # one alternative and every ordering rule agrees. This profile exists for
+    # the SLIT: four nodes in a line, so the distance order from node 3 is the
+    # exact reverse of the node-id order that the allocator used to walk. It
+    # also covers a multi-node machine whose firmware ships no HMAT at all,
+    # which nothing else here does.
+    ;;
   *)
-    printf '%s\n' "error: XAIOS_QEMU_X86_NUMA must be none or two-node" >&2
+    printf '%s\n' "error: XAIOS_QEMU_X86_NUMA must be none, two-node or four-node" >&2
     exit 2
     ;;
 esac
@@ -283,6 +297,27 @@ if [ "$numa_profile" = "two-node" ]; then
     -numa hmat-lb,initiator=0,target=1,hierarchy=memory,data-type=access-bandwidth,bandwidth=10G \
     -numa hmat-lb,initiator=1,target=0,hierarchy=memory,data-type=access-bandwidth,bandwidth=10G \
     -numa hmat-lb,initiator=1,target=1,hierarchy=memory,data-type=access-bandwidth,bandwidth=20G
+elif [ "$numa_profile" = "four-node" ]; then
+  # Distances describe a line: 0-1-2-3, each hop 10 further. Every pair is
+  # given explicitly rather than left to QEMU's default of 20 for anything
+  # remote, since a uniform 20 is precisely the case where a distance-ordered
+  # walk and a node-id walk cannot be told apart.
+  set -- "$@" \
+    -m 2G \
+    -object memory-backend-ram,id=xaios_ram0,size=512M \
+    -object memory-backend-ram,id=xaios_ram1,size=512M \
+    -object memory-backend-ram,id=xaios_ram2,size=512M \
+    -object memory-backend-ram,id=xaios_ram3,size=512M \
+    -numa node,nodeid=0,cpus=0,memdev=xaios_ram0 \
+    -numa node,nodeid=1,cpus=1,memdev=xaios_ram1 \
+    -numa node,nodeid=2,cpus=2,memdev=xaios_ram2 \
+    -numa node,nodeid=3,cpus=3,memdev=xaios_ram3 \
+    -numa dist,src=0,dst=1,val=20 \
+    -numa dist,src=0,dst=2,val=30 \
+    -numa dist,src=0,dst=3,val=40 \
+    -numa dist,src=1,dst=2,val=20 \
+    -numa dist,src=1,dst=3,val=30 \
+    -numa dist,src=2,dst=3,val=20
 else
   set -- "$@" -m "$memory"
 fi

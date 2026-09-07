@@ -4,7 +4,7 @@
 linked hosted implementation of ISO/IEC 9899:1999 with Technical Corrigenda
 1-3 for AArch64, x86_64 and RISC-V. The machine-readable inventory contains all 24
 mandatory headers and 464 mandatory library functions. The strict compile,
-link, namespace, runtime, termination and dual-architecture QEMU gates pass.
+link, namespace, runtime, termination and QEMU execution gates pass.
 
 This means 100% of the repository's mandatory C99 inventory is accounted for
 and green. It is not a claim of third-party ISO certification, exhaustive
@@ -17,7 +17,7 @@ performance. The requirement source is the
 1. Application headers expose hosted ISO C99, not a POSIX, Linux, or BSD API.
 2. Capabilities, threads, sockets, services, NUMA, model mappings and AI
    execution remain explicit XAIOS-native interfaces.
-3. Libc adds no syscall identifier. The ABI remains at 50 identifiers.
+3. Libc adds no syscall identifier. The ABI remains at 54 identifiers.
 4. Standard functions execute in userspace and cross into the kernel only for
    console, file, clock, or termination state.
 5. AI hot paths do not use stdio or the general libc heap for tensors, model
@@ -89,17 +89,20 @@ clean exit. Its bounded standard output is returned to the invoking terminal
 while the same bytes remain visible on the serial console.
 
 `make qemu-libc-gate` runs the contract audit, builds both images, executes the
-runtime and termination probes under AArch64, x86_64 and RISC-V QEMU, and writes the
+runtime and termination probes under AArch64 and x86_64 QEMU, and writes the
 ignored evidence artifact `build/libc/c99-conformance-report.json`. CI uploads
-the report, manifests, linked ELFs and QEMU logs.
+the report, manifests, linked ELFs and QEMU logs. `make qemu-riscv64-libc-gate`
+runs the same probes on the third machine; it is a separate target because the
+RISC-V image is built by its own scripts, and its result is not part of that
+report.
 
 ## Implementation-defined choices
 
 | Choice | XAIOS definition |
 |---|---|
-| Data model | LP64, little-endian, 8-bit bytes on both targets. |
-| Plain `char` | Unsigned on AArch64; signed on x86_64. |
-| `long double` | IEEE binary128 on AArch64; x87 extended precision in 16-byte storage on x86_64. |
+| Data model | LP64, little-endian, 8-bit bytes on all three targets. |
+| Plain `char` | Unsigned on AArch64 and RISC-V; signed on x86_64. |
+| `long double` | IEEE binary128 on AArch64 and RISC-V; x87 extended precision in 16-byte storage on x86_64. |
 | Execution character set | ASCII-compatible execution set; the required `C` locale is always available. |
 | Text and binary streams | Identical byte representation; no newline translation. |
 | Temporary files | Created in `/tmp/` through xaibootFS and removed on close where required by the library. |
@@ -123,7 +126,7 @@ because a compiler or CPU provides related behavior.
 | 6. Exercise semantics and edge cases | `DONE` | Language, allocation, strings, conversion, locale, wide text, stdio, math, complex, fenv, setjmp and signals. |
 | 7. Preserve XAIOS design invariants | `DONE` | Zero new syscall IDs; no public POSIX kernel API; AI-native boundary documented. |
 | 8. Run every target architecture | `DONE` | AArch64, x86_64 and RISC-V QEMU marker sets pass without panic. |
-| 9. Generate auditable evidence | `DONE` | Deterministic 13-gate report with SHA-256 artifact identities. |
+| 9. Generate auditable evidence | `DONE` | Deterministic 14-gate report with SHA-256 artifact identities. |
 
 ## Separate follow-on work
 

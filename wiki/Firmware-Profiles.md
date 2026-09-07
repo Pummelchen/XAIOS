@@ -1,7 +1,11 @@
 # Firmware Profiles
 
-XAIOS uses three distinct firmware/platform profiles. A result for one profile
-does not validate a different firmware, hypervisor or CPU architecture.
+XAIOS runs against four distinct firmware/platform contracts. A result for one
+does not validate a different firmware, hypervisor or CPU architecture. Three
+of them are qualification profiles with an entry in
+`contracts/firmware-platform-profiles-v1.json` and a runner of their own; the
+RISC-V one has neither, so its evidence is its own gates rather than a profile
+report.
 
 | Profile | Platform contract | Required device inventory | Evidence scope |
 |---|---|---|---|

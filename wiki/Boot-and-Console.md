@@ -16,8 +16,8 @@ Link-local and unique-local IPv6 addresses are not shown as public addresses.
 It then reports one of these outcomes:
 
 - `SSH server: up and running` only after the listener is operational;
-- a numeric startup error when networking, IPv4 reachability, entropy,
-  credentials, crypto,
+- a numeric startup error when networking, IPv4 address configuration,
+  entropy, credentials, crypto,
   or listener initialization fails.
 
 Once networking is active and before any service starts, the kernel sets the
@@ -28,9 +28,12 @@ clock is whatever the RTC reports, and QEMU's PL031 commonly reports epoch
 zero, which leaves anything checking a certificate validity window seeing every
 certificate as not yet valid. Confirm the result with `date` and `ntp status`.
 
-SSH is not opened until networking is active and a bounded IPv4 TCP connection
-to `1.1.1.1:443` succeeds. This checks configured external reachability without
-making SSH startup depend on public DNS. Failure leaves the listener closed.
+SSH is not opened until the interface holds a usable IPv4 address, meaning
+neither zero nor the broadcast address. That is the whole of the check, and
+deliberately so: a listener that first has to reach a third-party DNS name or
+TCP endpoint makes this machine's administration path depend on somebody
+else's service being up. Failure leaves the listener closed, reports a numeric
+startup error, and leaves the local prompt running.
 
 ## Console transport
 

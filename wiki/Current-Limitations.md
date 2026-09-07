@@ -20,8 +20,10 @@ What it does not have is hardware qualification. AArch64 and x86_64 are
 qualified on real machines and hypervisors; RISC-V has been run on one
 emulated board and nothing else, so no claim about firmware behaviour, timing
 or scaling on RISC-V hardware is supported by anything here. Both boot paths are complete: the kernel can be handed to QEMU directly, or
-booted from its own disk through UEFI firmware. It is not yet part of any
-released image.
+booted from its own disk through UEFI firmware. Build 5's image carries the
+RISC-V kernel beside the other two, but no gate has booted the RISC-V half
+*from that image*: the RISC-V gates boot a medium built from the same commit,
+and that is the whole claim.
 
 ## Platform and hardware
 
@@ -30,8 +32,12 @@ released image.
 - VMware Fusion on Apple Silicon has a qualified four-vCPU ARM64 profile with a
   generated compatibility stage, PCI-discovered E1000E DHCP, AHCI xaibootFS,
   public-key SSH/SFTP, recovery, reboot, clean shutdown and repeat-boot
-  evidence. Multi-vCPU startup, VMXNET3, live DNSSEC interoperability, IPv6,
-  outbound-client, snapshot semantics and physical qualification remain open.
+  evidence. Four vCPUs come online (`F-01`), VMXNET3 carries traffic end to
+  end (`F-02`), a bridged guest configures and answers on a globally routable
+  IPv6 address (`F-03`), and snapshot/resume semantics are gated -- though the
+  qualified profile stays on E1000E by choice. Live DNSSEC interoperability,
+  outbound-client coverage inside a gate, and physical qualification remain
+  open.
 - Apple Virtualization.framework runs XAIOS to a login with storage and
   dual-stack networking. `make vz-gate` checks that boot at four vCPUs and
   `make vz-stress-gate` soaks it at eight, but both need macOS on Apple Silicon
@@ -79,9 +85,10 @@ released image.
 - FreeBSD 15.1, native macOS, and Debian 13 OpenSSH clients pass bounded QEMU
   interoperability suites. This is not a production Internet deployment or an
   independent security audit.
-- The normal QEMU boot requires a bounded IPv4 TCP connection to
-  `1.1.1.1:443` before SSH binds. This checks configured external reachability
-  without depending on public DNS; it is not a general Internet-health check.
+- The normal QEMU boot requires the interface to hold a usable IPv4 address
+  before SSH binds. It probes no external DNS name and no external TCP
+  endpoint, so SSH availability does not depend on a third party -- and
+  equally, nothing about that check proves the machine can reach anything.
   Failure reports a numeric startup error. A local shell is available after
   PBKDF2 authentication in the default development image (`admin` / `xaios`,
   or the six-digit console PIN `012345`); key-only and release consoles stay
@@ -128,7 +135,8 @@ released image.
   reordering, keepalive, and FIN bookkeeping. Repeated-loss physical-network
   soak and congestion-control tuning remain unverified.
 - Bounded IPv4/IPv6 reassembly and source fragmentation pass maximum-size UDP
-  echo under dual-client load and focused AArch64/x86_64 QEMU gates.
+  echo under dual-client load and focused QEMU gates on all three
+  architectures.
   Deterministic and coverage-guided sanitizer campaigns plus packet-fault and
   recovery gates pass; physical lossy-link behavior remains.
 
@@ -168,7 +176,7 @@ released image.
 - xaiFS activation and xaibootFS audit persistence are separate durability
   domains. A post-publication audit failure cannot roll back an already
   published active generation.
-- xaibootFS v5 keeps two metadata copies and alternates writes between them,
+- xaibootFS keeps two metadata copies and alternates writes between them,
   so a write interrupted by power loss damages only the copy that is not
   currently authoritative and mount falls back to the survivor. The mirror
   sits past the data region, so volumes written before it keep mounting, and
@@ -176,8 +184,11 @@ released image.
   damaged the mount still refuses rather than formatting, because falling
   back is a recovery and not a licence to discard data. Host tests damage
   each copy in turn and require the volume to mount with contents intact.
-- xaibootFS v5 is intentionally bounded to 256 nodes, 256 open handles, 256 KiB
-  files and 4 MiB of data space. Interactive `nano` is further bounded to a
+- xaibootFS v6 is intentionally bounded to 1024 nodes, 256 open handles and
+  1 GiB of data space, and a device too small for it is still formatted v5 at
+  256 nodes and 4 MiB. Either way the file read/write API stages a whole file
+  in one buffer and so refuses a write past 256 KiB, below what the format
+  itself allows. Interactive `nano` is further bounded to a
   32 KiB editing buffer. This is suitable for OS state and small user files,
   not general bulk storage or model weights.
 - Tar/ZIP exchange is bounded by that 256 KiB file limit. Tar extraction accepts

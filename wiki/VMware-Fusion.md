@@ -87,7 +87,10 @@ fails.
 
 ## Remaining Boundary
 
-- Fusion multi-vCPU startup remains bootstrap-only.
+- Fusion multi-vCPU startup is no longer a boundary: four vCPUs come online,
+  and `make vmware-fusion-smoke` reads `numvcpus` out of the VMX it is about
+  to boot and requires the guest to report that many online, so a guest that
+  quietly started one fails rather than passes. See `F-01`.
 - VMXNET3 carries traffic end to end on Fusion 26.0.0: build with
   `XAIOS_FUSION_NIC=vmxnet3` and the guest takes a real DHCP lease from the
   bridged LAN, answers ICMPv6, SSH on both families and SFTP. The qualified

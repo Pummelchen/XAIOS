@@ -2,7 +2,7 @@
 
 **Status: functional parity on one emulated board, and nowhere else.** XAIOS
 runs the same shared kernel on RISC-V that it runs on AArch64 and x86_64. On
-the QEMU `virt` board it boots to 100% across four harts with 81 self-tests
+the QEMU `virt` board it boots to 100% across four harts with 87 self-tests
 and no errors, offers a login prompt, and runs an SSH server that answers:
 logging in returns the machine's real service state and filesystem. It has
 never been run on RISC-V hardware or on a RISC-V hypervisor, so nothing here
@@ -156,10 +156,6 @@ Run it with `-machine virt,acpi=off`. With ACPI on, this EDK2 build publishes
 no device tree, and the RISC-V port reads the interrupt controller, the
 timebase and the virtio window from one.
 
-Run it with `-machine virt,acpi=off`. With ACPI on, this EDK2 build publishes
-no device tree, and the RISC-V port reads the interrupt controller, the
-timebase and the virtio window from one.
-
 `make qemu-riscv64-boot-media-gate` boots the medium under EDK2 with no
 `-kernel` at all and requires the whole chain: firmware finds the loader at
 the removable-media path, the loader reads the kernel off that same disk, and
@@ -176,8 +172,8 @@ the kernel comes up to a login prompt with sshd listening.
 - **Message-signalled interrupts for PCI.** MMIO virtio takes interrupts now
   -- including the network, since this machine grew a second interface on
   `virtio-mmio-bus.2` and the stack finds that before it falls back to PCI --
-  the remaining PCI devices still poll, because the PLIC takes wires and not
-  messages.
+  but the remaining PCI devices still poll, because the PLIC takes wires and
+  not messages.
   The board can present AIA, and a driver for it is work nothing currently
   needs.
 - **An IOMMU.** So has x86_64, whose `smmu_initialized()` also reports zero;
@@ -216,7 +212,7 @@ the kernel comes up to a login prompt with sshd listening.
 
 ## Test coverage
 
-Forty-six `make` targets, of which forty-four are gates, plus legs in the shared unified-image and xapt gates. They fall into
+Fifty-five `make` targets, of which fifty-three are gates, plus legs in the shared unified-image and xapt gates. They fall into
 three groups, and the split matters more than the count.
 
 **Gates this architecture has of its own.** These exist because the shared
@@ -226,7 +222,7 @@ asked the first two's questions is being tested as an imitation of them.
 | Gate | What it proves |
 | --- | --- |
 | `make qemu-riscv64-isa-gate` | Sv48 is live rather than the Sv39 a machine may default to; kernel text is executable and not writable and writable data is not executable, read back from the page tables that enforce it; `fence.i` is accepted; firmware answers a probe for an extension that cannot exist with "no", and hart state management refuses a hart that does not exist -- the two controls that make every other SBI answer mean something. What the machine reports about itself -- SBI version and extensions, whether a misaligned load completes, the PLIC's address -- is printed rather than asserted, because a different board may answer differently without anything being broken. |
-| `make qemu-riscv64-gate` | The kernel boots to a login prompt with sshd listening, 81 self-tests, no errors. |
+| `make qemu-riscv64-gate` | The kernel boots to a login prompt with sshd listening, 87 self-tests, no errors. |
 | `make qemu-riscv64-durability-gate` | State written on one boot is read back on the next, and survives a boot killed outright with no shutdown and no flush -- the filesystem reports no checksum errors afterwards. |
 | `make qemu-riscv64-boot-media-gate` | The machine boots from its own disk through EDK2 with no `-kernel`, from the verified signed A/B system slot. |
 | `make qemu-riscv64-matrix-gate` | It boots at 1, 2, 4 and 8 harts, four independent times, and answers an SSH login each time. |
@@ -240,7 +236,9 @@ gates behind it -- `filesystem`, `app-agent`, `network-full`,
 `keyboard-input`, `routing-prefix`, `storage-bench`,
 `instruction-cost`, `dhcpv6`, `outbound-fragmentation`, `model-sftp`,
 `boot-loop`, `benchmark`, `preview`, `libc`, `fault-matrix`, `nvme`, `soak`, `parallel-network-load`,
-`docker-network-suite`, `xapt`, `console-xtop`, and the `userspace`, `network`,
+`docker-network-suite`, `xapt`, `console-xtop`, `cluster`, `cluster-two-node`,
+`cpu-matrix`, `installed-disk`, `netboot`, `setup`, `ssh-session-exhaustion`,
+the two FreeBSD suites, and the `userspace`, `network`,
 `cpu-ai` and `regression` suites that bundle them. Each is the same script
 the other two architectures run, taking `--arch riscv64`, rather than a
 RISC-V copy of it: one place decides what a boot is, and one place knows that
@@ -294,8 +292,9 @@ running a kernel from `build/`. All three QEMU legs now boot with no system
 volume, which is what a first boot on a real machine looks like, and all
 three report the fallback path and build 5.
 
-**Still short.** NUMA, cluster, the setup and installed-disk gates and the
-FreeBSD interoperability suites run on AArch64 and x86_64 and not here.
+**Still short.** The two-node NUMA gate, which reads SRAT/SLIT/HMAT and is
+x86_64's alone -- there is no AArch64 one either, so this is a firmware-table
+gate rather than something RISC-V is behind the other two on.
 
 The boot gates share `tests/scripts/riscv64_gate_lib.py` for booting the machine and
 `qemu_gate_lib.py` for comparing markers, rather than each carrying its own

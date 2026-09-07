@@ -36,21 +36,28 @@ void pmm_init(const xaios_boot_info_t *boot) {
   kassert(total_free != 0);
 }
 
+/* Nodes to try, nearest first. Both allocation paths used to fall back in
+   node-id order, which is the same thing only by accident: on a machine with
+   more than two nodes it walks past the neighbour the SLIT calls nearest and
+   serves node 0 instead, so a node under pressure spills to the farthest
+   memory as readily as to the closest. The bound is what the two callers can
+   hold on the stack; a machine with more nodes than that falls back through
+   the nearest XAIOS_PMM_MAX_FALLBACK_NODES and then gives up, which is a
+   worse allocation than it could make and never a wrong one. */
+#define XAIOS_PMM_MAX_FALLBACK_NODES 64U
+
 void *pmm_alloc_page(void) {
   uint32_t preferred = numa_preferred_node_for_cpu(smp_cpu_id());
   void *page = numa_alloc_page_on_node(preferred);
   if (page != 0) {
     return page;
   }
-  uint32_t ncount = numa_node_count();
-  for (uint32_t i = 0; i < ncount; ++i) {
-    if (i == preferred) continue;
-    page = numa_alloc_page_on_node(i);
-    if (page != 0) {
-      return page;
-    }
-  }
-  return 0;
+  /* Only a node that could not satisfy the request pays for the ordering.
+     numa_nodes_by_distance sorts, and this is the path every page in the
+     system comes through -- a sort over every node on each allocation would
+     be a cost the ordinary case has no use for, since the ordinary case never
+     leaves the local node. */
+  return pmm_alloc_page_near(preferred);
 }
 
 void *pmm_alloc_page_on_node(uint32_t node_id) {
@@ -58,17 +65,11 @@ void *pmm_alloc_page_on_node(uint32_t node_id) {
 }
 
 void *pmm_alloc_page_near(uint32_t preferred_node) {
-  void *page = numa_alloc_page_on_node(preferred_node);
-  if (page != 0) {
-    return page;
-  }
-  /* Fallback: try all other nodes */
-  uint32_t ncount = numa_node_count();
-  for (uint32_t i = 0; i < ncount; ++i) {
-    if (i == preferred_node) {
-      continue;
-    }
-    page = numa_alloc_page_on_node(i);
+  uint32_t order[XAIOS_PMM_MAX_FALLBACK_NODES];
+  uint32_t count = numa_nodes_by_distance(preferred_node, order,
+                                          XAIOS_PMM_MAX_FALLBACK_NODES);
+  for (uint32_t i = 0; i < count; ++i) {
+    void *page = numa_alloc_page_on_node(order[i]);
     if (page != 0) {
       return page;
     }

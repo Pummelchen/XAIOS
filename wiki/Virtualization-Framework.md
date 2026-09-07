@@ -1,7 +1,7 @@
 # Virtualization Framework
 
-Apple's Virtualization.framework is the fourth way to run XAIOS, alongside
-QEMU AArch64, QEMU x86_64 and [[VMware Fusion|VMware-Fusion]]. The guest runs on
+Apple's Virtualization.framework is the fifth way to run XAIOS, alongside
+QEMU AArch64, QEMU RISC-V64, QEMU x86_64 and [[VMware Fusion|VMware-Fusion]]. The guest runs on
 the host's own cores with the real interrupt controller and timer rather than a
 software model, which makes it a route to correctness and timing behaviour on
 Apple Silicon.

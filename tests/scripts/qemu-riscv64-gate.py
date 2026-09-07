@@ -44,6 +44,18 @@ REQUIRED = [
     # Sv48, because XAIOS_USER_BASE is past what Sv39 can address.
     "vmm: sv48 enabled",
     "vmm: self-test passed (map, translate, write, unmap)",
+    # 2 MiB and 1 GiB leaves, which this port implemented and nothing checked
+    # until now. The mode is part of each line rather than a separate marker,
+    # so a boot that silently fell back to Sv39 on the hart this gate runs
+    # cannot satisfy them: this gate's hart is an Sv48 one and asks for
+    # "mode=sv48" here, while the CPU matrix asks the Sv39 harts the same
+    # question in their own mode. The high-slot line is Sv48-only by nature --
+    # Sv39's whole address space is one root slot -- which is the other half
+    # of why it belongs here and not in the matrix.
+    "vmm: 2 MiB large-page map/unmap self-test passed mode=sv48",
+    "vmm: 1 GiB gigantic-page self-test passed mode=sv48 leaf_in_root=0",
+    "vmm: gigantic-page split self-test passed mode=sv48",
+    "vmm: gigantic page above the first root slot passed va=0x8000000000",
     # A bus that was enumerated, and a device on it that answered. The second
     # line is what stops the first from being a bus with nothing attached.
     "PCI: ECAM mapped bus=0",

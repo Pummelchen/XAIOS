@@ -21,7 +21,7 @@ renames, and deletions under it are rejected; mutable data belongs under
 | `/bin/service-manager` | Exercises and owns the bounded service-manager protocol used for managed workers. | Started during boot. |
 | `/bin/xaios-worker` | Joinable worker process used for scheduler, CPU-assignment, and service-lifecycle work. | Started by the service manager; count follows the boot profile. |
 | `/bin/xaios-setup` | First-boot setup. Offers running from the boot medium or installing onto a disk, then takes the account password, an optional six digit console PIN, and the machine's name. It cannot write `/etc` -- no userspace process can -- so it leaves what it collected under `/state` and the kernel installs it. | Started before `sshd`, and only when the machine has no account, so an image that packages credentials never reaches it. |
-| `/bin/sshd` | Persistent SSH/SFTP server, authenticated PTY transport, forwarding endpoint, and userspace adapter for the kernel command dispatcher. Its loop blocks in the kernel (`xaios_wait_events`) until there is console input, a packet or connection on one of its sockets, or output from a child, so an idle server is idle: a few percent of one core under emulation, where it used to hold a whole core. | Started only after networking and the bounded external IPv4 TCP readiness check succeeds. |
+| `/bin/sshd` | Persistent SSH/SFTP server, authenticated PTY transport, forwarding endpoint, and userspace adapter for the kernel command dispatcher. Its loop blocks in the kernel (`xaios_wait_events`) until there is console input, a packet or connection on one of its sockets, or output from a child, so an idle server is idle: a few percent of one core under emulation, where it used to hold a whole core. | Started only after networking, and it opens TCP port 22 only once the interface holds a usable IPv4 address. |
 
 ## Administrative applications
 
@@ -153,7 +153,7 @@ shipped in the normal image:
   entrypoint. The kernel exposes only generic process, filesystem, console, and
   paged runtime-snapshot primitives.
 - A nonzero transient application reports its exit status and is reaped. A
-  synchronous user-mode fault on AArch64 or x86-64 is converted to exit status 128,
+  synchronous user-mode fault on AArch64, x86-64 or RISC-V is converted to exit status 128,
   returns through the normal transient-process boundary, and leaves
   the kernel, SSH service, and other applications running. Kernel-mode faults
   remain fatal by design.

@@ -223,6 +223,19 @@ RISCV_BOOT_MARKERS = [
     "kernel starting",
     "smp: riscv64 self-test passed",
     "vmm: self-test passed (map, translate, write, unmap)",
+    # Large and gigantic leaves, asked of every hart in the matrix.
+    #
+    # This is the only place the Sv39 half of that can be asked at all. Six of
+    # the twelve models here offer Sv39 and nothing more, and the two modes
+    # differ by exactly one level -- a 1 GiB leaf is an entry in the root
+    # table under Sv39 and one step below it under Sv48 -- so a kernel that
+    # had them confused would pass every Sv48 gate in the tree. The markers
+    # are matched without their mode field for that reason: each hart states
+    # its own mode on the line, and requiring one here would fail half the
+    # matrix by construction.
+    "vmm: 2 MiB large-page map/unmap self-test passed mode=",
+    "vmm: 1 GiB gigantic-page self-test passed mode=",
+    "vmm: gigantic-page split self-test passed mode=",
     "virtio-blk: read/write/error/reset self-test passed",
     "persistence: disk reload/rollback self-test passed",
 ]

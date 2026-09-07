@@ -16,6 +16,8 @@ static uint64_t g_metadata_start;
 static uint64_t g_metadata_end;
 static volatile uint64_t g_local_bytes;
 static volatile uint64_t g_remote_bytes;
+static volatile uint64_t g_local_placement_bytes;
+static volatile uint64_t g_remote_placement_bytes;
 
 static int page_is_reserved(const xaios_boot_info_t *boot, uint64_t page);
 static uint64_t find_metadata_space(const xaios_boot_info_t *boot,
@@ -487,6 +489,8 @@ void numa_init(const xaios_boot_info_t *boot) {
   g_metadata_end = 0U;
   g_local_bytes = 0U;
   g_remote_bytes = 0U;
+  g_local_placement_bytes = 0U;
+  g_remote_placement_bytes = 0U;
   if (boot == 0 || boot->memory_descriptor_size <
                        sizeof(xaios_memory_descriptor_t)) {
     klog("NUMA: invalid boot memory map\n");
@@ -675,6 +679,41 @@ uint32_t numa_preferred_node_for_cpu(uint32_t cpu_id) {
   return preferred < g_numa_node_count ? preferred : local;
 }
 
+uint32_t numa_nodes_by_distance(uint32_t from_node, uint32_t *out_nodes,
+                                uint32_t capacity) {
+  if (out_nodes == 0 || capacity == 0U || g_numa_node_count == 0U) return 0U;
+  uint32_t written = 0U;
+  /* The starting node goes first without consulting the table. A SLIT is
+     firmware-supplied and a placement policy that trusted it blindly would
+     send every allocation off-node the moment a machine shipped a table
+     claiming a remote node is nearer than the local one. Distance decides the
+     order of the alternatives, not whether local memory is tried first. */
+  if (from_node < g_numa_node_count) out_nodes[written++] = from_node;
+  while (written < capacity) {
+    uint32_t best = UINT32_MAX;
+    uint8_t best_distance = UINT8_MAX;
+    for (uint32_t candidate = 0U; candidate < g_numa_node_count; ++candidate) {
+      uint32_t already = 0U;
+      for (uint32_t index = 0U; index < written; ++index) {
+        if (out_nodes[index] == candidate) already = 1U;
+      }
+      if (already != 0U) continue;
+      uint8_t distance = numa_distance(from_node, candidate);
+      /* Strictly-less keeps the tie on the lower node id, because candidates
+         are walked in ascending order. Two boots of one machine must lease
+         and allocate from the same node, or a failure that depends on
+         placement stops being reproducible. */
+      if (best == UINT32_MAX || distance < best_distance) {
+        best = candidate;
+        best_distance = distance;
+      }
+    }
+    if (best == UINT32_MAX) break;
+    out_nodes[written++] = best;
+  }
+  return written;
+}
+
 void numa_record_access(uint32_t cpu_id, uint64_t physical_address,
                         uint64_t bytes) {
   uint32_t cpu_node = numa_node_of_cpu(cpu_id);
@@ -695,6 +734,33 @@ uint64_t numa_local_bytes(void) {
 
 uint64_t numa_remote_bytes(void) {
   return __atomic_load_n(&g_remote_bytes, __ATOMIC_RELAXED);
+}
+
+uint64_t numa_local_placement_bytes(void) {
+  return __atomic_load_n(&g_local_placement_bytes, __ATOMIC_RELAXED);
+}
+
+uint64_t numa_remote_placement_bytes(void) {
+  return __atomic_load_n(&g_remote_placement_bytes, __ATOMIC_RELAXED);
+}
+
+/* Called on every successful physical page allocation. Until this existed the
+   local/remote counters moved only when the NUMA self-test poked them by
+   hand, so the telemetry described a test rather than the machine: a kernel
+   that placed every page on node 0 would have reported exactly the same two
+   numbers. A CPU with no node -- which is what the fallback topology gives --
+   is charged to neither side rather than to "local", because calling an
+   unknown placement local is the flattering answer and it would hide the
+   case where SRAT parsing produced nothing. */
+static void record_placement(uint32_t node_id, uint64_t bytes) {
+  if (g_numa_node_count < 2U) return;
+  uint32_t cpu_node = numa_node_of_cpu(smp_cpu_id());
+  if (cpu_node == UINT32_MAX) return;
+  if (cpu_node == node_id) {
+    __atomic_fetch_add(&g_local_placement_bytes, bytes, __ATOMIC_RELAXED);
+  } else {
+    __atomic_fetch_add(&g_remote_placement_bytes, bytes, __ATOMIC_RELAXED);
+  }
 }
 
 void *numa_alloc_page_on_node(uint32_t node_id) {
@@ -731,6 +797,7 @@ void *numa_alloc_page_on_node(uint32_t node_id) {
       node->alloc_page_hint = page_index + 1U;
       uint64_t physical = region->phys_start + page_index * PAGE_SIZE;
       xaios_spin_unlock(&node->lock);
+      record_placement(node_id, PAGE_SIZE);
       return (void *)(uintptr_t)physical;
     }
   }
@@ -765,6 +832,26 @@ int numa_free_page(void *page) {
   }
   xaios_spin_unlock(&node->lock);
   return 0;
+}
+
+/* klog has no way to print a list, and a fallback order is only evidence if a
+   reader can see the whole of it: "nearest first" is a claim about every
+   position, not about the first one. */
+static void format_node_list(const uint32_t *nodes, uint32_t count,
+                             char *buffer, uint64_t capacity) {
+  uint64_t used = 0U;
+  for (uint32_t index = 0U; index < count && used + 12U < capacity; ++index) {
+    if (index != 0U) buffer[used++] = ',';
+    uint32_t value = nodes[index];
+    char digits[12];
+    uint32_t digit_count = 0U;
+    do {
+      digits[digit_count++] = (char)('0' + (value % 10U));
+      value /= 10U;
+    } while (value != 0U);
+    while (digit_count != 0U) buffer[used++] = digits[--digit_count];
+  }
+  buffer[used] = '\0';
 }
 
 void numa_self_test(void) {
@@ -815,6 +902,77 @@ void numa_self_test(void) {
     numa_record_access(0U, (uint64_t)(uintptr_t)remote_page, 128U);
     kassert(numa_remote_bytes() == 128U);
     kassert(numa_free_page(remote_page) == 1);
+
+    /* At least two nodes must own a CPU. Nothing checked this, and the way
+       the x86 SRAT walk fails is silent: a processor affinity whose APIC id
+       matches no online CPU leaves that CPU on node 0, so a parse that found
+       no processor affinities at all puts every CPU on node 0 and every
+       assertion above still holds -- each CPU maps to exactly one node, and
+       that node is node 0. A machine whose firmware says it has two memory
+       nodes and one CPU node is either a parse failure here or a table worth
+       refusing to guess about. */
+    uint32_t nodes_with_cpus = 0U;
+    for (uint32_t node = 0U; node < g_numa_node_count; ++node) {
+      uint32_t owned = 0U;
+      for (uint32_t cpu = 0U; cpu < smp_capacity(); ++cpu) {
+        if (numa_node_has_cpu(node, cpu)) ++owned;
+      }
+      if (owned != 0U) ++nodes_with_cpus;
+      uint32_t order[16];
+      uint32_t order_count = numa_nodes_by_distance(node, order, 16U);
+      char order_text[128];
+      format_node_list(order, order_count, order_text, sizeof(order_text));
+      klog("NUMA: node=%u domain=%u cpus=%u pages=%lu fallback_order=%s\n",
+           node, g_numa_nodes[node].proximity_domain, owned,
+           g_numa_nodes[node].total_pages, order_text);
+    }
+    kassert(nodes_with_cpus >= 2U);
+
+    /* The fallback order is the placement policy, so it is asserted rather
+       than only printed: the local node first, then every other node exactly
+       once, by non-decreasing SLIT distance. The old allocator walked node
+       ids instead, which agrees with this on node 0 of a two-node machine and
+       disagrees everywhere else -- that is why the assertion runs from every
+       node and not just from the one the boot CPU happens to be on. */
+    for (uint32_t node = 0U; node < g_numa_node_count; ++node) {
+      uint32_t order[16];
+      uint32_t order_count = numa_nodes_by_distance(node, order, 16U);
+      kassert(order_count ==
+              (g_numa_node_count < 16U ? g_numa_node_count : 16U));
+      kassert(order[0] == node);
+      for (uint32_t index = 1U; index < order_count; ++index) {
+        kassert(numa_distance(node, order[index - 1U]) <=
+                numa_distance(node, order[index]));
+        for (uint32_t earlier = 0U; earlier < index; ++earlier) {
+          kassert(order[earlier] != order[index]);
+        }
+      }
+    }
+
+    /* Placement accounting has to move for a real allocation, and it has to
+       move on the correct side. The deltas are asserted as lower bounds, not
+       as equalities: the secondaries are online by this point and an exact
+       figure would be a flake rather than a stronger check. What makes the
+       check bite is the side -- an allocator charging every page as local
+       leaves the remote delta at zero. */
+    uint32_t local_node = numa_node_of_cpu(smp_cpu_id());
+    kassert(local_node != UINT32_MAX);
+    uint32_t far_node = local_node == 0U ? 1U : 0U;
+    uint64_t local_before = numa_local_placement_bytes();
+    uint64_t remote_before = numa_remote_placement_bytes();
+    void *near_page = numa_alloc_page_on_node(local_node);
+    kassert(near_page != 0);
+    uint64_t local_delta = numa_local_placement_bytes() - local_before;
+    kassert(local_delta >= PAGE_SIZE);
+    remote_before = numa_remote_placement_bytes();
+    void *far_page = numa_alloc_page_on_node(far_node);
+    kassert(far_page != 0);
+    uint64_t remote_delta = numa_remote_placement_bytes() - remote_before;
+    kassert(remote_delta >= PAGE_SIZE);
+    kassert(numa_free_page(near_page) == 1);
+    kassert(numa_free_page(far_page) == 1);
+    klog("NUMA: placement accounting cpu=%u local_node=%u far_node=%u local_delta=%lu remote_delta=%lu verified=1\n",
+         smp_cpu_id(), local_node, far_node, local_delta, remote_delta);
   }
 
   void *pages[64];
@@ -825,7 +983,8 @@ void numa_self_test(void) {
   for (uint32_t index = 0U; index < 64U; ++index) {
     kassert(numa_free_page(pages[index]) == 1);
   }
-  klog("NUMA: self-test passed nodes=%u regions=%u managed=%lu free=%lu dynamic_metadata=1 ownership=verified local_bytes=%lu remote_bytes=%lu\n",
+  klog("NUMA: self-test passed nodes=%u regions=%u managed=%lu free=%lu dynamic_metadata=1 ownership=verified local_bytes=%lu remote_bytes=%lu placement_local_bytes=%lu placement_remote_bytes=%lu\n",
        g_numa_node_count, node0->region_count, node0->managed_pages,
-       node0->free_count, numa_local_bytes(), numa_remote_bytes());
+       node0->free_count, numa_local_bytes(), numa_remote_bytes(),
+       numa_local_placement_bytes(), numa_remote_placement_bytes());
 }

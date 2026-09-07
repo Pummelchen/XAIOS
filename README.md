@@ -49,6 +49,7 @@ booted on, and what was *not* tested — see the
 |---|---|---|---|
 | QEMU ARM64 | macOS QEMU ARM64 | full CI | correctness and ABI only |
 | QEMU x86_64 | Intel VPS QEMU x86_64 | full CI | correctness and ABI only |
+| QEMU RISC-V64 | none; no firmware profile | a bring-up job in CI (smoke, release configuration, CPU tiers); 53 gate targets local | correctness and ABI only, on one emulated board |
 | VMware Fusion | macOS VMware Fusion ARM64 | `make vmware-fusion-smoke` | Fusion 26H1 four-vCPU lifecycle |
 | Apple Virtualization.framework | none; development target | `make vz-gate`, `make vz-stress-gate` | not qualification evidence |
 
@@ -80,8 +81,10 @@ QEMU or from its own disk through UEFI firmware. What it does not have is hardwa
 RISC-V machine or hypervisor is in the test set, so its evidence is one board.
 See [RISC-V](./wiki/RISC-V.md).
 
-**C99 libc.** A statically linked hosted ISO C99 library for AArch64 and
-x86_64, with no public POSIX API and no new syscall identifiers. See
+**C99 libc.** A statically linked hosted ISO C99 library for AArch64, x86_64
+and RISC-V, with no public POSIX API and no new syscall identifiers. The
+conformance report covers the first two; RISC-V runs the same probes under
+`make qemu-riscv64-libc-gate`. See
 [C99 libc](./wiki/C99-Libc.md).
 
 ## Model support status

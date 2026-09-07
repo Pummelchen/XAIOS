@@ -177,7 +177,7 @@ release-package: unified-image
 	./scripts/build-release.sh
 
 # Boot that one file on every environment available here. Shallower than the
-# per-platform gates by design: they each boot their own image, so all four can
+# per-platform gates by design: they each boot their own image, so all five can
 # pass while the unified image boots nothing.
 unified-image-gate: unified-image
 	python3 ./tests/scripts/unified-image-gate.py
@@ -191,7 +191,7 @@ local-gates:
 # Everything that must be true before this commit is tagged or shipped.
 #
 # CI already proves the part a Linux runner can reach, on every push. What it
-# cannot reach is either hypervisor, so two of the four environments XAIOS
+# cannot reach is either hypervisor, so two of the five environments XAIOS
 # names are covered only by make local-gates -- and until this target existed
 # nothing required that to have happened. A release could be cut having been
 # tested on half the platforms it claims.

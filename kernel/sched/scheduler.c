@@ -5,6 +5,7 @@
 #include <xaios/scheduler.h>
 #include <xaios/smp.h>
 #include <xaios/timer.h>
+#include <xaios/numa.h>
 #include <xaios/topology.h>
 #include <xaios/user.h>
 #if defined(__aarch64__)
@@ -292,63 +293,95 @@ static uint32_t rq_pick_stealable(xaios_runqueue_t *victim, uint32_t victim_cpu)
   return best_pid;
 }
 
-/* Hierarchical work-stealing: core → socket → NUMA → stop */
-static uint32_t try_steal_domain(uint32_t this_cpu, uint32_t domain_id) {
-  if (domain_id == UINT32_MAX) {
+/* Hierarchical work-stealing: core → socket → NUMA → stop.
+ *
+ * Only a level-0 domain lists CPUs. Every other level lists child domains, so
+ * this walks down to the leaves rather than reading a domain id as a CPU id,
+ * which is what it did before: on a machine with more than one core domain,
+ * "steal from the same socket" inspected the runqueue of whatever CPU number
+ * a domain id collided with. It looked harmless because on a small
+ * single-node machine the ids overlap the CPU ids and the extra levels find
+ * nothing to steal anyway. */
+static uint32_t try_steal_from_cpu(uint32_t this_cpu, uint32_t victim);
+
+/* `budget` is the number of victims this walk may still look at, kept from
+   the original: a steal happens on the path of a CPU that has just run out of
+   work, so scanning a whole domain to find nothing costs more than the steal
+   was worth. It is spent across the recursion rather than per domain, so a
+   deep hierarchy cannot multiply it. */
+static uint32_t try_steal_domain_recursive(uint32_t this_cpu,
+                                           uint32_t domain_id, uint32_t depth,
+                                           uint32_t *budget) {
+  if (domain_id == UINT32_MAX || depth > XAIOS_SCHED_DOMAIN_MAX_LEVELS ||
+      *budget == 0U) {
     return 0;
   }
-
   const xaios_sched_domain_t *dom = topology_get_domain(domain_id);
   if (dom == 0 || dom->member_count == 0) {
     return 0;
   }
-
-  /* Try up to 3 neighbors, don't scan entire domain */
-  uint32_t attempts = 0;
-  for (uint32_t i = 0; i < dom->member_count && attempts < 3; ++i) {
-    uint32_t victim = dom->members[i];
-    if (victim == this_cpu) {
-      continue;
+  for (uint32_t i = 0; i < dom->member_count && *budget != 0U; ++i) {
+    uint32_t stolen = 0;
+    if (dom->level == 0) {
+      --(*budget);
+      stolen = try_steal_from_cpu(this_cpu, dom->members[i]);
+    } else {
+      stolen = try_steal_domain_recursive(this_cpu, dom->members[i], depth + 1,
+                                          budget);
     }
-
-    const xaios_cpu_state_t *state = smp_cpu_state(victim);
-    if (state == 0 || state->online == 0 || state->scheduling_enabled == 0) {
-      continue;
-    }
-
-    /* Only steal from overloaded CPUs (count > 2) */
-    if (g_runqueues[victim].count <= 2) {
-      continue;
-    }
-
-    if (xaios_spin_trylock(&g_runqueues[victim].lock)) {
-      uint32_t stolen_pid = rq_pick_stealable(&g_runqueues[victim], victim);
-      xaios_spin_unlock(&g_runqueues[victim].lock);
-
-      if (stolen_pid != 0) {
-        /* Update task's assigned_cpu */
-        xaios_sched_task_t *task = find_task_local(victim, stolen_pid);
-        if (task != 0) {
-          task->assigned_cpu = this_cpu;
-          task->remaining_ticks = priority_slice(task->priority);
-        }
-
-        xaios_spin_lock(&g_runqueues[this_cpu].lock);
-        rq_add(&g_runqueues[this_cpu], stolen_pid);
-        xaios_spin_unlock(&g_runqueues[this_cpu].lock);
-
-        /* Update statistics */
-        __sync_fetch_and_add(&g_sched_stats[this_cpu].steal_success_count, 1);
-        __sync_fetch_and_add(&g_steal_count, 1);
-
-        return stolen_pid;
-      }
-      ++attempts;
+    if (stolen != 0) {
+      return stolen;
     }
   }
-
-  __sync_fetch_and_add(&g_sched_stats[this_cpu].steal_fail_count, 1);
   return 0;
+}
+
+static uint32_t try_steal_domain(uint32_t this_cpu, uint32_t domain_id) {
+  uint32_t budget = 8U;
+  return try_steal_domain_recursive(this_cpu, domain_id, 0, &budget);
+}
+
+/* One victim. Returns the pid moved onto this_cpu, or 0 for every reason a
+   CPU is not worth stealing from -- it is itself, it is not scheduling, it is
+   not overloaded, or another CPU holds its runqueue lock. */
+static uint32_t try_steal_from_cpu(uint32_t this_cpu, uint32_t victim) {
+  if (victim == this_cpu || victim >= g_cpu_capacity) {
+    return 0;
+  }
+
+  const xaios_cpu_state_t *state = smp_cpu_state(victim);
+  if (state == 0 || state->online == 0 || state->scheduling_enabled == 0) {
+    return 0;
+  }
+
+  /* Only steal from overloaded CPUs (count > 2) */
+  if (g_runqueues[victim].count <= 2) {
+    return 0;
+  }
+
+  if (!xaios_spin_trylock(&g_runqueues[victim].lock)) {
+    return 0;
+  }
+  uint32_t stolen_pid = rq_pick_stealable(&g_runqueues[victim], victim);
+  xaios_spin_unlock(&g_runqueues[victim].lock);
+  if (stolen_pid == 0) {
+    __sync_fetch_and_add(&g_sched_stats[this_cpu].steal_fail_count, 1);
+    return 0;
+  }
+
+  xaios_sched_task_t *task = find_task_local(victim, stolen_pid);
+  if (task != 0) {
+    task->assigned_cpu = this_cpu;
+    task->remaining_ticks = priority_slice(task->priority);
+  }
+
+  xaios_spin_lock(&g_runqueues[this_cpu].lock);
+  rq_add(&g_runqueues[this_cpu], stolen_pid);
+  xaios_spin_unlock(&g_runqueues[this_cpu].lock);
+
+  __sync_fetch_and_add(&g_sched_stats[this_cpu].steal_success_count, 1);
+  __sync_fetch_and_add(&g_steal_count, 1);
+  return stolen_pid;
 }
 
 static uint32_t try_steal_hierarchical(uint32_t this_cpu) {
@@ -877,6 +910,71 @@ void scheduler_dump_stats(void) {
   }
 }
 
+/* Load `victim` with three runnable tasks and try to steal one onto
+   `this_cpu` through the hierarchy. Returns the pid stolen, or 0. Three is
+   the smallest number the steal path accepts, since it refuses a victim whose
+   runqueue holds two or fewer. */
+static uint32_t steal_probe(uint32_t this_cpu, uint32_t victim,
+                            const uint32_t *pids) {
+  const xaios_cpu_state_t *state = smp_cpu_state(victim);
+  if (state == 0 || state->online == 0U) return UINT32_MAX;
+  uint32_t restore = state->scheduling_enabled;
+  kassert(smp_set_scheduling_enabled(victim, 1U) == XAIOS_OK);
+  for (uint32_t index = 0U; index < 3U; ++index) {
+    kassert(scheduler_register_on_cpu(pids[index], XAIOS_PRIORITY_NORMAL,
+                                      victim) == XAIOS_OK);
+    kassert(scheduler_set_runnable(pids[index]) == XAIOS_OK);
+  }
+  kassert(g_runqueues[victim].count == 3U);
+  uint32_t stolen = try_steal_hierarchical(this_cpu);
+  for (uint32_t index = 0U; index < 3U; ++index) {
+    scheduler_unregister(pids[index]);
+  }
+  kassert(smp_set_scheduling_enabled(victim, restore) == XAIOS_OK);
+  return stolen;
+}
+
+/* What the scheduler's NUMA awareness is worth, measured rather than
+   asserted in a comment. Work is taken from a CPU on this CPU's own node and
+   left alone on a CPU that is not, which is the whole of the policy: the
+   hierarchy stops at the NUMA level and deliberately does not go system-wide,
+   so a task keeps the memory it was placed near.
+   
+   Both halves are needed. The "does steal" half alone passes on a topology
+   that puts every CPU in one domain; the "does not steal" half alone passes
+   on a topology so broken that nothing is stealable at all. */
+static void scheduler_numa_steal_self_test(uint32_t this_cpu) {
+  if (numa_node_count() < 2U || smp_online_count() < 2U) {
+    klog("scheduler: numa steal self-test skipped nodes=%u online=%u\n",
+         numa_node_count(), smp_online_count());
+    return;
+  }
+  uint32_t local_node = topology_get_numa_node_for_cpu(this_cpu);
+  uint32_t local_victim = UINT32_MAX;
+  uint32_t remote_victim = UINT32_MAX;
+  for (uint32_t cpu = 0U; cpu < g_cpu_capacity; ++cpu) {
+    const xaios_cpu_state_t *state = smp_cpu_state(cpu);
+    if (cpu == this_cpu || state == 0 || state->online == 0U) continue;
+    uint32_t node = topology_get_numa_node_for_cpu(cpu);
+    if (node == local_node && local_victim == UINT32_MAX) local_victim = cpu;
+    if (node != local_node && remote_victim == UINT32_MAX) remote_victim = cpu;
+  }
+  if (local_victim == UINT32_MAX || remote_victim == UINT32_MAX) {
+    klog("scheduler: numa steal self-test skipped local_victim=%u remote_victim=%u\n",
+         local_victim, remote_victim);
+    return;
+  }
+
+  const uint32_t remote_pids[3] = {9001U, 9002U, 9003U};
+  const uint32_t local_pids[3] = {9004U, 9005U, 9006U};
+  uint32_t stolen_remote = steal_probe(this_cpu, remote_victim, remote_pids);
+  kassert(stolen_remote == 0U);
+  uint32_t stolen_local = steal_probe(this_cpu, local_victim, local_pids);
+  kassert(stolen_local != 0U && stolen_local != UINT32_MAX);
+  klog("scheduler: numa steal self-test passed cpu=%u node=%u local_victim=%u stole=%u remote_victim=%u stole=0\n",
+       this_cpu, local_node, local_victim, stolen_local, remote_victim);
+}
+
 void scheduler_self_test(void) {
   kassert(g_initialized != 0);
   uint32_t cpu = smp_cpu_id();
@@ -937,6 +1035,8 @@ void scheduler_self_test(void) {
   kassert(find_task_local(cpu, 2) == 0);
   kassert(find_task_local(cpu, 3) == 0);
   kassert(smp_set_scheduling_enabled(cpu, scheduling_was_enabled) == XAIOS_OK);
+
+  scheduler_numa_steal_self_test(cpu);
 
   klog("scheduler: hierarchical SMP self-test passed ticks=%lu switches=%lu "
        "yields=%lu steals=%lu\n",

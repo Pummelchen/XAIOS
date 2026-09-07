@@ -70,14 +70,18 @@ matching RRSIG. The upstream resolver's AD bit is not trusted. Unsigned,
 malformed, expired, unsupported-algorithm, or clock-untrusted replies fail
 closed and are reported to the caller without waiting for the query timeout.
 RSA/SHA-256, ECDSA P-256/P-384, and Ed25519 signatures plus SHA-256/SHA-384
-DS digests are supported. Signed exact-owner NSEC NODATA proofs are supported;
-NXDOMAIN, NSEC3, CNAME/DNAME synthesis, wildcard synthesis, and root-anchor rollover policy
+DS digests are supported. Signed exact-owner NSEC NODATA proofs are supported,
+as is the NSEC3 proof that a delegation carries no DS -- including the opt-out
+form -- which is what lets an unsigned delegation resolve as insecure rather
+than bogus; iteration counts above 150 are refused rather than computed.
+NXDOMAIN, CNAME/DNAME synthesis, wildcard synthesis, and root-anchor rollover policy
 are deliberately unsupported and fail closed. SNTP applies accepted corrections through a bounded
 500-ppm monotonic slew after initial calibration. Runtime-sized CPU/queue
 metadata avoids a fixed small-core limit.
 
-Boot readiness uses a real IPv4 TCP connection to port 443 before starting
-`sshd`; it does not treat a DNS response as proof of Internet reachability. The
+Boot readiness requires the interface to hold a usable IPv4 address before
+`sshd` opens port 22, and probes no external DNS name or TCP endpoint, so SSH
+availability does not depend on a third party's service being up. The
 boot-test image uses the in-guest local-DNSSEC resolver wiring self-test so
 `make qemu-smoke` remains deterministic when public DNS is unavailable. The
 normal `nettest` application performs an external locally validated lookup.
@@ -116,8 +120,8 @@ IPv4 and IPv6 replies on AArch64, x86_64 and RISC-V QEMU.
 `make qemu-network-adversarial-gate` adds sanitizer-backed coverage-guided
 SSH/SFTP/DNS parser campaigns, packet loss/reordering/corruption cases,
 connection and channel exhaustion with recovery, concurrent macOS/Debian load,
-and 20 fresh boots on each of ARM64 and x86_64; RISC-V is built and exercised
-by the same gate but is not part of that repeat-boot count. This remains emulated
+and 20 fresh boots on each of ARM64, x86_64 and RISC-V -- the same
+`XAIOS_NF3Q_BOOTS` count on all three. This remains emulated
 correctness evidence rather than physical deployment qualification.
 
 This is protocol correctness evidence under QEMU, not approval for direct

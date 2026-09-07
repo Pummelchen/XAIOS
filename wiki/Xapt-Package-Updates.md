@@ -162,7 +162,7 @@ recovery, and release-audit procedures.
 The app loader remains capability-based and does not add a package-manager
 syscall. `xapt` uses the existing filesystem, network, clock, and control
 protocol surface. Eight new administrative control operations fit inside the
-existing control syscall, so the XAIOS syscall count remains 50.
+existing control syscall, so the XAIOS syscall count remains 54.
 
 ## Evidence
 
@@ -171,7 +171,7 @@ make xapt-test
 make qemu-xapt-gate
 ```
 
-The dual-architecture QEMU gate proves pinned TLS transport, signed catalog
+The QEMU gate runs on all three architectures and proves pinned TLS transport, signed catalog
 refresh, signing-root rotation/revocation/recovery, interrupted activation
 recovery, independent app install and argv execution, upgrade, one-step
 rollback, tamper rejection, streamed A/B OS delivery, reboot persistence, and

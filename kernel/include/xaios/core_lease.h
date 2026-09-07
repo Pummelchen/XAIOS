@@ -9,6 +9,15 @@ xaios_status_t core_lease_acquire_cpus(uint32_t owner_id,
                                        const uint32_t *cpu_ids,
                                        uint32_t cpu_count);
 xaios_status_t core_lease_acquire(uint32_t owner_id, uint32_t core_mask);
+/* Lease `cpu_count` CPUs chosen by topology rather than named by the caller:
+   every leasable CPU on `node_id` first, then the nearest nodes by SLIT
+   distance until the count is met. `selected_cpu_ids` receives the chosen ids
+   in that order and must have room for `cpu_count`; it is written only when
+   the whole lease is granted, since a partial lease of a machine's CPUs is
+   never what an owner asked for. */
+xaios_status_t core_lease_acquire_on_node(uint32_t owner_id, uint32_t node_id,
+                                          uint32_t cpu_count,
+                                          uint32_t *selected_cpu_ids);
 xaios_status_t core_lease_release(uint32_t owner_id);
 uint32_t core_lease_cpu_count(void);
 int core_lease_cpu_is_used(uint32_t cpu_id);

@@ -49,7 +49,8 @@ never fabricated.
 
 `make qemu-operations-closure` performs abrupt termination, reboot, clean
 shutdown, persistent recovery checks, and authenticated command checks against
-AArch64, x86_64 and RISC-V. It also uses Debian 13 OpenSSH when Docker is available.
+AArch64 and x86_64; it has no RISC-V leg. It also uses Debian 13 OpenSSH when
+Docker is available.
 This proves the named QEMU behavior only. Physical power loss, firmware reset,
 RTC quality, thermals, PMU access, and device durability still require named
 hardware qualification.
