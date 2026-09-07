@@ -71,3 +71,6 @@ release/*.iso
 # The zip is tracked. It is about a tenth the size of the image, which puts it
 # under GitHub's 100 MB limit, so the release can travel with the repository.
 !release/*.iso.zip
+
+# Agent worktrees: isolated checkouts, never part of the tree they branch from.
+.claude/worktrees/
