@@ -107,30 +107,30 @@ degrades the same way everywhere. See
 [Platform neutrality](https://github.com/Pummelchen/XAIOS/blob/main/docs/PLATFORM-NEUTRALITY.md),
 which the build enforces.
 
-| Function | QEMU ARM64 | QEMU x86_64 | VMware Fusion ARM64 | Virtualization.framework |
-|---|---|---|---|---|
-| Boots to a login | yes | yes | yes | yes |
-| Durable xaibootFS volume | yes | yes | yes | yes |
-| IPv4 by DHCP | yes | yes | yes | yes |
-| IPv6 by SLAAC | yes | yes | `F-03` not qualified | yes, unique-local only (`V-03`) |
-| IPv6 by DHCPv6 | client present, gated | client present | client present | client present |
-| SSH server | yes | yes | yes | yes |
-| SSH client, SFTP | yes | yes | yes | yes |
-| Reachable from the host | yes | yes | yes | vmnet helper only, one direction at a time |
-| Boots at 1, 2 and 4 GiB | yes | yes | yes | yes |
-| Multiple vCPUs | yes, 130 gated | yes, 128/256 scenarios | yes, 4/4 | yes, 8/8 |
-| Message-signalled interrupts | distributor | yes | PCI | none; every queue polls (`V-02`) |
-| Framebuffer console | no, serial | no, serial | yes | yes when a display device is attached (`--gui`), driven directly over virtio-GPU because firmware publishes none; serial otherwise |
-| USB keyboard input | yes | yes | provisioned, not gated | console input over virtio |
-| Entropy protocol | virtio-rng | virtio-rng | `F-05` none exposed | yes |
-| Storage transport | virtio-MMIO | virtio-PCI, NVMe | AHCI | virtio-PCI |
-| Network transport | virtio-MMIO | virtio-PCI | E1000E qualified; VMXNET3 works (`F-02`) | virtio-PCI |
-| Applications gated | yes, by name | yes, by name | yes, by name | yes, by name |
-| Boots the unified image | yes, gated | yes, gated | yes, gated | yes, gated |
-| Automated gate | full CI | full CI | `make vmware-fusion-smoke` | `make vz-gate`, `make vz-stress-gate` |
-| Unified-image gate | `make unified-image-gate` covers all four from one file; CI runs the two QEMU rows and reports the hypervisors as skipped | | | |
-| Verified by | CI, every push | CI, every push | `make local-gates`, required by `make release-check` | `make local-gates`, required by `make release-check` |
-| Evidence class | correctness only | correctness only | Fusion 26H1 lifecycle | development target, not evidence |
+| Function | QEMU ARM64 | QEMU RISC-V64 | QEMU x86_64 | VMware Fusion ARM64 | Virtualization.framework |
+|---|---|---|---|---|---|
+| Boots to a login | yes | yes | yes | yes | yes |
+| Durable xaibootFS volume | yes | yes | yes | yes | yes |
+| IPv4 by DHCP | yes | yes | yes | yes | yes |
+| IPv6 by SLAAC | implemented, not evidenced here | implemented, not evidenced here | implemented, not evidenced here | `F-03` not qualified | yes, unique-local only (`V-03`) |
+| IPv6 by DHCPv6 | client present, gated | client present, gated | client present | client present | client present |
+| SSH server | yes | yes | yes | yes | yes |
+| SSH client, SFTP | yes | yes | yes | yes | yes |
+| Reachable from the host | yes | yes | yes | yes | vmnet helper only, one direction at a time |
+| Boots at 1, 2 and 4 GiB | yes (`qemu-memory-matrix`) | yes (`qemu-memory-matrix`) | yes (`qemu-memory-matrix`) | 2 and 4 run; 1 GiB not yet | yes, all three run |
+| Multiple vCPUs | yes, 130 gated | yes, 1/2/4/8 gated | yes, 128/256 scenarios | yes, 4/4 | yes, 8/8 |
+| Message-signalled interrupts | distributor | none as the board is configured; every queue polls | yes | PCI | none; every queue polls (`V-02`) |
+| Framebuffer console | no, serial | yes with a virtio-GPU attached, gated; serial otherwise | no, serial | yes | yes when a display device is attached (`--gui`), driven directly over virtio-GPU because firmware publishes none; serial otherwise |
+| USB keyboard input | yes | yes, gated | yes | provisioned, not gated | console input over virtio |
+| Entropy protocol | virtio-rng | virtio-rng (`source=device-rng`) | virtio-rng | `F-05` none exposed | yes |
+| Storage transport | virtio-MMIO | virtio-MMIO; NVMe over PCIe in its own gate | virtio-PCI, NVMe | AHCI | virtio-PCI |
+| Network transport | virtio-MMIO | virtio-MMIO | virtio-PCI | E1000E qualified; VMXNET3 works (`F-02`) | virtio-PCI |
+| Applications gated | yes, by name | yes, by name | yes, by name | yes, by name | yes, by name |
+| Boots the unified image | yes, gated | yes, gated | yes, gated | yes, gated | yes, gated |
+| Automated gate | full CI | unified-image boot in CI; 53 dedicated targets local only | full CI | `make vmware-fusion-smoke` | `make vz-gate`, `make vz-stress-gate` |
+| Unified-image gate | `make unified-image-gate` covers all five from one file; CI runs the three QEMU rows and reports the hypervisors as skipped |  | | | |
+| Verified by | CI, every push | CI boots the unified image every push; its own gates run locally | CI, every push | `make local-gates`, required by `make release-check` | `make local-gates`, required by `make release-check` |
+| Evidence class | correctness only | correctness only | correctness only | Fusion 26H1 lifecycle | development target, not evidence |
 
 Device inventory differs because the hypervisors differ; the kernel discovers
 what is present rather than assuming a platform, so those rows are not defects.

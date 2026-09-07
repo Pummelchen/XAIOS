@@ -285,10 +285,12 @@ jobs:
           XAIOS_TARGET_ARCH=x86_64 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
 
       # VMware Fusion and Virtualization.framework do not exist on a Linux
-      # runner, so the gate reports them as skipped and passes on the two it
-      # can run. That is the honest result: it proves the file boots both
-      # architectures, and claims nothing about the hypervisors, which are
-      # covered by make unified-image-gate on a macOS host.
+      # runner, so the gate reports them as skipped and passes on the three it
+      # can run. That is the honest result: it proves the file boots all three
+      # architectures -- AArch64, x86_64 and RISC-V -- and claims nothing about
+      # the hypervisors, which are covered by make unified-image-gate on a
+      # macOS host. It said "the two it can run" and "both architectures" long
+      # after RISC-V joined that list.
       - name: Boot the unified image on every environment available here
         run: make unified-image-gate
         env:
@@ -346,6 +348,59 @@ jobs:
             build/xaios-x86_64.img
             build/kernel-x86_64/kernel.elf
             build/uefi-x86_64/BOOTX64.EFI
+          if-no-files-found: ignore
+          retention-days: 7
+
+  riscv-bring-up:
+    name: RISC-V Bring-up
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      # qemu-system-misc carries qemu-system-riscv64, and QEMU ships the
+      # OpenSBI firmware this board boots through, so there is no separate
+      # firmware package to install the way ovmf is for x86_64.
+      - name: Install RISC-V QEMU dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm meson ninja-build qemu-system-misc mtools python3
+
+      # The boot-test configuration, which is what the other two architectures
+      # smoke here as well.
+      - name: Run RISC-V smoke
+        run: make qemu-riscv64-smoke
+        env:
+          XAIOS_QEMU_SMOKE_TIMEOUT: "600"
+
+      # The release configuration, which is what actually ships and which no
+      # boot-test gate exercises: there, shell commands are kernel built-ins
+      # and no application is ever launched as a process. That difference cost
+      # a day once and is worth a CI step.
+      - name: Run RISC-V release configuration
+        run: make qemu-riscv64-release-gate
+        env:
+          XAIOS_QEMU_SMOKE_TIMEOUT: "600"
+
+      # Sv48 and Sv39 harts in one run. Six of the thirteen CPU models QEMU
+      # implements offer Sv39 and no more, including both standard RISC-V
+      # application profiles, and until recently the kernel could not boot on
+      # any of them. Nothing outside a developer's machine has checked that
+      # since.
+      - name: Run RISC-V CPU tiers
+        run: python3 tests/scripts/qemu-cpu-matrix.py --arch riscv64
+
+      - name: Upload RISC-V artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: riscv64-bring-up-artifacts
+          path: |
+            build/xaios-riscv64-initfs.img
+            build/kernel-riscv64/kernel.elf
+            build/qemu-cpu-matrix-report.json
+            build/cpu-matrix-riscv64/*/console.log
           if-no-files-found: ignore
           retention-days: 7
 

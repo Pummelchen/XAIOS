@@ -453,8 +453,20 @@ def main() -> int:
         # Built once for the whole architecture. Every tier boots the same
         # kernel on a different hart, so rebuilding per tier would be
         # measuring the compiler twelve times.
-        build = run(["./scripts/build-riscv64.sh"],
-                    {**base_env, "XAIOS_BOOT_TEST_APPS": "1"}, 600)
+        #
+        # The image is built here too, and with the same switch. This used to
+        # build only the kernel and boot whatever initial filesystem happened
+        # to be in build/ -- so running after anything that leaves a *release*
+        # image there, which `make qemu-riscv64-release-gate` does, paired a
+        # boot-test kernel with a release filesystem. The markers below are
+        # kernel self-tests that the release configuration's boot UI
+        # suppresses, so the matrix would have reported every tier as a
+        # machine that produced no output. Self-contained beats
+        # order-dependent.
+        riscv_env = {**base_env, "XAIOS_BOOT_TEST_APPS": "1"}
+        build = run(["./scripts/build-riscv64.sh"], riscv_env, 600)
+        if build.returncode == 0:
+            build = run(["./scripts/build-riscv64-image.sh"], riscv_env, 600)
         if build.returncode != 0:
             failures.append("riscv64 kernel build failed for CPU matrix")
         else:
