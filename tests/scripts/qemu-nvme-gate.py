@@ -48,6 +48,26 @@ MARKERS = [
 # rounds submit per queue, so a one-queue machine legitimately completes fewer
 # operations. It is a floor, not an expectation -- 11 were observed on RISC-V
 # and 38 is the long-standing floor for the four-queue machines.
+# `machine` selects the board a row runs on, and only RISC-V has more than
+# one. `arch` is which runner and which build the row uses, which is the row's
+# own name unless it is a second configuration of one that is already listed.
+#
+# The two RISC-V rows are the same kernel image on two boards, and they must
+# disagree. QEMU's default `virt` publishes a PLIC, which carries wires and no
+# messages, so every queue there is polled -- that is not a defect and the row
+# says so positively, with `msix: 0` and the skipped-self-test marker, so that
+# a build which quietly stopped configuring interrupts everywhere cannot pass
+# by looking like it. `virt,aia=aplic-imsic` publishes an APLIC and an IMSIC,
+# and there the same kernel must find them, program an MSI-X vector per queue
+# and be handed its completions by interrupt. Asserting only one of the two
+# would let a regression in either direction through: a kernel that lost AIA
+# support, or one that started claiming messages on a board with none.
+#
+# The queue count is one on both, and stays one for a reason that has nothing
+# to do with interrupts: the driver asks for one queue per online CPU, and on
+# RISC-V the secondary harts are still held at the scheduler rendezvous when
+# NVMe initialises. Four queues here would be a change to SMP bring-up order,
+# not to this driver.
 PROFILE = {
     "aarch64": {"io_queues": 4, "msix": 4, "min_async": 38,
                 "controller": "controller=gicv3-its"},
@@ -55,6 +75,9 @@ PROFILE = {
                "controller": "controller=x86-apic"},
     "riscv64": {"io_queues": 1, "msix": 0, "min_async": 10,
                 "controller": None},
+    "riscv64-aia": {"arch": "riscv64", "machine": "virt,aia=aplic-imsic",
+                    "io_queues": 1, "msix": 1, "min_async": 10,
+                    "controller": "controller=aia-imsic"},
 }
 
 RESULT_PATTERN = re.compile(
@@ -86,25 +109,42 @@ def selected_architectures() -> tuple[str, ...]:
     if requested == "all":
         return tuple(PROFILE)
     if requested in PROFILE:
-        return (requested,)
+        # Naming an architecture selects every board this gate knows for it,
+        # not only the row that shares its name. `--arch riscv64` therefore
+        # runs the PLIC board and the AIA board, which is the only way the two
+        # halves of the claim -- polled where there are no messages, MSI-X
+        # where there are -- get made in the same run.
+        rows = tuple(
+            name for name in PROFILE
+            if name == requested or PROFILE[name].get("arch") == requested
+        )
+        return rows
     raise ValueError(
         f"architecture must be all or one of {', '.join(PROFILE)}; "
         f"got {requested!r}"
     )
 
 
-def run_architecture(architecture: str) -> dict[str, object]:
-    image = BUILD / f"xaios-nvme-gate-{architecture}.img"
-    persistent = BUILD / f"xaios-nvme-gate-{architecture}-persistent.img"
-    log_path = BUILD / f"qemu-nvme-gate-{architecture}.log"
+def run_architecture(row: str) -> dict[str, object]:
+    # The row's name identifies the configuration and names its files; the
+    # architecture underneath it decides which runner and which build. They
+    # differ only for a second board of an architecture already listed.
+    profile = PROFILE[row]
+    architecture = str(profile.get("arch", row))
+    image = BUILD / f"xaios-nvme-gate-{row}.img"
+    persistent = BUILD / f"xaios-nvme-gate-{row}-persistent.img"
+    log_path = BUILD / f"qemu-nvme-gate-{row}.log"
     subprocess.run(["truncate", "-s", "64M", str(image)], check=True)
     persistent.unlink(missing_ok=True)
 
-    profile = PROFILE[architecture]
     environment = qemu_boot_environment(
         architecture, os.environ.copy(),
         persistent=persistent, hostfwd_port="none", accel="tcg", smp=4,
-        state_dir=BUILD / f"qemu-nvme-gate-{architecture}-state",
+        # Per row, not per architecture: two boards of one architecture that
+        # shared a state directory would each boot from the other's leftovers,
+        # and a run whose second half booted the first half's disks is a run
+        # that measured the wrong machine.
+        state_dir=BUILD / f"qemu-nvme-gate-{row}-state",
         # The boot is read from the runner's stdout; the RISC-V runner would
         # otherwise write it to a file of its own.
         serial_to_stdout=True)
@@ -115,6 +155,16 @@ def run_architecture(architecture: str) -> dict[str, object]:
         environment["XAIOS_QEMU_X86_NVME_IMAGE"] = str(image)
     else:
         environment["XAIOS_NVME_IMAGE"] = str(image)
+    # The board, for the one architecture here that has a choice of them. Set
+    # explicitly both ways rather than left to the runner's default: the whole
+    # point of a row is which board it is, and a row that inherited a board
+    # from whoever invoked the gate would report a result about a machine
+    # nobody asked for -- with the default-board row, which must find no
+    # message-signalled interrupts, the one most likely to be quietly wrong.
+    if profile.get("machine") is not None:
+        environment["XAIOS_RISCV64_MACHINE"] = str(profile["machine"])
+    else:
+        environment.pop("XAIOS_RISCV64_MACHINE", None)
     runner = qemu_runner(architecture)
     required_markers = list(MARKERS)
     required_markers.append(

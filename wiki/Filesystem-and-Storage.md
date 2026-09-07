@@ -62,9 +62,16 @@ backing-byte verification across repeated async rounds. It also covers SGL,
 direct aligned buffers, cancellation, malformed completions, and queue
 affinity. Both architectures require interrupt delivery for every negotiated
 queue: x86_64 through APIC/MSI-X and AArch64 through GICv3 ITS LPIs. RISC-V
-runs the same gate with a single polled queue, because this port drives the
-PLIC and has no APLIC/IMSIC driver to receive a message-signalled interrupt
-with (`P-16`).
+runs the same gate twice, once per board, and the two must disagree. On QEMU's
+default `virt` the interrupt controller is a PLIC, which carries wires and no
+messages, so the single I/O queue is polled and the gate requires it to say
+so. On `virt,aia=aplic-imsic` the same kernel finds an APLIC and an IMSIC,
+programs an MSI-X vector for the queue, and is required to have its completion
+delivered by interrupt rather than polled for (`controller=aia-imsic`). The
+queue count stays one on both, and that is an SMP bring-up property rather than
+an interrupt one: the driver asks for one queue per online CPU and the
+secondary harts are still held at the scheduler rendezvous when NVMe
+initialises (`P-16`).
 
 Persistent images are formatted as xaibootFS v6, which records extents rather
 than a fixed block list and raises the volume to a gibibyte. Mounting an older

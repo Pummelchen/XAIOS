@@ -260,16 +260,21 @@ fi
 # publishes no device tree, and this port reads its interrupt controller, its
 # timebase and its virtio window from one.
 BOOT_MODE="${XAIOS_RISCV64_BOOT:-kernel}"
-# The board, overridable so the interrupt-controller question can be asked.
+# The board, and this architecture is the only one here with a real choice of
+# them.
 #
-# The default `virt` publishes a PLIC, which is the only interrupt controller
-# this port has a driver for. QEMU also offers `virt,aia=aplic-imsic`, which
-# publishes APLIC and IMSIC instead and is what would make message-signalled
-# interrupts available here -- so "every queue polls on RISC-V" is a property
-# of this kernel as much as of the board. Selecting it today gets a machine
-# that boots and says `no plic in the device tree; external interrupts will
-# not be delivered`, which is the correct degradation and not a usable
-# configuration. The knob exists so that work can start from a measurement.
+# The default `virt` publishes a PLIC, which carries wires and no messages, so
+# every device queue on it is serviced by polling. `virt,aia=aplic-imsic`
+# publishes an APLIC and an IMSIC instead, and the kernel drives those too --
+# it looks for the supervisor-level pair in the device tree and falls back to
+# the PLIC when there is none, so one image boots on either. On the AIA board
+# virtio-PCI and NVMe get MSI-X vectors and the wired virtio-mmio transports
+# are forwarded through the APLIC as messages.
+#
+# The default stays `virt` because every other RISC-V gate in this tree runs on
+# it, and because the two boards must keep disagreeing: a kernel that claimed
+# message-signalled interrupts on a machine with no IMSIC would be lying, and
+# `make qemu-riscv64-aia-gate` boots both to require each answer.
 MACHINE="${XAIOS_RISCV64_MACHINE:-virt}"
 KERNEL_ARGS="-kernel $KERNEL"
 # OpenSBI as the boot firmware, unless EDK2 is flashed in instead: QEMU takes

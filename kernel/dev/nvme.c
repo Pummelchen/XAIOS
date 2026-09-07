@@ -378,12 +378,14 @@ static xaios_status_t negotiate_io_queues(nvme_controller_t *controller) {
   return XAIOS_OK;
 }
 
-/* Only compiled where there is something to register it with. A machine whose
-   interrupt controller carries no messages never installs this, and a handler
-   defined and never referenced is a build error rather than dead weight --
-   which is the compiler being right: an unused interrupt handler is usually a
-   wiring mistake, not an intention. */
-#if !defined(__riscv)
+/* Every architecture here can now be handed a completion by an interrupt, so
+   this is compiled everywhere. It used to be excluded on RISC-V, where the
+   only interrupt controller with a driver was the PLIC and no message could
+   reach a queue; a handler defined and never referenced is a build error
+   rather than dead weight, and that exclusion was the compiler being right.
+   It stopped being right when the APLIC/IMSIC driver landed: whether messages
+   are available is a property of the board now, decided at run time, not of
+   the architecture. */
 static void nvme_interrupt_handler(uint32_t intid, void *context) {
   nvme_queue_t *queue = (nvme_queue_t *)context;
   if (queue == 0 || queue->interrupt_id != intid || queue->controller == 0) {
@@ -392,7 +394,6 @@ static void nvme_interrupt_handler(uint32_t intid, void *context) {
   ++queue->interrupt_completions;
   (void)poll_queue(queue->controller, queue, NVME_QUEUE_DEPTH);
 }
-#endif
 
 static xaios_status_t configure_queue_interrupts(
     nvme_controller_t *controller) {
@@ -418,23 +419,60 @@ static xaios_status_t configure_queue_interrupts(
     ++controller->msix_queue_count;
   }
 #elif defined(__riscv)
-  /* No message-signalled interrupts on this machine.
+  /* Whether this machine carries messages is a property of its board, asked
+   * here rather than assumed.
    *
-   * The PLIC takes wires, not messages, so there is no LPI to allocate and no
-   * GICv2m frame to write into. That is a property of the interrupt
-   * controller and not a defect: the driver's own wait path already polls the
-   * completion queues -- wait_request calls poll_controller every turn -- so
-   * the queues work, they are simply serviced by the caller rather than by an
-   * interrupt. Saying so is what stops this looking like a driver that failed
-   * to initialise, which is how it read before: "no LPI available for queue
-   * 0" and then nothing.
+   * A PLIC takes wires, not messages: there is no identity to allocate and
+   * nothing to write a message into, so the queues are serviced by the
+   * caller's own wait path -- wait_request calls poll_controller every turn
+   * -- and saying so is what stops this looking like a driver that failed to
+   * initialise. That is still the honest answer on QEMU's default `virt`
+   * board and on every existing gate for this architecture.
    *
-   * virtio makes the same choice on the same board and logs it the same way.
-   * If this port grows an AIA driver, this is the branch that should stop
-   * being taken. */
-  (void)controller;
-  klog("nvme: no message-signalled interrupts on this machine; %u queues use "
-       "polled completion\n", controller->io_queue_count);
+   * An APLIC/IMSIC board is different, and the difference is the whole of
+   * P-16: an IMSIC interrupt file is reached by writing the interrupt's
+   * identity as a word to the hart's own page, which is exactly the address
+   * and data an MSI-X table entry holds. So the shape below is the ITS path's
+   * shape with none of the ITS in it.
+   *
+   * The GICv2m fallback the generic branch has below is deliberately not
+   * mirrored here: it is a fixed AArch64 address, and probing it on this
+   * architecture would be reading a machine's memory map out of another
+   * machine's driver. */
+  if (gic_its_available() == 0) {
+    klog("nvme: no message-signalled interrupts on this machine; %u queues "
+         "use polled completion\n", controller->io_queue_count);
+    return XAIOS_OK;
+  }
+  for (uint32_t index = 0U; index < controller->io_queue_count; ++index) {
+    nvme_queue_t *queue = &controller->io[index];
+    uint32_t interrupt_id = 0U;
+    if (gic_allocate_lpi(&interrupt_id) != XAIOS_OK) {
+      klog("nvme: no message identity available for queue %u\n", index);
+      return XAIOS_ERR_IO;
+    }
+    uint64_t message_address = 0U;
+    uint32_t message_data = 0U;
+    /* No device id and no event id: an IMSIC has no translation table to look
+       one up in. The zeros are passed because the shared signature asks for
+       them, and the controller ignores them. */
+    xaios_status_t status =
+        gic_its_configure_msi(0U, index, interrupt_id, queue->assigned_cpu,
+                              &message_address, &message_data);
+    if (status != XAIOS_OK ||
+        gic_register_lpi(interrupt_id, queue->assigned_cpu,
+                         nvme_interrupt_handler, queue) != XAIOS_OK ||
+        pci_configure_msix(controller->pci_index, (uint16_t)index,
+                           message_address, message_data) != XAIOS_OK) {
+      klog("nvme: IMSIC queue setup failed queue=%u identity=%u cpu=%u "
+           "address=0x%lx status=%d\n", index, interrupt_id,
+           queue->assigned_cpu, message_address, (int)status);
+      return XAIOS_ERR_IO;
+    }
+    queue->interrupt_id = interrupt_id;
+    queue->msix_entry = (uint16_t)index;
+    ++controller->msix_queue_count;
+  }
 #else
   uint32_t device_id = pci_stream_id(controller->pci_index);
   uint32_t use_its = 1U;
@@ -1031,6 +1069,11 @@ xaios_status_t nvme_interrupt_self_test(void) {
        controller->msix_queue_count, delivered,
 #if defined(__x86_64__)
        "x86-apic"
+#elif defined(__riscv)
+       /* Not "its": there is no translation service here, and naming one
+          would make a gate that asserts the controller's name pass on a
+          machine that has something else entirely. */
+       "aia-imsic"
 #else
        gic_its_available() ? "gicv3-its" : "gicv2m"
 #endif

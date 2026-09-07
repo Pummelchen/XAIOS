@@ -11,6 +11,7 @@
  * board-specific and hardcoding QEMU's would be the identity-versus-
  * capability mistake again.
  */
+#include <xaios/riscv64_aia.h>
 #include <xaios/riscv64_fdt.h>
 #include <xaios/smp.h>
 #include <xaios/status.h>
@@ -56,6 +57,14 @@ typedef struct riscv64_irq_handler {
 
 static riscv64_irq_handler_t g_handlers[PLIC_MAX_SOURCES];
 
+/* The message identity a wired source was given, on a machine whose wires go
+   through an APLIC rather than a PLIC. Zero means "not routed yet"; identity
+   zero is not a valid one, which is what makes zero usable as absent. Kept
+   here rather than in aia.c because the source number is this file's
+   currency -- drivers ask for a wire and do not know that it becomes a
+   message on the way. */
+static uint16_t g_wired_identity[PLIC_MAX_SOURCES];
+
 void riscv64_exception_set_device_tree(const void *blob) {
   g_device_tree = blob;
 }
@@ -81,7 +90,19 @@ static uint64_t supervisor_context(void) {
 }
 
 void riscv64_plic_enable(uint32_t source, uint32_t priority) {
-  if (g_plic_base == 0U || source == 0U || source >= PLIC_MAX_SOURCES) return;
+  if (source == 0U || source >= PLIC_MAX_SOURCES) return;
+  /* On an AIA machine there is no PLIC to mask at, and the same call means
+     the same thing: priority zero is how a caller says "stop delivering
+     this". Routed to the APLIC so that unregistering a handler leaves the
+     source quiet on both kinds of board rather than only one -- a source left
+     enabled with no handler delivers a message nothing claims, forever. */
+  if (riscv64_aia_present()) {
+    if (priority != 0U || g_wired_identity[source] == 0U) return;
+    (void)riscv64_aia_unregister(g_wired_identity[source]);
+    g_wired_identity[source] = 0U;
+    return;
+  }
+  if (g_plic_base == 0U) return;
   /* Priority zero means "never interrupt", so a source enabled at zero is
      enabled and silent -- which looks exactly like a device that is not
      working. */
@@ -99,6 +120,44 @@ xaios_status_t riscv64_irq_register(uint32_t source,
   if (source == 0U || source >= PLIC_MAX_SOURCES || handler == 0) {
     return XAIOS_ERR_INVALID;
   }
+  /* A wire on an AIA machine is not delivered as a wire.
+   *
+   * The caller asked to be told when source N asserts, which is the same
+   * request on both kinds of board; what differs is that here the APLIC turns
+   * the assertion into a message to an IMSIC, so the source needs an identity
+   * of its own and the handler is attached to that identity rather than to
+   * the source number. The driver does not have to know -- and must not have
+   * to know, because the same virtio code runs on the PLIC board. */
+  if (riscv64_aia_present()) {
+    if (!riscv64_aia_wired_present()) {
+      /* An IMSIC with no APLIC beside it can carry messages from PCI devices
+         and has no way to hear a wire at all. Refused rather than accepted
+         and silently never delivered: the callers all fall back to polling
+         when registration fails, which is a working machine, and a
+         registration that "succeeded" would leave them waiting. */
+      return XAIOS_ERR_UNSUPPORTED;
+    }
+    uint32_t identity = g_wired_identity[source];
+    if (identity == 0U) {
+      if (riscv64_aia_allocate(&identity) != XAIOS_OK) {
+        return XAIOS_ERR_NO_MEMORY;
+      }
+    }
+    xaios_status_t status =
+        riscv64_aia_register(identity, smp_cpu_id(), handler, context);
+    if (status != XAIOS_OK) return status;
+    status = riscv64_aia_route_wired(source, identity, smp_cpu_id());
+    if (status != XAIOS_OK) {
+      (void)riscv64_aia_unregister(identity);
+      return status;
+    }
+    g_wired_identity[source] = (uint16_t)identity;
+    /* Recorded here too, so a caller asking what is registered gets the same
+       answer on both boards even though the dispatch path differs. */
+    g_handlers[source].handler = handler;
+    g_handlers[source].context = context;
+    return XAIOS_OK;
+  }
   g_handlers[source].handler = handler;
   g_handlers[source].context = context;
   riscv64_plic_enable(source, 1U);
@@ -106,6 +165,13 @@ xaios_status_t riscv64_irq_register(uint32_t source,
 }
 
 static void handle_external(void) {
+  /* One cause, two controllers. scause 9 is "a supervisor external interrupt
+     happened" on every RISC-V machine; which controller has the details is a
+     property of the board, decided once at init and asked here. */
+  if (riscv64_aia_present()) {
+    g_external_count += riscv64_aia_dispatch();
+    return;
+  }
   if (g_plic_base == 0U) return;
   uint64_t context = supervisor_context();
   volatile uint32_t *claim =
@@ -506,6 +572,33 @@ void exception_init(void) {
                    :
                    : "r"((uint64_t)(uintptr_t)riscv64_trap_entry)
                    : "memory");
+
+  /* Which interrupt controller this board actually has, asked before either
+   * is assumed.
+   *
+   * The AIA controllers are looked for first and the PLIC second, and the
+   * order is not a preference: QEMU's `virt` publishes one or the other and
+   * never both, so on any real machine only one of these two branches has
+   * anything to find. Asking about AIA first means a board that has it is
+   * driven by it rather than falling into the "no plic in the device tree"
+   * message, which is what this port did until now -- a machine that booted
+   * every self-test and delivered no external interrupts at all.
+   *
+   * The probe inside needs the trap vector, which is why this is here and not
+   * earlier: reading a supervisor AIA CSR on hardware without Ssaia is an
+   * illegal instruction, and surviving that is how the question gets asked. */
+  if (g_device_tree != 0 && riscv64_aia_init(g_device_tree) != 0) {
+    riscv64_aia_report();
+    /* Timer, external and software, then interrupts on -- the same three the
+       PLIC path enables below. Duplicated rather than shared because the
+       return here skips the PLIC discovery entirely and a single exit would
+       have to carry a flag through it. */
+    __asm__ volatile("csrs sie, %0"
+                     : : "r"(SIE_TIMER | SIE_EXTERNAL | SIE_SOFTWARE));
+    __asm__ volatile("csrs sstatus, %0" : : "r"(SSTATUS_SIE));
+    klog("exception: stvec armed, timer and external interrupts enabled\n");
+    return;
+  }
 
   uint64_t plic = 0U;
   /* By compatible string, not by node name: this controller is called

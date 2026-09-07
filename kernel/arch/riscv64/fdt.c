@@ -451,3 +451,163 @@ int fdt_find_compatible_property(const void *blob, const char *compatible,
   *length = search.length;
   return 1;
 }
+
+
+/* Every node with a compatible string, not just the first one.
+ *
+ * Two passes over the tree rather than one, for the reason the searches above
+ * already give and this one cannot avoid either: a node's `compatible`, its
+ * `reg` and its `phandle` arrive in whatever order the tree was written, and
+ * QEMU writes `phandle` first and `compatible` last. A single pass would have
+ * to decide whether to believe a `reg` before it knows whose node it is.
+ *
+ * The count returned is how many matched, which can exceed `max`. A caller
+ * that gets back more than it had room for has been told its assumption about
+ * the board is wrong, which is more useful than a silent truncation.
+ */
+typedef struct all_search {
+  const char *wanted;
+  fdt_node_ref_t *matches;
+  uint32_t max;
+  uint32_t count;
+} all_search_t;
+
+static void collect_all_compatible(const fdt_property_t *property,
+                                   void *context) {
+  all_search_t *search = (all_search_t *)context;
+  if (!string_equal(property->name, "compatible")) return;
+  if (!compatible_contains(property->value, property->length, search->wanted)) {
+    return;
+  }
+  if (search->count < search->max) {
+    fdt_node_ref_t *slot = &search->matches[search->count];
+    slot->node_name = property->node_name;
+    slot->address = 0U;
+    slot->size = 0U;
+    slot->phandle = 0U;
+  }
+  ++search->count;
+}
+
+static void fill_all_reg(const fdt_property_t *property, void *context) {
+  all_search_t *search = (all_search_t *)context;
+  uint32_t limit = search->count < search->max ? search->count : search->max;
+  int is_reg = string_equal(property->name, "reg");
+  int is_phandle = string_equal(property->name, "phandle");
+  if (is_reg == 0 && is_phandle == 0) return;
+  for (uint32_t index = 0U; index < limit; ++index) {
+    fdt_node_ref_t *slot = &search->matches[index];
+    if (!string_equal(property->node_name, slot->node_name)) continue;
+    if (is_phandle != 0) {
+      if (property->length >= 4U) slot->phandle = be32(property->value);
+      return;
+    }
+    if (property->length < property->address_cells * 4U) return;
+    slot->address = read_cells(property->value, property->address_cells);
+    if (property->length >=
+        (property->address_cells + property->size_cells) * 4U) {
+      slot->size = read_cells(property->value + property->address_cells * 4U,
+                              property->size_cells);
+    }
+    return;
+  }
+}
+
+uint32_t fdt_find_compatible_all(const void *blob, const char *compatible,
+                                 fdt_node_ref_t *matches, uint32_t max) {
+  all_search_t search;
+  search.wanted = compatible;
+  search.matches = matches;
+  search.max = matches == 0 ? 0U : max;
+  search.count = 0U;
+  fdt_walk(blob, collect_all_compatible, &search);
+  if (search.count != 0U && search.max != 0U) {
+    fdt_walk(blob, fill_all_reg, &search);
+  }
+  return search.count;
+}
+
+typedef struct named_property_search {
+  const char *node_name;
+  const char *property;
+  const uint8_t *value;
+  uint32_t length;
+  int found;
+} named_property_search_t;
+
+static void find_property_of_named_node(const fdt_property_t *property,
+                                        void *context) {
+  named_property_search_t *search = (named_property_search_t *)context;
+  if (search->found != 0) return;
+  if (!string_equal(property->node_name, search->node_name)) return;
+  if (!string_equal(property->name, search->property)) return;
+  search->value = property->value;
+  search->length = property->length;
+  search->found = 1;
+}
+
+int fdt_node_property(const void *blob, const char *node_name,
+                      const char *name, const uint8_t **value,
+                      uint32_t *length) {
+  named_property_search_t search = {node_name, name, 0, 0U, 0};
+  if (node_name == 0 || name == 0) return 0;
+  fdt_walk(blob, find_property_of_named_node, &search);
+  if (search.found == 0 || value == 0 || length == 0) return 0;
+  *value = search.value;
+  *length = search.length;
+  return 1;
+}
+
+/* Which hart a local interrupt controller belongs to.
+ *
+ * The tree nests it: `/cpus/cpu@N` carries the hart id in its `reg`, and its
+ * child `interrupt-controller` carries the phandle everything else refers to
+ * that hart by. The walk is linear and a node's properties precede its
+ * children, so the last `reg` seen under a node named `cpu` belongs to the
+ * hart whose intc child comes next. That is a property of how a device tree
+ * is serialised rather than a guess: the FDT_PROP tokens of a node always
+ * come before any FDT_BEGIN_NODE inside it.
+ *
+ * Why it matters at all: an IMSIC's interrupt files are selected by position
+ * in its `interrupts-extended` list, not by hart id, and the two agree only
+ * on a machine where firmware kept no hart for itself. This port has already
+ * been bitten once by assuming hart ids have no gaps.
+ */
+typedef struct intc_search {
+  uint32_t wanted_phandle;
+  uint32_t current_hart;
+  int have_current;
+  uint32_t hart_id;
+  int found;
+} intc_search_t;
+
+static void find_intc_hart(const fdt_property_t *property, void *context) {
+  intc_search_t *search = (intc_search_t *)context;
+  if (search->found != 0) return;
+  if (node_name_matches(property->node_name, "cpu") &&
+      string_equal(property->name, "reg") && property->length >= 4U) {
+    /* Decoded with the cells /cpus declared for its children, which is what
+       fdt_walk already hands over. Assuming one cell would read the top half
+       of a 64-bit id on a tree that declares two. */
+    search->current_hart =
+        (uint32_t)read_cells(property->value, property->address_cells);
+    search->have_current = 1;
+    return;
+  }
+  if (!string_equal(property->node_name, "interrupt-controller")) return;
+  if (!string_equal(property->name, "phandle") || property->length < 4U) return;
+  if (search->have_current == 0) return;
+  if (be32(property->value) != search->wanted_phandle) return;
+  search->hart_id = search->current_hart;
+  search->found = 1;
+}
+
+int fdt_hart_of_intc_phandle(const void *blob, uint32_t phandle,
+                             uint32_t *hart_id) {
+  intc_search_t search = {phandle, 0U, 0, 0U, 0};
+  if (phandle == 0U) return 0;
+  fdt_walk(blob, find_intc_hart, &search);
+  if (search.found == 0 || hart_id == 0) return 0;
+  *hart_id = search.hart_id;
+  return 1;
+}
