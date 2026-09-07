@@ -89,6 +89,22 @@ def main() -> int:
     }
     write_report(REPORT, report)
     if failures:
+        # The reasons first, then the consoles.
+        #
+        # This printed the two consoles and nothing else, so a failure here
+        # arrived as seven thousand lines of a machine booting perfectly
+        # followed by "Error 1" -- and the only statement of what went wrong
+        # was in a report file that the next run of this gate overwrites.
+        # That is how one real failure of this gate was lost: it was rerun to
+        # investigate, the rerun passed, and the evidence was gone.
+        print("qemu-fault-injection: FAILED")
+        for failure in failures:
+            print(f"  - {failure}")
+        # Kept beside the report so a rerun cannot erase the failing one.
+        keepsake = REPORT.with_name(
+            f"{REPORT.stem}-failure-{now()}.json")
+        write_report(keepsake, report)
+        print(f"qemu-fault-injection: this failure kept at {keepsake}")
         print(fault_proc.stdout)
         print(smoke_proc.stdout)
     return 0 if not failures else 1

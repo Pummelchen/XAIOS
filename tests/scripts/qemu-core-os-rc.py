@@ -26,6 +26,14 @@ COMMANDS = [
     ("network", ["make", "qemu-network-suite"], 300),
     ("high_core", ["make", "qemu-high-core-gate"], 500),
     ("x86_64", ["make", "qemu-x86_64-smoke"], 240),
+    # Both of these existed as make targets that nothing invoked, which makes
+    # them documentation rather than gates. The memory matrix is the only thing
+    # that boots all three architectures at more than one memory size, and the
+    # address-space defects it guards were invisible at the single size every
+    # other gate uses. The read-only medium gate is the only thing that
+    # exercises the driver's refusal path at all.
+    ("memory_matrix", ["make", "qemu-memory-matrix"], 3600),
+    ("readonly_medium", ["make", "qemu-readonly-medium-gate"], 900),
     ("operations", ["python3", "tests/scripts/qemu-operations-closure.py",
                     "--skip-docker"], 700),
 ]

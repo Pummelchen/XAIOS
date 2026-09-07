@@ -35,6 +35,10 @@ RECORD = BUILD / "local-gates.json"
 # rather than forty. Each entry is (name, make target, budget in seconds).
 GATES = (
     ("vmware-fusion-smoke", "vmware-fusion-smoke", 1800),
+    # Reports the boundary rather than a result today -- vmrun captureScreen is
+    # a guest operation needing VMware Tools -- and is listed so that stays
+    # visible and starts answering the day a guest agent exists.
+    ("vmware-fusion-framebuffer-gate", "vmware-fusion-framebuffer-gate", 1800),
     ("vz-gate", "vz-gate", 1800),
     ("unified-image-gate", "unified-image-gate", 3600),
     ("vz-stress-gate", "vz-stress-gate", 3600),
