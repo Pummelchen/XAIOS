@@ -25,6 +25,17 @@
  * at a peer across a real network -- XAIOS_CLUSTER_PEER_IPV4_{A,B,C,D} -- and
  * defaults to the host side of the QEMU user network, which is where the
  * host-process peer has always been.
+ *
+ * There is a second program in this file, built with
+ * XAIOS_CLUSTER_MESH_NODES=3, and it exists because everything described
+ * above tests a cluster whose members are polite. Membership here moves on
+ * frames that say what they mean -- a LEAVE takes a node offline, a JOIN
+ * brings it back -- and machines do not usually fail that way. They lose
+ * power, panic, or have a cable pulled, and say nothing at all. The mesh at
+ * the bottom of this file has no LEAVE in it: three nodes heartbeat to each
+ * other and a node is judged dead when a deadline passes with nothing heard
+ * from it. Three, because until there is a third node there is no majority to
+ * be in, and a survivor's decision cannot be distinguished from a guess.
  */
 
 #include <xaios_user.h>
@@ -54,8 +65,24 @@
 #define XAIOS_CLUSTER_PEER_IPV4_D 2U
 #endif
 
+/* Which program this file is. Zero -- the default -- is the two-node data
+   plane below: one machine dials, one listens, and membership moves because
+   each end says what it is doing. Three is the mesh at the bottom of this
+   file, where nobody announces anything and a node is judged by whether it
+   is still speaking. They are separate programs sharing one source file
+   because they share the framing, the key and the peer table, and because a
+   machine only ever runs one of them. */
+#ifndef XAIOS_CLUSTER_MESH_NODES
+#define XAIOS_CLUSTER_MESH_NODES 0
+#endif
+#if XAIOS_CLUSTER_MESH_NODES != 0 && XAIOS_CLUSTER_MESH_NODES != 3
+#error "XAIOS_CLUSTER_MESH_NODES is 0 (two-node data plane) or 3 (mesh)"
+#endif
+
+#if !XAIOS_CLUSTER_MESH_NODES
 static xaios_cluster_peer_t g_peers[1];
 static xaios_cluster_t g_cluster;
+#endif
 
 /* The key both ends share. A real deployment derives one; this is a test
    whose point is the transport, and a key that is generated here would have to
@@ -68,6 +95,7 @@ static const u8 k_shared_key[XAIOS_CLUSTER_KEY_SIZE] = {
 };
 
 
+#if !XAIOS_CLUSTER_MESH_NODES
 /* Read exactly `want` bytes, or give up when the deadline passes.
  *
  * A stream returns what it has rather than what was asked for. Busy and zero
@@ -96,6 +124,8 @@ static int read_exactly(u64 socket, u8 *buffer, u64 want, u64 timeout_nanos,
   return total == want ? 0 : (last_status != 0 ? last_status : -1);
 }
 
+#endif /* !XAIOS_CLUSTER_MESH_NODES */
+
 /* The frame's own length, read out of the header it starts with.
  *
  * A client knows how many bytes to expect because it sealed them. A server
@@ -109,6 +139,7 @@ static u64 frame_length_from_header(const u8 *header) {
          (u64)XAIOS_CLUSTER_TAG_SIZE;
 }
 
+#if !XAIOS_CLUSTER_MESH_NODES
 /* Membership, and the ownership it decides.
  *
  * The framing tests above prove two machines can exchange a sealed frame. A
@@ -205,6 +236,8 @@ static int recv_sealed(u64 socket, xaios_cluster_message_t *message,
   return 0;
 }
 
+#endif /* !XAIOS_CLUSTER_MESH_NODES */
+
 static int fail(const char *why) {
   xaios_log("/bin/clustertest: ");
   xaios_log(why);
@@ -212,7 +245,580 @@ static int fail(const char *why) {
   return 1;
 }
 
+#if XAIOS_CLUSTER_MESH_NODES
+/* ---------------------------------------------------------------------------
+ * Three nodes, heartbeats, and a peer that stops answering.
+ *
+ * The two-node program below this one moves membership on frames that say
+ * what they mean: a LEAVE takes a node offline, a JOIN brings it back. That
+ * is the polite case, and it is not the case that happens. Machines fail by
+ * losing power, by panicking, by having a cable pulled or a switch reboot,
+ * and every one of those looks the same from the outside: nothing arrives any
+ * more. Detecting that needs a heartbeat -- traffic that exists so its
+ * absence means something -- and a deadline, which is a judgement about how
+ * long a healthy node may be quiet before it is presumed gone.
+ *
+ * It also needs a third node. At two, a survivor cannot distinguish a dead
+ * peer from a cut wire, and both nodes deciding they are in charge is a
+ * defensible answer for each of them. At three, a majority can be certain no
+ * other majority exists, so a survivor pair may act and a lone survivor must
+ * not. That is why this is three machines and not two, and it is the whole
+ * reason the row this closes could not be closed by the two-node gate.
+ *
+ * Topology: every node listens on a port of its own and dials both others,
+ * so each ordered pair gets a connection carrying heartbeats one way. Two
+ * connections per pair rather than one shared in both directions, because
+ * then a node's liveness rests entirely on frames it chose to send: nothing
+ * it receives, and no connection somebody else opened towards it, can make it
+ * look alive to a peer. Which peer spoke is read out of the frame's sender
+ * field after it opens, never inferred from the socket it arrived on.
+ *
+ * The link state is deliberately NOT membership. Under QEMU's user network a
+ * dial to a peer's forwarded port is accepted by the emulator on the host
+ * before the guest behind it has been asked anything at all, so "connected"
+ * can mean nothing more than "an emulator is running". A frame that opens --
+ * right epoch, right receiver, fresh nonce, valid tag -- is the only evidence
+ * this program will treat as a live peer, which is also the only evidence
+ * worth anything on a network with an attacker on it.
+ * ------------------------------------------------------------------------ */
+
+#ifndef XAIOS_CLUSTER_NODE_ID
+#define XAIOS_CLUSTER_NODE_ID 1U
+#endif
+#ifndef XAIOS_CLUSTER_MESH_PORT_1
+#define XAIOS_CLUSTER_MESH_PORT_1 7801U
+#endif
+#ifndef XAIOS_CLUSTER_MESH_PORT_2
+#define XAIOS_CLUSTER_MESH_PORT_2 7802U
+#endif
+#ifndef XAIOS_CLUSTER_MESH_PORT_3
+#define XAIOS_CLUSTER_MESH_PORT_3 7803U
+#endif
+
+#define MESH_TOTAL ((u64)XAIOS_CLUSTER_MESH_NODES)
+#define MESH_PEER_COUNT (XAIOS_CLUSTER_MESH_NODES - 1)
+#define MESH_LOCAL_ID ((uint64_t)XAIOS_CLUSTER_NODE_ID)
+
+/* How often a node speaks, and how long a silence has to last before it is
+   read as a death.
+ *
+ * Forty heartbeats fit inside the deadline. That ratio is not caution for its
+ * own sake: a dial to a peer that has vanished can sit in the kernel's
+ * connect path for up to ten seconds before it gives up, and during that
+ * stall this node sends nothing to anybody. A deadline shorter than that
+ * stall would have each survivor declare the OTHER survivor dead while it was
+ * busy dialling the corpse -- one failure turning into three. The gate
+ * measures the worst dial this run actually took and refuses to pass if it
+ * came anywhere near the deadline, so the margin is checked rather than
+ * assumed. */
+#define MESH_TICK_NS 200000000ULL
+#define MESH_HEARTBEAT_NS 500000000ULL
+#define MESH_SILENCE_NS 20000000000ULL
+/* A peer that has never been heard from is still booting; retry often. One
+   that has been declared dead is probably not coming back in this run, but a
+   real node would keep trying, because that is how a repaired machine
+   rejoins -- so retry, rarely. */
+#define MESH_DIAL_RETRY_NS 2000000000ULL
+#define MESH_DEAD_DIAL_RETRY_NS 30000000000ULL
+/* Long enough for three emulated machines to boot and find each other. */
+#define MESH_FORM_LIMIT_NS 300000000000ULL
+/* An outer bound on the whole run, so a node that is never killed exits with
+   a complaint rather than holding the gate open until its timeout. */
+#define MESH_RUN_LIMIT_NS 900000000000ULL
+
+/* The experts whose ownership is reported. Eight, because the point is to
+   watch which ones move when a node dies and which do not, and one expert
+   can only demonstrate the first. */
+#define MESH_EXPERTS 8U
+
+static const u64 k_mesh_port[3] = {
+    (u64)XAIOS_CLUSTER_MESH_PORT_1,
+    (u64)XAIOS_CLUSTER_MESH_PORT_2,
+    (u64)XAIOS_CLUSTER_MESH_PORT_3,
+};
+
+static xaios_cluster_peer_t g_mesh_peers[MESH_PEER_COUNT];
+static xaios_cluster_t g_mesh;
+static uint64_t g_mesh_peer_id[MESH_PEER_COUNT];
+static u64 g_mesh_out[MESH_PEER_COUNT];
+static u64 g_mesh_last_sent[MESH_PEER_COUNT];
+static u64 g_mesh_last_dial[MESH_PEER_COUNT];
+static int g_mesh_seen_online[MESH_PEER_COUNT];
+static u64 g_mesh_report_version;
+static u64 g_mesh_worst_dial_ns;
+static u8 g_mesh_frame[XAIOS_CLUSTER_MAX_MESSAGE];
+
+/* Inbound connections. Two peers, but a peer that reconnects can briefly hold
+   two, and a slot that is never freed would silently stop this node hearing
+   from anyone -- so there is room to spare and a slot is released the moment
+   its socket reports the far end gone. */
+#define MESH_INBOUND 6
+#define MESH_INBOUND_BUFFER (2U * XAIOS_CLUSTER_MAX_MESSAGE)
+static u64 g_mesh_in[MESH_INBOUND];
+static u8 g_mesh_in_buffer[MESH_INBOUND][MESH_INBOUND_BUFFER];
+static u64 g_mesh_in_filled[MESH_INBOUND];
+
+/* Every line this program prints is assembled here and written once.
+ *
+ * xaios_log_u64 is three console writes -- prefix, number, suffix -- and a
+ * report built from a dozen of them is a dozen chances for sshd or the kernel
+ * to put a line of its own through the middle of this one. The gate reads
+ * these lines with a regular expression, so a torn line is a failed match,
+ * and a failed match reads exactly like a check that never ran. One write per
+ * line is the difference between a gate that is flaky on a busy machine and
+ * one that is not. */
+static char g_mesh_line[512];
+static u64 g_mesh_line_len;
+
+static void mesh_line_reset(void) {
+  g_mesh_line_len = 0;
+  g_mesh_line[0] = 0;
+}
+
+static void mesh_line_text(const char *text) {
+  while (*text != 0 && g_mesh_line_len + 1U < sizeof(g_mesh_line)) {
+    g_mesh_line[g_mesh_line_len++] = *text++;
+  }
+  g_mesh_line[g_mesh_line_len] = 0;
+}
+
+static void mesh_line_u64(u64 value) {
+  char digits[21];
+  u64 count = 0;
+  if (value == 0U) {
+    mesh_line_text("0");
+    return;
+  }
+  while (value != 0U && count < sizeof(digits)) {
+    digits[count++] = (char)('0' + (char)(value % 10U));
+    value /= 10U;
+  }
+  while (count != 0U) {
+    --count;
+    if (g_mesh_line_len + 1U < sizeof(g_mesh_line)) {
+      g_mesh_line[g_mesh_line_len++] = digits[count];
+    }
+  }
+  g_mesh_line[g_mesh_line_len] = 0;
+}
+
+static void mesh_line_emit(void) {
+  mesh_line_text("\n");
+  xaios_log(g_mesh_line);
+}
+
+static int mesh_peer_online(uint64_t node_id) {
+  for (u64 i = 0; i < (u64)MESH_PEER_COUNT; ++i) {
+    if (g_mesh_peer_id[i] == node_id) {
+      return g_mesh_peers[i].state == XAIOS_CLUSTER_NODE_ONLINE ? 1 : 0;
+    }
+  }
+  return 0;
+}
+
+static void mesh_expert_identity(u64 expert, xaios_expert_identity_t *out) {
+  xaios_memzero(out, sizeof(*out));
+  for (u64 i = 0; i < 16U; ++i) out->model_uuid[i] = (u8)(i + 1U);
+  out->layer_id = 7ULL;
+  out->expert_id = expert;
+  out->layout_id = 1U;
+}
+
+/* One line carrying everything this node believes: who is up, whether that is
+   a majority, and who owns each expert.
+ *
+ * It is one line on purpose. The gate compares these across machines, and a
+ * membership printed separately from the ownership computed from it invites
+ * comparing a view against an answer taken from a different instant. */
+static void mesh_report(const char *reason) {
+  uint64_t live = 0;
+  uint64_t total = 0;
+  int quorum = 0;
+  if (xaios_cluster_quorum(&g_mesh, &live, &total, &quorum) !=
+      XAIOS_ENGINE_OK) {
+    xaios_log("/bin/clustertest: mesh quorum query failed\n");
+    return;
+  }
+  ++g_mesh_report_version;
+  mesh_line_reset();
+  mesh_line_text("/bin/clustertest: mesh report node=");
+  mesh_line_u64((u64)MESH_LOCAL_ID);
+  mesh_line_text(" version=");
+  mesh_line_u64(g_mesh_report_version);
+  mesh_line_text(" live=");
+  mesh_line_u64((u64)live);
+  mesh_line_text(" total=");
+  mesh_line_u64((u64)total);
+  mesh_line_text(" quorum=");
+  mesh_line_u64((u64)(quorum ? 1 : 0));
+  mesh_line_text(" reason=");
+  mesh_line_text(reason);
+  mesh_line_text(" members=");
+  int printed = 0;
+  for (u64 id = 1; id <= MESH_TOTAL; ++id) {
+    int up = id == (u64)MESH_LOCAL_ID ? 1 : mesh_peer_online((uint64_t)id);
+    if (!up) continue;
+    if (printed) mesh_line_text(",");
+    mesh_line_u64(id);
+    printed = 1;
+  }
+  if (!quorum) {
+    /* A minority does not get to answer. Somewhere on the other side of this
+       silence there may be two nodes that can still see each other, and they
+       are entitled to decide; if this node decided as well, one expert would
+       have two owners, which is not an error anybody detects -- it is just
+       work done twice and a result nobody reconciles. Withholding is the
+       whole practical content of quorum. */
+    mesh_line_text(" owners=withheld");
+    mesh_line_emit();
+    return;
+  }
+  mesh_line_text(" owners=");
+  for (u64 expert = 0; expert < MESH_EXPERTS; ++expert) {
+    xaios_expert_identity_t identity;
+    uint64_t owner = 0;
+    mesh_expert_identity(expert, &identity);
+    if (xaios_cluster_select_owner(&g_mesh, &identity, &owner) !=
+        XAIOS_ENGINE_OK) {
+      mesh_line_text("error");
+      mesh_line_emit();
+      return;
+    }
+    if (expert != 0U) mesh_line_text(",");
+    mesh_line_u64((u64)owner);
+  }
+  mesh_line_emit();
+}
+
+static void mesh_dial(u64 index) {
+  xaios_ip_addr_user_t address;
+  xaios_memzero(&address, sizeof(address));
+  address.family = 4U;
+  address.addr[0] = (u8)XAIOS_CLUSTER_PEER_IPV4_A;
+  address.addr[1] = (u8)XAIOS_CLUSTER_PEER_IPV4_B;
+  address.addr[2] = (u8)XAIOS_CLUSTER_PEER_IPV4_C;
+  address.addr[3] = (u8)XAIOS_CLUSTER_PEER_IPV4_D;
+  u64 port = k_mesh_port[g_mesh_peer_id[index] - 1U];
+  u64 socket = 0;
+  u64 started = xaios_clock_nanos();
+  int status = xaios_net_connect(&address, port, &socket);
+  u64 took = xaios_clock_nanos() - started;
+  /* Both outcomes are timed, and the worst is reported at the end. A dial
+     blocks this node's whole loop, so its cost is the real risk to the
+     deadline, and a number nobody prints is a number nobody checks. */
+  if (took > g_mesh_worst_dial_ns) g_mesh_worst_dial_ns = took;
+  mesh_line_reset();
+  mesh_line_text("/bin/clustertest: mesh dial node=");
+  mesh_line_u64((u64)g_mesh_peer_id[index]);
+  mesh_line_text(" port=");
+  mesh_line_u64(port);
+  mesh_line_text(status != 0 ? " result=failed took_ms=" : " result=ok took_ms=");
+  mesh_line_u64(took / 1000000ULL);
+  mesh_line_emit();
+  if (status != 0) return;
+  g_mesh_out[index] = socket;
+}
+
+static void mesh_heartbeat(u64 index, u64 now) {
+  size_t sealed = 0;
+  if (xaios_cluster_seal(&g_mesh, g_mesh_peer_id[index],
+                         (u16)XAIOS_CLUSTER_HEARTBEAT, 0, 0, g_mesh_frame,
+                         sizeof(g_mesh_frame), &sealed) != XAIOS_ENGINE_OK) {
+    return;
+  }
+  u64 sent = 0;
+  if (xaios_net_send(g_mesh_out[index], g_mesh_frame, (u64)sealed, &sent) !=
+          0 ||
+      sent != (u64)sealed) {
+    /* The link is gone; the peer may or may not be. Closing the socket is all
+       that happens here -- membership is decided by silence and by nothing
+       else, because a broken connection is a fact about a connection. */
+    (void)xaios_net_close(g_mesh_out[index]);
+    g_mesh_out[index] = 0;
+    return;
+  }
+  g_mesh_last_sent[index] = now;
+}
+
+static void mesh_accept(u64 listener) {
+  for (u64 guard = 0; guard < (u64)MESH_INBOUND; ++guard) {
+    u64 socket = 0;
+    if (xaios_net_accept(listener, &socket) != 0) return;
+    u64 slot = (u64)MESH_INBOUND;
+    for (u64 i = 0; i < (u64)MESH_INBOUND; ++i) {
+      if (g_mesh_in[i] == 0) {
+        slot = i;
+        break;
+      }
+    }
+    if (slot == (u64)MESH_INBOUND) {
+      /* Nowhere to put it. Refusing loudly is better than holding a socket
+         this node will never read, which would look like a peer that had
+         gone quiet. */
+      xaios_log("/bin/clustertest: mesh inbound table full; connection "
+                "refused\n");
+      (void)xaios_net_close(socket);
+      return;
+    }
+    g_mesh_in[slot] = socket;
+    g_mesh_in_filled[slot] = 0;
+  }
+}
+
+/* Read whatever has arrived and open every complete frame in it.
+ *
+ * A stream has no frames in it; it has bytes, and the frames are a thing the
+ * reader believes. Two heartbeats sent half a second apart can arrive in one
+ * segment, and one heartbeat can arrive in two -- so this keeps a buffer per
+ * connection, takes the length out of each header, and consumes only what is
+ * whole. A version that treated one read as one frame would work on every
+ * quiet machine and fail on a busy one. */
+static void mesh_receive(u64 now) {
+  for (u64 slot = 0; slot < (u64)MESH_INBOUND; ++slot) {
+    if (g_mesh_in[slot] == 0) continue;
+    u64 room = (u64)MESH_INBOUND_BUFFER - g_mesh_in_filled[slot];
+    /* A read of zero bytes is a rejected syscall, not an empty read, so a
+       full buffer is skipped rather than asked -- the frames already in it
+       are consumed below and the room comes back on the next turn. */
+    if (room != 0U) {
+      u64 got = 0;
+      int status = xaios_net_recv(g_mesh_in[slot],
+                                  g_mesh_in_buffer[slot] +
+                                      g_mesh_in_filled[slot],
+                                  room, &got);
+      if (status != 0 && status != XAIOS_ERR_BUSY) {
+        (void)xaios_net_close(g_mesh_in[slot]);
+        g_mesh_in[slot] = 0;
+        g_mesh_in_filled[slot] = 0;
+        continue;
+      }
+      if (status == 0) g_mesh_in_filled[slot] += got;
+    }
+    for (;;) {
+      if (g_mesh_in_filled[slot] < (u64)XAIOS_CLUSTER_HEADER_SIZE) break;
+      u64 length = frame_length_from_header(g_mesh_in_buffer[slot]);
+      if (length > (u64)MESH_INBOUND_BUFFER ||
+          length < (u64)XAIOS_CLUSTER_HEADER_SIZE) {
+        /* A length this node cannot honour means the stream is not what it
+           claims to be. There is no resynchronising from that without a
+           framing marker, so drop the connection rather than guess. */
+        xaios_log("/bin/clustertest: mesh impossible frame length; dropping "
+                  "connection\n");
+        (void)xaios_net_close(g_mesh_in[slot]);
+        g_mesh_in[slot] = 0;
+        g_mesh_in_filled[slot] = 0;
+        break;
+      }
+      if (g_mesh_in_filled[slot] < length) break;
+      xaios_cluster_message_t message;
+      xaios_memzero(&message, sizeof(message));
+      if (xaios_cluster_open(&g_mesh, g_mesh_in_buffer[slot], (size_t)length,
+                             &message) == XAIOS_ENGINE_OK) {
+        /* `open` has already marked the sender online. What it cannot do is
+           say when, because nothing in the engine reads a clock -- so the
+           timestamp is stamped here, from the one clock this node trusts. */
+        (void)xaios_cluster_note_heard(&g_mesh, message.sender_node_id,
+                                       now == 0U ? 1U : now);
+      }
+      /* Whether it opened or not, those bytes are spent. A frame that failed
+         to open -- a stale nonce from a connection that was replaced, say --
+         is not a reason to stop reading the ones behind it. */
+      u64 remaining = g_mesh_in_filled[slot] - length;
+      for (u64 i = 0; i < remaining; ++i) {
+        g_mesh_in_buffer[slot][i] = g_mesh_in_buffer[slot][length + i];
+      }
+      g_mesh_in_filled[slot] = remaining;
+    }
+  }
+}
+
+static int mesh_main(void) {
+  mesh_line_reset();
+  mesh_line_text("/bin/clustertest: mesh node=");
+  mesh_line_u64((u64)MESH_LOCAL_ID);
+  mesh_line_text(" of=");
+  mesh_line_u64((u64)MESH_TOTAL);
+  mesh_line_text(" heartbeat_ms=");
+  mesh_line_u64(MESH_HEARTBEAT_NS / 1000000ULL);
+  mesh_line_text(" silence_deadline_ms=");
+  mesh_line_u64(MESH_SILENCE_NS / 1000000ULL);
+  mesh_line_emit();
+
+  xaios_memzero(g_mesh_peers, sizeof(g_mesh_peers));
+  u64 next = 0;
+  for (u64 id = 1; id <= MESH_TOTAL; ++id) {
+    if (id == (u64)MESH_LOCAL_ID) continue;
+    g_mesh_peer_id[next] = (uint64_t)id;
+    g_mesh_peers[next].node_id = (uint64_t)id;
+    /* Every peer starts OFFLINE and unheard. Starting them online would mean
+       this node's first report described a cluster it had not yet met, and
+       the first thing the deadline did would be to correct an optimism this
+       program had no reason to have. */
+    g_mesh_peers[next].state = XAIOS_CLUSTER_NODE_OFFLINE;
+    g_mesh_peers[next].last_heard_nanos = 0U;
+    g_mesh_peers[next].next_transmit_nonce = 1ULL;
+    g_mesh_peers[next].last_received_nonce = 0ULL;
+    /* One key for every link in the mesh, which is weaker than it looks and
+       is said out loud rather than left to be discovered: with a single
+       shared key, node 3 can seal a frame that node 2 will accept as coming
+       from node 1. Nothing in this test does that, and nothing in this test
+       would notice. A deployment needs a key per ordered pair -- the peer
+       table already has separate transmit and receive keys precisely so that
+       it can -- and until it does, mutual authentication here means "a
+       member of this cluster" rather than "this member of this cluster". */
+    for (u64 i = 0; i < XAIOS_CLUSTER_KEY_SIZE; ++i) {
+      g_mesh_peers[next].transmit_key[i] = k_shared_key[i];
+      g_mesh_peers[next].receive_key[i] = k_shared_key[i];
+    }
+    ++next;
+  }
+  if (xaios_cluster_init(&g_mesh, MESH_LOCAL_ID, 1ULL, g_mesh_peers,
+                         (uint64_t)MESH_PEER_COUNT) != XAIOS_ENGINE_OK) {
+    return fail("mesh cluster init failed");
+  }
+
+  u64 listener = 0;
+  u64 local_port = k_mesh_port[MESH_LOCAL_ID - 1U];
+  if (xaios_net_listen(local_port, &listener) != 0) {
+    return fail("mesh could not listen");
+  }
+  mesh_line_reset();
+  mesh_line_text("/bin/clustertest: mesh listening port=");
+  mesh_line_u64(local_port);
+  mesh_line_emit();
+
+  u64 start = xaios_clock_nanos();
+  int formed = 0;
+  for (;;) {
+    u64 now = xaios_clock_nanos();
+    if (!formed && now - start > MESH_FORM_LIMIT_NS) {
+      (void)xaios_net_close(listener);
+      return fail("mesh never formed: some peer was never heard from");
+    }
+    if (now - start > MESH_RUN_LIMIT_NS) {
+      (void)xaios_net_close(listener);
+      return fail("mesh run limit reached with quorum still held");
+    }
+
+    for (u64 i = 0; i < (u64)MESH_PEER_COUNT; ++i) {
+      if (g_mesh_out[i] == 0) {
+        u64 backoff = g_mesh_seen_online[i] == 0 &&
+                              g_mesh_peers[i].last_heard_nanos != 0U
+                          ? MESH_DEAD_DIAL_RETRY_NS
+                          : MESH_DIAL_RETRY_NS;
+        if (g_mesh_last_dial[i] == 0U || now - g_mesh_last_dial[i] >= backoff) {
+          g_mesh_last_dial[i] = now;
+          mesh_dial(i);
+          now = xaios_clock_nanos();
+        }
+      }
+      if (g_mesh_out[i] != 0 &&
+          (g_mesh_last_sent[i] == 0U ||
+           now - g_mesh_last_sent[i] >= MESH_HEARTBEAT_NS)) {
+        mesh_heartbeat(i, now);
+      }
+    }
+
+    mesh_accept(listener);
+    mesh_receive(now);
+
+    uint64_t expired = 0;
+    if (xaios_cluster_expire_silent(&g_mesh, now, MESH_SILENCE_NS, &expired) !=
+        XAIOS_ENGINE_OK) {
+      (void)xaios_net_close(listener);
+      return fail("mesh silence expiry failed");
+    }
+
+    int lost = 0;
+    int found = 0;
+    for (u64 i = 0; i < (u64)MESH_PEER_COUNT; ++i) {
+      int up = g_mesh_peers[i].state == XAIOS_CLUSTER_NODE_ONLINE ? 1 : 0;
+      if (up == g_mesh_seen_online[i]) continue;
+      g_mesh_seen_online[i] = up;
+      if (up) {
+        found = 1;
+        mesh_line_reset();
+        mesh_line_text("/bin/clustertest: mesh peer-found node=");
+        mesh_line_u64((u64)g_mesh_peer_id[i]);
+        mesh_line_emit();
+      } else {
+        lost = 1;
+        u64 silent_for = now - (u64)g_mesh_peers[i].last_heard_nanos;
+        mesh_line_reset();
+        mesh_line_text("/bin/clustertest: mesh peer-lost node=");
+        mesh_line_u64((u64)g_mesh_peer_id[i]);
+        /* The reason is the point of this whole program: nothing was said,
+           and the deadline ran out. No LEAVE was sent, and none could have
+           been -- the machine that stopped was killed outright, which is what
+           a power failure looks like from here. */
+        mesh_line_text(" reason=silence silent_for_ms=");
+        mesh_line_u64(silent_for / 1000000ULL);
+        mesh_line_text(" deadline_ms=");
+        mesh_line_u64(MESH_SILENCE_NS / 1000000ULL);
+        mesh_line_emit();
+      }
+    }
+
+    if (!formed) {
+      int all = 1;
+      for (u64 i = 0; i < (u64)MESH_PEER_COUNT; ++i) {
+        if (g_mesh_peers[i].state != XAIOS_CLUSTER_NODE_ONLINE) all = 0;
+      }
+      if (all) {
+        formed = 1;
+        mesh_report("formed");
+      }
+    } else if (lost || found) {
+      mesh_report(lost ? "peer-lost" : "peer-found");
+      uint64_t live = 0;
+      uint64_t total = 0;
+      int quorum = 0;
+      if (xaios_cluster_quorum(&g_mesh, &live, &total, &quorum) ==
+              XAIOS_ENGINE_OK &&
+          !quorum) {
+        /* Nothing left to decide and no right to decide it. Saying so and
+           stopping is the honest end of a minority node's run; a node that
+           carried on serving from here is the failure this gate exists to
+           make visible. */
+        mesh_line_reset();
+        mesh_line_text("/bin/clustertest: mesh minority node=");
+        mesh_line_u64((u64)MESH_LOCAL_ID);
+        mesh_line_text(" live=");
+        mesh_line_u64((u64)live);
+        mesh_line_text(" total=");
+        mesh_line_u64((u64)total);
+        mesh_line_emit();
+        mesh_line_reset();
+        mesh_line_text("/bin/clustertest: mesh worst_dial_ms=");
+        mesh_line_u64(g_mesh_worst_dial_ns / 1000000ULL);
+        mesh_line_text(" deadline_ms=");
+        mesh_line_u64(MESH_SILENCE_NS / 1000000ULL);
+        mesh_line_emit();
+        xaios_log("/bin/clustertest: mesh three-node membership passed\n");
+        for (u64 i = 0; i < (u64)MESH_PEER_COUNT; ++i) {
+          if (g_mesh_out[i] != 0) (void)xaios_net_close(g_mesh_out[i]);
+        }
+        for (u64 i = 0; i < (u64)MESH_INBOUND; ++i) {
+          if (g_mesh_in[i] != 0) (void)xaios_net_close(g_mesh_in[i]);
+        }
+        (void)xaios_net_close(listener);
+        return 0;
+      }
+    }
+
+    /* Sleeping rather than spinning. A loop that polled these sockets as
+       fast as it could would burn a core doing nothing, and on a machine
+       running three of these at once that is three cores of noise underneath
+       the thing being measured. */
+    (void)xaios_sleep_ns(MESH_TICK_NS);
+  }
+}
+#endif /* XAIOS_CLUSTER_MESH_NODES */
+
 int main(void) {
+#if XAIOS_CLUSTER_MESH_NODES
+  return mesh_main();
+#else
   xaios_log("/bin/clustertest: cluster data plane over TCP\n");
 
   /* Every peer slot has to name a real node before init: it rejects a table
@@ -548,5 +1154,6 @@ int main(void) {
   xaios_log("/bin/clustertest: cluster data plane over TCP passed\n");
   xaios_log("/bin/clustertest: membership join/partition/recovery passed\n");
   return 0;
-#endif
+#endif /* XAIOS_CLUSTER_ROLE_SERVER */
+#endif /* XAIOS_CLUSTER_MESH_NODES */
 }

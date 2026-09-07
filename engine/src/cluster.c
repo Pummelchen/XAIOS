@@ -214,6 +214,74 @@ xaios_engine_status_t xaios_cluster_set_peer_state(
   return XAIOS_ENGINE_OK;
 }
 
+xaios_engine_status_t xaios_cluster_note_heard(xaios_cluster_t *cluster,
+                                               uint64_t node_id,
+                                               uint64_t now_nanos) {
+  /* Zero is the "never heard" value, so accepting it here would erase the
+     distinction the field exists to keep. A caller whose clock genuinely
+     reads zero has a clock problem, and silently recording it would hide
+     that behind a peer that never expires. */
+  if (now_nanos == 0U) return XAIOS_ENGINE_ERR_INVALID;
+  xaios_cluster_peer_t *peer = find_peer(cluster, node_id);
+  if (peer == NULL) return XAIOS_ENGINE_ERR_NOT_FOUND;
+  peer->last_heard_nanos = now_nanos;
+  return XAIOS_ENGINE_OK;
+}
+
+xaios_engine_status_t xaios_cluster_expire_silent(xaios_cluster_t *cluster,
+                                                  uint64_t now_nanos,
+                                                  uint64_t deadline_nanos,
+                                                  uint64_t *expired_count) {
+  if (cluster == NULL || cluster->peers == NULL || expired_count == NULL ||
+      deadline_nanos == 0U) {
+    return XAIOS_ENGINE_ERR_INVALID;
+  }
+  *expired_count = 0U;
+  for (uint64_t i = 0U; i < cluster->peer_capacity; ++i) {
+    xaios_cluster_peer_t *peer = &cluster->peers[i];
+    if (peer->state != XAIOS_CLUSTER_NODE_ONLINE) continue;
+    /* A peer that has never been heard from is not silent, it is absent, and
+       the two want opposite treatment: one should be evicted, the other
+       waited for. */
+    if (peer->last_heard_nanos == 0U) continue;
+    /* Subtract rather than add. now + deadline can wrap on a machine whose
+       clock is already near the top of the range, and a wrapped comparison
+       expires every peer at once -- which is the whole cluster, from a piece
+       of arithmetic. A clock that has gone backwards makes the difference
+       negative in the unsigned sense, which this reads as "heard from very
+       recently" and so declines to expire; that is the safe direction to be
+       wrong in, and it is why the check is not written the other way. */
+    if (now_nanos <= peer->last_heard_nanos) continue;
+    if (now_nanos - peer->last_heard_nanos > deadline_nanos) {
+      peer->state = XAIOS_CLUSTER_NODE_OFFLINE;
+      *expired_count += 1U;
+    }
+  }
+  return XAIOS_ENGINE_OK;
+}
+
+xaios_engine_status_t xaios_cluster_quorum(const xaios_cluster_t *cluster,
+                                           uint64_t *live_nodes,
+                                           uint64_t *total_nodes,
+                                           int *has_quorum) {
+  if (cluster == NULL || cluster->peers == NULL || live_nodes == NULL ||
+      total_nodes == NULL || has_quorum == NULL) {
+    return XAIOS_ENGINE_ERR_INVALID;
+  }
+  uint64_t live = 1U; /* this node, which is up by virtue of asking */
+  for (uint64_t i = 0U; i < cluster->peer_capacity; ++i) {
+    if (cluster->peers[i].state == XAIOS_CLUSTER_NODE_ONLINE) live += 1U;
+  }
+  uint64_t total = cluster->peer_capacity + 1U;
+  *live_nodes = live;
+  *total_nodes = total;
+  /* A strict majority: 2 of 3 has quorum, 1 of 3 does not, and 1 of 2 does
+     not either -- which is the honest answer at two nodes and the reason two
+     nodes cannot survive a failure without an operator. */
+  *has_quorum = (live * 2U) > total ? 1 : 0;
+  return XAIOS_ENGINE_OK;
+}
+
 static uint64_t identity_score(const xaios_expert_identity_t *identity,
                                uint64_t node_id) {
   uint64_t value = UINT64_C(0xcbf29ce484222325);

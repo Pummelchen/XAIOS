@@ -68,6 +68,7 @@ make qemu-smoke
 make qemu-keyboard-input-gate
 make qemu-storage-crash-test
 make qemu-cluster-two-node-gate
+make qemu-cluster-three-node-gate
 make qemu-crash-safety-gate
 make qemu-write-ordering-gate
 make qemu-storage-bench
@@ -240,6 +241,29 @@ public fixture and is not production trust evidence.
   XAIOS produces. The same pair has been run across a real network with the
   dialling machine on the Intel VPS; that run is manual, because it needs a
   second host and a tunnel between them.
+- `make qemu-cluster-three-node-gate` is failure evidence, which is a
+  different claim from the one above. The two-node gate's members announce
+  their departures, and machines do not fail that way: they lose power or
+  panic and say nothing. Three guests heartbeat to each other every 500ms
+  over their own TCP connections; the gate SIGKILLs one emulator outright and
+  requires the survivors to notice because a twenty second deadline passed
+  with nothing heard, not because anything was said. A run has produced
+  `mesh peer-lost node=3 reason=silence silent_for_ms=20004 deadline_ms=20000`
+  on both survivors, four milliseconds past the deadline they were built
+  with. Three is the smallest number at which quorum means anything, so a
+  second kill follows: the last machine reports `live=1 total=3 quorum=0` and
+  `owners=withheld`, because a minority that answers ownership questions is
+  how one expert ends up with two owners. The gate carries its own controls.
+  All three run healthily for thirty seconds -- longer than the deadline --
+  before anything is killed, and any death declared in that window fails the
+  run, which is what says the detector fires on silence rather than on time
+  passing. `XAIOS_CLUSTER_THREE_NODE_SKIP_KILL=1` runs everything and kills
+  nothing, and every failure-detection check must then go red. What it does
+  not cover: one host, one emulator per node and one user network, so a
+  partition here is a process that stopped rather than a network that broke,
+  and nothing about a link that drops packets while both machines are alive
+  has been tested. Every timing figure in it is a deadline being met, never a
+  measurement worth quoting.
 - `make qemu-crash-safety-gate` is power-loss evidence for ordering and
   tearing: it kills the emulator outright at random points while a package is
   being ingested, then hashes every chunk the surviving catalog still calls

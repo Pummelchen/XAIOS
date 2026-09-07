@@ -119,6 +119,51 @@ fi
 if [ -n "${XAIOS_CLUSTER_PEER_PORT:-}" ]; then
   CLUSTER_APP_CFLAGS="$CLUSTER_APP_CFLAGS -DCLUSTER_PEER_PORT=${XAIOS_CLUSTER_PEER_PORT}U"
 fi
+# The three-node mesh, which is a different program in the same file.
+#
+# Node id and the three ports are compile-time because the app has no
+# discovery and inventing one here would test the invention. They are checked
+# here rather than left to the compiler: a node id of zero produces a peer
+# table xaios_cluster_init rejects at run time, on a machine whose console
+# nobody is reading yet, and a port that is not a number becomes a macro that
+# fails to expand into something a person can recognise.
+if [ -n "${XAIOS_CLUSTER_MESH_NODES:-}" ]; then
+  case "$XAIOS_CLUSTER_MESH_NODES" in
+    0|3) ;;
+    *)
+      printf '%s\n' "error: XAIOS_CLUSTER_MESH_NODES must be 0 or 3" >&2
+      exit 1
+      ;;
+  esac
+  CLUSTER_APP_CFLAGS="$CLUSTER_APP_CFLAGS -DXAIOS_CLUSTER_MESH_NODES=${XAIOS_CLUSTER_MESH_NODES}"
+  if [ "$XAIOS_CLUSTER_MESH_NODES" = 3 ]; then
+    case "${XAIOS_CLUSTER_NODE_ID:-}" in
+      1|2|3) ;;
+      *)
+        printf '%s\n' \
+          "error: XAIOS_CLUSTER_NODE_ID must be 1, 2 or 3 for a three-node mesh" >&2
+        exit 1
+        ;;
+    esac
+    CLUSTER_APP_CFLAGS="$CLUSTER_APP_CFLAGS -DXAIOS_CLUSTER_NODE_ID=${XAIOS_CLUSTER_NODE_ID}U"
+    for mesh_index in 1 2 3; do
+      eval "mesh_port=\${XAIOS_CLUSTER_MESH_PORT_${mesh_index}:-}"
+      case "$mesh_port" in
+        ''|*[!0-9]*)
+          printf '%s\n' \
+            "error: XAIOS_CLUSTER_MESH_PORT_${mesh_index} must be a port number" >&2
+          exit 1
+          ;;
+      esac
+      if [ "$mesh_port" -lt 1 ] || [ "$mesh_port" -gt 65535 ]; then
+        printf '%s\n' \
+          "error: XAIOS_CLUSTER_MESH_PORT_${mesh_index} is not a port" >&2
+        exit 1
+      fi
+      CLUSTER_APP_CFLAGS="$CLUSTER_APP_CFLAGS -DXAIOS_CLUSTER_MESH_PORT_${mesh_index}=${mesh_port}U"
+    done
+  fi
+fi
 UTILITY_APPS="ls mkdir touch cp mv rm rmdir stat cat head tail less grep find sed write tar cpio zip unzip ps df du"
 HOSTED_USER_APPS="helloworldc99"
 

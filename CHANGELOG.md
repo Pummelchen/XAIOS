@@ -23,6 +23,27 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **A node that stops answering is now noticed, and three of them can decide
+  what to do about it.** Cluster membership moved only on frames that said
+  what they meant: a node announced a departure and its peers believed it.
+  Machines do not usually fail that way -- they lose power, panic, or have a
+  cable pulled, and the only evidence anyone gets is that nothing arrives any
+  more. Peers now carry a last-heard time and a deadline, and a peer that has
+  gone quiet for longer than the deadline is taken offline; a peer that has
+  never spoken is left alone, because that is a slow boot rather than a death,
+  and a clock that has gone backwards expires nobody. `make
+  qemu-cluster-three-node-gate` runs three XAIOS machines heartbeating to each
+  other every 500ms, kills one emulator outright, and requires the survivors
+  to notice by silence -- they do, four milliseconds past a twenty second
+  deadline -- to agree on the membership that is left, and to move only the
+  dead node's experts rather than reshuffling all of them. Three machines
+  because quorum does not exist at two: kill a second one and the last machine
+  reports one of three, no quorum, and refuses to answer who owns what at all,
+  since somewhere behind that silence there may be two nodes that can still
+  see each other and are entitled to decide. An expert with two owners is not
+  an error anybody detects; it is work done twice and a result nobody
+  reconciles.
+
 - **RISC-V can lease a core, and its harts come online before the tests that
   need one.** Leasing a hart out of the scheduler answered "unsupported" here,
   and secondaries did not exist until the scheduler rendezvous -- so every

@@ -120,6 +120,7 @@ acceptance.
 | `/bin/perfbench` | Measures what XAIOS costs to use: syscall latency at one, four and eight threads, socket bind/close through the serialised network path, and thread create/join. Reports nanoseconds per operation and asserts nothing. Built only when `XAIOS_STRESS_TEST=1`. |
 | `/bin/smpstress` | Sustained multi-core load. Pins threads across the cores until a deadline, then checks a contended counter against tallies each thread kept privately and each thread's word against the neighbours sharing its cache line. Built only when `XAIOS_STRESS_TEST=1`, because it soaks rather than returns. |
 | `/bin/nettest` | App-callable UDP/TCP, external session, and asynchronous DNS/cache telemetry test. |
+| `/bin/netmqtest` | Two threads pinned to separate CPUs sending UDP at once, so the driver's per-CPU transmit-pair selector has more than one CPU to choose from. Only meaningful against a multi-queue tap: on a single-queue link every frame correctly lands on pair zero. |
 | `/bin/lstm-xor` | Deterministic CPU-only LSTM/XOR fixture. It also verifies that production model decode fails closed; it is not real-model inference. |
 | `/bin/sshtest` | Scripted SSH-compatible command, filesystem, archive, process, and error-surface acceptance suite. |
 | `/bin/mltest` | Deterministic CPU ML dispatcher test for XOR, sum, parity, and fixed-point matrix multiplication fixtures. |
