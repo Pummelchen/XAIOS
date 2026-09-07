@@ -162,14 +162,19 @@ SPECIAL_CAPABILITIES = {
             # v6 point as present and the *next* point as missing, which sent
             # the reader to a kill point the run never reached. Four crossings
             # are tested, so four are required.
-            "qemu-storage-crash: recovered point=system-backup-flushed "
-            "volume=v5",
-            "qemu-storage-crash: recovered point=system-backup-flushed "
-            "volume=v6",
-            "qemu-storage-crash: recovered point=system-primary-written "
-            "volume=v5",
-            "qemu-storage-crash: recovered point=system-primary-written "
-            "volume=v6",
+            # arch= is named, and this is the AArch64 release candidate, so
+            # naming it is the stronger claim rather than a looser one. The
+            # field appeared when the gate gained a third architecture; the
+            # markers here kept the two-architecture wording and reported four
+            # missing crossings for a gate that crosses all four.
+            "qemu-storage-crash: recovered arch=aarch64 "
+            "point=system-backup-flushed volume=v5",
+            "qemu-storage-crash: recovered arch=aarch64 "
+            "point=system-backup-flushed volume=v6",
+            "qemu-storage-crash: recovered arch=aarch64 "
+            "point=system-primary-written volume=v5",
+            "qemu-storage-crash: recovered arch=aarch64 "
+            "point=system-primary-written volume=v6",
             "qemu-storage-crash: all metadata kill points recovered",
         ],
     ),
@@ -188,13 +193,22 @@ SPECIAL_CAPABILITIES = {
         [
             "nvme: async self-test passed namespaces=1",
             "rounds=8 async=38 cancelled=1",
-            "qemu-nvme-gate: aarch64/x86_64 async four-queue PRP/SGL direct I/O",
+            # Named per architecture, because the gate now covers three and
+            # says how each one is driven. RISC-V is polled: that board has no
+            # MSI-X, which is a property of the machine and is why the count
+            # differs rather than something to hide behind a looser match.
+            "passed on aarch64 4 msix, x86_64 4 msix, riscv64 1 polled",
         ],
     ),
     "outbound_fragmentation": (
         "fragmentation",
         [
-            "PASS: AArch64/x86_64 outbound fragmentation report=",
+            # This said "AArch64/x86_64" until the gate grew a third
+            # architecture and changed its own wording. The aggregate kept the
+            # old string and reported a missing marker for a gate that passes,
+            # which is the same shape as a stale assertion anywhere else: the
+            # system improved and the check did not move with it.
+            "PASS: outbound fragmentation on aarch64, x86_64, riscv64",
         ],
     ),
     "high_core_dynamic_capacity": (
