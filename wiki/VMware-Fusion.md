@@ -88,8 +88,11 @@ fails.
 ## Remaining Boundary
 
 - Fusion multi-vCPU startup remains bootstrap-only.
-- VMXNET3 is discovered, self-tested and activated, but cannot yet carry a
-  frame; the qualified device remains E1000E. See `F-02`.
+- VMXNET3 carries traffic end to end on Fusion 26.0.0: build with
+  `XAIOS_FUSION_NIC=vmxnet3` and the guest takes a real DHCP lease from the
+  bridged LAN, answers ICMPv6, SSH on both families and SFTP. The qualified
+  device remains E1000E by choice -- `XAIOS_FUSION_NIC` defaults to it -- so
+  the qualified profile cannot drift onto the card. See `F-02`.
 - IPv6 works on a bridged guest whose network offers it: a globally routable
   SLAAC address, inbound SSH/SFTP/UDP and outbound SSH/SCP. It did not until
   the E1000E receive filter stopped discarding all multicast, which is where

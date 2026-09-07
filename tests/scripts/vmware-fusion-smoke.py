@@ -32,11 +32,32 @@ VMRUN = Path(os.environ.get(
 ))
 TIMEOUT_SECONDS = int(os.environ.get("XAIOS_FUSION_TIMEOUT", "240"))
 READY_MARKER = "SSH server: up and running (tcp/22)"
+# What the guest must say, split into the part that is true of every profile
+# and the part that names the NIC this bundle was built with.
+#
+# These two lists were one list with "e1000e" written into it twice, which
+# made every Fusion gate unrunnable against the VMXNET3 profile: the guest
+# booted perfectly, took a real lease over the card and started sshd, and the
+# gate timed out because two markers named a device that was deliberately not
+# present. The NIC is read from the VMX that is about to be booted, the same
+# way `configured_vcpus` reads the CPU count, so the markers describe the
+# machine under test rather than the one the file was written for.
+NIC_MARKERS = {
+    "e1000e": [
+        "e1000e: ready pci=",
+        "network-device: selected e1000e",
+        "kernel: persistent network stack enabled device=e1000e",
+    ],
+    "vmxnet3": [
+        "vmxnet3: self-test passed",
+        "vmxnet3: activated",
+        "network-device: selected vmxnet3",
+        "kernel: persistent network stack enabled device=vmxnet3",
+    ],
+}
 BOOT_MARKERS = [
-    "e1000e: ready pci=",
     "ahci: ready pci=",
     "xaibootfs: persistent mounted v5",
-    "kernel: persistent network stack enabled device=e1000e",
     "kernel: starting persistent /bin/sshd service",
     # The other side of F-05's boundary, asserted rather than observed. This
     # profile has no firmware RNG and no architectural one, so what seeds the
@@ -76,6 +97,29 @@ FATAL_MARKERS = ["System halted", "assertion failed", "CYAN SCREEN OF DEATH",
 # perfectly and the gate reported it never became ready. Read the number the
 # profile actually asks for and require the guest to report that many.
 CPU_ONLINE_PATTERN = re.compile(r"telemetry: boot_summary cpu_online=(\d+)")
+
+
+def configured_nic() -> str:
+    """Which NIC the bundle about to be booted presents.
+
+    Read rather than assumed: `XAIOS_FUSION_NIC` selects it at build time and
+    a gate run without that variable in its environment would otherwise expect
+    e1000e markers from a bundle built for vmxnet3.
+    """
+    for line in VMX.read_text(encoding="utf-8").splitlines():
+        if line.strip().startswith("ethernet0.virtualDev"):
+            return line.split("=", 1)[1].strip().strip('"')
+    return "e1000e"
+
+
+def boot_markers() -> list[str]:
+    nic = configured_nic()
+    if nic not in NIC_MARKERS:
+        raise RuntimeError(
+            f"the VM bundle presents ethernet0.virtualDev={nic!r}, which this "
+            f"gate has no markers for; add them to NIC_MARKERS rather than "
+            f"letting the boot be checked against another card's log lines")
+    return BOOT_MARKERS + NIC_MARKERS[nic]
 
 
 def configured_vcpus() -> int:
@@ -198,13 +242,15 @@ def cpu_capability() -> dict[str, object]:
 
 def wait_for_boot(after_ready_count: int) -> tuple[str, str]:
     deadline = time.monotonic() + TIMEOUT_SECONDS
+    last_missing: list[str] = ["the ready marker itself"]
     while time.monotonic() < deadline:
         output = serial_text()
         fatal = [marker for marker in FATAL_MARKERS if marker in output]
         if fatal:
             raise RuntimeError(f"Fusion guest reported fatal markers {fatal!r}\n{serial_tail()}")
         if output.count(READY_MARKER) > after_ready_count:
-            missing = [marker for marker in BOOT_MARKERS if marker not in output]
+            missing = [marker for marker in boot_markers()
+                       if marker not in output]
             expected_cpus = configured_vcpus()
             reported = [int(count) for count in CPU_ONLINE_PATTERN.findall(output)]
             if not reported:
@@ -216,10 +262,17 @@ def wait_for_boot(after_ready_count: int) -> tuple[str, str]:
             addresses = IPV4_PATTERN.findall(output)
             if not missing and addresses:
                 return addresses[-1], output
+            # Kept for the timeout below. Without it the deadline expired
+            # with "did not become ready" and eighty lines of a console
+            # showing a machine that had booted, logged in and started sshd,
+            # and nothing said which marker was absent.
+            last_missing = missing if missing else ["an IPv4 address"]
         if not vm_running():
             raise RuntimeError(f"Fusion VM stopped before guest became ready\n{serial_tail()}")
         time.sleep(0.5)
-    raise TimeoutError(f"Fusion guest did not become ready\n{serial_tail()}")
+    raise TimeoutError(
+        f"Fusion guest did not become ready; still missing {last_missing}\n"
+        f"{serial_tail()}")
 
 
 def start_vm(after_ready_count: int) -> tuple[str, str]:

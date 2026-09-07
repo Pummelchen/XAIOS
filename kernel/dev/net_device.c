@@ -115,5 +115,13 @@ xaios_network_device_kind_t network_device_kind(void) {
 const char *network_device_name(void) {
   if (g_network_device_kind == XAIOS_NETWORK_DEVICE_VIRTIO) return "virtio-net";
   if (g_network_device_kind == XAIOS_NETWORK_DEVICE_E1000E) return "e1000e";
+  /* VMXNET3 was added to every other switch in this file and missed here, so
+     the one profile the card is selected on booted reporting
+     "persistent network stack enabled device=none" -- a machine that had just
+     taken a DHCP lease over that card saying it had no network device. The
+     name is not decoration: it is the boot marker the Fusion gates match on,
+     so the omission made a working VMXNET3 guest indistinguishable from one
+     with no NIC at all. */
+  if (g_network_device_kind == XAIOS_NETWORK_DEVICE_VMXNET3) return "vmxnet3";
   return "none";
 }
