@@ -1342,8 +1342,13 @@ persistent_network_done:
   run_user_app("/bin/smpstress", 11, smptest_caps | XAIOS_CAP_TIME);
   /* Measurement rather than a check: it reports cost and asserts nothing, so
      it runs where the stress app runs and nowhere else. */
+  /* NET as well as NET_SOCKET. The socket measurement needs only the socket
+     capability, but the poll-path arm calls net_udp_echo, which the syscall
+     table guards with XAIOS_CAP_NET -- without it every poll worker is
+     refused and the mixed measurement silently has nothing on one side. */
   run_user_app("/bin/perfbench", 11,
-               smptest_caps | XAIOS_CAP_TIME | XAIOS_CAP_NET_SOCKET);
+               smptest_caps | XAIOS_CAP_TIME | XAIOS_CAP_NET_SOCKET |
+               XAIOS_CAP_NET);
 #endif
   run_user_app("/bin/nettest", 12, nettest_caps);
   /* Two pinned senders on separate CPUs, which is the only way the
@@ -1351,8 +1356,15 @@ persistent_network_done:
      from one CPU, so every frame correctly lands on pair zero and the
      selector is never asked a second question. Needs THREADS on top of
      the network capabilities, and SMP to place threads by CPU. */
+  /* NET_SOCKET as well: the sender binds a UDP socket and sends through it,
+     which is the only path that reaches network_device_tx. Without it every
+     bind is refused, no frame is transmitted, and the fan-out this exists to
+     show cannot happen -- which is exactly what the first run on a four-queue
+     tap did. The app counts its own failures and says so, but the driver's
+     frames_by_pair line is what the claim rests on. */
   run_user_app("/bin/netmqtest", 12,
-               nettest_caps | XAIOS_CAP_THREADS | XAIOS_CAP_SMP);
+               nettest_caps | XAIOS_CAP_THREADS | XAIOS_CAP_SMP |
+               XAIOS_CAP_NET_SOCKET);
   run_user_app("/bin/lstm-xor", 13, lstm_caps);
   run_user_app("/bin/sshtest", 14, sshtest_caps);
   run_user_app("/bin/mltest", 15, mltest_caps);
