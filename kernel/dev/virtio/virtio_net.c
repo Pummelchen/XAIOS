@@ -156,6 +156,8 @@ typedef struct virtio_net_driver {
      evidence that it did. */
   uint64_t tx_frames_by_pair[VIRTIO_NET_MAX_QUEUE_PAIRS];
   uint32_t tx_fanout_reported;
+  /* How many pairs had carried a frame when the last line was printed. */
+  uint32_t tx_fanout_pairs_reported;
   /* Where the next receive poll starts, so no pair starves another. Receive
      has no CPU affinity to follow -- the device chooses which queue a frame
      lands on -- so a cursor is right here where it would be wrong for
@@ -1193,8 +1195,20 @@ static xaios_status_t tx_submit_vectors(const xaios_net_iovec_t *vectors,
      carried frames whatever the answer, so "all on pair zero" is visible as
      a measurement rather than as nothing. It is the expected answer here:
      the pair follows the sending CPU, and a boot sends from one. */
-  if (g_net->tx_fanout_reported == 0U && sent >= 4U) {
+  /* Reported again the moment a pair that had carried nothing carries its
+     first frame, which is the event this whole arrangement exists to produce.
+     Reporting only once meant reporting only the boot, where one CPU sends and
+     the answer is always "all on pair zero" -- so the interesting case, two
+     CPUs sending at once, happened after the only line that would have shown
+     it. /bin/netmqtest exists to cause exactly that and could not be seen. */
+  uint32_t pairs_used = 0U;
+  for (uint32_t i = 0U; i < VIRTIO_NET_MAX_QUEUE_PAIRS; ++i) {
+    if (g_net->tx_frames_by_pair[i] != 0U) pairs_used++;
+  }
+  if ((g_net->tx_fanout_reported == 0U && sent >= 4U) ||
+      pairs_used > g_net->tx_fanout_pairs_reported) {
     g_net->tx_fanout_reported = 1U;
+    g_net->tx_fanout_pairs_reported = pairs_used;
     klog("virtio-net-persist: transmit pairs=%u frames_by_pair=%lu,%lu,%lu,%lu "
          "(pair follows the sending CPU)\n",
          g_net->active_pairs, g_net->tx_frames_by_pair[0],

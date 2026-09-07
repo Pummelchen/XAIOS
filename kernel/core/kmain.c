@@ -1346,6 +1346,13 @@ persistent_network_done:
                smptest_caps | XAIOS_CAP_TIME | XAIOS_CAP_NET_SOCKET);
 #endif
   run_user_app("/bin/nettest", 12, nettest_caps);
+  /* Two pinned senders on separate CPUs, which is the only way the
+     per-CPU transmit-pair selector is exercised at all: a boot sends
+     from one CPU, so every frame correctly lands on pair zero and the
+     selector is never asked a second question. Needs THREADS on top of
+     the network capabilities, and SMP to place threads by CPU. */
+  run_user_app("/bin/netmqtest", 12,
+               nettest_caps | XAIOS_CAP_THREADS | XAIOS_CAP_SMP);
   run_user_app("/bin/lstm-xor", 13, lstm_caps);
   run_user_app("/bin/sshtest", 14, sshtest_caps);
   run_user_app("/bin/mltest", 15, mltest_caps);
