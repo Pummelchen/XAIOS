@@ -32,6 +32,10 @@
 #define SYSCALL_ITERATIONS 20000U
 #define SOCKET_ITERATIONS 400U
 #define CHURN_ITERATIONS 64U
+/* Fewer than the socket loop: each one is a send and a reply
+   rather than two syscalls, so this keeps the two arms of the
+   mixed run to a similar duration. */
+#define POLL_ITERATIONS 96U
 
 static unsigned char g_stacks[BENCH_THREADS][BENCH_STACK_BYTES];
 static u64 g_elapsed[BENCH_THREADS];
@@ -58,6 +62,36 @@ static u64 syscall_worker(void *argument) {
 /* Bind and close a UDP socket repeatedly. Both ends of that pair enter the
    network stack, which since C-01 is serialised behind one guard, so several
    threads doing this at once is the contention that guard actually sees. */
+/* Traffic, so the poll path is busy while sockets are being opened.
+ *
+ * C-01 named two costs and this file measured one. Its remaining sentence is
+ * "network syscalls now serialise against each other *and the poll path*", and
+ * socket bind/close threads contend only with each other -- none of them makes
+ * the stack receive anything. A guard shared between the syscall path and the
+ * poll path is invisible to a workload that never polls.
+ *
+ * xaios_net_udp_echo sends and waits for the reply, so it enters the stack,
+ * drives the device, and comes back through the receive path: the half
+ * bind/close never touches. Run alongside the socket workers, it is what makes
+ * the shared guard observable at all. */
+static u64 poll_worker(void *argument) {
+  u64 ordinal = (u64)argument;
+  if (ordinal >= BENCH_THREADS) return 0;
+  const char payload[] = "xaios-poll-path";
+  u64 started = xaios_clock_nanos();
+  u64 completed = 0;
+  for (u64 i = 0; i < POLL_ITERATIONS; ++i) {
+    u64 echoed = 0;
+    if (xaios_net_udp_echo(payload, xaios_strlen(payload), &echoed) < 0) {
+      continue;
+    }
+    ++completed;
+  }
+  g_elapsed[ordinal] = xaios_clock_nanos() - started;
+  g_operations[ordinal] = completed;
+  return 0;
+}
+
 static u64 socket_worker(void *argument) {
   u64 ordinal = (u64)argument;
   if (ordinal >= BENCH_THREADS) return 0;
@@ -120,6 +154,46 @@ static u64 run_parallel(u64 (*worker)(void *), u64 threads, const char *name) {
   return started;
 }
 
+/* Both workloads at once, each reported separately.
+ *
+ * run_parallel reports one figure across every thread it started, which is
+ * right when they all do the same thing and wrong here: the whole question is
+ * whether one path pays for the other, and a single average of the two hides
+ * exactly that. So the threads are started together, joined together, and the
+ * two arms are reported from their own slots.
+ *
+ * The socket threads take the low slots and the poll threads the high ones,
+ * because both workers index g_elapsed by the ordinal they are handed. */
+static void run_parallel_mixed(u64 socket_threads, u64 poll_threads) {
+  u64 ids[BENCH_THREADS];
+  u64 started = 0;
+  if (socket_threads + poll_threads > BENCH_THREADS) return;
+  for (u64 i = 0; i < BENCH_THREADS; ++i) {
+    g_elapsed[i] = 0;
+    g_operations[i] = 0;
+  }
+  for (u64 i = 0; i < socket_threads + poll_threads; ++i) {
+    u64 (*worker)(void *) = (i < socket_threads) ? socket_worker : poll_worker;
+    if (xaios_thread_create(worker, (void *)i, g_stacks[i], BENCH_STACK_BYTES,
+                            XAIOS_THREAD_CPU_ANY, &ids[started]) < 0) {
+      continue;
+    }
+    ++started;
+  }
+  for (u64 i = 0; i < started; ++i) {
+    u64 result = 0;
+    (void)xaios_thread_join(ids[i], 0, &result);
+  }
+  /* report() averages the slots from zero, so each arm is reported by moving
+     its slots down rather than by teaching report() about ranges. */
+  report("socket_bind_close_mixed", socket_threads);
+  for (u64 i = 0; i < poll_threads; ++i) {
+    g_elapsed[i] = g_elapsed[socket_threads + i];
+    g_operations[i] = g_operations[socket_threads + i];
+  }
+  report("poll_udp_echo_mixed", poll_threads);
+}
+
 int main(void) {
   xaios_log("/bin/perfbench: measuring syscall and subsystem cost\n");
 
@@ -138,6 +212,27 @@ int main(void) {
 
   (void)run_parallel(socket_worker, 4, "socket_bind_close");
   (void)run_parallel(socket_worker, BENCH_THREADS, "socket_bind_close");
+
+  /* The poll path alone, then mixed with socket work.
+   *
+   * The comparison is the measurement: if the two paths share a guard and that
+   * guard costs something, the per-operation figure for each rises when the
+   * other is running. If it does not move, they are not serialising against
+   * each other in any amount this machine can see -- which is the answer C-01
+   * asked for and did not have. Neither figure is a performance claim; both
+   * are comparisons between two runs on one machine. */
+  g_elapsed[0] = 0;
+  g_operations[0] = 0;
+  (void)poll_worker((void *)0);
+  report("poll_udp_echo", 1);
+
+  (void)run_parallel(poll_worker, 4, "poll_udp_echo");
+
+  /* Mixed: half the threads open and close sockets, half drive traffic. Both
+     arms are reported, because a guard that penalises one and not the other is
+     the interesting case and an average would hide it. */
+  xaios_log("/bin/perfbench: mixed socket and poll load, four threads each\n");
+  (void)run_parallel_mixed(4U, 4U);
 
   /* Thread creation and teardown, which every parallel workload pays before it
      does anything useful. */

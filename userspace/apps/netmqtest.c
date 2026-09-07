@@ -58,14 +58,50 @@ static sender_state_t g_senders[SENDER_COUNT];
 static u64 sender_main(void *argument) {
   sender_state_t *state = (sender_state_t *)argument;
   const char payload[] = "xaios-multiqueue-transmit";
+
+  /* A real datagram to a real address, because the obvious call does not
+     transmit.
+     
+     The first version of this used xaios_net_udp_echo, which reads like a UDP
+     send and is not one: network_stack_app_udp_echo builds a frame and hands
+     it to network_stack_process_udp_frame, so the packet is processed inside
+     the stack and never reaches the device. xaios_net_external_session with
+     the UDP protocol calls the same function. Either would have produced a
+     test that ran two threads, reported sixteen frames sent, and left
+     frames_by_pair untouched -- passing while proving nothing about the thing
+     it exists to prove. It did exactly that on a four-queue tap before this
+     was noticed.
+     
+     sendto on a bound socket goes through the stack to network_device_tx,
+     which is the path with the per-CPU pair selector in it. The destination
+     is the gateway of the emulated network: it does not have to answer, and
+     nothing here waits for a reply -- the frame leaving is the whole event. */
+  u64 handle = 0U;
+  if (xaios_net_bind_udp(24000U + state->cpu, &handle) < 0) {
+    state->failed += FRAMES_PER_SENDER;
+    return 0U;
+  }
+  xaios_ip_addr_user_t destination;
+  destination.family = 4U;
+  for (u32 b = 0U; b < 16U; ++b) destination.addr[b] = 0U;
+  /* 10.0.2.2 under SLIRP, and the tap's own address on a tap network: either
+     way a host on the guest's link, so the frame is transmitted rather than
+     dropped as unroutable. */
+  destination.addr[0] = 10U;
+  destination.addr[1] = 0U;
+  destination.addr[2] = 2U;
+  destination.addr[3] = 2U;
+
   for (u32 i = 0U; i < FRAMES_PER_SENDER; ++i) {
-    u64 echoed = 0U;
-    if (xaios_net_udp_echo(payload, xaios_strlen(payload), &echoed) < 0) {
+    u64 written = 0U;
+    if (xaios_net_sendto(handle, payload, xaios_strlen(payload), &written,
+                         &destination) < 0) {
       state->failed++;
     } else {
       state->sent++;
     }
   }
+  (void)xaios_net_close(handle);
   return state->sent;
 }
 
