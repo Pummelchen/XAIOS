@@ -68,10 +68,29 @@ var memoryMiB: UInt64 = 2048
 // through the UEFI framebuffer, and Apple's firmware does not appear to route
 // EFI console output to the virtio console.
 var showWindow = false
+// Where to write a capture of the guest's display, and how long to wait first.
+//
+// V-06 proved the graphical console by reading QEMU's scanout back through
+// screendump, and named what that does not cover: "not Fusion's or
+// Virtualization.framework's". Fusion's half turned out to be unreachable --
+// vmrun captureScreen is a guest operation needing VMware Tools, which XAIOS
+// does not ship. This half is reachable, because the display here is a
+// VZVirtualMachineView this harness builds itself, and an NSView can be asked
+// for its own pixels.
+var screenshotPath: String? = nil
+var screenshotDelay: Double = 90.0
 var usbBoot = false
 var index = 1
 while index < arguments.count {
     switch arguments[index] {
+    case "--screenshot":
+        index += 1
+        screenshotPath = arguments[safe: index]
+        // A capture needs the view, and the view only exists with a window.
+        showWindow = true
+    case "--screenshot-delay":
+        index += 1
+        screenshotDelay = Double(arguments[safe: index] ?? "") ?? screenshotDelay
     case "--vmnet":
         index += 1
         vmnetSocket = arguments[safe: index]
@@ -326,6 +345,62 @@ if showWindow {
     window.makeKeyAndOrderFront(nil)
     application.activate(ignoringOtherApps: true)
     DispatchQueue.main.async { startMachine() }
+    if let path = screenshotPath {
+        /* Captured from the view rather than from the screen.
+         *
+         * cacheDisplay asks the view for its own pixels, so what lands in the
+         * file is what the guest drew -- not a photograph of a window, which
+         * would include the title bar, depend on what is in front of it, and
+         * need screen-recording permission the operator has to grant. It also
+         * works while the window is behind another one.
+         *
+         * The delay is a boot budget, not a guess at when something looks
+         * right: the point is to capture a machine that has finished booting,
+         * and the caller sets it from what it knows about the guest. */
+        DispatchQueue.main.asyncAfter(deadline: .now() + screenshotDelay) {
+            guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+            else {
+                FileHandle.standardError.write(Data(
+                    "xaios-vz: could not allocate a bitmap for the view\n".utf8))
+                exit(3)
+            }
+            /* Layer first, then cacheDisplay.
+             *
+             * VZVirtualMachineView is layer-backed and the guest's surface is
+             * composited by the GPU, so cacheDisplay -- which walks the view
+             * hierarchy's drawRect: -- returns a fully black bitmap: correct
+             * for a view that draws nothing itself, and useless here. Asking
+             * the layer to render reaches the composited content instead.
+             * cacheDisplay is kept as the fallback for the case where there is
+             * no layer at all. */
+            if let layer = view.layer,
+               let context = NSGraphicsContext(bitmapImageRep: rep) {
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = context
+                layer.render(in: context.cgContext)
+                NSGraphicsContext.restoreGraphicsState()
+            } else {
+                view.cacheDisplay(in: view.bounds, to: rep)
+            }
+            guard let png = rep.representation(using: .png, properties: [:])
+            else {
+                FileHandle.standardError.write(Data(
+                    "xaios-vz: could not encode the capture as PNG\n".utf8))
+                exit(3)
+            }
+            do {
+                try png.write(to: URL(fileURLWithPath: path))
+                let note = "xaios-vz: display captured to \(path) "
+                    + "(\(rep.pixelsWide)x\(rep.pixelsHigh))\n"
+                FileHandle.standardError.write(Data(note.utf8))
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "xaios-vz: could not write \(path): \(error)\n".utf8))
+                exit(3)
+            }
+            exit(0)
+        }
+    }
     application.run()
 } else {
     DispatchQueue.main.async { startMachine() }

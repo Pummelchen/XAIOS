@@ -241,6 +241,13 @@ vmnet-helper:
 vz-bridged-gate: vz-harness vmnet-helper
 	python3 ./tests/scripts/vz-bridged-gate.py
 
+# V-06's other named boundary: what Virtualization.framework's own display
+# shows. Reachable where Fusion's is not, because the view is ours -- an
+# NSView can be asked for its own pixels, and vmrun captureScreen cannot be
+# asked at all without VMware Tools in the guest.
+vz-framebuffer-gate: vz-harness
+	python3 ./tests/scripts/vz-framebuffer-gate.py
+
 vz-stress-gate: vz-harness
 	XAIOS_STRESS_TEST=1 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
 	python3 ./tests/scripts/vz-stress-gate.py
