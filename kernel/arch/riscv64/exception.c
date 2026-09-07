@@ -265,6 +265,62 @@ void exception_mmio_probe_end(void) { g_mmio_probe_active = 0; }
 
 int exception_mmio_probe_faulted(void) { return g_mmio_probe_faulted; }
 
+/* A page fault the kernel went looking for, on whichever hart went looking.
+ *
+ * The MMIO probe above is one global pair of flags, which is right for what
+ * it does: bus probing happens once, on the boot hart, before anything else
+ * is running. This is not that. The TLB shootdown self-test asks a *different*
+ * hart to dereference an address the boot hart has just unmapped, and the
+ * whole point is that two harts are doing different things at the same time.
+ * One global flag would let the boot hart's own faults and a secondary's
+ * answer each other, so the state is per hart -- indexed by the kernel's CPU
+ * number, which is what tp holds and what every other per-CPU array here is
+ * indexed by.
+ *
+ * Page faults, not access faults: the MMIO probe recovers from
+ * load/store-access-fault, which is what an unbacked physical address
+ * produces. An address with no valid page table entry produces
+ * load/store-page-fault instead, a different cause entirely, and the probe
+ * above would have let it through to the panic. Both are accepted here
+ * because a machine that reports the withdrawn mapping as an access fault
+ * rather than a page fault has still stopped translating it, which is the
+ * question being asked.
+ *
+ * This recovers by stepping over the faulting instruction, which leaves the
+ * load's destination register untouched -- so a caller must never believe the
+ * value it read back without first asking whether the probe faulted. */
+/* Sized to match smp.c's RISCV64_MAX_HARTS, which this file cannot see: that
+   constant is static to the SMP implementation, and exporting it so two files
+   could share one number would put a bound on hart identifiers into a header
+   that nothing else needs. A hart above the bound simply cannot arm a probe --
+   exception_page_probe_begin does nothing and the caller's dereference stays
+   fatal, which is the safe direction to fail in. */
+#define PAGE_PROBE_MAX_CPUS 8U
+static volatile uint32_t g_page_probe_armed[PAGE_PROBE_MAX_CPUS];
+static volatile uint32_t g_page_probe_faulted[PAGE_PROBE_MAX_CPUS];
+
+void exception_page_probe_begin(void) {
+  uint32_t cpu = smp_cpu_id();
+  if (cpu >= PAGE_PROBE_MAX_CPUS) return;
+  g_page_probe_faulted[cpu] = 0U;
+  /* Armed last and with a release, because the trap handler reads the two in
+     the other order: a hart that took a fault between the two stores would
+     otherwise clear the flag it had just set. */
+  __atomic_store_n(&g_page_probe_armed[cpu], 1U, __ATOMIC_RELEASE);
+}
+
+void exception_page_probe_end(void) {
+  uint32_t cpu = smp_cpu_id();
+  if (cpu >= PAGE_PROBE_MAX_CPUS) return;
+  __atomic_store_n(&g_page_probe_armed[cpu], 0U, __ATOMIC_RELEASE);
+}
+
+int exception_page_probe_faulted(void) {
+  uint32_t cpu = smp_cpu_id();
+  if (cpu >= PAGE_PROBE_MAX_CPUS) return 0;
+  return g_page_probe_faulted[cpu] != 0U ? 1 : 0;
+}
+
 uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
                           uint64_t arg2);
 uint64_t user_process_note_fault(void);
@@ -338,6 +394,32 @@ uint64_t riscv64_trap_handler(riscv64_trap_frame_t *frame) {
     g_mmio_probe_faulted = 1;
     frame->sepc += instruction_width(frame->sepc);
     return 0U;
+  }
+
+  /* A page fault this hart went looking for -- see exception_page_probe_begin.
+     Checked before the user-mode branch below and before the fatal path,
+     because the probing hart is in supervisor mode and would otherwise be
+     killed by the very fault it was asked to provoke. Armed on one hart at a
+     time and only for the duration of a single dereference, so this cannot
+     swallow an unrelated kernel fault on a hart that is not probing.
+     Restricted to faults taken in supervisor mode as well: a probe is only
+     ever armed around a kernel load, and a user process faulting must reach
+     the branch below that kills it rather than being silently stepped over.
+     The two cannot overlap today -- the probe runs on a secondary before any
+     user code exists -- and the guard is there so that stays true if the
+     probe is ever armed somewhere less quiet. */
+  if ((frame->sstatus & SSTATUS_SPP) != 0U &&
+      (cause == CAUSE_LOAD_PAGE_FAULT || cause == CAUSE_STORE_PAGE_FAULT ||
+       cause == CAUSE_INSTRUCTION_PAGE_FAULT ||
+       cause == CAUSE_LOAD_ACCESS_FAULT || cause == CAUSE_STORE_ACCESS_FAULT)) {
+    uint32_t probe_cpu = smp_cpu_id();
+    if (probe_cpu < PAGE_PROBE_MAX_CPUS &&
+        __atomic_load_n(&g_page_probe_armed[probe_cpu], __ATOMIC_ACQUIRE) !=
+            0U) {
+      g_page_probe_faulted[probe_cpu] = 1U;
+      frame->sepc += instruction_width(frame->sepc);
+      return 0U;
+    }
   }
 
   /* A breakpoint the kernel placed deliberately -- the SIMD-across-a-trap

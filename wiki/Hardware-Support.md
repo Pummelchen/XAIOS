@@ -46,10 +46,25 @@ owns, so the hardware's own walker is a witness and not only the kernel's.
 Separately, RISC-V maps the kernel *image* in 4 KiB pages, so that a leaf never
 spans two sections with different permissions.
 
-x86_64 validates address-specific SMP TLB invalidation, which RISC-V does not
-have at all: its fences are hart-local and it issues no SBI remote fence, so a
-kernel mapping withdrawn on one hart is not withdrawn from another hart's TLB.
-That is a correctness gap rather than missing coverage, and is tracked.
+All three architectures now withdraw a mapping from every online CPU's TLB,
+and each validates it. x86_64 validates address-specific SMP TLB invalidation
+through its own inter-processor interrupt; AArch64 relies on hardware-broadcast
+TLBI. RISC-V had neither and no remote fence of any kind -- its `sfence.vma`
+is hart-local by definition, so a kernel mapping withdrawn on one hart stayed
+live in every other hart's TLB. It now issues an SBI RFENCE
+(REMOTE_SFENCE_VMA) from its unmap and remap paths, with the hart mask built
+from firmware's hart ids rather than from the kernel's CPU numbers, because
+those are not the same sequence on every boot.
+
+What the RISC-V self-test measures is stronger than a call count: a *remote*
+hart is made to read the address, the mapping is then withdrawn, and that hart
+must fault. In the same boot the withdrawal is first performed with the remote
+fence suppressed, and the boot log records whether the remote hart was still
+reading through the cleared entry at that point -- which is what makes the
+subsequent fault attributable to the fence rather than to the machine. On
+QEMU (rv64/Sv48 and thead-c906/Sv39, four harts) all three remote harts are
+observed stale before the fence and faulting after it. This has not been run
+on RISC-V silicon.
 
 Sparse model packages beyond 100 GiB are covered in hosted tests. None of these
 results proves multi-terabyte physical capacity or large-page performance.

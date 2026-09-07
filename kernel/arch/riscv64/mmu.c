@@ -1213,15 +1213,29 @@ static void vmm_large_page_self_test(void) {
     vmm_panic("large-page split self-test has no page to override with");
   }
   uint64_t override_physical = (uint64_t)(uintptr_t)override_page;
-  if (gigantic_offset < XAIOS_VMM_LARGE_PAGE_SIZE) {
-    /* The far-neighbour check below compares against the first 2 MiB of the
-       gibibyte, and needs the aliased page to be in a different one. The
-       allocator hands out pages above the kernel image, which starts 2 MiB
-       into RAM, so this does not happen -- and if it ever does, the check
-       would silently degrade into testing the same table twice. */
-    vmm_panic("split self-test page sits in the first 2 MiB of its gibibyte, "
-              "where its far-neighbour check would prove nothing");
-  }
+  /* The far neighbour is chosen in a different 2 MiB child than the page
+     under test, rather than fixed at offset zero and the page required to be
+     elsewhere.
+     
+     The check needs two things from one gibibyte: the child holding the 4 KiB
+     override, and some other child that a partial split would have lost. It
+     used to take offset zero for the second and panic when the page landed in
+     that same first 2 MiB -- reasoning that the allocator hands out pages
+     above the kernel image, which starts 2 MiB into RAM. That holds under
+     -kernel and not under EDK2, where firmware owns the bottom of RAM and the
+     first free page sits low in its gibibyte, so the machine booted on one
+     firmware and died on a cyan screen on the other over where a page landed.
+     Requiring a better page cannot work either: pages come out sequentially,
+     so crossing 2 MiB would take five hundred of them.
+     
+     Picking the child instead is exact rather than lucky. Any child but the
+     one the override is in will do, and there are 512 of them. */
+  const uint64_t child_index = gigantic_offset / XAIOS_VMM_LARGE_PAGE_SIZE;
+  const uint64_t far_child = (child_index == 0U) ? 1U : 0U;
+  const uint64_t far_va =
+      SELF_TEST_SPLIT_VA + far_child * XAIOS_VMM_LARGE_PAGE_SIZE;
+  const uint64_t far_expected =
+      gigantic_pa + far_child * XAIOS_VMM_LARGE_PAGE_SIZE;
 
   if (vmm_map_gigantic_page(SELF_TEST_SPLIT_VA, gigantic_pa,
                             XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE) !=
@@ -1270,13 +1284,13 @@ static void vmm_large_page_self_test(void) {
   /* The neighbour in a different 2 MiB table: the level-2 to level-1 split
      has to have filled that one too, and it is the one a partial split would
      lose, because nothing ever walked through it. */
-  if (vmm_translate(SELF_TEST_SPLIT_VA, &observed, 0) != XAIOS_OK) {
+  if (vmm_translate(far_va, &observed, 0) != XAIOS_OK) {
     vmm_panic("splitting a gigantic leaf left a distant 2 MiB window "
-              "unmapped");
+              "unmapped at %lx", far_va);
   }
-  if (observed != gigantic_pa) {
+  if (observed != far_expected) {
     vmm_panic("splitting a gigantic leaf moved a distant 2 MiB window to %lx "
-              "not %lx", observed, gigantic_pa);
+              "not %lx", observed, far_expected);
   }
   /* Removing the whole gibibyte removes the tables the split produced with
      it. The tables themselves are not returned to the allocator -- three

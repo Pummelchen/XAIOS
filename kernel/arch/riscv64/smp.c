@@ -38,6 +38,18 @@ xaios_status_t xaios_thread_run_group(uint64_t requested_threads,
 uint64_t riscv64_kernel_satp(void);
 /* Each hart has its own root, so each hart is handed its own satp. */
 uint64_t riscv64_hart_satp(uint32_t cpu_id);
+/* The remote half of the TLB shootdown self-test.
+ *
+ * The kernel can count its own shootdowns without anybody's help, and a count
+ * proves almost nothing -- the question is whether a hart that is *not* the
+ * one doing the unmapping loses the translation. Answering it needs a second
+ * hart to perform a load when the first one says so, and the only place a
+ * secondary can be asked to do that before the scheduler exists is the loop
+ * it waits in below. So the wait loop polls, and mmu.c owns the protocol and
+ * the assertions. The service call costs one load and one CSR write per pass
+ * when there is nothing to answer. */
+void riscv64_tlb_probe_service(uint32_t cpu_id);
+void riscv64_tlb_shootdown_self_test(void);
 extern char riscv64_secondary_entry[];
 
 #define RISCV64_MAX_HARTS 8U
@@ -178,6 +190,18 @@ void smp_secondary_main(uint64_t cpu_id) {
      comes. Woken spuriously it simply re-reads the flag. */
   __asm__ volatile("csrs sie, %0" : : "r"(UINT64_C(1) << 1) : "memory");
   while (__atomic_load_n(&g_secondary_release, __ATOMIC_ACQUIRE) == 0U) {
+    /* Answers a TLB probe if one has been posted, and clears the pending
+       software interrupt either way -- see riscv64_tlb_probe_service. */
+    riscv64_tlb_probe_service((uint32_t)cpu_id);
+    /* Re-read after that clear, and this ordering is not decoration. The
+       service call consumes the pending bit, which may have been the release
+       IPI itself; a hart that went straight to wfi from here would sleep with
+       the gate already open and nothing left to wake it. Reading the flag
+       after the clear closes that: the release store happens before its IPI,
+       so a flag that still reads zero here means the IPI has not been sent
+       yet, and when it is it will find the pending bit clear and the hart in
+       wfi. */
+    if (__atomic_load_n(&g_secondary_release, __ATOMIC_ACQUIRE) != 0U) break;
     __asm__ volatile("wfi" ::: "memory");
   }
   /* Whatever woke it has been consumed by the read above. */
@@ -338,6 +362,15 @@ xaios_status_t smp_bring_secondaries_online(void) {
   }
   klog("smp: riscv64 %u harts online, scheduling held until the rendezvous\n",
        smp_online_count());
+  /* Here and not in vmm_self_test, because there is nothing to measure until
+     a second hart exists. The vmm self-tests run inside vmm_init, long before
+     any hart has been started -- which is exactly why the port's own
+     large-page test had to record that it could say nothing about any TLB but
+     its own. This is the first moment in the boot where that sentence stops
+     being true. It has to run before the harts are leased to the AI cell,
+     too: a leased hart has left this wait loop's neighbourhood and would not
+     answer a probe. */
+  riscv64_tlb_shootdown_self_test();
   return XAIOS_OK;
 }
 

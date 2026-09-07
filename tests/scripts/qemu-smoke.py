@@ -104,6 +104,23 @@ ARCH_TARGETS = {
         "vmm: sv48 enabled",
         "smp: riscv64 boot hart=",
         "smp: riscv64 4 harts online, scheduling held until the rendezvous",
+        # Remote TLB shootdown, which only this architecture had to build by
+        # hand: AArch64's TLBI is broadcast by the hardware and x86-64 has its
+        # own IPI path. Gated on the "passed" line rather than on nothing,
+        # because the self-test skips itself -- and says so -- on a single-hart
+        # machine or on firmware without the RFENCE extension, and a skip that
+        # nobody notices is how this stops being tested.
+        #
+        # What is deliberately NOT required here is the companion line saying
+        # the negative control held. The self-test prints that only when the
+        # remote hart demonstrably kept translating through a cleared page
+        # table entry after a hart-local fence, which is a fact about the
+        # machine rather than about the kernel: an implementation is free to
+        # drop the entry on its own, and QEMU's behaviour here is not a
+        # contract. Requiring it would fail a boot for the emulator changing
+        # its mind. The line is always printed and always says which case
+        # happened, so a reader of the log can tell how strong the run was.
+        "vmm: tlb shootdown self-test passed",
         "smp: hart1 leased owner=0 role=ai-hot",
     ],
     "x86_64": [],
