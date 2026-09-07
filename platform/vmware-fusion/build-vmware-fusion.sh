@@ -149,7 +149,21 @@ case "$FUSION_NIC" in
     exit 2
     ;;
 esac
-sed "s/@@XAIOS_FUSION_NIC@@/$FUSION_NIC/" \
+# How much memory the guest gets. 2048 is the qualified profile and stays the
+# default; B-12 is a 4096 defect -- firmware places the framebuffer above RAM,
+# so with four gibibytes it lands at 63.75 GiB, outside what the kernel
+# identity-maps, and with one or two it falls inside and works. That size was
+# not reachable from here at all, so the gates ran at the one size that cannot
+# reproduce the bug they were meant to guard.
+FUSION_MEMSIZE="${XAIOS_FUSION_MEMSIZE:-2048}"
+case "$FUSION_MEMSIZE" in
+  ''|*[!0-9]*)
+    printf '%s\n' "error: XAIOS_FUSION_MEMSIZE must be a count of mebibytes" >&2
+    exit 2
+    ;;
+esac
+sed -e "s/@@XAIOS_FUSION_NIC@@/$FUSION_NIC/" \
+    -e "s/@@XAIOS_FUSION_MEMSIZE@@/$FUSION_MEMSIZE/" \
   "$ROOT_DIR/platform/vmware-fusion/XAIOS.vmx.in" > "$VM_BUNDLE/XAIOS.vmx"
 # Serial console wiring. "file" is the default and keeps the automated Fusion
 # smoke gate reading fusion-serial.log. "pipe" makes the console bidirectional

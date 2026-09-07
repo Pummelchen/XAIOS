@@ -120,7 +120,12 @@ def run() -> tuple[str, bool]:
     command += [str(VZ / target) for target, _ in VOLUMES]
     # Four vCPUs, not one: secondaries start with translation off, and every
     # defect that state causes is invisible on a single-CPU boot.
-    command += ["--memory-mib", "2048", "--cpus", "4"]
+    # B-06's whole subject is the memory size, and this was pinned at 2048 --
+    # the one value between the 1024 that used to fail and the 4096 that used
+    # to work, so the gate could never have seen the defect it guards.
+    # run-vz.sh already reads this variable; the gate now reads the same one.
+    command += ["--memory-mib", os.environ.get("XAIOS_VZ_MEMORY_MIB", "2048"),
+                "--cpus", "4"]
     with log.open("wb") as handle:
         process = subprocess.Popen(command, stdout=handle,
                                    stderr=subprocess.STDOUT,

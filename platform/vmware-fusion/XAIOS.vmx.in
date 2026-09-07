@@ -30,7 +30,7 @@ uefi.secureBoot.enabled = "FALSE"
 numvcpus = "4"
 # Two gibibytes: see the note in platform/qemu/run-qemu-aarch64.sh for why
 # one is not currently reachable on all four profiles.
-memsize = "2048"
+memsize = "@@XAIOS_FUSION_MEMSIZE@@"
 sata0.present = "TRUE"
 sata0:0.present = "TRUE"
 sata0:0.deviceType = "cdrom-image"
