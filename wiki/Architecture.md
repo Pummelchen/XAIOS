@@ -22,7 +22,7 @@ they do not prove physical performance or production readiness.
 4. The kernel initializes architecture services, memory, devices, storage,
    filesystems, security, networking, processes, runtime services, and
    telemetry in dependency order.
-5. A normal AArch64 or x86_64 image loads `/init`, the service manager, and the
+5. A normal AArch64, x86_64 or RISC-V image loads `/init`, the service manager, and the
    persistent console/SSH service from initramfs. Before opening TCP port 22, that service
    requires a successful external IPv4 DNS response. It then prints the local
    IPv4 address and verified SSH state at 100% and leaves a functional serial
@@ -30,7 +30,7 @@ they do not prove physical performance or production readiness.
    separate transient address spaces only when invoked over SSH, then reaped.
    QEMU correctness gates use an explicit profile that runs workers and
    diagnostics during boot to retain deterministic fixture markers.
-   AArch64 and x86-64 process spaces each provide two adjacent 2 MiB code/data
+   AArch64, x86-64 and RISC-V process spaces each provide two adjacent 2 MiB code/data
    page-table spans plus a separate stack span. Switches clear all owned entries
    before installing the next process, preventing stale cross-process mappings.
 
@@ -39,7 +39,7 @@ they do not prove physical performance or production readiness.
 | Component | Main source | Responsibility |
 |---|---|---|
 | UEFI loader | `boot/uefi/` | Firmware entry, ELF loading, and boot handoff. |
-| Architecture ports | `kernel/arch/aarch64/`, `kernel/arch/x86_64/` | Exceptions, timers, interrupts, CPU startup, page tables, and platform discovery. |
+| Architecture ports | `kernel/arch/aarch64/`, `kernel/arch/x86_64/`, `kernel/arch/riscv64/` | Exceptions, timers, interrupts, CPU startup, page tables, and platform discovery. |
 | Kernel core | `kernel/core/` | Initialization, logging, telemetry, panic handling, and self-test sequencing. |
 | Memory | `kernel/mm/` | Physical and virtual memory, NUMA metadata, heaps, arenas, and ELF ownership. |
 | Devices and storage | `kernel/dev/`, `kernel/storage/` | VirtIO, focused NVMe, block devices, GPT, and partitions. |

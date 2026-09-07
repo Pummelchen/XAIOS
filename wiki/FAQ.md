@@ -12,7 +12,7 @@ No. Programs must be built for the XAIOS ABI and packaged into the image.
 
 ## What works today?
 
-The ARM and x86_64 QEMU core-OS paths boot and provide processes, threads,
+The ARM, x86_64 and RISC-V QEMU core-OS paths boot and provide processes, threads,
 filesystems, IPv4/IPv6, SSH/SFTP, local and remote shells, administration,
 storage lifecycle operations, and diagnostic applications. See [[Home]] and
 [[Applications|Applications]].
@@ -50,7 +50,7 @@ logits, deterministic decode, and physical-hardware acceptance.
 ## Why use QEMU?
 
 QEMU provides reproducible boot, ABI, fault, protocol, CPU-count, and device
-correctness tests on ARM and x86_64. It cannot establish physical performance.
+correctness tests on ARM, x86_64 and RISC-V. It cannot establish physical performance.
 
 ## Can I run the x86_64 build on an Apple Silicon Mac?
 

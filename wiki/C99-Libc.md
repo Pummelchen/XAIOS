@@ -2,7 +2,7 @@
 
 **Status: project conformance gates complete.** XAIOS provides a statically
 linked hosted implementation of ISO/IEC 9899:1999 with Technical Corrigenda
-1-3 for AArch64 and x86_64. The machine-readable inventory contains all 24
+1-3 for AArch64, x86_64 and RISC-V. The machine-readable inventory contains all 24
 mandatory headers and 464 mandatory library functions. The strict compile,
 link, namespace, runtime, termination and dual-architecture QEMU gates pass.
 
@@ -75,6 +75,7 @@ Build an application after `make libc`:
 ```sh
 scripts/build-c99-app.sh --arch aarch64 --main args app.c build/app.elf
 scripts/build-c99-app.sh --arch x86_64 --main void app.c build/app-x86.elf
+scripts/build-c99-app.sh --arch riscv64 --main args app.c build/app-riscv.elf
 ```
 
 `--main args` selects `int main(int, char **)`; `--main void` selects
@@ -88,7 +89,7 @@ clean exit. Its bounded standard output is returned to the invoking terminal
 while the same bytes remain visible on the serial console.
 
 `make qemu-libc-gate` runs the contract audit, builds both images, executes the
-runtime and termination probes under AArch64 and x86_64 QEMU, and writes the
+runtime and termination probes under AArch64, x86_64 and RISC-V QEMU, and writes the
 ignored evidence artifact `build/libc/c99-conformance-report.json`. CI uploads
 the report, manifests, linked ELFs and QEMU logs.
 
@@ -121,7 +122,7 @@ because a compiler or CPU provides related behavior.
 | 5. Complete mandatory surface | `DONE` | 464/464 functions declare and force-link on both targets. |
 | 6. Exercise semantics and edge cases | `DONE` | Language, allocation, strings, conversion, locale, wide text, stdio, math, complex, fenv, setjmp and signals. |
 | 7. Preserve XAIOS design invariants | `DONE` | Zero new syscall IDs; no public POSIX kernel API; AI-native boundary documented. |
-| 8. Run both target architectures | `DONE` | AArch64 and x86_64 QEMU marker sets pass without panic. |
+| 8. Run every target architecture | `DONE` | AArch64, x86_64 and RISC-V QEMU marker sets pass without panic. |
 | 9. Generate auditable evidence | `DONE` | Deterministic 13-gate report with SHA-256 artifact identities. |
 
 ## Separate follow-on work
@@ -130,7 +131,7 @@ The following are useful native extensions but are not part of ISO C99 and do
 not block the hosted C99 status:
 
 - native-thread context regression coverage exercises concurrent allocation,
-  shared-stream writes and isolated failing I/O paths on AArch64 and x86_64
+  shared-stream writes and isolated failing I/O paths on AArch64, x86_64 and RISC-V
   QEMU;
 - runtime-selected NEON/SVE and AVX2/AVX-512 memory primitives after scalar
   differential and physical-hardware tests;

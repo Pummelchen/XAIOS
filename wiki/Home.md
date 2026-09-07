@@ -25,7 +25,7 @@ primary Unix behavior reference for commands and network interoperability.
 
 ## Implemented OS surface
 
-- AArch64 and x86_64 UEFI boot under QEMU.
+- AArch64, x86_64 and RISC-V UEFI boot under QEMU.
 - Runtime-sized CPU, cpuset, scheduler, NUMA, and process metadata.
 - EL0 processes and threads with capability-checked syscalls.
 - VirtIO block/network/RNG plus focused emulated NVMe and SMMUv3 gates.
@@ -47,7 +47,7 @@ primary Unix behavior reference for commands and network interoperability.
 
 ## Evidence boundary
 
-The ARM and x86_64 QEMU core-OS correctness gates pass. QEMU proves boot,
+The ARM, x86_64 and RISC-V QEMU core-OS correctness gates pass. QEMU proves boot,
 protocol, ABI, and deterministic behavior; it does not prove physical hardware
 performance, production security, or real-model inference. No real Qwen, Kimi,
 or DeepSeek checkpoint has passed end-to-end token and logits parity.

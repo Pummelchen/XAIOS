@@ -244,7 +244,17 @@ fi
 # publishes no device tree, and this port reads its interrupt controller, its
 # timebase and its virtio window from one.
 BOOT_MODE="${XAIOS_RISCV64_BOOT:-kernel}"
-MACHINE="virt"
+# The board, overridable so the interrupt-controller question can be asked.
+#
+# The default `virt` publishes a PLIC, which is the only interrupt controller
+# this port has a driver for. QEMU also offers `virt,aia=aplic-imsic`, which
+# publishes APLIC and IMSIC instead and is what would make message-signalled
+# interrupts available here -- so "every queue polls on RISC-V" is a property
+# of this kernel as much as of the board. Selecting it today gets a machine
+# that boots and says `no plic in the device tree; external interrupts will
+# not be delivered`, which is the correct degradation and not a usable
+# configuration. The knob exists so that work can start from a measurement.
+MACHINE="${XAIOS_RISCV64_MACHINE:-virt}"
 KERNEL_ARGS="-kernel $KERNEL"
 # OpenSBI as the boot firmware, unless EDK2 is flashed in instead: QEMU takes
 # one or the other, not both.
@@ -264,7 +274,7 @@ case "$BOOT_MODE" in
     # The variable store is written by the firmware, so each run gets its own
     # copy rather than editing the one homebrew installed.
     cp "$FIRMWARE_VARS" "$STATE/vars.fd"
-    MACHINE="virt,acpi=off"
+    MACHINE="${XAIOS_RISCV64_MACHINE:-virt},acpi=off"
     KERNEL_ARGS=""
     FIRMWARE_ARGS="-drive if=pflash,format=raw,unit=0,readonly=on,file=$FIRMWARE_CODE -drive if=pflash,format=raw,unit=1,file=$STATE/vars.fd"
     ;;

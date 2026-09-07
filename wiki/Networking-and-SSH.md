@@ -111,12 +111,13 @@ PTY applications, SFTP lifecycle and
 isolation, SCP, UDP, IPv6/TCP, malformed traffic, rekey, reboot persistence,
 and concurrent clients against one guest. The raw Ethernet gates additionally
 send maximum-size fragmented UDP requests and independently reassemble XAIOS
-IPv4 and IPv6 replies on AArch64 and x86_64 QEMU.
+IPv4 and IPv6 replies on AArch64, x86_64 and RISC-V QEMU.
 
 `make qemu-network-adversarial-gate` adds sanitizer-backed coverage-guided
 SSH/SFTP/DNS parser campaigns, packet loss/reordering/corruption cases,
 connection and channel exhaustion with recovery, concurrent macOS/Debian load,
-and 20 fresh boots on each of ARM64 and x86_64. This remains emulated
+and 20 fresh boots on each of ARM64 and x86_64; RISC-V is built and exercised
+by the same gate but is not part of that repeat-boot count. This remains emulated
 correctness evidence rather than physical deployment qualification.
 
 This is protocol correctness evidence under QEMU, not approval for direct

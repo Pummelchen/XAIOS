@@ -2,8 +2,8 @@
 
 XAIOS has one architecture-neutral operations layer. The kernel owns lifecycle
 state, resource inspection, recovery policy, and command authorization; small
-architecture backends perform PSCI power calls on AArch64 and QEMU-compatible
-ACPI/reset-port operations on x86_64.
+architecture backends perform PSCI power calls on AArch64, QEMU-compatible
+ACPI/reset-port operations on x86_64, and SBI system-reset calls on RISC-V.
 
 ## Clean shutdown and reboot
 
@@ -49,7 +49,7 @@ never fabricated.
 
 `make qemu-operations-closure` performs abrupt termination, reboot, clean
 shutdown, persistent recovery checks, and authenticated command checks against
-both AArch64 and x86_64. It also uses Debian 13 OpenSSH when Docker is available.
+AArch64, x86_64 and RISC-V. It also uses Debian 13 OpenSSH when Docker is available.
 This proves the named QEMU behavior only. Physical power loss, firmware reset,
 RTC quality, thermals, PMU access, and device durability still require named
 hardware qualification.

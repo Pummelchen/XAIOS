@@ -141,6 +141,7 @@ The repository shape is:
 ```text
 catalog-aarch64.txt
 catalog-x86_64.txt
+catalog-riscv64.txt
 apps/ARCH/NAME/VERSION/{NAME.elf,manifest.txt,record.json}
 os/ARCH/VERSION/{kernel.elf,record.json}
 ```

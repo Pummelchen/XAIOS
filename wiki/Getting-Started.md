@@ -2,7 +2,8 @@
 
 This guide builds and starts the AArch64 XAIOS image under QEMU. See
 [[Hardware Support|Hardware-Support]] for x86_64, VMware Fusion and Apple
-Virtualization.framework boundaries.
+Virtualization.framework boundaries, and [[RISC-V|RISC-V]] for the rv64gc
+port, which builds and runs the same way through its own scripts.
 
 If you only want to *run* XAIOS, you do not need any of this — take a released
 build instead.

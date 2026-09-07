@@ -61,7 +61,10 @@ four I/O queues and exercises four-page PRP 16 KiB write, flush, read, and host
 backing-byte verification across repeated async rounds. It also covers SGL,
 direct aligned buffers, cancellation, malformed completions, and queue
 affinity. Both architectures require interrupt delivery for every negotiated
-queue: x86_64 through APIC/MSI-X and AArch64 through GICv3 ITS LPIs.
+queue: x86_64 through APIC/MSI-X and AArch64 through GICv3 ITS LPIs. RISC-V
+runs the same gate with a single polled queue, because this port drives the
+PLIC and has no APLIC/IMSIC driver to receive a message-signalled interrupt
+with (`P-16`).
 
 Persistent images are formatted as xaibootFS v6, which records extents rather
 than a fixed block list and raises the volume to a gibibyte. Mounting an older

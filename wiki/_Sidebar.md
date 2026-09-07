@@ -18,6 +18,7 @@
 
 QEMU is the default and is covered in [[Getting Started|Getting-Started]].
 
+- [[RISC-V|RISC-V]]
 - [[VMware Fusion|VMware-Fusion]]
 - [[Virtualization Framework|Virtualization-Framework]]
 - [[Firmware Profiles|Firmware-Profiles]]
