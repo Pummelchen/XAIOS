@@ -110,6 +110,11 @@ vmware-fusion-network-gate:
 vmware-fusion-snapshot-gate:
 	python3 ./tests/scripts/vmware-fusion-snapshot-gate.py
 
+# V-06's remaining boundary on this platform: what Fusion's own display shows
+# at a login prompt, read back with vmrun captureScreen.
+vmware-fusion-framebuffer-gate:
+	python3 ./tests/scripts/vmware-fusion-framebuffer-gate.py
+
 vmware-fusion-panic-capture:
 	python3 ./tests/scripts/vmware-fusion-panic-capture.py
 
