@@ -647,7 +647,8 @@ int xaios_net_send(u64 sockfd, const void *buffer, u64 buffer_size,
 }
 
 int xaios_net_sendto(u64 sockfd, const void *buffer, u64 buffer_size,
-                     u64 *out_bytes, const xaios_ip_addr_user_t *dst_addr) {
+                     u64 *out_bytes, const xaios_ip_addr_user_t *dst_addr,
+                     u64 dst_port) {
   xaios_socket_request_t request;
   xaios_memzero(&request, sizeof(request));
   request.sockfd = sockfd;
@@ -655,6 +656,9 @@ int xaios_net_sendto(u64 sockfd, const void *buffer, u64 buffer_size,
   request.buffer_size = buffer_size;
   request.out_bytes = (u64)out_bytes;
   request.addr_ptr = (u64)dst_addr;
+  /* The field the struct always had and nothing ever filled. The kernel reads
+     it now; a zero here is refused rather than sent to port zero. */
+  request.port = dst_port;
   u64 rc = xaios_syscall3(XAIOS_SYSCALL_NET_SEND, (u64)&request,
                          sizeof(request), 0);
   return rc == ~0ULL ? -1 : (int)rc;

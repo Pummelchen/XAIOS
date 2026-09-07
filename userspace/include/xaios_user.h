@@ -418,8 +418,17 @@ int xaios_net_recvfrom(u64 sockfd, void *buffer, u64 buffer_size,
                        u64 *out_bytes, xaios_ip_addr_user_t *src_addr);
 int xaios_net_send(u64 sockfd, const void *buffer, u64 buffer_size,
                   u64 *out_bytes);
+/* A datagram carries a destination port as well as a destination address, and
+   this took one until B-29 because the kernel never read either: NET_SEND
+   required a flow that only an inbound datagram created, so the peer was
+   whoever had written to the socket last and the arguments here were
+   decoration. Adding the port to the signature rather than to a second
+   function, because a sendto without one cannot be completed -- there is no
+   sensible default for "which service on that host" -- and every caller in
+   the tree is being changed with it. */
 int xaios_net_sendto(u64 sockfd, const void *buffer, u64 buffer_size,
-                     u64 *out_bytes, const xaios_ip_addr_user_t *dst_addr);
+                     u64 *out_bytes, const xaios_ip_addr_user_t *dst_addr,
+                     u64 dst_port);
 int xaios_net_close(u64 sockfd);
 int xaios_net_resolve(const char *hostname, u32 *out_ipv4);
 int xaios_net_resolve_address(const char *hostname, u32 family,

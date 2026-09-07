@@ -148,6 +148,36 @@ xaios_status_t network_stack_tcp_send(uint32_t flow_id, const uint8_t *data,
 xaios_status_t network_stack_tcp_close_flow(uint32_t flow_id);
 xaios_status_t network_stack_udp_send(uint32_t flow_id, const uint8_t *data,
                                        uint32_t len, uint32_t *bytes_written);
+/* Send a datagram from a bound port to a named peer, creating the flow the
+   transmit path needs when this socket has not spoken to that peer before.
+ 
+   network_stack_udp_send takes a flow id, and until B-29 the only thing that
+   ever produced one for a user socket was an *inbound* datagram: bind_udp
+   registered a listener and nothing else, so a socket that had never received
+   anything had no flow, and every send from it was refused. A datagram
+   protocol whose send works only after a receive is not a datagram protocol,
+   and no test caught it because every other userspace UDP caller went through
+   network_stack_app_udp_echo, which loops a frame back into the receive path
+   and never reaches the device at all.
+ 
+   IPv4 only, and that is a limitation rather than a decision deferred
+   silently: the v6 branch of the transmit path needs flow->local_addr,
+   flow->remote_addr and a neighbour entry, none of which alloc_udp_flow fills,
+   and there is no UDP equivalent of the TCP drain loop that solicits one. A v6
+   destination is refused here rather than being built into a frame with a
+   zero source address that the guest would report as sent.
+ 
+   Returns XAIOS_ERR_BUSY while the destination's MAC is still being resolved:
+   the first send to an unseen peer sends an ARP request and has nothing to put
+   in the Ethernet header yet. The caller is expected to poll and retry, which
+   is what the syscall does; treating BUSY as failure would make the first
+   datagram to any peer fail on a cold ARP cache. */
+xaios_status_t network_stack_udp_sendto(uint16_t local_port,
+                                        const xaios_ip_addr_t *remote_addr,
+                                        uint16_t remote_port,
+                                        const uint8_t *data, uint32_t len,
+                                        uint32_t *bytes_written,
+                                        uint32_t *out_flow_id);
 uint32_t network_stack_udp_recv(uint64_t sockfd, uint8_t *buffer,
                                 uint32_t buffer_size,
                                 xaios_ip_addr_t *source_addr,

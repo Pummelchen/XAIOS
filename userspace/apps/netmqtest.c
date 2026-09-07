@@ -92,10 +92,14 @@ static u64 sender_main(void *argument) {
   destination.addr[2] = 2U;
   destination.addr[3] = 2U;
 
+  /* Discard, port 9. Nothing has to be listening for a datagram to leave the
+     card, and choosing a port with a defined "throw it away" meaning says
+     that on purpose rather than borrowing a service's number. */
+  const u64 destination_port = 9U;
   for (u32 i = 0U; i < FRAMES_PER_SENDER; ++i) {
     u64 written = 0U;
     if (xaios_net_sendto(handle, payload, xaios_strlen(payload), &written,
-                         &destination) < 0) {
+                         &destination, destination_port) < 0) {
       state->failed++;
     } else {
       state->sent++;

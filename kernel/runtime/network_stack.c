@@ -3024,6 +3024,85 @@ xaios_status_t network_stack_udp_send(uint32_t flow_id, const uint8_t *data,
   return result;
 }
 
+static xaios_status_t network_stack_udp_sendto_unlocked(
+    uint16_t local_port, const xaios_ip_addr_t *remote_addr,
+    uint16_t remote_port, const uint8_t *data, uint32_t len,
+    uint32_t *bytes_written, uint32_t *out_flow_id) {
+  if (remote_addr == 0 || data == 0 || bytes_written == 0 || len == 0U ||
+      local_port == 0U || remote_port == 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  if (remote_addr->family != XAIOS_IP_FAMILY_V4) {
+    /* See the header: the v6 transmit branch needs state this path does not
+       fill, so it is refused rather than half-built. */
+    return XAIOS_ERR_UNSUPPORTED;
+  }
+  /* Both address fields are stored the way the receive path stores them, and
+     that is not the way network_config_local_ipv4() holds an address.
+     parse_udp runs the wire bytes through ip4_addr_host_order, which yields
+     the byte-reversed integer -- 10.0.2.2 becomes 0x0202000a, not 0x0a000202
+     -- and network_stack_udp_send_unlocked reverses remote_address again on
+     its way back out to the wire. A flow created here with the natural order
+     would transmit to the wrong host, and would additionally fail to match
+     find_udp_flow when the peer replied, so the reply would allocate a second
+     flow for the same four-tuple. The user's octets already arrive in the
+     reversed order when read low byte first, which is why the expression
+     below looks backwards and is not; the local address has to be swapped
+     explicitly. */
+  uint32_t remote_address = (uint32_t)remote_addr->addr[0] |
+                            ((uint32_t)remote_addr->addr[1] << 8U) |
+                            ((uint32_t)remote_addr->addr[2] << 16U) |
+                            ((uint32_t)remote_addr->addr[3] << 24U);
+  uint32_t configured_local = network_config_local_ipv4();
+  uint32_t local_address = ((configured_local & 0xFFU) << 24U) |
+                           (((configured_local >> 8U) & 0xFFU) << 16U) |
+                           (((configured_local >> 16U) & 0xFFU) << 8U) |
+                           ((configured_local >> 24U) & 0xFFU);
+  network_udp_flow_t *flow =
+      find_udp_flow(local_port, remote_port, local_address, remote_address);
+  if (flow == 0) {
+    /* A queue binding if the machine has one, and no flow refused if it does
+       not. The binding decides which receive queue a flow's inbound frames
+       are steered to, so it is required on the receive path and is genuinely
+       optional here: transmit picks its queue pair from the sending CPU
+       inside the driver and never consults this. Refusing to send because no
+       AI cell happens to hold a queue would make an ordinary socket depend on
+       an unrelated subsystem. What it costs, honestly: a flow created with no
+       binding cannot receive -- process_udp_frame looks the binding up from
+       the flow and drops the frame when it finds none -- so a reply to a
+       datagram sent before any binding exists is dropped, exactly as it is
+       today for a peer nobody has bound a queue for. */
+    network_queue_binding_t *binding = select_binding_for_flow(
+        local_port, remote_port, local_address, remote_address);
+    flow = alloc_udp_flow(
+        binding != 0 ? binding->queue_id : XAIOS_NETWORK_QUEUE_ID_INVALID,
+        binding != 0 ? binding->cell_id : 0U, local_port, remote_port,
+        local_address, remote_address, timer_now_ns());
+    if (flow == 0) {
+      return XAIOS_ERR_NO_MEMORY;
+    }
+  }
+  if (out_flow_id != 0) {
+    *out_flow_id = flow->flow_id;
+  }
+  return network_stack_udp_send_unlocked(flow->flow_id, data, len,
+                                         bytes_written);
+}
+
+xaios_status_t network_stack_udp_sendto(uint16_t local_port,
+                                        const xaios_ip_addr_t *remote_addr,
+                                        uint16_t remote_port,
+                                        const uint8_t *data, uint32_t len,
+                                        uint32_t *bytes_written,
+                                        uint32_t *out_flow_id) {
+  network_lock();
+  xaios_status_t result =
+      network_stack_udp_sendto_unlocked(local_port, remote_addr, remote_port,
+                                        data, len, bytes_written, out_flow_id);
+  network_unlock();
+  return result;
+}
+
 static uint32_t network_stack_tcp_recv_unlocked(uint32_t flow_id, uint8_t *buffer,
                                   uint32_t buffer_size) {
   if (buffer == 0 || buffer_size == 0U) return 0U;
@@ -4825,6 +4904,44 @@ void network_stack_self_test(void) {
                                    0, 0, 0) == sizeof(short_datagram));
     kassert(short_datagram[0] == 1U && short_datagram[1] == 2U &&
             short_datagram[2] == 3U && short_datagram[3] == 4U);
+  }
+  {
+    /* The refusals on the send-to-a-named-peer path, which is the half of
+       B-29 that no boot exercises.
+   
+       The positive half of that fix is demonstrated by /bin/netmqtest and by
+       the driver's own transmit counters, and it cannot be demonstrated here:
+       a real datagram needs a device, and this self-test runs against frames
+       it builds itself. What can be pinned here is that the path refuses what
+       it must refuse, which is the control the positive result needs -- a
+       send that returned XAIOS_OK for every set of arguments would make
+       frames_sent=16 meaningless. None of these calls allocates a flow or
+       touches a counter, deliberately, so the figures asserted below still
+       describe the receive path alone. */
+    xaios_ip_addr_t probe_v4 = xaios_ip_addr_from_ipv4(XAIOS_IPV4_GATEWAY);
+    xaios_ip_addr_t probe_v6;
+    xaios_ip_addr_zero(&probe_v6);
+    probe_v6.family = XAIOS_IP_FAMILY_V6;
+    const uint8_t probe_payload[4] = {9U, 8U, 7U, 6U};
+    uint32_t probe_written = 0xffffffffU;
+    kassert(network_stack_udp_sendto(0U, &probe_v4, 9U, probe_payload,
+                                     sizeof(probe_payload), &probe_written,
+                                     0) == XAIOS_ERR_INVALID);
+    kassert(network_stack_udp_sendto(24000U, &probe_v4, 0U, probe_payload,
+                                     sizeof(probe_payload), &probe_written,
+                                     0) == XAIOS_ERR_INVALID);
+    kassert(network_stack_udp_sendto(24000U, 0, 9U, probe_payload,
+                                     sizeof(probe_payload), &probe_written,
+                                     0) == XAIOS_ERR_INVALID);
+    kassert(network_stack_udp_sendto(24000U, &probe_v4, 9U, probe_payload, 0U,
+                                     &probe_written, 0) == XAIOS_ERR_INVALID);
+    /* IPv6 is refused rather than attempted: see network_stack_udp_sendto. A
+       machine that grows the v6 transmit path will fail this line, which is
+       the right place to be reminded that the refusal was deliberate. */
+    kassert(network_stack_udp_sendto(24000U, &probe_v6, 9U, probe_payload,
+                                     sizeof(probe_payload), &probe_written,
+                                     0) == XAIOS_ERR_UNSUPPORTED);
+    kassert(network_stack_udp_flow_count() == 1U);
   }
   kassert(g_udp_rx_count == 2U);
   kassert(network_stack_udp_flow_hit_count() == 1U);
