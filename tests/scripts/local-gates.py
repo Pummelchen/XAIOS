@@ -40,6 +40,7 @@ GATES = (
     # visible and starts answering the day a guest agent exists.
     ("vmware-fusion-framebuffer-gate", "vmware-fusion-framebuffer-gate", 1800),
     ("vz-gate", "vz-gate", 1800),
+    ("hypervisor-memory-matrix", "hypervisor-memory-matrix", 7200),
     ("unified-image-gate", "unified-image-gate", 3600),
     ("vz-stress-gate", "vz-stress-gate", 3600),
 )

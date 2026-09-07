@@ -115,6 +115,13 @@ vmware-fusion-snapshot-gate:
 vmware-fusion-framebuffer-gate:
 	python3 ./tests/scripts/vmware-fusion-framebuffer-gate.py
 
+# The hypervisors at 1, 2 and 4 GiB, which qemu-memory-matrix does for the
+# three QEMU architectures. Both hypervisor gates ran only at 2048 -- the one
+# size where B-06 cannot occur and the only Fusion size where the framebuffer
+# lands inside the identity map.
+hypervisor-memory-matrix:
+	python3 ./tests/scripts/hypervisor-memory-matrix.py
+
 vmware-fusion-panic-capture:
 	python3 ./tests/scripts/vmware-fusion-panic-capture.py
 
