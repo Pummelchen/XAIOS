@@ -50,6 +50,11 @@ qemu-xapt-gate:
 qemu-memory-matrix:
 	python3 ./tests/scripts/qemu-memory-matrix.py
 
+# B-14: a block device that really advertises VIRTIO_BLK_F_RO, and the same
+# image on a writable one. The read-only branch had never executed.
+qemu-readonly-medium-gate:
+	python3 ./tests/scripts/qemu-readonly-medium-gate.py
+
 vmware-fusion-image: image
 	./platform/vmware-fusion/build-vmware-fusion.sh
 

@@ -57,6 +57,14 @@ EXPECTED = (
      re.compile(r"/bin/agenttest: agent protocol dispatch passed")),
     ("pipe and redirect surface",
      re.compile(r"/bin/posix-shell: pipe and redirect surface passed")),
+    # B-19, asserted rather than observed. The loader rounds the base firmware
+    # gives it up to the strongest p_align across the loadable segments, so
+    # this reads zero on a correctly placed kernel and non-zero on the one
+    # that made CI red for twelve commits. Firmware picks a different address
+    # on almost every boot, which is what made that defect look environmental,
+    # so this is checked on every boot rather than once.
+    ("kernel placed at its required alignment",
+     re.compile(r"kernel: load base 0x[0-9a-f]+ offset_in_64k 0\b")),
 )
 
 # What it must never say.

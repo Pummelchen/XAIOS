@@ -67,6 +67,12 @@ BOOT_MARKERS = [
     # which is worse than having no record.
     "entropy: DEVELOPMENT seed file accepted",
     "entropy: source=development-seed-file",
+    # B-19: the loader rounds firmware's address up to the strongest alignment
+    # the segments ask for, and this is the one number that says it did.
+    # Fusion is where it matters most -- firmware placed the kernel at
+    # 0xfd480000 on one boot today and 0xff680000 on another, so the placement
+    # this guards changes underneath every run.
+    "offset_in_64k 0",
     READY_MARKER,
 ]
 # The userspace applications, which until now ran only under QEMU. Fusion and

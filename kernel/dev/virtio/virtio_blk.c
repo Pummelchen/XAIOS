@@ -441,9 +441,21 @@ static xaios_status_t submit_sector_h(
   if (drv == 0 || drv->initialized == 0U || buffer == 0 ||
       buffer_size < SECTOR_SIZE || completion == 0 || token == 0 ||
       sector >= drv->capacity_sectors ||
-      (type != VIRTIO_BLK_T_IN && type != VIRTIO_BLK_T_OUT) ||
-      (type == VIRTIO_BLK_T_OUT && drv->read_only != 0U)) {
+      (type != VIRTIO_BLK_T_IN && type != VIRTIO_BLK_T_OUT)) {
     return XAIOS_ERR_INVALID;
+  }
+  /* Refused, but not as a malformed request.
+   *
+   * This used to sit in the condition above and answer XAIOS_ERR_INVALID,
+   * while the synchronous path a few hundred lines down answered
+   * XAIOS_ERR_UNSUPPORTED for the same device and the same reason. Two
+   * refusals in one driver disagreeing about what a read-only medium is: a
+   * write to one is a well-formed request the device cannot perform, which is
+   * what UNSUPPORTED means, and is nothing like a null buffer or a sector
+   * past the end of the disk. Nothing caught the disagreement because no gate
+   * had ever attached a read-only device, so neither branch had run. */
+  if (type == VIRTIO_BLK_T_OUT && drv->read_only != 0U) {
+    return XAIOS_ERR_UNSUPPORTED;
   }
 
   /* How much this request actually moves.
@@ -1543,7 +1555,7 @@ void virtio_block_self_test(void) {
        and is not asked to accept one. Everything below that does not depend on
        having written still runs, so the device is exercised either way. */
     kassert(virtio_block_write_sector(write_test_sector, write_sector,
-                                      SECTOR_SIZE) == XAIOS_ERR_INVALID);
+                                      SECTOR_SIZE) == XAIOS_ERR_UNSUPPORTED);
   } else {
     kassert(virtio_block_write_sector(write_test_sector, write_sector,
                                       SECTOR_SIZE) == XAIOS_OK);

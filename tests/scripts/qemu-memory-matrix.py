@@ -82,12 +82,19 @@ ARCHITECTURES = ("aarch64", "x86_64", "riscv64")
 # them announce it the same way, so one shared string would silently never
 # match on two of the three -- a gate reporting the wording of a log line as a
 # broken address space.
+# B-19 rides along here for free: this gate boots nine machines across three
+# architectures and three memory sizes, and firmware picks a different load
+# address for most of them -- the two QEMU AArch64 addresses seen today differ
+# purely because the memory size did. That is the widest spread of placements
+# anything in this tree produces, and the alignment invariant is one line.
+ALIGNMENT_MARKER = "offset_in_64k 0"
 BOOT_MARKERS = {
-    "aarch64": ("VMM map/unmap self-test passed", "VMM translation test passed"),
+    "aarch64": ("VMM map/unmap self-test passed", "VMM translation test passed",
+                ALIGNMENT_MARKER),
     "x86_64": ("VMM: x86 map/unmap self-test passed",
-               "VMM: x86 self-test translated"),
+               "VMM: x86 self-test translated", ALIGNMENT_MARKER),
     "riscv64": ("vmm: self-test passed (map, translate, write, unmap)",
-                "VMM translation test passed"),
+                "VMM translation test passed", ALIGNMENT_MARKER),
 }
 # Said by the boot UI, not the kernel. Reaching this with none of the markers
 # above means a release image was booted: there the boot UI owns the console

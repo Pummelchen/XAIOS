@@ -130,6 +130,23 @@ iommu="${XAIOS_QEMU_IOMMU:-none}"
 # Lowering the figure means making the kernel relocatable first. Until then
 # this is the smallest number that boots everywhere.
 memory="${XAIOS_QEMU_MEMORY:-2G}"
+
+# B-14's other half: a block device that really advertises VIRTIO_BLK_F_RO.
+#
+# The kernel's block self-test asks whether the medium is writable and, when
+# it is not, verifies that a write is refused and runs everything that does
+# not depend on having written. That branch had never executed. The row
+# recorded the reason as QEMU discarding writes while still advertising the
+# device as writable -- but /dev/vblk0 is this scratch device, not the boot
+# medium, and this drive was never attached read-only in the first place, so
+# what the guest reported said nothing about the boot drive either way.
+#
+# Off by default: the partition self-test writes a table to this device, and
+# a read-only scratch disk is a different test rather than a stricter one.
+test_block_mode="snapshot=on"
+if [ "${XAIOS_QEMU_TEST_BLOCK_READONLY:-0}" = "1" ]; then
+  test_block_mode="readonly=on"
+fi
 smp="${XAIOS_QEMU_SMP:-4}"
 image="${XAIOS_AARCH64_IMAGE:-build/xaios-aarch64.img}"
 test_block_image="${XAIOS_TEST_BLOCK_IMAGE:-build/xaios-virtio-test.img}"
@@ -312,7 +329,7 @@ set -- "$qemu" \
   -drive "if=pflash,format=raw,readonly=on,file=$firmware" \
   -drive "if=none,format=raw,readonly=on,id=xaios_boot,file=$image" \
   -device virtio-blk-pci,drive=xaios_boot,bootindex=0 \
-  -drive "if=none,format=raw,snapshot=on,id=xaios_test_block,file=$test_block_image" \
+  -drive "if=none,format=raw,$test_block_mode,id=xaios_test_block,file=$test_block_image" \
   -device virtio-blk-device,drive=xaios_test_block,bus=virtio-mmio-bus.0 \
   -drive "if=none,format=raw,id=xaios_persistent,file=$persistent_image" \
   -device virtio-blk-device,drive=xaios_persistent,bus=virtio-mmio-bus.1 \
