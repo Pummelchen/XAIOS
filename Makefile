@@ -557,6 +557,13 @@ qemu-riscv64-crash-safety-gate:
 	  build/xaios-crash-fixture.img
 	XAIOS_BOOT_TEST_APPS=1 XAIOS_CRASH_WRITER=1 ./scripts/build-riscv64.sh
 	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	# The signed A/B system volume, which nothing else in this target
+	# produces. The RISC-V runner copies it into its state directory and
+	# fails at that copy before QEMU starts, so on a clean tree this gate
+	# reported a guest that never committed a chunk -- and pointed at
+	# XAIOS_CRASH_WRITER -- when what had happened was that no machine
+	# was ever started.
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-boot-media.sh
 	python3 ./tests/scripts/qemu-crash-safety-gate.py --arch riscv64
 
 qemu-riscv64-write-ordering-gate:
@@ -565,6 +572,13 @@ qemu-riscv64-write-ordering-gate:
 	XAIOS_BOOT_TEST_APPS=1 XAIOS_CRASH_WRITER=1 XAIOS_IO_TRACE=1 \
 	  ./scripts/build-riscv64.sh
 	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
+	# The signed A/B system volume, which nothing else in this target
+	# produces. The RISC-V runner copies it into its state directory and
+	# fails at that copy before QEMU starts, so on a clean tree this gate
+	# reported a guest that never committed a chunk -- and pointed at
+	# XAIOS_CRASH_WRITER -- when what had happened was that no machine
+	# was ever started.
+	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-boot-media.sh
 	python3 ./tests/scripts/qemu-write-ordering-gate.py --arch riscv64
 
 qemu-x86_64-numa-gate:
