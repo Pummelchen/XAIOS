@@ -270,6 +270,21 @@
         "number": 51,
         "name": "net_local_ipv6",
         "capability": "XAIOS_CAP_NET"
+      },
+      {
+        "number": 52,
+        "name": "console_size",
+        "capability": "XAIOS_CAP_CONSOLE"
+      },
+      {
+        "number": 53,
+        "name": "sleep_nanos",
+        "capability": "XAIOS_CAP_TIME"
+      },
+      {
+        "number": 54,
+        "name": "wait_events",
+        "capability": "XAIOS_CAP_TIME"
       }
     ],
     "capabilities": [

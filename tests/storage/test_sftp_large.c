@@ -202,6 +202,15 @@ static uint32_t open_file(const char *path) {
 
 #ifdef XAIOS_LIBFUZZER
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+  /* What this entry point does not look at.
+     The scripted test below asserts on these counters; the fuzzer feeds
+     packets in and inspects nothing, so under it they are written and never
+     read -- which a compiler is right to call out and which is not a reason
+     to stop counting. Said here, once. */
+  (void)g_write_calls;
+  (void)g_fsync_calls;
+  (void)g_close_calls;
+  (void)g_open_flags;
   if (size == 0U || size > UINT32_MAX) return 0;
   g_response_size = 0U;
   (void)sftp_handle_message(91, 77U, data, (uint32_t)size);

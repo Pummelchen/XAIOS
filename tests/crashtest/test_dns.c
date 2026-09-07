@@ -15,6 +15,8 @@
 #define DNS_PAYLOAD_OFFSET 42U
 static uint64_t g_now_ns = UINT64_C(1000000000);
 static uint8_t g_tx_frame[512];
+/* What the last transmit carried. Only the scripted test reads it; the
+   fuzzer drives dns_decode_name directly and never inspects a reply. */
 static uint32_t g_tx_length;
 static uint16_t g_rng_value = UINT16_C(0x1234);
 
@@ -74,6 +76,12 @@ static uint16_t get_be16(const uint8_t *p) { return (uint16_t)(((uint16_t)p[0] <
 
 #ifdef XAIOS_LIBFUZZER
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
+  /* What this entry point does not look at.
+     The scripted test below reads the captured transmit; the fuzzer drives
+     the decoder directly and inspects nothing, so under it the capture is
+     written and never read -- which a compiler is right to call out and which
+     is not a reason to stop capturing it. Said here, once. */
+  (void)g_tx_length;
   char output[XAIOS_DNS_MAX_NAME];
   if (size == 0U || size > UINT32_MAX) return 0;
   for (uint32_t offset = 0U; offset < (uint32_t)size; ++offset)

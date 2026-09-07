@@ -84,11 +84,22 @@ See [RISC-V](./wiki/RISC-V.md).
 x86_64, with no public POSIX API and no new syscall identifiers. See
 [C99 libc](./wiki/C99-Libc.md).
 
-**Model support status.** Neither the deterministic model-v1 path nor the
-model-v2 format foundation executes a transformer. Qwen 3.8 is the next
-correctness target, Kimi K3 and DeepSeek V4 later; nothing is production
-supported. XAIOS is built around official architecture adapters rather than a
-hard-coded graph. See [Model support](./wiki/Applications.md).
+## Model support status
+
+Neither the deterministic model-v1 path nor the model-v2 format foundation
+executes a transformer. Nothing here is production supported, and the table
+says which is which rather than leaving a reader to infer it.
+
+| Path | Status |
+| --- | --- |
+| model-v1, the deterministic QEMU decode | **Fixture only** — a fixed transform with a known answer, used to prove the runtime boundary rather than to run a model |
+| model-v2 format foundation | Format and loader only; no transformer executes |
+| Qwen 3.8 | The next real-model correctness target |
+| Kimi K3 text | Later |
+| Kimi K3 multimodal, DeepSeek V4 | Later still |
+
+XAIOS is built around official architecture adapters rather than a hard-coded
+graph. See [Model support](./wiki/Applications.md).
 
 **Updates.** The native [`xapt` updater](./wiki/Xapt-Package-Updates.md)
 installs signed applications without rebooting and stages OS images into the
