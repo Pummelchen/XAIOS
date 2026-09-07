@@ -195,13 +195,18 @@ def run_arm_boot_tier(tier: Dict[str, Any], supported: Set[str],
 
 # What a hart that cannot run this kernel has to say.
 #
-# The kernel needs Sv48, because that is where its address-space layout puts
-# userspace, and it refuses rather than falling back -- Sv39 cannot address
-# 511 GiB, so a fallback would boot and then fail somewhere far less
-# obvious. Several real harts offer only Sv39, including the two standard
-# RISC-V application profiles, so "refuses in one line" is a property worth
-# holding the kernel to rather than a case to leave untested.
-RISCV_REFUSAL = "Sv48 refused by this hart"
+# This used to be "Sv48 refused by this hart", and five tiers were recorded as
+# machines XAIOS deliberately declines to run on: the kernel needed Sv48
+# because userspace sat at 511 GiB, which Sv39 cannot address, so refusing was
+# better than booting and failing somewhere less obvious. That included both
+# standard RISC-V application profiles.
+#
+# The user window moved to 255 GiB, which both modes can address, and the
+# kernel now takes Sv39 where Sv48 is not offered -- so those five machines
+# boot, and their tiers are ordinary boot probes. What is left for this string
+# to catch is a hart offering neither, which no CPU model here is, and which
+# would otherwise be a silent halt.
+RISCV_REFUSAL = "offers neither Sv48 nor Sv39"
 
 # What a booting RISC-V hart has to say, in its own words.
 #

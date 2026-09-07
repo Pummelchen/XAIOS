@@ -1085,31 +1085,31 @@
         "name": "profile-rva22s64",
         "cpu": "rva22s64",
         "accelerator": "tcg",
-        "validation": "qemu-boot-refusal"
+        "validation": "qemu-boot-probe"
       },
       {
         "name": "profile-rva23s64",
         "cpu": "rva23s64",
         "accelerator": "tcg",
-        "validation": "qemu-boot-refusal"
+        "validation": "qemu-boot-probe"
       },
       {
         "name": "embedded-sifive-u54",
         "cpu": "sifive-u54",
         "accelerator": "tcg",
-        "validation": "qemu-boot-refusal"
+        "validation": "qemu-boot-probe"
       },
       {
         "name": "vendor-thead-c906",
         "cpu": "thead-c906",
         "accelerator": "tcg",
-        "validation": "qemu-boot-refusal"
+        "validation": "qemu-boot-probe"
       },
       {
         "name": "server-xiangshan-nanhu",
         "cpu": "xiangshan-nanhu",
         "accelerator": "tcg",
-        "validation": "qemu-boot-refusal"
+        "validation": "qemu-boot-probe"
       }
     ]
   },
