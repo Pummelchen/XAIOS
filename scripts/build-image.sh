@@ -162,6 +162,21 @@ if [ -n "${XAIOS_CLUSTER_MESH_NODES:-}" ]; then
       fi
       CLUSTER_APP_CFLAGS="$CLUSTER_APP_CFLAGS -DXAIOS_CLUSTER_MESH_PORT_${mesh_index}=${mesh_port}U"
     done
+    # Whether a node that loses quorum stops or keeps running. The kill gate
+    # wants it to stop: its peers were SIGKILLed and are not coming back. The
+    # partition gate wants it to keep running, because its peers are alive on
+    # the far side of a cut link and the repair is the half of that test which
+    # has not happened yet. Default zero, so the existing gate is unchanged by
+    # this knob existing.
+    MESH_HOLD="${XAIOS_CLUSTER_MESH_HOLD:-0}"
+    case "$MESH_HOLD" in
+      0|1) ;;
+      *)
+        printf '%s\n' "error: XAIOS_CLUSTER_MESH_HOLD must be 0 or 1" >&2
+        exit 1
+        ;;
+    esac
+    CLUSTER_APP_CFLAGS="$CLUSTER_APP_CFLAGS -DXAIOS_CLUSTER_MESH_HOLD=${MESH_HOLD}"
   fi
 fi
 UTILITY_APPS="ls mkdir touch cp mv rm rmdir stat cat head tail less grep find sed write tar cpio zip unzip ps df du"

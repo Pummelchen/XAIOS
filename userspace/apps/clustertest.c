@@ -79,6 +79,45 @@
 #error "XAIOS_CLUSTER_MESH_NODES is 0 (two-node data plane) or 3 (mesh)"
 #endif
 
+/* What a node does after it has lost quorum, and how often it says what it
+ * believes.
+ *
+ * Zero -- the default, and what the three-node kill gate runs -- is a node
+ * that reports its minority and stops. That is the honest end of a run in
+ * which the other machines are gone: they were SIGKILLed, they are not coming
+ * back, and a node that kept looping would only hold the gate open until its
+ * timeout.
+ *
+ * One is for a partition, where the premise is different in the way that
+ * matters: the other machines are still running. A minority here is a node
+ * that has been cut off, not a node that has outlived its cluster, and the
+ * interesting half of the test happens after that -- the link is repaired and
+ * the three have to become one cluster again. A node that exited at the
+ * moment it lost quorum could never demonstrate a heal, so under this setting
+ * it says the same things and keeps running.
+ *
+ * It also makes each node state its belief on a timer rather than only when
+ * its membership changes. During a partition nothing changes for minutes at a
+ * time, and the gate has to compare what the two sides believe AT THE SAME
+ * MOMENT -- which is impossible if the only evidence is a report each node
+ * emitted when it last saw a transition, one of them potentially long before
+ * the cut. A periodic report is what makes "these two nodes disagreed while
+ * both were running" a statement about one instant instead of a comparison
+ * between two different pasts.
+ *
+ * It is a compile-time choice rather than a run-time one because this program
+ * has no configuration channel -- no arguments, no file it reads -- and
+ * inventing one for a test would be testing the invention. */
+#ifndef XAIOS_CLUSTER_MESH_HOLD
+#define XAIOS_CLUSTER_MESH_HOLD 0
+#endif
+#if XAIOS_CLUSTER_MESH_HOLD != 0 && XAIOS_CLUSTER_MESH_HOLD != 1
+#error "XAIOS_CLUSTER_MESH_HOLD is 0 (stop on minority) or 1 (keep running)"
+#endif
+#if XAIOS_CLUSTER_MESH_HOLD && !XAIOS_CLUSTER_MESH_NODES
+#error "XAIOS_CLUSTER_MESH_HOLD only means anything in the three-node mesh"
+#endif
+
 #if !XAIOS_CLUSTER_MESH_NODES
 static xaios_cluster_peer_t g_peers[1];
 static xaios_cluster_t g_cluster;
@@ -325,6 +364,12 @@ static int fail(const char *why) {
 /* An outer bound on the whole run, so a node that is never killed exits with
    a complaint rather than holding the gate open until its timeout. */
 #define MESH_RUN_LIMIT_NS 900000000000ULL
+/* How often a node states its belief when it is holding through a partition.
+   Short against the twenty second deadline, so that the gate always has a
+   statement from each side that is younger than the thing it is comparing,
+   and long enough that three machines are not spending their consoles on it:
+   at five seconds a four minute run is fifty lines a node. */
+#define MESH_PERIODIC_REPORT_NS 5000000000ULL
 
 /* The experts whose ownership is reported. Eight, because the point is to
    watch which ones move when a node dies and which do not, and one expert
@@ -347,6 +392,9 @@ static int g_mesh_seen_online[MESH_PEER_COUNT];
 static u64 g_mesh_report_version;
 static u64 g_mesh_worst_dial_ns;
 static u8 g_mesh_frame[XAIOS_CLUSTER_MAX_MESSAGE];
+#if XAIOS_CLUSTER_MESH_HOLD
+static u64 g_mesh_last_periodic;
+#endif
 
 /* Inbound connections. Two peers, but a peer that reconnects can briefly hold
    two, and a slot that is never freed would silently stop this node hearing
@@ -490,6 +538,22 @@ static void mesh_report(const char *reason) {
   mesh_line_emit();
 }
 
+/* The worst dial this node has taken so far, against the deadline it has to
+   respect. A dial blocks the whole loop, so a dial that approached the
+   silence deadline would mean this node stopped heartbeating its living peers
+   while it was busy trying to reach an unreachable one -- one broken link
+   turning into three dead peers. The gate reads this line and refuses to pass
+   if the margin is thin, which is the difference between a deadline that is
+   safe and one that was assumed to be. */
+static void mesh_worst_dial_line(void) {
+  mesh_line_reset();
+  mesh_line_text("/bin/clustertest: mesh worst_dial_ms=");
+  mesh_line_u64(g_mesh_worst_dial_ns / 1000000ULL);
+  mesh_line_text(" deadline_ms=");
+  mesh_line_u64(MESH_SILENCE_NS / 1000000ULL);
+  mesh_line_emit();
+}
+
 static void mesh_dial(u64 index) {
   xaios_ip_addr_user_t address;
   xaios_memzero(&address, sizeof(address));
@@ -519,10 +583,49 @@ static void mesh_dial(u64 index) {
   g_mesh_out[index] = socket;
 }
 
+/* The senders own membership view, as a bitmap indexed by node id.
+ *
+ * A heartbeat used to carry no payload, which made it a statement that the
+ * sender is alive and nothing else. That is half of what a receiver needs: a
+ * node whose outbound links are cut still hears every heartbeat and still
+ * counts a whole cluster, while the peers that cannot hear it have already
+ * excluded it -- and both sides then pass a correct majority test at the same
+ * instant. Carrying the view makes the other half sayable: a receiver can see
+ * whether the sender lists it, and a peer that does not list us is a peer we
+ * cannot agree with however clearly we hear it. */
+/* Whether a peer has ever listed us in its view.
+ *
+ * "Absent from your view" and "excluded from your view" are different facts,
+ * and only the second one means the link is one-way. A node's very first
+ * heartbeat goes out before it has heard from anybody, so it lists only
+ * itself -- and treating that as exclusion made every node conclude, from the
+ * first frame it ever received, that its peer could not hear it. Nothing then
+ * reached quorum and the cluster never formed: three nodes each reporting
+ * live=1 total=3 quorum=0 while perfectly healthy.
+ *
+ * So exclusion is only believed once inclusion has been seen. Before that, a
+ * peer that does not list us has simply not finished forming, which is the
+ * ordinary state of a cluster that is still starting. */
+static u8 g_mesh_listed_us[MESH_PEER_COUNT];
+
+static u64 mesh_member_bitmap(void) {
+  u64 bitmap = 1ULL << (MESH_LOCAL_ID & 63U);
+  for (u64 i = 0; i < (u64)MESH_PEER_COUNT; ++i) {
+    if (g_mesh_peers[i].state == XAIOS_CLUSTER_NODE_ONLINE) {
+      bitmap |= 1ULL << (g_mesh_peers[i].node_id & 63U);
+    }
+  }
+  return bitmap;
+}
+
 static void mesh_heartbeat(u64 index, u64 now) {
   size_t sealed = 0;
+  u64 view = mesh_member_bitmap();
+  u8 payload[8];
+  for (u64 i = 0; i < 8U; ++i) payload[i] = (u8)((view >> (i * 8U)) & 0xFFU);
   if (xaios_cluster_seal(&g_mesh, g_mesh_peer_id[index],
-                         (u16)XAIOS_CLUSTER_HEARTBEAT, 0, 0, g_mesh_frame,
+                         (u16)XAIOS_CLUSTER_HEARTBEAT, payload,
+                         (u16)sizeof(payload), g_mesh_frame,
                          sizeof(g_mesh_frame), &sealed) != XAIOS_ENGINE_OK) {
     return;
   }
@@ -619,6 +722,33 @@ static void mesh_receive(u64 now) {
            timestamp is stamped here, from the one clock this node trusts. */
         (void)xaios_cluster_note_heard(&g_mesh, message.sender_node_id,
                                        now == 0U ? 1U : now);
+        /* And whether the sender can hear us. A heartbeat with no payload is
+           an older peer that cannot say; treated as reachable, because
+           refusing quorum to a peer that simply predates this field would
+           break a mixed cluster for a reason that has nothing to do with the
+           network. */
+        if (message.payload_length >= 8U) {
+          u64 view = 0;
+          for (u64 i = 0; i < 8U; ++i) {
+            view |= ((u64)message.payload[i]) << (i * 8U);
+          }
+          const int listed =
+              (view & (1ULL << (MESH_LOCAL_ID & 63U))) != 0U ? 1 : 0;
+          for (u64 i = 0; i < (u64)MESH_PEER_COUNT; ++i) {
+            if (g_mesh_peers[i].node_id != message.sender_node_id) continue;
+            if (listed) {
+              g_mesh_listed_us[i] = 1U;
+              (void)xaios_cluster_note_reachability(
+                  &g_mesh, message.sender_node_id, 1);
+            } else if (g_mesh_listed_us[i] != 0U) {
+              /* It listed us before and does not now: a one-way link, which
+                 is the case quorum must not count. */
+              (void)xaios_cluster_note_reachability(
+                  &g_mesh, message.sender_node_id, 0);
+            }
+            break;
+          }
+        }
       }
       /* Whether it opened or not, those bytes are spent. A frame that failed
          to open -- a stale nonce from a connection that was replaced, say --
@@ -642,6 +772,14 @@ static int mesh_main(void) {
   mesh_line_u64(MESH_HEARTBEAT_NS / 1000000ULL);
   mesh_line_text(" silence_deadline_ms=");
   mesh_line_u64(MESH_SILENCE_NS / 1000000ULL);
+#if XAIOS_CLUSTER_MESH_HOLD
+  /* Which of the two programs this is, said by the machine itself. The gate
+     that drives partitions builds every node with the hold, and a node built
+     without it would leave the moment it lost quorum -- taking the second
+     half of the test with it and failing in a way that reads like a heal that
+     did not happen rather than a build that was wrong. */
+  mesh_line_text(" mode=hold");
+#endif
   mesh_line_emit();
 
   xaios_memzero(g_mesh_peers, sizeof(g_mesh_peers));
@@ -788,12 +926,17 @@ static int mesh_main(void) {
         mesh_line_text(" total=");
         mesh_line_u64((u64)total);
         mesh_line_emit();
-        mesh_line_reset();
-        mesh_line_text("/bin/clustertest: mesh worst_dial_ms=");
-        mesh_line_u64(g_mesh_worst_dial_ns / 1000000ULL);
-        mesh_line_text(" deadline_ms=");
-        mesh_line_u64(MESH_SILENCE_NS / 1000000ULL);
-        mesh_line_emit();
+        mesh_worst_dial_line();
+#if XAIOS_CLUSTER_MESH_HOLD
+        /* Under a partition this is not the end of anything. The other two
+           machines are still running on the far side of a broken link, this
+           one has correctly stood down, and the half of the test that has not
+           happened yet is the repair. So it says the same thing and keeps
+           going: it keeps dialling, keeps listening, and will report again
+           the moment it hears a peer. Standing down is about withholding
+           ownership, which mesh_report already does with owners=withheld --
+           it was never about exiting. */
+#else
         xaios_log("/bin/clustertest: mesh three-node membership passed\n");
         for (u64 i = 0; i < (u64)MESH_PEER_COUNT; ++i) {
           if (g_mesh_out[i] != 0) (void)xaios_net_close(g_mesh_out[i]);
@@ -803,8 +946,23 @@ static int mesh_main(void) {
         }
         (void)xaios_net_close(listener);
         return 0;
+#endif
       }
     }
+
+#if XAIOS_CLUSTER_MESH_HOLD
+    /* One statement of belief per interval, whatever is or is not happening.
+       It goes here, at the bottom of the loop, so that it describes the state
+       AFTER this turn's receiving and expiry rather than the state this turn
+       started with -- a report taken before the expiry runs would name a peer
+       as live in the same tick the node decided it was not. */
+    if (formed && (g_mesh_last_periodic == 0U ||
+                   now - g_mesh_last_periodic >= MESH_PERIODIC_REPORT_NS)) {
+      g_mesh_last_periodic = now;
+      mesh_report("periodic");
+      mesh_worst_dial_line();
+    }
+#endif
 
     /* Sleeping rather than spinning. A loop that polled these sockets as
        fast as it could would burn a core doing nothing, and on a machine

@@ -69,6 +69,7 @@ make qemu-keyboard-input-gate
 make qemu-storage-crash-test
 make qemu-cluster-two-node-gate
 make qemu-cluster-three-node-gate
+make qemu-cluster-partition-gate
 make qemu-crash-safety-gate
 make qemu-write-ordering-gate
 make qemu-power-loss-gate
@@ -265,6 +266,45 @@ public fixture and is not production trust evidence.
   and nothing about a link that drops packets while both machines are alive
   has been tested. Every timing figure in it is a deadline being met, never a
   measurement worth quoting.
+- `make qemu-cluster-partition-gate` is partition evidence, and it is a third
+  claim again. The gate above kills an emulator, and a killed process stops
+  answering AND stops sending, so nobody on the far side of it is deciding
+  anything. A partition leaves both machines alive, both heartbeating, each
+  hearing nothing from the other, and each having to decide separately. A
+  relay stands between the three guests -- `tests/scripts/cluster_fault_relay.py`,
+  one TCP listener per ordered pair, with every node built to dial its peers
+  through it rather than at them -- so a link can be broken in one direction
+  or in both while every machine keeps running. Three faults in one boot.
+  Cutting every link to node 3 leaves the other two a majority: `mesh
+  peer-lost node=3 reason=silence silent_for_ms=20083 deadline_ms=20000` on
+  node 1, both survivors settling on `live=2 total=3 quorum=1 members=1,2
+  owners=1,2,1,2,1,1,2,2`, and node 3 on `live=1 total=3 quorum=0` with
+  `owners=withheld` while it is still running -- the relay refused ten
+  connections from it during that window, which is how the gate tells a
+  partitioned node from a dead one without taking the node's own word for it.
+  Repairing the links puts all three back on `members=1,2,3` and on the
+  ownership map they started with, `3,3,3,2,3,1,3,3`, unchanged. Then only
+  node 3's outbound links are cut, so it is heard by nobody and hears
+  everybody -- and the cluster splits its brain. That last one is a real
+  defect in the engine rather than a fault in the gate, it is described in
+  D-06, and the check is not to be relaxed: **this gate is red today, and its
+  one red is true.** Its controls: `XAIOS_CLUSTER_PARTITION_SKIP_CUT=1` runs
+  every phase and cuts nothing, and the nineteen checks that exist because of
+  a cut must all go red -- the run says which ones did not, by name.
+  `--self-test` hands the analysis transcripts of runs that never happened,
+  one per check, and requires each to go red for the failure it is there to
+  catch, which is the only way to show that a check nobody has ever seen fail
+  -- the split-brain one -- can fail at all. And
+  `python3 tests/scripts/cluster_fault_relay.py --self-test` is the fault
+  injector's own control, because a relay that does not really cut makes
+  every phase above indistinguishable from nothing happening. What it does
+  not cover: the cut is a link that REJECTS, so a dial fails fast and a send
+  gets an error. It is not a black hole, where connect() hangs for the ten
+  seconds the kernel allows and a send returns success into a buffer that
+  will never drain -- which is the harsher case for the sender and is
+  untested. Nothing here loses, reorders or delays a byte inside a stream
+  either; TCP does not do that and a relay cannot fake it. That still needs
+  two machines and a switch.
 - `make qemu-crash-safety-gate` is power-loss evidence for ordering and
   tearing: it kills the emulator outright at random points while a package is
   being ingested, then hashes every chunk the surviving catalog still calls

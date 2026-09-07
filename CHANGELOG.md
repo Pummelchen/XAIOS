@@ -23,6 +23,36 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **A broken link, rather than a broken machine -- and a split brain found
+  underneath it.** Everything the cluster had been tested against was a
+  process that stopped: a node killed outright stops answering and stops
+  sending, and nobody on the far side of it is deciding anything. A partition
+  is the other case, both machines alive, each hearing nothing from the other,
+  each deciding on its own. `make qemu-cluster-partition-gate` produces one:
+  a fault-injecting relay carries every heartbeat between the three guests,
+  one TCP listener per ordered pair, and it can be told to stop carrying in
+  one direction or in both while every machine keeps running. Cut every link
+  to one node and the cluster does the right thing -- the two that can still
+  hear each other keep serving and take over only the cut-off node's experts,
+  the cut-off node reports one of three, no quorum, and refuses to answer who
+  owns what, and it does that while still alive and still knocking (the relay
+  counts the connections it refuses from it, so this is not the node's own
+  account of itself). Repair the links and all three converge back on one
+  membership and on exactly the ownership map they started with. Cut only
+  ONE node's outbound links, though -- heard by nobody, hearing everybody,
+  which is what a failed transmit path or a one-way firewall rule looks like
+  -- and the cluster splits its brain: the other two write it off and reassign
+  its experts while it goes on counting three live nodes and owning them, and
+  six of eight experts end up with two owners while both sides pass their own
+  quorum test. The arithmetic is right and its input is not: a node judges its
+  peers by whether their frames arrive and is never told whether its own are
+  arriving anywhere, so liveness is decided alone rather than mutually. That
+  is a real defect, it is recorded in D-06, the gate is red on it, and the
+  check is not to be relaxed to make the gate green. A node that loses quorum
+  now stays running instead of exiting when it is built for this gate, which
+  is what makes the repair testable, and it states what it believes every five
+  seconds so that two sides of a partition can be compared at one instant
+  rather than across two different pasts.
 - **A node that stops answering is now noticed, and three of them can decide
   what to do about it.** Cluster membership moved only on frames that said
   what they meant: a node announced a departure and its peers believed it.

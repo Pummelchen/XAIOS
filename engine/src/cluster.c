@@ -107,6 +107,12 @@ xaios_engine_status_t xaios_cluster_init(xaios_cluster_t *cluster,
         return XAIOS_ENGINE_ERR_INVALID;
       }
     }
+    /* Reachable until a peer's own view says otherwise -- set here rather
+       than only on a state transition, because a caller may write
+       `peers[i].state` directly, as the hosted tests do, and a peer that had
+       never been told anything about reachability would otherwise be excluded
+       from quorum for a reason that has nothing to do with the network. */
+    peers[i].hears_us = 1U;
   }
   *cluster = (xaios_cluster_t){local_node_id, epoch, peers, peer_capacity};
   return XAIOS_ENGINE_OK;
@@ -189,6 +195,19 @@ xaios_engine_status_t xaios_cluster_open(xaios_cluster_t *cluster,
   peer->last_received_nonce = nonce;
   peer->state = opcode == XAIOS_CLUSTER_LEAVE ? XAIOS_CLUSTER_NODE_OFFLINE
                                                : XAIOS_CLUSTER_NODE_ONLINE;
+  /* Reachable until the peer's own view says otherwise.
+   *
+   * A frame arriving proves this direction works and says nothing about the
+   * other, so the default has to be a choice. It is "yes" because the
+   * alternative denies quorum to any deployment whose peers do not send a
+   * view -- an older build, or a caller driving the engine directly, as the
+   * hosted tests do -- and that would be a partition declared over a missing
+   * field rather than a missing link. The protection still holds where it
+   * matters: in a real mesh every heartbeat carries a view, and the node
+   * whose outbound links are cut still *receives* those heartbeats, so it
+   * learns it has been excluded from the very frames that keep reaching
+   * it. */
+  peer->hears_us = 1U;
   memset(message, 0, sizeof(*message));
   message->sender_node_id = sender;
   message->receiver_node_id = receiver;
@@ -211,6 +230,19 @@ xaios_engine_status_t xaios_cluster_set_peer_state(
   xaios_cluster_peer_t *peer = find_peer(cluster, node_id);
   if (peer == NULL) return XAIOS_ENGINE_ERR_NOT_FOUND;
   peer->state = state;
+  /* Same default as `open`, for a caller that sets membership directly. */
+  if (state == XAIOS_CLUSTER_NODE_ONLINE) peer->hears_us = 1U;
+  return XAIOS_ENGINE_OK;
+}
+
+xaios_engine_status_t xaios_cluster_note_reachability(
+    xaios_cluster_t *cluster, uint64_t node_id, int hears_us) {
+  /* What the sender said about us, recorded separately from when we heard it.
+     A peer we can hear that cannot hear us is not a peer we can agree with,
+     and quorum must not count it. */
+  xaios_cluster_peer_t *peer = find_peer(cluster, node_id);
+  if (peer == NULL) return XAIOS_ENGINE_ERR_NOT_FOUND;
+  peer->hears_us = hears_us != 0 ? 1U : 0U;
   return XAIOS_ENGINE_OK;
 }
 
@@ -270,7 +302,14 @@ xaios_engine_status_t xaios_cluster_quorum(const xaios_cluster_t *cluster,
   }
   uint64_t live = 1U; /* this node, which is up by virtue of asking */
   for (uint64_t i = 0U; i < cluster->peer_capacity; ++i) {
-    if (cluster->peers[i].state == XAIOS_CLUSTER_NODE_ONLINE) live += 1U;
+    /* Both directions. Hearing a peer is not enough: a node whose outbound
+       links are cut hears everyone, and counting those peers is what let it
+       claim a whole-cluster majority while the rest of the cluster had
+       already excluded it. See the comment on `hears_us`. */
+    if (cluster->peers[i].state == XAIOS_CLUSTER_NODE_ONLINE &&
+        cluster->peers[i].hears_us != 0U) {
+      live += 1U;
+    }
   }
   uint64_t total = cluster->peer_capacity + 1U;
   *live_nodes = live;

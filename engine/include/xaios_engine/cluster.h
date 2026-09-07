@@ -42,6 +42,24 @@ typedef struct xaios_cluster_peer {
      xaios_cluster_note_heard, because the engine has no business deciding
      which clock a deployment keeps time by. */
   uint64_t last_heard_nanos;
+  /* Whether this peer's last frame said it can hear *us*.
+   *
+   * Membership used to be decided from inbound silence alone, and that is
+   * exactly half of what a partition does. A node whose outbound links are
+   * cut still receives every heartbeat, still counts every peer as online,
+   * and still computes a whole-cluster majority -- while the peers that
+   * cannot hear it have already expired it and computed their own. Both
+   * sides pass a correct strict-majority test at the same instant, and the
+   * experts have two owners each. That is split brain, and it was reachable
+   * here: a three-node run with node 3's outbound links cut produced node 3
+   * holding live=3 quorum=1 members=1,2,3 against nodes 1 and 2 holding
+   * live=2 quorum=1 members=1,2.
+   *
+   * The arithmetic was never wrong; its input was. A peer counts toward
+   * quorum only if we can hear it AND it says it can hear us, because a link
+   * one of us cannot use is not a link. The sender states its own view in
+   * every heartbeat and the receiver records it here. */
+  uint8_t hears_us;
   uint8_t transmit_key[XAIOS_CLUSTER_KEY_SIZE];
   uint8_t receive_key[XAIOS_CLUSTER_KEY_SIZE];
   uint32_t state;
@@ -99,6 +117,14 @@ xaios_engine_status_t xaios_cluster_set_peer_state(
     xaios_cluster_t *cluster, uint64_t node_id, uint32_t state);
 /* Record that this node was heard from at `now_nanos`. `now_nanos` must be
    non-zero, because zero is the value that means "never heard". */
+/* Record what a peer's last frame said about whether it can hear us.
+ *
+ * Quorum counts a peer only when both directions work: see the comment on
+ * `hears_us` for the split brain this exists to prevent. */
+xaios_engine_status_t xaios_cluster_note_reachability(xaios_cluster_t *cluster,
+                                                     uint64_t node_id,
+                                                     int hears_us);
+
 xaios_engine_status_t xaios_cluster_note_heard(xaios_cluster_t *cluster,
                                                uint64_t node_id,
                                                uint64_t now_nanos);
