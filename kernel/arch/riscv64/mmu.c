@@ -30,11 +30,26 @@
 #include <xaios/boot_info.h>
 #include <xaios/elf_loader.h>
 #include <xaios/pmm.h>
+#include <xaios/riscv64_sbi.h>
 #include <xaios/smp.h>
 #include <xaios/status.h>
+#include <xaios/timer.h>
 #include <xaios/vmm.h>
 
 void klog(const char *fmt, ...);
+/* Hart identity, which is firmware's numbering rather than the kernel's.
+   Everything that talks to SBI -- and a remote fence is the sharpest example
+   -- has to name harts the way firmware does. */
+uint32_t riscv64_hart_of_cpu(uint32_t cpu_id);
+/* A page fault taken on purpose, recovered rather than fatal, per hart. The
+   shootdown self-test asks a secondary to dereference an address the boot
+   hart has just withdrawn; without this the secondary would be killed by the
+   fault the test exists to provoke. Declared here rather than added to
+   xaios/exception.h because it belongs to this architecture, and that header
+   is shared with two others that have no use for it. */
+void exception_page_probe_begin(void);
+void exception_page_probe_end(void);
+int exception_page_probe_faulted(void);
 void panic_at(const char *file, int line, const char *fmt, ...)
     __attribute__((noreturn));
 #define vmm_panic(...) panic_at(__FILE__, __LINE__, __VA_ARGS__)
@@ -83,6 +98,12 @@ extern char __rodata_end[];
    the mapping simply did not happen and the fault appeared much later
    somewhere else -- which is why the exhaustion check below is loud. */
 #define EARLY_TABLES 192U
+
+/* How many harts this file is prepared to describe: one set of page tables
+   each, and one slot each in the shootdown's hart-mask scratch. It bounds the
+   *identifier* space rather than a count, which is the distinction smp.c
+   records -- firmware may hand out ids with gaps in them. */
+#define VMM_MAX_HARTS 64U
 
 static uint64_t g_root[ENTRIES] __attribute__((aligned(4096)));
 static uint64_t g_early[EARLY_TABLES][ENTRIES] __attribute__((aligned(4096)));
@@ -187,12 +208,210 @@ static uint32_t pte_to_flags(uint64_t entry) {
   return flags;
 }
 
+/* ---------------------------------------------------------------------------
+ * Remote TLB shootdown.
+ *
+ * `sfence.vma` fences the hart that executes it and no other. That is not a
+ * QEMU detail or a cautious reading -- it is the definition of the
+ * instruction, and there is no supervisor-mode instruction that fences a hart
+ * this one is not running on. So until this existed, every fence in this file
+ * was a fence of one TLB: the kernel cleared a page table entry, fenced
+ * itself, freed the page, and the other harts went on translating through the
+ * entry that had been cleared. A write through such a stale translation lands
+ * in whatever the allocator handed out next. It is silent, it is late, and
+ * when it surfaces it does not look like a paging bug.
+ *
+ * The other two architectures already close this. x86-64 sends an
+ * inter-processor interrupt and waits for each CPU to acknowledge a
+ * generation (x86_64_platform_invalidate_page_all). AArch64 does not have the
+ * problem at all: `tlbi vaae1is` is broadcast by the hardware across the inner
+ * shareable domain. RISC-V's answer is neither -- it is firmware's, through
+ * the RFENCE extension, which is the same shape as HSM for starting a hart
+ * and IPI for waking one, and for the same reason: the work is machine-mode
+ * work and supervisor mode asks for it. That is also why there is no
+ * acknowledgement counter here to match x86-64's. The ecall does not return
+ * until firmware says every named hart has fenced; the wait is the call.
+ *
+ * The hart mask is the part worth being careful about. SBI takes a bitmap and
+ * a base, and bit N means hart (base + N) -- not hart N. Hart ids are
+ * firmware's to choose and this project has already been bitten by assuming
+ * they are dense: booting through EDK2 leaves one hart already started, so the
+ * machine comes up with ids 0, 2, 3, and code that indexed by id was wrong. A
+ * shootdown that gets the base wrong fences some other hart and reports
+ * success, which is the worst failure available -- the kernel would believe it
+ * had done the thing it had not done. So the mask is built from the hart ids
+ * of the online CPUs, grouped into 64-hart windows around the lowest id in
+ * each group, and never assumed to start at zero.
+ * ------------------------------------------------------------------------ */
+
+/* Completed shootdown operations: fences that reached at least one other
+   hart. Not the number of ecalls -- a machine whose hart ids are spread wider
+   than 64 takes several ecalls for one logical shootdown -- and not the
+   number attempted, because a fence firmware refused proves nothing. */
+static uint64_t g_tlb_shootdown_count;
+/* Remote harts fenced, summed over every shootdown. The pair is what makes
+   the self-test's assertion mean anything: a count of operations alone cannot
+   tell "fenced three harts twice" from "fenced nobody twice". */
+static uint64_t g_tlb_remote_hart_fences;
+/* Firmware refusals, counted rather than ignored. Without this a kernel whose
+   every remote fence was rejected would report exactly the same shootdown
+   count as one where they all worked. */
+static uint64_t g_tlb_remote_fence_errors;
+/* The negative control, and nothing but the self-test writes it.
+ *
+ * "The remote hart no longer translates the address" is a claim about
+ * hardware that could be true for reasons having nothing to do with this
+ * code: an implementation is free to drop a translation whenever it likes, so
+ * an assertion that only ever sees the fixed kernel cannot tell a working
+ * shootdown from a machine that never held the entry. The self-test therefore
+ * withdraws a mapping twice -- once with this set, which is exactly the kernel
+ * that existed before this change, and once without -- and compares. If the
+ * suppressed withdrawal already stops the remote hart translating, the machine
+ * cannot demonstrate the bug and the test says so rather than claiming a proof
+ * it does not have. */
+static uint32_t g_tlb_shootdown_suppressed;
+
+uint64_t riscv64_platform_tlb_shootdown_count(void) {
+  return __atomic_load_n(&g_tlb_shootdown_count, __ATOMIC_ACQUIRE);
+}
+
+uint64_t riscv64_platform_tlb_remote_hart_fences(void) {
+  return __atomic_load_n(&g_tlb_remote_hart_fences, __ATOMIC_ACQUIRE);
+}
+
+uint64_t riscv64_platform_tlb_remote_fence_errors(void) {
+  return __atomic_load_n(&g_tlb_remote_fence_errors, __ATOMIC_ACQUIRE);
+}
+
+/* Said once, not once per fence: firmware without RFENCE cannot be worked
+   around from supervisor mode, and a line per unmap would bury the boot. */
+static uint32_t g_rfence_warned;
+
+/* The mask and base of the last window fenced, kept so the self-test can
+   print what was actually sent rather than what the reader assumes. A
+   shootdown that names the wrong harts succeeds silently -- firmware has no
+   way to know the caller meant somebody else -- so the numbers that decide
+   whether the gap handling is right are worth having in the boot log. */
+static uint64_t g_tlb_last_mask;
+static uint64_t g_tlb_last_base;
+static uint32_t g_tlb_last_windows;
+
+uint64_t riscv64_platform_tlb_last_mask(void) { return g_tlb_last_mask; }
+uint64_t riscv64_platform_tlb_last_base(void) { return g_tlb_last_base; }
+uint32_t riscv64_platform_tlb_last_windows(void) { return g_tlb_last_windows; }
+
+/* The fence itself. A `size` of zero means the whole address space, which is
+ * how the specification spells it and what the global callers want.
+ *
+ * Returns the number of remote harts named, which is zero on a machine that
+ * is still single-hart. That early exit is not an optimisation for its own
+ * sake: vmm_init maps thousands of pages before any secondary exists, and an
+ * ecall each to reach nobody would be a real cost for no correctness. */
+static uint32_t tlb_remote_fence(uint64_t start, uint64_t size) {
+  if (g_tlb_shootdown_suppressed != 0U) return 0U;
+  if (smp_online_count() <= 1U) return 0U;
+  if (sbi_rfence_available() == 0) {
+    if (__atomic_exchange_n(&g_rfence_warned, 1U, __ATOMIC_ACQ_REL) == 0U) {
+      klog("vmm: WARNING firmware offers no SBI RFENCE extension; a kernel "
+           "mapping withdrawn on one hart stays live in every other hart's "
+           "TLB and supervisor mode cannot fix that\n");
+    }
+    return 0U;
+  }
+
+  uint64_t harts[VMM_MAX_HARTS];
+  uint32_t pending[VMM_MAX_HARTS];
+  uint32_t count = 0U;
+  uint32_t self = smp_cpu_id();
+  uint32_t capacity = smp_capacity();
+  if (capacity > VMM_MAX_HARTS) capacity = VMM_MAX_HARTS;
+  for (uint32_t cpu = 0U; cpu < capacity && count < VMM_MAX_HARTS; ++cpu) {
+    if (cpu == self) continue;
+    /* Online CPUs only. A hart that was never started, or that refused to,
+       is not one firmware will accept in a mask: SBI answers
+       SBI_ERR_INVALID_PARAM for the whole call, so a single absent hart would
+       cancel the fence for every present one. */
+    if (smp_cpu_state(cpu) == 0) continue;
+    harts[count] = (uint64_t)riscv64_hart_of_cpu(cpu);
+    pending[count] = 1U;
+    ++count;
+  }
+  if (count == 0U) return 0U;
+
+  /* Grouped into windows rather than assuming one call covers everything.
+     Sixty-four harts fit in a mask; ids 0 and 200 do not, however few harts
+     there are. Each pass takes the lowest id still unfenced as the base and
+     sweeps up everything within 63 of it. */
+  uint32_t remaining = count;
+  uint32_t fenced = 0U;
+  uint32_t windows = 0U;
+  while (remaining != 0U) {
+    uint64_t base = UINT64_C(0xFFFFFFFFFFFFFFFF);
+    for (uint32_t i = 0U; i < count; ++i) {
+      if (pending[i] != 0U && harts[i] < base) base = harts[i];
+    }
+    uint64_t mask = 0U;
+    uint32_t in_window = 0U;
+    for (uint32_t i = 0U; i < count; ++i) {
+      if (pending[i] == 0U) continue;
+      uint64_t offset = harts[i] - base;
+      if (offset >= 64U) continue;
+      mask |= UINT64_C(1) << offset;
+      pending[i] = 0U;
+      ++in_window;
+    }
+    /* The lowest pending id is always in its own window, so this is never
+       zero; the guard is here so a future change that breaks that invariant
+       hangs a boot loudly rather than spinning forever in the unmap path. */
+    if (in_window == 0U) break;
+    remaining -= in_window;
+    ++windows;
+    g_tlb_last_mask = mask;
+    g_tlb_last_base = base;
+    int64_t error = sbi_remote_sfence_vma(mask, base, start, size);
+    if (error != 0) {
+      __atomic_add_fetch(&g_tlb_remote_fence_errors, 1U, __ATOMIC_RELAXED);
+      klog("vmm: SBI remote fence refused mask=0x%lx base=%lu error=0x%lx\n",
+           mask, base, (uint64_t)error);
+      continue;
+    }
+    __atomic_add_fetch(&g_tlb_remote_hart_fences, (uint64_t)in_window,
+                       __ATOMIC_RELAXED);
+    fenced += in_window;
+  }
+  /* Counted only when firmware actually fenced somebody. A shootdown that
+     every window refused is not a shootdown, and counting it would let the
+     self-test's assertion pass on a machine where nothing happened. */
+  if (fenced != 0U) {
+    __atomic_add_fetch(&g_tlb_shootdown_count, 1U, __ATOMIC_RELAXED);
+  }
+  g_tlb_last_windows = windows;
+  return fenced;
+}
+
 static void flush_all(void) {
   __asm__ volatile("sfence.vma zero, zero" ::: "memory");
 }
 
+/* The global fence, on every hart. Kept apart from flush_all because not
+   every caller of flush_all wants it: switching this hart's user directory
+   changes only this hart's translations, and broadcasting that would be an
+   ecall per context switch to fence harts whose directories were untouched. */
+static void flush_all_everywhere(void) {
+  flush_all();
+  (void)tlb_remote_fence(0U, 0U);
+}
+
 static void flush_one(uint64_t virtual_address) {
   __asm__ volatile("sfence.vma %0, zero" : : "r"(virtual_address) : "memory");
+  /* Every caller of this edits a table some other hart walks: kernel leaves
+     live in the shared hierarchy that is mirrored into each hart's root, and
+     a process's leaf tables are reached from every hart's own user directory
+     by pointer. So the address is withdrawn from this hart and then from the
+     others, in that order -- the local fence first because it cannot fail and
+     costs nothing, the remote one second because it is an ecall that blocks
+     until firmware says every named hart has fenced. */
+  (void)tlb_remote_fence(virtual_address, PAGE_SIZE);
 }
 
 /* The fence that covers a leaf of the given level, which for anything above
@@ -217,7 +436,12 @@ static void flush_leaf(uint64_t virtual_address, uint32_t level) {
     flush_one(virtual_address);
     return;
   }
-  flush_all();
+  /* Global, and on every hart. The paragraph above argues the global part;
+     the remote part is the same argument one level out -- a superpage the
+     kernel has withdrawn is withdrawn from one TLB unless firmware is asked
+     to fence the rest, and a stale gibibyte is a worse stale than a stale
+     page. */
+  flush_all_everywhere();
 }
 
 /* Walk to the entry that would describe `virtual_address` at `target_level`,
@@ -297,7 +521,6 @@ static uint64_t *walk(uint64_t *root, uint64_t virtual_address,
 #define USER_L1_INDEX index_at(XAIOS_USER_BASE, 2U)
 #define USER_CODE_L2_INDEX index_at(XAIOS_USER_BASE, 1U)
 #define USER_STACK_L2_INDEX index_at(XAIOS_USER_STACK_TOP - PAGE_SIZE, 1U)
-#define VMM_MAX_HARTS 64U
 
 typedef struct hart_tables {
   uint64_t *root;           /* this hart's copy of the top level */
@@ -929,6 +1152,13 @@ xaios_status_t vmm_unmap_user_page(uint64_t virtual_address,
 /* Point this hart's user directory at a process's leaf tables, or at nothing.
    Pointer entries carry no permission bits: on RISC-V a non-leaf entry with U
    set is reserved, which is the one place this differs from x86-64. */
+/* Local, and deliberately so -- this is the one fence in the file that is not
+   made global. The directory being rewritten is this hart's own: every hart
+   has its own copy, reached through its own root, and pointing this one at a
+   different process changes nothing another hart can translate. Broadcasting
+   it would cost an ecall on every context switch to fence harts whose tables
+   were not touched. The leaf tables underneath *are* shared, which is why
+   vmm_map_user_page and vmm_unmap_user_page do fence globally. */
 void vmm_switch_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
   uint32_t cpu = smp_cpu_id();
   if (cpu >= g_hart_table_count || g_hart_tables[cpu].user_directory == 0) {
@@ -956,8 +1186,12 @@ void vmm_switch_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
 
 void vmm_destroy_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
   /* Flushed before the pages go back, so no stale translation can point at
-     memory the allocator has handed to someone else. */
-  flush_all();
+     memory the allocator has handed to someone else -- and on every hart,
+     not just this one. These pages held a process's leaf tables, and any hart
+     that ran that process reached them through its own directory; a fence of
+     one TLB here leaves the others translating into freed memory, which is
+     precisely the corruption this whole mechanism exists to stop. */
+  flush_all_everywhere();
   for (uint32_t i = 0U; i < l3_count; ++i) {
     if (l3_tables[i] != 0U) {
       pmm_free_page((void *)(uintptr_t)l3_tables[i]);
@@ -1015,15 +1249,17 @@ void vmm_destroy_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
  * is the hardware's own opinion of the leaf, taken from the same page-table
  * walker a fault would use.
  *
- * What this does not prove, said plainly because it is the gap x86-64 does
- * not have: nothing here says anything about any TLB but this hart's. Both
- * fences this file issues are `sfence.vma`, which is hart-local by
- * definition, and this port sends no SBI remote fence to anybody -- so a
- * kernel mapping withdrawn here is withdrawn from one TLB and the other harts
- * are not told. The mirroring checks below cover the page *tables* reaching
- * every hart, which is a different question and the one that had a bug in it.
- * x86-64's self-test counts its shootdowns; there is nothing to count here
- * yet. */
+ * What this does not prove, said plainly because it is a limit of *when* it
+ * runs rather than of what it checks: nothing here says anything about any
+ * TLB but this hart's. vmm_init happens long before any secondary hart has
+ * been started, so there is no other TLB in existence to observe -- and this
+ * comment used to end by recording that the port had no remote fence at all,
+ * which was true and is no longer. The fences do reach every hart now
+ * (tlb_remote_fence), and riscv64_tlb_shootdown_self_test measures that at
+ * the first moment in the boot when a second hart exists: it has a remote
+ * hart read an address, withdraws it, and requires that hart to fault. The
+ * mirroring checks below cover the page *tables* reaching every hart, which
+ * is a different question and the one that had a bug in it. */
 static void vmm_large_page_self_test(void) {
   const char *mode = (g_root_level == 2U) ? "sv39" : "sv48";
 
@@ -1353,6 +1589,359 @@ static void vmm_large_page_self_test(void) {
   }
 
   pmm_free_page(page);
+}
+
+/* ---------------------------------------------------------------------------
+ * Proving a remote hart stopped translating.
+ *
+ * Counting shootdowns is the easy half, and on its own it is close to
+ * worthless: "the function ran N times" is satisfied by a function that sends
+ * a mask of zero to the wrong base and is told everything is fine. What has
+ * to be shown is the thing the bug was about -- a hart that is not this one
+ * losing a translation it demonstrably had.
+ *
+ * That needs a second hart to execute a load at a moment of this hart's
+ * choosing, which is what the little request block below is for. A secondary
+ * sitting at the pre-scheduler gate polls it (riscv64_tlb_probe_service),
+ * dereferences the address it is given with the page-fault probe armed, and
+ * reports back either the value it read or the fact that it faulted. The boot
+ * hart then has the one measurement that matters, taken on the other hart's
+ * own MMU.
+ *
+ * Three states are read out of the same remote hart, in one boot, on the same
+ * address:
+ *
+ *   1. mapped                    -> the remote hart reads the signature.
+ *      (This is also what loads the translation into its TLB. Without it the
+ *      test would prove nothing later: an address that was never translated
+ *      cannot go stale.)
+ *   2. unmapped, local fence only -> what the kernel did before this change.
+ *   3. remote fence issued        -> the remote hart must fault.
+ *
+ * Steps 2 and 3 differ by exactly one thing: the SBI call. So if step 2 shows
+ * the remote hart still reading through a cleared page table entry and step 3
+ * shows it faulting, the fence is what removed the translation, and that is a
+ * genuine remote TLB effect rather than a counter going up. If step 2 shows
+ * the remote hart already faulting, this machine has dropped the entry on its
+ * own -- permitted, and it means the negative control could not be
+ * demonstrated here. The test says which of the two happened rather than
+ * quietly claiming the stronger one.
+ *
+ * Step 4 is the control in the other direction, and the test would be
+ * vacuous without it: a probe mechanism that reported "faulted" no matter
+ * what would satisfy step 3 while proving nothing at all. So the page is
+ * mapped again, with a different signature, and the remote hart has to read
+ * the new value back.
+ * ------------------------------------------------------------------------ */
+
+/* One slot per CPU. Written by the boot hart, read and answered by the hart
+   it names; volatile because the two are genuinely concurrent and the
+   compiler has no way to know it. */
+typedef struct tlb_probe_slot {
+  volatile uint64_t address;
+  volatile uint32_t request;  /* bumped by the asker */
+  volatile uint32_t done;     /* set to `request` by the answerer */
+  volatile uint32_t faulted;
+  volatile uint64_t observed;
+} tlb_probe_slot_t;
+
+static tlb_probe_slot_t g_tlb_probe[VMM_MAX_HARTS];
+
+/* Called by a secondary hart from the loop it waits in before the scheduler
+   rendezvous. Costs one load and one CSR write per pass when there is nothing
+   to do.
+ *
+ * The software-interrupt pending bit is cleared *first*, before the request
+ * is read, and the order is the whole correctness of the handshake. Clearing
+ * it afterwards loses a wake-up: the asker writes the request and raises the
+ * interrupt in the window between this hart reading a stale request and
+ * clearing the bit, and this hart then goes back to wfi with a request
+ * pending and nothing left to wake it. Clearing first means any request
+ * visible after the clear is still seen by the read below, and any request
+ * that arrives after the read has left the bit set, so the wfi returns
+ * immediately. */
+void riscv64_tlb_probe_service(uint32_t cpu_id) {
+  __asm__ volatile("csrc sip, %0" : : "r"(UINT64_C(1) << 1) : "memory");
+  if (cpu_id >= VMM_MAX_HARTS) return;
+  tlb_probe_slot_t *slot = &g_tlb_probe[cpu_id];
+  uint32_t sequence = __atomic_load_n(&slot->request, __ATOMIC_ACQUIRE);
+  if (sequence == slot->done) return;
+
+  volatile uint64_t *pointer = (volatile uint64_t *)(uintptr_t)slot->address;
+  uint64_t value = 0U;
+  exception_page_probe_begin();
+  value = *pointer;
+  exception_page_probe_end();
+  uint32_t faulted = exception_page_probe_faulted() != 0 ? 1U : 0U;
+  /* The recovery steps over the faulting load, which leaves its destination
+     register holding whatever was there before -- so a faulted probe has no
+     value to report and must not pretend otherwise. */
+  slot->observed = faulted != 0U ? 0U : value;
+  slot->faulted = faulted;
+  __atomic_store_n(&slot->done, sequence, __ATOMIC_RELEASE);
+}
+
+/* Ask `cpu` to dereference `address`. Returns zero if it did not answer in
+   time, which is a failure of the test harness rather than of the kernel and
+   is reported as such. */
+static int tlb_probe_remote(uint32_t cpu, uint64_t address, uint32_t *faulted,
+                            uint64_t *observed) {
+  if (cpu >= VMM_MAX_HARTS) return 0;
+  tlb_probe_slot_t *slot = &g_tlb_probe[cpu];
+  uint32_t sequence = slot->request + 1U;
+  slot->address = address;
+  __atomic_store_n(&slot->request, sequence, __ATOMIC_RELEASE);
+  /* The flag is what it checks; the interrupt is what ends its sleep. Same
+     pairing smp_release_secondary_schedulers uses, and for the same reason. */
+  (void)sbi_send_ipi(UINT64_C(1), (uint64_t)riscv64_hart_of_cpu(cpu));
+
+  uint64_t frequency = timer_frequency_hz();
+  uint64_t deadline =
+      timer_counter() + (frequency == 0U ? UINT64_C(0) : frequency * 2U);
+  while (__atomic_load_n(&slot->done, __ATOMIC_ACQUIRE) != sequence) {
+    if (frequency != 0U && timer_counter() >= deadline) return 0;
+  }
+  *faulted = slot->faulted;
+  *observed = slot->observed;
+  return 1;
+}
+
+/* A gibibyte-aligned window one past the three the large-page self-test uses,
+   picked under the same four constraints that comment sets out: below 256 GiB
+   so Sv39 can represent it, clear of the userspace window, clear of the
+   identity map, and a gibibyte away from its neighbours so it cannot share a
+   level-2 table with them. Checked for emptiness before use rather than
+   assumed, because "no machine has 196 GiB of RAM" is an assumption with a
+   date on it. */
+#define SELF_TEST_SHOOTDOWN_VA UINT64_C(0x30C0000000) /* 195 GiB */
+#define SELF_TEST_SHOOTDOWN_SIGNATURE UINT64_C(0x5849414f53544c42)  /* XAIOSTLB */
+#define SELF_TEST_SHOOTDOWN_SIGNATURE2 UINT64_C(0x5849414f53464e43) /* XAIOSFNC */
+
+/* Ask one hart to dereference the test address and hold it to an expectation.
+ *
+ * Every online hart other than this one is asked, not just the first: a hart
+ * mask built against the wrong base still reaches *somebody*, and a test that
+ * questioned one hart would pass while the others kept translating. Which
+ * harts get fenced is the part of this that is easy to get quietly wrong, so
+ * every one of them is the witness. */
+static void tlb_probe_expect(uint32_t cpu, uint64_t address, int expect_fault,
+                             uint64_t expect_value, const char *step) {
+  uint32_t faulted = 0U;
+  uint64_t observed = 0U;
+  if (tlb_probe_remote(cpu, address, &faulted, &observed) == 0) {
+    vmm_panic("hart cpu%u did not answer a TLB probe within two seconds "
+              "during the %s step", (uint64_t)cpu, step);
+  }
+  if (expect_fault != 0) {
+    if (faulted == 0U) {
+      vmm_panic("%s: hart cpu%u still translated %lx and read %lx -- the "
+                "translation was not withdrawn from that hart's TLB",
+                step, (uint64_t)cpu, address, observed);
+    }
+    return;
+  }
+  if (faulted != 0U) {
+    vmm_panic("%s: hart cpu%u faulted on %lx, which is mapped", step,
+              (uint64_t)cpu, address);
+  }
+  if (observed != expect_value) {
+    vmm_panic("%s: hart cpu%u read %lx through %lx, expected %lx", step,
+              (uint64_t)cpu, observed, address, expect_value);
+  }
+}
+
+void riscv64_tlb_shootdown_self_test(void) {
+  const char *mode = (g_root_level == 2U) ? "sv39" : "sv48";
+
+  if (smp_online_count() <= 1U) {
+    klog("vmm: tlb shootdown self-test skipped mode=%s -- one hart online, so "
+         "there is no remote TLB to observe; nothing about remote fencing is "
+         "checked on this machine\n", mode);
+    return;
+  }
+  if (sbi_rfence_available() == 0) {
+    klog("vmm: tlb shootdown self-test skipped mode=%s -- firmware offers no "
+         "RFENCE extension, so this kernel CANNOT withdraw a mapping from "
+         "another hart's TLB and no assertion below would be honest\n", mode);
+    return;
+  }
+
+  /* Every online hart that is not this one, named rather than assumed to be
+     1..n: the boot hart is whichever one firmware handed over on, and a
+     machine that failed to start one secondary still has the others. */
+  uint32_t self = smp_cpu_id();
+  uint32_t remotes[VMM_MAX_HARTS];
+  uint32_t remote_count = 0U;
+  uint32_t capacity = smp_capacity();
+  if (capacity > VMM_MAX_HARTS) capacity = VMM_MAX_HARTS;
+  for (uint32_t cpu = 0U; cpu < capacity; ++cpu) {
+    if (cpu == self || smp_cpu_state(cpu) == 0) continue;
+    remotes[remote_count++] = cpu;
+  }
+  if (remote_count == 0U) {
+    klog("vmm: tlb shootdown self-test skipped mode=%s -- no online hart "
+         "other than this one\n", mode);
+    return;
+  }
+
+  if (vmm_translate(SELF_TEST_SHOOTDOWN_VA, 0, 0) == XAIOS_OK) {
+    vmm_panic("tlb shootdown self-test window %lx is already mapped; this "
+              "machine is too large for the address the test picked",
+              SELF_TEST_SHOOTDOWN_VA);
+  }
+
+  /* The kernel's CPU numbers next to firmware's hart ids, printed because
+     they are the input to the hart mask and the place this can silently go
+     wrong. On QEMU with an SBI boot they are the same sequence; under EDK2
+     they are not, and a reader who wants to know whether this machine
+     exercised the gap case can only find out from a line like this. */
+  for (uint32_t cpu = 0U; cpu < capacity; ++cpu) {
+    if (smp_cpu_state(cpu) == 0) continue;
+    klog("vmm: tlb shootdown cpu%u -> hart%u%s\n", cpu,
+         riscv64_hart_of_cpu(cpu), cpu == self ? " (self, not fenced)" : "");
+  }
+
+  void *page = pmm_alloc_page();
+  if (page == 0) vmm_panic("tlb shootdown self-test has no page to alias");
+  uint64_t physical = (uint64_t)(uintptr_t)page;
+  volatile uint64_t *identity = (volatile uint64_t *)(uintptr_t)physical;
+  *identity = SELF_TEST_SHOOTDOWN_SIGNATURE;
+
+  uint64_t shootdowns_before = riscv64_platform_tlb_shootdown_count();
+  uint64_t hart_fences_before = riscv64_platform_tlb_remote_hart_fences();
+
+  if (vmm_map_page(SELF_TEST_SHOOTDOWN_VA, physical,
+                   XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE) != XAIOS_OK) {
+    vmm_panic("tlb shootdown self-test could not map %lx",
+              SELF_TEST_SHOOTDOWN_VA);
+  }
+
+  /* --- 1. every remote hart reads it, which is what puts it in its TLB ---
+     A failure here is not a shootdown failure: it would mean a kernel mapping
+     the boot hart made is not reaching another hart's root at all, which is
+     the mirroring bug sync_kernel_hierarchy exists to prevent. It is also the
+     step that makes everything after it mean something -- an address a hart
+     never translated cannot go stale. */
+  for (uint32_t i = 0U; i < remote_count; ++i) {
+    tlb_probe_expect(remotes[i], SELF_TEST_SHOOTDOWN_VA, 0,
+                     SELF_TEST_SHOOTDOWN_SIGNATURE, "mapped");
+  }
+
+  /* --- 2. withdraw it with a hart-local fence only: the negative control --- */
+  __atomic_store_n(&g_tlb_shootdown_suppressed, 1U, __ATOMIC_RELEASE);
+  xaios_status_t unmapped = vmm_unmap_page(SELF_TEST_SHOOTDOWN_VA);
+  __atomic_store_n(&g_tlb_shootdown_suppressed, 0U, __ATOMIC_RELEASE);
+  if (unmapped != XAIOS_OK) {
+    vmm_panic("tlb shootdown self-test could not unmap %lx",
+              SELF_TEST_SHOOTDOWN_VA);
+  }
+  /* The entry really is gone from the tables -- otherwise step 3 would be
+     asserting that a live mapping is live. */
+  if (vmm_translate(SELF_TEST_SHOOTDOWN_VA, 0, 0) == XAIOS_OK) {
+    vmm_panic("tlb shootdown self-test unmapped %lx and it still translates",
+              SELF_TEST_SHOOTDOWN_VA);
+  }
+  /* Nothing is asserted here. Whether a hart still holds the translation is
+     the machine's business -- an implementation may drop it whenever it
+     likes -- and the point of asking is to find out whether this machine can
+     demonstrate the bug at all. */
+  uint32_t stale_harts = 0U;
+  for (uint32_t i = 0U; i < remote_count; ++i) {
+    uint32_t faulted = 0U;
+    uint64_t observed = 0U;
+    if (tlb_probe_remote(remotes[i], SELF_TEST_SHOOTDOWN_VA, &faulted,
+                         &observed) == 0) {
+      vmm_panic("hart cpu%u did not answer the negative-control probe",
+                (uint64_t)remotes[i]);
+    }
+    if (faulted == 0U && observed == SELF_TEST_SHOOTDOWN_SIGNATURE) {
+      ++stale_harts;
+    }
+  }
+
+  /* --- 3. the remote fence, on its own, with the entry already cleared ---
+     Steps 2 and 3 differ by exactly one thing: this call. */
+  uint32_t reached = tlb_remote_fence(SELF_TEST_SHOOTDOWN_VA, PAGE_SIZE);
+  if (reached != remote_count) {
+    vmm_panic("the remote fence reached %u harts, but %u are online besides "
+              "this one -- the hart mask does not name them all",
+              (uint64_t)reached, (uint64_t)remote_count);
+  }
+  for (uint32_t i = 0U; i < remote_count; ++i) {
+    tlb_probe_expect(remotes[i], SELF_TEST_SHOOTDOWN_VA, 1, 0U,
+                     "after an explicit remote fence");
+  }
+
+  /* --- 4. map it again: the control against a probe that always faults ---
+     Without this the test would be vacuous. A probe mechanism that reported
+     "faulted" whatever happened would satisfy step 3 and prove nothing. */
+  *identity = SELF_TEST_SHOOTDOWN_SIGNATURE2;
+  if (vmm_map_page(SELF_TEST_SHOOTDOWN_VA, physical,
+                   XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE) != XAIOS_OK) {
+    vmm_panic("tlb shootdown self-test could not remap %lx",
+              SELF_TEST_SHOOTDOWN_VA);
+  }
+  for (uint32_t i = 0U; i < remote_count; ++i) {
+    tlb_probe_expect(remotes[i], SELF_TEST_SHOOTDOWN_VA, 0,
+                     SELF_TEST_SHOOTDOWN_SIGNATURE2, "mapped again");
+  }
+
+  /* --- 5. the production path end to end: the ordinary unmap, unaided ---
+     Step 3 proved the fence works when this test calls it by hand. This
+     proves vmm_unmap_page actually calls it. */
+  if (vmm_unmap_page(SELF_TEST_SHOOTDOWN_VA) != XAIOS_OK) {
+    vmm_panic("tlb shootdown self-test could not unmap %lx the second time",
+              SELF_TEST_SHOOTDOWN_VA);
+  }
+  for (uint32_t i = 0U; i < remote_count; ++i) {
+    tlb_probe_expect(remotes[i], SELF_TEST_SHOOTDOWN_VA, 1, 0U,
+                     "after the ordinary unmap path");
+  }
+
+  uint64_t shootdowns = riscv64_platform_tlb_shootdown_count();
+  uint64_t hart_fences = riscv64_platform_tlb_remote_hart_fences();
+  /* The same shape of assertion x86-64 makes, kept because it catches a
+     different failure from the ones above: a fence that worked by accident
+     while never being issued for most of what this test did. Two because the
+     test performs a map, an explicit fence, a remap and an unmap, and every
+     one of them must have fenced. */
+  if (shootdowns - shootdowns_before < 2U) {
+    vmm_panic("tlb shootdown self-test recorded %lu shootdowns, expected at "
+              "least 2", shootdowns - shootdowns_before);
+  }
+  if (hart_fences - hart_fences_before <
+      (shootdowns - shootdowns_before) * (uint64_t)remote_count) {
+    vmm_panic("tlb shootdown self-test recorded %lu shootdowns over %u remote "
+              "harts but only %lu hart fences: some shootdowns did not reach "
+              "every hart", shootdowns - shootdowns_before,
+              (uint64_t)remote_count, hart_fences - hart_fences_before);
+  }
+  if (riscv64_platform_tlb_remote_fence_errors() != 0U) {
+    vmm_panic("firmware refused %lu remote fences",
+              riscv64_platform_tlb_remote_fence_errors());
+  }
+
+  pmm_free_page(page);
+
+  klog("vmm: tlb shootdown self-test passed mode=%s remote_harts=%u "
+       "shootdowns=%lu hart_fences=%lu last_mask=0x%lx last_base=%lu "
+       "windows=%u\n", mode, remote_count, shootdowns - shootdowns_before,
+       hart_fences - hart_fences_before, riscv64_platform_tlb_last_mask(),
+       riscv64_platform_tlb_last_base(), riscv64_platform_tlb_last_windows());
+  if (stale_harts != 0U) {
+    klog("vmm: tlb shootdown negative control held: after a hart-local fence "
+         "%u of %u remote harts still read 0x%lx through the cleared entry, "
+         "and stopped only once the SBI remote fence was issued -- so what "
+         "was measured is REMOTE harts losing a translation, not a counter\n",
+         stale_harts, remote_count, SELF_TEST_SHOOTDOWN_SIGNATURE);
+  } else {
+    klog("vmm: tlb shootdown negative control NOT demonstrable on this "
+         "machine: all %u remote harts had already dropped the translation "
+         "after a hart-local fence, which the architecture permits. The "
+         "assertions above then only show that a remote hart does not "
+         "translate a withdrawn page -- not that the remote fence is why\n",
+         remote_count);
+  }
 }
 
 void riscv64_isa_self_test(void);
