@@ -880,7 +880,14 @@ xaios-ssh-bridge:
 qemu-developer-ux:
 	python3 ./tests/scripts/qemu-developer-ux.py
 
-qemu-post51-gate: image image-x86_64
+# The boot-test images, not the release ones.
+#
+# This asked for `image image-x86_64`, which is the release configuration:
+# the boot UI owns the console there and the kernel log is suppressed. Every
+# suite this target then runs reads that log, so all of them reported a guest
+# that had produced none of their markers -- on a machine that boots perfectly
+# to a login prompt with sshd up.
+qemu-post51-gate: image-qemu-test image-x86_64-qemu-test
 	python3 ./tests/scripts/qemu-post51-gate.py
 
 qemu-readiness-gate:
