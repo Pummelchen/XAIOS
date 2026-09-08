@@ -20,7 +20,7 @@ renames, and deletions under it are rejected; mutable data belongs under
 | `/init` | First userspace process. Establishes the initial service lifecycle and returns status to the kernel. | Started once during boot. |
 | `/bin/service-manager` | Exercises and owns the bounded service-manager protocol used for managed workers. | Started during boot. |
 | `/bin/xaios-worker` | Joinable worker process used for scheduler, CPU-assignment, and service-lifecycle work. | Started by the service manager; count follows the boot profile. |
-| `/bin/xaios-setup` | First-boot setup. Offers running from the boot medium or installing onto a disk, then takes the account password, an optional six digit console PIN, and the machine's name. It cannot write `/etc` -- no userspace process can -- so it leaves what it collected under `/state` and the kernel installs it. | Started before `sshd`, and only when the machine has no account, so an image that packages credentials never reaches it. |
+| `/bin/xaios-setup` | First-boot setup. Offers running from the boot medium or installing onto a disk, then takes the machine's name, the account name and password, an optional six digit console PIN, whether the machine answers on the network, and whether this console should log in without asking. It cannot write `/etc` -- no userspace process can -- so it leaves what it collected under `/state` and the kernel installs it. | Started before `sshd`, and only when the machine has no account, so an image that packages credentials never reaches it. |
 | `/bin/sshd` | Persistent SSH/SFTP server, authenticated PTY transport, forwarding endpoint, and userspace adapter for the kernel command dispatcher. Its loop blocks in the kernel (`xaios_wait_events`) until there is console input, a packet or connection on one of its sockets, or output from a child, so an idle server is idle: a few percent of one core under emulation, where it used to hold a whole core. | Started only after networking, and it opens TCP port 22 only once the interface holds a usable IPv4 address. |
 
 ## Administrative applications
@@ -36,6 +36,7 @@ renames, and deletions under it are rejected; mutable data belongs under
 | Path | Purpose |
 |---|---|
 | `/bin/ssh` | Dedicated outbound SSH/SCP process. It supports password, Ed25519 identity-file and forwarded-agent authentication, encrypted OpenSSH keys, IPv4/IPv6, DNS A/AAAA, PTY/exec sessions, recursive SFTP-backed copies, and one password-authenticated `-J user@host[:port]` hop with independent target authentication. The parent SSH service exchanges terminal data through bounded asynchronous child-channel IPC. |
+| `/bin/scp` | The copy half of the same program, linked separately from the identical objects and packaged under its own path, so that the name a session dispatches decides which of the two behaviours runs rather than an argument does. Recursive copies are SFTP-backed, and exactly one endpoint may be remote. |
 
 ## Repository applications
 
@@ -117,8 +118,8 @@ acceptance.
 | `/bin/sysinfo` | Legacy compatibility diagnostic that directs administrators to `xaiosctl status` and `xaiosctl hardware`. |
 | `/bin/systest` | Syscall, descriptor-width validation, and xaibootFS create/read/stat/list/rename/delete suite. |
 | `/bin/smptest` | SMP scheduler visibility, worker groups, and EL0 thread create/join/validation test. |
-| `/bin/perfbench` | Measures what XAIOS costs to use: syscall latency at one, four and eight threads, socket bind/close through the serialised network path, and thread create/join. Reports nanoseconds per operation and asserts nothing. Built only when `XAIOS_STRESS_TEST=1`. |
-| `/bin/smpstress` | Sustained multi-core load. Pins threads across the cores until a deadline, then checks a contended counter against tallies each thread kept privately and each thread's word against the neighbours sharing its cache line. Built only when `XAIOS_STRESS_TEST=1`, because it soaks rather than returns. |
+| `/bin/perfbench` | Measures what XAIOS costs to use: syscall latency at one, four and eight threads, socket bind/close through the serialised network path, and thread create/join. Reports nanoseconds per operation and asserts nothing. It is packaged in every image; what `XAIOS_STRESS_TEST=1` controls is whether the kernel launches it during a test-apps boot, so an ordinary image contains the program and never runs it -- which is why a gate that reads its output has to ask for the switch rather than depend on the default image. |
+| `/bin/smpstress` | Sustained multi-core load. Pins threads across the cores until a deadline, then checks a contended counter against tallies each thread kept privately and each thread's word against the neighbours sharing its cache line. It is packaged in every image, like `perfbench`; `XAIOS_STRESS_TEST=1` decides whether the kernel launches it during a test-apps boot, which it otherwise must not, because it soaks rather than returns. |
 | `/bin/nettest` | App-callable UDP/TCP, external session, and asynchronous DNS/cache telemetry test. |
 | `/bin/netmqtest` | Two threads pinned to separate CPUs sending UDP at once, so the driver's per-CPU transmit-pair selector has more than one CPU to choose from. Only meaningful against a multi-queue tap: on a single-queue link every frame correctly lands on pair zero. |
 | `/bin/lstm-xor` | Deterministic CPU-only LSTM/XOR fixture. It also verifies that production model decode fails closed; it is not real-model inference. |

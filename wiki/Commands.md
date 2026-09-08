@@ -49,7 +49,7 @@ authentication, and the complete OpenSSH algorithm matrix are not implemented.
 | `ifconfig` | Show the active VirtIO interface, IPv4 address, netmask, MTU, and MAC. |
 | `route`, `arp`, `ndp`, `netstat` | Show bounded routing, neighbor, packet, flow, drop, and resolver state. |
 | `ping IP`, `ping status` | Start a validated asynchronous ICMP echo and inspect its result/RTT. |
-| `nslookup NAME` | Start or read an asynchronous DNS A-record lookup. |
+| `nslookup [-6] NAME` | Start or read an asynchronous DNS lookup: the A record by default, the AAAA record with `-6`. |
 | `date`, `date -s EPOCH` | Show epoch/source or set a validated UTC epoch in seconds. |
 | `ntp sync [IP]`, `ntp status` | Start a bounded SNTP exchange or inspect source, attempts, stratum, RTT, timeout, and error state. |
 | `limits` | Show normal/warning/critical pressure plus memory, heap, process, filesystem, and CPU capacity. |

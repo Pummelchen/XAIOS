@@ -7,10 +7,14 @@ Progress status and ownership live only in [[Project Tracker|Project-Tracker]].
 ## Architectures
 
 AArch64, x86_64 and RISC-V (rv64gc) all run the same shared kernel. On the
-QEMU `virt` board RISC-V boots to the first-run setup prompt: Sv48 paging with
-section-accurate kernel permissions, PLIC interrupts, PCI enumerated through
-ECAM with base addresses assigned by the kernel, virtio disks, the initial
-filesystem, IPv6, userspace over a full trap frame, and four harts scheduling.
+QEMU `virt` board RISC-V boots to the first-run setup prompt: Sv48 paging where
+the hart offers it and Sv39 where it does not, chosen at run time, with
+section-accurate kernel permissions and validated 2 MiB and 1 GiB leaves in
+both modes; PLIC interrupts, or an APLIC and IMSIC when the board is started
+as `virt,aia=aplic-imsic`; remote TLB shootdown through SBI RFENCE; PCI
+enumerated through ECAM with base addresses assigned by the kernel, virtio
+disks, the initial filesystem, IPv6, userspace over a full trap frame, and
+four harts scheduling.
 
 It also has the hosted ISO C99 library, `xapt`, a real-time clock, a login
 prompt, a working SSH server, and a UEFI boot medium built by
@@ -21,9 +25,17 @@ qualified on real machines and hypervisors; RISC-V has been run on one
 emulated board and nothing else, so no claim about firmware behaviour, timing
 or scaling on RISC-V hardware is supported by anything here. Both boot paths are complete: the kernel can be handed to QEMU directly, or
 booted from its own disk through UEFI firmware. Build 5's image carries the
-RISC-V kernel beside the other two, but no gate has booted the RISC-V half
-*from that image*: the RISC-V gates boot a medium built from the same commit,
-and that is the whole claim.
+RISC-V kernel beside the other two, and `make unified-image-gate` now boots
+the RISC-V half *from that image* -- it is the third of the gate's five
+environments. Getting there corrected two things that had made the claim
+weaker than it read: the image build did not build the RISC-V half at all but
+picked up whatever `build/` held, which is how build 5's ISO came to carry a
+build 4 RISC-V kernel; and the gate attached the tree's own A/B system volume,
+which the loader prefers over the kernel on the medium, so every log it had
+ever produced said "loaded verified A/B system slot" and it had been proving
+that the image's *loader* boots and then running a kernel from `build/`. All
+three QEMU legs boot with no system volume now, which is what a first boot on
+a real machine looks like.
 
 ## Platform and hardware
 
@@ -40,27 +52,38 @@ and that is the whole claim.
   open.
 - Apple Virtualization.framework runs XAIOS to a login with storage and
   dual-stack networking. `make vz-gate` checks that boot at four vCPUs and
-  `make vz-stress-gate` soaks it at eight, but both need macOS on Apple Silicon
-  and a signed harness, so neither runs in CI and neither is qualification
-  evidence. Its firmware describes no GIC ITS, so
+  `make vz-stress-gate` soaks it at eight, and `make vz-framebuffer-gate` reads
+  the guest's display back off the host, but all three need macOS on Apple
+  Silicon and a signed harness, so none of them runs in CI and none is
+  qualification evidence. Its firmware describes no GIC ITS, so
   message-signalled interrupts cannot be delivered and every virtio queue runs
   polled; its GOP is `PixelBltOnly`, so firmware leaves no linear
   framebuffer, and the kernel drives the virtio-GPU directly to get one; and it presents no PL011. Its router advertises
   a unique-local IPv6 prefix, so the address configured there is unique-local
-  rather than globally routable.
+  rather than globally routable. What the framebuffer gate is not is a physical
+  monitor: it captures a virtual display on one Mac through ScreenCaptureKit,
+  which also requires Screen Recording to have been granted to the launching
+  application, since the permission is cached per process at launch.
 - A guest on Apple Virtualization.framework is reachable from the host only over
   vmnet, and then in one direction at a time. The NAT attachment carries
   guest-initiated traffic but delivers no host-initiated frame, so sshd listens
-  there without being reachable. `platform/virtualization-framework/vmnet-helper` fixes that at the cost
+  there without being reachable. `platform/virtualization-framework/vmnet-helper.c`,
+  built as `build/vz/vmnet-helper` by `make vmnet-helper`, fixes that at the cost
   of a privileged helper and a choice: its host mode carries host/guest traffic
   but reaches no further, its shared mode reaches the internet but carries only
   what the guest starts. Bridging, which would do both, needs the
   `com.apple.vm.networking` entitlement Apple issues only with a provisioning
   profile.
-- MSI-X for virtio on PCI is implemented against the GIC ITS but is exercised by
-  no target available here: Virtualization.framework has no ITS, and QEMU's
-  `virt` machine puts virtio on MMIO, where interrupts arrive through the
-  distributor. It is unverified until it meets ARM PCIe hardware.
+- MSI-X for virtio on PCI is implemented against the GIC ITS and is exercised by
+  no ARM target available here: Virtualization.framework has no ITS, and QEMU's
+  ARM `virt` machine puts virtio on MMIO, where interrupts arrive through the
+  distributor. That path is unverified until it meets ARM PCIe hardware. The
+  claim is narrower than it used to be rather than gone: on RISC-V's
+  `virt,aia=aplic-imsic` board the same shared MSI-X code is driven by an
+  IMSIC and is exercised, and `make qemu-riscv64-aia-gate` requires a virtio
+  device's first message to actually arrive rather than merely to have been
+  configured. What that does not do is test the ITS, which is six hundred
+  lines this board has no equivalent of.
 - The x86_64 QEMU image executes the complete common process/thread, filesystem,
   networking, SSH/SFTP, control, security, AI Cell and telemetry service set.
   Modern PCI VirtIO block/network and emulated NVMe pass focused correctness
@@ -76,12 +99,23 @@ and that is the whole claim.
 
 ## Networking and SSH
 
-- Networking uses one virtqueue pair, whatever the device offers. The driver
-  negotiates `VIRTIO_NET_F_MQ` and reads `max_virtqueue_pairs`, and a
-  multi-queue tap has been shown to report four pairs to the guest, but the
-  buffers, control queue and steering that would use more than one are not
-  written. A device advertising several pairs is driven exactly as a
-  single-pair device is. RSS is not implemented.
+- Networking drives every virtqueue pair a device offers. The driver negotiates
+  `VIRTIO_NET_F_MQ`, allocates each advertised pair at its own queue indices,
+  posts receive buffers on all of them, polls them round-robin so a busy pair
+  cannot starve the others, and only then sends
+  `VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET` -- that order is not cosmetic, since a
+  device told to use four pairs delivers on four immediately and the command
+  sent before the buffers exist drops every frame landing on a queue nobody
+  reads. Transmit fans out by CPU rather than by cursor, `smp_cpu_id() %
+  active_pairs` chosen before the lock is taken, because the point of a second
+  transmit queue is that two CPUs sending at once do not queue behind one lock.
+  `VIRTIO_NET_F_RSS` is negotiated too, with all six four-tuple hash types, a
+  sixteen-entry indirection table and a fixed forty-byte key. What this rests
+  on is one four-queue tap on one Debian host under TCG: SLIRP is single-queue
+  and macOS has no tap device, so every gate that runs on the default network
+  cannot tell a driver servicing four pairs from one servicing one, and the
+  measured distribution across pairs is correctness evidence carrying no
+  throughput claim.
 - FreeBSD 15.1, native macOS, and Debian 13 OpenSSH clients pass bounded QEMU
   interoperability suites. This is not a production Internet deployment or an
   independent security audit.
@@ -142,18 +176,30 @@ and that is the whole claim.
 
 ## Storage and persistence
 
-- Power-loss behaviour is covered in three ways and none of them is a device
-  that loses a write. The crash gate kills the emulator mid-ingest, and
-  constructs two states directly because a kill almost never lands on either:
-  a superblock caught half-written, and a superblock that is whole while the
-  catalog it points at was never written -- the state a volatile write cache
-  leaves behind. Both must be rejected by the slot's own hash, with the volume
-  coming back from the other slot a commit older. The ordering gate separately
-  requires a flush between the catalog and the superblock that publishes it.
-  What none of this does is run against a device that acknowledges a write and
-  then loses it: the emulator never loses an acknowledged write, so those
-  states are constructed rather than provoked, and physical controller-cache
-  behaviour remains unproven.
+- Power-loss behaviour is covered in three ways, and one of them is now a
+  device that really loses writes. The crash gate kills the emulator
+  mid-ingest, and constructs two states directly because a kill almost never
+  lands on either: a superblock caught half-written, and a superblock that is
+  whole while the catalog it points at was never written -- the state a
+  volatile write cache leaves behind. Both must be rejected by the slot's own
+  hash, with the volume coming back from the other slot a commit older. The
+  ordering gate separately requires a flush between the catalog and the
+  superblock that publishes it. Neither of those provokes the loss; the
+  emulator does not lose an acknowledged write by being killed, and the premise
+  that a cache mode could make it do so is wrong. `cache=unsafe` and
+  `cache.no-flush=on` only make flushes no-ops -- a write QEMU has
+  acknowledged already reached the host through `pwrite`, and killing QEMU
+  does not take the host's page cache with it. `make qemu-write-cache-probe`
+  is that measured rather than asserted, on the same block layer with
+  `qemu-io`, and kept runnable so the claim can be rechecked against a future
+  QEMU. `make qemu-power-loss-gate` closes the loop a different way: the models
+  volume is attached through QEMU's `blklogwrites` filter, which passes every
+  request through and records header, payload and flush markers in issue
+  order, and `tools/xaios_write_log.py` replays the recording honouring the one
+  promise a volatile cache makes -- everything before the last completed flush
+  is durable, everything since survived or did not, independently. Every byte
+  it replays is a byte the guest wrote. What remains open is physical
+  controller-cache behaviour on real hardware, which no emulator settles.
 - VirtIO block/network use interrupt-assisted completions, indirect
   descriptors, and bounded queued work. The x86 block gate records whether
   the post-reset completion arrived through MSI-X and otherwise verifies the
@@ -164,7 +210,11 @@ and that is the whole claim.
   and SGL 16 KiB write/read/flush operations with async submission, direct
   aligned buffers, cancellation, malformed-completion rejection, queue
   affinity, and host backing-byte verification. Every queue must deliver its
-  canary through APIC/MSI-X on x86_64 or GICv3 ITS LPIs on AArch64. Physical
+  canary through APIC/MSI-X on x86_64 or GICv3 ITS LPIs on AArch64. RISC-V
+  negotiates one queue -- the driver asks for one per online CPU and the
+  secondary harts are still at the scheduler rendezvous when NVMe initialises
+  -- and runs the same gate on both of its boards, polled on the PLIC one and
+  delivered by an IMSIC message on `virt,aia=aplic-imsic`. Physical
   durability, discard behavior, and throughput remain open.
 - xaiFS supports signed registration, resumable staging, verification,
   immutable activation, scrub/quarantine, cleanup/reuse, and free-only trim
@@ -250,8 +300,12 @@ and that is the whole claim.
   tiled prefill/verification, persistent worker gangs, and bandwidth autotuning
   remain incomplete.
 - No complete model-executing native macOS process, Metal backend, physical
-  model-parity run, cluster data plane, or immutable performance artifact
-  exists.
+  model-parity run, or immutable performance artifact exists. The cluster data
+  plane is no longer on that list: sealed frames cross a real network between
+  XAIOS guests, membership is decided from heartbeats that actually arrived,
+  and two-node, three-node and partition gates run it between independent
+  machines. What is still missing above it is distributed activation
+  *execution*, which waits on real local inference rather than on transport.
 
 ## Evidence policy
 

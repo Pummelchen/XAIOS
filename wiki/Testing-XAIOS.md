@@ -20,7 +20,7 @@ details are in [[Getting Started|Getting-Started]].
 | `make compile-check` | Freestanding C compile checks with warnings treated as failures. |
 | `make hosted-test` | Hosted model-v2, engine, parser, kernel, and utility tests. |
 | `make libc-check` | Strict hosted C99 headers, 464-function namespace/link, ELF layout, source pin, non-POSIX surface, and syscall-budget contract. |
-| `make qemu-libc-gate` | Complete libc contract plus AArch64/x86_64 runtime and termination probes; emits the conformance report. |
+| `make qemu-libc-gate` | Complete libc contract plus runtime and termination probes on every architecture that carries the library -- AArch64, x86_64 and RISC-V -- and emits the conformance report, which covers the two the contract's `architecture_gates` names. Its image dependency builds only the first two, so the RISC-V leg boots whatever `build/` already holds; `make qemu-riscv64-libc-gate` is the one that builds that image itself. |
 | `make qemu-riscv64-gate` | RISC-V rv64gc on the QEMU `virt` board: boots the shared kernel to 100% across four harts and requires PCI and MMIO virtio both carrying a disk, xaiFS mounted at /models, the initial filesystem mounted, `/init` and the service manager run and returned from, the hosted C99 termination probes passed, every control command rendered, a `xaios login:` prompt, sshd listening, and at least 78 self-tests, with no assertion or panic anywhere. Four harts deliberately: firmware picks its own boot hart and it is not always hart 0. Negative control run -- zeroing the filesystem header fails it on six markers. |
 | `make qemu-riscv64-boot-media-gate` | The same machine, booted from its own disk instead of from a kernel handed to QEMU: EDK2 firmware with no `-kernel`, requiring that firmware find the loader at the removable-media path, that the loader read the kernel off that same disk, and that the boot reach a login prompt with sshd listening. Needs `acpi=off`, or this EDK2 build publishes no device tree. Negative control run -- deleting the loader from the medium fails it on the loader markers. |
 | `make qemu-riscv64-matrix-gate` | RISC-V at 1, 2, 4 and 8 harts: every boot must reach a login prompt, report exactly the harts it was given as scheduling, and answer an SSH login asking for its service state. Four independent boots with fresh firmware variables and fresh volumes each, so none can pass on state a previous run left behind. Hart count is the dimension swept because firmware picks its own boot hart and it is not always hart 0. |
@@ -41,13 +41,16 @@ details are in [[Getting Started|Getting-Started]].
 | `make hypervisor-memory-matrix` | The same three sizes on VMware Fusion and Virtualization.framework, which had only ever run at 2048 -- the one value where B-06 cannot occur and the only Fusion size whose framebuffer needs no mapping. Records where firmware placed Fusion's framebuffer and whether that is above RAM. |
 | `make qemu-slaac-gate` | A global IPv6 address formed from a real router advertisement. Two networks, because either alone proves the wrong thing: on SLIRP's site-local `fec0::/64` the guest must report link-local and no more, and on an advertised `2001:db8::/64` it must form an address inside it. |
 | `make qemu-readonly-medium-gate` | A block device that really advertises `VIRTIO_BLK_F_RO`, and the same image on a writable one. The read-only branch had never executed; running it found two refusal paths in the driver disagreeing about what a read-only medium is. |
-| `make qemu-riscv64-aia-gate` | The same RISC-V kernel on both interrupt controllers: polled on the default `virt` board's PLIC, delivered messages by APLIC+IMSIC on `virt,aia=aplic-imsic`. Requires opposite answers from the two boards, so neither result can be produced by accident. |
 | `make vmware-fusion-load-soak` | One Fusion boot held under continuous 256 KiB SFTP round trips, rather than many boots that each start clean. The assertion only a long run can make is the memory trend, compared first quarter against last. A reproduction harness rather than a gate: it exits non-zero only when it reproduces something. |
 | `make vz-framebuffer-gate` | What Virtualization.framework's own display shows at a login prompt, captured through ScreenCaptureKit. Needs Screen Recording permission, which is cached per process at launch, so it must be run by an application that holds it. |
 | `make vmware-fusion-framebuffer-gate` | The same question for Fusion, which cannot be answered: `vmrun captureScreen` is a guest operation needing VMware Tools, which XAIOS does not ship. Reports that boundary by name rather than leaving the question open. |
-| `make qemu-nvme-gate` | Async PRP/SGL, direct-buffer, cancellation, malformed-completion, stress and backing-byte checks on all three architectures: four queues with every-queue MSI-X/LPI delivery on AArch64 and x86_64, and one polled queue on RISC-V, which has no message-signalled interrupt to receive (`P-16`). |
+| `make qemu-nvme-gate` | Async PRP/SGL, direct-buffer, cancellation, malformed-completion, stress and backing-byte checks on four rows: four queues with every-queue MSI-X/LPI delivery on AArch64 and x86_64, and RISC-V twice, on both of its boards, required to disagree. QEMU's default `virt` publishes a PLIC, which carries wires and no messages, so its single queue is polled and the row says so positively -- `msix=0` and the skipped self-test -- because a build that quietly stopped configuring interrupts everywhere would otherwise pass by looking exactly like it. `virt,aia=aplic-imsic` publishes an APLIC and an IMSIC, and there the same kernel image must program a vector and be handed its completion by interrupt (`controller=aia-imsic`). The queue count stays one on both, which is an SMP bring-up property and not an interrupt one: the driver asks for one queue per online CPU and the secondary harts are still at the scheduler rendezvous when NVMe initialises (`P-16`). |
+| `make qemu-riscv64-aia-gate` | The same claim from the interrupt controller's side, and it covers the wired half that NVMe cannot: an NVMe MSI arrives from PCI and never passes through an APLIC. What is asserted on the AIA board is delivery rather than configuration, because every driver here can also poll and a machine on which nothing is ever delivered boots and passes exactly like one where everything is -- so the required markers are the ones that can only be printed after something arrived: an IMSIC loopback through the trap handler, an APLIC source forwarded as a message, at least one real virtio-mmio device announcing its first delivery, and the NVMe canary. On the default board the same markers are forbidden and the PLIC's own are required. |
 | `make qemu-x86_64-numa-gate` | Two boots. Two-node x86 SRAT/SLIT/HMAT, 2 MiB/1 GiB mappings, targeted SMP TLB invalidation, placement, byte accounting, node-aware core leasing and stealing that stops at the node; then a four-node machine with no HMAT, where the SLIT fallback order from node 3 is the reverse of the node-id order and is the only arrangement here that tells a distance-ordered walk from a node-id walk. |
 | `make qemu-aarch64-sve2-gate` | SVE2 arithmetic plus per-task Z/P/FFR scheduler/interrupt preservation under QEMU TCG; it does not qualify an inference backend or physical hardware. |
+| `make qemu-memory-matrix` | Nine boots: aarch64, x86_64 and riscv64 at 1024, 2048 and 4096 MiB. Each must report managed memory matching what the machine was given, and the figures have to rise with the request -- which is the gate's control on itself, because the three runners read three differently-named memory variables and a gate setting the wrong one would boot three identical 2 GiB machines and pass every per-boot check. Three equal figures fail. The address-space defects this exists for were all invisible at the one size the gates used to run at. |
+| `make qemu-slaac-gate` | IPv6 autoconfiguration under QEMU, on two networks, because either alone proves the wrong thing. SLIRP's default advertisement is `fec0::/64` -- deprecated site-local -- and there the guest must form a SLAAC address, decline to call it public, and report only its link-local one, which is what says the public address slot is not being handed something unroutable. With `XAIOS_QEMU_USER_NET_IPV6` the advertisement is `2001:db8::/64`, global scope, and there the guest must report an address inside it formed from its own MAC. A gate that ran only the second would pass against a stack that called every address public. |
+| `make qemu-readonly-medium-gate` | A block device that really advertises `VIRTIO_BLK_F_RO`, and the same image on a writable one, because until this existed the read-only branch had never executed (`B-14`). |
 | `make qemu-operations-closure` | Both-architecture abrupt-stop, power, recovery, diagnostics, clock, pressure, update/config, support, and Debian-client gate. |
 | `make qemu-qualification-readiness` | Consolidated QEMU evidence packet for SSH/network, NVMe, storage recovery, diagnostics, high-core topology, x86 parity, and repeated soak; physical qualification remains open. |
 | `make qemu-full-os-rc` | Aggregate mandatory QEMU core-OS release-candidate gate. |
@@ -82,12 +85,16 @@ make qemu-crash-safety-gate
 make qemu-write-ordering-gate
 make qemu-power-loss-gate
 make qemu-storage-bench
+make qemu-readonly-medium-gate
 make qemu-smmu-gate
 make qemu-nvme-gate
+make qemu-riscv64-aia-gate
+make qemu-memory-matrix
 make qemu-x86_64-numa-gate
 make qemu-aarch64-sve2-gate
 make qemu-outbound-fragmentation-gate
 make qemu-model-sftp-gate
+make qemu-slaac-gate
 make qemu-network-adversarial-gate
 make qemu-freebsd-network-suite
 make qemu-freebsd-bidirectional-suite
@@ -114,10 +121,12 @@ make qemu-riscv64-boot-media-gate
 make qemu-riscv64-matrix-gate
 make qemu-riscv64-durability-gate
 make qemu-riscv64-release-gate
+make qemu-riscv64-aia-gate
 make qemu-riscv64-smoke
 make qemu-riscv64-regression-suite
 make qemu-riscv64-storage-crash-test
 make qemu-riscv64-crash-safety-gate
+make qemu-riscv64-power-loss-gate
 make qemu-riscv64-framebuffer-gate
 make qemu-riscv64-keyboard-input-gate
 make qemu-riscv64-routing-prefix-gate
@@ -141,6 +150,8 @@ make qemu-riscv64-local-console-gate
 make qemu-console-xtop-gate-riscv64
 make qemu-riscv64-cluster-gate
 make qemu-riscv64-cluster-two-node-gate
+make qemu-riscv64-cluster-three-node-gate
+make qemu-riscv64-cluster-partition-gate
 make qemu-riscv64-cpu-matrix
 make qemu-riscv64-installed-disk-gate
 make qemu-riscv64-netboot-gate
@@ -153,9 +164,15 @@ make qemu-riscv64-freebsd-bidirectional-suite
 The last block is the shared gates this architecture gained rather than ones
 written for it, so what they assert is the same claim asked of a different
 machine. Two of them state it in this port's own words where the machine
-differs: `qemu-riscv64-cpu-matrix` requires seven harts to boot the kernel and
-five to *refuse* it in one line, because those five offer only Sv39 and this
-kernel's address-space layout needs Sv48; and `qemu-riscv64-installed-disk-gate`
+differs: `qemu-riscv64-cpu-matrix` requires all twelve CPU models to boot the
+kernel, which five of them did not use to do -- `rva22s64`, `rva23s64`,
+`sifive-u54`, `thead-c906` and `xiangshan-nanhu` offer Sv39 and nothing more,
+and were recorded in the contract as machines XAIOS deliberately refuses,
+because userspace sat at 511 GiB and that is not a representable Sv39 address.
+The user window moved to 255 GiB, so they boot, and the contract rows became
+ordinary boot probes; what the refusal check watches for now is a hart
+offering neither mode, which no QEMU model is, but which is worth naming
+rather than halting silently. And `qemu-riscv64-installed-disk-gate`
 requires the harts that come online plus the ones firmware kept to equal the
 capacity, because which hart EDK2 keeps is not the same on two consecutive
 boots.
@@ -194,8 +211,10 @@ runtime inputs and must never be stored in the repository.
 
 ## Manual host-platform runs
 
-Two targets have no automated gate and are exercised by hand. Neither produces
-qualification evidence.
+These targets need macOS on Apple Silicon and, for the Virtualization.framework
+ones, a signed harness, so none of them runs in CI and none produces
+qualification evidence. They are gates in every other sense -- each asserts and
+each can fail -- but the machine they need is a person's laptop.
 
 ```sh
 make vmware-fusion-smoke
@@ -226,6 +245,52 @@ tolerance: a contended counter against tallies each thread kept privately, and
 per-thread words against the neighbours sharing their cache line. It repeats
 because the defects it finds are intermittent -- the first one appeared on one
 boot in six. See [[Virtualization Framework|Virtualization-Framework]].
+
+```sh
+make vz-framebuffer-gate
+make vmware-fusion-framebuffer-gate
+```
+
+V-06's two host platforms, and the pair is worth reading together because one
+of them answers and one of them says why it cannot. `make qemu-framebuffer-gate`
+closed the graphical console by reading QEMU's scanout back through
+`screendump`, and named its own boundary: that is QEMU's surface, not a
+physical display and not one of these two. On Virtualization.framework the
+boundary is now crossed. The harness owns the view, an `NSView` can be asked
+for its own pixels, and with Screen Recording granted to the launching
+application `SCScreenshotManager` returns the guest's screen -- the branded
+name, both addresses, `SSH server: up and running (tcp/22)` and a cursor at
+`xaios login:`, 6700 lit pixels of 1280x832 and no progress bar. The bar check
+is a threshold rather than zero because ScreenCaptureKit captures the window
+and its title bar comes too, whose green close button measures about 16
+matching pixels against roughly 7200 for a real bar: two orders of magnitude
+apart, so a floor between them separates window chrome from a bar and nothing
+lands in between. The permission is cached per process at launch, so the gate
+has to be run by an application that holds it, and a virtual display on one
+Mac is still not a physical monitor. Fusion's half is not reachable and the
+gate exists to say so by name rather than leave the question looking open:
+`vmrun captureScreen` is classified as a *guest* operation, needing VMware
+Tools running inside the machine and a login to it, and XAIOS ships no VMware
+Tools. There is no flag and nothing an operator can enable. The two questions
+are written and will start answering if a guest agent ever exists; they are
+asked together, because "no progress bar on screen" is true of a dead display
+and "pixels were drawn" is true of one frozen mid-boot, and a machine that has
+finished booting has to show both.
+
+```sh
+make vmware-fusion-load-soak
+make hypervisor-memory-matrix
+```
+
+`vmware-fusion-load-soak` is F-04's remaining shape: one Fusion boot held under
+continuous 256 KiB SFTP round trips rather than many boots, because a leak of a
+page per operation is invisible in a boot and obvious over a thousand
+operations. It is what first gave `B-28` a rate -- round 61 of 586 failed with
+`sftp exited 255 ('Connection closed')` and rounds 62 through 586 succeeded.
+`hypervisor-memory-matrix` does for Fusion and Virtualization.framework what
+`qemu-memory-matrix` does for the three QEMU architectures: both hypervisor
+gates had only ever run at 2048 MiB, the one size at which `B-06` cannot occur
+and the only Fusion size where the framebuffer lands inside the identity map.
 
 ## Update repository validation
 
@@ -293,16 +358,35 @@ public fixture and is not production trust evidence.
   Repairing the links puts all three back on `members=1,2,3` and on the
   ownership map they started with, `3,3,3,2,3,1,3,3`, unchanged. Then only
   node 3's outbound links are cut, so it is heard by nobody and hears
-  everybody -- and the cluster splits its brain. That last one is a real
-  defect in the engine rather than a fault in the gate, it is described in
-  D-06, and the check is not to be relaxed: **this gate is red today, and its
-  one red is true.** Its controls: `XAIOS_CLUSTER_PARTITION_SKIP_CUT=1` runs
+  everybody. That asymmetric case is the one that is not reachable by killing
+  anything, and it is the one that found a real defect: the cluster split its
+  brain. Node 3 held `live=3 quorum=1 members=1,2,3` while nodes 1 and 2 held
+  `live=2 quorum=1 members=1,2`, six of eight experts had two owners, and both
+  sides passed a correct strict-majority test at the same instant. The
+  arithmetic was never wrong; its input was. `xaios_cluster_quorum` counted any
+  peer this node saw as ONLINE, membership came from inbound silence alone, and
+  a node whose outbound links are cut still receives every heartbeat -- so it
+  counted the whole cluster and was never told whether anyone could hear it.
+  Heartbeats carry the sender's member bitmap now and a peer counts toward
+  quorum only if we hear it AND it says it hears us, so the isolated node
+  learns it has been excluded from the very heartbeats that keep reaching it:
+  `node=3 live=1 total=3 quorum=0 members=1,2,3 owners=withheld` -- still
+  hearing both peers, counting itself alone -- and after the second heal all
+  three return to `live=3 quorum=1` with the identical ownership map. The
+  defect and its fix are recorded in D-06, and the check is not to be relaxed
+  now that it passes any more than it was while it failed: the reason it was
+  worth writing is exactly that it went red against a real defect the day it
+  first ran. One distinction the fix had to keep: absent from your view and excluded from it
+  are different facts, and exclusion is believed only after inclusion has been
+  seen, because a node's first heartbeat goes out before it has heard anybody
+  and lists only itself -- treating that as exclusion deadlocked formation at
+  `live=1` on three healthy nodes. Its controls: `XAIOS_CLUSTER_PARTITION_SKIP_CUT=1` runs
   every phase and cuts nothing, and the nineteen checks that exist because of
   a cut must all go red -- the run says which ones did not, by name.
   `--self-test` hands the analysis transcripts of runs that never happened,
   one per check, and requires each to go red for the failure it is there to
-  catch, which is the only way to show that a check nobody has ever seen fail
-  -- the split-brain one -- can fail at all. And
+  catch, which is the only way to show that a check which should now never
+  fire in practice -- the split-brain one -- can fail at all. And
   `python3 tests/scripts/cluster_fault_relay.py --self-test` is the fault
   injector's own control, because a relay that does not really cut makes
   every phase above indistinguishable from nothing happening. What it does

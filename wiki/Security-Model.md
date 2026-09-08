@@ -90,7 +90,11 @@ make qemu-security-gate
 make qemu-smoke
 ```
 
-The CI workflow grants only read access to repository contents. The local
+The CI workflow's top-level grant is read access to repository contents and
+nothing more. One job raises it: `publish-wiki` takes `contents: write` so it
+can push `wiki/` to the separate Wiki repository, and it runs only after the
+documentation contract passes, on a push to `main` in this repository. The
+local
 code-scanning contract prevents resolved workflow-permission, wildcard-bind,
 sensitive-diagnostic, and integer-width findings from returning; GitHub CodeQL
 remains the authoritative whole-repository scanner after push.

@@ -7,8 +7,11 @@ software model, which makes it a route to correctness and timing behaviour on
 Apple Silicon.
 
 It is a **development and verification target, not a qualification profile**.
-There is no automated gate for it, so nothing here is qualification evidence;
-see [[Firmware Profiles|Firmware-Profiles]] for the profiles that are.
+`make vz-gate`, `make vz-stress-gate`, `make vz-bridged-gate` and
+`make vz-framebuffer-gate` all assert and all can fail, but every one of them
+needs macOS on Apple Silicon and a signed harness, so none runs in CI and none
+is qualification evidence; see [[Firmware Profiles|Firmware-Profiles]] for the
+profiles that are.
 
 ## Status
 
@@ -48,11 +51,33 @@ Three properties differ from QEMU and each one cost real time to find.
 hardware, so the compiled-in QEMU UART address must not be used. The kernel
 logs over a virtio console instead.
 
-**No linear framebuffer.** The GOP reports `PixelBltOnly` at 1280x800 across 37
-modes, with `FrameBufferBase` and `FrameBufferSize` both zero after a successful
-`SetMode`. That is legal UEFI: drawing goes through `GOP->Blt()`, a boot service
-that does not outlive `ExitBootServices`. The kernel therefore renders its
-terminal to the virtio console and reports `boot-ui: no framebuffer`.
+**No linear framebuffer from firmware.** The GOP reports `PixelBltOnly` at
+1280x800 across 37 modes, with `FrameBufferBase` and `FrameBufferSize` both
+zero after a successful `SetMode`. That is legal UEFI: drawing goes through
+`GOP->Blt()`, a boot service that does not outlive `ExitBootServices`, so the
+kernel inherits no memory it can write pixels into and the log goes to the
+virtio console. The display device is nonetheless on the PCI bus regardless --
+the harness attaches one -- and `kernel/dev/virtio/virtio_gpu.c` claims it:
+display info queried, a 2-D resource created, the framebuffer attached page by
+page because heap pages are not physically contiguous, a scanout pointed at it,
+and a transfer-and-flush after each draw, since the host copies out of the
+backing when told to rather than sharing a mapping. So the machine draws its
+boot screen here after all; what it does not have is a framebuffer firmware
+handed it.
+
+That display can now be read from outside, which is what V-06 is about.
+`make vz-framebuffer-gate` captures the harness window through ScreenCaptureKit
+-- reachable where Fusion's is not, because the view is ours and an `NSView`
+can be asked for its own pixels -- and requires a finished boot to show both
+halves of the claim at once: something drawn, and no progress bar left. Asking
+only one is worthless, since "no bar" is true of a dead display and "pixels
+were drawn" is true of one frozen mid-boot. The bar check is a threshold rather
+than zero because the capture includes the window's title bar, whose green
+close button measures about 16 matching pixels against roughly 7200 for a real
+bar. It needs Screen Recording granted to the launching application, and the
+permission is cached per process at launch, so the gate has to be run by an
+application that holds it. A virtual display on one Mac is still not a physical
+monitor.
 
 **No interrupt translation service.** Firmware describes no GIC ITS, so
 message-signalled interrupts cannot be delivered and every virtio queue runs
@@ -92,7 +117,8 @@ XAIOS.
 A bridged attachment would expose the guest directly, and needs the
 `com.apple.vm.networking` entitlement that Apple issues only with a provisioning
 profile; ad-hoc signing cannot provide it. vmnet needs no entitlement, only
-root, so `platform/virtualization-framework/vmnet-helper` runs a vmnet interface privileged and relays
+root, so `platform/virtualization-framework/vmnet-helper.c` -- built to
+`build/vz/vmnet-helper` by `make vmnet-helper` -- runs a vmnet interface privileged and relays
 frames to the machine over a socket -- the arrangement `socket_vmnet` uses for
 rootless QEMU. Its host mode carries host/guest traffic and reaches no further;
 its shared mode reaches the internet and carries only what the guest starts.

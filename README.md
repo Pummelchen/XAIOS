@@ -26,7 +26,7 @@ what is packaged around it:
 
 | To run XAIOS | Take |
 |---|---|
-| in QEMU | `xaios_b5-qemu.zip` — image plus a launch script per architecture |
+| in QEMU | `xaios_b5-qemu.zip` — image plus a launch script for AArch64 and one for x86-64. There is no RISC-V script in the kit: the image carries the RISC-V kernel, but the only RISC-V machine that has booted anything here is QEMU's `virt` board through `platform/qemu/run-qemu-riscv64.sh` in the repository |
 | in VMware Fusion | `xaios_b5-vmware-fusion.zip` — image plus a `.vmx` |
 | in Apple Virtualization.framework | `xaios_b5-virtualization-framework.zip` — image plus a harness you build and sign |
 | on a real machine, from a USB stick | `xaios_b5-usb.zip` — image plus a writer that names the target disk back before it writes |
@@ -82,9 +82,11 @@ RISC-V machine or hypervisor is in the test set, so its evidence is one board.
 See [RISC-V](./wiki/RISC-V.md).
 
 **C99 libc.** A statically linked hosted ISO C99 library for AArch64, x86_64
-and RISC-V, with no public POSIX API and no new syscall identifiers. The
-conformance report covers the first two; RISC-V runs the same probes under
-`make qemu-riscv64-libc-gate`. See
+and RISC-V, with no public POSIX API and no new syscall identifiers. All three
+run the runtime and termination probes; the conformance report covers the first
+two, because the contract's architecture gates name those, and
+`make qemu-riscv64-libc-gate` is the target that builds the RISC-V image before
+running them there. See
 [C99 libc](./wiki/C99-Libc.md).
 
 ## Model support status

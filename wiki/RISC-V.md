@@ -14,17 +14,54 @@ Progress status and ownership live only in
 
 ## What runs
 
-- **Sv48 paging**, not Sv39: `XAIOS_USER_BASE` is at 512 GiB, past what Sv39
-  can address. The kernel image is mapped one section at a time -- `.text`
-  read and execute, `.rodata` read-only, `.data` read and write -- in 4 KiB
-  pages, because a 2 MiB leaf spanning the boundary between two sections would
-  have to be granted the union of their permissions.
+- **Sv48 paging where the hart has it and Sv39 where it does not**, chosen at
+  run time rather than demanded. This used to be Sv48 only, and panicked on a
+  hart that refused it, because `XAIOS_USER_BASE` sat at 511 GiB -- not a
+  representable Sv39 address, since a 39-bit space reaches 256 GiB and
+  anything above it sign-extends somewhere else entirely. The window is at
+  255 GiB now, which both modes can address. Six of the thirteen CPU models
+  QEMU implements offer Sv39 and nothing more -- `rva22s64` and `rva23s64`
+  among them, the profiles real silicon is certified against -- so the old
+  constant was excluding most of the family for no reason anything needed.
+  The two modes are not two sets of tables:
+  `index_at` is the same arithmetic either way, so Sv48's level-2 table under
+  root slot 0 *is* Sv39's root table, and selecting Sv39 is entering the
+  structure one level lower rather than building a second one. The kernel
+  image is still mapped one section at a time -- `.text` read and execute,
+  `.rodata` read-only, `.data` read and write -- in 4 KiB pages, because a
+  2 MiB leaf spanning the boundary between two sections would have to be
+  granted the union of their permissions.
+- **2 MiB and 1 GiB leaves**, in whichever of the two modes the hart gave us,
+  which is not the same test twice: a 1 GiB leaf is a level-2 entry, and that
+  is an entry one step below the root under Sv48 and an entry in the root
+  itself under Sv39, so the Sv48 boots alone would never have covered it.
+  Each leaf is dereferenced through an alias of memory the kernel owns, so
+  the hardware's own walker witnesses the mapping and not only the kernel's
+  bookkeeping.
+- **Remote TLB shootdown** through SBI's RFENCE extension. `sfence.vma` is
+  hart-local by definition, so a kernel mapping withdrawn on one hart stayed
+  live in every other hart's TLB until this existed; the unmap and remap paths
+  now issue `REMOTE_SFENCE_VMA` with the hart mask built from firmware's hart
+  ids rather than from the kernel's CPU numbers, because those are not the
+  same sequence on every boot.
 - **Traps and system calls** over a frame of all thirty-one registers plus
   `sepc`, `scause`, `stval` and `sstatus`. `sscratch` holds the kernel stack
   while a thread is in user mode and zero while the kernel runs, so one swap
   both distinguishes the two cases and lands on the right stack. System calls
   arrive by `ecall` with the number in `a7`.
-- **PLIC** interrupts, found by compatible string rather than by node name.
+- **PLIC** interrupts, found by compatible string rather than by node name,
+  on QEMU's default `virt` board.
+- **APLIC and IMSIC** -- the Advanced Interrupt Architecture -- on
+  `-machine virt,aia=aplic-imsic`, which is the same kernel image selecting a
+  different controller at run time from the device tree. The IMSIC receives
+  messages and the APLIC, programmed in MSI delivery mode, translates wired
+  devices onto the same path, so PCI and virtio-mmio both arrive as messages
+  and NVMe reports `controller=aia-imsic`. Both controllers are found by what
+  they are attached to -- the supervisor IMSIC is the one whose
+  `interrupts-extended` names cause 9 -- never by address and never by
+  position, because a board with AIA publishes machine-mode counterparts with
+  identical compatible strings and programming firmware's controller is
+  accepted silently and delivers nothing.
 - **PCI** enumerated through ECAM, with base addresses assigned by the kernel.
 - **virtio** block and network devices over the modern PCI transport.
 - **The filesystem, IPv6 and userspace**, unchanged from the shared kernel.
@@ -126,7 +163,7 @@ during boot: the runtime smoke test and the void-main form exit zero, the exit
 probe returns 23 and the abort probe 134.
 
 Two things this needed that the other architectures did not. picolibc has to
-be built with `-mcmodel=medany`, because userspace links at `0x7fc0000000` and
+be built with `-mcmodel=medany`, because userspace links at `0x3fc0000000` and
 the default code model addresses through `lui`, which reaches only the lowest
 and highest two gigabytes. And the quad-precision builtins call two
 floating-point mode helpers with no RISC-V implementation -- riscv64 lp64d has
@@ -169,25 +206,37 @@ the kernel comes up to a login prompt with sshd listening.
   about firmware behaviour, timing or scaling on a real machine is supported
   by anything here. This is the difference that matters and no amount of work
   on this machine closes it.
-- **Message-signalled interrupts for PCI.** MMIO virtio takes interrupts now
-  -- including the network, since this machine grew a second interface on
-  `virtio-mmio-bus.2` and the stack finds that before it falls back to PCI --
-  but the remaining PCI devices still poll, because the PLIC takes wires and
-  not messages.
-  The board can present AIA, and a driver for it is work nothing currently
-  needs.
-- **An IOMMU.** So has x86_64, whose `smmu_initialized()` also reports zero;
+- **Message-signalled interrupts on the default board.** This is now a
+  property of the board rather than of the port, which it was not before
+  `kernel/arch/riscv64/aia.c` existed. QEMU's plain `virt` publishes a PLIC,
+  which carries wires and no messages: MMIO virtio takes wired interrupts
+  there -- including the network, since this machine grew a second interface
+  on `virtio-mmio-bus.2` and the stack finds that before it falls back to PCI
+  -- and the PCI devices poll. NVMe runs its queues on polled completion,
+  which is a mode the driver already had rather than a concession: its wait
+  path polls the completion queues every turn while waiting.
+  `-machine virt,aia=aplic-imsic` is the board that does deliver messages, and
+  `make qemu-riscv64-aia-gate` boots the same kernel image on both and
+  requires each to say the opposite thing about itself, because either half
+  alone can be passed by a broken build -- a kernel that lost its AIA driver
+  would still pass a PLIC-only gate, and one that claimed messages
+  unconditionally would still pass an AIA-only gate while lying on every other
+  RISC-V gate here, all of which run the default board. What it asserts on the
+  AIA board is delivery and not configuration, because every driver here can
+  also poll: an IMSIC loopback, an APLIC-asserted wire arriving as a message,
+  at least one real wired device announcing its first delivery, and an NVMe
+  completion arriving with nobody polling the queue. `make qemu-nvme-gate`
+  runs both RISC-V boards for the same reason, and holds each to the same
+  answers as the other two architectures -- controller ready, identify, async
+  round trip, cancellation, scatter-gather, four malformed commands refused,
+  and the bytes the guest wrote present on the host's disk -- differing only
+  in `msix=0` with the skipped self-test on the PLIC board and `msix=1` with
+  `controller=aia-imsic` on the AIA one. What is still refused rather than
+  half-driven: `aia=aplic` direct delivery, and multi-group IMSICs.
+- **An IOMMU.** There is none on this board -- `smmu_init` says so in one line
+  and DMA is unmediated. Nor has x86_64, whose `smmu_initialized()` also reports zero;
   this is an AArch64 capability rather than something RISC-V is behind the
   other two on.
-- **Message-signalled interrupts.** The PLIC takes wires, not messages. The
-  board can present AIA, and a driver for it is real work that nothing
-  currently needs -- virtio reaches the kernel over wired interrupts, and
-  NVMe runs its queues on polled completion, which is a mode the driver
-  already had rather than a concession: its wait path polls the completion
-  queues every turn while waiting. `make qemu-riscv64-nvme-gate` holds that
-  to the same answers as the other two -- controller ready, identify,
-  async round trip, cancellation, scatter-gather, four malformed commands
-  refused, and the bytes the guest wrote present on the host's disk.
 - **A second NVMe queue.** The driver asks for one per online CPU, and on
   this architecture the secondary harts are not online yet when NVMe
   initialises: one queue here, four on the other two. Nothing depends on it,
@@ -212,7 +261,7 @@ the kernel comes up to a login prompt with sshd listening.
 
 ## Test coverage
 
-Fifty-five `make` targets, of which fifty-three are gates, plus legs in the shared unified-image and xapt gates. They fall into
+Fifty-nine `make` targets, of which fifty-seven are gates, plus legs in the shared unified-image and xapt gates. They fall into
 three groups, and the split matters more than the count.
 
 **Gates this architecture has of its own.** These exist because the shared
@@ -227,16 +276,18 @@ asked the first two's questions is being tested as an imitation of them.
 | `make qemu-riscv64-boot-media-gate` | The machine boots from its own disk through EDK2 with no `-kernel`, from the verified signed A/B system slot. |
 | `make qemu-riscv64-matrix-gate` | It boots at 1, 2, 4 and 8 harts, four independent times, and answers an SSH login each time. |
 | `make qemu-riscv64-release-gate` | The release configuration -- what the other architectures ship as `make image` -- logs in over SSH and runs `hello`, `sysinfo` and `xtop` as processes, reports every hart in the monitor, and keeps answering afterwards. The boot-test gates never launch a process: the shell's commands are built into that kernel. |
+| `make qemu-riscv64-aia-gate` | One kernel image on both of this architecture's boards, held to opposite answers about interrupts: the PLIC board must say positively that nothing was delivered by message and that the PLIC is what is serving, and the `virt,aia=aplic-imsic` board must show four kinds of arrival -- an IMSIC loopback, an APLIC wire forwarded as a message, a real wired device's first delivery, and an NVMe completion nobody polled for. Separate from the NVMe gate because it also covers the wired half, which NVMe does not touch: an NVMe MSI comes from PCI and never passes through an APLIC. |
 
 **The shared suite, run here.** `make qemu-riscv64-smoke` and the milestone
 gates behind it -- `filesystem`, `app-agent`, `network-full`,
 `cpu-ai-runtime`, `ai-cell`, `security`, `update` -- plus `process`, `osctl`,
 `fault-injection`, `persistence-reboot`, `local-console`, `write-ordering`,
-`storage-crash-test`, `crash-safety`, `framebuffer`,
+`storage-crash-test`, `crash-safety`, `power-loss`, `framebuffer`,
 `keyboard-input`, `routing-prefix`, `storage-bench`,
 `instruction-cost`, `dhcpv6`, `outbound-fragmentation`, `model-sftp`,
 `boot-loop`, `benchmark`, `preview`, `libc`, `fault-matrix`, `nvme`, `soak`, `parallel-network-load`,
 `docker-network-suite`, `xapt`, `console-xtop`, `cluster`, `cluster-two-node`,
+`cluster-three-node`, `cluster-partition`,
 `cpu-matrix`, `installed-disk`, `netboot`, `setup`, `ssh-session-exhaustion`,
 the two FreeBSD suites, and the `userspace`, `network`,
 `cpu-ai` and `regression` suites that bundle them. Each is the same script
@@ -292,9 +343,16 @@ running a kernel from `build/`. All three QEMU legs now boot with no system
 volume, which is what a first boot on a real machine looks like, and all
 three report the fallback path and build 5.
 
-**Still short.** The two-node NUMA gate, which reads SRAT/SLIT/HMAT and is
-x86_64's alone -- there is no AArch64 one either, so this is a firmware-table
-gate rather than something RISC-V is behind the other two on.
+**Still short.** The NUMA gate, which reads SRAT/SLIT/HMAT at two nodes and
+then SLIT distances alone at four, is x86_64's alone -- there is no AArch64
+one either, so this is a firmware-table gate rather than something RISC-V is
+behind the other two on. `make qemu-readonly-medium-gate` and
+`make qemu-slaac-gate` are AArch64-only in the same way: each asks a question
+about one board's devices or one host network rather than about an
+architecture, and neither has been pointed at a second machine. What RISC-V
+*is* included in is `make qemu-memory-matrix`, which boots all three
+architectures at 1, 2 and 4 GiB and requires each to report managed memory
+that rises with what the machine was given.
 
 The boot gates share `tests/scripts/riscv64_gate_lib.py` for booting the machine and
 `qemu_gate_lib.py` for comparing markers, rather than each carrying its own

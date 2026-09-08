@@ -11,7 +11,7 @@ report.
 |---|---|---|---|
 | macOS QEMU ARM64 | AAVMF/EDK2, ARM ACPI, GICv3, PSCI, PL011 and VirtIO-MMIO | VirtIO-MMIO block/net/RNG and xHCI USB HID keyboard | QEMU ARM64 correctness only |
 | macOS VMware Fusion ARM64 | Fusion 26H1 (26.0.0) UEFI through generated GRUB chainload, four-vCPU ARM ACPI and PCI ECAM | E1000E, AHCI and PL011-compatible serial | Fusion 26H1 full supported lifecycle |
-| macOS QEMU RISC-V64 | OpenSBI on the `virt` board, or EDK2 with `acpi=off` for a boot medium; device tree rather than ACPI for the interrupt controller, timebase and VirtIO window; PLIC; Sv48 or Sv39 chosen at run time | VirtIO-MMIO block/net/RNG, VirtIO-GPU and xHCI USB HID keyboard when attached; NVMe over PCIe in its own gate | RISC-V correctness gates; no message-signalled interrupts (`P-16`) |
+| macOS QEMU RISC-V64 | OpenSBI on the `virt` board, or EDK2 with `acpi=off` for a boot medium; device tree rather than ACPI for the interrupt controller, timebase and VirtIO window; PLIC on the default board, or an APLIC/IMSIC pair with `aia=aplic-imsic`; Sv48 or Sv39 chosen at run time | VirtIO-MMIO block/net/RNG, VirtIO-GPU and xHCI USB HID keyboard when attached; NVMe over PCIe in its own gate | RISC-V correctness gates; message-signalled interrupts only on the AIA board, and every other RISC-V gate here runs the default one (`P-16`) |
 | Intel VPS QEMU x86_64 | OVMF/EDK2, q35, x86 ACPI MADT/SRAT/SLIT/HMAT, xAPIC/IOAPIC and PCI configuration I/O | VirtIO-PCI block/net, QEMU NVMe/MSI-X and xHCI USB HID keyboard | immutable designated Intel VPS QEMU evidence |
 
 The contract records a required table and device inventory plus separate gates

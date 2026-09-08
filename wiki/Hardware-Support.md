@@ -6,8 +6,8 @@
 |---|---|
 | QEMU AArch64 `virt` | Complete core-OS correctness target with UEFI, SMP, GICv3/ITS, VirtIO, SMMUv3 gates, filesystems, network, SSH/SFTP, and userspace. NVMe requires LPI delivery on every negotiated queue. |
 | QEMU x86_64 `q35` | Common kernel/userspace service parity with AArch64, including ACPI/MADT AP startup, xAPIC, XSAVE/FXSAVE, PCI VirtIO, network, SSH/SFTP, storage, and userspace. NVMe requires APIC/MSI-X delivery on every negotiated queue. |
-| QEMU RISC-V `virt` (rv64gc) | Boots to 100% on four harts with 87 self-tests and no errors, a login prompt and sshd answering; also boots from its own disk through EDK2 from the verified signed A/B system slot, and at 1, 2, 4 and 8 harts with an SSH login each. Sv48 with per-section kernel permissions, ecall syscalls with the user-access window closed except across dispatch, PLIC, PCI through ECAM with base addresses assigned by the kernel because SBI firmware assigns none, both virtio transports, xaiFS at /models, a Goldfish clock, IPv6, the hosted ISO C99 library, xapt, and secondaries woken by SBI IPI. Run with `platform/qemu/run-qemu-riscv64.sh`; the disk layout and `virtio-mmio.force-legacy=false` both matter, and the UEFI path needs `acpi=off`. virtio takes its interrupt through the PLIC, and the interrupt ends the waiting process's sleep rather than being polled for; the frame is still drained by that process rather than in the handler, because handing one to the stack takes a lock a thread on the same hart may hold. Not qualified on hardware: one emulated board is the whole evidence, and fifty-three gate targets on one board are still one board. QEMU 11.1.1 (macOS/arm64). |
-| Apple Virtualization.framework ARM64 | Development target, not a qualification profile and not gated. Boots to a login: virtio-PCI console, xaibootFS on a durable volume, DHCP IPv4, SLAAC IPv6 and SSH. No PL011, no linear framebuffer (`PixelBltOnly` GOP) and no GIC ITS, so every virtio queue runs polled. See [[Virtualization Framework|Virtualization-Framework]]. |
+| QEMU RISC-V `virt` (rv64gc) | Boots to 100% on four harts with 87 self-tests and no errors, a login prompt and sshd answering; also boots from its own disk through EDK2 from the verified signed A/B system slot, and at 1, 2, 4 and 8 harts with an SSH login each. Sv48 or Sv39 chosen at run time, with per-section kernel permissions, ecall syscalls with the user-access window closed except across dispatch, PLIC on the default board and an APLIC/IMSIC pair on `virt,aia=aplic-imsic`, PCI through ECAM with base addresses assigned by the kernel because SBI firmware assigns none, both virtio transports, xaiFS at /models, a Goldfish clock, IPv6, the hosted ISO C99 library, xapt, and secondaries woken by SBI IPI. Run with `platform/qemu/run-qemu-riscv64.sh`; the disk layout and `virtio-mmio.force-legacy=false` both matter, and the UEFI path needs `acpi=off`. On the default board virtio takes its interrupt through the PLIC, and the interrupt ends the waiting process's sleep rather than being polled for; the frame is still drained by that process rather than in the handler, because handing one to the stack takes a lock a thread on the same hart may hold. On the AIA board the same kernel is delivered message-signalled interrupts instead, so NVMe reports `controller=aia-imsic` with an MSI-X vector on its queue (`make qemu-riscv64-aia-gate`). Not qualified on hardware: one emulated board is the whole evidence, and fifty-seven gate targets on one board are still one board. QEMU 11.1.1 (macOS/arm64). |
+| Apple Virtualization.framework ARM64 | Development target, not a qualification profile. Its gates -- `vz-gate`, `vz-stress-gate`, `vz-bridged-gate`, `vz-framebuffer-gate` -- all need macOS on Apple Silicon and a signed harness, so none of them runs in CI. Boots to a login: virtio-PCI console, xaibootFS on a durable volume, DHCP IPv4, SLAAC IPv6 and SSH. No PL011 and no GIC ITS, so every virtio queue runs polled. Firmware leaves no linear framebuffer (`PixelBltOnly` GOP), so the kernel drives the virtio-GPU on the PCI bus to get one, and the resulting display is captured from the host through ScreenCaptureKit. See [[Virtualization Framework|Virtualization-Framework]]. |
 | VMware Fusion ARM64 | Qualified four-vCPU guest profile tested only on Fusion 26H1 (26.0.0): PCI-discovered E1000E DHCP, AHCI xaibootFS persistence/recovery, public-key SSH, SFTP, reboot, shutdown and repeat boot; the smoke gate requires as many CPUs online as the VMX asks for (`F-01`). VMXNET3 carries traffic end to end (`F-02`) and a bridged guest configures and answers on a globally routable IPv6 address (`F-03`), both gated, but the qualified profile stays on E1000E by choice. Live DNSSEC interoperability, outbound-client coverage inside a gate, and physical qualification remain open. |
 
 QEMU CPU-count gates cover 1 through 256 emulated CPUs and a focused 130-CPU
@@ -30,10 +30,18 @@ is complete for the declared common core-OS scope.
 - x86_64: CPUID/topology discovery, AVX2 packed-kernel interfaces, XSAVE state,
   and conservative FXSAVE fallback. AVX-512, VNNI, and AMX production backends
   remain incomplete.
-- NUMA: runtime-sized node and CPU metadata exists. A two-node x86 QEMU gate
-  parses SRAT/SLIT/HMAT, allocates from each firmware range, selects a preferred
-  memory node from checked latency/bandwidth records, and reports deterministic
-  local/remote accounting. Physical locality and bandwidth remain open.
+- NUMA: runtime-sized node and CPU metadata exists. `make qemu-x86_64-numa-gate`
+  boots two machines. The two-node one parses SRAT, SLIT and HMAT together,
+  allocates from each firmware range, selects a preferred memory node from
+  checked latency/bandwidth records, reports deterministic local/remote
+  accounting in bytes, leases cores with the requesting node preferred and
+  spills to the node the SLIT calls nearest, and steals work only from a
+  victim on the stealer's own node. The four-node one has no HMAT at all, so
+  the SLIT stands on its own, and its distances are arranged so that the
+  fallback order seen from node 3 is the reverse of the node-id order -- the
+  only arrangement here that can tell a distance-ordered walk from a walk that
+  merely counts upwards. Physical locality and bandwidth remain open, and
+  there is no AArch64 or RISC-V equivalent: this is a firmware-table gate.
 
 All three architecture VMMs expose collision-safe kernel 2 MiB map/unmap
 operations and validate translation across the full extent during boot. x86_64

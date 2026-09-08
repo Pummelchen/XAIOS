@@ -43,9 +43,15 @@ describes in the ACPI SPCR table. Firmware that publishes ACPI tables but no
 SPCR has no console UART at all, and the kernel takes it at its word instead of
 writing to an address nothing answers at.
 
-Apple's Virtualization.framework is such a platform, and it also has no linear
-framebuffer, so the kernel attaches a virtio console and replays what was
-logged before that console existed. See
+Apple's Virtualization.framework is such a platform, so the kernel attaches a
+virtio console and replays what was logged before that console existed. Its
+firmware also leaves no linear framebuffer -- the GOP reports `PixelBltOnly`
+with a zero base, so drawing there goes through a boot service that does not
+outlive `ExitBootServices` -- but that is a statement about firmware and not
+about the machine: the display device is on the PCI bus regardless, and the
+kernel claims it through `virtio_gpu` and draws the same boot screen into it.
+The console transport and the display are separate questions, and only the
+first of them is answered by the serial stream. See
 [[Virtualization Framework|Virtualization-Framework]].
 
 ## Local console policy

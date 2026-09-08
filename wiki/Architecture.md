@@ -51,10 +51,19 @@ they do not prove physical performance or production readiness.
 | Applications | `userspace/apps/`, `userspace/apps/terminal/` | Standalone ELFs and app-owned terminal modules. The kernel supplies generic capability-gated primitives rather than application implementations. |
 | Portable engine | `engine/` | Model-v2 and xaiFS parsing, adapters, backends, model/session ownership, and asynchronous range I/O. |
 
-The engine's hosted cluster reference authenticates bounded peer messages,
-rejects replay, and deterministically assigns and reduces expert work. It does
-not yet have an XAIOS multi-guest transport; see
+The engine's cluster layer authenticates bounded peer messages, rejects replay,
+and deterministically assigns and reduces expert work. It is no longer hosted
+only: sealed frames cross a real network between XAIOS guests, and
+`make qemu-cluster-two-node-gate`, `make qemu-cluster-three-node-gate` and
+`make qemu-cluster-partition-gate` run join, heartbeat, failure-by-silence and
+one-way partition across independent machines. Quorum is mutual rather than
+one-sided -- a heartbeat carries the sender's own member bitmap, and a peer
+counts only if we hear it and it says it hears us -- because membership decided
+from inbound silence alone lets a node whose outbound links are cut go on
+counting the whole cluster while the rest have already written it off. See
 [`docs/CLUSTER-PROTOCOL.md`](https://github.com/Pummelchen/XAIOS/blob/main/docs/CLUSTER-PROTOCOL.md).
+What remains hosted-only is distributed activation *execution*, which depends
+on real local inference rather than on transport.
 
 ## Trust boundaries
 

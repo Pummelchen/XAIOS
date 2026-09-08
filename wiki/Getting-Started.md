@@ -17,7 +17,7 @@ differs is what is packaged around it.
 
 | To run XAIOS | Take |
 |---|---|
-| in QEMU | `xaios_b5-qemu.zip` — image plus a launch script per architecture |
+| in QEMU | `xaios_b5-qemu.zip` — image plus `run-aarch64.sh` and `run-x86_64.sh`. There is no RISC-V script in the kit; the image carries the RISC-V kernel, but the only RISC-V machine anything here has booted on is QEMU's `virt` board through `platform/qemu/run-qemu-riscv64.sh` in the repository |
 | in VMware Fusion | `xaios_b5-vmware-fusion.zip` — image plus a `.vmx` |
 | in Apple Virtualization.framework | `xaios_b5-virtualization-framework.zip` — image plus a harness you build and sign |
 | on a real machine, from a USB stick | `xaios_b5-usb.zip` — image plus a writer that names the target disk back before it writes |

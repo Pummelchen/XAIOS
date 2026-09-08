@@ -49,12 +49,25 @@ outside the advertised /64 is sent to it -- without that a host configures an
 address and can still only reach its own link, because the neighbour lookup
 asks about a destination no neighbour will answer for.
 
-Which prefix arrives depends on the network. Virtualization.framework
-(`fd4a:25c::/64`) and QEMU's slirp (`fec0::/64`) both advertise unique-local
-prefixes, so an address configured on those is unique-local. A bridged Fusion
-guest on a network with real IPv6 takes a globally routable address, and has
-been shown end to end on one: ICMPv6, inbound SSH and SFTP, inbound UDP, and
-outbound SSH and SCP to a host in another country.
+Which prefix arrives depends on the network, and the two non-global cases are
+not the same case. Virtualization.framework advertises `fd4a:25c::/64`, which
+is unique-local, so the address configured there is unique-local. QEMU's slirp
+advertises `fec0::/64`, which is deprecated *site-local*, and this stack keeps
+its public address slot for genuinely global addresses on purpose: a guest
+asked for a public address must not hand out one that cannot be routed. So on
+the default QEMU network the guest forms a SLAAC address, correctly declines to
+call it public, and reports its link-local one. That is not a missing feature,
+and it is why the default network could not evidence SLAAC at all -- there was
+no configuration in which the question could be put.
+`XAIOS_QEMU_USER_NET_IPV6` puts it, through slirp's `ipv6-net`: with
+`2001:db8::/64`, the RFC 3849 documentation range and global in scope, the
+guest forms `2001:db8::5054:ff:fe12:3457` from the advertisement, the interface
+identifier derived from its own MAC. `make qemu-slaac-gate` runs both networks,
+because either alone proves the wrong thing -- one that ran only the global
+prefix would pass against a stack that called every address public.
+A bridged Fusion guest on a network with real IPv6 takes a globally routable
+address, and has been shown end to end on one: ICMPv6, inbound SSH and SFTP,
+inbound UDP, and outbound SSH and SCP to a host in another country.
 
 ## Network behavior
 
@@ -63,7 +76,19 @@ fragmentation, TCP
 handshake/data retransmission, slow start, congestion avoidance, fast
 retransmit, out-of-order receive, duplicate-ACK/SACK handling, UDP delivery
 semantics, asynchronous DNS A/AAAA resolution, bounded TTL caching,
-DNS-over-TCP fallback, socket ownership, cancellation, and cleanup. DNS
+DNS-over-TCP fallback, socket ownership, cancellation, and cleanup. A
+userspace datagram socket can now name its peer in the call:
+`xaios_net_sendto` allocates the flow for the four-tuple and transmits on it,
+where before this existed the only thing that ever created a UDP socket's flow
+was an *inbound* datagram, so a socket that had bound a port and received
+nothing was refused every send. It reaches the device, which
+`xaios_net_udp_echo` and `xaios_net_external_session` do not -- both process a
+frame inside the stack rather than transmitting one, which is why nothing had
+noticed. The destination must be IPv4 today; the v6 branch needs flow addresses
+and a neighbour entry this path does not fill, and is refused rather than
+half-built. The first datagram to an unseen peer blocks briefly, against a
+two-second deadline, while ARP resolves, and an unresolved peer and a failed
+send are separate reasons so that an ARP fact never reads as a code defect. DNS
 requests set EDNS DO and CD; answers are admitted only after XAIOS locally
 validates the DNSKEY/DS delegation chain from compiled root DS anchors and a
 matching RRSIG. The upstream resolver's AD bit is not trusted. Unsigned,

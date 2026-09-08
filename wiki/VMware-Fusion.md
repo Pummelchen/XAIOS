@@ -107,8 +107,31 @@ fails.
   commands while SFTP still worked (`B-25`); that was sshd leaking one of the
   kernel's sixty-four session contexts per connection whose command failed,
   and it is fixed and gated -- see `make qemu-ssh-session-exhaustion-gate`.
-- Long-duration Fusion service load, repeat-boot at volume and crash recovery
-  against generated VMDKs remain separate work.
+- Long-duration Fusion service load is no longer untested, and what it found is
+  a defect rather than a clean bill. `make vmware-fusion-load-soak` holds one
+  boot under continuous 256 KiB SFTP round trips -- one boot rather than many,
+  because a leak of a page per operation is invisible in a boot and obvious
+  over a thousand. It gave `B-28` a rate for the first time: round 61 of 586
+  failed with `sftp exited 255 ('Connection closed')` and rounds 62 through 586
+  succeeded. Repeat-boot at volume has its own harness in
+  `make vmware-fusion-boot-soak`, which is a reproduction harness for `B-15`
+  and not a gate -- it exits non-zero only if it reproduces. Crash recovery
+  against generated VMDKs remains separate work.
+- What the Fusion window shows cannot be read back from the host, and
+  `make vmware-fusion-framebuffer-gate` exists to say so by name rather than
+  leave the question looking open. `vmrun captureScreen` is classified as a
+  *guest* operation: it needs VMware Tools running inside the machine and a
+  login to it, and XAIOS ships no VMware Tools. There is no flag for it and
+  nothing an operator can enable. The gate boots the guest, asks, and reports
+  the refusal; the two questions it would ask -- nothing left of the progress
+  bar, and something on the screen -- are already written and will start
+  answering if a guest agent ever exists. This is the half of `V-06` that
+  Virtualization.framework has closed and Fusion has not.
+- Both hypervisor gates had only ever run at 2048 MiB, the one memory size at
+  which `B-06` cannot occur and the only Fusion size where the framebuffer
+  lands inside the identity map. `make hypervisor-memory-matrix` runs Fusion
+  and Virtualization.framework at 1, 2 and 4 GiB, which is what
+  `make qemu-memory-matrix` does for the three QEMU architectures.
 - Fusion on Apple Silicon does not validate x86_64 guests or physical hardware.
 
 See the repository [Fusion detail document](https://github.com/Pummelchen/XAIOS/blob/main/docs/VMWARE-FUSION.md),

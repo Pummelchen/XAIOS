@@ -51,8 +51,21 @@ snapshots, and negotiated block flushes. xaiFS uses signed metadata,
 copy-on-write publication, per-extent integrity, and immutable active mappings.
 QEMU crash gates cover selected interruption points, and construct two states a
 kill rarely lands on -- a half-written superblock, and a whole superblock whose
-catalog was never written. Neither is a device that loses an acknowledged
-write, so they do not prove physical controller-cache or power-loss behavior.
+catalog was never written. Neither of those is a device that loses an
+acknowledged write, because killing the emulator does not lose one: an
+acknowledged write has already reached the host through `pwrite`, and no cache
+mode changes that. `make qemu-power-loss-gate` is where the loss is real. The
+volume runs through QEMU's `blklogwrites` filter, which records header, payload
+and flush markers in issue order; the emulator is killed mid-ingest; and
+`tools/xaios_write_log.py` replays the recording honouring the one promise a
+volatile write cache makes -- everything before the last completed flush is
+durable, everything since survived or did not, independently. The volume must
+come back with no error, a surviving superblock and a generation no lower than
+the last flushed commit, and the kernel's own reader must then agree with the
+host tool about which commit survived and accept a fresh commit on top. Every
+case is replayed a second time through a device that ignores flushes, which
+must corrupt, or the gate reports itself worthless. Physical
+controller-cache behaviour on real hardware is still not proven by any of it.
 
 The current QEMU VirtIO block path is interrupt-driven and supports
 eight-request block batching, indirect descriptors, and event-index
