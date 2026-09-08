@@ -17,6 +17,7 @@
 
 import AppKit
 import Foundation
+import ScreenCaptureKit
 import Virtualization
 
 func fail(_ message: String) -> Never {
@@ -373,32 +374,115 @@ if showWindow {
              * the layer to render reaches the composited content instead.
              * cacheDisplay is kept as the fallback for the case where there is
              * no layer at all. */
-            if let layer = view.layer,
-               let context = NSGraphicsContext(bitmapImageRep: rep) {
-                NSGraphicsContext.saveGraphicsState()
-                NSGraphicsContext.current = context
-                layer.render(in: context.cgContext)
-                NSGraphicsContext.restoreGraphicsState()
-            } else {
-                view.cacheDisplay(in: view.bounds, to: rep)
+            /* ScreenCaptureKit first, because it is the only one of the
+             * three that can see the guest.
+             *
+             * Virtualization.framework composites the guest surface as an
+             * IOSurface the window server owns, outside the view's layer
+             * tree, so cacheDisplay -- which walks drawRect: -- and
+             * CALayer.render both return a correctly sized, entirely black
+             * bitmap. Both were tried and both did exactly that. The window
+             * server can see it, and asking the window server is what needs
+             * Screen Recording permission.
+             *
+             * Failure here is reported and then falls through to the layer
+             * path, so a machine without the permission still produces a file
+             * and a clear reason rather than an error the caller has to guess
+             * at. */
+            /* The capture runs to completion on its own and exits; the
+             * fallback happens inside its failure path.
+             *
+             * The first version launched this Task and then blocked the main
+             * thread on a semaphore waiting for it. That cannot work:
+             * ScreenCaptureKit's async work needs the main queue to make
+             * progress, and the main queue was the thread doing the waiting.
+             * It deadlocked, timed out after thirty seconds, and fell through
+             * to the layer path -- silently, because nothing printed on the
+             * timeout. The symptom was a capture that looked like it had
+             * simply chosen the fallback.
+             */
+            func captureViaLayer() {
+                if let layer = view.layer,
+                   let context = NSGraphicsContext(bitmapImageRep: rep) {
+                    NSGraphicsContext.saveGraphicsState()
+                    NSGraphicsContext.current = context
+                    layer.render(in: context.cgContext)
+                    NSGraphicsContext.restoreGraphicsState()
+                } else {
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                }
+                guard let png = rep.representation(using: .png, properties: [:])
+                else {
+                    FileHandle.standardError.write(Data(
+                        "xaios-vz: could not encode the capture as PNG\n".utf8))
+                    exit(3)
+                }
+                do {
+                    try png.write(to: URL(fileURLWithPath: path))
+                    let note = "xaios-vz: display captured to \(path) "
+                        + "(\(rep.pixelsWide)x\(rep.pixelsHigh), layer -- "
+                        + "expect this to be blank, the guest surface is not "
+                        + "in the layer tree)\n"
+                    FileHandle.standardError.write(Data(note.utf8))
+                } catch {
+                    FileHandle.standardError.write(Data(
+                        "xaios-vz: could not write \(path): \(error)\n".utf8))
+                    exit(3)
+                }
+                exit(0)
             }
-            guard let png = rep.representation(using: .png, properties: [:])
-            else {
-                FileHandle.standardError.write(Data(
-                    "xaios-vz: could not encode the capture as PNG\n".utf8))
-                exit(3)
+
+            Task { @MainActor in
+                do {
+                    let content = try await SCShareableContent.excludingDesktopWindows(
+                        false, onScreenWindowsOnly: true)
+                    let pid = ProcessInfo.processInfo.processIdentifier
+                    guard let target = content.windows.first(where: {
+                        $0.owningApplication?.processID == pid
+                    }) else {
+                        FileHandle.standardError.write(Data(
+                            ("xaios-vz: screencapture saw "
+                             + "\(content.windows.count) window(s) and none "
+                             + "belonged to pid \(pid)\n").utf8))
+                        captureViaLayer()
+                        return
+                    }
+                    let filter = SCContentFilter(desktopIndependentWindow: target)
+                    let configuration = SCStreamConfiguration()
+                    configuration.width = Int(target.frame.width)
+                    configuration.height = Int(target.frame.height)
+                    configuration.showsCursor = false
+                    let image = try await SCScreenshotManager.captureImage(
+                        contentFilter: filter, configuration: configuration)
+                    let shot = NSBitmapImageRep(cgImage: image)
+                    guard let data = shot.representation(using: .png,
+                                                         properties: [:]) else {
+                        FileHandle.standardError.write(Data(
+                            "xaios-vz: could not encode the capture as PNG\n".utf8))
+                        exit(3)
+                    }
+                    try data.write(to: URL(fileURLWithPath: path))
+                    let note = "xaios-vz: display captured to \(path) "
+                        + "(\(shot.pixelsWide)x\(shot.pixelsHigh), "
+                        + "screencapture)\n"
+                    FileHandle.standardError.write(Data(note.utf8))
+                    exit(0)
+                } catch {
+                    /* Usually Screen Recording permission, which a
+                       command-line tool cannot request -- only bundled apps
+                       get the prompt -- so it must be granted to the parent
+                       application by hand. Named rather than left as a raw
+                       error. */
+                    let note = "xaios-vz: screencapture refused: \(error)\n"
+                        + "xaios-vz: grant Screen & System Audio Recording to "
+                        + "the application that launches this binary in System "
+                        + "Settings > Privacy & Security, then quit and reopen "
+                        + "it.\n"
+                    FileHandle.standardError.write(Data(note.utf8))
+                    captureViaLayer()
+                }
             }
-            do {
-                try png.write(to: URL(fileURLWithPath: path))
-                let note = "xaios-vz: display captured to \(path) "
-                    + "(\(rep.pixelsWide)x\(rep.pixelsHigh))\n"
-                FileHandle.standardError.write(Data(note.utf8))
-            } catch {
-                FileHandle.standardError.write(Data(
-                    "xaios-vz: could not write \(path): \(error)\n".utf8))
-                exit(3)
-            }
-            exit(0)
+            return
         }
     }
     application.run()
