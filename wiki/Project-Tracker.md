@@ -2,11 +2,27 @@
 
 Last reviewed: 2026-09-08.
 
-The current QEMU closure revision passes hosted, AArch64/x86_64 smoke, libc,
-dual-architecture all-queue NVMe interrupt, SVE2 per-task context, x86 HMAT/
-1-GiB/TLB, xaibootFS-v5 migration/scale, TLS xapt, and external network gates.
-The final consolidated report deliberately retains
-`physical_qualification=false`.
+The current QEMU closure revision passes hosted, AArch64/x86_64/RISC-V smoke,
+libc, all-queue NVMe interrupt, SVE2 per-task context, x86 HMAT/1-GiB/TLB,
+xaibootFS migration/scale, TLS xapt, and external network gates. The final
+consolidated report deliberately retains `physical_qualification=false`.
+
+**2026-09-08 -- the ten aggregate targets pass on the current tree, and the
+three physical-profile results below predate it.** `qemu-core-os-rc`,
+`qemu-full-os-rc`, `qemu-developer-ux`, `qemu-operations-closure`,
+`qemu-network-adversarial-gate`, `qemu-readiness-gate`, `qemu-post51-gate`,
+`qemu-qualification-readiness`, `qemu-100-gate` and `qemu-release` are green,
+alongside the four repository checks and smoke on all three architectures.
+That is emulated evidence and nothing more: this session changed shared code
+that every profile compiles -- the scheduler and page allocator (NUMA-aware
+placement was a branch that could not fail), the network stack (a userspace UDP
+socket could reply but never speak first), the cluster engine (a split brain
+was reachable in an asymmetric partition), and the RISC-V MMU and interrupt
+path -- so **the ARM, Fusion and Intel profile results quoted below stand for
+the commits they name and must be re-collected before any of them is quoted as
+current.** Fourteen defects were found that had no row of their own, six of
+them in code shared by all three architectures; each is recorded in the row it
+belongs to rather than only here.
 
 A transmit that never completed used to wedge this stack about one boot in
 eighteen. It was caught with the device reporting `DRIVER_OK`, no

@@ -49,9 +49,9 @@ booted on, and what was *not* tested — see the
 |---|---|---|---|
 | QEMU ARM64 | macOS QEMU ARM64 | full CI | correctness and ABI only |
 | QEMU x86_64 | Intel VPS QEMU x86_64 | full CI | correctness and ABI only |
-| QEMU RISC-V64 | none; no firmware profile | a bring-up job in CI (smoke, release configuration, CPU tiers); 53 gate targets local | correctness and ABI only, on one emulated board |
-| VMware Fusion | macOS VMware Fusion ARM64 | `make vmware-fusion-smoke` | Fusion 26H1 four-vCPU lifecycle |
-| Apple Virtualization.framework | none; development target | `make vz-gate`, `make vz-stress-gate` | not qualification evidence |
+| QEMU RISC-V64 | none; no firmware profile | a bring-up job in CI (smoke, release configuration, CPU tiers); 57 gate targets local | correctness and ABI only, on one emulated board |
+| VMware Fusion | macOS VMware Fusion ARM64 | `make vmware-fusion-smoke`, `make hypervisor-memory-matrix`, `make vmware-fusion-load-soak` | Fusion 26H1 four-vCPU lifecycle |
+| Apple Virtualization.framework | none; development target | `make vz-gate`, `make vz-stress-gate`, `make vz-framebuffer-gate` | not qualification evidence |
 
 XAIOS behaves the same on all of them. Firmware supplies capabilities, never
 identity and never behaviour, and `make platform-neutrality-check` enforces it.
