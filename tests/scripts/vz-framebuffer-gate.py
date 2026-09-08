@@ -51,6 +51,8 @@ GREEN = (0, 205, 0)
 DIM = (0, 128, 0)
 TOLERANCE = 24
 BOOT_SECONDS = int(os.environ.get("XAIOS_VZ_SCREENSHOT_DELAY", "150"))
+# See the comment at the check: chrome is ~16, a real bar ~7200.
+BAR_PIXEL_FLOOR = 200
 
 VOLUMES = ("vz-test.img", "vz-persistent.img", "vz-model.img",
            "vz-storage-admin.img", "vz-system.img", "vz-system2.img")
@@ -221,12 +223,23 @@ def main() -> int:
                 "checks": checks,
             }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             return 0
-        if checks["bar_pixels"] != 0:
+        # A threshold, not zero, and the numbers are why.
+        #
+        # ScreenCaptureKit captures the window, not the guest's framebuffer
+        # alone, so the title bar comes with it -- and the close button is
+        # green. A finished boot here measures 16 matching pixels, all of them
+        # that button. A real progress bar measured 7200 in the QEMU gate
+        # against a pre-fix capture. Two orders of magnitude apart, so a
+        # threshold in between is not a fudge: it separates window chrome from
+        # a bar, and nothing lands between them.
+        if checks["bar_pixels"] > BAR_PIXEL_FLOOR:
             failures.append(
                 f"the boot progress bar is still on screen "
-                f"({checks['bar_pixels']} bar pixels): the guest drew later "
-                f"stages without presenting them, which is the defect V-06 "
-                f"found and which nothing inside the machine can see")
+                f"({checks['bar_pixels']} bar pixels against a floor of "
+                f"{BAR_PIXEL_FLOOR}; window chrome measures about 16 and a "
+                f"real bar about 7200): the guest drew later stages without "
+                f"presenting them, which is the defect V-06 found and which "
+                f"nothing inside the machine can see")
         if checks["drawn_pixels"] < 1000:
             failures.append(
                 f"the display is effectively blank ({checks['drawn_pixels']} "
