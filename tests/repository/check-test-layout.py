@@ -115,7 +115,15 @@ def check_composed_script_paths() -> list[str]:
 def main() -> int:
     failures: list[str] = []
     script_files = {path.name for path in SCRIPTS.iterdir() if path.is_file()}
-    unexpected = sorted(script_files - RUNTIME_SCRIPTS)
+    # README.md is the one non-runtime file allowed here, and only that name.
+    #
+    # The rule this check enforces is that scripts/ holds the programs the
+    # build runs and nothing else -- no leftovers, no half-finished helper
+    # somebody meant to delete. A README does not weaken that: it executes
+    # nothing, and the alternative is a directory of twenty-six build scripts
+    # with no statement of what distinguishes it from tools/, which is the
+    # question a newcomer actually arrives with.
+    unexpected = sorted(script_files - RUNTIME_SCRIPTS - {"README.md"})
     # One directory per supported environment, each holding that environment's
     # own launcher. Before this, Fusion's assets sat in platform/, its scripts
     # in scripts/, and the Virtualization.framework harness in tools/ -- three
