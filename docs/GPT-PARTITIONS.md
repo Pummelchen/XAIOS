@@ -1,8 +1,9 @@
 # GPT Partitions
 
 Status: GPT v1 parser/writer and bounded partition device implemented and
-hosted-tested. Automatic boot discovery and authenticated online partition
-administration are not implemented.
+hosted-tested. Boot discovery reads the partition map on the boot path, and
+partition administration is exposed through authenticated, confirmed
+`xaiosctl storage partition` operations.
 
 XAIOS uses UEFI GPT revision 1.0 without private header extensions. Integers
 are little-endian. A normal model/state disk contains:
@@ -32,8 +33,10 @@ These UUIDs are stable format identifiers:
 | xaiFS | `1f3b2d7a-6e91-4a52-9c7d-5841494f5302` | Large staged and immutable model packages |
 | Update/recovery | `1f3b2d7a-6e91-4a52-9c7d-5841494f5303` | Explicit update or recovery storage |
 
-The boot/root device is not inferred from these type GUIDs. Device-role and
-active-mount checks remain mandatory before mutation.
+Boot discovery selects the xaibootFS root by matching the StateFS type GUID,
+so the type GUID does identify a role at mount time. It does not authorize one:
+device-role and active-mount checks remain mandatory before any mutation, and a
+partition is never modified merely because its GUID says what it is for.
 
 ## Update protocol
 

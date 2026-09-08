@@ -9,140 +9,70 @@ The format is separate from xaibootFS and from `xaios.model.v2`. A xaiFS volume
 stores one or more immutable model package objects; xaibootFS stores only small
 control records.
 
-## Byte order and addressing
+## What this document covers
 
-All integers are unsigned little-endian. All offsets, lengths, generations,
-record counts and logical block addresses are 64-bit. The volume block size is
-4096 bytes. Package chunk size is selected when the volume is formatted and
-must be a power of two from 2 MiB through 16 MiB.
+The byte layout — superblocks, catalog snapshots, package and chunk records,
+and the canonical manifest the package identity is hashed over — is specified
+once, in [`MODELFS-FORMAT.md`](./MODELFS-FORMAT.md). It used to be written out
+here as well, and the two copies had already drifted into naming different
+chunk-size limits. This document is the layer above: how a volume is used, in
+what order, and by which interfaces.
 
-Every addition, multiplication and range check is performed before I/O. A
-volume implementation must reject an extent that wraps, exceeds the declared
-volume size, overlaps reserved metadata, or is not 4 KiB aligned.
-
-## Redundant superblocks
-
-Superblocks occupy bytes `0..4095` and `4096..8191`. Each uses this fixed
-layout; unused bytes are zero.
-
-| Offset | Size | Field |
-|---:|---:|---|
-| 0 | 8 | Magic `XAIOSV1\0` |
-| 8 | 2 | Major version, `1` |
-| 10 | 2 | Minor version, `0` |
-| 12 | 1 | Endianness, `1` for little-endian |
-| 13 | 1 | Hash algorithm, `1` for SHA-256 |
-| 14 | 2 | Flags |
-| 16 | 8 | Header size, `4096` |
-| 24 | 8 | Block size, `4096` |
-| 32 | 8 | Chunk size |
-| 40 | 8 | Declared volume size |
-| 48 | 8 | Superblock generation |
-| 56 | 8 | Active catalog offset |
-| 64 | 8 | Active catalog length |
-| 72 | 8 | Catalog generation |
-| 80 | 8 | Append allocator tail |
-| 88 | 16 | Volume UUID |
-| 104 | 32 | SHA-256 of the complete catalog blob |
-| 136 | 32 | Superblock SHA-256 with this field zeroed |
-| 168 | 3928 | Reserved, zero |
-
-Readers validate both copies and select the valid copy with the greatest
-generation. Equal generations must describe the same catalog. The older valid
-copy is the recovery point if a new catalog or superblock is corrupt.
-
-## Catalog snapshots
-
-A catalog is immutable after publication. Catalogs and payload extents never
-overlap. Each catalog contains a 256-byte header, fixed 384-byte package
-records, fixed 128-byte chunk records, and an optional canonical extension
-area. The superblock hashes the complete catalog, including physical extent
-placement.
-
-Package states are `staging`, `active` and `quarantined`. Active package bytes
-are immutable; quarantined packages cannot activate or return data.
-Package records contain a record ID, model UUID, package identity,
-architecture ID, portable/backend target, source revision, logical size,
-chunk range, Ed25519 signer public key and signature. A package can be active
-only after every non-zero chunk has been written and verified.
-
-Chunk records contain the owning record ID, logical offset, physical offset,
-length, flags and SHA-256. Chunks cover the logical package exactly with no
-gaps or overlap. A sparse-zero chunk has no physical extent and reads as zero;
-its checksum is still the SHA-256 of its logical zero bytes. This permits CI to
-exercise a logical 100 GB package without writing 100 GB.
-
-The package identity is SHA-256 over the canonical logical manifest:
-
-```text
-domain = "xaios.model.volume.package.v1\0"
-model UUID
-source revision
-architecture ID padded to 32 bytes
-target ID padded to 32 bytes
-logical size
-chunk size
-for every chunk in logical order:
-    logical offset, length, logical flags, chunk SHA-256
-```
-
-Physical offsets and staging state are excluded, so copying or compacting a
-package does not change its identity. Ed25519 signs the 32-byte package
-identity. Both the hosted tooling and QEMU fixture builder require a valid
-signature; unsigned package records are rejected.
+Two properties from the format are worth restating because the rules below
+depend on them. A catalog is immutable once published, so every mutation is a
+new snapshot and a superblock switch rather than an edit. And package states
+are `staging`, `active` and `quarantined`: active bytes never change, and a
+quarantined package can neither activate nor return data.
 
 ## Lifecycle and ordering
 
-`xai_fs_stage_begin` validates the signed logical manifest, allocates
-aligned physical extents, writes a staging catalog, flushes it, then publishes
-the alternate superblock and flushes again. `xai_fs_pwrite` accepts one
-complete expected chunk, verifies its checksum before publication and records
-completion in a new catalog snapshot. Reopening the volume resumes from the
-last published chunk bitmap.
+`xaios_xai_fs_register_staging` validates the signed logical manifest,
+allocates aligned physical extents, writes a staging catalog, flushes it, then
+publishes the alternate superblock and flushes again.
+`xaios_xai_fs_pwrite_staging` accepts staged bytes and
+`xaios_xai_fs_commit_staging_range` verifies a completed chunk's checksum
+before publication and records the completion in a new catalog snapshot.
+Reopening the volume resumes from the last published chunk bitmap.
 
-`xai_fs_stage_verify` rereads every physical chunk, verifies all hashes,
-recomputes package identity and verifies the Ed25519 signature.
-`xai_fs_activate` publishes a new catalog containing the active state;
-the previous superblock remains a valid pre-activation recovery point until a
-later transaction. A failure before the final superblock flush leaves the old
-catalog authoritative.
+`xaios_xai_fs_verify_package` rereads every physical chunk, verifies all
+hashes, recomputes the package identity and verifies the Ed25519 signature.
+`xaios_xai_fs_activate_staging` publishes a new catalog containing the active
+state; the previous superblock remains a valid pre-activation recovery point
+until a later transaction. A failure before the final superblock flush leaves
+the old catalog authoritative — which is the whole reason the order is
+catalog, flush, superblock, flush and not something shorter.
 
-The kernel exposes the same C commit and activation path through xaiFS.
+The kernel exposes the same commit and activation path through xaiFS.
 Administrator-only registration creates a signed staging record and allocates
-or reuses aligned extents. SFTP `stat` reports the contiguous committed prefix
-so OpenSSH `reput` resumes at a verified chunk boundary. `xaiosctl model verify`,
-cleanup and replay-protected activation are administrator-only; active package
-files never accept writes.
+or reuses aligned extents. SFTP `stat` reports the contiguous committed prefix,
+so OpenSSH `reput` resumes at a verified chunk boundary. `xaiosctl model
+verify`, cleanup and replay-protected activation are administrator-only; active
+package files never accept writes.
 
-`xai_fs_remove` and staging garbage collection remove catalog references
-and return payload extents to a coalesced free list. Old catalog snapshots are
-append-only recovery metadata and are not reused by format v1.
+`xaios_xai_fs_remove_staging`, `xaios_xai_fs_remove_quarantined` and staging
+garbage collection remove catalog references and return payload extents to a
+coalesced free list. Old catalog snapshots are append-only recovery metadata
+and are not reused by format v1.
 
 ## I/O API
 
-The portable boundary provides operations equivalent to:
+The portable boundary is `engine/include/xaios_engine/xai_fs.h`. Every entry
+point is prefixed `xaios_xai_fs_` and returns `xaios_engine_status_t`:
 
-```c
-xai_fs_open(...)
-xai_fs_stage_begin(...)
-xai_fs_pwrite(...)
-xai_fs_pread(...)
-xai_fs_stage_verify(...)
-xai_fs_activate(...)
-xai_fs_remove(...)
-xai_fs_extent_map(...)
-xai_fs_prefetch(...)
-xai_fs_sync(...)
-xai_fs_recover(...)
-```
+| Group | Operations |
+|---|---|
+| Volume | `format`, `probe`, `open`, `grow`, `repair_superblock` |
+| Staging | `register_staging`, `pwrite_staging`, `commit_staging_range`, `activate_staging`, `remove_staging` |
+| Integrity | `verify_package`, `verify_package_manifest`, `verify_range`, `quarantine_package`, `remove_quarantined`, `repair_from_replica` |
+| Reading | `pread`, `pread_verified`, `read_package`, `read_chunk` |
 
-Kernel reads use a 64-bit positional block callback. Hosted files use
-`pread`, `pwrite`, and `fsync`. The QEMU VirtIO adapter has an
-interrupt-dispatched eight-request queue with direct-or-bounce DMA,
-event-index suppression and indirect descriptors. The focused emulated-NVMe
-gate validates admin/I/O queue and write/flush/read correctness. These remain
-QEMU format/ABI/device-contract checks, not production storage throughput,
-physical durability, or zero-copy performance evidence.
+Kernel reads use a 64-bit positional block callback; hosted files use `pread`,
+`pwrite` and `fsync`. The QEMU VirtIO adapter has an interrupt-dispatched
+eight-request queue with direct-or-bounce DMA, event-index suppression and
+indirect descriptors. The focused emulated-NVMe gate validates admin/I/O queue
+and write/flush/read correctness. These remain QEMU format, ABI and
+device-contract checks — not production storage throughput, physical
+durability, or zero-copy performance evidence.
 
 The portable `model_file` boundary in
 `engine/include/xaios_engine/model_file.h` adds signed package open, verified
@@ -152,11 +82,9 @@ package size.
 
 ## Stability and migration
 
-Readers reject unknown major versions. A minor version may add only fields in
-reserved or length-delimited extension space. Incompatible descriptor changes
-require a new major version and an explicit streaming migration tool. The
-source package identity and signature must survive migration unchanged unless
-the logical package bytes change.
-
-Format v1 deliberately does not provide in-place mutable package metadata,
-database rows, fixed per-file block arrays, or weight payloads in xaibootFS.
+Migration rules are part of the format and are stated in
+[`MODELFS-FORMAT.md`](./MODELFS-FORMAT.md). What belongs here is the
+consequence for callers: format v1 deliberately provides no in-place mutable
+package metadata, no database rows, no fixed per-file block arrays, and no
+weight payloads in xaibootFS. A caller that wants any of those is asking for a
+different format, not a newer minor version of this one.

@@ -7,7 +7,7 @@ Status: implemented by `tools/xaios_xai_fs.py` and parsed by
 
 - All integers are unsigned little-endian.
 - Metadata and physical payload extents are 4 KiB aligned.
-- Chunk size is one power of two from 2 MiB through 16 MiB.
+- Chunk size is one power of two from 2 MiB through 64 MiB.
 - Every reserved byte is zero and every range is checked before I/O.
 - Offsets, lengths, counts, logical sizes, and generations are 64-bit.
 - Hash algorithm ID 1 is SHA-256. Package signatures are Ed25519 over the

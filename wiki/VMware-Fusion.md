@@ -6,19 +6,37 @@ AHCI. It remains virtual-platform correctness evidence, not a compatibility
 claim for other Fusion releases, physical Apple Silicon performance, or
 production certification.
 
-The generated VM uses the Debian 13 ARM64 GRUB chainloader to launch the same
-XAIOS UEFI loader used by the common firmware path. The kernel discovers its
-devices through ACPI/PCI rather than selecting a Fusion-specific core path.
+The generated VM uses a Debian 13 ARM64 GRUB build purely as a UEFI
+compatibility chainloader: GRUB chainloads `XAIOS.EFI`, and the XAIOS loader
+still validates and loads `kernel.elf` itself. Nothing about the boot is
+Fusion-specific after that point. The common ARM64 kernel validates the ACPI
+RSDP, XSDT and RSDT checksums and takes CPU discovery, GIC selection and PCI
+ECAM placement from MADT and MCFG records. The NIC is a standard Intel
+82574L/E1000E-compatible part and the disk controller a standard AHCI SATA
+controller, both selected from PCI identifiers rather than from knowing which
+hypervisor is underneath. The AHCI driver registers `/dev/ahci0p0` through the
+generic block interface, and xaibootFS formats a new disk and reloads the
+existing volume on later boots with no filesystem behavior special-cased for
+Fusion.
 
 Fusion's UEFI Graphics Output Protocol framebuffer is passed to the kernel
 when valid. The kernel continues a compact 8x16 console-style progress display
 after UEFI hands off at 20%, then renders the IPv4 address, an assigned public
 IPv6 SLAAC address when a validated Router Advertisement provides one, verified SSH state
 and the current local-authentication prompt with a blinking cursor at 100%.
+Only a globally routable SLAAC address is shown there: link-local and
+unique-local addresses are deliberately not presented as public ones, because
+an address printed on a boot screen is an invitation to connect to it.
 The common input path includes a USB HID boot-keyboard driver for QEMU xHCI.
 The Fusion bundle provisions xHCI so the same driver is available to the guest;
 interactive Fusion-window qualification remains separate from the QEMU input
 gates. PL011 serial remains the headless-console fallback.
+
+The bundle also carries a per-build 64-byte development entropy seed inside the
+UEFI image, because the tested Fusion firmware exposes neither
+`EFI_RNG_PROTOCOL` nor AArch64 RNDR and a guest with no entropy source cannot
+start its SSH service at all. The seed is unique to the locally generated
+bundle and is a development convenience, not a hardware-backed entropy claim.
 
 ## Verified On Fusion 26H1 (26.0.0) ARM64
 
@@ -30,12 +48,26 @@ gates. PL011 serial remains the headless-console fallback.
 - Persistent SSH writes across hard-stop recovery, guest reboot, orderly
   shutdown with storage quiescing, and a clean repeat boot.
 
-Build the bundle with:
+## Building and running it
+
+The host needs Apple Silicon macOS, VMware Fusion, Docker (which builds the
+reproducible GRUB stage), Clang/LLD, Python 3, mtools and `xorriso`.
 
 ```sh
+make image
 make vmware-fusion-image
 make vmware-fusion-smoke
+make vmware-fusion
 ```
+
+`make vmware-fusion-image` generates `build/vmware-fusion/XAIOS.vmwarevm`.
+Treat that bundle as output and do not edit it; the next rebuild replaces it,
+along with its VMDK. Ordinary reboots and recovery of the same bundle preserve
+xaibootFS state.
+
+`make vmware-fusion-smoke` is authoritative only when it writes passing
+evidence from the host in front of you. It is not a release gate and it is not
+physical-performance evidence.
 
 ## Typing at the Fusion console
 
@@ -77,13 +109,9 @@ XAIOS_AUTHORIZED_KEYS_FILE=/path/to/test-key.pub make vmware-fusion-image
 ssh -i /path/to/test-key admin@guest-address
 ```
 
-The generated bundle and its 256 MiB VMDK live under
-`build/vmware-fusion/XAIOS.vmwarevm`. Rebuilding the bundle creates a new VMDK;
-ordinary reboots preserve it.
-
-`make vmware-fusion-smoke` builds a disposable public-key image and performs
-the complete lifecycle above. It leaves no VM running when it succeeds or
-fails.
+The bundle's disk is a 256 MiB SATA VMDK. `make vmware-fusion-smoke` builds a
+disposable public-key image, performs the complete lifecycle above, and leaves
+no VM running whether it succeeds or fails.
 
 ## Remaining Boundary
 
@@ -132,7 +160,13 @@ fails.
   lands inside the identity map. `make hypervisor-memory-matrix` runs Fusion
   and Virtualization.framework at 1, 2 and 4 GiB, which is what
   `make qemu-memory-matrix` does for the three QEMU architectures.
+- Live recursive DNSSEC interoperability still needs resolver-response
+  compatibility work, so DNSSEC callers remain fail-closed. SSH startup is
+  deliberately not tied to a DNS or TCP endpoint, so this does not affect
+  whether the guest comes up reachable.
 - Fusion on Apple Silicon does not validate x86_64 guests or physical hardware.
 
-See the repository [Fusion detail document](https://github.com/Pummelchen/XAIOS/blob/main/docs/VMWARE-FUSION.md),
-[[Hardware Support|Hardware-Support]], and the [[Project Tracker|Project-Tracker]].
+See [[Hardware Support|Hardware-Support]] for where this profile sits against
+the others, and the [[Project Tracker|Project-Tracker]] for the open items
+named above. The firmware evidence contract this profile reports under is
+[`docs/FIRMWARE-PLATFORM-PROFILES.md`](https://github.com/Pummelchen/XAIOS/blob/main/docs/FIRMWARE-PLATFORM-PROFILES.md).

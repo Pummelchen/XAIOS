@@ -12,7 +12,7 @@ The protocol uses native little-endian fixed-width fields on the current
 AArch64 ABI. Cross-machine cluster transport is not defined by this ABI and
 will require its own explicit wire encoding.
 
-Request headers contain magic `0x58414350`, version `1`, header size,
+Request headers contain magic `0x58414350`, version `2`, header size,
 operation, flags, payload type, 64-bit request ID, requested role, node ID,
 timeout and payload length. Responses carry matching identity fields, stable
 status, request ID, payload type and length. Requests are limited to 512 bytes
@@ -62,6 +62,8 @@ and responses to 8,192 bytes. All length arithmetic is bounds-checked.
 | `catalog activate` | 53 | administrator | Publish the verified monotonic application catalog. |
 | `system update begin/chunk/commit/abort` | 54-57 | administrator | Stream and finalize or abort an inactive-slot system update. |
 | `runtime snapshot` | 58 | observer | Paged raw CPU/process counters, memory, load averages, roles, and sample wait. |
+| `storage repair-from-replica` | 59 | administrator | Offline payload repair of a package from a trusted replica volume. |
+| `storage install` | 60 | administrator | Partition a target disk, format its EFI System Partition, and copy this machine's boot files onto it. Destructive, so it carries the same confirmation, actor and audit requirements as the partition mutations above. |
 
 Request payloads are typed as log query, bounded path, mutation, audit query,
 application/update transaction, or runtime-snapshot query.
@@ -114,7 +116,7 @@ apply retains the previous active generation on validation or storage failure.
 ## Session and storage boundary
 
 Syscall 38 is a separate `xaios.remote-session.v1` ABI for executing within
-(lazily creating) and closing one of 16 bounded shell contexts. It gives each SSH
+(lazily creating) and closing one of 64 bounded shell contexts. It gives each SSH
 connection its own current directory and parser state. It is intentionally not
 part of the control protocol.
 
@@ -134,7 +136,7 @@ logs. Audit records contain hashes and metadata rather than operation payloads.
 ## Compatibility
 
 The QEMU release-candidate contract freezes magic, version, header sizes,
-limits, operation codes 1 through 58, syscall 37, and control/storage/model
+limits, operation codes 1 through 60, syscall 37, and control/storage/model
 capability bits. Syscall 38 is separately frozen for session lifecycle. New
 incompatible layouts require a new protocol version; existing structures must
 not be silently reinterpreted.

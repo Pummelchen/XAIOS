@@ -83,14 +83,19 @@ The current VirtIO-blk adapter negotiates only features it implements:
 - flush;
 - discard;
 - write-zeroes;
+- indirect descriptors (`VIRTIO_F_RING_INDIRECT_DESC`), which raise the usable
+  queue depth when the device accepts them;
+- event-index suppression (`VIRTIO_F_RING_EVENT_IDX`);
 - VirtIO 1 transport.
 
 VirtIO requests use 512-byte sectors internally as required by the VirtIO block
 protocol. The generic API reports and enforces the configured logical sector
-size. The current driver submits one copied 512-byte data request at a time;
-larger generic operations are streamed through that bounded buffer. Discard
-and write-zeroes use their standard range payload and are never issued unless
-negotiated.
+size. The driver maps a caller's buffer for direct DMA where alignment and
+addressing allow it, and falls back to a single 512-byte sector through a
+bounded bounce buffer where they do not; the device counts `direct_transfers`
+and `bounce_transfers` separately so the split is observable rather than
+assumed. Discard and write-zeroes use their standard range payload and are
+never issued unless negotiated.
 
 QEMU 2026-08-03 evidence: the test device reported 512-byte logical and
 physical blocks and advertised flush, discard, and write-zeroes. This proves
@@ -100,8 +105,10 @@ The focused NVMe adapter uses four 16-entry queues, caller-aligned direct
 buffers, reusable PRP lists, native single-descriptor SGL where advertised,
 and persistent request slots. Its QEMU gate covers cancellation, malformed
 completion fields, repeated concurrent queue stress, flush, and host backing
-bytes. x86_64 verifies one MSI-X completion after interrupt activation;
-AArch64 currently polls because no GICv3 ITS backend exists.
+bytes. x86_64 verifies MSI-X completion delivery after interrupt activation;
+AArch64 uses the GICv3 ITS backend in `kernel/arch/aarch64/gic_its.c` and the
+NVMe gate requires LPI delivery on every negotiated queue rather than accepting
+a polled result.
 
 The xaifs drive defaults to conservative file semantics. Set
 `XAIOS_QEMU_MODEL_DISCARD=unmap` to launch QEMU with

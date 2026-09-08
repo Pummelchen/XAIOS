@@ -140,8 +140,11 @@ limits; the 64-bit API and separate xaiFS are used for large model packages.
 `tail`, `sed`, `tar`, `zip`, `unzip`, fixture-only `cpio`, outbound `ssh` and
 `scp`, `nano`, `xtop`, `pong`, `xaiosctl`, `status`, `hello`, `sysinfo`, `systest`,
 `smptest`, `nettest`, `lstm-xor`, `mltest`, `posix-shell`, `agenttest`, `help`,
-and `exit`. Exact options and storage/archive limits are specified in
-[`UNIX-COMPATIBILITY.md`](./UNIX-COMPATIBILITY.md).
+and `exit`. The exact options each one accepts are on
+[Applications](https://github.com/Pummelchen/XAIOS/wiki/Applications) and
+[Commands](https://github.com/Pummelchen/XAIOS/wiki/Commands); the
+compatibility boundary around them is on [Unix
+Compatibility](https://github.com/Pummelchen/XAIOS/wiki/Unix-Compatibility).
 
 `xaiosctl` is the structured administrative entrypoint. The SSH
 daemon recognizes only the exact `xaiosctl` command prefix and launches its
@@ -346,6 +349,7 @@ Each process is launched with a capability bitmask. Syscalls are rejected if the
 | `XAIOS_CAP_MODEL_STAGE` | 268435456 | xaiFS registration, staging cleanup and package verification |
 | `XAIOS_CAP_MODEL_ACTIVATE` | 536870912 | Verified package activation |
 | `XAIOS_CAP_CONSOLE` | 1073741824 | Direct serial-console input/output; reserved for the persistent console owner |
+| `XAIOS_CAP_CREDENTIAL_READ` | 2147483648 | Opening the stored SSH client identity at `/etc/xaios_ssh_client_identity`; held by the transient outbound `ssh`/`scp` child and by nothing else |
 
 ## Data Types
 

@@ -47,5 +47,6 @@ must not be substituted for guest hardware measurements.
 
 The consolidated report uses `qemu_evidence_pass_physical_open` when all
 emulated gates pass. This is evidence readiness, not physical support. N-F3P,
-S-11P, D-08, and D-10 remain open in the [[Project Tracker|Project-Tracker]]
+S-11P, D-08, and D-10 remain open in the [Project
+Tracker](https://github.com/Pummelchen/XAIOS/wiki/Project-Tracker)
 until named physical artifacts satisfy their acceptance criteria.

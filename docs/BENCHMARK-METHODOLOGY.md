@@ -8,7 +8,8 @@ XAIOS QEMU benchmarks measure **correctness**, not raw performance. The QEMU env
 
 ### Correctness Gates (QEMU)
 
-Every `make qemu-smoke` run validates 330+ boot markers covering:
+Every `make qemu-smoke` run validates around 210 required boot markers -- 205
+common to every architecture, plus a per-architecture set -- covering:
 
 - Exception handling and timer self-tests
 - Memory management (PMM, VMM, NUMA, kheap, arena)
@@ -21,7 +22,7 @@ Every `make qemu-smoke` run validates 330+ boot markers covering:
 - Userspace process lifecycle (load, run, exit, reclaim)
 - CPU-AI deterministic fixture (model-v1 admission, byte-table tokenization and fixture dispatch)
 
-### Telemetry Metrics (~100 keys)
+### Telemetry Metrics (175 keys)
 
 The kernel emits a JSON telemetry payload at boot completion. Key categories:
 
@@ -43,7 +44,7 @@ The kernel emits a JSON telemetry payload at boot completion. Key categories:
 | Accelerator | TCG (no KVM/HVF for reproducibility) |
 | Machine | QEMU `virt` (ARM) |
 | CPU | `cortex-a72` × 4 |
-| RAM | 512 MB |
+| RAM | 2 GB (`XAIOS_QEMU_MEMORY`) |
 | Firmware | AAVMF (UEFI) |
 | Timeout | 60s (configurable via `XAIOS_QEMU_SMOKE_TIMEOUT`) |
 

@@ -127,7 +127,8 @@ and [CONTRIBUTING](https://github.com/Pummelchen/XAIOS/blob/main/CONTRIBUTING.md
 The Wiki is the human-readable entry point. Detailed versioned specifications
 and API contracts remain in the source repository:
 
-- [Getting started](https://github.com/Pummelchen/XAIOS/blob/main/docs/GETTING-STARTED.md)
+- [Reference index](https://github.com/Pummelchen/XAIOS/blob/main/docs/README.md)
+- [Application development](https://github.com/Pummelchen/XAIOS/blob/main/docs/APPLICATION-DEVELOPMENT.md)
 - [`xaiosctl` reference](https://github.com/Pummelchen/XAIOS/blob/main/docs/XAIOSCTL.md)
 - [Control protocol](https://github.com/Pummelchen/XAIOS/blob/main/docs/CONTROL-PROTOCOL.md)
 - [Model-v2 specification](https://github.com/Pummelchen/XAIOS/blob/main/docs/MODEL-V2-SPECIFICATION.md)
@@ -135,10 +136,8 @@ and API contracts remain in the source repository:
 - [Hardware backends](https://github.com/Pummelchen/XAIOS/blob/main/docs/HARDWARE-BACKENDS.md)
 - [Portable engine service](https://github.com/Pummelchen/XAIOS/blob/main/docs/ENGINE-SERVICE.md)
 - [Benchmark contract](https://github.com/Pummelchen/XAIOS/blob/main/docs/BENCHMARK-CONTRACT.md)
-- [OS architecture](https://github.com/Pummelchen/XAIOS/blob/main/docs/ARCHITECTURE.md)
 - [Syscall and userspace API](https://github.com/Pummelchen/XAIOS/blob/main/docs/API.md)
 - [Network and SSH status](https://github.com/Pummelchen/XAIOS/blob/main/docs/NETWORK-SSH-STATUS.md)
-- [Unix compatibility boundary](https://github.com/Pummelchen/XAIOS/blob/main/docs/UNIX-COMPATIBILITY.md)
 - [Storage architecture](https://github.com/Pummelchen/XAIOS/blob/main/docs/STORAGE-ARCHITECTURE.md)
 - [xaiFS format](https://github.com/Pummelchen/XAIOS/blob/main/docs/MODELFS-FORMAT.md)
 - [xaiFS recovery](https://github.com/Pummelchen/XAIOS/blob/main/docs/MODELFS-RECOVERY.md)
@@ -147,7 +146,6 @@ and API contracts remain in the source repository:
 - [Storage security](https://github.com/Pummelchen/XAIOS/blob/main/docs/STORAGE-SECURITY.md)
 - [Storage benchmarking](https://github.com/Pummelchen/XAIOS/blob/main/docs/STORAGE-BENCHMARKING.md)
 - [Hardware readiness contract](https://github.com/Pummelchen/XAIOS/blob/main/HARDWARE-READINESS.md)
-- [VMware Fusion details](https://github.com/Pummelchen/XAIOS/blob/main/docs/VMWARE-FUSION.md)
 - [Virtualization.framework harness](https://github.com/Pummelchen/XAIOS/blob/main/platform/virtualization-framework/README.md)
 - [Complete test inventory](https://github.com/Pummelchen/XAIOS/blob/main/tests/README.md)
 

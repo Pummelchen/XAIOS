@@ -129,7 +129,7 @@ Config files are strict, complete `xaios.config.v1` documents staged below
 
 ```text
 schema=xaios.config.v1
-ssh.max_connections=1..4
+ssh.max_connections=1..32
 ssh.max_channels_per_connection=1..2
 ssh.max_auth_attempts=1..5
 ssh.command_rate_per_minute=1..120

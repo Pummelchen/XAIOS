@@ -21,7 +21,7 @@ compiler. For a new package:
 
 Registration requires the model UUID, signer public key, signature, source
 revision, architecture, target layout, logical size and expected package ID.
-xaiFS derives bounded 2-16 MiB chunk records and records each digest only after
+xaiFS derives bounded 2-64 MiB chunk records and records each digest only after
 the corresponding bytes are durably written. Final verification recomputes the
 package identity and validates the supplied signature.
 
@@ -51,7 +51,7 @@ creation, registration and recovery administration:
 
 1. Produce a signed package manifest and package file.
 2. Format or open a dedicated offline xaiFS image.
-3. Run `stage`; the tool processes one configured 2-16 MiB chunk at a time.
+3. Run `stage`; the tool processes one configured 2-64 MiB chunk at a time.
 4. Re-run `stage` after interruption; committed chunks are not rewritten.
 5. Run `verify`, then `activate`.
 6. Boot XAIOS with that image as `XAIOS_XAI_FS_IMAGE`.

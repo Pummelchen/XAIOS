@@ -32,11 +32,14 @@ hypervisor or board identity into core services.
 QEMU is the broadest operating-system correctness environment. VMware Fusion
 ARM64 is a qualified four-vCPU guest path tested only on VMware Fusion 26H1
 (26.0.0), with PCI-discovered E1000E DHCP, AHCI xaibootFS, public-key SSH/SFTP,
-recovery, reboot and shutdown evidence on the current Apple Silicon host. It
-remains incomplete for multi-vCPU, VMXNET3, live DNSSEC interoperability and
-physical qualification. Future Fusion and physical drivers must be
-capability-gated; no platform is supported merely because it reports a CPU
-family or firmware table.
+recovery, reboot and shutdown evidence on the current Apple Silicon host. Live
+DNSSEC interoperability and physical qualification remain open there; the
+current per-platform status is on [VMware
+Fusion](https://github.com/Pummelchen/XAIOS/wiki/VMware-Fusion) and [Hardware
+Support](https://github.com/Pummelchen/XAIOS/wiki/Hardware-Support), which is
+where a status claim can be kept current. Future Fusion and physical drivers
+must be capability-gated; no platform is supported merely because it reports a
+CPU family or firmware table.
 
 The canonical three-profile contract and immutable evidence format are in
 [Firmware Platform Profiles](./FIRMWARE-PLATFORM-PROFILES.md). It keeps macOS

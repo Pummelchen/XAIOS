@@ -100,8 +100,13 @@ kernel.
 
 Archive extraction rejects absolute and traversal paths, corrupt checksums,
 encrypted ZIP, ZIP64, links, device nodes, and unsupported required features.
-xaibootFS limits regular files to 256 KiB, so these utilities are intended for
-configuration and small exchange archives rather than model payloads.
+A write to xaibootFS is refused at 256 KiB, so these utilities are intended
+for configuration and small exchange archives rather than model payloads.
+The v6 format itself allows a gibibyte; the binding limit is the static
+buffer this path stages a whole file through, which is still the v5 figure.
+Refusing is deliberate until the path streams instead of staging: checking
+only the format's limit was a kernel `.bss` overflow reachable from
+userspace. Model payloads go to xaiFS, which streams.
 
 ## Diagnostic applications
 

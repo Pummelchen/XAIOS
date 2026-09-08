@@ -72,10 +72,10 @@ with `error: Picolibc submodule is missing`:
 git clone --recurse-submodules https://github.com/Pummelchen/XAIOS.git
 ```
 
-See [Getting Started](docs/GETTING-STARTED.md) for toolchain setup, building,
-running, and userspace application development, and the
-[wiki Getting Started](https://github.com/Pummelchen/XAIOS/wiki/Getting-Started)
-for the shortest path from a clone to a booted guest. The
+See [Getting Started](https://github.com/Pummelchen/XAIOS/wiki/Getting-Started)
+for toolchain setup, building and running, and
+[Application development](docs/APPLICATION-DEVELOPMENT.md) for adding a
+program to the system. The
 [testing guide](https://github.com/Pummelchen/XAIOS/wiki/Testing-XAIOS)
 documents validation tiers and external interoperability suites.
 
@@ -83,8 +83,9 @@ documents validation tiers and external interoperability suites.
 
 - [XAIOS Wiki](https://github.com/Pummelchen/XAIOS/wiki) - human-facing project documentation
 - [API](docs/API.md) - userspace syscall and capability reference
-- [Architecture](docs/ARCHITECTURE.md) - detailed system architecture and boot flow
-- [Getting Started](docs/GETTING-STARTED.md) - prerequisites, builds, and app development
+- [Architecture](https://github.com/Pummelchen/XAIOS/wiki/Architecture) - system architecture and boot flow
+- [Technical reference index](docs/README.md) - every specification, and which side of the split a document belongs on
+- [Application development](docs/APPLICATION-DEVELOPMENT.md) - registering an application and its capability mask
 - [Current Limitations](https://github.com/Pummelchen/XAIOS/wiki/Current-Limitations) - verified gaps and non-claims
 
 ## Development Environment
@@ -150,7 +151,8 @@ All C code is freestanding C99 compiled with `-Wall -Wextra -Werror`:
 4. Add a functional smoke marker when the app participates in boot validation.
 5. Verify with `make image && make qemu-smoke`.
 
-See [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) for a complete example.
+See [Application development](docs/APPLICATION-DEVELOPMENT.md) for a complete
+example.
 
 ## Adding a Kernel Module
 

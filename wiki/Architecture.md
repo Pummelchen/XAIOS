@@ -9,12 +9,25 @@ The authoritative platform boundary is recorded in
 `docs/PLATFORM-SUPPORT.json`. QEMU results prove correctness and ABI behavior;
 they do not prove physical performance or production readiness.
 
+This page is the architecture description. The interfaces it names are
+specified separately, under
+[`docs/`](https://github.com/Pummelchen/XAIOS/tree/main/docs): the syscall and
+capability surface in `API.md`, the administration ABI in
+`CONTROL-PROTOCOL.md`, the package and filesystem formats in
+`MODEL-V2-SPECIFICATION.md` and `MODELFS-FORMAT.md`, and the rule that keeps
+the kernel from recognizing a hypervisor in `PLATFORM-NEUTRALITY.md`.
+
 ## Boot and runtime flow
 
 1. UEFI firmware loads the XAIOS loader. VMware Fusion uses a generated GRUB
    compatibility chainloader before the same XAIOS loader.
-2. `boot/uefi/loader_main.c` validates and loads `kernel.elf`, builds the boot
-   information structure, and transfers control to the architecture entry. A
+2. `boot/uefi/loader_main.c` validates the ELF, loads its fixed physical
+   segments, captures the firmware tables and any boot-image extent, exits boot
+   services, and transfers control to the architecture entry. What it hands
+   over is version 9 of the boot-information structure in
+   `kernel/include/xaios/boot_info.h`: the memory map, the console the firmware
+   described, the kernel extent, and an optional initfs and entropy seed. The
+   kernel builds its own page tables rather than inheriting the loader's. A
    normal boot displays the colored XAI OS identity and begins the in-place
    progress meter at 0% before loading the system image.
 3. Each architecture performs its platform-specific handoff and enters the
@@ -65,6 +78,26 @@ counting the whole cluster while the rest have already written it off. See
 What remains hosted-only is distributed activation *execution*, which depends
 on real local inference rather than on transport.
 
+## Process and address layout
+
+A normal image starts three processes and stops. `/init` is PID 1 and exits
+after its syscalls; `/bin/service-manager` is PID 2 and supervises the service
+tree; `/bin/sshd` is PID 3 and stays. Nothing else runs until an administrator
+asks for it: an allowlisted diagnostic invoked by its exact name over SSH gets
+a transient slot from PID 32 upward, its own address space, and is reaped when
+it exits. The `XAIOS_BOOT_TEST_APPS=1` fixture profile is the exception, and
+exists so QEMU gates have deterministic markers: it runs bounded workers as
+PIDs 3 to 5, the diagnostic applications from PID 6 upward, and `/bin/sshd`
+last.
+
+Each architecture links its kernel where its firmware can load it — AArch64 at
+`0x90000000`, x86-64 at `0x100000`, RISC-V at `0x80200000` — and userspace
+links at `0x3fc0000000` on every one of them, outside the kernel's identity
+map. Device addresses are not part of this layout. They come from the
+firmware tables the kernel parses at boot, and a hard-coded board value
+survives only as a last-resort fallback in the loader's own early console:
+assuming one is the defect `docs/PLATFORM-NEUTRALITY.md` exists to prevent.
+
 ## Trust boundaries
 
 - EL0 code crosses into the kernel only through validated syscall dispatch.
@@ -82,6 +115,14 @@ on real local inference rather than on transport.
   trust boundary; FreeBSD is the primary Unix behavioral reference.
 - Model-v1 is a deterministic fixture boundary. Production decode must fail
   explicitly until a real architecture plan executes.
+
+Two mitigations sit underneath those boundaries rather than forming one. The
+kernel seeds a stack canary before `kmain` and checks it, so a stack buffer
+overflow is detected rather than followed; and where the platform provides an
+SMMUv3 or equivalent IOMMU, device DMA is translated rather than trusted. Core
+leases are a third case and an unfinished one: the topology-aware lease
+interface exists and is tested, but production inference dispatch does not use
+it yet, so it is not an isolation guarantee.
 
 ## Main data flows
 

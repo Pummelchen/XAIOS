@@ -19,8 +19,10 @@ up and running`. A failed stage is shown on the serial console with a numeric
 error code and leaves the local command prompt running without an SSH listener.
 The configured QEMU address is also printed at completion.
 
-Boot error codes are stable by stage: `1001`-`1006` identify IPv4/DNS status
-failures (`1005` is the bounded DNS timeout), `2001` entropy, `2002` host-key
+Boot error codes are stable by stage: `1001` is the IPv4 readiness failure --
+one code, because `verify_ipv4_ready` either finds a usable address or does
+not, and the range this once documented described a DNS check that the same
+paragraph above says is deliberately absent. `2001` entropy, `2002` host-key
 initialization, `2101` and above crypto self-tests, `2201` runtime
 configuration, `2202` users, `2203` authorized keys, `2301` the TCP listener,
 and `2302` the companion UDP service. No SSH-ready message is emitted on these
@@ -123,7 +125,9 @@ comparison, interactive PTY ANSI `xtop`, and UDP echo. The passing report is
 This is the primary external Unix behavioral-reference gate. It does not prove
 FreeBSD binary ABI compatibility, and it does not replace the broader Debian
 and macOS administration, concurrency, persistence, rekey and malformed-packet
-coverage. See [`UNIX-COMPATIBILITY.md`](./UNIX-COMPATIBILITY.md).
+coverage. See [Unix
+Compatibility](https://github.com/Pummelchen/XAIOS/wiki/Unix-Compatibility) for
+what each client gate does and does not establish.
 
 The machine-readable result is `build/qemu-docker-network-suite.json`. Serial
 logs and the direct-network packet capture are also generated under `build/`.
@@ -148,7 +152,7 @@ XAIOS guest instance and recorded:
 - two direct raw TCP clients while SSH, SFTP, and UDP traffic remained active,
   including malformed/incomplete fragment rejection and complete out-of-order
   IPv4/IPv6 fragment reassembly from both client origins;
-- all four allowed SSH connections saturated concurrently, with two active
+- all 32 allowed SSH connections saturated concurrently, with two active
   channels per connection;
 - 40 strict SFTP cycles and 330 UDP round trips during the combined workload;
 - two additional over-capacity connections rejected cleanly;
@@ -266,6 +270,25 @@ runs concurrent native macOS and Debian 13 SFTP upload/download, exact byte
 comparison, dynamic package lifecycle, abandoned-staging cleanup and reuse,
 online scrub, free-space trim and VirtIO discard accounting. Its transfer rate
 under TCG is not physical network or storage performance evidence.
+
+### Manual framed IPv4/IPv6 client
+
+The gates above drive the guest through host forwarding, which is NAT and
+therefore cannot carry IPv6 or a malformed frame. For those, QEMU's framed
+socket backend puts raw Ethernet on a TCP socket and a host script speaks the
+protocol directly:
+
+```sh
+XAIOS_QEMU_HOSTFWD_PORT=none XAIOS_QEMU_NET_SOCKET_PORT=12345 make qemu
+python3 tests/network/qemu-ipv6-tcp-client.py --port 12345
+```
+
+`XAIOS_QEMU_HOSTFWD_PORT=none` gives the socket backend the guest's second
+interface to itself, which is the simple case. The two are not exclusive: ask
+for a forward and a socket port at once and the launcher joins them on a QEMU
+hub, with IPv6 turned off on the forwarding side so SLIRP does not interpret
+and reset the synthetic frames arriving from the socket. `XAIOS_QEMU_HOSTFWD_UDP_PORT`
+forwards to the guest's UDP echo port the same way.
 
 ## Provision a Development Image
 
