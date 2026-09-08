@@ -51,6 +51,8 @@ platform is their purpose.
 | `scripts/` | build and release automation the build system invokes |
 | `tools/` | standalone utilities a person runs by hand |
 | `config/` | build cross-files, development credentials, deployment configuration |
+| `release/` | one note per numbered build: what it was booted on, and what was not tested |
+| `third_party/` | vendored and submoduled upstream code — Picolibc, BearSSL, compiler-rt builtins |
 
 `scripts/` and `tools/` are not interchangeable. If the build calls it, it is a
 script; if you call it, it is a tool. `check-test-layout.py` enforces the
@@ -62,8 +64,18 @@ Anything that exists to drive or assert one specific hypervisor belongs under
 
 ## Getting Started
 
+Clone with submodules — the hosted C99 library is built from Picolibc under
+`third_party/`, and `make image` builds that library, so a plain clone stops
+with `error: Picolibc submodule is missing`:
+
+```sh
+git clone --recurse-submodules https://github.com/Pummelchen/XAIOS.git
+```
+
 See [Getting Started](docs/GETTING-STARTED.md) for toolchain setup, building,
-running, and userspace application development. The
+running, and userspace application development, and the
+[wiki Getting Started](https://github.com/Pummelchen/XAIOS/wiki/Getting-Started)
+for the shortest path from a clone to a booted guest. The
 [testing guide](https://github.com/Pummelchen/XAIOS/wiki/Testing-XAIOS)
 documents validation tiers and external interoperability suites.
 
@@ -79,8 +91,17 @@ documents validation tiers and external interoperability suites.
 
 | Platform | Toolchain |
 |----------|-----------|
-| macOS | `brew install llvm lld qemu mtools python3` |
-| Linux | `apt install clang lld qemu-system-arm qemu-efi-aarch64 mtools python3` |
+| macOS | `brew install llvm lld qemu mtools python3 meson ninja xorriso` |
+| Linux | `apt install clang lld llvm qemu-system-arm qemu-efi-aarch64 mtools python3 meson ninja-build` |
+
+`meson` and `ninja` are for the libc build, not for XAIOS itself. On macOS,
+put Homebrew LLVM on `PATH` before building: `scripts/build-libc.sh` resolves
+`llvm-ar` there and nowhere else, while the image build and the QEMU launchers
+find their tools through `brew --prefix`.
+
+```sh
+export PATH="$(brew --prefix llvm)/bin:$PATH"
+```
 
 Build and smoke test:
 

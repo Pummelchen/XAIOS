@@ -1,13 +1,26 @@
 # XAIOS
 
 XAIOS is a freestanding Unix-like operating system for dedicated AI and
-high-performance server workloads. It boots on AArch64, x86_64 and RISC-V under QEMU,
-provides a native kernel/userspace ABI, persistent filesystems, IPv4/IPv6,
-OpenSSH-compatible SSH/SFTP, local and remote shells, administration controls,
-and a portable inference-engine foundation.
+high-performance server workloads, written in C99. It boots from UEFI on
+AArch64, x86_64 and RISC-V under QEMU, and on two macOS hypervisors — VMware
+Fusion and Apple Virtualization.framework — and provides a native
+kernel/userspace ABI, persistent filesystems, IPv4/IPv6, OpenSSH-compatible
+SSH/SFTP, local and remote shells, administration controls, and a portable
+inference-engine foundation.
+
+The target it is built towards is an SSH-administered distributed CPU inference
+server in which the operating system and the model runtime are one system
+rather than an application on a distribution: the kernel owns hardware,
+isolation, persistence, networking and service lifecycle, the engine owns model
+packages, architecture adapters, backends and sessions, and the two are built
+and gated together. No transformer executes yet, which is why the evidence
+boundary below is stated rather than implied.
 
 XAIOS is not Linux or FreeBSD and does not run their binaries. FreeBSD is the
 primary Unix behavior reference for commands and network interoperability.
+
+New here? [[Getting Started|Getting-Started]] goes from a clone to a login
+prompt; [[Current Limitations|Current-Limitations]] says what is not claimed.
 
 ## Use XAIOS
 
@@ -67,21 +80,47 @@ single [[Project Tracker|Project-Tracker]] for remaining work.
 - [[Networking and SSH|Networking-and-SSH]]
 - [[Administration|Administration]]
 - [[xapt Package Updates|Xapt-Package-Updates]]
+- [[Operations and Recovery|Operations-and-Recovery]]
 
 ### Understand and validate it
 
-- [[Hardware Support|Hardware-Support]]
-- [[RISC-V|RISC-V]]
 - [[Architecture|Architecture]]
+- [[Screen Framework|Screen-Framework]]
 - [[Security Model|Security-Model]]
 - [[Unix Compatibility|Unix-Compatibility]]
 - [[ISO C99 Library|C99-Libc]]
-- [[Testing XAIOS|Testing-XAIOS]]
+- [[Hardware Support|Hardware-Support]]
+- [[Firmware Profiles|Firmware-Profiles]]
+- [[RISC-V|RISC-V]]
 - [[VMware Fusion|VMware-Fusion]]
 - [[Virtualization Framework|Virtualization-Framework]]
+- [[Testing XAIOS|Testing-XAIOS]]
 - [[Current Limitations|Current-Limitations]]
 - [[FAQ]]
 - [[Project Tracker|Project-Tracker]]
+
+## Where the source lives
+
+A change goes in exactly one of these, and the choice is usually settled by the
+directory's purpose rather than by the file's subject.
+
+| Directory | Why it exists |
+|---|---|
+| [`boot/`](https://github.com/Pummelchen/XAIOS/tree/main/boot) | The UEFI loader: firmware entry, kernel validation, boot handoff. |
+| [`kernel/`](https://github.com/Pummelchen/XAIOS/tree/main/kernel) | The kernel. Shared code, with `arch/aarch64/`, `arch/x86_64/` and `arch/riscv64/` for what cannot be shared. |
+| [`userspace/`](https://github.com/Pummelchen/XAIOS/tree/main/userspace) | `init`, the shell, `/bin` applications, the hosted C99 library, sshd. |
+| [`engine/`](https://github.com/Pummelchen/XAIOS/tree/main/engine) | The portable inference engine: model packages, adapters, backends, sessions. |
+| [`platform/`](https://github.com/Pummelchen/XAIOS/tree/main/platform) | One directory per hypervisor, holding its assets and launchers and nothing else. |
+| [`tests/`](https://github.com/Pummelchen/XAIOS/tree/main/tests) | Gates that boot XAIOS, checks about the repository itself, fixtures, network harnesses. |
+| [`contracts/`](https://github.com/Pummelchen/XAIOS/tree/main/contracts) | Versioned machine-readable contracts: what a gate is allowed to call passing. |
+| [`docs/`](https://github.com/Pummelchen/XAIOS/tree/main/docs) | Versioned specifications and formats. |
+| [`scripts/`](https://github.com/Pummelchen/XAIOS/tree/main/scripts) / [`tools/`](https://github.com/Pummelchen/XAIOS/tree/main/tools) | If the build calls it, it is a script; if you call it, it is a tool. |
+| [`release/`](https://github.com/Pummelchen/XAIOS/tree/main/release) | One note per numbered build: what it was booted on, and what was not tested. |
+
+Naming a hypervisor is `platform/` and `tests/` work. Kernel, boot and
+userspace code may not do it at all — see
+[Platform neutrality](https://github.com/Pummelchen/XAIOS/blob/main/docs/PLATFORM-NEUTRALITY.md)
+and [CONTRIBUTING](https://github.com/Pummelchen/XAIOS/blob/main/CONTRIBUTING.md).
 
 ## Repository reference documents
 

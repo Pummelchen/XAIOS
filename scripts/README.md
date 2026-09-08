@@ -27,7 +27,7 @@ manipulates or inspects a file that already exists, it is a tool.
 | `build-boot-media.sh`, `build-netboot-image.sh` | Bootable media for real machines, and the network-boot kit for a blank one. |
 | `build-libc.sh` | The hosted C99 library, its sysroot and compiler-rt. Runs before anything that links a hosted application. |
 | `build-release.sh`, `build-vm-packages.sh` | A numbered build and the per-hypervisor kits published beside it. |
-| `macos-bootstrap.sh` | Installs the toolchain a fresh macOS machine needs. Start here if nothing builds yet. |
+| `macos-bootstrap.sh` | Checks a macOS host for the toolchain and reports what is missing and how to install it. It installs nothing itself, so it is safe to run first when nothing builds yet. |
 
 The remaining scripts create fixtures and volumes (`create-initfs.py`,
 `create-persistent-image.sh`), convert artefacts (`elf-to-efi.py`,
