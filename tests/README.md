@@ -9,13 +9,25 @@ bridge utilities.
 
 | Path | Contents |
 |---|---|
-| `tests/scripts/` | Python and shell gate runners, status validators, QEMU orchestration, fault injection, release checks, and benchmark-evidence generators. |
+| `tests/scripts/` | Python and shell gate runners, status validators, QEMU orchestration, fault injection, release checks, and benchmark-evidence generators. The shared helpers other gates build on are `qemu_gate_lib.py` and `riscv64_gate_lib.py`. |
+| `tests/repository/` | Checks about the repository rather than about a running system -- platform neutrality, documentation freshness, this layout rule, the Wiki's shape, the user-facing catalogues, and the code-scanning contract. `make docs-check` runs them. |
 | `tests/network/` | Debian and FreeBSD interoperability Dockerfiles, client/server scripts, IPv4/IPv6 helpers, keys generated at runtime, and network fixtures. |
-| `tests/model_v2/` | Python/C model-v2 round trips, malformed packages, sparse files, and memory-bound conversion checks. |
-| `tests/hosted/` | Hosted C correctness tests for portable kernel/runtime components. |
+| `tests/model_v2/` | Model-v2 round trips, malformed packages, sparse files and memory-bound conversion checks, plus the hosted engine and cluster tests. |
+| `tests/storage/` | Hosted C tests for the storage stack: the block device, FAT, GPT, the VFS, xaibootFS v6 and its mirror, xaiFS administration, and large SFTP transfers. |
+| `tests/system/` | Hosted C tests for kernel components with no subsystem directory of their own -- ACPI on both x86-64 and AArch64, cpusets, inflate, known-hosts parsing, the screen framework -- and the system-volume test. |
+| `tests/xai_fs/` | The xaiFS host reader test and the fixture generators the crash, cache and sparse cases are run against. |
+| `tests/security/` | ML-KEM and SSH host-identity tests. |
+| `tests/control/` | The hosted control-client test for the administration ABI. |
+| `tests/engine/` | The SHA-256 acceleration test. |
+| `tests/xapt/` | The host-side test for signed `xapt` repositories and catalogues. |
+| `tests/crashtest/` | Deterministic tests for untrusted input boundaries, run under AddressSanitizer and UndefinedBehaviorSanitizer by `make crash-test`. It has its own README, which states what it deliberately does not claim. |
 | `tests/libc/` | ISO C99 requirement inventories plus strict language, library, startup and termination probes. |
 | `tests/fuzz/` | Parser fuzz entrypoints and corpora. |
-| `tests/fixtures/` | Deterministic test inputs that are safe to version. |
+| `tests/fixtures/` | Deterministic test inputs that are safe to version, including the throwaway TLS material `tests/fixtures/README.md` explains. |
+
+There is no single directory of hosted tests. A hosted C test sits beside the
+subsystem it covers, and `make hosted-test` names each source file explicitly,
+so adding one means adding it to that target as well as to a directory.
 
 `tests/repository/check-test-layout.py` rejects test runners in `scripts/`, missing
 Docker build inputs, and test-image inputs outside `tests/`. It runs through
@@ -29,7 +41,7 @@ Docker build inputs, and test-image inputs outside `tests/`. It runs through
 | Hosted unit tests | `make hosted-test` |
 | Hosted sanitizers | `make hosted-sanitizer-test` |
 | Hosted ISO C99 contract | `make libc-check` |
-| Hosted ISO C99 dual-architecture runtime | `make qemu-libc-gate` |
+| Hosted ISO C99 runtime on all three architectures | `make qemu-libc-gate` |
 | Signed xapt repository unit tests | `make xapt-test` |
 | xapt app and A/B OS lifecycle on ARM/x86 | `make qemu-xapt-gate` |
 | Code-scanning regression contract | `make code-scanning-contract` |
@@ -44,7 +56,7 @@ Docker build inputs, and test-image inputs outside `tests/`. It runs through
 | x86_64 full-service smoke | `make qemu-x86_64-smoke` |
 | USB HID local-console login on ARM64 and x86_64 QEMU | `make qemu-keyboard-input-gate` |
 | Aggregate QEMU core OS | `make qemu-core-os-rc` |
-| Parser, packet-fault, load/recovery, and dual-architecture soak | `make qemu-network-adversarial-gate` |
+| Parser, packet-fault, load/recovery, and three-architecture soak | `make qemu-network-adversarial-gate` |
 | IPv4/IPv6 source fragmentation on ARM/x86 | `make qemu-outbound-fragmentation-gate` |
 | Async NVMe PRP/SGL, cancellation, malformed completions, and all-queue x86 MSI-X/ARM ITS delivery | `make qemu-nvme-gate` |
 | x86_64-only async NVMe evidence for the Intel profile | `make qemu-x86_64-nvme-gate` |
@@ -63,8 +75,9 @@ The smoke image exercises the in-guest local-DNSSEC resolver wiring
 deterministically; it does not require a public resolver. The hosted DNS test
 generates a signed root-to-child chain and verifies DNSKEY, DS, RRSIG, signed A,
 signature corruption, expiry, NSEC NODATA, and malformed input. Normal images
-perform the same local validation, while SSH boot readiness is established by an
-IPv4 TCP connection rather than DNS.
+perform the same local validation. SSH boot readiness depends on neither: it is
+reached when the interface holds a usable IPv4 address, and `verify_ipv4_ready`
+in `userspace/sshd/sshd.c` deliberately probes no external name or endpoint.
 
 `qemu-operations-closure` builds authenticated AArch64 and x86_64 images and
 uses the real guest SSH server to check abrupt-stop detection, persisted clean
