@@ -112,7 +112,7 @@ which the build enforces.
 | Boots to a login | yes | yes | yes | yes | yes |
 | Durable xaibootFS volume | yes | yes | yes | yes | yes |
 | IPv4 by DHCP | yes | yes | yes | yes | yes |
-| IPv6 by SLAAC | implemented, not evidenced here | implemented, not evidenced here | implemented, not evidenced here | `F-03` not qualified | yes, unique-local only (`V-03`) |
+| IPv6 by SLAAC | yes (`qemu-slaac-gate`) | yes (`qemu-slaac-gate`) | yes (`qemu-slaac-gate`) | `F-03` not qualified | yes, unique-local only (`V-03`) |
 | IPv6 by DHCPv6 | client present, gated | client present, gated | client present | client present | client present |
 | SSH server | yes | yes | yes | yes | yes |
 | SSH client, SFTP | yes | yes | yes | yes | yes |

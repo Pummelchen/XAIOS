@@ -435,6 +435,21 @@ fi
 # its network -- and net0 is a second, unrouted one. Setting it on net0 changes
 # an address nothing reads.
 user_net_cidr="${XAIOS_QEMU_USER_NET_CIDR:-none}"
+# The IPv6 prefix this machine's user network advertises.
+#
+# SLIRP advertises fec0::/64 by default, which is site-local -- deprecated
+# address space, and this stack deliberately keeps g_public_v6 for genuinely
+# global addresses, so a guest on the default network forms a SLAAC address
+# that is correctly not treated as public and reports only its link-local one.
+# That is right behaviour and it left the capability matrix unable to say SLAAC
+# was evidenced under QEMU at all.
+#
+# Setting a global prefix makes the question answerable. 2001:db8::/32 is the
+# documentation range, reserved by RFC 3849 precisely so it can be used in
+# examples without colliding with anyone's real allocation, and it is global
+# scope, so a guest that forms an address from it exercises the same path a
+# real advertisement would.
+user_net_ipv6="${XAIOS_QEMU_USER_NET_IPV6:-none}"
 
 set -- "$@" \
   -netdev user,id=net0 \
@@ -478,6 +493,9 @@ else
   net1_options="user,id=net1"
   if [ "$user_net_cidr" != "none" ]; then
     net1_options="${net1_options},net=${user_net_cidr}"
+  fi
+  if [ "$user_net_ipv6" != "none" ]; then
+    net1_options="${net1_options},ipv6-net=${user_net_ipv6}"
   fi
   if [ "$hostfwd_port" != "none" ]; then
     net1_options="${net1_options},hostfwd=tcp::${hostfwd_port}-:22"

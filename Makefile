@@ -55,6 +55,12 @@ qemu-memory-matrix:
 qemu-readonly-medium-gate:
 	python3 ./tests/scripts/qemu-readonly-medium-gate.py
 
+# The matrix claimed SLAAC and nothing supported it. Two networks, because
+# either alone proves the wrong thing: site-local space must NOT become a
+# public address, and a global prefix must.
+qemu-slaac-gate:
+	python3 ./tests/scripts/qemu-slaac-gate.py
+
 vmware-fusion-image: image
 	./platform/vmware-fusion/build-vmware-fusion.sh
 
