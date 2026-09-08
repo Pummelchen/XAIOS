@@ -45,7 +45,14 @@ from qemu_gate_lib import qemu_boot_environment, qemu_runner, smoke_timeout
 
 REPORT = BUILD / "qemu-readonly-medium-gate.json"
 ARCH = "aarch64"
-SELF_TEST = "virtio-blk: read/write/error/reset self-test passed"
+# The driver prints this line in three separate klog calls -- the prefix, then
+# "medium=...", then the geometry -- so waiting for the prefix and stopping
+# means killing the emulator between the first call and the second. That is
+# exactly what happened: the read-only boot won the race and reported
+# medium=read-only, the writable boot lost it and reported a line ending at
+# "discovery=1 ", and the gate blamed the guest for a value it had cut off
+# itself. Wait for the field being read, not for the line it lives on.
+SELF_TEST = "medium="
 FATAL = ("CYAN SCREEN OF DEATH", "assertion failed", "KERNEL PANIC")
 
 CASES = (
