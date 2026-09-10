@@ -47,9 +47,10 @@ a real machine looks like.
   evidence. Four vCPUs come online (`F-01`), VMXNET3 carries traffic end to
   end (`F-02`), a bridged guest configures and answers on a globally routable
   IPv6 address (`F-03`), and snapshot/resume semantics are gated -- though the
-  qualified profile stays on E1000E by choice. Live DNSSEC interoperability,
-  outbound-client coverage inside a gate, and physical qualification remain
-  open.
+  qualified profile stays on E1000E by choice. Outbound SSH and SCP from the
+  guest, and `direct-tcpip` forwarding through it, are gated by
+  `make vmware-fusion-outbound-gate`. Live DNSSEC interoperability and physical
+  qualification remain open.
 - Apple Virtualization.framework runs XAIOS to a login with storage and
   dual-stack networking. `make vz-gate` checks that boot at four vCPUs and
   `make vz-stress-gate` soaks it at eight, and `make vz-framebuffer-gate` reads

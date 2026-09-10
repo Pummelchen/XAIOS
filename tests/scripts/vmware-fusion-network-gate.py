@@ -14,10 +14,15 @@ IPv6 address. That is the part of F-03 this machine can answer for.
 
 What it deliberately does not claim: nothing here proves behaviour under loss
 or reordering -- the LAN is whatever it is on the day, and a gate that asserted
-a loss figure would be asserting the weather. Outbound SSH from the guest to
-this host is not attempted either, because it would need Remote Login enabled
-on the Mac, which is a change to the operator's machine and not this gate's to
-make. Both are named in the report rather than left as silence.
+a loss figure would be asserting the weather. That is named in the report
+rather than left as silence.
+
+Outbound SSH used to be named here too, on the grounds that a far end meant
+Remote Login on the operator's Mac. It does not: `vmware-fusion-outbound-gate`
+brings up a disposable container on this host's LAN address and proves the
+outbound client, SCP in both directions and `direct-tcpip` through the guest
+against it, touching nothing of the operator's. This gate stays the inbound
+half; that one is the outbound half.
 """
 
 from __future__ import annotations
@@ -220,8 +225,9 @@ def main() -> int:
         "failures": failures,
         "not_claimed": [
             "loss and reordering behaviour: the LAN is not a controlled link",
-            "outbound SSH from the guest to this host: needs Remote Login "
-            "enabled on the Mac, which is the operator's decision",
+            "the guest as a client, and as a jump host: outbound SSH, SCP and "
+            "direct-tcpip are proved by vmware-fusion-outbound-gate against a "
+            "disposable container, not here",
         ],
     }
     REPORT.parent.mkdir(parents=True, exist_ok=True)

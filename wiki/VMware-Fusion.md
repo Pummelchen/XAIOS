@@ -161,8 +161,15 @@ no VM running whether it succeeds or fails.
   and Virtualization.framework at 1, 2 and 4 GiB, which is what
   `make qemu-memory-matrix` does for the three QEMU architectures.
 - Live recursive DNSSEC interoperability still needs resolver-response
-  compatibility work, so DNSSEC callers remain fail-closed. SSH startup is
-  deliberately not tied to a DNS or TCP endpoint, so this does not affect
+  compatibility work, and the shape of that work is now named: the whole
+  root-DNSKEY to DS to child-DNSKEY to answer walk shares one deadline, because
+  `g_pending.started_ns` is set once per resolution and never reset per query
+  (`B-35`). A longer chain spends the budget and returns a cancellation that a
+  caller cannot tell from a validation refusal (`B-36`). Callers are **not**
+  fail-closed, which this page previously said: on a bridged guest a correctly
+  signed name resolved to an address while a mis-signed one was refused. That
+  observation is not gated, for the two reasons above. SSH startup is
+  deliberately not tied to a DNS or TCP endpoint, so none of this affects
   whether the guest comes up reachable.
 - Fusion on Apple Silicon does not validate x86_64 guests or physical hardware.
 
