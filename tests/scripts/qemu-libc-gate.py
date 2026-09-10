@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the hosted C99 runtime smoke on both XAIOS QEMU architectures."""
+"""Build and boot the hosted C99 runtime smoke on every XAIOS architecture."""
 
 from __future__ import annotations
 
@@ -18,6 +18,59 @@ REQUIREMENTS = json.loads((ROOT / "tests/libc/c99-requirements.json").read_text(
 MARKERS = tuple(REQUIREMENTS["runtime_markers"])
 FORBIDDEN = ("Cyan Screen of Death", "panic:", "assertion failed")
 TMPFILE_EVENT = re.compile(r"xaibootfs: (?:write|delete) path=(/tmp/T\S+)")
+
+# Every architecture this gate covers, and the build that produces the image
+# each leg boots. They are deliberately one table rather than two lists: the
+# gate builds what it is about to boot, so an architecture cannot be booted
+# without being built, and adding one here adds it to both halves at once.
+#
+# B-31: the make dependency used to build AArch64 and x86-64 while this file
+# iterated three architectures, so the RISC-V leg booted whatever `build/`
+# happened to hold -- another commit, or the release configuration, or an
+# image built with the libc probes off. It stayed green throughout, because a
+# leg that boots an unrelated artefact passes exactly like a leg that boots
+# the right one.
+ARCHES = ("aarch64", "x86_64", "riscv64")
+IMAGE_BUILD = {
+    "aarch64": {
+        "env": {"XAIOS_LIBC_TEST": "1", "XAIOS_BOOT_VERBOSE": "1"},
+        "commands": (["./scripts/build-image.sh"],),
+    },
+    "x86_64": {
+        "env": {"XAIOS_TARGET_ARCH": "x86_64", "XAIOS_LIBC_TEST": "1",
+                "XAIOS_BOOT_VERBOSE": "1"},
+        "commands": (["./scripts/build-image.sh"],),
+    },
+    # RISC-V takes three scripts, and the first two are not enough. The
+    # kernel script compiles the probes in and the image script packs their
+    # binaries, both only when told this is a libc-test build. The third
+    # makes build/xaios-riscv64-system.img, which the runner copies into the
+    # boot state before it starts QEMU and refuses to boot without -- and
+    # which carries a copy of the kernel that the loader prefers over the one
+    # on the medium, so a system volume left over from an older kernel is a
+    # stale artefact of exactly the kind this gate exists to stop booting.
+    "riscv64": {
+        "env": {"XAIOS_BOOT_TEST_APPS": "1", "XAIOS_LIBC_TEST": "1"},
+        "commands": (["./scripts/build-riscv64.sh"],
+                     ["./scripts/build-riscv64-image.sh"],
+                     ["./scripts/build-riscv64-boot-media.sh"]),
+    },
+}
+
+
+def build_image(arch: str) -> None:
+    """Produce the image this gate is about to boot.
+
+    A leg that boots an artefact this run did not build tests whatever was
+    lying around, and reports it in the same words as a real pass.
+    """
+    specification = IMAGE_BUILD[arch]
+    env = os.environ.copy()
+    env.update(specification["env"])
+    for command in specification["commands"]:
+        print(f"qemu-libc-gate: {arch}: building: {' '.join(command)}",
+              flush=True)
+        subprocess.run(command, cwd=ROOT, env=env, check=True)
 
 
 def assert_tmpfiles_removed(text: str, arch: str) -> None:
@@ -102,20 +155,43 @@ def main() -> int:
     `--arch NAME` runs one of them. That is for working on a single machine:
     each leg is a full boot, and paying for three to see whether the one just
     changed still works is how a gate stops being run during development.
+
+    `--build-only` stops after the images, for `make image-libc-test`.
+
+    Each architecture is built immediately before it is booted, so what the
+    gate reports on is what this run produced.
     """
     selected = None
-    for index, argument in enumerate(sys.argv):
-        if argument == "--arch" and index + 1 < len(sys.argv):
-            selected = sys.argv[index + 1]
+    build_only = False
+    arguments = sys.argv[1:]
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--arch" and index + 1 < len(arguments):
+            selected = arguments[index + 1]
+            index += 1
         elif argument.startswith("--arch="):
             selected = argument.split("=", 1)[1]
-    arches = ("aarch64", "x86_64", "riscv64")
+        elif argument == "--build-only":
+            build_only = True
+        else:
+            # Silently ignoring an argument it does not know is how a gate
+            # ends up running something other than what it was asked for.
+            raise SystemExit(f"unsupported argument {argument!r}")
+        index += 1
+    arches = ARCHES
     if selected is not None:
         if selected not in arches:
             raise SystemExit(f"unsupported --arch {selected!r}")
         arches = (selected,)
     for arch in arches:
-        run_arch(arch, f"./platform/qemu/run-qemu-{arch}.sh")
+        build_image(arch)
+        if not build_only:
+            run_arch(arch, f"./platform/qemu/run-qemu-{arch}.sh")
+    if build_only:
+        print(f"qemu-libc-gate: built libc-test images for "
+              f"{', '.join(arches)}")
+        return 0
     print(f"qemu-libc-gate: PASS: hosted runtime executed on "
           f"{', '.join(arches)}")
     return 0

@@ -88,20 +88,27 @@ authenticated local or SSH shell to verify hosted `stdio`, process loading and
 clean exit. Its bounded standard output is returned to the invoking terminal
 while the same bytes remain visible on the serial console.
 
-`make qemu-libc-gate` runs the contract audit, builds the AArch64 and x86_64
-images, and then executes the runtime and termination probes on every
+`make qemu-libc-gate` runs the contract audit, builds an image per
+architecture, and then executes the runtime and termination probes on every
 architecture that carries the library -- all three, since the runner stopped
-saying "both architectures" as though two were all of them. Two things about
-that are worth saying plainly rather than leaving to be discovered. Its image
-dependency builds two, so the RISC-V leg boots whatever `build/` already holds
-unless something else built it first; and the conformance report it writes to
-`build/libc/c99-conformance-report.json` is generated from the contract's
-`architecture_gates`, which names AArch64 and x86_64, so the report says two
-architectures and means it. CI uploads that report, the manifests, the linked
-ELFs and the QEMU logs. `make qemu-riscv64-libc-gate` is the third machine on
-its own terms: it builds the RISC-V kernel and image with its own scripts
-first, then runs the same probes with `--arch riscv64`, and its result is not
-part of that report.
+saying "both architectures" as though two were all of them.
+
+It builds every image it boots, and that is worth stating because for a long
+time it did not: the make dependency built AArch64 and x86-64 while the gate
+iterated three, so the RISC-V leg booted whatever `build/` happened to hold and
+passed as convincingly as a leg testing the right artefact (`B-31`). The list
+of architectures built and the list booted are now literally the same table.
+RISC-V needs three build steps rather than two -- kernel, image, and the signed
+A/B system volume the runner copies into its boot state -- and the third was
+missing from every libc target, including the one documented here as building
+its own image.
+
+The conformance report at `build/libc/c99-conformance-report.json` is generated
+from the contract's `architecture_gates`, which names AArch64 and x86_64, so
+the report says two architectures and means it. CI uploads that report, the
+manifests, the linked ELFs and the QEMU logs. `make qemu-riscv64-libc-gate` is
+the same gate with `--arch riscv64`, and its result is not part of that
+report.
 
 ## Implementation-defined choices
 
