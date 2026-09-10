@@ -62,6 +62,14 @@ typedef struct {
   uint32_t active_connections;
   uint32_t total_connections;
   uint32_t rejected_connections;
+  /* Why a connection was refused before it was ever served, counted apart.
+     B-28 was one refusal in 586 sessions with no guest-side account of it at
+     all: the three pre-serve refusal paths reported to the audit log on the
+     durable volume, which no gate reads, and one of them reported nothing.
+     A refusal nobody can attribute is indistinguishable from a defect. */
+  uint32_t rate_limited_connections;
+  uint32_t capacity_refused_connections;
+  uint32_t slot_exhausted_connections;
   uint64_t bytes_sent;
   uint64_t bytes_received;
 } sshd_stats_t;
