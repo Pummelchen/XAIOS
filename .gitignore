@@ -73,4 +73,8 @@ release/*.iso
 !release/*.iso.zip
 
 # Agent worktrees: isolated checkouts, never part of the tree they branch from.
+# They are disposable -- work worth keeping is merged into main by the session
+# that spawned them. Each one builds into its own build/ directory, so they cost
+# roughly a gigabyte apiece and thirteen of them once held 11 GB here. Remove a
+# finished one with `git worktree remove --force <path>` and `git worktree prune`.
 .claude/worktrees/
