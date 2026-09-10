@@ -83,7 +83,12 @@ in `userspace/sshd/sshd.c` deliberately probes no external name or endpoint.
 uses the real guest SSH server to check abrupt-stop detection, persisted clean
 reboot/shutdown, service controls, network diagnostics, DNS, ICMP, SNTP,
 resource-pressure reporting, update status, configuration export/import, and
-redacted support bundles. By default it also runs a Debian 13 OpenSSH client
+redacted support bundles. Before it kills the first guest it waits for that
+guest's `lifecycle: record durable` console line, not merely for SSH: a guest
+whose state volume never mounted reaches SSH just as fast and keeps its
+lifecycle record in memory, and the gate used to report that as the *second*
+boot failing to notice an unclean stop. Any other lifecycle verdict fails the
+gate at the boot that produced it. By default it also runs a Debian 13 OpenSSH client
 from the reproducible Docker image; `--skip-docker` is used by the aggregate
 gate where Docker interoperability has a separate required job.
 

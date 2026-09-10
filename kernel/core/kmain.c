@@ -904,9 +904,15 @@ void kmain(const xaios_boot_info_t *boot) {
      the console locks, and a live boot has no way in at all. What is lost is
      that none of it survives the power going off, which is what a live boot
      means and is now the only thing it means. */
+  /* Whether what got mounted above outlives the power going off. Everything
+     up to here mounts a disk; the fallback below mounts memory, and the
+     operations layer has to say which, because a lifecycle record written to
+     memory is not a lifecycle record the next boot can read. */
+  uint32_t durable_state = 1U;
   if (persistent_status != XAIOS_OK) {
     if (ram_block_create("/dev/ram0") == XAIOS_OK) {
       persistent_status = xaiboot_fs_mount_device("/dev/ram0");
+      durable_state = 0U;
       klog("kernel: no durable volume; state kept in memory status=%d\n",
            (int)persistent_status);
     }
@@ -934,7 +940,7 @@ void kmain(const xaios_boot_info_t *boot) {
   } else {
     klog("kernel: persistent mount skipped status=%d\n", (int)persistent_status);
   }
-  operations_init(persistent_status == XAIOS_OK ? 1U : 0U);
+  operations_init(persistent_status == XAIOS_OK ? 1U : 0U, durable_state);
   kassert(vfs_mount_mutable_root() == XAIOS_OK);
   /* Expose the boot image's /bin read-only, so the userspace ls that ships
      as /bin/ls can list the directory it lives in. */

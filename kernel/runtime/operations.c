@@ -41,6 +41,7 @@ typedef enum operations_power_action {
 } operations_power_action_t;
 
 static uint32_t g_persistent;
+static uint32_t g_durable;
 static uint32_t g_boot_ready;
 static uint32_t g_rescue;
 static uint32_t g_unclean_boots;
@@ -216,12 +217,13 @@ static uint32_t record_running(const char *record) {
   return record != 0 && str_starts(record, "state=running\n");
 }
 
-static void persist_lifecycle(const char *state) {
+static xaios_status_t persist_lifecycle(const char *state) {
   char record[160];
   uint64_t flushed = 0U;
   uint64_t unsupported = 0U;
   uint64_t failed = 0U;
   uint64_t used = 0U;
+  xaios_status_t status = XAIOS_OK;
   record[0] = '\0';
   append(record, sizeof(record), &used, "state=");
   append(record, sizeof(record), &used, state);
@@ -230,26 +232,75 @@ static void persist_lifecycle(const char *state) {
   append(record, sizeof(record), &used, "\nboots=");
   append_u64(record, sizeof(record), &used, g_boots);
   append(record, sizeof(record), &used, "\n");
-  if (g_persistent != 0U) {
-    xaios_status_t status =
-        xaiboot_fs_write(OPERATIONS_RECORD_PATH, record, used);
-    if (status == XAIOS_OK) status = xaiboot_fs_commit("lifecycle");
-    if (status == XAIOS_OK) {
-      /* A running marker must survive host-side power loss before SSH starts. */
-      status = block_flush_all(&flushed, &unsupported, &failed);
-    }
-    if (status != XAIOS_OK) {
-      klog("operations: lifecycle persist failed state=%s status=%d flushed=%lu unsupported=%lu failed=%lu\n",
-           state, (int)status, flushed, unsupported, failed);
-    }
+  if (g_persistent == 0U) return XAIOS_ERR_UNSUPPORTED;
+  status = xaiboot_fs_write(OPERATIONS_RECORD_PATH, record, used);
+  if (status == XAIOS_OK) status = xaiboot_fs_commit("lifecycle");
+  if (status == XAIOS_OK) {
+    /* A running marker must survive host-side power loss before SSH starts. */
+    status = block_flush_all(&flushed, &unsupported, &failed);
   }
+  if (status != XAIOS_OK) {
+    klog("operations: lifecycle persist failed state=%s status=%d flushed=%lu unsupported=%lu failed=%lu\n",
+         state, (int)status, flushed, unsupported, failed);
+  }
+  return status;
 }
 
-void operations_init(uint32_t persistent_available) {
+/* Say on the console, once per boot, what became of this boot's lifecycle
+   record.
+
+   The operations gate kills the first guest and asks the second what it
+   inherited. Waiting for SSH before killing is not the same as waiting for
+   the record the second boot reads: a guest whose state volume never mounted
+   reaches SSH exactly as fast, writes its record into memory, and leaves the
+   second boot with nothing to find -- which the gate then reports as a missed
+   unclean boot, blaming the second guest for what the first one never wrote.
+   So the machine says it itself, and says which of the two happened.
+
+   Written through the console writer rather than klog because a release build
+   turns klog's console output off at boot_ui_begin, and this line has to exist
+   in the image the gate actually runs. The wordings are deliberately disjoint:
+   "record durable" is the only one that means the record is on a disk, and no
+   other verdict contains it. */
+static void report_lifecycle(xaios_status_t status) {
+  char line[160];
+  uint64_t used = 0U;
+  const char *verdict;
+  const char *storage;
+  line[0] = '\0';
+  if (g_persistent == 0U) {
+    verdict = "absent";
+    storage = "none";
+  } else if (status != XAIOS_OK) {
+    verdict = "unwritten";
+    storage = g_durable != 0U ? "disk" : "memory";
+  } else if (g_durable == 0U) {
+    verdict = "volatile";
+    storage = "memory";
+  } else {
+    verdict = "durable";
+    storage = "disk";
+  }
+  append(line, sizeof(line), &used, "lifecycle: record ");
+  append(line, sizeof(line), &used, verdict);
+  append(line, sizeof(line), &used, " state=running boots=");
+  append_u64(line, sizeof(line), &used, g_boots);
+  append(line, sizeof(line), &used, " unclean=");
+  append_u64(line, sizeof(line), &used, g_unclean_boots);
+  append(line, sizeof(line), &used, " storage=");
+  append(line, sizeof(line), &used, storage);
+  append(line, sizeof(line), &used, " status=");
+  append_status(line, sizeof(line), &used, status);
+  append(line, sizeof(line), &used, "\n");
+  klog_console_write(line, used);
+}
+
+void operations_init(uint32_t persistent_available, uint32_t durable_storage) {
   char record[160];
   uint64_t bytes = 0U;
   xaios_xbfs_stat_t rescue;
   g_persistent = persistent_available != 0U;
+  g_durable = g_persistent != 0U && durable_storage != 0U;
   g_boot_ready = 0U;
   g_rescue = 0U;
   g_unclean_boots = 0U;
@@ -271,14 +322,14 @@ void operations_init(uint32_t persistent_available) {
       g_rescue = 1U;
   }
   if (g_unclean_boots >= 3U) g_rescue = 1U;
-  persist_lifecycle("running");
-  klog("operations: lifecycle initialized boots=%lu unclean=%u rescue=%u\n",
-       g_boots, g_unclean_boots, g_rescue);
+  report_lifecycle(persist_lifecycle("running"));
+  klog("operations: lifecycle initialized boots=%lu unclean=%u rescue=%u durable=%u\n",
+       g_boots, g_unclean_boots, g_rescue, g_durable);
 }
 
 void operations_mark_boot_ready(void) {
   g_boot_ready = 1U;
-  persist_lifecycle("running");
+  (void)persist_lifecycle("running");
 }
 
 uint32_t operations_rescue_mode(void) { return g_rescue; }
@@ -294,15 +345,15 @@ void operations_tick(void) {
   uint64_t flushed = 0U, unsupported = 0U, failed = 0U;
   if (g_power_action == OPERATIONS_POWER_NONE ||
       timer_now_ns() < g_power_deadline_ns) return;
-  persist_lifecycle(g_power_action == OPERATIONS_POWER_REBOOT
-                        ? "reboot" : "clean");
+  (void)persist_lifecycle(g_power_action == OPERATIONS_POWER_REBOOT
+                              ? "reboot" : "clean");
   (void)klog_flush();
   xaios_status_t flush_status =
       block_flush_all(&flushed, &unsupported, &failed);
   klog("operations: storage quiesced flushed=%lu unsupported=%lu failed=%lu\n",
        flushed, unsupported, failed);
   if (flush_status != XAIOS_OK) {
-    persist_lifecycle("flush-failed");
+    (void)persist_lifecycle("flush-failed");
     (void)klog_flush();
     g_power_action = OPERATIONS_POWER_NONE;
     g_power_deadline_ns = 0U;

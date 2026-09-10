@@ -20,6 +20,16 @@ ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
 DEBIAN_IMAGE = "xaios-debian13-network-client:13"
 READY = "SSH server: up and running (tcp/22)"
+# What the kernel says once per boot about the record the *next* boot reads.
+# Waiting for SSH is not the same thing: a guest whose state volume never
+# mounted reaches SSH just as fast, keeps its lifecycle record in memory, and
+# leaves the next boot with nothing to find -- which this gate used to report
+# as a missed unclean boot, blaming the second guest for what the first one
+# never wrote. Only "durable" means the record is on a disk; every other
+# verdict the kernel can print ("volatile", "unwritten", "absent") is a
+# failure of the first boot and is reported as one, at the boot that caused it.
+LIFECYCLE = "lifecycle: record "
+LIFECYCLE_DURABLE = "lifecycle: record durable"
 
 
 def reserve_port() -> int:
@@ -46,6 +56,37 @@ def wait_marker(path: Path, marker: str, count: int = 1,
         time.sleep(0.25)
     tail = "\n".join(text.splitlines()[-80:])
     raise TimeoutError(f"missing marker {marker!r} count={count}\n{tail}")
+
+
+def lifecycle_lines(path: Path) -> list[str]:
+    text = path.read_text(errors="replace") if path.exists() else ""
+    return [line.strip() for line in text.splitlines() if LIFECYCLE in line]
+
+
+def wait_lifecycle_durable(path: Path, count: int = 1,
+                           timeout: float = 180.0) -> list[str]:
+    """Wait until `count` boots have each put their record on a disk.
+
+    Raises as soon as a boot says otherwise, rather than waiting out the
+    timeout: the kernel has already told us this boot's record will not
+    survive, so no later boot can make that true.
+    """
+    deadline = time.monotonic() + timeout
+    lines: list[str] = []
+    while time.monotonic() < deadline:
+        lines = lifecycle_lines(path)
+        bad = [line for line in lines if LIFECYCLE_DURABLE not in line]
+        if bad:
+            raise RuntimeError(
+                "guest reported its lifecycle record is not durable, so a "
+                "later boot cannot detect this one: " + "; ".join(bad)
+            )
+        if len(lines) >= count:
+            return lines
+        time.sleep(0.25)
+    raise TimeoutError(
+        f"missing {count} durable lifecycle record(s); saw {lines!r}"
+    )
 
 
 def stop(process: subprocess.Popen[bytes]) -> None:
@@ -175,8 +216,14 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
     log_path.unlink(missing_ok=True)
 
     # Boot 1: leave a running lifecycle record by abruptly stopping QEMU.
+    # The record, not SSH, is what boot 2 is asked about, so wait for the boot
+    # to say the record is on the disk before killing anything. On this bench
+    # that happens roughly eleven seconds before SSH is announced, so the wait
+    # costs nothing on a healthy boot -- and on an unhealthy one it fails here,
+    # naming the boot that failed, instead of at boot 2 with a clean record.
     first = start_guest(arch, port, persistent, log_path)
     try:
+        print(wait_lifecycle_durable(log_path, 1)[-1], flush=True)
         wait_marker(log_path, READY)
         wait_ssh(key, port)
     finally:
@@ -185,12 +232,14 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
     # Boot 2: verify unclean detection, then exercise the reset primitive.
     second = start_guest(arch, port, persistent, log_path)
     try:
+        wait_lifecycle_durable(log_path, 2)
         wait_marker(log_path, READY, 2)
         wait_ssh(key, port)
         recovery = ssh_command(key, port, "recovery status")
         assert_contains(recovery, "unclean_boots=1")
         ssh_command(key, port, "reboot")
         if arch == "aarch64":
+            wait_lifecycle_durable(log_path, 3)
             wait_marker(log_path, READY, 3)
             wait_ssh(key, port)
         else:
@@ -202,6 +251,7 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
     third = start_guest(arch, port, persistent, log_path)
     try:
         expected_ready = 3 if arch == "x86_64" else 4
+        wait_lifecycle_durable(log_path, expected_ready)
         wait_marker(log_path, READY, expected_ready)
         wait_ssh(key, port)
         assert_contains(ssh_command(key, port, "ifconfig"),
@@ -276,6 +326,7 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
     fourth = start_guest(arch, port, persistent, log_path)
     try:
         final_ready = 5 if arch == "aarch64" else 4
+        wait_lifecycle_durable(log_path, final_ready)
         wait_marker(log_path, READY, final_ready)
         wait_ssh(key, port)
         clean = ssh_command(key, port, "recovery status")
@@ -286,6 +337,7 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
     return {
         "arch": arch,
         "status": "pass",
+        "durable_lifecycle_records": len(lifecycle_lines(log_path)),
         "unclean_recovery": "pass",
         "reboot": "pass",
         "orderly_shutdown": "pass",

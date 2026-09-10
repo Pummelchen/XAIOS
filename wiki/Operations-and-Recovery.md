@@ -21,6 +21,19 @@ record means the previous instance did not complete its power transaction and
 increments the consecutive unclean count. Three consecutive unclean boots or a
 persistent `/state/lifecycle/rescue` marker enable rescue mode.
 
+Every boot then says on the console what became of its own record, in every
+build:
+
+    lifecycle: record durable state=running boots=2 unclean=1 storage=disk status=ok
+
+`durable` is the only verdict that means the next boot can read it. A machine
+whose state volume did not mount runs on a volume made of memory and says
+`volatile ... storage=memory`; a write, commit or flush failure says
+`unwritten` with the status; a machine with no state volume at all says
+`absent`. This is written before SSH starts, because a test that kills a guest
+to make an unclean boot has to know the record it will ask about is already on
+the disk -- reaching SSH does not say that.
+
 Rescue mode still starts networking and SSH so an administrator can inspect the
 system. It permits status, support, clock/network diagnostics, update status,
 power actions, and bounded file inspection/repair. Other application commands

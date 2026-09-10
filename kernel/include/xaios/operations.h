@@ -4,7 +4,11 @@
 #include <xaios/status.h>
 #include <xaios/types.h>
 
-void operations_init(uint32_t persistent_available);
+/* durable_storage says whether the mounted state volume survives power loss.
+   A machine that fell back to a volume made of memory still has working state
+   for as long as it runs, and must not claim its lifecycle record outlives
+   the boot. */
+void operations_init(uint32_t persistent_available, uint32_t durable_storage);
 void operations_mark_boot_ready(void);
 void operations_tick(void);
 uint32_t operations_rescue_mode(void);
