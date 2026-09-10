@@ -95,7 +95,7 @@ build_program "$ROOT_DIR/userspace/worker/worker-riscv64.S" \
 # the RISC-V gates run, 0 is the release configuration the other architectures
 # ship as `make image`, where sshd dispatches on-demand applications such as
 # xtop instead of the built-in test shell commands.
-USER_APPS="xaios-shell xaiosctl nano pong hello sysinfo systest smptest smpstress perfbench nettest netmqtest lstm-xor sshtest mltest posix-shell agenttest xaios-setup xtop clustertest"
+USER_APPS="xaios-shell xaiosctl nano pong hello sysinfo systest smptest joinnest smpstress perfbench nettest netmqtest lstm-xor sshtest mltest posix-shell agenttest xaios-setup xtop clustertest"
 
 # Which end of a cluster this image is, and where its peer is.
 #

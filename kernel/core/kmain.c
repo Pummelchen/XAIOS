@@ -1344,6 +1344,14 @@ persistent_network_done:
   run_user_app("/bin/sysinfo", 9, sysinfo_caps);
   run_user_app("/bin/systest", 10, systest_caps);
   run_user_app("/bin/smptest", 11, smptest_caps);
+  /* B-02's window, entered on purpose: a user process waiting in
+     xaios_thread_join with a thread pending on its own CPU, so the join has
+     to run that thread nested inside its own syscall. Needs the same
+     capabilities as smptest and nothing else -- it checks that the CPU it
+     borrowed came back by using two of them after the nested run. It costs
+     one boot two threads and no soak time, so it runs wherever the test apps
+     run rather than behind the stress flag. */
+  run_user_app("/bin/joinnest", 11, smptest_caps | XAIOS_CAP_TIME);
 #if XAIOS_STRESS_TEST
   run_user_app("/bin/smpstress", 11, smptest_caps | XAIOS_CAP_TIME);
   /* Measurement rather than a check: it reports cost and asserts nothing, so
