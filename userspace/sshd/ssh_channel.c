@@ -701,10 +701,49 @@ static uint32_t trailing_partial_escape(const uint8_t *data, uint32_t len) {
   return 0U;
 }
 
+/* Whether this channel's outgoing bytes are a terminal's output.
+ *
+ * The screen framework's session filter reads every byte a channel sends,
+ * looking for the sequence a program uses to enter the alternate screen; from
+ * then on it paints the bytes into a screen and sends changed cells instead of
+ * the bytes themselves. That is right for a terminal and wrong for everything
+ * else, and this is B-38.
+ *
+ * Three kinds of channel carry bytes that are not a terminal's output at all:
+ * the SFTP subsystem carries file contents, a direct-tcpip forward carries
+ * whatever the forwarded connection carries, and an agent channel carries the
+ * agent protocol. All three are arbitrary binary, so all three can contain
+ * those eight bytes -- and file contents are the case that needs no
+ * coincidence at all, because any file that holds captured terminal output
+ * holds them on purpose. When one does, the filter eats the payload. The
+ * client receives a byte stream that is no longer the file: SFTP's
+ * length-prefixed framing then either desynchronises into a bogus length
+ * ("Received message too long") or, if the mangled stream happens to promise
+ * more bytes than follow, leaves the client waiting for a response the server
+ * has already decided it sent.
+ *
+ * A client waiting on that response sends nothing more, so the server sees an
+ * authenticated connection that has gone quiet: no error, nothing to close,
+ * and the session sits in the table until the 300-second idle timeout reaps
+ * it. That is the observation this was filed as -- a session accepted and
+ * authenticated with no matching close, while the machine went on serving
+ * everyone else.
+ *
+ * Gated on what the channel is rather than on the bytes, because no byte test
+ * can work: the payload is arbitrary, so any sequence the filter reacts to can
+ * occur in it.
+ */
+static int channel_carries_terminal_output(const ssh_channel_t *ch) {
+  return ch->is_sftp == 0U && ch->is_forward == 0U && ch->is_agent == 0U;
+}
+
 int ssh_channel_send_data(int sockfd, uint32_t remote_id,
                           const uint8_t *data, uint32_t len) {
   ssh_channel_t *ch = find_channel_by_remote(sockfd, remote_id);
   if (ch == 0 || data == 0 || len == 0U) return -1;
+  if (channel_carries_terminal_output(ch) == 0) {
+    return queue_raw(ch, data, len);
+  }
   while (len != 0U) {
     if (ch->screen == 0) {
       int64_t at = find_bytes(data, len, k_alternate_enter, 8U);
