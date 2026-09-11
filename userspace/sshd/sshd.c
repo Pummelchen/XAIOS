@@ -369,6 +369,194 @@ static void log_connection_refusal(const char *reason, uint32_t observed,
   xaios_log(line);
 }
 
+/* Why a connection that *was* served is being let go, on the console.
+ *
+ * The refusal lines above cover the three ways a connection is turned away
+ * before a byte of SSH is spoken. Everything past that point ended with
+ * `ssh_log(... "Connection closed")` and nothing else -- the audit file on the
+ * durable volume, which no soak and no gate reads. So the console's account of
+ * a connection the server accepted and then gave up on was one kernel line,
+ * `syscall: net_close`, with no reason attached to it and nothing at all until
+ * the close actually happened.
+ *
+ * That is what makes B-43 unreadable. Its evidence is an accept with nothing
+ * after it, and "the server closed this connection thirty seconds later
+ * because the client never sent a version" and "the server never looked at
+ * this connection" print exactly the same thing: nothing. The connect-timeout
+ * path is the one that matters most there and it is the quietest, because a
+ * client that has said nothing gives the console nothing either.
+ *
+ * One line per close, with the reason and a running count, so the two can be
+ * told apart without a debugger on a laptop in another room. */
+static uint32_t g_connection_close_count;
+
+static void log_connection_close(const char *reason, uint64_t sockfd,
+                                 uint32_t state, uint64_t held_ns) {
+  char line[192];
+  u64 offset = 0;
+  xaios_memzero(line, sizeof(line));
+  xaios_append_cstr(line, sizeof(line), &offset,
+                    "sshd: connection closed reason=");
+  xaios_append_cstr(line, sizeof(line), &offset, reason);
+  xaios_append_cstr(line, sizeof(line), &offset, " sockfd=");
+  xaios_append_u64(line, sizeof(line), &offset, sockfd);
+  xaios_append_cstr(line, sizeof(line), &offset, " state=");
+  xaios_append_u64(line, sizeof(line), &offset, state);
+  xaios_append_cstr(line, sizeof(line), &offset, " held_ms=");
+  xaios_append_u64(line, sizeof(line), &offset, held_ns / UINT64_C(1000000));
+  xaios_append_cstr(line, sizeof(line), &offset, " count=");
+  xaios_append_u64(line, sizeof(line), &offset, g_connection_close_count);
+  xaios_append_cstr(line, sizeof(line), &offset, "\n");
+  xaios_log(line);
+}
+
+/* The reason the connection currently being serviced is giving up.
+ *
+ * sshd is one thread and process_connection runs for one connection at a
+ * time; the walk reads this immediately after the call that set it, so one
+ * slot is the whole requirement. Cleared at the top of every connection's
+ * turn, so a reason can never be attributed to the wrong close. */
+static const char *g_close_reason;
+
+static int close_because(const char *reason) {
+  g_close_reason = reason;
+  return -1;
+}
+
+/* When one pass of the service loop took long enough to be a network outage.
+ *
+ * This process is not merely the SSH server: on this machine it is the thing
+ * that drives the network. `network_poll_tick` -- which drains the device's
+ * receive ring, runs the TCP state machine, sends the ACKs, retransmits what
+ * was not acknowledged and expires dead flows -- has no timer behind it and no
+ * interrupt handler and no kernel thread. It runs inside the network syscalls
+ * a process makes, and inside `wait_events`. The network stack's own comment
+ * says as much: "a poll that runs only inside network syscalls". sshd is
+ * ordinarily the only process making those calls, so for the length of any
+ * pause anywhere else in this loop the guest's networking does not exist: no
+ * ACK leaves the machine, nothing is taken off the ring, and a peer that is
+ * waiting is waiting on a stack that is not running.
+ *
+ * That is what makes this worth a console line. A pause here is invisible from
+ * inside -- no timeout fires, no path is refused, nothing is closed -- and
+ * from outside it is indistinguishable from the machine having gone away. B-43
+ * is an accepted connection with nothing after it and a peer that gave up
+ * about eighteen seconds later, twice, at two unrelated points in the
+ * protocol; a pause of the whole stack is the only mechanism found that
+ * produces the same duration at both, because the duration is then the
+ * *client's* patience rather than any timer of ours.
+ *
+ * So the loop times itself, and a pass over the threshold names the phase it
+ * was spent in. Three of the four phases contain blocking work that is not a
+ * network syscall -- the console and its child, a transmit waiting on a peer,
+ * a channel's turn, every `ssh_log` write to the durable volume along the way
+ * -- and knowing which of them it was is the difference between a fix and
+ * another round of guessing.
+ *
+ * The threshold is not a performance budget. An ordinary pass is microseconds
+ * to low milliseconds; SSHD_LOOP_STALL_REPORT_NS is set where a pause has
+ * stopped being slow and started being an absence, and it stays well clear of
+ * ordinary work so that the line means something when it appears. */
+static uint32_t g_loop_stall_count;
+
+static void report_service_loop_stall(uint64_t started, uint64_t after_console,
+                                      uint64_t after_udp, uint64_t after_accept,
+                                      uint64_t after_connections,
+                                      uint64_t ended) {
+  if (ended <= started || ended - started < SSHD_LOOP_STALL_REPORT_NS) return;
+
+  /* The longest phase, which is the one worth naming. Computed from the marks
+     rather than from a phase counter, so a pass whose time went somewhere this
+     does not split out still reports the total honestly. */
+  const char *phase = "console";
+  uint64_t longest = after_console - started;
+  if (after_udp - after_console > longest) {
+    longest = after_udp - after_console;
+    phase = "udp-echo";
+  }
+  if (after_accept - after_udp > longest) {
+    longest = after_accept - after_udp;
+    phase = "accept";
+  }
+  if (after_connections - after_accept > longest) {
+    longest = after_connections - after_accept;
+    phase = "connections";
+  }
+  if (ended - after_connections > longest) {
+    longest = ended - after_connections;
+    phase = "channels";
+  }
+
+  ++g_loop_stall_count;
+  char line[224];
+  u64 offset = 0;
+  xaios_memzero(line, sizeof(line));
+  xaios_append_cstr(line, sizeof(line), &offset,
+                    "sshd: service loop stalled ms=");
+  xaios_append_u64(line, sizeof(line), &offset,
+                   (ended - started) / UINT64_C(1000000));
+  xaios_append_cstr(line, sizeof(line), &offset, " phase=");
+  xaios_append_cstr(line, sizeof(line), &offset, phase);
+  xaios_append_cstr(line, sizeof(line), &offset, " phase_ms=");
+  xaios_append_u64(line, sizeof(line), &offset, longest / UINT64_C(1000000));
+  xaios_append_cstr(line, sizeof(line), &offset, " active=");
+  xaios_append_u64(line, sizeof(line), &offset,
+                   __atomic_load_n(&g_server_stats.active_connections,
+                                   __ATOMIC_ACQUIRE));
+  xaios_append_cstr(line, sizeof(line), &offset, " count=");
+  xaios_append_u64(line, sizeof(line), &offset, g_loop_stall_count);
+  xaios_append_cstr(line, sizeof(line), &offset, "\n");
+  xaios_log(line);
+}
+
+/* When the wait itself came back far later than it was asked to.
+ *
+ * The measurement above deliberately excludes the wait, because it is asking
+ * what sshd *did* with the time. This asks the other question, and the two
+ * answers are not interchangeable: a pass that took eighteen seconds says this
+ * process held the machine, and a fifty-millisecond wait that took eighteen
+ * seconds says this process was not running at all -- and neither was anything
+ * else, because a guest that is not scheduled is a guest whose network stack
+ * is not being driven either. From a peer both look identical, which is why
+ * the console has to be able to tell them apart.
+ *
+ * On a hypervisor the second is a real answer rather than a defect of ours: a
+ * VM can be descheduled, its disk can stall behind the host's, a snapshot can
+ * be taken. B-43 was seen on a laptop running Fusion, so "the machine was not
+ * running for eighteen seconds" is a hypothesis that has to be either
+ * confirmed or ruled out before anything in this process is blamed, and until
+ * now nothing on the console could do either.
+ *
+ * Allowance rather than a bare threshold: the wait is asked for fifty
+ * milliseconds and may legitimately return a little after that, so what is
+ * reported is the overrun beyond what was requested. */
+static uint32_t g_wait_overrun_count;
+
+static void report_wait_overrun(uint64_t requested, uint64_t started,
+                                uint64_t ended) {
+  if (ended <= started) return;
+  uint64_t elapsed = ended - started;
+  if (elapsed < requested + SSHD_LOOP_STALL_REPORT_NS) return;
+
+  ++g_wait_overrun_count;
+  char line[224];
+  u64 offset = 0;
+  xaios_memzero(line, sizeof(line));
+  xaios_append_cstr(line, sizeof(line), &offset,
+                    "sshd: service loop wait overran ms=");
+  xaios_append_u64(line, sizeof(line), &offset, elapsed / UINT64_C(1000000));
+  xaios_append_cstr(line, sizeof(line), &offset, " requested_ms=");
+  xaios_append_u64(line, sizeof(line), &offset, requested / UINT64_C(1000000));
+  xaios_append_cstr(line, sizeof(line), &offset, " active=");
+  xaios_append_u64(line, sizeof(line), &offset,
+                   __atomic_load_n(&g_server_stats.active_connections,
+                                   __ATOMIC_ACQUIRE));
+  xaios_append_cstr(line, sizeof(line), &offset, " count=");
+  xaios_append_u64(line, sizeof(line), &offset, g_wait_overrun_count);
+  xaios_append_cstr(line, sizeof(line), &offset, "\n");
+  xaios_log(line);
+}
+
 static int ip_addr_equal(const xaios_ip_addr_user_t *a,
                          const xaios_ip_addr_user_t *b) {
   if (a->family != b->family) return 0;
@@ -2529,19 +2717,19 @@ static int process_connection(ssh_connection_t *conn) {
         u64 n = 0;
         int status = xaios_net_recv(conn->sockfd,
             conn->version_buf + conn->version_len, 1, &n);
-        if (status != 0) return -1;
+        if (status != 0) return close_because("peer-gone");
         if (n == 0) return 0;
         conn->version_len += (uint32_t)n;
         if (conn->version_buf[conn->version_len - 1U] == '\n') break;
       }
       if (conn->version_len == sizeof(conn->version_buf) &&
           conn->version_buf[conn->version_len - 1U] != '\n') {
-        return -1;
+        return close_because("client-version-too-long");
       }
     }
     if (!valid_client_version(conn->version_buf, conn->version_len)) {
       ssh_log(SSH_LOG_WARN, "Rejected invalid SSH client version");
-      return -1;
+      return close_because("client-version-invalid");
     }
 
     if (send_server_kexinit(conn, 0) != 0) return -1;
@@ -2553,7 +2741,7 @@ static int process_connection(ssh_connection_t *conn) {
     /* Receive client KEXINIT */
     int packet_status = ssh_packet_read(sockfd, pkt);
     if (packet_status > 0) return 0;
-    if (packet_status < 0) return -1;
+    if (packet_status < 0) return close_because("packet-read-failed");
     if (validate_client_kexinit(conn, pkt) != 0) return -1;
     init_exchange_hash(conn, pkt);
     conn->state = SSH_STATE_NEWKEYS;
@@ -2564,7 +2752,7 @@ static int process_connection(ssh_connection_t *conn) {
     /* KEXDH_INIT */
     int packet_status = ssh_packet_read(sockfd, pkt);
     if (packet_status > 0) return 0;
-    if (packet_status < 0) return -1;
+    if (packet_status < 0) return close_because("packet-read-failed");
     if (handle_kexdh_init(conn, pkt, 0) != 0) return -1;
     conn->state = SSH_STATE_NEWKEYS_SENT;
     return 0;
@@ -2574,7 +2762,7 @@ static int process_connection(ssh_connection_t *conn) {
     /* Receive NEWKEYS */
     int packet_status = ssh_packet_read(sockfd, pkt);
     if (packet_status > 0) return 0;
-    if (packet_status < 0) return -1;
+    if (packet_status < 0) return close_because("packet-read-failed");
     if (pkt->len == 0 || pkt->data[0] != 21) return -1;
 
     if (conn_init_encryption(conn) != 0) return -1;
@@ -2625,7 +2813,7 @@ static int process_connection(ssh_connection_t *conn) {
   if (conn->state == SSH_STATE_AUTH) {
     int packet_status = conn_packet_read_encrypted(conn, pkt);
     if (packet_status > 0) return 0;
-    if (packet_status < 0) return -1;
+    if (packet_status < 0) return close_because("packet-read-failed");
     if (pkt->len == 0) return 0;
     uint8_t msg = pkt->data[0];
 
@@ -2904,14 +3092,14 @@ static int process_connection(ssh_connection_t *conn) {
       conn->last_keepalive = now;
       if (now - conn->last_activity > SSHD_TIMEOUT_IDLE) {
         ssh_log(SSH_LOG_WARN, "Idle timeout\n");
-        return -1;
+        return close_because("idle-timeout");
       }
     }
 
     /* Read one packet */
     int packet_status = conn_packet_read_encrypted(conn, pkt);
     if (packet_status > 0) return 0;
-    if (packet_status < 0) return -1;
+    if (packet_status < 0) return close_because("packet-read-failed");
     if (pkt->len == 0) return 0;
 
     conn->last_activity = now;
@@ -2940,7 +3128,7 @@ static int process_connection(ssh_connection_t *conn) {
 
     if (msg == SSH_MSG_DISCONNECT) {
       ssh_log(SSH_LOG_INFO, "Client disconnected\n");
-      return -1;
+      return close_because("client-disconnect");
     }
 
     /* Unknown message */
@@ -3060,11 +3248,13 @@ int sshd_run(void) {
 service_loop:
   console_render_boot_status();
   for (;;) {
-    uint64_t now = timer_now();
+    uint64_t pass_started = timer_now();
+    uint64_t now = pass_started;
     console_refresh_boot_ui(now);
     console_service_pong(now);
     console_service_child();
     console_tick();
+    uint64_t after_console = timer_now();
     for (uint32_t i = 0; g_console_ssh_ready != 0U && i < 4U; ++i) {
       uint8_t udp_buffer[1478];
       xaios_ip_addr_user_t source_addr;
@@ -3083,6 +3273,8 @@ service_loop:
         ssh_log(SSH_LOG_INFO, "UDP payload delivered bytes=%u\n", bytes_read);
       }
     }
+
+    uint64_t after_udp = timer_now();
 
     /* Try to accept new connections (non-blocking) */
     for (uint32_t i = 0; g_console_ssh_ready != 0U && i < 4U; ++i) {
@@ -3146,10 +3338,13 @@ service_loop:
               conn_fd, active + 1);
     }
 
+    uint64_t after_accept = timer_now();
+
     /* Process each active connection (cooperative time-slicing) */
     for (uint32_t i = 0; i < SSH_MAX_CONNECTIONS; ++i) {
       ssh_connection_t *conn = ssh_conn_by_index(i);
       if (!conn) continue;
+      g_close_reason = 0;
 
       /* Check for timeouts */
       uint64_t now = timer_now();
@@ -3163,12 +3358,14 @@ service_loop:
                                       conn->kex_start_time : conn->connect_time;
         if (now - exchange_start > SSHD_TIMEOUT_CONNECT) {
           ssh_log(SSH_LOG_WARN, "Connect timeout\n");
+          g_close_reason = "connect-timeout";
           goto close_conn;
         }
       }
       if (conn->state == SSH_STATE_AUTH) {
         if (now - conn->connect_time > SSHD_TIMEOUT_AUTH) {
           ssh_log(SSH_LOG_WARN, "Auth timeout\n");
+          g_close_reason = "auth-timeout";
           goto close_conn;
         }
       }
@@ -3195,16 +3392,33 @@ close_conn:
         }
 
         ssh_channel_close_connection((int)conn->sockfd);
+        /* Read before the slot is zeroed: ssh_conn_free wipes the struct, and
+           the console line is about the connection, not about the slot. */
+        uint64_t closed_sockfd = conn->sockfd;
+        uint32_t closed_state = (uint32_t)conn->state;
+        uint64_t closed_connect_time = conn->connect_time;
+        uint32_t closed_silently =
+            conn->close_requested == SSHD_CLOSE_REQUEST_SILENT;
         xaios_net_close(conn->sockfd);
         __atomic_sub_fetch(&g_server_stats.active_connections, 1,
                            __ATOMIC_RELEASE);
         ssh_conn_free(conn);
+        ++g_connection_close_count;
+        log_connection_close(
+            g_close_reason != 0 ? g_close_reason
+                                : (closed_silently != 0U ? "transport"
+                                                         : "protocol"),
+            closed_sockfd, closed_state,
+            timer_now() - closed_connect_time);
         ssh_log(SSH_LOG_INFO, "Connection closed\n");
       }
     }
+    uint64_t after_connections = timer_now();
     if (g_console_ssh_ready != 0U && ssh_channel_tick(timer_now()) != 0) {
       ssh_log(SSH_LOG_WARN, "Interactive channel refresh failed\n");
     }
+    report_service_loop_stall(pass_started, after_console, after_udp,
+                              after_accept, after_connections, timer_now());
     /* Nothing above blocks, so left to itself this loop spins and keeps a
        whole core at a hundred percent from boot -- which the process
        monitor showed on every machine once it was honest about who was
@@ -3212,9 +3426,12 @@ close_conn:
        a packet or connection on a socket sshd owns, or output from a child;
        otherwise after a timeout that only paces the timed housekeeping
        above. A game on the console wants frames, and gets a shorter one. */
-    (void)xaios_wait_events(g_console_pong.active != 0U
-                                ? UINT64_C(16000000)
-                                : UINT64_C(50000000));
+    uint64_t wait_requested = g_console_pong.active != 0U
+                                  ? UINT64_C(16000000)
+                                  : UINT64_C(50000000);
+    uint64_t wait_started = timer_now();
+    (void)xaios_wait_events(wait_requested);
+    report_wait_overrun(wait_requested, wait_started, timer_now());
   }
 
   return 0;

@@ -71,6 +71,27 @@
 /* The mutable filesystem stores at most 8 KiB per file. */
 #define SSHD_LOG_ROTATE_BYTES 7168U
 
+/* How long one pass of the service loop may take before the console is told.
+ *
+ * This is not a latency budget; it is the point at which a pause stops being
+ * slowness and becomes an outage of the machine's networking. The guest's TCP
+ * state machine runs inside the network syscalls this process makes and inside
+ * its wait -- there is no timer and no interrupt behind it -- so while this
+ * loop is busy elsewhere nothing is taken off the receive ring, no ACK is
+ * sent, and nothing is retransmitted. A peer cannot tell that from the machine
+ * having gone away, and after a few seconds of it a peer's own TCP starts to
+ * conclude the latter.
+ *
+ * One second, because an ordinary pass is microseconds to a few milliseconds
+ * even under emulation -- three orders of magnitude of headroom, so the line
+ * never appears for ordinary work -- while the two things known to be able to
+ * hold this loop are measured in tens of seconds: a transmit waiting on a peer
+ * is bounded by SSHD_TIMEOUT_TRANSMIT_WINDOW and may take several of those for
+ * one packet, and a write to the durable volume is bounded by nothing here at
+ * all. Below a second the line would be noise; far above it, the stall this
+ * exists to catch would be over before anything was said. */
+#define SSHD_LOOP_STALL_REPORT_NS UINT64_C(1000000000)
+
 /* Authentication */
 #define SSHD_MAX_AUTH_ATTEMPTS 5
 #define SSHD_MAX_USERS 100
