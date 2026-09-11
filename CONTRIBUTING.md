@@ -85,6 +85,7 @@ documents validation tiers and external interoperability suites.
 - [API](docs/API.md) - userspace syscall and capability reference
 - [Architecture](https://github.com/Pummelchen/XAIOS/wiki/Architecture) - system architecture and boot flow
 - [Technical reference index](docs/README.md) - every specification, and which side of the split a document belongs on
+- [Build process](docs/BUILD-PROCESS.md) - how an image and a release are produced, and what each check in the sequence catches
 - [Application development](docs/APPLICATION-DEVELOPMENT.md) - registering an application and its capability mask
 - [Current Limitations](https://github.com/Pummelchen/XAIOS/wiki/Current-Limitations) - verified gaps and non-claims
 

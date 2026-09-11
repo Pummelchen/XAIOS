@@ -56,6 +56,7 @@ stayed on this side as
 | [Benchmark contract](./BENCHMARK-CONTRACT.md) | What a performance claim must record to be valid |
 | [Benchmark methodology](./BENCHMARK-METHODOLOGY.md) | What the QEMU benchmarks measure, and what they cannot |
 | [Block device API](./BLOCK-DEVICE-API.md) | The generic block interface drivers register against |
+| [Build process](./BUILD-PROCESS.md) | How an image and a release are produced, and what each check in the sequence catches |
 | [Cluster protocol](./CLUSTER-PROTOCOL.md) | Authenticated peer frames and deterministic expert placement |
 | [Control protocol](./CONTROL-PROTOCOL.md) | The `xaios.control.v1` request/response ABI |
 | [Engine service](./ENGINE-SERVICE.md) | The portable model and session service boundary |

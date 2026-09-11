@@ -26,8 +26,9 @@ prompt; [[Current Limitations|Current-Limitations]] says what is not claimed.
 
 0. Take a released build from the
    [releases page](https://github.com/Pummelchen/XAIOS/releases) — currently
-   **build 5** — or build one from source. Which download to take, and what is
-   in each, is in [[Getting Started|Getting-Started]].
+   **build 6** — or build one from source. A release is one image per
+   architecture; which download to take, and what is in each, is in
+   [[Getting Started|Getting-Started]].
 1. Follow [[Getting Started|Getting-Started]] to build and boot an image.
 2. Read [[Boot and Console|Boot-and-Console]] for startup and local login.
 3. Connect through [[Networking and SSH|Networking-and-SSH]].

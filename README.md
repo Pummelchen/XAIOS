@@ -42,29 +42,37 @@ Two paths. Neither needs the other.
 
 Released builds are on the
 [releases page](https://github.com/Pummelchen/XAIOS/releases); the current one
-is [**build 5**](https://github.com/Pummelchen/XAIOS/releases/tag/b5). You do
+is [**build 6**](https://github.com/Pummelchen/XAIOS/releases/tag/b6). You do
 not need to compile anything to try XAIOS.
 
-Six downloads, and **five of them contain the same image** — what differs is
-what is packaged around it:
+**Pick your architecture first.** From build 6 a release is one image per
+machine rather than one image for all of them, and the choice is not reversible
+by downloading a different kit: an AArch64 image will not boot an x86-64
+machine.
 
-| To run XAIOS | Take |
-|---|---|
-| in QEMU | `xaios_b5-qemu.zip` — image plus a launch script for AArch64 and one for x86-64. There is no RISC-V script in the kit: the image carries the RISC-V kernel, but the only RISC-V machine that has booted anything here is QEMU's `virt` board through `platform/qemu/run-qemu-riscv64.sh` in the repository |
-| in VMware Fusion | `xaios_b5-vmware-fusion.zip` — image plus a `.vmx` |
-| in Apple Virtualization.framework | `xaios_b5-virtualization-framework.zip` — image plus a harness you build and sign |
-| on a real machine, from a USB stick | `xaios_b5-usb.zip` — image plus a writer that names the target disk back before it writes |
-| on a real machine with no disk, over the network | `xaios_b5-netboot.zip` — two boot binaries plus a DHCP/TFTP server script |
-| with your own tooling | `xaios_b5.iso.zip` — the image, and nothing else |
+| To run XAIOS on | AArch64 | x86-64 | RISC-V 64-bit |
+|---|---|---|---|
+| QEMU | `xaios_b6-aarch64-qemu.zip` | `xaios_b6-x86_64-qemu.zip` | `xaios_b6-riscv64-qemu.zip` |
+| VMware Fusion | `xaios_b6-aarch64-vmware-fusion.zip` | — | — |
+| Apple Virtualization.framework | `xaios_b6-aarch64-virtualization-framework.zip` | — | — |
+| a real machine, from a USB stick | `xaios_b6-aarch64-usb.zip` | `xaios_b6-x86_64-usb.zip` | `xaios_b6-riscv64-usb.zip` |
+| a real machine with no disk, over the network | `xaios_b6-aarch64-netboot.zip` | `xaios_b6-x86_64-netboot.zip` | `xaios_b6-riscv64-netboot.zip` |
+| your own tooling | `xaios_b6-aarch64.iso.zip` | `xaios_b6-x86_64.iso.zip` | `xaios_b6-riscv64.iso.zip` |
 
-Unzip before use. The image is one file that is an ISO 9660 filesystem, a
+Fusion and Virtualization.framework have no x86-64 or RISC-V column because
+both run guests on the host Mac's own cores. An x86-64 or RISC-V guest there
+would be emulation, which is what the QEMU kits are for.
+
+Unzip before use. Each image is one file that is an ISO 9660 filesystem, a
 GPT-partitioned disk and a bootable USB image at once, which is why one
 download covers CD-ROM, hard disk and stick. On first boot there is no account
 and no default password; the machine asks how to set itself up.
 
 Each release note records exactly which hypervisors and firmware that build was
 booted on, and what was *not* tested — see the
-[build 5 note](./release/xaios_b5.md).
+[build 6 note](./release/xaios_b6.md). How a build is produced and what each
+step is guarding against is in
+[docs/BUILD-PROCESS.md](./docs/BUILD-PROCESS.md).
 
 ### Build from source and boot it
 

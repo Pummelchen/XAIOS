@@ -174,7 +174,9 @@ fault on purpose -- `make qemu-fault-matrix` compiles three of them, into the
 same path every packaging script reads -- now says so in its own bytes, and
 both packaging scripts refuse it without booting anything.
 
-Not yet released.
+Released as three images, one per architecture, with eleven kits beside them.
+See [the release note](./release/xaios_b6.md), and
+[docs/BUILD-PROCESS.md](./docs/BUILD-PROCESS.md) for how a build is produced.
 
 ## Build 5 — 2026-09-05
 

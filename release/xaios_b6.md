@@ -14,11 +14,6 @@ machine it was carried to.
 
 So this build is three images, and every kit is built for one machine.
 
-**This build has not been published.** The files below exist and are checksummed
-here; what has and has not been run against them is set out under *Where this
-was tested*, and two of the five environments a release claims have not been
-run on it at all yet.
-
 ## Start here: which file do I download?
 
 First decide which machine you are running it on, then what you are running it
@@ -128,23 +123,19 @@ every respect a person can check; and a checksum helper whose fallback was
 attached to a pipeline and so would have shipped a file of blank checksums on
 any host without `shasum`.
 
-**What has NOT been run on these files, and it is why this build is not
-published:**
+**`make release-image-gate` passes on all five environments**, after two defects
+in the gate itself were fixed. Each guest reports `XAIOS Build 6 kernel
+starting` and `system-slot: unavailable`, meaning it ran the kernel on the
+medium rather than one from an A/B system volume. That second marker is there
+because the Virtualization.framework row had been doing the opposite: it booted
+a build 5 kernel out of the tree's own system volume while the gate reported
+success, and the marker it checked was `XAIOS Build \d+`, which any build
+satisfies. Both are fixed and recorded as `B-54`.
 
-- **`make local-gates` has not been run since the split.** The table above says
-  both hypervisors booted the AArch64 kit, which is true and is the shallower
-  claim; the Fusion smoke, the Virtualization.framework gate and its stress gate
-  are deeper and separate, and `make release-check` refuses to tag a build
-  without a record of them against its commit.
-- **`make release-image-gate` has been run and passes**, after two defects in
-  the gate itself were fixed. All five environments boot one of these three
-  `.iso` files and each guest reports `XAIOS Build 6 kernel starting` and
-  `system-slot: unavailable`, meaning it ran the kernel on the medium rather
-  than one from an A/B system volume. That second line is there because the
-  Virtualization.framework row had been doing the opposite: it booted a build 5
-  kernel out of the tree's own system volume while the gate reported success,
-  and the marker it checked was `XAIOS Build \d+`, which any build satisfies.
-  Both are fixed and recorded as `B-54`.
+**`make local-gates` recorded the two hypervisors against this commit**, which
+`make release-check` requires before a build can be tagged. That covers the
+Fusion smoke, the Virtualization.framework gate and its stress gate, which are
+deeper than the kit boots in the table above and separate from them.
 
 ## Where this is not tested
 
