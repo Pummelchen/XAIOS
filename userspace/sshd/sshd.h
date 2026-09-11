@@ -18,6 +18,49 @@
 #define SSHD_KEEPALIVE_INTERVAL UINT64_C(30000000000)
 #define SSHD_REKEY_INTERVAL UINT64_C(3600000000000)
 
+/* How long a peer may keep the server waiting for its socket, and how little
+   it may take in that time. This is B-40.
+ *
+ * sshd is one thread. A send that cannot complete does not stall one session:
+ * the loop that serves every other session, and the accept that admits new
+ * ones, is inside it. So the transmit path has always had a bound -- but the
+ * bound asked the wrong question. It measured the gap since the last byte and
+ * reset on any byte at all, so a peer that took one byte every nine seconds
+ * renewed it forever and held the whole machine while doing so.
+ *
+ * The question a bound has to ask is not "has this peer taken a byte" but "is
+ * this peer taking the data". So the window keeps the ten seconds the gap
+ * bound used -- a peer that goes quiet for ten seconds is dropped exactly as
+ * before -- and adds the floor that makes it mean something: in each such
+ * window the peer must have taken at least SSHD_TRANSMIT_WINDOW_MIN_BYTES.
+ * Below that it is not a slow link, it is a peer holding the server. A window
+ * the peer clears starts another, so a genuinely slow session runs as long as
+ * it keeps taking its data.
+ *
+ * The floor is 10 KiB per ten seconds, which is 1 KiB/s. The largest packet
+ * this server writes is SSH_MAX_PACKET_SIZE, 35000 bytes, so a peer at exactly
+ * the floor can hold the loop for about thirty-five seconds and no longer. A
+ * link that cannot sustain 1 KiB/s is slower than a 9600-baud data call, and
+ * four orders of magnitude below what this guest's own network does; the
+ * emulated link in the gates measures in megabytes per second. The trade is
+ * deliberate and it is the single-threaded server's to make: a peer slower
+ * than that loses its connection, rather than every other session losing the
+ * server. */
+#define SSHD_TIMEOUT_TRANSMIT_WINDOW UINT64_C(10000000000)
+#define SSHD_TRANSMIT_WINDOW_MIN_BYTES UINT64_C(10240)
+
+/* What a connection's close_requested says about the transport underneath it.
+ *
+ * POLITE is the ordinary request: the main loop writes a disconnect message
+ * and closes. SILENT says the byte stream is already unusable -- a transmit
+ * was abandoned part way through an encrypted packet, so what the peer would
+ * read next is not a packet boundary -- and, more to the point here, that the
+ * socket which would not take the last packet will not take a disconnect
+ * either. Writing one costs another full transmit window with the whole
+ * server waiting on it and tells the peer nothing it can use. */
+#define SSHD_CLOSE_REQUEST_POLITE 1U
+#define SSHD_CLOSE_REQUEST_SILENT 2U
+
 /* Rate limiting */
 #define SSHD_RATE_LIMIT_MAX_ENTRIES 256
 #define SSHD_RATE_LIMIT_MAX_FAILURES 10

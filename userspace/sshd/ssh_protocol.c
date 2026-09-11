@@ -2,6 +2,7 @@
 #include "ssh_crypto.h"
 #include "ssh_connection.h"
 #include "ssh_utils.h"
+#include "sshd.h"
 #include <xaios_user.h>
 
 uint32_t ssh_read_u32_be(const uint8_t *p) {
@@ -34,9 +35,22 @@ static int connection_recv(int sockfd, void *data, u64 len,
   return xaios_net_recv((u64)(uint64_t)sockfd, data, len, received);
 }
 
-static int send_all(int sockfd, const void *data, uint64_t len) {
+/* What one transmit has managed while the peer made it wait.
+ *
+ * `window_opened` is when the peer first refused to take more -- zero while
+ * nothing has stalled, so a transmit the socket swallows whole never reads
+ * the clock at all. `window_taken` is what the peer has taken since then.
+ * Both belong to the transmit rather than to a single call, because a packet
+ * is written as a body and a MAC and the peer cannot be given a fresh
+ * allowance in the middle of one. See SSHD_TIMEOUT_TRANSMIT_WINDOW. */
+typedef struct {
+  uint64_t window_opened;
+  uint64_t window_taken;
+} ssh_transmit_t;
+
+static int send_all_within(int sockfd, const void *data, uint64_t len,
+                           ssh_transmit_t *transmit) {
   uint64_t sent = 0;
-  uint64_t stalled_since = 0;
   while (sent < len) {
     u64 n = 0;
     int r = connection_send(sockfd, (const uint8_t *)data + sent,
@@ -44,19 +58,43 @@ static int send_all(int sockfd, const void *data, uint64_t len) {
     if (r != 0) return -1;
     if (n == 0) {
       uint64_t now = xaios_clock_nanos();
-      if (stalled_since == 0U) stalled_since = now;
-      if (now > stalled_since &&
-          now - stalled_since >= UINT64_C(10000000000)) {
-        xaios_log("sshd: transmit queue stalled\n");
-        return -1;
+      if (transmit->window_opened == 0U) {
+        transmit->window_opened = now;
+        transmit->window_taken = 0U;
+      }
+      if (now > transmit->window_opened &&
+          now - transmit->window_opened >= SSHD_TIMEOUT_TRANSMIT_WINDOW) {
+        if (transmit->window_taken < SSHD_TRANSMIT_WINDOW_MIN_BYTES) {
+          /* Said in bytes because that is the finding: a peer taking a
+             trickle is not a peer that has gone quiet, and the old message
+             -- "stalled" -- would have described the one case this bound was
+             already catching rather than the one it was missing. */
+          xaios_log("sshd: transmit below the minimum rate, closing\n");
+          /* Part of a packet is on the wire and the rest never will be, so
+             nothing further may be written to this connection: what would
+             follow is not a packet boundary, and the socket that refused
+             these bytes will refuse those too, for another whole window with
+             the server waiting on it. Marked here rather than at each caller
+             because every caller of a failed transmit is in that position. */
+          ssh_connection_t *conn = ssh_conn_find((uint64_t)(uint32_t)sockfd);
+          if (conn != 0) conn->close_requested = SSHD_CLOSE_REQUEST_SILENT;
+          return -1;
+        }
+        transmit->window_opened = now;
+        transmit->window_taken = 0U;
       }
       continue;
     }
     if (n > len - sent) return -1;
-    stalled_since = 0;
     sent += n;
+    if (transmit->window_opened != 0U) transmit->window_taken += (uint64_t)n;
   }
   return 0;
+}
+
+static int send_all(int sockfd, const void *data, uint64_t len) {
+  ssh_transmit_t transmit = {0U, 0U};
+  return send_all_within(sockfd, data, len, &transmit);
 }
 
 static void increment_counter(uint8_t counter[16], uint32_t blocks) {
@@ -199,8 +237,13 @@ int ssh_packet_write_encrypted(int sockfd, const uint8_t *data, uint32_t len) {
   aes128_ctr(&conn->crypto.encrypt_ctx, conn->crypto.encrypt_iv,
              plaintext, encrypted, encrypted_len);
   increment_counter(conn->crypto.encrypt_iv, encrypted_len / block_size);
-  if (send_all(sockfd, encrypted, encrypted_len) != 0) return -1;
-  if (send_all(sockfd, mac, mac_len) != 0) return -1;
+  /* One allowance for the whole packet: body and MAC are two calls and one
+     transmit, and a peer that spent the window on the body does not get a
+     second one for the thirty-two bytes after it. */
+  ssh_transmit_t transmit = {0U, 0U};
+  if (send_all_within(sockfd, encrypted, encrypted_len, &transmit) != 0)
+    return -1;
+  if (send_all_within(sockfd, mac, mac_len, &transmit) != 0) return -1;
   conn->crypto.encrypt_seq =
       (uint32_t)(conn->crypto.encrypt_seq + 1U);
   return 0;

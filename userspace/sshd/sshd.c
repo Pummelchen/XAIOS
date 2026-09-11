@@ -3176,8 +3176,15 @@ service_loop:
       int result = conn->close_requested != 0U ? -1 : process_connection(conn);
       if (result != 0) {
 close_conn:
-        /* Send disconnect message if encrypted */
-        if (conn->state >= SSH_STATE_AUTH) {
+        /* Send disconnect message if encrypted -- unless the transport is
+           the thing that failed. A connection marked SILENT was closed
+           because a transmit was abandoned part way through a packet, so a
+           disconnect message would be appended to a truncated one, and the
+           socket that would not take those bytes will not take these. It
+           would cost another full transmit window with the whole server
+           waiting on it: B-40's symptom, produced by B-40's cure. */
+        if (conn->state >= SSH_STATE_AUTH &&
+            conn->close_requested != SSHD_CLOSE_REQUEST_SILENT) {
           uint8_t disconnect_msg[17];
           ssh_mem_zero(disconnect_msg, sizeof(disconnect_msg));
           disconnect_msg[0] = SSH_MSG_DISCONNECT;

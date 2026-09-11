@@ -1191,42 +1191,131 @@ static int shell_handle_input(ssh_channel_t *ch, const uint8_t *data,
   return 0;
 }
 
-int ssh_channel_tick(uint64_t now_ns) {
-  for (uint32_t i = 0U; i < SSH_CHANNEL_MAX; ++i) {
-    ssh_channel_t *ch = &g_channels[i];
-    if (ch->active != 0U && ch->screen != 0 && ch->pending_used == 0U &&
-        ch->screen->incomplete != 0U && screen_flush(ch) != 0) return -1;
-    if (ch->active != 0U && ch->is_forward != 0U &&
-        ch->pending_used == 0U && ch->remote_window != 0U) {
-      u64 received = 0U;
-      uint32_t capacity = sizeof(g_forward_buffer);
-      if (capacity > ch->remote_window) capacity = ch->remote_window;
-      if (capacity > ch->remote_max_packet) capacity = ch->remote_max_packet;
-      if (xaios_net_recv(ch->forward_fd, g_forward_buffer, capacity,
-                         &received) != 0 || received > capacity) return -1;
-      if (received != 0U &&
-          ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
-                                g_forward_buffer, (uint32_t)received) != 0)
-        return -1;
-    }
-    if (ch->active != 0U && ssh_client_is_active(ch)) {
-      int client_result = ssh_client_tick(ch, now_ns);
-      if (client_result < 0) return -1;
-      if (client_result > 0 && ch->shell_active != 0U &&
-          shell_send_prompt(ch) != 0) return -1;
-      if (client_result > 0 && ch->shell_active == 0U) {
-        ch->close_after_flush = 1U;
-        if (flush_channel(ch) != 0) return -1;
-      }
-    }
-    if (ch->active != 0U && ch->pong.active != 0U &&
-        ch->pending_used == 0U && pong_game_tick(&ch->pong, now_ns) != 0 &&
-        pong_render_frame(ch, now_ns) != 0) {
-      ch->exit_status = 1U;
-      if (pong_finish(ch, 1U) != 0) return -1;
+/* What one channel's turn came to.
+ *
+ * The two failures are told apart because they need different endings. A
+ * channel whose own I/O failed -- a forwarded connection whose far end went
+ * away is the everyday case -- leaves the session it belongs to perfectly
+ * healthy, so the peer is told the channel is closing and everything else on
+ * that connection carries on. A failure to *write* means the connection's
+ * byte stream is the thing that broke: a packet went out half-written, so
+ * what follows it is not a packet boundary, and the socket that would not
+ * take those bytes will not take a courtesy close either. There the whole
+ * connection goes, silently. */
+#define SSH_CHANNEL_TICK_OK 0
+#define SSH_CHANNEL_TICK_CHANNEL_FAILED 1
+#define SSH_CHANNEL_TICK_TRANSPORT_FAILED 2
+
+static int channel_tick_one(ssh_channel_t *ch, uint64_t now_ns) {
+  if (ch->active != 0U && ch->screen != 0 && ch->pending_used == 0U &&
+      ch->screen->incomplete != 0U && screen_flush(ch) != 0)
+    return SSH_CHANNEL_TICK_TRANSPORT_FAILED;
+  if (ch->active != 0U && ch->is_forward != 0U &&
+      ch->pending_used == 0U && ch->remote_window != 0U) {
+    u64 received = 0U;
+    uint32_t capacity = sizeof(g_forward_buffer);
+    if (capacity > ch->remote_window) capacity = ch->remote_window;
+    if (capacity > ch->remote_max_packet) capacity = ch->remote_max_packet;
+    if (xaios_net_recv(ch->forward_fd, g_forward_buffer, capacity,
+                       &received) != 0 || received > capacity)
+      return SSH_CHANNEL_TICK_CHANNEL_FAILED;
+    if (received != 0U &&
+        ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
+                              g_forward_buffer, (uint32_t)received) != 0)
+      return SSH_CHANNEL_TICK_TRANSPORT_FAILED;
+  }
+  if (ch->active != 0U && ssh_client_is_active(ch)) {
+    int client_result = ssh_client_tick(ch, now_ns);
+    if (client_result < 0) return SSH_CHANNEL_TICK_CHANNEL_FAILED;
+    if (client_result > 0 && ch->shell_active != 0U &&
+        shell_send_prompt(ch) != 0)
+      return SSH_CHANNEL_TICK_TRANSPORT_FAILED;
+    if (client_result > 0 && ch->shell_active == 0U) {
+      ch->close_after_flush = 1U;
+      if (flush_channel(ch) != 0) return SSH_CHANNEL_TICK_TRANSPORT_FAILED;
     }
   }
-  return 0;
+  if (ch->active != 0U && ch->pong.active != 0U &&
+      ch->pending_used == 0U && pong_game_tick(&ch->pong, now_ns) != 0 &&
+      pong_render_frame(ch, now_ns) != 0) {
+    ch->exit_status = 1U;
+    if (pong_finish(ch, 1U) != 0) return SSH_CHANNEL_TICK_TRANSPORT_FAILED;
+  }
+  return SSH_CHANNEL_TICK_OK;
+}
+
+/* Give up on one channel, and say so on the console.
+ *
+ * ssh_channel_close_connection does this for every channel a connection owns
+ * when the connection goes; this is the same teardown for one of them, with
+ * the session-context close left out because the session belongs to the
+ * connection and not to the channel. */
+static void channel_abandon(ssh_channel_t *ch, int transport_failed) {
+  int sockfd = (int)ch->owner_sockfd;
+  uint32_t remote_id = ch->remote_id;
+  uint32_t local_id = ch->local_id;
+
+  if (transport_failed == 0 && ch->close_sent == 0U) {
+    uint8_t close_msg[5];
+    (void)send_channel_eof(sockfd, remote_id);
+    close_msg[0] = SSH_MSG_CHANNEL_CLOSE;
+    ssh_write_u32_be(close_msg + 1, remote_id);
+    (void)ssh_packet_write_encrypted(sockfd, close_msg, sizeof(close_msg));
+  }
+  sftp_close_channel(sockfd, remote_id);
+  ssh_client_close(ch);
+  if (ch->forward_fd != 0U) (void)xaios_net_close(ch->forward_fd);
+  if (ch->less.active != 0U) less_pager_close(&ch->less);
+  screen_release(ch);
+  ssh_mem_zero(ch, sizeof(*ch));
+
+  if (transport_failed != 0) {
+    ssh_connection_t *connection = ssh_conn_find((u64)(uint32_t)sockfd);
+    if (connection != 0)
+      connection->close_requested = SSHD_CLOSE_REQUEST_SILENT;
+  }
+
+  /* On the console rather than through ssh_log, which writes to the audit
+     file on the durable volume: this is the line that says why a session's
+     channel went away, and a console is the only thing a soak captures. */
+  char line[160];
+  u64 offset = 0;
+  xaios_memzero(line, sizeof(line));
+  xaios_append_cstr(line, sizeof(line), &offset,
+                    "sshd: channel closed after tick failure local=");
+  xaios_append_u64(line, sizeof(line), &offset, local_id);
+  xaios_append_cstr(line, sizeof(line), &offset, " reason=");
+  xaios_append_cstr(line, sizeof(line), &offset,
+                    transport_failed != 0 ? "transport" : "channel");
+  xaios_append_cstr(line, sizeof(line), &offset, "\n");
+  xaios_log(line);
+}
+
+/* Every channel gets its turn, whatever the one before it did. This is B-41.
+ *
+ * The loop used to return the moment a channel failed, which did two things
+ * at once and neither of them on purpose. The channel that failed was left
+ * active, so the next tick reached it again, failed again, and returned
+ * again -- for as long as the connection lived. And every channel after it in
+ * the table never ran at all: a forward's data is pumped here and nowhere
+ * else, so a second session's forward simply stopped moving, with one warning
+ * line per tick in a log nobody was reading to say so.
+ *
+ * A channel that cannot be serviced is therefore closed here rather than
+ * carried, and the loop goes on to the next one. The return value still says
+ * whether anything failed, because the caller's warning is worth keeping;
+ * what it no longer means is that the remaining channels were skipped. */
+int ssh_channel_tick(uint64_t now_ns) {
+  int failed = 0;
+  for (uint32_t i = 0U; i < SSH_CHANNEL_MAX; ++i) {
+    ssh_channel_t *ch = &g_channels[i];
+    if (ch->active == 0U) continue;
+    int outcome = channel_tick_one(ch, now_ns);
+    if (outcome == SSH_CHANNEL_TICK_OK) continue;
+    channel_abandon(ch, outcome == SSH_CHANNEL_TICK_TRANSPORT_FAILED);
+    failed = 1;
+  }
+  return failed != 0 ? -1 : 0;
 }
 
 /* ---- Handle CHANNEL_REQUEST (type 98) ---- */
