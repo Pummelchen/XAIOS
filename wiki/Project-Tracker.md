@@ -10,12 +10,22 @@ that did it and in the comments beside the code.
 
 ## Where the tree stands
 
-The ten aggregate targets pass: `qemu-core-os-rc`, `qemu-full-os-rc`,
+The ten aggregate targets -- `qemu-core-os-rc`, `qemu-full-os-rc`,
 `qemu-developer-ux`, `qemu-operations-closure`, `qemu-network-adversarial-gate`,
 `qemu-readiness-gate`, `qemu-post51-gate`, `qemu-qualification-readiness`,
-`qemu-100-gate` and `qemu-release`, alongside the repository checks and smoke on
-all three architectures. The consolidated report deliberately retains
+`qemu-100-gate` and `qemu-release` -- last passed together before the work
+recorded in the rows below, and **have not been re-run since**. That work
+changed shared code every one of them compiles: the virtio-net driver (RSS
+negotiation, the hash key and the queue-pair count), the lifecycle record and
+`operations_init`'s signature, sshd's accept path, and the boot application
+list. Individually re-run since, on this tree: `compile-check`,
+`platform-neutrality-check`, `docs-check`, `code-scanning-contract`,
+`qemu-smoke`, `qemu-thread-join-soak`, `qemu-ssh-connection-rate-gate` and the
+Fusion load soak. The consolidated report deliberately retains
 `physical_qualification=false`.
+
+**Re-running the ten is the next thing to do**, and until it happens no
+statement here about aggregate status is current.
 
 That is emulated evidence and nothing more. **No result on this page is
 physical-hardware evidence, and no released build has been booted on physical

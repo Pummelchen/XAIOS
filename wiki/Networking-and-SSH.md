@@ -31,6 +31,17 @@ database and development-image opt-in; release builds reject it.
 - A 32-transport server ceiling, up to two active channels per transport, and
   64 asynchronous child-channel records, with explicit saturation errors and
   reclamation after disconnect.
+- An accept-rate limit of 120 connections per minute per client address,
+  bounding a flood from a peer that has proved nothing. A connection is
+  credited back once it authenticates, so a peer holding a credential this
+  machine accepts is not throttled -- an administrator moving many files over
+  SFTP opens a connection per transfer, and counting those protected nothing
+  while breaking the workload the machine is for. Unauthenticated connections
+  still count and still trip it; authenticated peers remain bounded by the
+  transport ceiling above. A refused connection is closed before the version
+  banner, which from the client is `Connection closed` with no explanation, so
+  the guest names the reason on its console with a per-reason counter: a
+  refusal nobody can attribute is indistinguishable from a defect.
 
 ## Address configuration
 
