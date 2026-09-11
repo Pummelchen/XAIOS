@@ -106,6 +106,10 @@ way a recipient would.
 | `xaios_b6-x86_64-netboot.zip` | yes | the binary on an EFI System Partition |
 | `xaios_b6-riscv64-netboot.zip` | yes | the binary on an EFI System Partition |
 
+The three `.iso` files themselves boot on all five environments under `make
+release-image-gate`, each guest reporting this build's number and confirming it
+took its kernel from the medium.
+
 Host for all of it: Apple M2, macOS 26.6.2. Only AArch64 runs on the host's own
 instruction set; the other two go through QEMU's interpreter.
 
@@ -132,11 +136,15 @@ published:**
   claim; the Fusion smoke, the Virtualization.framework gate and its stress gate
   are deeper and separate, and `make release-check` refuses to tag a build
   without a record of them against its commit.
-- **`make release-image-gate` has not been run on these three images.** It boots
-  each shipped `.iso` on every environment available, and it was rewritten for
-  per-architecture images in this build. The kits carry the same three files and
-  those booted, so this is a gap in coverage rather than an untested artifact --
-  but it is the gate whose whole job is that distinction, and it has not run.
+- **`make release-image-gate` has been run and passes**, after two defects in
+  the gate itself were fixed. All five environments boot one of these three
+  `.iso` files and each guest reports `XAIOS Build 6 kernel starting` and
+  `system-slot: unavailable`, meaning it ran the kernel on the medium rather
+  than one from an A/B system volume. That second line is there because the
+  Virtualization.framework row had been doing the opposite: it booted a build 5
+  kernel out of the tree's own system volume while the gate reported success,
+  and the marker it checked was `XAIOS Build \d+`, which any build satisfies.
+  Both are fixed and recorded as `B-54`.
 
 ## Where this is not tested
 

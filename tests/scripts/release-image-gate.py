@@ -88,8 +88,14 @@ VMRUN = Path(os.environ.get(
 # The common ground: what every environment says when this image works. The
 # per-platform gates assert far more, and should -- device inventories differ,
 # so a marker list long enough to be thorough here would be five lists.
+# `\d+` stood here, and it is why this gate reported five environments booting
+# three released images while one of them was running a kernel from the build
+# before. Any build number matched, so the one check that could have noticed
+# said nothing. The gate's whole claim is that *this* file boots; a marker that
+# accepts a kernel from another build cannot make it.
 EXPECTED = (
-    ("kernel started", re.compile(r"XAIOS Build \d+ kernel starting")),
+    ("this build's kernel started",
+     re.compile(rf"XAIOS Build {re.escape(_build_number())} kernel starting")),
     ("shell command surface",
      re.compile(r"/bin/xaios-shell: command surface passed")),
     ("SSH server listening", re.compile(r"SSH server: up and running")),
@@ -226,8 +232,24 @@ def boot_vz() -> tuple[str, str | None]:
     # The image is the boot disk. The data volumes stay separate, which is the
     # arrangement this image is designed for: it is read-only, and the durable
     # filesystem has to live somewhere writable.
+    # No A/B system volume, for the reason the QEMU path sets
+    # XAIOS_SYSTEM_VOLUME_IMAGE=none: the loader prefers a verified slot over
+    # the kernel on the medium, so a machine booted from a release image with
+    # one attached runs the kernel from the volume and not the one in the file
+    # under test. That looks exactly like the image booting and is not.
+    #
+    # It was not hypothetical here. This gate passed the Virtualization.
+    # framework row while the guest printed "XAIOS Build 5 kernel starting"
+    # from the tree's own vz-system.img -- the two QEMU rows and Fusion all
+    # logged "system-slot: unavailable" and ran the medium's kernel, and this
+    # one silently did not.
+    #
+    # The two system volumes are last in the list, and the harness attaches
+    # every disk after the boot image in the order given because the kernel
+    # identifies its volumes by position on the bus. Dropping the last two
+    # therefore shifts nothing.
     volumes = ["vz-test.img", "vz-persistent.img", "vz-model.img",
-               "vz-storage-admin.img", "vz-system.img", "vz-system2.img"]
+               "vz-storage-admin.img"]
     for name in volumes:
         if not (VZ / name).is_file():
             return "", f"missing {name}; run make vz-gate once to create the volumes"
