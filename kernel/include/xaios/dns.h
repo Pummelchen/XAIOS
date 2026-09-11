@@ -7,6 +7,12 @@
 
 #define XAIOS_DNS_PORT 53U
 #define XAIOS_DNS_MAX_NAME 256U
+/* The longest hostname the resolver will accept, including the terminator.
+ * Published because a caller that hands over a longer name gets
+ * XAIOS_ERR_INVALID back, and XAIOS_ERR_INVALID from this resolver otherwise
+ * means "the chain was walked and refused" (B-36). A caller that checks the
+ * length itself can report its own bad argument as its own bad argument. */
+#define XAIOS_DNS_MAX_HOSTNAME 64U
 #define XAIOS_DNS_CACHE_SIZE 16U
 
 /* DNS record types */

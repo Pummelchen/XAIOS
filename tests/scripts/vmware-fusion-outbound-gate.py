@@ -655,11 +655,17 @@ def forwarding_checks(container: str, guest_ip: str, host_ip: str, port: int,
 NSLOOKUP = re.compile(r"^\s*(\S+): (.+?)\s*$", re.MULTILINE)
 
 
-# XAIOS_ERR_CANCELLED, which the resolver reports when the whole chain walk
-# misses its single deadline. It is not a verdict about the chain; it means no
-# verdict was reached, and reading it as one is how a timeout gets recorded as
-# a refusal.
-TIMED_OUT = "error(7)"
+# XAIOS_ERR_CANCELLED, which the resolver reports when a query misses its own
+# deadline or the chain walk misses its budget. It is not a verdict about the
+# chain; it means no verdict was reached, and reading it as one is how a
+# timeout gets recorded as a refusal.
+#
+# This used to be the bare "error(7)" of the status code, which said nothing
+# and sat one typo away from "dnssec-unverified" in a reader's eye. B-36 gave
+# the shell a word for it; B-35 made the thing it names less likely, by giving
+# each query in the walk its own deadline instead of sharing one across all of
+# them.
+TIMED_OUT = "dnssec-timeout"
 
 
 def guest_nslookup(shell: GuestShell, name: str, *, attempts: int = 40,
@@ -671,10 +677,11 @@ def guest_nslookup(shell: GuestShell, name: str, *, attempts: int = 40,
     first reply would record `pending` for everything and never fail.
 
     `retry_timeouts` restarts the whole resolution when it comes back as
-    `error(7)`. The chain for one name is several queries under one fifteen
-    second budget, so a slow delegation can spend it without reaching a
-    verdict; retrying gives it another budget rather than filing the timeout
-    as an answer.
+    `dnssec-timeout`. Each query in the chain now has its own fifteen-second
+    deadline and the walk as a whole has a forty-five-second budget, so a slow
+    delegation no longer spends the whole allowance on one hop -- but a walk
+    can still run out, and retrying gives it another budget rather than filing
+    the timeout as an answer.
     """
     for attempt in range(retry_timeouts + 1):
         answer = "pending"
@@ -729,11 +736,12 @@ def dnssec_checks(shell: GuestShell, checks: dict[str, object],
     `dnssec-failed.org` to `dnssec-unverified` -- and it is still recorded as
     an observation that never fails the gate, for two reasons. It needs the
     public internet, which no gate here may. And it does not always reach a
-    verdict: a resolution is several queries under one fifteen-second budget,
-    and the longer chain has been observed spending the budget and reporting
-    `error(7)`, which says a timeout happened and says nothing about the
-    signature. Failing a gate on that would be reporting the weather; passing
-    on it would be worse.
+    verdict: the longer chain was observed spending its budget and saying so,
+    which reports a timeout and says nothing about the signature. That used to
+    be much easier to hit, because the whole walk shared one fifteen-second
+    budget against a five-second retransmit timer (B-35); each query now has
+    that budget to itself and the walk has one of its own. Failing a gate on a
+    timeout would be reporting the weather; passing on it would be worse.
     """
     text = SERIAL.read_text(errors="replace")
     lease = re.search(r"network: DHCP lease ip=\w+ mask=\w+ gw=\w+ dns=(\w+)",
@@ -805,8 +813,8 @@ def dnssec_checks(shell: GuestShell, checks: dict[str, object],
         verdict = ("the guest accepted a correctly signed chain and refused a "
                    "mis-signed one through the same resolver")
     elif TIMED_OUT in (signed, bogus):
-        verdict = ("inconclusive: a resolution spent its fifteen-second budget "
-                   "before reaching a verdict, which is a timeout and not a "
+        verdict = ("inconclusive: a resolution spent its budget before "
+                   "reaching a verdict, which is a timeout and not a "
                    "signature decision")
     else:
         verdict = (f"inconclusive: signed={signed!r} bogus={bogus!r}, which is "

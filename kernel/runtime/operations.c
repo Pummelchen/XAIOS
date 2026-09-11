@@ -625,32 +625,63 @@ xaios_status_t operations_execute(const char *command, char *output,
       append(output, capacity, &used, "ping: request sent; use ping status\n");
     }
   } else if (str_equal(name, "nslookup")) {
+    /* B-36. "dnssec-unverified" is a verdict about a name: the chain was
+       walked and refused. It used to also be what this printed when the
+       command itself was wrong -- an extra argument, a missing hostname, a
+       bare -6 -- because both arrived as XAIOS_ERR_INVALID and the last one
+       to set it won. A reader could not tell a typo from a fail-closed
+       resolver, and neither could a gate.
+
+       So the command's own arguments are checked here, before the resolver is
+       asked anything, and a bad one is reported as a bad argument. That
+       includes the length: the resolver rejects an over-long hostname with
+       the same XAIOS_ERR_INVALID it uses for a refused chain, so the shell
+       has to catch it first rather than translate it afterwards. What is left
+       reaching the resolver is a syntactically valid request, and every
+       status it returns is then a statement about the name. */
     uint8_t family = XAIOS_IP_FAMILY_V4;
     const char *hostname = arg1;
+    uint32_t bad_arguments = 0U;
     if (str_equal(arg1, "-6")) {
       family = XAIOS_IP_FAMILY_V6;
       hostname = arg2;
     } else if (arg2[0] != '\0') {
-      status = XAIOS_ERR_INVALID;
+      bad_arguments = 1U;
     }
-    if (has_extra != 0U || hostname[0] == '\0') status = XAIOS_ERR_INVALID;
-    xaios_ip_addr_t address;
-    xaios_ip_addr_zero(&address);
-    if (status == XAIOS_OK)
+    if (has_extra != 0U || hostname[0] == '\0' ||
+        str_len(hostname) >= XAIOS_DNS_MAX_HOSTNAME) {
+      bad_arguments = 1U;
+    }
+    if (bad_arguments != 0U) {
+      append(output, capacity, &used,
+             "nslookup: invalid-argument; usage: nslookup [-6] <hostname>\n");
+      status = XAIOS_ERR_INVALID;
+    } else {
+      xaios_ip_addr_t address;
+      xaios_ip_addr_zero(&address);
       status = dns_resolve_address(hostname, family, &address);
-    append(output, capacity, &used, hostname);
-    append(output, capacity, &used, ": ");
-    if (status == XAIOS_OK && family == XAIOS_IP_FAMILY_V4)
-      append_ipv4(output, capacity, &used,
-                  xaios_ip_addr_to_ipv4(&address));
-    else if (status == XAIOS_OK)
-      append_ipv6(output, capacity, &used, &address);
-    else if (status == XAIOS_ERR_BUSY) append(output, capacity, &used, "pending");
-    else if (status == XAIOS_ERR_INVALID)
-      append(output, capacity, &used, "dnssec-unverified");
-    else append_status(output, capacity, &used, status);
-    append(output, capacity, &used, "\n");
-    if (status == XAIOS_ERR_BUSY) status = XAIOS_OK;
+      append(output, capacity, &used, hostname);
+      append(output, capacity, &used, ": ");
+      if (status == XAIOS_OK && family == XAIOS_IP_FAMILY_V4)
+        append_ipv4(output, capacity, &used,
+                    xaios_ip_addr_to_ipv4(&address));
+      else if (status == XAIOS_OK)
+        append_ipv6(output, capacity, &used, &address);
+      else if (status == XAIOS_ERR_BUSY)
+        append(output, capacity, &used, "pending");
+      else if (status == XAIOS_ERR_INVALID)
+        append(output, capacity, &used, "dnssec-unverified");
+      /* B-35's other half. A resolution that ran out of budget reached no
+         verdict at all, which is not the same claim as refusing one, and
+         used to surface as the bare "error(7)" of XAIOS_ERR_CANCELLED. */
+      else if (status == XAIOS_ERR_CANCELLED)
+        append(output, capacity, &used, "dnssec-timeout");
+      else if (status == XAIOS_ERR_NOT_FOUND)
+        append(output, capacity, &used, "not-found");
+      else append_status(output, capacity, &used, status);
+      append(output, capacity, &used, "\n");
+      if (status == XAIOS_ERR_BUSY) status = XAIOS_OK;
+    }
   } else if (str_equal(name, "date")) {
     if (str_equal(arg1, "-s")) {
       uint64_t epoch = 0U;

@@ -11,12 +11,37 @@
 #include <xaios/network_config.h>
 #include <xaios/virtio_rng.h>
 
+#include "dns_selftest_chain.h"
+
 #define DNS_UDP_FRAME_SIZE 512U
 #define DNS_TCP_MESSAGE_SIZE 4096U
-#define DNS_MAX_HOSTNAME 64U
+#define DNS_MAX_HOSTNAME XAIOS_DNS_MAX_HOSTNAME
 #define DNS_RETRANSMIT_NS UINT64_C(5000000000)
-#define DNS_QUERY_TIMEOUT_NS UINT64_C(15000000000)
 #define DNS_MAX_RETRANSMITS 2U
+/* B-35. Two deadlines, because there are two different ways to fail to get an
+   answer and they need different budgets.
+
+   DNS_QUERY_TIMEOUT_NS is one query's own deadline and is sized to the
+   retransmit schedule it has to contain: the first transmit at t=0 and two
+   retransmits at 5 s and 10 s, leaving the last one a full retransmit interval
+   to be answered in. It used to be the budget for the entire DNSKEY -> DS ->
+   DNSKEY -> address walk, because started_ns was set once per resolve and
+   never reset by start_query -- so a chain whose every hop answered promptly
+   still ran out of time at the third or fourth hop and was reported as if the
+   name had gone unanswered. start_query now stamps query_started_ns, so each
+   query gets this budget of its own.
+
+   DNS_WALK_TIMEOUT_NS is what stops per-query deadlines from composing into an
+   unbounded wait: a name of N labels costs 2N + 2 queries, and at 15 s each a
+   deep name could keep a caller waiting for minutes. Budgeting the walk
+   explicitly is the point -- an implicit budget that happens to fall out of
+   one query's timer is exactly the defect above.
+
+   Both expire as XAIOS_ERR_CANCELLED, never as XAIOS_ERR_INVALID: the
+   difference a caller has to be able to see is "we never reached a verdict"
+   against "we reached one and refused", and a timeout is always the former. */
+#define DNS_QUERY_TIMEOUT_NS UINT64_C(15000000000)
+#define DNS_WALK_TIMEOUT_NS UINT64_C(45000000000)
 #define DNS_MAX_POINTER_JUMPS 32U
 #define DNS_EPHEMERAL_PORT_MIN UINT16_C(49152)
 #define DNS_EDNS_UDP_SIZE UINT16_C(1232)
@@ -77,7 +102,11 @@ typedef struct dns_pending {
   char child_zone[DNS_MAX_HOSTNAME];
   dnssec_keyset_t validated_keys;
   dnssec_dsset_t child_ds;
-  uint64_t started_ns;
+  /* When the whole chain walk began, and when the query in flight began.
+     sent_ns cannot serve as the latter: a retransmit moves it, so a query
+     that is retransmitted twice would never reach its own deadline. */
+  uint64_t walk_started_ns;
+  uint64_t query_started_ns;
   uint64_t sent_ns;
   uint8_t udp_frame[DNS_UDP_FRAME_SIZE];
   uint8_t query[DNS_UDP_FRAME_SIZE];
@@ -428,6 +457,7 @@ static xaios_status_t start_query(dns_pending_t *pending, const char *name,
   if (pending->query_len == 0U) return XAIOS_ERR_INVALID;
   pending->state = DNS_PENDING_UDP;
   if (send_udp_query(pending) != XAIOS_OK) return XAIOS_ERR_IO;
+  pending->query_started_ns = now_ns;
   pending->sent_ns = now_ns;
   ++g_query_count;
   return XAIOS_OK;
@@ -460,7 +490,7 @@ static xaios_status_t dns_resolve_address_unlocked(const char *hostname, uint8_t
   g_pending.hostname_labels = hostname_label_count(hostname);
   if (g_pending.hostname_labels == 0U) return XAIOS_ERR_INVALID;
   g_pending.dnssec_stage = DNSSEC_STAGE_ROOT_DNSKEY;
-  g_pending.started_ns = now_ns;
+  g_pending.walk_started_ns = now_ns;
   if (start_query(&g_pending, "", DNS_TYPE_DNSKEY, now_ns) != XAIOS_OK) {
     bytes_zero(&g_pending, sizeof(g_pending));
     ++g_reject_count;
@@ -703,10 +733,19 @@ void dns_transport_tick(uint64_t now_ns) {
 void dns_tick(uint64_t now_ns) {
   if (g_pending.state == DNS_PENDING_NONE ||
       g_pending.state == DNS_PENDING_COMPLETE) return;
-  if (now_ns > g_pending.started_ns &&
-      now_ns - g_pending.started_ns >= DNS_QUERY_TIMEOUT_NS) {
-    klog("dns: query timeout id=%u host=%s\n", g_pending.id,
-         g_pending.hostname);
+  if (now_ns > g_pending.walk_started_ns &&
+      now_ns - g_pending.walk_started_ns >= DNS_WALK_TIMEOUT_NS) {
+    klog("dns: walk timeout id=%u host=%s stage=%u queries_unanswered=1\n",
+         g_pending.id, g_pending.hostname, (unsigned)g_pending.dnssec_stage);
+    complete_pending(XAIOS_ERR_CANCELLED);
+    ++g_timeout_count;
+    return;
+  }
+  if (now_ns > g_pending.query_started_ns &&
+      now_ns - g_pending.query_started_ns >= DNS_QUERY_TIMEOUT_NS) {
+    klog("dns: query timeout id=%u host=%s name=%s stage=%u\n", g_pending.id,
+         g_pending.hostname, g_pending.query_name,
+         (unsigned)g_pending.dnssec_stage);
     complete_pending(XAIOS_ERR_CANCELLED);
     ++g_timeout_count;
     return;
@@ -738,6 +777,173 @@ uint32_t dns_pending_count(void) {
              : 0U;
 }
 
+/* B-34. This used to print "dnssec=local-chain tcp-fallback=enabled
+   aaaa=enabled" after exercising the name codec and the cache and nothing
+   else. It now walks a signed chain to an address, refuses a forged signature
+   and an expired one, drives the truncation fallback in both directions,
+   validates a AAAA RRset, and checks that each query is judged against its own
+   deadline. The marker reports the counts those steps produced, so a step that
+   stops running takes its own evidence with it.
+
+   Two deliberate absences. The wall clock is not read: every verifier takes
+   its validity time as an argument, and at this point in boot
+   wall_time_now_ns() may still be the raw monotonic counter, which would make
+   a genuine DNSSEC check fail on a machine whose RTC has not been read yet.
+   And nothing is transmitted: the pending record is built in place rather than
+   through dns_resolve_address, so a machine with no NIC still runs all of it.
+
+   The chain in dns_selftest_chain.h is rooted at its own anchor, not at the
+   real root; dns_init() at the end puts the IANA anchors back. */
+#define DNS_SELFTEST_WALL_NS UINT64_C(1900000000000000000)
+#define DNS_SELFTEST_EXPIRED_WALL_NS UINT64_C(2530000000000000000)
+
+static uint32_t dns_self_test_chain(uint32_t *out_aaaa_validated) {
+  dnssec_ds_t anchor;
+  uint8_t address[16];
+  uint8_t forged[sizeof(k_selftest_a)];
+  uint32_t ttl = 0U;
+  uint32_t links = 0U;
+  /* The keyset and DS set live in the pending record rather than on the
+     stack: a dnssec_keyset_t is several kilobytes and this runs on the boot
+     stack. dns_init() above has already zeroed the record, and dns_init() at
+     the end of the self-test clears it again. */
+  dnssec_keyset_t *keys = &g_pending.validated_keys;
+  dnssec_dsset_t *ds = &g_pending.child_ds;
+
+  bytes_zero(&anchor, sizeof(anchor));
+  anchor.key_tag = DNS_SELFTEST_ROOT_TAG;
+  anchor.algorithm = 8U;
+  anchor.digest_type = 2U;
+  anchor.digest_length = (uint8_t)sizeof(k_selftest_anchor_digest);
+  bytes_copy(anchor.digest, k_selftest_anchor_digest,
+             sizeof(k_selftest_anchor_digest));
+  kassert(dnssec_set_trust_anchors(&anchor, 1U) == XAIOS_OK);
+
+  kassert(dnssec_verify_dnskey(k_selftest_root_dnskey,
+                               (uint32_t)sizeof(k_selftest_root_dnskey), "", 0,
+                               DNS_SELFTEST_WALL_NS, keys) == XAIOS_OK);
+  ++links;
+  kassert(dnssec_verify_ds(k_selftest_ds, (uint32_t)sizeof(k_selftest_ds),
+                           DNS_SELFTEST_ZONE, keys, DNS_SELFTEST_WALL_NS,
+                           ds) == XAIOS_OK);
+  ++links;
+  kassert(dnssec_verify_dnskey(k_selftest_dnskey,
+                               (uint32_t)sizeof(k_selftest_dnskey),
+                               DNS_SELFTEST_ZONE, ds, DNS_SELFTEST_WALL_NS,
+                               keys) == XAIOS_OK);
+  ++links;
+  kassert(dnssec_verify_address(k_selftest_a, (uint32_t)sizeof(k_selftest_a),
+                                DNS_SELFTEST_ZONE, XAIOS_DNS_TYPE_A, keys,
+                                DNS_SELFTEST_WALL_NS, address,
+                                &ttl) == XAIOS_OK);
+  kassert(ttl == 60U);
+  for (uint32_t i = 0U; i < sizeof(k_selftest_a_rdata); ++i)
+    kassert(address[i] == k_selftest_a_rdata[i]);
+
+  /* The control. A signature that has been tampered with must not validate:
+     without this, every assertion above would still pass against a verifier
+     that returned XAIOS_OK unconditionally. */
+  bytes_copy(forged, k_selftest_a, sizeof(forged));
+  forged[sizeof(forged) - 1U] ^= 0x01U;
+  kassert(dnssec_verify_address(forged, (uint32_t)sizeof(forged),
+                                DNS_SELFTEST_ZONE, XAIOS_DNS_TYPE_A, keys,
+                                DNS_SELFTEST_WALL_NS, address,
+                                &ttl) == XAIOS_ERR_INVALID);
+  /* ...and neither must a signature that was valid and has expired. */
+  kassert(dnssec_verify_address(k_selftest_a, (uint32_t)sizeof(k_selftest_a),
+                                DNS_SELFTEST_ZONE, XAIOS_DNS_TYPE_A, keys,
+                                DNS_SELFTEST_EXPIRED_WALL_NS, address,
+                                &ttl) == XAIOS_ERR_INVALID);
+
+  /* AAAA, validated through the same chain rather than asserted to exist. */
+  kassert(dnssec_verify_address(k_selftest_aaaa,
+                                (uint32_t)sizeof(k_selftest_aaaa),
+                                DNS_SELFTEST_ZONE, XAIOS_DNS_TYPE_AAAA, keys,
+                                DNS_SELFTEST_WALL_NS, address,
+                                &ttl) == XAIOS_OK);
+  for (uint32_t i = 0U; i < sizeof(k_selftest_aaaa_rdata); ++i)
+    kassert(address[i] == k_selftest_aaaa_rdata[i]);
+  *out_aaaa_validated = 1U;
+  /* An A answer is not a AAAA answer however well it is signed. */
+  kassert(dnssec_verify_address(k_selftest_a, (uint32_t)sizeof(k_selftest_a),
+                                DNS_SELFTEST_ZONE, XAIOS_DNS_TYPE_AAAA, keys,
+                                DNS_SELFTEST_WALL_NS, address,
+                                &ttl) == XAIOS_ERR_INVALID);
+  return links;
+}
+
+static void dns_self_test_pending(uint16_t id, uint8_t stage) {
+  bytes_zero(&g_pending, sizeof(g_pending));
+  g_pending.state = DNS_PENDING_UDP;
+  g_pending.family = XAIOS_IP_FAMILY_V4;
+  g_pending.query_type = XAIOS_DNS_TYPE_A;
+  g_pending.dnssec_stage = stage;
+  g_pending.hostname_labels = 1U;
+  g_pending.id = id;
+  /* Already out of retransmits, so dns_tick reaches its deadlines without
+     asking a network device that may not exist to send anything. */
+  g_pending.retransmits = DNS_MAX_RETRANSMITS;
+  str_copy(g_pending.hostname, DNS_SELFTEST_ZONE, DNS_MAX_HOSTNAME);
+  str_copy(g_pending.query_name, DNS_SELFTEST_ZONE, DNS_MAX_HOSTNAME);
+}
+
+static uint32_t dns_self_test_truncation(void) {
+  /* A truncated UDP reply moves the query to TCP; a reply that is still
+     truncated after the TCP attempt is a dead end, not another retry. Both
+     decisions are taken on the twelve-byte header, before any validation, so
+     neither needs a signature, a clock, or a NIC. */
+  uint8_t reply[12];
+  uint64_t before = g_tcp_fallback_count;
+  dns_self_test_pending(UINT16_C(0xbeef), DNSSEC_STAGE_ADDRESS);
+  bytes_zero(reply, sizeof(reply));
+  put_be16(reply, g_pending.id);
+  put_be16(reply + 2U, (uint16_t)(DNS_FLAG_QR | DNS_FLAG_TC));
+  kassert(dns_process_message(reply, sizeof(reply), 0U, 0U) == XAIOS_ERR_BUSY);
+  kassert(g_pending.state == DNS_PENDING_TCP_CONNECT);
+  kassert(g_tcp_fallback_count == before + 1U);
+  kassert(dns_process_message(reply, sizeof(reply), 0U, 1U) ==
+          XAIOS_ERR_NOT_FOUND);
+  kassert(g_pending.state == DNS_PENDING_COMPLETE);
+  kassert(g_pending.result == XAIOS_ERR_NOT_FOUND);
+  return (uint32_t)(g_tcp_fallback_count - before);
+}
+
+static void dns_self_test_deadlines(void) {
+  /* B-35, in the kernel that has to honour it. The clock is supplied, so this
+     is exact rather than timing-dependent.
+
+     The first tick is the control that fails on the defect: the walk is 21 s
+     old, past the 15 s that used to cover all of it, while the query in flight
+     is 1 s old. A resolver that judges a query by when the walk began ends the
+     resolution here. */
+  uint64_t timeouts = g_timeout_count;
+  klog("dns: self-test exercising resolver deadlines; the two timeout lines "
+       "below are the test, not a fault\n");
+  dns_self_test_pending(UINT16_C(0x0d15), DNSSEC_STAGE_CHILD_DS);
+  g_pending.walk_started_ns = 0U;
+  g_pending.query_started_ns = UINT64_C(20000000000);
+  g_pending.sent_ns = g_pending.query_started_ns;
+  dns_tick(UINT64_C(21000000000));
+  kassert(g_pending.state == DNS_PENDING_UDP);
+  kassert(g_timeout_count == timeouts);
+  /* Its own deadline still ends it, and ends it as "no verdict". */
+  dns_tick(g_pending.query_started_ns + DNS_QUERY_TIMEOUT_NS);
+  kassert(g_pending.state == DNS_PENDING_COMPLETE);
+  kassert(g_pending.result == XAIOS_ERR_CANCELLED);
+  kassert(g_timeout_count == timeouts + 1U);
+
+  /* And the walk budget ends a walk whose query in flight is young, which is
+     what stops per-query deadlines composing without bound. */
+  dns_self_test_pending(UINT16_C(0x0d16), DNSSEC_STAGE_CHILD_DNSKEY);
+  g_pending.walk_started_ns = 0U;
+  g_pending.query_started_ns = DNS_WALK_TIMEOUT_NS - UINT64_C(5000000000);
+  g_pending.sent_ns = g_pending.query_started_ns;
+  dns_tick(DNS_WALK_TIMEOUT_NS);
+  kassert(g_pending.state == DNS_PENDING_COMPLETE);
+  kassert(g_pending.result == XAIOS_ERR_CANCELLED);
+  kassert(g_timeout_count == timeouts + 2U);
+}
+
 void dns_self_test(void) {
   dns_init();
   uint8_t encoded[64];
@@ -764,5 +970,15 @@ void dns_self_test(void) {
   kassert(xaios_ip_addr_to_ipv4(&result) == UINT32_C(0x01020304));
   kassert(cache_lookup("cache.test", XAIOS_IP_FAMILY_V6, &result,
                        UINT64_C(1000000)) == 0);
-  klog("dns: self-test passed dnssec=local-chain tcp-fallback=enabled aaaa=enabled\n");
+  uint32_t aaaa_validated = 0U;
+  uint32_t links = dns_self_test_chain(&aaaa_validated);
+  uint32_t truncations = dns_self_test_truncation();
+  dns_self_test_deadlines();
+  /* Put the real root anchors back and drop everything the test left behind:
+     the test anchor, the fake pending record, and the test's counter values. */
+  dns_init();
+  klog("dns: self-test passed dnssec=local-chain tcp-fallback=enabled "
+       "aaaa=enabled chain_links=%u forged_signature=rejected "
+       "expired_signature=rejected truncated_reply=%u validated_aaaa=%u\n",
+       (unsigned)links, (unsigned)truncations, (unsigned)aaaa_validated);
 }

@@ -196,16 +196,71 @@ def assert_contains(value: str, *markers: str) -> None:
         raise RuntimeError(f"missing {missing!r} in output {value!r}")
 
 
+# What "nslookup <name>" can end up saying, and what each one means. The gate
+# needs all four apart, because three of them used to arrive as the same word.
+#
+#   an address         the chain validated
+#   dnssec-unverified  the chain was walked and refused -- a verdict
+#   dnssec-timeout     the walk ran out of budget -- no verdict was reached
+#   invalid-argument   the command was wrong; nothing was asked about any name
+DNS_UNVERIFIED = "dnssec-unverified"
+DNS_TIMEOUT = "dnssec-timeout"
+DNS_BAD_ARGUMENT = "nslookup: invalid-argument"
+
+# Longer than the resolver's own walk budget (45 s), deliberately. At 15 s this
+# gate gave up first and reported its own impatience as the resolver's, which
+# is the wrong end of the wire to be measuring: the point is to see the verdict
+# the resolver reached, including "dnssec-timeout" when it reached none.
+DNS_PATIENCE_SECONDS = 60.0
+
+
 def wait_dns_result(key: Path, port: int, command: str, label: str) -> str:
     """Wait for XAIOS's asynchronous resolver without accepting a timeout."""
-    deadline = time.monotonic() + 15.0
+    deadline = time.monotonic() + DNS_PATIENCE_SECONDS
     value = ""
     while time.monotonic() < deadline:
         value = ssh_command(key, port, command, ok=None)
         if "pending" not in value:
             return value
         time.sleep(0.5)
-    raise RuntimeError(f"DNS {label} remained pending for 15 seconds")
+    raise RuntimeError(
+        f"DNS {label} remained pending for {DNS_PATIENCE_SECONDS:.0f} seconds, "
+        f"longer than the resolver's own walk budget: it never completed at all"
+    )
+
+
+def check_dns_argument_errors(key: Path, port: int) -> None:
+    """A malformed nslookup must be refused as a malformed nslookup.
+
+    B-36. Every one of these used to print "dnssec-unverified" and this gate
+    accepted that word as a fail-closed resolver, so a shell that reported a
+    typo as a DNSSEC failure read here as a pass. The assertion that matters is
+    the negative one: the argument error must not be spelled like a verdict
+    about a name, because a gate that accepts both cannot tell them apart.
+    """
+    for command in ("nslookup example.com extra-argument",
+                    "nslookup",
+                    "nslookup -6",
+                    "nslookup -6 a.example.com spare",
+                    # 64 characters, one past what the resolver accepts: the
+                    # resolver rejects it with the same code it uses for a
+                    # refused chain, so the shell has to catch it first.
+                    "nslookup " + "a" * 64):
+        output = ssh_command(key, port, command, ok=False)
+        if DNS_UNVERIFIED in output or DNS_TIMEOUT in output:
+            raise RuntimeError(
+                f"{command!r} reported a malformed argument as a verdict about "
+                f"a name: {output!r}"
+            )
+        assert_contains(output, DNS_BAD_ARGUMENT)
+    # ...and the same shell still answers a well-formed lookup, so the check
+    # above cannot be passed by refusing every nslookup.
+    well_formed = wait_dns_result(key, port, "nslookup example.com",
+                                  "A (well-formed)")
+    if DNS_BAD_ARGUMENT in well_formed:
+        raise RuntimeError(
+            f"a well-formed nslookup was rejected as malformed: {well_formed!r}"
+        )
 
 
 def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
@@ -284,25 +339,28 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
         time.sleep(1.0)
         ping = ssh_command(key, port, "ping status")
         assert_contains(ping, "target=10.0.2.2", "rtt_ns=")
+        check_dns_argument_errors(key, port)
         second_dns = wait_dns_result(key, port, "nslookup example.com", "A")
         dns_value = second_dns.partition(": ")[2].strip()
-        if dns_value != "dnssec-unverified":
+        if dns_value != DNS_UNVERIFIED:
             try:
                 if ipaddress.ip_address(dns_value).version != 4:
                     raise ValueError("not IPv4")
             except ValueError as error:
                 raise RuntimeError(
-                    "DNS A response was neither authenticated nor fail-closed"
+                    "DNS A response was neither authenticated nor fail-closed: "
+                    f"{dns_value!r}"
                 ) from error
         second_aaaa = wait_dns_result(key, port, "nslookup -6 example.com", "AAAA")
         aaaa_value = second_aaaa.partition(": ")[2].strip()
-        if aaaa_value != "dnssec-unverified":
+        if aaaa_value != DNS_UNVERIFIED:
             try:
                 if ipaddress.ip_address(aaaa_value).version != 6:
                     raise ValueError("not IPv6")
             except ValueError as error:
                 raise RuntimeError(
-                    "DNS AAAA response was neither authenticated nor fail-closed"
+                    "DNS AAAA response was neither authenticated nor "
+                    f"fail-closed: {aaaa_value!r}"
                 ) from error
         ssh_command(key, port, "config export /tmp/closure-config.bin")
         assert_contains(ssh_command(key, port,
@@ -338,6 +396,7 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
         "arch": arch,
         "status": "pass",
         "durable_lifecycle_records": len(lifecycle_lines(log_path)),
+        "dns_argument_error_rejected": "pass",
         "unclean_recovery": "pass",
         "reboot": "pass",
         "orderly_shutdown": "pass",

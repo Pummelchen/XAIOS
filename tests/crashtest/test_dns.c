@@ -23,7 +23,15 @@ static uint16_t g_rng_value = UINT16_C(0x1234);
 void panic_at(const char *file, int line, const char *fmt, ...) {
   (void)fmt; fprintf(stderr, "panic at %s:%d\n", file, line); abort();
 }
-void klog(const char *fmt, ...) { (void)fmt; }
+/* Not a no-op any more: dns_self_test() reports what it proved in its marker,
+   and a hosted run that prints it is how a reader sees the counts without
+   booting a machine. */
+void klog(const char *fmt, ...) {
+  va_list arguments;
+  va_start(arguments, fmt);
+  (void)vprintf(fmt, arguments);
+  va_end(arguments);
+}
 uint64_t timer_now_ns(void) { return g_now_ns; }
 uint64_t wall_time_now_ns(void) { return UINT64_C(1900000000000000000); }
 int xaios_random(void *buffer, uint64_t size) { memset(buffer, 0x5a, (size_t)size); return 0; }
@@ -208,11 +216,102 @@ static void run_resolver_chain(void) {
   assert(dns_resolve("TEST", &address) == XAIOS_OK && address == UINT32_C(0x01020304)); assert(dns_authenticated_count() == 1U && dns_query_count() == 4U);
 }
 
+/* B-35 control, positive half. The chain used to be judged against a single
+   deadline stamped when the resolve began, so a walk whose every hop answered
+   well inside its own budget still ran out of time partway down. Six seconds
+   between hops is twenty-four seconds across the walk -- comfortably past the
+   fifteen-second budget the whole chain used to share, and comfortably inside
+   each query's own. dns_tick is called between hops because that is where the
+   deadline lives; a version of this test that never ticked would pass against
+   the defect. */
+static void run_resolver_slow_chain(void) {
+  uint32_t address = 0U;
+  uint8_t frame[512];
+  g_now_ns = UINT64_C(1000000000);
+  dns_init();
+  configure_test_anchor();
+  dns_configure(UINT32_C(0x0a000203));
+  assert(dns_resolve("test", &address) == XAIOS_ERR_BUSY);
+  for (uint32_t i = 0U; i < 4U; ++i) {
+    g_now_ns += UINT64_C(6000000000);
+    dns_tick(g_now_ns);
+    assert(dns_timeout_count() == 0U);
+    uint32_t length = 0U;
+    const uint8_t *payload = response_for_query(&length);
+    xaios_status_t status = dns_process_ipv4_frame(
+        frame, frame_from_dns(frame, payload, length), g_now_ns);
+    assert(i == 3U ? status == XAIOS_OK : status == XAIOS_ERR_BUSY);
+  }
+  assert(dns_resolve("test", &address) == XAIOS_OK &&
+         address == UINT32_C(0x01020304));
+  assert(dns_timeout_count() == 0U);
+  assert(dns_authenticated_count() == 1U);
+}
+
+/* B-35 control, negative half: per-query deadlines must not compose into an
+   unbounded wait. Every hop here answers fourteen seconds in, inside its own
+   deadline, so nothing but the walk budget can end the walk -- and when it
+   does, the caller is told no verdict was reached (XAIOS_ERR_CANCELLED) and
+   not that one was reached and refused (XAIOS_ERR_INVALID). */
+static void run_resolver_walk_budget(void) {
+  uint32_t address = 0U;
+  uint8_t frame[512];
+  uint32_t hops = 0U;
+  g_now_ns = UINT64_C(1000000000);
+  dns_init();
+  configure_test_anchor();
+  dns_configure(UINT32_C(0x0a000203));
+  assert(dns_resolve("test", &address) == XAIOS_ERR_BUSY);
+  while (dns_timeout_count() == 0U && hops < 8U) {
+    g_now_ns += UINT64_C(14000000000);
+    dns_tick(g_now_ns);
+    if (dns_timeout_count() != 0U) break;
+    uint32_t length = 0U;
+    const uint8_t *payload = response_for_query(&length);
+    (void)dns_process_ipv4_frame(
+        frame, frame_from_dns(frame, payload, length), g_now_ns);
+    ++hops;
+  }
+  assert(dns_timeout_count() == 1U);
+  /* The walk ended before the chain did; had it completed, this would be 4. */
+  assert(hops < 4U);
+  xaios_status_t verdict = dns_resolve("test", &address);
+  assert(verdict == XAIOS_ERR_CANCELLED);
+  assert(verdict != XAIOS_ERR_INVALID);
+  assert(dns_authenticated_count() == 0U);
+}
+
+/* The base case the two above are built on: a query nobody answers reaches its
+   own deadline and is reported as a timeout. */
+static void run_resolver_query_timeout(void) {
+  uint32_t address = 0U;
+  g_now_ns = UINT64_C(1000000000);
+  dns_init();
+  configure_test_anchor();
+  dns_configure(UINT32_C(0x0a000203));
+  assert(dns_resolve("test", &address) == XAIOS_ERR_BUSY);
+  g_now_ns += UINT64_C(16000000000);
+  dns_tick(g_now_ns);
+  assert(dns_timeout_count() == 1U);
+  assert(dns_resolve("test", &address) == XAIOS_ERR_CANCELLED);
+}
+
 int main(void) {
+  /* B-34. The kernel self-test now walks a signed chain, rejects a forged and
+     an expired signature, drives the truncation fallback, validates a AAAA
+     RRset and checks both resolver deadlines. Running it here is what makes
+     those assertions a gate rather than a claim a machine has to boot to
+     check: its kasserts abort this binary, and it restores the real root
+     anchors on the way out, so the tests below are unaffected. */
+  dns_self_test();
   run_malformed_corpus();
   run_validator_tests();
   run_resolver_chain();
-  puts("dns: local DNSSEC chain, negative proof, malformed corpus, and cache passed");
+  run_resolver_slow_chain();
+  run_resolver_walk_budget();
+  run_resolver_query_timeout();
+  puts("dns: local DNSSEC chain, negative proof, malformed corpus, cache, "
+       "kernel self-test, and per-query/walk deadlines passed");
   return 0;
 }
 #endif
