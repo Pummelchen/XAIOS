@@ -72,23 +72,23 @@ to set itself up on its first boot.
 
 | File | Bytes | SHA-256 |
 |---|---|---|
-| `xaios_b6-aarch64-netboot.zip` | 2,375,537 | `9faa68a309f7b7c5f12088880b3e56a58cdb839b91bbc8b43cf9ac9cef126866` |
-| `xaios_b6-aarch64-qemu.zip` | 13,904,457 | `5707fbd1b7222dd836fb0f9a816c31adb2cbbf968c25fa62e332538aeab067c1` |
-| `xaios_b6-aarch64-usb.zip` | 13,905,437 | `ef5158ad74f4ca554574416adf4793da5e8f36384f27a28bbf7c8c17dbfc8598` |
-| `xaios_b6-aarch64-virtualization-framework.zip` | 13,912,498 | `fd317ec8779307ad2b5600b6535deb0918dc2b70d2b7a01d1da3d23268dac23b` |
-| `xaios_b6-aarch64-vmware-fusion.zip` | 13,905,807 | `a48103db377c0dc6e94ab1b5f44a5f029b81fcd39fb978eaa53ac98d41a8b249` |
-| `xaios_b6-aarch64.iso` | 219,492,352 | `6e70d935e9f54bd34022db7a12d5c82bc6a2c50a4482beeac7de371e0de12aff` |
-| `xaios_b6-aarch64.iso.zip` | 13,901,155 | `ca108b66e469d15c3e619d372e7e3f9f5493702f3b84feb09dcd09c89f3900d0` |
-| `xaios_b6-riscv64-netboot.zip` | 4,270,592 | `50538432d2cb1271026945481be5ce39a4165c33ae255e51cdee65772dd7fbbb` |
-| `xaios_b6-riscv64-qemu.zip` | 13,079,076 | `c4a97acbe25236f9ded0da3d30c602a4c6ed0c940f681ce82e8baba84e64a7a1` |
-| `xaios_b6-riscv64-usb.zip` | 13,079,432 | `f924db21bd4bd92e32a1f9f0a2724c24722a515eb58c0897761463d09038434d` |
-| `xaios_b6-riscv64.iso` | 84,226,048 | `562ad49f33e89b0e609012dfede39a5902f89181004af2220473fc96a4895799` |
-| `xaios_b6-riscv64.iso.zip` | 13,075,130 | `2af83e7fdf5c93f0f971a01c0bf2f5bc3c7bd7afa4e22db01dcc2e40702231ff` |
-| `xaios_b6-x86_64-netboot.zip` | 2,202,876 | `551b9cebee7dc9427f3b148a27a1a88b40acedb7158cbbe20833d2a567f32401` |
-| `xaios_b6-x86_64-qemu.zip` | 6,750,556 | `e1a1c03296dc54c57f9fc4fdfce5e9b6f5073dff121b5d35afaee51e2898b125` |
-| `xaios_b6-x86_64-usb.zip` | 6,751,672 | `b4a30a2a52b1fe642519fae2431fe499a129d57fb1bc3429399b336802504af4` |
-| `xaios_b6-x86_64.iso` | 77,934,592 | `03bffb26b2069a98703b7f815b28b4fd1600998fb455a561529fa5f00c3720c1` |
-| `xaios_b6-x86_64.iso.zip` | 6,747,395 | `7ae766026d8f7ea094468679aed79721f2bf7b57221126cb92c6aa64ac0fa75a` |
+| `xaios_b6-aarch64-netboot.zip` | 2,376,019 | `83285a50cfe2b5c3b8061e2ae7255b0d6e198809209bb716d0a692cf4a2e5967` |
+| `xaios_b6-aarch64-qemu.zip` | 13,904,265 | `47bcff4b81bc124b1edb1a9a99281e0accab02f1c5d6da337f47c3a6392a364e` |
+| `xaios_b6-aarch64-usb.zip` | 13,905,242 | `15c6d87d8e625963f2071d844c966c0fd72069e349e5549127e3d866d3776d75` |
+| `xaios_b6-aarch64-virtualization-framework.zip` | 13,912,304 | `729039fd8c49c35261701ed2eb34f8dc4024b66b6a7d98ae521255f7328856a0` |
+| `xaios_b6-aarch64-vmware-fusion.zip` | 13,905,612 | `8f949eae4621a653218a69f02124036ae846ef46a25b80ffd6c3e07d39a1a2a1` |
+| `xaios_b6-aarch64.iso` | 219,492,352 | `b21f2a61ab6a1c28710e0e2d3979cdc05771d6d346ab80855ce66f55a5827f98` |
+| `xaios_b6-aarch64.iso.zip` | 13,900,958 | `48b3bf3068afab21a8e4016cc20241c847d0f4bc496dc2e0e2f223aecda6b51c` |
+| `xaios_b6-riscv64-netboot.zip` | 4,266,986 | `bba4e911ea28f2d1b7afaf766451cac5d4e781f119ac6cb69c651a7e06514288` |
+| `xaios_b6-riscv64-qemu.zip` | 13,076,247 | `1043fa9c2a80faa58109043b0e44a86d85cc3f5d2c1399696dcb5b888b944036` |
+| `xaios_b6-riscv64-usb.zip` | 13,076,607 | `e9689fe63207853604a302d7042d4730db100c0d2f2b7637412e2d632272f476` |
+| `xaios_b6-riscv64.iso` | 84,226,048 | `ae6e175cf7c7342e2f02933fddfa152d97ba26ce24a5d35afb9605e54e5b3a7e` |
+| `xaios_b6-riscv64.iso.zip` | 13,072,305 | `0ab19eb746adaf8c6752f8f83675eac693881525e6c082147b3adf36213f34b9` |
+| `xaios_b6-x86_64-netboot.zip` | 2,202,871 | `e58f4e9e431705bb6961e32709562cd8d848ede1a1c8f0c385e9c43c3aee7ca1` |
+| `xaios_b6-x86_64-qemu.zip` | 6,750,490 | `f318e45151c00c7243b5ad41ef1f75a8572d9fbddfa70c5d6fef834de2e6e84a` |
+| `xaios_b6-x86_64-usb.zip` | 6,751,604 | `c8caeef078aa64a1f7bcf753b72247b55623b538677639bb2715a93a99b204ff` |
+| `xaios_b6-x86_64.iso` | 77,934,592 | `468a487e0f35333e2d3b39901e6313643ec6d4e8ebdfc28acb45310bcc5fb916` |
+| `xaios_b6-x86_64.iso.zip` | 6,747,330 | `2e313955f2029dfcd063247fbec616ce741d2e8c577663d4a3d55673bb732d6a` |
 
 ## Where this was tested
 
