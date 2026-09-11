@@ -13,6 +13,17 @@
 
 #include "dns_selftest_chain.h"
 
+#ifndef XAIOS_BOOT_TEST_APPS
+#define XAIOS_BOOT_TEST_APPS 0
+#endif
+
+/* The instant the fixture chain's signatures are judged at. Shared by the
+   self-test and, in the boot-test configuration, by the fixture zone the
+   resolver answers locally: both validate the same committed material, and
+   both must do so without reading a wall clock that may still be the raw
+   monotonic counter this early in boot. */
+#define DNS_SELFTEST_WALL_NS UINT64_C(1900000000000000000)
+
 #define DNS_UDP_FRAME_SIZE 512U
 #define DNS_TCP_MESSAGE_SIZE 4096U
 #define DNS_MAX_HOSTNAME XAIOS_DNS_MAX_HOSTNAME
@@ -463,6 +474,146 @@ static xaios_status_t start_query(dns_pending_t *pending, const char *name,
   return XAIOS_OK;
 }
 
+/* The self-test chain's own trust anchor, as a DS record. The chain in
+   dns_selftest_chain.h is rooted here rather than at the real root, and both
+   callers -- the self-test, which installs it as the configured anchor set,
+   and the boot-test fixture zone, which passes it in directly -- need the same
+   bytes. */
+static void dns_selftest_anchor(dnssec_ds_t *out) {
+  bytes_zero(out, sizeof(*out));
+  out->key_tag = DNS_SELFTEST_ROOT_TAG;
+  out->algorithm = 8U;
+  out->digest_type = 2U;
+  out->digest_length = (uint8_t)sizeof(k_selftest_anchor_digest);
+  bytes_copy(out->digest, k_selftest_anchor_digest,
+             sizeof(k_selftest_anchor_digest));
+}
+
+#if XAIOS_BOOT_TEST_APPS
+/* B-33. In the boot-test configuration only, the resolver answers one zone
+   from the signed chain the image already carries, so that a userspace caller
+   can drive a genuine DNSSEC validation on a machine with no recursive
+   resolver to ask. /bin/nettest resolves it and compares the answer; before
+   this, the marker it printed for that was a bare log call with no code behind
+   it.
+
+   Two names, because one of them only proves half of what the marker claims:
+
+     selftest          the fixture zone. DNSKEY -> DS -> DNSKEY -> RRSIG over
+                       the A or AAAA RRset, exactly the code a real answer goes
+                       through, and then admitted to the ordinary cache.
+     forged.selftest   the same zone and key with one bit of the signature
+                       flipped. It must NOT validate. A verifier that returned
+                       success unconditionally would satisfy every check
+                       against the first name and fail only this one, so the
+                       refusal is carried to userspace as a result rather than
+                       being swallowed here.
+
+   Nothing is transmitted and no wall clock is read, so this works before the
+   network is up and on a machine with no NIC.
+
+   Why this is not a special case in shipping code: the whole thing is inside
+   XAIOS_BOOT_TEST_APPS, the same switch that selects the test applications and
+   the same one /bin/nettest's branch is under. `make image`, `make release`
+   and the kit builds set it to 0, so a shipping resolver has no fixture zone,
+   no fixture keyset and no branch testing for either. */
+#define DNS_FIXTURE_FORGED_NAME "forged." DNS_SELFTEST_ZONE
+
+/* A keyset is roughly nine kilobytes; too much for the kernel stack of the
+   thread that happens to make the syscall. Static, and reached only under the
+   network stack guard that dns_resolve_address already holds. */
+static dnssec_keyset_t g_fixture_keys;
+static dnssec_dsset_t g_fixture_ds;
+
+static xaios_status_t dns_fixture_walk(uint16_t type, const uint8_t *answer,
+                                       uint32_t answer_length,
+                                       uint8_t *out_address,
+                                       uint32_t *out_ttl) {
+  dnssec_dsset_t anchors;
+  bytes_zero(&anchors, sizeof(anchors));
+  anchors.owner[0] = '\0';
+  anchors.count = 1U;
+  dns_selftest_anchor(&anchors.records[0]);
+  /* The anchor is passed as the parent DS set rather than installed with
+     dnssec_set_trust_anchors: this runs while the rest of the system is up,
+     and swapping the configured root anchors underneath a real resolution in
+     flight would be a fine way to make one fail for reasons nobody could
+     explain. */
+  if (dnssec_verify_dnskey(k_selftest_root_dnskey,
+                           (uint32_t)sizeof(k_selftest_root_dnskey), "",
+                           &anchors, DNS_SELFTEST_WALL_NS,
+                           &g_fixture_keys) != XAIOS_OK) {
+    return XAIOS_ERR_INVALID;
+  }
+  if (dnssec_verify_ds(k_selftest_ds, (uint32_t)sizeof(k_selftest_ds),
+                       DNS_SELFTEST_ZONE, &g_fixture_keys,
+                       DNS_SELFTEST_WALL_NS, &g_fixture_ds) != XAIOS_OK) {
+    return XAIOS_ERR_INVALID;
+  }
+  if (dnssec_verify_dnskey(k_selftest_dnskey,
+                           (uint32_t)sizeof(k_selftest_dnskey),
+                           DNS_SELFTEST_ZONE, &g_fixture_ds,
+                           DNS_SELFTEST_WALL_NS,
+                           &g_fixture_keys) != XAIOS_OK) {
+    return XAIOS_ERR_INVALID;
+  }
+  return dnssec_verify_address(answer, answer_length, DNS_SELFTEST_ZONE, type,
+                               &g_fixture_keys, DNS_SELFTEST_WALL_NS,
+                               out_address, out_ttl);
+}
+
+static xaios_status_t dns_fixture_resolve(const char *hostname, uint8_t family,
+                                          xaios_ip_addr_t *out_address,
+                                          uint64_t now_ns) {
+  uint8_t forged[sizeof(k_selftest_a)];
+  uint8_t address[16];
+  uint32_t ttl = 0U;
+  uint16_t type = family == XAIOS_IP_FAMILY_V4 ? XAIOS_DNS_TYPE_A
+                                               : XAIOS_DNS_TYPE_AAAA;
+  const uint8_t *answer = k_selftest_a;
+  uint32_t answer_length = (uint32_t)sizeof(k_selftest_a);
+  int tampered = str_case_equal(hostname, DNS_FIXTURE_FORGED_NAME,
+                                DNS_MAX_HOSTNAME);
+  if (tampered) {
+    bytes_copy(forged, k_selftest_a, sizeof(forged));
+    forged[sizeof(forged) - 1U] ^= 0x01U;
+    answer = forged;
+    answer_length = (uint32_t)sizeof(forged);
+    type = XAIOS_DNS_TYPE_A;
+  } else if (family == XAIOS_IP_FAMILY_V6) {
+    answer = k_selftest_aaaa;
+    answer_length = (uint32_t)sizeof(k_selftest_aaaa);
+  }
+  if (dns_fixture_walk(type, answer, answer_length, address, &ttl) !=
+      XAIOS_OK) {
+    ++g_reject_count;
+    klog("dns: fixture %s refused by local validation%s\n", hostname,
+         tampered ? " (expected: the signature was tampered with)" : "");
+    return XAIOS_ERR_INVALID;
+  }
+  ++g_authenticated_count;
+  if (type == XAIOS_DNS_TYPE_A) {
+    *out_address = xaios_ip_addr_from_ipv4(
+        ((uint32_t)address[0] << 24U) | ((uint32_t)address[1] << 16U) |
+        ((uint32_t)address[2] << 8U) | (uint32_t)address[3]);
+  } else {
+    out_address->family = XAIOS_IP_FAMILY_V6;
+    bytes_copy(out_address->addr, address, 16U);
+  }
+  if (tampered) {
+    /* Reported, not hidden: userspace is the one that decides this is a
+       failure, and it cannot decide that if the kernel quietly turns an
+       accepted forgery into a refusal. */
+    klog("dns: fixture %s VALIDATED a tampered signature\n", hostname);
+    return XAIOS_OK;
+  }
+  klog("dns: fixture %s validated locally type=%u ttl=%u chain=selftest\n",
+       hostname, (unsigned)type, (unsigned)ttl);
+  cache_insert(hostname, out_address, ttl, now_ns);
+  return XAIOS_OK;
+}
+#endif
+
 static xaios_status_t dns_resolve_address_unlocked(const char *hostname, uint8_t family,
                                    xaios_ip_addr_t *out_address) {
   if (hostname == 0 || out_address == 0 ||
@@ -471,6 +622,12 @@ static xaios_status_t dns_resolve_address_unlocked(const char *hostname, uint8_t
   }
   uint64_t now_ns = timer_now_ns();
   if (cache_lookup(hostname, family, out_address, now_ns)) return XAIOS_OK;
+#if XAIOS_BOOT_TEST_APPS
+  if (str_case_equal(hostname, DNS_SELFTEST_ZONE, DNS_MAX_HOSTNAME) ||
+      str_case_equal(hostname, DNS_FIXTURE_FORGED_NAME, DNS_MAX_HOSTNAME)) {
+    return dns_fixture_resolve(hostname, family, out_address, now_ns);
+  }
+#endif
   if (g_pending.state == DNS_PENDING_COMPLETE) {
     if (g_pending.family == family &&
         str_case_equal(g_pending.hostname, hostname, DNS_MAX_HOSTNAME)) {
@@ -794,7 +951,6 @@ uint32_t dns_pending_count(void) {
 
    The chain in dns_selftest_chain.h is rooted at its own anchor, not at the
    real root; dns_init() at the end puts the IANA anchors back. */
-#define DNS_SELFTEST_WALL_NS UINT64_C(1900000000000000000)
 #define DNS_SELFTEST_EXPIRED_WALL_NS UINT64_C(2530000000000000000)
 
 static uint32_t dns_self_test_chain(uint32_t *out_aaaa_validated) {
@@ -810,13 +966,7 @@ static uint32_t dns_self_test_chain(uint32_t *out_aaaa_validated) {
   dnssec_keyset_t *keys = &g_pending.validated_keys;
   dnssec_dsset_t *ds = &g_pending.child_ds;
 
-  bytes_zero(&anchor, sizeof(anchor));
-  anchor.key_tag = DNS_SELFTEST_ROOT_TAG;
-  anchor.algorithm = 8U;
-  anchor.digest_type = 2U;
-  anchor.digest_length = (uint8_t)sizeof(k_selftest_anchor_digest);
-  bytes_copy(anchor.digest, k_selftest_anchor_digest,
-             sizeof(k_selftest_anchor_digest));
+  dns_selftest_anchor(&anchor);
   kassert(dnssec_set_trust_anchors(&anchor, 1U) == XAIOS_OK);
 
   kassert(dnssec_verify_dnskey(k_selftest_root_dnskey,

@@ -313,7 +313,20 @@ TARGETS = [
     "/bin/nettest: complete",
     "/bin/nettest: app-callable udp/tcp path passed",
     "/bin/nettest: external host-to-guest tcp/udp session path passed",
+    # B-33. These two used to be bare log calls under XAIOS_BOOT_TEST_APPS with
+    # no resolver code behind them, so this gate certified two printfs. The
+    # boot-test kernel now answers the committed fixture zone from the signed
+    # chain in kernel/net/dns_selftest_chain.h, and /bin/nettest prints the
+    # first marker only after resolving it -- A and AAAA, compared against the
+    # fixture's own addresses -- and being refused the same zone with one bit
+    # of the signature flipped. The second follows a repeat resolve served from
+    # the cache the validated answer was admitted to.
     "/bin/nettest: deterministic local DNSSEC resolver path passed",
+    # The figure the resolver returned, not only the verdict: 171245575 is
+    # 10.53.0.7, the fixture's A record. A resolver that answered with anything
+    # else -- or that was handed a regenerated chain nobody propagated -- misses
+    # this line rather than passing on the sentence above it.
+    "/bin/nettest: dnssec_fixture_ipv4=171245575",
     "/bin/nettest: userspace DNS fixture path passed",
     "kernel: /bin/nettest returned to kernel exit_code=0",
     "/bin/lstm-xor: CPU-only two-hidden-layer LSTM XOR example starting",
