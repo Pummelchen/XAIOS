@@ -10,26 +10,21 @@ that did it and in the comments beside the code.
 
 ## Where the tree stands
 
-The ten aggregate targets -- `qemu-core-os-rc`, `qemu-full-os-rc`,
-`qemu-developer-ux`, `qemu-operations-closure`, `qemu-network-adversarial-gate`,
-`qemu-readiness-gate`, `qemu-post51-gate`, `qemu-qualification-readiness`,
-`qemu-100-gate` and `qemu-release` -- last passed together before the work
-recorded in the rows below, and **have not been re-run since**. That work
-changed shared code every one of them compiles: the virtio-net driver (RSS
-negotiation, the hash key and the queue-pair count), the lifecycle record and
-`operations_init`'s signature, sshd's accept path, and the boot application
-list. Individually re-run since, on this tree: `compile-check`,
-`platform-neutrality-check`, `docs-check`, `code-scanning-contract`,
-`qemu-smoke`, `qemu-thread-join-soak`, `qemu-ssh-connection-rate-gate` and the
-Fusion load soak. The consolidated report deliberately retains
-`physical_qualification=false`.
-
-**Re-running the ten is the next thing to do**, and until it happens no
-statement here about aggregate status is current.
+The ten aggregate targets all pass on this tree: `qemu-core-os-rc`,
+`qemu-full-os-rc`, `qemu-developer-ux`, `qemu-operations-closure`,
+`qemu-network-adversarial-gate`, `qemu-readiness-gate`, `qemu-post51-gate`,
+`qemu-qualification-readiness`, `qemu-100-gate` and `qemu-release`, run
+serially -- these assert on boot markers and timings, and a `qemu-smoke` boot
+was cut short at load average 30 on this machine and passed at load 9 with no
+change in between, so concurrency here manufactures failures that say nothing.
+The consolidated report deliberately retains `physical_qualification=false`.
 
 That is emulated evidence and nothing more. **No result on this page is
 physical-hardware evidence, and no released build has been booted on physical
 hardware.**
+
+One step timed out once and did not reproduce; it is `B-39` rather than a
+footnote here.
 
 ### Firmware profile results
 
@@ -146,6 +141,7 @@ only what the defect was and what closed it.
 | ID | Defect | Affects | Status | Notes |
 |---|---|---|---|---|
 | B-38 | A session authenticates, stalls for ~19 s, and its socket is never closed | VMware Fusion ARM64 | `TESTING` | The second of B-28's two signatures, separated from the first now that the accept refusal is understood. Reproduced at round 1569 of 2463: `sftp exited 255 ('Read from remote host ... Operation timed out')` -- a session that was accepted and authenticated, not one refused on accept. The guest's own console shows it: a normal round reads `accept -> auth -> close -> accept`, and the failing one accepted `connfd=3145`, authenticated it, and then accepted `connfd=3146` with **no close of 3145** anywhere in that round or the next. 3146 was served normally, so the machine kept working and one session was orphaned. Host-side timing puts the stall at 18.6 s against neighbouring rounds 0.7 s apart. **To close:** find what holds that session, and whether the orphaned socket is ever reclaimed -- a leak here is bounded by the socket table, which a long enough run would exhaust. |
+| B-39 | `core-os-rc`'s fragmentation step timed out once, and has not since | all four | `TESTING` | In a full serial run of the ten aggregates, `qemu-outbound-fragmentation-gate` was killed by `core-os-rc`'s 360 s step budget with `timed_out: true`, having rebuilt its three images and reached all three `testing` lines. Every other step in that run passed. It has not reproduced: 121 s standalone, 120 s from the boot-test image state, 121 s with all three images invalidated, and a full `core-os-rc` re-run passed in 1323 s on a quiet machine. Two explanations were tried and both are dead -- the step does not parallelise with its neighbours, and the make dependencies it rebuilds are incremental, so the rebuild does not cost the missing four minutes. **To close:** have the step record its own elapsed time and the machine's load when it is killed, so a recurrence says which it was instead of leaving an exit code to be argued about; a budget that kills a correct guest is the defect class `q35-high-core-256-x2apic` already demonstrated here. |
 | B-33 | `qemu-smoke` asserts a `printf` for the DNSSEC path | all four | `TESTING` | Under `XAIOS_BOOT_TEST_APPS` -- the configuration every QEMU gate uses -- `userspace/apps/nettest.c` takes a branch whose entire body is `xaios_log("/bin/nettest: deterministic local DNSSEC resolver path passed")`. No resolver code runs. `tests/scripts/qemu-smoke.py` requires that exact string, so the primary boot gate has been certifying a log line, and the comment beside it claims the marker proves the validating resolver is wired into the build. It proves the string is compiled in. **To close:** make the boot-test branch validate a signed chain the image carries, so the marker can only be printed after a validation actually happened, and prove the gate goes red when the chain is corrupted. |
 | B-34 | `dns_self_test` reports three things it does not test | all four | `TESTING` | `kernel/net/dns.c` prints `dns: self-test passed dnssec=local-chain tcp-fallback=enabled aaaa=enabled` while exercising only `dns_encode_name`, `dns_decode_name` and the cache. No DNSSEC, no TCP fallback and no AAAA path runs. **To close:** either exercise the three, or stop naming them in the marker; a self-test that lists capabilities it never touches is worse than one that stays quiet. |
 | B-35 | One deadline covers a whole DNSSEC chain | all four | `TESTING` | `g_pending.started_ns` is set once in `dns_resolve_address_unlocked` and never reset by `start_query`, so the root-DNSKEY, DS, child-DNSKEY and answer queries share a single 15 s budget against a 5 s retransmit timer. Measured on a bridged Fusion guest: a short chain finished and a longer one spent the budget and returned `XAIOS_ERR_CANCELLED`. **To close:** give each query its own deadline, or budget the walk explicitly, and gate a chain long enough to have failed before. |
