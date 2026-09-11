@@ -164,6 +164,49 @@ client, listener, and packet-capture artifacts are generated under `build/`.
 This is bounded QEMU interoperability and load evidence, not a physical-network
 throughput benchmark or an Internet-exposure approval.
 
+## sshd is also the machine's network thread
+
+This belongs in any reading of SSH availability, because it is a property of
+the SSH service rather than of the network stack alone.
+
+`network_poll_tick()` has no timer, no interrupt handler and no kernel thread
+behind it. It runs inside the network syscalls a process makes and inside
+`xaios_wait_events`, and on a booted machine `/bin/sshd` is the only process
+making either call -- the kernel starts it after disabling preemption and the
+periodic timer, so it is the only thing running on the boot CPU. The guest's
+networking therefore runs exactly while sshd is inside its service loop.
+
+The consequence to plan for: **any pause in that loop is a total network
+outage, not a slow SSH server.** For its duration nothing comes off the receive
+ring, no ACK leaves, no retransmit fires, no timeout expires, nothing is
+refused and nothing is closed -- and from a client it is indistinguishable from
+the machine having gone away. Three of the loop's four phases contain blocking
+work that is not a network syscall, including every `ssh_log` append to the
+durable volume.
+
+Why it is arranged this way, and what a timer or a dedicated thread would cost,
+is argued in [Architecture](../wiki/Architecture.md#what-drives-the-network-stack).
+What matters here is that the condition is now visible rather than silent. Two
+console lines report it:
+
+```
+network: longest gap between polls us=55008 polls=752428 listeners=2
+network: stack was not polled for ms=1840 outages=1 listeners=2
+```
+
+The first is each new worst gap as it is set; the second appears only when a
+gap exceeds one second, which is the point at which the kernel calls it an
+outage rather than a pause. sshd's own `sshd: service loop stalled` line names
+which phase of its loop the time went to, and the two together are what
+separates "the server held the machine" from "the machine was not running".
+
+Measured on QEMU under TCG by `make qemu-network-poll-cadence-gate`: about
+55 ms idle on a quiet host, which is the housekeeping interval of sshd's wait,
+rising to around 105 ms when the build machine is busy; 164 ms and 297 ms worst
+in two runs of three 256 KiB SFTP round trips plus ninety rejected connections;
+no gap over the one-second threshold in any run. A deployment whose durable
+volume is slower than QEMU's should expect those figures to grow with it.
+
 ## Security and Resource Model
 
 The SSH daemon has no built-in account password. Images may package an

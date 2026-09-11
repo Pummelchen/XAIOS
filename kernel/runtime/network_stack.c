@@ -343,6 +343,13 @@ static uint32_t g_half_open_count = 0;
 static uint8_t g_local_mac[6];
 static uint32_t g_persistent_initialized;
 static uint64_t g_poll_tick_count;
+#define NETWORK_POLL_GAP_OUTAGE_NS UINT64_C(1000000000)
+#define NETWORK_POLL_GAP_RECORD_LINES 32U
+
+static uint64_t g_poll_last_ns;
+static uint64_t g_poll_gap_max_ns;
+static uint64_t g_poll_gap_outage_count;
+static uint32_t g_poll_gap_record_lines;
 static uint32_t g_tcp_drain_cursor;
 static uint64_t g_icmp_reply_count;
 static uint64_t g_arp_reply_count;
@@ -458,6 +465,9 @@ static uint16_t g_ping_sequence;
 #define NETWORK_SOCK_FLOW_MAP_SIZE \
   (NETWORK_TCP_CONNECTIONS + NETWORK_UDP_FLOWS)
 static socket_flow_mapping_t g_socket_flow_map[NETWORK_SOCK_FLOW_MAP_SIZE];
+/* Every mapping this table had no room for. Counted rather than inferred: the
+   condition is otherwise invisible from outside the kernel. */
+static uint64_t g_socket_map_exhausted_count;
 
 static uint64_t g_udp_tx_count;
 static uint64_t g_udp_rx_count;
@@ -2124,6 +2134,11 @@ xaios_status_t network_stack_tcp_abort_flow(uint32_t flow_id) {
 
 void network_stack_init(void) {
   g_tcp_drain_cursor = 0U;
+  g_socket_map_exhausted_count = 0U;
+  g_poll_last_ns = 0U;
+  g_poll_gap_max_ns = 0U;
+  g_poll_gap_outage_count = 0U;
+  g_poll_gap_record_lines = 0U;
   for (uint32_t i = 0; i < XAIOS_NETWORK_MAX_QUEUE_BINDINGS; ++i) {
     g_queue_bindings[i].cell_id = 0;
     g_queue_bindings[i].queue_id = XAIOS_NETWORK_QUEUE_ID_INVALID;
@@ -2806,14 +2821,34 @@ xaios_status_t network_stack_accept_connection(uint16_t listen_port,
 
 /* ---- Socket-to-Flow Mapping Functions ---- */
 
-static void network_stack_map_socket_unlocked(uint64_t sockfd, uint32_t flow_id,
+/* B-47. This used to return void and fall off the end when both scans failed,
+   so a full table was indistinguishable from a successful mapping. The accept
+   that called it still allocated a descriptor, still wrote the peer address
+   back to userspace and still logged "syscall: net_accept" -- and the socket
+   it handed out had no flow behind it, so every later send and recv on that
+   descriptor looked up nothing and did nothing. A connection accepted and then
+   never progressed, with not one line anywhere saying why.
+
+   The table is NETWORK_TCP_CONNECTIONS + NETWORK_UDP_FLOWS entries, which
+   reads like "one slot per flow, so it cannot run out before flows do". That
+   is not what bounds it. A row is keyed by descriptor, not by flow, and is
+   cleared on net_close or when the owning process is torn down -- for UDP also
+   when the flow itself is released, but for TCP not: release_tcp_flow leaves
+   the row standing. So the occupancy is the number of open mapped
+   descriptors, and the kernel socket table holds at least 256 of those
+   (KERNEL_SOCK_MIN_CAPACITY) against 160 rows here. A process that opens
+   connections and leaves the descriptors open while their flows die -- a
+   leak, a peer that resets, a plain idle timeout -- fills this table with an
+   empty flow table. Sizing does not protect it; the refusal below does. */
+static xaios_status_t network_stack_map_socket_unlocked(uint64_t sockfd,
+                                uint32_t flow_id,
                                 uint8_t protocol) {
   for (uint32_t i = 0; i < NETWORK_SOCK_FLOW_MAP_SIZE; ++i) {
     if (g_socket_flow_map[i].active != 0 &&
         g_socket_flow_map[i].sockfd == sockfd) {
       g_socket_flow_map[i].flow_id = flow_id;
       g_socket_flow_map[i].protocol = protocol;
-      return;
+      return XAIOS_OK;
     }
   }
   for (uint32_t i = 0; i < NETWORK_SOCK_FLOW_MAP_SIZE; ++i) {
@@ -2822,16 +2857,49 @@ static void network_stack_map_socket_unlocked(uint64_t sockfd, uint32_t flow_id,
       g_socket_flow_map[i].flow_id = flow_id;
       g_socket_flow_map[i].protocol = protocol;
       g_socket_flow_map[i].active = 1;
-      return;
+      return XAIOS_OK;
     }
   }
+  ++g_socket_map_exhausted_count;
+  /* Loud, but not loud enough to drown the console: a caller that retries in a
+     tight loop would otherwise turn one exhausted table into a serial flood,
+     and an unread serial pipe stalls the guest. First occurrence, then every
+     sixty-fourth. */
+  if (g_socket_map_exhausted_count == 1U ||
+      (g_socket_map_exhausted_count % 64U) == 0U) {
+    klog("network: socket-to-flow map exhausted size=%u sockfd=%lu flow=%u "
+         "protocol=%u refusals=%lu\n",
+         (unsigned)NETWORK_SOCK_FLOW_MAP_SIZE, (unsigned long)sockfd, flow_id,
+         (unsigned)protocol, g_socket_map_exhausted_count);
+  }
+  return XAIOS_ERR_NO_MEMORY;
 }
 
-void network_stack_map_socket(uint64_t sockfd, uint32_t flow_id,
+xaios_status_t network_stack_map_socket(uint64_t sockfd, uint32_t flow_id,
                                 uint8_t protocol) {
   network_lock();
-  network_stack_map_socket_unlocked(sockfd, flow_id, protocol);
+  xaios_status_t status =
+      network_stack_map_socket_unlocked(sockfd, flow_id, protocol);
   network_unlock();
+  return status;
+}
+
+uint64_t network_stack_socket_map_exhausted_count(void) {
+  return g_socket_map_exhausted_count;
+}
+
+uint32_t network_stack_socket_map_capacity(void) {
+  return NETWORK_SOCK_FLOW_MAP_SIZE;
+}
+
+uint32_t network_stack_socket_map_count(void) {
+  uint32_t used = 0U;
+  network_lock();
+  for (uint32_t i = 0; i < NETWORK_SOCK_FLOW_MAP_SIZE; ++i) {
+    if (g_socket_flow_map[i].active != 0U) ++used;
+  }
+  network_unlock();
+  return used;
 }
 
 static socket_flow_mapping_t *network_stack_get_socket_mapping_unlocked(uint64_t sockfd) {
@@ -3238,8 +3306,11 @@ static uint32_t network_stack_udp_recv_unlocked(uint64_t sockfd, uint8_t *buffer
          from inside a listener-guard section, inverting the order the two
          guards are documented to keep. Reentrancy hid this while there was
          only one guard. */
-      network_stack_map_socket_unlocked(sockfd, entry.flow_id,
-                                        NETWORK_IP_PROTO_UDP);
+      /* The datagram has already been handed to the caller, so there is
+         nothing to refuse here; an exhausted table costs this socket its
+         reply path and says so in the log (B-47). */
+      (void)network_stack_map_socket_unlocked(sockfd, entry.flow_id,
+                                              NETWORK_IP_PROTO_UDP);
       { listener_unlock(); return bytes_read; }
     }
   }
@@ -5135,6 +5206,68 @@ void network_stack_self_test(void) {
   kassert(network_stack_queue_backpressure_drop_count() == 0U);
   kassert(network_stack_flow_core_mismatch_count() == 0U);
 
+  {
+    /* B-47: fill the socket-to-flow table and watch it refuse.
+   
+       Nothing in a boot fills this table, and nothing in the syscall paths
+       could see it full, because the failure was a void return. So the only
+       honest gate is to fill it here -- every row, from whatever the tests
+       above left behind -- and then ask for one more. The probe descriptor is
+       above anything the kernel socket allocator hands out, so it cannot
+       collide with a real row.
+   
+       Three things are asserted, and they fail for three different reasons:
+       the table really is full (a fill that quietly reused one row would
+       prove nothing), the extra mapping is refused with a status the caller
+       can act on (this is the line that goes red if the refusal is removed),
+       and the probe descriptor genuinely has no mapping afterwards -- which
+       is what the accept path used to hand to userspace without a word. */
+    const uint64_t probe_base = UINT64_C(0x5841494f53000000);
+    uint32_t capacity = network_stack_socket_map_capacity();
+    uint32_t before = network_stack_socket_map_count();
+    uint64_t exhausted_before = network_stack_socket_map_exhausted_count();
+    uint32_t filled = 0U;
+    kassert(before < capacity);
+    for (uint32_t i = before; i < capacity; ++i) {
+      kassert(network_stack_map_socket(probe_base + i, 0x4000U + i,
+                                       NETWORK_IP_PROTO_TCP) == XAIOS_OK);
+      ++filled;
+    }
+    kassert(network_stack_socket_map_count() == capacity);
+    kassert(network_stack_socket_map_exhausted_count() == exhausted_before);
+
+    socket_flow_mapping_t overflow_mapping;
+    const uint64_t overflow_fd = probe_base + capacity;
+    kassert(network_stack_map_socket(overflow_fd, 0x9999U,
+                                     NETWORK_IP_PROTO_TCP) ==
+            XAIOS_ERR_NO_MEMORY);
+    kassert(network_stack_socket_map_exhausted_count() ==
+            exhausted_before + 1U);
+    kassert(network_stack_get_socket_mapping(overflow_fd,
+                                             &overflow_mapping) == 0);
+    /* A descriptor already in the table is still updated when the table is
+       full -- the first scan matches before the second one runs out. Without
+       this the refusal would break every established socket the moment one
+       new one could not be admitted. */
+    socket_flow_mapping_t rebind_mapping;
+    kassert(network_stack_map_socket(probe_base + before, 0x7777U,
+                                     NETWORK_IP_PROTO_TCP) == XAIOS_OK);
+    kassert(network_stack_get_socket_mapping(probe_base + before,
+                                             &rebind_mapping) != 0);
+    kassert(rebind_mapping.flow_id == 0x7777U);
+    kassert(network_stack_socket_map_exhausted_count() ==
+            exhausted_before + 1U);
+
+    for (uint32_t i = before; i < capacity; ++i) {
+      network_stack_unmap_socket(probe_base + i);
+    }
+    kassert(network_stack_socket_map_count() == before);
+    klog("network: socket-flow map exhaustion self-test passed capacity=%u "
+         "filled=%u refused=%lu\n",
+         capacity, filled,
+         network_stack_socket_map_exhausted_count() - exhausted_before);
+  }
+
   uint64_t udp50;
   uint64_t udp95;
   uint64_t udp99;
@@ -5200,6 +5333,14 @@ void network_init_persistent(void) {
   for (uint32_t i = 0; i < NETWORK_SOCK_FLOW_MAP_SIZE; ++i) {
     g_socket_flow_map[i].active = 0;
   }
+  /* The boot self-test fills this table on purpose and leaves its refusals
+     counted. Zero them here so a non-zero figure in a running machine means
+     a running machine ran out. */
+  g_socket_map_exhausted_count = 0U;
+  g_poll_last_ns = 0U;
+  g_poll_gap_max_ns = 0U;
+  g_poll_gap_outage_count = 0U;
+  g_poll_gap_record_lines = 0U;
   g_half_open_count = 0;
   g_tcp_drain_cursor = 0U;
   sockbuf_pool_init();
@@ -5373,12 +5514,85 @@ static int network_reassemble_incoming(uint8_t *frame, uint32_t *frame_len,
   return 1;
 }
 
+/* B-44: how long the stack went undriven, and saying so.
+
+   This poll has no timer, no interrupt handler and no kernel thread. It runs
+   inside the network syscalls a process makes and inside wait_events, and on
+   a booted machine the process making those calls is sshd -- which the kernel
+   starts as its last act, on the boot CPU, after switching preemption and the
+   periodic timer off (kmain.c). So the guest's networking runs exactly while
+   sshd is inside its loop, and any pause anywhere in that loop is a total
+   network outage: nothing comes off the receive ring, no ACK leaves, no
+   retransmit fires, no flow expires.
+
+   Whether that arrangement should change is a design question and is argued
+   in wiki/Architecture.md. What was indefensible is that it was invisible:
+   from inside, a stack that has not run for ten seconds is indistinguishable
+   from a quiet network, and from outside it is indistinguishable from the
+   machine having gone away. So the gap between consecutive polls is measured
+   here, the longest one is kept, and a gap long enough to be an outage says
+   so on the console.
+
+   Measured only while a listener is registered. With no listener there is
+   nothing the poll is late for, and a machine with no network service would
+   otherwise report enormous gaps that mean nothing -- a metric that fires on
+   an idle machine is a metric nobody reads. */
+static uint32_t listeners_active_unlocked(void) {
+  uint32_t active = 0U;
+  for (uint32_t i = 0U; i < NETWORK_MAX_LISTENERS; ++i) {
+    if (g_listeners_ex[i].active != 0U) ++active;
+  }
+  return active;
+}
+
+static void network_note_poll_gap(uint64_t now_ns) {
+  uint32_t listeners = listeners_active_unlocked();
+  if (listeners == 0U) {
+    /* Nothing is waiting on this stack. Forget when it last ran, so the first
+       poll after a listener appears is not charged with the idle stretch
+       before it. */
+    g_poll_last_ns = 0U;
+    return;
+  }
+  uint64_t previous = g_poll_last_ns;
+  g_poll_last_ns = now_ns;
+  if (previous == 0U || now_ns <= previous) return;
+  uint64_t gap_ns = now_ns - previous;
+  if (gap_ns >= NETWORK_POLL_GAP_OUTAGE_NS) {
+    ++g_poll_gap_outage_count;
+    /* Rate-limited for the reason every log on this path is: a machine that
+       is stalling repeatedly must not turn its own diagnosis into the next
+       stall. First, then every sixty-fourth. */
+    if (g_poll_gap_outage_count == 1U ||
+        (g_poll_gap_outage_count % 64U) == 0U) {
+      klog("network: stack was not polled for ms=%lu outages=%lu listeners=%u "
+           "(nothing drives this poll but the processes calling into it)\n",
+           gap_ns / UINT64_C(1000000), g_poll_gap_outage_count, listeners);
+    }
+  }
+  if (gap_ns <= g_poll_gap_max_ns) return;
+  g_poll_gap_max_ns = gap_ns;
+  /* Every new maximum, which is a short and self-limiting sequence: it climbs
+     to the cadence of whatever is driving the poll and then stops. Capped all
+     the same, so a machine that degrades steadily cannot fill the console. */
+  if (g_poll_gap_record_lines >= NETWORK_POLL_GAP_RECORD_LINES) return;
+  ++g_poll_gap_record_lines;
+  klog("network: longest gap between polls us=%lu polls=%lu listeners=%u\n",
+       g_poll_gap_max_ns / UINT64_C(1000), g_poll_tick_count, listeners);
+}
+
+uint64_t network_poll_gap_max_ns(void) { return g_poll_gap_max_ns; }
+uint64_t network_poll_gap_outage_count(void) {
+  return g_poll_gap_outage_count;
+}
+
 static void network_poll_tick_locked(void) {
   operations_tick();
   if (g_persistent_initialized == 0) {
     return;
   }
   uint64_t now_ns = timer_now_ns();
+  network_note_poll_gap(now_ns);
   ntp_tick(now_ns);
   if (g_public_v6_valid_until_ns != 0U && now_ns >= g_public_v6_valid_until_ns) {
     xaios_ip_addr_zero(&g_public_v6);

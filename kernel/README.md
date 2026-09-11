@@ -26,13 +26,26 @@ neutrality](../docs/PLATFORM-NEUTRALITY.md).
 | `lib/` | Freestanding helpers with no subsystem of their own. |
 | `include/xaios/` | Every public kernel header. A subsystem's interface lives here; its implementation does not. |
 
-## Two distinctions worth knowing before you choose a directory
+## Three things worth knowing before you choose a directory
 
 **`net/` against `runtime/network_stack.c`.** `net/` builds and parses packets
 and knows nothing about sockets, queues or processes. The network stack owns
 the state — sockets, flows, the routing table, the guard that serialises it —
 and calls into `net/` to do the protocol work. A change to how a header is
 parsed goes in `net/`; a change to what happens to a socket goes in `runtime/`.
+
+**What runs the network stack.** Nothing schedules it. `network_poll_tick()`
+in `runtime/network_stack.c` -- which drains the device ring, runs the TCP
+state machine, retransmits and expires flows -- has no timer, no interrupt
+handler and no kernel thread behind it. It runs inside the network syscalls a
+process makes and inside `xaios_wait_events`, and on a booted machine the
+process making those calls is `/bin/sshd`, which `core/kmain.c` starts after
+disabling preemption and the periodic timer. So a pause anywhere in sshd's loop
+is a total network outage for its duration. Before adding work to any path
+between a network syscall and that poll, read the argument and the costed
+alternatives in [Architecture](../wiki/Architecture.md#what-drives-the-network-stack);
+the stack measures its own gaps and `make qemu-network-poll-cadence-gate`
+reports the worst one.
 
 **`fs/` against `storage/`.** `fs/` is about files inside a volume.
 `storage/` is about volumes themselves — where they begin on a disk, which of

@@ -98,6 +98,100 @@ firmware tables the kernel parses at boot, and a hard-coded board value
 survives only as a last-resort fallback in the loader's own early console:
 assuming one is the defect `docs/PLATFORM-NEUTRALITY.md` exists to prevent.
 
+## What drives the network stack
+
+`network_poll_tick()` in `kernel/runtime/network_stack.c` is the whole of the
+network stack's forward motion. It drains the device's receive ring, answers
+ARP and NDP, reassembles fragments, feeds DNS and NTP, runs the TCP state
+machine, sends the ACKs, retransmits what was not acknowledged, expires dead
+flows and drains pending transmissions.
+
+**Nothing schedules it.** There is no timer callback, no interrupt handler and
+no kernel thread behind it. It runs only when something calls it, and the
+callers are: the network syscalls in `kernel/user/syscall.c` (connect, accept,
+send, recv, resolve), the wait loop of `xaios_wait_events`, and two boot-time
+loops -- the NTP sync in `kmain.c` and the SLAAC wait in the stack itself. From
+userspace only `/bin/sshd` and `/bin/xtop` call `wait_events`, and the tick
+inside it runs only for a caller holding `XAIOS_CAP_NET_SOCKET`.
+
+So on a booted machine the network runs while sshd is inside its service loop,
+and not otherwise. That is stronger than it sounds, because the kernel's last
+act before starting sshd is to disable preemption and the periodic timer
+(`kmain.c`): sshd is not merely the only network process, it is the only thing
+running on the boot CPU. **Any pause anywhere in that loop -- a slow write to
+the durable volume, a filesystem stall, anything -- is a total network
+outage.** Nothing comes off the receive ring, no ACK leaves the machine, no
+retransmit fires, no timeout expires, nothing is refused and nothing is closed.
+From a peer it is indistinguishable from the machine having gone away. B-43 is
+the first sighting that is probably this.
+
+### Why it is arranged this way, and what the alternatives cost
+
+The arrangement is not an oversight, and both ways out are more expensive than
+they look.
+
+*A timer or interrupt cadence* cannot carry this poll as the kernel stands.
+The stack's guard is `xaios_reentrant_lock`, chosen under C-01 because ten of
+the stack's exported functions call other exported ones; it identifies its
+holder by CPU id, so an interrupt landing on a CPU already inside the guard
+would be told it holds the lock and would walk straight into the critical
+section it interrupted. `kernel/include/xaios/spinlock.h` states that as a
+property to preserve. Nor is the poll interrupt-handler work in the first
+place: its first act is `operations_tick()`, which on a pending power action
+flushes every block device and calls `arch_reboot()`; it puts a 1520-byte
+frame buffer on the stack, and it logs under the kernel log's own lock. And
+the carrier does not exist at runtime anyway -- the 100 Hz tick is switched
+off before sshd starts, and on RISC-V the timer interrupt never reached
+`scheduler_tick()` to begin with. Putting the poll on a timer means restoring
+preemption and making the whole stack interrupt-safe, which is a change to the
+machine's execution model rather than to its scheduling.
+
+*A kernel thread* is lock-safe -- kernel threads are one of the two sanctioned
+contexts for that guard, and an SSH login child on a worker CPU already drives
+this poll through `wait_events` today. Its cost is the thread facility:
+`kernel/sched/thread.c` runs one thread to completion per worker CPU with no
+preemption, so a permanent poll thread permanently removes a CPU from the pool
+that hosts kernel threads -- one of three on the four-core default -- and the
+only production user of that pool is asynchronous process launch. It also
+means a machine that wakes on a cadence whether or not anything is on the
+network, which is the cost this project has twice spent work removing.
+
+*What the current arrangement buys* is that a machine nobody is talking to
+does no network work at all, and that the poll is driven at the rate of
+whatever is actually using the network. `wait_events` already declines to tick
+for a caller that could not receive, and on an interrupt-driven device it ticks
+only when the device reports activity or 50 ms of housekeeping have passed.
+
+### What changed: the coupling is now measurable
+
+The decision is to keep the arrangement and stop it being invisible, because
+invisibility was the part that could not be defended. The stack measures the
+gap between consecutive polls whenever a listener is registered, keeps the
+longest, prints each new maximum, and prints a distinct line when a gap is long
+enough to be an outage rather than a pause:
+
+```
+network: longest gap between polls us=55008 polls=752428 listeners=2
+network: stack was not polled for ms=1840 outages=1 listeners=2
+```
+
+`network_poll_gap_max_ns()` and `network_poll_gap_outage_count()` expose the
+same figures. The measurement is deliberately not taken when nothing is
+listening: with no listener there is nothing the poll is late for, and a metric
+that fires on an idle machine is a metric nobody reads.
+
+`make qemu-network-poll-cadence-gate` is the measurement under load. On QEMU
+under TCG the worst gap observed across runs was **297 ms**. Idle it is about
+55 ms on a quiet host -- the housekeeping interval of sshd's wait -- rising to
+around 105 ms when the build machine is busy, which is the host descheduling
+the emulator rather than anything the guest did. Three 256 KiB SFTP round trips
+and ninety rejected connections moved it to 164 ms in one run and 297 ms in
+another. No gap crossed the one-second outage threshold in any run, which is
+consistent with B-43 not reproducing in 1281 QEMU connections. Those are the
+figures any future change to this arrangement has to beat, and the reason the
+gate records the number rather than asserting it: on a shared host the spread
+between runs is the host's.
+
 ## Trust boundaries
 
 - EL0 code crosses into the kernel only through validated syscall dispatch.

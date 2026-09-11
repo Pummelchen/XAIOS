@@ -116,6 +116,13 @@ void network_stack_unlock(void);
 
 void network_poll_tick(void);
 uint64_t network_poll_tick_count(void);
+/* B-44. The longest stretch this stack went undriven while a listener was
+   registered, and how many of those stretches were long enough to be an
+   outage rather than a pause. The poll has no timer, no interrupt and no
+   thread behind it, so these are the machine's only account of how long its
+   networking was not running -- see wiki/Architecture.md. */
+uint64_t network_poll_gap_max_ns(void);
+uint64_t network_poll_gap_outage_count(void);
 uint64_t network_icmp_reply_count(void);
 uint64_t network_arp_reply_sent_count(void);
 uint64_t network_icmpv6_reply_count(void);
@@ -222,8 +229,17 @@ typedef struct socket_flow_mapping {
   uint8_t  protocol;   /* 6=TCP, 17=UDP */
   uint32_t active;
 } socket_flow_mapping_t;
-void network_stack_map_socket(uint64_t sockfd, uint32_t flow_id,
+/* XAIOS_OK, or XAIOS_ERR_NO_MEMORY when the table is full. It returned void
+   until B-47, and a full table was then a silent no-op: the caller went on to
+   hand userspace a descriptor with no flow behind it. Callers must check. */
+xaios_status_t network_stack_map_socket(uint64_t sockfd, uint32_t flow_id,
                                 uint8_t protocol);
+/* Mappings refused for want of a row, the table's size, and its occupancy.
+   Exported so a boot self-test can fill the table and see the refusal, and so
+   the condition is countable from outside. */
+uint64_t network_stack_socket_map_exhausted_count(void);
+uint32_t network_stack_socket_map_capacity(void);
+uint32_t network_stack_socket_map_count(void);
 /* Copies the mapping and returns non-zero when one exists. Never hands out a
    pointer into the table: see the definition. */
 int network_stack_get_socket_mapping(uint64_t sockfd,

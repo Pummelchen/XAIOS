@@ -1771,7 +1771,15 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     for (uint32_t i = 0U; i < 16U; ++i)
       socket->peer_addr[i] = remote_addr.addr[i];
     xaios_spin_unlock(&g_kernel_socket_lock);
-    network_stack_map_socket(sockfd, flow_id, XAIOS_NETWORK_PROTOCOL_TCP);
+    if (network_stack_map_socket(sockfd, flow_id,
+                                 XAIOS_NETWORK_PROTOCOL_TCP) != XAIOS_OK) {
+      /* Same refusal as accept, for the same reason (B-47): a connected
+         descriptor with no mapping can neither send nor receive, and would
+         look to the caller like a peer that went quiet. */
+      (void)kernel_socket_free(sockfd, owner_token);
+      (void)network_stack_tcp_abort_flow(flow_id);
+      return reject_syscall(syscall, arg0, arg1, "net-connect-no-flow-slot");
+    }
     bytes_copy((void *)(uintptr_t)request.out_sockfd, &sockfd, sizeof(sockfd));
     klog("syscall: net_connect port=%lu sockfd=%lu flow=%u\n", request.port,
          sockfd, flow_id);
@@ -1900,8 +1908,17 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       socket->peer_addr[j] = peer_addr.addr[j];
     }
     xaios_spin_unlock(&g_kernel_socket_lock);
-    /* Map socket to flow */
-    network_stack_map_socket(connfd, flow_id, 6); /* TCP */
+    /* Map socket to flow. B-47: this used to be a void call, and a full map
+       was a silent no-op -- the accept still succeeded, still logged, and
+       handed back a descriptor with no flow behind it, which is precisely a
+       connection that is accepted and then never progresses. Refuse instead:
+       give the descriptor back, close the flow so the peer is told, and name
+       the reason. */
+    if (network_stack_map_socket(connfd, flow_id, 6) != XAIOS_OK) { /* TCP */
+      (void)kernel_socket_free(connfd, owner_token);
+      network_stack_tcp_close_flow(flow_id);
+      return reject_syscall(syscall, arg0, arg1, "net-accept-no-flow-slot");
+    }
     /* Write peer address to addr_out_ptr if requested */
     if (request.addr_out_ptr != 0) {
       uint8_t addr_buf[17];
@@ -2090,8 +2107,11 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
                                   ? "net-sendto-unresolved"
                                   : "net-sendto-failed");
       }
-      network_stack_map_socket(request.sockfd, datagram_flow,
-                               XAIOS_NETWORK_PROTOCOL_UDP);
+      /* The datagram is already on the wire, so there is nothing left to
+         refuse; an exhausted map costs this socket its reply path and the
+         stack logs the exhaustion (B-47). */
+      (void)network_stack_map_socket(request.sockfd, datagram_flow,
+                                     XAIOS_NETWORK_PROTOCOL_UDP);
       *(uint64_t *)(uintptr_t)request.out_bytes = datagram_bytes;
       return XAIOS_OK;
     }
