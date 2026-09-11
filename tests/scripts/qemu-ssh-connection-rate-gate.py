@@ -312,7 +312,30 @@ def main() -> int:
                 f"not inside the {WINDOW_SECONDS:.0f}s window the limiter counts "
                 f"over -- the counter reset part way and this run proves nothing")
 
-        if len(served) < LIMIT:
+        # Before any verdict: did the host actually open the connections?
+        #
+        # `unreachable` is the host failing to connect at all and `silent` is a
+        # connection accepted and then neither served nor closed. Neither is
+        # the guest turning anything away, and neither counts as a refusal --
+        # so a run carrying them produced *both* "only 113 of the first 120
+        # were answered" and "all 121 were served, so the limit did not fire",
+        # which cannot both be true. That is this gate accusing the guest of a
+        # defect the host caused, which is the failure it was written to stop
+        # other gates making.
+        #
+        # It stays a non-zero exit. An inconclusive run that exits 0 is a gate
+        # that cannot fail. It names the host instead.
+        stillborn = [o for o in outcomes if o in ("unreachable", "silent")]
+        if stillborn:
+            failures.append(
+                f"INCONCLUSIVE, not a guest defect: {len(stillborn)} of "
+                f"{len(outcomes)} connections never reached a verdict -- "
+                f"{outcomes.count('unreachable')} could not be opened by this "
+                f"host and {outcomes.count('silent')} were accepted and then "
+                f"neither served nor closed. The guest cannot be judged on a "
+                f"run whose connections did not arrive; re-run on a quieter "
+                f"machine, or open them more slowly")
+        elif len(served) < LIMIT:
             failures.append(
                 f"only {len(served)} of the first {LIMIT} connections were "
                 f"answered with an SSH banner; a guest refusing everything "
@@ -349,7 +372,17 @@ def main() -> int:
                 "what this gate reads it to mean")
 
         served_preload = int(authed["preloaded_served"])
-        if served_preload != LIMIT - headroom:
+        authed_stillborn = [o for o in authed["outcomes"]
+                            if isinstance(o, str)
+                            and ("Operation timed out" in o or "timeout" in o)]
+        if authed_stillborn and served_preload != LIMIT - headroom:
+            failures.append(
+                f"INCONCLUSIVE, not a guest defect: the authenticated case "
+                f"loaded {served_preload} of the {LIMIT - headroom} it needs "
+                f"and its sessions timed out reaching the host. The window was "
+                f"not where the case requires and nothing about the credit is "
+                f"shown either way")
+        elif served_preload != LIMIT - headroom:
             failures.append(
                 f"the authenticated case meant to load the window to "
                 f"{LIMIT - headroom} but only {served_preload} of its bare "
