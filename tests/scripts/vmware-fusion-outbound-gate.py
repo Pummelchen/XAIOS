@@ -679,6 +679,13 @@ NSLOOKUP = re.compile(r"^\s*(\S+): (.+?)\s*$", re.MULTILINE)
 # them.
 TIMED_OUT = "dnssec-timeout"
 
+# B-33's fixture zone, answered from the committed chain in boot-test
+# builds. 10.53.0.7 is the address the chain signs; the forged name shares
+# its zone and key with one bit flipped in the signature.
+DNSSEC_FIXTURE_NAME = "selftest"
+DNSSEC_FIXTURE_FORGED = "forged.selftest"
+DNSSEC_FIXTURE_ADDRESS = "10.53.0.7"
+
 
 def guest_nslookup(shell: GuestShell, name: str, *, attempts: int = 40,
                    retry_timeouts: int = 0) -> str:
@@ -718,18 +725,18 @@ def dnssec_checks(shell: GuestShell, checks: dict[str, object],
                   failures: list[str], not_claimed: list[str]) -> None:
     """What this host can and cannot establish about the guest's resolver.
 
-    The tree's DNSSEC evidence is the hosted signed-chain test: it substitutes
-    the trust anchors with fixture ones, feeds a chain built by
-    `tests/scripts/generate-dnssec-fixture.py`, and requires corruption and
-    expiry to be refused. Nothing equivalent can be staged inside a guest. The
-    anchors are the compiled IANA root DS values and `dnssec_set_trust_anchors`
-    has no in-guest caller, so a synthetic chain has no root to hang from; and
-    the resolver's address is taken once at boot from the DHCP lease with no
-    build-time or runtime override, so on a bridged guest it is whatever the
-    operator's LAN hands out. Pointing it somewhere this gate controls would
-    mean a DHCP server on that LAN, which is not this gate's to run.
+    This used to say a signed chain could not be staged inside a guest, and
+    gave a good reason: the anchors are the compiled IANA roots,
+    `dnssec_set_trust_anchors` has no in-guest caller, and the resolver address
+    comes from the DHCP lease with no override, so a chain this gate controlled
+    had no root to hang from. B-33 gave it one. In boot-test builds -- which is
+    how `vmware-fusion-smoke` builds this guest -- the resolver answers
+    `selftest` and `forged.selftest` from the chain committed at
+    `kernel/net/dns_selftest_chain.h`, walking it in full with the anchor
+    passed in as the parent DS set rather than installed globally. That is
+    asserted here, and it is the claim.
 
-    So two things are asserted here, and neither of them is the claim:
+    Two further things are asserted, and neither of them is:
 
       * the resolver was wired from the bridged lease rather than falling back
         to the compiled address, which is falsifiable and fails whenever the
@@ -777,6 +784,50 @@ def dnssec_checks(shell: GuestShell, checks: dict[str, object],
             f"lease: DHCP offered {leased_dns}, the resolver was configured as "
             f"{configured.group(1) if configured else None}")
 
+    # The signed chain, validated inside this guest, on this hypervisor.
+    #
+    # This is what the docstring above used to say could not be staged, and
+    # the reason it gave was right at the time: the anchors are the compiled
+    # IANA roots, dnssec_set_trust_anchors has no in-guest caller, and the
+    # resolver address comes from the bridged lease, so a chain we control had
+    # no root to hang from. B-33 gave it one. Under XAIOS_BOOT_TEST_APPS --
+    # which vmware-fusion-smoke builds this guest with -- the resolver answers
+    # two names from the chain committed at kernel/net/dns_selftest_chain.h,
+    # walking root DNSKEY to DS to child DNSKEY to RRSIG with the anchor passed
+    # in as the parent DS set rather than installed globally. No packet leaves
+    # the guest, nothing depends on the LAN's resolver, and no anchor is
+    # swapped underneath a real resolution.
+    #
+    # The pair is its own control: the two names share a zone and a key and
+    # differ by one flipped bit in the signature. Both answering means nothing
+    # is being verified; neither answering means the resolver is broken rather
+    # than strict. Only good-resolves-and-forged-refused can happen if the
+    # chain is really being walked.
+    good = guest_nslookup(shell, DNSSEC_FIXTURE_NAME, attempts=12)
+    forged = guest_nslookup(shell, DNSSEC_FIXTURE_FORGED, attempts=12)
+    checks["dnssec_local_chain"] = {
+        "name": DNSSEC_FIXTURE_NAME,
+        "answer": good,
+        "expected": DNSSEC_FIXTURE_ADDRESS,
+        "forged_name": DNSSEC_FIXTURE_FORGED,
+        "forged_answer": forged,
+        "validated": good == DNSSEC_FIXTURE_ADDRESS,
+        "forged_refused": forged == "dnssec-unverified",
+    }
+    if good != DNSSEC_FIXTURE_ADDRESS:
+        failures.append(
+            f"the guest did not validate the committed signed chain: "
+            f"{DNSSEC_FIXTURE_NAME} answered {good!r}, expected "
+            f"{DNSSEC_FIXTURE_ADDRESS}. This walk needs no network and no "
+            f"LAN resolver, so a failure here is the guest's own validator")
+    if forged != "dnssec-unverified":
+        failures.append(
+            f"the guest accepted a tampered signature: "
+            f"{DNSSEC_FIXTURE_FORGED} answered {forged!r}, expected "
+            f"dnssec-unverified. The forged zone differs from the good one by "
+            f"a single bit in the RRSIG, so accepting it means the signature "
+            f"is not being checked at all")
+
     unresolvable = f"{secrets.token_hex(6)}.xaios-fusion-gate.invalid"
     answer = guest_nslookup(shell, unresolvable, attempts=8)
     manufactured = False
@@ -801,15 +852,12 @@ def dnssec_checks(shell: GuestShell, checks: dict[str, object],
     # rest on the public internet, and this one does not: the sentence names
     # what would have to change for the claim to be closable here.
     not_claimed.append(
-        "local validation of a signed DNSSEC chain by the guest: the compiled "
-        "trust anchors are the IANA root DS values and nothing in the guest "
-        "can replace them (dnssec_set_trust_anchors has no in-guest caller), "
-        "and the resolver address is taken once at boot from the DHCP lease "
-        "with no build-time or runtime override, so a chain this gate controls "
-        "cannot be put in front of it without running DHCP on the operator's "
-        "LAN. XAIOS_FUSION_DNSSEC_LIVE=1 records the live signed-versus-bogus "
-        "pair as an observation, which needs the public internet and is not "
-        "part of pass or fail")
+        "live recursive DNSSEC against a public resolver: that needs the "
+        "internet, which no gate here may depend on, and it does not always "
+        "reach a verdict. XAIOS_FUSION_DNSSEC_LIVE=1 records the signed-versus"
+        "-bogus pair as an observation that never affects pass or fail. Local "
+        "validation of a signed chain is no longer in this list -- see "
+        "dnssec_local_chain above")
 
     if os.environ.get("XAIOS_FUSION_DNSSEC_LIVE") != "1":
         return
