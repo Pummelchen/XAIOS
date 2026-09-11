@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 import json
+import os
 import subprocess
 import time
 
 from qemu_gate_lib import BUILD, ROOT, check_markers, run
+
+# A step past this fraction of its budget is reported as a note. It is not a
+# failure -- the step passed -- but it is the one that times out next on a
+# busier machine, and B-39 is what that looks like when nobody was warned.
+BUDGET_WARN_FRACTION = 0.75
 
 
 SCHEMA = "xaios.qemu.core_os_release_candidate.v1"
@@ -235,8 +241,24 @@ def main() -> int:
     results = {}
     outputs = {}
     BUILD.mkdir(parents=True, exist_ok=True)
+    # B-39: a step that is killed has to say what it was killed for.
+    #
+    # The fragmentation step timed out once here and never again -- 121s
+    # standalone, 120s from the boot-test image state, 121s with all three of
+    # its images invalidated, and this whole gate green on a re-run. Two
+    # explanations were tried against the exit code alone and both were wrong,
+    # because an exit code of 124 carries no elapsed time and no idea what else
+    # the machine was doing. This machine has cut a qemu-smoke boot short at
+    # load average 30 and passed it at load 9 with no change in between, so
+    # "how loaded was it" is not a detail.
+    #
+    # Every step now records its own elapsed time, its budget and the load
+    # either side of it, whether it passed or not. A recurrence describes
+    # itself.
     for name, command, timeout in COMMANDS:
         timed_out = False
+        load_start = os.getloadavg()[0]
+        started = time.monotonic()
         try:
             proc = run(command, timeout=timeout)
             output = proc.stdout or ""
@@ -246,11 +268,17 @@ def main() -> int:
             output = exc.stdout or ""
             if isinstance(output, bytes):
                 output = output.decode("utf-8", errors="replace")
-            output += f"\nqemu-core-os-rc: command timed out after {timeout}s\n"
+            output += (
+                f"\nqemu-core-os-rc: command timed out after {timeout}s "
+                f"(load {load_start:.2f} at start, "
+                f"{os.getloadavg()[0]:.2f} now)\n"
+            )
             exit_code = 124
         except OSError as exc:
             output = f"qemu-core-os-rc: command failed to start: {exc}\n"
             exit_code = 127
+        elapsed = time.monotonic() - started
+        load_end = os.getloadavg()[0]
         outputs[name] = output
         BUILD.mkdir(parents=True, exist_ok=True)
         (BUILD / f"qemu-core-os-rc-{name}.log").write_text(
@@ -260,10 +288,23 @@ def main() -> int:
             "command": command,
             "exit_code": exit_code,
             "timed_out": timed_out,
+            "seconds": round(elapsed, 1),
+            "budget_seconds": timeout,
+            "budget_used": round(elapsed / timeout, 3) if timeout else None,
+            "load_start": round(load_start, 2),
+            "load_end": round(load_end, 2),
             "log": f"build/qemu-core-os-rc-{name}.log",
         }
         if exit_code != 0:
-            failures.append(f"{name} exited {exit_code}")
+            failures.append(
+                f"{name} exited {exit_code} after {elapsed:.0f}s of a "
+                f"{timeout}s budget, load {load_start:.2f} to {load_end:.2f}")
+        elif timeout and elapsed > timeout * BUDGET_WARN_FRACTION:
+            # Not a failure. A step this close to its budget is the next
+            # timeout nobody can explain, and saying so now costs nothing.
+            print(f"qemu-core-os-rc: NOTE {name} used {elapsed:.0f}s of its "
+                  f"{timeout}s budget ({elapsed / timeout:.0%}), load "
+                  f"{load_start:.2f} to {load_end:.2f}", flush=True)
 
     capabilities = {}
     for name, markers in AARCH64_CAPABILITIES.items():
