@@ -10,14 +10,23 @@ that did it and in the comments beside the code.
 
 ## Where the tree stands
 
-The ten aggregate targets all pass on this tree: `qemu-core-os-rc`,
-`qemu-full-os-rc`, `qemu-developer-ux`, `qemu-operations-closure`,
-`qemu-network-adversarial-gate`, `qemu-readiness-gate`, `qemu-post51-gate`,
-`qemu-qualification-readiness`, `qemu-100-gate` and `qemu-release`, run
-serially -- these assert on boot markers and timings, and a `qemu-smoke` boot
-was cut short at load average 30 on this machine and passed at load 9 with no
-change in between, so concurrency here manufactures failures that say nothing.
-The consolidated report deliberately retains `physical_qualification=false`.
+The ten aggregate targets -- `qemu-core-os-rc`, `qemu-full-os-rc`,
+`qemu-developer-ux`, `qemu-operations-closure`, `qemu-network-adversarial-gate`,
+`qemu-readiness-gate`, `qemu-post51-gate`, `qemu-qualification-readiness`,
+`qemu-100-gate` and `qemu-release` -- all passed at `c25b749`, run serially,
+because these assert on boot markers and timings and this machine cut a
+`qemu-smoke` boot short at load average 30 and passed it at load 9 with no
+change in between. The consolidated report deliberately retains
+`physical_qualification=false`.
+
+**They have not been re-run since, and shared code has changed underneath
+them**: the resolver and DNSSEC verification, the network stack's socket map
+and poll accounting, the syscall layer, the lifecycle record, and most of sshd
+-- eighteen files across `kernel/` and `userspace/`. Individually green on the
+current tree: `compile-check`, `platform-neutrality-check`, `docs-check`,
+`code-scanning-contract`, `qemu-smoke`, and every gate named in the rows below.
+Re-running the ten is the next thing worth doing, and until it happens no
+statement here about aggregate status is current.
 
 That is emulated evidence and nothing more. **No result on this page is
 physical-hardware evidence, and no released build has been booted on physical
