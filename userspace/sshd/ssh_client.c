@@ -22,6 +22,19 @@
 #define SSH_CLIENT_PASSWORD_MAX 128U
 #define SSH_CLIENT_PATH_MAX 256U
 #define SSH_CLIENT_TIMEOUT_NS UINT64_C(15000000000)
+/* How long a credential prompt waits for an answer before giving up.
+ *
+ * B-37. This client cannot ask whether the session it was launched in has a
+ * terminal: the child is handed a channel id, a working directory and a
+ * command line, and nothing else -- no PTY flag reaches it. So a prompt
+ * written into a session nobody is sitting at, which is every script and
+ * every CI job, used to wait for an answer that could not arrive, and the
+ * caller saw a command that never returned. A bounded wait turns that into a
+ * failure with a reason, which a script can act on. The clock measures
+ * silence rather than total time: every byte typed at the prompt restarts
+ * it, so a person part-way through a passphrase is never cut off mid-word.
+ */
+#define SSH_CLIENT_PROMPT_IDLE_NS UINT64_C(60000000000)
 #define SSH_CLIENT_SCP_DEPTH_MAX 8U
 #define SSH_CLIENT_DIRECTORY_LIST_MAX 16384U
 #define SSH_CLIENT_WINDOW UINT32_C(65536)
@@ -39,6 +52,10 @@ enum ssh_client_mode {
 typedef struct ssh_client_context {
   uint32_t active;
   uint32_t prompting;
+  /* -o BatchMode=yes: a credential that would have been asked for is an
+     error instead. */
+  uint32_t batch_mode;
+  uint64_t prompt_deadline;
   uint32_t connected;
   uint32_t mode;
   u64 outer_sockfd;
@@ -1489,7 +1506,173 @@ static int client_prompt_password(ssh_client_context_t *client,
     return -1;
   }
   client->prompting = 1U;
+  client->prompt_deadline = xaios_clock_nanos() + SSH_CLIENT_PROMPT_IDLE_NS;
   return 0;
+}
+
+/* What the identity file at `path` needs before it can be used:
+   0 -- nothing, it is stored unencrypted and was parsed here;
+   1 -- a passphrase, it is readable but will not parse without one;
+  -1 -- it cannot be read at all.
+
+   An OpenSSH private key says in its header which it is: the cipher field is
+   "none" for a key with no passphrase and names a cipher for one with. This
+   asks the question by loading the key with an empty passphrase rather than
+   by reading that field separately, because the loader already refuses an
+   encrypted key when the passphrase is empty, and one parser cannot disagree
+   with itself. A key that needs nothing is therefore never asked about --
+   which is the whole of B-37's first half, since the prompt used to go out
+   for every identity file regardless. */
+static int identity_state(const char *path) {
+  xaios_xbfs_stat_user_t info;
+  ssh_identity_t identity;
+  if (path == 0 || path[0] == '\0' || xaios_fs_stat(path, &info) != 0)
+    return -1;
+  int loaded = ssh_identity_load(path, "", &identity);
+  ssh_mem_zero(&identity, sizeof(identity));
+  return loaded == 0 ? 0 : 1;
+}
+
+static char lower_case(char value) {
+  return value >= 'A' && value <= 'Z' ? (char)(value - 'A' + 'a') : value;
+}
+
+static int equal_fold(const char *left, const char *right) {
+  for (uint32_t i = 0U;; ++i) {
+    if (lower_case(left[i]) != lower_case(right[i])) return 0;
+    if (left[i] == '\0') return 1;
+  }
+}
+
+/* `-o Name=value`, spelled the way OpenSSH spells it. BatchMode is the only
+   name this client has an answer for, and anything else is refused rather
+   than ignored: an option that is accepted and does nothing is worse than
+   one that is not accepted, because the caller believes it took effect. */
+static int client_set_option(ssh_client_context_t *client, const char *text) {
+  static const char batch_mode[] = "batchmode";
+  uint32_t split = 0U;
+  while (text[split] != '\0' && text[split] != '=') ++split;
+  if (text[split] != '=' || split != sizeof(batch_mode) - 1U) return -1;
+  for (uint32_t i = 0U; i < split; ++i)
+    if (lower_case(text[i]) != batch_mode[i]) return -1;
+  const char *value = text + split + 1U;
+  if (equal_fold(value, "yes") != 0) {
+    client->batch_mode = 1U;
+    return 0;
+  }
+  if (equal_fold(value, "no") != 0) {
+    client->batch_mode = 0U;
+    return 0;
+  }
+  return -1;
+}
+
+/* The credential the next handshake needs, and how it is obtained.
+   0 -- nothing is needed, go straight on;
+   1 -- a prompt has been sent and its answer is awaited;
+  -1 -- it cannot be had here, and the reason has been printed. */
+static int client_request_credential(ssh_client_context_t *client,
+                                     ssh_channel_t *channel) {
+  if (client->use_identity != 0U) {
+    int state = identity_state(client->identity_path);
+    if (state == 0) return 0;
+    if (state < 0) {
+      (void)output_text(client, "ssh: identity file cannot be read\r\n");
+      return -1;
+    }
+  }
+  if (client->batch_mode != 0U) {
+    (void)output_text(
+        client,
+        client->use_identity != 0U
+            ? "ssh: identity file needs a passphrase and BatchMode=yes is set\r\n"
+            : "ssh: password authentication needs a terminal and BatchMode=yes is set\r\n");
+    return -1;
+  }
+  return client_prompt_password(client, channel) == 0 ? 1 : -1;
+}
+
+/* One attempt with the credential the client now holds: the handshake, the
+   sentence when it fails, the next credential when a jump host asks for one,
+   and the transfer when the command was scp.
+   1 -- the session is live, or the transfer is finished;
+   0 -- a further credential is outstanding and its prompt has gone out;
+  -1 -- the attempt failed and the client has been released.
+   `echo_newline` is for the prompt path only: it closes the line the typed
+   password was hidden on. Nothing was typed when no prompt was shown. */
+static int client_proceed(ssh_client_context_t *client, ssh_channel_t *channel,
+                          int echo_newline) {
+  for (;;) {
+    int handshake = client_handshake(client, channel);
+    int echo_failed = echo_newline != 0 && output_text(client, "\r\n") != 0;
+    echo_newline = 0;
+    if (echo_failed || handshake < 0) {
+      if (handshake < 0) {
+        xaios_log("ssh-client: handshake failed\n");
+      }
+      const char *message = "ssh: connection or authentication failed\r\n";
+      if (handshake == -10 || handshake == -26)
+        message = "ssh: connection failed\r\n";
+      if (handshake == -11) message = "ssh: client memory unavailable\r\n";
+      if (handshake == -12 || handshake == -13 || handshake == -14 ||
+          handshake == -15 || handshake == -16) {
+        message = "ssh: protocol version exchange failed\r\n";
+      }
+      if (handshake == -17 || handshake == -18 || handshake == -19 ||
+          handshake == -20 || handshake == -21 || handshake == -22) {
+        message = "ssh: key exchange failed\r\n";
+      }
+      if (handshake == -17) message = "ssh: key exchange initialization failed\r\n";
+      if (handshake == -18) message = "ssh: server key exchange proposal invalid\r\n";
+      if (handshake == -19) message = "ssh: key generation failed\r\n";
+      if (handshake == -20) message = "ssh: key exchange request failed\r\n";
+      if (handshake == -21) message = "ssh: key exchange reply invalid\r\n";
+      if (handshake == -22) message = "ssh: new-keys exchange failed\r\n";
+      if (handshake == -23) message = "ssh: authentication failed\r\n";
+      if (handshake == -24) message = "ssh: session open failed\r\n";
+      if (handshake == -25) message = "ssh: host key verification failed\r\n";
+      if (handshake == -27) message = "ssh: identity file or passphrase invalid\r\n";
+      if (handshake == -28) message = "ssh: public-key authentication failed\r\n";
+      (void)output_text(client, message);
+      client_release(channel, client);
+      return -1;
+    }
+    if (handshake != 1) break;
+    int credential = client_request_credential(client, channel);
+    if (credential < 0) {
+      client_release(channel, client);
+      return -1;
+    }
+    if (credential > 0) return 0;
+  }
+  if (client->mode == SSH_CLIENT_MODE_SCP_UPLOAD ||
+      client->mode == SSH_CLIENT_MODE_SCP_DOWNLOAD) {
+    int transfer = client_scp_transfer(client);
+    const char *status = "scp: transfer failed\r\n";
+    if (transfer == 0) status = "scp: transfer complete\r\n";
+    else if (transfer == -11) status = "scp: SFTP request send failed\r\n";
+    else if (transfer == -12) status = "scp: invalid SFTP version reply\r\n";
+    else if (transfer == -41) status = "scp: SFTP reply timeout\r\n";
+    else if (transfer == -42) status = "scp: remote SFTP service closed\r\n";
+    else if (transfer == -43) status = "scp: remote SFTP service error\r\n";
+    else if (transfer == -21) status = "scp: local source not found\r\n";
+    else if (transfer == -22) status = "scp: local source open failed\r\n";
+    else if (transfer == -23) status = "scp: remote destination open failed\r\n";
+    else if (transfer == -24) status = "scp: local source read failed\r\n";
+    else if (transfer == -25) status = "scp: remote write failed\r\n";
+    else if (transfer == -26) status = "scp: remote rejected write\r\n";
+    else if (transfer == -27) status = "scp: local close failed\r\n";
+    else if (transfer == -28) status = "scp: remote close failed\r\n";
+    else if (transfer == -29) status = "scp: directory requires -r or unsupported file type\r\n";
+    else if (transfer == -30) status = "scp: cannot create destination directory\r\n";
+    else if (transfer == -31) status = "scp: directory path or listing exceeds XAIOS limits\r\n";
+    else if (transfer == -32) status = "scp: cannot create local destination\r\n";
+    else if (transfer == -33) status = "scp: cannot inspect remote source\r\n";
+    (void)output_text(client, status);
+    client_release(channel, client);
+    return transfer == 0 ? 1 : -1;
+  }
+  return 1;
 }
 
 static int remote_specification(const char *text, uint32_t *colon) {
@@ -1543,8 +1726,10 @@ static int resolve_local_path(const ssh_channel_t *channel, const char *input,
 
 static void client_usage(const ssh_channel_t *channel, int scp) {
   const char *usage = scp
-      ? "usage: scp [-r] [-i key] [-P port] SOURCE DESTINATION\r\n"
-      : "usage: ssh [-J user@host[:port]] [-i key] [-p port] user@host [command]\r\n";
+      ? "usage: scp [-r] [-B] [-i key] [-o BatchMode=yes] [-P port] "
+        "SOURCE DESTINATION\r\n"
+      : "usage: ssh [-J user@host[:port]] [-i key] [-o BatchMode=yes] "
+        "[-p port] user@host [command]\r\n";
   (void)ssh_channel_send_data((int)channel->owner_sockfd, channel->remote_id,
                               (const uint8_t *)usage, ssh_str_len(usage));
 }
@@ -1585,6 +1770,31 @@ int ssh_client_prepare(struct ssh_channel *channel, const char *command) {
       }
       if (ssh_str_eq(token, "-r")) {
         client->recursive = 1U;
+        continue;
+      }
+      /* -B is what OpenSSH's scp calls batch mode, and it means what
+         -o BatchMode=yes means: ask for nothing. */
+      if (ssh_str_eq(token, "-B")) {
+        client->batch_mode = 1U;
+        continue;
+      }
+      if (token[0] == '-' && token[1] == 'o') {
+        const char *option = token + 2U;
+        if (option[0] == '\0') {
+          if (next_token(command, &position, token, sizeof(token)) != 0) {
+            client_usage(channel, 1);
+            client_release(channel, client);
+            return -1;
+          }
+          option = token;
+        }
+        if (client_set_option(client, option) != 0) {
+          (void)output_text(
+              client,
+              "scp: only -o BatchMode=yes|no is understood\r\n");
+          client_release(channel, client);
+          return -1;
+        }
         continue;
       }
       if (ssh_str_eq(token, "-A")) {
@@ -1686,6 +1896,24 @@ int ssh_client_prepare(struct ssh_channel *channel, const char *command) {
       client->use_agent = 1U;
       continue;
     }
+    if (token[0] == '-' && token[1] == 'o') {
+      const char *option = token + 2U;
+      if (option[0] == '\0') {
+        if (next_token(command, &position, token, sizeof(token)) != 0) {
+          client_release(channel, client);
+          client_usage(channel, 0);
+          return -1;
+        }
+        option = token;
+      }
+      if (client_set_option(client, option) != 0) {
+        (void)output_text(client,
+                          "ssh: only -o BatchMode=yes|no is understood\r\n");
+        client_release(channel, client);
+        return -1;
+      }
+      continue;
+    }
     if (ssh_str_eq(token, "-i")) {
       if (next_token(command, &position, client->identity_path,
                      sizeof(client->identity_path)) != 0) {
@@ -1769,17 +1997,26 @@ agent_failed:
     client_release(channel, client);
     return -1;
   }
-  if (client_prompt_password(client, channel) != 0) {
+  /* B-37. The prompt is no longer unconditional: an identity file with no
+     passphrase is loaded without asking anybody anything, which is what lets
+     a run with no terminal finish. When something genuinely has to be asked
+     for and there is nobody to ask -- BatchMode -- that is an error here,
+     and an error here is a non-zero exit rather than a wait. */
+  int credential = client_request_credential(client, channel);
+  if (credential < 0) {
     client_release(channel, client);
     return -1;
   }
-  return 1;
+  if (credential > 0) return 1;
+  return client_proceed(client, channel, 0) < 0 ? -1 : 1;
 }
 
 int ssh_client_password_input(struct ssh_channel *channel,
                               const uint8_t *data, uint32_t length) {
   ssh_client_context_t *client = client_for_channel(channel);
   if (client == 0 || client->prompting == 0U) return -1;
+  /* Somebody is there: the idle clock starts again from this keystroke. */
+  client->prompt_deadline = xaios_clock_nanos() + SSH_CLIENT_PROMPT_IDLE_NS;
   for (uint32_t i = 0U; i < length; ++i) {
     uint8_t value = data[i];
     if (value == 3U) {
@@ -1801,73 +2038,7 @@ int ssh_client_password_input(struct ssh_channel *channel,
       continue;
     }
     client->prompting = 0U;
-    int handshake = client_handshake(client, channel);
-    if (output_text(client, "\r\n") != 0 || handshake < 0) {
-      if (handshake < 0) {
-        xaios_log("ssh-client: handshake failed\n");
-      }
-      const char *message = "ssh: connection or authentication failed\r\n";
-      if (handshake == -10 || handshake == -26)
-        message = "ssh: connection failed\r\n";
-      if (handshake == -11) message = "ssh: client memory unavailable\r\n";
-      if (handshake == -12 || handshake == -13 || handshake == -14 ||
-          handshake == -15 || handshake == -16) {
-        message = "ssh: protocol version exchange failed\r\n";
-      }
-      if (handshake == -17 || handshake == -18 || handshake == -19 ||
-          handshake == -20 || handshake == -21 || handshake == -22) {
-        message = "ssh: key exchange failed\r\n";
-      }
-      if (handshake == -17) message = "ssh: key exchange initialization failed\r\n";
-      if (handshake == -18) message = "ssh: server key exchange proposal invalid\r\n";
-      if (handshake == -19) message = "ssh: key generation failed\r\n";
-      if (handshake == -20) message = "ssh: key exchange request failed\r\n";
-      if (handshake == -21) message = "ssh: key exchange reply invalid\r\n";
-      if (handshake == -22) message = "ssh: new-keys exchange failed\r\n";
-      if (handshake == -23) message = "ssh: authentication failed\r\n";
-      if (handshake == -24) message = "ssh: session open failed\r\n";
-      if (handshake == -25) message = "ssh: host key verification failed\r\n";
-      if (handshake == -27) message = "ssh: identity file or passphrase invalid\r\n";
-      if (handshake == -28) message = "ssh: public-key authentication failed\r\n";
-      (void)output_text(client, message);
-      client_release(channel, client);
-      return 1;
-    }
-    if (handshake == 1) {
-      if (client_prompt_password(client, channel) != 0) {
-        client_release(channel, client);
-        return 1;
-      }
-      return 0;
-    }
-    if (client->mode == SSH_CLIENT_MODE_SCP_UPLOAD ||
-        client->mode == SSH_CLIENT_MODE_SCP_DOWNLOAD) {
-      int transfer = client_scp_transfer(client);
-      const char *status = "scp: transfer failed\r\n";
-      if (transfer == 0) status = "scp: transfer complete\r\n";
-      else if (transfer == -11) status = "scp: SFTP request send failed\r\n";
-      else if (transfer == -12) status = "scp: invalid SFTP version reply\r\n";
-      else if (transfer == -41) status = "scp: SFTP reply timeout\r\n";
-      else if (transfer == -42) status = "scp: remote SFTP service closed\r\n";
-      else if (transfer == -43) status = "scp: remote SFTP service error\r\n";
-      else if (transfer == -21) status = "scp: local source not found\r\n";
-      else if (transfer == -22) status = "scp: local source open failed\r\n";
-      else if (transfer == -23) status = "scp: remote destination open failed\r\n";
-      else if (transfer == -24) status = "scp: local source read failed\r\n";
-      else if (transfer == -25) status = "scp: remote write failed\r\n";
-      else if (transfer == -26) status = "scp: remote rejected write\r\n";
-      else if (transfer == -27) status = "scp: local close failed\r\n";
-      else if (transfer == -28) status = "scp: remote close failed\r\n";
-      else if (transfer == -29) status = "scp: directory requires -r or unsupported file type\r\n";
-      else if (transfer == -30) status = "scp: cannot create destination directory\r\n";
-      else if (transfer == -31) status = "scp: directory path or listing exceeds XAIOS limits\r\n";
-      else if (transfer == -32) status = "scp: cannot create local destination\r\n";
-      else if (transfer == -33) status = "scp: cannot inspect remote source\r\n";
-      (void)output_text(client, status);
-      client_release(channel, client);
-      return 1;
-    }
-    return 0;
+    return client_proceed(client, channel, 1) == 0 ? 0 : 1;
   }
   return 0;
 }
@@ -2528,9 +2699,22 @@ static int client_send_close(ssh_client_context_t *client) {
 }
 
 int ssh_client_tick(struct ssh_channel *channel, uint64_t now_ns) {
-  (void)now_ns;
   ssh_client_context_t *client = client_for_channel(channel);
-  if (client == 0 || client->connected == 0U) return 0;
+  if (client == 0) return 0;
+  if (client->prompting != 0U) {
+    /* B-37's backstop. A prompt this client cannot know is unanswerable --
+       it is never told whether the session has a terminal -- stops being a
+       wait once nothing has been typed at it for long enough, and becomes a
+       failure the caller can see and act on. */
+    if (now_ns < client->prompt_deadline) return 0;
+    (void)output_text(
+        client,
+        "\r\nssh: nothing answered the prompt; no terminal? "
+        "use -o BatchMode=yes\r\n");
+    client_release(channel, client);
+    return -1;
+  }
+  if (client->connected == 0U) return 0;
   for (uint32_t iteration = 0U; iteration < 8U; ++iteration) {
     ssh_packet_t *packet = &client->packet_workspace;
     int result = ssh_packet_read_encrypted((int)client->sockfd, packet);
@@ -2611,5 +2795,9 @@ int ssh_client_is_prompting(const struct ssh_channel *channel) {
 
 int ssh_client_is_active(const struct ssh_channel *channel) {
   ssh_client_context_t *client = client_for_channel(channel);
-  return client != 0 && client->connected != 0U;
+  /* A client waiting for an answer is active too, so that it is ticked and
+     the prompt's idle clock is read. Without this the only caller ticks
+     nothing until a connection exists, and the wait would be unbounded
+     again. */
+  return client != 0 && (client->connected != 0U || client->prompting != 0U);
 }

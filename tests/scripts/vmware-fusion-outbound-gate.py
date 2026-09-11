@@ -349,18 +349,30 @@ class GuestShell:
             errors="replace")
 
     def client_command(self, command: str) -> str:
-        """One ssh/scp invocation, including answering the passphrase prompt.
+        """One ssh/scp invocation, and the assertion that it asks nothing.
 
-        The prompt is required rather than tolerated. If a future client stops
-        asking, this raises instead of quietly injecting a stray newline into
-        whatever it is doing.
+        This used to require the passphrase prompt, on the reasoning that a
+        client which stopped asking should be caught rather than quietly fed a
+        stray newline. The reasoning was right and the expectation was
+        backwards: the identity this gate packs is generated with `-N ""` and
+        has no passphrase, so asking for one was the defect (`B-37`). The
+        client now reads the key before deciding, and a plain key is never
+        prompted for.
+
+        So the assertion inverts rather than disappearing. A prompt here means
+        the client is asking for a credential that does not exist, which is
+        what B-37 was, and this raises on it.
         """
         print(f"guest> {command}", flush=True)
         self.send(command)
-        self.expect(PASSPHRASE_PROMPT, f"the passphrase prompt for {command!r}")
-        self.send("")
-        return self.expect(PROMPT, f"the prompt after {command!r}").decode(
+        answer = self.expect(PROMPT, f"the prompt after {command!r}").decode(
             errors="replace")
+        if PASSPHRASE_PROMPT.decode(errors="replace") in answer:
+            raise RuntimeError(
+                f"{command!r} was asked for a passphrase. The identity this "
+                f"gate packs has none, so there is nothing to answer: this is "
+                f"B-37 returning. Output: {answer[:300]!r}")
+        return answer
 
     def close(self) -> None:
         if self.process.poll() is None:
