@@ -46,6 +46,14 @@ kernel to boot is `storage/`.
   their own invariants during startup and panic on failure. They are how a
   defect is caught on the machine that has it rather than in a gate that might
   not run there, so a new invariant belongs beside the code that maintains it.
+  This includes release images: `kassert` is never compiled out, and a
+  self-test that only ran in the test configuration would be testing a
+  different binary from the one people install. B-42 measured the price on the
+  most expensive one -- the DNSSEC self-test, which carries a committed signed
+  chain to walk -- at 7,409 bytes of object content and 4,640 bytes of
+  `kernel.elf`, 0.44%, with no change to the boot image or the initfs, and
+  kept it. A self-test that needs test *data* should still say in its comment
+  what that data costs a shipping image.
 - **A refusal is a result.** Where a capability is absent the kernel says so in
   the boot log and degrades in a stated way. Silence is treated as a defect:
   several bugs here were invisible because a subsystem reported nothing rather

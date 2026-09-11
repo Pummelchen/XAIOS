@@ -8,6 +8,9 @@
 #define XAIOS_DNSSEC_MAX_KEY_RDATA 1024U
 #define XAIOS_DNSSEC_MAX_DS 8U
 #define XAIOS_DNSSEC_MAX_DS_DIGEST 64U
+/* Two, because IANA publishes two root anchors during a key rollover and the
+   resolver has to accept a root DNSKEY signed under either of them. */
+#define XAIOS_DNSSEC_MAX_ANCHORS 2U
 
 typedef struct dnssec_key {
   uint16_t key_tag;
@@ -42,6 +45,15 @@ void dnssec_init(void);
 /* Test and future signed-update hook. The caller owns the supplied records. */
 xaios_status_t dnssec_set_trust_anchors(const dnssec_ds_t *anchors,
                                         uint32_t anchor_count);
+
+/* B-42. Which anchors are installed right now, reported as their key tags.
+   Anything that swaps the anchor set -- today only the boot self-test, which
+   walks a chain rooted at its own anchor -- has to put the real ones back, and
+   the only way to say that has happened is to read the table afterwards rather
+   than to trust the code that was supposed to. Returns how many are
+   installed, which may exceed max_tags; writes no more than max_tags of
+   them. */
+uint32_t dnssec_trust_anchor_tags(uint16_t *out_tags, uint32_t max_tags);
 
 /* Verify and extract a DNSKEY RRset. A root keyset is matched against the
  * configured trust anchors; child keysets are matched against parent DS data.

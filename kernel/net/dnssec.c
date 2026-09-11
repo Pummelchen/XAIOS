@@ -32,7 +32,7 @@ typedef struct dnssec_rr {
 
 static dnssec_rr_t g_records[DNSSEC_MAX_RECORDS];
 static uint32_t g_record_count;
-static dnssec_ds_t g_anchors[2];
+static dnssec_ds_t g_anchors[XAIOS_DNSSEC_MAX_ANCHORS];
 static uint32_t g_anchor_count;
 static uint8_t g_signed[DNSSEC_MAX_SIGNED];
 
@@ -280,6 +280,14 @@ void dnssec_init(void) {
   g_anchor_count = 2U;
   g_anchors[0].key_tag = 20326U; g_anchors[0].algorithm = 8U; g_anchors[0].digest_type = 2U; g_anchors[0].digest_length = sizeof(k_root_20326_ds); copy_bytes(g_anchors[0].digest, k_root_20326_ds, sizeof(k_root_20326_ds));
   g_anchors[1].key_tag = 38696U; g_anchors[1].algorithm = 8U; g_anchors[1].digest_type = 2U; g_anchors[1].digest_length = sizeof(k_root_38696_ds); copy_bytes(g_anchors[1].digest, k_root_38696_ds, sizeof(k_root_38696_ds));
+}
+uint32_t dnssec_trust_anchor_tags(uint16_t *out_tags, uint32_t max_tags) {
+  /* The count reported is how many are installed, not how many fitted: a
+     caller that asserts on it has to be able to see an anchor set larger than
+     the buffer it offered, not be told the table was short. */
+  for (uint32_t i = 0; i < g_anchor_count && i < max_tags; ++i)
+    if (out_tags != 0) out_tags[i] = g_anchors[i].key_tag;
+  return g_anchor_count;
 }
 xaios_status_t dnssec_set_trust_anchors(const dnssec_ds_t *anchors, uint32_t count) {
   if (anchors == 0 || count == 0U || count > sizeof(g_anchors) / sizeof(g_anchors[0])) return XAIOS_ERR_INVALID;

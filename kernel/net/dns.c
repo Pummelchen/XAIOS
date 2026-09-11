@@ -236,11 +236,53 @@ void dns_init(void) {
   dnssec_init();
 }
 
+/* B-42. The anchors in force, on the boot log, from the table rather than
+   from the source. The boot self-test walks a chain rooted at its own anchor
+   and installs that anchor to do it, so "the real anchors are back by the time
+   anything can resolve a name" is a claim about a global that a reader cannot
+   check by reading either function alone -- and it is the claim that decides
+   whether a shipping machine validates the internet or a committed test key.
+   Printed here, where the resolver is handed its server and becomes usable,
+   it is the same statement on a release image as on a boot-test one. */
+static void dns_log_trust_anchors(void) {
+  uint16_t tags[XAIOS_DNSSEC_MAX_ANCHORS];
+  uint32_t count = dnssec_trust_anchor_tags(tags, XAIOS_DNSSEC_MAX_ANCHORS);
+  if (count == 0U) {
+    klog("dns: trust anchors count=0 (no root anchor installed; every secure "
+         "zone fails closed)\n");
+    return;
+  }
+  /* The count comes from the table and the tags from the buffer, and the two
+     are printed separately rather than the count being inferred from what
+     fitted: an anchor set larger than this buffer then reads as a count with
+     fewer tags beside it, which is a visible disagreement rather than a
+     silent truncation. Five digits and a separator per tag. */
+  char tag_list[XAIOS_DNSSEC_MAX_ANCHORS * 8U];
+  uint32_t shown = count < XAIOS_DNSSEC_MAX_ANCHORS ? count
+                                                    : XAIOS_DNSSEC_MAX_ANCHORS;
+  uint32_t used = 0U;
+  for (uint32_t i = 0U; i < shown; ++i) {
+    if (i != 0U && used + 1U < sizeof(tag_list)) tag_list[used++] = ',';
+    char digits[6];
+    uint32_t digit_count = 0U;
+    uint16_t value = tags[i];
+    do {
+      digits[digit_count++] = (char)('0' + (value % 10U));
+      value = (uint16_t)(value / 10U);
+    } while (value != 0U && digit_count < sizeof(digits));
+    while (digit_count > 0U && used + 1U < sizeof(tag_list))
+      tag_list[used++] = digits[--digit_count];
+  }
+  tag_list[used] = '\0';
+  klog("dns: trust anchors count=%u tags=%s\n", (unsigned)count, tag_list);
+}
+
 void dns_configure(uint32_t server_ip) {
   g_dns_server_ip = server_ip;
   klog("dns: configured validating resolver %u.%u.%u.%u\n",
        (unsigned)(server_ip >> 24U), (unsigned)((server_ip >> 16U) & 0xffU),
        (unsigned)((server_ip >> 8U) & 0xffU), (unsigned)(server_ip & 0xffU));
+  dns_log_trust_anchors();
 }
 
 uint32_t dns_encode_name(uint8_t *buf, uint32_t buf_size, const char *name) {
@@ -950,7 +992,32 @@ uint32_t dns_pending_count(void) {
    through dns_resolve_address, so a machine with no NIC still runs all of it.
 
    The chain in dns_selftest_chain.h is rooted at its own anchor, not at the
-   real root; dns_init() at the end puts the IANA anchors back. */
+   real root; dns_init() at the end puts the IANA anchors back, and the end of
+   this function asserts that it did.
+
+   B-42, the question of whether any of this belongs in a release image. It is
+   unconditional on purpose, and the decision was taken on measurement rather
+   than on the feeling that test material in a shipping binary is untidy.
+
+   What it costs, aarch64, `make image` against the same tree built with the
+   self-test compiled out: 7,409 bytes of dns.o -- 3,008 of code, 1,445 of
+   fixture chain, 2,951 of string literals, most of them the expressions
+   kassert stringifies for its panic message. Linked, .rodata is one 4 KiB page
+   larger and .text is unchanged (the removed code fits in the padding the
+   linker script already leaves), so kernel.elf goes from 1,043,560 to
+   1,038,920 bytes: 0.44%. The boot image is a fixed 64 MiB and does not move,
+   and the initfs does not contain any of this.
+
+   What it buys: the only DNSSEC verification that happens anywhere in a
+   shipping configuration. B-33's fixture zone is correctly behind
+   XAIOS_BOOT_TEST_APPS, no gate greps the marker below, and kassert is never
+   compiled out -- so on a release machine this walk is what stands between a
+   broken verifier and a resolver that believes whatever it is told. Guarding
+   it out would buy 0.44% of the kernel and leave that at nothing.
+
+   One thing a future guard would have to carry with it: this is the only
+   unconditional caller of dns_init() on a boot whose persistent network never
+   comes up, and dns_init() is what installs the root anchors. */
 #define DNS_SELFTEST_EXPIRED_WALL_NS UINT64_C(2530000000000000000)
 
 static uint32_t dns_self_test_chain(uint32_t *out_aaaa_validated) {
@@ -1127,8 +1194,37 @@ void dns_self_test(void) {
   /* Put the real root anchors back and drop everything the test left behind:
      the test anchor, the fake pending record, and the test's counter values. */
   dns_init();
+  /* B-42, and the reason this function is allowed to touch the configured
+     anchor set at all: the restore is checked rather than assumed. The chain
+     above is rooted at a test anchor that this function installs as *the*
+     anchor set, and a machine that finished boot still holding it would
+     happily validate a forgery signed with a key committed to this
+     repository. The restore is one call above and it is still worth
+     asserting: the property is about a global, dns_init() is the only thing
+     that resets it, and an edit that moves either call is exactly the kind
+     that reads fine. Checked against the table, not against the call.
+
+     This restore is the one that always runs. The kernel calls dns_init()
+     once more when the persistent network stack comes up, which would clear a
+     surviving test anchor a second time -- but only on a machine that got that
+     far, and a machine with no usable network device skips that branch
+     entirely and keeps whatever this function left installed.
+
+     Control run: with the dns_init() above removed, an otherwise unchanged
+     release image halts at "assertion failed: anchor_count ==
+     XAIOS_DNSSEC_MAX_ANCHORS", and with these assertions removed as well the
+     marker below reads root_anchors=1 and the line after it tags=9581. */
+  uint16_t anchors_after[XAIOS_DNSSEC_MAX_ANCHORS];
+  uint32_t anchor_count =
+      dnssec_trust_anchor_tags(anchors_after, XAIOS_DNSSEC_MAX_ANCHORS);
+  kassert(anchor_count == XAIOS_DNSSEC_MAX_ANCHORS);
+  for (uint32_t i = 0U; i < anchor_count; ++i)
+    kassert(anchors_after[i] != DNS_SELFTEST_ROOT_TAG);
   klog("dns: self-test passed dnssec=local-chain tcp-fallback=enabled "
        "aaaa=enabled chain_links=%u forged_signature=rejected "
-       "expired_signature=rejected truncated_reply=%u validated_aaaa=%u\n",
-       (unsigned)links, (unsigned)truncations, (unsigned)aaaa_validated);
+       "expired_signature=rejected truncated_reply=%u validated_aaaa=%u "
+       "root_anchors=%u\n",
+       (unsigned)links, (unsigned)truncations, (unsigned)aaaa_validated,
+       (unsigned)anchor_count);
+  dns_log_trust_anchors();
 }
