@@ -215,6 +215,56 @@ static uint32_t console_rows(void) {
 static int g_log_fd = -1;
 static uint32_t g_log_bytes = 0;
 
+/* What the durable volume costs this process, counted rather than assumed.
+ *
+ * B-45 is an arithmetic claim about work done inside this loop, and by B-44
+ * this loop is the machine's networking: while sshd is inside a write to the
+ * volume, nothing is taken off the receive ring, no ACK leaves the guest and
+ * no retransmit happens. A claim like that is worth exactly as much as the
+ * instrument behind it, so the two paths that touch the volume during an
+ * ordinary connection -- the audit append and the authorized-key load -- keep
+ * running totals of how often they ran, how many bytes they moved, and how
+ * long they held the loop.
+ *
+ * Cumulative rather than per-connection. A console is a lossy transport and a
+ * soak scrolls; a running total means the last line that survives is still the
+ * whole answer, and per-connection is a division the reader can do. The line
+ * is emitted at each close, which is where a reader is already looking.
+ *
+ * These stay after the fix, and that is the point of them. A measurement taken
+ * once, quoted and then deleted cannot notice the day the number goes back
+ * up. */
+static uint32_t g_audit_write_calls;
+static uint64_t g_audit_write_bytes;
+static uint64_t g_audit_write_ns;
+static uint32_t g_key_load_calls;
+static uint32_t g_key_load_file_reads;
+static uint64_t g_key_load_ns;
+
+static void log_durable_cost(uint32_t connections) {
+  char line[256];
+  u64 offset = 0;
+  xaios_memzero(line, sizeof(line));
+  xaios_append_cstr(line, sizeof(line), &offset, "sshd: durable cost conns=");
+  xaios_append_u64(line, sizeof(line), &offset, connections);
+  xaios_append_cstr(line, sizeof(line), &offset, " audit_writes=");
+  xaios_append_u64(line, sizeof(line), &offset, g_audit_write_calls);
+  xaios_append_cstr(line, sizeof(line), &offset, " audit_bytes=");
+  xaios_append_u64(line, sizeof(line), &offset, g_audit_write_bytes);
+  xaios_append_cstr(line, sizeof(line), &offset, " audit_us=");
+  xaios_append_u64(line, sizeof(line), &offset,
+                   g_audit_write_ns / UINT64_C(1000));
+  xaios_append_cstr(line, sizeof(line), &offset, " key_loads=");
+  xaios_append_u64(line, sizeof(line), &offset, g_key_load_calls);
+  xaios_append_cstr(line, sizeof(line), &offset, " key_file_reads=");
+  xaios_append_u64(line, sizeof(line), &offset, g_key_load_file_reads);
+  xaios_append_cstr(line, sizeof(line), &offset, " key_us=");
+  xaios_append_u64(line, sizeof(line), &offset,
+                   g_key_load_ns / UINT64_C(1000));
+  xaios_append_cstr(line, sizeof(line), &offset, "\n");
+  xaios_log(line);
+}
+
 static int ssh_log_reopen(void) {
   if (g_log_fd >= 0) {
     xaios_fs_close(g_log_fd);
@@ -327,18 +377,40 @@ void ssh_log(int level, const char *fmt, ...) {
   for (uint32_t i = 0; i < buf_pos; ++i) line[line_pos++] = buffer[i];
   line[line_pos++] = '\n';
 
-  if (g_log_fd < 0 && ssh_log_reopen() != 0) return;
+  /* From here to the end of this function is time spent on the durable
+     volume, and by B-44 that is time the guest has no networking. Timed as a
+     block rather than per call so a rotation -- which closes, creates and
+     truncates -- is counted where it is actually paid. */
+  uint64_t durable_started = xaios_clock_nanos();
+  if (g_log_fd < 0 && ssh_log_reopen() != 0) {
+    g_audit_write_ns += xaios_clock_nanos() - durable_started;
+    return;
+  }
   if (g_log_bytes + line_pos > SSHD_LOG_ROTATE_BYTES) {
-    if (ssh_log_reopen() != 0) return;
+    if (ssh_log_reopen() != 0) {
+      g_audit_write_ns += xaios_clock_nanos() - durable_started;
+      return;
+    }
     xaios_log("sshd: audit log rotated\n");
   }
+  ++g_audit_write_calls;
+  g_audit_write_bytes += line_pos;
   int written = xaios_fs_write(g_log_fd, line, line_pos);
   if (written != (int)line_pos) {
-    if (ssh_log_reopen() != 0) return;
+    if (ssh_log_reopen() != 0) {
+      g_audit_write_ns += xaios_clock_nanos() - durable_started;
+      return;
+    }
+    ++g_audit_write_calls;
+    g_audit_write_bytes += line_pos;
     written = xaios_fs_write(g_log_fd, line, line_pos);
-    if (written != (int)line_pos) return;
+    if (written != (int)line_pos) {
+      g_audit_write_ns += xaios_clock_nanos() - durable_started;
+      return;
+    }
   }
   g_log_bytes += line_pos;
+  g_audit_write_ns += xaios_clock_nanos() - durable_started;
 }
 
 /* Say on the console why a connection was refused before it was served.
@@ -2149,7 +2221,7 @@ static int managed_auth_database_valid(
   return 1;
 }
 
-static int load_authorized_keys(void) {
+static int load_authorized_keys_from_volume(void) {
   xaios_xbfs_stat_user_t stat;
   ssh_mem_zero(g_authorized_keys, sizeof(g_authorized_keys));
   g_authorized_key_count = 0U;
@@ -2227,6 +2299,135 @@ static int load_authorized_keys(void) {
   }
   ssh_log(SSH_LOG_INFO, "Loaded %u authorized keys\n", g_authorized_key_count);
   return (g_authorized_key_count > 0) ? 0 : -1;
+}
+
+/* The authorized keys, and the one thing that makes not re-reading them safe.
+ *
+ * Every publickey attempt called the loader, and the loader reads the key file
+ * off the durable volume -- twice per connection, measured. That is a read of
+ * the volume in the middle of authentication, and by B-44 sshd's loop is the
+ * machine's network thread, so it is a read of the volume with the guest's
+ * networking stopped behind it. The keys change when an administrator changes
+ * them, which is approximately never, and the attempts happen on every
+ * connection.
+ *
+ * A cache is obvious. A cache that goes stale is worse than the re-read, and
+ * worse in the direction that matters: a revoked key that still opens the
+ * machine, or a key just added that does not. So the question is not whether
+ * to cache but what the cache is keyed on, and the answer has to be something
+ * that changes whenever the file does, from any writer, without anyone having
+ * remembered to tell sshd.
+ *
+ * xaibootFS gives exactly that. Every write to a file assigns the node a fresh
+ * generation from a volume-wide counter, and `xaios_fs_stat` reports it along
+ * with the size and the content hash. So the cache holds the (present,
+ * generation, size, hash) of *both* files the loader consults -- the managed
+ * database and the bootstrap file -- and serves the parsed keys only while all
+ * eight numbers still match. Both, because which file wins is itself a
+ * function of whether the managed one exists: a managed database appearing has
+ * to invalidate the keys parsed from the bootstrap file, and that is a change
+ * of presence rather than of content.
+ *
+ * `xaios_fs_stat` is a lookup in the resident node table. It reads no block
+ * and does no IO, which is the entire difference between it and what it
+ * replaces.
+ *
+ * Note what this deliberately does *not* rely on: `sshd_reload_control_state`
+ * calls the loader after an `xaiosctl auth key add`, and that hook is not the
+ * invalidation. Keying on the generation catches every writer, including the
+ * ones that do not go through that hook -- the kernel writing the database for
+ * a local-console administrator, a restored snapshot, a rollback. A cache that
+ * trusted the hook would be correct only for the paths someone remembered. */
+#ifndef SSHD_KEY_CACHE
+#define SSHD_KEY_CACHE 1
+#endif
+#ifndef SSHD_KEY_CACHE_INVALIDATES
+#define SSHD_KEY_CACHE_INVALIDATES 1
+#endif
+
+#if SSHD_KEY_CACHE
+typedef struct {
+  int present;
+  uint64_t generation;
+  uint64_t size;
+  uint64_t content_hash;
+} key_source_sample_t;
+
+typedef struct {
+  int valid;
+  int result;
+  key_source_sample_t managed;
+  key_source_sample_t bootstrap;
+} authorized_keys_cache_t;
+
+static authorized_keys_cache_t g_authorized_keys_cache;
+
+static void sample_key_source(const char *path, key_source_sample_t *out) {
+  xaios_xbfs_stat_user_t stat;
+  ssh_mem_zero(out, sizeof(*out));
+  if (xaios_fs_stat(path, &stat) != 0) return;
+  out->present = 1;
+  out->generation = stat.generation;
+  out->size = stat.size;
+  out->content_hash = stat.content_hash;
+}
+
+#if SSHD_KEY_CACHE_INVALIDATES
+static int key_source_same(const key_source_sample_t *a,
+                           const key_source_sample_t *b) {
+  return a->present == b->present && a->generation == b->generation &&
+         a->size == b->size && a->content_hash == b->content_hash;
+}
+#endif
+
+static int authorized_keys_cache_current(const key_source_sample_t *managed,
+                                         const key_source_sample_t *bootstrap) {
+  if (g_authorized_keys_cache.valid == 0) return 0;
+#if SSHD_KEY_CACHE_INVALIDATES
+  return key_source_same(&g_authorized_keys_cache.managed, managed) &&
+         key_source_same(&g_authorized_keys_cache.bootstrap, bootstrap);
+#else
+  /* The control, built only by the gate. A cache that never looks at the file
+     again is faster than one that does and is wrong from the first key an
+     administrator adds or revokes -- which is why the real one is keyed on the
+     generation, and why "it is faster now" is not on its own a result. */
+  (void)managed;
+  (void)bootstrap;
+  return 1;
+#endif
+}
+#endif /* SSHD_KEY_CACHE */
+
+static int load_authorized_keys(void) {
+  uint64_t started = xaios_clock_nanos();
+  uint64_t audit_before = g_audit_write_ns;
+  int result;
+  ++g_key_load_calls;
+#if SSHD_KEY_CACHE
+  key_source_sample_t managed;
+  key_source_sample_t bootstrap;
+  sample_key_source(XAIOS_ADMIN_AUTH_PATH, &managed);
+  sample_key_source(AUTHORIZED_KEYS_PATH, &bootstrap);
+  if (authorized_keys_cache_current(&managed, &bootstrap) != 0) {
+    result = g_authorized_keys_cache.result;
+  } else {
+    ++g_key_load_file_reads;
+    result = load_authorized_keys_from_volume();
+    g_authorized_keys_cache.valid = 1;
+    g_authorized_keys_cache.result = result;
+    g_authorized_keys_cache.managed = managed;
+    g_authorized_keys_cache.bootstrap = bootstrap;
+  }
+#else
+  ++g_key_load_file_reads;
+  result = load_authorized_keys_from_volume();
+#endif
+  /* The loader writes an audit line of its own, and that write is already
+     counted as audit cost. Subtracting it keeps the two totals disjoint, so
+     they can be added up without counting the same nanoseconds twice. */
+  g_key_load_ns += (xaios_clock_nanos() - started) -
+                   (g_audit_write_ns - audit_before);
+  return result;
 }
 
 static const authorized_key_t *check_authorized_key(const uint8_t *pubkey) {
@@ -3411,6 +3612,9 @@ close_conn:
             closed_sockfd, closed_state,
             timer_now() - closed_connect_time);
         ssh_log(SSH_LOG_INFO, "Connection closed\n");
+        /* After the audit line above, so the totals include this connection's
+           last record rather than all of it but that. */
+        log_durable_cost(g_connection_close_count);
       }
     }
     uint64_t after_connections = timer_now();

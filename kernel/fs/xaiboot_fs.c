@@ -96,6 +96,18 @@ typedef struct xaios_xbfs_extent {
   uint32_t start;
   uint32_t length;
 } xaios_xbfs_extent_t;
+/* The append path, and the switch that turns it off.
+ *
+ * Off, every write through a file descriptor goes back to reading the whole
+ * file and writing all of it out again, which is what this filesystem did
+ * before B-45. It exists so the gate can measure both behaviours from one
+ * tree, one workload and one instrument, rather than comparing today's numbers
+ * against numbers written down yesterday on a different build. Set through
+ * XAIOS_KERNEL_CFLAGS_EXTRA; the shipped default is on. */
+#ifndef XBFS_APPEND_IN_PLACE
+#define XBFS_APPEND_IN_PLACE 1
+#endif
+
 #define XBFS_MAX_OPEN_FILES 256U
 #define XBFS_NODE_FREE 0U
 #define XBFS_NODE_DIR 1U
@@ -268,6 +280,12 @@ static uint64_t g_mount_count;
 static uint64_t g_format_count;
 static uint64_t g_boot_load_count;
 static uint64_t g_write_count;
+/* Appends served without rewriting the file, and appends that had to fall back
+   to the whole-file path. Counted apart from g_write_count, which still counts
+   both, so a gate can tell "the fast path ran" from "the fast path is there
+   and never runs" -- which is the way this change would be green and useless. */
+static uint64_t g_append_count;
+static uint64_t g_append_fallback_count;
 static uint64_t g_read_count;
 static uint64_t g_delete_count;
 static uint64_t g_commit_count;
@@ -559,14 +577,27 @@ static xaios_status_t append_u32(char *buffer, uint64_t capacity,
   return XAIOS_OK;
 }
 
-static uint64_t fnv1a64(const void *buffer, uint64_t size) {
+/* FNV-1a resumed from where it left off, which is what makes an append cheap.
+ *
+ * fnv1a64(A followed by B) is fnv1a64_extend(fnv1a64(A), B). The fold starts
+ * at a fixed basis, carries no length, and has no finalisation step, so the
+ * state after the last byte of A is exactly the state the first byte of B
+ * would be folded into. A file's recorded content_hash is therefore a
+ * resumable position in its own hash, and adding to a file does not require
+ * reading the file back to re-hash it. That property is the whole reason the
+ * append path below can leave the rest of the file alone. */
+static uint64_t fnv1a64_extend(uint64_t hash, const void *buffer,
+                               uint64_t size) {
   const uint8_t *bytes = (const uint8_t *)buffer;
-  uint64_t hash = FNV1A64_OFFSET;
   for (uint64_t i = 0; i < size; ++i) {
     hash ^= bytes[i];
     hash *= FNV1A64_PRIME;
   }
   return hash;
+}
+
+static uint64_t fnv1a64(const void *buffer, uint64_t size) {
+  return fnv1a64_extend(FNV1A64_OFFSET, buffer, size);
 }
 
 static uint64_t mfs_checksum(const void *data, uint64_t size) {
@@ -1347,6 +1378,95 @@ static void free_extents(const xaios_xbfs_extent_t *extents, uint32_t count) {
     }
   }
 }
+
+/* Claim more blocks onto the end of a file's list, leaving the ones it already
+   has exactly where they are.
+
+   `allocate_extents` builds a list from nothing. This adds to a live one, and
+   the difference that matters is the first thing it tries: the block
+   immediately after the file's current last block. A log grows one block at a
+   time, and taking the next block whenever it is free keeps the whole file in
+   a single run, so the extent count does not move however long the file gets.
+   Only when that block is already taken does this spend an extent, and when
+   the format has no extents left it fails rather than truncating the run --
+   the caller then writes the file the old way, which is slower and correct.
+
+   Failure restores the list byte for byte and releases every block this call
+   claimed, including the ones that merely lengthened the existing tail extent.
+   A file left holding blocks that a failed append allocated would leak them;
+   one left with a longer tail than its size accounts for would read as
+   containing bytes nobody wrote. */
+#if XBFS_APPEND_IN_PLACE
+static xaios_status_t extend_extents(xaios_xbfs_extent_t *extents,
+                                     uint32_t *extent_count,
+                                     uint64_t blocks_needed) {
+  if (blocks_needed == 0U) return XAIOS_OK;
+  uint32_t original_count = *extent_count;
+  uint32_t original_tail_length =
+      original_count != 0U ? extents[original_count - 1U].length : 0U;
+  uint64_t remaining = blocks_needed;
+
+  while (remaining != 0U) {
+    if (*extent_count != 0U) {
+      xaios_xbfs_extent_t *tail = &extents[*extent_count - 1U];
+      uint64_t next = (uint64_t)tail->start + (uint64_t)tail->length;
+      if (next < g_active_data_sectors && block_used(next) == 0U) {
+        block_claim(next);
+        ++g_allocation_count;
+        tail->length += 1U;
+        --remaining;
+        continue;
+      }
+    }
+    if (*extent_count >= XBFS_V6_MAX_EXTENTS) break;
+    uint64_t block = 0U;
+    uint64_t run = 0U;
+    while (block < g_active_data_sectors && run == 0U) {
+      if (block_used(block) != 0U) {
+        ++block;
+        continue;
+      }
+      while (block + run < g_active_data_sectors && run < remaining &&
+             block_used(block + run) == 0U) {
+        ++run;
+      }
+    }
+    if (run == 0U) break;
+    extents[*extent_count].start = (uint32_t)block;
+    extents[*extent_count].length = (uint32_t)run;
+    ++(*extent_count);
+    for (uint64_t offset = 0U; offset < run; ++offset) {
+      block_claim(block + offset);
+      ++g_allocation_count;
+    }
+    remaining -= run;
+  }
+
+  if (remaining != 0U) {
+    for (uint32_t e = original_count; e < *extent_count; ++e) {
+      for (uint32_t offset = 0U; offset < extents[e].length; ++offset) {
+        block_release((uint64_t)extents[e].start + offset);
+        ++g_free_count;
+      }
+      extents[e].start = 0U;
+      extents[e].length = 0U;
+    }
+    if (original_count != 0U) {
+      xaios_xbfs_extent_t *tail = &extents[original_count - 1U];
+      for (uint32_t offset = original_tail_length; offset < tail->length;
+           ++offset) {
+        block_release((uint64_t)tail->start + offset);
+        ++g_free_count;
+      }
+      tail->length = original_tail_length;
+    }
+    *extent_count = original_count;
+    ++g_reject_count;
+    return XAIOS_ERR_NO_MEMORY;
+  }
+  return XAIOS_OK;
+}
+#endif /* XBFS_APPEND_IN_PLACE */
 
 static xaios_status_t validate_disk(uint64_t expected_checksum) {
   if (!bytes_eq(g_xbfs.magic, XBFS_MAGIC, XBFS_MAGIC_LEN) ||
@@ -2519,6 +2639,173 @@ static int64_t xaiboot_fs_read_fd_locked(uint32_t fd, void *buffer, uint64_t siz
   return (int64_t)copy;
 }
 
+/* Add to the end of a file without rewriting the rest of it. This is B-45.
+ *
+ * The whole-file path below stages the file in `g_file_buffer`: every append,
+ * however small, read the file back, copied it, and wrote all of it out again.
+ * `ssh_log` appends about thirty bytes per audit record and sshd emits several
+ * per connection, so one SSH connection cost seven whole-file read-modify-
+ * writes of the audit log -- and by B-44 sshd's loop is the machine's network
+ * thread, so that time is time the guest has no networking at all.
+ *
+ * What the format allows, and it allows exactly this:
+ *
+ *   * a node's blocks are a list, not a packing. The blocks a file already has
+ *     keep their contents and their positions; making a file longer is adding
+ *     to the end of that list, not rebuilding it.
+ *   * `content_hash` is FNV-1a, which carries no length and has no
+ *     finalisation, so the recorded hash of the first `size` bytes is exactly
+ *     the state the byte at `size` folds into. The new hash costs one
+ *     multiplication per *appended* byte and none per byte of the file.
+ *   * everything written lives at or past the old `size`. Nothing at or past
+ *     the old `size` is covered by the old hash, and no reader can reach it.
+ *
+ * That last point is what makes writing in place here as crash-safe as the
+ * copy-on-write path it replaces, and it is worth spelling out because
+ * "writes in place" usually means the opposite. Exactly one block is touched
+ * that already holds committed bytes -- the partly filled tail block -- and
+ * only the bytes in it above `size` are changed. The durability model this
+ * filesystem is built for, and the one `qemu-power-loss-gate` actually
+ * enforces by replaying a real write journal, is that a write either happened
+ * or it did not. Both versions of that tail sector are byte-for-byte identical
+ * below `size`, so whichever of them survives a power cut, every byte the
+ * committed metadata describes is still there and still hashes to the
+ * committed `content_hash`. A crash before the metadata commit loses the
+ * record being appended and nothing else -- which is precisely what a crash
+ * before the whole-file path's metadata commit loses.
+ *
+ * The write ordering is the same as well: content out first, then
+ * `write_metadata`, which carries the only flush. Nothing is published until
+ * the metadata naming the new size is durable.
+ *
+ * It refuses rather than half-working. A cursor that is not at the end, a file
+ * that would need more extents than the format has, a volume with no free
+ * block: each returns 0 with the node and the bitmap exactly as they were, and
+ * the caller writes the file the old way. So the set of writes that succeed is
+ * unchanged; only their cost is different.
+ *
+ * What this gives up, stated rather than buried: the whole-file path re-read
+ * the file on every append and so re-verified its content hash on every
+ * append. This does not read the file, so a file whose bytes have gone bad is
+ * now found at the next read instead of at the next append. Reading a file in
+ * order to add to it is the cost this exists to remove, and the check itself
+ * is not lost -- `read_file` still makes it.
+ *
+ * Returns 1 when the append was made, 0 when it was not applicable and the
+ * caller should fall back, and -1 when the volume failed under it. */
+#if XBFS_APPEND_IN_PLACE
+static int append_fd_in_place(xaios_xbfs_file_handle_t *handle,
+                              const void *buffer, uint64_t size) {
+  xaios_xbfs_node_t *node = find_node(handle->path, 0);
+  if (node == 0 || node->active == 0 || node->type != XBFS_NODE_FILE ||
+      size == 0U || handle->cursor != node->size) {
+    return 0;
+  }
+
+  uint64_t old_size = node->size;
+  uint64_t new_size = old_size + size;
+  uint64_t old_blocks = blocks_for_size(old_size);
+  uint64_t new_blocks = blocks_for_size(new_size);
+  if (new_size > g_active_max_file_bytes ||
+      new_blocks > (uint64_t)g_active_file_max_blocks) {
+    return 0;
+  }
+  /* Only a node whose block list matches its size can be reasoned about this
+     way. Nothing produces any other shape today; a version that did would take
+     the whole-file path rather than have this guess. */
+  if (extent_blocks(node->extents, node->extent_count) != old_blocks) {
+    return 0;
+  }
+
+  xaios_xbfs_extent_t extents[XBFS_V6_MAX_EXTENTS];
+  uint32_t extent_count = node->extent_count;
+  bytes_zero(extents, sizeof(extents));
+  bytes_copy(extents, node->extents, sizeof(extents));
+  if (extend_extents(extents, &extent_count, new_blocks - old_blocks) !=
+      XAIOS_OK) {
+    return 0;
+  }
+
+  const uint8_t *bytes = (const uint8_t *)buffer;
+  uint8_t sector[XBFS_SECTOR_SIZE];
+  uint64_t written = 0U;
+  uint64_t blocks_touched = 0U;
+  int failed = 0;
+  while (written < size && failed == 0) {
+    uint64_t offset = old_size + written;
+    uint64_t index = offset / XBFS_SECTOR_SIZE;
+    uint64_t within = offset % XBFS_SECTOR_SIZE;
+    uint64_t chunk = XBFS_SECTOR_SIZE - within;
+    if (chunk > size - written) chunk = size - written;
+    uint64_t block = extent_block_at(extents, extent_count, index);
+    if (block == UINT64_MAX) {
+      failed = 1;
+      break;
+    }
+    /* `within` can only be non-zero on the very first pass, because every
+       chunk after the first starts on a block boundary. So this reads at most
+       one sector, and only ever the partly filled tail block -- the one whose
+       bytes below `within` are committed and have to be written back
+       unchanged. A freshly claimed block is written whole, from zero. */
+    if (within != 0U) {
+      if (blk_read(absolute_data_sector(block), sector, XBFS_SECTOR_SIZE) !=
+          XAIOS_OK) {
+        failed = 1;
+        break;
+      }
+    } else {
+      bytes_zero(sector, sizeof(sector));
+    }
+    bytes_copy(sector + within, bytes + written, chunk);
+    if (blk_write(absolute_data_sector(block), sector, XBFS_SECTOR_SIZE) !=
+        XAIOS_OK) {
+      failed = 1;
+      break;
+    }
+    written += chunk;
+    ++blocks_touched;
+  }
+
+  if (failed != 0) {
+    /* Nothing is published, so give back only what this call claimed. The
+       blocks the file already had are untouched and so is the node. */
+    for (uint64_t i = old_blocks; i < new_blocks; ++i) {
+      uint64_t block = extent_block_at(extents, extent_count, i);
+      if (block != UINT64_MAX && block_used(block) != 0U) {
+        block_release(block);
+        ++g_free_count;
+      }
+    }
+    klog("xaibootfs: append block IO failed path=%s added=%lu size=%lu\n",
+         handle->path, size, new_size);
+    return -1;
+  }
+
+  node->size = new_size;
+  node->content_hash = fnv1a64_extend(node->content_hash, buffer, size);
+  node->generation = g_xbfs.generation++;
+  node->extent_count = extent_count;
+  bytes_zero(node->extents, sizeof(node->extents));
+  bytes_copy(node->extents, extents, sizeof(extents));
+  /* Counted the way the whole-file path counts it -- once per write of a
+     file that spans more than one sector, not once per file that grows into
+     one. The telemetry that reads this was written against that meaning. */
+  if (new_blocks > 1U) {
+    ++g_multi_sector_file_count;
+  }
+  ++g_write_count;
+  ++g_append_count;
+  klog("xaibootfs: append path=%s added=%lu size=%lu touched=%lu blocks=%u generation=%lu\n",
+       node->path, size, node->size, blocks_touched,
+       (unsigned long)extent_blocks(node->extents, node->extent_count),
+       node->generation);
+  if (write_metadata() != XAIOS_OK) {
+    return -1;
+  }
+  return 1;
+}
+#endif /* XBFS_APPEND_IN_PLACE */
+
 /* How large a file this path can actually write. Two limits, and the smaller
    one binds.
 
@@ -2547,6 +2834,23 @@ static int64_t xaiboot_fs_write_fd_locked(uint32_t fd, const void *buffer, uint6
     ++g_reject_count;
     return (int64_t)XAIOS_ERR_INVALID;
   }
+
+#if XBFS_APPEND_IN_PLACE
+  /* The common case, and the only one that was expensive: the cursor is at the
+     end of the file and the write only makes it longer. Everything else falls
+     through to the whole-file path below, unchanged. */
+  int appended = append_fd_in_place(handle, buffer, size);
+  if (appended < 0) {
+    return (int64_t)XAIOS_ERR_IO;
+  }
+  if (appended > 0) {
+    handle->cursor += size;
+    klog("xaibootfs: write-fd fd=%u bytes=%lu cursor=%lu\n", fd, size,
+         handle->cursor);
+    return (int64_t)size;
+  }
+  ++g_append_fallback_count;
+#endif
 
   uint64_t file_size = 0;
   if (find_node(handle->path, 0) != 0) {
@@ -2613,6 +2917,10 @@ uint64_t xaiboot_fs_boot_load_count(void) { return g_boot_load_count; }
 uint64_t xaiboot_fs_file_count(void) { return node_count_by_type(XBFS_NODE_FILE); }
 uint64_t xaiboot_fs_directory_count(void) { return node_count_by_type(XBFS_NODE_DIR); }
 uint64_t xaiboot_fs_write_count(void) { return g_write_count; }
+uint64_t xaiboot_fs_append_count(void) { return g_append_count; }
+uint64_t xaiboot_fs_append_fallback_count(void) {
+  return g_append_fallback_count;
+}
 uint64_t xaiboot_fs_read_count(void) { return g_read_count; }
 uint64_t xaiboot_fs_delete_count(void) { return g_delete_count; }
 uint64_t xaiboot_fs_commit_count(void) { return g_commit_count; }
@@ -3056,6 +3364,8 @@ void xaiboot_fs_self_test(void) {
   g_stat_count = 0;
   g_open_count = 0;
   g_close_count = 0;
+  g_append_count = 0;
+  g_append_fallback_count = 0;
   reset_open_files();
 
   kassert(mount_volume(XBFS_MOUNT_READ_WRITE) == XAIOS_OK);
@@ -3244,6 +3554,151 @@ void xaiboot_fs_self_test(void) {
     kassert(xaiboot_fs_write_fd((uint32_t)guard_fd, probe, 1U) == 1);
     kassert(xaiboot_fs_close((uint32_t)guard_fd) == XAIOS_OK);
     kassert(xaiboot_fs_delete("/state/overflow-guard") == XAIOS_OK);
+  }
+  {
+    /* B-45. Three separate things have to hold, and the first is the one a
+       green-and-useless version of this change would fail: the fast path has
+       to actually run. Everything after it is content, and content would be
+       right either way -- the whole-file path produces the same bytes, slowly.
+
+       The records are deliberately not a divisor of the sector size, so the
+       run crosses block boundaries at every offset within a block rather than
+       always at the same one. An append that understood only the tail block,
+       or that got the boundary off by one, has nowhere to hide in that. */
+    static const char record[] = "[INFO] connection accepted\n";
+    const uint64_t record_length = sizeof(record) - 1U;
+    const uint32_t record_count = 200U;
+    uint64_t appends_before = xaiboot_fs_append_count();
+    uint64_t reads_before = xaiboot_fs_read_count();
+    int64_t log_fd = xaiboot_fs_open("/state/append-probe",
+                                     XAIOS_XBFS_OPEN_WRITE |
+                                         XAIOS_XBFS_OPEN_CREATE |
+                                         XAIOS_XBFS_OPEN_TRUNCATE);
+    kassert(log_fd >= 0);
+    for (uint32_t i = 0U; i < record_count; ++i) {
+      kassert(xaiboot_fs_write_fd((uint32_t)log_fd, record, record_length) ==
+              (int64_t)record_length);
+    }
+    kassert(xaiboot_fs_close((uint32_t)log_fd) == XAIOS_OK);
+#if XBFS_APPEND_IN_PLACE
+    kassert(xaiboot_fs_append_count() - appends_before ==
+            (uint64_t)record_count);
+    /* And not one file read among them, which is the defect itself. */
+    kassert(xaiboot_fs_read_count() == reads_before);
+#else
+    (void)reads_before;
+#endif
+
+    /* The bytes, and by way of read_file the content hash that was extended
+       rather than recomputed: a wrong hash is XAIOS_ERR_INVALID here. */
+    uint64_t probe_size = 0;
+    kassert(read_file("/state/append-probe", buffer, sizeof(buffer),
+                      &probe_size) == XAIOS_OK);
+    kassert(probe_size == record_length * (uint64_t)record_count);
+    for (uint32_t i = 0U; i < record_count; ++i) {
+      kassert(bytes_eq(buffer + (uint64_t)i * record_length, record,
+                       record_length) != 0);
+    }
+
+    /* A write that is not at the end is not an append, must not be treated as
+       one, and must still be correct. */
+    uint64_t fallbacks_before = xaiboot_fs_append_fallback_count();
+    appends_before = xaiboot_fs_append_count();
+    int64_t patch_fd = xaiboot_fs_open("/state/append-probe",
+                                       XAIOS_XBFS_OPEN_WRITE);
+    kassert(patch_fd >= 0);
+    kassert(xaiboot_fs_seek((uint32_t)patch_fd, record_length) == XAIOS_OK);
+    kassert(xaiboot_fs_write_fd((uint32_t)patch_fd, "XX", 2U) == 2);
+    kassert(xaiboot_fs_close((uint32_t)patch_fd) == XAIOS_OK);
+    kassert(xaiboot_fs_append_count() == appends_before);
+#if XBFS_APPEND_IN_PLACE
+    kassert(xaiboot_fs_append_fallback_count() == fallbacks_before + 1U);
+#else
+    (void)fallbacks_before;
+#endif
+    kassert(read_file("/state/append-probe", buffer, sizeof(buffer),
+                      &probe_size) == XAIOS_OK);
+    kassert(probe_size == record_length * (uint64_t)record_count);
+    kassert(buffer[record_length] == 'X' && buffer[record_length + 1U] == 'X');
+    kassert(bytes_eq(buffer, record, record_length) != 0);
+    kassert(bytes_eq(buffer + record_length * 2U, record, record_length) != 0);
+
+    /* Failing when it should, one: an append that would take the file past
+       what this volume's format allows is refused, and refused without
+       changing the file. The bound is `write_limit`, which on a v2 volume is
+       the format's own eight kibibytes and on v6 is the staging buffer -- the
+       .bss overflow that bound exists to stop. The append path does not stage
+       through that buffer at all, and the bound still binds, because a path
+       that quietly raised its own limit is how that overflow would come back. */
+    uint64_t limit = write_limit();
+    int64_t bound_fd = xaiboot_fs_open("/state/append-probe",
+                                       XAIOS_XBFS_OPEN_WRITE);
+    kassert(bound_fd >= 0);
+    kassert(xaiboot_fs_seek((uint32_t)bound_fd, limit - 1U) == XAIOS_OK);
+    kassert(xaiboot_fs_write_fd((uint32_t)bound_fd, record,
+                                record_length) ==
+            (int64_t)XAIOS_ERR_INVALID);
+    kassert(xaiboot_fs_close((uint32_t)bound_fd) == XAIOS_OK);
+    kassert(read_file("/state/append-probe", buffer, sizeof(buffer),
+                      &probe_size) == XAIOS_OK);
+    kassert(probe_size == record_length * (uint64_t)record_count);
+
+    /* Failing when it should, two: a volume with no free block. The append
+       needs one, cannot have one, and the file has to come back unchanged and
+       still readable -- not longer, not shorter, and not corrupt. This is the
+       case where a fast path that published its metadata before its blocks
+       would be found out. */
+    uint32_t filled = 0U;
+    /* Fill to exactly full, sizing the last file to the free blocks that are
+       left rather than writing whole files until one does not fit. Writing
+       until failure stops with a few blocks still free, and an append that
+       then succeeds would have proved nothing -- which is how this control
+       would have passed while testing the opposite of what it says. */
+    while (block_count_used() < (uint64_t)g_active_data_sectors &&
+           filled < XBFS_MAX_NODES) {
+      uint64_t free_blocks =
+          (uint64_t)g_active_data_sectors - block_count_used();
+      uint64_t chunk = free_blocks * XBFS_SECTOR_SIZE;
+      if (chunk > (uint64_t)XBFS_MAX_FILE_BYTES) {
+        chunk = (uint64_t)XBFS_MAX_FILE_BYTES;
+      }
+      char fill_path[XBFS_PATH_MAX];
+      uint64_t offset = 0;
+      kassert(append_cstr(fill_path, sizeof(fill_path), &offset,
+                          "/state/fill-") == XAIOS_OK);
+      kassert(append_u32(fill_path, sizeof(fill_path), &offset, filled) ==
+              XAIOS_OK);
+      if (write_file(fill_path, buffer, chunk) != XAIOS_OK) break;
+      ++filled;
+    }
+    kassert(block_count_used() == (uint64_t)g_active_data_sectors);
+    uint64_t blocked_size = 0;
+    kassert(read_file("/state/append-probe", buffer, sizeof(buffer),
+                      &blocked_size) == XAIOS_OK);
+    int64_t blocked_fd = xaiboot_fs_open("/state/append-probe",
+                                         XAIOS_XBFS_OPEN_WRITE);
+    kassert(blocked_fd >= 0);
+    kassert(xaiboot_fs_seek((uint32_t)blocked_fd, blocked_size) == XAIOS_OK);
+    /* A whole sector, so a block is needed whatever slack the tail had. */
+    kassert(xaiboot_fs_write_fd((uint32_t)blocked_fd, buffer,
+                                XBFS_SECTOR_SIZE) < 0);
+    kassert(xaiboot_fs_close((uint32_t)blocked_fd) == XAIOS_OK);
+    uint64_t after_size = 0;
+    kassert(read_file("/state/append-probe", buffer, sizeof(buffer),
+                      &after_size) == XAIOS_OK);
+    kassert(after_size == blocked_size);
+    for (uint32_t i = 0U; i < filled; ++i) {
+      char fill_path[XBFS_PATH_MAX];
+      uint64_t offset = 0;
+      kassert(append_cstr(fill_path, sizeof(fill_path), &offset,
+                          "/state/fill-") == XAIOS_OK);
+      kassert(append_u32(fill_path, sizeof(fill_path), &offset, i) == XAIOS_OK);
+      kassert(delete_node(fill_path) == XAIOS_OK);
+    }
+    kassert(delete_node("/state/append-probe") == XAIOS_OK);
+    klog("xaibootfs: append self-test passed appends=%lu fallbacks=%lu records=%lu filled=%u refused_full=%lu\n",
+         xaiboot_fs_append_count(), xaiboot_fs_append_fallback_count(),
+         (uint64_t)record_count, filled, blocked_size);
   }
   klog("xaibootfs: write bound self-test passed limit=%lu staging_buffer=%lu\n",
        write_limit(), (uint64_t)sizeof(g_file_buffer));

@@ -48,6 +48,10 @@ uint64_t xaiboot_fs_boot_load_count(void);
 uint64_t xaiboot_fs_file_count(void);
 uint64_t xaiboot_fs_directory_count(void);
 uint64_t xaiboot_fs_write_count(void);
+/* Writes served by extending a file rather than rewriting it, and
+   writes that had to rewrite. Both are counted in write_count too. */
+uint64_t xaiboot_fs_append_count(void);
+uint64_t xaiboot_fs_append_fallback_count(void);
 uint64_t xaiboot_fs_read_count(void);
 uint64_t xaiboot_fs_delete_count(void);
 uint64_t xaiboot_fs_commit_count(void);

@@ -1391,6 +1391,15 @@ if [ "$LIBC_TEST" = 1 ]; then
 fi
 
 printf '%s\n' "Building userspace /bin/sshd ELF..."
+# The same escape hatch the kernel has in XAIOS_KERNEL_CFLAGS_EXTRA, for the
+# same reason: a gate that has to compare two behaviours of this server wants
+# both of them built from one tree, one workload and one instrument. B-45's
+# gate uses it to build the authorized-key cache without its invalidation, to
+# show what a cache keyed on nothing looks like. Unset in every ordinary build.
+SSHD_CFLAGS_EXTRA="${XAIOS_SSHD_CFLAGS_EXTRA:-}"
+if [ -n "$SSHD_CFLAGS_EXTRA" ]; then
+  printf '%s\n' "sshd built with extra flags: $SSHD_CFLAGS_EXTRA"
+fi
 SSHD_RESPONSE_FILE="$INIT_BUILD_DIR/sshd-objects.rsp"
 : > "$SSHD_RESPONSE_FILE"
 for sshd_src in sshd.c ssh_crypto.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
@@ -1413,6 +1422,7 @@ for sshd_src in sshd.c ssh_crypto.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.
     -Wextra \
     -Werror \
     $PASSWORD_AUTH_CFLAG \
+    $SSHD_CFLAGS_EXTRA \
     -DMLK_CONFIG_FILE='"mlkem_xaios_config.h"' \
     -I"$ROOT_DIR/userspace/include" \
     -I"$ROOT_DIR/userspace/sshd" \
