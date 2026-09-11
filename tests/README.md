@@ -131,6 +131,42 @@ Do not commit downloaded VM images, generated SSH keys, passwords, build
 outputs, or reports. Test runners create ephemeral credentials and write
 artifacts under `build/`.
 
+## Three verdicts, not two
+
+A gate that can only pass or fail will, sooner or later, report the host's
+failure as the guest's defect. Three gates here arrived at that independently
+on the same day, so it is written down rather than rediscovered a fourth time.
+
+Every gate that has to *create* a condition before judging it should be able to
+say three things:
+
+- **pass** — the condition held and the thing under test behaved;
+- **fail** — the condition held and the thing under test did not;
+- **inconclusive** — the condition was never created, so nothing was learned.
+
+The third still exits non-zero. An inconclusive run that exits zero is a gate
+that cannot fail, which is the defect this repository has now found eight times
+and is worse than having no gate at all. What it must not do is name the guest.
+It should say what did not happen and which side of the wire it did not happen
+on.
+
+The three that needed it, and what each looked like before:
+
+| Gate | The condition | What it reported instead |
+|---|---|---|
+| `qemu-sshd-transmit-rate-gate` | a peer reading below the floor | the host absorbed 725,203 bytes on the peer's behalf, so the guest was never shown a slow peer, correctly closed nothing — and the gate called that the defect |
+| `qemu-ssh-connection-rate-gate` | 121 connections inside the limiter's window | five the host could not open and two accepted-then-silent counted as neither served nor refused, so one run reported both "only 113 of 120 were answered" and "all 121 were served" |
+| `qemu-network-poll-cadence-gate` | a measurable gap between polls | avoided the trap by *recording* its number rather than asserting it, because on a shared machine the spread between runs belongs to the machine |
+
+The last one is the cheaper pattern where it applies: if the quantity is
+inherently the host's as much as the guest's, record it and assert only the
+things that are not — that the instrument works, that the counter advanced,
+that the transfers came back byte-identical.
+
+A useful test when writing one: *if this gate ran on a machine with no guest at
+all, what would it say?* If the answer is anything other than "inconclusive" or
+"the workload never ran", the anti-vacuity floor is missing too.
+
 ## Evidence boundary
 
 Hosted and QEMU results prove only the behavior named by each gate. QEMU timing
