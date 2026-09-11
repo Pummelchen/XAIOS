@@ -1368,6 +1368,7 @@ docs-check:
 	python3 tests/repository/check-model-support.py
 	python3 tests/repository/check-platform-support.py
 	python3 tests/repository/check-core-os-status.py
+	python3 tests/repository/check-ssh-wire-bound.py
 
 code-scanning-contract:
 	python3 tests/repository/check-code-scanning-contract.py

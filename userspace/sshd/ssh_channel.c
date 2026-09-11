@@ -590,7 +590,7 @@ static int flush_channel(ssh_channel_t *ch) {
     if (chunk > ch->remote_window) chunk = ch->remote_window;
     if (chunk > ch->remote_max_packet) chunk = ch->remote_max_packet;
     if (chunk > SSH_CHANNEL_MAX_PACKET) chunk = SSH_CHANNEL_MAX_PACKET;
-    if (chunk > SSH_MAX_PACKET_SIZE - 9U) chunk = SSH_MAX_PACKET_SIZE - 9U;
+    if (chunk > SSH_WIRE_MAX_CHUNK) chunk = SSH_WIRE_MAX_CHUNK;
     if (write_channel_data((int)ch->owner_sockfd, ch->remote_id,
                            ch->pending + ch->pending_offset, chunk) != 0) {
       return -1;

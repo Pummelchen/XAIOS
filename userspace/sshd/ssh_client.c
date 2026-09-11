@@ -1127,7 +1127,7 @@ static int proxy_stream_send(void *context, const uint8_t *data,
   uint32_t chunk = length > UINT32_MAX ? UINT32_MAX : (uint32_t)length;
   if (chunk > client->proxy_remote_window) chunk = client->proxy_remote_window;
   if (chunk > client->proxy_remote_max_packet) chunk = client->proxy_remote_max_packet;
-  if (chunk > SSH_MAX_PACKET_SIZE - 9U) chunk = SSH_MAX_PACKET_SIZE - 9U;
+  if (chunk > SSH_WIRE_MAX_CHUNK) chunk = SSH_WIRE_MAX_CHUNK;
   if (chunk == 0U) return -1;
   /* The target handshake retains frame_workspace as its server KEXINIT. */
   uint8_t *packet = client->proxy_packet_workspace.data;
@@ -2067,7 +2067,7 @@ static int send_channel_data(ssh_client_context_t *client,
     uint32_t chunk = length - offset;
     if (chunk > client->remote_window) chunk = client->remote_window;
     if (chunk > client->remote_max_packet) chunk = client->remote_max_packet;
-    if (chunk > SSH_MAX_PACKET_SIZE - 9U) chunk = SSH_MAX_PACKET_SIZE - 9U;
+    if (chunk > SSH_WIRE_MAX_CHUNK) chunk = SSH_WIRE_MAX_CHUNK;
     uint8_t *packet = client->packet_workspace.data;
     packet[0] = SSH_MSG_CHANNEL_DATA;
     ssh_write_u32_be(packet + 1U, client->remote_channel);

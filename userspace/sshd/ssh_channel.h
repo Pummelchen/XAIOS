@@ -2,6 +2,8 @@
 #define SSH_CHANNEL_H
 
 #include <xaios/types.h>
+
+#include "ssh_protocol.h"
 #include <xaios_screen.h>
 #include "less_pager.h"
 #include "nano_editor.h"
@@ -15,6 +17,14 @@
 #define SSH_CHANNEL_SHELL_LINE_SIZE 256U
 #define SSH_CHANNEL_INITIAL_WINDOW 65536U
 #define SSH_CHANNEL_MAX_PACKET 10240U
+
+/* The channel maximum has to fit what a socket will take in one call, or a
+   full-size packet is refused rather than short-written (B-46). Raising it
+   past SSH_WIRE_MAX_CHUNK is a build error, not a surprise in the field --
+   the same guard xaiboot_fs.c uses to stop a future node count quietly
+   reintroducing an overflow. */
+typedef char ssh_channel_packet_fits_socket_buffer
+    [(SSH_CHANNEL_MAX_PACKET + 9U <= SSH_WIRE_MAX_CHUNK) ? 1 : -1];
 #define SSH_CHANNEL_SFTP_REQUEST_MAX SSH_MAX_PACKET_SIZE
 #define SSH_CHANNEL_SFTP_BUFFER_SIZE \
   (SSH_CHANNEL_SFTP_REQUEST_MAX + SSH_CHANNEL_MAX_PACKET)

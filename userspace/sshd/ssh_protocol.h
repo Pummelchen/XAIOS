@@ -4,6 +4,26 @@
 #include <xaios/types.h>
 
 #define SSH_MAX_PACKET_SIZE 35000U
+
+/* The most this process can hand a socket in one call.
+ *
+ * B-46: SSH_MAX_PACKET_SIZE is 35000 and the syscall refuses anything over
+ * SOCKET_BUFFER_SIZE, which is 16384. The three places that chunk a transfer
+ * clamped to SSH_MAX_PACKET_SIZE - 9 -- 34991 -- so a chunk at that size
+ * would have come back net-send-denied rather than short-written. Nothing
+ * reached it, because SSH_CHANNEL_MAX_PACKET is 10240 and bounds the data
+ * that gets that far; it was a cliff waiting for the day someone raised the
+ * channel maximum for a good reason. The clamp is now the syscall's bound.
+ *
+ * This is SOCKET_BUFFER_SIZE from kernel/include/xaios/socket_buffer.h, and
+ * it is written here as a number because userspace does not get the kernel's
+ * include path -- compile-check's userspace pass has no -Ikernel/include, and
+ * userspace/include/xaios/ holds only types.h. A number copied across that
+ * boundary is exactly how these two came to disagree, so
+ * tests/repository/check-ssh-wire-bound.py reads both files and fails if they
+ * drift. ssh_channel.h asserts the channel maximum still fits, so raising it
+ * is a build error rather than a refusal in the field. */
+#define SSH_WIRE_MAX_CHUNK 16384U
 #define SSH_VERSION_SERVER "SSH-2.0-XAIOS_1.0"
 #define SSH_MSG_KEXINIT 20
 #define SSH_MSG_KEXDH_INIT 30
