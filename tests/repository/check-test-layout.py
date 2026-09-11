@@ -22,7 +22,7 @@ RUNTIME_SCRIPTS = {
     "build-riscv64-image.sh",
     "build-riscv64-boot-media.sh",
     "elf-to-efi.py",
-    "build-unified-image.sh",
+    "build-arch-image.sh",
     "build-release.sh",
     "build-user-app.sh",
     "build-vm-packages.sh",

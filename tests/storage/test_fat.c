@@ -19,9 +19,11 @@
 void klog(const char *fmt, ...) { (void)fmt; }
 
 #define SECTOR 512U
-/* 96 MiB, the size the unified image gives its EFI System Partition. Testing
-   at the size the real thing uses is what catches a geometry choice that only
-   works for one volume size. */
+/* 96 MiB, the size the AArch64 release image gives its EFI System Partition.
+   Testing at the size the real thing uses is what catches a geometry choice
+   that only works for one volume size. The other two images use 32 MiB; both
+   sizes come out FAT16, which is the property that matters and which
+   build-arch-image.sh now asks mformat to confirm rather than assume. */
 #define DISK_BYTES (96U * 1024U * 1024U)
 
 static unsigned char *g_image;

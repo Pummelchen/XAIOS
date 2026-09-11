@@ -230,33 +230,48 @@ qemu-dhcpv6-gate: image-qemu-test
 # markers the gates look for. That is not a stale image and the staleness
 # check does not catch it -- it is a correct image of the wrong build, and it
 # happened when make vmware-fusion-image rebuilt the kernel in passing.
-# All three halves, built here rather than picked up from the tree.
+# One architecture, one image. Each target builds that architecture's payload
+# and then wraps it, and neither half knows about the other two -- which is the
+# point: a boot that goes wrong has one kernel, one initial filesystem and one
+# loader on the medium to be wrong about.
 #
-# The RISC-V kernel and initial filesystem were taken from whatever build/
-# happened to contain, so the shipped image carried whichever configuration
-# someone had last built -- and, once, a kernel from an older build number
-# than the image it was inside. Nothing said so: the image was assembled from
-# files that existed, and files that exist look like files that were built.
-unified-image:
+# Built here rather than picked up from the tree. The RISC-V kernel and initial
+# filesystem used to be taken from whatever build/ happened to contain, so the
+# shipped image carried whichever configuration someone had last built -- and,
+# once, a kernel from an older build number than the image it was inside.
+# Nothing said so: the image was assembled from files that existed, and files
+# that exist look like files that were built.
+release-image-aarch64:
 	XAIOS_BOOT_VERBOSE=1 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
+	XAIOS_TARGET_ARCH=aarch64 ./scripts/build-arch-image.sh
+
+release-image-x86_64:
 	XAIOS_TARGET_ARCH=x86_64 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
+	XAIOS_TARGET_ARCH=x86_64 ./scripts/build-arch-image.sh
+
+release-image-riscv64:
 	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64.sh
 	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-image.sh
 	XAIOS_BOOT_TEST_APPS=1 ./scripts/build-riscv64-boot-media.sh
-	./scripts/build-unified-image.sh
+	XAIOS_TARGET_ARCH=riscv64 ./scripts/build-arch-image.sh
 
-# The release package: the image, and the zip that carries it where a 220 MB
-# file cannot go.
-release-package: unified-image
+# All three, for a release. Serial rather than parallel: each one runs the
+# same builders over the same build/ directory, and in parallel they would
+# overwrite each other's intermediate objects.
+release-images: release-image-aarch64 release-image-x86_64 release-image-riscv64
+
+# The release package: the three images, and a zip beside each one.
+release-package: release-images
 	./scripts/build-release.sh
 
-# Boot that one file on every environment available here. Shallower than the
-# per-platform gates by design: they each boot their own image, so all five can
-# pass while the unified image boots nothing.
-unified-image-gate: unified-image
-	python3 ./tests/scripts/unified-image-gate.py
+# Boot each released image on every environment that can run it. Shallower
+# than the per-platform gates by design: those each boot an image they built
+# for themselves, so all five can pass while the files a release actually
+# contains boot nothing.
+release-image-gate: release-images
+	python3 ./tests/scripts/release-image-gate.py
 
-# Everything CI cannot run: the two hypervisors and the half of the unified
+# Everything CI cannot run: the two hypervisors and the half of the release
 # image gate that drives them. Writes build/local-gates.json naming the commit
 # it checked, so "was this verified on the hypervisors?" has an answer.
 local-gates:
@@ -1391,6 +1406,7 @@ docs-check:
 	python3 tests/repository/check-platform-support.py
 	python3 tests/repository/check-core-os-status.py
 	python3 tests/repository/check-ssh-wire-bound.py
+	python3 tests/repository/check-fault-test-marker.py
 
 code-scanning-contract:
 	python3 tests/repository/check-code-scanning-contract.py

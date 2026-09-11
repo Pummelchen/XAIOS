@@ -67,6 +67,35 @@ for required in "$LOADER" "$KERNEL" "$INITFS"; do
   }
 done
 
+KERNEL_TO_CHECK="$KERNEL"
+case "$ARCH" in
+  aarch64) FAULT_TEST_REBUILD="./scripts/build-image.sh" ;;
+  x86_64)  FAULT_TEST_REBUILD="XAIOS_TARGET_ARCH=x86_64 ./scripts/build-image.sh" ;;
+  riscv64) FAULT_TEST_REBUILD="./scripts/build-riscv64.sh" ;;
+esac
+# A kernel built to fault on purpose must not be wrapped into anything.
+#
+# `make qemu-fault-matrix` compiles three of them, each into the same
+# build/kernel*/kernel.elf a packaging script reads, and restores the normal
+# image when it finishes. That restoration is a courtesy and not a guarantee:
+# interrupt it, crash it, or run a packaging script beside it, and the tree is
+# left holding a kernel that halts on purpose under a name that means "the
+# kernel". One netboot binary was built that way and looked exactly like a
+# release binary; it took booting it to find out.
+#
+# The kernel says so in its own bytes when it is one of those builds. This
+# reads that rather than trusting the filename. LC_ALL=C because the file is
+# binary and a locale that tries to decode it can make grep give up on the
+# line the marker is in.
+XAIOS_FAULT_TEST_MARKER="fault-test-build: this kernel faults on purpose and must not be shipped"
+if LC_ALL=C grep -a -q -F "$XAIOS_FAULT_TEST_MARKER" "$KERNEL_TO_CHECK"; then
+  printf '%s\n' \
+    "error: $KERNEL_TO_CHECK was built with XAIOS_FAULT_TEST and halts on" \
+    "       purpose. It must not be packaged. Rebuild without it:" \
+    "         $FAULT_TEST_REBUILD" >&2
+  exit 1
+fi
+
 SEED="$BUILD_DIR/netboot-entropy.seed"
 # Exactly XAIOS_BOOT_INFO_ENTROPY_SEED_BYTES. The loader ignores a section of
 # any other length rather than seeding from a short read.

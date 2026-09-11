@@ -98,6 +98,66 @@ Landed since build 5 and not in any released image.
   CPU over two minutes: AArch64 fell from 4.8% of a core to 3.8%, twice each
   way; x86-64 and RISC-V moved within noise and neither regressed.
 
+## Build 6 — 2026-09-12
+
+One image per architecture, instead of one image for all of them.
+
+Up to build 5 a release was a single ISO carrying an AArch64, an x86-64 and a
+RISC-V loader, kernel and initial filesystem, and UEFI made that work: firmware
+picks its own loader from the removable-media path and never sees the others.
+It was genuinely one deliverable. What it was not was easy to reason about. A
+boot that went wrong had three kernels, three initial filesystems and three
+loaders on the medium to be wrong about; the file was 220 MB of which about
+thirty was payload; and an architecture whose build had quietly not happened
+produced an image that still booted on the machine that built it and not on the
+machine it was carried to.
+
+So a release is now three images, and every kit built from one is built for one
+machine:
+
+| | AArch64 | x86-64 | RISC-V |
+|---|---|---|---|
+| image | `xaios_b6-aarch64.iso` | `xaios_b6-x86_64.iso` | `xaios_b6-riscv64.iso` |
+| USB | yes | yes | yes |
+| network boot | yes | yes | yes, untried on hardware |
+| QEMU | yes | yes | yes |
+| VMware Fusion | yes | — | — |
+| Virtualization.framework | yes | — | — |
+
+RISC-V reaches the same shelf as the other two for the first time. It had a
+loader in the shipped image and nothing else: no USB kit, no network-boot
+binary in the kit anyone downloads, no launcher. It now has all three. The
+network-boot binary is the one thing here that has never been fetched by real
+firmware -- no RISC-V machine that netboots has been in front of this project
+-- so what is unproven is the fetch and the DHCP option-93 selection rather
+than the system inside the binary, which boots from a medium in this tree like
+the other two. That is stated in the kit's own README rather than left to be
+discovered.
+
+Fusion and Virtualization.framework are AArch64 only, and that is a fact about
+the host rather than a gap: both run guests on the machine's own cores, so an
+x86-64 or RISC-V guest there would be emulation, which is what the QEMU kits
+are for.
+
+The two images that no longer have to hold three architectures are much
+smaller: 78 MB for x86-64 and 84 MB for RISC-V, against 220 MB before, which
+is under the limit that made a zip mandatory rather than merely tidy. The
+AArch64 image keeps its 96 MiB EFI System Partition and its size, because that
+is the partition VMware Fusion's firmware boots and 96 MiB is the only size it
+has ever been given; shrinking it is a Fusion re-qualification rather than an
+edit.
+
+Three things that could not fail before now can. The image builder asks
+`mformat` what filesystem it actually produced rather than trusting that the
+size implies FAT16, which is the property Fusion silently depends on. The
+release builder refuses to package an architecture it was asked for and cannot
+find, instead of skipping it in a line that scrolls past. And a kernel built to
+fault on purpose -- `make qemu-fault-matrix` compiles three of them, into the
+same path every packaging script reads -- now says so in its own bytes, and
+both packaging scripts refuse it without booting anything.
+
+Not yet released.
+
 ## Build 5 — 2026-09-05
 
 XAIOS on a third architecture, a process monitor that costs almost nothing

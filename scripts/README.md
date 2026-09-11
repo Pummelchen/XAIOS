@@ -23,7 +23,7 @@ manipulates or inspects a file that already exists, it is a tool.
 |---|---|
 | `build-image.sh` | The AArch64 image, and the x86-64 one with `XAIOS_TARGET_ARCH=x86_64`. The single most-used script here and the one most environment switches reach. |
 | `build-riscv64.sh`, `build-riscv64-image.sh`, `build-riscv64-boot-media.sh` | The RISC-V equivalents. Separate because that port boots through OpenSBI or EDK2 rather than the path the other two share. |
-| `build-unified-image.sh` | One ISO that boots all three architectures and both hypervisors, which is what a release actually ships. |
+| `build-arch-image.sh` | One bootable ISO for one architecture, which is what a release ships three of. |
 | `build-boot-media.sh`, `build-netboot-image.sh` | Bootable media for real machines, and the network-boot kit for a blank one. |
 | `build-libc.sh` | The hosted C99 library, its sysroot and compiler-rt. Runs before anything that links a hosted application. |
 | `build-release.sh`, `build-vm-packages.sh` | A numbered build and the per-hypervisor kits published beside it. |

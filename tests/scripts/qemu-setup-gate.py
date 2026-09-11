@@ -163,7 +163,7 @@ def firmware_vars() -> str | None:
     return None
 
 
-def build_unified() -> Path:
+def build_release_image() -> Path:
     """The image a USB stick actually carries, built with no account.
 
     The install run needs this rather than the test bench's boot image. That
@@ -174,12 +174,16 @@ def build_unified() -> Path:
     installer refuses what it should refuse."""
     environment = dict(os.environ)
     environment["XAIOS_SSH_USERS_FILE"] = "none"
-    # One image carries all three architectures' loaders and kernels, so the
-    # same file is what a RISC-V machine installs from too.
-    subprocess.run(["make", "unified-image"], cwd=ROOT, env=environment,
-                   check=True, stdout=subprocess.DEVNULL)
+    # One image per architecture now, so the one built here is the one this
+    # gate's guest is. It used to be a single file carrying all three, and the
+    # same file was what a RISC-V machine installed from; that is no longer
+    # true, and a gate that installed from an image for another machine would
+    # be proving nothing about the installer.
+    arch = os.environ.get("XAIOS_TARGET_ARCH", "aarch64")
+    subprocess.run(["make", f"release-image-{arch}"], cwd=ROOT,
+                   env=environment, check=True, stdout=subprocess.DEVNULL)
     number = (ROOT / "BUILD_NUMBER").read_text().strip()
-    return BUILD / f"xaios_b{number}.iso"
+    return BUILD / f"xaios_b{number}-{arch}.iso"
 
 
 def run(script: list, spare_disk: bool = False,
@@ -197,12 +201,12 @@ def run(script: list, spare_disk: bool = False,
     with data.open("wb") as sink:
         sink.truncate(64 * 1024 * 1024)
 
-    unified = image is not None
+    from_image = image is not None
     # Firmware for the install run, which has to find a loader on the medium.
     # The run-from-the-medium half on this board needs none: SBI hands the
     # kernel over directly, which is how every other RISC-V gate starts a
     # machine and is what a person setting one up here would see.
-    direct = PROFILE["direct_kernel"] if not unified else None
+    direct = PROFILE["direct_kernel"] if not from_image else None
     command = [PROFILE["qemu"]]
     if direct is not None:
         command += [*PROFILE["machine"], "-smp", "4", "-m", "2048",
@@ -225,7 +229,7 @@ def run(script: list, spare_disk: bool = False,
         "-drive", f"if=none,format=raw,readonly=on,id=xaios,file={boot}",
         "-device", "virtio-blk-pci,drive=xaios,bootindex=0",
     ]
-    if not unified:
+    if not from_image:
         # The bench attaches every volume as its own device.
         command += [
             "-drive", f"if=none,format=raw,id=t0,file={initfs}",
@@ -384,7 +388,7 @@ def main() -> int:
 
     # ---- installing onto a disk from the same menu
     install_text, install_answered = run(INSTALL_SCRIPT, spare_disk=True,
-                                         image=build_unified())
+                                         image=build_release_image())
     install_unanswered = [p for p, _ in INSTALL_SCRIPT[len(install_answered):]]
     check("the install asked for a disk, its identity and a source",
           not install_unanswered,

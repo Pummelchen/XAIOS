@@ -1088,6 +1088,34 @@ void kmain(const xaios_boot_info_t *boot) {
   /* Boot completed successfully -- reset boot counter */
   boot_counter_reset();
 
+#if defined(XAIOS_FAULT_TEST_PAGE) || defined(XAIOS_FAULT_TEST_RO) || \
+    defined(XAIOS_FAULT_TEST_NX)
+/* Read out of the finished binary by scripts/build-arch-image.sh and
+ * scripts/build-netboot-image.sh, and kept in step with them by
+ * tests/repository/check-fault-test-marker.py. Changing the text here without
+ * changing it there would leave two scripts looking for a string that no
+ * longer exists, which is the quiet half of this failure rather than the loud
+ * one. */
+#define XAIOS_FAULT_TEST_BUILD_MARKER \
+  "fault-test-build: this kernel faults on purpose and must not be shipped"
+  /* A kernel built to fault on purpose has to say so in its own bytes.
+   *
+   * The three branches below are each distinctive once they run, and two of
+   * them leave a distinctive string behind; the page-fault one calls a helper
+   * that is compiled into every kernel, so it leaves nothing at all. That
+   * mattered the day a packaging script picked up build/kernel/kernel.elf
+   * while a fault build was in the tree and wrapped it into a netboot binary:
+   * the file looked exactly like a release binary, and the only way anyone
+   * found out was booting it and watching it halt.
+   *
+   * This marker is unconditional across all three, so a script that reads the
+   * finished artifact can refuse it without booting anything --
+   * scripts/build-arch-image.sh and scripts/build-netboot-image.sh both do.
+   * It exists only in these builds: a release kernel has no such string,
+   * because none of this is compiled into one. */
+  klog("%s\n", XAIOS_FAULT_TEST_BUILD_MARKER);
+#endif
+
 #if defined(XAIOS_FAULT_TEST_PAGE)
   exception_trigger_page_fault_for_test();
 #elif defined(XAIOS_FAULT_TEST_RO)

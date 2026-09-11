@@ -1,22 +1,31 @@
 #!/usr/bin/env python3
-"""Boot the one unified image on every environment that can run it.
+"""Boot each released image on every environment that can run it.
 
-build/xaios.iso is a single file meant to boot five different environments --
-QEMU on two architectures, VMware Fusion, Apple Virtualization.framework -- as
-optical media, as a disk, or from a USB stick. Nothing checked that until this
-gate existed: the per-platform gates each boot their own per-platform image, so
-every one of them can pass while the unified image boots nothing at all.
+A release is three files now, one per architecture, each a single image meant
+to boot as optical media, as a disk, or from a USB stick. Between them they
+cover five environments -- QEMU on three architectures, VMware Fusion, Apple
+Virtualization.framework. Nothing checked that until this gate existed: the
+per-platform gates each boot their own per-platform image, built for the
+occasion, so every one of them can pass while the files a release actually
+contains boot nothing at all.
 
-That is not hypothetical. Getting this image to boot on Fusion turned on a
-detail no per-platform gate would ever have exercised -- the name of the kernel
-file -- and the x86_64 half asserted on a device self-test that does not apply
-when the initial filesystem arrives on the boot medium rather than as a
-separate drive. Both were found by hand, once, and nothing would have caught
+That is not hypothetical. Getting the AArch64 image to boot on Fusion turned on
+a detail no per-platform gate would ever have exercised -- the name of the
+kernel file -- and the x86_64 image asserted on a device self-test that does
+not apply when the initial filesystem arrives on the boot medium rather than as
+a separate drive. Both were found by hand, once, and nothing would have caught
 either coming back.
 
+The images used to be one file carrying all three architectures. Splitting them
+changed what this gate must be careful about rather than removing the need for
+it: each environment now has its own medium to be stale, missing or built from
+the wrong tree, so each is resolved and checked separately below. An
+architecture whose image was never built is reported as such and fails, because
+a release that is short an image is the failure this gate is for.
+
 What this checks is deliberately shallower than the per-platform gates: that
-the one file boots each environment to a working system. Depth is their job.
-Breadth is this one's.
+each shipped file boots its environments to a working system. Depth is their
+job. Breadth is this one's.
 
 Environments that cannot run here are reported as skipped, never as passed. A
 gate that quietly counts an absent hypervisor as a success is worse than one
@@ -45,11 +54,33 @@ def _build_number() -> str:
         return "0"
 
 
-IMAGE = Path(os.environ.get(
-    "XAIOS_UNIFIED_IMAGE", BUILD / f"xaios_b{_build_number()}.iso"))
+# Each architecture's own image, and an override per architecture rather than
+# one for "the image": there is no longer a single file to point at, and a
+# variable that names one would silently apply to whichever environment asked
+# last.
+def image_for(arch: str) -> Path:
+    override = os.environ.get(f"XAIOS_RELEASE_IMAGE_{arch.upper()}")
+    if override:
+        return Path(override)
+    return BUILD / f"xaios_b{_build_number()}-{arch}.iso"
+
+
+# What each architecture's image is built from. Checked against the image's own
+# timestamp before that image is booted; see staleness().
+SOURCES = {
+    "aarch64": (BUILD / "kernel" / "kernel.elf",
+                BUILD / "xaios-virtio-test.img",
+                BUILD / "uefi" / "BOOTAA64.EFI"),
+    "x86_64": (BUILD / "kernel-x86_64" / "kernel.elf",
+               BUILD / "xaios-x86-virtio-test.img",
+               BUILD / "uefi-x86_64" / "BOOTX64.EFI"),
+    "riscv64": (BUILD / "kernel-riscv64" / "kernel.elf",
+                BUILD / "xaios-riscv64-initfs.img",
+                BUILD / "riscv64-uefi" / "BOOTRISCV64.EFI"),
+}
 VZ = BUILD / "vz"
 FUSION_VM = BUILD / "vmware-fusion" / "XAIOS.vmwarevm"
-REPORT = BUILD / "unified-image-gate.json"
+REPORT = BUILD / "release-image-gate.json"
 VMRUN = Path(os.environ.get(
     "XAIOS_FUSION_VMRUN",
     "/Applications/VMware Fusion.app/Contents/Library/vmrun"))
@@ -150,8 +181,8 @@ def boot_qemu(arch: str) -> tuple[str, str | None]:
     # being gated and being published, and the file that had been verified was
     # no longer the file on disk. Copying costs a second and makes "this exact
     # file booted" true rather than nearly true.
-    scratch = BUILD / f"unified-boot-{arch}.img"
-    shutil.copy(IMAGE, scratch)
+    scratch = BUILD / f"release-boot-{arch}.img"
+    shutil.copy(image_for(arch), scratch)
     image_variable = {"aarch64": "XAIOS_AARCH64_IMAGE",
                       "x86_64": "XAIOS_X86_64_IMAGE",
                       "riscv64": "XAIOS_RISCV64_IMAGE"}[arch]
@@ -159,7 +190,7 @@ def boot_qemu(arch: str) -> tuple[str, str | None]:
                            else "XAIOS_PERSISTENT_IMAGE")
     environment = {**os.environ, image_variable: str(scratch),
                    persistent_variable:
-                       str(fresh_persistent(f"unified-{arch}-persistent.img")),
+                       str(fresh_persistent(f"release-{arch}-persistent.img")),
                    # No A/B system volume, which is the whole point.
                    #
                    # The loader prefers a verified slot over the kernel on the
@@ -176,13 +207,13 @@ def boot_qemu(arch: str) -> tuple[str, str | None]:
         environment["XAIOS_RISCV64_BOOT"] = "uefi"
         environment["XAIOS_RISCV64_SERIAL"] = "stdio"
         environment["XAIOS_RISCV64_STATE"] = str(
-            fresh_state(f"unified-{arch}-state"))
+            fresh_state(f"release-{arch}-state"))
     # x86_64 has no hardware acceleration on an ARM host, so it boots through
     # an interpreter and takes several times longer than anything else here.
     timeout = int(os.environ.get(
-        "XAIOS_UNIFIED_QEMU_TIMEOUT",
+        "XAIOS_RELEASE_QEMU_TIMEOUT",
         "540" if arch in ("x86_64", "riscv64") else "240"))
-    log = BUILD / f"unified-qemu-{arch}.log"
+    log = BUILD / f"release-qemu-{arch}.log"
     return run_until_settled([str(runner)], log, timeout, environment), None
 
 
@@ -200,13 +231,13 @@ def boot_vz() -> tuple[str, str | None]:
     for name in volumes:
         if not (VZ / name).is_file():
             return "", f"missing {name}; run make vz-gate once to create the volumes"
-    boot_disk = VZ / "unified-boot.img"
-    shutil.copy(IMAGE, boot_disk)
-    shutil.copy(fresh_persistent("unified-vz-persistent.img"),
+    boot_disk = VZ / "release-boot.img"
+    shutil.copy(image_for("aarch64"), boot_disk)
+    shutil.copy(fresh_persistent("release-vz-persistent.img"),
                 VZ / "vz-persistent.img")
     command = [str(harness), str(boot_disk)] + [str(VZ / v) for v in volumes]
     command += ["--memory-mib", "2048", "--cpus", "4"]
-    log = BUILD / "unified-vz.log"
+    log = BUILD / "release-vz.log"
     return run_until_settled(command, log, 240), None
 
 
@@ -241,20 +272,20 @@ def boot_fusion() -> tuple[str, str | None]:
              str(data_disk)],
             check=False, capture_output=True, timeout=120)
 
-    staged = FUSION_VM / "unified-gate.iso"
-    shutil.copy(IMAGE, staged)
+    staged = FUSION_VM / "release-gate.iso"
+    shutil.copy(image_for("aarch64"), staged)
     original = vmx.read_text(encoding="utf-8")
     serial = FUSION_VM / "fusion-serial.log"
     try:
         vmx.write_text(
             re.sub(r'sata0:0\.fileName = "[^"]*"',
-                   'sata0:0.fileName = "unified-gate.iso"', original),
+                   'sata0:0.fileName = "release-gate.iso"', original),
             encoding="utf-8")
         serial.unlink(missing_ok=True)
         subprocess.run([str(VMRUN), "-T", "fusion", "start", str(vmx), "nogui"],
                        check=False, capture_output=True, timeout=120)
         deadline = time.monotonic() + int(
-            os.environ.get("XAIOS_UNIFIED_FUSION_TIMEOUT", "240"))
+            os.environ.get("XAIOS_RELEASE_FUSION_TIMEOUT", "240"))
         text = ""
         while time.monotonic() < deadline:
             time.sleep(5)
@@ -270,55 +301,71 @@ def boot_fusion() -> tuple[str, str | None]:
         staged.unlink(missing_ok=True)
 
 
+# Environment, the architecture whose image it boots, and how to boot it.
+#
+# The architecture is here rather than inferred from the name because two of
+# these are not named for one. VMware Fusion and Virtualization.framework both
+# run AArch64 guests on this host, so both boot the AArch64 image; an x86-64 or
+# RISC-V guest here would be emulation, which is what the QEMU entries are.
 ENVIRONMENTS = (
-    ("qemu-aarch64", lambda: boot_qemu("aarch64")),
-    ("qemu-x86_64", lambda: boot_qemu("x86_64")),
-    ("qemu-riscv64", lambda: boot_qemu("riscv64")),
-    ("virtualization-framework", boot_vz),
-    ("vmware-fusion", boot_fusion),
+    ("qemu-aarch64", "aarch64", lambda: boot_qemu("aarch64")),
+    ("qemu-x86_64", "x86_64", lambda: boot_qemu("x86_64")),
+    ("qemu-riscv64", "riscv64", lambda: boot_qemu("riscv64")),
+    ("virtualization-framework", "aarch64", boot_vz),
+    ("vmware-fusion", "aarch64", boot_fusion),
 )
 
 
-def staleness() -> str | None:
-    """Whether the image is older than what it is supposed to contain.
+def staleness(arch: str) -> str | None:
+    """Whether this architecture's image is older than what it should contain.
 
-    make unified-image-gate rebuilds the image first; running this script
+    make release-image-gate rebuilds the images first; running this script
     directly does not, and then it tests whatever is on disk. That is how an
-    hour went into diagnosing three Fusion failures that were a stale image
-    and nothing else -- the guest under test was not the code under test.
-    Refuse rather than report a result about the wrong bytes.
+    hour went into diagnosing three Fusion failures that were a stale image and
+    nothing else -- the guest under test was not the code under test. Refuse
+    rather than report a result about the wrong bytes.
+
+    Per architecture, because the images are per architecture: rebuilding one
+    used to refresh the timestamp that vouched for all three, so a stale RISC-V
+    payload was covered by an AArch64 build that had nothing to do with it.
     """
-    if not IMAGE.is_file():
-        return f"{IMAGE} is missing"
-    built = IMAGE.stat().st_mtime
-    for source in (BUILD / "kernel" / "kernel.elf",
-                   BUILD / "kernel-x86_64" / "kernel.elf",
-                   BUILD / "kernel-riscv64" / "kernel.elf",
-                   BUILD / "xaios-virtio-test.img",
-                   BUILD / "x86-virtio-test.img",
-                   BUILD / "xaios-riscv64-initfs.img"):
+    image = image_for(arch)
+    if not image.is_file():
+        return (f"{image} is missing; a release is short its {arch} image "
+                f"and this gate cannot say anything about it")
+    built = image.stat().st_mtime
+    for source in SOURCES[arch]:
         if source.is_file() and source.stat().st_mtime > built:
-            return (f"{IMAGE.name} is older than "
+            return (f"{image.name} is older than "
                     f"{source.relative_to(BUILD)}, so it does not contain it")
     return None
 
 
 def main() -> int:
-    stale = staleness()
-    if stale is not None:
-        print(f"unified-image-gate: {stale}")
-        print("  Run: make unified-image")
+    only = os.environ.get("XAIOS_RELEASE_ONLY")
+    selected = [e for e in ENVIRONMENTS if only is None or e[0] == only]
+
+    # Every image this run will touch, checked before any of them is booted.
+    # Finding the third image stale after two twenty-minute boots is the same
+    # answer an hour later.
+    stale = []
+    for arch in dict.fromkeys(arch for _, arch, _ in selected):
+        reason = staleness(arch)
+        if reason is not None:
+            stale.append((arch, reason))
+    if stale:
+        for arch, reason in stale:
+            print(f"release-image-gate: {reason}")
+            print(f"  Run: make release-image-{arch}")
         return 1
 
-    only = os.environ.get("XAIOS_UNIFIED_ONLY")
     results = []
-    for name, boot in ENVIRONMENTS:
-        if only is not None and name != only:
-            continue
+    for name, arch, boot in selected:
         text, unavailable = boot()
         if unavailable is not None:
-            results.append({"environment": name, "status": "skipped",
-                            "reason": unavailable})
+            results.append({"environment": name, "architecture": arch,
+                            "image": str(image_for(arch)),
+                            "status": "skipped", "reason": unavailable})
             print(f"  skip {name}: {unavailable}")
             continue
         checks = [{"name": label, "passed": bool(pattern.search(text))}
@@ -327,7 +374,8 @@ def main() -> int:
                   for label, pattern in FORBIDDEN]
         passed = all(c["passed"] for c in checks) and \
             not any(f["seen"] for f in faults)
-        results.append({"environment": name,
+        results.append({"environment": name, "architecture": arch,
+                        "image": str(image_for(arch)),
                         "status": "passed" if passed else "failed",
                         "checks": checks, "faults": faults})
         print(f"  {'ok  ' if passed else 'FAIL'} {name}")
@@ -342,22 +390,25 @@ def main() -> int:
     ran = [r for r in results if r["status"] != "skipped"]
     passed = bool(ran) and all(r["status"] == "passed" for r in ran)
     REPORT.write_text(json.dumps({
-        "image": str(IMAGE),
+        "images": {arch: str(image_for(arch))
+                   for arch in dict.fromkeys(a for _, a, _ in selected)},
         "qualification_evidence": False,
         "environments": results,
         "passed": passed,
     }, indent=2) + "\n", encoding="utf-8")
-    print(f"unified-image-gate: report written to {REPORT}")
+    print(f"release-image-gate: report written to {REPORT}")
 
     if not ran:
-        print("unified-image-gate: no environment could run; nothing was proved")
+        print("release-image-gate: no environment could run; nothing was proved")
         return 1
     if not passed:
         failed = [r["environment"] for r in ran if r["status"] != "passed"]
-        print(f"unified-image-gate: failed on {', '.join(failed)}")
+        print(f"release-image-gate: failed on {', '.join(failed)}")
         return 1
     skipped = [r["environment"] for r in results if r["status"] == "skipped"]
-    summary = f"unified-image-gate: {len(ran)} environments booted one image"
+    booted = len(dict.fromkeys(r["architecture"] for r in ran))
+    summary = (f"release-image-gate: {len(ran)} environments booted "
+               f"{booted} released image{'s' if booted != 1 else ''}")
     if skipped:
         summary += f"; skipped {', '.join(skipped)}"
     print(summary)

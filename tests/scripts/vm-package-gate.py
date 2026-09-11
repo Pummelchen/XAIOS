@@ -22,10 +22,17 @@ produced a machine that started perfectly:
 None of those is visible without starting the kit, and none is caught by any
 other gate. This exists so that dropping one of them fails something.
 
-The two QEMU kits run anywhere QEMU does, CI included. The Fusion and
-Virtualization.framework kits need macOS on Apple Silicon with those
-hypervisors installed, so they are attempted when they can be and reported as
-not-run when they cannot -- never quietly skipped into a pass.
+The three QEMU kits run anywhere QEMU does, CI included -- one per
+architecture, since a release is one image per architecture and so are the kits
+built from it. RISC-V gained a kit that way, and it is the one that had never
+been started from an archive at all.
+
+The Fusion and Virtualization.framework kits need macOS on Apple Silicon with
+those hypervisors installed, so they are attempted when they can be and
+reported as not-run when they cannot -- never quietly skipped into a pass.
+They exist for AArch64 only, and that is a fact about the host rather than a
+gap: both run guests on the machine's own cores, so an x86-64 or RISC-V guest
+here would be emulation, which is what the QEMU kits are.
 """
 
 from __future__ import annotations
@@ -144,32 +151,35 @@ def not_run(name: str, why: str) -> dict:
     return {"kit": name, "ran": False, "reason": why, "passed": False}
 
 
+# A port per architecture, and none of them the default: two kits booting at
+# once would otherwise collide on the host forward and the second would fail to
+# start at all, which reads as a broken launcher.
+QEMU_KITS = (("aarch64", "qemu-system-aarch64", "27431"),
+             ("x86_64", "qemu-system-x86_64", "27432"),
+             ("riscv64", "qemu-system-riscv64", "27433"))
+
+
 def qemu_kit(results: list[dict]) -> None:
-    root = extract("qemu")
-    if root is None:
-        results.append(not_run("qemu", "no kit archive; run make vm-packages"))
-        return
-    if shutil.which("qemu-system-aarch64") is None:
-        results.append(not_run("qemu-aarch64", "qemu-system-aarch64 not installed"))
-    else:
-        # A port per architecture, and neither the default: two kits booting at
-        # once would otherwise collide on the host forward and the second would
-        # fail to start at all, which reads as a broken launcher.
-        text = run_launcher([str(root / "run-aarch64.sh")], root,
-                            BUILD / "kit-qemu-aarch64.log",
-                            {"XAIOS_SSH_PORT": "27431"})
-        results.append(evaluate("qemu-aarch64", text))
-    if shutil.which("qemu-system-x86_64") is None:
-        results.append(not_run("qemu-x86_64", "qemu-system-x86_64 not installed"))
-    else:
-        text = run_launcher([str(root / "run-x86_64.sh")], root,
-                            BUILD / "kit-qemu-x86_64.log",
-                            {"XAIOS_SSH_PORT": "27432"})
-        results.append(evaluate("qemu-x86_64", text))
+    for arch, binary, port in QEMU_KITS:
+        name = f"qemu-{arch}"
+        root = extract(f"{arch}-qemu")
+        if root is None:
+            results.append(not_run(
+                name, f"no {arch} kit archive; run make vm-packages"))
+            continue
+        if shutil.which(binary) is None:
+            results.append(not_run(name, f"{binary} not installed"))
+            continue
+        text = run_launcher([str(root / f"run-{arch}.sh")], root,
+                            BUILD / f"kit-qemu-{arch}.log",
+                            {"XAIOS_SSH_PORT": port})
+        results.append(evaluate(name, text))
 
 
 def vz_kit(results: list[dict]) -> None:
-    name = "virtualization-framework"
+    # AArch64 only: see the note at the top. The kit is named for the
+    # architecture it carries, like every other kit.
+    name = "aarch64-virtualization-framework"
     if sys.platform != "darwin":
         results.append(not_run(name, "needs macOS"))
         return
@@ -186,7 +196,7 @@ def vz_kit(results: list[dict]) -> None:
 
 
 def fusion_kit(results: list[dict]) -> None:
-    name = "vmware-fusion"
+    name = "aarch64-vmware-fusion"
     if sys.platform != "darwin" or not VMRUN.is_file():
         results.append(not_run(name, "needs macOS with VMware Fusion"))
         return

@@ -261,7 +261,7 @@ the kernel comes up to a login prompt with sshd listening.
 
 ## Test coverage
 
-Fifty-nine `make` targets, of which fifty-seven are gates, plus legs in the shared unified-image and xapt gates. They fall into
+Fifty-nine `make` targets, of which fifty-seven are gates, plus legs in the shared release-image and xapt gates. They fall into
 three groups, and the split matters more than the count.
 
 **Gates this architecture has of its own.** These exist because the shared
@@ -331,8 +331,12 @@ invisible until something faulted a user process here on purpose:
   someone's behalf -- got its window closed underneath it and faulted on the
   next byte it wrote to its own caller.
 
-**The shipped image, on this architecture.** `make unified-image-gate` boots
-the one release ISO on five environments and this is now the third of them.
+**The shipped image, on this architecture.** `make release-image-gate` boots
+each release ISO on the environments that can run it, and RISC-V now has an
+ISO of its own: since the split, a release is one image per architecture
+rather than one image carrying all three, so the file this gate boots on the
+RISC-V row contains a RISC-V loader, kernel and initial filesystem and nothing
+else.
 Getting there found two things. The image build did not build the RISC-V
 half at all -- it picked up whatever `build/` happened to hold, which is how
 build 5's ISO came to carry a build 4 RISC-V kernel. And the gate attached

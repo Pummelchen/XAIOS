@@ -259,52 +259,56 @@ jobs:
             build/qemu-storage-crash-failure.log
           retention-days: 7
 
-  unified-image:
-    name: Unified Image (one file, every environment available)
+  release-images:
+    name: Release Images (one per architecture, every environment available)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      # xorriso builds the hybrid image; both QEMU architectures and both
-      # firmwares are needed because the point of this job is that one file
-      # boots more than one of them.
-      - name: Install toolchain and both QEMU architectures
+      # xorriso builds the hybrid images; all three QEMU architectures and
+      # their firmwares are needed because the point of this job is that each
+      # shipped file boots the machine it is for.
+      - name: Install toolchain and all three QEMU architectures
         run: |
           sudo apt-get update
           sudo apt-get install -y clang lld llvm meson ninja-build \
             qemu-system-arm qemu-efi-aarch64 qemu-system-x86 ovmf \
+            qemu-system-misc qemu-efi-riscv64 \
             xorriso mtools python3 python3-cryptography
 
-      # Both architectures, with the applications, because the gate asserts
-      # the shell command surface and that only exists in a test-apps build.
-      - name: Build both architectures
-        run: |
-          XAIOS_BOOT_VERBOSE=1 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
-          XAIOS_TARGET_ARCH=x86_64 XAIOS_BOOT_TEST_APPS=1 ./scripts/build-image.sh
+      # Each architecture's payload and then its image, with the applications,
+      # because the gate asserts the shell command surface and that only exists
+      # in a test-apps build.
+      #
+      # The three run in sequence rather than as three jobs: they share build/,
+      # and the gate has to see all three images at once.
+      - name: Build the three release images
+        run: make release-images
 
       # VMware Fusion and Virtualization.framework do not exist on a Linux
       # runner, so the gate reports them as skipped and passes on the three it
-      # can run. That is the honest result: it proves the file boots all three
-      # architectures -- AArch64, x86_64 and RISC-V -- and claims nothing about
-      # the hypervisors, which are covered by make unified-image-gate on a
-      # macOS host. It said "the two it can run" and "both architectures" long
-      # after RISC-V joined that list.
-      - name: Boot the unified image on every environment available here
-        run: make unified-image-gate
+      # can run. That is the honest result: it proves each shipped image boots
+      # its own architecture -- AArch64, x86_64 and RISC-V -- and claims
+      # nothing about the hypervisors, which are covered by make
+      # release-image-gate on a macOS host.
+      - name: Boot each release image on every environment available here
+        run: make release-image-gate
         env:
-          XAIOS_UNIFIED_QEMU_TIMEOUT: "600"
+          XAIOS_RELEASE_QEMU_TIMEOUT: "600"
 
-      - name: Upload the unified image and its report
+      - name: Upload the release images and the report
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: unified-image
+          name: release-images
           path: |
-            build/xaios.iso
-            build/unified-image-gate.json
-            build/unified-qemu-*.log
+            build/xaios_b*-aarch64.iso
+            build/xaios_b*-x86_64.iso
+            build/xaios_b*-riscv64.iso
+            build/release-image-gate.json
+            build/release-qemu-*.log
           retention-days: 7
 
   x86-bring-up:

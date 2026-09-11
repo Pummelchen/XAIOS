@@ -2,7 +2,7 @@
 """Run every gate that CI cannot, and leave a record of having done it.
 
 Four gates need macOS on Apple Silicon: two hypervisors that do not exist on a
-Linux runner, and the half of the unified-image gate that drives them. CI runs
+Linux runner, and the half of the release-image gate that drives them. CI runs
 everything else on every push, which means the automated half of this project
 is continuously verified and the local half is verified whenever somebody
 remembers.
@@ -41,7 +41,7 @@ GATES = (
     ("vmware-fusion-framebuffer-gate", "vmware-fusion-framebuffer-gate", 1800),
     ("vz-gate", "vz-gate", 1800),
     ("hypervisor-memory-matrix", "hypervisor-memory-matrix", 7200),
-    ("unified-image-gate", "unified-image-gate", 3600),
+    ("release-image-gate", "release-image-gate", 3600),
     ("vz-stress-gate", "vz-stress-gate", 3600),
 )
 

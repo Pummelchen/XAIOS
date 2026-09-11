@@ -25,9 +25,9 @@ qualified on real machines and hypervisors; RISC-V has been run on one
 emulated board and nothing else, so no claim about firmware behaviour, timing
 or scaling on RISC-V hardware is supported by anything here. Both boot paths are complete: the kernel can be handed to QEMU directly, or
 booted from its own disk through UEFI firmware. Build 5's image carries the
-RISC-V kernel beside the other two, and `make unified-image-gate` now boots
-the RISC-V half *from that image* -- it is the third of the gate's five
-environments. Getting there corrected two things that had made the claim
+RISC-V kernel beside the other two; from the next build a release is one image
+per architecture instead, and `make release-image-gate` boots the RISC-V one
+*as the file that ships* -- it is one of the gate's five environments. Getting there corrected two things that had made the claim
 weaker than it read: the image build did not build the RISC-V half at all but
 picked up whatever `build/` held, which is how build 5's ISO came to carry a
 build 4 RISC-V kernel; and the gate attached the tree's own A/B system volume,

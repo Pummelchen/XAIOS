@@ -12,6 +12,24 @@ The distinction matters most on the read-only and no-execute cases: a store
 to read-only memory that reported a *load* fault, or an execute of data that
 reported a data fault, would mean the page tables are not carrying the
 permissions the boot said they were.
+
+Every boot here gets its own durable volume, made fresh. This gate used to
+take the runner's default, which is `build/xaios-persistent.img` -- the volume
+every ad-hoc run on the machine has been writing to since the tree was cloned.
+Roughly twenty sibling gates pass their own and reset it; this one did not, and
+on a volume 64 boots deep the guest died in an unrelated self-test before any
+fault was injected. All three scenarios failed and the gate reported them as
+missing fault markers, which is an accusation about the fault machinery for a
+condition the host created. The same three passed on a fresh volume, on the
+same commit, minutes later.
+
+That is also why a boot that never reaches `exceptions:` is now reported as
+inconclusive rather than as missing markers. "The kernel did not say it was
+about to fault" is true of a kernel with broken fault injection and equally
+true of one that never got that far, and the two need different sentences: the
+first is a defect here, the second is a defect somewhere else or nowhere. Both
+still exit non-zero -- an inconclusive gate is not a passing one -- but only
+one of them names the guest.
 """
 import os
 import select
@@ -97,10 +115,29 @@ def run_build(fault: str) -> int:
     return 0
 
 
+# What the guest must have printed before a missing fault marker can be read
+# as a statement about fault handling. It is the line the fault injector itself
+# emits on its way in, so its absence means the injector never ran.
+REACHED = "exceptions: triggering controlled"
+
+# One per scenario, per architecture, so a scenario cannot inherit the volume
+# the one before it left behind either.
+def fresh_persistent(name: str) -> Path:
+    volume = Path(__file__).resolve().parents[2] / "build" / (
+        f"fault-matrix-{ARCH}-{name}-persistent.img")
+    volume.unlink(missing_ok=True)
+    return volume
+
+
 def run_fault_boot(name: str, targets) -> int:
     for attempt in range(2):
         env = qemu_boot_environment(
             ARCH, os.environ.copy(), hostfwd_port="none",
+            # A volume of this gate's own, deleted first, so the runner makes a
+            # blank one. See the note at the top: without this the boot carries
+            # whatever state the machine has accumulated, and the failure that
+            # produces is reported as a fault-handling defect.
+            persistent=str(fresh_persistent(name)),
             # The boot is read from the runner's stdout here, and RISC-V's
             # runner writes the console to a file unless told otherwise.
             serial_to_stdout=True)
@@ -155,6 +192,22 @@ def run_fault_boot(name: str, targets) -> int:
                 "loader; retrying once"
             )
             continue
+        if REACHED not in output:
+            # The injector never ran, so nothing here is evidence about fault
+            # handling in either direction. Say which, and say it about the
+            # boot rather than about the kernel's fault paths.
+            why = "the boot ended before the fault injector ran"
+            if "assertion failed" in output:
+                assertion = next(
+                    (line.strip() for line in output.splitlines()
+                     if "assertion failed" in line), "an assertion")
+                why = f"the guest panicked first: {assertion}"
+            elif "XAIOS loader starting" not in output:
+                why = "firmware never reached the loader"
+            print(f"\nqemu-fault-matrix: {name} INCONCLUSIVE, not a guest "
+                  f"fault-handling defect -- {why}")
+            return 2
+
         missing = [target for target in targets if target not in output]
         print(f"\nqemu-fault-matrix: {name} missing targets: {missing}")
         return 1
@@ -183,21 +236,37 @@ def rebuild_normal_image() -> int:
 
 def main() -> int:
     failures = []
+    inconclusive = []
     for fault, targets in FAULTS:
         print(f"\nqemu-fault-matrix: building fault image fault={fault}")
         if run_build(fault) != 0:
             failures.append(f"{fault}:build")
             continue
-        if run_fault_boot(fault, targets) != 0:
+        status = run_fault_boot(fault, targets)
+        if status == 2:
+            inconclusive.append(f"{fault}:boot")
+        elif status != 0:
             failures.append(f"{fault}:boot")
 
     print("\nqemu-fault-matrix: rebuilding normal image")
     if rebuild_normal_image() != 0:
         failures.append("normal:rebuild")
 
+    # Both are non-zero. A gate that cannot conclude has not passed, and one
+    # that reported inconclusive as success would be the more dangerous of the
+    # two errors -- but the caller and the reader should be able to tell them
+    # apart, and so should the exit code.
     if failures:
         print(f"qemu-fault-matrix: failed scenarios: {failures}")
+        if inconclusive:
+            print(f"qemu-fault-matrix: inconclusive scenarios: {inconclusive}")
         return 1
+    if inconclusive:
+        print(f"qemu-fault-matrix: INCONCLUSIVE, not a guest defect: "
+              f"{inconclusive}")
+        print("qemu-fault-matrix: nothing above is evidence about fault "
+              "handling in either direction")
+        return 2
 
     print("qemu-fault-matrix: all controlled fault scenarios passed")
     return 0
