@@ -38,6 +38,7 @@ import json
 import os
 import subprocess
 import sys
+import re
 import time
 from pathlib import Path
 
@@ -97,6 +98,9 @@ def free_pages(console: str) -> int | None:
 # denied, and the socket syscall traces say whether the listener accepted
 # anything at all. A marker set that looked only for the expected line would
 # find nothing and prove nothing in every case where the cause is elsewhere.
+# The console session, and whatever the last probe left in flight.
+SESSION_TALLY_ALLOWANCE = 4
+
 SESSION_MARKERS = (
     "remote-login:",
     "sshd:",
@@ -106,6 +110,23 @@ SESSION_MARKERS = (
     "syscall: net_close",
     "network: listener",
 )
+
+
+def sshd_idle_timeout_ns() -> int:
+    """The reclaim this soak has to outwait, read from the source.
+
+    Not written down here. A gate carrying its own copy of a constant passes
+    after someone changes the real one -- the same reason the connection-rate
+    gate reads SSHD_CONNECTION_RATE_LIMIT rather than repeating 120.
+    """
+    header = ROOT / "userspace" / "sshd" / "sshd.h"
+    found = re.search(r"#define\s+SSHD_TIMEOUT_IDLE\s+UINT64_C\((\d+)\)",
+                      header.read_text(encoding="utf-8"))
+    if not found:
+        raise SystemExit(
+            f"vmware-fusion-load-soak: SSHD_TIMEOUT_IDLE not found in "
+            f"{header}; the tally cannot outwait a reclaim it cannot read")
+    return int(found.group(1))
 
 
 def session_lines(text: str) -> list[str]:
@@ -277,6 +298,45 @@ def main() -> int:
     if fatal:
         failures.append(f"the console carries fault markers {fatal}")
 
+    # B-38: accepted against closed, over the whole run rather than a slice.
+    #
+    # This soak kept the guest's console for the failing round and the rounds
+    # either side of it -- about 1.4 seconds. A session the server abandons is
+    # reclaimed by SSHD_TIMEOUT_IDLE, which is 300 seconds, some four hundred
+    # rounds later, so "no net_close in that round or the next" was read as an
+    # orphaned socket when it is exactly what an idle reclaim looks like
+    # through a window two orders of magnitude too small. The tally does not
+    # care about windows.
+    #
+    # The wait is what makes it mean anything. Idle out the last sessions with
+    # the guest up and nothing driving it, and every accept that still has no
+    # close is a socket the server genuinely never reclaimed.
+    idle_ns = sshd_idle_timeout_ns()
+    settle = idle_ns / 1_000_000_000.0 + 30.0
+    print(f"vmware-fusion-load-soak: idling {settle:.0f}s so the reclaim can "
+          f"run before accepts and closes are tallied", flush=True)
+    time.sleep(settle)
+    console = smoke.serial_text()
+    accepted = console.count("syscall: net_accept")
+    closed = console.count("syscall: net_close")
+    outstanding = accepted - closed
+    session_tally = {
+        "accepted": accepted,
+        "closed": closed,
+        "outstanding": outstanding,
+        "idle_timeout_s": round(idle_ns / 1_000_000_000.0),
+        "settled_for_s": round(settle),
+    }
+    # The console session and the probe that ran last are legitimately open.
+    if outstanding > SESSION_TALLY_ALLOWANCE:
+        failures.append(
+            f"{outstanding} sessions were accepted and never closed, after "
+            f"{round(settle)}s of idle -- longer than the "
+            f"{round(idle_ns / 1_000_000_000.0)}s reclaim. {accepted} accepted "
+            f"against {closed} closed. A socket still outstanding here was "
+            f"not reclaimed by any timeout, which is the orphan B-38 was "
+            f"originally read as")
+
     # A trend, not a threshold. Compare the first quarter of the samples with
     # the last: caches fill early and the figure wanders, so one low reading
     # says nothing, while a steady decline across a ten-minute run is a leak.
@@ -306,6 +366,7 @@ def main() -> int:
         "rounds": len(rounds),
         "bytes_moved": len(rounds) * PAYLOAD_BYTES * 2,
         "free_page_trend": trend,
+        "session_tally": session_tally,
         # B-28's close condition: the guest's own console for the failing
         # round and the rounds either side of it, so a refusal can be read as
         # what the machine did rather than as what the client concluded. Empty
