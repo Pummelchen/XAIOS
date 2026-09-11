@@ -1320,6 +1320,31 @@ static uint64_t absolute_data_sector(uint16_t block_index) {
  * out of space is a real failure and is reported as one -- a file recorded
  * with only part of its blocks would read as truncated later, which is worse
  * than not being written. */
+/* Place a file in at most XBFS_V6_MAX_EXTENTS runs of free blocks.
+ *
+ * This took the first free runs it found, in address order, and gave up once
+ * it had sixteen of them. On a fresh volume that is the same as any other
+ * policy and cheaper than most. On a volume that has been written and
+ * rewritten for a while it is the worst available: the low blocks are the most
+ * broken up, so first-fit collects sixteen short runs out of the rubble at the
+ * bottom and never reaches the long runs above them. The volume then reports
+ * plenty of free space and refuses the write, and because the same path is
+ * what snapshots a file, `commit_snapshot` fails on a filesystem `fsck` calls
+ * sound -- which halts the machine on its next boot, because the update
+ * self-test stages a snapshot and asserts that it worked. See B-52.
+ *
+ * One scan, which stops early in the case that has always worked and must not
+ * get slower: the first run long enough to hold the whole file ends it. That
+ * is one extent, it cannot be improved on, and on a mostly empty volume it is
+ * the run at block zero -- the same handful of iterations the old code took.
+ *
+ * The scan also keeps the sixteen longest runs as it goes, and those are used
+ * only when it reaches the end without finding one that fits, which on a
+ * healthy volume does not happen. Filling from the longest first is not merely
+ * better than address order, it is the best any policy can do against this
+ * constraint: the question is whether some sixteen runs can cover the file,
+ * and if the sixteen longest cannot, no sixteen can.
+ */
 static xaios_status_t allocate_extents(uint64_t blocks_needed,
                                        xaios_xbfs_extent_t *extents,
                                        uint32_t *out_count) {
@@ -1327,41 +1352,81 @@ static xaios_status_t allocate_extents(uint64_t blocks_needed,
   if (blocks_needed == 0U) return XAIOS_OK;
   if (blocks_needed > g_active_data_sectors) return XAIOS_ERR_INVALID;
 
-  uint64_t remaining = blocks_needed;
+  struct free_run {
+    uint64_t start;
+    uint64_t length;
+  };
+  struct free_run longest[XBFS_V6_MAX_EXTENTS];
+  uint32_t longest_count = 0U;
   uint32_t used = 0U;
+  uint64_t remaining = blocks_needed;
+
   uint64_t block = 0U;
-  while (remaining != 0U && block < g_active_data_sectors) {
+  while (block < g_active_data_sectors) {
     if (block_used(block) != 0U) {
       ++block;
       continue;
     }
+    uint64_t start = block;
     uint64_t run = 0U;
-    while (block + run < g_active_data_sectors && run < remaining &&
-           block_used(block + run) == 0U) {
+    while (start + run < g_active_data_sectors &&
+           block_used(start + run) == 0U) {
       ++run;
+      /* Stop measuring once it is long enough. The exact length past that
+         point is not used, and on a mostly empty volume the first run is the
+         whole volume. */
+      if (run >= blocks_needed) break;
     }
-    if (used >= XBFS_V6_MAX_EXTENTS) break;
-    extents[used].start = (uint32_t)block;
-    extents[used].length = (uint32_t)run;
-    ++used;
-    for (uint64_t offset = 0U; offset < run; ++offset) {
-      block_claim(block + offset);
-      ++g_allocation_count;
+    block = start + run;
+
+    if (run >= blocks_needed) {
+      extents[0].start = (uint32_t)start;
+      extents[0].length = (uint32_t)blocks_needed;
+      used = 1U;
+      remaining = 0U;
+      break;
     }
-    remaining -= run;
-    block += run;
+
+    /* Keep the sixteen longest, longest first. Insertion rather than a sort:
+       the array is sixteen entries and the scan is the expensive half. */
+    uint32_t at = longest_count;
+    while (at > 0U && longest[at - 1U].length < run) {
+      if (at < XBFS_V6_MAX_EXTENTS) longest[at] = longest[at - 1U];
+      --at;
+    }
+    if (at < XBFS_V6_MAX_EXTENTS) {
+      longest[at].start = start;
+      longest[at].length = run;
+      if (longest_count < XBFS_V6_MAX_EXTENTS) ++longest_count;
+    }
   }
 
   if (remaining != 0U) {
-    for (uint32_t e = 0U; e < used; ++e) {
-      for (uint32_t offset = 0U; offset < extents[e].length; ++offset) {
-        block_release((uint64_t)extents[e].start + offset);
-        ++g_free_count;
-      }
+    for (uint32_t i = 0U; i < longest_count && remaining != 0U; ++i) {
+      uint64_t take = longest[i].length;
+      if (take > remaining) take = remaining;
+      extents[used].start = (uint32_t)longest[i].start;
+      extents[used].length = (uint32_t)take;
+      ++used;
+      remaining -= take;
     }
+  }
+
+  if (remaining != 0U) {
     *out_count = 0U;
     ++g_reject_count;
     return XAIOS_ERR_NO_MEMORY;
+  }
+
+  /* Claimed only once the whole placement is known. The old code claimed as it
+     went and released again on failure, so a refused allocation still moved
+     both the allocation and the free counter -- the two telemetry numbers a
+     reader would use to ask whether this was happening at all. */
+  for (uint32_t e = 0U; e < used; ++e) {
+    for (uint32_t offset = 0U; offset < extents[e].length; ++offset) {
+      block_claim((uint64_t)extents[e].start + offset);
+      ++g_allocation_count;
+    }
   }
   *out_count = used;
   return XAIOS_OK;

@@ -147,6 +147,24 @@ is the partition VMware Fusion's firmware boots and 96 MiB is the only size it
 has ever been given; shrinking it is a Fusion re-qualification rather than an
 edit.
 
+**A machine that had run long enough stopped booting, and now does not.** A
+file is at most sixteen runs of blocks. The allocator took the first sixteen
+free runs it found, in address order -- and the low blocks of a volume are the
+most broken up, so on a volume that had been written and rewritten for a while
+it collected sixteen fragments out of the rubble at the bottom and never
+reached the long runs above them. The write was refused with the volume
+two-thirds empty. Because the same path snapshots a file, and because the
+update self-test stages a snapshot on every boot and asserts that it worked,
+the machine halted in the cyan screen instead of coming up. `fsck` called the
+volume sound, and it was: nothing was corrupt, the free space was simply in the
+wrong shape. The machine this is developed on had got there after 64 boots.
+
+Blocks are now taken longest run first, which is the best any policy can do
+against a sixteen-extent limit -- if the sixteen longest runs cannot cover the
+file, no sixteen can. Nothing on disk changes shape; existing volumes read
+exactly as before. Sixteen extents is still a ceiling and a volume can still in
+principle be aged past it, which is recorded rather than claimed fixed.
+
 Three things that could not fail before now can. The image builder asks
 `mformat` what filesystem it actually produced rather than trusting that the
 size implies FAT16, which is the property Fusion silently depends on. The
