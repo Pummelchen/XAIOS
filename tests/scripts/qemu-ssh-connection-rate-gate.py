@@ -62,6 +62,7 @@ import select
 import shutil
 import socket
 import subprocess
+import threading
 import sys
 import time
 from pathlib import Path
@@ -96,8 +97,122 @@ WINDOW_NS = sshd_constant("SSHD_CONNECTION_RATE_WINDOW")
 WINDOW_SECONDS = WINDOW_NS / 1_000_000_000.0
 
 
+class Console:
+    """The guest's console, read continuously and timestamped as it arrives.
+
+    B-50 asked for the host's opens timestamped against the guest's poll gaps,
+    so the order of the two is a measurement rather than an inference. Two
+    things had to change for that to be possible.
+
+    The first is that nothing read this pipe while the probes ran. Every chunk
+    the guest printed during the run therefore arrived, as far as the host
+    could tell, at the moment the drain afterwards collected it -- so there
+    were no arrival times to compare anything against.
+
+    The second matters more than the timestamps. A pipe nobody reads fills,
+    and QEMU's write to it then blocks, and a guest whose console write is
+    blocked stops doing everything else. The gap this row is about is
+    `network: stack was not polled for ms=30839`, and a gate that stops
+    reading the console for the length of its probe loop is a candidate cause
+    of exactly that. It had to be removed before the measurement could mean
+    anything, whichever way the answer goes.
+    """
+
+    def __init__(self, process) -> None:
+        self._process = process
+        self._chunks: list[tuple[float, str]] = []
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        descriptor = self._process.stdout.fileno()
+        while not self._stop.is_set():
+            ready, _, _ = select.select([descriptor], [], [], 0.2)
+            if not ready:
+                if self._process.poll() is not None:
+                    return
+                continue
+            try:
+                chunk = os.read(descriptor, 65536).decode("utf-8",
+                                                          errors="replace")
+            except OSError:
+                return
+            if not chunk:
+                return
+            with self._lock:
+                self._chunks.append((time.monotonic(), chunk))
+
+    def text(self) -> str:
+        with self._lock:
+            return "".join(chunk for _, chunk in self._chunks)
+
+    def arrivals(self) -> list[tuple[float, str]]:
+        with self._lock:
+            return list(self._chunks)
+
+    def close(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2)
+
+
+# A gap the guest reports after the fact: the number is how long it lasted, and
+# the line arrives once it is over.
+GAP_PATTERNS = (
+    re.compile(r"network: stack was not polled for ms=(\d+)"),
+    re.compile(r"sshd: service loop stalled ms=(\d+) phase=(\w+)"),
+)
+
+
+def gaps_on_the_host_clock(console: Console) -> list[dict[str, object]]:
+    """Each reported gap placed on the host's clock.
+
+    The line is printed when the gap ends, so its arrival time is the end and
+    the start is that minus the duration the guest measured. The arrival is
+    known only to the chunk that carried it, which is close enough: chunks
+    arrive every few hundred milliseconds and the gaps in question are tens of
+    seconds.
+    """
+    # A line can be split across two chunks, so each chunk is searched together
+    # with a little of the text before it. That re-finds the previous chunk's
+    # matches, so each one is keyed by where it sits in the whole console: the
+    # same match found twice has the same offset, and the first arrival is the
+    # one that carried it.
+    found: dict[int, dict[str, object]] = {}
+    seen = ""
+    for arrived, chunk in console.arrivals():
+        region_start = max(0, len(seen) - 200)
+        seen += chunk
+        for pattern in GAP_PATTERNS:
+            for match in pattern.finditer(seen[region_start:]):
+                offset = region_start + match.start()
+                if offset in found:
+                    continue
+                milliseconds = int(match.group(1))
+                found[offset] = {
+                    "line": match.group(0),
+                    "ms": milliseconds,
+                    "ended_at": round(arrived, 3),
+                    "started_at": round(arrived - milliseconds / 1000.0, 3),
+                }
+    return sorted(found.values(), key=lambda g: g["started_at"])
+
+
+# Every open this gate makes, on the same clock the gaps are placed on.
+OPENS: list[dict[str, object]] = []
+
+
 def probe(port: int, timeout: float = 4.0) -> str:
     """One TCP connection: served (banner), refused (closed), or unreachable."""
+    started = time.monotonic()
+    outcome = _probe(port, timeout)
+    OPENS.append({"outcome": outcome, "started_at": round(started, 3),
+                  "ended_at": round(time.monotonic(), 3)})
+    return outcome
+
+
+def _probe(port: int, timeout: float = 4.0) -> str:
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=timeout) as s:
             s.settimeout(timeout)
@@ -116,37 +231,24 @@ def probe(port: int, timeout: float = 4.0) -> str:
         return "unreachable"
 
 
-def wait_for_ready(process, deadline: float) -> tuple[bool, list[str]]:
-    output: list[str] = []
-    descriptor = process.stdout.fileno()
+def wait_for_ready(process, console: "Console", deadline: float) -> bool:
+    """Wait for sshd to announce itself, while the console keeps being read."""
     while time.time() < deadline:
-        ready, _, _ = select.select([descriptor], [], [], 0.2)
-        if ready:
-            chunk = os.read(descriptor, 8192).decode("utf-8", errors="replace")
-            if not chunk:
-                break
-            output.append(chunk)
-            if READY in "".join(output):
-                return True, output
-        elif process.poll() is not None:
-            break
-    return False, output
+        if READY in console.text():
+            return True
+        if process.poll() is not None:
+            return READY in console.text()
+        time.sleep(0.2)
+    return False
 
 
-def drain(process, output: list[str], seconds: float) -> None:
-    """Collect whatever the guest printed, without blocking on a quiet console."""
-    descriptor = process.stdout.fileno()
+def drain(process, console: "Console", seconds: float) -> None:
+    """Let the guest finish saying why. The reader thread is already reading."""
     end = time.time() + seconds
     while time.time() < end:
-        ready, _, _ = select.select([descriptor], [], [], 0.2)
-        if not ready:
-            if process.poll() is not None:
-                return
-            continue
-        chunk = os.read(descriptor, 65536).decode("utf-8", errors="replace")
-        if not chunk:
+        if process.poll() is not None:
             return
-        output.append(chunk)
+        time.sleep(0.2)
 
 
 KEY = BUILD / "ssh-connection-rate-key"
@@ -205,6 +307,48 @@ def authenticate(port: int, timeout: float = 40.0) -> str:
     return f"refused:{finished.returncode}:{reason}"
 
 
+def order_of(opens: list[dict[str, object]],
+             gaps: list[dict[str, object]]) -> dict[str, object]:
+    """Which came first: the host's failed opens, or the guest's outage.
+
+    B-50 could not choose between two readings. Either the guest stopped
+    polling and the host's opens failed because of it, or the opens failed
+    first -- each costing the host a 4 s timeout -- and the guest's gap is the
+    consequence rather than the cause. Both fit the same evidence, and they
+    call for entirely different fixes.
+
+    The answer is an ordering, so this reports the ordering and nothing more.
+    It draws no conclusion: "the first failed open was inside the gap" and
+    "the gap began after every open had failed" are different findings, and
+    naming which one happened is the whole of what this row asked for.
+    """
+    failed = [o for o in opens
+              if o["outcome"] in ("unreachable", "silent", "refused")]
+    if not gaps:
+        return {"verdict": "no gap reported", "failed_opens": len(failed)}
+    if not failed:
+        return {"verdict": "gap reported with no failed open",
+                "gaps": len(gaps)}
+    first_failure = min(float(o["started_at"]) for o in failed)
+    widest = max(gaps, key=lambda g: float(g["ms"]))
+    start, end = float(widest["started_at"]), float(widest["ended_at"])
+    if first_failure < start:
+        verdict = ("the first failed open preceded the widest gap by "
+                   f"{round(start - first_failure, 2)}s, so the gap follows "
+                   f"the failures")
+    elif first_failure > end:
+        verdict = ("every failed open came after the widest gap ended, by "
+                   f"{round(first_failure - end, 2)}s")
+    else:
+        verdict = ("the first failed open fell inside the widest gap, "
+                   f"{round(first_failure - start, 2)}s after it began, so "
+                   f"the outage was already under way")
+    return {"verdict": verdict,
+            "first_failed_open_at": round(first_failure, 3),
+            "widest_gap": widest, "failed_opens": len(failed),
+            "gaps": len(gaps)}
+
+
 def run_case(name: str, attempts: int, port: int, *, preload: int = 0,
              authenticated: bool = False) -> dict[str, object]:
     # Its own durable volume and its own state, created fresh.
@@ -236,12 +380,14 @@ def run_case(name: str, attempts: int, port: int, *, preload: int = 0,
     outcomes: list[str] = []
     preloaded: list[str] = []
     elapsed = 0.0
+    OPENS.clear()
+    reader = Console(process)
     try:
-        ready, output = wait_for_ready(
-            process, time.time() + smoke_timeout(ARCH, 240))
+        ready = wait_for_ready(
+            process, reader, time.time() + smoke_timeout(ARCH, 240))
         if not ready:
             return {"case": name, "booted": False, "outcomes": [],
-                    "preloaded": [], "console": "".join(output)}
+                    "preloaded": [], "console": reader.text()}
         started = time.monotonic()
         for _ in range(preload):
             preloaded.append(probe(port))
@@ -249,8 +395,11 @@ def run_case(name: str, attempts: int, port: int, *, preload: int = 0,
             outcomes.append(authenticate(port) if authenticated else probe(port))
         elapsed = time.monotonic() - started
         # The guest prints from its own loop; give it a moment to say why.
-        drain(process, output, 6.0)
+        drain(process, reader, 6.0)
+        gaps = gaps_on_the_host_clock(reader)
+        opens = list(OPENS)
     finally:
+        reader.close()
         if process.poll() is None:
             try:
                 os.killpg(process.pid, 15)
@@ -260,13 +409,15 @@ def run_case(name: str, attempts: int, port: int, *, preload: int = 0,
                     os.killpg(process.pid, 9)
                 except ProcessLookupError:
                     pass
-    console = "".join(output)
+    console = reader.text()
     log = BUILD / f"qemu-ssh-connection-rate-{name}.log"
     log.write_text(console, encoding="utf-8")
     return {"case": name, "booted": True, "outcomes": outcomes,
             "preloaded_served": sum(1 for o in preloaded if o == "banner"),
             "preloaded": len(preloaded),
             "seconds": round(elapsed, 2), "console_path": str(log.relative_to(ROOT)),
+            "opens": opens, "gaps": gaps,
+            "ordering": order_of(opens, gaps),
             "console": console}
 
 
