@@ -114,6 +114,29 @@ def ssh_base(key: Path, port: int, host: str = "127.0.0.1") -> list[str]:
     ]
 
 
+def ssh_reboot(key: Path, port: int) -> None:
+    """Ask the guest to reboot, and do not require ssh to come back cleanly.
+
+    `reboot` is the one command whose success destroys the connection carrying
+    it. Whether ssh exits 0, exits non-zero, or hangs until its own timeout
+    depends on whether the guest manages to close the channel before it goes
+    down -- which is a race with the machine's own shutdown, and on a runner
+    with no hardware virtualisation the guest loses it. This gate asserted a
+    clean exit within 30 s and had been failing that way on CI since
+    2026-09-02, with `subprocess.TimeoutExpired` on the word `reboot`.
+
+    Nothing is lost by not asserting it. The evidence that the reboot happened
+    is on the console and is checked immediately below: the lifecycle record
+    reaching its third durable write, and the guest printing its ready marker a
+    third time. That is a stronger claim than an exit status -- it says the
+    machine came back, not merely that it accepted the request.
+    """
+    try:
+        ssh_command(key, port, "reboot", ok=None, timeout=30)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def ssh_command(key: Path, port: int, command: str, *, ok: bool | None = True,
                 timeout: int = 30) -> str:
     result = subprocess.run(ssh_base(key, port) + [command], cwd=ROOT,
@@ -292,7 +315,7 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
         wait_ssh(key, port)
         recovery = ssh_command(key, port, "recovery status")
         assert_contains(recovery, "unclean_boots=1")
-        ssh_command(key, port, "reboot")
+        ssh_reboot(key, port)
         if arch == "aarch64":
             wait_lifecycle_durable(log_path, 3)
             wait_marker(log_path, READY, 3)
