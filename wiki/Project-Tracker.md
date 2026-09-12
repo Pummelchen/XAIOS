@@ -30,7 +30,13 @@ retains `physical_qualification=false`.
 What *is* current, against `7df4fc8`, the commit build 6 was cut from:
 `make release-check` passes, which requires `docs-check`, a
 `check-release-package` run against the published note, and a `local-gates`
-record naming that exact commit. That record covers six gates including both
+record naming that exact commit. It now also requires that CI passed on that
+commit: it did not when build 6 was cut, and it could not, because the check
+did not exist and the sentence it printed was about this Mac's four
+environments only. The runner is a fifth and it is the one that finds what none
+of the four can -- every defect in the nine red days was invisible here and
+immediate there -- so `check-ci-status` asks, and says INCONCLUSIVE rather than
+passing when it cannot get an answer. That record covers six gates including both
 hypervisors -- `vmware-fusion-smoke`, `vmware-fusion-framebuffer-gate`,
 `vz-gate`, `hypervisor-memory-matrix`, `release-image-gate` and
 `vz-stress-gate`. `boot-media-gate` (72 checks) and `vm-package-gate` (five
