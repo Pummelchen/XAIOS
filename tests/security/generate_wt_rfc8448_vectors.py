@@ -71,7 +71,14 @@ def extract_field(lines: list[str], marker: str, field: str,
     block = lines[start:end]
 
     for n, line in enumerate(block):
-        if field not in line:
+        # A field label is the whole line up to its colon, so the match is
+        # anchored: "hash (32 octets):" is a substring of RFC 8448's
+        # "binder hash (32 octets):", and a plain substring test would take the
+        # binder hash if it were printed first in the block. Anchoring on the
+        # label rather than on the line's end matters because the hex continues
+        # on the following lines, so the label's line does not end in a colon.
+        label = line.strip().split(":")[0].strip() + ":"
+        if label != field:
             continue
         # The hex may begin on this line or wrap onto the following ones.
         tokens: list[str] = []
@@ -137,11 +144,22 @@ def main() -> int:
                   "expanded (32 octets):", 32)
     exp_master = extract_field(lines, 'derive secret "tls13 exp master"',
                   "expanded (32 octets):", 32)
+    # The resumption master secret is taken from a DIFFERENT transcript -- the
+    # one through the client's Finished, which is the last hash the trace
+    # prints. Deriving it from the server's Finished, as the first version of
+    # the key schedule did, gives a well-formed value that is not this one.
+    res_master = extract_field(lines, 'derive secret "tls13 res master"',
+                               "expanded (32 octets):", 32)
+    th_client_finished = extract_field(
+        lines, 'derive secret "tls13 res master"', "hash (32 octets):", 32)
 
-    # A guard the RFC itself provides: the "derived" value taken from the early
-    # secret is the salt of the handshake extraction, and the RFC prints the
-    # same 32 bytes twice under two labels. If the parser picked up the wrong
-    # block these differ.
+    # The two "derived" values are different, and each is printed twice in the
+    # RFC -- once as the "expanded" output of its own step and once as the
+    # "salt" of the next extraction. This guard catches the parser matching the
+    # same block for both, which is the failure that would otherwise pass every
+    # length check. It is a conflation check and not a proof of correctness:
+    # two distinct wrong blocks would satisfy it. The Python oracle is what
+    # makes the extracted values trustworthy.
     if derived_early == derived_handshake:
         raise SystemExit(
             "the two 'derived' values extracted are identical, which means the "
@@ -212,6 +230,16 @@ static const uint8_t WT_RFC8448_SERVER_APPLICATION_TRAFFIC[32] = {{
 }};
 static const uint8_t WT_RFC8448_EXPORTER_MASTER[32] = {{
 {c_array(exp_master)}
+}};
+
+/* The transcript through the CLIENT's Finished, and the resumption master
+   secret derived from it. These are a different transcript from the exporter's
+   above, which is the whole reason res master is a separate argument. */
+static const uint8_t WT_RFC8448_TRANSCRIPT_AFTER_CLIENT_FINISHED[32] = {{
+{c_array(th_client_finished)}
+}};
+static const uint8_t WT_RFC8448_RESUMPTION_MASTER[32] = {{
+{c_array(res_master)}
 }};
 
 #endif /* WT_RFC8448_VECTORS_H */

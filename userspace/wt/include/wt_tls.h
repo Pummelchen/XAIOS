@@ -2,9 +2,18 @@
  *
  * RFC 8446 section 7.1 defines the schedule; RFC 9001 section 5.1 defines how
  * QUIC turns a traffic secret into a packet protection key, an IV and a header
- * protection key. Between them they are the whole of what QUIC needs from TLS
- * to protect a packet, and they are the part of TLS 1.3 that can be checked
+ * protection key. For a connection with no pre-shared key and no 0-RTT -- the
+ * only kind this module supports -- that is the whole of what QUIC needs from
+ * TLS to protect a packet, and it is the part of TLS 1.3 that can be checked
  * against published vectors without a peer.
+ *
+ * WHAT IS MISSING FROM THE SCHEDULE, so it is not mistaken for complete: the
+ * early-secret branches. `binder_key` ("res binder"/"ext binder"),
+ * `client_early_traffic_secret` ("c e traffic") and
+ * `early_exporter_master_secret` ("e exp master") are not derived, because
+ * without a PSK or 0-RTT none of them is used. A connection that wants 0-RTT
+ * needs them and needs a session-ticket store to hold the PSK they come from,
+ * and neither exists here.
  *
  * WHAT THIS IS NOT. This is not a TLS handshake. It does not parse a
  * ClientHello, build a ServerHello, verify a certificate chain or check a

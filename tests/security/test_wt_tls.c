@@ -177,6 +177,33 @@ static void test_key_schedule(void) {
   expect_int("the resumption master secret is absent without a client "
              "Finished transcript", 0, secrets.resumption_master_available);
 
+  /* RFC 8448 section 3 prints this value over the client-Finished transcript,
+     and the audit that found the wrong-transcript defect is what pointed at it.
+     Deriving it from the server's Finished gives a well-formed value that is
+     not this one, so pinning it is the check that the transcript is the right
+     one. */
+  {
+    wt_tls_secrets_t with_res;
+    expect_int("key schedule with the RFC's client-Finished transcript", 0,
+               wt_tls_key_schedule(
+                   WT_RFC8448_ECDHE, sizeof(WT_RFC8448_ECDHE),
+                   WT_RFC8448_TRANSCRIPT_AFTER_SERVER_HELLO,
+                   WT_RFC8448_TRANSCRIPT_AFTER_SERVER_FINISHED,
+                   WT_RFC8448_TRANSCRIPT_AFTER_CLIENT_FINISHED, &with_res));
+    expect_bytes("resumption_master_secret",
+                 WT_RFC8448_RESUMPTION_MASTER, with_res.resumption_master, 32);
+    expect_int("and it is flagged available", 1,
+               with_res.resumption_master_available);
+    /* The other values must be unchanged by the extra transcript: they come
+       from the server's Finished and must not move. */
+    expect_bytes("the exporter is unaffected by the client transcript",
+                 WT_RFC8448_EXPORTER_MASTER, with_res.exporter_master, 32);
+    expect_bytes("the application secrets are unaffected",
+                 WT_RFC8448_CLIENT_APPLICATION_TRAFFIC,
+                 with_res.client_application_traffic, 32);
+    wt_tls_secrets_clear(&with_res);
+  }
+
   /* Every value RFC 8448 prints, in the order the RFC derives them. A mismatch
      here localises the defect: the early secret failing means the extract, the
      handshake secret failing means the "derived" step or the ECDHE input, and
@@ -207,30 +234,11 @@ static void test_key_schedule(void) {
      first resumption attempt with nothing to point at. The two must therefore
      differ, and the availability flag must say which is which. */
   {
-    wt_tls_secrets_t with_resumption;
-    static const uint8_t zeroes[32] = {0};
-    uint8_t client_transcript[WT_TLS_HASH_LEN];
-    memcpy(client_transcript, WT_RFC8448_TRANSCRIPT_AFTER_SERVER_FINISHED, 32);
-    client_transcript[0] ^= 0x01U; /* stand-in for the client's Finished */
-
-    expect_int("key schedule with a client Finished transcript", 0,
-               wt_tls_key_schedule(WT_RFC8448_ECDHE, sizeof(WT_RFC8448_ECDHE),
-                                   WT_RFC8448_TRANSCRIPT_AFTER_SERVER_HELLO,
-                                   WT_RFC8448_TRANSCRIPT_AFTER_SERVER_FINISHED,
-                                   client_transcript, &with_resumption));
-    expect_int("the resumption master secret is available when its transcript "
-               "is supplied", 1, with_resumption.resumption_master_available);
-    g_checks++;
-    if (memcmp(with_resumption.resumption_master,
-               with_resumption.exporter_master, 32) == 0) {
-      g_failures++;
-      printf("FAIL the resumption and exporter master secrets are identical\n");
-    }
     /* And with no client transcript the field stays zero rather than holding a
        value derived from the wrong messages. */
+    static const uint8_t zeroes[32] = {0};
     expect_int("the resumption master secret is zero when unavailable", 1,
                memcmp(secrets.resumption_master, zeroes, 32) == 0);
-    wt_tls_secrets_clear(&with_resumption);
   }
 
   /* A wrong ECDHE input must not produce the published secrets. This is the

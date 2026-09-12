@@ -260,8 +260,20 @@ static void derive_label(const uint8_t secret[32], const char *label,
                          size_t out_len, uint8_t *out) {
   uint8_t info[64];
   size_t label_len = strlen(label);
-  size_t full_len = 6U + label_len;
+  size_t full_len;
   size_t info_len;
+
+  /* Bounded rather than assumed: `info` is 64 bytes and `label_len` comes from
+     the caller. Every label in this file is short, so this is a latent
+     overflow rather than a live one -- which is the same class of defect the
+     comments here warn about, so it is closed. */
+  if (label_len > 255U - 6U || 4U + 6U + label_len > sizeof(info)) {
+    g_checks++;
+    g_failures++;
+    printf("FAIL derive_label: label too long for the info buffer\n");
+    return;
+  }
+  full_len = 6U + label_len;
 
   info[0] = (uint8_t)(out_len >> 8);
   info[1] = (uint8_t)(out_len & 0xFFU);

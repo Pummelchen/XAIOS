@@ -37,11 +37,25 @@ HEX_CHARS = set("0123456789abcdef")
 def is_hex_line(line: str) -> bool:
     """Whether a line is (only) a hex-dump line.
 
-    RFC hex dumps are indented groups of byte pairs, sometimes with a further
-    indented annotation column, and sometimes containing a hyphen where the
-    RFC prints a byte range. Byte ranges are a transcription hazard, so their
-    presence is an error rather than something to strip.
+    Three conditions, and the third is the one that took two attempts:
+
+      1. every character is a hex digit, a space or a byte-range hyphen;
+      2. it contains at least one hex digit;
+      3. it is indented by three or more spaces.
+
+    The indentation is what separates a dump from prose. A line of pure hex
+    letters with no space is ambiguous on its own -- "decade", "face", "efface",
+    "added" and "accede" are all pure [0-9a-f] -- and a length test does not
+    settle it either, because a dump legitimately ends in fragments like
+    "020304" (three bytes) and "e221af44...d934" (sixteen) on orphaned lines.
+    RFC 9001's hex dumps are all indented by at least three columns while its
+    prose is indented by three or four as well, so indentation alone is not
+    enough; it is combined with (1), which prose never satisfies for a whole
+    line. Requiring a space, which an earlier version did, silently truncated
+    every packet whose last line was a fragment that fitted on one line.
     """
+    if not line.startswith("   "):
+        return False
     stripped = line.strip()
     if not stripped:
         return False
@@ -165,10 +179,16 @@ def main() -> int:
     # The RFC states the packet lengths in prose as well as by printing the
     # bytes, so the extraction is checked against a number the parser did not
     # produce. A silent truncation is then a build failure here.
-    if len(client_packet) != 1200:
-        raise SystemExit(
-            f"client Initial extracted as {len(client_packet)} bytes, the RFC "
-            f"says 1200")
+    # Every stated length, not just the client's. The generated header claims
+    # the lengths are asserted against the RFC's prose; the first version
+    # asserted only the client Initial, so a truncated server Initial or Retry
+    # would have been emitted silently.
+    for name, data, stated in (("client Initial", client_packet, 1200),
+                               ("server Initial", server_packet, 135),
+                               ("Retry", retry_packet, 36)):
+        if len(data) != stated:
+            raise SystemExit(
+                f"{name} extracted as {len(data)} bytes, the RFC says {stated}")
     if not server_packet or not retry_packet:
         raise SystemExit("a vector extracted empty")
     # The server's plaintext is printed separately from its protected packet,
@@ -204,10 +224,15 @@ def main() -> int:
             "the client header extracted is identical to the protected "
             "packet's first 22 bytes, which means the protected header was "
             "picked up instead of the unprotected one")
-    if server_header == server_packet[:22]:
+    # The server's header is 20 bytes and its protected packet's prefix is 22,
+    # so comparing them directly compares different lengths and can never be
+    # true. Compare the overlapping bytes instead; that is the check that has
+    # content.
+    if server_header == server_packet[:len(server_header)]:
         raise SystemExit(
             "the server header extracted is identical to the protected "
-            "packet's first 22 bytes")
+            "packet's first bytes, which means the protected header was "
+            "picked up instead of the unprotected one")
 
     # The RFC also prints each unprotected header and the connection IDs, which
     # the arithmetic in the test needs. These are short enough to take from the
