@@ -163,7 +163,7 @@ def host_lan_address() -> tuple[str, str]:
 
 def reserve_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("0.0.0.0", 0))
+        sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
 
 
