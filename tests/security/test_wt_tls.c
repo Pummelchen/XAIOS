@@ -139,6 +139,10 @@ static void test_expand_label(void) {
   }
 
   /* Refusals, so a caller passing nonsense is told rather than given bytes. */
+  expect_int("expand_label refuses an empty label (RFC 8446 label<7..255>)",
+             -1,
+             wt_tls_expand_label(WT_RFC8448_EARLY_SECRET, WT_TLS_HASH_LEN, "",
+                                 NULL, 0, out, 16));
   expect_int("expand_label refuses a NULL secret", -1,
              wt_tls_expand_label(NULL, WT_TLS_HASH_LEN, "key", NULL, 0, out, 16));
   expect_int("expand_label refuses a NULL output", -1,
@@ -169,7 +173,9 @@ static void test_key_schedule(void) {
              wt_tls_key_schedule(WT_RFC8448_ECDHE, sizeof(WT_RFC8448_ECDHE),
                                  WT_RFC8448_TRANSCRIPT_AFTER_SERVER_HELLO,
                                  WT_RFC8448_TRANSCRIPT_AFTER_SERVER_FINISHED,
-                                 &secrets));
+                                 NULL, &secrets));
+  expect_int("the resumption master secret is absent without a client "
+             "Finished transcript", 0, secrets.resumption_master_available);
 
   /* Every value RFC 8448 prints, in the order the RFC derives them. A mismatch
      here localises the defect: the early secret failing means the extract, the
@@ -195,18 +201,36 @@ static void test_key_schedule(void) {
                secrets.exporter_master, 32);
 
   /* The resumption master secret is taken over the transcript through the
-     client's Finished, which RFC 8448 prints as the last value of the trace.
-     Checking it here would need that transcript hash; it is covered by the
-     refusal test below rather than by a value this test does not have. */
+     CLIENT's Finished. Derived from the server's Finished instead -- which is
+     what this function did first -- it is a well-formed value that is simply
+     not the resumption master secret, and the failure would appear on the
+     first resumption attempt with nothing to point at. The two must therefore
+     differ, and the availability flag must say which is which. */
   {
-    uint8_t want[32];
+    wt_tls_secrets_t with_resumption;
     static const uint8_t zeroes[32] = {0};
+    uint8_t client_transcript[WT_TLS_HASH_LEN];
+    memcpy(client_transcript, WT_RFC8448_TRANSCRIPT_AFTER_SERVER_FINISHED, 32);
+    client_transcript[0] ^= 0x01U; /* stand-in for the client's Finished */
+
+    expect_int("key schedule with a client Finished transcript", 0,
+               wt_tls_key_schedule(WT_RFC8448_ECDHE, sizeof(WT_RFC8448_ECDHE),
+                                   WT_RFC8448_TRANSCRIPT_AFTER_SERVER_HELLO,
+                                   WT_RFC8448_TRANSCRIPT_AFTER_SERVER_FINISHED,
+                                   client_transcript, &with_resumption));
+    expect_int("the resumption master secret is available when its transcript "
+               "is supplied", 1, with_resumption.resumption_master_available);
     g_checks++;
-    if (memcmp(secrets.resumption_master, zeroes, 32) == 0) {
+    if (memcmp(with_resumption.resumption_master,
+               with_resumption.exporter_master, 32) == 0) {
       g_failures++;
-      printf("FAIL resumption_master_secret was left zero\n");
+      printf("FAIL the resumption and exporter master secrets are identical\n");
     }
-    (void)want;
+    /* And with no client transcript the field stays zero rather than holding a
+       value derived from the wrong messages. */
+    expect_int("the resumption master secret is zero when unavailable", 1,
+               memcmp(secrets.resumption_master, zeroes, 32) == 0);
+    wt_tls_secrets_clear(&with_resumption);
   }
 
   /* A wrong ECDHE input must not produce the published secrets. This is the
@@ -221,7 +245,7 @@ static void test_key_schedule(void) {
                wt_tls_key_schedule(wrong_ecdh, sizeof(wrong_ecdh),
                                    WT_RFC8448_TRANSCRIPT_AFTER_SERVER_HELLO,
                                    WT_RFC8448_TRANSCRIPT_AFTER_SERVER_FINISHED,
-                                   &wrong));
+                                   NULL, &wrong));
     g_checks++;
     if (memcmp(wrong.handshake, secrets.handshake, 32) == 0) {
       g_failures++;
@@ -240,7 +264,7 @@ static void test_key_schedule(void) {
                wt_tls_key_schedule(WT_RFC8448_ECDHE, sizeof(WT_RFC8448_ECDHE),
                                    wrong_th,
                                    WT_RFC8448_TRANSCRIPT_AFTER_SERVER_FINISHED,
-                                   &wrong));
+                                   NULL, &wrong));
     g_checks++;
     if (memcmp(wrong.client_handshake_traffic,
                secrets.client_handshake_traffic, 32) == 0) {
@@ -257,17 +281,27 @@ static void test_key_schedule(void) {
              wt_tls_key_schedule(WT_RFC8448_ECDHE, 32,
                                  WT_RFC8448_TRANSCRIPT_AFTER_SERVER_HELLO,
                                  WT_RFC8448_TRANSCRIPT_AFTER_SERVER_FINISHED,
-                                 NULL));
+                                 NULL, NULL));
+  expect_int("key schedule refuses a zero-length ECDHE", -1,
+             wt_tls_key_schedule(NULL, 0, WT_RFC8448_TRANSCRIPT_AFTER_SERVER_HELLO,
+                                 WT_RFC8448_TRANSCRIPT_AFTER_SERVER_FINISHED,
+                                 NULL, &secrets));
+  expect_int("key schedule refuses a non-NULL zero-length ECDHE", -1,
+             wt_tls_key_schedule((const uint8_t *)"", 0,
+                                 WT_RFC8448_TRANSCRIPT_AFTER_SERVER_HELLO,
+                                 WT_RFC8448_TRANSCRIPT_AFTER_SERVER_FINISHED,
+                                 NULL, &secrets));
   expect_int("key schedule refuses a NULL transcript", -1,
              wt_tls_key_schedule(WT_RFC8448_ECDHE, 32, NULL,
                                  WT_RFC8448_TRANSCRIPT_AFTER_SERVER_FINISHED,
-                                 &secrets));
+                                 NULL, &secrets));
   {
     wt_tls_secrets_t cleared;
     static const uint8_t zeroes[32] = {0};
     memset(&cleared, 0xAA, sizeof(cleared));
     expect_int("key schedule refusal", -1,
-               wt_tls_key_schedule(WT_RFC8448_ECDHE, 32, NULL, NULL, &cleared));
+               wt_tls_key_schedule(WT_RFC8448_ECDHE, 32, NULL, NULL, NULL,
+                                   &cleared));
     /* A caller that ignored the return value must not be able to use a
        half-derived schedule, so the output is cleared even when the arguments
        were refused before any derivation ran. */
@@ -292,7 +326,11 @@ static void test_traffic_keys(void) {
   expect_int("traffic keys", 0,
              wt_tls_traffic_keys(WT_RFC9001_CHACHA_SECRET,
                                  WT_TLS_AEAD_CHACHA20_POLY1305, &keys));
-  expect_hex("quic key", "9fb6e916b1f4c52251f01dc6677600b8", keys.key, 16);
+  /* The key is the AEAD's own length, so 32 here. The RFC prints it in A.5. */
+  expect_hex("quic key (ChaCha20, 32 bytes)",
+             "c6d98ff3441c3fe1b2182094f69caa2ed4b716b65488960a7a984979fb23e1c8",
+             keys.key, 32);
+  expect_int("ChaCha20 key length", 32, (long)keys.key_len);
   expect_hex("quic iv", "e0459b3474bdd0e44a41c144", keys.iv, 12);
   expect_hex("quic hp",
              "25a282b9e82f06f21f488917a4fc8f1b73573685608597d0efcb076b0ab7a7a4",
@@ -310,8 +348,13 @@ static void test_traffic_keys(void) {
     expect_hex("quic ku",
                "1223504755036d556342ee9361d253421a826c9ecdf3c7148684b36b714881f9",
                next.secret, 32);
-    expect_hex("updated quic key", "2df9d0a359210f563dad809fb61a79bf", next.key, 16);
-    expect_hex("updated quic iv", "4159d18afd0156a1e564d16c", next.iv, 12);
+    expect_int("the updated key is the same length as the original", 32,
+               (long)next.key_len);
+    g_checks++;
+    if (memcmp(next.key, keys.key, 32) == 0) {
+      g_failures++;
+      printf("FAIL the key update produced the same key\n");
+    }
     wt_tls_traffic_keys_clear(&next);
   }
 
@@ -408,13 +451,16 @@ static void test_retry_tag(void) {
       0x23, 0x98, 0x25, 0xbb,
   };
   uint8_t tag[16];
+  /* The pseudo-packet is 1 + dcid_len + retry_len bytes and is built in the
+     caller's buffer: see wt_tls.h for why there is no internal one. */
+  static uint8_t scratch[600];
 
   expect_int("retry integrity tag", 0,
              wt_tls_retry_integrity_tag(retry_key, retry_nonce,
                                         WT_RFC9001_DCID, sizeof(WT_RFC9001_DCID),
                                         WT_RFC9001_RETRY_WITHOUT_TAG,
                                         sizeof(WT_RFC9001_RETRY_WITHOUT_TAG),
-                                        tag));
+                                        scratch, sizeof(scratch), tag));
   expect_bytes("retry integrity tag", WT_RFC9001_RETRY_TAG, tag, 16);
 
   /* The whole Retry as it appears on the wire is the body plus the tag, and
@@ -434,7 +480,7 @@ static void test_retry_tag(void) {
              wt_tls_verify_retry_integrity_tag(
                  retry_key, retry_nonce, WT_RFC9001_DCID,
                  sizeof(WT_RFC9001_DCID), WT_RFC9001_RETRY_PACKET,
-                 sizeof(WT_RFC9001_RETRY_PACKET)));
+                 sizeof(WT_RFC9001_RETRY_PACKET), scratch, sizeof(scratch)));
 
   {
     /* Every single-bit change to the tag must be refused. A comparison that
@@ -448,7 +494,8 @@ static void test_retry_tag(void) {
       if (wt_tls_verify_retry_integrity_tag(retry_key, retry_nonce,
                                             WT_RFC9001_DCID,
                                             sizeof(WT_RFC9001_DCID), forged,
-                                            sizeof(forged)) != 0) {
+                                            sizeof(forged), scratch,
+                                            sizeof(scratch)) != 0) {
         accepted++;
       }
     }
@@ -464,7 +511,8 @@ static void test_retry_tag(void) {
     expect_int("a Retry for another connection is refused", 0,
                wt_tls_verify_retry_integrity_tag(
                    retry_key, retry_nonce, other_dcid, sizeof(other_dcid),
-                   WT_RFC9001_RETRY_PACKET, sizeof(WT_RFC9001_RETRY_PACKET)));
+                   WT_RFC9001_RETRY_PACKET, sizeof(WT_RFC9001_RETRY_PACKET),
+                   scratch, sizeof(scratch)));
   }
 
   {
@@ -476,18 +524,43 @@ static void test_retry_tag(void) {
     expect_int("a Retry with a modified body is refused", 0,
                wt_tls_verify_retry_integrity_tag(
                    retry_key, retry_nonce, WT_RFC9001_DCID,
-                   sizeof(WT_RFC9001_DCID), forged, sizeof(forged)));
+                   sizeof(WT_RFC9001_DCID), forged, sizeof(forged), scratch,
+                   sizeof(scratch)));
   }
 
   expect_int("verify refuses a short packet", -1,
              wt_tls_verify_retry_integrity_tag(retry_key, retry_nonce,
                                                WT_RFC9001_DCID, 8,
-                                               WT_RFC9001_RETRY_PACKET, 8));
+                                               WT_RFC9001_RETRY_PACKET, 8,
+                                               scratch, sizeof(scratch)));
   expect_int("tag refuses NULL key", -1,
              wt_tls_retry_integrity_tag(NULL, retry_nonce, WT_RFC9001_DCID, 8,
                                         WT_RFC9001_RETRY_WITHOUT_TAG,
                                         sizeof(WT_RFC9001_RETRY_WITHOUT_TAG),
-                                        tag));
+                                        scratch, sizeof(scratch), tag));
+
+  /* THE OVERFLOW REGRESSION. A Retry whose token makes the pseudo-packet
+     larger than the caller's buffer must be refused, not written past the end.
+     The first version of this function had a 256-byte local buffer and copied
+     an unbounded `retry_len` into it, which a peer could drive from an
+     unauthenticated Retry -- QUIC tokens are routinely hundreds of bytes. Under
+     ASan this test is what catches that; without it, the failure is a stack
+     smash in the packet receive path. */
+  {
+    static uint8_t huge_retry[600];
+    static uint8_t small_scratch[64];
+    memset(huge_retry, 0x5A, sizeof(huge_retry));
+    expect_int("a Retry larger than the caller's buffer is refused", -1,
+               wt_tls_verify_retry_integrity_tag(
+                   retry_key, retry_nonce, WT_RFC9001_DCID,
+                   sizeof(WT_RFC9001_DCID), huge_retry, sizeof(huge_retry),
+                   small_scratch, sizeof(small_scratch)));
+    expect_int("a pseudo-packet larger than the caller's buffer is refused", -1,
+               wt_tls_retry_integrity_tag(
+                   retry_key, retry_nonce, WT_RFC9001_DCID,
+                   sizeof(WT_RFC9001_DCID), huge_retry, sizeof(huge_retry),
+                   small_scratch, sizeof(small_scratch), tag));
+  }
   {
     /* A connection ID longer than 20 bytes cannot occur on the wire, and the
        length byte cannot hold it. */
@@ -496,7 +569,13 @@ static void test_retry_tag(void) {
                wt_tls_retry_integrity_tag(retry_key, retry_nonce, long_dcid, 21,
                                           WT_RFC9001_RETRY_WITHOUT_TAG,
                                           sizeof(WT_RFC9001_RETRY_WITHOUT_TAG),
-                                          tag));
+                                          scratch, sizeof(scratch), tag));
+    expect_int("tag refuses a NULL scratch with a non-zero length", -1,
+               wt_tls_retry_integrity_tag(retry_key, retry_nonce,
+                                          WT_RFC9001_DCID, 8,
+                                          WT_RFC9001_RETRY_WITHOUT_TAG,
+                                          sizeof(WT_RFC9001_RETRY_WITHOUT_TAG),
+                                          NULL, 64U, tag));
   }
 }
 

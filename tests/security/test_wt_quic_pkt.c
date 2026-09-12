@@ -214,7 +214,9 @@ static void test_header_protection_client_initial(void) {
     memcpy(keys.key, WT_RFC9001_CLIENT_KEY, 16);
     memcpy(keys.iv, WT_RFC9001_CLIENT_IV, 12);
     memcpy(keys.hp, WT_RFC9001_CLIENT_HP, 16);
-    keys.hp_len = 16U;
+    keys.key_len = 16U;
+    keys.key_len = 16U;
+  keys.hp_len = 16U;
 
     /* The payload is the RFC's protected payload, so protect_packet is not
        used here: the sample must come from bytes already protected. That is
@@ -290,6 +292,7 @@ static void test_client_initial_end_to_end(void) {
   memcpy(keys.key, WT_RFC9001_CLIENT_KEY, 16);
   memcpy(keys.iv, WT_RFC9001_CLIENT_IV, 12);
   memcpy(keys.hp, WT_RFC9001_CLIENT_HP, 16);
+  keys.key_len = 16U;
   keys.hp_len = 16U;
 
   /* The sender's payload is the CRYPTO frame followed by PADDING to 1162. */
@@ -473,6 +476,7 @@ static void test_server_initial_end_to_end(void) {
   memcpy(keys.key, WT_RFC9001_SERVER_KEY, 16);
   memcpy(keys.iv, WT_RFC9001_SERVER_IV, 12);
   memcpy(keys.hp, WT_RFC9001_SERVER_HP, 16);
+  keys.key_len = 16U;
   keys.hp_len = 16U;
 
   memset(packet, 0, sizeof(packet));

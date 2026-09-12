@@ -43,8 +43,10 @@ int wt_tls_expand_label(const uint8_t *secret, size_t secret_len,
   if (context == NULL && context_len != 0U) return -1;
 
   label_len = strlen(label);
-  /* "tls13 " plus the label, and the one length byte has to hold it. */
-  if (label_len > 255U - 6U) return -1;
+  /* "tls13 " plus the label, and the one length byte has to hold it. RFC 8446
+     declares the field `opaque label<7..255>`, so the shortest legal label is
+     one byte after the prefix; an empty label is refused rather than encoded. */
+  if (label_len == 0U || label_len > 255U - 6U) return -1;
   full_len = 6U + label_len;
   if (context_len > 255U) return -1;
   /* out_len is checked against the HKDF bound by wt_hkdf_expand_sha256. */
@@ -85,16 +87,13 @@ int wt_tls_derive_secret(const uint8_t *secret, size_t secret_len,
  *   handshake_secret -> derived -> master_secret = HKDF-Extract(derived, 0)
  *
  * with the two traffic-secret pairs and the exporter taken from the handshake
- * and master secrets respectively. The resumption master secret is taken from
- * the master secret over the transcript through the *client's* Finished, which
- * the caller supplies as `transcript_after_server_finished` only when there is
- * no client Finished (a server-side abort); for a complete handshake the caller
- * must recompute it over the true transcript. That is stated here rather than
- * silently producing a plausible value. */
+ * and master secrets respectively. The resumption master secret is the one
+ * value whose transcript is different, and it is handled separately above. */
 int wt_tls_key_schedule(
     const uint8_t *ecdh_secret, size_t ecdh_len,
     const uint8_t transcript_after_server_hello[WT_TLS_HASH_LEN],
     const uint8_t transcript_after_server_finished[WT_TLS_HASH_LEN],
+    const uint8_t *transcript_after_client_finished,
     wt_tls_secrets_t *out) {
   uint8_t derived[WT_TLS_HASH_LEN];
   static const uint8_t zero[WT_TLS_HASH_LEN] = {0};
@@ -104,6 +103,7 @@ int wt_tls_key_schedule(
      ignored the return value with an unusable schedule rather than a
      partially derived one. */
   memset(out, 0, sizeof(*out));
+  if (ecdh_secret == NULL || ecdh_len == 0U) return -1;
   if (transcript_after_server_hello == NULL ||
       transcript_after_server_finished == NULL) {
     return -1;
@@ -171,10 +171,17 @@ int wt_tls_key_schedule(
                            out->exporter_master) != 0) {
     goto fail;
   }
-  if (wt_tls_derive_secret(out->master, sizeof(out->master), "res master",
-                           transcript_after_server_finished,
-                           out->resumption_master) != 0) {
-    goto fail;
+  /* The resumption master secret comes from the transcript through the
+     CLIENT's Finished, not the server's. With no such transcript it is left
+     zero and flagged, rather than filled with a plausible value derived from
+     the wrong messages. */
+  if (transcript_after_client_finished != NULL) {
+    if (wt_tls_derive_secret(out->master, sizeof(out->master), "res master",
+                             transcript_after_client_finished,
+                             out->resumption_master) != 0) {
+      goto fail;
+    }
+    out->resumption_master_available = 1;
   }
 
   wt_secure_zero(derived, sizeof(derived));
@@ -193,11 +200,15 @@ fail:
    16-byte field -- corrupts the struct and surfaces as a wrong value somewhere
    else entirely. */
 typedef char wt_tls_hp_len_fits[WT_TLS_HP_LEN >= 32U ? 1 : -1];
+typedef char wt_tls_key_len_fits[WT_TLS_KEY_LEN >= 32U ? 1 : -1];
 
-/* The header protection key length for a suite. RFC 9001 section 5.1: the hp
-   key uses the AEAD's own key size, so it is 16 for AES-128-GCM and 32 for
-   ChaCha20-Poly1305. */
-static size_t aead_hp_len(wt_tls_aead_t aead) {
+/* The traffic key size for a suite. RFC 9001 section 5.1: the packet
+   protection key AND the header protection key both use the AEAD's own key
+   size, so both are 16 for AES-128-GCM and 32 for ChaCha20-Poly1305. The first
+   version of this used 16 for the key and the AEAD's size for hp, which gave
+   ChaCha20 a 16-byte "key" that is not a ChaCha20 key while reporting
+   success. */
+static size_t aead_key_len(wt_tls_aead_t aead) {
   switch (aead) {
     case WT_TLS_AEAD_AES_128_GCM: return 16U;
     case WT_TLS_AEAD_CHACHA20_POLY1305: return 32U;
@@ -207,15 +218,17 @@ static size_t aead_hp_len(wt_tls_aead_t aead) {
 
 int wt_tls_traffic_keys(const uint8_t secret[WT_TLS_HASH_LEN],
                         wt_tls_aead_t aead, wt_tls_traffic_keys_t *out) {
-  size_t hp_len = aead_hp_len(aead);
-  if (secret == NULL || out == NULL || hp_len == 0U) return -1;
+  size_t key_len = aead_key_len(aead);
+  if (out != NULL) memset(out, 0, sizeof(*out));
+  if (secret == NULL || out == NULL || key_len == 0U) return -1;
   memset(out, 0, sizeof(*out));
   memcpy(out->secret, secret, WT_TLS_HASH_LEN);
-  out->hp_len = hp_len;
+  out->key_len = key_len;
+  out->hp_len = key_len;
   /* RFC 9001 section 5.1: all three come from the traffic secret with QUIC's
      own labels, with an empty context. */
   if (wt_tls_expand_label(secret, WT_TLS_HASH_LEN, "quic key", NULL, 0,
-                          out->key, WT_TLS_KEY_LEN) != 0) {
+                          out->key, key_len) != 0) {
     goto fail;
   }
   if (wt_tls_expand_label(secret, WT_TLS_HASH_LEN, "quic iv", NULL, 0,
@@ -223,7 +236,7 @@ int wt_tls_traffic_keys(const uint8_t secret[WT_TLS_HASH_LEN],
     goto fail;
   }
   if (wt_tls_expand_label(secret, WT_TLS_HASH_LEN, "quic hp", NULL, 0,
-                          out->hp, hp_len) != 0) {
+                          out->hp, key_len) != 0) {
     goto fail;
   }
   return 0;
@@ -236,7 +249,9 @@ fail:
 int wt_tls_key_update(const uint8_t secret[WT_TLS_HASH_LEN],
                       wt_tls_aead_t aead, wt_tls_traffic_keys_t *out) {
   uint8_t next[WT_TLS_HASH_LEN];
+  if (out != NULL) memset(out, 0, sizeof(*out));
   if (secret == NULL || out == NULL) return -1;
+  memset(next, 0, sizeof(next));
   /* RFC 9001 section 6: the next secret is HKDF-Expand-Label of the current
      one on the "quic ku" label, and the keys are then derived from it in the
      ordinary way. */
@@ -257,6 +272,7 @@ int wt_tls_initial_secret(const uint8_t *salt, size_t salt_len,
                           uint8_t out[WT_TLS_HASH_LEN]) {
   /* RFC 9001 section 5.2:
      initial_secret = HKDF-Extract(initial_salt, client_dst_connection_id) */
+  if (out != NULL) memset(out, 0, sizeof(*out));
   if (salt == NULL || out == NULL) return -1;
   if (dcid == NULL && dcid_len != 0U) return -1;
   return wt_hkdf_extract_sha256(salt, salt_len, dcid, dcid_len, out);
@@ -266,12 +282,15 @@ int wt_tls_initial_traffic_keys(const uint8_t initial_secret[WT_TLS_HASH_LEN],
                                 int from_server, wt_tls_aead_t aead,
                                 wt_tls_traffic_keys_t *out) {
   uint8_t secret[WT_TLS_HASH_LEN];
+  if (out != NULL) memset(out, 0, sizeof(*out));
   if (initial_secret == NULL || out == NULL) return -1;
+  memset(secret, 0, sizeof(secret));
   /* The label is the only difference between the two directions: "client in"
      and "server in". */
   if (wt_tls_expand_label(initial_secret, WT_TLS_HASH_LEN,
                           from_server ? "server in" : "client in", NULL, 0,
                           secret, WT_TLS_HASH_LEN) != 0) {
+    wt_secure_zero(secret, sizeof(secret));
     return -1;
   }
   if (wt_tls_traffic_keys(secret, aead, out) != 0) {
@@ -295,10 +314,9 @@ int wt_tls_retry_integrity_tag(const uint8_t retry_aead_key[16],
                                const uint8_t retry_aead_nonce[12],
                                const uint8_t *original_dcid, size_t dcid_len,
                                const uint8_t *retry_without_tag,
-                               size_t retry_len, uint8_t out_tag[16]) {
-  uint8_t pseudo[1U + 255U];
-  uint8_t empty_plaintext = 0U;
-  uint8_t scratch = 0U;
+                               size_t retry_len, uint8_t *scratch,
+                               size_t scratch_len, uint8_t out_tag[16]) {
+  uint8_t empty[1] = {0};
   size_t pseudo_len;
 
   if (retry_aead_key == NULL || retry_aead_nonce == NULL || out_tag == NULL) {
@@ -309,19 +327,30 @@ int wt_tls_retry_integrity_tag(const uint8_t retry_aead_key[16],
      section 17.2), and the length byte has to hold this one. */
   if (dcid_len > 20U) return -1;
   if (original_dcid == NULL && dcid_len != 0U) return -1;
+  if (scratch == NULL && scratch_len != 0U) return -1;
 
-  pseudo[0] = (uint8_t)dcid_len;
-  if (dcid_len != 0U) memcpy(pseudo + 1U, original_dcid, dcid_len);
-  if (retry_len != 0U) {
-    memcpy(pseudo + 1U + dcid_len, retry_without_tag, retry_len);
-  }
   pseudo_len = 1U + dcid_len + retry_len;
+  /* The bound is the caller's buffer, checked before anything is written. A
+     Retry too large for it is refused rather than truncated: a truncated
+     pseudo-packet produces a tag that is wrong in every byte, and refusing
+     says so. */
+  if (pseudo_len > scratch_len) return -1;
+
+  scratch[0] = (uint8_t)dcid_len;
+  if (dcid_len != 0U) memcpy(scratch + 1U, original_dcid, dcid_len);
+  if (retry_len != 0U) {
+    memcpy(scratch + 1U + dcid_len, retry_without_tag, retry_len);
+  }
 
   {
-    int status = wt_aes128_gcm_encrypt(retry_aead_key, retry_aead_nonce, pseudo,
-                                       pseudo_len, &empty_plaintext, 0U,
-                                       &scratch, out_tag);
-    wt_secure_zero(pseudo, sizeof(pseudo));
+    /* The plaintext is empty and must be a valid pointer even so; `empty` is a
+       one-byte buffer rather than NULL because the AEAD binding requires a
+       non-NULL input. */
+    int status = wt_aes128_gcm_encrypt(retry_aead_key, retry_aead_nonce,
+                                       scratch, pseudo_len, empty, 0U, empty,
+                                       out_tag);
+    wt_secure_zero(scratch, pseudo_len);
+    if (status != 0) wt_secure_zero(out_tag, 16U);
     return status;
   }
 }
@@ -331,13 +360,14 @@ int wt_tls_verify_retry_integrity_tag(const uint8_t retry_aead_key[16],
                                       const uint8_t *original_dcid,
                                       size_t dcid_len,
                                       const uint8_t *retry_packet,
-                                      size_t retry_len) {
+                                      size_t retry_len, uint8_t *scratch,
+                                      size_t scratch_len) {
   uint8_t expected[16];
   const uint8_t *received;
   size_t body_len;
   int equal;
 
-  /* A Retry is at least the tag plus a token and the fixed fields. */
+  /* A Retry is the fixed fields, a token, and a 16-byte tag. */
   if (retry_packet == NULL || retry_len < 16U) return -1;
 
   /* The tag is the last 16 bytes and is not covered by the pseudo-packet. */
@@ -346,7 +376,8 @@ int wt_tls_verify_retry_integrity_tag(const uint8_t retry_aead_key[16],
 
   if (wt_tls_retry_integrity_tag(retry_aead_key, retry_aead_nonce,
                                  original_dcid, dcid_len, retry_packet,
-                                 body_len, expected) != 0) {
+                                 body_len, scratch, scratch_len,
+                                 expected) != 0) {
     return -1;
   }
   /* Constant time: a tag comparison that returns early is a forgery oracle. */

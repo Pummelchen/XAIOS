@@ -69,10 +69,29 @@ if [ "$needs_build" -eq 1 ]; then
 fi
 
 # One object per source that is not a test, so a test can be rebuilt alone.
+#
+# A module is rebuilt when its own source is newer than its object OR when any
+# header in userspace/wt/include is. The first version checked only the source,
+# so editing a header left every object stale and a run could pass against code
+# that no longer existed -- which happened, and cost a debugging session
+# chasing a defect that had already been fixed.
+newest_header() {
+  newest=""
+  for header in "$ROOT"/userspace/wt/include/*.h; do
+    if [ -z "$newest" ] || [ "$header" -nt "$newest" ]; then
+      newest=$header
+    fi
+  done
+  printf '%s' "$newest"
+}
+
+HEADER_STAMP=$(newest_header)
+
 build_module() {
   source=$1
   object="$BUILD/objects/$(printf '%s' "$source" | tr '/' '_').o"
-  if [ ! -f "$object" ] || [ "$ROOT/$source" -nt "$object" ]; then
+  if [ ! -f "$object" ] || [ "$ROOT/$source" -nt "$object" ] ||
+     { [ -n "$HEADER_STAMP" ] && [ "$HEADER_STAMP" -nt "$object" ]; }; then
     "$CC" -std=c99 -O1 -g -Wall -Wextra -Werror \
       -I"$BEARSSL/inc" -I"$BEARSSL/src" \
       -I"$ROOT/userspace/wt/include" \
@@ -101,6 +120,11 @@ for name in "$@"; do
     exit 2
   fi
   binary="$BUILD/test_wt_$name"
+  # Rebuild the test when its source or any header changed, for the same reason.
+  if [ -f "$binary" ] && [ -n "$HEADER_STAMP" ] &&
+     [ "$HEADER_STAMP" -nt "$binary" ]; then
+    rm -f "$binary"
+  fi
   "$CC" -std=c99 -O1 -g -Wall -Wextra -Werror \
     -I"$BEARSSL/inc" -I"$BEARSSL/src" \
     -I"$ROOT/userspace/wt/include" \
