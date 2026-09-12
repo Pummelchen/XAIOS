@@ -253,6 +253,31 @@ static uint64_t g_audit_write_max_ns;
    that phase and this rules out the obvious suspect in one reproduction rather
    than several. */
 static uint64_t g_pass_durable_ns;
+
+/* Audit records held in memory until there is a reason to pay for them.
+ *
+ * B-63: every ssh_log() call was one append to the durable volume, and an
+ * append carries blk_flush() -- a virtio flush, which is a host fsync. sshd's
+ * service loop is the only thing that polls the network (B-44), so each of
+ * those fsyncs is a window in which the machine has no networking, and on a
+ * host whose disk stalls the window is seconds. A connection takes about five
+ * log lines, so it was paying five of them.
+ *
+ * The records themselves are worth keeping; the per-line fsync is not. The
+ * console is where a connection's story is told -- log_connection_close and
+ * the refusal lines below write there, and the comment on them says plainly
+ * that the audit file is read by no soak and no gate. So lines accumulate here
+ * and go out in one write when the buffer fills or a connection ends: one
+ * fsync per connection rather than five, with the same bytes in the same order
+ * in the same file.
+ *
+ * What this gives up, stated rather than buried: a crash loses the records
+ * still in the buffer. The whole-file path already loses the record being
+ * appended, so the guarantee was never "every line survives any crash" -- it
+ * was one line's worth of exposure and is now a connection's worth. */
+#define SSHD_AUDIT_BUFFER_BYTES 3072U
+static char g_audit_buffer[SSHD_AUDIT_BUFFER_BYTES];
+static uint32_t g_audit_buffered;
 static uint32_t g_key_load_calls;
 static uint32_t g_key_load_file_reads;
 static uint64_t g_key_load_ns;
@@ -339,6 +364,52 @@ static void hex_to_str(uint64_t val, char *buf, uint32_t buf_size) {
   buf[len] = '\0';
 }
 
+/* Put bytes on the durable volume now. The only place that pays for a flush,
+   and the only place that counts one. */
+static void ssh_audit_write_through(const char *bytes, uint32_t length) {
+  if (length == 0U) return;
+  uint64_t durable_started = xaios_clock_nanos();
+  if (g_log_fd < 0 && ssh_log_reopen() != 0) {
+    record_durable_ns(durable_started);
+    return;
+  }
+  if (g_log_bytes + length > SSHD_LOG_ROTATE_BYTES) {
+    if (ssh_log_reopen() != 0) {
+      record_durable_ns(durable_started);
+      return;
+    }
+    xaios_log("sshd: audit log rotated\n");
+  }
+  ++g_audit_write_calls;
+  g_audit_write_bytes += length;
+  int written = xaios_fs_write(g_log_fd, bytes, length);
+  if (written != (int)length) {
+    if (ssh_log_reopen() != 0) {
+      record_durable_ns(durable_started);
+      return;
+    }
+    ++g_audit_write_calls;
+    g_audit_write_bytes += length;
+    written = xaios_fs_write(g_log_fd, bytes, length);
+    if (written != (int)length) {
+      record_durable_ns(durable_started);
+      return;
+    }
+  }
+  g_log_bytes += length;
+  record_durable_ns(durable_started);
+}
+
+/* Everything held, in one write. Safe to call with nothing buffered. */
+static void ssh_audit_flush(void) {
+  if (g_audit_buffered == 0U) return;
+  uint32_t length = g_audit_buffered;
+  /* Cleared first: a write that fails must not leave the same bytes queued to
+     be attempted again on every later call. */
+  g_audit_buffered = 0U;
+  ssh_audit_write_through(g_audit_buffer, length);
+}
+
 void ssh_log(int level, const char *fmt, ...) {
   const char *prefix;
   switch (level) {
@@ -411,36 +482,20 @@ void ssh_log(int level, const char *fmt, ...) {
      volume, and by B-44 that is time the guest has no networking. Timed as a
      block rather than per call so a rotation -- which closes, creates and
      truncates -- is counted where it is actually paid. */
-  uint64_t durable_started = xaios_clock_nanos();
-  if (g_log_fd < 0 && ssh_log_reopen() != 0) {
-    record_durable_ns(durable_started);
+  /* A line too long for the buffer would never fit and must not be dropped
+     silently, so the buffer is drained and the line written on its own. */
+  if (line_pos > SSHD_AUDIT_BUFFER_BYTES) {
+    ssh_audit_flush();
+    ssh_audit_write_through(line, line_pos);
     return;
   }
-  if (g_log_bytes + line_pos > SSHD_LOG_ROTATE_BYTES) {
-    if (ssh_log_reopen() != 0) {
-      record_durable_ns(durable_started);
-      return;
-    }
-    xaios_log("sshd: audit log rotated\n");
+  if (g_audit_buffered + line_pos > SSHD_AUDIT_BUFFER_BYTES) {
+    ssh_audit_flush();
   }
-  ++g_audit_write_calls;
-  g_audit_write_bytes += line_pos;
-  int written = xaios_fs_write(g_log_fd, line, line_pos);
-  if (written != (int)line_pos) {
-    if (ssh_log_reopen() != 0) {
-      record_durable_ns(durable_started);
-      return;
-    }
-    ++g_audit_write_calls;
-    g_audit_write_bytes += line_pos;
-    written = xaios_fs_write(g_log_fd, line, line_pos);
-    if (written != (int)line_pos) {
-      record_durable_ns(durable_started);
-      return;
-    }
+  for (uint32_t i = 0; i < line_pos; ++i) {
+    g_audit_buffer[g_audit_buffered + i] = line[i];
   }
-  g_log_bytes += line_pos;
-  record_durable_ns(durable_started);
+  g_audit_buffered += line_pos;
 }
 
 /* Say on the console why a connection was refused before it was served.
@@ -3651,6 +3706,10 @@ close_conn:
         /* After the audit line above, so the totals include this connection's
            last record rather than all of it but that. */
         log_durable_cost(g_connection_close_count);
+        /* One connection's records, one write, one flush -- rather than one
+           per line while the loop that holds them is the only thing polling
+           the network. */
+        ssh_audit_flush();
       }
     }
     uint64_t after_connections = timer_now();
