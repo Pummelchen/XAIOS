@@ -224,6 +224,49 @@ def verbose_probe(address: str) -> dict[str, object]:
             "transcript": result.stderr.strip()}
 
 
+ACCEPT_RE = re.compile(r"net_accept listenfd=\d+ connfd=(\d+)")
+CLOSE_RE = re.compile(
+    r"sshd: connection closed reason=([a-z-]+) sockfd=(\d+) state=(\d+) "
+    r"held_ms=(\d+)")
+
+
+def resolve_stranded_sockets(correlation: list[dict[str, object]],
+                             console: str) -> None:
+    """Find how each failing round's sockets ended, wherever that was logged.
+
+    B-63 read as "the guest never saw it" for a long time, and the guest had
+    seen it. The close of the connection that stalls is written 30 to 120
+    seconds after the round it belongs to, so the per-round console window --
+    which is the right tool for B-28, where everything happens inside the round
+    -- cannot contain it, and attributes it to whichever round was running when
+    it was finally printed.
+
+    So the sockets are followed by number instead of by time. Each failing
+    round's `net_accept` lines give the socket it opened, and this then reads
+    the whole console for how that socket closed. In the soak that found this,
+    the three failing rounds resolved to `packet-read-failed held_ms=30014`,
+    `auth-timeout state=5 held_ms=120030` and `packet-read-failed
+    held_ms=30007`, against a client that gave up at 18.4 seconds. Only two
+    `packet-read-failed` closes existed in 14276 closes, and both were failing
+    rounds -- which is the kind of thing worth being able to say.
+    """
+    closes: dict[str, dict[str, object]] = {}
+    for match in CLOSE_RE.finditer(console):
+        reason, sockfd, state, held = match.groups()
+        closes[sockfd] = {"reason": reason, "state": int(state),
+                          "held_ms": int(held)}
+    for record in correlation:
+        if record.get("sftp_exit_code") in (0, None):
+            continue
+        opened = ACCEPT_RE.findall(
+            "\n".join(str(line) for line in record.get("guest_lines", [])))
+        record["sockets_opened"] = [
+            {"sockfd": int(fd),
+             "close": closes.get(fd, {"reason": "no close recorded anywhere in "
+                                                "this console"})}
+            for fd in opened]
+
+
 def main() -> int:
     # The correlation checks run everywhere, including on the machines that
     # skip the soak itself.
@@ -418,6 +461,10 @@ def main() -> int:
                 f"free memory declined across the run: {round(early)} pages "
                 f"early against {round(late)} late. Over {index} rounds that "
                 f"is a leak rather than a cache filling")
+
+    # How the failing rounds' sockets actually ended, read from the whole
+    # console rather than from the round's own window -- see the helper above.
+    resolve_stranded_sockets(correlation, smoke.serial_text())
 
     report = {
         "schema": "xaios.vmware-fusion.load_soak.v1",
