@@ -23,6 +23,10 @@
 # and the UEFI firmwares are what the shipped images boot through. Without
 # them this image could reproduce the boot gates but not the release ones, and
 # the release ones are where a shipped file either works or does not.
+#
+# qemu-system-arm and qemu-system-x86 are on the fourth line for the aggregate
+# gates: several of them assert one marker covering all three architectures at
+# once, so reproducing any of them takes all three emulators.
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
@@ -31,6 +35,7 @@ RUN apt-get update && apt-get install -y \
       build-essential libfdt-dev libglib2.0-dev libpixman-1-dev libslirp-dev \
       pkg-config python3-venv zlib1g-dev \
       qemu-efi-riscv64 qemu-efi-aarch64 ovmf xorriso \
+      qemu-system-arm qemu-system-x86 \
   && rm -rf /var/lib/apt/lists/*
 
 # The runner's image carries other qemu packages, which populate /usr/share/qemu

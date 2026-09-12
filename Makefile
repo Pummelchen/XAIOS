@@ -75,8 +75,16 @@ vmware-fusion-smoke:
 
 # RISC-V rv64gc bring-up. Boots via OpenSBI on the QEMU `virt` board rather
 # than UEFI, which is why it has its own build script and no boot medium.
+# B-68: this built the kernel and stopped, while every consumer of it boots a
+# machine -- and a machine needs an initial filesystem. Eight gates took this
+# as a prerequisite and then died on "no initial filesystem"; the ones that
+# worked did so because they repeated the image step in their own recipe. The
+# fix is for the target to mean what its users assume it means. Building the
+# image is idempotent and takes seconds, so the recipes that still call it
+# themselves are harmless repetition rather than a second build.
 riscv64:
 	./scripts/build-riscv64.sh
+	./scripts/build-riscv64-image.sh
 
 qemu-riscv64-gate: riscv64
 	./scripts/build-riscv64-image.sh
@@ -868,6 +876,10 @@ qemu-qualification-readiness:
 qemu-smmu-gate: image-qemu-test
 	python3 ./tests/scripts/qemu-smmu-gate.py
 
+# B-68: the `riscv64` prerequisite builds the kernel and stops there, so the
+# RISC-V legs died on "no initial filesystem" while the two that had images
+# passed. Every other RISC-V gate adds the image script to its own recipe; this
+# one and the fragmentation gate below were the two that did not.
 qemu-nvme-gate: image-qemu-test image-x86_64-qemu-test riscv64
 	python3 ./tests/scripts/qemu-nvme-gate.py
 
