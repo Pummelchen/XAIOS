@@ -1441,6 +1441,7 @@ docs-check:
 	python3 tests/repository/check-fault-test-marker.py
 	python3 tests/repository/check-portable-dd.py
 	python3 tests/repository/check-riscv-firmware-paths.py
+	python3 tests/repository/check-aggregate-budgets.py
 
 code-scanning-contract:
 	python3 tests/repository/check-code-scanning-contract.py
