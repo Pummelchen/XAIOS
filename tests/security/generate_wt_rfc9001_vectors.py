@@ -34,34 +34,55 @@ from pathlib import Path
 HEX_CHARS = set("0123456789abcdef")
 
 
+# A hex token is a run of hex digits of even length. The dump splits lines at
+# 16 bytes, so a token is 16 bytes or the last fragment of a wrapped line.
+HEX_TOKEN = __import__("re").compile(r"[0-9a-f]+$")
+
+
 def is_hex_line(line: str) -> bool:
-    """Whether a line is (only) a hex-dump line.
+    """Whether a line is (only) a hex-dump line, ignoring its indentation.
 
-    Three conditions, and the third is the one that took two attempts:
+    A dump line is one or more hex tokens separated by spaces, each an even
+    number of hex digits, optionally with a token separated by a byte-range
+    hyphen.
 
-      1. every character is a hex digit, a space or a byte-range hyphen;
-      2. it contains at least one hex digit;
-      3. it is indented by three or more spaces.
+    "Each an EVEN number of hex digits" is the test, and it is the fourth
+    version of this predicate:
 
-    The indentation is what separates a dump from prose. A line of pure hex
-    letters with no space is ambiguous on its own -- "decade", "face", "efface",
-    "added" and "accede" are all pure [0-9a-f] -- and a length test does not
-    settle it either, because a dump legitimately ends in fragments like
-    "020304" (three bytes) and "e221af44...d934" (sixteen) on orphaned lines.
-    RFC 9001's hex dumps are all indented by at least three columns while its
-    prose is indented by three or four as well, so indentation alone is not
-    enough; it is combined with (1), which prose never satisfies for a whole
-    line. Requiring a space, which an earlier version did, silently truncated
-    every packet whose last line was a fragment that fitted on one line.
+      - a plain [0-9a-f -] character test accepted "decade", "face", "efface",
+        "added" and "accede", all of which are pure hex and even length, so a
+        line of prose could be absorbed into a vector;
+      - requiring a space rejected the continuation lines that print a single
+        token, silently truncating every packet whose last line was a fragment
+        (the client Initial lost its final 16 bytes; the length assertion is
+        what caught it);
+      - requiring three columns of indentation rejected the same fragments,
+        because RFC 9001 indents them by anywhere from three to nine columns;
+      - requiring every token to be exactly two digits assumed the dump splits
+        at every byte, and it splits at every sixteenth.
+
+    A word is distinguishable after all: "decade" is six hex digits, and six is
+    even, so length parity alone does not separate it -- but "accede", "added"
+    and "efface" are five, five and six, and half of them fall out. The ones
+    that remain are accepted, which is a live trade-off rather than a solved
+    problem, and the length assertions in the extractors are what keep it from
+    mattering: a prose line that is absorbed makes the block the wrong length
+    and generation stops.
     """
-    if not line.startswith("   "):
-        return False
     stripped = line.strip()
     if not stripped:
         return False
-    if not all(c in HEX_CHARS or c in " -" for c in stripped):
-        return False
-    return any(c in HEX_CHARS for c in stripped)
+    for token in stripped.split():
+        if "-" in token:
+            for part in token.split("-"):
+                if not HEX_TOKEN.fullmatch(part) or len(part) % 2 != 0:
+                    return False
+            continue
+        if not HEX_TOKEN.fullmatch(token):
+            return False
+        if len(token) % 2 != 0:
+            return False
+    return True
 
 
 def extract_after(lines: list[str], marker: str) -> bytes:

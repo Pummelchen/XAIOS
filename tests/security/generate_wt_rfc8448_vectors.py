@@ -101,6 +101,37 @@ def extract_field(lines: list[str], marker: str, field: str,
         f"labels have changed and the extracted vectors would be wrong")
 
 
+def extract_labelled_block(lines: list[str], marker: str, length: int) -> bytes:
+    """The hex block of exactly `length` bytes whose label line contains `marker`.
+
+    The first line of hex is on the LABEL line -- "ClientHello (196 octets):  01
+    00 00 c0 ..." -- and the rest continue on indented lines. Starting from the
+    line after the marker, which is the obvious thing to do, loses whatever the
+    label line carried: 13 bytes here, and the block is then 183 bytes long and
+    the length assertion is what notices.
+    """
+    indices = [n for n, line in enumerate(lines) if marker in line]
+    if not indices:
+        raise SystemExit(f"marker not found: {marker!r}")
+    start = indices[0]
+    tokens: list[str] = []
+    i = start
+    while i < len(lines):
+        text = lines[i]
+        if i == start:
+            # Keep only what follows the label's colon.
+            text = text.split(":", 1)[1] if ":" in text else ""
+        if text.strip() and not is_hex_line(text):
+            break
+        tokens.extend(text.strip().replace("-", "").split())
+        i += 1
+    blob = "".join(tokens)
+    if len(blob) != length * 2:
+        raise SystemExit(
+            f"block at {marker!r} is {len(blob) // 2} bytes, expected {length}")
+    return bytes.fromhex(blob)
+
+
 def c_array(data: bytes, per_line: int = 10, indent: str = "    ") -> str:
     parts = []
     for offset in range(0, len(data), per_line):
@@ -150,6 +181,12 @@ def main() -> int:
     # the key schedule did, gives a well-formed value that is not this one.
     res_master = extract_field(lines, 'derive secret "tls13 res master"',
                                "expanded (32 octets):", 32)
+    # The two handshake messages the trace is built from, as they go on the
+    # wire: `type || uint24 length || body`. The transcript is the hash of
+    # these two concatenated, and the RFC prints that hash, so building a
+    # transcript from the messages and hashing it is checkable end to end.
+    client_hello = extract_labelled_block(lines, "ClientHello (196 octets):", 196)
+    server_hello = extract_labelled_block(lines, "ServerHello (90 octets):", 90)
     th_client_finished = extract_field(
         lines, 'derive secret "tls13 res master"', "hash (32 octets):", 32)
 
@@ -240,6 +277,16 @@ static const uint8_t WT_RFC8448_TRANSCRIPT_AFTER_CLIENT_FINISHED[32] = {{
 }};
 static const uint8_t WT_RFC8448_RESUMPTION_MASTER[32] = {{
 {c_array(res_master)}
+}};
+
+/* The ClientHello and ServerHello as they go on the wire, framing included. */
+#define WT_RFC8448_CLIENT_HELLO_LEN {len(client_hello)}
+static const uint8_t WT_RFC8448_CLIENT_HELLO[WT_RFC8448_CLIENT_HELLO_LEN] = {{
+{c_array(client_hello)}
+}};
+#define WT_RFC8448_SERVER_HELLO_LEN {len(server_hello)}
+static const uint8_t WT_RFC8448_SERVER_HELLO[WT_RFC8448_SERVER_HELLO_LEN] = {{
+{c_array(server_hello)}
 }};
 
 #endif /* WT_RFC8448_VECTORS_H */
