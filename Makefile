@@ -1353,6 +1353,13 @@ hosted-test: engine-cli
 	  tests/storage/test_xaiboot_fs_v6.c \
 	  -o build/hosted/test-xaiboot-fs-v6
 	./build/hosted/test-xaiboot-fs-v6
+	@# B-48: the metadata commit's cost, counted at the block device, so the
+	@# figure is what the disk saw rather than a claim about what it should be.
+	$(HOST_CC) $(HOST_CFLAGS) \
+	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/dev/block_device.c \
+	  tests/storage/test_xaiboot_fs_write_cost.c \
+	  -o build/hosted/test-xaiboot-fs-write-cost
+	./build/hosted/test-xaiboot-fs-write-cost
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/dev/block_device.c \
 	  tests/storage/test_xaiboot_fs_fragmentation.c \
