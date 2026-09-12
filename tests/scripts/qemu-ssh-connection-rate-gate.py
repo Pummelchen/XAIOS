@@ -70,7 +70,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
 sys.path.insert(0, str(ROOT / "tests" / "scripts"))
-from qemu_gate_lib import qemu_boot_environment, qemu_runner, smoke_timeout
+from qemu_gate_lib import Console, qemu_boot_environment, qemu_runner, smoke_timeout
 
 REPORT = BUILD / "qemu-ssh-connection-rate-gate.json"
 ARCH = os.environ.get("XAIOS_SSH_RATE_ARCH", "aarch64")
@@ -95,66 +95,6 @@ def sshd_constant(name: str) -> int:
 LIMIT = sshd_constant("SSHD_CONNECTION_RATE_LIMIT")
 WINDOW_NS = sshd_constant("SSHD_CONNECTION_RATE_WINDOW")
 WINDOW_SECONDS = WINDOW_NS / 1_000_000_000.0
-
-
-class Console:
-    """The guest's console, read continuously and timestamped as it arrives.
-
-    B-50 asked for the host's opens timestamped against the guest's poll gaps,
-    so the order of the two is a measurement rather than an inference. Two
-    things had to change for that to be possible.
-
-    The first is that nothing read this pipe while the probes ran. Every chunk
-    the guest printed during the run therefore arrived, as far as the host
-    could tell, at the moment the drain afterwards collected it -- so there
-    were no arrival times to compare anything against.
-
-    The second matters more than the timestamps. A pipe nobody reads fills,
-    and QEMU's write to it then blocks, and a guest whose console write is
-    blocked stops doing everything else. The gap this row is about is
-    `network: stack was not polled for ms=30839`, and a gate that stops
-    reading the console for the length of its probe loop is a candidate cause
-    of exactly that. It had to be removed before the measurement could mean
-    anything, whichever way the answer goes.
-    """
-
-    def __init__(self, process) -> None:
-        self._process = process
-        self._chunks: list[tuple[float, str]] = []
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def _run(self) -> None:
-        descriptor = self._process.stdout.fileno()
-        while not self._stop.is_set():
-            ready, _, _ = select.select([descriptor], [], [], 0.2)
-            if not ready:
-                if self._process.poll() is not None:
-                    return
-                continue
-            try:
-                chunk = os.read(descriptor, 65536).decode("utf-8",
-                                                          errors="replace")
-            except OSError:
-                return
-            if not chunk:
-                return
-            with self._lock:
-                self._chunks.append((time.monotonic(), chunk))
-
-    def text(self) -> str:
-        with self._lock:
-            return "".join(chunk for _, chunk in self._chunks)
-
-    def arrivals(self) -> list[tuple[float, str]]:
-        with self._lock:
-            return list(self._chunks)
-
-    def close(self) -> None:
-        self._stop.set()
-        self._thread.join(timeout=2)
 
 
 # A gap the guest reports after the fact: the number is how long it lasted, and
