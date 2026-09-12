@@ -27,6 +27,26 @@ export XAIOS_PICOLIBC_REVISION_OVERRIDE
 
 echo "=== host ==="
 echo "  arch: $(uname -m)  cpus: $(nproc)"
+
+# This gate boots an x86-64 guest, so it needs an x86-64 userland, and an arm64
+# container cannot build one -- picolibc's configure asks gcc for -m64 and an
+# arm64 gcc has never heard of it. Saying so here is the difference between a
+# refusal and four minutes ending in a linker error nobody reads.
+#
+# XAIOS_PARITY_PLATFORM=linux/amd64 gets an x86-64 container, and on an Apple
+# Silicon Mac that is emulated: it would build, and every timing it produced
+# would be slower than a real x86-64 runner and would predict nothing. So this
+# refuses there too, and says which machine could answer.
+if [ "$(uname -m)" != x86_64 ]; then
+  printf '%s\n' \
+    "nvme-budget: INCONCLUSIVE, and the fault is this container's, not the" \
+    "  gate's: this is $(uname -m) and qemu-nvme-gate needs an x86-64 guest," \
+    "  whose userland cannot be built here (picolibc asks gcc for -m64)." \
+    "  XAIOS_PARITY_PLATFORM=linux/amd64 would build it under emulation and" \
+    "  time something slower than any real runner, which is worse than no" \
+    "  number. A budget for CI has to be measured on an x86-64 Linux host." >&2
+  exit 1
+fi
 for a in aarch64 x86_64 riscv64; do
   printf '  %s: %s\n' "$a" "$(qemu-system-$a --version 2>/dev/null | head -1)"
 done
