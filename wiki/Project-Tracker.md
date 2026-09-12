@@ -263,6 +263,112 @@ only what the defect was and what closed it.
 | B-30 | `operations-closure` blamed the wrong boot for a missing unclean record | all four | The gate killed boot 1 once it reached SSH and required boot 2 to notice. When it failed with `unclean_boots=0 boots=1` this row blamed a durability race, on the reasoning that the failing run took 72.9 s against 241.9 s so the boot must have been killed sooner. Both halves were wrong. The timing is an artefact of `run_step` measuring the whole step, which aborts after 2 of ~9 boots on failure -- the short run is the consequence, not the cause. And the record is durable at the 52% stage, hundreds of lines before sshd starts, so program order rules the race out. The clue was `boots=1` and nobody read it: `g_boots` starts at 1 and rises only from a record found on disk, so boot 2 found *no record at all* and the fault was in boot 1, which had reached SSH without ever writing one. Reproduced deliberately by giving boot 1 a state volume the kernel refuses, which falls back to memory and reaches SSH just as fast. Boot 1 now waits for the guest's own durability verdict -- `durable`, `volatile`, `unwritten` or `absent`, on the console rather than via klog, which release builds suppress -- and `operations_init` takes a `durable_storage` argument so a memory-backed record cannot report itself durable. |
 | B-32 | The CI permissions check could not see a job-level override | repository | It matched the workflow's top-level `permissions:` block and stopped at `jobs:`, so a job could grant itself anything and the check still reported the boundary as read-only. It now parses the workflow, computes each job's effective permissions under GitHub's replacement semantics, and requires every elevation above the default to be named in an allowlist inside the check -- a stale entry fails too. It parses only the subset this workflow uses and refuses to vouch for anything it cannot read, rather than passing. |
 
+## Open problems and recommended refactors
+
+Three problems are open. Each is written here with what was tried, what did not
+work, and what would actually close it, because two of the three have already
+cost more in method than in engineering.
+
+### P-1 — A connection is dropped whenever sshd's loop blocks
+
+Covers `B-43`, `B-63`, and the structural half of `B-44`.
+
+**Mechanism, established.** The network stack is polled only from sshd's service
+loop. While that loop is inside any blocking call, nothing processes packets:
+the peer waits, gives up at its own patience (about 18s for the macOS client),
+and the connection surfaces much later as `packet-read-failed` or
+`auth-timeout`. Three independent clocks agree on each outage -- `network:
+longest gap between polls us=9069149` from the stack, `service loop stalled
+ms=9101 phase=connections` from sshd, and `held_ms=9333` from the connection --
+against a next-largest gap of 143 ms in the same run.
+
+**What blocked the loop.** `ssh_log()` wrote every line straight to the durable
+volume, and a xaibootfs append carries `blk_flush()`, which is a virtio flush and
+therefore a host fsync. A connection produces about five log lines, so sshd paid
+five host fsyncs per connection inside the only loop that moves packets.
+
+**What was tried, and what it was worth:**
+
+| Attempt | Outcome |
+|---|---|
+| Three Fusion load soaks, ~26,000 round trips | Soak 1 reproduced three times; soaks 2 and 3 reproduced nothing. As a *diagnostic* this failed -- the mechanism was stated in a comment directly above the offending lines. |
+| Following stranded sockets by number rather than by clock | Worked. The close lands 30-120s late, so a per-round window attributes it to the wrong round. This is why the row read "the guest never saw it" for so long. |
+| A kernel line at flow release when `rx_unread > 0` or `packets_rx == 0` | Worked, and fired on CI rather than in the soak. Silent on healthy traffic: 0 of 280 releases printed. |
+| `durable_ms` on the stall line, per pass | Worked. At millisecond scale the durable write is ~90% of every stall this machine produces. |
+| Buffering audit records; draining only when half full | Worked. Five fsyncs per connection became **0.041**, and blocking time for 121 connections fell from 1324 ms to 89 ms. |
+
+**Ruled out, each of which would have been a reasonable place to start:** the
+socket-to-flow map never ran out (`B-47`'s mechanism -- the one exhaustion line
+in a 33 MB console is its own self-test); sshd's loop was not asleep (it waits at
+most 50 ms and accepts four per pass); the server was not wedged (a `DEBUG3`
+probe connected in 0.08s immediately after each failure); there was no drop or
+retransmit storm (one `retransmit=6` line in the whole console, early, nowhere
+near a failure); and the guest was not being descheduled by a loaded host (zero
+wait overruns in a run with three multi-second stalls, and that wait is the
+longest single call in the loop).
+
+**Why it is still open.** Everything above narrows the window. None of it closes
+it: one fsync can still stall for seconds on a host whose disk does, and the
+guest has no networking for the duration. **Recommended refactor is `OD-011`** --
+the network needs a poll that does not depend on sshd's loop, and both ways of
+getting one are decisions about the machine's execution model rather than
+refactors anyone should make silently.
+
+**Reproduction, for whoever takes it:** CI is far better at this than the local
+soak -- roughly one run in six to eight against three in 7138 rounds on Fusion,
+none in 7235, none in 11690. The Debian 13 interoperability job is where it
+lands. Running the soak again is the least likely thing to work.
+
+### P-2 — A gate that outlasts its budget cannot report its own failure
+
+Covers `B-39`, and retrospectively explains `B-72`.
+
+`qemu-core-os-rc` kills each step at its budget; the gates it runs have budgets
+of their own, and `smoke_timeout` multiplies the RISC-V ones by four. Where the
+gate's wait was longer than the step's budget, the aggregate killed it first and
+printed `exited 124` with no architecture, no phase and no reason.
+
+Two steps had it. `fragmentation` waited 720s for a RISC-V boot inside 360 --
+that is B-39, whose only evidence is one run that took at least 3.7x its usual
+time and could be recorded as nothing but a timeout. `nvme` waited 1440s inside
+900, which is why B-72 read as an anonymous timeout for two runs and why raising
+its budget worked: it gave the gate back the ability to name the row.
+
+Fixed in both, and `check-aggregate-budgets.py` now fails on either -- exercised
+in both directions before it was wired in. **Residual worth knowing:** that check
+reads two spellings of a wait out of gate source and cannot see a wait built any
+other way, which its own docstring states. **Recommended refactor:** gates should
+derive their wait from the budget they are given rather than choosing one
+independently, at which point the inversion becomes unrepresentable and the check
+becomes unnecessary.
+
+### P-3 — This Mac cannot see what the runner sees
+
+Nine defects (`B-65` through `B-73`) were invisible here and immediate on Linux:
+a firmware path defaulting to `/opt/homebrew` and nothing else, `dd bs=1m`,
+mtools missing from a job, a job with no RISC-V emulator, small-data sections
+clang 18 emits and clang 23 does not, an argument silently discarded, a make
+target that built half a machine, a truncated number read mid-arrival, and an
+MSI-X interrupt QEMU 8.2.2 never delivers.
+
+**What worked:** `tests/linux-parity` reproduces in about a minute what used to
+take a push and a wait. Better still, three of the nine now have static checks --
+`check-riscv-firmware-paths.py`, `check-portable-dd.py`,
+`check-aggregate-budgets.py` -- which catch the whole class without booting
+anything.
+
+**What did not work, and is a real limit:** the parity container is arm64 and the
+runner is x86_64. It cannot build an x86-64 userland at all (picolibc asks gcc
+for `-m64`), and running it under emulated amd64 produces timings slower than any
+real runner, so it predicts nothing. Three gates were once "reproduced" failing
+there and all three had died on that build, saying nothing about CI. Every run
+now prints the platform it ran on.
+
+**Recommended:** an x86_64 Linux host for parity. One already exists -- the Intel
+qualification host in `Platform recommendations` -- and pointing
+`tests/linux-parity` at it would close the gap that `nvme-budget.sh` currently
+refuses to guess at.
+
 ## What ships, and how far along it is
 
 Three bootable deliveries, and the engineering each one waits on. Status is
@@ -435,6 +541,7 @@ qualification evidence.
 | OD-008 | Pin official Kimi/DeepSeek sources | `BLOCKED` | Corresponding adapters; DeepSeek exact label is unresolved. |
 | OD-009 | Select expert-parallel interconnect and failure/ownership model | `NOT STARTED` | Cluster inference. |
 | OD-010 | Define names, quality reporting, telemetry, and acceptance for opt-in approximate modes | `NOT STARTED` | Any approximate mode. |
+| OD-011 | Choose how the network is polled when sshd's loop is busy: a timer cadence (needs the stack made interrupt-safe -- `xaios_reentrant_lock` identifies its holder by CPU id and forbids interrupt context -- and preemption restored) or a dedicated thread (costs one of three worker CPUs permanently, since the scheduler runs one thread to completion per worker) | `NOT STARTED` | Closing P-1. Until then every blocking call in sshd's loop is a window with no networking, narrowed to about one fsync per twenty-four connections and not removed. |
 
 ## Risk register
 
