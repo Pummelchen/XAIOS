@@ -188,6 +188,15 @@ else
   # and reported an old kernel's behaviour. That cost a run to find -- a
   # freshly built guest answering "command not found" for a program that was
   # in the image it had just been given.
+  # Named rather than left to `cp`, for the reason given at the models volume
+  # above: a missing host file reported as a guest that would not boot.
+  if [ "$dry_run" -eq 0 ] && [ ! -f "$RISCV_SYSTEM" ]; then
+    printf '%s\n' \
+      "error: $RISCV_SYSTEM is missing, so this machine has no A/B system" \
+      "       volume to boot. Nothing has gone wrong in the guest; it has not" \
+      "       been started. Run: ./scripts/build-riscv64-image.sh" >&2
+    exit 1
+  fi
   if [ "$dry_run" -eq 0 ] &&
      { [ ! -f "$SYSTEM_IMAGE" ] || [ "$RISCV_SYSTEM" -nt "$SYSTEM_IMAGE" ]; }; then
     cp "$RISCV_SYSTEM" "$SYSTEM_IMAGE"

@@ -571,3 +571,24 @@ if [ ! -f "$XAI_FS_IMAGE" ]; then
     "$ROOT_DIR/tests/xai_fs/create_c_fixture.py" "$XAI_FS_IMAGE"
   printf '%s\n' "Created $XAI_FS_IMAGE"
 fi
+
+# The signed A/B system volume, for the same reason and with the same history.
+#
+# It was produced only by build-riscv64-boot-media.sh, which the RISC-V CI job
+# does not run, and run-qemu-riscv64.sh copies it with a bare `cp`. So fixing
+# the models volume above moved the failure one line down rather than removing
+# it: the next CI run died on this file instead, with the same shape of error
+# and the same misleading report of a guest that would not boot.
+#
+# These are the two volumes the runner needs and the build did not make. The
+# other three it reads are either produced here already, optional, or created
+# by the runner itself when absent.
+SYSTEM_VOLUME="$ROOT_DIR/build/xaios-riscv64-system.img"
+RISCV_KERNEL="$ROOT_DIR/build/kernel-riscv64/kernel.elf"
+if [ ! -f "$SYSTEM_VOLUME" ] && [ -f "$RISCV_KERNEL" ]; then
+  printf '%s\n' "Creating signed A/B system volume: $SYSTEM_VOLUME"
+  PYTHONPATH="$ROOT_DIR" "$PYTHON3" "$ROOT_DIR/tools/xaios_system_volume.py" \
+    create "$SYSTEM_VOLUME" "$RISCV_KERNEL"
+  PYTHONPATH="$ROOT_DIR" "$PYTHON3" "$ROOT_DIR/tools/xaios_system_volume.py" \
+    verify "$SYSTEM_VOLUME"
+fi
