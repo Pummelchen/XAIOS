@@ -15,7 +15,9 @@
  */
 
 #include "wt_tls_handshake.h"
+#include "wt_quic_pkt.h"
 #include "wt_rfc8448_vectors.h"
+#include "wt_rfc9001_vectors.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -1005,6 +1007,192 @@ static void test_parse_then_schedule(void) {
   wt_tls_secrets_clear(&secrets);
 }
 
+/* ------------------------------------------------- the whole send path
+ *
+ * Build a ClientHello with the builder, wrap it in a CRYPTO frame, put that in
+ * a QUIC Initial packet, protect it with RFC 9001's published Initial keys, and
+ * recover it -- all the way back to the ClientHello that went in.
+ *
+ * This is the first place the modules are used together in the direction a
+ * client actually uses them. RFC 9001's Initial keys are keyed on the
+ * connection ID the packet carries, so the packet is built with the RFC's
+ * header and keys; the ClientHello inside it is this module's own, which is not
+ * the message RFC 9001 protects (that one is a different trace). The check is
+ * therefore a round trip through real key material rather than a comparison
+ * with RFC 9001's bytes -- which is what the packet module's own tests do with
+ * RFC 9001's actual message.
+ */
+static void test_client_hello_through_initial_protection(void) {
+  static const uint16_t cipher_suites[1] = {0x1301};
+  static const uint16_t groups[1] = {0x001d};
+  static const uint16_t signature_algorithms[1] = {0x0403};
+  static const uint8_t h3[3] = {0x02, 0x68, 0x33};
+  static uint8_t hello[512];
+  static uint8_t packet[1500];
+  static uint8_t recovered[1500];
+  wt_tls_key_share_t share;
+  wt_tls_client_hello_params_t params;
+  wt_tls_traffic_keys_t keys;
+  wt_quic_packet_header_t header;
+  size_t hello_len;
+  size_t frame_len;
+  size_t packet_len = 0U;
+  size_t plaintext_len = 0U;
+  size_t header_len = 22U;
+
+  /* A ClientHello with a real ALPN and a real key share. The public key is the
+     RFC's, because generating one would make the test depend on the random
+     source; what is under test is the framing and the protection, not the
+     key generation. */
+  share.group = 0x001d;
+  share.public_key = WT_RFC8448_CLIENT_KEY_PUBLIC;
+  share.public_key_len = sizeof(WT_RFC8448_CLIENT_KEY_PUBLIC);
+  memset(&params, 0, sizeof(params));
+  params.random = WT_RFC8448_CLIENT_RANDOM;
+  params.cipher_suites = cipher_suites;
+  params.cipher_suite_count = 1U;
+  params.key_shares = &share;
+  params.key_share_count = 1U;
+  params.supported_groups = groups;
+  params.supported_group_count = 1U;
+  params.signature_algorithms = signature_algorithms;
+  params.signature_algorithm_count = 1U;
+  params.alpn_protocols = h3;
+  params.alpn_protocols_len = sizeof(h3);
+  params.server_name = "server";
+
+  hello_len = wt_tls_encode_client_hello(&params, hello, sizeof(hello));
+  g_checks++;
+  if (hello_len == 0U) {
+    g_failures++;
+    printf("FAIL the ClientHello could not be built\n");
+    return;
+  }
+
+  /* The CRYPTO frame: type 0x06, a three-byte offset of zero, a three-byte
+     length, then the handshake message. RFC 9000 section 19.6. */
+  {
+    size_t offset = 0U;
+    packet[header_len + offset] = 0x06U;
+    offset++;
+    packet[header_len + offset] = 0x00U;
+    packet[header_len + offset + 1U] = 0x00U;
+    packet[header_len + offset + 2U] = 0x00U;
+    offset += 3U;
+    packet[header_len + offset] = (uint8_t)((hello_len >> 16) & 0xFFU);
+    packet[header_len + offset + 1U] = (uint8_t)((hello_len >> 8) & 0xFFU);
+    packet[header_len + offset + 2U] = (uint8_t)(hello_len & 0xFFU);
+    offset += 3U;
+    memcpy(packet + header_len + offset, hello, hello_len);
+    offset += hello_len;
+    frame_len = offset;
+  }
+
+  /* RFC 9001's client Initial header and keys. The header is the one the RFC
+     prints, so the connection ID matches the keys. */
+  memcpy(packet, WT_RFC9001_CLIENT_HEADER, header_len);
+  /* The length field must describe the frames plus the AEAD tag. It is bytes
+     16 and 17 of this header (after the four-byte version, the one-byte DCID
+     length, the eight-byte DCID, the one-byte SCID length, the zero-length SCID
+     and the one-byte token length): the header the RFC prints already carries a
+     length for its own payload, so it is recomputed here for this one. */
+  {
+    size_t payload = frame_len + 16U;
+    packet[16] = (uint8_t)((payload >> 8) & 0xFFU);
+    packet[17] = (uint8_t)(payload & 0xFFU);
+  }
+
+  memset(&keys, 0, sizeof(keys));
+  memcpy(keys.key, WT_RFC9001_CLIENT_KEY, 16);
+  memcpy(keys.iv, WT_RFC9001_CLIENT_IV, 12);
+  memcpy(keys.hp, WT_RFC9001_CLIENT_HP, 16);
+  keys.key_len = 16U;
+  keys.hp_len = 16U;
+
+  header.bytes = packet;
+  header.len = header_len;
+  header.pn_offset = 18U;
+  header.pn_len = 4U;
+  header.long_header = 1;
+
+  expect_int("protect the ClientHello Initial", 0,
+             wt_quic_protect_packet(WT_TLS_AEAD_AES_128_GCM, &keys, &header,
+                                    UINT64_C(2), packet,
+                                    header_len + frame_len, &packet_len));
+  expect_int("the protected packet is the header, the frames and a tag",
+             (long)(header_len + frame_len + 16U), (long)packet_len);
+  /* Nothing of the ClientHello may be readable on the wire. */
+  {
+    int leaked = 0;
+    for (size_t i = header_len + 7U; i < packet_len - 16U; i++) {
+      /* The key share's first byte is distinctive enough for this check. */
+      if (packet[i] == WT_RFC8448_CLIENT_KEY_PUBLIC[0] &&
+          i + 4U < packet_len &&
+          packet[i + 1U] == WT_RFC8448_CLIENT_KEY_PUBLIC[1]) {
+        leaked = 1;
+      }
+    }
+    expect_int("the ClientHello is not readable in the protected packet", 0,
+               leaked);
+  }
+
+  /* And back. */
+  {
+    wt_quic_packet_header_t rx;
+    uint64_t pn = 0U;
+    uint64_t truncated = 0U;
+    rx.bytes = packet;
+    rx.len = header_len;
+    rx.pn_offset = 18U;
+    rx.pn_len = 4U;
+    rx.long_header = 1;
+
+    expect_int("remove header protection", 0,
+               wt_quic_header_protection(WT_TLS_AEAD_AES_128_GCM, keys.hp, 16U,
+                                         &rx, packet, packet_len));
+    for (size_t i = 0U; i < 4U; i++) {
+      truncated = (truncated << 8) | packet[18U + i];
+    }
+    expect_int("recover the packet number", 0,
+               wt_quic_decode_packet_number(truncated, 4U, 0U, &pn));
+    expect_int("the packet number is 2", 2, (long)pn);
+    expect_int("unprotect the packet", 0,
+               wt_quic_unprotect_packet(WT_TLS_AEAD_AES_128_GCM, &keys, &rx,
+                                        pn, packet, packet_len, recovered,
+                                        sizeof(recovered), &plaintext_len));
+  }
+
+  /* The recovered CRYPTO frame must carry the ClientHello that went in. */
+  expect_int("the recovered payload is the frame", (long)frame_len,
+             (long)plaintext_len);
+  expect_int("the frame is a CRYPTO frame", 0x06, recovered[0]);
+  expect_int("its offset is zero", 0, (long)(recovered[1] | recovered[2] |
+                                             recovered[3]));
+  {
+    size_t declared = ((size_t)recovered[4] << 16) |
+                      ((size_t)recovered[5] << 8) | (size_t)recovered[6];
+    expect_int("its declared length is the ClientHello's", (long)hello_len,
+               (long)declared);
+  }
+  expect_bytes("the ClientHello survived the round trip", hello,
+               recovered + 7U, hello_len);
+
+  /* And it is the same message the transcript would absorb. */
+  {
+    wt_tls_transcript_t transcript;
+    uint8_t hash[WT_TLS_HASH_LEN];
+    expect_int("transcript_init", 0, wt_tls_transcript_init(&transcript));
+    expect_int("absorb the recovered ClientHello", 0,
+               wt_tls_transcript_absorb(&transcript, recovered + 7U, hello_len));
+    expect_int("hash it", 0, wt_tls_transcript_hash(&transcript, hash));
+    g_checks++;
+    if (memcmp(hash, wt_tls_empty_hash, WT_TLS_HASH_LEN) == 0) {
+      g_failures++;
+      printf("FAIL the recovered ClientHello hashed to nothing\n");
+    }
+  }
+}
+
 int main(void) {
   test_handshake_framing();
   test_transcript();
@@ -1012,6 +1200,7 @@ int main(void) {
   test_server_hello_parse();
   test_finished();
   test_parse_then_schedule();
+  test_client_hello_through_initial_protection();
 
   if (g_failures != 0) {
     printf("wt_tls_handshake: %d of %d checks FAILED\n", g_failures, g_checks);
