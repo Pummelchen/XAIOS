@@ -1187,6 +1187,27 @@ compile-check: libc
 	    -fsyntax-only "$$f" \
 	    || failed=$$((failed + 1)); \
 	done; \
+	@# The other arm of every `#if XAIOS_BOOT_TEST_APPS` in the kernel.
+	@#
+	@# Every leg above compiles the default configuration, in which that
+	@# macro is 0 because the files default it with `#ifndef`. What the
+	@# gates actually boot is `make image-qemu-test`, which sets it to 1 --
+	@# and `remote_login.c` alone switches nine regions on it. So the
+	@# configuration that ships was compiled nowhere in this target, and a
+	@# format string reachable only there got past this check and past a
+	@# local sweep of it (B-95). A check that compiles a configuration
+	@# nobody boots and calls the tree clean is the failure mode this
+	@# repository already names as worse than having no check at all.
+	for f in $$(find kernel -name '*.c' ! -path '*/x86_64/*' ! -path '*/riscv64/*'); do \
+	  clang --target=aarch64-none-elf -std=c99 -ffreestanding \
+	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+	    -Wall -Wextra -Werror -DXAIOS_BOOT_TEST_APPS=1 \
+	    -DXAIOS_BUILD_NUMBER=$$(cat BUILD_NUMBER) \
+	    -Ikernel/include -Iengine/include \
+	    -Iengine/src -Iuserspace/include -Iuserspace/sshd -Ithird_party/bearssl/inc \
+	    -fsyntax-only "$$f" \
+	    || failed=$$((failed + 1)); \
+	done; \
 	for f in $$(find kernel/arch/riscv64 -name '*.c'); do \
 	  clang --target=riscv64-unknown-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -mno-relax -march=rv64gc -mabi=lp64d \

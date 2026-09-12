@@ -1155,7 +1155,7 @@ static xaios_status_t handle_ls(const char *args, char *output,
        (list_status != XAIOS_ERR_NO_MEMORY || listing_size == 0U)) ||
       listing_size > sizeof(listing)) {
     klog(
-        "remote-login: ls path=%s list_status=%lu listing_size=%lu capacity=%lu\n",
+        "remote-login: ls path=%s list_status=%d listing_size=%lu capacity=%lu\n",
         resolved, list_status, listing_size, (uint64_t)sizeof(listing));
     remote_login_log_failure("ls", "list-failed", list_status);
     return command_fail(output, output_capacity, output_bytes, "ls: not found");
