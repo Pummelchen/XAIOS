@@ -1305,6 +1305,11 @@ hosted-test: engine-cli
 	  -o build/hosted/test-xaiboot-fs-fragmentation
 	./build/hosted/test-xaiboot-fs-fragmentation
 	$(HOST_CC) $(HOST_CFLAGS) \
+	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/dev/block_device.c \
+	  tests/storage/test_xaiboot_fs_large_volume.c \
+	  -o build/hosted/test-xaiboot-fs-large-volume
+	./build/hosted/test-xaiboot-fs-large-volume
+	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Iuserspace/include -Iuserspace/sshd -Iuserspace/apps/terminal \
 	  -Ikernel/include \
 	  userspace/sshd/sftp_server.c tests/storage/test_sftp_large.c \

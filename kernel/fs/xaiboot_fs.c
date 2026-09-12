@@ -1308,8 +1308,18 @@ static xaios_status_t write_journal(xaios_xbfs_journal_t *journal) {
   return XAIOS_OK;
 }
 
-static uint64_t absolute_data_sector(uint16_t block_index) {
-  return active_data_start_sector() + (uint64_t)block_index;
+/* The block index is 64-bit because the volume is.
+ *
+ * This took a uint16_t, which stops at 65535 -- block 65536 is 32 MiB in, and
+ * a v6 volume is allowed a gibibyte. Every caller already passed a uint64_t
+ * taken from an extent, so the conversion happened silently at the call and
+ * the sector number wrapped: a read or a write past 32 MiB went to a sector
+ * near the start of the data region instead, hitting whatever was there. No
+ * error, no short count, the wrong bytes. Nothing reachable by the v5 volumes
+ * anything currently boots, which is why it sat here; v6 volumes are the ones
+ * that can grow into it. See B-49. */
+static uint64_t absolute_data_sector(uint64_t block_index) {
+  return active_data_start_sector() + block_index;
 }
 
 /* Claim enough blocks for a file, as few runs as possible.
