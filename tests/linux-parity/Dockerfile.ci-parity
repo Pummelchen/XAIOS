@@ -18,6 +18,11 @@
 # The second line of packages is not for building XAIOS. The RISC-V CPU tier
 # matrix needs a QEMU newer than noble ships, so CI builds one; these are what
 # that build needs, and they are here so the parity image can build it too.
+#
+# The third line is the release-images job: xorriso builds the hybrid images,
+# and the UEFI firmwares are what the shipped images boot through. Without
+# them this image could reproduce the boot gates but not the release ones, and
+# the release ones are where a shipped file either works or does not.
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
@@ -25,6 +30,7 @@ RUN apt-get update && apt-get install -y \
       python3-cryptography git make ca-certificates xz-utils zip \
       build-essential libfdt-dev libglib2.0-dev libpixman-1-dev libslirp-dev \
       pkg-config python3-venv zlib1g-dev \
+      qemu-efi-riscv64 qemu-efi-aarch64 ovmf xorriso \
   && rm -rf /var/lib/apt/lists/*
 
 # The runner's image carries other qemu packages, which populate /usr/share/qemu

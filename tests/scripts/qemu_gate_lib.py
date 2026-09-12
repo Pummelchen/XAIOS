@@ -6,7 +6,7 @@ import re
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple, Optional
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -521,6 +521,54 @@ def _replay(data: bytes, columns: int, rows: int,
             if column >= columns:
                 column = columns - 1
     frames.append(["".join(line).rstrip() for line in grid])
+
+
+# Where EDK2's RISC-V firmware lives, in the order to look.
+#
+# B-67: the RISC-V runner defaulted to the Homebrew path alone, so every UEFI
+# boot on Linux failed before QEMU started and the release gate reported three
+# absent markers -- which reads like a kernel that did not boot, when nothing
+# had booted at all. The gates that drive QEMU themselves had the same gap in
+# a milder form: they listed /usr/share/qemu/edk2-riscv-code.fd, which is not
+# where Debian puts it either, so on the distribution CI runs on they skipped.
+# A gate that skips is not a gate that passed.
+#
+# The names genuinely differ per platform: Homebrew ships edk2-riscv-*.fd,
+# Debian's qemu-efi-riscv64 ships RISCV_VIRT_CODE.fd and RISCV_VIRT_VARS.fd.
+# platform/qemu/run-qemu-riscv64.sh carries the same list in shell, and
+# tests/repository/check-riscv-firmware-paths.py keeps the two in step.
+RISCV_FIRMWARE_CODE = (
+    "/opt/homebrew/share/qemu/edk2-riscv-code.fd",
+    "/usr/local/share/qemu/edk2-riscv-code.fd",
+    "/usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd",
+    "/usr/share/qemu/edk2-riscv-code.fd",
+    "/usr/share/edk2/riscv/RISCV_VIRT_CODE.fd",
+)
+RISCV_FIRMWARE_VARS = (
+    "/opt/homebrew/share/qemu/edk2-riscv-vars.fd",
+    "/usr/local/share/qemu/edk2-riscv-vars.fd",
+    "/usr/share/qemu-efi-riscv64/RISCV_VIRT_VARS.fd",
+    "/usr/share/qemu/edk2-riscv-vars.fd",
+    "/usr/share/edk2/riscv/RISCV_VIRT_VARS.fd",
+)
+
+
+def riscv_firmware(kind: str) -> Optional[str]:
+    """The first RISC-V firmware file of `kind` ("code" or "vars") that exists.
+
+    An explicit XAIOS_RISCV64_FIRMWARE_CODE / _VARS wins, as it does in the
+    runner, so firmware in an unusual place is a variable and not a patch.
+    """
+    variable = f"XAIOS_RISCV64_FIRMWARE_{kind.upper()}"
+    override = os.environ.get(variable)
+    if override:
+        return override if os.path.isfile(override) else None
+    candidates = {"code": RISCV_FIRMWARE_CODE,
+                  "vars": RISCV_FIRMWARE_VARS}[kind]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return None
 
 
 def qemu_runner(arch: str) -> str:
