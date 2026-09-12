@@ -1274,13 +1274,36 @@ void admin_control_self_test(void) {
   kassert(host_key_entropy_gate() == XAIOS_ADMIN_RESULT_DENIED);
   (void)entropy_swap_source_for_test(XAIOS_ENTROPY_SOURCE_NONE);
   kassert(host_key_entropy_gate() == XAIOS_ADMIN_RESULT_DENIED);
-  (void)entropy_swap_source_for_test(XAIOS_ENTROPY_SOURCE_DEVICE_RNG);
-  kassert(host_key_entropy_gate() == XAIOS_ADMIN_RESULT_OK);
-  (void)entropy_swap_source_for_test(XAIOS_ENTROPY_SOURCE_FIRMWARE_RNG);
-  kassert(host_key_entropy_gate() == XAIOS_ADMIN_RESULT_OK);
-  (void)entropy_swap_source_for_test(restore);
-  klog("admin-control: host-key rotation refuses development-grade entropy "
-       "and permits a real source\n");
+
+  /* The other half -- that a real source is permitted -- is only askable on a
+     machine that has one.
+     entropy_swap_source_for_test moves the label and nothing else, and
+     entropy_is_production_grade also requires a pool that was actually seeded.
+     On a machine with no random device the pool never is, so swapping in a
+     production-grade label produces a machine that still refuses, correctly,
+     and this used to assert that it would not. It killed the guest at boot on
+     the one configuration F-05 exists to describe: `make
+     qemu-docker-no-rng-suite` starts a machine with no RNG on purpose, and it
+     panicked here instead of coming up and declining to mint.
+     So the permit half is asserted where it can be, and its absence is
+     reported rather than skipped quietly -- a machine with no entropy is
+     supposed to say so. */
+  if (entropy_is_seeded() != 0U) {
+    (void)entropy_swap_source_for_test(XAIOS_ENTROPY_SOURCE_DEVICE_RNG);
+    kassert(host_key_entropy_gate() == XAIOS_ADMIN_RESULT_OK);
+    (void)entropy_swap_source_for_test(XAIOS_ENTROPY_SOURCE_FIRMWARE_RNG);
+    kassert(host_key_entropy_gate() == XAIOS_ADMIN_RESULT_OK);
+    (void)entropy_swap_source_for_test(restore);
+    klog("admin-control: host-key rotation refuses development-grade entropy "
+         "and permits a real source\n");
+  } else {
+    (void)entropy_swap_source_for_test(XAIOS_ENTROPY_SOURCE_DEVICE_RNG);
+    kassert(host_key_entropy_gate() == XAIOS_ADMIN_RESULT_DENIED);
+    (void)entropy_swap_source_for_test(restore);
+    klog("admin-control: host-key rotation refuses development-grade entropy; "
+         "this machine has no seeded entropy pool, so it refuses a real source "
+         "label too and the permit half is not askable here\n");
+  }
 
   klog("admin-control: self-test passed schema=1 invalid=1 principal=2 "
        "transactional=1\n");

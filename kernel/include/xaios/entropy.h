@@ -15,6 +15,7 @@ void entropy_self_test(void);
 /* Where the current seed came from (XAIOS_ENTROPY_SOURCE_* in boot_info.h),
    and whether it is fit for a secret that has to outlive this boot. */
 uint32_t entropy_source(void);
+uint32_t entropy_is_seeded(void);
 uint32_t entropy_is_production_grade(void);
 /* Self-tests only, and only in matched pairs: see entropy.c. */
 uint32_t entropy_swap_source_for_test(uint32_t source);

@@ -197,6 +197,16 @@ uint32_t entropy_swap_source_for_test(uint32_t source) {
    anyone holding that image already has. This is the question F-05 exists to
    make askable; what an operator does about the answer -- which entropy
    source to provision, and how -- remains theirs to decide. */
+/* Whether the pool was ever seeded at all.
+ *
+ * Separate from the source label, and it has to be: a machine with no random
+ * device never seeds, and entropy_swap_source_for_test changes only the label.
+ * A self-test that swapped in a production-grade label on an unseeded pool and
+ * then asserted the machine would mint a key was asserting something that
+ * cannot be true, and it took the machine down at boot on exactly the
+ * configuration F-05 is about. See admin_control.c. */
+uint32_t entropy_is_seeded(void) { return g_entropy.seeded != 0U; }
+
 uint32_t entropy_is_production_grade(void) {
   /* A random device on the bus counts. It is not the firmware's word, but it
      is a source the machine asked for and received, which is the distinction
