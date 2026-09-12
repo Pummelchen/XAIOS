@@ -378,6 +378,29 @@ def smoke_command(arch: str) -> List[str]:
     return command
 
 
+def timeout_scale() -> float:
+    """How much slower this machine is than the one the budgets were written on.
+
+    Budgets scaled by architecture and by nothing else, which is half the
+    question. The other half is the host: a GitHub runner has no hardware
+    virtualisation, so every guest is interpreted and everything takes several
+    times longer than it does on the Mac these numbers came from. The
+    fragmentation step is the example -- 96 to 98 seconds here across five
+    consecutive runs, and past its 360-second budget on every CI run.
+
+    Declared rather than detected. A gate that guesses at its host will
+    eventually guess wrong and silently give itself more room, which is how a
+    budget stops meaning anything; an environment that knows it is slow says so.
+    """
+    raw = os.environ.get("XAIOS_GATE_TIMEOUT_SCALE", "1")
+    try:
+        scale = float(raw)
+    except ValueError:
+        return 1.0
+    # A scale below 1 would tighten budgets, which is not what this is for.
+    return scale if scale >= 1.0 else 1.0
+
+
 def smoke_timeout(arch: str, base: int) -> int:
     """A budget scaled to the machine rather than to the fastest one.
 
@@ -385,7 +408,8 @@ def smoke_timeout(arch: str, base: int) -> int:
     acceleration available for it. Gates were written with AArch64's numbers,
     and reusing them would report a slower machine as a broken one.
     """
-    return base * 4 if arch == "riscv64" else base
+    scaled = base * 4 if arch == "riscv64" else base
+    return int(scaled * timeout_scale())
 
 
 # ------------------------------------------------------- reading a screen

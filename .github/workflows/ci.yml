@@ -9,6 +9,18 @@ on:
 permissions:
   contents: read
 
+# Every budget in tests/ was written on an Apple-silicon Mac. A GitHub runner
+# has no hardware virtualisation, so each guest is interpreted and the same work
+# takes several times longer: the outbound-fragmentation step runs in 96 to 98
+# seconds there, across five consecutive runs, and exceeded its 360-second
+# budget on every run here.
+#
+# Declared rather than detected. A gate that sniffs at its host will eventually
+# guess wrong and quietly give itself more room, and a budget that moves on its
+# own has stopped being a budget. See qemu_gate_lib.timeout_scale.
+env:
+  XAIOS_GATE_TIMEOUT_SCALE: "3"
+
 jobs:
   hosted-c99-libc:
     name: Hosted C99 libc (ARM64 and x86_64)
@@ -416,7 +428,9 @@ jobs:
   core-os-release-candidate:
     name: Core OS Aggregate RC
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    # Above the sum the steps can actually use, so a step that hangs is killed
+    # by its own budget and named, rather than taking the job down anonymously.
+    timeout-minutes: 90
     steps:
       # Full history, for the same reason as the Documentation Contract job:
       # this aggregate runs docs-check, and the review-date comparison inside

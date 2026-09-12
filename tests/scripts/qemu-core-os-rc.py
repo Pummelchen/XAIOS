@@ -4,7 +4,7 @@ import os
 import subprocess
 import time
 
-from qemu_gate_lib import BUILD, ROOT, check_markers, run
+from qemu_gate_lib import BUILD, ROOT, check_markers, run, timeout_scale
 
 # A step past this fraction of its budget is reported as a note. It is not a
 # failure -- the step passed -- but it is the one that times out next on a
@@ -255,7 +255,14 @@ def main() -> int:
     # Every step now records its own elapsed time, its budget and the load
     # either side of it, whether it passed or not. A recurrence describes
     # itself.
-    for name, command, timeout in COMMANDS:
+    for name, command, base_timeout in COMMANDS:
+        # The budgets above were written on this Mac. A host with no hardware
+        # virtualisation interprets every guest and needs several times longer
+        # for the same work -- the fragmentation step runs in 96 to 98 seconds
+        # here and exceeds its 360-second budget on every CI run. The scale is
+        # declared by the environment rather than guessed at; see
+        # qemu_gate_lib.timeout_scale.
+        timeout = int(base_timeout * timeout_scale())
         timed_out = False
         load_start = os.getloadavg()[0]
         started = time.monotonic()
