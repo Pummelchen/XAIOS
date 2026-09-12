@@ -244,6 +244,15 @@ static uint64_t g_audit_write_ns;
    and one write of nine seconds is a dropped connection. Averages hide exactly
    the tail this is about. */
 static uint64_t g_audit_write_max_ns;
+/* Durable nanoseconds inside the pass currently running, reset at the top of
+   each one. B-63: a stall says which phase it was in and not what the phase
+   was doing, and the run-long total cannot answer that -- 1020 writes at 34 ms
+   and one nine-second pass are the same number until they are separated. If a
+   stalled pass reports durable time close to its own length, the audit write is
+   the cause; if it reports nearly none, the time is going somewhere else in
+   that phase and this rules out the obvious suspect in one reproduction rather
+   than several. */
+static uint64_t g_pass_durable_ns;
 static uint32_t g_key_load_calls;
 static uint32_t g_key_load_file_reads;
 static uint64_t g_key_load_ns;
@@ -252,6 +261,7 @@ static uint64_t g_key_load_ns;
 static void record_durable_ns(uint64_t started) {
   uint64_t elapsed = xaios_clock_nanos() - started;
   g_audit_write_ns += elapsed;
+  g_pass_durable_ns += elapsed;
   if (elapsed > g_audit_write_max_ns) g_audit_write_max_ns = elapsed;
 }
 
@@ -580,7 +590,7 @@ static void report_service_loop_stall(uint64_t started, uint64_t after_console,
   }
 
   ++g_loop_stall_count;
-  char line[224];
+  char line[288];
   u64 offset = 0;
   xaios_memzero(line, sizeof(line));
   xaios_append_cstr(line, sizeof(line), &offset,
@@ -595,6 +605,9 @@ static void report_service_loop_stall(uint64_t started, uint64_t after_console,
   xaios_append_u64(line, sizeof(line), &offset,
                    __atomic_load_n(&g_server_stats.active_connections,
                                    __ATOMIC_ACQUIRE));
+  xaios_append_cstr(line, sizeof(line), &offset, " durable_ms=");
+  xaios_append_u64(line, sizeof(line), &offset,
+                   g_pass_durable_ns / UINT64_C(1000000));
   xaios_append_cstr(line, sizeof(line), &offset, " count=");
   xaios_append_u64(line, sizeof(line), &offset, g_loop_stall_count);
   xaios_append_cstr(line, sizeof(line), &offset, "\n");
@@ -3470,6 +3483,9 @@ service_loop:
   console_render_boot_status();
   for (;;) {
     uint64_t pass_started = timer_now();
+    /* Per pass, so a stall reports what this pass spent on the durable volume
+       rather than what every pass has spent since boot. */
+    g_pass_durable_ns = 0;
     uint64_t now = pass_started;
     console_refresh_boot_ui(now);
     console_service_pong(now);
