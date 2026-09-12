@@ -101,6 +101,24 @@ def extract_field(lines: list[str], marker: str, field: str,
         f"labels have changed and the extracted vectors would be wrong")
 
 
+def hkdf_expand_label(secret: bytes, label: str, context: bytes,
+                      length: int) -> bytes:
+    """HKDF-Expand-Label (RFC 8446 section 7.1), used only to reproduce the
+    Finished MAC as a validation of the extracted messages."""
+    import hashlib
+    import hmac as hmac_module
+    full_label = b"tls13 " + label.encode()
+    info = (length.to_bytes(2, "big") + bytes([len(full_label)]) + full_label
+            + bytes([len(context)]) + context)
+    okm, block, counter = b"", b"", 1
+    while len(okm) < length:
+        block = hmac_module.new(secret, block + info + bytes([counter]),
+                                hashlib.sha256).digest()
+        okm += block
+        counter += 1
+    return okm[:length]
+
+
 def extract_labelled_block(lines: list[str], marker: str, length: int) -> bytes:
     """The hex block of exactly `length` bytes whose label line contains `marker`.
 
@@ -146,7 +164,20 @@ def main() -> int:
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
 
-    lines = args.rfc8448.read_text(encoding="utf-8", errors="replace").split("\n")
+    raw = args.rfc8448.read_text(encoding="utf-8", errors="replace")
+    # RFC 8448's hex blocks span page breaks, which insert a form feed, two
+    # running-header lines and a page number into the middle of a message. The
+    # Certificate is 445 bytes across a break, and a parser that stops there
+    # gets 181 bytes -- which is a length the assertion below catches, and did.
+    lines = []
+    for line in raw.split("\n"):
+        if line.startswith("\f"):
+            continue
+        if "Thomson" in line and "Informational" in line:
+            continue
+        if line.startswith("RFC 8448") and "TLS 1.3 Traces" in line:
+            continue
+        lines.append(line)
 
     # Section 3, the simple 1-RTT handshake. Each value is anchored to the line
     # that prints it, and the "(same as ...)" references are taken from the one
@@ -186,6 +217,17 @@ def main() -> int:
     # these two concatenated, and the RFC prints that hash, so building a
     # transcript from the messages and hashing it is checkable end to end.
     client_hello = extract_labelled_block(lines, "ClientHello (196 octets):", 196)
+    # The rest of the server's flight, so the transcript through
+    # CertificateVerify can be assembled -- which is the transcript the
+    # Finished MAC is taken over.
+    encrypted_extensions = extract_labelled_block(
+        lines, "EncryptedExtensions (40 octets):", 40)
+    certificate = extract_labelled_block(lines, "Certificate (445 octets):", 445)
+    certificate_verify = extract_labelled_block(
+        lines, "CertificateVerify (136 octets):", 136)
+    finished = extract_labelled_block(lines, "Finished (36 octets):", 36)
+    server_finished = extract_field(lines, 'calculate finished "tls13 finished"',
+                                    "finished (32 octets):", 32)
     # The ClientHello random is inside the message at offset 6 (after the
     # four-byte header and the two-byte legacy_version). Taken from there rather
     # than transcribed, so it cannot disagree with the message it belongs to.
@@ -205,6 +247,25 @@ def main() -> int:
     # length check. It is a conflation check and not a proof of correctness:
     # two distinct wrong blocks would satisfy it. The Python oracle is what
     # makes the extracted values trustworthy.
+    # The transcript through CertificateVerify, and the Finished MAC over it.
+    # The RFC prints the MAC and not the hash, so the hash is computed and then
+    # validated by reproducing the MAC: if the messages were extracted wrongly
+    # the MAC will not match and generation stops rather than emitting a vector
+    # that would make a wrong implementation pass.
+    import hashlib
+    import hmac as hmac_module
+    transcript_through_certificate_verify = hashlib.sha256(
+        client_hello + server_hello + encrypted_extensions + certificate
+        + certificate_verify).digest()
+    finished_key = hkdf_expand_label(s_hs, "finished", b"", 32)
+    computed_finished = hmac_module.new(
+        finished_key, transcript_through_certificate_verify,
+        hashlib.sha256).hexdigest()
+    if computed_finished != server_finished.hex():
+        raise SystemExit(
+            "the Finished MAC derived from the extracted messages does not "
+            "match the RFC's; the messages were extracted wrongly")
+
     if derived_early == derived_handshake:
         raise SystemExit(
             "the two 'derived' values extracted are identical, which means the "
@@ -300,6 +361,32 @@ static const uint8_t WT_RFC8448_CLIENT_KEY_PUBLIC[32] = {{
    test has to supply the RFC's. */
 static const uint8_t WT_RFC8448_CLIENT_RANDOM[32] = {{
 {c_array(client_hello_fresh[6:38])}
+}};
+
+/* The rest of the server's flight, so the transcript through CertificateVerify
+   can be rebuilt. This is what the Finished MAC covers. */
+#define WT_RFC8448_ENCRYPTED_EXTENSIONS_LEN {len(encrypted_extensions)}
+static const uint8_t WT_RFC8448_ENCRYPTED_EXTENSIONS[WT_RFC8448_ENCRYPTED_EXTENSIONS_LEN] = {{
+{c_array(encrypted_extensions)}
+}};
+#define WT_RFC8448_CERTIFICATE_LEN {len(certificate)}
+static const uint8_t WT_RFC8448_CERTIFICATE[WT_RFC8448_CERTIFICATE_LEN] = {{
+{c_array(certificate)}
+}};
+#define WT_RFC8448_CERTIFICATE_VERIFY_LEN {len(certificate_verify)}
+static const uint8_t WT_RFC8448_CERTIFICATE_VERIFY[WT_RFC8448_CERTIFICATE_VERIFY_LEN] = {{
+{c_array(certificate_verify)}
+}};
+#define WT_RFC8448_FINISHED_LEN {len(finished)}
+static const uint8_t WT_RFC8448_FINISHED[WT_RFC8448_FINISHED_LEN] = {{
+{c_array(finished)}
+}};
+/* The transcript hash through CertificateVerify is not printed by the RFC, so
+   it is computed here from the messages above -- and then CHECKED, by
+   deriving the Finished MAC from it and comparing that to the value the RFC
+   does print. A wrong transcript produces a wrong MAC and generation stops. */
+static const uint8_t WT_RFC8448_SERVER_FINISHED[32] = {{
+{c_array(server_finished)}
 }};
 
 /* The ClientHello and ServerHello as they go on the wire, framing included. */

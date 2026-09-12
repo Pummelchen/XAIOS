@@ -192,6 +192,42 @@ size_t wt_tls_client_hello_size(const wt_tls_client_hello_params_t *params);
 size_t wt_tls_encode_client_hello(const wt_tls_client_hello_params_t *params,
                                   uint8_t *out, size_t out_capacity);
 
+/* ----------------------------------------------------------------- Finished
+ *
+ * RFC 8446 section 4.4.4. The Finished message is an HMAC over the transcript
+ * hash with a key derived from the sender's traffic secret:
+ *
+ *   finished_key = HKDF-Expand-Label(secret, "finished", "", Hash.length)
+ *   verify_data  = HMAC(finished_key, Transcript-Hash(...))
+ *
+ * The secret is the CLIENT's handshake traffic secret for a client Finished
+ * and the SERVER's for a server Finished. Using the wrong one produces a MAC
+ * of the right shape that never verifies, which is why the direction is an
+ * argument rather than something the caller is expected to remember.
+ * ------------------------------------------------------------------------- */
+
+/* The 32-byte verify_data a Finished message must carry. */
+#define WT_TLS_FINISHED_LEN 32U
+
+/* Compute the verify_data for a Finished, given the traffic secret for the
+ * direction being sent and the transcript hash through the previous message. */
+int wt_tls_finished_compute(const uint8_t traffic_secret[WT_TLS_HASH_LEN],
+                            const uint8_t transcript_hash[WT_TLS_HASH_LEN],
+                            uint8_t out[WT_TLS_FINISHED_LEN]);
+
+/* Verify a received Finished in constant time. Returns 1 when it verifies, 0
+ * when it does not, and -1 on a bad argument. `message` is the whole Finished
+ * handshake message, framing included, and the transcript hash must be the one
+ * through the message BEFORE it -- RFC 8446 hashes a message into the
+ * transcript after its own MAC has been checked, so a caller that absorbs the
+ * Finished first will never verify.
+ *
+ * The comparison is constant time because a timing-variable compare on a MAC
+ * is a forgery oracle. */
+int wt_tls_finished_verify(const uint8_t traffic_secret[WT_TLS_HASH_LEN],
+                           const uint8_t transcript_hash[WT_TLS_HASH_LEN],
+                           const uint8_t *message, size_t message_len);
+
 #ifdef __cplusplus
 }
 #endif

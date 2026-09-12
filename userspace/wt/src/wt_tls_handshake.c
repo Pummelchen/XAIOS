@@ -591,3 +591,60 @@ size_t wt_tls_encode_client_hello(const wt_tls_client_hello_params_t *params,
   if (w.overflow || w.offset != total) return 0U;
   return total;
 }
+
+/* ----------------------------------------------------------------- Finished */
+
+int wt_tls_finished_compute(const uint8_t traffic_secret[WT_TLS_HASH_LEN],
+                            const uint8_t transcript_hash[WT_TLS_HASH_LEN],
+                            uint8_t out[WT_TLS_FINISHED_LEN]) {
+  uint8_t finished_key[WT_TLS_HASH_LEN];
+
+  if (traffic_secret == NULL || transcript_hash == NULL || out == NULL) {
+    return -1;
+  }
+  /* finished_key = HKDF-Expand-Label(secret, "finished", "", Hash.length) */
+  if (wt_tls_expand_label(traffic_secret, WT_TLS_HASH_LEN, "finished", NULL, 0,
+                          finished_key, sizeof(finished_key)) != 0) {
+    return -1;
+  }
+  /* verify_data = HMAC(finished_key, Transcript-Hash(...)) */
+  if (wt_hmac_sha256(finished_key, sizeof(finished_key), transcript_hash,
+                     WT_TLS_HASH_LEN, out) != 0) {
+    wt_secure_zero(finished_key, sizeof(finished_key));
+    return -1;
+  }
+  wt_secure_zero(finished_key, sizeof(finished_key));
+  return 0;
+}
+
+int wt_tls_finished_verify(const uint8_t traffic_secret[WT_TLS_HASH_LEN],
+                           const uint8_t transcript_hash[WT_TLS_HASH_LEN],
+                           const uint8_t *message, size_t message_len) {
+  uint8_t expected[WT_TLS_FINISHED_LEN];
+  uint8_t type = 0U;
+  size_t body_len = 0U;
+  size_t body_offset = 0U;
+  int equal;
+
+  if (traffic_secret == NULL || transcript_hash == NULL || message == NULL) {
+    return -1;
+  }
+  /* The message must be a Finished of exactly the right body length, so a
+     caller cannot pass a truncated one and have the first 32 bytes of
+     something else compared. */
+  if (wt_tls_decode_handshake_header(message, message_len, &type, &body_len,
+                                     &body_offset) != 0) {
+    return -1;
+  }
+  if (type != WT_TLS_HS_FINISHED) return -1;
+  if (body_len != WT_TLS_FINISHED_LEN) return -1;
+  if (message_len != body_offset + body_len) return -1;
+
+  if (wt_tls_finished_compute(traffic_secret, transcript_hash, expected) != 0) {
+    return -1;
+  }
+  equal = wt_ct_equal(expected, message + body_offset,
+                      WT_TLS_FINISHED_LEN);
+  wt_secure_zero(expected, sizeof(expected));
+  return equal;
+}

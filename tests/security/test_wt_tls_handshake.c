@@ -826,6 +826,133 @@ static void test_server_hello_parse(void) {
   }
 }
 
+/* ------------------------------------------------------------------ Finished */
+
+/* The whole chain, verified against RFC 8448 end to end: absorb the RFC's real
+ * handshake messages -- ClientHello, ServerHello, EncryptedExtensions,
+ * Certificate, CertificateVerify -- hash the transcript, derive the Finished
+ * key from the server's handshake traffic secret, and compare the result to the
+ * Finished message the RFC prints.
+ *
+ * This is the strongest check in the file. It fails if any message was framed
+ * wrong, if the transcript absorbs one twice or in the wrong order, if the
+ * "finished" label or the finished-key length is wrong, if the HMAC is over the
+ * wrong bytes, or if the traffic secret is the client's instead of the
+ * server's. Every one of those is a failure that would otherwise appear as an
+ * authentication failure several round trips away.
+ *
+ * The transcript hash is not printed by the RFC -- it prints the MAC -- so the
+ * generator computes the hash from the extracted messages and REQUIRES the
+ * derived MAC to equal the printed one before it will emit a vector. A wrong
+ * extraction stops generation rather than producing a vector a wrong
+ * implementation would pass.
+ */
+static void test_finished(void) {
+  wt_tls_transcript_t transcript;
+  uint8_t hash[WT_TLS_HASH_LEN];
+  uint8_t verify_data[WT_TLS_FINISHED_LEN];
+
+  expect_int("transcript_init", 0, wt_tls_transcript_init(&transcript));
+
+  /* The server's flight, in order, as the RFC sends it. */
+  expect_int("absorb ClientHello", 0,
+             wt_tls_transcript_absorb(&transcript, WT_RFC8448_CLIENT_HELLO,
+                                      sizeof(WT_RFC8448_CLIENT_HELLO)));
+  expect_int("absorb ServerHello", 0,
+             wt_tls_transcript_absorb(&transcript, WT_RFC8448_SERVER_HELLO,
+                                      sizeof(WT_RFC8448_SERVER_HELLO)));
+  expect_int("absorb EncryptedExtensions", 0,
+             wt_tls_transcript_absorb(&transcript, WT_RFC8448_ENCRYPTED_EXTENSIONS,
+                                      sizeof(WT_RFC8448_ENCRYPTED_EXTENSIONS)));
+  expect_int("absorb Certificate", 0,
+             wt_tls_transcript_absorb(&transcript, WT_RFC8448_CERTIFICATE,
+                                      sizeof(WT_RFC8448_CERTIFICATE)));
+  expect_int("absorb CertificateVerify", 0,
+             wt_tls_transcript_absorb(&transcript,
+                                      WT_RFC8448_CERTIFICATE_VERIFY,
+                                      sizeof(WT_RFC8448_CERTIFICATE_VERIFY)));
+  expect_int("transcript hash", 0, wt_tls_transcript_hash(&transcript, hash));
+
+  expect_int("the Finished MAC", 0,
+             wt_tls_finished_compute(WT_RFC8448_SERVER_HANDSHAKE_TRAFFIC, hash,
+                                     verify_data));
+  /* The RFC prints this value as the server's Finished. */
+  expect_bytes("the Finished MAC is the RFC's", WT_RFC8448_SERVER_FINISHED,
+               verify_data, WT_TLS_FINISHED_LEN);
+
+  /* And the same over the RFC's Finished message, which is
+     `14 00 00 20 || verify_data`. */
+  expect_int("the RFC's Finished message verifies", 1,
+             wt_tls_finished_verify(WT_RFC8448_SERVER_HANDSHAKE_TRAFFIC, hash,
+                                    WT_RFC8448_FINISHED,
+                                    sizeof(WT_RFC8448_FINISHED)));
+
+  /* The client's handshake secret must NOT verify the server's Finished: the
+     two directions have different secrets and using the wrong one is the
+     mistake this argument exists to prevent. */
+  expect_int("the client's secret does not verify the server's Finished", 0,
+             wt_tls_finished_verify(WT_RFC8448_CLIENT_HANDSHAKE_TRAFFIC, hash,
+                                    WT_RFC8448_FINISHED,
+                                    sizeof(WT_RFC8448_FINISHED)));
+
+  /* Every single-bit change to the MAC must be refused. */
+  {
+    uint8_t forged[WT_RFC8448_FINISHED_LEN];
+    int accepted = 0;
+    for (size_t bit = 0U; bit < WT_TLS_FINISHED_LEN * 8U; bit++) {
+      memcpy(forged, WT_RFC8448_FINISHED, sizeof(forged));
+      forged[4U + bit / 8U] ^= (uint8_t)(1U << (bit % 8U));
+      if (wt_tls_finished_verify(WT_RFC8448_SERVER_HANDSHAKE_TRAFFIC, hash,
+                                 forged, sizeof(forged)) != 0) {
+        accepted++;
+      }
+    }
+    expect_int("every single-bit MAC forgery is refused", 0, accepted);
+  }
+
+  /* A wrong transcript hash must not verify. */
+  {
+    uint8_t wrong[WT_TLS_HASH_LEN];
+    memcpy(wrong, hash, sizeof(wrong));
+    wrong[0] ^= 0x01U;
+    expect_int("a wrong transcript hash is refused", 0,
+               wt_tls_finished_verify(WT_RFC8448_SERVER_HANDSHAKE_TRAFFIC,
+                                      wrong, WT_RFC8448_FINISHED,
+                                      sizeof(WT_RFC8448_FINISHED)));
+  }
+
+  /* Wrong message types and lengths are refusals, not comparisons of the
+     first 32 bytes of something else. */
+  {
+    uint8_t forged[WT_RFC8448_FINISHED_LEN];
+    memcpy(forged, WT_RFC8448_FINISHED, sizeof(forged));
+    forged[0] = WT_TLS_HS_CERTIFICATE;
+    expect_int("a Finished-typed check rejects another type", -1,
+               wt_tls_finished_verify(WT_RFC8448_SERVER_HANDSHAKE_TRAFFIC,
+                                      hash, forged, sizeof(forged)));
+    memcpy(forged, WT_RFC8448_FINISHED, sizeof(forged));
+    expect_int("a truncated Finished is refused", -1,
+               wt_tls_finished_verify(WT_RFC8448_SERVER_HANDSHAKE_TRAFFIC,
+                                      hash, forged, 20U));
+    expect_int("a NULL message is refused", -1,
+               wt_tls_finished_verify(WT_RFC8448_SERVER_HANDSHAKE_TRAFFIC,
+                                      hash, NULL, 36U));
+    expect_int("a NULL secret is refused", -1,
+               wt_tls_finished_verify(NULL, hash, WT_RFC8448_FINISHED,
+                                      sizeof(WT_RFC8448_FINISHED)));
+  }
+
+  /* compute must refuse bad arguments rather than produce a MAC. */
+  expect_int("compute refuses a NULL secret", -1,
+             wt_tls_finished_compute(NULL, hash, verify_data));
+  expect_int("compute refuses a NULL transcript", -1,
+             wt_tls_finished_compute(WT_RFC8448_SERVER_HANDSHAKE_TRAFFIC, NULL,
+                                     verify_data));
+  expect_int("compute refuses a NULL output", -1,
+             wt_tls_finished_compute(WT_RFC8448_SERVER_HANDSHAKE_TRAFFIC, hash,
+                                     NULL));
+}
+
 /* ------------------------------------------- the two joined: keys from the wire */
 
 /* The whole point of the two layers. Take RFC 8448's actual ServerHello,
@@ -883,6 +1010,7 @@ int main(void) {
   test_transcript();
   test_client_hello_build();
   test_server_hello_parse();
+  test_finished();
   test_parse_then_schedule();
 
   if (g_failures != 0) {
