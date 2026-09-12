@@ -156,7 +156,7 @@ def ssh_command(key: Path, port: int, command: str, *, ok: bool | None = True,
 
 
 def wait_ssh(key: Path, port: int, arch: str = "aarch64",
-             timeout: int = 60) -> None:
+             timeout: int = 180) -> None:
     """Wait for the guest to answer, on a budget that knows what host it is on.
 
     Sixty seconds was written on a Mac, where these guests boot with hardware
@@ -168,6 +168,15 @@ def wait_ssh(key: Path, port: int, arch: str = "aarch64",
 
     The scale is declared by the environment rather than sniffed at, which is
     the same arrangement the other gates use.
+
+    The base was sixty and is a hundred and eighty. Sixty was enough here and
+    not on the runner; a hundred and eighty times the CI scale gives nine
+    minutes, and a boot that has not answered in nine minutes is broken rather
+    than slow. The number the runner actually needs is not knowable from this
+    machine -- it cannot be measured here, because here it passes -- and it is
+    not knowable from the parity container either, which is arm64 and cannot
+    build the x86-64 userland at all. What can be done is to stop the budget
+    being the thing that fails and let the runner report its own figure.
     """
     scaled = smoke_timeout(arch, timeout)
     deadline = time.monotonic() + scaled

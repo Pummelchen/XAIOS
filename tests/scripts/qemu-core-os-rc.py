@@ -27,7 +27,16 @@ COMMANDS = [
     # when the gate ran v5 only, and overran the moment v6 was added.
     ("storage_crash", ["make", "qemu-storage-crash-test"], 1800),
     ("smmuv3", ["make", "qemu-smmu-gate"], 300),
-    ("nvme", ["make", "qemu-nvme-gate"], 300),
+    # B-72: 300 was set when this gate's RISC-V legs failed in under a second
+    # on a missing filesystem. Since B-68 they boot for real, and it used all
+    # 900 of its tripled budget twice without finishing. It takes 105-107s
+    # here, measured three times, but one of its four guests runs on hardware
+    # virtualisation here and none of them do on the runner, so that figure
+    # does not scale into an answer -- and the parity container cannot settle
+    # it either, being arm64 and unable to build the x86-64 userland. 600
+    # stops the budget being the thing that fails; the step reports its own
+    # elapsed, so the runner supplies the real number on the next run.
+    ("nvme", ["make", "qemu-nvme-gate"], 600),
     ("fragmentation", ["make", "qemu-outbound-fragmentation-gate"], 360),
     ("network", ["make", "qemu-network-suite"], 300),
     ("high_core", ["make", "qemu-high-core-gate"], 500),
