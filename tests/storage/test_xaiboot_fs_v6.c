@@ -44,7 +44,11 @@ uint64_t virtio_block_capacity_sectors(void) { return 0U; }
 #define SECTOR 512U
 /* Room for a v6 volume: the start offset, two metadata copies, the journal
    and a gigabyte of data. */
-#define DISK_SECTORS (3072U + 2560U * 2U + 2U + 1U + 2097152U)
+/* 3584 is XBFS_V6_METADATA_SECTORS, twice for the two mirror slots. It is
+   repeated here because the constant lives in the implementation rather
+   than the header; a disk too small for two slots formats as v5 instead,
+   and the version assertion below is what catches that. */
+#define DISK_SECTORS (3072U + 3584U * 2U + 2U + 1U + 2097152U)
 #define DISK_BYTES ((uint64_t)DISK_SECTORS * SECTOR)
 
 static uint8_t *g_disk;

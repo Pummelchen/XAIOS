@@ -83,10 +83,38 @@
  * filesystem in place, which is the one operation on this data nobody should
  * have to trust. */
 #define XBFS_V6_VERSION 6U
-#define XBFS_V6_MAX_EXTENTS 16U
+/* How many runs of blocks one file may be scattered across.
+ *
+ * This was 16, and 16 is reachable. A volume written and rewritten for a while
+ * breaks its free space into short runs, and a file that needs more of them
+ * than this is refused with the volume mostly empty -- which also means it
+ * cannot be snapshotted, which used to mean the machine stopped booting
+ * (B-52). Taking the longest runs first made that far harder to reach; it did
+ * not move the limit.
+ *
+ * 64 costs 768 bytes per node and about 0.75 MiB across the node table. That
+ * was worth weighing when every commit rewrote the whole region; since B-48 a
+ * commit writes only the sectors that changed, so a larger node table costs
+ * space rather than write amplification.
+ *
+ * It is a raised ceiling and not a removed one, and the row says so. A 256 KiB
+ * file -- the largest the whole-file path stages -- on a volume fragmented to
+ * single blocks would need 512 extents, and 512 inline costs 25 MiB of
+ * buffers. Removing the ceiling properly means indirect extents: a node that
+ * points at an overflow block when it runs out of inline room. That is the
+ * real fix and it is not this one.
+ *
+ * The on-disk node changes shape. Nothing migrates it: XAIOS is early enough
+ * that breaking the format is cheaper than carrying a conversion, and a volume
+ * written by an older build is reformatted rather than upgraded. */
+#define XBFS_V6_MAX_EXTENTS 64U
 #define XBFS_V6_MAX_NODES 1024U
 #define XBFS_V6_DATA_SECTORS 2097152U
-#define XBFS_V6_METADATA_SECTORS 2560U
+/* Sized for the node table above plus the block bitmap, with room to spare.
+   Raising XBFS_V6_MAX_EXTENTS grows every node, so this grows with it; a
+   region too small to hold the table it describes is a format that cannot be
+   written. */
+#define XBFS_V6_METADATA_SECTORS 3584U
 #define XBFS_V6_MAX_FILE_BYTES \
   ((uint64_t)XBFS_V6_DATA_SECTORS * XBFS_SECTOR_SIZE)
 /* One bit per block, rounded to whole bytes. */
