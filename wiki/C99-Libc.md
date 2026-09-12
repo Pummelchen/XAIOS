@@ -17,7 +17,10 @@ performance. The requirement source is the
 1. Application headers expose hosted ISO C99, not a POSIX, Linux, or BSD API.
 2. Capabilities, threads, sockets, services, NUMA, model mappings and AI
    execution remain explicit XAIOS-native interfaces.
-3. Libc adds no syscall identifier. The ABI remains at 54 identifiers.
+3. Libc adds no syscall identifier. The ABI is 55 identifiers, all of them
+   XAIOS-native; `tests/libc/c99-requirements.json` pins the count and
+   `make libc-check` fails when it moves, so a syscall added for anything else
+   has to say so in the same change.
 4. Standard functions execute in userspace and cross into the kernel only for
    console, file, clock, or termination state.
 5. AI hot paths do not use stdio or the general libc heap for tensors, model

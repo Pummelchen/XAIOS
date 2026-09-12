@@ -285,6 +285,11 @@
         "number": 54,
         "name": "wait_events",
         "capability": "XAIOS_CAP_TIME"
+      },
+      {
+        "number": 55,
+        "name": "net_open_udp",
+        "capability": "XAIOS_CAP_NET_SOCKET"
       }
     ],
     "capabilities": [
