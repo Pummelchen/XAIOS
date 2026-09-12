@@ -1,6 +1,6 @@
 # Project Tracker
 
-Last reviewed: 2026-09-12.
+Last reviewed: 2026-09-13.
 
 This is the only human-maintained XAIOS project tracker. Roadmaps, milestones,
 phase plans, open decisions and risks are consolidated here, and the Wiki keeps
@@ -19,7 +19,9 @@ that rule cannot hold for both sides, so the published branch wins: `main`'s
 in the order they were first assigned. The port's commits were already pushed
 when this was found and still cite the old numbers, which is why this paragraph
 exists rather than a silent edit; the numbers in this table are the authority.
-Anything assigned from now on starts at `B-84`.
+The port's branch has since been merged and deleted, so those commits are
+reachable from `main` and nowhere else. Anything assigned from now on starts at
+`B-84`.
 
 ## Where the tree stands
 
@@ -61,28 +63,25 @@ hardware.**
 
 ### What is open
 
-Eight open rows, and none of them is a boot failure or a data-loss path. The
+Seven open rows, and none of them is a boot failure or a data-loss path. The
 count was six while eleven were closed, because nine days of red turned out to be
 five separate causes and working through them found more; the RISC-V and CI work
 on `main` then raised and closed sixteen, and the WebTransport C99 port added
 four of its own, of which three are closed. What is left is `B-39`, `B-43`,
-`B-63`, `B-77`, `B-78` and `B-79`, plus `B-48`, which is a cost rather than a
-fault, and `B-94`, which is a gate that fails on the runner about one run in
-four and is recorded rather than explained. Every row is `TESTING` or `OPEN` in
-the table below, which here means the fix or the measurement is still owed rather
-than that the code is untried.
+`B-63`, `B-77`, `B-78`, `B-79` and `B-94`, which is a gate that fails on the
+runner about one run in four and is recorded rather than explained. Every row is
+`TESTING` or `OPEN` in the table below, which here means the fix or the
+measurement is still owed rather than that the code is untried.
 
 | | What it is | Why it is still open |
 |---|---|---|
 | `B-39` | `qemu-core-os-rc`'s fragmentation step times out on every CI run | Never reproduced here. Per-step elapsed and load are recorded so a second sighting can be attributed to the host or to the guest rather than argued about. |
 | `B-43` | A VMware Fusion session stalls about 19 s and says nothing | The mechanism this row originally named was wrong and is corrected in place. The stall is real; what causes it is not established. `B-63` is a different signature and not this. |
-| `B-48` | Every file write commits the whole metadata region | 1280 sectors, 640 KiB, for a one-record append. A cost, not a fault: it is why `B-45`'s improvement came from writing fewer records rather than cheaper ones. |
 | `B-63` | A session is accepted, receives nothing, and both ends time out separately | Reproduced on the runner three times with the host-side capture; the mechanism is established and the row says which half of it the flow line answers. |
 | `B-77` | The kernel's ephemeral ports overlap the DNS resolver's and NTP's | Pre-existing for the TCP connect path, which shared the counter and the range; `B-35` widened who is exposed to it rather than introducing it. Two subsystems can hold one port number and neither is told. |
 | `B-78` | A socket refused a listener row still reports a port that cannot receive | Needs seventeen concurrent sockets to reach, so no gate covers it and the failure is silent. Registration returns void, so the socket that cannot receive still reports a port. |
-| `B-94` | `qemu-readonly-medium-gate` fails on the runner about one run in four | `qemu-readonly-medium-gate` boots the same guest twice and requires the read-only boot to report `medium=read-only` and the writable boot to report it lost the flag. On the runner the read-only boot sometimes reports nothing, so the gate exits 2 after about fifteen seconds with `either the scratch device was attached the other way round or the driver did not read VIRTIO_BLK_F_RO` -- its own two candidate causes, and it cannot tell them apart. **Pre-existing and not this branch's:** it failed on `main` at `5545dfd` before the WebTransport work was merged, passed on the three runs after that, and failed again at `b08823d`. Roughly one run in four, but the sample is small. Two sightings are enough to record and not enough to explain; what would explain it is the gate reporting the scratch device's own feature bits rather than only the guest's line. |
-| `B-94` | `qemu-readonly-medium-gate` fails on the runner about one run in four | The gate cannot tell its two candidate causes apart, and it failed on `main` before this branch was merged. Recorded so the next sighting is the third rather than the first. |
 | `B-79` | The TLS 1.3 client handshake is written and has no 0-RTT | The handshake completes against an independently generated QUIC server flight. What is absent is 0-RTT and the session tickets it needs, a HelloRetryRequest (refused by name), and client certificates. The rest of the port, and what each remaining task's exit criterion is, is in [Current tasks](#current-tasks) below. |
+| `B-94` | `qemu-readonly-medium-gate` fails on the runner about one run in four | `qemu-readonly-medium-gate` boots the same guest twice and requires the read-only boot to report `medium=read-only` and the writable boot to report it lost the flag. On the runner the read-only boot sometimes reports nothing, so the gate exits 2 after about fifteen seconds with `either the scratch device was attached the other way round or the driver did not read VIRTIO_BLK_F_RO` -- its own two candidate causes, and it cannot tell them apart. **Pre-existing and not the port's:** it failed on `main` at `5545dfd` before the WebTransport work was merged, passed on the three runs after that, and failed again at `b08823d`. Roughly one run in four, but the sample is small. Two sightings are enough to record and not enough to explain; what would explain it is the gate reporting the scratch device's own feature bits rather than only the guest's line. |
 
 Three things are open that are not defects:
 
@@ -102,11 +101,10 @@ footnote here.
 
 ## Current tasks
 
-**Paused here, at `c9accf3`, with `main` and `webtransport` at the same commit.**
-The WebTransport C99 port's TLS 1.3 client handshake is written, tested and
-merged: it completes a QUIC handshake against a server flight built by an
-independent Python implementation, and 1214 host checks pin it against RFC 8446,
-8448, 9001, 7301 and 7748 in CI and under AddressSanitizer and
+**The WebTransport C99 port is paused, with its TLS 1.3 client handshake written,
+tested and merged on `main`.** It completes a QUIC handshake against a server
+flight built by an independent Python implementation, and 1214 host checks pin it
+against RFC 8446, 8448, 9001, 7301 and 7748 in CI and under AddressSanitizer and
 UndefinedBehaviorSanitizer. The tasks below are what is left of the port, in the
 order they unblock each other. They are numbered from `B-84` because that is
 where the tracker's sequence had reached; they are work not yet done rather than
@@ -121,7 +119,7 @@ defects, and the numbering rule on this page does not care which it is.
 | `B-88` | A HelloRetryRequest is refused by name rather than handled | `NOT STARTED` | A server that wants a different group can be talked to. This means rewriting the transcript with the synthetic `message_hash` (RFC 8446 section 4.4.1), sending a second ClientHello and refusing a second retry. Refusing by name is honest and is a server this client cannot reach. |
 | `B-89` | A CertificateRequest is answered with an empty Certificate and no CertificateVerify | `NOT STARTED` | Client certificates, if XAIOS ever has a use for them. RFC 8446 section 4.4.2 requires the empty answer a client with no certificate sends, which is what is implemented and is conformant. |
 | `B-90` | No P-384 or P-521 certificate has been through the verifier | `NOT STARTED` | The generated ECDSA fixture is P-256. The curve check that refuses a mismatched scheme is tested, and the SHA-384 and SHA-512 digest buffers are tested through the RSA schemes, but the ECDSA paths on the two longer curves have never seen a real certificate. An untested branch in a signature verifier is the one place to not leave one. |
-| `B-91` | The module has never been built or booted for RISC-V | `NOT STARTED` | `make compile-check` covers the aarch64 and x86_64 freestanding targets and the host; no RISC-V cross-toolchain is installed on this machine, so `userspace/wt/` is unbuilt for riscv64 and has never run there. The rest of the tree is gated on all three. |
+| `B-91` | The module has never been built or booted for RISC-V | `NOT STARTED` | **The premise originally written into this row was wrong and is corrected in place.** There is no missing RISC-V cross-compiler: `compile-check` already compiles `kernel/arch/riscv64/` with `clang --target=riscv64-unknown-elf`, and clang and lld have always targeted rv64. What was missing was the **hosted RISC-V libc sysroot** -- `scripts/build-libc.sh` defaults `XAIOS_LIBC_ARCHES` to `aarch64 x86_64` while accepting `riscv64`, so `build/libc/riscv64/sysroot` was never built, and the userspace legs of `compile-check` need a sysroot per architecture. With `XAIOS_LIBC_ARCHES=riscv64 ./scripts/build-libc.sh` the sysroot builds and its symbol probe passes at 464 functions, and all eight `userspace/wt/src/*.c` compile clean for `riscv64-unknown-elf`. **Still open:** `compile-check` has no riscv64 userspace leg, so nothing in CI would notice a regression in this module, and it has never *run* on the target. **To close:** a riscv64 userspace leg in `compile-check`, and a guest that completes a handshake. |
 | `B-92` | Two views outlive the buffers they point into, by contract rather than by construction | `NOT STARTED` | `wt_tls_client_receive` borrows the Certificate message until CertificateVerify arrives, and `wt_tls_client_peer_transport_parameters` returns a view into the EncryptedExtensions buffer. Both are documented, and the transport-parameters one is withheld until the handshake completes, but a caller that reuses a per-read scratch buffer gets a use-after-scope. **Exit:** the client owns the bytes it keeps, or the receive path takes a buffer it owns. |
 | `B-93` | The client's flight is valid only until the next call | `NOT STARTED` | QUIC retransmits a lost Finished with the same keys, so the bytes have to outlive the call that produced them. Today `wt_tls_client_receive` returns a pointer into the handshake's own buffer that the next call overwrites, so a QUIC layer must copy them and nothing says so at the type level. |
 
@@ -267,6 +265,7 @@ only what the defect was and what closed it.
 | B-77 | The kernel's ephemeral ports overlap the DNS resolver's and NTP's | all four | `OPEN` | `kernel_socket_port_in_use` scans the kernel socket table, so it knows nothing about a port another subsystem is using. The DNS resolver picks a random local port in 49152..65535 (`kernel/net/dns.c`) and NTP sends from the fixed local port 49155 (`kernel/net/ntp.c`), so the fourth ephemeral draw lands on NTP's port deterministically and the first lands on the DNS range floor. Both subsystems match earlier on the receive path, so a reply is not simply lost, but two owners can hold one number and neither is told. **Pre-existing for the TCP connect path, which shared this counter and range**; `B-35` widened who is exposed to it rather than introducing it. Neither has been moved. |
 | B-78 | A socket refused a listener row still reports a port that cannot receive | all four | `OPEN` | `network_stack_register_udp_listener` returns void, logs `UDP listener registry full` and does nothing when the sixteen rows are gone (`NETWORK_MAX_LISTENERS`). The handler has already written the descriptor and the port, so the caller is told it owns an address no reply can reach and every receive returns zero forever. A resource-exhaustion path, and the `docs/API.md` sentence about the port being registered states the guarantee unconditionally. Not reachable with fewer than seventeen concurrent sockets and not covered by any gate, because the fill cannot be driven from outside without a reproducer. |
 | B-79 | The TLS 1.3 handshake has its pieces and a state machine, and no 0-RTT | all four | `OPEN` | `userspace/wt/` now carries the whole client handshake: the key schedule (RFC 8446 section 7.1) split into its two phases, QUIC traffic keys, Initial secrets, the Retry integrity tag and packet protection (RFC 9001 sections 5 and 6), handshake framing and the transcript, a ClientHello builder, ServerHello, EncryptedExtensions, CertificateRequest, Certificate and CertificateVerify parsers, x25519, Finished compute and verify, the CertificateVerify signature check, the pinned-key policy (`B-80`, now closed), and `wt_tls_client.c`, the state machine that sequences them and refuses what does not belong. **1214 host checks** against RFC 8446, 8448, 9001, 7301 and 7748 run under AddressSanitizer and UndefinedBehaviorSanitizer, in CI, and the handshake completes end to end against a server flight built by an independent Python implementation (`tests/security/generate_wt_quic_flight.py`) rather than by this code -- which is what makes the client's own Finished a check and not a tautology. Five adversarial audits and the sanitizer runs have found and closed a remote stack overflow in the Retry tag, a resumption master secret derived from the wrong transcript, a packet number encoder using the wrong range, a GCM decrypt path that failed on every packet, a measurement pass writing through a NULL pointer, a verifier with two unsequenced modifications of the same variable, an AES block encrypt that computed E(0) XOR the input, a CertificateVerify digest buffer sized for SHA-256 while offering SHA-512 (`B-81`), a public key that pointed into a dead decoder frame (`B-82`), an ALPN extension read in a format RFC 7301 does not define (`B-83`), BearSSL's Curve25519 using big-endian scalars where RFC 7748 says little-endian, a fail-reason getter that reported a failure for a handshake that had succeeded, and a clear that wiped the secrets but left the state CONNECTED so the transport-parameter getter kept answering. **What is absent:** 0-RTT and the session tickets it needs, so there is no early-data encryption level at all; a HelloRetryRequest is refused by name rather than handled, which is honest but is a server this client cannot talk to; and client certificates, where the client answers a CertificateRequest with an empty Certificate (RFC 8446 section 4.4.2) and never a CertificateVerify. |
+| B-94 | `qemu-readonly-medium-gate` fails on the runner about one run in four | repository | `OPEN` | `qemu-readonly-medium-gate` boots the same guest twice and requires the read-only boot to report `medium=read-only` and the writable boot to report it lost the flag. On the runner the read-only boot sometimes reports nothing, so the gate exits 2 after about fifteen seconds with `either the scratch device was attached the other way round or the driver did not read VIRTIO_BLK_F_RO` -- its own two candidate causes, and it cannot tell them apart. **Pre-existing and not the port's:** it failed on `main` at `5545dfd` before the WebTransport work was merged, passed on the three runs after that, and failed again at `b08823d`. Roughly one run in four, but the sample is small; two sightings are enough to record and not enough to explain. **To close:** the gate reports the scratch device's own feature bits rather than only the guest's line, so the two causes can be told apart, or a third sighting arrives. |
 
 ### Resolved, kept for reference
 
