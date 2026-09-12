@@ -131,7 +131,7 @@ static uint64_t *early_table(void) {
        with nothing connecting the two. Under UEFI that was a store to the
        interrupt controller, twenty log lines after the mapping that failed. */
     klog("vmm: early page-table pool exhausted after %u tables; some of the "
-         "identity map was not created\n", (uint64_t)g_early_used);
+         "identity map was not created\n", g_early_used);
     return 0;
   }
   uint64_t *table = g_early[g_early_used++];
