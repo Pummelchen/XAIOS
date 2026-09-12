@@ -147,6 +147,18 @@ if [ -n "${XAIOS_XAI_FS_IMAGE:-}" ]; then
   MODELS_IMAGE="$XAIOS_XAI_FS_IMAGE"
 else
   MODELS_IMAGE="$STATE/models.img"
+  # A missing source used to end this script at `cp`, before QEMU started, and
+  # the gate above then reported a guest that had not printed its boot markers.
+  # It had not printed anything. Say which file is missing and what makes it,
+  # because "the guest did not boot" and "the host never built the volume" are
+  # different problems and only one of them is in the guest.
+  if [ "$dry_run" -eq 0 ] && [ ! -f "$BUILD/xaios-xaifs.img" ]; then
+    printf '%s\n' \
+      "error: $BUILD/xaios-xaifs.img is missing, so this machine has no models" \
+      "       volume to boot. Nothing has gone wrong in the guest; it has not" \
+      "       been started. Run: ./scripts/build-riscv64-image.sh" >&2
+    exit 1
+  fi
   if [ "$dry_run" -eq 0 ] &&
      { [ ! -f "$MODELS_IMAGE" ] ||
        [ "$BUILD/xaios-xaifs.img" -nt "$MODELS_IMAGE" ]; }; then

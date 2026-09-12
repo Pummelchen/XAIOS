@@ -547,3 +547,27 @@ printf 'XAIOS-VIRTIO-BLOCK-TEST\n' | \
   "/etc/xapt.conf=$ROOT_DIR/userspace/init/xapt.conf" \
   "$@"
 printf '%s\n' "Created $IMAGE"
+
+# The models volume this architecture's runner boots.
+#
+# It was produced only by scripts/build-image.sh, which builds AArch64 and
+# x86_64 and is never run on a machine doing RISC-V alone. run-qemu-riscv64.sh
+# copies it to seed the guest's /models, and under `set -e` a missing source
+# ended the runner before QEMU started -- so on CI, where the RISC-V job builds
+# only RISC-V, every RISC-V boot failed at `cp` and was reported as a guest that
+# had not printed its boot markers. It had not printed anything, because it had
+# never been started.
+#
+# Built here so the RISC-V build produces everything the RISC-V runner boots.
+# It is the same fixture and the same builder the other architectures use; the
+# file is shared rather than per-architecture because its contents are a signed
+# model package, which is architecture-neutral.
+# $BUILD_DIR here is this script's own output directory, not the tree's
+# build/. The runner reads the tree's, so name it explicitly.
+XAI_FS_IMAGE="$ROOT_DIR/build/xaios-xaifs.img"
+if [ ! -f "$XAI_FS_IMAGE" ]; then
+  printf '%s\n' "Creating signed xaiFS fixture: $XAI_FS_IMAGE"
+  PYTHONPATH="$ROOT_DIR/tools" "$PYTHON3" \
+    "$ROOT_DIR/tests/xai_fs/create_c_fixture.py" "$XAI_FS_IMAGE"
+  printf '%s\n' "Created $XAI_FS_IMAGE"
+fi
