@@ -314,6 +314,27 @@ static uint64_t g_metadata_mirror_recoveries;
 /* Sized for the largest version, because one buffer serves them all and a
    v6 volume's metadata does not fit in v5's. */
 static uint8_t g_metadata_buffer[XBFS_V6_METADATA_SECTORS * XBFS_SECTOR_SIZE];
+/* What each metadata slot currently holds, so a commit can write only the
+   sectors that changed.
+ *
+ * The whole region was written every time, however little moved: 1280 sectors
+ * -- 640 KiB -- on a v5 volume and 2560 on v6. A 32-byte audit record
+ * therefore cost 1281 sectors, measured, which is why B-45 took file bytes to
+ * almost nothing and per-record time did not move. Nearly all of it is the
+ * node table, and an append changes one node.
+ *
+ * Two copies because the slots alternate: a commit targets the slot that is
+ * *not* the one mount would currently choose, so the content it is replacing
+ * is what was written two commits ago, not one. Diffing against a single
+ * previous buffer would compare the wrong slot and skip sectors that differ.
+ *
+ * A shadow is only believed after the write it describes has flushed, and any
+ * failure marks it unknown so the next commit writes the region whole. The
+ * cost of being wrong here is a metadata sector that silently keeps an old
+ * value, so the conservative direction is the only acceptable one. B-48. */
+static uint8_t g_metadata_shadow[2][XBFS_V6_METADATA_SECTORS *
+                                    XBFS_SECTOR_SIZE];
+static uint32_t g_metadata_shadow_valid[2];
 static xaios_spinlock_t g_xaiboot_fs_lock = XAIOS_SPINLOCK_INIT;
 static uint8_t g_file_buffer[XBFS_V5_MAX_FILE_BYTES];
 /* Sized for the largest format, not for the one that existed when it was
@@ -1168,6 +1189,8 @@ static xaios_status_t read_metadata(void) {
   if (usable[0] == 0 && usable[1] == 0) {
     /* Neither copy is intact. Reload the primary so the caller sees the
        original bytes and can apply its own blank-versus-damaged judgement. */
+    g_metadata_shadow_valid[0] = 0U;
+    g_metadata_shadow_valid[1] = 0U;
     g_metadata_slot = 0U;
     return read_metadata_slot(0U);
   }
@@ -1181,6 +1204,8 @@ static xaios_status_t read_metadata(void) {
     klog("xaibootfs: metadata slot %u unusable; continuing from slot %u seq=%lu\n",
          (unsigned)(chosen ^ 1U), (unsigned)chosen, sequence[chosen]);
   }
+  g_metadata_shadow_valid[0] = 0U;
+  g_metadata_shadow_valid[1] = 0U;
   g_metadata_slot = chosen;
   return read_metadata_slot(chosen);
 }
@@ -1257,18 +1282,42 @@ static xaios_status_t write_metadata(void) {
                                                     : g_metadata_slot;
   uint64_t start = metadata_slot_start_sector(target);
   uint8_t sector[XBFS_SECTOR_SIZE];
+  /* Only the sectors that differ from what this slot already holds. When the
+     shadow is not trusted -- first commit to the slot since mount, or anything
+     that failed part-way through -- every sector is written, which is what the
+     code always did. */
+  uint32_t known = g_metadata_shadow_valid[target];
+  uint64_t moved = 0U;
   for (uint32_t i = 0; i < g_active_metadata_sectors; ++i) {
-    bytes_copy(sector, g_metadata_buffer + (uint64_t)i * XBFS_SECTOR_SIZE,
-               XBFS_SECTOR_SIZE);
+    const uint8_t *source = g_metadata_buffer + (uint64_t)i * XBFS_SECTOR_SIZE;
+    if (known != 0U &&
+        bytes_eq(source, g_metadata_shadow[target] +
+                             (uint64_t)i * XBFS_SECTOR_SIZE,
+                 XBFS_SECTOR_SIZE) != 0) {
+      continue;
+    }
+    bytes_copy(sector, source, XBFS_SECTOR_SIZE);
     if (blk_write(start + i, sector, sizeof(sector)) != XAIOS_OK) {
       klog("xaibootfs: metadata write failed sector=%lu capacity=%lu\n",
            start + i, blk_capacity());
       ++g_reject_count;
+      /* Part of the slot is new and part is old, and which is which is no
+         longer known. Say so, so the next commit writes it whole. */
+      g_metadata_shadow_valid[target] = 0U;
       return XAIOS_ERR_IO;
     }
+    ++moved;
   }
   xaios_status_t flushed = blk_flush();
-  if (flushed != XAIOS_OK) return flushed;
+  if (flushed != XAIOS_OK) {
+    g_metadata_shadow_valid[target] = 0U;
+    return flushed;
+  }
+  /* Durable now, so the shadow can be believed. */
+  bytes_copy(g_metadata_shadow[target], g_metadata_buffer,
+             (uint64_t)g_active_metadata_sectors * XBFS_SECTOR_SIZE);
+  g_metadata_shadow_valid[target] = 1U;
+  (void)moved;
   /* Only once the new copy is durable does it become the one to read, and
      the other becomes the next target. */
   g_metadata_slot = target;
@@ -1605,6 +1654,8 @@ static xaios_status_t format_volume(void) {
   g_xbfs.committed_generation = 0;
   ++g_format_count;
   g_metadata_sequence = 0U;
+  g_metadata_shadow_valid[0] = 0U;
+  g_metadata_shadow_valid[1] = 0U;
   g_metadata_slot = 0U;
   if (clear_journal() != XAIOS_OK) {
     return XAIOS_ERR_IO;
@@ -1722,6 +1773,8 @@ static xaios_status_t mount_volume(uint32_t mount_flags) {
      mount, and inheriting its setting here would send writes to a slot that
      does not exist on this volume. */
   g_metadata_mirror_enabled = 0U;
+  g_metadata_shadow_valid[0] = 0U;
+  g_metadata_shadow_valid[1] = 0U;
   g_metadata_slot = 0U;
   if (blk_capacity() < active_data_start_sector() + g_active_data_sectors) {
     ++g_reject_count;
@@ -3050,6 +3103,8 @@ static xaios_status_t xaiboot_fs_mount_device_locked(const char *identifier) {
     return XAIOS_ERR_UNSUPPORTED;
   }
   set_active_v5();
+  g_metadata_shadow_valid[0] = 0U;
+  g_metadata_shadow_valid[1] = 0U;
   g_metadata_slot = 0U;
   g_metadata_sequence = 0U;
   /* The mirror is optional: a volume sized exactly for the old layout keeps
@@ -3388,6 +3443,8 @@ xaios_status_t xaiboot_fs_unmount(void) {
   g_persistent_device = 0;
   g_mounted = 0;
   g_mount_flags = 0;
+  g_metadata_shadow_valid[0] = 0U;
+  g_metadata_shadow_valid[1] = 0U;
   g_metadata_slot = 0U;
   g_metadata_sequence = 0U;
   g_metadata_mirror_enabled = 0U;
