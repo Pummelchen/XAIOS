@@ -1412,6 +1412,7 @@ docs-check:
 	python3 tests/repository/check-core-os-status.py
 	python3 tests/repository/check-ssh-wire-bound.py
 	python3 tests/repository/check-fault-test-marker.py
+	python3 tests/repository/check-portable-dd.py
 
 code-scanning-contract:
 	python3 tests/repository/check-code-scanning-contract.py

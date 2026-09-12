@@ -248,7 +248,9 @@ if [ "$dry_run" -eq 0 ] && [ ! -f "$ADMIN_IMAGE" ]; then
   if [ -f "$BUILD/xaios-smoke-storage-admin.img" ]; then
     cp "$BUILD/xaios-smoke-storage-admin.img" "$ADMIN_IMAGE"
   else
-    dd if=/dev/zero of="$ADMIN_IMAGE" bs=1m count=16 status=none
+    # bs=1048576, not bs=1m: lowercase suffixes are BSD dd only and GNU dd
+    # rejects them, so this line ran on a Mac and failed on Linux.
+    dd if=/dev/zero of="$ADMIN_IMAGE" bs=1048576 count=16 status=none
   fi
 fi
 BOOT_ARGS=""

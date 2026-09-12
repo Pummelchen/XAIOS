@@ -73,7 +73,11 @@ PYTHONPATH="$ROOT_DIR" "$PYTHON3" "$ROOT_DIR/tools/xaios_system_volume.py" \
 
 printf '%s\n' "Creating RISC-V boot medium: $IMAGE"
 rm -f "$IMAGE"
-dd if=/dev/zero of="$IMAGE" bs=1m count=128 status=none
+# bs=1048576 rather than bs=1m. Lowercase suffixes are BSD dd only: GNU dd
+# rejects them with "invalid number: '1m'", which is what made every Linux
+# CI run fail here while every run on a Mac passed. A byte count needs no
+# suffix and means the same thing to both.
+dd if=/dev/zero of="$IMAGE" bs=1048576 count=128 status=none
 "$MFORMAT" -i "$IMAGE" -F -v XAIOSRV64 ::
 "$MMD" -i "$IMAGE" ::/EFI ::/EFI/BOOT ::/EFI/XAIOS
 "$MCOPY" -i "$IMAGE" "$BUILD_DIR/BOOTRISCV64.EFI" ::/EFI/BOOT/BOOTRISCV64.EFI

@@ -126,7 +126,10 @@ cp "$ENTROPY_SEED" "$STAGE_DIR/EFI/XAIOS/entropy.sed"
 # kernel about 1, so adding one application to the image failed the build with
 # nothing but "Disk full" from mtools. Sized for the contents plus room to grow.
 ESP_MIB="${XAIOS_FUSION_ESP_MIB:-48}"
-dd if=/dev/zero of="$ESP_IMAGE" bs=1m count="$ESP_MIB" status=none
+# bs=1048576, not bs=1m: lowercase suffixes are BSD dd only. This script
+# needs VMware Fusion and so only ever runs on a Mac, but the spelling is
+# the one that bit CI elsewhere and there is no reason to keep two.
+dd if=/dev/zero of="$ESP_IMAGE" bs=1048576 count="$ESP_MIB" status=none
 mformat -i "$ESP_IMAGE" -v XAIOS_ESP ::
 mmd -i "$ESP_IMAGE" ::/EFI ::/EFI/BOOT ::/EFI/XAIOS
 mcopy -i "$ESP_IMAGE" "$GRUB_EFI" ::/EFI/BOOT/BOOTAA64.EFI
