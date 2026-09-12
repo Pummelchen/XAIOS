@@ -1318,6 +1318,11 @@ hosted-test: engine-cli
 	./build/hosted/test-xaiboot-fs-fragmentation
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/dev/block_device.c \
+	  tests/storage/test_xaiboot_fs_extent_depth.c \
+	  -o build/hosted/test-xaiboot-fs-extent-depth
+	./build/hosted/test-xaiboot-fs-extent-depth
+	$(HOST_CC) $(HOST_CFLAGS) \
+	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/dev/block_device.c \
 	  tests/storage/test_xaiboot_fs_large_volume.c \
 	  -o build/hosted/test-xaiboot-fs-large-volume
 	./build/hosted/test-xaiboot-fs-large-volume
