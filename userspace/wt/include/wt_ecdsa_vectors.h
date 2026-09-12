@@ -16,8 +16,9 @@
  *
  * THE PRIVATE KEY BEHIND THIS FIXTURE IS A TEST KEY. It protects nothing and
  * must never be used for anything. WT_ECDSA_CONTENT is RFC 8446 section 4.4.3's
- * signed content (64 spaces, context string, 0x00) plus a placeholder
- * transcript hash 00 01 .. 1f; the real hash comes from the handshake.
+ * signed content (64 spaces, context string, 0x00) plus the fixed ramp
+ * 00 01 .. 1f where a transcript hash goes; this fixture signs given bytes
+ * rather than a handshake, and the real hash comes from the handshake.
  */
 
 #ifndef WT_ECDSA_VECTORS_H

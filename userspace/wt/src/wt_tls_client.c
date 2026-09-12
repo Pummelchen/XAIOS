@@ -45,9 +45,9 @@ uint8_t wt_tls_client_alert(const wt_tls_client_t *handshake) {
 
 const char *wt_tls_client_fail_reason(const wt_tls_client_t *handshake) {
   /* NULL unless the handshake has actually failed. The header states that
-     contract and an earlier version broke it: `wt_tls_client_start` wrote a
-     placeholder reason before it knew whether it would succeed, and left it
-     there afterwards, so a healthy handshake reported "the handshake was never
+     contract and an earlier version broke it: `wt_tls_client_start` recorded a
+     reason before it knew whether it would succeed, and left it there
+     afterwards, so a healthy handshake reported "the handshake was never
      started" to anyone who asked. Gating on the state rather than on the
      string being set is what makes the contract hold no matter what the
      failure path wrote. */
