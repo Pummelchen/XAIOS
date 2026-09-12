@@ -384,7 +384,7 @@ libc:
 # and the values under test are arithmetic over byte strings. The code is the
 # same code the target builds, over the same vendored BearSSL.
 wt-host-test:
-	./scripts/test-wt-host.sh
+	./tests/security/run-wt-host-tests.sh
 
 # The same vectors recomputed independently in Python, so the C tests are not
 # checking themselves. Needs the `cryptography` package; skips cleanly without

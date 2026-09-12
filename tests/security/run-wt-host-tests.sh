@@ -15,7 +15,7 @@
 #        (no arguments runs every test; a name runs only that one)
 set -eu
 
-ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 BEARSSL="$ROOT/third_party/bearssl"
 BUILD="$ROOT/build/wt-host"
 CC=${CC:-clang}
@@ -82,7 +82,7 @@ build_module() {
 }
 
 MODULE_OBJECTS=""
-for source in userspace/wt/src/wt_crypto_bearssl.c; do
+for source in userspace/wt/src/wt_crypto_bearssl.c userspace/wt/src/wt_aes128.c; do
   MODULE_OBJECTS="$MODULE_OBJECTS $(build_module "$source")"
 done
 

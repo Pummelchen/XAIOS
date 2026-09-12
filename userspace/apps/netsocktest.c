@@ -6,9 +6,10 @@
  * traffic. What it did not have was a way to be given a port, and that is the
  * one thing a client needs first. `xaios_net_listen` with the UDP protocol
  * carries a receive path and refuses a zero port; a client that has never
- * received anything has no port to name and no listener to stand behind, and
- * `xaios_net_sendto` on a socket that was never bound sends from port zero,
- * which no peer can reply to.
+ * received anything has no port to name and no listener to stand behind. A
+ * socket that was never bound has local port zero, and the send path refuses
+ * a datagram from it outright -- so the client is not merely unnamed, it has
+ * nothing it can send.
  *
  * This runs the four things that has to mean, in the order they can fail:
  *
@@ -66,7 +67,14 @@ typedef struct summary {
 
 /* Port zero asks the kernel to choose. Both the descriptor and the port are
    taken from the call rather than assumed: the port is the caller's own
-   address, and a caller that guessed it would be telling peers a lie. */
+   address, and a caller that guessed it would be telling peers a lie.
+ *
+ * Note what this does NOT do: it cannot tell whether the port the kernel
+ * returned is one the reply path can reach, because that is a property of the
+ * listener registry and not of this call. A registry with no free row leaves
+ * the socket unable to receive while this still reports a port. That is B-61,
+ * and it is deliberately not asserted here -- a check that cannot fail on the
+ * machine it runs on is worse than a comment saying so. */
 static void open_ephemeral(summary_t *summary, open_result_t *result) {
   result->open_failed = 0U;
   result->port = 0U;
@@ -126,8 +134,14 @@ int main(void) {
 
   /* A port asked for by number comes back as itself. 0 is not usable as the
      expected value here, so the number is one in the dynamic range that the
-     two ephemeral draws are unlikely to have taken; a collision is a fair
-     failure and says so. */
+     two ephemeral draws are unlikely to have taken.
+   *
+     A collision with a port already held is NOT detected: the explicit branch
+     allocates whatever number it is given, so a shadowed port would be
+     reported as explicit_port_mismatch == 0 and read as success. The first
+     version of this comment claimed a collision "is a fair failure and says
+     so", which was wrong. The gate reads the kernel's allocation log as well,
+     which is where a wrong answer would show up. */
   open_result_t explicit_open;
   explicit_open.open_failed = 0U;
   explicit_open.port = 0U;
