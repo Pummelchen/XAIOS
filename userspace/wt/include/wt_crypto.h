@@ -125,6 +125,34 @@ int wt_chacha20_xor(const uint8_t key[32], const uint8_t nonce[12],
                     uint32_t counter, const uint8_t *in, size_t len,
                     uint8_t *out);
 
+/* X25519 Diffie-Hellman (RFC 7748), which is the key exchange QUIC's
+ * TLS_AES_128_GCM_SHA256 connections use by default and the one RFC 8448's
+ * trace is built on.
+ *
+ * The scalar is clamped in place by the implementation, as RFC 7748 requires,
+ * so a caller does not have to remember to clear the three low bits and set
+ * the high one. Both functions take the private key as the caller's buffer and
+ * do not modify it.
+ *
+ * A shared secret that is all zeros is refused: it is the low-order-point
+ * result, it is the same for every private key, and accepting it would let a
+ * peer force a known secret. RFC 7748 section 6.1 says implementations MAY
+ * check for it; for a protocol where a wrong secret is indistinguishable from
+ * a wrong key, refusing is the only answer that fails safely. */
+
+/* Derive the public key from a private key. `out` receives 32 bytes. */
+int wt_x25519_public_key(const uint8_t private_key[32], uint8_t out[32]);
+
+/* Derive the shared secret. `peer_public` is the peer's 32-byte u-coordinate as
+ * it appears on the wire. Returns -1 on a bad argument or an all-zero result. */
+int wt_x25519_shared_secret(const uint8_t private_key[32],
+                            const uint8_t peer_public[32], uint8_t out[32]);
+
+/* Whether a 32-byte value is a valid X25519 public key for this code's
+ * purposes: not all zeros. Exposed so a caller can reject a peer's key before
+ * doing the scalar multiplication. */
+int wt_x25519_public_key_is_valid(const uint8_t peer_public[32]);
+
 /* Constant-time comparison of two equal-length buffers. Returns 1 on equal.
    Used for tag and MAC checks; a timing-variable compare here is a forgery
    oracle. */

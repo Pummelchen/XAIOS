@@ -59,6 +59,21 @@ BEARSSL_SOURCES="
   symcipher/aes_ct64_ctr
   symcipher/aes_ct64_enc
   symcipher/aes_ct64_dec
+  ec/ec_c25519_m15
+  codec/ccopy
+  int/i15_add
+  int/i15_sub
+  int/i15_montmul
+  int/i15_mulacc
+  int/i15_moddiv
+  int/i15_encode
+  int/i15_decode
+  int/i15_decmod
+  int/i15_muladd
+  int/i15_bitlen
+  int/i15_reduce
+  int/i15_ninv15
+  int/i15_tmont
   codec/dec32be
   codec/dec32le
   codec/dec64be

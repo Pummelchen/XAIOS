@@ -17,6 +17,7 @@
 
 #include "wt_crypto.h"
 #include "wt_rfc9001_vectors.h"
+#include "wt_rfc8448_vectors.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -537,6 +538,119 @@ static void test_gcm_round_trip(void) {
   }
 }
 
+/* ------------------------------------------------------------------ x25519 */
+
+/* RFC 7748 section 5.2's own test vector: a private key and the public key it
+ * must produce, and the shared secret between two such pairs. These are the
+ * canonical vectors, and they pin the clamping and the encoding rather than
+ * just "it produces 32 bytes". */
+static void test_x25519(void) {
+  static const uint8_t alice_private[32] = {
+      0x77, 0x07, 0x6d, 0x0a, 0x73, 0x18, 0xa5, 0x7d,
+      0x3c, 0x16, 0xc1, 0x72, 0x51, 0xb2, 0x66, 0x45,
+      0xdf, 0x4c, 0x2f, 0x87, 0xeb, 0xc0, 0x99, 0x2a,
+      0xb1, 0x77, 0xfb, 0xa5, 0x1d, 0xb9, 0x2c, 0x2a,
+  };
+  static const uint8_t alice_public[32] = {
+      0x85, 0x20, 0xf0, 0x09, 0x89, 0x30, 0xa7, 0x54,
+      0x74, 0x8b, 0x7d, 0xdc, 0xb4, 0x3e, 0xf7, 0x5a,
+      0x0d, 0xbf, 0x3a, 0x0d, 0x26, 0x38, 0x1a, 0xf4,
+      0xeb, 0xa4, 0xa9, 0x8e, 0xaa, 0x9b, 0x4e, 0x6a,
+  };
+  static const uint8_t bob_private[32] = {
+      0x5d, 0xab, 0x08, 0x7e, 0x62, 0x4a, 0x8a, 0x4b,
+      0x79, 0xe1, 0x7f, 0x8b, 0x83, 0x80, 0x0e, 0xe6,
+      0x6f, 0x3b, 0xb1, 0x29, 0x26, 0x18, 0xb6, 0xfd,
+      0x1c, 0x2f, 0x8b, 0x27, 0xff, 0x88, 0xe0, 0xeb,
+  };
+  static const uint8_t bob_public[32] = {
+      0xde, 0x9e, 0xdb, 0x7d, 0x7b, 0x7d, 0xc1, 0xb4,
+      0xd3, 0x5b, 0x61, 0xc2, 0xec, 0xe4, 0x35, 0x37,
+      0x3f, 0x83, 0x43, 0xc8, 0x5b, 0x78, 0x67, 0x4d,
+      0xad, 0xfc, 0x7e, 0x14, 0x6f, 0x88, 0x2b, 0x4f,
+  };
+  static const uint8_t expected_secret[32] = {
+      0x4a, 0x5d, 0x9d, 0x5b, 0xa4, 0xce, 0x2d, 0xe1,
+      0x72, 0x8e, 0x3b, 0xf4, 0x80, 0x35, 0x0f, 0x25,
+      0xe0, 0x7e, 0x21, 0xc9, 0x47, 0xd1, 0x9e, 0x33,
+      0x76, 0xf0, 0x9b, 0x3c, 0x1e, 0x16, 0x17, 0x42,
+  };
+  uint8_t out[32];
+
+  expect_int("x25519 public key from the RFC's private key", 0,
+             wt_x25519_public_key(alice_private, out));
+  expect("the public key is the RFC's", alice_public, out, 32);
+
+  expect_int("x25519 public key from the other private key", 0,
+             wt_x25519_public_key(bob_private, out));
+  expect("and it is the RFC's too", bob_public, out, 32);
+
+  /* Both directions must agree; a ladder that is wrong in one direction only
+     is a ladder that is wrong. */
+  expect_int("alice's shared secret", 0,
+             wt_x25519_shared_secret(alice_private, bob_public, out));
+  expect("alice computes the RFC's secret", expected_secret, out, 32);
+  expect_int("bob's shared secret", 0,
+             wt_x25519_shared_secret(bob_private, alice_public, out));
+  expect("bob computes the same secret", expected_secret, out, 32);
+
+  /* RFC 7748 section 6.1's low-order point. It must be refused, because the
+     result is the same for every private key and a peer that can choose it can
+     force a known secret. */
+  {
+    static const uint8_t low_order[32] = {0};
+    expect_int("the all-zero public key is refused", 0,
+               wt_x25519_public_key_is_valid(low_order));
+    expect_int("and the shared secret with it is refused", -1,
+               wt_x25519_shared_secret(alice_private, low_order, out));
+    /* The output must be cleared rather than left holding whatever was there. */
+    {
+      static const uint8_t zeroes[32] = {0};
+      expect("a refused shared secret is cleared", zeroes, out, 32);
+    }
+  }
+
+  /* RFC 8448's own trace: the client's private key and the server's public key
+     from the ServerHello produce the ECDHE input the key schedule is built on.
+     This is the value the whole handshake depends on, and it is published. */
+  {
+    static const uint8_t rfc8448_client_private[32] = {
+        0x49, 0xaf, 0x42, 0xba, 0x7f, 0x79, 0x94, 0x85,
+        0x2d, 0x71, 0x3e, 0xf2, 0x78, 0x4b, 0xcb, 0xca,
+        0xa7, 0x91, 0x1d, 0xe2, 0x6a, 0xdc, 0x56, 0x42,
+        0xcb, 0x63, 0x45, 0x40, 0xe7, 0xea, 0x50, 0x05,
+    };
+    static const uint8_t rfc8448_client_public[32] = {
+        0x99, 0x38, 0x1d, 0xe5, 0x60, 0xe4, 0xbd, 0x43,
+        0xd2, 0x3d, 0x8e, 0x43, 0x5a, 0x7d, 0xba, 0xfe,
+        0xb3, 0xc0, 0x6e, 0x51, 0xc1, 0x3c, 0xae, 0x4d,
+        0x54, 0x13, 0x69, 0x1e, 0x52, 0x9a, 0xaf, 0x2c,
+    };
+    static const uint8_t rfc8448_server_public[32] = {
+        0xc9, 0x82, 0x88, 0x76, 0x11, 0x20, 0x95, 0xfe,
+        0x66, 0x76, 0x2b, 0xdb, 0xf7, 0xc6, 0x72, 0xe1,
+        0x56, 0xd6, 0xcc, 0x25, 0x3b, 0x83, 0x3d, 0xf1,
+        0xdd, 0x69, 0xb1, 0xb0, 0x4e, 0x75, 0x1f, 0x0f,
+    };
+    expect_int("the RFC 8448 client public key", 0,
+               wt_x25519_public_key(rfc8448_client_private, out));
+    expect("matches the ClientHello's key share", rfc8448_client_public,
+                 out, 32);
+    expect_int("the RFC 8448 shared secret", 0,
+               wt_x25519_shared_secret(rfc8448_client_private,
+                                       rfc8448_server_public, out));
+    expect("is the ECDHE input the key schedule uses",
+                 WT_RFC8448_ECDHE, out, 32);
+  }
+
+  expect_int("a NULL private key is refused", -1,
+             wt_x25519_public_key(NULL, out));
+  expect_int("a NULL output is refused", -1,
+             wt_x25519_public_key(alice_private, NULL));
+  expect_int("a NULL peer key is refused", -1,
+             wt_x25519_shared_secret(alice_private, NULL, out));
+}
+
 /* ------------------------------------------------------------------ helpers */
 
 static void test_helpers(void) {
@@ -562,6 +676,7 @@ int main(void) {
   test_chacha20();
   test_initial_packet();
   test_gcm_round_trip();
+  test_x25519();
   test_helpers();
 
   if (g_failures != 0) {
