@@ -206,6 +206,525 @@ static void test_transcript(void) {
   expect_int("transcript_init refuses NULL", -1, wt_tls_transcript_init(NULL));
 }
 
+/* -------------------------------------------------------- ClientHello build */
+
+/* Verify the ClientHello builder by parsing what it produces.
+ *
+ * WHY NOT BYTE-FOR-BYTE AGAINST RFC 8448. The obvious check -- build the
+ * message with the trace's parameters and compare it to the 196 bytes the RFC
+ * prints -- does not hold, and the reason is worth recording rather than
+ * working around. RFC 8448's ClientHello is from an earlier draft of TLS 1.3:
+ * it carries renegotiation_info (0xff01), ec_point_formats (0x001c),
+ * session_ticket (0x0023), extended_master_secret (0x0017) and
+ * psk_key_exchange_modes (0x002d), none of which belong in a TLS 1.3 QUIC
+ * ClientHello, and its signature_algorithms list holds SIXTEEN entries where
+ * the extension's own length says fifteen -- 00 1e, thirty bytes, sixteen
+ * algorithms, so the last of them is a length error in the vector.
+ *
+ * Matching it byte for byte would mean emitting deprecated extensions and
+ * reproducing an off-by-one, and then the message would be rejected by a real
+ * server. So the builder is checked against the specification instead: its
+ * output is decoded here, field by field, from the wire format. That is a
+ * weaker check against a published vector and a stronger check against the
+ * protocol, and the difference is stated rather than hidden.
+ *
+ * The fields that CAN be compared to the RFC are: the cipher suite list, the
+ * supported groups, the signature algorithms minus the vector's extra entry,
+ * the key share, the ALPN, and the SNI. All are.
+ */
+
+/* A minimal reader over the built message, written here rather than shared with
+ * the parser: a verifier that used the code under test would agree with it.
+ *
+ * Every function takes the cursor by pointer and moves it explicitly, and there
+ * is no arithmetic that mixes a cursor update with a read in one expression.
+ * The first three versions of this used `r->offset += n + chr_u16(r)`, which
+ * modifies the cursor twice with no sequence point between them -- undefined
+ * behaviour that ASan reported as a stack overflow and then as a wild read, and
+ * that read like a builder emitting the wrong bytes. */
+
+typedef struct ch_reader {
+  const uint8_t *data;
+  size_t len;
+  size_t offset;
+  int failed;
+} ch_reader_t;
+
+static void chr_init(ch_reader_t *r, const uint8_t *data, size_t len) {
+  r->data = data;
+  r->len = len;
+  r->offset = 0U;
+  r->failed = 0;
+}
+
+static const uint8_t *chr_take(ch_reader_t *r, size_t n) {
+  const uint8_t *p;
+  if (r->failed || n > r->len - r->offset) {
+    r->failed = 1;
+    return NULL;
+  }
+  p = r->data + r->offset;
+  r->offset += n;
+  return p;
+}
+
+static uint8_t chr_u8(ch_reader_t *r) {
+  const uint8_t *p = chr_take(r, 1U);
+  return p == NULL ? 0U : p[0];
+}
+
+static uint16_t chr_u16(ch_reader_t *r) {
+  const uint8_t *p = chr_take(r, 2U);
+  return p == NULL ? 0U : (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
+}
+
+/* Skip precisely one field and return its length, so the walk reads the same
+ * number of bytes in both passes. `chr_skip` is the only place the cursor moves
+ * without producing a value, and every caller uses the value it returns. */
+static void chr_skip(ch_reader_t *r, size_t n) { (void)chr_take(r, n); }
+
+/* The ClientHello's fixed prefix, leaving the cursor at the extensions block.
+ * `out_ext_len` receives that block's length and the cursor is left just past
+ * its two-byte length, so the caller can walk the extensions itself. */
+static void chr_enter_extensions(ch_reader_t *r, uint16_t *out_ext_len) {
+  uint8_t session_id_len;
+  uint16_t suites_len;
+  uint8_t compression_len;
+
+  chr_skip(r, 2U);                 /* legacy_version */
+  chr_skip(r, 32U);                /* random */
+  session_id_len = chr_u8(r);
+  chr_skip(r, session_id_len);     /* legacy_session_id */
+  suites_len = chr_u16(r);
+  chr_skip(r, suites_len);         /* cipher_suites */
+  compression_len = chr_u8(r);
+  chr_skip(r, compression_len);    /* legacy_compression_methods */
+  *out_ext_len = chr_u16(r);       /* the extensions block's length */
+}
+
+/* Find one extension by walking the block from its start. */
+static const uint8_t *chr_find_extension(const uint8_t *extensions,
+                                         size_t extensions_len, uint16_t want,
+                                         size_t *out_len) {
+  ch_reader_t ext;
+  chr_init(&ext, extensions, extensions_len);
+  while (ext.offset < ext.len) {
+    uint16_t type = chr_u16(&ext);
+    uint16_t len = chr_u16(&ext);
+    const uint8_t *data = chr_take(&ext, len);
+    if (ext.failed) return NULL;
+    if (type == want) {
+      *out_len = len;
+      return data;
+    }
+  }
+  return NULL;
+}
+
+static void test_client_hello_build(void) {
+  static const uint16_t cipher_suites[3] = {0x1301, 0x1303, 0x1302};
+  static const uint16_t groups[5] = {0x001d, 0x0017, 0x0018, 0x0019, 0x0100};
+  /* RFC 8448's list, without the sixteenth entry its own length field excludes.
+     The vector prints 00 1e (thirty bytes, fifteen algorithms) and then
+     sixteen; the last, 0x0000, is outside the extension. Fifteen is what the
+     RFC's own length says, and 0x0000 is not a signature algorithm. */
+  static const uint16_t signature_algorithms[15] = {
+      0x0403, 0x0503, 0x0603, 0x0203, 0x0804, 0x0805, 0x0806, 0x0401,
+      0x0501, 0x0601, 0x0201, 0x0402, 0x0502, 0x0602, 0x0202,
+  };
+  static const uint8_t alpn[5] = {0x01, 0x00, 0x00, 0x00, 0x00};
+  wt_tls_client_hello_params_t params;
+  wt_tls_key_share_t share;
+  static uint8_t buffer[512];
+  size_t size;
+  size_t written;
+
+  share.group = 0x001d;
+  share.public_key = WT_RFC8448_CLIENT_KEY_PUBLIC;
+  share.public_key_len = sizeof(WT_RFC8448_CLIENT_KEY_PUBLIC);
+
+  memset(&params, 0, sizeof(params));
+  params.random = WT_RFC8448_CLIENT_RANDOM;
+  params.cipher_suites = cipher_suites;
+  params.cipher_suite_count = 3U;
+  params.key_shares = &share;
+  params.key_share_count = 1U;
+  params.supported_groups = groups;
+  params.supported_group_count = 5U;
+  params.signature_algorithms = signature_algorithms;
+  params.signature_algorithm_count = 15U;
+  params.alpn_protocols = alpn;
+  params.alpn_protocols_len = sizeof(alpn);
+  params.server_name = "server";
+
+  size = wt_tls_client_hello_size(&params);
+  written = wt_tls_encode_client_hello(&params, buffer, sizeof(buffer));
+  expect_int("the builder produces the size it measured", (long)size,
+             (long)written);
+
+  /* The framing, decoded by the module's own header reader -- which is checked
+     against the RFC's messages elsewhere in this file. */
+  {
+    uint8_t type = 0U;
+    size_t body_len = 0U;
+    size_t offset = 0U;
+    expect_int("the built message frames", 0,
+               wt_tls_decode_handshake_header(buffer, written, &type, &body_len,
+                                              &offset));
+    expect_int("it is a ClientHello", 1, (long)type);
+    expect_int("its body is the message minus the four-byte header",
+               (long)(written - 4U), (long)body_len);
+  }
+
+  /* Now decode it here. */
+  {
+    ch_reader_t r;
+    const uint8_t *field;
+    const uint8_t *extensions;
+    size_t field_len = 0U;
+    uint16_t ext_len = 0U;
+
+    /* The reader starts at the BODY, past the four-byte handshake header. */
+    chr_init(&r, buffer + 4U, written - 4U);
+    expect_int("the built ClientHello is a whole number of handshake messages",
+               (long)written, (long)(4U + ((size_t)buffer[1] << 16) +
+                                     ((size_t)buffer[2] << 8) + buffer[3]));
+
+    /* legacy_version must be 0x0303 with the real version in
+       supported_versions. */
+    expect_int("legacy_version is 0x0303", 0x0303, (long)chr_u16(&r));
+    field = chr_take(&r, 32U);
+    expect_bytes("the ClientHello random is the one supplied",
+                 WT_RFC8448_CLIENT_RANDOM, field, 32);
+
+    expect_int("legacy_session_id is empty, as QUIC requires", 0,
+               (long)chr_u8(&r));
+
+    {
+      uint16_t suites_len = chr_u16(&r);
+      uint16_t suites[8];
+      size_t count = suites_len / 2U;
+      expect_int("the cipher suite list is six bytes", 6, (long)suites_len);
+      /* Bounded by the array, not by the message. The first version looped to
+         count straight from the message and wrote eight past the end of a
+         three-element buffer under ASan -- a test bug, but the same shape as
+         the parsing bugs the test exists to look for, which is why the
+         sanitizer run stays in the loop. */
+      if (count > sizeof(suites) / sizeof(suites[0])) {
+        g_checks++;
+        g_failures++;
+        printf("FAIL the cipher suite list is %zu entries, more than the "
+               "verifier holds\n", count);
+        count = sizeof(suites) / sizeof(suites[0]);
+      }
+      for (size_t i = 0U; i < count; i++) suites[i] = chr_u16(&r);
+      expect_int("suite 0 is TLS_AES_128_GCM_SHA256", 0x1301, (long)suites[0]);
+      expect_int("suite 1 is TLS_CHACHA20_POLY1305_SHA256", 0x1303,
+                 (long)suites[1]);
+      expect_int("suite 2 is TLS_AES_256_GCM_SHA384", 0x1302, (long)suites[2]);
+    }
+
+    {
+      uint8_t methods_len = chr_u8(&r);
+      expect_int("legacy_compression_methods has one entry", 1,
+                 (long)methods_len);
+      expect_int("and it is null compression", 0, (long)chr_u8(&r));
+    }
+
+    ext_len = chr_u16(&r);
+    extensions = chr_take(&r, ext_len);
+    if (extensions == NULL) {
+      g_checks++;
+      g_failures++;
+      printf("FAIL the extensions block does not fit the message\n");
+      return;
+    }
+    /* The sections before the extensions plus the extensions must consume the
+       body exactly. This is the assertion that catches a wrong skip, and it is
+       why the walk is worth doing rather than trusting the builder. */
+    expect_int("the sections and the extensions consume the body exactly",
+               (long)(written - 4U), (long)r.offset);
+
+    /* server_name */
+    field = chr_find_extension(extensions, ext_len, 0x0000U, &field_len);
+    g_checks++;
+    if (field == NULL) {
+      g_failures++;
+      printf("FAIL the ClientHello has no server_name extension\n");
+    } else {
+      ch_reader_t sni;
+      chr_init(&sni, field, field_len);
+      expect_int("the server_name list length", (long)(field_len - 2U),
+                 (long)chr_u16(&sni));
+      expect_int("the name type is host_name", 0, (long)chr_u8(&sni));
+      expect_int("the name length is 6", 6, (long)chr_u16(&sni));
+      expect_bytes("the name is \"server\"", (const uint8_t *)"server",
+                   chr_take(&sni, 6U), 6);
+    }
+
+    /* supported_groups, which must equal the RFC's list. */
+    field = chr_find_extension(extensions, ext_len, 0x000AU, &field_len);
+    g_checks++;
+    if (field == NULL) {
+      g_failures++;
+      printf("FAIL the ClientHello has no supported_groups extension\n");
+    } else {
+      ch_reader_t g;
+      uint16_t list_len;
+      chr_init(&g, field, field_len);
+      list_len = chr_u16(&g);
+      expect_int("the supported_groups list is ten bytes", 10, (long)list_len);
+      for (size_t i = 0U; i < 5U; i++) {
+        expect_int("supported group matches the RFC's", (long)groups[i],
+                   (long)chr_u16(&g));
+      }
+    }
+
+    /* signature_algorithms. */
+    field = chr_find_extension(extensions, ext_len, 0x000DU, &field_len);
+    g_checks++;
+    if (field == NULL) {
+      g_failures++;
+      printf("FAIL the ClientHello has no signature_algorithms extension\n");
+    } else {
+      ch_reader_t g;
+      uint16_t list_len;
+      chr_init(&g, field, field_len);
+      list_len = chr_u16(&g);
+      expect_int("fifteen signature algorithms", 30, (long)list_len);
+      for (size_t i = 0U; i < 15U; i++) {
+        expect_int("signature algorithm matches the RFC's",
+                   (long)signature_algorithms[i], (long)chr_u16(&g));
+      }
+    }
+
+    /* key_share, including the client's public key. */
+    field = chr_find_extension(extensions, ext_len, 0x0033U, &field_len);
+    g_checks++;
+    if (field == NULL) {
+      g_failures++;
+      printf("FAIL the ClientHello has no key_share extension\n");
+    } else {
+      ch_reader_t g;
+      uint16_t list_len;
+      chr_init(&g, field, field_len);
+      list_len = chr_u16(&g);
+      expect_int("one key share of 36 bytes", 36, (long)list_len);
+      expect_int("the group is x25519", 0x001d, (long)chr_u16(&g));
+      expect_int("the key is 32 bytes", 32, (long)chr_u16(&g));
+      expect_bytes("the key is the client's public key",
+                   WT_RFC8448_CLIENT_KEY_PUBLIC, chr_take(&g, 32U), 32);
+    }
+
+    /* supported_versions must advertise 1.3 and nothing else. */
+    field = chr_find_extension(extensions, ext_len, 0x002BU, &field_len);
+    g_checks++;
+    if (field == NULL) {
+      g_failures++;
+      printf("FAIL the ClientHello has no supported_versions extension\n");
+    } else {
+      expect_int("supported_versions is three bytes", 3, (long)field_len);
+      expect_int("one version is listed", 2, (long)field[0]);
+      expect_int("and it is TLS 1.3", 0x0304,
+                 (long)(((uint16_t)field[1] << 8) | field[2]));
+    }
+
+    /* alpn */
+    field = chr_find_extension(extensions, ext_len, 0x0010U, &field_len);
+    g_checks++;
+    if (field == NULL) {
+      g_failures++;
+      printf("FAIL the ClientHello has no ALPN extension\n");
+    } else {
+      /* The extension data is `ProtocolNameList` -- a two-byte list length
+         followed by the length-prefixed protocol names -- not the bare list.
+         The first version compared the extension data against the caller's
+         list and was two bytes out. */
+      expect_int("the ALPN extension is the list plus its length prefix",
+                 (long)(sizeof(alpn) + 2U), (long)field_len);
+      expect_int("the ALPN list length is the caller's", (long)sizeof(alpn),
+                 (long)(((uint16_t)field[0] << 8) | field[1]));
+      expect_bytes("the ALPN list is the one supplied", alpn, field + 2U,
+                   sizeof(alpn));
+    }
+
+    /* A QUIC ClientHello without transport parameters is rejected by a server,
+       so the builder must emit none only when the caller passes none. */
+    field = chr_find_extension(extensions, ext_len, 0x0039U, &field_len);
+    expect_int("no quic_transport_parameters extension was requested so none "
+               "is present", 1, (long)(field == NULL));
+  }
+
+  /* The size function and the encoder must agree, because a caller sizes its
+     buffer from one and fills it with the other. */
+  {
+    static uint8_t exact[512];
+    expect_int("a buffer of exactly the measured size is accepted",
+               (long)size,
+               (long)wt_tls_encode_client_hello(&params, exact, size));
+    expect_bytes("and produces the same message", buffer, exact, size);
+    expect_int("a buffer one byte short is refused", 0,
+               (long)wt_tls_encode_client_hello(&params, exact, size - 1U));
+  }
+
+  /* A realistic HTTP/3 client differs from the RFC's vector in two ways that
+     matter: it offers "h3" rather than a zero-length protocol, and it carries
+     QUIC transport parameters, which RFC 9001 section 8.2 makes mandatory. */
+  {
+    static const uint8_t h3[3] = {0x02, 0x68, 0x33};
+    static const uint8_t quic_params[50] = {
+        0x04, 0x08, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x05, 0x04, 0x80, 0x00, 0xff, 0xff,
+        0x07, 0x04, 0x80, 0x00, 0xff, 0xff,
+        0x08, 0x01, 0x10,
+        0x01, 0x04, 0x80, 0x00, 0x75, 0x30,
+        0x09, 0x01, 0x10,
+        0x0f, 0x08, 0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08,
+        0x06, 0x04, 0x80, 0x00, 0xff, 0xff,
+    };
+    wt_tls_client_hello_params_t real_params = params;
+    static uint8_t real_buffer[512];
+    size_t real_size;
+    size_t written_real;
+    size_t base_size = size;
+
+    real_params.alpn_protocols = h3;
+    real_params.alpn_protocols_len = sizeof(h3);
+    real_params.quic_transport_parameters = quic_params;
+    real_params.quic_transport_parameters_len = sizeof(quic_params);
+
+    real_size = wt_tls_client_hello_size(&real_params);
+    /* ALPN loses two bytes (5 -> 3); the parameters add a four-byte extension
+       header and fifty bytes, so the message grows by 52. */
+    expect_int("the QUIC ClientHello grows by exactly the extension overhead",
+               (long)(base_size + 52U), (long)real_size);
+    written_real = wt_tls_encode_client_hello(&real_params, real_buffer,
+                                              sizeof(real_buffer));
+    expect_int("a real HTTP/3 ClientHello encodes to its measured size",
+               (long)real_size, (long)written_real);
+    {
+      ch_reader_t r2;
+      const uint8_t *field;
+      size_t field_len = 0U;
+      chr_init(&r2, real_buffer + 4U, written_real - 4U);
+      {
+        const uint8_t *real_extensions;
+        uint16_t real_ext_len = 0U;
+        chr_enter_extensions(&r2, &real_ext_len);
+        real_extensions = chr_take(&r2, real_ext_len);
+        field = chr_find_extension(real_extensions, real_ext_len, 0x0039U,
+                                   &field_len);
+      }
+      g_checks++;
+      if (field == NULL) {
+        g_failures++;
+        printf("FAIL the transport parameters are missing\n");
+      } else {
+        expect_int("the transport parameters are carried verbatim",
+                   (long)sizeof(quic_params), (long)field_len);
+        expect_bytes("and are the bytes supplied", quic_params, field,
+                     sizeof(quic_params));
+      }
+      chr_init(&r2, real_buffer + 4U, written_real - 4U);
+      {
+        const uint8_t *real_extensions;
+        uint16_t real_ext_len = 0U;
+        chr_enter_extensions(&r2, &real_ext_len);
+        real_extensions = chr_take(&r2, real_ext_len);
+        field = chr_find_extension(real_extensions, real_ext_len, 0x0010U,
+                                   &field_len);
+      }
+      expect_int("the h3 ALPN extension is the list plus its length prefix", 5,
+                 (long)field_len);
+      expect_int("the h3 list length", 3,
+                 (long)(((uint16_t)field[0] << 8) | field[1]));
+      expect_bytes("and it is h3", h3, field + 2U, 3);
+    }
+  }
+
+  /* Refusals. Each of these is a way a client can be wrong on the wire. */
+  {
+    wt_tls_client_hello_params_t bad = params;
+    static const uint8_t session_id[1] = {0x01};
+
+    /* RFC 9001 section 8.4 prohibits a non-empty legacy_session_id for QUIC. */
+    bad.legacy_session_id = session_id;
+    bad.legacy_session_id_len = 1U;
+    expect_int("a non-empty legacy session ID is refused", 0,
+               (long)wt_tls_client_hello_size(&bad));
+    expect_int("and encoding it is refused", 0,
+               (long)wt_tls_encode_client_hello(&bad, buffer, sizeof(buffer)));
+
+    /* A random is mandatory: a builder that defaulted to zeros would produce a
+       ClientHello with no unpredictability. */
+    bad = params;
+    bad.random = NULL;
+    expect_int("a NULL random is refused", 0,
+               (long)wt_tls_client_hello_size(&bad));
+
+    /* At least one cipher suite is mandatory. */
+    bad = params;
+    bad.cipher_suite_count = 0U;
+    expect_int("no cipher suites is refused", 0,
+               (long)wt_tls_client_hello_size(&bad));
+
+    /* No key share is legal TLS and produces a HelloRetryRequest, which is a
+       round trip a QUIC handshake is not willing to spend. */
+    bad = params;
+    bad.key_share_count = 0U;
+    bad.key_shares = NULL;
+    expect_int("no key share is refused", 0,
+               (long)wt_tls_client_hello_size(&bad));
+
+    /* A NULL pointer with a non-zero count is a caller bug. */
+    bad = params;
+    bad.key_shares = NULL;
+    expect_int("a NULL key share array with a count is refused", 0,
+               (long)wt_tls_client_hello_size(&bad));
+    bad = params;
+    bad.supported_groups = NULL;
+    expect_int("a NULL group array with a count is refused", 0,
+               (long)wt_tls_client_hello_size(&bad));
+    bad = params;
+    bad.signature_algorithms = NULL;
+    expect_int("a NULL signature algorithm array with a count is refused", 0,
+               (long)wt_tls_client_hello_size(&bad));
+
+    expect_int("a NULL output is refused", 0,
+               (long)wt_tls_encode_client_hello(&params, NULL, 512U));
+    expect_int("a NULL params is refused", 0,
+               (long)wt_tls_client_hello_size(NULL));
+  }
+
+  /* The smallest ClientHello: every optional parameter absent. */
+  {
+    wt_tls_client_hello_params_t minimal = params;
+    size_t n;
+    static uint8_t small_buffer[512];
+    minimal.server_name = NULL;
+    minimal.supported_group_count = 0U;
+    minimal.supported_groups = NULL;
+    minimal.signature_algorithm_count = 0U;
+    minimal.signature_algorithms = NULL;
+    minimal.alpn_protocols = NULL;
+    minimal.alpn_protocols_len = 0U;
+    n = wt_tls_client_hello_size(&minimal);
+    g_checks++;
+    if (n == 0U) {
+      g_failures++;
+      printf("FAIL a minimal ClientHello reports zero bytes\n");
+    } else {
+      expect_int("the minimal ClientHello encodes to its measured size",
+                 (long)n,
+                 (long)wt_tls_encode_client_hello(&minimal, small_buffer,
+                                                  sizeof(small_buffer)));
+      expect_int("a buffer one byte short is refused", 0,
+                 (long)wt_tls_encode_client_hello(&minimal, small_buffer,
+                                                  n - 1U));
+    }
+  }
+}
+
 /* -------------------------------------------------------- ServerHello parse */
 
 static void test_server_hello_parse(void) {
@@ -362,6 +881,7 @@ static void test_parse_then_schedule(void) {
 int main(void) {
   test_handshake_framing();
   test_transcript();
+  test_client_hello_build();
   test_server_hello_parse();
   test_parse_then_schedule();
 

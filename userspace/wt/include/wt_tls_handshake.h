@@ -121,6 +121,77 @@ int wt_tls_decode_handshake_header(const uint8_t *message, size_t message_len,
                                    uint8_t *out_type, size_t *out_body_len,
                                    size_t *out_body_offset);
 
+/* ---------------------------------------------------------------------------
+ * ClientHello construction
+ *
+ * The parameters a client chooses. This is not a policy object: it is the list
+ * of things that go on the wire, and the caller decides them. The defaults a
+ * real client would want -- which groups, which signature algorithms, which
+ * ALPN protocol -- are protocol policy and belong to the caller.
+ * ------------------------------------------------------------------------- */
+
+/* One key share to offer: a group and a public key the client generated for
+   it. The key is copied into the message, so the caller keeps ownership. */
+typedef struct wt_tls_key_share {
+  uint16_t group;
+  const uint8_t *public_key;
+  size_t public_key_len;
+} wt_tls_key_share_t;
+
+typedef struct wt_tls_client_hello_params {
+  /* The 32-byte ClientHello random. Caller-supplied because it must be
+     unpredictable: a predictable random is a replay and downgrade weakness,
+     and a builder that generated its own would hide where it came from. */
+  const uint8_t *random;
+  /* RFC 8446 section 4.1.2: required to be empty for QUIC, because TLS 1.3
+     middlebox compatibility mode is prohibited (RFC 9001 section 8.4). A
+     non-empty value is refused rather than sent. */
+  const uint8_t *legacy_session_id;
+  size_t legacy_session_id_len;
+  /* The cipher suites offered, in preference order. */
+  const uint16_t *cipher_suites;
+  size_t cipher_suite_count;
+  /* The key shares offered. */
+  const wt_tls_key_share_t *key_shares;
+  size_t key_share_count;
+  /* The groups the client supports, for the supported_groups extension. */
+  const uint16_t *supported_groups;
+  size_t supported_group_count;
+  /* The signature algorithms offered, in preference order. */
+  const uint16_t *signature_algorithms;
+  size_t signature_algorithm_count;
+  /* The ALPN protocols, each a length-prefixed byte string in
+     `alpn_protocols`. For QUIC this must include "h3" for HTTP/3. */
+  const uint8_t *alpn_protocols;
+  size_t alpn_protocols_len;
+  /* The Server Name Indication, without a length prefix. NULL for none. */
+  const char *server_name;
+  /* The QUIC transport parameters, already encoded. This module does not build
+     them -- they are QUIC's, not TLS's -- but it carries them, because a QUIC
+     ClientHello without the extension is rejected (RFC 9001 section 8.2). */
+  const uint8_t *quic_transport_parameters;
+  size_t quic_transport_parameters_len;
+} wt_tls_client_hello_params_t;
+
+/* How large a buffer a ClientHello needs for these parameters, or 0 if the
+ * parameters are invalid. Use this to size the buffer: the encoder refuses
+ * rather than truncating, so a caller that guessed too small gets an error and
+ * not a short message. */
+size_t wt_tls_client_hello_size(const wt_tls_client_hello_params_t *params);
+
+/* Encode a ClientHello into `out`, which must have room for
+ * wt_tls_client_hello_size(params) bytes. Returns the message length, or 0 on
+ * a bad argument or a buffer too small.
+ *
+ * The extensions are emitted in a fixed order -- server_name, supported_groups,
+ * signature_algorithms, ALPN, supported_versions, key_share,
+ * quic_transport_parameters -- which RFC 8446 allows and which makes the output
+ * comparable to a published message. RFC 8448's ClientHello uses that order
+ * with one difference: it interleaves nothing, so a caller reproducing the
+ * vector gets the vector's bytes. */
+size_t wt_tls_encode_client_hello(const wt_tls_client_hello_params_t *params,
+                                  uint8_t *out, size_t out_capacity);
+
 #ifdef __cplusplus
 }
 #endif

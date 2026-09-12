@@ -186,6 +186,14 @@ def main() -> int:
     # these two concatenated, and the RFC prints that hash, so building a
     # transcript from the messages and hashing it is checkable end to end.
     client_hello = extract_labelled_block(lines, "ClientHello (196 octets):", 196)
+    # The ClientHello random is inside the message at offset 6 (after the
+    # four-byte header and the two-byte legacy_version). Taken from there rather
+    # than transcribed, so it cannot disagree with the message it belongs to.
+    client_hello_fresh = client_hello
+    client_key_private = extract_labelled_block(
+        lines, "private key (32 octets):  49 af 42 ba", 32)
+    client_key_public = extract_labelled_block(
+        lines, "public key (32 octets):  99 38 1d e5", 32)
     server_hello = extract_labelled_block(lines, "ServerHello (90 octets):", 90)
     th_client_finished = extract_field(
         lines, 'derive secret "tls13 res master"', "hash (32 octets):", 32)
@@ -277,6 +285,21 @@ static const uint8_t WT_RFC8448_TRANSCRIPT_AFTER_CLIENT_FINISHED[32] = {{
 }};
 static const uint8_t WT_RFC8448_RESUMPTION_MASTER[32] = {{
 {c_array(res_master)}
+}};
+
+/* The client's ephemeral x25519 key pair, which the trace prints before the
+   ClientHello it builds from it. */
+static const uint8_t WT_RFC8448_CLIENT_KEY_PRIVATE[32] = {{
+{c_array(client_key_private)}
+}};
+static const uint8_t WT_RFC8448_CLIENT_KEY_PUBLIC[32] = {{
+{c_array(client_key_public)}
+}};
+/* The ClientHello random, printed inside the message at offset 6. The builder
+   takes it as a parameter because a predictable random is a weakness, so the
+   test has to supply the RFC's. */
+static const uint8_t WT_RFC8448_CLIENT_RANDOM[32] = {{
+{c_array(client_hello_fresh[6:38])}
 }};
 
 /* The ClientHello and ServerHello as they go on the wire, framing included. */

@@ -19,6 +19,27 @@ ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 BEARSSL="$ROOT/third_party/bearssl"
 BUILD="$ROOT/build/wt-host"
 CC=${CC:-clang}
+# WT_SANITIZE=1 builds and runs everything under ASan and UBSan. It is off by
+# default because the whole BearSSL object set has to be rebuilt with the same
+# flags, which roughly doubles the build, and on because it has already found a
+# test bug that the plain run passed.
+SANITIZE=${WT_SANITIZE:-0}
+case "$SANITIZE" in
+  0) SAN_FLAGS="" ;;
+  1) SAN_FLAGS="-fsanitize=address,undefined -fno-sanitize=function" ;;
+  *) printf '%s\n' "error: WT_SANITIZE must be 0 or 1" >&2; exit 2 ;;
+esac
+# -fno-sanitize=function is not optional: clang's `undefined` includes it, and
+# it flags BearSSL's own vtable type-punning in hmac.c, which is not a defect in
+# the code under test. The Darwin symbolizer also hangs on that report, so the
+# environment below disables symbolization. This is a toolchain workaround and
+# it belongs in a comment rather than in a run that looks clean by accident.
+if [ -n "$SAN_FLAGS" ]; then
+  BUILD="$BUILD-san"
+  ASAN_OPTIONS=symbolize=0
+  UBSAN_OPTIONS=symbolize=0
+  export ASAN_OPTIONS UBSAN_OPTIONS
+fi
 
 mkdir -p "$BUILD/bearssl" "$BUILD/objects"
 
@@ -62,7 +83,7 @@ if [ "$needs_build" -eq 1 ]; then
   for source in $BEARSSL_SOURCES; do
     object=$(bearssl_object "$source")
     [ -f "$object" ] && [ "$BEARSSL/src/$source.c" -ot "$object" ] && continue
-    "$CC" -std=c99 -O1 -g -Wall -Wextra -Werror \
+    "$CC" -std=c99 -O1 -g -Wall -Wextra -Werror $SAN_FLAGS \
       -I"$BEARSSL/inc" -I"$BEARSSL/src" \
       -c "$BEARSSL/src/$source.c" -o "$object"
   done
@@ -92,7 +113,7 @@ build_module() {
   object="$BUILD/objects/$(printf '%s' "$source" | tr '/' '_').o"
   if [ ! -f "$object" ] || [ "$ROOT/$source" -nt "$object" ] ||
      { [ -n "$HEADER_STAMP" ] && [ "$HEADER_STAMP" -nt "$object" ]; }; then
-    "$CC" -std=c99 -O1 -g -Wall -Wextra -Werror \
+    "$CC" -std=c99 -O1 -g -Wall -Wextra -Werror $SAN_FLAGS \
       -I"$BEARSSL/inc" -I"$BEARSSL/src" \
       -I"$ROOT/userspace/wt/include" \
       -c "$ROOT/$source" -o "$object"
@@ -126,7 +147,7 @@ for name in "$@"; do
      [ "$HEADER_STAMP" -nt "$binary" ]; then
     rm -f "$binary"
   fi
-  "$CC" -std=c99 -O1 -g -Wall -Wextra -Werror \
+  "$CC" -std=c99 -O1 -g -Wall -Wextra -Werror $SAN_FLAGS \
     -I"$BEARSSL/inc" -I"$BEARSSL/src" \
     -I"$ROOT/userspace/wt/include" \
     "$ROOT/$test_source" $MODULE_OBJECTS "$BUILD"/bearssl/*.o \
