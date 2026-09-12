@@ -344,7 +344,7 @@ static xaios_status_t read_device_geometry(virtio_block_driver_t *drv) {
   if (drv->logical_sector_size < SECTOR_SIZE ||
       drv->logical_sector_size % SECTOR_SIZE != 0U ||
       (drv->logical_sector_size & (drv->logical_sector_size - 1U)) != 0U) {
-    klog("virtio-blk: unusable logical sector size %u\n",
+    klog("virtio-blk: unusable logical sector size %lu\n",
          drv->logical_sector_size);
     return XAIOS_ERR_INVALID;
   }

@@ -230,7 +230,7 @@ xaios_status_t xaios_thread_create_detached_off_current_cpu(
       uint32_t target_cpu = 0U;
       if (smp_cpu_id_at(ordinal, &target_cpu) != XAIOS_OK) continue;
       const xaios_cpu_state_t *cpu = smp_cpu_state(target_cpu);
-      klog("threads: no free worker: cpu=%u %s role=%u lease=%u busy=%u\n",
+      klog("threads: no free worker: cpu=%u %s role=%lu lease=%lu busy=%lu\n",
            target_cpu, target_cpu == current_cpu ? "(caller)" : "",
            cpu != 0 ? (uint64_t)cpu->role : UINT64_MAX,
            cpu != 0 ? (uint64_t)cpu->lease_owner_id : UINT64_MAX,

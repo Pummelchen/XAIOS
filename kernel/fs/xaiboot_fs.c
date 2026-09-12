@@ -2060,7 +2060,7 @@ static xaios_status_t write_file(const char *path, const void *data,
     ++g_multi_sector_file_count;
   }
   ++g_write_count;
-  klog("xaibootfs: write path=%s size=%lu blocks=%u generation=%lu\n",
+  klog("xaibootfs: write path=%s size=%lu blocks=%lu generation=%lu\n",
        node->path, node->size,
        (unsigned long)extent_blocks(node->extents, node->extent_count),
        node->generation);
@@ -2091,7 +2091,7 @@ static xaios_status_t read_file(const char *path, void *buffer,
   }
   *out_size = node->size;
   ++g_read_count;
-  klog("xaibootfs: read path=%s size=%lu blocks=%u generation=%lu\n",
+  klog("xaibootfs: read path=%s size=%lu blocks=%lu generation=%lu\n",
        node->path, node->size,
        (unsigned long)extent_blocks(node->extents, node->extent_count),
        node->generation);
@@ -2955,7 +2955,7 @@ static int append_fd_in_place(xaios_xbfs_file_handle_t *handle,
   }
   ++g_write_count;
   ++g_append_count;
-  klog("xaibootfs: append path=%s added=%lu size=%lu touched=%lu blocks=%u generation=%lu\n",
+  klog("xaibootfs: append path=%s added=%lu size=%lu touched=%lu blocks=%lu generation=%lu\n",
        node->path, size, node->size, blocks_touched,
        (unsigned long)extent_blocks(node->extents, node->extent_count),
        node->generation);

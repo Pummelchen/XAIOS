@@ -420,7 +420,7 @@ static void remote_login_log_failure(const char *operation, const char *reason,
   if (operation == 0) {
     return;
   }
-  klog("remote-login: operation=%s failed reason=%s rc=%lu\n", operation,
+  klog("remote-login: operation=%s failed reason=%s rc=%d\n", operation,
        reason == 0 ? "unknown" : reason, status);
 }
 

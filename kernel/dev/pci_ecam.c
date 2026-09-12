@@ -437,7 +437,7 @@ void pci_init(void) {
     klog("PCI: [%u:%u.%u] vendor=0x%x device=0x%x class=0x%x.%x hdr=%u pcie=%u virtio=%u\n",
          d->bus, d->device, d->function, d->vendor_id, d->device_id,
          d->class_code, d->subclass, d->header_type, d->is_pcie, d->is_virtio);
-    klog("PCI: [%u:%u.%u] bar0=0x%lx bar1=0x%lx bar4=0x%lx\n", d->bus,
+    klog("PCI: [%u:%u.%u] bar0=0x%x bar1=0x%x bar4=0x%x\n", d->bus,
          d->device, d->function, d->bars[0], d->bars[1], d->bars[4]);
   }
 }
