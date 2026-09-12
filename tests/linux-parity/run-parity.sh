@@ -9,11 +9,19 @@
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 HERE=tests/linux-parity
-IMAGE=${XAIOS_PARITY_IMAGE:-xaios-ci-parity}
 SCRIPT=${1:?usage: run-parity.sh <script-in-this-directory>}
 
 command -v docker >/dev/null 2>&1 || {
   printf '%s\n' "error: docker is required" >&2; exit 1; }
+
+# The tag carries a digest of the Dockerfile, so editing the package list
+# produces a name that does not exist yet and the image is rebuilt. Tagged by
+# hand it would not: `docker image inspect` would find the old one and the run
+# would test the old toolchain while reporting on the new one.
+DIGEST=$(shasum -a 256 "$ROOT/$HERE/Dockerfile.ci-parity" 2>/dev/null \
+         || sha256sum "$ROOT/$HERE/Dockerfile.ci-parity")
+DIGEST=$(printf '%s' "$DIGEST" | cut -c1-12)
+IMAGE=${XAIOS_PARITY_IMAGE:-xaios-ci-parity:$DIGEST}
 
 docker image inspect "$IMAGE" >/dev/null 2>&1 || {
   printf '%s\n' "building $IMAGE ..."

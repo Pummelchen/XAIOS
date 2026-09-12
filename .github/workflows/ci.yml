@@ -375,6 +375,10 @@ jobs:
   riscv-bring-up:
     name: RISC-V Bring-up
     runs-on: ubuntu-latest
+    # Above what the steps can use between them, so a step that hangs is killed
+    # by its own budget and named. The CPU tier step below may build QEMU on a
+    # cold cache, which is the longest thing in this job by a wide margin.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
         with:
@@ -386,7 +390,12 @@ jobs:
       - name: Install RISC-V QEMU dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld llvm meson ninja-build qemu-system-misc mtools python3
+          # The trailing packages past python3 are not for running XAIOS: they
+          # are what building QEMU from source needs, for the CPU tier step
+          # below. On a warm cache nothing is built and they go unused, which
+          # is cheaper than branching an apt invocation on a cache hit.
+          sudo apt-get install -y clang lld llvm meson ninja-build qemu-system-misc mtools python3 \
+            build-essential git libfdt-dev libglib2.0-dev libpixman-1-dev libslirp-dev pkg-config python3-venv zlib1g-dev
 
       # The boot-test configuration, which is what the other two architectures
       # smoke here as well.
@@ -403,6 +412,26 @@ jobs:
         run: make qemu-riscv64-release-gate
         env:
           XAIOS_QEMU_SMOKE_TIMEOUT: "600"
+
+      # Ubuntu 24.04 ships QEMU 8.2.2, which models five of the twelve CPU
+      # tiers the contract lists. The other seven postdate it and nothing
+      # newer exists in noble or its backports, so the emulator is built and
+      # cached by commit. The two steps above deliberately keep running on the
+      # distribution's QEMU: they pass there, and a gate that only ever runs
+      # against a hand-built emulator stops saying anything about the one
+      # everybody else has.
+      - name: Restore pinned RISC-V QEMU
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/xaios-qemu-riscv64
+          key: qemu-riscv64-tiers-${{ runner.os }}-${{ runner.arch }}-5e35f26695645b20931e10d8567c7e0169e62c07-v1
+
+      - name: Provision RISC-V QEMU
+        run: |
+          tests/scripts/provision-qemu-riscv64.sh
+          echo "QEMU_SYSTEM_RISCV64=${XAIOS_QEMU_RISCV64_ROOT}/5e35f26695645b20931e10d8567c7e0169e62c07/build/qemu-system-riscv64" >> "$GITHUB_ENV"
+        env:
+          XAIOS_QEMU_RISCV64_ROOT: ${{ runner.temp }}/xaios-qemu-riscv64
 
       # Sv48 and Sv39 harts in one run. Six of the thirteen CPU models QEMU
       # implements offer Sv39 and no more, including both standard RISC-V

@@ -14,11 +14,17 @@
 # not --no-install-recommends: CI does not use it, and omitting the recommends
 # dropped QEMU's option ROMs, so a guest died on a missing efi-virtio.rom rather
 # than on anything in XAIOS.
+#
+# The second line of packages is not for building XAIOS. The RISC-V CPU tier
+# matrix needs a QEMU newer than noble ships, so CI builds one; these are what
+# that build needs, and they are here so the parity image can build it too.
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
       clang lld llvm meson ninja-build qemu-system-misc mtools python3 \
       python3-cryptography git make ca-certificates xz-utils zip \
+      build-essential libfdt-dev libglib2.0-dev libpixman-1-dev libslirp-dev \
+      pkg-config python3-venv zlib1g-dev \
   && rm -rf /var/lib/apt/lists/*
 
 # The runner's image carries other qemu packages, which populate /usr/share/qemu

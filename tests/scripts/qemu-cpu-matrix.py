@@ -27,7 +27,15 @@ BOOT_PROBE_MARKERS = [
 
 
 def find_qemu(binary: str) -> Optional[str]:
+    # run-qemu-riscv64.sh honours QEMU_SYSTEM_RISCV64, so a provisioned
+    # emulator can be pointed at without being on PATH. This script asks an
+    # emulator of its own which CPU models exist before deciding a tier is
+    # unsupported, and if the two disagreed it would read the model list off
+    # the PATH binary and report tiers missing that the binary it then runs
+    # can model perfectly well. Same variable, same answer.
+    override = os.environ.get(binary.upper().replace("-", "_"))
     candidates = [
+        override,
         shutil.which(binary),
         f"/opt/homebrew/opt/qemu/bin/{binary}",
         f"/opt/homebrew/bin/{binary}",
