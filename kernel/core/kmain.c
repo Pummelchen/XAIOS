@@ -1407,6 +1407,13 @@ persistent_network_done:
   run_user_app("/bin/netmqtest", 12,
                nettest_caps | XAIOS_CAP_THREADS | XAIOS_CAP_SMP |
                XAIOS_CAP_NET_SOCKET);
+  /* WT-35: a datagram socket the kernel names, which is what a QUIC client
+     has before its first packet. Only NET_SOCKET is needed -- the whole
+     surface is open_udp, sendto and close, none of which reads a socket
+     option or a network-wide setting that CAP_NET guards, and the app asserts
+     nothing, so it cannot fail a boot on a number it disagrees with. */
+  run_user_app("/bin/netsocktest", 12, XAIOS_CAP_LOG | XAIOS_CAP_EXIT |
+                                           XAIOS_CAP_NET_SOCKET);
   run_user_app("/bin/lstm-xor", 13, lstm_caps);
   run_user_app("/bin/sshtest", 14, sshtest_caps);
   run_user_app("/bin/mltest", 15, mltest_caps);

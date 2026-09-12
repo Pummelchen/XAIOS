@@ -58,6 +58,12 @@
 #define XAIOS_SYSCALL_CONSOLE_SIZE UINT64_C(52)
 #define XAIOS_SYSCALL_SLEEP_NANOS UINT64_C(53)
 #define XAIOS_SYSCALL_WAIT_EVENTS UINT64_C(54)
+/* A datagram socket with no port chosen by the caller. QUIC sends the first
+   packet of a connection from an ephemeral port, so a socket that can only be
+   created by naming a port cannot start one. XAIOS_SYSCALL_NET_LISTEN refuses
+   port 0 deliberately -- a listener is a name -- which is why this is a
+   separate call rather than a port-zero case in that one. */
+#define XAIOS_SYSCALL_NET_OPEN_UDP UINT64_C(55)
 /* What ended a wait_events call; zero means the timeout did. */
 #define XAIOS_WAIT_EVENT_CONSOLE UINT64_C(1)
 #define XAIOS_WAIT_EVENT_SOCKET UINT64_C(2)
@@ -227,6 +233,13 @@ typedef struct xaios_syscall_socket_request {
   uint64_t addr_ptr;
   uint64_t addr_out_ptr;
   uint64_t protocol;
+  /* Pointer to a uint64_t the kernel writes the port it chose into. An
+     out-parameter rather than a field of this structure, which is the
+     convention every other output here follows: the request is read from the
+     caller's memory once and never written back into, because a field that is
+     both input and output makes a failed call indistinguishable from a
+     refused one. NET_ACCEPT's `port` is the same shape. */
+  uint64_t out_port;
 } xaios_syscall_socket_request_t;
 
 typedef struct xaios_syscall_net_resolve_request {

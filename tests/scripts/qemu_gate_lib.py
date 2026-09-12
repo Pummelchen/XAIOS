@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+# Annotations are strings, so the ones written in the syntax of a newer Python
+# than the one running this are not evaluated at import time. Apple's system
+# python3 is 3.9, and `Optional[Dict[str, str]]` in a signature is evaluated --
+# and raises TypeError -- on it. Every gate that imports this module failed at
+# import on such a machine, which is why the library carries the future import
+# and the Optional spellings below rather than a minimum version nobody
+# installs.
+from __future__ import annotations
+
 import json
 import os
 import signal
@@ -6,7 +15,7 @@ import re
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,7 +24,7 @@ CONTRACT_PATH = ROOT / "contracts/qemu-rc-v1.json"
 
 
 def run(cmd: Sequence[str], timeout: int = 180,
-        env: Dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+        env: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess[str]:
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)

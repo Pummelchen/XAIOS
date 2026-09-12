@@ -82,6 +82,7 @@ void *xaios_memcpy(void *dst, const void *src, u64 size);
 #define XAIOS_SYSCALL_CONSOLE_SIZE 52ULL
 #define XAIOS_SYSCALL_SLEEP_NANOS 53ULL
 #define XAIOS_SYSCALL_WAIT_EVENTS 54ULL
+#define XAIOS_SYSCALL_NET_OPEN_UDP 55ULL
 #define XAIOS_WAIT_EVENT_CONSOLE 1ULL
 #define XAIOS_WAIT_EVENT_SOCKET 2ULL
 #define XAIOS_WAIT_EVENT_CHILD 4ULL
@@ -275,6 +276,11 @@ typedef struct xaios_socket_request {
   u64 addr_ptr;
   u64 addr_out_ptr;
   u64 protocol;
+  /* Pointer to a u64 the kernel writes the port it bound into. Must match
+     `xaios_syscall_socket_request_t` in the kernel's syscall.h field for
+     field: these two structures are the syscall ABI, and a field added to one
+     and not the other shifts every field after it. */
+  u64 out_port;
 } xaios_socket_request_t;
 
 typedef struct xaios_net_resolve_request {
@@ -410,6 +416,18 @@ int xaios_net_connect(const xaios_ip_addr_user_t *remote_addr, u64 port,
 int xaios_net_listen_addr(u64 port, const xaios_ip_addr_user_t *bind_addr,
                           u64 *out_sockfd);
 int xaios_net_bind_udp(u64 port, u64 *out_sockfd);
+
+/* Opens a datagram socket and reports the port it was given.
+   Pass 0 for `port` to have the kernel choose an ephemeral one, which is what a
+   sender needs when it has no name of its own yet -- a QUIC client before its
+   first packet. Passing a port binds that one. On success returns 0 and writes
+   the descriptor to `out_sockfd` and the port it bound to `out_port`; both are
+   out-parameters, and `out_sockfd` may not be NULL. The port is reported rather
+   than assumed because it is the caller's own address, and a peer told to reply
+   to it must be told the truth -- for an ephemeral request the caller has no
+   other way to learn it, and for an explicit one the kernel may in future
+   refuse the exact number asked for rather than hand back something else. */
+int xaios_net_open_udp(u64 port, u64 *out_sockfd, u64 *out_port);
 int xaios_net_accept(u64 sockfd, u64 *out_sockfd);
 int xaios_net_accept_addr(u64 sockfd, u64 *out_sockfd,
                           xaios_ip_addr_user_t *peer_addr, u64 *peer_port);

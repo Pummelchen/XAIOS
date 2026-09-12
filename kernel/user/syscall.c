@@ -93,6 +93,7 @@ static const xaios_syscall_entry_t g_syscall_table[] = {
     {XAIOS_SYSCALL_WAIT_EVENTS, "wait_events", XAIOS_CAP_TIME},
     {XAIOS_SYSCALL_NET_LOCAL_IPV4, "net_local_ipv4", XAIOS_CAP_NET},
     {XAIOS_SYSCALL_NET_CONNECT, "net_connect", XAIOS_CAP_NET_SOCKET},
+    {XAIOS_SYSCALL_NET_OPEN_UDP, "net_open_udp", XAIOS_CAP_NET_SOCKET},
     {XAIOS_SYSCALL_NET_LOCAL_IPV6, "net_local_ipv6", XAIOS_CAP_NET},
 };
 
@@ -270,6 +271,73 @@ static uint64_t kernel_socket_alloc(uint32_t type, uint16_t port,
   }
   xaios_spin_unlock(&g_kernel_socket_lock);
   return 0; /* no free slots */
+}
+
+/* The next ephemeral port, drawn from a caller-supplied counter.
+ *
+ * The range starts at 49152 because that is where RFC 6335 puts the dynamic
+ * range, and it is the same start the DNS resolver uses for the same reason.
+ * Returning 0 means the range is exhausted, which is a refusal and not a
+ * wrap: a caller told port 0 would believe it had been given one.
+ *
+ * The counter wraps at the top of its own type, not at the top of the range.
+ * `uint16_t` cannot hold 65536, so the value after 65535 is 0, and a reset
+ * written as "if the counter is below the range start, put it back" never
+ * fires for it: 0 < 49152 is true, but the increment that produced it wrapped
+ * the type rather than the range, so the test has to name 0 as the case it
+ * is. Leaving it out makes every 16384th draw hand out port 0 and fail, which
+ * reads as "no port" on a machine with 16383 of them free.
+ *
+ * The collision test is left to the caller, because a descriptor's `port` is
+ * not always a local port -- the TCP connect path stores the peer's port
+ * there -- and a caller that cannot tell those apart must not read the field
+ * as a set of ports already in use. */
+static uint16_t kernel_socket_draw_ephemeral(uint16_t *counter) {
+  for (uint32_t attempt = 0U; attempt < 16384U; ++attempt) {
+    uint16_t candidate = *counter;
+    *counter = (uint16_t)(candidate + 1U);
+    if (*counter == 0U || *counter < UINT16_C(49152)) {
+      *counter = UINT16_C(49152);
+    }
+    if (candidate < UINT16_C(49152)) continue;
+    return candidate;
+  }
+  return 0U;
+}
+
+/* Whether a live descriptor already has this port.
+ *
+ * Called without the socket lock, which it takes itself. */
+static int kernel_socket_port_in_use(uint16_t port) {
+  if (port == 0U) return 1;
+  xaios_spin_lock(&g_kernel_socket_lock);
+  int in_use = 0;
+  for (uint32_t i = 0; i < g_kernel_socket_capacity; ++i) {
+    if (g_kernel_sockets[i].state != 0 && g_kernel_sockets[i].port == port) {
+      in_use = 1;
+      break;
+    }
+  }
+  xaios_spin_unlock(&g_kernel_socket_lock);
+  return in_use;
+}
+
+/* The next ephemeral port no datagram descriptor already holds.
+ *
+ * `kernel_socket_alloc` does not check, and nothing below it does either: it
+ * takes the first free row and writes the port into it. That is right for a
+ * port the program named -- an explicit bind is the program's business -- and
+ * wrong for one the kernel chose, because a reply is looked up by port and two
+ * descriptors holding the same one leave whichever is listed second
+ * unreachable, with nothing said. Only the datagram path asks, because only
+ * there is `port` unambiguously a local port. */
+static uint16_t kernel_socket_next_datagram_port(void) {
+  for (uint32_t attempt = 0U; attempt < 16384U; ++attempt) {
+    uint16_t candidate = kernel_socket_draw_ephemeral(&g_next_ephemeral_port);
+    if (candidate == 0U) return 0U;
+    if (!kernel_socket_port_in_use(candidate)) return candidate;
+  }
+  return 0U;
 }
 
 static kernel_socket_t *kernel_socket_find_owned_locked(uint64_t sockfd,
@@ -1730,8 +1798,9 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     uint32_t flow_id = 0U;
     xaios_status_t open_status = XAIOS_ERR_BUSY;
     for (uint32_t attempt = 0U; attempt < 16U; ++attempt) {
-      uint16_t local_port = g_next_ephemeral_port++;
-      if (g_next_ephemeral_port < 49152U) g_next_ephemeral_port = 49152U;
+      uint16_t local_port =
+          kernel_socket_draw_ephemeral(&g_next_ephemeral_port);
+      if (local_port == 0U) break;
       open_status = network_stack_tcp_open(
           &remote_addr, (uint16_t)request.port, local_port, &flow_id);
       if (open_status == XAIOS_OK) break;
@@ -1848,6 +1917,92 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     }
     klog("syscall: net_listen protocol=%lu port=%lu sockfd=%lu\n", protocol,
          request.port, sockfd);
+    return XAIOS_OK;
+  }
+
+  if (syscall == XAIOS_SYSCALL_NET_OPEN_UDP) {
+    xaios_syscall_socket_request_t request;
+    uint64_t out_sockfd = 0;
+    if (arg1 != sizeof(request) ||
+        vmm_validate_user_buffer(arg0, sizeof(request), 0) != XAIOS_OK) {
+      return reject_syscall(syscall, arg0, arg1, "bad-net-open-udp-request");
+    }
+    bytes_copy(&request, (const void *)(uintptr_t)arg0, sizeof(request));
+    /* The caller supplies the port; port 0 asks the kernel to choose one. An
+       explicit port is allowed because a program that wants a known one --
+       a test, or a peer that must be told where to reply -- should not have to
+       bind a listener first to get it. */
+    if (request.port > 65535U ||
+        vmm_validate_user_buffer(request.out_sockfd, sizeof(out_sockfd),
+                                 XAIOS_VMM_WRITABLE) != XAIOS_OK ||
+        (request.out_port != 0U &&
+         vmm_validate_user_buffer(request.out_port, sizeof(uint64_t),
+                                  XAIOS_VMM_WRITABLE) != XAIOS_OK) ||
+        (request.addr_ptr != 0U &&
+         vmm_validate_user_buffer(request.addr_ptr, 17U, 0) != XAIOS_OK)) {
+      return reject_syscall(syscall, arg0, arg1, "net-open-udp-denied");
+    }
+    const xaios_user_process_t *process = user_current_process();
+    uint32_t owner_token = process != 0 ? process->owner_token : 0U;
+    uint16_t port = (uint16_t)request.port;
+    uint64_t sockfd = 0;
+    if (port != 0U) {
+      sockfd = kernel_socket_alloc(KERNEL_SOCK_DATAGRAM, port, owner_token);
+      if (sockfd == 0U) {
+        return reject_syscall(syscall, arg0, arg1, "net-open-udp-no-memory");
+      }
+    } else {
+      /* The range, the wrap and the search for a port nobody holds all live
+         in `kernel_socket_next_datagram_port`. A collision costs one attempt
+         rather than failing the call, because the caller asked for any
+         port. */
+      port = kernel_socket_next_datagram_port();
+      if (port != 0U) {
+        sockfd = kernel_socket_alloc(KERNEL_SOCK_DATAGRAM, port, owner_token);
+      }
+      if (sockfd == 0U) {
+        return reject_syscall(syscall, arg0, arg1, "net-open-udp-no-port");
+      }
+    }
+    uint8_t addr_buf[17];
+    if (request.addr_ptr != 0U) {
+      bytes_copy(addr_buf, (const void *)(uintptr_t)request.addr_ptr,
+                 sizeof(addr_buf));
+      if (addr_buf[0] != 0U && addr_buf[0] != 4U && addr_buf[0] != 6U) {
+        /* Frees the socket it just allocated. `kernel_socket_free` takes the
+           socket lock itself, so it is called before that lock is taken and
+           with nothing held. */
+        (void)kernel_socket_free(sockfd, owner_token);
+        return reject_syscall(syscall, arg0, arg1, "net-open-udp-family");
+      }
+    }
+    xaios_spin_lock(&g_kernel_socket_lock);
+    kernel_socket_t *socket = kernel_socket_find_owned_locked(sockfd, owner_token);
+    kassert(socket != 0);
+    socket->protocol = XAIOS_NETWORK_PROTOCOL_UDP;
+    if (request.addr_ptr != 0U) {
+      socket->family = addr_buf[0];
+      for (uint32_t j = 0; j < 16; ++j) {
+        socket->bind_addr[j] = addr_buf[1U + j];
+      }
+    }
+    xaios_spin_unlock(&g_kernel_socket_lock);
+    *(uint64_t *)(uintptr_t)request.out_sockfd = sockfd;
+    /* The port the kernel chose goes to the caller's own out-pointer, beside
+       the descriptor rather than inside the request. A caller that asked for
+       an ephemeral port has no other way to learn its own address, and a peer
+       told to reply needs the truth, so this is not optional for port zero --
+       but it is written through a distinct pointer, so the request itself
+       stays exactly as the caller wrote it. */
+    if (request.out_port != 0U) {
+      *(volatile uint64_t *)(uintptr_t)request.out_port = (uint64_t)port;
+    }
+    /* Registered so a reply can find the socket. A flow created by sendto
+       cannot receive without this: process_udp_frame looks the listener up by
+       port and drops the frame when it finds none. Net close unregisters it,
+       so an ephemeral socket frees its port like any other. */
+    network_stack_register_udp_listener(port, sockfd);
+    klog("syscall: net_open_udp port=%lu sockfd=%lu\n", (uint64_t)port, sockfd);
     return XAIOS_OK;
   }
 
@@ -2369,6 +2524,7 @@ void syscall_self_test(void) {
   kassert(lookup_syscall(XAIOS_SYSCALL_CONSOLE_SIZE) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_SLEEP_NANOS) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_NET_LOCAL_IPV4) != 0);
+  kassert(lookup_syscall(XAIOS_SYSCALL_NET_OPEN_UDP) != 0);
   kassert(lookup_syscall(99) == 0);
   klog("syscall: socket ownership self-test passed capacity=%u per_port=%u\n",
        g_kernel_socket_capacity, g_kernel_socket_per_port_limit);

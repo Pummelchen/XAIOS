@@ -40,6 +40,7 @@ COMMAND_MARKERS = {
         "/bin/systest: syscall and filesystem suite passed",
         "/bin/smptest: complete",
         "/bin/nettest: complete",
+        "/bin/netsocktest: complete",
         "/bin/sshtest: complete",
         "/bin/mltest: complete",
         "/bin/smptest: app-requested SMP worker set passed",

@@ -75,7 +75,7 @@ USER_START_OBJ="$INIT_BUILD_DIR/user-start.o"
 USER_LIB_OBJ="$INIT_BUILD_DIR/xaios-user.o"
 USER_SCREEN_OBJ="$INIT_BUILD_DIR/xaios-screen.o"
 USER_CONTROL_OBJ="$INIT_BUILD_DIR/xaios-control-client.o"
-USER_APPS="xaios-shell xaiosctl xapt nano xtop pong hello sysinfo systest smptest joinnest smpstress perfbench nettest netmqtest lstm-xor sshtest mltest posix-shell agenttest clustertest xaios-setup"
+USER_APPS="xaios-shell xaiosctl xapt nano xtop pong hello sysinfo systest smptest joinnest smpstress perfbench nettest netmqtest netsocktest lstm-xor sshtest mltest posix-shell agenttest clustertest xaios-setup"
 
 # Which end of a cluster this image is, and where its peer is.
 #

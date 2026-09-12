@@ -198,6 +198,16 @@ jobs:
         env:
           XAIOS_QEMU_SMOKE_TIMEOUT: "120"
 
+      # WT-35: the kernel naming a datagram socket, which is what a QUIC
+      # client has before its first packet. It reads the kernel's own
+      # allocation log and what the caller was told, so a write-back that
+      # silently does not land is caught here rather than by a peer that
+      # never answers.
+      - name: Ephemeral datagram socket ports
+        run: make qemu-datagram-ephemeral-port-gate
+        env:
+          XAIOS_EPHEMERAL_UDP_TIMEOUT: "300"
+
       - name: Upload build artifacts
         if: always()
         uses: actions/upload-artifact@v7

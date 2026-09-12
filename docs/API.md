@@ -93,7 +93,7 @@ limits; the 64-bit API and separate xaiFS are used for large model packages.
 | `XAIOS_SYSCALL_NET_UDP_ECHO` | 21 | `xaios_net_udp_echo(payload, size, echoed)` | Echo a UDP payload (self-test). |
 | `XAIOS_SYSCALL_NET_TCP_CONNECT` | 22 | `xaios_net_tcp_connect(trips)` | TCP handshake self-test. |
 | `XAIOS_SYSCALL_NET_EXTERNAL_SESSION` | 26 | `xaios_net_external_session(proto, port, ...)` | Open external host session (UDP=17, TCP=6). |
-| `XAIOS_SYSCALL_NET_LISTEN` | 29 | `xaios_net_listen(port, sockfd)` / `xaios_net_bind_udp(port, sockfd)` | Create a TCP listener or bound UDP socket according to the request protocol. |
+| `XAIOS_SYSCALL_NET_LISTEN` | 29 | `xaios_net_listen(port, sockfd)` / `xaios_net_bind_udp(port, sockfd)` | Create a TCP listener or bound UDP socket according to the request protocol. `NET_LISTEN` refuses port 0; a program that wants the kernel to choose a port wants `NET_OPEN_UDP`. |
 | `XAIOS_SYSCALL_NET_ACCEPT` | 30 | `xaios_net_accept(sockfd, newfd)` / `xaios_net_accept_addr(...)` | Accept an incoming TCP connection, optionally returning its peer address and port. |
 | `XAIOS_SYSCALL_NET_RECV` | 31 | `xaios_net_recv(sockfd, buf, size, bytes)` / `xaios_net_recvfrom(...)` | Receive TCP stream data or a queued UDP datagram. One call is limited to 16,384 bytes. |
 | `XAIOS_SYSCALL_NET_SEND` | 32 | `xaios_net_send(sockfd, buf, size, bytes)` / `xaios_net_sendto(sockfd, buf, size, bytes, dst_addr, dst_port)` | Send TCP stream data or a UDP datagram. One call is limited to 16,384 bytes; the kernel snapshots the payload before use. `xaios_net_sendto` names the peer in the call and needs no prior exchange with it; the destination must be IPv4 today, and the first datagram to an unseen peer blocks briefly while its ARP entry is resolved. `xaios_net_send` on a datagram socket sends to whichever peer that socket last received from or sent to, and is refused if there has been none. |
@@ -101,6 +101,7 @@ limits; the 64-bit API and separate xaiFS are used for large model packages.
 | `XAIOS_SYSCALL_NET_RESOLVE` | 46 | `xaios_net_resolve(hostname, ipv4)` | Poll or start a bounded asynchronous A-record lookup. Returns `XAIOS_ERR_BUSY` while pending and uses a TTL cache. |
 | `XAIOS_SYSCALL_NET_LOCAL_IPV4` | 49 | `xaios_net_local_ipv4()` | Return the configured local IPv4 address in network byte order. |
 | `XAIOS_SYSCALL_NET_CONNECT` | 50 | `xaios_net_connect(address, port, sockfd)` | Perform a bounded IPv4 TCP active open and return a connected stream socket. |
+| `XAIOS_SYSCALL_NET_OPEN_UDP` | 55 | `xaios_net_open_udp(port, sockfd, out_port)` | Open a datagram socket that can send and receive. Pass 0 for `port` to have the kernel choose one from the dynamic range (49152–65535) and report it through `out_port`, which is what a client needs before its first packet; pass a number to bind that port. The port is registered so a reply can reach the socket, and closing the descriptor releases it. A port the caller did not name is never handed to a second open while the first holder is open. |
 
 ## SMP and Threads
 

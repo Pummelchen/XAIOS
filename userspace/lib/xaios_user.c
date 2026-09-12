@@ -583,6 +583,30 @@ int xaios_net_bind_udp(u64 port, u64 *out_sockfd) {
   return rc == ~0ULL ? -1 : (int)rc;
 }
 
+int xaios_net_open_udp(u64 port, u64 *out_sockfd, u64 *out_port) {
+  xaios_socket_request_t request;
+  if (out_sockfd == 0) return -1;
+  xaios_memzero(&request, sizeof(request));
+  request.port = port;
+  request.out_sockfd = (u64)out_sockfd;
+  /* The port is an out-parameter of its own, written by the kernel through
+     this pointer, and not a field of the request that comes back changed. The
+     request is a description of what the caller wants, read once; a field
+     carrying an answer as well would make a call that failed after allocating
+     a descriptor indistinguishable from one that succeeded, since both would
+     look the same on return. This is the same shape as `out_sockfd`, and the
+     same shape `xaios_net_accept_addr` uses for its peer port. */
+  u64 chosen = 0U;
+  request.out_port = out_port != 0 ? (u64)&chosen : 0U;
+  u64 rc = xaios_syscall3(XAIOS_SYSCALL_NET_OPEN_UDP, (u64)&request,
+                          sizeof(request), 0);
+  if (rc == ~0ULL) return -1;
+  if (out_port != 0) {
+    *out_port = chosen;
+  }
+  return (int)rc;
+}
+
 int xaios_net_accept(u64 sockfd, u64 *out_sockfd) {
   xaios_socket_request_t request;
   xaios_memzero(&request, sizeof(request));
