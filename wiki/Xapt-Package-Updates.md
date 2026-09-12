@@ -162,7 +162,10 @@ recovery, and release-audit procedures.
 The app loader remains capability-based and does not add a package-manager
 syscall. `xapt` uses the existing filesystem, network, clock, and control
 protocol surface. Eight new administrative control operations fit inside the
-existing control syscall, so the XAIOS syscall count remains 54.
+existing control syscall, so `xapt` added no syscall of its own to the 54 the
+table held when this was written. The table is 55 now, from
+`XAIOS_SYSCALL_NET_OPEN_UDP`, and `make qemu-smoke` pins that number, so it is
+asserted in the build rather than recorded by hand here.
 
 ## Evidence
 
