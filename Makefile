@@ -300,10 +300,15 @@ local-gates:
 # actually receive: the image is too large for git, so the zip is the release
 # as far as anyone downloading it is concerned, and a zip is a copy that can go
 # stale without looking any different. Build 1's first one did, within an hour.
+# The fifth environment is the runner, and it is the one that catches what this
+# Mac cannot see. The sentence below used to be printed on the strength of the
+# two local checks alone, which is how build 6 came to be cut in the middle of
+# nine days of red CI.
 release-check: docs-check
 	python3 ./tests/repository/check-local-gate-record.py
 	python3 ./tests/repository/check-release-package.py
-	@printf '%s\n' "release-check: this commit is verified on all four environments"
+	python3 ./tests/repository/check-ci-status.py
+	@printf '%s\n' "release-check: this commit is verified on all four environments here, and on the runner"
 
 local-gate-record-check:
 	python3 ./tests/repository/check-local-gate-record.py
