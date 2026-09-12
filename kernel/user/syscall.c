@@ -228,12 +228,16 @@ static void kernel_socket_table_init(void) {
   xaios_spin_init(&g_kernel_socket_lock);
 }
 
-static uint64_t kernel_socket_alloc(uint32_t type, uint16_t port,
-                                    uint32_t owner_token) {
-  if (g_kernel_sockets == 0 || owner_token == 0U) return 0U;
-  xaios_spin_lock(&g_kernel_socket_lock);
+/* The allocation body, with `g_kernel_socket_lock` already held.
+ *
+ * Split from the wrapper below so that choosing an ephemeral port and taking
+ * the descriptor for it can happen inside one critical section. Doing them in
+ * two -- which is what the first version did -- leaves a window in which
+ * another CPU selects the same port, and the "is it in use" test it ran before
+ * releasing the lock cannot see an allocation that has not happened yet. */
+static uint64_t kernel_socket_alloc_locked(uint32_t type, uint16_t port,
+                                           uint32_t owner_token) {
   if (g_total_connections >= g_kernel_socket_capacity) {
-    xaios_spin_unlock(&g_kernel_socket_lock);
     klog("syscall: socket allocation denied (capacity reached: %u)\n",
          g_total_connections);
     return 0;
@@ -249,7 +253,6 @@ static uint64_t kernel_socket_alloc(uint32_t type, uint16_t port,
       }
     }
     if (port_count >= g_kernel_socket_per_port_limit) {
-      xaios_spin_unlock(&g_kernel_socket_lock);
       klog("syscall: socket allocation denied (max per-port: %u for port %u)\n",
            port_count, port);
       return 0;
@@ -265,80 +268,126 @@ static uint64_t kernel_socket_alloc(uint32_t type, uint16_t port,
       g_total_connections++;
       uint64_t id = g_socket_next_id++;
       if (g_socket_next_id == 0U) g_socket_next_id = 1U;
-      xaios_spin_unlock(&g_kernel_socket_lock);
       return id;
     }
   }
-  xaios_spin_unlock(&g_kernel_socket_lock);
   return 0; /* no free slots */
 }
 
-/* The next ephemeral port, drawn from a caller-supplied counter.
- *
- * The range starts at 49152 because that is where RFC 6335 puts the dynamic
- * range, and it is the same start the DNS resolver uses for the same reason.
- * Returning 0 means the range is exhausted, which is a refusal and not a
- * wrap: a caller told port 0 would believe it had been given one.
- *
- * The counter wraps at the top of its own type, not at the top of the range.
- * `uint16_t` cannot hold 65536, so the value after 65535 is 0, and a reset
- * written as "if the counter is below the range start, put it back" never
- * fires for it: 0 < 49152 is true, but the increment that produced it wrapped
- * the type rather than the range, so the test has to name 0 as the case it
- * is. Leaving it out makes every 16384th draw hand out port 0 and fail, which
- * reads as "no port" on a machine with 16383 of them free.
- *
- * The collision test is left to the caller, because a descriptor's `port` is
- * not always a local port -- the TCP connect path stores the peer's port
- * there -- and a caller that cannot tell those apart must not read the field
- * as a set of ports already in use. */
-static uint16_t kernel_socket_draw_ephemeral(uint16_t *counter) {
-  for (uint32_t attempt = 0U; attempt < 16384U; ++attempt) {
-    uint16_t candidate = *counter;
-    *counter = (uint16_t)(candidate + 1U);
-    if (*counter == 0U || *counter < UINT16_C(49152)) {
-      *counter = UINT16_C(49152);
-    }
-    if (candidate < UINT16_C(49152)) continue;
-    return candidate;
-  }
-  return 0U;
+static uint64_t kernel_socket_alloc(uint32_t type, uint16_t port,
+                                    uint32_t owner_token) {
+  uint64_t sockfd;
+  if (g_kernel_sockets == 0 || owner_token == 0U) return 0U;
+  xaios_spin_lock(&g_kernel_socket_lock);
+  sockfd = kernel_socket_alloc_locked(type, port, owner_token);
+  xaios_spin_unlock(&g_kernel_socket_lock);
+  return sockfd;
 }
 
-/* Whether a live descriptor already has this port.
+/* The range the kernel draws ports from when the caller does not name one.
  *
- * Called without the socket lock, which it takes itself. */
-static int kernel_socket_port_in_use(uint16_t port) {
-  if (port == 0U) return 1;
-  xaios_spin_lock(&g_kernel_socket_lock);
-  int in_use = 0;
-  for (uint32_t i = 0; i < g_kernel_socket_capacity; ++i) {
-    if (g_kernel_sockets[i].state != 0 && g_kernel_sockets[i].port == port) {
-      in_use = 1;
-      break;
+ * 49152 is where RFC 6335 puts the dynamic range, and it is the same start the
+ * DNS resolver uses for the same reason. Returning 0 means the range is
+ * exhausted, which is a refusal and not a wrap: a caller told port 0 would
+ * believe it had been given one. */
+#define KERNEL_EPHEMERAL_PORT_MIN UINT16_C(49152)
+
+static uint16_t kernel_ephemeral_next_after(uint16_t port) {
+  uint16_t next = (uint16_t)(port + 1U);
+  /* `uint16_t` cannot hold 65536, so the value after 65535 is 0 and the test
+     below catches it: 0 < 49152 is true. The counter therefore never holds a
+     value outside the range and no draw can return port 0. */
+  if (next < KERNEL_EPHEMERAL_PORT_MIN) next = KERNEL_EPHEMERAL_PORT_MIN;
+  return next;
+}
+
+/* Draw the next ephemeral port, advancing the shared counter atomically.
+ *
+ * A plain load, increment and store is a lost-update race: two CPUs both load
+ * P, both store P+1, and both keep P. For the datagram path that would mean two
+ * descriptors on one port, and the reply lookup stops at the first match, so
+ * the second socket would be silent forever.
+ *
+ * The counter is advanced with a compare-and-swap rather than a fetch-and-add
+ * so that the value written back is the wrapped one: the add would leave 0,
+ * 1, ... in the counter for a moment, and a draw reading it in that window
+ * would be handed a port outside the dynamic range. Nothing else writes the
+ * counter, so the loop converges on the first attempt in the ordinary case. */
+static uint16_t kernel_ephemeral_reserve(void) {
+  uint32_t guard = 0U;
+  for (;;) {
+    uint16_t current = g_next_ephemeral_port;
+    uint16_t next = kernel_ephemeral_next_after(current);
+    if (__sync_bool_compare_and_swap(&g_next_ephemeral_port, current, next)) {
+      return current;
     }
+    /* Bounded: a failed exchange means another CPU moved the counter, which
+       is progress, not livelock. The bound is a backstop that cannot be
+       reached on a machine with any sane number of CPUs. */
+    if (++guard > 1024U) return kernel_ephemeral_next_after(
+        g_next_ephemeral_port);
+  }
+}
+
+/* Select an ephemeral port and allocate the datagram descriptor for it, or
+ * return 0 with `*out_port` untouched.
+ *
+ * Both halves happen under `g_kernel_socket_lock`, and that is the point of
+ * the function rather than an accident of it. The first version drew a port,
+ * tested whether any descriptor held it, released the lock, and then allocated
+ * -- and every step of that is a separate window. Two CPUs could draw the same
+ * value, because the counter was a plain read-modify-write with nothing
+ * serialising it; and even with distinct values, a scan for "is it in use"
+ * cannot see an allocation that has not happened yet, so two CPUs could each
+ * find the same port free. Either way two live descriptors end up holding one
+ * port, and because a reply is looked up by port and the lookup stops at the
+ * first match, the second socket is unreachable with nothing said.
+ *
+ * `netmqtest` exists to run two syscall-issuing threads on two CPUs at once,
+ * so this is the shape the machine is already exercised in -- it was simply
+ * never a case anyone had asked a port-selection question in.
+ *
+ * The caller must have released every other lock: this takes the socket lock
+ * and, on failure, logs while holding it. */
+static uint64_t kernel_socket_alloc_ephemeral_datagram(uint32_t owner_token,
+                                                       uint16_t *out_port) {
+  uint64_t sockfd = 0U;
+  uint16_t port = 0U;
+
+  if (g_kernel_sockets == 0 || owner_token == 0U) return 0U;
+
+  xaios_spin_lock(&g_kernel_socket_lock);
+  /* The whole range, so a run of busy ports costs those ports and not the
+     call. The bound is the range size, so every port is considered once. */
+  for (uint32_t attempt = 0U; attempt < 16384U; ++attempt) {
+    uint16_t candidate = kernel_ephemeral_reserve();
+    if (candidate < KERNEL_EPHEMERAL_PORT_MIN) continue;
+    {
+      /* Search the table rather than calling a helper that would take the
+         lock again: `xaios_spin_lock` is a ticket lock and is not reentrant,
+         so a nested acquire deadlocks rather than succeeding. */
+      int in_use = 0;
+      for (uint32_t i = 0U; i < g_kernel_socket_capacity; ++i) {
+        if (g_kernel_sockets[i].state != 0 &&
+            g_kernel_sockets[i].port == candidate) {
+          in_use = 1;
+          break;
+        }
+      }
+      if (in_use) continue;
+    }
+    sockfd = kernel_socket_alloc_locked(KERNEL_SOCK_DATAGRAM, candidate,
+                                        owner_token);
+    if (sockfd != 0U) port = candidate;
+    break;
   }
   xaios_spin_unlock(&g_kernel_socket_lock);
-  return in_use;
+
+  if (sockfd == 0U) return 0U;
+  *out_port = port;
+  return sockfd;
 }
 
-/* The next ephemeral port no datagram descriptor already holds.
- *
- * `kernel_socket_alloc` does not check, and nothing below it does either: it
- * takes the first free row and writes the port into it. That is right for a
- * port the program named -- an explicit bind is the program's business -- and
- * wrong for one the kernel chose, because a reply is looked up by port and two
- * descriptors holding the same one leave whichever is listed second
- * unreachable, with nothing said. Only the datagram path asks, because only
- * there is `port` unambiguously a local port. */
-static uint16_t kernel_socket_next_datagram_port(void) {
-  for (uint32_t attempt = 0U; attempt < 16384U; ++attempt) {
-    uint16_t candidate = kernel_socket_draw_ephemeral(&g_next_ephemeral_port);
-    if (candidate == 0U) return 0U;
-    if (!kernel_socket_port_in_use(candidate)) return candidate;
-  }
-  return 0U;
-}
 
 static kernel_socket_t *kernel_socket_find_owned_locked(uint64_t sockfd,
                                                         uint32_t owner_token) {
@@ -1798,9 +1847,9 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     uint32_t flow_id = 0U;
     xaios_status_t open_status = XAIOS_ERR_BUSY;
     for (uint32_t attempt = 0U; attempt < 16U; ++attempt) {
-      uint16_t local_port =
-          kernel_socket_draw_ephemeral(&g_next_ephemeral_port);
-      if (local_port == 0U) break;
+      /* Drawn atomically, for the same reason the datagram path is: two CPUs
+         that lose an update to this counter draw the same local port. */
+      uint16_t local_port = kernel_ephemeral_reserve();
       open_status = network_stack_tcp_open(
           &remote_addr, (uint16_t)request.port, local_port, &flow_id);
       if (open_status == XAIOS_OK) break;
@@ -1952,14 +2001,11 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
         return reject_syscall(syscall, arg0, arg1, "net-open-udp-no-memory");
       }
     } else {
-      /* The range, the wrap and the search for a port nobody holds all live
-         in `kernel_socket_next_datagram_port`. A collision costs one attempt
-         rather than failing the call, because the caller asked for any
-         port. */
-      port = kernel_socket_next_datagram_port();
-      if (port != 0U) {
-        sockfd = kernel_socket_alloc(KERNEL_SOCK_DATAGRAM, port, owner_token);
-      }
+      /* The range, the wrap, the search for a port nobody holds and the
+         allocation of the descriptor for it all happen inside one critical
+         section: see `kernel_socket_alloc_ephemeral_datagram` for why doing
+         them in two lets two CPUs end up holding one port. */
+      sockfd = kernel_socket_alloc_ephemeral_datagram(owner_token, &port);
       if (sockfd == 0U) {
         return reject_syscall(syscall, arg0, arg1, "net-open-udp-no-port");
       }

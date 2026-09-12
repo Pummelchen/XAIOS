@@ -2380,15 +2380,26 @@ xaios_status_t network_stack_process_udp_frame(const uint8_t *frame,
         find_listener_ex(dst_port, NETWORK_IP_PROTO_UDP);
     if (listener != 0) {
       /* A datagram that does not fit is dropped here, whole, and counted; it is
-         never queued in part. That is the maximum-datagram-size policy rather
-         than silence about one: the receive path below does clamp a read to the
-         caller's buffer and discard the tail, but this check runs first and
-         against the same bound, so the queue can only ever hold a datagram the
-         buffer is guaranteed to hold -- `sockbuf_available` is at most
-         SOCKET_BUFFER_SIZE and a read is capped there. A caller that asks for
-         SOCKET_BUFFER_SIZE therefore cannot be truncated; one that asks for
-         less can, and is not told. A truncation flag is what would make that
-         case honest, and it is a syscall change rather than a stack one. */
+         never queued in part. The test is against `sockbuf_available`, the flow
+         ring's *free space*, so this is backpressure as much as a size policy:
+         a large datagram is admitted on an empty ring and refused once the ring
+         is partly full. It is not the check that bounds how large a datagram
+         can be.
+       *
+         The frame is what bounds that. `network_device_rx_poll` reads into a
+         `NETWORK_BUFFER_SIZE` (1520) buffer and this function's caller rejects
+         a reassembled frame longer than that, so `parse_udp` can only ever see
+         a UDP length inside a 1520-byte frame and the largest deliverable
+         datagram is 1520 - 14 - 20 - 8 = 1478 bytes of payload.
+       *
+         The receive path below is therefore safe for a caller that asks for a
+         full-size buffer: admission is against free space (at most
+         SOCKET_BUFFER_SIZE) and the syscall caps a read at SOCKET_BUFFER_SIZE,
+         both of which are at or above the 1478 the frame can produce, so no
+         clamp can occur. A caller that asks for less than the datagram's length
+         is truncated silently and told nothing. A truncation flag is what would
+         make that last case honest, and it is a syscall change rather than a
+         stack one. */
       if (listener->backlog_count >= NETWORK_LISTENER_BACKLOG ||
           data_len > sockbuf_available(flow->rx_buf) ||
           sockbuf_write(flow->rx_buf, udp_payload, data_len) != data_len ||
