@@ -317,13 +317,28 @@ def main() -> int:
           f"run before accepts and closes are tallied", flush=True)
     time.sleep(settle)
     console = smoke.serial_text()
-    accepted = console.count("syscall: net_accept")
-    closed = console.count("syscall: net_close")
+    # Descriptors, not line counts.
+    #
+    # Counting every `net_close` against every `net_accept` made the figure
+    # negative -- 2515 accepted, 2516 closed -- which reads as a connection the
+    # guest closed without ever accepting. It was the UDP listening socket:
+    # `net_listen protocol=17 port=24002 sockfd=6`, closed at shutdown and
+    # never accepted because a listener is not accepted. Any descriptor the
+    # server opens itself does the same thing, so the difference was measuring
+    # the wrong population.
+    #
+    # Matching closes to the descriptors that were actually accepted keeps the
+    # number meaning what its name says: sessions taken and not given back.
+    accepted_fds = set(re.findall(r"net_accept listenfd=\d+ connfd=(\d+)", console))
+    closed_fds = set(re.findall(r"net_close sockfd=(\d+)", console))
+    accepted = len(accepted_fds)
+    closed = len(accepted_fds & closed_fds)
     outstanding = accepted - closed
     session_tally = {
         "accepted": accepted,
         "closed": closed,
         "outstanding": outstanding,
+        "closes_of_unaccepted_descriptors": len(closed_fds - accepted_fds),
         "idle_timeout_s": round(idle_ns / 1_000_000_000.0),
         "settled_for_s": round(settle),
     }
