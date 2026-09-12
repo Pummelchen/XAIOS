@@ -153,11 +153,39 @@ int wt_tls_derive_secret(const uint8_t *secret, size_t secret_len,
  * `resumption_master_available` is 0, because a wrong value is worse than an
  * absent one.
  *
- * A caller that has no transcript yet can pass wt_tls_empty_hash for the first
- * two, which is what the RFC 8448 vectors do at the points they are printed
- * for; that is useful for testing the schedule and wrong for a connection.
+ * The schedule runs in two phases, and a handshake has to run them at two
+ * different times: `wt_tls_handshake_key_schedule` as soon as the ServerHello
+ * has been seen, because the next packet from the server is protected with the
+ * handshake keys it produces, and `wt_tls_application_key_schedule` once the
+ * server's Finished has been verified, because its transcript does not exist
+ * before then. `wt_tls_key_schedule` runs both at once, for a caller that has
+ * the whole transcript -- which is what the RFC 8448 vectors do, and what makes
+ * the two phases checkable against one published answer.
+ *
+ * A caller that has no transcript yet can pass wt_tls_empty_hash for the
+ * transcript arguments, which is what the RFC 8448 vectors do at the points
+ * they are printed for; that is useful for testing the schedule and wrong for a
+ * connection.
  *
  * On failure `out` is cleared rather than partially filled. */
+int wt_tls_handshake_key_schedule(
+    const uint8_t *ecdh_secret, size_t ecdh_len,
+    const uint8_t transcript_after_server_hello[WT_TLS_HASH_LEN],
+    wt_tls_secrets_t *out);
+
+/* The second phase. `handshake_phase` is what `wt_tls_handshake_key_schedule`
+ * produced, and its early, handshake and handshake-traffic secrets are carried
+ * into `out` unchanged -- so `out` holds the whole schedule and not just its
+ * second half. `out` and `handshake_phase` may be the same object. */
+int wt_tls_application_key_schedule(
+    const wt_tls_secrets_t *handshake_phase,
+    const uint8_t transcript_after_server_finished[WT_TLS_HASH_LEN],
+    wt_tls_secrets_t *out);
+
+/* Both phases, in order, plus the resumption master secret when a transcript
+ * through the client's Finished is supplied (NULL for one that has not seen
+ * it). Equivalent to calling the two above; this is the form the RFC 8448
+ * vectors are checked against. */
 int wt_tls_key_schedule(const uint8_t *ecdh_secret, size_t ecdh_len,
                         const uint8_t transcript_after_server_hello[WT_TLS_HASH_LEN],
                         const uint8_t transcript_after_server_finished[WT_TLS_HASH_LEN],

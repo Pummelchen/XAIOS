@@ -41,6 +41,9 @@ extern "C" {
 #define WT_TLS_HS_NEW_SESSION_TICKET 4U
 #define WT_TLS_HS_ENCRYPTED_EXTENSIONS 8U
 #define WT_TLS_HS_CERTIFICATE 11U
+/* RFC 8446 section 4.3.2. A server may send one before its Certificate; this
+   client holds no certificate, so it answers with an empty one. */
+#define WT_TLS_HS_CERTIFICATE_REQUEST 13U
 #define WT_TLS_HS_CERTIFICATE_VERIFY 15U
 #define WT_TLS_HS_FINISHED 20U
 
@@ -122,6 +125,163 @@ int wt_tls_decode_handshake_header(const uint8_t *message, size_t message_len,
                                    size_t *out_body_offset);
 
 /* ---------------------------------------------------------------------------
+ * EncryptedExtensions
+ *
+ * RFC 8446 section 4.3.1 and RFC 9001 section 8.2. The first message under
+ * handshake keys, and the one that carries ALPN's answer and the server's QUIC
+ * transport parameters.
+ *
+ * The message is a bare extension list, which makes it the one handshake
+ * message whose content is almost entirely peer-chosen. Two rules decide
+ * whether it is acceptable, and they are different rules:
+ *
+ *   - RFC 8446 section 4.3.1: an extension that is not allowed in
+ *     EncryptedExtensions at all is `illegal_parameter`.
+ *   - RFC 8446 section 4.2: an extension the client did not offer is
+ *     `unsupported_extension`. This one needs the ClientHello, so the parser
+ *     reports which types arrived and `wt_tls_client_hello_offers` answers
+ *     whether each was asked for.
+ * ------------------------------------------------------------------------- */
+
+/* Extension types, named so a caller does not compare magic numbers. These are
+ * the TLS 1.3 registry entries (RFC 8446 section 4.2), not a subset: the
+ * parser's job includes recognising the ones that must NOT appear here. */
+#define WT_TLS_EXT_SERVER_NAME 0x0000U
+#define WT_TLS_EXT_MAX_FRAGMENT_LENGTH 0x0001U
+#define WT_TLS_EXT_STATUS_REQUEST 0x0005U
+#define WT_TLS_EXT_SUPPORTED_GROUPS 0x000AU
+#define WT_TLS_EXT_SIGNATURE_ALGORITHMS 0x000DU
+#define WT_TLS_EXT_USE_SRTP 0x000EU
+#define WT_TLS_EXT_HEARTBEAT 0x000FU
+#define WT_TLS_EXT_ALPN 0x0010U
+#define WT_TLS_EXT_SIGNED_CERTIFICATE_TIMESTAMP 0x0012U
+#define WT_TLS_EXT_CLIENT_CERTIFICATE_TYPE 0x0013U
+#define WT_TLS_EXT_SERVER_CERTIFICATE_TYPE 0x0014U
+#define WT_TLS_EXT_PADDING 0x0015U
+/* RFC 8449. Not in RFC 8446's table, because RFC 8446 predates it, but it is
+ * legal in EncryptedExtensions and RFC 8448's trace carries one -- which is a
+ * useful reminder that "valid in EncryptedExtensions" is not a closed set. */
+#define WT_TLS_EXT_RECORD_SIZE_LIMIT 0x001CU
+#define WT_TLS_EXT_PRE_SHARED_KEY 0x0029U
+#define WT_TLS_EXT_EARLY_DATA 0x002AU
+#define WT_TLS_EXT_SUPPORTED_VERSIONS 0x002BU
+#define WT_TLS_EXT_COOKIE 0x002CU
+#define WT_TLS_EXT_PSK_KEY_EXCHANGE_MODES 0x002DU
+#define WT_TLS_EXT_CERTIFICATE_AUTHORITIES 0x002FU
+#define WT_TLS_EXT_OID_FILTERS 0x0030U
+#define WT_TLS_EXT_POST_HANDSHAKE_AUTH 0x0031U
+#define WT_TLS_EXT_SIGNATURE_ALGORITHMS_CERT 0x0032U
+#define WT_TLS_EXT_KEY_SHARE 0x0033U
+/* RFC 9001 section 8.2. Mandatory in a ClientHello and in EncryptedExtensions
+   for QUIC, and forbidden in TLS over any other transport. */
+#define WT_TLS_EXT_QUIC_TRANSPORT_PARAMETERS 0x0039U
+
+/* The most extensions a single EncryptedExtensions may carry before this
+ * refuses. Sixteen is far above any real server's list, and the alternative --
+ * a growing array -- is an allocation on a peer-controlled count. */
+#define WT_TLS_MAX_ENCRYPTED_EXTENSIONS 16U
+
+/* Why an EncryptedExtensions was refused. The value selects the TLS alert a
+ * QUIC stack reports, so it is returned rather than logged and dropped:
+ * "refused" and "refused for this reason" are different to a peer and to
+ * whoever reads the connection close.
+ *
+ * The first five come from the parse; the last two come from
+ * `wt_tls_encrypted_extensions_check`, which is the one that needs the
+ * ClientHello. */
+typedef enum wt_tls_ee_reject {
+  WT_TLS_EE_OK = 0,
+  /* Not an EncryptedExtensions, truncated, a length that does not fit, or a
+     body that is not exactly one extension list -> decode_error. */
+  WT_TLS_EE_MALFORMED,
+  /* The same extension type twice in one list (RFC 8446 section 4.2) ->
+     illegal_parameter. */
+  WT_TLS_EE_DUPLICATE_EXTENSION,
+  /* A recognised extension whose body is invalid: an ALPN list that is not one
+     protocol, a server_name that is not empty, a bad max_fragment_length ->
+     decode_error. */
+  WT_TLS_EE_BAD_EXTENSION,
+  /* More extensions than this parser holds -> decode_error. */
+  WT_TLS_EE_TOO_MANY_EXTENSIONS,
+  /* An extension the ClientHello offered, in a message RFC 8446 section 4.2
+     says it may not appear in (key_share, supported_versions,
+     signature_algorithms, ...) -> illegal_parameter. */
+  WT_TLS_EE_FORBIDDEN_EXTENSION,
+  /* An extension the ClientHello did not offer (RFC 8446 section 4.2: a server
+     MUST NOT send an extension response the client did not request) ->
+     unsupported_extension. */
+  WT_TLS_EE_UNSOLICITED_EXTENSION
+} wt_tls_ee_reject_t;
+
+typedef struct wt_tls_encrypted_extensions {
+  /* The selected ALPN protocol, as a view into the message. RFC 7301 requires
+     exactly one name in the server's answer, so this is one protocol and not a
+     list; `has_alpn` distinguishes "no ALPN" from "an empty one", which is
+     otherwise the same pointer and length. */
+  const uint8_t *alpn;
+  size_t alpn_len;
+  int has_alpn;
+
+  /* The server's QUIC transport parameters, still encoded: their layout is
+     RFC 9000's, not TLS's. Absent for a QUIC connection is fatal
+     (RFC 9001 section 8.2), and this parser does not enforce that because it
+     is not a QUIC implementation -- the driver does. */
+  const uint8_t *transport_parameters;
+  size_t transport_parameters_len;
+  int has_transport_parameters;
+
+  /* Present-and-well-formed flags for the rest of the extensions that may
+     appear here. None of them changes what this module does; they are recorded
+     so a caller is not left guessing what the server sent. */
+  int has_server_name;
+  int has_early_data;
+  int has_max_fragment_length;
+  uint8_t max_fragment_length;
+  int has_supported_groups;
+  int has_client_certificate_type;
+  uint8_t client_certificate_type;
+  int has_server_certificate_type;
+  uint8_t server_certificate_type;
+  int has_use_srtp;
+  int has_heartbeat;
+
+  /* Every extension type in the message, in the order it appeared, so a caller
+     can apply RFC 8446 section 4.2's "the client must have offered it" rule.
+     Duplicates are refused, so these are distinct. */
+  uint16_t types[WT_TLS_MAX_ENCRYPTED_EXTENSIONS];
+  size_t type_count;
+
+  /* Valid only when the parse returned -1: which refusal this was, and for the
+     two extension-specific reasons, which extension caused it. */
+  wt_tls_ee_reject_t reject;
+  uint16_t reject_extension;
+} wt_tls_encrypted_extensions_t;
+
+/* Parse an EncryptedExtensions message. `message` is the whole handshake
+ * message including its `type || length` header.
+ *
+ * Returns 0 on success and -1 on any refusal, in which case `out` is cleared
+ * and only `reject` and `reject_extension` are meaningful -- a caller that
+ * wants the alert code reads them; a caller that only wants to fail does not
+ * have to. Views point into `message`, which must outlive the structure.
+ *
+ * This checks the message's SHAPE: that it is an EncryptedExtensions, that the
+ * body is exactly one extension list, that no type repeats, and that the
+ * extensions this module understands are well formed. It deliberately does NOT
+ * decide whether an extension was allowed to be there, because that answer
+ * depends on the ClientHello and RFC 8446 gives two different alerts for the
+ * two ways it can be wrong. That decision is
+ * `wt_tls_encrypted_extensions_check`, declared after the ClientHello
+ * parameters because that is what it reads. */
+int wt_tls_parse_encrypted_extensions(const uint8_t *message, size_t message_len,
+                                      wt_tls_encrypted_extensions_t *out);
+
+/* The remaining rule -- an extension the client did not offer is
+ * `unsupported_extension` (RFC 8446 section 4.2) -- needs the ClientHello, so
+ * `wt_tls_client_hello_offers` answers it. It is declared after the
+ * ClientHello parameters, because that is what it reads. */
+
+/* ---------------------------------------------------------------------------
  * ClientHello construction
  *
  * The parameters a client chooses. This is not a policy object: it is the list
@@ -172,6 +332,52 @@ typedef struct wt_tls_client_hello_params {
   const uint8_t *quic_transport_parameters;
   size_t quic_transport_parameters_len;
 } wt_tls_client_hello_params_t;
+
+/* Whether the ClientHello these parameters describe offered `type`
+ * (RFC 8446 section 4.2: a server MUST NOT send an extension response the
+ * client did not request, and a client that receives one MUST abort with
+ * `unsupported_extension`).
+ *
+ * This is derived from the parameters rather than from a list recorded at
+ * encode time, because those parameters ARE the ClientHello: the builder emits
+ * an extension for a field exactly when that field is set, so asking the
+ * parameters is asking the message. The test asserts the two agree by encoding
+ * a ClientHello and reading its extension list back, so a builder that starts
+ * emitting an extension this does not know about is a test failure rather than
+ * a silent difference.
+ *
+ * Returns 1 when the extension was offered, 0 when it was not, and -1 on a
+ * NULL `params`. */
+int wt_tls_client_hello_offers(const wt_tls_client_hello_params_t *params,
+                               uint16_t type);
+
+/* Apply RFC 8446's two acceptance rules to a parsed EncryptedExtensions,
+ * against the ClientHello this client sent, in the order the RFC states them:
+ *
+ *   1. An extension that was not offered -> `unsupported_extension`
+ *      (section 4.2: "Implementations MUST NOT send extension responses if the
+ *      remote endpoint did not send the corresponding extension requests").
+ *   2. An extension that was offered but whose TLS 1.3 location is not
+ *      EncryptedExtensions -> `illegal_parameter`
+ *      (section 4.3.1: "The client MUST check EncryptedExtensions for the
+ *      presence of any forbidden extensions").
+ *
+ * The order matters and is not arbitrary. Rule 1 is decidable from the
+ * ClientHello alone and covers every extension this client does not speak,
+ * including ones registered after RFC 8446; rule 2 only ever sees types the
+ * client offered, which is a set of seven this module knows in full. That is
+ * what keeps the check correct without a complete copy of the IANA registry --
+ * a whitelist of "extensions valid in EncryptedExtensions" would refuse a
+ * server that used a newer RFC's extension, and RFC 8448's own trace already
+ * carries `record_size_limit`, which RFC 8446 predates.
+ *
+ * Returns 0 when the message may be accepted and -1 otherwise, writing the
+ * reject reason and the offending extension type through `out_reject` and
+ * `out_extension` (both may be NULL). */
+int wt_tls_encrypted_extensions_check(
+    const wt_tls_encrypted_extensions_t *ee,
+    const wt_tls_client_hello_params_t *offered, wt_tls_ee_reject_t *out_reject,
+    uint16_t *out_extension);
 
 /* How large a buffer a ClientHello needs for these parameters, or 0 if the
  * parameters are invalid. Use this to size the buffer: the encoder refuses

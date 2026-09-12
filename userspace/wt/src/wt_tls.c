@@ -89,11 +89,9 @@ int wt_tls_derive_secret(const uint8_t *secret, size_t secret_len,
  * with the two traffic-secret pairs and the exporter taken from the handshake
  * and master secrets respectively. The resumption master secret is the one
  * value whose transcript is different, and it is handled separately above. */
-int wt_tls_key_schedule(
+int wt_tls_handshake_key_schedule(
     const uint8_t *ecdh_secret, size_t ecdh_len,
     const uint8_t transcript_after_server_hello[WT_TLS_HASH_LEN],
-    const uint8_t transcript_after_server_finished[WT_TLS_HASH_LEN],
-    const uint8_t *transcript_after_client_finished,
     wt_tls_secrets_t *out) {
   uint8_t derived[WT_TLS_HASH_LEN];
   static const uint8_t zero[WT_TLS_HASH_LEN] = {0};
@@ -104,11 +102,7 @@ int wt_tls_key_schedule(
      partially derived one. */
   memset(out, 0, sizeof(*out));
   if (ecdh_secret == NULL || ecdh_len == 0U) return -1;
-  if (transcript_after_server_hello == NULL ||
-      transcript_after_server_finished == NULL) {
-    return -1;
-  }
-  if (ecdh_secret == NULL && ecdh_len != 0U) return -1;
+  if (transcript_after_server_hello == NULL) return -1;
 
   /* early_secret = HKDF-Extract(salt = 0, IKM = 0). HKDF's own definition of
      a zero-length salt is an all-zero HashLen salt, which
@@ -142,9 +136,56 @@ int wt_tls_key_schedule(
     goto fail;
   }
 
+  wt_secure_zero(derived, sizeof(derived));
+  return 0;
+
+fail:
+  wt_secure_zero(derived, sizeof(derived));
+  wt_secure_zero(out, sizeof(*out));
+  return -1;
+}
+
+int wt_tls_application_key_schedule(
+    const wt_tls_secrets_t *handshake_phase,
+    const uint8_t transcript_after_server_finished[WT_TLS_HASH_LEN],
+    wt_tls_secrets_t *out) {
+  uint8_t derived[WT_TLS_HASH_LEN];
+  static const uint8_t zero[WT_TLS_HASH_LEN] = {0};
+  uint8_t carried_handshake[WT_TLS_HASH_LEN];
+  uint8_t carried_client_hs[WT_TLS_HASH_LEN];
+  uint8_t carried_server_hs[WT_TLS_HASH_LEN];
+  uint8_t carried_early[WT_TLS_HASH_LEN];
+
+  if (out == NULL) return -1;
+  if (handshake_phase == NULL) {
+    memset(out, 0, sizeof(*out));
+    return -1;
+  }
+  if (transcript_after_server_finished == NULL) {
+    memset(out, 0, sizeof(*out));
+    return -1;
+  }
+
+  /* The handshake phase's own values are carried into the result, because a
+     caller that has run both phases expects one structure holding the whole
+     schedule. They are copied OUT OF THE INPUT BEFORE `out` IS CLEARED, and
+     that order is not incidental: a handshake calls this with `out` and
+     `handshake_phase` being the same structure, and clearing first would wipe
+     the input the derivation is about to read. That mistake produces an
+     all-zero master secret and well-formed application keys derived from it --
+     wrong, and indistinguishable from right until a packet fails to decrypt. */
+  memcpy(carried_early, handshake_phase->early, sizeof(carried_early));
+  memcpy(carried_handshake, handshake_phase->handshake,
+         sizeof(carried_handshake));
+  memcpy(carried_client_hs, handshake_phase->client_handshake_traffic,
+         sizeof(carried_client_hs));
+  memcpy(carried_server_hs, handshake_phase->server_handshake_traffic,
+         sizeof(carried_server_hs));
+  memset(out, 0, sizeof(*out));
+
   /* derived = Derive-Secret(handshake_secret, "derived", "") */
-  if (wt_tls_derive_secret(out->handshake, sizeof(out->handshake), "derived",
-                           wt_tls_empty_hash, derived) != 0) {
+  if (wt_tls_derive_secret(carried_handshake, sizeof(carried_handshake),
+                           "derived", wt_tls_empty_hash, derived) != 0) {
     goto fail;
   }
 
@@ -171,6 +212,54 @@ int wt_tls_key_schedule(
                            out->exporter_master) != 0) {
     goto fail;
   }
+
+  memcpy(out->early, carried_early, sizeof(out->early));
+  memcpy(out->handshake, carried_handshake, sizeof(out->handshake));
+  memcpy(out->client_handshake_traffic, carried_client_hs,
+         sizeof(out->client_handshake_traffic));
+  memcpy(out->server_handshake_traffic, carried_server_hs,
+         sizeof(out->server_handshake_traffic));
+
+  wt_secure_zero(derived, sizeof(derived));
+  wt_secure_zero(carried_early, sizeof(carried_early));
+  wt_secure_zero(carried_handshake, sizeof(carried_handshake));
+  wt_secure_zero(carried_client_hs, sizeof(carried_client_hs));
+  wt_secure_zero(carried_server_hs, sizeof(carried_server_hs));
+  return 0;
+
+fail:
+  wt_secure_zero(derived, sizeof(derived));
+  wt_secure_zero(carried_early, sizeof(carried_early));
+  wt_secure_zero(carried_handshake, sizeof(carried_handshake));
+  wt_secure_zero(carried_client_hs, sizeof(carried_client_hs));
+  wt_secure_zero(carried_server_hs, sizeof(carried_server_hs));
+  wt_secure_zero(out, sizeof(*out));
+  return -1;
+}
+
+int wt_tls_key_schedule(
+    const uint8_t *ecdh_secret, size_t ecdh_len,
+    const uint8_t transcript_after_server_hello[WT_TLS_HASH_LEN],
+    const uint8_t transcript_after_server_finished[WT_TLS_HASH_LEN],
+    const uint8_t *transcript_after_client_finished,
+    wt_tls_secrets_t *out) {
+  wt_tls_secrets_t handshake_phase;
+
+  if (out == NULL) return -1;
+  memset(out, 0, sizeof(*out));
+  if (wt_tls_handshake_key_schedule(ecdh_secret, ecdh_len,
+                                    transcript_after_server_hello,
+                                    &handshake_phase) != 0) {
+    return -1;
+  }
+  if (wt_tls_application_key_schedule(&handshake_phase,
+                                      transcript_after_server_finished,
+                                      out) != 0) {
+    wt_secure_zero(&handshake_phase, sizeof(handshake_phase));
+    return -1;
+  }
+  wt_secure_zero(&handshake_phase, sizeof(handshake_phase));
+
   /* The resumption master secret comes from the transcript through the
      CLIENT's Finished, not the server's. With no such transcript it is left
      zero and flagged, rather than filled with a plausible value derived from
@@ -179,20 +268,12 @@ int wt_tls_key_schedule(
     if (wt_tls_derive_secret(out->master, sizeof(out->master), "res master",
                              transcript_after_client_finished,
                              out->resumption_master) != 0) {
-      goto fail;
+      wt_secure_zero(out, sizeof(*out));
+      return -1;
     }
     out->resumption_master_available = 1;
   }
-
-  wt_secure_zero(derived, sizeof(derived));
   return 0;
-
-fail:
-  /* A partially derived schedule is worse than none: a caller that ignored
-     the return value would send with a secret that was never completed. */
-  wt_secure_zero(derived, sizeof(derived));
-  wt_secure_zero(out, sizeof(*out));
-  return -1;
 }
 
 /* The struct must hold the larger of the two header protection keys. A

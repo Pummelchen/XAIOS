@@ -323,6 +323,149 @@ static void test_key_schedule(void) {
   wt_tls_secrets_clear(&secrets);
 }
 
+/* ------------------------------------------- the schedule in two phases
+ *
+ * The whole schedule is one function above, and a handshake cannot use it: the
+ * handshake keys are needed as soon as the ServerHello arrives, and the
+ * application keys cannot exist until the server's Finished has been verified,
+ * because their transcript does not exist before then. So the schedule is
+ * exposed as two phases as well, and this checks that running them in order
+ * gives exactly what running the whole thing gives -- against RFC 8448's
+ * published values, not against each other.
+ *
+ * The failure this prevents is the tempting one: calling the whole schedule at
+ * the ServerHello and using the application secrets it produced, which would be
+ * well-formed, wrong, and indistinguishable from right until the first packet
+ * failed to decrypt.
+ */
+static void test_key_schedule_phases(void) {
+  wt_tls_secrets_t whole;
+  wt_tls_secrets_t phase_one;
+  wt_tls_secrets_t phase_two;
+  wt_tls_secrets_t combined;
+
+  expect_int("the whole schedule", 0,
+             wt_tls_key_schedule(
+                 WT_RFC8448_ECDHE, sizeof(WT_RFC8448_ECDHE),
+                 WT_RFC8448_TRANSCRIPT_AFTER_SERVER_HELLO,
+                 WT_RFC8448_TRANSCRIPT_AFTER_SERVER_FINISHED, NULL, &whole));
+
+  /* The first phase, at the point in the handshake where it is called. */
+  expect_int("the handshake phase", 0,
+             wt_tls_handshake_key_schedule(
+                 WT_RFC8448_ECDHE, sizeof(WT_RFC8448_ECDHE),
+                 WT_RFC8448_TRANSCRIPT_AFTER_SERVER_HELLO, &phase_one));
+  expect_bytes("  the handshake secret", whole.handshake, phase_one.handshake,
+               WT_TLS_HASH_LEN);
+  expect_bytes("  the client handshake traffic secret",
+               whole.client_handshake_traffic,
+               phase_one.client_handshake_traffic, WT_TLS_HASH_LEN);
+  expect_bytes("  the server handshake traffic secret",
+               whole.server_handshake_traffic,
+               phase_one.server_handshake_traffic, WT_TLS_HASH_LEN);
+  /* The RFC prints the client's handshake traffic secret, so this is a check
+     against the RFC and not only against the other function. */
+  expect_bytes("  which is RFC 8448's", WT_RFC8448_CLIENT_HANDSHAKE_TRAFFIC,
+               phase_one.client_handshake_traffic, WT_TLS_HASH_LEN);
+  /* The first phase cannot know the master secret's consumers, and it does not
+     pretend to: the application secrets are left zero. */
+  {
+    static const uint8_t zeroes[32] = {0};
+    expect_bytes("  the application secrets are not derived yet", zeroes,
+                 phase_one.client_application_traffic, WT_TLS_HASH_LEN);
+  }
+
+  /* The second phase, at the point where it is called. */
+  expect_int("the application phase", 0,
+             wt_tls_application_key_schedule(
+                 &phase_one, WT_RFC8448_TRANSCRIPT_AFTER_SERVER_FINISHED,
+                 &phase_two));
+  expect_bytes("  the master secret", whole.master, phase_two.master,
+               WT_TLS_HASH_LEN);
+  expect_bytes("  the client application traffic secret",
+               whole.client_application_traffic,
+               phase_two.client_application_traffic, WT_TLS_HASH_LEN);
+  expect_bytes("  the server application traffic secret",
+               whole.server_application_traffic,
+               phase_two.server_application_traffic, WT_TLS_HASH_LEN);
+  expect_bytes("  the exporter master secret", whole.exporter_master,
+               phase_two.exporter_master, WT_TLS_HASH_LEN);
+  /* The second phase carries the first phase's values into its output, so that
+     a caller ends up with one complete schedule rather than half of one in each
+     of two structures. */
+  expect_bytes("  and the handshake secrets are carried through",
+               whole.client_handshake_traffic,
+               phase_two.client_handshake_traffic, WT_TLS_HASH_LEN);
+  expect_bytes("  including the early secret", whole.early, phase_two.early,
+               WT_TLS_HASH_LEN);
+  expect_int("  and no resumption master secret, which needs the client's "
+             "Finished",
+             0, phase_two.resumption_master_available);
+
+  /* Running both phases into the same structure is what a handshake does, and
+     it must work: the second phase reads the first's output and writes over it.
+     A function that cleared its output before reading its input would produce
+     zeros here, and that is exactly the mistake the copy-first code above
+     exists to prevent. */
+  memset(&combined, 0xAA, sizeof(combined));
+  expect_int("the handshake phase into a fresh structure", 0,
+             wt_tls_handshake_key_schedule(
+                 WT_RFC8448_ECDHE, sizeof(WT_RFC8448_ECDHE),
+                 WT_RFC8448_TRANSCRIPT_AFTER_SERVER_HELLO, &combined));
+  expect_int("then the application phase in place", 0,
+             wt_tls_application_key_schedule(
+                 &combined, WT_RFC8448_TRANSCRIPT_AFTER_SERVER_FINISHED,
+                 &combined));
+  expect_bytes("running the phases in place gives the whole schedule",
+               whole.client_application_traffic,
+               combined.client_application_traffic, WT_TLS_HASH_LEN);
+  expect_bytes("  and the handshake secrets survive it",
+               whole.server_handshake_traffic, combined.server_handshake_traffic,
+               WT_TLS_HASH_LEN);
+
+  /* Refusals, and each must leave the output cleared. */
+  {
+    static const uint8_t zeroes[32] = {0};
+    wt_tls_secrets_t cleared;
+    memset(&cleared, 0xAA, sizeof(cleared));
+    expect_int("the handshake phase refuses a NULL transcript", -1,
+               wt_tls_handshake_key_schedule(WT_RFC8448_ECDHE,
+                                             sizeof(WT_RFC8448_ECDHE), NULL,
+                                             &cleared));
+    expect_bytes("  and clears the output", zeroes, cleared.handshake,
+                 WT_TLS_HASH_LEN);
+    expect_int("the handshake phase refuses a zero-length ECDHE", -1,
+               wt_tls_handshake_key_schedule(WT_RFC8448_ECDHE, 0U,
+                                             WT_RFC8448_TRANSCRIPT_AFTER_SERVER_HELLO,
+                                             &cleared));
+    expect_int("the handshake phase refuses a NULL output", -1,
+               wt_tls_handshake_key_schedule(WT_RFC8448_ECDHE,
+                                             sizeof(WT_RFC8448_ECDHE),
+                                             WT_RFC8448_TRANSCRIPT_AFTER_SERVER_HELLO,
+                                             NULL));
+    memset(&cleared, 0xAA, sizeof(cleared));
+    expect_int("the application phase refuses a NULL transcript", -1,
+               wt_tls_application_key_schedule(&phase_one, NULL, &cleared));
+    expect_bytes("  and clears the output", zeroes, cleared.master,
+                 WT_TLS_HASH_LEN);
+    expect_int("the application phase refuses a NULL input", -1,
+               wt_tls_application_key_schedule(
+                   NULL, WT_RFC8448_TRANSCRIPT_AFTER_SERVER_FINISHED,
+                   &cleared));
+    expect_bytes("  and clears the output", zeroes, cleared.master,
+                 WT_TLS_HASH_LEN);
+    expect_int("the application phase refuses a NULL output", -1,
+               wt_tls_application_key_schedule(
+                   &phase_one, WT_RFC8448_TRANSCRIPT_AFTER_SERVER_FINISHED,
+                   NULL));
+  }
+
+  wt_tls_secrets_clear(&whole);
+  wt_tls_secrets_clear(&phase_one);
+  wt_tls_secrets_clear(&phase_two);
+  wt_tls_secrets_clear(&combined);
+}
+
 /* ---------------------------------------------------------- traffic keys */
 
 static void test_traffic_keys(void) {
@@ -591,6 +734,7 @@ int main(void) {
   test_empty_hash();
   test_expand_label();
   test_key_schedule();
+  test_key_schedule_phases();
   test_traffic_keys();
   test_initial_keys();
   test_retry_tag();

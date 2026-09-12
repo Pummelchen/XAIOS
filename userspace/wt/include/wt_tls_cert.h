@@ -120,25 +120,97 @@ int wt_tls_certificate_verify_signature(
     const wt_tls_certificate_verify_t *verify, const uint8_t *content,
     size_t content_len);
 
-/* Read the public key out of a DER certificate, for a caller that wants to
- * compare it against a pinned key rather than verify a signature with it.
+/* A public key, with its bytes owned by the structure.
  *
- * Exactly one of `rsa` and `ec` is filled, according to the key type.
- * `is_rsa` is 1 when the key is RSA and 0 when it is EC. Returns 0 on success,
- * -1 when the certificate cannot be parsed or its key type is unsupported. */
-int wt_tls_certificate_public_key(const uint8_t *certificate_der,
-                                  size_t certificate_len, int *is_rsa,
-                                  br_rsa_public_key *rsa, br_ec_public_key *ec);
+ * BearSSL's `br_rsa_public_key` and `br_ec_public_key` are views: `n`, `e` and
+ * `q` point at wherever the key happened to be decoded. That is fine inside one
+ * call and wrong the moment a key outlives it, because
+ * `br_x509_decoder_get_pkey` hands out views into `br_x509_decoder_context`'s
+ * own `pkey_data` array -- a member of the decoder, which is a local in every
+ * function that parses a certificate. An earlier version of
+ * `wt_tls_certificate_public_key` returned those views to its caller, so the
+ * key it reported was a pointer into a dead stack frame: reading it after the
+ * next call returned whatever that call had put there. The test for it passed,
+ * because the bytes happened to survive; a stack sweep shows them changing.
+ *
+ * So a key that outlives its decoder is copied here, and the views in `rsa` and
+ * `ec` point into `storage` inside this structure. The size is BearSSL's own
+ * key buffer bound (BR_X509_BUFSIZE_KEY), so a key that does not fit is one
+ * BearSSL's decoder refuses rather than a limit chosen here. */
+#define WT_TLS_PUBLIC_KEY_MAX 520U
 
-/* Whether two RSA public keys are the same key, in constant time.
+typedef struct wt_tls_public_key {
+  int is_rsa;
+  uint8_t storage[WT_TLS_PUBLIC_KEY_MAX];
+  size_t storage_len;
+  /* Views into `storage`. Exactly one is meaningful, according to `is_rsa`. */
+  br_rsa_public_key rsa;
+  br_ec_public_key ec;
+} wt_tls_public_key_t;
+
+/* Read the public key out of a DER certificate into caller-owned storage.
  *
- * This is the pinned-key comparison: the operator's key is configured at build
- * or boot time and the peer's certificate must carry exactly it. Comparing
- * only the modulus is deliberate -- the exponent is checked too, but a key is
- * identified by its modulus, and a comparison that stopped at the first
- * difference would be a timing oracle for the modulus. */
+ * Returns 0 on success and -1 when the certificate cannot be parsed, carries a
+ * key type this module does not implement, or carries a key larger than
+ * WT_TLS_PUBLIC_KEY_MAX. On failure `out` is cleared. */
+int wt_tls_certificate_public_key(const uint8_t *certificate_der,
+                                  size_t certificate_len,
+                                  wt_tls_public_key_t *out);
+
+/* Build a public key from the components an operator has, rather than from a
+ * certificate. `modulus` and `exponent` are big-endian integers with no leading
+ * zero byte, which is the form DER uses. `hex` is the same modulus as an even
+ * number of hexadecimal digits, the form an operator copies out of tooling.
+ *
+ * Both refuse rather than approximate: an odd-length hex string, a non-hex
+ * character, an empty component, a component that does not fit, and a modulus
+ * with a leading zero byte are all -1 with `out` cleared. The leading-zero rule
+ * exists because a pin is compared as bytes, so accepting the padded form of a
+ * number and comparing it against the unpadded form from a certificate would
+ * refuse the right key for a reason no operator could see. */
+int wt_tls_public_key_set_rsa(wt_tls_public_key_t *out, const uint8_t *modulus,
+                              size_t modulus_len, const uint8_t *exponent,
+                              size_t exponent_len);
+int wt_tls_public_key_set_rsa_hex(wt_tls_public_key_t *out, const char *modulus,
+                                  uint32_t exponent);
+
+/* `point` is an ECPoint exactly as RFC 5480 section 2.2 encodes it in a
+ * certificate: the uncompressed form, 0x04 || X || Y. */
+int wt_tls_public_key_set_ec(wt_tls_public_key_t *out, int curve,
+                             const uint8_t *point, size_t point_len);
+
+/* Zero a key, including its owned bytes. */
+void wt_tls_public_key_clear(wt_tls_public_key_t *key);
+
+/* Whether two public keys are the same key.
+ *
+ * The comparison is byte equality of the modulus and exponent, or of the curve
+ * identifier and the point, and it is constant time in the secret-free way that
+ * matters: it does not stop at the first differing byte, so it is not a timing
+ * oracle for how much of a key an attacker has guessed.
+ *
+ * A key is never equal to a key of the other type, and an unset key is never
+ * equal to anything. */
+int wt_tls_public_key_equal(const wt_tls_public_key_t *a,
+                            const wt_tls_public_key_t *b);
+
+/* Whether two RSA public keys are the same key, in constant time. */
 int wt_tls_rsa_public_key_equal(const br_rsa_public_key *a,
                                 const br_rsa_public_key *b);
+
+/* Whether two EC public keys are the same key, in constant time.
+ *
+ * RFC 5480 section 2.2 requires an ECPoint in a certificate to be in the
+ * uncompressed form, so for a conformant certificate the point bytes from
+ * `br_x509_decoder` are canonical and a byte comparison is a key comparison.
+ * A certificate carrying a compressed point is not conformant, will not match
+ * a pin expressed in the required form, and is refused -- which is the safe
+ * direction for a pin, and is why there is no normalisation here.
+ *
+ * The curve identifier is compared first: the same point bytes on a different
+ * curve are a different key. */
+int wt_tls_ec_public_key_equal(const br_ec_public_key *a,
+                               const br_ec_public_key *b);
 
 #ifdef __cplusplus
 }

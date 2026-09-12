@@ -727,6 +727,400 @@ static void test_client_hello_build(void) {
   }
 }
 
+/* -------------------------------------------------- EncryptedExtensions */
+
+/* A minimal EncryptedExtensions around a raw extension block. The header says
+ * `08 || uint24 body length` and the body is the two-byte list length followed
+ * by the list, per RFC 8446 section 4.3.1. Small enough for the tests, which
+ * stay under 256 bytes so the length bytes can be written directly; the size is
+ * asserted rather than assumed. */
+static size_t ee_wrap(uint8_t *out, size_t capacity, const uint8_t *extensions,
+                      size_t extensions_len) {
+  size_t body_len = 2U + extensions_len;
+  if (capacity < 4U + body_len || body_len > 0xFFFFFFU) return 0U;
+  out[0] = WT_TLS_HS_ENCRYPTED_EXTENSIONS;
+  out[1] = (uint8_t)((body_len >> 16) & 0xFFU);
+  out[2] = (uint8_t)((body_len >> 8) & 0xFFU);
+  out[3] = (uint8_t)(body_len & 0xFFU);
+  out[4] = (uint8_t)((extensions_len >> 8) & 0xFFU);
+  out[5] = (uint8_t)(extensions_len & 0xFFU);
+  if (extensions_len != 0U) memcpy(out + 6U, extensions, extensions_len);
+  return 4U + body_len;
+}
+
+/* One `type || length || data` extension appended to a block. Returns the new
+ * block length. */
+static size_t ee_ext(uint8_t *out, size_t len, uint16_t type,
+                     const uint8_t *data, size_t data_len) {
+  out[len + 0U] = (uint8_t)(type >> 8);
+  out[len + 1U] = (uint8_t)(type & 0xFFU);
+  out[len + 2U] = (uint8_t)(data_len >> 8);
+  out[len + 3U] = (uint8_t)(data_len & 0xFFU);
+  if (data_len != 0U) memcpy(out + len + 4U, data, data_len);
+  return len + 4U + data_len;
+}
+
+/* The ClientHello parameters the parser's acceptance rules are checked
+ * against: the seven extensions this module's builder emits, and nothing
+ * else. `alpn` and the transport parameters are only read for their lengths. */
+static void ee_offered_params(wt_tls_client_hello_params_t *p,
+                              const uint8_t *alpn, size_t alpn_len,
+                              const uint8_t *transport, size_t transport_len) {
+  static const uint16_t groups[1] = {0x001DU};
+  static const uint16_t sigalgs[1] = {0x0804U};
+  static const uint16_t suites[1] = {0x1301U};
+  static const uint8_t pub[32] = {0};
+  static const wt_tls_key_share_t share = {0x001DU, pub, sizeof(pub)};
+
+  memset(p, 0, sizeof(*p));
+  p->random = (const uint8_t *)"0123456789abcdef0123456789abcdef";
+  p->cipher_suites = suites;
+  p->cipher_suite_count = 1U;
+  p->key_shares = &share;
+  p->key_share_count = 1U;
+  p->supported_groups = groups;
+  p->supported_group_count = 1U;
+  p->signature_algorithms = sigalgs;
+  p->signature_algorithm_count = 1U;
+  p->server_name = "server";
+  p->alpn_protocols = alpn;
+  p->alpn_protocols_len = alpn_len;
+  p->quic_transport_parameters = transport;
+  p->quic_transport_parameters_len = transport_len;
+}
+
+static void test_encrypted_extensions(void) {
+  wt_tls_encrypted_extensions_t ee;
+  wt_tls_ee_reject_t reject;
+  uint16_t offender;
+  uint8_t block[512];
+  uint8_t message[600];
+  size_t block_len;
+  size_t message_len;
+
+  /* --- RFC 8448's own EncryptedExtensions, all 40 bytes of it.
+   *
+   * It carries supported_groups, record_size_limit (0x001c, an extension from
+   * RFC 8449 that RFC 8446 postdates) and an empty server_name. It predates
+   * QUIC's use of this message, so it has no ALPN and no transport parameters
+   * -- which is the point: those two absences are what a QUIC handshake must
+   * refuse, and they are absent in the one EncryptedExtensions the RFCs
+   * actually publish. */
+  expect_int("parse the RFC's EncryptedExtensions", 0,
+             wt_tls_parse_encrypted_extensions(
+                 WT_RFC8448_ENCRYPTED_EXTENSIONS,
+                 sizeof(WT_RFC8448_ENCRYPTED_EXTENSIONS), &ee));
+  expect_int("its reject reason is none", 0, (long)ee.reject);
+  expect_int("three extensions", 3, (long)ee.type_count);
+  expect_int("the first is supported_groups", WT_TLS_EXT_SUPPORTED_GROUPS,
+             (long)ee.types[0]);
+  expect_int("the second is record_size_limit", WT_TLS_EXT_RECORD_SIZE_LIMIT,
+             (long)ee.types[1]);
+  expect_int("the third is server_name", WT_TLS_EXT_SERVER_NAME,
+             (long)ee.types[2]);
+  expect_int("supported_groups is present", 1, ee.has_supported_groups);
+  expect_int("server_name is present and empty", 1, ee.has_server_name);
+  expect_int("no ALPN", 0, ee.has_alpn);
+  expect_int("no transport parameters", 0, ee.has_transport_parameters);
+  expect_int("no max_fragment_length", 0, ee.has_max_fragment_length);
+  expect_int("no early_data", 0, ee.has_early_data);
+
+  /* --- The check runs against this client's offered set, which is not RFC
+   * 8448's (that trace is TLS over TCP). record_size_limit is legal in
+   * EncryptedExtensions but this client never asked for it, so rule 1 fires
+   * first and it is unsolicited rather than forbidden. */
+  {
+    wt_tls_client_hello_params_t params;
+    ee_offered_params(&params, NULL, 0U, NULL, 0U);
+    expect_int("record_size_limit is unsolicited, not forbidden", -1,
+               wt_tls_encrypted_extensions_check(
+                   &ee, &params, &reject, &offender));
+    expect_int("  and the reason says so", (long)WT_TLS_EE_UNSOLICITED_EXTENSION,
+               (long)reject);
+    expect_int("  naming record_size_limit", WT_TLS_EXT_RECORD_SIZE_LIMIT,
+               (long)offender);
+  }
+
+  /* --- A QUIC EncryptedExtensions: ALPN "h3" and transport parameters. */
+  {
+    static const uint8_t h3[3] = {0x02U, 'h', '3'};
+    static const uint8_t tp[4] = {0x01U, 0x02U, 0x03U, 0x04U};
+    uint8_t alpn_list[8];
+    wt_tls_client_hello_params_t params;
+
+    alpn_list[0] = 0x02U;
+    memcpy(alpn_list + 1U, "h3", 2U);
+    block_len = 0U;
+    block_len = ee_ext(block, block_len, WT_TLS_EXT_ALPN, h3, sizeof(h3));
+    block_len = ee_ext(block, block_len, WT_TLS_EXT_QUIC_TRANSPORT_PARAMETERS,
+                       tp, sizeof(tp));
+    message_len = ee_wrap(message, sizeof(message), block, block_len);
+    expect_int("the wrapped message is the block plus six", (long)block_len + 6,
+               (long)message_len);
+    expect_int("parse a QUIC EncryptedExtensions", 0,
+               wt_tls_parse_encrypted_extensions(message, message_len, &ee));
+    expect_int("ALPN is present", 1, ee.has_alpn);
+    expect_bytes("the selected protocol is h3", (const uint8_t *)"h3", ee.alpn,
+                 ee.alpn_len);
+    expect_int("two bytes of protocol", 2, (long)ee.alpn_len);
+    expect_int("transport parameters are present", 1,
+               ee.has_transport_parameters);
+    expect_bytes("the parameters survived", tp, ee.transport_parameters,
+                 ee.transport_parameters_len);
+
+    ee_offered_params(&params, alpn_list, sizeof(alpn_list), tp, sizeof(tp));
+    expect_int("both were offered, so the check accepts", 0,
+               wt_tls_encrypted_extensions_check(&ee, &params, &reject,
+                                                 &offender));
+    expect_int("  and the reason is none", (long)WT_TLS_EE_OK, (long)reject);
+
+    /* --- Rule 2: an extension the client offered, in the wrong message.
+     * supported_versions and key_share are both in every ClientHello this
+     * module builds and are both illegal in EncryptedExtensions (RFC 8446
+     * section 4.2 lists them as CH, SH and CH, SH, HRR). */
+    {
+      static const uint16_t forbidden[] = {WT_TLS_EXT_SUPPORTED_VERSIONS,
+                                           WT_TLS_EXT_KEY_SHARE,
+                                           WT_TLS_EXT_SIGNATURE_ALGORITHMS};
+      size_t i;
+      for (i = 0U; i < sizeof(forbidden) / sizeof(forbidden[0]); i++) {
+        static const uint8_t body[2] = {0x00U, 0x00U};
+        block_len = ee_ext(block, 0U, forbidden[i], body, sizeof(body));
+        message_len = ee_wrap(message, sizeof(message), block, block_len);
+        expect_int("parse an EncryptedExtensions with a misplaced extension", 0,
+                   wt_tls_parse_encrypted_extensions(message, message_len, &ee));
+        expect_int("the check refuses it", -1,
+                   wt_tls_encrypted_extensions_check(&ee, &params, &reject,
+                                                     &offender));
+        expect_int("  as a forbidden extension",
+                   (long)WT_TLS_EE_FORBIDDEN_EXTENSION, (long)reject);
+        expect_int("  naming it", (long)forbidden[i], (long)offender);
+      }
+    }
+
+    /* --- Rule 1: an extension this ClientHello never offered at all. */
+    {
+      static const uint8_t body[1] = {0x00U};
+      block_len = ee_ext(block, 0U, WT_TLS_EXT_STATUS_REQUEST, body,
+                         sizeof(body));
+      message_len = ee_wrap(message, sizeof(message), block, block_len);
+      expect_int("parse an EncryptedExtensions with an unrequested extension", 0,
+                 wt_tls_parse_encrypted_extensions(message, message_len, &ee));
+      expect_int("the check refuses it", -1,
+                 wt_tls_encrypted_extensions_check(&ee, &params, &reject,
+                                                   &offender));
+      expect_int("  as unsolicited", (long)WT_TLS_EE_UNSOLICITED_EXTENSION,
+                 (long)reject);
+      expect_int("  naming status_request", WT_TLS_EXT_STATUS_REQUEST,
+                 (long)offender);
+    }
+  }
+
+  /* --- Bodies that are the right extension but the wrong shape. */
+  {
+    static const uint8_t two_protocols[6] = {0x02U, 'h', '3',
+                                             0x02U, 'h', '2'};
+    static const uint8_t empty_protocol[1] = {0x00U};
+    static const uint8_t named_server[3] = {0x01U, 'a', 'b'};
+    static const uint8_t bad_mfl[1] = {0x05U};
+    static const uint8_t one_byte[1] = {0x01U};
+
+    /* RFC 7301: the server answers with exactly one protocol. A client that
+       took the first of two would be agreeing to something the server did not
+       choose. */
+    block_len = ee_ext(block, 0U, WT_TLS_EXT_ALPN, two_protocols,
+                       sizeof(two_protocols));
+    message_len = ee_wrap(message, sizeof(message), block, block_len);
+    expect_int("two ALPN names are refused", -1,
+               wt_tls_parse_encrypted_extensions(message, message_len, &ee));
+    expect_int("  as a bad extension", (long)WT_TLS_EE_BAD_EXTENSION,
+               (long)ee.reject);
+    expect_int("  naming ALPN", WT_TLS_EXT_ALPN, (long)ee.reject_extension);
+
+    block_len = ee_ext(block, 0U, WT_TLS_EXT_ALPN, empty_protocol,
+                       sizeof(empty_protocol));
+    message_len = ee_wrap(message, sizeof(message), block, block_len);
+    expect_int("an empty ALPN name is refused", -1,
+               wt_tls_parse_encrypted_extensions(message, message_len, &ee));
+
+    block_len = ee_ext(block, 0U, WT_TLS_EXT_SERVER_NAME, named_server,
+                       sizeof(named_server));
+    message_len = ee_wrap(message, sizeof(message), block, block_len);
+    expect_int("a server_name with content is refused", -1,
+               wt_tls_parse_encrypted_extensions(message, message_len, &ee));
+    expect_int("  naming server_name", WT_TLS_EXT_SERVER_NAME,
+               (long)ee.reject_extension);
+
+    block_len = ee_ext(block, 0U, WT_TLS_EXT_MAX_FRAGMENT_LENGTH, bad_mfl,
+                       sizeof(bad_mfl));
+    message_len = ee_wrap(message, sizeof(message), block, block_len);
+    expect_int("max_fragment_length 5 is refused", -1,
+               wt_tls_parse_encrypted_extensions(message, message_len, &ee));
+    block_len = ee_ext(block, 0U, WT_TLS_EXT_MAX_FRAGMENT_LENGTH, one_byte,
+                       sizeof(one_byte));
+    message_len = ee_wrap(message, sizeof(message), block, block_len);
+    expect_int("max_fragment_length 1 is accepted", 0,
+               wt_tls_parse_encrypted_extensions(message, message_len, &ee));
+    expect_int("  and recorded", 1, ee.has_max_fragment_length);
+    expect_int("  with its value", 1, (long)ee.max_fragment_length);
+    {
+      /* 2 (2^9) is the smallest legal value in the other direction. */
+      static const uint8_t mfl_two[1] = {0x02U};
+      static const uint8_t mfl_zero[1] = {0x00U};
+      block_len = ee_ext(block, 0U, WT_TLS_EXT_MAX_FRAGMENT_LENGTH, mfl_two,
+                         sizeof(mfl_two));
+      message_len = ee_wrap(message, sizeof(message), block, block_len);
+      expect_int("max_fragment_length 2 is accepted", 0,
+                 wt_tls_parse_encrypted_extensions(message, message_len, &ee));
+      block_len = ee_ext(block, 0U, WT_TLS_EXT_MAX_FRAGMENT_LENGTH, mfl_zero,
+                         sizeof(mfl_zero));
+      message_len = ee_wrap(message, sizeof(message), block, block_len);
+      expect_int("max_fragment_length 0 is refused", -1,
+                 wt_tls_parse_encrypted_extensions(message, message_len, &ee));
+    }
+  }
+
+  /* --- The same extension twice: RFC 8446 section 4.2 forbids it, and two
+   * ALPN answers would leave which one binds ambiguous while the transcript
+   * still verifies. */
+  {
+    static const uint8_t h3[3] = {0x02U, 'h', '3'};
+    block_len = 0U;
+    block_len = ee_ext(block, block_len, WT_TLS_EXT_ALPN, h3, sizeof(h3));
+    block_len = ee_ext(block, block_len, WT_TLS_EXT_ALPN, h3, sizeof(h3));
+    message_len = ee_wrap(message, sizeof(message), block, block_len);
+    expect_int("a repeated extension is refused", -1,
+               wt_tls_parse_encrypted_extensions(message, message_len, &ee));
+    expect_int("  as a duplicate", (long)WT_TLS_EE_DUPLICATE_EXTENSION,
+               (long)ee.reject);
+    expect_int("  naming ALPN", WT_TLS_EXT_ALPN, (long)ee.reject_extension);
+  }
+
+  /* --- Structural refusals, each reachable from the wire. */
+  {
+    static const uint8_t h3[3] = {0x02U, 'h', '3'};
+    block_len = ee_ext(block, 0U, WT_TLS_EXT_ALPN, h3, sizeof(h3));
+    message_len = ee_wrap(message, sizeof(message), block, block_len);
+
+    /* A declared list length that is not the rest of the body is trailing
+       bytes: a second message smuggled inside one the transcript hashes. */
+    {
+      uint8_t copy[600];
+      memcpy(copy, message, message_len);
+      copy[5] = (uint8_t)(copy[5] - 1U);
+      expect_int("a short extension list is refused", -1,
+                 wt_tls_parse_encrypted_extensions(copy, message_len, &ee));
+      expect_int("  as malformed", (long)WT_TLS_EE_MALFORMED, (long)ee.reject);
+      copy[5] = (uint8_t)(copy[5] + 2U);
+      expect_int("a long extension list is refused", -1,
+                 wt_tls_parse_encrypted_extensions(copy, message_len, &ee));
+    }
+    /* The wrong handshake message entirely. */
+    {
+      uint8_t copy[600];
+      memcpy(copy, message, message_len);
+      copy[0] = WT_TLS_HS_CERTIFICATE;
+      expect_int("a Certificate is not an EncryptedExtensions", -1,
+                 wt_tls_parse_encrypted_extensions(copy, message_len, &ee));
+    }
+    /* Truncation at every length. */
+    {
+      size_t cut;
+      for (cut = 0U; cut < message_len; cut++) {
+        expect_int("a truncated EncryptedExtensions is refused", -1,
+                   wt_tls_parse_encrypted_extensions(message, cut, &ee));
+      }
+    }
+    /* An extension whose declared length runs past the end of the list. */
+    {
+      uint8_t copy[600];
+      memcpy(copy, message, message_len);
+      copy[8] = 0x7FU; /* ALPN's length field */
+      expect_int("an extension longer than the list is refused", -1,
+                 wt_tls_parse_encrypted_extensions(copy, message_len, &ee));
+    }
+  }
+
+  /* --- More extensions than the parser holds. Seventeen one-byte
+   * early_data-shaped extensions would not fit, so use unknown-but-well-formed
+   * ones: the parser records the type before anything else looks at it. */
+  {
+    uint16_t i;
+    block_len = 0U;
+    for (i = 0U; i < WT_TLS_MAX_ENCRYPTED_EXTENSIONS + 1U; i++) {
+      block_len = ee_ext(block, block_len, (uint16_t)(0x7F00U + i), NULL, 0U);
+    }
+    message_len = ee_wrap(message, sizeof(message), block, block_len);
+    expect_int("seventeen extensions are refused", -1,
+               wt_tls_parse_encrypted_extensions(message, message_len, &ee));
+    expect_int("  as too many", (long)WT_TLS_EE_TOO_MANY_EXTENSIONS,
+               (long)ee.reject);
+  }
+
+  /* --- wt_tls_client_hello_offers must agree with what the builder emits.
+   *
+   * The function is derived from the parameters rather than recorded at encode
+   * time, which is only sound if the two cannot drift. So: build a ClientHello
+   * from these parameters, walk the extension list it actually contains, and
+   * require the answer to be yes for every type present and no for the ones the
+   * builder cannot emit. A builder that starts emitting something new fails
+   * here rather than silently disagreeing. */
+  {
+    static const uint8_t alpn_list[3] = {0x02U, 'h', '3'};
+    static const uint8_t tp[2] = {0x00U, 0x00U};
+    static const uint16_t cannot_emit[] = {
+        WT_TLS_EXT_STATUS_REQUEST, WT_TLS_EXT_SIGNED_CERTIFICATE_TIMESTAMP,
+        WT_TLS_EXT_RECORD_SIZE_LIMIT, WT_TLS_EXT_PADDING,
+        WT_TLS_EXT_PRE_SHARED_KEY, WT_TLS_EXT_COOKIE, 0xFF01U};
+    wt_tls_client_hello_params_t params;
+    uint8_t hello[512];
+    size_t hello_len;
+    size_t i;
+
+    ee_offered_params(&params, alpn_list, sizeof(alpn_list), tp, sizeof(tp));
+    hello_len = wt_tls_encode_client_hello(&params, hello, sizeof(hello));
+    expect_int("the ClientHello encodes", 1, hello_len > 0U ? 1 : 0);
+    expect_int("  and frames", (long)WT_TLS_HS_CLIENT_HELLO, (long)hello[0]);
+
+    /* Walk the extensions. The layout before them is fixed for this
+       parameter set: 4 header, 2 legacy_version, 32 random, 1 session ID
+       length (zero, required for QUIC), 2 cipher suite list length, 2 for the
+       one suite, 2 legacy_compression_methods (a length of 1 and the zero
+       method). So the extension list's own two-byte length is at offset 45 and
+       the list starts at 47. Both offsets are asserted against the message
+       rather than trusted. */
+    {
+      size_t pos = 45U;
+      size_t list_end;
+      size_t seen = 0U;
+      size_t declared = ((size_t)hello[pos] << 8) | (size_t)hello[pos + 1U];
+      expect_int("the extension list length is the rest of the message",
+                 (long)(hello_len - 47U), (long)declared);
+      list_end = hello_len;
+      pos += 2U;
+      expect_int("the list starts where the layout says", 47, (long)pos);
+      while (pos + 4U <= list_end) {
+        uint16_t type =
+            (uint16_t)(((uint16_t)hello[pos] << 8) | hello[pos + 1U]);
+        size_t len =
+            ((size_t)hello[pos + 2U] << 8) | (size_t)hello[pos + 3U];
+        expect_int("a built extension is reported as offered", 1,
+                   wt_tls_client_hello_offers(&params, type));
+        pos += 4U + len;
+        seen++;
+      }
+      expect_int("the walk reached the end exactly", (long)list_end, (long)pos);
+      expect_int("seven extensions were emitted", 7, (long)seen);
+    }
+    for (i = 0U; i < sizeof(cannot_emit) / sizeof(cannot_emit[0]); i++) {
+      expect_int("an extension the builder cannot emit is not offered", 0,
+                 wt_tls_client_hello_offers(&params, cannot_emit[i]));
+    }
+    expect_int("a NULL parameter list is refused", -1,
+               wt_tls_client_hello_offers(NULL, WT_TLS_EXT_ALPN));
+  }
+}
+
 /* -------------------------------------------------------- ServerHello parse */
 
 static void test_server_hello_parse(void) {
@@ -1197,6 +1591,7 @@ int main(void) {
   test_handshake_framing();
   test_transcript();
   test_client_hello_build();
+  test_encrypted_extensions();
   test_server_hello_parse();
   test_finished();
   test_parse_then_schedule();

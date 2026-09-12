@@ -15,7 +15,9 @@
  */
 
 #include "wt_tls_cert.h"
+#include "wt_ecdsa_vectors.h"
 #include "wt_rfc8448_vectors.h"
+#include "wt_tls_pin.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -40,6 +42,18 @@ static void expect_int(const char *name, long want, long got) {
   if (want == got) return;
   g_failures++;
   printf("FAIL %s: want %ld, got %ld\n", name, want, got);
+}
+
+/* Walk a 1 KiB array down the stack, so that any storage a returned pointer
+ * might still refer to is overwritten. This exists to catch use-after-return:
+ * a view into a callee's frame that happened to survive one call is a view that
+ * changes the moment anything else runs. */
+static void sweep_the_stack(int depth) {
+  volatile uint8_t junk[1024];
+  size_t i;
+  for (i = 0U; i < sizeof(junk); i++) junk[i] = 0xA5U;
+  if (depth > 0) sweep_the_stack(depth - 1);
+  (void)junk[0];
 }
 
 /* The transcript hash through Certificate, which is what the CertificateVerify
@@ -269,54 +283,166 @@ static void test_signature(void) {
   /* The public key is readable, and it is an RSA key of 1024 bits -- the RFC's
      certificate. */
   {
-    int is_rsa = 0;
-    br_rsa_public_key rsa;
-    br_ec_public_key ec;
+    wt_tls_public_key_t key;
     expect_int("read the certificate's public key", 0,
-               wt_tls_certificate_public_key(chain.entries[0],
-                                             chain.lengths[0], &is_rsa, &rsa,
-                                             &ec));
-    expect_int("it is an RSA key", 1, is_rsa);
-    expect_int("its modulus is 128 bytes", 128, (long)rsa.nlen);
-    expect_int("its exponent is 3 bytes", 3, (long)rsa.elen);
+               wt_tls_certificate_public_key(chain.entries[0], chain.lengths[0],
+                                             &key));
+    expect_int("it is an RSA key", 1, key.is_rsa);
+    expect_int("its modulus is 128 bytes", 128, (long)key.rsa.nlen);
+    expect_int("its exponent is 3 bytes", 3, (long)key.rsa.elen);
     /* The RFC's exponent is 65537. */
     expect_int("the exponent is 65537", 1,
-               (long)(rsa.e[0] == 0x01U && rsa.e[1] == 0x00U &&
-                      rsa.e[2] == 0x01U));
+               (long)(key.rsa.e[0] == 0x01U && key.rsa.e[1] == 0x00U &&
+                      key.rsa.e[2] == 0x01U));
+
+    /* THE KEY MUST SURVIVE THE CALL THAT PRODUCED IT. BearSSL's decoder hands
+       out views into its own context, which is a local in the function that
+       parses a certificate; an earlier version of this function returned those
+       views, so the key was a pointer into a dead stack frame. Reading it after
+       another call returned whatever that call had left there -- a
+       use-after-return that this test used to pass, because nothing had
+       overwritten the bytes yet. So: copy the modulus, sweep the stack, and
+       require the key's own bytes to be unchanged. */
+    {
+      uint8_t before[128];
+      size_t i;
+      memcpy(before, key.rsa.n, sizeof(before));
+      sweep_the_stack(64);
+      expect_bytes("the modulus survives a stack sweep", before, key.rsa.n,
+                   sizeof(before));
+      for (i = 0U; i < sizeof(before); i++) {
+        if (before[i] != 0x00U) break;
+      }
+      expect_int("and it is not all zeros", 1, i < sizeof(before) ? 1 : 0);
+    }
 
     /* A key compared against itself is equal; against a different key it is
        not. This is the pinned-key comparison. */
     {
-      br_rsa_public_key same = rsa;
+      wt_tls_public_key_t same;
       expect_int("a key equals itself", 1,
-                 wt_tls_rsa_public_key_equal(&rsa, &same));
-    }
-    {
-      /* Flip a bit in a copy of the modulus: a different key. */
-      static uint8_t other_n[128];
-      br_rsa_public_key other;
-      memcpy(other_n, rsa.n, 128U);
-      other_n[64] ^= 0x01U;
-      other.n = other_n;
-      other.nlen = 128U;
-      other.e = rsa.e;
-      other.elen = rsa.elen;
+                 wt_tls_public_key_equal(&key, &key));
+      memcpy(&same, &key, sizeof(same));
+      /* The copy's views point at the original's storage, so re-point them at
+         the copy: a struct copy of a self-referential structure is exactly the
+         mistake this type makes hard to write by accident. */
+      same.rsa.n = same.storage;
+      same.rsa.e = same.storage + same.rsa.nlen;
+      expect_int("a copied key still equals it", 1,
+                 wt_tls_public_key_equal(&key, &same));
+      same.storage[64] ^= 0x01U;
       expect_int("a different modulus is a different key", 0,
-                 wt_tls_rsa_public_key_equal(&rsa, &other));
-    }
-    {
-      /* And a different exponent with the same modulus is too. */
-      static uint8_t other_e[3] = {0x01U, 0x00U, 0x03U};
-      br_rsa_public_key other = rsa;
-      other.e = other_e;
-      other.elen = 3U;
+                 wt_tls_public_key_equal(&key, &same));
+      same.storage[64] ^= 0x01U;
+      same.storage[key.rsa.nlen] ^= 0x01U;
       expect_int("a different exponent is a different key", 0,
-                 wt_tls_rsa_public_key_equal(&rsa, &other));
+                 wt_tls_public_key_equal(&key, &same));
     }
-    expect_int("a NULL key is refused", 0,
-               wt_tls_rsa_public_key_equal(&rsa, NULL));
-    expect_int("reading a key from a NULL certificate is refused", -1,
-               wt_tls_certificate_public_key(NULL, 100U, &is_rsa, &rsa, &ec));
+    expect_int("a NULL key is refused", 0, wt_tls_public_key_equal(&key, NULL));
+    expect_int("a NULL key is refused from either side", 0,
+               wt_tls_public_key_equal(NULL, &key));
+
+    /* A pristine key (all zeros) is not equal to a real one: an uninitialised
+       key must never compare equal. */
+    {
+      wt_tls_public_key_t empty;
+      memset(&empty, 0, sizeof(empty));
+      expect_int("an all-zero key is not equal to a real one", 0,
+                 wt_tls_public_key_equal(&key, &empty));
+    }
+
+    /* The same key rebuilt from the operator's form -- modulus and exponent as
+       big-endian bytes -- is the same key, and rebuilding it from hex is the
+       same key again. This is what makes a pin checkable against a certificate
+       rather than merely plausible. */
+    {
+      wt_tls_public_key_t rebuilt;
+      char hex[257];
+      size_t i;
+      expect_int("rebuild the key from its bytes", 0,
+                 wt_tls_public_key_set_rsa(&rebuilt, key.rsa.n, key.rsa.nlen,
+                                           key.rsa.e, key.rsa.elen));
+      expect_int("the rebuilt key equals the certificate's", 1,
+                 wt_tls_public_key_equal(&key, &rebuilt));
+      for (i = 0U; i < 128U; i++) {
+        static const char digits[] = "0123456789abcdef";
+        hex[2U * i] = digits[(key.rsa.n[i] >> 4) & 0x0FU];
+        hex[2U * i + 1U] = digits[key.rsa.n[i] & 0x0FU];
+      }
+      hex[256] = '\0';
+      expect_int("rebuild the key from hex", 0,
+                 wt_tls_public_key_set_rsa_hex(&rebuilt, hex, 65537U));
+      expect_int("the hex key equals the certificate's", 1,
+                 wt_tls_public_key_equal(&key, &rebuilt));
+
+      /* And the refusals: a padded modulus, an odd-length string, a non-hex
+         character, an empty string, a zero exponent, and a key with one bit
+         changed are all refused or unequal. */
+      {
+        char padded[259];
+        padded[0] = '0';
+        padded[1] = '0';
+        memcpy(padded + 2U, hex, 257U);
+        expect_int("a leading 00 byte is refused", -1,
+                   wt_tls_public_key_set_rsa_hex(&rebuilt, padded, 65537U));
+      }
+      expect_int("an odd-length hex string is refused", -1,
+                 wt_tls_public_key_set_rsa_hex(&rebuilt, "abc", 65537U));
+      {
+        char bad[257];
+        memcpy(bad, hex, 257U);
+        bad[128] = 'z';
+        expect_int("a non-hex digit is refused", -1,
+                   wt_tls_public_key_set_rsa_hex(&rebuilt, bad, 65537U));
+      }
+      expect_int("an empty hex string is refused", -1,
+                 wt_tls_public_key_set_rsa_hex(&rebuilt, "", 65537U));
+      expect_int("a zero exponent is refused", -1,
+                 wt_tls_public_key_set_rsa_hex(&rebuilt, hex, 0U));
+      expect_int("a NULL hex string is refused", -1,
+                 wt_tls_public_key_set_rsa_hex(&rebuilt, NULL, 65537U));
+      {
+        uint8_t exponent_zero[3] = {0x00U, 0x00U, 0x03U};
+        expect_int("a leading zero in the exponent is refused", -1,
+                   wt_tls_public_key_set_rsa(&rebuilt, key.rsa.n, key.rsa.nlen,
+                                             exponent_zero, 3U));
+      }
+      expect_int("a NULL modulus is refused", -1,
+                 wt_tls_public_key_set_rsa(&rebuilt, NULL, 128U, key.rsa.e,
+                                           3U));
+      {
+        uint8_t too_big[WT_TLS_PUBLIC_KEY_MAX + 1U];
+        memset(too_big, 0x80, sizeof(too_big));
+        expect_int("a modulus that does not fit is refused", -1,
+                   wt_tls_public_key_set_rsa(&rebuilt, too_big, sizeof(too_big),
+                                             key.rsa.e, 3U));
+      }
+    }
+  }
+
+  /* Refusals, and each of them must leave the key cleared rather than half
+     filled: a caller that ignored the return value would otherwise compare
+     against whatever the previous parse left behind. */
+  {
+    static const uint8_t not_a_certificate[16] = "not a certifica";
+    wt_tls_public_key_t key;
+    expect_int("a NULL certificate is refused", -1,
+               wt_tls_certificate_public_key(NULL, 100U, &key));
+    expect_int("  and the key is cleared", 0, (long)key.storage_len);
+    expect_int("an empty certificate is refused", -1,
+               wt_tls_certificate_public_key(not_a_certificate, 0U, &key));
+    expect_int("  and the key is cleared", 0, (long)key.storage_len);
+    expect_int("a non-certificate is refused", -1,
+               wt_tls_certificate_public_key(not_a_certificate,
+                                             sizeof(not_a_certificate), &key));
+    expect_int("  and the key is cleared", 0, (long)key.storage_len);
+    expect_int("a NULL output is refused", -1,
+               wt_tls_certificate_public_key(chain.entries[0],
+                                             chain.lengths[0], NULL));
+    /* A truncated certificate is not a certificate. */
+    expect_int("a truncated certificate is refused", -1,
+               wt_tls_certificate_public_key(chain.entries[0],
+                                             chain.lengths[0] / 2U, &key));
   }
 
   /* NEGATIVE: every single-bit change to the signature must fail. A verifier
@@ -399,11 +525,144 @@ static void test_signature(void) {
                  content_len));
 }
 
+/* --------------------------------------------------------- the ECDSA path
+ *
+ * RFC 8448's traces carry RSA certificates, so the ECDSA scheme this module
+ * advertises -- `WT_TLS_SIG_ECDSA_SECP256R1_SHA256`, the second-most likely
+ * scheme a QUIC server will pick -- would otherwise be code that has never run.
+ * The fixture is generated by `tests/security/generate_wt_ecdsa_vectors.py`
+ * with the Python `cryptography` package and re-verified by it, so the
+ * signature the test checks is a real ECDSA signature over real content,
+ * produced by an implementation independent of BearSSL.
+ *
+ * What this catches that the RSA path cannot: the ASN.1 DER decoding of an
+ * ECDSA-Sig-Value, the curve lookup, the point length, and the dispatch on the
+ * scheme value rather than on the key type.
+ */
+static void test_ecdsa(void) {
+  wt_tls_certificate_verify_t verify;
+  wt_tls_public_key_t key;
+
+  expect_int("the fixture's certificate has a readable key", 0,
+             wt_tls_certificate_public_key(WT_ECDSA_CERT, WT_ECDSA_CERT_LEN,
+                                           &key));
+  expect_int("it is not RSA", 0, key.is_rsa);
+  expect_int("it is on secp256r1", BR_EC_secp256r1, key.ec.curve);
+  expect_int("with a 65-byte uncompressed point", 65, (long)key.ec.qlen);
+  expect_bytes("and the point is the one the generator computed",
+               WT_ECDSA_POINT, key.ec.q, WT_ECDSA_POINT_LEN);
+  expect_int("the DER signature is a SEQUENCE", 0x30,
+             (long)WT_ECDSA_SIGNATURE[0]);
+
+  verify.scheme = WT_TLS_SIG_ECDSA_SECP256R1_SHA256;
+  verify.signature = WT_ECDSA_SIGNATURE;
+  verify.signature_len = WT_ECDSA_SIGNATURE_LEN;
+
+  /* THE CHECK: a real P-256 signature over real content. */
+  expect_int("the ECDSA signature verifies", 1,
+             wt_tls_certificate_verify_signature(
+                 WT_ECDSA_CERT, WT_ECDSA_CERT_LEN, &verify, WT_ECDSA_CONTENT,
+                 WT_ECDSA_CONTENT_LEN));
+
+  /* NEGATIVE: every byte of the signature changed, and every byte of the
+     content changed, must fail. A verifier that accepted a mangled signature
+     would pass the check above and nothing else. */
+  {
+    uint8_t forged[WT_ECDSA_SIGNATURE_LEN];
+    size_t i;
+    for (i = 0U; i < WT_ECDSA_SIGNATURE_LEN; i++) {
+      wt_tls_certificate_verify_t mangled = verify;
+      memcpy(forged, WT_ECDSA_SIGNATURE, sizeof(forged));
+      forged[i] ^= 0xFFU;
+      mangled.signature = forged;
+      expect_int("a mangled ECDSA signature is refused", 0,
+                 wt_tls_certificate_verify_signature(
+                     WT_ECDSA_CERT, WT_ECDSA_CERT_LEN, &mangled,
+                     WT_ECDSA_CONTENT, WT_ECDSA_CONTENT_LEN));
+    }
+    for (i = 0U; i < WT_ECDSA_CONTENT_LEN; i += 7U) {
+      uint8_t content[WT_ECDSA_CONTENT_LEN];
+      memcpy(content, WT_ECDSA_CONTENT, sizeof(content));
+      content[i] ^= 0x01U;
+      expect_int("a changed content byte is refused", 0,
+                 wt_tls_certificate_verify_signature(
+                     WT_ECDSA_CERT, WT_ECDSA_CERT_LEN, &verify, content,
+                     WT_ECDSA_CONTENT_LEN));
+    }
+  }
+
+  /* The scheme must match the key. A P-256 certificate cannot answer a P-384
+     scheme, and an EC certificate cannot answer an RSA one: the dispatcher
+     looks up a verifier by scheme, and a scheme whose curve does not match the
+     certificate would otherwise reach a multiplication on the wrong curve. */
+  {
+    wt_tls_certificate_verify_t wrong = verify;
+    wrong.scheme = WT_TLS_SIG_ECDSA_SECP384R1_SHA384;
+    expect_int("a P-384 scheme against a P-256 certificate is refused", -1,
+               wt_tls_certificate_verify_signature(
+                   WT_ECDSA_CERT, WT_ECDSA_CERT_LEN, &wrong, WT_ECDSA_CONTENT,
+                   WT_ECDSA_CONTENT_LEN));
+    wrong.scheme = WT_TLS_SIG_ECDSA_SECP521R1_SHA512;
+    expect_int("a P-521 scheme against a P-256 certificate is refused", -1,
+               wt_tls_certificate_verify_signature(
+                   WT_ECDSA_CERT, WT_ECDSA_CERT_LEN, &wrong, WT_ECDSA_CONTENT,
+                   WT_ECDSA_CONTENT_LEN));
+    wrong.scheme = WT_TLS_SIG_RSA_PSS_RSAE_SHA256;
+    expect_int("an RSA-PSS scheme against an EC certificate is refused", -1,
+               wt_tls_certificate_verify_signature(
+                   WT_ECDSA_CERT, WT_ECDSA_CERT_LEN, &wrong, WT_ECDSA_CONTENT,
+                   WT_ECDSA_CONTENT_LEN));
+  }
+
+  /* An EC key equals itself and not another EC key, on the same path the RSA
+     comparison takes. */
+  {
+    wt_tls_public_key_t same;
+    expect_int("an EC key equals itself", 1, wt_tls_public_key_equal(&key, &key));
+    memcpy(&same, &key, sizeof(same));
+    same.ec.q = same.storage;
+    expect_int("and equals a copy of itself", 1,
+               wt_tls_public_key_equal(&key, &same));
+    same.storage[20] ^= 0x01U;
+    expect_int("but not a copy with one bit changed", 0,
+               wt_tls_public_key_equal(&key, &same));
+    same.storage[20] ^= 0x01U;
+    same.ec.curve = BR_EC_secp384r1;
+    expect_int("and not the same point on another curve", 0,
+               wt_tls_public_key_equal(&key, &same));
+  }
+
+  /* The pin, on an EC certificate: this is the path an operator pinning an EC
+     deployment takes, and it is the only place a real EC certificate meets the
+     pinned-key comparison. */
+  {
+    wt_tls_pinned_key_t pin;
+    wt_tls_pinned_key_t other;
+    uint8_t point[WT_ECDSA_POINT_LEN];
+    expect_int("pin the fixture's EC key", 0,
+               wt_tls_pinned_key_set_ec(&pin, BR_EC_secp256r1, WT_ECDSA_POINT,
+                                        WT_ECDSA_POINT_LEN));
+    expect_int("the EC certificate is accepted", (long)WT_TLS_PIN_ACCEPTED,
+               (long)wt_tls_pinned_key_accepts_certificate(
+                   &pin, WT_ECDSA_CERT, WT_ECDSA_CERT_LEN));
+    memcpy(point, WT_ECDSA_POINT, sizeof(point));
+    point[40] ^= 0x01U;
+    expect_int("pin a different point", 0,
+               wt_tls_pinned_key_set_ec(&other, BR_EC_secp256r1, point,
+                                        sizeof(point)));
+    expect_int("a different point is a mismatch",
+               (long)WT_TLS_PIN_KEY_MISMATCH,
+               (long)wt_tls_pinned_key_accepts_certificate(
+                   &other, WT_ECDSA_CERT, WT_ECDSA_CERT_LEN));
+  }
+}
+
 int main(void) {
   test_parse_certificate();
   test_parse_certificate_verify();
   test_signed_content();
   test_signature();
+  test_ecdsa();
 
   if (g_failures != 0) {
     printf("wt_tls_cert: %d of %d checks FAILED\n", g_failures, g_checks);

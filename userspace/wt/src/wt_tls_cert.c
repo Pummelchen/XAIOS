@@ -179,17 +179,15 @@ static void ignore_dn(void *context, const void *buf, size_t len) {
 }
 
 int wt_tls_certificate_public_key(const uint8_t *certificate_der,
-                                  size_t certificate_len, int *is_rsa,
-                                  br_rsa_public_key *rsa, br_ec_public_key *ec) {
+                                  size_t certificate_len,
+                                  wt_tls_public_key_t *out) {
   br_x509_decoder_context decoder;
   br_x509_pkey *pk;
+  size_t need;
 
-  if (certificate_der == NULL || is_rsa == NULL || rsa == NULL || ec == NULL) {
-    return -1;
-  }
-  if (certificate_len == 0U) return -1;
-  memset(rsa, 0, sizeof(*rsa));
-  memset(ec, 0, sizeof(*ec));
+  if (out == NULL) return -1;
+  memset(out, 0, sizeof(*out));
+  if (certificate_der == NULL || certificate_len == 0U) return -1;
 
   br_x509_decoder_init(&decoder, &ignore_dn, NULL);
   br_x509_decoder_push(&decoder, certificate_der, certificate_len);
@@ -199,20 +197,168 @@ int wt_tls_certificate_public_key(const uint8_t *certificate_der,
   pk = br_x509_decoder_get_pkey(&decoder);
   if (pk == NULL) return -1;
 
-  /* Only the two key types a TLS 1.3 server may present for the schemes this
-     module checks. Anything else is a refusal, because a caller that got a key
-     it cannot use should not be told the parse succeeded. */
+  /* Everything the decoder produced lives in `decoder`, which is about to go
+     out of scope. Copying is the whole point of this function: see
+     WT_TLS_PUBLIC_KEY_MAX in the header for what happened when it did not. */
   if (pk->key_type == BR_KEYTYPE_RSA) {
-    *is_rsa = 1;
-    *rsa = pk->key.rsa;
+    const br_rsa_public_key *src = &pk->key.rsa;
+    if (src->n == NULL || src->e == NULL) return -1;
+    if (src->nlen == 0U || src->elen == 0U) return -1;
+    need = src->nlen + src->elen;
+    if (need > sizeof(out->storage)) return -1;
+    memcpy(out->storage, src->n, src->nlen);
+    memcpy(out->storage + src->nlen, src->e, src->elen);
+    out->is_rsa = 1;
+    out->storage_len = need;
+    out->rsa.n = out->storage;
+    out->rsa.nlen = src->nlen;
+    out->rsa.e = out->storage + src->nlen;
+    out->rsa.elen = src->elen;
     return 0;
   }
   if (pk->key_type == BR_KEYTYPE_EC) {
-    *is_rsa = 0;
-    *ec = pk->key.ec;
+    const br_ec_public_key *src = &pk->key.ec;
+    if (src->q == NULL || src->qlen == 0U) return -1;
+    if (src->qlen > sizeof(out->storage)) return -1;
+    if (src->curve < 0) return -1;
+    memcpy(out->storage, src->q, src->qlen);
+    out->is_rsa = 0;
+    out->storage_len = src->qlen;
+    out->ec.curve = src->curve;
+    out->ec.q = out->storage;
+    out->ec.qlen = src->qlen;
     return 0;
   }
+  /* A key type a TLS 1.3 server may present that this module cannot check.
+     A refusal, because a caller told "success" would have nothing to compare. */
   return -1;
+}
+
+/* A big-endian integer that begins with a zero byte is the same number as the
+ * string without it, and DER never emits the padded form. Refusing the padded
+ * form is what makes "the operator's key and the certificate's key are the same
+ * bytes" checkable. */
+static int public_key_leading_zero(const uint8_t *bytes, size_t len) {
+  return len > 1U && bytes[0] == 0x00U;
+}
+
+int wt_tls_public_key_set_rsa(wt_tls_public_key_t *out, const uint8_t *modulus,
+                              size_t modulus_len, const uint8_t *exponent,
+                              size_t exponent_len) {
+  size_t need;
+
+  if (out == NULL) return -1;
+  memset(out, 0, sizeof(*out));
+  if (modulus == NULL || exponent == NULL) return -1;
+  if (modulus_len == 0U || exponent_len == 0U) return -1;
+  if (public_key_leading_zero(modulus, modulus_len)) return -1;
+  if (public_key_leading_zero(exponent, exponent_len)) return -1;
+  need = modulus_len + exponent_len;
+  if (need > sizeof(out->storage)) return -1;
+
+  memcpy(out->storage, modulus, modulus_len);
+  memcpy(out->storage + modulus_len, exponent, exponent_len);
+  out->is_rsa = 1;
+  out->storage_len = need;
+  out->rsa.n = out->storage;
+  out->rsa.nlen = modulus_len;
+  out->rsa.e = out->storage + modulus_len;
+  out->rsa.elen = exponent_len;
+  return 0;
+}
+
+static int public_key_hex_nibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+int wt_tls_public_key_set_rsa_hex(wt_tls_public_key_t *out, const char *modulus,
+                                  uint32_t exponent) {
+  size_t hex_len;
+  size_t modulus_len;
+  uint8_t exponent_bytes[4];
+  size_t exponent_len = 0U;
+  size_t i;
+
+  if (out == NULL) return -1;
+  memset(out, 0, sizeof(*out));
+  if (modulus == NULL) return -1;
+  if (exponent == 0U) return -1;
+  hex_len = strlen(modulus);
+  if (hex_len == 0U) return -1;
+  /* An odd number of digits is not a byte string, and choosing where to pad
+     would be guessing which end the operator meant. */
+  if ((hex_len % 2U) != 0U) return -1;
+  modulus_len = hex_len / 2U;
+  if (modulus_len == 0U) return -1;
+  if (modulus_len + 1U > sizeof(out->storage)) return -1;
+
+  /* Every digit is checked before any is written, so one bad character cannot
+     leave half a modulus behind for a later comparison. */
+  for (i = 0U; i < hex_len; i++) {
+    if (public_key_hex_nibble(modulus[i]) < 0) return -1;
+  }
+  {
+    uint32_t value = exponent;
+    while (value != 0U) {
+      exponent_bytes[exponent_len++] = (uint8_t)(value & 0xFFU);
+      value >>= 8;
+    }
+    for (i = 0U; i < exponent_len / 2U; i++) {
+      uint8_t swap = exponent_bytes[i];
+      exponent_bytes[i] = exponent_bytes[exponent_len - 1U - i];
+      exponent_bytes[exponent_len - 1U - i] = swap;
+    }
+  }
+  {
+    uint8_t decoded[WT_TLS_PUBLIC_KEY_MAX];
+    if (modulus_len > sizeof(decoded)) return -1;
+    for (i = 0U; i < modulus_len; i++) {
+      int hi = public_key_hex_nibble(modulus[2U * i]);
+      int lo = public_key_hex_nibble(modulus[2U * i + 1U]);
+      decoded[i] = (uint8_t)((hi << 4) | lo);
+    }
+    if (wt_tls_public_key_set_rsa(out, decoded, modulus_len, exponent_bytes,
+                                  exponent_len) != 0) {
+      memset(out, 0, sizeof(*out));
+      return -1;
+    }
+  }
+  return 0;
+}
+
+int wt_tls_public_key_set_ec(wt_tls_public_key_t *out, int curve,
+                             const uint8_t *point, size_t point_len) {
+  if (out == NULL) return -1;
+  memset(out, 0, sizeof(*out));
+  if (point == NULL || point_len == 0U) return -1;
+  if (curve < 0) return -1;
+  if (point_len > sizeof(out->storage)) return -1;
+  memcpy(out->storage, point, point_len);
+  out->is_rsa = 0;
+  out->storage_len = point_len;
+  out->ec.curve = curve;
+  out->ec.q = out->storage;
+  out->ec.qlen = point_len;
+  return 0;
+}
+
+void wt_tls_public_key_clear(wt_tls_public_key_t *key) {
+  if (key == NULL) return;
+  memset(key, 0, sizeof(*key));
+}
+
+int wt_tls_public_key_equal(const wt_tls_public_key_t *a,
+                            const wt_tls_public_key_t *b) {
+  if (a == NULL || b == NULL) return 0;
+  if (a->storage_len == 0U || b->storage_len == 0U) return 0;
+  if (a->is_rsa != b->is_rsa) return 0;
+  if (a->is_rsa) {
+    return wt_tls_rsa_public_key_equal(&a->rsa, &b->rsa);
+  }
+  return wt_tls_ec_public_key_equal(&a->ec, &b->ec);
 }
 
 int wt_tls_rsa_public_key_equal(const br_rsa_public_key *a,
@@ -227,6 +373,18 @@ int wt_tls_rsa_public_key_equal(const br_rsa_public_key *a,
      a mismatched exponent with a matching modulus is a different key. */
   if (a->elen != b->elen) return 0;
   return equal && wt_ct_equal(a->e, b->e, a->elen);
+}
+
+int wt_tls_ec_public_key_equal(const br_ec_public_key *a,
+                               const br_ec_public_key *b) {
+  if (a == NULL || b == NULL) return 0;
+  if (a->q == NULL || b->q == NULL) return 0;
+  if (a->qlen == 0U || b->qlen == 0U) return 0;
+  /* The same point on a different curve is a different key: the curve is an
+     input to every operation on it, so the bytes alone do not name a key. */
+  if (a->curve != b->curve) return 0;
+  if (a->qlen != b->qlen) return 0;
+  return wt_ct_equal(a->q, b->q, a->qlen);
 }
 
 /* Reduce a big-endian integer by stripping leading zeros, which is the form
@@ -322,16 +480,30 @@ int wt_tls_certificate_verify_signature(
                                 : (verify->scheme == WT_TLS_SIG_ECDSA_SECP384R1_SHA384)
                                     ? &br_sha384_vtable
                                     : &br_sha512_vtable;
+      int expected_curve =
+          (verify->scheme == WT_TLS_SIG_ECDSA_SECP256R1_SHA256) ? BR_EC_secp256r1
+          : (verify->scheme == WT_TLS_SIG_ECDSA_SECP384R1_SHA384)
+              ? BR_EC_secp384r1
+              : BR_EC_secp521r1;
       if (pk->key_type != BR_KEYTYPE_EC) return -1;
       if (content_len == 0U) return -1;
+      /* RFC 8446 section 4.4.3: the scheme must be consistent with the key in
+         the certificate. A P-384 scheme answered by a P-256 key is not a
+         signature that failed to verify; it is a message that does not make
+         sense, and saying so is the difference between "the peer made a
+         mistake" and "the peer forged something". Without this check the
+         verifier runs a P-256 multiplication with a 48-byte digest and returns
+         0 -- the right answer by accident, and a -1 that an audit can point at
+         is better than an accident. */
+      if (pk->key.ec.curve != expected_curve) return -1;
       {
         br_hash_compat_context hc;
         size_t hash_len = hf->desc >> BR_HASHDESC_OUT_OFF & BR_HASHDESC_OUT_MASK;
         hf->init(&hc.vtable);
         hf->update(&hc.vtable, content, content_len);
         hf->out(&hc.vtable, digest);
-        /* The EC implementation must be the one the key's curve belongs to;
-           the decoder records the curve in the public key. */
+        /* The implementation is the constant-time prime-field one, and the key
+           it is given is the one the certificate carried. */
         ok = br_ecdsa_i31_vrfy_asn1(&br_ec_prime_i31, digest, hash_len,
                                     &pk->key.ec, sig, sig_len);
       }
