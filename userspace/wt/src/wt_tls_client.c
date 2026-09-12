@@ -60,6 +60,15 @@ const char *wt_tls_client_fail_reason(const wt_tls_client_t *handshake) {
 int wt_tls_client_keys_available(const wt_tls_client_t *handshake,
                                  wt_tls_level_t level, int from_server) {
   if (handshake == NULL) return 0;
+  /* The level is checked rather than trusted because `key_bit` shifts by it: a
+     caller that passed something outside the enum would shift by an amount the
+     C standard does not define, which is a wrong answer at best and undefined
+     behaviour at worst. Three named levels and no others is the whole
+     domain. */
+  if (level != WT_TLS_LEVEL_INITIAL && level != WT_TLS_LEVEL_HANDSHAKE &&
+      level != WT_TLS_LEVEL_APPLICATION) {
+    return 0;
+  }
   return (handshake->keys_available & key_bit(level, from_server)) != 0U;
 }
 

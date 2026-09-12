@@ -459,6 +459,11 @@ static void test_server_hello(void) {
     wt_tls_traffic_keys_t keys;
     expect_int("a NULL handshake reports no keys", 0,
                wt_tls_client_keys_available(NULL, WT_TLS_LEVEL_HANDSHAKE, 0));
+    /* A level outside the enum is refused rather than shifting by it. */
+    expect_int("a level outside the enum reports no keys", 0,
+               wt_tls_client_keys_available(&handshake, (wt_tls_level_t)99, 0));
+    expect_int("and a negative one does not either", 0,
+               wt_tls_client_keys_available(&handshake, (wt_tls_level_t)-1, 0));
     expect_int("a NULL handshake has no keys", -1,
                wt_tls_client_keys(NULL, WT_TLS_LEVEL_HANDSHAKE, 0, &keys));
     expect_int("a NULL output is refused", -1,

@@ -119,6 +119,16 @@ typedef enum wt_tls_state {
  * handshake: `params` describes the ClientHello, `pin` is the trust decision,
  * and `client_key_private` is the scalar for the key share `params` offers.
  *
+ * FROZEN ONCE STARTED. `wt_tls_client_start` copies the configuration pointers
+ * and the ClientHello is encoded immediately, so the buffers `params` points at
+ * are read only at start -- but the acceptance checks consult `params` again
+ * when EncryptedExtensions arrives, to ask whether the server's answer was
+ * something that was offered. A caller that edited `params` in between would
+ * have those checks compare against a ClientHello that was never sent, which
+ * cannot fool a peer (the transcript binds the real bytes) but can make this
+ * client accept an answer it should have refused. Do not modify them until the
+ * handshake ends.
+ *
  * The private key is a separate argument rather than part of `params` because
  * `params` is the message -- it is what goes on the wire -- and a private key
  * must never be one field away from being serialised by accident. RFC 8446 also
