@@ -3,6 +3,7 @@ import json
 import os
 import select
 import shutil
+import sys
 import signal
 import subprocess
 import time
@@ -409,7 +410,28 @@ def run_x86_tier(tier: Dict[str, Any], supported: Set[str],
 
 def main() -> int:
     os.makedirs("build", exist_ok=True)
+    # --arch was accepted and ignored.
+    #
+    # The RISC-V CI job invokes this as `--arch riscv64` and installs only a
+    # RISC-V emulator. The filter was read from the environment alone, so the
+    # argument did nothing, all three architectures ran, and the job failed on
+    # "qemu-system-aarch64 not found" -- a complaint about an emulator it was
+    # never asked to use. An argument that is silently discarded is worse than
+    # one that is rejected.
     architecture_filter = os.environ.get("XAIOS_QEMU_CPU_MATRIX_ARCH", "all")
+    argv = sys.argv[1:]
+    while argv:
+        option = argv.pop(0)
+        if option == "--arch":
+            if not argv:
+                print("qemu-cpu-matrix: --arch needs a value")
+                return 2
+            architecture_filter = argv.pop(0)
+        elif option.startswith("--arch="):
+            architecture_filter = option.split("=", 1)[1]
+        else:
+            print(f"qemu-cpu-matrix: unknown argument {option}")
+            return 2
     if architecture_filter not in {"all", "aarch64", "x86_64", "riscv64"}:
         print("qemu-cpu-matrix: XAIOS_QEMU_CPU_MATRIX_ARCH must be "
               "all, aarch64, x86_64, or riscv64")
