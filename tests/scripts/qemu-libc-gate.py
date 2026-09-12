@@ -7,6 +7,7 @@ import os
 import json
 import re
 import select
+import shutil
 import sys
 import subprocess
 import time
@@ -88,6 +89,53 @@ def assert_tmpfiles_removed(text: str, arch: str) -> None:
         )
 
 
+QEMU_BINARY = {
+    "aarch64": "qemu-system-aarch64",
+    "x86_64": "qemu-system-x86_64",
+    "riscv64": "qemu-system-riscv64",
+}
+# What to install on the distribution CI runs on. The names do not follow from
+# the binary: qemu-system-riscv64 lives in qemu-system-misc, which is precisely
+# the sort of thing a message is worth carrying so nobody has to go looking.
+QEMU_PACKAGE = {
+    "aarch64": "qemu-system-arm",
+    "x86_64": "qemu-system-x86",
+    "riscv64": "qemu-system-misc",
+}
+
+
+def require_emulator(arch: str) -> None:
+    """Refuse before the run, naming the host, when the emulator is absent.
+
+    B-66: this gate iterates three architectures and the job running it
+    installed emulators for two. The RISC-V leg started a runner that exited
+    127 saying `qemu-system-riscv64: not found`, and the gate reported
+    `riscv64 failed; missing=[C99-LANGUAGE-PASS, ...]` -- a list of things the
+    guest did not print, about a guest that was never started. Nine days of
+    red CI were spent reading failures phrased that way.
+
+    The rule this repository applies everywhere else is that a check which
+    cannot be made says so and exits non-zero, naming the host rather than the
+    guest. A missing emulator is that case exactly, and it is knowable before
+    the first byte of output.
+    """
+    binary = QEMU_BINARY[arch]
+    override = os.environ.get(binary.upper().replace("-", "_"))
+    found = override if (override and os.access(override, os.X_OK)) \
+        else shutil.which(binary)
+    if found:
+        return
+    # SystemExit rather than RuntimeError: this is a statement about the
+    # machine, not a crash, and a traceback above it would suggest the gate
+    # broke rather than that the host is short a package.
+    raise SystemExit(
+        f"qemu-libc-gate: {arch}: INCONCLUSIVE, and the fault is this host's: {binary} is not "
+        f"installed, so the guest was never started and nothing it might have "
+        f"printed can be held against it. On Ubuntu the package is "
+        f"{QEMU_PACKAGE[arch]}. Install it, or run this gate with --arch for "
+        f"the architectures this machine can actually emulate.")
+
+
 def run_arch(arch: str, command: str) -> None:
     env = os.environ.copy()
     if arch == "aarch64":
@@ -140,9 +188,18 @@ def run_arch(arch: str, command: str) -> None:
     found_forbidden = [marker for marker in FORBIDDEN if marker in text]
     log = ROOT / f"build/qemu-libc-{arch}.log"
     log.write_text(text)
+    # How the runner ended is evidence about who failed. A guest that booted
+    # and fell short of the markers is a different finding from a runner that
+    # never started one, and reporting both as a list of absent markers is
+    # what made the second look like the first.
+    exit_code = process.poll()
+    how = (f"runner exited {exit_code}" if exit_code else
+           "runner was still going when the deadline passed")
+    first = next((line for line in text.splitlines() if line.strip()), "")
     raise RuntimeError(
-        f"{arch} failed; missing={missing}; forbidden={found_forbidden}; log={log}"
-    )
+        f"{arch} failed; {how}; missing={missing}; "
+        f"forbidden={found_forbidden}; first output line: {first!r}; "
+        f"log={log}")
 
 
 def main() -> int:
@@ -184,6 +241,12 @@ def main() -> int:
         if selected not in arches:
             raise SystemExit(f"unsupported --arch {selected!r}")
         arches = (selected,)
+    if not build_only:
+        # Every architecture, before the first build: a run that is going to
+        # be inconclusive should say so in seconds, not after compiling three
+        # userlands to find out.
+        for arch in arches:
+            require_emulator(arch)
     for arch in arches:
         build_image(arch)
         if not build_only:
