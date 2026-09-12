@@ -843,7 +843,9 @@ static void test_encrypted_extensions(void) {
 
   /* --- A QUIC EncryptedExtensions: ALPN "h3" and transport parameters. */
   {
-    static const uint8_t h3[3] = {0x02U, 'h', '3'};
+    /* RFC 7301: the server's extension_data is a ProtocolNameList of
+       exactly one name, so two bytes of list length come first. */
+    static const uint8_t h3[5] = {0x00U, 0x03U, 0x02U, 'h', '3'};
     static const uint8_t tp[4] = {0x01U, 0x02U, 0x03U, 0x04U};
     uint8_t alpn_list[8];
     wt_tls_client_hello_params_t params;
@@ -918,9 +920,9 @@ static void test_encrypted_extensions(void) {
 
   /* --- Bodies that are the right extension but the wrong shape. */
   {
-    static const uint8_t two_protocols[6] = {0x02U, 'h', '3',
-                                             0x02U, 'h', '2'};
-    static const uint8_t empty_protocol[1] = {0x00U};
+    static const uint8_t two_protocols[8] = {0x00U, 0x06U, 0x02U, 'h',
+                                              '3',   0x02U, 'h',    '2'};
+    static const uint8_t empty_protocol[3] = {0x00U, 0x01U, 0x00U};
     static const uint8_t named_server[3] = {0x01U, 'a', 'b'};
     static const uint8_t bad_mfl[1] = {0x05U};
     static const uint8_t one_byte[1] = {0x01U};
@@ -942,6 +944,39 @@ static void test_encrypted_extensions(void) {
     message_len = ee_wrap(message, sizeof(message), block, block_len);
     expect_int("an empty ALPN name is refused", -1,
                wt_tls_parse_encrypted_extensions(message, message_len, &ee));
+
+    /* THE BARE-NAME FORM IS NOT THE WIRE FORMAT. The parser first read the
+       server's answer as `protocol_name<1..255>` -- one length byte then the
+       name -- which is what the structure looks like it wants and is not what
+       RFC 7301 says is carried: the server's extension_data is a
+       ProtocolNameList of exactly one name, so a two-byte list length comes
+       first. The flattened form is refused, and this is the check that would
+       have caught it: nothing else in the repository carries ALPN, because RFC
+       8448's EncryptedExtensions has none. */
+    {
+      static const uint8_t bare_name[3] = {0x02U, 'h', '3'};
+      static const uint8_t list_too_long[5] = {0x00U, 0x04U, 0x02U, 'h', '3'};
+      static const uint8_t list_too_short[5] = {0x00U, 0x02U, 0x02U, 'h',
+                                                '3'};
+      block_len = ee_ext(block, 0U, WT_TLS_EXT_ALPN, bare_name,
+                         sizeof(bare_name));
+      message_len = ee_wrap(message, sizeof(message), block, block_len);
+      expect_int("a bare protocol name is refused", -1,
+                 wt_tls_parse_encrypted_extensions(message, message_len, &ee));
+      expect_int("  as a bad extension", (long)WT_TLS_EE_BAD_EXTENSION,
+                 (long)ee.reject);
+      block_len = ee_ext(block, 0U, WT_TLS_EXT_ALPN, list_too_long,
+                         sizeof(list_too_long));
+      message_len = ee_wrap(message, sizeof(message), block, block_len);
+      expect_int("an ALPN list length that overruns the extension is refused",
+                 -1,
+                 wt_tls_parse_encrypted_extensions(message, message_len, &ee));
+      block_len = ee_ext(block, 0U, WT_TLS_EXT_ALPN, list_too_short,
+                         sizeof(list_too_short));
+      message_len = ee_wrap(message, sizeof(message), block, block_len);
+      expect_int("an ALPN list length that underruns it is refused", -1,
+                 wt_tls_parse_encrypted_extensions(message, message_len, &ee));
+    }
 
     block_len = ee_ext(block, 0U, WT_TLS_EXT_SERVER_NAME, named_server,
                        sizeof(named_server));
@@ -984,7 +1019,9 @@ static void test_encrypted_extensions(void) {
    * ALPN answers would leave which one binds ambiguous while the transcript
    * still verifies. */
   {
-    static const uint8_t h3[3] = {0x02U, 'h', '3'};
+    /* RFC 7301: the server's extension_data is a ProtocolNameList of
+       exactly one name, so two bytes of list length come first. */
+    static const uint8_t h3[5] = {0x00U, 0x03U, 0x02U, 'h', '3'};
     block_len = 0U;
     block_len = ee_ext(block, block_len, WT_TLS_EXT_ALPN, h3, sizeof(h3));
     block_len = ee_ext(block, block_len, WT_TLS_EXT_ALPN, h3, sizeof(h3));
@@ -998,7 +1035,9 @@ static void test_encrypted_extensions(void) {
 
   /* --- Structural refusals, each reachable from the wire. */
   {
-    static const uint8_t h3[3] = {0x02U, 'h', '3'};
+    /* RFC 7301: the server's extension_data is a ProtocolNameList of
+       exactly one name, so two bytes of list length come first. */
+    static const uint8_t h3[5] = {0x00U, 0x03U, 0x02U, 'h', '3'};
     block_len = ee_ext(block, 0U, WT_TLS_EXT_ALPN, h3, sizeof(h3));
     message_len = ee_wrap(message, sizeof(message), block, block_len);
 

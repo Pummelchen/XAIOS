@@ -398,6 +398,13 @@ wt-host-sanitize:
 wt-vectors-check:
 	python3 tests/security/verify_wt_rfc8448_key_schedule.py
 	python3 tests/security/verify_wt_rfc9001_packets.py
+	# The two generated fixtures, re-verified rather than regenerated. Both
+	# ECDSA and RSA-PSS signing draw a random nonce, so a rewrite would produce
+	# a different but equally valid fixture on every run; re-verifying them
+	# against the `cryptography` package is what keeps a corrupted header from
+	# being believed.
+	python3 tests/security/generate_wt_ecdsa_vectors.py
+	python3 tests/security/generate_wt_quic_flight.py
 
 libc-check: libc
 	python3 tests/repository/check-libc-contract.py

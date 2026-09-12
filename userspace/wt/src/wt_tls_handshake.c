@@ -335,20 +335,44 @@ static int ee_parse_extension_body(wt_tls_encrypted_extensions_t *out,
                                    uint16_t type, const uint8_t *data,
                                    size_t len) {
   switch (type) {
-    case WT_TLS_EXT_ALPN:
-      /* RFC 7301 section 3.1: the server's ProtocolNameList carries exactly one
-         ProtocolName, `opaque protocol_name<1..255>`. Two names is not a
-         preference order to pick from -- it is a server that has not decided,
-         and a client that picked the first would be agreeing to something the
-         server did not choose. An empty name is refused too: length zero is not
-         a valid ProtocolName. */
-      if (len < 1U) return -1;
-      if ((size_t)data[0] != len - 1U) return -1;
-      if (len == 1U) return -1;
-      out->alpn = data + 1U;
-      out->alpn_len = len - 1U;
+    case WT_TLS_EXT_ALPN: {
+      /* RFC 7301 section 3.1: "The 'extension_data' field of the
+         ('application_layer_protocol_negotiation(16)') extension is structured
+         the same as described above for the client 'extension_data', except
+         that the 'ProtocolNameList' MUST contain exactly one 'ProtocolName'."
+         So the server's answer is a LIST of one, not a bare name:
+         two bytes of list length, then the name's own one-byte length, then
+         the name.
+         
+         This parser first read it as a bare `protocol_name<1..255>` -- one byte
+         of length then the name -- which is the flattening that the structure
+         looks like it wants and is not what the extension carries. It would
+         have refused every conformant server's answer and accepted a
+         non-conformant one, and it survived because no RFC trace carries ALPN:
+         RFC 8448's EncryptedExtensions has none. What found it was
+         regenerating the QUIC flight fixture from an independent
+         implementation, which encoded the list form and disagreed.
+         
+         Two names is not a preference order to pick from -- it is a server
+         that has not decided, and a client that took the first would be
+         agreeing to something the server did not choose. An empty name is
+         refused too: RFC 7301 says empty strings MUST NOT be included. */
+      size_t list_len;
+      size_t name_len;
+      if (len < 4U) return -1;
+      list_len = ((size_t)data[0] << 8) | (size_t)data[1];
+      if (list_len != len - 2U) return -1;
+      name_len = data[2];
+      if (name_len == 0U) return -1;
+      /* Exactly one name, so the list is the name's length byte plus the name
+         and nothing else -- and there is no second entry to be confused
+         about. */
+      if (name_len + 1U != list_len) return -1;
+      out->alpn = data + 3U;
+      out->alpn_len = name_len;
       out->has_alpn = 1;
       return 0;
+    }
 
     case WT_TLS_EXT_QUIC_TRANSPORT_PARAMETERS:
       /* Zero length is legal: a server with nothing to say still sends the

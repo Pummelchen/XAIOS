@@ -734,8 +734,62 @@ static void test_long_hash_schemes(void) {
   }
 }
 
+/* The client's Certificate handler relies on the parser refusing an empty
+ * certificate_list, so it does not repeat the check. That makes the refusal a
+ * documented guarantee rather than an incidental one, and this is where it is
+ * asserted: a Certificate with no entries is a malformed message (RFC 8446
+ * section 4.4.2 -- a server authenticates with a certificate), and a change
+ * that let one through would leave the handler reading a leaf that does not
+ * exist. */
+static void test_empty_certificate_list(void) {
+  static const uint8_t empty[10] = {0x0bU, 0x00U, 0x00U, 0x07U, 0x00U,
+                                    0x00U, 0x00U, 0x00U, 0x00U, 0x00U};
+  wt_tls_certificate_chain_t chain;
+
+  expect_int("an empty certificate_list is refused", -1,
+             wt_tls_parse_certificate(empty, sizeof(empty), &chain));
+  expect_int("  and the chain is cleared", 0, (long)chain.count);
+
+  /* One entry: framed the way the parser expects, so the structure is
+     accepted and the count is one. Built here byte by byte rather than
+     transcribed, because the three lengths have to agree with each other and a
+     hand-written array gets that wrong -- which is how the first version of
+     this test failed. */
+  {
+    uint8_t message[64];
+    size_t offset = 0U;
+    size_t i;
+    const size_t der_len = 18U;
+    const size_t list_len = 3U + der_len + 2U;
+    const size_t body_len = 1U + 3U + list_len;
+
+    message[offset++] = 0x0bU;
+    message[offset++] = (uint8_t)((body_len >> 16) & 0xFFU);
+    message[offset++] = (uint8_t)((body_len >> 8) & 0xFFU);
+    message[offset++] = (uint8_t)(body_len & 0xFFU);
+    message[offset++] = 0x00U; /* empty certificate_request_context */
+    message[offset++] = (uint8_t)((list_len >> 16) & 0xFFU);
+    message[offset++] = (uint8_t)((list_len >> 8) & 0xFFU);
+    message[offset++] = (uint8_t)(list_len & 0xFFU);
+    message[offset++] = (uint8_t)((der_len >> 16) & 0xFFU);
+    message[offset++] = (uint8_t)((der_len >> 8) & 0xFFU);
+    message[offset++] = (uint8_t)(der_len & 0xFFU);
+    message[offset++] = 0x30U; /* something that begins like DER */
+    for (i = 1U; i < der_len; i++) message[offset++] = 0x00U;
+    message[offset++] = 0x00U; /* the entry's empty extension block */
+    message[offset++] = 0x00U;
+
+    expect_int("a one-entry list is accepted", 0,
+               wt_tls_parse_certificate(message, offset, &chain));
+    expect_int("  with one entry", 1, (long)chain.count);
+    expect_int("  of eighteen bytes", (long)der_len, (long)chain.lengths[0]);
+    expect_int("  pointing at the DER", 0x30, (long)chain.entries[0][0]);
+  }
+}
+
 int main(void) {
   test_parse_certificate();
+  test_empty_certificate_list();
   test_parse_certificate_verify();
   test_signed_content();
   test_signature();

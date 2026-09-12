@@ -272,8 +272,17 @@ int wt_tls_public_key_set_rsa(wt_tls_public_key_t *out, const uint8_t *modulus,
   if (modulus_len == 0U || exponent_len == 0U) return -1;
   if (public_key_leading_zero(modulus, modulus_len)) return -1;
   if (public_key_leading_zero(exponent, exponent_len)) return -1;
+  /* The bound is written as two comparisons rather than as
+     `modulus_len + exponent_len > sizeof(storage)` because the sum of two
+     size_t values can wrap: SIZE_MAX - 1 and 2 wrap to 1, which passes the
+     check and then memcpy's an unbounded length into the storage. Only a
+     caller that is not this library can reach it -- the hex setter derives its
+     length from strlen and the certificate reader from the decoder -- but a
+     public function that writes out of bounds for an argument it was handed is
+     not something to leave standing because the current callers are polite. */
+  if (modulus_len > sizeof(out->storage)) return -1;
+  if (exponent_len > sizeof(out->storage) - modulus_len) return -1;
   need = modulus_len + exponent_len;
-  if (need > sizeof(out->storage)) return -1;
 
   memcpy(out->storage, modulus, modulus_len);
   memcpy(out->storage + modulus_len, exponent, exponent_len);

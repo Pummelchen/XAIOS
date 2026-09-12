@@ -92,6 +92,53 @@ jobs:
       - name: Check documentation and contract synchronization
         run: make docs-check
 
+  wt-host-tests:
+    name: WebTransport Host Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          # python3-cryptography is what re-verifies the generated ECDSA and
+          # QUIC flight fixtures. Without it those steps fail on import, and
+          # the failure would look like a broken fixture rather than a missing
+          # package -- the same trap B-58 records for mdir.
+          sudo apt-get install -y clang python3 python3-cryptography
+
+      # The RFC 8448 and RFC 9001 values recomputed from the RFCs themselves,
+      # by an implementation that shares no code with the one under test. This
+      # runs before the tests so that a wrong vector is reported as a wrong
+      # vector and not as a failing module.
+      - name: Re-derive the RFC vectors independently
+        run: make wt-vectors-check
+
+      # The two generated fixtures are re-verified rather than regenerated:
+      # ECDSA signing and RSA-PSS signing both draw a random nonce, so a
+      # rewrite would produce a different but equally valid fixture every run.
+      # Re-verifying them against the `cryptography` package is what keeps a
+      # corrupted header from being believed.
+      - name: Re-verify the generated fixtures
+        run: |
+          python3 tests/security/generate_wt_ecdsa_vectors.py
+          python3 tests/security/generate_wt_quic_flight.py
+
+      # The TLS 1.3, QUIC packet and certificate code is host-testable because
+      # it takes handshake messages rather than sockets, so this is where it is
+      # actually checked: the target has no way to print a digest and compare it
+      # to an RFC.
+      - name: WebTransport host tests
+        run: make wt-host-test
+
+      # The same suites under AddressSanitizer and UndefinedBehaviorSanitizer.
+      # Both of the memory-safety defects found in this module so far were
+      # found by the sanitizer run and not by the plain one.
+      - name: WebTransport host tests under the sanitizers
+        run: make wt-host-sanitize
+
   abi-contract:
     name: ABI Contract Validation
     runs-on: ubuntu-latest

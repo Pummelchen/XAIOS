@@ -133,7 +133,12 @@ if [ "$needs_build" -eq 1 ]; then
   for source in $BEARSSL_SOURCES; do
     object=$(bearssl_object "$source")
     [ -f "$object" ] && [ "$BEARSSL/src/$source.c" -ot "$object" ] && continue
-    "$CC" -std=c99 -O1 -g -Wall -Wextra -Werror $SAN_FLAGS \
+    # -Werror only for this repository's own sources. The vendored BearSSL is
+    # compiled by the target build with its own flags; making it fail this
+    # script on a warning a different clang version grows would turn a
+    # third-party warning into a red CI job about XAIOS's code. Its warnings
+    # are still printed.
+    "$CC" -std=c99 -O1 -g -Wall -Wextra $SAN_FLAGS \
       -I"$BEARSSL/inc" -I"$BEARSSL/src" \
       -c "$BEARSSL/src/$source.c" -o "$object"
   done
@@ -184,7 +189,7 @@ done
 
 # The tests. Each is tests/security/test_wt_<name>.c.
 if [ "$#" -eq 0 ]; then
-  set -- crypto tls quic_pkt tls_handshake tls_cert tls_pin
+  set -- crypto tls quic_pkt tls_handshake tls_cert tls_pin tls_client
 fi
 
 failed=0

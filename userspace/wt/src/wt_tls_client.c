@@ -44,8 +44,17 @@ uint8_t wt_tls_client_alert(const wt_tls_client_t *handshake) {
 }
 
 const char *wt_tls_client_fail_reason(const wt_tls_client_t *handshake) {
-  if (handshake == NULL) return "no handshake";
-  return handshake->fail_reason;
+  /* NULL unless the handshake has actually failed. The header states that
+     contract and an earlier version broke it: `wt_tls_client_start` wrote a
+     placeholder reason before it knew whether it would succeed, and left it
+     there afterwards, so a healthy handshake reported "the handshake was never
+     started" to anyone who asked. Gating on the state rather than on the
+     string being set is what makes the contract hold no matter what the
+     failure path wrote. */
+  if (handshake == NULL) return NULL;
+  if (handshake->state != WT_TLS_STATE_FAILED) return NULL;
+  return handshake->fail_reason == NULL ? "the handshake failed"
+                                        : handshake->fail_reason;
 }
 
 int wt_tls_client_keys_available(const wt_tls_client_t *handshake,
@@ -130,6 +139,24 @@ void wt_tls_client_clear(wt_tls_client_t *handshake) {
   handshake->keys_available = 0U;
   handshake->client_key_private = NULL;
   handshake->client_key_private_len = 0U;
+  /* The negotiated values and the borrowed views go too. A cleared handshake
+     that still reported WT_TLS_STATE_CONNECTED would keep handing out the
+     peer's transport parameters through the getter, which gates on exactly
+     that state -- so clearing the secrets but not the state leaves the
+     authenticated-looking bytes readable from a connection that no longer
+     exists. */
+  handshake->state = WT_TLS_STATE_START;
+  handshake->alert = 0U;
+  handshake->fail_reason = NULL;
+  handshake->cipher_suite = 0U;
+  handshake->group = 0U;
+  handshake->transport_parameters = NULL;
+  handshake->transport_parameters_len = 0U;
+  handshake->transport_parameters_seen = 0;
+  handshake->leaf_certificate = NULL;
+  handshake->leaf_certificate_len = 0U;
+  handshake->client_auth_requested = 0;
+  handshake->certificate_request_context_len = 0U;
 }
 
 /* Fail the handshake, with the alert RFC 8446 section 6.2 names for this
@@ -226,6 +253,16 @@ size_t wt_tls_client_start(wt_tls_client_t *handshake,
                 "the key share has no 32-byte x25519 private key");
     return 0U;
   }
+  /* RFC 9001 section 8.2 makes the transport parameters mandatory in the
+     ClientHello as well as in EncryptedExtensions, and a server that does not
+     see them closes the connection. Refusing here means a caller that forgot
+     them finds out at the call, rather than by watching a peer hang up. */
+  if (config->params->quic_transport_parameters == NULL ||
+      config->params->quic_transport_parameters_len == 0U) {
+    client_fail(handshake, WT_TLS_ALERT_HANDSHAKE_FAILURE,
+                "the ClientHello carries no QUIC transport parameters");
+    return 0U;
+  }
 
   /* The configuration is copied in, so a caller that reuses the struct it
      passed cannot change what this handshake is halfway through. The buffers
@@ -283,7 +320,7 @@ static int handle_server_hello(wt_tls_client_t *handshake,
   wt_tls_server_hello_t hello;
   uint8_t transcript_hash[WT_TLS_HASH_LEN];
   uint8_t ecdh[32];
-  int i;
+  int status;
 
   (void)out;
   (void)out_len;
@@ -375,10 +412,10 @@ static int handle_server_hello(wt_tls_client_t *handshake,
     return client_fail(handshake, WT_TLS_ALERT_ILLEGAL_PARAMETER,
                        "the x25519 shared secret could not be computed");
   }
-  i = wt_tls_handshake_key_schedule(ecdh, sizeof(ecdh), transcript_hash,
-                                    &handshake->secrets);
+  status = wt_tls_handshake_key_schedule(ecdh, sizeof(ecdh), transcript_hash,
+                                         &handshake->secrets);
   wt_secure_zero(ecdh, sizeof(ecdh));
-  if (i != 0) {
+  if (status != 0) {
     return client_fail(handshake, WT_TLS_ALERT_HANDSHAKE_FAILURE,
                        "the handshake key schedule failed");
   }
@@ -593,12 +630,12 @@ static int handle_certificate(wt_tls_client_t *handshake,
     return client_fail(handshake, WT_TLS_ALERT_DECODE_ERROR,
                        "the Certificate did not parse");
   }
-  /* A server authenticates with a certificate, so an empty chain is not a
-     server that declined to authenticate -- it is a server that cannot. */
-  if (chain.count == 0U) {
-    return client_fail(handshake, WT_TLS_ALERT_BAD_CERTIFICATE,
-                       "the server sent no certificate");
-  }
+  /* `chain.count` is at least one here without a check, because
+     `wt_tls_parse_certificate` refuses an empty certificate_list itself: a
+     server authenticates with a certificate, so an empty list is not a server
+     that declined to authenticate but a malformed message, and the parser
+     reports it as one (decode_error) before this is reached. That guarantee is
+     asserted in tests/security/test_wt_tls_cert.c. */
 
   /* RFC 8446 section 4.4.2: the sender's own certificate is first. The chain
      after it is not walked: a pinned key needs the leaf and nothing else, and

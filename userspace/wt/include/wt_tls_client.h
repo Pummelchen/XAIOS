@@ -272,9 +272,10 @@ int wt_tls_client_keys(const wt_tls_client_t *handshake, wt_tls_level_t level,
  * WT_TLS_AEAD_AES_128_GCM can be negotiated by this module. */
 wt_tls_aead_t wt_tls_client_aead(const wt_tls_client_t *handshake);
 
-/* State, alert and reason. `wt_tls_client_fail_reason` returns NULL while the
- * handshake has not failed; the string is a fixed literal and always non-NULL
- * once it has. */
+/* State, alert and reason. `wt_tls_client_fail_reason` returns NULL unless the
+ * handshake is in WT_TLS_STATE_FAILED, and a fixed literal once it is -- never
+ * NULL then, so a caller logging it cannot get a null pointer from a handshake
+ * that failed. */
 wt_tls_state_t wt_tls_client_state(const wt_tls_client_t *handshake);
 uint8_t wt_tls_client_alert(const wt_tls_client_t *handshake);
 const char *wt_tls_client_fail_reason(const wt_tls_client_t *handshake);
@@ -295,8 +296,12 @@ const uint8_t *wt_tls_client_alpn(const wt_tls_client_t *handshake,
 const uint8_t *wt_tls_client_peer_transport_parameters(
     const wt_tls_client_t *handshake, size_t *out_len);
 
-/* Zero everything derived: the transcript, the secrets, the traffic keys and
- * the private-key view. Called when a connection ends. */
+/* Zero everything derived: the transcript, the secrets, the traffic keys, the
+ * private-key view, the negotiated values and the borrowed views -- and return
+ * the handshake to WT_TLS_STATE_START, so it reports nothing about a connection
+ * that has ended. The configuration pointers stay, because they are the
+ * caller's and a cleared handshake is configured but unstarted rather than
+ * unusable. Called when a connection ends; safe on a NULL handshake. */
 void wt_tls_client_clear(wt_tls_client_t *handshake);
 
 #ifdef __cplusplus
