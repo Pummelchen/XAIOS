@@ -2379,6 +2379,16 @@ xaios_status_t network_stack_process_udp_frame(const uint8_t *frame,
     network_listener_ex_t *listener =
         find_listener_ex(dst_port, NETWORK_IP_PROTO_UDP);
     if (listener != 0) {
+      /* A datagram that does not fit is dropped here, whole, and counted; it is
+         never queued in part. That is the maximum-datagram-size policy rather
+         than silence about one: the receive path below does clamp a read to the
+         caller's buffer and discard the tail, but this check runs first and
+         against the same bound, so the queue can only ever hold a datagram the
+         buffer is guaranteed to hold -- `sockbuf_available` is at most
+         SOCKET_BUFFER_SIZE and a read is capped there. A caller that asks for
+         SOCKET_BUFFER_SIZE therefore cannot be truncated; one that asks for
+         less can, and is not told. A truncation flag is what would make that
+         case honest, and it is a syscall change rather than a stack one. */
       if (listener->backlog_count >= NETWORK_LISTENER_BACKLOG ||
           data_len > sockbuf_available(flow->rx_buf) ||
           sockbuf_write(flow->rx_buf, udp_payload, data_len) != data_len ||
