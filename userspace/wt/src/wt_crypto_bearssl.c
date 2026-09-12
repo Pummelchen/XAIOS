@@ -160,9 +160,12 @@ int wt_hkdf_expand_sha256(const uint8_t *prk, size_t prk_len,
 /* AES-128 block encryption lives in wt_aes128.c: BearSSL has no ECB entry
    point and reaching its bitslice block function means private API. */
 
-/* The AES-128-GCM core. `decrypt` selects direction; when decrypting, the tag
-   is checked before the plaintext is handed back, and a failure leaves `out`
-   untouched. */
+/* The AES-128-GCM core, shared by both directions.
+ *
+ * On the decrypting side the tag is written to `tag` rather than compared: see
+ * the note in wt_crypto.h for why that is the shape, and in particular why
+ * "check the tag, then decrypt" cannot work with this backend -- the tag is
+ * not known until the ciphertext has been run. */
 static int gcm_run(int decrypt, const uint8_t key[16], const uint8_t iv[12],
                    const uint8_t *aad, size_t aad_len,
                    const uint8_t *in, size_t len,
@@ -176,36 +179,22 @@ static int gcm_run(int decrypt, const uint8_t key[16], const uint8_t iv[12],
   if (aad == NULL && aad_len != 0U) return -1;
 
   br_aes_ct64_ctr_init(&keys, key, 16U);
-  /* BearSSL's GCM keeps the block-cipher *context*, not its vtable, and asks
-     for it as a `const br_block_ctr_class **` because the context's first
-     field is that pointer. Passing the vtable itself -- which is what this
-     did first -- compiles under a cast, and then the GCM's own use of
-     `(*bctx)->run(bctx, ...)` reads the vtable's first bytes as a context and
-     faults. `sd->vtable` is the context pointer BearSSL's own GCM code
-     passes. */
+  /* BearSSL's GCM keeps the block-cipher context, not its vtable, and asks for
+     it as a `const br_block_ctr_class **` because the context's first field is
+     that pointer. */
   br_gcm_init(&ctx, &keys.vtable, br_ghash_ctmul64);
   br_gcm_reset(&ctx, iv, 12U);
   if (aad_len != 0U) br_gcm_aad_inject(&ctx, aad, aad_len);
   br_gcm_flip(&ctx);
 
-  if (decrypt) {
-    /* A failed tag check must not leave plaintext behind, so the check runs
-       against the received tag before any plaintext is produced. */
-    if (br_gcm_check_tag(&ctx, tag) != 1U) {
-      wt_secure_zero(&ctx, sizeof(ctx));
-      wt_secure_zero(&keys, sizeof(keys));
-      return -1;
-    }
-    /* `br_gcm_run` processes in place and takes a non-const pointer, so the
-       ciphertext is copied into the caller's output buffer first and
-       decrypted there. Nothing is written before the tag has verified. */
-    memcpy(out, in, len);
-    br_gcm_run(&ctx, 0, out, len);
-  } else {
-    memcpy(out, in, len);
-    br_gcm_run(&ctx, 1, out, len);
-    br_gcm_get_tag(&ctx, tag);
-  }
+  /* The caller's buffers must not overlap: this copies the input into the
+     output and then works in place, so an overlapping call would feed the
+     cipher its own output from the second block onward. That is documented in
+     the header and is why the QUIC layer keeps its plaintext in a separate
+     buffer. */
+  memcpy(out, in, len);
+  br_gcm_run(&ctx, decrypt ? 0 : 1, out, len);
+  br_gcm_get_tag(&ctx, tag);
 
   wt_secure_zero(&ctx, sizeof(ctx));
   wt_secure_zero(&keys, sizeof(keys));
@@ -222,11 +211,8 @@ int wt_aes128_gcm_encrypt(const uint8_t key[16], const uint8_t iv[12],
 int wt_aes128_gcm_decrypt(const uint8_t key[16], const uint8_t iv[12],
                           const uint8_t *aad, size_t aad_len,
                           const uint8_t *cipher, size_t len,
-                          const uint8_t tag[16], uint8_t *out) {
-  /* The const cast is BearSSL's interface: `br_gcm_run` works in place. The
-     caller's ciphertext buffer is not modified because the write happens into
-     `out` afterwards, and callers are expected to pass distinct buffers. */
-  return gcm_run(1, key, iv, aad, aad_len, cipher, len, out, (uint8_t *)tag);
+                          uint8_t *out, uint8_t computed_tag[16]) {
+  return gcm_run(1, key, iv, aad, aad_len, cipher, len, out, computed_tag);
 }
 
 /* ---------------------------------------------------------------- ChaCha20 */

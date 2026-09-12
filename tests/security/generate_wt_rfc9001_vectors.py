@@ -158,6 +158,8 @@ def main() -> int:
     server_header = extract_labelled(
         lines, "The header from the server includes a new connection ID", 20)
     server_packet = extract_after(lines, "The final protected packet is then:")
+    server_payload = extract_after(
+        lines, "The server sends the following payload in response")
     retry_packet = extract_after(lines, "value is not included in the final Retry packet")
 
     # The RFC states the packet lengths in prose as well as by printing the
@@ -169,6 +171,14 @@ def main() -> int:
             f"says 1200")
     if not server_packet or not retry_packet:
         raise SystemExit("a vector extracted empty")
+    # The server's plaintext is printed separately from its protected packet,
+    # and it is shorter than the payload area of that packet. Reading the
+    # ciphertext at the payload offset instead of using this is what the first
+    # version of the test did, and it authenticated the wrong bytes.
+    if not 0 < len(server_payload) < len(server_packet):
+        raise SystemExit(
+            f"server payload extracted as {len(server_payload)} bytes, which "
+            f"does not fit a {len(server_packet)}-byte packet")
     # The client payload is the CRYPTO frame; the RFC says the protected payload
     # is 1162 bytes and that the frame plus PADDING makes it up, so the frame
     # must be shorter than that and start with the CRYPTO frame type.
@@ -278,6 +288,13 @@ static const uint8_t WT_RFC9001_CLIENT_TAG[16] = {{
 #define WT_RFC9001_CLIENT_FRAME_LEN {len(client_payload)}
 static const uint8_t WT_RFC9001_CLIENT_FRAME[WT_RFC9001_CLIENT_FRAME_LEN] = {{
 {c_array(client_payload)}
+}};
+
+/* Appendix A.3: the server Initial's payload, printed separately from the
+   protected packet. */
+#define WT_RFC9001_SERVER_PAYLOAD_LEN {len(server_payload)}
+static const uint8_t WT_RFC9001_SERVER_PAYLOAD[WT_RFC9001_SERVER_PAYLOAD_LEN] = {{
+{c_array(server_payload)}
 }};
 
 /* Appendix A.3: the server Initial packet. */

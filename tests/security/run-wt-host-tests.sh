@@ -83,13 +83,14 @@ build_module() {
 
 MODULE_OBJECTS=""
 for source in userspace/wt/src/wt_crypto_bearssl.c userspace/wt/src/wt_aes128.c \
-              userspace/wt/src/wt_tls.c; do
+              userspace/wt/src/wt_tls.c \
+              userspace/wt/src/wt_quic_pkt.c; do
   MODULE_OBJECTS="$MODULE_OBJECTS $(build_module "$source")"
 done
 
 # The tests. Each is tests/security/test_wt_<name>.c.
 if [ "$#" -eq 0 ]; then
-  set -- crypto tls
+  set -- crypto tls quic_pkt
 fi
 
 failed=0

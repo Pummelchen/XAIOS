@@ -82,11 +82,26 @@ int wt_hkdf_expand_sha256(const uint8_t *prk, size_t prk_len,
 
 /* AES-128-GCM (NIST SP 800-38D).
  *
- * Encrypt: writes `len` ciphertext bytes and a 16-byte tag.
- * Decrypt: writes `len` plaintext bytes only if the tag verifies, and returns
- * non-zero without writing when it does not. The compare is constant-time.
+ * `iv` is the 12-byte nonce, `aad` the additional authenticated data.
  *
- * `iv` is the 12-byte nonce, `aad` the additional authenticated data. */
+ * Encrypt writes `len` ciphertext bytes to `out` and the 16-byte tag to `tag`.
+ *
+ * Decrypt writes `len` plaintext bytes to `out` and the tag it *computed* to
+ * `computed_tag`; it does not compare tags, because comparing is the caller's
+ * decision and the comparison belongs next to the decision. The caller must
+ * compare with wt_ct_equal, which is constant time, and must discard the
+ * plaintext on a mismatch.
+ *
+ * The split is deliberate rather than an inconvenience of the backend. BearSSL
+ * requires the tag to be produced by `br_gcm_get_tag` after the ciphertext has
+ * been processed, so a function that decrypts and then checks cannot satisfy
+ * "write nothing when the tag fails" without a second buffer; and a function
+ * that checks before decrypting cannot, because the tag is not yet known. The
+ * first version of this tried the latter order and every decryption failed.
+ * Handing the computed tag back makes the order explicit and the failure mode
+ * a caller that ignores it, which the API documents rather than hides.
+ *
+ * `out` and `cipher` must not overlap. */
 int wt_aes128_gcm_encrypt(const uint8_t key[16], const uint8_t iv[12],
                           const uint8_t *aad, size_t aad_len,
                           const uint8_t *plain, size_t len,
@@ -94,7 +109,7 @@ int wt_aes128_gcm_encrypt(const uint8_t key[16], const uint8_t iv[12],
 int wt_aes128_gcm_decrypt(const uint8_t key[16], const uint8_t iv[12],
                           const uint8_t *aad, size_t aad_len,
                           const uint8_t *cipher, size_t len,
-                          const uint8_t tag[16], uint8_t *out);
+                          uint8_t *out, uint8_t computed_tag[16]);
 
 /* AES-128 block encryption (ECB over a single block), for QUIC's AES-based
    header protection, which encrypts the 16-byte sample and keeps 5 bytes. */

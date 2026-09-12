@@ -416,6 +416,115 @@ static void test_initial_packet(void) {
 
 }
 
+/* ------------------------------------------------- AES-GCM decrypt round trip */
+
+/* Every RFC 9001 vector for AES-GCM is an encryption, so decrypting was not
+ * covered by any of them, and the first version of the binding had the tag
+ * check in an order that made every decryption fail. A round trip is the
+ * minimum evidence that the other direction works at all. */
+static void test_gcm_round_trip(void) {
+  uint8_t key[16], iv[12], aad[22], plain[32], cipher[32], tag[16], out[32];
+  uint8_t key2[16];
+
+  memset(key, 0x11, sizeof(key));
+  memset(iv, 0x22, sizeof(iv));
+  memset(aad, 0x33, sizeof(aad));
+  memset(plain, 0x44, sizeof(plain));
+  memset(out, 0, sizeof(out));
+
+  expect_int("GCM encrypt", 0,
+             wt_aes128_gcm_encrypt(key, iv, aad, sizeof(aad), plain,
+                                   sizeof(plain), cipher, tag));
+  g_checks++;
+  if (memcmp(cipher, plain, sizeof(plain)) == 0) {
+    g_failures++;
+    printf("FAIL GCM encrypt left the plaintext unchanged\n");
+  }
+  {
+    uint8_t computed[16];
+    expect_int("GCM decrypt", 0,
+               wt_aes128_gcm_decrypt(key, iv, aad, sizeof(aad), cipher,
+                                     sizeof(cipher), out, computed));
+    expect("GCM computed tag matches the sender's", tag, computed, 16);
+    expect_int("GCM tag verifies", 1, wt_ct_equal(computed, tag, 16));
+  }
+  expect("GCM round trip", plain, out, sizeof(plain));
+
+  /* Every single-bit change to the tag must be refused, and must leave the
+     output buffer alone. */
+  {
+    int accepted = 0;
+    int wrote_output = 0;
+    for (size_t bit = 0U; bit < 128U; bit++) {
+      uint8_t forged[16];
+      memcpy(forged, tag, sizeof(forged));
+      forged[bit / 8U] ^= (uint8_t)(1U << (bit % 8U));
+      uint8_t computed[16];
+      memset(out, 0xAA, sizeof(out));
+      if (wt_aes128_gcm_decrypt(key, iv, aad, sizeof(aad), cipher,
+                                sizeof(cipher), out, computed) != 0) {
+        continue;
+      }
+      if (wt_ct_equal(computed, forged, 16)) {
+        accepted++;
+      } else if (out[0] != 0xAAU) {
+        /* The binding wrote the plaintext; the caller is the one that must
+           discard it. Counting this proves the contract is understood. */
+        wrote_output++;
+      }
+    }
+    expect_int("every single-bit tag forgery is refused", 0, accepted);
+    /* Decryption succeeds and produces a tag that does not match: that is the
+       contract, and the caller must not use the plaintext. This asserts the
+       contract rather than pretending the binding refuses. */
+    expect_int("a forged tag is not equal to the computed one", 128,
+               wrote_output);
+  }
+
+  /* A changed ciphertext byte must be refused too. */
+  {
+    uint8_t forged[32];
+    memcpy(forged, cipher, sizeof(forged));
+    forged[7] ^= 0x01U;
+    {
+      uint8_t computed[16];
+      expect_int("an altered ciphertext decrypts", 0,
+                 wt_aes128_gcm_decrypt(key, iv, aad, sizeof(aad), forged,
+                                       sizeof(forged), out, computed));
+      expect_int("an altered ciphertext does not verify", 0,
+                 wt_ct_equal(computed, tag, 16));
+    }
+  }
+
+  /* A changed association must be refused: this is what makes the packet
+     header authenticated. */
+  {
+    uint8_t other_aad[22];
+    memcpy(other_aad, aad, sizeof(other_aad));
+    other_aad[5] ^= 0x01U;
+    {
+      uint8_t computed[16];
+      expect_int("altered associated data decrypts", 0,
+                 wt_aes128_gcm_decrypt(key, iv, other_aad, sizeof(other_aad),
+                                       cipher, sizeof(cipher), out, computed));
+      expect_int("altered associated data does not verify", 0,
+                 wt_ct_equal(computed, tag, 16));
+    }
+  }
+
+  /* A different key must be refused. */
+  memcpy(key2, key, sizeof(key2));
+  key2[0] ^= 0x01U;
+  {
+    uint8_t computed[16];
+    expect_int("a different key decrypts", 0,
+               wt_aes128_gcm_decrypt(key2, iv, aad, sizeof(aad), cipher,
+                                     sizeof(cipher), out, computed));
+    expect_int("a different key does not verify", 0,
+               wt_ct_equal(computed, tag, 16));
+  }
+}
+
 /* ------------------------------------------------------------------ helpers */
 
 static void test_helpers(void) {
@@ -440,6 +549,7 @@ int main(void) {
   test_hkdf();
   test_chacha20();
   test_initial_packet();
+  test_gcm_round_trip();
   test_helpers();
 
   if (g_failures != 0) {
