@@ -181,7 +181,47 @@ def round_trip(address: str, index: int, payload: bytes) -> dict[str, object]:
             "exit_code": result.returncode,
             "identical": identical,
             "seconds": round(time.monotonic() - started, 2),
-            "stderr": result.stderr.strip()[:200]}
+            "stderr": result.stderr.strip()[:200],
+            # B-63: the summary above is what the report carries for the 1256
+            # uneventful rounds. The whole of it is kept here, and retained
+            # only for the rounds that matter -- the one round that failed is
+            # the one whose detail was being cut off at 200 characters.
+            "stderr_full": result.stderr.strip()}
+
+
+def verbose_probe(address: str) -> dict[str, object]:
+    """One deliberately talkative session, immediately after a failure.
+
+    B-63 is one dropped SFTP session in 1257 on Fusion with the guest logging
+    nothing unusual: no stalled service loop, no unpolled stack, worst poll gap
+    159 ms. The row asks for host-side evidence, and the obvious form of it, a
+    packet capture, needs root on this machine -- which this gate does not have
+    and should not ask for.
+
+    The client will say most of it for free. The rounds themselves run at
+    LogLevel=ERROR because 1257 verbose transcripts are noise; this one runs at
+    DEBUG3 and is kept whole. It is for the distinction the guest cannot draw:
+    a server that closed the connection, a server that refuses the next one,
+    and a client that gave up on its own are indistinguishable from inside the
+    guest and are three different transcripts here.
+
+    It runs after the failure rather than during it, so it records the state
+    left behind and not the event. That is worth saying plainly rather than
+    letting a reader assume otherwise: if this session connects and behaves, it
+    establishes that the server was healthy a second later, which is evidence
+    about the shape of the fault and not a capture of it.
+    """
+    started = time.monotonic()
+    result = subprocess.run(
+        ["sftp", "-F", "/dev/null", "-i", str(smoke.TEST_KEY),
+         "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+         "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+         "-o", "LogLevel=DEBUG3", "-b", "-", f"admin@{address}"],
+        input="pwd\n", cwd=ROOT, text=True, capture_output=True, timeout=120,
+        check=False)
+    return {"exit_code": result.returncode,
+            "seconds": round(time.monotonic() - started, 2),
+            "transcript": result.stderr.strip()}
 
 
 def main() -> int:
@@ -231,7 +271,10 @@ def main() -> int:
             index += 1
             round_started = time.time()
             entry = round_trip(address, index, payload)
-            rounds.append(entry)
+            # The full transcript is used below where it matters; carrying it
+            # 1257 times would bury the report it is meant to inform.
+            rounds.append({k: v for k, v in entry.items()
+                           if k != "stderr_full"})
             round_failure = None
             if entry["exit_code"] != 0:
                 round_failure = (
@@ -268,6 +311,11 @@ def main() -> int:
             # after a session closes", so what the guest printed while the
             # previous session was ending is evidence rather than context.
             if round_failure is not None:
+                # Everything the client said, not the first 200 characters of
+                # it, and one verbose session asking what the transport does
+                # next. Both only on the round that failed.
+                record["sftp_stderr_full"] = entry.get("stderr_full", "")
+                record["verbose_probe"] = verbose_probe(address)
                 if previous_record is not None:
                     correlation.append(previous_record)
                 correlation.append(record)
