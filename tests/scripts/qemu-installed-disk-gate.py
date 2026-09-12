@@ -27,6 +27,8 @@ import re
 import shutil
 import subprocess
 import sys
+
+import qemu_gate_lib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -78,13 +80,14 @@ ARCHITECTURES = {
         # acpi=off, because EDK2 on this board hands the kernel an ACPI set
         # it cannot use and the device tree is what this port reads.
         "machine": ["-machine", "virt,acpi=off", "-cpu", "rv64"],
-        "firmware_code": ("/opt/homebrew/share/qemu/edk2-riscv-code.fd",
-                          "/usr/share/qemu/edk2-riscv-code.fd"),
+        # B-67: this pair named Homebrew and /usr/share/qemu, and Debian
+        # puts it in neither, so on the Linux CI runs on the RISC-V row
+        # found no firmware. The shared list knows every platform's spelling.
+        "firmware_code": qemu_gate_lib.RISCV_FIRMWARE_CODE,
         # A writable variable store, copied per run: the firmware writes it,
         # and editing the one the package manager installed would change every
         # later run on this host.
-        "firmware_vars": ("/opt/homebrew/share/qemu/edk2-riscv-vars.fd",
-                          "/usr/share/qemu/edk2-riscv-vars.fd"),
+        "firmware_vars": qemu_gate_lib.RISCV_FIRMWARE_VARS,
         "build": [["./scripts/build-riscv64.sh"],
                   ["./scripts/build-riscv64-image.sh"]],
         "slot": r"\d+",

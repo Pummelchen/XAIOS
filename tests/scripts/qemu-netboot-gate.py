@@ -31,6 +31,8 @@ import re
 import shutil
 import subprocess
 import sys
+
+import qemu_gate_lib
 import time
 from pathlib import Path
 
@@ -70,10 +72,11 @@ ARCHITECTURES = {
         "qemu": "qemu-system-riscv64",
         "machine": ["-machine", "virt,acpi=off", "-cpu", "rv64"],
         "removable": "BOOTRISCV64.EFI",
-        "firmware_code": ("/opt/homebrew/share/qemu/edk2-riscv-code.fd",
-                          "/usr/share/qemu/edk2-riscv-code.fd"),
-        "firmware_vars": ("/opt/homebrew/share/qemu/edk2-riscv-vars.fd",
-                          "/usr/share/qemu/edk2-riscv-vars.fd"),
+        # B-67: this pair named Homebrew and /usr/share/qemu, and Debian
+        # puts it in neither, so on the Linux CI runs on the RISC-V row
+        # found no firmware. The shared list knows every platform's spelling.
+        "firmware_code": qemu_gate_lib.RISCV_FIRMWARE_CODE,
+        "firmware_vars": qemu_gate_lib.RISCV_FIRMWARE_VARS,
         "build": [["./scripts/build-riscv64.sh"],
                   ["./scripts/build-riscv64-image.sh"]],
         "slot": r"\d+",

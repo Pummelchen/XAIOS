@@ -848,8 +848,9 @@ static uint64_t extent_block_at(const xaios_xbfs_extent_t *extents,
    one run. This is how a volume written by an older version is read: its nodes
    record a block at a time, and a file laid down in order becomes a single
    extent. A file scattered across the volume becomes several, and one too
-   fragmented to describe in sixteen is refused rather than truncated -- losing
-   the tail of a file quietly is worse than declining to open it. */
+   fragmented to describe in XBFS_V6_MAX_EXTENTS runs is refused rather than
+   truncated -- losing the tail of a file quietly is worse than declining to
+   open it. */
 static uint32_t extents_from_blocks(const uint16_t *blocks, uint32_t count,
                                     xaios_xbfs_extent_t *extents) {
   uint32_t used = 0U;
@@ -1410,10 +1411,10 @@ static uint64_t absolute_data_sector(uint64_t block_index) {
 /* Place a file in at most XBFS_V6_MAX_EXTENTS runs of free blocks.
  *
  * This took the first free runs it found, in address order, and gave up once
- * it had sixteen of them. On a fresh volume that is the same as any other
+ * it had XBFS_V6_MAX_EXTENTS of them. On a fresh volume that is the same as any
  * policy and cheaper than most. On a volume that has been written and
  * rewritten for a while it is the worst available: the low blocks are the most
- * broken up, so first-fit collects sixteen short runs out of the rubble at the
+ * broken up, so first-fit collects that many short runs out of the rubble at the
  * bottom and never reaches the long runs above them. The volume then reports
  * plenty of free space and refuses the write, and because the same path is
  * what snapshots a file, `commit_snapshot` fails on a filesystem `fsck` calls
@@ -1425,12 +1426,15 @@ static uint64_t absolute_data_sector(uint64_t block_index) {
  * is one extent, it cannot be improved on, and on a mostly empty volume it is
  * the run at block zero -- the same handful of iterations the old code took.
  *
- * The scan also keeps the sixteen longest runs as it goes, and those are used
- * only when it reaches the end without finding one that fits, which on a
- * healthy volume does not happen. Filling from the longest first is not merely
- * better than address order, it is the best any policy can do against this
- * constraint: the question is whether some sixteen runs can cover the file,
- * and if the sixteen longest cannot, no sixteen can.
+ * The scan also keeps the XBFS_V6_MAX_EXTENTS longest runs as it goes, and
+ * those are used only when it reaches the end without finding one that fits,
+ * which on a healthy volume does not happen. Filling from the longest first is
+ * not merely better than address order, it is the best any policy can do
+ * against this constraint: the question is whether some XBFS_V6_MAX_EXTENTS
+ * runs can cover the file, and if the longest that many cannot, no such set
+ * can. The number was sixteen when this was written and is sixty-four since
+ * B-55; the array below is sized by the macro, so it was the prose that went
+ * stale and not the code.
  */
 static xaios_status_t allocate_extents(uint64_t blocks_needed,
                                        xaios_xbfs_extent_t *extents,
@@ -1474,8 +1478,8 @@ static xaios_status_t allocate_extents(uint64_t blocks_needed,
       break;
     }
 
-    /* Keep the sixteen longest, longest first. Insertion rather than a sort:
-       the array is sixteen entries and the scan is the expensive half. */
+    /* Keep the XBFS_V6_MAX_EXTENTS longest, longest first. Insertion rather than a sort:
+       the array is XBFS_V6_MAX_EXTENTS entries and the scan is the expensive half. */
     uint32_t at = longest_count;
     while (at > 0U && longest[at - 1U].length < run) {
       if (at < XBFS_V6_MAX_EXTENTS) longest[at] = longest[at - 1U];

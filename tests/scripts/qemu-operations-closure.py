@@ -13,7 +13,11 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from qemu_gate_lib import smoke_timeout, timeout_scale  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -132,7 +136,7 @@ def ssh_reboot(key: Path, port: int) -> None:
     machine came back, not merely that it accepted the request.
     """
     try:
-        ssh_command(key, port, "reboot", ok=None, timeout=30)
+        ssh_command(key, port, "reboot", ok=None, timeout=30 * timeout_scale())
     except subprocess.TimeoutExpired:
         pass
 
@@ -151,16 +155,44 @@ def ssh_command(key: Path, port: int, command: str, *, ok: bool | None = True,
     return result.stdout
 
 
-def wait_ssh(key: Path, port: int, timeout: float = 60.0) -> None:
-    deadline = time.monotonic() + timeout
+def wait_ssh(key: Path, port: int, arch: str = "aarch64",
+             timeout: int = 180) -> None:
+    """Wait for the guest to answer, on a budget that knows what host it is on.
+
+    Sixty seconds was written on a Mac, where these guests boot with hardware
+    virtualisation. The CI runner has none and interprets every instruction, so
+    the same boot takes several times longer and this raised
+    `TimeoutError: SSH did not become ready` -- a sentence about the guest, for
+    a condition of the host. That is B-39's finding, and this gate was missed
+    when it was applied: it does not import `timeout_scale` at all.
+
+    The scale is declared by the environment rather than sniffed at, which is
+    the same arrangement the other gates use.
+
+    The base was sixty and is a hundred and eighty. Sixty was enough here and
+    not on the runner; a hundred and eighty times the CI scale gives nine
+    minutes, and a boot that has not answered in nine minutes is broken rather
+    than slow. The number the runner actually needs is not knowable from this
+    machine -- it cannot be measured here, because here it passes -- and it is
+    not knowable from the parity container either, which is arm64 and cannot
+    build the x86-64 userland at all. What can be done is to stop the budget
+    being the thing that fails and let the runner report its own figure.
+    """
+    scaled = smoke_timeout(arch, timeout)
+    deadline = time.monotonic() + scaled
     while time.monotonic() < deadline:
         try:
-            if ssh_command(key, port, "echo closure-ready", timeout=10).strip() == "closure-ready":
+            if ssh_command(key, port, "echo closure-ready",
+                           timeout=10 * timeout_scale()).strip() == "closure-ready":
                 return
         except (RuntimeError, subprocess.TimeoutExpired):
             pass
         time.sleep(0.25)
-    raise TimeoutError(f"SSH did not become ready on port {port}")
+    raise TimeoutError(
+        f"{arch}: SSH did not become ready on port {port} within {scaled}s "
+        f"(base {timeout}s, scaled by qemu_gate_lib.smoke_timeout). On a host "
+        f"without hardware virtualisation every guest here is interpreted; if "
+        f"that is this host, XAIOS_GATE_TIMEOUT_SCALE is what declares it.")
 
 
 def start_guest(arch: str, port: int, persistent: Path,
@@ -303,7 +335,7 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
     try:
         print(wait_lifecycle_durable(log_path, 1)[-1], flush=True)
         wait_marker(log_path, READY)
-        wait_ssh(key, port)
+        wait_ssh(key, port, arch)
     finally:
         close_guest(first)
 
@@ -312,14 +344,14 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
     try:
         wait_lifecycle_durable(log_path, 2)
         wait_marker(log_path, READY, 2)
-        wait_ssh(key, port)
+        wait_ssh(key, port, arch)
         recovery = ssh_command(key, port, "recovery status")
         assert_contains(recovery, "unclean_boots=1")
         ssh_reboot(key, port)
         if arch == "aarch64":
             wait_lifecycle_durable(log_path, 3)
             wait_marker(log_path, READY, 3)
-            wait_ssh(key, port)
+            wait_ssh(key, port, arch)
         else:
             second.wait(timeout=30)
     finally:
@@ -331,7 +363,7 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
         expected_ready = 3 if arch == "x86_64" else 4
         wait_lifecycle_durable(log_path, expected_ready)
         wait_marker(log_path, READY, expected_ready)
-        wait_ssh(key, port)
+        wait_ssh(key, port, arch)
         assert_contains(ssh_command(key, port, "ifconfig"),
                         "vtnet0", "10.0.2.15", "RUNNING")
         assert_contains(ssh_command(key, port, "route"),
@@ -409,7 +441,7 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
         final_ready = 5 if arch == "aarch64" else 4
         wait_lifecycle_durable(log_path, final_ready)
         wait_marker(log_path, READY, final_ready)
-        wait_ssh(key, port)
+        wait_ssh(key, port, arch)
         clean = ssh_command(key, port, "recovery status")
         assert_contains(clean, "unclean_boots=0")
     finally:

@@ -19,6 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 
+import qemu_gate_lib
 import riscv64_gate_lib as rvgate
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,8 +27,11 @@ BUILD = ROOT / "build"
 MEDIUM = BUILD / "xaios-riscv64.img"
 INITFS = BUILD / "xaios-riscv64-initfs.img"
 LOG = BUILD / "qemu-riscv64-boot-media-gate.log"
-FIRMWARE_CODE = Path("/opt/homebrew/share/qemu/edk2-riscv-code.fd")
-FIRMWARE_VARS = Path("/opt/homebrew/share/qemu/edk2-riscv-vars.fd")
+# B-67: these were one Homebrew path each, so on Linux the gate skipped --
+# and a gate that skips is not a gate that passed. qemu_gate_lib knows where
+# every platform puts this firmware.
+FIRMWARE_CODE = qemu_gate_lib.riscv_firmware("code")
+FIRMWARE_VARS = qemu_gate_lib.riscv_firmware("vars")
 
 REQUIRED = [
     # Firmware found the loader on the medium, rather than a kernel handed to
@@ -72,9 +76,10 @@ def main() -> int:
     if qemu is None:
         print("qemu-system-riscv64 is not installed; skipping", file=sys.stderr)
         return 0
-    if not FIRMWARE_CODE.is_file() or not FIRMWARE_VARS.is_file():
-        print(f"no EDK2 RISC-V firmware at {FIRMWARE_CODE}; skipping",
-              file=sys.stderr)
+    if FIRMWARE_CODE is None or FIRMWARE_VARS is None:
+        print("no EDK2 RISC-V firmware in any known location; skipping. "
+              "macOS: brew install qemu. Debian: apt-get install "
+              "qemu-efi-riscv64.", file=sys.stderr)
         return 0
     for artefact in (MEDIUM, INITFS):
         if not artefact.is_file():

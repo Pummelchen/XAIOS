@@ -75,8 +75,16 @@ vmware-fusion-smoke:
 
 # RISC-V rv64gc bring-up. Boots via OpenSBI on the QEMU `virt` board rather
 # than UEFI, which is why it has its own build script and no boot medium.
+# B-68: this built the kernel and stopped, while every consumer of it boots a
+# machine -- and a machine needs an initial filesystem. Eight gates took this
+# as a prerequisite and then died on "no initial filesystem"; the ones that
+# worked did so because they repeated the image step in their own recipe. The
+# fix is for the target to mean what its users assume it means. Building the
+# image is idempotent and takes seconds, so the recipes that still call it
+# themselves are harmless repetition rather than a second build.
 riscv64:
 	./scripts/build-riscv64.sh
+	./scripts/build-riscv64-image.sh
 
 qemu-riscv64-gate: riscv64
 	./scripts/build-riscv64-image.sh
@@ -298,10 +306,15 @@ local-gates:
 # actually receive: the image is too large for git, so the zip is the release
 # as far as anyone downloading it is concerned, and a zip is a copy that can go
 # stale without looking any different. Build 1's first one did, within an hour.
+# The fifth environment is the runner, and it is the one that catches what this
+# Mac cannot see. The sentence below used to be printed on the strength of the
+# two local checks alone, which is how build 6 came to be cut in the middle of
+# nine days of red CI.
 release-check: docs-check
 	python3 ./tests/repository/check-local-gate-record.py
 	python3 ./tests/repository/check-release-package.py
-	@printf '%s\n' "release-check: this commit is verified on all four environments"
+	python3 ./tests/repository/check-ci-status.py
+	@printf '%s\n' "release-check: this commit is verified on all four environments here, and on the runner"
 
 local-gate-record-check:
 	python3 ./tests/repository/check-local-gate-record.py
@@ -901,6 +914,10 @@ qemu-qualification-readiness:
 qemu-smmu-gate: image-qemu-test
 	python3 ./tests/scripts/qemu-smmu-gate.py
 
+# B-68: the `riscv64` prerequisite builds the kernel and stops there, so the
+# RISC-V legs died on "no initial filesystem" while the two that had images
+# passed. Every other RISC-V gate adds the image script to its own recipe; this
+# one and the fragmentation gate below were the two that did not.
 qemu-nvme-gate: image-qemu-test image-x86_64-qemu-test riscv64
 	python3 ./tests/scripts/qemu-nvme-gate.py
 
@@ -1343,6 +1360,11 @@ hosted-test: engine-cli
 	./build/hosted/test-xaiboot-fs-fragmentation
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/dev/block_device.c \
+	  tests/storage/test_xaiboot_fs_extent_depth.c \
+	  -o build/hosted/test-xaiboot-fs-extent-depth
+	./build/hosted/test-xaiboot-fs-extent-depth
+	$(HOST_CC) $(HOST_CFLAGS) \
+	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/dev/block_device.c \
 	  tests/storage/test_xaiboot_fs_large_volume.c \
 	  -o build/hosted/test-xaiboot-fs-large-volume
 	./build/hosted/test-xaiboot-fs-large-volume
@@ -1456,6 +1478,8 @@ docs-check:
 	python3 tests/repository/check-fault-test-marker.py
 	python3 tests/repository/check-portable-dd.py
 	python3 tests/repository/check-syscall-abi.py
+	python3 tests/repository/check-riscv-firmware-paths.py
+	python3 tests/repository/check-aggregate-budgets.py
 
 code-scanning-contract:
 	python3 tests/repository/check-code-scanning-contract.py

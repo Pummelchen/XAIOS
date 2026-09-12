@@ -35,6 +35,8 @@ import shutil
 import signal
 import subprocess
 import sys
+
+import qemu_gate_lib
 import time
 from pathlib import Path
 
@@ -87,10 +89,11 @@ ARCHITECTURES = {
                   ["./scripts/build-riscv64-image.sh"]],
         "boot_image": BUILD / "xaios-riscv64.img",
         "initfs": BUILD / "xaios-riscv64-initfs.img",
-        "firmware_code": ("/opt/homebrew/share/qemu/edk2-riscv-code.fd",
-                          "/usr/share/qemu/edk2-riscv-code.fd"),
-        "firmware_vars": ("/opt/homebrew/share/qemu/edk2-riscv-vars.fd",
-                          "/usr/share/qemu/edk2-riscv-vars.fd"),
+        # B-67: this pair named Homebrew and /usr/share/qemu, and Debian
+        # puts it in neither, so on the Linux CI runs on the RISC-V row
+        # found no firmware. The shared list knows every platform's spelling.
+        "firmware_code": qemu_gate_lib.RISCV_FIRMWARE_CODE,
+        "firmware_vars": qemu_gate_lib.RISCV_FIRMWARE_VARS,
         # SBI hands the kernel over; there is no loader in the way for the
         # run-from-the-medium half. The install half needs one, and gets
         # firmware instead.

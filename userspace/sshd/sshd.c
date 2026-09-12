@@ -237,12 +237,64 @@ static uint32_t g_log_bytes = 0;
 static uint32_t g_audit_write_calls;
 static uint64_t g_audit_write_bytes;
 static uint64_t g_audit_write_ns;
+/* B-63: the total was all this kept, and a mean cannot answer the question the
+   total raises. sshd's loop is the only thing that polls the network (B-44), so
+   the number that matters is not what durable writes cost on average but what
+   the worst single one costs -- 1020 writes averaging 34 ms are unremarkable
+   and one write of nine seconds is a dropped connection. Averages hide exactly
+   the tail this is about. */
+static uint64_t g_audit_write_max_ns;
+/* Durable nanoseconds inside the pass currently running, reset at the top of
+   each one. B-63: a stall says which phase it was in and not what the phase
+   was doing, and the run-long total cannot answer that -- 1020 writes at 34 ms
+   and one nine-second pass are the same number until they are separated. If a
+   stalled pass reports durable time close to its own length, the audit write is
+   the cause; if it reports nearly none, the time is going somewhere else in
+   that phase and this rules out the obvious suspect in one reproduction rather
+   than several. */
+static uint64_t g_pass_durable_ns;
+
+/* Audit records held in memory until there is a reason to pay for them.
+ *
+ * B-63: every ssh_log() call was one append to the durable volume, and an
+ * append carries blk_flush() -- a virtio flush, which is a host fsync. sshd's
+ * service loop is the only thing that polls the network (B-44), so each of
+ * those fsyncs is a window in which the machine has no networking, and on a
+ * host whose disk stalls the window is seconds. A connection takes about five
+ * log lines, so it was paying five of them.
+ *
+ * The records themselves are worth keeping; the per-line fsync is not. The
+ * console is where a connection's story is told -- log_connection_close and
+ * the refusal lines below write there, and the comment on them says plainly
+ * that the audit file is read by no soak and no gate. So lines accumulate here
+ * and go out in one write when the buffer fills or a connection ends: one
+ * fsync per connection rather than five, with the same bytes in the same order
+ * in the same file.
+ *
+ * What this gives up, stated rather than buried: a crash loses the records
+ * still in the buffer. The whole-file path already loses the record being
+ * appended, so the guarantee was never "every line survives any crash" -- it
+ * was one line's worth of exposure and is now a connection's worth. */
+#define SSHD_AUDIT_BUFFER_BYTES 3072U
+static char g_audit_buffer[SSHD_AUDIT_BUFFER_BYTES];
+static uint32_t g_audit_buffered;
 static uint32_t g_key_load_calls;
 static uint32_t g_key_load_file_reads;
 static uint64_t g_key_load_ns;
 
+/* One durable-write sample: the running total and the worst seen. */
+static void record_durable_ns(uint64_t started) {
+  uint64_t elapsed = xaios_clock_nanos() - started;
+  g_audit_write_ns += elapsed;
+  g_pass_durable_ns += elapsed;
+  if (elapsed > g_audit_write_max_ns) g_audit_write_max_ns = elapsed;
+}
+
 static void log_durable_cost(uint32_t connections) {
-  char line[256];
+  /* Widened with audit_worst_us: the appends are bounds-checked so the old
+     256 would have truncated rather than overflowed, but a line that silently
+     loses key_us at the end is a worse outcome than a slightly larger frame. */
+  char line[320];
   u64 offset = 0;
   xaios_memzero(line, sizeof(line));
   xaios_append_cstr(line, sizeof(line), &offset, "sshd: durable cost conns=");
@@ -251,6 +303,9 @@ static void log_durable_cost(uint32_t connections) {
   xaios_append_u64(line, sizeof(line), &offset, g_audit_write_calls);
   xaios_append_cstr(line, sizeof(line), &offset, " audit_bytes=");
   xaios_append_u64(line, sizeof(line), &offset, g_audit_write_bytes);
+  xaios_append_cstr(line, sizeof(line), &offset, " audit_worst_us=");
+  xaios_append_u64(line, sizeof(line), &offset,
+                   g_audit_write_max_ns / UINT64_C(1000));
   xaios_append_cstr(line, sizeof(line), &offset, " audit_us=");
   xaios_append_u64(line, sizeof(line), &offset,
                    g_audit_write_ns / UINT64_C(1000));
@@ -307,6 +362,52 @@ static void hex_to_str(uint64_t val, char *buf, uint32_t buf_size) {
   }
   if (len == 0) buf[len++] = '0';
   buf[len] = '\0';
+}
+
+/* Put bytes on the durable volume now. The only place that pays for a flush,
+   and the only place that counts one. */
+static void ssh_audit_write_through(const char *bytes, uint32_t length) {
+  if (length == 0U) return;
+  uint64_t durable_started = xaios_clock_nanos();
+  if (g_log_fd < 0 && ssh_log_reopen() != 0) {
+    record_durable_ns(durable_started);
+    return;
+  }
+  if (g_log_bytes + length > SSHD_LOG_ROTATE_BYTES) {
+    if (ssh_log_reopen() != 0) {
+      record_durable_ns(durable_started);
+      return;
+    }
+    xaios_log("sshd: audit log rotated\n");
+  }
+  ++g_audit_write_calls;
+  g_audit_write_bytes += length;
+  int written = xaios_fs_write(g_log_fd, bytes, length);
+  if (written != (int)length) {
+    if (ssh_log_reopen() != 0) {
+      record_durable_ns(durable_started);
+      return;
+    }
+    ++g_audit_write_calls;
+    g_audit_write_bytes += length;
+    written = xaios_fs_write(g_log_fd, bytes, length);
+    if (written != (int)length) {
+      record_durable_ns(durable_started);
+      return;
+    }
+  }
+  g_log_bytes += length;
+  record_durable_ns(durable_started);
+}
+
+/* Everything held, in one write. Safe to call with nothing buffered. */
+static void ssh_audit_flush(void) {
+  if (g_audit_buffered == 0U) return;
+  uint32_t length = g_audit_buffered;
+  /* Cleared first: a write that fails must not leave the same bytes queued to
+     be attempted again on every later call. */
+  g_audit_buffered = 0U;
+  ssh_audit_write_through(g_audit_buffer, length);
 }
 
 void ssh_log(int level, const char *fmt, ...) {
@@ -381,36 +482,20 @@ void ssh_log(int level, const char *fmt, ...) {
      volume, and by B-44 that is time the guest has no networking. Timed as a
      block rather than per call so a rotation -- which closes, creates and
      truncates -- is counted where it is actually paid. */
-  uint64_t durable_started = xaios_clock_nanos();
-  if (g_log_fd < 0 && ssh_log_reopen() != 0) {
-    g_audit_write_ns += xaios_clock_nanos() - durable_started;
+  /* A line too long for the buffer would never fit and must not be dropped
+     silently, so the buffer is drained and the line written on its own. */
+  if (line_pos > SSHD_AUDIT_BUFFER_BYTES) {
+    ssh_audit_flush();
+    ssh_audit_write_through(line, line_pos);
     return;
   }
-  if (g_log_bytes + line_pos > SSHD_LOG_ROTATE_BYTES) {
-    if (ssh_log_reopen() != 0) {
-      g_audit_write_ns += xaios_clock_nanos() - durable_started;
-      return;
-    }
-    xaios_log("sshd: audit log rotated\n");
+  if (g_audit_buffered + line_pos > SSHD_AUDIT_BUFFER_BYTES) {
+    ssh_audit_flush();
   }
-  ++g_audit_write_calls;
-  g_audit_write_bytes += line_pos;
-  int written = xaios_fs_write(g_log_fd, line, line_pos);
-  if (written != (int)line_pos) {
-    if (ssh_log_reopen() != 0) {
-      g_audit_write_ns += xaios_clock_nanos() - durable_started;
-      return;
-    }
-    ++g_audit_write_calls;
-    g_audit_write_bytes += line_pos;
-    written = xaios_fs_write(g_log_fd, line, line_pos);
-    if (written != (int)line_pos) {
-      g_audit_write_ns += xaios_clock_nanos() - durable_started;
-      return;
-    }
+  for (uint32_t i = 0; i < line_pos; ++i) {
+    g_audit_buffer[g_audit_buffered + i] = line[i];
   }
-  g_log_bytes += line_pos;
-  g_audit_write_ns += xaios_clock_nanos() - durable_started;
+  g_audit_buffered += line_pos;
 }
 
 /* Say on the console why a connection was refused before it was served.
@@ -560,7 +645,7 @@ static void report_service_loop_stall(uint64_t started, uint64_t after_console,
   }
 
   ++g_loop_stall_count;
-  char line[224];
+  char line[288];
   u64 offset = 0;
   xaios_memzero(line, sizeof(line));
   xaios_append_cstr(line, sizeof(line), &offset,
@@ -575,6 +660,9 @@ static void report_service_loop_stall(uint64_t started, uint64_t after_console,
   xaios_append_u64(line, sizeof(line), &offset,
                    __atomic_load_n(&g_server_stats.active_connections,
                                    __ATOMIC_ACQUIRE));
+  xaios_append_cstr(line, sizeof(line), &offset, " durable_ms=");
+  xaios_append_u64(line, sizeof(line), &offset,
+                   g_pass_durable_ns / UINT64_C(1000000));
   xaios_append_cstr(line, sizeof(line), &offset, " count=");
   xaios_append_u64(line, sizeof(line), &offset, g_loop_stall_count);
   xaios_append_cstr(line, sizeof(line), &offset, "\n");
@@ -3450,6 +3538,9 @@ service_loop:
   console_render_boot_status();
   for (;;) {
     uint64_t pass_started = timer_now();
+    /* Per pass, so a stall reports what this pass spent on the durable volume
+       rather than what every pass has spent since boot. */
+    g_pass_durable_ns = 0;
     uint64_t now = pass_started;
     console_refresh_boot_ui(now);
     console_service_pong(now);
@@ -3615,6 +3706,23 @@ close_conn:
         /* After the audit line above, so the totals include this connection's
            last record rather than all of it but that. */
         log_durable_cost(g_connection_close_count);
+        /* Only when there is enough to be worth the fsync.
+         *
+         * Flushing at every close made it one fsync per connection, which was
+         * already five times better than one per line. But the cost of a flush
+         * does not depend on how much is in it -- it is a host fsync either
+         * way -- so paying one for forty bytes is the same window as paying
+         * one for three kilobytes, and the window is what drops connections.
+         *
+         * Half the buffer is the threshold rather than "when it is full"
+         * because a machine that goes quiet should not sit on records
+         * indefinitely: a connection's worth of traffic is enough to cross it,
+         * a handful of idle probes is not. Records still reach the file in
+         * order and no line is dropped; what changes is how long the last few
+         * may wait, and this file is read by no soak and no gate. */
+        if (g_audit_buffered >= SSHD_AUDIT_BUFFER_BYTES / 2U) {
+          ssh_audit_flush();
+        }
       }
     }
     uint64_t after_connections = timer_now();

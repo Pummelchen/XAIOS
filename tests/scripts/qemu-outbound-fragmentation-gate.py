@@ -99,8 +99,21 @@ def run_architecture(architecture: str) -> dict[str, object]:
             stderr=subprocess.STDOUT,
         )
         try:
+            # B-39: this was 180, which is 720 seconds for RISC-V once
+            # smoke_timeout's four-times factor is applied -- twice the 360 the
+            # aggregate allows this whole step. A slow boot therefore could not
+            # be reported by this gate at all: qemu-core-os-rc killed the step
+            # first and called it a timeout with no reason, which is the
+            # anonymous failure B-39 exists to prevent, one level down from
+            # where that row found it. The gate's own budget has to be smaller
+            # than the budget it is given, or it never gets to speak.
+            #
+            # 60 gives RISC-V 240 seconds and the others 60. The whole gate --
+            # three boots and three clients -- takes 96-98 seconds here and 270
+            # on the runner, so this is generous against measured numbers
+            # rather than tuned against a failure.
             wait_for_marker(log_path, READY,
-                            float(smoke_timeout(architecture, 180)))
+                            float(smoke_timeout(architecture, 60)))
             command = [
                 sys.executable,
                 str(ROOT / "tests" / "network" / "qemu-ipv6-tcp-client.py"),

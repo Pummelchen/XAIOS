@@ -237,7 +237,8 @@ Cheapest first.
     make boot-media-gate     # each kit's files, and each netboot binary booted
     make vm-package-gate     # each VM kit booted out of its own archive
     make local-gates         # the two hypervisors, recorded against HEAD
-    make release-check       # refuses to pass unless the above happened
+    make release-check       # refuses to pass unless the above happened,
+                             # and unless CI passed on this exact commit
 
 `release-image-gate` is the one that says the file a release ships boots. It
 boots each `.iso` on QEMU AArch64, QEMU x86-64, QEMU RISC-V,

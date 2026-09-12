@@ -116,7 +116,20 @@ IMAGE_BUILD = {
 FATAL = ("KERNEL PANIC", "CYAN SCREEN OF DEATH", "assertion failed",
          "System halted")
 
-TELEMETRY = re.compile(r'"pmm_total_pages":\s*(\d+)')
+# B-69: this was `(\d+)` with nothing after it, and the read loop below breaks
+# the moment it matches. The telemetry line is one JSON object several
+# kilobytes long, so a read can land in the middle of this number -- and then
+# the pattern matched the digits that had arrived, the loop stopped, and the
+# rest of the line was never read. The gate reported the prefix as the answer.
+#
+# On the runner that produced "x86_64 at 2048 MiB manages 199 MiB": 51020 is
+# the first five digits of 510208, and 51020 pages is exactly 199 MiB. RISC-V
+# reporting 0 and 2 MiB at 1024 and 2048 MiB are one- and three-digit prefixes
+# of the same shape. Every one of those was a real boot of a healthy kernel.
+#
+# The comma is what makes the number whole: this field is followed by
+# "pmm_free_pages" in the same object, so a match means the digits ended.
+TELEMETRY = re.compile(r'"pmm_total_pages":\s*(\d+),')
 PAGE_BYTES = 4096
 
 
@@ -191,7 +204,10 @@ def boot(arch: str, mib: int) -> tuple[str, int]:
                     pass
     text = "".join(output)
     pages = [int(match) for match in TELEMETRY.findall(text)]
-    return text, pages[0] if pages else 0
+    # The last one, not the first. There is one boot summary per boot today, so
+    # the two agree; if a second is ever emitted, the settled figure is the one
+    # to believe. None means the line never arrived, which is not a memory size.
+    return text, pages[-1] if pages else None
 
 
 def main() -> int:
@@ -205,7 +221,12 @@ def main() -> int:
             print(f"qemu-memory-matrix: booting {arch} at {mib} MiB",
                   flush=True)
             text, pages = boot(arch, mib)
-            managed_mib = (pages * PAGE_BYTES) // (1024 * 1024)
+            # No telemetry at all is not "this machine manages zero memory".
+            # It is this gate not having seen the line it came to read, and
+            # saying the first about the second is how a healthy kernel gets
+            # accused of capping itself.
+            managed_mib = (None if pages is None
+                           else (pages * PAGE_BYTES) // (1024 * 1024))
             fatal = [marker for marker in FATAL if marker in text]
             missing = [m for m in BOOT_MARKERS[arch] if m not in text]
             entry = {
@@ -242,7 +263,13 @@ def main() -> int:
             # of it -- reserved regions, the device tree, the framebuffer --
             # so the floor is a proportion rather than the exact figure, and
             # the ceiling catches a kernel counting memory that is not there.
-            if not (0.85 * mib <= managed_mib <= 1.02 * mib):
+            if managed_mib is None:
+                failures.append(
+                    f"{arch} at {mib} MiB: INCONCLUSIVE, and the fault is this "
+                    f"gate's or this host's rather than the guest's -- every "
+                    f"boot marker arrived and the telemetry line did not, so "
+                    f"there is no figure to judge. Console: {entry['console']}")
+            elif not (0.85 * mib <= managed_mib <= 1.02 * mib):
                 failures.append(
                     f"{arch} at {mib} MiB manages {managed_mib} MiB, which is "
                     f"not the memory it was given; a kernel that caps itself "
@@ -253,7 +280,8 @@ def main() -> int:
     for arch in ARCHITECTURES:
         managed = [r["managed_mib"] for r in results
                    if r["architecture"] == arch and not r["fatal_markers"]
-                   and not r["missing_markers"]]
+                   and not r["missing_markers"]
+                   and r["managed_mib"] is not None]
         if len(managed) == len(SIZES_MIB) and not all(
                 b > a for a, b in zip(managed, managed[1:])):
             failures.append(

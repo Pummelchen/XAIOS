@@ -12,7 +12,9 @@ import json
 import os
 import signal
 import re
+import select
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -387,6 +389,29 @@ def smoke_command(arch: str) -> List[str]:
     return command
 
 
+def timeout_scale() -> float:
+    """How much slower this machine is than the one the budgets were written on.
+
+    Budgets scaled by architecture and by nothing else, which is half the
+    question. The other half is the host: a GitHub runner has no hardware
+    virtualisation, so every guest is interpreted and everything takes several
+    times longer than it does on the Mac these numbers came from. The
+    fragmentation step is the example -- 96 to 98 seconds here across five
+    consecutive runs, and past its 360-second budget on every CI run.
+
+    Declared rather than detected. A gate that guesses at its host will
+    eventually guess wrong and silently give itself more room, which is how a
+    budget stops meaning anything; an environment that knows it is slow says so.
+    """
+    raw = os.environ.get("XAIOS_GATE_TIMEOUT_SCALE", "1")
+    try:
+        scale = float(raw)
+    except ValueError:
+        return 1.0
+    # A scale below 1 would tighten budgets, which is not what this is for.
+    return scale if scale >= 1.0 else 1.0
+
+
 def smoke_timeout(arch: str, base: int) -> int:
     """A budget scaled to the machine rather than to the fastest one.
 
@@ -394,7 +419,8 @@ def smoke_timeout(arch: str, base: int) -> int:
     acceleration available for it. Gates were written with AArch64's numbers,
     and reusing them would report a slower machine as a broken one.
     """
-    return base * 4 if arch == "riscv64" else base
+    scaled = base * 4 if arch == "riscv64" else base
+    return int(scaled * timeout_scale())
 
 
 # ------------------------------------------------------- reading a screen
@@ -506,6 +532,114 @@ def _replay(data: bytes, columns: int, rows: int,
             if column >= columns:
                 column = columns - 1
     frames.append(["".join(line).rstrip() for line in grid])
+
+
+# Where EDK2's RISC-V firmware lives, in the order to look.
+#
+# B-67: the RISC-V runner defaulted to the Homebrew path alone, so every UEFI
+# boot on Linux failed before QEMU started and the release gate reported three
+# absent markers -- which reads like a kernel that did not boot, when nothing
+# had booted at all. The gates that drive QEMU themselves had the same gap in
+# a milder form: they listed /usr/share/qemu/edk2-riscv-code.fd, which is not
+# where Debian puts it either, so on the distribution CI runs on they skipped.
+# A gate that skips is not a gate that passed.
+#
+# The names genuinely differ per platform: Homebrew ships edk2-riscv-*.fd,
+# Debian's qemu-efi-riscv64 ships RISCV_VIRT_CODE.fd and RISCV_VIRT_VARS.fd.
+# platform/qemu/run-qemu-riscv64.sh carries the same list in shell, and
+# tests/repository/check-riscv-firmware-paths.py keeps the two in step.
+RISCV_FIRMWARE_CODE = (
+    "/opt/homebrew/share/qemu/edk2-riscv-code.fd",
+    "/usr/local/share/qemu/edk2-riscv-code.fd",
+    "/usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd",
+    "/usr/share/qemu/edk2-riscv-code.fd",
+    "/usr/share/edk2/riscv/RISCV_VIRT_CODE.fd",
+)
+RISCV_FIRMWARE_VARS = (
+    "/opt/homebrew/share/qemu/edk2-riscv-vars.fd",
+    "/usr/local/share/qemu/edk2-riscv-vars.fd",
+    "/usr/share/qemu-efi-riscv64/RISCV_VIRT_VARS.fd",
+    "/usr/share/qemu/edk2-riscv-vars.fd",
+    "/usr/share/edk2/riscv/RISCV_VIRT_VARS.fd",
+)
+
+
+def riscv_firmware(kind: str) -> Optional[str]:
+    """The first RISC-V firmware file of `kind` ("code" or "vars") that exists.
+
+    An explicit XAIOS_RISCV64_FIRMWARE_CODE / _VARS wins, as it does in the
+    runner, so firmware in an unusual place is a variable and not a patch.
+    """
+    variable = f"XAIOS_RISCV64_FIRMWARE_{kind.upper()}"
+    override = os.environ.get(variable)
+    if override:
+        return override if os.path.isfile(override) else None
+    candidates = {"code": RISCV_FIRMWARE_CODE,
+                  "vars": RISCV_FIRMWARE_VARS}[kind]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+class Console:
+    """The guest's console, read continuously and timestamped as it arrives.
+
+    B-50 asked for the host's opens timestamped against the guest's poll gaps,
+    so the order of the two is a measurement rather than an inference. Two
+    things had to change for that to be possible.
+
+    The first is that nothing read this pipe while the probes ran. Every chunk
+    the guest printed during the run therefore arrived, as far as the host
+    could tell, at the moment the drain afterwards collected it -- so there
+    were no arrival times to compare anything against.
+
+    The second matters more than the timestamps. A pipe nobody reads fills,
+    and QEMU's write to it then blocks, and a guest whose console write is
+    blocked stops doing everything else. The gap this row is about is
+    `network: stack was not polled for ms=30839`, and a gate that stops
+    reading the console for the length of its probe loop is a candidate cause
+    of exactly that. It had to be removed before the measurement could mean
+    anything, whichever way the answer goes.
+    """
+
+    def __init__(self, process) -> None:
+        self._process = process
+        self._chunks: list[tuple[float, str]] = []
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        descriptor = self._process.stdout.fileno()
+        while not self._stop.is_set():
+            ready, _, _ = select.select([descriptor], [], [], 0.2)
+            if not ready:
+                if self._process.poll() is not None:
+                    return
+                continue
+            try:
+                chunk = os.read(descriptor, 65536).decode("utf-8",
+                                                          errors="replace")
+            except OSError:
+                return
+            if not chunk:
+                return
+            with self._lock:
+                self._chunks.append((time.monotonic(), chunk))
+
+    def text(self) -> str:
+        with self._lock:
+            return "".join(chunk for _, chunk in self._chunks)
+
+    def arrivals(self) -> list[tuple[float, str]]:
+        with self._lock:
+            return list(self._chunks)
+
+    def close(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2)
 
 
 def qemu_runner(arch: str) -> str:

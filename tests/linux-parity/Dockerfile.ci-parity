@@ -1,0 +1,47 @@
+# The Linux the CI runner is, on the Mac the code is written on.
+#
+# Five of the defects that kept CI red for nine days were invisible here and
+# obvious there: `dd bs=1m` (BSD spelling, GNU rejects it), mtools missing from
+# a job, a runner with no RISC-V emulator at all, and RISC-V small-data sections
+# that clang 18 emits and clang 23 does not. Every one cost a push, a wait and a
+# log read, because nothing on this machine could produce them.
+#
+# The image is the toolchain only. The source arrives over stdin at run time --
+# see run-parity.sh -- so there is nothing to keep in step with the tree, and no
+# generated tarball for the repository to carry.
+#
+# Keep the package list matching .github/workflows/ci.yml. It is deliberately
+# not --no-install-recommends: CI does not use it, and omitting the recommends
+# dropped QEMU's option ROMs, so a guest died on a missing efi-virtio.rom rather
+# than on anything in XAIOS.
+#
+# The second line of packages is not for building XAIOS. The RISC-V CPU tier
+# matrix needs a QEMU newer than noble ships, so CI builds one; these are what
+# that build needs, and they are here so the parity image can build it too.
+#
+# The third line is the release-images job: xorriso builds the hybrid images,
+# and the UEFI firmwares are what the shipped images boot through. Without
+# them this image could reproduce the boot gates but not the release ones, and
+# the release ones are where a shipped file either works or does not.
+#
+# qemu-system-arm and qemu-system-x86 are on the fourth line for the aggregate
+# gates: several of them assert one marker covering all three architectures at
+# once, so reproducing any of them takes all three emulators.
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+      clang lld llvm meson ninja-build qemu-system-misc mtools python3 \
+      python3-cryptography git make ca-certificates xz-utils zip \
+      build-essential libfdt-dev libglib2.0-dev libpixman-1-dev libslirp-dev \
+      pkg-config python3-venv zlib1g-dev \
+      qemu-efi-riscv64 qemu-efi-aarch64 ovmf xorriso \
+      qemu-system-arm qemu-system-x86 \
+  && rm -rf /var/lib/apt/lists/*
+
+# The runner's image carries other qemu packages, which populate /usr/share/qemu
+# with the option ROMs. Installing only qemu-system-misc leaves them in
+# /usr/lib/ipxe/qemu, where qemu-system-riscv64 does not look.
+RUN mkdir -p /usr/share/qemu \
+ && for r in /usr/lib/ipxe/qemu/*.rom; do ln -sf "$r" /usr/share/qemu/; done
+
+WORKDIR /work

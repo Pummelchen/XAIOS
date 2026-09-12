@@ -598,8 +598,51 @@ typedef struct network_listener_ex {
 
 static network_listener_ex_t g_listeners_ex[NETWORK_MAX_LISTENERS];
 
+/* B-63: say how a flow ended when the ending is the interesting kind.
+ *
+ * The defect is a connection accepted and then never serviced: the client
+ * gives up after about eighteen seconds and sshd closes it thirty or a hundred
+ * and twenty seconds later with packet-read-failed or auth-timeout, and the
+ * console says nothing about where the bytes went. Two flow states discriminate
+ * between the only two explanations there are, and neither is visible from
+ * userspace:
+ *
+ *   rx_unread > 0   the stack received the client's data and the application
+ *                   never got it -- a delivery fault on this side
+ *   packets_rx == 0 nothing ever arrived for this flow, so the segments did
+ *                   not reach the guest at all
+ *
+ * Both are abnormal, so this is quiet on a healthy connection: an ordinary
+ * close has read everything it was sent and has seen at least a handshake. In
+ * a 7138-round soak that is fourteen thousand closes saying nothing and the
+ * three that matter saying which of the two happened.
+ *
+ * What has been demonstrated, and what has not. With the condition removed,
+ * 121 connections through the rate gate produced 280 release lines, so the
+ * call site is reached and the line arrives on the console. Every one of those
+ * 280 reported rx_unread=0 with rx_packets>=1, so the condition suppresses all
+ * of them -- checked against that output rather than by reading it. The case
+ * it exists for has not been provoked on demand, and that is not for want of
+ * trying: pushing 200 KB and resetting the connection six times produced
+ * nothing, because sshd reads what it is sent. The condition fires when the
+ * application does not get bytes the stack holds, which is the fault under
+ * investigation and not something a healthy system can be asked to do. */
+static void log_flow_release_if_odd(const network_tcp_flow_t *flow) {
+  uint32_t rx_unread = flow->rx_buf != 0 ? sockbuf_used(flow->rx_buf) : 0U;
+  if (rx_unread == 0U && flow->packets_rx != 0U) return;
+  uint64_t now_ns = timer_now_ns();
+  uint64_t idle_ms = now_ns > flow->last_seen_ns
+                         ? (now_ns - flow->last_seen_ns) / 1000000U
+                         : 0U;
+  klog("network: tcp flow id=%u released state=%u rx_packets=%lu "
+       "tx_packets=%lu rx_unread=%u idle_ms=%lu\n",
+       flow->flow_id, (uint32_t)flow->state, flow->packets_rx,
+       flow->packets_tx, rx_unread, idle_ms);
+}
+
 static void release_tcp_flow(network_tcp_flow_t *flow) {
   if (flow == 0 || flow->state == XAIOS_NETWORK_FLOW_FREE) return;
+  log_flow_release_if_odd(flow);
   uint32_t flow_id = flow->flow_id;
   if (flow->rx_buf != 0) sockbuf_free(flow->rx_buf);
   if (flow->tx_buf != 0) sockbuf_free(flow->tx_buf);

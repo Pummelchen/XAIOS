@@ -181,7 +181,90 @@ def round_trip(address: str, index: int, payload: bytes) -> dict[str, object]:
             "exit_code": result.returncode,
             "identical": identical,
             "seconds": round(time.monotonic() - started, 2),
-            "stderr": result.stderr.strip()[:200]}
+            "stderr": result.stderr.strip()[:200],
+            # B-63: the summary above is what the report carries for the 1256
+            # uneventful rounds. The whole of it is kept here, and retained
+            # only for the rounds that matter -- the one round that failed is
+            # the one whose detail was being cut off at 200 characters.
+            "stderr_full": result.stderr.strip()}
+
+
+def verbose_probe(address: str) -> dict[str, object]:
+    """One deliberately talkative session, immediately after a failure.
+
+    B-63 is one dropped SFTP session in 1257 on Fusion with the guest logging
+    nothing unusual: no stalled service loop, no unpolled stack, worst poll gap
+    159 ms. The row asks for host-side evidence, and the obvious form of it, a
+    packet capture, needs root on this machine -- which this gate does not have
+    and should not ask for.
+
+    The client will say most of it for free. The rounds themselves run at
+    LogLevel=ERROR because 1257 verbose transcripts are noise; this one runs at
+    DEBUG3 and is kept whole. It is for the distinction the guest cannot draw:
+    a server that closed the connection, a server that refuses the next one,
+    and a client that gave up on its own are indistinguishable from inside the
+    guest and are three different transcripts here.
+
+    It runs after the failure rather than during it, so it records the state
+    left behind and not the event. That is worth saying plainly rather than
+    letting a reader assume otherwise: if this session connects and behaves, it
+    establishes that the server was healthy a second later, which is evidence
+    about the shape of the fault and not a capture of it.
+    """
+    started = time.monotonic()
+    result = subprocess.run(
+        ["sftp", "-F", "/dev/null", "-i", str(smoke.TEST_KEY),
+         "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+         "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+         "-o", "LogLevel=DEBUG3", "-b", "-", f"admin@{address}"],
+        input="pwd\n", cwd=ROOT, text=True, capture_output=True, timeout=120,
+        check=False)
+    return {"exit_code": result.returncode,
+            "seconds": round(time.monotonic() - started, 2),
+            "transcript": result.stderr.strip()}
+
+
+ACCEPT_RE = re.compile(r"net_accept listenfd=\d+ connfd=(\d+)")
+CLOSE_RE = re.compile(
+    r"sshd: connection closed reason=([a-z-]+) sockfd=(\d+) state=(\d+) "
+    r"held_ms=(\d+)")
+
+
+def resolve_stranded_sockets(correlation: list[dict[str, object]],
+                             console: str) -> None:
+    """Find how each failing round's sockets ended, wherever that was logged.
+
+    B-63 read as "the guest never saw it" for a long time, and the guest had
+    seen it. The close of the connection that stalls is written 30 to 120
+    seconds after the round it belongs to, so the per-round console window --
+    which is the right tool for B-28, where everything happens inside the round
+    -- cannot contain it, and attributes it to whichever round was running when
+    it was finally printed.
+
+    So the sockets are followed by number instead of by time. Each failing
+    round's `net_accept` lines give the socket it opened, and this then reads
+    the whole console for how that socket closed. In the soak that found this,
+    the three failing rounds resolved to `packet-read-failed held_ms=30014`,
+    `auth-timeout state=5 held_ms=120030` and `packet-read-failed
+    held_ms=30007`, against a client that gave up at 18.4 seconds. Only two
+    `packet-read-failed` closes existed in 14276 closes, and both were failing
+    rounds -- which is the kind of thing worth being able to say.
+    """
+    closes: dict[str, dict[str, object]] = {}
+    for match in CLOSE_RE.finditer(console):
+        reason, sockfd, state, held = match.groups()
+        closes[sockfd] = {"reason": reason, "state": int(state),
+                          "held_ms": int(held)}
+    for record in correlation:
+        if record.get("sftp_exit_code") in (0, None):
+            continue
+        opened = ACCEPT_RE.findall(
+            "\n".join(str(line) for line in record.get("guest_lines", [])))
+        record["sockets_opened"] = [
+            {"sockfd": int(fd),
+             "close": closes.get(fd, {"reason": "no close recorded anywhere in "
+                                                "this console"})}
+            for fd in opened]
 
 
 def main() -> int:
@@ -231,7 +314,10 @@ def main() -> int:
             index += 1
             round_started = time.time()
             entry = round_trip(address, index, payload)
-            rounds.append(entry)
+            # The full transcript is used below where it matters; carrying it
+            # 1257 times would bury the report it is meant to inform.
+            rounds.append({k: v for k, v in entry.items()
+                           if k != "stderr_full"})
             round_failure = None
             if entry["exit_code"] != 0:
                 round_failure = (
@@ -268,6 +354,11 @@ def main() -> int:
             # after a session closes", so what the guest printed while the
             # previous session was ending is evidence rather than context.
             if round_failure is not None:
+                # Everything the client said, not the first 200 characters of
+                # it, and one verbose session asking what the transport does
+                # next. Both only on the round that failed.
+                record["sftp_stderr_full"] = entry.get("stderr_full", "")
+                record["verbose_probe"] = verbose_probe(address)
                 if previous_record is not None:
                     correlation.append(previous_record)
                 correlation.append(record)
@@ -317,13 +408,28 @@ def main() -> int:
           f"run before accepts and closes are tallied", flush=True)
     time.sleep(settle)
     console = smoke.serial_text()
-    accepted = console.count("syscall: net_accept")
-    closed = console.count("syscall: net_close")
+    # Descriptors, not line counts.
+    #
+    # Counting every `net_close` against every `net_accept` made the figure
+    # negative -- 2515 accepted, 2516 closed -- which reads as a connection the
+    # guest closed without ever accepting. It was the UDP listening socket:
+    # `net_listen protocol=17 port=24002 sockfd=6`, closed at shutdown and
+    # never accepted because a listener is not accepted. Any descriptor the
+    # server opens itself does the same thing, so the difference was measuring
+    # the wrong population.
+    #
+    # Matching closes to the descriptors that were actually accepted keeps the
+    # number meaning what its name says: sessions taken and not given back.
+    accepted_fds = set(re.findall(r"net_accept listenfd=\d+ connfd=(\d+)", console))
+    closed_fds = set(re.findall(r"net_close sockfd=(\d+)", console))
+    accepted = len(accepted_fds)
+    closed = len(accepted_fds & closed_fds)
     outstanding = accepted - closed
     session_tally = {
         "accepted": accepted,
         "closed": closed,
         "outstanding": outstanding,
+        "closes_of_unaccepted_descriptors": len(closed_fds - accepted_fds),
         "idle_timeout_s": round(idle_ns / 1_000_000_000.0),
         "settled_for_s": round(settle),
     }
@@ -355,6 +461,10 @@ def main() -> int:
                 f"free memory declined across the run: {round(early)} pages "
                 f"early against {round(late)} late. Over {index} rounds that "
                 f"is a leak rather than a cache filling")
+
+    # How the failing rounds' sockets actually ended, read from the whole
+    # console rather than from the round's own window -- see the helper above.
+    resolve_stranded_sockets(correlation, smoke.serial_text())
 
     report = {
         "schema": "xaios.vmware-fusion.load_soak.v1",

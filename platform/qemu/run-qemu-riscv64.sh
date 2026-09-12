@@ -54,6 +54,51 @@ require_file() {
   fi
 }
 
+# The EDK2 firmware this board flashes in for a UEFI boot, wherever it lives.
+#
+# One name per platform and they do not agree: Homebrew ships edk2-riscv-*.fd,
+# Debian's qemu-efi-riscv64 ships RISCV_VIRT_CODE.fd and RISCV_VIRT_VARS.fd.
+# An explicit override comes first, as it does in the AArch64 runner, so
+# firmware somewhere else is a variable rather than a patch.
+find_riscv_firmware() {
+  case "$1" in
+    code)
+      if [ "${XAIOS_RISCV64_FIRMWARE_CODE:-}" != "" ]; then
+        [ -f "$XAIOS_RISCV64_FIRMWARE_CODE" ] &&
+          printf '%s\n' "$XAIOS_RISCV64_FIRMWARE_CODE" && return 0
+        return 1
+      fi
+      set -- \
+        /opt/homebrew/share/qemu/edk2-riscv-code.fd \
+        /usr/local/share/qemu/edk2-riscv-code.fd \
+        /usr/share/qemu-efi-riscv64/RISCV_VIRT_CODE.fd \
+        /usr/share/qemu/edk2-riscv-code.fd \
+        /usr/share/edk2/riscv/RISCV_VIRT_CODE.fd
+      ;;
+    vars)
+      if [ "${XAIOS_RISCV64_FIRMWARE_VARS:-}" != "" ]; then
+        [ -f "$XAIOS_RISCV64_FIRMWARE_VARS" ] &&
+          printf '%s\n' "$XAIOS_RISCV64_FIRMWARE_VARS" && return 0
+        return 1
+      fi
+      set -- \
+        /opt/homebrew/share/qemu/edk2-riscv-vars.fd \
+        /usr/local/share/qemu/edk2-riscv-vars.fd \
+        /usr/share/qemu-efi-riscv64/RISCV_VIRT_VARS.fd \
+        /usr/share/qemu/edk2-riscv-vars.fd \
+        /usr/share/edk2/riscv/RISCV_VIRT_VARS.fd
+      ;;
+    *) return 1 ;;
+  esac
+  for candidate do
+    if [ -f "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 run_qemu() {
   if [ "$dry_run" -eq 1 ]; then
     print_command "$@"
@@ -306,12 +351,27 @@ FIRMWARE_ARGS="-bios default"
 case "$BOOT_MODE" in
   kernel) ;;
   uefi)
-    FIRMWARE_CODE="${XAIOS_RISCV64_FIRMWARE_CODE:-/opt/homebrew/share/qemu/edk2-riscv-code.fd}"
-    FIRMWARE_VARS="${XAIOS_RISCV64_FIRMWARE_VARS:-/opt/homebrew/share/qemu/edk2-riscv-vars.fd}"
-    for file in "$FIRMWARE_CODE" "$FIRMWARE_VARS"; do
-      [ -f "$file" ] || {
-        printf 'error: no EDK2 RISC-V firmware at %s\n' "$file" >&2; exit 1; }
-    done
+    # B-67: this defaulted to the Homebrew path and nothing else, so a UEFI
+    # boot on any machine without /opt/homebrew failed before QEMU started.
+    # The release image gate then reported all three of its markers absent,
+    # which reads exactly like a kernel that did not boot -- nothing had
+    # booted at all. The other two runners have searched a list since they
+    # were written, which is why they pass on Linux and this did not.
+    FIRMWARE_CODE=$(find_riscv_firmware code) || {
+      printf '%s\n' \
+        "error: no EDK2 RISC-V firmware found." \
+        "  Looked in Homebrew, /usr/local and the distribution paths." \
+        "  macOS:  brew install qemu" \
+        "  Debian: apt-get install qemu-efi-riscv64" \
+        "  Or set XAIOS_RISCV64_FIRMWARE_CODE and XAIOS_RISCV64_FIRMWARE_VARS." >&2
+      exit 1
+    }
+    FIRMWARE_VARS=$(find_riscv_firmware vars) || {
+      printf '%s\n' \
+        "error: found EDK2 RISC-V code at $FIRMWARE_CODE but no matching" \
+        "  variable store. Set XAIOS_RISCV64_FIRMWARE_VARS." >&2
+      exit 1
+    }
     [ -f "$BOOT_MEDIUM" ] || {
       printf 'error: uefi boot needs %s; run scripts/build-riscv64-boot-media.sh\n' \
         "$BOOT_MEDIUM" >&2; exit 1; }

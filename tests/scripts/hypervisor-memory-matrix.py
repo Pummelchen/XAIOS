@@ -50,7 +50,13 @@ smoke = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(smoke)
 
 SIZES_MIB = (1024, 2048, 4096)
-PMM = re.compile(r"telemetry: boot_summary cpu_online=\d+ pmm_total=(\d+)")
+# The trailing " pmm_free=" is what proves the number ended. This gate reads a
+# finished console rather than a stream, so it cannot stop mid-number the way
+# qemu-memory-matrix did in B-69 -- but a capture cut short by a killed guest
+# gives the same truncated digits, and a prefix of a page count is a
+# plausible-looking memory size rather than an obvious error.
+PMM = re.compile(
+    r"telemetry: boot_summary cpu_online=\d+ pmm_total=(\d+) pmm_free=")
 FRAMEBUFFER = re.compile(
     r"boot-ui: framebuffer mapped base=0x([0-9a-f]+) bytes=0x[0-9a-f]+ "
     r"ram_pages=(\d+)")
