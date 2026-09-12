@@ -505,6 +505,26 @@ jobs:
         env:
           XAIOS_QEMU_SMMU_ROOT: ${{ runner.temp }}/xaios-qemu-smmu
 
+      # B-73: the nvme gate's riscv64-aia row hangs on the QEMU noble ships.
+      # The NVMe async self-test passes, then the MSI-X self-test never reports
+      # and the guest loops on "aia: identity=5 first message delivered" until
+      # the deadline. Reproduced in tests/linux-parity against 8.2.2 and passing
+      # in fourteen seconds against 11.1.1, so it is the emulator and not the
+      # board being slow -- that row is the cheaper of the two RISC-V boards.
+      # Same pin and same cache as the RISC-V Bring-up job.
+      - name: Restore pinned RISC-V QEMU
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/xaios-qemu-riscv64
+          key: qemu-riscv64-tiers-${{ runner.os }}-${{ runner.arch }}-5e35f26695645b20931e10d8567c7e0169e62c07-v1
+
+      - name: Provision RISC-V QEMU
+        run: |
+          tests/scripts/provision-qemu-riscv64.sh
+          echo "QEMU_SYSTEM_RISCV64=${XAIOS_QEMU_RISCV64_ROOT}/5e35f26695645b20931e10d8567c7e0169e62c07/build/qemu-system-riscv64" >> "$GITHUB_ENV"
+        env:
+          XAIOS_QEMU_RISCV64_ROOT: ${{ runner.temp }}/xaios-qemu-riscv64
+
       - name: Run aggregate core OS gate
         run: make qemu-core-os-rc
         env:

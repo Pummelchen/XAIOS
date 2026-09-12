@@ -36,11 +36,21 @@ echo "  built"
 # Each row separately, so the AIA board's cost is its own number and not a
 # share of a total. The gate's per-row deadline is generous here on purpose:
 # the point is to find what it needs, not to reproduce it failing.
-for row in riscv64 riscv64-aia; do
-  echo "=== $row ==="
-  start=$(date +%s)
-  XAIOS_QEMU_NVME_TIMEOUT=1200 python3 ./tests/scripts/qemu-nvme-gate.py --arch "$row" \
-    > "/tmp/$row.log" 2>&1
-  echo "  exit=$? elapsed=$(( $(date +%s) - start ))s"
-  tail -3 "/tmp/$row.log" | cut -c1-150
-done
+# The AIA row alone. On the Mac it takes fourteen seconds against plain
+# riscv64's twenty-eight, so it is not the more expensive board and the
+# "AIA is slow under interpretation" reading was wrong. What the runner's
+# console actually shows is the NVMe async self-test passing and then the
+# MSI-X self-test never reporting -- a guest waiting for an interrupt, not a
+# guest running slowly. The runner has QEMU 8.2.2 and this Mac has 11.1.1,
+# which is the difference this run is here to test.
+row=riscv64-aia
+echo "=== $row on $(qemu-system-riscv64 --version | head -1) ==="
+start=$(date +%s)
+XAIOS_QEMU_NVME_TIMEOUT=300 python3 ./tests/scripts/qemu-nvme-gate.py --arch "$row" \
+  > "/tmp/$row.log" 2>&1
+echo "  exit=$? elapsed=$(( $(date +%s) - start ))s"
+echo "  --- did the MSI-X self-test report? ---"
+grep -a "MSI-X interrupt self-test\|async self-test passed\|aia: identity" "/tmp/$row.log" \
+  | tail -6 | cut -c1-150
+echo "  --- last lines of the guest ---"
+tail -4 "/tmp/$row.log" | cut -c1-150
