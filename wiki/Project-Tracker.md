@@ -42,13 +42,15 @@ hardware.**
 
 ### What is open
 
-Nine defects, and none of them is a boot failure or a data-loss path. The count
-was six for the whole of the red-CI work while eleven were closed, because nine
-days of red turned out to be five separate causes and working through them found
-more. An adversarial audit of the `net_open_udp` change on 2026-09-13 added
-`B-61` through `B-65`, of which one was a proven race in code merged the same
-day and is fixed. Each is `TESTING` in the table below, which here means the fix
-or the measurement is still owed rather than that the code is untried.
+Eleven defects, and none of them is a boot failure or a data-loss path. The
+count was six for the whole of the red-CI work while eleven were closed, because
+nine days of red turned out to be five separate causes and working through them
+found more. An adversarial audit of the `net_open_udp` change on 2026-09-13
+added `B-61` through `B-65`, of which one was a proven race in code merged the
+same day and is fixed. Work on the WebTransport C99 port then added `B-66` and
+`B-67`, which are the two halves of the TLS 1.3 handshake and are the port's
+critical path. Each row is `TESTING` below, which here means the fix or the
+measurement is still owed rather than that the code is untried.
 
 | | What it is | Why it is still open |
 |---|---|---|
@@ -60,6 +62,8 @@ or the measurement is still owed rather than that the code is untried.
 | `B-55` | Sixteen extents is a real ceiling | `B-52` fixed the placement policy, not the limit. No volume here is near it, and the honest position is that it has been moved rather than removed. |
 | `B-64` | The kernel's ephemeral ports overlap the DNS resolver's and NTP's | Pre-existing for the TCP path; `B-35` widened who is exposed to it. Two subsystems can hold one port number and neither is told. |
 | `B-65` | A socket refused a listener row still reports a port that cannot receive | Needs seventeen concurrent sockets to reach, so no gate covers it and the failure is silent. |
+| `B-66` | The TLS 1.3 handshake state machine does not exist | The key schedule and packet protection are done and checked against RFC vectors; a ClientHello still cannot be built and no connection completes. |
+| `B-67` | Nothing on XAIOS can verify a server certificate | BearSSL can parse X.509 and verify RSA-PSS and ECDSA; there is no trust store and no policy decision about what one would be. |
 | `B-61` | Sixteen UDP listener rows for the whole machine | Every datagram socket now registers one, so sixteen concurrent UDP endpoints is a reachable ceiling where it previously took sixteen deliberate binds. QUIC's own use is bounded well below it and nothing here approaches it, but the limit is now on a path that does not ask for it, and it has not been moved. Registration returns void and logs when full, so the socket that cannot receive still reports a port; that half is `B-65`. |
 
 Three things are open that are not defects:
@@ -202,6 +206,8 @@ only what the defect was and what closed it.
 | B-39 | `core-os-rc`'s fragmentation step timed out once, and has not since | all four | `TESTING` | In a full serial run of the ten aggregates, `qemu-outbound-fragmentation-gate` was killed by a 360 s step budget with `timed_out: true`, having rebuilt its three images and reached all three `testing` lines. Every other step passed. It has not reproduced: 121 s standalone, 120 s from the boot-test image state, 121 s with all three images invalidated, and `core-os-rc` green in 1323 s on a re-run. Two explanations were tried against the exit code alone and both were wrong -- the step does not run concurrently with its neighbours, and the image builds its dependencies force are incremental. **The exit code was the problem:** 124 carries no elapsed time and no idea what else the machine was doing, on a host that has cut a boot short at load 30 and passed it at load 9. Every step now records its elapsed time, its budget, the fraction used and the load either side, and a step past 75% of its budget prints a note while still passing -- that is the one which times out next. Verified against the real code: a 76% step noted, a killed step reporting `exited 124 after 2s of a 2s budget, load 1.56 to 1.56`. **To close:** a recurrence that now says which it was. |
 | B-64 | The kernel's ephemeral ports overlap the DNS resolver's and NTP's | all four | `OPEN` | `kernel_socket_port_in_use` scans the kernel socket table, so it knows nothing about a port another subsystem is using. The DNS resolver picks a random local port in 49152..65535 (`kernel/net/dns.c`) and NTP sends from the fixed local port 49155 (`kernel/net/ntp.c`), so the fourth ephemeral draw lands on NTP's port deterministically and the first lands on the DNS range floor. Both subsystems match earlier on the receive path, so a reply is not simply lost, but two owners can hold one number and neither is told. **Pre-existing for the TCP connect path, which shared this counter and range**; `B-35` widened who is exposed to it rather than introducing it. Neither has been moved. |
 | B-65 | A socket refused a listener row still reports a port that cannot receive | all four | `OPEN` | `network_stack_register_udp_listener` returns void, logs `UDP listener registry full` and does nothing when the sixteen rows are gone (`NETWORK_MAX_LISTENERS`). The handler has already written the descriptor and the port, so the caller is told it owns an address no reply can reach and every receive returns zero forever. A resource-exhaustion path, and the `docs/API.md` sentence about the port being registered states the guarantee unconditionally. Not reachable with fewer than seventeen concurrent sockets and not covered by any gate, because the fill cannot be driven from outside without a reproducer. |
+| B-66 | The TLS 1.3 handshake state machine does not exist | all four | `OPEN` | The key schedule and QUIC packet protection are implemented and audited (`userspace/wt/`, 329 checks against RFC 8448 and RFC 9001). What is absent is the handshake itself: ClientHello construction and encoding, ServerHello parsing, the extensions (supported_versions, key_share, supported_groups, signature_algorithms, ALPN, quic_transport_parameters), the Certificate chain, CertificateVerify, and the Finished exchange. Without those no connection completes, so the existing code is a foundation and not a client. It is item 1 of the B-67 work list. |
+| B-67 | Nothing on XAIOS can verify a server certificate | all four | `OPEN` | The target has BearSSL's X.509 parser and RSA-PSS and ECDSA verification, and no trust store, no PKI policy and no way to express one. RFC 9001 section 4.4 leaves peer authentication to the implementation, so this is a decision rather than a gap in a library: either a pinned operator key like `xapt` already uses, or a real chain with a store and a revocation story. Until it is decided, CertificateVerify has nothing to verify against and the handshake cannot be gated on trust. |
 
 ### Resolved, kept for reference
 
