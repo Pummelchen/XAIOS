@@ -3706,10 +3706,23 @@ close_conn:
         /* After the audit line above, so the totals include this connection's
            last record rather than all of it but that. */
         log_durable_cost(g_connection_close_count);
-        /* One connection's records, one write, one flush -- rather than one
-           per line while the loop that holds them is the only thing polling
-           the network. */
-        ssh_audit_flush();
+        /* Only when there is enough to be worth the fsync.
+         *
+         * Flushing at every close made it one fsync per connection, which was
+         * already five times better than one per line. But the cost of a flush
+         * does not depend on how much is in it -- it is a host fsync either
+         * way -- so paying one for forty bytes is the same window as paying
+         * one for three kilobytes, and the window is what drops connections.
+         *
+         * Half the buffer is the threshold rather than "when it is full"
+         * because a machine that goes quiet should not sit on records
+         * indefinitely: a connection's worth of traffic is enough to cross it,
+         * a handful of idle probes is not. Records still reach the file in
+         * order and no line is dropped; what changes is how long the last few
+         * may wait, and this file is read by no soak and no gate. */
+        if (g_audit_buffered >= SSHD_AUDIT_BUFFER_BYTES / 2U) {
+          ssh_audit_flush();
+        }
       }
     }
     uint64_t after_connections = timer_now();
