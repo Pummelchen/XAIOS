@@ -61,14 +61,16 @@ hardware.**
 
 ### What is open
 
-Seven open rows, and none of them is a boot failure or a data-loss path. The
+Eight open rows, and none of them is a boot failure or a data-loss path. The
 count was six while eleven were closed, because nine days of red turned out to be
 five separate causes and working through them found more; the RISC-V and CI work
 on `main` then raised and closed sixteen, and the WebTransport C99 port added
 four of its own, of which three are closed. What is left is `B-39`, `B-43`,
 `B-63`, `B-77`, `B-78` and `B-79`, plus `B-48`, which is a cost rather than a
-fault. Every row is `TESTING` or `OPEN` in the table below, which here means the
-fix or the measurement is still owed rather than that the code is untried.
+fault, and `B-94`, which is a gate that fails on the runner about one run in
+four and is recorded rather than explained. Every row is `TESTING` or `OPEN` in
+the table below, which here means the fix or the measurement is still owed rather
+than that the code is untried.
 
 | | What it is | Why it is still open |
 |---|---|---|
@@ -78,6 +80,8 @@ fix or the measurement is still owed rather than that the code is untried.
 | `B-63` | A session is accepted, receives nothing, and both ends time out separately | Reproduced on the runner three times with the host-side capture; the mechanism is established and the row says which half of it the flow line answers. |
 | `B-77` | The kernel's ephemeral ports overlap the DNS resolver's and NTP's | Pre-existing for the TCP connect path, which shared the counter and the range; `B-35` widened who is exposed to it rather than introducing it. Two subsystems can hold one port number and neither is told. |
 | `B-78` | A socket refused a listener row still reports a port that cannot receive | Needs seventeen concurrent sockets to reach, so no gate covers it and the failure is silent. Registration returns void, so the socket that cannot receive still reports a port. |
+| `B-94` | `qemu-readonly-medium-gate` fails on the runner about one run in four | `qemu-readonly-medium-gate` boots the same guest twice and requires the read-only boot to report `medium=read-only` and the writable boot to report it lost the flag. On the runner the read-only boot sometimes reports nothing, so the gate exits 2 after about fifteen seconds with `either the scratch device was attached the other way round or the driver did not read VIRTIO_BLK_F_RO` -- its own two candidate causes, and it cannot tell them apart. **Pre-existing and not this branch's:** it failed on `main` at `5545dfd` before the WebTransport work was merged, passed on the three runs after that, and failed again at `b08823d`. Roughly one run in four, but the sample is small. Two sightings are enough to record and not enough to explain; what would explain it is the gate reporting the scratch device's own feature bits rather than only the guest's line. |
+| `B-94` | `qemu-readonly-medium-gate` fails on the runner about one run in four | The gate cannot tell its two candidate causes apart, and it failed on `main` before this branch was merged. Recorded so the next sighting is the third rather than the first. |
 | `B-79` | The TLS 1.3 client handshake is written and has no 0-RTT | The handshake completes against an independently generated QUIC server flight. What is absent is 0-RTT and the session tickets it needs, a HelloRetryRequest (refused by name), and client certificates. The rest of the port, and what each remaining task's exit criterion is, is in [Current tasks](#current-tasks) below. |
 
 Three things are open that are not defects:
