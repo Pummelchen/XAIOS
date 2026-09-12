@@ -74,6 +74,41 @@ BEARSSL_SOURCES="
   int/i15_reduce
   int/i15_ninv15
   int/i15_tmont
+  rsa/rsa_i31_pss_vrfy
+  rsa/rsa_i31_pub
+  rsa/rsa_pss_sig_unpad
+  rsa/rsa_i31_modulus
+  hash/mgf1
+  int/i31_add
+  int/i31_sub
+  int/i31_mulacc
+  int/i31_montmul
+  int/i31_encode
+  int/i31_decode
+  int/i31_bitlen
+  int/i31_ninv31
+  int/i31_reduce
+  int/i31_decmod
+  int/i31_modpow
+  int/i31_modpow2
+  int/i31_muladd
+  int/i31_tmont
+  int/i31_fmont
+  int/i31_rshift
+  int/i31_iszero
+  int/i32_div32
+  ec/ecdsa_atr
+  ec/ec_prime_i31
+  ec/ec_secp256r1
+  ec/ec_secp384r1
+  ec/ec_secp521r1
+  ec/ec_curve25519
+  ec/ec_pubkey
+  ec/ecdsa_i31_vrfy_asn1
+  ec/ecdsa_i31_vrfy_raw
+  ec/ecdsa_i31_bits
+  x509/x509_decoder
+  x509/x509_knownkey
   codec/dec32be
   codec/dec32le
   codec/dec64be
@@ -140,13 +175,14 @@ MODULE_OBJECTS=""
 for source in userspace/wt/src/wt_crypto_bearssl.c userspace/wt/src/wt_aes128.c \
               userspace/wt/src/wt_tls.c \
               userspace/wt/src/wt_quic_pkt.c \
-              userspace/wt/src/wt_tls_handshake.c; do
+              userspace/wt/src/wt_tls_handshake.c \
+              userspace/wt/src/wt_tls_cert.c; do
   MODULE_OBJECTS="$MODULE_OBJECTS $(build_module "$source")"
 done
 
 # The tests. Each is tests/security/test_wt_<name>.c.
 if [ "$#" -eq 0 ]; then
-  set -- crypto tls quic_pkt tls_handshake
+  set -- crypto tls quic_pkt tls_handshake tls_cert
 fi
 
 failed=0
