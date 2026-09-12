@@ -72,7 +72,7 @@ typedef struct summary {
  * Note what this does NOT do: it cannot tell whether the port the kernel
  * returned is one the reply path can reach, because that is a property of the
  * listener registry and not of this call. A registry with no free row leaves
- * the socket unable to receive while this still reports a port. That is B-61,
+ * the socket unable to receive while this still reports a port. That is B-74,
  * and it is deliberately not asserted here -- a check that cannot fail on the
  * machine it runs on is worse than a comment saying so. */
 static void open_ephemeral(summary_t *summary, open_result_t *result) {
