@@ -30,6 +30,25 @@ const char wt_tls_server_certificate_verify_context[] =
  * never verifies. */
 #define WT_TLS_CV_SPACES 64U
 
+/* The CertificateVerify dispatcher hashes the signed content with a hash that
+ * depends on the SCHEME, and the schemes this module checks use SHA-256,
+ * SHA-384 and SHA-512. The digest buffer is therefore sized for the largest of
+ * them and not for WT_TLS_HASH_LEN, which is the SHA-256 length and the length
+ * of everything in the key schedule.
+ *
+ * This was a stack buffer overflow, reachable from the wire: a server that
+ * answered a CertificateVerify with scheme 0x0805 or 0x0806 made
+ * sha384/sha512 write 48 or 64 bytes into a 32-byte local. It is the same class
+ * of defect as the Retry integrity tag's unbounded copy earlier in this port,
+ * and it was found the same way -- by asking what the length actually is rather
+ * than what it is called. The tests now drive both longer schemes under
+ * AddressSanitizer, which is what would have caught it. */
+#define WT_TLS_MAX_HASH_LEN 64U
+
+/* A build-time bound, so a future scheme whose hash does not fit fails to
+ * compile rather than at the first packet from a hostile peer. */
+typedef char wt_tls_max_hash_fits[WT_TLS_MAX_HASH_LEN >= 64U ? 1 : -1];
+
 int wt_tls_parse_certificate(const uint8_t *message, size_t message_len,
                              wt_tls_certificate_chain_t *out) {
   uint8_t type = 0U;
@@ -402,7 +421,7 @@ int wt_tls_certificate_verify_signature(
     size_t content_len) {
   br_x509_decoder_context decoder;
   br_x509_pkey *pk;
-  uint8_t digest[WT_TLS_HASH_LEN];
+  uint8_t digest[WT_TLS_MAX_HASH_LEN];
   const uint8_t *sig;
   size_t sig_len;
   uint32_t ok = 0U;
@@ -445,6 +464,9 @@ int wt_tls_certificate_verify_signature(
 
       if (pk->key_type != BR_KEYTYPE_RSA) return -1;
       if (content_len == 0U) return -1;
+      /* Belt as well as braces: the buffer above is the bound, and this makes
+         a scheme added later fail loudly rather than write past it. */
+      if (hash_len == 0U || hash_len > sizeof(digest)) return -1;
       /* TLS 1.3 uses RSA-PSS with a salt as long as the hash, which is what
          RFC 8446 section 4.2.3 says and what makes this different from a
          PKCS#1 v1.5 check. */
@@ -499,6 +521,7 @@ int wt_tls_certificate_verify_signature(
       {
         br_hash_compat_context hc;
         size_t hash_len = hf->desc >> BR_HASHDESC_OUT_OFF & BR_HASHDESC_OUT_MASK;
+        if (hash_len == 0U || hash_len > sizeof(digest)) return -1;
         hf->init(&hc.vtable);
         hf->update(&hc.vtable, content, content_len);
         hf->out(&hc.vtable, digest);

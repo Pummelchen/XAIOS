@@ -657,11 +657,89 @@ static void test_ecdsa(void) {
   }
 }
 
+/* --------------------------------------------- the longer hash schemes
+ *
+ * RFC 8446 lets a server sign with SHA-384 or SHA-512, and this module offers
+ * those schemes. The digest buffer the verifier hashes into was sized for
+ * SHA-256, so a CertificateVerify with scheme 0x0805 or 0x0806 wrote 48 or 64
+ * bytes into a 32-byte local -- a stack buffer overflow reachable from the
+ * wire by an unauthenticated peer, and one that no test covered because the RFC
+ * 8448 vector uses SHA-256.
+ *
+ * The signature here is deliberately garbage: the overflow happens while the
+ * signed content is hashed, before the signature is examined, so a wrong
+ * signature still exercises the write. Under AddressSanitizer this test fails
+ * on the unfixed code and passes on the fixed code, which is the whole point of
+ * it -- the check is the sanitizer, not the return value.
+ */
+static void test_long_hash_schemes(void) {
+  static const uint16_t schemes[2] = {WT_TLS_SIG_RSA_PSS_RSAE_SHA384,
+                                      WT_TLS_SIG_RSA_PSS_RSAE_SHA512};
+  static const size_t hash_lengths[2] = {48U, 64U};
+  wt_tls_certificate_chain_t chain;
+  wt_tls_certificate_verify_t verify;
+  uint8_t content[130];
+  uint8_t signature[128];
+  size_t i;
+
+  expect_int("the RFC's Certificate parses for the long-hash checks", 0,
+             wt_tls_parse_certificate(WT_RFC8448_CERTIFICATE,
+                                      sizeof(WT_RFC8448_CERTIFICATE), &chain));
+  expect_int("with one entry", 1, (long)chain.count);
+
+  memset(content, 0x41, sizeof(content));
+  memset(signature, 0x00, sizeof(signature));
+  signature[0] = 0x30U;
+  verify.signature = signature;
+  verify.signature_len = sizeof(signature);
+
+  for (i = 0U; i < 2U; i++) {
+    /* The signed content is longer than the hash, so a verifier that hashed
+       into a buffer sized for SHA-256 writes past it immediately -- which is
+       what AddressSanitizer reports on the unfixed code, before the signature
+       is looked at. */
+    (void)hash_lengths;
+    verify.scheme = schemes[i];
+    expect_int("a garbage signature under a long hash scheme is refused", 0,
+               wt_tls_certificate_verify_signature(
+                   chain.entries[0], chain.lengths[0], &verify, content,
+                   sizeof(content)));
+  }
+
+  /* The same two schemes with a signature too short to hold the hash: the
+     refusal must come from the verifier and not from a buffer that was
+     overrun. */
+  verify.signature_len = 8U;
+  for (i = 0U; i < 2U; i++) {
+    verify.scheme = schemes[i];
+    expect_int("a short signature under a long hash scheme is refused", 0,
+               wt_tls_certificate_verify_signature(
+                   chain.entries[0], chain.lengths[0], &verify, content,
+                   sizeof(content)));
+  }
+
+  /* And the ECDSA schemes on a P-256 certificate are refused before anything
+     is hashed, because the scheme's curve does not match the key's. */
+  {
+    static const uint16_t curves[2] = {WT_TLS_SIG_ECDSA_SECP384R1_SHA384,
+                                       WT_TLS_SIG_ECDSA_SECP521R1_SHA512};
+    for (i = 0U; i < 2U; i++) {
+      verify.scheme = curves[i];
+      verify.signature_len = sizeof(signature);
+      expect_int("a longer-curve ECDSA scheme is refused", -1,
+                 wt_tls_certificate_verify_signature(
+                     chain.entries[0], chain.lengths[0], &verify, content,
+                     sizeof(content)));
+    }
+  }
+}
+
 int main(void) {
   test_parse_certificate();
   test_parse_certificate_verify();
   test_signed_content();
   test_signature();
+  test_long_hash_schemes();
   test_ecdsa();
 
   if (g_failures != 0) {
