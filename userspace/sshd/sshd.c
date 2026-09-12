@@ -237,12 +237,29 @@ static uint32_t g_log_bytes = 0;
 static uint32_t g_audit_write_calls;
 static uint64_t g_audit_write_bytes;
 static uint64_t g_audit_write_ns;
+/* B-63: the total was all this kept, and a mean cannot answer the question the
+   total raises. sshd's loop is the only thing that polls the network (B-44), so
+   the number that matters is not what durable writes cost on average but what
+   the worst single one costs -- 1020 writes averaging 34 ms are unremarkable
+   and one write of nine seconds is a dropped connection. Averages hide exactly
+   the tail this is about. */
+static uint64_t g_audit_write_max_ns;
 static uint32_t g_key_load_calls;
 static uint32_t g_key_load_file_reads;
 static uint64_t g_key_load_ns;
 
+/* One durable-write sample: the running total and the worst seen. */
+static void record_durable_ns(uint64_t started) {
+  uint64_t elapsed = xaios_clock_nanos() - started;
+  g_audit_write_ns += elapsed;
+  if (elapsed > g_audit_write_max_ns) g_audit_write_max_ns = elapsed;
+}
+
 static void log_durable_cost(uint32_t connections) {
-  char line[256];
+  /* Widened with audit_worst_us: the appends are bounds-checked so the old
+     256 would have truncated rather than overflowed, but a line that silently
+     loses key_us at the end is a worse outcome than a slightly larger frame. */
+  char line[320];
   u64 offset = 0;
   xaios_memzero(line, sizeof(line));
   xaios_append_cstr(line, sizeof(line), &offset, "sshd: durable cost conns=");
@@ -251,6 +268,9 @@ static void log_durable_cost(uint32_t connections) {
   xaios_append_u64(line, sizeof(line), &offset, g_audit_write_calls);
   xaios_append_cstr(line, sizeof(line), &offset, " audit_bytes=");
   xaios_append_u64(line, sizeof(line), &offset, g_audit_write_bytes);
+  xaios_append_cstr(line, sizeof(line), &offset, " audit_worst_us=");
+  xaios_append_u64(line, sizeof(line), &offset,
+                   g_audit_write_max_ns / UINT64_C(1000));
   xaios_append_cstr(line, sizeof(line), &offset, " audit_us=");
   xaios_append_u64(line, sizeof(line), &offset,
                    g_audit_write_ns / UINT64_C(1000));
@@ -383,12 +403,12 @@ void ssh_log(int level, const char *fmt, ...) {
      truncates -- is counted where it is actually paid. */
   uint64_t durable_started = xaios_clock_nanos();
   if (g_log_fd < 0 && ssh_log_reopen() != 0) {
-    g_audit_write_ns += xaios_clock_nanos() - durable_started;
+    record_durable_ns(durable_started);
     return;
   }
   if (g_log_bytes + line_pos > SSHD_LOG_ROTATE_BYTES) {
     if (ssh_log_reopen() != 0) {
-      g_audit_write_ns += xaios_clock_nanos() - durable_started;
+      record_durable_ns(durable_started);
       return;
     }
     xaios_log("sshd: audit log rotated\n");
@@ -398,19 +418,19 @@ void ssh_log(int level, const char *fmt, ...) {
   int written = xaios_fs_write(g_log_fd, line, line_pos);
   if (written != (int)line_pos) {
     if (ssh_log_reopen() != 0) {
-      g_audit_write_ns += xaios_clock_nanos() - durable_started;
+      record_durable_ns(durable_started);
       return;
     }
     ++g_audit_write_calls;
     g_audit_write_bytes += line_pos;
     written = xaios_fs_write(g_log_fd, line, line_pos);
     if (written != (int)line_pos) {
-      g_audit_write_ns += xaios_clock_nanos() - durable_started;
+      record_durable_ns(durable_started);
       return;
     }
   }
   g_log_bytes += line_pos;
-  g_audit_write_ns += xaios_clock_nanos() - durable_started;
+  record_durable_ns(durable_started);
 }
 
 /* Say on the console why a connection was refused before it was served.
