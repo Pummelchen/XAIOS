@@ -49,6 +49,43 @@ REMOVED_TRACKER_FILES = {
 }
 
 
+
+def ragged_tables() -> list[str]:
+    """Table rows whose cells do not line up with the header's.
+
+    A `|` inside a cell ends that cell. Markdown has no way to tell a separator
+    from a pipe somebody meant as content, so `[[Operations and
+    Recovery|Operations-and-Recovery]]` in a table cell silently becomes two
+    cells, and every column after it shifts left by one. So does the pipe in
+    `` `service list|status|start` `` -- backticks group nothing as far as the
+    table parser is concerned.
+
+    Nine rows across four pages were doing this, including a row in the project
+    tracker and one in the Fusion table, and nothing said so: the file is valid
+    Markdown, every link resolves, and the damage is only visible to someone
+    reading the rendered page and noticing a column is empty. The fix in every
+    case is to write the pipe as `\\|`.
+
+    The header, or the first row when a table has no separator, sets the width.
+    """
+    failures = []
+    for page in sorted(WIKI.glob("*.md")):
+        width = None
+        for number, line in enumerate(page.read_text(encoding="utf-8").split("\n"), 1):
+            if not line.startswith("|"):
+                width = None
+                continue
+            cells = len(re.split(r"(?<!\\)\|", line)) - 2
+            if re.fullmatch(r"\|[\s\-:|]+\|", line) or width is None:
+                width = cells
+                continue
+            if cells != width:
+                failures.append(
+                    f"{page.name}:{number} has {cells} cells where the table "
+                    f"has {width}; an unescaped | inside a cell splits it")
+    return failures
+
+
 def main() -> int:
     failures: list[str] = []
     actual = {path.name for path in WIKI.glob("*.md")}
@@ -58,6 +95,7 @@ def main() -> int:
         failures.append("missing curated Wiki pages: " + ", ".join(missing))
     if extra:
         failures.append("unexpected Wiki pages: " + ", ".join(extra))
+    failures.extend(ragged_tables())
 
     planning_names = [
         name

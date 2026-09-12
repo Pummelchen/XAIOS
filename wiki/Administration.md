@@ -13,12 +13,12 @@ by `xapt`; see [[xapt Package Updates|Xapt-Package-Updates]].
 | Group | Purpose |
 |---|---|
 | `status`, `health`, `hardware`, `metrics`, `logs` | Inspect system state and telemetry. |
-| `config show|validate|diff|apply` | Validate and atomically apply bounded configuration transactions. |
-| `auth key list|add|remove` | Manage role-mapped administrative keys and revocation. |
+| `config show\|validate\|diff\|apply` | Validate and atomically apply bounded configuration transactions. |
+| `auth key list\|add\|remove` | Manage role-mapped administrative keys and revocation. |
 | `auth host-key rotate` | Rotate the persistent SSH host key. |
 | `audit show` | Read bounded, redacted audit history by sequence. |
-| `storage device|partition|format|mount|unmount|fsck|repair-from-replica|resize|scrub|trim` | Inspect and manage GPT, filesystems, xaiFS integrity, trusted-replica recovery, and free extents. |
-| `model register|verify|activate|cleanup` | Manage signed xaiFS package lifecycle around resumable SFTP staging. |
+| `storage device\|partition\|format\|mount\|unmount\|fsck\|repair-from-replica\|resize\|scrub\|trim` | Inspect and manage GPT, filesystems, xaiFS integrity, trusted-replica recovery, and free extents. |
+| `model register\|verify\|activate\|cleanup` | Manage signed xaiFS package lifecycle around resumable SFTP staging. |
 
 Examples:
 

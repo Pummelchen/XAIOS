@@ -10,7 +10,7 @@ observability utilities, is listed in [[Applications|Applications]].
 | Current owner | Commands or responsibility | Fault boundary |
 |---|---|---|
 | Kernel session layer | `cd`, `pwd`, `help`, `exit`, `quit`, `logout`, aliases, redirection, and pipelines | Maintains per-session state and command composition. |
-| Independent utility ELFs | File, text, archive, and observability tools documented in [[Applications|Applications]] | Each invocation has a bounded address space, least-privilege capabilities, exit status, and fault containment. |
+| Independent utility ELFs | File, text, archive, and observability tools documented in [[Applications\|Applications]] | Each invocation has a bounded address space, least-privilege capabilities, exit status, and fault containment. |
 | `/bin/sshd` plus transient `/bin/ssh` | Inbound SSH/SFTP transport plus dedicated outbound `ssh` and `scp` protocol execution | The client uses asynchronous child-channel IPC; a client fault is contained without terminating the inbound service. |
 | Kernel operations layer | `status`, power, service, process, network, clock, recovery, update, configuration, and support commands | Capability checks and privileged mechanisms remain authoritative in the kernel. |
 
@@ -22,7 +22,7 @@ observability utilities, is listed in [[Applications|Applications]].
 | `cd [DIR]` | Change directory; no argument selects `/`; relative, absolute, `.` and `..` paths are normalized. |
 | `l`, `la`, `ll` | Session aliases that dispatch the standalone `/bin/ls` application. |
 | `echo [TEXT...]` | Print text. `>` and `>>` redirect output to a file. |
-| `COMMAND | COMMAND` | Connect supported producer/filter commands through the bounded in-memory pipeline. |
+| `COMMAND \| COMMAND` | Connect supported producer/filter commands through the bounded in-memory pipeline. |
 | `status` | Render the bounded administrative status view; detailed operations use the `xaiosctl` application family. |
 
 ## Outbound network clients
@@ -44,7 +44,7 @@ authentication, and the complete OpenSSH algorithm matrix are not implemented.
 |---|---|
 | `shutdown` / `reboot` | Persist lifecycle intent, flush logs and block devices, then power off or reset through the architecture backend. |
 | `power status` | Show running/quiescing and boot-ready state. |
-| `service list|status|start|stop|restart` | Inspect or control the bounded kernel service registry with capability checks. |
+| `service list\|status\|start\|stop\|restart` | Inspect or control the bounded kernel service registry with capability checks. |
 | `kill PID` | Terminate and reclaim a non-running transient process; PID 1/2 and the current process are protected. |
 | `ifconfig` | Show the active VirtIO interface, IPv4 address, netmask, MTU, and MAC. |
 | `route`, `arp`, `ndp`, `netstat` | Show bounded routing, neighbor, packet, flow, drop, and resolver state. |
@@ -53,9 +53,9 @@ authentication, and the complete OpenSSH algorithm matrix are not implemented.
 | `date`, `date -s EPOCH` | Show epoch/source or set a validated UTC epoch in seconds. |
 | `ntp sync [IP]`, `ntp status` | Start a bounded SNTP exchange or inspect source, attempts, stratum, RTT, timeout, and error state. |
 | `limits` | Show normal/warning/critical pressure plus memory, heap, process, filesystem, and CPU capacity. |
-| `recovery status|enter|clear` | Inspect unclean boots or manage the persistent rescue marker. |
-| `update status|rollback` | Inspect the signed update transaction or invoke its authorized rollback path. |
-| `config export|import PATH` | Round-trip canonical configuration through the validated transactional admin path. |
+| `recovery status\|enter\|clear` | Inspect unclean boots or manage the persistent rescue marker. |
+| `update status\|rollback` | Inspect the signed update transaction or invoke its authorized rollback path. |
+| `config export\|import PATH` | Round-trip canonical configuration through the validated transactional admin path. |
 | `support` | Emit a redacted build/lifecycle/clock/resource/network/log bundle suitable for host-side capture. |
 
 Power, lifecycle, and recovery details are in

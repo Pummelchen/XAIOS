@@ -77,7 +77,7 @@ kernel.
 | `/bin/ls` | `ls [-a] [-l] [PATH]`; list files or directories. `l`, `la`, and `ll` dispatch to this binary. |
 | `/bin/mkdir` | `mkdir [-p] DIR...`; create directories and optional parents. |
 | `/bin/touch` | `touch FILE...`; create or truncate regular files. |
-| `/bin/cp` | `cp [-R|-r] SOURCE... DEST`; copy files or bounded directory trees. |
+| `/bin/cp` | `cp [-R\|-r] SOURCE... DEST`; copy files or bounded directory trees. |
 | `/bin/mv` | `mv SOURCE DEST`; rename or move within xaibootFS. |
 | `/bin/rm` | `rm [-r] [-f] PATH...`; remove files or trees. |
 | `/bin/rmdir` | `rmdir DIR...`; remove empty directories. |
