@@ -65,7 +65,12 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang python3 python3-cryptography
+          # mtools: tests/storage/test_fat.c cross-checks the volume XAIOS
+          # writes against mdir, so `make hosted-test` needs it. Without it
+          # the job failed with "/bin/sh: 2: mdir: not found" and then
+          # "mtools cannot see BOOTRISCV64.EFI on the volume XAIOS wrote",
+          # which reads as a filesystem defect and is a missing package.
+          sudo apt-get install -y clang mtools python3 python3-cryptography
 
       - name: Run hosted engine tests
         run: make hosted-test
@@ -424,7 +429,15 @@ jobs:
       - name: Install AArch64 and x86_64 test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential clang git libfdt-dev libglib2.0-dev libpixman-1-dev libslirp-dev lld llvm meson ninja-build ovmf mtools pkg-config python3 python3-cryptography python3-venv qemu-efi-aarch64 qemu-system-arm qemu-system-x86 zlib1g-dev
+          # qemu-system-misc and qemu-efi-riscv64: this job drives
+          # qemu-core-os-rc, which runs qemu-nvme-gate and
+          # qemu-outbound-fragmentation-gate -- and both of those have
+          # riscv64 among their prerequisites. The pinned QEMU built below
+          # is qemu-system-aarch64 only, so this runner had no RISC-V
+          # emulator at all and the RISC-V legs could not run. It did not
+          # show as a missing binary because the RISC-V runner died
+          # earlier, on a missing models volume (B-56).
+          sudo apt-get install -y build-essential clang git libfdt-dev libglib2.0-dev libpixman-1-dev libslirp-dev lld llvm meson ninja-build ovmf mtools pkg-config python3 python3-cryptography python3-venv qemu-efi-aarch64 qemu-efi-riscv64 qemu-system-arm qemu-system-misc qemu-system-x86 zlib1g-dev
 
       - name: Restore pinned SMMUv3 test QEMU
         uses: actions/cache@v5
