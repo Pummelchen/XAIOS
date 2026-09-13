@@ -751,6 +751,63 @@ carrier that is never given work. Both are decisions about the machine's
 execution model, which is what this row has said from the beginning; the second
 is the dedicated-CPU cost this row already prices.
 
+**The second session measured it, and the earlier reading of "when it is given
+work" was wrong.** The stop reproduces every boot at **13 to 18 polls**, and it
+is not caused by a task: in the run that was instrumented for it, no user thread
+was dispatched to the carrier at all, and the tick still died. What was
+established, one measurement at a time on this machine, is a list of things it
+is **not**:
+
+- **Not a mask by this kernel.** `timer_mask_local()` on the carrier is never
+  reached -- a diagnostic logged every call and printed only `cpu=0`, the boot
+  CPU correctly masking its own.
+- **Not `DAIF`.** The secondary idle loop runs with `daif=0x340`, which is
+  `I` **clear**: IRQs are enabled there. A secondary also demonstrably returns
+  from running a thread and re-enters the loop (`ran=1` then `ran=0`).
+- **Not the CPU having left its idle loop.** With the keepalive in the loop, one
+  run counted **6000 idle turns** on the carrier while the poll count stayed
+  frozen at 16. The loop is alive and re-arming the timer; the interrupt is what
+  is not arriving.
+- **Not the CPU-state array being reused.** `g_cpu_states` lives in the
+  bootstrap region and `smp_bootstrap_reserved_range()` keeps it out of the
+  NUMA allocator (`kernel/mm/numa.c:410`), so `smp_cpu_id()` stays correct.
+- **Not the redistributor being asleep.** Read back from the carrier during the
+  freeze: `GICR_WAKER=0x0`, which is `ProcessorSleep=0` *and*
+  `ChildrenAsleep=0`. One latent deviation is worth recording beside that:
+  neither `gic_init` nor `gic_secondary_init` **waits** for `ChildrenAsleep` to
+  clear after clearing `ProcessorSleep`, which the GICv3 specification requires
+  before the redistributor is usable. Both paths omit it, so it is not the
+  asymmetry that explains a secondary-only failure, and the boot CPU's timer
+  works for thousands of ticks regardless -- but a sequence the specification
+  makes mandatory is not being performed.
+- **Not PPI 27 being disabled.** The same read gives
+  `GICR_ISENABLER0 = 0x08000002`, bit 27 set, with the timer's own
+  `CNTV_CTL_EL0` showing `ENABLE=1` and `ISTATUS=1` and a comparator in the
+  future at every idle turn.
+
+**What is left is the delivery path, and it is narrowed to two candidates: the
+interrupt is stuck active because it was never deactivated, or the per-CPU CPU
+interface is masking it.** `ICC_EOIR1_EL1` is written unconditionally at
+`kernel/arch/aarch64/exception.c:248`, which deactivates when `ICC_CTLR_EL1`
+`EOImode` is 0 -- and `EOImode` is a *per-CPU* register that
+`gic_secondary_init` never sets, so a secondary whose reset value differs from
+the boot CPU's would take each interrupt once and then never again. Reading that
+register back is the next measurement, and **the attempt to take it is itself
+recorded because it failed informatively**: adding `mrs` of
+`ICC_PMR_EL1`/`ICC_IGRPEN1_EL1`/`ICC_CTLR_EL1`/`ICC_RPR_EL1` to the idle loop
+raised `EXCEPTION: kind=current-spx-sync class=unknown ec=0x0` at EL1 and halted
+the machine, which is what a trapped system-register access looks like and
+suggests the GIC system-register interface is not enabled the way the code
+assumes. The diagnostic was reverted; **the tree is unchanged from the previous
+session's state.**
+
+**A second observation from the same instrument, worth its own check.** Once the
+tick stops, `wfe` can return immediately -- a pending interrupt that is never
+delivered sets the event register -- so the carrier's idle loop stops sleeping
+and spins. One run counted 6000 turns of a loop that should have been parked.
+That is an idle-CPU cost question independent of `OD-011`, and it is recorded
+here because the same instrumentation found it.
+
 Two smaller corrections to the paragraphs above, both verified: the
 `scheduler_tick` gate the plan asks for **already exists** --
 `kernel/sched/scheduler.c:685` returns unless `cpu_state->scheduling_enabled` --
