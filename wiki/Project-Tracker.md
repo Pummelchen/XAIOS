@@ -694,6 +694,31 @@ network and sshd markers with no halt. **What is left for the timer itself** is
 deciding where the network tick is allowed to run, since the boot CPU takes no
 kernel-context interrupts today while the secondaries already do.
 
+**Stage three-a landed, and it is a race fix that was already there.** Putting
+the tick into interrupt context needs `network_poll_tick` to be safe to
+re-enter, and reading it for that found a live defect: `dns_transport_tick` was
+called *after* `network_unlock()`, so it mutated the pending query and drove the
+TCP flow carrying it without the guard that `dns.c`'s own comment says the
+resolver shares -- racing every `dns_resolve_address` on another CPU, and
+re-entering one on this CPU as soon as a tick could arrive in interrupt
+context. It is now inside the guard, which is where that comment always said it
+belonged. Verified by `make compile-check` in every configuration and a full
+`make qemu-smoke` boot on node4 with the DNS and network markers passing.
+
+**Where the next session picks this up.** The remaining step is the tick itself:
+call `network_poll_tick()` from the AArch64 timer handler -- the
+`intid == TIMER_PPI_INTID` branch of `kernel/arch/aarch64/exception.c`, which
+today only rearms and calls `scheduler_tick` -- and have it fire where kernel
+context is interruptible. The secondary CPUs already are: `smp.c` unmasks after
+`timer_mask_local()`. The boot CPU takes no kernel-context interrupts at all, so
+whether it joins is a separate question that does not have to be answered for
+the blocked-sshd case to be fixed, because a tick on any CPU services the one
+network stack. `scheduler_tick` must then be gated per CPU on
+`g_cpu_states[cpu].scheduling_enabled`, since the secondaries keep the scheduler
+timer masked on purpose until they own a preemptible user run queue. Everything
+the tick depends on is now in place: the interrupt-mask primitive, the
+interrupt-safe guard, and the guarded resolver tick.
+
 The decision is not made here, and the row above stays `NOT STARTED` because it
 is a choice about the machine's execution model rather than a refactor to make
 quietly.

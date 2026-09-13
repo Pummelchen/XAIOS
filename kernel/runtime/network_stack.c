@@ -5836,8 +5836,15 @@ static void network_poll_tick_locked(void) {
 void network_poll_tick(void) {
   network_lock();
   network_poll_tick_locked();
-  network_unlock();
+  /* The resolver's transport tick belongs inside this guard, not after it. It
+     mutates the pending query and drives the TCP flow carrying it, and dns.c's
+     own comment says the resolver shares this guard rather than holding one of
+     its own precisely because the poll calls back into it. Called after the
+     unlock it raced every dns_resolve_address on another CPU -- and once a tick
+     can arrive in interrupt context, which is what OD-011 adds, it would
+     re-enter a resolver call already in progress on this one. */
   dns_transport_tick(timer_now_ns());
+  network_unlock();
 }
 
 uint64_t network_poll_tick_count(void) {
