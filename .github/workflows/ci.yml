@@ -810,6 +810,13 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+    # The published Wiki is one branch of one repository, so two runs of this
+    # job cannot both write it: the second push is the only one that survives.
+    # Serialise them, and let a newer pending run replace an older one rather
+    # than cancelling a push that is already in flight.
+    concurrency:
+      group: publish-wiki
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -818,6 +825,26 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+
+          # A run of this job can outlive the push that started it, and one
+          # did. The run for 023afed0 spent about six hours queued and pushed
+          # its copy of the Wiki at 12:54:21Z, thirty-five seconds *after* the
+          # run for 8345bb2 had pushed a newer one -- so the published
+          # Project-Tracker went backwards by 98 lines, no job failed, and
+          # nothing reported it. Everything after that read the older page.
+          #
+          # Publishing is only ever correct for the commit that is still the
+          # tip of main, so ask which commit that is and stand down if it is
+          # not this one. A newer push has a run of this job of its own, and
+          # standing down is not a failure: it is this run correctly declining
+          # to publish something that is no longer current.
+          tip="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "${tip}" != "${GITHUB_SHA}" ]; then
+            printf 'wiki: %s is no longer the tip of main (%s); standing down\n' \
+              "${GITHUB_SHA}" "${tip}"
+            exit 0
+          fi
+
           git clone --depth 1 \
             "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git" \
             "${RUNNER_TEMP}/wiki"
@@ -835,10 +862,41 @@ jobs:
           cd "${RUNNER_TEMP}/wiki"
           if [ -z "$(git status --porcelain)" ]; then
             echo "wiki: already level with the repository"
-            exit 0
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "Sync the curated Wiki from ${GITHUB_SHA}"
+
+            # Somebody can still have written the published Wiki between the
+            # clone above and this push. There is no merge to do here: this
+            # repository is the source of truth and CONTRIBUTING.md says an
+            # edit made on the published pages is overwritten by the next
+            # merge, so on a rejected push the tree that belongs on top of the
+            # published tip is this one. Re-apply it there and try again.
+            attempt=0
+            while :; do
+              attempt=$((attempt + 1))
+              if git push origin HEAD; then
+                echo "wiki: published ${GITHUB_SHA}"
+                break
+              fi
+              if [ "${attempt}" -ge 3 ]; then
+                echo "wiki: push rejected ${attempt} times; giving up" >&2
+                exit 1
+              fi
+              echo "wiki: push rejected; re-applying to the published tip (attempt ${attempt})"
+              git fetch --depth 1 origin HEAD
+              git reset --soft FETCH_HEAD
+              git add -A
+              git commit -m "Sync the curated Wiki from ${GITHUB_SHA}"
+            done
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "Sync the curated Wiki from ${GITHUB_SHA}"
-          git push origin HEAD
+
+          # Compare what is published against what this repository carries, by
+          # reading it back from the remote rather than trusting the directory
+          # that was just pushed -- a check that compares a copy with itself
+          # proves nothing. risk R-012 claims this comparison exists, and it
+          # did not until now.
+          cd "${GITHUB_WORKSPACE}"
+          python3 tests/repository/check-wiki-parity.py

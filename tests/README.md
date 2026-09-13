@@ -46,6 +46,7 @@ Docker build inputs, and test-image inputs outside `tests/`. It runs through
 | xapt app and A/B OS lifecycle on ARM/x86 | `make qemu-xapt-gate` |
 | Code-scanning regression contract | `make code-scanning-contract` |
 | Documentation and test layout | `make docs-check` |
+| Published Wiki byte-for-byte against `wiki/` | `make wiki-parity-check` |
 | Firmware profile contract and documentation | `make firmware-profiles-check` |
 | macOS QEMU ARM64 profile evidence | `XAIOS_AAVMF_CODE=/absolute/path/to/edk2-aarch64-code.fd make firmware-profile-macos-qemu-aarch64` |
 | macOS VMware Fusion ARM64 profile evidence | `make firmware-profile-macos-vmware-fusion-aarch64` |
