@@ -2769,7 +2769,8 @@ static void tcp_drain_pending(void) {
 
 /* ---- Listener Registry Functions ---- */
 
-static void network_stack_register_listener_unlocked(uint16_t port, uint64_t sockfd) {
+static xaios_status_t network_stack_register_listener_unlocked(uint16_t port,
+                                                              uint64_t sockfd) {
   for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
     if (!g_listeners_ex[i].active) {
       g_listeners_ex[i].port = port;
@@ -2777,19 +2778,26 @@ static void network_stack_register_listener_unlocked(uint16_t port, uint64_t soc
       g_listeners_ex[i].sockfd = sockfd;
       g_listeners_ex[i].active = 1;
       g_listeners_ex[i].backlog_count = 0;
-      return;
+      return XAIOS_OK;
     }
   }
   klog("network: listener registry full (port=%u)\n", port);
+  return XAIOS_ERR_NO_MEMORY;
 }
 
-void network_stack_register_listener(uint16_t port, uint64_t sockfd) {
+xaios_status_t network_stack_register_listener(uint16_t port, uint64_t sockfd) {
   listener_lock();
-  network_stack_register_listener_unlocked(port, sockfd);
+  const xaios_status_t status =
+      network_stack_register_listener_unlocked(port, sockfd);
   listener_unlock();
+  /* A full registry is not a detail the caller can be spared: the row is what
+     makes the port answer, so a listener that was not given one cannot receive
+     and must not be reported as listening (B-78). */
+  return status;
 }
 
-static void network_stack_register_udp_listener_unlocked(uint16_t port, uint64_t sockfd) {
+static xaios_status_t network_stack_register_udp_listener_unlocked(
+    uint16_t port, uint64_t sockfd) {
   for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
     if (!g_listeners_ex[i].active) {
       g_listeners_ex[i].port = port;
@@ -2797,16 +2805,20 @@ static void network_stack_register_udp_listener_unlocked(uint16_t port, uint64_t
       g_listeners_ex[i].sockfd = sockfd;
       g_listeners_ex[i].active = 1;
       g_listeners_ex[i].backlog_count = 0;
-      return;
+      return XAIOS_OK;
     }
   }
   klog("network: UDP listener registry full (port=%u)\n", port);
+  return XAIOS_ERR_NO_MEMORY;
 }
 
-void network_stack_register_udp_listener(uint16_t port, uint64_t sockfd) {
+xaios_status_t network_stack_register_udp_listener(uint16_t port,
+                                                   uint64_t sockfd) {
   listener_lock();
-  network_stack_register_udp_listener_unlocked(port, sockfd);
+  const xaios_status_t status =
+      network_stack_register_udp_listener_unlocked(port, sockfd);
   listener_unlock();
+  return status;
 }
 
 static void network_stack_unregister_listener_unlocked(uint16_t port) {
@@ -4802,8 +4814,7 @@ static xaios_status_t network_stack_app_tcp_connect_unlocked(uint64_t *round_tri
   int temporary_listener = 0;
 
   if (!network_stack_has_listener(local_port)) {
-    network_stack_register_listener(local_port, UINT64_MAX);
-    if (!network_stack_has_listener(local_port)) {
+    if (network_stack_register_listener(local_port, UINT64_MAX) != XAIOS_OK) {
       return XAIOS_ERR_NO_MEMORY;
     }
     temporary_listener = 1;
@@ -4990,8 +5001,8 @@ void network_stack_self_test(void) {
   kassert(network_stack_bind_queue(1, 2, 0x4U) == XAIOS_OK);
 
   kassert(network_stack_queue_bindings() == 2U);
-  network_stack_register_listener(80U, 1U);
-  network_stack_register_udp_listener(UINT16_C(0x5678), 2U);
+  kassert(network_stack_register_listener(80U, 1U) == XAIOS_OK);
+  kassert(network_stack_register_udp_listener(UINT16_C(0x5678), 2U) == XAIOS_OK);
 
   frame_udp[12U] = 0x08;
   frame_udp[13U] = 0x00;

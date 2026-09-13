@@ -65,7 +65,7 @@ SUMMARY = re.compile(
     r"port_zero=(\d+) out_of_range=(\d+) duplicated=(\d+) "
     r"explicit_mismatch=(\d+) sends=(\d+) sends_failed=(\d+) "
     r"closes_failed=(\d+) first_port=(\d+) second_port=(\d+) "
-    r"explicit_port=(\d+)")
+    r"explicit_port=(\d+) registry_fill_ok=(\d+) registry_refused=(\d+)")
 COMPLETE = "/bin/netsocktest: complete"
 # The kernel's side of the same events.
 KERNEL_OPEN = re.compile(r"syscall: net_open_udp port=(\d+) sockfd=(\d+)")
@@ -139,6 +139,7 @@ def main() -> int:
     opens = opens_failed = port_zero = out_of_range = None
     duplicated = explicit_mismatch = sends = sends_failed = None
     closes_failed = first_port = second_port = explicit_port = None
+    registry_fill_ok = registry_refused = None
 
     if summary is None:
         failures.append(
@@ -147,7 +148,8 @@ def main() -> int:
     else:
         (opens, opens_failed, port_zero, out_of_range, duplicated,
          explicit_mismatch, sends, sends_failed, closes_failed, first_port,
-         second_port, explicit_port) = (int(g) for g in summary.groups())
+         second_port, explicit_port, registry_fill_ok,
+         registry_refused) = (int(g) for g in summary.groups())
 
         if opens != OPENS:
             failures.append(
@@ -182,6 +184,23 @@ def main() -> int:
                 f"port is a record rather than a source")
         if closes_failed != 0:
             failures.append(f"{closes_failed} descriptors failed to close")
+
+        # B-78's reproducer. The registry has sixteen rows and this app holds
+        # three when it starts filling, so a kernel that registers what it
+        # hands out must refuse within thirteen more. A kernel that does not
+        # refuse is handing out ports whose replies are dropped for want of a
+        # row, and from userspace that is indistinguishable from success --
+        # which is why the absence of a refusal, not the count, is the failure.
+        if registry_refused < 1:
+            failures.append(
+                "the kernel never refused a datagram socket; it answered "
+                "every open while the listener registry has sixteen rows, so "
+                "the ports past the ceiling cannot receive (B-78)")
+        if registry_fill_ok > 16:
+            failures.append(
+                f"the kernel handed out {registry_fill_ok} registered "
+                f"datagram sockets on top of the three already open, and the "
+                f"registry has sixteen rows")
 
         for name, value in (("first_port", first_port),
                             ("second_port", second_port)):
@@ -253,6 +272,8 @@ def main() -> int:
         "first_port": first_port,
         "second_port": second_port,
         "explicit_port": explicit_port,
+        "registry_fill_ok": registry_fill_ok,
+        "registry_refused": registry_refused,
         "kernel_allocations": kernel_opens,
         "reached_login_prompt": PROMPT in text,
         "failures": failures,

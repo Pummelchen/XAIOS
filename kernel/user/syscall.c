@@ -1958,12 +1958,20 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       }
     }
     xaios_spin_unlock(&g_kernel_socket_lock);
-    *(uint64_t *)(uintptr_t)request.out_sockfd = sockfd;
-    if (protocol == XAIOS_NETWORK_PROTOCOL_UDP) {
-      network_stack_register_udp_listener((uint16_t)request.port, sockfd);
-    } else {
-      network_stack_register_listener((uint16_t)request.port, sockfd);
+    /* The registry row is the listener. A socket that could not be given one
+       is a socket nothing will ever answer on, so the listen is refused here
+       rather than reported as listening: what the caller would otherwise be
+       handed is a descriptor whose port can never receive, and `docs/API.md`
+       states that guarantee without qualification (B-78). */
+    xaios_status_t registered =
+        protocol == XAIOS_NETWORK_PROTOCOL_UDP
+            ? network_stack_register_udp_listener((uint16_t)request.port, sockfd)
+            : network_stack_register_listener((uint16_t)request.port, sockfd);
+    if (registered != XAIOS_OK) {
+      (void)kernel_socket_free(sockfd, owner_token);
+      return reject_syscall(syscall, arg0, arg1, "net-listen-registry-full");
     }
+    *(uint64_t *)(uintptr_t)request.out_sockfd = sockfd;
     klog("syscall: net_listen protocol=%lu port=%lu sockfd=%lu\n", protocol,
          request.port, sockfd);
     return XAIOS_OK;
@@ -2033,21 +2041,27 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       }
     }
     xaios_spin_unlock(&g_kernel_socket_lock);
-    *(uint64_t *)(uintptr_t)request.out_sockfd = sockfd;
+    /* Registered before anything is reported, because the registration is what
+       makes the port answer: process_udp_frame looks the listener up by port
+       and drops the frame when it finds none, so a socket refused a row can
+       never receive. Reporting the descriptor and the port first would tell
+       the caller it owns an address that is already dead, which is the whole
+       of B-78. Net close unregisters it, so an ephemeral socket frees its port
+       like any other. */
+    if (network_stack_register_udp_listener(port, sockfd) != XAIOS_OK) {
+      (void)kernel_socket_free(sockfd, owner_token);
+      return reject_syscall(syscall, arg0, arg1, "net-open-udp-registry-full");
+    }
     /* The port the kernel chose goes to the caller's own out-pointer, beside
        the descriptor rather than inside the request. A caller that asked for
        an ephemeral port has no other way to learn its own address, and a peer
        told to reply needs the truth, so this is not optional for port zero --
        but it is written through a distinct pointer, so the request itself
        stays exactly as the caller wrote it. */
+    *(uint64_t *)(uintptr_t)request.out_sockfd = sockfd;
     if (request.out_port != 0U) {
       *(volatile uint64_t *)(uintptr_t)request.out_port = (uint64_t)port;
     }
-    /* Registered so a reply can find the socket. A flow created by sendto
-       cannot receive without this: process_udp_frame looks the listener up by
-       port and drops the frame when it finds none. Net close unregisters it,
-       so an ephemeral socket frees its port like any other. */
-    network_stack_register_udp_listener(port, sockfd);
     klog("syscall: net_open_udp port=%lu sockfd=%lu\n", (uint64_t)port, sockfd);
     return XAIOS_OK;
   }

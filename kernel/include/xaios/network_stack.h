@@ -209,10 +209,10 @@ int network_stack_socket_ready(uint64_t sockfd, uint8_t protocol,
                                uint16_t port, uint32_t listening);
 
 /* Listener registry */
-void network_stack_register_listener(uint16_t port, uint64_t sockfd);
+xaios_status_t network_stack_register_listener(uint16_t port, uint64_t sockfd);
 void network_stack_unregister_listener(uint16_t port);
 int  network_stack_has_listener(uint16_t port);
-void network_stack_register_udp_listener(uint16_t port, uint64_t sockfd);
+xaios_status_t network_stack_register_udp_listener(uint16_t port, uint64_t sockfd);
 void network_stack_unregister_udp_listener(uint16_t port);
 
 /* Accept queue */

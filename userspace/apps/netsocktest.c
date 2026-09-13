@@ -63,18 +63,21 @@ typedef struct summary {
   u64 first_port;
   u64 second_port;
   u64 explicit_port;
+  u64 registry_fill_ok;
+  u64 registry_refused;
 } summary_t;
 
 /* Port zero asks the kernel to choose. Both the descriptor and the port are
    taken from the call rather than assumed: the port is the caller's own
    address, and a caller that guessed it would be telling peers a lie.
  *
- * Note what this does NOT do: it cannot tell whether the port the kernel
- * returned is one the reply path can reach, because that is a property of the
- * listener registry and not of this call. A registry with no free row leaves
- * the socket unable to receive while this still reports a port. That is B-74,
- * and it is deliberately not asserted here -- a check that cannot fail on the
- * machine it runs on is worse than a comment saying so. */
+ * This used to say it could not tell whether the port the kernel returned is
+ * one the reply path can reach, because a registry with no free row left the
+ * socket unable to receive while the call still reported a port. That was
+ * B-78, and it is no longer true: `net_open_udp` registers the listener before
+ * it reports anything and fails the call when the registry is full, so a
+ * refused row arrives here as a failed open. `fill_registry` below measures
+ * exactly that. */
 static void open_ephemeral(summary_t *summary, open_result_t *result) {
   result->open_failed = 0U;
   result->port = 0U;
@@ -88,6 +91,37 @@ static void open_ephemeral(summary_t *summary, open_result_t *result) {
   if (result->port == 0U) summary->port_zero_returned++;
   if (result->port < EPHEMERAL_MIN || result->port > 65535U) {
     summary->ports_out_of_range++;
+  }
+}
+
+/* The listener registry has sixteen rows, so a datagram socket that needs a
+ * seventeenth cannot be given one. This opens until the kernel refuses, and
+ * holds the sockets while it counts so the rows stay taken.
+ *
+ * It asserts nothing, like the rest of this app: it records how many were
+ * handed out and whether a refusal ever came, and the gate requires the
+ * refusal. What makes that worth measuring is how the two possible kernels
+ * differ. One that refuses reports a failed open and the count stops below the
+ * ceiling. One that does not -- which is what this was before B-78 -- answers
+ * every open with a descriptor and a port, and the replies to that port are
+ * dropped for want of a row, so the only difference visible from here is that
+ * no refusal ever arrives. */
+static void fill_registry(summary_t *summary) {
+  enum { FILL_ATTEMPTS = 64U };
+  static u64 sockfds[FILL_ATTEMPTS];
+  u64 opened = 0U;
+  for (u64 i = 0U; i < FILL_ATTEMPTS; ++i) {
+    u64 sockfd = 0U;
+    u64 port = 0U;
+    if (xaios_net_open_udp(0U, &sockfd, &port) < 0) {
+      summary->registry_refused = 1U;
+      break;
+    }
+    sockfds[opened++] = sockfd;
+  }
+  summary->registry_fill_ok = opened;
+  for (u64 i = 0U; i < opened; ++i) {
+    if (xaios_net_close(sockfds[i]) < 0) summary->closes_failed++;
   }
 }
 
@@ -164,6 +198,10 @@ int main(void) {
     if (datagram_leaves(opened[0].sockfd) == 0U) summary.sends_failed++;
   }
 
+  /* Filled while the three sockets above are still open, so what it walks
+     towards is the ceiling rather than the whole registry. */
+  fill_registry(&summary);
+
   for (u64 i = 0U; i < OPEN_COUNT; ++i) {
     if (opened[i].sockfd != 0U && xaios_net_close(opened[i].sockfd) < 0) {
       summary.closes_failed++;
@@ -188,7 +226,9 @@ int main(void) {
   xaios_log_u64(" closes_failed=", summary.closes_failed, "");
   xaios_log_u64(" first_port=", summary.first_port, "");
   xaios_log_u64(" second_port=", summary.second_port, "");
-  xaios_log_u64(" explicit_port=", summary.explicit_port, "\n");
+  xaios_log_u64(" explicit_port=", summary.explicit_port, "");
+  xaios_log_u64(" registry_fill_ok=", summary.registry_fill_ok, "");
+  xaios_log_u64(" registry_refused=", summary.registry_refused, "\n");
 
   xaios_log("/bin/netsocktest: complete\n");
   return 0;
