@@ -153,22 +153,29 @@ static inline int xaios_spin_held(xaios_spinlock_t *lock) {
  * the moment somebody added one call. Check this list before introducing
  * another guard; a coarse lock is only simple while its order is.
  *
- * Never take this from interrupt context. The depth check identifies the
- * holder by CPU, so an interrupt that lands on a CPU already inside the guard
- * and calls a guarded function would be told it holds the lock and would walk
- * straight into the critical section it interrupted. Every subsystem using it
- * today is entered from syscalls and kernel threads only -- the timer path
- * reaches scheduler_tick, and the virtio handlers touch nothing but their own
- * driver state -- and that is a property to preserve rather than assume.
+ * **Interrupts are off while a guard is held, and the state they were in is
+ * restored on release.** That replaces an outright prohibition this used to
+ * carry. The holder is identified by CPU, so an interrupt landing on a CPU
+ * already inside the guard and calling a guarded function would be told it
+ * holds the lock and would walk straight into the critical section it
+ * interrupted -- true as long as the guard can be entered from interrupt
+ * context at all, and the fix is to make that impossible rather than to forbid
+ * it. With interrupts off for the duration no such interrupt can land, and the
+ * same lock may now be taken from a handler, which is what OD-011's network
+ * timer needs before it can exist. The state is kept per guard rather than per
+ * call because the depth counter already says that only the outermost release
+ * may undo the outermost acquire.
  */
 typedef struct xaios_reentrant_lock {
   xaios_spinlock_t lock;
   volatile uint32_t owner;
   volatile uint32_t depth;
+  /* What interrupts were when the outermost acquire took this guard. */
+  xaios_interrupt_state_t interrupt_state;
 } xaios_reentrant_lock_t;
 
 #define XAIOS_REENTRANT_LOCK_INIT \
-  { XAIOS_SPINLOCK_INIT, 0xffffffffU, 0 }
+  { XAIOS_SPINLOCK_INIT, 0xffffffffU, 0, 0UL }
 
 static inline void xaios_reentrant_lock(xaios_reentrant_lock_t *guard,
                                         uint32_t cpu_id) {
@@ -177,17 +184,27 @@ static inline void xaios_reentrant_lock(xaios_reentrant_lock_t *guard,
     ++guard->depth;
     return;
   }
+  /* Masked before the spinlock, not after: the point is that nothing can land
+     between the depth check above and the owner being published below. */
+  xaios_interrupt_state_t state = xaios_interrupts_disable();
   xaios_spin_lock(&guard->lock);
+  guard->interrupt_state = state;
   __atomic_store_n(&guard->owner, cpu_id, __ATOMIC_RELEASE);
   __atomic_store_n(&guard->depth, 1U, __ATOMIC_RELEASE);
 }
 
 static inline void xaios_reentrant_unlock(xaios_reentrant_lock_t *guard) {
+  xaios_interrupt_state_t state;
   if (guard->depth == 0U) return;
   if (--guard->depth != 0U) return;
+  /* Read before the guard is released: once the depth is zero another CPU may
+     take it and overwrite this field, and the state being restored is the
+     caller's, not the new holder's. */
+  state = guard->interrupt_state;
   __atomic_store_n(&guard->owner, 0xffffffffU, __ATOMIC_RELEASE);
   __atomic_store_n(&guard->depth, 0U, __ATOMIC_RELEASE);
   xaios_spin_unlock(&guard->lock);
+  xaios_interrupts_restore(state);
 }
 
 #endif

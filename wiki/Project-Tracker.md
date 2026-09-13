@@ -671,6 +671,29 @@ already names. The primitive is landed and the self-test is honest about what it
 did not test, because a test that reports a round trip it did not perform is
 exactly the thing this page exists to prevent.
 
+**The execution model is now established rather than assumed, and it is not
+uniform across CPUs.** Both EL0 entry paths in `kernel/arch/aarch64/entry.S` set
+`spsr_el1` to zero, so userspace runs with interrupts enabled; the boot CPU runs
+kernel code with them masked; and the secondary CPUs unmask in `smp.c` and then
+run kernel work interruptible, having first masked the scheduler timer on
+purpose -- *"Keep the local scheduler timer masked until this CPU owns a
+preemptible userspace run queue"*. That line is the shape of the whole problem:
+the machine **already** takes interrupts in kernel context on three of its four
+CPUs, so a network timer would fire there and call `network_poll_tick` from a
+handler, which is exactly what the reentrant lock forbade.
+
+**So stage two landed with stage one: the guard now masks interrupts for as long
+as it is held and restores the state on release.** The prohibition is gone
+because the condition it guarded against can no longer happen, the same guard
+may now be taken from a handler, and the saved state is kept per guard because
+the depth counter already says that only the outermost release undoes the
+outermost acquire -- read before the guard is released, so a CPU that takes it
+next cannot overwrite the state being restored. Verified by `make compile-check`
+in every configuration and a full `make qemu-smoke` boot that passes its lock,
+network and sshd markers with no halt. **What is left for the timer itself** is
+deciding where the network tick is allowed to run, since the boot CPU takes no
+kernel-context interrupts today while the secondaries already do.
+
 The decision is not made here, and the row above stays `NOT STARTED` because it
 is a choice about the machine's execution model rather than a refactor to make
 quietly.
