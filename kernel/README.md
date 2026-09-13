@@ -34,18 +34,31 @@ the state — sockets, flows, the routing table, the guard that serialises it �
 and calls into `net/` to do the protocol work. A change to how a header is
 parsed goes in `net/`; a change to what happens to a socket goes in `runtime/`.
 
-**What runs the network stack.** Nothing schedules it. `network_poll_tick()`
-in `runtime/network_stack.c` -- which drains the device ring, runs the TCP
-state machine, retransmits and expires flows -- has no timer, no interrupt
-handler and no kernel thread behind it. It runs inside the network syscalls a
-process makes and inside `xaios_wait_events`, and on a booted machine the
-process making those calls is `/bin/sshd`, which `core/kmain.c` starts after
-disabling preemption and the periodic timer. So a pause anywhere in sshd's loop
-is a total network outage for its duration. Before adding work to any path
-between a network syscall and that poll, read the argument and the costed
-alternatives in [Architecture](../wiki/Architecture.md#what-drives-the-network-stack);
-the stack measures its own gaps and `make qemu-network-poll-cadence-gate`
-reports the worst one.
+**What runs the network stack.** Mostly the calls a process makes, and one
+timer on one CPU. `network_poll_tick()` in `runtime/network_stack.c` -- which
+drains the device ring, runs the TCP state machine, retransmits and expires
+flows -- runs inside the network syscalls a process makes and inside
+`xaios_wait_events`, and on a booted machine the process making those calls is
+`/bin/sshd`, which `core/kmain.c` starts after disabling preemption and the
+periodic timer. So a pause anywhere in sshd's loop used to be a total network
+outage for its duration.
+
+That window is now bounded on AArch64 and x86-64. One secondary CPU carries a **network tick**
+(`timer_arm_network_tick()`, `OD-011`): the shared periodic tick is stopped
+before sshd starts, so the tick is armed afterwards on a CPU that takes
+kernel-context interrupts, and on that CPU the timer interrupt polls
+`network_poll_tick_from_interrupt()` -- the poll without `operations_tick()`,
+because the power path quiesces storage and can stop the machine and has no
+business in a handler -- instead of ticking the scheduler. No CPU gains or
+loses a preemption. Worst gap between polls, measured by
+`make qemu-network-poll-cadence-gate`: **24 ms idle, 29 ms under load**, down
+from 55-93 ms and 164-297 ms. RISC-V declines the tick -- `timer_arm_network_tick()`
+returns 0 there with the reason in the source -- because its trap entry cannot
+yet take traps in arbitrary kernel context, and arming it regressed that port's
+boot gate at `/bin/c99-thread-context`. Before adding work to any path between a network
+syscall and that poll, read the argument in
+[Architecture](../wiki/Architecture.md#what-drives-the-network-stack); the
+stack measures its own gaps and names how many polls the tick took.
 
 **`fs/` against `storage/`.** `fs/` is about files inside a volume.
 `storage/` is about volumes themselves — where they begin on a disk, which of

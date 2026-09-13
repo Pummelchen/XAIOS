@@ -106,105 +106,135 @@ ARP and NDP, reassembles fragments, feeds DNS and NTP, runs the TCP state
 machine, sends the ACKs, retransmits what was not acknowledged, expires dead
 flows and drains pending transmissions.
 
-**Nothing schedules it.** There is no timer callback, no interrupt handler and
-no kernel thread behind it. It runs only when something calls it, and the
-callers are: the network syscalls in `kernel/user/syscall.c` (connect, accept,
-send, recv, resolve), the wait loop of `xaios_wait_events`, and two boot-time
-loops -- the NTP sync in `kmain.c` and the SLAAC wait in the stack itself. From
-userspace only `/bin/sshd` and `/bin/xtop` call `wait_events`, and the tick
-inside it runs only for a caller holding `XAIOS_CAP_NET_SOCKET`.
+**Two things drive it, and they are not the same thing.** Most of the forward
+motion is still the calls a process makes: the network syscalls in
+`kernel/user/syscall.c` (connect, accept, send, recv, resolve), the wait loop of
+`xaios_wait_events`, and two boot-time loops -- the NTP sync in `kmain.c` and
+the SLAAC wait in the stack itself. From userspace only `/bin/sshd` and
+`/bin/xtop` call `wait_events`, and the tick inside it runs only for a caller
+holding `XAIOS_CAP_NET_SOCKET`.
 
-So on a booted machine the network runs while sshd is inside its service loop,
-and not otherwise. That is stronger than it sounds, because the kernel's last
-act before starting sshd is to disable preemption and the periodic timer
-(`kmain.c`): sshd is not merely the only network process, it is the only thing
-running on the boot CPU. **Any pause anywhere in that loop -- a slow write to
-the durable volume, a filesystem stall, anything -- is a total network
-outage.** Nothing comes off the receive ring, no ACK leaves the machine, no
-retransmit fires, no timeout expires, nothing is refused and nothing is closed.
-From a peer it is indistinguishable from the machine having gone away. B-43 is
-the first sighting that is probably this.
+On top of that, **on AArch64 and x86-64 one CPU carries a network tick** (`OD-011`,
+`timer_arm_network_tick()`). `kmain` stops the shared periodic tick immediately
+before it starts sshd, so the tick cannot be an ordinary timer callback: it is
+*armed* on a secondary CPU afterwards, and on that CPU the timer interrupt is
+the network's rather than the scheduler's. It polls the stack and does not tick
+the scheduler, which stays masked there exactly as the port left it, so no CPU
+gains or loses a preemption. The poll it runs is
+`network_poll_tick_from_interrupt()`, which is `network_poll_tick()` without
+`operations_tick()`: the power path quiesces storage and can stop the machine,
+and that belongs where a shutdown is requested from, not in a handler.
+
+The tick exists because everything else is a window with no networking in it.
+The boot CPU runs kernel code with interrupts masked, so while sshd is inside a
+blocking call -- a slow write to the durable volume, a filesystem stall,
+anything -- nothing is draining the receive ring: no ACK leaves the machine, no
+retransmit fires, no timeout expires, nothing is refused and nothing is closed,
+and from a peer it is indistinguishable from the machine having gone away. The
+tick does not remove that window, it bounds it: measured by
+`make qemu-network-poll-cadence-gate`, the worst gap fell from **55-93 ms idle
+and 164-297 ms under load** to **24 ms idle and 29 ms under load**, with several
+thousand polls per run now taken from the interrupt rather than from a syscall.
 
 ### Why it is arranged this way, and what the alternatives cost
 
-The arrangement is not an oversight, and both ways out are more expensive than
-they look.
+The syscall-driven half is not an oversight: *a machine nobody is talking to
+does no network work at all*, and the poll runs at the rate of whatever is
+actually using the network. `wait_events` already declines to tick for a caller
+that could not receive, and on an interrupt-driven device it ticks only when the
+device reports activity or 50 ms of housekeeping have passed. That property is
+kept. What was added is a floor under it, not a replacement for it.
 
-*A timer or interrupt cadence* cannot carry this poll as the kernel stands.
-The stack's guard is `xaios_reentrant_lock`, chosen under C-01 because ten of
-the stack's exported functions call other exported ones; it identifies its
-holder by CPU id, so an interrupt landing on a CPU already inside the guard
-would be told it holds the lock and would walk straight into the critical
-section it interrupted. `kernel/include/xaios/spinlock.h` states that as a
-property to preserve. Nor is the poll interrupt-handler work in the first
-place: its first act is `operations_tick()`, which on a pending power action
-flushes every block device and calls `arch_reboot()`; it puts a 1520-byte
-frame buffer on the stack, and it logs under the kernel log's own lock. And
-the carrier does not exist at runtime anyway -- the 100 Hz tick is switched
-off before sshd starts, and on RISC-V the timer interrupt never reached
-`scheduler_tick()` to begin with. Putting the poll on a timer means restoring
-preemption and making the whole stack interrupt-safe, which is a change to the
-machine's execution model rather than to its scheduling.
+**Both objections that made the timer look impossible were real and both were
+removed rather than argued with.** The stack's guard is `xaios_reentrant_lock`,
+chosen under C-01 because ten of the stack's exported functions call other
+exported ones; it identifies its holder by CPU id, so an interrupt landing on a
+CPU already inside the guard would be told it holds the lock and would walk into
+the critical section it interrupted -- `kernel/include/xaios/spinlock.h` states
+that as a property to preserve. **The guard now masks interrupts for as long as
+it is held and restores the state on release**, so the condition it guarded
+against cannot arise, the same guard may be taken from a handler, and the saved
+state is kept per guard because the depth counter already says only the
+outermost release undoes the outermost acquire. And the poll being
+handler-hostile was true of the wrong function: `operations_tick()` is the part
+that flushes block devices and can call `arch_reboot()`, and the interrupt path
+simply does not call it.
 
-*A kernel thread* is lock-safe -- kernel threads are one of the two sanctioned
-contexts for that guard, and an SSH login child on a worker CPU already drives
-this poll through `wait_events` today. Its cost is the thread facility:
-`kernel/sched/thread.c` runs one thread to completion per worker CPU with no
-preemption, so a permanent poll thread permanently removes a CPU from the pool
-that hosts kernel threads -- one of three on the four-core default -- and the
-only production user of that pool is asynchronous process launch. It also
-means a machine that wakes on a cadence whether or not anything is on the
-network, which is the cost this project has twice spent work removing.
+**The carrier did not exist, and that was the actual problem.** `kmain` switches
+the 100 Hz tick off before sshd starts, and that switches off the *global*
+period, so no CPU takes a periodic timer interrupt afterwards: a poll placed in
+`intid == TIMER_PPI_INTID` is unreachable code. The tick is therefore armed on a
+secondary after the fact, and that secondary's timer is the one that outlives
+the scheduler's.
 
-*What the current arrangement buys* is that a machine nobody is talking to
-does no network work at all, and that the poll is driven at the rate of
-whatever is actually using the network. `wait_events` already declines to tick
-for a caller that could not receive, and on an interrupt-driven device it ticks
-only when the device reports activity or 50 ms of housekeeping have passed.
+**A second defect had to be fixed to make it survive, and it was not in the
+timer at all.** `vector_entry` masks `DAIF` on every trap, and a secondary's
+idle loop could be re-entered with `I` still set -- measured directly, spinning
+with a pending timer *visible in its CPU interface* (`hppir1=27`) and
+`DAIF=0x3c0`, so it never took another interrupt. A CPU that cannot take an
+interrupt cannot be woken by one, which is how the scheduler moves work between
+CPUs. The loop now clears `I` every turn rather than once before it. With a
+pending interrupt the wait-for-event latch is set, so `wfe` returns immediately
+instead of sleeping: the same run had spun 134 million times. Both are recorded
+because the second one is a bug in its own right and nothing to do with the
+network.
 
-### What changed: the coupling is now measurable
+**RISC-V does not carry this tick, and that is a measured refusal rather than
+an omission.** The tick means taking timer traps in arbitrary kernel context,
+and that port's trap entry is deliberately minimal -- its own `entry.S` says "a
+full context switch belongs with the scheduler work this port has not done".
+Attempting it anyway regressed the boot: `/bin/c99-thread-context` faulted with
+`class=instruction-access-fault sepc=0x0` and `reason=thread-join-failed`, a
+return to program counter zero in the thread machinery, and the machine halted
+before the service phase. `make qemu-riscv64-smoke` was green before that change
+and red after it, and green again once reverted. So RISC-V keeps the arrangement
+every port had before `OD-011`: sshd's loop is still its network thread, and
+`timer_arm_network_tick()` returns 0 there, saying so in the source. AArch64 and
+x86-64 carry the tick.
 
-The decision is to keep the arrangement and stop it being invisible, because
-invisibility was the part that could not be defended. The stack measures the
-gap between consecutive polls whenever a listener is registered, keeps the
-longest, prints each new maximum, and prints a distinct line when a gap is long
-enough to be an outage rather than a pause:
+**A kernel thread remains the simpler alternative and its cost is unchanged** --
+one of three worker CPUs, because `kernel/sched/thread.c` runs one thread to
+completion per worker CPU with no preemption. The timer was chosen because it
+costs a timer rather than a core, and that is now true in the tree rather than
+expected of it.
+
+### What changed: the coupling is measurable, and bounded
+
+The stack measures the gap between consecutive polls whenever a listener is
+registered, keeps the longest, prints each new maximum, and prints a distinct
+line when a gap is long enough to be an outage rather than a pause:
 
 ```
-network: longest gap between polls us=55008 polls=752428 intr=0 listeners=2
+network: longest gap between polls us=24341 polls=612345 intr=2890 listeners=2
 network: stack was not polled for ms=1840 outages=1 listeners=2
 ```
 
 `intr=` is how many of those polls were taken from the timer interrupt rather
-than from a syscall, and it is 0, because no port arms a network tick. `OD-011`'s
-remaining step is exactly that tick -- one CPU polling the stack while sshd's
-loop is blocked -- and one was implemented and does not hold: on AArch64 the
-carrier CPU stopped taking timer interrupts the moment the boot-test profile
-dispatched a user thread to it, with no `timer_mask_local` on that CPU and no
-`CNTV_CTL_EL0` write anywhere in the port, and re-arming from the idle loop did
-not bring it back. That is unresolved, so the field is the instrument for the
-next attempt: the kernel's half of the work is in
-`network_poll_tick_from_interrupt()`, and `make
+than from a syscall, and it is the field that makes "the tick is armed" and "the
+tick fires" different claims: a timer on one CPU is exactly the shape that
+silently stops, and it did, twice, before this was right. `make
 qemu-network-poll-cadence-gate` fails if a guest announces an armed tick that
-never fires. Until then every poll here is one a syscall made, which is P-1
-still open.
+never advances this count, and it names the refusals it accepted on the way out.
+Measured on this machine: **24 ms idle, 29 ms under load**, several thousand
+interrupt polls per run, zero gaps past a second.
 
 `network_poll_gap_max_ns()` and `network_poll_gap_outage_count()` expose the
 same figures. The measurement is deliberately not taken when nothing is
 listening: with no listener there is nothing the poll is late for, and a metric
 that fires on an idle machine is a metric nobody reads.
 
-`make qemu-network-poll-cadence-gate` is the measurement under load. On QEMU
-under TCG the worst gap observed across runs was **297 ms**. Idle it is about
-55 ms on a quiet host -- the housekeeping interval of sshd's wait -- rising to
-around 105 ms when the build machine is busy, which is the host descheduling
-the emulator rather than anything the guest did. Three 256 KiB SFTP round trips
-and ninety rejected connections moved it to 164 ms in one run and 297 ms in
-another. No gap crossed the one-second outage threshold in any run, which is
-consistent with B-43 not reproducing in 1281 QEMU connections. Those are the
-figures any future change to this arrangement has to beat, and the reason the
-gate records the number rather than asserting it: on a shared host the spread
-between runs is the host's.
+`make qemu-network-poll-cadence-gate` is the measurement under load. **Before
+the network tick the worst gap was 297 ms**, 55 ms idle on a quiet host rising
+to 105 ms when the build machine was busy -- which is the host descheduling the
+emulator rather than anything the guest did -- and 164 to 297 ms across three
+256 KiB SFTP round trips and ninety rejected connections. **With the tick the
+same three phases measured 24, 25 and 29 ms**, because the interrupt floor is
+the 100 Hz period rather than sshd's housekeeping interval. No gap crossed the
+one-second outage threshold in any run. The gate still records the number rather
+than asserting it: on a shared host the spread between runs is the host's, and
+what it asserts is that the instrument works, that the poll count advances,
+that every transfer came back byte-identical, and now that an armed tick
+actually fires.
 
 ## Trust boundaries
 

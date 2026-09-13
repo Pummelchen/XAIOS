@@ -404,9 +404,24 @@ void smp_secondary_main(uint64_t cpu_id) {
 
   __asm__ volatile("msr daifclr, #2" ::: "memory");
 
-  /* Run assigned kernel work, otherwise wait for an IRQ or a new job. */
+  /* Run assigned kernel work, otherwise wait for an IRQ or a new job.
+   *
+   * `msr daifclr, #2` every turn, and not only the one before this loop, is
+   * load-bearing twice over. `vector_entry` masks DAIF on every trap, and this
+   * CPU was measured spinning here with I *set* while a pending timer sat
+   * visible in its CPU interface (`hppir1=27`, `DAIF=0x3c0`) -- so it never
+   * took another interrupt, and nothing re-enabled them. And with a pending
+   * interrupt the wait-for-event latch is set, so `wfe` returns immediately
+   * instead of sleeping: the same run spun 134 million times. A secondary that
+   * cannot take an interrupt cannot be woken by one either, which is how the
+   * scheduler moves work between CPUs. */
   for (;;) {
+    __asm__ volatile("msr daifclr, #2" ::: "memory");
     if (xaios_thread_run_pending((uint32_t)cpu_id) == 0U) {
+      /* Idle, so this CPU can carry the network tick. Called on every idle
+       * turn: it claims once and repairs a tick that was masked while this CPU
+       * ran a task. See timer_arm_network_tick(). */
+      (void)timer_arm_network_tick();
       __asm__ volatile("wfe");
     }
   }

@@ -1,6 +1,7 @@
 #include <xaios/assert.h>
 #include <xaios/klog.h>
 #include <xaios/rtc.h>
+#include <xaios/smp.h>
 #include <xaios/timer.h>
 
 static uint64_t g_wall_epoch_ns;
@@ -16,6 +17,10 @@ static uint64_t g_wall_last_sync_ns;
 static uint64_t g_timer_frequency_hz;
 static uint64_t g_timer_interval;
 static uint32_t g_timer_periodic_active;
+/* The one CPU carrying the network tick, or UINT32_MAX when none is. One
+   holder keeps the cost to one timer on one CPU and keeps the poll serialised
+   the way the network guard already expects. See timer_arm_network_tick(). */
+static uint32_t g_network_tick_cpu = UINT32_MAX;
 
 static uint64_t read_cntfrq_el0(void) {
   uint64_t value = 0;
@@ -102,8 +107,19 @@ void timer_disable(void) {
 void timer_rearm(void) {
   if (g_timer_periodic_active == 0) {
     /* The enable register is banked per CPU. Mask a secondary's expired
-     * timer after the boot CPU stops the shared periodic scheduler. */
-    write_cntv_ctl_el0(2);
+     * timer after the boot CPU stops the shared periodic scheduler -- unless
+     * this is the CPU carrying the network tick, which is the one timer that
+     * deliberately outlives the scheduler's. `timer_disable()` leaves
+     * g_timer_interval alone precisely so this path has an interval to use,
+     * and it enables as well as re-points because a masked carrier is one
+     * nothing else re-arms. */
+    if (g_timer_interval == 0 ||
+        smp_cpu_id() != __atomic_load_n(&g_network_tick_cpu, __ATOMIC_ACQUIRE)) {
+      write_cntv_ctl_el0(2);
+      return;
+    }
+    write_cntv_cval_el0(timer_counter() + g_timer_interval);
+    write_cntv_ctl_el0(1);
     return;
   }
   if (g_timer_interval == 0) {
@@ -112,6 +128,58 @@ void timer_rearm(void) {
   /* Set next compare value = now + interval */
   uint64_t now = timer_counter();
   write_cntv_cval_el0(now + g_timer_interval);
+}
+
+
+uint32_t timer_arm_network_tick(void) {
+  if (g_timer_interval == 0) {
+    return 0;
+  }
+  uint32_t mine = smp_cpu_id();
+  if (__atomic_load_n(&g_network_tick_cpu, __ATOMIC_ACQUIRE) == mine) {
+    /* Already ours. Re-arm only when the tick is NOT running: a mask or a
+       non-carrier `timer_rearm` can have switched it off while this CPU ran a
+       task, and that is the case this exists for. Re-pointing a timer that is
+       already armed would push the deadline forward on every turn, and this
+       loop turns faster than the period -- which starves the interrupt that
+       would advance the count. Measured: the count froze at 18 and then at 50
+       before this check. */
+    uint64_t running = 0U;
+    __asm__ volatile("mrs %0, cntv_ctl_el0" : "=r"(running));
+    if ((running & 1U) == 0U) {
+      write_cntv_cval_el0(timer_counter() + g_timer_interval);
+      write_cntv_ctl_el0(1);
+    }
+    return 1;
+  }
+  /* CNTV_CTL_EL0 is banked per CPU, so this can only arm its own timer, and
+     the holder has to be decided before that. A weak compare-exchange would do
+     for a lock; it is not used here because a second CPU that believed it had
+     won would arm a second tick, and two ticks means two pollers. */
+  uint32_t expected = UINT32_MAX;
+  if (!__atomic_compare_exchange_n(&g_network_tick_cpu, &expected, mine, 0,
+                                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+    return 0;
+  }
+  write_cntv_cval_el0(timer_counter() + g_timer_interval);
+  /* ENABLE=1, IMASK=0: the same arming timer_enable_periodic does, on a CPU
+     that was masked, and not a change to the boot CPU's policy. */
+  write_cntv_ctl_el0(1);
+  klog("timer: network tick armed on cpu=%u interval=%lu\n",
+       (unsigned)mine, g_timer_interval);
+  return 1;
+}
+
+uint32_t timer_network_tick_cpu(void) {
+  return __atomic_load_n(&g_network_tick_cpu, __ATOMIC_ACQUIRE);
+}
+
+uint32_t timer_local_tick_is_network_only(void) {
+  if (g_timer_periodic_active != 0) {
+    return 0;
+  }
+  return smp_cpu_id() == __atomic_load_n(&g_network_tick_cpu, __ATOMIC_ACQUIRE)
+             ? 1U : 0U;
 }
 
 static uint64_t duration_ticks(uint64_t duration_ns) {

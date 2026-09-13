@@ -153,14 +153,17 @@ uint64_t network_poll_tick_count(void);
  * is exactly the shape that silently stops. It is reported on the gap line as
  * `intr=`, and the poll-cadence gate fails if a guest announces an armed tick
  * while this does not advance: that is what "armed" and "fires" being
- * different claims looks like when something checks. It reads 0 today because
- * nothing arms a tick; see `network_poll_tick_from_interrupt` above. */
+ * different claims looks like when something checks. It is the field that
+ * caught the tick starving itself and the idle loop running with interrupts
+ * masked, one CPU's timer being the whole mechanism. See
+ * `network_poll_tick_from_interrupt` above. */
 uint64_t network_interrupt_poll_count(void);
 /* B-44. The longest stretch this stack went undriven while a listener was
    registered, and how many of those stretches were long enough to be an
-   outage rather than a pause. The poll has no timer, no interrupt and no
-   thread behind it, so these are the machine's only account of how long its
-   networking was not running -- see wiki/Architecture.md. */
+   outage rather than a pause. Most of the poll comes from the syscalls a
+   process makes and one CPU carries a timer that bounds the rest, so these are
+   the machine's only account of how long its networking was not running --
+   see wiki/Architecture.md. */
 uint64_t network_poll_gap_max_ns(void);
 uint64_t network_poll_gap_outage_count(void);
 uint64_t network_icmp_reply_count(void);

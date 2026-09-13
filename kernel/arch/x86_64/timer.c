@@ -1,7 +1,9 @@
 #include <xaios/assert.h>
 #include <xaios/klog.h>
+#include <xaios/network_stack.h>
 #include <xaios/rtc.h>
 #include <xaios/scheduler.h>
+#include <xaios/smp.h>
 #include <xaios/timer.h>
 
 #include "platform.h"
@@ -25,7 +27,21 @@ static uint32_t g_periodic_hz;
    not tick the scheduler, because it lands inside a syscall's wait, not
    between two instructions of a process. */
 static uint32_t g_idle_wait;
+/* The one CPU carrying the network tick, or UINT32_MAX when none is. */
+static uint32_t g_network_tick_cpu = UINT32_MAX;
 static xaios_context_frame_t g_irq_frame;
+
+/* The local APIC count for one period of the configured rate, or 0 when no
+   rate was ever configured. It used to be computed in three places with the
+   same three clamps in each, which is how a range ends up owned by nobody in
+   particular -- the shape `B-77` records for three private port constants. */
+static uint32_t periodic_count(void) {
+  if (g_periodic_hz == 0U || g_lapic_frequency == 0U) return 0U;
+  uint64_t count = g_lapic_frequency / g_periodic_hz;
+  if (count == 0U) count = 1U;
+  if (count > UINT32_MAX) count = UINT32_MAX;
+  return (uint32_t)count;
+}
 
 static uint64_t ticks_to_ns(uint64_t ticks) {
   if (g_frequency == 0U) return 0U;
@@ -67,25 +83,67 @@ void timer_enable_periodic(uint32_t hz) {
     timer_disable();
     return;
   }
-  uint64_t count = g_lapic_frequency / hz;
-  if (count == 0U) count = 1U;
-  if (count > UINT32_MAX) count = UINT32_MAX;
   g_periodic_active = 1U;
   g_periodic_hz = hz;
-  x86_64_platform_timer_start((uint32_t)count, 1U);
-  klog("timer: periodic enabled hz=%u interval=%lu\n", hz, count);
+  x86_64_platform_timer_start(periodic_count(), 1U);
+  klog("timer: periodic enabled hz=%u interval=%lu\n", hz,
+       (uint64_t)periodic_count());
 }
 
 void timer_mask_local(void) { x86_64_platform_timer_stop(); }
 
 void timer_disable(void) {
   g_periodic_active = 0U;
+  /* g_periodic_hz survives, and the interval with it: the network tick is
+     armed from it later, on a CPU that was masked when this ran. */
   x86_64_platform_timer_stop();
   klog("timer: periodic disabled\n");
 }
 
 void timer_rearm(void) {
-  if (g_periodic_active == 0U) x86_64_platform_timer_stop();
+  if (g_periodic_active != 0U) {
+    return; /* the local APIC rearms a periodic count by itself */
+  }
+  if (timer_network_tick_cpu() == smp_cpu_id() && periodic_count() != 0U) {
+    x86_64_platform_timer_start(periodic_count(), 1U);
+    return;
+  }
+  x86_64_platform_timer_stop();
+}
+
+uint32_t timer_arm_network_tick(void) {
+  if (periodic_count() == 0U) {
+    return 0;
+  }
+  uint32_t mine = smp_cpu_id();
+  if (__atomic_load_n(&g_network_tick_cpu, __ATOMIC_ACQUIRE) == mine) {
+    /* Already ours: repair a tick that was stopped while this CPU ran a task.
+       Restarting a period that is already running would be harmless here
+       because the APIC reloads itself, unlike the one-shot architectures. */
+    x86_64_platform_timer_start(periodic_count(), 1U);
+    return 1;
+  }
+  uint32_t expected = UINT32_MAX;
+  if (!__atomic_compare_exchange_n(&g_network_tick_cpu, &expected, mine, 0,
+                                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+    return 0;
+  }
+  x86_64_platform_timer_start(periodic_count(), 1U);
+  klog("timer: network tick armed on cpu=%u interval=%lu\n",
+       (unsigned)mine, (uint64_t)periodic_count());
+  return 1;
+}
+
+uint32_t timer_network_tick_cpu(void) {
+  return __atomic_load_n(&g_network_tick_cpu, __ATOMIC_ACQUIRE);
+}
+
+uint32_t timer_local_tick_is_network_only(void) {
+  if (g_periodic_active != 0) {
+    return 0;
+  }
+  return smp_cpu_id() == __atomic_load_n(&g_network_tick_cpu, __ATOMIC_ACQUIRE)
+             ? 1U : 0U;
 }
 
 /* Wait for a deadline with the CPU halted.
@@ -115,11 +173,13 @@ static void timer_idle_until_common(uint64_t deadline_ns, int break_on_wake) {
     __asm__ volatile("sti; hlt; cli" ::: "memory");
     g_idle_wait = 0U;
   }
-  if (had_periodic != 0U && g_periodic_hz != 0U) {
-    uint64_t period = g_lapic_frequency / g_periodic_hz;
-    if (period == 0U) period = 1U;
-    if (period > UINT32_MAX) period = UINT32_MAX;
-    x86_64_platform_timer_start((uint32_t)period, 1U);
+  /* Put back what this CPU had, and not only what the scheduler had: the one
+     CPU carrying the network tick had a timer on entry even though
+     g_periodic_active was clear, and stopping it here would end OD-011's
+     mechanism at the first idle wait with every marker still green. */
+  if ((had_periodic != 0U || timer_network_tick_cpu() == smp_cpu_id()) &&
+      periodic_count() != 0U) {
+    x86_64_platform_timer_start(periodic_count(), 1U);
   } else {
     x86_64_platform_timer_stop();
   }
@@ -257,6 +317,15 @@ void timer_self_test(void) {
 }
 
 void x86_64_platform_timer_irq(void) {
+  /* On the CPU carrying the network tick this interrupt is the network's and
+     not the scheduler's, so a frame is still serviced while sshd's loop is
+     blocked (OD-011). It is reached only once the shared periodic tick has
+     stopped, because timer_local_tick_is_network_only() answers no while it is
+     still running -- so nothing about scheduling changes here. */
+  if (timer_local_tick_is_network_only() != 0U) {
+    network_poll_tick_from_interrupt();
+    return;
+  }
   if (g_periodic_active != 0U && g_idle_wait == 0U) {
     scheduler_tick(&g_irq_frame, 0);
   }

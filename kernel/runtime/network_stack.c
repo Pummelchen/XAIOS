@@ -5595,17 +5595,19 @@ static int network_reassemble_incoming(uint8_t *frame, uint32_t *frame_len,
 
 /* B-44: how long the stack went undriven, and saying so.
 
-   This poll has no timer, no interrupt handler and no kernel thread. It runs
-   inside the network syscalls a process makes and inside wait_events, and on
-   a booted machine the process making those calls is sshd -- which the kernel
-   starts as its last act, on the boot CPU, after switching preemption and the
-   periodic timer off (kmain.c). So the guest's networking runs exactly while
-   sshd is inside its loop, and any pause anywhere in that loop is a total
-   network outage: nothing comes off the receive ring, no ACK leaves, no
-   retransmit fires, no flow expires.
+   Most of this poll comes from the network syscalls a process makes and from
+   wait_events, and on a booted machine the process making those calls is sshd
+   -- which the kernel starts as its last act, on the boot CPU, after switching
+   preemption and the periodic timer off (kmain.c). One secondary CPU carries a
+   timer that polls this stack from interrupt context (OD-011,
+   `network_poll_tick_from_interrupt`), which is what bounds the window a
+   blocking call in that loop opens. Before the tick, a pause anywhere in the
+   loop was a total network outage: nothing came off the receive ring, no ACK
+   left, no retransmit fired, no flow expired.
 
-   Whether that arrangement should change is a design question and is argued
-   in wiki/Architecture.md. What was indefensible is that it was invisible:
+   Whether the arrangement should change was a design question and is argued
+   in wiki/Architecture.md; the timer was chosen and is landed. What was
+   indefensible is that it was invisible:
    from inside, a stack that has not run for ten seconds is indistinguishable
    from a quiet network, and from outside it is indistinguishable from the
    machine having gone away. So the gap between consecutive polls is measured

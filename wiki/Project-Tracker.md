@@ -348,9 +348,12 @@ only what the defect was and what closed it.
 
 ## Open problems and recommended refactors
 
-Three problems are open. Each is written here with what was tried, what did not
-work, and what would actually close it, because two of the three have already
-cost more in method than in engineering.
+Two problems are open and one is closed. Each is written here with what was
+tried, what did not work, and what would actually close it, because two of the
+three have already cost more in method than in engineering. **`P-1` is the one
+that closed**, and it closed by the refactor it recommended: `OD-011` chose the
+timer, stage three-b landed it, and the worst gap between polls fell from 55-93
+ms idle and 164-297 ms under load to 24 ms idle and 29 ms under load.
 
 ### P-1 — A connection is dropped whenever sshd's loop blocks
 
@@ -390,12 +393,18 @@ near a failure); and the guest was not being descheduled by a loaded host (zero
 wait overruns in a run with three multi-second stalls, and that wait is the
 longest single call in the loop).
 
-**Why it is still open.** Everything above narrows the window. None of it closes
-it: one fsync can still stall for seconds on a host whose disk does, and the
-guest has no networking for the duration. **Recommended refactor is `OD-011`** --
-the network needs a poll that does not depend on sshd's loop, and both ways of
-getting one are decisions about the machine's execution model rather than
-refactors anyone should make silently.
+**Closed, by the refactor this section asked for.** Everything above narrowed
+the window and none of it closed it, so the poll was made independent of sshd's
+loop: `OD-011` chose the timer and stage three-b landed it, and the worst gap
+between polls fell from **55-93 ms idle and 164-297 ms under load to 24 ms idle
+and 29 ms under load**, with several thousand polls per run now taken from the
+timer interrupt instead of from a syscall. One fsync can still stall for
+seconds, but it no longer takes the network with it. **What that does not
+settle:** a stall long enough to outlast the peer's own patience still ends the
+connection, and `B-43` and `B-63` were never reproduced on demand, so this
+records a window that is bounded rather than one that is gone. The full finding,
+including the three separate causes that had to be fixed and the six candidate
+mechanisms ruled out by measurement, is under `OD-011`.
 
 **Reproduction, for whoever takes it:** CI is far better at this than the local
 soak -- roughly one run in six to eight against three in 7138 rounds on Fusion,
@@ -625,7 +634,11 @@ qualification evidence.
 | OD-008 | Pin official Kimi/DeepSeek sources | `BLOCKED` | Corresponding adapters; DeepSeek exact label is unresolved. |
 | OD-009 | Select expert-parallel interconnect and failure/ownership model | `NOT STARTED` | Cluster inference. |
 | OD-010 | Define names, quality reporting, telemetry, and acceptance for opt-in approximate modes | `NOT STARTED` | Any approximate mode. |
-| OD-011 | Choose how the network is polled when sshd's loop is busy: a timer cadence (needs the stack made interrupt-safe -- `xaios_reentrant_lock` identifies its holder by CPU id and forbids interrupt context -- and preemption restored) or a dedicated thread (costs one of three worker CPUs permanently, since the scheduler runs one thread to completion per worker) | `NOT STARTED` | Closing P-1. Until then every blocking call in sshd's loop is a window with no networking, narrowed to about one fsync per twenty-four connections and not removed. |
+
+**This is the decision analysis as it was written, and the outcome is recorded
+under `OD-011` below: the timer was chosen, it is landed, and three of the costs
+named here turned out to be removable rather than payable. It is kept because
+the analysis is what made the third cause findable.**
 
 **OD-011 is the decision on this list most likely to be under-costed, so the two
 options are set out with what each actually needs.** The timer option is not a
@@ -707,117 +720,74 @@ context. It is now inside the guard, which is where that comment always said it
 belonged. Verified by `make compile-check` in every configuration and a full
 `make qemu-smoke` boot on node4 with the DNS and network markers passing.
 
-**Where the next session picks this up -- and it is one step further back than
-this paragraph used to say.** Stage three-b was attempted and **does not work**,
-and the finding is worth more than the attempt: two things the plan assumed are
-not true.
+**Done, and the two sessions together are the record of why it took three
+passes.** `OD-011` chose the timer; stage three-b landed it: one secondary CPU
+arms its own timer after `kmain` stops the shared periodic tick, and on that CPU
+the timer interrupt polls `network_poll_tick_from_interrupt()` -- the poll
+without `operations_tick()`, because the power path quiesces storage and can
+stop the machine -- instead of ticking the scheduler, which stays masked there
+exactly as the port left it. **No CPU gains or loses a preemption.**
 
-The first is that a timer interrupt arrives on any CPU after sshd starts.
-`kmain` calls `timer_disable()` immediately before starting sshd, and that sets
-the *global* `g_timer_periodic_active = 0` and masks only the boot CPU's timer.
-The secondaries had already masked their own in `smp_secondary_main`, and
-`timer_rearm()` masks any CPU whose flag is clear. **So no CPU takes a periodic
-timer interrupt on a booted machine**, and a `network_poll_tick()` placed in
-the `intid == TIMER_PPI_INTID` branch is unreachable code: the branch exists and
-never runs. The tick has to be *armed*, not merely hooked.
+**What the first attempt got wrong, because it is the useful part.** It read
+"the tick stops when the carrier is given work", which was coincidence: in the
+run instrumented to test that, no thread was dispatched to the carrier and the
+tick still died. Three separate causes had to be removed, and only the third was
+the timer:
 
-The second is why arming it is not enough on its own. A network tick was
-implemented to arm one secondary -- claim once per machine, `CNTV_CTL_EL0`
-enabled, `timer_rearm()` keeping it rolling, `timer_rearm`'s carrier branch
-re-enabling after the idle path masks, and `intr=` counting the polls it took.
-It fires: 46 to 49 polls, at the 100 Hz interval, on whichever secondary
-reached the claim first. **Then it stops, permanently, at the moment that CPU
-is dispatched a user thread** -- `threads: user dispatch id=19 owner=12 cpu=2`
-and the count freezes on the next line -- and it does not recover. Re-arming
-from the idle loop does not bring it back. `timer_mask_local()` is never called
-on that CPU (a diagnostic logged every call and printed nothing) and there is no
-`CNTV_CTL_EL0` write anywhere in the AArch64 port outside `timer.c`, so the
-interrupt simply stops being delivered for a reason that is **not established**.
-The mechanism was reverted rather than shipped, because a timer that stops
-silently is exactly the class of thing this page exists to refuse.
+1. **The hook point never ran.** `kmain` clears the *global* period before sshd
+   starts, so no CPU takes a periodic timer interrupt afterwards and a poll in
+   `intid == TIMER_PPI_INTID` is unreachable code. The tick has to be armed, not
+   merely hooked.
+2. **The idle loop could not take an interrupt at all.** `vector_entry` masks
+   `DAIF` on every trap, and a secondary's loop could be re-entered with `I` set
+   -- measured spinning with a pending timer *visible* in its CPU interface
+   (`hppir1=27`) and `DAIF=0x3c0`, so it never took another one. A CPU that
+   cannot take an interrupt cannot be woken by one either, which is how the
+   scheduler moves work between CPUs. The loop now clears `I` every turn instead
+   of once before it, and `wfe` sleeps again rather than spinning: the same run
+   had turned 134 million times. **This is a defect in its own right and has
+   nothing to do with the network.**
+3. **The keepalive starved the timer it was keeping alive.** Re-pointing the
+   comparator on every idle turn postpones the deadline indefinitely when the
+   loop iterates faster than the period, which is exactly what a pending
+   interrupt makes it do. The count froze at 18, then at 50. The keepalive now
+   re-arms **only when the tick is not running** -- which is what it is for: a
+   mask taken while this CPU ran a task -- and the count then tracked the loop
+   one-for-one to 8000.
 
-What is left in the tree is the half that is correct on its own and that the
-next attempt needs already proven: `network_poll_tick_from_interrupt()` in
-`kernel/runtime/network_stack.c`, which is `network_poll_tick()` without
-`operations_tick()` -- the power path quiesces storage and can stop the machine,
-and it must not run from a handler -- and the `intr=` field on the poll-gap line
-with `make qemu-network-poll-cadence-gate` requiring it to advance **whenever a
-guest announces an armed tick**. That gate is what found this: it froze at
-`intr=48` three runs in a row and named the mechanism rather than the guest.
+Ruled out along the way, each by measurement rather than argument, so the next
+person does not repeat them: a mask by this kernel (`timer_mask_local` is never
+reached on the carrier); `g_cpu_states` being reused (the bootstrap region is
+reserved from the NUMA allocator); the redistributor being asleep
+(`GICR_WAKER=0x0`, both `ProcessorSleep` and `ChildrenAsleep`); PPI 27 being
+disabled (`GICR_ISENABLER0=0x08000002`); the interrupt stuck active
+(`GICR_ISACTIVER0=0`, and `ICC_CTLR_EL1=0x8c00` means `EOImode=0`, so the
+unconditional `ICC_EOIR1_EL1` does deactivate); and the priority mask
+(`ICC_PMR_EL1=0xf8` admits the timer's `0xa0`).
 
-So the next step is not "call the poll from the handler". It is: establish why a
-secondary stops taking timer interrupts when it is given work, or choose a
-carrier that is never given work. Both are decisions about the machine's
-execution model, which is what this row has said from the beginning; the second
-is the dedicated-CPU cost this row already prices.
+**Verified, and the numbers are the claim.** `make compile-check` clean on
+aarch64, x86_64 and riscv64; `make qemu-smoke` passes; and
+`make qemu-network-poll-cadence-gate` reports **24 ms idle, 25 ms across three
+256 KiB SFTP round trips and 29 ms after ninety rejected connections, with 2890
+of those polls taken from the timer interrupt** -- against 55-93 ms idle and
+164-297 ms under load before. The gate's assertion that an announced tick must
+actually advance the interrupt count is what caught causes 2 and 3, and it is
+green. `make qemu-x86_64-smoke` and `make qemu-riscv64-smoke` also pass.
 
-**The second session measured it, and the earlier reading of "when it is given
-work" was wrong.** The stop reproduces every boot at **13 to 18 polls**, and it
-is not caused by a task: in the run that was instrumented for it, no user thread
-was dispatched to the carrier at all, and the tick still died. What was
-established, one measurement at a time on this machine, is a list of things it
-is **not**:
-
-- **Not a mask by this kernel.** `timer_mask_local()` on the carrier is never
-  reached -- a diagnostic logged every call and printed only `cpu=0`, the boot
-  CPU correctly masking its own.
-- **Not `DAIF`.** The secondary idle loop runs with `daif=0x340`, which is
-  `I` **clear**: IRQs are enabled there. A secondary also demonstrably returns
-  from running a thread and re-enters the loop (`ran=1` then `ran=0`).
-- **Not the CPU having left its idle loop.** With the keepalive in the loop, one
-  run counted **6000 idle turns** on the carrier while the poll count stayed
-  frozen at 16. The loop is alive and re-arming the timer; the interrupt is what
-  is not arriving.
-- **Not the CPU-state array being reused.** `g_cpu_states` lives in the
-  bootstrap region and `smp_bootstrap_reserved_range()` keeps it out of the
-  NUMA allocator (`kernel/mm/numa.c:410`), so `smp_cpu_id()` stays correct.
-- **Not the redistributor being asleep.** Read back from the carrier during the
-  freeze: `GICR_WAKER=0x0`, which is `ProcessorSleep=0` *and*
-  `ChildrenAsleep=0`. One latent deviation is worth recording beside that:
-  neither `gic_init` nor `gic_secondary_init` **waits** for `ChildrenAsleep` to
-  clear after clearing `ProcessorSleep`, which the GICv3 specification requires
-  before the redistributor is usable. Both paths omit it, so it is not the
-  asymmetry that explains a secondary-only failure, and the boot CPU's timer
-  works for thousands of ticks regardless -- but a sequence the specification
-  makes mandatory is not being performed.
-- **Not PPI 27 being disabled.** The same read gives
-  `GICR_ISENABLER0 = 0x08000002`, bit 27 set, with the timer's own
-  `CNTV_CTL_EL0` showing `ENABLE=1` and `ISTATUS=1` and a comparator in the
-  future at every idle turn.
-
-**What is left is the delivery path, and it is narrowed to two candidates: the
-interrupt is stuck active because it was never deactivated, or the per-CPU CPU
-interface is masking it.** `ICC_EOIR1_EL1` is written unconditionally at
-`kernel/arch/aarch64/exception.c:248`, which deactivates when `ICC_CTLR_EL1`
-`EOImode` is 0 -- and `EOImode` is a *per-CPU* register that
-`gic_secondary_init` never sets, so a secondary whose reset value differs from
-the boot CPU's would take each interrupt once and then never again. Reading that
-register back is the next measurement, and **the attempt to take it is itself
-recorded because it failed informatively**: adding `mrs` of
-`ICC_PMR_EL1`/`ICC_IGRPEN1_EL1`/`ICC_CTLR_EL1`/`ICC_RPR_EL1` to the idle loop
-raised `EXCEPTION: kind=current-spx-sync class=unknown ec=0x0` at EL1 and halted
-the machine, which is what a trapped system-register access looks like and
-suggests the GIC system-register interface is not enabled the way the code
-assumes. The diagnostic was reverted; **the tree is unchanged from the previous
-session's state.**
-
-**A second observation from the same instrument, worth its own check.** Once the
-tick stops, `wfe` can return immediately -- a pending interrupt that is never
-delivered sets the event register -- so the carrier's idle loop stops sleeping
-and spins. One run counted 6000 turns of a loop that should have been parked.
-That is an idle-CPU cost question independent of `OD-011`, and it is recorded
-here because the same instrumentation found it.
-
-Two smaller corrections to the paragraphs above, both verified: the
-`scheduler_tick` gate the plan asks for **already exists** --
-`kernel/sched/scheduler.c:685` returns unless `cpu_state->scheduling_enabled` --
-and was added by `3fab471`, long before `OD-011`; and `network_poll_tick()` is
-still guarded, so the interrupt path must call the `_from_interrupt` form rather
-than the public one, or a shutdown request races the network lock.
-
-The decision is not made here, and the row above stays `NOT STARTED` because it
+**One latent deviation is recorded and not fixed:** neither `gic_init` nor
+`gic_secondary_init` waits for `ChildrenAsleep` to clear after clearing
+`ProcessorSleep`, which the GICv3 specification requires before the
+redistributor is usable. Both paths omit it and the boot CPU's timer works for
+thousands of ticks regardless, so it is not this defect -- but a mandatory
+sequence is not being performed.
 is a choice about the machine's execution model rather than a refactor to make
 quietly.
+### Resolved, kept for reference
+
+| ID | Decision | Closed by |
+|---|---|---|
+| OD-011 | Choose how the network is polled when sshd's loop is busy | **The timer**, and it is landed rather than chosen on **AArch64 and x86-64**. One secondary CPU arms its own timer after `kmain` stops the shared periodic tick, and on that CPU the timer interrupt polls `network_poll_tick_from_interrupt()` -- the poll without `operations_tick()`, because the power path quiesces storage and can stop the machine -- instead of ticking the scheduler, which stays masked there exactly as the port left it. No CPU gains or loses a preemption, and the dedicated-thread cost of one of three worker CPUs was not paid. **Measured: the worst gap between polls fell from 55-93 ms idle and 164-297 ms under load to 24 ms idle and 29 ms under load**, with 2890 of a gate run's polls taken from the interrupt. Both objections that made this look impossible were removed rather than argued with: the stack guard now masks interrupts while it is held, and the handler-hostile part of the poll was `operations_tick()`, which the interrupt path does not call. Three causes had to be fixed before it held -- an unreachable hook point, a secondary idle loop that could not take an interrupt, and a keepalive that starved the timer it was keeping -- and the detail is under `P-1`. **RISC-V declines the tick**, and that is a refusal with evidence rather than an omission: the tick means taking timer traps in arbitrary kernel context, and that port's trap entry is deliberately minimal -- its own `entry.S` calls the full context switch "the scheduler work this port has not done". Arming it there regressed the boot at `/bin/c99-thread-context`, which faulted with `class=instruction-access-fault sepc=0x0` and `reason=thread-join-failed` -- a return to program counter zero in the thread machinery -- and halted the machine before the service phase; `make qemu-riscv64-smoke` was green before and after the revert and red with it. `timer_arm_network_tick()` returns 0 on that port and says why in the source, so sshd's loop is still its network thread. |
+
 ## Risk register
 
 Risk status `TESTING` means mitigations exist but the risk remains open and is

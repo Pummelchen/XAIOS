@@ -169,17 +169,19 @@ throughput benchmark or an Internet-exposure approval.
 This belongs in any reading of SSH availability, because it is a property of
 the SSH service rather than of the network stack alone.
 
-`network_poll_tick()` has no timer, no interrupt handler and no kernel thread
-behind it. It runs inside the network syscalls a process makes and inside
-`xaios_wait_events`, and on a booted machine `/bin/sshd` is the only process
-making either call -- the kernel starts it after disabling preemption and the
-periodic timer, so it is the only thing running on the boot CPU. The guest's
-networking therefore runs exactly while sshd is inside its service loop.
+`network_poll_tick()` mostly runs inside the network syscalls a process makes
+and inside `xaios_wait_events`, and on a booted machine `/bin/sshd` is the only
+process making either call -- the kernel starts it after disabling preemption
+and the periodic timer, so it is the only thing running on the boot CPU. One
+secondary CPU additionally carries a **network tick** (`timer_arm_network_tick`,
+`OD-011`) and polls the stack from its timer interrupt, which is what keeps
+frames moving while sshd is inside a blocking call.
 
-The consequence to plan for: **any pause in that loop is a total network
-outage, not a slow SSH server.** For its duration nothing comes off the receive
-ring, no ACK leaves, no retransmit fires, no timeout expires, nothing is
-refused and nothing is closed -- and from a client it is indistinguishable from
+The consequence to plan for, and the ceiling on it: **a pause in that loop used
+to be a total network outage rather than a slow SSH server.** For its duration
+nothing came off the receive ring, no ACK left, no retransmit fired, no timeout
+expired, nothing was refused and nothing was closed -- and from a client it was
+indistinguishable from
 the machine having gone away. Three of the loop's four phases contain blocking
 work that is not a network syscall, including every `ssh_log` append to the
 durable volume.

@@ -240,6 +240,32 @@ static void timer_idle_until_common(uint64_t deadline_ns, int break_on_wake) {
   timer_rearm();
 }
 
+/* RISC-V does not carry the network tick, and this is a refusal with evidence
+ * rather than an omission.
+ *
+ * The tick means taking timer traps in arbitrary kernel context, and this
+ * port's trap entry is deliberately minimal -- `entry.S` says in as many words
+ * that "a full context switch belongs with the scheduler work this port has not
+ * done". Attempting it anyway was measured, not argued: with the tick armed the
+ * boot regressed at `/bin/c99-thread-context`, which faulted with
+ * `class=instruction-access-fault sepc=0x0` and `reason=thread-join-failed` --
+ * a return to program counter zero in the thread machinery -- and the machine
+ * halted before the service phase. `make qemu-riscv64-smoke` was green before
+ * that change and red after it, and green again once it was reverted.
+ *
+ * So RISC-V keeps the arrangement every port had before OD-011: the poll runs
+ * from the syscalls a process makes and from `wait_events`, and sshd's own loop
+ * is still the machine's network thread. Saying that here rather than
+ * implementing a tick that corrupts a frame is the same rule the rest of this
+ * tree follows -- a refusal is a result, and the port states it.
+ *
+ * Whoever finishes this port's context switch can delete this comment and
+ * implement the three functions the way aarch64/timer.c does.
+ */
+uint32_t timer_arm_network_tick(void) { return 0; }
+uint32_t timer_network_tick_cpu(void) { return UINT32_MAX; }
+uint32_t timer_local_tick_is_network_only(void) { return 0; }
+
 void timer_idle_until(uint64_t deadline_ns) {
   timer_idle_until_common(deadline_ns, 0);
 }

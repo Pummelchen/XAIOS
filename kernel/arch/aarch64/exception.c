@@ -5,6 +5,7 @@
 #include <xaios/gic.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
+#include <xaios/network_stack.h>
 #include <xaios/panic.h>
 #include <xaios/scheduler.h>
 #include <xaios/smp.h>
@@ -217,11 +218,22 @@ xaios_context_frame_t *aarch64_irq_handler(xaios_context_frame_t *frame) {
   }
 
   if (intid == TIMER_PPI_INTID) {
-    /* Timer interrupt: rearm and call scheduler tick */
+    /* Timer interrupt: rearm, then the network's tick or the scheduler's.
+     *
+     * Exactly one CPU carries the network tick, and on that CPU this interrupt
+     * is the network's and not the scheduler's -- it polls the stack so a frame
+     * is still serviced while sshd's loop is blocked (OD-011) and leaves the
+     * scheduler masked exactly as the port left it, because that CPU does not
+     * own a preemptible user run queue. No CPU gains or loses a preemption.
+     * Every other CPU takes the branch it always took. */
     timer_rearm();
-    scheduler_tick(frame, aarch64_sve_enabled() != 0U
-                              ? (uint8_t *)frame + XAIOS_CONTEXT_FRAME_SIZE
-                              : 0);
+    if (timer_local_tick_is_network_only() != 0U) {
+      network_poll_tick_from_interrupt();
+    } else {
+      scheduler_tick(frame, aarch64_sve_enabled() != 0U
+                                ? (uint8_t *)frame + XAIOS_CONTEXT_FRAME_SIZE
+                                : 0);
+    }
   } else if (intid == WORKER_SGI_INTID) {
     /* The interrupt only provides an architectural wake-up for the worker
      * loop; pending work is claimed after exception return. */

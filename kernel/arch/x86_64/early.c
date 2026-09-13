@@ -7,6 +7,7 @@
 #include <xaios/smp.h>
 #include <xaios/syscall.h>
 #include <xaios/thread.h>
+#include <xaios/timer.h>
 #include <xaios/types.h>
 #include <xaios/user.h>
 #include <xaios/vmm.h>
@@ -1163,9 +1164,15 @@ void x86_64_ap_entry(uint32_t ordinal) {
                    __ATOMIC_RELEASE);
   for (;;) {
     /* Ring-3 exit returns with IF clear. Re-enable worker wake IPIs before
-     * checking the queue so every subsequent detached job can run. */
+     * checking the queue so every subsequent detached job can run -- and that
+     * same `sti` is what lets this CPU take the network tick's interrupt at
+     * all; on AArch64 the equivalent line was missing and the tick stopped
+     * after a few dozen polls because of it. */
     __asm__ volatile("sti" ::: "memory");
     if (xaios_thread_run_pending(ordinal) == 0U) {
+      /* Idle, so this CPU can carry the network tick: it claims once and
+       * repairs a tick that was stopped while this CPU ran a task. */
+      (void)timer_arm_network_tick();
       __asm__ volatile("hlt");
     }
   }
