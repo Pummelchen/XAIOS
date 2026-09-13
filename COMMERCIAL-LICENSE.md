@@ -9,8 +9,8 @@ Commercial use is not granted by the PolyForm Noncommercial license. Any
 commercial use of XAIOS requires a separate written commercial license obtained
 from André Borchert, the XAIOS copyright holder, before that use begins.
 
-To request commercial licensing terms, contact the repository owner through
-[the Pummelchen GitHub profile](https://github.com/Pummelchen). A request does
+To request commercial licensing terms, contact André Borchert through
+[his GitHub profile](https://github.com/Pummelchen). A request does
 not grant any rights; commercial rights begin only when a separate written
 agreement has been executed by the copyright holder.
 
