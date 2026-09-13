@@ -290,3 +290,7 @@ a separate written licence obtained beforehand — see
 [`COMMERCIAL-LICENSE.md`](./COMMERCIAL-LICENSE.md).
 
 Copyright (c) 2026 André Borchert.
+
+## Contact
+
+Questions, bug reports and suggestions are always welcome. You can contact André Borchert by email at [0xa0b1@gmail.com](mailto:0xa0b1@gmail.com).
