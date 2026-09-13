@@ -73,12 +73,12 @@ hardware.**
 
 ### What is open
 
-Four open rows, and none of them is a boot failure or a data-loss path. The
+Five open rows. Four of them are not boot failures or data-loss paths; the fifth is a gate that fails on one board only, and it is `B-100`. The
 count was six while eleven were closed, because nine days of red turned out to be
 five separate causes and working through them found more; the RISC-V and CI work
 on `main` then raised and closed sixteen, and the WebTransport C99 port added
 four of its own, of which three are closed. What is left is `B-43`, `B-63`,
-`B-79` and `B-99`. Every row is `TESTING` or `OPEN` in the table below, which
+`B-79`, `B-100` and `B-99`. Every row is `TESTING` or `OPEN` in the table below, which
 here means the fix or the measurement is still owed rather than that the code is
 untried.
 
@@ -88,6 +88,7 @@ untried.
 | `B-63` | A session is accepted, receives nothing, and both ends time out separately | Reproduced on the runner three times with the host-side capture; the mechanism is established and the row says which half of it the flow line answers. |
 | `B-79` | The TLS 1.3 client handshake is written and has no 0-RTT | The handshake completes against an independently generated QUIC server flight. What is absent is 0-RTT and the session tickets it needs, a HelloRetryRequest (refused by name), and client certificates. The rest of the port, and what each remaining task's exit criterion is, is in [Current tasks](#current-tasks) below. |
 | `B-99` | The Fusion load soak fails on node2 about once a minute, and no evidence points at XAIOS | The client's TCP connect times out in 7.83s and the guest's console shows no trace of that connection, while a probe straight afterwards connects in 0.07s. The failures recur about once a minute in ~39s bursts that two different client Macs hit in the same windows, so the client stacks are not the cause. A QEMU guest on the userspace network took 4000 rounds without one failure and logs 2 TCP retransmits where a comparable Fusion run logs 2887, while under Fusion the same failures appear over e1000e and vmxnet3 and over both bridged and NAT vmnet -- so the guest's stack, its sshd, its NIC driver, both clients and the physical LAN are each held out, and Fusion's virtual network on node2 is what is left. The mechanism inside vmnet is unidentified, which is why the row is open; per-port exhaustion, flow-table exhaustion, the half-open bound and the B-43/B-63 service-loop stall are all refuted from the console. |
+| `B-100` | `riscv64-aia` fails its NVMe self-test on the runner with `XAIOS_ERR_IO` | Intermittent: the same gate passed on the seven other runs in the same window, and it failed on a commit that changes only the workflow. The guest says `nvme: controller ready` and `identify controller` succeeds, so the self-test is what fails. It is not B-73's old shape, which was a guest waiting for a message that never arrived. |
 
 Two things are open that are not defects:
 
@@ -171,6 +172,8 @@ this page does not repeat it.
 | `b1` | superseded | First released build. |
 
 No released build has been booted on physical hardware.
+
+| B-100 | `riscv64-aia` fails its NVMe self-test intermittently on the runner with an I/O error | riscv64 | `OPEN` | `Core OS Aggregate RC` failed on `c845015e`, a commit that changes only the workflow, and the sub-gate report names the row: three of the four architectures pass -- `aarch64`, `x86_64` and plain `riscv64` -- and **`riscv64-aia` fails** with `nvme: self-test failed status=-4`, which is `XAIOS_ERR_IO`. The guest reaches `nvme: controller ready version=0x10400 mqes=2048 dstrd=4` and `identify controller serial='XAIOSNVME' model='QEMU NVMe Ctrl' sgl=1`, so the controller is up and answering; the self-test is what fails. **It is intermittent rather than deterministic:** the same gate passed on the seven other runs in the same window, including three whose commits are descendants of the failing one, and the step took 1573s of its 1800s budget -- the pre-B-73 figure, against the 175s B-73 measured once the pinned QEMU was provisioned. **What this is not:** it is not B-73 recurring in its old shape. B-73's signature was a guest *waiting* for an MSI-X message that never arrived and never printing a failure; this guest prints a failure and carries on, which is a different event reaching a different conclusion. **What is not established:** whether the error comes from AIA MSI-X delivery, from the NVMe queue setup it changes, or from the runner's timing -- the row is opened by the failure and not by a diagnosis. **To close:** the aia row run enough times to say whether the failure follows the board, the emulator or the machine's load, and, if it follows the board, the failing step of the self-test named. |
 
 ## Status codes
 
