@@ -312,14 +312,15 @@ const uint8_t *wt_tls_client_alpn(const wt_tls_client_t *handshake,
  * completed. RFC 9001 section 8.2: their value is authenticated by the
  * handshake, so before the Finished verifies they are attacker-controlled
  * bytes -- returning them only afterwards is what stops a caller from acting on
- * them early by mistake. The bytes point into the EncryptedExtensions message
- * that was passed to `wt_tls_client_receive`; the caller must have kept that
- * buffer, or copied them, until the handshake completes. */
+ * them early by mistake. The bytes are the client's own copy, taken from the
+ * EncryptedExtensions message while it was in hand, so they outlive the buffer
+ * that carried them -- which is what a caller reading into a scratch buffer
+ * needs, and is the point of B-92. */
 const uint8_t *wt_tls_client_peer_transport_parameters(
     const wt_tls_client_t *handshake, size_t *out_len);
 
 /* Zero everything derived: the transcript, the secrets, the traffic keys, the
- * private-key view, the negotiated values and the borrowed views -- and return
+ * private-key view, the negotiated values and the bytes it kept -- and return
  * the handshake to WT_TLS_STATE_START, so it reports nothing about a connection
  * that has ended. The configuration pointers stay, because they are the
  * caller's and a cleared handshake is configured but unstarted rather than

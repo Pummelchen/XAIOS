@@ -148,9 +148,9 @@ void wt_tls_client_clear(wt_tls_client_t *handshake) {
   handshake->keys_available = 0U;
   handshake->client_key_private = NULL;
   handshake->client_key_private_len = 0U;
-  /* The negotiated values and the borrowed views go too. A cleared handshake
-     that still reported WT_TLS_STATE_CONNECTED would keep handing out the
-     peer's transport parameters through the getter, which gates on exactly
+  /* The negotiated values and the bytes the client kept go too. A cleared
+     handshake that still reported WT_TLS_STATE_CONNECTED would keep handing out
+     the peer's transport parameters through the getter, which gates on exactly
      that state -- so clearing the secrets but not the state leaves the
      authenticated-looking bytes readable from a connection that no longer
      exists. */
