@@ -4,7 +4,12 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 PIN=2ae376c6cdf4fef90ca2388ecf7a07457fa63cff
 SOURCE="$ROOT/third_party/picolibc"
-ARCHES=${XAIOS_LIBC_ARCHES:-"aarch64 x86_64"}
+# All three, because the tree is gated on all three. It was `aarch64 x86_64`
+# while every kernel leg of `compile-check` covered aarch64, x86_64 and
+# riscv64 -- so the hosted library was built for two of the architectures
+# the project ships and the third had no sysroot for a userspace leg to use,
+# which is why `userspace/wt/` was unbuilt for RISC-V (B-91).
+ARCHES=${XAIOS_LIBC_ARCHES:-"aarch64 x86_64 riscv64"}
 
 need() {
   command -v "$1" >/dev/null 2>&1 || {

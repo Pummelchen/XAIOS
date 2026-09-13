@@ -1176,7 +1176,18 @@ qemu-readiness-gate:
 qemu-full-os-rc:
 	python3 ./tests/scripts/qemu-full-os-rc.py
 
-# Every freestanding source compiles clean -- in both configurations.
+# Every freestanding source compiles clean -- in every configuration, on every
+# architecture the project ships.
+#
+# The userspace legs are aarch64, x86_64 and riscv64. The third was missing for
+# reasons that compounded: `scripts/build-libc.sh` built two sysroots while the
+# kernel legs covered three, so there was no `build/libc/riscv64/sysroot` for a
+# userspace leg to point at, and `userspace/wt/` was therefore compiled for
+# RISC-V by nothing at all (B-91). Both halves are addressed together, because
+# a leg without a sysroot cannot exist and a sysroot nobody points a leg at is
+# not coverage.
+#
+# Every freestanding source compiles clean -- in every configuration.
 #
 # The kernel legs run twice over the same aarch64 file set, once as the default
 # configuration and once with `-DXAIOS_BOOT_TEST_APPS=1`, which is what the
@@ -1192,7 +1203,8 @@ qemu-full-os-rc:
 # because the recipe is one shell command joined by backslashes -- a `#` or a
 # `@#` line inside it is not a comment to the shell, it is the next command.
 compile-check: libc
-	@mkdir -p build/compile-check/x86-kernel build/compile-check/x86-userspace
+	@mkdir -p build/compile-check/x86-kernel build/compile-check/x86-userspace \
+	  build/compile-check/riscv-userspace
 	@failed=0; \
 	for f in $$(find kernel -name '*.c' ! -path '*/x86_64/*' ! -path '*/riscv64/*'); do \
 	  clang --target=aarch64-none-elf -std=c99 -ffreestanding \
@@ -1264,6 +1276,23 @@ compile-check: libc
 	    -Ithird_party/openbsd-compat -Ithird_party/bearssl/inc \
 	    -Ithird_party/bearssl/src -Itests \
 	    -isystem build/libc/x86_64/sysroot/include \
+	    -DMLK_CONFIG_FILE='"mlkem_xaios_config.h"' \
+	    -c "$$f" -o "$$object" \
+	    || failed=$$((failed + 1)); \
+	done; \
+	for f in $$(find userspace -name '*.c' ! -path 'userspace/libc/*' \
+	    ! -path 'userspace/apps/hosted/*'); do \
+	  object=build/compile-check/riscv-userspace/$$(printf '%s' "$$f" | tr / _).o; \
+	  clang --target=riscv64-unknown-elf -std=c99 -ffreestanding \
+	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+	    -march=rv64gc -mabi=lp64d -mcmodel=medany \
+	    -Wall -Wextra -Werror -Iuserspace/include -Iuserspace/sshd \
+	    -Iuserspace/wt/include \
+	    -Iengine/include \
+	    -Iuserspace/apps/terminal -Ithird_party/mlkem-native/mlkem \
+	    -Ithird_party/openbsd-compat -Ithird_party/bearssl/inc \
+	    -Ithird_party/bearssl/src -Itests \
+	    -isystem build/libc/riscv64/sysroot/include \
 	    -DMLK_CONFIG_FILE='"mlkem_xaios_config.h"' \
 	    -c "$$f" -o "$$object" \
 	    || failed=$$((failed + 1)); \
