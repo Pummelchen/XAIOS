@@ -288,3 +288,5 @@ educational and noncommercial research use, including by universities and
 public research organisations. It does not grant commercial use, which requires
 a separate written licence obtained beforehand — see
 [`COMMERCIAL-LICENSE.md`](./COMMERCIAL-LICENSE.md).
+
+Copyright (c) 2024-2026 André Borchert.
