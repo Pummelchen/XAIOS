@@ -7,7 +7,16 @@
 #define XAI_FS_BLOCK_SIZE UINT64_C(4096)
 #define XAI_FS_WRITER_SCRATCH_MIN UINT64_C(8192)
 #define XAI_FS_MIN_CHUNK_SIZE UINT64_C(2097152)
-#define XAI_FS_MAX_CHUNK_SIZE UINT64_C(16777216)
+/* 64 MiB, which is what the format says and what the reader and the host tool
+ * have accepted since the cap was raised. This constant was left at 16 MiB by
+ * that change -- `78bafd1` touched `engine/src/xai_fs.c`, the Python tool and
+ * `wiki/Filesystem-and-Storage.md` and not this file -- so the C writer could
+ * neither format nor accept a volume in the (16, 64] MiB range that
+ * `docs/MODELFS-FORMAT.md` says is legal, the reader will open, and
+ * `tools/xaios_xai_fs.py` will write. One format with two caps is one cap
+ * nobody can rely on; the reader's own comment argues the higher one is where
+ * the limit stops binding. */
+#define XAI_FS_MAX_CHUNK_SIZE UINT64_C(67108864)
 
 static void store_le16(uint8_t output[2], uint16_t value) {
   output[0] = (uint8_t)value;

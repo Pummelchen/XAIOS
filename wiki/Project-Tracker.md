@@ -292,6 +292,7 @@ only what the defect was and what closed it.
 
 | ID | Defect | Affects | Closed by |
 |---|---|---|---|
+| B-102 | One format, two chunk-size caps, and the writer had the smaller one | all four | `XAI_FS_MAX_CHUNK_SIZE` in `engine/src/xai_fs_writer.c` was **16 MiB** while `engine/src/xai_fs.c`, `tools/xaios_xai_fs.py` and `docs/MODELFS-FORMAT.md` all said **64 MiB**, so the C writer could neither format nor accept a volume in the range the format documents, the reader opens and the host tool writes. **The cause is a mechanical change that missed one file:** `78bafd1` "raise the chunk cap to where it stops binding" touched the reader, the Python test and `wiki/Filesystem-and-Storage.md`, and the writer's constant was left where it was -- and the reader's own comment argues the higher cap is where the limit stops binding, so the intent was never in doubt. Nothing reported it because no two of the four are ever read together, which is `B-77`'s shape again: a value copied across a boundary with nothing comparing the copies. **Fixed by making the writer say what the format says**, and held by `tests/repository/check-xai-fs-chunk-bounds.py`, which reads all four by name and fails when any one disagrees. Control run: putting `16777216` back in the writer fails it, naming all four values. The bounds are a documented format property and not a per-caller policy, so a caller that wants smaller chunks asks for them; it does not get to redefine the format. |
 | B-101 | The published Wiki silently went backwards, and nothing failed | repository | `publish-wiki` copied `wiki/*.md` into a `--depth 1` clone of the Wiki repository and pushed, so whichever run of the job finished last decided what the Wiki said, whatever commit it was for. On 2026-09-13 the run for `023afed0` spent about six hours queued and pushed at **12:54:21Z**, thirty-five seconds *after* the run for `8345bb2` had pushed a newer copy at 12:53:46Z, so the published `Project-Tracker.md` went from 186,340 bytes to 179,190 -- the row for `OD-011` and the corrected `B-100` rate, the output of the previous session's last six commits, removed by a job that reported `success`. **Both runs succeeded and neither said anything**, which is what made it invisible: the Wiki repository's history is the only place it shows, as a commit whose parent already contained the newer page. Found by comparing the published pages against `wiki/` while reading the repository for a session handover, and confirmed by content rather than by argument -- the published `Project-Tracker.md` is byte-identical (md5 `92c7ba7271f0eabde905e54cdd027ae3`) to the repository's copy at `023afed0`, against `4f5bebb0d92cd1e8d6b62c92a485e8d8` at `8345bb2`. Every other one of the 26 pages was already level, so one page and one race. **Fixed in three parts, because one was not enough to be sure.** The job now carries `concurrency: group: publish-wiki`, so two runs cannot write at once; it resolves the tip of `main` with `git ls-remote` and **stands down unless its own commit is still that tip**, which is the actual defect -- publishing is only meaningful for the current commit, and a newer push has a run of its own; and a rejected push is re-applied to the published tip and retried up to three times, because a person can still edit the published pages between the clone and the push. Standing down is not a failure and does not fail the run, which is the correct report: this run is declining to publish something that is no longer current. **The check that would have caught it in a day is `B-101`'s other half.** `tests/repository/check-wiki-parity.py` reads the published Wiki back from the remote and compares every page byte for byte against `wiki/`, and `publish-wiki` runs it after pushing, which is the "post-push byte comparison" risk `R-012` had claimed existed since it was written. It runs with no credential against the public Wiki and with `GITHUB_TOKEN` when there is one; `XAIOS_WIKI_DIR` points it at a checkout so it can be exercised with no network, which is how its controls were run: an identical tree passes, one appended byte fails naming the line, and a deleted page fails naming the page. It is deliberately outside `docs-check`, which runs inside `qemu-core-os-rc` under a 120-second budget and must work with no network. |
 | B-80 | Nothing on XAIOS could verify a server certificate | all four | The operator chose a **pinned operator key**, the mechanism `xapt` already uses, over a trust store, and the policy is written in `userspace/wt/src/wt_tls_pin.c`. It holds one key and answers one question, and it is deliberately unable to answer anything else: an unset pin returns `WT_TLS_PIN_NO_PIN`, which is a refusal, so there is no state of the structure that means "accept any key" -- a policy object whose default is trust is one that eventually gets constructed, not configured, and then used. A certificate has to pass **two independent checks**: it must carry the pinned key (`wt_tls_pinned_key_accepts_certificate`, on the leaf, whose key is compared as bytes so that one key has exactly one representation) and its signature over the transcript must verify under that key (`wt_tls_certificate_verify_signature`). Neither alone is sufficient and both are required: a pin by itself accepts a certificate anyone could copy, and a signature check by itself accepts any self-signed key an attacker generated. A mismatch is `unknown_ca` and a missing pin is `handshake_failure`, because "this is not who we pinned" and "we never pinned anyone" are different operational problems. Component setters refuse a modulus with a leading zero byte, an odd-length hex string, a non-hex character and a key that does not fit, and every refusal leaves the pin unset rather than half configured. 80 checks hold the policy, including an EC pin against a real P-256 certificate generated for the purpose. **What a pin does not do** is on the header and in the wiki: it does not authenticate a name, and a deployment that pins gives up being redirected. |
 | B-83 | The EncryptedExtensions ALPN answer was read in a format RFC 7301 does not define | all four | `wt_tls_parse_encrypted_extensions` read the server's `application_layer_protocol_negotiation` extension as `protocol_name<1..255>` -- one length byte then the name. RFC 7301 section 3.1 says the extension_data of a ServerHello is "structured the same as described above for the client 'extension_data', except that the 'ProtocolNameList' MUST contain exactly one 'ProtocolName'", so it begins with a **two-byte list length** and a conformant server's answer was refused. It would also have accepted a non-conformant message, so this is a refusal-of-the-right-thing defect and not only a parsing one. It survived four audits and 711 checks because nothing in the repository carried ALPN: RFC 8448's EncryptedExtensions has none, and the only other fixtures were written by hand to match the parser. What found it was generating the QUIC server flight from an independent implementation -- which had first been written to agree with the parser, and did not find it either until it was corrected to the RFC and the two disagreed. The parser is fixed, the flattened form is now refused by a regression test, and the fixture was regenerated. |
@@ -706,19 +707,56 @@ context. It is now inside the guard, which is where that comment always said it
 belonged. Verified by `make compile-check` in every configuration and a full
 `make qemu-smoke` boot on node4 with the DNS and network markers passing.
 
-**Where the next session picks this up.** The remaining step is the tick itself:
-call `network_poll_tick()` from the AArch64 timer handler -- the
-`intid == TIMER_PPI_INTID` branch of `kernel/arch/aarch64/exception.c`, which
-today only rearms and calls `scheduler_tick` -- and have it fire where kernel
-context is interruptible. The secondary CPUs already are: `smp.c` unmasks after
-`timer_mask_local()`. The boot CPU takes no kernel-context interrupts at all, so
-whether it joins is a separate question that does not have to be answered for
-the blocked-sshd case to be fixed, because a tick on any CPU services the one
-network stack. `scheduler_tick` must then be gated per CPU on
-`g_cpu_states[cpu].scheduling_enabled`, since the secondaries keep the scheduler
-timer masked on purpose until they own a preemptible user run queue. Everything
-the tick depends on is now in place: the interrupt-mask primitive, the
-interrupt-safe guard, and the guarded resolver tick.
+**Where the next session picks this up -- and it is one step further back than
+this paragraph used to say.** Stage three-b was attempted and **does not work**,
+and the finding is worth more than the attempt: two things the plan assumed are
+not true.
+
+The first is that a timer interrupt arrives on any CPU after sshd starts.
+`kmain` calls `timer_disable()` immediately before starting sshd, and that sets
+the *global* `g_timer_periodic_active = 0` and masks only the boot CPU's timer.
+The secondaries had already masked their own in `smp_secondary_main`, and
+`timer_rearm()` masks any CPU whose flag is clear. **So no CPU takes a periodic
+timer interrupt on a booted machine**, and a `network_poll_tick()` placed in
+the `intid == TIMER_PPI_INTID` branch is unreachable code: the branch exists and
+never runs. The tick has to be *armed*, not merely hooked.
+
+The second is why arming it is not enough on its own. A network tick was
+implemented to arm one secondary -- claim once per machine, `CNTV_CTL_EL0`
+enabled, `timer_rearm()` keeping it rolling, `timer_rearm`'s carrier branch
+re-enabling after the idle path masks, and `intr=` counting the polls it took.
+It fires: 46 to 49 polls, at the 100 Hz interval, on whichever secondary
+reached the claim first. **Then it stops, permanently, at the moment that CPU
+is dispatched a user thread** -- `threads: user dispatch id=19 owner=12 cpu=2`
+and the count freezes on the next line -- and it does not recover. Re-arming
+from the idle loop does not bring it back. `timer_mask_local()` is never called
+on that CPU (a diagnostic logged every call and printed nothing) and there is no
+`CNTV_CTL_EL0` write anywhere in the AArch64 port outside `timer.c`, so the
+interrupt simply stops being delivered for a reason that is **not established**.
+The mechanism was reverted rather than shipped, because a timer that stops
+silently is exactly the class of thing this page exists to refuse.
+
+What is left in the tree is the half that is correct on its own and that the
+next attempt needs already proven: `network_poll_tick_from_interrupt()` in
+`kernel/runtime/network_stack.c`, which is `network_poll_tick()` without
+`operations_tick()` -- the power path quiesces storage and can stop the machine,
+and it must not run from a handler -- and the `intr=` field on the poll-gap line
+with `make qemu-network-poll-cadence-gate` requiring it to advance **whenever a
+guest announces an armed tick**. That gate is what found this: it froze at
+`intr=48` three runs in a row and named the mechanism rather than the guest.
+
+So the next step is not "call the poll from the handler". It is: establish why a
+secondary stops taking timer interrupts when it is given work, or choose a
+carrier that is never given work. Both are decisions about the machine's
+execution model, which is what this row has said from the beginning; the second
+is the dedicated-CPU cost this row already prices.
+
+Two smaller corrections to the paragraphs above, both verified: the
+`scheduler_tick` gate the plan asks for **already exists** --
+`kernel/sched/scheduler.c:685` returns unless `cpu_state->scheduling_enabled` --
+and was added by `3fab471`, long before `OD-011`; and `network_poll_tick()` is
+still guarded, so the interrupt path must call the `_from_interrupt` form rather
+than the public one, or a shutdown request races the network lock.
 
 The decision is not made here, and the row above stays `NOT STARTED` because it
 is a choice about the machine's execution model rather than a refactor to make

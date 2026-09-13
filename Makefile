@@ -1548,6 +1548,7 @@ docs-check:
 	python3 tests/repository/check-syscall-abi.py
 	python3 tests/repository/check-riscv-firmware-paths.py
 	python3 tests/repository/check-aggregate-budgets.py
+	python3 tests/repository/check-xai-fs-chunk-bounds.py
 
 code-scanning-contract:
 	python3 tests/repository/check-code-scanning-contract.py

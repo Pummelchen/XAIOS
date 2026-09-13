@@ -234,7 +234,7 @@ checksums that verifies nothing.
 
 Cheapest first.
 
-    make docs-check          # 16 repository checks, no build, seconds
+    make docs-check          # 17 repository checks, no build, seconds
     make compile-check       # every freestanding source compiles clean
     make hosted-test         # unit tests that run on the host
     make release-image-gate  # each image on all five environments
@@ -249,8 +249,8 @@ boots each `.iso` on QEMU AArch64, QEMU x86-64, QEMU RISC-V,
 Virtualization.framework and VMware Fusion, and requires each guest to print
 *this build's* number and `system-slot: unavailable`.
 
-`docs-check` runs the checks that need no build, and it runs sixteen of them.
-`tests/repository/` holds twenty-two, and the other six are deliberately
+`docs-check` runs the checks that need no build, and it runs seventeen of them.
+`tests/repository/` holds twenty-three, and the other six are deliberately
 elsewhere: `check-libc-contract.py` runs from `make libc-check` because it
 needs a built sysroot, `check-production-source.py` runs from `make
 production-source-audit` (as a step of `qemu-core-os-rc`), and
