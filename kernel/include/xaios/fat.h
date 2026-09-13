@@ -119,7 +119,19 @@ xaios_status_t fat_copy_file(xaios_fat_volume_t *destination,
                              xaios_fat_volume_t *source,
                              const char *source_path);
 
-/* Format, populate and read back a volume in memory, checked without a disk. */
-void fat_self_test(void);
+/* There is no boot-time FAT self-test, and this header used to declare one.
+ *
+ * `void fat_self_test(void);` sat here saying "Format, populate and read back a
+ * volume in memory, checked without a disk", with no definition anywhere in the
+ * tree -- so a caller following this header would have failed to link, and
+ * nothing did call it, which is why it survived. The coverage it described
+ * exists and is better placed: `tests/storage/test_fat.c` builds a volume in
+ * memory, writes and reads it back, and holds 118 assertions over the long-name
+ * and directory paths. That is a hosted test where a fault can be diagnosed,
+ * rather than a boot self-test that halts the machine it is diagnosing.
+ *
+ * The declaration is removed rather than implemented so this header stops
+ * promising a function the tree does not have. Whoever wants the boot-time
+ * check can add both it and this note. */
 
 #endif

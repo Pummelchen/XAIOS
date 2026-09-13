@@ -34,6 +34,28 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SURFACES = ("wiki", "docs")
 
+# Root-level documents carry claims too, and nothing read them.
+#
+# `SECURITY.md` said for five weeks that the x86_64 image did not run the
+# service stack that `wiki/Current-Limitations.md` and `wiki/Architecture.md`
+# say it does -- and one of those is wrong, while a check that scans only wiki/
+# and docs/ cannot see which. That is the same shape as the three expired
+# claims this file was written for: correct when written, and nothing re-reads
+# a sentence once it is committed. These are listed rather than globbed because
+# the root holds documents, not a document tree, and naming them is what makes
+# adding one a decision.
+ROOT_DOCUMENTS = (
+    "README.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "HARDWARE-READINESS.md",
+)
+# `CHANGELOG.md` is deliberately absent. It is a record of what each build did
+# and it quotes the commits that did it, so its references are historical by
+# construction; the field this check would flag is the one that makes it worth
+# reading. Its one live claim, that the file names the build `BUILD_NUMBER`
+# does, is checked by `check_build_identity` below.
+
 # How far one of our own commits may fall behind before a currency claim about
 # it stops being credible.
 MAX_COMMITS_BEHIND = 50
@@ -110,6 +132,63 @@ def check_build_identity(failures: list[str]) -> None:
             f"CHANGELOG.md has no entry for build {build}; a build nobody has "
             f"described is one nobody can find out what changed in")
 
+def check_document(path: Path, failures: list[str], shallow: bool,
+                   today: str, tomorrow: str) -> tuple[int, int]:
+    """The expired claims in one document. Returns (commit refs, upstream pins).
+
+    One function for both surfaces, so a rule added for a root document cannot
+    be one the Wiki pages are not held to, or the other way round.
+    """
+    relative = path.relative_to(ROOT)
+    text = path.read_text(errors="replace")
+    lowered = text.lower()
+    acknowledged = any(phrase in lowered for phrase in ACKNOWLEDGED)
+    checked = 0
+    upstream_pins = 0
+
+    for commit in HASH.findall(text):
+        checked += 1
+        if not in_our_history(commit):
+            # An upstream pin. Old on purpose.
+            upstream_pins += 1
+            continue
+        behind = run("git", "rev-list", "--count", f"{commit}..HEAD")
+        distance = int(behind) if behind.isdigit() else 0
+        if distance > MAX_COMMITS_BEHIND and not acknowledged:
+            failures.append(
+                f"{relative}: cites {commit[:8]}, {distance} commits "
+                f"behind HEAD, and does not say so. Re-run the evidence "
+                f"or state that it is behind the current tree."
+            )
+
+    reviewed = REVIEWED.search(text)
+    if reviewed:
+        claimed = reviewed.group(1)
+        changed = "" if shallow else run(
+            "git", "log", "-1", "--format=%ad", "--date=short", "--", str(relative)
+        )
+        if changed and changed > claimed:
+            failures.append(
+                f"{relative}: claims review on {claimed} but was "
+                f"modified on {changed}."
+            )
+        elif claimed > tomorrow:
+            # A day of slack, because "today" is not one date. The
+            # zones in use span about a full day either side of UTC, so
+            # a review recorded in the evening in UTC+7 is tomorrow to a
+            # runner on UTC, and a check that compared against its own
+            # local clock would fail every contributor east of it every
+            # evening -- which is exactly what it did. A date further
+            # ahead than that is a claim about a review that has not
+            # happened, which is what this is for.
+            failures.append(
+                f"{relative}: claims review on {claimed}, which is "
+                f"more than a day ahead of {today} and so describes a "
+                f"review that has not happened."
+            )
+    return checked, upstream_pins
+
+
 def main() -> int:
     failures: list[str] = []
     check_build_identity(failures)
@@ -119,56 +198,23 @@ def main() -> int:
     today = date.today().isoformat()
     tomorrow = (date.today() + timedelta(days=1)).isoformat()
 
+    documents: list[Path] = []
     for surface in SURFACES:
         base = ROOT / surface
-        if not base.is_dir():
-            continue
-        for path in sorted(base.rglob("*.md")):
-            relative = path.relative_to(ROOT)
-            text = path.read_text(errors="replace")
-            lowered = text.lower()
-            acknowledged = any(phrase in lowered for phrase in ACKNOWLEDGED)
+        if base.is_dir():
+            documents.extend(sorted(base.rglob("*.md")))
+    for name in ROOT_DOCUMENTS:
+        path = ROOT / name
+        if path.is_file():
+            documents.append(path)
+        else:
+            failures.append(
+                f"{name} is missing; it is a document this check reads")
 
-            for commit in HASH.findall(text):
-                checked += 1
-                if not in_our_history(commit):
-                    # An upstream pin. Old on purpose.
-                    upstream_pins += 1
-                    continue
-                behind = run("git", "rev-list", "--count", f"{commit}..HEAD")
-                distance = int(behind) if behind.isdigit() else 0
-                if distance > MAX_COMMITS_BEHIND and not acknowledged:
-                    failures.append(
-                        f"{relative}: cites {commit[:8]}, {distance} commits "
-                        f"behind HEAD, and does not say so. Re-run the evidence "
-                        f"or state that it is behind the current tree."
-                    )
-
-            reviewed = REVIEWED.search(text)
-            if reviewed:
-                claimed = reviewed.group(1)
-                changed = "" if shallow else run(
-                    "git", "log", "-1", "--format=%ad", "--date=short", "--", str(relative)
-                )
-                if changed and changed > claimed:
-                    failures.append(
-                        f"{relative}: claims review on {claimed} but was "
-                        f"modified on {changed}."
-                    )
-                elif claimed > tomorrow:
-                    # A day of slack, because "today" is not one date. The
-                    # zones in use span about a full day either side of UTC, so
-                    # a review recorded in the evening in UTC+7 is tomorrow to a
-                    # runner on UTC, and a check that compared against its own
-                    # local clock would fail every contributor east of it every
-                    # evening -- which is exactly what it did. A date further
-                    # ahead than that is a claim about a review that has not
-                    # happened, which is what this is for.
-                    failures.append(
-                        f"{relative}: claims review on {claimed}, which is "
-                        f"more than a day ahead of {today} and so describes a "
-                        f"review that has not happened."
-                    )
+    for path in documents:
+        seen, pins = check_document(path, failures, shallow, today, tomorrow)
+        checked += seen
+        upstream_pins += pins
 
     if failures:
         print("doc-freshness: claims that have expired")
@@ -180,9 +226,9 @@ def main() -> int:
                     "cannot say when a file last changed"
                     if shallow else "review dates current")
     print(
-        f"doc-freshness: {checked} commit references checked "
-        f"({upstream_pins} upstream pins, old by design), {review_state}, "
-        f"version identity consistent"
+        f"doc-freshness: {checked} commit references checked in "
+        f"{len(documents)} documents ({upstream_pins} upstream pins, old by "
+        f"design), {review_state}, version identity consistent"
     )
     return 0
 

@@ -41,8 +41,14 @@ The primary implementation surfaces are `kernel/user/syscall.c`,
 ## Explicit Non-Claims
 
 - QEMU validation is not a production security certification.
-- The x86_64 image does not yet integrate the full process-owned security,
-  SSH/control, filesystem, networking, AI Cell and telemetry service stack.
+- The x86_64 image runs the same process-owned security, SSH/control,
+  filesystem, networking, AI Cell and telemetry service stack as AArch64.
+  `wiki/Current-Limitations` and `wiki/Architecture` state that, and
+  `check-core-os-status.py` requires them to state it; this bullet said the
+  opposite for five weeks after the parity landed, which is the kind of claim
+  `tests/repository/check-doc-freshness.py` now reads this file for. What
+  remains open on x86_64 is not the stack but the *evidence for the hardware it
+  runs on*, which is the physical item below.
 - Development update keys and QEMU fixtures are not production trust roots.
 - Physical DMA isolation, firmware trust, side-channel resistance and hardware
   fault behavior require separate physical-platform validation.

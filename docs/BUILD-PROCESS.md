@@ -34,8 +34,12 @@ built it and not on the machine it was carried to.
 
     make bootstrap
 
-`scripts/macos-bootstrap.sh` checks for and installs what the build needs:
-`clang`, `lld`, `llvm-objcopy`, `llvm-readelf`, `qemu`, `python3`. The image
+`scripts/macos-bootstrap.sh` checks a macOS host for what the build needs and
+reports anything missing with the command that installs it -- **it installs
+nothing itself**, which is what makes it safe to run first on a machine that
+does not build yet, and is what `scripts/README.md` has always said. What it
+looks for: `clang`, `lld`, `llvm-objcopy`, `llvm-readelf`, `qemu`, `python3`.
+The image
 builders additionally need `xorriso`, `mtools` (`mformat`, `mmd`, `mcopy`,
 `mdir`, `minfo`) and `zip`; the Virtualization.framework kit needs `swiftc`, and
 the network-boot server script needs `dnsmasq` on whoever runs it, not on
@@ -230,7 +234,7 @@ checksums that verifies nothing.
 
 Cheapest first.
 
-    make docs-check          # sixteen repository checks, no build, seconds
+    make docs-check          # 16 repository checks, no build, seconds
     make compile-check       # every freestanding source compiles clean
     make hosted-test         # unit tests that run on the host
     make release-image-gate  # each image on all five environments
@@ -244,6 +248,22 @@ Cheapest first.
 boots each `.iso` on QEMU AArch64, QEMU x86-64, QEMU RISC-V,
 Virtualization.framework and VMware Fusion, and requires each guest to print
 *this build's* number and `system-slot: unavailable`.
+
+`docs-check` runs the checks that need no build, and it runs sixteen of them.
+`tests/repository/` holds twenty-two, and the other six are deliberately
+elsewhere: `check-libc-contract.py` runs from `make libc-check` because it
+needs a built sysroot, `check-production-source.py` runs from `make
+production-source-audit` (as a step of `qemu-core-os-rc`), and
+`check-release-package.py`, `check-local-gate-record.py` and
+`check-ci-status.py` run only from `make release-check`. **No CI job runs
+`release-check`**, so those three are a pre-tag local gate and nothing else:
+a packaging or CI-status claim is checked by the person cutting the build, at
+the moment they cut it, and not by the runner. That is a real limit and not an
+oversight, since `release-check` needs the release artefacts and the tag.
+`check-wiki-parity.py` is the sixth and runs from `publish-wiki` after it
+pushes, and from `make wiki-parity-check`; it is outside `docs-check` because
+it reads the published Wiki over the network, and a documentation gate that
+needs the internet is one that eventually gets skipped.
 
 That second marker is not decoration. The loader prefers a verified A/B system
 slot over the kernel on the medium, so a guest booted with a system volume
