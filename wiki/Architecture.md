@@ -171,9 +171,23 @@ longest, prints each new maximum, and prints a distinct line when a gap is long
 enough to be an outage rather than a pause:
 
 ```
-network: longest gap between polls us=55008 polls=752428 listeners=2
+network: longest gap between polls us=55008 polls=752428 intr=0 listeners=2
 network: stack was not polled for ms=1840 outages=1 listeners=2
 ```
+
+`intr=` is how many of those polls were taken from the timer interrupt rather
+than from a syscall, and it is 0, because no port arms a network tick. `OD-011`'s
+remaining step is exactly that tick -- one CPU polling the stack while sshd's
+loop is blocked -- and one was implemented and does not hold: on AArch64 the
+carrier CPU stopped taking timer interrupts the moment the boot-test profile
+dispatched a user thread to it, with no `timer_mask_local` on that CPU and no
+`CNTV_CTL_EL0` write anywhere in the port, and re-arming from the idle loop did
+not bring it back. That is unresolved, so the field is the instrument for the
+next attempt: the kernel's half of the work is in
+`network_poll_tick_from_interrupt()`, and `make
+qemu-network-poll-cadence-gate` fails if a guest announces an armed tick that
+never fires. Until then every poll here is one a syscall made, which is P-1
+still open.
 
 `network_poll_gap_max_ns()` and `network_poll_gap_outage_count()` expose the
 same figures. The measurement is deliberately not taken when nothing is

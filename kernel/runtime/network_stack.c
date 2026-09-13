@@ -343,6 +343,9 @@ static uint32_t g_half_open_count = 0;
 static uint8_t g_local_mac[6];
 static uint32_t g_persistent_initialized;
 static uint64_t g_poll_tick_count;
+/* Polls taken from a timer interrupt, counted apart from the ones a syscall
+   makes. See network_interrupt_poll_count() in the header for why. */
+static uint64_t g_interrupt_poll_count;
 #define NETWORK_POLL_GAP_OUTAGE_NS UINT64_C(1000000000)
 #define NETWORK_POLL_GAP_RECORD_LINES 32U
 
@@ -5430,6 +5433,7 @@ void network_init_persistent(void) {
   g_slaac_valid_until_ns = 0U;
   g_persistent_initialized = 1;
   g_poll_tick_count = 0;
+  g_interrupt_poll_count = 0;
   g_icmp_reply_count = 0;
   g_arp_reply_count = 0;
   g_icmpv6_reply_count = 0;
@@ -5652,8 +5656,10 @@ static void network_note_poll_gap(uint64_t now_ns) {
      the same, so a machine that degrades steadily cannot fill the console. */
   if (g_poll_gap_record_lines >= NETWORK_POLL_GAP_RECORD_LINES) return;
   ++g_poll_gap_record_lines;
-  klog("network: longest gap between polls us=%lu polls=%lu listeners=%u\n",
-       g_poll_gap_max_ns / UINT64_C(1000), g_poll_tick_count, listeners);
+  klog("network: longest gap between polls us=%lu polls=%lu intr=%lu "
+       "listeners=%u\n",
+       g_poll_gap_max_ns / UINT64_C(1000), g_poll_tick_count,
+       __atomic_load_n(&g_interrupt_poll_count, __ATOMIC_RELAXED), listeners);
 }
 
 uint64_t network_poll_gap_max_ns(void) { return g_poll_gap_max_ns; }
@@ -5661,8 +5667,12 @@ uint64_t network_poll_gap_outage_count(void) {
   return g_poll_gap_outage_count;
 }
 
+/* The network's own work, under the guard. `operations_tick()` is not here on
+   purpose: it is the power path, it quiesces storage and it can stop the
+   machine, and the two callers differ about whether that belongs. It is the
+   first thing `network_poll_tick` does and the one thing
+   `network_poll_tick_from_interrupt` does not -- see the header. */
 static void network_poll_tick_locked(void) {
-  operations_tick();
   if (g_persistent_initialized == 0) {
     return;
   }
@@ -5835,6 +5845,9 @@ static void network_poll_tick_locked(void) {
 
 void network_poll_tick(void) {
   network_lock();
+  /* The power path runs here and only here, which is where a shutdown is
+     asked for from. Called before the network's own work, as it always was. */
+  operations_tick();
   network_poll_tick_locked();
   /* The resolver's transport tick belongs inside this guard, not after it. It
      mutates the pending query and drives the TCP flow carrying it, and dns.c's
@@ -5845,6 +5858,18 @@ void network_poll_tick(void) {
      re-enter a resolver call already in progress on this one. */
   dns_transport_tick(timer_now_ns());
   network_unlock();
+}
+
+void network_poll_tick_from_interrupt(void) {
+  network_lock();
+  network_poll_tick_locked();
+  dns_transport_tick(timer_now_ns());
+  __atomic_add_fetch(&g_interrupt_poll_count, 1U, __ATOMIC_RELAXED);
+  network_unlock();
+}
+
+uint64_t network_interrupt_poll_count(void) {
+  return __atomic_load_n(&g_interrupt_poll_count, __ATOMIC_RELAXED);
 }
 
 uint64_t network_poll_tick_count(void) {

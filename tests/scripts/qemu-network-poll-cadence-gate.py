@@ -49,6 +49,22 @@ What it asserts, and why each one can fail:
     connections, or corrupting them, would not be a measurement of this.
   * the listener count on the line is non-zero, because the measurement is
     deliberately not taken when nothing is listening.
+  * **an armed network tick actually fires.** OD-011's remaining step is a
+    timer on one CPU that polls the stack while sshd's loop is blocked, and the
+    `intr=` field on the gap line counts polls taken from it. When the guest
+    announces one -- `timer: network tick armed on cpu=N` -- this requires the
+    count to be non-zero and to advance, because a timer armed and never fired
+    leaves every other figure here exactly as green as one that works: the gap
+    is set by whatever the system calls into the stack were already doing.
+
+    **The assertion is conditional because the tick is not armed today.** No
+    port carries one: it was implemented, and this check is what showed it
+    dying. On AArch64 the carrier's interrupt count froze at 46 the moment the
+    boot-test profile dispatched a user thread to that CPU -- with
+    `timer_mask_local` never called on it and no `CNTV_CTL_EL0` write anywhere
+    in the port -- and a re-arm from the idle loop did not bring it back. That
+    is unresolved, so nothing arms a tick and `intr=0` here is the truth rather
+    than a failure. The day 3b lands, this turns red unless it really fires.
 
 The worst gap itself is recorded, not asserted. This runs on a shared build
 machine under TCG, where the host can deschedule the whole emulator for
@@ -86,10 +102,14 @@ READY_MARKER = "SSH server: up and running (tcp/22)"
 # Each new maximum, printed by the kernel as it climbs. The last one in the
 # console is the worst gap the guest saw.
 GAP_LINE = re.compile(
-    r"network: longest gap between polls us=(\d+) polls=(\d+) listeners=(\d+)")
+    r"network: longest gap between polls us=(\d+) polls=(\d+) intr=(\d+) "
+    r"listeners=(\d+)")
 # A gap long enough that the kernel calls it an outage rather than a pause.
 OUTAGE_LINE = re.compile(
     r"network: stack was not polled for ms=(\d+) outages=(\d+) listeners=(\d+)")
+# Present only when a port carries the OD-011 network tick. Its absence is the
+# truthful state today; see the docstring for why the assertion is conditional.
+ARMED_TICK = re.compile(r"timer: network tick armed on cpu=(\d+)")
 
 # Well inside SSHD_CONNECTION_RATE_LIMIT (120 in a 60-second window), so the
 # server is busy rather than throttled: a gate that tripped the rate limiter
@@ -322,8 +342,12 @@ def main() -> int:
     worst_gap_us = int(gaps[-1][0]) if gaps else None
     first_polls = int(gaps[0][1]) if gaps else None
     last_polls = int(gaps[-1][1]) if gaps else None
-    listeners = int(gaps[-1][2]) if gaps else None
+    first_interrupt_polls = int(gaps[0][2]) if gaps else None
+    last_interrupt_polls = int(gaps[-1][2]) if gaps else None
+    listeners = int(gaps[-1][3]) if gaps else None
     worst_outage_ms = max((int(ms) for ms, _, _ in outages), default=None)
+    armed = ARMED_TICK.search(console)
+    armed_tick = int(armed.group(1)) if armed else None
 
     if not gaps:
         failures.append(
@@ -343,6 +367,22 @@ def main() -> int:
                 f"describe a stack anything was driving")
         if worst_gap_us is not None and worst_gap_us <= 0:
             failures.append("the worst gap reported is not a duration")
+        # OD-011: see the docstring. Conditional on the guest saying it armed
+        # one, so this is a real check the day stage three-b lands and not a
+        # red gate before it does.
+        if armed_tick is not None:
+            if last_interrupt_polls is None or last_interrupt_polls <= 0:
+                failures.append(
+                    f"the guest armed a network tick on cpu={armed_tick} and "
+                    f"no poll was ever taken from it (intr=0), so the timer is "
+                    f"armed and never fires -- which is what OD-011 stage "
+                    f"three-b looks like when it is wrong")
+            elif (first_interrupt_polls is not None and
+                  last_interrupt_polls <= first_interrupt_polls):
+                failures.append(
+                    f"the interrupt poll count did not advance across the run "
+                    f"({first_interrupt_polls} to {last_interrupt_polls}), so "
+                    f"the tick fired before the run began and not during it")
 
     if transfer_rc != 0 or transfer_identical is not True:
         failures.append(
@@ -374,6 +414,9 @@ def main() -> int:
         "gap_records": len(gaps),
         "polls_first_record": first_polls,
         "polls_last_record": last_polls,
+        "interrupt_polls_first_record": first_interrupt_polls,
+        "interrupt_polls_last_record": last_interrupt_polls,
+        "network_tick_cpu": armed_tick,
         "listeners": listeners,
         "outage_lines": len(outages),
         "worst_outage_ms": worst_outage_ms,
@@ -392,12 +435,19 @@ def main() -> int:
         print(f"qemu-network-poll-cadence-gate: report written to {REPORT}",
               file=sys.stderr)
         return 1
+    tick_state = (
+        f"The network tick on cpu={armed_tick} took {last_interrupt_polls} of "
+        f"those polls from a timer interrupt"
+        if armed_tick is not None else
+        "No port arms a network tick yet, so every poll was one a syscall "
+        "made and intr=0 is the truth: OD-011 stage three-b is still open")
     print(f"qemu-network-poll-cadence-gate: idle, the worst gap between polls "
           f"was {idle_gap_us} us; after {TRANSFERS} {PAYLOAD_BYTES}-byte "
           f"SFTP round trips, {transfer_gap_us} us; after {served} more "
           f"connections, "
           f"{worst_gap_us} us ({round(worst_gap_us / 1000.0, 1)} ms). "
-          f"{len(outages)} gap(s) crossed the one-second outage threshold")
+          f"{len(outages)} gap(s) crossed the one-second outage threshold. "
+          f"{tick_state}")
     print(f"qemu-network-poll-cadence-gate: report written to {REPORT}")
     return 0
 

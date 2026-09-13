@@ -190,13 +190,17 @@ What matters here is that the condition is now visible rather than silent. Two
 console lines report it:
 
 ```
-network: longest gap between polls us=55008 polls=752428 listeners=2
+network: longest gap between polls us=55008 polls=752428 intr=0 listeners=2
 network: stack was not polled for ms=1840 outages=1 listeners=2
 ```
 
 The first is each new worst gap as it is set; the second appears only when a
 gap exceeds one second, which is the point at which the kernel calls it an
-outage rather than a pause. sshd's own `sshd: service loop stalled` line names
+outage rather than a pause. `intr=` on the first counts polls taken from the
+timer interrupt rather than from a syscall, and it is 0 because no port arms a
+network tick yet -- that is `OD-011`'s remaining step, and the instrument is
+there for the attempt rather than for a mechanism that works. sshd's own
+`sshd: service loop stalled` line names
 which phase of its loop the time went to, and the two together are what
 separates "the server held the machine" from "the machine was not running".
 
