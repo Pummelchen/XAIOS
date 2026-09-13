@@ -20,7 +20,30 @@ ARCHIVE="$BUILD/libbearssl-xapt.a"
 mkdir -p "$BUILD/objects"
 
 set --
-for relative in $(CDPATH= cd -- "$SOURCE" && find src -name '*.c' | LC_ALL=C sort); do
+# Everything upstream ships, except the algorithms and profiles this project
+# does not use and cannot reach.
+#
+# DES and 3DES are the whole of `src/symcipher/des_*.c`, and nothing here calls
+# them. The client configures its suites explicitly through `set_suites`, and
+# the DES-CBC branch of the handshake is reached only through the engine's
+# `ides_cbcenc`/`ides_cbcdec` hooks, which nothing ever sets -- `ssl_hs_client.c`
+# names them as struct members, not as calls. Compiling them in puts a broken
+# cipher in every shipped image and keeps ten code-scanning alerts open about
+# code that cannot be negotiated (B-96).
+#
+# The profiles go for the same reason. `ssl_client_full.c` registers every
+# suite upstream knows, the DES ones among them; the two `ssl_server_full_*`
+# files are a server this project never is. XAIOS builds its client from
+# `ssl_client_reset` and the individual `set_default_*` calls instead.
+#
+# This is an exclusion rather than a list of the files to keep on purpose: the
+# crypto and the TLS engine are upstream's to get right, and a project that
+# names them one at a time will be wrong the first time upstream adds a module.
+for relative in $(CDPATH= cd -- "$SOURCE" && find src -name '*.c' \
+    ! -path 'src/symcipher/des_*' \
+    ! -path 'src/ssl/ssl_client_full.c' \
+    ! -path 'src/ssl/ssl_engine_default_descbc.c' \
+    ! -path 'src/ssl/ssl_server_full_*' | LC_ALL=C sort); do
   source="$SOURCE/$relative"
   object="$BUILD/objects/$(printf '%s' "$relative" | tr '/' '_').o"
   clang --target="$TARGET" $ARCH_CFLAGS -std=c99 -ffreestanding -fno-builtin -fno-pic \

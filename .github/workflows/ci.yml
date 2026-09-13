@@ -96,6 +96,13 @@ jobs:
 
       - name: Run hosted engine tests
         run: make hosted-test
+      # The xapt repository tool keeps its own tests, and nothing ran them:
+      # by the time anyone looked, the fixture had been passing a three-part
+      # version to a tool that has required a whole build number since the
+      # project moved off semver, and the target had been red the whole time
+      # (B-98).
+      - name: Run xapt repository tests
+        run: make xapt-test
 
   documentation-contract:
     name: Documentation Contract

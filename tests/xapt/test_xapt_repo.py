@@ -93,17 +93,21 @@ class XaptRepositoryTests(unittest.TestCase):
             repository = root / "repo"
             self.run_tool(
                 "system", "--repository", str(repository), "--image", str(image),
-                "--version", "0.2.0", "--generation", "100",
+                # A whole number, not a three-part version: XAIOS is identified by build
+                # number, and this test went on passing one long after the tool
+                # stopped accepting it -- which is what happens to a target
+                # nothing runs.  is not in CI.
+                "--version", "6", "--generation", "100",
                 "--arch", "x86_64",
             )
-            record = repository / "os/x86_64/0.2.0/record.json"
+            record = repository / "os/x86_64/6/record.json"
             self.run_tool(
                 "catalog", "--repository", str(repository), "--arch", "x86_64",
                 "--generation", "8", "--os-record", str(record),
             )
             verified = self.run_tool("verify", "--repository", str(repository))
             self.assertIn("systems=1", verified.stdout)
-            payload = repository / "os/x86_64/0.2.0/kernel.elf"
+            payload = repository / "os/x86_64/6/kernel.elf"
             payload.write_bytes(payload.read_bytes() + b"corrupt")
             failed = self.run_tool("verify", "--repository", str(repository), ok=False)
             self.assertIn("system payload mismatch", failed.stdout)
