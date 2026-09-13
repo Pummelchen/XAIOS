@@ -625,6 +625,36 @@ qualification evidence.
 | OD-010 | Define names, quality reporting, telemetry, and acceptance for opt-in approximate modes | `NOT STARTED` | Any approximate mode. |
 | OD-011 | Choose how the network is polled when sshd's loop is busy: a timer cadence (needs the stack made interrupt-safe -- `xaios_reentrant_lock` identifies its holder by CPU id and forbids interrupt context -- and preemption restored) or a dedicated thread (costs one of three worker CPUs permanently, since the scheduler runs one thread to completion per worker) | `NOT STARTED` | Closing P-1. Until then every blocking call in sshd's loop is a window with no networking, narrowed to about one fsync per twenty-four connections and not removed. |
 
+**OD-011 is the decision on this list most likely to be under-costed, so the two
+options are set out with what each actually needs.** The timer option is not a
+small change. There is no interrupt-mask primitive in the tree to build on:
+`kernel/include/xaios/arch_cpu.h` carries barriers, `relax`, `notify`, `wait`, a
+counter and a stack pointer, and nothing that saves and disables interrupts, and
+no `interrupts_save`-shaped helper exists anywhere in `kernel/`. So it needs one
+per architecture -- the instructions are already used in isolation, aarch64's
+`msr daifset, #2` in `gic.c` and riscv64's `csrrc sstatus` in `aia.c` -- and then
+a change to `xaios_reentrant_lock`'s contract with an audit of its four users
+(service, network, the resolver and the CPU-AI runtime, whose lock order the
+header fixes), and then preemption, which the scheduler does not provide today
+because it runs one thread to completion per worker. It also puts the whole poll
+path -- the device drain and the packet processing, whose cost is set by how much
+traffic arrived -- inside interrupt context, where its latency is everyone's.
+
+The thread option is the opposite trade. A kernel thread on a CPU of its own
+needs no lock change, no preemption and no new primitive, and it keeps the work
+in thread context where it can be bounded; it costs one of the three worker CPUs
+permanently, which is a quarter of a four-CPU machine.
+
+**A third shape exists that neither option in the row names, and it may be the
+cheapest correct one:** the timer interrupt drains the device into a ring and
+sends only what a peer needs to keep waiting, leaving the rest of the stack to
+the loop. That bounds the interrupt's work and removes the total-outage property
+without a dedicated CPU, at the cost of splitting the poll path in two and having
+to say which half may do what.
+
+The decision is not made here, and the row above stays `NOT STARTED` because it
+is a choice about the machine's execution model rather than a refactor to make
+quietly.
 ## Risk register
 
 Risk status `TESTING` means mitigations exist but the risk remains open and is
