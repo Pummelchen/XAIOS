@@ -159,11 +159,11 @@ void wt_tls_client_clear(wt_tls_client_t *handshake) {
   handshake->fail_reason = NULL;
   handshake->cipher_suite = 0U;
   handshake->group = 0U;
-  handshake->transport_parameters = NULL;
+  wt_secure_zero(handshake->transport_parameters,
+                 sizeof(handshake->transport_parameters));
   handshake->transport_parameters_len = 0U;
   handshake->transport_parameters_seen = 0;
-  handshake->leaf_certificate = NULL;
-  handshake->leaf_certificate_len = 0U;
+  wt_tls_public_key_clear(&handshake->leaf_public_key);
   handshake->client_auth_requested = 0;
   handshake->certificate_request_context_len = 0U;
 }
@@ -494,7 +494,22 @@ static int handle_encrypted_extensions(wt_tls_client_t *handshake,
     return client_fail(handshake, WT_TLS_ALERT_MISSING_EXTENSION,
                        "the server did not send QUIC transport parameters");
   }
-  handshake->transport_parameters = ee.transport_parameters;
+  /* Copied rather than borrowed: the caller's EncryptedExtensions buffer is
+     the caller's to read into again the moment this call returns, and a getter
+     handing back a view into it would be handing back whatever the caller put
+     there next. The copy is bounded, and a peer whose parameters do not fit is
+     refused here rather than truncated, because truncating them would silently
+     drop flow-control limits the peer is relying on. */
+  if (ee.transport_parameters_len >
+      sizeof(handshake->transport_parameters)) {
+    return client_fail(handshake, WT_TLS_ALERT_DECODE_ERROR,
+                       "the peer's transport parameters are larger than this "
+                       "client will hold");
+  }
+  if (ee.transport_parameters_len > 0U) {
+    memcpy(handshake->transport_parameters, ee.transport_parameters,
+           ee.transport_parameters_len);
+  }
   handshake->transport_parameters_len = ee.transport_parameters_len;
   handshake->transport_parameters_seen = 1;
 
@@ -672,12 +687,17 @@ static int handle_certificate(wt_tls_client_t *handshake,
                        "the server's key is not the pinned operator key");
   }
 
-  /* The leaf is a view into the caller's buffer and must stay one, because the
-     signature check two messages later needs the whole certificate and copying
-     an unbounded certificate to avoid a dangling view would trade a documented
-     lifetime for an unbounded allocation. The header states this. */
-  handshake->leaf_certificate = chain.entries[0];
-  handshake->leaf_certificate_len = chain.lengths[0];
+  /* The key is taken out of the certificate now, while the Certificate message
+     is in hand, because the signature that uses it does not arrive for another
+     two messages and the caller's buffer is the caller's to reuse. The key is
+     bounded and the certificate is not, so the certificate is the thing that
+     gets released. A certificate whose key cannot be read is refused with the
+     alert a bad certificate gets, because that is what it is. */
+  if (wt_tls_certificate_public_key(chain.entries[0], chain.lengths[0],
+                                    &handshake->leaf_public_key) != 0) {
+    return client_fail(handshake, WT_TLS_ALERT_BAD_CERTIFICATE,
+                       "the server's public key could not be read");
+  }
 
   if (wt_tls_transcript_absorb(&handshake->transcript, message, message_len) !=
       0) {
@@ -735,9 +755,8 @@ static int handle_certificate_verify(wt_tls_client_t *handshake,
                        "the signed content could not be built");
   }
 
-  verified = wt_tls_certificate_verify_signature(
-      handshake->leaf_certificate, handshake->leaf_certificate_len, &verify,
-      content, content_len);
+  verified = wt_tls_certificate_verify_signature_with_key(
+      &handshake->leaf_public_key, &verify, content, content_len);
   if (verified != 1) {
     /* 0 and -1 are both refusals and both mean the same thing to the peer: the
        handshake did not authenticate. RFC 8446 section 6.2 names decrypt_error

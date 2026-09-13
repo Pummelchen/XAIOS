@@ -424,27 +424,27 @@ static void strip_leading_zeros(const uint8_t **p, size_t *len) {
   }
 }
 
-int wt_tls_certificate_verify_signature(
-    const uint8_t *certificate_der, size_t certificate_len,
+/* The check itself, over key components rather than over a certificate.
+ *
+ * Split out because the two callers arrive holding the key differently. One
+ * has a certificate to decode and nothing that outlives the call; the other has
+ * a key it owns, because the certificate it came from is gone by the time the
+ * signature is checked. Doing the decoding inside this function would force the
+ * second caller to keep the whole certificate, which is the thing B-92 is
+ * about: the key is bounded and the certificate is not. */
+static int verify_with_components(
+    int key_type, const br_rsa_public_key *key_rsa,
+    const br_ec_public_key *key_ec,
     const wt_tls_certificate_verify_t *verify, const uint8_t *content,
     size_t content_len) {
-  br_x509_decoder_context decoder;
-  br_x509_pkey *pk;
   uint8_t digest[WT_TLS_MAX_HASH_LEN];
   const uint8_t *sig;
   size_t sig_len;
   uint32_t ok = 0U;
 
-  if (certificate_der == NULL || verify == NULL || content == NULL) return -1;
+  if (verify == NULL || content == NULL) return -1;
   if (verify->signature == NULL || verify->signature_len == 0U) return -1;
   if (verify->signature_len > 0xFFFFU) return -1;
-  if (certificate_len == 0U) return -1;
-
-  br_x509_decoder_init(&decoder, &ignore_dn, NULL);
-  br_x509_decoder_push(&decoder, certificate_der, certificate_len);
-  if (br_x509_decoder_last_error(&decoder) != 0) return -1;
-  pk = br_x509_decoder_get_pkey(&decoder);
-  if (pk == NULL) return -1;
 
   /* The signature and the key components are unsigned big-endian integers and
      may carry leading zero bytes; the verifiers expect them stripped. The
@@ -471,7 +471,7 @@ int wt_tls_certificate_verify_signature(
       size_t nlen;
       br_rsa_public_key rsa_key;
 
-      if (pk->key_type != BR_KEYTYPE_RSA) return -1;
+      if (key_type != BR_KEYTYPE_RSA) return -1;
       if (content_len == 0U) return -1;
       /* Belt as well as braces: the buffer above is the bound, and this makes
          a scheme added later fail loudly rather than write past it. */
@@ -487,8 +487,8 @@ int wt_tls_certificate_verify_signature(
       }
       /* The modulus must be long enough for the hash plus the PSS overhead;
          the verifier checks the rest. */
-      n = pk->key.rsa.n;
-      nlen = pk->key.rsa.nlen;
+      n = key_rsa->n;
+      nlen = key_rsa->nlen;
       strip_leading_zeros(&n, &nlen);
       if (nlen == 0U) return -1;
       /* BearSSL's `br_rsa_public_key` takes non-const pointers although the
@@ -497,8 +497,8 @@ int wt_tls_certificate_verify_signature(
          interface's shape and not a permission to write. */
       rsa_key.n = (unsigned char *)(uintptr_t)n;
       rsa_key.nlen = nlen;
-      rsa_key.e = pk->key.rsa.e;
-      rsa_key.elen = pk->key.rsa.elen;
+      rsa_key.e = key_rsa->e;
+      rsa_key.elen = key_rsa->elen;
       ok = br_rsa_i31_pss_vrfy(sig, sig_len, hf, hf, digest, hash_len,
                                &rsa_key);
       break;
@@ -516,7 +516,7 @@ int wt_tls_certificate_verify_signature(
           : (verify->scheme == WT_TLS_SIG_ECDSA_SECP384R1_SHA384)
               ? BR_EC_secp384r1
               : BR_EC_secp521r1;
-      if (pk->key_type != BR_KEYTYPE_EC) return -1;
+      if (key_type != BR_KEYTYPE_EC) return -1;
       if (content_len == 0U) return -1;
       /* RFC 8446 section 4.4.3: the scheme must be consistent with the key in
          the certificate. A P-384 scheme answered by a P-256 key is not a
@@ -526,7 +526,7 @@ int wt_tls_certificate_verify_signature(
          verifier runs a P-256 multiplication with a 48-byte digest and returns
          0 -- the right answer by accident, and a -1 that an audit can point at
          is better than an accident. */
-      if (pk->key.ec.curve != expected_curve) return -1;
+      if (key_ec->curve != expected_curve) return -1;
       {
         br_hash_compat_context hc;
         size_t hash_len = hf->desc >> BR_HASHDESC_OUT_OFF & BR_HASHDESC_OUT_MASK;
@@ -537,7 +537,7 @@ int wt_tls_certificate_verify_signature(
         /* The implementation is the constant-time prime-field one, and the key
            it is given is the one the certificate carried. */
         ok = br_ecdsa_i31_vrfy_asn1(&br_ec_prime_i31, digest, hash_len,
-                                    &pk->key.ec, sig, sig_len);
+                                    key_ec, sig, sig_len);
       }
       break;
     }
@@ -550,4 +550,36 @@ int wt_tls_certificate_verify_signature(
 
   wt_secure_zero(digest, sizeof(digest));
   return ok == 1U ? 1 : 0;
+}
+
+int wt_tls_certificate_verify_signature(
+    const uint8_t *certificate_der, size_t certificate_len,
+    const wt_tls_certificate_verify_t *verify, const uint8_t *content,
+    size_t content_len) {
+  br_x509_decoder_context decoder;
+  br_x509_pkey *pk;
+
+  if (certificate_der == NULL || verify == NULL || content == NULL) return -1;
+  if (certificate_len == 0U) return -1;
+
+  br_x509_decoder_init(&decoder, &ignore_dn, NULL);
+  br_x509_decoder_push(&decoder, certificate_der, certificate_len);
+  if (br_x509_decoder_last_error(&decoder) != 0) return -1;
+  pk = br_x509_decoder_get_pkey(&decoder);
+  if (pk == NULL) return -1;
+
+  return verify_with_components(
+      pk->key_type, &pk->key.rsa, &pk->key.ec, verify, content, content_len);
+}
+
+int wt_tls_certificate_verify_signature_with_key(
+    const wt_tls_public_key_t *key,
+    const wt_tls_certificate_verify_t *verify, const uint8_t *content,
+    size_t content_len) {
+  if (key == NULL) return -1;
+  /* The key's own views point into its own storage, so passing them on is a
+     borrow of this structure and not of whatever the key was read from. */
+  return verify_with_components(
+      key->is_rsa ? BR_KEYTYPE_RSA : BR_KEYTYPE_EC, &key->rsa, &key->ec,
+      verify, content, content_len);
 }

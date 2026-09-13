@@ -1234,6 +1234,80 @@ static void test_client_auth_request(void) {
 
 /* ------------------------------------------------------------- entry point */
 
+/* B-92: the client owns the bytes it keeps, by construction rather than by
+ * contract.
+ *
+ * Every message of this flight is delivered out of one scratch buffer that is
+ * overwritten the moment the call returns -- which is what a caller reading
+ * into a single buffer does, and the shape the header used to warn against.
+ * Nothing downstream may depend on those bytes surviving: the CertificateVerify
+ * is checked two messages after the Certificate it takes the key from, and the
+ * transport parameters are read after the handshake has completed.
+ *
+ * The scratch is filled with a byte the flight cannot contain, so a view that
+ * dangles reads back as something wrong rather than as something that happens
+ * to still be right. That is the difference between this check and one that
+ * passes because the stack was left alone. */
+static void test_client_owns_what_it_keeps(void) {
+  wt_tls_client_t handshake;
+  uint8_t scratch[1024];
+  const uint8_t *parameters = NULL;
+  size_t parameters_len = 0U;
+  size_t len;
+
+  setup_params();
+  setup_pin();
+
+  if (reach_wait_encrypted_extensions(&handshake) != 0) {
+    printf("FATAL could not start the ownership handshake\n");
+    g_failures++;
+    return;
+  }
+
+  /* EncryptedExtensions, and then the buffer it came from is destroyed. */
+  len = good_encrypted_extensions(scratch, sizeof(scratch));
+  if (feed(&handshake, WT_TLS_LEVEL_HANDSHAKE, scratch, len) != 0) return;
+  memset(scratch, 0xA5, sizeof(scratch));
+
+  /* Certificate, and then the buffer is destroyed before the message that
+     needs the key out of it has even been delivered. */
+  memcpy(scratch, WT_QUIC_FLIGHT_CERTIFICATE,
+         sizeof(WT_QUIC_FLIGHT_CERTIFICATE));
+  if (feed(&handshake, WT_TLS_LEVEL_HANDSHAKE, scratch,
+           sizeof(WT_QUIC_FLIGHT_CERTIFICATE)) != 0) {
+    return;
+  }
+  memset(scratch, 0x5A, sizeof(scratch));
+  /* The premise of this whole check, asserted rather than assumed: if the
+     buffer were still intact the rest would pass for the wrong reason. */
+  expect_int("the test's own message buffer really was destroyed", 1,
+             (scratch[0] == 0x5AU &&
+              scratch[sizeof(scratch) - 1U] == 0x5AU) ? 1 : 0);
+
+  expect_int("the CertificateVerify verifies against a key the client kept", 0,
+             feed(&handshake, WT_TLS_LEVEL_HANDSHAKE,
+                  WT_QUIC_FLIGHT_CERTIFICATE_VERIFY,
+                  sizeof(WT_QUIC_FLIGHT_CERTIFICATE_VERIFY)));
+  expect_int("the server's Finished is accepted", 0,
+             feed(&handshake, WT_TLS_LEVEL_HANDSHAKE, WT_QUIC_FLIGHT_FINISHED,
+                  sizeof(WT_QUIC_FLIGHT_FINISHED)));
+  expect_int("the handshake completes with every message buffer destroyed",
+             (long)WT_TLS_STATE_CONNECTED,
+             (long)wt_tls_client_state(&handshake));
+
+  parameters = wt_tls_client_peer_transport_parameters(&handshake,
+                                                       &parameters_len);
+  expect_int("the transport parameters outlived their buffer", 1,
+             parameters != NULL ? 1 : 0);
+  expect_int("and kept the peer's length", 6, (long)parameters_len);
+  if (parameters != NULL && parameters_len == 6U) {
+    expect_int("and the peer's bytes, not the caller's", 1,
+               (parameters[0] == server_parameters[0] &&
+                parameters[5] == server_parameters[5]) ? 1 : 0);
+  }
+  wt_tls_client_clear(&handshake);
+}
+
 int main(void) {
   setup_params();
   setup_pin();
@@ -1244,6 +1318,7 @@ int main(void) {
   test_certificate();
   test_certificate_verify();
   test_full_handshake();
+  test_client_owns_what_it_keeps();
   test_client_auth_request();
 
   if (g_failures != 0) {

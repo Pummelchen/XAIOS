@@ -148,6 +148,19 @@ typedef struct wt_tls_public_key {
   br_ec_public_key ec;
 } wt_tls_public_key_t;
 
+/* The same check against a key the caller already holds, rather than against a
+ * certificate to be decoded.
+ *
+ * It exists for a caller that has to keep the key past the message it came
+ * from. A parsed key is bounded by WT_TLS_PUBLIC_KEY_MAX and a certificate is
+ * not, so extracting the key once is what lets the certificate be released --
+ * which is the difference between a client that owns what it keeps and one
+ * whose views dangle when the caller reuses its read buffer. */
+int wt_tls_certificate_verify_signature_with_key(
+    const wt_tls_public_key_t *key,
+    const wt_tls_certificate_verify_t *verify, const uint8_t *content,
+    size_t content_len);
+
 /* Read the public key out of a DER certificate into caller-owned storage.
  *
  * Returns 0 on success and -1 when the certificate cannot be parsed, carries a

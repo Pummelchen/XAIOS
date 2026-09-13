@@ -155,6 +155,14 @@ typedef struct wt_tls_client_config {
  * buffer that the caller will reuse. */
 #define WT_TLS_CLIENT_MAX_ALPN 255U
 
+/* The peer's transport parameters, copied for the same reason the ALPN name is:
+ * a view into the caller's EncryptedExtensions buffer dangles as soon as that
+ * buffer is read into again, and nothing in the type says so. RFC 9000 section
+ * 18 defines no parameter set anywhere near this size, and a peer that sends
+ * more is refused rather than truncated -- truncating would silently drop
+ * flow-control limits, which is worse than not connecting. */
+#define WT_TLS_CLIENT_MAX_TRANSPORT_PARAMETERS 1024U
+
 typedef struct wt_tls_client {
   /* Configuration, borrowed. */
   const wt_tls_client_hello_params_t *params;
@@ -185,12 +193,11 @@ typedef struct wt_tls_client {
   uint16_t cipher_suite;
   uint16_t group;
   int transport_parameters_seen;
-  /* Where the peer's transport parameters were seen, borrowed from the
-   * EncryptedExtensions message the caller passed in. Only exposed once the
+  /* The peer's transport parameters, owned here. Only exposed once the
    * handshake has completed, because until then they are not authenticated
    * (RFC 9001 section 8.2) -- and this is a getter rather than a struct field
    * so that the rule is enforced rather than documented. */
-  const uint8_t *transport_parameters;
+  uint8_t transport_parameters[WT_TLS_CLIENT_MAX_TRANSPORT_PARAMETERS];
   size_t transport_parameters_len;
 
   uint8_t alpn[WT_TLS_CLIENT_MAX_ALPN];
@@ -205,14 +212,14 @@ typedef struct wt_tls_client {
   uint8_t certificate_request_context[255];
   size_t certificate_request_context_len;
 
-  /* The leaf certificate, borrowed from the Certificate message the caller
-     passed in. It must stay valid until the CertificateVerify has been checked,
-     which is why wt_tls_client_receive documents that the message buffer is
-     borrowed for the handshake's lifetime. It is not copied because a
-     certificate chain has no small bound: copying it would need either an
-     allocation or a limit that refuses a valid certificate. */
-  const uint8_t *leaf_certificate;
-  size_t leaf_certificate_len;
+  /* The leaf's public key, parsed out of the Certificate message while that
+     message is in hand and owned here afterwards. The certificate itself is
+     not kept: a chain has no small bound, so holding it would mean either an
+     allocation or a limit that refuses a valid certificate, while the key this
+     client actually needs is bounded by WT_TLS_PUBLIC_KEY_MAX. The
+     CertificateVerify comes two messages later, by which time the caller has
+     every right to have read into its buffer again. */
+  wt_tls_public_key_t leaf_public_key;
 
   /* The response flight, owned here. See WT_TLS_CLIENT_MAX_FLIGHT. */
   uint8_t flight[WT_TLS_CLIENT_MAX_FLIGHT];
