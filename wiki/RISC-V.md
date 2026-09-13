@@ -200,6 +200,20 @@ the kernel comes up to a login prompt with sshd listening.
 
 ## What is missing
 
+- **Preemptive scheduling.** `scheduler_tick` is called from the AArch64 and
+  x86-64 timer handlers and from nothing here: no file under
+  `kernel/arch/riscv64/` names a `scheduler_*` symbol, and the timer trap
+  handler rearms the comparator and returns. The port says so in its own
+  assembly rather than in its documentation, which is why this is written down
+  now -- `entry.S` calls the full context switch "the scheduler work this port
+  has not done", and says a user thread entered with interrupts off "cannot be
+  preempted, which is a scheduler that does not schedule". Four harts come
+  online, report as scheduling and pass the gates that ask, so the fact is
+  narrower than "the scheduler does not work" and it is real: an EL0 process
+  runs until it yields or exits. It matters beyond this port because `OD-011`'s
+  timer option and any future kernel-context interrupt work has to know that
+  there is no tick here to attach to, and because the shared kernel is
+  otherwise the same code on all three machines.
 - **Hardware qualification of any kind.** One emulated board is the whole
   evidence. AArch64 is qualified on VMware Fusion and x86_64 on a physical
   Intel host; RISC-V has run on QEMU's `virt` and nothing else, so no claim

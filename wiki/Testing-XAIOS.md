@@ -45,7 +45,7 @@ details are in [[Getting Started|Getting-Started]].
 | `make qemu-xapt-gate` | Pinned TLS, trust rotation/revocation/recovery, install, execute, upgrade, rollback, corruption rejection, OS-slot update, reboot persistence, and removal, on all three architectures. |
 | `make code-scanning-contract` | Read-only workflow permissions, loopback-only test port reservation, bounded diagnostics, and integer-width regression checks for resolved CodeQL findings. |
 | `make qemu-abi-contract` | Syscall, image, service, telemetry, and fixture ABI contract. |
-| `make qemu-smoke` | Primary AArch64 boot and deterministic self-test gate. |
+| `make qemu-smoke` | Primary AArch64 boot and deterministic self-test gate. Two of the markers it requires are self-tests the guest *refuses* rather than runs -- no PCI NVMe controller, and a lease it cannot exercise -- and it requires them because a refusal is a result: a build that quietly stopped configuring interrupts everywhere would otherwise pass by looking like a machine with nothing to configure. It now names each refusal it accepted on the way out, so a run with every self-test executed and a run with two refused are different sentences in the log rather than the same silence. |
 | `make qemu-keyboard-input-gate` | QMP-injected USB HID boot-keyboard login through the local console on both ARM64 and x86_64 QEMU. |
 | `make qemu-regression-suite` | Broader process, filesystem, network, and runtime regression suite. |
 | `make qemu-network-adversarial-gate` | N-F3Q parser fuzzing, packet-fault handling, concurrent load/recovery, and 20 fresh QEMU boots on each of ARM64, x86_64 and RISC-V. Set `XAIOS_NF3Q_BOOTS` only for bounded development reruns. |

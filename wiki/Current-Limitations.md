@@ -37,6 +37,22 @@ that the image's *loader* boots and then running a kernel from `build/`. All
 three QEMU legs boot with no system volume now, which is what a first boot on
 a real machine looks like.
 
+**RISC-V also has no preemptive scheduling, and that is a capability gap rather
+than an unfinished port.** `scheduler_tick` is called from the AArch64 and
+x86-64 timer handlers and from nothing on RISC-V: `kernel/arch/riscv64/` contains
+no reference to any `scheduler_*` symbol, and its timer trap handler rearms the
+comparator and returns. The port says so itself, in the two places a person is
+least likely to read -- `kernel/arch/riscv64/entry.S` calls the full context
+switch "the scheduler work this port has not done", and says a user thread
+entered with interrupts off "cannot be preempted, which is a scheduler that does
+not schedule". Four harts come online and report as scheduling, and the boot
+closure is otherwise the shared one, so this is narrower than it sounds and it
+is still real: an EL0 process on RISC-V runs until it yields or exits. It is
+recorded here because `OD-011`'s timer option and any future work on
+kernel-context interrupts needs to know that this port has no tick to attach to,
+and because a reader comparing the three architectures would otherwise conclude
+the shared scheduler means the same thing on all of them.
+
 ## Platform and hardware
 
 - AArch64 QEMU provides the broadest complete OS-service path. QEMU validates

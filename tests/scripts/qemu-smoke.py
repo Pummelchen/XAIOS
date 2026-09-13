@@ -361,6 +361,25 @@ OR_TARGETS = [
     ["core-lease: owner=0 cpus=1 acquired", "core-lease: self-test skipped"],
 ]
 
+# Markers a target is satisfied by when the self-test did not run, and the
+# guest said why. They are required on purpose and not a hole in the gate: this
+# kernel's rule is that a refusal is a result, so "no PCI NVMe controller" is
+# something the guest must say rather than something it may leave out -- a
+# build that quietly stopped configuring interrupts everywhere looks exactly
+# like a machine with nothing to configure, and `qemu-nvme-gate` relies on the
+# RISC-V row saying `msix=0` for the same reason.
+#
+# What was missing is visibility, not enforcement. A reader of this gate's
+# output could not tell a smoke that passed with every self-test running from
+# one that passed with two of them refused, because both printed nothing but
+# the absence of a failure. `wiki/Testing-XAIOS.md` says a skip should be a
+# verdict in its own right; the closest this gate can come without inventing a
+# fourth verdict is to name them, which it now does.
+SKIP_MARKERS = frozenset({
+    "nvme: self-test skipped no PCI NVMe controller",
+    "core-lease: self-test skipped",
+})
+
 def telemetry_line_complete(text):
     marker = "telemetry: {"
     start = text.rfind(marker)
@@ -373,6 +392,24 @@ def echo_best_effort(text: str) -> None:
         os.write(sys.stdout.fileno(), text.encode("utf-8", errors="replace"))
     except (BlockingIOError, BrokenPipeError, OSError):
         pass
+
+
+def describe_refusals(text: str) -> str:
+    """Name the self-tests the guest reported as not run, for the run's log.
+
+    A reader of this gate's output could not previously tell a smoke that
+    passed with every self-test executed from one that passed with two of them
+    refused, because both printed nothing but the absence of a failure.
+    `wiki/Testing-XAIOS.md` says a skip should be a verdict in its own right;
+    the closest this gate can come without inventing a fourth verdict is to say
+    them out loud.
+    """
+    refused = sorted(marker for marker in SKIP_MARKERS if marker in text)
+    if not refused:
+        return ""
+    lines = [f"self-test not run, as the guest reported it: {marker}\n"
+             for marker in refused]
+    return "".join(lines)
 
 
 def main() -> int:
@@ -445,6 +482,12 @@ def main() -> int:
                         all(pattern.search(text) for pattern in PATTERN_TARGETS) and
                         all(any(alt in text for alt in group) for group in OR_TARGETS) and
                         telemetry_line_complete(text) and not telemetry_failures):
+                    # Before the verdict, so a run that passed with two
+                    # self-tests refused says which ones. The verdict is
+                    # unchanged: every marker here is still required, because
+                    # the guest reporting the absence is the evidence. See
+                    # SKIP_MARKERS.
+                    echo_best_effort(describe_refusals(text))
                     echo_best_effort(
                         "\nQEMU smoke boot reached all full userspace/resource markers\n"
                     )
@@ -481,6 +524,13 @@ def main() -> int:
     for group in OR_TARGETS:
         if not any(alt in text for alt in group):
             missing.append(f"({' | '.join(group)})")
+
+    # Name the self-tests that were refused rather than run, so "passed" and
+    # "passed with two of them skipped" are different sentences in the log.
+    # This changes no verdict: every marker here is still required, because the
+    # guest reporting the absence is the evidence. See SKIP_MARKERS.
+    echo_best_effort(describe_refusals(text))
+
     if telemetry_line_complete(text):
         try:
             missing.extend(validate_telemetry_against_contract(
