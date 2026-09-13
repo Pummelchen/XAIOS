@@ -1176,6 +1176,21 @@ qemu-readiness-gate:
 qemu-full-os-rc:
 	python3 ./tests/scripts/qemu-full-os-rc.py
 
+# Every freestanding source compiles clean -- in both configurations.
+#
+# The kernel legs run twice over the same aarch64 file set, once as the default
+# configuration and once with `-DXAIOS_BOOT_TEST_APPS=1`, which is what the
+# gated images are built with. They have to: the files default that macro with
+# `#ifndef`, so compiling only the default arm leaves the arm that ships
+# unchecked, and `remote_login.c` alone switches nine regions on it. A format
+# string reachable only from the shipped configuration got past this target and
+# past a local sweep of it before the second pass existed (B-95).
+#
+# That failure mode is the one this repository names elsewhere as worse than
+# having no check: a check that compiles a configuration nobody boots, and
+# reports the tree clean. The comment is here rather than inside the recipe
+# because the recipe is one shell command joined by backslashes -- a `#` or a
+# `@#` line inside it is not a comment to the shell, it is the next command.
 compile-check: libc
 	@mkdir -p build/compile-check/x86-kernel build/compile-check/x86-userspace
 	@failed=0; \
@@ -1187,17 +1202,6 @@ compile-check: libc
 	    -fsyntax-only "$$f" \
 	    || failed=$$((failed + 1)); \
 	done; \
-	@# The other arm of every `#if XAIOS_BOOT_TEST_APPS` in the kernel.
-	@#
-	@# Every leg above compiles the default configuration, in which that
-	@# macro is 0 because the files default it with `#ifndef`. What the
-	@# gates actually boot is `make image-qemu-test`, which sets it to 1 --
-	@# and `remote_login.c` alone switches nine regions on it. So the
-	@# configuration that ships was compiled nowhere in this target, and a
-	@# format string reachable only there got past this check and past a
-	@# local sweep of it (B-95). A check that compiles a configuration
-	@# nobody boots and calls the tree clean is the failure mode this
-	@# repository already names as worse than having no check at all.
 	for f in $$(find kernel -name '*.c' ! -path '*/x86_64/*' ! -path '*/riscv64/*'); do \
 	  clang --target=aarch64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
