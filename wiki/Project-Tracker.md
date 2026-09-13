@@ -133,16 +133,26 @@ that is not XAIOS-specific is recorded.
 
 ### Firmware profile results
 
-Three profiles carry firmware evidence, and all three **are behind the current
-tree and must be re-run** before any of them is quoted as current: shared code
-that every profile compiles has changed since each was collected -- the
-scheduler and page allocator, the network stack, the cluster engine, and the
-RISC-V memory and interrupt path.
+Three profiles carry firmware evidence. **Two of them are current at
+`58bd1fe`, re-collected by the targets that produce them from a clean tree:**
+the macOS QEMU ARM64 profile on `node4` and the macOS VMware Fusion ARM64 one
+on `node2`, each passing every gate it defines. **The third is still behind the
+tree and must be re-run before it is quoted:** shared code that every profile
+compiles has changed since it was collected -- the scheduler and page
+allocator, the network stack, the cluster engine, and the RISC-V memory and
+interrupt path -- and it needs its designated host rather than one of these.
+
+One thing about collecting them is worth knowing before the next attempt,
+because it cost a run here: the collector does not discover the firmware. It
+reports `set XAIOS_AAVMF_CODE to the qualified firmware file` and refuses, even
+when the file it wants is the very one the QEMU runner would have defaulted to,
+so the variable has to be set explicitly and the check is on the file's
+identity rather than its location.
 
 | Profile | Collected at | Firmware | Covers |
 |---|---|---|---|
-| macOS QEMU ARM64 | `8a1a8a9` | AAVMF/EDK2 `47765fe344818cbc464b1c14ae658fb4b854f5c2ceffa982411731eb4865594d` | boot, CPU, network, SSH, USB keyboard console, SVE2 per-task context, storage recovery, operations, shutdown, repeat boot |
-| macOS VMware Fusion ARM64 | `8a1a8a9` | Fusion 26.0.0, chainloader `b7fb993edf80e301b148a2076f8a9919c3d31936d2273f592d19c06b5ec1d3a5` | four-vCPU boot, storage, network, SSH lifecycle |
+| macOS QEMU ARM64 | `58bd1fe` | AAVMF/EDK2 `47765fe344818cbc464b1c14ae658fb4b854f5c2ceffa982411731eb4865594d` | boot, CPU, network, SSH, USB keyboard console, SVE2 per-task context, storage recovery, operations, shutdown, repeat boot |
+| macOS VMware Fusion ARM64 | `58bd1fe` | Fusion 26.0.0, chainloader `b7fb993edf80e301b148a2076f8a9919c3d31936d2273f592d19c06b5ec1d3a5` | four-vCPU boot, storage, network, SSH lifecycle |
 | Intel VPS QEMU x86_64 | `ee9c621edde5315e0da37fb3ae328baf717318ee` | OVMF/EDK2 `624e06de18b4fa535e90db7160d00d3d07d206422b89999bf1e27d920264e4e0`, QEMU 10.0.11 under TCG | all eight profile gates: boot/network/SSH, USB keyboard console, CPU matrix, platform inventory, NUMA firmware, NVMe storage, operations/shutdown, repeat boot |
 
 The Intel profile needs its designated host (`deltasona`, Linux x86_64); no ARM
