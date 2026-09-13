@@ -255,6 +255,16 @@ static xaios_status_t submit_admin(nvme_controller_t *controller,
     nvme_completion_t completion = queue->cq[queue->cq_head];
     if ((completion.status & 1U) == queue->phase) {
       if (!completion_fields_valid(&completion, 0U, staged.cid)) {
+        /* One of the two ways this function returns XAIOS_ERR_IO, and they are
+           logged apart because B-100 needs them apart: a completion the device
+           produced and this driver refused is a protocol error, while the
+           branch below is a device that never answered. Both used to be the
+           same value with nothing on the console to tell them apart. */
+        klog("nvme: admin completion rejected opcode=%u cid=%u sq_head=%u "
+             "sq_id=%u status=0x%04x\n",
+             (unsigned)staged.opcode, (unsigned)staged.cid,
+             (unsigned)completion.sq_head, (unsigned)completion.sq_id,
+             (unsigned)completion.status);
         return XAIOS_ERR_IO;
       }
       if (result != 0) *result = completion.result;
@@ -267,7 +277,20 @@ static xaios_status_t submit_admin(nvme_controller_t *controller,
                    queue->cq_head);
       return XAIOS_OK;
     }
-    if (timer_now_ns() - started >= NVME_TIMEOUT_NS) return XAIOS_ERR_IO;
+    if (timer_now_ns() - started >= NVME_TIMEOUT_NS) {
+      /* The other way out, and the one a starved guest is most likely to take.
+         Elapsed is reported because the question is not whether five seconds
+         passed -- by definition they did -- but what the guest managed inside
+         them. A device that never answered and a device that answered and was
+         refused are different findings, and B-100 is the row that could not
+         tell them apart. */
+      klog("nvme: admin command timed out opcode=%u cid=%u nsid=%u elapsed=%lu "
+           "ns\n",
+           (unsigned)staged.opcode, (unsigned)staged.cid,
+           (unsigned)staged.nsid,
+           (unsigned long)(timer_now_ns() - started));
+      return XAIOS_ERR_IO;
+    }
     xaios_cpu_relax();
   }
 }
@@ -706,6 +729,16 @@ static uint32_t poll_queue(nvme_controller_t *controller, nvme_queue_t *queue,
     if (slot != 0 &&
         completion_fields_valid(&completion, queue->qid, slot->cid)) {
       status = slot->cancel_requested != 0U ? XAIOS_ERR_CANCELLED : XAIOS_OK;
+    } else {
+      /* The device-error side of the I/O path, and the reason B-100 can now
+         tell it from the timeout below: a completion arrived and could not be
+         matched to the request it claims to answer. A cancelled request is not
+         this -- that is a completion this driver asked for and matches
+         perfectly well. */
+      klog("nvme: io completion rejected qid=%u cid=%u sq_head=%u slot=%s\n",
+           (unsigned)queue->qid, (unsigned)completion.cid,
+           (unsigned)completion.sq_head,
+           slot == 0 ? "none" : "mismatched");
     }
     queue->cq_head = (uint16_t)(queue->cq_head + 1U);
     if (queue->cq_head == NVME_QUEUE_DEPTH) {
@@ -855,7 +888,16 @@ static xaios_status_t wait_batch(nvme_controller_t *controller,
     }
     if (done == count) return XAIOS_OK;
     (void)poll_controller(controller, NVME_QUEUE_DEPTH * NVME_MAX_IO_QUEUES);
-    if (timer_now_ns() - started >= NVME_TIMEOUT_NS) return XAIOS_ERR_IO;
+    if (timer_now_ns() - started >= NVME_TIMEOUT_NS) {
+      /* The other side, and the one the starved-guest hypothesis predicts.
+         Note that this loop returns OK when every request reaches COMPLETE
+         even if some completed with an error, so a failure here really is
+         requests that never completed at all. */
+      klog("nvme: io wait timed out done=%u of %u elapsed=%lu ns\n",
+           (unsigned)done, (unsigned)count,
+           (unsigned long)(timer_now_ns() - started));
+      return XAIOS_ERR_IO;
+    }
     xaios_cpu_relax();
   }
 }
@@ -955,7 +997,10 @@ xaios_status_t nvme_self_test(xaios_nvme_self_test_result_t *result) {
     result->malformed_completions_rejected = 4U;
   }
 
-  if (identify(controller, 0U, 1U) != XAIOS_OK) return XAIOS_ERR_IO;
+  if (identify(controller, 0U, 1U) != XAIOS_OK) {
+    klog("nvme: self-test failed step=identify-controller\n");
+    return XAIOS_ERR_IO;
+  }
   char serial[21];
   char model[41];
   for (uint32_t i = 0U; i < 20U; ++i) serial[i] = (char)controller->identify[4U + i];
@@ -966,7 +1011,10 @@ xaios_status_t nvme_self_test(xaios_nvme_self_test_result_t *result) {
   klog("nvme: identify controller serial='%s' model='%s' sgl=%u\n", serial,
        model, controller->sgl_supported);
 
-  if (identify(controller, 1U, 0U) != XAIOS_OK) return XAIOS_ERR_IO;
+  if (identify(controller, 1U, 0U) != XAIOS_OK) {
+    klog("nvme: self-test failed step=identify-namespace\n");
+    return XAIOS_ERR_IO;
+  }
   controller->namespace_id = 1U;
   controller->namespace_blocks = read_le64(controller->identify);
   uint32_t format = controller->identify[26U] & UINT8_C(0x0f);
@@ -975,11 +1023,26 @@ xaios_status_t nvme_self_test(xaios_nvme_self_test_result_t *result) {
     return XAIOS_ERR_UNSUPPORTED;
   }
   controller->block_size = 1U << lbads;
-  if (NVME_MAX_TRANSFER_BYTES % controller->block_size != 0U ||
-      negotiate_io_queues(controller) != XAIOS_OK ||
-      configure_queue_interrupts(controller) != XAIOS_OK ||
-      create_io_queues(controller) != XAIOS_OK ||
-      register_block_device(controller) != XAIOS_OK) {
+  /* Split rather than left as one condition, because B-100 asks which of
+     these it was and a single return cannot say. */
+  if (NVME_MAX_TRANSFER_BYTES % controller->block_size != 0U) {
+    klog("nvme: self-test failed step=transfer-size-not-block-aligned\n");
+    return XAIOS_ERR_IO;
+  }
+  if (negotiate_io_queues(controller) != XAIOS_OK) {
+    klog("nvme: self-test failed step=negotiate-io-queues\n");
+    return XAIOS_ERR_IO;
+  }
+  if (configure_queue_interrupts(controller) != XAIOS_OK) {
+    klog("nvme: self-test failed step=configure-queue-interrupts\n");
+    return XAIOS_ERR_IO;
+  }
+  if (create_io_queues(controller) != XAIOS_OK) {
+    klog("nvme: self-test failed step=create-io-queues\n");
+    return XAIOS_ERR_IO;
+  }
+  if (register_block_device(controller) != XAIOS_OK) {
+    klog("nvme: self-test failed step=register-block-device\n");
     return XAIOS_ERR_IO;
   }
   uint32_t blocks_per_transfer =
@@ -993,7 +1056,10 @@ xaios_status_t nvme_self_test(xaios_nvme_self_test_result_t *result) {
         (uint8_t *)kheap_calloc(NVME_MAX_TRANSFER_BYTES, NVME_PAGE_SIZE);
     if (buffers[queue] == 0) return XAIOS_ERR_NO_MEMORY;
   }
-  if (stress_io(controller, buffers) != XAIOS_OK) return XAIOS_ERR_IO;
+  if (stress_io(controller, buffers) != XAIOS_OK) {
+    klog("nvme: self-test failed step=stress-io\n");
+    return XAIOS_ERR_IO;
+  }
   controller->interrupt_test_buffer = buffers[0];
   g_nvme_controller = controller;
 
