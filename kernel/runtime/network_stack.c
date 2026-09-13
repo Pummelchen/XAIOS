@@ -5599,9 +5599,9 @@ static int network_reassemble_incoming(uint8_t *frame, uint32_t *frame_len,
    wait_events, and on a booted machine the process making those calls is sshd
    -- which the kernel starts as its last act, on the boot CPU, after switching
    preemption and the periodic timer off (kmain.c). One secondary CPU carries a
-   timer that polls this stack from interrupt context (OD-011,
-   `network_poll_tick_from_interrupt`), which is what bounds the window a
-   blocking call in that loop opens. Before the tick, a pause anywhere in the
+   network tick (OD-011) whose interrupt wakes it so its idle loop polls this
+   stack, and that is what bounds the window a blocking call in that loop
+   opens. Before the tick, a pause anywhere in the
    loop was a total network outage: nothing came off the receive ring, no ACK
    left, no retransmit fired, no flow expired.
 
@@ -5669,11 +5669,12 @@ uint64_t network_poll_gap_outage_count(void) {
   return g_poll_gap_outage_count;
 }
 
-/* The network's own work, under the guard. `operations_tick()` is not here on
-   purpose: it is the power path, it quiesces storage and it can stop the
-   machine, and the two callers differ about whether that belongs. It is the
-   first thing `network_poll_tick` does and the one thing
-   `network_poll_tick_from_interrupt` does not -- see the header. */
+/* The network's own work, under the guard. `operations_tick()` is deliberately
+   not here: it is the power path, it quiesces storage and it can stop the
+   machine, and it belongs to whichever caller is in a position to do that. Both
+   public entry points call it first -- `network_poll_tick` for a syscall and
+   `network_poll_tick_from_carrier` for the tick CPU's idle loop, both in thread
+   context -- so this function stays the network's work and nothing else. */
 static void network_poll_tick_locked(void) {
   if (g_persistent_initialized == 0) {
     return;
