@@ -99,6 +99,13 @@ code-scanning contract prevents resolved workflow-permission, wildcard-bind,
 sensitive-diagnostic, and integer-width findings from returning; GitHub CodeQL
 remains the authoritative whole-repository scanner after push.
 
+Every action the workflow uses is pinned to a full commit SHA rather than to a
+tag, because a tag is a mutable pointer and the workflow runs with this
+repository's token: whoever can move the tag decides what executes, including
+in the job that holds `contents: write`. `.github/dependabot.yml` moves those
+pins forward weekly, because a pin that nothing moves rots into the opposite
+problem -- a security fix that cannot reach the runner at all.
+
 Update, storage, SSH, administration, or network changes also require their
 focused gates and the external interoperability suites described in
 [[Testing XAIOS|Testing-XAIOS]].
