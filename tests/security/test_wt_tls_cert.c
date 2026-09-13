@@ -672,6 +672,106 @@ static void test_ecdsa(void) {
  * on the unfixed code and passes on the fixed code, which is the whole point of
  * it -- the check is the sanitizer, not the return value.
  */
+/* ------------------------------------------------- the longer ECDSA curves
+ *
+ * B-90. Until these ran, this verifier had seen a P-256 certificate accept a
+ * P-256 scheme and a P-256 certificate *refuse* a P-384 one, and nothing else:
+ * no secp384r1 and no secp521r1 multiplication had ever run in it, because the
+ * ECDSA fixture was P-256 only. The curve check below `test_ecdsa` is what
+ * makes a scheme/certificate mismatch safe, and it is not a substitute for the
+ * branch it protects -- a dispatcher that refused everything on the longer
+ * curves would have passed every test in this file until now.
+ *
+ * Same fixtures, same generator, same independent re-verification in
+ * `cryptography`; the differences are the curve, the digest and the point
+ * length, which is exactly where a verifier written against one curve goes
+ * wrong.
+ */
+static void test_ecdsa_long_curves(void) {
+  typedef struct long_case {
+    const char *label;
+    const uint8_t *cert;
+    size_t cert_len;
+    const uint8_t *point;
+    size_t point_len;
+    const uint8_t *signature;
+    size_t signature_len;
+    int curve;
+    uint16_t scheme;
+    size_t coordinate; /* bytes per coordinate; the point is 1 + 2 of them */
+  } long_case_t;
+  static const long_case_t cases[] = {
+    {"P-384", WT_ECDSA_P384_CERT, WT_ECDSA_P384_CERT_LEN,
+     WT_ECDSA_P384_POINT, WT_ECDSA_P384_POINT_LEN,
+     WT_ECDSA_P384_SIGNATURE, WT_ECDSA_P384_SIGNATURE_LEN,
+     BR_EC_secp384r1, WT_TLS_SIG_ECDSA_SECP384R1_SHA384, 48U},
+    {"P-521", WT_ECDSA_P521_CERT, WT_ECDSA_P521_CERT_LEN,
+     WT_ECDSA_P521_POINT, WT_ECDSA_P521_POINT_LEN,
+     WT_ECDSA_P521_SIGNATURE, WT_ECDSA_P521_SIGNATURE_LEN,
+     BR_EC_secp521r1, WT_TLS_SIG_ECDSA_SECP521R1_SHA512, 66U},
+  };
+  size_t c;
+  for (c = 0U; c < sizeof(cases) / sizeof(cases[0]); c++) {
+    wt_tls_certificate_verify_t verify;
+    wt_tls_public_key_t key;
+    expect_int("the certificate has a readable key", 0,
+               wt_tls_certificate_public_key(cases[c].cert, cases[c].cert_len,
+                                             &key));
+    expect_int("it is not RSA", 0, key.is_rsa);
+    expect_int("it is on the curve the scheme names", cases[c].curve,
+               key.ec.curve);
+    expect_int("with the uncompressed point length that curve needs",
+               (long)(1U + (2U * cases[c].coordinate)), (long)key.ec.qlen);
+    expect_bytes("and the point is the one the generator computed",
+                 cases[c].point, key.ec.q, cases[c].point_len);
+    expect_int("the DER signature is a SEQUENCE", 0x30,
+               (long)cases[c].signature[0]);
+
+    verify.scheme = cases[c].scheme;
+    verify.signature = cases[c].signature;
+    verify.signature_len = cases[c].signature_len;
+
+    /* THE CHECK: a real signature on this curve. This is the multiplication
+       that had never run. */
+    expect_int("the signature verifies on this curve", 1,
+               wt_tls_certificate_verify_signature(
+                   cases[c].cert, cases[c].cert_len, &verify, WT_ECDSA_CONTENT,
+                   WT_ECDSA_CONTENT_LEN));
+
+    /* NEGATIVE: a mangled signature must still be refused here. A verifier
+       that returned success for the longer curves without doing the
+       arithmetic would pass the check above and nothing else. */
+    {
+      uint8_t forged[WT_ECDSA_P521_SIGNATURE_LEN];
+      size_t i;
+      for (i = 0U; i < cases[c].signature_len; i++) {
+        wt_tls_certificate_verify_t mangled = verify;
+        memcpy(forged, cases[c].signature, cases[c].signature_len);
+        forged[i] ^= 0xFFU;
+        mangled.signature = forged;
+        expect_int("a mangled signature is refused on this curve", 0,
+                   wt_tls_certificate_verify_signature(
+                       cases[c].cert, cases[c].cert_len, &mangled,
+                       WT_ECDSA_CONTENT, WT_ECDSA_CONTENT_LEN));
+      }
+    }
+
+    /* And the curves must not answer for each other: the same certificate
+       answering a different curve's scheme is the mismatch the curve check
+       exists for, now exercised from the other side as well. */
+    {
+      wt_tls_certificate_verify_t wrong = verify;
+      wrong.scheme = cases[c].scheme == WT_TLS_SIG_ECDSA_SECP384R1_SHA384
+                         ? WT_TLS_SIG_ECDSA_SECP256R1_SHA256
+                         : WT_TLS_SIG_ECDSA_SECP384R1_SHA384;
+      expect_int("another curve's scheme is refused", -1,
+                 wt_tls_certificate_verify_signature(
+                     cases[c].cert, cases[c].cert_len, &wrong,
+                     WT_ECDSA_CONTENT, WT_ECDSA_CONTENT_LEN));
+    }
+  }
+}
+
 static void test_long_hash_schemes(void) {
   static const uint16_t schemes[2] = {WT_TLS_SIG_RSA_PSS_RSAE_SHA384,
                                       WT_TLS_SIG_RSA_PSS_RSAE_SHA512};
@@ -795,6 +895,7 @@ int main(void) {
   test_signature();
   test_long_hash_schemes();
   test_ecdsa();
+  test_ecdsa_long_curves();
 
   if (g_failures != 0) {
     printf("wt_tls_cert: %d of %d checks FAILED\n", g_failures, g_checks);
