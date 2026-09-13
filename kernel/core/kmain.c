@@ -1537,6 +1537,33 @@ persistent_network_done:
     setup_apply_pending();
   }
 
+  /* OD-011 needs a way to save the interrupt mask and put it back, and a
+     primitive nothing exercises is a primitive nobody has tested.
+     It reports three verdicts rather than one, because on the machines this has
+     run on it cannot test what it was written to test: interrupts are masked
+     here, so `before` is 0, the disable masks nothing that was not already
+     masked, and a "passed" would be a claim about a round trip that did not
+     happen. The first version of this asserted `before == 1` and halted the
+     machine, which is how the masked state was found. What that state means is
+     recorded in OD-011 rather than worked around here. */
+  {
+    int before = xaios_interrupts_enabled();
+    xaios_interrupt_state_t saved = xaios_interrupts_disable();
+    int masked = xaios_interrupts_enabled();
+    xaios_interrupts_restore(saved);
+    int after = xaios_interrupts_enabled();
+    kassert(masked == 0);
+    kassert(after == before);
+    if (before == 0) {
+      klog("interrupts: save/restore self-test inconclusive before=0 masked=0 "
+           "after=0; the enabling direction was never exercised\n");
+    } else {
+      klog("interrupts: save/restore self-test passed before=%d masked=%d "
+           "after=%d\n",
+           before, masked, after);
+    }
+  }
+
   klog("kernel: starting persistent /bin/sshd service\n");
   int sshd_exit =
       run_user_app("/bin/sshd", XAIOS_BOOT_TEST_APPS ? 18U : 3U, sshd_caps);

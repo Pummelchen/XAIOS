@@ -77,6 +77,90 @@ static inline void xaios_cpu_wait(void) {
 #endif
 }
 
+/* Interrupts, as a value that can be saved and put back.
+ *
+ * The kernel had no way to say "these few instructions must not be interrupted"
+ * until OD-011 needed one. That decision is to poll the network from a timer,
+ * and the reentrant lock is documented as never being taken from interrupt
+ * context -- so the first thing the poll needs is a primitive that turns
+ * interrupts off and, more importantly, puts them back exactly as they were. A
+ * helper that always enables them on the way out would turn a nested disable
+ * into a bug, which is why the state is saved rather than assumed.
+ *
+ * The saved value is architecture-defined and opaque: the caller holds it and
+ * hands it back, and nothing else may look inside it. */
+typedef unsigned long xaios_interrupt_state_t;
+
+/* Turn interrupts off and report what they were. This is the only correct way
+ * to enter a section that must not be interrupted: the restore below needs the
+ * previous state, and a caller that assumed "they were on" is wrong inside
+ * another such section. */
+static inline xaios_interrupt_state_t xaios_interrupts_disable(void) {
+#if defined(__aarch64__)
+  xaios_interrupt_state_t state;
+  __asm__ volatile("mrs %0, daif" : "=r"(state));
+  /* daifset with bit 1 sets DAIF.I and leaves the other three masks alone. */
+  __asm__ volatile("msr daifset, #2" ::: "memory");
+  return state;
+#elif defined(__x86_64__)
+  xaios_interrupt_state_t state;
+  __asm__ volatile("pushfq\n\tpopq %0\n\tcli" : "=r"(state) : : "memory");
+  return state;
+#elif defined(__riscv)
+  xaios_interrupt_state_t state;
+  /* One instruction, not a read and a write: an interrupt arriving between
+     them would be masked by a value this function did not compute. */
+  __asm__ volatile("csrrc %0, sstatus, %1"
+                   : "=r"(state)
+                   : "r"((unsigned long)(1UL << 1))
+                   : "memory");
+  return state;
+#else
+#error "Unsupported XAIOS kernel architecture"
+#endif
+}
+
+/* Put back the state `xaios_interrupts_disable` reported. */
+static inline void xaios_interrupts_restore(xaios_interrupt_state_t state) {
+#if defined(__aarch64__)
+  __asm__ volatile("msr daif, %0" ::"r"(state) : "memory");
+#elif defined(__x86_64__)
+  __asm__ volatile("pushq %0\n\tpopfq" ::"r"(state) : "memory");
+#elif defined(__riscv)
+  /* Only the enable bit is written back: sstatus carries other state, and this
+     function was not asked to restore that. */
+  if ((state & (1UL << 1)) != 0UL) {
+    __asm__ volatile("csrrs zero, sstatus, %0" ::"r"((unsigned long)(1UL << 1))
+                     : "memory");
+  } else {
+    __asm__ volatile("csrrc zero, sstatus, %0" ::"r"((unsigned long)(1UL << 1))
+                     : "memory");
+  }
+#else
+#error "Unsupported XAIOS kernel architecture"
+#endif
+}
+
+/* Whether interrupts are enabled now. For assertions and self-tests: the pair
+ * above is what correctness depends on, and this is how a test says so. */
+static inline int xaios_interrupts_enabled(void) {
+#if defined(__aarch64__)
+  xaios_interrupt_state_t state;
+  __asm__ volatile("mrs %0, daif" : "=r"(state));
+  return (state & (1UL << 7)) == 0UL;
+#elif defined(__x86_64__)
+  xaios_interrupt_state_t state;
+  __asm__ volatile("pushfq\n\tpopq %0" : "=r"(state));
+  return (state & (1UL << 9)) != 0UL;
+#elif defined(__riscv)
+  xaios_interrupt_state_t state;
+  __asm__ volatile("csrr %0, sstatus" : "=r"(state));
+  return (state & (1UL << 1)) != 0UL;
+#else
+#error "Unsupported XAIOS kernel architecture"
+#endif
+}
+
 static inline uint64_t xaios_cpu_counter(void) {
   uint64_t counter;
 #if defined(__aarch64__)

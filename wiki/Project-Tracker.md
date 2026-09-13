@@ -652,6 +652,25 @@ the loop. That bounds the interrupt's work and removes the total-outage property
 without a dedicated CPU, at the cost of splitting the poll path in two and having
 to say which half may do what.
 
+**And a measurement that changes what the timer option has to include.** The
+first piece of it is now in the tree: `arch_cpu.h` carries
+`xaios_interrupts_disable` / `xaios_interrupts_restore` /
+`xaios_interrupts_enabled` for all three architectures, built on the
+instructions each already used in isolation, with a self-test beside the other
+boot self-tests. **That self-test reports `inconclusive`, not `passed`:**
+`before=0 masked=0 after=0` at the end of boot, just before sshd starts, so the
+enabling direction is never exercised because there is nothing enabled to mask.
+The first version of it asserted `before == 1` and halted the machine, which is
+how the masked state was found rather than assumed. **The boot CPU runs with
+interrupts masked**, and the only unmask paths in the tree are
+`gic_secondary_init`, which `smp.c` runs on the secondary CPUs, and
+`kernel/sched/context.S`. A timer that polls the network therefore cannot be
+built on "add a timer" alone: it has to establish where and why the boot CPU
+enables interrupts, which is the same question as the preemption this row
+already names. The primitive is landed and the self-test is honest about what it
+did not test, because a test that reports a round trip it did not perform is
+exactly the thing this page exists to prevent.
+
 The decision is not made here, and the row above stays `NOT STARTED` because it
 is a choice about the machine's execution model rather than a refactor to make
 quietly.
