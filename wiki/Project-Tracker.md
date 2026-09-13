@@ -38,8 +38,14 @@ passed. `qemu-readiness-gate` and `qemu-full-os-rc` both failed on the same leg,
 volume rather than the guest: the three controlled-fault scenarios never ran,
 because the boot died first in an unrelated self-test. It is `B-51`, it is
 fixed, and `qemu-fault-matrix` passes in isolation on the same commit that
-failed. **The two aggregates have not themselves been re-run since that fix**,
-so no statement here about their status is newer than that.
+failed. **Both have since been asked again, serially, on a second Mac at
+`0fba4de`, and both pass:** `qemu-readiness-gate` reports `matrix_exit_code=0`
+with an empty `failures` list, and `qemu-full-os-rc` reports `status=pass`,
+`milestone=42`, `qemu_full_os_complete=true`, `release_candidate=qemu-rc-1` and
+thirteen validated subsystems. That answers the question the paragraph above
+left open and answers nothing wider: the other eight aggregates were not re-run
+in the same sitting, and these two are both QEMU gates, so the two that include
+Fusion and VZ are exactly as current as they were.
 
 They are run serially deliberately: these assert on boot markers and timings,
 and this machine cut a `qemu-smoke` boot short at load average 30 and passed it
@@ -83,7 +89,7 @@ untried.
 | `B-79` | The TLS 1.3 client handshake is written and has no 0-RTT | The handshake completes against an independently generated QUIC server flight. What is absent is 0-RTT and the session tickets it needs, a HelloRetryRequest (refused by name), and client certificates. The rest of the port, and what each remaining task's exit criterion is, is in [Current tasks](#current-tasks) below. |
 | `B-99` | The Fusion load soak fails on node2 about one round in 64 | The client's TCP connect times out in 7.83s and the guest's console shows no trace of that connection, while a probe straight afterwards connects in 0.07s. The failures recur about once a minute, and a second client on a different Mac sees the same 7.8s timeouts, so the loss is not peculiar to node2's stack -- the guest keeps serving other sessions throughout. Per-port exhaustion, the half-open bound and the B-43/B-63 service-loop stall are all refuted from the console. |
 
-Three things are open that are not defects:
+Two things are open that are not defects:
 
 - **No physical hardware, on any architecture.** Every result on this page comes
   from an emulator or a hypervisor. `D1` is the USB route and needs a stick in a
@@ -92,9 +98,6 @@ Three things are open that are not defects:
 - **Two external decisions block their own work** and nothing here moves them:
   `OD-004` (production trust-root custody) and `OD-008` (pinning an official
   DeepSeek source, whose exact release label is unresolved).
-- **The two aggregate targets that failed on 2026-09-12 have not been re-run
-  since the fix that explains them.** `qemu-fault-matrix` passes in isolation;
-  `qemu-readiness-gate` and `qemu-full-os-rc` have not been asked again.
 
 One step timed out once and did not reproduce; it is `B-39` rather than a
 footnote here.
