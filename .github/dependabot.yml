@@ -3,11 +3,11 @@
 # Every `uses:` in .github/workflows/ci.yml names a full commit SHA rather than
 # a tag or a branch, because a tag is a mutable pointer: whoever can move it
 # decides what runs in this repository's CI, with this repository's token.
-# Pinning is the rule this repository follows; `sha_pinning_required` at the
-# repository level is what turns the rule into something GitHub refuses to
-# violate, and it is enabled once the runs already queued against the unpinned
-# workflow have drained -- turning it on underneath them would fail work that
-# was valid when it started.
+# Pinning is the rule this repository follows, and `sha_pinning_required` is on
+# at the repository level, so a workflow that names a tag or a branch is
+# refused rather than merely discouraged. `allowed_actions` is `selected` with
+# GitHub-owned actions allowed and nothing else, so a third-party action cannot
+# arrive by editing the workflow in a pull request.
 #
 # A pin that nothing moves is a pin that rots, and a rotting pin trades one
 # problem for a worse one -- a security fix that cannot reach the runner. This
