@@ -262,13 +262,18 @@ size_t wt_tls_client_start(wt_tls_client_t *handshake,
  * call returns -1. A peer that sent one bad message does not get a second
  * chance in the same connection.
  *
- * THE BUFFER IS BORROWED FOR THE HANDSHAKE'S LIFETIME. The Certificate message
- * is held as a view and read again when CertificateVerify arrives, because
- * copying a certificate chain to avoid that would need an unbounded buffer. The
- * transport parameters are borrowed the same way. A QUIC stack reassembles
- * handshake bytes into a CRYPTO stream buffer that outlives one message, which
- * is exactly the lifetime this needs; a caller that hands in a per-read scratch
- * buffer must copy these two things out first. */
+ * THE MESSAGE BUFFER IS NOT KEPT. Nothing this function parses stays a view
+ * into `message`: the leaf certificate is read for its public key while the
+ * message is in hand and that key is owned afterwards, and the transport
+ * parameters are copied. A caller may therefore hand in a per-read scratch
+ * buffer and read into it again the moment this returns.
+ *
+ * This paragraph said the opposite until B-92, and it said it as a requirement
+ * rather than as a description: the certificate and the parameters used to be
+ * borrowed for the handshake's lifetime, so a per-read scratch buffer was a
+ * use-after-scope. It is corrected here rather than deleted because a header
+ * that tells a caller to keep a buffer alive for a reason that no longer exists
+ * is worse than one that says nothing at all. */
 int wt_tls_client_receive(wt_tls_client_t *handshake, wt_tls_level_t level,
                           const uint8_t *message, size_t message_len,
                           const uint8_t **out, size_t *out_len,
