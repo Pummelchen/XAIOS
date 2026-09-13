@@ -12,6 +12,7 @@
 #include <xaios/network_config.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
+#include <xaios/local_ports.h>
 #include <xaios/xaiboot_fs.h>
 #include <xaios/net_device.h>
 #include <xaios/network_stack.h>
@@ -290,7 +291,11 @@ static uint64_t kernel_socket_alloc(uint32_t type, uint16_t port,
  * DNS resolver uses for the same reason. Returning 0 means the range is
  * exhausted, which is a refusal and not a wrap: a caller told port 0 would
  * believe it had been given one. */
-#define KERNEL_EPHEMERAL_PORT_MIN UINT16_C(49152)
+/* The floor of the dynamic range, and the allocator's alone: the kernel's own
+   protocols source from the block below it rather than from inside it. The
+   partition is stated in `local_ports.h` so the three claimants cannot drift
+   into one another again (B-77). */
+#define KERNEL_EPHEMERAL_PORT_MIN XAIOS_EPHEMERAL_PORT_MIN
 
 static uint16_t kernel_ephemeral_next_after(uint16_t port) {
   uint16_t next = (uint16_t)(port + 1U);

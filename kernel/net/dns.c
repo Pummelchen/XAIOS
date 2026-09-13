@@ -3,6 +3,7 @@
 #include <xaios/dnssec.h>
 #include <xaios/ipv4.h>
 #include <xaios/klog.h>
+#include <xaios/local_ports.h>
 #include <xaios/spinlock.h>
 #include <xaios/smp.h>
 #include <xaios/network_stack.h>
@@ -54,7 +55,6 @@
 #define DNS_QUERY_TIMEOUT_NS UINT64_C(15000000000)
 #define DNS_WALK_TIMEOUT_NS UINT64_C(45000000000)
 #define DNS_MAX_POINTER_JUMPS 32U
-#define DNS_EPHEMERAL_PORT_MIN UINT16_C(49152)
 #define DNS_EDNS_UDP_SIZE UINT16_C(1232)
 #define DNS_FLAG_QR UINT16_C(0x8000)
 #define DNS_FLAG_TC UINT16_C(0x0200)
@@ -217,9 +217,20 @@ static uint16_t random_u16(uint16_t fallback) {
   return value;
 }
 
+/* One of the resolver's own ports, drawn at random so that two queries in
+   flight are not both answered on one number.
+ *
+ * This used to draw across 49152..65535, which is the range the socket
+ * allocator hands out from, so a query could be answered on a port a
+ * `net_open_udp` socket had also been given and nothing held both facts
+ * (B-77). The block it draws from now is below that range and disjoint from
+ * NTP's, and the span is a compile-time constant, so the modulo is exact and
+ * cannot divide by zero. */
 static uint16_t random_ephemeral_port(uint16_t fallback) {
-  return (uint16_t)(DNS_EPHEMERAL_PORT_MIN |
-                    (random_u16(fallback) & UINT16_C(0x3fff)));
+  const uint16_t span = (uint16_t)(XAIOS_DNS_SOURCE_PORT_MAX -
+                                   XAIOS_DNS_SOURCE_PORT_MIN + 1U);
+  return (uint16_t)(XAIOS_DNS_SOURCE_PORT_MIN +
+                    (uint16_t)(random_u16(fallback) % span));
 }
 
 void dns_init(void) {

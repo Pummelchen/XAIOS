@@ -1,13 +1,17 @@
 #include <xaios/assert.h>
 #include <xaios/ipv4.h>
 #include <xaios/klog.h>
+#include <xaios/local_ports.h>
 #include <xaios/ntp.h>
 #include <xaios/timer.h>
 #include <xaios/net_device.h>
 #include <xaios/network_config.h>
 
 #define NTP_PORT UINT16_C(123)
-#define NTP_LOCAL_PORT UINT16_C(49155)
+/* Below the dynamic range, which belongs to the socket allocator, and outside
+   the resolver's block beside it. Fixed rather than drawn: the server's
+   reply is matched on this number (B-77). */
+#define NTP_LOCAL_PORT XAIOS_NTP_SOURCE_PORT
 #define NTP_PACKET_BYTES 48U
 #define NTP_FRAME_BYTES (14U + 20U + 8U + NTP_PACKET_BYTES)
 #define NTP_UNIX_DELTA UINT64_C(2208988800)
