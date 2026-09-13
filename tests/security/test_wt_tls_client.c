@@ -1308,6 +1308,76 @@ static void test_client_owns_what_it_keeps(void) {
   wt_tls_client_clear(&handshake);
 }
 
+/* B-93: the flight outlives the call that produced it, and can be asked for
+ * again by name.
+ *
+ * QUIC retransmits a lost Finished with the same keys, so the bytes cannot be
+ * valid only until the next call, and a caller should not have to keep its own
+ * copy to be safe. This checks the accessor agrees with what the receive call
+ * returned -- same bytes, same length, same level -- after that call has
+ * returned, and that the lifetime is the stated one rather than an accident. */
+static void test_flight_outlives_the_call(void) {
+  wt_tls_client_t handshake;
+  uint8_t ee[256];
+  const uint8_t *out = NULL;
+  const uint8_t *again = NULL;
+  size_t out_len = 0U;
+  size_t again_len = 0U;
+  wt_tls_level_t out_level = WT_TLS_LEVEL_INITIAL;
+  wt_tls_level_t again_level = WT_TLS_LEVEL_INITIAL;
+
+  setup_params();
+  setup_pin();
+
+  expect_int("a NULL client has no flight", 1,
+             wt_tls_client_flight(NULL, NULL, NULL) == NULL ? 1 : 0);
+
+  if (reach_wait_encrypted_extensions(&handshake) != 0) {
+    printf("FATAL could not start the flight handshake\n");
+    g_failures++;
+    return;
+  }
+  expect_int("a started handshake has no flight yet", 1,
+             wt_tls_client_flight(&handshake, NULL, NULL) == NULL ? 1 : 0);
+  {
+    size_t len = good_encrypted_extensions(ee, sizeof(ee));
+    if (feed(&handshake, WT_TLS_LEVEL_HANDSHAKE, ee, len) != 0) return;
+  }
+  if (feed(&handshake, WT_TLS_LEVEL_HANDSHAKE, WT_QUIC_FLIGHT_CERTIFICATE,
+           sizeof(WT_QUIC_FLIGHT_CERTIFICATE)) != 0) {
+    return;
+  }
+  if (feed(&handshake, WT_TLS_LEVEL_HANDSHAKE,
+           WT_QUIC_FLIGHT_CERTIFICATE_VERIFY,
+           sizeof(WT_QUIC_FLIGHT_CERTIFICATE_VERIFY)) != 0) {
+    return;
+  }
+  expect_int("the server's Finished is accepted", 0,
+             wt_tls_client_receive(&handshake, WT_TLS_LEVEL_HANDSHAKE,
+                                   WT_QUIC_FLIGHT_FINISHED,
+                                   sizeof(WT_QUIC_FLIGHT_FINISHED), &out,
+                                   &out_len, &out_level));
+
+  /* The call has returned. These are the bytes a retransmission needs. */
+  again = wt_tls_client_flight(&handshake, &again_len, &again_level);
+  expect_int("the flight can still be fetched after the call", 1,
+             again != NULL ? 1 : 0);
+  expect_int("with the length the call reported", (long)out_len,
+             (long)again_len);
+  expect_int("at the level the call reported", (long)out_level,
+             (long)again_level);
+  expect_int("and with the same bytes", 1,
+             (out != NULL && again != NULL && out_len == again_len &&
+              memcmp(out, again, out_len) == 0)
+                 ? 1
+                 : 0);
+
+  /* And the end of the span is the stated one, not whatever happens next. */
+  wt_tls_client_clear(&handshake);
+  expect_int("clearing the client ends the flight", 1,
+             wt_tls_client_flight(&handshake, NULL, NULL) == NULL ? 1 : 0);
+}
+
 int main(void) {
   setup_params();
   setup_pin();
@@ -1319,6 +1389,7 @@ int main(void) {
   test_certificate_verify();
   test_full_handshake();
   test_client_owns_what_it_keeps();
+  test_flight_outlives_the_call();
   test_client_auth_request();
 
   if (g_failures != 0) {

@@ -111,6 +111,17 @@ const uint8_t *wt_tls_client_alpn(const wt_tls_client_t *handshake,
   return handshake->alpn;
 }
 
+const uint8_t *wt_tls_client_flight(const wt_tls_client_t *handshake,
+                                    size_t *out_len,
+                                    wt_tls_level_t *out_level) {
+  if (out_len != NULL) *out_len = 0U;
+  if (out_level != NULL) *out_level = WT_TLS_LEVEL_INITIAL;
+  if (handshake == NULL || handshake->flight_len == 0U) return NULL;
+  if (out_len != NULL) *out_len = handshake->flight_len;
+  if (out_level != NULL) *out_level = handshake->flight_level;
+  return handshake->flight;
+}
+
 const uint8_t *wt_tls_client_peer_transport_parameters(
     const wt_tls_client_t *handshake, size_t *out_len) {
   if (out_len != NULL) *out_len = 0U;
@@ -870,8 +881,12 @@ static int build_client_flight(wt_tls_client_t *handshake,
   /* RFC 9001 section 4.1.5: the client's second flight goes at the Handshake
      level, under handshake keys. The application keys derived alongside it are
      reported available in the same call, because RFC 9001 has the client
-     install 1-RTT keys once its Finished is produced. */
-  *out_level = WT_TLS_LEVEL_HANDSHAKE;
+     install 1-RTT keys once its Finished is produced. The level is kept as well
+     as returned, because the flight outlives this call and a caller that asks
+     for it again needs to know where to send it -- which is what the field was
+     declared for and, until B-93, never set. */
+  handshake->flight_level = WT_TLS_LEVEL_HANDSHAKE;
+  *out_level = handshake->flight_level;
   return 0;
 }
 

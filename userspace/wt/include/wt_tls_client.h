@@ -254,9 +254,13 @@ size_t wt_tls_client_start(wt_tls_client_t *handshake,
  * one.
  *
  * On success, `*out_len` is the length of a response flight to send at
- * `*out_level`, or 0 when the handshake has nothing to say. The response points
- * into the handshake's own buffer, so it is valid until the next call. Returns
- * 0 on success and -1 on a refusal.
+ * `*out_level`, or 0 when the handshake has nothing to say. The response is the
+ * handshake's own storage rather than a view into `message`, and it is the same
+ * bytes `wt_tls_client_flight` returns afterwards -- so a QUIC layer that has to
+ * retransmit a lost Finished does not copy it, and a caller that wants it again
+ * asks for it rather than holding the pointer from here. It stays valid until
+ * the client is cleared or the handshake fails. Returns 0 on success and -1 on
+ * a refusal.
  *
  * A refusal is terminal: the state becomes WT_TLS_STATE_FAILED and every later
  * call returns -1. A peer that sent one bad message does not get a second
@@ -278,6 +282,22 @@ int wt_tls_client_receive(wt_tls_client_t *handshake, wt_tls_level_t level,
                           const uint8_t *message, size_t message_len,
                           const uint8_t **out, size_t *out_len,
                           wt_tls_level_t *out_level);
+
+/* The response flight this client last produced, or NULL when it has none.
+ *
+ * `wt_tls_client_receive` hands the same bytes back at the moment it produces
+ * them, which is enough to send them once. QUIC needs them a second time: a lost
+ * Finished is retransmitted with the same keys, so the bytes have to outlive the
+ * call that produced them, and a caller should not have to keep its own copy to
+ * make that safe. They do outlive it -- they are this client's own storage --
+ * and this is how they are fetched again.
+ *
+ * The span is the secrets' span, deliberately: until the client is cleared or
+ * the handshake fails. A flight whose keys are gone cannot be retransmitted
+ * usefully, so storing it past that point would be storage with no purpose. */
+const uint8_t *wt_tls_client_flight(const wt_tls_client_t *handshake,
+                                    size_t *out_len,
+                                    wt_tls_level_t *out_level);
 
 /* Whether keys at `level` for `from_server` have been derived. QUIC asks this
  * after every call, because RFC 9001 section 4.1.4 makes key availability a
