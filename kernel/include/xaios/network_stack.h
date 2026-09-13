@@ -115,49 +115,43 @@ void network_stack_lock(void);
 void network_stack_unlock(void);
 
 void network_poll_tick(void);
-/* The same tick, from a timer interrupt, minus the part that power actions own.
+/* The tick-driven poll, from the CPU carrying the network tick.
  *
- * **Nothing calls this yet, and that is deliberate.** `OD-011`'s remaining step
- * is a timer on one CPU that polls the stack while sshd's loop is blocked, and
- * the trigger is not in the tree: one was implemented and it does not hold. On
- * AArch64 the carrier CPU stopped taking timer interrupts the moment the
- * boot-test profile dispatched a user thread to it -- 46 polls and then
- * nothing, with `timer_mask_local` never called on that CPU and no
- * `CNTV_CTL_EL0` write anywhere in the port -- and re-arming from the idle loop
- * did not bring it back. That is unresolved. What is here is the half that is
- * correct on its own, so that whoever lands the trigger does not have to land
- * this at the same time and get both wrong together. The gap line's `intr=`
- * field and `make qemu-network-poll-cadence-gate` are the instrument that
- * found the failure, and the gate fails if a guest ever announces an armed
- * tick that does not fire.
+ * `kmain` stops the shared periodic tick before it starts sshd, so the tick is
+ * *armed* on one CPU afterwards rather than being an ordinary timer callback,
+ * and that CPU's idle loop calls this each time it comes round. The tick's job
+ * is to wake the CPU; the poll itself runs here, in thread context.
  *
- * `network_poll_tick` begins with `operations_tick()`, which quiesces storage
- * through `block_flush_all` and can end in `arch_power_off()`. That sequence
- * is deliberate where a shutdown was asked for, and it has no business running
- * from a handler: it blocks on I/O and it stops the machine, both from a
- * context that cannot report that it did. So the interrupt path does the
- * network's work and leaves the power path to the syscall path, which is where
- * a shutdown is requested from in the first place.
+ * **That is deliberate, and it is why this is not the interrupt path.** The
+ * obvious design polls from the timer handler, and it was implemented that way
+ * first: it works on AArch64 and x86-64, and on RISC-V it corrupted a trap
+ * frame -- `/bin/c99-thread-context` returned to program counter zero, because
+ * that port's trap entry is deliberately minimal and cannot yet take arbitrary
+ * kernel-context traps. Polling from the loop needs no port to be more
+ * interrupt-safe than it already is, so all three behave the same way, and the
+ * power path is safe again too: `operations_tick()` quiesces storage and can
+ * stop the machine, which is a thing to do from a handler only if there is no
+ * alternative.
  *
- * Everything else is the same call, and everything else is why this is safe:
- * the network guard masks interrupts for as long as it is held and restores
- * the state on release, so a tick cannot re-enter a poll already in progress
- * on this CPU, and the resolver's transport tick runs inside that guard.
+ * The CPU has to be idle for this to run, which is exactly when a CPU is
+ * available to service the stack -- and it is `timer_arm_network_tick()` that
+ * makes it come round at the tick rate rather than only when something else
+ * wakes it.
  */
-void network_poll_tick_from_interrupt(void);
+void network_poll_tick_from_carrier(void);
 uint64_t network_poll_tick_count(void);
-/* Interrupt-context polls, counted separately from `network_poll_tick_count`.
+/* Polls taken by the CPU carrying the network tick.
  *
  * A mechanism that cannot report whether it ever ran is one nobody can tell
  * from a mechanism that never did -- and this one is a timer on one CPU, which
  * is exactly the shape that silently stops. It is reported on the gap line as
- * `intr=`, and the poll-cadence gate fails if a guest announces an armed tick
+ * `tick=`, and the poll-cadence gate fails if a guest announces an armed tick
  * while this does not advance: that is what "armed" and "fires" being
  * different claims looks like when something checks. It is the field that
- * caught the tick starving itself and the idle loop running with interrupts
- * masked, one CPU's timer being the whole mechanism. See
- * `network_poll_tick_from_interrupt` above. */
-uint64_t network_interrupt_poll_count(void);
+ * caught the tick starving itself and an idle loop that could not take an
+ * interrupt at all.
+ */
+uint64_t network_tick_poll_count(void);
 /* B-44. The longest stretch this stack went undriven while a listener was
    registered, and how many of those stretches were long enough to be an
    outage rather than a pause. Most of the poll comes from the syscalls a

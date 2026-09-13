@@ -221,15 +221,14 @@ xaios_context_frame_t *aarch64_irq_handler(xaios_context_frame_t *frame) {
     /* Timer interrupt: rearm, then the network's tick or the scheduler's.
      *
      * Exactly one CPU carries the network tick, and on that CPU this interrupt
-     * is the network's and not the scheduler's -- it polls the stack so a frame
-     * is still serviced while sshd's loop is blocked (OD-011) and leaves the
-     * scheduler masked exactly as the port left it, because that CPU does not
-     * own a preemptible user run queue. No CPU gains or loses a preemption.
-     * Every other CPU takes the branch it always took. */
+     * does not tick the scheduler -- it stays masked there exactly as the port
+     * left it, because that CPU does not own a preemptible user run queue. No
+     * CPU gains or loses a preemption. The tick's whole job is to wake that
+     * CPU; the poll itself runs from its idle loop, in thread context, which is
+     * what lets all three ports carry the same mechanism and keeps the power
+     * path out of a handler. See network_poll_tick_from_carrier(). */
     timer_rearm();
-    if (timer_local_tick_is_network_only() != 0U) {
-      network_poll_tick_from_interrupt();
-    } else {
+    if (timer_local_tick_is_network_only() == 0U) {
       scheduler_tick(frame, aarch64_sve_enabled() != 0U
                                 ? (uint8_t *)frame + XAIOS_CONTEXT_FRAME_SIZE
                                 : 0);

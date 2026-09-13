@@ -343,9 +343,9 @@ static uint32_t g_half_open_count = 0;
 static uint8_t g_local_mac[6];
 static uint32_t g_persistent_initialized;
 static uint64_t g_poll_tick_count;
-/* Polls taken from a timer interrupt, counted apart from the ones a syscall
-   makes. See network_interrupt_poll_count() in the header for why. */
-static uint64_t g_interrupt_poll_count;
+/* Polls taken by the CPU carrying the network tick, counted apart from the
+   ones a syscall makes. See network_tick_poll_count() in the header. */
+static uint64_t g_tick_poll_count;
 #define NETWORK_POLL_GAP_OUTAGE_NS UINT64_C(1000000000)
 #define NETWORK_POLL_GAP_RECORD_LINES 32U
 
@@ -5433,7 +5433,7 @@ void network_init_persistent(void) {
   g_slaac_valid_until_ns = 0U;
   g_persistent_initialized = 1;
   g_poll_tick_count = 0;
-  g_interrupt_poll_count = 0;
+  g_tick_poll_count = 0;
   g_icmp_reply_count = 0;
   g_arp_reply_count = 0;
   g_icmpv6_reply_count = 0;
@@ -5658,10 +5658,10 @@ static void network_note_poll_gap(uint64_t now_ns) {
      the same, so a machine that degrades steadily cannot fill the console. */
   if (g_poll_gap_record_lines >= NETWORK_POLL_GAP_RECORD_LINES) return;
   ++g_poll_gap_record_lines;
-  klog("network: longest gap between polls us=%lu polls=%lu intr=%lu "
+  klog("network: longest gap between polls us=%lu polls=%lu tick=%lu "
        "listeners=%u\n",
        g_poll_gap_max_ns / UINT64_C(1000), g_poll_tick_count,
-       __atomic_load_n(&g_interrupt_poll_count, __ATOMIC_RELAXED), listeners);
+       __atomic_load_n(&g_tick_poll_count, __ATOMIC_RELAXED), listeners);
 }
 
 uint64_t network_poll_gap_max_ns(void) { return g_poll_gap_max_ns; }
@@ -5862,16 +5862,15 @@ void network_poll_tick(void) {
   network_unlock();
 }
 
-void network_poll_tick_from_interrupt(void) {
-  network_lock();
-  network_poll_tick_locked();
-  dns_transport_tick(timer_now_ns());
-  __atomic_add_fetch(&g_interrupt_poll_count, 1U, __ATOMIC_RELAXED);
-  network_unlock();
+void network_poll_tick_from_carrier(void) {
+  /* Thread context, so this is the whole poll: `operations_tick()` is the
+     power path and belongs here and on the syscall path, and nowhere else. */
+  network_poll_tick();
+  __atomic_add_fetch(&g_tick_poll_count, 1U, __ATOMIC_RELAXED);
 }
 
-uint64_t network_interrupt_poll_count(void) {
-  return __atomic_load_n(&g_interrupt_poll_count, __ATOMIC_RELAXED);
+uint64_t network_tick_poll_count(void) {
+  return __atomic_load_n(&g_tick_poll_count, __ATOMIC_RELAXED);
 }
 
 uint64_t network_poll_tick_count(void) {

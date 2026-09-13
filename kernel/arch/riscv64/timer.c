@@ -12,6 +12,8 @@
  * workaround.
  */
 #include <xaios/exception.h>
+#include <xaios/klog.h>
+#include <xaios/smp.h>
 #include <xaios/riscv64_fdt.h>
 #include <xaios/riscv64_sbi.h>
 #include <xaios/status.h>
@@ -33,6 +35,12 @@ static uint64_t g_frequency_hz = FALLBACK_FREQUENCY_HZ;
 static int g_have_stimecmp;
 static uint64_t g_boot_counter;
 static uint64_t g_period_ticks;
+/* Whether the shared periodic scheduler tick is configured. `g_period_ticks`
+   is the interval and outlives this flag, because the network tick is armed
+   from it after timer_disable() clears the flag. */
+static uint32_t g_periodic_active;
+/* The one hart carrying the network tick, or UINT32_MAX when none is. */
+static uint32_t g_network_tick_cpu = UINT32_MAX;
 static const void *g_device_tree;
 
 void riscv64_timer_set_device_tree(const void *blob) { g_device_tree = blob; }
@@ -154,6 +162,7 @@ void timer_enable_periodic(uint32_t hz) {
   if (hz == 0U) return;
   g_period_ticks = g_frequency_hz / hz;
   if (g_period_ticks == 0U) g_period_ticks = 1U;
+  g_periodic_active = 1U;
   timer_rearm();
 }
 
@@ -169,11 +178,70 @@ void timer_rearm(void) {
      again forever. The symptom was a kernel that stopped between two log
      lines with no fault, which is the least informative way a livelock can
      present. */
-  if (g_period_ticks == 0U) {
+  uint64_t interval = 0U;
+  if (g_periodic_active != 0U) {
+    interval = g_period_ticks;
+  } else if (__atomic_load_n(&g_network_tick_cpu, __ATOMIC_ACQUIRE) ==
+             smp_cpu_id()) {
+    /* The one hart carrying the network tick keeps its comparator rolling
+       after the shared periodic tick stops. It also has to enable the hart's
+       timer interrupt here: timer_mask_local() clears sie.STIE and nothing
+       outside a sleep puts it back, so a carrier that only set a comparator
+       would have a timer that never fires. The tick only wakes the hart; the
+       poll runs from its idle loop, in thread context, which is what lets this
+       port carry the same mechanism as the other two without its trap entry
+       having to take arbitrary kernel-context traps. */
+    interval = g_period_ticks;
+    __asm__ volatile("csrs sie, %0" : : "r"(UINT64_C(1) << 5) : "memory");
+  }
+  if (interval == 0U) {
     set_timer(UINT64_MAX);
     return;
   }
+  set_timer(timer_counter() + interval);
+}
+
+uint32_t timer_arm_network_tick(void) {
+  if (g_period_ticks == 0U) return 0;
+  uint32_t mine = smp_cpu_id();
+  if (__atomic_load_n(&g_network_tick_cpu, __ATOMIC_ACQUIRE) == mine) {
+    /* Already ours. Re-arm only when this hart's timer interrupt is actually
+       off: re-pointing a comparator that is already armed postpones the
+       deadline on every turn of a loop that can iterate faster than the
+       period, which starves the interrupt that would advance it. `sie.STIE` is
+       the enable on this port, and writing the comparator is what clears its
+       pending bit. */
+    uint64_t sie = 0U;
+    __asm__ volatile("csrr %0, sie" : "=r"(sie));
+    if ((sie & (UINT64_C(1) << 5)) != 0U) {
+      return 1;
+    }
+    set_timer(timer_counter() + g_period_ticks);
+    __asm__ volatile("csrs sie, %0" : : "r"(UINT64_C(1) << 5) : "memory");
+    return 1;
+  }
+  /* The holder is decided before anything is armed: a hart that believed it
+     had won would arm a second tick, and two ticks means two pollers. */
+  uint32_t expected = UINT32_MAX;
+  if (!__atomic_compare_exchange_n(&g_network_tick_cpu, &expected, mine, 0,
+                                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+    return 0;
+  }
   set_timer(timer_counter() + g_period_ticks);
+  __asm__ volatile("csrs sie, %0" : : "r"(UINT64_C(1) << 5) : "memory");
+  klog("timer: network tick armed on cpu=%u interval=%lu\n",
+       (unsigned)mine, g_period_ticks);
+  return 1;
+}
+
+uint32_t timer_network_tick_cpu(void) {
+  return __atomic_load_n(&g_network_tick_cpu, __ATOMIC_ACQUIRE);
+}
+
+uint32_t timer_local_tick_is_network_only(void) {
+  if (g_periodic_active != 0) return 0;
+  return smp_cpu_id() == __atomic_load_n(&g_network_tick_cpu, __ATOMIC_ACQUIRE)
+             ? 1U : 0U;
 }
 
 void timer_mask_local(void) {
@@ -183,7 +251,9 @@ void timer_mask_local(void) {
 }
 
 void timer_disable(void) {
-  g_period_ticks = 0U;
+  /* g_period_ticks survives on purpose: the network tick is armed from it
+     later, on a hart that was masked when this ran. */
+  g_periodic_active = 0U;
   timer_mask_local();
   /* Push the comparator past any plausible uptime so a pending interrupt
      does not arrive after the caller believes the timer is off. */
@@ -240,31 +310,6 @@ static void timer_idle_until_common(uint64_t deadline_ns, int break_on_wake) {
   timer_rearm();
 }
 
-/* RISC-V does not carry the network tick, and this is a refusal with evidence
- * rather than an omission.
- *
- * The tick means taking timer traps in arbitrary kernel context, and this
- * port's trap entry is deliberately minimal -- `entry.S` says in as many words
- * that "a full context switch belongs with the scheduler work this port has not
- * done". Attempting it anyway was measured, not argued: with the tick armed the
- * boot regressed at `/bin/c99-thread-context`, which faulted with
- * `class=instruction-access-fault sepc=0x0` and `reason=thread-join-failed` --
- * a return to program counter zero in the thread machinery -- and the machine
- * halted before the service phase. `make qemu-riscv64-smoke` was green before
- * that change and red after it, and green again once it was reverted.
- *
- * So RISC-V keeps the arrangement every port had before OD-011: the poll runs
- * from the syscalls a process makes and from `wait_events`, and sshd's own loop
- * is still the machine's network thread. Saying that here rather than
- * implementing a tick that corrupts a frame is the same rule the rest of this
- * tree follows -- a refusal is a result, and the port states it.
- *
- * Whoever finishes this port's context switch can delete this comment and
- * implement the three functions the way aarch64/timer.c does.
- */
-uint32_t timer_arm_network_tick(void) { return 0; }
-uint32_t timer_network_tick_cpu(void) { return UINT32_MAX; }
-uint32_t timer_local_tick_is_network_only(void) { return 0; }
 
 void timer_idle_until(uint64_t deadline_ns) {
   timer_idle_until_common(deadline_ns, 0);

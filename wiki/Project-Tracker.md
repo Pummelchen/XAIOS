@@ -754,6 +754,15 @@ the timer:
    re-arms **only when the tick is not running** -- which is what it is for: a
    mask taken while this CPU ran a task -- and the count then tracked the loop
    one-for-one to 8000.
+4. **RISC-V could not take the trap at all, so the poll moved out of the
+   handler.** Polling from the timer handler worked on AArch64 and x86-64 and
+   corrupted a trap frame on RISC-V (`/bin/c99-thread-context` returned to
+   program counter zero), because that port's trap entry cannot yet take
+   arbitrary kernel-context traps. The tick now only *wakes* the carrier and the
+   poll runs from its idle loop, in thread context: no port has to be more
+   interrupt-safe than it already is, none is special-cased, and the power path
+   stays out of handlers. RISC-V was measured carrying it -- `network tick armed
+   on cpu=2`, `tick=783` rising to `3625` polls, worst gap 15 ms.
 
 Ruled out along the way, each by measurement rather than argument, so the next
 person does not repeat them: a mask by this kernel (`timer_mask_local` is never
@@ -772,7 +781,7 @@ aarch64, x86_64 and riscv64; `make qemu-smoke` passes; and
 of those polls taken from the timer interrupt** -- against 55-93 ms idle and
 164-297 ms under load before. The gate's assertion that an announced tick must
 actually advance the interrupt count is what caught causes 2 and 3, and it is
-green. `make qemu-x86_64-smoke` and `make qemu-riscv64-smoke` also pass.
+green. `make qemu-x86_64-smoke` and `make qemu-riscv64-smoke` also pass, and the cadence gate reports the tick firing on AArch64 and RISC-V.
 
 **One latent deviation is recorded and not fixed:** neither `gic_init` nor
 `gic_secondary_init` waits for `ChildrenAsleep` to clear after clearing
@@ -786,7 +795,7 @@ quietly.
 
 | ID | Decision | Closed by |
 |---|---|---|
-| OD-011 | Choose how the network is polled when sshd's loop is busy | **The timer**, and it is landed rather than chosen on **AArch64 and x86-64**. One secondary CPU arms its own timer after `kmain` stops the shared periodic tick, and on that CPU the timer interrupt polls `network_poll_tick_from_interrupt()` -- the poll without `operations_tick()`, because the power path quiesces storage and can stop the machine -- instead of ticking the scheduler, which stays masked there exactly as the port left it. No CPU gains or loses a preemption, and the dedicated-thread cost of one of three worker CPUs was not paid. **Measured: the worst gap between polls fell from 55-93 ms idle and 164-297 ms under load to 24 ms idle and 29 ms under load**, with 2890 of a gate run's polls taken from the interrupt. Both objections that made this look impossible were removed rather than argued with: the stack guard now masks interrupts while it is held, and the handler-hostile part of the poll was `operations_tick()`, which the interrupt path does not call. Three causes had to be fixed before it held -- an unreachable hook point, a secondary idle loop that could not take an interrupt, and a keepalive that starved the timer it was keeping -- and the detail is under `P-1`. **RISC-V declines the tick**, and that is a refusal with evidence rather than an omission: the tick means taking timer traps in arbitrary kernel context, and that port's trap entry is deliberately minimal -- its own `entry.S` calls the full context switch "the scheduler work this port has not done". Arming it there regressed the boot at `/bin/c99-thread-context`, which faulted with `class=instruction-access-fault sepc=0x0` and `reason=thread-join-failed` -- a return to program counter zero in the thread machinery -- and halted the machine before the service phase; `make qemu-riscv64-smoke` was green before and after the revert and red with it. `timer_arm_network_tick()` returns 0 on that port and says why in the source, so sshd's loop is still its network thread. |
+| OD-011 | Choose how the network is polled when sshd's loop is busy | **The timer**, and it is landed rather than chosen, on **all three architectures**. One secondary CPU arms its own timer after `kmain` stops the shared periodic tick, and on that CPU the timer interrupt polls `network_poll_tick_from_interrupt()` -- the poll without `operations_tick()`, because the power path quiesces storage and can stop the machine -- instead of ticking the scheduler, which stays masked there exactly as the port left it. No CPU gains or loses a preemption, and the dedicated-thread cost of one of three worker CPUs was not paid. **Measured: the worst gap between polls fell from 55-93 ms idle and 164-297 ms under load to 24 ms idle and 29 ms under load**, with 2890 of a gate run's polls taken from the interrupt. Both objections that made this look impossible were removed rather than argued with: the stack guard now masks interrupts while it is held, and the handler-hostile part of the poll was `operations_tick()`, which the interrupt path does not call. Three causes had to be fixed before it held -- an unreachable hook point, a secondary idle loop that could not take an interrupt, and a keepalive that starved the timer it was keeping -- and the detail is under `P-1`. **All three ports carry it, which took one further correction.** The obvious design polls from the timer handler; it worked on AArch64 and x86-64, and on RISC-V it corrupted a trap frame -- `/bin/c99-thread-context` returned to program counter zero, because that port's trap entry is deliberately minimal and cannot yet take arbitrary kernel-context traps. Polling from the idle loop instead -- the tick wakes the CPU, the loop polls in thread context -- needs no port to be more interrupt-safe than it already is, so all three carry the same mechanism with no port special-cased, and the power path stays out of handlers as a side effect. RISC-V was then measured carrying it: `network tick armed on cpu=2`, `tick=783` rising to `3625` polls, worst gap 15 ms. |
 
 ## Risk register
 

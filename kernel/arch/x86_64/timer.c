@@ -317,13 +317,12 @@ void timer_self_test(void) {
 }
 
 void x86_64_platform_timer_irq(void) {
-  /* On the CPU carrying the network tick this interrupt is the network's and
-     not the scheduler's, so a frame is still serviced while sshd's loop is
-     blocked (OD-011). It is reached only once the shared periodic tick has
-     stopped, because timer_local_tick_is_network_only() answers no while it is
-     still running -- so nothing about scheduling changes here. */
+  /* On the CPU carrying the network tick this interrupt does not tick the
+     scheduler; its whole job is to wake that CPU, whose idle loop polls the
+     stack in thread context. It is reached only once the shared periodic tick
+     has stopped, because timer_local_tick_is_network_only() answers no while it
+     is still running -- so nothing about scheduling changes here. */
   if (timer_local_tick_is_network_only() != 0U) {
-    network_poll_tick_from_interrupt();
     return;
   }
   if (g_periodic_active != 0U && g_idle_wait == 0U) {

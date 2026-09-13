@@ -43,19 +43,16 @@ flows -- runs inside the network syscalls a process makes and inside
 periodic timer. So a pause anywhere in sshd's loop used to be a total network
 outage for its duration.
 
-That window is now bounded on AArch64 and x86-64. One secondary CPU carries a **network tick**
+That window is now bounded. One secondary CPU carries a **network tick**
 (`timer_arm_network_tick()`, `OD-011`): the shared periodic tick is stopped
 before sshd starts, so the tick is armed afterwards on a CPU that takes
-kernel-context interrupts, and on that CPU the timer interrupt polls
-`network_poll_tick_from_interrupt()` -- the poll without `operations_tick()`,
-because the power path quiesces storage and can stop the machine and has no
-business in a handler -- instead of ticking the scheduler. No CPU gains or
-loses a preemption. Worst gap between polls, measured by
-`make qemu-network-poll-cadence-gate`: **24 ms idle, 29 ms under load**, down
-from 55-93 ms and 164-297 ms. RISC-V declines the tick -- `timer_arm_network_tick()`
-returns 0 there with the reason in the source -- because its trap entry cannot
-yet take traps in arbitrary kernel context, and arming it regressed that port's
-boot gate at `/bin/c99-thread-context`. Before adding work to any path between a network
+kernel-context interrupts, and on that CPU the timer interrupt does not tick the
+scheduler. The tick only wakes that CPU; the poll runs from its idle loop, in
+thread context, through `network_poll_tick_from_carrier()` -- so no port has to
+be more interrupt-safe than it already is, and the power path stays out of
+handlers. No CPU gains or loses a preemption. Worst gap between polls, measured
+by `make qemu-network-poll-cadence-gate`: **24 ms idle, 29 ms under load**, down
+from 55-93 ms and 164-297 ms. Before adding work to any path between a network
 syscall and that poll, read the argument in
 [Architecture](../wiki/Architecture.md#what-drives-the-network-stack); the
 stack measures its own gaps and names how many polls the tick took.

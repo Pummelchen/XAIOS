@@ -3,6 +3,7 @@
 #include <xaios/common_runtime.h>
 #include <xaios/gic.h>
 #include <xaios/klog.h>
+#include <xaios/network_stack.h>
 #include <xaios/security.h>
 #include <xaios/smp.h>
 #include <xaios/syscall.h>
@@ -1170,9 +1171,12 @@ void x86_64_ap_entry(uint32_t ordinal) {
      * after a few dozen polls because of it. */
     __asm__ volatile("sti" ::: "memory");
     if (xaios_thread_run_pending(ordinal) == 0U) {
-      /* Idle, so this CPU can carry the network tick: it claims once and
-       * repairs a tick that was stopped while this CPU ran a task. */
-      (void)timer_arm_network_tick();
+      /* Idle, so this CPU can carry the network tick: claim it once, repair a
+       * tick this CPU lost while running a task, and poll the stack while
+       * there is nothing else to do. See network_poll_tick_from_carrier(). */
+      if (timer_arm_network_tick() != 0U) {
+        network_poll_tick_from_carrier();
+      }
       __asm__ volatile("hlt");
     }
   }

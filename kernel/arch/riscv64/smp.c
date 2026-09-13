@@ -25,6 +25,7 @@
 #include <xaios/smp.h>
 #include <xaios/spinlock.h>
 #include <xaios/status.h>
+#include <xaios/network_stack.h>
 #include <xaios/timer.h>
 
 void klog(const char *fmt, ...);
@@ -233,7 +234,36 @@ void smp_secondary_main(uint64_t cpu_id) {
    * The pending work is still checked before sleeping and after waking,
    * because a wake that arrives between the two would otherwise be missed. */
   for (;;) {
+    /* The supervisor interrupt enable every turn, not only the one before this
+       loop: a trap clears sstatus.SIE and the return path is what puts it back,
+       so a hart that came back from one without it never takes another
+       interrupt -- and a hart that cannot take an interrupt cannot be woken by
+       one, which is how the scheduler moves work between harts. */
+    __asm__ volatile("csrs sstatus, %0" : : "r"(UINT64_C(2)) : "memory");
+    /* The timer is masked across `xaios_thread_run_pending`, and that is a
+       property of this port rather than of the mechanism. Running a user
+       thread here is nested inside the joiner's syscall (B-02), and this
+       port's trap entry is deliberately minimal -- its own `entry.S` says "a
+       full context switch belongs with the scheduler work this port has not
+       done". A timer trap taken inside that window was measured corrupting a
+       frame: `/bin/c99-thread-context` returned to program counter zero
+       (`class=instruction-access-fault sepc=0x0`, `reason=thread-join-failed`)
+       and the machine halted before the service phase.
+       
+       So the tick is permitted only where the trap context is this loop's own
+       frame -- `timer_arm_network_tick()` enables it, so it is live for the
+       poll and the sleep below -- and every hart, carrier or not, keeps its
+       timer masked while it is running work. The other two ports take that
+       trap anywhere; what is the same on all three is that one CPU polls the
+       stack at the tick rate. */
+    timer_mask_local();
     if (xaios_thread_run_pending((uint32_t)cpu_id) == 0U) {
+      /* Idle, so this hart can carry the network tick: claim it once, repair a
+       * tick this hart lost while running a task, and poll the stack while
+       * there is nothing else to do. See network_poll_tick_from_carrier(). */
+      if (timer_arm_network_tick() != 0U) {
+        network_poll_tick_from_carrier();
+      }
       __asm__ volatile("wfi" ::: "memory");
     }
   }

@@ -3,6 +3,7 @@
 #include <xaios/aarch64_sve.h>
 #include <xaios/gic.h>
 #include <xaios/klog.h>
+#include <xaios/network_stack.h>
 #include <xaios/scheduler.h>
 #include <xaios/smp.h>
 #include <xaios/timer.h>
@@ -418,10 +419,15 @@ void smp_secondary_main(uint64_t cpu_id) {
   for (;;) {
     __asm__ volatile("msr daifclr, #2" ::: "memory");
     if (xaios_thread_run_pending((uint32_t)cpu_id) == 0U) {
-      /* Idle, so this CPU can carry the network tick. Called on every idle
-       * turn: it claims once and repairs a tick that was masked while this CPU
-       * ran a task. See timer_arm_network_tick(). */
-      (void)timer_arm_network_tick();
+      /* Idle, so this CPU can carry the network tick: claim it once, repair a
+       * tick this CPU lost while running a task, and poll the stack while
+       * there is nothing else to do. The tick is what makes this come round at
+       * the tick rate instead of only when something else wakes the CPU, and
+       * the poll is here rather than in the handler because no port has to be
+       * more interrupt-safe than it already is for this to work. */
+      if (timer_arm_network_tick() != 0U) {
+        network_poll_tick_from_carrier();
+      }
       __asm__ volatile("wfe");
     }
   }

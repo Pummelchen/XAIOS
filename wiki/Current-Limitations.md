@@ -53,17 +53,6 @@ kernel-context interrupts needs to know that this port has no tick to attach to,
 and because a reader comparing the three architectures would otherwise conclude
 the shared scheduler means the same thing on all of them.
 
-**It now costs something concrete.** The network tick that AArch64 and x86-64
-carry -- one CPU polling the stack from its timer interrupt so a frame is still
-serviced while sshd's loop is blocked -- cannot be armed here, because arming it
-means taking timer traps in arbitrary kernel context and that is the context
-switch this port has not done. It was tried: `/bin/c99-thread-context` faulted
-with `sepc=0x0` and the machine halted before the service phase. So on RISC-V
-`timer_arm_network_tick()` returns 0 and sshd's loop is still the machine's
-network thread, which is the arrangement every port had before `OD-011`. That is
-a real functional difference between the three architectures and it is stated
-rather than left for a reader to infer.
-
 ## Platform and hardware
 
 - AArch64 QEMU provides the broadest complete OS-service path. QEMU validates

@@ -114,16 +114,14 @@ the SLAAC wait in the stack itself. From userspace only `/bin/sshd` and
 `/bin/xtop` call `wait_events`, and the tick inside it runs only for a caller
 holding `XAIOS_CAP_NET_SOCKET`.
 
-On top of that, **on AArch64 and x86-64 one CPU carries a network tick** (`OD-011`,
+On top of that, **one CPU carries a network tick** (`OD-011`,
 `timer_arm_network_tick()`). `kmain` stops the shared periodic tick immediately
 before it starts sshd, so the tick cannot be an ordinary timer callback: it is
-*armed* on a secondary CPU afterwards, and on that CPU the timer interrupt is
-the network's rather than the scheduler's. It polls the stack and does not tick
-the scheduler, which stays masked there exactly as the port left it, so no CPU
-gains or loses a preemption. The poll it runs is
-`network_poll_tick_from_interrupt()`, which is `network_poll_tick()` without
-`operations_tick()`: the power path quiesces storage and can stop the machine,
-and that belongs where a shutdown is requested from, not in a handler.
+*armed* on a secondary CPU afterwards, and on that CPU the timer interrupt does
+not tick the scheduler -- it stays masked there exactly as the port left it, so
+no CPU gains or loses a preemption. **The tick's whole job is to wake that CPU.**
+The poll itself runs from its idle loop, in thread context, through
+`network_poll_tick_from_carrier()`, which is the ordinary poll plus a counter.
 
 The tick exists because everything else is a window with no networking in it.
 The boot CPU runs kernel code with interrupts masked, so while sshd is inside a
@@ -167,6 +165,18 @@ period, so no CPU takes a periodic timer interrupt afterwards: a poll placed in
 secondary after the fact, and that secondary's timer is the one that outlives
 the scheduler's.
 
+**Polling from the loop rather than from the handler is what makes the
+mechanism the same on all three architectures.** The obvious design polls from
+the timer handler and it was implemented that way first: it works on AArch64 and
+x86-64, and on RISC-V it corrupted a trap frame -- `/bin/c99-thread-context`
+returned to program counter zero, because that port's trap entry is deliberately
+minimal and cannot yet take arbitrary kernel-context traps. Polling from the
+loop needs no port to be more interrupt-safe than it already is, so no port has
+to be special-cased, and the power path stays out of handlers as a side effect:
+`operations_tick()` quiesces storage and can stop the machine, and that is not
+handler work when there is an alternative. The CPU has to be idle for the poll
+to run, which is exactly when a CPU is free to service the stack.
+
 **A second defect had to be fixed to make it survive, and it was not in the
 timer at all.** `vector_entry` masks `DAIF` on every trap, and a secondary's
 idle loop could be re-entered with `I` still set -- measured directly, spinning
@@ -178,19 +188,6 @@ pending interrupt the wait-for-event latch is set, so `wfe` returns immediately
 instead of sleeping: the same run had spun 134 million times. Both are recorded
 because the second one is a bug in its own right and nothing to do with the
 network.
-
-**RISC-V does not carry this tick, and that is a measured refusal rather than
-an omission.** The tick means taking timer traps in arbitrary kernel context,
-and that port's trap entry is deliberately minimal -- its own `entry.S` says "a
-full context switch belongs with the scheduler work this port has not done".
-Attempting it anyway regressed the boot: `/bin/c99-thread-context` faulted with
-`class=instruction-access-fault sepc=0x0` and `reason=thread-join-failed`, a
-return to program counter zero in the thread machinery, and the machine halted
-before the service phase. `make qemu-riscv64-smoke` was green before that change
-and red after it, and green again once reverted. So RISC-V keeps the arrangement
-every port had before `OD-011`: sshd's loop is still its network thread, and
-`timer_arm_network_tick()` returns 0 there, saying so in the source. AArch64 and
-x86-64 carry the tick.
 
 **A kernel thread remains the simpler alternative and its cost is unchanged** --
 one of three worker CPUs, because `kernel/sched/thread.c` runs one thread to
@@ -205,18 +202,18 @@ registered, keeps the longest, prints each new maximum, and prints a distinct
 line when a gap is long enough to be an outage rather than a pause:
 
 ```
-network: longest gap between polls us=24341 polls=612345 intr=2890 listeners=2
+network: longest gap between polls us=24341 polls=612345 tick=2890 listeners=2
 network: stack was not polled for ms=1840 outages=1 listeners=2
 ```
 
-`intr=` is how many of those polls were taken from the timer interrupt rather
-than from a syscall, and it is the field that makes "the tick is armed" and "the
+`tick=` is how many of those polls were taken by the CPU carrying the network
+tick rather than by a syscall a process made, and it is the field that makes "the tick is armed" and "the
 tick fires" different claims: a timer on one CPU is exactly the shape that
 silently stops, and it did, twice, before this was right. `make
 qemu-network-poll-cadence-gate` fails if a guest announces an armed tick that
 never advances this count, and it names the refusals it accepted on the way out.
 Measured on this machine: **24 ms idle, 29 ms under load**, several thousand
-interrupt polls per run, zero gaps past a second.
+tick polls per run, zero gaps past a second.
 
 `network_poll_gap_max_ns()` and `network_poll_gap_outage_count()` expose the
 same figures. The measurement is deliberately not taken when nothing is

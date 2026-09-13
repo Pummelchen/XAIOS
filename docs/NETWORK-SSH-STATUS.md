@@ -174,8 +174,9 @@ and inside `xaios_wait_events`, and on a booted machine `/bin/sshd` is the only
 process making either call -- the kernel starts it after disabling preemption
 and the periodic timer, so it is the only thing running on the boot CPU. One
 secondary CPU additionally carries a **network tick** (`timer_arm_network_tick`,
-`OD-011`) and polls the stack from its timer interrupt, which is what keeps
-frames moving while sshd is inside a blocking call.
+`OD-011`): the tick wakes that CPU at the tick rate and its idle loop polls the
+stack, which is what keeps frames moving while sshd is inside a blocking call.
+It is the same mechanism on all three architectures.
 
 The consequence to plan for, and the ceiling on it: **a pause in that loop used
 to be a total network outage rather than a slow SSH server.** For its duration
@@ -192,16 +193,15 @@ What matters here is that the condition is now visible rather than silent. Two
 console lines report it:
 
 ```
-network: longest gap between polls us=55008 polls=752428 intr=0 listeners=2
+network: longest gap between polls us=55008 polls=752428 tick=0 listeners=2
 network: stack was not polled for ms=1840 outages=1 listeners=2
 ```
 
 The first is each new worst gap as it is set; the second appears only when a
 gap exceeds one second, which is the point at which the kernel calls it an
-outage rather than a pause. `intr=` on the first counts polls taken from the
-timer interrupt rather than from a syscall, and it is 0 because no port arms a
-network tick yet -- that is `OD-011`'s remaining step, and the instrument is
-there for the attempt rather than for a mechanism that works. sshd's own
+outage rather than a pause. `tick=` on the first counts polls taken by the CPU
+carrying the network tick rather than by a syscall a process made, and it is 0
+in that capture because the capture predates the tick. sshd's own
 `sshd: service loop stalled` line names
 which phase of its loop the time went to, and the two together are what
 separates "the server held the machine" from "the machine was not running".
