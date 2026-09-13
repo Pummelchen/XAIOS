@@ -495,7 +495,7 @@ jobs:
       # against a hand-built emulator stops saying anything about the one
       # everybody else has.
       - name: Restore pinned RISC-V QEMU
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/xaios-qemu-riscv64
           key: qemu-riscv64-tiers-${{ runner.os }}-${{ runner.arch }}-5e35f26695645b20931e10d8567c7e0169e62c07-v1
@@ -557,7 +557,7 @@ jobs:
           sudo apt-get install -y build-essential clang git libfdt-dev libglib2.0-dev libpixman-1-dev libslirp-dev lld llvm meson ninja-build ovmf mtools pkg-config python3 python3-cryptography python3-venv qemu-efi-aarch64 qemu-efi-riscv64 qemu-system-arm qemu-system-misc qemu-system-x86 zlib1g-dev
 
       - name: Restore pinned SMMUv3 test QEMU
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/xaios-qemu-smmu
           key: qemu-iommu-testdev-${{ runner.os }}-${{ runner.arch }}-6ce361b02c825b4a12a9684c47342859ee967cb2-v1
@@ -577,7 +577,7 @@ jobs:
       # board being slow -- that row is the cheaper of the two RISC-V boards.
       # Same pin and same cache as the RISC-V Bring-up job.
       - name: Restore pinned RISC-V QEMU
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/xaios-qemu-riscv64
           key: qemu-riscv64-tiers-${{ runner.os }}-${{ runner.arch }}-5e35f26695645b20931e10d8567c7e0169e62c07-v1
@@ -654,7 +654,7 @@ jobs:
       # decoder. The corpus is carried between runs so each campaign starts
       # from the coverage the previous one reached instead of from one seed.
       - name: Restore fuzzing corpus
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/fuzz
           key: parser-fuzz-corpus-${{ github.sha }}
