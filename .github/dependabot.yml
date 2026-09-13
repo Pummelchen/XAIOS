@@ -1,0 +1,26 @@
+# Keep the workflow's pinned actions current.
+#
+# Every `uses:` in .github/workflows/ci.yml names a full commit SHA rather than
+# a tag or a branch, because a tag is a mutable pointer: whoever can move it
+# decides what runs in this repository's CI, with this repository's token.
+# Pinning is the rule this repository follows; `sha_pinning_required` at the
+# repository level is what turns the rule into something GitHub refuses to
+# violate, and it is enabled once the runs already queued against the unpinned
+# workflow have drained -- turning it on underneath them would fail work that
+# was valid when it started.
+#
+# A pin that nothing moves is a pin that rots, and a rotting pin trades one
+# problem for a worse one -- a security fix that cannot reach the runner. This
+# file is the other half of the change that pinned them: the `github-actions`
+# ecosystem is the only one, because the repository has no package manifest to
+# update, and the schedule is weekly because actions release far more slowly
+# than that.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "actions"

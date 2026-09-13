@@ -33,7 +33,7 @@ jobs:
     # seconds of boot on top of building three userlands.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
 
@@ -51,7 +51,7 @@ jobs:
 
       - name: Upload libc evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: hosted-c99-libc-evidence
           path: |
@@ -66,7 +66,7 @@ jobs:
     name: Compile Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
 
@@ -82,7 +82,7 @@ jobs:
     name: Hosted Engine & Model v2
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install toolchain
         run: |
@@ -114,7 +114,7 @@ jobs:
       # commit lands on a later day, and never notices one that really is
       # stale. The check now declines to guess when history is shallow, so
       # without this it would pass without checking anything.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
 
@@ -125,7 +125,7 @@ jobs:
     name: WebTransport Host Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
 
@@ -172,7 +172,7 @@ jobs:
     name: ABI Contract Validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install Python 3
         run: |
@@ -186,7 +186,7 @@ jobs:
     name: Network Boot (no kernel on the medium)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
 
@@ -209,7 +209,7 @@ jobs:
 
       - name: Upload boot logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: netboot-logs
           path: |
@@ -221,7 +221,7 @@ jobs:
     name: Installed Disk (one drive, nothing attached)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
 
@@ -243,7 +243,7 @@ jobs:
 
       - name: Upload boot logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: installed-disk-logs
           path: |
@@ -257,7 +257,7 @@ jobs:
     name: Build & QEMU Smoke Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
 
@@ -286,7 +286,7 @@ jobs:
 
       - name: Upload build artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: build-artifacts
           path: |
@@ -299,7 +299,7 @@ jobs:
     name: Storage Crash Safety (power cut mid-write)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
 
@@ -338,7 +338,7 @@ jobs:
 
       - name: Upload the crash and throughput reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: storage-evidence
           path: |
@@ -354,7 +354,7 @@ jobs:
     name: Release Images (one per architecture, every environment available)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
 
@@ -391,7 +391,7 @@ jobs:
 
       - name: Upload the release images and the report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-images
           path: |
@@ -406,7 +406,7 @@ jobs:
     name: x86_64 Bring-up
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
 
@@ -436,7 +436,7 @@ jobs:
 
       - name: Upload x86_64 artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: x86_64-bring-up-artifacts
           path: |
@@ -454,7 +454,7 @@ jobs:
     # cold cache, which is the longest thing in this job by a wide margin.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
 
@@ -495,7 +495,7 @@ jobs:
       # against a hand-built emulator stops saying anything about the one
       # everybody else has.
       - name: Restore pinned RISC-V QEMU
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ${{ runner.temp }}/xaios-qemu-riscv64
           key: qemu-riscv64-tiers-${{ runner.os }}-${{ runner.arch }}-5e35f26695645b20931e10d8567c7e0169e62c07-v1
@@ -517,7 +517,7 @@ jobs:
 
       - name: Upload RISC-V artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: riscv64-bring-up-artifacts
           path: |
@@ -538,7 +538,7 @@ jobs:
       # Full history, for the same reason as the Documentation Contract job:
       # this aggregate runs docs-check, and the review-date comparison inside
       # it needs to be able to see when a file actually changed.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
           fetch-depth: 0
@@ -557,7 +557,7 @@ jobs:
           sudo apt-get install -y build-essential clang git libfdt-dev libglib2.0-dev libpixman-1-dev libslirp-dev lld llvm meson ninja-build ovmf mtools pkg-config python3 python3-cryptography python3-venv qemu-efi-aarch64 qemu-efi-riscv64 qemu-system-arm qemu-system-misc qemu-system-x86 zlib1g-dev
 
       - name: Restore pinned SMMUv3 test QEMU
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ${{ runner.temp }}/xaios-qemu-smmu
           key: qemu-iommu-testdev-${{ runner.os }}-${{ runner.arch }}-6ce361b02c825b4a12a9684c47342859ee967cb2-v1
@@ -577,7 +577,7 @@ jobs:
       # board being slow -- that row is the cheaper of the two RISC-V boards.
       # Same pin and same cache as the RISC-V Bring-up job.
       - name: Restore pinned RISC-V QEMU
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ${{ runner.temp }}/xaios-qemu-riscv64
           key: qemu-riscv64-tiers-${{ runner.os }}-${{ runner.arch }}-5e35f26695645b20931e10d8567c7e0169e62c07-v1
@@ -596,7 +596,7 @@ jobs:
 
       - name: Upload aggregate evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: core-os-rc-evidence
           path: |
@@ -618,7 +618,7 @@ jobs:
     name: Regression Suite
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
 
@@ -640,7 +640,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
 
@@ -654,7 +654,7 @@ jobs:
       # decoder. The corpus is carried between runs so each campaign starts
       # from the coverage the previous one reached instead of from one seed.
       - name: Restore fuzzing corpus
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: build/fuzz
           key: parser-fuzz-corpus-${{ github.sha }}
@@ -668,7 +668,7 @@ jobs:
 
       - name: Upload crashes and corpus
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: parser-fuzz-evidence
           path: |
@@ -683,7 +683,7 @@ jobs:
     name: Persistence Across Reboot
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
 
@@ -706,7 +706,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
 
@@ -720,7 +720,7 @@ jobs:
 
       - name: Upload xaiFS evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: qemu-model-sftp-evidence
           path: |
@@ -734,7 +734,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
 
@@ -748,7 +748,7 @@ jobs:
 
       - name: Upload network evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: qemu-network-evidence
           path: |
@@ -762,7 +762,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 50
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           submodules: recursive
 
@@ -772,7 +772,7 @@ jobs:
           sudo apt-get install -y clang lld llvm meson ninja-build qemu-system-arm qemu-utils qemu-efi-aarch64 mtools python3 python3-cryptography xz-utils genisoimage
 
       - name: Cache pinned FreeBSD client image
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cache/xaios/freebsd
           key: freebsd-15.1-release-aarch64-cloudinit-9722aea499610802
@@ -787,7 +787,7 @@ jobs:
 
       - name: Upload FreeBSD interoperability evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: qemu-freebsd-network-evidence
           path: |
@@ -811,7 +811,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Publish wiki/ to the repository Wiki
         env:
