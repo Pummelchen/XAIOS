@@ -379,6 +379,10 @@ static xaios_status_t submit_admin(nvme_controller_t *controller,
   queue->sq[queue->sq_tail] = staged;
   xaios_cpu_io_barrier();
   queue->sq_tail = (uint16_t)((queue->sq_tail + 1U) % NVME_QUEUE_DEPTH);
+  /* Counted so the trace's `outstanding` means the same thing here as it does
+     for the I/O queues: the field was written for I/O and read for the admin
+     queue, where it was always zero while a command was in flight. */
+  ++queue->outstanding;
   mmio_write32(controller, doorbell_offset(controller, 0U, 0U), queue->sq_tail);
 
   uint64_t started = timer_now_ns();
@@ -410,6 +414,7 @@ static xaios_status_t submit_admin(nvme_controller_t *controller,
         return XAIOS_ERR_IO;
       }
       if (result != 0) *result = completion.result;
+      if (queue->outstanding != 0U) --queue->outstanding;
       queue->cq_head = (uint16_t)(queue->cq_head + 1U);
       if (queue->cq_head == NVME_QUEUE_DEPTH) {
         queue->cq_head = 0U;
@@ -538,6 +543,27 @@ static xaios_status_t initialize_controller(nvme_controller_t *controller,
   klog("nvme: controller ready version=0x%x mqes=%u dstrd=%u\n",
        mmio_read32(controller, NVME_REG_VS), mqes,
        controller->doorbell_stride);
+  /* What the device was actually programmed with, read back from its own
+   * registers beside what the driver believes it handed over.
+   *
+   * B-100's second sighting is a completion whose `sq_head` wrapped the admin
+   * submission queue -- `sq_head=0` where that field is the index plus one on
+   * every completion this driver accepted -- which is what a queue whose size
+   * the device disagrees about looks like from the outside, and so is a
+   * submission-queue base that is not the page the driver writes. Both are
+   * visible here and nowhere else: `aqa` carries the queue sizes and `asq` the
+   * base, and `expect_` is what `dma_address` says the driver's own pages are.
+   * One line on every NVMe boot, because the healthy value is what makes an
+   * unhealthy one readable. */
+  klog("nvme: controller registers cc=0x%x csts=0x%x aqa=0x%x asq=0x%lx "
+       "acq=0x%lx expect_asq=0x%lx expect_acq=0x%lx\n",
+       (unsigned)mmio_read32(controller, NVME_REG_CC),
+       (unsigned)mmio_read32(controller, NVME_REG_CSTS),
+       (unsigned)mmio_read32(controller, NVME_REG_AQA),
+       (unsigned long)mmio_read64(controller, NVME_REG_ASQ),
+       (unsigned long)mmio_read64(controller, NVME_REG_ACQ),
+       (unsigned long)dma_address(controller->admin.sq),
+       (unsigned long)dma_address(controller->admin.cq));
   return XAIOS_OK;
 }
 
