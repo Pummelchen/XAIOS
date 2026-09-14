@@ -53,58 +53,42 @@ kernel-context interrupts needs to know that this port has no tick to attach to,
 and because a reader comparing the three architectures would otherwise conclude
 the shared scheduler means the same thing on all of them.
 
-**A RISC-V machine XAIOS has been installed onto does not currently complete its
-first boot.** The installed-disk gate for this architecture had never run -- it
-could not build its own disk (`B-103`) -- and once it could, the first boot of the
-installed disk died at `/bin/c99-thread-context`, a libc test whose three threads
-write to one shared stream. **The first cause found was a budget, and it was
-fixed:** an installed-disk boot has three harts, because EDK2 keeps one, and the
-scheduler put two of the test's three workers on the same hart; with no
-preemption on this port the third worker's first instruction waited for the
-second to finish, so a five-second join was measuring how many harts the machine
-had rather than whether a thread finishes. That join now waits a minute, for the
-reason written beside it, and the timeout no longer happens.
+**A RISC-V machine now boots an XAIOS-installed disk, and getting there took
+four faults to find one cause.** The installed-disk gate for this architecture
+had never run -- it could not build its own disk (`B-103`) -- and once it could,
+every boot died somewhere different. Two of those were fixed on their own terms
+and neither was the fault: a five-second join that was really measuring how many
+harts the machine had, and a window around user entry where a trap is misread
+because the kernel's stack address is parked in `sscratch` while the kernel is
+still running.
 
-**Fixing that did not make the boot pass, and this page says what happens
-instead.** The test now runs further and the machine dies at `unhandled trap
-cause=1 epc=0x4` -- an instruction access fault at address 4, a near-null jump
-(`B-108`). The suspect is named in the code: `timer_mask_local()` clears only the
-supervisor *timer* interrupt, and the idle loop masks it around the window where
-this port cannot survive a trap, so the supervisor *software* interrupt an IPI
-arrives on is still free to enter that same window -- and the boot's log shows
-IPIs in flight. The earlier form of the same fault, recorded in
-`kernel/arch/riscv64/smp.c`, was a return to program counter zero.
+**The fault was the stacks.** A thread that runs on any hart other than the boot
+hart takes its whole syscall chain on that hart's kernel stack, and those were
+**16 KiB with no guard page under them** -- while the boot hart's stack is
+256 KiB with a page unmapped beneath it, a size the kernel had already raised
+once because its deepest chain, an installer walking a FAT directory from inside
+a syscall, overflowed 64 KiB and quietly overwrote a per-CPU table. The nested
+user-thread run that this port's scheduler borrows the CPU for multiplies the
+depth, so the deepest chain in the kernel was running on a quarter of a size
+already known to be too small, with nothing underneath it to hit. What that
+looks like from outside is a frame holding a garbage stack pointer and execution
+arriving in non-executable memory -- and it looks like a different fault every
+time anything nearby changes, because which hart runs the chain and how deep the
+nesting goes are both races.
 
-**Masking every interrupt in the window was tried and rejected.** It booted the
-installed disk completely once and then **livelocked**, and the reason is now
-understood rather than mysterious: clearing `sstatus.SIE` also masks the
-supervisor *software* interrupt the scheduler uses to move work between harts,
-so a hart that could not be woken spun forever. The mask was reverted.
+The secondary stacks now get what the boot stack gets: the same size, and a
+guard page each that the MMU leaves unmapped, so the next overflow is a page
+fault at an address that names itself. The installed-disk gate passes, twice in
+a row, both boots green on both runs.
 
-**What replaced it is narrower and is shipped.** Reading the entry code found a
-real hole: `aarch64_enter_user_thread` parks the thread's kernel stack in
-`sscratch` and then runs for several instructions before the `sret`, while the
-idle loop reaches it with interrupts enabled -- and the trap entry decides
-whether a trap came from user mode by testing `sscratch`, so a trap in that
-window is misread, saves the wrong stack pointer and leaves the kernel's stack
-address behind. Interrupts are now masked across exactly those few instructions,
-with `SPIE` still set so the thread begins with interrupts on, and the trap
-handler panics if an interrupt is ever taken inside that range, so a regression
-of the hole names itself. **That did not fix the fault:** with the window closed
-the installed disk booted completely in one run and in the next died with a
-different signature -- an instruction page fault with a zero stack pointer in
-the frame and the program counter above the kernel image, in heap. The window
-guard did not fire, so the corruption has another source.
-
-Nothing has been changed to hide any of it: the gate fails, and no CI job runs
-it. Both rows are **inconclusive or open rather than passed**, and the boot is
-not claimed to work. What has changed is that the evidence is now readable: a
-RISC-V panic prints RISC-V registers and owns the console, so the next fault can
-be read where it prints. The candidates the new signature points at are a frame
-written in the wrong place by a path the guard does not cover, and exhaustion of
-the kernel stack -- the nested user-thread run pushes a trap frame and a stub
-frame below whatever the syscall had already used, and that nesting multiplies
-on a port with no preemption that borrows the CPU to make progress.
+**What is still missing on this architecture is installation, not booting.** The
+storage-administration window is addressed by a device's *position in the test
+bench's device order* -- logical slot 5 becomes PCI ordinal 4, the fifth disk of
+five that the bench attaches -- so a machine with two disks cannot open the
+spare, and the install phase of the gate is skipped and says so (`B-113`). That
+is unproven on x86-64 and RISC-V, and on a real two-disk machine it is not
+merely unproven but impossible. It is the last thing between this architecture
+and the whole of "it installs".
 
 ## Platform and hardware
 
