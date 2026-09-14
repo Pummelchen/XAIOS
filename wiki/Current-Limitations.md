@@ -81,14 +81,28 @@ guard page each that the MMU leaves unmapped, so the next overflow is a page
 fault at an address that names itself. The installed-disk gate passes, twice in
 a row, both boots green on both runs.
 
-**What is still missing on this architecture is installation, not booting.** The
-storage-administration window is addressed by a device's *position in the test
-bench's device order* -- logical slot 5 becomes PCI ordinal 4, the fifth disk of
-five that the bench attaches -- so a machine with two disks cannot open the
-spare, and the install phase of the gate is skipped and says so (`B-113`). That
-is unproven on x86-64 and RISC-V, and on a real two-disk machine it is not
-merely unproven but impossible. It is the last thing between this architecture
-and the whole of "it installs".
+**Installation is no longer missing either, and it was missing for a reason
+worth stating.** The storage-administration window -- the disk an operator
+installs onto -- used to be addressed by a device's *position in the test
+bench's device order*: logical slot 5 became PCI ordinal 4, the fifth disk of
+the five the bench attaches. A machine with two disks could not open its spare,
+so the install phase of the x86-64 and RISC-V gates could only be skipped, and
+on a real two-disk machine installing was not merely unproven but impossible.
+
+The window is now the configured one if the machine has it, and otherwise **the
+first block device nothing else has taken** -- which on a machine with a spare
+is the spare, whatever order the firmware enumerated the bus in, and on a
+machine with one disk is nothing, so the caller is told there is no spare rather
+than being handed the wrong disk. A device's name is a name and not a position:
+the spare is called `/dev/vblk5` wherever it was found, which is what makes the
+install path the same on every machine. The fallback needed the driver to start
+recording which devices it had taken, because opening one twice is not refused
+and would have had two queues fighting over one device.
+
+All three architectures now install: the x86-64 gate passes all four phases
+including *the disk XAIOS wrote booting on its own with an SSH server*, AArch64
+still passes all four, and RISC-V runs the install phase where it used to skip
+it.
 
 ## Platform and hardware
 
