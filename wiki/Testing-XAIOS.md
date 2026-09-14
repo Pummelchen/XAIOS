@@ -191,14 +191,17 @@ though it were.** `qemu-riscv64-installed-disk-gate` could not run at all until
 this session: it died at import on a profile key its architecture never had, and
 with that fixed it turned out not to build the loader its own disk needs
 (`B-103`). Repaired, it exposed a real failure on the first boot of an installed
-disk -- the C99 thread test's five-second join runs out and the kernel panics
-(`B-104`). That one is recorded as **inconclusive**, not fixed: the workers were
-still running when the budget expired, so the reading may be that five seconds
-is too small for an emulated RISC-V machine, or it may be that a thread is
-genuinely stuck, and one run with a larger budget tells the two apart. It is
-deliberately not in CI yet, because a job added while it fails would be red on
-every run. The AArch64 and x86-64 variants are green, and the x86-64 one now has
-a job.
+disk -- the C99 thread test's five-second join ran out and the kernel panicked
+(`B-104`). **That budget was the first cause and is fixed:** an installed-disk
+boot has three harts because EDK2 keeps one, two of the test's three workers were
+placed on the same hart, and with no preemption on this port the third worker
+started only as the second finished -- so five seconds was measuring the
+machine's hart count rather than whether a thread finishes. The join now waits a
+minute, and that timeout no longer happens. **The boot still fails, one layer
+down:** the machine now dies at `unhandled trap cause=1 epc=0x4`, a near-null
+jump, which is `B-108` and is open. So this gate is deliberately not in CI yet,
+because a job added while it fails on a kernel fault would be red on every run.
+The AArch64 and x86-64 variants are green, and the x86-64 one now has a job.
 
 The xaiFS and parallel-network gates require macOS plus Docker because they
 run native macOS and Debian 13 clients against one guest. The focused high-core

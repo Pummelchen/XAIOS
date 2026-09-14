@@ -54,22 +54,35 @@ and because a reader comparing the three architectures would otherwise conclude
 the shared scheduler means the same thing on all of them.
 
 **A RISC-V machine XAIOS has been installed onto does not currently complete its
-first boot, and the cause is not yet pinned to the gap above.** The installed-disk
-gate for this architecture had never run -- it could not build its own disk
-(`B-103`) -- and once it could, the first boot of the installed disk died at
-`/bin/c99-thread-context`, a libc test whose three threads write to one shared
-stream and whose join allows five seconds. The kernel reported a timeout with the
-target thread still `running`, and the console held about four fifths of the
-test's work when the budget expired, so the two readings are that five seconds is
-too little for this emulated machine or that a thread is genuinely stuck. The
-verdict is recorded as **inconclusive** rather than passed (`B-104`), and the
-experiment that separates the readings is one run with a larger join budget.
-Nothing has been changed to hide it: the gate fails, and no CI job runs it. Since
-the same binary passes on the RISC-V smoke, this is specific to an installed
-disk rather than to the port as a whole, and the absence of preemption above --
-threads that share a hart run only where they yield -- is one of the things the
-separating run will rule in or out rather than an explanation this page settles
-on.
+first boot.** The installed-disk gate for this architecture had never run -- it
+could not build its own disk (`B-103`) -- and once it could, the first boot of the
+installed disk died at `/bin/c99-thread-context`, a libc test whose three threads
+write to one shared stream. **The first cause found was a budget, and it was
+fixed:** an installed-disk boot has three harts, because EDK2 keeps one, and the
+scheduler put two of the test's three workers on the same hart; with no
+preemption on this port the third worker's first instruction waited for the
+second to finish, so a five-second join was measuring how many harts the machine
+had rather than whether a thread finishes. That join now waits a minute, for the
+reason written beside it, and the timeout no longer happens.
+
+**Fixing that did not make the boot pass, and this page says what happens
+instead.** The test now runs further and the machine dies at `unhandled trap
+cause=1 epc=0x4` -- an instruction access fault at address 4, a near-null jump
+(`B-108`). The suspect is named in the code: `timer_mask_local()` clears only the
+supervisor *timer* interrupt, and the idle loop masks it around the window where
+this port cannot survive a trap, so the supervisor *software* interrupt an IPI
+arrives on is still free to enter that same window -- and the boot's log shows
+IPIs in flight. The earlier form of the same fault, recorded in
+`kernel/arch/riscv64/smp.c`, was a return to program counter zero. So the
+narrowing removed one way in and left another open.
+
+Nothing has been changed to hide any of it: the gate fails, and no CI job runs it.
+Both rows are **inconclusive or open rather than passed**, and the boot is not
+claimed to work. Disentangling this needs either every interrupt masked in that
+window or a trap entry that can be taken while a user thread runs nested in a
+joiner's syscall -- `kernel/arch/riscv64/entry.S` calls the full context switch
+"the scheduler work this port has not done" -- and both touch the scheduling this
+port already documents as absent above.
 
 ## Platform and hardware
 
