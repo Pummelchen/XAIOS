@@ -148,27 +148,43 @@ static void capture_gp_regs(uint64_t *r) {
   __asm__ volatile("mov %%r15, %0" : "=m"(r[14]));
   __asm__ volatile("mov %%rsp, %0" : "=m"(r[31]));
 #elif defined(__riscv)
-  /* The caller-visible integer registers, by name rather than by number.
-     RISC-V has no instruction that spills them as a block, so each is moved
-     individually -- which is also why only the ones a backtrace or a fault
-     report actually uses are captured, rather than all thirty-two. */
-  __asm__ volatile("sd ra, 0(%0)\n\t"
-                   "sd sp, 8(%0)\n\t"
-                   "sd gp, 16(%0)\n\t"
-                   "sd tp, 24(%0)\n\t"
-                   "sd t0, 32(%0)\n\t"
-                   "sd t1, 40(%0)\n\t"
-                   "sd t2, 48(%0)\n\t"
-                   "sd s0, 56(%0)\n\t"
-                   "sd s1, 64(%0)\n\t"
-                   "sd a0, 72(%0)\n\t"
-                   "sd a1, 80(%0)\n\t"
-                   "sd a2, 88(%0)\n\t"
-                   "sd a3, 96(%0)\n\t"
+  /* Every general-purpose register with an ABI name, in the order the renderer
+     prints them -- ra, sp, gp, tp, t0-t2, s0-s1, a0-a7, s2-s11, t3-t6.
+     RISC-V has no instruction that spills them as a block, so each is stored
+     individually, and all thirty-one are stored because a fault report that
+     leaves some out invites a reader to believe a value it does not have.
+     (`x0` is not stored: it is hardwired zero and nothing can change that.) */
+  __asm__ volatile("sd ra,   0(%0)\n\t"
+                   "sd sp,   8(%0)\n\t"
+                   "sd gp,  16(%0)\n\t"
+                   "sd tp,  24(%0)\n\t"
+                   "sd t0,  32(%0)\n\t"
+                   "sd t1,  40(%0)\n\t"
+                   "sd t2,  48(%0)\n\t"
+                   "sd s0,  56(%0)\n\t"
+                   "sd s1,  64(%0)\n\t"
+                   "sd a0,  72(%0)\n\t"
+                   "sd a1,  80(%0)\n\t"
+                   "sd a2,  88(%0)\n\t"
+                   "sd a3,  96(%0)\n\t"
                    "sd a4, 104(%0)\n\t"
                    "sd a5, 112(%0)\n\t"
                    "sd a6, 120(%0)\n\t"
-                   "sd a7, 128(%0)"
+                   "sd a7, 128(%0)\n\t"
+                   "sd s2, 136(%0)\n\t"
+                   "sd s3, 144(%0)\n\t"
+                   "sd s4, 152(%0)\n\t"
+                   "sd s5, 160(%0)\n\t"
+                   "sd s6, 168(%0)\n\t"
+                   "sd s7, 176(%0)\n\t"
+                   "sd s8, 184(%0)\n\t"
+                   "sd s9, 192(%0)\n\t"
+                   "sd s10, 200(%0)\n\t"
+                   "sd s11, 208(%0)\n\t"
+                   "sd t3, 216(%0)\n\t"
+                   "sd t4, 224(%0)\n\t"
+                   "sd t5, 232(%0)\n\t"
+                   "sd t6, 240(%0)"
                    :
                    : "r"(r)
                    : "memory");
@@ -352,6 +368,38 @@ static void render_gp_regs(const uint64_t *r) {
     panic_u64_hex(r[i]);
     panic_puts("\r\n");
   }
+  /* This port's capture stores rsp in r[31] after zeroing the rest, so the
+     line is real here. It used to be printed after the `#endif`, which made it
+     look shared while only some of the branches filled the slot. */
+  panic_puts("  RSP  = ");
+  panic_u64_hex(r[31]);
+  panic_puts("\r\n\r\n");
+#elif defined(__riscv)
+  /* By ABI name, in the order the capture stores them.
+   *
+   * This used to fall through to the AArch64 branch below, which prints
+   * r[0..30] as "x0".."x30" and r[31] as "SP". The two captures do not agree:
+   * AArch64 stores x0..x30 then SP, while this port stores ra, sp, gp, tp and
+   * on in ABI order -- so on RISC-V every label named a different register than
+   * the value printed under it, ten of the lines were never written at all,
+   * and the "SP" line printed whatever happened to be on the stack. A fault
+   * report that misnames its registers is worse than one that prints fewer:
+   * the `sp` a reader needs is in here, and this defect is why a session's
+   * worth of diagnosis went after "a stack pointer of zero" that was in fact
+   * the `gp` register (B-111). */
+  static const char *names[] = {"ra ", "sp ", "gp ", "tp ", "t0 ", "t1 ",
+                                "t2 ", "s0 ", "s1 ", "a0 ", "a1 ", "a2 ",
+                                "a3 ", "a4 ", "a5 ", "a6 ", "a7 ", "s2 ",
+                                "s3 ", "s4 ", "s5 ", "s6 ", "s7 ", "s8 ",
+                                "s9 ", "s10", "s11", "t3 ", "t4 ", "t5 ",
+                                "t6 "};
+  for (uint32_t i = 0U; i < 31U; ++i) {
+    panic_puts("  ");
+    panic_puts(names[i]);
+    panic_puts(" = ");
+    panic_u64_hex(r[i]);
+    panic_puts("\r\n");
+  }
 #else
   for (uint32_t i = 0; i < 31; i += 2) {
     panic_puts("  x");
@@ -370,10 +418,14 @@ static void render_gp_regs(const uint64_t *r) {
     panic_u64_hex(r[i + 1]);
     panic_puts("\r\n");
   }
-#endif
+  /* AArch64 puts the stack pointer in r[31]; RISC-V prints it in the list above,
+     as `sp`, which is what a reader of that port looks for, and x86-64 prints
+     `RSP` in its own branch. A shared line after the `#endif` was what let two
+     of the three branches print a slot they never filled. */
   panic_puts("  SP   = ");
   panic_u64_hex(r[31]);
   panic_puts("\r\n\r\n");
+#endif
 }
 
 static void render_sys_regs(uint64_t elr, uint64_t esr, uint64_t far,

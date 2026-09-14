@@ -234,7 +234,7 @@ checksums that verifies nothing.
 
 Cheapest first.
 
-    make docs-check          # 17 repository checks, no build, seconds
+    make docs-check          # 18 repository checks, no build, seconds
     make compile-check       # every freestanding source compiles clean
     make hosted-test         # unit tests that run on the host
     make release-image-gate  # each image on all five environments
