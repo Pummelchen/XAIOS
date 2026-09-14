@@ -1,0 +1,60 @@
+# CodeQL code scanning — advanced setup.
+#
+# Why this file exists instead of GitHub's default setup: this repository has a
+# single Swift file that is macOS-only and belongs to no Swift package and no
+# Xcode project, so default setup's autobuild finds nothing to build and fails
+# with "Autobuild failure" — scanning nothing while reporting a configuration
+# error. CodeQL for Swift supports only autobuild and manual (there is no
+# "none" mode, because the extractor has to observe a real compilation), so
+# advanced setup is the only way to scan this file at all.
+#
+# Swift extraction is macOS-only, and the file imports Virtualization,
+# ScreenCaptureKit and AppKit, so the runner must be macOS.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '31 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  packages: read
+
+# Let a running scan finish: with cancel-in-progress a burst of pushes can
+# supersede every scan before one completes, and a security check that never
+# finishes reports nothing.
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  analyze:
+    name: analyze swift
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: swift
+          build-mode: manual
+
+      # The build must really happen: this is what the extractor observes. It is
+      # the same compile the platform README documents.
+      - name: Build for extraction
+        run: xcrun swiftc -O platform/virtualization-framework/xaios_vz.swift -o /tmp/xaios_vz
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:swift"
