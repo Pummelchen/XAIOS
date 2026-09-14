@@ -586,6 +586,18 @@ def main() -> int:
     else:
         missing.append("telemetry: complete JSON line")
     echo_best_effort(f"\nmissing targets: {missing}\n")
+    # A missing marker and a dropped line look the same from here, and the
+    # kernel now says when it has dropped one (`klog: N log lines dropped`).
+    # Printed with the failure so the reader does not have to know to look for
+    # it: under load this is the difference between "the machine did not do it"
+    # and "the machine did it and the console lost the sentence".
+    dropped = re.findall(r"klog: (\d+) log lines dropped", text)
+    if dropped:
+        total = sum(int(count) for count in dropped)
+        echo_best_effort(f"note: the kernel reported {total} log line(s) dropped "
+                         f"while its console lock was held, so a missing marker "
+                         f"above may be a line that was lost rather than work "
+                         f"that did not happen\n")
     return 1
 
 

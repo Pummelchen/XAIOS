@@ -59,6 +59,19 @@ static uint32_t g_panic_active;
 static uint64_t g_panic_dropped;
 static uint64_t g_panic_other;
 
+/* Lines `klog` has thrown away because another CPU held the console lock.
+ *
+ * `klog` takes that lock with a try, on purpose: it is called from contexts
+ * that must not block, so a contended line is dropped rather than waited for.
+ * What was wrong is that it was dropped *silently*. Gates assert on lines, so a
+ * dropped line is indistinguishable from behaviour that did not happen -- and
+ * that is the shape of a class of intermittent failures: a marker missing under
+ * load with the machine otherwise perfect, and neither the success message nor
+ * the failure message present in the console. Counted here and reported by the
+ * next line that does get through, because an absence has to be visible to be
+ * read correctly. */
+static uint64_t g_klog_contended_drops;
+
 /* One place that says "the console is not ours right now". */
 static int klog_suppressed_by_panic(void) {
   if (__atomic_load_n(&g_panic_active, __ATOMIC_ACQUIRE) == 0U) return 0;
@@ -473,7 +486,19 @@ static void klog_vformat(const char *fmt, va_list args) {
 void klog(const char *fmt, ...) {
   if (klog_suppressed_by_panic()) return;
   if (!xaios_spin_trylock(&g_klog_lock)) {
+    (void)__atomic_add_fetch(&g_klog_contended_drops, 1U, __ATOMIC_RELAXED);
     return;
+  }
+
+  /* Said before the line that got through, while the lock is held, so a reader
+     of the console knows the log is lossy and by how much. */
+  uint64_t lost = __atomic_exchange_n(&g_klog_contended_drops, 0U,
+                                      __ATOMIC_RELAXED);
+  if (lost != 0U) {
+    klog_puts("klog: ");
+    klog_u64(lost, 10U);
+    klog_puts(" log lines dropped, the console lock was held\n");
+    klog_line_flush();
   }
 
   va_list args;
