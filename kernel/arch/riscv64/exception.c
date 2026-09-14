@@ -48,6 +48,10 @@ extern void riscv64_trap_entry(void);
 static uint64_t g_plic_base;
 static const void *g_device_tree;
 static uint64_t g_trap_counts[16];
+/* The masked window in entry.S; a trap taken between these two addresses is a
+   bug in that mask rather than a fault to survive. */
+extern char riscv64_sscratch_window_begin[];
+extern char riscv64_sscratch_window_end[];
 static uint64_t g_external_count;
 
 typedef struct riscv64_irq_handler {
@@ -416,6 +420,29 @@ uint64_t riscv64_trap_handler(riscv64_trap_frame_t *frame) {
   if ((cause & SCAUSE_INTERRUPT) != 0U) {
     uint64_t which = cause & ~SCAUSE_INTERRUPT;
     if (which < 16U) ++g_trap_counts[which];
+    /* The one window a trap must never be taken in.
+     *
+     * `riscv64_sscratch_window_begin`/`_end` in entry.S bracket the section
+     * where a thread's kernel stack has been parked in sscratch but the hart
+     * has not yet entered user mode. The trap entry tells a trap from user mode
+     * from one from the kernel by looking at sscratch, so a trap in there is
+     * read as coming from user mode: the wrong stack pointer is saved and
+     * sscratch is left holding a kernel address, and the frames unwind to
+     * garbage -- measured as a jump to address 4 with a zero stack pointer
+     * (B-108). Interrupts are masked across those few instructions, and this
+     * is the check that the mask is doing its job rather than a second opinion
+     * about it: it fires only if an interrupt got in anyway, and it says which
+     * one and where. Silence here is the pass. */
+    if ((frame->sstatus & SSTATUS_SPP) != 0U &&
+        frame->sepc >= (uint64_t)(uintptr_t)riscv64_sscratch_window_begin &&
+        frame->sepc < (uint64_t)(uintptr_t)riscv64_sscratch_window_end) {
+      exception_panic("riscv64: %s interrupt taken inside the sscratch window "
+                      "sepc=0x%lx -- the mask across it has failed",
+                      which == IRQ_TIMER ? "timer"
+                                         : (which == IRQ_EXTERNAL ? "external"
+                                                                  : "software"),
+                      (unsigned long)frame->sepc);
+    }
     if (which == IRQ_TIMER) {
       timer_rearm();
     } else if (which == IRQ_EXTERNAL) {

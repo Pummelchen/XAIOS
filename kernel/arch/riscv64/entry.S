@@ -317,8 +317,38 @@ aarch64_enter_user_thread:
   sd    s10, 88(sp)
   sd    s11, 96(sp)
 
-  /* Where the trap handler finds the kernel stack to return onto. */
+  /* Where the trap handler finds the kernel stack to return onto. The two
+     labels around the section that follows are what the trap handler checks a
+     supervisor trap's sepc against: anything trapped in here would be read as
+     a trap from user mode, which is the corruption this window exists to
+     prevent (B-108). */
+  .globl riscv64_sscratch_window_begin
+riscv64_sscratch_window_begin:
   csrw  sscratch, sp
+
+  /* Interrupts off until we are actually in user mode, and that is a fix
+     rather than a precaution.
+   *
+   * The trap entry decides where a trap came from by looking at sscratch: a
+     non-zero value means a thread was in user mode and the frame must be
+     pushed on the kernel stack it names, and zero means the kernel was running
+     and the frame goes on the current stack. Between the store above and the
+     sret below, sscratch is non-zero while the kernel is still running, so an
+     interrupt taken in that window is read as a trap from user mode, saves the
+     wrong stack pointer and leaves sscratch holding a kernel address instead of
+     zero. The next trap from user mode then switches to a stack that is
+     already in use, and the nested frames unwind to garbage -- measured as a
+     return to program counter zero and later as a jump to address 4 with a
+     zero stack pointer (B-108), the fault that no mask had fixed.
+   *
+   * Masking everything around `xaios_thread_run_pending` instead was tried and
+   * is wrong for a different reason: it also masks the supervisor software
+   * interrupt the scheduler uses to move work between harts, so a hart that
+   * could not be woken spun forever. This window is a handful of instructions,
+   * and SPIE is set below, so the thread still starts with interrupts enabled
+   * -- user mode is not being masked here, only the kernel's last few
+   * instructions before it. */
+  csrci sstatus, 2
 
   /* SPP = 0 selects user mode for the sret below; SPIE = 1 so interrupts are
      enabled once there. A user thread entered with interrupts off cannot be
@@ -336,6 +366,8 @@ aarch64_enter_user_thread:
   mv    a0, t2
   mv    ra, t3
   sret
+  .globl riscv64_sscratch_window_end
+riscv64_sscratch_window_end:
 
 /* Where a user thread comes back to, entered from the trap handler once it
    has decided the thread is finished. a0 carries the encoded result the
