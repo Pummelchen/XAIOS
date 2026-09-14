@@ -389,8 +389,8 @@ ms idle and 164-297 ms under load to 24 ms idle and 29 ms under load.
 
 Covers `B-43`, `B-63`, and the structural half of `B-44`.
 
-**Mechanism, established.** The network stack is polled only from sshd's service
-loop. While that loop is inside any blocking call, nothing processes packets:
+**Mechanism, established, and since closed.** The network stack was polled only
+from sshd's service loop. While that loop is inside any blocking call, nothing processes packets:
 the peer waits, gives up at its own patience (about 18s for the macOS client),
 and the connection surfaces much later as `packet-read-failed` or
 `auth-timeout`. Three independent clocks agree on each outage -- `network:
@@ -753,10 +753,12 @@ belonged. Verified by `make compile-check` in every configuration and a full
 **Done, and the two sessions together are the record of why it took three
 passes.** `OD-011` chose the timer; stage three-b landed it: one secondary CPU
 arms its own timer after `kmain` stops the shared periodic tick, and on that CPU
-the timer interrupt polls `network_poll_tick_from_interrupt()` -- the poll
-without `operations_tick()`, because the power path quiesces storage and can
-stop the machine -- instead of ticking the scheduler, which stays masked there
-exactly as the port left it. **No CPU gains or loses a preemption.**
+the timer interrupt does not tick the scheduler, which stays masked there exactly
+as the port left it. The tick wakes the CPU; the idle loop polls the stack in
+thread context through `network_poll_tick_from_carrier()`, which is the whole
+poll including the power path -- safe there because thread context is where
+`operations_tick()` quiesces storage, and it can stop the machine.
+**No CPU gains or loses a preemption.**
 
 **What the first attempt got wrong, because it is the useful part.** It read
 "the tick stops when the carrier is given work", which was coincidence: in the
@@ -825,7 +827,7 @@ quietly.
 
 | ID | Decision | Closed by |
 |---|---|---|
-| OD-011 | Choose how the network is polled when sshd's loop is busy | **The timer**, and it is landed rather than chosen, on **all three architectures**. One secondary CPU arms its own timer after `kmain` stops the shared periodic tick, and on that CPU the timer interrupt polls `network_poll_tick_from_interrupt()` -- the poll without `operations_tick()`, because the power path quiesces storage and can stop the machine -- instead of ticking the scheduler, which stays masked there exactly as the port left it. No CPU gains or loses a preemption, and the dedicated-thread cost of one of three worker CPUs was not paid. **Measured: the worst gap between polls fell from 55-93 ms idle and 164-297 ms under load to 24 ms idle and 29 ms under load**, with 2890 of a gate run's polls taken from the interrupt. Both objections that made this look impossible were removed rather than argued with: the stack guard now masks interrupts while it is held, and the handler-hostile part of the poll was `operations_tick()`, which the interrupt path does not call. Three causes had to be fixed before it held -- an unreachable hook point, a secondary idle loop that could not take an interrupt, and a keepalive that starved the timer it was keeping -- and the detail is under `P-1`. **All three ports carry it, which took one further correction.** The obvious design polls from the timer handler; it worked on AArch64 and x86-64, and on RISC-V it corrupted a trap frame -- `/bin/c99-thread-context` returned to program counter zero, because that port's trap entry is deliberately minimal and cannot yet take arbitrary kernel-context traps. Polling from the idle loop instead -- the tick wakes the CPU, the loop polls in thread context -- needs no port to be more interrupt-safe than it already is, so all three carry the same mechanism with no port special-cased, and the power path stays out of handlers as a side effect. RISC-V was then measured carrying it: `network tick armed on cpu=2`, `tick=783` rising to `3625` polls, worst gap 15 ms. |
+| OD-011 | Choose how the network is polled when sshd's loop is busy | **The timer**, and it is landed rather than chosen, on **all three architectures**. One secondary CPU arms its own timer after `kmain` stops the shared periodic tick, and on that CPU the timer interrupt does not tick the scheduler, which stays masked there exactly as the port left it. **The tick's whole job is to wake that CPU**; the poll runs from its idle loop, in thread context, through `network_poll_tick_from_carrier()`. No CPU gains or loses a preemption, and the dedicated-thread cost of one of three worker CPUs was not paid. **Measured: the worst gap between polls fell from 55-93 ms idle and 164-297 ms under load to 24 ms idle and 29 ms under load**, with thousands of a gate run's polls taken by the CPU carrying the tick. Both objections that made this look impossible were removed rather than argued with: the stack guard now masks interrupts while it is held, and the poll was never handler work to begin with once it moved to the loop -- `operations_tick()` quiesces storage and can stop the machine, and it belongs in thread context. Three causes had to be fixed before it held -- an unreachable hook point, a secondary idle loop that could not take an interrupt, and a keepalive that starved the timer it was keeping -- and the detail is under `P-1`. **All three ports carry it, which took one further correction.** The obvious design polls from the timer handler; it worked on AArch64 and x86-64, and on RISC-V it corrupted a trap frame -- `/bin/c99-thread-context` returned to program counter zero, because that port's trap entry is deliberately minimal and cannot yet take arbitrary kernel-context traps. Polling from the idle loop instead -- the tick wakes the CPU, the loop polls in thread context -- needs no port to be more interrupt-safe than it already is, so all three carry the same mechanism with no port special-cased, and the power path stays out of handlers as a side effect. RISC-V was then measured carrying it: `network tick armed on cpu=2`, `tick=783` rising to `3625` polls, worst gap 15 ms. |
 
 ## Risk register
 
