@@ -205,8 +205,17 @@ int main(int argc, char **argv) {
       {"xaiosctl capabilities", "xaiosctl capabilities --json",
        "real_model_inference=unsupported",
        "\"model_v2\":\"interface-only\"", 0},
+      /* Presence, not value. Both of these fields report what the machine
+         actually is: `avx2` is detected from CPUID on x86-64 and hard-coded to
+         zero on the other two ports, and the vendor is read from the machine.
+         Asserting "unknown" was asserting an AArch64 and RISC-V answer, so the
+         first time this self-test ran on x86-64 -- which took until the shared
+         smoke stopped booting the wrong image -- it reported a rendering
+         failure for a command that had rendered correctly (B-116). The field
+         name still has to appear, which is what the command's own test is for;
+         what the machine is, is the machine's business. */
       {"xaiosctl hardware", "xaiosctl hardware --json",
-       "cpu_vendor=unknown", "\"avx2\":\"unknown\"", 0},
+       "cpu_vendor=", "\"avx2\":", 0},
       {"xaiosctl metrics", "xaiosctl metrics --json",
        "tokens_generated=unknown", "\"network_rx_bytes\":null", 0},
       {"xaiosctl logs --limit 2 --component kernel",
