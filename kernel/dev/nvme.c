@@ -234,21 +234,40 @@ static int completion_fields_valid(const nvme_completion_t *completion,
          ((completion->status >> 1U) & UINT16_C(0x7ff)) == 0U;
 }
 
+/* Which of the parser's checks refused, named, because this self-test is the
+ * first thing `nvme_self_test` runs and until it was named a failure here left
+ * the console with nothing on it at all -- the one exit in the chain that could
+ * not be told from any other. */
+static xaios_status_t parser_check_failed(const char *check) {
+  klog("nvme: completion parser self-test failed check=%s\n", check);
+  return XAIOS_ERR_IO;
+}
+
 static xaios_status_t completion_parser_self_test(void) {
   nvme_completion_t completion = {
       .sq_head = 1U, .sq_id = 2U, .cid = 7U, .status = 1U};
-  if (!completion_fields_valid(&completion, 2U, 7U)) return XAIOS_ERR_IO;
+  if (!completion_fields_valid(&completion, 2U, 7U)) {
+    return parser_check_failed("valid-completion");
+  }
   completion.sq_id = 3U;
-  if (completion_fields_valid(&completion, 2U, 7U)) return XAIOS_ERR_IO;
+  if (completion_fields_valid(&completion, 2U, 7U)) {
+    return parser_check_failed("wrong-queue");
+  }
   completion.sq_id = 2U;
   completion.sq_head = NVME_QUEUE_DEPTH;
-  if (completion_fields_valid(&completion, 2U, 7U)) return XAIOS_ERR_IO;
+  if (completion_fields_valid(&completion, 2U, 7U)) {
+    return parser_check_failed("head-out-of-range");
+  }
   completion.sq_head = 1U;
   completion.cid = 8U;
-  if (completion_fields_valid(&completion, 2U, 7U)) return XAIOS_ERR_IO;
+  if (completion_fields_valid(&completion, 2U, 7U)) {
+    return parser_check_failed("wrong-cid");
+  }
   completion.cid = 7U;
   completion.status = UINT16_C(3);
-  if (completion_fields_valid(&completion, 2U, 7U)) return XAIOS_ERR_IO;
+  if (completion_fields_valid(&completion, 2U, 7U)) {
+    return parser_check_failed("non-zero-status");
+  }
   return XAIOS_OK;
 }
 
@@ -314,7 +333,12 @@ static xaios_status_t allocate_queue(nvme_queue_t *queue, uint16_t qid,
                                      nvme_controller_t *controller) {
   queue->sq = (nvme_command_t *)kheap_calloc(NVME_PAGE_SIZE, NVME_PAGE_SIZE);
   queue->cq = (nvme_completion_t *)kheap_calloc(NVME_PAGE_SIZE, NVME_PAGE_SIZE);
-  if (queue->sq == 0 || queue->cq == 0) return XAIOS_ERR_NO_MEMORY;
+  if (queue->sq == 0 || queue->cq == 0) {
+    klog("nvme: queue ring allocation failed qid=%u sq=%u cq=%u bytes=%u\n",
+         (unsigned)qid, (unsigned)(queue->sq == 0),
+         (unsigned)(queue->cq == 0), (unsigned)NVME_PAGE_SIZE);
+    return XAIOS_ERR_NO_MEMORY;
+  }
   queue->qid = qid;
   queue->phase = 1U;
   queue->assigned_cpu = assigned_cpu;
@@ -323,7 +347,11 @@ static xaios_status_t allocate_queue(nvme_queue_t *queue, uint16_t qid,
   for (uint32_t slot = 0U; slot < NVME_QUEUE_DEPTH; ++slot) {
     queue->slots[slot].prp_list =
         (uint64_t *)kheap_calloc(NVME_PAGE_SIZE, NVME_PAGE_SIZE);
-    if (queue->slots[slot].prp_list == 0) return XAIOS_ERR_NO_MEMORY;
+    if (queue->slots[slot].prp_list == 0) {
+      klog("nvme: queue prp list allocation failed qid=%u slot=%u bytes=%u\n",
+           (unsigned)qid, (unsigned)slot, (unsigned)NVME_PAGE_SIZE);
+      return XAIOS_ERR_NO_MEMORY;
+    }
   }
   return XAIOS_OK;
 }
@@ -331,17 +359,34 @@ static xaios_status_t allocate_queue(nvme_queue_t *queue, uint16_t qid,
 static xaios_status_t initialize_controller(nvme_controller_t *controller,
                                             uint32_t pci_index) {
   bytes_zero(controller, sizeof(*controller));
-  if (pci_enable_device(pci_index) != XAIOS_OK) return XAIOS_ERR_IO;
+  xaios_status_t enabled = pci_enable_device(pci_index);
+  if (enabled != XAIOS_OK) {
+    klog("nvme: controller pci enable failed index=%u status=%d\n",
+         (unsigned)pci_index, (int)enabled);
+    return XAIOS_ERR_IO;
+  }
   uint64_t bar = pci_bar_address(pci_index, 0U);
-  if (bar == 0U || (bar & (NVME_PAGE_SIZE - 1U)) != 0U) return XAIOS_ERR_INVALID;
-  if (device_window_map("nvme", bar, NVME_PAGE_SIZE * 2U,
-                        &controller->bar) != XAIOS_OK) {
+  if (bar == 0U || (bar & (NVME_PAGE_SIZE - 1U)) != 0U) {
+    klog("nvme: controller bar unusable index=%u bar=0x%lx\n",
+         (unsigned)pci_index, (unsigned long)bar);
+    return XAIOS_ERR_INVALID;
+  }
+  xaios_status_t mapped = device_window_map("nvme", bar, NVME_PAGE_SIZE * 2U,
+                                            &controller->bar);
+  if (mapped != XAIOS_OK) {
+    klog("nvme: controller window map failed bar=0x%lx bytes=%lu status=%d\n",
+         (unsigned long)bar, (unsigned long)(NVME_PAGE_SIZE * 2U),
+         (int)mapped);
     return XAIOS_ERR_IO;
   }
   controller->cap = mmio_read64(controller, NVME_REG_CAP);
   uint32_t mqes = (uint32_t)(controller->cap & UINT64_C(0xffff)) + 1U;
   uint32_t mpsmin = (uint32_t)((controller->cap >> 48U) & UINT64_C(0xf));
-  if (mqes < NVME_QUEUE_DEPTH || mpsmin != 0U) return XAIOS_ERR_UNSUPPORTED;
+  if (mqes < NVME_QUEUE_DEPTH || mpsmin != 0U) {
+    klog("nvme: controller unsupported mqes=%u mpsmin=%u need_mqes=%u\n",
+         (unsigned)mqes, (unsigned)mpsmin, (unsigned)NVME_QUEUE_DEPTH);
+    return XAIOS_ERR_UNSUPPORTED;
+  }
   controller->doorbell_stride =
       4U << ((uint32_t)((controller->cap >> 32U) & UINT64_C(0xf)));
 
@@ -367,7 +412,11 @@ static xaios_status_t initialize_controller(nvme_controller_t *controller,
   controller->io_queue_count = desired;
   controller->pci_index = pci_index;
   controller->identify = (uint8_t *)kheap_calloc(NVME_PAGE_SIZE, NVME_PAGE_SIZE);
-  if (controller->identify == 0) return XAIOS_ERR_NO_MEMORY;
+  if (controller->identify == 0) {
+    klog("nvme: identify buffer allocation failed bytes=%u\n",
+         (unsigned)NVME_PAGE_SIZE);
+    return XAIOS_ERR_NO_MEMORY;
+  }
 
   mmio_write32(controller, NVME_REG_AQA,
                ((NVME_QUEUE_DEPTH - 1U) << 16U) | (NVME_QUEUE_DEPTH - 1U));
@@ -402,7 +451,10 @@ static xaios_status_t negotiate_io_queues(nvme_controller_t *controller) {
   uint32_t requested = controller->io_queue_count - 1U;
   command.cdw11 = (requested << 16U) | requested;
   uint32_t result = 0U;
-  if (submit_admin(controller, &command, &result) != XAIOS_OK) {
+  xaios_status_t submitted = submit_admin(controller, &command, &result);
+  if (submitted != XAIOS_OK) {
+    klog("nvme: io queue negotiation refused requested=%u status=%d\n",
+         (unsigned)requested, (int)submitted);
     return XAIOS_ERR_IO;
   }
   uint32_t completion_queues = (result & UINT32_C(0xffff)) + 1U;
@@ -410,7 +462,11 @@ static xaios_status_t negotiate_io_queues(nvme_controller_t *controller) {
   uint32_t granted = completion_queues < submission_queues
                          ? completion_queues
                          : submission_queues;
-  if (granted == 0U) return XAIOS_ERR_IO;
+  if (granted == 0U) {
+    klog("nvme: controller granted no io queues result=0x%x requested=%u\n",
+         (unsigned)result, (unsigned)requested);
+    return XAIOS_ERR_IO;
+  }
   if (controller->io_queue_count > granted) controller->io_queue_count = granted;
   return XAIOS_OK;
 }
@@ -589,13 +645,23 @@ static xaios_status_t create_io_queues(nvme_controller_t *controller) {
     command.data_pointer1 = dma_address(queue->cq);
     command.cdw10 = ((NVME_QUEUE_DEPTH - 1U) << 16U) | queue->qid;
     command.cdw11 = ((uint32_t)queue->msix_entry << 16U) | 3U;
-    if (submit_admin(controller, &command, 0) != XAIOS_OK) return XAIOS_ERR_IO;
+    xaios_status_t completion_queue = submit_admin(controller, &command, 0);
+    if (completion_queue != XAIOS_OK) {
+      klog("nvme: create io completion queue refused qid=%u status=%d\n",
+           (unsigned)queue->qid, (int)completion_queue);
+      return XAIOS_ERR_IO;
+    }
     bytes_zero(&command, sizeof(command));
     command.opcode = NVME_ADMIN_CREATE_IO_SQ;
     command.data_pointer1 = dma_address(queue->sq);
     command.cdw10 = ((NVME_QUEUE_DEPTH - 1U) << 16U) | queue->qid;
     command.cdw11 = ((uint32_t)queue->qid << 16U) | 1U;
-    if (submit_admin(controller, &command, 0) != XAIOS_OK) return XAIOS_ERR_IO;
+    xaios_status_t submission_queue = submit_admin(controller, &command, 0);
+    if (submission_queue != XAIOS_OK) {
+      klog("nvme: create io submission queue refused qid=%u status=%d\n",
+           (unsigned)queue->qid, (int)submission_queue);
+      return XAIOS_ERR_IO;
+    }
   }
   return XAIOS_OK;
 }
@@ -1106,7 +1172,12 @@ static xaios_status_t stress_io(nvme_controller_t *controller,
 
 xaios_status_t nvme_self_test(xaios_nvme_self_test_result_t *result) {
   if (result != 0) bytes_zero(result, sizeof(*result));
-  if (completion_parser_self_test() != XAIOS_OK) return XAIOS_ERR_IO;
+  if (completion_parser_self_test() != XAIOS_OK) {
+    /* The parser names the check that refused; this names the step, so that a
+       failure here reads like the other eight rather than as a bare status. */
+    klog("nvme: self-test failed step=completion-parser\n");
+    return XAIOS_ERR_IO;
+  }
   uint32_t found = UINT32_MAX;
   for (uint32_t index = 0U; index < pci_device_count(); ++index) {
     const xaios_pci_device_t *device = pci_device(index);
@@ -1182,13 +1253,25 @@ xaios_status_t nvme_self_test(xaios_nvme_self_test_result_t *result) {
   uint32_t blocks_per_transfer =
       NVME_MAX_TRANSFER_BYTES / controller->block_size;
   if ((uint64_t)blocks_per_transfer * controller->io_queue_count >
-      controller->namespace_blocks) return XAIOS_ERR_UNSUPPORTED;
+      controller->namespace_blocks) {
+    /* A real refusal on a small namespace, not a defect, and one that used to
+       leave `nvme: self-test failed status=-11` as the only trace of itself. */
+    klog("nvme: self-test failed step=namespace-too-small blocks=%lu "
+         "per_transfer=%u queues=%u\n",
+         (unsigned long)controller->namespace_blocks,
+         (unsigned)blocks_per_transfer, (unsigned)controller->io_queue_count);
+    return XAIOS_ERR_UNSUPPORTED;
+  }
 
   uint8_t *buffers[NVME_MAX_IO_QUEUES] = {0};
   for (uint32_t queue = 0U; queue < controller->io_queue_count; ++queue) {
     buffers[queue] =
         (uint8_t *)kheap_calloc(NVME_MAX_TRANSFER_BYTES, NVME_PAGE_SIZE);
-    if (buffers[queue] == 0) return XAIOS_ERR_NO_MEMORY;
+    if (buffers[queue] == 0) {
+      klog("nvme: self-test failed step=stress-buffer queue=%u bytes=%u\n",
+           (unsigned)queue, (unsigned)NVME_MAX_TRANSFER_BYTES);
+      return XAIOS_ERR_NO_MEMORY;
+    }
   }
   g_nvme_batch_margin.slowest_ns = 0U;
   g_nvme_batch_margin.waited = 0U;
