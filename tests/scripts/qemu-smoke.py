@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from qemu_gate_lib import (arch_from_argv, contract, parse_telemetry,
-                           qemu_boot_environment, qemu_make_target,
+                           qemu_boot_environment, qemu_runner,
                            validate_telemetry_against_contract)
 
 
@@ -412,6 +412,37 @@ def describe_refusals(text: str) -> str:
     return "".join(lines)
 
 
+# The image each architecture's shared smoke has to be looking at, and the
+# reason it has to say so itself.
+#
+# This gate used to reach the guest through `make <arch runner target>`. For
+# AArch64 that target is a bare runner invocation, but for x86-64 it is
+# `qemu-x86_64: image-x86_64` -- which runs `build-image.sh` *without*
+# `XAIOS_BOOT_TEST_APPS=1` and so overwrites the boot image with the
+# configuration this gate is not asking about, immediately before booting it.
+# Without the boot test apps the splash owns the console and the kernel log is
+# suppressed: the machine comes up perfectly, `SSH server: up and running`
+# appears, and 214 of the markers below are invisible. That is why no milestone
+# gate had ever applied to x86-64, and why the first attempt to fix it -- build
+# the test image first -- changed nothing: the build step was correct and the
+# `make` target rebuilt over it one line later.
+#
+# So this gate builds its own configuration and then starts the runner itself,
+# which is what `make qemu-aarch64` was doing for AArch64 all along. Building
+# the image explicitly also removes the luck that leg was relying on: it passed
+# because the test image happened to be the one in `build/`, not because
+# anything asked for it.
+#
+# RISC-V is absent here and that is a gap rather than a decision: its image is
+# built by two scripts instead of by a make target, so `qemu-riscv64-update-gate`
+# builds it itself and the RISC-V leg below still depends on that having
+# happened.
+TEST_IMAGE_TARGETS = {
+    "aarch64": "image-qemu-test",
+    "x86_64": "image-x86_64-qemu-test",
+}
+
+
 def main() -> int:
     arch = arch_from_argv(sys.argv[1:])
     targets = list(TARGETS) + list(ARCH_TARGETS.get(arch, []))
@@ -440,8 +471,22 @@ def main() -> int:
                                 storage_admin=scratch_image,
                                 state_dir=state_dir, hostfwd_port="none",
                                 serial_to_stdout=True)
+    # Build the configuration this gate is about to assert, then start the
+    # runner directly. See TEST_IMAGE_TARGETS for why neither step is optional.
+    test_image = TEST_IMAGE_TARGETS.get(arch)
+    if test_image is not None:
+        built = subprocess.run(["make", test_image], env=env,
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True,
+                               check=False)
+        if built.returncode != 0:
+            sys.stdout.write(built.stdout)
+            print(f"qemu-smoke: could not build {test_image}, so the machine "
+                  f"below would not be the one this gate is asking about")
+            return 1
+
     proc = subprocess.Popen(
-        ["make", qemu_make_target(arch)],
+        [qemu_runner(arch)],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
