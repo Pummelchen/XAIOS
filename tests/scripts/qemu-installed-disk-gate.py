@@ -126,9 +126,12 @@ ARCHITECTURES = {
         # a block device for the installer to find. A skip that says why is a
         # result; a phase that silently does not run is not.
         "install_phase_skip": (
-            "the scratch disk is not enumerated on PCI, so the installer has "
-            "no device to write; the installed-disk boots above are the "
-            "evidence this row gives"
+            "the storage-administration window is opened by MMIO bus slot "
+            "(kmain.c opens the scratch disk with virtio_block_open_slot(5U)) "
+            "and this machine has no such slot, so the disk attached here is "
+            "on the bus and never opened: the boot log says 'no pci device of "
+            "type 2 at ordinal N; 2 present'. The installed-disk boots above "
+            "are the evidence this row gives"
         ),
     },
     "riscv64": {
