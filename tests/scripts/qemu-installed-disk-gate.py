@@ -121,26 +121,6 @@ ARCHITECTURES = {
         # real reason rather than a weaker check. The claim is unchanged: a
         # reader returning plausible nonsense does not reach this.
         "esp_bytes_digits": 7,
-        # Named rather than passed over. Booting an installed disk is proven on
-        # this architecture; the phase after it -- a running machine installing
-        # onto a blank disk -- is not. The cause is in the kernel and it is not
-        # that the window has no PCI equivalent: the storage administration
-        # window is opened as logical slot 5, and the PCI transport does have a
-        # mapping for it, but that map encodes one test bench's disk order, in
-        # which window 5 is the fifth block device on the bus. This machine
-        # presents two. A skip that says why is a result; a phase that silently
-        # does not run is not.
-        "install_phase_skip": (
-            "the storage-administration window is opened as logical slot 5 "
-            "(kmain.c calls virtio_block_open_slot(5U)), and on PCI that slot is "
-            "carried to an enumeration ordinal by matching_ordinal_for_slot, "
-            "which maps it to ordinal 4 because the window is the fifth block "
-            "device in the order the QEMU test bench attaches its disks "
-            "(virtio_transport_pci.c). An installed machine has two disks, so "
-            "there is no fifth to find and the guest says so: 'no pci device of "
-            "type 2 at ordinal 4; 2 present'. The installed-disk boots above are "
-            "the evidence this row gives"
-        ),
     },
     "riscv64": {
         "qemu": "qemu-system-riscv64",
@@ -196,25 +176,6 @@ ARCHITECTURES = {
         # MB, which is eight digits, because this architecture's ESP carries the
         # loader and its payload the same way AArch64's does.
         "esp_bytes_digits": 8,
-        # The same skip as x86-64 and for the same reason, because this machine
-        # is in the same position: the target disk here is a PCI function, and
-        # the window the boot path opens is logical slot 5, which the PCI
-        # transport carries to enumeration ordinal 4. The guest says so:
-        # 'no pci device of type 2 at ordinal 4; 1 present', then
-        # 'storage-admin: scratch device unavailable status=-3'. Written out
-        # rather than inherited, because a skip copied from another
-        # architecture without its own evidence is a claim nobody checked.
-        "install_phase_skip": (
-            "the storage-administration window is opened as logical slot 5 "
-            "(kmain.c calls virtio_block_open_slot(5U)), which the PCI transport "
-            "carries to ordinal 4 through matching_ordinal_for_slot -- the fifth "
-            "block device in the order the QEMU test bench attaches its disks "
-            "(virtio_transport_pci.c). This machine presents one, so the guest "
-            "reports 'no pci device of type 2 at ordinal 4; 1 present' and "
-            "'storage-admin: scratch device unavailable status=-3'. The disk "
-            "attached here is a PCI function and is never opened. The "
-            "installed-disk boots above are the evidence this row gives"
-        ),
     },
 }
 # Every key this file reads without a default, checked against all three
@@ -330,8 +291,15 @@ SECOND_BOOT = FIRST_BOOT + (
 # because every earlier check is the installer marking its own work.
 INSTALL = (
     ("installed onto the blank disk",
+     # The byte floor is per-architecture, like the one the boot checks use and
+     # for the same reason: an x86-64 ESP is about 9.6 MB because it carries no
+     # GRUB chainloader, which is seven digits, while AArch64's is eight. This
+     # was written as `\d{8,}` when only AArch64 could reach the phase, so the
+     # first time an x86-64 machine actually installed onto a blank disk the
+     # check missed a successful install and reported a failure that had not
+     # happened.
      re.compile(rf"install: self-test passed target={TARGET_VOLUME} "
-                rf"files=5 bytes=\d{{8,}}")),
+                rf"files=5 bytes=\d{{{ESP_BYTES_DIGITS},}}")),
     ("every boot file copied",
      re.compile(rf"install: {TARGET_VOLUME} is bootable "
                 rf"esp={TARGET_VOLUME}p\d+ state={TARGET_VOLUME}p\d+ files=5")),
