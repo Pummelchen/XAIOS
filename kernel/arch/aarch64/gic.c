@@ -91,6 +91,31 @@ static void mmio_write64(uint64_t base, uint32_t offset, uint64_t value) {
   *reg = value;
 }
 
+/* Wake a redistributor, and wait for it to say it is awake.
+ *
+ * GICv3 makes the wait mandatory: after clearing GICR_WAKER.ProcessorSleep,
+ * software must poll GICR_WAKER.ChildrenAsleep until it reads zero before
+ * using the rest of the frame. Neither call site did this -- the boot CPU's
+ * and the secondary's had the same three lines written out twice, which is how
+ * a mandatory step goes missing in both. It is one function now so it cannot
+ * go missing in one of them again, and the bound exists because a redistributor
+ * that never reports itself awake is a machine that would otherwise hang here
+ * with no output at all; the caller logs and continues, and the probe that
+ * follows fails visibly instead.
+ */
+#define GIC_WAKER_CHILDREN_ASLEEP (1U << 2U)
+#define GIC_WAKER_SPIN_LIMIT 100000U
+static uint32_t wake_redistributor(uint64_t base) {
+  uint32_t waker = mmio_read32(base, GICR_WAKER);
+  mmio_write32(base, GICR_WAKER, waker & ~(1U << 1U));
+  for (uint32_t spin = 0U; spin < GIC_WAKER_SPIN_LIMIT; ++spin) {
+    if ((mmio_read32(base, GICR_WAKER) & GIC_WAKER_CHILDREN_ASLEEP) == 0U) {
+      return 1U;
+    }
+  }
+  return 0U;
+}
+
 static void wait_distributor(void) {
   while ((mmio_read32(g_distributor_base, GICD_CTLR) & GICD_CTLR_RWP) !=
          0U) {
@@ -315,9 +340,9 @@ void gic_enable_full(void) {
 
   /* Configure redistributor for CPU 0 */
   uint64_t boot_gicr = redistributor_base(0U);
-  uint32_t gicr_waker = mmio_read32(boot_gicr, GICR_WAKER);
-  gicr_waker &= ~(1U << 1U); /* clear ProcessorSleep */
-  mmio_write32(boot_gicr, GICR_WAKER, gicr_waker);
+  if (wake_redistributor(boot_gicr) == 0U) {
+    klog("gic: cpu0 redistributor never reported awake\n");
+  }
 
   /* Set redistributor priority for timer */
   uint32_t gicr_group = mmio_read32(boot_gicr, GICR_IGROUPR0);
@@ -364,10 +389,10 @@ void gic_secondary_init(uint32_t cpu_id) {
     return;
   }
 
-  /* Wake redistributor: clear ProcessorSleep */
-  uint32_t gicr_waker = mmio_read32(gicr_base, GICR_WAKER);
-  gicr_waker &= ~(1U << 1U);
-  mmio_write32(gicr_base, GICR_WAKER, gicr_waker);
+  /* Wake redistributor, and wait for it to say so. */
+  if (wake_redistributor(gicr_base) == 0U) {
+    klog("gic: cpu%u redistributor never reported awake\n", (unsigned)cpu_id);
+  }
 
   /* Set redistributor priority for timer PPI */
   uint32_t gicr_group = mmio_read32(gicr_base, GICR_IGROUPR0);

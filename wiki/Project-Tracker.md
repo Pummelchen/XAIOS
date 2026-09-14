@@ -815,12 +815,19 @@ of those polls taken from the timer interrupt** -- against 55-93 ms idle and
 actually advance the interrupt count is what caught causes 2 and 3, and it is
 green. `make qemu-x86_64-smoke` and `make qemu-riscv64-smoke` also pass, and the cadence gate reports the tick firing on AArch64 and RISC-V.
 
-**One latent deviation is recorded and not fixed:** neither `gic_init` nor
-`gic_secondary_init` waits for `ChildrenAsleep` to clear after clearing
-`ProcessorSleep`, which the GICv3 specification requires before the
-redistributor is usable. Both paths omit it and the boot CPU's timer works for
-thousands of ticks regardless, so it is not this defect -- but a mandatory
-sequence is not being performed.
+**One latent deviation found on the way is now fixed.** Neither `gic_init` nor
+`gic_secondary_init` waited for `ChildrenAsleep` to clear after clearing
+`ProcessorSleep`, which the GICv3 specification requires before the rest of the
+redistributor is used. Both paths omitted it, and neither was this defect -- the
+boot CPU's timer works for thousands of ticks regardless -- but a mandatory
+sequence was not being performed, and it had gone missing in two places at once
+because the same three lines were written out twice. It is one
+`wake_redistributor()` now, which polls until the redistributor reports itself
+awake and is bounded rather than open-ended: a frame that never wakes logs
+`gic: cpu<N> redistributor never reported awake` and lets the probe that follows
+fail visibly, instead of hanging the machine with no output at all. Verified by
+`make qemu-smoke`: the boot completes with no such line, so both paths take the
+poll and pass it.
 is a choice about the machine's execution model rather than a refactor to make
 quietly.
 ### Resolved, kept for reference
