@@ -392,7 +392,7 @@ static void render_sys_regs(uint64_t elr, uint64_t esr, uint64_t far,
   panic_puts("\r\n  RSP      = ");
   panic_u64_hex(sp_el0);
   panic_puts("\r\n\r\n");
-#else
+#elif defined(__aarch64__)
   panic_puts("  ELR_EL1  = ");
   panic_u64_hex(elr);
   panic_puts("\r\n  ESR_EL1  = ");
@@ -408,6 +408,39 @@ static void render_sys_regs(uint64_t elr, uint64_t esr, uint64_t far,
   panic_puts(" (EL");
   panic_u32((unsigned)(current_el >> 2U));
   panic_puts(")\r\n\r\n");
+#else
+  /* RISC-V, under its own names.
+   *
+   * `capture_sys_regs` fills these same six slots from sepc, scause, stval and
+   * sstatus, which are what carry the same four facts here. This branch used to
+   * be the `#else` of the x86_64 test, so a RISC-V panic printed the AArch64
+   * names -- and that is not a cosmetic complaint, because
+   * `tests/scripts/resolve-panic.py` reads those labels to work out which
+   * machine produced a panic. It therefore identified a RISC-V panic as
+   * AArch64: it refused to resolve against the RISC-V kernel that had actually
+   * produced it, and would have accepted an AArch64 kernel and printed
+   * confident nonsense from the wrong symbol table.
+   *
+   * The privilege line is deliberately absent rather than translated.
+   * `CurrentEL` above is AArch64's encoding, where the mode sits in bits [3:2]
+   * of the register; this port passed the constant 1 for "supervisor", which
+   * the same renderer shifted right by two and printed as `(EL0)` on every
+   * RISC-V panic ever taken in the kernel. A wrong privilege level in a fault
+   * report is worse than no line, so `sstatus` is printed and left to be read:
+   * its SPP bit says which mode a trap came from, and it says nothing at all
+   * about a panic that was not reached through a trap. */
+  (void)current_el;
+  panic_puts("  sepc     = ");
+  panic_u64_hex(elr);
+  panic_puts("\r\n  scause   = ");
+  panic_u64_hex(esr);
+  panic_puts("\r\n  stval    = ");
+  panic_u64_hex(far);
+  panic_puts("\r\n  sstatus  = ");
+  panic_u64_hex(spsr);
+  panic_puts("\r\n  sp       = ");
+  panic_u64_hex(sp_el0);
+  panic_puts("\r\n\r\n");
 #endif
 }
 

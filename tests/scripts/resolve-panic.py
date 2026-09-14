@@ -87,12 +87,23 @@ def elf_machine(kernel: Path) -> str:
                 return "aarch64"
             if "X86-64" in value or "x86-64" in value:
                 return "x86_64"
+            if "RISC-V" in value or "riscv" in value:
+                return "riscv64"
             return value
     return ""
 
 
 def panic_machine(text: str) -> str:
-    """Which architecture produced this panic, read off its register dump."""
+    """Which architecture produced this panic, read off its register dump.
+
+    RISC-V first, and under its own labels: a panic on that port prints sepc,
+    scause, stval and sstatus. It used to print the AArch64 names, which made
+    this function answer "aarch64" for a RISC-V panic -- so the one mismatch it
+    exists to catch was the one it got wrong, and it refused the RISC-V kernel
+    that had really produced the panic while accepting an AArch64 one.
+    """
+    if "scause" in text or "sepc" in text or "stval" in text:
+        return "riscv64"
     if "ELR_EL1" in text or "CurrentEL" in text:
         return "aarch64"
     if "RFLAGS" in text or "RIP      =" in text:
@@ -166,6 +177,15 @@ def main() -> int:
             f"{from_elf}. Every address resolves to some symbol in some "
             f"table, so continuing would print names that look right and are "
             f"not. Pass --kernel for the build that panicked.")
+    if not from_panic:
+        # Said rather than passed over. A dump whose register block was not
+        # captured cannot be placed on a machine, so the one check available
+        # against a wrong kernel did not run, and the names below are only as
+        # good as the assumption that this kernel is the right architecture.
+        print("note: no register block in that text, so which machine produced "
+              "this panic could not be read and the architecture of "
+              f"{arguments.kernel} was not checked against it.",
+              file=sys.stderr)
 
     table = symbols(arguments.kernel)
     linked = link_base(table)
