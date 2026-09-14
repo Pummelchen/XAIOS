@@ -44,6 +44,19 @@ from qemu_gate_lib import (arch_from_argv, qemu_boot_environment, qemu_runner,
                            smoke_timeout)
 
 ARCH = arch_from_argv(sys.argv)
+ROOT = Path(__file__).resolve().parents[2]
+BUILD = ROOT / "build"
+
+# How long to keep reading after the fault markers have been seen.
+#
+# The markers say that a fault happened. The register block, the backtrace and
+# the halt banner come *after* them, and those are the evidence a person reads
+# when the finding has to be acted on -- so breaking on the marker kept the
+# finding and threw the evidence away. This gate wrote no log at all, which is
+# why a deliberate panic could not be read back after a change to the panic
+# dump, and why the register-report row had to record that verification as owed.
+FAULT_DRAIN_SECONDS = 2.0
+HALT_BANNER = "System halted"
 
 # How each machine names the trap the fault produces.
 FAULT_CLASS = {
@@ -155,6 +168,7 @@ def run_fault_boot(name: str, targets) -> int:
         deadline = time.time() + smoke_timeout(
             ARCH, int(os.environ.get("XAIOS_QEMU_FAULT_TIMEOUT", "60")))
         passed = False
+        drain_until = None
         try:
             fd = proc.stdout.fileno()
             while time.time() < deadline:
@@ -167,8 +181,13 @@ def run_fault_boot(name: str, targets) -> int:
                     sys.stdout.flush()
                     seen.append(chunk)
                     output = "".join(seen)
-                    if all(target in output for target in targets):
+                    if not passed and all(target in output
+                                          for target in targets):
                         passed = True
+                        drain_until = time.time() + FAULT_DRAIN_SECONDS
+                    if passed and (HALT_BANNER in output or
+                                   (drain_until is not None and
+                                    time.time() >= drain_until)):
                         break
                 elif proc.poll() is not None:
                     break
@@ -181,11 +200,18 @@ def run_fault_boot(name: str, targets) -> int:
                     os.killpg(proc.pid, signal.SIGKILL)
                     proc.wait(timeout=3)
 
+        # Kept whichever way the scenario went, because the console is the
+        # evidence and this gate used to keep none.
+        output = "".join(seen)
+        log = BUILD / f"qemu-fault-matrix-{ARCH}-{name}.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(output, encoding="utf-8", errors="replace")
+
         if passed:
-            print(f"\nqemu-fault-matrix: {name} fault path passed")
+            print(f"\nqemu-fault-matrix: {name} fault path passed, console in "
+                  f"{log.relative_to(ROOT)}")
             return 0
 
-        output = "".join(seen)
         if attempt == 0 and "XAIOS loader starting" not in output:
             print(
                 f"\nqemu-fault-matrix: {name} firmware did not reach the "
