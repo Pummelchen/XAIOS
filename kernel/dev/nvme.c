@@ -877,6 +877,19 @@ static xaios_status_t register_block_device(nvme_controller_t *controller) {
                                     &k_nvme_async_ops);
 }
 
+/* How much room the stress phase had, not only whether it ran out.
+ *
+ * A timeout here is one of the two ways this self-test can fail, and catching
+ * the failure itself takes about one starved run in forty-five -- far too rare
+ * to reason from. The margin is measurable on every run: the slowest batch a
+ * healthy boot waits for, against the five seconds it is allowed. If a starved
+ * machine fails by timing out, its margin will be visibly close to the budget
+ * long before it crosses it; if the margin stays in the milliseconds, then a
+ * failure is a completion that was rejected rather than one that never came,
+ * and the two are told apart without waiting for the event (B-100). */
+static uint64_t g_nvme_slowest_batch_ns;
+static uint64_t g_nvme_batches_waited;
+
 static xaios_status_t wait_batch(nvme_controller_t *controller,
                                  xaios_block_async_request_t *requests,
                                  uint32_t count) {
@@ -886,7 +899,14 @@ static xaios_status_t wait_batch(nvme_controller_t *controller,
     for (uint32_t index = 0U; index < count; ++index) {
       if (requests[index].state == XAIOS_BLOCK_ASYNC_COMPLETE) ++done;
     }
-    if (done == count) return XAIOS_OK;
+    if (done == count) {
+      uint64_t elapsed = timer_now_ns() - started;
+      if (elapsed > g_nvme_slowest_batch_ns) {
+        g_nvme_slowest_batch_ns = elapsed;
+      }
+      ++g_nvme_batches_waited;
+      return XAIOS_OK;
+    }
     (void)poll_controller(controller, NVME_QUEUE_DEPTH * NVME_MAX_IO_QUEUES);
     if (timer_now_ns() - started >= NVME_TIMEOUT_NS) {
       /* The other side, and the one the starved-guest hypothesis predicts.
@@ -918,16 +938,32 @@ static xaios_status_t stress_io(nvme_controller_t *controller,
           (uint64_t)queue * NVME_MAX_TRANSFER_BYTES;
       requests[queue].buffer = buffers[queue];
       requests[queue].length = NVME_MAX_TRANSFER_BYTES;
-      if (submit_io(controller, queue, &requests[queue], round & 1U) !=
-          XAIOS_OK) {
+      xaios_status_t submitted =
+          submit_io(controller, queue, &requests[queue], round & 1U);
+      if (submitted != XAIOS_OK) {
+        /* Named, like every other way this phase can fail. `stress_io` used to
+           return XAIOS_ERR_IO from six places without saying which, so a
+           failure was attributed to whichever one the reader had in mind --
+           and this one is not even a timing path: it is the queue refusing a
+           request, which happens when the slot ring is full or the request is
+           malformed (B-100). */
+        klog("nvme: stress write submit failed round=%u queue=%u status=%d\n",
+             (unsigned)round, (unsigned)queue, (int)submitted);
         return XAIOS_ERR_IO;
       }
     }
     if (wait_batch(controller, requests, controller->io_queue_count) !=
-        XAIOS_OK) return XAIOS_ERR_IO;
+        XAIOS_OK) {
+      klog("nvme: stress write wait failed round=%u\n", (unsigned)round);
+      return XAIOS_ERR_IO;
+    }
   }
-  if (synchronous_io(controller, XAIOS_BLOCK_ASYNC_FLUSH, 0U, 0, 0U) !=
-      XAIOS_OK) return XAIOS_ERR_IO;
+  xaios_status_t flushed = synchronous_io(controller, XAIOS_BLOCK_ASYNC_FLUSH,
+                                          0U, 0, 0U);
+  if (flushed != XAIOS_OK) {
+    klog("nvme: stress flush failed status=%d\n", (int)flushed);
+    return XAIOS_ERR_IO;
+  }
 
   bytes_zero(requests, sizeof(requests));
   for (uint32_t queue = 0U; queue < controller->io_queue_count; ++queue) {
@@ -937,17 +973,33 @@ static xaios_status_t stress_io(nvme_controller_t *controller,
     requests[queue].byte_offset = (uint64_t)queue * NVME_MAX_TRANSFER_BYTES;
     requests[queue].buffer = buffers[queue];
     requests[queue].length = NVME_MAX_TRANSFER_BYTES;
-    if (submit_io(controller, queue, &requests[queue], queue & 1U) != XAIOS_OK) {
+    xaios_status_t submitted =
+        submit_io(controller, queue, &requests[queue], queue & 1U);
+    if (submitted != XAIOS_OK) {
+      klog("nvme: stress read submit failed queue=%u status=%d\n",
+           (unsigned)queue, (int)submitted);
       return XAIOS_ERR_IO;
     }
   }
   if (wait_batch(controller, requests, controller->io_queue_count) != XAIOS_OK) {
+    klog("nvme: stress read wait failed\n");
     return XAIOS_ERR_IO;
   }
   for (uint32_t queue = 0U; queue < controller->io_queue_count; ++queue) {
     for (uint32_t byte = 0U; byte < NVME_MAX_TRANSFER_BYTES; ++byte) {
       if (buffers[queue][byte] !=
           (uint8_t)(byte ^ UINT32_C(0xa5) ^ (queue << 4U))) {
+        /* Not a timing path at all, and the one cause of a `stress-io` failure
+           that means the data did not survive the round trip. It used to
+           return XAIOS_ERR_IO like the other five, which is why B-100 could
+           describe this phase as having two ways to fail. The offset is named
+           because where it diverges says whether the transfer was truncated,
+           landed in the wrong place, or came back stale. */
+        klog("nvme: stress verify failed queue=%u offset=%lu expected=0x%02x "
+             "read=0x%02x\n",
+             (unsigned)queue, (unsigned long)byte,
+             (unsigned)(uint8_t)(byte ^ UINT32_C(0xa5) ^ (queue << 4U)),
+             (unsigned)buffers[queue][byte]);
         return XAIOS_ERR_IO;
       }
     }
@@ -1056,10 +1108,22 @@ xaios_status_t nvme_self_test(xaios_nvme_self_test_result_t *result) {
         (uint8_t *)kheap_calloc(NVME_MAX_TRANSFER_BYTES, NVME_PAGE_SIZE);
     if (buffers[queue] == 0) return XAIOS_ERR_NO_MEMORY;
   }
+  g_nvme_slowest_batch_ns = 0U;
+  g_nvme_batches_waited = 0U;
   if (stress_io(controller, buffers) != XAIOS_OK) {
-    klog("nvme: self-test failed step=stress-io\n");
+    klog("nvme: self-test failed step=stress-io slowest=%lu ns of %lu budget "
+         "batches=%lu\n",
+         (unsigned long)g_nvme_slowest_batch_ns,
+         (unsigned long)NVME_TIMEOUT_NS,
+         (unsigned long)g_nvme_batches_waited);
     return XAIOS_ERR_IO;
   }
+  /* Said on every boot, so that a starved one can be read against a healthy
+     one. See the note above g_nvme_slowest_batch_ns. */
+  klog("nvme: self-test stress waits slowest=%lu ns of %lu budget batches=%lu\n",
+       (unsigned long)g_nvme_slowest_batch_ns,
+       (unsigned long)NVME_TIMEOUT_NS,
+       (unsigned long)g_nvme_batches_waited);
   controller->interrupt_test_buffer = buffers[0];
   g_nvme_controller = controller;
 
