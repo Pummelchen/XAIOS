@@ -38,6 +38,11 @@ MARKERS = [
     "nvme: controller ready version=",
     "nvme: identify controller serial='XAIOSNVME",
     "nvme: async self-test passed namespaces=1",
+    # The margin the stress phase measured for the waits it can time out in.
+    # Required rather than merely printed: a margin that stops being reported
+    # takes the only evidence there is about B-100 with it, and nothing else
+    # fails when that happens.
+    "nvme: self-test stress waits slowest=",
 ]
 
 # What each machine is held to beyond the shared markers: how many IO queues
@@ -85,6 +90,15 @@ RESULT_PATTERN = re.compile(
     r"cancelled=(?P<cancelled>\d+) sgl=(?P<sgl>\d+) "
     r"direct=(?P<direct>\d+) malformed=(?P<malformed>\d+) "
     r"affinity=cpu msix=(?P<msix>\d+)"
+)
+
+# The stress phase's waits, as the driver reports them on every boot: the
+# slowest wait of each kind against the budget it is allowed, and how many of
+# each kind were waited for.
+WAIT_PATTERN = re.compile(
+    r"slowest=(?P<slowest_ns>\d+) ns of (?P<budget_ns>\d+) budget "
+    r"batches=(?P<batches>\d+) batch_slowest=(?P<batch_slowest_ns>\d+) ns "
+    r"singles=(?P<singles>\d+) single_slowest=(?P<single_slowest_ns>\d+) ns"
 )
 
 
@@ -235,6 +249,25 @@ def run_architecture(row: str) -> dict[str, object]:
         if match is not None
         else {}
     )
+    wait_match = WAIT_PATTERN.search(output)
+    wait_margins = (
+        {key: int(value) for key, value in wait_match.groupdict().items()}
+        if wait_match is not None
+        else {}
+    )
+    # What the margin is: a measurement, not a bound. On a shared host the
+    # spread between runs belongs to the host, so asserting headroom here would
+    # turn a loaded machine into a failed gate -- which is the shape of the
+    # defect the margin exists to explain, not a check on it. What is asserted
+    # is coverage: the batched wait and both single-request waits must have been
+    # measured, the budget must still be the one the driver times out against,
+    # and the numbers must have come from a line the driver actually printed.
+    wait_coverage_verified = bool(
+        wait_margins
+        and wait_margins["batches"] >= 1
+        and wait_margins["singles"] >= 2
+        and wait_margins["budget_ns"] == 5_000_000_000
+    )
     with image.open("rb") as stream:
         first_transfer = stream.read(16384)
     expected = bytes((index ^ 0xA5) & 0xFF for index in range(16384))
@@ -249,7 +282,13 @@ def run_architecture(row: str) -> dict[str, object]:
         and metrics["malformed"] >= 4
         and metrics["msix"] == profile["msix"]
     )
-    passed = not missing and not forbidden and host_verified and behavior_verified
+    passed = (
+        not missing
+        and not forbidden
+        and host_verified
+        and behavior_verified
+        and wait_coverage_verified
+    )
     return {
         "status": "pass" if passed else "fail",
         "controller": "QEMU NVMe",
@@ -260,6 +299,8 @@ def run_architecture(row: str) -> dict[str, object]:
         "guest_write_read_flush": not missing and not forbidden,
         "host_backing_image_verified": host_verified,
         "async_behavior_verified": behavior_verified,
+        "wait_coverage_verified": wait_coverage_verified,
+        "wait_margins": wait_margins,
         "msix_delivery_verified": not any(
             "MSI-X interrupt self-test" in marker for marker in missing
         ),
@@ -285,7 +326,7 @@ def main() -> int:
     REPORT.write_text(
         json.dumps(
             {
-                "schema": "xaios.qemu.nvme.v4",
+                "schema": "xaios.qemu.nvme.v5",
                 "status": "pass" if passed else "fail",
                 "qemu_correctness_only": True,
                 "requested_architectures": list(architectures),
