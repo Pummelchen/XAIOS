@@ -186,6 +186,20 @@ requires the harts that come online plus the ones firmware kept to equal the
 capacity, because which hart EDK2 keeps is not the same on two consecutive
 boots.
 
+**One of them is not green, and this page says so rather than listing it as
+though it were.** `qemu-riscv64-installed-disk-gate` could not run at all until
+this session: it died at import on a profile key its architecture never had, and
+with that fixed it turned out not to build the loader its own disk needs
+(`B-103`). Repaired, it exposed a real failure on the first boot of an installed
+disk -- the C99 thread test's five-second join runs out and the kernel panics
+(`B-104`). That one is recorded as **inconclusive**, not fixed: the workers were
+still running when the budget expired, so the reading may be that five seconds
+is too small for an emulated RISC-V machine, or it may be that a thread is
+genuinely stuck, and one run with a larger budget tells the two apart. It is
+deliberately not in CI yet, because a job added while it fails would be red on
+every run. The AArch64 and x86-64 variants are green, and the x86-64 one now has
+a job.
+
 The xaiFS and parallel-network gates require macOS plus Docker because they
 run native macOS and Debian 13 clients against one guest. The focused high-core
 gate validates runtime-sized SMP/NUMA metadata; it is not a scalability test.

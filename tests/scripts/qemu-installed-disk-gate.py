@@ -76,9 +76,13 @@ ARCHITECTURES = {
                 "virtio-net-device,netdev=net0,bus=virtio-mmio-bus.2"],
         "virtio_mmio": ["-global", "virtio-mmio.force-legacy=false"],
         "esp_bytes_digits": 8,
+        # The blank disk the running system installs onto, on the storage
+        # administration window the boot path opens rather than on a device it
+        # looks up itself: MMIO bus 5 here, which is the window the kernel names
+        # /dev/vblk5. Which physical disk that window is differs by transport;
+        # what the window is called does not.
         "target_device": ["virtio-blk-device,drive=xaios_target,"
                           "bus=virtio-mmio-bus.5"],
-        "target_volume": "/dev/vblk5",
     },
     "x86_64": {
         "qemu": "qemu-system-x86_64",
@@ -111,7 +115,6 @@ ARCHITECTURES = {
         "virtio_mmio": [],
         "target_device": ["virtio-blk-pci,drive=xaios_target,"
                           "disable-legacy=on"],
-        "target_volume": "/dev/vblk1",
         # Seven digits, not eight. The AArch64 image carries the GRUB
         # chainloader Fusion's firmware needs and this one does not, so its ESP
         # is about 9.6 MB against AArch64's ten-plus -- a smaller number for a
@@ -120,18 +123,23 @@ ARCHITECTURES = {
         "esp_bytes_digits": 7,
         # Named rather than passed over. Booting an installed disk is proven on
         # this architecture; the phase after it -- a running machine installing
-        # onto a blank disk -- is not, and the reason is specific: the storage
-        # administration window is device 5 on the MMIO boards and this machine
-        # enumerates disks through PCI, where the second disk does not appear as
-        # a block device for the installer to find. A skip that says why is a
-        # result; a phase that silently does not run is not.
+        # onto a blank disk -- is not. The cause is in the kernel and it is not
+        # that the window has no PCI equivalent: the storage administration
+        # window is opened as logical slot 5, and the PCI transport does have a
+        # mapping for it, but that map encodes one test bench's disk order, in
+        # which window 5 is the fifth block device on the bus. This machine
+        # presents two. A skip that says why is a result; a phase that silently
+        # does not run is not.
         "install_phase_skip": (
-            "the storage-administration window is opened by MMIO bus slot "
-            "(kmain.c opens the scratch disk with virtio_block_open_slot(5U)) "
-            "and this machine has no such slot, so the disk attached here is "
-            "on the bus and never opened: the boot log says 'no pci device of "
-            "type 2 at ordinal N; 2 present'. The installed-disk boots above "
-            "are the evidence this row gives"
+            "the storage-administration window is opened as logical slot 5 "
+            "(kmain.c calls virtio_block_open_slot(5U)), and on PCI that slot is "
+            "carried to an enumeration ordinal by matching_ordinal_for_slot, "
+            "which maps it to ordinal 4 because the window is the fifth block "
+            "device in the order the QEMU test bench attaches its disks "
+            "(virtio_transport_pci.c). An installed machine has two disks, so "
+            "there is no fifth to find and the guest says so: 'no pci device of "
+            "type 2 at ordinal 4; 2 present'. The installed-disk boots above are "
+            "the evidence this row gives"
         ),
     },
     "riscv64": {
@@ -148,7 +156,16 @@ ARCHITECTURES = {
         # later run on this host.
         "firmware_vars": qemu_gate_lib.RISCV_FIRMWARE_VARS,
         "build": [["./scripts/build-riscv64.sh"],
-                  ["./scripts/build-riscv64-image.sh"]],
+                  ["./scripts/build-riscv64-image.sh"],
+                  # The loader, which is a third script here and not part of
+                  # either of the other two: build-riscv64-image.sh builds no
+                  # UEFI loader on purpose -- this board's smoke path hands QEMU
+                  # a kernel directly -- and an installed disk is booted through
+                  # firmware, so it needs BOOTRISCV64.EFI on its ESP. Without
+                  # this step the disk builder refuses to run for want of a
+                  # loader, which is what used to happen: the gate never reached
+                  # a single boot.
+                  ["./scripts/build-riscv64-boot-media.sh"]],
         "slot": r"\d+",
         # Every hart the firmware let go of, and no more.
         #
@@ -171,17 +188,75 @@ ARCHITECTURES = {
         "virtio_mmio": [],
         "target_device": ["virtio-blk-pci,drive=xaios_target,"
                           "disable-legacy=on"],
-        "target_volume": "/dev/vblk1",
+        # Eight digits, and measured rather than matched to another
+        # architecture. The first draft of this profile copied x86-64's seven,
+        # which is a *weaker* floor than AArch64's eight and would have let a
+        # smaller ESP through while looking like a considered choice. The guest
+        # reports the real figure on this boot: `files=5 bytes=16894192` -- 16.9
+        # MB, which is eight digits, because this architecture's ESP carries the
+        # loader and its payload the same way AArch64's does.
+        "esp_bytes_digits": 8,
+        # The same skip as x86-64 and for the same reason, because this machine
+        # is in the same position: the target disk here is a PCI function, and
+        # the window the boot path opens is logical slot 5, which the PCI
+        # transport carries to enumeration ordinal 4. The guest says so:
+        # 'no pci device of type 2 at ordinal 4; 1 present', then
+        # 'storage-admin: scratch device unavailable status=-3'. Written out
+        # rather than inherited, because a skip copied from another
+        # architecture without its own evidence is a claim nobody checked.
+        "install_phase_skip": (
+            "the storage-administration window is opened as logical slot 5 "
+            "(kmain.c calls virtio_block_open_slot(5U)), which the PCI transport "
+            "carries to ordinal 4 through matching_ordinal_for_slot -- the fifth "
+            "block device in the order the QEMU test bench attaches its disks "
+            "(virtio_transport_pci.c). This machine presents one, so the guest "
+            "reports 'no pci device of type 2 at ordinal 4; 1 present' and "
+            "'storage-admin: scratch device unavailable status=-3'. The disk "
+            "attached here is a PCI function and is never opened. The "
+            "installed-disk boots above are the evidence this row gives"
+        ),
     },
 }
+# Every key this file reads without a default, checked against all three
+# profiles rather than only the one being run. A profile that omits one used to
+# die with a bare KeyError at import, and only the AArch64 gate ran anywhere, so
+# the RISC-V profile missing `esp_bytes_digits` stayed invisible until someone
+# ran the RISC-V gate -- which then did not run at all.
+REQUIRED_PROFILE_KEYS = ("qemu", "machine", "firmware_code", "firmware_vars",
+                         "build", "slot", "cpus", "net", "virtio_mmio",
+                         "esp_bytes_digits", "target_device")
+for _arch, _profile in ARCHITECTURES.items():
+    _missing = [key for key in REQUIRED_PROFILE_KEYS if key not in _profile]
+    if _missing:
+        raise SystemExit(f"installed-disk-gate: the {_arch} profile is missing "
+                         f"{', '.join(_missing)}")
+
 PROFILE = ARCHITECTURES[ARCH]
 FIRMWARE_CANDIDATES = PROFILE["firmware_code"]
 SLOT = PROFILE["slot"]
-# The blank disk the running machine installs onto, and its volume name. It is
-# the storage-administration window the boot path attaches, which is device 5 on
-# the MMIO boards and enumerated through PCI on x86-64, so the name differs by
-# architecture and is named rather than assumed.
-TARGET_VOLUME = PROFILE["target_volume"]
+
+
+def kernel_install_target() -> str:
+    """The volume the running system installs onto, read from the kernel.
+
+    Not a per-architecture fact, and it must never be guessed per architecture.
+    The boot path names its install target with one unconditional constant --
+    `XAIOS_INSTALL_TARGET` in kernel/core/kmain.c -- and prints that same string
+    in the markers this gate asserts, so a per-architecture copy here can only
+    be a second guess at it. It was one, and a wrong one: the RISC-V and x86-64
+    profiles named /dev/vblk1 while the kernel prints /dev/vblk5, which made
+    both of those expectations impossible to satisfy. Reading it instead of
+    restating it means the two cannot drift apart again.
+    """
+    source = (ROOT / "kernel" / "core" / "kmain.c").read_text()
+    match = re.search(r'#define\s+XAIOS_INSTALL_TARGET\s+"([^"]+)"', source)
+    if match is None:
+        raise SystemExit("installed-disk-gate: kernel/core/kmain.c no longer "
+                         "defines XAIOS_INSTALL_TARGET")
+    return match.group(1)
+
+
+TARGET_VOLUME = kernel_install_target()
 ESP_BYTES_DIGITS = PROFILE["esp_bytes_digits"]
 
 CAPACITY = re.compile(r"smp: riscv64 boot hart=\d+ harts=\d+ capacity=(\d+)")

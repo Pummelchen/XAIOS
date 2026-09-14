@@ -53,6 +53,24 @@ kernel-context interrupts needs to know that this port has no tick to attach to,
 and because a reader comparing the three architectures would otherwise conclude
 the shared scheduler means the same thing on all of them.
 
+**A RISC-V machine XAIOS has been installed onto does not currently complete its
+first boot, and the cause is not yet pinned to the gap above.** The installed-disk
+gate for this architecture had never run -- it could not build its own disk
+(`B-103`) -- and once it could, the first boot of the installed disk died at
+`/bin/c99-thread-context`, a libc test whose three threads write to one shared
+stream and whose join allows five seconds. The kernel reported a timeout with the
+target thread still `running`, and the console held about four fifths of the
+test's work when the budget expired, so the two readings are that five seconds is
+too little for this emulated machine or that a thread is genuinely stuck. The
+verdict is recorded as **inconclusive** rather than passed (`B-104`), and the
+experiment that separates the readings is one run with a larger join budget.
+Nothing has been changed to hide it: the gate fails, and no CI job runs it. Since
+the same binary passes on the RISC-V smoke, this is specific to an installed
+disk rather than to the port as a whole, and the absence of preemption above --
+threads that share a hart run only where they yield -- is one of the things the
+separating run will rule in or out rather than an explanation this page settles
+on.
+
 ## Platform and hardware
 
 - AArch64 QEMU provides the broadest complete OS-service path. QEMU validates

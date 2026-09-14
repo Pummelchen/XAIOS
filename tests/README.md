@@ -53,7 +53,7 @@ Docker build inputs, and test-image inputs outside `tests/`. It runs through
 | Intel VPS QEMU x86_64 profile evidence | `XAIOS_FIRMWARE_PROFILE_HOST_CLASS=intel-vps XAIOS_OVMF_CODE=/absolute/path/to/OVMF_CODE.fd make firmware-profile-intel-vps-qemu-x86_64` |
 | Production-source audit | `make production-source-audit` |
 | ABI contract | `make qemu-abi-contract` |
-| Installed disk, one drive, nothing attached (AArch64 / x86-64 / RISC-V) | `make qemu-installed-disk-gate`, `-x86_64-`, `-riscv64-` |
+| Installed disk, one drive, nothing attached (AArch64 and x86-64 green; RISC-V runs but fails its first boot, `B-104`) | `make qemu-installed-disk-gate`, `-x86_64-`, `-riscv64-` |
 | Primary AArch64 smoke | `make qemu-smoke` |
 | x86_64 full-service smoke | `make qemu-x86_64-smoke` |
 | USB HID local-console login on ARM64 and x86_64 QEMU | `make qemu-keyboard-input-gate` |

@@ -434,6 +434,28 @@ jobs:
           XAIOS_QEMU_X86_CPU: Skylake-Server
           XAIOS_QEMU_X86_SMOKE_TIMEOUT: "120"
 
+      # The install path on this architecture: a running machine writes a
+      # bootable disk, and that disk is booted on its own with nothing else
+      # attached. Only the AArch64 job ran it before, so the x86_64 and RISC-V
+      # profiles of the same gate were exercised nowhere -- and the RISC-V one
+      # was in fact broken, unnoticed, because no build ever ran it.
+      - name: Installed disk boot and self-install
+        run: make qemu-x86_64-installed-disk-gate
+        env:
+          XAIOS_INSTALLED_DISK_TIMEOUT: "300"
+
+      - name: Upload x86_64 installed-disk logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: x86_64-installed-disk-logs
+          path: |
+            build/installed-disk-boot*-x86_64.log
+            build/install-run-x86_64.log
+            build/installed-by-xaios-x86_64.log
+            build/qemu-installed-disk-gate-x86_64.json
+          if-no-files-found: ignore
+
       - name: Upload x86_64 artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -486,6 +508,21 @@ jobs:
         run: make qemu-riscv64-release-gate
         env:
           XAIOS_QEMU_SMOKE_TIMEOUT: "600"
+
+      # One disk, a GPT, an ESP and a state partition found by type, booted
+      # twice: the same property the AArch64 installed-disk job tests, on the
+      # architecture where nothing tested it.
+      #
+      # NOT added yet, and the reason is recorded rather than left as an
+      # absence: the gate runs now, and its first boot of an installed disk
+      # fails on this architecture (`B-104`). A step added here would be red on
+      # every run until that is closed, which is not the same thing as a job
+      # that reports a real failure once. What the AArch64 `installed-disk` job
+      # does already cover is the class of defect that let this architecture rot
+      # unnoticed: the gate validates every profile's required keys on every
+      # invocation, so a profile missing one fails that job by name (control run:
+      # deleting the riscv64 key fails the AArch64 run with
+      # "the riscv64 profile is missing esp_bytes_digits").
 
       # Ubuntu 24.04 ships QEMU 8.2.2, which models five of the twelve CPU
       # tiers the contract lists. The other seven postdate it and nothing

@@ -43,6 +43,9 @@ case "$ARCH" in
     KERNEL="$BUILD_DIR/kernel/kernel.elf"
     INITFS="$BUILD_DIR/xaios-virtio-test.img"
     BUILDER="./scripts/build-image.sh"
+    # All three artifacts come from the one script on these two architectures.
+    LOADER_BUILDER="./scripts/build-image.sh"
+    KERNEL_BUILDER="./scripts/build-image.sh"
     OUTPUT_DEFAULT="$BUILD_DIR/installed-disk.img"
     ;;
   riscv64)
@@ -51,6 +54,14 @@ case "$ARCH" in
     KERNEL="$BUILD_DIR/kernel-riscv64/kernel.elf"
     INITFS="$BUILD_DIR/xaios-riscv64-initfs.img"
     BUILDER="./scripts/build-riscv64-image.sh"
+    # Neither of the other two artifacts comes from that script. The image
+    # builder here builds userspace and nothing else -- this board's smoke path
+    # hands QEMU a kernel directly, so it has no loader to build -- and the
+    # kernel comes from the compiler driver script. Naming one script for all
+    # three sent a reader to a script that could not produce the file that was
+    # missing, which is exactly the message this file used to print.
+    LOADER_BUILDER="./scripts/build-riscv64-boot-media.sh"
+    KERNEL_BUILDER="./scripts/build-riscv64.sh"
     OUTPUT_DEFAULT="$BUILD_DIR/installed-disk-riscv64.img"
     ;;
   x86_64)
@@ -63,6 +74,8 @@ case "$ARCH" in
     KERNEL="$BUILD_DIR/kernel-x86_64/kernel.elf"
     INITFS="$BUILD_DIR/xaios-x86-virtio-test.img"
     BUILDER="./scripts/build-image.sh"
+    LOADER_BUILDER="./scripts/build-image.sh"
+    KERNEL_BUILDER="./scripts/build-image.sh"
     OUTPUT_DEFAULT="$BUILD_DIR/installed-disk-x86_64.img"
     ;;
   *)
@@ -87,9 +100,21 @@ for tool in mformat mmd mcopy; do
   }
 done
 
+# Which script builds the file that is missing, per artifact rather than one
+# answer for all three: an architecture whose artifacts come from three scripts
+# would otherwise be told to run whichever one happens to be listed, and on
+# RISC-V that was neither the loader's builder nor the kernel's.
+builder_for() {
+  case "$1" in
+    "$LOADER") printf '%s' "$LOADER_BUILDER" ;;
+    "$KERNEL") printf '%s' "$KERNEL_BUILDER" ;;
+    *) printf '%s' "$BUILDER" ;;
+  esac
+}
+
 for required in "$LOADER" "$KERNEL" "$INITFS"; do
   [ -f "$required" ] || {
-    printf 'missing: %s\nrun %s first\n' "$required" "$BUILDER" >&2
+    printf 'missing: %s\nrun %s first\n' "$required" "$(builder_for "$required")" >&2
     exit 1
   }
 done
