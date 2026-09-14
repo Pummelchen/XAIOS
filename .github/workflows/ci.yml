@@ -271,6 +271,13 @@ jobs:
 
       - name: QEMU smoke test
         run: python3 tests/scripts/qemu-smoke.py
+
+      # The update path: two transactions staged, one committed, one failed and
+      # recovered, a rollback, and a boot fallback -- asked of this machine the
+      # same way it is asked of the other two. Nothing ran it in CI before, so
+      # "it updates itself" was evidenced by a gate no job invoked (B-112).
+      - name: Update transactions, rollback and boot fallback
+        run: make qemu-update-gate
         env:
           XAIOS_QEMU_SMOKE_TIMEOUT: "120"
 
@@ -293,6 +300,8 @@ jobs:
             build/*.img
             build/kernel/kernel.elf
             build/uefi/BOOTAA64.EFI
+            build/qemu-milestone-68-update-gate.json
+            build/qemu-smoke.log
           retention-days: 7
 
   storage-crash-safety:
@@ -444,6 +453,9 @@ jobs:
         env:
           XAIOS_INSTALLED_DISK_TIMEOUT: "300"
 
+      - name: Update transactions, rollback and boot fallback
+        run: make qemu-x86_64-update-gate
+
       - name: Upload x86_64 installed-disk logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -454,6 +466,8 @@ jobs:
             build/install-run-x86_64.log
             build/installed-by-xaios-x86_64.log
             build/qemu-installed-disk-gate-x86_64.json
+            build/qemu-milestone-68-update-gate.json
+            build/qemu-smoke-x86_64.log
           if-no-files-found: ignore
 
       - name: Upload x86_64 artifacts
@@ -497,6 +511,11 @@ jobs:
       # smoke here as well.
       - name: Run RISC-V smoke
         run: make qemu-riscv64-smoke
+        env:
+          XAIOS_QEMU_SMOKE_TIMEOUT: "600"
+
+      - name: Update transactions, rollback and boot fallback
+        run: make qemu-riscv64-update-gate
         env:
           XAIOS_QEMU_SMOKE_TIMEOUT: "600"
 
@@ -562,6 +581,8 @@ jobs:
             build/kernel-riscv64/kernel.elf
             build/qemu-cpu-matrix-report.json
             build/cpu-matrix-riscv64/*/console.log
+            build/qemu-milestone-68-update-gate.json
+            build/qemu-smoke-riscv64.log
           if-no-files-found: ignore
           retention-days: 7
 
