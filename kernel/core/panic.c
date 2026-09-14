@@ -542,6 +542,22 @@ static void render_recent_log(void) {
 }
 
 static void render_halt(void) {
+  /* Said rather than left out: the dump above is complete, but the machine's
+     other harts were told to stop printing while it ran, and a reader comparing
+     this console against one from a healthy boot needs to know that. */
+  uint64_t dropped = klog_console_panic_dropped();
+  if (dropped != 0U) {
+    panic_puts("  console claimed: ");
+    panic_u32((unsigned)dropped);
+    panic_puts(" log writes from other harts suppressed\r\n");
+  }
+  uint64_t other = klog_console_panic_other();
+  if (other != 0U) {
+    panic_puts("  console claimed: ");
+    panic_u32((unsigned)other);
+    panic_puts(" further harts panicked while this dump ran and were not "
+               "printed\r\n");
+  }
   panic_puts("  System halted. Manual reset required.\r\n");
   panic_puts("  =====================================================\r\n");
   /* Reset ANSI colors */
@@ -556,7 +572,30 @@ void panic_at(const char *file, int line, const char *fmt, ...) {
   __asm__ volatile("msr daifset, #0xf" ::: "memory");
 #elif defined(__x86_64__)
   __asm__ volatile("cli" ::: "memory");
+#elif defined(__riscv)
+  /* This branch was missing, so a RISC-V panic kept taking interrupts while it
+     dumped -- every other port stops them here. Clearing SIE covers the timer,
+     an IPI and an external interrupt at once. */
+  __asm__ volatile("csrci sstatus, 2" ::: "memory");
 #endif
+
+  /* Claim the console before the first character goes out.
+   *
+   * The dump below writes around the log lock on purpose, and every other hart
+   * writes through it, so without this the two streams interleave a byte at a
+   * time and the dump arrives unreadable -- which is what happened to the first
+   * RISC-V panic taken from a running system, where `System halted` came out
+   * inside a `user: rejected syscall=11` line. Output the other harts ask for
+   * is dropped from here on, and the dump says how much. */
+  /* One dump per console. A hart that panics while another dump is already
+     running does not print: two dumps on one console interleave a character at
+     a time and neither can be read, which is what happened on the first
+     RISC-V boot failure where two CPUs took a controlled page fault together
+     (B-110). Its death is counted and the running dump reports it, so it is
+     deferred rather than hidden. */
+  if (klog_console_panic_claim() == 0) {
+    for (;;) xaios_cpu_wait();
+  }
 
   /* Boot progress intentionally suppresses ordinary logs. Fatal diagnostics
    * must always reach the console, including before userspace is available. */

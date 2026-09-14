@@ -50,6 +50,19 @@ void klog_write(const char *message, uint64_t length);
 void klog_write_atomic(const char *message, uint64_t length);
 void klog_console_set_log_output(uint32_t enabled);
 void klog_console_write(const char *message, uint64_t length);
+/* Claim the console for a panic, and report what that cost.
+ *
+ * The panic path writes around the console lock on purpose -- it cannot take a
+ * lock a dying machine may already hold -- so the ordinary paths have to stand
+ * aside or the two streams interleave byte for byte. `claim` returns 1 to the
+ * one hart that got the console and 0 to any hart that panics while a dump is
+ * already running; that hart must not print, because two dumps on one console
+ * are two unreadable dumps. `dropped` counts the ordinary writes the claim
+ * suppressed, `other` the panics that arrived second -- both are reported in
+ * the dump, so nothing is dropped silently. See the definitions. */
+int klog_console_panic_claim(void);
+uint64_t klog_console_panic_dropped(void);
+uint64_t klog_console_panic_other(void);
 int klog_console_capture_begin(char *buffer, uint64_t capacity);
 uint64_t klog_console_capture_end(void);
 int klog_console_read_char(uint8_t *value);

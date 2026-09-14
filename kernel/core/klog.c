@@ -52,6 +52,19 @@ static uint32_t g_uart_reg_shift;
 #endif
 static xaios_spinlock_t g_klog_lock;
 static uint32_t g_log_output_enabled = 1U;
+/* Set by the hart that is panicking; see klog_console_panic_claim below.
+   Plain integers touched only through the atomics, because several harts
+   reach them at once and the numbers are reported. */
+static uint32_t g_panic_active;
+static uint64_t g_panic_dropped;
+static uint64_t g_panic_other;
+
+/* One place that says "the console is not ours right now". */
+static int klog_suppressed_by_panic(void) {
+  if (__atomic_load_n(&g_panic_active, __ATOMIC_ACQUIRE) == 0U) return 0;
+  (void)__atomic_add_fetch(&g_panic_dropped, 1U, __ATOMIC_RELAXED);
+  return 1;
+}
 static xaios_console_capture_t
     g_console_captures[XAIOS_CONSOLE_CAPTURE_DEPTH];
 static uint32_t g_console_capture_depth;
@@ -180,8 +193,45 @@ void klog_console_set_log_output(uint32_t enabled) {
   g_log_output_enabled = enabled != 0U ? 1U : 0U;
 }
 
+/* Set once, by the hart that is panicking, and never cleared.
+ *
+ * The panic path writes around `g_klog_lock` deliberately: it cannot take a
+ * lock a dying machine may already hold, and a panic that deadlocks on its own
+ * console is worse than one that prints in a strange order. What that cost was
+ * legibility. Every other hart kept logging through the locked paths, and the
+ * two streams interleaved byte for byte -- so a panic dump arrived shredded
+ * through the middle of other lines, and `System halted` came out inside a
+ * `user: rejected syscall=11` line.
+ *
+ * That is not a cosmetic complaint about one boot. The panic dump is the only
+ * evidence a halted machine leaves, and on the first RISC-V boot failure that
+ * got far enough to panic from a running system, the cause was not readable at
+ * all. So the panicking hart claims the console, the ordinary paths drop what
+ * they were asked to print, and the dump reports how much it dropped -- the
+ * suppression is disclosed rather than silent. */
+int klog_console_panic_claim(void) {
+  uint32_t expected = 0U;
+  if (__atomic_compare_exchange_n(&g_panic_active, &expected, 1U, 0,
+                                  __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+    return 1;
+  }
+  /* Someone else already owns the console. The count is kept so the winning
+     dump can say so; see the header. */
+  (void)__atomic_add_fetch(&g_panic_other, 1U, __ATOMIC_RELAXED);
+  return 0;
+}
+
+uint64_t klog_console_panic_dropped(void) {
+  return __atomic_load_n(&g_panic_dropped, __ATOMIC_RELAXED);
+}
+
+uint64_t klog_console_panic_other(void) {
+  return __atomic_load_n(&g_panic_other, __ATOMIC_RELAXED);
+}
+
 void klog_console_write(const char *message, uint64_t length) {
   if (message == 0 || length == 0U) return;
+  if (klog_suppressed_by_panic()) return;
   xaios_spin_lock(&g_klog_lock);
   /* Console output produced while a session is capturing belongs to that
      session: the capturing caller relays it to its own terminal exactly once.
@@ -307,6 +357,7 @@ void klog_write(const char *message, uint64_t length) {
 
 void klog_write_atomic(const char *message, uint64_t length) {
   if (message == 0 || length == 0U) return;
+  if (klog_suppressed_by_panic()) return;
   xaios_spin_lock(&g_klog_lock);
   klog_write(message, length);
   klog_line_flush();
@@ -420,6 +471,7 @@ static void klog_vformat(const char *fmt, va_list args) {
 }
 
 void klog(const char *fmt, ...) {
+  if (klog_suppressed_by_panic()) return;
   if (!xaios_spin_trylock(&g_klog_lock)) {
     return;
   }
@@ -449,6 +501,10 @@ static const char *log_level_str(xaios_log_level_t level) {
 }
 
 void klog_level(xaios_log_level_t level, const char *fmt, ...) {
+  /* Suppressed whole, not just its prefix: klog_level prints its prefix through
+     klog() and its message through klog_vformat directly, so guarding one and
+     not the other would shred the dump with the other half of every line. */
+  if (klog_suppressed_by_panic()) return;
   if (level == XAIOS_LOG_PANIC || level == XAIOS_LOG_ERROR) {
     klog_console_set_log_output(1U);
   }
