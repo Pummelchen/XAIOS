@@ -75,26 +75,36 @@ arrives on is still free to enter that same window -- and the boot's log shows
 IPIs in flight. The earlier form of the same fault, recorded in
 `kernel/arch/riscv64/smp.c`, was a return to program counter zero.
 
-**Masking every interrupt in that window was tried, and it is not the answer.**
-It was written and the gate run twice: the first run booted the installed disk
-completely, and the second **livelocked** -- three hundred kilobytes of console
-and then silence, two harts spinning at full speed, no panic banner, no SSH
-server, nothing to read. That is a worse failure than the fault it replaced, so
-the change was reverted rather than shipped on the strength of the one run that
-passed. What it does establish is that the window is where the fault lives;
-what it does not say is which interrupt was getting in, or what the spinning
-hart was waiting for when everything else was masked.
+**Masking every interrupt in the window was tried and rejected.** It booted the
+installed disk completely once and then **livelocked**, and the reason is now
+understood rather than mysterious: clearing `sstatus.SIE` also masks the
+supervisor *software* interrupt the scheduler uses to move work between harts,
+so a hart that could not be woken spun forever. The mask was reverted.
+
+**What replaced it is narrower and is shipped.** Reading the entry code found a
+real hole: `aarch64_enter_user_thread` parks the thread's kernel stack in
+`sscratch` and then runs for several instructions before the `sret`, while the
+idle loop reaches it with interrupts enabled -- and the trap entry decides
+whether a trap came from user mode by testing `sscratch`, so a trap in that
+window is misread, saves the wrong stack pointer and leaves the kernel's stack
+address behind. Interrupts are now masked across exactly those few instructions,
+with `SPIE` still set so the thread begins with interrupts on, and the trap
+handler panics if an interrupt is ever taken inside that range, so a regression
+of the hole names itself. **That did not fix the fault:** with the window closed
+the installed disk booted completely in one run and in the next died with a
+different signature -- an instruction page fault with a zero stack pointer in
+the frame and the program counter above the kernel image, in heap. The window
+guard did not fire, so the corruption has another source.
 
 Nothing has been changed to hide any of it: the gate fails, and no CI job runs
 it. Both rows are **inconclusive or open rather than passed**, and the boot is
-not claimed to work. The next step is measurement rather than another mask -- a
-panic dump is legible again now that it has an owner (`B-110`), so the fault
-can be read where it prints, and the window can say whether a trap is taken in
-it and of which kind. The two candidate fixes remain a trap entry that can be
-taken while a user thread runs nested in a joiner's syscall --
-`kernel/arch/riscv64/entry.S` calls the full context switch "the scheduler work
-this port has not done" -- and a mask narrow enough not to starve that wait.
-Both touch the scheduling this port already documents as absent above.
+not claimed to work. What has changed is that the evidence is now readable: a
+RISC-V panic prints RISC-V registers and owns the console, so the next fault can
+be read where it prints. The candidates the new signature points at are a frame
+written in the wrong place by a path the guard does not cover, and exhaustion of
+the kernel stack -- the nested user-thread run pushes a trap frame and a stub
+frame below whatever the syscall had already used, and that nesting multiplies
+on a port with no preemption that borrows the CPU to make progress.
 
 ## Platform and hardware
 
