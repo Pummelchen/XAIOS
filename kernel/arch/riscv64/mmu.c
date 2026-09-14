@@ -852,6 +852,31 @@ void vmm_init(const xaios_boot_info_t *boot) {
     }
   }
 
+  /* And the same page under every secondary hart's stack.
+   *
+   * Those stacks had no guard at all, and were a quarter of the size this
+   * kernel had already found too small for its deepest chain (see the note in
+   * kernel/arch/riscv64/smp.c). A hart that is not the boot hart takes its
+   * whole syscall chain on its own stack, so an overflow there did not fault
+   * either -- it wrote into whatever the linker had placed next, which is how
+   * this kernel has lost a per-CPU table before. Unmapping these makes that a
+   * page fault at an address that names itself. */
+  {
+    extern uint8_t *riscv64_secondary_stack_guard(uint32_t cpu);
+    extern uint32_t riscv64_secondary_stack_count(void);
+    uint32_t unmapped = 0U;
+    for (uint32_t cpu = 0U; cpu < riscv64_secondary_stack_count(); ++cpu) {
+      uint64_t guard = (uint64_t)(uintptr_t)riscv64_secondary_stack_guard(cpu);
+      if (guard == 0U) continue;
+      uint64_t *entry = walk(g_kernel_root, guard, 0U, 1);
+      if (entry != 0) {
+        *entry = 0U;
+        ++unmapped;
+      }
+    }
+    klog("vmm: %u secondary stack guard pages left unmapped\n", unmapped);
+  }
+
   /* Ask for Sv48, take Sv39 if that is what the hart has.
    *
    * satp is WARL: a write naming a mode the implementation does not have is

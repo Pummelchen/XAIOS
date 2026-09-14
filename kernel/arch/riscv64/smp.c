@@ -55,7 +55,20 @@ extern char riscv64_secondary_entry[];
 
 #define RISCV64_MAX_HARTS 8U
 #define SECONDARY_READY_TIMEOUT_MS UINT64_C(2000)
-#define SECONDARY_STACK_BYTES 16384U
+/* The same size the boot stack was raised to, for the same reason.
+ *
+ * The boot hart's stack is 256 KiB with a guard page under it, and
+ * kernel/arch/riscv64/linker.ld says why: sixty-four was not enough, because
+ * the deepest chain this kernel takes is storage -- an installer walking a FAT
+ * directory from inside a syscall from inside osctl -- and an overflow there
+ * did not fault, it quietly overwrote the per-CPU current-process table.
+ *
+ * These were 16 KiB, a quarter of the size already proven too small, and with
+ * nothing below them at all. A thread that runs on a hart other than the boot
+ * hart takes its whole syscall chain on this stack, so the same deep chain had
+ * a quarter of the space and no way to say it had run out. */
+#define SECONDARY_STACK_BYTES 262144U
+#define SECONDARY_STACK_GUARD_BYTES 4096U
 
 /* What a starting hart needs before it can execute anything: somewhere to put
    a stack frame and the address space to do it in. Physically addressed,
@@ -94,8 +107,34 @@ static xaios_cpu_state_t g_cpu_states[RISCV64_MAX_HARTS];
 static hart_handoff_t g_handoff[RISCV64_MAX_HARTS];
 static uint32_t g_hart_present[RISCV64_MAX_HARTS];
 static int64_t g_hart_status[RISCV64_MAX_HARTS];
-static uint8_t g_secondary_stacks[RISCV64_MAX_HARTS][SECONDARY_STACK_BYTES]
-    __attribute__((aligned(16)));
+/* Guard first, then the stack, so the page under each stack is the one that
+   faults when a hart runs out of room. The two are one object rather than two
+   arrays because the adjacency is the whole point of the guard, and separate
+   arrays would leave the linker free to put them anywhere. */
+typedef struct {
+  uint8_t guard[SECONDARY_STACK_GUARD_BYTES];
+  uint8_t stack[SECONDARY_STACK_BYTES];
+} secondary_stack_t;
+
+static secondary_stack_t g_secondary_stacks[RISCV64_MAX_HARTS]
+    __attribute__((aligned(4096)));
+
+/* Where a hart's stack may not reach, and the top it starts from. Read by
+   vmm_init, which unmaps the guard pages once paging is on -- the same thing
+   it does for the boot stack's guard. */
+uint8_t *riscv64_secondary_stack_guard(uint32_t cpu) {
+  return cpu < RISCV64_MAX_HARTS ? g_secondary_stacks[cpu].guard : (uint8_t *)0;
+}
+
+uint8_t *riscv64_secondary_stack_top(uint32_t cpu) {
+  return cpu < RISCV64_MAX_HARTS
+             ? &g_secondary_stacks[cpu].stack[SECONDARY_STACK_BYTES]
+             : (uint8_t *)0;
+}
+
+/* How many of the above there are, so vmm_init does not have to be told the
+   hart limit a second time and keep the two in step by hand. */
+uint32_t riscv64_secondary_stack_count(void) { return RISCV64_MAX_HARTS; }
 
 void riscv64_smp_record_boot_hart(uint32_t hart_id) {
   g_boot_hart = hart_id;
@@ -351,7 +390,7 @@ xaios_status_t smp_bring_secondaries_online(void) {
   for (uint32_t cpu = 1U; cpu < g_cpu_count; ++cpu) {
     uint32_t hart = g_hart_of_cpu[cpu];
     g_handoff[cpu].stack_top =
-        (uint64_t)(uintptr_t)&g_secondary_stacks[cpu][SECONDARY_STACK_BYTES];
+        (uint64_t)(uintptr_t)riscv64_secondary_stack_top(cpu);
     /* This hart's own root, which is what lets it run a different process
        from the boot hart at the same time. */
     g_handoff[cpu].satp = riscv64_hart_satp(cpu);
