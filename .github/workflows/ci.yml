@@ -448,13 +448,13 @@ jobs:
       # attached. Only the AArch64 job ran it before, so the x86_64 and RISC-V
       # profiles of the same gate were exercised nowhere -- and the RISC-V one
       # was in fact broken, unnoticed, because no build ever ran it.
+      - name: Update transactions, rollback and boot fallback
+        run: make qemu-x86_64-update-gate
+
       - name: Installed disk boot and self-install
         run: make qemu-x86_64-installed-disk-gate
         env:
           XAIOS_INSTALLED_DISK_TIMEOUT: "300"
-
-      - name: Update transactions, rollback and boot fallback
-        run: make qemu-x86_64-update-gate
 
       - name: Upload x86_64 installed-disk logs
         if: always()
