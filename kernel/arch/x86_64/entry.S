@@ -127,9 +127,9 @@ x86_64_load_tss:
 
 .global x86_64_enter_ring3
 .type x86_64_enter_ring3, @function
-.global aarch64_enter_user
-.type aarch64_enter_user, @function
-aarch64_enter_user:
+.global xaios_enter_user
+.type xaios_enter_user, @function
+xaios_enter_user:
 x86_64_enter_ring3:
   subq $8, %rsp
   pushq %rbx
@@ -156,9 +156,9 @@ x86_64_enter_ring3:
   movq %r15, %rsi
   iretq
 
-.global aarch64_enter_user_thread
-.type aarch64_enter_user_thread, @function
-aarch64_enter_user_thread:
+.global xaios_enter_user_thread
+.type xaios_enter_user_thread, @function
+xaios_enter_user_thread:
   subq $8, %rsp
   pushq %rbx
   pushq %rbp

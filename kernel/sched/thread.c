@@ -63,7 +63,9 @@ static xaios_user_thread_context_t **g_current_user_thread_by_cpu;
 static uint32_t g_current_user_thread_capacity;
 static xaios_spinlock_t g_thread_lock = XAIOS_SPINLOCK_INIT;
 
-extern uint64_t aarch64_enter_user_thread(uint64_t entry, uint64_t stack,
+/* In the port's assembly, and named for the system rather than for the one
+   port that had it first -- see kernel/arch/aarch64/entry.S (B-109). */
+extern uint64_t xaios_enter_user_thread(uint64_t entry, uint64_t stack,
                                           uint64_t argument,
                                           uint64_t return_address);
 
@@ -361,7 +363,7 @@ static uint64_t user_thread_worker(void *opaque) {
   g_current_user_thread_by_cpu[cpu_id] = context;
   uint64_t started_ns = timer_now_ns();
   user_thread_runtime_start(context->owner_pid, cpu_id, started_ns);
-  uint64_t encoded = aarch64_enter_user_thread(
+  uint64_t encoded = xaios_enter_user_thread(
       context->entry, context->stack_top, context->argument,
       context->return_address);
   user_thread_runtime_stop(context->owner_pid, cpu_id, started_ns,

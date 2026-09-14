@@ -1,8 +1,8 @@
 .section .text.entry, "ax"
 .global kernel_entry
 .type kernel_entry, %function
-.global aarch64_enter_user
-.type aarch64_enter_user, %function
+.global xaios_enter_user
+.type xaios_enter_user, %function
 .global aarch64_return_from_user_exit
 .type aarch64_return_from_user_exit, %function
 
@@ -44,7 +44,19 @@ kernel_entry:
   wfe
   b 3b
 
-aarch64_enter_user:
+/* Entering user mode, on every architecture.
+ *
+ * One name for one mechanism, and deliberately not an architecture's name.
+ * These were `aarch64_enter_user` and `aarch64_enter_user_thread` in all three
+ * ports, because the names came from the port that had the mechanism first and
+ * were kept as it was shared. That is a name that lies about the machine: a
+ * backtrace resolved against the RISC-V kernel printed
+ * `aarch64_enter_user_thread+0x32`, which reads unmistakably as a symbol table
+ * belonging to the wrong architecture -- the exact failure resolve-panic.py
+ * exists to refuse -- and a diagnosis went looking for an AArch64 kernel that
+ * had never been involved (B-109). What is shared across ports is named for
+ * the system, not for one of them. */
+xaios_enter_user:
   mov x10, x2
   mov x11, x3
   sub sp, sp, #112
@@ -66,9 +78,9 @@ aarch64_enter_user:
   mov x1, x11
   eret
 
-.global aarch64_enter_user_thread
-.type aarch64_enter_user_thread, %function
-aarch64_enter_user_thread:
+.global xaios_enter_user_thread
+.type xaios_enter_user_thread, %function
+xaios_enter_user_thread:
   sub sp, sp, #112
   stp x19, x20, [sp, #0]
   stp x21, x22, [sp, #16]

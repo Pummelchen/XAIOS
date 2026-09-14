@@ -299,9 +299,9 @@ aarch64_simd_irq_self_test:
  * return, so the kernel's context has to be somewhere the trap handler can
  * find it: saved on this stack, with the stack pointer parked in sscratch.
  */
-  .globl aarch64_enter_user_thread
-  .type aarch64_enter_user_thread, @function
-aarch64_enter_user_thread:
+  .globl xaios_enter_user_thread
+  .type xaios_enter_user_thread, @function
+xaios_enter_user_thread:
   addi  sp, sp, -112
   sd    ra, 0(sp)
   sd    s0, 8(sp)
@@ -375,7 +375,7 @@ riscv64_sscratch_window_end:
 /* Leaving user mode for good.
  *
  * Entered from the trap stub with sp still pointing at the trap frame and a0
- * holding the encoded exit result, which is what aarch64_enter_user returns.
+ * holding the encoded exit result, which is what xaios_enter_user returns.
  * The kernel stack that entered user mode is exactly 288 bytes above the
  * frame -- the stub subtracted that much from the value sscratch held -- so
  * unwinding is arithmetic rather than another saved pointer.
@@ -399,15 +399,15 @@ riscv64_return_from_user_exit:
   ld    s11, 96(sp)
   addi  sp, sp, 112
   ret
-  .size aarch64_enter_user_thread, . - aarch64_enter_user_thread
+  .size xaios_enter_user_thread, . - xaios_enter_user_thread
 
 /* The other user entry, taking argc and argv rather than a single argument.
    Two entry points exist because processes and threads are started
    differently; the mechanism is identical, so this forwards rather than
    duplicating the register dance above. */
-  .globl aarch64_enter_user
-  .type aarch64_enter_user, @function
-aarch64_enter_user:
+  .globl xaios_enter_user
+  .type xaios_enter_user, @function
+xaios_enter_user:
   /* a0 entry, a1 stack, a2 argc, a3 argv -> entry, stack, argument=argc,
      return=argv is wrong; a process returns through its own exit syscall, so
      the return address is not used and argv goes in a1 of the user frame.
@@ -415,7 +415,7 @@ aarch64_enter_user:
      parameter keeps the same convention userspace already expects. */
   /* Its own return address, saved -- which it was not.
    *
-   * `call` puts the return address in ra, and aarch64_enter_user_thread
+   * `call` puts the return address in ra, and xaios_enter_user_thread
    * restores ra from its own frame when the process exits, which is the
    * address just after that call. So this returned into itself, executed
    * `ret` with ra still pointing at that same instruction, and looped between
@@ -428,11 +428,11 @@ aarch64_enter_user:
      through its own exit syscall instead. Zeroed rather than left holding a
      pointer the user frame would never read. */
   mv    a3, zero
-  call  aarch64_enter_user_thread
+  call  xaios_enter_user_thread
   ld    ra, 0(sp)
   addi  sp, sp, 16
   ret
-  .size aarch64_enter_user, . - aarch64_enter_user
+  .size xaios_enter_user, . - xaios_enter_user
 
 /* Where a secondary hart begins.
  *

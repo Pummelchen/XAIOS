@@ -92,7 +92,9 @@ typedef struct xaios_async_process_context {
   void *opaque;
 } xaios_async_process_context_t;
 
-extern uint64_t aarch64_enter_user(uint64_t entry, uint64_t stack,
+/* In the port's assembly, and named for the system rather than for the one
+   port that had it first -- see kernel/arch/aarch64/entry.S (B-109). */
+extern uint64_t xaios_enter_user(uint64_t entry, uint64_t stack,
                                    uint64_t argc, uint64_t argv);
 
 static void copy_process(xaios_user_process_t *dst,
@@ -956,7 +958,7 @@ int user_process_run(const xaios_user_process_t *process) {
        g_current_process->name, g_current_process->pid, entry, stack);
 
   user_switch_address_space(g_current_process->pid);
-  uint64_t encoded = aarch64_enter_user(entry, stack, g_current_process->argc,
+  uint64_t encoded = xaios_enter_user(entry, stack, g_current_process->argc,
                                         g_current_process->argv_user);
   kassert((encoded & XAIOS_USER_EXIT_RETURN_MASK) ==
           XAIOS_USER_EXIT_RETURN_MAGIC);
@@ -1004,7 +1006,7 @@ int user_process_run_concurrent(const xaios_user_process_t *process) {
 
   /* Enter user mode for initial execution */
   user_switch_address_space(g_current_process->pid);
-  uint64_t encoded = aarch64_enter_user(entry, stack, g_current_process->argc,
+  uint64_t encoded = xaios_enter_user(entry, stack, g_current_process->argc,
                                         g_current_process->argv_user);
   kassert((encoded & XAIOS_USER_EXIT_RETURN_MASK) ==
           XAIOS_USER_EXIT_RETURN_MAGIC);
