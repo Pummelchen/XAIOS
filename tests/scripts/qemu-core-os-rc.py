@@ -315,6 +315,17 @@ def main() -> int:
             failures.append(
                 f"{name} exited {exit_code} after {elapsed:.0f}s of a "
                 f"{timeout}s budget, load {load_start:.2f} to {load_end:.2f}")
+            # The step's own reason is in its output, which went to a file and
+            # an artifact; the job log otherwise says a step exited non-zero and
+            # nothing about why. That is how `operations exited 1 after 271s of
+            # a 2100s budget` and a missing PASS marker arrived with no way to
+            # read them, and B-119 is the row for it: a failure has to name
+            # itself where the reader is.
+            tail = output.strip().splitlines()[-20:]
+            if tail:
+                print(f"qemu-core-os-rc: {name} said:", flush=True)
+                for line in tail:
+                    print(f"qemu-core-os-rc:   {line}", flush=True)
         elif timeout and elapsed > timeout * BUDGET_WARN_FRACTION:
             # Not a failure. A step this close to its budget is the next
             # timeout nobody can explain, and saying so now costs nothing.
