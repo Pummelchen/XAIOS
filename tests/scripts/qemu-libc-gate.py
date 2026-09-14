@@ -12,7 +12,7 @@ import sys
 import subprocess
 import time
 from pathlib import Path
-from qemu_gate_lib import qemu_boot_environment
+from qemu_gate_lib import qemu_boot_environment, smoke_timeout
 
 ROOT = Path(__file__).resolve().parents[2]
 REQUIREMENTS = json.loads((ROOT / "tests/libc/c99-requirements.json").read_text())
@@ -153,8 +153,19 @@ def run_arch(arch: str, command: str) -> None:
         stderr=subprocess.STDOUT, text=False, bufsize=0,
     )
     output = bytearray()
+    # Through the shared helper rather than as a literal pair, because a literal
+    # pair was the only budget in the tree that ignored the host. Every other
+    # gate asks `smoke_timeout`, which scales by architecture and then by
+    # `XAIOS_GATE_TIMEOUT_SCALE` -- the declaration a GitHub runner makes that it
+    # interprets every guest and is several times slower than the machine these
+    # numbers came from. This gate read `720` for RISC-V and `180` otherwise and
+    # stopped there, so on CI, where the workflow sets the scale to 3, this leg
+    # got 720 seconds where the convention gives it 2160 and expired while the
+    # guest was still working. The two numbers are unchanged on a machine that
+    # declares no scale: `smoke_timeout` applies the same x4 for RISC-V that the
+    # literals did. `XAIOS_LIBC_QEMU_TIMEOUT` still overrides the result.
     deadline = time.monotonic() + int(
-        env.get("XAIOS_LIBC_QEMU_TIMEOUT", "720" if arch == "riscv64" else "180"))
+        env.get("XAIOS_LIBC_QEMU_TIMEOUT", str(smoke_timeout(arch, 180))))
     try:
         assert process.stdout is not None
         while time.monotonic() < deadline:

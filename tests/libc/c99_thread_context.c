@@ -9,6 +9,23 @@
 #define XAIOS_LIBC_TEST_THREADS 3U
 #define XAIOS_LIBC_TEST_WRITES 64U
 #define XAIOS_LIBC_TEST_STACK_BYTES 32768U
+/* How long a join may wait before the test calls a thread stuck.
+ *
+ * This is a correctness assertion and not a speed one, so it has to be long
+ * enough that no machine passes it merely by being fast -- and five seconds was
+ * not. The test's own cost scales with how many harts the machine has, because
+ * three workers on a machine with two free harts run two at a time: this port
+ * has no preemption, so the third worker's first instruction is not executed
+ * until one of the others finishes. That is exactly what an installed-disk boot
+ * on RISC-V looks like -- EDK2 keeps one hart, three come online, two workers
+ * were placed on one hart, and the third was dispatched about five seconds in,
+ * with the join budget already spent. The same binary passes on the RISC-V
+ * smoke, which has four harts, and on AArch64, which has four vCPUs.
+ *
+ * A minute still reports a thread that never finishes, which is the thing being
+ * tested; it does not report a machine that is emulated, or busy, or one hart
+ * short. */
+#define XAIOS_LIBC_TEST_JOIN_TIMEOUT_NS UINT64_C(60000000000)
 
 static unsigned char stacks[XAIOS_LIBC_TEST_THREADS][XAIOS_LIBC_TEST_STACK_BYTES]
     __attribute__((aligned(16)));
@@ -51,7 +68,8 @@ int main(int argc, char **argv) {
                                &ids[index]) == 0);
   }
   for (unsigned int index = 0U; index < XAIOS_LIBC_TEST_THREADS; ++index) {
-    assert(xaios_thread_join(ids[index], UINT64_C(5000000000), &result) == 0);
+    assert(xaios_thread_join(ids[index], XAIOS_LIBC_TEST_JOIN_TIMEOUT_NS,
+                             &result) == 0);
     assert(result == UINT64_C(0xc9900000) + index);
   }
   assert(fflush(shared_stream) == 0);
