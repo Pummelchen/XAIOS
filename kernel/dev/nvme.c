@@ -255,6 +255,49 @@ static int completion_fields_valid(const nvme_completion_t *completion,
          ((completion->status >> 1U) & UINT16_C(0x7ff)) == 0U;
 }
 
+/* Record a completion this queue consumed, and say what a queue had been doing
+ * when one is refused. Both live above every wait path because the admin queue
+ * needs them as much as the I/O queues do: B-100 turned up twice, once as an
+ * I/O completion that matched no request, and once as a create-io-queue
+ * completion the admin path refused with every field the old line printed
+ * looking valid -- status 0x0001 is a successful completion -- so the value it
+ * was waiting for is the first thing the line has to carry. */
+static void record_completion(nvme_queue_t *queue,
+                              const nvme_completion_t *completion,
+                              uint16_t matched_cid) {
+  nvme_completion_trace_t *trace = &queue->trace[queue->trace_next];
+  trace->cq_head = queue->cq_head;
+  trace->cid = completion->cid;
+  trace->matched_cid = matched_cid;
+  trace->sq_head = completion->sq_head;
+  trace->status = completion->status;
+  trace->sq_id = completion->sq_id;
+  queue->trace_next = (queue->trace_next + 1U) % NVME_TRACE_ENTRIES;
+  ++queue->completions_consumed;
+}
+
+static void report_queue_trace(const nvme_queue_t *queue, const char *reason) {
+  uint32_t available = queue->completions_consumed < NVME_TRACE_ENTRIES
+                           ? (uint32_t)queue->completions_consumed
+                           : NVME_TRACE_ENTRIES;
+  klog("nvme: queue %u completions=%lu cq_head=%u phase=%u sq_tail=%u "
+       "outstanding=%u trace=%s\n",
+       (unsigned)queue->qid, (unsigned long)queue->completions_consumed,
+       (unsigned)queue->cq_head, (unsigned)queue->phase,
+       (unsigned)queue->sq_tail, (unsigned)queue->outstanding, reason);
+  for (uint32_t offset = 0U; offset < available; ++offset) {
+    uint32_t index = (queue->trace_next + NVME_TRACE_ENTRIES - available +
+                      offset) % NVME_TRACE_ENTRIES;
+    const nvme_completion_trace_t *entry = &queue->trace[index];
+    klog("nvme: queue %u trace[%u] cq_head=%u cid=%u matched=%u sq_id=%u "
+         "sq_head=%u status=0x%04x\n",
+         (unsigned)queue->qid, (unsigned)offset, (unsigned)entry->cq_head,
+         (unsigned)entry->cid, (unsigned)entry->matched_cid,
+         (unsigned)entry->sq_id, (unsigned)entry->sq_head,
+         (unsigned)entry->status);
+  }
+}
+
 /* Which of the parser's checks refused, named, because this self-test is the
  * first thing `nvme_self_test` runs and until it was named a failure here left
  * the console with nothing on it at all -- the one exit in the chain that could
@@ -308,17 +351,26 @@ static xaios_status_t submit_admin(nvme_controller_t *controller,
     xaios_cpu_io_barrier();
     nvme_completion_t completion = queue->cq[queue->cq_head];
     if ((completion.status & 1U) == queue->phase) {
-      if (!completion_fields_valid(&completion, 0U, staged.cid)) {
+      int valid = completion_fields_valid(&completion, 0U, staged.cid);
+      record_completion(queue, &completion, valid ? staged.cid : 0U);
+      if (!valid) {
         /* One of the two ways this function returns XAIOS_ERR_IO, and they are
            logged apart because B-100 needs them apart: a completion the device
            produced and this driver refused is a protocol error, while the
            branch below is a device that never answered. Both used to be the
-           same value with nothing on the console to tell them apart. */
-        klog("nvme: admin completion rejected opcode=%u cid=%u sq_head=%u "
-             "sq_id=%u status=0x%04x\n",
-             (unsigned)staged.opcode, (unsigned)staged.cid,
-             (unsigned)completion.sq_head, (unsigned)completion.sq_id,
-             (unsigned)completion.status);
+           same value with nothing on the console to tell them apart. What the
+           device answered with, what the driver was waiting for, and where in
+           the ring it was read are all named now, because the first sighting of
+           this line had every field it printed looking valid -- `status=0x0001`
+           is a successful completion -- and the one value that could explain it
+           was the one it did not print. */
+        klog("nvme: admin completion rejected opcode=%u cid=%u expected=%u "
+             "sq_head=%u sq_id=%u status=0x%04x cq_head=%u phase=%u\n",
+             (unsigned)staged.opcode, (unsigned)completion.cid,
+             (unsigned)staged.cid, (unsigned)completion.sq_head,
+             (unsigned)completion.sq_id, (unsigned)completion.status,
+             (unsigned)queue->cq_head, (unsigned)queue->phase);
+        report_queue_trace(queue, "admin-rejected");
         return XAIOS_ERR_IO;
       }
       if (result != 0) *result = completion.result;
@@ -343,6 +395,7 @@ static xaios_status_t submit_admin(nvme_controller_t *controller,
            (unsigned)staged.opcode, (unsigned)staged.cid,
            (unsigned)staged.nsid,
            (unsigned long)(timer_now_ns() - started));
+      report_queue_trace(queue, "admin-timeout");
       return XAIOS_ERR_IO;
     }
     xaios_cpu_relax();
@@ -813,31 +866,6 @@ static xaios_status_t submit_io(nvme_controller_t *controller,
   return XAIOS_OK;
 }
 
-/* Say what a queue had been doing, from the ring above. Called when a
- * completion is refused and when a wait runs out, because those are the two
- * moments the ring was written for. */
-static void report_queue_trace(const nvme_queue_t *queue, const char *reason) {
-  uint32_t available = queue->completions_consumed < NVME_TRACE_ENTRIES
-                           ? (uint32_t)queue->completions_consumed
-                           : NVME_TRACE_ENTRIES;
-  klog("nvme: queue %u completions=%lu cq_head=%u phase=%u sq_tail=%u "
-       "outstanding=%u trace=%s\n",
-       (unsigned)queue->qid, (unsigned long)queue->completions_consumed,
-       (unsigned)queue->cq_head, (unsigned)queue->phase,
-       (unsigned)queue->sq_tail, (unsigned)queue->outstanding, reason);
-  for (uint32_t offset = 0U; offset < available; ++offset) {
-    uint32_t index = (queue->trace_next + NVME_TRACE_ENTRIES - available +
-                      offset) % NVME_TRACE_ENTRIES;
-    const nvme_completion_trace_t *entry = &queue->trace[index];
-    klog("nvme: queue %u trace[%u] cq_head=%u cid=%u matched=%u sq_id=%u "
-         "sq_head=%u status=0x%04x\n",
-         (unsigned)queue->qid, (unsigned)offset, (unsigned)entry->cq_head,
-         (unsigned)entry->cid, (unsigned)entry->matched_cid,
-         (unsigned)entry->sq_id, (unsigned)entry->sq_head,
-         (unsigned)entry->status);
-  }
-}
-
 static uint32_t poll_queue(nvme_controller_t *controller, nvme_queue_t *queue,
                            uint32_t budget) {
   uint32_t completed_count = 0U;
@@ -852,15 +880,7 @@ static uint32_t poll_queue(nvme_controller_t *controller, nvme_queue_t *queue,
     nvme_request_slot_t *slot = slot_for_cid(queue, completion.cid);
     /* Recorded before the outcome is decided, so a refusal is read together
        with the completions that were accepted before it. */
-    nvme_completion_trace_t *trace = &queue->trace[queue->trace_next];
-    trace->cq_head = queue->cq_head;
-    trace->cid = completion.cid;
-    trace->matched_cid = slot == 0 ? 0U : slot->cid;
-    trace->sq_head = completion.sq_head;
-    trace->status = completion.status;
-    trace->sq_id = completion.sq_id;
-    queue->trace_next = (queue->trace_next + 1U) % NVME_TRACE_ENTRIES;
-    ++queue->completions_consumed;
+    record_completion(queue, &completion, slot == 0 ? 0U : slot->cid);
     xaios_status_t status = XAIOS_ERR_IO;
     xaios_block_async_request_t *request = slot == 0 ? 0 : slot->request;
     if (slot != 0 &&
