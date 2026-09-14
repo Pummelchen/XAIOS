@@ -78,16 +78,49 @@ def stop_load(processes: list[subprocess.Popen[bytes]]) -> None:
 
 
 def run_row(row: str, timeout: int) -> tuple[int, str]:
+    """Run the gate for one row, stopping it as soon as the failure appears.
+
+    The gate waits for markers that a failed self-test never prints, so a run
+    that reproduces spends its whole deadline doing it -- the 1573-second
+    failure `B-100` records, and the reason the first soak's reproduction cost
+    eight minutes. The line this harness is looking for appears within seconds
+    of the boot, so the run is stopped when it does and the console kept.
+    """
     log = BUILD / f"qemu-nvme-gate-{row}.log"
     if log.exists():
         log.unlink()
-    completed = subprocess.run(
+    process = subprocess.Popen(
         [sys.executable, str(GATE), "--arch", row],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        timeout=timeout,
+        start_new_session=True,
     )
-    return completed.returncode, log.read_text(errors="replace") if log.exists() else ""
+    deadline = time.monotonic() + timeout
+    expired = False
+    try:
+        while process.poll() is None:
+            if time.monotonic() >= deadline:
+                expired = True
+                break
+            time.sleep(0.5)
+            if log.exists() and FAILURE in log.read_text(errors="replace"):
+                break
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)
+            # The gate's runner is in a session of its own, so killing the gate
+            # does not kill the guest.
+            kill_stray(row)
+    if expired:
+        raise subprocess.TimeoutExpired(str(GATE), timeout)
+    text = log.read_text(errors="replace") if log.exists() else ""
+    status = process.returncode if process.returncode is not None else 124
+    return status, text
 
 
 def kill_stray(row: str) -> None:

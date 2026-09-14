@@ -276,6 +276,41 @@ static void record_completion(nvme_queue_t *queue,
   ++queue->completions_consumed;
 }
 
+/* The submission-queue entries around the one the device says it answered.
+ *
+ * Both sightings of B-100 look like the device answering a command the host did
+ * not submit -- an I/O completion with cid 0 that matched no request, and an
+ * admin completion refused with `status=0x0001`, a successful completion -- and
+ * the question in both is what the host's own memory holds at the index the
+ * device named. The completion's `sq_head` has been the index plus one on every
+ * completion this driver accepted, so all three of the previous, named and next
+ * slots are printed rather than assuming which reading is right: a slot holding
+ * the expected command says the device's view of the ring is somewhere else,
+ * and a slot of zeros says the command never reached memory. The second
+ * sighting is why this exists: its completion named `sq_head=0` while the
+ * driver had submitted five commands and never written the last slot of the
+ * ring, so the index the device named was quite possibly one the host had not
+ * written at all. */
+static void report_sq_slot(const nvme_queue_t *queue, uint16_t index) {
+  if (index >= NVME_QUEUE_DEPTH) {
+    klog("nvme: queue %u sq slot %u out of range\n", (unsigned)queue->qid,
+         (unsigned)index);
+    return;
+  }
+  const nvme_command_t *command = &queue->sq[index];
+  klog("nvme: queue %u sq[%u] opcode=%u cid=%u nsid=%u cdw10=0x%x\n",
+       (unsigned)queue->qid, (unsigned)index, (unsigned)command->opcode,
+       (unsigned)command->cid, (unsigned)command->nsid,
+       (unsigned)command->cdw10);
+}
+
+static void report_sq_neighbourhood(const nvme_queue_t *queue, uint16_t index) {
+  report_sq_slot(queue, (uint16_t)((index + NVME_QUEUE_DEPTH - 1U) %
+                                   NVME_QUEUE_DEPTH));
+  report_sq_slot(queue, index);
+  report_sq_slot(queue, (uint16_t)((index + 1U) % NVME_QUEUE_DEPTH));
+}
+
 static void report_queue_trace(const nvme_queue_t *queue, const char *reason) {
   uint32_t available = queue->completions_consumed < NVME_TRACE_ENTRIES
                            ? (uint32_t)queue->completions_consumed
@@ -370,6 +405,7 @@ static xaios_status_t submit_admin(nvme_controller_t *controller,
              (unsigned)staged.cid, (unsigned)completion.sq_head,
              (unsigned)completion.sq_id, (unsigned)completion.status,
              (unsigned)queue->cq_head, (unsigned)queue->phase);
+        report_sq_neighbourhood(queue, completion.sq_head);
         report_queue_trace(queue, "admin-rejected");
         return XAIOS_ERR_IO;
       }
@@ -897,6 +933,7 @@ static uint32_t poll_queue(nvme_controller_t *controller, nvme_queue_t *queue,
            (unsigned)queue->qid, (unsigned)completion.cid,
            (unsigned)completion.sq_id, (unsigned)completion.sq_head,
            (unsigned)completion.status, slot == 0 ? "none" : "mismatched");
+      report_sq_neighbourhood(queue, completion.sq_head);
       report_queue_trace(queue, "rejected");
     }
     queue->cq_head = (uint16_t)(queue->cq_head + 1U);
