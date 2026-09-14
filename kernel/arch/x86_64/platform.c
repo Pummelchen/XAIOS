@@ -110,6 +110,16 @@ void exception_self_test(void) {
 
 void exception_trigger_page_fault_for_test(void) {
   volatile uint64_t *unmapped = (volatile uint64_t *)UINT64_C(0x1000000000);
+  /* Said out loud, like the other two ports say it.
+   *
+   * This faulted and was reported on x86-64 without ever printing the line the
+   * fault matrix keys on, so the gate read the scenario as "the boot ended
+   * before the fault injector ran" and returned INCONCLUSIVE for it -- while
+   * the machine had done exactly what was asked. A port that behaves the same
+   * and narrates differently is indistinguishable from one that did not
+   * behave, which is what the gate is for (B-118). */
+  klog("exceptions: triggering controlled page fault at 0x%lx\n",
+       (uint64_t)(uintptr_t)unmapped);
   (void)*unmapped;
 }
 

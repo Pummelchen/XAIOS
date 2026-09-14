@@ -63,9 +63,14 @@ FAULT_CLASS = {
     "aarch64": {"page": "class=data-abort-current",
                 "ro": "class=data-abort-current",
                 "nx": "class=instruction-abort-current"},
-    "x86_64": {"page": "class=data-abort-current",
-               "ro": "class=data-abort-current",
-               "nx": "class=instruction-abort-current"},
+    # x86-64 has no class string. Its page-fault frame carries an error code
+    # instead, and the three scenarios are told apart by it: not-present,
+    # present-and-written, present-and-fetched. This was written with AArch64's
+    # class names, so the x86-64 scenarios could not have passed however the
+    # machine behaved -- the same mistake as B-116, in the gate this time.
+    "x86_64": {"page": "error=0x0000000000000000",
+               "ro": "error=0x0000000000000003",
+               "nx": "error=0x0000000000000011"},
     # RISC-V distinguishes the three, which is a stronger assertion than the
     # other two can make: a store fault and a load fault are different causes
     # here, so "the write was refused" is checkable rather than inferred.
@@ -74,13 +79,25 @@ FAULT_CLASS = {
                 "nx": "class=instruction-page-fault"},
 }[ARCH]
 
+# What this machine calls the report itself.
+#
+# AArch64 and RISC-V say the same sentence; x86-64 names itself in it. That is a
+# difference in wording, not in behaviour -- the machine halts and says which
+# controlled fault it took on all three -- and it is accepted the way RISC-V's
+# class names are, rather than asserting one port's sentence on another.
+FAULT_REPORT = {
+    "aarch64": "controlled page fault reported",
+    "x86_64": "controlled x86_64 exception reported",
+    "riscv64": "controlled page fault reported",
+}[ARCH]
+
 FAULTS = [
     (
         "page",
         [
             "exceptions: triggering controlled page fault",
             FAULT_CLASS["page"],
-            "controlled page fault reported",
+            FAULT_REPORT,
         ],
     ),
     (
@@ -88,7 +105,7 @@ FAULTS = [
         [
             "exceptions: triggering controlled rodata write fault",
             FAULT_CLASS["ro"],
-            "controlled page fault reported",
+            FAULT_REPORT,
         ],
     ),
     (
@@ -96,7 +113,7 @@ FAULTS = [
         [
             "exceptions: triggering controlled NX execute fault",
             FAULT_CLASS["nx"],
-            "controlled page fault reported",
+            FAULT_REPORT,
         ],
     ),
 ]
@@ -109,10 +126,26 @@ BUILD_COMMANDS = {
 }[ARCH]
 
 
-def run_build(fault: str) -> int:
+def build_env():
+    """The environment a build needs to produce *this* machine's image.
+
+    `build-image.sh` defaults to AArch64 and is told otherwise by
+    `XAIOS_TARGET_ARCH`. Without it, an x86-64 run of this gate built an AArch64
+    image, left the x86-64 one as whatever was in `build/`, and then booted that
+    -- so the fault injector was never in the machine and all three scenarios
+    reported "the boot ended before the fault injector ran". The target existed
+    and had never worked (B-118).
+    """
     env = os.environ.copy()
-    env["XAIOS_FAULT_TEST"] = fault
     env["XAIOS_BOOT_TEST_APPS"] = "1"
+    if ARCH != "aarch64":
+        env["XAIOS_TARGET_ARCH"] = ARCH
+    return env
+
+
+def run_build(fault: str) -> int:
+    env = build_env()
+    env["XAIOS_FAULT_TEST"] = fault
     for command in BUILD_COMMANDS:
         proc = subprocess.run(
             command,
@@ -242,8 +275,7 @@ def run_fault_boot(name: str, targets) -> int:
 
 def rebuild_normal_image() -> int:
     """Leave the tree holding a kernel that does not fault on purpose."""
-    env = os.environ.copy()
-    env["XAIOS_BOOT_TEST_APPS"] = "1"
+    env = build_env()
     env.pop("XAIOS_FAULT_TEST", None)
     for command in BUILD_COMMANDS:
         proc = subprocess.run(
