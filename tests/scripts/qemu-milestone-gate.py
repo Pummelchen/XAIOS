@@ -254,6 +254,16 @@ def main() -> int:
     checks = []
     if proc.returncode != 0:
         failures.append(f"qemu-smoke exited {proc.returncode}")
+        # The sub-gate's own diagnostics name what it was waiting for and
+        # whether the console had reported lost lines; `run` captured them, so
+        # without this the job log says only "exited 1" and the reason has to
+        # be reconstructed from an uploaded artifact (B-118's lesson one level
+        # down).
+        tail = (proc.stdout or "").strip().splitlines()[-20:]
+        if tail:
+            print("qemu-gate: the gate that failed said:", flush=True)
+            for line in tail:
+                print(f"qemu-gate:   {line}", flush=True)
 
     missing = check_markers(proc.stdout, config["markers"])
     checks.append(result("markers", not missing, missing_markers=missing))

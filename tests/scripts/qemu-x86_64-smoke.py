@@ -6,6 +6,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from qemu_gate_lib import dropped_line_note
+
 
 TARGETS = [
     "XAIOS loader starting",
@@ -158,6 +161,12 @@ def main() -> int:
         print(f"  - {marker}")
     for marker in forbidden:
         print(f"  - forbidden marker observed: {marker}")
+    # This smoke asserted on console lines without saying when the console had
+    # been told it lost one, which is the half of B-117 that reached the shared
+    # smoke and not this one.
+    note = dropped_line_note(text)
+    if note:
+        print(f"qemu-x86_64-smoke: {note}")
     return 1
 
 

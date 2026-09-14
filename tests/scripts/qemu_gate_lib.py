@@ -91,6 +91,29 @@ def check_markers(text: str, markers: Iterable[str]) -> List[str]:
     return [marker for marker in markers if marker not in text]
 
 
+def dropped_line_note(text: str) -> str:
+    """A note for a gate's failure output when the guest reported lost lines.
+
+    A missing marker and a dropped line look the same from a gate's side, and
+    the kernel says when it has dropped one (`klog: N log lines dropped`).
+    Printed with the failure so the reader does not have to know to look for it:
+    under load this is the difference between "the machine did not do it" and
+    "the machine did it and the console lost the sentence" (B-117). It lives
+    here because the fix for that row reached one gate, and the same failure
+    then cost a session in another -- every gate that asserts console markers
+    should print this rather than leaving the reader to guess.
+    """
+    total = sum(
+        int(count)
+        for count in re.findall(r"klog: (\d+) log lines dropped", text)
+    )
+    if total == 0:
+        return ""
+    return (f"note: the kernel reported {total} log line(s) dropped while its "
+            f"console lock was held, so a missing marker above may be a line "
+            f"that was lost rather than work that did not happen")
+
+
 def status_from_failures(failures: Sequence[str]) -> str:
     return "pass" if not failures else "fail"
 

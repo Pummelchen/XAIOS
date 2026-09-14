@@ -9,8 +9,8 @@ import sys
 import time
 from pathlib import Path
 
-from qemu_gate_lib import (arch_from_argv, contract, parse_telemetry,
-                           qemu_boot_environment, qemu_runner,
+from qemu_gate_lib import (arch_from_argv, contract, dropped_line_note,
+                           parse_telemetry, qemu_boot_environment, qemu_runner,
                            validate_telemetry_against_contract)
 
 
@@ -591,13 +591,9 @@ def main() -> int:
     # Printed with the failure so the reader does not have to know to look for
     # it: under load this is the difference between "the machine did not do it"
     # and "the machine did it and the console lost the sentence".
-    dropped = re.findall(r"klog: (\d+) log lines dropped", text)
-    if dropped:
-        total = sum(int(count) for count in dropped)
-        echo_best_effort(f"note: the kernel reported {total} log line(s) dropped "
-                         f"while its console lock was held, so a missing marker "
-                         f"above may be a line that was lost rather than work "
-                         f"that did not happen\n")
+    note = dropped_line_note(text)
+    if note:
+        echo_best_effort(f"{note}\n")
     return 1
 
 
