@@ -73,16 +73,28 @@ supervisor *timer* interrupt, and the idle loop masks it around the window where
 this port cannot survive a trap, so the supervisor *software* interrupt an IPI
 arrives on is still free to enter that same window -- and the boot's log shows
 IPIs in flight. The earlier form of the same fault, recorded in
-`kernel/arch/riscv64/smp.c`, was a return to program counter zero. So the
-narrowing removed one way in and left another open.
+`kernel/arch/riscv64/smp.c`, was a return to program counter zero.
 
-Nothing has been changed to hide any of it: the gate fails, and no CI job runs it.
-Both rows are **inconclusive or open rather than passed**, and the boot is not
-claimed to work. Disentangling this needs either every interrupt masked in that
-window or a trap entry that can be taken while a user thread runs nested in a
-joiner's syscall -- `kernel/arch/riscv64/entry.S` calls the full context switch
-"the scheduler work this port has not done" -- and both touch the scheduling this
-port already documents as absent above.
+**Masking every interrupt in that window was tried, and it is not the answer.**
+It was written and the gate run twice: the first run booted the installed disk
+completely, and the second **livelocked** -- three hundred kilobytes of console
+and then silence, two harts spinning at full speed, no panic banner, no SSH
+server, nothing to read. That is a worse failure than the fault it replaced, so
+the change was reverted rather than shipped on the strength of the one run that
+passed. What it does establish is that the window is where the fault lives;
+what it does not say is which interrupt was getting in, or what the spinning
+hart was waiting for when everything else was masked.
+
+Nothing has been changed to hide any of it: the gate fails, and no CI job runs
+it. Both rows are **inconclusive or open rather than passed**, and the boot is
+not claimed to work. The next step is measurement rather than another mask -- a
+panic dump is legible again now that it has an owner (`B-110`), so the fault
+can be read where it prints, and the window can say whether a trap is taken in
+it and of which kind. The two candidate fixes remain a trap entry that can be
+taken while a user thread runs nested in a joiner's syscall --
+`kernel/arch/riscv64/entry.S` calls the full context switch "the scheduler work
+this port has not done" -- and a mask narrow enough not to starve that wait.
+Both touch the scheduling this port already documents as absent above.
 
 ## Platform and hardware
 
