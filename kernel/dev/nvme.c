@@ -79,6 +79,24 @@ typedef struct nvme_request_slot {
   uint8_t uses_sgl;
 } nvme_request_slot_t;
 
+/* The last few completions a queue consumed, kept so that a completion the
+ * driver cannot match -- and the wait it leaves behind -- can be read against
+ * what came before it rather than on its own. A ring rather than a line per
+ * completion: the lines would be noise on every boot and still not enough
+ * context on the boot that matters. This exists because B-100 was reproduced
+ * with a dropped completion (cid=0, sq_head=0, no matching request) and the
+ * next question is what the device had been answering before it. */
+#define NVME_TRACE_ENTRIES 8U
+
+typedef struct {
+  uint16_t cq_head;
+  uint16_t cid;
+  uint16_t matched_cid;
+  uint16_t sq_head;
+  uint16_t status;
+  uint16_t sq_id;
+} nvme_completion_trace_t;
+
 typedef struct nvme_queue {
   nvme_command_t *sq;
   nvme_completion_t *cq;
@@ -93,6 +111,9 @@ typedef struct nvme_queue {
   uint32_t interrupt_id;
   uint16_t msix_entry;
   uint64_t interrupt_completions;
+  nvme_completion_trace_t trace[NVME_TRACE_ENTRIES];
+  uint32_t trace_next;
+  uint64_t completions_consumed;
   struct nvme_controller *controller;
 } nvme_queue_t;
 
@@ -792,6 +813,31 @@ static xaios_status_t submit_io(nvme_controller_t *controller,
   return XAIOS_OK;
 }
 
+/* Say what a queue had been doing, from the ring above. Called when a
+ * completion is refused and when a wait runs out, because those are the two
+ * moments the ring was written for. */
+static void report_queue_trace(const nvme_queue_t *queue, const char *reason) {
+  uint32_t available = queue->completions_consumed < NVME_TRACE_ENTRIES
+                           ? (uint32_t)queue->completions_consumed
+                           : NVME_TRACE_ENTRIES;
+  klog("nvme: queue %u completions=%lu cq_head=%u phase=%u sq_tail=%u "
+       "outstanding=%u trace=%s\n",
+       (unsigned)queue->qid, (unsigned long)queue->completions_consumed,
+       (unsigned)queue->cq_head, (unsigned)queue->phase,
+       (unsigned)queue->sq_tail, (unsigned)queue->outstanding, reason);
+  for (uint32_t offset = 0U; offset < available; ++offset) {
+    uint32_t index = (queue->trace_next + NVME_TRACE_ENTRIES - available +
+                      offset) % NVME_TRACE_ENTRIES;
+    const nvme_completion_trace_t *entry = &queue->trace[index];
+    klog("nvme: queue %u trace[%u] cq_head=%u cid=%u matched=%u sq_id=%u "
+         "sq_head=%u status=0x%04x\n",
+         (unsigned)queue->qid, (unsigned)offset, (unsigned)entry->cq_head,
+         (unsigned)entry->cid, (unsigned)entry->matched_cid,
+         (unsigned)entry->sq_id, (unsigned)entry->sq_head,
+         (unsigned)entry->status);
+  }
+}
+
 static uint32_t poll_queue(nvme_controller_t *controller, nvme_queue_t *queue,
                            uint32_t budget) {
   uint32_t completed_count = 0U;
@@ -804,6 +850,17 @@ static uint32_t poll_queue(nvme_controller_t *controller, nvme_queue_t *queue,
       break;
     }
     nvme_request_slot_t *slot = slot_for_cid(queue, completion.cid);
+    /* Recorded before the outcome is decided, so a refusal is read together
+       with the completions that were accepted before it. */
+    nvme_completion_trace_t *trace = &queue->trace[queue->trace_next];
+    trace->cq_head = queue->cq_head;
+    trace->cid = completion.cid;
+    trace->matched_cid = slot == 0 ? 0U : slot->cid;
+    trace->sq_head = completion.sq_head;
+    trace->status = completion.status;
+    trace->sq_id = completion.sq_id;
+    queue->trace_next = (queue->trace_next + 1U) % NVME_TRACE_ENTRIES;
+    ++queue->completions_consumed;
     xaios_status_t status = XAIOS_ERR_IO;
     xaios_block_async_request_t *request = slot == 0 ? 0 : slot->request;
     if (slot != 0 &&
@@ -815,10 +872,12 @@ static uint32_t poll_queue(nvme_controller_t *controller, nvme_queue_t *queue,
          matched to the request it claims to answer. A cancelled request is not
          this -- that is a completion this driver asked for and matches
          perfectly well. */
-      klog("nvme: io completion rejected qid=%u cid=%u sq_head=%u slot=%s\n",
+      klog("nvme: io completion rejected qid=%u cid=%u sq_id=%u sq_head=%u "
+           "status=0x%04x slot=%s\n",
            (unsigned)queue->qid, (unsigned)completion.cid,
-           (unsigned)completion.sq_head,
-           slot == 0 ? "none" : "mismatched");
+           (unsigned)completion.sq_id, (unsigned)completion.sq_head,
+           (unsigned)completion.status, slot == 0 ? "none" : "mismatched");
+      report_queue_trace(queue, "rejected");
     }
     queue->cq_head = (uint16_t)(queue->cq_head + 1U);
     if (queue->cq_head == NVME_QUEUE_DEPTH) {
@@ -923,11 +982,29 @@ static xaios_status_t await_requests(nvme_controller_t *controller,
          with an error, so a failure here really is requests that never
          completed at all. `operation` is named because the caller reports the
          same XAIOS_ERR_IO for a flush that timed out and a flush that was
-         rejected, and the console is the only place the two are told apart. */
-      klog("nvme: io wait timed out done=%u of %u operation=%d elapsed=%lu "
-           "ns\n",
+         rejected, and the console is the only place the two are told apart.
+         The pending request is named by its token -- the queue and command id
+         the driver is still waiting for -- and the queues with work left dump
+         their last completions, because B-100's reproduction was a completion
+         that was dropped and this is what says which one never came. */
+      uint32_t pending = count;
+      for (uint32_t index = 0U; index < count; ++index) {
+        if (requests[index].state != XAIOS_BLOCK_ASYNC_COMPLETE) {
+          pending = index;
+          break;
+        }
+      }
+      klog("nvme: io wait timed out done=%u of %u operation=%d elapsed=%lu ns "
+           "pending=%u token=0x%lx state=%d\n",
            (unsigned)done, (unsigned)count, (int)requests[0].operation,
-           (unsigned long)(timer_now_ns() - started));
+           (unsigned long)(timer_now_ns() - started), (unsigned)pending,
+           (unsigned long)(pending < count ? requests[pending].token : 0U),
+           (int)(pending < count ? (int)requests[pending].state : -1));
+      for (uint32_t index = 0U; index < controller->io_queue_count; ++index) {
+        if (controller->io[index].outstanding != 0U) {
+          report_queue_trace(&controller->io[index], "timeout");
+        }
+      }
       return XAIOS_ERR_IO;
     }
     xaios_cpu_relax();
