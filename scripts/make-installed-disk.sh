@@ -53,8 +53,20 @@ case "$ARCH" in
     BUILDER="./scripts/build-riscv64-image.sh"
     OUTPUT_DEFAULT="$BUILD_DIR/installed-disk-riscv64.img"
     ;;
+  x86_64)
+    # The removable-media name UEFI specifies for this machine, and the
+    # artifacts build-image.sh already produces for it. This architecture was
+    # missing from this case, which is why `make qemu-installed-disk-gate`
+    # could not be asked for it and x86-64 had no install evidence at all.
+    LOADER="$BUILD_DIR/uefi-x86_64/BOOTX64.EFI"
+    REMOVABLE_NAME="BOOTX64.EFI"
+    KERNEL="$BUILD_DIR/kernel-x86_64/kernel.elf"
+    INITFS="$BUILD_DIR/xaios-x86-virtio-test.img"
+    BUILDER="./scripts/build-image.sh"
+    OUTPUT_DEFAULT="$BUILD_DIR/installed-disk-x86_64.img"
+    ;;
   *)
-    printf 'error: XAIOS_TARGET_ARCH must be aarch64 or riscv64\n' >&2
+    printf 'error: XAIOS_TARGET_ARCH must be aarch64, x86_64 or riscv64\n' >&2
     exit 2 ;;
 esac
 OUTPUT="${XAIOS_INSTALLED_DISK:-$OUTPUT_DEFAULT}"
