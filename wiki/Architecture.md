@@ -183,11 +183,17 @@ idle loop could be re-entered with `I` still set -- measured directly, spinning
 with a pending timer *visible in its CPU interface* (`hppir1=27`) and
 `DAIF=0x3c0`, so it never took another interrupt. A CPU that cannot take an
 interrupt cannot be woken by one, which is how the scheduler moves work between
-CPUs. The loop now clears `I` every turn rather than once before it. With a
-pending interrupt the wait-for-event latch is set, so `wfe` returns immediately
-instead of sleeping: the same run had spun 134 million times. Both are recorded
-because the second one is a bug in its own right and nothing to do with the
-network.
+CPUs. The loop now clears `I` every turn rather than once before it.
+
+The same defect had a second face worth knowing about, and it is what made the
+first one hard to see from outside: with a pending interrupt the wait-for-event
+latch is set, so `wfe` returns immediately instead of sleeping, and the run that
+exposed this had turned its idle loop **134 million times** while taking no
+interrupts at all. A spinning idle loop and a silent timer were the same fault
+seen from two places, not two faults -- clearing `I` settles both, and the
+measurement says so: with the tick armed and the loop clearing `I` each turn,
+the loop turned once per tick (`n=8000`, `ticks=7970`) instead of millions of
+times between them.
 
 **A kernel thread remains the simpler alternative and its cost is unchanged** --
 one of three worker CPUs, because `kernel/sched/thread.c` runs one thread to
