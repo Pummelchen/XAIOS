@@ -1152,6 +1152,46 @@ static void release_handle(virtio_block_driver_t *drv) {
   kheap_free(drv);
 }
 
+/* Which physical devices this driver has already taken.
+ *
+ * Opening a device twice is not refused by the device and not checked here:
+ * each open configures a queue and registers a completion, so a second one
+ * fights the first for the same virtqueue. Nothing needed to know which devices
+ * were in use until the storage-administration window had to *find* one instead
+ * of being told where to look -- the window used to be a fixed position in a
+ * test bench's device order, which no machine with fewer disks than the bench
+ * can satisfy (B-113).
+ *
+ * A device is identified by its transport and the address of its common
+ * configuration structure, which is unique per device on both transports. An
+ * ordinal would not do: the same device is reached by different ordinals
+ * depending on which lookup is used to find it. */
+#define VIRTIO_BLOCK_MAX_TAKEN 8U
+typedef struct {
+  uint32_t backend;
+  uint64_t common_config;
+} virtio_block_taken_t;
+
+static virtio_block_taken_t g_taken[VIRTIO_BLOCK_MAX_TAKEN];
+static uint32_t g_taken_count;
+
+static int block_device_taken(const virtio_mmio_device_t *device) {
+  for (uint32_t i = 0U; i < g_taken_count; ++i) {
+    if (g_taken[i].backend == device->backend &&
+        g_taken[i].common_config == device->common_config) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static void block_device_note_taken(const virtio_mmio_device_t *device) {
+  if (g_taken_count >= VIRTIO_BLOCK_MAX_TAKEN) return;
+  g_taken[g_taken_count].backend = device->backend;
+  g_taken[g_taken_count].common_config = device->common_config;
+  ++g_taken_count;
+}
+
 static virtio_block_driver_t *allocate_handle(void) {
   virtio_block_driver_t *drv =
       (virtio_block_driver_t *)kheap_calloc(sizeof(*drv), 16);
@@ -1215,6 +1255,50 @@ static xaios_status_t start_handle(virtio_block_driver_t *drv, uint32_t slot) {
   return XAIOS_OK;
 }
 
+/* The storage-administration window: the disk an operator installs onto.
+ *
+ * The window has a configured address on the test bench, where every volume is
+ * attached in a known order, and that address is tried first so the bench
+ * behaves exactly as it did. What it could not do is work anywhere else. The
+ * configured window is logical slot 5, which the PCI transport carries to
+ * enumeration ordinal 4 -- the fifth block device, in the order the bench
+ * attaches five. A machine XAIOS has been installed onto has two, so the
+ * window did not resolve and the spare disk was never opened: the install
+ * phase of the x86-64 and RISC-V gates could only be skipped, and on a real
+ * two-disk machine installing was impossible rather than merely unproven
+ * (B-113).
+ *
+ * So if the configured window is absent, take the first block device nothing
+ * else has taken. On a one-disk machine that is nothing, which is right: there
+ * is no spare and the caller is told so. On a machine with a spare it is the
+ * spare, whatever order the firmware happened to enumerate the bus in. The
+ * device keeps the caller's logical slot, so it is named /dev/vblk5 wherever
+ * it was found -- a device's name is a name, not a position.
+ *
+ * `scan_limit` bounds the search; the caller passes the same ceiling the rest
+ * of this file uses for "how many disks could there possibly be". */
+xaios_status_t virtio_block_open_administration_window(
+    uint32_t slot, uint32_t scan_limit, virtio_block_handle_t **out_handle) {
+  if (out_handle == 0) return XAIOS_ERR_INVALID;
+  if (virtio_block_open_slot(slot, out_handle) == XAIOS_OK) {
+    return XAIOS_OK;
+  }
+  for (uint32_t ordinal = 0U; ordinal < scan_limit; ++ordinal) {
+    virtio_mmio_device_t probe;
+    if (virtio_transport_find_nth(VIRTIO_DEVICE_BLOCK, "virtio-blk-admin",
+                                  ordinal, ordinal, &probe) != XAIOS_OK) {
+      continue;
+    }
+    if (block_device_taken(&probe) != 0) continue;
+    if (virtio_block_open_ordinal(ordinal, slot, out_handle) == XAIOS_OK) {
+      klog("storage-admin: window slot=%u is not attached; using the first "
+           "unclaimed block device, ordinal=%u\n", slot, ordinal);
+      return XAIOS_OK;
+    }
+  }
+  return XAIOS_ERR_NOT_FOUND;
+}
+
 xaios_status_t virtio_block_open_slot(uint32_t start_slot,
                                      virtio_block_handle_t **out_handle) {
   if (out_handle == 0) {
@@ -1232,6 +1316,7 @@ xaios_status_t virtio_block_open_slot(uint32_t start_slot,
     release_handle(drv);
     return status;
   }
+  block_device_note_taken(&drv->device);
   *out_handle = drv;
   return XAIOS_OK;
 }
@@ -1281,6 +1366,7 @@ xaios_status_t virtio_block_open_pci_ordinal(
     release_handle(drv);
     return status;
   }
+  block_device_note_taken(&drv->device);
   *out_handle = drv;
   return XAIOS_OK;
 }
@@ -1302,6 +1388,7 @@ xaios_status_t virtio_block_open_ordinal(uint32_t ordinal, uint32_t slot,
     release_handle(drv);
     return status;
   }
+  block_device_note_taken(&drv->device);
   *out_handle = drv;
   return XAIOS_OK;
 }

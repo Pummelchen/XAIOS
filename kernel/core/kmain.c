@@ -1002,8 +1002,12 @@ void kmain(const xaios_boot_info_t *boot) {
   } else {
     klog("xaifs: mount skipped status=%d\n", (int)xai_fs_status);
   }
+  /* The configured window, or the only disk nothing else has taken. See the
+     function: a fixed position cannot be satisfied by a machine with fewer
+     disks than the test bench, which is every machine that is not the bench. */
   xaios_status_t storage_admin_status =
-      virtio_block_open_slot(5U, &g_storage_admin_handle);
+      virtio_block_open_administration_window(5U, BOOT_DISK_SCAN_LIMIT,
+                                             &g_storage_admin_handle);
   if (storage_admin_status == XAIOS_OK) {
     storage_admin_status = storage_admin_attach(
         virtio_block_device_h(g_storage_admin_handle), 1U);

@@ -50,6 +50,12 @@ xaios_status_t virtio_block_open_pci_ordinal(uint32_t ordinal, uint32_t slot,
    any. One disk means an installed machine whose state is a partition of it;
    several mean volumes attached separately, each already owned. */
 uint32_t virtio_block_present_count(uint32_t limit);
+
+/* Open the disk an operator installs onto: the configured window if this
+   machine has one, and otherwise the first block device nothing else has
+   taken. The device is named after `slot` wherever it was found. */
+xaios_status_t virtio_block_open_administration_window(
+    uint32_t slot, uint32_t scan_limit, virtio_block_handle_t **out_handle);
 xaios_status_t virtio_block_read_sector_h(virtio_block_handle_t *handle,
                                          uint64_t sector, void *buffer,
                                          uint64_t buffer_size);
