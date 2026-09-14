@@ -163,6 +163,36 @@ that was booting correctly. Budgets now scale by
 `XAIOS_QEMU_MATRIX_TIMEOUT_SCALE`; unset, nothing changes, and nothing the
 scenario asserts was relaxed.
 
+## Physical qualification: deferred, and said so
+
+**This is a position rather than a queue, and it is written down here because
+the objective it belongs to is a single-node, self-hosting, SSH-administered OS
+with physical qualification explicitly deferred rather than silently assumed.**
+There is no physical hardware in this project on any architecture, no physical
+result is being waited on to complete any current work, and the three targets
+that would need one are `OD-001`, `OD-002` and `OD-003` -- all `NOT STARTED`,
+all blocked on nothing but the choice of machine.
+
+What follows from it, and what does not:
+
+- **Nothing is promoted for being the only evidence available.** A QEMU result
+  stays *correctness and ABI only*, an Apple Virtualization.framework result
+  stays *not qualification evidence*, and the rows that only hardware can settle
+  keep `NEEDS HARDWARE` and stay off the active list.
+- **No physical claim is made anywhere.** No physical Apple, ARM-server,
+  Intel-desktop or Xeon performance, firmware compatibility, NIC behaviour, NVMe
+  durability, NUMA locality, thermal behaviour or production security is
+  asserted by anything in this tree. x86-64 in particular has never executed on
+  an Intel or AMD processor: its evidence is QEMU on an ARM host through an
+  interpreter. RISC-V's evidence is one emulated board and nothing else.
+- **The deferral does not weaken an emulated gate.** They are held to the
+  standard they were written to, and `physical_qualification=false` stays in the
+  reports that carry it.
+- **It closes only one way:** delivery order 1b -- a named machine per target
+  passing the firmware, device, durability, security, ISA-state, NUMA, soak and
+  benchmark contracts. `HARDWARE-READINESS.md` states the boundary and the
+  contracts; this page owns the status.
+
 ## Released builds
 
 Builds are published on the

@@ -25,3 +25,41 @@ NVMe durability, NUMA locality, thermal behavior, or production security.
 
 Physical claims require named machines, immutable raw artifacts, repeated
 measurements, and the full `docs/BENCHMARK-CONTRACT.md` contract.
+
+## Physical qualification is deferred, by decision
+
+This is stated rather than left to be inferred, because "not yet" and "not being
+worked on" are different claims and a reader should not have to guess which one
+this is.
+
+**It is a deferral, not a queue.** There is no physical hardware in this
+project -- on any architecture -- and no physical result is being waited on to
+complete the current work. Every result in this tree comes from QEMU or from a
+hypervisor, and that is the intended state of the project at this point rather
+than a gap something is closing. The engineering that a physical machine would
+exercise is finished as far as it can be here; what is missing is the machine.
+
+**What the deferral does not do.** It does not weaken a gate. The emulated gates
+are held to the same standard they were, `physical_qualification=false` stays
+retained in the reports that carry it, and no emulated result is promoted by
+being the only one available. It also does not license a physical claim: the
+vocabulary is unchanged, so a QEMU result is *correctness and ABI only*, an
+Apple Virtualization.framework result is *not qualification evidence*, and the
+items that can only be settled by hardware keep the status `NEEDS HARDWARE`
+and stay off the active work list instead of reading as further behind than they
+are.
+
+**The three targets, and what each one's evidence actually is.**
+
+| Target | Emulated evidence | Physical evidence |
+|---|---|---|
+| AArch64 | QEMU ARM64, and VMware Fusion and Virtualization.framework on Apple Silicon | none |
+| x86-64 | QEMU x86_64, on an ARM host through QEMU's interpreter | none -- it has never executed on an Intel or AMD processor |
+| RISC-V (rv64gc) | one emulated board, QEMU's `virt` | none, and no RISC-V machine or hypervisor is in the test set at all, so one board is this port's entire evidence |
+
+**What closes it, in order.** A named machine per target -- the selections
+`OD-001`, `OD-002` and `OD-003` in the project tracker, all still `NOT STARTED`
+and all blocked on nothing but the choice -- passing the firmware, device,
+durability, security, ISA-state, NUMA, soak and benchmark contracts above. That
+is delivery order 1b, and it is the only entry in that table that no work on
+this repository can advance.
