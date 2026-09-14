@@ -531,6 +531,15 @@ jobs:
         env:
           XAIOS_QEMU_SMOKE_TIMEOUT: "600"
 
+      # The panic path on the third machine. This was left out when the other
+      # two were added, on the belief that this job was near its 90-minute cap
+      # -- which was never measured. It runs in about seven minutes end to end,
+      # so the belief was wrong and the step belongs here (B-112).
+      - name: Controlled page, read-only and NX faults
+        run: make qemu-riscv64-fault-matrix
+        env:
+          XAIOS_QEMU_SMOKE_TIMEOUT: "600"
+
       # The release configuration, which is what actually ships and which no
       # boot-test gate exercises: there, shell commands are kernel built-ins
       # and no application is ever launched as a process. That difference cost
@@ -595,6 +604,7 @@ jobs:
             build/cpu-matrix-riscv64/*/console.log
             build/qemu-milestone-68-update-gate.json
             build/qemu-smoke-riscv64.log
+            build/qemu-fault-matrix-riscv64-*.log
           if-no-files-found: ignore
           retention-days: 7
 
