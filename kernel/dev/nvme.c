@@ -802,6 +802,62 @@ static xaios_status_t create_io_queues(nvme_controller_t *controller) {
   return XAIOS_OK;
 }
 
+/* Put a queue back to the state it was in before it carried any work, over the
+ * same pages and with the same interrupt binding. */
+static void reset_queue(nvme_queue_t *queue) {
+  bytes_zero(queue->sq, NVME_PAGE_SIZE);
+  bytes_zero(queue->cq, NVME_PAGE_SIZE);
+  for (uint32_t slot = 0U; slot < NVME_QUEUE_DEPTH; ++slot) {
+    uint64_t *prp_list = queue->slots[slot].prp_list;
+    bytes_zero(&queue->slots[slot], sizeof(queue->slots[slot]));
+    queue->slots[slot].prp_list = prp_list;
+  }
+  queue->sq_tail = 0U;
+  queue->cq_head = 0U;
+  queue->phase = 1U;
+  queue->outstanding = 0U;
+  queue->trace_next = 0U;
+  queue->completions_consumed = 0U;
+}
+
+/* Stop the controller and re-arm it over the memory it already has.
+ *
+ * Written for B-100. The emulated device answered a command the host never
+ * submitted -- four times, on the admin queue and on the I/O queue -- and the
+ * request behind it was then never completed, while the host's rings and the
+ * device's own registers were both correct at the failure. The answer the NVMe
+ * specification gives for a controller that has stopped answering is a reset
+ * and a retry, so this is that: disable, wait for the device to say it is not
+ * ready, put every queue back to zero over its existing pages, program the
+ * admin queue registers again, enable, and re-create the I/O queues. Nothing
+ * here re-maps PCI, re-allocates memory or re-registers the block device, so a
+ * restart cannot disturb the rest of the machine -- and every outstanding
+ * request is failed by the reset, which is why callers run it only when they
+ * have already given up on one. */
+static xaios_status_t restart_controller(nvme_controller_t *controller) {
+  uint32_t cc = mmio_read32(controller, NVME_REG_CC);
+  mmio_write32(controller, NVME_REG_CC, cc & ~NVME_CC_ENABLE);
+  if (wait_ready(controller, 0U) != XAIOS_OK) {
+    klog("nvme: controller restart failed step=disable\n");
+    return XAIOS_ERR_IO;
+  }
+  reset_queue(&controller->admin);
+  for (uint32_t index = 0U; index < controller->io_queue_count; ++index) {
+    reset_queue(&controller->io[index]);
+  }
+  mmio_write32(controller, NVME_REG_AQA,
+               ((NVME_QUEUE_DEPTH - 1U) << 16U) | (NVME_QUEUE_DEPTH - 1U));
+  mmio_write64(controller, NVME_REG_ASQ, dma_address(controller->admin.sq));
+  mmio_write64(controller, NVME_REG_ACQ, dma_address(controller->admin.cq));
+  mmio_write32(controller, NVME_REG_CC,
+               NVME_CC_ENABLE | (6U << 16U) | (4U << 20U));
+  if (wait_ready(controller, NVME_CSTS_READY) != XAIOS_OK) {
+    klog("nvme: controller restart failed step=enable\n");
+    return XAIOS_ERR_IO;
+  }
+  return create_io_queues(controller);
+}
+
 static xaios_status_t prepare_data_pointer(nvme_controller_t *controller,
                                            nvme_request_slot_t *slot,
                                            nvme_command_t *command,
@@ -1208,6 +1264,17 @@ static xaios_status_t register_block_device(nvme_controller_t *controller) {
                                     &k_nvme_async_ops);
 }
 
+/* Reset the controller and prove it answers a command again.
+ *
+ * Used as the self-test's own step on every boot as well as behind a stress
+ * phase that failed, because a restart that is only ever run in a failure is a
+ * restart nobody has watched work: the boot that proves it works is the boot
+ * that would otherwise have nothing to say about it (B-100). */
+static xaios_status_t restart_and_prove(nvme_controller_t *controller) {
+  if (restart_controller(controller) != XAIOS_OK) return XAIOS_ERR_IO;
+  return synchronous_io(controller, XAIOS_BLOCK_ASYNC_FLUSH, 0U, 0, 0U);
+}
+
 static xaios_status_t stress_io(nvme_controller_t *controller,
                                 uint8_t **buffers) {
   xaios_block_async_request_t requests[NVME_MAX_IO_QUEUES];
@@ -1438,13 +1505,29 @@ xaios_status_t nvme_self_test(xaios_nvme_self_test_result_t *result) {
   g_nvme_single_margin.slowest_ns = 0U;
   g_nvme_single_margin.waited = 0U;
   if (stress_io(controller, buffers) != XAIOS_OK) {
-    klog("nvme: self-test failed step=stress-io slowest=%lu ns of %lu budget "
-         "batches=%lu singles=%lu\n",
-         (unsigned long)nvme_slowest_wait_ns(),
-         (unsigned long)NVME_TIMEOUT_NS,
-         (unsigned long)g_nvme_batch_margin.waited,
-         (unsigned long)g_nvme_single_margin.waited);
-    return XAIOS_ERR_IO;
+    /* B-100: the phase failed, and every sighting of it behind this row is a
+       completion the device produced that the host could not match -- with the
+       host's rings and the device's registers both correct when it happened.
+       The specification's answer to a controller that stops answering is a
+       reset, so the phase is retried once on a controller re-armed over the
+       same pages. A failure after that is the phase's own and stands. */
+    klog("nvme: self-test stress phase failed; restarting the controller and "
+         "retrying once\n");
+    g_nvme_batch_margin.slowest_ns = 0U;
+    g_nvme_batch_margin.waited = 0U;
+    g_nvme_single_margin.slowest_ns = 0U;
+    g_nvme_single_margin.waited = 0U;
+    if (restart_and_prove(controller) != XAIOS_OK ||
+        stress_io(controller, buffers) != XAIOS_OK) {
+      klog("nvme: self-test failed step=stress-io slowest=%lu ns of %lu budget "
+           "batches=%lu singles=%lu\n",
+           (unsigned long)nvme_slowest_wait_ns(),
+           (unsigned long)NVME_TIMEOUT_NS,
+           (unsigned long)g_nvme_batch_margin.waited,
+           (unsigned long)g_nvme_single_margin.waited);
+      return XAIOS_ERR_IO;
+    }
+    klog("nvme: self-test stress phase passed on the retry after a restart\n");
   }
   /* Said on every boot, so that a starved one can be read against a healthy
      one. See the note above `await_requests`. The two kinds are reported apart
@@ -1460,6 +1543,16 @@ xaios_status_t nvme_self_test(xaios_nvme_self_test_result_t *result) {
        (unsigned long)g_nvme_batch_margin.slowest_ns,
        (unsigned long)g_nvme_single_margin.waited,
        (unsigned long)g_nvme_single_margin.slowest_ns);
+  /* After the margin line, so that the waits it reports are the phase's own and
+     not this step's. What it proves is that a controller reset leaves a machine
+     that answers commands, which is the whole of the recovery B-100 needs; the
+     interrupt canary below then runs on the re-armed queues, so the reset is
+     also required not to have broken interrupt delivery. */
+  if (restart_and_prove(controller) != XAIOS_OK) {
+    klog("nvme: self-test failed step=controller-restart\n");
+    return XAIOS_ERR_IO;
+  }
+  klog("nvme: controller restart self-test passed resets=1 flush=1\n");
   controller->interrupt_test_buffer = buffers[0];
   g_nvme_controller = controller;
 

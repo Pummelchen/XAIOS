@@ -43,6 +43,12 @@ BUILD = Path("build")
 GATE = Path("tests/scripts/qemu-nvme-gate.py")
 ROWS = ("aarch64", "x86_64", "riscv64", "riscv64-aia")
 FAILURE = "nvme: self-test failed"
+# The driver now recovers from a dropped completion by re-arming the
+# controller and retrying, so the defect can appear in a boot that still
+# passes its gate. The soak keeps looking for the failure *and* for the
+# recovery, because the recovery is the same event seen from the other
+# side: a device that answered a command the host never submitted.
+RECOVERY = "restarting the controller and retrying once"
 MARGIN = re.compile(
     r"slowest=(?P<slowest>\d+) ns of \d+ budget batches=\d+ "
     r"batch_slowest=(?P<batch>\d+) ns singles=\d+ "
@@ -103,8 +109,10 @@ def run_row(row: str, timeout: int) -> tuple[int, str]:
                 expired = True
                 break
             time.sleep(0.5)
-            if log.exists() and FAILURE in log.read_text(errors="replace"):
-                break
+            if log.exists():
+                seen = log.read_text(errors="replace")
+                if FAILURE in seen or RECOVERY in seen:
+                    break
     finally:
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGTERM)
@@ -206,17 +214,20 @@ def main() -> int:
             )
             if match is not None:
                 margins.append((int(match.group("batch")), int(match.group("single"))))
-            if FAILURE in text:
+            if FAILURE in text or RECOVERY in text:
                 reproductions += 1
                 stamp = time.strftime("%Y%m%d-%H%M%S")
                 kept = BUILD / f"nvme-stress-soak-{arguments.row}-{stamp}.log"
                 shutil.copyfile(BUILD / f"qemu-nvme-gate-{arguments.row}.log", kept)
-                print(f"run {run}: REPRODUCED after {seconds:.0f}s; console={kept}",
+                kind = "REPRODUCED" if FAILURE in text else "RECOVERED"
+                print(f"run {run}: {kind} after {seconds:.0f}s; console={kept}",
                       flush=True)
                 for line in text.splitlines():
-                    if FAILURE in line or "nvme: io wait timed out" in line \
-                            or "nvme: io completion rejected" in line \
-                            or "nvme: stress" in line:
+                    if (FAILURE in line or RECOVERY in line
+                            or "restarting the controller" in line
+                            or "nvme: io wait timed out" in line
+                            or "nvme: io completion rejected" in line
+                            or "nvme: stress" in line):
                         print(f"    {line.strip()}", flush=True)
                 break
             if status != 0:

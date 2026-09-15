@@ -43,6 +43,11 @@ MARKERS = [
     # takes the only evidence there is about B-100 with it, and nothing else
     # fails when that happens.
     "nvme: self-test stress waits slowest=",
+    # The controller-restart self-test: the recovery B-100 needs, and the only
+    # place the reset path is exercised on a boot that has nothing wrong with
+    # it. A reset that is only ever run in a failure is a reset nobody has
+    # watched work.
+    "nvme: controller restart self-test passed",
 ]
 
 # What each machine is held to beyond the shared markers: how many IO queues
