@@ -1433,6 +1433,10 @@ static void X86_BRINGUP_ONLY validate_ring3_syscall(uint16_t serial_base) {
  * Nothing has to be discovered for it, which is the whole reason it is the
  * reference here. */
 #define PIT_HZ UINT64_C(1193182)
+/* How many APIC timer counts the rate is measured over. One million counts is
+ * about ten milliseconds of the timer's own clock, which is long enough that
+ * the TSC's resolution is irrelevant and short enough to disappear in a boot. */
+#define LAPIC_MEASURE_COUNTS UINT32_C(1000000)
 #define PIT_CALIBRATION_COUNT UINT16_C(0xffff)
 
 /* Measure the TSC in hertz against the PIT, which is the one clock on an x86
@@ -1576,9 +1580,35 @@ static void validate_lapic_timer_interrupt(uint16_t serial_base) {
       lapic_read(APIC_TIMER_CURRENT) != 0U) {
     panic_halt(serial_base, "local APIC timer interrupt failed");
   }
-  if (elapsed_tsc != 0U) {
+  /* The frequency, measured instead of inferred from the interrupt above.
+   *
+   * Deriving it from `elapsed_tsc` made the answer depend on how long the host
+   * took to deliver one interrupt: this machine reported 22,031,284 Hz in one
+   * boot and 55,216,540 Hz in another, and a CI job's three boots of the same
+   * host reported 115,658,845, 169,648,168 and 164,735,927 Hz. The periodic
+   * tick's interval is built from this number, so the machine booted with the
+   * scheduler ticking at whatever rate the host happened to be running at.
+   * The counter's own rate has nothing to do with interrupts, so it is read
+   * directly: run it down over a known number of counts, time that with the
+   * calibrated TSC, and the counts per second follow. The divisor is the one
+   * the periodic tick uses, so the number is in the units `periodic_count`
+   * divides by the tick rate. */
+  lapic_write(APIC_LVT_TIMER, UINT32_C(1 << 16) | 32U); /* masked */
+  lapic_write(APIC_TIMER_DIVIDE, UINT32_C(0x0b));
+  lapic_write(APIC_TIMER_INITIAL, UINT32_C(0xffffffff));
+  uint64_t count_started_tsc = rdtsc();
+  uint64_t count_budget = g_tsc_frequency / 4U;
+  uint32_t measured_counts = 0U;
+  for (;;) {
+    measured_counts = UINT32_C(0xffffffff) - lapic_read(APIC_TIMER_CURRENT);
+    if (measured_counts >= LAPIC_MEASURE_COUNTS) break;
+    if (rdtsc() - count_started_tsc > count_budget) break;
+  }
+  uint64_t count_elapsed_tsc = rdtsc() - count_started_tsc;
+  lapic_write(APIC_TIMER_INITIAL, 0U);
+  if (measured_counts != 0U && count_elapsed_tsc != 0U) {
     g_lapic_frequency =
-        (UINT64_C(100000) * g_tsc_frequency) / elapsed_tsc;
+        ((uint64_t)measured_counts * g_tsc_frequency) / count_elapsed_tsc;
   }
   if (g_lapic_frequency == 0U) g_lapic_frequency = UINT64_C(1000000);
   serial_puts(serial_base, "x86_64: local APIC timer interrupt passed id=");
@@ -1590,8 +1620,14 @@ static void validate_lapic_timer_interrupt(uint16_t serial_base) {
   serial_puts(serial_base, " mode=");
   serial_puts(serial_base,
               g_lapic_x2apic != 0U ? "x2apic" : "xapic");
-  serial_puts(serial_base, " elapsed_tsc=");
+  serial_puts(serial_base, " interrupt_tsc=");
   serial_dec(serial_base, elapsed_tsc);
+  serial_puts(serial_base, " counts=");
+  serial_dec(serial_base, measured_counts);
+  serial_puts(serial_base, " counts_tsc=");
+  serial_dec(serial_base, count_elapsed_tsc);
+  serial_puts(serial_base, " lapic_hz=");
+  serial_dec(serial_base, g_lapic_frequency);
   serial_puts(serial_base, "\n");
 }
 
