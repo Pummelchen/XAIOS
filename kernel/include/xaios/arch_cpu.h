@@ -40,8 +40,19 @@ static inline void xaios_cpu_io_barrier(void) {
 /* Answer a TLB shootdown request that an interrupt cannot carry, because this
  * CPU is spinning with interrupts masked. Defined with the rest of the x86-64
  * shootdown in kernel/arch/x86_64/early.c; no other architecture waits for an
- * acknowledgement of its invalidation, so no other architecture defines it. */
-void xaios_cpu_service_shootdown_request(void);
+ * acknowledgement of its invalidation, so no other architecture needs it.
+ *
+ * The weak definition below is for programs that compile these headers without
+ * the kernel: `make hosted-test` builds kernel files -- `kernel/fs/vfs.c` among
+ * them -- against a hosted libc, and on an x86-64 host the inline
+ * `xaios_cpu_relax()` refers to this symbol, which the kernel's own definition
+ * overrides wherever the kernel is linked. Without it the hosted build failed
+ * to link on an x86-64 host, which is how CI found this. The kernel cannot
+ * silently end up with the no-op: the self-test that requires the spin path to
+ * answer a shootdown fails if it does, and the smoke gate requires that
+ * self-test's verdict. */
+extern void xaios_cpu_service_shootdown_request(void)
+    __attribute__((weak));
 #endif
 
 static inline void xaios_cpu_relax(void) {
@@ -49,7 +60,16 @@ static inline void xaios_cpu_relax(void) {
   __asm__ volatile("yield" ::: "memory");
 #elif defined(__x86_64__)
   __asm__ volatile("pause" ::: "memory");
-  xaios_cpu_service_shootdown_request();
+  /* A weak reference, so a program that compiles these headers without the
+     kernel's definition -- the hosted tests build kernel files against a
+     hosted libc, and on an x86-64 host this inline refers to the symbol --
+     gets a null address and skips, while the kernel's own definition is what
+     the machine calls. The kernel cannot silently end up with the skip: the
+     self-test that requires the spin path to answer a shootdown fails if it
+     does, and the smoke gate requires that self-test's verdict. */
+  if (xaios_cpu_service_shootdown_request != 0) {
+    xaios_cpu_service_shootdown_request();
+  }
 #elif defined(__riscv)
   /* Zihintpause's `pause` is encoded as a fence a hart without the extension
      ignores, so it is safe to emit unconditionally: a CPU that has the hint
