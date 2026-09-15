@@ -23,6 +23,37 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **The machine no longer stops when a CPU cannot take an interrupt, and the
+  NVMe driver no longer invents completions.** Both were defects in the same
+  family: a device or a CPU answering a question that had been asked at the
+  wrong moment. On x86-64, a CPU spinning with interrupts masked -- which is
+  what waiting for the network, service or CPU-AI guard is -- could not take
+  the inter-processor interrupt a TLB shootdown waits for, while the CPU it was
+  waiting for held that guard and was waiting for its answer; the machine
+  panicked after two seconds with `TLB shootdown timeout` (B-123). The spin
+  itself now answers the shootdown, so the wait ends when the other CPU lets go
+  rather than when a timer gives up. Separately, an idle CPU that asked whether
+  there was work and then slept could have its wakeup consumed in the gap and
+  sleep with the thread still pending, forever, because only one CPU carries a
+  periodic tick (B-120); all three ports now ask once more with interrupts
+  masked and sleep and enable them together.
+- **Storage on RISC-V no longer misreads completions.** The NVMe driver copied
+  a completion out of the completion queue and then checked the phase tag, and
+  the copy is not a single access: the command identifier and the status share
+  one word and the compiler reads them separately. A completion the device was
+  still writing was therefore read as a fresh phase with a command identifier
+  of zero, which matches no request and looks successful -- and the request
+  behind it was then lost, which is why a starved guest saw the stress phase
+  fail with `XAIOS_ERR_IO` (B-100). The driver reads that word once and checks
+  the phase before reading anything else.
+- **The console still drops a line under load, but it now loses fewer and says
+  where.** A contended line waits for the console lock, and how long it waits
+  was chosen by whether interrupts were masked rather than by whether the CPU
+  was inside a handler -- so a line printed from a thread holding a spinlock
+  took the short wait meant for a handler and could be lost (B-119, second
+  sighting). It asks the right question now, and the report names the context
+  so a loss says which budget was wrong.
+
 - **A broken link, rather than a broken machine -- and a split brain found
   underneath it.** Everything the cluster had been tested against was a
   process that stopped: a node killed outright stops answering and stops
