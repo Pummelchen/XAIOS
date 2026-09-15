@@ -210,5 +210,9 @@ apply here.*
   must remain fetchable at the tag it names.
 - **Builders** `scripts/build-arch-image.sh` per architecture, `Makefile` at the
   root, `platform/*/build-*.sh` per hypervisor target.
-- **Gates** the build's own `BUILD_NUMBER` validation, and the C99/C toolchain
-  checks in `AUDIT/` and the platform scripts.
+- **Gates** `BUILD_NUMBER` validation, which `make docs-check` cross-checks against
+  the `## Build <n>` section in `CHANGELOG.md` — bump both together or the gate
+  fails. Then `make compile-check`, `make hosted-test`, `make xapt-test` and the
+  QEMU boot gates. **`release-check` is local-only**: no CI job runs it, and
+  `local-gates` must be recorded against HEAD on a clean tree, because any later
+  commit costs another run.
