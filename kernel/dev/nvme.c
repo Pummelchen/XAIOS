@@ -370,6 +370,64 @@ static xaios_status_t completion_parser_self_test(void) {
   return XAIOS_OK;
 }
 
+/* Whether the completion at `index` belongs to the phase this driver is
+ * waiting for, read the way the device means it.
+ *
+ * The device and this CPU have exactly one synchronisation point -- the phase
+ * tag -- and it lives in the same 32-bit dword as the command identifier:
+ * `cid` is the low half and `status` the high half. `nvme_completion_t` is
+ * packed, so the compiler is free to load those halves separately, and it
+ * does: the aarch64 build reads the phase with `ldrh w6, [entry, #14]` and
+ * only reaches for `cid` after the comparison has passed. A completion caught
+ * mid-write therefore comes back with a fresh phase and a command identifier
+ * that has not been written yet -- a completion matching no request, which is
+ * what B-100 was: `cid=0` with a success status, on a machine whose rings and
+ * the device's registers were both correct, four times, and then again inside
+ * the controller-restart self-test (`admin completion rejected opcode=1
+ * cid=0 expected=18 ... cid=0 matched=0`, and the real completion for cid 18
+ * was simply never seen).
+ *
+ * One 32-bit acquire load of that dword, checked before anything else is read
+ * from the entry, closes the window: the phase is the last thing the device
+ * writes, so once it matches, the rest of the entry is complete and the
+ * acquire keeps the copy below from being hoisted above this check. */
+/* What the entry says when it is read again after a refusal.
+ *
+ * This is the line that decides between the two halves of B-100. A completion
+ * the driver refused, with a fresh phase and a command identifier of zero, is
+ * either an entry the driver read while the device was still writing it -- in
+ * which case reading it again now shows the command identifier the device
+ * meant, and the defect is this driver's -- or one the device genuinely wrote
+ * with a zero command identifier, in which case the second read agrees with
+ * the first and the defect is the device's. Four sightings could not tell them
+ * apart and every one of them printed a completion that looked successful;
+ * this prints the difference. */
+static void report_completion_reread(const nvme_queue_t *queue,
+                                     const nvme_completion_t *first) {
+  nvme_completion_t again = queue->cq[queue->cq_head];
+  if (again.cid == first->cid && again.sq_head == first->sq_head &&
+      again.sq_id == first->sq_id && again.status == first->status) {
+    klog("nvme: queue %u completion reread agrees cid=%u sq_head=%u "
+         "status=0x%04x -- the device wrote it that way\n",
+         (unsigned)queue->qid, (unsigned)again.cid, (unsigned)again.sq_head,
+         (unsigned)again.status);
+    return;
+  }
+  klog("nvme: queue %u completion reread differs cid=%u sq_head=%u "
+       "status=0x%04x first_cid=%u first_sq_head=%u first_status=0x%04x -- the "
+       "first read raced the device\n",
+       (unsigned)queue->qid, (unsigned)again.cid, (unsigned)again.sq_head,
+       (unsigned)again.status, (unsigned)first->cid, (unsigned)first->sq_head,
+       (unsigned)first->status);
+}
+
+static int completion_in_phase(const nvme_queue_t *queue, uint16_t index) {
+  const volatile uint32_t *dword =
+      (const volatile uint32_t *)((const uint8_t *)&queue->cq[index] + 12U);
+  uint32_t tail = __atomic_load_n(dword, __ATOMIC_ACQUIRE);
+  return (uint32_t)((tail >> 16) & 1U) == queue->phase ? 1 : 0;
+}
+
 static xaios_status_t submit_admin(nvme_controller_t *controller,
                                    const nvme_command_t *command,
                                    uint32_t *result) {
@@ -388,8 +446,8 @@ static xaios_status_t submit_admin(nvme_controller_t *controller,
   uint64_t started = timer_now_ns();
   for (;;) {
     xaios_cpu_io_barrier();
-    nvme_completion_t completion = queue->cq[queue->cq_head];
-    if ((completion.status & 1U) == queue->phase) {
+    if (completion_in_phase(queue, queue->cq_head) != 0) {
+      nvme_completion_t completion = queue->cq[queue->cq_head];
       int valid = completion_fields_valid(&completion, 0U, staged.cid);
       record_completion(queue, &completion, valid ? staged.cid : 0U);
       if (!valid) {
@@ -409,6 +467,7 @@ static xaios_status_t submit_admin(nvme_controller_t *controller,
              (unsigned)staged.cid, (unsigned)completion.sq_head,
              (unsigned)completion.sq_id, (unsigned)completion.status,
              (unsigned)queue->cq_head, (unsigned)queue->phase);
+        report_completion_reread(queue, &completion);
         report_sq_neighbourhood(queue, completion.sq_head);
         report_queue_trace(queue, "admin-rejected");
         return XAIOS_ERR_IO;
@@ -990,11 +1049,11 @@ static uint32_t poll_queue(nvme_controller_t *controller, nvme_queue_t *queue,
   while (completed_count < budget) {
     xaios_spin_lock(&queue->lock);
     xaios_cpu_io_barrier();
-    nvme_completion_t completion = queue->cq[queue->cq_head];
-    if ((completion.status & 1U) != queue->phase) {
+    if (completion_in_phase(queue, queue->cq_head) == 0) {
       xaios_spin_unlock(&queue->lock);
       break;
     }
+    nvme_completion_t completion = queue->cq[queue->cq_head];
     nvme_request_slot_t *slot = slot_for_cid(queue, completion.cid);
     /* Recorded before the outcome is decided, so a refusal is read together
        with the completions that were accepted before it. */
@@ -1015,6 +1074,7 @@ static uint32_t poll_queue(nvme_controller_t *controller, nvme_queue_t *queue,
            (unsigned)queue->qid, (unsigned)completion.cid,
            (unsigned)completion.sq_id, (unsigned)completion.sq_head,
            (unsigned)completion.status, slot == 0 ? "none" : "mismatched");
+      report_completion_reread(queue, &completion);
       report_sq_neighbourhood(queue, completion.sq_head);
       report_queue_trace(queue, "rejected");
     }
