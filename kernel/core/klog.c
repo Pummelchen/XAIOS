@@ -59,6 +59,26 @@ static uint32_t g_panic_active;
 static uint64_t g_panic_dropped;
 static uint64_t g_panic_other;
 
+/* How long a contended line waits for the console lock before it is dropped.
+ *
+ * Measured, not guessed: a bound of 200 microseconds changed nothing on the
+ * x86-64 smoke -- two to four lines were still lost per boot -- because the
+ * holder is not finishing a word, it is writing a whole line to a console that
+ * traps per character under emulation, and a long line takes milliseconds.
+ *
+ * So the wait depends on what the caller is. A line printed from a thread may
+ * wait as long as a line takes, because that is what the lock is for and the
+ * thread has nothing it must return to. A line printed from an interrupt
+ * handler may not: the holder can be the very thread this handler interrupted,
+ * which cannot run again until the handler returns, so waiting there is waiting
+ * for something that cannot happen and the line is dropped after a short try.
+ * The console lock is a leaf -- nothing takes it and then another lock, and the
+ * ring it feeds is only ever taken underneath it -- so the long wait cannot
+ * deadlock against anything. */
+#define KLOG_LOCK_WAIT_NS UINT64_C(5000000)     /* thread context: 5 ms */
+#define KLOG_LOCK_IRQ_WAIT_NS UINT64_C(200000)  /* interrupt context: 200 us */
+#define KLOG_LOCK_MAX_ATTEMPTS UINT32_C(10000000)
+
 /* Lines `klog` has thrown away because another CPU held the console lock.
  *
  * `klog` takes that lock with a try, on purpose: it is called from contexts
@@ -485,7 +505,37 @@ static void klog_vformat(const char *fmt, va_list args) {
 
 void klog(const char *fmt, ...) {
   if (klog_suppressed_by_panic()) return;
-  if (!xaios_spin_trylock(&g_klog_lock)) {
+  /* A contended line waits for the lock before it is dropped.
+   *
+   * Dropping on the first try was too eager, and B-119 is the measurement: a
+   * console under load lost the one line a gate was asserting on -- the
+   * x86-64 secondary-worker barrier, printed once, gone -- while the rest of
+   * the boot was perfect, and the gate failed a guest that had done the work.
+   * The lock is still not blocked for: the wait is bounded by
+   * KLOG_LOCK_WAIT_NS, so a context that must not block waits at most that
+   * long, and a line that loses the race even then is still dropped and still
+   * counted. What the bound is not is zero, because the holder is usually
+   * finishing a line rather than a report, and that is a wait worth taking. */
+  int locked = xaios_spin_trylock(&g_klog_lock);
+  if (!locked) {
+    uint64_t started = timer_now_ns();
+    uint32_t attempts = 0U;
+    uint64_t budget = xaios_interrupts_enabled() != 0 ? KLOG_LOCK_WAIT_NS
+                                                      : KLOG_LOCK_IRQ_WAIT_NS;
+    /* Bounded twice: by the elapsed time, which is what the bound means, and
+       by an attempt count, because the first lines of a boot can be printed
+       before the time source is worth reading and a zero-length elapsed time
+       would otherwise make the wait unbounded. */
+    while (timer_now_ns() - started < budget &&
+           ++attempts < KLOG_LOCK_MAX_ATTEMPTS) {
+      if (xaios_spin_trylock(&g_klog_lock)) {
+        locked = 1;
+        break;
+      }
+      xaios_cpu_relax();
+    }
+  }
+  if (!locked) {
     (void)__atomic_add_fetch(&g_klog_contended_drops, 1U, __ATOMIC_RELAXED);
     return;
   }
