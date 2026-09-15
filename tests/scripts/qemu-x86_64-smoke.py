@@ -34,6 +34,12 @@ TARGETS = [
     "scheduler: SIMD/FP interrupt preservation passed",
     "smp: x86 secondary worker barrier passed ready=",
     "threads: concurrent group complete",
+    # The shootdown-vs-guard check runs the fixed kernel and the kernel as it
+    # was, and requires the first to complete and the second to time out, with
+    # the answer coming from the spin and not from the interrupt. The verdict
+    # line carries all of that; requiring it by name means a machine where the
+    # cycle could not be built fails here instead of passing quietly (B-123).
+    "smp: x86 shootdown acknowledgement self-test passed cpu=",
     "/bin/smptest: complete",
     "/bin/nettest: complete",
     # The surface markers, not just the exit codes. An application that exits

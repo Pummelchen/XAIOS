@@ -751,6 +751,18 @@ xaios_status_t smp_run_user_thread_group(uint64_t requested_threads,
                                 checksum);
 }
 
+/* The shootdown acknowledgement check is x86-64's, and saying so is the point:
+ * an absent check that looks like a passed one is the failure mode this
+ * project keeps having to fix (B-123).
+ *
+ * AArch64 does not have the problem at all: `tlbi vaae1is` is broadcast by the
+ * hardware across the inner shareable domain, so no CPU waits for another
+ * CPU's acknowledgement and there is no answer an interrupt could carry. */
+void smp_shootdown_ack_self_test(void) {
+  klog("smp: shootdown acknowledgement self-test not applicable on aarch64 "
+       "-- tlbi is broadcast, nothing waits for an acknowledgement\n");
+}
+
 void smp_self_test(void) {
   kassert(g_cpu_states[0].online != 0);
   kassert(g_cpu_states[0].role == XAIOS_CPU_ROLE_HOUSEKEEPING);

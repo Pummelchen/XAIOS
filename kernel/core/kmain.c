@@ -1299,6 +1299,10 @@ persistent_network_done:
   klog("scheduler: SIMD/FP interrupt preservation passed\n");
   kassert(smp_release_secondary_schedulers() == XAIOS_OK);
   xaios_thread_self_test();
+  /* A CPU that cannot take an interrupt must still answer a TLB shootdown:
+     with the scheduler up, one CPU can be made to spin on a guard while
+     another shoots down inside it (B-123). */
+  smp_shootdown_ack_self_test();
   klog("kernel: preemptive scheduler infrastructure enabled\n");
   boot_ui_update(85U, "scheduler", "runtime services", 2U);
 

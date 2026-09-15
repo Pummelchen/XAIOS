@@ -238,3 +238,151 @@ void smp_self_test(void) {
   klog("smp: x86 per-core registry self-test passed online=%u capacity=%u\n",
        g_online, g_capacity);
 }
+
+/* ---------------------------------------------------------------------------
+ * A CPU that cannot take an interrupt still answers a TLB shootdown (B-123).
+ *
+ * The cycle this builds on purpose. The boot CPU takes a guard, which masks
+ * interrupts for the whole critical section. A thread on another CPU asks for
+ * that same guard and spins with interrupts masked. The boot CPU, still inside
+ * the guard, issues a shootdown. The other CPU's acknowledgement is supposed
+ * to arrive as an interrupt it can no longer take, so before the fix neither
+ * side could move and the shootdown timed out -- which is exactly what the
+ * operations closure's x86-64 leg did, with the network guard.
+ *
+ * The check is run twice: once as the kernel is, where the spinning CPU
+ * answers by hand and the shootdown must complete, and once with that answer
+ * suppressed, which is the kernel as it was, where it must time out. Without
+ * the second run "it passed" would only mean the cycle was never built; the
+ * counters say which path answered, so a pass that came from the interrupt is
+ * a failure of the test rather than a success of the kernel.
+ * ------------------------------------------------------------------------- */
+
+/* A guard of its own, because what the test needs is the property every
+ * reentrant guard has -- it masks interrupts before it spins -- and not the
+ * tables any particular guard protects. */
+static xaios_reentrant_lock_t g_shootdown_test_guard =
+    XAIOS_REENTRANT_LOCK_INIT("shootdown self-test guard");
+
+typedef struct x86_shootdown_test_context {
+  volatile uint32_t go;
+  volatile uint32_t attempting;
+  volatile uint32_t acquired;
+  volatile uint32_t done;
+} x86_shootdown_test_context_t;
+
+static x86_shootdown_test_context_t g_shootdown_test;
+
+/* Runs on the other CPU: waits for the boot CPU to take the guard, then asks
+ * for it -- the masked spin the shootdown has to be answerable from. */
+static uint64_t shootdown_test_worker(void *opaque) {
+  x86_shootdown_test_context_t *context =
+      (x86_shootdown_test_context_t *)opaque;
+  while (__atomic_load_n(&context->go, __ATOMIC_ACQUIRE) == 0U) {
+    xaios_cpu_relax();
+  }
+  __atomic_store_n(&context->attempting, 1U, __ATOMIC_RELEASE);
+  xaios_reentrant_lock(&g_shootdown_test_guard, smp_cpu_id());
+  __atomic_store_n(&context->acquired, 1U, __ATOMIC_RELEASE);
+  xaios_reentrant_unlock(&g_shootdown_test_guard);
+  __atomic_store_n(&context->done, 1U, __ATOMIC_RELEASE);
+  return UINT64_C(0x5a00d);
+}
+
+/* Time the worker is given, once it says it is entering the guard, to be
+ * inside the masked spin: it masks a few instructions later, and this is real
+ * time rather than a guess about speed. */
+#define X86_SHOOTDOWN_TEST_SETTLE_NS UINT64_C(20000000)
+/* What the negative control waits for an answer it must not get. Short,
+ * because the control is expected to spend it all. */
+#define X86_SHOOTDOWN_TEST_CONTROL_NS UINT64_C(50000000)
+#define X86_SHOOTDOWN_TEST_JOIN_NS UINT64_C(30000000000)
+#define X86_SHOOTDOWN_TEST_RESULT UINT64_C(0x5a00d)
+
+/* Run one phase and report the walk out of it. Returns the shootdown's verdict
+ * (1 every CPU acknowledged, 0 the budget ran out, -1 the cycle could not be
+ * built), and the two counters' deltas for the CPU under test. */
+static int shootdown_test_phase(uint32_t target_cpu, uint64_t address,
+                                uint64_t budget_ns, uint32_t suppress_poll,
+                                uint64_t *polled_delta,
+                                uint64_t *handled_delta) {
+  g_shootdown_test.go = 0U;
+  g_shootdown_test.attempting = 0U;
+  g_shootdown_test.acquired = 0U;
+  g_shootdown_test.done = 0U;
+  uint64_t polled_before = x86_64_platform_shootdowns_polled(target_cpu);
+  uint64_t handled_before = x86_64_platform_shootdowns_handled(target_cpu);
+  uint64_t id = 0U;
+  if (xaios_thread_create(shootdown_test_worker, &g_shootdown_test, target_cpu,
+                          &id) != XAIOS_OK) {
+    return -1;
+  }
+  xaios_reentrant_lock(&g_shootdown_test_guard, smp_cpu_id());
+  __atomic_store_n(&g_shootdown_test.go, 1U, __ATOMIC_RELEASE);
+  /* Wait for the worker's own note that it is acquiring the guard, then give
+     the instructions between that note and the masked spin a fixed budget. */
+  const xaios_cpu_state_t *target = smp_cpu_state(target_cpu);
+  uint64_t settle_deadline = timer_now_ns() + X86_SHOOTDOWN_TEST_SETTLE_NS;
+  while (target != 0 && target->waiting_for != g_shootdown_test_guard.name &&
+         timer_now_ns() < settle_deadline) {
+    xaios_cpu_relax();
+  }
+  while (timer_now_ns() < settle_deadline) {
+    xaios_cpu_relax();
+  }
+  int complete = x86_64_platform_shootdown_probe(address, budget_ns,
+                                                 suppress_poll);
+  xaios_reentrant_unlock(&g_shootdown_test_guard);
+  uint64_t result = 0U;
+  int joined = xaios_thread_join(id, X86_SHOOTDOWN_TEST_JOIN_NS, &result) ==
+               XAIOS_OK;
+  *polled_delta =
+      x86_64_platform_shootdowns_polled(target_cpu) - polled_before;
+  *handled_delta =
+      x86_64_platform_shootdowns_handled(target_cpu) - handled_before;
+  if (joined == 0 || result != X86_SHOOTDOWN_TEST_RESULT) return -1;
+  return complete;
+}
+
+void smp_shootdown_ack_self_test(void) {
+  uint32_t self = smp_cpu_id();
+  uint32_t target_cpu = UINT32_MAX;
+  for (uint32_t ordinal = 0U; ordinal < x86_64_platform_cpu_count();
+       ++ordinal) {
+    if (ordinal != self && x86_64_platform_cpu_online(ordinal) != 0U) {
+      target_cpu = ordinal;
+      break;
+    }
+  }
+  if (target_cpu == UINT32_MAX) {
+    klog("smp: x86 shootdown acknowledgement self-test skipped -- one cpu "
+         "online\n");
+    return;
+  }
+  /* A permanently mapped kernel address, so the invalidation is real and the
+     control that times out leaves no mapping that is about to change. */
+  uint64_t address = (uint64_t)(uintptr_t)&g_shootdown_test;
+  uint64_t polled_fixed = 0U;
+  uint64_t handled_fixed = 0U;
+  uint64_t polled_control = 0U;
+  uint64_t handled_control = 0U;
+  int fixed = shootdown_test_phase(target_cpu, address,
+                                   x86_64_platform_shootdown_budget_ns(), 0U,
+                                   &polled_fixed, &handled_fixed);
+  int control = shootdown_test_phase(target_cpu, address,
+                                     X86_SHOOTDOWN_TEST_CONTROL_NS, 1U,
+                                     &polled_control, &handled_control);
+  klog("smp: x86 shootdown acknowledgement self-test fixed=%d control=%d "
+       "polled=%lu/%lu interrupted=%lu/%lu cpu=%u\n",
+       fixed, control, polled_fixed, polled_control, handled_fixed,
+       handled_control, target_cpu);
+  kassert(fixed == 1);
+  /* The answer has to have come from the spin: an interrupt could have landed
+     before the worker masked them, and then this test would have proved
+     nothing. */
+  kassert(polled_fixed >= 1U);
+  kassert(control == 0);
+  kassert(polled_control == 0U);
+  klog("smp: x86 shootdown acknowledgement self-test passed cpu=%u\n",
+       target_cpu);
+}

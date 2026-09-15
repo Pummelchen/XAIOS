@@ -29,6 +29,14 @@ uint64_t x86_64_platform_timer_interrupts(void);
 void x86_64_platform_eoi(void);
 void x86_64_platform_invalidate_page_all(uint64_t virtual_address);
 uint64_t x86_64_platform_tlb_shootdown_count(void);
+/* One shootdown with a caller-chosen budget, reported rather than fatal, and
+ * with the spin path's answer optionally suppressed: the two halves of the
+ * B-123 self-test. Returns 1 when every other online CPU acknowledged. */
+int x86_64_platform_shootdown_probe(uint64_t virtual_address, uint64_t budget_ns,
+                                    uint32_t suppress_poll);
+uint64_t x86_64_platform_shootdown_budget_ns(void);
+uint64_t x86_64_platform_shootdowns_polled(uint32_t ordinal);
+uint64_t x86_64_platform_shootdowns_handled(uint32_t ordinal);
 
 void x86_64_platform_timer_irq(void);
 void x86_64_platform_set_user_resume(uint64_t stack);

@@ -491,6 +491,18 @@ xaios_status_t smp_release_secondary_schedulers(void) {
   return XAIOS_OK;
 }
 
+/* The shootdown acknowledgement check is x86-64's, and saying so is the point:
+ * an absent check that looks like a passed one is the failure mode this
+ * project keeps having to fix (B-123).
+ *
+ * RISC-V's remote fence is firmware's (`sbi_remote_sfence_vma`), and that call
+ * does not return until firmware says every named hart has fenced: the wait is
+ * the call, so there is no acknowledgement for an interrupt to carry. */
+void smp_shootdown_ack_self_test(void) {
+  klog("smp: shootdown acknowledgement self-test not applicable on riscv64 "
+       "-- firmware fences every hart before the call returns\n");
+}
+
 void smp_self_test(void) {
   klog("smp: riscv64 self-test passed id=%u online=%u capacity=%u\n",
        smp_cpu_id(), smp_online_count(), smp_capacity());

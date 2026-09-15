@@ -36,11 +36,20 @@ static inline void xaios_cpu_io_barrier(void) {
 #endif
 }
 
+#if defined(__x86_64__)
+/* Answer a TLB shootdown request that an interrupt cannot carry, because this
+ * CPU is spinning with interrupts masked. Defined with the rest of the x86-64
+ * shootdown in kernel/arch/x86_64/early.c; no other architecture waits for an
+ * acknowledgement of its invalidation, so no other architecture defines it. */
+void xaios_cpu_service_shootdown_request(void);
+#endif
+
 static inline void xaios_cpu_relax(void) {
 #if defined(__aarch64__)
   __asm__ volatile("yield" ::: "memory");
 #elif defined(__x86_64__)
   __asm__ volatile("pause" ::: "memory");
+  xaios_cpu_service_shootdown_request();
 #elif defined(__riscv)
   /* Zihintpause's `pause` is encoded as a fence a hart without the extension
      ignores, so it is safe to emit unconditionally: a CPU that has the hint

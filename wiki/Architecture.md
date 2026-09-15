@@ -158,6 +158,22 @@ handler-hostile was true of the wrong function: `operations_tick()` is the part
 that flushes block devices and can call `arch_reboot()`, and the interrupt path
 simply does not call it.
 
+**That masking has a consequence that had to be answered, and on x86-64 it
+stopped the machine.** A CPU waiting for a guard cannot take *any* interrupt,
+and one of the machine's interrupts is a wait rather than a notification: the
+x86-64 TLB shootdown has the initiating CPU wait until every other CPU has
+acknowledged that it invalidated the page. A guard's holder that maps or unmaps
+a page inside its critical section is therefore a shootdown, and a CPU spinning
+for the same guard is exactly the CPU whose acknowledgement cannot arrive --
+neither side can move until the budget runs out, which is `B-123`. The spin
+itself now answers the request: `xaios_cpu_relax()` reads the pending shootdown
+and invalidates and acknowledges it by hand, so every wait in the kernel that
+runs with interrupts masked is still answerable. AArch64 and RISC-V have no such
+wait -- hardware broadcasts the invalidation on one and firmware fences every
+hart before its call returns on the other -- which is why the self-test that
+builds this cycle exists only on x86-64, and why the other two report that the
+check does not apply to them rather than passing it in silence.
+
 **The carrier did not exist, and that was the actual problem.** `kmain` switches
 the 100 Hz tick off before sshd starts, and that switches off the *global*
 period, so no CPU takes a periodic timer interrupt afterwards: a poll placed in

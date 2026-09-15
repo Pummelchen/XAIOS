@@ -84,6 +84,11 @@ ARCH_TARGETS = {
         "exceptions: self-test",
         "gic: discovery self-test passed",
         "smp: per-core registry self-test passed",
+        # x86-64 is the only architecture whose TLB shootdown waits for an
+        # acknowledgement, so this check does not apply here -- and saying so
+        # is required, because a check that silently disappears looks exactly
+        # like one that passed (B-123).
+        "smp: shootdown acknowledgement self-test not applicable on aarch64 ",
         "timer: monotonic self-test passed",
     ],
     "riscv64": [
@@ -98,6 +103,9 @@ ARCH_TARGETS = {
         "exception: self-test passed",
         "irq: riscv64 plic serving the interrupt-controller interface",
         "smp: riscv64 self-test passed",
+        # See the AArch64 list: this check is x86-64's, and that it does not
+        # apply here is asserted rather than left unsaid (B-123).
+        "smp: shootdown acknowledgement self-test not applicable on riscv64 ",
         "timer: self-test passed",
         # Only RISC-V has these, and they are the point of having a third
         # architecture rather than a second copy of the first.

@@ -90,6 +90,22 @@ xaios_status_t smp_run_user_thread_group(uint64_t requested_threads,
                                         uint64_t *ran_threads,
                                         uint64_t *checksum);
 void smp_self_test(void);
+/* Prove that a CPU which cannot take an interrupt still answers a TLB
+ * shootdown.
+ *
+ * The cycle is real and was hit in the operations closure: a CPU holds a
+ * reentrant guard, which masks interrupts before it spins; inside that
+ * critical section it maps or unmaps a page, which shoots down; another CPU
+ * spins for the same guard with interrupts masked; and the first CPU waits for
+ * the second CPU's acknowledgement, which is meant to arrive as the interrupt
+ * the second CPU cannot take (B-123).
+ *
+ * x86-64 has the only shootdown that waits for an acknowledgement -- AArch64's
+ * `tlbi vaae1is` is broadcast by hardware and RISC-V's remote fence is a
+ * firmware call that returns when every named hart has fenced -- so the other
+ * architectures report that the check does not apply to them rather than
+ * passing a test they did not run. */
+void smp_shootdown_ack_self_test(void);
 void smp_secondary_main(uint64_t cpu_id);
 
 #endif
