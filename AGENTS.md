@@ -1,5 +1,15 @@
 # XAIOS
 
+<!-- agent-harnesses:begin -->
+> **One instruction file.** This is it. Codex, DeepSeek Harness, OpenCode, Qwen Code, Qoder and Zed read `AGENTS.md` directly, and
+> Claude Code reads it through the committed `CLAUDE.md`, which contains nothing
+> but `@AGENTS.md`. **Edit only this file** — do not add a second set of
+> instructions anywhere.
+>
+> Do **not** add `.rules`, `.cursorrules`, `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md` or `AGENT.md`. Zed takes the *first match* from that list, **ahead of
+> `AGENTS.md`**, so any one of them silently replaces this file for every Zed user.
+<!-- agent-harnesses:end -->
+
 An experimental freestanding Unix-like operating system in C99 with a built-in
 portable inference engine, for people who want to read, boot or extend a small OS.
 It boots from UEFI to a login prompt with durable storage, dual-stack networking
