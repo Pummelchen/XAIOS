@@ -353,6 +353,12 @@ static inline uint64_t rdtsc(void);
 static uint32_t lapic_id(void);
 static void lapic_send(uint32_t destination, uint32_t command);
 static void lapic_write(uint32_t offset, uint32_t value);
+/* How long a TLB shootdown waits for every online CPU to acknowledge, and a
+ * spin bound for the part of boot where no clock can be read yet. */
+#define X86_TLB_SHOOTDOWN_TIMEOUT_NS UINT64_C(2000000000)
+#define X86_TLB_SHOOTDOWN_FALLBACK_SPINS UINT64_C(200000000)
+static void serial_puts(uint16_t base, const char *message);
+static void serial_dec(uint16_t base, uint64_t value);
 static void panic_halt(uint16_t serial_base, const char *message);
 
 #if !XAIOS_X86_COMMON_RUNTIME
@@ -515,7 +521,16 @@ void x86_64_platform_invalidate_page_all(uint64_t virtual_address) {
   }
   __asm__ volatile("invlpg (%0)" : : "r"((void *)(uintptr_t)virtual_address)
                    : "memory");
-  uint64_t deadline = rdtsc() + UINT64_C(2000000000);
+  /* The budget is in nanoseconds, and it used to be in TSC ticks.
+   *
+   * `rdtsc() + 2000000000` is two seconds only on a machine whose TSC runs at
+   * 1 GHz: on the CI runner's 2.4456 GHz it was 0.82 seconds, and on any other
+   * machine it is whatever its clock happens to be -- the same shape as
+   * `B-122`, where a hand-written tick deadline had to become a measured one.
+   * A clock that cannot be read yet falls back to a bounded spin, which is
+   * what the virtio waits do for the same reason. */
+  uint64_t started_ns = timer_now_ns();
+  uint64_t spins = 0U;
   for (uint32_t ordinal = 0U; ordinal < g_cpu_record_count; ++ordinal) {
     if (ordinal == self ||
         __atomic_load_n(&g_cpu_records[ordinal].online,
@@ -524,7 +539,30 @@ void x86_64_platform_invalidate_page_all(uint64_t virtual_address) {
     }
     while (__atomic_load_n(&g_cpu_records[ordinal].tlb_generation,
                            __ATOMIC_ACQUIRE) != generation) {
-      if ((int64_t)(rdtsc() - deadline) >= 0) {
+      int expired = started_ns != 0U
+                        ? timer_now_ns() - started_ns >=
+                              X86_TLB_SHOOTDOWN_TIMEOUT_NS
+                        : ++spins >= X86_TLB_SHOOTDOWN_FALLBACK_SPINS;
+      if (expired != 0) {
+        /* Name the CPU that did not answer and what it last acknowledged:
+           "the shootdown timed out" says nothing about which hart is stuck or
+           whether it ever saw the request (B-123). */
+        serial_puts(COM1_PORT, "x86_64: tlb shootdown timeout waiting for "
+                               "cpu=");
+        serial_dec(COM1_PORT, ordinal);
+        serial_puts(COM1_PORT, " apic_id=");
+        serial_dec(COM1_PORT, g_cpu_records[ordinal].apic_id);
+        serial_puts(COM1_PORT, " generation=");
+        serial_dec(COM1_PORT, generation);
+        serial_puts(COM1_PORT, " acknowledged=");
+        serial_dec(COM1_PORT,
+                   __atomic_load_n(&g_cpu_records[ordinal].tlb_generation,
+                                   __ATOMIC_ACQUIRE));
+        serial_puts(COM1_PORT, " online=");
+        serial_dec(COM1_PORT,
+                   __atomic_load_n(&g_cpu_records[ordinal].online,
+                                   __ATOMIC_ACQUIRE));
+        serial_puts(COM1_PORT, "\n");
         panic_halt(COM1_PORT, "TLB shootdown timeout");
       }
       __asm__ volatile("pause");
