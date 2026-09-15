@@ -159,6 +159,7 @@ static uint64_t g_boot_memory_size;
 
 static xaios_status_t block_backend_read(void *context, uint64_t byte_offset,
                                          void *buffer, uint64_t length);
+static void block_device_note_taken(const virtio_mmio_device_t *device);
 static xaios_status_t block_backend_write(void *context, uint64_t byte_offset,
                                           const void *buffer,
                                           uint64_t length);
@@ -798,8 +799,22 @@ static xaios_status_t flush_h(virtio_block_driver_t *drv) {
   xaios_spin_unlock(&drv->queue_lock);
   virtio_transport_notify(&drv->device, 0U);
   if (virtio_transport_wait_used_notifying(&drv->device, 0U, &drv->used->idx, used_target) != XAIOS_OK) {
-    klog("virtio-blk: flush completion timeout avail=%u used=%u target=%u\n",
-         drv->next_avail, drv->used->idx, used_target);
+    /* The device and its state, not just the ring indices: B-121's flush
+       timeouts arrived from two devices at once, and nothing in this line said
+       which devices they were or whether the device was still alive. */
+    klog("virtio-blk: flush completion timeout device=%s base=0x%lx "
+         "backend=%u slot=%u capacity=%lu read_only=%u flush_ok=%u "
+         "avail=%u used=%u target=%u next_avail=%u used_last=%u special=%u "
+         "outstanding=%u device_status=0x%x\n",
+         drv->device.name != 0 ? drv->device.name : "?",
+         (unsigned long)drv->device.base, (unsigned)drv->device.backend,
+         (unsigned)drv->device.transport_slot,
+         (unsigned long)drv->capacity_sectors, (unsigned)drv->read_only,
+         (unsigned)drv->supports_flush, (unsigned)drv->avail->idx,
+         (unsigned)drv->used->idx, (unsigned)used_target,
+         (unsigned)drv->next_avail, (unsigned)drv->used_last,
+         (unsigned)drv->special_active, (unsigned)drv->outstanding,
+         (unsigned)virtio_transport_device_status(&drv->device));
     (void)recover_queue(drv);
     return XAIOS_ERR_IO;
   }
@@ -870,8 +885,14 @@ static xaios_status_t range_command_h(virtio_block_driver_t *drv,
   xaios_spin_unlock(&drv->queue_lock);
   virtio_transport_notify(&drv->device, 0U);
   if (virtio_transport_wait_used_notifying(&drv->device, 0U, &drv->used->idx, used_target) != XAIOS_OK) {
-    klog("virtio-blk: range completion timeout type=%u sector=%lu count=%u\n",
-         type, sector, sector_count);
+    klog("virtio-blk: range completion timeout device=%s type=%u sector=%lu "
+         "count=%u next_avail=%u used_last=%u outstanding=%u "
+         "device_status=0x%x\n",
+         drv->device.name != 0 ? drv->device.name : "?", (unsigned)type,
+         (unsigned long)sector, (unsigned)sector_count,
+         (unsigned)drv->next_avail, (unsigned)drv->used_last,
+         (unsigned)drv->outstanding,
+         (unsigned)virtio_transport_device_status(&drv->device));
     (void)recover_queue(drv);
     return XAIOS_ERR_IO;
   }
@@ -998,6 +1019,18 @@ xaios_status_t virtio_block_init(void) {
     g_blk->initialized = 0U;
     return XAIOS_ERR_INVALID;
   }
+  /* This device now belongs to a driver, and the registry has to say so.
+   *
+   * It did not, and B-121 is what that cost. The storage-administration
+   * window's scan takes "the first block device nothing else has taken", and
+   * the disk the machine had just booted from did not look taken, so the
+   * window opened it: `start_handle` re-negotiates the features, which resets
+   * the device and clears its queue, and then programs *its own* rings into it.
+   * The machine's own handle is left writing to rings the device no longer
+   * reads -- every later request from it, including the flush a reboot depends
+   * on, times out -- and on an installed machine the disk seized that way is
+   * the one holding the running filesystem. */
+  block_device_note_taken(&g_blk->device);
   klog("virtio-blk: capacity_sectors=%lu\n", g_blk->capacity_sectors);
   return XAIOS_OK;
 }
@@ -1311,6 +1344,18 @@ xaios_status_t virtio_block_open_slot(uint32_t start_slot,
     release_handle(drv);
     return XAIOS_ERR_NOT_FOUND;
   }
+  /* A device another handle already owns is never opened, whatever the caller
+     asked for and whatever the registry happens to contain: opening it
+     re-negotiates the features, which resets the device and moves its queue to
+     this handle's rings, and the owner is left with a disk that silently stops
+     answering (B-121). The caller is told which device and why. */
+  if (block_device_taken(&drv->device) != 0) {
+    klog("virtio-blk-h: slot=%u base=0x%lx already belongs to another "
+         "handle\n",
+         start_slot, (unsigned long)drv->device.base);
+    release_handle(drv);
+    return XAIOS_ERR_BUSY;
+  }
   xaios_status_t status = start_handle(drv, start_slot);
   if (status != XAIOS_OK) {
     release_handle(drv);
@@ -1361,6 +1406,18 @@ xaios_status_t virtio_block_open_pci_ordinal(
     release_handle(drv);
     return XAIOS_ERR_NOT_FOUND;
   }
+  /* A device another handle already owns is never opened, whatever the caller
+     asked for and whatever the registry happens to contain: opening it
+     re-negotiates the features, which resets the device and moves its queue to
+     this handle's rings, and the owner is left with a disk that silently stops
+     answering (B-121). The caller is told which device and why. */
+  if (block_device_taken(&drv->device) != 0) {
+    klog("virtio-blk-h: slot=%u base=0x%lx already belongs to another "
+         "handle\n",
+         slot, (unsigned long)drv->device.base);
+    release_handle(drv);
+    return XAIOS_ERR_BUSY;
+  }
   xaios_status_t status = start_handle(drv, slot);
   if (status != XAIOS_OK) {
     release_handle(drv);
@@ -1382,6 +1439,18 @@ xaios_status_t virtio_block_open_ordinal(uint32_t ordinal, uint32_t slot,
                                 slot, &drv->device) != XAIOS_OK) {
     release_handle(drv);
     return XAIOS_ERR_NOT_FOUND;
+  }
+  /* A device another handle already owns is never opened, whatever the caller
+     asked for and whatever the registry happens to contain: opening it
+     re-negotiates the features, which resets the device and moves its queue to
+     this handle's rings, and the owner is left with a disk that silently stops
+     answering (B-121). The caller is told which device and why. */
+  if (block_device_taken(&drv->device) != 0) {
+    klog("virtio-blk-h: slot=%u base=0x%lx already belongs to another "
+         "handle\n",
+         slot, (unsigned long)drv->device.base);
+    release_handle(drv);
+    return XAIOS_ERR_BUSY;
   }
   xaios_status_t status = start_handle(drv, slot);
   if (status != XAIOS_OK) {
