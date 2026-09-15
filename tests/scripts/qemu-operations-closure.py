@@ -134,11 +134,29 @@ def ssh_reboot(key: Path, port: int) -> None:
     reaching its third durable write, and the guest printing its ready marker a
     third time. That is a stronger claim than an exit status -- it says the
     machine came back, not merely that it accepted the request.
+
+    What is *not* waived is a guest that answers and declines, which is the
+    other thing a non-zero status can mean and the reason this used to pass
+    `ok=None`: the command schedules the power action and returns, so the
+    status is the guest's answer, while 255 is ssh's own "the connection
+    failed" and is what a shutdown racing the channel looks like. A refusal is
+    raised here with the guest's words, because the phase below waits for
+    lifecycle records a refusal will never produce and would otherwise fail
+    with a sentence about the records rather than about the refusal.
     """
     try:
-        ssh_command(key, port, "reboot", ok=None, timeout=30 * timeout_scale())
+        result = subprocess.run(ssh_base(key, port) + ["reboot"], cwd=ROOT,
+                                text=True, capture_output=True,
+                                timeout=30 * timeout_scale())
     except subprocess.TimeoutExpired:
-        pass
+        return
+    if result.returncode in (0, 255):
+        return
+    output = (result.stdout + result.stderr).strip()
+    raise RuntimeError(
+        f"the guest refused the reboot: exit={result.returncode} "
+        f"output={output!r}"
+    )
 
 
 def ssh_command(key: Path, port: int, command: str, *, ok: bool | None = True,
