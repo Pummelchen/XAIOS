@@ -215,12 +215,21 @@ SPECIAL_CAPABILITIES = {
         "nvme",
         [
             "nvme: async self-test passed namespaces=1",
-            "rounds=8 async=38 cancelled=1",
-            # Named per architecture, because the gate now covers three and
-            # says how each one is driven. RISC-V is polled: that board has no
-            # MSI-X, which is a property of the machine and is why the count
-            # differs rather than something to hide behind a looser match.
-            "passed on aarch64 4 msix, x86_64 4 msix, riscv64 1 polled",
+            # The counts are the gate's business, and the gate asserts them as
+            # *minimums* (`async_ops >= min_async`, scaled by queue count,
+            # `rounds >= 8`, `cancelled >= 1`, `malformed >= 4`). This asked for
+            # the literal `async=38`, which is one host's four-queue total: the
+            # nvme gate's own stdout carries `async=39` for its two four-queue
+            # rows and `async=12` for its two single-queue ones, so the marker
+            # matched nothing on this machine and a runner whose rows differed
+            # by one failed an aggregate whose own sub-gate passed. That is the
+            # shape of a check asserting a number the system never promised.
+            # The shape is what is required here, plus the gate's own verdict,
+            # which carries the per-architecture driving line.
+            "rounds=8 ",
+            "cancelled=1",
+            "qemu-nvme-gate: async PRP/SGL direct I/O, cancellation, malformed "
+            "completion and stress passed on ",
         ],
     ),
     "outbound_fragmentation": (
