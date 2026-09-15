@@ -337,7 +337,7 @@ def validate_contract(contract: Dict[str, Any], failures: List[str]) -> Dict[str
     for path in ["/init", "/bin/service-manager", "/bin/xaios-worker", "/bin/xaios-shell", "/bin/xaiosctl", "/bin/hello", "/bin/helloworldc99", "/bin/sysinfo", "/bin/systest", "/bin/smptest", "/bin/nettest", "/bin/lstm-xor", "/bin/sshtest", "/bin/mltest", "/etc/xaios-init.conf", "/etc/services/source-index.svc", "/models/cpu-ai-v1-fixture.xaiosmodel"]:
         if path not in required_paths:
             failures.append(f"contract.filesystem.required_paths missing {path}")
-    check_equal(filesystem.get("max_files"), 64, "contract.filesystem.max_files", failures)
+    check_equal(filesystem.get("max_files"), 80, "contract.filesystem.max_files", failures)
 
     model_format = contract.get("cpu_ai_model_format", {})
     check_equal(model_format.get("magic"), "XAIOS_MODEL_MIAI", "contract.cpu_ai_model_format.magic", failures)

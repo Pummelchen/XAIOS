@@ -7,7 +7,15 @@ import sys
 SECTOR_SIZE = 512
 MAGIC = b"XAIOSROFS2"
 VERSION = 2
-MAX_FILES = 64
+# The ceiling is the format's own: a directory record is PATH_MAX + 28 bytes
+# and the directory lives in HEADER_BYTES, so 80 records is what fits. It was
+# 64, and the RISC-V image used all 64 of them -- so the SSH authorized-keys
+# file, which is what turns a machine that serves SSH into one that can be
+# administered over it, was the entry that did not fit and `make riscv64` with
+# a key failed with "too many initfs files" (B-126). The kernel's
+# INITFS_MAX_FILES must equal this, and `qemu-abi-contract` now checks that it
+# does rather than trusting the two to be edited together.
+MAX_FILES = 80
 PATH_MAX = 64
 HEADER_SECTOR = 1
 HEADER_BYTES = 8192
@@ -113,7 +121,14 @@ def main() -> int:
         flags = ENTRY_FLAG_EXECUTABLE if path.startswith("/bin/") else 0
         files.append((path, pathlib.Path(host_file).read_bytes(), flags))
     if len(files) > MAX_FILES:
-        raise SystemExit("too many initfs files")
+        raise SystemExit(
+            f"too many initfs files: {len(files)} of {MAX_FILES} "
+            f"(the kernel's INITFS_MAX_FILES must match this number)")
+    # Said out loud, because a full directory is a fact about the image rather
+    # than something to discover when the next file is added: the RISC-V image
+    # reached the ceiling exactly, and the next entry -- the SSH authorized-keys
+    # file, which is what makes the machine administrable -- failed the build.
+    print(f"initfs: {len(files)} of {MAX_FILES} entries used")
 
     offset = DATA_OFFSET
     entries = []

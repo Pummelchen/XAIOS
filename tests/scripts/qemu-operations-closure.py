@@ -45,9 +45,18 @@ def reserve_port() -> int:
 def run(command: list[str], *, env: dict[str, str] | None = None,
         timeout: int = 240) -> subprocess.CompletedProcess[str]:
     print("+", " ".join(command), flush=True)
-    return subprocess.run(command, cwd=ROOT, env=env, text=True,
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          timeout=timeout, check=True)
+    try:
+        return subprocess.run(command, cwd=ROOT, env=env, text=True,
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT,
+                              timeout=timeout, check=True)
+    except subprocess.CalledProcessError as error:
+        # A build that fails here used to be reported as a traceback with the
+        # command and nothing about why: the output was captured and then
+        # dropped by the exception, so the reason existed and was unreadable.
+        if error.output:
+            print(error.output, flush=True)
+        raise
 
 
 def wait_marker(path: Path, marker: str, count: int = 1,
@@ -224,13 +233,25 @@ def start_guest(arch: str, port: int, persistent: Path,
             "XAIOS_PERSISTENT_IMAGE": str(persistent),
         })
         runner = ROOT / "platform" / "qemu" / "run-qemu-aarch64.sh"
-    else:
+    elif arch == "x86_64":
         env.update({
             "XAIOS_QEMU_X86_ACCEL": "tcg",
             "XAIOS_QEMU_X86_SMP": "4",
             "XAIOS_X86_PERSISTENT_IMAGE": str(persistent),
         })
         runner = ROOT / "platform" / "qemu" / "run-qemu-x86_64.sh"
+    else:
+        # RISC-V has no hypervisor on any host this runs on, so there is no
+        # accelerator to ask for, and its runner writes the console to a file
+        # by default while this gate reads the boot out of the process's
+        # stdout. Its host-forwarding knob has this architecture's own name.
+        env.update({
+            "XAIOS_RISCV64_SSH_PORT": str(port),
+            "XAIOS_RISCV64_CPUS": "4",
+            "XAIOS_RISCV64_SERIAL": "stdio",
+            "XAIOS_PERSISTENT_IMAGE": str(persistent),
+        })
+        runner = ROOT / "platform" / "qemu" / "run-qemu-riscv64.sh"
     log_file = log_path.open("ab")
     process = subprocess.Popen([str(runner)], cwd=ROOT, env=env,
                                stdin=subprocess.DEVNULL, stdout=log_file,
@@ -366,12 +387,14 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
         recovery = ssh_command(key, port, "recovery status")
         assert_contains(recovery, "unclean_boots=1")
         ssh_reboot(key, port)
-        if arch == "aarch64":
+        if arch == "x86_64":
+            # The x86-64 runner is the only one given `-no-reboot`, so a
+            # reboot ends that process; the other two come back inside it.
+            second.wait(timeout=30)
+        else:
             wait_lifecycle_durable(log_path, 3)
             wait_marker(log_path, READY, 3)
             wait_ssh(key, port, arch)
-        else:
-            second.wait(timeout=30)
     finally:
         close_guest(second)
 
@@ -456,7 +479,7 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
     # shutdown persisted a clean lifecycle record before QEMU powered off.
     fourth = start_guest(arch, port, persistent, log_path)
     try:
-        final_ready = 5 if arch == "aarch64" else 4
+        final_ready = 4 if arch == "x86_64" else 5
         wait_lifecycle_durable(log_path, final_ready)
         wait_marker(log_path, READY, final_ready)
         wait_ssh(key, port, arch)
@@ -482,7 +505,8 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--arch", choices=("aarch64", "x86_64", "all"),
+    parser.add_argument("--arch",
+                        choices=("aarch64", "x86_64", "riscv64", "all"),
                         default="all")
     parser.add_argument("--skip-docker", action="store_true")
     args = parser.parse_args()
@@ -493,10 +517,12 @@ def main() -> int:
     run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)])
     env = os.environ.copy()
     env["XAIOS_AUTHORIZED_KEYS_FILE"] = f"{key}.pub"
-    arches = ("aarch64", "x86_64") if args.arch == "all" else (args.arch,)
+    arches = (("aarch64", "x86_64", "riscv64") if args.arch == "all"
+              else (args.arch,))
+    builds = {"aarch64": "image", "x86_64": "image-x86_64",
+              "riscv64": "riscv64"}
     for arch in arches:
-        run(["make", "image" if arch == "aarch64" else "image-x86_64"],
-            env=env)
+        run(["make", builds[arch]], env=env)
 
     docker_enabled = not args.skip_docker and shutil.which("docker") is not None
     if docker_enabled:

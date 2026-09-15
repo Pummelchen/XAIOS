@@ -621,7 +621,7 @@
     "sector_size": 512,
     "header_bytes": 8192,
     "block_size": 512,
-    "max_files": 64,
+    "max_files": 80,
     "path_max": 64,
     "data_offset": 2097152,
     "flags": [

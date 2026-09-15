@@ -37,6 +37,22 @@ Landed since build 5 and not in any released image.
   sleep with the thread still pending, forever, because only one CPU carries a
   periodic tick (B-120); all three ports now ask once more with interrupts
   masked and sleep and enable them together.
+- **A RISC-V machine can be administered over SSH again, and the image said so
+  by refusing to build.** The initial filesystem holds a fixed directory of 64
+  entries and the RISC-V image used all 64, so adding the SSH authorized-keys
+  file -- the difference between a machine that serves SSH and one an operator
+  can log in to -- failed the build with `too many initfs files`. The ceiling
+  is the format's own (80 records at a 64-byte path are what fit in the 8 KiB
+  directory) and is now 80, with the kernel's table and the builder's checked
+  against each other by the ABI contract rather than trusted to be edited
+  together (B-126).
+- **`reboot` on RISC-V restarts the machine instead of stopping it.** The port
+  asked SBI's system-reset extension for a *shutdown* and called it a reboot,
+  so a guest told to reboot powered off and never came back. It asks for a cold
+  reboot now, and `shutdown` still asks for the shutdown it always meant. The
+  administrative lifecycle gate found this the first time it ran on RISC-V --
+  it boots, is told the previous boot was unclean, reboots over SSH, is driven
+  through the control surface and shuts down cleanly (B-127).
 - **Storage on RISC-V no longer misreads completions.** The NVMe driver copied
   a completion out of the completion queue and then checked the phase tag, and
   the copy is not a single access: the command identifier and the status share

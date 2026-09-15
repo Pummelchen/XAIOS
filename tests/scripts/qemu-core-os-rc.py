@@ -49,8 +49,19 @@ COMMANDS = [
     # exercises the driver's refusal path at all.
     ("memory_matrix", ["make", "qemu-memory-matrix"], 3600),
     ("readonly_medium", ["make", "qemu-readonly-medium-gate"], 900),
+    # The administrative lifecycle, one step per architecture rather than one
+    # for all three. The single step's 700-second budget was written for two
+    # architectures and would have been the thing that failed once RISC-V was
+    # added to it: that leg is interpreted on every host there is, so it is
+    # several times the others' cost. Separate steps also say which
+    # architecture failed in the aggregate's own output instead of leaving it
+    # to the closure's log.
     ("operations", ["python3", "tests/scripts/qemu-operations-closure.py",
-                    "--skip-docker"], 700),
+                    "--skip-docker", "--arch", "aarch64"], 500),
+    ("operations_x86_64", ["python3", "tests/scripts/qemu-operations-closure.py",
+                           "--skip-docker", "--arch", "x86_64"], 500),
+    ("operations_riscv64", ["python3", "tests/scripts/qemu-operations-closure.py",
+                            "--skip-docker", "--arch", "riscv64"], 900),
 ]
 
 AARCH64_CAPABILITIES = {
@@ -173,6 +184,14 @@ HOSTED_CAPABILITIES = {
 SPECIAL_CAPABILITIES = {
     "operational_lifecycle_closure": (
         "operations",
+        ["qemu-operations-closure: PASS"],
+    ),
+    "operational_lifecycle_closure_x86_64": (
+        "operations_x86_64",
+        ["qemu-operations-closure: PASS"],
+    ),
+    "operational_lifecycle_closure_riscv64": (
+        "operations_riscv64",
         ["qemu-operations-closure: PASS"],
     ),
     "storage_crash_consistency": (

@@ -38,6 +38,15 @@
 #define SBI_BASE_PROBE_EXTENSION UINT64_C(3)
 #define SBI_DBCN_WRITE UINT64_C(0)
 #define SBI_SRST_SYSTEM_RESET UINT64_C(0)
+/* What the system-reset extension is asked to do, from SBI v2.0: the same
+ * call stops the machine or restarts it, and the port called it with the
+ * shutdown type for both -- so `reboot` on this architecture powered the
+ * machine off, which is what the administrative lifecycle gate caught the
+ * first time it ran here (B-127). */
+#define SBI_SRST_RESET_SHUTDOWN UINT64_C(0)
+#define SBI_SRST_RESET_COLD_REBOOT UINT64_C(1)
+#define SBI_SRST_RESET_WARM_REBOOT UINT64_C(2)
+#define SBI_SRST_REASON_NONE UINT64_C(0)
 
 typedef struct sbi_result {
   int64_t error;
@@ -52,6 +61,10 @@ void sbi_puts(const char *text);
 void sbi_put_u64_hex(uint64_t value);
 void sbi_put_u64(uint64_t value);
 void sbi_shutdown(void);
+/* Ask firmware to stop or restart the machine. `reset_type` is one of the
+ * SBI_SRST_RESET_* values; the call does not return when firmware obeys, and
+ * the caller parks when it does not. */
+void sbi_system_reset(uint32_t reset_type, uint32_t reset_reason);
 
 /* Start a hart at a physical address with translation off, passing an opaque
    value the entry code receives in a1. Returns the SBI error, zero on

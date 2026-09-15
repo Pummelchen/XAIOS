@@ -138,14 +138,24 @@ void sbi_put_u64(uint64_t value) {
   }
 }
 
-void sbi_shutdown(void) {
+void sbi_system_reset(uint32_t reset_type, uint32_t reset_reason) {
   /* The system-reset extension is the current way; the legacy shutdown is
-     what older firmware has. Neither is guaranteed, so if both decline the
-     caller is left to park rather than being told the machine stopped. */
+     what older firmware has, and it only knows how to stop the machine. So a
+     reboot on firmware without SRST has no call to make and the caller parks:
+     the alternative -- what this port did -- is to ask for a shutdown and
+     tell the operator the machine rebooted, which is worse than not
+     restarting (B-127). */
   if (sbi_probe_extension(SBI_EXT_SRST) != 0) {
-    (void)sbi_call(SBI_EXT_SRST, SBI_SRST_SYSTEM_RESET, 0U, 0U, 0U);
+    (void)sbi_call(SBI_EXT_SRST, SBI_SRST_SYSTEM_RESET, reset_type,
+                   reset_reason, 0U);
   }
-  (void)sbi_call(SBI_EXT_LEGACY_SHUTDOWN, 0U, 0U, 0U, 0U);
+  if (reset_type == SBI_SRST_RESET_SHUTDOWN) {
+    (void)sbi_call(SBI_EXT_LEGACY_SHUTDOWN, 0U, 0U, 0U, 0U);
+  }
+}
+
+void sbi_shutdown(void) {
+  sbi_system_reset(SBI_SRST_RESET_SHUTDOWN, SBI_SRST_REASON_NONE);
 }
 
 /* Starting another hart.

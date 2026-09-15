@@ -8,7 +8,14 @@
 #define INITFS_SECTOR UINT64_C(1)
 #define INITFS_MAGIC "XAIOSROFS2"
 #define INITFS_MAGIC_LEN 9U
-#define INITFS_MAX_FILES 64U
+/* The RISC-V image reached this ceiling exactly, so the next entry -- the SSH
+ * authorized-keys file, without which the machine cannot be administered by
+ * key -- failed the image build (B-126). This is the format's own limit: a
+ * directory record is INITFS_PATH_MAX + 28 bytes and the directory lives in
+ * INITFS_HEADER_BYTES, so 80 records is what fits. The static tables below
+ * grow by about 1.7 KiB for the sixteen extra entries. The builder's MAX_FILES
+ * must equal this and `qemu-abi-contract` checks that it does. */
+#define INITFS_MAX_FILES 80U
 #define INITFS_PATH_MAX 64U
 #define INITFS_MODE_MAX 32U
 #define SECTOR_SIZE UINT64_C(512)

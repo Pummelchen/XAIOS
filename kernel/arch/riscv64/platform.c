@@ -153,9 +153,13 @@ void watchdog_self_test(void) {}
 void boot_counter_reset(void) {}
 
 /* Reset through SBI's system-reset extension, which is the only way a
-   supervisor-mode kernel can restart the machine. */
+   supervisor-mode kernel can restart the machine -- and reset is the whole
+   point: this called `sbi_shutdown()`, which is the same extension asked to
+   *stop*, so `reboot` powered the machine off. The administrative lifecycle
+   gate found it the first time it ran on this architecture: after `ssh
+   reboot` the machine never came back (B-127). */
 void arch_reboot(void) {
-  sbi_shutdown();
+  sbi_system_reset(SBI_SRST_RESET_COLD_REBOOT, SBI_SRST_REASON_NONE);
   for (;;) {
     __asm__ volatile("wfi");
   }

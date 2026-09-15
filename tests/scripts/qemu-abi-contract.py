@@ -40,6 +40,8 @@ def validate_initfs_contract(rc_contract):
     failures = []
     create_initfs = (ROOT / "scripts/create-initfs.py").read_text(encoding="utf-8")
     build_image = (ROOT / "scripts/build-image.sh").read_text(encoding="utf-8")
+    kernel_initramfs = (ROOT / "kernel" / "fs" / "initramfs.c").read_text(
+        encoding="utf-8")
     fs = rc_contract.get("filesystem_format", {})
     constants = {
         "MAGIC": fs.get("magic"),
@@ -62,6 +64,20 @@ def validate_initfs_contract(rc_contract):
                 failures.append(f"create-initfs {name} does not match contract {expected!r}")
         elif str(expected) not in value:
             failures.append(f"create-initfs {name} expected {expected}, got {value}")
+
+    # The builder's ceiling and the kernel's are the same number in two files,
+    # and nothing compared them: the RISC-V image sat exactly on the kernel's
+    # limit, so one more entry failed the build -- and an image the builder
+    # accepted with a larger ceiling would be refused by the kernel reading it
+    # rather than by the build that wrote it (B-126).
+    kernel_limit = re.search(r"^#define\s+INITFS_MAX_FILES\s+(\d+)U?$",
+                             kernel_initramfs, re.MULTILINE)
+    if kernel_limit is None:
+        failures.append("initramfs.c is missing INITFS_MAX_FILES")
+    elif int(kernel_limit.group(1)) != fs.get("max_files"):
+        failures.append(
+            f"initramfs.c INITFS_MAX_FILES is {kernel_limit.group(1)} but the "
+            f"contract says {fs.get('max_files')}")
 
     required_paths = fs.get("required_paths", [])
     user_app_paths = set()
