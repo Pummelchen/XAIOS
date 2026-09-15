@@ -309,7 +309,8 @@ static network_tcp_flow_t g_tcp_flows[NETWORK_TCP_CONNECTIONS];
    with almost no serialisation, and ten of its exported functions call other
    exported ones. See xaios_reentrant_lock for why that combination needs a
    depth-counting guard rather than a plain lock at each entry point. */
-static xaios_reentrant_lock_t g_network_guard = XAIOS_REENTRANT_LOCK_INIT;
+static xaios_reentrant_lock_t g_network_guard =
+    XAIOS_REENTRANT_LOCK_INIT("network guard");
 
 static void network_lock(void) {
   xaios_reentrant_lock(&g_network_guard, smp_cpu_id());

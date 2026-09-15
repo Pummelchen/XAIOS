@@ -247,6 +247,19 @@ static uint64_t platform_mpidr(const aarch64_acpi_info_t *acpi_info,
   return 0U;
 }
 
+/* What this CPU is waiting for, published for another CPU to read. AArch64
+ * has no TLB shootdown that waits for an acknowledgement -- `tlbi vaae1is` is
+ * broadcast by the hardware -- so nothing reports this yet; it is recorded
+ * anyway, because a report from a CPU that is waiting is the only way to say
+ * what it was waiting for, and the field belongs to the CPU rather than to the
+ * mechanism that reads it (B-123). */
+void xaios_cpu_note_wait(const char *reason) {
+  uint32_t cpu = smp_cpu_id();
+  if (cpu < g_cpu_capacity) {
+    g_cpu_states[cpu].waiting_for = reason;
+  }
+}
+
 uint32_t smp_cpu_id(void) {
   uint64_t mpidr = read_mpidr_el1() & UINT64_C(0x00ffffff);
   for (uint32_t cpu = 0U; cpu < g_cpu_capacity; ++cpu) {

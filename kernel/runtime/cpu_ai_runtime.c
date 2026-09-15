@@ -80,7 +80,8 @@ typedef struct {
 /* C-01: the runtime's model binding and key-value state is reached from
    the decode and run syscalls, which execute on whichever CPU the calling
    thread occupies. See xaios_reentrant_lock. */
-static xaios_reentrant_lock_t g_cpu_ai_guard = XAIOS_REENTRANT_LOCK_INIT;
+static xaios_reentrant_lock_t g_cpu_ai_guard =
+    XAIOS_REENTRANT_LOCK_INIT("CPU AI guard");
 
 static void cpu_ai_lock(void) {
   xaios_reentrant_lock(&g_cpu_ai_guard, smp_cpu_id());

@@ -172,10 +172,17 @@ typedef struct xaios_reentrant_lock {
   volatile uint32_t depth;
   /* What interrupts were when the outermost acquire took this guard. */
   xaios_interrupt_state_t interrupt_state;
+  /* Which guard this is, for a CPU that is waiting on it. A guard is taken
+   * with interrupts off for the whole critical section, so a CPU spinning here
+   * cannot answer an inter-processor interrupt -- and a report from the CPU
+   * that sent one has to be able to say what it was doing (B-123). */
+  const char *name;
 } xaios_reentrant_lock_t;
 
-#define XAIOS_REENTRANT_LOCK_INIT \
-  { XAIOS_SPINLOCK_INIT, 0xffffffffU, 0, 0UL }
+/* A guard names itself, because a CPU waiting on it has nothing else to report
+ * and "some lock" is not an answer. */
+#define XAIOS_REENTRANT_LOCK_INIT(guard_name) \
+  { XAIOS_SPINLOCK_INIT, 0xffffffffU, 0, 0UL, (guard_name) }
 
 static inline void xaios_reentrant_lock(xaios_reentrant_lock_t *guard,
                                         uint32_t cpu_id) {
@@ -184,6 +191,7 @@ static inline void xaios_reentrant_lock(xaios_reentrant_lock_t *guard,
     ++guard->depth;
     return;
   }
+  xaios_cpu_note_wait(guard->name);
   /* Masked before the spinlock, not after: the point is that nothing can land
      between the depth check above and the owner being published below. */
   xaios_interrupt_state_t state = xaios_interrupts_disable();
@@ -191,6 +199,7 @@ static inline void xaios_reentrant_lock(xaios_reentrant_lock_t *guard,
   guard->interrupt_state = state;
   __atomic_store_n(&guard->owner, cpu_id, __ATOMIC_RELEASE);
   __atomic_store_n(&guard->depth, 1U, __ATOMIC_RELEASE);
+  xaios_cpu_note_wait(0);
 }
 
 static inline void xaios_reentrant_unlock(xaios_reentrant_lock_t *guard) {

@@ -35,7 +35,8 @@ static const char k_child_parent_name[] = "/init";
    service_update, all of which are syscalls and so run on whichever CPU the
    calling thread occupies. A few of these functions call each other, so the
    guard counts depth; see xaios_reentrant_lock. */
-static xaios_reentrant_lock_t g_service_guard = XAIOS_REENTRANT_LOCK_INIT;
+static xaios_reentrant_lock_t g_service_guard =
+    XAIOS_REENTRANT_LOCK_INIT("service guard");
 
 static void service_lock(void) {
   xaios_reentrant_lock(&g_service_guard, smp_cpu_id());

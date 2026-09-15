@@ -143,6 +143,18 @@ void riscv64_smp_record_boot_hart(uint32_t hart_id) {
   g_cpu_count = 1U;
 }
 
+/* What this CPU is waiting for, published for another CPU to read. RISC-V's
+ * remote fence is firmware's (`sbi_remote_sfence_vma`), and that call does not
+ * return until firmware says every named hart has fenced, so no CPU waits on
+ * this note yet; it is recorded because the field belongs to the CPU, not to
+ * the mechanism that reads it (B-123). */
+void xaios_cpu_note_wait(const char *reason) {
+  uint32_t cpu = smp_cpu_id();
+  if (cpu < RISCV64_MAX_HARTS) {
+    g_cpu_states[cpu].waiting_for = reason;
+  }
+}
+
 uint32_t smp_cpu_id(void) {
   /* tp holds this hart's logical CPU number, put there by the entry code.
      Read from a register rather than a CSR because mhartid is machine mode

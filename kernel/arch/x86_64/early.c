@@ -48,6 +48,9 @@
 #define X86_XSTATE_AVX512 UINT64_C(0xe0)
 #define X86_XSTATE_AMX UINT64_C(0x60000)
 #define MSR_IA32_APIC_BASE UINT32_C(0x1b)
+/* The value RDTSCP returns in ECX: this kernel puts the CPU's ordinal there so
+ * a CPU can name itself without reading the APIC (see the fast identity). */
+#define MSR_IA32_TSC_AUX UINT32_C(0xc0000103)
 #define APIC_BASE_ENABLE UINT64_C(1 << 11)
 #define APIC_BASE_X2APIC UINT64_C(1 << 10)
 #define APIC_ID UINT32_C(0x020)
@@ -202,6 +205,15 @@ typedef struct x86_64_cpu_record {
   volatile uint32_t completed_generation;
   volatile uint64_t checksum;
   volatile uint32_t tlb_generation;
+  /* What this CPU was doing when somebody asked it for a TLB shootdown, so a
+   * refusal can say why it did not answer (B-123). `interrupts_taken` is a
+   * liveness count: a CPU that keeps taking timer interrupts is running with
+   * interrupts enabled and simply did not receive or handle the request, while
+   * one whose count is frozen is not taking interrupts at all. */
+  volatile uint64_t interrupts_taken;
+  volatile uint32_t last_vector;
+  volatile uint64_t shootdowns_handled;
+  volatile uint32_t shootdown_lock_wait;
   uint64_t kernel_stack_top;
   uint64_t syscall_stack_top;
   uint64_t user_resume_rsp[X86_USER_NESTING_MAX];
@@ -337,6 +349,10 @@ static uint64_t g_virtio_msix_isr;
 static volatile uint32_t g_common_worker_release;
 static uint64_t g_tsc_frequency;
 static uint64_t g_lapic_frequency;
+/* Whether IA32_TSC_AUX holds this CPU's ordinal, so `current_ordinal_fast`
+ * may use RDTSCP. Set by whichever CPU prepares first; it is a property of the
+ * CPU model, not of one CPU. */
+static uint32_t g_tsc_aux_ready;
 static volatile uint32_t g_tlb_shootdown_lock;
 static volatile uint32_t g_tlb_shootdown_generation;
 static volatile uint64_t g_tlb_shootdown_address;
@@ -351,6 +367,7 @@ extern const uint8_t _binary_hello_bin_end[];
 
 static inline uint64_t rdtsc(void);
 static uint32_t lapic_id(void);
+static uint32_t current_ordinal_fast(void);
 static void lapic_send(uint32_t destination, uint32_t command);
 static void lapic_write(uint32_t offset, uint32_t value);
 /* How long a TLB shootdown waits for every online CPU to acknowledge, and a
@@ -404,6 +421,19 @@ uint32_t x86_64_platform_cpu_online(uint32_t ordinal) {
              ? __atomic_load_n(&g_cpu_records[ordinal].online,
                                __ATOMIC_ACQUIRE)
              : 0U;
+}
+
+/* What this CPU is waiting for, published where another CPU can read it. The
+ * reader of this note is the TLB shootdown's refusal, which until now could
+ * name only the CPU that had not acknowledged: "cpu 1 is silent" is a question
+ * and this is the half that answers it (B-123). */
+void xaios_cpu_note_wait(const char *reason) {
+  if (g_cpu_records == 0) return;
+  uint32_t ordinal = current_ordinal_fast();
+  if (ordinal < g_cpu_record_count) {
+    __atomic_store_n(&g_cpu_records[ordinal].state.waiting_for, reason,
+                     __ATOMIC_RELEASE);
+  }
 }
 
 uint32_t x86_64_platform_workers_ready(void) {
@@ -498,11 +528,25 @@ void x86_64_platform_eoi(void) {
 }
 
 void x86_64_platform_invalidate_page_all(uint64_t virtual_address) {
+  uint32_t self = x86_64_platform_current_ordinal();
+  xaios_cpu_note_wait("tlb shootdown lock");
   while (__atomic_exchange_n(&g_tlb_shootdown_lock, 1U,
                              __ATOMIC_ACQUIRE) != 0U) {
+    /* A CPU waiting here cannot take the shootdown interrupt either, so record
+     * whether it is waiting with interrupts masked: that is the difference
+     * between "spinning and will answer" and "spinning and cannot" (B-123). */
+    if (self < g_cpu_record_count) {
+      __atomic_store_n(&g_cpu_records[self].shootdown_lock_wait,
+                       xaios_interrupts_enabled() != 0 ? 1U : 2U,
+                       __ATOMIC_RELEASE);
+    }
     __asm__ volatile("pause");
   }
-  uint32_t self = x86_64_platform_current_ordinal();
+  if (self < g_cpu_record_count) {
+    __atomic_store_n(&g_cpu_records[self].shootdown_lock_wait, 0U,
+                     __ATOMIC_RELEASE);
+  }
+  xaios_cpu_note_wait("tlb shootdown in progress");
   uint32_t generation =
       __atomic_add_fetch(&g_tlb_shootdown_generation, 1U, __ATOMIC_RELAXED);
   if (generation == 0U) {
@@ -544,24 +588,53 @@ void x86_64_platform_invalidate_page_all(uint64_t virtual_address) {
                               X86_TLB_SHOOTDOWN_TIMEOUT_NS
                         : ++spins >= X86_TLB_SHOOTDOWN_FALLBACK_SPINS;
       if (expired != 0) {
-        /* Name the CPU that did not answer and what it last acknowledged:
-           "the shootdown timed out" says nothing about which hart is stuck or
-           whether it ever saw the request (B-123). */
+        /* Name the CPU that did not answer, what it last acknowledged, and
+           what it says it was doing: "the shootdown timed out" says nothing
+           about which CPU is stuck, whether it ever saw the request, or what
+           it was waiting for (B-123). */
+        x86_64_cpu_record_t *stuck = &g_cpu_records[ordinal];
+        /* Plain reads of a volatile pointer: this is a report, and a pointer
+           that is being replaced as it is read is still a pointer. */
+        const char *waiting_for = stuck->state.waiting_for;
+        const char *own = self < g_cpu_record_count
+                              ? g_cpu_records[self].state.waiting_for
+                              : 0;
         serial_puts(COM1_PORT, "x86_64: tlb shootdown timeout waiting for "
                                "cpu=");
         serial_dec(COM1_PORT, ordinal);
         serial_puts(COM1_PORT, " apic_id=");
-        serial_dec(COM1_PORT, g_cpu_records[ordinal].apic_id);
+        serial_dec(COM1_PORT, stuck->apic_id);
         serial_puts(COM1_PORT, " generation=");
         serial_dec(COM1_PORT, generation);
         serial_puts(COM1_PORT, " acknowledged=");
         serial_dec(COM1_PORT,
-                   __atomic_load_n(&g_cpu_records[ordinal].tlb_generation,
-                                   __ATOMIC_ACQUIRE));
+                   __atomic_load_n(&stuck->tlb_generation, __ATOMIC_ACQUIRE));
         serial_puts(COM1_PORT, " online=");
         serial_dec(COM1_PORT,
-                   __atomic_load_n(&g_cpu_records[ordinal].online,
+                   __atomic_load_n(&stuck->online, __ATOMIC_ACQUIRE));
+        serial_puts(COM1_PORT, " waited_ns=");
+        serial_dec(COM1_PORT,
+                   started_ns != 0U ? timer_now_ns() - started_ns : 0U);
+        serial_puts(COM1_PORT, " interrupts=");
+        serial_dec(COM1_PORT,
+                   __atomic_load_n(&stuck->interrupts_taken,
                                    __ATOMIC_ACQUIRE));
+        serial_puts(COM1_PORT, " last_vector=");
+        serial_dec(COM1_PORT, stuck->last_vector);
+        serial_puts(COM1_PORT, " shootdowns_handled=");
+        serial_dec(COM1_PORT, __atomic_load_n(&stuck->shootdowns_handled,
+                                              __ATOMIC_ACQUIRE));
+        serial_puts(COM1_PORT, " shootdown_lock_wait=");
+        serial_dec(COM1_PORT, stuck->shootdown_lock_wait);
+        serial_puts(COM1_PORT, " waiting_for=");
+        serial_puts(COM1_PORT, waiting_for != 0 ? waiting_for : "none");
+        serial_puts(COM1_PORT, "\n");
+        /* The initiator's own note, because the CPU that reports the refusal
+           is the one that knows which of the two is holding what. */
+        serial_puts(COM1_PORT, "x86_64: tlb shootdown initiator cpu=");
+        serial_dec(COM1_PORT, self);
+        serial_puts(COM1_PORT, " waiting_for=");
+        serial_puts(COM1_PORT, own != 0 ? own : "none");
         serial_puts(COM1_PORT, "\n");
         panic_halt(COM1_PORT, "TLB shootdown timeout");
       }
@@ -570,6 +643,7 @@ void x86_64_platform_invalidate_page_all(uint64_t virtual_address) {
   }
   __atomic_add_fetch(&g_tlb_shootdown_count, 1U, __ATOMIC_RELAXED);
   __atomic_store_n(&g_tlb_shootdown_lock, 0U, __ATOMIC_RELEASE);
+  xaios_cpu_note_wait(0);
 }
 
 uint64_t x86_64_platform_tlb_shootdown_count(void) {
@@ -1047,6 +1121,38 @@ static uint32_t lapic_id(void) {
   return (apic_base & APIC_BASE_X2APIC) != 0U ? id : id >> 24U;
 }
 
+/* This CPU's ordinal without going to the APIC.
+ *
+ * `x86_64_platform_current_ordinal` reads the APIC id, which under emulation
+ * is a host round trip -- too expensive to pay on every external interrupt, and
+ * far too expensive to pay on every iteration of a spin loop. RDTSCP returns
+ * the IA32_TSC_AUX value, bring-up puts this CPU's ordinal there, and reading
+ * it costs a few cycles. A CPU whose CPUID has no RDTSCP keeps the APIC read,
+ * and the ordinal is validated against the record table either way. */
+static uint32_t current_ordinal_fast(void) {
+  if (g_tsc_aux_ready == 0U) return x86_64_platform_current_ordinal();
+  uint32_t low = 0U;
+  uint32_t high = 0U;
+  uint32_t aux = 0U;
+  __asm__ volatile("rdtscp" : "=a"(low), "=d"(high), "=c"(aux) : : "memory");
+  return aux < g_cpu_record_count ? aux : x86_64_platform_current_ordinal();
+}
+
+/* Whether this CPU can name itself with RDTSCP, and if so, teach it its own
+ * ordinal. Called once per CPU, before that CPU can run anything that asks. */
+static void prepare_tsc_aux(uint32_t ordinal) {
+  uint32_t eax = 0U;
+  uint32_t ebx = 0U;
+  uint32_t ecx = 0U;
+  uint32_t edx = 0U;
+  cpuid(UINT32_C(0x80000000), 0U, &eax, &ebx, &ecx, &edx);
+  if (eax < UINT32_C(0x80000001)) return;
+  cpuid(UINT32_C(0x80000001), 0U, &eax, &ebx, &ecx, &edx);
+  if ((edx & (UINT32_C(1) << 27U)) == 0U) return; /* no RDTSCP */
+  wrmsr(MSR_IA32_TSC_AUX, ordinal);
+  g_tsc_aux_ready = 1U;
+}
+
 static void lapic_send(uint32_t destination, uint32_t command) {
   uint64_t apic_base = rdmsr(MSR_IA32_APIC_BASE);
   if ((apic_base & APIC_BASE_X2APIC) != 0U) {
@@ -1069,6 +1175,20 @@ static void tsc_delay(uint64_t cycles) {
 }
 
 uint64_t x86_64_interrupt_entry(x86_64_exception_frame_t *frame) {
+  /* Liveness and last-vector, per CPU: a TLB shootdown that times out prints
+   * these for the CPU that did not answer, which is how "it never took the
+   * interrupt" is told apart from "it took it and answered the wrong
+   * generation" (B-123). The ring-3 syscall arrives through this same entry
+   * and is not an interrupt, so it is not counted. */
+  if (frame != 0 && g_cpu_records != 0 && frame->vector >= 32U &&
+      frame->vector != 128U) {
+    uint32_t ordinal = current_ordinal_fast();
+    if (ordinal < g_cpu_record_count) {
+      x86_64_cpu_record_t *record = &g_cpu_records[ordinal];
+      __atomic_add_fetch(&record->interrupts_taken, 1U, __ATOMIC_RELAXED);
+      __atomic_store_n(&record->last_vector, frame->vector, __ATOMIC_RELEASE);
+    }
+  }
   if (frame != 0 && frame->vector == 128U) {
     if ((frame->cs & 3U) != 3U) panic_halt(COM1_PORT, "ring3 syscall CPL");
     ++g_ring3_syscalls;
@@ -1152,6 +1272,8 @@ uint64_t x86_64_interrupt_entry(x86_64_exception_frame_t *frame) {
     if (ordinal < g_cpu_record_count) {
       __atomic_store_n(&g_cpu_records[ordinal].tlb_generation, generation,
                        __ATOMIC_RELEASE);
+      __atomic_add_fetch(&g_cpu_records[ordinal].shootdowns_handled, 1U,
+                         __ATOMIC_RELAXED);
     }
     lapic_write(APIC_EOI, 0U);
     return 0U;
@@ -1177,6 +1299,7 @@ uint64_t x86_64_interrupt_entry(x86_64_exception_frame_t *frame) {
 
 void x86_64_ap_entry(uint32_t ordinal) {
   if (ordinal >= g_cpu_record_count) panic_halt(COM1_PORT, "AP ordinal");
+  prepare_tsc_aux(ordinal);
   x86_64_idtr_t idtr = {
       .limit = (uint16_t)(sizeof(g_idt) - 1U),
       .base = (uint64_t)(uintptr_t)g_idt,
@@ -1745,6 +1868,9 @@ static void start_application_processors(uint16_t serial_base,
     }
   }
   if (bsp_found == 0U) panic_halt(serial_base, "BSP absent from MADT");
+  /* Before any secondary runs, so every CPU that asks has an answer, and
+     before anything that can spin. */
+  prepare_tsc_aux(g_bsp_ordinal);
 
   uint32_t online = 1U;
   for (uint32_t i = 0U; i < g_cpu_record_count; ++i) {
@@ -1789,6 +1915,12 @@ static void start_application_processors(uint16_t serial_base,
   serial_puts(serial_base, " madt_cpus=");
   serial_dec(serial_base, g_cpu_record_count);
   serial_puts(serial_base, " dynamic_records=1\n");
+  /* How a CPU names itself when it has no time to ask the APIC: `rdtscp` is a
+     register read, `apic-id` is a host round trip. A machine that reports the
+     second is still correct, and worth being able to see. */
+  serial_puts(serial_base, "x86_64: per-CPU identity source=");
+  serial_puts(serial_base, g_tsc_aux_ready != 0U ? "rdtscp" : "apic-id");
+  serial_puts(serial_base, "\n");
 
 #if !XAIOS_X86_COMMON_RUNTIME
   uint32_t workers = 0U;

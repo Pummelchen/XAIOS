@@ -26,12 +26,29 @@ typedef struct __attribute__((aligned(16))) xaios_cpu_state {
   /* SMP scheduler fields */
   uint32_t scheduling_enabled; /* 1 when the CPU can accept scheduled work */
   uint32_t steal_count;        /* work-stealing events on this CPU */
+  /* What this CPU is waiting for, in the words of the code that waits.
+   *
+   * A refusal on one CPU that names another ("cpu 1 did not answer") is a
+   * question, and the answer is what the other CPU was doing -- which nothing
+   * recorded until a TLB shootdown timed out and the report could say only
+   * which CPU had not acknowledged (B-123). The waiting CPU writes one word
+   * here; whichever CPU reports the refusal reads it. `0` means "not waiting
+   * for anything in particular", which is also what a CPU that has not been
+   * asked looks like. */
+  const char *volatile waiting_for;
   /* Architecture-owned translation root and private user directory. */
   uint64_t *page_table_root;
   uint64_t *user_page_directory;
 } xaios_cpu_state_t;
 
 uint32_t smp_cpu_id(void);
+
+/* Record what this CPU is waiting for, so another CPU's refusal can name it.
+ *
+ * `reason` is a string literal; `0` clears it. The write is one word and the
+ * reader only ever prints it, so the note is a report and never a decision. */
+void xaios_cpu_note_wait(const char *reason);
+
 xaios_status_t smp_wake_cpu(uint32_t cpu_id);
 
 void smp_init_platform(const xaios_boot_info_t *boot);

@@ -77,6 +77,12 @@ static inline void xaios_cpu_wait(void) {
 #endif
 }
 
+/* Record what this CPU is waiting for, so a refusal on another CPU can name it
+ * rather than asking which CPU was silent. `reason` is a string literal and `0`
+ * clears it; the implementation lives with the architecture's per-CPU state
+ * (see kernel/include/xaios/smp.h for the field it writes). */
+void xaios_cpu_note_wait(const char *reason);
+
 /* Interrupts, as a value that can be saved and put back.
  *
  * The kernel had no way to say "these few instructions must not be interrupted"
