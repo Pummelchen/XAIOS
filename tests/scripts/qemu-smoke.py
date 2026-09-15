@@ -89,6 +89,9 @@ ARCH_TARGETS = {
         # is required, because a check that silently disappears looks exactly
         # like one that passed (B-123).
         "smp: shootdown acknowledgement self-test not applicable on aarch64 ",
+        # The same for the idle-wakeup check: this architecture closes that
+        # window with `sev` rather than with a re-check (B-120).
+        "smp: idle wakeup self-test not applicable on aarch64 ",
         "timer: monotonic self-test passed",
     ],
     "riscv64": [
@@ -106,6 +109,9 @@ ARCH_TARGETS = {
         # See the AArch64 list: this check is x86-64's, and that it does not
         # apply here is asserted rather than left unsaid (B-123).
         "smp: shootdown acknowledgement self-test not applicable on riscv64 ",
+        # See the AArch64 list: this port closes the window by waiting with
+        # interrupts masked (B-120).
+        "smp: idle wakeup self-test not applicable on riscv64 ",
         "timer: self-test passed",
         # Only RISC-V has these, and they are the point of having a third
         # architecture rather than a second copy of the first.

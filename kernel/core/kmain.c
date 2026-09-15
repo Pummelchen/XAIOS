@@ -1303,6 +1303,8 @@ persistent_network_done:
      with the scheduler up, one CPU can be made to spin on a guard while
      another shoots down inside it (B-123). */
   smp_shootdown_ack_self_test();
+  /* And a wakeup must not be lost between an idle CPU's check and its wait. */
+  smp_idle_wakeup_self_test();
   klog("kernel: preemptive scheduler infrastructure enabled\n");
   boot_ui_update(85U, "scheduler", "runtime services", 2U);
 

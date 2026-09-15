@@ -32,6 +32,7 @@ void klog(const char *fmt, ...);
 void gic_secondary_init(uint32_t cpu_id);
 void timer_mask_local(void);
 uint32_t xaios_thread_run_pending(uint32_t cpu_id);
+uint32_t xaios_thread_pending_on_cpu(uint32_t cpu_id);
 xaios_status_t xaios_thread_run_group(uint64_t requested_threads,
                                       uint64_t iterations,
                                       uint64_t *ran_threads,
@@ -308,15 +309,29 @@ void smp_secondary_main(uint64_t cpu_id) {
        trap anywhere; what is the same on all three is that one CPU polls the
        stack at the tick rate. */
     timer_mask_local();
-    if (xaios_thread_run_pending((uint32_t)cpu_id) == 0U) {
-      /* Idle, so this hart can carry the network tick: claim it once, repair a
-       * tick this hart lost while running a task, and poll the stack while
-       * there is nothing else to do. See network_poll_tick_from_carrier(). */
-      if (timer_arm_network_tick() != 0U) {
-        network_poll_tick_from_carrier();
-      }
-      __asm__ volatile("wfi" ::: "memory");
+    if (xaios_thread_run_pending((uint32_t)cpu_id) != 0U) continue;
+    /* Idle, so this hart can carry the network tick: claim it once, repair a
+     * tick this hart lost while running a task, and poll the stack while
+     * there is nothing else to do. See network_poll_tick_from_carrier(). */
+    if (timer_arm_network_tick() != 0U) {
+      network_poll_tick_from_carrier();
+      continue;
     }
+    /* Ask the queue once more with interrupts masked, and wait while they stay
+     * masked.
+     *
+     * `wfi` was reached with sstatus.SIE set, and an IPI that arrived between
+     * the check above and the wait was taken by its handler -- after which the
+     * hart slept with the thread that IPI announced still pending, and nothing
+     * woke it again, because the network tick is armed on one hart (B-120).
+     * RISC-V makes the fix cheaper than x86-64's `sti; hlt` pair: `wfi`
+     * resumes for a locally enabled interrupt that is pending even with SIE
+     * clear, so an IPI that arrives inside this window is left pending and
+     * wakes the hart instead of being consumed. The loop's first instruction
+     * re-enables interrupts, which is where the pending IPI is then taken. */
+    __asm__ volatile("csrrc zero, sstatus, %0" ::"r"(UINT64_C(2)) : "memory");
+    if (xaios_thread_pending_on_cpu((uint32_t)cpu_id) != 0U) continue;
+    __asm__ volatile("wfi" ::: "memory");
   }
 }
 
@@ -501,6 +516,18 @@ xaios_status_t smp_release_secondary_schedulers(void) {
 void smp_shootdown_ack_self_test(void) {
   klog("smp: shootdown acknowledgement self-test not applicable on riscv64 "
        "-- firmware fences every hart before the call returns\n");
+}
+
+/* The idle-wakeup check is x86-64's, and saying so is the point: an absent
+ * check that looks like a passed one is the failure mode this project keeps
+ * having to fix (B-120).
+ *
+ * RISC-V has no such window after the change above: the queue is asked once
+ * more with sstatus.SIE clear and `wfi` runs with it clear, so a wakeup that
+ * arrives in the gap stays pending and is what `wfi` resumes for. */
+void smp_idle_wakeup_self_test(void) {
+  klog("smp: idle wakeup self-test not applicable on riscv64 -- wfi resumes "
+       "for a pending interrupt that stays masked\n");
 }
 
 void smp_self_test(void) {

@@ -215,6 +215,14 @@ typedef struct x86_64_cpu_record {
   volatile uint64_t shootdowns_handled;
   volatile uint64_t shootdowns_polled;
   volatile uint32_t shootdown_lock_wait;
+  /* How many times this CPU reached its halt with a thread pending for it
+   * anyway, which is a wakeup that arrived between the idle loop's check and
+   * its halt and was consumed by its handler (B-120). Zero after the fix
+   * except when it counts one the re-check caught. */
+  volatile uint32_t idle_wakeups_raced;
+  /* How many times this CPU entered the self-test's widened window, which is
+   * how the test knows the wakeup it sends is inside it. */
+  volatile uint32_t idle_gap_rounds;
   uint64_t kernel_stack_top;
   uint64_t syscall_stack_top;
   uint64_t user_resume_rsp[X86_USER_NESTING_MAX];
@@ -365,6 +373,12 @@ static volatile uint32_t g_tlb_shootdown_in_flight;
 /* Set only by the self-test's negative control, which has to run the kernel as
  * it was before the spin path could answer. */
 static volatile uint32_t g_tlb_shootdown_poll_suppressed;
+/* Set only by the idle-wakeup self-test: widen the window between the idle
+ * loop's queue check and its halt, and optionally halt the way this kernel did
+ * before the re-check, so the lost wakeup behind B-120 can be built on purpose
+ * instead of waited for. Zero in production. */
+static volatile uint64_t g_idle_halt_probe_gap_cycles;
+static volatile uint32_t g_idle_halt_probe_legacy;
 
 #if XAIOS_X86_COMMON_RUNTIME
 extern void kmain(const xaios_boot_info_t *boot);
@@ -794,6 +808,27 @@ uint64_t x86_64_platform_shootdowns_polled(uint32_t ordinal) {
 uint64_t x86_64_platform_shootdowns_handled(uint32_t ordinal) {
   return ordinal < g_cpu_record_count
              ? __atomic_load_n(&g_cpu_records[ordinal].shootdowns_handled,
+                               __ATOMIC_ACQUIRE)
+             : 0U;
+}
+
+void x86_64_platform_set_idle_halt_probe(uint64_t gap_cycles, uint32_t legacy) {
+  __atomic_store_n(&g_idle_halt_probe_legacy, legacy != 0U ? 1U : 0U,
+                   __ATOMIC_RELEASE);
+  __atomic_store_n(&g_idle_halt_probe_gap_cycles, gap_cycles,
+                   __ATOMIC_RELEASE);
+}
+
+uint64_t x86_64_platform_idle_gap_rounds(uint32_t ordinal) {
+  return ordinal < g_cpu_record_count
+             ? __atomic_load_n(&g_cpu_records[ordinal].idle_gap_rounds,
+                               __ATOMIC_ACQUIRE)
+             : 0U;
+}
+
+uint64_t x86_64_platform_idle_wakeups_raced(uint32_t ordinal) {
+  return ordinal < g_cpu_record_count
+             ? __atomic_load_n(&g_cpu_records[ordinal].idle_wakeups_raced,
                                __ATOMIC_ACQUIRE)
              : 0U;
 }
@@ -1478,15 +1513,50 @@ void x86_64_ap_entry(uint32_t ordinal) {
      * all; on AArch64 the equivalent line was missing and the tick stopped
      * after a few dozen polls because of it. */
     __asm__ volatile("sti" ::: "memory");
-    if (xaios_thread_run_pending(ordinal) == 0U) {
-      /* Idle, so this CPU can carry the network tick: claim it once, repair a
-       * tick this CPU lost while running a task, and poll the stack while
-       * there is nothing else to do. See network_poll_tick_from_carrier(). */
-      if (timer_arm_network_tick() != 0U) {
-        network_poll_tick_from_carrier();
-      }
-      __asm__ volatile("hlt");
+    if (xaios_thread_run_pending(ordinal) != 0U) continue;
+    /* Idle, so this CPU can carry the network tick: claim it once, repair a
+     * tick this CPU lost while running a task, and poll the stack while
+     * there is nothing else to do. See network_poll_tick_from_carrier(). */
+    if (timer_arm_network_tick() != 0U) {
+      network_poll_tick_from_carrier();
+      continue;
     }
+    /* Ask the queue one last time with interrupts masked, then halt and
+     * enable them in one step.
+     *
+     * `hlt` used to follow the check after a gap, and an IPI that arrived in
+     * that gap was taken by its handler -- after which the CPU slept with the
+     * thread the IPI announced still pending. Nothing woke it again: the
+     * network tick is armed on one CPU, and a secondary has no periodic
+     * interrupt of its own, so the thread sat `PENDING` until the join that
+     * was waiting for it gave up (B-120). AArch64 closes the same window with
+     * `xaios_cpu_notify()`'s `sev`, which sets the event register the `wfe`
+     * would otherwise wait on; x86-64 has no event register, so the answer is
+     * the `sti; hlt` pair, whose interrupt shadow means the interrupt is
+     * recognised after the halt rather than before it. */
+    uint64_t probe_gap =
+        __atomic_load_n(&g_idle_halt_probe_gap_cycles, __ATOMIC_ACQUIRE);
+    if (probe_gap != 0U) {
+      __atomic_add_fetch(&g_cpu_records[ordinal].idle_gap_rounds, 1U,
+                         __ATOMIC_RELEASE);
+      tsc_delay(probe_gap);
+    }
+    __asm__ volatile("cli" ::: "memory");
+    if (__atomic_load_n(&g_idle_halt_probe_legacy, __ATOMIC_ACQUIRE) == 0U &&
+        xaios_thread_pending_on_cpu(ordinal) != 0U) {
+      /* The window was real and this CPU was in it. Counted once per CPU, and
+         then said out loud with interrupts restored: this is the measurement
+         that the fix is catching something rather than the claim that it
+         cannot happen. */
+      uint32_t previous = __atomic_fetch_add(
+          &g_cpu_records[ordinal].idle_wakeups_raced, 1U, __ATOMIC_ACQ_REL);
+      __asm__ volatile("sti" ::: "memory");
+      if (previous == 0U) {
+        klog("x86_64: idle wakeup race avoided cpu=%u\n", ordinal);
+      }
+      continue;
+    }
+    __asm__ volatile("sti; hlt" ::: "memory");
   }
 #else
   for (;;) __asm__ volatile("hlt");

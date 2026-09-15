@@ -344,6 +344,186 @@ static int shootdown_test_phase(uint32_t target_cpu, uint64_t address,
   return complete;
 }
 
+/* ---------------------------------------------------------------------------
+ * A wakeup must not be lost between the idle loop's check and its halt (B-120).
+ *
+ * CI's x86_64 job timed out in `xaios_thread_run_group` with the threads for
+ * cpu 2 and cpu 3 still `PENDING` after the whole thirty-second budget, while
+ * the CPUs themselves were online and had passed the scheduler barrier. The
+ * shape is a window: the idle loop asked the queue for work, and an interrupt
+ * that arrived before the `hlt` was taken by its handler, after which the CPU
+ * slept with the thread that interrupt announced still pending. Nothing woke
+ * it again -- the network tick is armed on one CPU and a secondary has no
+ * periodic interrupt of its own.
+ *
+ * The window is a few instructions wide, so waiting for it to be hit proves
+ * nothing on a fast machine. The test therefore widens it on purpose
+ * (`x86_64_platform_set_idle_halt_probe`), waits until the target CPU is
+ * inside the widened window, and only then hands it a thread. The same
+ * construction is then run with the halt written the way it was before the
+ * fix, and must lose the thread; that half is run with a short budget and the
+ * thread is recovered afterwards, so the control costs milliseconds and
+ * reports rather than panics.
+ * ------------------------------------------------------------------------- */
+
+/* Long enough that the wakeup the test sends is certainly inside it: the two
+ * calls between the observation and the send take microseconds. */
+#define X86_IDLE_WAKEUP_GAP_CYCLES UINT64_C(50000000)
+#define X86_IDLE_WAKEUP_OBSERVE_NS UINT64_C(200000000)
+/* The fixed kernel answers in microseconds, so a second is generous; the
+ * control is expected to spend its whole (shorter) budget. */
+#define X86_IDLE_WAKEUP_BUDGET_NS UINT64_C(1000000000)
+#define X86_IDLE_WAKEUP_CONTROL_NS UINT64_C(200000000)
+#define X86_IDLE_WAKEUP_JOIN_NS UINT64_C(30000000000)
+#define X86_IDLE_WAKEUP_RESULT UINT64_C(0x1d1e)
+
+typedef struct x86_idle_wakeup_context {
+  volatile uint32_t ran;
+} x86_idle_wakeup_context_t;
+
+static x86_idle_wakeup_context_t g_idle_wakeup_test;
+
+static uint64_t idle_wakeup_worker(void *opaque) {
+  x86_idle_wakeup_context_t *context = (x86_idle_wakeup_context_t *)opaque;
+  __atomic_store_n(&context->ran, 1U, __ATOMIC_RELEASE);
+  return X86_IDLE_WAKEUP_RESULT;
+}
+
+/* What a round did, named rather than collapsed into one failure: a round that
+ * could not be set up and a round that lost the thread are different findings,
+ * and the verdict line has to say which. */
+#define X86_IDLE_WAKEUP_RAN 1
+#define X86_IDLE_WAKEUP_LOST 0
+#define X86_IDLE_WAKEUP_NO_WINDOW (-1)
+#define X86_IDLE_WAKEUP_NO_SLOT (-2)
+#define X86_IDLE_WAKEUP_NOT_JOINED (-3)
+#define X86_IDLE_WAKEUP_BAD_RESULT (-4)
+
+/* One round: X86_IDLE_WAKEUP_RAN if the thread ran inside `budget_ns`,
+ * X86_IDLE_WAKEUP_LOST if it did not (the control's expected outcome), or a
+ * negative step name. `*raced` reports whether the re-check, rather than the
+ * halt, is what kept the wakeup. */
+static int idle_wakeup_round(uint32_t target_cpu, uint64_t budget_ns,
+                             uint64_t *raced) {
+  g_idle_wakeup_test.ran = 0U;
+  uint64_t raced_before = x86_64_platform_idle_wakeups_raced(target_cpu);
+  /* Get the target into the window and hand it the thread while it is inside.
+   *
+   * The wake has to be *the* thing that brings it there: an earlier wake can
+   * land inside a window the target is already in, in which case it is
+   * consumed and the target sleeps without ever opening another -- which is
+   * what the first version of this measured, reporting `fixed=-1` because it
+   * planned the round around a window that had already opened. Each attempt
+   * therefore reads the counter, wakes, and waits for a change; a wake that
+   * produced no change is followed by another one. */
+  int observed = 0;
+  for (uint32_t attempt = 0U; attempt < 4U && observed == 0; ++attempt) {
+    uint64_t gap_before = x86_64_platform_idle_gap_rounds(target_cpu);
+    x86_64_platform_wake(target_cpu);
+    uint64_t observe_deadline = timer_now_ns() + X86_IDLE_WAKEUP_OBSERVE_NS;
+    while (x86_64_platform_idle_gap_rounds(target_cpu) == gap_before) {
+      if (timer_now_ns() >= observe_deadline) break;
+      xaios_cpu_relax();
+    }
+    if (x86_64_platform_idle_gap_rounds(target_cpu) != gap_before) {
+      observed = 1;
+    }
+  }
+  if (observed == 0) return X86_IDLE_WAKEUP_NO_WINDOW;
+  uint64_t id = 0U;
+  if (xaios_thread_create(idle_wakeup_worker, &g_idle_wakeup_test, target_cpu,
+                          &id) != XAIOS_OK) {
+    return X86_IDLE_WAKEUP_NO_SLOT;
+  }
+  uint64_t deadline = timer_now_ns() + budget_ns;
+  while (__atomic_load_n(&g_idle_wakeup_test.ran, __ATOMIC_ACQUIRE) == 0U) {
+    if (timer_now_ns() >= deadline) break;
+    xaios_cpu_relax();
+  }
+  int ran = __atomic_load_n(&g_idle_wakeup_test.ran, __ATOMIC_ACQUIRE) != 0U;
+  *raced = x86_64_platform_idle_wakeups_raced(target_cpu) - raced_before;
+  if (ran == 0) {
+    /* The control's outcome: the CPU is halted with the thread pending.
+       Waking it is what the fix would have done for itself. */
+    (void)smp_wake_cpu(target_cpu);
+  }
+  uint64_t result = 0U;
+  if (xaios_thread_join(id, X86_IDLE_WAKEUP_JOIN_NS, &result) != XAIOS_OK) {
+    return X86_IDLE_WAKEUP_NOT_JOINED;
+  }
+  if (result != X86_IDLE_WAKEUP_RESULT) return X86_IDLE_WAKEUP_BAD_RESULT;
+  return ran;
+}
+
+/* The CPU the test races against: another online CPU that actually reaches
+ * its idle window.
+ *
+ * Not simply the first other CPU. The CPU carrying the network tick takes that
+ * branch every turn of its loop and never reaches the halt, so racing it would
+ * measure nothing -- and that is exactly what the first version of this test
+ * did, reporting `fixed=-1` because the CPU it picked never entered the
+ * window. The carrier is skipped by name, and the window is then confirmed
+ * rather than assumed: the counter has to move inside the observation budget. */
+static int idle_wakeup_pick_cpu(uint32_t self, uint32_t *chosen) {
+  uint32_t carrier = timer_network_tick_cpu();
+  for (uint32_t pass = 0U; pass < 2U; ++pass) {
+    for (uint32_t ordinal = 0U; ordinal < x86_64_platform_cpu_count();
+         ++ordinal) {
+      if (ordinal == self || x86_64_platform_cpu_online(ordinal) == 0U) {
+        continue;
+      }
+      if (pass == 0U && ordinal == carrier) continue;
+      /* An idle secondary is asleep in its halt -- the network tick is armed
+         on one CPU, so nothing else interrupts it -- and it cannot enter the
+         window until something wakes it. Waking it is also the only way to see
+         the window this test needs. */
+      uint64_t before = x86_64_platform_idle_gap_rounds(ordinal);
+      x86_64_platform_wake(ordinal);
+      uint64_t deadline = timer_now_ns() + X86_IDLE_WAKEUP_OBSERVE_NS;
+      while (x86_64_platform_idle_gap_rounds(ordinal) == before) {
+        if (timer_now_ns() >= deadline) break;
+        xaios_cpu_relax();
+      }
+      if (x86_64_platform_idle_gap_rounds(ordinal) != before) {
+        *chosen = ordinal;
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
+void smp_idle_wakeup_self_test(void) {
+  uint32_t self = smp_cpu_id();
+  x86_64_platform_set_idle_halt_probe(X86_IDLE_WAKEUP_GAP_CYCLES, 0U);
+  uint32_t target_cpu = UINT32_MAX;
+  if (idle_wakeup_pick_cpu(self, &target_cpu) == 0) {
+    x86_64_platform_set_idle_halt_probe(0U, 0U);
+    klog("smp: x86 idle wakeup self-test skipped -- no other cpu reaches its "
+         "idle window\n");
+    return;
+  }
+  uint64_t raced_fixed = 0U;
+  int fixed = idle_wakeup_round(target_cpu, X86_IDLE_WAKEUP_BUDGET_NS,
+                                &raced_fixed);
+  x86_64_platform_set_idle_halt_probe(X86_IDLE_WAKEUP_GAP_CYCLES, 1U);
+  uint64_t raced_control = 0U;
+  int control = idle_wakeup_round(target_cpu, X86_IDLE_WAKEUP_CONTROL_NS,
+                                  &raced_control);
+  x86_64_platform_set_idle_halt_probe(0U, 0U);
+  klog("smp: x86 idle wakeup self-test fixed=%d raced=%lu control=%d "
+       "control_raced=%lu cpu=%u gaps=%lu\n",
+       fixed, raced_fixed, control, raced_control, target_cpu,
+       x86_64_platform_idle_gap_rounds(target_cpu));
+  kassert(fixed == 1);
+  /* The re-check has to be what kept the wakeup, not luck: without it this is
+     the run that loses the thread. */
+  kassert(raced_fixed >= 1U);
+  kassert(control == 0);
+  kassert(raced_control == 0U);
+  klog("smp: x86 idle wakeup self-test passed cpu=%u\n", target_cpu);
+}
+
 void smp_shootdown_ack_self_test(void) {
   uint32_t self = smp_cpu_id();
   uint32_t target_cpu = UINT32_MAX;

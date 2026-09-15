@@ -763,6 +763,19 @@ void smp_shootdown_ack_self_test(void) {
        "-- tlbi is broadcast, nothing waits for an acknowledgement\n");
 }
 
+/* The idle-wakeup check is x86-64's, and saying so is the point: an absent
+ * check that looks like a passed one is the failure mode this project keeps
+ * having to fix (B-120).
+ *
+ * AArch64 has no such window. `sev` -- which `xaios_cpu_notify()` issues after
+ * publishing a thread -- sets the wait-for-event latch that a `wfe` reaching it
+ * later returns on, so a wakeup consumed before the `wfe` still leaves the
+ * event that wakes it. */
+void smp_idle_wakeup_self_test(void) {
+  klog("smp: idle wakeup self-test not applicable on aarch64 -- sev sets the "
+       "wait-for-event latch the wfe waits on\n");
+}
+
 void smp_self_test(void) {
   kassert(g_cpu_states[0].online != 0);
   kassert(g_cpu_states[0].role == XAIOS_CPU_ROLE_HOUSEKEEPING);

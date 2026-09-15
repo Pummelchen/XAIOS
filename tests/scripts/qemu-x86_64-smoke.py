@@ -34,12 +34,6 @@ TARGETS = [
     "scheduler: SIMD/FP interrupt preservation passed",
     "smp: x86 secondary worker barrier passed ready=",
     "threads: concurrent group complete",
-    # The shootdown-vs-guard check runs the fixed kernel and the kernel as it
-    # was, and requires the first to complete and the second to time out, with
-    # the answer coming from the spin and not from the interrupt. The verdict
-    # line carries all of that; requiring it by name means a machine where the
-    # cycle could not be built fails here instead of passing quietly (B-123).
-    "smp: x86 shootdown acknowledgement self-test passed cpu=",
     "/bin/smptest: complete",
     "/bin/nettest: complete",
     # The surface markers, not just the exit codes. An application that exits
@@ -74,6 +68,23 @@ FORBIDDEN = [
     "rescue=1",
 ]
 
+# The two self-tests that need a second CPU to build the thing they test, and
+# the line each prints instead when the machine has only one. Which pair is
+# required depends on the CPU count the run was given, because requiring a
+# "passed" line on a uniprocessor would fail a machine that correctly reported
+# it could not run the check -- and requiring nothing at all would let a check
+# that disappeared look like one that passed.
+SMP_SELF_TESTS = [
+    (
+        "smp: x86 shootdown acknowledgement self-test passed cpu=",
+        "smp: x86 shootdown acknowledgement self-test skipped",
+    ),
+    (
+        "smp: x86 idle wakeup self-test passed cpu=",
+        "smp: x86 idle wakeup self-test skipped",
+    ),
+]
+
 OR_TARGETS = [
     [
         "x86_64: AVX2 packed no-expand known-answer canary passed",
@@ -90,6 +101,12 @@ def main() -> int:
     env = os.environ.copy()
     env.setdefault("XAIOS_QEMU_X86_ACCEL", "tcg")
     env.setdefault("XAIOS_QEMU_X86_CPU", "max")
+    # A machine with one CPU cannot build either self-test's cycle, and both
+    # say so by name; require the refusal there and the verdict here.
+    smp = int(env.get("XAIOS_QEMU_X86_SMP", "4"))
+    targets = list(TARGETS)
+    for passed, skipped in SMP_SELF_TESTS:
+        targets.append(passed if smp >= 2 else skipped)
     timeout = int(env.get("XAIOS_QEMU_X86_SMOKE_TIMEOUT", "180"))
     supplied_persistent_image = env.get("XAIOS_X86_PERSISTENT_IMAGE")
     persistent_image = Path(
@@ -130,7 +147,7 @@ def main() -> int:
                 if any(marker in text for marker in FORBIDDEN):
                     break
                 if (
-                    all(target in text for target in TARGETS)
+                    all(target in text for target in targets)
                     and all(
                         any(target in text for target in alternatives)
                         for alternatives in OR_TARGETS
@@ -155,7 +172,7 @@ def main() -> int:
             persistent_image.unlink(missing_ok=True)
 
     text = "".join(seen)
-    missing = [target for target in TARGETS if target not in text]
+    missing = [target for target in targets if target not in text]
     missing.extend(
         " | ".join(alternatives)
         for alternatives in OR_TARGETS

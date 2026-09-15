@@ -37,6 +37,12 @@ int x86_64_platform_shootdown_probe(uint64_t virtual_address, uint64_t budget_ns
 uint64_t x86_64_platform_shootdown_budget_ns(void);
 uint64_t x86_64_platform_shootdowns_polled(uint32_t ordinal);
 uint64_t x86_64_platform_shootdowns_handled(uint32_t ordinal);
+/* Set only by the idle-wakeup self-test: widen the window between the idle
+ * loop's queue check and its halt, and optionally halt the way this kernel did
+ * before the re-check, which is the negative control for B-120. */
+void x86_64_platform_set_idle_halt_probe(uint64_t gap_cycles, uint32_t legacy);
+uint64_t x86_64_platform_idle_gap_rounds(uint32_t ordinal);
+uint64_t x86_64_platform_idle_wakeups_raced(uint32_t ordinal);
 
 void x86_64_platform_timer_irq(void);
 void x86_64_platform_set_user_resume(uint64_t stack);

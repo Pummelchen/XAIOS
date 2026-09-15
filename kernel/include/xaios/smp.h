@@ -106,6 +106,14 @@ void smp_self_test(void);
  * architectures report that the check does not apply to them rather than
  * passing a test they did not run. */
 void smp_shootdown_ack_self_test(void);
+/* Prove that a wakeup is not lost between an idle CPU's check for work and its
+ * wait: an interrupt consumed in that gap used to leave the CPU sleeping with
+ * its thread still pending (B-120). x86-64 widens the window and builds both
+ * halves of it; AArch64 and RISC-V have no such gap -- `sev` sets the
+ * wait-for-event latch the `wfe` waits on, and the `wfi` port asks the queue
+ * once more with interrupts masked -- so they report that the check does not
+ * apply to them rather than passing one they did not run. */
+void smp_idle_wakeup_self_test(void);
 void smp_secondary_main(uint64_t cpu_id);
 
 #endif

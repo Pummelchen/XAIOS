@@ -217,6 +217,24 @@ completion per worker CPU with no preemption. The timer was chosen because it
 costs a timer rather than a core, and that is now true in the tree rather than
 expected of it.
 
+**An idle CPU that asks whether there is work and then sleeps has one more way
+to lose it, and it cost a thread on the runner.** The idle loop asked the
+thread queue, asked the timer, and halted; an interrupt delivered in the gap
+between the question and the halt was taken by its handler, and the CPU then
+slept with the thread that interrupt announced still pending. Nothing woke it
+again, because the network tick is armed on exactly one CPU and the others have
+no periodic interrupt -- which is why the failure looked like the one CPU model
+CI happened to be using and was not. The three ports close it in three ways,
+and the difference is worth knowing: AArch64's `sev`, issued after a thread is
+published, sets the wait-for-event latch that a later `wfe` returns on; x86-64
+has no event register, so it asks the queue once more with interrupts masked
+and then halts and enables them in a single `sti; hlt`, whose shadow means the
+interrupt is recognised after the halt; RISC-V waits with `sstatus.SIE` clear,
+which its `wfi` is required to resume from for a locally enabled pending
+interrupt. A self-test widens the window on purpose and requires the kernel as
+it was to lose the thread, rather than waiting for a few instructions of real
+time to be hit.
+
 ### What changed: the coupling is measurable, and bounded
 
 The stack measures the gap between consecutive polls whenever a listener is

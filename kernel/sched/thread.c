@@ -427,6 +427,21 @@ xaios_status_t xaios_user_thread_create(uint64_t entry, uint64_t argument,
   return status;
 }
 
+uint32_t xaios_thread_pending_on_cpu(uint32_t cpu_id) {
+  if (g_threads == 0) return 0U;
+  uint32_t pending = 0U;
+  xaios_spin_lock(&g_thread_lock);
+  for (uint32_t i = 0; i < g_thread_capacity; ++i) {
+    if (g_threads[i].state == XAIOS_THREAD_PENDING &&
+        g_threads[i].target_cpu == cpu_id) {
+      pending = 1U;
+      break;
+    }
+  }
+  xaios_spin_unlock(&g_thread_lock);
+  return pending;
+}
+
 uint32_t xaios_thread_run_pending(uint32_t cpu_id) {
   if (g_threads == 0) return 0U;
 

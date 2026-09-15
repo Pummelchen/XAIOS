@@ -41,6 +41,13 @@ xaios_status_t xaios_user_thread_drain(uint32_t owner_pid,
                                        uint64_t timeout_ns);
 uint64_t xaios_user_thread_exit(uint64_t result);
 uint32_t xaios_thread_run_pending(uint32_t cpu_id);
+/* Whether `cpu_id` has a thread waiting, without claiming or running it.
+ *
+ * An idle CPU asks this with interrupts masked, immediately before it halts:
+ * the halt and the enabling of interrupts have to be one step, or a wakeup
+ * that arrives in between is taken by its handler and the CPU then sleeps with
+ * the thread it announced still pending (B-120). */
+uint32_t xaios_thread_pending_on_cpu(uint32_t cpu_id);
 uint32_t xaios_thread_capacity(void);
 uint32_t xaios_thread_active_count(void);
 xaios_status_t xaios_thread_run_group(uint64_t requested_threads,
