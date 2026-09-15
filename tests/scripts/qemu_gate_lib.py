@@ -109,9 +109,22 @@ def dropped_line_note(text: str) -> str:
     )
     if total == 0:
         return ""
+    # Which context lost them, when the kernel says so (B-119, second
+    # sighting): a drop inside a handler is the short wait working as
+    # designed, and a drop outside one is the budget still being wrong. A
+    # reader deciding whether to chase the loss needs that difference.
+    in_handler = sum(
+        int(count)
+        for count in re.findall(r"in_handler=(\d+)", text)
+    )
+    masked = sum(int(count) for count in re.findall(r"masked=(\d+)", text))
+    where = ""
+    if in_handler or masked:
+        where = (f" ({in_handler} from inside a handler, {masked} with "
+                 f"interrupts masked)")
     return (f"note: the kernel reported {total} log line(s) dropped while its "
-            f"console lock was held, so a missing marker above may be a line "
-            f"that was lost rather than work that did not happen")
+            f"console lock was held{where}, so a missing marker above may be a "
+            f"line that was lost rather than work that did not happen")
 
 
 def status_from_failures(failures: Sequence[str]) -> str:

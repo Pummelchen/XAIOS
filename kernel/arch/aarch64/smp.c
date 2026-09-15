@@ -776,6 +776,17 @@ void smp_idle_wakeup_self_test(void) {
        "wait-for-event latch the wfe waits on\n");
 }
 
+/* Whether this CPU is inside a trap handler.
+ *
+ * This port answers with the interrupt mask rather than a trap depth, which is
+ * what every caller asked before the question was separated: it is
+ * conservative, shortening the console lock's wait in a thread context that
+ * happens to hold a spinlock. x86-64 answers exactly because the observed drop
+ * was there (B-119). */
+uint32_t xaios_cpu_in_interrupt(void) {
+  return xaios_interrupts_enabled() != 0 ? 0U : 1U;
+}
+
 void smp_self_test(void) {
   kassert(g_cpu_states[0].online != 0);
   kassert(g_cpu_states[0].role == XAIOS_CPU_ROLE_HOUSEKEEPING);

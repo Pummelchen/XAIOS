@@ -1357,7 +1357,10 @@ static void tsc_delay(uint64_t cycles) {
   while ((int64_t)(rdtsc() - deadline) < 0) __asm__ volatile("pause");
 }
 
-uint64_t x86_64_interrupt_entry(x86_64_exception_frame_t *frame) {
+/* The body of the trap entry, wrapped below so that the per-CPU trap depth is
+ * maintained on every path out -- the function has a return per vector class
+ * and the wrapper is the one place that can see them all. */
+static uint64_t x86_64_interrupt_entry_body(x86_64_exception_frame_t *frame) {
   /* Liveness and last-vector, per CPU: a TLB shootdown that times out prints
    * these for the CPU that did not answer, which is how "it never took the
    * interrupt" is told apart from "it took it and answered the wrong
@@ -1477,6 +1480,41 @@ uint64_t x86_64_interrupt_entry(x86_64_exception_frame_t *frame) {
   if (frame != 0 && frame->vector == 255U) return 0U;
   panic_halt(COM1_PORT, "unexpected external interrupt");
   return 0U;
+}
+
+uint64_t x86_64_interrupt_entry(x86_64_exception_frame_t *frame) {
+  uint32_t ordinal = current_ordinal_fast();
+  x86_64_cpu_record_t *record =
+      g_cpu_records != 0 && ordinal < g_cpu_record_count ? &g_cpu_records[ordinal]
+                                                         : 0;
+  /* A ring-3 syscall arrives through this same entry and is *not* a handler for
+   * this purpose: it runs on behalf of a thread, so a line it prints may wait
+   * for the console lock the way a thread's may. Counting it as a handler
+   * shortened that wait and the smoke showed the consequence immediately --
+   * `klog: 1 log lines dropped, the console lock was held in_handler=1
+   * masked=0`, which is a syscall context reported as a handler. Only a trap
+   * that interrupted kernel work counts. */
+  int is_trap = frame != 0 && frame->vector != 128U;
+  if (record != 0 && is_trap) {
+    __atomic_add_fetch(&record->state.interrupt_depth, 1U, __ATOMIC_ACQ_REL);
+  }
+  uint64_t result = x86_64_interrupt_entry_body(frame);
+  if (record != 0 && is_trap) {
+    __atomic_sub_fetch(&record->state.interrupt_depth, 1U, __ATOMIC_ACQ_REL);
+  }
+  return result;
+}
+
+/* Whether this CPU is inside a trap. Exact here, because the depth above is
+ * maintained for every vector through the one entry. */
+uint32_t xaios_cpu_in_interrupt(void) {
+  if (g_cpu_records == 0) return 0U;
+  uint32_t ordinal = current_ordinal_fast();
+  if (ordinal >= g_cpu_record_count) return 0U;
+  return __atomic_load_n(&g_cpu_records[ordinal].state.interrupt_depth,
+                         __ATOMIC_ACQUIRE) != 0U
+             ? 1U
+             : 0U;
 }
 
 void x86_64_ap_entry(uint32_t ordinal) {

@@ -86,6 +86,17 @@ static inline void xaios_cpu_wait(void) {
 #endif
 }
 
+/* Whether this CPU is inside a trap handler.
+ *
+ * Not the same question as whether interrupts are masked: a thread that holds
+ * a kernel spinlock is masked as well, and what the console lock needs to know
+ * is whether the lock's holder could be the context this CPU interrupted --
+ * which is only true inside a handler (B-119). x86-64 keeps a per-CPU trap
+ * depth and answers exactly. AArch64 and RISC-V answer with the mask, which is
+ * what every caller did before this existed and which is conservative: it
+ * shortens the wait in a context that could have afforded a longer one. */
+uint32_t xaios_cpu_in_interrupt(void);
+
 /* Record what this CPU is waiting for, so a refusal on another CPU can name it
  * rather than asking which CPU was silent. `reason` is a string literal and `0`
  * clears it; the implementation lives with the architecture's per-CPU state

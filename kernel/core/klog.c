@@ -57,6 +57,11 @@ static uint32_t g_log_output_enabled = 1U;
    reach them at once and the numbers are reported. */
 static uint32_t g_panic_active;
 static uint64_t g_panic_dropped;
+/* Contended drops, counted by the context that lost the line: a drop inside a
+ * handler is the short wait working as designed, and one outside a handler is
+ * the budget still being wrong (B-119). */
+static uint64_t g_klog_drops_in_handler;
+static uint64_t g_klog_drops_masked;
 static uint64_t g_panic_other;
 
 /* How long a contended line waits for the console lock before it is dropped.
@@ -520,8 +525,17 @@ void klog(const char *fmt, ...) {
   if (!locked) {
     uint64_t started = timer_now_ns();
     uint32_t attempts = 0U;
-    uint64_t budget = xaios_interrupts_enabled() != 0 ? KLOG_LOCK_WAIT_NS
-                                                      : KLOG_LOCK_IRQ_WAIT_NS;
+    /* The question is whether this CPU is inside a handler, not whether
+     * interrupts are masked. A thread that holds a kernel spinlock is masked
+     * too, and its lock is held by another CPU, which will release -- so
+     * shortening the wait there loses lines that had time to get through. The
+     * barrier line B-119's first fix was written for is exactly that case: it
+     * is printed from inside the scheduler guard, with interrupts masked and
+     * no handler anywhere near it, and the runner dropped it anyway. Only a
+     * CPU inside a handler may be waiting for a lock its own interrupted
+     * context holds, and only there is the wait shortened. */
+    uint64_t budget = xaios_cpu_in_interrupt() != 0 ? KLOG_LOCK_IRQ_WAIT_NS
+                                                    : KLOG_LOCK_WAIT_NS;
     /* Bounded twice: by the elapsed time, which is what the bound means, and
        by an attempt count, because the first lines of a boot can be printed
        before the time source is worth reading and a zero-length elapsed time
@@ -536,7 +550,17 @@ void klog(const char *fmt, ...) {
     }
   }
   if (!locked) {
+    /* Counted apart, because which context loses a line is the whole question
+       the next sighting has to answer: a handler drop is the shortened wait
+       working as designed, and a non-handler drop is this budget still being
+       wrong. */
     (void)__atomic_add_fetch(&g_klog_contended_drops, 1U, __ATOMIC_RELAXED);
+    if (xaios_cpu_in_interrupt() != 0) {
+      (void)__atomic_add_fetch(&g_klog_drops_in_handler, 1U, __ATOMIC_RELAXED);
+    }
+    (void)__atomic_add_fetch(
+        &g_klog_drops_masked,
+        xaios_interrupts_enabled() == 0 ? 1U : 0U, __ATOMIC_RELAXED);
     return;
   }
 
@@ -545,9 +569,17 @@ void klog(const char *fmt, ...) {
   uint64_t lost = __atomic_exchange_n(&g_klog_contended_drops, 0U,
                                       __ATOMIC_RELAXED);
   if (lost != 0U) {
+    uint64_t in_handler = __atomic_exchange_n(&g_klog_drops_in_handler, 0U,
+                                              __ATOMIC_RELAXED);
+    uint64_t masked = __atomic_exchange_n(&g_klog_drops_masked, 0U,
+                                          __ATOMIC_RELAXED);
     klog_puts("klog: ");
     klog_u64(lost, 10U);
-    klog_puts(" log lines dropped, the console lock was held\n");
+    klog_puts(" log lines dropped, the console lock was held in_handler=");
+    klog_u64(in_handler, 10U);
+    klog_puts(" masked=");
+    klog_u64(masked, 10U);
+    klog_puts("\n");
     klog_line_flush();
   }
 

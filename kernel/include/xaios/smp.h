@@ -36,6 +36,14 @@ typedef struct __attribute__((aligned(16))) xaios_cpu_state {
    * for anything in particular", which is also what a CPU that has not been
    * asked looks like. */
   const char *volatile waiting_for;
+  /* How many traps deep this CPU is. `xaios_cpu_in_interrupt()` reads it, and
+   * the console lock uses the answer to decide how long it may wait: a CPU
+   * inside a handler may be holding that lock in the context the handler
+   * interrupted, which cannot run again until the handler returns, so the wait
+   * there has to be short rather than long. Interrupts being *masked* is not
+   * the same question -- a thread holding a spinlock is masked too, and its
+   * holder is another CPU, which will release (B-119). */
+  volatile uint32_t interrupt_depth;
   /* Architecture-owned translation root and private user directory. */
   uint64_t *page_table_root;
   uint64_t *user_page_directory;
