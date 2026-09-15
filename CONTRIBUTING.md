@@ -99,7 +99,12 @@ documents validation tiers and external interoperability suites.
 `meson` and `ninja` are for the libc build, not for XAIOS itself. On macOS,
 put Homebrew LLVM on `PATH` before building: `scripts/build-libc.sh` resolves
 `llvm-ar` there and nowhere else, while the image build and the QEMU launchers
-find their tools through `brew --prefix`.
+find their tools through `brew --prefix`. Apple's clang, which is first on
+`PATH` by default, also cannot assemble picolibc's RISC-V sources -- it fails
+deep inside the libc build with `Unknown command line argument
+'-riscv-add-build-attributes'`, an error that names the option and not the
+compiler -- so `scripts/build-libc.sh` refuses it up front when `riscv64` is one
+of the architectures being built.
 
 ```sh
 export PATH="$(brew --prefix llvm)/bin:$PATH"

@@ -24,6 +24,27 @@ need meson
 need ninja
 need python3
 
+# Apple's clang comes first on PATH by default on macOS, and it cannot assemble
+# picolibc's RISC-V sources: its driver asks the assembler for
+# `-riscv-add-build-attributes`, a backend option clang does not have, so the
+# build dies several hundred ninja steps in with `Unknown command line argument
+# '-riscv-add-build-attributes'` -- an error that names the option and neither
+# the compiler nor the fix. CONTRIBUTING.md already says to put Homebrew LLVM
+# first; this says so at the point somebody has not.
+case " $ARCHES " in
+  *" riscv64 "*)
+    case "$(clang --version 2>/dev/null | head -1)" in
+      *"Apple clang"*)
+        printf '%s\n' \
+          'error: clang on PATH is Apple clang, which cannot assemble' \
+          "       picolibc's RISC-V sources. Put Homebrew LLVM first on PATH:" \
+          '         export PATH="$(brew --prefix llvm)/bin:$PATH"' >&2
+        exit 1
+        ;;
+    esac
+    ;;
+esac
+
 if [ ! -f "$SOURCE/meson.build" ]; then
   printf '%s\n' 'error: Picolibc submodule is missing; run git submodule update --init --recursive' >&2
   exit 1
