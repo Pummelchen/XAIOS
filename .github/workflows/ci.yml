@@ -78,6 +78,14 @@ jobs:
       - name: Compile-check kernel C files
         run: make compile-check
 
+      # The hosted WebTransport port is excluded from the freestanding sweep --
+      # it builds against the vendored tree's headers and the hosted sysroot,
+      # which `make compile-check` has just built as a dependency of `libc`.
+      # This is where its three architectures are checked, with the flags it is
+      # actually built with.
+      - name: Compile the WebTransport port for every architecture
+        run: make wt-upstream-compile
+
   hosted-engine:
     name: Hosted Engine & Model v2
     runs-on: ubuntu-latest
@@ -167,6 +175,13 @@ jobs:
       # found by the sanitizer run and not by the plain one.
       - name: WebTransport host tests under the sanitizers
         run: make wt-host-sanitize
+
+      # The port's own client and server meeting over a real UDP socket: the
+      # vendored library driven by this repository's crypto, key share, trust
+      # and signature code. It needs no OpenSSL, and a completed handshake here
+      # is the claim the QEMU gate makes about a booted guest.
+      - name: WebTransport handshake interop
+        run: make wt-interop-test
 
   abi-contract:
     name: ABI Contract Validation

@@ -2,7 +2,7 @@ SHELL := /bin/sh
 HOST_CC ?= clang
 HOST_CFLAGS ?= -std=c99 -Wall -Wextra -Werror -pedantic
 
-.PHONY: all bootstrap test image image-qemu-test image-x86_64 image-x86_64-qemu-test image-libc-test qemu-libc-gate xapt-test xapt-repository qemu-xapt-gate engine-cli libc libc-check initfs-format-test vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-network-gate vmware-fusion-outbound-gate qemu-outbound-batch-mode-gate qemu-sftp-binary-passthrough-gate qemu-sshd-transmit-rate-gate qemu-sshd-channel-starvation-gate qemu-sshd-close-visibility-gate qemu-socket-flow-map-gate qemu-datagram-ephemeral-port-gate qemu-network-poll-cadence-gate qemu-sshd-audit-append-gate qemu-x86_64-sshd-audit-append-gate qemu-x86_64-sftp-binary-passthrough-gate qemu-riscv64-sftp-binary-passthrough-gate vmware-fusion-snapshot-gate riscv64 qemu-riscv64 qemu-riscv64-xapt-gate qemu-riscv64-docker-network-suite qemu-riscv64-parallel-network-load qemu-riscv64-soak-gate qemu-riscv64-nvme-gate qemu-riscv64-fault-matrix qemu-riscv64-libc-gate qemu-riscv64-preview qemu-riscv64-boot-loop qemu-riscv64-benchmark qemu-riscv64-model-sftp-gate qemu-riscv64-outbound-fragmentation-gate qemu-riscv64-dhcpv6-gate qemu-riscv64-instruction-cost-gate qemu-riscv64-storage-bench qemu-riscv64-routing-prefix-gate qemu-riscv64-keyboard-input-gate qemu-riscv64-framebuffer-gate qemu-riscv64-crash-safety-gate qemu-riscv64-ai-cell-gate qemu-riscv64-app-agent-gate qemu-riscv64-cpu-ai-runtime-gate qemu-riscv64-cpu-ai-suite qemu-riscv64-fault-injection qemu-riscv64-filesystem-gate qemu-riscv64-isa-gate qemu-riscv64-local-console-gate qemu-riscv64-network-full-gate qemu-riscv64-network-suite qemu-riscv64-osctl-gate qemu-riscv64-persistence-reboot qemu-riscv64-process-gate qemu-riscv64-regression-suite qemu-riscv64-security-gate qemu-riscv64-smoke qemu-riscv64-storage-crash-test qemu-riscv64-update-gate qemu-riscv64-userspace-suite qemu-riscv64-write-ordering-gate qemu-riscv64-gate qemu-riscv64-boot-media-gate qemu-riscv64-matrix-gate qemu-riscv64-durability-gate qemu-riscv64-release-gate vmware-fusion-panic-capture vmware-fusion-boot-soak vmware-fusion-dry-run vz-harness vz-gate vz-bridged-gate qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-vmxnet3 qemu-vmxnet3-gate qemu-rss-steering-gate qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-numa-gate qemu-aarch64-sve2-gate qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-operations-closure qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-nvme-stress-soak qemu-outbound-fragmentation-gate qemu-qualification-readiness qemu-dry-run qemu-smoke qemu-installed-disk-gate qemu-riscv64-installed-disk-gate qemu-x86_64-installed-disk-gate qemu-x86_64-update-gate vm-packages vm-package-gate boot-media boot-media-gate qemu-setup-gate qemu-riscv64-setup-gate qemu-netboot-gate qemu-riscv64-netboot-gate qemu-cluster-gate qemu-riscv64-cluster-gate qemu-cluster-two-node-gate qemu-riscv64-cluster-two-node-gate qemu-cluster-three-node-gate qemu-riscv64-cluster-three-node-gate qemu-cluster-partition-gate qemu-riscv64-cluster-partition-gate qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-riscv64-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-crash-safety-gate qemu-power-loss-gate qemu-riscv64-power-loss-gate qemu-write-cache-probe qemu-write-ordering-gate qemu-storage-bench qemu-fault-matrix qemu-x86_64-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-riscv64-freebsd-network-suite qemu-freebsd-bidirectional-suite qemu-riscv64-freebsd-bidirectional-suite qemu-four-endpoint-network-suite qemu-parallel-network-load qemu-network-adversarial-gate qemu-local-console-gate qemu-console-xtop-gate qemu-console-xtop-gate-x86_64 qemu-console-xtop-gate-riscv64 qemu-keyboard-input-gate qemu-framebuffer-gate qemu-routing-prefix-gate qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate qemu-ssh-session-exhaustion-gate qemu-ssh-connection-rate-gate qemu-thread-join-soak qemu-x86_64-thread-join-soak qemu-riscv64-thread-join-soak qemu-x86_64-ssh-session-exhaustion-gate qemu-riscv64-ssh-session-exhaustion-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc parser-fuzz wt-host-test wt-host-sanitize wt-vectors-check compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test code-scanning-contract docs-check platform-neutrality-check doc-freshness-check wiki-parity-check production-source-audit qemu-baseline clean clean-persistent qemu-riscv64-aia-gate qemu-riscv64-iommu-gate wt-upstream-compile
+.PHONY: all bootstrap test wt-interop-test image image-qemu-test image-x86_64 image-x86_64-qemu-test image-libc-test qemu-libc-gate xapt-test xapt-repository qemu-xapt-gate engine-cli libc libc-check initfs-format-test vmware-fusion-image vmware-fusion vmware-fusion-smoke vmware-fusion-network-gate vmware-fusion-outbound-gate qemu-outbound-batch-mode-gate qemu-sftp-binary-passthrough-gate qemu-sshd-transmit-rate-gate qemu-sshd-channel-starvation-gate qemu-sshd-close-visibility-gate qemu-socket-flow-map-gate qemu-datagram-ephemeral-port-gate qemu-network-poll-cadence-gate qemu-sshd-audit-append-gate qemu-x86_64-sshd-audit-append-gate qemu-x86_64-sftp-binary-passthrough-gate qemu-riscv64-sftp-binary-passthrough-gate vmware-fusion-snapshot-gate riscv64 qemu-riscv64 qemu-riscv64-xapt-gate qemu-riscv64-docker-network-suite qemu-riscv64-parallel-network-load qemu-riscv64-soak-gate qemu-riscv64-nvme-gate qemu-riscv64-fault-matrix qemu-riscv64-libc-gate qemu-riscv64-preview qemu-riscv64-boot-loop qemu-riscv64-benchmark qemu-riscv64-model-sftp-gate qemu-riscv64-outbound-fragmentation-gate qemu-riscv64-dhcpv6-gate qemu-riscv64-instruction-cost-gate qemu-riscv64-storage-bench qemu-riscv64-routing-prefix-gate qemu-riscv64-keyboard-input-gate qemu-riscv64-framebuffer-gate qemu-riscv64-crash-safety-gate qemu-riscv64-ai-cell-gate qemu-riscv64-app-agent-gate qemu-riscv64-cpu-ai-runtime-gate qemu-riscv64-cpu-ai-suite qemu-riscv64-fault-injection qemu-riscv64-filesystem-gate qemu-riscv64-isa-gate qemu-riscv64-local-console-gate qemu-riscv64-network-full-gate qemu-riscv64-network-suite qemu-riscv64-osctl-gate qemu-riscv64-persistence-reboot qemu-riscv64-process-gate qemu-riscv64-regression-suite qemu-riscv64-security-gate qemu-riscv64-smoke qemu-riscv64-storage-crash-test qemu-riscv64-update-gate qemu-riscv64-userspace-suite qemu-riscv64-write-ordering-gate qemu-riscv64-gate qemu-riscv64-boot-media-gate qemu-riscv64-matrix-gate qemu-riscv64-durability-gate qemu-riscv64-release-gate vmware-fusion-panic-capture vmware-fusion-boot-soak vmware-fusion-dry-run vz-harness vz-gate vz-bridged-gate qemu qemu-aarch64 qemu-x86_64 qemu-x86_64-vmxnet3 qemu-vmxnet3-gate qemu-rss-steering-gate qemu-x86_64-smoke qemu-x86_64-cpu-matrix qemu-x86_64-platform-matrix qemu-x86_64-numa-gate qemu-aarch64-sve2-gate qemu-x86_64-repeat-boot intel-desktop-gate qemu-core-os-rc qemu-operations-closure qemu-high-core-gate qemu-smmu-gate qemu-nvme-gate qemu-nvme-stress-soak qemu-outbound-fragmentation-gate qemu-qualification-readiness qemu-dry-run qemu-smoke qemu-installed-disk-gate qemu-riscv64-installed-disk-gate qemu-x86_64-installed-disk-gate qemu-x86_64-update-gate vm-packages vm-package-gate boot-media boot-media-gate qemu-setup-gate qemu-riscv64-setup-gate qemu-netboot-gate qemu-riscv64-netboot-gate qemu-cluster-gate qemu-riscv64-cluster-gate qemu-cluster-two-node-gate qemu-riscv64-cluster-two-node-gate qemu-cluster-three-node-gate qemu-riscv64-cluster-three-node-gate qemu-cluster-partition-gate qemu-riscv64-cluster-partition-gate qemu-process-gate qemu-osctl-gate qemu-filesystem-gate qemu-app-agent-gate qemu-network-full-gate qemu-cpu-ai-runtime-gate qemu-ai-cell-gate qemu-security-gate qemu-update-gate qemu-soak-gate qemu-release qemu-100-gate qemu-preview qemu-matrix qemu-cpu-matrix qemu-riscv64-cpu-matrix qemu-benchmark qemu-persistence-reboot qemu-storage-crash-test qemu-crash-safety-gate qemu-power-loss-gate qemu-riscv64-power-loss-gate qemu-write-cache-probe qemu-write-ordering-gate qemu-storage-bench qemu-fault-matrix qemu-x86_64-fault-matrix qemu-regression-suite qemu-fault-injection qemu-abi-contract qemu-boot-loop qemu-userspace-suite qemu-network-suite qemu-docker-network-suite qemu-freebsd-network-suite qemu-riscv64-freebsd-network-suite qemu-freebsd-bidirectional-suite qemu-riscv64-freebsd-bidirectional-suite qemu-four-endpoint-network-suite qemu-parallel-network-load qemu-network-adversarial-gate qemu-local-console-gate qemu-console-xtop-gate qemu-console-xtop-gate-x86_64 qemu-console-xtop-gate-riscv64 qemu-keyboard-input-gate qemu-framebuffer-gate qemu-routing-prefix-gate qemu-cpu-ai-suite qemu-ssh-smoke qemu-model-sftp-gate qemu-ssh-session-exhaustion-gate qemu-ssh-connection-rate-gate qemu-thread-join-soak qemu-x86_64-thread-join-soak qemu-riscv64-thread-join-soak qemu-x86_64-ssh-session-exhaustion-gate qemu-riscv64-ssh-session-exhaustion-gate xaios-ssh-bridge qemu-developer-ux qemu-post51-gate qemu-readiness-gate qemu-full-os-rc parser-fuzz wt-host-test wt-host-sanitize wt-vectors-check compile-check hosted-test hosted-sanitizer-test crash-test model-v2-test code-scanning-contract docs-check platform-neutrality-check doc-freshness-check wiki-parity-check production-source-audit qemu-baseline clean clean-persistent qemu-riscv64-aia-gate qemu-riscv64-iommu-gate wt-upstream-compile
 .PHONY: firmware-profiles-check firmware-profile-macos-qemu-aarch64 firmware-profile-macos-vmware-fusion-aarch64 firmware-profile-intel-vps-qemu-x86_64 firmware-profiles qemu-x86_64-nvme-gate
 
 all: bootstrap image
@@ -410,25 +410,36 @@ wt-host-sanitize:
 # it rather than failing.
 # The vendored WebTransport C99 library's compile step (B-131).
 #
-# It builds the upstream sources that need no crypto backend, plus the XAIOS
-# socket seam and clock, for every architecture the port claims -- against the
-# hosted libc sysroot, so `make libc` has to have run. The four upstream
-# sources that still call OpenSSL are named by the script rather than silently
-# skipped; docs/WEBTRANSPORT-C99-INTEGRATION.md is why those are the whole
-# list.
+# It builds the whole client stack for every architecture the port claims --
+# against the hosted libc sysroot, so `make libc` has to have run. No upstream
+# source is left unbuilt: the four files that called OpenSSL are replaced from
+# the XAIOS side, and docs/WEBTRANSPORT-C99-INTEGRATION.md is why those were
+# the whole list.
 wt-upstream-compile:
 	./scripts/build-wt-upstream.sh --arch aarch64
 	./scripts/build-wt-upstream.sh --arch x86_64
 	./scripts/build-wt-upstream.sh --arch riscv64
 
+# The port's client and server meeting over a real socket (B-131). One binary,
+# both roles, all of it this repository's crypto: a completed handshake here is
+# the claim the QEMU gate makes about a booted guest, checked where a failure
+# can name itself. It also runs the negative controls -- a wrong pin and a
+# development bypass asked for off loopback -- because a positive case alone
+# would pass for a trust check that never ran.
+wt-interop-test:
+	./tests/security/run-wt-interop-test.sh
+
 wt-vectors-check:
 	python3 tests/security/verify_wt_rfc8448_key_schedule.py
 	python3 tests/security/verify_wt_rfc9001_packets.py
-	# The two generated fixtures, re-verified rather than regenerated. Both
+	# The generated fixtures, re-verified rather than regenerated. Both
 	# ECDSA and RSA-PSS signing draw a random nonce, so a rewrite would produce
 	# a different but equally valid fixture on every run; re-verifying them
 	# against the `cryptography` package is what keeps a corrupted header from
-	# being believed.
+	# being believed. The peer identity is re-derived from the throwaway PEM
+	# pair beside it, so a DER file that had drifted from its source is found
+	# here rather than by a failing handshake.
+	python3 tests/security/generate_wt_peer_identity.py
 	python3 tests/security/generate_wt_ecdsa_vectors.py
 	python3 tests/security/generate_wt_quic_flight.py
 
@@ -1254,6 +1265,13 @@ qemu-full-os-rc:
 # reports the tree clean. The comment is here rather than inside the recipe
 # because the recipe is one shell command joined by backslashes -- a `#` or a
 # `@#` line inside it is not a comment to the shell, it is the next command.
+# userspace/wt/xaios is the hosted WebTransport port: it is built against the
+# vendored tree's headers and the hosted libc sysroot, not freestanding against
+# the target include path, so the userspace sweep below excludes it. It is
+# checked instead by `make wt-upstream-compile` (every architecture, the real
+# flags), `make wt-host-test` and `make wt-interop-test`, all of which CI runs;
+# leaving it in this sweep would only prove it cannot be built the way nothing
+# builds it.
 compile-check: libc
 	@mkdir -p build/compile-check/x86-kernel build/compile-check/x86-userspace \
 	  build/compile-check/riscv-userspace
@@ -1303,7 +1321,8 @@ compile-check: libc
 	    || failed=$$((failed + 1)); \
 	done; \
 	for f in $$(find userspace -name '*.c' ! -path 'userspace/libc/*' \
-	    ! -path 'userspace/apps/hosted/*'); do \
+	    ! -path 'userspace/apps/hosted/*' \
+	    ! -path 'userspace/wt/xaios/*'); do \
 	  clang --target=aarch64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
 	    -Wall -Wextra -Werror -Iuserspace/include -Iuserspace/sshd \
@@ -1317,7 +1336,8 @@ compile-check: libc
 	    || failed=$$((failed + 1)); \
 	done; \
 	for f in $$(find userspace -name '*.c' ! -path 'userspace/libc/*' \
-	    ! -path 'userspace/apps/hosted/*'); do \
+	    ! -path 'userspace/apps/hosted/*' \
+	    ! -path 'userspace/wt/xaios/*'); do \
 	  object=build/compile-check/x86-userspace/$$(printf '%s' "$$f" | tr / _).o; \
 	  clang --target=x86_64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie -mno-red-zone \
@@ -1333,7 +1353,8 @@ compile-check: libc
 	    || failed=$$((failed + 1)); \
 	done; \
 	for f in $$(find userspace -name '*.c' ! -path 'userspace/libc/*' \
-	    ! -path 'userspace/apps/hosted/*'); do \
+	    ! -path 'userspace/apps/hosted/*' \
+	    ! -path 'userspace/wt/xaios/*'); do \
 	  object=build/compile-check/riscv-userspace/$$(printf '%s' "$$f" | tr / _).o; \
 	  clang --target=riscv64-unknown-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie \

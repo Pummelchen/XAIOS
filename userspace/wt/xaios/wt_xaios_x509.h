@@ -52,4 +52,37 @@ int wt_xaios_signature_verify(const wt_xaios_public_key_t *key, uint16_t scheme,
                               const uint8_t *signature, size_t signature_len,
                               const uint8_t *content, size_t content_len);
 
+/* Room for one RSA private key's eight components, or one EC private scalar.
+   The assertion in the implementation is what keeps this honest; an RSA-4096
+   key is 6 x 512 bytes plus the two small exponents, so 4096 is the same
+   generous-by-a-bit shape the public key buffer has. */
+#define WT_XAIOS_SKEY_STORAGE 4608U
+
+typedef struct wt_xaios_private_key {
+  uint64_t alignment;
+  unsigned char storage[WT_XAIOS_SKEY_STORAGE];
+} wt_xaios_private_key_t;
+
+/* Parse a DER private key (PKCS#8 or PKCS#1) into `out`. Returns 0 on success,
+   -1 for a key this backend does not carry. */
+int wt_xaios_private_key_load(const uint8_t *der, size_t der_len,
+                              wt_xaios_private_key_t *out);
+
+/* The largest signature this key can produce, so a caller with a fixed buffer
+   can tell "the signature does not fit" from "the key does not match". */
+size_t wt_xaios_signature_size(const wt_xaios_private_key_t *key);
+
+/* Sign `content` with the key `load` produced, under `scheme`.
+ *
+ * The digest is taken from the scheme, as RFC 8446 section 4.4.3 requires, so
+ * a caller cannot choose a hash separately from the scheme and cannot get the
+ * two out of step. RSA-PSS uses a salt as long as the hash and a fresh one per
+ * signature, drawn from the platform's entropy.
+ *
+ * Returns 0 on success, -1 on a bad argument, an unsupported scheme, a key that
+ * does not match the scheme, or an output buffer too small. */
+int wt_xaios_signature_sign(const wt_xaios_private_key_t *key, uint16_t scheme,
+                            const uint8_t *content, size_t content_len,
+                            uint8_t *out, size_t capacity, size_t *out_len);
+
 #endif

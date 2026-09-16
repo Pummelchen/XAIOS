@@ -23,6 +23,19 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **The WebTransport C99 port completes a TLS 1.3 handshake with itself.**
+  Signing is no longer refused: a DER private key is parsed with BearSSL's
+  key decoder and RSA-PSS (fresh salt per signature, from an HMAC-DRBG
+  seeded by platform entropy) or ECDSA signs with it. A host handshake
+  endpoint drives the vendored runtime session on both sides -- one binary,
+  both roles, no OpenSSL anywhere -- and `make wt-interop-test` observes a
+  completed QUIC v1 + TLS 1.3 handshake with a pinned certificate, plus the
+  negative controls a positive case cannot replace: a wrong fingerprint is
+  refused with `trust`, and so is the development bypass asked for off
+  loopback. The test runs in CI. It also found that the session driver
+  itself had never been compiled by the port's compile check, and that the
+  check's object names collided across directories (B-131).
+
 - **The WebTransport C99 port has its crypto backend, and the vendored tree
   is down to one OpenSSL file.** SHA-256 (with the transcript snapshot TLS
   1.3 needs), HMAC, HKDF, HKDF-Expand-Label, AES-128-GCM, ChaCha20 and

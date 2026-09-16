@@ -31,6 +31,7 @@ RUNTIME_SCRIPTS = {
     "build-libc-runtime-test.sh",
     "build-libc.sh",
     "build-wt-upstream.sh",
+    "build-wt-peer.sh",
     "build-netboot-image.sh",
     "create-initfs.py",
     "create-persistent-image.sh",

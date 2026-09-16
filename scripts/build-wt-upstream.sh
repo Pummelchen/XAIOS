@@ -105,9 +105,15 @@ compile_one() {
 
 for source in "$VENDOR"/src/core/*.c "$VENDOR"/src/quic/*.c \
               "$VENDOR"/src/runtime/server_retry.c \
+              "$VENDOR"/src/runtime/session.c \
               "$VENDOR"/src/tls/extension.c "$VENDOR"/src/tls/handshake.c \
               "$VENDOR"/src/tls/keyschedule.c "$VENDOR"/src/tls/session.c; do
-  compile_one "$VENDOR_WARN" "$source" "$(basename "$source" .c)"
+  # The object name comes from the path, not the basename: `session.c` and
+  # `handshake.c` each exist in two of these directories, and a collision would
+  # leave one of them never actually compiled by a check whose whole purpose is
+  # "every source compiles".
+  relative=${source#"$VENDOR"/src/}
+  compile_one "$VENDOR_WARN" "$source" "$(printf '%s' "${relative%.c}" | tr '/' '_')"
 done
 
 # The one upstream file that needs the platform seam.

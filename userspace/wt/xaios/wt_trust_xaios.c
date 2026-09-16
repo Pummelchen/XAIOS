@@ -201,16 +201,28 @@ wt_status_t wt_tls_signature_sign(const uint8_t *private_key,
                                   const uint8_t *content, size_t content_len,
                                   uint8_t *signature_out, size_t capacity,
                                   size_t *signature_len) {
-  (void)private_key;
-  (void)private_key_len;
-  (void)scheme;
-  (void)content;
-  (void)content_len;
-  (void)signature_out;
-  (void)capacity;
-  (void)signature_len;
-  /* The server half of upstream's session. This port is a client and carries
-     no private-key path; naming the refusal is what keeps a caller from
-     reading a zero-length signature as a signature. */
-  return WT_ERR_UNSUPPORTED;
+  wt_xaios_private_key_t key;
+  int status;
+
+  if (private_key == NULL || content == NULL || signature_out == NULL ||
+      signature_len == NULL) {
+    return WT_ERR_INVALID_ARGUMENT;
+  }
+  *signature_len = 0U;
+  if (!wt_tls_signature_scheme_supported(scheme)) return WT_ERR_UNSUPPORTED;
+  if (wt_xaios_private_key_load(private_key, private_key_len, &key) != 0) {
+    /* A key this backend cannot read is not a key, which is a protocol error
+       rather than a missing capability: the caller supplied the bytes. */
+    return WT_ERR_PROTOCOL;
+  }
+  if (capacity < wt_xaios_signature_size(&key)) {
+    wt_secure_zero(&key, sizeof(key));
+    return WT_ERR_LIMIT;
+  }
+  status = wt_xaios_signature_sign(&key, scheme, content, content_len,
+                                   signature_out, capacity, signature_len);
+  wt_secure_zero(&key, sizeof(key));
+  /* The scheme and the buffer were both checked above, so a refusal here is a
+     key that does not match the scheme it is being asked to sign with. */
+  return status == 0 ? WT_OK : WT_ERR_UNSUPPORTED;
 }
