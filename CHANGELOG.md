@@ -23,15 +23,15 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
-- **A registered EL0 process is still not preempted, and that is now measured
-  rather than assumed.** With a user process running as a scheduled task (the
-  entry above), a spinner built for the test -- a process that never blocks,
-  looping in EL0 for 1.2 seconds -- accumulated exactly two scheduler switches,
-  which are the dispatch and the hand-back: the timer never took the CPU away
-  from it. The assertion that required more caught it and the boot halted, so
-  the spinner and the check are not in this build; what is recorded under
-  B-132 is the measurement, the narrowing, and the discriminator that decides
-  between the remaining candidates (B-132).
+- **The EL0 preemption measurement from the last change is corrected: it
+  measured the test's own design, not the port.** The spinner ran 1.2 seconds
+  in EL0 with two switches, which read as "not preempted" -- but the
+  dispatching context was blocked while it waited, so the spinner was the
+  only runnable task and the scheduler correctly picked it again instead of
+  switching. A measurement of preemption needs a second runnable task (the
+  kernel-context test had one, which is why it counted switches); the
+  dispatcher staying runnable is the fix, and the blocked case is the
+  negative control (B-132).
 
 - **A user process can now be a scheduled task rather than a call that
   returns on the caller's stack, and on RISC-V it is.** The process gets a
