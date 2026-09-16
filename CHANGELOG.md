@@ -23,6 +23,28 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **A kernel context can hand the CPU to another task and get it back,
+  which is the piece preemption was missing.** `scheduler_register_kernel_task()`
+  builds a task whose frame starts it in kernel mode on a stack of its own,
+  `scheduler_adopt_this_context()` registers the context that is running now
+  so a tick can save it and hand the CPU over, and the new
+  `platform_kernel_preemption_self_test()` uses both: the boot context blocks
+  itself, the timer switches to a second kernel task on its own stack, that
+  task makes the first runnable again and blocks itself, and the next tick
+  brings the first back -- with the runs and switches printed and asserted:
+  `switch 30001 -> 30000`, then `switch 30000 -> 30001`, then
+  `kernel-context switch registered=1 ran=1 runs=1 switches=3` and the pass
+  line. **The ordering is part of the contract, and it was found by getting
+  it wrong:** the new task is registered *not* runnable, the caller adopts
+  the context that will hand the CPU over, and only then is the task made
+  runnable -- the first version made it runnable at registration, a tick
+  landed in that window, and the CPU left a context whose frame had never
+  been saved and died at program counter zero. RISC-V can build such a frame
+  because its trap return loads `sp` from the frame and takes the privilege
+  from `sstatus`; AArch64 refuses by name because its exception return keeps
+  the CPU's `SP_EL1`, and x86-64 because it does not tick the scheduler from
+  a trap at all (B-132).
+
 - **A timer interrupt that arrived before the scheduler existed no longer
   takes the machine down.** The scheduler's current-task accessor read its
   run queues without checking that they had been allocated, and this port's
