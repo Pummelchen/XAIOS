@@ -113,6 +113,18 @@ done
 # The one upstream file that needs the platform seam.
 compile_one "$VENDOR_WARN $SEAM_FLAGS" "$VENDOR/src/runtime/udp.c" "udp"
 
+# The rest of the client stack -- the public API, the WebTransport session and
+# the HTTP/3 layer -- compiles against the same backends, so it is built here
+# too. "The port compiles" should be a claim about the whole port and not about
+# the handshake subset, and a file that stops compiling is found now rather
+# than when the application is linked. The names are prefixed because
+# `session.c` and `endpoint.c` each appear in more than one directory.
+for directory in api webtransport http3; do
+  for source in "$VENDOR"/src/"$directory"/*.c; do
+    compile_one "$VENDOR_WARN" "$source" "$directory-$(basename "$source" .c)"
+  done
+done
+
 # The XAIOS side of the port. The crypto backend implements upstream's
 # `webtransport/crypto/crypto.h` over BearSSL; the keyshare backend replaces
 # upstream's OpenSSL X25519 with the ladder this repository already checks
@@ -138,5 +150,5 @@ done
 printf '%s\n' \
   "wt-upstream: $built sources compiled for $ARCH into ${OUT#"$ROOT"/}"
 printf '%s\n' \
-  "wt-upstream: every upstream source in the handshake set is built or" \
-  "  replaced; no OpenSSL file remains"
+  "wt-upstream: the whole client stack (core, quic, runtime, tls, api," \
+  "  webtransport, http3) is built or replaced; no OpenSSL file remains"

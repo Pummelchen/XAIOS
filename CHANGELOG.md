@@ -40,8 +40,9 @@ Landed since build 5 and not in any released image.
   reader, and the RSA-PSS and ECDSA scheme dispatch are now this
   repository's code; the port reaches them through an opaque-key bridge
   because its crypto header and this repository's declare the same names
-  for different types. 45 sources compile per architecture with nothing
-  missing, and the port's host binary checks the trust policy against a
+  for different types. The whole client stack -- `api/`, `webtransport/`
+  and `http3/` included -- compiles: 78 sources per architecture with
+  nothing missing. The port's host binary checks the trust policy against a
   real ECDSA certificate and signature. A differential test against
   BearSSL's own X.509 decoder found a DER length bug in the new reader on
   its first run (B-131).

@@ -263,8 +263,10 @@ So every upstream file in the handshake set is now built or replaced:
 `src/crypto/crypto_openssl.c`, `src/tls/keyshare.c` and `src/tls/trust.c` are
 replaced, and `src/tls/self_signed.c` is a server and test helper that no
 compiled translation unit references. The whole of `core/`, `quic/`,
-`runtime/` and the remaining `tls/` files compile untouched -- 45 sources per
-architecture.
+`runtime/` and the remaining `tls/` files compile untouched. The whole client
+stack is built, not only the handshake set: `api/`, `webtransport/` and
+`http3/` compile against the same backends, which is 78 sources per
+architecture and the surface the application will link.
 
 The vector test is not ceremony: its first run found that a zero-length AEAD
 message was refused for want of an output buffer, and that a second `final` on
