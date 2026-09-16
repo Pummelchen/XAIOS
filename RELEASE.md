@@ -163,7 +163,13 @@ Leave previous releases' notes and performance tables alone.
   against, or otherwise modify another repository. A change that appears to belong
   elsewhere is reported to the owner with the exact edit and the reason, not applied.
   Touching another repository requires an instruction that names it, and "the fix
-  lives there" is not one.
+  lives there" is not one. **The one write that is part of this repository's own
+  workflow is the published Wiki:** `wiki/` is the source of truth, and the
+  `publish-wiki` CI job copies `wiki/*.md` over `XAIOS.wiki.git` after the
+  documentation contract passes and then reads it back with
+  `make wiki-parity-check`. Agents edit `wiki/` in this repository; publishing it by
+  hand is a maintainer action, and an edit made on the published pages is overwritten
+  by the next publish.
 - **`AGENTS.md` is the one instruction file, and every harness must reach it.** This
   account works with Codex, Claude Code, DeepSeek Harness, OpenCode, Qwen Code,
   Qoder and Zed. Six read `AGENTS.md` directly; **Claude Code does not** — its
@@ -210,7 +216,10 @@ apply here.*
   root, `platform/*/build-*.sh` per hypervisor target.
 - **Gates** `BUILD_NUMBER` validation, which `make docs-check` cross-checks against
   the `## Build <n>` section in `CHANGELOG.md` — bump both together or the gate
-  fails. Then `make compile-check`, `make hosted-test`, `make xapt-test` and the
-  QEMU boot gates. **`release-check` is local-only**: no CI job runs it, and
-  `local-gates` must be recorded against HEAD on a clean tree, because any later
-  commit costs another run.
+  fails. Then `make compile-check` (which runs `make wt-upstream-compile` beside it),
+  `make hosted-test`, `make xapt-test`, the WebTransport gates
+  (`make wt-vectors-check`, `make wt-host-test`, `make wt-host-sanitize`,
+  `make wt-interop-test`, `make qemu-quic-handshake-gate`) and the other QEMU boot
+  gates. **`release-check` is local-only**: no CI job runs it, and `local-gates` must
+  be recorded against HEAD on a clean tree, because any later commit costs another
+  run.

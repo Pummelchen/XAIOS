@@ -29,13 +29,23 @@ surface is not frozen.
 - `userspace/` — `libc`, `init`, `apps`, `sshd`, `service-manager`, `worker`, `wt`.
 - `scripts/` — the builders: `build-image.sh`, `build-arch-image.sh`,
   `build-riscv64.sh`, `build-boot-media.sh`, `build-vm-packages.sh`,
-  `build-release.sh`, `build-libc.sh`, `macos-bootstrap.sh`.
+  `build-release.sh`, `build-libc.sh`, `macos-bootstrap.sh`, plus the
+  WebTransport port's `build-wt-upstream.sh` (compile the vendored library for
+  every guest architecture), `build-wt-peer.sh` (the host handshake endpoint)
+  and `build-wt-app.sh` (`/bin/wtqtest`).
 - `tests/` — `repository/`, `scripts/`, `security/`, `libc/`, `engine/`,
   `storage/`, `system/`, `network/`, and more.
 - `platform/{qemu,vmware-fusion,virtualization-framework}`, `docs/`, `wiki/`,
   `release/` (the tracked `.iso.zip` plus its notes), `contracts/`, `config/`,
-  `third_party/`.
-- The 77 KB `Makefile` is the entry point for all of it.
+  `third_party/` — which holds the hash-pinned vendored trees, including
+  `webtransport-c99/` (upstream's C99 WebTransport library, checked by
+  `tests/repository/check-webtransport-vendor.py`; a port adds files *beside*
+  it, never inside it).
+- `wiki/` is the source of truth for the published GitHub Wiki: a push to `main`
+  runs the `publish-wiki` CI job, which copies `wiki/*.md` over
+  `XAIOS.wiki.git` and then reads it back with `make wiki-parity-check`. An edit
+  made on the published pages is overwritten by the next publish.
+- The 78 KB `Makefile` is the entry point for all of it.
 
 ## Build
 
@@ -64,6 +74,17 @@ make test               # aggregate: bootstrap image qemu-dry-run
 make qemu               # AArch64; also qemu-x86_64, qemu-riscv64
 ```
 
+The WebTransport port has its own gates, and they are the ones to run after
+touching `userspace/wt/`, `third_party/webtransport-c99/` or the RISC-V IOMMU:
+
+```bash
+make libc                 # the hosted sysroot wt-upstream-compile builds against
+make wt-upstream-compile  # the vendored library, every guest architecture
+make wt-host-test         # RFC vectors, trust policy, signature checks (host)
+make wt-interop-test      # the port's client and server complete a handshake
+make qemu-quic-handshake-gate  # ...and a booted guest does the same
+```
+
 A released build needs no compiler: download the per-architecture kit and unzip.
 
 ## Identity
@@ -81,13 +102,14 @@ Do not introduce a semantic version.
 
 ## Gates
 
-- CI (`.github/workflows/ci.yml`): `make qemu-libc-gate`, `make compile-check`,
-  `make hosted-test`, `make xapt-test`, `make docs-check`, `make wt-vectors-check`,
-  `make wt-host-test`, `make wt-host-sanitize`,
+- CI (`.github/workflows/ci.yml`): `make qemu-libc-gate`, `make compile-check`
+  (which also runs `make wt-upstream-compile`), `make hosted-test`,
+  `make xapt-test`, `make docs-check`, `make wt-vectors-check`,
+  `make wt-host-test`, `make wt-host-sanitize`, `make wt-interop-test`,
   `python3 tests/scripts/qemu-abi-contract.py`.
 - CI boot gates: `make image-qemu-test` followed by `qemu-netboot-gate.py`,
-  `qemu-installed-disk-gate.py`, `qemu-smoke.py`; then `make qemu-update-gate` and
-  `make qemu-fault-matrix`.
+  `qemu-installed-disk-gate.py`, `qemu-smoke.py`; then `make qemu-update-gate`,
+  `make qemu-fault-matrix` and `make qemu-quic-handshake-gate`.
 - The local order, cheapest first (`docs/BUILD-PROCESS.md`): `make docs-check`,
   `make compile-check`, `make hosted-test`, `make release-image-gate`,
   `make boot-media-gate`, `make vm-package-gate`, `make local-gates`,
@@ -109,6 +131,16 @@ Do not introduce a semantic version.
   commit, a README typo included, costs another full run.
 - Do not run two things that write `build/` at the same time
   (`docs/BUILD-PROCESS.md`, "Two builders at once").
+- **`make qemu-quic-handshake-gate` rebuilds the boot image with
+  `XAIOS_BOOT_TEST_APPS=1 XAIOS_WT_HANDSHAKE_TEST=1`.** The second flag is what
+  launches `/bin/wtqtest`, and an image carrying it makes every later boot-test
+  gate wait ~20 s for a peer that is not there. Run this gate *after* the other
+  boot gates, or rebuild with `make image-qemu-test` before them.
+- **`make wt-upstream-compile` needs the hosted sysroot** (`make libc`, which
+  `make compile-check` builds as a dependency). The port itself is excluded from
+  `compile-check`'s freestanding sweep on purpose: it builds against the vendored
+  headers and the hosted libc, so the freestanding flags would only prove it
+  cannot be built the way nothing builds it.
 - Kit builders: leaving `platform/vmware-fusion/XAIOS.vmx.in` placeholders
   (`@@…@@`) unsubstituted produces a VM Fusion that silently refuses to power on;
   the builder now fails on any leftover `@@`. A checksum fallback attached to a
