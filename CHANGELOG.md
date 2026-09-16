@@ -23,6 +23,16 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **A registered EL0 process is still not preempted, and that is now measured
+  rather than assumed.** With a user process running as a scheduled task (the
+  entry above), a spinner built for the test -- a process that never blocks,
+  looping in EL0 for 1.2 seconds -- accumulated exactly two scheduler switches,
+  which are the dispatch and the hand-back: the timer never took the CPU away
+  from it. The assertion that required more caught it and the boot halted, so
+  the spinner and the check are not in this build; what is recorded under
+  B-132 is the measurement, the narrowing, and the discriminator that decides
+  between the remaining candidates (B-132).
+
 - **A user process can now be a scheduled task rather than a call that
   returns on the caller's stack, and on RISC-V it is.** The process gets a
   kernel stack of its own and is entered from a task entry that runs on it;
