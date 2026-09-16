@@ -200,20 +200,26 @@ the kernel comes up to a login prompt with sshd listening.
 
 ## What is missing
 
-- **Preemptive scheduling.** `scheduler_tick` is called from the AArch64 and
-  x86-64 timer handlers and from nothing here: no file under
-  `kernel/arch/riscv64/` names a `scheduler_*` symbol, and the timer trap
-  handler rearms the comparator and returns. The port says so in its own
-  assembly rather than in its documentation, which is why this is written down
-  now -- `entry.S` calls the full context switch "the scheduler work this port
-  has not done", and says a user thread entered with interrupts off "cannot be
-  preempted, which is a scheduler that does not schedule". Four harts come
-  online, report as scheduling and pass the gates that ask, so the fact is
-  narrower than "the scheduler does not work" and it is real: an EL0 process
-  runs until it yields or exits. It matters beyond this port because `OD-011`'s
-  timer option and any future kernel-context interrupt work has to know that
-  there is no tick here to attach to, and because the shared kernel is
-  otherwise the same code on all three machines.
+- **Preemptive scheduling.** The tick is here now -- the timer interrupt maps
+  its trap frame to the scheduler's context frame, ticks it and maps the answer
+  back, with a round-trip self-test the smoke requires by name -- but **no EL0
+  process is preempted, on this port or on the other two**, and the reason is
+  not this port's timer. `user_process_run` never registers a process with the
+  scheduler and the one function that does has no callers, so the scheduler's
+  current task stays 0 for the whole of userspace and a tick has nothing to
+  switch to. The measurement is in the boot log: every tick from a user context
+  reports `pid=0 -> pid=0 ... switches=0`, and the worker gate's three processes
+  run to completion one after another on the same user stack. Beyond
+  registration this port needs what `entry.S` calls "the scheduler work this
+  port has not done": the kernel continuation a user entry parks on the CPU's
+  stack, and the `sscratch` re-armed from it, are per CPU rather than per task,
+  so resuming a different task from a trap would unwind the outgoing task's
+  continuation with the incoming task's exit code. `B-129` carries the tick;
+  `B-132` carries registration and the per-task kernel context, and it closes on
+  a spinning EL0 process being preempted. This matters beyond this port because
+  `OD-011`'s timer option and any future kernel-context interrupt work rests on
+  it, and because the shared kernel is otherwise the same code on all three
+  machines.
 - **Hardware qualification of any kind.** One emulated board is the whole
   evidence. AArch64 is qualified on VMware Fusion and x86_64 on a physical
   Intel host; RISC-V has run on QEMU's `virt` and nothing else, so no claim

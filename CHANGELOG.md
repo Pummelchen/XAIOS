@@ -23,6 +23,50 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **The RISC-V timer interrupt ticks the scheduler now, and measuring it found
+  the reason no EL0 process is preempted on any of the three architectures.**
+  The port's trap frame is mapped to the scheduler's context frame in both
+  directions, the tick is taken from the timer trap unless that CPU carries the
+  network tick, and the answer is written back into the trap frame the return
+  resumes; a round-trip self-test covers the mapping and the smoke requires it
+  by name (`sched-tick: riscv64 trap-frame mapping self-test passed`). The same
+  self-test machinery then counted what the tick actually does, and a boot with
+  the worker gate prints `sched-tick: riscv64 user-context tick pid=0 -> pid=0
+  ... switches=0`: the tick arrives from EL0 and the scheduler has nothing to
+  switch to, because `user_process_run` -- the only path this kernel runs a
+  process through -- never registers one, and the single function that does has
+  no callers. The worker gate's three processes run to completion one after
+  another on the same user stack. **On x86-64 the timer tick that could not
+  apply a switch was removed rather than left half-working:** it passed the
+  scheduler a context frame nothing filled, saved zeros as the preempted task's
+  context and moved the scheduler's idea of the current task without moving the
+  CPU, and its self-test now says why by name -- a real switch needs per-task
+  kernel context (B-129, B-132).
+- **The RISC-V board's IOMMU now has a contract written down rather than an
+  assumption.** `docs/RISCV-IOMMU.md` records what QEMU 11.1.1 implements for
+  `-device riscv-iommu-pci` -- its requestor id, `CAP`/`DDTP`/queue
+  registers, 1LVL device directory and contexts, the Sv39/48/57 tables the
+  port already has, its four command opcodes and its fault causes -- and the
+  three findings that shape the work. The IOMMU attaches to the PCI bus and
+  to nothing else, so the RISC-V runner's virtio-mmio root filesystem cannot
+  be mediated on this board at all and only the PCI transports can; the
+  moment `DDTP` leaves Bare, every PCI function without a context stops, so
+  identity contexts land in the same step that programs it and the driver
+  bails out to Bare if the capability read fails; and faults reach the fault
+  queue however they are notified, so polling is sufficient evidence on the
+  board that has no usable MSI-X. No driver code is written yet (B-130).
+- **The completed WebTransport C99 library was assessed for integration, and
+  the answer is a backend layer rather than a platform directory.**
+  `docs/WEBTRANSPORT-C99-INTEGRATION.md` records the seam that matters
+  (`C99/src/runtime/udp_platform.h`, `CLOCK_MONOTONIC` in `src/core/time.c`, and
+  the twenty crypto primitives), the eleven assumptions to fix, the fact that
+  no syscall change and no threads are needed, and the two things that are not
+  one-file changes: Picolibc declares `clock_gettime` but implements it only for
+  Linux, and the crypto seam does not cover X.509 or X25519, so a backend swap
+  touches four TLS files rather than one. One in-tree claim was found false and
+  corrected: `userspace/wt/include/wt_crypto.h` said BearSSL has no Poly1305 and
+  no RSA-PSS, and the vendored tree has four Poly1305 implementations and six
+  PSS files (B-131).
 - **The machine no longer stops when a CPU cannot take an interrupt, and the
   NVMe driver no longer invents completions.** Both were defects in the same
   family: a device or a CPU answering a question that had been asked at the

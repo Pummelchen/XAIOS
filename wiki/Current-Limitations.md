@@ -37,21 +37,46 @@ that the image's *loader* boots and then running a kernel from `build/`. All
 three QEMU legs boot with no system volume now, which is what a first boot on
 a real machine looks like.
 
-**RISC-V also has no preemptive scheduling, and that is a capability gap rather
-than an unfinished port.** `scheduler_tick` is called from the AArch64 and
-x86-64 timer handlers and from nothing on RISC-V: `kernel/arch/riscv64/` contains
-no reference to any `scheduler_*` symbol, and its timer trap handler rearms the
-comparator and returns. The port says so itself, in the two places a person is
-least likely to read -- `kernel/arch/riscv64/entry.S` calls the full context
-switch "the scheduler work this port has not done", and says a user thread
-entered with interrupts off "cannot be preempted, which is a scheduler that does
-not schedule". Four harts come online and report as scheduling, and the boot
-closure is otherwise the shared one, so this is narrower than it sounds and it
-is still real: an EL0 process on RISC-V runs until it yields or exits. It is
-recorded here because `OD-011`'s timer option and any future work on
-kernel-context interrupts needs to know that this port has no tick to attach to,
-and because a reader comparing the three architectures would otherwise conclude
-the shared scheduler means the same thing on all of them.
+**No EL0 process is preempted on any of the three architectures, and the reason
+is not the one this page used to give.** It said RISC-V had no tick to attach
+to, because `kernel/arch/riscv64/` named no `scheduler_*` symbol. That part is
+fixed and measured: the RISC-V timer interrupt now maps its trap frame to the
+scheduler's context frame, ticks it and maps the answer back, with its own
+round-trip self-test that the smoke requires by name
+(`sched-tick: riscv64 trap-frame mapping self-test passed`). A boot log shows
+the tick arriving from a user context (`sched-tick: riscv64 user-context tick
+pid=0 -> pid=0`), so the mechanism runs.
+
+**What stops it is that no user process is ever registered with the
+scheduler.** `user_process_run` is the only path this kernel runs a process
+through, and it never registers one; the single registration site,
+`user_process_run_concurrent`, has no callers. The scheduler's current task is
+therefore process 0 -- the idle task -- for the whole of userspace, so a tick
+has nothing to switch to. The measurement says the same thing twice: every tick
+from a user context on RISC-V reports `pid=0 -> pid=0 ... switches=0`, and the
+boot worker gate's three processes run one after another on the same user stack
+to completion.
+
+Even with registration the ports would need work, and it is the same work in
+different places. On x86-64 the kernel continuation a process returns through
+is one slot per CPU and nesting depth (`user_resume_rsp[]` and the TSS `rsp0`
+derived from it), and floating-point state is one area per CPU and depth, so a
+switch would hand the incoming task the outgoing task's return path and
+registers; a trap taken in kernel mode has no `RSP`/`SS` words in its frame to
+apply a switch into at all. On RISC-V a user entry parks the process's kernel
+continuation on the CPU's stack and re-arms `sscratch` from it, so the same
+collision appears on the trap-return side. The tick on x86-64 was therefore
+removed rather than left half-working: it passed the scheduler a context frame
+that nothing filled and never applied the one it got back, which corrupted the
+scheduler's bookkeeping without switching the CPU.
+
+This is recorded here because `OD-011`'s timer option, the `B-129` objective and
+any future work on kernel-context interrupts all rest on it, and because a
+reader comparing the three architectures would otherwise conclude that the
+shared scheduler running on all of them means the same execution model on all of
+them. `B-132` is the task that closes it: register user processes with the
+scheduler, give each its own kernel context, and then prove the preemption with
+a spinning EL0 process.
 
 **A RISC-V machine now boots an XAIOS-installed disk, and getting there took
 four faults to find one cause.** The installed-disk gate for this architecture
