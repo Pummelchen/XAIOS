@@ -22,8 +22,8 @@ merged and deleted. Anything assigned from now on starts at `B-84`.
 **Closed rows are removed, not kept.** At the maintainer's direction on
 2026-09-17 every resolved row was deleted, including the tables that held them.
 The identifiers are therefore holes, and a number that a gate, a comment or a
-release note cites is a pointer into `CHANGELOG.md` and the commit history
-rather than into this page. The reasoning behind each fix was always in the
+release note cites is a pointer into `CHANGELOG.md`, the commit history and the
+[closed-identifier index](#closed-identifiers) at the end of this page. The reasoning behind each fix was always in the
 commit that made it and in the comments beside the code; that is now the only
 place it lives.
 
@@ -751,3 +751,135 @@ affected item to `FAILED` until a passing rerun is recorded.
 GitHub issues and milestones may provide discussion and execution history, but
 their descriptive status must link back here rather than becoming another
 independent tracker.
+
+## Closed identifiers
+
+Closed rows are removed from this tracker; this is the index that keeps their
+identifiers resolvable. One line per identifier, naming what the item was and
+the commit that first recorded the row as closed -- which for a row this tracker
+inherited already closed is the commit that first wrote it. The account of the
+fix itself is in that commit, in `CHANGELOG.md` and in the comments beside the
+code; the numbers here are holes that are never reused.
+
+| ID | What it was | Recorded closed in |
+|---|---|---|
+| `B-01` | Outbound ProxyJump failed host key verification | `1fdb810` Tracker: F-02, B-01 and B-04 say what was found |
+| `B-02` | Thread join failed under load, twice | `2c68000` B-02: the join window, entered on purpose |
+| `B-03` | `vmnet-helper` spun a core while idle | `4f1ab4e` B-03: verified on the fixed binary, which the V-03 run happened to start |
+| `B-04` | Fusion intermittently got no DHCP offer | `6da8f0b` B-04: a hundred Fusion boots, and the retry count explains the defect |
+| `B-05` | One fixed kernel link address blocked a 1 GiB profile | `a1f2f61` Six acceptance runs, and why five rows were never actually tested |
+| `B-06` | Virtualization.framework booted to nothing below ~3.5 GiB | `a1f2f61` Six acceptance runs, and why five rows were never actually tested |
+| `B-07` | Applications were never run on two of the four images | `a1f2f61` Six acceptance runs, and why five rows were never actually tested |
+| `B-08` | An unclean-boot marker put the guest into rescue mode | `a1f2f61` Six acceptance runs, and why five rows were never actually tested |
+| `B-11` | Userspace and the identity map were the same addresses | `a1f2f61` Six acceptance runs, and why five rows were never actually tested |
+| `B-12` | Fusion faulted on the firmware framebuffer at 4 GiB | `a1f2f61` Six acceptance runs, and why five rows were never actually tested |
+| `B-14` | The x86_64 guest wrote to the medium it booted from | `d7175bd` B-14: the read-only branch runs for the first time, and fails |
+| `B-15` | An intermittent fatal assertion on VMware Fusion | `3d98a26` The tracker was an implementation diary in a table |
+| `B-19` | The relocated kernel was placed without its required alignment | `d7175bd` B-14: the read-only branch runs for the first time, and fails |
+| `B-23` | A v6 volume sometimes did not come back from a power cut | `e3a2974` xaibootfs: probe the mirror at the right sector on v6, and stop the rename overflow |
+| `B-24` | Renaming a directory on a v6 volume wrote 191 KiB past a static array | `e3a2974` xaibootfs: probe the mirror at the right sector on v6, and stop the rename overflow |
+| `B-25` | After reverting a Fusion snapshot the guest refused every command | `b27c507` B-25: sshd leaked a kernel session per connection whose command failed |
+| `B-26` | `qemu-docker-network-suite` failed its native xtop check | `aa1ce44` B-26: the external client suite described an xtop that no longer exists |
+| `B-27` | A full-screen program's terminal restore was truncated | `3ac5c06` B-27: five bytes of a terminal restore that never left the program |
+| `B-28` | An SSH session is refused once in several hundred under sustained load | `166b980` The Fusion soak: B-28's fix holds, and its second signature is a separate defect |
+| `B-29` | A userspace UDP socket could not send | `2fdbb00` B-29: a UDP socket could reply but never speak first |
+| `B-30` | `operations-closure` blamed the wrong boot for a missing unclean record | `1d1787d` B-30: the gate blamed the wrong boot, and so did this tracker |
+| `B-31` | `qemu-libc-gate` booted a RISC-V image its dependency never built | `b13f431` B-31: the libc gate reported PASS about a kernel that no longer existed |
+| `B-32` | The CI permissions check could not see a job-level override | `b13f431` B-31: the libc gate reported PASS about a kernel that no longer existed |
+| `B-33` | Two aggregate gates certified a `printf` for the DNSSEC path | `5e6661e` B-33: two aggregate gates were certifying a printf |
+| `B-34` | `dns_self_test` reported three things it did not test | `49fe1b8` B-34, B-35, B-36: the DNSSEC cluster, and a gate that keyed on the symptom |
+| `B-35` | One deadline covered a whole DNSSEC chain | `49fe1b8` B-34, B-35, B-36: the DNSSEC cluster, and a gate that keyed on the symptom |
+| `B-36` | A malformed argument was reported as a DNSSEC failure | `49fe1b8` B-34, B-35, B-36: the DNSSEC cluster, and a gate that keyed on the symptom |
+| `B-37` | The outbound SSH client could not run without a terminal | `e42b32a` B-37: the outbound client asked for a passphrase that did not exist |
+| `B-38` | An SFTP session stalls when the file contains the alternate-screen sequence | `75e1fc7` The soak now counts what it used to glimpse, and B-38's leak does not exist |
+| `B-39` | `core-os-rc`'s fragmentation step timed out once here, and timed out on CI | `720a580` B-39 was two causes and a reporting inversion, and the step now completes at 13% of budget |
+| `B-40` | `send_all` could freeze the whole server for as long as a peer trickled | `24bb31e` B-40 and B-41: the two ways one peer could stop the server serving everyone |
+| `B-41` | A failing channel was logged, never closed, and starved the ones behind it | `24bb31e` B-40 and B-41: the two ways one peer could stop the server serving everyone |
+| `B-42` | The DNSSEC self-test fixture and its anchors ship in release images | `9bf7bdf` B-42: the fixture stays, and the claim about the anchors became checkable |
+| `B-43` | A session stalls ~19 s and the guest says nothing about it | `7505946` The tracker has no open defect left, and none of the last four needed a code change |
+| `B-44` | sshd is the machine's network thread, and nothing said so | `068903f` B-47 was reachable, and B-44 keeps its arrangement with the silence removed |
+| `B-45` | Every 32-byte audit append rewrote the whole log file | `9b82034` B-45: the append stops rewriting the file, and the real cost turns out to be elsewhere |
+| `B-46` | A full-size SSH packet would be refused rather than short-written | `c0b93a6` B-46: two numbers that had to agree, and nothing made them |
+| `B-47` | A full socket map accepted the connection and dropped it silently | `068903f` B-47 was reachable, and B-44 keeps its arrangement with the silence removed |
+| `B-48` | Every file write committed the whole metadata region | `201b6e0` A 32-byte append cost 640 KiB, and now costs 2 |
+| `B-49` | A data sector number truncated above 32 MiB | `785f83c` A data sector number truncated above 32 MiB |
+| `B-50` | The gate stopped reading the guest's console and then blamed the guest | `30f577e` The gate stopped reading the console and then blamed the guest |
+| `B-51` | `qemu-fault-matrix` booted the machine's accumulated state, and said the wrong thing when that state failed it | `483625e` One architecture, one set of images |
+| `B-52` | A machine that had run long enough stopped booting | `33af3f8` A machine that had run long enough stopped booting |
+| `B-53` | Nothing stopped a packaging script from shipping a kernel built to fault on purpose | `483625e` One architecture, one set of images |
+| `B-54` | The release-image gate passed a row that booted a kernel from the previous build | `52e5ed5` The gate said five environments booted the image; one booted the last build |
+| `B-55` | Sixteen extents was a reachable ceiling; it is now sixty-four | `6ff063b` B-55 rested on arithmetic; here is the test |
+| `B-56` | Every RISC-V boot in CI failed at a missing AArch64 artifact, and was reported as a guest that would not boot | `214d422` Every RISC-V boot in CI failed before QEMU started |
+| `B-57` | `dd bs=1m` works on a Mac and fails on Linux, and CI is Linux | `fba3df3` dd bs=1m works on a Mac and fails on Linux, and CI is Linux |
+| `B-58` | Two CI jobs were missing packages the work they run requires | `493894e` Two CI jobs were missing packages the work they run requires |
+| `B-59` | A machine with no entropy source panicked at boot, in the self-test that exists to prove it refuses gracefully | `ee66efc` A machine with no entropy source panicked at boot |
+| `B-60` | `qemu-operations-closure` required `ssh reboot` to exit cleanly over the connection the reboot destroys | `c742c0a` B-60 is settled: the operations closure passes on the runner |
+| `B-61` | Two userspace linker scripts never collected RISC-V's small-data sections | `cdc6f74` Two userspace linker scripts never collected RISC-V small data |
+| `B-62` | The Fusion soak's session tally counted closes it never counted accepts for | `4ddd7d8` Open a datagram socket on a port the kernel chooses |
+| `B-63` | A session is accepted, receives nothing, and both ends time out separately | `4ddd7d8` Open a datagram socket on a port the kernel chooses |
+| `B-64` | `qemu-cpu-matrix` accepted `--arch` and ignored it | `6c34115` qemu-cpu-matrix accepted --arch and ignored it |
+| `B-65` | Seven required CPU tiers need a QEMU newer than the runner's | `0fe5ada` Seven RISC-V CPU tiers could not be tested on the runner |
+| `B-66` | A three-architecture gate ran on a two-architecture runner | `dd9a88a` A three-architecture gate ran on a two-architecture runner |
+| `B-67` | The RISC-V release image boots on macOS and not on the runner | `cdf3616` The RISC-V release image booted here and nowhere else |
+| `B-68` | Eight RISC-V gates took a prerequisite that built half a machine | `6b63f8a` A prerequisite that built half a machine |
+| `B-69` | The memory matrix believed a number that had not finished arriving | `4d1f2c4` The memory matrix believed a number that had not finished arriving |
+| `B-70` | Whether other gates stall the guest the way B-50 did | `371c174` None of the other gates have B-50's fault, and reading them is how that is known |
+| `B-71` | The operations closure waited 60s for a guest the runner interprets | `ba9d59f` The operations closure passes on the runner; nvme now fails on its merits |
+| `B-72` | Fixing the nvme gate's RISC-V legs made it outgrow its budget | `ba9d59f` The operations closure passes on the runner; nvme now fails on its merits |
+| `B-73` | The AIA board waits for an MSI-X interrupt that never arrives on the runner | `4d05a36` The AIA row costs 175 seconds, not 1643 |
+| `B-75` | The kernel's answer to `net_open_udp` reached every field except the one that carried it | `fcd43d6` Renumber the port's tracker rows: main had taken B-61 to B-73 first |
+| `B-76` | XAIOS had no way to open a datagram socket with a port the kernel chose | `fcd43d6` Renumber the port's tracker rows: main had taken B-61 to B-73 first |
+| `B-77` | The kernel's ephemeral ports overlap the DNS resolver's and NTP's | `cb0a615` Three subsystems each believed the dynamic port range was theirs |
+| `B-78` | A socket refused a listener row still reports a port that cannot receive | `94c709c` A listener row that was refused is now a refused call, and the ceiling is measured |
+| `B-79` | The TLS 1.3 handshake has its pieces and a state machine, and no 0-RTT | `7505946` The tracker has no open defect left, and none of the last four needed a code change |
+| `B-80` | Nothing on XAIOS could verify a server certificate | `fcd43d6` Renumber the port's tracker rows: main had taken B-61 to B-73 first |
+| `B-81` | The CertificateVerify verifier hashed into a buffer sized for SHA-256 | `fcd43d6` Renumber the port's tracker rows: main had taken B-61 to B-73 first |
+| `B-82` | The public key read out of a certificate pointed into a dead stack frame | `fcd43d6` Renumber the port's tracker rows: main had taken B-61 to B-73 first |
+| `B-83` | The EncryptedExtensions ALPN answer was read in a format RFC 7301 does not define | `fcd43d6` Renumber the port's tracker rows: main had taken B-61 to B-73 first |
+| `B-90` | No P-384 or P-521 certificate has been through the verifier | `165e822` Two of the verifier's three ECDSA branches had never run |
+| `B-92` | Two views outlived the buffers they point into, by contract rather than by construction | `a4e7271` B-92: the client owns the bytes it keeps, by construction |
+| `B-93` | The client's flight was valid only until the next call | `58bd1fe` B-93: the flight can be asked for again, and says how long it lives |
+| `B-94` | `qemu-readonly-medium-gate` fails on the runner about one run in four | `95ecdf0` The read-only-medium gate was racing itself, and B-94's premise was wrong |
+| `B-95` | Twelve kernel calls printed a 64-bit value through a 32-bit specifier, or the reverse | `2510321` Nothing was checking klog's format strings, and thirteen of them were wrong |
+| `B-96` | The kernel links every BearSSL source, including algorithms nothing calls | `a90b8ba` Stop linking the BearSSL ciphers XAIOS cannot negotiate, and run the xapt tests |
+| `B-97` | `compile-check` compiled one configuration and every image ships another | `185d60f` Record B-97: the compile check compiled one configuration and the images ship another |
+| `B-98` | `make xapt-test` had been failing and nothing ran it | `a90b8ba` Stop linking the BearSSL ciphers XAIOS cannot negotiate, and run the xapt tests |
+| `B-99` | The Fusion load soak fails on node2 about one round in 64, and the guest is provably not the cause | `7505946` The tracker has no open defect left, and none of the last four needed a code change |
+| `B-100` | The NVMe driver could read a completion while the device was still writing it | `9271e1d` The NVMe completion is read in one access, with the phase checked first |
+| `B-101` | The published Wiki silently went backwards, and nothing failed | `212de96` Fix the Wiki publish race, and compare what is published |
+| `B-102` | One format, two chunk-size caps, and the writer had the smaller one | `9eebf88` One format had two chunk-size caps, and the writer had the smaller one |
+| `B-103` | The RISC-V installed-disk gate never ran, and nothing could make it | `ffb4a50` The RISC-V installed-disk gate could not run, and nothing said so |
+| `B-104` | RISC-V could not boot an XAIOS-installed disk: a five-second join that was a speed assertion, and a kernel fault behind it | `6f4d16d` RISC-V boots an installed disk: close B-104 and B-108, open B-113 |
+| `B-105` | The recorded cause of the x86-64 install skip was wrong, and it was recorded as established | `ffb4a50` The RISC-V installed-disk gate could not run, and nothing said so |
+| `B-106` | The RISC-V libc leg's deadline was the one budget in the tree that ignored the declared host scale | `c5bab2d` Record the RISC-V leg's budget defect, its kernel fault, and a resolver that lied |
+| `B-107` | A RISC-V panic said it was an AArch64 panic, and the resolver believed it | `c5bab2d` Record the RISC-V leg's budget defect, its kernel fault, and a resolver that lied |
+| `B-108` | RISC-V could not boot an installed disk: the secondary hart stacks were a quarter of the size already proven too small, with no guard under them | `6f4d16d` RISC-V boots an installed disk: close B-104 and B-108, open B-113 |
+| `B-109` | Every port's user-entry symbols were named after AArch64 | `e81e5f6` Close the symbol-naming defect and narrow the unrun-gate row to what is left |
+| `B-110` | A panic dump was shredded by the other harts' logging, and on RISC-V it was not even given a quiet machine | `2b2d87c` Record a mask experiment that failed, and a symbol name that lied |
+| `B-111` | The RISC-V panic dump printed every register under the wrong name, and ten of them from memory it never wrote | `f9fdd78` Correct the "frame sp=0" in B-108 and record the register mislabelling |
+| `B-112` | The fault matrix and the update gates were gates that no CI job ran, on any architecture | `f09ccb7` Close the last unrun gate: the fault matrix runs on all three architectures |
+| `B-113` | The storage-administration window was a device's position in one test bench's enumeration, so installing onto a blank disk could not work on a machine with fewer disks | `2bfee22` Record that all three architectures install, and the check that said otherwise |
+| `B-114` | The install check could not pass on x86-64, and the first successful install there was reported as a failure | `2bfee22` Record that all three architectures install, and the check that said otherwise |
+| `B-115` | The shared smoke booted a machine it had not asked for, so x86-64 had no milestone gate | `ffbbc5d` x86-64 has update evidence, and two defects that hid each other are closed |
+| `B-116` | The x86-64 build was not the machine the test was written for: a control self-test asserted an AArch64 answer | `ffbbc5d` x86-64 has update evidence, and two defects that hid each other are closed |
+| `B-117` | `klog` threw log lines away when the console lock was held, and said nothing | `1c48cb5` Record that the console was lossy, and what that means for old failures |
+| `B-118` | The fault matrix had no x86-64 target, and would not have worked if it had | `f25c0bf` Record the three faults behind the missing x86-64 fault matrix |
+| `B-119` | The console lock drops lines, so a gate can fail on a marker the kernel did print | `dbca02e` The console lock now waits in the context that can afford it |
+| `B-120` | A wakeup consumed between an idle CPU's check for work and its halt left the thread pending | `d23f1f7` B-120 closed: the runner's own job passes the step that lost threads |
+| `B-121` | The operations closure waits for a third durable lifecycle record that never arrives | `4203ffc` The administration window was seizing the machine's own disk, and that is why it could not reboot |
+| `B-122` | The x86-64 time base was a guess of 1 GHz, so every timeout, sleep and clock reading on that architecture was scaled by the machine's real TSC over that guess | `2614c5a` The tick frequency is measured, not the host's interrupt latency |
+| `B-123` | A CPU spinning with interrupts masked could not answer a TLB shootdown, and the x86-64 operations closure panicked on it | `0a25ffe` A CPU that cannot take the interrupt answers the TLB shootdown itself |
+| `B-124` | The operations closure could not tell a refused reboot from a machine going down | `71d7f55` The closure reads the guest's answer to reboot instead of discarding it |
+| `B-125` | The aggregate gate asked for an NVMe completion count the system never promised | `07db335` The aggregate asks for the NVMe phase's shape, not one host's count |
+| `B-126` | The RISC-V image could not carry an SSH authorized-keys file, so the machine could not be key-administered | `73a434b` The administrative lifecycle runs on RISC-V, and found two defects doing it |
+| `B-127` | `reboot` on RISC-V powered the machine off | `73a434b` The administrative lifecycle runs on RISC-V, and found two defects doing it |
+| `B-128` | The lifecycle gate reported a probe that produced no output as a resolver verdict | `1ed58b8` A DNS probe that produced no output is not a resolver verdict |
+| `B-131` | The completed WebTransport C99 tree is not in this repository | `37ca33d` Close B-131: the port's handshake gate is green on a booted guest |
+| `B-134` | A real timer interrupt inside `scheduler_self_test` resumed the CPU at program counter zero | `04802bf` Record the IOMMU look, the deferred CAP read, and the self-test mask |
+| `B-135` | A timer interrupt that arrived before the scheduler existed took the machine down | `21895a3` Record the CAP read, the kernel-stack carrier and the early-tick crash |
+| `F-01` | Fusion multi-vCPU startup | `dd92da8` F-01 closes; V-06's Fusion boundary is blocked, and by what |
+| `F-02` | VMXNET3 networking | `0be357e` F-02: the VMXNET3 fix, confirmed on the machine the row is about |
+| `F-03` | Fusion network feature qualification | `44d9873` F-03: the chain this gate said it could not stage |
+| `F-04` | Fusion snapshot and sustained-load qualification | `75e1fc7` The soak now counts what it used to glimpse, and B-38's leak does not exist |
+| `F-05` | Fusion entropy and production-credential boundary | `3d98a26` The tracker was an implementation diary in a table |
+| `OD-011` | Choose how the network is polled when sshd's loop is busy | `e288cf6` OD-011 stage three-b: the network tick, on AArch64 and x86-64 |
