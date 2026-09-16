@@ -1421,6 +1421,7 @@ hosted-test: engine-cli
 	./build/hosted/test-packed
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Iuserspace/include userspace/lib/xaios_control_client.c \
+	  userspace/lib/control_render_primitives.c \
 	  tests/control/test_control_client.c -o build/hosted/test-control-client
 	./build/hosted/test-control-client
 	$(HOST_CC) $(HOST_CFLAGS) \

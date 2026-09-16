@@ -60,7 +60,8 @@ compile "$SOURCE" "$TEMP/app.o"
 set -- "$TEMP/start.o" "$TEMP/xaios_user.o"
 if [ "$WITH_CONTROL" = 1 ]; then
   compile "$ROOT/userspace/lib/xaios_control_client.c" "$TEMP/control.o"
-  set -- "$@" "$TEMP/control.o"
+  compile "$ROOT/userspace/lib/control_render_primitives.c" "$TEMP/control-primitives.o"
+  set -- "$@" "$TEMP/control.o" "$TEMP/control-primitives.o"
 fi
 set -- "$@" "$TEMP/app.o"
 mkdir -p "$(dirname "$OUTPUT")"

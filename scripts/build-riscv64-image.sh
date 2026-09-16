@@ -233,6 +233,11 @@ for app in $USER_APPS; do
     -I"$ROOT_DIR/userspace/include" \
     -c "$ROOT_DIR/userspace/lib/xaios_control_client.c" \
     -o "$BUILD_DIR/control-$app.o"
+  "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
+    -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/lib/control_render_primitives.c" \
+    -o "$BUILD_DIR/control-primitives-$app.o"
   # The screen framework, for programs that draw a screen.
   "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
     -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie -Os \
@@ -272,6 +277,7 @@ for app in $USER_APPS; do
   "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
     -o "$BUILD_DIR/$app.elf" "$BUILD_DIR/start-$app.o" "$BUILD_DIR/$app.o" \
     "$BUILD_DIR/lib-$app.o" "$BUILD_DIR/control-$app.o" \
+    "$BUILD_DIR/control-primitives-$app.o" \
     "$BUILD_DIR/screen-$app.o" $EXTRA_OBJS
   APP_ARGS="$APP_ARGS /bin/$app=$BUILD_DIR/$app.elf"
 done
