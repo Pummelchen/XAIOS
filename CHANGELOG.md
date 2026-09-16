@@ -23,6 +23,19 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **A timer interrupt inside the scheduler's own self-test could send the
+  machine to program counter zero.** `scheduler_self_test` registers three
+  tasks whose context frames are a zeroed dummy -- that is what it needs to
+  test the pick and the frame write-back -- and a real timer interrupt
+  taken in that window ticked the scheduler for real, picked one of them,
+  and resumed at its `elr_el1` of 0x1000. AArch64 has applied the frame it
+  is handed since it had a tick and so carried the hazard all along; the
+  RISC-V tick landing made it reachable and one boot in a handful took it,
+  which is how it was found (`scheduler[cpu0]: switch 0 -> 1 ... switch
+  1 -> 2` and then `user exception: cause=12 sepc=0x0`). Interrupts are
+  masked across the window that registers the fake tasks now, so the
+  window is atomic with respect to the mechanism under test (B-134).
+
 - **The RISC-V timer interrupt ticks the scheduler now, and measuring it found
   the reason no EL0 process is preempted on any of the three architectures.**
   The port's trap frame is mapped to the scheduler's context frame in both
@@ -54,7 +67,15 @@ Landed since build 5 and not in any released image.
   identity contexts land in the same step that programs it and the driver
   bails out to Bare if the capability read fails; and faults reach the fault
   queue however they are notified, so polling is sufficient evidence on the
-  board that has no usable MSI-X. No driver code is written yet (B-130).
+  board that has no usable MSI-X. **The first milestone is landed:** the
+  port looks for the device over PCI rather than asserting its absence and
+  names it and its BAR, with the no-device sentence now the result of that
+  look and the evidence that produced it printed beside it. The register
+  read is deliberately not there yet: QEMU places the BAR at 0x400010000,
+  above the device window this port identity-maps, and reading it faults the
+  machine -- so the read goes with the mapping that makes it reachable. Nothing is programmed -- the device
+  resets refusing PCI DMA -- and the look runs in `smmu_self_test()`
+  because `smmu_init()` is called before PCI enumeration (B-130).
 - **The completed WebTransport C99 library was assessed for integration, and
   the answer is a backend layer rather than a platform directory.**
   `docs/WEBTRANSPORT-C99-INTEGRATION.md` records the seam that matters
