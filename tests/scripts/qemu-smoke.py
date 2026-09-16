@@ -110,6 +110,11 @@ ARCH_TARGETS = {
         # rests on: the frame the scheduler hands back must be the one the trap
         # return resumes (B-129).
         "sched-tick: riscv64 trap-frame mapping self-test passed",
+        # And the behavioural half: a kernel context hands this CPU to a
+        # second task and the timer brings it back, which is the machinery a
+        # preempted user process needs and the only place it is exercised on
+        # this port today (B-132).
+        "sched-preempt: riscv64 kernel-context preemption self-test passed",
         # See the AArch64 list: this check is x86-64's, and that it does not
         # apply here is asserted rather than left unsaid (B-123).
         "smp: shootdown acknowledgement self-test not applicable on riscv64 ",

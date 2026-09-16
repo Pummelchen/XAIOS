@@ -12,6 +12,7 @@
  * capability mistake again.
  */
 #include <xaios/assert.h>
+#include <xaios/context.h>
 #include <xaios/riscv64_aia.h>
 #include <xaios/scheduler.h>
 #include <xaios/riscv64_fdt.h>
@@ -214,6 +215,9 @@ typedef struct riscv64_trap_frame {
 } riscv64_trap_frame_t;
 
 #define SSTATUS_SPP (UINT64_C(1) << 8)
+/* Supervisor previous interrupt enable: what SIE becomes after `sret`, and
+   the only way a frame can say "resume in the kernel with interrupts on". */
+#define SSTATUS_SPIE (UINT64_C(1) << 5)
 #define SSTATUS_SUM (UINT64_C(1) << 18)
 
 /* Supervisor access to user pages, opened only where it is meant to be used.
@@ -483,6 +487,29 @@ static void riscv64_context_to_frame(const xaios_context_frame_t *context,
   if (context->sp_el1 != 0U) frame->kernel_sp = context->sp_el1;
 }
 
+/* Build a frame that starts a task in kernel mode on a stack of its own.
+ *
+ * This is the piece a user-process dispatch needs and a kernel-context switch
+ * cannot do without: the frame says where the task's first instruction is and
+ * *which stack it runs on*, so a trap return that switches to it lands on that
+ * task's stack instead of the one the CPU was already using. RISC-V can express
+ * it because its trap return loads `sp` from the frame (`regs[1]`) and its
+ * `sret` takes the privilege from `sstatus.SPP`, so a supervisor frame with a
+ * stack in it is exactly "resume this task in kernel mode, on this stack, with
+ * interrupts on". */
+int xaios_context_frame_kernel_entry(xaios_context_frame_t *frame,
+                                     void (*entry)(void),
+                                     uint64_t stack_top) {
+  if (frame == 0 || entry == 0 || stack_top == 0U) return 0;
+  uint8_t *bytes = (uint8_t *)frame;
+  for (uint64_t index = 0U; index < sizeof(*frame); ++index) bytes[index] = 0U;
+  frame->regs[1] = stack_top;
+  frame->sp_el1 = stack_top;
+  frame->elr_el1 = (uint64_t)(uintptr_t)entry;
+  frame->spsr_el1 = SSTATUS_SPP | SSTATUS_SPIE;
+  return 1;
+}
+
 /* What the tick has actually done, counted rather than reasoned about.
  *
  * A timer trap that ticks the scheduler and a timer trap that preempts a user
@@ -595,6 +622,92 @@ void platform_scheduler_tick_self_test(void) {
   kassert(never_ran != 0);
   kassert(stack_kept != 0);
   klog("sched-tick: riscv64 trap-frame mapping self-test passed\n");
+}
+
+/* One 8 KiB stack for the test's own task, and the count its trampoline bumps.
+ *
+ * Static rather than allocated: the point of the test is the switch itself, and
+ * a kernel stack obtained from an allocator would add a way for the test to
+ * fail for a reason that is not the switch. */
+static uint64_t g_preempt_stack[1024] __attribute__((aligned(16)));
+static volatile uint64_t g_preempt_runs;
+#define RISCV64_PREEMPT_TASK_PID UINT32_C(30000)
+#define RISCV64_PREEMPT_HOST_PID UINT32_C(30001)
+
+/* Runs in kernel mode on the test task's own stack, and never returns: a task
+ * that returns has nowhere to return to, which is the whole reason leaving is a
+ * switch rather than a `ret`.
+ *
+ * The order of the two calls matters. The context that handed the CPU over has
+ * to be runnable *before* this one stops being, or the tick that follows finds
+ * nothing to pick and leaves the machine in a task that is doing nothing. */
+static void riscv64_preempt_task_entry(void) {
+  ++g_preempt_runs;
+  (void)scheduler_set_runnable(RISCV64_PREEMPT_HOST_PID);
+  (void)scheduler_set_blocked(RISCV64_PREEMPT_TASK_PID);
+  for (;;) {
+    __asm__ volatile("wfi" ::: "memory");
+  }
+}
+
+void platform_kernel_preemption_self_test(void) {
+  uint32_t cpu = smp_cpu_id();
+  const xaios_cpu_state_t *cpu_state = smp_cpu_state(cpu);
+  uint32_t was_enabled = cpu_state != 0 ? cpu_state->scheduling_enabled : 0U;
+  uint64_t stack_top = ((uint64_t)(uintptr_t)g_preempt_stack +
+                        sizeof(g_preempt_stack)) & ~UINT64_C(0xf);
+
+  xaios_context_frame_t probe;
+  if (xaios_context_frame_kernel_entry(&probe, riscv64_preempt_task_entry,
+                                       stack_top) == 0) {
+    klog("sched-preempt: riscv64 not applicable -- this port cannot build a "
+         "kernel-entry frame\n");
+    return;
+  }
+  if (smp_set_scheduling_enabled(cpu, 1U) != XAIOS_OK) {
+    klog("sched-preempt: riscv64 could not enable scheduling on cpu=%u\n",
+         (unsigned)cpu);
+    return;
+  }
+
+  g_preempt_runs = 0U;
+  /* Order matters: the task is registered but not yet runnable, this context is
+     adopted (so the tick can save it), and only then is the task made runnable.
+     Registering it runnable first leaves a window in which a tick takes the CPU
+     from a context whose frame does not exist yet. */
+  int registered =
+      scheduler_register_kernel_task(RISCV64_PREEMPT_TASK_PID,
+                                     riscv64_preempt_task_entry, stack_top,
+                                     XAIOS_PRIORITY_HIGH) == XAIOS_OK &&
+      scheduler_adopt_this_context(RISCV64_PREEMPT_HOST_PID,
+                                   XAIOS_PRIORITY_NORMAL) == XAIOS_OK &&
+      scheduler_set_runnable(RISCV64_PREEMPT_TASK_PID) == XAIOS_OK;
+  uint64_t deadline = timer_now_ns() + UINT64_C(500000000);
+  if (registered != 0) {
+    /* This context stops being runnable, so the very next tick must run the
+       other task rather than keep this one for the rest of its slice. */
+    (void)scheduler_set_blocked(RISCV64_PREEMPT_HOST_PID);
+    while (g_preempt_runs == 0U && timer_now_ns() < deadline) {
+      __asm__ volatile("wfi" ::: "memory");
+    }
+  }
+
+  int ran = g_preempt_runs != 0U;
+  /* Counted, not assumed: the switch numbers the scheduler kept while the test
+     held the CPU are the difference between "the other task ran" and "the other
+     task ran because two tasks were switched between". */
+  uint64_t switches = scheduler_context_switch_count();
+  scheduler_unregister(RISCV64_PREEMPT_TASK_PID);
+  scheduler_unregister(RISCV64_PREEMPT_HOST_PID);
+  (void)smp_set_scheduling_enabled(cpu, was_enabled);
+
+  klog("sched-preempt: riscv64 kernel-context switch registered=%d ran=%d "
+       "runs=%lu switches=%lu\n",
+       registered, ran, (unsigned long)g_preempt_runs,
+       (unsigned long)switches);
+  kassert(registered != 0);
+  kassert(ran != 0);
+  klog("sched-preempt: riscv64 kernel-context preemption self-test passed\n");
 }
 
 uint64_t riscv64_trap_handler(riscv64_trap_frame_t *frame) {
