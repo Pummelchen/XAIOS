@@ -1,3 +1,4 @@
+#include <xaios/arch_cpu.h>
 #include <xaios/assert.h>
 #include <xaios/context.h>
 #include <xaios/klog.h>
@@ -995,6 +996,20 @@ void scheduler_self_test(void) {
     g_load_average_q16[i] = 0U;
   }
 
+  /* Interrupts off while fake tasks are registered.
+   *
+   * Everything below registers three tasks whose frames are the scheduler's
+   * zeroed dummy -- every register zero and `elr_el1` 0x1000 -- because what is
+   * under test is the pick and the write-back into the caller's frame, not the
+   * tasks. A real timer interrupt taken in this window therefore ticks the
+   * scheduler for real and picks one of them, and an architecture that applies
+   * the frame it is handed resumes at that task's program counter. RISC-V's now
+   * does, and this was measured there: `scheduler[cpu0]: switch 0 -> 1 ... switch
+   * 1 -> 2` and then `user exception: cause=12 sepc=0x0` inside this function,
+   * on a boot that differed from a passing one only in timing. The mask makes
+   * the window atomic with respect to the mechanism under test; it is restored
+   * before the steal self-test below, which needs a live timer. */
+  xaios_interrupt_state_t interrupts = xaios_interrupts_disable();
   kassert(scheduler_register_on_cpu(1, XAIOS_PRIORITY_HIGH, cpu) == XAIOS_OK);
   kassert(scheduler_register_on_cpu(2, XAIOS_PRIORITY_NORMAL, cpu) == XAIOS_OK);
   kassert(scheduler_register_on_cpu(3, XAIOS_PRIORITY_LOW, cpu) == XAIOS_OK);
@@ -1041,6 +1056,7 @@ void scheduler_self_test(void) {
   kassert(find_task_local(cpu, 1) == 0);
   kassert(find_task_local(cpu, 2) == 0);
   kassert(find_task_local(cpu, 3) == 0);
+  xaios_interrupts_restore(interrupts);
   kassert(smp_set_scheduling_enabled(cpu, scheduling_was_enabled) == XAIOS_OK);
 
   scheduler_numa_steal_self_test(cpu);
