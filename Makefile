@@ -1589,6 +1589,7 @@ docs-check:
 	python3 tests/repository/check-aggregate-budgets.py
 	python3 tests/repository/check-xai-fs-chunk-bounds.py
 	python3 tests/repository/check-panic-registers.py
+	python3 tests/repository/check-webtransport-vendor.py
 
 code-scanning-contract:
 	python3 tests/repository/check-code-scanning-contract.py

@@ -23,6 +23,20 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **The completed C99 WebTransport library is vendored, at a pinned commit.**
+  `third_party/webtransport-c99/` holds upstream `C99/include` and `C99/src`
+  whole -- the QUIC wire core and crypto, the TLS 1.3 handshake over CRYPTO
+  frames, the connection runtime, HTTP/3 and QPACK, the draft-16 session layer
+  and the public API, 166 files -- copied from
+  `46937e29eb734887ca7b739abfedaf68ae565de2` with its MIT licence. Nothing in
+  it has been edited: `MANIFEST.sha256` records every file's hash and
+  `make docs-check` verifies it, so a local change to vendored code fails the
+  build instead of quietly forking upstream. Upstream's `platform/`
+  directories were not copied, because they hold build scripts and no C: the
+  port's real seams are the socket header, the clock and the crypto
+  primitives. The XAIOS platform layer and the handshake gate against this
+  code are the work that follows (B-131).
+
 - **A RISC-V machine with a PCI IOMMU attached now mediates PCI DMA, and one
   boot proves translation, refusal and isolation.** A board booted with
   `-device riscv-iommu-pci` and two `iommu-testdev` instances is programmed by
