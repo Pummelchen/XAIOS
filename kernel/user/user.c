@@ -1022,7 +1022,20 @@ static void user_task_kernel_entry(void) {
   for (;;) xaios_cpu_relax();
 }
 
-int user_process_run_scheduled(const xaios_user_process_t *process) {
+int user_process_scheduled_dispatch_supported(void) {
+  xaios_context_frame_t probe;
+  bytes_zero(&probe, sizeof(probe));
+  return xaios_context_frame_kernel_entry(&probe, user_task_kernel_entry,
+                                          UINT64_C(0x1000)) != 0;
+}
+
+int user_process_run_scheduled(const xaios_user_process_t *process,
+                               int dispatcher_blocked,
+                               xaios_user_dispatch_result_t *result) {
+  if (result != 0) {
+    bytes_zero(result, sizeof(*result));
+    result->dispatcher_blocked = dispatcher_blocked != 0;
+  }
   kassert(process != 0);
   kassert(process->pid != 0 && process->pid <= XAIOS_MAX_USER_PROCESSES);
   uint32_t cpu = smp_cpu_id();
@@ -1043,18 +1056,24 @@ int user_process_run_scheduled(const xaios_user_process_t *process) {
     klog("user: no kernel stack for scheduled pid=%u; running it on the "
          "caller's stack\n",
          (unsigned)pid);
-    return user_process_run(process);
+    int fallback_exit = user_process_run(process);
+    if (result != 0) result->exit_code = fallback_exit;
+    return fallback_exit;
   }
   uint64_t stack_top =
       ((uint64_t)(uintptr_t)stack + USER_TASK_STACK_BYTES) & ~UINT64_C(0xf);
 
+  /* The process and the dispatching context run at the *same* priority; the
+     ordering between them is the run queue's, not the priority's. */
   if (scheduler_register_kernel_task(pid, user_task_kernel_entry, stack_top,
-                                     XAIOS_PRIORITY_HIGH) != XAIOS_OK) {
+                                     XAIOS_PRIORITY_NORMAL) != XAIOS_OK) {
     kheap_free(stack);
     klog("user: scheduled dispatch unavailable for pid=%u; running it on the "
          "caller's stack\n",
          (unsigned)pid);
-    return user_process_run(process);
+    int fallback_exit = user_process_run(process);
+    if (result != 0) result->exit_code = fallback_exit;
+    return fallback_exit;
   }
   if (scheduler_adopt_this_context(runner_pid, XAIOS_PRIORITY_NORMAL) !=
           XAIOS_OK ||
@@ -1064,15 +1083,43 @@ int user_process_run_scheduled(const xaios_user_process_t *process) {
     klog("user: could not adopt a dispatcher for pid=%u; running it on the "
          "caller's stack\n",
          (unsigned)pid);
-    return user_process_run(process);
+    int fallback_exit = user_process_run(process);
+    if (result != 0) result->exit_code = fallback_exit;
+    return fallback_exit;
   }
 
   user_clear_current_process();
   uint64_t switches_before = scheduler_context_switch_count();
   uint64_t wait_start = timer_now_ns();
-  klog("user: dispatcher waiting pid=%u runner=%u cpu=%u\n", (unsigned)pid,
-       (unsigned)runner_pid, (unsigned)cpu);
-  (void)scheduler_set_blocked(runner_pid);
+  klog("user: dispatcher waiting pid=%u runner=%u cpu=%u blocked=%d\n",
+       (unsigned)pid, (unsigned)runner_pid, (unsigned)cpu,
+       dispatcher_blocked != 0 ? 1 : 0);
+
+  if (dispatcher_blocked != 0) {
+    /* The control, kept because an earlier measurement misread it as a
+       property of EL0. With the dispatcher blocked the process is the only
+       runnable task, so the tick puts it back, `rq_pick_best` picks it again,
+       finds `next_pid == current_pid` and returns without a switch -- and the
+       count stops at the dispatch and the hand-back. That is a correct
+       scheduler with nothing to switch to, not an unpreemptible EL0
+       context. */
+    (void)scheduler_set_blocked(runner_pid);
+  } else {
+    /* Queue order, not priority: both are RUNNABLE at the same priority and
+       the process is placed *ahead* of the dispatcher in the run queue, so the
+       two alternate. `rq_pick_best` takes the highest priority and then the
+       first entry, and the tick puts the task it is running back into the
+       queue before it chooses -- so with the process ahead, the pick hands the
+       process the CPU, and on the next tick the process is what is left
+       waiting while the dispatcher is chosen, and so on for as long as the
+       process runs. Blocking and re-adding the runner is how it moves to the
+       back of the queue; its state does not stay blocked. Making the process
+       the only runnable task instead (the branch above) is what stops that
+       alternation, which is why the two runs are the measurement and its
+       control. */
+    (void)scheduler_set_blocked(runner_pid);
+    (void)scheduler_set_runnable(runner_pid);
+  }
 
   int exit_code = 0;
   uint64_t deadline = wait_start + USER_TASK_WAIT_NS;
@@ -1090,8 +1137,12 @@ int user_process_run_scheduled(const xaios_user_process_t *process) {
       exit_code = -1;
       break;
     }
-    /* This context is not runnable, so it is the timer that brings it back
-       after the task has had its turn. */
+    /* Either design brings this context back through the timer: blocked, a
+       tick that finds the current task not runnable reschedules and picks the
+       process -- which is the only runnable task -- and the process's own
+       expiry brings the dispatcher back; runnable, the two alternate on their
+       slices. Neither path sleeps, so this loop is where the dispatcher spends
+       the wait either way. */
     xaios_cpu_relax();
   }
 
@@ -1102,9 +1153,15 @@ int user_process_run_scheduled(const xaios_user_process_t *process) {
   user_clear_current_process();
   user_process_runtime_stop(pid, cpu, timer_now_ns());
   klog("user: scheduled dispatch pid=%u switches=%lu exit_code=%d "
-       "waited_ns=%lu\n",
+       "waited_ns=%lu blocked=%d\n",
        (unsigned)pid, (unsigned long)switches, exit_code,
-       (unsigned long)(timer_now_ns() - wait_start));
+       (unsigned long)(timer_now_ns() - wait_start),
+       dispatcher_blocked != 0 ? 1 : 0);
+  if (result != 0) {
+    result->as_task = 1;
+    result->switches = switches;
+    result->exit_code = exit_code;
+  }
   return exit_code;
 }
 

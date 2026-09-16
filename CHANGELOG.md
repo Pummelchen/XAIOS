@@ -23,6 +23,36 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **An EL0 process is preempted now, and one boot carries both the proof and
+  its control.** The corrected measurement recorded below read a spinner's two
+  switches as "EL0 is not preemptible"; the dispatching context had blocked
+  itself, so the spinner was the only runnable task and the scheduler was
+  right to keep picking it. The dispatcher now stays `RUNNABLE` at the
+  process's own priority and is re-queued behind it, so the two alternate, and
+  `/bin/spin` -- a process that loops in EL0 for 1.2 seconds, never yields and
+  reads the clock once per burst -- is dispatched twice in one boot. With the
+  dispatcher runnable the boot records `kernel: /bin/spin preempted pid=7
+  switches=86` and requires at least four, because two switches are the
+  dispatch and the hand-back and nothing else in that window can add a third.
+  With the dispatcher blocked it records `kernel: /bin/spin blocked dispatcher
+  pid=8 switches=2` and requires strictly fewer: same process, same span, one
+  difference, which is what keeps the first number honest. A port that cannot
+  start a task in kernel mode says so and runs neither (B-132).
+
+- **That proof found a scheduler defect, and it was why the first attempt
+  stalled.** A task that is picked is removed from its run queue, and the tick
+  reschedules every tick while a task's state is `RUNNING` -- so a task
+  switched away from before its slice expired was left in no queue at all: it
+  could never be chosen again, and the CPU went idle one tick later while the
+  abandoned task kept running on a frame the scheduler had stopped saving.
+  With one runnable task nothing noticed, because the pick chose the task it
+  had just removed and returned without switching; two tasks at the same
+  priority lose each other. The tick now puts the running task back before
+  choosing, `scheduler_self_test` alternates two equal-priority tasks and
+  requires whichever is not current to still be in the queue -- a check that
+  fails without the fix -- and the blocked and runnable spinner runs above are
+  the behavioural pair (B-132).
+
 - **The EL0 preemption measurement from the last change is corrected: it
   measured the test's own design, not the port.** The spinner ran 1.2 seconds
   in EL0 with two switches, which read as "not preempted" -- but the

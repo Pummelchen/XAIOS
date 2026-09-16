@@ -723,11 +723,36 @@ void scheduler_tick(xaios_context_frame_t *irq_frame, void *architecture_state) 
     need_reschedule = 1;
   } else {
     xaios_sched_task_t *current = find_task_local(cpu, current_pid);
-    if (current == 0 || current->state != XAIOS_TASK_STATE_RUNNABLE) {
+    if (current == 0) {
+      need_reschedule = 1;
+    } else if (current->state == XAIOS_TASK_STATE_BLOCKED) {
+      /* It gave the CPU up of its own accord and is in no queue; there is
+         nothing here to switch back to. */
       need_reschedule = 1;
     } else if (current->remaining_ticks == 0) {
       current->state = XAIOS_TASK_STATE_RUNNABLE;
       current->remaining_ticks = priority_slice(current->priority);
+      rq_add(rq, current_pid);
+      need_reschedule = 1;
+    } else if (current->state == XAIOS_TASK_STATE_RUNNING) {
+      /* The task that is running is in *no* run queue: `rq_pick_best` removed
+         it when it was picked, and RUNNING is the state it was left in. So it
+         has to be put back into the queue before the pick, or a switch away
+         from it before its slice expires drops it from every queue and it can
+         never be chosen again. It is lost rather than delayed, and this CPU
+         goes idle one tick later.
+       *
+       * This is what a dispatching context and the process it dispatched did
+       * to each other the first time both were runnable, which is what the
+       * queue-order design needs (B-132): every tick switched between them and
+       * dropped whichever it left, so after two ticks neither was in a queue
+       * and the CPU sat in the idle path while one of them kept running on a
+       * frame the scheduler had stopped keeping.
+       *
+       * The remaining slice is deliberately not re-armed: this task has not
+       * used it up, and resetting it on every tick would make the slice
+       * meaningless for a task that is switched to often. */
+      current->state = XAIOS_TASK_STATE_RUNNABLE;
       rq_add(rq, current_pid);
       need_reschedule = 1;
     }
@@ -1120,6 +1145,52 @@ void scheduler_self_test(void) {
   kassert(find_task_local(cpu, 1) == 0);
   kassert(find_task_local(cpu, 2) == 0);
   kassert(find_task_local(cpu, 3) == 0);
+
+  /* A task that is switched away from before its slice expires must stay
+     pickable.
+   *
+   * The pick removes the running task from the queue, so a tick that chooses
+   * another task has to put the outgoing one back first. Without that, the
+   * second tick below finds an empty queue and leaves this CPU with no current
+   * task while the task it abandoned keeps running on a frame the scheduler
+   * has stopped saving -- the shape a dispatching context and the process it
+   * dispatched had the first time both were runnable (B-132).
+   *
+   * The two tasks are equal on purpose: queue order is then the only thing
+   * deciding, which is what that design rests on. A task of any other
+   * priority from the block above would be picked first and hide the
+   * mechanism. Interrupts are off across this window (see above), so these
+   * are the only ticks. */
+  kassert(scheduler_register_on_cpu(10, XAIOS_PRIORITY_NORMAL, cpu) == XAIOS_OK);
+  kassert(scheduler_register_on_cpu(11, XAIOS_PRIORITY_NORMAL, cpu) == XAIOS_OK);
+  kassert(scheduler_set_runnable(10) == XAIOS_OK);
+  kassert(scheduler_set_runnable(11) == XAIOS_OK);
+  xaios_spin_lock(&g_runqueues[cpu].lock);
+  /* Emulate the state a pick leaves behind: running, and in no queue. */
+  rq_remove(&g_runqueues[cpu], 10);
+  g_runqueues[cpu].current_pid = 10;
+  xaios_spin_unlock(&g_runqueues[cpu].lock);
+  xaios_sched_task_t *ten = find_task_local(cpu, 10);
+  kassert(ten != 0);
+  ten->state = XAIOS_TASK_STATE_RUNNING;
+  ten->remaining_ticks = XAIOS_PRIORITY_NORMAL_SLICE;
+
+  xaios_context_frame_t alternate_frame;
+  bytes_zero(&alternate_frame, sizeof(alternate_frame));
+  alternate_frame.elr_el1 = UINT64_C(0x2000);
+  scheduler_tick(&alternate_frame, 0);
+  scheduler_tick(&alternate_frame, 0);
+
+  uint32_t alternate_current = g_runqueues[cpu].current_pid;
+  kassert(alternate_current == 10 || alternate_current == 11);
+  uint32_t alternate_waiting = alternate_current == 10U ? 11U : 10U;
+  kassert(rq_index(&g_runqueues[cpu], alternate_waiting) !=
+          UINT32_C(0xffffffff));
+  scheduler_unregister(10);
+  scheduler_unregister(11);
+  kassert(find_task_local(cpu, 10) == 0);
+  kassert(find_task_local(cpu, 11) == 0);
+
   xaios_interrupts_restore(interrupts);
   kassert(smp_set_scheduling_enabled(cpu, scheduling_was_enabled) == XAIOS_OK);
 

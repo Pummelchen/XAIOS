@@ -115,6 +115,24 @@ xaios_status_t user_process_wait(uint32_t pid);
 xaios_status_t user_process_wake(uint32_t pid);
 int user_process_run(const xaios_user_process_t *process);
 
+/* What a scheduled dispatch observed, handed back to the caller rather than
+ * left to be inferred from the log.
+ *
+ * `as_task` is 0 when the port could not build a kernel-entry frame and the
+ * sequential path ran instead, which is the difference between "the process
+ * was preemptible" and "the process ran". `dispatcher_blocked` says which of
+ * the two dispatcher designs ran, because the switch count means nothing
+ * without it: a blocked dispatcher leaves the process the only runnable task,
+ * so the scheduler correctly picks it again and the count stops at the
+ * dispatch and the hand-back. `switches` counts every scheduler switch from
+ * just before the dispatch to just after the hand-back, and so includes both. */
+typedef struct xaios_user_dispatch_result {
+  int as_task;
+  int dispatcher_blocked;
+  uint64_t switches;
+  int exit_code;
+} xaios_user_dispatch_result_t;
+
 /* Run a loaded process as a task the scheduler owns rather than as a call
  * that returns on the caller's stack: it gets a kernel stack of its own and
  * is entered from a task entry on that stack, and when it exits the task
@@ -122,8 +140,24 @@ int user_process_run(const xaios_user_process_t *process);
  * the process preemptible -- the timer can take the CPU away and give it
  * back without its kernel context colliding with the dispatcher's. A port
  * that cannot start a task in kernel mode falls back to `user_process_run`
- * and says so in the log. */
-int user_process_run_scheduled(const xaios_user_process_t *process);
+ * and says so in the log.
+ *
+ * `dispatcher_blocked` chooses the dispatcher design. Zero keeps the
+ * dispatching context RUNNABLE at the same priority as the process and moves
+ * it behind the process in the run queue, so the two alternate and a
+ * never-yielding EL0 process is preempted repeatedly; non-zero blocks it, so
+ * the process is the only runnable task and the count stops at two -- that is
+ * the negative control for the preemption measurement. `result` may be null;
+ * when it is given it is filled on every path, including the fallback. */
+int user_process_run_scheduled(const xaios_user_process_t *process,
+                               int dispatcher_blocked,
+                               xaios_user_dispatch_result_t *result);
+
+/* Whether this port can start a process from a kernel-entry frame at all,
+ * asked before a dispatch rather than discovered from its result: a test that
+ * needs a preemptible process should not have to run one to find out, and a
+ * port that cannot must say so instead of spending the time. */
+int user_process_scheduled_dispatch_supported(void);
 xaios_status_t user_process_run_transient(
     const xaios_initramfs_file_t *file, uint64_t capability_mask,
     int *exit_code);

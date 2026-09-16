@@ -37,46 +37,49 @@ that the image's *loader* boots and then running a kernel from `build/`. All
 three QEMU legs boot with no system volume now, which is what a first boot on
 a real machine looks like.
 
-**No EL0 process is preempted on any of the three architectures, and the reason
-is not the one this page used to give.** It said RISC-V had no tick to attach
-to, because `kernel/arch/riscv64/` named no `scheduler_*` symbol. That part is
-fixed and measured: the RISC-V timer interrupt now maps its trap frame to the
+**EL0 preemption is real on RISC-V now, and the other two ports still lack
+the per-task kernel context it needs.** This page used to say RISC-V had no tick
+to attach to, because `kernel/arch/riscv64/` named no `scheduler_*` symbol. That
+part was fixed first: the RISC-V timer interrupt maps its trap frame to the
 scheduler's context frame, ticks it and maps the answer back, with its own
 round-trip self-test that the smoke requires by name
-(`sched-tick: riscv64 trap-frame mapping self-test passed`). A boot log shows
-the tick arriving from a user context (`sched-tick: riscv64 user-context tick
-pid=0 -> pid=0`), so the mechanism runs.
+(`sched-tick: riscv64 trap-frame mapping self-test passed`).
 
-**What stops it is that no user process is ever registered with the
-scheduler.** `user_process_run` is the only path this kernel runs a process
-through, and it never registers one; the single registration site,
-`user_process_run_concurrent`, has no callers. The scheduler's current task is
-therefore process 0 -- the idle task -- for the whole of userspace, so a tick
-has nothing to switch to. The measurement says the same thing twice: every tick
-from a user context on RISC-V reports `pid=0 -> pid=0 ... switches=0`, and the
-boot worker gate's three processes run one after another on the same user stack
-to completion.
+**Then a user process was made a scheduled task, and the proof of preemption is
+a boot.** A loaded process is registered on the CPU running it and adopted as
+that CPU's current task; it owns a kernel stack of its own and is entered from a
+task entry on that stack; and when it exits the task hands the CPU back through
+the scheduler rather than unwinding into the context that dispatched it. A
+measurement of preemption needs a second runnable task, so the dispatching
+context stays `RUNNABLE` at the process's own priority and is re-queued behind
+it, and the two alternate. The boot gate dispatches `/bin/spin` -- a process
+that never yields, looping in EL0 for 1.2 seconds -- twice: with the dispatcher
+runnable it reports `kernel: /bin/spin preempted pid=7 switches=86` and asserts
+at least four, and with it blocked it reports `kernel: /bin/spin blocked
+dispatcher pid=8 switches=2` and asserts strictly fewer, which is the control
+that keeps the first number honest.
 
-Even with registration the ports would need work, and it is the same work in
-different places. On x86-64 the kernel continuation a process returns through
-is one slot per CPU and nesting depth (`user_resume_rsp[]` and the TSS `rsp0`
-derived from it), and floating-point state is one area per CPU and depth, so a
-switch would hand the incoming task the outgoing task's return path and
+**The remaining work is the same work in different places, and it is what stops
+the other two ports.** On x86-64 the kernel continuation a process returns
+through is one slot per CPU and nesting depth (`user_resume_rsp[]` and the TSS
+`rsp0` derived from it), and floating-point state is one area per CPU and depth,
+so a switch would hand the incoming task the outgoing task's return path and
 registers; a trap taken in kernel mode has no `RSP`/`SS` words in its frame to
-apply a switch into at all. On RISC-V a user entry parks the process's kernel
-continuation on the CPU's stack and re-arms `sscratch` from it, so the same
-collision appears on the trap-return side. The tick on x86-64 was therefore
-removed rather than left half-working: it passed the scheduler a context frame
-that nothing filled and never applied the one it got back, which corrupted the
-scheduler's bookkeeping without switching the CPU.
+apply a switch into at all. Its tick was therefore removed rather than left
+half-working: it passed the scheduler a context frame that nothing filled and
+never applied the one it got back, which corrupted the scheduler's bookkeeping
+without switching the CPU. On AArch64 the exception return keeps the CPU's
+`SP_EL1` instead of loading a kernel stack from the frame, so a task cannot own
+its kernel context there yet. Both ports say so by name in their own self-tests
+rather than passing. RISC-V's idle loop still masks its local timer around
+`xaios_thread_run_pending`, because a user thread there runs nested inside the
+joiner's syscall with its continuation on that CPU's stack.
 
-This is recorded here because `OD-011`'s timer option, the `B-129` objective and
-any future work on kernel-context interrupts all rest on it, and because a
-reader comparing the three architectures would otherwise conclude that the
-shared scheduler running on all of them means the same execution model on all of
-them. `B-132` is the task that closes it: register user processes with the
-scheduler, give each its own kernel context, and then prove the preemption with
-a spinning EL0 process.
+This is recorded here because `OD-011`'s timer option and the `B-129` objective
+rest on it, and because a reader comparing the three architectures would
+otherwise conclude that the shared scheduler running on all of them means the
+same execution model on all of them. `B-132` carries the rest: the same proof on
+the other two ports, each with its own kernel context.
 
 **A RISC-V machine now boots an XAIOS-installed disk, and getting there took
 four faults to find one cause.** The installed-disk gate for this architecture

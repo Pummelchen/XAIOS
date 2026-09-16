@@ -119,6 +119,7 @@ acceptance.
 | Path | Purpose |
 |---|---|
 | `/bin/hello` | Minimal userspace toolchain, ELF loader, logging, and exit integration check. |
+| `/bin/spin` | A process that never yields, used as the EL0 preemption proof. It loops in EL0 for a fixed wall-clock span, reading the clock once per burst so nearly all of the span executes with the timer as the only thing that can take the CPU away, then reports its burst count and exits. The boot gate dispatches it twice: once with the dispatching context runnable at the same priority and queued behind it -- the two alternate, which is the preemption -- and once with that context blocked, where nothing else can run and the switch count stops at the dispatch and the hand-back. It asserts nothing itself; the kernel asserts both numbers, and the second is the control for the first. |
 | `/bin/helloworldc99` | Hosted ISO C99 demonstration built against the XAIOS libc. It prints `Hello, World!` through `stdio` and is available on demand as `helloworldc99`. |
 | `/bin/sysinfo` | Legacy compatibility diagnostic that directs administrators to `xaiosctl status` and `xaiosctl hardware`. |
 | `/bin/systest` | Syscall, descriptor-width validation, and xaibootFS create/read/stat/list/rename/delete suite. |

@@ -1329,18 +1329,73 @@ persistent_network_done:
   {
     const xaios_initramfs_file_t *scheduled_file = 0;
     xaios_user_process_t scheduled_process;
+    xaios_user_dispatch_result_t scheduled;
     kassert(initramfs_lookup("/bin/hello", &scheduled_file) == XAIOS_OK);
     kassert(user_load_process(scheduled_file, 6U,
                               XAIOS_CAP_LOG | XAIOS_CAP_EXIT,
                               &scheduled_process) == XAIOS_OK);
-    uint64_t switches_before = scheduler_context_switch_count();
-    int scheduled_exit = user_process_run_scheduled(&scheduled_process);
-    uint64_t switches = scheduler_context_switch_count() - switches_before;
+    int scheduled_exit =
+        user_process_run_scheduled(&scheduled_process, 0, &scheduled);
     kassert(scheduled_exit == 0);
     klog("kernel: /bin/hello scheduled dispatch pid=6 switches=%lu "
          "exit_code=%d\n",
-         (unsigned long)switches, scheduled_exit);
+         (unsigned long)scheduled.switches, scheduled_exit);
     user_process_reclaim_address_space(&scheduled_process);
+  }
+  /* The EL0 preemption proof and its control, in one boot.
+   *
+   * `/bin/spin` never blocks: it loops in EL0 for a fixed wall-clock span, so
+   * the only thing that can take the CPU away from it is the timer. With the
+   * dispatching context left runnable at the same priority and moved behind
+   * the process, the two alternate and the switch count *is* the preemption.
+   * With the dispatcher blocked the process is the only runnable task, so the
+   * count stops at the dispatch and the hand-back -- which is exactly what an
+   * earlier measurement misread as EL0 not being preemptible. Running both is
+   * what makes the positive number mean something: same process, same span,
+   * one difference. A port that cannot start a task in kernel mode never
+   * reaches either run and says so rather than passing a test it cannot
+   * take (B-132). */
+  if (user_process_scheduled_dispatch_supported() != 0) {
+    const xaios_initramfs_file_t *spin_file = 0;
+    const uint64_t spin_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_TIME;
+    kassert(initramfs_lookup("/bin/spin", &spin_file) == XAIOS_OK);
+
+    xaios_user_process_t preempted_process;
+    xaios_user_dispatch_result_t preempted;
+    kassert(user_load_process(spin_file, 7U, spin_caps,
+                              &preempted_process) == XAIOS_OK);
+    int preempted_exit =
+        user_process_run_scheduled(&preempted_process, 0, &preempted);
+    kassert(preempted_exit == 0);
+    kassert(preempted.as_task != 0);
+    klog("kernel: /bin/spin preempted pid=7 switches=%lu exit_code=%d "
+         "as_task=%d\n",
+         (unsigned long)preempted.switches, preempted_exit, preempted.as_task);
+    /* Two switches are the dispatch and the hand-back. Four or more can only
+       be the timer taking the CPU from EL0 and giving it back more than once,
+       because nothing else in this window can switch this CPU. */
+    kassert(preempted.switches >= 4U);
+    user_process_reclaim_address_space(&preempted_process);
+
+    xaios_user_process_t blocked_process;
+    xaios_user_dispatch_result_t blocked;
+    kassert(user_load_process(spin_file, 8U, spin_caps,
+                              &blocked_process) == XAIOS_OK);
+    int blocked_exit =
+        user_process_run_scheduled(&blocked_process, 1, &blocked);
+    kassert(blocked_exit == 0);
+    kassert(blocked.as_task != 0);
+    klog("kernel: /bin/spin blocked dispatcher pid=8 switches=%lu "
+         "exit_code=%d as_task=%d\n",
+         (unsigned long)blocked.switches, blocked_exit, blocked.as_task);
+    /* The control: the same process over the same span, strictly fewer
+       switches because the dispatcher gave the CPU up instead of competing
+       for it. */
+    kassert(blocked.switches < preempted.switches);
+    user_process_reclaim_address_space(&blocked_process);
+  } else {
+    klog("kernel: /bin/spin preemption proof not applicable -- this port "
+         "cannot start a task in kernel mode\n");
   }
   for (uint32_t pid = 3; pid <= 5; ++pid) {
     xaios_user_process_t worker_process;
