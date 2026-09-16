@@ -10,14 +10,19 @@
  * has. It provides HKDF (RFC 5869) and AES-128-GCM (RFC 5288) directly, and
  * AES-ECB for QUIC's AES-based header protection.
  *
- * WHAT IS NOT HERE. ChaCha20-Poly1305 is not implemented: BearSSL has ChaCha20
- * as a stream cipher but no Poly1305, so the AEAD would have to be written on
- * top, and that is a new cryptographic construction rather than a binding.
- * QUIC's mandatory cipher suite is TLS_AES_128_GCM_SHA256, which is what this
- * covers; ChaCha20-Poly1305 is optional and its absence is recorded rather
- * than papered over. wt_chacha20_xor is present and used only for the ChaCha20
- * *header protection* path of RFC 9001 section 5.4.4, which needs the raw
- * keystream and no AEAD at all -- that part is complete.
+ * WHAT IS NOT HERE. ChaCha20-Poly1305 is not implemented, and the reason
+ * first written here was wrong: this said BearSSL "has ChaCha20 as a stream
+ * cipher but no Poly1305". The vendored tree does have Poly1305 -- four
+ * constant-time implementations under `third_party/bearssl/src/symcipher/`
+ * (`poly1305_ctmul.c`, `_ctmul32.c`, `_ctmulq.c`, `poly1305_i15.c`) -- and all
+ * of `third_party/bearssl/src` is compiled by `scripts/build-bearssl.sh`. What
+ * is missing is the binding, not the primitive, so the AEAD is a construction
+ * to be wired rather than written.
+ * It is still absent, and it is still optional: QUIC's mandatory cipher suite
+ * is TLS_AES_128_GCM_SHA256, which is what this covers. wt_chacha20_xor is
+ * present and used only for the ChaCha20 *header protection* path of RFC 9001
+ * section 5.4.4, which needs the raw keystream and no AEAD at all -- that part
+ * is complete.
  *
  * Every function here is checked against a published RFC vector in
  * `tests/security/test_wt_crypto.c`. None of it is "obviously right":
