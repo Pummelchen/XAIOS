@@ -23,6 +23,23 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **A timer interrupt that arrived before the scheduler existed no longer
+  takes the machine down.** The scheduler's current-task accessor read its
+  run queues without checking that they had been allocated, and this port's
+  timer is armed at 100 Hz for the exception self-test long before
+  `scheduler_init()` runs, so a tick in that window loaded from a null run
+  queue and the boot ended in `class=load-access-fault stval=0x210` --
+  `current_pid`'s offset in that array. Both accessors answer "no task"
+  when there is no scheduler yet, which is the same answer (B-135).
+- **The RISC-V trap frame now carries the kernel stack its next user-mode
+  trap must land on.** The stub records it at entry and the trap return arms
+  `sscratch` from the frame rather than from the stack the trap was taken on
+  -- the one value a context switch has to carry for the incoming task, and
+  the reason a switched-to task's next syscall would otherwise unwind the
+  outgoing task's continuation with its own exit code. A machine that never
+  switches behaves exactly as before, and the mapping self-test asserts that
+  a frame naming no stack cannot move one (B-132, B-129).
+
 - **A timer interrupt inside the scheduler's own self-test could send the
   machine to program counter zero.** `scheduler_self_test` registers three
   tasks whose context frames are a zeroed dummy -- that is what it needs to
@@ -70,12 +87,16 @@ Landed since build 5 and not in any released image.
   board that has no usable MSI-X. **The first milestone is landed:** the
   port looks for the device over PCI rather than asserting its absence and
   names it and its BAR, with the no-device sentence now the result of that
-  look and the evidence that produced it printed beside it. The register
-  read is deliberately not there yet: QEMU places the BAR at 0x400010000,
-  above the device window this port identity-maps, and reading it faults the
-  machine -- so the read goes with the mapping that makes it reachable. Nothing is programmed -- the device
-  resets refusing PCI DMA -- and the look runs in `smmu_self_test()`
-  because `smmu_init()` is called before PCI enumeration (B-130).
+  look and the evidence that produced it printed beside it, and the device's
+  own capability register is read and decoded once its BAR is mapped: QEMU
+  places that BAR at 0x400010000, above the window this port identity-maps,
+  so mapping the page is what makes the register reachable rather than
+  fatal. On the board that carries the device:
+  `riscv-iommu: found device=5 base=0x400010000 cap=0x78c2cf4f10 version=0x10
+  sv39=1 sv48=1 sv57=1 igs=0` -- version 1.0, every page-table format, and
+  MSI-only fault notification. Nothing is programmed -- the device resets
+  refusing PCI DMA -- and the look runs in `smmu_self_test()` because
+  `smmu_init()` is called before PCI enumeration (B-130).
 - **The completed WebTransport C99 library was assessed for integration, and
   the answer is a backend layer rather than a platform directory.**
   `docs/WEBTRANSPORT-C99-INTEGRATION.md` records the seam that matters

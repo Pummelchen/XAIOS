@@ -121,12 +121,18 @@ Milestones, each independently verifiable:
    look belongs in `smmu_self_test()`, which runs after it -- a probe in
    `smmu_init` reports that a board with the device attached has none.
    `pci_enable_device()` must come before the BAR is read. And **the `CAP`
-   read cannot be taken here:** QEMU places this 64-bit BAR at
+   read needs the BAR mapped first:** QEMU places this 64-bit BAR at
    `0x400010000`, this port identity-maps its device window below 4 GiB, and
-   the read faults with `ERROR: controlled page fault reported`,
+   reading it unmapped faults with `ERROR: controlled page fault reported`,
    `class=load-page-fault cause=13 stval=0x400010000` -- the MMIO probe
-   containment does not turn it into a returned value. The read goes with the
-   `vmm_map_page` that makes the BAR reachable, in milestone 2.
+   containment does not turn that into a returned value. With
+   `vmm_map_page(base, base, XAIOS_VMM_DEVICE)` in front of it the register
+   answers, and a guest booted with the device attached reports
+   `riscv-iommu: found device=5 base=0x400010000 cap=0x78c2cf4f10 version=0x10
+   sv39=1 sv48=1 sv57=1 igs=0`: version 1.0, all three page-table formats
+   available, and **`IGS = 0`, which is MSI only** -- so on a board whose PCI
+   IOMMU has no usable MSI-X, faults are only ever seen by polling the fault
+   queue, and the gate must assert them that way.
 2. **Queues and DDT** -- 1LVL, command and fault queues enabled, `IOFENCE.C`
    round trip, `IODIR.INVAL_DDT`; installs the identity contexts in the same
    change (see above).
