@@ -204,10 +204,28 @@ Milestones, each independently verifiable:
 Both QEMU variants attach the IOMMU to the PCI bus and to nothing else, so
 **virtio-mmio is not mediated and cannot be**: the riscv64 runner's root
 filesystem, models volume and persistent disks are all `virtio-blk-device` on
-`virtio-mmio-bus`, and no driver can change that. "The virtio DMA path
-translates through it" is achievable for the PCI transports
-(`virtio-blk-pci`, `virtio-net-pci`, `virtio-rng-pci`) and must be stated that
-way rather than implied to cover the root filesystem.
+`virtio-mmio-bus`, and no driver can change that.
+
+The PCI transports are a different matter, and the virtio half is now landed.
+Every PCI function starts with a pass-through context; when a virtio PCI
+transport hands a queue to a device, `setup_queue` calls
+`riscv64_iommu_mediate_dma` for the descriptor, available and used rings, and
+the driver installs an Sv39 first-stage context whose table identity-maps three
+gigabytes with 1 GiB leaves. Identity, because a driver allocates a device's
+buffers wherever physical memory is, and the point of this step is that the
+walk happens rather than that the addresses move. What it buys is a table this
+driver owns: an entry can be taken away, and the table's contents can be read
+back from the CPU and asserted. `riscv-iommu: mediated dma stream_id=32
+region=0x... pte_ok=1` is that read, and `virtio-rng: entropy delivery
+self-test passed` afterwards is two real device reads that could only have
+reached their rings through the walk.
+
+**What the virtio half is not yet:** isolation between mediated functions. They
+share one identity-mapped table, so the walk happens without keeping them out of
+each other's memory, and a transport whose buffers are mapped to *different*
+addresses -- a real translation rather than an identity one -- is the step after
+that. The isolation proof this gate makes is the one the test device makes:
+unmap, invalidate, and the same transaction faults.
 
 Not claimable here either: ATS/PRI behaviour (the capability is advertised and
 no device on this board uses it), interrupt-delivered faults on the default

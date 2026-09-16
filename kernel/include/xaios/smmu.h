@@ -62,4 +62,32 @@ uint64_t smmu_fault_count(void);
 uint64_t smmu_stream_count(void);
 void smmu_self_test(void);
 
+#if defined(__riscv)
+/* Translate a PCI function's DMA through a first-stage table.
+ *
+ * RISC-V's IOMMU is a PCI function and every PCI function starts with a
+ * pass-through context, so a transport that hands a queue to a device calls
+ * this with the stream id and the physical ranges it is about to give the
+ * device. The implementation installs an Sv39 first-stage context whose table
+ * identity-maps memory, which turns the device's DMA from a pass-through into a
+ * walk, and returns 1 once the address has been resolved back out of that
+ * table. It returns 0 when there is no IOMMU on the board, when the stream id
+ * does not fit the directory, or when the walk does not resolve -- a refusal,
+ * never a silent fall-back to unmediated DMA.
+ *
+ * Only RISC-V has this today: the AArch64 SMMU's streams are registered
+ * through `smmu_register_stream` and there is no PCI path that hands it a
+ * queue, which is why the declaration is inside the architecture guard. */
+/* Whether the board's IOMMU is up and mediating at all. It already existed
+   for the self-test's callers; the transport uses it to tell "this board has
+   none" from "this board refused", which are the same return value and very
+   different lines to log. */
+uint32_t riscv64_iommu_ready(void);
+int riscv64_iommu_mediate_dma(uint32_t stream_id, uint64_t physical,
+                              uint64_t size);
+uint32_t riscv64_iommu_mediated_functions(void);
+uint64_t riscv64_iommu_mediated_regions(void);
+uint64_t riscv64_iommu_mediated_pages(void);
+#endif
+
 #endif

@@ -260,10 +260,20 @@ the kernel comes up to a login prompt with sshd listening.
   `kernel/arch/riscv64/iommu.c` programs the device directory table, the command
   and fault queues and Sv39/Sv48 first-stage tables, installs a pass-through
   context for every enumerated PCI function in the same step that leaves
-  `Bare`, and proves isolation with `make qemu-riscv64-iommu-gate`. What it
-  cannot mediate is this board's `virtio-mmio` devices -- the IOMMU is attached
-  to the PCI bus and to nothing else -- so the root filesystem, models volume
-  and persistent disks stay unmediated on every RISC-V boot. x86_64 has none
+  `Bare`, and proves isolation with `make qemu-riscv64-iommu-gate`. Every PCI
+  function starts with a pass-through context, and the virtio PCI transport no
+  longer leaves it there: when it hands a queue to a device it calls
+  `riscv64_iommu_mediate_dma`, which installs an Sv39 first-stage context whose
+  table identity-maps memory, verifies each ring address by resolving it back
+  out of that table, and only then lets the device be told where the rings are.
+  The entropy source is the one this exercises end to end -- its two self-test
+  reads are DMA that reached mediated rings -- and that is what the IOMMU gate
+  asserts. What it cannot mediate is this board's `virtio-mmio` devices -- the
+  IOMMU is attached to the PCI bus and to nothing else -- so the root
+  filesystem, models volume and persistent disks stay unmediated on every
+  RISC-V boot. Mediated functions also still share one identity-mapped table
+  rather than having one each, so the walk happens without isolating them from
+  each other yet. x86_64 has none
   either, whose `smmu_initialized()` also reports zero; AArch64's SMMUv3
   remains the other mediated path.
 - **A second NVMe queue.** The driver asks for one per online CPU, and on

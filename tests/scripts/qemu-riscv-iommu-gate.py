@@ -35,6 +35,17 @@ MARKERS = [
     "riscv-iommu: unregistered device refused",
     "riscv-iommu: isolation self-test passed authorized=1 forbidden=1 "
     "stale_mapping=blocked faults=",
+    # The virtio half: a real PCI function whose queue rings this driver built
+    # a first-stage table for, rather than leaving the pass-through context
+    # every function starts with. The mediated line is printed per region and
+    # only after the address has been resolved back OUT of the table, so it is
+    # the mapping being read and not the call being made.
+    "riscv-iommu: first-stage context stream_id=",
+    "riscv-iommu: mediated dma stream_id=",
+    # And the device still works through that table: the entropy source does
+    # two real reads after its rings were mediated, which is DMA that can only
+    # have reached the rings by a first-stage walk.
+    "virtio-rng: entropy delivery self-test passed",
 ]
 PANIC_MARKERS = ["CYAN SCREEN OF DEATH", "System halted. Manual reset required"]
 
@@ -117,6 +128,22 @@ def main() -> int:
                 text = output.decode("utf-8", errors="replace")
                 if all(marker in text for marker in MARKERS):
                     passed = not any(marker in text for marker in PANIC_MARKERS)
+                    # The mediated regions are printed one per ring as the
+                    # transport sets a queue up, so the last marker can arrive
+                    # before the queue has finished describing itself. Read on
+                    # until the three are in or a short grace passes, and let
+                    # the count below judge what arrived.
+                    grace = time.monotonic() + 2.0
+                    while (time.monotonic() < grace and
+                           text.count("riscv-iommu: mediated dma stream_id=") < 3):
+                        more_ready, _, _ = select.select([descriptor], [], [], 0.2)
+                        if not more_ready:
+                            continue
+                        more = os.read(descriptor, 8192)
+                        if not more:
+                            break
+                        output.extend(more)
+                        text = output.decode("utf-8", errors="replace")
                     break
             elif process.poll() is not None:
                 break
@@ -143,6 +170,13 @@ def main() -> int:
     ]
     if fault_totals and max(fault_totals) < 2:
         failures.append("RISC-V IOMMU recorded fewer than two refused transactions")
+    # The summary markers only prove lines were printed. A mediated function
+    # hands over at least its descriptor, available and used rings, so fewer
+    # than three mediated regions is a queue that was only partly described.
+    mediated = len(re.findall(r"riscv-iommu: mediated dma stream_id=", text))
+    if mediated < 3:
+        failures.append(
+            f"only {mediated} virtio queue regions were mediated, expected 3")
     failures.extend(f"panic marker present: {marker}" for marker in panics)
     if not passed and not failures:
         failures.append(
@@ -163,9 +197,16 @@ def main() -> int:
             "the same transaction after unmap and invalidate was refused",
             "a PCI function with no valid context raised DDT_INVALID",
             "both refusals were recorded in the fault queue, which was polled",
+            "a real PCI virtio function's queue rings were given a first-stage "
+            "Sv39 context whose table resolved each ring address back to itself",
+            "that function then completed two DMA reads through the mediated "
+            "rings, which is the mapping being used rather than merely built",
         ],
         "not_claimed": [
             "any virtio-mmio device, which this board's IOMMU cannot mediate",
+            "isolation between mediated PCI functions: their first-stage table "
+            "identity-maps RAM, so the walk happens but the functions still "
+            "share it",
             "physical IOMMU performance",
             "interrupt-delivered faults on a board with no usable PCI MSI",
         ],

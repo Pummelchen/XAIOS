@@ -33,6 +33,7 @@
 #include <xaios/gic.h>
 #include <xaios/klog.h>
 #include <xaios/pci.h>
+#include <xaios/smmu.h>
 #include <xaios/smp.h>
 #include <xaios/timer.h>
 #include <xaios/virtio_transport.h>
@@ -519,6 +520,46 @@ static xaios_status_t configure_queue_msix(virtio_mmio_device_t *device,
 #endif
 }
 
+
+/* Hand one queue's rings to the board's IOMMU (B-130).
+ *
+ * Every PCI function starts with a pass-through context, so without this the
+ * device's DMA reaches these pages without a table being walked. With it, the
+ * first descriptor the device fetches is translated. A refusal is logged and
+ * does not stop the queue -- a board with no IOMMU has to boot -- but it is
+ * never silent, because "unmediated" is exactly the state this call exists to
+ * leave. */
+static void mediate_queue_rings(const virtio_mmio_device_t *device,
+                                uint32_t queue_index, uint32_t queue_size,
+                                uint64_t desc_address, uint64_t avail_address,
+                                uint64_t used_address) {
+#if defined(__riscv)
+  /* A board with no IOMMU is not a board whose driver refused: the call
+     answers 0 and there is nothing to say. Only a refusal on a board that HAS
+     one is worth a line, and it is worth one because the queue is about to be
+     handed over unmediated. */
+  if (riscv64_iommu_ready() != 0) {
+    uint32_t stream_id = pci_stream_id(device->transport_index);
+    uint64_t desc_bytes = (uint64_t)sizeof(virtq_desc_t) * (uint64_t)queue_size;
+    if (riscv64_iommu_mediate_dma(stream_id, desc_address, desc_bytes) == 0 ||
+        riscv64_iommu_mediate_dma(stream_id, avail_address,
+                                  (uint64_t)sizeof(virtq_avail_t)) == 0 ||
+        riscv64_iommu_mediate_dma(stream_id, used_address,
+                                  (uint64_t)sizeof(virtq_used_t)) == 0) {
+      klog("virtio-pci: queue %u rings are not mediated for stream_id=%u\n",
+           (unsigned)queue_index, (unsigned)stream_id);
+    }
+  }
+#else
+  (void)device;
+  (void)queue_index;
+  (void)queue_size;
+  (void)desc_address;
+  (void)avail_address;
+  (void)used_address;
+#endif
+}
+
 xaios_status_t virtio_transport_setup_queue(virtio_mmio_device_t *device,
                                            uint32_t queue_index,
                                            uint32_t queue_size,
@@ -536,6 +577,8 @@ xaios_status_t virtio_transport_setup_queue(virtio_mmio_device_t *device,
   if (desc_address == 0U || avail_address == 0U || used_address == 0U) {
     return XAIOS_ERR_INVALID;
   }
+  mediate_queue_rings(device, queue_index, queue_size, desc_address,
+                      avail_address, used_address);
   mmio_write16(device->common_config + 22U, (uint16_t)queue_index);
   uint16_t maximum = mmio_read16(device->common_config + 24U);
   if (maximum < queue_size ||
@@ -727,6 +770,8 @@ xaios_status_t virtio_transport_setup_queue_vectored(
   if (desc_address == 0U || avail_address == 0U || used_address == 0U) {
     return XAIOS_ERR_INVALID;
   }
+  mediate_queue_rings(device, queue_index, queue_size, desc_address,
+                      avail_address, used_address);
   mmio_write16(device->common_config + 22U, (uint16_t)queue_index);
   uint16_t maximum = mmio_read16(device->common_config + 24U);
   if (maximum < queue_size ||

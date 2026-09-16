@@ -23,6 +23,15 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **A real PCI virtio function's DMA is translated by the RISC-V IOMMU.** The
+  queue rings a virtio PCI transport hands to a device are given an Sv39
+  first-stage context before the device is told where they are: the table
+  identity-maps memory, each ring address is resolved back out of it before
+  the mapping is claimed, and the entropy source's self-test reads are DMA
+  that reached those rings through the walk. Isolation between mediated
+  functions and a table that maps to different addresses are what remains,
+  and `virtio-mmio` still cannot be mediated at all (B-130).
+
 - **A booted XAIOS guest completes a WebTransport QUIC and TLS 1.3
   handshake.** The port's client is packaged as `/bin/wtqtest` and driven
   by `make qemu-quic-handshake-gate` against the same host peer the interop

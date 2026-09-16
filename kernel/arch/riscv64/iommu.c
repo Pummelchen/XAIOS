@@ -699,3 +699,121 @@ void riscv64_iommu_self_test(void) {
        "stale_mapping=blocked faults=%lu\n",
        (unsigned long)g_fault_count);
 }
+
+/* --- First-stage contexts for the functions that actually do DMA (B-130) ---
+ *
+ * Every PCI function starts with a pass-through context, which is what keeps a
+ * machine whose drivers were written for unmediated DMA booting. That is not a
+ * translation: the IOMMU is in the path and there is no table for it to walk.
+ * This is the other half -- a PCI function whose DMA is a walk.
+ *
+ * The table identity-maps three gigabytes with 1 GiB leaves in Sv39. It is
+ * identity because a driver allocates a device's buffers wherever physical
+ * memory happens to be, and the point of this step is that the walk happens,
+ * not that the addresses move. What it buys is the thing a pass-through cannot
+ * have: the mapping is a table this driver owns, so an entry can be taken away
+ * (that is a revocation) and the table's contents can be read back from the CPU
+ * and asserted, rather than inferred from a device that happens to work.
+ *
+ * The mediation happens when a transport hands a queue to a device, which is
+ * the moment the device first has memory to reach; `virtio_transport_pci.c`
+ * calls it from `setup_queue`. Passing the rings rather than every buffer is
+ * deliberate: they are the memory the transport itself knows about, and the
+ * identity mapping is what lets the driver keep allocating its data buffers the
+ * way it always did.
+ */
+
+#define IOMMU_MEDIATED_MAX 4U
+
+static uint64_t g_mediated_table[IOMMU_MEDIATED_MAX][512]
+    __attribute__((aligned(4096)));
+static uint32_t g_mediated_stream[IOMMU_MEDIATED_MAX];
+static uint32_t g_mediated_count;
+static uint64_t g_mediated_pages;
+static uint64_t g_mediated_regions;
+
+/* What the table resolves `address` to, read back out of the table. A leaf at
+ * this level covers 1 GiB, so the offset within it is the address's low thirty
+ * bits; a table that resolved to something else would be one whose context
+ * pointed at the wrong root, and asserting the walk is what tells the two
+ * apart without a device in the loop. */
+static uint64_t mediated_walk(const uint64_t *table, uint64_t address) {
+  uint64_t entry = table[(address >> 30U) & 0x1ffU];
+  if ((entry & (IOMMU_PTE_V | IOMMU_PTE_R | IOMMU_PTE_W)) !=
+      (IOMMU_PTE_V | IOMMU_PTE_R | IOMMU_PTE_W)) {
+    return UINT64_MAX;
+  }
+  return ((entry >> 10U) << 12U) | (address & UINT64_C(0x3fffffff));
+}
+
+/* The slot for `stream_id`, building and installing its table the first time.
+ * Returns -1 when the slots are full, which is a refusal rather than a
+ * fall-back to pass-through: a device this driver cannot mediate is one it
+ * must not claim to. */
+static int mediated_slot(uint32_t stream_id) {
+  for (uint32_t slot = 0U; slot < g_mediated_count; ++slot) {
+    if (g_mediated_stream[slot] == stream_id) return (int)slot;
+  }
+  if (g_mediated_count >= IOMMU_MEDIATED_MAX) return -1;
+  uint32_t slot = g_mediated_count;
+  g_mediated_stream[slot] = stream_id;
+  for (uint32_t entry = 0U; entry < 512U; ++entry) {
+    g_mediated_table[slot][entry] = 0U;
+  }
+  for (uint32_t gib = 0U; gib < 3U; ++gib) {
+    g_mediated_table[slot][gib] = pte_leaf((uint64_t)gib * IOMMU_GIB);
+  }
+  xaios_cpu_io_barrier();
+  /* One table serves as the Sv39 root: its entries are 1 GiB leaves, which is
+   * level two's leaf size in this format, so no second level is needed to
+   * describe memory a device can reach. */
+  install_translation_context(
+      stream_id, first_stage_fsc(g_mediated_table[slot], IOMMU_FSC_MODE_SV39));
+  (void)issue_command(IOMMU_CMD_IODIR_INVAL_DDT, 0U);
+  (void)issue_command(IOMMU_CMD_IOTINVAL_ALL, 0U);
+  ++g_mediated_count;
+  klog("riscv-iommu: first-stage context stream_id=%u leaves=3 ram=3GiB "
+       "format=sv39\n",
+       (unsigned)stream_id);
+  return (int)slot;
+}
+
+int riscv64_iommu_mediate_dma(uint32_t stream_id, uint64_t physical,
+                              uint64_t size) {
+  int slot;
+  uint64_t page;
+  uint64_t resolved;
+  uint64_t pages;
+
+  if (g_iommu_ready == 0U || size == 0U) return 0;
+  if (stream_id >= IOMMU_DDT_CONTEXTS) return 0;
+  slot = mediated_slot(stream_id);
+  if (slot < 0) {
+    klog("riscv-iommu: no first-stage slot left for stream_id=%u; its DMA "
+         "stays unmediated\n",
+         (unsigned)stream_id);
+    return 0;
+  }
+  page = physical & ~UINT64_C(0xfff);
+  resolved = mediated_walk(g_mediated_table[slot], page);
+  if (resolved != page) {
+    klog("riscv-iommu: first-stage walk for stream_id=%u address=0x%lx "
+         "resolved=0x%lx; refusing to claim the mapping\n",
+         (unsigned)stream_id, (unsigned long)page, (unsigned long)resolved);
+    return 0;
+  }
+  pages = (size + 4095U) / 4096U;
+  g_mediated_pages += pages;
+  ++g_mediated_regions;
+  klog("riscv-iommu: mediated dma stream_id=%u region=0x%lx size=%lu "
+       "pages=%lu pte_ok=1\n",
+       (unsigned)stream_id, (unsigned long)physical, (unsigned long)size,
+       (unsigned long)pages);
+  return 1;
+}
+
+uint32_t riscv64_iommu_mediated_functions(void) { return g_mediated_count; }
+
+uint64_t riscv64_iommu_mediated_regions(void) { return g_mediated_regions; }
+
+uint64_t riscv64_iommu_mediated_pages(void) { return g_mediated_pages; }
