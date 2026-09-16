@@ -5,6 +5,8 @@
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
 #include <xaios/nvme.h>
+
+#include "nvme_completion.h"
 #include <xaios/pci.h>
 #include <xaios/smp.h>
 #include <xaios/spinlock.h>
@@ -37,85 +39,12 @@
 #define NVME_IO_READ UINT8_C(0x02)
 #define NVME_PSDT_SGL ((uint8_t)(UINT8_C(1) << 6U))
 
-#define NVME_QUEUE_DEPTH 16U
 #define NVME_MAX_IO_QUEUES 4U
 #define NVME_PAGE_SIZE UINT64_C(4096)
 #define NVME_MAX_TRANSFER_BYTES UINT32_C(16384)
 #define NVME_STRESS_ROUNDS 8U
 #define NVME_TIMEOUT_NS UINT64_C(5000000000)
 
-typedef struct nvme_command {
-  uint8_t opcode;
-  uint8_t flags;
-  uint16_t cid;
-  uint32_t nsid;
-  uint64_t reserved0;
-  uint64_t metadata;
-  uint64_t data_pointer1;
-  uint64_t data_pointer2;
-  uint32_t cdw10;
-  uint32_t cdw11;
-  uint32_t cdw12;
-  uint32_t cdw13;
-  uint32_t cdw14;
-  uint32_t cdw15;
-} __attribute__((packed)) nvme_command_t;
-
-typedef struct nvme_completion {
-  uint32_t result;
-  uint32_t reserved;
-  uint16_t sq_head;
-  uint16_t sq_id;
-  uint16_t cid;
-  uint16_t status;
-} __attribute__((packed)) nvme_completion_t;
-
-typedef struct nvme_request_slot {
-  xaios_block_async_request_t *request;
-  uint64_t *prp_list;
-  uint16_t cid;
-  uint8_t active;
-  uint8_t cancel_requested;
-  uint8_t uses_sgl;
-} nvme_request_slot_t;
-
-/* The last few completions a queue consumed, kept so that a completion the
- * driver cannot match -- and the wait it leaves behind -- can be read against
- * what came before it rather than on its own. A ring rather than a line per
- * completion: the lines would be noise on every boot and still not enough
- * context on the boot that matters. This exists because B-100 was reproduced
- * with a dropped completion (cid=0, sq_head=0, no matching request) and the
- * next question is what the device had been answering before it. */
-#define NVME_TRACE_ENTRIES 8U
-
-typedef struct {
-  uint16_t cq_head;
-  uint16_t cid;
-  uint16_t matched_cid;
-  uint16_t sq_head;
-  uint16_t status;
-  uint16_t sq_id;
-} nvme_completion_trace_t;
-
-typedef struct nvme_queue {
-  nvme_command_t *sq;
-  nvme_completion_t *cq;
-  nvme_request_slot_t slots[NVME_QUEUE_DEPTH];
-  xaios_spinlock_t lock;
-  uint16_t qid;
-  uint16_t sq_tail;
-  uint16_t cq_head;
-  uint16_t phase;
-  uint16_t outstanding;
-  uint32_t assigned_cpu;
-  uint32_t interrupt_id;
-  uint16_t msix_entry;
-  uint64_t interrupt_completions;
-  nvme_completion_trace_t trace[NVME_TRACE_ENTRIES];
-  uint32_t trace_next;
-  uint64_t completions_consumed;
-  struct nvme_controller *controller;
-} nvme_queue_t;
 
 typedef struct nvme_controller {
   volatile uint8_t *bar;
@@ -247,13 +176,6 @@ static uint16_t allocate_cid(nvme_controller_t *controller) {
   return controller->next_cid;
 }
 
-static int completion_fields_valid(const nvme_completion_t *completion,
-                                   uint16_t qid, uint16_t expected_cid) {
-  return completion != 0 && completion->sq_id == qid &&
-         completion->sq_head < NVME_QUEUE_DEPTH &&
-         completion->cid == expected_cid &&
-         ((completion->status >> 1U) & UINT16_C(0x7ff)) == 0U;
-}
 
 /* Record a completion this queue consumed, and say what a queue had been doing
  * when one is refused. Both live above every wait path because the admin queue
@@ -262,19 +184,6 @@ static int completion_fields_valid(const nvme_completion_t *completion,
  * completion the admin path refused with every field the old line printed
  * looking valid -- status 0x0001 is a successful completion -- so the value it
  * was waiting for is the first thing the line has to carry. */
-static void record_completion(nvme_queue_t *queue,
-                              const nvme_completion_t *completion,
-                              uint16_t matched_cid) {
-  nvme_completion_trace_t *trace = &queue->trace[queue->trace_next];
-  trace->cq_head = queue->cq_head;
-  trace->cid = completion->cid;
-  trace->matched_cid = matched_cid;
-  trace->sq_head = completion->sq_head;
-  trace->status = completion->status;
-  trace->sq_id = completion->sq_id;
-  queue->trace_next = (queue->trace_next + 1U) % NVME_TRACE_ENTRIES;
-  ++queue->completions_consumed;
-}
 
 /* The submission-queue entries around the one the device says it answered.
  *
@@ -291,84 +200,13 @@ static void record_completion(nvme_queue_t *queue,
  * driver had submitted five commands and never written the last slot of the
  * ring, so the index the device named was quite possibly one the host had not
  * written at all. */
-static void report_sq_slot(const nvme_queue_t *queue, uint16_t index) {
-  if (index >= NVME_QUEUE_DEPTH) {
-    klog("nvme: queue %u sq slot %u out of range\n", (unsigned)queue->qid,
-         (unsigned)index);
-    return;
-  }
-  const nvme_command_t *command = &queue->sq[index];
-  klog("nvme: queue %u sq[%u] opcode=%u cid=%u nsid=%u cdw10=0x%x\n",
-       (unsigned)queue->qid, (unsigned)index, (unsigned)command->opcode,
-       (unsigned)command->cid, (unsigned)command->nsid,
-       (unsigned)command->cdw10);
-}
 
-static void report_sq_neighbourhood(const nvme_queue_t *queue, uint16_t index) {
-  report_sq_slot(queue, (uint16_t)((index + NVME_QUEUE_DEPTH - 1U) %
-                                   NVME_QUEUE_DEPTH));
-  report_sq_slot(queue, index);
-  report_sq_slot(queue, (uint16_t)((index + 1U) % NVME_QUEUE_DEPTH));
-}
-
-static void report_queue_trace(const nvme_queue_t *queue, const char *reason) {
-  uint32_t available = queue->completions_consumed < NVME_TRACE_ENTRIES
-                           ? (uint32_t)queue->completions_consumed
-                           : NVME_TRACE_ENTRIES;
-  klog("nvme: queue %u completions=%lu cq_head=%u phase=%u sq_tail=%u "
-       "outstanding=%u trace=%s\n",
-       (unsigned)queue->qid, (unsigned long)queue->completions_consumed,
-       (unsigned)queue->cq_head, (unsigned)queue->phase,
-       (unsigned)queue->sq_tail, (unsigned)queue->outstanding, reason);
-  for (uint32_t offset = 0U; offset < available; ++offset) {
-    uint32_t index = (queue->trace_next + NVME_TRACE_ENTRIES - available +
-                      offset) % NVME_TRACE_ENTRIES;
-    const nvme_completion_trace_t *entry = &queue->trace[index];
-    klog("nvme: queue %u trace[%u] cq_head=%u cid=%u matched=%u sq_id=%u "
-         "sq_head=%u status=0x%04x\n",
-         (unsigned)queue->qid, (unsigned)offset, (unsigned)entry->cq_head,
-         (unsigned)entry->cid, (unsigned)entry->matched_cid,
-         (unsigned)entry->sq_id, (unsigned)entry->sq_head,
-         (unsigned)entry->status);
-  }
-}
 
 /* Which of the parser's checks refused, named, because this self-test is the
  * first thing `nvme_self_test` runs and until it was named a failure here left
  * the console with nothing on it at all -- the one exit in the chain that could
  * not be told from any other. */
-static xaios_status_t parser_check_failed(const char *check) {
-  klog("nvme: completion parser self-test failed check=%s\n", check);
-  return XAIOS_ERR_IO;
-}
 
-static xaios_status_t completion_parser_self_test(void) {
-  nvme_completion_t completion = {
-      .sq_head = 1U, .sq_id = 2U, .cid = 7U, .status = 1U};
-  if (!completion_fields_valid(&completion, 2U, 7U)) {
-    return parser_check_failed("valid-completion");
-  }
-  completion.sq_id = 3U;
-  if (completion_fields_valid(&completion, 2U, 7U)) {
-    return parser_check_failed("wrong-queue");
-  }
-  completion.sq_id = 2U;
-  completion.sq_head = NVME_QUEUE_DEPTH;
-  if (completion_fields_valid(&completion, 2U, 7U)) {
-    return parser_check_failed("head-out-of-range");
-  }
-  completion.sq_head = 1U;
-  completion.cid = 8U;
-  if (completion_fields_valid(&completion, 2U, 7U)) {
-    return parser_check_failed("wrong-cid");
-  }
-  completion.cid = 7U;
-  completion.status = UINT16_C(3);
-  if (completion_fields_valid(&completion, 2U, 7U)) {
-    return parser_check_failed("non-zero-status");
-  }
-  return XAIOS_OK;
-}
 
 /* Whether the completion at `index` belongs to the phase this driver is
  * waiting for, read the way the device means it.
@@ -402,31 +240,7 @@ static xaios_status_t completion_parser_self_test(void) {
  * the first and the defect is the device's. Four sightings could not tell them
  * apart and every one of them printed a completion that looked successful;
  * this prints the difference. */
-static void report_completion_reread(const nvme_queue_t *queue,
-                                     const nvme_completion_t *first) {
-  nvme_completion_t again = queue->cq[queue->cq_head];
-  if (again.cid == first->cid && again.sq_head == first->sq_head &&
-      again.sq_id == first->sq_id && again.status == first->status) {
-    klog("nvme: queue %u completion reread agrees cid=%u sq_head=%u "
-         "status=0x%04x -- the device wrote it that way\n",
-         (unsigned)queue->qid, (unsigned)again.cid, (unsigned)again.sq_head,
-         (unsigned)again.status);
-    return;
-  }
-  klog("nvme: queue %u completion reread differs cid=%u sq_head=%u "
-       "status=0x%04x first_cid=%u first_sq_head=%u first_status=0x%04x -- the "
-       "first read raced the device\n",
-       (unsigned)queue->qid, (unsigned)again.cid, (unsigned)again.sq_head,
-       (unsigned)again.status, (unsigned)first->cid, (unsigned)first->sq_head,
-       (unsigned)first->status);
-}
 
-static int completion_in_phase(const nvme_queue_t *queue, uint16_t index) {
-  const volatile uint32_t *dword =
-      (const volatile uint32_t *)((const uint8_t *)&queue->cq[index] + 12U);
-  uint32_t tail = __atomic_load_n(dword, __ATOMIC_ACQUIRE);
-  return (uint32_t)((tail >> 16) & 1U) == queue->phase ? 1 : 0;
-}
 
 static xaios_status_t submit_admin(nvme_controller_t *controller,
                                    const nvme_command_t *command,

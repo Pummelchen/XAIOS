@@ -24,7 +24,7 @@ kernel/core/klog.c 635
 kernel/core/kmain.c 1693
 kernel/core/panic.c 685
 kernel/dev/input.c 745
-kernel/dev/nvme.c 1701
+kernel/dev/nvme.c 1515
 kernel/dev/pci_ecam.c 691
 kernel/dev/virtio/virtio_blk.c 1800
 kernel/dev/virtio/virtio_net.c 1683
@@ -66,7 +66,7 @@ kernel/user/user.c 1512
 platform/qemu/run-qemu-aarch64.sh 558
 platform/qemu/run-qemu-riscv64.sh 535
 scripts/build-boot-media.sh 544
-scripts/build-image.sh 1671
+scripts/build-image.sh 1673
 scripts/build-riscv64-image.sh 594
 scripts/build-vm-packages.sh 661
 scripts/xaios-ssh-bridge.py 1171

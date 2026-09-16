@@ -732,6 +732,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/assert.o
   $KERNEL_BUILD_DIR/stack_canary.o
   $KERNEL_BUILD_DIR/nvme.o
+  $KERNEL_BUILD_DIR/nvme_completion.o
   $KERNEL_BUILD_DIR/ahci.o
   $KERNEL_BUILD_DIR/virtio_transport.o
   $KERNEL_BUILD_DIR/block_device.o
@@ -885,6 +886,7 @@ else
 fi
 compile_kernel "$ROOT_DIR/kernel/arch/aarch64/topology.c" "$KERNEL_BUILD_DIR/topology.o"
 compile_kernel "$ROOT_DIR/kernel/dev/nvme.c" "$KERNEL_BUILD_DIR/nvme.o"
+compile_kernel "$ROOT_DIR/kernel/dev/nvme_completion.c" "$KERNEL_BUILD_DIR/nvme_completion.o"
 compile_kernel "$ROOT_DIR/kernel/dev/ahci.c" "$KERNEL_BUILD_DIR/ahci.o"
 if [ "$TARGET_ARCH" = aarch64 ]; then
   # aarch64 can meet virtio on either transport, so both are built and a
