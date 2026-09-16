@@ -114,7 +114,16 @@ xaios_status_t user_process_make_runnable(uint32_t pid, uint32_t parent_pid);
 xaios_status_t user_process_wait(uint32_t pid);
 xaios_status_t user_process_wake(uint32_t pid);
 int user_process_run(const xaios_user_process_t *process);
-int user_process_run_concurrent(const xaios_user_process_t *process);
+
+/* Run a loaded process as a task the scheduler owns rather than as a call
+ * that returns on the caller's stack: it gets a kernel stack of its own and
+ * is entered from a task entry on that stack, and when it exits the task
+ * hands the CPU back to the context that dispatched it. That is what makes
+ * the process preemptible -- the timer can take the CPU away and give it
+ * back without its kernel context colliding with the dispatcher's. A port
+ * that cannot start a task in kernel mode falls back to `user_process_run`
+ * and says so in the log. */
+int user_process_run_scheduled(const xaios_user_process_t *process);
 xaios_status_t user_process_run_transient(
     const xaios_initramfs_file_t *file, uint64_t capability_mask,
     int *exit_code);

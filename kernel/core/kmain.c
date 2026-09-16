@@ -1321,6 +1321,27 @@ persistent_network_done:
   operations_mark_boot_ready();
 
 #if XAIOS_BOOT_TEST_APPS
+  /* One process dispatched as a *task* rather than as a call, which is
+     what makes an EL0 process preemptible: it owns its kernel stack, the
+     timer can take the CPU away from it, and the switch count across the
+     window says whether that happened. The three workers below keep the
+     sequential path, so a failure here is isolated to this dispatch. */
+  {
+    const xaios_initramfs_file_t *scheduled_file = 0;
+    xaios_user_process_t scheduled_process;
+    kassert(initramfs_lookup("/bin/hello", &scheduled_file) == XAIOS_OK);
+    kassert(user_load_process(scheduled_file, 6U,
+                              XAIOS_CAP_LOG | XAIOS_CAP_EXIT,
+                              &scheduled_process) == XAIOS_OK);
+    uint64_t switches_before = scheduler_context_switch_count();
+    int scheduled_exit = user_process_run_scheduled(&scheduled_process);
+    uint64_t switches = scheduler_context_switch_count() - switches_before;
+    kassert(scheduled_exit == 0);
+    klog("kernel: /bin/hello scheduled dispatch pid=6 switches=%lu "
+         "exit_code=%d\n",
+         (unsigned long)switches, scheduled_exit);
+    user_process_reclaim_address_space(&scheduled_process);
+  }
   for (uint32_t pid = 3; pid <= 5; ++pid) {
     xaios_user_process_t worker_process;
     kassert(user_load_process(worker_file, pid, XAIOS_CAP_LOG | XAIOS_CAP_EXIT,

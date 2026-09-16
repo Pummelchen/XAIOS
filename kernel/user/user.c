@@ -1,4 +1,5 @@
 #include <xaios/assert.h>
+#include <xaios/arch_cpu.h>
 #include <xaios/context.h>
 #include <xaios/elf_loader.h>
 #include <xaios/kheap.h>
@@ -970,53 +971,140 @@ int user_process_run(const xaios_user_process_t *process) {
   return exit_code;
 }
 
-int user_process_run_concurrent(const xaios_user_process_t *process) {
-  kassert(process != 0);
-  kassert(process->pid != 0 && process->pid <= XAIOS_MAX_USER_PROCESSES);
-  g_current_process = &g_process_table[process->pid - 1U];
-  if (g_current_process->pid != process->pid ||
-      g_current_process->state == XAIOS_USER_PROCESS_EMPTY) {
-    copy_process(g_current_process, process);
+#define USER_TASK_STACK_BYTES (16U * 1024U)
+/* The pid a dispatching context adopts while it waits. Above the process table
+ * on purpose: the scheduler's per-pid runtime accounting is a process table
+ * lookup, and a runner is not a process. */
+#define USER_TASK_RUNNER_PID_BASE UINT32_C(20000)
+#define USER_TASK_WAIT_NS UINT64_C(2000000000)
+
+/* The kernel continuation of a user task.
+ *
+ * It runs on the task's own kernel stack, binds and enters the process, and
+ * when the process exits it hands the CPU back to the context that dispatched
+ * it rather than returning: there is nothing on this stack to return to, and
+ * the dispatcher's context is not this task's to unwind. */
+static void user_task_kernel_entry(void) {
+  uint32_t pid = scheduler_current_pid();
+  if (pid == 0U || pid > XAIOS_MAX_USER_PROCESSES) {
+    klog("user: task entry pid=%u is outside the process table\n",
+         (unsigned)pid);
+    scheduler_unregister(pid);
+    for (;;) xaios_cpu_relax();
   }
-  uint64_t entry = g_current_process->entry;
-  uint64_t stack = g_current_process->stack_top;
-  transition_process(g_current_process, XAIOS_USER_PROCESS_RUNNING, 0);
-  __sync_fetch_and_add(&g_process_scheduled_count, 1U);
-  user_process_runtime_start(g_current_process->pid, smp_cpu_id(),
-                             timer_now_ns());
+  xaios_user_process_t *process = &g_process_table[pid - 1U];
+  uint32_t runner_pid = USER_TASK_RUNNER_PID_BASE + pid;
 
-  /* Register with preemptive scheduler */
-  kassert(scheduler_register(g_current_process->pid) == XAIOS_OK);
-  kassert(scheduler_set_runnable(g_current_process->pid) == XAIOS_OK);
-
-  /* Initialize context frame for first entry to user mode */
-  xaios_context_frame_t *frame = scheduler_task_frame(g_current_process->pid);
-  kassert(frame != 0);
-  for (uint32_t i = 0; i < XAIOS_CONTEXT_FRAME_REGS; ++i) {
-    ((uint64_t *)frame)[i] = 0;
+  if (user_bind_current_process(pid) != XAIOS_OK) {
+    klog("user: task entry could not bind pid=%u\n", (unsigned)pid);
   }
-  frame->elr_el1 = entry;
-  frame->sp_el0 = stack;
-  frame->spsr_el1 = 0; /* EL0, interrupts enabled */
+  user_switch_address_space(pid);
+  klog("user: scheduled task entering EL0 pid=%u name=%s entry=0x%lx "
+       "stack=0x%lx\n",
+       (unsigned)pid, process->name != 0 ? process->name : "(none)",
+       (unsigned long)process->entry, (unsigned long)process->stack_top);
 
-  klog("scheduler: concurrent dispatch pid=%u parent=%u name=%s entry=0x%lx stack=0x%lx\n",
-       g_current_process->pid, g_current_process->parent_pid,
-       g_current_process->name != 0 ? g_current_process->name : "(none)",
-       entry, stack);
-
-  /* Enter user mode for initial execution */
-  user_switch_address_space(g_current_process->pid);
-  uint64_t encoded = xaios_enter_user(entry, stack, g_current_process->argc,
-                                        g_current_process->argv_user);
+  uint64_t encoded = xaios_enter_user(process->entry, process->stack_top,
+                                      process->argc, process->argv_user);
   kassert((encoded & XAIOS_USER_EXIT_RETURN_MASK) ==
           XAIOS_USER_EXIT_RETURN_MAGIC);
   int exit_code = (int)(uint32_t)encoded;
+  transition_process(process, XAIOS_USER_PROCESS_EXITED, exit_code);
+  klog("user: scheduled task exited pid=%u exit_code=%d\n", (unsigned)pid,
+       exit_code);
 
-  /* Unregister from scheduler */
-  scheduler_unregister(g_current_process->pid);
+  /* Hand the CPU back, in this order: the dispatcher has to be runnable before
+     this task stops being, or the tick that follows finds nothing to pick. */
+  (void)scheduler_set_runnable(runner_pid);
+  (void)scheduler_set_blocked(pid);
+  klog("user: scheduled task handed the CPU back pid=%u runner=%u\n",
+       (unsigned)pid, (unsigned)runner_pid);
+  for (;;) xaios_cpu_relax();
+}
 
-  klog("user: concurrent exited pid=%u exit_code=%u\n",
-       g_current_process->pid, (unsigned)exit_code);
+int user_process_run_scheduled(const xaios_user_process_t *process) {
+  kassert(process != 0);
+  kassert(process->pid != 0 && process->pid <= XAIOS_MAX_USER_PROCESSES);
+  uint32_t cpu = smp_cpu_id();
+  uint32_t pid = process->pid;
+  uint32_t runner_pid = USER_TASK_RUNNER_PID_BASE + pid;
+
+  g_current_process = &g_process_table[pid - 1U];
+  if (g_current_process->pid != pid ||
+      g_current_process->state == XAIOS_USER_PROCESS_EMPTY) {
+    copy_process(g_current_process, process);
+  }
+  transition_process(g_current_process, XAIOS_USER_PROCESS_RUNNING, 0);
+  __sync_fetch_and_add(&g_process_scheduled_count, 1U);
+  user_process_runtime_start(pid, cpu, timer_now_ns());
+
+  void *stack = kheap_alloc(USER_TASK_STACK_BYTES, 16U);
+  if (stack == 0) {
+    klog("user: no kernel stack for scheduled pid=%u; running it on the "
+         "caller's stack\n",
+         (unsigned)pid);
+    return user_process_run(process);
+  }
+  uint64_t stack_top =
+      ((uint64_t)(uintptr_t)stack + USER_TASK_STACK_BYTES) & ~UINT64_C(0xf);
+
+  if (scheduler_register_kernel_task(pid, user_task_kernel_entry, stack_top,
+                                     XAIOS_PRIORITY_HIGH) != XAIOS_OK) {
+    kheap_free(stack);
+    klog("user: scheduled dispatch unavailable for pid=%u; running it on the "
+         "caller's stack\n",
+         (unsigned)pid);
+    return user_process_run(process);
+  }
+  if (scheduler_adopt_this_context(runner_pid, XAIOS_PRIORITY_NORMAL) !=
+          XAIOS_OK ||
+      scheduler_set_runnable(pid) != XAIOS_OK) {
+    scheduler_unregister(pid);
+    kheap_free(stack);
+    klog("user: could not adopt a dispatcher for pid=%u; running it on the "
+         "caller's stack\n",
+         (unsigned)pid);
+    return user_process_run(process);
+  }
+
+  user_clear_current_process();
+  uint64_t switches_before = scheduler_context_switch_count();
+  uint64_t wait_start = timer_now_ns();
+  klog("user: dispatcher waiting pid=%u runner=%u cpu=%u\n", (unsigned)pid,
+       (unsigned)runner_pid, (unsigned)cpu);
+  (void)scheduler_set_blocked(runner_pid);
+
+  int exit_code = 0;
+  uint64_t deadline = wait_start + USER_TASK_WAIT_NS;
+  for (;;) {
+    xaios_user_process_t snapshot;
+    if (user_process_snapshot(pid, &snapshot) != XAIOS_OK) break;
+    if (snapshot.state == XAIOS_USER_PROCESS_EXITED ||
+        snapshot.state == XAIOS_USER_PROCESS_FAILED) {
+      exit_code = snapshot.exit_code;
+      break;
+    }
+    if (timer_now_ns() >= deadline) {
+      klog("user: scheduled pid=%u did not finish within %lu ns\n",
+           (unsigned)pid, (unsigned long)USER_TASK_WAIT_NS);
+      exit_code = -1;
+      break;
+    }
+    /* This context is not runnable, so it is the timer that brings it back
+       after the task has had its turn. */
+    xaios_cpu_relax();
+  }
+
+  uint64_t switches = scheduler_context_switch_count() - switches_before;
+  scheduler_unregister(pid);
+  scheduler_unregister(runner_pid);
+  kheap_free(stack);
+  user_clear_current_process();
+  user_process_runtime_stop(pid, cpu, timer_now_ns());
+  klog("user: scheduled dispatch pid=%u switches=%lu exit_code=%d "
+       "waited_ns=%lu\n",
+       (unsigned)pid, (unsigned long)switches, exit_code,
+       (unsigned long)(timer_now_ns() - wait_start));
   return exit_code;
 }
 

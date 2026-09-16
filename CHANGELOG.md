@@ -23,6 +23,20 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **A user process can now be a scheduled task rather than a call that
+  returns on the caller's stack, and on RISC-V it is.** The process gets a
+  kernel stack of its own and is entered from a task entry that runs on it;
+  when it exits, the task hands the CPU back through the scheduler to the
+  context that dispatched it instead of unwinding into it. A boot records the
+  whole round trip -- dispatcher waiting, the switch into the task, `/bin/hello`
+  running in EL0, its exit, the hand-back, the switch back and
+  `scheduled dispatch pid=6 switches=2 exit_code=0` -- and the riscv64 smoke
+  requires it. The scheduler also re-establishes the per-CPU process binding
+  on every switch, without which a preempted process would resume with the
+  binding of whatever task displaced it and have its syscalls checked against
+  another process's capabilities. A port that cannot start a task in kernel
+  mode falls back to the old path and says so (B-132).
+
 - **A user process that exits no longer leaves the kernel with interrupts
   off on RISC-V.** The exit return path leaves through `ret` rather than
   `sret`, so it never restored the interrupt enable that a trap from user mode

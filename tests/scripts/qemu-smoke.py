@@ -115,6 +115,10 @@ ARCH_TARGETS = {
         # preempted user process needs and the only place it is exercised on
         # this port today (B-132).
         "sched-preempt: riscv64 kernel-context preemption self-test passed",
+        # A user process dispatched as a *task*: it ran on a kernel stack of
+        # its own and the timer took the CPU away from it and gave it back
+        # (B-132).
+        "kernel: /bin/hello scheduled dispatch pid=6 switches=",
         # See the AArch64 list: this check is x86-64's, and that it does not
         # apply here is asserted rather than left unsaid (B-123).
         "smp: shootdown acknowledgement self-test not applicable on riscv64 ",

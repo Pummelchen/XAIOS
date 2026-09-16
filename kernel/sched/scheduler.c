@@ -794,6 +794,12 @@ void scheduler_tick(xaios_context_frame_t *irq_frame, void *architecture_state) 
        cpu, old_pid, next_pid, g_tick_count, g_context_switch_count);
 
   user_switch_address_space(next_pid);
+  /* The per-CPU process binding follows the address space. A task that is
+     not a user process fails this and is left alone, which is why the
+     answer is ignored rather than asserted: without it a preempted process
+     would resume with the *other* task's binding, and its next syscall
+     would be checked against another process's capabilities. */
+  (void)user_bind_current_process(next_pid);
   *irq_frame = next_task->frame;
   if (architecture_state != 0 && next_task->architecture_state != 0) {
     bytes_copy(architecture_state, next_task->architecture_state,
