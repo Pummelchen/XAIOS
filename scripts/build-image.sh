@@ -769,6 +769,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/security.o
   $KERNEL_BUILD_DIR/child_channel.o
   $KERNEL_BUILD_DIR/remote_login.o
+  $KERNEL_BUILD_DIR/remote_login_archive.o
   $KERNEL_BUILD_DIR/operations.o
   $KERNEL_BUILD_DIR/admin_control.o
   $KERNEL_BUILD_DIR/control_protocol.o
@@ -937,6 +938,7 @@ compile_kernel "$ROOT_DIR/kernel/runtime/core_lease.c" "$KERNEL_BUILD_DIR/core_l
 compile_kernel "$ROOT_DIR/kernel/runtime/security.c" "$KERNEL_BUILD_DIR/security.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/child_channel.c" "$KERNEL_BUILD_DIR/child_channel.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login.c" "$KERNEL_BUILD_DIR/remote_login.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_archive.c" "$KERNEL_BUILD_DIR/remote_login_archive.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/operations.c" "$KERNEL_BUILD_DIR/operations.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/admin_control.c" "$KERNEL_BUILD_DIR/admin_control.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/control_protocol.c" "$KERNEL_BUILD_DIR/control_protocol.o"
