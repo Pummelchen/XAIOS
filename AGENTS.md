@@ -113,6 +113,14 @@ Do not introduce a semantic version.
   (`@@…@@`) unsubstituted produces a VM Fusion that silently refuses to power on;
   the builder now fails on any leftover `@@`. A checksum fallback attached to a
   pipeline (`shasum | cut || sha256sum`) never fires and ships blank checksums.
+- **The initial filesystem's directory is finite.** `scripts/create-initfs.py` and
+  `kernel/fs/initramfs.c` each carry the entry ceiling (`MAX_FILES` and
+  `INITFS_MAX_FILES`), and the builder prints how full the image is --
+  `initfs: 65 of 80 entries used`. The RISC-V image reached 64 of 64, so the next
+  file -- the SSH authorized-keys file, which is what turns a machine serving SSH
+  into one an operator can administer -- failed the build with `too many initfs
+  files`. Raise both numbers together, never one: `qemu-abi-contract` compares
+  them and fails when they disagree.
 - **The architecture is not asserted as a hard failure.** `make bootstrap` checks a
   macOS host, but `scripts/macos-bootstrap.sh` only *warns* (`host architecture is
   $HOST_ARCH; Apple Silicon arm64 is the primary macOS target`) when the host is not
