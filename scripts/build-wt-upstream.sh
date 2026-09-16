@@ -121,20 +121,22 @@ compile_one "$VENDOR_WARN $SEAM_FLAGS" "$VENDOR/src/runtime/udp.c" "udp"
 for source in "$SEAM"/wt_xaios_platform.c "$SEAM"/wt_xaios_clock.c \
               "$SEAM"/wt_crypto_bearssl_upstream.c \
               "$SEAM"/wt_keyshare_xaios.c \
+              "$SEAM"/wt_trust_xaios.c \
+              "$SEAM"/wt_xaios_x509.c \
               "$ROOT"/userspace/wt/src/wt_x25519.c \
+              "$ROOT"/userspace/wt/src/wt_x509_spki.c \
+              "$ROOT"/userspace/wt/src/wt_sigverify.c \
               "$ROOT"/userspace/wt/src/wt_aes128.c; do
   compile_one "$SEAM_WARN" "$source" "$(basename "$source" .c)"
 done
 
 # Said rather than left as a link error two steps later.
-# Three of the four upstream OpenSSL files are now replaced rather than
-# missing: `src/crypto/crypto_openssl.c` by the BearSSL backend,
-# `src/tls/keyshare.c` by the XAIOS X25519 binding, and
-# `src/tls/self_signed.c` by not being needed -- it is a server and test
-# helper no compiled translation unit references.
+# All four upstream OpenSSL files are accounted for: crypto_openssl.c and
+# tls/keyshare.c and tls/trust.c are replaced from `$SEAM`, and
+# tls/self_signed.c is a server and test helper no compiled translation unit
+# references.
 printf '%s\n' \
   "wt-upstream: $built sources compiled for $ARCH into ${OUT#"$ROOT"/}"
 printf '%s\n' \
-  "wt-upstream: 1 upstream source still calls OpenSSL and is not built:" \
-  "  src/tls/trust.c (pin-only verify); crypto_openssl.c, tls/keyshare.c and" \
-  "  tls/self_signed.c are replaced or unneeded"
+  "wt-upstream: every upstream source in the handshake set is built or" \
+  "  replaced; no OpenSSL file remains"

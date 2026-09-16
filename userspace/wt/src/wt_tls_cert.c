@@ -42,8 +42,8 @@ const char wt_tls_server_certificate_verify_context[] =
  * of defect as the Retry integrity tag's unbounded copy earlier in this port,
  * and it was found the same way -- by asking what the length actually is rather
  * than what it is called. The tests now drive both longer schemes under
- * AddressSanitizer, which is what would have caught it. */
-#define WT_TLS_MAX_HASH_LEN 64U
+ * AddressSanitizer, which is what would have caught it. The bound itself
+ * lives in the header, because the shared scheme dispatch uses it too. */
 
 /* A build-time bound, so a future scheme whose hash does not fit fails to
  * compile rather than at the first packet from a hostile peer. */
@@ -415,142 +415,6 @@ int wt_tls_ec_public_key_equal(const br_ec_public_key *a,
   return wt_ct_equal(a->q, b->q, a->qlen);
 }
 
-/* Reduce a big-endian integer by stripping leading zeros, which is the form
- * BearSSL's verifiers expect for a signature and for a key component. */
-static void strip_leading_zeros(const uint8_t **p, size_t *len) {
-  while (*len > 0U && **p == 0U) {
-    (*p)++;
-    (*len)--;
-  }
-}
-
-/* The check itself, over key components rather than over a certificate.
- *
- * Split out because the two callers arrive holding the key differently. One
- * has a certificate to decode and nothing that outlives the call; the other has
- * a key it owns, because the certificate it came from is gone by the time the
- * signature is checked. Doing the decoding inside this function would force the
- * second caller to keep the whole certificate, which is the thing B-92 is
- * about: the key is bounded and the certificate is not. */
-static int verify_with_components(
-    int key_type, const br_rsa_public_key *key_rsa,
-    const br_ec_public_key *key_ec,
-    const wt_tls_certificate_verify_t *verify, const uint8_t *content,
-    size_t content_len) {
-  uint8_t digest[WT_TLS_MAX_HASH_LEN];
-  const uint8_t *sig;
-  size_t sig_len;
-  uint32_t ok = 0U;
-
-  if (verify == NULL || content == NULL) return -1;
-  if (verify->signature == NULL || verify->signature_len == 0U) return -1;
-  if (verify->signature_len > 0xFFFFU) return -1;
-
-  /* The signature and the key components are unsigned big-endian integers and
-     may carry leading zero bytes; the verifiers expect them stripped. The
-     signature is a view into the peer's message, so the stripped pointer is a
-     local rather than a modification of that buffer. */
-  sig = verify->signature;
-  sig_len = verify->signature_len;
-  strip_leading_zeros(&sig, &sig_len);
-  if (sig_len == 0U) return -1;
-
-  switch (verify->scheme) {
-    case WT_TLS_SIG_RSA_PSS_RSAE_SHA256:
-    case WT_TLS_SIG_RSA_PSS_RSAE_SHA384:
-    case WT_TLS_SIG_RSA_PSS_RSAE_SHA512: {
-      const br_hash_class *hf = (verify->scheme == WT_TLS_SIG_RSA_PSS_RSAE_SHA256)
-                                    ? &br_sha256_vtable
-                                : (verify->scheme == WT_TLS_SIG_RSA_PSS_RSAE_SHA384)
-                                    ? &br_sha384_vtable
-                                    : &br_sha512_vtable;
-      size_t hash_len = (verify->scheme == WT_TLS_SIG_RSA_PSS_RSAE_SHA256) ? 32U
-                       : (verify->scheme == WT_TLS_SIG_RSA_PSS_RSAE_SHA384) ? 48U
-                                                                            : 64U;
-      const uint8_t *n;
-      size_t nlen;
-      br_rsa_public_key rsa_key;
-
-      if (key_type != BR_KEYTYPE_RSA) return -1;
-      if (content_len == 0U) return -1;
-      /* Belt as well as braces: the buffer above is the bound, and this makes
-         a scheme added later fail loudly rather than write past it. */
-      if (hash_len == 0U || hash_len > sizeof(digest)) return -1;
-      /* TLS 1.3 uses RSA-PSS with a salt as long as the hash, which is what
-         RFC 8446 section 4.2.3 says and what makes this different from a
-         PKCS#1 v1.5 check. */
-      {
-        br_hash_compat_context hc;
-        hf->init(&hc.vtable);
-        hf->update(&hc.vtable, content, content_len);
-        hf->out(&hc.vtable, digest);
-      }
-      /* The modulus must be long enough for the hash plus the PSS overhead;
-         the verifier checks the rest. */
-      n = key_rsa->n;
-      nlen = key_rsa->nlen;
-      strip_leading_zeros(&n, &nlen);
-      if (nlen == 0U) return -1;
-      /* BearSSL's `br_rsa_public_key` takes non-const pointers although the
-         verifier only reads them. The key is a view into the peer's
-         certificate, which this function does not modify; the cast is the
-         interface's shape and not a permission to write. */
-      rsa_key.n = (unsigned char *)(uintptr_t)n;
-      rsa_key.nlen = nlen;
-      rsa_key.e = key_rsa->e;
-      rsa_key.elen = key_rsa->elen;
-      ok = br_rsa_i31_pss_vrfy(sig, sig_len, hf, hf, digest, hash_len,
-                               &rsa_key);
-      break;
-    }
-    case WT_TLS_SIG_ECDSA_SECP256R1_SHA256:
-    case WT_TLS_SIG_ECDSA_SECP384R1_SHA384:
-    case WT_TLS_SIG_ECDSA_SECP521R1_SHA512: {
-      const br_hash_class *hf = (verify->scheme == WT_TLS_SIG_ECDSA_SECP256R1_SHA256)
-                                    ? &br_sha256_vtable
-                                : (verify->scheme == WT_TLS_SIG_ECDSA_SECP384R1_SHA384)
-                                    ? &br_sha384_vtable
-                                    : &br_sha512_vtable;
-      int expected_curve =
-          (verify->scheme == WT_TLS_SIG_ECDSA_SECP256R1_SHA256) ? BR_EC_secp256r1
-          : (verify->scheme == WT_TLS_SIG_ECDSA_SECP384R1_SHA384)
-              ? BR_EC_secp384r1
-              : BR_EC_secp521r1;
-      if (key_type != BR_KEYTYPE_EC) return -1;
-      if (content_len == 0U) return -1;
-      /* RFC 8446 section 4.4.3: the scheme must be consistent with the key in
-         the certificate. A P-384 scheme answered by a P-256 key is not a
-         signature that failed to verify; it is a message that does not make
-         sense, and saying so is the difference between "the peer made a
-         mistake" and "the peer forged something". Without this check the
-         verifier runs a P-256 multiplication with a 48-byte digest and returns
-         0 -- the right answer by accident, and a -1 that an audit can point at
-         is better than an accident. */
-      if (key_ec->curve != expected_curve) return -1;
-      {
-        br_hash_compat_context hc;
-        size_t hash_len = hf->desc >> BR_HASHDESC_OUT_OFF & BR_HASHDESC_OUT_MASK;
-        if (hash_len == 0U || hash_len > sizeof(digest)) return -1;
-        hf->init(&hc.vtable);
-        hf->update(&hc.vtable, content, content_len);
-        hf->out(&hc.vtable, digest);
-        /* The implementation is the constant-time prime-field one, and the key
-           it is given is the one the certificate carried. */
-        ok = br_ecdsa_i31_vrfy_asn1(&br_ec_prime_i31, digest, hash_len,
-                                    key_ec, sig, sig_len);
-      }
-      break;
-    }
-    default:
-      /* An unsupported scheme is a refusal. Falling through to "0" would say
-         the signature was checked and failed, which is a different and more
-         misleading answer than "this cannot be checked". */
-      return -1;
-  }
-
-  wt_secure_zero(digest, sizeof(digest));
-  return ok == 1U ? 1 : 0;
-}
 
 int wt_tls_certificate_verify_signature(
     const uint8_t *certificate_der, size_t certificate_len,
@@ -568,8 +432,9 @@ int wt_tls_certificate_verify_signature(
   pk = br_x509_decoder_get_pkey(&decoder);
   if (pk == NULL) return -1;
 
-  return verify_with_components(
-      pk->key_type, &pk->key.rsa, &pk->key.ec, verify, content, content_len);
+  return wt_tls_verify_signature_components(
+      pk->key_type, &pk->key.rsa, &pk->key.ec, verify->scheme,
+      verify->signature, verify->signature_len, content, content_len);
 }
 
 int wt_tls_certificate_verify_signature_with_key(
@@ -579,7 +444,8 @@ int wt_tls_certificate_verify_signature_with_key(
   if (key == NULL) return -1;
   /* The key's own views point into its own storage, so passing them on is a
      borrow of this structure and not of whatever the key was read from. */
-  return verify_with_components(
+  return wt_tls_verify_signature_components(
       key->is_rsa ? BR_KEYTYPE_RSA : BR_KEYTYPE_EC, &key->rsa, &key->ec,
-      verify, content, content_len);
+      verify->scheme, verify->signature, verify->signature_len, content,
+      content_len);
 }

@@ -21,6 +21,11 @@
 
 #include "webtransport/crypto/crypto.h"
 
+#include "webtransport/tls/extension.h"
+#include "webtransport/tls/trust.h"
+
+#include "wt_ecdsa_vectors.h"
+
 static int g_checks = 0;
 static int g_failures = 0;
 
@@ -287,6 +292,109 @@ static void test_helpers(void) {
   expect_status("crypto init", wt_crypto_init(), WT_OK);
 }
 
+/* The trust policy and the CertificateVerify check, over the repository's
+ * ECDSA fixture: a real certificate, a real signature over real content, and
+ * a fingerprint that is the SHA-256 of the leaf. This is the path the
+ * handshake gate depends on, so it is checked where a failure can name
+ * itself. */
+static void test_trust_and_signature(void) {
+  wt_tls_certificate_t certificate;
+  wt_tls_trust_policy_t policy;
+  uint8_t spki[WT_TLS_SPKI_MAX];
+  size_t spki_len = 0U;
+  uint8_t fingerprint[WT_SHA256_LEN];
+
+  memset(&certificate, 0, sizeof(certificate));
+  certificate.count = 1U;
+  certificate.entries[0].der = WT_ECDSA_CERT;
+  certificate.entries[0].der_len = WT_ECDSA_CERT_LEN;
+
+  /* The development bypass accepts a loopback name and refuses anything
+     else, which is the restriction the policy carries with it. */
+  memset(&policy, 0, sizeof(policy));
+  policy.mode = WT_TLS_TRUST_LOCAL_DEVELOPMENT;
+  policy.host_name = "localhost";
+  expect_status("development bypass on loopback",
+                wt_tls_trust_verify(&policy, &certificate, spki, &spki_len),
+                WT_OK);
+  policy.host_name = "example.com";
+  expect_status("development bypass off loopback refused",
+                wt_tls_trust_verify(&policy, &certificate, spki, &spki_len),
+                WT_ERR_TRUST);
+
+  /* Pinned: the leaf's own fingerprint passes and a changed one does not. */
+  memset(&policy, 0, sizeof(policy));
+  policy.mode = WT_TLS_TRUST_PINNED_CERTIFICATE;
+  policy.fingerprint_count = 1U;
+  expect_status("fingerprint", wt_sha256(WT_ECDSA_CERT, WT_ECDSA_CERT_LEN,
+                                         fingerprint),
+                WT_OK);
+  memcpy(policy.fingerprints[0], fingerprint, WT_SHA256_LEN);
+  expect_status("pinned leaf accepted",
+                wt_tls_trust_verify(&policy, &certificate, spki, &spki_len),
+                WT_OK);
+  ++g_checks;
+  if (spki_len != 91U) fail("the pinned path returned a 91-byte SPKI");
+  policy.fingerprints[0][0] ^= 0x01U;
+  expect_status("wrong pin refused",
+                wt_tls_trust_verify(&policy, &certificate, spki, &spki_len),
+                WT_ERR_TRUST);
+  policy.fingerprints[0][0] ^= 0x01U;
+  (void)wt_tls_trust_verify(&policy, &certificate, spki, &spki_len);
+
+  /* The signature the fixture carries verifies against the key the policy
+     released, and a mangled one does not. */
+  expect_status("the fixture's ECDSA signature verifies",
+                wt_tls_signature_verify(spki, spki_len,
+                                        WT_TLS_SIGNATURE_ECDSA_SECP256R1_SHA256,
+                                        WT_ECDSA_CONTENT, WT_ECDSA_CONTENT_LEN,
+                                        WT_ECDSA_SIGNATURE,
+                                        WT_ECDSA_SIGNATURE_LEN),
+                WT_OK);
+  {
+    uint8_t mangled[WT_ECDSA_SIGNATURE_LEN];
+    memcpy(mangled, WT_ECDSA_SIGNATURE, sizeof(mangled));
+    mangled[8] ^= 0x01U;
+    expect_status("a mangled signature is refused",
+                  wt_tls_signature_verify(
+                      spki, spki_len,
+                      WT_TLS_SIGNATURE_ECDSA_SECP256R1_SHA256, WT_ECDSA_CONTENT,
+                      WT_ECDSA_CONTENT_LEN, mangled, sizeof(mangled)),
+                  WT_ERR_AUTHENTICATION);
+  }
+
+  /* A mode this machine cannot serve is a named refusal. */
+  policy.mode = WT_TLS_TRUST_SYSTEM;
+  expect_status("system trust store refused",
+                wt_tls_trust_verify(&policy, &certificate, spki, &spki_len),
+                WT_ERR_UNSUPPORTED);
+  policy.mode = WT_TLS_TRUST_STORE;
+  expect_status("certificate store refused",
+                wt_tls_trust_verify(&policy, &certificate, spki, &spki_len),
+                WT_ERR_UNSUPPORTED);
+
+  /* The signed content is 64 spaces, the context, a zero and the hash. */
+  {
+    uint8_t content[WT_TLS_CERTIFICATE_VERIFY_CONTENT_LEN];
+    uint8_t hash[32];
+    if (wt_sha256("transcript", 10U, hash) != WT_OK) {
+      fail("transcript hash");
+    } else {
+      expect_status("certificate verify content",
+                    wt_tls_certificate_verify_content(1, hash, content), WT_OK);
+      ++g_checks;
+      if (memcmp(content, "TLS 1.3, server CertificateVerify", 33U) != 0 ||
+          content[32] == ' ') {
+        /* The spaces are the first 64 bytes, so the context starts at 64. */
+      }
+      if (content[64] != 'T' || content[64 + 32] != 'y' ||
+          content[64 + 33] != 0U || memcmp(content + 64 + 34U, hash, 32U) != 0) {
+        fail("the signed content is not 64 spaces + context + 0 + hash");
+      }
+    }
+  }
+}
+
 int main(void) {
   test_sha256();
   test_hmac();
@@ -295,6 +403,7 @@ int main(void) {
   test_aead();
   test_chacha20();
   test_helpers();
+  test_trust_and_signature();
   if (g_failures != 0) {
     printf("wt_upstream_crypto: %d of %d checks failed\n", g_failures, g_checks);
     return 1;

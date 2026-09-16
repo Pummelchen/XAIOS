@@ -178,6 +178,8 @@ build_module() {
 
 MODULE_OBJECTS=""
 for source in userspace/wt/src/wt_crypto_bearssl.c userspace/wt/src/wt_x25519.c \
+              userspace/wt/src/wt_sigverify.c \
+              userspace/wt/src/wt_x509_spki.c \
               userspace/wt/src/wt_aes128.c \
               userspace/wt/src/wt_tls.c \
               userspace/wt/src/wt_quic_pkt.c \
@@ -220,19 +222,33 @@ done
 # separate binary from the in-tree module's tests because the two implement the
 # same function names for two different headers, and one link cannot hold both.
 upstream_binary="$BUILD/test_wt_upstream_crypto"
-upstream_object="$BUILD/objects/wt_crypto_bearssl_upstream.o"
-upstream_source="$ROOT/userspace/wt/xaios/wt_crypto_bearssl_upstream.c"
 upstream_test="$ROOT/tests/security/test_wt_upstream_crypto.c"
-if [ ! -f "$upstream_binary" ] || [ "$upstream_source" -nt "$upstream_binary" ] ||
-   [ "$upstream_test" -nt "$upstream_binary" ]; then
+upstream_objects=""
+upstream_headers=""
+for source in "$ROOT/userspace/wt/xaios/wt_crypto_bearssl_upstream.c" \
+              "$ROOT/userspace/wt/xaios/wt_trust_xaios.c" \
+              "$ROOT/userspace/wt/xaios/wt_xaios_x509.c" \
+              "$ROOT/userspace/wt/src/wt_x509_spki.c" \
+              "$ROOT/userspace/wt/src/wt_sigverify.c"; do
+  object="$BUILD/objects/upstream-$(basename "$source" .c).o"
+  if [ ! -f "$object" ] || [ "$source" -nt "$object" ]; then
+    "$CC" -std=c99 -O1 -g -Wall -Wextra -Werror $SAN_FLAGS \
+      -I"$BEARSSL/inc" -I"$BEARSSL/src" \
+      -I"$ROOT/third_party/webtransport-c99/include" \
+      -I"$ROOT/userspace/wt/include" -I"$ROOT/userspace/wt/xaios" \
+      -I"$ROOT/userspace/include" -c "$source" -o "$object"
+  fi
+  upstream_objects="$upstream_objects $object"
+  upstream_headers="$upstream_headers $source"
+done
+if [ ! -f "$upstream_binary" ] || [ "$upstream_test" -nt "$upstream_binary" ]; then
+  # shellcheck disable=SC2086
   "$CC" -std=c99 -O1 -g -Wall -Wextra -Werror $SAN_FLAGS \
     -I"$BEARSSL/inc" -I"$BEARSSL/src" \
-    -I"$ROOT/third_party/webtransport-c99/include" -I"$ROOT/userspace/include" \
-    -c "$upstream_source" -o "$upstream_object"
-  "$CC" -std=c99 -O1 -g -Wall -Wextra -Werror $SAN_FLAGS \
-    -I"$BEARSSL/inc" -I"$BEARSSL/src" \
-    -I"$ROOT/third_party/webtransport-c99/include" -I"$ROOT/userspace/include" \
-    "$upstream_test" "$upstream_object" "$BUILD"/bearssl/*.o -o "$upstream_binary"
+    -I"$ROOT/third_party/webtransport-c99/include" \
+    -I"$ROOT/userspace/wt/include" -I"$ROOT/userspace/wt/xaios" \
+    -I"$ROOT/userspace/include" \
+    "$upstream_test" $upstream_objects "$BUILD"/bearssl/*.o -o "$upstream_binary"
 fi
 if ! "$upstream_binary"; then
   failed=$((failed + 1))

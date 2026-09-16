@@ -248,11 +248,23 @@ for aarch64, x86_64 and riscv64 with no errors, and
 `tests/security/test_wt_upstream_crypto.c` checks the crypto against published
 vectors in `make wt-host-test`.
 
-Of the ten source directories, one file fails, and it is the one this document
-predicted: `src/tls/trust.c`, A7. `src/crypto/crypto_openssl.c` and
-`src/tls/keyshare.c` are replaced, and `src/tls/self_signed.c` is a server and
-test helper that no compiled translation unit references. The whole of `core/`,
-`quic/`, `runtime/` and the remaining `tls/` files compile untouched.
+A7 is written too: `userspace/wt/xaios/wt_trust_xaios.c` carries the trust
+policy, and the leaf's SubjectPublicKeyInfo is read by a definite-length DER
+reader in `userspace/wt/src/wt_x509_spki.c` rather than by OpenSSL. The scheme
+dispatch moved out of `wt_tls_cert.c` into `userspace/wt/src/wt_sigverify.c` so
+the in-tree module and the port share one implementation, and the port reaches
+it through `wt_xaios_x509.c` -- a bridge with an opaque key buffer, because the
+port's `webtransport/crypto/crypto.h` and this repository's `wt_crypto.h`
+declare the same identifiers for different types and one translation unit
+cannot hold both. Signing is refused by name: upstream signs only in its server
+half and this port is a client.
+
+So every upstream file in the handshake set is now built or replaced:
+`src/crypto/crypto_openssl.c`, `src/tls/keyshare.c` and `src/tls/trust.c` are
+replaced, and `src/tls/self_signed.c` is a server and test helper that no
+compiled translation unit references. The whole of `core/`, `quic/`,
+`runtime/` and the remaining `tls/` files compile untouched -- 45 sources per
+architecture.
 
 The vector test is not ceremony: its first run found that a zero-length AEAD
 message was refused for want of an output buffer, and that a second `final` on

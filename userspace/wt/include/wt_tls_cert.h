@@ -51,6 +51,11 @@ extern "C" {
 #define WT_TLS_SIG_ECDSA_SECP384R1_SHA384 0x0503U
 #define WT_TLS_SIG_ECDSA_SECP521R1_SHA512 0x0603U
 
+/* The largest digest any scheme this module checks uses, which is SHA-512's.
+ * The dispatch buffers in the verifier are sized by it, and a scheme whose
+ * hash does not fit is a build failure rather than a run-time overflow. */
+#define WT_TLS_MAX_HASH_LEN 64U
+
 /* The context string for a server CertificateVerify, verbatim per RFC 8446
  * section 4.4.3. The client's is "TLS 1.3, client CertificateVerify"; getting
  * one byte wrong produces a signature that never verifies and no hint why. */
@@ -161,6 +166,18 @@ int wt_tls_certificate_verify_signature_with_key(
     const wt_tls_certificate_verify_t *verify, const uint8_t *content,
     size_t content_len);
 
+/* The scheme dispatch both verifiers use, over key components rather than over
+ * a certificate or a key structure.
+ *
+ * Returns 1 when the signature verifies, 0 when it does not, and -1 on a bad
+ * argument, an unsupported scheme, or a key that does not match the scheme. A
+ * -1 is a refusal, never a pass. */
+int wt_tls_verify_signature_components(
+    int key_type, const br_rsa_public_key *key_rsa,
+    const br_ec_public_key *key_ec, uint16_t scheme,
+    const uint8_t *signature, size_t signature_len, const uint8_t *content,
+    size_t content_len);
+
 /* Read the public key out of a DER certificate into caller-owned storage.
  *
  * Returns 0 on success and -1 when the certificate cannot be parsed, carries a
@@ -169,6 +186,21 @@ int wt_tls_certificate_verify_signature_with_key(
 int wt_tls_certificate_public_key(const uint8_t *certificate_der,
                                   size_t certificate_len,
                                   wt_tls_public_key_t *out);
+
+/* The same two halves, split so a caller that receives the SubjectPublicKeyInfo
+ * as DER -- which is what RFC 8446's CertificateVerify is checked against, and
+ * what the vendored WebTransport port's trust interface hands forward -- can
+ * still reach the key.
+ *
+ * `wt_tls_certificate_spki` locates the SPKI inside a certificate and returns
+ * it as a view into that buffer; nothing is decoded and nothing is copied.
+ * `wt_tls_public_key_from_spki` parses that DER into caller-owned storage.
+ * Both return 0 on success and -1 on anything they do not carry. */
+int wt_tls_certificate_spki(const uint8_t *certificate_der,
+                            size_t certificate_len, const uint8_t **spki,
+                            size_t *spki_len);
+int wt_tls_public_key_from_spki(const uint8_t *spki, size_t spki_len,
+                                wt_tls_public_key_t *out);
 
 /* Build a public key from the components an operator has, rather than from a
  * certificate. `modulus` and `exponent` are big-endian integers with no leading

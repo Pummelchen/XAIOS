@@ -887,6 +887,77 @@ static void test_empty_certificate_list(void) {
   }
 }
 
+/* The SubjectPublicKeyInfo parser is a second implementation of an encoding
+ * BearSSL already decodes -- it exists because the vendored WebTransport port
+ * receives the SPKI as DER and has no certificate to hand a decoder. A second
+ * implementation of a delicate encoding is only defensible if it is checked
+ * against the first, so every certificate fixture is parsed both ways and the
+ * keys are compared. */
+static void compare_spki(const char *what, const uint8_t *cert,
+                         size_t cert_len) {
+  wt_tls_public_key_t decoded;
+  wt_tls_public_key_t parsed;
+  const uint8_t *spki = NULL;
+  size_t spki_len = 0U;
+  char label[128];
+
+  snprintf(label, sizeof(label), "%s: BearSSL decodes the key", what);
+  if (wt_tls_certificate_public_key(cert, cert_len, &decoded) != 0) {
+    expect_int(label, 0, -1);
+    return;
+  }
+  expect_int(label, 0, 0);
+
+  snprintf(label, sizeof(label), "%s: the SPKI is located", what);
+  if (wt_tls_certificate_spki(cert, cert_len, &spki, &spki_len) != 0) {
+    expect_int(label, 0, -1);
+    return;
+  }
+  expect_int(label, 0, 0);
+  snprintf(label, sizeof(label), "%s: the SPKI is non-empty", what);
+  expect_int(label, 1, spki_len != 0U ? 1 : 0);
+
+  snprintf(label, sizeof(label), "%s: the SPKI parses", what);
+  if (wt_tls_public_key_from_spki(spki, spki_len, &parsed) != 0) {
+    expect_int(label, 0, -1);
+    return;
+  }
+  expect_int(label, 0, 0);
+
+  snprintf(label, sizeof(label), "%s: same key type", what);
+  expect_int(label, decoded.is_rsa, parsed.is_rsa);
+  if (decoded.is_rsa) {
+    snprintf(label, sizeof(label), "%s: same modulus length", what);
+    expect_int(label, (long)decoded.rsa.nlen, (long)parsed.rsa.nlen);
+    snprintf(label, sizeof(label), "%s: same modulus", what);
+    expect_bytes(label, decoded.rsa.n, parsed.rsa.n, decoded.rsa.nlen);
+    snprintf(label, sizeof(label), "%s: same exponent length", what);
+    expect_int(label, (long)decoded.rsa.elen, (long)parsed.rsa.elen);
+    snprintf(label, sizeof(label), "%s: same exponent", what);
+    expect_bytes(label, decoded.rsa.e, parsed.rsa.e, decoded.rsa.elen);
+  } else {
+    snprintf(label, sizeof(label), "%s: same curve", what);
+    expect_int(label, decoded.ec.curve, parsed.ec.curve);
+    snprintf(label, sizeof(label), "%s: same point length", what);
+    expect_int(label, (long)decoded.ec.qlen, (long)parsed.ec.qlen);
+    snprintf(label, sizeof(label), "%s: same point", what);
+    expect_bytes(label, decoded.ec.q, parsed.ec.q, decoded.ec.qlen);
+  }
+}
+
+static void test_spki_parser(void) {
+  wt_tls_certificate_chain_t chain;
+  compare_spki("p256", WT_ECDSA_CERT, WT_ECDSA_CERT_LEN);
+  compare_spki("p384", WT_ECDSA_P384_CERT, WT_ECDSA_P384_CERT_LEN);
+  compare_spki("p521", WT_ECDSA_P521_CERT, WT_ECDSA_P521_CERT_LEN);
+  /* The RFC 8448 fixture is a whole Certificate message rather than a
+     certificate, so its leaf is the view the module's own tests use. */
+  expect_int("the RFC 8448 Certificate message parses", 0,
+             wt_tls_parse_certificate(WT_RFC8448_CERTIFICATE,
+                                      sizeof(WT_RFC8448_CERTIFICATE), &chain));
+  compare_spki("rfc8448", chain.entries[0], chain.lengths[0]);
+}
+
 int main(void) {
   test_parse_certificate();
   test_empty_certificate_list();
@@ -896,6 +967,7 @@ int main(void) {
   test_long_hash_schemes();
   test_ecdsa();
   test_ecdsa_long_curves();
+  test_spki_parser();
 
   if (g_failures != 0) {
     printf("wt_tls_cert: %d of %d checks FAILED\n", g_failures, g_checks);

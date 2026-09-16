@@ -34,6 +34,17 @@ Landed since build 5 and not in any released image.
   refused for want of an output buffer, and a second `final` hashed a zeroed
   context instead of reporting `WT_ERR_STATE`. Only `src/tls/trust.c` still
   calls OpenSSL, and it is next (B-131).
+- **The WebTransport C99 port no longer has an OpenSSL file.** The trust
+  policy (pinned fingerprints, a loopback-only development bypass, named
+  refusals for platform store and PEM bundle), the SubjectPublicKeyInfo
+  reader, and the RSA-PSS and ECDSA scheme dispatch are now this
+  repository's code; the port reaches them through an opaque-key bridge
+  because its crypto header and this repository's declare the same names
+  for different types. 45 sources compile per architecture with nothing
+  missing, and the port's host binary checks the trust policy against a
+  real ECDSA certificate and signature. A differential test against
+  BearSSL's own X.509 decoder found a DER length bug in the new reader on
+  its first run (B-131).
 
 - **The WebTransport C99 port has its XAIOS platform seam, and the library's
   remaining surface is four files.** The vendored library keeps every
