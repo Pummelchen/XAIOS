@@ -61,12 +61,12 @@ kernel/sched/thread.c 824
 kernel/storage/gpt.c 625
 kernel/storage/storage_admin.c 1184
 kernel/user/service.c 1340
-kernel/user/syscall.c 2610
+kernel/user/syscall.c 2345
 kernel/user/user.c 1512
 platform/qemu/run-qemu-aarch64.sh 558
 platform/qemu/run-qemu-riscv64.sh 535
 scripts/build-boot-media.sh 544
-scripts/build-image.sh 1693
+scripts/build-image.sh 1695
 scripts/build-riscv64-image.sh 600
 scripts/build-vm-packages.sh 661
 scripts/xaios-ssh-bridge.py 1171

@@ -23,6 +23,8 @@
 #include <xaios/socket_buffer.h>
 #include <xaios/spinlock.h>
 #include <xaios/syscall.h>
+
+#include "syscall_internal.h"
 #include <xaios/timer.h>
 #include <xaios/thread.h>
 #include <xaios/user.h>
@@ -185,50 +187,6 @@ static uint32_t g_cpu_ai_app_bound;
    is not used -- such a link has to be emptied at the receive cadence. */
 #define XAIOS_WAIT_HOUSEKEEPING_NS UINT64_C(50000000)
 
-#define KERNEL_SOCK_LISTEN UINT32_C(1)
-#define KERNEL_SOCK_CONNECTED UINT32_C(2)
-#define KERNEL_SOCK_DATAGRAM UINT32_C(3)
-#define KERNEL_SOCK_MIN_CAPACITY UINT32_C(256)
-#define KERNEL_SOCKETS_PER_CPU UINT32_C(32)
-#define KERNEL_SOCK_MIN_PER_PORT UINT32_C(128)
-
-typedef struct kernel_socket {
-  uint32_t state;   /* 0=free, KERNEL_SOCK_LISTEN, KERNEL_SOCK_CONNECTED */
-  uint16_t port;
-  uint8_t  family;          /* 0=any, 4=IPv4, 6=IPv6 */
-  uint8_t  protocol;        /* 6=TCP, 17=UDP */
-  uint8_t  bind_addr[16];   /* bind address (16 bytes for IPv6) */
-  uint8_t  peer_addr[16];   /* peer address (connected sockets) */
-  uint16_t peer_port;
-  uint32_t owner_token;
-  uint64_t id;              /* unique socket ID from alloc */
-} kernel_socket_t;
-
-static kernel_socket_t *g_kernel_sockets;
-static uint32_t g_kernel_socket_capacity;
-static uint32_t g_kernel_socket_per_port_limit;
-static uint64_t g_socket_next_id = 1;
-static uint16_t g_next_ephemeral_port = UINT16_C(49152);
-static uint32_t g_total_connections = 0;
-static xaios_spinlock_t g_kernel_socket_lock = XAIOS_SPINLOCK_INIT;
-
-static void kernel_socket_table_init(void) {
-  uint64_t capacity = (uint64_t)smp_online_count() * KERNEL_SOCKETS_PER_CPU;
-  if (capacity < KERNEL_SOCK_MIN_CAPACITY) capacity = KERNEL_SOCK_MIN_CAPACITY;
-  if (capacity > UINT32_MAX) capacity = UINT32_MAX;
-  g_kernel_sockets = (kernel_socket_t *)kheap_calloc(
-      capacity * sizeof(*g_kernel_sockets), 64U);
-  kassert(g_kernel_sockets != 0);
-  g_kernel_socket_capacity = (uint32_t)capacity;
-  uint64_t per_port = (uint64_t)smp_online_count() * 8U;
-  if (per_port < KERNEL_SOCK_MIN_PER_PORT) {
-    per_port = KERNEL_SOCK_MIN_PER_PORT;
-  }
-  if (per_port > capacity) per_port = capacity;
-  g_kernel_socket_per_port_limit = (uint32_t)per_port;
-  xaios_spin_init(&g_kernel_socket_lock);
-}
-
 /* The allocation body, with `g_kernel_socket_lock` already held.
  *
  * Split from the wrapper below so that choosing an ephemeral port and taking
@@ -236,54 +194,6 @@ static void kernel_socket_table_init(void) {
  * two -- which is what the first version did -- leaves a window in which
  * another CPU selects the same port, and the "is it in use" test it ran before
  * releasing the lock cannot see an allocation that has not happened yet. */
-static uint64_t kernel_socket_alloc_locked(uint32_t type, uint16_t port,
-                                           uint32_t owner_token) {
-  if (g_total_connections >= g_kernel_socket_capacity) {
-    klog("syscall: socket allocation denied (capacity reached: %u)\n",
-         g_total_connections);
-    return 0;
-  }
-
-  /* Enforce the per-port limit for connected sockets. */
-  if (type == KERNEL_SOCK_CONNECTED) {
-    uint32_t port_count = 0;
-    for (uint32_t i = 0; i < g_kernel_socket_capacity; ++i) {
-      if (g_kernel_sockets[i].state == KERNEL_SOCK_CONNECTED &&
-          g_kernel_sockets[i].port == port) {
-        port_count++;
-      }
-    }
-    if (port_count >= g_kernel_socket_per_port_limit) {
-      klog("syscall: socket allocation denied (max per-port: %u for port %u)\n",
-           port_count, port);
-      return 0;
-    }
-  }
-
-  for (uint32_t i = 0; i < g_kernel_socket_capacity; ++i) {
-    if (g_kernel_sockets[i].state == 0) {
-      g_kernel_sockets[i].state = type;
-      g_kernel_sockets[i].port = port;
-      g_kernel_sockets[i].owner_token = owner_token;
-      g_kernel_sockets[i].id = g_socket_next_id;
-      g_total_connections++;
-      uint64_t id = g_socket_next_id++;
-      if (g_socket_next_id == 0U) g_socket_next_id = 1U;
-      return id;
-    }
-  }
-  return 0; /* no free slots */
-}
-
-static uint64_t kernel_socket_alloc(uint32_t type, uint16_t port,
-                                    uint32_t owner_token) {
-  uint64_t sockfd;
-  if (g_kernel_sockets == 0 || owner_token == 0U) return 0U;
-  xaios_spin_lock(&g_kernel_socket_lock);
-  sockfd = kernel_socket_alloc_locked(type, port, owner_token);
-  xaios_spin_unlock(&g_kernel_socket_lock);
-  return sockfd;
-}
 
 /* The range the kernel draws ports from when the caller does not name one.
  *
@@ -295,16 +205,6 @@ static uint64_t kernel_socket_alloc(uint32_t type, uint16_t port,
    protocols source from the block below it rather than from inside it. The
    partition is stated in `local_ports.h` so the three claimants cannot drift
    into one another again (B-77). */
-#define KERNEL_EPHEMERAL_PORT_MIN XAIOS_EPHEMERAL_PORT_MIN
-
-static uint16_t kernel_ephemeral_next_after(uint16_t port) {
-  uint16_t next = (uint16_t)(port + 1U);
-  /* `uint16_t` cannot hold 65536, so the value after 65535 is 0 and the test
-     below catches it: 0 < 49152 is true. The counter therefore never holds a
-     value outside the range and no draw can return port 0. */
-  if (next < KERNEL_EPHEMERAL_PORT_MIN) next = KERNEL_EPHEMERAL_PORT_MIN;
-  return next;
-}
 
 /* Draw the next ephemeral port, advancing the shared counter atomically.
  *
@@ -318,21 +218,6 @@ static uint16_t kernel_ephemeral_next_after(uint16_t port) {
  * 1, ... in the counter for a moment, and a draw reading it in that window
  * would be handed a port outside the dynamic range. Nothing else writes the
  * counter, so the loop converges on the first attempt in the ordinary case. */
-static uint16_t kernel_ephemeral_reserve(void) {
-  uint32_t guard = 0U;
-  for (;;) {
-    uint16_t current = g_next_ephemeral_port;
-    uint16_t next = kernel_ephemeral_next_after(current);
-    if (__sync_bool_compare_and_swap(&g_next_ephemeral_port, current, next)) {
-      return current;
-    }
-    /* Bounded: a failed exchange means another CPU moved the counter, which
-       is progress, not livelock. The bound is a backstop that cannot be
-       reached on a machine with any sane number of CPUs. */
-    if (++guard > 1024U) return kernel_ephemeral_next_after(
-        g_next_ephemeral_port);
-  }
-}
 
 /* Select an ephemeral port and allocate the datagram descriptor for it, or
  * return 0 with `*out_port` untouched.
@@ -354,161 +239,11 @@ static uint16_t kernel_ephemeral_reserve(void) {
  *
  * The caller must have released every other lock: this takes the socket lock
  * and, on failure, logs while holding it. */
-static uint64_t kernel_socket_alloc_ephemeral_datagram(uint32_t owner_token,
-                                                       uint16_t *out_port) {
-  uint64_t sockfd = 0U;
-  uint16_t port = 0U;
-
-  if (g_kernel_sockets == 0 || owner_token == 0U) return 0U;
-
-  xaios_spin_lock(&g_kernel_socket_lock);
-  /* The whole range, so a run of busy ports costs those ports and not the
-     call. The bound is the range size, so every port is considered once. */
-  for (uint32_t attempt = 0U; attempt < 16384U; ++attempt) {
-    uint16_t candidate = kernel_ephemeral_reserve();
-    if (candidate < KERNEL_EPHEMERAL_PORT_MIN) continue;
-    {
-      /* Search the table rather than calling a helper that would take the
-         lock again: `xaios_spin_lock` is a ticket lock and is not reentrant,
-         so a nested acquire deadlocks rather than succeeding. */
-      int in_use = 0;
-      for (uint32_t i = 0U; i < g_kernel_socket_capacity; ++i) {
-        if (g_kernel_sockets[i].state != 0 &&
-            g_kernel_sockets[i].port == candidate) {
-          in_use = 1;
-          break;
-        }
-      }
-      if (in_use) continue;
-    }
-    sockfd = kernel_socket_alloc_locked(KERNEL_SOCK_DATAGRAM, candidate,
-                                        owner_token);
-    if (sockfd != 0U) port = candidate;
-    break;
-  }
-  xaios_spin_unlock(&g_kernel_socket_lock);
-
-  if (sockfd == 0U) return 0U;
-  *out_port = port;
-  return sockfd;
-}
-
-
-static kernel_socket_t *kernel_socket_find_owned_locked(uint64_t sockfd,
-                                                        uint32_t owner_token) {
-  for (uint32_t i = 0; i < g_kernel_socket_capacity; ++i) {
-    if (g_kernel_sockets[i].state != 0 && g_kernel_sockets[i].id == sockfd &&
-        g_kernel_sockets[i].owner_token == owner_token) {
-      return &g_kernel_sockets[i];
-    }
-  }
-  return 0;
-}
-
-static xaios_status_t kernel_socket_snapshot_owned(uint64_t sockfd,
-                                                   uint32_t owner_token,
-                                                   kernel_socket_t *snapshot) {
-  if (snapshot == 0) return XAIOS_ERR_INVALID;
-  xaios_spin_lock(&g_kernel_socket_lock);
-  kernel_socket_t *socket = kernel_socket_find_owned_locked(sockfd, owner_token);
-  if (socket == 0) {
-    xaios_spin_unlock(&g_kernel_socket_lock);
-    return XAIOS_ERR_INVALID;
-  }
-  *snapshot = *socket;
-  xaios_spin_unlock(&g_kernel_socket_lock);
-  return XAIOS_OK;
-}
 
 /* Whether any socket this owner holds has something a non-blocking call
    would return. The owner's sockets are copied out under the table lock
    first: the network stack has a lock of its own, and the two are never
    held together. */
-#define KERNEL_SOCKETS_READY_SCAN UINT32_C(64)
-static int kernel_sockets_ready_for(uint32_t owner_token) {
-  kernel_socket_t owned[KERNEL_SOCKETS_READY_SCAN];
-  uint32_t count = 0U;
-  if (owner_token == 0U || g_kernel_sockets == 0) return 0;
-  xaios_spin_lock(&g_kernel_socket_lock);
-  for (uint32_t i = 0; i < g_kernel_socket_capacity &&
-                       count < KERNEL_SOCKETS_READY_SCAN; ++i) {
-    if (g_kernel_sockets[i].state != 0U &&
-        g_kernel_sockets[i].owner_token == owner_token) {
-      owned[count++] = g_kernel_sockets[i];
-    }
-  }
-  xaios_spin_unlock(&g_kernel_socket_lock);
-  for (uint32_t i = 0; i < count; ++i) {
-    uint32_t listening = owned[i].state != KERNEL_SOCK_CONNECTED;
-    if (network_stack_socket_ready(owned[i].id, owned[i].protocol,
-                                   owned[i].port, listening) != 0) {
-      return 1;
-    }
-  }
-  return 0;
-}
-
-static xaios_status_t kernel_socket_free(uint64_t sockfd, uint32_t owner_token) {
-  xaios_spin_lock(&g_kernel_socket_lock);
-  kernel_socket_t *socket = kernel_socket_find_owned_locked(sockfd, owner_token);
-  if (socket != 0) {
-    socket->state = 0;
-    socket->port = 0;
-    socket->family = 0;
-    socket->protocol = 0;
-    socket->peer_port = 0;
-    socket->owner_token = 0;
-    socket->id = 0;
-    for (uint32_t j = 0; j < 16; ++j) {
-      socket->bind_addr[j] = 0;
-      socket->peer_addr[j] = 0;
-    }
-    if (g_total_connections > 0) g_total_connections--;
-    xaios_spin_unlock(&g_kernel_socket_lock);
-    return XAIOS_OK;
-  }
-  xaios_spin_unlock(&g_kernel_socket_lock);
-  return XAIOS_ERR_INVALID;
-}
-
-void syscall_release_process_resources(uint32_t owner_token) {
-  if (owner_token == 0U) return;
-  (void)vfs_release_owner(owner_token);
-  if (g_kernel_sockets == 0) return;
-  for (;;) {
-    kernel_socket_t snapshot;
-    uint32_t found = 0U;
-    xaios_spin_lock(&g_kernel_socket_lock);
-    for (uint32_t i = 0; i < g_kernel_socket_capacity; ++i) {
-      if (g_kernel_sockets[i].state != 0U &&
-          g_kernel_sockets[i].owner_token == owner_token) {
-        snapshot = g_kernel_sockets[i];
-        found = 1U;
-        break;
-      }
-    }
-    xaios_spin_unlock(&g_kernel_socket_lock);
-    if (found == 0U) return;
-
-    socket_flow_mapping_t mapping_copy;
-    socket_flow_mapping_t *mapping =
-        network_stack_get_socket_mapping(snapshot.id, &mapping_copy)
-            ? &mapping_copy
-            : 0;
-    if (mapping != 0) {
-      if (mapping->protocol == XAIOS_NETWORK_PROTOCOL_TCP) {
-        (void)network_stack_tcp_close_flow(mapping->flow_id);
-      }
-      network_stack_unmap_socket(snapshot.id);
-    }
-    if (snapshot.state == KERNEL_SOCK_LISTEN) {
-      network_stack_unregister_listener(snapshot.port);
-    } else if (snapshot.state == KERNEL_SOCK_DATAGRAM) {
-      network_stack_unregister_udp_listener(snapshot.port);
-    }
-    (void)kernel_socket_free(snapshot.id, owner_token);
-  }
-}
 
 static const xaios_syscall_entry_t *lookup_syscall(uint64_t number) {
   for (uint32_t i = 0; i < sizeof(g_syscall_table) / sizeof(g_syscall_table[0]);
@@ -1884,7 +1619,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1,
                             "net-connect-socket-failed");
     }
-    xaios_spin_lock(&g_kernel_socket_lock);
+    syscall_socket_lock();
     kernel_socket_t *socket =
         kernel_socket_find_owned_locked(sockfd, owner_token);
     kassert(socket != 0);
@@ -1893,7 +1628,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     socket->peer_port = (uint16_t)request.port;
     for (uint32_t i = 0U; i < 16U; ++i)
       socket->peer_addr[i] = remote_addr.addr[i];
-    xaios_spin_unlock(&g_kernel_socket_lock);
+    syscall_socket_unlock();
     if (network_stack_map_socket(sockfd, flow_id,
                                  XAIOS_NETWORK_PROTOCOL_TCP) != XAIOS_OK) {
       /* Same refusal as accept, for the same reason (B-47): a connected
@@ -1951,7 +1686,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     if (sockfd == 0) {
       return reject_syscall(syscall, arg0, arg1, "net-listen-no-memory");
     }
-    xaios_spin_lock(&g_kernel_socket_lock);
+    syscall_socket_lock();
     kernel_socket_t *socket =
         kernel_socket_find_owned_locked(sockfd, owner_token);
     kassert(socket != 0);
@@ -1962,7 +1697,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
         socket->bind_addr[j] = addr_buf[1U + j];
       }
     }
-    xaios_spin_unlock(&g_kernel_socket_lock);
+    syscall_socket_unlock();
     /* The registry row is the listener. A socket that could not be given one
        is a socket nothing will ever answer on, so the listen is refused here
        rather than reported as listening: what the caller would otherwise be
@@ -2035,7 +1770,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
         return reject_syscall(syscall, arg0, arg1, "net-open-udp-family");
       }
     }
-    xaios_spin_lock(&g_kernel_socket_lock);
+    syscall_socket_lock();
     kernel_socket_t *socket = kernel_socket_find_owned_locked(sockfd, owner_token);
     kassert(socket != 0);
     socket->protocol = XAIOS_NETWORK_PROTOCOL_UDP;
@@ -2045,7 +1780,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
         socket->bind_addr[j] = addr_buf[1U + j];
       }
     }
-    xaios_spin_unlock(&g_kernel_socket_lock);
+    syscall_socket_unlock();
     /* Registered before anything is reported, because the registration is what
        makes the port answer: process_udp_frame looks the listener up by port
        and drops the frame when it finds none, so a socket refused a row can
@@ -2118,7 +1853,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1, "net-accept-no-memory");
     }
     /* Store peer info on the socket */
-    xaios_spin_lock(&g_kernel_socket_lock);
+    syscall_socket_lock();
     kernel_socket_t *socket =
         kernel_socket_find_owned_locked(connfd, owner_token);
     kassert(socket != 0);
@@ -2127,7 +1862,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     for (uint32_t j = 0; j < 16; ++j) {
       socket->peer_addr[j] = peer_addr.addr[j];
     }
-    xaios_spin_unlock(&g_kernel_socket_lock);
+    syscall_socket_unlock();
     /* Map socket to flow. B-47: this used to be a void call, and a full map
        was a silent no-op -- the accept still succeeded, still logged, and
        handed back a descriptor with no flow behind it, which is precisely a
@@ -2535,7 +2270,7 @@ void syscall_self_test(void) {
   kassert(kernel_socket_snapshot_owned(owner_two, 1002U, &socket_snapshot) ==
           XAIOS_OK);
   kassert(kernel_socket_free(owner_two, 1002U) == XAIOS_OK);
-  kassert(g_total_connections == 0U);
+  kassert(syscall_socket_total_connections() == 0U);
   kassert(lookup_syscall(XAIOS_SYSCALL_LOG) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_EXIT) != 0);
   kassert(lookup_syscall(XAIOS_SYSCALL_OSCTL) != 0);
@@ -2592,7 +2327,7 @@ void syscall_self_test(void) {
   kassert(lookup_syscall(XAIOS_SYSCALL_NET_OPEN_UDP) != 0);
   kassert(lookup_syscall(99) == 0);
   klog("syscall: socket ownership self-test passed capacity=%u per_port=%u\n",
-       g_kernel_socket_capacity, g_kernel_socket_per_port_limit);
+       syscall_socket_capacity(), syscall_socket_per_port_limit());
   klog("syscall: table self-test passed entries=%lu\n",
        (uint64_t)(sizeof(g_syscall_table) / sizeof(g_syscall_table[0])));
 }

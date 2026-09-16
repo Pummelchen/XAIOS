@@ -763,6 +763,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/xai_fs_admin.o
   $KERNEL_BUILD_DIR/service.o
   $KERNEL_BUILD_DIR/syscall.o
+  $KERNEL_BUILD_DIR/syscall_socket.o
   $KERNEL_BUILD_DIR/core_lease.o
   $KERNEL_BUILD_DIR/security.o
   $KERNEL_BUILD_DIR/child_channel.o
@@ -929,6 +930,7 @@ compile_kernel "$ROOT_DIR/kernel/runtime/setup_apply.c" "$KERNEL_BUILD_DIR/setup
 compile_kernel "$ROOT_DIR/kernel/fs/xai_fs_admin.c" "$KERNEL_BUILD_DIR/xai_fs_admin.o"
 compile_kernel "$ROOT_DIR/kernel/user/service.c" "$KERNEL_BUILD_DIR/service.o"
 compile_kernel "$ROOT_DIR/kernel/user/syscall.c" "$KERNEL_BUILD_DIR/syscall.o"
+compile_kernel "$ROOT_DIR/kernel/user/syscall_socket.c" "$KERNEL_BUILD_DIR/syscall_socket.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/core_lease.c" "$KERNEL_BUILD_DIR/core_lease.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/security.c" "$KERNEL_BUILD_DIR/security.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/child_channel.c" "$KERNEL_BUILD_DIR/child_channel.o"
