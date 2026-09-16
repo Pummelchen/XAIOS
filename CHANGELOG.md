@@ -23,15 +23,18 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
-- **A user process dispatched as a scheduled task was attempted and is not
-  in this build.** The entry and the exit worked -- a boot recorded the switch
-  into the task, `/bin/hello` running from a task entry on a kernel stack of
-  its own, its exit, and the task's own exit line -- and the hand-back to the
-  context that dispatched it did not: the trap that should have resumed the
-  dispatcher was lost and the boot stopped there. The two candidates and the
-  10-minute discriminator between them are recorded under B-132 in the
-  tracker; the code was reverted rather than shipped, so no boot in this
-  build can stop that way.
+- **A user process that exits no longer leaves the kernel with interrupts
+  off on RISC-V.** The exit return path leaves through `ret` rather than
+  `sret`, so it never restored the interrupt enable that a trap from user mode
+  clears: the kernel continuation after every process exit ran with interrupts
+  off for the rest of its life. Nothing had noticed, because that continuation
+  is normally a few instructions from `timer_disable()` -- and it stopped a
+  scheduled user task dead, since the context waiting to be handed the CPU back
+  never received another tick. The same path also left the *user* stack pointer
+  in `sscratch`, which the next trap entry reads as "this trap came from user
+  mode". Both are fixed, and the boot gate records the property, asserting it
+  on this port: `kernel: /bin/xaios-worker pid=3 returned to kernel
+  exit_code=0 interrupts=1` (B-132).
 
 - **Two preempted tasks no longer share one set of floating-point
   registers.** The RISC-V trap stub saves and restores `f0`-`f31` and
