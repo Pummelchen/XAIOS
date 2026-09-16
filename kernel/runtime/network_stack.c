@@ -30,6 +30,8 @@
  */
 
 #include <xaios/arp.h>
+
+#include "network_stack_wire.h"
 #include <xaios/assert.h>
 #include <xaios/dns.h>
 #include <xaios/entropy.h>
@@ -53,16 +55,10 @@
 
 /* Janeway — “Break off your pursuit or we'll open fire.” */
 
-#define NETWORK_ETHERTYPE_IPV4 UINT16_C(0x0800)
-#define NETWORK_ETHERTYPE_IPV6 UINT16_C(0x86DD)
-#define NETWORK_IP_PROTO_UDP UINT8_C(17)
-#define NETWORK_IP_PROTO_TCP UINT8_C(6)
-
 #define NETWORK_BUFFER_SIZE 1520U
 /* Twice the receive ring depth, so one poll can clear a full ring and the
    refills that land while it works. */
 #define NETWORK_POLL_RX_BUDGET 16U
-#define NETWORK_MAX_SAMPLES 64U
 
 #define NETWORK_TCP_CONNECTIONS 128U
 #define NETWORK_UDP_FLOWS 32U
@@ -80,19 +76,13 @@
 #define NETWORK_TCP_FLAG_ACK 0x10U
 
 /* TCP options kind bytes */
-#define TCP_OPT_END       0U
-#define TCP_OPT_NOP       1U
-#define TCP_OPT_MSS       2U
-#define TCP_OPT_WSCALE    3U
-#define TCP_OPT_SACK_PERMITTED 4U
-#define TCP_OPT_SACK      5U
 
 #define NETWORK_TCP_MSS 1400U
 #define NETWORK_TCP_IPV6_MSS 1200U
 #define NETWORK_TCP_IPV4_RX_MAX 1460U
 #define NETWORK_TCP_IPV6_RX_MAX 1440U
 #define NETWORK_TCP_WSCALE_OK 1U
-#define TCP_OOO_BUF_ENTRIES 4U
+
 #define TCP_TX_WINDOW_SEGMENTS 8U
 
 /* Congestion control constants */
@@ -246,56 +236,6 @@ typedef struct network_tcp_flow {
   uint8_t peer_fin_received;
 } network_tcp_flow_t;
 
-typedef struct tcp_parsed_options {
-  uint16_t mss;
-  uint8_t window_scale;
-  uint8_t sack_permitted;
-  uint8_t sack_count;
-  uint32_t sack_left[TCP_OOO_BUF_ENTRIES];
-  uint32_t sack_right[TCP_OOO_BUF_ENTRIES];
-} tcp_parsed_options_t;
-
-typedef struct network_ip4_header {
-  uint8_t version_ihl;
-  uint8_t tos;
-  uint16_t total_length;
-  uint16_t id;
-  uint16_t flags_fragment_offset;
-  uint8_t ttl;
-  uint8_t protocol;
-  uint16_t checksum;
-  uint32_t source;
-  uint32_t destination;
-} network_ip4_header_t;
-
-typedef struct network_ip6_header {
-  uint8_t  version_tc_flow[4];
-  uint16_t payload_length;
-  uint8_t  next_header;
-  uint8_t  hop_limit;
-  uint8_t  source[16];
-  uint8_t  destination[16];
-} network_ip6_header_t;
-
-typedef struct network_udp_header {
-  uint16_t source_port;
-  uint16_t dest_port;
-  uint16_t length;
-  uint16_t checksum;
-} network_udp_header_t;
-
-typedef struct network_tcp_header {
-  uint16_t source_port;
-  uint16_t dest_port;
-  uint32_t seq;
-  uint32_t ack;
-  uint8_t data_offset_reserved;
-  uint8_t flags;
-  uint16_t window_size;
-  uint16_t checksum;
-  uint16_t urgent_pointer;
-} network_tcp_header_t;
-
 static network_queue_binding_t g_queue_bindings[XAIOS_NETWORK_MAX_QUEUE_BINDINGS];
 static network_queue_ring_t g_queue_rings[XAIOS_NETWORK_MAX_QUEUE_BINDINGS];
 static uint64_t g_next_flow_id = 1U;
@@ -329,7 +269,6 @@ static void network_unlock(void) { xaios_reentrant_unlock(&g_network_guard); }
 static void listener_lock(void) { network_lock(); }
 
 static void listener_unlock(void) { network_unlock(); }
-
 
 /* The resolver lives inside this stack and must share its guard; see the
    declaration in network_stack.h. */
@@ -501,21 +440,13 @@ static uint64_t g_tcp_latency_samples[NETWORK_MAX_SAMPLES];
 static uint32_t g_udp_latency_count;
 static uint32_t g_tcp_latency_count;
 
-static int tcp_seq_before(uint32_t left, uint32_t right) {
-  return (int32_t)(left - right) < 0;
-}
-
-static int tcp_seq_after(uint32_t left, uint32_t right) {
-  return tcp_seq_before(right, left);
-}
-
 /* Buffer an out-of-order TCP segment within the current receive window. */
 static uint32_t ooo_buffer_store(network_tcp_flow_t *flow, uint32_t seq,
                                    const uint8_t *data, uint32_t len,
                                    uint32_t expected_seq) {
   uint32_t distance = seq - expected_seq;
   if (len == 0U || len > NETWORK_TCP_IPV4_RX_MAX ||
-      !tcp_seq_after(seq, expected_seq) ||
+      !net_wire_tcp_seq_after(seq, expected_seq) ||
       distance >= flow->window_size) return 0;
   uint32_t available = flow->window_size - distance;
   if (len > available) len = available;
@@ -546,7 +477,7 @@ static uint32_t ooo_buffer_drain(network_tcp_flow_t *flow) {
     progress = 0;
     for (uint32_t i = 0; i < TCP_OOO_BUF_ENTRIES; ++i) {
       if (flow->ooo_buf[i].in_use &&
-          !tcp_seq_after(flow->ooo_buf[i].seq, flow->expected_seq)) {
+          !net_wire_tcp_seq_after(flow->ooo_buf[i].seq, flow->expected_seq)) {
         uint32_t overlap = flow->expected_seq - flow->ooo_buf[i].seq;
         if (overlap >= flow->ooo_buf[i].len) {
           flow->ooo_buf[i].in_use = 0U;
@@ -779,7 +710,7 @@ static uint32_t tcp_tx_oldest_index(const network_tcp_flow_t *flow) {
   for (uint32_t i = 0U; i < TCP_TX_WINDOW_SEGMENTS; ++i) {
     if (flow->tx_segments[i].in_use == 0U) continue;
     if (oldest == TCP_TX_WINDOW_SEGMENTS ||
-        tcp_seq_before(flow->tx_segments[i].seq,
+        net_wire_tcp_seq_before(flow->tx_segments[i].seq,
                        flow->tx_segments[oldest].seq)) {
       oldest = i;
     }
@@ -842,17 +773,17 @@ static void tcp_accept_peer_fin(network_tcp_flow_t *flow, uint64_t now_ns) {
 static int acknowledge_tcp_flow(network_tcp_flow_t *flow, uint32_t ack,
                                 uint64_t now_ns) {
   if (flow == 0) return 0;
-  if (tcp_seq_after(ack, flow->next_send_seq)) return -1;
+  if (net_wire_tcp_seq_after(ack, flow->next_send_seq)) return -1;
   if (flow->state == XAIOS_NETWORK_FLOW_LAST_ACK &&
       flow->fin_outstanding != 0U &&
-      !tcp_seq_before(ack, flow->fin_seq + 1U)) {
+      !net_wire_tcp_seq_before(ack, flow->fin_seq + 1U)) {
     ++g_tcp_closed_count;
     release_tcp_flow(flow);
     return 1;
   }
   if (flow->state == XAIOS_NETWORK_FLOW_FIN_WAIT &&
       flow->fin_outstanding != 0U &&
-      !tcp_seq_before(ack, flow->fin_seq + 1U)) {
+      !net_wire_tcp_seq_before(ack, flow->fin_seq + 1U)) {
     flow->fin_outstanding = 0U;
     if (flow->peer_fin_received == 0U) {
       flow->state = XAIOS_NETWORK_FLOW_FIN_WAIT_2;
@@ -861,14 +792,14 @@ static int acknowledge_tcp_flow(network_tcp_flow_t *flow, uint32_t ack,
       tcp_enter_time_wait(flow, now_ns);
     }
   }
-  if (tcp_seq_after(ack, flow->local_seq)) {
+  if (net_wire_tcp_seq_after(ack, flow->local_seq)) {
     flow->local_seq = ack;
     flow->highest_acked = ack;
     uint32_t released = 0U;
     for (uint32_t i = 0U; i < TCP_TX_WINDOW_SEGMENTS; ++i) {
       if (flow->tx_segments[i].in_use == 0U) continue;
       uint32_t end = flow->tx_segments[i].seq + flow->tx_segments[i].len;
-      if (!tcp_seq_before(ack, end)) {
+      if (!net_wire_tcp_seq_before(ack, end)) {
         if (flow->tx_segments[i].retransmitted == 0U &&
             flow->tx_segments[i].first_tx_ns != 0U &&
             now_ns > flow->tx_segments[i].first_tx_ns) {
@@ -877,7 +808,7 @@ static int acknowledge_tcp_flow(network_tcp_flow_t *flow, uint32_t ack,
         released += flow->tx_segments[i].len;
         flow->tx_segments[i].in_use = 0U;
         flow->tx_segments[i].pending = 0U;
-      } else if (tcp_seq_after(ack, flow->tx_segments[i].seq)) {
+      } else if (net_wire_tcp_seq_after(ack, flow->tx_segments[i].seq)) {
         uint32_t prefix = ack - flow->tx_segments[i].seq;
         if (prefix > flow->tx_segments[i].len) {
           prefix = flow->tx_segments[i].len;
@@ -940,15 +871,15 @@ static uint32_t tcp_apply_sack_blocks(
   for (uint32_t block = 0U; block < options->sack_count; ++block) {
     uint32_t left = options->sack_left[block];
     uint32_t right = options->sack_right[block];
-    if (!tcp_seq_before(left, right) || tcp_seq_before(left, flow->local_seq) ||
-        tcp_seq_after(right, flow->next_send_seq)) {
+    if (!net_wire_tcp_seq_before(left, right) || net_wire_tcp_seq_before(left, flow->local_seq) ||
+        net_wire_tcp_seq_after(right, flow->next_send_seq)) {
       continue;
     }
     for (uint32_t i = 0U; i < TCP_TX_WINDOW_SEGMENTS; ++i) {
       if (flow->tx_segments[i].in_use == 0U) continue;
       uint32_t end = flow->tx_segments[i].seq + flow->tx_segments[i].len;
-      if (!tcp_seq_before(flow->tx_segments[i].seq, left) &&
-          !tcp_seq_after(end, right)) {
+      if (!net_wire_tcp_seq_before(flow->tx_segments[i].seq, left) &&
+          !net_wire_tcp_seq_after(end, right)) {
         released += flow->tx_segments[i].len;
         flow->tx_segments[i].in_use = 0U;
         flow->tx_segments[i].pending = 0U;
@@ -1047,27 +978,6 @@ static int udp_listener_enqueue(uint16_t port, uint32_t flow_id,
   listener_unlock();
 }
 
-static uint16_t read_u16_be(const uint8_t *bytes) {
-  return (uint16_t)(((uint16_t)bytes[0] << 8U) | (uint16_t)bytes[1]);
-}
-
-static uint32_t read_u32_be(const uint8_t *bytes) {
-  return ((uint32_t)bytes[0] << 24U) | ((uint32_t)bytes[1] << 16U) |
-         ((uint32_t)bytes[2] << 8U) | (uint32_t)bytes[3];
-}
-
-static void write_be16(uint8_t *dst, uint16_t value) {
-  dst[0] = (uint8_t)(value >> 8U);
-  dst[1] = (uint8_t)(value);
-}
-
-static void write_be32(uint8_t *dst, uint32_t value) {
-  dst[0] = (uint8_t)(value >> 24U);
-  dst[1] = (uint8_t)(value >> 16U);
-  dst[2] = (uint8_t)(value >> 8U);
-  dst[3] = (uint8_t)value;
-}
-
 static int network_ipv6_is_global_unicast(const xaios_ip_addr_t *address) {
   return address != 0 && address->family == XAIOS_IP_FAMILY_V6 &&
          (address->addr[0] & UINT8_C(0xe0)) == UINT8_C(0x20);
@@ -1096,7 +1006,7 @@ static void network_ipv6_apply_router_advertisement(const uint8_t *frame,
                                                      uint32_t frame_len,
                                                      uint64_t now_ns) {
   if (frame == 0 || frame_len < XAIOS_ICMPV6_OFFSET + 16U) return;
-  uint32_t payload_len = read_u16_be(frame + 18U);
+  uint32_t payload_len = net_wire_read_u16_be(frame + 18U);
   if (payload_len < 16U || payload_len > frame_len - XAIOS_ICMPV6_OFFSET) return;
 
   const uint8_t *icmpv6 = frame + XAIOS_ICMPV6_OFFSET;
@@ -1104,7 +1014,7 @@ static void network_ipv6_apply_router_advertisement(const uint8_t *frame,
      kept for as long as the Router Lifetime field says. A lifetime of zero
      means "not a default router" and withdraws it. */
   {
-    uint16_t router_lifetime_s = read_u16_be(icmpv6 + 6U);
+    uint16_t router_lifetime_s = net_wire_read_u16_be(icmpv6 + 6U);
     if (router_lifetime_s != 0U) {
       xaios_ip_addr_t router;
       xaios_ip_addr_from_raw_ipv6(&router, frame + 22U);
@@ -1130,7 +1040,7 @@ static void network_ipv6_apply_router_advertisement(const uint8_t *frame,
     if (icmpv6[offset] == 3U && option_len == 32U &&
         icmpv6[offset + 2U] == 64U &&
         (icmpv6[offset + 3U] & UINT8_C(0x40)) != 0U) {
-      uint32_t valid_lifetime_s = read_u32_be(icmpv6 + offset + 4U);
+      uint32_t valid_lifetime_s = net_wire_read_u32_be(icmpv6 + offset + 4U);
       xaios_ip_addr_t candidate;
       network_ipv6_slaac_from_prefix(&candidate, icmpv6 + offset + 16U);
       int global = network_ipv6_is_global_unicast(&candidate);
@@ -1190,64 +1100,14 @@ xaios_status_t network_stack_adopt_dhcpv6(const xaios_ip_addr_t *address,
   return XAIOS_OK;
 }
 
-static uint32_t tcp_generate_isn(uint32_t flow_id) {
-  uint32_t sequence = 0;
-  if (entropy_read(&sequence, sizeof(sequence)) == XAIOS_OK) {
-    return sequence;
-  }
-  return (uint32_t)(timer_now_ns() ^ ((uint64_t)flow_id << 16U));
-}
-
-static uint32_t tcp_scaled_window(uint16_t window, uint8_t shift) {
-  if (shift > 14U) shift = 14U;
-  return (uint32_t)window << shift;
-}
-
-static void bytes_zero(void *buffer, uint64_t size);
-
-static int parse_tcp_options(const uint8_t *tcp_hdr, uint32_t hdr_bytes,
-                             tcp_parsed_options_t *options) {
-  bytes_zero(options, sizeof(*options));
-  if (tcp_hdr == 0 || hdr_bytes < 20U || hdr_bytes > 60U) return 0;
-  uint32_t offset = 20; /* skip fixed header */
-  while (offset + 1U <= hdr_bytes) {
-    uint8_t kind = tcp_hdr[offset];
-    if (kind == TCP_OPT_END) break;
-    if (kind == TCP_OPT_NOP) { offset += 1; continue; }
-    if (offset + 2U > hdr_bytes) return 0;
-    uint8_t len = tcp_hdr[offset + 1U];
-    if (len < 2U || offset + (uint32_t)len > hdr_bytes) return 0;
-    if (kind == TCP_OPT_MSS && len == 4U && offset + 4U <= hdr_bytes) {
-      options->mss = read_u16_be(tcp_hdr + offset + 2U);
-    } else if (kind == TCP_OPT_WSCALE && len == 3U) {
-      uint8_t shift = tcp_hdr[offset + 2U];
-      options->window_scale = shift > 14U ? 14U : shift;
-    } else if (kind == TCP_OPT_SACK_PERMITTED && len == 2U) {
-      options->sack_permitted = 1U;
-    } else if (kind == TCP_OPT_SACK) {
-      if (len < 10U || ((uint32_t)len - 2U) % 8U != 0U) return 0;
-      uint32_t count = ((uint32_t)len - 2U) / 8U;
-      if (count > TCP_OOO_BUF_ENTRIES) count = TCP_OOO_BUF_ENTRIES;
-      for (uint32_t i = 0U; i < count; ++i) {
-        options->sack_left[i] =
-            read_u32_be(tcp_hdr + offset + 2U + i * 8U);
-        options->sack_right[i] =
-            read_u32_be(tcp_hdr + offset + 6U + i * 8U);
-      }
-      options->sack_count = (uint8_t)count;
-    }
-    offset += (uint32_t)len;
-  }
-  return 1;
-}
 
 static uint32_t build_tcp_options(const network_tcp_flow_t *flow,
                                   uint8_t flags, uint8_t options[40]) {
-  bytes_zero(options, 40U);
+  net_wire_bytes_zero(options, 40U);
   if ((flags & NETWORK_TCP_FLAG_SYN) != 0U) {
     options[0] = TCP_OPT_MSS;
     options[1] = 4U;
-    write_be16(options + 2U,
+    net_wire_write_be16(options + 2U,
                flow != 0 && flow->local_addr.family == XAIOS_IP_FAMILY_V6
                    ? NETWORK_TCP_IPV6_MSS : NETWORK_TCP_MSS);
     options[4] = TCP_OPT_SACK_PERMITTED;
@@ -1273,47 +1133,12 @@ static uint32_t build_tcp_options(const network_tcp_flow_t *flow,
   uint32_t written = 0U;
   for (uint32_t i = 0U; i < TCP_OOO_BUF_ENTRIES; ++i) {
     if (flow->ooo_buf[i].in_use == 0U) continue;
-    write_be32(options + 2U + written * 8U, flow->ooo_buf[i].seq);
-    write_be32(options + 6U + written * 8U,
+    net_wire_write_be32(options + 2U + written * 8U, flow->ooo_buf[i].seq);
+    net_wire_write_be32(options + 6U + written * 8U,
                flow->ooo_buf[i].seq + flow->ooo_buf[i].len);
     ++written;
   }
   return 2U + count * 8U;
-}
-
-static uint64_t percentile(uint64_t *samples, uint32_t count, uint32_t p) {
-  if (count == 0U) {
-    return 0;
-  }
-  uint64_t sorted[NETWORK_MAX_SAMPLES];
-  for (uint32_t i = 0; i < count; ++i) {
-    sorted[i] = samples[i];
-  }
-
-  for (uint32_t i = 0; i < count; ++i) {
-    for (uint32_t j = i + 1U; j < count; ++j) {
-      if (sorted[j] < sorted[i]) {
-        uint64_t tmp = sorted[i];
-        sorted[i] = sorted[j];
-        sorted[j] = tmp;
-      }
-    }
-  }
-
-  uint32_t divisor = (p > 100U) ? 1000U : 100U;
-  uint32_t index = (count * p) / divisor;
-  if (index >= count) {
-    index = count - 1U;
-  }
-
-  return sorted[index];
-}
-
-static void bytes_zero(void *buffer, uint64_t size) {
-  uint8_t *bytes = (uint8_t *)buffer;
-  for (uint64_t i = 0; i < size; ++i) {
-    bytes[i] = 0;
-  }
 }
 
 static void record_latency(uint64_t *samples, uint32_t *count, uint64_t value) {
@@ -1505,263 +1330,6 @@ static void packet_mark_dropped(network_packet_desc_t *packet) {
     ++g_packet_drop_count;
     ++g_packet_lifecycle_count;
   }
-}
-
-static uint32_t ip4_addr_host_order(uint32_t network_order_address) {
-  const uint8_t *src = (const uint8_t *)&network_order_address;
-  return (uint32_t)src[0] | ((uint32_t)src[1] << 8U) |
-         ((uint32_t)src[2] << 16U) | ((uint32_t)src[3] << 24U);
-}
-
-static int eth_frame_has_ipv4(const uint8_t *frame, uint64_t frame_len) {
-  const network_ip4_header_t *ip = (const network_ip4_header_t *)(frame + 14U);
-  if (frame_len < (14U + 20U)) {
-    return 0;
-  }
-  if (read_u16_be(frame + 12U) != NETWORK_ETHERTYPE_IPV4) {
-    return 0;
-  }
-  if ((ip->version_ihl >> 4U) != 4U) {
-    return 0;
-  }
-  return 1;
-}
-
-static int parse_udp(const uint8_t *frame, uint64_t frame_len,
-                     uint16_t *src_port, uint16_t *dst_port,
-                     uint16_t *payload_len, uint32_t *src_address,
-                     uint32_t *dst_address) {
-  if (!eth_frame_has_ipv4(frame, frame_len)) {
-    return 0;
-  }
-  if (!ipv4_validate_incoming(frame, frame_len) ||
-      ipv4_is_fragment(frame, frame_len)) {
-    return 0;
-  }
-
-  const network_ip4_header_t *ip = (const network_ip4_header_t *)(frame + 14U);
-  const uint16_t ip_header_words = (uint16_t)(ip->version_ihl & 0x0fU);
-  const uint64_t ip_len = (uint64_t)read_u16_be((const uint8_t *)&ip->total_length);
-  const uint32_t ip_header_bytes = (uint32_t)ip_header_words * 4U;
-  if (ip->protocol != NETWORK_IP_PROTO_UDP) {
-    return 0;
-  }
-  if (ip_header_bytes < 20U || ip_len < ip_header_bytes) {
-    return 0;
-  }
-
-  const network_udp_header_t *udp =
-      (const network_udp_header_t *)((const uint8_t *)ip + ip_header_bytes);
-  const uint64_t udp_start = 14U + (uint64_t)ip_header_bytes;
-  const uint64_t udp_end = 14U + ip_len;
-  if (udp_end > frame_len || ip_len < ip_header_bytes + 8U) {
-    return 0;
-  }
-
-  const uint16_t udp_length = read_u16_be((const uint8_t *)&udp->length);
-  if (udp_length < 8U || udp_start + 8U > udp_end || udp_start + (uint64_t)udp_length > udp_end) {
-    return 0;
-  }
-
-  uint16_t wire_checksum = read_u16_be((const uint8_t *)&udp->checksum);
-  if (wire_checksum != 0U) {
-    uint32_t source = read_u32_be((const uint8_t *)&ip->source);
-    uint32_t destination = read_u32_be((const uint8_t *)&ip->destination);
-    if (ipv4_pseudo_checksum(source, destination, NETWORK_IP_PROTO_UDP,
-                             udp_length, (const uint8_t *)udp,
-                             udp_length) != 0U) return 0;
-  }
-
-  *src_port = read_u16_be((const uint8_t *)&udp->source_port);
-  *dst_port = read_u16_be((const uint8_t *)&udp->dest_port);
-  *payload_len = udp_length;
-  *src_address = ip4_addr_host_order(ip->source);
-  *dst_address = ip4_addr_host_order(ip->destination);
-  return 1;
-}
-
-static int parse_tcp(const uint8_t *frame, uint64_t frame_len, uint16_t *src_port,
-                    uint16_t *dst_port, uint32_t *seq, uint32_t *ack,
-                    uint8_t *flags) {
-  if (!eth_frame_has_ipv4(frame, frame_len)) {
-    return 0;
-  }
-  if (!ipv4_validate_incoming(frame, frame_len) ||
-      ipv4_is_fragment(frame, frame_len)) {
-    return 0;
-  }
-
-  const network_ip4_header_t *ip = (const network_ip4_header_t *)(frame + 14U);
-  const uint16_t ip_header_words = (uint16_t)(ip->version_ihl & 0x0fU);
-  const uint64_t ip_len = (uint64_t)read_u16_be((const uint8_t *)&ip->total_length);
-  const uint64_t ip_header_bytes = (uint64_t)ip_header_words * 4U;
-  if (ip->protocol != NETWORK_IP_PROTO_TCP) {
-    return 0;
-  }
-  if (ip_header_bytes < 20U || ip_len < ip_header_bytes + 20U) {
-    return 0;
-  }
-  if (14U + ip_len > frame_len) {
-    return 0;
-  }
-
-  const network_tcp_header_t *tcp =
-      (const network_tcp_header_t *)((const uint8_t *)ip + ip_header_bytes);
-  const uint16_t data_offset_words = (uint16_t)(tcp->data_offset_reserved >> 4U);
-  
-  /* TCP options are bounded by both the protocol and the IP payload. */
-  if (data_offset_words < 5U) {
-    return 0;  /* TCP header too small */
-  }
-  if (data_offset_words > 15U) {
-    return 0;  /* TCP header too large (max 60 bytes) */
-  }
-  
-  const uint64_t tcp_header_bytes = (uint64_t)data_offset_words * 4U;
-  
-  if (tcp_header_bytes > ip_len - ip_header_bytes) {
-    return 0;  /* TCP header extends beyond IP payload */
-  }
-  
-  if (tcp_header_bytes > 60) {
-    return 0;  /* TCP options exceed 40 byte limit */
-  }
-  
-  const uint64_t tcp_payload_len =
-      ip_len - ip_header_bytes - (uint64_t)tcp_header_bytes;
-  const uint16_t tcp_len = (uint16_t)(tcp_header_bytes + tcp_payload_len);
-
-  if (tcp_header_bytes > ip_len) {
-    return 0;
-  }
-
-  /* TCP checksums are mandatory on this receive path. */
-  uint32_t src_ip_be = read_u32_be((const uint8_t *)&ip->source);
-  uint32_t dst_ip_be = read_u32_be((const uint8_t *)&ip->destination);
-  uint16_t wire_cksum = read_u16_be((const uint8_t *)&tcp->checksum);
-  if (wire_cksum == 0U ||
-      ipv4_pseudo_checksum(src_ip_be, dst_ip_be, NETWORK_IP_PROTO_TCP,
-                           tcp_len, (const uint8_t *)tcp, tcp_len) != 0U) {
-    return 0;
-  }
-
-  *src_port = read_u16_be((const uint8_t *)&tcp->source_port);
-  *dst_port = read_u16_be((const uint8_t *)&tcp->dest_port);
-  *seq = read_u32_be((const uint8_t *)&tcp->seq);
-  *ack = read_u32_be((const uint8_t *)&tcp->ack);
-  *flags = tcp->flags;
-  return 1;
-}
-
-static int eth_frame_has_ipv6(const uint8_t *frame, uint64_t frame_len) {
-  if (frame_len < (14U + XAIOS_IPV6_HEADER_SIZE)) {
-    return 0;
-  }
-  if (read_u16_be(frame + 12U) != NETWORK_ETHERTYPE_IPV6) {
-    return 0;
-  }
-  if ((frame[14U] >> 4U) != 6U) {
-    return 0;
-  }
-  return 1;
-}
-
-static int parse_udp_v6(const uint8_t *frame, uint64_t frame_len,
-                        uint16_t *src_port, uint16_t *dst_port,
-                        uint16_t *payload_len,
-                        xaios_ip_addr_t *src_addr, xaios_ip_addr_t *dst_addr) {
-  if (!eth_frame_has_ipv6(frame, frame_len)) {
-    return 0;
-  }
-  const uint8_t *ip6 = frame + 14U;
-  uint16_t plen = read_u16_be(ip6 + 4U);
-  uint8_t next_hdr = ip6[6U];
-  if (next_hdr != NETWORK_IP_PROTO_UDP) {
-    return 0;
-  }
-  if (14U + XAIOS_IPV6_HEADER_SIZE + 8U > frame_len) {
-    return 0;
-  }
-  if (14U + XAIOS_IPV6_HEADER_SIZE + plen > frame_len) {
-    return 0;
-  }
-  const uint8_t *udp = ip6 + XAIOS_IPV6_HEADER_SIZE;
-  uint16_t udp_len = read_u16_be(udp + 4U);
-  if (udp_len < 8U || udp_len > plen) {
-    return 0;
-  }
-  *src_port = read_u16_be(udp);
-  *dst_port = read_u16_be(udp + 2U);
-  *payload_len = udp_len;
-
-  /* IPv6 UDP checksums are mandatory. */
-  uint16_t wire_udp_cksum = read_u16_be(udp + 6U);
-  if (wire_udp_cksum != 0) {
-    xaios_ip_addr_t usrc, udst;
-    xaios_ip_addr_from_raw_ipv6(&usrc, ip6 + 8U);
-    xaios_ip_addr_from_raw_ipv6(&udst, ip6 + 24U);
-    uint16_t computed_cksum = ipv6_pseudo_checksum(&usrc, &udst,
-                                  NETWORK_IP_PROTO_UDP, udp_len,
-                                  udp, udp_len);
-    if (computed_cksum != 0) {
-      return 0; /* bad checksum */
-    }
-  } else {
-    return 0; /* RFC 2460: IPv6 UDP must have non-zero checksum */
-  }
-
-  xaios_ip_addr_from_raw_ipv6(src_addr, ip6 + 8U);
-  xaios_ip_addr_from_raw_ipv6(dst_addr, ip6 + 24U);
-  return 1;
-}
-
-static int parse_tcp_v6(const uint8_t *frame, uint64_t frame_len,
-                        uint16_t *src_port, uint16_t *dst_port,
-                        uint32_t *seq, uint32_t *ack_val, uint8_t *flags,
-                        xaios_ip_addr_t *src_addr, xaios_ip_addr_t *dst_addr) {
-  if (!eth_frame_has_ipv6(frame, frame_len)) {
-    return 0;
-  }
-  const uint8_t *ip6 = frame + 14U;
-  uint16_t plen = read_u16_be(ip6 + 4U);
-  uint8_t next_hdr = ip6[6U];
-  if (next_hdr != NETWORK_IP_PROTO_TCP) {
-    return 0;
-  }
-  if (14U + XAIOS_IPV6_HEADER_SIZE + 20U > frame_len) {
-    return 0;
-  }
-  if (14U + XAIOS_IPV6_HEADER_SIZE + plen > frame_len) {
-    return 0;
-  }
-  const uint8_t *tcp = ip6 + XAIOS_IPV6_HEADER_SIZE;
-  uint16_t data_offset_words = (uint16_t)(tcp[12U] >> 4U);
-  if (data_offset_words < 5U || data_offset_words > 15U) {
-    return 0;
-  }
-  uint32_t tcp_hdr_bytes = (uint32_t)data_offset_words * 4U;
-  if (tcp_hdr_bytes > (uint32_t)plen) {
-    return 0;
-  }
-  *src_port = read_u16_be(tcp);
-  *dst_port = read_u16_be(tcp + 2U);
-  *seq = read_u32_be(tcp + 4U);
-  *ack_val = read_u32_be(tcp + 8U);
-  *flags = tcp[13U];
-
-  /* TCP checksums are mandatory for IPv6. */
-  uint32_t tcp_total = tcp_hdr_bytes + ((uint32_t)plen - tcp_hdr_bytes);
-  uint16_t wire_cksum = read_u16_be(tcp + 16U);
-  xaios_ip_addr_t src, dst;
-  xaios_ip_addr_from_raw_ipv6(&src, ip6 + 8U);
-  xaios_ip_addr_from_raw_ipv6(&dst, ip6 + 24U);
-  if (wire_cksum == 0U ||
-      ipv6_pseudo_checksum(&src, &dst, NETWORK_IP_PROTO_TCP, tcp_total,
-                           tcp, tcp_total) != 0U) return 0;
-
-  xaios_ip_addr_from_raw_ipv6(src_addr, ip6 + 8U);
-  xaios_ip_addr_from_raw_ipv6(dst_addr, ip6 + 24U);
-  return 1;
 }
 
 static network_tcp_flow_t *find_flow_by_ports_v6(
@@ -2076,7 +1644,7 @@ static xaios_status_t network_stack_tcp_open_unlocked(const xaios_ip_addr_t *rem
     flow->local_addr.addr[14] = g_local_mac[4];
     flow->local_addr.addr[15] = g_local_mac[5];
   }
-  flow->local_seq = tcp_generate_isn(flow->flow_id);
+  flow->local_seq = net_wire_tcp_generate_isn(flow->flow_id);
   flow->next_send_seq = flow->local_seq + 1U;
   flow->expected_seq = 0U;
   flow->window_size = (uint16_t)SOCKET_BUFFER_SIZE;
@@ -2348,7 +1916,7 @@ xaios_status_t network_stack_process_udp_frame(const uint8_t *frame,
   uint32_t src_address = 0;
   uint32_t dst_address = 0;
 
-  if (parse_udp(frame, frame_len, &src_port, &dst_port, &payload_len,
+  if (net_wire_parse_udp(frame, frame_len, &src_port, &dst_port, &payload_len,
                 &src_address, &dst_address) == 0) {
     ++g_udp_dropped_count;
     ++g_udp_malformed_count;
@@ -2435,7 +2003,7 @@ xaios_status_t network_stack_process_udp_frame(const uint8_t *frame,
        *
          The frame is what bounds that. `network_device_rx_poll` reads into a
          `NETWORK_BUFFER_SIZE` (1520) buffer and this function's caller rejects
-         a reassembled frame longer than that, so `parse_udp` can only ever see
+         a reassembled frame longer than that, so `net_wire_parse_udp` can only ever see
          a UDP length inside a 1520-byte frame and the largest deliverable
          datagram is 1520 - 14 - 20 - 8 = 1478 bytes of payload.
        *
@@ -2496,21 +2064,21 @@ static xaios_status_t tcp_build_and_send_segment(
   /* Ethernet header */
   for (uint32_t i = 0; i < 6; ++i) { frame[i] = dst_mac[i]; }
   for (uint32_t i = 0; i < 6; ++i) { frame[6U + i] = src_mac[i]; }
-  write_be16(frame + 12, 0x0800U);
+  net_wire_write_be16(frame + 12, 0x0800U);
   /* IPv4 header */
   uint16_t ip_total = (uint16_t)(20U + tcp_hdr_bytes + payload_len);
   ipv4_build_header(frame + 14, ip_total, 6, src_ip, dst_ip);
   /* TCP header */
   uint8_t *tcp = frame + 34U;
-  write_be16(tcp, src_port);
-  write_be16(tcp + 2, dst_port);
-  write_be32(tcp + 4, seq);
-  write_be32(tcp + 8, ack_val);
+  net_wire_write_be16(tcp, src_port);
+  net_wire_write_be16(tcp + 2, dst_port);
+  net_wire_write_be32(tcp + 4, seq);
+  net_wire_write_be32(tcp + 8, ack_val);
   tcp[12] = data_offset_val;
   tcp[13] = flags;
-  write_be16(tcp + 14, window);
-  write_be16(tcp + 16, 0);
-  write_be16(tcp + 18, 0); /* urgent pointer */
+  net_wire_write_be16(tcp + 14, window);
+  net_wire_write_be16(tcp + 16, 0);
+  net_wire_write_be16(tcp + 18, 0); /* urgent pointer */
   /* Copy options */
   for (uint32_t i = 0; i < tcp_opt_len; ++i) {
     tcp[20U + i] = tcp_opts[i];
@@ -2530,7 +2098,7 @@ static xaios_status_t tcp_build_and_send_segment(
   uint16_t tcp_seg_len = (uint16_t)(tcp_hdr_bytes + payload_len);
   uint16_t cksum = ipv4_pseudo_checksum(src_ip, dst_ip, 6, tcp_seg_len,
                                            tcp, (uint32_t)tcp_seg_len);
-  write_be16(tcp + 16, cksum);
+  net_wire_write_be16(tcp + 16, cksum);
   return network_device_tx(frame, frame_len);
 }
 
@@ -2576,26 +2144,26 @@ static xaios_status_t tcp_build_and_send_segment_v6(
   /* Ethernet header */
   for (uint32_t i = 0; i < 6; ++i) { frame[i] = dst_mac[i]; }
   for (uint32_t i = 0; i < 6; ++i) { frame[6U + i] = src_mac[i]; }
-  write_be16(frame + 12, 0x86DDU); /* IPv6 ethertype */
+  net_wire_write_be16(frame + 12, 0x86DDU); /* IPv6 ethertype */
   /* IPv6 header (40 bytes) */
   uint8_t *ip6 = frame + 14U;
-  write_be32(ip6, 0x60000000U); /* version=6, TC=0, flow=0 */
-  write_be16(ip6 + 4, (uint16_t)(tcp_hdr_bytes + payload_len)); /* payload length */
+  net_wire_write_be32(ip6, 0x60000000U); /* version=6, TC=0, flow=0 */
+  net_wire_write_be16(ip6 + 4, (uint16_t)(tcp_hdr_bytes + payload_len)); /* payload length */
   ip6[6] = 6U; /* next header = TCP */
   ip6[7] = 64U; /* hop limit */
   for (uint32_t i = 0; i < 16; ++i) { ip6[8U + i] = src_ip->addr[i]; }
   for (uint32_t i = 0; i < 16; ++i) { ip6[24U + i] = dst_ip->addr[i]; }
   /* TCP header */
   uint8_t *tcp = frame + 54U;
-  write_be16(tcp, src_port);
-  write_be16(tcp + 2, dst_port);
-  write_be32(tcp + 4, seq);
-  write_be32(tcp + 8, ack_val);
+  net_wire_write_be16(tcp, src_port);
+  net_wire_write_be16(tcp + 2, dst_port);
+  net_wire_write_be32(tcp + 4, seq);
+  net_wire_write_be32(tcp + 8, ack_val);
   tcp[12] = data_offset_val;
   tcp[13] = flags;
-  write_be16(tcp + 14, window);
-  write_be16(tcp + 16, 0);
-  write_be16(tcp + 18, 0); /* urgent */
+  net_wire_write_be16(tcp + 14, window);
+  net_wire_write_be16(tcp + 16, 0);
+  net_wire_write_be16(tcp + 18, 0); /* urgent */
   /* Copy options */
   for (uint32_t i = 0; i < tcp_opt_len; ++i) {
     tcp[20U + i] = tcp_opts[i];
@@ -2614,7 +2182,7 @@ static xaios_status_t tcp_build_and_send_segment_v6(
   uint16_t tcp_total = (uint16_t)(tcp_hdr_bytes + payload_len);
   uint16_t cksum = ipv6_pseudo_checksum(src_ip, dst_ip, 6, tcp_total,
                                            tcp, (uint32_t)tcp_total);
-  write_be16(tcp + 16, cksum);
+  net_wire_write_be16(tcp + 16, cksum);
   return network_device_tx(frame, frame_len);
 }
 
@@ -3091,11 +2659,11 @@ static xaios_status_t network_stack_udp_send_unlocked(uint32_t flow_id, const ui
           frame[j] = g_udp_flows[i].remote_mac[j];
           frame[6U + j] = g_local_mac[j];
         }
-        write_be16(frame + 12U, NETWORK_ETHERTYPE_IPV6);
+        net_wire_write_be16(frame + 12U, NETWORK_ETHERTYPE_IPV6);
         uint8_t *ip6 = frame + 14U;
         for (uint32_t j = 0; j < 40U; ++j) ip6[j] = 0U;
         ip6[0] = 0x60U;
-        write_be16(ip6 + 4U, udp_len);
+        net_wire_write_be16(ip6 + 4U, udp_len);
         ip6[6] = NETWORK_IP_PROTO_UDP;
         ip6[7] = 64U;
         for (uint32_t j = 0; j < 16U; ++j) {
@@ -3103,15 +2671,15 @@ static xaios_status_t network_stack_udp_send_unlocked(uint32_t flow_id, const ui
           ip6[24U + j] = g_udp_flows[i].remote_addr.addr[j];
         }
         uint8_t *udp = ip6 + 40U;
-        write_be16(udp, g_udp_flows[i].local_port);
-        write_be16(udp + 2U, g_udp_flows[i].remote_port);
-        write_be16(udp + 4U, udp_len);
-        write_be16(udp + 6U, 0U);
+        net_wire_write_be16(udp, g_udp_flows[i].local_port);
+        net_wire_write_be16(udp + 2U, g_udp_flows[i].remote_port);
+        net_wire_write_be16(udp + 4U, udp_len);
+        net_wire_write_be16(udp + 6U, 0U);
         for (uint32_t j = 0; j < len; ++j) udp[8U + j] = data[j];
         uint16_t checksum = ipv6_pseudo_checksum(
             &g_udp_flows[i].local_addr, &g_udp_flows[i].remote_addr,
             NETWORK_IP_PROTO_UDP, udp_len, udp, udp_len);
-        write_be16(udp + 6U, checksum == 0U ? UINT16_MAX : checksum);
+        net_wire_write_be16(udp + 6U, checksum == 0U ? UINT16_MAX : checksum);
         *bytes_written = len;
         return network_device_tx(frame, frame_len);
       }
@@ -3139,16 +2707,16 @@ static xaios_status_t network_stack_udp_send_unlocked(uint32_t flow_id, const ui
       /* Ethernet */
       for (uint32_t j = 0; j < 6; ++j) { frame[j] = dst_mac[j]; }
       for (uint32_t j = 0; j < 6; ++j) { frame[6U + j] = g_local_mac[j]; }
-      write_be16(frame + 12, 0x0800U);
+      net_wire_write_be16(frame + 12, 0x0800U);
       /* IPv4 */
       ipv4_build_header(frame + 14, ip_total, 17,
                          network_config_local_ipv4(), dst_ip_be);
       /* UDP header */
       uint8_t *udp = frame + 34U;
-      write_be16(udp, g_udp_flows[i].local_port);
-      write_be16(udp + 2, g_udp_flows[i].remote_port);
-      write_be16(udp + 4, udp_len);
-      write_be16(udp + 6, 0U);
+      net_wire_write_be16(udp, g_udp_flows[i].local_port);
+      net_wire_write_be16(udp + 2, g_udp_flows[i].remote_port);
+      net_wire_write_be16(udp + 4, udp_len);
+      net_wire_write_be16(udp + 6, 0U);
       /* Payload */
       for (uint32_t j = 0; j < len; ++j) {
         frame[42U + j] = data[j];
@@ -3156,7 +2724,7 @@ static xaios_status_t network_stack_udp_send_unlocked(uint32_t flow_id, const ui
       uint16_t checksum = ipv4_pseudo_checksum(
           network_config_local_ipv4(), dst_ip_be, NETWORK_IP_PROTO_UDP, udp_len,
           udp, udp_len);
-      write_be16(udp + 6U, checksum == 0U ? UINT16_MAX : checksum);
+      net_wire_write_be16(udp + 6U, checksum == 0U ? UINT16_MAX : checksum);
       *bytes_written = len;
       return network_device_tx(frame, frame_len);
     }
@@ -3187,7 +2755,7 @@ static xaios_status_t network_stack_udp_sendto_unlocked(
   }
   /* Both address fields are stored the way the receive path stores them, and
      that is not the way network_config_local_ipv4() holds an address.
-     parse_udp runs the wire bytes through ip4_addr_host_order, which yields
+     net_wire_parse_udp runs the wire bytes through net_wire_ip4_addr_host_order, which yields
      the byte-reversed integer -- 10.0.2.2 becomes 0x0202000a, not 0x0a000202
      -- and network_stack_udp_send_unlocked reverses remote_address again on
      its way back out to the wire. A flow created here with the natural order
@@ -3424,7 +2992,7 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
   uint32_t ack = 0;
   uint8_t flags = 0;
 
-  if (parse_tcp(frame, frame_len, &src_port, &dst_port, &seq, &ack, &flags) ==
+  if (net_wire_parse_tcp(frame, frame_len, &src_port, &dst_port, &seq, &ack, &flags) ==
       0) {
     ++g_tcp_reset_count;
     ++g_packet_drop_count;
@@ -3440,9 +3008,9 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
       (const network_ip4_header_t *)(frame + 14U);
   uint32_t parsed_ip_header_bytes = (uint32_t)(ip->version_ihl & 0x0fU) * 4U;
   const uint8_t *parsed_tcp_header = frame + 14U + parsed_ip_header_bytes;
-  uint16_t peer_window_raw = read_u16_be(parsed_tcp_header + 14U);
-  uint32_t remote_address = ip4_addr_host_order(ip->source);
-  uint32_t local_address = ip4_addr_host_order(ip->destination);
+  uint16_t peer_window_raw = net_wire_read_u16_be(parsed_tcp_header + 14U);
+  uint32_t remote_address = net_wire_ip4_addr_host_order(ip->source);
+  uint32_t local_address = net_wire_ip4_addr_host_order(ip->destination);
 
   network_tcp_flow_t *flow = find_flow_by_ports(dst_port, src_port, remote_address);
   network_queue_binding_t *binding =
@@ -3477,7 +3045,7 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
     }
     uint32_t tcp_header_bytes = (uint32_t)(parsed_tcp_header[12U] >> 4U) * 4U;
     tcp_parsed_options_t options;
-    if (!parse_tcp_options(parsed_tcp_header, tcp_header_bytes, &options)) {
+    if (!net_wire_parse_tcp_options(parsed_tcp_header, tcp_header_bytes, &options)) {
       packet_mark_dropped(packet);
       return XAIOS_ERR_INVALID;
     }
@@ -3492,7 +3060,7 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
     flow->peer_ws = options.window_scale;
     flow->ws_parsed = options.window_scale > 0U ? 1U : 0U;
     flow->peer_sack_permitted = options.sack_permitted;
-    flow->peer_window = tcp_scaled_window(peer_window_raw, flow->peer_ws);
+    flow->peer_window = net_wire_tcp_scaled_window(peer_window_raw, flow->peer_ws);
     for (uint32_t i = 0U; i < 6U; ++i) flow->remote_mac[i] = frame[6U + i];
     flow->remote_mac_valid = 1U;
     flow->pending_syn = 0U;
@@ -3566,7 +3134,7 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
     /* Data plane: set expected_seq (SYN consumes 1 seq number) */
     flow->expected_seq = seq + 1U;
     /* Generate ISN from timer and flow ID */
-    flow->local_seq = tcp_generate_isn(flow->flow_id);
+    flow->local_seq = net_wire_tcp_generate_isn(flow->flow_id);
     flow->next_send_seq = flow->local_seq + 1U;
     flow->window_size = (uint16_t)SOCKET_BUFFER_SIZE;
     flow->pending_synack = 1;
@@ -3600,7 +3168,7 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
       const uint8_t *thdr = frame + 14U + ip_hdr_b;
       uint32_t thdr_b = (uint32_t)(thdr[12] >> 4U) * 4U;
       tcp_parsed_options_t options;
-      if (!parse_tcp_options(thdr, thdr_b, &options)) {
+      if (!net_wire_parse_tcp_options(thdr, thdr_b, &options)) {
         release_tcp_flow(flow);
         packet_mark_dropped(packet);
         return XAIOS_ERR_INVALID;
@@ -3646,7 +3214,7 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
     flow->next_send_seq = ack; /* peer confirmed our ISN+1 */
     flow->last_seen_ns = start;
     flow->keepalive_last_rx_ns = start;
-    flow->peer_window = tcp_scaled_window(peer_window_raw, flow->peer_ws);
+    flow->peer_window = net_wire_tcp_scaled_window(peer_window_raw, flow->peer_ws);
     ++flow->packets_rx;
     ++g_tcp_handshake_count;
     ++g_tcp_established_count;
@@ -3664,19 +3232,19 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
                      flow->state == XAIOS_NETWORK_FLOW_LAST_ACK ||
                      flow->state == XAIOS_NETWORK_FLOW_TIME_WAIT)) {
     if ((flags & NETWORK_TCP_FLAG_ACK) != 0U &&
-        tcp_seq_after(ack, flow->next_send_seq)) {
+        net_wire_tcp_seq_after(ack, flow->next_send_seq)) {
       packet_mark_dropped(packet);
       return XAIOS_ERR_INVALID;
     }
     flow->last_seen_ns = start;
-    flow->peer_window = tcp_scaled_window(peer_window_raw, flow->peer_ws);
+    flow->peer_window = net_wire_tcp_scaled_window(peer_window_raw, flow->peer_ws);
     ++flow->packets_rx;
 
     /* Extract TCP payload */
     const network_ip4_header_t *iph =
         (const network_ip4_header_t *)(frame + 14U);
     uint64_t ip_hdr_bytes = (uint64_t)(iph->version_ihl & 0x0FU) * 4U;
-    uint16_t ip_total = read_u16_be((const uint8_t *)&iph->total_length);
+    uint16_t ip_total = net_wire_read_u16_be((const uint8_t *)&iph->total_length);
     const uint8_t *tcp_hdr = frame + 14U + ip_hdr_bytes;
     uint64_t tcp_hdr_bytes = (uint64_t)(tcp_hdr[12] >> 4U) * 4U;
     uint32_t payload_len = (uint32_t)(ip_total) - (uint32_t)ip_hdr_bytes -
@@ -3690,7 +3258,7 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
       const uint8_t *payload = tcp_hdr + tcp_hdr_bytes;
       uint32_t payload_seq = seq;
       uint32_t deliver_len = payload_len;
-      if (tcp_seq_before(payload_seq, flow->expected_seq)) {
+      if (net_wire_tcp_seq_before(payload_seq, flow->expected_seq)) {
         uint32_t overlap = flow->expected_seq - payload_seq;
         if (overlap >= deliver_len) deliver_len = 0U;
         else {
@@ -3707,7 +3275,7 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
         /* Drain any newly contiguous out-of-order data. */
         ooo_buffer_drain(flow);
       } else if (deliver_len != 0U &&
-                 tcp_seq_after(payload_seq, flow->expected_seq)) {
+                 net_wire_tcp_seq_after(payload_seq, flow->expected_seq)) {
         /* Retain future data for bounded reordering recovery. */
         ooo_buffer_store(flow, payload_seq, payload, deliver_len,
                          flow->expected_seq);
@@ -3719,7 +3287,7 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
     if ((flags & NETWORK_TCP_FLAG_FIN) != 0U) {
       uint32_t fin_seq = seq + payload_len;
       flow->pending_ack = 1U;
-      if (!tcp_seq_before(fin_seq, flow->expected_seq)) {
+      if (!net_wire_tcp_seq_before(fin_seq, flow->expected_seq)) {
         flow->peer_fin_seq = fin_seq;
         flow->peer_fin_pending = 1U;
         tcp_accept_peer_fin(flow, start);
@@ -3732,7 +3300,7 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
 
     if ((flags & NETWORK_TCP_FLAG_ACK) != 0U) {
       tcp_parsed_options_t options;
-      if (!parse_tcp_options(tcp_hdr, (uint32_t)tcp_hdr_bytes, &options)) {
+      if (!net_wire_parse_tcp_options(tcp_hdr, (uint32_t)tcp_hdr_bytes, &options)) {
         packet_mark_dropped(packet);
         return XAIOS_ERR_INVALID;
       }
@@ -3789,7 +3357,7 @@ xaios_status_t network_stack_process_udp_frame_v6(const uint8_t *frame,
   xaios_ip_addr_zero(&src_addr);
   xaios_ip_addr_zero(&dst_addr);
 
-  if (parse_udp_v6(frame, frame_len, &src_port, &dst_port, &payload_len,
+  if (net_wire_parse_udp_v6(frame, frame_len, &src_port, &dst_port, &payload_len,
                    &src_addr, &dst_addr) == 0) {
     ++g_udp_dropped_count;
     ++g_udp_malformed_count;
@@ -3909,7 +3477,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
   xaios_ip_addr_zero(&src_addr);
   xaios_ip_addr_zero(&dst_addr);
 
-  if (parse_tcp_v6(frame, frame_len, &src_port, &dst_port, &seq, &ack_v,
+  if (net_wire_parse_tcp_v6(frame, frame_len, &src_port, &dst_port, &seq, &ack_v,
                    &flags, &src_addr, &dst_addr) == 0) {
     ++g_tcp_reset_count;
     ++g_packet_drop_count;
@@ -3922,7 +3490,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
   }
 
   const uint8_t *parsed_tcp_header = frame + 14U + XAIOS_IPV6_HEADER_SIZE;
-  uint16_t peer_window_raw = read_u16_be(parsed_tcp_header + 14U);
+  uint16_t peer_window_raw = net_wire_read_u16_be(parsed_tcp_header + 14U);
 
   network_tcp_flow_t *flow =
       find_flow_by_ports_v6(dst_port, src_port, &src_addr);
@@ -3960,7 +3528,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
     uint32_t tcp_header_bytes =
         (uint32_t)(parsed_tcp_header[12U] >> 4U) * 4U;
     tcp_parsed_options_t options;
-    if (!parse_tcp_options(parsed_tcp_header, tcp_header_bytes, &options)) {
+    if (!net_wire_parse_tcp_options(parsed_tcp_header, tcp_header_bytes, &options)) {
       packet_mark_dropped(packet);
       return XAIOS_ERR_INVALID;
     }
@@ -3975,7 +3543,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
     flow->peer_ws = options.window_scale;
     flow->ws_parsed = options.window_scale > 0U ? 1U : 0U;
     flow->peer_sack_permitted = options.sack_permitted;
-    flow->peer_window = tcp_scaled_window(peer_window_raw, flow->peer_ws);
+    flow->peer_window = net_wire_tcp_scaled_window(peer_window_raw, flow->peer_ws);
     for (uint32_t i = 0U; i < 6U; ++i) flow->remote_mac[i] = frame[6U + i];
     flow->remote_mac_valid = 1U;
     flow->pending_syn = 0U;
@@ -4046,7 +3614,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
     flow->local_addr = dst_addr;
     flow->remote_seq = seq;
     flow->expected_seq = seq + 1U;
-    flow->local_seq = tcp_generate_isn(flow->flow_id);
+    flow->local_seq = net_wire_tcp_generate_isn(flow->flow_id);
     flow->next_send_seq = flow->local_seq + 1U;
     flow->window_size = (uint16_t)SOCKET_BUFFER_SIZE;
     flow->pending_synack = 1;
@@ -4073,7 +3641,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
     {
       uint32_t header_bytes = (uint32_t)(parsed_tcp_header[12U] >> 4U) * 4U;
       tcp_parsed_options_t options;
-      if (!parse_tcp_options(parsed_tcp_header, header_bytes, &options)) {
+      if (!net_wire_parse_tcp_options(parsed_tcp_header, header_bytes, &options)) {
         release_tcp_flow(flow);
         packet_mark_dropped(packet);
         return XAIOS_ERR_INVALID;
@@ -4115,7 +3683,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
     flow->next_send_seq = ack_v;
     flow->last_seen_ns = start;
     flow->keepalive_last_rx_ns = start;
-    flow->peer_window = tcp_scaled_window(peer_window_raw, flow->peer_ws);
+    flow->peer_window = net_wire_tcp_scaled_window(peer_window_raw, flow->peer_ws);
     ++flow->packets_rx;
     ++g_tcp_handshake_count;
     ++g_tcp_established_count;
@@ -4133,12 +3701,12 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
                      flow->state == XAIOS_NETWORK_FLOW_LAST_ACK ||
                      flow->state == XAIOS_NETWORK_FLOW_TIME_WAIT)) {
     if ((flags & NETWORK_TCP_FLAG_ACK) != 0U &&
-        tcp_seq_after(ack_v, flow->next_send_seq)) {
+        net_wire_tcp_seq_after(ack_v, flow->next_send_seq)) {
       packet_mark_dropped(packet);
       return XAIOS_ERR_INVALID;
     }
     flow->last_seen_ns = start;
-    flow->peer_window = tcp_scaled_window(peer_window_raw, flow->peer_ws);
+    flow->peer_window = net_wire_tcp_scaled_window(peer_window_raw, flow->peer_ws);
     ++flow->packets_rx;
 
     /* Extract TCP payload from IPv6 frame */
@@ -4146,7 +3714,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
     const uint8_t *ip6 = frame + 14U;
     const uint8_t *tcp_hdr = ip6 + 40U;
     uint64_t tcp_hdr_bytes = (uint64_t)(tcp_hdr[12] >> 4U) * 4U;
-    uint16_t ip6_payload_len = read_u16_be(ip6 + 4U);
+    uint16_t ip6_payload_len = net_wire_read_u16_be(ip6 + 4U);
     uint32_t payload_len_v6 = (uint32_t)ip6_payload_len - (uint32_t)tcp_hdr_bytes;
 
     if (payload_len_v6 > NETWORK_TCP_IPV6_RX_MAX) {
@@ -4157,7 +3725,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
       const uint8_t *payload = tcp_hdr + tcp_hdr_bytes;
       uint32_t payload_seq = seq;
       uint32_t deliver_len = payload_len_v6;
-      if (tcp_seq_before(payload_seq, flow->expected_seq)) {
+      if (net_wire_tcp_seq_before(payload_seq, flow->expected_seq)) {
         uint32_t overlap = flow->expected_seq - payload_seq;
         if (overlap >= deliver_len) deliver_len = 0U;
         else {
@@ -4173,7 +3741,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
         flow->window_size = (uint16_t)sockbuf_available(flow->rx_buf);
         ooo_buffer_drain(flow);
       } else if (deliver_len != 0U &&
-                 tcp_seq_after(payload_seq, flow->expected_seq)) {
+                 net_wire_tcp_seq_after(payload_seq, flow->expected_seq)) {
         ooo_buffer_store(flow, payload_seq, payload, deliver_len,
                          flow->expected_seq);
       } else {
@@ -4184,7 +3752,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
     if ((flags & NETWORK_TCP_FLAG_FIN) != 0U) {
       uint32_t fin_seq = seq + payload_len_v6;
       flow->pending_ack = 1U;
-      if (!tcp_seq_before(fin_seq, flow->expected_seq)) {
+      if (!net_wire_tcp_seq_before(fin_seq, flow->expected_seq)) {
         flow->peer_fin_seq = fin_seq;
         flow->peer_fin_pending = 1U;
         tcp_accept_peer_fin(flow, start);
@@ -4197,7 +3765,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
 
     if ((flags & NETWORK_TCP_FLAG_ACK) != 0U) {
       tcp_parsed_options_t options;
-      if (!parse_tcp_options(tcp_hdr, (uint32_t)tcp_hdr_bytes, &options)) {
+      if (!net_wire_parse_tcp_options(tcp_hdr, (uint32_t)tcp_hdr_bytes, &options)) {
         packet_mark_dropped(packet);
         return XAIOS_ERR_INVALID;
       }
@@ -4518,35 +4086,35 @@ uint64_t network_stack_flow_core_mismatch_count(void) {
 }
 
 uint64_t network_stack_udp_latency_p50_ns(void) {
-  return percentile(g_udp_latency_samples, g_udp_latency_count, 50U);
+  return net_wire_percentile(g_udp_latency_samples, g_udp_latency_count, 50U);
 }
 
 uint64_t network_stack_udp_latency_p95_ns(void) {
-  return percentile(g_udp_latency_samples, g_udp_latency_count, 95U);
+  return net_wire_percentile(g_udp_latency_samples, g_udp_latency_count, 95U);
 }
 
 uint64_t network_stack_udp_latency_p99_ns(void) {
-  return percentile(g_udp_latency_samples, g_udp_latency_count, 99U);
+  return net_wire_percentile(g_udp_latency_samples, g_udp_latency_count, 99U);
 }
 
 uint64_t network_stack_udp_latency_p999_ns(void) {
-  return percentile(g_udp_latency_samples, g_udp_latency_count, 999U);
+  return net_wire_percentile(g_udp_latency_samples, g_udp_latency_count, 999U);
 }
 
 uint64_t network_stack_tcp_latency_p50_ns(void) {
-  return percentile(g_tcp_latency_samples, g_tcp_latency_count, 50U);
+  return net_wire_percentile(g_tcp_latency_samples, g_tcp_latency_count, 50U);
 }
 
 uint64_t network_stack_tcp_latency_p95_ns(void) {
-  return percentile(g_tcp_latency_samples, g_tcp_latency_count, 95U);
+  return net_wire_percentile(g_tcp_latency_samples, g_tcp_latency_count, 95U);
 }
 
 uint64_t network_stack_tcp_latency_p99_ns(void) {
-  return percentile(g_tcp_latency_samples, g_tcp_latency_count, 99U);
+  return net_wire_percentile(g_tcp_latency_samples, g_tcp_latency_count, 99U);
 }
 
 uint64_t network_stack_tcp_latency_p999_ns(void) {
-  return percentile(g_tcp_latency_samples, g_tcp_latency_count, 999U);
+  return net_wire_percentile(g_tcp_latency_samples, g_tcp_latency_count, 999U);
 }
 
 static void emit_latency_snapshot(uint64_t *udp50, uint64_t *udp95,
@@ -4564,7 +4132,7 @@ static void emit_latency_snapshot(uint64_t *udp50, uint64_t *udp95,
 }
 
 static void build_app_udp_frame(uint8_t *frame, uint64_t payload_len) {
-  bytes_zero(frame, NETWORK_BUFFER_SIZE);
+  net_wire_bytes_zero(frame, NETWORK_BUFFER_SIZE);
   frame[12U] = 0x08;
   frame[13U] = 0x00;
   frame[14U] = 0x45;
@@ -4589,12 +4157,12 @@ static void build_app_udp_frame(uint8_t *frame, uint64_t payload_len) {
   const uint16_t udp_len = (uint16_t)(8U + payload_len);
   frame[38U] = (uint8_t)(udp_len >> 8U);
   frame[39U] = (uint8_t)udp_len;
-  write_be16(frame + 24U, ipv4_checksum(frame + 14U, 20U));
+  net_wire_write_be16(frame + 24U, ipv4_checksum(frame + 14U, 20U));
 }
 
 static void build_app_tcp_frame(uint8_t *frame, uint8_t flags,
                                 uint16_t remote_port) {
-  bytes_zero(frame, NETWORK_BUFFER_SIZE);
+  net_wire_bytes_zero(frame, NETWORK_BUFFER_SIZE);
   frame[12U] = 0x08;
   frame[13U] = 0x00;
   frame[14U] = 0x45;
@@ -4626,16 +4194,16 @@ static void finalize_app_tcp_frame(uint8_t *frame) {
   uint16_t checksum =
       ipv4_pseudo_checksum(UINT32_C(0x0a00020f), UINT32_C(0x0a000202),
                            NETWORK_IP_PROTO_TCP, 24U, frame + 34U, 24U);
-  write_be16(frame + 50U, checksum == 0U ? UINT16_MAX : checksum);
+  net_wire_write_be16(frame + 50U, checksum == 0U ? UINT16_MAX : checksum);
   frame[24U] = 0U;
   frame[25U] = 0U;
-  write_be16(frame + 24U, ipv4_checksum(frame + 14U, 20U));
+  net_wire_write_be16(frame + 24U, ipv4_checksum(frame + 14U, 20U));
 }
 
 static void tcp_sliding_window_self_test(void) {
   network_tcp_flow_t flow;
   uint8_t payload[10];
-  bytes_zero(&flow, sizeof(flow));
+  net_wire_bytes_zero(&flow, sizeof(flow));
   for (uint32_t i = 0U; i < sizeof(payload); ++i) {
     payload[i] = (uint8_t)(i + 1U);
   }
@@ -4674,17 +4242,17 @@ static void tcp_sliding_window_self_test(void) {
 
   uint8_t option_header[60];
   tcp_parsed_options_t options;
-  bytes_zero(option_header, sizeof(option_header));
+  net_wire_bytes_zero(option_header, sizeof(option_header));
   option_header[20] = TCP_OPT_SACK_PERMITTED;
   option_header[21] = 2U;
   option_header[22] = TCP_OPT_SACK;
   option_header[23] = 10U;
-  write_be32(option_header + 24U, 204U);
-  write_be32(option_header + 28U, 208U);
-  kassert(parse_tcp_options(option_header, 32U, &options) != 0);
+  net_wire_write_be32(option_header + 24U, 204U);
+  net_wire_write_be32(option_header + 28U, 208U);
+  kassert(net_wire_parse_tcp_options(option_header, 32U, &options) != 0);
   kassert(options.sack_permitted == 1U && options.sack_count == 1U);
 
-  bytes_zero(&flow, sizeof(flow));
+  net_wire_bytes_zero(&flow, sizeof(flow));
   flow.state = XAIOS_NETWORK_FLOW_ESTABLISHED;
   flow.local_seq = 200U;
   flow.next_send_seq = 212U;
@@ -4706,7 +4274,7 @@ static void tcp_sliding_window_self_test(void) {
           flow.tx_segments[0].retransmitted == 1U);
   g_tcp_retransmit_count = retransmits_before;
 
-  bytes_zero(&flow, sizeof(flow));
+  net_wire_bytes_zero(&flow, sizeof(flow));
   flow.state = XAIOS_NETWORK_FLOW_ESTABLISHED;
   flow.tx_buf = sockbuf_alloc();
   kassert(flow.tx_buf != 0);
@@ -4720,7 +4288,7 @@ static void tcp_sliding_window_self_test(void) {
           flow.tx_segments[0].len == 1U);
   sockbuf_free(flow.tx_buf);
 
-  bytes_zero(&flow, sizeof(flow));
+  net_wire_bytes_zero(&flow, sizeof(flow));
   flow.rx_buf = sockbuf_alloc();
   kassert(flow.rx_buf != 0);
   flow.expected_seq = 400U;
@@ -4731,11 +4299,11 @@ static void tcp_sliding_window_self_test(void) {
   uint8_t generated[40];
   uint32_t generated_len =
       build_tcp_options(&flow, NETWORK_TCP_FLAG_ACK, generated);
-  bytes_zero(option_header, sizeof(option_header));
+  net_wire_bytes_zero(option_header, sizeof(option_header));
   for (uint32_t i = 0U; i < generated_len; ++i) {
     option_header[20U + i] = generated[i];
   }
-  kassert(parse_tcp_options(option_header, 20U + generated_len, &options) != 0);
+  kassert(net_wire_parse_tcp_options(option_header, 20U + generated_len, &options) != 0);
   kassert(options.sack_count == 1U && options.sack_left[0] == 404U &&
           options.sack_right[0] == 408U);
   kassert(sockbuf_write(flow.rx_buf, payload, 4U) == 4U);
@@ -4749,7 +4317,7 @@ static void tcp_sliding_window_self_test(void) {
   }
   sockbuf_free(flow.rx_buf);
 
-  bytes_zero(&flow, sizeof(flow));
+  net_wire_bytes_zero(&flow, sizeof(flow));
   flow.rto_ns = NETWORK_TCP_RETRANSMIT_NS;
   flow.cwnd = NETWORK_TCP_MSS * 8U;
   tcp_backoff_rto(&flow);
@@ -4760,7 +4328,7 @@ static void tcp_sliding_window_self_test(void) {
 
   option_header[20] = TCP_OPT_SACK;
   option_header[21] = 9U;
-  kassert(parse_tcp_options(option_header, 29U, &options) == 0);
+  kassert(net_wire_parse_tcp_options(option_header, 29U, &options) == 0);
   klog("network: TCP sliding-window self-test passed segments=3 cumulative_ack=1 partial_ack=1 sack=1 fast_retransmit=1 zero_window=1 reorder=1 rto_backoff=1\n");
 }
 
@@ -4851,10 +4419,10 @@ static xaios_status_t network_stack_app_tcp_connect_unlocked(uint64_t *round_tri
     if (flow == 0 || flow->state != XAIOS_NETWORK_FLOW_SYN_RECV) {
       status = XAIOS_ERR_NOT_FOUND;
     } else {
-      write_be32(ack + 38U, flow->expected_seq);
-      write_be32(ack + 42U, flow->next_send_seq);
-      write_be32(rst + 38U, flow->expected_seq);
-      write_be32(rst + 42U, flow->next_send_seq);
+      net_wire_write_be32(ack + 38U, flow->expected_seq);
+      net_wire_write_be32(ack + 42U, flow->next_send_seq);
+      net_wire_write_be32(rst + 38U, flow->expected_seq);
+      net_wire_write_be32(rst + 42U, flow->next_send_seq);
       finalize_app_tcp_frame(ack);
       finalize_app_tcp_frame(rst);
     }
@@ -4987,11 +4555,11 @@ void network_stack_self_test(void) {
   uint8_t frame_tcp_syn[NETWORK_BUFFER_SIZE];
   uint8_t frame_tcp_syn_ack[NETWORK_BUFFER_SIZE];
   uint8_t frame_tcp_timeout[NETWORK_BUFFER_SIZE];
-  bytes_zero(frame_udp, sizeof(frame_udp));
-  bytes_zero(frame_udp_bad, sizeof(frame_udp_bad));
-  bytes_zero(frame_tcp_syn, sizeof(frame_tcp_syn));
-  bytes_zero(frame_tcp_syn_ack, sizeof(frame_tcp_syn_ack));
-  bytes_zero(frame_tcp_timeout, sizeof(frame_tcp_timeout));
+  net_wire_bytes_zero(frame_udp, sizeof(frame_udp));
+  net_wire_bytes_zero(frame_udp_bad, sizeof(frame_udp_bad));
+  net_wire_bytes_zero(frame_tcp_syn, sizeof(frame_tcp_syn));
+  net_wire_bytes_zero(frame_tcp_syn_ack, sizeof(frame_tcp_syn_ack));
+  net_wire_bytes_zero(frame_tcp_timeout, sizeof(frame_tcp_timeout));
 
   network_stack_init();
   tcp_sliding_window_self_test();
@@ -5042,7 +4610,7 @@ void network_stack_self_test(void) {
   frame_udp[43U] = 2;
   frame_udp[44U] = 3;
   frame_udp[45U] = 4;
-  write_be16(frame_udp + 24U, ipv4_checksum(frame_udp + 14U, 20U));
+  net_wire_write_be16(frame_udp + 24U, ipv4_checksum(frame_udp + 14U, 20U));
 
   kassert(network_stack_process_udp_frame(frame_udp, 46U) == XAIOS_OK);
   kassert(network_stack_process_udp_frame(frame_udp, 46U) == XAIOS_OK);
@@ -5152,14 +4720,14 @@ void network_stack_self_test(void) {
     frame_tcp_syn[50] = (uint8_t)(tcp_checksum >> 8U);
     frame_tcp_syn[51] = (uint8_t)tcp_checksum;
   }
-  write_be16(frame_tcp_syn + 24U,
+  net_wire_write_be16(frame_tcp_syn + 24U,
              ipv4_checksum(frame_tcp_syn + 14U, 20U));
 
   frame_tcp_timeout[0] = 0U;
   for (uint32_t i = 0; i < 58U; ++i) frame_tcp_timeout[i] = frame_tcp_syn[i];
   frame_tcp_timeout[50U] = 0U;
   frame_tcp_timeout[51U] = 0U;
-  kassert(parse_tcp(frame_tcp_timeout, 58U, &(uint16_t){0}, &(uint16_t){0},
+  kassert(net_wire_parse_tcp(frame_tcp_timeout, 58U, &(uint16_t){0}, &(uint16_t){0},
                     &(uint32_t){0}, &(uint32_t){0}, &(uint8_t){0}) == 0);
 
   kassert(network_stack_process_tcp_frame(frame_tcp_syn, 58U) == XAIOS_OK);
@@ -5180,8 +4748,8 @@ void network_stack_self_test(void) {
   frame_tcp_syn_ack[39] = 0;
   frame_tcp_syn_ack[40] = 0;
   frame_tcp_syn_ack[41] = 0;
-  write_be32(frame_tcp_syn_ack + 38U, g_tcp_flows[0].expected_seq);
-  write_be32(frame_tcp_syn_ack + 42U, g_tcp_flows[0].next_send_seq);
+  net_wire_write_be32(frame_tcp_syn_ack + 38U, g_tcp_flows[0].expected_seq);
+  net_wire_write_be32(frame_tcp_syn_ack + 42U, g_tcp_flows[0].next_send_seq);
   frame_tcp_syn_ack[46] = 0x60; /* offset 6 words */
   frame_tcp_syn_ack[47] = NETWORK_TCP_FLAG_ACK;
   frame_tcp_syn_ack[48] = 0x40;
@@ -5193,7 +4761,7 @@ void network_stack_self_test(void) {
         ipv4_pseudo_checksum(0x0a00020fU, 0x0a000202U,
                              NETWORK_IP_PROTO_TCP, 24U,
                              frame_tcp_syn_ack + 34U, 24U);
-    write_be16(frame_tcp_syn_ack + 50U,
+    net_wire_write_be16(frame_tcp_syn_ack + 50U,
                tcp_checksum == 0U ? UINT16_MAX : tcp_checksum);
   }
 
@@ -5212,7 +4780,7 @@ void network_stack_self_test(void) {
         ipv4_pseudo_checksum(0x0a00020fU, 0x0a000202U,
                              NETWORK_IP_PROTO_TCP, 24U,
                              frame_tcp_timeout + 34U, 24U);
-    write_be16(frame_tcp_timeout + 50U,
+    net_wire_write_be16(frame_tcp_timeout + 50U,
                tcp_checksum == 0U ? UINT16_MAX : tcp_checksum);
   }
   kassert(network_stack_process_tcp_frame(frame_tcp_timeout, 58U) == XAIOS_OK);
@@ -5242,14 +4810,14 @@ void network_stack_self_test(void) {
       saved_mac[i] = g_local_mac[i];
       g_local_mac[i] = test_mac[i];
     }
-    write_be16(ra_frame + 18U, 48U);
+    net_wire_write_be16(ra_frame + 18U, 48U);
     uint8_t *ra_icmpv6 = ra_frame + XAIOS_ICMPV6_OFFSET;
     ra_icmpv6[0] = XAIOS_ICMPV6_ROUTER_ADVERT;
     ra_icmpv6[16] = 3U; /* Prefix Information option */
     ra_icmpv6[17] = 4U; /* 32 bytes */
     ra_icmpv6[18] = 64U;
     ra_icmpv6[19] = UINT8_C(0x40); /* Autonomous address configuration */
-    write_be32(ra_icmpv6 + 20U, 60U);
+    net_wire_write_be32(ra_icmpv6 + 20U, 60U);
     ra_icmpv6[32] = UINT8_C(0x20);
     ra_icmpv6[33] = UINT8_C(0x01);
     ra_icmpv6[34] = UINT8_C(0x0d);
@@ -5540,18 +5108,18 @@ xaios_status_t network_stack_ping_start(uint32_t target_ip) {
     frame[i] = gateway_mac[i];
     frame[6U + i] = g_local_mac[i];
   }
-  write_be16(frame + 12U, NETWORK_ETHERTYPE_IPV4);
+  net_wire_write_be16(frame + 12U, NETWORK_ETHERTYPE_IPV4);
   ipv4_build_header(frame + 14U, 36U, XAIOS_IPV4_PROTO_ICMP,
                     network_config_local_ipv4(), target_ip);
   uint8_t *icmp = frame + 34U;
   icmp[0] = XAIOS_ICMP_ECHO_REQUEST;
   icmp[1] = 0U;
-  write_be16(icmp + 4U, NETWORK_PING_IDENTIFIER);
+  net_wire_write_be16(icmp + 4U, NETWORK_PING_IDENTIFIER);
   ++g_ping_sequence;
-  write_be16(icmp + 6U, g_ping_sequence);
+  net_wire_write_be16(icmp + 6U, g_ping_sequence);
   icmp[8] = 'X'; icmp[9] = 'A'; icmp[10] = 'I'; icmp[11] = 'O';
   icmp[12] = 'S'; icmp[13] = 'P'; icmp[14] = 'N'; icmp[15] = 'G';
-  write_be16(icmp + 2U, ipv4_checksum(icmp, 16U));
+  net_wire_write_be16(icmp + 2U, ipv4_checksum(icmp, 16U));
   xaios_status_t status = network_device_tx(frame, sizeof(frame));
   g_ping.state = status == XAIOS_OK ? XAIOS_NETWORK_PING_PENDING
                                      : XAIOS_NETWORK_PING_FAILED;
@@ -5715,19 +5283,19 @@ static void network_poll_tick_locked(void) {
   if (frame_len < 14U) {
     return;
   }
-  uint16_t ethertype = read_u16_be(rx_buf + 12U);
+  uint16_t ethertype = net_wire_read_u16_be(rx_buf + 12U);
   if (ethertype == 0x0806U) {
-    if (frame_len >= 42U && read_u16_be(rx_buf + 20U) == XAIOS_ARP_OP_REPLY) {
+    if (frame_len >= 42U && net_wire_read_u16_be(rx_buf + 20U) == XAIOS_ARP_OP_REPLY) {
       arp_process_reply(rx_buf, frame_len);
     } else if (frame_len >= 42U &&
-               read_u16_be(rx_buf + 20U) == XAIOS_ARP_OP_REQUEST) {
-      uint32_t target_ip = read_u32_be(rx_buf + 38U);
+               net_wire_read_u16_be(rx_buf + 20U) == XAIOS_ARP_OP_REQUEST) {
+      uint32_t target_ip = net_wire_read_u32_be(rx_buf + 38U);
       if (target_ip == network_config_local_ipv4()) {
         uint8_t reply_frame[64];
         uint64_t reply_len = 0;
         if (arp_build_reply(reply_frame, &reply_len, g_local_mac,
                             network_config_local_ipv4(), rx_buf + 6,
-                            read_u32_be(rx_buf + 28U)) == XAIOS_OK) {
+                            net_wire_read_u32_be(rx_buf + 28U)) == XAIOS_OK) {
           network_device_tx(reply_frame, reply_len);
           ++g_arp_reply_count;
         }
@@ -5751,10 +5319,10 @@ static void network_poll_tick_locked(void) {
     if (protocol == XAIOS_IPV4_PROTO_ICMP) {
       const uint8_t *icmp = rx_buf + 34U;
       if (frame_len >= 42U && icmp[0] == XAIOS_ICMP_ECHO_REPLY &&
-          read_u16_be(icmp + 4U) == NETWORK_PING_IDENTIFIER &&
-          read_u16_be(icmp + 6U) == g_ping_sequence &&
-          read_u32_be(rx_buf + 26U) == g_ping.target_ip &&
-          ipv4_checksum(icmp, read_u16_be(rx_buf + 16U) - 20U) == 0U &&
+          net_wire_read_u16_be(icmp + 4U) == NETWORK_PING_IDENTIFIER &&
+          net_wire_read_u16_be(icmp + 6U) == g_ping_sequence &&
+          net_wire_read_u32_be(rx_buf + 26U) == g_ping.target_ip &&
+          ipv4_checksum(icmp, net_wire_read_u16_be(rx_buf + 16U) - 20U) == 0U &&
           g_ping.state == XAIOS_NETWORK_PING_PENDING) {
         g_ping.state = XAIOS_NETWORK_PING_REPLIED;
         g_ping.round_trip_ns = now_ns >= g_ping_sent_ns
@@ -5770,7 +5338,7 @@ static void network_poll_tick_locked(void) {
         uint64_t reply_len = 0;
         if (icmp_build_echo_reply(reply_buf, &reply_len, g_local_mac,
                                    rx_buf + 6, network_config_local_ipv4(),
-                                   read_u32_be(rx_buf + 26U), rx_buf,
+                                   net_wire_read_u32_be(rx_buf + 26U), rx_buf,
                                    frame_len) == XAIOS_OK) {
           network_device_tx(reply_buf, reply_len);
           ++g_icmp_reply_count;

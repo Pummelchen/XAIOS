@@ -797,6 +797,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/rate_limit.o
   $KERNEL_BUILD_DIR/source_index.o
   $KERNEL_BUILD_DIR/network_stack.o
+  $KERNEL_BUILD_DIR/network_stack_wire.o
   $KERNEL_BUILD_DIR/network_config.o
   $KERNEL_BUILD_DIR/git_workspace.o
   $KERNEL_BUILD_DIR/agent_protocol.o
@@ -960,6 +961,7 @@ compile_kernel "$ROOT_DIR/kernel/storage/crash_writer.c" "$KERNEL_BUILD_DIR/cras
 compile_kernel "$ROOT_DIR/kernel/runtime/rate_limit.c" "$KERNEL_BUILD_DIR/rate_limit.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/source_index.c" "$KERNEL_BUILD_DIR/source_index.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack.c" "$KERNEL_BUILD_DIR/network_stack.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_wire.c" "$KERNEL_BUILD_DIR/network_stack_wire.o"
 compile_kernel "$ROOT_DIR/kernel/net/network_config.c" "$KERNEL_BUILD_DIR/network_config.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/git_workspace.c" "$KERNEL_BUILD_DIR/git_workspace.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/agent_protocol.c" "$KERNEL_BUILD_DIR/agent_protocol.o"
