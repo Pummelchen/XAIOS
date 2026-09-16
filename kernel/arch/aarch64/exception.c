@@ -222,6 +222,33 @@ void platform_scheduler_tick_self_test(void) {
        "the chosen task's context comes back in\n");
 }
 
+/* Why this port cannot yet build a kernel-entry frame, and the test that
+ * therefore refuses by name (B-132).
+ *
+ * A frame that starts a task in kernel mode has to say which stack that task
+ * runs on, and this port's exception return does not load a stack from the
+ * frame: the CPU keeps its own SP_EL1 across the return (`sp_el1` is a field of
+ * the shared frame that no AArch64 code writes). A task switched to here would
+ * therefore run on whatever stack the interrupted context was using, which is
+ * the collision the kernel stack per task exists to prevent. Loading SP_EL1
+ * from the frame in the exception return is the change that would make this
+ * port able to say yes; until then it says no, out loud, rather than passing a
+ * test it cannot run. */
+int xaios_context_frame_kernel_entry(xaios_context_frame_t *frame,
+                                     void (*entry)(void),
+                                     uint64_t stack_top) {
+  (void)frame;
+  (void)entry;
+  (void)stack_top;
+  return 0;
+}
+
+void platform_kernel_preemption_self_test(void) {
+  klog("sched-preempt: aarch64 not applicable -- this port's exception return "
+       "keeps the CPU's SP_EL1 instead of loading a kernel stack from the "
+       "frame, so a task cannot own its kernel context yet (B-132)\n");
+}
+
 xaios_context_frame_t *aarch64_irq_handler(xaios_context_frame_t *frame) {
   uint64_t iar = 0U;
   __asm__ volatile("mrs %[iar], " ICC_IAR1_EL1 : [iar] "=r"(iar));

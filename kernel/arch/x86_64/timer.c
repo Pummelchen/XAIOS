@@ -351,6 +351,26 @@ void platform_scheduler_tick_self_test(void) {
        "(B-129, needs per-task kernel contexts)\n");
 }
 
+/* Why this port cannot build a kernel-entry frame either, and what it would
+ * take (B-132). Beyond the frame shape, there is nothing here to switch a
+ * kernel context *from*: the timer interrupt does not tick the scheduler on this
+ * port (see the refusal above), so a task handed the CPU by one kernel context
+ * would never be handed back. */
+int xaios_context_frame_kernel_entry(xaios_context_frame_t *frame,
+                                     void (*entry)(void),
+                                     uint64_t stack_top) {
+  (void)frame;
+  (void)entry;
+  (void)stack_top;
+  return 0;
+}
+
+void platform_kernel_preemption_self_test(void) {
+  klog("sched-preempt: x86_64 not applicable -- this port does not tick the "
+       "scheduler from a trap, so a kernel context cannot be switched away "
+       "from yet (B-129, B-132)\n");
+}
+
 void x86_64_platform_timer_irq(void) {
   /* On the CPU carrying the network tick this interrupt does not tick the
      scheduler; its whole job is to wake that CPU, whose idle loop polls the
