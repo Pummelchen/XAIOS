@@ -4,14 +4,14 @@
 
 #include "xbfs_internal.h"
 
-void bytes_zero(void *buffer, uint64_t size) {
+void xbfs_bytes_zero(void *buffer, uint64_t size) {
   uint8_t *bytes = (uint8_t *)buffer;
   for (uint64_t i = 0; i < size; ++i) {
     bytes[i] = 0;
   }
 }
 
-void bytes_copy(void *dst, const void *src, uint64_t size) {
+void xbfs_bytes_copy(void *dst, const void *src, uint64_t size) {
   uint8_t *out = (uint8_t *)dst;
   const uint8_t *in = (const uint8_t *)src;
   for (uint64_t i = 0; i < size; ++i) {
@@ -19,7 +19,7 @@ void bytes_copy(void *dst, const void *src, uint64_t size) {
   }
 }
 
-int bytes_eq(const void *a, const void *b, uint64_t size) {
+int xbfs_bytes_eq(const void *a, const void *b, uint64_t size) {
   const uint8_t *left = (const uint8_t *)a;
   const uint8_t *right = (const uint8_t *)b;
   for (uint64_t i = 0; i < size; ++i) {
@@ -30,7 +30,7 @@ int bytes_eq(const void *a, const void *b, uint64_t size) {
   return 1;
 }
 
-uint64_t cstr_len(const char *value) {
+uint64_t xbfs_cstr_len(const char *value) {
   uint64_t len = 0;
   while (value[len] != '\0') {
     ++len;
@@ -38,7 +38,7 @@ uint64_t cstr_len(const char *value) {
   return len;
 }
 
-int str_eq(const char *a, const char *b) {
+int xbfs_str_eq(const char *a, const char *b) {
   while (*a != '\0' && *b != '\0') {
     if (*a != *b) {
       return 0;
@@ -49,7 +49,7 @@ int str_eq(const char *a, const char *b) {
   return *a == '\0' && *b == '\0';
 }
 
-xaios_status_t append_char(char *buffer, uint64_t capacity,
+xaios_status_t xbfs_append_char(char *buffer, uint64_t capacity,
                                  uint64_t *offset, char value) {
   if (buffer == 0 || offset == 0 || *offset + 1U >= capacity) {
     return XAIOS_ERR_NO_MEMORY;
@@ -60,25 +60,25 @@ xaios_status_t append_char(char *buffer, uint64_t capacity,
   return XAIOS_OK;
 }
 
-xaios_status_t append_cstr(char *buffer, uint64_t capacity,
+xaios_status_t xbfs_append_cstr(char *buffer, uint64_t capacity,
                                  uint64_t *offset, const char *value) {
   if (value == 0) {
     return XAIOS_ERR_INVALID;
   }
   for (uint64_t i = 0; value[i] != '\0'; ++i) {
-    if (append_char(buffer, capacity, offset, value[i]) != XAIOS_OK) {
+    if (xbfs_append_char(buffer, capacity, offset, value[i]) != XAIOS_OK) {
       return XAIOS_ERR_NO_MEMORY;
     }
   }
   return XAIOS_OK;
 }
 
-xaios_status_t append_u32(char *buffer, uint64_t capacity,
+xaios_status_t xbfs_append_u32(char *buffer, uint64_t capacity,
                                 uint64_t *offset, uint32_t value) {
   char digits[10];
   uint32_t count = 0;
   if (value == 0) {
-    return append_char(buffer, capacity, offset, '0');
+    return xbfs_append_char(buffer, capacity, offset, '0');
   }
   while (value != 0 && count < sizeof(digits)) {
     digits[count++] = (char)('0' + (value % 10U));
@@ -86,14 +86,14 @@ xaios_status_t append_u32(char *buffer, uint64_t capacity,
   }
   while (count > 0) {
     --count;
-    if (append_char(buffer, capacity, offset, digits[count]) != XAIOS_OK) {
+    if (xbfs_append_char(buffer, capacity, offset, digits[count]) != XAIOS_OK) {
       return XAIOS_ERR_NO_MEMORY;
     }
   }
   return XAIOS_OK;
 }
 
-uint64_t fnv1a64_extend(uint64_t hash, const void *buffer,
+uint64_t xbfs_fnv1a64_extend(uint64_t hash, const void *buffer,
                                uint64_t size) {
   const uint8_t *bytes = (const uint8_t *)buffer;
   for (uint64_t i = 0; i < size; ++i) {
@@ -103,11 +103,11 @@ uint64_t fnv1a64_extend(uint64_t hash, const void *buffer,
   return hash;
 }
 
-uint64_t fnv1a64(const void *buffer, uint64_t size) {
-  return fnv1a64_extend(FNV1A64_OFFSET, buffer, size);
+uint64_t xbfs_fnv1a64(const void *buffer, uint64_t size) {
+  return xbfs_fnv1a64_extend(FNV1A64_OFFSET, buffer, size);
 }
 
-uint64_t mfs_checksum(const void *data, uint64_t size) {
+uint64_t xbfs_mfs_checksum(const void *data, uint64_t size) {
   const uint8_t *bytes = (const uint8_t *)data;
   uint64_t hash = FNV1A64_OFFSET;
   for (uint64_t i = 0; i < size; ++i) {
@@ -121,7 +121,7 @@ uint64_t mfs_checksum(const void *data, uint64_t size) {
   return hash;
 }
 
-void copy_path(char dst[XBFS_PATH_MAX], const char *src) {
+void xbfs_copy_path(char dst[XBFS_PATH_MAX], const char *src) {
   uint32_t i = 0;
   while (i + 1U < XBFS_PATH_MAX && src[i] != '\0') {
     dst[i] = src[i];
@@ -130,7 +130,7 @@ void copy_path(char dst[XBFS_PATH_MAX], const char *src) {
   dst[i] = '\0';
 }
 
-const char *basename_of(const char *path) {
+const char *xbfs_basename_of(const char *path) {
   const char *base = path;
   if (path == 0) {
     return 0;
@@ -143,7 +143,7 @@ const char *basename_of(const char *path) {
   return base;
 }
 
-void parent_path_of(const char *path, char parent[XBFS_PATH_MAX]) {
+void xbfs_parent_path_of(const char *path, char parent[XBFS_PATH_MAX]) {
   uint32_t last_slash = 0;
   for (uint32_t i = 0; i < XBFS_PATH_MAX && path[i] != '\0'; ++i) {
     if (path[i] == '/') {
@@ -161,20 +161,20 @@ void parent_path_of(const char *path, char parent[XBFS_PATH_MAX]) {
   parent[last_slash] = '\0';
 }
 
-uint64_t blocks_for_size(uint64_t size) {
+uint64_t xbfs_blocks_for_size(uint64_t size) {
   return (size + XBFS_SECTOR_SIZE - 1U) / XBFS_SECTOR_SIZE;
 }
 
-int path_is_at_or_below(const char *path, const char *root) {
-  uint64_t root_len = cstr_len(root);
-  return str_eq(path, root) ||
-         (bytes_eq(path, root, root_len) && path[root_len] == '/');
+int xbfs_path_is_at_or_below(const char *path, const char *root) {
+  uint64_t root_len = xbfs_cstr_len(root);
+  return xbfs_str_eq(path, root) ||
+         (xbfs_bytes_eq(path, root, root_len) && path[root_len] == '/');
 }
 
-int direct_child_of(const char *parent, const char *child,
+int xbfs_direct_child_of(const char *parent, const char *child,
                            const char **name) {
-  uint64_t parent_len = cstr_len(parent);
-  if (str_eq(parent, "/")) {
+  uint64_t parent_len = xbfs_cstr_len(parent);
+  if (xbfs_str_eq(parent, "/")) {
     if (child[0] != '/' || child[1] == '\0') {
       return 0;
     }
@@ -187,7 +187,7 @@ int direct_child_of(const char *parent, const char *child,
     *name = tail;
     return 1;
   }
-  if (!bytes_eq(parent, child, parent_len) || child[parent_len] != '/') {
+  if (!xbfs_bytes_eq(parent, child, parent_len) || child[parent_len] != '/') {
     return 0;
   }
   const char *tail = &child[parent_len + 1U];

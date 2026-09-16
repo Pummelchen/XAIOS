@@ -31,7 +31,7 @@ kernel/dev/virtio/virtio_net.c 1683
 kernel/dev/virtio/virtio_transport.c 504
 kernel/dev/virtio/virtio_transport_pci.c 835
 kernel/dev/vmxnet3.c 1066
-kernel/fs/fat.c 1394
+kernel/fs/fat.c 1238
 kernel/fs/initramfs.c 552
 kernel/fs/vfs.c 757
 kernel/fs/vfs_xaifs.c 1798
@@ -66,7 +66,7 @@ kernel/user/user.c 1512
 platform/qemu/run-qemu-aarch64.sh 558
 platform/qemu/run-qemu-riscv64.sh 535
 scripts/build-boot-media.sh 544
-scripts/build-image.sh 1695
+scripts/build-image.sh 1697
 scripts/build-riscv64-image.sh 600
 scripts/build-vm-packages.sh 661
 scripts/xaios-ssh-bridge.py 1171

@@ -1444,12 +1444,12 @@ hosted-test: engine-cli
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Ikernel/include kernel/dev/block_device.c kernel/lib/crc32.c \
 	  kernel/storage/gpt.c kernel/storage/partition_device.c \
-	  kernel/storage/storage_admin.c kernel/fs/fat.c \
+	  kernel/storage/storage_admin.c kernel/fs/fat.c kernel/fs/fat_codec.c \
 	  tests/storage/test_storage_admin.c \
 	  -o build/hosted/test-storage-admin
 	./build/hosted/test-storage-admin
 	$(HOST_CC) $(HOST_CFLAGS) \
-	  -Ikernel/include kernel/dev/block_device.c kernel/fs/fat.c \
+	  -Ikernel/include kernel/dev/block_device.c kernel/fs/fat.c kernel/fs/fat_codec.c \
 	  tests/storage/test_fat.c -o build/hosted/test-fat
 	./build/hosted/test-fat build/hosted/fat-long-names.img
 	@# The reciprocal check: an implementation that is not this one, reading
@@ -1467,7 +1467,7 @@ hosted-test: engine-cli
 	  -Ikernel/include -Iengine/include -Iengine/src -Iuserspace/include \
 	  -Iuserspace/sshd kernel/dev/block_device.c kernel/lib/crc32.c \
 	  kernel/storage/gpt.c kernel/storage/partition_device.c \
-	  kernel/storage/storage_admin.c kernel/fs/fat.c \
+	  kernel/storage/storage_admin.c kernel/fs/fat.c kernel/fs/fat_codec.c \
 	  kernel/fs/xai_fs_admin.c \
 	  engine/src/xai_fs.c engine/src/xai_fs_writer.c \
 	  engine/src/sha256.c userspace/sshd/ssh_crypto.c \

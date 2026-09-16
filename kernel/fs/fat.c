@@ -1,5 +1,7 @@
 #include <xaios/fat.h>
 
+#include "fat_internal.h"
+
 #include <xaios/klog.h>
 
 /* On-disk layout constants. All FAT structures are little-endian regardless of
@@ -33,51 +35,6 @@
    8..5, day one-based in bits 4..0. */
 #define FAT_EPOCH_DATE UINT16_C(0x0021)
 
-static void bytes_zero(void *buffer, uint64_t length) {
-  uint8_t *out = (uint8_t *)buffer;
-  for (uint64_t index = 0U; index < length; ++index) out[index] = 0U;
-}
-
-static void bytes_copy(void *destination, const void *source,
-                       uint64_t length) {
-  uint8_t *out = (uint8_t *)destination;
-  const uint8_t *in = (const uint8_t *)source;
-  for (uint64_t index = 0U; index < length; ++index) out[index] = in[index];
-}
-
-static int bytes_equal(const void *left, const void *right, uint64_t length) {
-  const uint8_t *a = (const uint8_t *)left;
-  const uint8_t *b = (const uint8_t *)right;
-  for (uint64_t index = 0U; index < length; ++index) {
-    if (a[index] != b[index]) return 0;
-  }
-  return 1;
-}
-
-static void put16(uint8_t *out, uint16_t value) {
-  out[0] = (uint8_t)(value & 0xFFU);
-  out[1] = (uint8_t)((value >> 8) & 0xFFU);
-}
-
-static void put32(uint8_t *out, uint32_t value) {
-  out[0] = (uint8_t)(value & 0xFFU);
-  out[1] = (uint8_t)((value >> 8) & 0xFFU);
-  out[2] = (uint8_t)((value >> 16) & 0xFFU);
-  out[3] = (uint8_t)((value >> 24) & 0xFFU);
-}
-
-static uint16_t get16(const uint8_t *in) {
-  return (uint16_t)((uint16_t)in[0] | ((uint16_t)in[1] << 8));
-}
-
-static uint32_t get32(const uint8_t *in) {
-  return (uint32_t)in[0] | ((uint32_t)in[1] << 8) | ((uint32_t)in[2] << 16) |
-         ((uint32_t)in[3] << 24);
-}
-
-static char upper(char value) {
-  return (value >= 'a' && value <= 'z') ? (char)(value - 'a' + 'A') : value;
-}
 
 /* One sector of scratch, used for every read-modify-write below. A single
    buffer means this is not reentrant, which is correct for an installer: two
@@ -101,7 +58,7 @@ static xaios_status_t write_sector(const xaios_fat_volume_t *volume,
 
 /*
  * Convert one path component to the 11-byte on-disk name: eight of base, three
- * of extension, space padded, upper case. A component that does not fit is
+ * of extension, space padded, fat_upper case. A component that does not fit is
  * refused rather than truncated -- two files whose names differ only past the
  * eighth character would silently become one.
  */
@@ -120,12 +77,6 @@ static xaios_status_t write_sector(const xaios_fat_volume_t *volume,
  * `text` is the name as asked for, `short_name` the 8.3 entry that always
  * exists -- either the name itself, or a generated alias like BOOTRI~1 -- and
  * `needs_long` says whether long-name entries have to accompany it. */
-typedef struct fat_name {
-  uint8_t short_name[FAT_NAME_LENGTH];
-  char text[XAIOS_FAT_PATH_MAX + 1U];
-  uint32_t text_length;
-  uint32_t needs_long;
-} fat_name_t;
 
 /* Thirteen UTF-16 characters per long-name entry, which is what fixes how
    many entries a name of a given length costs. */
@@ -133,85 +84,20 @@ typedef struct fat_name {
 #define FAT_LFN_LAST UINT8_C(0x40)
 #define FAT_LFN_MAX_ENTRIES 20U
 
-static xaios_status_t encode_name(const char *component, uint64_t length,
-                                  uint8_t out[FAT_NAME_LENGTH]) {
-  if (length == 0U) return XAIOS_ERR_INVALID;
-  for (uint64_t index = 0U; index < FAT_NAME_LENGTH; ++index) out[index] = ' ';
-  uint64_t dot = length;
-  for (uint64_t index = 0U; index < length; ++index) {
-    if (component[index] == '.') {
-      /* The last dot separates the extension; an earlier one is not a legal
-         8.3 name at all. "." and ".." are handled by the caller. */
-      if (dot != length) return XAIOS_ERR_INVALID;
-      dot = index;
-    }
-  }
-  uint64_t base_length = dot;
-  uint64_t extension_length = dot == length ? 0U : length - dot - 1U;
-  if (base_length == 0U || base_length > 8U || extension_length > 3U) {
-    return XAIOS_ERR_INVALID;
-  }
-  for (uint64_t index = 0U; index < base_length; ++index) {
-    char value = upper(component[index]);
-    if (value == '/' || value == '\\' || (uint8_t)value < 0x20U) {
-      return XAIOS_ERR_INVALID;
-    }
-    out[index] = (uint8_t)value;
-  }
-  for (uint64_t index = 0U; index < extension_length; ++index) {
-    out[8U + index] = (uint8_t)upper(component[dot + 1U + index]);
-  }
-  return XAIOS_OK;
-}
 
 /* The checksum a long-name entry carries, computed over the 8.3 alias it
    belongs to. It is what ties the two together: a reader that finds long-name
    entries whose checksum does not match the following 8.3 entry must ignore
    them, because they are the remains of a file some other writer deleted. */
-static uint8_t lfn_checksum(const uint8_t name[FAT_NAME_LENGTH]) {
-  uint8_t sum = 0U;
-  for (uint32_t index = 0U; index < FAT_NAME_LENGTH; ++index) {
-    sum = (uint8_t)(((sum & 1U) != 0U ? 0x80U : 0U) + (sum >> 1) + name[index]);
-  }
-  return sum;
-}
 
 /* Is this character one an 8.3 name may hold? Anything else is dropped from a
    generated alias rather than encoded, which is what every other writer does
    and what keeps the alias a legal short name. */
-static uint32_t short_name_character(char value) {
-  if (value >= 'A' && value <= 'Z') return 1U;
-  if (value >= '0' && value <= '9') return 1U;
-  return value == '_' || value == '-' || value == '$' || value == '~';
-}
 
 /* Build the 8.3 alias for a name that does not fit: up to six legal
    characters of the base, then "~N", then up to three of the extension.
    BOOTRISCV64.EFI becomes BOOTRI~1.EFI, which is what mtools writes for it
    and therefore what a volume built by this repository already carries. */
-static void short_alias(const char *component, uint64_t length,
-                        uint32_t ordinal, uint8_t out[FAT_NAME_LENGTH]) {
-  for (uint32_t index = 0U; index < FAT_NAME_LENGTH; ++index) out[index] = ' ';
-  uint64_t dot = length;
-  for (uint64_t index = 0U; index < length; ++index) {
-    if (component[index] == '.') dot = index;
-  }
-  uint32_t used = 0U;
-  for (uint64_t index = 0U; index < dot && used < 6U; ++index) {
-    char value = upper(component[index]);
-    if (short_name_character(value) == 0U) continue;
-    out[used++] = (uint8_t)value;
-  }
-  out[used++] = (uint8_t)'~';
-  out[used++] = (uint8_t)('0' + (char)(ordinal % 10U));
-  uint32_t extension = 0U;
-  for (uint64_t index = dot + 1U; index < length && extension < 3U; ++index) {
-    char value = upper(component[index]);
-    if (short_name_character(value) == 0U) continue;
-    out[8U + extension] = (uint8_t)value;
-    ++extension;
-  }
-}
 
 /* Where a cluster's first sector is. Cluster numbering starts at 2: entries 0
    and 1 of the FAT hold the media descriptor and end-of-chain marker, and have
@@ -231,7 +117,7 @@ static xaios_status_t fat_entry_get(const xaios_fat_volume_t *volume,
   uint64_t sector = volume->reserved_sectors + offset / volume->sector_size;
   xaios_status_t status = read_sector(volume, sector, g_sector);
   if (status != XAIOS_OK) return status;
-  *out_value = get16(&g_sector[offset % volume->sector_size]);
+  *out_value = fat_get16(&g_sector[offset % volume->sector_size]);
   return XAIOS_OK;
 }
 
@@ -251,7 +137,7 @@ static xaios_status_t fat_entry_set(const xaios_fat_volume_t *volume,
                       offset / volume->sector_size;
     xaios_status_t status = read_sector(volume, sector, g_sector);
     if (status != XAIOS_OK) return status;
-    put16(&g_sector[offset % volume->sector_size], (uint16_t)value);
+    fat_put16(&g_sector[offset % volume->sector_size], (uint16_t)value);
     status = write_sector(volume, sector, g_sector);
     if (status != XAIOS_OK) return status;
   }
@@ -291,7 +177,7 @@ static xaios_status_t allocate_cluster(const xaios_fat_volume_t *volume,
       uint64_t within = ((cluster * 2U) % volume->sector_size) / 2U;
       for (; within < entries_per_sector && cluster < end;
            ++within, ++cluster) {
-        if (get16(&g_sector[within * 2U]) != FAT_FREE) continue;
+        if (fat_get16(&g_sector[within * 2U]) != FAT_FREE) continue;
         status = fat_entry_set(volume, (uint32_t)cluster, FAT_EOC);
         if (status != XAIOS_OK) return status;
         g_next_free_hint = (uint32_t)(cluster + 1U);
@@ -305,7 +191,7 @@ static xaios_status_t allocate_cluster(const xaios_fat_volume_t *volume,
 
 static xaios_status_t zero_cluster(const xaios_fat_volume_t *volume,
                                    uint32_t cluster) {
-  bytes_zero(g_sector, volume->sector_size);
+  fat_bytes_zero(g_sector, volume->sector_size);
   uint64_t first = cluster_sector(volume, cluster);
   for (uint64_t index = 0U; index < volume->sectors_per_cluster; ++index) {
     xaios_status_t status = write_sector(volume, first + index, g_sector);
@@ -398,59 +284,17 @@ static xaios_status_t extend_directory(const xaios_fat_volume_t *volume,
   return fat_entry_set(volume, cluster, added);
 }
 
-typedef struct directory_entry {
-  uint8_t name[FAT_NAME_LENGTH];
-  uint8_t attributes;
-  uint32_t first_cluster;
-  uint32_t size;
-  uint64_t index;
-  uint64_t sector;
-  uint64_t offset;
-} directory_entry_t;
-
-static void decode_entry(const uint8_t *raw, directory_entry_t *entry) {
-  bytes_copy(entry->name, raw, FAT_NAME_LENGTH);
-  entry->attributes = raw[11];
-  entry->first_cluster = get16(&raw[26]);
-  entry->size = get32(&raw[28]);
-}
 
 /* Where in an assembled long name a given entry's characters belong, and how
    to read them out of the entry. The thirteen characters are in three runs
    rather than one, which is an artefact of the entry having been fitted
    around the fields an 8.3 entry already used. */
-static const uint8_t k_lfn_offsets[FAT_LFN_CHARS] = {
-    1U, 3U, 5U, 7U, 9U, 14U, 16U, 18U, 20U, 22U, 24U, 28U, 30U};
 
 /* Take one long-name entry's characters into `out` at its ordinal's place.
    Returns zero when the entry holds a character this reader will not
    represent -- anything outside ASCII, which no name here uses and which
    would otherwise be silently mangled into a name that matched nothing. */
-static uint32_t lfn_gather(const uint8_t *raw, char *out, uint32_t capacity,
-                           uint32_t *out_length) {
-  uint32_t ordinal = raw[0] & 0x3FU;
-  if (ordinal == 0U || ordinal > FAT_LFN_MAX_ENTRIES) return 0U;
-  uint32_t base = (ordinal - 1U) * FAT_LFN_CHARS;
-  for (uint32_t index = 0U; index < FAT_LFN_CHARS; ++index) {
-    uint16_t value = get16(&raw[k_lfn_offsets[index]]);
-    if (value == 0x0000U || value == 0xFFFFU) continue;
-    if (value > 0x7FU) return 0U;
-    uint32_t position = base + index;
-    if (position >= capacity) return 0U;
-    out[position] = (char)value;
-    if (position + 1U > *out_length) *out_length = position + 1U;
-  }
-  return 1U;
-}
 
-static uint32_t names_equal_fold(const char *a, uint32_t a_length,
-                                 const char *b, uint32_t b_length) {
-  if (a_length != b_length) return 0U;
-  for (uint32_t index = 0U; index < a_length; ++index) {
-    if (upper(a[index]) != upper(b[index])) return 0U;
-  }
-  return 1U;
-}
 
 /* Find a named entry in a directory, by its 8.3 name or by its long one.
  *
@@ -492,7 +336,7 @@ static xaios_status_t find_entry(const xaios_fat_volume_t *volume,
         for (uint32_t i = 0U; i < sizeof(assembled); ++i) assembled[i] = '\0';
       }
       if (assembled_valid != 0U && raw[13] == assembled_checksum) {
-        if (lfn_gather(raw, assembled, XAIOS_FAT_PATH_MAX,
+        if (fat_lfn_gather(raw, assembled, XAIOS_FAT_PATH_MAX,
                        &assembled_length) == 0U) {
           assembled_valid = 0U;
         }
@@ -506,15 +350,15 @@ static xaios_status_t find_entry(const xaios_fat_volume_t *volume,
       continue;
     }
     uint32_t matched =
-        bytes_equal(raw, name->short_name, FAT_NAME_LENGTH) != 0 ? 1U : 0U;
+        fat_bytes_equal(raw, name->short_name, FAT_NAME_LENGTH) != 0 ? 1U : 0U;
     if (matched == 0U && assembled_valid != 0U && assembled_length != 0U &&
-        lfn_checksum(raw) == assembled_checksum) {
-      matched = names_equal_fold(assembled, assembled_length, name->text,
+        fat_lfn_checksum(raw) == assembled_checksum) {
+      matched = fat_names_equal_fold(assembled, assembled_length, name->text,
                                  name->text_length);
     }
     assembled_valid = 0U;
     if (matched == 0U) continue;
-    decode_entry(raw, entry);
+    fat_decode_entry(raw, entry);
     entry->index = index;
     entry->sector = sector;
     entry->offset = offset;
@@ -540,7 +384,7 @@ static xaios_status_t find_short_entry(const xaios_fat_volume_t *volume,
     if (raw[0] == 0x00U) return XAIOS_ERR_NOT_FOUND;
     if (raw[0] == 0xE5U) continue;
     if ((raw[11] & FAT_ATTR_LONG_NAME) == FAT_ATTR_LONG_NAME) continue;
-    if (bytes_equal(raw, name, FAT_NAME_LENGTH) != 0) return XAIOS_OK;
+    if (fat_bytes_equal(raw, name, FAT_NAME_LENGTH) != 0) return XAIOS_OK;
   }
 }
 
@@ -596,8 +440,8 @@ static xaios_status_t write_entry(const xaios_fat_volume_t *volume,
   status = read_sector(volume, sector, g_sector);
   if (status != XAIOS_OK) return status;
   uint8_t *raw = &g_sector[offset];
-  bytes_zero(raw, FAT_DIR_ENTRY_SIZE);
-  bytes_copy(raw, name, FAT_NAME_LENGTH);
+  fat_bytes_zero(raw, FAT_DIR_ENTRY_SIZE);
+  fat_bytes_copy(raw, name, FAT_NAME_LENGTH);
   raw[11] = attributes;
   /* A constant date of 1980-01-01, the epoch of the format, rather than zero.
      XAIOS has no wall clock while installing onto a bare machine, and a
@@ -605,13 +449,13 @@ static xaios_status_t write_entry(const xaios_fat_volume_t *volume,
      but zero is not a legal FAT date at all: the month and day fields are
      one-based, so a zero encodes the zeroth day of the zeroth month, which
      readers render as garbage. Firmware ignores these fields either way. */
-  put16(&raw[14], 0U);
-  put16(&raw[16], FAT_EPOCH_DATE);
-  put16(&raw[18], FAT_EPOCH_DATE);
-  put16(&raw[22], 0U);
-  put16(&raw[24], FAT_EPOCH_DATE);
-  put16(&raw[26], (uint16_t)first_cluster);
-  put32(&raw[28], size);
+  fat_put16(&raw[14], 0U);
+  fat_put16(&raw[16], FAT_EPOCH_DATE);
+  fat_put16(&raw[18], FAT_EPOCH_DATE);
+  fat_put16(&raw[22], 0U);
+  fat_put16(&raw[24], FAT_EPOCH_DATE);
+  fat_put16(&raw[26], (uint16_t)first_cluster);
+  fat_put32(&raw[28], size);
   return write_sector(volume, sector, g_sector);
 }
 
@@ -631,12 +475,12 @@ static xaios_status_t encode_component(const char *component, uint64_t length,
   }
   out->text[length] = '\0';
   out->text_length = (uint32_t)length;
-  if (encode_name(component, length, out->short_name) == XAIOS_OK) {
+  if (fat_encode_name(component, length, out->short_name) == XAIOS_OK) {
     out->needs_long = 0U;
     return XAIOS_OK;
   }
   out->needs_long = 1U;
-  short_alias(component, length, 1U, out->short_name);
+  fat_short_alias(component, length, 1U, out->short_name);
   return XAIOS_OK;
 }
 
@@ -653,7 +497,7 @@ static xaios_status_t unique_alias(const xaios_fat_volume_t *volume,
                                    const directory_cursor_t *cursor,
                                    fat_name_t *name) {
   for (uint32_t ordinal = 1U; ordinal <= 9U; ++ordinal) {
-    short_alias(name->text, name->text_length, ordinal, name->short_name);
+    fat_short_alias(name->text, name->text_length, ordinal, name->short_name);
     if (find_short_entry(volume, cursor, name->short_name) ==
         XAIOS_ERR_NOT_FOUND) {
       return XAIOS_OK;
@@ -675,7 +519,7 @@ static xaios_status_t write_long_name(const xaios_fat_volume_t *volume,
   uint32_t entries = long_entry_count(name);
   if (entries == 0U) return XAIOS_OK;
   if (entries > FAT_LFN_MAX_ENTRIES) return XAIOS_ERR_INVALID;
-  uint8_t checksum = lfn_checksum(name->short_name);
+  uint8_t checksum = fat_lfn_checksum(name->short_name);
   for (uint32_t slot = 0U; slot < entries; ++slot) {
     uint32_t ordinal = entries - slot;
     uint64_t sector = 0U;
@@ -686,12 +530,12 @@ static xaios_status_t write_long_name(const xaios_fat_volume_t *volume,
     status = read_sector(volume, sector, g_sector);
     if (status != XAIOS_OK) return status;
     uint8_t *raw = &g_sector[offset];
-    bytes_zero(raw, FAT_DIR_ENTRY_SIZE);
+    fat_bytes_zero(raw, FAT_DIR_ENTRY_SIZE);
     raw[0] = (uint8_t)(ordinal | (slot == 0U ? FAT_LFN_LAST : 0U));
     raw[11] = FAT_ATTR_LONG_NAME;
     raw[12] = 0U;
     raw[13] = checksum;
-    put16(&raw[26], 0U);
+    fat_put16(&raw[26], 0U);
     uint32_t base = (ordinal - 1U) * FAT_LFN_CHARS;
     for (uint32_t index = 0U; index < FAT_LFN_CHARS; ++index) {
       uint32_t position = base + index;
@@ -703,7 +547,7 @@ static xaios_status_t write_long_name(const xaios_fat_volume_t *volume,
       } else {
         value = 0xFFFFU; /* unused, and 0xFFFF rather than zero by the spec */
       }
-      put16(&raw[k_lfn_offsets[index]], value);
+      fat_put16(&raw[fat_k_lfn_offsets[index]], value);
     }
     status = write_sector(volume, sector, g_sector);
     if (status != XAIOS_OK) return status;
@@ -797,7 +641,7 @@ xaios_status_t fat_mount(xaios_block_device_t *device,
   if (info.logical_sector_size != FAT_SECTOR_SIZE) {
     return XAIOS_ERR_UNSUPPORTED;
   }
-  bytes_zero(volume, sizeof(*volume));
+  fat_bytes_zero(volume, sizeof(*volume));
   volume->device = device;
   volume->sector_size = info.logical_sector_size;
   volume->total_sectors = info.capacity_bytes / info.logical_sector_size;
@@ -805,14 +649,14 @@ xaios_status_t fat_mount(xaios_block_device_t *device,
   if (g_sector[510] != 0x55U || g_sector[511] != 0xAAU) {
     return XAIOS_ERR_INVALID;
   }
-  if (get16(&g_sector[11]) != FAT_SECTOR_SIZE) return XAIOS_ERR_UNSUPPORTED;
+  if (fat_get16(&g_sector[11]) != FAT_SECTOR_SIZE) return XAIOS_ERR_UNSUPPORTED;
   volume->sectors_per_cluster = g_sector[13];
-  volume->reserved_sectors = get16(&g_sector[14]);
+  volume->reserved_sectors = fat_get16(&g_sector[14]);
   volume->fat_count = g_sector[16];
-  volume->root_entry_count = get16(&g_sector[17]);
-  volume->sectors_per_fat = get16(&g_sector[22]);
-  uint64_t declared = get16(&g_sector[19]);
-  if (declared == 0U) declared = get32(&g_sector[32]);
+  volume->root_entry_count = fat_get16(&g_sector[17]);
+  volume->sectors_per_fat = fat_get16(&g_sector[22]);
+  uint64_t declared = fat_get16(&g_sector[19]);
+  if (declared == 0U) declared = fat_get32(&g_sector[32]);
   if (volume->sectors_per_cluster == 0U || volume->fat_count == 0U ||
       volume->sectors_per_fat == 0U || volume->reserved_sectors == 0U ||
       declared == 0U || declared > volume->total_sectors) {
@@ -851,7 +695,7 @@ xaios_status_t fat_format(xaios_block_device_t *device, const char *label,
   if (info.logical_sector_size != FAT_SECTOR_SIZE) {
     return XAIOS_ERR_UNSUPPORTED;
   }
-  bytes_zero(volume, sizeof(*volume));
+  fat_bytes_zero(volume, sizeof(*volume));
   volume->device = device;
   volume->sector_size = info.logical_sector_size;
   volume->total_sectors = info.capacity_bytes / info.logical_sector_size;
@@ -936,39 +780,39 @@ xaios_status_t fat_format(xaios_block_device_t *device, const char *label,
 
   /* Boot sector. The jump instruction and OEM name are what a firmware
      implementation looks at first to decide this is a FAT volume at all. */
-  bytes_zero(g_sector, volume->sector_size);
+  fat_bytes_zero(g_sector, volume->sector_size);
   g_sector[0] = 0xEBU;
   g_sector[1] = 0x3CU;
   g_sector[2] = 0x90U;
   static const char oem[] = "XAIOS1.0";
-  bytes_copy(&g_sector[3], oem, 8U);
-  put16(&g_sector[11], (uint16_t)volume->sector_size);
+  fat_bytes_copy(&g_sector[3], oem, 8U);
+  fat_put16(&g_sector[11], (uint16_t)volume->sector_size);
   g_sector[13] = (uint8_t)volume->sectors_per_cluster;
-  put16(&g_sector[14], (uint16_t)volume->reserved_sectors);
+  fat_put16(&g_sector[14], (uint16_t)volume->reserved_sectors);
   g_sector[16] = (uint8_t)volume->fat_count;
-  put16(&g_sector[17], (uint16_t)volume->root_entry_count);
+  fat_put16(&g_sector[17], (uint16_t)volume->root_entry_count);
   if (volume->total_sectors < UINT64_C(0x10000)) {
-    put16(&g_sector[19], (uint16_t)volume->total_sectors);
+    fat_put16(&g_sector[19], (uint16_t)volume->total_sectors);
   } else {
-    put16(&g_sector[19], 0U);
-    put32(&g_sector[32], (uint32_t)volume->total_sectors);
+    fat_put16(&g_sector[19], 0U);
+    fat_put32(&g_sector[32], (uint32_t)volume->total_sectors);
   }
   g_sector[21] = 0xF8U; /* fixed disk */
-  put16(&g_sector[22], (uint16_t)volume->sectors_per_fat);
-  put16(&g_sector[24], 63U);  /* sectors per track, unused but conventional */
-  put16(&g_sector[26], 255U); /* heads, likewise */
+  fat_put16(&g_sector[22], (uint16_t)volume->sectors_per_fat);
+  fat_put16(&g_sector[24], 63U);  /* sectors per track, unused but conventional */
+  fat_put16(&g_sector[26], 255U); /* heads, likewise */
   g_sector[38] = 0x29U;       /* extended boot signature: label and id follow */
-  put32(&g_sector[39], UINT32_C(0x58414F53));
+  fat_put32(&g_sector[39], UINT32_C(0x58414F53));
   for (uint64_t index = 0U; index < 11U; ++index) {
     g_sector[43U + index] = ' ';
   }
   if (label != 0) {
     for (uint64_t index = 0U; index < 11U && label[index] != '\0'; ++index) {
-      g_sector[43U + index] = (uint8_t)upper(label[index]);
+      g_sector[43U + index] = (uint8_t)fat_upper(label[index]);
     }
   }
   static const char type[] = "FAT16   ";
-  bytes_copy(&g_sector[54], type, 8U);
+  fat_bytes_copy(&g_sector[54], type, 8U);
   g_sector[510] = 0x55U;
   g_sector[511] = 0xAAU;
   xaios_status_t status = write_sector(volume, 0U, g_sector);
@@ -978,7 +822,7 @@ xaios_status_t fat_format(xaios_block_device_t *device, const char *label,
      is unreachable until a FAT entry points at it, so leaving it as it was
      costs nothing and writing it would cost the whole volume's worth of I/O
      on every install. */
-  bytes_zero(g_sector, volume->sector_size);
+  fat_bytes_zero(g_sector, volume->sector_size);
   for (uint64_t sector = volume->reserved_sectors;
        sector < volume->data_start_sector; ++sector) {
     status = write_sector(volume, sector, g_sector);
@@ -987,8 +831,8 @@ xaios_status_t fat_format(xaios_block_device_t *device, const char *label,
   /* Entries 0 and 1: the media descriptor, and the end-of-chain marker. */
   status = read_sector(volume, volume->reserved_sectors, g_sector);
   if (status != XAIOS_OK) return status;
-  put16(&g_sector[0], 0xFFF8U);
-  put16(&g_sector[2], 0xFFFFU);
+  fat_put16(&g_sector[0], 0xFFF8U);
+  fat_put16(&g_sector[2], 0xFFFFU);
   for (uint64_t copy = 0U; copy < volume->fat_count; ++copy) {
     status = write_sector(
         volume, volume->reserved_sectors + copy * volume->sectors_per_fat,
@@ -1011,7 +855,7 @@ xaios_status_t fat_format(xaios_block_device_t *device, const char *label,
     }
     for (uint64_t index = 0U;
          index < FAT_NAME_LENGTH && label[index] != '\0'; ++index) {
-      name[index] = (uint8_t)upper(label[index]);
+      name[index] = (uint8_t)fat_upper(label[index]);
     }
     directory_cursor_t root = {1U, 0U};
     status = write_entry(volume, &root, 0U, name, FAT_ATTR_VOLUME_ID, 0U, 0U);
@@ -1147,8 +991,8 @@ xaios_status_t fat_write_file(xaios_fat_volume_t *volume, const char *path,
          index < volume->sectors_per_cluster && written < length; ++index) {
       uint64_t chunk = length - written;
       if (chunk > volume->sector_size) chunk = volume->sector_size;
-      bytes_zero(g_sector, volume->sector_size);
-      bytes_copy(g_sector, &bytes[written], chunk);
+      fat_bytes_zero(g_sector, volume->sector_size);
+      fat_bytes_copy(g_sector, &bytes[written], chunk);
       status = write_sector(volume, base + index, g_sector);
       if (status != XAIOS_OK) {
         (void)free_chain(volume, first);
@@ -1203,7 +1047,7 @@ xaios_status_t fat_read_file(xaios_fat_volume_t *volume, const char *path,
       if (status != XAIOS_OK) return status;
       uint64_t chunk = entry.size - read;
       if (chunk > volume->sector_size) chunk = volume->sector_size;
-      bytes_copy(&out[read], g_sector, chunk);
+      fat_bytes_copy(&out[read], g_sector, chunk);
       read += chunk;
     }
     uint32_t next = 0U;
