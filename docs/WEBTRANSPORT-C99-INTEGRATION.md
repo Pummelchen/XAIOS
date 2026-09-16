@@ -215,8 +215,42 @@ name the cause of the first failing round.
 
 ## What this document does not claim
 
-No part of the integration is implemented. Every line number is at the pin
-above and will move when the library moves. The verdict is that the work is
-bounded and enumerated -- not that it is done, and not that a handshake on a
-booted XAIOS guest has been observed. That observation is what `B-131` closes
-on.
+No handshake on a booted XAIOS guest has been observed yet, and the crypto
+backend, the trust verifier, the test application and the gate are not written.
+Every line number is at the pin above and will move when the library moves. The
+verdict is that the work is bounded and enumerated -- not that it is done. The
+observation of a completed handshake is what `B-131` closes on; the vendoring
+and the platform seam that have landed since are recorded at the end of this
+document.
+
+## Landed so far (2026-09-17)
+
+Two things below the line above are now measurements rather than estimates.
+
+**The tree is vendored at the pin.** `third_party/webtransport-c99/` is
+upstream's `include/` and `src/` at
+`46937e29eb734887ca7b739abfedaf68ae565de2`, with `MANIFEST.sha256` and
+`tests/repository/check-webtransport-vendor.py` keeping it exactly upstream's.
+
+**A1 and A2 are written, and the compile surface is four files.** The seam the
+plan says must come from beside the tree does:
+`userspace/wt/xaios/wt_xaios_platform.{h,c}` implements the socket layer over
+`NET_OPEN_UDP`, `NET_SEND`, `NET_RECV` and `WAIT_EVENTS`, and
+`wt_xaios_clock.c` implements `clock_gettime` over `CLOCK_NANOS`. The build
+defines `WEBTRANSPORT_RUNTIME_UDP_PLATFORM_H` and force-includes the seam for
+`src/runtime/udp.c` only, so the vendored POSIX branch is inert and upstream is
+unmodified. `scripts/build-wt-upstream.sh` (make `wt-upstream-compile`) builds
+37 sources for aarch64, x86_64 and riscv64 with no errors. Of the ten source
+directories, only four files fail, and they are exactly the ones this document
+predicted: `src/crypto/crypto_openssl.c`, `src/tls/keyshare.c`,
+`src/tls/trust.c` and `src/tls/self_signed.c` -- the A5 and A6/A7 work. The
+whole of `core/`, `quic/`, `runtime/` and the remaining `tls/` files compile
+untouched.
+
+Two details the implementation settled that the plan left open. XAIOS opens and
+binds a UDP socket in one syscall, so the seam's handles are indices into a
+small table and the kernel descriptor is created when the port is first known.
+And there is no `MSG_PEEK`, which the library uses to look at a datagram without
+consuming it, so the seam keeps a one-datagram stash per socket and serves the
+next receive from it.
+

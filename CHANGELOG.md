@@ -23,6 +23,19 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **The WebTransport C99 port has its XAIOS platform seam, and the library's
+  remaining surface is four files.** The vendored library keeps every
+  operating-system difference behind one private header, and that header is
+  a POSIX branch; `userspace/wt/xaios/` supplies the same operations over
+  XAIOS's UDP syscalls and clock instead, so the vendored tree stays exactly
+  upstream's. `make wt-upstream-compile` builds them against the hosted libc
+  sysroot: 37 sources for each of the three architectures, no errors, and it
+  names the four that still call OpenSSL -- the crypto primitive backend and
+  the three TLS files that use OpenSSL directly. Everything else compiles
+  unmodified, which is the integration plan's claim measured rather than
+  estimated. The BearSSL backend and the handshake gate are what follow
+  (B-131).
+
 - **The completed C99 WebTransport library is vendored, at a pinned commit.**
   `third_party/webtransport-c99/` holds upstream `C99/include` and `C99/src`
   whole -- the QUIC wire core and crypto, the TLS 1.3 handshake over CRYPTO

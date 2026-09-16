@@ -30,6 +30,7 @@ RUNTIME_SCRIPTS = {
     "build-xapt-repository.sh",
     "build-libc-runtime-test.sh",
     "build-libc.sh",
+    "build-wt-upstream.sh",
     "build-netboot-image.sh",
     "create-initfs.py",
     "create-persistent-image.sh",
