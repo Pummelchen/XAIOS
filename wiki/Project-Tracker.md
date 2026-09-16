@@ -1,6 +1,6 @@
 # Project Tracker
 
-Last reviewed: 2026-09-16.
+Last reviewed: 2026-09-17.
 
 This is the only human-maintained XAIOS project tracker. Roadmaps, milestones,
 phase plans, open decisions and risks are consolidated here, and the Wiki keeps
