@@ -498,6 +498,25 @@ riscv64_sscratch_window_end:
   .globl riscv64_return_from_user_exit
   .type riscv64_return_from_user_exit, @function
 riscv64_return_from_user_exit:
+  /* The kernel resumes with interrupts enabled, and with sscratch cleared.
+   *
+   * Both are missing from a bare `ret`, and both were measured the same way.
+   * A trap from user mode clears `sstatus.SIE` and the *normal* return restores
+   * it from the frame on the way out through `sret` -- but this path leaves
+   * through `ret`, so the kernel continuation it returns into ran with
+   * interrupts off for the rest of its life. Nothing notices while that
+   * continuation is a few instructions from a `timer_disable()`, which is why
+   * it survived; it stopped a scheduled user task dead, because the context
+   * waiting to be handed the CPU back never got another tick.
+   *
+   * `sscratch` is the same class of state: the swap that brought the kernel
+   * back left the *user* stack pointer in it, and the next trap entry reads a
+   * non-zero sscratch as "this trap came from user mode" -- the misread
+   * `B-108` was about -- so it would have pushed its frame onto a user address.
+   */
+  li    t0, 0x2             /* SIE */
+  csrs  sstatus, t0
+  csrw  sscratch, zero
   addi  sp, sp, TRAP_FRAME_BYTES
   ld    ra, 0(sp)
   ld    s0, 8(sp)

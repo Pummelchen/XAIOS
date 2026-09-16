@@ -1330,8 +1330,18 @@ persistent_network_done:
     kassert(service_start("/bin/xaios-worker") == XAIOS_OK);
     int worker_exit_code = user_process_run(&worker_process);
     kassert(worker_exit_code == 0);
-    klog("kernel: /bin/xaios-worker pid=%u returned to kernel exit_code=%u\n",
-         pid, (unsigned)worker_exit_code);
+    /* A user exit leaves through the port's own return path, and what it
+       restores is part of its contract: this kernel called `xaios_enter_user`
+       with interrupts on and gets them back on. RISC-V returned with them off
+       until this check existed, which is invisible until the kernel has to wait
+       for a tick -- a scheduled task handing the CPU back, for one. */
+    uint32_t resumed_interrupts = (uint32_t)xaios_interrupts_enabled();
+    klog("kernel: /bin/xaios-worker pid=%u returned to kernel exit_code=%u "
+         "interrupts=%u\n",
+         pid, (unsigned)worker_exit_code, (unsigned)resumed_interrupts);
+#if defined(__riscv)
+    kassert(resumed_interrupts != 0U);
+#endif
     user_process_reclaim_address_space(&worker_process);
   }
 #endif
