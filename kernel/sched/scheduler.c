@@ -852,16 +852,25 @@ uint64_t scheduler_tick_count(void) { return g_tick_count; }
 uint64_t scheduler_context_switch_count(void) { return g_context_switch_count; }
 uint64_t scheduler_yield_count(void) { return g_yield_count; }
 
+/* "No task" and "no scheduler yet" answer the same thing, and the second is not
+ * a corner case: this port's timer is armed at 100 Hz for the exception
+ * self-test long before `scheduler_init()` allocates the run queues, and an
+ * architecture whose tick asks who is running before it ticks -- RISC-V's does,
+ * to tell a tick that switched from one that did not (B-129) -- dereferenced a
+ * null `g_runqueues` and took the machine down with
+ * `class=load-access-fault stval=0x210`, which is `current_pid`'s offset in that
+ * array. The guard is the difference between a tick that arrives early being
+ * ignored and being fatal. */
 uint32_t scheduler_current_pid(void) {
   uint32_t cpu = smp_cpu_id();
-  if (cpu >= g_cpu_capacity) {
+  if (g_runqueues == 0 || cpu >= g_cpu_capacity) {
     return 0;
   }
   return g_runqueues[cpu].current_pid;
 }
 
 uint32_t scheduler_current_pid_on_cpu(uint32_t cpu_id) {
-  if (cpu_id >= g_cpu_capacity) {
+  if (g_runqueues == 0 || cpu_id >= g_cpu_capacity) {
     return 0;
   }
   return g_runqueues[cpu_id].current_pid;
