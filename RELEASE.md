@@ -5,11 +5,12 @@ The release and build standard for this repository.
 **Part 1 is generic** and identical in every Pummelchen repository. **Part 2 is this
 repository's own section**, and it wins wherever the two disagree.
 
-This file is a **generated copy** — do not edit it here. *For maintainers:* the
+This file is a **deployed copy** — do not edit it here. *For maintainers:* the
 master is `docs/release-rules.md` in the `TinyTitan` repository, which holds Part 1
-once and every repository's Part 2 side by side; edit that and run
-`tools/sync-release-rules.py --apply`. An agent working in this repository should
-treat this file as authoritative and does not need to leave the repository.
+once and every repository's Part 2 side by side. Edit the master, then bring this
+copy and the other repositories' copies into step by hand. An agent working in this
+repository should treat this file as authoritative and does not need to leave the
+repository.
 
 ---
 
@@ -155,13 +156,15 @@ Leave previous releases' notes and performance tables alone.
 
 ## 1.10 Cross-repository
 
-- **This file is the master; every repository's copy is generated from it.** The
-  master is `docs/release-rules.md` in `TinyTitan`, and its
-  `tools/sync-release-rules.py` splits it into Part 1 and each repository's Part 2
-  and deploys the resulting `RELEASE.md` plus the `## Releasing` section of each
-  `AGENTS.md`. Edit the master and run `--apply`; `--check` is the drift gate and
-  exits non-zero when a committed copy no longer matches. **Never hand-edit a
-  deployed copy** — the next run overwrites it.
+- **This file is the master; every repository's copy is deployed from it.** The
+  master is `docs/release-rules.md` in `TinyTitan`, which holds Part 1 once and each
+  repository's Part 2 side by side. It is deployed to each repository's `RELEASE.md`
+  and to the `## Releasing` section of its `AGENTS.md`. **The deployment is manual.**
+  A generated copy is no longer produced: the tool that made one wrote to every
+  repository unconditionally and opened a pull request in each, and it was removed
+  rather than guarded. Edit the master, then update each copy by hand to match.
+  There is **no drift gate** to catch a copy that falls behind, so keeping them in
+  step is a discipline, and a copy that disagrees with the master is a defect.
 - **Repository rules live in the master, not in shell-script comments.** A rule an
   agent cannot find is a rule that will be broken.
 - **`AGENTS.md` is the one instruction file, and every harness must reach it.** This
@@ -177,7 +180,8 @@ Leave previous releases' notes and performance tables alone.
   `.rules`, `.cursorrules`, `.windsurfrules`, `.clinerules`,
   `.github/copilot-instructions.md`, `AGENT.md`, and only then `AGENTS.md` — so any
   of those six silently replaces this file for every Zed user.
-  `tools/sync-release-rules.py --check` fails when one appears.
+  Check for them by hand in every repository; the drift gate that used to fail on one
+  was removed with the deployment tool.
 - **An archived repository is read-only.** Nothing can be committed to it, so no
   release step may depend on one. Name the exclusion rather than leaving a gap.
 - **A check that has never been seen to fail is not yet trusted.**
