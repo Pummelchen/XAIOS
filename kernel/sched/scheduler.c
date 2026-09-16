@@ -985,6 +985,55 @@ static void scheduler_numa_steal_self_test(uint32_t this_cpu) {
        this_cpu, local_node, local_victim, stolen_local, remote_victim);
 }
 
+xaios_status_t scheduler_register_kernel_task(uint32_t pid, void (*entry)(void),
+                                              uint64_t stack_top,
+                                              xaios_task_priority_t priority) {
+  if (entry == 0 || stack_top == 0U) {
+    return XAIOS_ERR_INVALID;
+  }
+  xaios_status_t status = scheduler_register_on_cpu(pid, priority, smp_cpu_id());
+  if (status != XAIOS_OK) {
+    return status;
+  }
+  xaios_context_frame_t *frame = scheduler_task_frame(pid);
+  if (frame == 0 || xaios_context_frame_kernel_entry(frame, entry, stack_top) == 0) {
+    /* The task record is given back rather than left registered: a task whose
+     * port cannot resume it is a task that would hang the CPU the first time it
+     * was picked. */
+    scheduler_unregister(pid);
+    return XAIOS_ERR_UNSUPPORTED;
+  }
+  /* Registered, and deliberately *not* runnable. The caller has to adopt the
+   * context that will hand the CPU over first, and until it has, a runnable
+   * task is one a tick may pick -- which would take the CPU from a context
+   * whose frame has not been saved yet, and never give it back. That window is
+   * not theoretical: the first version of this made the task runnable here and
+   * a tick landed inside it. */
+  return XAIOS_OK;
+}
+
+xaios_status_t scheduler_adopt_this_context(uint32_t pid,
+                                            xaios_task_priority_t priority) {
+  uint32_t cpu = smp_cpu_id();
+  xaios_status_t status = scheduler_register_on_cpu(pid, priority, cpu);
+  if (status != XAIOS_OK) {
+    return status;
+  }
+  /* Runnable and in the queue, so it can be picked again after it is switched
+     away from, and current, so the tick saves it before it picks. Its frame is
+     deliberately not filled here: the first tick that switches away from it
+     saves the context that is running now, which is the only place it exists. */
+  status = scheduler_set_runnable(pid);
+  if (status != XAIOS_OK) {
+    scheduler_unregister(pid);
+    return status;
+  }
+  xaios_spin_lock(&g_runqueues[cpu].lock);
+  g_runqueues[cpu].current_pid = pid;
+  xaios_spin_unlock(&g_runqueues[cpu].lock);
+  return XAIOS_OK;
+}
+
 void scheduler_self_test(void) {
   kassert(g_initialized != 0);
   uint32_t cpu = smp_cpu_id();

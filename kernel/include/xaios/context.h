@@ -39,4 +39,18 @@ void context_switch(xaios_context_frame_t *old,
  * the exception round trip. The periodic timer and IRQ interface must be on. */
 uint64_t aarch64_simd_irq_self_test(void);
 
+/* Build a frame whose first instruction runs in *kernel* mode on `stack_top`,
+ * which is the shape a task needs when it has to own its kernel context: a task
+ * a trap return switches to resumes on that stack rather than on whatever stack
+ * the CPU happened to be using.
+ *
+ * Returns 1 when this architecture can express that and 0 when it cannot, which
+ * is a refusal the caller reports by name rather than a failure that looks like
+ * success. The two ports that cannot say so today are AArch64, whose exception
+ * return keeps the CPU's SP_EL1 instead of loading one from the frame, and
+ * x86-64, which does not tick the scheduler from a trap at all (B-132). */
+int xaios_context_frame_kernel_entry(xaios_context_frame_t *frame,
+                                     void (*entry)(void),
+                                     uint64_t stack_top);
+
 #endif

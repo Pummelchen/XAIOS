@@ -117,6 +117,37 @@ void scheduler_self_test(void);
  * one that cannot yet apply a decision says so by name rather than passing. */
 void platform_scheduler_tick_self_test(void);
 
+/* A task that begins in kernel mode on a stack of its own, and the call that
+ * makes the context already running one.
+ *
+ * These are the two halves every port needs before a user process can be a
+ * scheduled task: `scheduler_register_kernel_task` creates a task whose frame
+ * the architecture's trap return can resume on that task's own stack (through
+ * `xaios_context_frame_kernel_entry`, which refuses on a port that cannot), and
+ * `scheduler_adopt_this_context` registers the *running* kernel context as a
+ * task so a tick can save it and hand the CPU to another task -- which is how a
+ * dispatcher gets the machine back after it has handed it over. Registering a
+ * context whose frame has not been filled yet is the point: the first tick that
+ * switches away from it saves it.
+ *
+ * `scheduler_register_kernel_task` leaves its task *registered and not
+ * runnable*. The caller adopts the context that will hand the CPU over first
+ * and makes the task runnable afterwards; a task made runnable before that is
+ * one a tick can pick while the caller's own frame does not exist yet, and the
+ * CPU would leave a context that can never be resumed. */
+xaios_status_t scheduler_register_kernel_task(uint32_t pid, void (*entry)(void),
+                                              uint64_t stack_top,
+                                              xaios_task_priority_t priority);
+xaios_status_t scheduler_adopt_this_context(uint32_t pid,
+                                            xaios_task_priority_t priority);
+
+/* The behavioural test behind that mechanism: hand this CPU to a second kernel
+ * context and require the timer to bring it back. `scheduler_self_test` proves
+ * a decision reaches a frame; this proves the machine actually runs the other
+ * task and returns. An architecture that cannot express a kernel-entry frame
+ * says so by name (B-132). */
+void platform_kernel_preemption_self_test(void);
+
 /* Statistics and telemetry */
 void scheduler_get_stats(uint32_t cpu_id, xaios_sched_stats_t *stats);
 void scheduler_dump_stats(void);
