@@ -309,14 +309,32 @@ DNS_PATIENCE_SECONDS = 60.0
 
 
 def wait_dns_result(key: Path, port: int, command: str, label: str) -> str:
-    """Wait for XAIOS's asynchronous resolver without accepting a timeout."""
+    """Wait for XAIOS's asynchronous resolver without accepting a timeout.
+
+    An *empty* answer is waited for like a pending one rather than treated as a
+    verdict, and the two are told apart when the patience runs out. The command
+    is run with `ok=None`, so a connection that failed produces an empty string
+    exactly as a command with nothing to say does -- and CI's aggregate caught
+    this the one way it must not be caught: the aarch64 leg failed with
+    `DNS A response was neither authenticated nor fail-closed: ''`, which reads
+    as a resolver that answered an empty address. The run before it, with
+    identical kernel and gate code, passed the same check, so what the message
+    described was a probe that produced no output, not a resolver verdict.
+    """
     deadline = time.monotonic() + DNS_PATIENCE_SECONDS
     value = ""
     while time.monotonic() < deadline:
         value = ssh_command(key, port, command, ok=None)
-        if "pending" not in value:
+        if "pending" not in value and value.strip() != "":
             return value
         time.sleep(0.5)
+    if value.strip() == "":
+        raise RuntimeError(
+            f"DNS {label} produced no output at all for "
+            f"{DNS_PATIENCE_SECONDS:.0f} seconds: the command printed nothing, "
+            f"which is a connection that did not run rather than a resolver "
+            f"that answered"
+        )
     raise RuntimeError(
         f"DNS {label} remained pending for {DNS_PATIENCE_SECONDS:.0f} seconds, "
         f"longer than the resolver's own walk budget: it never completed at all"
@@ -445,7 +463,7 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
             except ValueError as error:
                 raise RuntimeError(
                     "DNS A response was neither authenticated nor fail-closed: "
-                    f"{dns_value!r}"
+                    f"{dns_value!r} (the whole line was {second_dns!r})"
                 ) from error
         second_aaaa = wait_dns_result(key, port, "nslookup -6 example.com", "AAAA")
         aaaa_value = second_aaaa.partition(": ")[2].strip()
@@ -456,7 +474,8 @@ def exercise(arch: str, key: Path, docker_enabled: bool) -> dict[str, object]:
             except ValueError as error:
                 raise RuntimeError(
                     "DNS AAAA response was neither authenticated nor "
-                    f"fail-closed: {aaaa_value!r}"
+                    f"fail-closed: {aaaa_value!r} (the whole line was "
+                    f"{second_aaaa!r})"
                 ) from error
         ssh_command(key, port, "config export /tmp/closure-config.bin")
         assert_contains(ssh_command(key, port,
