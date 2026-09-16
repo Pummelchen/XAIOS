@@ -2,15 +2,13 @@
 
 The release and build standard for this repository.
 
-**Part 1 is generic** and identical in every Pummelchen repository. **Part 2 is this
-repository's own section**, and it wins wherever the two disagree.
+**This file belongs to this repository.** Edit it here and nowhere else. It was once
+deployed from a master document kept in another repository; that arrangement is gone.
+Nothing outside this repository governs these rules or can overwrite this file, and an
+agent working here never needs to leave the repository to find the standard.
 
-This file is a **deployed copy** — do not edit it here. *For maintainers:* the
-master is `docs/release-rules.md` in the `TinyTitan` repository, which holds Part 1
-once and every repository's Part 2 side by side. Edit the master, then bring this
-copy and the other repositories' copies into step by hand. An agent working in this
-repository should treat this file as authoritative and does not need to leave the
-repository.
+**Part 1 is the rule set** and **Part 2 is this repository's own section**; where the
+two appear to disagree, Part 2 wins.
 
 ---
 
@@ -154,23 +152,22 @@ Verify the Release: the notes quote the digest in the `.sha256` beside it, the
 assets are the archive and its checksum, and the changelog points at the same tag.
 Leave previous releases' notes and performance tables alone.
 
-## 1.10 Cross-repository
+## 1.10 Rules, agents and other repositories
 
-- **This file is the master; every repository's copy is deployed from it.** The
-  master is `docs/release-rules.md` in `TinyTitan`, which holds Part 1 once and each
-  repository's Part 2 side by side. It is deployed to each repository's `RELEASE.md`
-  and to the `## Releasing` section of its `AGENTS.md`. **The deployment is manual.**
-  A generated copy is no longer produced: the tool that made one wrote to every
-  repository unconditionally and opened a pull request in each, and it was removed
-  rather than guarded. Edit the master, then update each copy by hand to match.
-  There is **no drift gate** to catch a copy that falls behind, so keeping them in
-  step is a discipline, and a copy that disagrees with the master is a defect.
-- **Repository rules live in the master, not in shell-script comments.** A rule an
-  agent cannot find is a rule that will be broken.
+- **These rules live in this repository and are edited only here.** They are not
+  deployed from anywhere and nothing outside this repository can overwrite them. A
+  rule an agent cannot find is a rule that will be broken, so a rule about this
+  repository belongs in this file or in `AGENTS.md` — not in a shell-script comment,
+  and not in another repository.
+- **Work happens in this repository only.** Never commit, push, open a pull request
+  against, or otherwise modify another repository. A change that appears to belong
+  elsewhere is reported to the owner with the exact edit and the reason, not applied.
+  Touching another repository requires an instruction that names it, and "the fix
+  lives there" is not one.
 - **`AGENTS.md` is the one instruction file, and every harness must reach it.** This
   account works with Codex, Claude Code, DeepSeek Harness, OpenCode, Qwen Code,
   Qoder and Zed. Six read `AGENTS.md` directly; **Claude Code does not** — its
-  documentation is explicit that it reads `CLAUDE.md`, not `AGENTS.md` — so every
+  documentation is explicit that it reads `CLAUDE.md`, not `AGENTS.md` — so this
   repository also carries a committed `CLAUDE.md` whose entire content is the
   `@AGENTS.md` import. Commit it: a symlink made on one machine is invisible to a
   fresh clone, to CI and to every other checkout, and on Windows it needs
@@ -179,14 +176,11 @@ Leave previous releases' notes and performance tables alone.
 - **Never add a file that shadows `AGENTS.md`.** Zed takes the *first match* from
   `.rules`, `.cursorrules`, `.windsurfrules`, `.clinerules`,
   `.github/copilot-instructions.md`, `AGENT.md`, and only then `AGENTS.md` — so any
-  of those six silently replaces this file for every Zed user.
-  Check for them by hand in every repository; the drift gate that used to fail on one
-  was removed with the deployment tool.
+  of those six silently replaces this file for every Zed user. Check for them whenever
+  the instruction file changes.
 - **An archived repository is read-only.** Nothing can be committed to it, so no
   release step may depend on one. Name the exclusion rather than leaving a gap.
 - **A check that has never been seen to fail is not yet trusted.**
-
----
 
 # Part 2 — This repository
 
