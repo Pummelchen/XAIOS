@@ -23,6 +23,18 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **The WebTransport C99 port has its crypto backend, and the vendored tree
+  is down to one OpenSSL file.** SHA-256 (with the transcript snapshot TLS
+  1.3 needs), HMAC, HKDF, HKDF-Expand-Label, AES-128-GCM, ChaCha20 and
+  `xaios_random` are bound to BearSSL in `userspace/wt/xaios/`, and X25519
+  is the ladder this repository already checks against RFC 7748 -- moved to
+  its own source file so the in-tree module and the port link one copy.
+  Published vectors for all of it run in `make wt-host-test` (39 checks),
+  and the first run found two real defects: an empty AEAD message was
+  refused for want of an output buffer, and a second `final` hashed a zeroed
+  context instead of reporting `WT_ERR_STATE`. Only `src/tls/trust.c` still
+  calls OpenSSL, and it is next (B-131).
+
 - **The WebTransport C99 port has its XAIOS platform seam, and the library's
   remaining surface is four files.** The vendored library keeps every
   operating-system difference behind one private header, and that header is

@@ -220,8 +220,8 @@ backend, the trust verifier, the test application and the gate are not written.
 Every line number is at the pin above and will move when the library moves. The
 verdict is that the work is bounded and enumerated -- not that it is done. The
 observation of a completed handshake is what `B-131` closes on; the vendoring
-and the platform seam that have landed since are recorded at the end of this
-document.
+and the platform and crypto backends that have landed since are recorded at
+the end of this document.
 
 ## Landed so far (2026-09-17)
 
@@ -232,20 +232,33 @@ upstream's `include/` and `src/` at
 `46937e29eb734887ca7b739abfedaf68ae565de2`, with `MANIFEST.sha256` and
 `tests/repository/check-webtransport-vendor.py` keeping it exactly upstream's.
 
-**A1 and A2 are written, and the compile surface is four files.** The seam the
-plan says must come from beside the tree does:
+**A1, A2, A5 and A6 are written, and the compile surface is one file.** The
+seam the plan says must come from beside the tree does:
 `userspace/wt/xaios/wt_xaios_platform.{h,c}` implements the socket layer over
 `NET_OPEN_UDP`, `NET_SEND`, `NET_RECV` and `WAIT_EVENTS`, and
 `wt_xaios_clock.c` implements `clock_gettime` over `CLOCK_NANOS`. The build
 defines `WEBTRANSPORT_RUNTIME_UDP_PLATFORM_H` and force-includes the seam for
 `src/runtime/udp.c` only, so the vendored POSIX branch is inert and upstream is
-unmodified. `scripts/build-wt-upstream.sh` (make `wt-upstream-compile`) builds
-37 sources for aarch64, x86_64 and riscv64 with no errors. Of the ten source
-directories, only four files fail, and they are exactly the ones this document
-predicted: `src/crypto/crypto_openssl.c`, `src/tls/keyshare.c`,
-`src/tls/trust.c` and `src/tls/self_signed.c` -- the A5 and A6/A7 work. The
-whole of `core/`, `quic/`, `runtime/` and the remaining `tls/` files compile
-untouched.
+unmodified. `wt_crypto_bearssl_upstream.c` supplies A5's twenty primitives over
+BearSSL, and `wt_keyshare_xaios.c` supplies A6's X25519 from the ladder this
+repository already checks against RFC 7748 -- which moved to
+`userspace/wt/src/wt_x25519.c` so the in-tree module and the port link one copy.
+`scripts/build-wt-upstream.sh` (make `wt-upstream-compile`) builds 41 sources
+for aarch64, x86_64 and riscv64 with no errors, and
+`tests/security/test_wt_upstream_crypto.c` checks the crypto against published
+vectors in `make wt-host-test`.
+
+Of the ten source directories, one file fails, and it is the one this document
+predicted: `src/tls/trust.c`, A7. `src/crypto/crypto_openssl.c` and
+`src/tls/keyshare.c` are replaced, and `src/tls/self_signed.c` is a server and
+test helper that no compiled translation unit references. The whole of `core/`,
+`quic/`, `runtime/` and the remaining `tls/` files compile untouched.
+
+The vector test is not ceremony: its first run found that a zero-length AEAD
+message was refused for want of an output buffer, and that a second `final` on
+a context hashed the zeroed state into a plausible digest instead of reporting
+`WT_ERR_STATE`. Both were in the adaptation, and neither would have been
+visible from the compile.
 
 Two details the implementation settled that the plan left open. XAIOS opens and
 binds a UDP socket in one syscall, so the seam's handles are indices into a

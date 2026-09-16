@@ -177,7 +177,8 @@ build_module() {
 }
 
 MODULE_OBJECTS=""
-for source in userspace/wt/src/wt_crypto_bearssl.c userspace/wt/src/wt_aes128.c \
+for source in userspace/wt/src/wt_crypto_bearssl.c userspace/wt/src/wt_x25519.c \
+              userspace/wt/src/wt_aes128.c \
               userspace/wt/src/wt_tls.c \
               userspace/wt/src/wt_quic_pkt.c \
               userspace/wt/src/wt_tls_handshake.c \
@@ -214,6 +215,28 @@ for name in "$@"; do
     failed=$((failed + 1))
   fi
 done
+
+# The vendored WebTransport library's BearSSL crypto backend (B-131). It is a
+# separate binary from the in-tree module's tests because the two implement the
+# same function names for two different headers, and one link cannot hold both.
+upstream_binary="$BUILD/test_wt_upstream_crypto"
+upstream_object="$BUILD/objects/wt_crypto_bearssl_upstream.o"
+upstream_source="$ROOT/userspace/wt/xaios/wt_crypto_bearssl_upstream.c"
+upstream_test="$ROOT/tests/security/test_wt_upstream_crypto.c"
+if [ ! -f "$upstream_binary" ] || [ "$upstream_source" -nt "$upstream_binary" ] ||
+   [ "$upstream_test" -nt "$upstream_binary" ]; then
+  "$CC" -std=c99 -O1 -g -Wall -Wextra -Werror $SAN_FLAGS \
+    -I"$BEARSSL/inc" -I"$BEARSSL/src" \
+    -I"$ROOT/third_party/webtransport-c99/include" -I"$ROOT/userspace/include" \
+    -c "$upstream_source" -o "$upstream_object"
+  "$CC" -std=c99 -O1 -g -Wall -Wextra -Werror $SAN_FLAGS \
+    -I"$BEARSSL/inc" -I"$BEARSSL/src" \
+    -I"$ROOT/third_party/webtransport-c99/include" -I"$ROOT/userspace/include" \
+    "$upstream_test" "$upstream_object" "$BUILD"/bearssl/*.o -o "$upstream_binary"
+fi
+if ! "$upstream_binary"; then
+  failed=$((failed + 1))
+fi
 
 if [ "$failed" -ne 0 ]; then
   printf 'wt-host: %d test(s) failed\n' "$failed" >&2

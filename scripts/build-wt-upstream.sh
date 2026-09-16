@@ -79,7 +79,9 @@ mkdir -p "$OUT"
 COMMON="-std=c99 -fhosted -D_POSIX_C_SOURCE=200809L -D_POSIX_MONOTONIC_CLOCK=200809L \
 -fno-pic -fno-pie -fno-stack-protector -nostdinc \
 -isystem $SYSROOT/include -isystem $RESOURCE/include \
--I$VENDOR/include -I$VENDOR/src -I$SEAM -I$ROOT/userspace/include"
+-I$VENDOR/include -I$VENDOR/src -I$SEAM \
+-I$ROOT/third_party/bearssl/inc -I$ROOT/third_party/bearssl/src \
+-I$ROOT/userspace/wt/include -I$ROOT/userspace/include"
 
 # The vendored sources are third-party and are compiled with the warnings but
 # without `-Werror`: a warning in code this repository does not own is not a
@@ -111,14 +113,28 @@ done
 # The one upstream file that needs the platform seam.
 compile_one "$VENDOR_WARN $SEAM_FLAGS" "$VENDOR/src/runtime/udp.c" "udp"
 
-for source in "$SEAM"/wt_xaios_platform.c "$SEAM"/wt_xaios_clock.c; do
+# The XAIOS side of the port. The crypto backend implements upstream's
+# `webtransport/crypto/crypto.h` over BearSSL; the keyshare backend replaces
+# upstream's OpenSSL X25519 with the ladder this repository already checks
+# against RFC 7748, and the AES block file is the same one the in-tree module
+# uses.
+for source in "$SEAM"/wt_xaios_platform.c "$SEAM"/wt_xaios_clock.c \
+              "$SEAM"/wt_crypto_bearssl_upstream.c \
+              "$SEAM"/wt_keyshare_xaios.c \
+              "$ROOT"/userspace/wt/src/wt_x25519.c \
+              "$ROOT"/userspace/wt/src/wt_aes128.c; do
   compile_one "$SEAM_WARN" "$source" "$(basename "$source" .c)"
 done
 
 # Said rather than left as a link error two steps later.
+# Three of the four upstream OpenSSL files are now replaced rather than
+# missing: `src/crypto/crypto_openssl.c` by the BearSSL backend,
+# `src/tls/keyshare.c` by the XAIOS X25519 binding, and
+# `src/tls/self_signed.c` by not being needed -- it is a server and test
+# helper no compiled translation unit references.
 printf '%s\n' \
   "wt-upstream: $built sources compiled for $ARCH into ${OUT#"$ROOT"/}"
 printf '%s\n' \
-  "wt-upstream: 4 upstream sources still call OpenSSL and are not built:" \
-  "  src/crypto/crypto_openssl.c src/tls/keyshare.c src/tls/trust.c src/tls/self_signed.c" \
-  "  the XAIOS BearSSL backend beside the tree is the change that removes them"
+  "wt-upstream: 1 upstream source still calls OpenSSL and is not built:" \
+  "  src/tls/trust.c (pin-only verify); crypto_openssl.c, tls/keyshare.c and" \
+  "  tls/self_signed.c are replaced or unneeded"
