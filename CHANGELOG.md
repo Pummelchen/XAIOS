@@ -23,6 +23,19 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **Two preempted tasks no longer share one set of floating-point
+  registers.** The RISC-V trap stub saves and restores `f0`-`f31` and
+  `fcsr` with the rest of the context, and the frame carries them, so a task
+  resumed after a switch finds its own values. The proof is behavioural
+  rather than a mapping round-trip: the context that gives the CPU away
+  writes a value into `f0`, the task that runs meanwhile writes a different
+  one, and the boot requires the first context's value back --
+  `... switches=3 fp_kept=1`, asserted. Two port details make it safe: the
+  stub switches `sstatus.FS` on for its own duration, because an `fsd` with
+  the unit off is an illegal instruction taken inside the trap entry, and it
+  skips the restore for a frame whose `FS` says the unit was off, because
+  those values are not live (B-132).
+
 - **A kernel context can hand the CPU to another task and get it back,
   which is the piece preemption was missing.** `scheduler_register_kernel_task()`
   builds a task whose frame starts it in kernel mode on a stack of its own,
