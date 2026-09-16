@@ -106,6 +106,10 @@ ARCH_TARGETS = {
         "exception: self-test passed",
         "irq: riscv64 plic serving the interrupt-controller interface",
         "smp: riscv64 self-test passed",
+        # The trap-frame mapping its timer tick applies, which is what preemption
+        # rests on: the frame the scheduler hands back must be the one the trap
+        # return resumes (B-129).
+        "sched-tick: riscv64 trap-frame mapping self-test passed",
         # See the AArch64 list: this check is x86-64's, and that it does not
         # apply here is asserted rather than left unsaid (B-123).
         "smp: shootdown acknowledgement self-test not applicable on riscv64 ",

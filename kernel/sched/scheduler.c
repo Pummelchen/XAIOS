@@ -1018,6 +1018,13 @@ void scheduler_self_test(void) {
   scheduler_tick(&dummy_frame, 0);
   uint32_t picked = g_runqueues[cpu].current_pid;
   kassert(picked == 1 || picked == 2 || picked == 3);
+  /* And the decision reaches the frame the caller passed, which is what an
+     architecture's trap return resumes: the frame it supplied (elr 0x1000, all
+     registers zero) is now the chosen task's. An architecture whose tick fills
+     and applies its own frame -- and RISC-V's now does -- is checked by this
+     line, and one that cannot yet apply a decision says so in its own port
+     (B-129). */
+  kassert(dummy_frame.elr_el1 != UINT64_C(0x1000));
 
   scheduler_lock();
   uint32_t before = g_runqueues[cpu].current_pid;

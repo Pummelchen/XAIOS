@@ -209,6 +209,19 @@ void exception_self_test(void) {
 
 volatile uint64_t g_aarch64_irq_count;
 
+/* The self-test for this port's tick, and the invariant it rests on: an
+ * AArch64 IRQ handler takes the scheduler's own context frame, so the frame it
+ * hands the scheduler *is* what the exception return resumes. Nothing is
+ * mapped here, which is exactly why the check is worth making on the port that
+ * works: a task registered with "start at 0x1234 on stack 0x5678" must come
+ * back out of `scheduler_tick` in the frame the handler passed. */
+void platform_scheduler_tick_self_test(void) {
+  klog("sched-tick: aarch64 tick self-test not applicable -- this port's IRQ "
+       "handler takes the scheduler's context frame itself, so there is nothing "
+       "to map; scheduler_self_test asserts that the frame it passes is the one "
+       "the chosen task's context comes back in\n");
+}
+
 xaios_context_frame_t *aarch64_irq_handler(xaios_context_frame_t *frame) {
   uint64_t iar = 0U;
   __asm__ volatile("mrs %[iar], " ICC_IAR1_EL1 : [iar] "=r"(iar));

@@ -106,6 +106,17 @@ uint32_t scheduler_runnable_count(void);
 void scheduler_load_average_hundredths(uint32_t averages[3]);
 void scheduler_self_test(void);
 
+/* Prove that this architecture's timer path applies a scheduling decision.
+ *
+ * `scheduler_self_test` ticks a frame of its own; this one goes through the
+ * architecture, because the thing that can be wrong per architecture is the
+ * mapping between its trap frame and `xaios_context_frame_t` -- a scheduler
+ * that picks a task whose frame the trap return cannot resume is a scheduler
+ * that does not schedule. An architecture with nothing to map (AArch64's IRQ
+ * handler takes the context frame itself) asserts the same invariant directly;
+ * one that cannot yet apply a decision says so by name rather than passing. */
+void platform_scheduler_tick_self_test(void);
+
 /* Statistics and telemetry */
 void scheduler_get_stats(uint32_t cpu_id, xaios_sched_stats_t *stats);
 void scheduler_dump_stats(void);

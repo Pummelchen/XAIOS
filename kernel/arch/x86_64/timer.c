@@ -316,6 +316,18 @@ void timer_self_test(void) {
        end - start, end_ns - start_ns);
 }
 
+/* This port's tick cannot yet be tested the way the other two can, and it says
+ * why instead of passing: `g_irq_frame` is declared here and referenced once,
+ * by the `scheduler_tick` call below, so the context the scheduler saves for a
+ * preempted task is one nobody filled and the frame it hands back is never
+ * applied -- the vector-32 branch returns 0 and resumes the interrupted
+ * instruction. Until that is fixed there is no mapping to check (B-129). */
+void platform_scheduler_tick_self_test(void) {
+  klog("sched-tick: x86_64 tick self-test not applicable -- this port's timer "
+       "interrupt passes the scheduler a frame it does not fill and does not "
+       "apply the frame it gets back (B-129)\n");
+}
+
 void x86_64_platform_timer_irq(void) {
   /* On the CPU carrying the network tick this interrupt does not tick the
      scheduler; its whole job is to wake that CPU, whose idle loop polls the

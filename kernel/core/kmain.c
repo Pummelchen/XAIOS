@@ -1071,6 +1071,9 @@ void kmain(const xaios_boot_info_t *boot) {
   user_scheduler_self_test();
   scheduler_init();
   scheduler_self_test();
+  /* And through each architecture's own timer path, which is where the
+     trap-frame mapping lives (B-129). */
+  platform_scheduler_tick_self_test();
   xaios_thread_runtime_init();
   elf_loader_self_test();
   service_supervisor_init();

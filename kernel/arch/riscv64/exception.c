@@ -11,7 +11,9 @@
  * board-specific and hardcoding QEMU's would be the identity-versus-
  * capability mistake again.
  */
+#include <xaios/assert.h>
 #include <xaios/riscv64_aia.h>
+#include <xaios/scheduler.h>
 #include <xaios/riscv64_fdt.h>
 #include <xaios/smp.h>
 #include <xaios/status.h>
@@ -415,6 +417,120 @@ static uint64_t instruction_width(uint64_t pc) {
    and then waits forever for it to leave. */
 #define USER_EXIT_MARKER UINT64_C(0x4f534149)
 
+/* Preemption: the trap frame and the scheduler's context frame, mapped.
+ *
+ * The shared scheduler does the whole of a preemption in one call: it saves the
+ * interrupted task's context into that task's own `xaios_context_frame_t`,
+ * picks the next runnable one, and writes *its* frame back through the pointer
+ * it was given -- and whoever called it then resumes through that frame. That
+ * is why the AArch64 port works: its IRQ handler takes the context frame
+ * directly, so its trap frame *is* the scheduler's frame. This port's frame is
+ * its own shape, so the two are mapped here, in both directions, once.
+ *
+ * The 31 general-purpose registers the stub saves -- ra, sp, gp, tp, t0-t2,
+ * s0-s1, a0-a7, s2-s11, t3-t6 -- are exactly `xaios_context_frame_t.regs[31]`
+ * in that order, which is why this is a copy rather than a table. `sepc` is the
+ * program counter and `sstatus` the processor state. The stack is the one field
+ * that needs a rule: `user.c` builds a task's *first* frame as `elr_el1` =
+ * entry, `sp_el0` = stack, `spsr_el1` = 0, with every register zero, while a
+ * task that has been interrupted has its stack in `regs[1]` because that is
+ * where the stub saves it. A zero `regs[1]` therefore means "never ran, use
+ * `sp_el0`", and anything else means "resume on the stack the trap saved".
+ *
+ * A local rather than a static: a trap on another hart may be running this at
+ * the same time, and the scheduler keeps no pointer to it. */
+static void riscv64_frame_to_context(const riscv64_trap_frame_t *frame,
+                                     xaios_context_frame_t *context) {
+  const uint64_t *saved = &frame->ra;
+  for (uint32_t index = 0U; index < 31U; ++index) {
+    context->regs[index] = saved[index];
+  }
+  context->elr_el1 = frame->sepc;
+  context->spsr_el1 = frame->sstatus;
+  context->sp_el0 = frame->sp;
+  context->sp_el1 = 0U;
+  context->padding = 0U;
+  context->fpcr = 0U;
+  context->fpsr = 0U;
+  for (uint32_t index = 0U; index < 64U; ++index) context->simd[index] = 0U;
+}
+
+static void riscv64_context_to_frame(const xaios_context_frame_t *context,
+                                     riscv64_trap_frame_t *frame) {
+  uint64_t *saved = &frame->ra;
+  for (uint32_t index = 0U; index < 31U; ++index) {
+    saved[index] = context->regs[index];
+  }
+  frame->sepc = context->elr_el1;
+  frame->sstatus = context->spsr_el1;
+  /* `regs[1]` is the stack a trap saved. A task that has never run has every
+     register zero -- `user.c` builds such a frame with only elr_el1, sp_el0 and
+     spsr_el1 set -- and gets its stack from `sp_el0` instead. */
+  frame->sp = context->regs[1] != 0U ? context->regs[1] : context->sp_el0;
+}
+
+static void riscv64_scheduler_tick(riscv64_trap_frame_t *frame) {
+  if (timer_local_tick_is_network_only() != 0U) {
+    /* The CPU carrying the network tick polls the stack in its idle loop; its
+       timer interrupt exists to wake it and does not tick the scheduler, which
+       is the same division the other two ports make. */
+    return;
+  }
+  xaios_context_frame_t context;
+  riscv64_frame_to_context(frame, &context);
+  scheduler_tick(&context, 0);
+  riscv64_context_to_frame(&context, frame);
+}
+
+static void riscv64_zero(void *destination, uint64_t size) {
+  uint8_t *bytes = (uint8_t *)destination;
+  for (uint64_t index = 0U; index < size; ++index) bytes[index] = 0U;
+}
+
+void platform_scheduler_tick_self_test(void) {
+  riscv64_trap_frame_t frame;
+  riscv64_zero(&frame, sizeof(frame));
+  frame.ra = UINT64_C(0x11);
+  frame.sp = UINT64_C(0xbbbb);
+  frame.a0 = UINT64_C(0x22);
+  frame.sepc = UINT64_C(0xaaaa);
+  frame.sstatus = UINT64_C(0x33);
+
+  xaios_context_frame_t context;
+  riscv64_frame_to_context(&frame, &context);
+  int saved = context.regs[0] == UINT64_C(0x11) &&
+              context.regs[1] == UINT64_C(0xbbbb) &&
+              context.regs[9] == UINT64_C(0x22) &&
+              context.elr_el1 == UINT64_C(0xaaaa) &&
+              context.spsr_el1 == UINT64_C(0x33) &&
+              context.sp_el0 == UINT64_C(0xbbbb);
+
+  /* What the scheduler hands back for a task that has already run carries the
+     stack its own trap saved; what it hands back for one that never has carries
+     the user stack `user.c` put in sp_el0. Both must land in the trap frame's
+     sp, because that is what the trap return resumes on. */
+  context.regs[0] = UINT64_C(0x44);
+  context.regs[1] = UINT64_C(0x9999);
+  context.elr_el1 = UINT64_C(0x1234);
+  context.sp_el0 = UINT64_C(0x5678);
+  context.spsr_el1 = 0U;
+  riscv64_context_to_frame(&context, &frame);
+  int interrupted = frame.ra == UINT64_C(0x44) && frame.sepc == UINT64_C(0x1234) &&
+                    frame.sp == UINT64_C(0x9999);
+
+  context.regs[1] = 0U;
+  riscv64_context_to_frame(&context, &frame);
+  int never_ran = frame.sp == UINT64_C(0x5678);
+
+  klog("sched-tick: riscv64 trap-frame mapping self-test saved=%d "
+       "interrupted=%d never_ran=%d\n",
+       saved, interrupted, never_ran);
+  kassert(saved != 0);
+  kassert(interrupted != 0);
+  kassert(never_ran != 0);
+  klog("sched-tick: riscv64 trap-frame mapping self-test passed\n");
+}
+
 uint64_t riscv64_trap_handler(riscv64_trap_frame_t *frame) {
   uint64_t cause = frame->scause;
   if ((cause & SCAUSE_INTERRUPT) != 0U) {
@@ -445,6 +561,9 @@ uint64_t riscv64_trap_handler(riscv64_trap_frame_t *frame) {
     }
     if (which == IRQ_TIMER) {
       timer_rearm();
+      /* The tick this port did not have: without it an EL0 process here runs
+         until it yields or exits (B-129). */
+      riscv64_scheduler_tick(frame);
     } else if (which == IRQ_EXTERNAL) {
       handle_external();
     } else if (which == IRQ_SOFTWARE) {
