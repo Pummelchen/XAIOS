@@ -2,6 +2,8 @@
 #include <xaios/block_device.h>
 #include <xaios/klog.h>
 #include <xaios/xaiboot_fs.h>
+
+#include "xbfs_internal.h"
 #include <xaios/spinlock.h>
 #include <xaios/virtio_blk.h>
 
@@ -10,7 +12,6 @@
 #define XBFS_MAGIC_LEN 8U
 #define XBFS_VERSION 2U
 #define XBFS_JOURNAL_VERSION 1U
-#define XBFS_SECTOR_SIZE UINT64_C(512)
 #define XBFS_START_SECTOR UINT64_C(3072)
 #define XBFS_METADATA_SECTORS UINT64_C(16)
 /* A/B metadata.
@@ -35,11 +36,9 @@
 #define XBFS_METADATA_SLOTS 2U
 #define XBFS_SEQUENCE_TAIL_BYTES UINT64_C(16)
 #define XBFS_JOURNAL_SECTORS UINT64_C(2)
-#define XBFS_CHECKSUM_OFFSET UINT64_C(80)
 #define XBFS_DATA_SECTORS 96U
 #define XBFS_MAX_NODES 32U
 #define XBFS_V3_PATH_MAX 96U
-#define XBFS_PATH_MAX 256U
 #define XBFS_FILE_MAX_BLOCKS 16U
 #define XBFS_MAX_FILE_BYTES (XBFS_FILE_MAX_BLOCKS * XBFS_SECTOR_SIZE)
 #define XBFS_V3_METADATA_SECTORS 32U
@@ -144,8 +143,6 @@ typedef struct xaios_xbfs_extent {
 #define XBFS_JOURNAL_EMPTY 0U
 #define XBFS_JOURNAL_PENDING 1U
 #define XBFS_JOURNAL_OP_WRITE_FILE 1U
-#define FNV1A64_OFFSET UINT64_C(14695981039346656037)
-#define FNV1A64_PRIME UINT64_C(1099511628211)
 
 typedef struct xaios_xbfs_node_v3 {
   uint32_t active;
@@ -410,20 +407,6 @@ static const char k_replayed_state[] =
 
 static xaios_status_t restore_snapshot_node(xaios_xbfs_node_t *node);
 
-static void bytes_zero(void *buffer, uint64_t size) {
-  uint8_t *bytes = (uint8_t *)buffer;
-  for (uint64_t i = 0; i < size; ++i) {
-    bytes[i] = 0;
-  }
-}
-
-static void bytes_copy(void *dst, const void *src, uint64_t size) {
-  uint8_t *out = (uint8_t *)dst;
-  const uint8_t *in = (const uint8_t *)src;
-  for (uint64_t i = 0; i < size; ++i) {
-    out[i] = in[i];
-  }
-}
 
 static void set_active_v2(void) {
   g_active_metadata_sectors = XBFS_METADATA_SECTORS;
@@ -548,83 +531,11 @@ static void reset_open_files(void) {
   }
 }
 
-static int bytes_eq(const void *a, const void *b, uint64_t size) {
-  const uint8_t *left = (const uint8_t *)a;
-  const uint8_t *right = (const uint8_t *)b;
-  for (uint64_t i = 0; i < size; ++i) {
-    if (left[i] != right[i]) {
-      return 0;
-    }
-  }
-  return 1;
-}
-
-static uint64_t cstr_len(const char *value) {
-  uint64_t len = 0;
-  while (value[len] != '\0') {
-    ++len;
-  }
-  return len;
-}
-
-static int str_eq(const char *a, const char *b) {
-  while (*a != '\0' && *b != '\0') {
-    if (*a != *b) {
-      return 0;
-    }
-    ++a;
-    ++b;
-  }
-  return *a == '\0' && *b == '\0';
-}
 
 static int node_is_visible(const xaios_xbfs_node_t *node) {
   return node != 0 && (node->active != 0 || node->snapshot_active != 0);
 }
 
-static xaios_status_t append_char(char *buffer, uint64_t capacity,
-                                 uint64_t *offset, char value) {
-  if (buffer == 0 || offset == 0 || *offset + 1U >= capacity) {
-    return XAIOS_ERR_NO_MEMORY;
-  }
-  buffer[*offset] = value;
-  ++(*offset);
-  buffer[*offset] = '\0';
-  return XAIOS_OK;
-}
-
-static xaios_status_t append_cstr(char *buffer, uint64_t capacity,
-                                 uint64_t *offset, const char *value) {
-  if (value == 0) {
-    return XAIOS_ERR_INVALID;
-  }
-  for (uint64_t i = 0; value[i] != '\0'; ++i) {
-    if (append_char(buffer, capacity, offset, value[i]) != XAIOS_OK) {
-      return XAIOS_ERR_NO_MEMORY;
-    }
-  }
-  return XAIOS_OK;
-}
-
-static xaios_status_t append_u32(char *buffer, uint64_t capacity,
-                                uint64_t *offset, uint32_t value) {
-  char digits[10];
-  uint32_t count = 0;
-  if (value == 0) {
-    return append_char(buffer, capacity, offset, '0');
-  }
-  while (value != 0 && count < sizeof(digits)) {
-    digits[count++] = (char)('0' + (value % 10U));
-    value /= 10U;
-  }
-  while (count > 0) {
-    --count;
-    if (append_char(buffer, capacity, offset, digits[count]) != XAIOS_OK) {
-      return XAIOS_ERR_NO_MEMORY;
-    }
-  }
-  return XAIOS_OK;
-}
 
 /* FNV-1a resumed from where it left off, which is what makes an append cheap.
  *
@@ -635,33 +546,7 @@ static xaios_status_t append_u32(char *buffer, uint64_t capacity,
  * resumable position in its own hash, and adding to a file does not require
  * reading the file back to re-hash it. That property is the whole reason the
  * append path below can leave the rest of the file alone. */
-static uint64_t fnv1a64_extend(uint64_t hash, const void *buffer,
-                               uint64_t size) {
-  const uint8_t *bytes = (const uint8_t *)buffer;
-  for (uint64_t i = 0; i < size; ++i) {
-    hash ^= bytes[i];
-    hash *= FNV1A64_PRIME;
-  }
-  return hash;
-}
 
-static uint64_t fnv1a64(const void *buffer, uint64_t size) {
-  return fnv1a64_extend(FNV1A64_OFFSET, buffer, size);
-}
-
-static uint64_t mfs_checksum(const void *data, uint64_t size) {
-  const uint8_t *bytes = (const uint8_t *)data;
-  uint64_t hash = FNV1A64_OFFSET;
-  for (uint64_t i = 0; i < size; ++i) {
-    uint8_t value = (i >= XBFS_CHECKSUM_OFFSET &&
-                     i < XBFS_CHECKSUM_OFFSET + sizeof(uint64_t))
-                        ? 0U
-                        : bytes[i];
-    hash ^= value;
-    hash *= FNV1A64_PRIME;
-  }
-  return hash;
-}
 
 static int metadata_header_is_blank(void) {
   for (uint32_t i = 0U; i < XBFS_SECTOR_SIZE; ++i) {
@@ -678,27 +563,6 @@ static uint64_t journal_checksum(xaios_xbfs_journal_t *journal) {
   return checksum;
 }
 
-static void copy_path(char dst[XBFS_PATH_MAX], const char *src) {
-  uint32_t i = 0;
-  while (i + 1U < XBFS_PATH_MAX && src[i] != '\0') {
-    dst[i] = src[i];
-    ++i;
-  }
-  dst[i] = '\0';
-}
-
-static const char *basename_of(const char *path) {
-  const char *base = path;
-  if (path == 0) {
-    return 0;
-  }
-  for (uint32_t i = 0; path[i] != '\0'; ++i) {
-    if (path[i] == '/' && path[i + 1U] != '\0') {
-      base = &path[i + 1U];
-    }
-  }
-  return base;
-}
 
 static xaios_status_t validate_path(const char *path) {
   if (path == 0 || path[0] != '/') {
@@ -736,23 +600,6 @@ static xaios_status_t normalize_path(const char *path,
   return XAIOS_OK;
 }
 
-static void parent_path_of(const char *path, char parent[XBFS_PATH_MAX]) {
-  uint32_t last_slash = 0;
-  for (uint32_t i = 0; i < XBFS_PATH_MAX && path[i] != '\0'; ++i) {
-    if (path[i] == '/') {
-      last_slash = i;
-    }
-  }
-  if (last_slash == 0) {
-    parent[0] = '/';
-    parent[1] = '\0';
-    return;
-  }
-  for (uint32_t i = 0; i < last_slash; ++i) {
-    parent[i] = path[i];
-  }
-  parent[last_slash] = '\0';
-}
 
 static uint64_t node_count_by_type(uint32_t type) {
   uint64_t count = 0;
@@ -1919,9 +1766,6 @@ static xaios_status_t ensure_base_directories(void) {
   return XAIOS_OK;
 }
 
-static uint64_t blocks_for_size(uint64_t size) {
-  return (size + XBFS_SECTOR_SIZE - 1U) / XBFS_SECTOR_SIZE;
-}
 
 static xaios_status_t write_extents(const xaios_xbfs_extent_t *extents,
                                     uint32_t extent_count, const void *data,
@@ -2112,11 +1956,6 @@ static int has_active_children(const char *path) {
   return 0;
 }
 
-static int path_is_at_or_below(const char *path, const char *root) {
-  uint64_t root_len = cstr_len(root);
-  return str_eq(path, root) ||
-         (bytes_eq(path, root, root_len) && path[root_len] == '/');
-}
 
 static xaios_status_t delete_node(const char *path) {
   if (g_mounted == 0 || (g_mount_flags & XBFS_MOUNT_READ_WRITE) == 0 ||
@@ -2292,37 +2131,6 @@ static xaios_status_t stat_node(const char *path, xaios_xbfs_stat_t *stat) {
   return XAIOS_OK;
 }
 
-static int direct_child_of(const char *parent, const char *child,
-                           const char **name) {
-  uint64_t parent_len = cstr_len(parent);
-  if (str_eq(parent, "/")) {
-    if (child[0] != '/' || child[1] == '\0') {
-      return 0;
-    }
-    const char *tail = &child[1];
-    for (uint64_t i = 0; tail[i] != '\0'; ++i) {
-      if (tail[i] == '/') {
-        return 0;
-      }
-    }
-    *name = tail;
-    return 1;
-  }
-  if (!bytes_eq(parent, child, parent_len) || child[parent_len] != '/') {
-    return 0;
-  }
-  const char *tail = &child[parent_len + 1U];
-  if (*tail == '\0') {
-    return 0;
-  }
-  for (uint64_t i = 0; tail[i] != '\0'; ++i) {
-    if (tail[i] == '/') {
-      return 0;
-    }
-  }
-  *name = tail;
-  return 1;
-}
 
 static xaios_status_t list_dir(const char *path, char *buffer,
                               uint64_t buffer_size, uint64_t *out_size) {

@@ -36,7 +36,7 @@ kernel/fs/initramfs.c 552
 kernel/fs/vfs.c 757
 kernel/fs/vfs_xaifs.c 1798
 kernel/fs/xai_fs_admin.c 676
-kernel/fs/xaiboot_fs.c 3890
+kernel/fs/xaiboot_fs.c 3698
 kernel/include/xaios/control_protocol.h 678
 kernel/mm/numa.c 990
 kernel/net/dhcpv6.c 609
@@ -66,7 +66,7 @@ kernel/user/user.c 1512
 platform/qemu/run-qemu-aarch64.sh 558
 platform/qemu/run-qemu-riscv64.sh 535
 scripts/build-boot-media.sh 544
-scripts/build-image.sh 1673
+scripts/build-image.sh 1675
 scripts/build-riscv64-image.sh 594
 scripts/build-vm-packages.sh 661
 scripts/xaios-ssh-bridge.py 1171
