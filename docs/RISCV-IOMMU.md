@@ -112,9 +112,21 @@ every poll or `FQOF` hides the evidence.
 
 Milestones, each independently verifiable:
 
-1. **Probe** -- find the device over PCI, read `CAP`, log
-   `riscv-iommu: enabled cap=...`, and on a board without it say so as the
-   *result of a look*. Safe: with `off=off` (Bare) no DMA changes.
+1. **Probe** -- **landed 2026-09-16.** Find the device over PCI, name it and
+   its BAR, and on a board without it say so as the *result of a look*:
+   `smmu: riscv64 pci inventory has no 0x1b36:0x0014 and the tree has no
+   riscv,iommu node`, followed by the sentence the smoke requires. Safe: with
+   the device reset (Bare) no DMA changes. Three things were learned doing it
+   and are worth keeping. `smmu_init(boot)` runs *before* `pci_init()`, so the
+   look belongs in `smmu_self_test()`, which runs after it -- a probe in
+   `smmu_init` reports that a board with the device attached has none.
+   `pci_enable_device()` must come before the BAR is read. And **the `CAP`
+   read cannot be taken here:** QEMU places this 64-bit BAR at
+   `0x400010000`, this port identity-maps its device window below 4 GiB, and
+   the read faults with `ERROR: controlled page fault reported`,
+   `class=load-page-fault cause=13 stval=0x400010000` -- the MMIO probe
+   containment does not turn it into a returned value. The read goes with the
+   `vmm_map_page` that makes the BAR reachable, in milestone 2.
 2. **Queues and DDT** -- 1LVL, command and fault queues enabled, `IOFENCE.C`
    round trip, `IODIR.INVAL_DDT`; installs the identity contexts in the same
    change (see above).

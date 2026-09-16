@@ -7,8 +7,10 @@
  * in the way its caller already handles, which is the same thing the other
  * architectures do where a capability is missing.
  */
+#include <xaios/pci.h>
 #include <xaios/riscv64_fdt.h>
 #include <xaios/riscv64_sbi.h>
+#include <xaios/smmu.h>
 #include <xaios/timer.h>
 #include <xaios/topology.h>
 #include <xaios/status.h>
@@ -31,15 +33,72 @@ void riscv64_platform_set_device_tree(const void *blob) {
    unimplemented is message-signalled interrupts, below, which need more than
    a bus. */
 
-/* No IOMMU. RISC-V has one in its specification and this board does not
-   present it, so device DMA is unmediated here -- which the SMMU-aware paths
-   already handle, since three of the four supported environments have no
-   IOMMU either. */
-void smmu_init(void) {
-  klog("smmu: riscv64 has no IOMMU on this board; DMA is unmediated\n");
+/* The RISC-V IOMMU: looked for rather than assumed (B-130).
+ *
+ * This said "riscv64 has no IOMMU on this board" as a compile-time sentence.
+ * The plain `virt` board genuinely has none, and that is still what a boot
+ * without the device reports -- but the sentence is now the *result* of a look,
+ * because QEMU attaches one with `-device riscv-iommu-pci` (Red Hat
+ * 0x1b36:0x0014) and the same kernel has to notice it.
+ *
+ * The register file is one 4 KiB page at BAR0 and `CAP` sits at offset 0; it is
+ * read here only to prove the device answers. Nothing is programmed yet, and
+ * that matters: QEMU resets the device with its device directory table Off, so
+ * an unprogrammed IOMMU refuses PCI DMA rather than passing it through. The
+ * milestones that program it, and the ordering that keeps a half-programmed
+ * table from taking the machine's PCI DMA with it, are in
+ * docs/RISCV-IOMMU.md. */
+#define RISCV_IOMMU_PCI_VENDOR XAIOS_PCI_VENDOR_REDHAT
+#define RISCV_IOMMU_PCI_DEVICE UINT16_C(0x0014)
+
+/* Where the look happens.
+ *
+ * Not in `smmu_init`: the IOMMU here is a PCI function, and `pci_init()` runs
+ * later in `kmain` than the shared `smmu_init(boot)` call, so a probe there
+ * would search an inventory that does not exist yet and report every board as
+ * having no IOMMU -- which is exactly what it did on a QEMU command line that
+ * had one attached. `smmu_self_test()` is called after `pci_init()`, which is
+ * where this port's look belongs. */
+void smmu_init(const struct xaios_boot_info *boot) { (void)boot; }
+
+static void riscv64_iommu_probe(void) {
+  uint32_t index = pci_find_device(RISCV_IOMMU_PCI_VENDOR,
+                                   RISCV_IOMMU_PCI_DEVICE);
+  if (index == UINT32_C(0xFFFFFFFF)) {
+    klog("smmu: riscv64 pci inventory has no 0x%04x:0x%04x and the tree has no "
+         "riscv,iommu node\n",
+         (unsigned)RISCV_IOMMU_PCI_VENDOR, (unsigned)RISCV_IOMMU_PCI_DEVICE);
+    klog("smmu: riscv64 has no IOMMU on this board; DMA is unmediated\n");
+    return;
+  }
+
+  (void)pci_enable_device(index);
+  uint64_t base = pci_bar_address(index, 0U);
+  if (base == 0U) {
+    klog("smmu: riscv64 riscv-iommu-pci present with no BAR0 assigned; DMA is "
+         "unmediated\n");
+    return;
+  }
+
+  /* BAR0 is named and not read.
+   *
+   * QEMU places this device's 64-bit BAR above 4 GiB -- measured at
+   * `0x400010000` -- and this port identity-maps its device window far below
+   * that, so a `CAP` read here takes a load page fault that the MMIO probe
+   * containment does not turn into a returned value (`ERROR: controlled page
+   * fault reported`, `class=load-page-fault cause=13 stval=0x400010000`,
+   * `sepc` in this function). The read belongs with the `vmm_map_page` that
+   * makes the BAR reachable, which is milestone 2; doing it here first would
+   * boot a machine that carries this device into a panic screen for the
+   * privilege of one log field. */
+  klog("riscv-iommu: found device=%u base=0x%lx (BAR0 not yet mapped; CAP read "
+       "deferred to the milestone that maps it)\n",
+       (unsigned)index, (unsigned long)base);
+  klog("smmu: riscv64 riscv-iommu-pci present, not yet programmed; PCI DMA is "
+       "refused by the device until then\n");
 }
 
-void smmu_self_test(void) {}
+void smmu_self_test(void) { riscv64_iommu_probe(); }
 
 /* The Goldfish real-time clock.
  *
