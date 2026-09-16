@@ -101,6 +101,15 @@
 #define XAIOS_LIBC_TEST 0
 #endif
 
+/* The WebTransport handshake gate (B-131). Off in every ordinary boot,
+ * including the ordinary boot-test profile: the application waits for a host
+ * peer that most boots do not have, and a twenty-second stall in every gate
+ * that boots the profile is not a cost the others should pay for one gate's
+ * evidence. `make qemu-quic-handshake-gate` builds with this set. */
+#ifndef XAIOS_WT_HANDSHAKE_TEST
+#define XAIOS_WT_HANDSHAKE_TEST 0
+#endif
+
 /* Two NTP retransmits plus margin, well inside the client's own 10s
    timeout, so a filtered UDP/123 costs a bounded pause and nothing more. */
 #define BOOT_NTP_DEADLINE_NS UINT64_C(6000000000)
@@ -1532,6 +1541,15 @@ persistent_network_done:
   run_user_app("/bin/clustertest", 18, nettest_caps | XAIOS_CAP_NET_SOCKET);
 #endif
   kassert(run_user_app("/bin/helloworldc99", 23U, c99_demo_caps) == 0);
+#if XAIOS_WT_HANDSHAKE_TEST
+  /* The port's own client, on a booted guest: the vendored library driven by
+     this repository's BearSSL backend, its XAIOS socket seam, and a pinned
+     certificate (B-131). It prints `wtqtest: WT-HANDSHAKE-OK` itself, which is
+     what the gate reads -- the kernel's own line says only that it exited. */
+  kassert(run_user_app("/bin/wtqtest", 25U,
+                       XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT | XAIOS_CAP_TIME |
+                           XAIOS_CAP_NET_SOCKET | XAIOS_CAP_RANDOM) == 0);
+#endif
 #else
   klog("kernel: boot diagnostics disabled; utilities are SSH on-demand\n");
 #endif

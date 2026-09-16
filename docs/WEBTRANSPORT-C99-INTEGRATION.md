@@ -180,18 +180,16 @@ and no RSA-PSS. Both are present in the vendored tree
 
 ## Minimal path to a QEMU gate
 
-**The handshake is observed on the host and the guest side is what is left.** A
-host endpoint that drives the vendored runtime session (`tests/security/wt_peer.c`,
+**The handshake is observed, on the host and on a booted guest.** A host
+endpoint that drives the vendored runtime session (`tests/security/wt_peer.c`,
 built by `scripts/build-wt-peer.sh`) completes a QUIC v1 handshake -- TLS 1.3,
 `TLS_AES_128_GCM_SHA256`, x25519, an RSA-PSS-RSAE-SHA256 server signature and a
 pinned certificate -- with this repository's BearSSL backend on both sides, and
-`make wt-interop-test` runs it with the negative controls beside it. What
-remains is the same endpoint on the guest, which adds the XAIOS socket seam and
-the network path and nothing else.
-
-The steps below are the original enumeration and are kept because the order is
-still the order; A1, A2, A3, A5, A6 and A7 are now written and the item numbers
-that named them are done.
+`make wt-interop-test` runs it with the negative controls beside it.
+`userspace/apps/hosted/wtqtest.c` is the same client on the guest, and
+`make qemu-quic-handshake-gate` boots it against that same peer over QEMU's user
+network. The steps below are the original enumeration and are kept because the
+order was the order; every numbered item is written.
 
 1. `userspace/libc/os_adapter.c` -- `clock_gettime` (A1), or do it in the
    vendored `time.c` and leave libc alone.
@@ -201,12 +199,11 @@ that named them are done.
    `crypto/crypto.h` needs (A5).
 4. `userspace/wt/src/wt_tls_trust_xaios.c` (**new**, ~200 lines) -- pin-only
    verify (A7).
-5. `userspace/apps/wtqtest.c` (**the remaining work**, ~150 lines) -- open an
-   ephemeral UDP socket, start a client session against `10.0.2.2:4433`, pump,
-   print `WT-HANDSHAKE-OK` when `wt_runtime_session_handshake_done` turns true.
-   `wt_peer.c` is the same driver with the platform's own POSIX socket branch,
-   so this is the one file that has to be written fresh rather than adapted,
-   and `tests/fixtures/wt-peer-cert.der` fixes the pin it checks
+5. `userspace/apps/hosted/wtqtest.c` (**written**) -- opens an ephemeral UDP
+   socket, starts a client session against `10.0.2.2:4433`, pumps, and prints
+   `WT-HANDSHAKE-OK` once `wt_runtime_session_handshake_done` is true and the
+   peer's transport parameters are in force. `scripts/build-wt-app.sh` builds
+   it, and `tests/fixtures/wt-peer-cert.der` fixes the pin it checks
    (`d4664ca3...f19dca`).
 6. `Makefile` and `scripts/create-initfs.py` -- the vendored source list, the
    BearSSL objects, and one more initfs entry. **The initial filesystem's
@@ -232,15 +229,17 @@ name the cause of the first failing round.
 
 ## What this document does not claim
 
-No handshake on a booted XAIOS guest has been observed yet: the guest
-application and its gate are the remaining work, and the handshake they will
-perform is the one `make wt-interop-test` already performs on the host. The
-crypto backend, the key share, the trust verifier, the certificate and
-signature code and a host endpoint that drives all of them are written. Every
-line number is at the pin above and will move when the library moves. The
-verdict is that the work is bounded and enumerated -- not that it is done. The
-observation of a completed handshake on the guest is what `B-131` closes on;
-what has landed since is recorded at the end of this document.
+A handshake on a booted XAIOS guest has now been observed:
+`make qemu-quic-handshake-gate` reads `wtqtest: WT-HANDSHAKE-OK` from the guest
+and `WT-PEER-HANDSHAKE-OK` from the peer in the same run. Nothing above the
+handshake is claimed -- no HTTP/3, no WebTransport session, no application data
+-- and the port's server role is not carried at all: signing exists and is used
+by the host peer, but the XAIOS socket seam can serve a client and not a
+listener, because the kernel's receive reports a datagram's sender address
+without its port. That limitation is a kernel gap rather than a port one, and it
+is recorded in `userspace/wt/xaios/wt_xaios_platform.c` beside the code that
+works around it. Every line number is at the pin above and will move when the
+library moves; what has landed since is recorded at the end of this document.
 
 ## Landed so far (2026-09-17)
 

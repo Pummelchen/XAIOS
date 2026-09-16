@@ -12,7 +12,15 @@
 #include <xaios_user.h>
 
 #define WT_XAIOS_MAX_SOCKETS 8
-#define WT_XAIOS_MAX_DATAGRAM 65507U
+/* The largest receive this seam can ask the kernel for. It is the kernel's own
+   socket buffer (`SOCKET_BUFFER_SIZE` in kernel/include/xaios/socket_buffer.h)
+   and not a UDP datagram's 65507: a receive whose buffer is larger than that
+   is refused outright -- `net-recv-denied` at the syscall -- so a seam sized
+   for the protocol asked for the one size the kernel will not answer. A QUIC
+   datagram is at most a path MTU, so nothing here is given less room than it
+   needs, and `wt_udp_platform_receive_message` copies out of the stash for a
+   caller whose buffer is larger still. */
+#define WT_XAIOS_MAX_DATAGRAM 16384U
 #define WT_XAIOS_MS_TO_NS UINT64_C(1000000)
 
 /* What `wt_udp_platform_last_error` reports. The library never sees these
@@ -29,6 +37,21 @@ typedef struct wt_xaios_socket {
   uint64_t descriptor; /* 0 until the kernel socket exists */
   uint16_t port;
   uint8_t family; /* 4 or 6, the kernel's spelling */
+  /* The port of the last address this socket sent to, which is also the port
+     of the peer of every datagram it receives.
+     XAIOS's receive reports the SENDER'S ADDRESS but not its port --
+     `xaios_ip_addr_user_t` is a family and sixteen address bytes -- and the
+     library compares a received datagram's sender against the peer it
+     expected, port included. Reporting zero made every datagram a stranger:
+     the connection pulled twelve packets it had asked for, discarded all
+     twelve, and reported a handshake that timed out with nothing to show for
+     it. The remembered destination is the missing half, and it is the right
+     value for a client, which is the role this port takes. It is NOT right for
+     a listener: a server learns its peer from the first datagram, before it has
+     ever sent, so the port it learns would still be zero and its reply would go
+     to port zero. A server on XAIOS needs the receive to report the source
+     port, which is a kernel change rather than a seam one. */
+  uint16_t peer_port;
 } wt_xaios_socket_t;
 
 static wt_xaios_socket_t g_sockets[WT_XAIOS_MAX_SOCKETS];
@@ -223,6 +246,8 @@ int wt_udp_platform_send_message(wt_udp_handle_t handle,
     g_last_error = WT_XAIOS_ERROR_IO;
     return -1;
   }
+  /* Where this went is where an answer comes from: see `peer_port`. */
+  slot->peer_port = storage->ss_port;
   *written = (size_t)sent;
   return 0;
 }
@@ -246,7 +271,7 @@ static int stash_one(wt_xaios_socket_t *slot, int handle) {
   g_stash_length = (size_t)received;
   g_stash_truncated = 0;
   g_stash_handle = handle;
-  fill_storage(&g_stash_address, source.family, source.addr, 0U, 0U);
+  fill_storage(&g_stash_address, source.family, source.addr, slot->peer_port, 0U);
   g_stash_address_length = (int)sizeof(g_stash_address);
   return 0;
 }

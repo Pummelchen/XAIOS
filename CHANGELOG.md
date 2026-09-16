@@ -23,6 +23,17 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **A booted XAIOS guest completes a WebTransport QUIC and TLS 1.3
+  handshake.** The port's client is packaged as `/bin/wtqtest` and driven
+  by `make qemu-quic-handshake-gate` against the same host peer the interop
+  test uses, with the guest pinning the peer's certificate. Two seam
+  defects only a guest could find came out of it: every receive was
+  rejected for asking the kernel for more bytes than its socket buffer
+  holds, and every received datagram was reported with a zero source port,
+  so the client discarded the whole server flight as coming from a
+  stranger. Both are fixed, and the second is now a documented limit: the
+  seam can be a client but not a listener (B-131).
+
 - **The WebTransport C99 port completes a TLS 1.3 handshake with itself.**
   Signing is no longer refused: a DER private key is parsed with BearSSL's
   key decoder and RSA-PSS (fresh salt per signature, from an HMAC-DRBG

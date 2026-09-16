@@ -32,6 +32,7 @@ RUNTIME_SCRIPTS = {
     "build-libc.sh",
     "build-wt-upstream.sh",
     "build-wt-peer.sh",
+    "build-wt-app.sh",
     "build-netboot-image.sh",
     "create-initfs.py",
     "create-persistent-image.sh",

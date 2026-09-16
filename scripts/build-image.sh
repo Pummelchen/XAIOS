@@ -180,7 +180,7 @@ if [ -n "${XAIOS_CLUSTER_MESH_NODES:-}" ]; then
   fi
 fi
 UTILITY_APPS="ls mkdir touch cp mv rm rmdir stat cat head tail less grep find sed write tar cpio zip unzip ps df du"
-HOSTED_USER_APPS="helloworldc99"
+HOSTED_USER_APPS="helloworldc99 wtqtest"
 
 BUILD_MODE="${XAIOS_BUILD_MODE:-development}"
 case "$BUILD_MODE" in
@@ -638,7 +638,7 @@ if [ -n "${XAIOS_BUILD_REVISION_OVERRIDE:-}" ] ||
    [ -n "$(git -C "$ROOT_DIR" ls-files --others --exclude-standard 2>/dev/null)" ]; then
   BUILD_IDENTIFIER="${BUILD_IDENTIFIER}-dirty"
 fi
-KERNEL_CFLAGS="$KERNEL_CFLAGS $PASSWORD_AUTH_CFLAG -DXAIOS_BOOT_TEST_APPS=$BOOT_TEST_APPS -DXAIOS_BOOT_VERBOSE=$BOOT_VERBOSE -DXAIOS_FAILURE_TEST_APP=$FAILURE_TEST_APP -DXAIOS_LIBC_TEST=$LIBC_TEST -DXAIOS_BUILD_NUMBER=$BUILD_NUMBER"
+KERNEL_CFLAGS="$KERNEL_CFLAGS $PASSWORD_AUTH_CFLAG -DXAIOS_BOOT_TEST_APPS=$BOOT_TEST_APPS -DXAIOS_BOOT_VERBOSE=$BOOT_VERBOSE -DXAIOS_WT_HANDSHAKE_TEST=${XAIOS_WT_HANDSHAKE_TEST:-0} -DXAIOS_FAILURE_TEST_APP=$FAILURE_TEST_APP -DXAIOS_LIBC_TEST=$LIBC_TEST -DXAIOS_BUILD_NUMBER=$BUILD_NUMBER"
 
 # Extra flags for the kernel only, appended last so they win.
 #
@@ -1358,8 +1358,16 @@ fi
 for app in $HOSTED_USER_APPS; do
   app_elf="$INIT_BUILD_DIR/$app.elf"
   printf '%s\n' "Building hosted C99 userspace /bin/$app ELF..."
-  "$ROOT_DIR/scripts/build-c99-app.sh" --arch "$TARGET_ARCH" --main void \
-    "$ROOT_DIR/userspace/apps/hosted/$app.c" "$app_elf"
+  if [ "$app" = "wtqtest" ]; then
+    # The WebTransport client is a hosted application too, but it is built with
+    # the port beside it: the vendored runtime, the XAIOS socket seam, this
+    # repository's BearSSL backend and the BearSSL archive (B-131).
+    "$ROOT_DIR/scripts/build-wt-app.sh" --arch "$TARGET_ARCH" \
+      "$ROOT_DIR/userspace/apps/hosted/$app.c" "$app_elf"
+  else
+    "$ROOT_DIR/scripts/build-c99-app.sh" --arch "$TARGET_ARCH" --main void \
+      "$ROOT_DIR/userspace/apps/hosted/$app.c" "$app_elf"
+  fi
   set -- "$@" "/bin/$app=$app_elf"
 done
 

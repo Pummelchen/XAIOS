@@ -313,6 +313,15 @@ jobs:
         env:
           XAIOS_EPHEMERAL_UDP_TIMEOUT: "300"
 
+      # The WebTransport port's own client, on a booted guest, completing a
+      # QUIC and TLS 1.3 handshake against the host peer the interop test uses
+      # (B-131). It rebuilds the image with XAIOS_WT_HANDSHAKE_TEST=1, which is
+      # why it runs after the other boot gates rather than beside them.
+      - name: WebTransport handshake from a booted guest
+        run: make qemu-quic-handshake-gate
+        env:
+          XAIOS_WT_GATE_TIMEOUT: "300"
+
       - name: Upload build artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
