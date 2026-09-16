@@ -23,13 +23,8 @@ static uint32_t g_wall_source;
 static uint64_t g_wall_last_sync_ns;
 static uint32_t g_periodic_active;
 static uint32_t g_periodic_hz;
-/* Set while a CPU idles on a one-shot: the interrupt that ends the wait must
-   not tick the scheduler, because it lands inside a syscall's wait, not
-   between two instructions of a process. */
-static uint32_t g_idle_wait;
 /* The one CPU carrying the network tick, or UINT32_MAX when none is. */
 static uint32_t g_network_tick_cpu = UINT32_MAX;
-static xaios_context_frame_t g_irq_frame;
 
 /* The local APIC count for one period of the configured rate, or 0 when no
    rate was ever configured. It used to be computed in three places with the
@@ -156,7 +151,9 @@ uint32_t timer_local_tick_is_network_only(void) {
  * deadline and sleep; this is the same: the local APIC timer is set to fire
  * at the deadline, the CPU halts with interrupts enabled, and the periodic
  * tick, if this CPU had one, is put back afterwards. The interrupt that
- * ends the wait is counted but does not tick the scheduler. */
+ * ends the wait is counted but does not tick the scheduler -- no timer
+ * interrupt on this port does, for the reason written out beside
+ * `x86_64_platform_timer_irq` below. */
 static void timer_idle_until_common(uint64_t deadline_ns, int break_on_wake) {
   uint32_t had_periodic = g_periodic_active;
   uint64_t wake = timer_wake_generation();
@@ -168,10 +165,8 @@ static void timer_idle_until_common(uint64_t deadline_ns, int break_on_wake) {
     uint64_t count = (wait_ns * g_lapic_frequency) / UINT64_C(1000000000);
     if (count == 0U) count = 1U;
     if (count > UINT32_MAX) count = UINT32_MAX;
-    g_idle_wait = 1U;
     x86_64_platform_timer_start((uint32_t)count, 0U);
     __asm__ volatile("sti; hlt; cli" ::: "memory");
-    g_idle_wait = 0U;
   }
   /* Put back what this CPU had, and not only what the scheduler had: the one
      CPU carrying the network tick had a timer on entry even though
@@ -316,16 +311,44 @@ void timer_self_test(void) {
        end - start, end_ns - start_ns);
 }
 
-/* This port's tick cannot yet be tested the way the other two can, and it says
- * why instead of passing: `g_irq_frame` is declared here and referenced once,
- * by the `scheduler_tick` call below, so the context the scheduler saves for a
- * preempted task is one nobody filled and the frame it hands back is never
- * applied -- the vector-32 branch returns 0 and resumes the interrupted
- * instruction. Until that is fixed there is no mapping to check (B-129). */
+/* Why this port's timer interrupt does not tick the scheduler (B-129).
+ *
+ * It used to call `scheduler_tick(&g_irq_frame, 0)` -- and `g_irq_frame` was
+ * declared in this file, referenced by that call and filled by nothing. The
+ * scheduler therefore saved a zeroed context as the preempted task's and
+ * believed the task it picked was running, while this CPU went on executing the
+ * interrupted instruction: a tick that corrupted the scheduler's bookkeeping
+ * and switched nothing. It is gone rather than kept, because the mapping the
+ * other ports do is not what is missing here.
+ *
+ * RISC-V needed the trap frame and the scheduler's frame mapped, and that port
+ * now has it. This one cannot switch from a trap at all yet, and the reason is
+ * the shape of its user-mode entry rather than its trap frame. A user process
+ * here is entered with `iretq` from deep inside the kernel, so its kernel
+ * continuation -- where its exit syscall returns to -- lives on the stack it
+ * was entered from. The port keeps exactly one of those per CPU and per
+ * nesting depth: `x86_64_cpu_record_t.user_resume_rsp[X86_USER_NESTING_MAX]`
+ * with `user_previous_rsp0[]`, written by `x86_64_platform_set_user_resume`
+ * and read by `x86_64_platform_user_resume` (early.c), together with the TSS
+ * `rsp0` that is derived from the entering process's stack. Resuming a
+ * *different* process from a trap would hand it the outgoing process's kernel
+ * stack and its resume slot, so its exit would unwind the outgoing process's
+ * continuation with its own exit code. The saving of floating-point state is
+ * per CPU and nesting depth for the same reason (`current_irq_state_area`,
+ * early.c), so a preemptive switch would also resume one process with
+ * another's.
+ *
+ * What B-129 owes this port is therefore the full context switch its own
+ * entry.S says it has not done: a kernel stack and resume slot per task, TSS
+ * `rsp0` and the floating-point area swapped with the task, and only then the
+ * frame mapping the other two ports have. Recorded rather than half-built --
+ * a tick that switches the scheduler's idea of the running task without
+ * switching the CPU is worse than one that does nothing. */
 void platform_scheduler_tick_self_test(void) {
-  klog("sched-tick: x86_64 tick self-test not applicable -- this port's timer "
-       "interrupt passes the scheduler a frame it does not fill and does not "
-       "apply the frame it gets back (B-129)\n");
+  klog("sched-tick: x86_64 tick self-test not applicable -- this port's user "
+       "entry keeps one kernel continuation and floating-point area per CPU "
+       "rather than per task, so a trap cannot resume another task yet "
+       "(B-129, needs per-task kernel contexts)\n");
 }
 
 void x86_64_platform_timer_irq(void) {
@@ -337,7 +360,7 @@ void x86_64_platform_timer_irq(void) {
   if (timer_local_tick_is_network_only() != 0U) {
     return;
   }
-  if (g_periodic_active != 0U && g_idle_wait == 0U) {
-    scheduler_tick(&g_irq_frame, 0);
-  }
+  /* Nothing else to do: see the refusal above. The periodic tick still
+     advances `timer_now_ns` and re-arms the comparator in the caller, which is
+     what the boot worker gate's bounded waits rest on. */
 }

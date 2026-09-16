@@ -469,6 +469,18 @@ static void riscv64_context_to_frame(const xaios_context_frame_t *context,
   frame->sp = context->regs[1] != 0U ? context->regs[1] : context->sp_el0;
 }
 
+/* What the tick has actually done, counted rather than reasoned about.
+ *
+ * A timer trap that ticks the scheduler and a timer trap that preempts a user
+ * context are two claims, and only the second is the capability this port is
+ * said to lack. `sstatus.SPP` says which mode the trap interrupted, and the
+ * scheduler's own idea of the current task says whether the frame this returns
+ * belongs to another one -- so the two counters together are the measurement,
+ * taken on the machine rather than argued from the code. */
+static uint64_t g_tick_count;
+static uint64_t g_tick_user_count;
+static uint64_t g_tick_user_switches;
+
 static void riscv64_scheduler_tick(riscv64_trap_frame_t *frame) {
   if (timer_local_tick_is_network_only() != 0U) {
     /* The CPU carrying the network tick polls the stack in its idle loop; its
@@ -476,10 +488,38 @@ static void riscv64_scheduler_tick(riscv64_trap_frame_t *frame) {
        is the same division the other two ports make. */
     return;
   }
+  uint32_t before = scheduler_current_pid();
+  int from_user = (frame->sstatus & SSTATUS_SPP) == 0U;
   xaios_context_frame_t context;
   riscv64_frame_to_context(frame, &context);
   scheduler_tick(&context, 0);
   riscv64_context_to_frame(&context, frame);
+
+  ++g_tick_count;
+  if (g_tick_count == 1U) {
+    klog("sched-tick: riscv64 first timer tick from=%s pid=%u\n",
+         from_user != 0 ? "user" : "kernel", (unsigned)before);
+  }
+  if (from_user == 0) return;
+  ++g_tick_user_count;
+  if (g_tick_user_count <= 8U) {
+    /* Named one by one at first, because the interesting fact is whether a
+       tick from a user context arrives at all, and whether the scheduler then
+       has another task to hand back. */
+    klog("sched-tick: riscv64 user-context tick pid=%u -> pid=%u "
+         "ticks=%lu user_ticks=%lu switches=%lu\n",
+         (unsigned)before, (unsigned)scheduler_current_pid(),
+         (unsigned long)g_tick_count, (unsigned long)g_tick_user_count,
+         (unsigned long)g_tick_user_switches);
+  }
+  if (scheduler_current_pid() == before) return;
+  ++g_tick_user_switches;
+  if ((g_tick_user_switches % 256U) == 0U) {
+    klog("sched-tick: riscv64 user-context switches=%lu ticks=%lu "
+         "user_ticks=%lu\n",
+         (unsigned long)g_tick_user_switches, (unsigned long)g_tick_count,
+         (unsigned long)g_tick_user_count);
+  }
 }
 
 static void riscv64_zero(void *destination, uint64_t size) {
