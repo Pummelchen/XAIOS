@@ -305,6 +305,15 @@ DNS_BAD_ARGUMENT = "nslookup: invalid-argument"
 # gate gave up first and reported its own impatience as the resolver's, which
 # is the wrong end of the wire to be measuring: the point is to see the verdict
 # the resolver reached, including "dnssec-timeout" when it reached none.
+#
+# It is the *local* bound and it is scaled on a host that declares itself slow,
+# the way every other wait in this file is. The budget is host-side patience
+# with an SSH session, not the resolver's walk: 60 s of it was not enough on the
+# CI runner, where the aarch64 leg failed with `DNS A (well-formed) produced no
+# output at all for 60 seconds` on a commit that changed neither the kernel nor
+# this gate, while the resolver's own budget is 45 s and was never reached.
+# A stalled session is the runner's measured behaviour (B-43, B-63), and
+# `timeout_scale()` is what this repository already uses to say so out loud.
 DNS_PATIENCE_SECONDS = 60.0
 
 
@@ -321,7 +330,8 @@ def wait_dns_result(key: Path, port: int, command: str, label: str) -> str:
     identical kernel and gate code, passed the same check, so what the message
     described was a probe that produced no output, not a resolver verdict.
     """
-    deadline = time.monotonic() + DNS_PATIENCE_SECONDS
+    patience = DNS_PATIENCE_SECONDS * timeout_scale()
+    deadline = time.monotonic() + patience
     value = ""
     while time.monotonic() < deadline:
         value = ssh_command(key, port, command, ok=None)
@@ -331,12 +341,12 @@ def wait_dns_result(key: Path, port: int, command: str, label: str) -> str:
     if value.strip() == "":
         raise RuntimeError(
             f"DNS {label} produced no output at all for "
-            f"{DNS_PATIENCE_SECONDS:.0f} seconds: the command printed nothing, "
+            f"{patience:.0f} seconds: the command printed nothing, "
             f"which is a connection that did not run rather than a resolver "
             f"that answered"
         )
     raise RuntimeError(
-        f"DNS {label} remained pending for {DNS_PATIENCE_SECONDS:.0f} seconds, "
+        f"DNS {label} remained pending for {patience:.0f} seconds, "
         f"longer than the resolver's own walk budget: it never completed at all"
     )
 
