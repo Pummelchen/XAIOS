@@ -22,6 +22,74 @@ primary Unix behavior reference for commands and network interoperability.
 New here? [[Getting Started|Getting-Started]] goes from a clone to a login
 prompt; [[Current Limitations|Current-Limitations]] says what is not claimed.
 
+## Quick start
+
+Two ways in, and neither needs the other.
+
+**From a released build — no compiler.** Download the kit for your machine from
+the [releases page](https://github.com/Pummelchen/XAIOS/releases) — currently
+**build 6** — unzip it, and run the launcher. The choice of architecture is not
+reversible by downloading another kit, so pick yours first:
+
+```sh
+unzip xaios_b6-aarch64-qemu.zip
+cd xaios_b6-aarch64-qemu
+./run.sh                 # Ctrl-A X quits QEMU
+```
+
+A fresh image has no account and no password: the machine asks how to set itself
+up on first boot.
+
+**From source.** On a macOS host with Homebrew:
+
+```sh
+brew install llvm lld qemu mtools python3 meson ninja xorriso
+git clone --recurse-submodules https://github.com/Pummelchen/XAIOS.git
+cd XAIOS
+export PATH="$(brew --prefix llvm)/bin:$PATH"
+make image               # -> build/xaios-aarch64.img
+make qemu                # boot it, four vCPUs; Ctrl-A X exits
+```
+
+Either way a good boot ends like this:
+
+```text
+IPv4: 10.0.2.15
+IPv6: fe80::5054:ff:fe12:3457
+SSH server: up and running (tcp/22)
+
+xaios login:
+```
+
+The development image's account is `admin` / `xaios` — a public credential for
+isolated networks only. Release images package no password and reject password
+authentication. [[Getting Started|Getting-Started]] has the whole path,
+including the key-based login to use instead.
+
+## Common tasks
+
+| I want to… | Do this | You should see |
+|---|---|---|
+| Log in locally | type `admin`, then `xaios` at the `xaios login:` prompt | the `admin@xaios:/$` prompt |
+| Log in over SSH | `ssh -p 7788 admin@127.0.0.1` from another terminal | an `admin@xaios` prompt |
+| See what the machine is doing | `xaiosctl status` | `ssh=running`, `readiness=…`, CPU and page counts |
+| Watch it live | `xtop` | a refreshing CPU/process dashboard; `q` quits |
+| Find my way around the filesystem | `ls -l /`, `df`, `du -h /state` | xaibootFS on `/`, xaiFS on `/models` |
+| Copy a file in or out | `scp -P 7788 file admin@127.0.0.1:/state/` | a silent return; `ls /state` shows it |
+| Read or edit a file | `less /etc/xaios-init.conf`, `nano /state/notes.txt` | the pager or the editor |
+| Make or open an archive | `tar -cf /state/etc.tar /etc`, `unzip -l a.zip` | the archive, or its listing |
+| Install or update one application | `xapt update`, `xapt list`, `xapt install APP` | a signed catalog refresh, no reboot |
+| Update the whole OS | `xapt os-upgrade` | a streamed image into the inactive A/B slot |
+| Set the clock | `date`, `ntp sync`, `date -s EPOCH` | the active source, or the corrected time |
+| Check resource pressure | `limits` | normal/warning/critical plus the counts behind it |
+| Collect a report for a bug | `support` | a redacted bundle to capture on the host |
+| Shut down cleanly | `shutdown` | lifecycle record written, then poweroff |
+| Recover after an unclean boot | `recovery status`, then `recovery clear` | the marker and the unclean count |
+
+Full syntax is in [[Commands|Commands]]; every executable, with its options, is
+in [[Applications|Applications]]. The worked examples below the reference tables
+there show what a session actually looks like.
+
 ## Use XAIOS
 
 0. Take a released build from the
@@ -71,7 +139,7 @@ single [[Project Tracker|Project-Tracker]] for remaining work.
 
 ## Documentation
 
-### Operate the OS
+### Guide
 
 - [[Getting Started|Getting-Started]]
 - [[Boot and Console|Boot-and-Console]]
@@ -83,7 +151,7 @@ single [[Project Tracker|Project-Tracker]] for remaining work.
 - [[xapt Package Updates|Xapt-Package-Updates]]
 - [[Operations and Recovery|Operations-and-Recovery]]
 
-### Understand and validate it
+### Reference and internals
 
 - [[Architecture|Architecture]]
 - [[Screen Framework|Screen-Framework]]

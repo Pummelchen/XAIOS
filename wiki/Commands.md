@@ -61,6 +61,105 @@ authentication, and the complete OpenSSH algorithm matrix are not implemented.
 Power, lifecycle, and recovery details are in
 [[Operations and Recovery|Operations-and-Recovery]].
 
+## Worked examples
+
+Transcripts from an authenticated session. `admin@xaios:/$` is the prompt and
+everything after it is typed; the lines below each are what the machine prints.
+Output that varies (addresses, counts, timings) is shown as it appears rather
+than tidied.
+
+**Where am I, and what is here?**
+
+```text
+admin@xaios:/$ pwd
+/
+admin@xaios:/$ ls -l /state
+-rw-r--r--   1 admin  admin      118  lifecycle/record
+drwxr-xr-x   2 admin  admin        0  services
+admin@xaios:/$ df
+Filesystem Size Used Avail Capacity Mounted on
+xaibootFS 2048K 29K 2018K 2% /
+xaiFS 65536K 10312K 55224K 16% /models
+```
+
+**Look at a file, and edit one.**
+
+```text
+admin@xaios:/$ cat -n /etc/xaios-init.conf
+     1  service sshd
+     2  service source-index
+admin@xaios:/$ nano /state/notes.txt
+```
+
+`less FILE` pages a file without taking over the terminal; `nano FILE` is the
+full-screen editor. Both exit with `q` — `less` also with `ctrl-C`.
+
+**Compose commands.** Redirection and the bounded pipeline work in the session:
+
+```text
+admin@xaios:/$ echo hello > /state/greeting
+admin@xaios:/$ cat /state/greeting
+hello
+admin@xaios:/$ cat /etc/xaios-init.conf | grep service
+service sshd
+service source-index
+```
+
+**Copy a file to another machine.** From XAIOS outwards:
+
+```text
+admin@xaios:/$ scp -P 22 /state/greeting user@10.0.2.9:/tmp/
+admin@xaios:/$ scp -r -P 22 user@10.0.2.9:/tmp/tree /state/
+```
+
+Exactly one endpoint may be remote, and `-r` copies a bounded tree through
+SFTP. `ssh -p 22 user@10.0.2.9` opens a session on the other machine; add
+`-J jump@bastion` for one jump hop.
+
+**Ask the network what it thinks.**
+
+```text
+admin@xaios:/$ ifconfig
+admin@xaios:/$ ping 10.0.2.2
+ping: started
+admin@xaios:/$ ping status
+admin@xaios:/$ nslookup example.com
+admin@xaios:/$ route
+admin@xaios:/$ netstat
+```
+
+`ping` and `nslookup` start asynchronously: the first command asks the question
+and the `status` form (or a second `nslookup`) reads the answer, so a slow
+resolver never blocks the session.
+
+**Check the clock, the pressure, and the record.**
+
+```text
+admin@xaios:/$ date
+admin@xaios:/$ ntp sync
+admin@xaios:/$ ntp status
+admin@xaios:/$ limits
+admin@xaios:/$ support
+```
+
+`date` names its source (`rtc`, `manual` or `ntp`); `limits` prints the
+normal/warning/critical verdict beside the counts it came from; `support`
+prints a redacted bundle to capture from the host.
+
+**Inspect and control services, then stop the machine.**
+
+```text
+admin@xaios:/$ service list
+admin@xaios:/$ service status sshd
+admin@xaios:/$ service restart sshd
+admin@xaios:/$ shutdown
+```
+
+`shutdown` and `reboot` acknowledge first, then flush the lifecycle record,
+xaibootFS and every block device that advertises flush support before the power
+call. What happens if that record does not reach the disk is in
+[[Operations and Recovery|Operations-and-Recovery]].
+
 ## Session control and errors
 
 `help` prints the available surface. `exit`, `quit`, and `logout` end the

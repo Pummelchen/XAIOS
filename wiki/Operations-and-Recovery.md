@@ -58,6 +58,70 @@ process, filesystem, network, resolver, and log-ring counters. Thermal and PMU
 fields say `unavailable` until a real platform backend exists; QEMU values are
 never fabricated.
 
+## Worked examples
+
+**Shut down or reboot, and see that it was clean.**
+
+```text
+admin@xaios:/$ shutdown
+shutdown: acknowledged; writing lifecycle record
+admin@xaios:/$ reboot
+```
+
+The machine acknowledges first and powers down after it has flushed; the
+`lifecycle:` line on the *next* boot is the confirmation:
+
+```text
+lifecycle: record durable state=running boots=2 unclean=0 storage=disk status=ok
+```
+
+`unclean=0` means the previous instance completed its power transaction. A
+`volatile … storage=memory` line means the state volume did not mount and this
+boot is running on memory; `unwritten` names a write, commit or flush failure;
+`absent` means there was no state volume at all.
+
+**After a machine that was killed rather than shut down.**
+
+```text
+admin@xaios:/$ recovery status
+admin@xaios:/$ recovery clear
+```
+
+`status` reports the consecutive unclean count and whether the rescue marker is
+set; `clear` removes a *forced* marker and resets the count, which is what an
+administrator does once the cause is understood. Three consecutive unclean boots
+enter rescue mode on their own.
+
+**What rescue mode will and will not do.** Networking and SSH still come up so
+the machine can be inspected. Status, support, clock and network diagnostics,
+update status, power actions and bounded file inspection/repair all work;
+anything else fails explicitly rather than half-running.
+
+**Correct the clock.**
+
+```text
+admin@xaios:/$ date
+admin@xaios:/$ ntp sync
+admin@xaios:/$ ntp status
+admin@xaios:/$ date -s 1789000000
+```
+
+`ntp sync` sends one bounded SNTPv4 request, validates the reply and applies
+half the measured round trip; if no reply arrives it reports a timeout rather
+than claiming synchronization. The default server is `162.159.200.1` — an
+approved source belongs in deployment policy.
+
+**Before opening a bug.**
+
+```text
+admin@xaios:/$ limits
+admin@xaios:/$ support
+```
+
+`limits` gives the pressure verdict and the memory, heap, process, filesystem and
+CPU counts behind it; `support` is the redacted bundle to capture on the host
+and attach to a report.
+
 ## Evidence boundary
 
 `make qemu-operations-closure` performs abrupt termination, reboot, clean
