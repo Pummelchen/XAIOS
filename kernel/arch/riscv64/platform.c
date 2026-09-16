@@ -7,10 +7,12 @@
  * in the way its caller already handles, which is the same thing the other
  * architectures do where a capability is missing.
  */
+#include <xaios/exception.h>
 #include <xaios/pci.h>
 #include <xaios/riscv64_fdt.h>
 #include <xaios/riscv64_sbi.h>
 #include <xaios/smmu.h>
+#include <xaios/vmm.h>
 #include <xaios/timer.h>
 #include <xaios/topology.h>
 #include <xaios/status.h>
@@ -80,20 +82,41 @@ static void riscv64_iommu_probe(void) {
     return;
   }
 
-  /* BAR0 is named and not read.
-   *
-   * QEMU places this device's 64-bit BAR above 4 GiB -- measured at
-   * `0x400010000` -- and this port identity-maps its device window far below
-   * that, so a `CAP` read here takes a load page fault that the MMIO probe
-   * containment does not turn into a returned value (`ERROR: controlled page
-   * fault reported`, `class=load-page-fault cause=13 stval=0x400010000`,
-   * `sepc` in this function). The read belongs with the `vmm_map_page` that
-   * makes the BAR reachable, which is milestone 2; doing it here first would
-   * boot a machine that carries this device into a panic screen for the
-   * privilege of one log field. */
-  klog("riscv-iommu: found device=%u base=0x%lx (BAR0 not yet mapped; CAP read "
-       "deferred to the milestone that maps it)\n",
-       (unsigned)index, (unsigned long)base);
+  /* BAR0 is above this port's identity-mapped device window -- QEMU places it at
+   * `0x400010000` -- so the page has to be mapped before a register can be read
+   * from it, which is what the AArch64 SMMU self-test does for the same reason.
+   * Without the mapping the read faults (`class=load-page-fault cause=13
+   * stval=0x400010000`) and takes the machine down for one log field. */
+  xaios_status_t mapped = vmm_map_page(base, base, XAIOS_VMM_DEVICE);
+  if (mapped != XAIOS_OK) {
+    klog("smmu: riscv64 riscv-iommu-pci at 0x%lx could not be mapped "
+         "(status=%d); DMA is unmediated\n",
+         (unsigned long)base, (int)mapped);
+    return;
+  }
+
+  /* A read that faults and a read of all-ones mean the same thing here, and
+     neither is fatal -- the containment the ECAM probe uses. */
+  exception_mmio_probe_begin();
+  uint64_t cap = *(volatile const uint64_t *)(uintptr_t)base;
+  exception_mmio_probe_end();
+  if (exception_mmio_probe_faulted() != 0) {
+    klog("smmu: riscv64 riscv-iommu-pci at 0x%lx does not answer; DMA is "
+         "unmediated\n",
+         (unsigned long)base);
+    return;
+  }
+
+  /* CAP: version in bits 7:0, Sv39/Sv48/Sv57 at 9/10/11, and the
+     interrupt-generation support at 29:28. Decoded rather than dumped, because
+     the version says which specification the device implements and the Sv bits
+     say which page-table formats the driver that follows may use. */
+  klog("riscv-iommu: found device=%u base=0x%lx cap=0x%lx version=0x%lx sv39=%u "
+       "sv48=%u sv57=%u igs=%u\n",
+       (unsigned)index, (unsigned long)base, (unsigned long)cap,
+       (unsigned long)(cap & UINT64_C(0xff)),
+       (unsigned)((cap >> 9U) & 1U), (unsigned)((cap >> 10U) & 1U),
+       (unsigned)((cap >> 11U) & 1U), (unsigned)((cap >> 28U) & 3U));
   klog("smmu: riscv64 riscv-iommu-pci present, not yet programmed; PCI DMA is "
        "refused by the device until then\n");
 }
