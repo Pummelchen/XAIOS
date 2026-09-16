@@ -124,6 +124,14 @@ riscv64_boot_lottery:
  * a half-written one would be worse than an absent one.
  */
   .section .text, "ax"
+  /* Bytes the trap stub reserves for one frame, and where the floating-point
+     state lives inside it. The field offsets are the C view in
+     `riscv64_trap_frame_t`; this constant is the stub's, and it is 560 rather
+     than 552 because the psABI wants sp 16-byte aligned at the trap and the
+     eight bytes of padding are cheaper than an unaligned stack. */
+  .equ  TRAP_FRAME_BYTES, 560
+  .equ  TRAP_FRAME_FP, 288
+  .equ  TRAP_FRAME_FCSR, 544
   .globl riscv64_trap_entry
   .align 4
 riscv64_trap_entry:
@@ -142,7 +150,7 @@ riscv64_trap_entry:
      right; put it back and leave sscratch as it was. */
   csrrw sp, sscratch, sp
 1:
-  addi  sp, sp, -288
+  addi  sp, sp, -TRAP_FRAME_BYTES
   sd    ra, 0(sp)
   sd    gp, 16(sp)
   sd    tp, 24(sp)
@@ -174,11 +182,57 @@ riscv64_trap_entry:
   sd    t5, 232(sp)
   sd    t6, 240(sp)
 
+  /* The floating-point state, saved with the rest of the context because a
+     switched-to task has to resume with *its* floating-point registers.
+   *
+   * The unit is switched on for the duration of this stub first: `sstatus.FS`
+   * can be Off, and an `fsd` executed then is an illegal instruction taken
+   * inside the trap entry, which is a trap in a trap. The frame keeps the
+   * interrupted `sstatus` untouched, so a context that was not using the unit
+   * resumes with it still off, and the restore below is skipped for it. */
+  csrr  t0, sstatus
+  li    t1, 0x2000          /* FS = Initial */
+  csrs  sstatus, t1
+  frcsr t0
+  sd    t0, TRAP_FRAME_FCSR(sp)
+  fsd   f0, TRAP_FRAME_FP+0(sp)
+  fsd   f1, TRAP_FRAME_FP+8(sp)
+  fsd   f2, TRAP_FRAME_FP+16(sp)
+  fsd   f3, TRAP_FRAME_FP+24(sp)
+  fsd   f4, TRAP_FRAME_FP+32(sp)
+  fsd   f5, TRAP_FRAME_FP+40(sp)
+  fsd   f6, TRAP_FRAME_FP+48(sp)
+  fsd   f7, TRAP_FRAME_FP+56(sp)
+  fsd   f8, TRAP_FRAME_FP+64(sp)
+  fsd   f9, TRAP_FRAME_FP+72(sp)
+  fsd   f10, TRAP_FRAME_FP+80(sp)
+  fsd   f11, TRAP_FRAME_FP+88(sp)
+  fsd   f12, TRAP_FRAME_FP+96(sp)
+  fsd   f13, TRAP_FRAME_FP+104(sp)
+  fsd   f14, TRAP_FRAME_FP+112(sp)
+  fsd   f15, TRAP_FRAME_FP+120(sp)
+  fsd   f16, TRAP_FRAME_FP+128(sp)
+  fsd   f17, TRAP_FRAME_FP+136(sp)
+  fsd   f18, TRAP_FRAME_FP+144(sp)
+  fsd   f19, TRAP_FRAME_FP+152(sp)
+  fsd   f20, TRAP_FRAME_FP+160(sp)
+  fsd   f21, TRAP_FRAME_FP+168(sp)
+  fsd   f22, TRAP_FRAME_FP+176(sp)
+  fsd   f23, TRAP_FRAME_FP+184(sp)
+  fsd   f24, TRAP_FRAME_FP+192(sp)
+  fsd   f25, TRAP_FRAME_FP+200(sp)
+  fsd   f26, TRAP_FRAME_FP+208(sp)
+  fsd   f27, TRAP_FRAME_FP+216(sp)
+  fsd   f28, TRAP_FRAME_FP+224(sp)
+  fsd   f29, TRAP_FRAME_FP+232(sp)
+  fsd   f30, TRAP_FRAME_FP+240(sp)
+  fsd   f31, TRAP_FRAME_FP+248(sp)
+
   /* The interrupted stack pointer, which is in sscratch for a trap from user
      mode and is this stack for one from the kernel. */
   csrr  t0, sscratch
   bnez  t0, 2f
-  addi  t0, sp, 288
+  addi  t0, sp, TRAP_FRAME_BYTES
 2:
   sd    t0, 8(sp)
   /* And the stack this context's *next* trap from user mode must land on, which
@@ -187,7 +241,7 @@ riscv64_trap_entry:
      kernel is already on. Kept in the frame because a context switch has to
      re-arm sscratch from the incoming task's value, not the outgoing one's
      (`B-132`); see the epilogue below. */
-  addi  t0, sp, 288
+  addi  t0, sp, TRAP_FRAME_BYTES
   sd    t0, 280(sp)
   /* Cleared so a nested trap taken while the kernel is running takes the
      kernel branch above rather than switching to a stack already in use. */
@@ -232,10 +286,52 @@ riscv64_trap_entry:
   bnez  t1, 3f
   ld    t1, 280(sp)
   bnez  t1, 4f
-  addi  t1, sp, 288
+  addi  t1, sp, TRAP_FRAME_BYTES
 4:
   csrw  sscratch, t1
 3:
+  /* The floating-point registers of whichever context this frame describes,
+     skipped for a context that had the unit off -- its frame's values are not
+     live, and an `fld` with FS off is the same illegal instruction the save
+     above avoids. `t0` still holds the restored `sstatus`. */
+  li    t1, 0x6000          /* FS mask */
+  and   t1, t0, t1
+  beqz  t1, 5f
+  ld    t0, TRAP_FRAME_FCSR(sp)
+  csrw  fcsr, t0
+  fld   f0, TRAP_FRAME_FP+0(sp)
+  fld   f1, TRAP_FRAME_FP+8(sp)
+  fld   f2, TRAP_FRAME_FP+16(sp)
+  fld   f3, TRAP_FRAME_FP+24(sp)
+  fld   f4, TRAP_FRAME_FP+32(sp)
+  fld   f5, TRAP_FRAME_FP+40(sp)
+  fld   f6, TRAP_FRAME_FP+48(sp)
+  fld   f7, TRAP_FRAME_FP+56(sp)
+  fld   f8, TRAP_FRAME_FP+64(sp)
+  fld   f9, TRAP_FRAME_FP+72(sp)
+  fld   f10, TRAP_FRAME_FP+80(sp)
+  fld   f11, TRAP_FRAME_FP+88(sp)
+  fld   f12, TRAP_FRAME_FP+96(sp)
+  fld   f13, TRAP_FRAME_FP+104(sp)
+  fld   f14, TRAP_FRAME_FP+112(sp)
+  fld   f15, TRAP_FRAME_FP+120(sp)
+  fld   f16, TRAP_FRAME_FP+128(sp)
+  fld   f17, TRAP_FRAME_FP+136(sp)
+  fld   f18, TRAP_FRAME_FP+144(sp)
+  fld   f19, TRAP_FRAME_FP+152(sp)
+  fld   f20, TRAP_FRAME_FP+160(sp)
+  fld   f21, TRAP_FRAME_FP+168(sp)
+  fld   f22, TRAP_FRAME_FP+176(sp)
+  fld   f23, TRAP_FRAME_FP+184(sp)
+  fld   f24, TRAP_FRAME_FP+192(sp)
+  fld   f25, TRAP_FRAME_FP+200(sp)
+  fld   f26, TRAP_FRAME_FP+208(sp)
+  fld   f27, TRAP_FRAME_FP+216(sp)
+  fld   f28, TRAP_FRAME_FP+224(sp)
+  fld   f29, TRAP_FRAME_FP+232(sp)
+  fld   f30, TRAP_FRAME_FP+240(sp)
+  fld   f31, TRAP_FRAME_FP+248(sp)
+5:
   ld    ra, 0(sp)
   ld    gp, 16(sp)
   ld    tp, 24(sp)
@@ -395,14 +491,14 @@ riscv64_sscratch_window_end:
  *
  * Entered from the trap stub with sp still pointing at the trap frame and a0
  * holding the encoded exit result, which is what xaios_enter_user returns.
- * The kernel stack that entered user mode is exactly 288 bytes above the
+ * The kernel stack that entered user mode is exactly one frame above the
  * frame -- the stub subtracted that much from the value sscratch held -- so
  * unwinding is arithmetic rather than another saved pointer.
  */
   .globl riscv64_return_from_user_exit
   .type riscv64_return_from_user_exit, @function
 riscv64_return_from_user_exit:
-  addi  sp, sp, 288
+  addi  sp, sp, TRAP_FRAME_BYTES
   ld    ra, 0(sp)
   ld    s0, 8(sp)
   ld    s1, 16(sp)

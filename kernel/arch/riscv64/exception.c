@@ -207,17 +207,27 @@ typedef struct riscv64_trap_frame {
   uint64_t t3, t4, t5, t6;
   uint64_t sepc, scause, stval, sstatus;
   /* The kernel stack this context's next trap from user mode lands on, which
-     the stub writes at entry and the trap return re-arms `sscratch` from. It is
-     the last eight bytes of the 288 the stub reserves: a field rather than
-     arithmetic, because it is the one value a context switch has to carry for
-     the incoming task (`B-132`). */
+     the stub writes at entry and the trap return re-arms `sscratch` from. A
+     field rather than arithmetic, because it is the one value a context switch
+     has to carry for the incoming task (`B-132`). */
   uint64_t kernel_sp;
+  /* The floating-point registers and control/status word, saved by the stub on
+     every trap and restored on the way out. They travel with the context
+     because a switched-to task has to resume with its own -- two preempted
+     processes sharing one set is a wrong answer with no symptom until the
+     numbers matter. The stub reserves 560 bytes, so the eight bytes of padding
+     after `fcsr` are its own. */
+  uint64_t fp[32];
+  uint64_t fcsr;
 } riscv64_trap_frame_t;
 
 #define SSTATUS_SPP (UINT64_C(1) << 8)
 /* Supervisor previous interrupt enable: what SIE becomes after `sret`, and
    the only way a frame can say "resume in the kernel with interrupts on". */
 #define SSTATUS_SPIE (UINT64_C(1) << 5)
+/* `sstatus.FS` bits 13:14: value 1 is Initial, which is "this context may
+   use the floating-point unit". */
+#define SSTATUS_FS_INITIAL (UINT64_C(1) << 13)
 #define SSTATUS_SUM (UINT64_C(1) << 18)
 
 /* Supervisor access to user pages, opened only where it is meant to be used.
@@ -464,9 +474,17 @@ static void riscv64_frame_to_context(const riscv64_trap_frame_t *frame,
      next syscall (B-132). */
   context->sp_el1 = frame->kernel_sp;
   context->padding = 0U;
-  context->fpcr = 0U;
+  /* The shared frame's SIMD area is 512 bytes for AArch64's 32 x 128-bit
+     registers; this port's are 64-bit each for the D extension, so the first
+     thirty-two slots carry them exactly and the rest are not this port's to
+     use. `fpcr` is the control/status word here and `fpsr` has no RISC-V
+     counterpart, so it is zero rather than a copy of the same value. */
+  for (uint32_t index = 0U; index < 32U; ++index) {
+    context->simd[index] = frame->fp[index];
+  }
+  for (uint32_t index = 32U; index < 64U; ++index) context->simd[index] = 0U;
+  context->fpcr = frame->fcsr;
   context->fpsr = 0U;
-  for (uint32_t index = 0U; index < 64U; ++index) context->simd[index] = 0U;
 }
 
 static void riscv64_context_to_frame(const xaios_context_frame_t *context,
@@ -485,6 +503,10 @@ static void riscv64_context_to_frame(const xaios_context_frame_t *context,
      already on, which is the caller's -- exactly the behaviour before a switch
      could carry one, so a frame that cannot name a stack cannot change one. */
   if (context->sp_el1 != 0U) frame->kernel_sp = context->sp_el1;
+  for (uint32_t index = 0U; index < 32U; ++index) {
+    frame->fp[index] = context->simd[index];
+  }
+  frame->fcsr = context->fpcr;
 }
 
 /* Build a frame that starts a task in kernel mode on a stack of its own.
@@ -506,7 +528,10 @@ int xaios_context_frame_kernel_entry(xaios_context_frame_t *frame,
   frame->regs[1] = stack_top;
   frame->sp_el1 = stack_top;
   frame->elr_el1 = (uint64_t)(uintptr_t)entry;
-  frame->spsr_el1 = SSTATUS_SPP | SSTATUS_SPIE;
+  /* FS = Initial as well, because a task whose `sstatus` says the unit is Off
+     takes an illegal instruction on its first floating-point register access --
+     and the kernel task this builds is arbitrary C code, which may have one. */
+  frame->spsr_el1 = SSTATUS_SPP | SSTATUS_SPIE | SSTATUS_FS_INITIAL;
   return 1;
 }
 
@@ -577,6 +602,9 @@ void platform_scheduler_tick_self_test(void) {
   frame.sepc = UINT64_C(0xaaaa);
   frame.sstatus = UINT64_C(0x33);
   frame.kernel_sp = UINT64_C(0xcc);
+  frame.fp[0] = UINT64_C(0xf0f0f0f0f0f0f0f0);
+  frame.fp[31] = UINT64_C(0x0f0f0f0f0f0f0f0f);
+  frame.fcsr = UINT64_C(0x7f);
 
   xaios_context_frame_t context;
   riscv64_frame_to_context(&frame, &context);
@@ -586,7 +614,11 @@ void platform_scheduler_tick_self_test(void) {
               context.elr_el1 == UINT64_C(0xaaaa) &&
               context.spsr_el1 == UINT64_C(0x33) &&
               context.sp_el0 == UINT64_C(0xbbbb) &&
-              context.sp_el1 == UINT64_C(0xcc);
+              context.sp_el1 == UINT64_C(0xcc) &&
+              context.simd[0] == UINT64_C(0xf0f0f0f0f0f0f0f0) &&
+              context.simd[31] == UINT64_C(0x0f0f0f0f0f0f0f0f) &&
+              context.fpcr == UINT64_C(0x7f) &&
+              context.simd[32] == 0U;
 
   /* What the scheduler hands back for a task that has already run carries the
      stack its own trap saved; what it hands back for one that never has carries
@@ -598,10 +630,14 @@ void platform_scheduler_tick_self_test(void) {
   context.sp_el0 = UINT64_C(0x5678);
   context.spsr_el1 = 0U;
   context.sp_el1 = UINT64_C(0xdd);
+  context.simd[1] = UINT64_C(0xa5a5a5a5a5a5a5a5);
+  context.fpcr = UINT64_C(0x1f);
   riscv64_context_to_frame(&context, &frame);
   int interrupted = frame.ra == UINT64_C(0x44) && frame.sepc == UINT64_C(0x1234) &&
                     frame.sp == UINT64_C(0x9999) &&
-                    frame.kernel_sp == UINT64_C(0xdd);
+                    frame.kernel_sp == UINT64_C(0xdd) &&
+                    frame.fp[1] == UINT64_C(0xa5a5a5a5a5a5a5a5) &&
+                    frame.fcsr == UINT64_C(0x1f);
 
   context.regs[1] = 0U;
   riscv64_context_to_frame(&context, &frame);
@@ -631,6 +667,21 @@ void platform_scheduler_tick_self_test(void) {
  * fail for a reason that is not the switch. */
 static uint64_t g_preempt_stack[1024] __attribute__((aligned(16)));
 static volatile uint64_t g_preempt_runs;
+
+/* One floating-point register, written and read as bits so the test cannot be
+ * rewritten by a compiler into something that never touches the unit. */
+static const uint64_t RISCV64_FP_HOST_BITS = UINT64_C(0x0123456789abcdef);
+static const uint64_t RISCV64_FP_TASK_BITS = UINT64_C(0xfedcba9876543210);
+
+static void riscv64_fp_write(uint64_t bits) {
+  __asm__ volatile("fmv.d.x f0, %0" : : "r"(bits));
+}
+
+static uint64_t riscv64_fp_read(void) {
+  uint64_t bits = 0U;
+  __asm__ volatile("fmv.x.d %0, f0" : "=r"(bits));
+  return bits;
+}
 #define RISCV64_PREEMPT_TASK_PID UINT32_C(30000)
 #define RISCV64_PREEMPT_HOST_PID UINT32_C(30001)
 
@@ -643,6 +694,10 @@ static volatile uint64_t g_preempt_runs;
  * nothing to pick and leaves the machine in a task that is doing nothing. */
 static void riscv64_preempt_task_entry(void) {
   ++g_preempt_runs;
+  /* A value of this task's own, in the same register the context that handed
+     the CPU over wrote before it stopped: on the way back that context must
+     find its own value, not this one. */
+  riscv64_fp_write(RISCV64_FP_TASK_BITS);
   (void)scheduler_set_runnable(RISCV64_PREEMPT_HOST_PID);
   (void)scheduler_set_blocked(RISCV64_PREEMPT_TASK_PID);
   for (;;) {
@@ -684,6 +739,8 @@ void platform_kernel_preemption_self_test(void) {
       scheduler_set_runnable(RISCV64_PREEMPT_TASK_PID) == XAIOS_OK;
   uint64_t deadline = timer_now_ns() + UINT64_C(500000000);
   if (registered != 0) {
+    /* A live floating-point value, written before the CPU is given away. */
+    riscv64_fp_write(RISCV64_FP_HOST_BITS);
     /* This context stops being runnable, so the very next tick must run the
        other task rather than keep this one for the rest of its slice. */
     (void)scheduler_set_blocked(RISCV64_PREEMPT_HOST_PID);
@@ -693,6 +750,11 @@ void platform_kernel_preemption_self_test(void) {
   }
 
   int ran = g_preempt_runs != 0U;
+  /* Per-task floating-point state, asserted across a real switch: this
+     register held `RISCV64_FP_HOST_BITS` when the CPU was given away and the
+     other task wrote its own value into it while it ran. Anything but the
+     host's value here means the two tasks shared one set of registers. */
+  int fp_kept = riscv64_fp_read() == RISCV64_FP_HOST_BITS;
   /* Counted, not assumed: the switch numbers the scheduler kept while the test
      held the CPU are the difference between "the other task ran" and "the other
      task ran because two tasks were switched between". */
@@ -702,11 +764,12 @@ void platform_kernel_preemption_self_test(void) {
   (void)smp_set_scheduling_enabled(cpu, was_enabled);
 
   klog("sched-preempt: riscv64 kernel-context switch registered=%d ran=%d "
-       "runs=%lu switches=%lu\n",
+       "runs=%lu switches=%lu fp_kept=%d\n",
        registered, ran, (unsigned long)g_preempt_runs,
-       (unsigned long)switches);
+       (unsigned long)switches, fp_kept);
   kassert(registered != 0);
   kassert(ran != 0);
+  kassert(fp_kept != 0);
   klog("sched-preempt: riscv64 kernel-context preemption self-test passed\n");
 }
 
