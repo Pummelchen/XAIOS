@@ -1438,10 +1438,10 @@ if [ -n "$SSHD_CFLAGS_EXTRA" ]; then
 fi
 SSHD_RESPONSE_FILE="$INIT_BUILD_DIR/sshd-objects.rsp"
 : > "$SSHD_RESPONSE_FILE"
-for sshd_src in sshd.c ssh_crypto.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
+for sshd_src in sshd.c sshd_audit.c ssh_crypto.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
   sshd_obj="$INIT_BUILD_DIR/sshd-${sshd_src%.c}.o"
   sshd_opt=""
-  if [ "$sshd_src" = "sshd.c" ]; then
+  if [ "$sshd_src" = "sshd.c" ] || [ "$sshd_src" = "sshd_audit.c" ]; then
     sshd_opt="-Os"
   fi
   "$CLANG" \

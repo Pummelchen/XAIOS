@@ -373,11 +373,14 @@ fi
 # stops at a setup prompt and there is nothing to log into.
 printf '%s\n' "Building /bin/sshd..."
 SSHD_OBJS=""
-for sshd_src in sshd ssh_crypto ssh_mlkem tweetnacl_subset ssh_protocol \
+for sshd_src in sshd sshd_audit ssh_crypto ssh_mlkem tweetnacl_subset ssh_protocol \
     ssh_channel ssh_client_proxy ssh_host_key ssh_connection sftp_server \
     less_pager; do
   sshd_opt=""
-  [ "$sshd_src" = sshd ] && sshd_opt="-Os"
+  case "$sshd_src" in
+    sshd|sshd_audit) sshd_opt="-Os" ;;
+    *) sshd_opt="" ;;
+  esac
   # shellcheck disable=SC2086
   "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
     -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \

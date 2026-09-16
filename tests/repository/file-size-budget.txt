@@ -67,7 +67,7 @@ platform/qemu/run-qemu-aarch64.sh 558
 platform/qemu/run-qemu-riscv64.sh 535
 scripts/build-boot-media.sh 544
 scripts/build-image.sh 1697
-scripts/build-riscv64-image.sh 600
+scripts/build-riscv64-image.sh 603
 scripts/build-vm-packages.sh 661
 scripts/xaios-ssh-bridge.py 1171
 tests/control/test_control_client.c 838
@@ -119,6 +119,6 @@ userspace/sshd/sftp_server.c 1009
 userspace/sshd/ssh_channel.c 1883
 userspace/sshd/ssh_client.c 2803
 userspace/sshd/ssh_crypto.c 1205
-userspace/sshd/sshd.c 3756
+userspace/sshd/sshd.c 3478
 userspace/wt/src/wt_tls_client.c 1078
 userspace/wt/src/wt_tls_handshake.c 993
