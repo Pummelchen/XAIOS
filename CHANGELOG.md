@@ -23,6 +23,25 @@ records how it was built.
 
 Landed since build 5 and not in any released image.
 
+- **A RISC-V machine with a PCI IOMMU attached now mediates PCI DMA, and one
+  boot proves translation, refusal and isolation.** A board booted with
+  `-device riscv-iommu-pci` and two `iommu-testdev` instances is programmed by
+  `kernel/arch/riscv64/iommu.c`: a 1LVL device directory of 64 extended
+  contexts, command and fault queues, an `IOFENCE.C` round trip and an
+  `IODIR.INVAL_DDT`, with a pass-through context for every enumerated PCI
+  function installed in the same step that leaves `Bare`. The device refuses
+  all PCI DMA out of reset, so that ordering is what keeps the machine
+  booting -- and it still boots to a login prompt with SSH. Sv39 and Sv48
+  first-stage tables then translate an `iommu-testdev`'s DMA (`result=0x0
+  target=0x12345678`); clearing the mapping and invalidating refuses the same
+  transaction with a first-stage fault (`cause=15`), and a second test device
+  that was never given a context is refused with `DDT_INVALID` (`cause=258`).
+  `make qemu-riscv64-iommu-gate` boots exactly that and requires both refusals
+  in the fault total rather than the summary line alone. The plain `virt`
+  board still has no IOMMU, and now says so as the result of a probe; this
+  board's `virtio-mmio` devices cannot be mediated at all, because the device
+  is attached to the PCI bus and to nothing else (B-130).
+
 - **An EL0 process is preempted now, and one boot carries both the proof and
   its control.** The corrected measurement recorded below read a spinner's two
   switches as "EL0 is not preemptible"; the dispatching context had blocked

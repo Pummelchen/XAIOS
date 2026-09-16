@@ -270,6 +270,44 @@ if [ "$NVME_IMAGE" != none ]; then
   NVME_ARGS="-drive if=none,format=raw,id=xaios_nvme,file=$NVME_IMAGE -device nvme,serial=XAIOSNVME,drive=xaios_nvme"
 fi
 
+# The RISC-V IOMMU and the two test devices its isolation proof drives (B-130).
+#
+# Off by default, because attaching it changes what every PCI function on the
+# machine has to be given before its DMA works -- the driver's business on a
+# boot that asked for the device, not the ordinary boot's. `riscv-iommu`
+# attaches the device and two `iommu-testdev` instances at fixed slots, so the
+# device ids the gate names are stable: one whose context the driver registers
+# and one it deliberately leaves out. The slot choice is not decoration --
+# this device's extended contexts give a six-bit device id in 1LVL, so a
+# function above slot 7 cannot be described by the table the driver builds.
+IOMMU_ARGS=""
+case "${XAIOS_QEMU_IOMMU:-none}" in
+  none) ;;
+  riscv-iommu)
+    if ! "$QEMU" -device help 2>&1 | grep -F 'name "riscv-iommu-pci"' >/dev/null; then
+      printf '%s\n' \
+        "error: selected QEMU does not provide riscv-iommu-pci required by the RISC-V IOMMU gate" >&2
+      exit 1
+    fi
+    if ! "$QEMU" -device help 2>&1 | grep -F 'name "iommu-testdev"' >/dev/null; then
+      printf '%s\n' \
+        "error: selected QEMU does not provide iommu-testdev required by the RISC-V IOMMU gate" >&2
+      exit 1
+    fi
+    # Placed before every other device on the command line on purpose: a PCI
+    # function captures the address space it was realized with, so a device
+    # that appears before the IOMMU keeps talking to system memory and is not
+    # mediated at all. Attached here, the rng, the disks and the network are
+    # behind the device too -- which is the machine the driver's identity
+    # contexts are for.
+    IOMMU_ARGS="-device riscv-iommu-pci -device iommu-testdev,addr=06.0 -device iommu-testdev,addr=07.0"
+    ;;
+  *)
+    printf '%s\n' "error: XAIOS_QEMU_IOMMU must be none or riscv-iommu" >&2
+    exit 2
+    ;;
+esac
+
 # Whether the model volume passes discards through to the host, which is what
 # lets a gate see that space a deleted model occupied was actually released
 # rather than merely unreferenced.
@@ -475,6 +513,7 @@ esac
 run_qemu "$QEMU" \
   -machine "$MACHINE" -cpu "$CPU_MODEL" -smp "$CPUS" -m "$MEMORY" -display none \
   -global virtio-mmio.force-legacy=false \
+  $IOMMU_ARGS \
   $SERIAL_ARGS \
   $FIRMWARE_ARGS \
   $KERNEL_ARGS \

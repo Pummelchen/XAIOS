@@ -71,6 +71,7 @@ CONTRACT_CAPABILITIES = {
     "userspace_dns",
     "storage_crash_consistency",
     "translated_smmuv3_isolation",
+    "translated_riscv_iommu_isolation",
     "emulated_nvme_io",
     "high_core_dynamic_capacity",
     "arm_fp_neon_context",

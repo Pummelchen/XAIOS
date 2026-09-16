@@ -232,6 +232,7 @@ compile "$ROOT_DIR/kernel/arch/riscv64/exception.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/aia.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/irq.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/platform.c"
+compile "$ROOT_DIR/kernel/arch/riscv64/iommu.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/isa_self_test.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/boot.c"
 

@@ -136,13 +136,49 @@ Milestones, each independently verifiable:
 2. **Queues and DDT** -- 1LVL, command and fault queues enabled, `IOFENCE.C`
    round trip, `IODIR.INVAL_DDT`; installs the identity contexts in the same
    change (see above).
+   **Landed 2026-09-17.** `kernel/arch/riscv64/iommu.c` builds a 1LVL device
+   directory of 64 extended (64-byte) contexts -- the format QEMU's `intremap`
+   reset selects, which is also what fixes the 1LVL device-id width at six
+   bits, one page -- enables 16-entry command and fault queues, round-trips
+   `IOFENCE.C` and issues `IODIR.INVAL_DDT`, and installs a pass-through
+   context (`tc.V` set, both stages Bare) for every enumerated PCI function
+   *before* `DDTP` leaves Bare. Measured: `riscv-iommu: queues and ddt enabled
+   commands=2 contexts=7 fence=1 invalidate_ddt=1 faults=0`, and the machine
+   boots to the login prompt with SSH afterwards. A function whose stream id is
+   wider than the table is named and the device is left in Bare rather than
+   having its id truncated into another function's context.
 3. **Page tables** -- Sv39 first, then Sv48, identity over RAM, one test page
    mapped and unmapped, software A/D.
+   **Landed 2026-09-17.** One tree serves both formats: `l2` is an Sv39 root and
+   an Sv48 root sits one level above it pointing at the same `l2`, so the two
+   are read at different depths. The low RAM is identity-mapped with 1 GiB
+   leaves -- what a driver written for unmediated DMA needs -- and the test IOVA
+   gets a 4 KiB page through a full walk, every leaf R/W/U with A and D set by
+   software. One encoding had to be measured rather than reasoned about: a
+   leaf's physical address is the PPN field at bits 53:10, so writing
+   `address & ~0xfff` puts the address where the page number belongs and the
+   walk lands at `address >> 2` -- the first version translated the test IOVA to
+   `0x20177c000` for a target of `0x805df000`, and the trace showed it before
+   the kernel did.
 4. **Translation for one device** -- identity context for `iommu-testdev`,
    whose write lands; this also answers whether its `DMA_ATTRS` encoding is
    accepted on RISC-V (`attrs=0` is the fallback).
+   **Landed 2026-09-17.** The `DMA_ATTRS` encoding the SMMU gate uses
+   (`0x0a`: space valid, non-secure) is accepted here too, and the identity
+   control runs first -- with its pass-through context still in place the
+   device's own DMA is `result=0x0 target=0x12345678`, which is what separates
+   "the engine works" from "the page table works". Then Sv39 and Sv48:
+   `riscv-iommu: sv39 translated DMA result=0x0 target=0x12345678
+   iova=0x100000000 did=48` and the same under Sv48.
 5. **Isolation** -- unmap and invalidate, assert a first-stage fault; abort the
    context, assert `DDT_INVALID` for a device that was never registered.
+   **Landed 2026-09-17.** Clearing the leaf and issuing `IOTINVAL.VMA` turns the
+   same transaction into `result=0xdead0002 target=0x0` with a fault record
+   `cause=15 did=48 ttype=3 iotval=0x100000000` -- the first-stage write fault
+   the page table was the only reason for. The second `iommu-testdev` is
+   deliberately left out of the directory, and its transaction is
+   `result=0xdead0002` with `cause=258` (`DDT_INVALID`), which is the refusal
+   rather than a translation of an unregistered id.
 6. **Gate and documentation** -- a `make qemu-riscv64-iommu-gate` that boots
    with two `iommu-testdev` instances (one authorized, one deliberately not),
    requires the markers in order, parses the fault total so that "printed the
@@ -151,6 +187,17 @@ Milestones, each independently verifiable:
    `tests/scripts/qemu-smmu-gate.py`, and the capability contract
    (`tests/scripts/qemu-core-os-rc.py`, `tests/repository/check-core-os-status.py`)
    moves only when both files move together.
+   **Landed 2026-09-17.** `make qemu-riscv64-iommu-gate` builds the RISC-V
+   kernel and image and runs `tests/scripts/qemu-riscv-iommu-gate.py`, which
+   boots the runner with `XAIOS_QEMU_IOMMU=riscv-iommu` -- the device and two
+   `iommu-testdev` instances at fixed slots, so the stream ids the driver names
+   are stable -- requires the markers, and requires at least two refused
+   transactions in the fault total so "printed the summary" cannot pass with no
+   faults. Its report is `xaios.qemu.riscv-iommu.v1` with
+   `qemu_correctness_only: true`. The capability
+   `translated_riscv_iommu_isolation` was added to
+   `contracts/qemu-rc-v1.json`, `tests/repository/check-core-os-status.py` and
+   `tests/scripts/qemu-core-os-rc.py` in the same change.
 
 ## What this board cannot prove
 
@@ -169,6 +216,6 @@ requestor-id mapping is not the identity, a second IOMMU, and any physical
 machine.
 
 The plain `virt` board genuinely has no IOMMU, so the smoke's marker stays
-true -- but it should become the result of a probe, naming what was searched,
-rather than a compile-time sentence. Only a board booted with the device
-attached may claim isolation.
+true, and it is now the result of a probe that names what it searched for. Only
+a board booted with the device attached claims isolation, and
+`make qemu-riscv64-iommu-gate` is that board.

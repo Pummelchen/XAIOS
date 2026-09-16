@@ -823,6 +823,7 @@
       "userspace_dns",
       "storage_crash_consistency",
       "translated_smmuv3_isolation",
+      "translated_riscv_iommu_isolation",
       "emulated_nvme_io",
       "high_core_dynamic_capacity",
       "arm_fp_neon_context",
@@ -852,6 +853,10 @@
       {
         "name": "smmuv3",
         "command": "make qemu-smmu-gate"
+      },
+      {
+        "name": "iommu_riscv64",
+        "command": "make qemu-riscv64-iommu-gate"
       },
       {
         "name": "nvme",

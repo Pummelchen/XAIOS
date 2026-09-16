@@ -7,18 +7,21 @@
  * in the way its caller already handles, which is the same thing the other
  * architectures do where a capability is missing.
  */
-#include <xaios/exception.h>
-#include <xaios/pci.h>
 #include <xaios/riscv64_fdt.h>
 #include <xaios/riscv64_sbi.h>
 #include <xaios/smmu.h>
-#include <xaios/vmm.h>
 #include <xaios/timer.h>
 #include <xaios/topology.h>
 #include <xaios/status.h>
 #include <xaios/types.h>
 
 void klog(const char *fmt, ...);
+
+/* The RISC-V IOMMU driver, in its own file because it is a device rather than
+   a board quirk: `kernel/arch/riscv64/iommu.c` probes for it, and programs it
+   when it answers. Everything this file used to say about the board having no
+   IOMMU is now the result of that look (B-130). */
+void riscv64_iommu_self_test(void);
 
 /* The tree, shared with the pieces below that read it. Set by boot.c before
    any of this runs. */
@@ -35,93 +38,21 @@ void riscv64_platform_set_device_tree(const void *blob) {
    unimplemented is message-signalled interrupts, below, which need more than
    a bus. */
 
-/* The RISC-V IOMMU: looked for rather than assumed (B-130).
- *
- * This said "riscv64 has no IOMMU on this board" as a compile-time sentence.
- * The plain `virt` board genuinely has none, and that is still what a boot
- * without the device reports -- but the sentence is now the *result* of a look,
- * because QEMU attaches one with `-device riscv-iommu-pci` (Red Hat
+/* The RISC-V IOMMU: looked for rather than assumed, and programmed when it
+ * answers (B-130). The plain `virt` board genuinely has none, and that is still
+ * what a boot without the device reports -- but the sentence is the *result* of
+ * a look, because QEMU attaches one with `-device riscv-iommu-pci` (Red Hat
  * 0x1b36:0x0014) and the same kernel has to notice it.
  *
- * The register file is one 4 KiB page at BAR0 and `CAP` sits at offset 0; it is
- * read here only to prove the device answers. Nothing is programmed yet, and
- * that matters: QEMU resets the device with its device directory table Off, so
- * an unprogrammed IOMMU refuses PCI DMA rather than passing it through. The
- * milestones that program it, and the ordering that keeps a half-programmed
- * table from taking the machine's PCI DMA with it, are in
- * docs/RISCV-IOMMU.md. */
-#define RISCV_IOMMU_PCI_VENDOR XAIOS_PCI_VENDOR_REDHAT
-#define RISCV_IOMMU_PCI_DEVICE UINT16_C(0x0014)
-
-/* Where the look happens.
- *
- * Not in `smmu_init`: the IOMMU here is a PCI function, and `pci_init()` runs
- * later in `kmain` than the shared `smmu_init(boot)` call, so a probe there
- * would search an inventory that does not exist yet and report every board as
- * having no IOMMU -- which is exactly what it did on a QEMU command line that
- * had one attached. `smmu_self_test()` is called after `pci_init()`, which is
- * where this port's look belongs. */
+ * The look belongs after `pci_init()`: the IOMMU here is a PCI function, and
+ * `smmu_init(boot)` runs earlier in `kmain`, so a probe there searches an
+ * inventory that does not exist yet and reports every board as having no
+ * IOMMU. `smmu_self_test()` is called after `pci_init()`, which is where this
+ * port's work belongs; `kernel/arch/riscv64/iommu.c` holds the driver and
+ * `docs/RISCV-IOMMU.md` the contract. */
 void smmu_init(const struct xaios_boot_info *boot) { (void)boot; }
 
-static void riscv64_iommu_probe(void) {
-  uint32_t index = pci_find_device(RISCV_IOMMU_PCI_VENDOR,
-                                   RISCV_IOMMU_PCI_DEVICE);
-  if (index == UINT32_C(0xFFFFFFFF)) {
-    klog("smmu: riscv64 pci inventory has no 0x%04x:0x%04x and the tree has no "
-         "riscv,iommu node\n",
-         (unsigned)RISCV_IOMMU_PCI_VENDOR, (unsigned)RISCV_IOMMU_PCI_DEVICE);
-    klog("smmu: riscv64 has no IOMMU on this board; DMA is unmediated\n");
-    return;
-  }
-
-  (void)pci_enable_device(index);
-  uint64_t base = pci_bar_address(index, 0U);
-  if (base == 0U) {
-    klog("smmu: riscv64 riscv-iommu-pci present with no BAR0 assigned; DMA is "
-         "unmediated\n");
-    return;
-  }
-
-  /* BAR0 is above this port's identity-mapped device window -- QEMU places it at
-   * `0x400010000` -- so the page has to be mapped before a register can be read
-   * from it, which is what the AArch64 SMMU self-test does for the same reason.
-   * Without the mapping the read faults (`class=load-page-fault cause=13
-   * stval=0x400010000`) and takes the machine down for one log field. */
-  xaios_status_t mapped = vmm_map_page(base, base, XAIOS_VMM_DEVICE);
-  if (mapped != XAIOS_OK) {
-    klog("smmu: riscv64 riscv-iommu-pci at 0x%lx could not be mapped "
-         "(status=%d); DMA is unmediated\n",
-         (unsigned long)base, (int)mapped);
-    return;
-  }
-
-  /* A read that faults and a read of all-ones mean the same thing here, and
-     neither is fatal -- the containment the ECAM probe uses. */
-  exception_mmio_probe_begin();
-  uint64_t cap = *(volatile const uint64_t *)(uintptr_t)base;
-  exception_mmio_probe_end();
-  if (exception_mmio_probe_faulted() != 0) {
-    klog("smmu: riscv64 riscv-iommu-pci at 0x%lx does not answer; DMA is "
-         "unmediated\n",
-         (unsigned long)base);
-    return;
-  }
-
-  /* CAP: version in bits 7:0, Sv39/Sv48/Sv57 at 9/10/11, and the
-     interrupt-generation support at 29:28. Decoded rather than dumped, because
-     the version says which specification the device implements and the Sv bits
-     say which page-table formats the driver that follows may use. */
-  klog("riscv-iommu: found device=%u base=0x%lx cap=0x%lx version=0x%lx sv39=%u "
-       "sv48=%u sv57=%u igs=%u\n",
-       (unsigned)index, (unsigned long)base, (unsigned long)cap,
-       (unsigned long)(cap & UINT64_C(0xff)),
-       (unsigned)((cap >> 9U) & 1U), (unsigned)((cap >> 10U) & 1U),
-       (unsigned)((cap >> 11U) & 1U), (unsigned)((cap >> 28U) & 3U));
-  klog("smmu: riscv64 riscv-iommu-pci present, not yet programmed; PCI DMA is "
-       "refused by the device until then\n");
-}
-
-void smmu_self_test(void) { riscv64_iommu_probe(); }
+void smmu_self_test(void) { riscv64_iommu_self_test(); }
 
 /* The Goldfish real-time clock.
  *

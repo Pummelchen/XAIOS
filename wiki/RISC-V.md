@@ -253,10 +253,19 @@ the kernel comes up to a login prompt with sshd listening.
   in `msix=0` with the skipped self-test on the PLIC board and `msix=1` with
   `controller=aia-imsic` on the AIA one. What is still refused rather than
   half-driven: `aia=aplic` direct delivery, and multi-group IMSICs.
-- **An IOMMU.** There is none on this board -- `smmu_init` says so in one line
-  and DMA is unmediated. Nor has x86_64, whose `smmu_initialized()` also reports zero;
-  this is an AArch64 capability rather than something RISC-V is behind the
-  other two on.
+- **An IOMMU.** The plain `virt` board has none -- `smmu_init` looks for one
+  and says so when it does not find it (`smmu: riscv64 pci inventory has no
+  0x1b36:0x0014 and the tree has no riscv,iommu node`), and DMA is unmediated
+  there. A board booted with `-device riscv-iommu-pci` is a different machine:
+  `kernel/arch/riscv64/iommu.c` programs the device directory table, the command
+  and fault queues and Sv39/Sv48 first-stage tables, installs a pass-through
+  context for every enumerated PCI function in the same step that leaves
+  `Bare`, and proves isolation with `make qemu-riscv64-iommu-gate`. What it
+  cannot mediate is this board's `virtio-mmio` devices -- the IOMMU is attached
+  to the PCI bus and to nothing else -- so the root filesystem, models volume
+  and persistent disks stay unmediated on every RISC-V boot. x86_64 has none
+  either, whose `smmu_initialized()` also reports zero; AArch64's SMMUv3
+  remains the other mediated path.
 - **A second NVMe queue.** The driver asks for one per online CPU, and on
   this architecture the secondary harts are not online yet when NVMe
   initialises: one queue here, four on the other two. Nothing depends on it,

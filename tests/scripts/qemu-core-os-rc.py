@@ -62,6 +62,11 @@ COMMANDS = [
                            "--skip-docker", "--arch", "x86_64"], 500),
     ("operations_riscv64", ["python3", "tests/scripts/qemu-operations-closure.py",
                             "--skip-docker", "--arch", "riscv64"], 900),
+    # The RISC-V IOMMU's isolation proof. Its own step rather than part of the
+    # smmuv3 one: the device, the page-table format and the fault evidence are
+    # all different, and an aggregate that named one architecture's IOMMU
+    # capability would be claiming the other's as well (B-130).
+    ("iommu_riscv64", ["make", "qemu-riscv64-iommu-gate"], 600),
 ]
 
 AARCH64_CAPABILITIES = {
@@ -228,6 +233,18 @@ SPECIAL_CAPABILITIES = {
             # streams fault first, so the number varies by boot.
             "authorized=1 forbidden=1 stale_mapping=blocked faults=",
             "qemu-smmu-gate: translated DMA isolation passed",
+        ],
+    ),
+    "translated_riscv_iommu_isolation": (
+        "iommu_riscv64",
+        [
+            "riscv-iommu: sv39 translated DMA result=0x0",
+            "riscv-iommu: sv48 translated DMA result=0x0",
+            # Cumulative fault total, like the SMMUv3 one: what is asserted is
+            # that both refusals left a record, not one exact running count.
+            "riscv-iommu: isolation self-test passed authorized=1 forbidden=1 "
+            "stale_mapping=blocked faults=",
+            "qemu-riscv-iommu-gate: PCI DMA isolation passed",
         ],
     ),
     "emulated_nvme_io": (
