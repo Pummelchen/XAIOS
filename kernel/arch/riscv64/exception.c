@@ -205,6 +205,12 @@ typedef struct riscv64_trap_frame {
   uint64_t s2, s3, s4, s5, s6, s7, s8, s9, s10, s11;
   uint64_t t3, t4, t5, t6;
   uint64_t sepc, scause, stval, sstatus;
+  /* The kernel stack this context's next trap from user mode lands on, which
+     the stub writes at entry and the trap return re-arms `sscratch` from. It is
+     the last eight bytes of the 288 the stub reserves: a field rather than
+     arithmetic, because it is the one value a context switch has to carry for
+     the incoming task (`B-132`). */
+  uint64_t kernel_sp;
 } riscv64_trap_frame_t;
 
 #define SSTATUS_SPP (UINT64_C(1) << 8)
@@ -448,7 +454,11 @@ static void riscv64_frame_to_context(const riscv64_trap_frame_t *frame,
   context->elr_el1 = frame->sepc;
   context->spsr_el1 = frame->sstatus;
   context->sp_el0 = frame->sp;
-  context->sp_el1 = 0U;
+  /* The kernel stack this task's next trap lands on, not the user stack: a
+     trap from user mode swaps `sscratch` for it, and the trap return has to put
+     the *incoming* task's value back, which is what makes a switch survive the
+     next syscall (B-132). */
+  context->sp_el1 = frame->kernel_sp;
   context->padding = 0U;
   context->fpcr = 0U;
   context->fpsr = 0U;
@@ -467,6 +477,10 @@ static void riscv64_context_to_frame(const xaios_context_frame_t *context,
      register zero -- `user.c` builds such a frame with only elr_el1, sp_el0 and
      spsr_el1 set -- and gets its stack from `sp_el0` instead. */
   frame->sp = context->regs[1] != 0U ? context->regs[1] : context->sp_el0;
+  /* A task that has never been given a kernel stack keeps the one this trap is
+     already on, which is the caller's -- exactly the behaviour before a switch
+     could carry one, so a frame that cannot name a stack cannot change one. */
+  if (context->sp_el1 != 0U) frame->kernel_sp = context->sp_el1;
 }
 
 /* What the tick has actually done, counted rather than reasoned about.
@@ -535,6 +549,7 @@ void platform_scheduler_tick_self_test(void) {
   frame.a0 = UINT64_C(0x22);
   frame.sepc = UINT64_C(0xaaaa);
   frame.sstatus = UINT64_C(0x33);
+  frame.kernel_sp = UINT64_C(0xcc);
 
   xaios_context_frame_t context;
   riscv64_frame_to_context(&frame, &context);
@@ -543,7 +558,8 @@ void platform_scheduler_tick_self_test(void) {
               context.regs[9] == UINT64_C(0x22) &&
               context.elr_el1 == UINT64_C(0xaaaa) &&
               context.spsr_el1 == UINT64_C(0x33) &&
-              context.sp_el0 == UINT64_C(0xbbbb);
+              context.sp_el0 == UINT64_C(0xbbbb) &&
+              context.sp_el1 == UINT64_C(0xcc);
 
   /* What the scheduler hands back for a task that has already run carries the
      stack its own trap saved; what it hands back for one that never has carries
@@ -554,20 +570,30 @@ void platform_scheduler_tick_self_test(void) {
   context.elr_el1 = UINT64_C(0x1234);
   context.sp_el0 = UINT64_C(0x5678);
   context.spsr_el1 = 0U;
+  context.sp_el1 = UINT64_C(0xdd);
   riscv64_context_to_frame(&context, &frame);
   int interrupted = frame.ra == UINT64_C(0x44) && frame.sepc == UINT64_C(0x1234) &&
-                    frame.sp == UINT64_C(0x9999);
+                    frame.sp == UINT64_C(0x9999) &&
+                    frame.kernel_sp == UINT64_C(0xdd);
 
   context.regs[1] = 0U;
   riscv64_context_to_frame(&context, &frame);
   int never_ran = frame.sp == UINT64_C(0x5678);
 
+  /* A frame that names no kernel stack leaves the one this trap is on alone --
+     the whole point of the field being conditional, because a task that cannot
+     name a stack must not be able to move one. */
+  context.sp_el1 = 0U;
+  riscv64_context_to_frame(&context, &frame);
+  int stack_kept = frame.kernel_sp == UINT64_C(0xdd);
+
   klog("sched-tick: riscv64 trap-frame mapping self-test saved=%d "
-       "interrupted=%d never_ran=%d\n",
-       saved, interrupted, never_ran);
+       "interrupted=%d never_ran=%d stack_kept=%d\n",
+       saved, interrupted, never_ran, stack_kept);
   kassert(saved != 0);
   kassert(interrupted != 0);
   kassert(never_ran != 0);
+  kassert(stack_kept != 0);
   klog("sched-tick: riscv64 trap-frame mapping self-test passed\n");
 }
 

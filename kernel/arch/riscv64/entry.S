@@ -181,6 +181,14 @@ riscv64_trap_entry:
   addi  t0, sp, 288
 2:
   sd    t0, 8(sp)
+  /* And the stack this context's *next* trap from user mode must land on, which
+     is the frame's own top either way: for a trap from user mode that is the
+     kernel stack sscratch held, and for one from the kernel it is the stack the
+     kernel is already on. Kept in the frame because a context switch has to
+     re-arm sscratch from the incoming task's value, not the outgoing one's
+     (`B-132`); see the epilogue below. */
+  addi  t0, sp, 288
+  sd    t0, 280(sp)
   /* Cleared so a nested trap taken while the kernel is running takes the
      kernel branch above rather than switching to a stack already in use. */
   csrw  sscratch, zero
@@ -210,12 +218,23 @@ riscv64_trap_entry:
   /* Going back to user mode means sscratch has to hold this kernel stack
      again, or the next syscall from that thread finds zero and stays on the
      user stack -- the bug this whole dance exists to prevent, reintroduced on
-     the second call rather than the first. */
+     the second call rather than the first.
+   *
+   * It is read from the frame rather than computed from this sp, because a
+   * scheduler tick may have replaced the frame with the task it chose: the
+   * stack this trap was taken on then belongs to the task being left, and
+   * arming sscratch with it would send the *incoming* task's next syscall onto
+   * the outgoing task's stack, where it would unwind that task's continuation
+   * with its own exit code (B-132). The entry wrote this frame's own top there,
+   * so a machine that never switches behaves exactly as it did before. */
   li    t1, 0x100
   and   t1, t0, t1
   bnez  t1, 3f
-  addi  t0, sp, 288
-  csrw  sscratch, t0
+  ld    t1, 280(sp)
+  bnez  t1, 4f
+  addi  t1, sp, 288
+4:
+  csrw  sscratch, t1
 3:
   ld    ra, 0(sp)
   ld    gp, 16(sp)
