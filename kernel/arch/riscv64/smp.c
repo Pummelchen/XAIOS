@@ -28,7 +28,8 @@
 #include <xaios/network_stack.h>
 #include <xaios/timer.h>
 
-void klog(const char *fmt, ...);
+#include "smp_internal.h"
+
 void gic_secondary_init(uint32_t cpu_id);
 void timer_mask_local(void);
 uint32_t xaios_thread_run_pending(uint32_t cpu_id);
@@ -38,8 +39,6 @@ xaios_status_t xaios_thread_run_group(uint64_t requested_threads,
                                       uint64_t *ran_threads,
                                       uint64_t *checksum);
 uint64_t riscv64_kernel_satp(void);
-/* Each hart has its own root, so each hart is handed its own satp. */
-uint64_t riscv64_hart_satp(uint32_t cpu_id);
 /* The remote half of the TLB shootdown self-test.
  *
  * The kernel can count its own shootdowns without anybody's help, and a count
@@ -51,11 +50,7 @@ uint64_t riscv64_hart_satp(uint32_t cpu_id);
  * the assertions. The service call costs one load and one CSR write per pass
  * when there is nothing to answer. */
 void riscv64_tlb_probe_service(uint32_t cpu_id);
-void riscv64_tlb_shootdown_self_test(void);
-extern char riscv64_secondary_entry[];
 
-#define RISCV64_MAX_HARTS 8U
-#define SECONDARY_READY_TIMEOUT_MS UINT64_C(2000)
 /* The same size the boot stack was raised to, for the same reason.
  *
  * The boot hart's stack is 256 KiB with a guard page under it, and
@@ -71,27 +66,16 @@ extern char riscv64_secondary_entry[];
 #define SECONDARY_STACK_BYTES 262144U
 #define SECONDARY_STACK_GUARD_BYTES 4096U
 
-/* What a starting hart needs before it can execute anything: somewhere to put
-   a stack frame and the address space to do it in. Physically addressed,
-   because the hart reads it with translation off. */
-typedef struct hart_handoff {
-  uint64_t stack_top;
-  uint64_t satp;
-  uint64_t cpu_id;
-} hart_handoff_t;
-
-static uint32_t g_boot_hart;
 /* Logical CPU number to hart id. Index 0 is the boot hart, whichever one
    firmware chose. Everything that talks to SBI goes through this; everything
    that indexes a per-CPU structure uses the logical number. */
-static uint32_t g_hart_of_cpu[RISCV64_MAX_HARTS];
-static uint32_t g_cpu_count = 1U;
-static uint32_t g_online = 1U;
+uint32_t riscv64_smp_hart_of_cpu[RISCV64_MAX_HARTS];
+uint32_t riscv64_smp_online = 1U;
 /* Two different numbers that were one.
  *
- * g_capacity bounds the *identifier* space: smp_cpu_state and everything that
+ * riscv64_smp_capacity bounds the *identifier* space: smp_cpu_state and everything that
  * indexes by CPU id -- the core lease table among them -- treats it as "ids
- * below this". g_online_target is how many harts are expected to arrive, and
+ * below this". riscv64_smp_online_target is how many harts are expected to arrive, and
  * is what the rendezvous loops wait for.
  *
  * They were the same variable, set to a count. That is right only while ids
@@ -100,14 +84,11 @@ static uint32_t g_online = 1U;
  * take over, so the machine comes up with ids 0,2,3 and a capacity of 3 --
  * and every lease of CPU 3 was refused as out of range. Identity is the
  * firmware's to choose; counting is ours. */
-static uint32_t g_capacity = 1U;
-static uint32_t g_online_target = 1U;
-static uint32_t g_secondary_release;
-static uint32_t g_smp_locking_active;
-static xaios_cpu_state_t g_cpu_states[RISCV64_MAX_HARTS];
-static hart_handoff_t g_handoff[RISCV64_MAX_HARTS];
-static uint32_t g_hart_present[RISCV64_MAX_HARTS];
-static int64_t g_hart_status[RISCV64_MAX_HARTS];
+uint32_t riscv64_smp_capacity = 1U;
+uint32_t riscv64_smp_online_target = 1U;
+uint32_t riscv64_smp_secondary_release;
+uint32_t riscv64_smp_locking_active;
+xaios_cpu_state_t riscv64_smp_cpu_states[RISCV64_MAX_HARTS];
 /* Guard first, then the stack, so the page under each stack is the one that
    faults when a hart runs out of room. The two are one object rather than two
    arrays because the adjacency is the whole point of the guard, and separate
@@ -137,13 +118,6 @@ uint8_t *riscv64_secondary_stack_top(uint32_t cpu) {
    hart limit a second time and keep the two in step by hand. */
 uint32_t riscv64_secondary_stack_count(void) { return RISCV64_MAX_HARTS; }
 
-void riscv64_smp_record_boot_hart(uint32_t hart_id) {
-  g_boot_hart = hart_id;
-  /* Whichever hart firmware handed over on is CPU 0. */
-  g_hart_of_cpu[0] = hart_id;
-  g_cpu_count = 1U;
-}
-
 /* What this CPU is waiting for, published for another CPU to read. RISC-V's
  * remote fence is firmware's (`sbi_remote_sfence_vma`), and that call does not
  * return until firmware says every named hart has fenced, so no CPU waits on
@@ -152,7 +126,7 @@ void riscv64_smp_record_boot_hart(uint32_t hart_id) {
 void xaios_cpu_note_wait(const char *reason) {
   uint32_t cpu = smp_cpu_id();
   if (cpu < RISCV64_MAX_HARTS) {
-    g_cpu_states[cpu].waiting_for = reason;
+    riscv64_smp_cpu_states[cpu].waiting_for = reason;
   }
 }
 
@@ -167,67 +141,31 @@ uint32_t smp_cpu_id(void) {
 }
 
 uint32_t riscv64_hart_of_cpu(uint32_t cpu_id) {
-  return cpu_id < RISCV64_MAX_HARTS ? g_hart_of_cpu[cpu_id] : 0U;
+  return cpu_id < RISCV64_MAX_HARTS ? riscv64_smp_hart_of_cpu[cpu_id] : 0U;
 }
 
 uint32_t smp_online_count(void) {
-  return __atomic_load_n(&g_online, __ATOMIC_ACQUIRE);
+  return __atomic_load_n(&riscv64_smp_online, __ATOMIC_ACQUIRE);
 }
 
 uint32_t smp_locking_active(void) {
-  return __atomic_load_n(&g_smp_locking_active, __ATOMIC_ACQUIRE);
+  return __atomic_load_n(&riscv64_smp_locking_active, __ATOMIC_ACQUIRE);
 }
 
-uint32_t smp_capacity(void) { return g_capacity; }
-
-const xaios_cpu_state_t *smp_cpu_state(uint32_t cpu_id) {
-  if (cpu_id >= RISCV64_MAX_HARTS || g_cpu_states[cpu_id].online == 0U) {
-    return 0;
-  }
-  return &g_cpu_states[cpu_id];
-}
-
-xaios_status_t smp_set_scheduling_enabled(uint32_t cpu_id, uint32_t enabled) {
-  /* The value is recorded, which it was not: this discarded `enabled`, said
-     XAIOS_OK, and left the flag the scheduler reads at zero. The kernel duly
-     enabled scheduling, was told it had worked, and every tick then returned
-     without picking anything -- a scheduler that ran, held no lock, had three
-     runnable tasks, and chose none of them. A setter that reports success and
-     stores nothing is worse than one that fails. */
-  if (cpu_id >= RISCV64_MAX_HARTS || g_cpu_states[cpu_id].online == 0U) {
-    return XAIOS_ERR_NOT_FOUND;
-  }
-  __atomic_store_n(&g_cpu_states[cpu_id].scheduling_enabled,
-                   enabled == 0U ? 0U : 1U, __ATOMIC_RELEASE);
-  return XAIOS_OK;
-}
-
-xaios_status_t smp_cpu_id_at(uint32_t ordinal, uint32_t *cpu_id) {
-  if (cpu_id == 0) return XAIOS_ERR_INVALID;
-  uint32_t seen = 0U;
-  for (uint32_t hart = 0U; hart < RISCV64_MAX_HARTS; ++hart) {
-    if (g_cpu_states[hart].online == 0U) continue;
-    if (seen == ordinal) {
-      *cpu_id = hart;
-      return XAIOS_OK;
-    }
-    ++seen;
-  }
-  return XAIOS_ERR_NOT_FOUND;
-}
+uint32_t smp_capacity(void) { return riscv64_smp_capacity; }
 
 /* Where a secondary hart lands once SBI has started it. */
 void smp_secondary_main(uint64_t cpu_id) {
   if (cpu_id < RISCV64_MAX_HARTS) {
-    g_cpu_states[cpu_id].cpu_id = (uint32_t)cpu_id;
-    g_cpu_states[cpu_id].mpidr = g_hart_of_cpu[cpu_id];
-    g_cpu_states[cpu_id].role = XAIOS_CPU_ROLE_SCHEDULING;
-    g_cpu_states[cpu_id].scheduling_enabled = 0U;
+    riscv64_smp_cpu_states[cpu_id].cpu_id = (uint32_t)cpu_id;
+    riscv64_smp_cpu_states[cpu_id].mpidr = riscv64_smp_hart_of_cpu[cpu_id];
+    riscv64_smp_cpu_states[cpu_id].role = XAIOS_CPU_ROLE_SCHEDULING;
+    riscv64_smp_cpu_states[cpu_id].scheduling_enabled = 0U;
     /* Online last, and only once everything it describes has landed: it is
        what the boot hart waits on, and an entry seen half-written is worse
        than one not seen at all. */
-    __atomic_store_n(&g_cpu_states[cpu_id].online, 1U, __ATOMIC_RELEASE);
-    __atomic_add_fetch(&g_online, 1U, __ATOMIC_ACQ_REL);
+    __atomic_store_n(&riscv64_smp_cpu_states[cpu_id].online, 1U, __ATOMIC_RELEASE);
+    __atomic_add_fetch(&riscv64_smp_online, 1U, __ATOMIC_ACQ_REL);
   }
 
   /* Sleep rather than spin, and be woken by an IPI when the gate opens.
@@ -242,7 +180,7 @@ void smp_secondary_main(uint64_t cpu_id) {
      hart whose sie has nothing enabled may wait for something that never
      comes. Woken spuriously it simply re-reads the flag. */
   __asm__ volatile("csrs sie, %0" : : "r"(UINT64_C(1) << 1) : "memory");
-  while (__atomic_load_n(&g_secondary_release, __ATOMIC_ACQUIRE) == 0U) {
+  while (__atomic_load_n(&riscv64_smp_secondary_release, __ATOMIC_ACQUIRE) == 0U) {
     /* Answers a TLB probe if one has been posted, and clears the pending
        software interrupt either way -- see riscv64_tlb_probe_service. */
     riscv64_tlb_probe_service((uint32_t)cpu_id);
@@ -254,7 +192,7 @@ void smp_secondary_main(uint64_t cpu_id) {
        so a flag that still reads zero here means the IPI has not been sent
        yet, and when it is it will find the pending bit clear and the hart in
        wfi. */
-    if (__atomic_load_n(&g_secondary_release, __ATOMIC_ACQUIRE) != 0U) break;
+    if (__atomic_load_n(&riscv64_smp_secondary_release, __ATOMIC_ACQUIRE) != 0U) break;
     __asm__ volatile("wfi" ::: "memory");
   }
   /* Whatever woke it has been consumed by the read above. */
@@ -267,7 +205,7 @@ void smp_secondary_main(uint64_t cpu_id) {
   timer_mask_local();
 
   if (cpu_id < RISCV64_MAX_HARTS) {
-    __atomic_store_n(&g_cpu_states[cpu_id].scheduling_enabled, 1U,
+    __atomic_store_n(&riscv64_smp_cpu_states[cpu_id].scheduling_enabled, 1U,
                      __ATOMIC_RELEASE);
   }
 
@@ -335,201 +273,6 @@ void smp_secondary_main(uint64_t cpu_id) {
   }
 }
 
-/* Which harts this machine has, from the tree rather than from a guess.
- *
- * Counting `riscv` cpu nodes says how many there are; their ids are what SBI
- * wants, and a machine may number them from something other than zero. Asking
- * SBI for each candidate's status is the check that costs nothing and catches
- * both -- a hart that does not exist reports an error rather than starting. */
-static void discover_harts(void) {
-  g_hart_present[g_boot_hart < RISCV64_MAX_HARTS ? g_boot_hart : 0U] = 1U;
-  for (uint32_t hart = 0U; hart < RISCV64_MAX_HARTS; ++hart) {
-    if (hart == g_boot_hart) continue;
-    g_hart_status[hart] = sbi_hart_status(hart);
-    if (g_hart_status[hart] >= 0) g_hart_present[hart] = 1U;
-  }
-}
-
-void smp_init_platform(const xaios_boot_info_t *boot) {
-  (void)boot;
-
-  g_cpu_states[0].cpu_id = 0U;
-  /* mpidr is AArch64's name for "what the hardware calls this core"; the hart
-     id is what means the same thing here, and reporting it under that name
-     beats reporting the kernel's own index twice. */
-  g_cpu_states[0].mpidr = g_boot_hart;
-  g_cpu_states[0].role = XAIOS_CPU_ROLE_SCHEDULING;
-  g_cpu_states[0].online = 1U;
-  g_online = 1U;
-
-  if (sbi_probe_extension(SBI_EXT_HSM) == 0) {
-    g_capacity = 1U;
-    g_online_target = 1U;
-    klog("smp: riscv64 firmware offers no hart state management; boot "
-         "hart=%u runs alone\n", g_boot_hart);
-    return;
-  }
-
-  discover_harts();
-
-  /* Counted now, started later. Discovery is safe here; starting is not.
-   *
-   * smp_init runs while the boot UI still says "CPU and interrupts", which is
-   * before vmm_init and before the page allocator. A hart started here would
-   * be handed a satp that has not been built yet and would run with
-   * translation off through kernel code the boot hart is still writing.
-   * smp_release_secondary_schedulers is where the kernel says secondaries may
-   * run, and by then the address space, the allocator, the interrupt
-   * controller and the timer all exist -- which is what "may run" has to
-   * mean. */
-  uint32_t candidates = 0U;
-  for (uint32_t hart = 0U; hart < RISCV64_MAX_HARTS; ++hart) {
-    if (hart == g_boot_hart || g_hart_present[hart] == 0U) continue;
-    if (g_cpu_count >= RISCV64_MAX_HARTS) break;
-    g_hart_of_cpu[g_cpu_count] = hart;
-    ++g_cpu_count;
-    ++candidates;
-  }
-  g_capacity = 1U + candidates;
-  uint32_t started = 0U;
-  (void)started;
-
-  klog("smp: riscv64 boot hart=%u harts=%u capacity=%u (secondaries start at "
-       "the scheduler rendezvous)\n", g_boot_hart, candidates + 1U,
-       g_capacity);
-}
-
-xaios_status_t smp_bring_secondaries_online(void) {
-  /* Start them here, for the reasons smp_init_platform records: by now the
-     address space, the allocator, the interrupt controller and the timer all
-     exist, which is what a hart needs to run kernel code at all. They land,
-     register themselves and then spin on the release flag, so they are
-     online and leasable without being in the scheduler. */
-  uint32_t started = 0U;
-  uint32_t highest_started = 0U;
-  if (g_cpu_count <= 1U) return XAIOS_OK;
-
-  /* Before the first one can land, not after the loop that starts them all:
-     a hart started early enough executes kernel code while later ones are
-     still being started, and a lock that is a no-op on one side and an
-     atomic on the other is not a lock. */
-  __atomic_store_n(&g_smp_locking_active, 1U, __ATOMIC_RELEASE);
-  for (uint32_t cpu = 1U; cpu < g_cpu_count; ++cpu) {
-    uint32_t hart = g_hart_of_cpu[cpu];
-    g_handoff[cpu].stack_top =
-        (uint64_t)(uintptr_t)riscv64_secondary_stack_top(cpu);
-    /* This hart's own root, which is what lets it run a different process
-       from the boot hart at the same time. */
-    g_handoff[cpu].satp = riscv64_hart_satp(cpu);
-    g_handoff[cpu].cpu_id = cpu;
-    int64_t status =
-        sbi_hart_start(hart, (uint64_t)(uintptr_t)riscv64_secondary_entry,
-                       (uint64_t)(uintptr_t)&g_handoff[cpu]);
-    if (status != 0) {
-      klog("smp: hart=%u refused to start sbi_error=%lx\n", hart,
-           (uint64_t)status);
-      continue;
-    }
-    if (cpu > highest_started) highest_started = cpu;
-    ++started;
-  }
-  g_online_target = 1U + started;
-  if (highest_started + 1U > g_capacity) g_capacity = highest_started + 1U;
-  if (started == 0U) {
-    /* Nothing started, so nothing else may take an atomic on its account. */
-    __atomic_store_n(&g_smp_locking_active, 0U, __ATOMIC_RELEASE);
-    return XAIOS_OK;
-  }
-
-  /* Wait for them to be online before returning: a caller that leases a core
-     immediately after this would otherwise race the hart it is leasing. */
-  uint64_t online_frequency = timer_frequency_hz();
-  uint64_t online_deadline =
-      timer_counter() + (online_frequency == 0U
-                             ? UINT64_C(0)
-                             : online_frequency * SECONDARY_READY_TIMEOUT_MS /
-                                   UINT64_C(1000));
-  while (smp_online_count() < g_online_target) {
-    if (timer_counter() >= online_deadline) {
-      klog("smp: %u of %u harts came online\n", smp_online_count(),
-           g_online_target);
-      return XAIOS_ERR_IO;
-    }
-  }
-  klog("smp: riscv64 %u harts online, scheduling held until the rendezvous\n",
-       smp_online_count());
-  /* Here and not in vmm_self_test, because there is nothing to measure until
-     a second hart exists. The vmm self-tests run inside vmm_init, long before
-     any hart has been started -- which is exactly why the port's own
-     large-page test had to record that it could say nothing about any TLB but
-     its own. This is the first moment in the boot where that sentence stops
-     being true. It has to run before the harts are leased to the AI cell,
-     too: a leased hart has left this wait loop's neighbourhood and would not
-     answer a probe. */
-  riscv64_tlb_shootdown_self_test();
-  return XAIOS_OK;
-}
-
-xaios_status_t smp_release_secondary_schedulers(void) {
-  __atomic_store_n(&g_secondary_release, 1U, __ATOMIC_RELEASE);
-  /* The flag is what they check; the interrupt is what ends their sleep.
-     Sent to every hart that was started, whether or not it has reached the
-     gate yet -- one that has not will read the flag on arrival. */
-  for (uint32_t cpu = 1U; cpu < g_cpu_count; ++cpu) {
-    if (g_cpu_states[cpu].online != 0U) {
-      (void)sbi_send_ipi(UINT64_C(1), g_hart_of_cpu[cpu]);
-    }
-  }
-
-  uint64_t frequency = timer_frequency_hz();
-  uint64_t deadline =
-      timer_counter() +
-      (frequency == 0U ? UINT64_C(0) : frequency * SECONDARY_READY_TIMEOUT_MS /
-                                           UINT64_C(1000));
-  for (;;) {
-    uint32_t ready = 1U;
-    for (uint32_t cpu = 1U; cpu < g_cpu_count; ++cpu) {
-      if (__atomic_load_n(&g_cpu_states[cpu].scheduling_enabled,
-                          __ATOMIC_ACQUIRE) != 0U) {
-        ++ready;
-      }
-    }
-    if (ready >= g_online_target) break;
-    if (timer_counter() >= deadline) {
-      klog("smp: %u of %u harts reached the scheduler rendezvous\n", ready,
-           g_online_target);
-      return XAIOS_ERR_IO;
-    }
-  }
-  klog("smp: riscv64 %u harts scheduling online=%u\n", g_online_target,
-       smp_online_count());
-  return XAIOS_OK;
-}
-
-/* The shootdown acknowledgement check is x86-64's, and saying so is the point:
- * an absent check that looks like a passed one is the failure mode this
- * project keeps having to fix (B-123).
- *
- * RISC-V's remote fence is firmware's (`sbi_remote_sfence_vma`), and that call
- * does not return until firmware says every named hart has fenced: the wait is
- * the call, so there is no acknowledgement for an interrupt to carry. */
-void smp_shootdown_ack_self_test(void) {
-  klog("smp: shootdown acknowledgement self-test not applicable on riscv64 "
-       "-- firmware fences every hart before the call returns\n");
-}
-
-/* The idle-wakeup check is x86-64's, and saying so is the point: an absent
- * check that looks like a passed one is the failure mode this project keeps
- * having to fix (B-120).
- *
- * RISC-V has no such window after the change above: the queue is asked once
- * more with sstatus.SIE clear and `wfi` runs with it clear, so a wakeup that
- * arrives in the gap stays pending and is what `wfi` resumes for. */
-void smp_idle_wakeup_self_test(void) {
-  klog("smp: idle wakeup self-test not applicable on riscv64 -- wfi resumes "
-       "for a pending interrupt that stays masked\n");
-}
-
 /* Whether this CPU is inside a trap handler.
  *
  * This port answers with the interrupt mask rather than a trap depth, which is
@@ -541,115 +284,18 @@ uint32_t xaios_cpu_in_interrupt(void) {
   return xaios_interrupts_enabled() != 0 ? 0U : 1U;
 }
 
-void smp_self_test(void) {
-  klog("smp: riscv64 self-test passed id=%u online=%u capacity=%u\n",
-       smp_cpu_id(), smp_online_count(), smp_capacity());
-}
-
-/* Memory the bootstrap path needs kept out of the allocator's hands.
- *
- * x86-64 reserves the real-mode trampoline application processors start in;
- * AArch64 reserves the spin-table page firmware parks them on. RISC-V starts
- * a hart with SBI, passing the entry address in a register, so there is no
- * fixed page to protect -- and reserving one anyway would take memory out of
- * service to guard something that does not exist. */
-xaios_status_t smp_bootstrap_reserved_range(uint64_t *start, uint64_t *end) {
-  if (start != 0) *start = 0U;
-  if (end != 0) *end = 0U;
-  return XAIOS_ERR_UNSUPPORTED;
-}
-
-/* Which cores are held for latency-sensitive work, and which have interrupts
-   steered away from them. Both are empty on one hart: there is nothing to
-   isolate work onto and nothing to isolate it from. */
-uint32_t smp_hot_core_mask(void) { return 0U; }
-
-uint32_t smp_irq_isolated_mask(void) { return 0U; }
-
-
-
-/* Leasing a core to the AI runtime needs a second core to lease. Refused
-   rather than granted: a lease that reports success and leaves the caller
-   sharing the only hart is worse than no leasing at all. */
-/* Leasing a hart out of the scheduler, which this platform used to answer
-   "unsupported" to. That answer was made before secondaries existed early
-   enough to lease, and once they did it was the only thing standing between
-   this architecture and the cell lifecycle the other two exercise on every
-   boot -- the self-test skipped itself here rather than failing, so the gap
-   read as an absence of tests rather than an absence of a feature.
-
-   The state a lease changes is the same on every architecture, because it is
-   the shared scheduler that reads it. What differs is only that RISC-V has
-   no interrupt affinity to route away from a leased hart: the PLIC has
-   per-hart contexts and could, but nothing here programs them yet, so the
-   flag is set and the routing is not claimed. */
-static xaios_spinlock_t g_lease_lock = XAIOS_SPINLOCK_INIT;
-
-xaios_status_t smp_mark_core_leased(uint32_t cpu_id, uint32_t owner_id) {
-  xaios_spin_lock(&g_lease_lock);
-  if (cpu_id == 0U || cpu_id >= g_capacity || owner_id == UINT32_MAX ||
-      g_cpu_states[cpu_id].online == 0U ||
-      g_cpu_states[cpu_id].role != XAIOS_CPU_ROLE_SCHEDULING) {
-    xaios_spin_unlock(&g_lease_lock);
-    return XAIOS_ERR_INVALID;
-  }
-  if (g_cpu_states[cpu_id].lease_owner_id != 0U &&
-      g_cpu_states[cpu_id].lease_owner_id != owner_id + 1U) {
-    ++g_cpu_states[cpu_id].migration_count;
-    xaios_spin_unlock(&g_lease_lock);
-    return XAIOS_ERR_BUSY;
-  }
-  g_cpu_states[cpu_id].role = XAIOS_CPU_ROLE_AI_HOT;
-  g_cpu_states[cpu_id].lease_owner_id = owner_id + 1U;
-  /* Not routed away, and saying so: see above. */
-  g_cpu_states[cpu_id].irq_routed_away = 0U;
-  g_cpu_states[cpu_id].tick_suppressed = 1U;
-  g_cpu_states[cpu_id].scheduling_enabled = 0U;
-  xaios_spin_unlock(&g_lease_lock);
-  klog("smp: hart%u leased owner=%u role=ai-hot irq_routed=0\n", cpu_id,
-       owner_id);
-  return XAIOS_OK;
-}
-
-xaios_status_t smp_release_core_lease(uint32_t cpu_id, uint32_t owner_id) {
-  xaios_spin_lock(&g_lease_lock);
-  if (cpu_id == 0U || cpu_id >= g_capacity ||
-      g_cpu_states[cpu_id].online == 0U ||
-      g_cpu_states[cpu_id].role != XAIOS_CPU_ROLE_AI_HOT ||
-      g_cpu_states[cpu_id].lease_owner_id != owner_id + 1U) {
-    xaios_spin_unlock(&g_lease_lock);
-    return XAIOS_ERR_INVALID;
-  }
-  g_cpu_states[cpu_id].role = XAIOS_CPU_ROLE_SCHEDULING;
-  g_cpu_states[cpu_id].lease_owner_id = 0U;
-  g_cpu_states[cpu_id].tick_suppressed = 0U;
-  /* Back into the scheduler only if the scheduler has been opened at all: a
-     hart leased before the rendezvous must not start scheduling because a
-     lease ended. */
-  g_cpu_states[cpu_id].scheduling_enabled =
-      __atomic_load_n(&g_secondary_release, __ATOMIC_ACQUIRE);
-  xaios_spin_unlock(&g_lease_lock);
-  klog("smp: hart%u released owner=%u role=scheduling\n", cpu_id, owner_id);
-  return XAIOS_OK;
-}
-
 xaios_status_t smp_wake_cpu(uint32_t cpu_id) {
-  if (cpu_id >= RISCV64_MAX_HARTS || g_cpu_states[cpu_id].online == 0U ||
-      __atomic_load_n(&g_cpu_states[cpu_id].scheduling_enabled,
+  if (cpu_id >= RISCV64_MAX_HARTS || riscv64_smp_cpu_states[cpu_id].online == 0U ||
+      __atomic_load_n(&riscv64_smp_cpu_states[cpu_id].scheduling_enabled,
                       __ATOMIC_ACQUIRE) == 0U) {
     return XAIOS_ERR_INVALID;
   }
   /* Addressed by hart, because that is what firmware knows about; the mask is
      one bit relative to that hart rather than a bitmap based at zero, so this
      says nothing about harts it was not asked to wake. */
-  uint64_t hart = g_hart_of_cpu[cpu_id];
+  uint64_t hart = riscv64_smp_hart_of_cpu[cpu_id];
   return sbi_send_ipi(UINT64_C(1), hart) == 0 ? XAIOS_OK : XAIOS_ERR_IO;
 }
-
-uint64_t smp_total_migration_count(void) { return 0U; }
-
-uint64_t smp_total_involuntary_context_switch_count(void) { return 0U; }
-
 
 /* Kernel threads, which the shared scheduler places itself. */
 xaios_status_t smp_run_user_thread_group(uint64_t requested_threads,

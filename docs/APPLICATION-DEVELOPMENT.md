@@ -99,7 +99,7 @@ application reaches a normal image.
 ## Proving it runs
 
 If the application emits a line the smoke gate should require, add that exact
-line to `TARGETS` in `tests/scripts/qemu-smoke.py`:
+line to `TARGETS` in `tests/scripts/qemu_smoke_markers.py`:
 
 ```python
 "myapp: done",

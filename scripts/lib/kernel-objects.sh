@@ -109,6 +109,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/boot_ui_render.o
   $KERNEL_BUILD_DIR/boot_ui_term.o
   $KERNEL_BUILD_DIR/klog.o
+  $KERNEL_BUILD_DIR/klog_console.o
+  $KERNEL_BUILD_DIR/klog_format.o
   $KERNEL_BUILD_DIR/idle_wake.o
   $KERNEL_BUILD_DIR/input.o
   $KERNEL_BUILD_DIR/input_queue.o
@@ -180,6 +182,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/ram_block.o
   $KERNEL_BUILD_DIR/setup_apply.o
   $KERNEL_BUILD_DIR/xai_fs_admin.o
+  $KERNEL_BUILD_DIR/xai_fs_admin_support.o
   $KERNEL_BUILD_DIR/service.o
   $KERNEL_BUILD_DIR/service_registry.o
   $KERNEL_BUILD_DIR/service_lifecycle.o
@@ -267,6 +270,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/crash_writer.o
   $KERNEL_BUILD_DIR/rate_limit.o
   $KERNEL_BUILD_DIR/source_index.o
+  $KERNEL_BUILD_DIR/source_index_scanner.o
+  $KERNEL_BUILD_DIR/source_index_self_test.o
   $KERNEL_BUILD_DIR/network_stack.o
   $KERNEL_BUILD_DIR/network_stack_wire.o
   $KERNEL_BUILD_DIR/network_stack_listener.o
@@ -313,6 +318,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/ipv4.o
   $KERNEL_BUILD_DIR/icmp.o
   $KERNEL_BUILD_DIR/ipv6.o
+  $KERNEL_BUILD_DIR/ipv6_ext.o
   $KERNEL_BUILD_DIR/icmpv6.o
   $KERNEL_BUILD_DIR/ndp.o
   $KERNEL_BUILD_DIR/ndp_cache.o

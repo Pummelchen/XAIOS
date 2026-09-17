@@ -1,0 +1,415 @@
+#!/usr/bin/env python3
+"""Marker tables for qemu-smoke.py, split out so both files stay under 500 lines.
+
+This is the data the gate asserts, moved verbatim: the literal sentences the
+guest must print, the compiled regexes for markers whose figures move between
+runs, and the per-architecture lists. The reasoning that explains a table
+travelled with it -- a marker is a claim about the machine, and why it is
+spelled the way it is is how the next reader decides whether changing it
+changes the gate or the system.
+
+qemu-smoke.py imports every name below and defines none of them again.
+"""
+import re
+
+
+# Markers whose line carries a running tally beside the figures worth pinning.
+#
+# A tally counts everything the kernel has done since boot, so it moves the
+# moment any test is added anywhere near it -- and pinning one has broken this
+# repository's gates twice already, once on a cumulative interrupt count and
+# once on a file count. The structural figures still have to be exact, because
+# those are the claim; the tallies are matched as numbers.
+PATTERN_TARGETS = [
+    # Counts, not a tally.
+    #
+    # This pinned sessions=6 commands=6 in TARGETS, and then the remote-login
+    # self-test grew a case -- filling the session table to prove a full one
+    # evicts its oldest entry rather than refusing every session after it,
+    # which is B-25 -- and the numbers became 71. Nothing about the machine
+    # had changed. A marker that breaks when a self-test is extended asserts
+    # the size of the test rather than the behaviour of the system. The denial
+    # count stays exact, because that one is the security property.
+    re.compile(r"remote-login: self-test passed sessions=[1-9]\d+ "
+               r"commands=[1-9]\d+ denials=4"),
+    re.compile(
+        r"xaibootfs: self-test passed files=7 directories=15 "
+        r"writes=[1-9]\d* reads=[1-9]\d* deletes=[1-9]\d* commits=1 "
+        r"rollbacks=1 replays=1 rejects=[1-9]\d* "
+        r"checksum_errors=0"),
+    # open and close are tallies for the same reason: any test that opens a
+    # file moves them. list, stat and rename are the claim here.
+    re.compile(
+        r"xaibootfs: public API self-test passed list=1 stat=3 rename=1 "
+        r"open=\d+ close=\d+"),
+    # At least one multi-sector file, not exactly one: the claim is that the
+    # multi-sector path was exercised, and a second test that happens to
+    # create one does not weaken it.
+    re.compile(
+        r"xaibootfs: multi-sector file self-test passed files=7 "
+        r"multi_sector=[1-9]\d*"),
+    # The accelerated SHA-256 agreeing with the scalar reference. This is the
+    # only place that comparison happens on an architecture that has an
+    # accelerated compressor: CI's runners are x86_64, where there is none and
+    # the hosted test skips. A machine without the extension says so instead,
+    # and that is also a pass -- what must never happen is the fast path being
+    # installed without having been checked.
+    re.compile(
+        r"engine-sha256: (accelerated path installed, verified against the "
+        r"scalar reference on [1-9]\d* lengths|scalar path)"),
+]
+
+# What each machine has to say for itself.
+#
+# The six markers below used to sit in TARGETS, which made them a requirement
+# on every architecture and therefore unportable: an SMMU is an ARM thing, a
+# GIC is an ARM thing, and a machine without either cannot say it tested one.
+# The capability is shared -- every architecture must describe its interrupt
+# controller, prove its page tables map and unmap, show its timer advancing --
+# but the words are the machine's own, and a gate that demanded ARM's words
+# would be measuring how well RISC-V imitates ARM rather than whether it
+# works. RISC-V says PLIC because it has a PLIC.
+# Where each machine's entropy comes from, asserted per architecture because
+# the answer differs and the difference is the point. F-05's engineering half
+# made the provenance observable; this is what stops it drifting back. RISC-V
+# reported "none" while a working virtio-rng sat on its bus, which is the
+# failure the provenance work existed to end and was invisible until it was
+# gated.
+ARCH_TARGETS = {
+    "aarch64": [
+        "entropy: source=hardware",
+        "SMMU: self-test bypass mode streams=0 invalidations=1",
+        "VMM map/unmap self-test passed",
+        "exceptions: self-test",
+        "gic: discovery self-test passed",
+        "smp: per-core registry self-test passed",
+        # x86-64 is the only architecture whose TLB shootdown waits for an
+        # acknowledgement, so this check does not apply here -- and saying so
+        # is required, because a check that silently disappears looks exactly
+        # like one that passed (B-123).
+        "smp: shootdown acknowledgement self-test not applicable on aarch64 ",
+        # The same for the idle-wakeup check: this architecture closes that
+        # window with `sev` rather than with a re-check (B-120).
+        "smp: idle wakeup self-test not applicable on aarch64 ",
+        "timer: monotonic self-test passed",
+    ],
+    "riscv64": [
+        # A real source the machine asked the host for, named apart from the
+        # firmware's own because it is not the firmware's word.
+        "entropy: device RNG seed accepted",
+        "entropy: source=device-rng",
+        # No IOMMU on this board, said out loud rather than skipped: an
+        # unmediated DMA path is a fact about the machine worth asserting.
+        "smmu: riscv64 has no IOMMU on this board; DMA is unmediated",
+        "vmm: self-test passed (map, translate, write, unmap)",
+        "exception: self-test passed",
+        "irq: riscv64 plic serving the interrupt-controller interface",
+        "smp: riscv64 self-test passed",
+        # The trap-frame mapping its timer tick applies, which is what preemption
+        # rests on: the frame the scheduler hands back must be the one the trap
+        # return resumes (B-129).
+        "sched-tick: riscv64 trap-frame mapping self-test passed",
+        # And the behavioural half: a kernel context hands this CPU to a
+        # second task and the timer brings it back, which is the machinery a
+        # preempted user process needs and the only place it is exercised on
+        # this port today (B-132).
+        "sched-preempt: riscv64 kernel-context preemption self-test passed",
+        # A user process dispatched as a *task*: it ran on a kernel stack of
+        # its own and the timer took the CPU away from it and gave it back
+        # (B-132).
+        "kernel: /bin/hello scheduled dispatch pid=6 switches=",
+        # And the proof that EL0 itself is preempted, with its control in the
+        # same boot: /bin/spin never yields, so with the dispatching context
+        # runnable at the same priority the two alternate (the kernel asserts
+        # switches>=4), and with it blocked the process is the only runnable
+        # task and the count stops at the dispatch and the hand-back. The
+        # numbers move; that both runs happened does not (B-132).
+        "kernel: /bin/spin preempted pid=7 switches=",
+        "kernel: /bin/spin blocked dispatcher pid=8 switches=",
+        # See the AArch64 list: this check is x86-64's, and that it does not
+        # apply here is asserted rather than left unsaid (B-123).
+        "smp: shootdown acknowledgement self-test not applicable on riscv64 ",
+        # See the AArch64 list: this port closes the window by waiting with
+        # interrupts masked (B-120).
+        "smp: idle wakeup self-test not applicable on riscv64 ",
+        "timer: self-test passed",
+        # Only RISC-V has these, and they are the point of having a third
+        # architecture rather than a second copy of the first.
+        "vmm: sv48 enabled",
+        "smp: riscv64 boot hart=",
+        "smp: riscv64 4 harts online, scheduling held until the rendezvous",
+        # Remote TLB shootdown, which only this architecture had to build by
+        # hand: AArch64's TLBI is broadcast by the hardware and x86-64 has its
+        # own IPI path. Gated on the "passed" line rather than on nothing,
+        # because the self-test skips itself -- and says so -- on a single-hart
+        # machine or on firmware without the RFENCE extension, and a skip that
+        # nobody notices is how this stops being tested.
+        #
+        # What is deliberately NOT required here is the companion line saying
+        # the negative control held. The self-test prints that only when the
+        # remote hart demonstrably kept translating through a cleared page
+        # table entry after a hart-local fence, which is a fact about the
+        # machine rather than about the kernel: an implementation is free to
+        # drop the entry on its own, and QEMU's behaviour here is not a
+        # contract. Requiring it would fail a boot for the emulator changing
+        # its mind. The line is always printed and always says which case
+        # happened, so a reader of the log can tell how strong the run was.
+        "vmm: tlb shootdown self-test passed",
+        "smp: hart1 leased owner=0 role=ai-hot",
+    ],
+    "x86_64": [],
+}
+
+
+TARGETS = [
+    "spinlock: early single-core try-lock self-test passed",
+    "VMM architecture device mappings installed",
+    "arena: self-test passed",
+    "sandbox: lifecycle self-test passed",
+    "sandbox: VM build self-test passed",
+    "source-index: fixture loaded files=2 symbols=2 updates=1",
+    "source-index: C scanner self-test passed",
+    "git-workspace: self-test passed",
+    "git-workspace: blob hash and diff self-test passed",
+    "virtio-blk: read/write/error/reset self-test passed",
+    "persistence: self-test scratch sector=3000 sectors=1 initramfs_payload_start=4096",
+    "persistence: disk write sector=3000 version=1 records=5",
+    "persistence: disk loaded sector=3000 version=1 records=5",
+    "persistence: disk reload/rollback self-test passed snapshots=5 rollbacks=5 rejects=2 disk_writes=1 disk_loads=1 checksum_errors=0",
+    "xaibootfs: mounted start=3072 metadata=16 journal=2 data=3090 sectors=96 nodes=32 policy=rw",
+    "xaibootfs: write path=/state/services/source-index.state",
+    "xaibootfs: snapshot committed",
+    "xaibootfs: snapshot rollback",
+    "xaibootfs: allocator self-test passed",
+    "xaibootfs: directory tree self-test passed directories=15",
+    "xaibootfs: journal replay self-test passed replays=1 journal_writes=1",
+    "xaibootfs: subsystem records self-test passed records=4",
+    "xaifs: mounted /models device=/dev/vblk4 generation=",
+    "xaifs: signed active read and crash-consistent staging write self-test passed active_bytes=8192 staging_bytes=4096",
+    "update: self-test passed transactions=2 staged=2 committed=1 failed=1 recovered=1 rollbacks=1 boot_fallbacks=1 records=8 rollback_points=2 rejects=2",
+    "virtio-net: malformed packet/drop self-test passed",
+    "virtio-net: queue/tx/parser/reset self-test passed",
+    "network: stack initialized",
+    "ipv4: fragmentation/reassembly self-test passed",
+    "ipv6: fragmentation/reassembly passed",
+    "network: udp flow id=",
+    "expired queue=",
+    "retransmit=1",
+    "timeout queue=",
+    "network: queue-backed udp/tcp self-test passed rx=6 tx=6 drops=2 lifecycle=18 udp_flows=1 udp_hits=1 udp_expired=1 tcp_timeouts=1 tcp_retransmits=1 queue_rx=6 queue_tx=6 queue_done=6 backpressure=0 flow_mismatch=0",
+    "network: external host udp session port=2222",
+    "network: external host tcp session port=2222",
+    "ipv6: self-test passed",
+    "icmpv6: self-test passed",
+    "ndp: self-test passed",
+    "initramfs: config service=/init mode=standard",
+    "initramfs: service-manager path=/bin/service-manager descriptor=/etc/services/source-index.svc",
+    "initramfs: child service=/svc/source-index parent=/init restart=never",
+    "initramfs: mounted rofs version=2 files=",
+    "initramfs: rofs metadata/config self-test passed",
+    "syscall: table self-test passed entries=55",
+    "virtio-rng: entropy delivery self-test passed",
+    "user: process table initialized slots=1024",
+    "user: process lifecycle invalid/failed transition self-test passed",
+    "scheduler: lifecycle self-test passed",
+    "user: process pid=1 name=/init state=loaded",
+    "security: self-test passed denied=15 capability_denials=3 fs_denials=2 workspace_denials=1 sandbox_denials=1 rollback_denials=1 update_policy_rejects=4 credential_rejects=2 signature_accepts=1 signature_rejects=4 admin_denials=2 update_authorizations=1 update_replay_rejects=1 key_accepts=1 key_rejects=1 sandbox_escape_rejects=1",
+    "remote-login: isolated session cwd self-test passed",
+
+    "threads: runtime initialized capacity=",
+    "threads: concurrent scheduler self-test passed threads=",
+    "scheduler: SIMD/FP interrupt preservation passed",
+    "model-arena: shared read-only arena self-test passed",
+    "ai-kernel: scalar fp16 and packed no-expand self-test passed fp16=10 int4=6 int6=2",
+    "nic-conflict-agent",
+    "core-conflict-agent",
+    "workspace-conflict-agent",
+    "ai-cell: descriptor ABI self-test passed accepts=5 rejects=4",
+    "ai-cell: resource contract self-test passed admissions=2 rejects=10 arena_pages=160 arena_bytes=655360 queue_binds=3 queue_releases=3 workspace_binds=2 workspace_releases=2 conflicts=3",
+    "ai-cell: lifecycle self-test passed",
+    "agent-protocol: self-test passed",
+    "control: protocol self-test passed version=2 malformed=5 denied=1 redaction=1",
+    "admin-control: self-test passed schema=1 invalid=1 principal=2 transactional=1",
+    "elf_loader: self-test passed dynamic_page_capacity=513",
+    "cpu-ai-runtime: Q8.8 kernel self-test passed",
+    "kheap: self-test passed",
+    "VMM translation test passed",
+    "nvme: self-test skipped no PCI NVMe controller",
+    "PMM 1024 page allocate/free test passed",
+    "cpu-ai-runtime: model manifest loaded",
+    "cpu-ai-runtime: model file loaded id=2 name=cpu-ai-v1-fixture",
+    "cpu-ai-runtime: model file path=/models/cpu-ai-v1-fixture.xaiosmodel admitted arena=2",
+    "cpu-ai-runtime: tokenizer/runtime boundary self-test passed tokenizer_calls=2 runtime_calls=2",
+    "cpu-ai-runtime: multi-cell shared weights self-test passed loads=2 shared_binds=2 kv_writes=8",
+    "cpu-ai-runtime: model load failure self-test passed failures=3 gpu_rejects=1",
+    "cpu-ai-runtime: model file loader self-test passed file_loads=1 file_rejects=3",
+    "admission_rejects=5 checksum_failures=1",
+    "cpu-ai-runtime: tokenizer binding and CPU dispatch self-test passed tokenizer_binds=2 kernel_dispatches=2",
+    "cpu-ai-runtime: v1 fixture decode input=ABCD output=1B1F2327",
+    "cpu-ai-runtime: self-test passed",
+    "cpu-ai-runtime: generic ml model kind=2",
+    "cpu-ai-runtime: generic ml model kind=3",
+    "cpu-ai-runtime: generic ml model kind=4",
+    "ai-cell: multi-cell shared model/private kv self-test passed",
+    "user: loaded /init ELF",
+    "user: process pid=1 name=/init state=running",
+    "user: rejected syscall=99",
+    "user: rejected syscall=1",
+    "/init: bad syscall tests passed",
+    "/init: hello from ELF",
+    "service-manager: configured /init restart=never log=serial max_restarts=0",
+    "service-manager: log /init manager-ready records=1",
+    "/init: service manager policy ready",
+    "service-manager: restart denied /init policy=never attempts=1",
+    "/init: restart denied by policy",
+    "service: /init state=running",
+    "/init: service setup complete",
+    "rejected=3",
+    "user: /init exited status=0",
+    "user: process pid=1 name=/init state=exited",
+    "user: kernel resumed after EL0 pid=1 state=exited exit_code=0",
+    "kernel: /init returned to kernel exit_code=0",
+    "user: reclaimed aspace pid=1",
+    "user: loaded /bin/service-manager ELF",
+    "user: process pid=2 name=/bin/service-manager state=running",
+    "/service-manager: hello from ELF",
+    "user: service descriptor read path=/etc/services/source-index.svc",
+    "/service-manager: descriptor loaded",
+    "user: rejected syscall=9",
+    "user: rejected syscall=10",
+    "/service-manager: missing capability tests passed",
+    "service-manager: defined child /svc/source-index parent=/init restart=never",
+    "service-supervisor: tree parent=/init child=/svc/source-index children=1 edges=1",
+    "service: /svc/source-index state=running",
+    "service: /svc/source-index mutable-state persisted state=running",
+    "osctl: /svc/source-index state=running",
+    "service-manager: restart denied /svc/source-index policy=never",
+    "/service-manager: child service supervised",
+    "service-manager: configured /svc/source-index restart=always log=serial max_restarts=2",
+    "service-manager: log /svc/source-index crash-test records=1",
+    "service-supervisor: observed crash /svc/source-index code=7 parent=/init",
+    "service: /svc/source-index state=failed exit_code=7",
+    "service-supervisor: cleanup /svc/source-index reason=crash cleanups=1",
+    "service-supervisor: restarting child /svc/source-index parent=/init attempt=2",
+    "/service-manager: child crash supervised",
+    "admin: policy ssh_only=1 password_login=0 admin_cap_required=1 remote_safe_allowlist=1 exports=1",
+    "admin: status service=/svc/source-index state=running",
+    "xaibootfs: write path=/state/services/admin.state",
+    "admin: logs service=/svc/source-index records=1",
+    "admin: remote-safe command=status accepted accepts=1",
+    "admin: remote-safe command=shell rejected rejects=1",
+    "/service-manager: admin status exported",
+    "/service-manager: remote-safe checks passed",
+    "osctl: status legacy=1 processes=",
+    "osctl: ps slots=1024",
+    "osctl: services transitions=",
+    "osctl: cells transitions=",
+    "osctl: fs files=",
+    "osctl: net udp_tx=",
+    "osctl: telemetry cpu_ai_loads=",
+    "osctl: update transactions=",
+    "osctl: rollback persistence=",
+    # The partition table writer, run against a real blank disk rather than
+    # only by hosted tests of its arguments. Required so it cannot quietly
+    # stop running the way it had never started.
+    "storage-admin: partition create/verify/delete self-test passed",
+    # And the three things that make a partition bootable: the standard EFI
+    # type, a FAT filesystem on it, and files at the paths firmware opens.
+    "storage-admin: esp create/format/install self-test passed",
+    "/service-manager: osctl command surface passed",
+    "/service-manager: mutable fs syscalls passed",
+    "/service-manager: control plane complete",
+    "user: /bin/service-manager exited status=0",
+    "kernel: /bin/service-manager returned to kernel exit_code=0",
+    "parent=2 runnable name=/bin/xaios-worker",
+    "parent=2 name=/bin/xaios-worker",
+    "name=/bin/xaios-worker state=exited exit_code=0",
+    "/worker: scheduled child process ran",
+    "/bin/xaios-shell: command surface passed 1..15 + ls variants + tar/cpio archive",
+    "/bin/xaios-shell: standalone applications validated by SSH gates",
+    "kernel: /bin/xaios-shell returned to kernel exit_code=0",
+    "/bin/xaiosctl: control commands passed human=14 json=14",
+    "/bin/xaiosctl: negative tests passed malformed=1 authorization=1 node=1",
+    "kernel: /bin/xaiosctl returned to kernel exit_code=0",
+    "/bin/hello: hello world from C userspace",
+    "/bin/hello: C toolchain and EL0 runtime integration passed",
+    "kernel: /bin/hello returned to kernel exit_code=0",
+    "/bin/sysinfo: legacy utility; use xaiosctl status and xaiosctl hardware for measured state",
+    "/bin/sysinfo: complete",
+    "kernel: /bin/sysinfo returned to kernel exit_code=0",
+    "/bin/systest: syscall and filesystem suite passed",
+    "kernel: /bin/systest returned to kernel exit_code=0",
+    "/bin/smptest: complete",
+    "/bin/smptest: app-requested SMP worker set passed",
+    "/bin/smptest: concurrent kernel-dispatched worker group passed",
+    "/bin/smptest: general EL0 create/join threads passed",
+    "kernel: /bin/smptest returned to kernel exit_code=0",
+    "/bin/nettest: complete",
+    "/bin/nettest: app-callable udp/tcp path passed",
+    "/bin/nettest: external host-to-guest tcp/udp session path passed",
+    # B-33. These two used to be bare log calls under XAIOS_BOOT_TEST_APPS with
+    # no resolver code behind them, so this gate certified two printfs. The
+    # boot-test kernel now answers the committed fixture zone from the signed
+    # chain in kernel/net/dns_selftest_chain.h, and /bin/nettest prints the
+    # first marker only after resolving it -- A and AAAA, compared against the
+    # fixture's own addresses -- and being refused the same zone with one bit
+    # of the signature flipped. The second follows a repeat resolve served from
+    # the cache the validated answer was admitted to.
+    "/bin/nettest: deterministic local DNSSEC resolver path passed",
+    # The figure the resolver returned, not only the verdict: 171245575 is
+    # 10.53.0.7, the fixture's A record. A resolver that answered with anything
+    # else -- or that was handed a regenerated chain nobody propagated -- misses
+    # this line rather than passing on the sentence above it.
+    "/bin/nettest: dnssec_fixture_ipv4=171245575",
+    "/bin/nettest: userspace DNS fixture path passed",
+    "kernel: /bin/nettest returned to kernel exit_code=0",
+    "/bin/lstm-xor: CPU-only two-hidden-layer LSTM XOR example starting",
+    "/bin/lstm-xor: production decode unsupported as required",
+    "/bin/lstm-xor: cpu-ai fixture decode=",
+    "/bin/lstm-xor: train_ns=",
+    "/bin/lstm-xor: run3_avg_ns=",
+    "/bin/lstm-xor: final_errors=0",
+    "/bin/lstm-xor: xor solve passed predictions=0,1,1,0",
+    "kernel: /bin/lstm-xor returned to kernel exit_code=0",
+    "/bin/sshtest: interactive remote login command surface passed",
+    "kernel: /bin/sshtest returned to kernel exit_code=0",
+    "/bin/mltest: multi-model CPU-only ML runtime passed",
+    "kernel: /bin/mltest returned to kernel exit_code=0",
+    "/bin/posix-shell: pipe and redirect surface passed",
+    "kernel: /bin/posix-shell returned to kernel exit_code=0",
+    "/bin/agenttest: agent protocol dispatch passed",
+    "/bin/agenttest: complete",
+    "kernel: /bin/agenttest returned to kernel exit_code=0",
+    "/bin/helloworldc99: Hello, World!",
+    "/bin/helloworldc99: hosted ISO C99 libc application",
+    "kernel: /bin/helloworldc99 returned to kernel exit_code=0",
+    "boot-ui: progress=90 loaded=runtime services loading=IPv4 network readiness remaining=2",
+    "sshd: Phase 2 runtime ready",
+    "boot-ui: progress=100 loaded=SSH-server loading=complete remaining=0",
+]
+
+# OR targets: each entry is a list of alternative strings.
+# At least one string from each group must appear in the output.
+OR_TARGETS = [
+    ["core-lease: dynamic isolation self-test passed", "core-lease: self-test skipped"],
+    ["core-lease: owner=0 cpus=1 acquired", "core-lease: self-test skipped"],
+]
+
+# Markers a target is satisfied by when the self-test did not run, and the
+# guest said why. They are required on purpose and not a hole in the gate: this
+# kernel's rule is that a refusal is a result, so "no PCI NVMe controller" is
+# something the guest must say rather than something it may leave out -- a
+# build that quietly stopped configuring interrupts everywhere looks exactly
+# like a machine with nothing to configure, and `qemu-nvme-gate` relies on the
+# RISC-V row saying `msix=0` for the same reason.
+#
+# What was missing is visibility, not enforcement. A reader of this gate's
+# output could not tell a smoke that passed with every self-test running from
+# one that passed with two of them refused, because both printed nothing but
+# the absence of a failure. `wiki/Testing-XAIOS.md` says a skip should be a
+# verdict in its own right; the closest this gate can come without inventing a
+# fourth verdict is to name them, which it now does.
+SKIP_MARKERS = frozenset({
+    "nvme: self-test skipped no PCI NVMe controller",
+    "core-lease: self-test skipped",
+})

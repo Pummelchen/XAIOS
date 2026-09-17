@@ -228,7 +228,7 @@ hosted-test: engine-cli
 	  -Iuserspace/sshd kernel/dev/block_device.c kernel/lib/crc32.c \
 	  kernel/storage/gpt.c kernel/storage/partition_device.c \
 	  kernel/storage/storage_admin.c kernel/storage/storage_admin_table.c kernel/storage/storage_admin_self_test.c kernel/fs/fat.c kernel/fs/fat_dir.c kernel/fs/fat_file_io.c kernel/fs/fat_codec.c \
-	  kernel/fs/xai_fs_admin.c \
+	  kernel/fs/xai_fs_admin.c kernel/fs/xai_fs_admin_support.c \
 	  engine/src/xai_fs.c engine/src/xai_fs_codec.c engine/src/xai_fs_read.c engine/src/xai_fs_writer.c engine/src/xai_fs_writer_staging.c engine/src/xai_fs_writer_rewrite.c engine/src/xai_fs_writer_util.c \
 	  engine/src/sha256.c userspace/sshd/ssh_crypto.c userspace/sshd/ssh_crypto_symmetric.c userspace/sshd/ssh_crypto_curve25519.c \
 	  userspace/sshd/tweetnacl_subset.c \
@@ -307,7 +307,7 @@ hosted-test: engine-cli
 	./build/hosted/test-ssh-identity build/hosted/id-ed25519 \
 	  build/hosted/id-ed25519-encrypted
 	$(HOST_CC) $(HOST_CFLAGS) \
-	  -Ikernel/include kernel/net/ipv4.c kernel/net/ipv6.c \
+	  -Ikernel/include kernel/net/ipv4.c kernel/net/ipv6.c kernel/net/ipv6_ext.c \
 	  tests/network/test_ip_fragments.c -o build/hosted/test-ip-fragments
 	./build/hosted/test-ip-fragments
 	$(HOST_CC) $(HOST_CFLAGS) -Ikernel/include \
