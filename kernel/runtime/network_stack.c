@@ -4237,6 +4237,35 @@ xaios_status_t network_stack_external_session(uint64_t protocol, uint64_t port,
   return result;
 }
 
+/* WT-39: the two listener pools are separate and each still refuses at its own
+   capacity. Fills both at once -- the case a single shared table could not
+   express, because whichever filled first took the other's rows -- and asserts
+   acceptance up to each bound and a refusal one past it. Hands every row back
+   so the rest of the self-test sees the empty registry it expects. */
+static void listener_pool_capacity_self_test(void) {
+  uint64_t sockfd = 1000U;
+  for (uint32_t i = 0; i < NETWORK_MAX_UDP_LISTENERS; ++i) {
+    kassert(network_stack_register_udp_listener((uint16_t)(0x6000U + i),
+                                                sockfd++) == XAIOS_OK);
+  }
+  kassert(network_stack_register_udp_listener(UINT16_C(0x7000), sockfd++) ==
+          XAIOS_ERR_NO_MEMORY);
+  /* The UDP pool is full and the TCP pool has not noticed: all sixteen rows
+     are still there, and TCP refuses only at sixteen of its own. */
+  for (uint32_t i = 0; i < NETWORK_MAX_TCP_LISTENERS; ++i) {
+    kassert(network_stack_register_listener((uint16_t)(0x7001U + i),
+                                            sockfd++) == XAIOS_OK);
+  }
+  kassert(network_stack_register_listener(UINT16_C(0x7100), sockfd++) ==
+          XAIOS_ERR_NO_MEMORY);
+  for (uint32_t i = 0; i < NETWORK_MAX_UDP_LISTENERS; ++i) {
+    network_stack_unregister_udp_listener((uint16_t)(0x6000U + i));
+  }
+  for (uint32_t i = 0; i < NETWORK_MAX_TCP_LISTENERS; ++i) {
+    network_stack_unregister_listener((uint16_t)(0x7001U + i));
+  }
+}
+
 void network_stack_self_test(void) {
   uint8_t frame_udp[NETWORK_BUFFER_SIZE];
   uint8_t frame_udp_bad[NETWORK_BUFFER_SIZE];
@@ -4250,6 +4279,7 @@ void network_stack_self_test(void) {
   net_wire_bytes_zero(frame_tcp_timeout, sizeof(frame_tcp_timeout));
 
   network_stack_init();
+  listener_pool_capacity_self_test();
   tcp_sliding_window_self_test();
 
   kassert(network_stack_bind_queue(0, 1, 0x2U) == XAIOS_OK);

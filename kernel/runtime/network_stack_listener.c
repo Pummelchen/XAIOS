@@ -27,33 +27,49 @@
 
 /* ---- state ---- */
 
-static network_listener_ex_t g_listeners_ex[NETWORK_MAX_LISTENERS];
+static network_listener_ex_t g_tcp_listeners[NETWORK_MAX_TCP_LISTENERS];
+static network_listener_ex_t g_udp_listeners[NETWORK_MAX_UDP_LISTENERS];
 static socket_flow_mapping_t g_socket_flow_map[NETWORK_SOCK_FLOW_MAP_SIZE];
 /* Every mapping this table had no room for. Counted rather than inferred: the
    condition is otherwise invisible from outside the kernel. */
 static uint64_t g_socket_map_exhausted_count;
+
+/* The flat slot index the accessors expose, mapped onto the two pools. TCP
+   rows are [0, NETWORK_MAX_TCP_LISTENERS) and UDP rows follow. A caller that
+   scans the whole space still sees both pools and filters by protocol, which
+   is what the lookups do; the register functions below scan only their own
+   range, so one pool can never spend the other's rows (WT-39). */
+static network_listener_ex_t *listener_slot(uint32_t index) {
+  if (index < NETWORK_MAX_TCP_LISTENERS) return &g_tcp_listeners[index];
+  index -= NETWORK_MAX_TCP_LISTENERS;
+  if (index < NETWORK_MAX_UDP_LISTENERS) return &g_udp_listeners[index];
+  return 0;
+}
 
 /* ---- accessors (lock-free; the caller holds the stack guard) ---- */
 
 uint32_t network_listener_slot_count(void) { return NETWORK_MAX_LISTENERS; }
 
 int network_listener_slot_read(uint32_t index, network_listener_ex_t *out) {
-  if (out == 0 || index >= NETWORK_MAX_LISTENERS) return 0;
-  if (g_listeners_ex[index].active == 0U) return 0;
-  *out = g_listeners_ex[index];
+  if (out == 0) return 0;
+  network_listener_ex_t *row = listener_slot(index);
+  if (row == 0 || row->active == 0U) return 0;
+  *out = *row;
   return 1;
 }
 
 void network_listener_slot_write(uint32_t index,
                                  const network_listener_ex_t *row) {
-  if (row == 0 || index >= NETWORK_MAX_LISTENERS) return;
-  g_listeners_ex[index] = *row;
+  network_listener_ex_t *slot = listener_slot(index);
+  if (row == 0 || slot == 0) return;
+  *slot = *row;
 }
 
 uint32_t network_listener_active_count(void) {
   uint32_t active = 0U;
   for (uint32_t i = 0U; i < NETWORK_MAX_LISTENERS; ++i) {
-    if (g_listeners_ex[i].active != 0U) ++active;
+    network_listener_ex_t *row = listener_slot(i);
+    if (row != 0 && row->active != 0U) ++active;
   }
   return active;
 }
@@ -92,7 +108,9 @@ void socket_map_reset_exhausted(void) { g_socket_map_exhausted_count = 0U; }
 
 static xaios_status_t network_stack_register_listener_unlocked(uint16_t port,
                                                               uint64_t sockfd) {
-  for (uint32_t i = 0; i < network_listener_slot_count(); ++i) {
+  /* TCP rows only: this scan cannot reach the UDP pool, so a datagram-heavy
+     guest cannot consume a TCP listener's row (WT-39). */
+  for (uint32_t i = 0; i < NETWORK_MAX_TCP_LISTENERS; ++i) {
     network_listener_ex_t row;
     if (network_listener_slot_read(i, &row)) continue;
     net_wire_bytes_zero(&row, sizeof(row));
@@ -121,7 +139,10 @@ xaios_status_t network_stack_register_listener(uint16_t port, uint64_t sockfd) {
 
 static xaios_status_t network_stack_register_udp_listener_unlocked(
     uint16_t port, uint64_t sockfd) {
-  for (uint32_t i = 0; i < network_listener_slot_count(); ++i) {
+  /* The UDP pool, starting where the TCP pool ends: sixteen TCP listeners
+     leave every datagram row available (WT-39). */
+  for (uint32_t i = NETWORK_MAX_TCP_LISTENERS; i < NETWORK_MAX_LISTENERS;
+       ++i) {
     network_listener_ex_t row;
     if (network_listener_slot_read(i, &row)) continue;
     net_wire_bytes_zero(&row, sizeof(row));

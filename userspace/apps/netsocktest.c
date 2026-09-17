@@ -23,6 +23,12 @@
  *   4. a datagram leaves from the socket that was given a port, so the port is
  *      a source and not merely a record.
  *
+ * WT-39 adds a fifth: with the datagram registry deliberately filled to its
+ * refusal, a TCP listener is still registrable, because the two protocols no
+ * longer share one sixteen-row table. That is measured here rather than argued
+ * because it is exactly the case the old single table could not pass -- a QUIC
+ * client and sshd asking at the same time.
+ *
  * It reports and does not judge, like /bin/perfbench and /bin/netmqtest: the
  * gate reads the summary line and decides. A measurement program that returns
  * non-zero on a bad number makes a boot fail for a reason that belongs to the
@@ -43,6 +49,11 @@
 /* The dynamic range, RFC 6335. Repeated rather than included because the
    kernel side of the same number is not part of the userspace header. */
 #define EPHEMERAL_MIN 49152U
+
+/* The TCP port the independence probe listens on. A service port nobody in the
+   boot-test profile uses, so a failure to register it is the registry and not
+   a collision. */
+#define TCP_PROBE_PORT 27400U
 
 typedef struct open_result {
   u64 open_failed;
@@ -65,6 +76,7 @@ typedef struct summary {
   u64 explicit_port;
   u64 registry_fill_ok;
   u64 registry_refused;
+  u64 tcp_after_udp_full;
 } summary_t;
 
 /* Port zero asks the kernel to choose. Both the descriptor and the port are
@@ -94,18 +106,22 @@ static void open_ephemeral(summary_t *summary, open_result_t *result) {
   }
 }
 
-/* The listener registry has sixteen rows, so a datagram socket that needs a
- * seventeenth cannot be given one. This opens until the kernel refuses, and
- * holds the sockets while it counts so the rows stay taken.
+/* The datagram registry has its own capacity (WT-39 gave UDP and TCP separate
+ * pools), so this opens until the kernel refuses and holds the sockets while
+ * it counts, keeping every datagram row taken. It asserts nothing, like the
+ * rest of this app: it records how many were handed out, whether a refusal
+ * ever came, and whether a TCP listener could still be registered beside the
+ * full datagram pool, and the gate requires the refusal and the probe.
  *
- * It asserts nothing, like the rest of this app: it records how many were
- * handed out and whether a refusal ever came, and the gate requires the
- * refusal. What makes that worth measuring is how the two possible kernels
- * differ. One that refuses reports a failed open and the count stops below the
+ * What makes the refusal worth measuring is how the two possible kernels
+ * differ. One that refuses reports a failed open and the count stops at the
  * ceiling. One that does not -- which is what this was before B-78 -- answers
  * every open with a descriptor and a port, and the replies to that port are
  * dropped for want of a row, so the only difference visible from here is that
- * no refusal ever arrives. */
+ * no refusal ever arrives. The TCP probe is the WT-39 half: while one shared
+ * sixteen-row table served both protocols, the refusal this loop produces was
+ * also the refusal a listener got, and a machine running sshd had already
+ * spent one of the sixteen before this app started. */
 static void fill_registry(summary_t *summary) {
   enum { FILL_ATTEMPTS = 64U };
   static u64 sockfds[FILL_ATTEMPTS];
@@ -120,6 +136,16 @@ static void fill_registry(summary_t *summary) {
     sockfds[opened++] = sockfd;
   }
   summary->registry_fill_ok = opened;
+
+  /* Every datagram row is held. A TCP listener is a different pool and must
+     still register; the datagram sockets stay open across the probe so the
+     two really do overlap. */
+  u64 tcp_sockfd = 0U;
+  if (xaios_net_listen(TCP_PROBE_PORT, &tcp_sockfd) == 0) {
+    summary->tcp_after_udp_full = 1U;
+    if (xaios_net_close(tcp_sockfd) < 0) summary->closes_failed++;
+  }
+
   for (u64 i = 0U; i < opened; ++i) {
     if (xaios_net_close(sockfds[i]) < 0) summary->closes_failed++;
   }
@@ -228,7 +254,8 @@ int main(void) {
   xaios_log_u64(" second_port=", summary.second_port, "");
   xaios_log_u64(" explicit_port=", summary.explicit_port, "");
   xaios_log_u64(" registry_fill_ok=", summary.registry_fill_ok, "");
-  xaios_log_u64(" registry_refused=", summary.registry_refused, "\n");
+  xaios_log_u64(" registry_refused=", summary.registry_refused, "");
+  xaios_log_u64(" tcp_after_udp_full=", summary.tcp_after_udp_full, "\n");
 
   xaios_log("/bin/netsocktest: complete\n");
   return 0;

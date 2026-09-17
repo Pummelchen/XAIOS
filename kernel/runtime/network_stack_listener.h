@@ -34,7 +34,31 @@
    repeating the numbers. */
 #define NETWORK_TCP_CONNECTIONS 128U
 #define NETWORK_UDP_FLOWS 32U
-#define NETWORK_MAX_LISTENERS 16U
+/* Two listener pools, one per protocol, because they bound different things
+   and neither should be the other's ceiling (WT-39).
+
+   A row is a receive entry: a TCP row holds connections the stack has accepted
+   but the application has not taken off the backlog, and a UDP row holds
+   datagrams that have arrived but not been read. They were one sixteen-row
+   table, and sixteen datagram sockets -- which WT-35 made every send-capable
+   client register -- exhausted the listeners a TCP service could register, and
+   sixteen TCP listeners exhausted the datagram sockets. The pools are separate
+   ranges of one flat slot index: TCP rows are [0, NETWORK_MAX_TCP_LISTENERS)
+   and UDP rows follow immediately, so slot_count/slot_read/slot_write keep
+   their single index while an allocation in one pool can never take a row from
+   the other.
+
+   The bound protects static kernel memory, and only that: these tables are
+   kernel private, never cross the syscall trap and are part of no kernel-user
+   layout. A TCP row is backed by NETWORK_TCP_CONNECTIONS flows, and sixteen
+   listeners is already more than the machine's services use (sshd takes one).
+   A UDP row is serviced by NETWORK_UDP_FLOWS flows, so past that many
+   concurrent datagram sockets a row can only wait for a flow to free; the pool
+   is that count. */
+#define NETWORK_MAX_TCP_LISTENERS 16U
+#define NETWORK_MAX_UDP_LISTENERS NETWORK_UDP_FLOWS
+#define NETWORK_MAX_LISTENERS \
+  (NETWORK_MAX_TCP_LISTENERS + NETWORK_MAX_UDP_LISTENERS)
 #define NETWORK_LISTENER_BACKLOG NETWORK_TCP_CONNECTIONS
 #define NETWORK_SOCK_FLOW_MAP_SIZE \
   (NETWORK_TCP_CONNECTIONS + NETWORK_UDP_FLOWS)

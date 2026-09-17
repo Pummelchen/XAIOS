@@ -25,7 +25,9 @@ The properties checked, in the order the app establishes them:
   4. a port asked for by number comes back as that number;
   5. a datagram leaves from the socket that was given the port, so the port is
      a source and not merely a record;
-  6. every descriptor closes.
+  6. every descriptor closes;
+  7. WT-39: with the datagram registry full, a TCP listener can still register,
+     because the two protocols no longer share one sixteen-row table.
 
 None of this is visible in a release image: the app is part of the boot-test
 profile and the summary is one line of its console output, so this needs
@@ -65,7 +67,8 @@ SUMMARY = re.compile(
     r"port_zero=(\d+) out_of_range=(\d+) duplicated=(\d+) "
     r"explicit_mismatch=(\d+) sends=(\d+) sends_failed=(\d+) "
     r"closes_failed=(\d+) first_port=(\d+) second_port=(\d+) "
-    r"explicit_port=(\d+) registry_fill_ok=(\d+) registry_refused=(\d+)")
+    r"explicit_port=(\d+) registry_fill_ok=(\d+) registry_refused=(\d+) "
+    r"tcp_after_udp_full=(\d+)")
 COMPLETE = "/bin/netsocktest: complete"
 # The kernel's side of the same events.
 KERNEL_OPEN = re.compile(r"syscall: net_open_udp port=(\d+) sockfd=(\d+)")
@@ -74,6 +77,12 @@ PROMPT = "xaios login:"
 EPHEMERAL_MIN = 49152
 EPHEMERAL_MAX = 65535
 OPENS = 3
+# WT-39: UDP and TCP have separate listener pools now, and this gate pins both.
+# The datagram pool (kernel NETWORK_MAX_UDP_LISTENERS) holds the three sockets
+# the app opens before it starts filling, so the fill measures the rest; the
+# TCP pool is a different one, and the app probes it once the datagram pool is
+# full -- the case the old shared sixteen-row table could not pass.
+UDP_REGISTRY = 32
 
 
 def boot() -> tuple[str, str]:
@@ -139,7 +148,7 @@ def main() -> int:
     opens = opens_failed = port_zero = out_of_range = None
     duplicated = explicit_mismatch = sends = sends_failed = None
     closes_failed = first_port = second_port = explicit_port = None
-    registry_fill_ok = registry_refused = None
+    registry_fill_ok = registry_refused = tcp_after_udp_full = None
 
     if summary is None:
         failures.append(
@@ -149,7 +158,8 @@ def main() -> int:
         (opens, opens_failed, port_zero, out_of_range, duplicated,
          explicit_mismatch, sends, sends_failed, closes_failed, first_port,
          second_port, explicit_port, registry_fill_ok,
-         registry_refused) = (int(g) for g in summary.groups())
+         registry_refused, tcp_after_udp_full) = (int(g)
+                                                  for g in summary.groups())
 
         if opens != OPENS:
             failures.append(
@@ -185,22 +195,37 @@ def main() -> int:
         if closes_failed != 0:
             failures.append(f"{closes_failed} descriptors failed to close")
 
-        # B-78's reproducer. The registry has sixteen rows and this app holds
-        # three when it starts filling, so a kernel that registers what it
-        # hands out must refuse within thirteen more. A kernel that does not
-        # refuse is handing out ports whose replies are dropped for want of a
-        # row, and from userspace that is indistinguishable from success --
-        # which is why the absence of a refusal, not the count, is the failure.
+        # B-78's reproducer, now against WT-39's two-pool kernel. The datagram
+        # pool holds the three sockets this app opens before it starts
+        # filling, so a kernel that registers what it hands out must refuse
+        # within UDP_REGISTRY - OPENS more. A kernel that does not refuse is
+        # handing out ports whose replies are dropped for want of a row, and
+        # from userspace that is indistinguishable from success -- which is why
+        # the absence of a refusal, not the count, is the failure. The count is
+        # pinned as well, because a shared table that merely grew would also
+        # refuse, and the probe below is what separates the two.
         if registry_refused < 1:
             failures.append(
                 "the kernel never refused a datagram socket; it answered "
-                "every open while the listener registry has sixteen rows, so "
-                "the ports past the ceiling cannot receive (B-78)")
-        if registry_fill_ok > 16:
+                f"every open while the datagram listener registry has "
+                f"{UDP_REGISTRY} rows, so the ports past the ceiling cannot "
+                f"receive (B-78)")
+        if registry_fill_ok != UDP_REGISTRY - OPENS:
             failures.append(
-                f"the kernel handed out {registry_fill_ok} registered "
-                f"datagram sockets on top of the three already open, and the "
-                f"registry has sixteen rows")
+                f"the kernel handed out {registry_fill_ok} datagram sockets "
+                f"before refusing, and the datagram registry has "
+                f"{UDP_REGISTRY} rows with {OPENS} already open here, so the "
+                f"expected count is {UDP_REGISTRY - OPENS}")
+        # WT-39: the pools are separate, so a TCP listener still registers
+        # while every datagram row is taken. A shared table fails here, which
+        # is why this assertion and not the refusal is the one that names the
+        # defect.
+        if tcp_after_udp_full != 1:
+            failures.append(
+                "no TCP listener could be registered while the datagram "
+                "registry was full; the two protocols still share one "
+                "listener table and whichever fills first is the other's "
+                "ceiling (WT-39)")
 
         for name, value in (("first_port", first_port),
                             ("second_port", second_port)):
@@ -274,6 +299,7 @@ def main() -> int:
         "explicit_port": explicit_port,
         "registry_fill_ok": registry_fill_ok,
         "registry_refused": registry_refused,
+        "tcp_after_udp_full": tcp_after_udp_full,
         "kernel_allocations": kernel_opens,
         "reached_login_prompt": PROMPT in text,
         "failures": failures,
@@ -292,7 +318,8 @@ def main() -> int:
           f"{len(kernel_opens)} datagram sockets, the caller was told "
           f"{first_port} and {second_port} for the two it did not name and "
           f"{explicit_port} for the one it did, a datagram left from the "
-          f"first, and the guest booted through")
+          f"first, a TCP listener registered beside the full datagram pool, "
+          f"and the guest booted through")
     print(f"qemu-datagram-ephemeral-port-gate: report written to {REPORT}")
     return 0
 
