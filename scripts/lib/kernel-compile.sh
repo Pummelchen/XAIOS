@@ -59,6 +59,7 @@ compile_kernel "$ROOT_DIR/kernel/arch/aarch64/mmu_user.c" "$KERNEL_BUILD_DIR/mmu
   # path in it had never been linked into a running system on this
   # architecture -- and the SVE path could not have been.
   compile_kernel_simd "$ROOT_DIR/engine/src/packed.c" "$KERNEL_BUILD_DIR/engine_packed.o"
+  compile_kernel_simd "$ROOT_DIR/engine/src/packed_simd.c" "$KERNEL_BUILD_DIR/engine_packed_simd.o"
   compile_kernel_simd "$ROOT_DIR/kernel/arch/aarch64/sve.c" "$KERNEL_BUILD_DIR/sve.o"
   compile_kernel_simd "$ROOT_DIR/kernel/arch/aarch64/sve_canary.S" "$KERNEL_BUILD_DIR/sve_canary.o"
 else
@@ -81,12 +82,14 @@ compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_idt.c" "$KERNEL_BUILD_DIR/ear
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_post_smp.c" "$KERNEL_BUILD_DIR/early_post_smp.o"
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_ap.c" "$KERNEL_BUILD_DIR/early_ap.o"
   compile_kernel_simd "$ROOT_DIR/engine/src/packed.c" "$KERNEL_BUILD_DIR/engine_packed.o"
+  compile_kernel_simd "$ROOT_DIR/engine/src/packed_simd.c" "$KERNEL_BUILD_DIR/engine_packed_simd.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/timer.c" "$KERNEL_BUILD_DIR/timer.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/platform.c" "$KERNEL_BUILD_DIR/platform.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/power.c" "$KERNEL_BUILD_DIR/power.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/watchdog.c" "$KERNEL_BUILD_DIR/watchdog.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/pci.c" "$KERNEL_BUILD_DIR/pci.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/smp.c" "$KERNEL_BUILD_DIR/smp.o"
+  compile_kernel "$ROOT_DIR/kernel/arch/x86_64/smp_selftest.c" "$KERNEL_BUILD_DIR/smp_selftest.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/mmu_boot.c" "$KERNEL_BUILD_DIR/mmu_boot.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/mmu_user.c" "$KERNEL_BUILD_DIR/mmu_user.o"
 fi

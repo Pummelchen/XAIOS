@@ -325,3 +325,21 @@ printf '%s\n' "Building userspace C runtime..."
   -I"$ROOT_DIR/userspace/include" \
   -c "$ROOT_DIR/userspace/lib/xaios_screen.c" \
   -o "$USER_SCREEN_OBJ"
+
+# The screen framework's key decoder, split out for the file-size budget.
+"$CLANG" \
+  --target="$TARGET_TRIPLE" \
+  $USER_ARCH_CFLAGS \
+  -std=c99 \
+  -ffreestanding \
+  -fno-stack-protector \
+  -fno-builtin \
+  -fno-pic \
+  -fno-pie \
+  -Os \
+  -Wall \
+  -Wextra \
+  -Werror \
+  -I"$ROOT_DIR/userspace/include" \
+  -c "$ROOT_DIR/userspace/lib/xaios_screen_input.c" \
+  -o "$USER_SCREEN_INPUT_OBJ"

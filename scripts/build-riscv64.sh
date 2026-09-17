@@ -298,6 +298,7 @@ OBJECTS="$OBJECTS $BUILD_DIR/virtio_transport_mmio.o \
 for source in "$ROOT_DIR/engine/src/architecture.c" \
     "$ROOT_DIR/engine/src/backend_scalar.c" \
     "$ROOT_DIR/engine/src/packed.c" \
+    "$ROOT_DIR/engine/src/packed_simd.c" \
     "$ROOT_DIR/engine/src/sha256.c" \
     "$ROOT_DIR/engine/src/sha256_accel.c" \
     "$ROOT_DIR/engine/src/backend_neon.c" \

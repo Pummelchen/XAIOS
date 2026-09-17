@@ -55,6 +55,7 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   $KERNEL_BUILD_DIR/smp_platform.o
   $KERNEL_BUILD_DIR/smp_registry.o
   $KERNEL_BUILD_DIR/engine_packed.o
+  $KERNEL_BUILD_DIR/engine_packed_simd.o
   $KERNEL_BUILD_DIR/sve.o
   $KERNEL_BUILD_DIR/sve_canary.o
   $KERNEL_BUILD_DIR/virtio_transport_mmio.o
@@ -86,12 +87,14 @@ else
   $KERNEL_BUILD_DIR/early_post_smp.o
   $KERNEL_BUILD_DIR/early_ap.o
   $KERNEL_BUILD_DIR/engine_packed.o
+  $KERNEL_BUILD_DIR/engine_packed_simd.o
   $KERNEL_BUILD_DIR/timer.o
   $KERNEL_BUILD_DIR/platform.o
   $KERNEL_BUILD_DIR/power.o
   $KERNEL_BUILD_DIR/watchdog.o
   $KERNEL_BUILD_DIR/pci.o
   $KERNEL_BUILD_DIR/smp.o
+  $KERNEL_BUILD_DIR/smp_selftest.o
   $KERNEL_BUILD_DIR/virtio_transport_pci_probe.o
   $KERNEL_BUILD_DIR/virtio_transport_pci_queue.o
   $KERNEL_BUILD_DIR/mmu_boot.o

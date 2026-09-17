@@ -79,6 +79,10 @@ for app in $USER_APPS; do
     -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie -Os \
     -I"$ROOT_DIR/userspace/include" \
     -c "$ROOT_DIR/userspace/lib/xaios_screen.c" -o "$BUILD_DIR/screen-$app.o"
+    "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
+      -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie -Os \
+      -I"$ROOT_DIR/userspace/include" \
+      -c "$ROOT_DIR/userspace/lib/xaios_screen_input.c" -o "$BUILD_DIR/screen-input-$app.o"
   # xaios-setup writes the credential records sshd reads, so it hashes them
   # with the same code sshd verifies them with -- two implementations of
   # PBKDF2 that disagree produce an account that cannot be logged into, and
@@ -178,6 +182,6 @@ for app in $USER_APPS; do
     "$BUILD_DIR/control-system-$app.o" \
     "$BUILD_DIR/control-storage-$app.o" \
     "$BUILD_DIR/control-ops-$app.o" "$BUILD_DIR/control-config-$app.o" "$BUILD_DIR/control-request-$app.o" "$BUILD_DIR/control-parse-flags-$app.o" "$BUILD_DIR/control-parse-validate-$app.o" "$BUILD_DIR/control-dispatch-$app.o" \
-    "$BUILD_DIR/screen-$app.o" $EXTRA_OBJS
+    "$BUILD_DIR/screen-$app.o" "$BUILD_DIR/screen-input-$app.o" $EXTRA_OBJS
   APP_ARGS="$APP_ARGS /bin/$app=$BUILD_DIR/$app.elf"
 done

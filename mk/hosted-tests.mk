@@ -155,7 +155,7 @@ hosted-test: engine-cli
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Iengine/include engine/src/model_v2.c engine/src/sha256.c \
 	  engine/src/architecture.c engine/src/service.c engine/src/backend_scalar.c \
-	  engine/src/backend_neon.c engine/src/backend_avx2.c engine/src/packed.c \
+	  engine/src/backend_neon.c engine/src/backend_avx2.c engine/src/packed.c engine/src/packed_simd.c \
 	  tests/model_v2/test_engine.c -o build/hosted/test-engine
 	./build/hosted/test-engine
 	$(HOST_CC) $(HOST_CFLAGS) \
@@ -168,7 +168,7 @@ hosted-test: engine-cli
 	./build/hosted/test-kimi-k3-mini
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Iengine/include engine/src/backend_scalar.c engine/src/backend_neon.c \
-	  engine/src/backend_avx2.c engine/src/packed.c \
+	  engine/src/backend_avx2.c engine/src/packed.c engine/src/packed_simd.c \
 	  tests/model_v2/test_packed.c \
 	  -o build/hosted/test-packed
 	./build/hosted/test-packed
@@ -190,6 +190,7 @@ hosted-test: engine-cli
 	./build/hosted/test-known-hosts
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Iuserspace/include -Ikernel/include userspace/lib/xaios_screen.c \
+	  userspace/lib/xaios_screen_input.c \
 	  tests/system/test_screen.c -o build/hosted/test-screen
 	./build/hosted/test-screen
 	$(HOST_CC) $(HOST_CFLAGS) \

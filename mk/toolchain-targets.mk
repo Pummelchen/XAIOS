@@ -5,7 +5,7 @@ engine-cli:
 	$(HOST_CC) $(HOST_CFLAGS) -Iengine/include \
 	  engine/src/model_v2.c engine/src/sha256.c engine/src/architecture.c \
 	  engine/src/service.c engine/src/backend_scalar.c \
-	  engine/src/backend_neon.c engine/src/backend_avx2.c engine/src/packed.c \
+	  engine/src/backend_neon.c engine/src/backend_avx2.c engine/src/packed.c engine/src/packed_simd.c \
 	  tools/xaios_engine_cli.c -o build/hosted/xaios-engine
 
 libc:
