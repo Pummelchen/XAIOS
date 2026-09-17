@@ -2,14 +2,19 @@
 #define XAIOS_KERNEL_RUNTIME_REMOTE_LOGIN_INTERNAL_H
 
 /*
- * The surface shared by remote_login.c and remote_login_archive.c.
+ * The surface shared by remote_login.c and the modules split out of it:
+ * remote_login_archive.c, remote_login_text.c and remote_login_path.c.
  *
- * The archive entry points live in remote_login_archive.c. Only
- * remote_login.c's command dispatch reaches them, and the archive code is
- * compiled only when XAIOS_BOOT_TEST_APPS is on -- as it was inside
+ * The archive, text and navigation entry points live in those modules. Only
+ * remote_login.c's command dispatch reaches them, and the code they came from
+ * was compiled only when XAIOS_BOOT_TEST_APPS is on -- as it was inside
  * remote_login.c -- so the declarations that exist only in that arm carry the
  * same guard. In the shipped configuration neither the entry points nor the
  * primitives they call are compiled.
+ *
+ * remote_path_resolve is the exception: the shipped shell resolves paths too,
+ * so it, and the primitives remote_login_path.c needs for it, are declared in
+ * every configuration.
  */
 
 #include <xaios/status.h>
@@ -26,10 +31,21 @@
 
 #define XAIOS_USTAR_BLOCK_SIZE UINT64_C(512)
 
-/* The session cwd is state of remote_login.c, and the archive module reads it
-   through this accessor rather than through the variable, which stays private
-   because the rest of the shell reads it directly. */
+/* The session cwd is state of remote_login.c, and the split-out modules read
+   it through this accessor rather than through the variable, which stays
+   private because the rest of the shell reads it directly. */
 const char *remote_login_cwd(void);
+
+/* Primitives remote_login.c owns in every configuration. remote_login_path.c
+   resolves paths for the shipped shell as well as the boot-test one, so it
+   needs these outside the boot-test guard. */
+uint64_t cstr_len(const char *text);
+int string_equal(const char *lhs, const char *rhs);
+xaios_status_t copy_cstr(char *dst, uint64_t dst_capacity, const char *src);
+xaios_status_t copy_cstr_range(char *dst, uint64_t dst_capacity,
+                               const char *src, uint64_t count);
+xaios_status_t remote_path_resolve(const char *cwd, const char *path, char *out,
+                                   uint64_t out_capacity);
 
 #if XAIOS_BOOT_TEST_APPS
 
@@ -54,16 +70,10 @@ xaios_status_t ustar_walk(const char *archive_path, const char *destination,
 /* Primitives the archive entry points call back into. They stay owned by
    remote_login.c because the rest of the shell uses them too; only their
    linkage changes so the archive module can name them. */
-uint64_t cstr_len(const char *text);
 void output_append(char *output, uint64_t capacity, uint64_t *offset,
                    const char *text);
 xaios_status_t output_append_char(char *output, uint64_t capacity,
                                   uint64_t *offset, char value);
-xaios_status_t copy_cstr(char *dst, uint64_t dst_capacity, const char *src);
-xaios_status_t copy_cstr_range(char *dst, uint64_t dst_capacity,
-                               const char *src, uint64_t count);
-xaios_status_t remote_path_resolve(const char *cwd, const char *path, char *out,
-                                   uint64_t out_capacity);
 xaios_status_t remote_ensure_parent(const char *path);
 xaios_status_t path_join(char *out, uint64_t out_capacity, const char *base,
                          const char *name);
@@ -91,6 +101,38 @@ xaios_status_t pax_extract_path(const char *data, uint64_t size, char *out,
 xaios_status_t gzip_decode(const uint8_t *input, uint64_t input_size,
                            uint8_t *output, uint64_t output_capacity,
                            uint64_t *output_size);
+
+/* Shell primitives that stay in remote_login.c but are now called from the
+   split-out text and path modules as well. */
+xaios_status_t token_next(const char *text, uint64_t *index, char *token,
+                          uint64_t capacity);
+xaios_status_t command_fail(char *output, uint64_t output_capacity,
+                            uint64_t *output_bytes, const char *message);
+void output_append_u64(char *output, uint64_t capacity, uint64_t *offset,
+                       uint64_t value);
+int has_more_args(const char *text, uint64_t index);
+void remote_login_log_failure(const char *operation, const char *reason,
+                              xaios_status_t status);
+int string_starts_with(const char *text, const char *prefix);
+uint64_t parse_decimal_uint(const char *text, uint64_t *value);
+int find_match(const char *name, const char *pattern);
+xaios_status_t read_file_lines(const char *path, char *buffer,
+                               uint64_t buffer_capacity, uint64_t *size);
+
+/* Command entry points of the split-out modules. remote_login.c's dispatch
+   calls these across the translation-unit boundary. */
+xaios_status_t handle_ls(const char *args, char *output,
+                         uint64_t output_capacity, uint64_t *output_bytes);
+xaios_status_t handle_find_cmd(const char *args, char *output,
+                               uint64_t output_capacity,
+                               uint64_t *output_bytes);
+xaios_status_t handle_grep(const char *args, char *output,
+                           uint64_t output_capacity, uint64_t *output_bytes);
+xaios_status_t handle_head_tail(const char *args, int is_head, char *output,
+                                uint64_t output_capacity,
+                                uint64_t *output_bytes);
+xaios_status_t handle_sed(const char *args, char *output,
+                          uint64_t output_capacity, uint64_t *output_bytes);
 
 #endif /* XAIOS_BOOT_TEST_APPS */
 

@@ -89,7 +89,7 @@ uint64_t cstr_len(const char *text) {
   return len;
 }
 
-static int string_equal(const char *lhs, const char *rhs) {
+int string_equal(const char *lhs, const char *rhs) {
   if (lhs == 0 || rhs == 0) {
     return 0;
   }
@@ -140,7 +140,7 @@ xaios_status_t copy_cstr(char *dst, uint64_t dst_capacity, const char *src) {
   return copy_cstr_range(dst, dst_capacity, src, cstr_len(src));
 }
 
-static void output_append_u64(char *output, uint64_t capacity, uint64_t *offset,
+void output_append_u64(char *output, uint64_t capacity, uint64_t *offset,
                              uint64_t value) {
   char digits[24];
   uint64_t count = 0;
@@ -173,7 +173,7 @@ static uint64_t skip_ws(const char *text, uint64_t index) {
   return index;
 }
 
-static xaios_status_t token_next(const char *text, uint64_t *index, char *token,
+xaios_status_t token_next(const char *text, uint64_t *index, char *token,
                                uint64_t capacity) {
   if (text == 0 || index == 0 || token == 0 || capacity == 0) {
     return XAIOS_ERR_INVALID;
@@ -223,126 +223,6 @@ static xaios_status_t token_next(const char *text, uint64_t *index, char *token,
   return XAIOS_OK;
 }
 
-static int remote_path_is_sensitive(const char *path) {
-  static const char control_prefix[] = "/state/control";
-  static const char host_key[] = "/state/xaios_host_key";
-  static const char password_users[] = "/etc/xaios_sshd_users";
-  static const char authorized_keys[] = "/etc/xaios_authorized_keys";
-  uint64_t control_length = sizeof(control_prefix) - 1U;
-  if (path == 0) return 1;
-  if (string_equal(path, host_key) || string_equal(path, password_users) ||
-      string_equal(path, authorized_keys)) {
-    return 1;
-  }
-  for (uint64_t i = 0U; i < control_length; ++i) {
-    if (path[i] != control_prefix[i]) return 0;
-  }
-  return path[control_length] == '\0' || path[control_length] == '/';
-}
-
-xaios_status_t remote_path_resolve(const char *cwd, const char *path,
-                                   char *resolved,
-                                   uint64_t resolved_capacity) {
-  char source[XAIOS_XBFS_PATH_MAX];
-  uint64_t source_len = 0;
-  uint64_t idx = 0;
-  uint64_t resolved_len = 1;
-  if (cwd == 0 || path == 0 || resolved == 0 ||
-      resolved_capacity < 2U) {
-    return XAIOS_ERR_INVALID;
-  }
-
-  if (path[0] == '/') {
-    if (cstr_len(path) >= XAIOS_XBFS_PATH_MAX) {
-      return XAIOS_ERR_NO_MEMORY;
-    }
-    if (copy_cstr(source, sizeof(source), path) != XAIOS_OK) {
-      return XAIOS_ERR_INVALID;
-    }
-    source_len = cstr_len(path);
-  } else {
-    uint64_t cwd_len = cstr_len(cwd);
-    if (cwd_len == 0U || cstr_len(cwd) >= XAIOS_XBFS_PATH_MAX) {
-      return XAIOS_ERR_INVALID;
-    }
-    if (copy_cstr(source, sizeof(source), cwd) != XAIOS_OK) {
-      return XAIOS_ERR_INVALID;
-    }
-    source_len = cstr_len(source);
-    if (source_len != 1U && source[source_len - 1U] != '/') {
-      source[source_len] = '/';
-      ++source_len;
-      source[source_len] = '\0';
-    }
-    if (source_len + cstr_len(path) >= XAIOS_XBFS_PATH_MAX) {
-      return XAIOS_ERR_NO_MEMORY;
-    }
-    for (uint64_t i = 0; path[i] != '\0'; ++i) {
-      source[source_len] = path[i];
-      ++source_len;
-    }
-    source[source_len] = '\0';
-  }
-
-  if (source[0] != '/' || source_len == 0U) {
-    return XAIOS_ERR_INVALID;
-  }
-
-  resolved[0] = '/';
-  resolved[1] = '\0';
-  while (idx < source_len) {
-    while (idx < source_len && source[idx] == '/') {
-      ++idx;
-    }
-    if (idx >= source_len) {
-      break;
-    }
-    uint64_t seg_start = idx;
-    while (idx < source_len && source[idx] != '/') {
-      ++idx;
-    }
-    uint64_t seg_len = idx - seg_start;
-    if (seg_len == 1U && source[seg_start] == '.') {
-      continue;
-    }
-    if (seg_len == 2U && source[seg_start] == '.' &&
-        source[seg_start + 1U] == '.') {
-      while (resolved_len > 1U) {
-        --resolved_len;
-        if (resolved[resolved_len] == '/') {
-          break;
-        }
-      }
-      continue;
-    }
-    if (seg_len == 0U) {
-      continue;
-    }
-    if (resolved_len > 1U) {
-      if (resolved_len + 1U >= resolved_capacity) {
-        return XAIOS_ERR_NO_MEMORY;
-      }
-      resolved[resolved_len] = '/';
-      ++resolved_len;
-    }
-    if (resolved_len + seg_len >= resolved_capacity) {
-      return XAIOS_ERR_NO_MEMORY;
-    }
-    for (uint64_t i = 0; i < seg_len; ++i) {
-      resolved[resolved_len] = source[seg_start + i];
-      ++resolved_len;
-    }
-  }
-  if (resolved_len == 0U) {
-    resolved_len = 1U;
-  }
-  resolved[resolved_len] = '\0';
-  if (remote_path_is_sensitive(resolved)) {
-    return XAIOS_ERR_INVALID;
-  }
-  return XAIOS_OK;
-}
-
 xaios_status_t remote_ensure_parent(const char *path) {
   uint64_t len = cstr_len(path);
   if (len == 0U) {
@@ -379,7 +259,7 @@ xaios_status_t remote_ensure_parent(const char *path) {
              : XAIOS_ERR_INVALID;
 }
 
-static xaios_status_t command_fail(char *output, uint64_t output_capacity,
+xaios_status_t command_fail(char *output, uint64_t output_capacity,
                                  uint64_t *output_bytes,
                                  const char *message) {
   output_append(output, output_capacity, output_bytes, message);
@@ -420,7 +300,7 @@ static void copy_remainder(const char *text, uint64_t index, char *out,
   out[i] = '\0';
 }
 
-static void remote_login_log_failure(const char *operation, const char *reason,
+void remote_login_log_failure(const char *operation, const char *reason,
                                    xaios_status_t status) {
   if (operation == 0) {
     return;
@@ -429,7 +309,7 @@ static void remote_login_log_failure(const char *operation, const char *reason,
        reason == 0 ? "unknown" : reason, status);
 }
 
-static int has_more_args(const char *text, uint64_t index) {
+int has_more_args(const char *text, uint64_t index) {
   return text != 0 && text[skip_ws(text, index)] != '\0';
 }
 
@@ -664,7 +544,7 @@ xaios_status_t archive_parse_entry(const char *line, uint64_t line_size,
   return XAIOS_OK;
 }
 
-static int string_starts_with(const char *text, const char *prefix) {
+int string_starts_with(const char *text, const char *prefix) {
   if (text == 0 || prefix == 0) {
     return 0;
   }
@@ -712,7 +592,7 @@ static int glob_match(const char *text, const char *pattern) {
   return text[0] == pattern[0] && glob_match(text + 1U, pattern + 1U);
 }
 
-static int find_match(const char *name, const char *pattern) {
+int find_match(const char *name, const char *pattern) {
   if (pattern == 0 || pattern[0] == '\0') {
     return 1;
   }
@@ -727,11 +607,7 @@ static int find_match(const char *name, const char *pattern) {
                            : (string_equal(name, pattern) == 1U);
 }
 
-static int is_hidden_name(const char *name) {
-  return name != 0 && name[0] == '.';
-}
-
-static uint64_t parse_decimal_uint(const char *text, uint64_t *value) {
+uint64_t parse_decimal_uint(const char *text, uint64_t *value) {
   uint64_t cursor = 0;
   uint64_t parsed = 0;
   if (text == 0 || value == 0 || text[0] == '\0') {
@@ -787,192 +663,6 @@ xaios_status_t path_join(char *out, uint64_t out_capacity, const char *base,
     out[base_len + i] = name[i];
   }
   out[base_len + name_len] = '\0';
-  return XAIOS_OK;
-}
-
-static xaios_status_t append_ls_entry(char *output, uint64_t output_capacity,
-                                    uint64_t *output_bytes, const char *name,
-                                    uint64_t size, uint64_t type,
-                                    int long_form) {
-  if (long_form) {
-    char type_char = type == 1U ? 'd' : '-';
-    output_append_char(output, output_capacity, output_bytes, type_char);
-    output_append(output, output_capacity, output_bytes, " ");
-    output_append_u64(output, output_capacity, output_bytes, size);
-    output_append(output, output_capacity, output_bytes, " ");
-  }
-  output_append(output, output_capacity, output_bytes, name);
-  return output_append_char(output, output_capacity, output_bytes, '\n');
-}
-
-static xaios_status_t handle_ls(const char *args, char *output,
-                               uint64_t output_capacity,
-                               uint64_t *output_bytes) {
-  uint64_t arg_index = 0;
-  char token[32];
-  char explicit_path[XAIOS_XBFS_PATH_MAX];
-  int show_all = 0;
-  int long_form = 0;
-  int end_of_options = 0;
-  explicit_path[0] = '\0';
-
-  while (token_next(args, &arg_index, token, sizeof(token)) == XAIOS_OK) {
-    if (end_of_options == 0 && string_equal(token, "--") == 1U) {
-      end_of_options = 1;
-      continue;
-    }
-
-    if (token[0] == '-' && end_of_options == 0) {
-      if (string_equal(token, "-a") == 1U) {
-        show_all = 1;
-      } else if (string_equal(token, "-l") == 1U) {
-        long_form = 1;
-      } else if (string_equal(token, "-la") == 1U ||
-                 string_equal(token, "-al") == 1U) {
-        show_all = 1;
-        long_form = 1;
-      } else {
-        return command_fail(output, output_capacity, output_bytes,
-                           "ls: invalid option");
-      }
-      continue;
-    }
-
-    if (explicit_path[0] != '\0') {
-      return command_fail(output, output_capacity, output_bytes,
-                          "ls: too many arguments");
-    }
-    if (copy_cstr(explicit_path, sizeof(explicit_path), token) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes, "ls: invalid path");
-    }
-  }
-
-  char target[XAIOS_XBFS_PATH_MAX];
-  if (explicit_path[0] == '\0') {
-    if (copy_cstr(target, sizeof(target), g_remote_login_cwd) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "ls: invalid path");
-    }
-  } else if (copy_cstr(target, sizeof(target), explicit_path) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "ls: invalid path");
-  }
-
-  char resolved[XAIOS_XBFS_PATH_MAX];
-  char listing[XAIOS_REMOTE_LOGIN_LIST_BYTES];
-  uint64_t listing_size = 0;
-  if (remote_path_resolve(g_remote_login_cwd, target, resolved,
-                         sizeof(resolved)) != XAIOS_OK) {
-    remote_login_log_failure("ls", "invalid-path", XAIOS_ERR_INVALID);
-    return command_fail(output, output_capacity, output_bytes, "ls: invalid path");
-  }
-  xaios_xbfs_stat_t target_stat;
-  if (xaiboot_fs_stat(resolved, &target_stat) == XAIOS_OK &&
-      target_stat.type == 2U) {
-    return append_ls_entry(output, output_capacity, output_bytes,
-                           explicit_path[0] == '\0' ? resolved : explicit_path,
-                           target_stat.size, target_stat.type, long_form);
-  }
-  {
-    const xaios_initramfs_file_t *image_file = 0;
-    if (initramfs_lookup(resolved, &image_file) == XAIOS_OK &&
-        initramfs_directory_exists(resolved) == 0) {
-      return append_ls_entry(output, output_capacity, output_bytes,
-                             explicit_path[0] == '\0' ? resolved
-                                                       : explicit_path,
-                             image_file->size, 2U, long_form);
-    }
-  }
-  int image_directory = initramfs_directory_exists(resolved);
-  xaios_status_t list_status = xaiboot_fs_list(resolved, listing,
-                                              sizeof(listing),
-                                              &listing_size);
-  if (image_directory != 0 && list_status != XAIOS_OK) {
-    list_status = XAIOS_OK;
-    listing_size = 0U;
-  }
-  if ((list_status != XAIOS_OK &&
-       (list_status != XAIOS_ERR_NO_MEMORY || listing_size == 0U)) ||
-      listing_size > sizeof(listing)) {
-    klog(
-        "remote-login: ls path=%s list_status=%d listing_size=%lu capacity=%lu\n",
-        resolved, list_status, listing_size, (uint64_t)sizeof(listing));
-    remote_login_log_failure("ls", "list-failed", list_status);
-    return command_fail(output, output_capacity, output_bytes, "ls: not found");
-  }
-
-  uint64_t line_start = 0;
-  while (line_start < listing_size) {
-    uint64_t line_end = line_start;
-    while (line_end < listing_size && listing[line_end] != '\n') {
-      ++line_end;
-    }
-    uint64_t name_len = line_end - line_start;
-    if (name_len == 0U) {
-      line_start = line_end + 1U;
-      continue;
-    }
-    if (name_len + 1U >= XAIOS_XBFS_PATH_MAX) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "ls: path too long");
-    }
-    char name[XAIOS_XBFS_PATH_MAX];
-    if (copy_cstr_range(name, sizeof(name), listing + line_start, name_len) !=
-        XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes, "ls: not found");
-    }
-    if (!show_all && is_hidden_name(name) != 0) {
-      line_start = line_end + 1U;
-      continue;
-    }
-    char child[XAIOS_XBFS_PATH_MAX];
-    if (path_join(child, sizeof(child), resolved, name) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes, "ls: not found");
-    }
-    xaios_xbfs_stat_t child_stat;
-    if (xaiboot_fs_stat(child, &child_stat) != XAIOS_OK) {
-      line_start = line_end + 1U;
-      continue;
-    }
-    if (append_ls_entry(output, output_capacity, output_bytes, name,
-                        child_stat.size, child_stat.type, long_form) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes, "ls: output too large");
-    }
-    line_start = line_end + 1U;
-  }
-  /* Merge the boot image's view of this directory. xaibootFS took its turn
-     above, so anything it can stat is already listed and is skipped here;
-     synthetic subdirectories are deduplicated against earlier image files. */
-  for (uint32_t i = 0U; i < initramfs_file_count(); ++i) {
-    char name[XAIOS_XBFS_PATH_MAX];
-    int is_directory = 0;
-    if (initramfs_child_at(resolved, i, name, sizeof(name), &is_directory) == 0)
-      continue;
-    if (!show_all && is_hidden_name(name) != 0) continue;
-    char child[XAIOS_XBFS_PATH_MAX];
-    xaios_xbfs_stat_t child_stat;
-    if (path_join(child, sizeof(child), resolved, name) != XAIOS_OK) continue;
-    if (xaiboot_fs_stat(child, &child_stat) == XAIOS_OK) continue;
-    if (is_directory != 0) {
-      uint32_t seen = 0U;
-      for (uint32_t j = 0U; j < i && seen == 0U; ++j) {
-        char earlier[XAIOS_XBFS_PATH_MAX];
-        int earlier_dir = 0;
-        if (initramfs_child_at(resolved, j, earlier, sizeof(earlier),
-                               &earlier_dir) != 0 &&
-            earlier_dir != 0 && string_equal(earlier, name) == 1U)
-          seen = 1U;
-      }
-      if (seen != 0U) continue;
-    }
-    const xaios_initramfs_file_t *file = initramfs_file_at(i);
-    if (append_ls_entry(output, output_capacity, output_bytes, name,
-                        is_directory != 0 ? 0U : file->size,
-                        is_directory != 0 ? 1U : 2U, long_form) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "ls: output too large");
-    }
-  }
   return XAIOS_OK;
 }
 
@@ -1135,379 +825,7 @@ static xaios_status_t handle_cp(const char *args, char *output,
   return XAIOS_OK;
 }
 
-static char ascii_fold(char value) {
-  return value >= 'A' && value <= 'Z' ? (char)(value + ('a' - 'A')) : value;
-}
-
-static int span_contains(const char *text, uint64_t text_len,
-                         const char *pattern, int ignore_case) {
-  uint64_t pattern_len = cstr_len(pattern);
-  if (pattern_len == 0U) return 1;
-  if (pattern_len > text_len) return 0;
-  for (uint64_t start = 0U; start + pattern_len <= text_len; ++start) {
-    uint64_t matched = 0U;
-    while (matched < pattern_len) {
-      char left = text[start + matched];
-      char right = pattern[matched];
-      if (ignore_case != 0) {
-        left = ascii_fold(left);
-        right = ascii_fold(right);
-      }
-      if (left != right) break;
-      ++matched;
-    }
-    if (matched == pattern_len) return 1;
-  }
-  return 0;
-}
-
-static int grep_atom_matches(const char *pattern, uint64_t *atom_len, char value,
-                             int ignore_case) {
-  char expected = pattern[0];
-  *atom_len = 1U;
-  if (expected == '\\' && pattern[1] != '\0') {
-    expected = pattern[1];
-    *atom_len = 2U;
-  }
-  if (expected == '.') return 1;
-  if (ignore_case != 0) {
-    expected = ascii_fold(expected);
-    value = ascii_fold(value);
-  }
-  return expected == value;
-}
-
-static int grep_regex_here(const char *pattern, const char *text,
-                           uint64_t text_len, int ignore_case) {
-  if (pattern[0] == '\0') return 1;
-  if (pattern[0] == '$' && pattern[1] == '\0') return text_len == 0U;
-  uint64_t atom_len = 0U;
-  (void)grep_atom_matches(pattern, &atom_len, '\0', ignore_case);
-  if (pattern[atom_len] == '*') {
-    uint64_t used = 0U;
-    for (;;) {
-      if (grep_regex_here(pattern + atom_len + 1U, text + used,
-                          text_len - used, ignore_case)) {
-        return 1;
-      }
-      if (used >= text_len ||
-          !grep_atom_matches(pattern, &atom_len, text[used], ignore_case)) {
-        return 0;
-      }
-      ++used;
-    }
-  }
-  if (text_len != 0U &&
-      grep_atom_matches(pattern, &atom_len, text[0], ignore_case)) {
-    return grep_regex_here(pattern + atom_len, text + 1U, text_len - 1U,
-                           ignore_case);
-  }
-  return 0;
-}
-
-static int grep_regex_matches(const char *pattern, const char *text,
-                              uint64_t text_len, int ignore_case) {
-  if (pattern[0] == '^') {
-    return grep_regex_here(pattern + 1U, text, text_len, ignore_case);
-  }
-  for (uint64_t start = 0U; start <= text_len; ++start) {
-    if (grep_regex_here(pattern, text + start, text_len - start, ignore_case)) {
-      return 1;
-    }
-  }
-  return 0;
-}
-
-static xaios_status_t handle_grep(const char *args, char *output,
-                                uint64_t output_capacity,
-                                uint64_t *output_bytes) {
-  char pattern[XAIOS_XBFS_PATH_MAX];
-  char files[16][XAIOS_XBFS_PATH_MAX];
-  uint32_t file_count = 0U;
-  uint64_t index = 0U;
-  int ignore_case = 0;
-  int line_numbers = 0;
-  int invert = 0;
-  int count_only = 0;
-  int fixed = 0;
-  int show_filename = 0;
-  int hide_filename = 0;
-  int end_options = 0;
-  char token[XAIOS_XBFS_PATH_MAX];
-  pattern[0] = '\0';
-  while (token_next(args, &index, token, sizeof(token)) == XAIOS_OK) {
-    if (end_options == 0 && string_equal(token, "--")) {
-      end_options = 1;
-      continue;
-    }
-    if (pattern[0] == '\0' && end_options == 0 && token[0] == '-') {
-      for (uint64_t flag = 1U; token[flag] != '\0'; ++flag) {
-        if (token[flag] == 'i') ignore_case = 1;
-        else if (token[flag] == 'n') line_numbers = 1;
-        else if (token[flag] == 'v') invert = 1;
-        else if (token[flag] == 'c') count_only = 1;
-        else if (token[flag] == 'F') fixed = 1;
-        else if (token[flag] == 'H') show_filename = 1;
-        else if (token[flag] == 'h') hide_filename = 1;
-        else {
-          return command_fail(output, output_capacity, output_bytes,
-                              "grep: unsupported option");
-        }
-      }
-      continue;
-    }
-    if (pattern[0] == '\0') {
-      if (copy_cstr(pattern, sizeof(pattern), token) != XAIOS_OK) {
-        return command_fail(output, output_capacity, output_bytes,
-                            "grep: pattern too long");
-      }
-    } else if (file_count < 16U &&
-               copy_cstr(files[file_count], sizeof(files[0]), token) == XAIOS_OK) {
-      ++file_count;
-    } else {
-      return command_fail(output, output_capacity, output_bytes,
-                          "grep: too many files");
-    }
-  }
-  if (pattern[0] == '\0') {
-    return command_fail(output, output_capacity, output_bytes,
-                        "grep: missing pattern");
-  }
-  if (file_count == 0U) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "grep: missing file");
-  }
-
-  uint64_t total_matches = 0U;
-  for (uint32_t file = 0U; file < file_count; ++file) {
-    char resolved[XAIOS_XBFS_PATH_MAX];
-    char *data = (char *)kheap_alloc(XAIOS_XBFS_MAX_FILE_BYTES_V5 + 1U, 16U);
-    uint64_t data_size = 0U;
-    if (data == 0 ||
-        remote_path_resolve(g_remote_login_cwd, files[file], resolved,
-                            sizeof(resolved)) != XAIOS_OK ||
-        xaiboot_fs_read(resolved, data, XAIOS_XBFS_MAX_FILE_BYTES_V5,
-                        &data_size) != XAIOS_OK) {
-      kheap_free(data);
-      return command_fail(output, output_capacity, output_bytes,
-                          "grep: cannot read file");
-    }
-    uint64_t file_matches = 0U;
-    uint64_t line_start = 0U;
-    uint64_t line_number = 1U;
-    while (line_start <= data_size) {
-      uint64_t line_end = line_start;
-      while (line_end < data_size && data[line_end] != '\n') ++line_end;
-      uint64_t line_len = line_end - line_start;
-      int matched = fixed != 0
-                        ? span_contains(data + line_start, line_len, pattern,
-                                        ignore_case)
-                        : grep_regex_matches(pattern, data + line_start,
-                                             line_len, ignore_case);
-      if (invert != 0) matched = !matched;
-      if (matched != 0) {
-        ++file_matches;
-        ++total_matches;
-        if (count_only == 0) {
-          if ((file_count > 1U || show_filename != 0) && hide_filename == 0) {
-            output_append(output, output_capacity, output_bytes, files[file]);
-            output_append(output, output_capacity, output_bytes, ":");
-          }
-          if (line_numbers != 0) {
-            output_append_u64(output, output_capacity, output_bytes, line_number);
-            output_append(output, output_capacity, output_bytes, ":");
-          }
-          for (uint64_t byte = line_start; byte < line_end; ++byte) {
-            if (output_append_char(output, output_capacity, output_bytes,
-                                   data[byte]) != XAIOS_OK) {
-              kheap_free(data);
-              return XAIOS_ERR_NO_MEMORY;
-            }
-          }
-          if (output_append_char(output, output_capacity, output_bytes, '\n') !=
-              XAIOS_OK) {
-            kheap_free(data);
-            return XAIOS_ERR_NO_MEMORY;
-          }
-        }
-      }
-      if (line_end >= data_size) break;
-      line_start = line_end + 1U;
-      ++line_number;
-    }
-    if (count_only != 0) {
-      if ((file_count > 1U || show_filename != 0) && hide_filename == 0) {
-        output_append(output, output_capacity, output_bytes, files[file]);
-        output_append(output, output_capacity, output_bytes, ":");
-      }
-      output_append_u64(output, output_capacity, output_bytes, file_matches);
-      output_append(output, output_capacity, output_bytes, "\n");
-    }
-    kheap_free(data);
-  }
-  return total_matches == 0U ? XAIOS_ERR_NOT_FOUND : XAIOS_OK;
-}
-
-static xaios_status_t handle_find_recursive(const char *path, const char *pattern,
-                                          char *output,
-                                          uint64_t output_capacity,
-                                          uint64_t *output_bytes,
-                                          int print_entry_path) {
-  xaios_xbfs_stat_t start_stat;
-  char listing[XAIOS_REMOTE_LOGIN_LIST_BYTES];
-  uint64_t listing_size = 0;
-  if (xaiboot_fs_stat(path, &start_stat) != XAIOS_OK || start_stat.type != 1U) {
-    return XAIOS_ERR_NOT_FOUND;
-  }
-  if (pattern == 0 || pattern[0] == '\0') {
-    if (print_entry_path != 0) {
-      output_append(output, output_capacity, output_bytes, path);
-      if (output_append_char(output, output_capacity, output_bytes, '\n') !=
-          XAIOS_OK) {
-        return XAIOS_ERR_NO_MEMORY;
-      }
-    }
-  } else {
-    const char *name = path;
-    uint64_t path_len = cstr_len(path);
-    for (uint64_t i = 0; i + 1U < path_len; ++i) {
-      if (path[path_len - i - 1U] == '/') {
-        name = &path[path_len - i];
-        break;
-      }
-    }
-    if (find_match(name, pattern) != 0) {
-      if (print_entry_path != 0) {
-        output_append(output, output_capacity, output_bytes, path);
-        if (output_append_char(output, output_capacity, output_bytes, '\n') !=
-            XAIOS_OK) {
-          return XAIOS_ERR_NO_MEMORY;
-        }
-      }
-    }
-  }
-  if (xaiboot_fs_list(path, listing, sizeof(listing), &listing_size) != XAIOS_OK) {
-    return XAIOS_ERR_INVALID;
-  }
-  uint64_t line_start = 0;
-  while (line_start < listing_size) {
-    uint64_t line_end = line_start;
-    while (line_end < listing_size && listing[line_end] != '\n') {
-      ++line_end;
-    }
-    char name[XAIOS_XBFS_PATH_MAX];
-    uint64_t name_len = line_end - line_start;
-    if (name_len >= sizeof(name)) {
-      name_len = sizeof(name) - 1U;
-    }
-    for (uint64_t i = 0; i < name_len; ++i) {
-      name[i] = listing[line_start + i];
-    }
-    name[name_len] = '\0';
-    if (name_len == 0U) {
-      line_start = line_end + 1U;
-      continue;
-    }
-    char child[XAIOS_XBFS_PATH_MAX];
-    if (path_join(child, sizeof(child), path, name) != XAIOS_OK) {
-      return XAIOS_ERR_NO_MEMORY;
-    }
-    xaios_xbfs_stat_t child_stat;
-    if (xaiboot_fs_stat(child, &child_stat) != XAIOS_OK) {
-      line_start = line_end + 1U;
-      continue;
-    }
-    if (pattern == 0 || pattern[0] == '\0' || find_match(name, pattern) != 0) {
-      output_append(output, output_capacity, output_bytes, child);
-      if (output_append_char(output, output_capacity, output_bytes, '\n') !=
-          XAIOS_OK) {
-        return XAIOS_ERR_NO_MEMORY;
-      }
-    }
-    if (child_stat.type == 1U) {
-      xaios_status_t child_status =
-          handle_find_recursive(child, pattern, output, output_capacity, output_bytes,
-                               0);
-      if (child_status != XAIOS_OK && child_status != XAIOS_ERR_NOT_FOUND) {
-        return child_status;
-      }
-    }
-    line_start = line_end + 1U;
-  }
-  return XAIOS_OK;
-}
-
-static xaios_status_t handle_find(const char *path, const char *pattern, char *output,
-                                uint64_t output_capacity,
-                                uint64_t *output_bytes) {
-  return handle_find_recursive(path, pattern, output, output_capacity, output_bytes,
-                              1);
-}
-
-static xaios_status_t handle_find_cmd(const char *args, char *output,
-                                    uint64_t output_capacity,
-                                    uint64_t *output_bytes) {
-  uint64_t arg_index = 0;
-  char path_arg[XAIOS_XBFS_PATH_MAX];
-  char resolved[XAIOS_XBFS_PATH_MAX];
-  char token[XAIOS_XBFS_PATH_MAX];
-  char pattern[XAIOS_XBFS_PATH_MAX];
-  char explicit_path[XAIOS_XBFS_PATH_MAX];
-  int path_was_given = 0;
-  int has_name_filter = 0;
-  explicit_path[0] = '\0';
-  pattern[0] = '\0';
-
-  if (token_next(args, &arg_index, path_arg, sizeof(path_arg)) == XAIOS_OK) {
-    path_was_given = 1;
-    if (path_arg[0] == '-') {
-      if (copy_cstr(explicit_path, sizeof(explicit_path), ".") != XAIOS_OK) {
-        return command_fail(output, output_capacity, output_bytes, "find: invalid path");
-      }
-    } else {
-      if (copy_cstr(explicit_path, sizeof(explicit_path), path_arg) != XAIOS_OK) {
-        return command_fail(output, output_capacity, output_bytes, "find: invalid path");
-      }
-    }
-  } else {
-    (void)copy_cstr(explicit_path, sizeof(explicit_path), ".");
-  }
-
-  while (token_next(args, &arg_index, token, sizeof(token)) == XAIOS_OK) {
-    if (string_equal(token, "-name") == 1U) {
-      has_name_filter = 1;
-      if (token_next(args, &arg_index, pattern, sizeof(pattern)) != XAIOS_OK) {
-        return command_fail(output, output_capacity, output_bytes,
-                            "find: missing -name argument");
-      }
-      continue;
-    }
-    if (token[0] == '-') {
-      return command_fail(output, output_capacity, output_bytes,
-                          "find: unsupported option");
-    } else {
-      return command_fail(output, output_capacity, output_bytes,
-                          path_was_given == 0 ? "find: invalid path"
-                                              : "find: too many path arguments");
-    }
-  }
-  if (has_name_filter == 0) {
-    pattern[0] = '\0';
-  }
-
-  if (remote_path_resolve(g_remote_login_cwd, explicit_path, resolved,
-                         sizeof(resolved)) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes, "find: invalid path");
-  }
-  if (handle_find(resolved, pattern, output, output_capacity, output_bytes) !=
-      XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "find: cannot list");
-  }
-  return XAIOS_OK;
-}
-
-static xaios_status_t read_file_lines(const char *path, char *buffer,
+xaios_status_t read_file_lines(const char *path, char *buffer,
                                     uint64_t buffer_capacity, uint64_t *size) {
   if (path == 0 || buffer == 0 || size == 0 || buffer_capacity == 0U) {
     return XAIOS_ERR_INVALID;
@@ -1518,122 +836,6 @@ static xaios_status_t read_file_lines(const char *path, char *buffer,
   return XAIOS_OK;
 }
 
-static xaios_status_t handle_head_tail(const char *args, int is_head, char *output,
-                                     uint64_t output_capacity,
-                                     uint64_t *output_bytes) {
-  uint64_t arg_index = 0;
-  char token[XAIOS_XBFS_PATH_MAX];
-  char path_arg[XAIOS_XBFS_PATH_MAX];
-  uint64_t lines = 10U;
-  char resolved[XAIOS_XBFS_PATH_MAX];
-  char data[XAIOS_XBFS_MAX_FILE_BYTES];
-  uint64_t data_size = 0;
-
-  if (token_next(args, &arg_index, token, sizeof(token)) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes, "head/tail: missing path");
-  }
-  if (string_equal(token, "-n") == 1U) {
-    uint64_t parsed = 0;
-    if (token_next(args, &arg_index, token, sizeof(token)) != XAIOS_OK ||
-        parse_decimal_uint(token, &parsed) == 0U || parsed == 0U) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "head/tail: invalid -n argument");
-    }
-    lines = parsed;
-    if (token_next(args, &arg_index, path_arg, sizeof(path_arg)) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "head/tail: missing path");
-    }
-  } else if (string_starts_with(token, "-n") == 1U && token[2] != '\0') {
-    uint64_t parsed = 0;
-    if (parse_decimal_uint(token + 2U, &parsed) == 0U || parsed == 0U) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "head/tail: invalid -n argument");
-    }
-    lines = parsed;
-    if (token_next(args, &arg_index, path_arg, sizeof(path_arg)) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "head/tail: missing path");
-    }
-  } else {
-    if (copy_cstr(path_arg, sizeof(path_arg), token) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "head/tail: invalid path");
-    }
-    if (has_more_args(args, arg_index) != 0) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "head/tail: too many arguments");
-    }
-  }
-
-  if (has_more_args(args, arg_index) != 0) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "head/tail: too many arguments");
-  }
-
-  if (remote_path_resolve(g_remote_login_cwd, path_arg, resolved,
-                         sizeof(resolved)) != XAIOS_OK ||
-      read_file_lines(resolved, data, sizeof(data), &data_size) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes, "head/tail: cannot open");
-  }
-  if (data_size >= sizeof(data)) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "head/tail: file too large");
-  }
-  data[data_size] = '\0';
-
-  if (is_head == 1) {
-    if (data_size == 0U) {
-      return XAIOS_OK;
-    }
-    uint64_t line_count = 0;
-    for (uint64_t i = 0; i < data_size; ++i) {
-      if (data[i] == '\n') {
-        ++line_count;
-      }
-      if (line_count >= lines && data[i] == '\n') {
-        if (output_append_char(output, output_capacity, output_bytes, '\n') !=
-            XAIOS_OK) {
-          return command_fail(output, output_capacity, output_bytes,
-                             "head/tail: output too large");
-        }
-        break;
-      }
-      if (output_append_char(output, output_capacity, output_bytes, data[i]) !=
-          XAIOS_OK) {
-        return command_fail(output, output_capacity, output_bytes,
-                            "head/tail: output too large");
-      }
-    }
-    return XAIOS_OK;
-  }
-
-  uint64_t lines_seen = 0U;
-  uint64_t start = data_size;
-  if (data_size == 0U) {
-    return XAIOS_OK;
-  }
-  for (uint64_t i = data_size; i > 0U; --i) {
-    if (data[i - 1U] != '\n') {
-      continue;
-    }
-    ++lines_seen;
-    if (lines_seen >= lines) {
-      start = i;
-      break;
-    }
-  }
-  if (lines_seen < lines) {
-    start = 0U;
-  }
-  for (uint64_t i = start; i < data_size; ++i) {
-    if (output_append_char(output, output_capacity, output_bytes, data[i]) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "head/tail: output too large");
-    }
-  }
-  return XAIOS_OK;
-}
 #endif
 
 static xaios_status_t handle_pwd(char *output, uint64_t output_capacity,
@@ -3076,147 +2278,6 @@ static xaios_status_t handle_rmdir(const char *args, char *output,
                         "rmdir: missing operand");
   }
   output[0] = '\0';
-  return XAIOS_OK;
-}
-
-static xaios_status_t handle_sed(const char *args, char *output,
-                               uint64_t output_capacity,
-                               uint64_t *output_bytes) {
-  char expr[XAIOS_XBFS_PATH_MAX];
-  char path_arg[XAIOS_XBFS_PATH_MAX];
-  uint64_t arg_index = 0;
-  char resolved[XAIOS_XBFS_PATH_MAX];
-  char data[XAIOS_XBFS_MAX_FILE_BYTES];
-  uint64_t data_size = 0;
-  char result[XAIOS_XBFS_MAX_FILE_BYTES];
-  uint64_t result_len = 0;
-
-  if (token_next(args, &arg_index, expr, sizeof(expr)) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "sed: missing expression");
-  }
-  if (token_next(args, &arg_index, path_arg, sizeof(path_arg)) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "sed: missing file");
-  }
-  uint64_t expr_len = cstr_len(expr);
-  if (expr_len >= 2U &&
-      ((expr[0] == '\'' && expr[expr_len - 1U] == '\'') ||
-       (expr[0] == '"' && expr[expr_len - 1U] == '"'))) {
-    for (uint64_t i = 1U; i + 1U < expr_len; ++i) {
-      expr[i - 1U] = expr[i];
-    }
-    expr_len -= 2U;
-    expr[expr_len] = '\0';
-  }
-  if (expr[0] != 's' || expr[1] != '/') {
-    return command_fail(output, output_capacity, output_bytes,
-                        "sed: only s/// supported");
-  }
-  uint64_t slash2 = 0;
-  uint64_t slash3 = 0;
-  for (uint64_t i = 2; i < expr_len; ++i) {
-    if (expr[i] == '/') {
-      if (slash2 == 0) {
-        slash2 = i;
-      } else {
-        slash3 = i;
-        break;
-      }
-    }
-  }
-  if (slash2 == 0) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "sed: malformed expression");
-  }
-  char old_pat[128];
-  char new_pat[128];
-  uint64_t old_len = slash2 - 2U;
-  uint64_t new_len =
-      (slash3 == 0) ? (expr_len - slash2 - 1U) : (slash3 - slash2 - 1U);
-  if (old_len >= sizeof(old_pat) || new_len >= sizeof(new_pat)) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "sed: pattern too long");
-  }
-  for (uint64_t i = 0; i < old_len; ++i) {
-    old_pat[i] = expr[2U + i];
-  }
-  old_pat[old_len] = '\0';
-  for (uint64_t i = 0; i < new_len; ++i) {
-    new_pat[i] = expr[slash2 + 1U + i];
-  }
-  new_pat[new_len] = '\0';
-  int global = 0;
-  if (slash3 != 0 && slash3 + 1U < expr_len && expr[slash3 + 1U] == 'g') {
-    global = 1;
-  }
-  if (remote_path_resolve(g_remote_login_cwd, path_arg, resolved,
-                          sizeof(resolved)) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "sed: cannot open file");
-  }
-  if (xaiboot_fs_read(resolved, data, sizeof(data), &data_size) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "sed: read error");
-  }
-  if (data_size >= sizeof(data)) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "sed: file too large");
-  }
-  data[data_size] = '\0';
-  uint64_t line_start = 0;
-  while (line_start <= data_size) {
-    uint64_t line_end = line_start;
-    while (line_end < data_size && data[line_end] != '\n') {
-      ++line_end;
-    }
-    uint64_t line_len = line_end - line_start;
-    uint64_t src = 0;
-    while (src <= line_len) {
-      int match = 1;
-      if (old_len == 0) {
-        match = 0;
-      }
-      for (uint64_t k = 0; match != 0 && k < old_len; ++k) {
-        if (src + k >= line_len ||
-            data[line_start + src + k] != old_pat[k]) {
-          match = 0;
-        }
-      }
-      if (match != 0) {
-        for (uint64_t k = 0; k < new_len && result_len + 1U < sizeof(result);
-             ++k) {
-          result[result_len++] = new_pat[k];
-        }
-        src += old_len;
-        if (global == 0) {
-          while (src < line_len && result_len + 1U < sizeof(result)) {
-            result[result_len++] = data[line_start + src];
-            ++src;
-          }
-          break;
-        }
-      } else {
-        if (src < line_len && result_len + 1U < sizeof(result)) {
-          result[result_len++] = data[line_start + src];
-        }
-        ++src;
-      }
-    }
-    if (result_len + 1U < sizeof(result)) {
-      result[result_len++] = '\n';
-    }
-    if (line_end >= data_size) {
-      break;
-    }
-    line_start = line_end + 1U;
-  }
-  result[result_len] = '\0';
-  if (xaiboot_fs_write(resolved, result, result_len) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "sed: write error");
-  }
-  output_append(output, output_capacity, output_bytes, result);
   return XAIOS_OK;
 }
 
