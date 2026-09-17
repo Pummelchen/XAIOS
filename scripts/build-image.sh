@@ -835,6 +835,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/bpe_tokenizer.o
   $KERNEL_BUILD_DIR/engine_xai_fs.o
   $KERNEL_BUILD_DIR/engine_xai_fs_writer.o
+  $KERNEL_BUILD_DIR/engine_xai_fs_writer_util.o
   $KERNEL_BUILD_DIR/engine_sha256.o
   $KERNEL_BUILD_DIR/engine_sha256_accel.o
   $KERNEL_BUILD_DIR/engine_sha256_dispatch.o
@@ -1012,6 +1013,7 @@ compile_kernel "$ROOT_DIR/kernel/lib/string.c" "$KERNEL_BUILD_DIR/string.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/bpe_tokenizer.c" "$KERNEL_BUILD_DIR/bpe_tokenizer.o"
 compile_kernel "$ROOT_DIR/engine/src/xai_fs.c" "$KERNEL_BUILD_DIR/engine_xai_fs.o"
 compile_kernel "$ROOT_DIR/engine/src/xai_fs_writer.c" "$KERNEL_BUILD_DIR/engine_xai_fs_writer.o"
+compile_kernel "$ROOT_DIR/engine/src/xai_fs_writer_util.c" "$KERNEL_BUILD_DIR/engine_xai_fs_writer_util.o"
 compile_kernel "$ROOT_DIR/engine/src/sha256.c" "$KERNEL_BUILD_DIR/engine_sha256.o"
 # The accelerated compressor is the one file here that needs SIMD registers,
 # and it asks clang for the SHA2 instructions in that function alone rather
@@ -1021,7 +1023,6 @@ compile_kernel_simd "$ROOT_DIR/engine/src/sha256_accel.c" "$KERNEL_BUILD_DIR/eng
 compile_kernel "$ROOT_DIR/kernel/runtime/engine_sha256_dispatch.c" "$KERNEL_BUILD_DIR/engine_sha256_dispatch.o"
 compile_kernel "$ROOT_DIR/userspace/sshd/ssh_crypto.c" "$KERNEL_BUILD_DIR/kernel_ssh_crypto.o"
 compile_kernel "$ROOT_DIR/userspace/sshd/tweetnacl_subset.c" "$KERNEL_BUILD_DIR/kernel_tweetnacl_subset.o"
-
 KERNEL_RESPONSE_FILE="$KERNEL_BUILD_DIR/objects.rsp"
 printf '%s\n' "$KERNEL_OBJECTS" | while IFS= read -r object_path; do
   if [ "$object_path" != "" ]; then
@@ -1500,7 +1501,7 @@ if [ -n "$SSHD_CFLAGS_EXTRA" ]; then
 fi
 SSHD_RESPONSE_FILE="$INIT_BUILD_DIR/sshd-objects.rsp"
 : > "$SSHD_RESPONSE_FILE"
-for sshd_src in sshd.c sshd_audit.c sshd_rate_limit.c sshd_kex.c ssh_crypto.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
+for sshd_src in sshd.c sshd_audit.c sshd_rate_limit.c sshd_kex.c ssh_crypto.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_alt_screen.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
   sshd_obj="$INIT_BUILD_DIR/sshd-${sshd_src%.c}.o"
   sshd_opt=""
   if [ "$sshd_src" = "sshd.c" ] || [ "$sshd_src" = "sshd_audit.c" ] ||
@@ -1578,11 +1579,10 @@ done
   "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$USER_CONTROL_STORAGE_OBJ" "$USER_CONTROL_OPS_OBJ" \
   @"$SSHD_RESPONSE_FILE"
 set -- "$@" "/bin/sshd=$INIT_BUILD_DIR/sshd.elf"
-
 printf '%s\n' "Building userspace /bin/ssh child client ELF..."
 SSH_CLIENT_RESPONSE_FILE="$INIT_BUILD_DIR/ssh-client-objects.rsp"
 : > "$SSH_CLIENT_RESPONSE_FILE"
-for ssh_client_src in ssh.c ssh_client.c ssh_known_hosts.c ssh_crypto.c ssh_identity.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_connection.c; do
+for ssh_client_src in ssh.c ssh_client.c ssh_sftp.c ssh_known_hosts.c ssh_crypto.c ssh_identity.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_connection.c; do
   ssh_client_obj="$INIT_BUILD_DIR/ssh-client-${ssh_client_src%.c}.o"
   ssh_client_path="$ROOT_DIR/userspace/apps/$ssh_client_src"
   if [ "$ssh_client_src" != "ssh.c" ]; then

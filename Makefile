@@ -1472,7 +1472,7 @@ hosted-test: engine-cli
 	  kernel/storage/gpt.c kernel/storage/partition_device.c \
 	  kernel/storage/storage_admin.c kernel/fs/fat.c kernel/fs/fat_codec.c \
 	  kernel/fs/xai_fs_admin.c \
-	  engine/src/xai_fs.c engine/src/xai_fs_writer.c \
+	  engine/src/xai_fs.c engine/src/xai_fs_writer.c engine/src/xai_fs_writer_util.c \
 	  engine/src/sha256.c userspace/sshd/ssh_crypto.c \
 	  userspace/sshd/tweetnacl_subset.c \
 	  tests/storage/test_xai_fs_admin.c \
@@ -1573,7 +1573,7 @@ hosted-test: engine-cli
 	  -Iengine/include -Iengine/src -Iuserspace/include -Iuserspace/sshd \
 	  -Iuserspace/apps/terminal \
 	  -Ikernel/include engine/src/xai_fs.c \
-	  engine/src/xai_fs_writer.c engine/src/model_file.c \
+	  engine/src/xai_fs_writer.c engine/src/xai_fs_writer_util.c engine/src/model_file.c \
 	  engine/src/sha256.c \
 	  userspace/sshd/ssh_crypto.c userspace/sshd/tweetnacl_subset.c \
 	  tests/xai_fs/test_xai_fs_reader.c \

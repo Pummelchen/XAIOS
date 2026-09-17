@@ -400,7 +400,7 @@ fi
 printf '%s\n' "Building /bin/sshd..."
 SSHD_OBJS=""
 for sshd_src in sshd sshd_audit sshd_rate_limit sshd_kex ssh_crypto ssh_mlkem tweetnacl_subset ssh_protocol \
-    ssh_channel ssh_client_proxy ssh_host_key ssh_connection sftp_server \
+    ssh_channel ssh_alt_screen ssh_client_proxy ssh_host_key ssh_connection sftp_server \
     less_pager; do
   sshd_opt=""
   case "$sshd_src" in
@@ -462,7 +462,7 @@ SSHD_ARGS="/bin/sshd=$BUILD_DIR/sshd.elf"
 printf '%s\n' "Building /bin/ssh and /bin/scp..."
 SSH_CLIENT_OBJS=""
 for ssh_client_src in ssh ssh_client ssh_known_hosts ssh_crypto ssh_identity \
-    ssh_mlkem tweetnacl_subset ssh_protocol ssh_connection; do
+    ssh_mlkem tweetnacl_subset ssh_protocol ssh_connection ssh_sftp; do
   ssh_client_path="$ROOT_DIR/userspace/sshd/$ssh_client_src.c"
   [ "$ssh_client_src" = ssh ] && \
     ssh_client_path="$ROOT_DIR/userspace/apps/ssh.c"
