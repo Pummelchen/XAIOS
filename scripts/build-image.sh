@@ -660,7 +660,6 @@ fi
 compile_kernel_simd() {
   KERNEL_ALLOW_SIMD=1 compile_kernel "$1" "$2"
 }
-
 compile_kernel() {
   source_path="$1"
   object_path="$2"
@@ -681,7 +680,6 @@ compile_kernel() {
     -I"$ROOT_DIR/third_party/bearssl/inc" \
     -c "$source_path" -o "$object_path"
 }
-
 if [ "$TARGET_ARCH" = aarch64 ]; then
   ARCH_KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/entry.o
@@ -751,6 +749,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/smp_task_set.o
   $KERNEL_BUILD_DIR/initramfs.o
   $KERNEL_BUILD_DIR/xaiboot_fs.o
+  $KERNEL_BUILD_DIR/xbfs_state.o
   $KERNEL_BUILD_DIR/xbfs_node_codec.o
   $KERNEL_BUILD_DIR/xbfs_util.o
   $KERNEL_BUILD_DIR/fat.o
@@ -923,6 +922,7 @@ compile_kernel "$ROOT_DIR/kernel/runtime/entropy.c" "$KERNEL_BUILD_DIR/entropy.o
 compile_kernel "$ROOT_DIR/kernel/sched/smp_task_set.c" "$KERNEL_BUILD_DIR/smp_task_set.o"
 compile_kernel "$ROOT_DIR/kernel/fs/initramfs.c" "$KERNEL_BUILD_DIR/initramfs.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xaiboot_fs.c" "$KERNEL_BUILD_DIR/xaiboot_fs.o"
+compile_kernel "$ROOT_DIR/kernel/fs/xbfs_state.c" "$KERNEL_BUILD_DIR/xbfs_state.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_node_codec.c" "$KERNEL_BUILD_DIR/xbfs_node_codec.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_util.c" "$KERNEL_BUILD_DIR/xbfs_util.o"
 compile_kernel "$ROOT_DIR/kernel/fs/fat.c" "$KERNEL_BUILD_DIR/fat.o"

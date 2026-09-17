@@ -20,6 +20,36 @@
 #define FNV1A64_OFFSET UINT64_C(14695981039346656037)
 #define FNV1A64_PRIME UINT64_C(1099511628211)
 
+/* The geometry every on-disk version records.
+ *
+ * xbfs_state.c builds the mounted volume's geometry from these, so the values
+ * have to be visible in that translation unit as well as in xaiboot_fs.c. The
+ * XBFS_*_METADATA_SECTORS macros are deliberately repeated in xaiboot_fs.c:
+ * two text-scanning gates read them out of that file. The two copies are the
+ * same token sequence here, so an edit to one without the other is a
+ * macro-redefinition error under -Werror rather than a silent drift. */
+#define XBFS_VERSION 2U
+#define XBFS_METADATA_SECTORS UINT64_C(16)
+#define XBFS_DATA_SECTORS 96U
+#define XBFS_MAX_NODES 32U
+#define XBFS_V3_VERSION 3U
+#define XBFS_V3_METADATA_SECTORS 32U
+#define XBFS_V3_DATA_SECTORS 256U
+#define XBFS_V3_MAX_NODES 64U
+#define XBFS_V3_FILE_MAX_BLOCKS 16U
+#define XBFS_V4_VERSION 4U
+#define XBFS_V4_METADATA_SECTORS 384U
+#define XBFS_V4_DATA_SECTORS 4096U
+#define XBFS_V4_MAX_NODES 128U
+#define XBFS_V5_VERSION 5U
+#define XBFS_V5_METADATA_SECTORS 1280U
+#define XBFS_V5_DATA_SECTORS 8192U
+#define XBFS_V5_MAX_NODES 256U
+#define XBFS_V6_VERSION 6U
+#define XBFS_V6_METADATA_SECTORS 3584U
+#define XBFS_V6_MAX_NODES 1024U
+#define XBFS_V6_DATA_SECTORS 2097152U
+
 /* Node layout: the v3 through v5 on-disk node shapes, the in-memory node every
    version is converted into, and the sizes that shape them. xaiboot_fs.c keeps
    the XBFS_*_METADATA_SECTORS defines, which the version dispatch and the
@@ -186,5 +216,75 @@ void export_v4_node(xaios_xbfs_node_v4_t *legacy,
                     const xaios_xbfs_node_t *node);
 void export_legacy_node(xaios_xbfs_node_v3_t *legacy,
                         const xaios_xbfs_node_t *node);
+
+/* The mounted volume's geometry, owned by xbfs_state.c.
+ *
+ * These were seven `g_active_*` globals written in exactly five places, one
+ * per format (the v2..v6 `set_active_*` functions), and read in 26 functions.
+ * The values are what the version dispatch decides on the mount path, so the
+ * five writers collapse into one `select` and every reader goes through a
+ * getter. `get` exists for the functions that read three or more fields at
+ * once; the per-field getters keep a single-field call site mechanical. */
+typedef struct xaios_xbfs_geometry {
+  uint32_t metadata_sectors;
+  uint32_t max_nodes;
+  uint32_t file_max_blocks;
+  uint32_t data_sectors;
+  uint32_t version;
+  uint32_t path_max;
+  uint64_t max_file_bytes;
+} xbfs_geometry_t;
+
+/* Replace the five set_active_v* writers. Any version that is not v3..v6
+   selects the v2 geometry, which is what those writers' else branch did. */
+void xbfs_geometry_select(uint32_t version);
+uint32_t xbfs_geometry_metadata_sectors(void);
+uint32_t xbfs_geometry_max_nodes(void);
+uint32_t xbfs_geometry_file_max_blocks(void);
+uint64_t xbfs_geometry_max_file_bytes(void);
+uint32_t xbfs_geometry_data_sectors(void);
+uint32_t xbfs_geometry_version(void);
+uint32_t xbfs_geometry_path_max(void);
+void xbfs_geometry_get(xbfs_geometry_t *out);
+
+/* The filesystem's counters, owned by xbfs_state.c.
+ *
+ * One enum-indexed interface rather than twenty-three named globals: these are
+ * read from roughly forty functions, so a file cut cannot move them without
+ * one. `bump` is the common case, a counter that only ever increments; `add`
+ * covers the one site that folds in a total it already computed (delete_tree's
+ * node count). Nothing here is reset on a mount, so a caller that wants the
+ * since-test figures calls reset_all. */
+typedef enum {
+  XBFS_STAT_MOUNT = 0,
+  XBFS_STAT_FORMAT,
+  XBFS_STAT_BOOT_LOAD,
+  XBFS_STAT_WRITE,
+  XBFS_STAT_APPEND,
+  XBFS_STAT_APPEND_FALLBACK,
+  XBFS_STAT_READ,
+  XBFS_STAT_DELETE,
+  XBFS_STAT_COMMIT,
+  XBFS_STAT_ROLLBACK,
+  XBFS_STAT_REJECT,
+  XBFS_STAT_CHECKSUM_ERROR,
+  XBFS_STAT_ALLOCATION,
+  XBFS_STAT_FREE,
+  XBFS_STAT_REPLAY,
+  XBFS_STAT_JOURNAL_WRITE,
+  XBFS_STAT_MULTI_SECTOR_FILE,
+  XBFS_STAT_STATE_RECORD,
+  XBFS_STAT_RENAME,
+  XBFS_STAT_LIST,
+  XBFS_STAT_STAT,
+  XBFS_STAT_OPEN,
+  XBFS_STAT_CLOSE,
+  XBFS_STAT_COUNT
+} xbfs_stat_t;
+
+uint64_t xbfs_stat_get(xbfs_stat_t id);
+void xbfs_stat_bump(xbfs_stat_t id);
+void xbfs_stat_add(xbfs_stat_t id, uint64_t delta);
+void xbfs_stat_reset_all(void);
 
 #endif /* XAIOS_KERNEL_FS_XBFS_INTERNAL_H */
