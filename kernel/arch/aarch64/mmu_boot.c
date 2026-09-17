@@ -191,7 +191,9 @@ static void map_kernel_pages(uint64_t start, uint64_t end) {
   uint64_t table_end = a64mmu_align_up(end, L2_BLOCK_SIZE);
 
   for (uint64_t region = table_start; region < table_end; region += L2_BLOCK_SIZE) {
-    kassert(table_index < EARLY_KERNEL_L3_TABLES);
+    /* Out of L3 tables: stop rather than write past the array; the identity
+       blocks above already map these regions. */
+    if (table_index >= EARLY_KERNEL_L3_TABLES) break;
 
     uint64_t l1_index = (region >> 30) & 0x1ffU;
     uint64_t l2_index = (region >> 21) & 0x1ffU;

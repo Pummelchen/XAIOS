@@ -103,6 +103,7 @@ void boot_cpu_memory_bring_up(const xaios_boot_info_t *boot) {
 
   pmm_init(boot);
   vmm_init(boot);
+  klog_counters_ready();
   /* The firmware framebuffer, before anything draws on it again.
    *
    * Until translation was enabled, writing to it worked because firmware's

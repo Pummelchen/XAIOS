@@ -94,6 +94,31 @@ void klog_init(const xaios_boot_info_t *boot) {
   klog_console_set_log_output(1U);
 }
 
+/* The drop counters are only touched once the kernel is running on its own
+ * page tables, and this says when that is.
+ *
+ * `klog` is called from inside that transition -- `vmm_init` logs the line
+ * after it enables translation -- and on a VMware Fusion guest the access to
+ * `g_klog_contended_drops` there took a data abort: the kernel is placed high
+ * in RAM by that firmware, and the page holding the counters was not one the
+ * boot tables had made accessible yet by the time the line was written. QEMU
+ * places the kernel lower and never met it.
+ *
+ * Gating the counters rather than dropping them keeps what they are for. The
+ * lines lost during the transition itself are not counted, which is the honest
+ * reading: nothing was contending for a lock that early. From the moment the
+ * mappings are settled, every drop is counted and reported exactly as before.
+ */
+static uint64_t g_klog_counters_ready;
+
+void klog_counters_ready(void) {
+  __atomic_store_n(&g_klog_counters_ready, 1U, __ATOMIC_RELEASE);
+}
+
+static int klog_counters_armed(void) {
+  return __atomic_load_n(&g_klog_counters_ready, __ATOMIC_ACQUIRE) != 0U;
+}
+
 /* Set once, by the hart that is panicking, and never cleared.
  *
  * The panic path writes around `g_klog_lock` deliberately: it cannot take a
@@ -257,21 +282,25 @@ void klog(const char *fmt, ...) {
     /* Counted apart, because which context loses a line is the whole question
        the next sighting has to answer: a handler drop is the shortened wait
        working as designed, and a non-handler drop is this budget still being
-       wrong. */
-    (void)__atomic_add_fetch(&g_klog_contended_drops, 1U, __ATOMIC_RELAXED);
-    if (xaios_cpu_in_interrupt() != 0) {
-      (void)__atomic_add_fetch(&g_klog_drops_in_handler, 1U, __ATOMIC_RELAXED);
+       wrong. Not before the mappings are settled -- see klog_counters_ready. */
+    if (klog_counters_armed()) {
+      (void)__atomic_add_fetch(&g_klog_contended_drops, 1U, __ATOMIC_RELAXED);
+      if (xaios_cpu_in_interrupt() != 0) {
+        (void)__atomic_add_fetch(&g_klog_drops_in_handler, 1U, __ATOMIC_RELAXED);
+      }
+      (void)__atomic_add_fetch(
+          &g_klog_drops_masked,
+          xaios_interrupts_enabled() == 0 ? 1U : 0U, __ATOMIC_RELAXED);
     }
-    (void)__atomic_add_fetch(
-        &g_klog_drops_masked,
-        xaios_interrupts_enabled() == 0 ? 1U : 0U, __ATOMIC_RELAXED);
     return;
   }
 
   /* Said before the line that got through, while the lock is held, so a reader
      of the console knows the log is lossy and by how much. */
-  uint64_t lost = __atomic_exchange_n(&g_klog_contended_drops, 0U,
-                                      __ATOMIC_RELAXED);
+  uint64_t lost = 0U;
+  if (klog_counters_armed()) {
+    lost = __atomic_exchange_n(&g_klog_contended_drops, 0U, __ATOMIC_RELAXED);
+  }
   if (lost != 0U) {
     uint64_t in_handler = __atomic_exchange_n(&g_klog_drops_in_handler, 0U,
                                               __ATOMIC_RELAXED);

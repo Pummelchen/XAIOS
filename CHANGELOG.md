@@ -19,9 +19,101 @@ deferred; see the [project tracker](./wiki/Project-Tracker.md).
 Entries record what changed for someone *running* XAIOS. The commit history
 records how it was built.
 
-## Unreleased
+## Build 7 — 2026-09-17
 
-Landed since build 5 and not in any released image.
+**No source file is over 500 lines any more.** When this work started, 120
+tracked files were, the largest of them a 5,157-line network stack and a
+2,121-line build script; today the repository's own ratchet reports zero, and
+the longest file is exactly 500. Nothing about the system changed: this is a
+size limit met by moving code into modules beside it, verbatim, with the
+behaviour checked by the gates rather than assumed from a clean diff.
+
+The limit is enforced, not aspirational. `make docs-check` runs
+`check-file-size-budget.py` against a baseline file that listed every offender:
+a baselined file may not grow, a new file over the limit fails outright, and a
+baselined file that comes back under the limit must be removed from the list
+rather than left there. That last rule is what took the list from 120 to zero
+entries over the campaign instead of leaving it as a record of past sins.
+
+What made it tractable was the method rather than the effort. Extractions ran in
+parallel, one agent per file, none of them building anything: each reported the
+wiring its split needed, and the parent applied all of it in one pass and then
+ran one verification pass over the result. Every batch ended with `make
+compile-check` across all three architectures, a link of all three images, three
+QEMU boots, and the area gates.
+
+The gates earned their keep. A move that compiles and links can still panic the
+machine: an extraction of `early.c`'s AP startup did exactly that, was reverted,
+and landed only a dozen batches later once its seam had been reduced to four
+scalars reached through accessors. An extraction of the RISC-V MMU linked
+cleanly and then faulted on a null root, because it had renamed and thereby
+lost three public entry points; the redo kept the file-scope state whole and
+let the parent reach the root by address. Both are the reason every round ends
+with a boot gate per architecture touched rather than a link.
+
+Two public headers were split the same way, and the rule there was stricter than
+for code: `userspace/include/xaios_control.h` and
+`kernel/include/xaios/control_protocol.h` were cut into included sub-headers
+with every macro, typedef, wire value and declaration order intact. A header
+split that renames or reorders anything is an ABI change wearing a tidy-up's
+clothes.
+
+- **A VMware Fusion guest boots again.** Build 6's predecessor work made
+  `klog` count the lines it drops when another CPU holds the console lock, and
+  report them from the next line that gets through. On Fusion that report ran
+  from inside the memory-management transition -- `vmm_init` logs the line
+  after it enables translation -- and the first read of the new counter took a
+  data abort, so every Fusion boot stopped at the cyan screen while QEMU was
+  unaffected. Fusion places the kernel high in RAM; QEMU does not. The counters
+  are now armed only once the kernel is on its own page tables
+  (`klog_counters_ready`, called after `vmm_init`), which keeps the feature and
+  removes the fault: the lines lost during the transition itself are not
+  counted, and every drop after it is, exactly as before. Found by bisecting
+  the 333 commits since build 6 with an automated build-and-boot test, then
+  resolving the panic's `ELR` and `FAR` against the kernel's symbols -- the
+  faulting instruction was in `klog` and the address was the counter. The same
+  pass made the AArch64 boot mapper stop refining rather than write past its
+  L3 table array if a kernel span ever exceeds the 32 MiB the early tables
+  cover.
+
+**The VMware Fusion image builds again, and a stuck build now says so.**
+
+- **`make vmware-fusion-image` no longer hangs.** The chainloader step ran
+  GRUB's `grub-mkstandalone` inside a container, and that wrapper -- a compiled
+  program that shells out to `tar` and reads the result back through a pipe --
+  never returned on this host: a `docker run` of it sat for eighty minutes at
+  0.08s of CPU with the release build stopped behind it, no error, and nothing
+  printed to say where it was. The chainloader is now built with `grub-mkimage`
+  over a memdisk, which is what standalone passes to it anyway -- the same
+  modules, the same embedded config, the same output path -- and the container
+  is fed through a pipe rather than given bind mounts, because a `--volume` of
+  this tree stopped starting the container at all here. A release should not
+  depend on the host's file sharing layer behaving, and both docker runs are
+  now bounded, for the same reason the image build above them already was.
+
+Three build scripts went the same way as the C: `scripts/build-image.sh` from
+2,121 lines to 398, `scripts/build-riscv64-image.sh` from 741 to 63, and
+`scripts/build-vm-packages.sh` from 661 to 124, each by extracting verbatim
+blocks into `scripts/lib/*.sh` sourced in place. The proof there is mechanical
+rather than a diff: replacing each `source` line with the body of the file it
+sources reproduces the original byte for byte. The `Makefile` went from 1,656
+lines to 91 as eight `mk/*.mk` fragments, verified by comparing all 244 target
+definitions and all 315 `make -pn` entries before and after.
+
+Three repository checks read the text of the source they audit, and two of them
+had to be updated when the code they read moved: the x86 NUMA gate greps the
+IDT trap-gate idiom out of `early_idt.c` now, and the panic-register check reads
+the renderer from `panic_render.c`. The assertions are unchanged in both cases,
+and that is the point worth recording: those checks pin an implementation
+*location* as well as a property, so a split that moves the code must update
+them, and a split that does not move it must not.
+
+The wiring was where the mistakes were, not the moves: a `$CFLAGS` that did not
+exist in one builder, object lists appended to a compiler's `-o` line three
+times, a Makefile pattern that was a substring of another line, and the same
+object name meaning different things in different architecture branches. Every
+one was caught by a build and none by reading, which is why the campaign never
+trusted a diff alone.
 
 - **A real PCI virtio function's DMA is translated by the RISC-V IOMMU.** The
   queue rings a virtio PCI transport hands to a device are given an Sv39

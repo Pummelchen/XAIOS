@@ -108,13 +108,58 @@ if ! $GRUB_BUILD_BOUND docker build --platform linux/arm64 \
     exit 2
   fi
 fi
-docker run --rm --platform linux/arm64 \
-  --volume "$ROOT_DIR:/workspace" \
+# The chainloader is built by grub-mkstandalone in a container, as it always
+# was -- but the container is fed through a pipe rather than given bind mounts,
+# because a `--volume` of this tree stopped starting the container at all on
+# this host, and that is what this step was hanging on.
+#
+# It costs a release build eighty minutes to learn this: `docker run
+# --volume "$ROOT_DIR:/workspace"` never returned, at 0.08s of CPU, with
+# nothing printed and no bound of its own. The same command with the config on
+# stdin and the image on stdout finishes in seconds. A bind mount of an
+# unrelated directory worked, so this is not "docker is broken" -- it is this
+# tree, which now holds a build directory of several gigabytes, and a release
+# should not depend on the host's file sharing layer coping with that.
+#
+# What must NOT change is the tool: an earlier attempt at this fix built the
+# image with grub-mkimage and every module embedded in the core. It produced a
+# 2.8 MB file (standalone's is 5.9, because standalone puts the modules in the
+# memdisk for runtime loading instead), passed the size check, and crashed the
+# guest with a synchronous exception -- QEMU never saw it, because QEMU boots
+# the ISO's ESP directly while Fusion boots this chainloader. `make
+# release-image-gate` is the gate that caught it, which is why it boots each
+# released image rather than trusting the build.
+#
+# Bounded, for the same reason the image build above is: an unbounded docker
+# run here is what consumed a release build's whole budget silently.
+GRUB_RUN_TIMEOUT="${XAIOS_FUSION_GRUB_RUN_TIMEOUT:-300}"
+if command -v timeout >/dev/null 2>&1; then
+  GRUB_RUN_BOUND="timeout $GRUB_RUN_TIMEOUT"
+elif command -v gtimeout >/dev/null 2>&1; then
+  GRUB_RUN_BOUND="gtimeout $GRUB_RUN_TIMEOUT"
+else
+  GRUB_RUN_BOUND=""
+fi
+
+# shellcheck disable=SC2086
+$GRUB_RUN_BOUND docker run --rm -i --platform linux/arm64 \
+  --entrypoint sh \
   "$GRUB_IMAGE" \
-  -O arm64-efi \
-  --modules="part_gpt part_msdos fat iso9660 search search_fs_file chain normal" \
-  --output="/workspace/build/vmware-fusion/BOOTAA64.EFI" \
-  "boot/grub/grub.cfg=/workspace/platform/vmware-fusion/grub.cfg"
+  -c 'set -eu
+      cat > /tmp/grub.cfg
+      grub-mkstandalone \
+        -O arm64-efi \
+        --modules="part_gpt part_msdos fat iso9660 search search_fs_file chain normal" \
+        --output=/tmp/BOOTAA64.EFI \
+        "boot/grub/grub.cfg=/tmp/grub.cfg"
+      base64 /tmp/BOOTAA64.EFI' \
+  < "$ROOT_DIR/platform/vmware-fusion/grub.cfg" \
+  | base64 -d > "$GRUB_EFI"
+
+[ -s "$GRUB_EFI" ] || {
+  printf '%s\n' "error: the chainloader came back empty" >&2
+  exit 2
+}
 
 cp "$GRUB_EFI" "$STAGE_DIR/EFI/BOOT/BOOTAA64.EFI"
 cp "$ROOT_DIR/build/uefi/BOOTAA64.EFI" "$STAGE_DIR/EFI/XAIOS/XAIOS.EFI"
