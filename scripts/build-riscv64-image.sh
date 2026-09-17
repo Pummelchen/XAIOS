@@ -238,6 +238,11 @@ for app in $USER_APPS; do
     -I"$ROOT_DIR/userspace/include" \
     -c "$ROOT_DIR/userspace/lib/control_render_primitives.c" \
     -o "$BUILD_DIR/control-primitives-$app.o"
+  "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
+    -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/lib/control_render_system.c" \
+    -o "$BUILD_DIR/control-system-$app.o"
   # The screen framework, for programs that draw a screen.
   "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
     -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie -Os \
@@ -278,6 +283,7 @@ for app in $USER_APPS; do
     -o "$BUILD_DIR/$app.elf" "$BUILD_DIR/start-$app.o" "$BUILD_DIR/$app.o" \
     "$BUILD_DIR/lib-$app.o" "$BUILD_DIR/control-$app.o" \
     "$BUILD_DIR/control-primitives-$app.o" \
+    "$BUILD_DIR/control-system-$app.o" \
     "$BUILD_DIR/screen-$app.o" $EXTRA_OBJS
   APP_ARGS="$APP_ARGS /bin/$app=$BUILD_DIR/$app.elf"
 done
@@ -306,6 +312,8 @@ for app in $UTILITY_APPS; do
   "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
     -o "$BUILD_DIR/$app.elf" "$BUILD_DIR/start-xaios-shell.o" \
     "$BUILD_DIR/lib-xaios-shell.o" "$BUILD_DIR/control-xaios-shell.o" \
+    "$BUILD_DIR/control-primitives-xaios-shell.o" \
+    "$BUILD_DIR/control-system-xaios-shell.o" \
     "$BUILD_DIR/xutils-inflate.o" "$BUILD_DIR/xutils-$app.o"
   APP_ARGS="$APP_ARGS /bin/$app=$BUILD_DIR/$app.elf"
 done
@@ -361,6 +369,8 @@ if [ -f "$XAPT_BEARSSL" ] &&
   "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
     -o "$BUILD_DIR/xapt.elf" "$BUILD_DIR/start-xapt.o" \
     "$BUILD_DIR/lib-hello.o" "$BUILD_DIR/control-hello.o" \
+    "$BUILD_DIR/control-primitives-hello.o" \
+    "$BUILD_DIR/control-system-hello.o" \
     "$BUILD_DIR/xapt.o" "$BUILD_DIR/xapt_tls.o" \
     "$BUILD_DIR/xapt_trust_anchors.o" "$XAPT_BEARSSL"
   XAPT_ARGS="/bin/xapt=$BUILD_DIR/xapt.elf"
@@ -373,12 +383,12 @@ fi
 # stops at a setup prompt and there is nothing to log into.
 printf '%s\n' "Building /bin/sshd..."
 SSHD_OBJS=""
-for sshd_src in sshd sshd_audit ssh_crypto ssh_mlkem tweetnacl_subset ssh_protocol \
+for sshd_src in sshd sshd_audit sshd_rate_limit sshd_kex ssh_crypto ssh_mlkem tweetnacl_subset ssh_protocol \
     ssh_channel ssh_client_proxy ssh_host_key ssh_connection sftp_server \
     less_pager; do
   sshd_opt=""
   case "$sshd_src" in
-    sshd|sshd_audit) sshd_opt="-Os" ;;
+    sshd|sshd_audit|sshd_rate_limit|sshd_kex) sshd_opt="-Os" ;;
     *) sshd_opt="" ;;
   esac
   # shellcheck disable=SC2086
@@ -419,6 +429,8 @@ done
 "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
   -o "$BUILD_DIR/sshd.elf" "$BUILD_DIR/start-sshd.o" \
   "$BUILD_DIR/lib-hello.o" "$BUILD_DIR/control-hello.o" \
+  "$BUILD_DIR/control-primitives-hello.o" \
+  "$BUILD_DIR/control-system-hello.o" \
   "$BUILD_DIR/screen-hello.o" $SSHD_OBJS
 SSHD_ARGS="/bin/sshd=$BUILD_DIR/sshd.elf"
 

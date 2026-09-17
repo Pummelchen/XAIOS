@@ -76,6 +76,7 @@ USER_LIB_OBJ="$INIT_BUILD_DIR/xaios-user.o"
 USER_SCREEN_OBJ="$INIT_BUILD_DIR/xaios-screen.o"
 USER_CONTROL_OBJ="$INIT_BUILD_DIR/xaios-control-client.o"
 USER_CONTROL_PRIM_OBJ="$INIT_BUILD_DIR/xaios-control-primitives.o"
+USER_CONTROL_SYS_OBJ="$INIT_BUILD_DIR/xaios-control-system.o"
 USER_APPS="xaios-shell xaiosctl xapt nano xtop pong hello spin sysinfo systest smptest joinnest smpstress perfbench nettest netmqtest netsocktest lstm-xor sshtest mltest posix-shell agenttest clustertest xaios-setup"
 
 # Which end of a cluster this image is, and where its peer is.
@@ -1169,6 +1170,24 @@ printf '%s\n' "Building userspace C runtime..."
   -c "$ROOT_DIR/userspace/lib/control_render_primitives.c" \
   -o "$USER_CONTROL_PRIM_OBJ"
 
+# The system and status renderers, split out of the control client itself.
+"$CLANG" \
+  --target="$TARGET_TRIPLE" \
+  $USER_ARCH_CFLAGS \
+  -std=c99 \
+  -ffreestanding \
+  -fno-stack-protector \
+  -fno-builtin \
+  -fno-pic \
+  -fno-pie \
+  -Os \
+  -Wall \
+  -Wextra \
+  -Werror \
+  -I"$ROOT_DIR/userspace/include" \
+  -c "$ROOT_DIR/userspace/lib/control_render_system.c" \
+  -o "$USER_CONTROL_SYS_OBJ"
+
 # The screen framework: the grid, the present that writes only what
 # changed, and the key decoder. Linked into every program that draws a
 # screen, and into sshd, which runs every alternate-screen program through it.
@@ -1257,7 +1276,7 @@ for app in $USER_APPS; do
       -o "$XAPT_TRUST_OBJ"
     "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
       -o "$app_elf" "$USER_START_OBJ" "$USER_LIB_OBJ" \
-      "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$app_obj" "$XAPT_TLS_OBJ" "$XAPT_TRUST_OBJ" \
+      "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$app_obj" "$XAPT_TLS_OBJ" "$XAPT_TRUST_OBJ" \
       "$XAPT_BEARSSL"
   elif [ "$app" = "xaios-setup" ]; then
     # Setup writes the credential records sshd reads, so it hashes them with
@@ -1282,7 +1301,7 @@ for app in $USER_APPS; do
       -o "$app_elf" \
       "$USER_START_OBJ" \
       "$USER_LIB_OBJ" \
-      "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" \
+      "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" \
       "$app_obj" \
       "$SETUP_CRYPTO_OBJ" \
       "$SETUP_NACL_OBJ"
@@ -1294,7 +1313,7 @@ for app in $USER_APPS; do
       -o "$app_elf" \
       "$USER_START_OBJ" \
       "$USER_LIB_OBJ" \
-      "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" \
+      "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" \
       "$USER_SCREEN_OBJ" \
       "$app_obj"
   elif [ "$app" = "clustertest" ]; then
@@ -1362,7 +1381,7 @@ for app in $UTILITY_APPS; do
     -o "$app_elf" \
     "$USER_START_OBJ" \
     "$USER_LIB_OBJ" \
-    "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" \
+    "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" \
     "$USER_INFLATE_OBJ" \
     "$app_obj"
   set -- "$@" "/bin/$app=$app_elf"
@@ -1444,10 +1463,11 @@ if [ -n "$SSHD_CFLAGS_EXTRA" ]; then
 fi
 SSHD_RESPONSE_FILE="$INIT_BUILD_DIR/sshd-objects.rsp"
 : > "$SSHD_RESPONSE_FILE"
-for sshd_src in sshd.c sshd_audit.c ssh_crypto.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
+for sshd_src in sshd.c sshd_audit.c sshd_rate_limit.c sshd_kex.c ssh_crypto.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
   sshd_obj="$INIT_BUILD_DIR/sshd-${sshd_src%.c}.o"
   sshd_opt=""
-  if [ "$sshd_src" = "sshd.c" ] || [ "$sshd_src" = "sshd_audit.c" ]; then
+  if [ "$sshd_src" = "sshd.c" ] || [ "$sshd_src" = "sshd_audit.c" ] ||
+      [ "$sshd_src" = "sshd_rate_limit.c" ] || [ "$sshd_src" = "sshd_kex.c" ]; then
     sshd_opt="-Os"
   fi
   "$CLANG" \
@@ -1518,7 +1538,7 @@ done
   -o "$INIT_BUILD_DIR/sshd.elf" \
   "$USER_START_OBJ" \
   "$USER_LIB_OBJ" \
-  "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" \
+  "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" \
   @"$SSHD_RESPONSE_FILE"
 set -- "$@" "/bin/sshd=$INIT_BUILD_DIR/sshd.elf"
 

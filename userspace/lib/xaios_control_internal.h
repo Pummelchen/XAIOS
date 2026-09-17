@@ -45,4 +45,25 @@ int human_field_state(char *output, u64 capacity, u64 *offset, const char *key, 
 int json_envelope_begin(char *output, u64 capacity, u64 *offset, u64 request_id);
 int json_envelope_end(char *output, u64 capacity, u64 *offset);
 
+/*
+ * The system and status renderers, from control_render_system.c. They were the
+ * second group to leave xaios_control_client.c and are called by its reply
+ * dispatcher; "status" here is the observability family, with configuration,
+ * auth keys and storage left behind for later rounds.
+ */
+int render_version(const void *payload, int json, char *output, u64 capacity,
+                   u64 *offset, u64 request_id);
+int render_status(const void *payload, int json, char *output, u64 capacity,
+                  u64 *offset, u64 request_id);
+int render_health(const void *payload, int json, char *output, u64 capacity,
+                  u64 *offset, u64 request_id);
+int render_capabilities(const void *payload, int json, char *output,
+                        u64 capacity, u64 *offset, u64 request_id);
+int render_hardware(const void *payload, int json, char *output, u64 capacity,
+                    u64 *offset, u64 request_id);
+int render_metrics(const void *payload, int json, char *output, u64 capacity,
+                   u64 *offset, u64 request_id);
+int render_logs(const void *payload, u64 payload_length, int json, char *output,
+                u64 capacity, u64 *offset, u64 request_id);
+
 #endif /* XAIOS_USERSPACE_LIB_CONTROL_INTERNAL_H */
