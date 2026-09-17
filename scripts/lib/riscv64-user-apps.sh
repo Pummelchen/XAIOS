@@ -111,6 +111,16 @@ for app in $USER_APPS; do
     done
   fi
   if [ "$app" = "xaios-setup" ]; then
+    # The split halves of the setup application, linked into it.
+    for setup_module_src in xaios-setup-console xaios-setup-storage; do
+      "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
+        -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \
+        -fno-pie -Wall -Wextra -Werror \
+        -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/sshd" \
+        -c "$ROOT_DIR/userspace/apps/$setup_module_src.c" \
+        -o "$BUILD_DIR/$setup_module_src.o"
+      EXTRA_OBJS="$EXTRA_OBJS $BUILD_DIR/$setup_module_src.o"
+    done
     for setup_src in ssh_crypto ssh_crypto_symmetric tweetnacl_subset; do
       "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
         -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \

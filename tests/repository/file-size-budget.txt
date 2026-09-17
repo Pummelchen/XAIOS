@@ -3,21 +3,15 @@
 # number or removes a line; nothing here may grow.
 
 engine/src/packed.c 601
-kernel/arch/riscv64/entry.S 610
-kernel/arch/riscv64/fdt.c 613
 kernel/arch/x86_64/smp.c 568
 kernel/dev/virtio/virtio_transport.c 504
 kernel/fs/initramfs.c 552
-kernel/net/dhcpv6.c 609
-kernel/storage/gpt.c 625
 platform/qemu/run-qemu-aarch64.sh 558
 platform/qemu/run-qemu-riscv64.sh 535
 scripts/build-boot-media.sh 544
-tests/network/debian13-client-suite.sh 633
 tests/network/parallel-client-load.py 541
 tests/repository/check-code-scanning-contract.py 575
 tests/scripts/cluster_fault_relay.py 502
-tests/scripts/qemu-cluster-three-node-gate.py 608
 tests/scripts/qemu-cpu-matrix.py 559
 tests/scripts/qemu-freebsd-network-suite.py 598
 tests/scripts/qemu-installed-disk-gate.py 558
@@ -26,7 +20,5 @@ tests/scripts/qemu-power-loss-gate.py 522
 tests/scripts/qemu-readiness-gate.py 552
 tests/scripts/qemu-ssh-connection-rate-gate.py 544
 tests/scripts/qemu-sshd-audit-append-gate.py 602
-tests/scripts/vmware-fusion-load-soak.py 613
 tests/security/test_wt_quic_pkt.c 604
-userspace/apps/xaios-setup.c 633
 userspace/lib/xaios_screen.c 564

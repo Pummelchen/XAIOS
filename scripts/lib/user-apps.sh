@@ -242,6 +242,18 @@ for app in $USER_APPS; do
     SETUP_CRYPTO_OBJ="$INIT_BUILD_DIR/setup-ssh_crypto.o"
     SETUP_CRYPTO_SYMMETRIC_OBJ="$INIT_BUILD_DIR/setup-ssh_crypto_symmetric.o"
     SETUP_NACL_OBJ="$INIT_BUILD_DIR/setup-tweetnacl_subset.o"
+    # xaios-setup is split into translation units beside it for the file-size
+    # budget; they are linked into this app, not built as apps of their own.
+    SETUP_MODULE_OBJS=""
+    for setup_module_src in xaios-setup-console xaios-setup-storage; do
+      "$CLANG" --target="$TARGET_TRIPLE" $USER_ARCH_CFLAGS -std=c99 \
+        -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+        -Wall -Wextra -Werror \
+        -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/sshd" \
+        -c "$ROOT_DIR/userspace/apps/$setup_module_src.c" \
+        -o "$INIT_BUILD_DIR/$setup_module_src.o"
+      SETUP_MODULE_OBJS="$SETUP_MODULE_OBJS $INIT_BUILD_DIR/$setup_module_src.o"
+    done
     "$LD_LLD" \
       -nostdlib \
       -T "$ROOT_DIR/userspace/init/linker.ld" \
@@ -252,7 +264,7 @@ for app in $USER_APPS; do
       "$app_obj" \
       "$SETUP_CRYPTO_OBJ" \
       "$SETUP_CRYPTO_SYMMETRIC_OBJ" \
-      "$SETUP_NACL_OBJ"
+      "$SETUP_NACL_OBJ" $SETUP_MODULE_OBJS
   elif [ "$app" = "xaiosctl" ] ||
       [ "$app" = "xtop" ]; then
     "$LD_LLD" \

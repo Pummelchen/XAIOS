@@ -29,9 +29,8 @@
 #include <xaios_user.h>
 #include <xaios_control_client.h>
 #include <ssh_crypto.h>
+#include "xaios-setup-internal.h"
 
-#define SETUP_LINE_MAX 128U
-#define SETUP_OUTPUT_MAX 8192U
 /* Matches what sshd's parser accepts and what the development records use.
    A different figure here would produce credentials this system rejects. */
 #define SETUP_PBKDF2_ITERATIONS 200000U
@@ -52,122 +51,17 @@
    exist already, and nothing creates that one. */
 #define SETUP_PENDING_PATH "/state/setup-pending"
 
-static char g_output[SETUP_OUTPUT_MAX];
 static char g_pending[2048];
 static u64 g_pending_used;
 
-/* ------------------------------------------------------------------ text */
-
-static u64 text_length(const char *text) {
-  u64 length = 0ULL;
-  while (text[length] != '\0') ++length;
-  return length;
-}
-
-static void say(const char *text) {
-  (void)xaios_console_write(text, text_length(text));
-}
-
-static int text_equal(const char *a, const char *b) {
-  u64 i = 0ULL;
-  while (a[i] != '\0' && a[i] == b[i]) ++i;
-  return a[i] == '\0' && b[i] == '\0';
-}
-
-static void append(char *out, u64 capacity, u64 *offset, const char *text) {
-  for (u64 i = 0ULL; text[i] != '\0'; ++i) {
-    if (*offset + 1ULL >= capacity) return;
-    out[(*offset)++] = text[i];
-  }
-  out[*offset] = '\0';
-}
+/* ------------------------------------------------------------- collected */
 
 /* Collect one "key=value" line for the kernel to act on. */
 static void pending_add(const char *key, const char *value) {
-  append(g_pending, sizeof(g_pending), &g_pending_used, key);
-  append(g_pending, sizeof(g_pending), &g_pending_used, "=");
-  append(g_pending, sizeof(g_pending), &g_pending_used, value);
-  append(g_pending, sizeof(g_pending), &g_pending_used, "\n");
-}
-
-static void append_hex(char *out, u64 capacity, u64 *offset,
-                       const unsigned char *bytes, u64 count) {
-  static const char digits[] = "0123456789abcdef";
-  for (u64 i = 0ULL; i < count; ++i) {
-    if (*offset + 2ULL >= capacity) return;
-    out[(*offset)++] = digits[(bytes[i] >> 4) & 0x0FU];
-    out[(*offset)++] = digits[bytes[i] & 0x0FU];
-  }
-  out[*offset] = '\0';
-}
-
-static void append_u32(char *out, u64 capacity, u64 *offset, u32 value) {
-  char digits[12];
-  u32 count = 0U;
-  if (value == 0U) {
-    digits[count++] = '0';
-  }
-  while (value != 0U) {
-    digits[count++] = (char)('0' + (value % 10U));
-    value /= 10U;
-  }
-  while (count != 0U) {
-    if (*offset + 1ULL >= capacity) return;
-    out[(*offset)++] = digits[--count];
-  }
-  out[*offset] = '\0';
-}
-
-/* ----------------------------------------------------------------- input */
-
-/* Read one line. `mask` suppresses the echo, for a secret being typed in
-   front of whoever is standing there. Backspace is handled because a person
-   typing a password they cannot see will use it, and a setup routine that
-   ignores it produces an account whose password nobody knows. */
-static u64 read_line(char *buffer, u64 capacity, int mask) {
-  u64 length = 0ULL;
-  for (;;) {
-    char value = 0;
-    if (xaios_console_read(&value) != 1) {
-      /* Nothing waiting. There is no yield to make here -- sshd polls the
-         same ring the same way -- and setup is a short interactive program
-         with nothing else to run. */
-      continue;
-    }
-    if (value == '\r' || value == '\n') {
-      say("\n");
-      buffer[length] = '\0';
-      return length;
-    }
-    if (value == 0x7F || value == 0x08) {
-      if (length != 0ULL) {
-        --length;
-        if (!mask) say("\b \b");
-      }
-      continue;
-    }
-    /* Anything below space is a control code; a setup answer has none, and
-       letting them through puts escape sequences into a credential file. */
-    if (value < 0x20 || length + 1ULL >= capacity) continue;
-    buffer[length++] = value;
-    if (mask) {
-      say("*");
-    } else {
-      (void)xaios_console_write(&value, 1ULL);
-    }
-  }
-}
-
-static u64 prompt(const char *question, char *buffer, u64 capacity, int mask) {
-  say(question);
-  return read_line(buffer, capacity, mask);
-}
-
-/* A yes/no question where the default is the safe answer. */
-static int prompt_yes(const char *question) {
-  char answer[SETUP_LINE_MAX];
-  (void)prompt(question, answer, sizeof(answer), 0);
-  return answer[0] == 'y' || answer[0] == 'Y';
+  xsetup_append(g_pending, sizeof(g_pending), &g_pending_used, key);
+  xsetup_append(g_pending, sizeof(g_pending), &g_pending_used, "=");
+  xsetup_append(g_pending, sizeof(g_pending), &g_pending_used, value);
+  xsetup_append(g_pending, sizeof(g_pending), &g_pending_used, "\n");
 }
 
 /* --------------------------------------------------------- credentials */
@@ -206,12 +100,12 @@ static int build_credential(const char *secret, u64 secret_length, char *out,
                          hash) != 0) {
     return -1;
   }
-  append(out, capacity, offset, "pbkdf2-sha256:");
-  append_u32(out, capacity, offset, SETUP_PBKDF2_ITERATIONS);
-  append(out, capacity, offset, ":");
-  append_hex(out, capacity, offset, salt, sizeof(salt));
-  append(out, capacity, offset, ":");
-  append_hex(out, capacity, offset, hash, sizeof(hash));
+  xsetup_append(out, capacity, offset, "pbkdf2-sha256:");
+  xsetup_append_u32(out, capacity, offset, SETUP_PBKDF2_ITERATIONS);
+  xsetup_append(out, capacity, offset, ":");
+  xsetup_append_hex(out, capacity, offset, salt, sizeof(salt));
+  xsetup_append(out, capacity, offset, ":");
+  xsetup_append_hex(out, capacity, offset, hash, sizeof(hash));
   return 0;
 }
 
@@ -223,67 +117,28 @@ static int read_secret_twice(const char *first_prompt,
                              u64 capacity, u64 minimum, int digits_only) {
   char again[SETUP_LINE_MAX];
   for (;;) {
-    u64 length = prompt(first_prompt, out, capacity, 1);
+    u64 length = xsetup_prompt(first_prompt, out, capacity, 1);
     if (length < minimum) {
-      say("  Too short.\n");
+      xsetup_say("  Too short.\n");
       continue;
     }
     if (digits_only && !all_digits(out, length)) {
-      say("  Digits only.\n");
+      xsetup_say("  Digits only.\n");
       continue;
     }
-    u64 confirm_length = prompt(second_prompt, again, sizeof(again), 1);
+    u64 confirm_length = xsetup_prompt(second_prompt, again, sizeof(again), 1);
     if (confirm_length != length) {
-      say("  They did not match.\n");
+      xsetup_say("  They did not match.\n");
       continue;
     }
     u64 i = 0ULL;
     while (i < length && out[i] == again[i]) ++i;
     if (i != length) {
-      say("  They did not match.\n");
+      xsetup_say("  They did not match.\n");
       continue;
     }
     return (int)length;
   }
-}
-
-/* ------------------------------------------------------------- storage */
-
-/* Run one control command and leave its output in g_output.
-   `xaios_control_run` parses a whole command line, program name included --
-   it rejects anything whose first word is not "xaiosctl" -- so callers pass
-   the command from "storage" onwards and this supplies the rest. Discovered
-   by having the failure say what it was rather than assuming. */
-static int control(const char *command) {
-  char line[512];
-  u64 offset = 0ULL;
-  u64 size = 0ULL;
-  g_output[0] = '\0';
-  append(line, sizeof(line), &offset, "xaiosctl ");
-  append(line, sizeof(line), &offset, command);
-  /* As an administrator, and saying who is asking.
-
-     xaios_control_run runs as "local-observer" with the observer role, which
-     can read but cannot partition a disk -- and the actor is not something a
-     --principal flag sets: that flag names the principal being *managed* by
-     an auth command, which is a different field entirely. Passing it and
-     expecting the install to be authorised is how this first failed, with the
-     client reporting a missing principal for a command that carried one.
-
-     "setup" is the actor recorded in the audit trail, which is what should
-     appear against a partition table written before the machine had a
-     person. */
-  int result = xaios_control_run_as(line, XAIOS_CONTROL_ROLE_ADMIN, "setup",
-                                    g_output, sizeof(g_output), &size);
-  return result;
-}
-
-static void show_disks(void) {
-  if (control("storage device list") != 0) {
-    say("  Could not list the disks in this machine.\n");
-    return;
-  }
-  say(g_output);
 }
 
 /* ---------------------------------------------------------------- steps */
@@ -294,25 +149,25 @@ static void step_account(void) {
   char record[512];
   u64 offset = 0ULL;
 
-  say("\n-- Account --\n"
-      "The account you will log in with, on this console and over SSH.\n\n");
+  xsetup_say("\n-- Account --\n"
+             "The account you will log in with, on this console and over SSH.\n\n");
   for (;;) {
-    u64 length = prompt("Username: ", username, sizeof(username), 0);
+    u64 length = xsetup_prompt("Username: ", username, sizeof(username), 0);
     if (username_valid(username, length)) break;
-    say("  Use lower-case letters, digits, - or _, up to 32 characters.\n");
+    xsetup_say("  Use lower-case letters, digits, - or _, up to 32 characters.\n");
   }
 
-  say("\nPasswords are not shown as you type them, and must be at least\n"
-      "eight characters.\n\n");
+  xsetup_say("\nPasswords are not shown as you type them, and must be at least\n"
+             "eight characters.\n\n");
   int length = read_secret_twice("Password: ", "Repeat password: ", password,
                                  sizeof(password), SETUP_PASSWORD_MIN, 0);
 
-  append(record, sizeof(record), &offset, username);
-  append(record, sizeof(record), &offset, ":");
+  xsetup_append(record, sizeof(record), &offset, username);
+  xsetup_append(record, sizeof(record), &offset, ":");
   if (length <= 0 ||
       build_credential(password, (u64)length, record, sizeof(record),
                        &offset) != 0) {
-    say("\nCould not create the credential. The account was not made.\n");
+    xsetup_say("\nCould not create the credential. The account was not made.\n");
     return;
   }
 
@@ -322,7 +177,7 @@ static void step_account(void) {
 
   pending_add("user", record);
   for (u64 i = 0ULL; i < sizeof(record); ++i) record[i] = '\0';
-  say("\nAccount created.\n");
+  xsetup_say("\nAccount created.\n");
 }
 
 static void step_pin(void) {
@@ -330,32 +185,32 @@ static void step_pin(void) {
   char record[512];
   u64 offset = 0ULL;
 
-  say("\n-- Quick login --\n"
-      "A six digit PIN for this console only. It is never accepted over SSH,\n"
-      "and the prompt that takes it is rate limited, because six digits is a\n"
-      "small enough space to try exhaustively otherwise.\n\n");
-  if (!prompt_yes("Set a quick login PIN? [y/N]: ")) {
-    say("No PIN set. The password is the only way in.\n");
+  xsetup_say("\n-- Quick login --\n"
+             "A six digit PIN for this console only. It is never accepted over SSH,\n"
+             "and the prompt that takes it is rate limited, because six digits is a\n"
+             "small enough space to try exhaustively otherwise.\n\n");
+  if (!xsetup_prompt_yes("Set a quick login PIN? [y/N]: ")) {
+    xsetup_say("No PIN set. The password is the only way in.\n");
     return;
   }
 
   int length = read_secret_twice("PIN (6 digits): ", "Repeat PIN: ", pin,
                                  sizeof(pin), SETUP_PIN_DIGITS, 1);
   if (length != (int)SETUP_PIN_DIGITS) {
-    say("A PIN is exactly six digits. None was set.\n");
+    xsetup_say("A PIN is exactly six digits. None was set.\n");
     return;
   }
   if (build_credential(pin, (u64)length, record, sizeof(record), &offset) !=
       0) {
-    say("Could not create the PIN.\n");
+    xsetup_say("Could not create the PIN.\n");
     return;
   }
-  append(record, sizeof(record), &offset, "\n");
+  xsetup_append(record, sizeof(record), &offset, "\n");
   for (u64 i = 0ULL; i < sizeof(pin); ++i) pin[i] = '\0';
 
   pending_add("pin", record);
   for (u64 i = 0ULL; i < sizeof(record); ++i) record[i] = '\0';
-  say("Quick login set.\n");
+  xsetup_say("Quick login set.\n");
 }
 
 /* Which background services this machine starts.
@@ -369,18 +224,18 @@ static void step_pin(void) {
    Written as an enabled list, so a service added later is off until a machine
    is told to run it rather than appearing on machines already in service. */
 static void step_services(void) {
-  say("\n-- Background services --\n"
-      "The console is always available. What is optional is whether this\n"
-      "machine answers on the network.\n\n");
-  if (prompt_yes("Allow logging in over SSH? [Y/n]: ") ||
-      !prompt_yes("Are you sure you want SSH off? [y/N]: ")) {
+  xsetup_say("\n-- Background services --\n"
+             "The console is always available. What is optional is whether this\n"
+             "machine answers on the network.\n\n");
+  if (xsetup_prompt_yes("Allow logging in over SSH? [Y/n]: ") ||
+      !xsetup_prompt_yes("Are you sure you want SSH off? [y/N]: ")) {
     pending_add("services", "ssh");
-    say("Remote access enabled.\n");
+    xsetup_say("Remote access enabled.\n");
     return;
   }
   pending_add("services", "");
-  say("Remote access off. The console will be the only way into this\n"
-      "machine, so do not lose access to it.\n");
+  xsetup_say("Remote access off. The console will be the only way into this\n"
+             "machine, so do not lose access to it.\n");
 }
 
 /* Skipping the login prompt on this machine.
@@ -395,30 +250,30 @@ static void step_services(void) {
    local console only, which is the one an attacker has to be present to
    use. */
 static void step_autologin(void) {
-  say("\n-- Automatic login --\n"
-      "This machine can skip the console login prompt and open a shell when\n"
-      "it finishes booting, with its background services started.\n\n"
-      "Anyone who can reach the keyboard then has that shell, without the\n"
-      "password or the PIN. SSH is unaffected and still authenticates.\n\n");
-  if (!prompt_yes("Log in automatically on this console? [y/N]: ")) {
-    say("The login prompt stays. This is the safer answer.\n");
+  xsetup_say("\n-- Automatic login --\n"
+             "This machine can skip the console login prompt and open a shell when\n"
+             "it finishes booting, with its background services started.\n\n"
+             "Anyone who can reach the keyboard then has that shell, without the\n"
+             "password or the PIN. SSH is unaffected and still authenticates.\n\n");
+  if (!xsetup_prompt_yes("Log in automatically on this console? [y/N]: ")) {
+    xsetup_say("The login prompt stays. This is the safer answer.\n");
     return;
   }
   pending_add("autologin", "yes");
-  say("Automatic login enabled. The password and PIN still work over SSH and\n"
-      "after logging out.\n");
+  xsetup_say("Automatic login enabled. The password and PIN still work over SSH and\n"
+             "after logging out.\n");
 }
 
 static void step_identity(void) {
   char hostname[SETUP_LINE_MAX];
 
-  say("\n-- Name --\n"
-      "What this machine calls itself. It appears on the login prompt, so a\n"
-      "person in front of a rack can tell which machine they are typing at.\n\n");
-  u64 length = prompt("Hostname [xaios]: ", hostname, sizeof(hostname), 0);
+  xsetup_say("\n-- Name --\n"
+             "What this machine calls itself. It appears on the login prompt, so a\n"
+             "person in front of a rack can tell which machine they are typing at.\n\n");
+  u64 length = xsetup_prompt("Hostname [xaios]: ", hostname, sizeof(hostname), 0);
   if (length != 0ULL) {
     if (!username_valid(hostname, length)) {
-      say("  Use lower-case letters, digits, - or _. Keeping xaios.\n");
+      xsetup_say("  Use lower-case letters, digits, - or _. Keeping xaios.\n");
     } else {
       pending_add("hostname", hostname);
     }
@@ -428,179 +283,55 @@ static void step_identity(void) {
      address by DHCP and has no static configuration to write, so a question
      here would be a question whose answer nothing reads -- worse than not
      asking, because it would look like it had been set. */
-  say("\n-- Network --\n");
+  xsetup_say("\n-- Network --\n");
   u32 address = xaios_net_local_ipv4();
   if (address == 0U) {
-    say("No IPv4 address yet. XAIOS asks for one by DHCP as it comes up;\n"
-        "if this machine needs a fixed address, that is set on your network\n"
-        "rather than here.\n");
+    xsetup_say("No IPv4 address yet. XAIOS asks for one by DHCP as it comes up;\n"
+               "if this machine needs a fixed address, that is set on your network\n"
+               "rather than here.\n");
   } else {
-    say("Address taken by DHCP. XAIOS has no static configuration to set\n"
-        "here; a fixed address is a reservation on your network.\n");
+    xsetup_say("Address taken by DHCP. XAIOS has no static configuration to set\n"
+               "here; a fixed address is a reservation on your network.\n");
   }
-}
-
-static void step_install(void) {
-  char target[SETUP_LINE_MAX];
-  char source[SETUP_LINE_MAX];
-  char confirmation[SETUP_LINE_MAX];
-  char command[512];
-  u64 offset = 0ULL;
-
-  say("\n-- Install --\n"
-      "The disks this machine has:\n\n");
-  show_disks();
-
-  say("\nInstalling erases the disk you choose, completely.\n"
-      "The disk you booted from cannot be chosen.\n\n");
-  if (prompt("Disk to install onto (blank to cancel): ", target,
-             sizeof(target), 0) == 0ULL) {
-    say("Nothing was installed.\n");
-    return;
-  }
-
-  offset = 0ULL;
-  append(command, sizeof(command), &offset, "storage partition verify ");
-  append(command, sizeof(command), &offset, target);
-  if (control(command) != 0) {
-    say("\nThat disk could not be read. Nothing was installed.\n");
-    return;
-  }
-  say("\n");
-  say(g_output);
-
-  say("\nThe disk's own identity is shown above as disk_guid. Typing it is\n"
-      "what confirms this: it cannot be guessed, so the disk has to have\n"
-      "been looked at.\n\n");
-  if (prompt("disk_guid: ", confirmation, sizeof(confirmation), 0) == 0ULL) {
-    say("Nothing was installed.\n");
-    return;
-  }
-  /* The partition this machine booted, which is what an install copies. The
-     kernel records it because only the kernel knows it, and a person should
-     not have to work it out from a list of block devices. */
-  char boot_esp[SETUP_LINE_MAX];
-  int esp_length = xaios_read_file("/state/boot-esp", boot_esp,
-                                   sizeof(boot_esp) - 1U);
-  u64 esp_used = 0ULL;
-  if (esp_length > 0) {
-    while (esp_used < (u64)esp_length && boot_esp[esp_used] > 0x20) ++esp_used;
-  }
-  boot_esp[esp_used] = '\0';
-
-  if (esp_used != 0ULL) {
-    say("\nCopying from ");
-    say(boot_esp);
-    say(", the partition this machine booted.\n");
-    say("Press enter to accept it, or name another.\n\n");
-  } else {
-    say("\nThis machine did not boot from an EFI System Partition, so there\n"
-        "is nothing here to copy. An install needs media that has one.\n\n");
-  }
-  u64 typed = prompt("EFI partition to copy from: ", source, sizeof(source), 0);
-  if (typed == 0ULL) {
-    if (esp_used == 0ULL) {
-      say("Nothing was installed.\n");
-      return;
-    }
-    for (u64 i = 0ULL; i <= esp_used; ++i) source[i] = boot_esp[i];
-  }
-
-  offset = 0ULL;
-  append(command, sizeof(command), &offset, "storage install ");
-  append(command, sizeof(command), &offset, target);
-  append(command, sizeof(command), &offset, " from ");
-  append(command, sizeof(command), &offset, source);
-  append(command, sizeof(command), &offset, " --confirm-device ");
-  append(command, sizeof(command), &offset, confirmation);
-  append(command, sizeof(command), &offset, " --operation-id 1");
-
-  say("\nInstalling. This writes the partition table, formats the EFI\n"
-      "partition and copies the system.\n\n");
-  if (control(command) != 0) {
-    say(g_output);
-    say("\nThe install did not finish. Nothing on the target disk should be\n"
-        "relied on; run setup again.\n");
-    return;
-  }
-  say(g_output);
-  say("\nInstalled.\n\n"
-      "Power the machine off, remove the medium you booted from, and start\n"
-      "it again. Setup runs once more on that first boot to make the account,\n"
-      "on the disk that will keep it.\n");
 }
 
 /* ----------------------------------------------------------------- main */
 
-/* Whether there is anywhere to install to.
-
-   `storage device list` prints one "device=" line per device with a
-   "read_only=" field on it. A read-only device is the medium being booted
-   from, which is never an install target, so a writable one is what makes the
-   question worth asking. Counted from the rendered output rather than
-   guessed: the answer differs between a live stick, a netbooted machine and
-   an installed one, and getting it wrong offers to erase the wrong thing.
-
-   Offering the choice is all this decides. Which disk, and whether to go
-   ahead, are the operator's, and install_to_disk refuses the disk it is
-   reading from however this answers. */
-static int install_is_possible(void) {
-  if (control("storage device list") != 0) {
-    /* Say so rather than going quietly to account setup. A machine that could
-       have been installed and was never offered the choice looks identical to
-       one that had no disk, and the person in front of it cannot tell which
-       happened. */
-    say("\nThe disks in this machine could not be listed, so installing is\n"
-        "not offered here. ");
-    say(g_output[0] != '\0' ? g_output : "The storage service gave no reason.\n");
-    return 0;
-  }
-  u64 writable = 0ULL;
-  for (u64 i = 0ULL; g_output[i] != '\0'; ++i) {
-    if (g_output[i] != 'r') continue;
-    const char *marker = "read_only=0";
-    u64 j = 0ULL;
-    while (marker[j] != '\0' && g_output[i + j] == marker[j]) ++j;
-    if (marker[j] == '\0') ++writable;
-  }
-  return writable != 0ULL ? 1 : 0;
-}
-
 int main(void) {
-  say("\n"
-      "=====================================================\n"
-      "  XAIOS setup\n"
-      "=====================================================\n\n"
-      "This machine has no account yet, so nobody can log in to it.\n"
-      "Setting one up takes a minute and happens once.\n");
+  xsetup_say("\n"
+             "=====================================================\n"
+             "  XAIOS setup\n"
+             "=====================================================\n\n"
+             "This machine has no account yet, so nobody can log in to it.\n"
+             "Setting one up takes a minute and happens once.\n");
 
-  int can_install = install_is_possible();
+  int can_install = xsetup_install_is_possible();
   if (!can_install) {
-    say("\nNo disk to install onto was found, so this machine is being set up\n"
-        "to run as it booted.\n");
+    xsetup_say("\nNo disk to install onto was found, so this machine is being set up\n"
+               "to run as it booted.\n");
   }
   if (can_install) {
     char choice[SETUP_LINE_MAX];
-    say("\nThis system is running from the medium you booted, and there is a\n"
-        "disk in the machine.\n\n"
-        "  1) Run from this medium\n"
-        "     Nothing is written to any disk. Anything you change is lost\n"
-        "     when the machine is turned off.\n\n"
-        "  2) Install onto a disk\n"
-        "     Erases a disk you choose, and puts XAIOS on it to stay.\n\n");
+    xsetup_say("\nThis system is running from the medium you booted, and there is a\n"
+               "disk in the machine.\n\n"
+               "  1) Run from this medium\n"
+               "     Nothing is written to any disk. Anything you change is lost\n"
+               "     when the machine is turned off.\n\n"
+               "  2) Install onto a disk\n"
+               "     Erases a disk you choose, and puts XAIOS on it to stay.\n\n");
     for (;;) {
-      (void)prompt("Choose [1/2]: ", choice, sizeof(choice), 0);
-      if (text_equal(choice, "1")) break;
-      if (text_equal(choice, "2")) {
-        step_install();
-        say("\nSetup finished.\n\n");
+      (void)xsetup_prompt("Choose [1/2]: ", choice, sizeof(choice), 0);
+      if (xsetup_text_equal(choice, "1")) break;
+      if (xsetup_text_equal(choice, "2")) {
+        xsetup_step_install();
+        xsetup_say("\nSetup finished.\n\n");
         xaios_exit(0);
         return 0;
       }
-      say("  Answer 1 or 2.\n");
+      xsetup_say("  Answer 1 or 2.\n");
     }
-    say("\nRunning from this medium. The account below lasts until the\n"
-        "machine is turned off.\n");
+    xsetup_say("\nRunning from this medium. The account below lasts until the\n"
+               "machine is turned off.\n");
   }
 
   step_identity();
@@ -613,7 +344,7 @@ int main(void) {
      saved before this point, so a setup that is interrupted leaves the
      machine exactly as it was rather than half-configured. */
   if (g_pending_used == 0ULL) {
-    say("\nNothing to save. This machine still has no account.\n\n");
+    xsetup_say("\nNothing to save. This machine still has no account.\n\n");
     xaios_exit(0);
     return 0;
   }
@@ -621,13 +352,13 @@ int main(void) {
      failure. Reading it as "non-zero means it went wrong" reported every
      successful save as a failure while the save had in fact happened. */
   if (xaios_write_file(SETUP_PENDING_PATH, g_pending) < 0) {
-    say("\nCould not save what you entered, so none of it was applied.\n\n");
+    xsetup_say("\nCould not save what you entered, so none of it was applied.\n\n");
     xaios_exit(1);
     return 1;
   }
   for (u64 i = 0ULL; i < sizeof(g_pending); ++i) g_pending[i] = '\0';
 
-  say("\nSetup finished. The login prompt follows.\n\n");
+  xsetup_say("\nSetup finished. The login prompt follows.\n\n");
   xaios_exit(0);
   return 0;
 }

@@ -66,7 +66,7 @@ uint64_t riscv64_hart_satp(uint32_t cpu_id);
    and called once the first secondaries are online. */
 void riscv64_tlb_shootdown_self_test(void);
 
-/* Where a secondary hart lands once SBI has started it, defined by entry.S. */
+/* Where a secondary hart lands once SBI has started it, defined by entry_helpers.S. */
 extern char riscv64_secondary_entry[];
 
 /* Declared here rather than through a public klog header, which is what the

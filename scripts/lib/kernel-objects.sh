@@ -261,6 +261,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/crc32.o
   $KERNEL_BUILD_DIR/inflate.o
   $KERNEL_BUILD_DIR/gpt.o
+  $KERNEL_BUILD_DIR/gpt_write.o
   $KERNEL_BUILD_DIR/partition_device.o
   $KERNEL_BUILD_DIR/storage_admin.o
   $KERNEL_BUILD_DIR/storage_admin_table.o
@@ -324,6 +325,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/ndp_cache.o
   $KERNEL_BUILD_DIR/ndp_proto.o
   $KERNEL_BUILD_DIR/dhcpv6.o
+  $KERNEL_BUILD_DIR/dhcpv6_codec.o
   $KERNEL_BUILD_DIR/socket_buffer.o
   $KERNEL_BUILD_DIR/routing.o
   $KERNEL_BUILD_DIR/dns.o

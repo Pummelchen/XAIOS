@@ -60,7 +60,7 @@ extern void riscv64_trap_entry(void);
 static uint64_t g_plic_base;
 static const void *g_device_tree;
 static uint64_t g_trap_counts[16];
-/* The masked window in entry.S; a trap taken between these two addresses is a
+/* The masked window in entry_helpers.S; a trap taken between these two addresses is a
    bug in that mask rather than a fault to survive. */
 extern char riscv64_sscratch_window_begin[];
 extern char riscv64_sscratch_window_end[];

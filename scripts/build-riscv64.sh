@@ -221,8 +221,11 @@ compile() {
 }
 
 compile "$ROOT_DIR/kernel/arch/riscv64/entry.S"
+compile "$ROOT_DIR/kernel/arch/riscv64/entry_helpers.S"
 compile "$ROOT_DIR/kernel/arch/riscv64/sbi.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/fdt.c"
+compile "$ROOT_DIR/kernel/arch/riscv64/fdt_lookup.c"
+compile "$ROOT_DIR/kernel/arch/riscv64/fdt_intc.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/boot_info.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/mmu.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/mmu_tlb.c"
