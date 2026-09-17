@@ -44,6 +44,8 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   $KERNEL_BUILD_DIR/power.o
   $KERNEL_BUILD_DIR/watchdog.o
   $KERNEL_BUILD_DIR/smmu.o
+  $KERNEL_BUILD_DIR/mmu_boot.o
+  $KERNEL_BUILD_DIR/mmu_user.o
   $KERNEL_BUILD_DIR/pci.o
   $KERNEL_BUILD_DIR/gic.o
   $KERNEL_BUILD_DIR/gic_its.o
@@ -70,6 +72,7 @@ else
   $KERNEL_BUILD_DIR/early_irq.o
   $KERNEL_BUILD_DIR/early_gdt.o
   $KERNEL_BUILD_DIR/early_platform.o
+  $KERNEL_BUILD_DIR/early_timer_discover.o
   $KERNEL_BUILD_DIR/early_exception.o
   $KERNEL_BUILD_DIR/engine_packed.o
   $KERNEL_BUILD_DIR/timer.o
@@ -201,6 +204,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/cpu_ai_manifest.o
   $KERNEL_BUILD_DIR/cpu_ai_fixture.o
   $KERNEL_BUILD_DIR/ai_kernels.o
+  $KERNEL_BUILD_DIR/ai_kernels_quant.o
+  $KERNEL_BUILD_DIR/ai_kernels_matmul.o
   $KERNEL_BUILD_DIR/paged_kv_cache.o
   $KERNEL_BUILD_DIR/inference_batcher.o
   $KERNEL_BUILD_DIR/inference_preempt.o

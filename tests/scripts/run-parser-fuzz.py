@@ -53,7 +53,7 @@ def main() -> int:
         "sftp": [
             "-DXAIOS_LIBFUZZER=1", "-Iuserspace/include",
             "-Iuserspace/sshd", "-Iuserspace/apps/terminal", "-Ikernel/include",
-            "userspace/sshd/sftp_server.c", "tests/storage/test_sftp_large.c",
+            "userspace/sshd/sftp_server.c", "userspace/sshd/sftp_server_file.c", "userspace/sshd/sftp_server_dir.c", "tests/storage/test_sftp_large.c",
         ],
     }
     for name, sources in targets.items():

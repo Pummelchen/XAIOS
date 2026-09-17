@@ -21,6 +21,7 @@
 #include "sshd_console_ui.h"
 #include "sshd_config.h"
 #include "sshd_console_session.h"
+#include "sshd_connection_support.h"
 
 static sshd_stats_t g_server_stats;
 xaios_admin_config_user_t g_runtime_config;
@@ -80,31 +81,6 @@ int sshd_read_exact_file(const char *path, void *buffer, uint64_t size) {
    path that updates them. */
 uint32_t sshd_active_connections(void) {
   return __atomic_load_n(&g_server_stats.active_connections, __ATOMIC_ACQUIRE);
-}
-
-/* The reason the connection currently being serviced is giving up.
- *
- * sshd is one thread and process_connection runs for one connection at a
- * time; the walk reads this immediately after the call that set it, so one
- * slot is the whole requirement. Cleared at the top of every connection's
- * turn, so a reason can never be attributed to the wrong close. */
-static const char *g_close_reason;
-
-static int close_because(const char *reason) {
-  g_close_reason = reason;
-  return -1;
-}
-
-/* ---- Timer ---- */
-static uint64_t timer_now(void) {
-  return xaios_clock_nanos();
-}
-
-static int verify_ipv4_ready(void) {
-  /* The kernel reaches this service only after NIC selection and IPv4 setup.
-   * Keep SSH availability independent of a third-party DNS/TCP endpoint. */
-  u32 address = xaios_net_local_ipv4();
-  return address != 0U && address != UINT32_MAX ? 0 : -1;
 }
 
 void console_auth_succeeded(void) {
@@ -268,42 +244,6 @@ int sshd_bytes_equal(const uint8_t *left, const uint8_t *right,
   return difference == 0U;
 }
 
-static int bytes_have_zero(const uint8_t *data, uint32_t size) {
-  for (uint32_t i = 0; i < size; ++i) {
-    if (data[i] == 0U) return 1;
-  }
-  return 0;
-}
-
-static int valid_client_version(const uint8_t *version, uint32_t length) {
-  static const uint8_t prefix[] = "SSH-2.0-";
-  if (version == 0 || length < sizeof(prefix) || version[length - 1U] != '\n') {
-    return 0;
-  }
-  uint32_t text_length = length - 1U;
-  if (text_length != 0U && version[text_length - 1U] == '\r') --text_length;
-  if (text_length < sizeof(prefix) ||
-      !sshd_bytes_equal(version, prefix, sizeof(prefix) - 1U)) {
-    return 0;
-  }
-  for (uint32_t i = 0; i < text_length; ++i) {
-    if (version[i] < 32U || version[i] > 126U) return 0;
-  }
-  return 1;
-}
-
-static int send_auth_failure(ssh_connection_t *conn) {
-  uint8_t reject[64];
-  const char *methods = g_password_auth_enabled == 0U ? "publickey" :
-                                                        "publickey,password";
-  uint32_t methods_len = ssh_str_len(methods);
-  reject[0] = SSH_MSG_USERAUTH_FAILURE;
-  ssh_write_u32_be(reject + 1U, methods_len);
-  ssh_mem_copy(reject + 5U, methods, methods_len);
-  reject[5U + methods_len] = 0U;
-  return conn_packet_write_encrypted(conn, reject, 6U + methods_len);
-}
-
 /* ---- Connection State Machine Processor ---- */
 
 /* Process one step for a connection. Returns 0 if connection should remain,
@@ -311,7 +251,7 @@ static int send_auth_failure(ssh_connection_t *conn) {
 static int process_connection(ssh_connection_t *conn) {
   int sockfd = (int)conn->sockfd;
   ssh_packet_t *pkt = &ssh_conn_scratch()->pkt;
-  uint64_t now = timer_now();
+  uint64_t now = sshd_timer_now();
 
   if (conn->state == SSH_STATE_INIT) {
     /* Send server version */
@@ -332,19 +272,19 @@ static int process_connection(ssh_connection_t *conn) {
         u64 n = 0;
         int status = xaios_net_recv(conn->sockfd,
             conn->version_buf + conn->version_len, 1, &n);
-        if (status != 0) return close_because("peer-gone");
+        if (status != 0) return sshd_close_because("peer-gone");
         if (n == 0) return 0;
         conn->version_len += (uint32_t)n;
         if (conn->version_buf[conn->version_len - 1U] == '\n') break;
       }
       if (conn->version_len == sizeof(conn->version_buf) &&
           conn->version_buf[conn->version_len - 1U] != '\n') {
-        return close_because("client-version-too-long");
+        return sshd_close_because("client-version-too-long");
       }
     }
-    if (!valid_client_version(conn->version_buf, conn->version_len)) {
+    if (!sshd_valid_client_version(conn->version_buf, conn->version_len)) {
       ssh_log(SSH_LOG_WARN, "Rejected invalid SSH client version");
-      return close_because("client-version-invalid");
+      return sshd_close_because("client-version-invalid");
     }
 
     if (send_server_kexinit(conn, 0) != 0) return -1;
@@ -356,7 +296,7 @@ static int process_connection(ssh_connection_t *conn) {
     /* Receive client KEXINIT */
     int packet_status = ssh_packet_read(sockfd, pkt);
     if (packet_status > 0) return 0;
-    if (packet_status < 0) return close_because("packet-read-failed");
+    if (packet_status < 0) return sshd_close_because("packet-read-failed");
     if (validate_client_kexinit(conn, pkt) != 0) return -1;
     init_exchange_hash(conn, pkt);
     conn->state = SSH_STATE_NEWKEYS;
@@ -367,7 +307,7 @@ static int process_connection(ssh_connection_t *conn) {
     /* KEXDH_INIT */
     int packet_status = ssh_packet_read(sockfd, pkt);
     if (packet_status > 0) return 0;
-    if (packet_status < 0) return close_because("packet-read-failed");
+    if (packet_status < 0) return sshd_close_because("packet-read-failed");
     if (handle_kexdh_init(conn, pkt, 0) != 0) return -1;
     conn->state = SSH_STATE_NEWKEYS_SENT;
     return 0;
@@ -377,7 +317,7 @@ static int process_connection(ssh_connection_t *conn) {
     /* Receive NEWKEYS */
     int packet_status = ssh_packet_read(sockfd, pkt);
     if (packet_status > 0) return 0;
-    if (packet_status < 0) return close_because("packet-read-failed");
+    if (packet_status < 0) return sshd_close_because("packet-read-failed");
     if (pkt->len == 0 || pkt->data[0] != 21) return -1;
 
     if (conn_init_encryption(conn) != 0) return -1;
@@ -428,7 +368,7 @@ static int process_connection(ssh_connection_t *conn) {
   if (conn->state == SSH_STATE_AUTH) {
     int packet_status = conn_packet_read_encrypted(conn, pkt);
     if (packet_status > 0) return 0;
-    if (packet_status < 0) return close_because("packet-read-failed");
+    if (packet_status < 0) return sshd_close_because("packet-read-failed");
     if (pkt->len == 0) return 0;
     uint8_t msg = pkt->data[0];
 
@@ -462,7 +402,7 @@ static int process_connection(ssh_connection_t *conn) {
       uint32_t user_len = ssh_read_string_len(pkt->data + offset);
       offset += 4U;
       if (user_len > 64U || offset + user_len > pkt->len ||
-          bytes_have_zero(pkt->data + offset, user_len)) return -1;
+          sshd_bytes_have_zero(pkt->data + offset, user_len)) return -1;
       char username[65];
       ssh_mem_copy(username, pkt->data + offset, user_len);
       username[user_len] = '\0';
@@ -472,7 +412,7 @@ static int process_connection(ssh_connection_t *conn) {
       uint32_t service_len = ssh_read_string_len(pkt->data + offset);
       offset += 4U;
       if (service_len > 64U || offset + service_len > pkt->len ||
-          bytes_have_zero(pkt->data + offset, service_len)) return -1;
+          sshd_bytes_have_zero(pkt->data + offset, service_len)) return -1;
       char service[65];
       ssh_mem_copy(service, pkt->data + offset, service_len);
       service[service_len] = '\0';
@@ -483,7 +423,7 @@ static int process_connection(ssh_connection_t *conn) {
       uint32_t method_len = ssh_read_string_len(pkt->data + offset);
       offset += 4U;
       if (method_len > 64U || offset + method_len > pkt->len ||
-          bytes_have_zero(pkt->data + offset, method_len)) return -1;
+          sshd_bytes_have_zero(pkt->data + offset, method_len)) return -1;
       char method[65];
       ssh_mem_copy(method, pkt->data + offset, method_len);
       method[method_len] = '\0';
@@ -491,13 +431,13 @@ static int process_connection(ssh_connection_t *conn) {
       uint32_t auth_data_offset = offset;
 
       if (check_rate_limit(&conn->client_addr) != 0) {
-        if (send_auth_failure(conn) != 0) return -1;
+        if (sshd_send_auth_failure(conn) != 0) return -1;
         return 0;
       }
 
       if (conn->auth_attempts >= g_runtime_config.max_auth_attempts) {
         record_auth_failure(&conn->client_addr);
-        if (send_auth_failure(conn) != 0) return -1;
+        if (sshd_send_auth_failure(conn) != 0) return -1;
         return 0;
       }
 
@@ -506,7 +446,7 @@ static int process_connection(ssh_connection_t *conn) {
         if (g_password_auth_enabled == 0U || sshd_auth_user_count() == 0U) {
           conn->auth_attempts++;
           record_auth_failure(&conn->client_addr);
-          if (send_auth_failure(conn) != 0) return -1;
+          if (sshd_send_auth_failure(conn) != 0) return -1;
           return 0;
         }
         uint32_t password_offset = auth_data_offset;
@@ -515,7 +455,7 @@ static int process_connection(ssh_connection_t *conn) {
         password_offset += 1U;
         uint32_t pass_len = ssh_read_string_len(pkt->data + password_offset);
         if (pass_len > 128U || password_offset + 4U + pass_len > pkt->len ||
-            bytes_have_zero(pkt->data + password_offset + 4U, pass_len)) {
+            sshd_bytes_have_zero(pkt->data + password_offset + 4U, pass_len)) {
           return -1;
         }
         char password[129];
@@ -538,7 +478,7 @@ static int process_connection(ssh_connection_t *conn) {
         } else {
           conn->auth_attempts++;
           record_auth_failure(&conn->client_addr);
-          if (send_auth_failure(conn) != 0) return -1;
+          if (sshd_send_auth_failure(conn) != 0) return -1;
           ssh_log(SSH_LOG_WARN, "Password auth failed: '%s'\n", username);
         }
         return 0;
@@ -558,7 +498,7 @@ static int process_connection(ssh_connection_t *conn) {
             !ssh_str_eq(username, account)) {
           conn->auth_attempts++;
           record_auth_failure(&conn->client_addr);
-          if (send_auth_failure(conn) != 0) return -1;
+          if (sshd_send_auth_failure(conn) != 0) return -1;
           return 0;
         }
         offset = auth_data_offset;
@@ -602,7 +542,7 @@ static int process_connection(ssh_connection_t *conn) {
           ssh_log(SSH_LOG_WARN, "Public key not authorized\n");
           conn->auth_attempts++;
           record_auth_failure(&conn->client_addr);
-          if (send_auth_failure(conn) != 0) return -1;
+          if (sshd_send_auth_failure(conn) != 0) return -1;
           return 0;
         }
 
@@ -673,14 +613,14 @@ static int process_connection(ssh_connection_t *conn) {
           xaios_log("sshd: public key signature verification failed\n");
           conn->auth_attempts++;
           record_auth_failure(&conn->client_addr);
-          if (send_auth_failure(conn) != 0) return -1;
+          if (sshd_send_auth_failure(conn) != 0) return -1;
           ssh_log(SSH_LOG_WARN, "Public key auth failed (verify)\n");
         }
         return 0;
       }
 
       /* Unknown auth method */
-      if (send_auth_failure(conn) != 0) return -1;
+      if (sshd_send_auth_failure(conn) != 0) return -1;
       return 0;
     }
 
@@ -711,14 +651,14 @@ static int process_connection(ssh_connection_t *conn) {
       conn->last_keepalive = now;
       if (now - conn->last_activity > SSHD_TIMEOUT_IDLE) {
         ssh_log(SSH_LOG_WARN, "Idle timeout\n");
-        return close_because("idle-timeout");
+        return sshd_close_because("idle-timeout");
       }
     }
 
     /* Read one packet */
     int packet_status = conn_packet_read_encrypted(conn, pkt);
     if (packet_status > 0) return 0;
-    if (packet_status < 0) return close_because("packet-read-failed");
+    if (packet_status < 0) return sshd_close_because("packet-read-failed");
     if (pkt->len == 0) return 0;
 
     conn->last_activity = now;
@@ -747,7 +687,7 @@ static int process_connection(ssh_connection_t *conn) {
 
     if (msg == SSH_MSG_DISCONNECT) {
       ssh_log(SSH_LOG_INFO, "Client disconnected\n");
-      return close_because("client-disconnect");
+      return sshd_close_because("client-disconnect");
     }
 
     /* Unknown message */
@@ -767,7 +707,7 @@ int sshd_run(void) {
   g_console_ipv4 = xaios_net_local_ipv4();
   g_console_ssh_ready = 0U;
   g_console_boot_error = 0;
-  network_status = verify_ipv4_ready();
+  network_status = sshd_verify_ipv4_ready();
   if (network_status != 0) {
     ssh_log(SSH_LOG_ERROR,
             "IPv4 network readiness check failed; refusing SSH startup status=%u\n",
@@ -867,7 +807,7 @@ int sshd_run(void) {
 service_loop:
   console_render_boot_status();
   for (;;) {
-    uint64_t pass_started = timer_now();
+    uint64_t pass_started = sshd_timer_now();
     /* Per pass, so a stall reports what this pass spent on the durable volume
        rather than what every pass has spent since boot. */
     ssh_audit_pass_reset();
@@ -876,7 +816,7 @@ service_loop:
     console_service_pong(now);
     sshd_console_program_service();
     console_tick();
-    uint64_t after_console = timer_now();
+    uint64_t after_console = sshd_timer_now();
     for (uint32_t i = 0; g_console_ssh_ready != 0U && i < 4U; ++i) {
       uint8_t udp_buffer[1478];
       xaios_ip_addr_user_t source_addr;
@@ -896,7 +836,7 @@ service_loop:
       }
     }
 
-    uint64_t after_udp = timer_now();
+    uint64_t after_udp = sshd_timer_now();
 
     /* Try to accept new connections (non-blocking) */
     for (uint32_t i = 0; g_console_ssh_ready != 0U && i < 4U; ++i) {
@@ -948,7 +888,7 @@ service_loop:
       conn->client_addr = peer_addr;
       conn->client_port = (uint16_t)peer_port;
       conn->state = SSH_STATE_INIT;
-      conn->last_activity = timer_now();
+      conn->last_activity = sshd_timer_now();
       conn->last_keepalive = conn->last_activity;
       conn->connect_time = conn->last_activity;
       conn->version_len = 0;
@@ -960,16 +900,16 @@ service_loop:
               conn_fd, active + 1);
     }
 
-    uint64_t after_accept = timer_now();
+    uint64_t after_accept = sshd_timer_now();
 
     /* Process each active connection (cooperative time-slicing) */
     for (uint32_t i = 0; i < SSH_MAX_CONNECTIONS; ++i) {
       ssh_connection_t *conn = ssh_conn_by_index(i);
       if (!conn) continue;
-      g_close_reason = 0;
+      sshd_close_reason_set(0);
 
       /* Check for timeouts */
-      uint64_t now = timer_now();
+      uint64_t now = sshd_timer_now();
       if (conn->state == SSH_STATE_INIT || conn->state == SSH_STATE_KEX ||
           conn->state == SSH_STATE_KEX_SENT || conn->state == SSH_STATE_NEWKEYS ||
           conn->state == SSH_STATE_NEWKEYS_SENT ||
@@ -980,14 +920,14 @@ service_loop:
                                       conn->kex_start_time : conn->connect_time;
         if (now - exchange_start > SSHD_TIMEOUT_CONNECT) {
           ssh_log(SSH_LOG_WARN, "Connect timeout\n");
-          g_close_reason = "connect-timeout";
+          sshd_close_reason_set("connect-timeout");
           goto close_conn;
         }
       }
       if (conn->state == SSH_STATE_AUTH) {
         if (now - conn->connect_time > SSHD_TIMEOUT_AUTH) {
           ssh_log(SSH_LOG_WARN, "Auth timeout\n");
-          g_close_reason = "auth-timeout";
+          sshd_close_reason_set("auth-timeout");
           goto close_conn;
         }
       }
@@ -1026,12 +966,13 @@ close_conn:
                            __ATOMIC_RELEASE);
         ssh_conn_free(conn);
         ++g_connection_close_count;
+        const char *close_reason = sshd_close_reason();
         log_connection_close(
-            g_close_reason != 0 ? g_close_reason
-                                : (closed_silently != 0U ? "transport"
-                                                         : "protocol"),
+            close_reason != 0 ? close_reason
+                              : (closed_silently != 0U ? "transport"
+                                                       : "protocol"),
             closed_sockfd, closed_state,
-            timer_now() - closed_connect_time, g_connection_close_count);
+            sshd_timer_now() - closed_connect_time, g_connection_close_count);
         ssh_log(SSH_LOG_INFO, "Connection closed\n");
         /* After the audit line above, so the totals include this connection's
            last record rather than all of it but that. The key-loader counters
@@ -1062,12 +1003,12 @@ close_conn:
         }
       }
     }
-    uint64_t after_connections = timer_now();
-    if (g_console_ssh_ready != 0U && ssh_channel_tick(timer_now()) != 0) {
+    uint64_t after_connections = sshd_timer_now();
+    if (g_console_ssh_ready != 0U && ssh_channel_tick(sshd_timer_now()) != 0) {
       ssh_log(SSH_LOG_WARN, "Interactive channel refresh failed\n");
     }
     report_service_loop_stall(pass_started, after_console, after_udp,
-                              after_accept, after_connections, timer_now());
+                              after_accept, after_connections, sshd_timer_now());
     /* Nothing above blocks, so left to itself this loop spins and keeps a
        whole core at a hundred percent from boot -- which the process
        monitor showed on every machine once it was honest about who was
@@ -1078,9 +1019,9 @@ close_conn:
     uint64_t wait_requested = g_console_pong.active != 0U
                                   ? UINT64_C(16000000)
                                   : UINT64_C(50000000);
-    uint64_t wait_started = timer_now();
+    uint64_t wait_started = sshd_timer_now();
     (void)xaios_wait_events(wait_requested);
-    report_wait_overrun(wait_requested, wait_started, timer_now());
+    report_wait_overrun(wait_requested, wait_started, sshd_timer_now());
   }
 
   return 0;

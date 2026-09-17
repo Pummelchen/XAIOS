@@ -272,7 +272,7 @@ hosted-test: engine-cli
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Iuserspace/include -Iuserspace/sshd -Iuserspace/apps/terminal \
 	  -Ikernel/include \
-	  userspace/sshd/sftp_server.c tests/storage/test_sftp_large.c \
+	  userspace/sshd/sftp_server.c userspace/sshd/sftp_server_file.c userspace/sshd/sftp_server_dir.c tests/storage/test_sftp_large.c \
 	  -o build/hosted/test-sftp-large
 	./build/hosted/test-sftp-large
 	python3 tests/scripts/generate-dnssec-fixture.py build/hosted/dnssec_fixture.h

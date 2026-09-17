@@ -3,9 +3,9 @@
 
 /* The private seam between kernel/arch/x86_64/early.c and the modules split
  * out of it (early_tlb.c, early_cpu.c, early_serial.c, early_mem.c,
- * early_pci.c, early_acpi.c, early_fpu.c, early_gdt.c, early_irq.c and
- * early_platform.c). Every one of those files includes this header and nothing
- * in it is visible outside
+ * early_pci.c, early_acpi.c, early_fpu.c, early_gdt.c, early_irq.c,
+ * early_platform.c and early_timer_discover.c). Every one of those files
+ * includes this header and nothing in it is visible outside
  * them: the x86_64 CPU record, the per-CPU TLB bookkeeping, the trap frame and
  * the early.c primitives the moved code calls are shared here, while the
  * globals stay file-scope in whichever file owns them.
@@ -26,6 +26,11 @@
 #define X86_KERNEL_STACK_SIZE UINT64_C(524288)
 #define X86_KERNEL_STACK_GUARD_BYTES UINT32_C(64)
 #define X86_KERNEL_STACK_GUARD_VALUE UINT8_C(0xa5)
+
+/* The MSR holding the local-APIC base and its enable/x2APIC bits. early.c's
+ * LAPIC register primitives and early_timer_discover.c's calibration both read
+ * it, so it is defined once here rather than on either side of the seam. */
+#define MSR_IA32_APIC_BASE UINT32_C(0x1b)
 
 typedef struct x86_64_tss {
   uint32_t reserved0;
@@ -150,6 +155,14 @@ void xaios_x86_early_set_tsc_hz(uint64_t frequency);
 uint64_t xaios_x86_early_lapic_hz(void);
 uint32_t xaios_x86_early_bsp_ordinal(void);
 void xaios_x86_early_set_worker_release(uint32_t value);
+
+/* Defined in early_timer_discover.c: measure the TSC against the PIT (B-122)
+ * and report the APIC/timer capabilities, at the one point in x86_64_kmain
+ * before the LAPIC timer self-test. It programs no interrupt, sends no IPI and
+ * starts no AP; the frequency it determines is stored through
+ * xaios_x86_early_set_tsc_hz above, and the LAPIC timer interrupt itself still
+ * stays with validate_lapic_timer_interrupt in early.c. */
+void xaios_x86_early_timer_discover(uint16_t serial_base);
 
 /* Defined in early_tlb.c. */
 void xaios_x86_early_tlb_note_interrupt(void);

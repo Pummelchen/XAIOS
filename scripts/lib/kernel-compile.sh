@@ -41,6 +41,8 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/gic.c" "$KERNEL_BUILD_DIR/gic.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/gic_its.c" "$KERNEL_BUILD_DIR/gic_its.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/smp.c" "$KERNEL_BUILD_DIR/smp.o"
+compile_kernel "$ROOT_DIR/kernel/arch/aarch64/mmu_boot.c" "$KERNEL_BUILD_DIR/mmu_boot.o"
+compile_kernel "$ROOT_DIR/kernel/arch/aarch64/mmu_user.c" "$KERNEL_BUILD_DIR/mmu_user.o"
   # The packed engine, which until now was compiled for x86_64 only. The
   # AArch64 kernel could not reach a packed kernel of any kind, so the NEON
   # path in it had never been linked into a running system on this
@@ -60,6 +62,7 @@ compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_fpu.c" "$KERNEL_BUILD_DIR/ear
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_irq.c" "$KERNEL_BUILD_DIR/early_irq.o"
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_gdt.c" "$KERNEL_BUILD_DIR/early_gdt.o"
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_platform.c" "$KERNEL_BUILD_DIR/early_platform.o"
+compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_timer_discover.c" "$KERNEL_BUILD_DIR/early_timer_discover.o"
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_exception.c" "$KERNEL_BUILD_DIR/early_exception.o"
   compile_kernel_simd "$ROOT_DIR/engine/src/packed.c" "$KERNEL_BUILD_DIR/engine_packed.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/timer.c" "$KERNEL_BUILD_DIR/timer.o"
@@ -191,6 +194,8 @@ compile_kernel "$ROOT_DIR/kernel/runtime/cpu_ai_runtime.c" "$KERNEL_BUILD_DIR/cp
 compile_kernel "$ROOT_DIR/kernel/runtime/cpu_ai_manifest.c" "$KERNEL_BUILD_DIR/cpu_ai_manifest.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/cpu_ai_fixture.c" "$KERNEL_BUILD_DIR/cpu_ai_fixture.o"
 compile_kernel_simd "$ROOT_DIR/kernel/runtime/ai_kernels.c" "$KERNEL_BUILD_DIR/ai_kernels.o"
+compile_kernel_simd "$ROOT_DIR/kernel/runtime/ai_kernels_quant.c" "$KERNEL_BUILD_DIR/ai_kernels_quant.o"
+compile_kernel_simd "$ROOT_DIR/kernel/runtime/ai_kernels_matmul.c" "$KERNEL_BUILD_DIR/ai_kernels_matmul.o"
 compile_kernel_simd "$ROOT_DIR/kernel/runtime/paged_kv_cache.c" "$KERNEL_BUILD_DIR/paged_kv_cache.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/inference_batcher.c" "$KERNEL_BUILD_DIR/inference_batcher.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/inference_preempt.c" "$KERNEL_BUILD_DIR/inference_preempt.o"
