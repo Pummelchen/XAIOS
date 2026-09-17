@@ -62,7 +62,10 @@ if [ "$WITH_CONTROL" = 1 ]; then
   compile "$ROOT/userspace/lib/xaios_control_client.c" "$TEMP/control.o"
   compile "$ROOT/userspace/lib/control_render_primitives.c" "$TEMP/control-primitives.o"
   compile "$ROOT/userspace/lib/control_render_system.c" "$TEMP/control-system.o"
-  set -- "$@" "$TEMP/control.o" "$TEMP/control-primitives.o" "$TEMP/control-system.o"
+  compile "$ROOT/userspace/lib/control_render_storage.c" "$TEMP/control-storage.o"
+  compile "$ROOT/userspace/lib/control_render_ops.c" "$TEMP/control-ops.o"
+  set -- "$@" "$TEMP/control.o" "$TEMP/control-primitives.o" "$TEMP/control-system.o" \
+    "$TEMP/control-storage.o" "$TEMP/control-ops.o"
 fi
 set -- "$@" "$TEMP/app.o"
 mkdir -p "$(dirname "$OUTPUT")"

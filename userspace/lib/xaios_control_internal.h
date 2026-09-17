@@ -48,8 +48,7 @@ int json_envelope_end(char *output, u64 capacity, u64 *offset);
 /*
  * The system and status renderers, from control_render_system.c. They were the
  * second group to leave xaios_control_client.c and are called by its reply
- * dispatcher; "status" here is the observability family, with configuration,
- * auth keys and storage left behind for later rounds.
+ * dispatcher; "status" here is the observability family.
  */
 int render_version(const void *payload, int json, char *output, u64 capacity,
                    u64 *offset, u64 request_id);
@@ -65,5 +64,77 @@ int render_metrics(const void *payload, int json, char *output, u64 capacity,
                    u64 *offset, u64 request_id);
 int render_logs(const void *payload, u64 payload_length, int json, char *output,
                 u64 capacity, u64 *offset, u64 request_id);
+
+/*
+ * Three bounded-string and quoted-hex helpers that predate the split and are
+ * still defined in xaios_control_client.c. The configuration, auth-key and
+ * audit renderers that stayed behind call them, and so do the storage and
+ * operation renderers that moved out, so they are declared here rather than
+ * copied into every module that needs them.
+ */
+int fixed_string_valid(const char *text, u64 capacity);
+int fixed_string_terminated(const char *text, u64 capacity);
+int append_quoted_hex(char *output, u64 capacity, u64 *offset,
+                      const unsigned char *bytes, u64 size);
+
+/*
+ * The storage renderers, from control_render_storage.c: the device,
+ * filesystem and partition tables a storage query returns. The remaining
+ * configuration, auth-key and audit renderers are still in
+ * xaios_control_client.c.
+ */
+int render_storage_devices(const void *payload, u64 payload_length, int json,
+                           char *output, u64 capacity, u64 *offset,
+                           u64 request_id);
+int render_storage_filesystems(const void *payload, u64 payload_length, int json,
+                               char *output, u64 capacity, u64 *offset,
+                               u64 request_id);
+int render_storage_partitions(const void *payload, u64 payload_length, int json,
+                              char *output, u64 capacity, u64 *offset,
+                              u64 request_id);
+
+/*
+ * The partition-record validators and formatters, defined in
+ * control_render_storage.c beside the partition table. The partition-plan
+ * renderer in control_render_ops.c and the volume report there describe the
+ * same records and the same report, so these are shared rather than copied.
+ */
+int storage_boolean_valid(u32 value);
+int partition_report_valid(
+    const xaios_storage_partition_report_user_t *report);
+int partition_record_valid(
+    const xaios_storage_partition_record_user_t *record);
+int append_partition_record_json(
+    char *output, u64 capacity, u64 *offset,
+    const xaios_storage_partition_record_user_t *record);
+int append_partition_report_json(
+    char *output, u64 capacity, u64 *offset, int *first,
+    const xaios_storage_partition_report_user_t *report);
+int append_partition_report_human(
+    char *output, u64 capacity, u64 *offset,
+    const xaios_storage_partition_report_user_t *report);
+
+/*
+ * The operation renderers, from control_render_ops.c: what an install, a
+ * partition plan, a mutation, a model cleanup, a volume check/repair, a scrub
+ * and a trim did.
+ */
+int render_storage_install(const void *payload, u64 payload_length, int json,
+                           char *output, u64 capacity, u64 *offset,
+                           u64 request_id);
+int render_storage_partition_plan(const void *payload, u64 payload_length,
+                                  int json, char *output, u64 capacity,
+                                  u64 *offset, u64 request_id);
+int render_mutation(const void *payload, int json, char *output, u64 capacity,
+                    u64 *offset, u64 request_id);
+int render_model_cleanup(const void *payload, int json, char *output,
+                         u64 capacity, u64 *offset, u64 request_id);
+int render_storage_volume_report(const void *payload, u64 payload_length,
+                                 int json, char *output, u64 capacity,
+                                 u64 *offset, u64 request_id);
+int render_storage_scrub(const void *payload, int json, char *output,
+                         u64 capacity, u64 *offset, u64 request_id);
+int render_storage_trim(const void *payload, int json, char *output,
+                        u64 capacity, u64 *offset, u64 request_id);
 
 #endif /* XAIOS_USERSPACE_LIB_CONTROL_INTERNAL_H */

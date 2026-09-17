@@ -77,6 +77,8 @@ USER_SCREEN_OBJ="$INIT_BUILD_DIR/xaios-screen.o"
 USER_CONTROL_OBJ="$INIT_BUILD_DIR/xaios-control-client.o"
 USER_CONTROL_PRIM_OBJ="$INIT_BUILD_DIR/xaios-control-primitives.o"
 USER_CONTROL_SYS_OBJ="$INIT_BUILD_DIR/xaios-control-system.o"
+USER_CONTROL_STORAGE_OBJ="$INIT_BUILD_DIR/xaios-control-storage.o"
+USER_CONTROL_OPS_OBJ="$INIT_BUILD_DIR/xaios-control-ops.o"
 USER_APPS="xaios-shell xaiosctl xapt nano xtop pong hello spin sysinfo systest smptest joinnest smpstress perfbench nettest netmqtest netsocktest lstm-xor sshtest mltest posix-shell agenttest clustertest xaios-setup"
 
 # Which end of a cluster this image is, and where its peer is.
@@ -1188,6 +1190,41 @@ printf '%s\n' "Building userspace C runtime..."
   -c "$ROOT_DIR/userspace/lib/control_render_system.c" \
   -o "$USER_CONTROL_SYS_OBJ"
 
+# The storage-table and operation renderers, the next groups out of the client.
+"$CLANG" \
+  --target="$TARGET_TRIPLE" \
+  $USER_ARCH_CFLAGS \
+  -std=c99 \
+  -ffreestanding \
+  -fno-stack-protector \
+  -fno-builtin \
+  -fno-pic \
+  -fno-pie \
+  -Os \
+  -Wall \
+  -Wextra \
+  -Werror \
+  -I"$ROOT_DIR/userspace/include" \
+  -c "$ROOT_DIR/userspace/lib/control_render_storage.c" \
+  -o "$USER_CONTROL_STORAGE_OBJ"
+
+"$CLANG" \
+  --target="$TARGET_TRIPLE" \
+  $USER_ARCH_CFLAGS \
+  -std=c99 \
+  -ffreestanding \
+  -fno-stack-protector \
+  -fno-builtin \
+  -fno-pic \
+  -fno-pie \
+  -Os \
+  -Wall \
+  -Wextra \
+  -Werror \
+  -I"$ROOT_DIR/userspace/include" \
+  -c "$ROOT_DIR/userspace/lib/control_render_ops.c" \
+  -o "$USER_CONTROL_OPS_OBJ"
+
 # The screen framework: the grid, the present that writes only what
 # changed, and the key decoder. Linked into every program that draws a
 # screen, and into sshd, which runs every alternate-screen program through it.
@@ -1276,7 +1313,7 @@ for app in $USER_APPS; do
       -o "$XAPT_TRUST_OBJ"
     "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
       -o "$app_elf" "$USER_START_OBJ" "$USER_LIB_OBJ" \
-      "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$app_obj" "$XAPT_TLS_OBJ" "$XAPT_TRUST_OBJ" \
+      "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$USER_CONTROL_STORAGE_OBJ" "$USER_CONTROL_OPS_OBJ" "$app_obj" "$XAPT_TLS_OBJ" "$XAPT_TRUST_OBJ" \
       "$XAPT_BEARSSL"
   elif [ "$app" = "xaios-setup" ]; then
     # Setup writes the credential records sshd reads, so it hashes them with
@@ -1301,7 +1338,7 @@ for app in $USER_APPS; do
       -o "$app_elf" \
       "$USER_START_OBJ" \
       "$USER_LIB_OBJ" \
-      "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" \
+      "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$USER_CONTROL_STORAGE_OBJ" "$USER_CONTROL_OPS_OBJ" \
       "$app_obj" \
       "$SETUP_CRYPTO_OBJ" \
       "$SETUP_NACL_OBJ"
@@ -1313,7 +1350,7 @@ for app in $USER_APPS; do
       -o "$app_elf" \
       "$USER_START_OBJ" \
       "$USER_LIB_OBJ" \
-      "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" \
+      "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$USER_CONTROL_STORAGE_OBJ" "$USER_CONTROL_OPS_OBJ" \
       "$USER_SCREEN_OBJ" \
       "$app_obj"
   elif [ "$app" = "clustertest" ]; then
@@ -1381,7 +1418,7 @@ for app in $UTILITY_APPS; do
     -o "$app_elf" \
     "$USER_START_OBJ" \
     "$USER_LIB_OBJ" \
-    "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" \
+    "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$USER_CONTROL_STORAGE_OBJ" "$USER_CONTROL_OPS_OBJ" \
     "$USER_INFLATE_OBJ" \
     "$app_obj"
   set -- "$@" "/bin/$app=$app_elf"
@@ -1538,7 +1575,7 @@ done
   -o "$INIT_BUILD_DIR/sshd.elf" \
   "$USER_START_OBJ" \
   "$USER_LIB_OBJ" \
-  "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" \
+  "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$USER_CONTROL_STORAGE_OBJ" "$USER_CONTROL_OPS_OBJ" \
   @"$SSHD_RESPONSE_FILE"
 set -- "$@" "/bin/sshd=$INIT_BUILD_DIR/sshd.elf"
 
