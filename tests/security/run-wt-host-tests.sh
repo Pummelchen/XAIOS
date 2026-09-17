@@ -212,7 +212,7 @@ for name in "$@"; do
      [ "$HEADER_STAMP" -nt "$binary" ]; then
     rm -f "$binary"
   fi
-  # Three suites are split across translation units for the file-size budget,
+  # Five suites are split across translation units for the file-size budget,
   # so whichever one is being built gets its own extra sources.
   extra_sources=""
   case "$name" in
@@ -224,6 +224,9 @@ for name in "$@"; do
       ;;
     tls_cert)
       extra_sources="$ROOT/tests/security/test_wt_tls_cert_parse.c $ROOT/tests/security/test_wt_tls_cert_signature.c"
+      ;;
+    crypto)
+      extra_sources="$ROOT/tests/security/test_wt_crypto_primitives.c $ROOT/tests/security/test_wt_crypto_packet.c"
       ;;
     tls)
       extra_sources="$ROOT/tests/security/test_wt_tls_schedule.c $ROOT/tests/security/test_wt_tls_quic_keys.c"

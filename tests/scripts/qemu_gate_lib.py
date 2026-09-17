@@ -19,6 +19,31 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+# ---------------------------------------------------------------- re-exports
+#
+# The architecture/QEMU-runner helpers and the terminal replay moved to sibling
+# modules so that this shared helper keeps its size down. Every gate imports
+# them from this module, so they are imported here under their original names
+# and the split is invisible to a caller.
+from qemu_gate_arch import (  # noqa: E402
+    QEMU_ARCHES,
+    _MAKE_TARGETS,
+    _QEMU_ENV_ALIASES,
+    arch_from_argv,
+    qemu_boot_environment,
+    qemu_make_target,
+    qemu_runner,
+    smoke_command,
+    smoke_timeout,
+    timeout_scale,
+    translate_qemu_env,
+)
+from qemu_gate_terminal import (  # noqa: E402
+    _replay,
+    render_terminal,
+    render_terminal_frames,
+)
+
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
@@ -214,362 +239,6 @@ def now() -> int:
     return int(time.time())
 
 
-# --------------------------------------------------------------- architecture
-#
-# Three machines, three runners, and three sets of names for the same knobs:
-# aarch64 reads XAIOS_QEMU_* and XAIOS_PERSISTENT_IMAGE, x86_64 mixes
-# XAIOS_QEMU_* with XAIOS_QEMU_X86_* and XAIOS_X86_PERSISTENT_IMAGE, and
-# riscv64 reads XAIOS_RISCV64_* throughout and keeps its disks in a state
-# directory rather than naming an image. Renaming any of that would break
-# every existing caller for no gain, so the difference lives here instead:
-# one place that a gate asks "boot this architecture" and gets the right
-# names. A gate that hardcodes a runner can reach exactly one machine, which
-# is how a third architecture ends up with six gates against seventy.
-
-QEMU_ARCHES = ("aarch64", "x86_64", "riscv64")
-
-_MAKE_TARGETS = {
-    "aarch64": "qemu-aarch64",
-    "x86_64": "qemu-x86_64",
-    "riscv64": "qemu-riscv64",
-}
-
-
-def arch_from_argv(argv: Sequence[str], default: str = "aarch64") -> str:
-    """--arch NAME or --arch=NAME, validated. Gates take it the same way."""
-    arch = default
-    for index, argument in enumerate(argv):
-        if argument == "--arch" and index + 1 < len(argv):
-            arch = argv[index + 1]
-        elif argument.startswith("--arch="):
-            arch = argument.split("=", 1)[1]
-    if arch not in QEMU_ARCHES:
-        raise SystemExit(f"unsupported --arch {arch!r}; expected one of "
-                         f"{', '.join(QEMU_ARCHES)}")
-    return arch
-
-
-def qemu_make_target(arch: str) -> str:
-    return _MAKE_TARGETS[arch]
-
-
-def qemu_boot_environment(arch: str, env: Dict[str, str], *,
-                          persistent: Any = None,
-                          persistent_sectors: Any = None,
-                          storage_admin: Any = None,
-                          system_volume: Any = None,
-                          state_dir: Any = None,
-                          hostfwd_port: Any = None,
-                          hostfwd_udp_port: Any = None,
-                          smp: Any = None,
-                          boot_mode: Any = None,
-                          extra_args: Any = None,
-                          qmp_socket: Any = None,
-                          keyboard: Any = None,
-                          accel: Any = None,
-                          user_net_cidr: Any = None,
-                          net_socket_port: Any = None,
-                          net_socket_port_2: Any = None,
-                          net_socket_host: Any = None,
-                          model_discard: Any = None,
-                          xai_fs: Any = None,
-                          serial_to_stdout: bool = False) -> Dict[str, str]:
-    """The knobs for one boot, under the names this architecture's runner reads.
-
-    Three of them -- the durable volume's file and size, and the signed A/B
-    system volume -- happen to share a name across all three runners, so they
-    are set unconditionally. The rest differ, and that is what this exists for.
-
-    `serial_to_stdout` matters only on RISC-V, whose runner writes the console
-    to a file by default. A gate that reads the boot from the runner's stdout,
-    as the smoke helper does, needs it; one that reads the log file does not.
-
-    `boot_mode` also matters only on RISC-V, which is the one architecture
-    here that can start either way: "kernel" hands the ELF to QEMU, "uefi"
-    boots the medium through EDK2. A gate about the A/B system volume needs
-    uefi, because with -kernel nothing has chosen a slot.
-    """
-    env = dict(env)
-    if extra_args is not None:
-        env["XAIOS_QEMU_EXTRA_ARGS" if arch != "riscv64"
-            else "XAIOS_RISCV64_EXTRA_ARGS"] = str(extra_args)
-    if qmp_socket is not None:
-        env["XAIOS_QEMU_QMP_SOCKET" if arch != "riscv64"
-            else "XAIOS_RISCV64_QMP_SOCKET"] = str(qmp_socket)
-    if hostfwd_udp_port is not None:
-        env["XAIOS_QEMU_HOSTFWD_UDP_PORT" if arch != "riscv64"
-            else "XAIOS_RISCV64_HOSTFWD_UDP_PORT"] = str(hostfwd_udp_port)
-    if user_net_cidr is not None:
-        env["XAIOS_QEMU_USER_NET_CIDR" if arch != "riscv64"
-            else "XAIOS_RISCV64_USER_NET_CIDR"] = str(user_net_cidr)
-    if xai_fs is not None:
-        env["XAIOS_XAI_FS_IMAGE"] = str(xai_fs)
-    if model_discard is not None:
-        # The one knob all three runners already spell the same way, because
-        # the RISC-V one was taught it under the existing name rather than
-        # given a fourth spelling of the same idea.
-        env["XAIOS_QEMU_MODEL_DISCARD"] = str(model_discard)
-    prefix = "XAIOS_QEMU" if arch != "riscv64" else "XAIOS_RISCV64"
-    if net_socket_port is not None:
-        env[f"{prefix}_NET_SOCKET_PORT"] = str(net_socket_port)
-    if net_socket_port_2 is not None:
-        env[f"{prefix}_NET_SOCKET_PORT_2"] = str(net_socket_port_2)
-    if net_socket_host is not None:
-        env[f"{prefix}_NET_SOCKET_HOST"] = str(net_socket_host)
-    if keyboard is not None:
-        env["XAIOS_QEMU_KEYBOARD" if arch != "riscv64"
-            else "XAIOS_RISCV64_KEYBOARD"] = str(keyboard)
-    if persistent is not None:
-        env["XAIOS_PERSISTENT_IMAGE"] = str(persistent)
-    if persistent_sectors is not None:
-        env["XAIOS_PERSISTENT_SECTORS"] = str(persistent_sectors)
-    if system_volume is not None:
-        env["XAIOS_SYSTEM_VOLUME_IMAGE"] = str(system_volume)
-    if arch == "aarch64":
-        if accel is not None:
-            env["XAIOS_QEMU_ACCEL"] = str(accel)
-        if storage_admin is not None:
-            env["XAIOS_STORAGE_ADMIN_IMAGE"] = str(storage_admin)
-        if hostfwd_port is not None:
-            env["XAIOS_QEMU_HOSTFWD_PORT"] = str(hostfwd_port)
-        if smp is not None:
-            env["XAIOS_QEMU_SMP"] = str(smp)
-    elif arch == "x86_64":
-        if accel is not None:
-            env["XAIOS_QEMU_X86_ACCEL"] = str(accel)
-        if persistent is not None:
-            # Both names, deliberately: a gate that sets only the shared one
-            # for an x86_64 boot falls through to the shared image, whose
-            # /state holds whichever run created it. That cost a day once.
-            env["XAIOS_X86_PERSISTENT_IMAGE"] = str(persistent)
-        if storage_admin is not None:
-            env["XAIOS_X86_STORAGE_ADMIN_IMAGE"] = str(storage_admin)
-        if hostfwd_port is not None:
-            env["XAIOS_QEMU_HOSTFWD_PORT"] = str(hostfwd_port)
-        if smp is not None:
-            env["XAIOS_QEMU_X86_SMP"] = str(smp)
-    else:
-        if state_dir is not None:
-            env["XAIOS_RISCV64_STATE"] = str(state_dir)
-        if hostfwd_port is not None:
-            # "none" reaches the runner intact: it understands it, and a gate
-            # that wants no host port must be able to say so rather than get
-            # the default.
-            env["XAIOS_RISCV64_SSH_PORT"] = str(hostfwd_port)
-        if smp is not None:
-            env["XAIOS_RISCV64_CPUS"] = str(smp)
-        if storage_admin is not None:
-            env["XAIOS_STORAGE_ADMIN_IMAGE"] = str(storage_admin)
-        if boot_mode is not None:
-            env["XAIOS_RISCV64_BOOT"] = str(boot_mode)
-        # accel has no RISC-V spelling: there is no hypervisor for this
-        # architecture on any host this runs on, so it is always TCG. A gate
-        # that asks for TCG gets it; one that asked for anything else would be
-        # asking for something that does not exist.
-        if serial_to_stdout:
-            env["XAIOS_RISCV64_SERIAL"] = "stdio"
-    return env
-
-
-# The environment names a gate may already be written against, and what each
-# means on a machine that spells it differently. Gates that grew up on one
-# architecture set XAIOS_QEMU_* directly at a dozen call sites; rewriting all
-# of them to logical names would be a bigger change than teaching one place
-# what they mean.
-_QEMU_ENV_ALIASES = {
-    "XAIOS_QEMU_HOSTFWD_PORT": "XAIOS_RISCV64_SSH_PORT",
-    "XAIOS_QEMU_HOSTFWD_UDP_PORT": "XAIOS_RISCV64_HOSTFWD_UDP_PORT",
-    "XAIOS_QEMU_NET_SOCKET_PORT": "XAIOS_RISCV64_NET_SOCKET_PORT",
-    "XAIOS_QEMU_NET_SOCKET_PORT_2": "XAIOS_RISCV64_NET_SOCKET_PORT_2",
-    "XAIOS_QEMU_NET_SOCKET_HOST": "XAIOS_RISCV64_NET_SOCKET_HOST",
-    "XAIOS_QEMU_USER_NET_CIDR": "XAIOS_RISCV64_USER_NET_CIDR",
-    "XAIOS_QEMU_KEYBOARD": "XAIOS_RISCV64_KEYBOARD",
-    "XAIOS_QEMU_EXTRA_ARGS": "XAIOS_RISCV64_EXTRA_ARGS",
-    "XAIOS_QEMU_QMP_SOCKET": "XAIOS_RISCV64_QMP_SOCKET",
-    "XAIOS_QEMU_SMP": "XAIOS_RISCV64_CPUS",
-    "XAIOS_QEMU_MEMORY": "XAIOS_RISCV64_MEMORY",
-}
-
-
-def translate_qemu_env(arch: str, env: Dict[str, str]) -> Dict[str, str]:
-    """Rewrite XAIOS_QEMU_* names into what this architecture's runner reads.
-
-    Names both runners already share -- XAIOS_PERSISTENT_IMAGE,
-    XAIOS_SYSTEM_VOLUME_IMAGE, XAIOS_QEMU_RNG, XAIOS_QEMU_NET_DUMP,
-    XAIOS_QEMU_MODEL_DISCARD, XAIOS_XAI_FS_IMAGE -- pass through untouched.
-    Names that mean nothing here, such as the accelerator, are dropped rather
-    than passed on: there is one accelerator on this machine and pretending to
-    choose it would be a lie in the environment.
-    """
-    if arch != "riscv64":
-        return dict(env)
-    translated: Dict[str, str] = {}
-    for name, value in env.items():
-        if name in ("XAIOS_QEMU_ACCEL", "XAIOS_QEMU_CPU",
-                    "XAIOS_QEMU_MSI_CONTROLLER", "XAIOS_QEMU_IOMMU"):
-            continue
-        translated[_QEMU_ENV_ALIASES.get(name, name)] = value
-    return translated
-
-
-def smoke_command(arch: str) -> List[str]:
-    """The boot-closure helper, for this architecture.
-
-    Gates that need a full boot before they assert anything run the smoke
-    helper rather than a runner, which is what lets them follow the machine
-    rather than name it.
-    """
-    command = ["python3", "./tests/scripts/qemu-smoke.py"]
-    if arch != "aarch64":
-        command += ["--arch", arch]
-    return command
-
-
-def timeout_scale() -> float:
-    """How much slower this machine is than the one the budgets were written on.
-
-    Budgets scaled by architecture and by nothing else, which is half the
-    question. The other half is the host: a GitHub runner has no hardware
-    virtualisation, so every guest is interpreted and everything takes several
-    times longer than it does on the Mac these numbers came from. The
-    fragmentation step is the example -- 96 to 98 seconds here across five
-    consecutive runs, and past its 360-second budget on every CI run.
-
-    Declared rather than detected. A gate that guesses at its host will
-    eventually guess wrong and silently give itself more room, which is how a
-    budget stops meaning anything; an environment that knows it is slow says so.
-    """
-    raw = os.environ.get("XAIOS_GATE_TIMEOUT_SCALE", "1")
-    try:
-        scale = float(raw)
-    except ValueError:
-        return 1.0
-    # A scale below 1 would tighten budgets, which is not what this is for.
-    return scale if scale >= 1.0 else 1.0
-
-
-def smoke_timeout(arch: str, base: int) -> int:
-    """A budget scaled to the machine rather than to the fastest one.
-
-    RISC-V runs the same closure through an interpreter with no host
-    acceleration available for it. Gates were written with AArch64's numbers,
-    and reusing them would report a slower machine as a broken one.
-    """
-    scaled = base * 4 if arch == "riscv64" else base
-    return int(scaled * timeout_scale())
-
-
-# ------------------------------------------------------- reading a screen
-#
-# What a full-screen program sent, as what it put on the screen.
-#
-# Gates used to read these streams as teletype transcripts: strip the escapes,
-# split on newlines, and look at the lines. That worked while programs redrew
-# by printing whole frames. It stopped working when drawing moved into the
-# screen framework, which sends only the cells that changed and moves the
-# cursor between them -- there are no newlines to split on any more, a line of
-# text can arrive in three pieces, and a substring that is plainly on the
-# screen is not in the stream. Two checks in the external client suite went
-# red for exactly that and stayed red because nothing had run them.
-#
-# So the stream is replayed into a grid instead, which is what the terminal on
-# the other end does. Only what these programs actually use is implemented:
-# absolute cursor moves, erase display and line, carriage return and line
-# feed, and enough of the private modes to ignore them. Colours are dropped --
-# a gate that wants a colour should look for its escape in the bytes, which is
-# unambiguous; a gate that wants text should look at the screen.
-
-def render_terminal_frames(data: bytes, columns: int = 240,
-                           rows: int = 80) -> List[List[str]]:
-    """Every screen this stream showed, in order.
-
-    A frame ends where the program clears the display and starts another, and
-    the last one is whatever was on screen when the stream stopped. A gate
-    asking "did this ever appear" needs all of them: the final screen of a
-    program that was asked to show its help and then hide it again is the one
-    without the help on it.
-    """
-    frames: List[List[str]] = []
-    _replay(data, columns, rows, frames)
-    return frames
-
-
-def render_terminal(data: bytes, columns: int = 240, rows: int = 80) -> List[str]:
-    """Replay a terminal byte stream and return the rows it leaves on screen."""
-    frames = render_terminal_frames(data, columns, rows)
-    return frames[-1] if frames else []
-
-
-def _replay(data: bytes, columns: int, rows: int,
-            frames: List[List[str]]) -> None:
-    grid = [[" "] * columns for _ in range(rows)]
-    row = 0
-    column = 0
-    index = 0
-    length = len(data)
-    text = data.decode("utf-8", "replace")
-    length = len(text)
-    while index < length:
-        character = text[index]
-        if character == "\x1b" and index + 1 < length and text[index + 1] == "[":
-            end = index + 2
-            while end < length and text[end] not in "@ABCDEFGHJKSTfhilmnrst":
-                end += 1
-            if end >= length:
-                break
-            body = text[index + 2:end]
-            final = text[end]
-            index = end + 1
-            if body.startswith("?"):
-                continue  # private modes: alternate screen, cursor visibility
-            parts = [int(p) if p.isdigit() else 0 for p in body.split(";")] or [0]
-            if final in "Hf":
-                row = max(0, (parts[0] if parts and parts[0] else 1) - 1)
-                column = max(0, (parts[1] if len(parts) > 1 and parts[1] else 1) - 1)
-            elif final == "J":
-                mode = parts[0] if parts else 0
-                if mode == 2:
-                    frames.append(["".join(line).rstrip() for line in grid])
-                    grid = [[" "] * columns for _ in range(rows)]
-                    row = column = 0
-                elif mode == 0:
-                    for c in range(column, columns):
-                        grid[row][c] = " "
-                    for r in range(row + 1, rows):
-                        grid[r] = [" "] * columns
-            elif final == "K":
-                mode = parts[0] if parts else 0
-                start = column if mode == 0 else 0
-                stop = columns if mode in (0, 2) else column + 1
-                for c in range(start, min(stop, columns)):
-                    grid[row][c] = " "
-            elif final == "A":
-                row = max(0, row - max(1, parts[0]))
-            elif final == "B":
-                row = min(rows - 1, row + max(1, parts[0]))
-            elif final == "C":
-                column = min(columns - 1, column + max(1, parts[0]))
-            elif final == "D":
-                column = max(0, column - max(1, parts[0]))
-            continue
-        index += 1
-        if character == "\r":
-            column = 0
-        elif character == "\n":
-            row = min(rows - 1, row + 1)
-        elif character == "\b":
-            column = max(0, column - 1)
-        elif character in ("\x1b", "\x07"):
-            continue
-        else:
-            if 0 <= row < rows and 0 <= column < columns:
-                grid[row][column] = character
-            column += 1
-            if column >= columns:
-                column = columns - 1
-    frames.append(["".join(line).rstrip() for line in grid])
-
-
 # Where EDK2's RISC-V firmware lives, in the order to look.
 #
 # B-67: the RISC-V runner defaulted to the Homebrew path alone, so every UEFI
@@ -676,13 +345,3 @@ class Console:
     def close(self) -> None:
         self._stop.set()
         self._thread.join(timeout=2)
-
-
-def qemu_runner(arch: str) -> str:
-    """The script that starts this machine.
-
-    Gates that drive the boot themselves -- reading the console, cutting
-    power, rebooting -- cannot go through make, so they need the runner. They
-    should still not name one.
-    """
-    return f"./platform/qemu/run-qemu-{arch}.sh"

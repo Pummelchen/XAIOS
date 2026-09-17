@@ -47,6 +47,8 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   $KERNEL_BUILD_DIR/mmu_boot.o
   $KERNEL_BUILD_DIR/mmu_user.o
   $KERNEL_BUILD_DIR/pci.o
+  $KERNEL_BUILD_DIR/pci_ecam_bars.o
+  $KERNEL_BUILD_DIR/pci_ecam_msix.o
   $KERNEL_BUILD_DIR/gic.o
   $KERNEL_BUILD_DIR/gic_its.o
   $KERNEL_BUILD_DIR/smp.o
@@ -82,6 +84,7 @@ else
   $KERNEL_BUILD_DIR/early_contract.o
   $KERNEL_BUILD_DIR/early_idt.o
   $KERNEL_BUILD_DIR/early_post_smp.o
+  $KERNEL_BUILD_DIR/early_ap.o
   $KERNEL_BUILD_DIR/engine_packed.o
   $KERNEL_BUILD_DIR/timer.o
   $KERNEL_BUILD_DIR/platform.o
@@ -113,6 +116,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/klog_ring.o
   $KERNEL_BUILD_DIR/telemetry.o
   $KERNEL_BUILD_DIR/panic.o
+  $KERNEL_BUILD_DIR/panic_render.o
   $KERNEL_BUILD_DIR/assert.o
   $KERNEL_BUILD_DIR/stack_canary.o
   $KERNEL_BUILD_DIR/nvme.o

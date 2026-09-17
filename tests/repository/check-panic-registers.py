@@ -39,6 +39,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "kernel" / "core" / "panic.c"
+# The renderer moved to its own translation unit in the file-size split; the
+# check reads the same function, from the file that now defines it.
+RENDER_SOURCE = ROOT / "kernel" / "core" / "panic_render.c"
 
 # x86-64 names its registers in Microsoft's order and AArch64 prints x0..x31;
 # both are their own vocabulary and are read from the same two places. Only the
@@ -84,7 +87,7 @@ def printed_names(branch: str) -> list[str]:
 def main() -> int:
     text = SOURCE.read_text(encoding="utf-8")
     capture = function_body(text, "static void capture_gp_regs")
-    render = function_body(text, "static void render_gp_regs")
+    render = function_body(RENDER_SOURCE.read_text(encoding="utf-8"), "void panic_render_gp_regs")
 
     capture_branch = riscv_branch(capture)
     render_branch = riscv_branch(render)
