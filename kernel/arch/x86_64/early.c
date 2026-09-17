@@ -50,6 +50,13 @@
 #define validate_virtio_block_operation xaios_x86_pci_validate_virtio_block
 #define validate_virtio_network_operation xaios_x86_pci_validate_virtio_network
 
+/* The GDT/TSS construction moved to early_gdt.c; these aliases keep its two
+ * call sites -- x86_64_kmain and x86_64_ap_entry -- spelling it the way they
+ * did. The BSP's rsp0 is reached through the scalar accessors the platform
+ * hooks below call, never through a pointer into that file's state. */
+#define install_gdt_tss xaios_x86_gdt_install
+#define install_ap_gdt_tss xaios_x86_gdt_install_ap
+
 #define COM1_PORT UINT16_C(0x3f8)
 #define PAGE_SIZE UINT64_C(4096)
 #define X86_EFLAGS_ID UINT64_C(1 << 21)
@@ -77,9 +84,9 @@
 #define X86_USER_BASE UINT64_C(0x100000000)
 #define X86_USER_WINDOW_SIZE UINT64_C(0x1000000)
 #define X86_USER_LOG_MAX UINT64_C(4096)
-#define X86_KERNEL_STACK_SIZE UINT64_C(524288)
-#define X86_KERNEL_STACK_GUARD_BYTES UINT32_C(64)
-#define X86_KERNEL_STACK_GUARD_VALUE UINT8_C(0xa5)
+/* X86_KERNEL_STACK_SIZE, _GUARD_BYTES and _GUARD_VALUE moved to
+ * early_module.h: early_gdt.c sizes the BSP syscall stack with them and this
+ * file guards the kernel and syscall stacks with them. */
 #define IDT_PRESENT UINT8_C(0x80)
 #define IDT_INTERRUPT_GATE UINT8_C(0x0e)
 #define IDT_TRAP_GATE UINT8_C(0x0f)
@@ -94,10 +101,8 @@ typedef struct x86_64_idt_entry {
   uint32_t zero;
 } __attribute__((packed)) x86_64_idt_entry_t;
 
-typedef struct x86_64_idtr {
-  uint16_t limit;
-  uint64_t base;
-} __attribute__((packed)) x86_64_idtr_t;
+/* x86_64_idtr_t moved to early_module.h, where early_gdt.c's builder and the
+ * two loaders in this file both read it. */
 
 typedef struct x86_64_exception_frame {
   uint64_t r15;
@@ -178,8 +183,8 @@ extern void x86_64_irq_34(void);
 extern void x86_64_irq_35(void);
 extern void x86_64_irq_128(void);
 extern void x86_64_irq_255(void);
-extern void x86_64_load_gdt(const x86_64_idtr_t *gdtr);
-extern void x86_64_load_tss(void);
+/* x86_64_load_gdt/x86_64_load_tss are declared in early_gdt.c now: the two
+ * functions here that called them moved there with them. */
 extern void x86_64_ring3_resume(void);
 extern uint8_t x86_64_ap_trampoline_start[];
 extern uint8_t x86_64_ap_trampoline_end[];
@@ -194,10 +199,9 @@ extern uint8_t x86_64_ap_trampoline_gdt_offset[];
 
 static x86_64_idt_entry_t g_idt[256] __attribute__((aligned(16)));
 extern void (*const x86_64_device_irq_stubs[64])(void);
-static uint64_t g_gdt[7] __attribute__((aligned(16)));
-static x86_64_tss_t g_tss;
-static uint8_t g_syscall_stack[X86_KERNEL_STACK_SIZE]
-    __attribute__((aligned(PAGE_SIZE)));
+/* g_gdt, g_tss and g_syscall_stack moved to early_gdt.c with the builder that
+ * fills them; this file reaches the BSP's rsp0 through the scalar accessors
+ * xaios_x86_gdt_bsp_rsp0/_set_bsp_rsp0. A CPU record's own TSS is still here. */
 static x86_64_contract_state_t g_contract;
 static x86_64_hardware_gate_state_t g_hardware_gate;
 static uint32_t g_exception_vectors_installed;
@@ -420,15 +424,24 @@ void x86_64_platform_set_user_resume(uint64_t stack) {
   if (depth >= X86_USER_NESTING_MAX) {
     panic_halt(COM1_PORT, "user nesting depth");
   }
-  x86_64_tss_t *tss = ordinal == g_bsp_ordinal ? &g_tss : &record->tss;
+  /* The BSP's TSS lives in early_gdt.c now, so its rsp0 is read and written
+   * through the scalar accessors rather than a pointer into that state. The
+   * two stores and the increment keep the order they had before the split. */
+  int bsp = ordinal == g_bsp_ordinal;
   record->user_resume_rsp[depth] = stack;
-  record->user_previous_rsp0[depth] = tss->rsp0;
+  record->user_previous_rsp0[depth] =
+      bsp ? xaios_x86_gdt_bsp_rsp0() : record->tss.rsp0;
   ++record->user_nesting_depth;
 
   uint64_t syscall_stack_low =
       record->syscall_stack_top - X86_KERNEL_STACK_SIZE;
   if (stack > syscall_stack_low && stack < record->syscall_stack_top) {
-    tss->rsp0 = stack & ~UINT64_C(0xf);
+    uint64_t rsp0 = stack & ~UINT64_C(0xf);
+    if (bsp) {
+      xaios_x86_gdt_set_bsp_rsp0(rsp0);
+    } else {
+      record->tss.rsp0 = rsp0;
+    }
   }
 }
 
@@ -444,8 +457,11 @@ uint64_t x86_64_platform_user_resume(void) {
   }
   --depth;
   uint64_t stack = record->user_resume_rsp[depth];
-  x86_64_tss_t *tss = ordinal == g_bsp_ordinal ? &g_tss : &record->tss;
-  tss->rsp0 = record->user_previous_rsp0[depth];
+  if (ordinal == g_bsp_ordinal) {
+    xaios_x86_gdt_set_bsp_rsp0(record->user_previous_rsp0[depth]);
+  } else {
+    record->tss.rsp0 = record->user_previous_rsp0[depth];
+  }
   record->user_resume_rsp[depth] = 0U;
   record->user_previous_rsp0[depth] = 0U;
   record->user_nesting_depth = depth;
@@ -549,65 +565,10 @@ static void idt_set_user_gate(uint8_t vector, void (*handler)(void)) {
   g_idt[vector].type_attr = IDT_PRESENT | UINT8_C(0x60) | IDT_TRAP_GATE;
 }
 
-static void install_gdt_tss(uint16_t serial_base) {
-  for (uint32_t i = 0U; i < 7U; ++i) g_gdt[i] = 0U;
-  g_gdt[1] = UINT64_C(0x00af9a000000ffff);
-  g_gdt[2] = UINT64_C(0x00cf92000000ffff);
-  g_gdt[3] = UINT64_C(0x00cff2000000ffff);
-  g_gdt[4] = UINT64_C(0x00affa000000ffff);
-  g_tss = (x86_64_tss_t){0};
-  for (uint32_t i = 0U; i < X86_KERNEL_STACK_GUARD_BYTES; ++i) {
-    g_syscall_stack[i] = X86_KERNEL_STACK_GUARD_VALUE;
-  }
-  g_tss.rsp0 = (uint64_t)(uintptr_t)(g_syscall_stack + sizeof(g_syscall_stack));
-  g_tss.io_map_base = sizeof(g_tss);
-  uint64_t base = (uint64_t)(uintptr_t)&g_tss;
-  uint64_t limit = sizeof(g_tss) - 1U;
-  g_gdt[5] = (limit & UINT64_C(0xffff)) |
-             ((base & UINT64_C(0xffffff)) << 16U) |
-             (UINT64_C(0x89) << 40U) |
-             ((limit & UINT64_C(0xf0000)) << 32U) |
-             ((base & UINT64_C(0xff000000)) << 32U);
-  g_gdt[6] = base >> 32U;
-  x86_64_idtr_t gdtr = {
-      .limit = (uint16_t)(sizeof(g_gdt) - 1U),
-      .base = (uint64_t)(uintptr_t)g_gdt,
-  };
-  x86_64_load_gdt(&gdtr);
-  x86_64_load_tss();
-  serial_puts(serial_base, "x86_64: GDT/TSS installed rsp0=");
-  serial_hex64(serial_base, g_tss.rsp0);
-  serial_puts(serial_base, "\n");
-}
-
-static void install_ap_gdt_tss(x86_64_cpu_record_t *record) {
-  if (record == 0 || record->kernel_stack_top == 0U ||
-      record->syscall_stack_top == 0U) {
-    panic_halt(COM1_PORT, "AP GDT inputs");
-  }
-  for (uint32_t i = 0U; i < 7U; ++i) record->gdt[i] = 0U;
-  record->gdt[1] = UINT64_C(0x00af9a000000ffff);
-  record->gdt[2] = UINT64_C(0x00cf92000000ffff);
-  record->gdt[3] = UINT64_C(0x00cff2000000ffff);
-  record->gdt[4] = UINT64_C(0x00affa000000ffff);
-  record->tss = (x86_64_tss_t){0};
-  record->tss.rsp0 = record->syscall_stack_top;
-  record->tss.io_map_base = sizeof(record->tss);
-  uint64_t base = (uint64_t)(uintptr_t)&record->tss;
-  uint64_t limit = sizeof(record->tss) - 1U;
-  record->gdt[5] = (limit & UINT64_C(0xffff)) |
-                   ((base & UINT64_C(0xffffff)) << 16U) |
-                   (UINT64_C(0x89) << 40U) |
-                   ((limit & UINT64_C(0xf0000)) << 32U) |
-                   ((base & UINT64_C(0xff000000)) << 32U);
-  record->gdt[6] = base >> 32U;
-  x86_64_idtr_t gdtr = {
-      .limit = (uint16_t)(sizeof(record->gdt) - 1U),
-      .base = (uint64_t)(uintptr_t)record->gdt,
-  };
-  x86_64_load_gdt(&gdtr);
-  x86_64_load_tss();
-}
+/* install_gdt_tss and install_ap_gdt_tss moved to early_gdt.c as
+ * xaios_x86_gdt_install and xaios_x86_gdt_install_ap, together with g_gdt,
+ * g_tss and g_syscall_stack. The aliases at the top of this file keep both
+ * call sites -- x86_64_kmain and x86_64_ap_entry -- spelling them as before. */
 
 #if XAIOS_X86_COMMON_RUNTIME
 static int kernel_stack_guard_valid(uint32_t ordinal) {
@@ -1290,8 +1251,8 @@ static void start_application_processors(uint16_t serial_base,
   for (uint32_t i = 0U; i < g_cpu_record_count; ++i) {
     if (g_cpu_records[i].apic_id == bsp_id) {
       g_cpu_records[i].online = 1U;
-      g_cpu_records[i].kernel_stack_top = g_tss.rsp0;
-      g_cpu_records[i].syscall_stack_top = g_tss.rsp0;
+      g_cpu_records[i].kernel_stack_top = xaios_x86_gdt_bsp_rsp0();
+      g_cpu_records[i].syscall_stack_top = xaios_x86_gdt_bsp_rsp0();
       g_bsp_ordinal = i;
       bsp_found = 1U;
     }

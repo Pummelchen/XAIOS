@@ -37,10 +37,10 @@
  * the UDP transmit/expire data plane -- find, allocate, expire and transmit --
  * live in network_stack_udp.c, reached through the cursor-plus-commit accessors
  * declared in network_stack_udp.h. The receive dispatch inside
- * network_poll_tick_locked() still waits: it is interleaved with the poll tail
+ * network_poll_tick_locked() waited then: it is interleaved with the poll tail
  * and reaches both flow tables, the descriptors and the rings from inside the
- * loop, and its early returns leave the whole function, so it wants more
- * accessors than either of these cuts did.
+ * loop, and its early returns leave the whole function. It moved later, with
+ * the rest of the poll plane, once those reads had accessors to cross with.
  *
  * The two cuts after those are leaves of that state block. The
  * application/external-session plane -- the synthetic IPv4 frames the loopback
@@ -72,8 +72,22 @@
  * the whole poll reports that as its non-zero return so the poll tail is
  * still skipped exactly where it was.
  *
- * The rest of this file -- the TCP flow table, its counters, the receive
- * dispatch and the poll tail -- is still file-scope state, and the
+ * The two cuts after those are the poll plane and the local-address surface.
+ * The poll plane -- the receive dispatch with its IPv4/IPv6 fragment
+ * reassembly, the B-44 poll-gap accounting, and the poll-tick entry points and
+ * counters -- lives in network_stack_poll.c, reached through
+ * network_stack_poll.h. The dispatch reads only accessors this file already
+ * had (net_stack_local_mac(), net_stack_persistent_ready(),
+ * net_stack_note_ipv6_rx()) and public handlers, so the one thing that crosses
+ * back is the TCP drain cursor: tcp_drain_pending() walks the flow table, so
+ * it stays here as net_stack_tcp_drain_pending(). The local-address accessors
+ * -- the SLAAC/link-local and public IPv6 reads, the IPv4 read, the MAC read
+ * and the DHCPv6 lease adoption -- live in network_stack_local.c and own no
+ * state at all; they read this file's flag and MAC through those same existing
+ * accessors.
+ *
+ * The rest of this file -- the TCP flow table, its counters, the flow
+ * lifecycle and the TCP frame handlers -- is still file-scope state, and the
  * row-copying accessors are the pattern the next cut should follow. The TCP
  * frame handlers hold a live pointer into the flow table across hundreds of
  * lines, so they stay with it until that table's own cursor-plus-commit cut is
@@ -85,9 +99,8 @@
  *   shared state                   counters, TCP flow table
  *   guard                          see xaios_reentrant_lock; C-01
  *   helpers                        byte order, checksums, frame construction
- *   receive path                   frame classification and dispatch
- *   TCP flow state machine         moved to network_stack_tcp_flow.c
- *   TCP segment builder/transmit   moved to network_stack_tcp_segment.c
+ *   TCP flow table                 find, allocate, lifecycle, timers
+ *   TCP frame handlers             IPv4 and IPv6 receive classification
  *   listener, accept, socket map   moved to network_stack_listener.c
  *   IPv6 address state             moved to network_stack_v6.c
  *   queue bindings, packet pool    moved to network_stack_packet.c
@@ -96,6 +109,8 @@
  *   link replies and ping          moved to network_stack_icmp.c
  *   app/external session plane     moved to network_stack_app.c
  *   boot self-test                 moved to network_stack_selftest.c
+ *   poll, dispatch, gap accounting moved to network_stack_poll.c
+ *   local-address accessors        moved to network_stack_local.c
  *   public API                     the entry points a syscall reaches
  */
 
@@ -105,6 +120,7 @@
 #include "network_stack_icmp.h"
 #include "network_stack_listener.h"
 #include "network_stack_packet.h"
+#include "network_stack_poll.h"
 #include "network_stack_selftest.h"
 #include "network_stack_udp.h"
 #include "network_stack_udp_rx.h"
@@ -133,10 +149,6 @@
 #include <xaios/network_config.h>
 
 /* Janeway — “Break off your pursuit or we'll open fire.” */
-
-/* Twice the receive ring depth, so one poll can clear a full ring and the
-   refills that land while it works. */
-#define NETWORK_POLL_RX_BUDGET 16U
 
 #define NETWORK_TCP_MAX_RETRANSMITS 5U
 
@@ -232,17 +244,8 @@ static uint32_t g_persistent_initialized;
    network_stack_icmp.h. */
 uint32_t net_stack_persistent_ready(void) { return g_persistent_initialized; }
 
-static uint64_t g_poll_tick_count;
-/* Polls taken by the CPU carrying the network tick, counted apart from the
-   ones a syscall makes. See network_tick_poll_count() in the header. */
-static uint64_t g_tick_poll_count;
-#define NETWORK_POLL_GAP_OUTAGE_NS UINT64_C(1000000000)
-#define NETWORK_POLL_GAP_RECORD_LINES 32U
-
-static uint64_t g_poll_last_ns;
-static uint64_t g_poll_gap_max_ns;
-static uint64_t g_poll_gap_outage_count;
-static uint32_t g_poll_gap_record_lines;
+/* The poll-gap state and the poll-tick counters moved to
+   network_stack_poll.c with the accounting that owns them. */
 static uint32_t g_tcp_drain_cursor;
 static uint64_t g_ipv6_rx_count;
 
@@ -285,27 +288,9 @@ static uint32_t g_tcp_latency_count;
    the rest of this file uses and the row types they speak. */
 
 
-xaios_status_t network_stack_adopt_dhcpv6(const xaios_ip_addr_t *address,
-                                          uint32_t valid_lifetime_s) {
-  if (address == 0 || address->family != XAIOS_IP_FAMILY_V6) {
-    return XAIOS_ERR_INVALID;
-  }
-  if (valid_lifetime_s == 0U) return XAIOS_ERR_INVALID;
-  uint64_t now_ns = timer_now_ns();
-  uint64_t lifetime_ns = (uint64_t)valid_lifetime_s * UINT64_C(1000000000);
-  uint64_t valid_until_ns =
-      lifetime_ns > UINT64_MAX - now_ns ? UINT64_MAX : now_ns + lifetime_ns;
-  network_lock();
-  /* The lease, and the public address it becomes when it is globally
-     routable, are written together under the guard the moved code used. */
-  net_v6_adopt_dhcpv6(address, valid_until_ns);
-  network_unlock();
-  klog("network: IPv6 address configured by DHCPv6 valid_s=%u (%s)\n",
-       valid_lifetime_s,
-       net_v6_is_global_unicast(address) != 0 ? "global" : "local");
-  return XAIOS_OK;
-}
-
+/* The local-address accessors and network_stack_adopt_dhcpv6() moved to
+   network_stack_local.c; they own no state here and read this file's flag and
+   MAC through the existing accessors. */
 static void record_latency(uint64_t *samples, uint32_t *count, uint64_t value) {
   if (*count < NETWORK_MAX_SAMPLES) {
     samples[*count] = value;
@@ -666,10 +651,7 @@ xaios_status_t network_stack_tcp_abort_flow(uint32_t flow_id) {
 void network_stack_init(void) {
   g_tcp_drain_cursor = 0U;
   socket_map_reset_exhausted();
-  g_poll_last_ns = 0U;
-  g_poll_gap_max_ns = 0U;
-  g_poll_gap_outage_count = 0U;
-  g_poll_gap_record_lines = 0U;
+  net_poll_reset_gap();
   net_packet_reset();
 
   for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
@@ -717,7 +699,10 @@ void network_stack_init(void) {
 /* network_stack_bind_queue() and network_stack_release_queue() moved to
    network_stack_packet.c with the binding table they own. */
 
-static void tcp_drain_pending(void) {
+/* The poll plane in network_stack_poll.c drains the pending TCP
+   transmissions; the cursor and the flow table it walks stayed here, so this
+   is the one symbol that crosses the boundary. Caller holds the guard. */
+void net_stack_tcp_drain_pending(void) {
   uint32_t start_index = g_tcp_drain_cursor;
   g_tcp_drain_cursor =
       (g_tcp_drain_cursor + 1U) % NETWORK_TCP_CONNECTIONS;
@@ -2078,10 +2063,7 @@ void network_init_persistent(void) {
      counted. Zero them here so a non-zero figure in a running machine means
      a running machine ran out. */
   socket_map_reset_exhausted();
-  g_poll_last_ns = 0U;
-  g_poll_gap_max_ns = 0U;
-  g_poll_gap_outage_count = 0U;
-  g_poll_gap_record_lines = 0U;
+  net_poll_reset_gap();
   g_half_open_count = 0;
   g_tcp_drain_cursor = 0U;
   sockbuf_pool_init();
@@ -2091,8 +2073,7 @@ void network_init_persistent(void) {
   }
   net_v6_init(g_local_mac);
   g_persistent_initialized = 1;
-  g_poll_tick_count = 0;
-  g_tick_poll_count = 0;
+  net_poll_reset_ticks();
   net_icmp_reset();
   g_ipv6_rx_count = 0;
   /* RFC 4861 has a host solicit a router on startup rather than wait for the
@@ -2108,292 +2089,9 @@ void network_init_persistent(void) {
   klog("network: persistent mode initialized (dual-stack)\n");
 }
 
-xaios_status_t network_stack_local_ipv6(xaios_ip_addr_t *address) {
-  if (address == 0) return XAIOS_ERR_INVALID;
-  if (g_persistent_initialized == 0U) {
-    xaios_ip_addr_zero(address);
-    return XAIOS_ERR_NOT_FOUND;
-  }
-  net_v6_local_address(address, timer_now_ns());
-  return XAIOS_OK;
-}
-
-xaios_status_t network_wait_for_ipv6_slaac(uint64_t timeout_ns) {
-  if (g_persistent_initialized == 0U || timeout_ns == 0U) {
-    return XAIOS_ERR_INVALID;
-  }
-  /* A router advertisement answers the solicitation within milliseconds, but
-     nothing polls the interface between bringing it up and starting services,
-     so the reply would sit unread in the receive ring and the machine would
-     come up with a link-local address only. Poll for it here, re-soliciting
-     the way RFC 4861 does rather than waiting on one packet. */
-  xaios_ip_addr_t address;
-  uint64_t started = timer_now_ns();
-  uint64_t next_solicit = started + UINT64_C(500000000);
-  uint32_t solicits = 1U;
-  for (;;) {
-    network_poll_tick();
-    if (net_v6_slaac_configured() != 0 &&
-        network_stack_local_ipv6(&address) == XAIOS_OK) {
-      return XAIOS_OK;
-    }
-    uint64_t now = timer_now_ns();
-    if (now - started >= timeout_ns) break;
-    if (now >= next_solicit && solicits < 3U) {
-      xaios_ip_addr_t link_local_v6;
-      net_v6_link_local(&link_local_v6);
-      (void)ndp_send_router_solicitation(g_local_mac, &link_local_v6);
-      ++solicits;
-      next_solicit = now + UINT64_C(500000000);
-    }
-  }
-  klog("network: no usable IPv6 prefix after %u solicitations; link-local "
-       "only\n",
-       solicits);
-  return XAIOS_ERR_NOT_FOUND;
-}
-
-uint32_t network_stack_local_ipv4(void) { return network_config_local_ipv4(); }
-
-xaios_status_t network_stack_local_mac(uint8_t mac[6]) {
-  if (mac == 0 || g_persistent_initialized == 0U) return XAIOS_ERR_NOT_FOUND;
-  for (uint32_t i = 0U; i < 6U; ++i) mac[i] = g_local_mac[i];
-  return XAIOS_OK;
-}
-
-xaios_status_t network_stack_local_public_ipv6(xaios_ip_addr_t *address) {
-  if (address == 0) return XAIOS_ERR_INVALID;
-  if (g_persistent_initialized == 0U ||
-      net_v6_public_address(address, timer_now_ns()) == 0) {
-    xaios_ip_addr_zero(address);
-    return XAIOS_ERR_NOT_FOUND;
-  }
-  return XAIOS_OK;
-}
-
-
-static int network_reassemble_incoming(uint8_t *frame, uint32_t *frame_len,
-                                       uint16_t ethertype) {
-  uint64_t completed_len = *frame_len;
-  xaios_status_t status;
-
-  if (ethertype == NETWORK_ETHERTYPE_IPV4) {
-    if (!ipv4_validate_incoming(frame, completed_len)) {
-      return 0;
-    }
-    if (!ipv4_is_fragment(frame, completed_len)) {
-      return 1;
-    }
-    status = ipv4_reassemble(frame, &completed_len);
-  } else if (ethertype == NETWORK_ETHERTYPE_IPV6) {
-    if (!ipv6_is_fragment_v6(frame, completed_len)) {
-      return 1;
-    }
-    status = ipv6_reassemble_v6(frame, &completed_len);
-  } else {
-    return 0;
-  }
-
-  if (status != XAIOS_OK || completed_len > NETWORK_BUFFER_SIZE) {
-    return 0;
-  }
-  *frame_len = (uint32_t)completed_len;
-  return 1;
-}
-
-/* B-44: how long the stack went undriven, and saying so.
-
-   Most of this poll comes from the network syscalls a process makes and from
-   wait_events, and on a booted machine the process making those calls is sshd
-   -- which the kernel starts as its last act, on the boot CPU, after switching
-   preemption and the periodic timer off (kmain.c). One secondary CPU carries a
-   network tick (OD-011) whose interrupt wakes it so its idle loop polls this
-   stack, and that is what bounds the window a blocking call in that loop
-   opens. Before the tick, a pause anywhere in the
-   loop was a total network outage: nothing came off the receive ring, no ACK
-   left, no retransmit fired, no flow expired.
-
-   Whether the arrangement should change was a design question and is argued
-   in wiki/Architecture.md; the timer was chosen and is landed. What was
-   indefensible is that it was invisible:
-   from inside, a stack that has not run for ten seconds is indistinguishable
-   from a quiet network, and from outside it is indistinguishable from the
-   machine having gone away. So the gap between consecutive polls is measured
-   here, the longest one is kept, and a gap long enough to be an outage says
-   so on the console.
-
-   Measured only while a listener is registered. With no listener there is
-   nothing the poll is late for, and a machine with no network service would
-   otherwise report enormous gaps that mean nothing -- a metric that fires on
-   an idle machine is a metric nobody reads. */
-static uint32_t listeners_active_unlocked(void) {
-  /* The registry counts its own live rows now; this keeps the name the
-     poll-gap code below reads. */
-  return network_listener_active_count();
-}
-
-static void network_note_poll_gap(uint64_t now_ns) {
-  uint32_t listeners = listeners_active_unlocked();
-  if (listeners == 0U) {
-    /* Nothing is waiting on this stack. Forget when it last ran, so the first
-       poll after a listener appears is not charged with the idle stretch
-       before it. */
-    g_poll_last_ns = 0U;
-    return;
-  }
-  uint64_t previous = g_poll_last_ns;
-  g_poll_last_ns = now_ns;
-  if (previous == 0U || now_ns <= previous) return;
-  uint64_t gap_ns = now_ns - previous;
-  if (gap_ns >= NETWORK_POLL_GAP_OUTAGE_NS) {
-    ++g_poll_gap_outage_count;
-    /* Rate-limited for the reason every log on this path is: a machine that
-       is stalling repeatedly must not turn its own diagnosis into the next
-       stall. First, then every sixty-fourth. */
-    if (g_poll_gap_outage_count == 1U ||
-        (g_poll_gap_outage_count % 64U) == 0U) {
-      klog("network: stack was not polled for ms=%lu outages=%lu listeners=%u "
-           "(nothing drives this poll but the processes calling into it)\n",
-           gap_ns / UINT64_C(1000000), g_poll_gap_outage_count, listeners);
-    }
-  }
-  if (gap_ns <= g_poll_gap_max_ns) return;
-  g_poll_gap_max_ns = gap_ns;
-  /* Every new maximum, which is a short and self-limiting sequence: it climbs
-     to the cadence of whatever is driving the poll and then stops. Capped all
-     the same, so a machine that degrades steadily cannot fill the console. */
-  if (g_poll_gap_record_lines >= NETWORK_POLL_GAP_RECORD_LINES) return;
-  ++g_poll_gap_record_lines;
-  klog("network: longest gap between polls us=%lu polls=%lu tick=%lu "
-       "listeners=%u\n",
-       g_poll_gap_max_ns / UINT64_C(1000), g_poll_tick_count,
-       __atomic_load_n(&g_tick_poll_count, __ATOMIC_RELAXED), listeners);
-}
-
-uint64_t network_poll_gap_max_ns(void) { return g_poll_gap_max_ns; }
-uint64_t network_poll_gap_outage_count(void) {
-  return g_poll_gap_outage_count;
-}
-
-/* The network's own work, under the guard. `operations_tick()` is deliberately
-   not here: it is the power path, it quiesces storage and it can stop the
-   machine, and it belongs to whichever caller is in a position to do that. Both
-   public entry points call it first -- `network_poll_tick` for a syscall and
-   `network_poll_tick_from_carrier` for the tick CPU's idle loop, both in thread
-   context -- so this function stays the network's work and nothing else. */
-static void network_poll_tick_locked(void) {
-  if (g_persistent_initialized == 0) {
-    return;
-  }
-  uint64_t now_ns = timer_now_ns();
-  network_note_poll_gap(now_ns);
-  ntp_tick(now_ns);
-  net_v6_expire_public(now_ns);
-  net_ping_expire(now_ns);
-  uint8_t rx_buf[NETWORK_BUFFER_SIZE];
-  ++g_poll_tick_count;
-  /* Take everything the device has queued rather than one frame per call. The
-     receive ring holds a handful of buffers, so draining only the head leaves
-     a link with steady inbound traffic permanently full: the device then drops
-     what arrives, and the guest answers nothing it was not already holding.
-     An interrupt hides this by draining promptly; a platform with none, and a
-     poll that runs only inside network syscalls, does not. Bounded so a busy
-     link cannot hold the poll lock indefinitely. */
-  for (uint32_t drained = 0U; drained < NETWORK_POLL_RX_BUDGET; ++drained) {
-    uint32_t frame_len = network_device_rx_poll(rx_buf, sizeof(rx_buf));
-    if (frame_len == 0) {
-      break;
-    }
-    /* A frame is the only way an external peer makes a socket readable, so
-       this is where a waiter is told its answer has expired. Before the
-       frame is parsed rather than after: what it turns into -- data, a
-       connection, a close -- all change readiness, and none of them are
-       worth distinguishing here. */
-    network_readiness_note();
-  if (frame_len < 14U) {
-    return;
-  }
-  uint16_t ethertype = net_wire_read_u16_be(rx_buf + 12U);
-  if (ethertype == 0x0806U) {
-    net_arp_handle_frame(rx_buf, frame_len, g_local_mac);
-  } else if (ethertype == NETWORK_ETHERTYPE_IPV4) {
-    if (frame_len < 34U ||
-        !network_reassemble_incoming(rx_buf, &frame_len, ethertype)) {
-      return;
-    }
-    uint8_t protocol = rx_buf[23U];
-    if (protocol == NETWORK_IP_PROTO_UDP &&
-        ntp_process_ipv4_frame(rx_buf, frame_len, now_ns) == XAIOS_OK) {
-      return;
-    }
-    if (protocol == NETWORK_IP_PROTO_UDP &&
-        dns_process_ipv4_frame(rx_buf, frame_len, now_ns) == XAIOS_OK) {
-      dns_tick(now_ns);
-      return;
-    }
-    if (protocol == XAIOS_IPV4_PROTO_ICMP) {
-      if (net_icmp_handle_ipv4(rx_buf, frame_len, now_ns, g_local_mac) != 0) {
-        return;
-      }
-    } else if (protocol == NETWORK_IP_PROTO_UDP) {
-      network_stack_process_udp_frame(rx_buf, frame_len);
-    } else if (protocol == NETWORK_IP_PROTO_TCP) {
-      (void)network_stack_process_tcp_frame(rx_buf, frame_len);
-    }
-  } else if (ethertype == NETWORK_ETHERTYPE_IPV6) {
-    ++g_ipv6_rx_count;
-    if (frame_len < 54U ||
-        !network_reassemble_incoming(rx_buf, &frame_len, ethertype)) {
-      return;
-    }
-    uint8_t next_header = rx_buf[20U]; /* byte 6 of IPv6 at offset 14 */
-    if (next_header == XAIOS_IPV6_NEXT_ICMPV6) {
-      net_icmpv6_handle_frame(rx_buf, frame_len, now_ns, g_local_mac);
-    } else if (next_header == NETWORK_IP_PROTO_UDP) {
-      network_stack_process_udp_frame_v6(rx_buf, frame_len);
-    } else if (next_header == NETWORK_IP_PROTO_TCP) {
-      (void)network_stack_process_tcp_frame_v6(rx_buf, frame_len);
-    }
-  }
-  }
-  /* Drain pending TCP transmissions (SYN-ACK, data, ACK, FIN) */
-  dns_tick(now_ns);
-  network_stack_retransmit_tcp_flows(now_ns);
-  network_stack_expire_tcp_flows(now_ns);
-  tcp_drain_pending();
-}
-
-void network_poll_tick(void) {
-  network_lock();
-  /* The power path runs here and only here, which is where a shutdown is
-     asked for from. Called before the network's own work, as it always was. */
-  operations_tick();
-  network_poll_tick_locked();
-  /* The resolver's transport tick belongs inside this guard, not after it. It
-     mutates the pending query and drives the TCP flow carrying it, and dns.c's
-     own comment says the resolver shares this guard rather than holding one of
-     its own precisely because the poll calls back into it. Called after the
-     unlock it raced every dns_resolve_address on another CPU -- and once a tick
-     can arrive in interrupt context, which is what OD-011 adds, it would
-     re-enter a resolver call already in progress on this one. */
-  dns_transport_tick(timer_now_ns());
-  network_unlock();
-}
-
-void network_poll_tick_from_carrier(void) {
-  /* Thread context, so this is the whole poll: `operations_tick()` is the
-     power path and belongs here and on the syscall path, and nowhere else. */
-  network_poll_tick();
-  __atomic_add_fetch(&g_tick_poll_count, 1U, __ATOMIC_RELAXED);
-}
-
-uint64_t network_tick_poll_count(void) {
-  return __atomic_load_n(&g_tick_poll_count, __ATOMIC_RELAXED);
-}
-
-uint64_t network_poll_tick_count(void) {
-  return g_poll_tick_count;
-}
+/* The local-address accessors and network_stack_adopt_dhcpv6() moved to
+   network_stack_local.c; the receive dispatch, its fragment reassembly and the
+   poll-gap accounting moved to network_stack_poll.c. */
 
 uint64_t network_ipv6_rx_count(void) {
   return g_ipv6_rx_count;

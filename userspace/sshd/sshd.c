@@ -19,19 +19,19 @@
 #include "sshd_internal.h"
 #include "sshd_diagnostics.h"
 #include "sshd_console_ui.h"
+#include "sshd_config.h"
+#include "sshd_console_session.h"
 
 static sshd_stats_t g_server_stats;
-static xaios_admin_config_user_t g_runtime_config;
+xaios_admin_config_user_t g_runtime_config;
 /* Read by this file's console login state and by sshd_console_ui.c, which
    renders the login screen and decides whether the console opens a shell. */
 uint32_t g_password_auth_enabled;
 
-#define SSHD_CONSOLE_COMMAND_MAX UINT32_C(256)
-
 /* The console command line console_tick() edits. The rest of the console state
    is defined here too, because that hub reads and writes it directly every
    pass; sshd_console_ui.c reaches all of it through sshd_console_ui.h. */
-static char g_console_command[SSHD_CONSOLE_COMMAND_MAX];
+char g_console_command[SSHD_CONSOLE_COMMAND_MAX];
 char g_console_output[SSHD_CONSOLE_OUTPUT_MAX];
 uint32_t g_console_command_length;
 uint32_t g_console_ignore_lf;
@@ -42,9 +42,6 @@ nano_editor_t g_console_nano;
 pong_game_t g_console_pong;
 less_pager_t g_console_less;
 uint32_t g_console_auth_state;
-
-/* Defined below with the console session state they read and write. */
-static void console_set_username(const char *username);
 
 /* Running count of closed connections; log_durable_cost() is given it after
    each close and sshd_diagnostics.c prints it in its per-close line. */
@@ -78,53 +75,6 @@ int sshd_read_exact_file(const char *path, void *buffer, uint64_t size) {
   return bytes == (int)size && close_result == 0 ? 0 : -1;
 }
 
-static int config_record_valid(const xaios_admin_config_user_t *config) {
-  uint64_t checksum_offset =
-      (uint64_t)((const uint8_t *)&config->checksum -
-                 (const uint8_t *)config);
-  return config->magic == XAIOS_ADMIN_CONFIG_MAGIC &&
-         config->version == XAIOS_ADMIN_SCHEMA_VERSION &&
-         config->size == sizeof(*config) && config->generation != 0U &&
-         config->max_connections >= 1U &&
-         config->max_connections <= SSH_MAX_CONNECTIONS &&
-         config->max_channels_per_connection >= 1U &&
-         config->max_channels_per_connection <= SSH_CHANNELS_PER_CONNECTION &&
-         config->max_auth_attempts >= 1U &&
-         config->max_auth_attempts <= SSHD_MAX_AUTH_ATTEMPTS &&
-         config->command_rate_per_minute >= 1U &&
-         config->command_rate_per_minute <= 120U &&
-         config->password_auth <= XAIOS_ADMIN_PASSWORD_DEVELOPMENT &&
-         (config->password_auth == XAIOS_ADMIN_PASSWORD_DISABLED ||
-          XAIOS_PASSWORD_AUTH_AVAILABLE != 0) &&
-         config->reserved == 0U &&
-         config->checksum ==
-             sshd_fnv1a64_zero_range(config, sizeof(*config), checksum_offset,
-                                     sizeof(config->checksum));
-}
-
-static int load_runtime_config(void) {
-  xaios_admin_config_user_t config;
-  if (sshd_read_exact_file(XAIOS_ADMIN_CONFIG_PATH, &config,
-                           sizeof(config)) != 0 ||
-      !config_record_valid(&config)) {
-    ssh_mem_zero(&config, sizeof(config));
-    return -1;
-  }
-  g_runtime_config = config;
-  g_password_auth_enabled =
-      XAIOS_PASSWORD_AUTH_AVAILABLE != 0 &&
-      config.password_auth == XAIOS_ADMIN_PASSWORD_DEVELOPMENT;
-  return 0;
-}
-
-uint32_t sshd_max_channels_per_connection(void) {
-  return g_runtime_config.max_channels_per_connection;
-}
-
-uint32_t sshd_command_rate_per_minute(void) {
-  return g_runtime_config.command_rate_per_minute;
-}
-
 /* The active-connection count sshd_diagnostics.c prints in its stall lines.
    A value, not the statistics block: the counters stay here with the accept
    path that updates them. */
@@ -150,40 +100,6 @@ static uint64_t timer_now(void) {
   return xaios_clock_nanos();
 }
 
-/* Which background services this machine was told to start.
-
-   One list, one name per line, written by setup. A machine that has never
-   been set up has no file and everything starts, which is what every image
-   did before this.
-
-   Only the network listener is selectable today. The console is not a service
-   in this sense -- it is how a person reaches a machine that has no network,
-   and a switch that could turn it off is a switch that can strand a machine
-   nobody can reach. */
-#define SSHD_SERVICES_PATH "/etc/xaios_services"
-
-static int service_enabled(const char *name) {
-  char list[256];
-  int length = xaios_read_file(SSHD_SERVICES_PATH, list, sizeof(list) - 1U);
-  if (length <= 0) return 1; /* never configured: start everything */
-  list[length] = '\0';
-  uint32_t start = 0U;
-  for (uint32_t i = 0U; i <= (uint32_t)length; ++i) {
-    if (i != (uint32_t)length && list[i] != '\n' && list[i] != ',') continue;
-    uint32_t end = i;
-    while (end > start && (list[end - 1U] == '\r' || list[end - 1U] == ' ')) {
-      --end;
-    }
-    uint32_t j = 0U;
-    while (start + j < end && name[j] != '\0' && list[start + j] == name[j]) {
-      ++j;
-    }
-    if (name[j] == '\0' && start + j == end) return 1;
-    start = i + 1U;
-  }
-  return 0;
-}
-
 static int verify_ipv4_ready(void) {
   /* The kernel reaches this service only after NIC selection and IPv4 setup.
    * Keep SSH availability independent of a third-party DNS/TCP endpoint. */
@@ -191,130 +107,11 @@ static int verify_ipv4_ready(void) {
   return address != 0U && address != UINT32_MAX ? 0 : -1;
 }
 
-static void console_execute_command(void) {
-  g_console_command[g_console_command_length] = '\0';
-  console_write("\n");
-  if (g_console_command_length == 0U) {
-    console_prompt();
-    return;
-  }
-  char nano_argument[NANO_EDITOR_PATH_MAX];
-  if (console_nano_argument(g_console_command, nano_argument,
-                            sizeof(nano_argument)) == 0) {
-    (void)console_start_nano(g_console_command);
-  } else if (ssh_str_eq(g_console_command, "pong")) {
-    (void)console_start_pong();
-  } else if (g_console_command[0] == 'l' && g_console_command[1] == 'e' &&
-             g_console_command[2] == 's' && g_console_command[3] == 's' &&
-             (g_console_command[4] == '\0' || g_console_command[4] == ' ')) {
-    (void)console_start_less(g_console_command);
-  } else if (sshd_console_command_is_xtop(g_console_command)) {
-    (void)sshd_console_program_start(g_console_command,
-                                     sizeof(g_console_command),
-                                     console_username());
-  } else if (ssh_str_eq(g_console_command, "clear")) {
-    console_write("\x1b[2J\x1b[H");
-  } else if (ssh_str_eq(g_console_command, "exit") ||
-             ssh_str_eq(g_console_command, "logout") ||
-             ssh_str_eq(g_console_command, "quit")) {
-    (void)xaios_remote_login_session_close(SSHD_CONSOLE_SESSION_ID);
-    console_write("logout\n");
-    g_console_auth_state = SSHD_CONSOLE_AUTH_USER;
-    g_console_command_length = 0U;
-    console_write_login_prompt();
-    return;
-  } else {
-    u64 output_bytes = 0U;
-    /* Launch terminal applications with the same options the SSH channel
-       gives them, so xtop and friends render identically on both surfaces
-       rather than falling back to their plain snapshot form here. */
-    (void)ssh_terminal_promote_command(g_console_command,
-                                       sizeof(g_console_command),
-                                       sshd_console_columns(),
-                                       sshd_console_rows());
-    xaios_memzero(g_console_output, sizeof(g_console_output));
-    int status = xaios_remote_login_session(
-        SSHD_CONSOLE_SESSION_ID, console_username(), g_console_command,
-        g_console_output,
-        sizeof(g_console_output), &output_bytes);
-    if (output_bytes != 0U) {
-      (void)sshd_console_write_bytes(g_console_output, output_bytes);
-      if (g_console_output[output_bytes - 1U] != '\n') console_write("\n");
-    }
-    if (status < 0 && output_bytes == 0U) {
-      console_write("command failed: status=");
-      console_write_error(status);
-      console_write("\n");
-    }
-  }
-  g_console_command_length = 0U;
-  if (g_console_nano.active == 0U && g_console_pong.active == 0U &&
-      sshd_console_program_active() == 0 && g_console_less.active == 0U)
-    console_prompt();
-}
-
-static void console_auth_failed(void) {
-  sshd_auth_console_record_failure();
-  g_console_auth_state = SSHD_CONSOLE_AUTH_USER;
-  if (sshd_auth_console_lockout_active() != 0) {
-    console_write(
-        "Login incorrect\n"
-        "Too many failed attempts. Try again in 60 seconds.\n");
-    console_write_login_prompt();
-    return;
-  }
-  console_write("Login incorrect\n");
-  console_write_login_prompt();
-}
-
 void console_auth_succeeded(void) {
   sshd_auth_console_clear_failures();
   g_console_auth_state = SSHD_CONSOLE_AUTH_SHELL;
   console_write("XAIOS local console session opened\n");
   console_prompt();
-}
-
-static void console_submit_auth(void) {
-  uint32_t submitted_length = g_console_command_length;
-  g_console_command[g_console_command_length] = '\0';
-  console_write("\n");
-  if (sshd_auth_console_locked_out()) {
-    console_write("Locked out. Try again in a moment.\n");
-    console_write_login_prompt();
-    g_console_auth_state = SSHD_CONSOLE_AUTH_USER;
-    xaios_memzero(g_console_command, sizeof(g_console_command));
-    g_console_command_length = 0U;
-    return;
-  }
-  if (g_console_auth_state == SSHD_CONSOLE_AUTH_USER) {
-    if (sshd_auth_pin_available() != 0U &&
-        sshd_auth_pin_matches(g_console_command, submitted_length)) {
-      if (sshd_auth_pin_verify(g_console_command) != 0) {
-        console_auth_failed();
-      } else {
-        /* A PIN identifies the machine's account rather than naming one, so
-           it logs in as that account. */
-        console_set_account_username();
-        console_auth_succeeded();
-      }
-    } else if (!sshd_auth_user_exists(g_console_command)) {
-      console_write("Login incorrect\n");
-      console_write_login_prompt();
-      sshd_auth_console_record_failure();
-    } else {
-      console_set_username(g_console_command);
-      g_console_auth_state = SSHD_CONSOLE_AUTH_PASSWORD;
-      console_write("Password: ");
-    }
-  } else if (g_console_auth_state == SSHD_CONSOLE_AUTH_PASSWORD) {
-    if (sshd_auth_password_verify(console_username(), g_console_command) != 0) {
-      console_auth_failed();
-    } else {
-      console_auth_succeeded();
-    }
-  }
-  xaios_memzero(g_console_command, sizeof(g_console_command));
-  g_console_command_length = 0U;
 }
 
 static void console_tick(void) {
@@ -439,7 +236,7 @@ static void console_tick(void) {
    anything past the prompt. */
 static char g_console_username[SSHD_USERNAME_MAX];
 
-static void console_set_username(const char *username) {
+void console_set_username(const char *username) {
   uint32_t i = 0U;
   while (username[i] != '\0' && i + 1U < sizeof(g_console_username)) {
     g_console_username[i] = username[i];
@@ -493,37 +290,6 @@ static int valid_client_version(const uint8_t *version, uint32_t length) {
     if (version[i] < 32U || version[i] > 126U) return 0;
   }
   return 1;
-}
-
-static int command_starts_with(const char *command, const char *prefix) {
-  uint32_t i = 0U;
-  if (command == 0 || prefix == 0) return 0;
-  while (prefix[i] != '\0') {
-    if (command[i] != prefix[i]) return 0;
-    ++i;
-  }
-  return 1;
-}
-
-int sshd_reload_control_state(const char *command) {
-  if (command_starts_with(command, "xaiosctl config apply ")) {
-    if (load_runtime_config() != 0) return -1;
-    if (sshd_auth_load_users(g_password_auth_enabled) != 0) return -1;
-    if (sshd_auth_load_pin(g_password_auth_enabled) != 0) return -1;
-    ssh_log(SSH_LOG_INFO, "Applied SSH runtime configuration generation=%u\n",
-            g_runtime_config.generation);
-  } else if (command_starts_with(command, "xaiosctl auth key add ") ||
-             command_starts_with(command, "xaiosctl auth key remove ")) {
-    if (sshd_keys_load() != 0) return -1;
-  } else if (command_starts_with(command,
-                                 "xaiosctl auth host-key rotate")) {
-    if (ssh_host_key_reload() != 0) return -1;
-    for (uint32_t i = 0U; i < SSH_MAX_CONNECTIONS; ++i) {
-      ssh_connection_t *connection = ssh_conn_by_index(i);
-      if (connection != 0) connection->close_requested = 1U;
-    }
-  }
-  return 0;
 }
 
 static int send_auth_failure(ssh_connection_t *conn) {

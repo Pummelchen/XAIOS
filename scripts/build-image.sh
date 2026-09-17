@@ -722,6 +722,7 @@ else
   $KERNEL_BUILD_DIR/early_serial.o
   $KERNEL_BUILD_DIR/early_acpi.o
   $KERNEL_BUILD_DIR/early_fpu.o
+  $KERNEL_BUILD_DIR/early_gdt.o
   $KERNEL_BUILD_DIR/engine_packed.o
   $KERNEL_BUILD_DIR/timer.o
   $KERNEL_BUILD_DIR/platform.o
@@ -737,6 +738,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/boot_storage.o
   $KERNEL_BUILD_DIR/boot_apps.o
   $KERNEL_BUILD_DIR/boot_ui.o
+  $KERNEL_BUILD_DIR/boot_ui_render.o
+  $KERNEL_BUILD_DIR/boot_ui_term.o
   $KERNEL_BUILD_DIR/klog.o
   $KERNEL_BUILD_DIR/idle_wake.o
   $KERNEL_BUILD_DIR/input.o
@@ -757,6 +760,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/virtio_blk_handles.o
   $KERNEL_BUILD_DIR/virtio_net.o
   $KERNEL_BUILD_DIR/virtio_net_selftest.o
+  $KERNEL_BUILD_DIR/virtio_net_tx.o
+  $KERNEL_BUILD_DIR/virtio_net_setup.o
   $KERNEL_BUILD_DIR/e1000e.o
   $KERNEL_BUILD_DIR/vmxnet3.o
   $KERNEL_BUILD_DIR/net_device.o
@@ -795,6 +800,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/setup_apply.o
   $KERNEL_BUILD_DIR/xai_fs_admin.o
   $KERNEL_BUILD_DIR/service.o
+  $KERNEL_BUILD_DIR/service_registry.o
+  $KERNEL_BUILD_DIR/service_lifecycle.o
   $KERNEL_BUILD_DIR/syscall.o
   $KERNEL_BUILD_DIR/syscall_table.o
   $KERNEL_BUILD_DIR/syscall_socket.o
@@ -818,6 +825,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/remote_login_exec.o
   $KERNEL_BUILD_DIR/remote_login_copy.o
   $KERNEL_BUILD_DIR/remote_login_apps.o
+  $KERNEL_BUILD_DIR/remote_login_session.o
+  $KERNEL_BUILD_DIR/remote_login_archive_format.o
   $KERNEL_BUILD_DIR/remote_login_meta.o
   $KERNEL_BUILD_DIR/remote_login_parse.o
   $KERNEL_BUILD_DIR/operations.o
@@ -868,6 +877,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/network_stack_udp.o
   $KERNEL_BUILD_DIR/network_stack_udp_rx.o
   $KERNEL_BUILD_DIR/network_stack_icmp.o
+  $KERNEL_BUILD_DIR/network_stack_poll.o
+  $KERNEL_BUILD_DIR/network_stack_local.o
   $KERNEL_BUILD_DIR/network_stack_app.o
   $KERNEL_BUILD_DIR/network_stack_selftest.o
   $KERNEL_BUILD_DIR/network_config.o
@@ -923,6 +934,8 @@ compile_kernel "$ROOT_DIR/kernel/core/kmain.c" "$KERNEL_BUILD_DIR/kmain.o"
 compile_kernel "$ROOT_DIR/kernel/core/boot_storage.c" "$KERNEL_BUILD_DIR/boot_storage.o"
 compile_kernel "$ROOT_DIR/kernel/core/boot_apps.c" "$KERNEL_BUILD_DIR/boot_apps.o"
 compile_kernel "$ROOT_DIR/kernel/core/boot_ui.c" "$KERNEL_BUILD_DIR/boot_ui.o"
+compile_kernel "$ROOT_DIR/kernel/core/boot_ui_render.c" "$KERNEL_BUILD_DIR/boot_ui_render.o"
+compile_kernel "$ROOT_DIR/kernel/core/boot_ui_term.c" "$KERNEL_BUILD_DIR/boot_ui_term.o"
 compile_kernel "$ROOT_DIR/kernel/core/klog.c" "$KERNEL_BUILD_DIR/klog.o"
 compile_kernel "$ROOT_DIR/kernel/core/idle_wake.c" "$KERNEL_BUILD_DIR/idle_wake.o"
 compile_kernel "$ROOT_DIR/kernel/dev/input.c" "$KERNEL_BUILD_DIR/input.o"
@@ -958,6 +971,7 @@ compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_pci.c" "$KERNEL_BUILD_DIR/ear
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_serial.c" "$KERNEL_BUILD_DIR/early_serial.o"
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_acpi.c" "$KERNEL_BUILD_DIR/early_acpi.o"
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_fpu.c" "$KERNEL_BUILD_DIR/early_fpu.o"
+compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_gdt.c" "$KERNEL_BUILD_DIR/early_gdt.o"
   compile_kernel_simd "$ROOT_DIR/engine/src/packed.c" "$KERNEL_BUILD_DIR/engine_packed.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/timer.c" "$KERNEL_BUILD_DIR/timer.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/platform.c" "$KERNEL_BUILD_DIR/platform.o"
@@ -990,6 +1004,8 @@ compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_blk.c" "$KERNEL_BUILD_DIR/vir
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_blk_handles.c" "$KERNEL_BUILD_DIR/virtio_blk_handles.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_net.c" "$KERNEL_BUILD_DIR/virtio_net.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_net_selftest.c" "$KERNEL_BUILD_DIR/virtio_net_selftest.o"
+compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_net_tx.c" "$KERNEL_BUILD_DIR/virtio_net_tx.o"
+compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_net_setup.c" "$KERNEL_BUILD_DIR/virtio_net_setup.o"
 compile_kernel "$ROOT_DIR/kernel/dev/e1000e.c" "$KERNEL_BUILD_DIR/e1000e.o"
 compile_kernel "$ROOT_DIR/kernel/dev/vmxnet3.c" "$KERNEL_BUILD_DIR/vmxnet3.o"
 compile_kernel "$ROOT_DIR/kernel/dev/net_device.c" "$KERNEL_BUILD_DIR/net_device.o"
@@ -1028,6 +1044,8 @@ compile_kernel "$ROOT_DIR/kernel/dev/ram_block.c" "$KERNEL_BUILD_DIR/ram_block.o
 compile_kernel "$ROOT_DIR/kernel/runtime/setup_apply.c" "$KERNEL_BUILD_DIR/setup_apply.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xai_fs_admin.c" "$KERNEL_BUILD_DIR/xai_fs_admin.o"
 compile_kernel "$ROOT_DIR/kernel/user/service.c" "$KERNEL_BUILD_DIR/service.o"
+compile_kernel "$ROOT_DIR/kernel/user/service_registry.c" "$KERNEL_BUILD_DIR/service_registry.o"
+compile_kernel "$ROOT_DIR/kernel/user/service_lifecycle.c" "$KERNEL_BUILD_DIR/service_lifecycle.o"
 compile_kernel "$ROOT_DIR/kernel/user/syscall.c" "$KERNEL_BUILD_DIR/syscall.o"
 compile_kernel "$ROOT_DIR/kernel/user/syscall_table.c" "$KERNEL_BUILD_DIR/syscall_table.o"
 compile_kernel "$ROOT_DIR/kernel/user/syscall_socket.c" "$KERNEL_BUILD_DIR/syscall_socket.o"
@@ -1051,6 +1069,8 @@ compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_zip.c" "$KERNEL_BUILD_DIR/
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_exec.c" "$KERNEL_BUILD_DIR/remote_login_exec.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_copy.c" "$KERNEL_BUILD_DIR/remote_login_copy.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_apps.c" "$KERNEL_BUILD_DIR/remote_login_apps.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_session.c" "$KERNEL_BUILD_DIR/remote_login_session.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_archive_format.c" "$KERNEL_BUILD_DIR/remote_login_archive_format.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_meta.c" "$KERNEL_BUILD_DIR/remote_login_meta.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_parse.c" "$KERNEL_BUILD_DIR/remote_login_parse.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/operations.c" "$KERNEL_BUILD_DIR/operations.o"
@@ -1101,6 +1121,8 @@ compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_packet.c" "$KERNEL_BUILD_
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_udp.c" "$KERNEL_BUILD_DIR/network_stack_udp.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_udp_rx.c" "$KERNEL_BUILD_DIR/network_stack_udp_rx.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_icmp.c" "$KERNEL_BUILD_DIR/network_stack_icmp.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_poll.c" "$KERNEL_BUILD_DIR/network_stack_poll.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_local.c" "$KERNEL_BUILD_DIR/network_stack_local.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_app.c" "$KERNEL_BUILD_DIR/network_stack_app.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_selftest.c" "$KERNEL_BUILD_DIR/network_stack_selftest.o"
 compile_kernel "$ROOT_DIR/kernel/net/network_config.c" "$KERNEL_BUILD_DIR/network_config.o"
@@ -1529,6 +1551,19 @@ for app in $USER_APPS; do
     done
     CLUSTER_OBJ="$INIT_BUILD_DIR/cluster-cluster.o"
     CLUSTER_SHA_OBJ="$INIT_BUILD_DIR/cluster-sha256.o"
+    # clustertest is split into translation units beside it for the file-size
+    # budget; they are linked into the app, not built as apps of their own.
+    CLUSTER_PLANE_OBJS=""
+    for plane_src in clustertest_support clustertest_mesh; do
+      "$CLANG" --target="$TARGET_TRIPLE" $USER_ARCH_CFLAGS -std=c99 \
+        -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+        -Wall -Wextra -Werror $CLUSTER_APP_CFLAGS \
+        -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/sshd" \
+        -I"$ROOT_DIR/engine/include" \
+        -c "$ROOT_DIR/userspace/apps/$plane_src.c" \
+        -o "$INIT_BUILD_DIR/$plane_src.o"
+      CLUSTER_PLANE_OBJS="$CLUSTER_PLANE_OBJS $INIT_BUILD_DIR/$plane_src.o"
+    done
   fi
 
   if [ "$app" = "xapt" ]; then
@@ -1606,6 +1641,7 @@ for app in $USER_APPS; do
       "$USER_LIB_OBJ" \
       "$app_obj" \
       "$CLUSTER_OBJ" \
+      $CLUSTER_PLANE_OBJS \
       "$CLUSTER_SHA_OBJ"
   else
     "$LD_LLD" \
@@ -1762,11 +1798,11 @@ if [ -n "$SSHD_CFLAGS_EXTRA" ]; then
 fi
 SSHD_RESPONSE_FILE="$INIT_BUILD_DIR/sshd-objects.rsp"
 : > "$SSHD_RESPONSE_FILE"
-for sshd_src in sshd.c sshd_audit.c sshd_rate_limit.c sshd_kex.c sshd_console_screen.c sshd_console_programs.c sshd_auth.c sshd_keys.c sshd_diagnostics.c sshd_console_ui.c ssh_crypto.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_alt_screen.c ssh_channel_shell.c ssh_channel_stream.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
+for sshd_src in sshd.c sshd_audit.c sshd_rate_limit.c sshd_kex.c sshd_console_screen.c sshd_console_programs.c sshd_auth.c sshd_keys.c sshd_diagnostics.c sshd_console_ui.c sshd_config.c sshd_console_session.c ssh_crypto.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_alt_screen.c ssh_channel_shell.c ssh_channel_stream.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
   sshd_obj="$INIT_BUILD_DIR/sshd-${sshd_src%.c}.o"
   sshd_opt=""
   if [ "$sshd_src" = "sshd.c" ] || [ "$sshd_src" = "sshd_audit.c" ] ||
-      [ "$sshd_src" = "sshd_rate_limit.c" ] || [ "$sshd_src" = "sshd_kex.c" ] || [ "$sshd_src" = "sshd_console_screen.c" ] || [ "$sshd_src" = "sshd_console_programs.c" ] || [ "$sshd_src" = "sshd_auth.c" ] || [ "$sshd_src" = "sshd_keys.c" ] || [ "$sshd_src" = "sshd_diagnostics.c" ] || [ "$sshd_src" = "sshd_console_ui.c" ]; then
+      [ "$sshd_src" = "sshd_rate_limit.c" ] || [ "$sshd_src" = "sshd_kex.c" ] || [ "$sshd_src" = "sshd_console_screen.c" ] || [ "$sshd_src" = "sshd_console_programs.c" ] || [ "$sshd_src" = "sshd_auth.c" ] || [ "$sshd_src" = "sshd_keys.c" ] || [ "$sshd_src" = "sshd_diagnostics.c" ] || [ "$sshd_src" = "sshd_console_ui.c" ] || [ "$sshd_src" = "sshd_config.c" ] || [ "$sshd_src" = "sshd_console_session.c" ]; then
     sshd_opt="-Os"
   fi
   "$CLANG" \

@@ -3,10 +3,11 @@
 
 /* The private seam between kernel/arch/x86_64/early.c and the modules split
  * out of it (early_tlb.c, early_cpu.c, early_serial.c, early_mem.c,
- * early_pci.c and early_acpi.c). Every one of those files includes this header
- * and nothing in it is visible outside them: the x86_64 CPU record, the per-CPU
- * TLB bookkeeping, and the early.c primitives the moved code calls are shared
- * here, while the globals stay file-scope in whichever file owns them.
+ * early_pci.c, early_acpi.c, early_fpu.c and early_gdt.c). Every one of those
+ * files includes this header and nothing in it is visible outside them: the
+ * x86_64 CPU record, the per-CPU TLB bookkeeping, and the early.c primitives
+ * the moved code calls are shared here, while the globals stay file-scope in
+ * whichever file owns them.
  * Declarations and type definitions only -- the functions are defined exactly
  * once, in the file the comment beside them names. */
 
@@ -17,6 +18,13 @@
 /* Same nesting bound early.c uses for the per-CPU user-resume stacks; the CPU
  * record's arrays are sized by it. */
 #define X86_USER_NESTING_MAX UINT32_C(8)
+
+/* The kernel and syscall stacks. early.c guards both with these and the moved
+ * GDT/TSS builder in early_gdt.c sizes the BSP's syscall stack with them, so
+ * they are shared here rather than defined on one side of the seam. */
+#define X86_KERNEL_STACK_SIZE UINT64_C(524288)
+#define X86_KERNEL_STACK_GUARD_BYTES UINT32_C(64)
+#define X86_KERNEL_STACK_GUARD_VALUE UINT8_C(0xa5)
 
 typedef struct x86_64_tss {
   uint32_t reserved0;
@@ -29,6 +37,13 @@ typedef struct x86_64_tss {
   uint16_t reserved3;
   uint16_t io_map_base;
 } __attribute__((packed)) x86_64_tss_t;
+
+/* The descriptor-table pointer `lgdt`/`lidt` take. Shared because early_gdt.c's
+ * builder and early.c's install_idt and AP entry each load one. */
+typedef struct x86_64_idtr {
+  uint16_t limit;
+  uint64_t base;
+} __attribute__((packed)) x86_64_idtr_t;
 
 typedef struct x86_64_cpu_record {
   uint32_t apic_id;
@@ -107,6 +122,14 @@ void xaios_x86_early_cpuid(uint32_t leaf, uint32_t subleaf, uint32_t *eax,
 
 /* Defined in early_cpu.c. */
 void x86_64_early_cpu_build_placement_policy(uint16_t serial_base);
+
+/* Defined in early_gdt.c: build and load the BSP GDT/TSS, the per-AP half, and
+ * the BSP TSS rsp0 the platform hooks here read and write. The rsp0 crosses
+ * the seam as a scalar, never as a pointer into early_gdt.c's mutable state. */
+void xaios_x86_gdt_install(uint16_t serial_base);
+void xaios_x86_gdt_install_ap(x86_64_cpu_record_t *record);
+uint64_t xaios_x86_gdt_bsp_rsp0(void);
+void xaios_x86_gdt_set_bsp_rsp0(uint64_t rsp0);
 
 /* Defined in early_acpi.c: parse the RSDP/root/MADT (and note SRAT/SLIT/HMAT),
  * then allocate and enumerate the CPU records. The record storage stays owned
