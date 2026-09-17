@@ -152,7 +152,17 @@ sentence from "checked and passing": the harness ran, the guest produced no
 console output at all -- not a panic, not an assertion, not rescue mode -- and
 every marker failed together, including `virtio console attached`. That is the
 harness's console never coming up on this host rather than the build failing,
-and it is recorded here rather than counted as a pass.
+and it is recorded here rather than counted as a pass. It is also the only kit
+`make vm-package-gate` fails.
+
+**`make vmware-fusion-smoke`, which is deeper than the row above, is also not
+checked** -- and not because of this build. That gate requires VMware Fusion
+26.0.0 exactly, and this host has been updated to 26.0.1, so it refuses to run
+before it boots anything. The Fusion claim in the table comes from
+`make release-image-gate`, which boots the released image in the same
+hypervisor and reaches a login prompt with SSH listening. The deeper gate is
+named here rather than passed over: an environment that cannot run a check is
+not evidence that the check would have passed.
 
 Two defects were found and fixed while cutting this build, both by gates rather
 than by reading:
