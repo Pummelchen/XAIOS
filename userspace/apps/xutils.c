@@ -4,32 +4,13 @@
 #define XAIOS_UTILITY_NAME "xutils"
 #endif
 
-#define PATH_MAX 256U
-#define FILE_MAX 131072U
-#define LIST_MAX 16384U
-#define OUTPUT_MAX 32768U
-#define ENTRY_MAX 128U
-#define USTAR_BLOCK 512U
-
-extern int xaios_inflate_raw(const unsigned char *input, u64 input_size,
-                             unsigned char *output, u64 output_capacity,
-                             u64 *output_size);
-
-typedef struct archive_entry {
-  char name[PATH_MAX];
-  u32 crc;
-  u32 size;
-  u32 offset;
-  u32 method;
-  u32 directory;
-} archive_entry_t;
+#include "xutils_archive.h"
 
 static char g_output[OUTPUT_MAX];
-static unsigned char g_data[FILE_MAX];
-static unsigned char g_aux[FILE_MAX];
-static archive_entry_t g_entries[ENTRY_MAX];
+unsigned char xutils_scratch[FILE_MAX];
+unsigned char xutils_aux[FILE_MAX];
 static u64 g_used;
-static const char *g_cwd;
+const char *xutils_cwd;
 
 static u64 length(const char *text) {
   u64 result = 0U;
@@ -170,7 +151,7 @@ static int resolve_path(const char *input, char *output) {
     if (length(input) + 1U > sizeof(source)) return -1;
     copy(source, input, sizeof(source));
   } else {
-    copy(source, g_cwd, sizeof(source));
+    copy(source, xutils_cwd, sizeof(source));
     source_used = length(source);
     if (source_used > 1U && source[source_used - 1U] != '/')
       source[source_used++] = '/';
@@ -331,9 +312,9 @@ static int copy_tree(const char *source, const char *destination, int recursive)
   if (xaios_fs_stat(source, &stat) != 0) return -1;
   if (stat.type == XAIOS_FS_TYPE_FILE) {
     u64 size = 0U;
-    if (read_file(source, g_data, sizeof(g_data), &size) != 0 ||
+    if (read_file(source, xutils_scratch, sizeof(xutils_scratch), &size) != 0 ||
         ensure_parents(destination) != 0) return -1;
-    return write_file(destination, g_data, size);
+    return write_file(destination, xutils_scratch, size);
   }
   if (!recursive || stat.type != XAIOS_FS_TYPE_DIRECTORY) return -1;
   if (xaios_fs_mkdir(destination) != 0) {
@@ -556,32 +537,32 @@ static int print_file(const char *path_arg, int number_lines, int head,
   char path[PATH_MAX];
   u64 size = 0U;
   if (resolve_path(path_arg, path) != 0 ||
-      read_file(path, g_data, sizeof(g_data), &size) != 0) return -1;
+      read_file(path, xutils_scratch, sizeof(xutils_scratch), &size) != 0) return -1;
   u64 start = 0U;
   u64 end = size;
   if (head != 0) {
     u64 lines = 0U;
     end = 0U;
     while (end < size && lines < line_limit)
-      if (g_data[end++] == '\n') ++lines;
+      if (xutils_scratch[end++] == '\n') ++lines;
   } else if (head == 0 && line_limit != ~0ULL) {
     u64 lines = 0U;
     start = size;
     while (start > 0U && lines <= line_limit) {
       --start;
-      if (g_data[start] == '\n' && start + 1U < size && ++lines == line_limit) {
+      if (xutils_scratch[start] == '\n' && start + 1U < size && ++lines == line_limit) {
         ++start;
         break;
       }
     }
   }
   u64 line = 1U;
-  if (!number_lines) return append_bytes(g_data + start, end - start);
+  if (!number_lines) return append_bytes(xutils_scratch + start, end - start);
   u64 cursor = start;
   while (cursor < end) {
     (void)append_u64(line++); (void)append("\t");
     while (cursor < end) {
-      char value = (char)g_data[cursor++];
+      char value = (char)xutils_scratch[cursor++];
       (void)append_char(value);
       if (value == '\n') break;
     }
@@ -691,17 +672,17 @@ static int grep_file(const char *path_arg, const char *pattern, int insensitive,
   char path[PATH_MAX];
   u64 size = 0U;
   if (resolve_path(path_arg, path) != 0 ||
-      read_file(path, g_data, sizeof(g_data), &size) != 0) return -1;
+      read_file(path, xutils_scratch, sizeof(xutils_scratch), &size) != 0) return -1;
   u64 cursor = 0U;
   u64 line_number = 1U;
   u64 matches = 0U;
   while (cursor < size) {
     u64 start = cursor;
-    while (cursor < size && g_data[cursor] != '\n') ++cursor;
+    while (cursor < size && xutils_scratch[cursor] != '\n') ++cursor;
     int match = fixed
-                    ? span_contains(g_data + start, cursor - start, pattern,
+                    ? span_contains(xutils_scratch + start, cursor - start, pattern,
                                     insensitive)
-                    : grep_regex_matches(pattern, g_data + start,
+                    : grep_regex_matches(pattern, xutils_scratch + start,
                                          cursor - start, insensitive);
     if (invert) match = !match;
     if (match) {
@@ -709,7 +690,7 @@ static int grep_file(const char *path_arg, const char *pattern, int insensitive,
       if (!count_only) {
         if (show_name) { (void)append(path_arg); (void)append(":"); }
         if (numbered) { (void)append_u64(line_number); (void)append(":"); }
-        (void)append_bytes(g_data + start, cursor - start); (void)append("\n");
+        (void)append_bytes(xutils_scratch + start, cursor - start); (void)append("\n");
       }
     }
     if (cursor < size) ++cursor;
@@ -855,341 +836,27 @@ static int cmd_sed(const char *args) {
   char path[PATH_MAX];
   u64 size = 0U;
   if (resolve_path(path_arg, path) != 0 ||
-      read_file(path, g_data, sizeof(g_data), &size) != 0) return fail("cannot read file");
+      read_file(path, xutils_scratch, sizeof(xutils_scratch), &size) != 0) return fail("cannot read file");
   u64 out = 0U;
   int replaced_on_line = 0;
   for (u64 i = 0U; i < size;) {
     int match = (!replaced_on_line || global) && i + old_size <= size;
     for (u64 j = 0U; match && j < old_size; ++j)
-      if (g_data[i + j] != (unsigned char)old_text[j]) match = 0;
+      if (xutils_scratch[i + j] != (unsigned char)old_text[j]) match = 0;
     if (match) {
-      if (out + new_size > sizeof(g_aux)) return fail("result too large");
-      for (u64 j = 0U; j < new_size; ++j) g_aux[out++] = (unsigned char)new_text[j];
+      if (out + new_size > sizeof(xutils_aux)) return fail("result too large");
+      for (u64 j = 0U; j < new_size; ++j) xutils_aux[out++] = (unsigned char)new_text[j];
       i += old_size;
       replaced_on_line = 1;
     } else {
-      if (out == sizeof(g_aux)) return fail("result too large");
-      g_aux[out++] = g_data[i];
-      if (g_data[i++] == '\n') replaced_on_line = 0;
+      if (out == sizeof(xutils_aux)) return fail("result too large");
+      xutils_aux[out++] = xutils_scratch[i];
+      if (xutils_scratch[i++] == '\n') replaced_on_line = 0;
     }
   }
-  if (write_file(path, g_aux, out) != 0 || append_bytes(g_aux, out) != 0)
+  if (write_file(path, xutils_aux, out) != 0 || append_bytes(xutils_aux, out) != 0)
     return fail("write error");
   return 0;
-}
-
-static u32 crc32(const void *data, u64 size) {
-  const unsigned char *bytes = (const unsigned char *)data;
-  u32 crc = 0xffffffffU;
-  for (u64 i = 0U; i < size; ++i) {
-    crc ^= bytes[i];
-    for (u32 bit = 0U; bit < 8U; ++bit)
-      crc = (crc >> 1U) ^ (0xedb88320U & (u32)(0U - (crc & 1U)));
-  }
-  return crc ^ 0xffffffffU;
-}
-
-static void put_le16(unsigned char *p, u32 value) {
-  p[0] = (unsigned char)value; p[1] = (unsigned char)(value >> 8U);
-}
-static void put_le32(unsigned char *p, u32 value) {
-  p[0] = (unsigned char)value; p[1] = (unsigned char)(value >> 8U);
-  p[2] = (unsigned char)(value >> 16U); p[3] = (unsigned char)(value >> 24U);
-}
-static u32 get_le16(const unsigned char *p) { return (u32)p[0] | (u32)p[1] << 8U; }
-static u32 get_le32(const unsigned char *p) {
-  return (u32)p[0] | (u32)p[1] << 8U | (u32)p[2] << 16U | (u32)p[3] << 24U;
-}
-
-static int archive_safe(const char *name) {
-  if (name == 0 || name[0] == '\0' || name[0] == '/' || name[0] == '\\')
-    return 0;
-  for (u64 i = 0U; name[i] != '\0'; ++i) {
-    if (name[i] == '\\' || name[i] == ':') return 0;
-    if ((i == 0U || name[i - 1U] == '/') && name[i] == '.' &&
-        name[i + 1U] == '.' && (name[i + 2U] == '/' || name[i + 2U] == '\0'))
-      return 0;
-  }
-  return 1;
-}
-
-static int octal_put(char *field, u64 width, u64 value) {
-  for (u64 i = 0U; i < width; ++i) field[i] = '0';
-  field[width - 1U] = '\0';
-  u64 cursor = width - 1U;
-  do {
-    if (cursor == 0U) return -1;
-    field[--cursor] = (char)('0' + (value & 7U));
-    value >>= 3U;
-  } while (value != 0U);
-  return 0;
-}
-
-static int octal_get(const char *field, u64 width, u64 *value) {
-  u64 result = 0U;
-  for (u64 i = 0U; i < width; ++i) {
-    if (field[i] == '\0' || field[i] == ' ') break;
-    if (field[i] < '0' || field[i] > '7') return -1;
-    result = result * 8U + (u64)(field[i] - '0');
-  }
-  *value = result;
-  return 0;
-}
-
-static int tar_add(const char *source, const char *name, u64 *used) {
-  xaios_xbfs_stat_user_t stat;
-  if (xaios_fs_stat(source, &stat) != 0 || length(name) > 99U ||
-      *used + USTAR_BLOCK > sizeof(g_data)) return -1;
-  unsigned char *header = g_data + *used;
-  xaios_memzero(header, USTAR_BLOCK);
-  copy((char *)header, name, 100U);
-  (void)octal_put((char *)header + 100U, 8U, stat.type == XAIOS_FS_TYPE_DIRECTORY ? 0755U : 0644U);
-  (void)octal_put((char *)header + 108U, 8U, 0U);
-  (void)octal_put((char *)header + 116U, 8U, 0U);
-  (void)octal_put((char *)header + 124U, 12U, stat.type == XAIOS_FS_TYPE_FILE ? stat.size : 0U);
-  (void)octal_put((char *)header + 136U, 12U, 0U);
-  for (u64 i = 148U; i < 156U; ++i) header[i] = ' ';
-  header[156] = stat.type == XAIOS_FS_TYPE_DIRECTORY ? '5' : '0';
-  copy((char *)header + 257U, "ustar", 6U);
-  copy((char *)header + 263U, "00", 3U);
-  u64 sum = 0U;
-  for (u64 i = 0U; i < USTAR_BLOCK; ++i) sum += header[i];
-  (void)octal_put((char *)header + 148U, 8U, sum);
-  *used += USTAR_BLOCK;
-  if (stat.type == XAIOS_FS_TYPE_FILE) {
-    u64 got = 0U;
-    if (read_file(source, g_data + *used, sizeof(g_data) - *used, &got) != 0 ||
-        got != stat.size) return -1;
-    *used += (got + USTAR_BLOCK - 1U) & ~(USTAR_BLOCK - 1U);
-    return *used <= sizeof(g_data) ? 0 : -1;
-  }
-  char listing[LIST_MAX];
-  u64 listing_size = 0U;
-  if (list_dir(source, listing, &listing_size) != 0) return -1;
-  u64 cursor = 0U;
-  char child_name[PATH_MAX];
-  int next;
-  while ((next = each_listing(listing, listing_size, &cursor, child_name)) > 0) {
-    char child_source[PATH_MAX];
-    char child_archive[PATH_MAX];
-    if (join_path(source, child_name, child_source) != 0 ||
-        join_path(name, child_name, child_archive) != 0 ||
-        tar_add(child_source, child_archive, used) != 0) return -1;
-  }
-  return next < 0 ? -1 : 0;
-}
-
-static int tar_header_path(const unsigned char *header, char *path) {
-  u64 name_size = 0U;
-  u64 prefix_size = 0U;
-  while (name_size < 100U && header[name_size] != 0U) ++name_size;
-  while (prefix_size < 155U && header[345U + prefix_size] != 0U) ++prefix_size;
-  if (name_size == 0U || prefix_size + (prefix_size != 0U ? 1U : 0U) +
-                              name_size + 1U > PATH_MAX)
-    return -1;
-  u64 used = 0U;
-  for (u64 i = 0U; i < prefix_size; ++i) path[used++] = (char)header[345U + i];
-  if (prefix_size != 0U) path[used++] = '/';
-  for (u64 i = 0U; i < name_size; ++i) path[used++] = (char)header[i];
-  path[used] = '\0';
-  return 0;
-}
-
-static int pax_path(const unsigned char *data, u64 size, char *path) {
-  u64 cursor = 0U;
-  while (cursor < size) {
-    u64 record_start = cursor;
-    u64 record_size = 0U;
-    u64 digits = 0U;
-    while (cursor < size && data[cursor] >= '0' && data[cursor] <= '9') {
-      if (record_size > (~0ULL - 9U) / 10U) return -1;
-      record_size = record_size * 10U + (u64)(data[cursor++] - '0');
-      ++digits;
-    }
-    if (digits == 0U || cursor >= size || data[cursor] != ' ' ||
-        record_size <= cursor - record_start + 1U ||
-        record_size > size - record_start)
-      return -1;
-    u64 value_start = ++cursor;
-    u64 record_end = record_start + record_size;
-    if (record_end == 0U || data[record_end - 1U] != '\n') return -1;
-    if (record_end - 1U - value_start >= 5U &&
-        data[value_start] == 'p' && data[value_start + 1U] == 'a' &&
-        data[value_start + 2U] == 't' && data[value_start + 3U] == 'h' &&
-        data[value_start + 4U] == '=') {
-      u64 path_size = record_end - 1U - value_start - 5U;
-      if (path_size == 0U || path_size + 1U > PATH_MAX) return -1;
-      for (u64 i = 0U; i < path_size; ++i)
-        path[i] = (char)data[value_start + 5U + i];
-      path[path_size] = '\0';
-    }
-    cursor = record_end;
-  }
-  return 0;
-}
-
-static int gzip_decode(const unsigned char *input, u64 input_size,
-                       unsigned char *output, u64 output_capacity,
-                       u64 *output_size) {
-  if (input_size < 18U || input[0] != 0x1fU || input[1] != 0x8bU ||
-      input[2] != 8U || (input[3] & 0xe0U) != 0U)
-    return -1;
-  u32 flags = input[3];
-  u64 cursor = 10U;
-  if ((flags & 4U) != 0U) {
-    if (input_size - cursor < 2U) return -1;
-    u64 extra = get_le16(input + cursor);
-    cursor += 2U;
-    if (extra > input_size - cursor) return -1;
-    cursor += extra;
-  }
-  if ((flags & 8U) != 0U) {
-    while (cursor < input_size && input[cursor] != 0U) ++cursor;
-    if (cursor >= input_size) return -1;
-    ++cursor;
-  }
-  if ((flags & 16U) != 0U) {
-    while (cursor < input_size && input[cursor] != 0U) ++cursor;
-    if (cursor >= input_size) return -1;
-    ++cursor;
-  }
-  if ((flags & 2U) != 0U) {
-    if (input_size - cursor < 2U ||
-        (crc32(input, cursor) & 0xffffU) != get_le16(input + cursor))
-      return -1;
-    cursor += 2U;
-  }
-  if (cursor > input_size - 8U) return -1;
-  u32 expected_crc = get_le32(input + input_size - 8U);
-  u32 expected_size = get_le32(input + input_size - 4U);
-  if (expected_size > output_capacity ||
-      xaios_inflate_raw(input + cursor, input_size - cursor - 8U, output,
-                        output_capacity, output_size) != 0 ||
-      *output_size != expected_size || crc32(output, *output_size) != expected_crc)
-    return -1;
-  return 0;
-}
-
-static int cmd_tar(const char *args) {
-  u64 cursor = 0U;
-  char mode[16];
-  char archive_arg[PATH_MAX];
-  if (next_token(args, &cursor, mode, sizeof(mode)) != 0 ||
-      next_token(args, &cursor, archive_arg, sizeof(archive_arg)) != 0)
-    return fail("usage: tar -cf|-tf|-xf ARCHIVE [PATH...]");
-  int create = starts(mode, "-c");
-  int list = starts(mode, "-t");
-  int extract = starts(mode, "-x");
-  int verbose = mode[length(mode) - 1U] == 'v' || mode[2] == 'v';
-  if (!create && !list && !extract) return fail("unsupported mode");
-  char archive_path[PATH_MAX];
-  if (resolve_path(archive_arg, archive_path) != 0) return fail("invalid archive");
-  if (create) {
-    u64 used = 0U;
-    char source_arg[PATH_MAX];
-    int count = 0;
-    while (next_token(args, &cursor, source_arg, sizeof(source_arg)) == 0) {
-      char source[PATH_MAX];
-      char name[PATH_MAX];
-      if (resolve_path(source_arg, source) != 0 || basename_of(source, name) != 0 ||
-          tar_add(source, name, &used) != 0) return fail("cannot create archive");
-      if (verbose) { (void)append(name); (void)append("\n"); }
-      ++count;
-    }
-    if (!count || used + 1024U > sizeof(g_data)) return fail("missing files");
-    xaios_memzero(g_data + used, 1024U); used += 1024U;
-    return write_file(archive_path, g_data, used) == 0 ? 0 : fail("write failed");
-  }
-  u64 size = 0U;
-  if (read_file(archive_path, g_data, sizeof(g_data), &size) != 0)
-    return fail("cannot read archive");
-  if (size >= 2U && g_data[0] == 0x1fU && g_data[1] == 0x8bU) {
-    u64 decoded_size = 0U;
-    if (gzip_decode(g_data, size, g_aux, sizeof(g_aux), &decoded_size) != 0)
-      return fail("invalid gzip archive");
-    xaios_memcpy(g_data, g_aux, decoded_size);
-    size = decoded_size;
-  }
-  char destination[PATH_MAX];
-  copy(destination, g_cwd, sizeof(destination));
-  char token[PATH_MAX];
-  while (next_token(args, &cursor, token, sizeof(token)) == 0) {
-    if (equal(token, "-C") && next_token(args, &cursor, token, sizeof(token)) == 0) {
-      if (resolve_path(token, destination) != 0) return fail("invalid destination");
-    } else return fail("unsupported option");
-  }
-  char extended_path[PATH_MAX];
-  extended_path[0] = '\0';
-  int saw_entry = 0;
-  int saw_terminator = 0;
-  for (u64 at = 0U; at + USTAR_BLOCK <= size;) {
-    int zero = 1;
-    for (u64 i = 0U; i < USTAR_BLOCK; ++i) if (g_data[at + i] != 0U) zero = 0;
-    if (zero) {
-      saw_terminator = 1;
-      break;
-    }
-    saw_entry = 1;
-    const unsigned char *header = g_data + at;
-    u64 file_size = 0U;
-    u64 stored_checksum = 0U;
-    if (octal_get((const char *)header + 124U, 12U, &file_size) != 0 ||
-        octal_get((const char *)header + 148U, 8U, &stored_checksum) != 0 ||
-        file_size > size - at - USTAR_BLOCK) return fail("invalid archive");
-    u64 checksum = 0U;
-    for (u64 i = 0U; i < USTAR_BLOCK; ++i)
-      checksum += i >= 148U && i < 156U ? (u64)' ' : header[i];
-    if (checksum != stored_checksum || file_size > ~0ULL - (USTAR_BLOCK - 1U))
-      return fail("invalid archive");
-    u64 padded = (file_size + USTAR_BLOCK - 1U) & ~(USTAR_BLOCK - 1U);
-    if (padded > size - at - USTAR_BLOCK) return fail("invalid archive");
-    char type = header[156U] == 0U ? '0' : (char)header[156U];
-    const unsigned char *payload = header + USTAR_BLOCK;
-    if (type == 'x' || type == 'g') {
-      if (type == 'x' && pax_path(payload, file_size, extended_path) != 0)
-        return fail("invalid PAX header");
-      at += USTAR_BLOCK + padded;
-      continue;
-    }
-    if (type == 'L') {
-      u64 path_size = 0U;
-      while (path_size < file_size && payload[path_size] != 0U &&
-             payload[path_size] != '\n')
-        ++path_size;
-      if (path_size == 0U || path_size + 1U > sizeof(extended_path))
-        return fail("invalid GNU long name");
-      for (u64 i = 0U; i < path_size; ++i)
-        extended_path[i] = (char)payload[i];
-      extended_path[path_size] = '\0';
-      at += USTAR_BLOCK + padded;
-      continue;
-    }
-    char name[PATH_MAX];
-    if (extended_path[0] != '\0') {
-      copy(name, extended_path, sizeof(name));
-      extended_path[0] = '\0';
-    } else if (tar_header_path(header, name) != 0) {
-      return fail("invalid archive path");
-    }
-    if (!archive_safe(name)) return fail("unsafe path");
-    if (list) { (void)append(name); (void)append("\n"); }
-    if (extract) {
-      char target[PATH_MAX];
-      if (join_path(destination, name, target) != 0 || ensure_parents(target) != 0)
-        return fail("unsafe path");
-      if (type == '5') {
-        if (xaios_fs_mkdir(target) != 0) {
-          xaios_xbfs_stat_user_t stat;
-          if (xaios_fs_stat(target, &stat) != 0) return fail("mkdir failed");
-        }
-      } else if (type == '0') {
-        if (write_file(target, payload, file_size) != 0)
-          return fail("extract failed");
-      } else return fail("unsupported entry type");
-    }
-    at += USTAR_BLOCK + padded;
-  }
-  return saw_entry && saw_terminator ? 0 : fail("invalid archive");
 }
 
 static void hex8(char *dst, u32 value) {
@@ -1212,14 +879,14 @@ static int from_hex8(const unsigned char *src, u32 *value) {
 
 static int cpio_add(const char *source, const char *name, u64 *used, u32 *ino) {
   xaios_xbfs_stat_user_t stat;
-  if (xaios_fs_stat(source, &stat) != 0 || !archive_safe(name)) return -1;
+  if (xaios_fs_stat(source, &stat) != 0 || !xutils_archive_safe(name)) return -1;
   u32 namesize = (u32)length(name) + 1U;
   u32 filesize = stat.type == XAIOS_FS_TYPE_FILE ? (u32)stat.size : 0U;
   u64 header_end = *used + 110U + namesize;
   u64 data_at = (header_end + 3U) & ~3ULL;
   u64 end = (data_at + filesize + 3U) & ~3ULL;
-  if (end > sizeof(g_data)) return -1;
-  unsigned char *header = g_data + *used;
+  if (end > sizeof(xutils_scratch)) return -1;
+  unsigned char *header = xutils_scratch + *used;
   xaios_memzero(header, end - *used);
   copy((char *)header, "070701", 7U);
   hex8((char *)header + 6U, (*ino)++);
@@ -1232,7 +899,7 @@ static int cpio_add(const char *source, const char *name, u64 *used, u32 *ino) {
   copy((char *)header + 110U, name, namesize);
   if (filesize != 0U) {
     u64 got = 0U;
-    if (read_file(source, g_data + data_at, filesize, &got) != 0 || got != filesize)
+    if (read_file(source, xutils_scratch + data_at, filesize, &got) != 0 || got != filesize)
       return -1;
   }
   *used = end;
@@ -1284,35 +951,35 @@ static int cmd_cpio(const char *args) {
           cpio_add(source, name, &used, &ino) != 0) return fail("create failed");
     }
     char trailer[] = "TRAILER!!!";
-    if (used + 124U > sizeof(g_data)) return fail("archive too large");
-    unsigned char *h = g_data + used; xaios_memzero(h, 124U);
+    if (used + 124U > sizeof(xutils_scratch)) return fail("archive too large");
+    unsigned char *h = xutils_scratch + used; xaios_memzero(h, 124U);
     copy((char *)h, "070701", 7U);
     hex8((char *)h + 6U, ino); hex8((char *)h + 14U, 0U);
     for (u32 off = 22U; off <= 86U; off += 8U) hex8((char *)h + off, 0U);
     hex8((char *)h + 94U, 11U); hex8((char *)h + 102U, 0U);
     copy((char *)h + 110U, trailer, sizeof(trailer)); used += 124U;
-    return write_file(archive_path, g_data, used) == 0 ? 0 : fail("write failed");
+    return write_file(archive_path, xutils_scratch, used) == 0 ? 0 : fail("write failed");
   }
   u64 size = 0U;
-  if (read_file(archive_path, g_data, sizeof(g_data), &size) != 0)
+  if (read_file(archive_path, xutils_scratch, sizeof(xutils_scratch), &size) != 0)
     return fail("cannot read archive");
   char destination[PATH_MAX];
-  if (destination_arg[0] == '\0') copy(destination, g_cwd, sizeof(destination));
+  if (destination_arg[0] == '\0') copy(destination, xutils_cwd, sizeof(destination));
   else if (resolve_path(destination_arg, destination) != 0)
     return fail("invalid destination");
   int found_trailer = 0;
   for (u64 at = 0U; at + 110U <= size;) {
-    if (!starts((char *)g_data + at, "070701")) return fail("invalid archive");
+    if (!starts((char *)xutils_scratch + at, "070701")) return fail("invalid archive");
     u32 file_size, name_size, mode;
-    if (from_hex8(g_data + at + 54U, &file_size) != 0 ||
-        from_hex8(g_data + at + 94U, &name_size) != 0 ||
-        from_hex8(g_data + at + 14U, &mode) != 0 || name_size == 0U ||
+    if (from_hex8(xutils_scratch + at + 54U, &file_size) != 0 ||
+        from_hex8(xutils_scratch + at + 94U, &name_size) != 0 ||
+        from_hex8(xutils_scratch + at + 14U, &mode) != 0 || name_size == 0U ||
         name_size >= PATH_MAX || name_size > size - at - 110U ||
-        g_data[at + 110U + name_size - 1U] != 0U)
+        xutils_scratch[at + 110U + name_size - 1U] != 0U)
       return fail("invalid archive");
     char name[PATH_MAX];
     for (u32 i = 0U; i < name_size; ++i)
-      name[i] = (char)g_data[at + 110U + i];
+      name[i] = (char)xutils_scratch[at + 110U + i];
     name[name_size - 1U] = '\0';
     u64 data_at = (at + 110U + name_size + 3U) & ~3ULL;
     if (data_at > size || file_size > size - data_at)
@@ -1321,7 +988,7 @@ static int cmd_cpio(const char *args) {
       found_trailer = 1;
       break;
     }
-    if (!archive_safe(name)) return fail("unsafe path");
+    if (!xutils_archive_safe(name)) return fail("unsafe path");
     if (list) { (void)append(name); (void)append("\n"); }
     if (extract) {
       char target[PATH_MAX];
@@ -1333,155 +1000,13 @@ static int cmd_cpio(const char *args) {
           if (xaios_fs_stat(target, &stat) != 0) return fail("mkdir failed");
         }
       } else if ((mode & 0170000U) == 0100000U) {
-        if (write_file(target, g_data + data_at, file_size) != 0)
+        if (write_file(target, xutils_scratch + data_at, file_size) != 0)
           return fail("extract failed");
       } else return fail("unsupported entry type");
     }
     at = (data_at + file_size + 3U) & ~3ULL;
   }
   return found_trailer ? 0 : fail("invalid archive");
-}
-
-static int zip_add(const char *source, const char *name, int recursive,
-                   u64 *used, u32 *count) {
-  xaios_xbfs_stat_user_t stat;
-  if (*count >= ENTRY_MAX || xaios_fs_stat(source, &stat) != 0) return -1;
-  int directory = stat.type == XAIOS_FS_TYPE_DIRECTORY;
-  if (directory && !recursive) return -1;
-  char entry_name[PATH_MAX]; copy(entry_name, name, sizeof(entry_name));
-  u64 name_size = length(entry_name);
-  if (directory && entry_name[name_size - 1U] != '/') {
-    if (name_size + 2U > sizeof(entry_name)) return -1;
-    entry_name[name_size++] = '/'; entry_name[name_size] = '\0';
-  }
-  u64 file_size = directory ? 0U : stat.size;
-  if (*used + 30U + name_size + file_size > sizeof(g_data)) return -1;
-  unsigned char *header = g_data + *used;
-  xaios_memzero(header, 30U);
-  put_le32(header, 0x04034b50U); put_le16(header + 4U, 20U);
-  u64 data_at = *used + 30U + name_size;
-  if (!directory) {
-    u64 got = 0U;
-    if (read_file(source, g_data + data_at, file_size, &got) != 0 || got != file_size)
-      return -1;
-  }
-  u32 crc = crc32(g_data + data_at, file_size);
-  put_le32(header + 14U, crc); put_le32(header + 18U, (u32)file_size);
-  put_le32(header + 22U, (u32)file_size); put_le16(header + 26U, (u32)name_size);
-  for (u64 i = 0U; i < name_size; ++i) header[30U + i] = (unsigned char)entry_name[i];
-  archive_entry_t *entry = &g_entries[(*count)++];
-  copy(entry->name, entry_name, sizeof(entry->name)); entry->crc = crc;
-  entry->size = (u32)file_size; entry->offset = (u32)*used; entry->directory = directory;
-  *used = data_at + file_size;
-  if (directory) {
-    char listing[LIST_MAX]; u64 listing_size = 0U;
-    if (list_dir(source, listing, &listing_size) != 0) return -1;
-    u64 cursor = 0U; char child_name[PATH_MAX]; int next;
-    while ((next = each_listing(listing, listing_size, &cursor, child_name)) > 0) {
-      char child_source[PATH_MAX], child_archive[PATH_MAX];
-      if (join_path(source, child_name, child_source) != 0 ||
-          join_path(entry_name, child_name, child_archive) != 0 ||
-          zip_add(child_source, child_archive, 1, used, count) != 0) return -1;
-    }
-    if (next < 0) return -1;
-  }
-  return 0;
-}
-
-static int cmd_zip(const char *args) {
-  u64 cursor = 0U; char token[PATH_MAX]; int recursive = 0;
-  if (next_token(args, &cursor, token, sizeof(token)) != 0) return fail("missing archive");
-  if (equal(token, "-r")) { recursive = 1; if (next_token(args, &cursor, token, sizeof(token)) != 0) return fail("missing archive"); }
-  char archive_path[PATH_MAX];
-  if (resolve_path(token, archive_path) != 0) return fail("invalid archive");
-  u64 used = 0U; u32 count = 0U; int sources = 0;
-  while (next_token(args, &cursor, token, sizeof(token)) == 0) {
-    char source[PATH_MAX], name[PATH_MAX];
-    if (resolve_path(token, source) != 0 || basename_of(source, name) != 0 ||
-        zip_add(source, name, recursive, &used, &count) != 0)
-      return fail("cannot add path");
-    ++sources;
-  }
-  if (!sources) return fail("missing files");
-  u64 central = used;
-  for (u32 i = 0U; i < count; ++i) {
-    archive_entry_t *entry = &g_entries[i]; u64 name_size = length(entry->name);
-    if (used + 46U + name_size > sizeof(g_data)) return fail("archive too large");
-    unsigned char *h = g_data + used; xaios_memzero(h, 46U);
-    put_le32(h, 0x02014b50U); put_le16(h + 4U, 0x0314U); put_le16(h + 6U, 20U);
-    put_le32(h + 16U, entry->crc); put_le32(h + 20U, entry->size);
-    put_le32(h + 24U, entry->size); put_le16(h + 28U, (u32)name_size);
-    put_le32(h + 38U, entry->directory ? 0x10U : 0U); put_le32(h + 42U, entry->offset);
-    for (u64 j = 0U; j < name_size; ++j) h[46U + j] = (unsigned char)entry->name[j];
-    used += 46U + name_size;
-  }
-  if (used + 22U > sizeof(g_data)) return fail("archive too large");
-  unsigned char *end = g_data + used; xaios_memzero(end, 22U);
-  put_le32(end, 0x06054b50U); put_le16(end + 8U, count); put_le16(end + 10U, count);
-  put_le32(end + 12U, (u32)(used - central)); put_le32(end + 16U, (u32)central);
-  used += 22U;
-  return write_file(archive_path, g_data, used) == 0 ? 0 : fail("write failed");
-}
-
-static int cmd_unzip(const char *args) {
-  u64 cursor = 0U; char token[PATH_MAX]; int list = 0;
-  if (next_token(args, &cursor, token, sizeof(token)) != 0) return fail("missing archive");
-  if (equal(token, "-l")) { list = 1; if (next_token(args, &cursor, token, sizeof(token)) != 0) return fail("missing archive"); }
-  char archive_path[PATH_MAX];
-  if (resolve_path(token, archive_path) != 0) return fail("invalid archive");
-  char destination[PATH_MAX]; copy(destination, g_cwd, sizeof(destination));
-  while (next_token(args, &cursor, token, sizeof(token)) == 0) {
-    if (!equal(token, "-d") || next_token(args, &cursor, token, sizeof(token)) != 0 ||
-        resolve_path(token, destination) != 0) return fail("unsupported option");
-  }
-  u64 size = 0U;
-  if (read_file(archive_path, g_data, sizeof(g_data), &size) != 0)
-    return fail("cannot read archive");
-  u64 at = 0U;
-  u32 entries = 0U;
-  while (at + 30U <= size && get_le32(g_data + at) == 0x04034b50U) {
-    u32 flags = get_le16(g_data + at + 6U); u32 method = get_le16(g_data + at + 8U);
-    u32 crc = get_le32(g_data + at + 14U); u32 packed = get_le32(g_data + at + 18U);
-    u32 unpacked = get_le32(g_data + at + 22U); u32 name_size = get_le16(g_data + at + 26U);
-    u32 extra_size = get_le16(g_data + at + 28U);
-    if ((u64)name_size + (u64)extra_size > size - at - 30U)
-      return fail("unsupported or corrupt archive");
-    u64 data_at = at + 30U + name_size + extra_size;
-    if ((flags & 9U) != 0U || name_size == 0U || name_size >= PATH_MAX ||
-        packed > size - data_at || (method != 0U && method != 8U))
-      return fail("unsupported or corrupt archive");
-    char name[PATH_MAX];
-    for (u32 i = 0U; i < name_size; ++i) name[i] = (char)g_data[at + 30U + i];
-    name[name_size] = '\0';
-    if (!archive_safe(name)) return fail("unsafe path");
-    if (list) { (void)append_u64(unpacked); (void)append(" "); (void)append(name); (void)append("\n"); }
-    else {
-      char target[PATH_MAX];
-      if (join_path(destination, name, target) != 0 || ensure_parents(target) != 0)
-        return fail("unsafe path");
-      if (name[name_size - 1U] == '/') {
-        if (xaios_fs_mkdir(target) != 0) {
-          xaios_xbfs_stat_user_t stat; if (xaios_fs_stat(target, &stat) != 0) return fail("mkdir failed");
-        }
-      } else {
-        const unsigned char *payload = g_data + data_at; u64 output_size = packed;
-        if (method == 8U) {
-          if (xaios_inflate_raw(payload, packed, g_aux, sizeof(g_aux), &output_size) != 0 ||
-              output_size != unpacked) return fail("deflate failed");
-          payload = g_aux;
-        }
-        if (output_size != unpacked || crc32(payload, output_size) != crc ||
-            write_file(target, payload, output_size) != 0) return fail("extract failed");
-      }
-    }
-    at = data_at + packed;
-    ++entries;
-  }
-  if (entries == 0U || at + 4U > size ||
-      (get_le32(g_data + at) != 0x02014b50U &&
-       get_le32(g_data + at) != 0x06054b50U))
-    return fail("unsupported or corrupt archive");
-  return 0;
 }
 
 static int runtime_query(xaios_control_runtime_snapshot_payload_user_t *snapshot,
@@ -1680,14 +1205,55 @@ static int cmd_du(const char *args) {
     if (summary) { (void)append_u64(human ? (total + 1023U) / 1024U : (total + 511U) / 512U); (void)append(human ? "K\t" : "\t"); (void)append(path); (void)append("\n"); }
     ++paths;
   }
-  if (!paths) { u64 total = 0U; if (du_walk(g_cwd, human, summary, &total) != 0) return fail("cannot inspect current directory"); if (summary) { (void)append_u64((total + 511U) / 512U); (void)append("\t"); (void)append(g_cwd); (void)append("\n"); } }
+  if (!paths) { u64 total = 0U; if (du_walk(xutils_cwd, human, summary, &total) != 0) return fail("cannot inspect current directory"); if (summary) { (void)append_u64((total + 511U) / 512U); (void)append("\t"); (void)append(xutils_cwd); (void)append("\n"); } }
   return 0;
 }
+
+/* Bridges to the helpers the archive module shares.  The state and the
+ * buffered output stay single-instanced here; xutils_archive.c calls these
+ * rather than carrying its own copy of either. */
+int xutils_append(const char *text) { return append(text); }
+int xutils_append_u64(u64 value) { return append_u64(value); }
+int xutils_fail(const char *message) { return fail(message); }
+u64 xutils_length(const char *text) { return length(text); }
+int xutils_equal(const char *lhs, const char *rhs) { return equal(lhs, rhs); }
+int xutils_starts(const char *text, const char *prefix) {
+  return starts(text, prefix);
+}
+void xutils_copy(char *dst, const char *src, u64 capacity) {
+  copy(dst, src, capacity);
+}
+int xutils_next_token(const char *text, u64 *cursor, char *token, u64 capacity) {
+  return next_token(text, cursor, token, capacity);
+}
+int xutils_resolve_path(const char *input, char *output) {
+  return resolve_path(input, output);
+}
+int xutils_join_path(const char *base, const char *name, char *output) {
+  return join_path(base, name, output);
+}
+int xutils_basename_of(const char *path, char *name) {
+  return basename_of(path, name);
+}
+int xutils_read_file(const char *path, unsigned char *buffer, u64 capacity,
+                     u64 *size) {
+  return read_file(path, buffer, capacity, size);
+}
+int xutils_write_file(const char *path, const void *buffer, u64 size) {
+  return write_file(path, buffer, size);
+}
+int xutils_list_dir(const char *path, char *listing, u64 *size) {
+  return list_dir(path, listing, size);
+}
+int xutils_each_listing(const char *listing, u64 size, u64 *cursor, char *name) {
+  return each_listing(listing, size, cursor, name);
+}
+int xutils_ensure_parents(const char *path) { return ensure_parents(path); }
 
 int main(int argc, char **argv) {
   const char *args = argc > 2 ? argv[2] : "";
   if (argc < 2 || argv == 0 || argv[1] == 0 || argv[1][0] != '/') return fail("missing session context");
-  g_cwd = argv[1]; g_used = 0U; g_output[0] = '\0';
+  xutils_cwd = argv[1]; g_used = 0U; g_output[0] = '\0';
   int result;
   if (equal(XAIOS_UTILITY_NAME, "ls")) result = cmd_ls(args);
   else if (equal(XAIOS_UTILITY_NAME, "mkdir")) result = cmd_mkdir(args);
@@ -1705,10 +1271,10 @@ int main(int argc, char **argv) {
   else if (equal(XAIOS_UTILITY_NAME, "find")) result = cmd_find(args);
   else if (equal(XAIOS_UTILITY_NAME, "write")) result = cmd_write(args);
   else if (equal(XAIOS_UTILITY_NAME, "sed")) result = cmd_sed(args);
-  else if (equal(XAIOS_UTILITY_NAME, "tar")) result = cmd_tar(args);
+  else if (equal(XAIOS_UTILITY_NAME, "tar")) result = xutils_cmd_tar(args);
   else if (equal(XAIOS_UTILITY_NAME, "cpio")) result = cmd_cpio(args);
-  else if (equal(XAIOS_UTILITY_NAME, "zip")) result = cmd_zip(args);
-  else if (equal(XAIOS_UTILITY_NAME, "unzip")) result = cmd_unzip(args);
+  else if (equal(XAIOS_UTILITY_NAME, "zip")) result = xutils_cmd_zip(args);
+  else if (equal(XAIOS_UTILITY_NAME, "unzip")) result = xutils_cmd_unzip(args);
   else if (equal(XAIOS_UTILITY_NAME, "ps")) result = cmd_ps(args);
   else if (equal(XAIOS_UTILITY_NAME, "df")) result = cmd_df(args);
   else if (equal(XAIOS_UTILITY_NAME, "du")) result = cmd_du(args);

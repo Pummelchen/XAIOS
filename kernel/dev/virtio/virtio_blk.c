@@ -9,12 +9,12 @@
 #include <xaios/virtio_transport.h>
 #include <xaios/vmm.h>
 
+#include "virtio_blk_internal.h"
+
 #define VIRTIO_MMIO_CONFIG 0x100U
 #define VRING_DESC_F_NEXT UINT16_C(1)
 #define VRING_DESC_F_WRITE UINT16_C(2)
 #define VRING_DESC_F_INDIRECT UINT16_C(4)
-#define VIRTIO_BLK_T_IN UINT32_C(0)
-#define VIRTIO_BLK_T_OUT UINT32_C(1)
 #define VIRTIO_BLK_T_FLUSH UINT32_C(4)
 #define VIRTIO_BLK_T_DISCARD UINT32_C(11)
 #define VIRTIO_BLK_T_WRITE_ZEROES UINT32_C(13)
@@ -27,8 +27,6 @@
 #define VIRTIO_F_RING_INDIRECT_DESC (UINT32_C(1) << 28U)
 #define VIRTIO_F_RING_EVENT_IDX (UINT32_C(1) << 29U)
 #define VIRTIO_F_VERSION_1_HIGH UINT32_C(1)
-#define SECTOR_SIZE UINT64_C(512)
-#define DMA_ALIGNMENT UINT64_C(4096)
 #define VIRTIO_BLK_CONFIG_BLK_SIZE 20U
 #define VIRTIO_BLK_CONFIG_PHYSICAL_BLOCK_EXP 24U
 #define VIRTIO_BLK_CONFIG_MAX_DISCARD_SECTORS 36U
@@ -36,7 +34,6 @@
 #define VIRTIO_BLK_CONFIG_DISCARD_ALIGNMENT 44U
 #define VIRTIO_BLK_CONFIG_MAX_WRITE_ZEROES_SECTORS 48U
 #define VIRTIO_BLK_DIRECT_DEPTH 2U
-#define VIRTIO_BLK_MAX_ASYNC_DEPTH VIRTQ_SIZE
 /* The largest span one request may carry.
    
    Bounded rather than unlimited: a descriptor length is 32 bits, the buffer
@@ -55,100 +52,6 @@
 #define VIRTIO_BLK_WAIT_TIMEOUT_NS UINT64_C(5000000000)
 #define VIRTIO_BLK_SELF_TEST_SECTOR UINT64_C(2999)
 
-typedef struct virtio_blk_req {
-  uint32_t type;
-  uint32_t reserved;
-  uint64_t sector;
-} virtio_blk_req_t;
-
-typedef struct virtio_blk_range {
-  uint64_t sector;
-  uint32_t num_sectors;
-  uint32_t flags;
-} virtio_blk_range_t;
-
-typedef struct virtio_blk_async_slot {
-  virtq_desc_t indirect[3];
-  virtio_blk_req_t request;
-  uint8_t dma_sector[SECTOR_SIZE];
-  uint8_t status;
-  uint8_t active;
-  uint8_t type;
-  uint8_t direct_dma;
-  uint8_t reserved;
-  /* How much this request moved. The completion has to copy exactly that
-     much back out of the bounce buffer, and a caller asking how far it got
-     needs the real figure rather than the one it requested. */
-  uint64_t transfer;
-  void *buffer;
-  virtio_block_completion_t completion;
-  void *completion_context;
-  uint64_t token;
-} virtio_blk_async_slot_t;
-
-typedef struct virtio_block_driver {
-  virtio_mmio_device_t device;
-  virtq_desc_t *desc;
-  virtq_avail_t *avail;
-  virtq_used_t *used;
-  virtio_blk_req_t *request;
-  uint8_t *dma_sector;
-  uint8_t *status;
-  uint16_t next_avail;
-  uint16_t used_last;
-  uint32_t outstanding;
-  /* When set, completions are acknowledged but not processed.
-   *
-   * The queue-depth checks in the self-test below fill the ring and then
-   * assert that everything they submitted is still outstanding and that one
-   * more request is refused. Both statements are about the queue's capacity,
-   * and both are only observable while nothing is draining it -- which is
-   * true when completions are polled and false the moment the device can
-   * interrupt. Rather than write assertions that are weaker on the machines
-   * that complete faster, the test suspends processing for exactly the window
-   * it is measuring. The interrupt is still acknowledged while suspended,
-   * because a device left asserting a level-triggered line re-raises it
-   * immediately and the machine spends the window in its own handler. */
-  uint32_t completions_suspended;
-  uint32_t special_active;
-  uint32_t queue_depth;
-  /* How the data actually reached the device. A direct request handed the
-     caller's own memory to it; a bounce request copied a sector through the
-     driver's staging buffer because the caller's memory was not one
-     physically contiguous span. The second is correct and slow, and it used
-     to be every request; counting both is what turns "reads land in the
-     consumer's buffer" from a claim into a number. */
-  uint64_t direct_transfers;
-  uint64_t bounce_transfers;
-  /* A monotonic count of every write and every flush this device has issued,
-     used only when the write-ordering trace is built in. */
-  uint64_t io_sequence;
-  uint32_t uses_indirect;
-  uint32_t uses_event_idx;
-  uint64_t reset_count;
-  uint64_t next_token;
-  uint64_t interrupt_count;
-  xaios_spinlock_t queue_lock;
-  virtio_blk_async_slot_t *async_slots[VIRTIO_BLK_MAX_ASYNC_DEPTH];
-  uint64_t capacity_sectors;
-  uint64_t logical_sector_size;
-  uint64_t physical_block_size;
-  uint32_t accepted_features;
-  uint32_t read_only;
-  uint32_t supports_flush;
-  uint32_t supports_discard;
-  uint32_t supports_write_zeroes;
-  uint32_t max_discard_sectors;
-  uint32_t max_discard_ranges;
-  uint32_t discard_sector_alignment;
-  uint32_t max_write_zeroes_sectors;
-  uint32_t initialized;
-  uint32_t block_registered;
-  uint32_t memory_backed;
-  uint8_t *memory_base;
-  uint64_t memory_size;
-  xaios_block_device_t block_device;
-} virtio_block_driver_t;
 
 static virtio_block_driver_t *g_blk;
 static volatile uint32_t g_interrupt_canary_complete = 1U;
@@ -157,9 +60,12 @@ static uint64_t g_interrupt_canary_baseline;
 static uint8_t *g_boot_memory_base;
 static uint64_t g_boot_memory_size;
 
+/* Handles in virtio_blk_handles.c reach the primary device through this
+   copied-out pointer; `g_blk' stays private to this file. */
+virtio_block_driver_t *virtio_blk_primary_driver(void) { return g_blk; }
+
 static xaios_status_t block_backend_read(void *context, uint64_t byte_offset,
                                          void *buffer, uint64_t length);
-static void block_device_note_taken(const virtio_mmio_device_t *device);
 static xaios_status_t block_backend_write(void *context, uint64_t byte_offset,
                                           const void *buffer,
                                           uint64_t length);
@@ -221,7 +127,7 @@ static int dma_range(const void *ptr, uint64_t length, int writable,
   return 1;
 }
 
-static uint64_t read_capacity(const virtio_mmio_device_t *device) {
+uint64_t read_capacity(const virtio_mmio_device_t *device) {
   uint32_t low = virtio_mmio_read32(device->base, VIRTIO_MMIO_CONFIG);
   uint32_t high = virtio_mmio_read32(device->base, VIRTIO_MMIO_CONFIG + 4U);
   return ((uint64_t)high << 32U) | low;
@@ -290,7 +196,7 @@ static xaios_status_t allocate_driver(void) {
   return XAIOS_OK;
 }
 
-static xaios_status_t configure_queue(virtio_block_driver_t *drv) {
+xaios_status_t configure_queue(virtio_block_driver_t *drv) {
   uint32_t accepted_low = 0U;
   uint32_t accepted_high = 0U;
   if (virtio_transport_negotiate_features(
@@ -335,7 +241,7 @@ static xaios_status_t configure_queue(virtio_block_driver_t *drv) {
   return virtio_transport_set_driver_ok_checked(&drv->device);
 }
 
-static xaios_status_t read_device_geometry(virtio_block_driver_t *drv) {
+xaios_status_t read_device_geometry(virtio_block_driver_t *drv) {
   drv->logical_sector_size = SECTOR_SIZE;
   if ((drv->accepted_features & VIRTIO_BLK_F_BLK_SIZE) != 0U) {
     drv->logical_sector_size =
@@ -387,7 +293,7 @@ static xaios_status_t read_device_geometry(virtio_block_driver_t *drv) {
   return XAIOS_OK;
 }
 
-static void virtio_block_interrupt(uint32_t intid, void *context) {
+void virtio_block_interrupt(uint32_t intid, void *context) {
   virtio_block_driver_t *drv = (virtio_block_driver_t *)context;
   (void)intid;
   if (drv == 0 || drv->initialized == 0U) return;
@@ -434,7 +340,7 @@ static void io_trace(virtio_block_driver_t *drv, const char *what,
 }
 #endif
 
-static xaios_status_t submit_sector_h(
+xaios_status_t submit_sector_h(
     virtio_block_driver_t *drv, uint64_t sector, void *buffer,
     uint64_t buffer_size, uint32_t type,
     virtio_block_completion_t completion, void *context, uint64_t *token,
@@ -715,12 +621,8 @@ static xaios_status_t recover_queue(virtio_block_driver_t *drv) {
   return XAIOS_OK;
 }
 
-typedef struct virtio_block_sync_wait {
-  volatile uint32_t complete;
-  xaios_status_t status;
-} virtio_block_sync_wait_t;
 
-static void sync_completion(uint64_t token, xaios_status_t status,
+void sync_completion(uint64_t token, xaios_status_t status,
                             void *context) {
   virtio_block_sync_wait_t *wait = (virtio_block_sync_wait_t *)context;
   (void)token;
@@ -737,7 +639,7 @@ static void interrupt_canary_completion(uint64_t token,
   __atomic_store_n(&g_interrupt_canary_complete, 1U, __ATOMIC_RELEASE);
 }
 
-static xaios_status_t wait_sync(virtio_block_driver_t *drv,
+xaios_status_t wait_sync(virtio_block_driver_t *drv,
                                 virtio_block_sync_wait_t *wait) {
   uint64_t started = timer_now_ns();
   while (__atomic_load_n(&wait->complete, __ATOMIC_ACQUIRE) == 0U) {
@@ -751,7 +653,7 @@ static xaios_status_t wait_sync(virtio_block_driver_t *drv,
   return wait->status;
 }
 
-static xaios_status_t wait_idle(virtio_block_driver_t *drv) {
+xaios_status_t wait_idle(virtio_block_driver_t *drv) {
   uint64_t started = timer_now_ns();
   while (drv->outstanding != 0U) {
     (void)virtio_block_poll_h(drv);
@@ -765,7 +667,7 @@ static xaios_status_t wait_idle(virtio_block_driver_t *drv) {
 }
 
 
-static xaios_status_t flush_h(virtio_block_driver_t *drv) {
+xaios_status_t flush_h(virtio_block_driver_t *drv) {
   if (drv == 0 || drv->initialized == 0 || drv->supports_flush == 0U) {
     return XAIOS_ERR_UNSUPPORTED;
   }
@@ -910,7 +812,7 @@ static xaios_status_t range_command_h(virtio_block_driver_t *drv,
   return XAIOS_OK;
 }
 
-static xaios_status_t register_block_device(virtio_block_driver_t *drv) {
+xaios_status_t register_block_device(virtio_block_driver_t *drv) {
   if (drv->block_registered != 0U) return XAIOS_OK;
   uint64_t capacity_bytes = 0U;
   if (!multiply_u64(drv->capacity_sectors, SECTOR_SIZE, &capacity_bytes) ||
@@ -1109,426 +1011,6 @@ xaios_status_t virtio_block_interrupt_canary_wait(uint64_t timeout_ns) {
   return XAIOS_OK;
 }
 
-static xaios_status_t transfer_sector_h(virtio_block_driver_t *drv,
-                                        uint64_t sector, void *buffer,
-                                        uint64_t buffer_size, uint32_t type) {
-  if (drv == 0 || drv->initialized == 0 || buffer == 0 ||
-      buffer_size < SECTOR_SIZE) {
-    return XAIOS_ERR_INVALID;
-  }
-  if (type != VIRTIO_BLK_T_IN && type != VIRTIO_BLK_T_OUT) {
-    return XAIOS_ERR_INVALID;
-  }
-  if (sector >= drv->capacity_sectors) return XAIOS_ERR_IO;
-  if (type == VIRTIO_BLK_T_OUT && drv->read_only != 0U) {
-    return XAIOS_ERR_UNSUPPORTED;
-  }
-  virtio_block_sync_wait_t wait = {0U, XAIOS_ERR_IO};
-  uint64_t token = 0U;
-  xaios_status_t status;
-  do {
-    /* One sector, whatever the buffer holds. This is the single-sector API
-       and its callers size their buffers generously; taking more than a
-       sector here would write past what they meant. Callers that want a
-       whole span go through the block backend. */
-    status = submit_sector_h(drv, sector, buffer,
-                             buffer_size < SECTOR_SIZE ? buffer_size
-                                                       : SECTOR_SIZE,
-                             type,
-                             sync_completion, &wait, &token, 0);
-    if (status == XAIOS_ERR_BUSY) (void)virtio_block_poll_h(drv);
-  } while (status == XAIOS_ERR_BUSY);
-  if (status != XAIOS_OK) return status;
-  (void)token;
-  return wait_sync(drv, &wait);
-}
-
-static xaios_status_t virtio_block_transfer_sector(uint64_t sector, void *buffer,
-                                                  uint64_t buffer_size,
-                                                  uint32_t type) {
-  if (g_blk == 0 || g_blk->initialized == 0) {
-    return XAIOS_ERR_INVALID;
-  }
-  return transfer_sector_h(g_blk, sector, buffer, buffer_size, type);
-}
-
-xaios_status_t virtio_block_read_sector(uint64_t sector, void *buffer,
-                                       uint64_t buffer_size) {
-  return virtio_block_transfer_sector(sector, buffer, buffer_size,
-                                      VIRTIO_BLK_T_IN);
-}
-
-xaios_status_t virtio_block_write_sector(uint64_t sector, const void *buffer,
-                                        uint64_t buffer_size) {
-  return virtio_block_transfer_sector(sector, (void *)buffer, buffer_size,
-                                      VIRTIO_BLK_T_OUT);
-}
-
-xaios_status_t virtio_block_flush(void) {
-  return flush_h(g_blk);
-}
-
-/* Everything a handle owns, in one place, so that a probe that finds no device
-   gives it all back. The scan below calls this once per ordinal and stops on
-   the first miss, and a leak per miss would be a leak on every boot. */
-static void release_handle(virtio_block_driver_t *drv) {
-  if (drv == 0) return;
-  for (uint32_t i = 0U; i < VIRTIO_BLK_MAX_ASYNC_DEPTH; ++i) {
-    kheap_free(drv->async_slots[i]);
-  }
-  kheap_free(drv->status);
-  kheap_free(drv->dma_sector);
-  kheap_free(drv->request);
-  kheap_free(drv->used);
-  kheap_free(drv->avail);
-  kheap_free(drv->desc);
-  kheap_free(drv);
-}
-
-/* Which physical devices this driver has already taken.
- *
- * Opening a device twice is not refused by the device and not checked here:
- * each open configures a queue and registers a completion, so a second one
- * fights the first for the same virtqueue. Nothing needed to know which devices
- * were in use until the storage-administration window had to *find* one instead
- * of being told where to look -- the window used to be a fixed position in a
- * test bench's device order, which no machine with fewer disks than the bench
- * can satisfy (B-113).
- *
- * A device is identified by its transport and the address of its common
- * configuration structure, which is unique per device on both transports. An
- * ordinal would not do: the same device is reached by different ordinals
- * depending on which lookup is used to find it. */
-#define VIRTIO_BLOCK_MAX_TAKEN 8U
-typedef struct {
-  uint32_t backend;
-  uint64_t common_config;
-} virtio_block_taken_t;
-
-static virtio_block_taken_t g_taken[VIRTIO_BLOCK_MAX_TAKEN];
-static uint32_t g_taken_count;
-
-static int block_device_taken(const virtio_mmio_device_t *device) {
-  for (uint32_t i = 0U; i < g_taken_count; ++i) {
-    if (g_taken[i].backend == device->backend &&
-        g_taken[i].common_config == device->common_config) {
-      return 1;
-    }
-  }
-  return 0;
-}
-
-static void block_device_note_taken(const virtio_mmio_device_t *device) {
-  if (g_taken_count >= VIRTIO_BLOCK_MAX_TAKEN) return;
-  g_taken[g_taken_count].backend = device->backend;
-  g_taken[g_taken_count].common_config = device->common_config;
-  ++g_taken_count;
-}
-
-static virtio_block_driver_t *allocate_handle(void) {
-  virtio_block_driver_t *drv =
-      (virtio_block_driver_t *)kheap_calloc(sizeof(*drv), 16);
-  if (drv == 0) return 0;
-  drv->desc = (virtq_desc_t *)kheap_calloc(
-      sizeof(virtq_desc_t) * VIRTQ_SIZE, DMA_ALIGNMENT);
-  drv->avail = (virtq_avail_t *)kheap_calloc(
-      sizeof(virtq_avail_t), DMA_ALIGNMENT);
-  drv->used = (virtq_used_t *)kheap_calloc(
-      sizeof(virtq_used_t), DMA_ALIGNMENT);
-  drv->request = (virtio_blk_req_t *)kheap_calloc(
-      sizeof(virtio_blk_req_t), DMA_ALIGNMENT);
-  drv->dma_sector =
-      (uint8_t *)kheap_calloc(SECTOR_SIZE, DMA_ALIGNMENT);
-  drv->status = (uint8_t *)kheap_calloc(1, DMA_ALIGNMENT);
-  if (drv->desc == 0 || drv->avail == 0 || drv->used == 0 ||
-      drv->request == 0 || drv->dma_sector == 0 || drv->status == 0) {
-    release_handle(drv);
-    return 0;
-  }
-  for (uint32_t i = 0U; i < VIRTIO_BLK_MAX_ASYNC_DEPTH; ++i) {
-    drv->async_slots[i] = (virtio_blk_async_slot_t *)kheap_calloc(
-        sizeof(virtio_blk_async_slot_t), DMA_ALIGNMENT);
-    if (drv->async_slots[i] == 0) {
-      release_handle(drv);
-      return 0;
-    }
-  }
-  xaios_spin_init(&drv->queue_lock);
-  return drv;
-}
-
-/* Bring up a device the caller has already located. Shared by both entry
-   points below so that a disk found by ordinal is configured, checked and
-   registered exactly the way a disk found by slot is. */
-static xaios_status_t start_handle(virtio_block_driver_t *drv, uint32_t slot) {
-  if (configure_queue(drv) != XAIOS_OK) {
-    klog("virtio-blk-h: slot=%u queue configuration failed\n", slot);
-    return XAIOS_ERR_IO;
-  }
-  drv->capacity_sectors = read_capacity(&drv->device);
-  if (read_device_geometry(drv) != XAIOS_OK) return XAIOS_ERR_INVALID;
-  drv->initialized = 1;
-  /* Completion is polled through the used ring on every submission path, so
-     a transport with no message-signalled interrupt still serves requests.
-     Losing a whole volume over a missing notification would leave the
-     machine without persistent storage for no reason. */
-  if (virtio_transport_register_interrupt(
-          &drv->device, virtio_block_interrupt, drv) != XAIOS_OK) {
-    klog("virtio-blk-h: slot=%u no interrupt available; completions are "
-         "polled\n",
-         slot);
-  }
-  if (register_block_device(drv) != XAIOS_OK) {
-    klog("virtio-blk-h: slot=%u registration failed\n", slot);
-    drv->initialized = 0U;
-    return XAIOS_ERR_INVALID;
-  }
-  klog("virtio-blk-h: slot=%u capacity_sectors=%lu event_idx=%u\n", slot,
-       drv->capacity_sectors, drv->uses_event_idx);
-  return XAIOS_OK;
-}
-
-/* The storage-administration window: the disk an operator installs onto.
- *
- * The window has a configured address on the test bench, where every volume is
- * attached in a known order, and that address is tried first so the bench
- * behaves exactly as it did. What it could not do is work anywhere else. The
- * configured window is logical slot 5, which the PCI transport carries to
- * enumeration ordinal 4 -- the fifth block device, in the order the bench
- * attaches five. A machine XAIOS has been installed onto has two, so the
- * window did not resolve and the spare disk was never opened: the install
- * phase of the x86-64 and RISC-V gates could only be skipped, and on a real
- * two-disk machine installing was impossible rather than merely unproven
- * (B-113).
- *
- * So if the configured window is absent, take the first block device nothing
- * else has taken. On a one-disk machine that is nothing, which is right: there
- * is no spare and the caller is told so. On a machine with a spare it is the
- * spare, whatever order the firmware happened to enumerate the bus in. The
- * device keeps the caller's logical slot, so it is named /dev/vblk5 wherever
- * it was found -- a device's name is a name, not a position.
- *
- * `scan_limit` bounds the search; the caller passes the same ceiling the rest
- * of this file uses for "how many disks could there possibly be". */
-xaios_status_t virtio_block_open_administration_window(
-    uint32_t slot, uint32_t scan_limit, virtio_block_handle_t **out_handle) {
-  if (out_handle == 0) return XAIOS_ERR_INVALID;
-  if (virtio_block_open_slot(slot, out_handle) == XAIOS_OK) {
-    return XAIOS_OK;
-  }
-  for (uint32_t ordinal = 0U; ordinal < scan_limit; ++ordinal) {
-    virtio_mmio_device_t probe;
-    if (virtio_transport_find_nth(VIRTIO_DEVICE_BLOCK, "virtio-blk-admin",
-                                  ordinal, ordinal, &probe) != XAIOS_OK) {
-      continue;
-    }
-    if (block_device_taken(&probe) != 0) continue;
-    if (virtio_block_open_ordinal(ordinal, slot, out_handle) == XAIOS_OK) {
-      klog("storage-admin: window slot=%u is not attached; using the first "
-           "unclaimed block device, ordinal=%u\n", slot, ordinal);
-      return XAIOS_OK;
-    }
-  }
-  return XAIOS_ERR_NOT_FOUND;
-}
-
-xaios_status_t virtio_block_open_slot(uint32_t start_slot,
-                                     virtio_block_handle_t **out_handle) {
-  if (out_handle == 0) {
-    return XAIOS_ERR_INVALID;
-  }
-  virtio_block_driver_t *drv = allocate_handle();
-  if (drv == 0) return XAIOS_ERR_NO_MEMORY;
-  if (virtio_transport_find_at(VIRTIO_DEVICE_BLOCK, "virtio-blk-h",
-                               start_slot, &drv->device) != XAIOS_OK) {
-    release_handle(drv);
-    return XAIOS_ERR_NOT_FOUND;
-  }
-  /* A device another handle already owns is never opened, whatever the caller
-     asked for and whatever the registry happens to contain: opening it
-     re-negotiates the features, which resets the device and moves its queue to
-     this handle's rings, and the owner is left with a disk that silently stops
-     answering (B-121). The caller is told which device and why. */
-  if (block_device_taken(&drv->device) != 0) {
-    klog("virtio-blk-h: slot=%u base=0x%lx already belongs to another "
-         "handle\n",
-         start_slot, (unsigned long)drv->device.base);
-    release_handle(drv);
-    return XAIOS_ERR_BUSY;
-  }
-  xaios_status_t status = start_handle(drv, start_slot);
-  if (status != XAIOS_OK) {
-    release_handle(drv);
-    return status;
-  }
-  block_device_note_taken(&drv->device);
-  *out_handle = drv;
-  return XAIOS_OK;
-}
-
-/* How many virtio block devices this machine presents, counted without
-   claiming any of them.
-
-   The distinction this answers is the one between an installed machine and a
-   test bench. An installed machine has one disk, and its durable state is a
-   partition of that disk because there is nowhere else for it to be. A test
-   bench has a disk per volume, each pinned to a known window, and every one of
-   them already belongs to a driver. Scanning and opening devices on a test
-   bench takes volumes away from the drivers that own them -- which is exactly
-   what happened when this scan first ran there, and the machine came up
-   without a working shell.
-
-   Finding a device is a read of its identity registers and does not configure
-   or claim it, so asking this question costs nothing. */
-uint32_t virtio_block_present_count(uint32_t limit) {
-  virtio_mmio_device_t probe;
-  uint32_t count = 0U;
-  while (count < limit) {
-    if (virtio_transport_find_nth(VIRTIO_DEVICE_BLOCK, "virtio-blk-count",
-                                  count, count, &probe) != XAIOS_OK) {
-      break;
-    }
-    ++count;
-  }
-  return count;
-}
-
-xaios_status_t virtio_block_open_pci_ordinal(
-    uint32_t ordinal, uint32_t slot, virtio_block_handle_t **out_handle) {
-  if (out_handle == 0) {
-    return XAIOS_ERR_INVALID;
-  }
-  virtio_block_driver_t *drv = allocate_handle();
-  if (drv == 0) return XAIOS_ERR_NO_MEMORY;
-  if (virtio_transport_find_nth_pci(VIRTIO_DEVICE_BLOCK, "virtio-blk-h",
-                                    ordinal, slot,
-                                    &drv->device) != XAIOS_OK) {
-    release_handle(drv);
-    return XAIOS_ERR_NOT_FOUND;
-  }
-  /* A device another handle already owns is never opened, whatever the caller
-     asked for and whatever the registry happens to contain: opening it
-     re-negotiates the features, which resets the device and moves its queue to
-     this handle's rings, and the owner is left with a disk that silently stops
-     answering (B-121). The caller is told which device and why. */
-  if (block_device_taken(&drv->device) != 0) {
-    klog("virtio-blk-h: slot=%u base=0x%lx already belongs to another "
-         "handle\n",
-         slot, (unsigned long)drv->device.base);
-    release_handle(drv);
-    return XAIOS_ERR_BUSY;
-  }
-  xaios_status_t status = start_handle(drv, slot);
-  if (status != XAIOS_OK) {
-    release_handle(drv);
-    return status;
-  }
-  block_device_note_taken(&drv->device);
-  *out_handle = drv;
-  return XAIOS_OK;
-}
-
-xaios_status_t virtio_block_open_ordinal(uint32_t ordinal, uint32_t slot,
-                                        virtio_block_handle_t **out_handle) {
-  if (out_handle == 0) {
-    return XAIOS_ERR_INVALID;
-  }
-  virtio_block_driver_t *drv = allocate_handle();
-  if (drv == 0) return XAIOS_ERR_NO_MEMORY;
-  if (virtio_transport_find_nth(VIRTIO_DEVICE_BLOCK, "virtio-blk-h", ordinal,
-                                slot, &drv->device) != XAIOS_OK) {
-    release_handle(drv);
-    return XAIOS_ERR_NOT_FOUND;
-  }
-  /* A device another handle already owns is never opened, whatever the caller
-     asked for and whatever the registry happens to contain: opening it
-     re-negotiates the features, which resets the device and moves its queue to
-     this handle's rings, and the owner is left with a disk that silently stops
-     answering (B-121). The caller is told which device and why. */
-  if (block_device_taken(&drv->device) != 0) {
-    klog("virtio-blk-h: slot=%u base=0x%lx already belongs to another "
-         "handle\n",
-         slot, (unsigned long)drv->device.base);
-    release_handle(drv);
-    return XAIOS_ERR_BUSY;
-  }
-  xaios_status_t status = start_handle(drv, slot);
-  if (status != XAIOS_OK) {
-    release_handle(drv);
-    return status;
-  }
-  block_device_note_taken(&drv->device);
-  *out_handle = drv;
-  return XAIOS_OK;
-}
-
-xaios_status_t virtio_block_read_sector_h(virtio_block_handle_t *handle,
-                                         uint64_t sector, void *buffer,
-                                         uint64_t buffer_size) {
-  return transfer_sector_h(handle, sector, buffer, buffer_size, VIRTIO_BLK_T_IN);
-}
-
-xaios_status_t virtio_block_write_sector_h(virtio_block_handle_t *handle,
-                                          uint64_t sector, const void *buffer,
-                                          uint64_t buffer_size) {
-  return transfer_sector_h(handle, sector, (void *)buffer, buffer_size,
-                           VIRTIO_BLK_T_OUT);
-}
-
-xaios_status_t virtio_block_submit_read_h(
-    virtio_block_handle_t *handle, uint64_t sector, void *buffer,
-    uint64_t buffer_size, virtio_block_completion_t completion, void *context,
-    uint64_t *token) {
-  /* One sector, as this entry point has always meant, but a buffer smaller
-     than that still has to be rejected rather than clamped into range. */
-  return submit_sector_h(handle, sector, buffer,
-                         buffer_size < SECTOR_SIZE ? buffer_size : SECTOR_SIZE,
-                         VIRTIO_BLK_T_IN, completion, context, token, 0);
-}
-
-xaios_status_t virtio_block_submit_write_h(
-    virtio_block_handle_t *handle, uint64_t sector, const void *buffer,
-    uint64_t buffer_size, virtio_block_completion_t completion, void *context,
-    uint64_t *token) {
-  return submit_sector_h(handle, sector, (void *)(uintptr_t)buffer,
-                         buffer_size < SECTOR_SIZE ? buffer_size : SECTOR_SIZE,
-                         VIRTIO_BLK_T_OUT, completion, context, token, 0);
-}
-
-xaios_status_t virtio_block_flush_h(virtio_block_handle_t *handle) {
-  return flush_h(handle);
-}
-
-uint64_t virtio_block_capacity_sectors_h(virtio_block_handle_t *handle) {
-  if (handle == 0 || handle->initialized == 0) {
-    return 0;
-  }
-  return handle->capacity_sectors;
-}
-
-xaios_block_device_t *virtio_block_device_h(virtio_block_handle_t *handle) {
-  if (handle == 0 || handle->initialized == 0U ||
-      handle->block_registered == 0U) {
-    return 0;
-  }
-  return &handle->block_device;
-}
-
-void virtio_block_close(virtio_block_handle_t *handle) {
-  if (handle != 0 && handle->initialized != 0) {
-    (void)wait_idle(handle);
-    if (handle->block_registered != 0U &&
-        block_device_unregister(&handle->block_device) == XAIOS_OK) {
-      handle->block_registered = 0U;
-    }
-    if (handle->memory_backed == 0U) {
-      (void)virtio_transport_unregister_interrupt(
-          &handle->device, virtio_block_interrupt, handle);
-      virtio_transport_reset(&handle->device);
-    }
-    handle->initialized = 0;
-  }
-}
 
 /* Move a span in as few requests as the device and the memory allow.
  *

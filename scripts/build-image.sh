@@ -702,17 +702,8 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   "
 else
   ARCH_KERNEL_OBJECTS="
-  $KERNEL_BUILD_DIR/entry.o
-  $KERNEL_BUILD_DIR/acpi.o
-  $KERNEL_BUILD_DIR/cpu_features.o
   $KERNEL_BUILD_DIR/early.o
-  $KERNEL_BUILD_DIR/engine_packed.o
-  $KERNEL_BUILD_DIR/timer.o
   $KERNEL_BUILD_DIR/platform.o
-  $KERNEL_BUILD_DIR/power.o
-  $KERNEL_BUILD_DIR/watchdog.o
-  $KERNEL_BUILD_DIR/pci.o
-  $KERNEL_BUILD_DIR/smp.o
   "
 fi
 KERNEL_OBJECTS="
@@ -733,6 +724,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/virtio_transport.o
   $KERNEL_BUILD_DIR/block_device.o
   $KERNEL_BUILD_DIR/virtio_blk.o
+  $KERNEL_BUILD_DIR/virtio_blk_handles.o
   $KERNEL_BUILD_DIR/virtio_net.o
   $KERNEL_BUILD_DIR/e1000e.o
   $KERNEL_BUILD_DIR/vmxnet3.o
@@ -755,6 +747,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/vfs_xaiboot.o
   $KERNEL_BUILD_DIR/vfs_initramfs.o
   $KERNEL_BUILD_DIR/vfs_xaifs.o
+  $KERNEL_BUILD_DIR/vfs_xaifs_trim.o
   $KERNEL_BUILD_DIR/model_cache.o
   $KERNEL_BUILD_DIR/ram_residency.o
   $KERNEL_BUILD_DIR/ram_block.o
@@ -762,6 +755,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/xai_fs_admin.o
   $KERNEL_BUILD_DIR/service.o
   $KERNEL_BUILD_DIR/syscall.o
+  $KERNEL_BUILD_DIR/syscall_table.o
   $KERNEL_BUILD_DIR/syscall_socket.o
   $KERNEL_BUILD_DIR/core_lease.o
   $KERNEL_BUILD_DIR/security.o
@@ -771,9 +765,12 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/remote_login_text.o
   $KERNEL_BUILD_DIR/remote_login_path.o
   $KERNEL_BUILD_DIR/remote_login_sysinfo.o
+  $KERNEL_BUILD_DIR/remote_login_tar.o
+  $KERNEL_BUILD_DIR/remote_login_zip.o
   $KERNEL_BUILD_DIR/operations.o
   $KERNEL_BUILD_DIR/admin_control.o
   $KERNEL_BUILD_DIR/control_protocol.o
+  $KERNEL_BUILD_DIR/control_storage_ops.o
   $KERNEL_BUILD_DIR/app_store.o
   $KERNEL_BUILD_DIR/cpu_ai_runtime.o
   $KERNEL_BUILD_DIR/ai_kernels.o
@@ -909,6 +906,7 @@ else
 fi
 compile_kernel "$ROOT_DIR/kernel/dev/block_device.c" "$KERNEL_BUILD_DIR/block_device.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_blk.c" "$KERNEL_BUILD_DIR/virtio_blk.o"
+compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_blk_handles.c" "$KERNEL_BUILD_DIR/virtio_blk_handles.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_net.c" "$KERNEL_BUILD_DIR/virtio_net.o"
 compile_kernel "$ROOT_DIR/kernel/dev/e1000e.c" "$KERNEL_BUILD_DIR/e1000e.o"
 compile_kernel "$ROOT_DIR/kernel/dev/vmxnet3.c" "$KERNEL_BUILD_DIR/vmxnet3.o"
@@ -931,6 +929,7 @@ compile_kernel "$ROOT_DIR/kernel/fs/vfs.c" "$KERNEL_BUILD_DIR/vfs.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs_xaiboot.c" "$KERNEL_BUILD_DIR/vfs_xaiboot.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs_initramfs.c" "$KERNEL_BUILD_DIR/vfs_initramfs.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs_xaifs.c" "$KERNEL_BUILD_DIR/vfs_xaifs.o"
+compile_kernel "$ROOT_DIR/kernel/fs/vfs_xaifs_trim.c" "$KERNEL_BUILD_DIR/vfs_xaifs_trim.o"
 compile_kernel "$ROOT_DIR/kernel/fs/model_cache.c" "$KERNEL_BUILD_DIR/model_cache.o"
 compile_kernel "$ROOT_DIR/kernel/mm/ram_residency.c" "$KERNEL_BUILD_DIR/ram_residency.o"
 compile_kernel "$ROOT_DIR/kernel/dev/ram_block.c" "$KERNEL_BUILD_DIR/ram_block.o"
@@ -938,6 +937,7 @@ compile_kernel "$ROOT_DIR/kernel/runtime/setup_apply.c" "$KERNEL_BUILD_DIR/setup
 compile_kernel "$ROOT_DIR/kernel/fs/xai_fs_admin.c" "$KERNEL_BUILD_DIR/xai_fs_admin.o"
 compile_kernel "$ROOT_DIR/kernel/user/service.c" "$KERNEL_BUILD_DIR/service.o"
 compile_kernel "$ROOT_DIR/kernel/user/syscall.c" "$KERNEL_BUILD_DIR/syscall.o"
+compile_kernel "$ROOT_DIR/kernel/user/syscall_table.c" "$KERNEL_BUILD_DIR/syscall_table.o"
 compile_kernel "$ROOT_DIR/kernel/user/syscall_socket.c" "$KERNEL_BUILD_DIR/syscall_socket.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/core_lease.c" "$KERNEL_BUILD_DIR/core_lease.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/security.c" "$KERNEL_BUILD_DIR/security.o"
@@ -947,9 +947,12 @@ compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_archive.c" "$KERNEL_BUILD_
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_text.c" "$KERNEL_BUILD_DIR/remote_login_text.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_path.c" "$KERNEL_BUILD_DIR/remote_login_path.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_sysinfo.c" "$KERNEL_BUILD_DIR/remote_login_sysinfo.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_tar.c" "$KERNEL_BUILD_DIR/remote_login_tar.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_zip.c" "$KERNEL_BUILD_DIR/remote_login_zip.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/operations.c" "$KERNEL_BUILD_DIR/operations.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/admin_control.c" "$KERNEL_BUILD_DIR/admin_control.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/control_protocol.c" "$KERNEL_BUILD_DIR/control_protocol.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/control_storage_ops.c" "$KERNEL_BUILD_DIR/control_storage_ops.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/app_store.c" "$KERNEL_BUILD_DIR/app_store.o"
 compile_kernel "$ROOT_DIR/kernel/user/user.c" "$KERNEL_BUILD_DIR/user.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/model_arena.c" "$KERNEL_BUILD_DIR/model_arena.o"
@@ -1250,6 +1253,28 @@ set --
 for app in $USER_APPS; do
   app_obj="$INIT_BUILD_DIR/$app.o"
   app_elf="$INIT_BUILD_DIR/$app.elf"
+  xtop_serve_obj=""
+  if [ "$app" = "xtop" ]; then
+    xtop_serve_obj="$INIT_BUILD_DIR/xtop-serve.o"
+    "$CLANG" \
+      --target="$TARGET_TRIPLE" \
+      $USER_ARCH_CFLAGS \
+      -std=c99 \
+      -ffreestanding \
+      -fno-stack-protector \
+      -fno-builtin \
+      -fno-pic \
+      -fno-pie \
+      -Os \
+      -Wall \
+      -Wextra \
+      -Werror \
+      -I"$ROOT_DIR/userspace/include" \
+      -I"$ROOT_DIR/userspace/sshd" \
+      -I"$ROOT_DIR/engine/include" \
+      -c "$ROOT_DIR/userspace/apps/xtop_serve.c" \
+      -o "$xtop_serve_obj"
+  fi
   printf '%s\n' "Building userspace /bin/$app ELF..."
   "$CLANG" \
     --target="$TARGET_TRIPLE" \
@@ -1353,6 +1378,7 @@ for app in $USER_APPS; do
       "$USER_LIB_OBJ" \
       "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$USER_CONTROL_STORAGE_OBJ" "$USER_CONTROL_OPS_OBJ" \
       "$USER_SCREEN_OBJ" \
+      $xtop_serve_obj \
       "$app_obj"
   elif [ "$app" = "clustertest" ]; then
     "$LD_LLD" \
@@ -1395,6 +1421,7 @@ USER_INFLATE_OBJ="$INIT_BUILD_DIR/xutils-inflate.o"
 
 for app in $UTILITY_APPS; do
   app_obj="$INIT_BUILD_DIR/xutils-$app.o"
+  app_archive_obj="$INIT_BUILD_DIR/xutils-archive-$app.o"
   app_elf="$INIT_BUILD_DIR/$app.elf"
   printf '%s\n' "Building userspace /bin/$app utility ELF..."
   "$CLANG" \
@@ -1413,6 +1440,22 @@ for app in $UTILITY_APPS; do
     -I"$ROOT_DIR/userspace/include" \
     -c "$ROOT_DIR/userspace/apps/xutils.c" \
     -o "$app_obj"
+  "$CLANG" \
+    --target="$TARGET_TRIPLE" \
+    $USER_ARCH_CFLAGS \
+    -std=c99 \
+    -ffreestanding \
+    -fno-stack-protector \
+    -fno-builtin \
+    -fno-pic \
+    -fno-pie \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -DXAIOS_UTILITY_NAME=\"$app\" \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/apps/xutils_archive.c" \
+    -o "$app_archive_obj"
   "$LD_LLD" \
     -nostdlib \
     -T "$ROOT_DIR/userspace/init/linker.ld" \
@@ -1421,6 +1464,7 @@ for app in $UTILITY_APPS; do
     "$USER_LIB_OBJ" \
     "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$USER_CONTROL_STORAGE_OBJ" "$USER_CONTROL_OPS_OBJ" \
     "$USER_INFLATE_OBJ" \
+    "$app_archive_obj" \
     "$app_obj"
   set -- "$@" "/bin/$app=$app_elf"
 done
@@ -1582,7 +1626,7 @@ set -- "$@" "/bin/sshd=$INIT_BUILD_DIR/sshd.elf"
 printf '%s\n' "Building userspace /bin/ssh child client ELF..."
 SSH_CLIENT_RESPONSE_FILE="$INIT_BUILD_DIR/ssh-client-objects.rsp"
 : > "$SSH_CLIENT_RESPONSE_FILE"
-for ssh_client_src in ssh.c ssh_client.c ssh_sftp.c ssh_known_hosts.c ssh_crypto.c ssh_identity.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_connection.c; do
+for ssh_client_src in ssh.c ssh_client.c ssh_sftp.c ssh_client_scp.c ssh_known_hosts.c ssh_crypto.c ssh_identity.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_connection.c; do
   ssh_client_obj="$INIT_BUILD_DIR/ssh-client-${ssh_client_src%.c}.o"
   ssh_client_path="$ROOT_DIR/userspace/apps/$ssh_client_src"
   if [ "$ssh_client_src" != "ssh.c" ]; then
@@ -1642,7 +1686,6 @@ done
   @"$SSH_CLIENT_RESPONSE_FILE"
 set -- "$@" "/bin/ssh=$INIT_BUILD_DIR/ssh.elf"
 set -- "$@" "/bin/scp=$INIT_BUILD_DIR/scp.elf"
-
 if [ "${XAIOS_AUTHORIZED_KEYS_FILE:-}" != "" ]; then
   if [ ! -f "$XAIOS_AUTHORIZED_KEYS_FILE" ]; then
     printf '%s\n' "error: authorized keys file not found: $XAIOS_AUTHORIZED_KEYS_FILE" >&2
@@ -1671,10 +1714,8 @@ if [ "${XAIOS_SSH_CLIENT_IDENTITY_FILE:-}" != "" ]; then
   fi
   set -- "$@" "/etc/xaios_ssh_client_identity=$XAIOS_SSH_CLIENT_IDENTITY_FILE"
 fi
-
 rm -f "$IMAGE_PATH"
 mkdir -p "$(dirname -- "$IMAGE_PATH")"
-
 # Every user binary about to be packed has to agree with the kernel about
 # where userspace lives. The linker scripts are checked from source by the ABI
 # contract; these are build artefacts, and a stale one is produced by a
@@ -1683,7 +1724,6 @@ mkdir -p "$(dirname -- "$IMAGE_PATH")"
 # user_load_process.
 "${XAIOS_PYTHON3:-python3}" "$ROOT_DIR/tools/check_user_elf_base.py" \
   "$INIT_BUILD_DIR" "$BUILD_DIR/libc/$TARGET_ARCH/runtime-test"
-
 printf '%s\n' "Creating FAT boot image: $IMAGE_PATH"
 dd if=/dev/zero of="$IMAGE_PATH" bs=1048576 count=64 status=none
 "$MFORMAT" -i "$IMAGE_PATH" -F -v XAIOS ::
@@ -1692,9 +1732,7 @@ dd if=/dev/zero of="$IMAGE_PATH" bs=1048576 count=64 status=none
 "$MMD" -i "$IMAGE_PATH" ::/EFI/XAIOS
 "$MCOPY" -i "$IMAGE_PATH" "$LOADER_EFI" "::/EFI/BOOT/$UEFI_BOOT_NAME"
 "$MCOPY" -i "$IMAGE_PATH" "$KERNEL_ELF" ::/EFI/XAIOS/kernel.elf
-
 printf '%s\n' "Created $IMAGE_PATH"
-
 printf '%s\n' "Creating VirtIO block test image: $TEST_BLOCK_IMAGE"
 rm -f "$TEST_BLOCK_IMAGE"
 dd if=/dev/zero of="$TEST_BLOCK_IMAGE" bs=512 count=8192 status=none
@@ -1708,7 +1746,6 @@ printf 'XAIOS-VIRTIO-BLOCK-TEST\n' | dd of="$TEST_BLOCK_IMAGE" bs=512 count=1 co
   "$ROOT_DIR/userspace/service-manager/source-index.svc" \
   "$@"
 printf '%s\n' "Created $TEST_BLOCK_IMAGE"
-
 PERSISTENT_BYTES=16777216
 if [ ! -f "$PERSISTENT_IMAGE" ]; then
   printf '%s\n' "Creating persistent disk image: $PERSISTENT_IMAGE"
@@ -1723,7 +1760,6 @@ else
   fi
   printf '%s\n' "Persistent image already exists: $PERSISTENT_IMAGE"
 fi
-
 if [ "$TARGET_ARCH" = x86_64 ] && [ ! -f "$STORAGE_ADMIN_IMAGE" ]; then
   printf '%s\n' "Creating x86 storage administration scratch image: $STORAGE_ADMIN_IMAGE"
   dd if=/dev/zero of="$STORAGE_ADMIN_IMAGE" bs=512 count=16384 status=none

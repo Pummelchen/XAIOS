@@ -25,144 +25,12 @@
 #include <xaios/syscall.h>
 
 #include "syscall_internal.h"
+#include "syscall_table.h"
 #include <xaios/timer.h>
 #include <xaios/thread.h>
 #include <xaios/user.h>
 #include <xaios/vfs.h>
 #include <xaios/vmm.h>
-
-typedef struct xaios_syscall_entry {
-  uint64_t number;
-  const char *name;
-  uint64_t required_capability;
-} xaios_syscall_entry_t;
-
-static const xaios_syscall_entry_t g_syscall_table[] = {
-    {XAIOS_SYSCALL_LOG, "log", XAIOS_CAP_LOG},
-    {XAIOS_SYSCALL_EXIT, "exit", XAIOS_CAP_EXIT},
-    {XAIOS_SYSCALL_OSCTL, "osctl", XAIOS_CAP_OSCTL},
-    {XAIOS_SYSCALL_READ_SERVICE_DESCRIPTOR, "read_service_descriptor",
-     XAIOS_CAP_FS_READ},
-    {XAIOS_SYSCALL_SERVICE_STATUS, "service_status",
-     XAIOS_CAP_SERVICE_CONTROL},
-    {XAIOS_SYSCALL_SERVICE_START, "service_start", XAIOS_CAP_SERVICE_CONTROL},
-    {XAIOS_SYSCALL_SERVICE_STOP, "service_stop", XAIOS_CAP_SERVICE_CONTROL},
-    {XAIOS_SYSCALL_SERVICE_RESTART, "service_restart",
-     XAIOS_CAP_SERVICE_CONTROL},
-    {XAIOS_SYSCALL_SERVICE_ROLLBACK, "service_rollback",
-     XAIOS_CAP_SERVICE_ROLLBACK},
-    {XAIOS_SYSCALL_SERVICE_UPDATE, "service_update", XAIOS_CAP_UPDATE},
-    {XAIOS_SYSCALL_FS_OPEN, "fs_open", XAIOS_CAP_FS_READ},
-    {XAIOS_SYSCALL_FS_READ, "fs_read", XAIOS_CAP_FS_READ},
-    {XAIOS_SYSCALL_FS_WRITE, "fs_write", XAIOS_CAP_FS_WRITE},
-    {XAIOS_SYSCALL_FS_CLOSE, "fs_close", XAIOS_CAP_FS_READ},
-    {XAIOS_SYSCALL_FS_STAT, "fs_stat", XAIOS_CAP_FS_READ},
-    {XAIOS_SYSCALL_FS_MKDIR, "fs_mkdir", XAIOS_CAP_FS_WRITE},
-    {XAIOS_SYSCALL_FS_DELETE, "fs_delete", XAIOS_CAP_FS_WRITE},
-    {XAIOS_SYSCALL_FS_RENAME, "fs_rename", XAIOS_CAP_FS_WRITE},
-    {XAIOS_SYSCALL_FS_LIST, "fs_list", XAIOS_CAP_FS_READ},
-    {XAIOS_SYSCALL_CLOCK_NANOS, "clock_nanos", XAIOS_CAP_TIME},
-    {XAIOS_SYSCALL_NET_UDP_ECHO, "net_udp_echo", XAIOS_CAP_NET},
-    {XAIOS_SYSCALL_NET_TCP_CONNECT, "net_tcp_connect", XAIOS_CAP_NET},
-    {XAIOS_SYSCALL_SMP_RUN, "smp_run", XAIOS_CAP_SMP},
-    {XAIOS_SYSCALL_CPU_AI_DECODE, "cpu_ai_decode", XAIOS_CAP_CPU_AI},
-    {XAIOS_SYSCALL_REMOTE_LOGIN, "remote_login", XAIOS_CAP_REMOTE_LOGIN},
-    {XAIOS_SYSCALL_NET_EXTERNAL_SESSION, "net_external_session", XAIOS_CAP_NET},
-    {XAIOS_SYSCALL_THREAD_GROUP_RUN, "thread_group_run", XAIOS_CAP_THREADS},
-    {XAIOS_SYSCALL_ML_RUN, "ml_run", XAIOS_CAP_ML},
-    {XAIOS_SYSCALL_NET_LISTEN, "net_listen", XAIOS_CAP_NET_SOCKET},
-    {XAIOS_SYSCALL_NET_ACCEPT, "net_accept", XAIOS_CAP_NET_SOCKET},
-    {XAIOS_SYSCALL_NET_RECV, "net_recv", XAIOS_CAP_NET_SOCKET},
-    {XAIOS_SYSCALL_NET_SEND, "net_send", XAIOS_CAP_NET_SOCKET},
-    {XAIOS_SYSCALL_NET_CLOSE, "net_close", XAIOS_CAP_NET_SOCKET},
-    {XAIOS_SYSCALL_AGENT_DISPATCH, "agent_dispatch", XAIOS_CAP_AGENT},
-    {XAIOS_SYSCALL_RANDOM, "random", XAIOS_CAP_RANDOM},
-    {XAIOS_SYSCALL_FS_SEEK, "fs_seek", XAIOS_CAP_FS_READ},
-    {XAIOS_SYSCALL_CONTROL_QUERY, "control_query", XAIOS_CAP_CONTROL_QUERY},
-    {XAIOS_SYSCALL_REMOTE_LOGIN_SESSION, "remote_login_session",
-     XAIOS_CAP_REMOTE_LOGIN},
-    {XAIOS_SYSCALL_FS_PREAD, "fs_pread", XAIOS_CAP_FS_READ},
-    {XAIOS_SYSCALL_FS_PWRITE, "fs_pwrite", XAIOS_CAP_FS_WRITE},
-    {XAIOS_SYSCALL_FS_FSYNC, "fs_fsync", XAIOS_CAP_FS_WRITE},
-    {XAIOS_SYSCALL_THREAD_CREATE, "thread_create", XAIOS_CAP_THREADS},
-    {XAIOS_SYSCALL_THREAD_JOIN, "thread_join", XAIOS_CAP_THREADS},
-    {XAIOS_SYSCALL_THREAD_CANCEL, "thread_cancel", XAIOS_CAP_THREADS},
-    {XAIOS_SYSCALL_THREAD_EXIT, "thread_exit", XAIOS_CAP_THREADS},
-    {XAIOS_SYSCALL_NET_RESOLVE, "net_resolve", XAIOS_CAP_NET},
-    {XAIOS_SYSCALL_CONSOLE_READ, "console_read", XAIOS_CAP_CONSOLE},
-    {XAIOS_SYSCALL_CONSOLE_WRITE, "console_write", XAIOS_CAP_CONSOLE},
-    {XAIOS_SYSCALL_CONSOLE_SIZE, "console_size", XAIOS_CAP_CONSOLE},
-    {XAIOS_SYSCALL_SLEEP_NANOS, "sleep_nanos", XAIOS_CAP_TIME},
-    {XAIOS_SYSCALL_WAIT_EVENTS, "wait_events", XAIOS_CAP_TIME},
-    {XAIOS_SYSCALL_NET_LOCAL_IPV4, "net_local_ipv4", XAIOS_CAP_NET},
-    {XAIOS_SYSCALL_NET_CONNECT, "net_connect", XAIOS_CAP_NET_SOCKET},
-    {XAIOS_SYSCALL_NET_OPEN_UDP, "net_open_udp", XAIOS_CAP_NET_SOCKET},
-    {XAIOS_SYSCALL_NET_LOCAL_IPV6, "net_local_ipv6", XAIOS_CAP_NET},
-};
-
-static uint64_t control_operation_capability(uint16_t operation) {
-  if (operation >= XAIOS_CONTROL_OP_APP_ACTIVATE &&
-      operation <= XAIOS_CONTROL_OP_SYSTEM_UPDATE_ABORT) {
-    return XAIOS_CAP_UPDATE | XAIOS_CAP_ADMIN;
-  }
-  if (operation == XAIOS_CONTROL_OP_MODEL_VERIFY ||
-      operation == XAIOS_CONTROL_OP_MODEL_REGISTER ||
-      operation == XAIOS_CONTROL_OP_MODEL_CLEANUP) {
-    return XAIOS_CAP_MODEL_STAGE;
-  }
-  if (operation == XAIOS_CONTROL_OP_MODEL_ACTIVATE) {
-    return XAIOS_CAP_MODEL_ACTIVATE;
-  }
-  if ((operation >= XAIOS_CONTROL_OP_STORAGE_DEVICE_LIST &&
-       operation <= XAIOS_CONTROL_OP_STORAGE_PARTITION_PLAN_CREATE) ||
-      operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_PLAN_DELETE ||
-      operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_PLAN_RESIZE) {
-    return XAIOS_CAP_STORAGE_READ;
-  }
-  if (operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_CREATE ||
-      operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_DELETE) {
-    return XAIOS_CAP_STORAGE_PARTITION;
-  }
-  if (operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_RESIZE) {
-    return XAIOS_CAP_STORAGE_PARTITION | XAIOS_CAP_STORAGE_RESIZE;
-  }
-  if (operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_REPAIR) {
-    return XAIOS_CAP_STORAGE_PARTITION | XAIOS_CAP_STORAGE_REPAIR;
-  }
-  if (operation == XAIOS_CONTROL_OP_STORAGE_FORMAT_PLAN ||
-      operation == XAIOS_CONTROL_OP_STORAGE_FSCK ||
-      operation == XAIOS_CONTROL_OP_STORAGE_FS_RESIZE_PLAN) {
-    return XAIOS_CAP_STORAGE_READ;
-  }
-  if (operation == XAIOS_CONTROL_OP_STORAGE_FORMAT) {
-    return XAIOS_CAP_STORAGE_FORMAT;
-  }
-  if (operation == XAIOS_CONTROL_OP_STORAGE_MOUNT ||
-      operation == XAIOS_CONTROL_OP_STORAGE_UNMOUNT) {
-    return XAIOS_CAP_STORAGE_MOUNT;
-  }
-  if (operation == XAIOS_CONTROL_OP_STORAGE_FS_REPAIR) {
-    return XAIOS_CAP_STORAGE_REPAIR;
-  }
-  if (operation == XAIOS_CONTROL_OP_STORAGE_FS_RESIZE) {
-    return XAIOS_CAP_STORAGE_RESIZE;
-  }
-  if (operation == XAIOS_CONTROL_OP_STORAGE_SCRUB_STATUS) {
-    return XAIOS_CAP_STORAGE_READ;
-  }
-  if (operation >= XAIOS_CONTROL_OP_STORAGE_SCRUB_START &&
-      operation <= XAIOS_CONTROL_OP_STORAGE_SCRUB_CANCEL) {
-    return XAIOS_CAP_STORAGE_REPAIR;
-  }
-  if (operation == XAIOS_CONTROL_OP_STORAGE_TRIM_STATUS) {
-    return XAIOS_CAP_STORAGE_READ;
-  }
-  if (operation == XAIOS_CONTROL_OP_STORAGE_TRIM_START ||
-      operation == XAIOS_CONTROL_OP_STORAGE_TRIM_CANCEL) {
-    return XAIOS_CAP_STORAGE_TRIM;
-  }
-  return 0U;
-}
 
 static uint64_t g_control_plane_syscall_count;
 static uint64_t g_control_plane_denial_count;
@@ -245,30 +113,6 @@ static uint32_t g_cpu_ai_app_bound;
    first: the network stack has a lock of its own, and the two are never
    held together. */
 
-static const xaios_syscall_entry_t *lookup_syscall(uint64_t number) {
-  for (uint32_t i = 0; i < sizeof(g_syscall_table) / sizeof(g_syscall_table[0]);
-       ++i) {
-    if (g_syscall_table[i].number == number) {
-      return &g_syscall_table[i];
-    }
-  }
-  return 0;
-}
-
-static xaios_status_t copy_user_string(uint64_t user_ptr, uint64_t length,
-                                      char *buffer, uint64_t buffer_size) {
-  if (length == 0 || length >= buffer_size ||
-      vmm_validate_user_buffer(user_ptr, length, 0) != XAIOS_OK) {
-    return XAIOS_ERR_INVALID;
-  }
-  const char *src = (const char *)(uintptr_t)user_ptr;
-  for (uint64_t i = 0; i < length; ++i) {
-    buffer[i] = src[i];
-  }
-  buffer[length] = '\0';
-  return XAIOS_OK;
-}
-
 /* A word that may alias anything: these helpers fill structs that are
    then read through their own types, and a plain uint64_t store could
    be reordered past those reads under strict aliasing. */
@@ -290,38 +134,6 @@ static void bytes_copy(void *dst, const void *src, uint64_t size) {
   for (; i < size; ++i) {
     out[i] = in[i];
   }
-}
-
-static void format_u64_decimal(uint64_t value, char output[21]) {
-  char reverse[20];
-  uint32_t count = 0U;
-  do {
-    reverse[count++] = (char)('0' + (value % 10U));
-    value /= 10U;
-  } while (value != 0U);
-  for (uint32_t i = 0U; i < count; ++i) output[i] = reverse[count - i - 1U];
-  output[count] = '\0';
-}
-
-static int command_starts_with(const char *command, const char *name) {
-  uint32_t offset = 0U;
-  uint32_t index = 0U;
-  while (command[offset] == ' ' || command[offset] == '\t') ++offset;
-  while (name[index] != '\0') {
-    if (command[offset + index] != name[index]) return 0;
-    ++index;
-  }
-  return command[offset + index] == '\0' || command[offset + index] == ' ' ||
-         command[offset + index] == '\t';
-}
-
-static int path_equal(const char *left, const char *right) {
-  uint32_t index = 0U;
-  while (left[index] != '\0' && right[index] != '\0') {
-    if (left[index] != right[index]) return 0;
-    ++index;
-  }
-  return left[index] == right[index];
 }
 
 static xaios_status_t child_process_ready(uint32_t pid, void *opaque) {
@@ -380,7 +192,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
                           uint64_t arg2) {
   (void)arg2;
 
-  const xaios_syscall_entry_t *entry = lookup_syscall(syscall);
+  const xaios_syscall_entry_t *entry = syscall_table_lookup(syscall);
   if (entry == 0) {
     return reject_syscall(syscall, arg0, arg1, "unknown");
   }
@@ -662,7 +474,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
 
   if (syscall == XAIOS_SYSCALL_OSCTL) {
     char command[128];
-    if (copy_user_string(arg0, arg1, command, sizeof(command)) != XAIOS_OK) {
+    if (syscall_table_copy_user_string(arg0, arg1, command, sizeof(command)) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "bad-user-string");
     }
     if (security_reject_credential_material(command) != XAIOS_OK) {
@@ -703,7 +515,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     const xaios_control_request_header_t *control_request =
         (const xaios_control_request_header_t *)(const void *)request;
     uint64_t operation_capability =
-        control_operation_capability(control_request->operation);
+        syscall_table_control_operation_capability(control_request->operation);
     if (operation_capability != 0U &&
         user_process_has_capability(operation_capability) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1,
@@ -736,7 +548,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
   if (syscall >= XAIOS_SYSCALL_SERVICE_STATUS &&
       syscall <= XAIOS_SYSCALL_SERVICE_ROLLBACK) {
     char service_name[64];
-    if (copy_user_string(arg0, arg1, service_name, sizeof(service_name)) !=
+    if (syscall_table_copy_user_string(arg0, arg1, service_name, sizeof(service_name)) !=
         XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "bad-service-name");
     }
@@ -762,7 +574,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
 
   if (syscall == XAIOS_SYSCALL_SERVICE_UPDATE) {
     char signature[128];
-    if (copy_user_string(arg0, arg1, signature, sizeof(signature)) != XAIOS_OK) {
+    if (syscall_table_copy_user_string(arg0, arg1, signature, sizeof(signature)) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "bad-update-signature");
     }
     if (service_update(signature) != XAIOS_OK) {
@@ -773,7 +585,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
 
   if (syscall == XAIOS_SYSCALL_FS_OPEN) {
     char path[XAIOS_XBFS_PATH_MAX];
-    if (copy_user_string(arg0, arg1, path, sizeof(path)) != XAIOS_OK) {
+    if (syscall_table_copy_user_string(arg0, arg1, path, sizeof(path)) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "bad-fs-path");
     }
     if ((arg2 & XAIOS_XBFS_OPEN_WRITE) != 0 &&
@@ -784,7 +596,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
                                           XAIOS_CAP_FS_WRITE);
       return reject_syscall(syscall, arg0, arg1, "missing-fs-write");
     }
-    if (path_equal(path, "/etc/xaios_ssh_client_identity") &&
+    if (syscall_table_path_equal(path, "/etc/xaios_ssh_client_identity") &&
         user_process_has_capability(XAIOS_CAP_CREDENTIAL_READ) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1,
                             "missing-credential-read");
@@ -932,7 +744,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
 
   if (syscall == XAIOS_SYSCALL_FS_STAT) {
     char path[XAIOS_XBFS_PATH_MAX];
-    if (copy_user_string(arg0, arg1, path, sizeof(path)) != XAIOS_OK ||
+    if (syscall_table_copy_user_string(arg0, arg1, path, sizeof(path)) != XAIOS_OK ||
         vmm_validate_user_buffer(arg2, sizeof(xaios_xbfs_stat_t),
                                  XAIOS_VMM_WRITABLE) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "bad-fs-stat");
@@ -952,7 +764,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
 
   if (syscall == XAIOS_SYSCALL_FS_MKDIR) {
     char path[XAIOS_XBFS_PATH_MAX];
-    if (copy_user_string(arg0, arg1, path, sizeof(path)) != XAIOS_OK ||
+    if (syscall_table_copy_user_string(arg0, arg1, path, sizeof(path)) != XAIOS_OK ||
         security_authorize_fs_write(path) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-mkdir-denied");
     }
@@ -964,7 +776,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
 
   if (syscall == XAIOS_SYSCALL_FS_DELETE) {
     char path[XAIOS_XBFS_PATH_MAX];
-    if (copy_user_string(arg0, arg1, path, sizeof(path)) != XAIOS_OK ||
+    if (syscall_table_copy_user_string(arg0, arg1, path, sizeof(path)) != XAIOS_OK ||
         security_authorize_fs_write(path) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "fs-delete-denied");
     }
@@ -983,9 +795,9 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1, "bad-fs-rename-request");
     }
     bytes_copy(&request, (const void *)(uintptr_t)arg0, sizeof(request));
-    if (copy_user_string(request.old_path, request.old_path_len, old_path,
+    if (syscall_table_copy_user_string(request.old_path, request.old_path_len, old_path,
                          sizeof(old_path)) != XAIOS_OK ||
-        copy_user_string(request.new_path, request.new_path_len, new_path,
+        syscall_table_copy_user_string(request.new_path, request.new_path_len, new_path,
                          sizeof(new_path)) != XAIOS_OK ||
         security_authorize_fs_write(old_path) != XAIOS_OK ||
         security_authorize_fs_write(new_path) != XAIOS_OK) {
@@ -1001,7 +813,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
     xaios_syscall_list_request_t request;
     char path[XAIOS_XBFS_PATH_MAX];
     uint64_t out_size = 0;
-    if (copy_user_string(arg0, arg1, path, sizeof(path)) != XAIOS_OK ||
+    if (syscall_table_copy_user_string(arg0, arg1, path, sizeof(path)) != XAIOS_OK ||
         vmm_validate_user_buffer(arg2, sizeof(request), 0) != XAIOS_OK) {
       return reject_syscall(syscall, arg0, arg1, "bad-fs-list-request");
     }
@@ -1146,9 +958,9 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1, "bad-remote-login-request");
     }
     bytes_copy(&request, (const void *)(uintptr_t)arg0, sizeof(request));
-    if (copy_user_string(request.user, request.user_size, user,
+    if (syscall_table_copy_user_string(request.user, request.user_size, user,
                          sizeof(user)) != XAIOS_OK ||
-        copy_user_string(request.command, request.command_size, command,
+        syscall_table_copy_user_string(request.command, request.command_size, command,
                          sizeof(command)) != XAIOS_OK ||
         request.output_size == 0 ||
         vmm_validate_user_buffer(request.output, request.output_size,
@@ -1215,9 +1027,9 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       const char *argv[4];
       const char *child_path = 0;
       if (caller_pid == 0U ||
-          copy_user_string(request.command, request.command_size, command,
+          syscall_table_copy_user_string(request.command, request.command_size, command,
                            sizeof(command)) != XAIOS_OK ||
-          copy_user_string(request.metadata, request.metadata_size, cwd,
+          syscall_table_copy_user_string(request.metadata, request.metadata_size, cwd,
                            sizeof(cwd)) != XAIOS_OK ||
           request.output != 0U || request.output_size != 0U ||
           request.out_size == 0U ||
@@ -1229,9 +1041,9 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
          a child too now: one process that streams frames for as long as the
          session lasts, rather than a launch per frame -- which is what
          makes sixty frames a second a matter of writing them. */
-      int child_is_xtop = command_starts_with(command, "xtop");
+      int child_is_xtop = syscall_table_command_starts_with(command, "xtop");
       child_path = child_is_xtop ? "/bin/xtop"
-                   : command_starts_with(command, "scp") ? "/bin/scp"
+                   : syscall_table_command_starts_with(command, "scp") ? "/bin/scp"
                                                           : "/bin/ssh";
       xaios_status_t child_status = initramfs_lookup(child_path, &file);
       if (child_status != XAIOS_OK || file == 0 || file->executable == 0U) {
@@ -1240,7 +1052,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       child_status = child_channel_open(caller_pid, request.session_id,
                                         &channel_id);
       if (child_status != XAIOS_OK) return child_status;
-      format_u64_decimal(channel_id, channel_text);
+      syscall_table_format_u64_decimal(channel_id, channel_text);
       argv[0] = child_path;
       argv[1] = channel_text;
       argv[2] = cwd;
@@ -1358,9 +1170,9 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return complete_control_syscall(0U);
     }
     if (request.action != XAIOS_REMOTE_LOGIN_SESSION_EXECUTE ||
-        copy_user_string(request.user, request.user_size, user,
+        syscall_table_copy_user_string(request.user, request.user_size, user,
                          sizeof(user)) != XAIOS_OK ||
-        copy_user_string(request.command, request.command_size, command,
+        syscall_table_copy_user_string(request.command, request.command_size, command,
                          sizeof(command)) != XAIOS_OK ||
         request.output_size == 0U ||
         request.metadata != 0U || request.metadata_size != 0U ||
@@ -2156,7 +1968,7 @@ uint64_t syscall_dispatch(uint64_t syscall, uint64_t arg0, uint64_t arg1,
       return reject_syscall(syscall, arg0, arg1, "bad-net-resolve-request");
     }
     bytes_copy(&request, (const void *)(uintptr_t)arg0, sizeof(request));
-    if (copy_user_string(request.hostname, request.hostname_size, hostname,
+    if (syscall_table_copy_user_string(request.hostname, request.hostname_size, hostname,
                          sizeof(hostname)) != XAIOS_OK ||
         (request.family != XAIOS_IP_FAMILY_V4 &&
          request.family != XAIOS_IP_FAMILY_V6) ||
@@ -2271,65 +2083,65 @@ void syscall_self_test(void) {
           XAIOS_OK);
   kassert(kernel_socket_free(owner_two, 1002U) == XAIOS_OK);
   kassert(syscall_socket_total_connections() == 0U);
-  kassert(lookup_syscall(XAIOS_SYSCALL_LOG) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_EXIT) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_OSCTL) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_READ_SERVICE_DESCRIPTOR) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_SERVICE_STATUS) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_SERVICE_START) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_SERVICE_STOP) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_SERVICE_RESTART) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_SERVICE_ROLLBACK) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_SERVICE_UPDATE) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_FS_OPEN) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_FS_READ) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_FS_WRITE) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_FS_CLOSE) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_FS_STAT) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_FS_MKDIR) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_FS_DELETE) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_FS_RENAME) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_FS_LIST) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_CLOCK_NANOS) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_NET_UDP_ECHO) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_NET_TCP_CONNECT) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_SMP_RUN) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_CPU_AI_DECODE) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_REMOTE_LOGIN) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_NET_EXTERNAL_SESSION) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_THREAD_GROUP_RUN) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_ML_RUN) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_NET_LISTEN) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_NET_ACCEPT) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_NET_RECV) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_NET_SEND) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_NET_CLOSE) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_NET_CONNECT) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_WAIT_EVENTS) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_AGENT_DISPATCH) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_RANDOM) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_FS_SEEK) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_CONTROL_QUERY) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_REMOTE_LOGIN_SESSION) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_FS_PREAD) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_FS_PWRITE) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_FS_FSYNC) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_THREAD_CREATE) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_THREAD_JOIN) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_THREAD_CANCEL) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_THREAD_EXIT) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_NET_RESOLVE) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_CONSOLE_READ) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_CONSOLE_WRITE) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_CONSOLE_SIZE) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_SLEEP_NANOS) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_NET_LOCAL_IPV4) != 0);
-  kassert(lookup_syscall(XAIOS_SYSCALL_NET_OPEN_UDP) != 0);
-  kassert(lookup_syscall(99) == 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_LOG) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_EXIT) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_OSCTL) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_READ_SERVICE_DESCRIPTOR) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_SERVICE_STATUS) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_SERVICE_START) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_SERVICE_STOP) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_SERVICE_RESTART) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_SERVICE_ROLLBACK) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_SERVICE_UPDATE) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_FS_OPEN) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_FS_READ) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_FS_WRITE) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_FS_CLOSE) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_FS_STAT) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_FS_MKDIR) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_FS_DELETE) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_FS_RENAME) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_FS_LIST) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_CLOCK_NANOS) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_NET_UDP_ECHO) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_NET_TCP_CONNECT) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_SMP_RUN) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_CPU_AI_DECODE) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_REMOTE_LOGIN) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_NET_EXTERNAL_SESSION) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_THREAD_GROUP_RUN) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_ML_RUN) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_NET_LISTEN) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_NET_ACCEPT) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_NET_RECV) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_NET_SEND) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_NET_CLOSE) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_NET_CONNECT) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_WAIT_EVENTS) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_AGENT_DISPATCH) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_RANDOM) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_FS_SEEK) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_CONTROL_QUERY) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_REMOTE_LOGIN_SESSION) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_FS_PREAD) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_FS_PWRITE) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_FS_FSYNC) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_THREAD_CREATE) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_THREAD_JOIN) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_THREAD_CANCEL) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_THREAD_EXIT) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_NET_RESOLVE) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_CONSOLE_READ) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_CONSOLE_WRITE) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_CONSOLE_SIZE) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_SLEEP_NANOS) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_NET_LOCAL_IPV4) != 0);
+  kassert(syscall_table_lookup(XAIOS_SYSCALL_NET_OPEN_UDP) != 0);
+  kassert(syscall_table_lookup(99) == 0);
   klog("syscall: socket ownership self-test passed capacity=%u per_port=%u\n",
        syscall_socket_capacity(), syscall_socket_per_port_limit());
   klog("syscall: table self-test passed entries=%lu\n",
-       (uint64_t)(sizeof(g_syscall_table) / sizeof(g_syscall_table[0])));
+       syscall_table_entry_count());
 }
 
 uint64_t syscall_control_plane_count(void) {

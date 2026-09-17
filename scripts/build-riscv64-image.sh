@@ -288,6 +288,16 @@ for app in $USER_APPS; do
       EXTRA_OBJS="$EXTRA_OBJS $BUILD_DIR/setup-$setup_src.o"
     done
   fi
+  if [ "$app" = "xtop" ]; then
+    "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
+      -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \
+      -fno-pie -Os -Wall -Wextra -Werror \
+      -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/sshd" \
+      -I"$ROOT_DIR/engine/include" \
+      -c "$ROOT_DIR/userspace/apps/xtop_serve.c" \
+      -o "$BUILD_DIR/xtop-serve.o"
+    EXTRA_OBJS="$EXTRA_OBJS $BUILD_DIR/xtop-serve.o"
+  fi
   # shellcheck disable=SC2086
   "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
     -o "$BUILD_DIR/$app.elf" "$BUILD_DIR/start-$app.o" "$BUILD_DIR/$app.o" \
@@ -321,6 +331,11 @@ for app in $UTILITY_APPS; do
     -Wall -Wextra -Werror -DXAIOS_UTILITY_NAME=\"$app\" \
     -I"$ROOT_DIR/userspace/include" \
     -c "$ROOT_DIR/userspace/apps/xutils.c" -o "$BUILD_DIR/xutils-$app.o"
+  "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
+    -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+    -Wall -Wextra -Werror -DXAIOS_UTILITY_NAME=\"$app\" \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/apps/xutils_archive.c" -o "$BUILD_DIR/xutils-archive-$app.o"
   "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
     -o "$BUILD_DIR/$app.elf" "$BUILD_DIR/start-xaios-shell.o" \
     "$BUILD_DIR/lib-xaios-shell.o" "$BUILD_DIR/control-xaios-shell.o" \
@@ -328,7 +343,7 @@ for app in $UTILITY_APPS; do
     "$BUILD_DIR/control-system-xaios-shell.o" \
     "$BUILD_DIR/control-storage-xaios-shell.o" \
     "$BUILD_DIR/control-ops-xaios-shell.o" \
-    "$BUILD_DIR/xutils-inflate.o" "$BUILD_DIR/xutils-$app.o"
+    "$BUILD_DIR/xutils-inflate.o" "$BUILD_DIR/xutils-archive-$app.o" "$BUILD_DIR/xutils-$app.o"
   APP_ARGS="$APP_ARGS /bin/$app=$BUILD_DIR/$app.elf"
 done
 
@@ -462,6 +477,7 @@ SSHD_ARGS="/bin/sshd=$BUILD_DIR/sshd.elf"
 printf '%s\n' "Building /bin/ssh and /bin/scp..."
 SSH_CLIENT_OBJS=""
 for ssh_client_src in ssh ssh_client ssh_known_hosts ssh_crypto ssh_identity \
+    ssh_client_scp \
     ssh_mlkem tweetnacl_subset ssh_protocol ssh_connection ssh_sftp; do
   ssh_client_path="$ROOT_DIR/userspace/sshd/$ssh_client_src.c"
   [ "$ssh_client_src" = ssh ] && \

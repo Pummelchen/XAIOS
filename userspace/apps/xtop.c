@@ -2,12 +2,11 @@
 #include <xaios_screen.h>
 #include <xaios/types.h>
 #include "ssh_child_ipc.h"
+#include "xtop_serve.h"
 
-#define XAIOS_OK 0
 #define XAIOS_ERR_INVALID (-1)
 #define XAIOS_ERR_NOT_FOUND (-2)
 #define XAIOS_ERR_NO_MEMORY (-3)
-#define XTOP_ERR_BUSY (-5) /* XAIOS_ERR_BUSY, as the kernel returns it */
 
 #define XAIOS_USER_PROCESS_LOADED XAIOS_RUNTIME_PROCESS_LOADED
 #define XAIOS_USER_PROCESS_RUNNABLE XAIOS_RUNTIME_PROCESS_RUNNABLE
@@ -20,10 +19,7 @@
 #define XAIOS_CPU_ROLE_AI_HOT XAIOS_RUNTIME_CPU_AI_HOT
 #define XAIOS_XTOP_MAX_PROCESSES 1024U
 #define XAIOS_XTOP_CPU_PAGE_MAX 256U
-#define XAIOS_XTOP_OUTPUT_BYTES 32768U
 #define XAIOS_XTOP_ARENA_BYTES 131072U
-
-typedef int xaios_status_t;
 
 typedef struct xaios_cpu_usage_snapshot {
   uint32_t cpu_id;
@@ -46,7 +42,10 @@ static unsigned char g_arena[XAIOS_XTOP_ARENA_BYTES];
 static uint64_t g_arena_used;
 static uint64_t g_request_id = 1U;
 
-static void bytes_zero(void *buffer, uint64_t size) {
+/* The render arena is the renderer's; the session only clears it. */
+void xtop_arena_reset(void) { g_arena_used = 0U; }
+
+void xtop_bytes_zero(void *buffer, uint64_t size) {
   unsigned char *bytes = (unsigned char *)buffer;
   for (uint64_t i = 0U; i < size; ++i) bytes[i] = 0U;
 }
@@ -61,21 +60,21 @@ static void *kheap_calloc(uint64_t size, uint64_t alignment) {
   uint64_t offset = align_up(g_arena_used, alignment);
   if (offset > sizeof(g_arena) || size > sizeof(g_arena) - offset) return 0;
   void *result = &g_arena[offset];
-  bytes_zero(result, size);
+  xtop_bytes_zero(result, size);
   g_arena_used = offset + size;
   return result;
 }
 
 static void kheap_free(void *pointer) { (void)pointer; }
 
-static uint64_t cstr_len(const char *text) {
+uint64_t xtop_cstr_len(const char *text) {
   uint64_t size = 0U;
   if (text == 0) return 0U;
   while (text[size] != '\0') ++size;
   return size;
 }
 
-static int string_equal(const char *lhs, const char *rhs) {
+int xtop_string_equal(const char *lhs, const char *rhs) {
   if (lhs == 0 || rhs == 0) return 0;
   while (*lhs != '\0' && *lhs == *rhs) {
     ++lhs;
@@ -85,7 +84,7 @@ static int string_equal(const char *lhs, const char *rhs) {
 }
 
 static int contains_substring(const char *text, const char *needle) {
-  uint64_t needle_size = cstr_len(needle);
+  uint64_t needle_size = xtop_cstr_len(needle);
   if (needle_size == 0U) return 1;
   for (uint64_t i = 0U; text != 0 && text[i] != '\0'; ++i) {
     uint64_t j = 0U;
@@ -113,8 +112,8 @@ static xaios_status_t output_append_char(char *output, uint64_t capacity,
   return XAIOS_OK;
 }
 
-static xaios_status_t output_append(char *output, uint64_t capacity,
-                                    uint64_t *offset, const char *text) {
+xaios_status_t xtop_output_append(char *output, uint64_t capacity,
+                                  uint64_t *offset, const char *text) {
   if (text == 0) return XAIOS_ERR_INVALID;
   while (*text != '\0') {
     if (output_append_char(output, capacity, offset, *text++) != XAIOS_OK)
@@ -123,8 +122,8 @@ static xaios_status_t output_append(char *output, uint64_t capacity,
   return XAIOS_OK;
 }
 
-static xaios_status_t output_append_u64(char *output, uint64_t capacity,
-                                        uint64_t *offset, uint64_t value) {
+xaios_status_t xtop_output_append_u64(char *output, uint64_t capacity,
+                                      uint64_t *offset, uint64_t value) {
   char digits[24];
   uint32_t count = 0U;
   do {
@@ -141,8 +140,8 @@ static xaios_status_t output_append_u64(char *output, uint64_t capacity,
 
 static xaios_status_t command_fail(char *output, uint64_t capacity,
                                    uint64_t *offset, const char *message) {
-  (void)output_append(output, capacity, offset, message);
-  (void)output_append(output, capacity, offset, "\n");
+  (void)xtop_output_append(output, capacity, offset, message);
+  (void)xtop_output_append(output, capacity, offset, "\n");
   return XAIOS_ERR_INVALID;
 }
 
@@ -153,8 +152,8 @@ static uint64_t skip_ws(const char *text, uint64_t index) {
   return index;
 }
 
-static xaios_status_t token_next(const char *text, uint64_t *index,
-                                 char *token, uint64_t capacity) {
+xaios_status_t xtop_token_next(const char *text, uint64_t *index,
+                               char *token, uint64_t capacity) {
   uint64_t used = 0U;
   uint64_t i;
   char quote = '\0';
@@ -245,7 +244,7 @@ static int runtime_query(
     unsigned char bytes[XAIOS_CONTROL_MAX_RESPONSE_BYTES];
   } response;
   u64 response_size = 0U;
-  bytes_zero(&request, sizeof(request));
+  xtop_bytes_zero(&request, sizeof(request));
   request.header.magic = XAIOS_CONTROL_MAGIC;
   request.header.version = XAIOS_CONTROL_VERSION;
   request.header.header_size = (u16)sizeof(request.header);
@@ -286,7 +285,7 @@ static int control_simple_query(uint32_t operation, uint32_t payload_type,
     unsigned char bytes[XAIOS_CONTROL_MAX_RESPONSE_BYTES];
   } response;
   u64 response_size = 0U;
-  bytes_zero(&request, sizeof(request));
+  xtop_bytes_zero(&request, sizeof(request));
   request.magic = XAIOS_CONTROL_MAGIC;
   request.version = XAIOS_CONTROL_VERSION;
   request.header_size = (u16)sizeof(request);
@@ -317,7 +316,6 @@ static int control_simple_query(uint32_t operation, uint32_t payload_type,
    serving loop before each frame; a one-shot run fills what it can and has
    no rates, because a rate needs two samples. */
 #define XTOP_HISTORY 96U
-#define XTOP_LAYOUT_COUNT 3U
 typedef struct xtop_extras {
   int have_hardware;
   xaios_control_hardware_payload_user_t hardware;
@@ -338,6 +336,10 @@ typedef struct xtop_extras {
 static xtop_extras_t g_extras;
 static uint16_t g_last_cpu_tenths;
 static uint16_t g_last_mem_tenths;
+
+/* The retained samples are the renderer's; these read them out. */
+uint16_t xtop_last_cpu_tenths(void) { return g_last_cpu_tenths; }
+uint16_t xtop_last_mem_tenths(void) { return g_last_mem_tenths; }
 
 static void history_push16(uint16_t *history, uint16_t value) {
   for (uint32_t i = 1U; i < XTOP_HISTORY; ++i) history[i - 1U] = history[i];
@@ -389,7 +391,7 @@ static void ring_push(
     uint32_t cpu_start) {
   xtop_sample_t *slot = &g_ring[g_ring_next];
   g_ring_next = (g_ring_next + 1U) % XTOP_RING;
-  bytes_zero(slot->runtime, sizeof(slot->runtime));
+  xtop_bytes_zero(slot->runtime, sizeof(slot->runtime));
   for (uint32_t i = 0U; i < process_count; ++i) {
     if (processes[i].pid <= XAIOS_XTOP_MAX_PROCESSES)
       slot->runtime[processes[i].pid] = processes[i].runtime_ns;
@@ -529,18 +531,7 @@ typedef struct xtop_process_row {
   const char *name;
 } xtop_process_row_t;
 
-typedef enum xtop_sort_key {
-  XTOP_SORT_CPU = 0,
-  XTOP_SORT_MEMORY,
-  XTOP_SORT_TIME,
-  XTOP_SORT_PID,
-  XTOP_SORT_STATE,
-  XTOP_SORT_SYSCALLS,
-  XTOP_SORT_COMMAND,
-  XTOP_SORT_PARENT
-} xtop_sort_key_t;
-
-static const char *xtop_sort_name(xtop_sort_key_t key) {
+const char *xtop_sort_name(xtop_sort_key_t key) {
   switch (key) {
   case XTOP_SORT_MEMORY:
     return "mem";
@@ -593,10 +584,10 @@ static uint64_t xtop_capacity_tenths(uint64_t numerator,
 
 static void xtop_append_percent(char *output, uint64_t output_capacity,
                                 uint64_t *output_bytes, uint64_t tenths) {
-  output_append_u64(output, output_capacity, output_bytes, tenths / 10U);
-  output_append(output, output_capacity, output_bytes, ".");
-  output_append_u64(output, output_capacity, output_bytes, tenths % 10U);
-  output_append(output, output_capacity, output_bytes, "%");
+  xtop_output_append_u64(output, output_capacity, output_bytes, tenths / 10U);
+  xtop_output_append(output, output_capacity, output_bytes, ".");
+  xtop_output_append_u64(output, output_capacity, output_bytes, tenths % 10U);
+  xtop_output_append(output, output_capacity, output_bytes, "%");
 }
 
 static void xtop_append_repeat(char *output, uint64_t output_capacity,
@@ -618,7 +609,7 @@ static void xtop_append_u64_width(char *output, uint64_t output_capacity,
     xtop_append_repeat(output, output_capacity, output_bytes, ' ',
                        width - (uint32_t)digits);
   }
-  output_append_u64(output, output_capacity, output_bytes, value);
+  xtop_output_append_u64(output, output_capacity, output_bytes, value);
 }
 
 /* Terminal columns in a UTF-8 string: every byte that does not continue a
@@ -657,33 +648,6 @@ static uint32_t xtop_columns(const char *text) {
 /* Columns a meter uses around its bar: a space after the label, two before
    the percentage, the six-column percentage, and a gutter after it. */
 #define XTOP_METER_OVERHEAD 10U
-#define XTOP_BOX_H "\xe2\x94\x80"     /* U+2500 */
-#define XTOP_BOX_V "\xe2\x94\x82"     /* U+2502 */
-#define XTOP_BOX_TL "\xe2\x94\x8c"    /* U+250C */
-#define XTOP_BOX_TR "\xe2\x94\x90"    /* U+2510 */
-#define XTOP_BOX_BL "\xe2\x94\x94"    /* U+2514 */
-#define XTOP_BOX_BR "\xe2\x94\x98"    /* U+2518 */
-
-/* ---- the canvas: where a frame is drawn ----
- *
- * A frame is drawn either into the screen framework's grid of cells -- the
- * serving session, where only the cells that changed are then sent -- or
- * into a byte buffer as escape-coded text, for a one-shot run whose output
- * is a stream. The same drawing code serves both; what differs is where a
- * glyph and a colour go. Drawing into cells skips composing thirty
- * kilobytes of escapes and parsing them back, which was most of what a
- * frame cost. The text form emits exactly the escapes it always did. */
-typedef struct xtop_canvas {
-  xaios_screen_t *screen; /* cells, or null */
-  char *text;             /* bytes, or null */
-  uint64_t capacity;
-  uint64_t *used;
-  uint16_t fg;
-  uint16_t bg;
-  uint8_t bold;
-  uint32_t row;
-  uint32_t column;
-} xtop_canvas_t;
 
 #define XTOP_COLOR_FIELD UINT16_C(68)
 #define XTOP_COLOR_TEXT UINT16_C(120)
@@ -697,28 +661,30 @@ typedef struct xtop_canvas {
 #define XTOP_COLOR_EMPTY UINT16_C(75)
 #define XTOP_COLOR_CHART UINT16_C(70)
 
-typedef enum xtop_style {
-  XTOP_STYLE_RESET,   /* text on the field, not bold */
-  XTOP_STYLE_FG,      /* the text colour, keeping the background */
-  XTOP_STYLE_TITLE,   /* bold white */
-  XTOP_STYLE_FILL_BG, /* the fill background */
-  XTOP_STYLE_HEADER,  /* black on the fill: the list header and selection */
-  XTOP_STYLE_ALERT,   /* bold red */
-  XTOP_STYLE_HOT,
-  XTOP_STYLE_WARM,
-  XTOP_STYLE_COOL,
-  XTOP_STYLE_EMPTY,
-  XTOP_STYLE_CHART
-} xtop_style_t;
-
 /* The screen framework holds the grid and writes the difference between
    presents; see userspace/include/xaios_screen.h. */
 static xaios_screen_cell_t g_screen_next[XAIOS_SCREEN_MAX_CELLS];
 static xaios_screen_cell_t g_screen_shown[XAIOS_SCREEN_MAX_CELLS];
 static xaios_screen_t g_screen;
 
-static void canvas_text_init(xtop_canvas_t *cv, char *text, uint64_t capacity,
-                             uint64_t *used) {
+/* The screen grid is the renderer's file-scope state; the serving
+   session reaches it only through these, never as a pointer. */
+void xtop_screen_open(uint32_t rows, uint32_t columns) {
+  xaios_screen_init(&g_screen, g_screen_next, g_screen_shown,
+                    XAIOS_SCREEN_MAX_CELLS, rows, columns);
+  g_screen.cursor_hidden = 1U;
+}
+
+uint64_t xtop_screen_take_diff(char *out, uint64_t capacity) {
+  return xaios_screen_present(&g_screen, out, capacity);
+}
+
+int xtop_screen_incomplete(void) { return g_screen.incomplete != 0U; }
+
+void xtop_screen_invalidate(void) { xaios_screen_invalidate(&g_screen); }
+
+void xtop_canvas_text_init(xtop_canvas_t *cv, char *text, uint64_t capacity,
+                           uint64_t *used) {
   cv->screen = 0;
   cv->text = text;
   cv->capacity = capacity;
@@ -771,10 +737,10 @@ static void canvas_style(xtop_canvas_t *cv, xtop_style_t style) {
   default:
     break;
   }
-  if (cv->text != 0) output_append(cv->text, cv->capacity, cv->used, escape);
+  if (cv->text != 0) xtop_output_append(cv->text, cv->capacity, cv->used, escape);
 }
 
-static void canvas_text(xtop_canvas_t *cv, const char *text) {
+void xtop_canvas_text(xtop_canvas_t *cv, const char *text) {
   if (cv->screen != 0) {
     if (cv->row < cv->screen->rows) {
       cv->column += xaios_screen_put(cv->screen, cv->row, cv->column, text,
@@ -782,22 +748,22 @@ static void canvas_text(xtop_canvas_t *cv, const char *text) {
     }
     return;
   }
-  output_append(cv->text, cv->capacity, cv->used, text);
+  xtop_output_append(cv->text, cv->capacity, cv->used, text);
 }
 
 static void canvas_char(xtop_canvas_t *cv, char value) {
   char one[2];
   one[0] = value;
   one[1] = '\0';
-  canvas_text(cv, one);
+  xtop_canvas_text(cv, one);
 }
 
 static void canvas_u64(xtop_canvas_t *cv, uint64_t value) {
   char digits[24];
   uint64_t used = 0U;
   digits[0] = '\0';
-  output_append_u64(digits, sizeof(digits), &used, value);
-  canvas_text(cv, digits);
+  xtop_output_append_u64(digits, sizeof(digits), &used, value);
+  xtop_canvas_text(cv, digits);
 }
 
 static void canvas_repeat(xtop_canvas_t *cv, char value, uint32_t count) {
@@ -808,21 +774,21 @@ static void canvas_repeat(xtop_canvas_t *cv, char value, uint32_t count) {
    one column wide, and the layout arithmetic counts columns. */
 static void canvas_repeat_str(xtop_canvas_t *cv, const char *glyph,
                               uint32_t count) {
-  for (uint32_t i = 0U; i < count; ++i) canvas_text(cv, glyph);
+  for (uint32_t i = 0U; i < count; ++i) xtop_canvas_text(cv, glyph);
 }
 
-static void canvas_newline(xtop_canvas_t *cv) {
+void xtop_canvas_newline(xtop_canvas_t *cv) {
   if (cv->screen != 0) {
     ++cv->row;
     cv->column = 0U;
     return;
   }
-  output_append(cv->text, cv->capacity, cv->used, "\r\n");
+  xtop_output_append(cv->text, cv->capacity, cv->used, "\r\n");
 }
 
 /* Start a frame: the field colour everywhere, the cursor home and shown or
    hidden as asked. */
-static void canvas_begin(xtop_canvas_t *cv, int cursor_hidden) {
+void xtop_canvas_begin(xtop_canvas_t *cv, int cursor_hidden) {
   canvas_style(cv, XTOP_STYLE_RESET);
   if (cv->screen != 0) {
     xaios_screen_clear(cv->screen, XTOP_COLOR_FIELD);
@@ -831,8 +797,8 @@ static void canvas_begin(xtop_canvas_t *cv, int cursor_hidden) {
     cv->column = 0U;
     return;
   }
-  output_append(cv->text, cv->capacity, cv->used, "\033[2J\033[H");
-  output_append(cv->text, cv->capacity, cv->used,
+  xtop_output_append(cv->text, cv->capacity, cv->used, "\033[2J\033[H");
+  xtop_output_append(cv->text, cv->capacity, cv->used,
                 cursor_hidden != 0 ? "\033[?25l" : "\033[?25h");
 }
 
@@ -841,7 +807,7 @@ static void canvas_cursor(xtop_canvas_t *cv, int cursor_hidden) {
     cv->screen->cursor_hidden = cursor_hidden != 0 ? 1U : 0U;
     return;
   }
-  output_append(cv->text, cv->capacity, cv->used,
+  xtop_output_append(cv->text, cv->capacity, cv->used,
                 cursor_hidden != 0 ? "\033[?25l" : "\033[?25h");
 }
 
@@ -863,9 +829,9 @@ static void canvas_percent_width(xtop_canvas_t *cv, uint64_t tenths) {
   uint64_t digits = u64_digits(whole);
   if (digits < 3U) canvas_repeat(cv, ' ', 3U - (uint32_t)digits);
   canvas_u64(cv, whole);
-  canvas_text(cv, ".");
+  xtop_canvas_text(cv, ".");
   canvas_u64(cv, tenths % 10U);
-  canvas_text(cv, "%");
+  xtop_canvas_text(cv, "%");
 }
 
 /* At most `width` columns of a string. */
@@ -881,7 +847,7 @@ static void canvas_bounded(xtop_canvas_t *cv, const char *text,
       glyph[n++] = text[i++];
     }
     glyph[n] = '\0';
-    canvas_text(cv, glyph);
+    xtop_canvas_text(cv, glyph);
     ++columns;
   }
 }
@@ -892,11 +858,11 @@ static void canvas_runtime(xtop_canvas_t *cv, uint64_t runtime_ns) {
   uint64_t minutes = (seconds / 60U) % 60U;
   seconds %= 60U;
   canvas_u64_width(cv, hours, 2U);
-  canvas_text(cv, ":");
-  if (minutes < 10U) canvas_text(cv, "0");
+  xtop_canvas_text(cv, ":");
+  if (minutes < 10U) xtop_canvas_text(cv, "0");
   canvas_u64(cv, minutes);
-  canvas_text(cv, ":");
-  if (seconds < 10U) canvas_text(cv, "0");
+  xtop_canvas_text(cv, ":");
+  if (seconds < 10U) xtop_canvas_text(cv, "0");
   canvas_u64(cv, seconds);
 }
 
@@ -907,31 +873,31 @@ static uint32_t canvas_uptime(xtop_canvas_t *cv, uint64_t now_ns) {
   uint64_t minutes = (seconds / 60U) % 60U;
   seconds %= 60U;
   canvas_u64(cv, days);
-  canvas_text(cv, " days, ");
-  if (hours < 10U) canvas_text(cv, "0");
+  xtop_canvas_text(cv, " days, ");
+  if (hours < 10U) xtop_canvas_text(cv, "0");
   canvas_u64(cv, hours);
-  canvas_text(cv, ":");
-  if (minutes < 10U) canvas_text(cv, "0");
+  xtop_canvas_text(cv, ":");
+  if (minutes < 10U) xtop_canvas_text(cv, "0");
   canvas_u64(cv, minutes);
-  canvas_text(cv, ":");
-  if (seconds < 10U) canvas_text(cv, "0");
+  xtop_canvas_text(cv, ":");
+  if (seconds < 10U) xtop_canvas_text(cv, "0");
   canvas_u64(cv, seconds);
   return (uint32_t)u64_digits(days) + 15U;
 }
 
 static void canvas_hundredths(xtop_canvas_t *cv, uint32_t value) {
   canvas_u64(cv, value / 100U);
-  canvas_text(cv, ".");
-  if (value % 100U < 10U) canvas_text(cv, "0");
+  xtop_canvas_text(cv, ".");
+  if (value % 100U < 10U) xtop_canvas_text(cv, "0");
   canvas_u64(cv, value % 100U);
 }
 
 /* A rule with an optional name set into it by the left corner and an
    optional note by the right: exactly `width` columns and no line ending, so
    two can share a screen row. */
-static void xtop_draw_rule(xtop_canvas_t *cv, const char *left_corner,
-                           const char *right_corner, const char *title,
-                           const char *note, uint32_t width) {
+void xtop_draw_rule(xtop_canvas_t *cv, const char *left_corner,
+                    const char *right_corner, const char *title,
+                    const char *note, uint32_t width) {
   if (width < 2U) return;
   uint32_t inner = width - 2U;
   uint32_t title_columns = title != 0 ? xtop_columns(title) + 3U : 0U;
@@ -939,25 +905,25 @@ static void xtop_draw_rule(xtop_canvas_t *cv, const char *left_corner,
   if (title_columns + note_columns > inner) note_columns = 0U;
   if (title_columns > inner) title_columns = 0U;
   canvas_style(cv, XTOP_STYLE_RESET);
-  canvas_text(cv, left_corner);
+  xtop_canvas_text(cv, left_corner);
   if (title_columns != 0U) {
-    canvas_text(cv, XTOP_BOX_H " ");
+    xtop_canvas_text(cv, XTOP_BOX_H " ");
     canvas_style(cv, XTOP_STYLE_TITLE);
-    canvas_text(cv, title);
+    xtop_canvas_text(cv, title);
     canvas_style(cv, XTOP_STYLE_RESET);
-    canvas_text(cv, " ");
+    xtop_canvas_text(cv, " ");
   }
   if (inner > title_columns + note_columns) {
     canvas_repeat_str(cv, XTOP_BOX_H, inner - title_columns - note_columns);
   }
   if (note_columns != 0U) {
-    canvas_text(cv, " ");
+    xtop_canvas_text(cv, " ");
     canvas_style(cv, XTOP_STYLE_TITLE);
-    canvas_text(cv, note);
+    xtop_canvas_text(cv, note);
     canvas_style(cv, XTOP_STYLE_RESET);
-    canvas_text(cv, " " XTOP_BOX_H);
+    xtop_canvas_text(cv, " " XTOP_BOX_H);
   }
-  canvas_text(cv, right_corner);
+  xtop_canvas_text(cv, right_corner);
 }
 
 static void xtop_draw_panel_top(xtop_canvas_t *cv, const char *title,
@@ -970,8 +936,8 @@ static void xtop_draw_panel_bottom(xtop_canvas_t *cv, uint32_t width) {
 }
 
 /* Text in a style, padded with the field to exactly `width` columns. */
-static void xtop_draw_padded(xtop_canvas_t *cv, xtop_style_t style,
-                             const char *text, uint32_t width) {
+void xtop_draw_padded(xtop_canvas_t *cv, xtop_style_t style,
+                      const char *text, uint32_t width) {
   uint32_t visible = xtop_columns(text);
   if (visible > width) visible = width;
   canvas_style(cv, style);
@@ -1014,7 +980,7 @@ static void xtop_draw_gauge_row(xtop_canvas_t *cv, uint32_t width,
         ++figure_index;
       } while (((uint8_t)figure[figure_index] & 0xc0U) == 0x80U);
       glyph[n] = '\0';
-      canvas_text(cv, glyph);
+      xtop_canvas_text(cv, glyph);
     } else {
       canvas_char(cv, ' ');
     }
@@ -1045,9 +1011,9 @@ static void xtop_draw_chart_row(xtop_canvas_t *cv, uint32_t width,
     /* Rows are numbered from the top; the bar fills from the bottom. */
     uint32_t below = (rows - 1U - row) * 8U;
     if (total_eighths >= below + 8U) {
-      canvas_text(cv, XTOP_BAR_FULL);
+      xtop_canvas_text(cv, XTOP_BAR_FULL);
     } else if (total_eighths > below) {
-      canvas_text(cv, eighths[total_eighths - below]);
+      xtop_canvas_text(cv, eighths[total_eighths - below]);
     } else {
       canvas_char(cv, ' ');
     }
@@ -1071,13 +1037,13 @@ static void xtop_append_rate(char *output, uint64_t output_capacity,
     unit = "KB/s"; whole = bytes_per_s / 1024U;
     tenths = (bytes_per_s % 1024U) * 10U / 1024U;
   }
-  output_append_u64(output, output_capacity, output_bytes, whole);
+  xtop_output_append_u64(output, output_capacity, output_bytes, whole);
   if (whole < 100U && unit[0] != 'B') {
-    output_append(output, output_capacity, output_bytes, ".");
-    output_append_u64(output, output_capacity, output_bytes, tenths);
+    xtop_output_append(output, output_capacity, output_bytes, ".");
+    xtop_output_append_u64(output, output_capacity, output_bytes, tenths);
   }
-  output_append(output, output_capacity, output_bytes, " ");
-  output_append(output, output_capacity, output_bytes, unit);
+  xtop_output_append(output, output_capacity, output_bytes, " ");
+  xtop_output_append(output, output_capacity, output_bytes, unit);
 }
 
 static const char *xtop_yes_no(uint32_t value) {
@@ -1093,7 +1059,7 @@ static void xtop_platform_line(char *line, uint64_t capacity, uint32_t row,
   const xaios_control_hardware_payload_user_t *hw = &g_extras.hardware;
   line[0] = '\0';
   if (g_extras.have_hardware == 0) {
-    if (row == 0U) output_append(line, capacity, &used, "hardware query unavailable");
+    if (row == 0U) xtop_output_append(line, capacity, &used, "hardware query unavailable");
     return;
   }
   int arm = hw->architecture[0] == 'a';
@@ -1101,52 +1067,52 @@ static void xtop_platform_line(char *line, uint64_t capacity, uint32_t row,
   int riscv = hw->architecture[0] == 'r';
   switch (row) {
   case 0U:
-    output_append(line, capacity, &used, "Architecture: ");
-    output_append(line, capacity, &used, hw->architecture);
-    output_append(line, capacity, &used, "  Backend: ");
-    output_append(line, capacity, &used, hw->selected_backend);
+    xtop_output_append(line, capacity, &used, "Architecture: ");
+    xtop_output_append(line, capacity, &used, hw->architecture);
+    xtop_output_append(line, capacity, &used, "  Backend: ");
+    xtop_output_append(line, capacity, &used, hw->selected_backend);
     break;
   case 1U:
-    output_append(line, capacity, &used, "CPUs: ");
-    output_append_u64(line, capacity, &used, cpu_total);
-    output_append(line, capacity, &used, "  NUMA nodes: ");
-    output_append_u64(line, capacity, &used, hw->numa_nodes);
-    output_append(line, capacity, &used, "  Page: ");
-    output_append_u64(line, capacity, &used, hw->page_size / 1024U);
-    output_append(line, capacity, &used, " KiB");
+    xtop_output_append(line, capacity, &used, "CPUs: ");
+    xtop_output_append_u64(line, capacity, &used, cpu_total);
+    xtop_output_append(line, capacity, &used, "  NUMA nodes: ");
+    xtop_output_append_u64(line, capacity, &used, hw->numa_nodes);
+    xtop_output_append(line, capacity, &used, "  Page: ");
+    xtop_output_append_u64(line, capacity, &used, hw->page_size / 1024U);
+    xtop_output_append(line, capacity, &used, " KiB");
     break;
   case 2U:
     if (arm) {
-      output_append(line, capacity, &used, "SIMD: NEON ");
-      output_append(line, capacity, &used, xtop_yes_no(hw->neon));
-      output_append(line, capacity, &used, "  SVE ");
-      output_append(line, capacity, &used, xtop_yes_no(hw->sve));
+      xtop_output_append(line, capacity, &used, "SIMD: NEON ");
+      xtop_output_append(line, capacity, &used, xtop_yes_no(hw->neon));
+      xtop_output_append(line, capacity, &used, "  SVE ");
+      xtop_output_append(line, capacity, &used, xtop_yes_no(hw->sve));
     } else if (x86) {
-      output_append(line, capacity, &used, "AVX2 ");
-      output_append(line, capacity, &used, xtop_yes_no(hw->avx2));
-      output_append(line, capacity, &used, "  AVX-512 ");
-      output_append(line, capacity, &used, xtop_yes_no(hw->avx512));
-      output_append(line, capacity, &used, "  VNNI ");
-      output_append(line, capacity, &used, xtop_yes_no(hw->vnni));
-      output_append(line, capacity, &used, "  AMX ");
-      output_append(line, capacity, &used, xtop_yes_no(hw->amx));
+      xtop_output_append(line, capacity, &used, "AVX2 ");
+      xtop_output_append(line, capacity, &used, xtop_yes_no(hw->avx2));
+      xtop_output_append(line, capacity, &used, "  AVX-512 ");
+      xtop_output_append(line, capacity, &used, xtop_yes_no(hw->avx512));
+      xtop_output_append(line, capacity, &used, "  VNNI ");
+      xtop_output_append(line, capacity, &used, xtop_yes_no(hw->vnni));
+      xtop_output_append(line, capacity, &used, "  AMX ");
+      xtop_output_append(line, capacity, &used, xtop_yes_no(hw->amx));
     } else if (riscv) {
-      output_append(line, capacity, &used, "Vector (V) ");
-      output_append(line, capacity, &used, xtop_yes_no(hw->rvv));
-      output_append(line, capacity, &used, "  Sstc timer ");
-      output_append(line, capacity, &used, xtop_yes_no(hw->sstc));
+      xtop_output_append(line, capacity, &used, "Vector (V) ");
+      xtop_output_append(line, capacity, &used, xtop_yes_no(hw->rvv));
+      xtop_output_append(line, capacity, &used, "  Sstc timer ");
+      xtop_output_append(line, capacity, &used, xtop_yes_no(hw->sstc));
     } else {
-      output_append(line, capacity, &used, "Features: unknown");
+      xtop_output_append(line, capacity, &used, "Features: unknown");
     }
     break;
   case 3U:
-    output_append(line, capacity, &used, "Timer: ");
-    output_append_u64(line, capacity, &used, hw->timer_frequency_hz / 1000000U);
-    output_append(line, capacity, &used, " MHz  Memory: ");
-    output_append_u64(line, capacity, &used, hw->physical_pages / 256U);
-    output_append(line, capacity, &used, "M physical, ");
-    output_append_u64(line, capacity, &used, hw->managed_pages / 256U);
-    output_append(line, capacity, &used, "M managed");
+    xtop_output_append(line, capacity, &used, "Timer: ");
+    xtop_output_append_u64(line, capacity, &used, hw->timer_frequency_hz / 1000000U);
+    xtop_output_append(line, capacity, &used, " MHz  Memory: ");
+    xtop_output_append_u64(line, capacity, &used, hw->physical_pages / 256U);
+    xtop_output_append(line, capacity, &used, "M physical, ");
+    xtop_output_append_u64(line, capacity, &used, hw->managed_pages / 256U);
+    xtop_output_append(line, capacity, &used, "M managed");
     break;
   default:
     break;
@@ -1160,39 +1126,39 @@ static void xtop_ai_line(char *line, uint64_t capacity, uint32_t row) {
   const xaios_control_metrics_payload_user_t *m = &g_extras.metrics;
   line[0] = '\0';
   if (g_extras.have_metrics == 0) {
-    if (row == 0U) output_append(line, capacity, &used, "metrics query unavailable");
+    if (row == 0U) xtop_output_append(line, capacity, &used, "metrics query unavailable");
     return;
   }
   switch (row) {
   case 0U:
-    output_append(line, capacity, &used, "Inferences/s: ");
-    output_append_u64(line, capacity, &used, g_extras.inferences_per_s);
-    output_append(line, capacity, &used, "  Active: ");
-    output_append_u64(line, capacity, &used, m->active_sessions);
-    output_append(line, capacity, &used, "  Queue: ");
-    output_append_u64(line, capacity, &used, m->queue_depth);
+    xtop_output_append(line, capacity, &used, "Inferences/s: ");
+    xtop_output_append_u64(line, capacity, &used, g_extras.inferences_per_s);
+    xtop_output_append(line, capacity, &used, "  Active: ");
+    xtop_output_append_u64(line, capacity, &used, m->active_sessions);
+    xtop_output_append(line, capacity, &used, "  Queue: ");
+    xtop_output_append_u64(line, capacity, &used, m->queue_depth);
     break;
   case 1U:
-    output_append(line, capacity, &used, "Tokens/s: prefill ");
-    output_append_u64(line, capacity, &used, m->prefill_tokens_per_second);
-    output_append(line, capacity, &used, "  decode ");
-    output_append_u64(line, capacity, &used, m->decode_tokens_per_second);
+    xtop_output_append(line, capacity, &used, "Tokens/s: prefill ");
+    xtop_output_append_u64(line, capacity, &used, m->prefill_tokens_per_second);
+    xtop_output_append(line, capacity, &used, "  decode ");
+    xtop_output_append_u64(line, capacity, &used, m->decode_tokens_per_second);
     break;
   case 2U:
-    output_append(line, capacity, &used, "First token: ");
-    output_append_u64(line, capacity, &used, m->time_to_first_token_ns / 1000000U);
-    output_append(line, capacity, &used, " ms  Completed: ");
-    output_append_u64(line, capacity, &used, m->requests_completed);
-    output_append(line, capacity, &used, "  Failed: ");
-    output_append_u64(line, capacity, &used, m->requests_failed);
+    xtop_output_append(line, capacity, &used, "First token: ");
+    xtop_output_append_u64(line, capacity, &used, m->time_to_first_token_ns / 1000000U);
+    xtop_output_append(line, capacity, &used, " ms  Completed: ");
+    xtop_output_append_u64(line, capacity, &used, m->requests_completed);
+    xtop_output_append(line, capacity, &used, "  Failed: ");
+    xtop_output_append_u64(line, capacity, &used, m->requests_failed);
     break;
   case 3U:
-    output_append(line, capacity, &used, "Model resident: ");
-    output_append_u64(line, capacity, &used, m->model_resident_bytes / 1048576U);
-    output_append(line, capacity, &used, "M  KV cache: ");
-    output_append_u64(line, capacity, &used, m->kv_cache_bytes / 1048576U);
-    output_append(line, capacity, &used, "M  Workers: ");
-    output_append_u64(line, capacity, &used, m->worker_count);
+    xtop_output_append(line, capacity, &used, "Model resident: ");
+    xtop_output_append_u64(line, capacity, &used, m->model_resident_bytes / 1048576U);
+    xtop_output_append(line, capacity, &used, "M  KV cache: ");
+    xtop_output_append_u64(line, capacity, &used, m->kv_cache_bytes / 1048576U);
+    xtop_output_append(line, capacity, &used, "M  Workers: ");
+    xtop_output_append_u64(line, capacity, &used, m->worker_count);
     break;
   default:
     break;
@@ -1204,40 +1170,40 @@ static void xtop_netdisk_line(char *line, uint64_t capacity, uint32_t row) {
   const xaios_control_metrics_payload_user_t *m = &g_extras.metrics;
   line[0] = '\0';
   if (g_extras.have_metrics == 0) {
-    if (row == 0U) output_append(line, capacity, &used, "metrics query unavailable");
+    if (row == 0U) xtop_output_append(line, capacity, &used, "metrics query unavailable");
     return;
   }
   switch (row) {
   case 0U:
-    output_append(line, capacity, &used, "Net: \xe2\x86\x91 ");
+    xtop_output_append(line, capacity, &used, "Net: \xe2\x86\x91 ");
     xtop_append_rate(line, capacity, &used, g_extras.tx_bytes_per_s);
-    output_append(line, capacity, &used, "  \xe2\x86\x93 ");
+    xtop_output_append(line, capacity, &used, "  \xe2\x86\x93 ");
     xtop_append_rate(line, capacity, &used, g_extras.rx_bytes_per_s);
     break;
   case 1U:
-    output_append(line, capacity, &used, "Packets: rx ");
-    output_append_u64(line, capacity, &used, m->network_rx_packets);
-    output_append(line, capacity, &used, "  tx ");
-    output_append_u64(line, capacity, &used, m->network_tx_packets);
-    output_append(line, capacity, &used, "  errors ");
-    output_append_u64(line, capacity, &used, m->network_errors);
+    xtop_output_append(line, capacity, &used, "Packets: rx ");
+    xtop_output_append_u64(line, capacity, &used, m->network_rx_packets);
+    xtop_output_append(line, capacity, &used, "  tx ");
+    xtop_output_append_u64(line, capacity, &used, m->network_tx_packets);
+    xtop_output_append(line, capacity, &used, "  errors ");
+    xtop_output_append_u64(line, capacity, &used, m->network_errors);
     break;
   case 2U:
-    output_append(line, capacity, &used, "Disk I/O: R ");
-    output_append_u64(line, capacity, &used, g_extras.reads_per_s);
-    output_append(line, capacity, &used, "/s  W ");
-    output_append_u64(line, capacity, &used, g_extras.writes_per_s);
-    output_append(line, capacity, &used, "/s  (");
-    output_append_u64(line, capacity, &used, m->storage_reads);
-    output_append(line, capacity, &used, " reads, ");
-    output_append_u64(line, capacity, &used, m->storage_writes);
-    output_append(line, capacity, &used, " writes)");
+    xtop_output_append(line, capacity, &used, "Disk I/O: R ");
+    xtop_output_append_u64(line, capacity, &used, g_extras.reads_per_s);
+    xtop_output_append(line, capacity, &used, "/s  W ");
+    xtop_output_append_u64(line, capacity, &used, g_extras.writes_per_s);
+    xtop_output_append(line, capacity, &used, "/s  (");
+    xtop_output_append_u64(line, capacity, &used, m->storage_reads);
+    xtop_output_append(line, capacity, &used, " reads, ");
+    xtop_output_append_u64(line, capacity, &used, m->storage_writes);
+    xtop_output_append(line, capacity, &used, " writes)");
     break;
   case 3U:
-    output_append(line, capacity, &used, "Log buffer: ");
-    output_append_u64(line, capacity, &used, m->log_buffer_bytes / 1024U);
-    output_append(line, capacity, &used, "K  overflows ");
-    output_append_u64(line, capacity, &used, m->log_overflows);
+    xtop_output_append(line, capacity, &used, "Log buffer: ");
+    xtop_output_append_u64(line, capacity, &used, m->log_buffer_bytes / 1024U);
+    xtop_output_append(line, capacity, &used, "K  overflows ");
+    xtop_output_append_u64(line, capacity, &used, m->log_overflows);
     break;
   default:
     break;
@@ -1245,9 +1211,9 @@ static void xtop_netdisk_line(char *line, uint64_t capacity, uint32_t row) {
 }
 
 /* A panel\'s vertical edge. */
-static void xtop_draw_edge(xtop_canvas_t *cv) {
+void xtop_draw_edge(xtop_canvas_t *cv) {
   canvas_style(cv, XTOP_STYLE_RESET);
-  canvas_text(cv, XTOP_BOX_V);
+  xtop_canvas_text(cv, XTOP_BOX_V);
 }
 
 static xtop_style_t xtop_meter_style(uint64_t tenths) {
@@ -1267,7 +1233,7 @@ static void xtop_draw_meter(xtop_canvas_t *cv, const char *label,
      wide wraps -- on a real terminal that is a blank line under every meter,
      and the same picture on the framebuffer console, which the local console
      comparison caught. */
-  uint32_t label_width = (uint32_t)cstr_len(label);
+  uint32_t label_width = (uint32_t)xtop_cstr_len(label);
   uint32_t visible = label_columns + bar_width + XTOP_METER_OVERHEAD;
   uint64_t filled64 = (tenths * bar_width + 999U) / 1000U;
   uint32_t filled = filled64 > bar_width ? bar_width : (uint32_t)filled64;
@@ -1275,29 +1241,29 @@ static void xtop_draw_meter(xtop_canvas_t *cv, const char *label,
   if (label_width < label_columns) {
     canvas_repeat(cv, ' ', label_columns - label_width);
   }
-  canvas_text(cv, label);
-  canvas_text(cv, " ");
+  xtop_canvas_text(cv, label);
+  xtop_canvas_text(cv, " ");
   canvas_style(cv, xtop_meter_style(tenths));
   canvas_repeat_str(cv, XTOP_BAR_FULL, filled);
   canvas_style(cv, XTOP_STYLE_EMPTY);
   canvas_repeat_str(cv, XTOP_BAR_EMPTY, bar_width - filled);
   canvas_style(cv, XTOP_STYLE_RESET);
-  canvas_text(cv, "  ");
+  xtop_canvas_text(cv, "  ");
   canvas_style(cv, XTOP_STYLE_TITLE);
   canvas_percent_width(cv, tenths);
   canvas_style(cv, XTOP_STYLE_RESET);
-  canvas_text(cv, " ");
+  xtop_canvas_text(cv, " ");
   if (visible < cell_width) canvas_repeat(cv, ' ', cell_width - visible);
 }
 
 static void xtop_draw_key(xtop_canvas_t *cv, uint32_t *visible,
                           const char *key, const char *label) {
   canvas_style(cv, XTOP_STYLE_TITLE);
-  canvas_text(cv, key);
+  xtop_canvas_text(cv, key);
   canvas_style(cv, XTOP_STYLE_RESET);
-  canvas_text(cv, label);
+  xtop_canvas_text(cv, label);
   canvas_char(cv, ' ');
-  *visible += (uint32_t)cstr_len(key) + (uint32_t)cstr_len(label) + 1U;
+  *visible += (uint32_t)xtop_cstr_len(key) + (uint32_t)xtop_cstr_len(label) + 1U;
 }
 
 /* The screen's bottom rule, with the keys set into it the way mactop sets
@@ -1312,21 +1278,21 @@ static void xtop_draw_key_bar(xtop_canvas_t *cv, uint32_t columns,
   uint64_t cadence_used = 0U;
   cadence[0] = '\0';
   if (interactive != 0 && refresh_ms != 0U) {
-    output_append(cadence, sizeof(cadence), &cadence_used, "-/+ ");
-    output_append_u64(cadence, sizeof(cadence), &cadence_used, refresh_ms);
-    output_append(cadence, sizeof(cadence), &cadence_used, "ms");
+    xtop_output_append(cadence, sizeof(cadence), &cadence_used, "-/+ ");
+    xtop_output_append_u64(cadence, sizeof(cadence), &cadence_used, refresh_ms);
+    xtop_output_append(cadence, sizeof(cadence), &cadence_used, "ms");
   }
   uint32_t cadence_columns = cadence[0] != '\0' ? xtop_columns(cadence) + 3U : 0U;
   canvas_style(cv, XTOP_STYLE_RESET);
-  canvas_text(cv, XTOP_BOX_BL XTOP_BOX_H " ");
+  xtop_canvas_text(cv, XTOP_BOX_BL XTOP_BOX_H " ");
   if (interactive != 0) {
     /* "1/3 layout" by the left corner, as mactop counts its own. */
     canvas_style(cv, XTOP_STYLE_TITLE);
     canvas_u64(cv, layout);
-    canvas_text(cv, "/");
+    xtop_canvas_text(cv, "/");
     canvas_u64(cv, XTOP_LAYOUT_COUNT);
     canvas_style(cv, XTOP_STYLE_RESET);
-    canvas_text(cv, " layout  ");
+    xtop_canvas_text(cv, " layout  ");
     visible += 2U + (uint32_t)u64_digits(layout) + (uint32_t)u64_digits(XTOP_LAYOUT_COUNT) + 8U;
     xtop_draw_key(cv, &visible, "L", "Layout");
     xtop_draw_key(cv, &visible, "F1", "Help");
@@ -1343,21 +1309,21 @@ static void xtop_draw_key_bar(xtop_canvas_t *cv, uint32_t columns,
     const char *text = columns < 60U
                            ? "--active --all --sort KEY --plain "
                            : "--active  --all  --sort KEY  --filter TEXT  --cpu-start N  --plain ";
-    canvas_text(cv, text);
-    visible += (uint32_t)cstr_len(text);
+    xtop_canvas_text(cv, text);
+    visible += (uint32_t)xtop_cstr_len(text);
   }
   if (columns < visible + cadence_columns + 1U) cadence_columns = 0U;
   if (columns > visible + cadence_columns + 1U) {
     canvas_repeat_str(cv, XTOP_BOX_H, columns - visible - cadence_columns - 1U);
   }
   if (cadence_columns != 0U) {
-    canvas_text(cv, " ");
+    xtop_canvas_text(cv, " ");
     canvas_style(cv, XTOP_STYLE_TITLE);
-    canvas_text(cv, cadence);
+    xtop_canvas_text(cv, cadence);
     canvas_style(cv, XTOP_STYLE_RESET);
-    canvas_text(cv, " " XTOP_BOX_H);
+    xtop_canvas_text(cv, " " XTOP_BOX_H);
   }
-  canvas_text(cv, XTOP_BOX_BR);
+  xtop_canvas_text(cv, XTOP_BOX_BR);
   canvas_style(cv, XTOP_STYLE_RESET);
 }
 
@@ -1426,26 +1392,26 @@ static void xtop_draw_info_cell(xtop_canvas_t *cv, uint32_t row,
   uint32_t visible = 0U;
   if (row == 0U) {
     canvas_style(cv, XTOP_STYLE_FG);
-    canvas_text(cv, "Tasks: ");
+    xtop_canvas_text(cv, "Tasks: ");
     canvas_style(cv, XTOP_STYLE_TITLE);
     canvas_u64(cv, active_tasks);
     visible = 7U + (uint32_t)u64_digits(active_tasks);
     if (width >= 40U) {
       canvas_style(cv, XTOP_STYLE_FG);
-      canvas_text(cv, " active, ");
+      xtop_canvas_text(cv, " active, ");
       /* Failures are the one figure that should shout, and only when there
          are any. */
       canvas_style(cv, failed_tasks != 0U ? XTOP_STYLE_ALERT : XTOP_STYLE_TITLE);
       canvas_u64(cv, failed_tasks);
       canvas_style(cv, XTOP_STYLE_FG);
-      canvas_text(cv, " failed; CPUs: ");
+      xtop_canvas_text(cv, " failed; CPUs: ");
       canvas_style(cv, XTOP_STYLE_TITLE);
       canvas_u64(cv, cpu_total);
       visible += 24U + (uint32_t)u64_digits(failed_tasks) +
                  (uint32_t)u64_digits(cpu_total);
     } else {
       canvas_style(cv, XTOP_STYLE_FG);
-      canvas_text(cv, "  Fail: ");
+      xtop_canvas_text(cv, "  Fail: ");
       canvas_style(cv, failed_tasks != 0U ? XTOP_STYLE_ALERT : XTOP_STYLE_TITLE);
       canvas_u64(cv, failed_tasks);
       visible += 8U + (uint32_t)u64_digits(failed_tasks);
@@ -1453,13 +1419,13 @@ static void xtop_draw_info_cell(xtop_canvas_t *cv, uint32_t row,
   } else if (row == 1U) {
     const char *caption = width >= 32U ? "Load average: " : "Load: ";
     canvas_style(cv, XTOP_STYLE_FG);
-    canvas_text(cv, caption);
+    xtop_canvas_text(cv, caption);
     canvas_style(cv, XTOP_STYLE_TITLE);
-    visible = (uint32_t)cstr_len(caption);
+    visible = (uint32_t)xtop_cstr_len(caption);
     uint32_t values = width >= 24U ? 3U : 2U;
     for (uint32_t i = 0U; i < values; ++i) {
       if (i != 0U) {
-        canvas_text(cv, " ");
+        xtop_canvas_text(cv, " ");
         ++visible;
       }
       canvas_hundredths(cv, load_average[i]);
@@ -1469,7 +1435,7 @@ static void xtop_draw_info_cell(xtop_canvas_t *cv, uint32_t row,
     uint64_t seconds = now_ns / UINT64_C(1000000000);
     if (width >= 24U) {
       canvas_style(cv, XTOP_STYLE_FG);
-      canvas_text(cv, "Uptime: ");
+      xtop_canvas_text(cv, "Uptime: ");
       canvas_style(cv, XTOP_STYLE_TITLE);
       visible = 8U + canvas_uptime(cv, now_ns);
     } else {
@@ -1478,17 +1444,17 @@ static void xtop_draw_info_cell(xtop_canvas_t *cv, uint32_t row,
       uint64_t minutes = (seconds / 60U) % 60U;
       seconds %= 60U;
       canvas_style(cv, XTOP_STYLE_FG);
-      canvas_text(cv, "Uptime: ");
+      xtop_canvas_text(cv, "Uptime: ");
       canvas_style(cv, XTOP_STYLE_TITLE);
       canvas_u64(cv, days);
-      canvas_text(cv, "d ");
-      if (hours < 10U) canvas_text(cv, "0");
+      xtop_canvas_text(cv, "d ");
+      if (hours < 10U) xtop_canvas_text(cv, "0");
       canvas_u64(cv, hours);
-      canvas_text(cv, ":");
-      if (minutes < 10U) canvas_text(cv, "0");
+      xtop_canvas_text(cv, ":");
+      if (minutes < 10U) xtop_canvas_text(cv, "0");
       canvas_u64(cv, minutes);
-      canvas_text(cv, ":");
-      if (seconds < 10U) canvas_text(cv, "0");
+      xtop_canvas_text(cv, ":");
+      if (seconds < 10U) xtop_canvas_text(cv, "0");
       canvas_u64(cv, seconds);
       visible = 18U + (uint32_t)u64_digits(days);
     }
@@ -1738,28 +1704,28 @@ static uint32_t xtop_render_color(
   char figure[16];
   uint64_t used = 0U;
   cpu_title[0] = '\0';
-  output_append(cpu_title, sizeof(cpu_title), &used, "CPU  ");
-  output_append_u64(cpu_title, sizeof(cpu_title), &used, cpu_total);
-  output_append(cpu_title, sizeof(cpu_title), &used,
+  xtop_output_append(cpu_title, sizeof(cpu_title), &used, "CPU  ");
+  xtop_output_append_u64(cpu_title, sizeof(cpu_title), &used, cpu_total);
+  xtop_output_append(cpu_title, sizeof(cpu_title), &used,
                 cpu_total == 1U ? " core  " : " cores  ");
   xtop_append_percent(cpu_title, sizeof(cpu_title), &used, cpu_all_tenths);
   used = 0U;
   mem_title[0] = '\0';
-  output_append(mem_title, sizeof(mem_title), &used, "Mem  ");
-  output_append_u64(mem_title, sizeof(mem_title), &used, used_mebibytes);
-  output_append(mem_title, sizeof(mem_title), &used, "M / ");
-  output_append_u64(mem_title, sizeof(mem_title), &used, managed_mebibytes);
-  output_append(mem_title, sizeof(mem_title), &used, "M  (Swap 0K / 0K)  ");
+  xtop_output_append(mem_title, sizeof(mem_title), &used, "Mem  ");
+  xtop_output_append_u64(mem_title, sizeof(mem_title), &used, used_mebibytes);
+  xtop_output_append(mem_title, sizeof(mem_title), &used, "M / ");
+  xtop_output_append_u64(mem_title, sizeof(mem_title), &used, managed_mebibytes);
+  xtop_output_append(mem_title, sizeof(mem_title), &used, "M  (Swap 0K / 0K)  ");
   xtop_append_percent(mem_title, sizeof(mem_title), &used, memory_tenths);
 
-  canvas_begin(cv, interactive != 0);
+  xtop_canvas_begin(cv, interactive != 0);
 
   /* Outer top: the title by the left corner, the tab strip by the right.
      "[Main]" stays: the network suites read it to know the screen is up. */
   xtop_draw_rule(cv, XTOP_BOX_TL, XTOP_BOX_TR,
                  "XAIOS xtop \xe2\x80\x94 sampled kernel process monitor",
                  "[Main]", columns);
-  canvas_newline(cv);
+  xtop_canvas_newline(cv);
 
   /* The first band: gauges, the machine and its AI runtime, or history,
      by layout. Every layout keeps the outer frame and the process list. */
@@ -1777,7 +1743,7 @@ static uint32_t xtop_render_color(
   xtop_draw_panel_top(cv, band_left_title, left);
   xtop_draw_panel_top(cv, band_right_title, right);
   xtop_draw_edge(cv);
-  canvas_newline(cv);
+  xtop_canvas_newline(cv);
   for (uint32_t row = 0U; row < gauge_rows; ++row) {
     int carries = row == gauge_rows / 2U;
     xtop_draw_edge(cv);
@@ -1808,13 +1774,13 @@ static uint32_t xtop_render_color(
     }
     xtop_draw_edge(cv);
     xtop_draw_edge(cv);
-    canvas_newline(cv);
+    xtop_canvas_newline(cv);
   }
   xtop_draw_edge(cv);
   xtop_draw_panel_bottom(cv, left);
   xtop_draw_panel_bottom(cv, right);
   xtop_draw_edge(cv);
-  canvas_newline(cv);
+  xtop_canvas_newline(cv);
 
   /* The second band: cores beside the system figures, or the network and
      disk figures, or a network history beside the cores. */
@@ -1832,7 +1798,7 @@ static uint32_t xtop_render_color(
     xtop_draw_panel_top(cv, detail_left_title, left);
     xtop_draw_panel_top(cv, detail_right_title, right);
     xtop_draw_edge(cv);
-    canvas_newline(cv);
+    xtop_canvas_newline(cv);
     for (uint32_t line_index = 0U; line_index < detail_rows; ++line_index) {
       uint32_t line = line_index;
       xtop_draw_edge(cv);
@@ -1910,25 +1876,25 @@ static uint32_t xtop_render_color(
       } else if (line == 3U) {
         char view[128];
         used = 0U; view[0] = '\0';
-        output_append(view, sizeof(view), &used, "View: ");
-        output_append(view, sizeof(view), &used,
+        xtop_output_append(view, sizeof(view), &used, "View: ");
+        xtop_output_append(view, sizeof(view), &used,
                       interactive != 0 ? "live" : "snapshot");
-        output_append(view, sizeof(view), &used, "  Sort: ");
-        output_append(view, sizeof(view), &used, xtop_sort_name(sort_key));
-        if (reverse != 0) output_append(view, sizeof(view), &used, " ascending");
+        xtop_output_append(view, sizeof(view), &used, "  Sort: ");
+        xtop_output_append(view, sizeof(view), &used, xtop_sort_name(sort_key));
+        if (reverse != 0) xtop_output_append(view, sizeof(view), &used, " ascending");
         if (filter[0] != '\0') {
-          output_append(view, sizeof(view), &used, "  Filter: ");
-          output_append(view, sizeof(view), &used, filter);
+          xtop_output_append(view, sizeof(view), &used, "  Filter: ");
+          xtop_output_append(view, sizeof(view), &used, filter);
         }
         if (cpu_start != 0U || cpu_start + cpu_shown < cpu_total) {
-          output_append(view, sizeof(view), &used, "  CPU page: ");
-          output_append_u64(view, sizeof(view), &used, cpu_start);
-          output_append(view, sizeof(view), &used, "-");
-          output_append_u64(view, sizeof(view), &used,
+          xtop_output_append(view, sizeof(view), &used, "  CPU page: ");
+          xtop_output_append_u64(view, sizeof(view), &used, cpu_start);
+          xtop_output_append(view, sizeof(view), &used, "-");
+          xtop_output_append_u64(view, sizeof(view), &used,
                             cpu_shown == 0U ? cpu_start
                                             : cpu_start + cpu_shown - 1U);
-          output_append(view, sizeof(view), &used, "/");
-          output_append_u64(view, sizeof(view), &used, cpu_total);
+          xtop_output_append(view, sizeof(view), &used, "/");
+          xtop_output_append_u64(view, sizeof(view), &used, cpu_total);
         }
         xtop_draw_padded(cv, XTOP_STYLE_FG, view, right_in);
       } else {
@@ -1936,13 +1902,13 @@ static uint32_t xtop_render_color(
       }
       xtop_draw_edge(cv);
       xtop_draw_edge(cv);
-      canvas_newline(cv);
+      xtop_canvas_newline(cv);
     }
     xtop_draw_edge(cv);
     xtop_draw_panel_bottom(cv, left);
     xtop_draw_panel_bottom(cv, right);
     xtop_draw_edge(cv);
-    canvas_newline(cv);
+    xtop_canvas_newline(cv);
   }
 
   /* The process list, with its header on a bar. */
@@ -1954,7 +1920,7 @@ static uint32_t xtop_render_color(
           : "Process List",
       inner);
   xtop_draw_edge(cv);
-  canvas_newline(cv);
+  xtop_canvas_newline(cv);
   xtop_draw_edge(cv);
   xtop_draw_edge(cv);
   xtop_draw_padded(
@@ -1967,7 +1933,7 @@ static uint32_t xtop_render_color(
       list_in);
   xtop_draw_edge(cv);
   xtop_draw_edge(cv);
-  canvas_newline(cv);
+  xtop_canvas_newline(cv);
 
   uint32_t list_rows = 0U;
   for (uint32_t i = process_start;
@@ -1981,39 +1947,39 @@ static uint32_t xtop_render_color(
     uint32_t fixed_visible;
     if (list_in < 60U) {
       canvas_u64_width(cv, row->pid, 4U);
-      canvas_text(cv, " ");
+      xtop_canvas_text(cv, " ");
       canvas_char(cv, xtop_state_character(row->state));
-      canvas_text(cv, " ");
+      xtop_canvas_text(cv, " ");
       canvas_percent_width(cv, row->cpu_tenths);
-      canvas_text(cv, " ");
+      xtop_canvas_text(cv, " ");
       canvas_percent_width(cv, row->memory_tenths);
-      canvas_text(cv, " ");
+      xtop_canvas_text(cv, " ");
       fixed_visible = 21U;
     } else {
       canvas_u64_width(cv, row->pid, 5U);
-      canvas_text(cv, " ");
+      xtop_canvas_text(cv, " ");
       canvas_u64_width(cv, row->parent_pid, 5U);
-      canvas_text(cv, " ");
+      xtop_canvas_text(cv, " ");
       canvas_char(cv, xtop_state_character(row->state));
-      canvas_text(cv, " ");
+      xtop_canvas_text(cv, " ");
       canvas_percent_width(cv, row->cpu_tenths);
-      canvas_text(cv, " ");
+      xtop_canvas_text(cv, " ");
       canvas_percent_width(cv, row->memory_tenths);
-      canvas_text(cv, " ");
+      xtop_canvas_text(cv, " ");
       canvas_runtime(cv, row->runtime_ns);
-      canvas_text(cv, " ");
+      xtop_canvas_text(cv, " ");
       canvas_u64_width(cv, row->resident_pages * 4U, 7U);
-      canvas_text(cv, " ");
+      xtop_canvas_text(cv, " ");
       if (row->cpu_id == UINT32_MAX) {
-        canvas_text(cv, "  -");
+        xtop_canvas_text(cv, "  -");
       } else {
         canvas_u64_width(cv, row->cpu_id, 3U);
       }
-      canvas_text(cv, " ");
+      xtop_canvas_text(cv, " ");
       fixed_visible = 49U;
       if (list_in >= 100U) {
         canvas_u64_width(cv, row->syscall_count, 9U);
-        canvas_text(cv, " ");
+        xtop_canvas_text(cv, " ");
         fixed_visible += 10U;
       }
     }
@@ -2032,18 +1998,18 @@ static uint32_t xtop_render_color(
       }
     }
     if (prefix_length != 0U && command_width >= prefix_length) {
-      canvas_text(cv, "|- ");
+      xtop_canvas_text(cv, "|- ");
     }
     uint32_t name_width = command_width > prefix_length
                               ? command_width - prefix_length : 0U;
     canvas_bounded(cv, row->name, name_width);
-    uint32_t command_length = (uint32_t)cstr_len(row->name);
+    uint32_t command_length = (uint32_t)xtop_cstr_len(row->name);
     if (command_length < name_width) {
       canvas_repeat(cv, ' ', name_width - command_length);
     }
     xtop_draw_edge(cv);
     xtop_draw_edge(cv);
-    canvas_newline(cv);
+    xtop_canvas_newline(cv);
     ++process_shown;
     ++list_rows;
   }
@@ -2054,54 +2020,53 @@ static uint32_t xtop_render_color(
     canvas_repeat(cv, ' ', list_in);
     xtop_draw_edge(cv);
     xtop_draw_edge(cv);
-    canvas_newline(cv);
+    xtop_canvas_newline(cv);
   }
   xtop_draw_edge(cv);
   xtop_draw_panel_bottom(cv, inner);
   xtop_draw_edge(cv);
-  canvas_newline(cv);
+  xtop_canvas_newline(cv);
 
   xtop_draw_key_bar(cv, columns, interactive, refresh_ms, layout);
   canvas_cursor(cv, interactive != 0);
   return process_shown;
 }
 
-static xaios_status_t xtop_parse_u32_option(const char *args, uint64_t *index,
-                                            uint32_t *value) {
+xaios_status_t xtop_parse_u32_option(const char *args, uint64_t *index,
+                                     uint32_t *value) {
   char token[24];
   uint64_t parsed = 0U;
   uint64_t consumed = 0U;
-  if (token_next(args, index, token, sizeof(token)) != XAIOS_OK ||
+  if (xtop_token_next(args, index, token, sizeof(token)) != XAIOS_OK ||
       parse_u64_token(token, &parsed, &consumed) != XAIOS_OK ||
-      consumed != cstr_len(token) || parsed > UINT32_MAX) {
+      consumed != xtop_cstr_len(token) || parsed > UINT32_MAX) {
     return XAIOS_ERR_INVALID;
   }
   *value = (uint32_t)parsed;
   return XAIOS_OK;
 }
 
-static xaios_status_t xtop_parse_sort_option(const char *args, uint64_t *index,
-                                             xtop_sort_key_t *key) {
+xaios_status_t xtop_parse_sort_option(const char *args, uint64_t *index,
+                                      xtop_sort_key_t *key) {
   char value[24];
-  if (token_next(args, index, value, sizeof(value)) != XAIOS_OK) {
+  if (xtop_token_next(args, index, value, sizeof(value)) != XAIOS_OK) {
     return XAIOS_ERR_INVALID;
   }
-  if (string_equal(value, "cpu") == 1U) *key = XTOP_SORT_CPU;
-  else if (string_equal(value, "mem") == 1U) *key = XTOP_SORT_MEMORY;
-  else if (string_equal(value, "time") == 1U) *key = XTOP_SORT_TIME;
-  else if (string_equal(value, "pid") == 1U) *key = XTOP_SORT_PID;
-  else if (string_equal(value, "state") == 1U) *key = XTOP_SORT_STATE;
-  else if (string_equal(value, "syscalls") == 1U) *key = XTOP_SORT_SYSCALLS;
-  else if (string_equal(value, "command") == 1U) *key = XTOP_SORT_COMMAND;
-  else if (string_equal(value, "parent") == 1U) *key = XTOP_SORT_PARENT;
+  if (xtop_string_equal(value, "cpu") == 1U) *key = XTOP_SORT_CPU;
+  else if (xtop_string_equal(value, "mem") == 1U) *key = XTOP_SORT_MEMORY;
+  else if (xtop_string_equal(value, "time") == 1U) *key = XTOP_SORT_TIME;
+  else if (xtop_string_equal(value, "pid") == 1U) *key = XTOP_SORT_PID;
+  else if (xtop_string_equal(value, "state") == 1U) *key = XTOP_SORT_STATE;
+  else if (xtop_string_equal(value, "syscalls") == 1U) *key = XTOP_SORT_SYSCALLS;
+  else if (xtop_string_equal(value, "command") == 1U) *key = XTOP_SORT_COMMAND;
+  else if (xtop_string_equal(value, "parent") == 1U) *key = XTOP_SORT_PARENT;
   else return XAIOS_ERR_INVALID;
   return XAIOS_OK;
 }
 
-
-static xaios_status_t handle_xtop(const char *args, char *output,
-                                  uint64_t output_capacity,
-                                  uint64_t *output_bytes) {
+xaios_status_t xtop_handle(const char *args, char *output,
+                           uint64_t output_capacity,
+                           uint64_t *output_bytes) {
   static uint64_t before_runtime[XAIOS_XTOP_MAX_PROCESSES + 1U];
   static xaios_control_runtime_process_record_user_t
       process_records[XAIOS_XTOP_MAX_PROCESSES];
@@ -2138,71 +2103,71 @@ static xaios_status_t handle_xtop(const char *args, char *output,
   xtop_sort_key_t sort_key = XTOP_SORT_CPU;
 
   filter[0] = '\0';
-  while (token_next(args, &index, option, sizeof(option)) == XAIOS_OK) {
-    if (string_equal(option, "--all")) show_all = 1;
-    else if (string_equal(option, "--active")) show_all = 0;
-    else if (string_equal(option, "--no-cpus")) show_cpus = 0;
-    else if (string_equal(option, "--color")) color_output = 1;
-    else if (string_equal(option, "--plain")) color_output = 0;
-    else if (string_equal(option, "--interactive")) {
+  while (xtop_token_next(args, &index, option, sizeof(option)) == XAIOS_OK) {
+    if (xtop_string_equal(option, "--all")) show_all = 1;
+    else if (xtop_string_equal(option, "--active")) show_all = 0;
+    else if (xtop_string_equal(option, "--no-cpus")) show_cpus = 0;
+    else if (xtop_string_equal(option, "--color")) color_output = 1;
+    else if (xtop_string_equal(option, "--plain")) color_output = 0;
+    else if (xtop_string_equal(option, "--interactive")) {
       interactive = 1;
       color_output = 1;
-    } else if (string_equal(option, "--reverse")) reverse = 1;
-    else if (string_equal(option, "--tree")) sort_key = XTOP_SORT_PARENT;
-    else if (string_equal(option, "--sort")) {
+    } else if (xtop_string_equal(option, "--reverse")) reverse = 1;
+    else if (xtop_string_equal(option, "--tree")) sort_key = XTOP_SORT_PARENT;
+    else if (xtop_string_equal(option, "--sort")) {
       if (xtop_parse_sort_option(args, &index, &sort_key) != XAIOS_OK)
         return command_fail(output, output_capacity, output_bytes,
                             "xtop: invalid --sort key");
-    } else if (string_equal(option, "--filter")) {
-      if (token_next(args, &index, filter, sizeof(filter)) != XAIOS_OK)
+    } else if (xtop_string_equal(option, "--filter")) {
+      if (xtop_token_next(args, &index, filter, sizeof(filter)) != XAIOS_OK)
         return command_fail(output, output_capacity, output_bytes,
                             "xtop: invalid --filter");
-    } else if (string_equal(option, "--process-start")) {
+    } else if (xtop_string_equal(option, "--process-start")) {
       if (xtop_parse_u32_option(args, &index, &process_start) != XAIOS_OK)
         return command_fail(output, output_capacity, output_bytes,
                             "xtop: invalid --process-start");
-    } else if (string_equal(option, "--selected")) {
+    } else if (xtop_string_equal(option, "--selected")) {
       if (xtop_parse_u32_option(args, &index, &selected) != XAIOS_OK)
         return command_fail(output, output_capacity, output_bytes,
                             "xtop: invalid --selected");
-    } else if (string_equal(option, "--serve-frame")) {
+    } else if (xtop_string_equal(option, "--serve-frame")) {
       serve_frame = 1;
-    } else if (string_equal(option, "--layout")) {
+    } else if (xtop_string_equal(option, "--layout")) {
       if (xtop_parse_u32_option(args, &index, &layout) != XAIOS_OK ||
           layout == 0U || layout > XTOP_LAYOUT_COUNT)
         return command_fail(output, output_capacity, output_bytes,
                             "xtop: --layout must be 1..3");
-    } else if (string_equal(option, "--refresh-ms")) {
+    } else if (xtop_string_equal(option, "--refresh-ms")) {
       if (xtop_parse_u32_option(args, &index, &refresh_ms) != XAIOS_OK ||
           refresh_ms > 60000U)
         return command_fail(output, output_capacity, output_bytes,
                             "xtop: --refresh-ms must be 0..60000");
-    } else if (string_equal(option, "--columns")) {
+    } else if (xtop_string_equal(option, "--columns")) {
       if (xtop_parse_u32_option(args, &index, &terminal_columns) != XAIOS_OK ||
           terminal_columns < 40U || terminal_columns > 240U)
         return command_fail(output, output_capacity, output_bytes,
                             "xtop: --columns must be 40..240");
-    } else if (string_equal(option, "--rows")) {
+    } else if (xtop_string_equal(option, "--rows")) {
       if (xtop_parse_u32_option(args, &index, &terminal_rows) != XAIOS_OK ||
           terminal_rows < 12U || terminal_rows > 100U)
         return command_fail(output, output_capacity, output_bytes,
                             "xtop: --rows must be 12..100");
-    } else if (string_equal(option, "--cpu-start")) {
+    } else if (xtop_string_equal(option, "--cpu-start")) {
       if (xtop_parse_u32_option(args, &index, &cpu_start) != XAIOS_OK)
         return command_fail(output, output_capacity, output_bytes,
                             "xtop: invalid --cpu-start");
-    } else if (string_equal(option, "--cpu-count")) {
+    } else if (xtop_string_equal(option, "--cpu-count")) {
       if (xtop_parse_u32_option(args, &index, &cpu_requested) != XAIOS_OK ||
           cpu_requested == 0U)
         return command_fail(output, output_capacity, output_bytes,
                             "xtop: invalid --cpu-count");
-    } else if (string_equal(option, "--sample-ms")) {
+    } else if (xtop_string_equal(option, "--sample-ms")) {
       if (xtop_parse_u32_option(args, &index, &sample_ms) != XAIOS_OK ||
           sample_ms == 0U || sample_ms > 1000U)
         return command_fail(output, output_capacity, output_bytes,
                             "xtop: --sample-ms must be 1..1000");
-    } else if (string_equal(option, "--help")) {
-      output_append(output, output_capacity, output_bytes,
+    } else if (xtop_string_equal(option, "--help")) {
+      xtop_output_append(output, output_capacity, output_bytes,
           "xtop [--active|--all] [--sample-ms 1..1000] [--cpu-start N] "
           "[--cpu-count N] [--no-cpus] [--color|--plain] "
           "[--columns 40..240] [--rows 12..100] "
@@ -2344,7 +2309,7 @@ static xaios_status_t handle_xtop(const char *args, char *output,
        frame goes to the caller's buffer as text. */
     xtop_canvas_t canvas;
     if (serve_frame != 0) canvas_cells_init(&canvas, &g_screen);
-    else canvas_text_init(&canvas, output, output_capacity, output_bytes);
+    else xtop_canvas_text_init(&canvas, output, output_capacity, output_bytes);
     (void)xtop_render_color(
         &canvas, terminal_columns, terminal_rows,
         cpu_start, g_cpu_record_count, cpu_total, before_cpu_values, after_ns,
@@ -2355,25 +2320,25 @@ static xaios_status_t handle_xtop(const char *args, char *output,
     return XAIOS_OK;
   }
 
-  output_append(output, output_capacity, output_bytes, "XAIOS xtop sample_ms=");
-  output_append_u64(output, output_capacity, output_bytes, sample_ms);
-  output_append(output, output_capacity, output_bytes, " cpus=");
-  output_append_u64(output, output_capacity, output_bytes, cpu_total);
-  output_append(output, output_capacity, output_bytes, " tasks_active=");
-  output_append_u64(output, output_capacity, output_bytes,
+  xtop_output_append(output, output_capacity, output_bytes, "XAIOS xtop sample_ms=");
+  xtop_output_append_u64(output, output_capacity, output_bytes, sample_ms);
+  xtop_output_append(output, output_capacity, output_bytes, " cpus=");
+  xtop_output_append_u64(output, output_capacity, output_bytes, cpu_total);
+  xtop_output_append(output, output_capacity, output_bytes, " tasks_active=");
+  xtop_output_append_u64(output, output_capacity, output_bytes,
                     after_meta.process_active);
-  output_append(output, output_capacity, output_bytes, " failed=");
-  output_append_u64(output, output_capacity, output_bytes,
+  xtop_output_append(output, output_capacity, output_bytes, " failed=");
+  xtop_output_append_u64(output, output_capacity, output_bytes,
                     after_meta.process_failed);
-  output_append(output, output_capacity, output_bytes, " sort=");
-  output_append(output, output_capacity, output_bytes, xtop_sort_name(sort_key));
-  output_append(output, output_capacity, output_bytes, " reverse=");
-  output_append_u64(output, output_capacity, output_bytes, reverse != 0);
+  xtop_output_append(output, output_capacity, output_bytes, " sort=");
+  xtop_output_append(output, output_capacity, output_bytes, xtop_sort_name(sort_key));
+  xtop_output_append(output, output_capacity, output_bytes, " reverse=");
+  xtop_output_append_u64(output, output_capacity, output_bytes, reverse != 0);
   if (filter[0] != '\0') {
-    output_append(output, output_capacity, output_bytes, " filter=");
-    output_append(output, output_capacity, output_bytes, filter);
+    xtop_output_append(output, output_capacity, output_bytes, " filter=");
+    xtop_output_append(output, output_capacity, output_bytes, filter);
   }
-  output_append(output, output_capacity, output_bytes, "\nCPU all=");
+  xtop_output_append(output, output_capacity, output_bytes, "\nCPU all=");
   uint64_t busy_delta =
       after_meta.cpu_busy_total_ns >= before_meta.cpu_busy_total_ns
           ? after_meta.cpu_busy_total_ns - before_meta.cpu_busy_total_ns
@@ -2388,269 +2353,113 @@ static xaios_status_t handle_xtop(const char *args, char *output,
       after_meta.managed_pages >= after_meta.free_pages
           ? after_meta.managed_pages - after_meta.free_pages
           : 0U;
-  output_append(output, output_capacity, output_bytes, " MEM managed=");
+  xtop_output_append(output, output_capacity, output_bytes, " MEM managed=");
   xtop_append_percent(output, output_capacity, output_bytes,
                       xtop_capacity_tenths(used_pages,
                                            after_meta.managed_pages));
-  output_append(output, output_capacity, output_bytes, " pages=");
-  output_append_u64(output, output_capacity, output_bytes, used_pages);
-  output_append(output, output_capacity, output_bytes, "/");
-  output_append_u64(output, output_capacity, output_bytes,
+  xtop_output_append(output, output_capacity, output_bytes, " pages=");
+  xtop_output_append_u64(output, output_capacity, output_bytes, used_pages);
+  xtop_output_append(output, output_capacity, output_bytes, "/");
+  xtop_output_append_u64(output, output_capacity, output_bytes,
                     after_meta.managed_pages);
-  output_append(output, output_capacity, output_bytes, " physical_pages=");
-  output_append_u64(output, output_capacity, output_bytes,
+  xtop_output_append(output, output_capacity, output_bytes, " physical_pages=");
+  xtop_output_append_u64(output, output_capacity, output_bytes,
                     after_meta.physical_pages);
-  output_append(output, output_capacity, output_bytes, "\n");
+  xtop_output_append(output, output_capacity, output_bytes, "\n");
 
   if (show_cpus != 0) {
-    output_append(output, output_capacity, output_bytes,
+    xtop_output_append(output, output_capacity, output_bytes,
                   "CPU CPU% BUSY_MS IDLE_MS ACTIVE ROLE\n");
     for (uint32_t i = 0U; i < g_cpu_record_count; ++i) {
       const xaios_control_runtime_cpu_record_user_t *cpu = &g_cpu_records[i];
       uint64_t delta = cpu->busy_ns >= before_cpu_values[i]
                            ? cpu->busy_ns - before_cpu_values[i]
                            : 0U;
-      output_append_u64(output, output_capacity, output_bytes, cpu->cpu_id);
-      output_append(output, output_capacity, output_bytes, " ");
+      xtop_output_append_u64(output, output_capacity, output_bytes, cpu->cpu_id);
+      xtop_output_append(output, output_capacity, output_bytes, " ");
       xtop_append_percent(output, output_capacity, output_bytes,
                           xtop_capacity_tenths(delta, elapsed_ns));
-      output_append(output, output_capacity, output_bytes, " ");
-      output_append_u64(output, output_capacity, output_bytes,
+      xtop_output_append(output, output_capacity, output_bytes, " ");
+      xtop_output_append_u64(output, output_capacity, output_bytes,
                         cpu->busy_ns / UINT64_C(1000000));
-      output_append(output, output_capacity, output_bytes, " ");
-      output_append_u64(output, output_capacity, output_bytes,
+      xtop_output_append(output, output_capacity, output_bytes, " ");
+      xtop_output_append_u64(output, output_capacity, output_bytes,
                         (cpu->elapsed_ns >= cpu->busy_ns
                              ? cpu->elapsed_ns - cpu->busy_ns
                              : 0U) /
                             UINT64_C(1000000));
-      output_append(output, output_capacity, output_bytes, " ");
-      output_append_u64(output, output_capacity, output_bytes, cpu->active_pid);
-      output_append(output, output_capacity, output_bytes, " ");
-      output_append(output, output_capacity, output_bytes,
+      xtop_output_append(output, output_capacity, output_bytes, " ");
+      xtop_output_append_u64(output, output_capacity, output_bytes, cpu->active_pid);
+      xtop_output_append(output, output_capacity, output_bytes, " ");
+      xtop_output_append(output, output_capacity, output_bytes,
                     xtop_cpu_role_name(cpu->cpu_id));
-      output_append(output, output_capacity, output_bytes, "\n");
+      xtop_output_append(output, output_capacity, output_bytes, "\n");
     }
-    output_append(output, output_capacity, output_bytes, "cpu_shown=");
-    output_append_u64(output, output_capacity, output_bytes,
+    xtop_output_append(output, output_capacity, output_bytes, "cpu_shown=");
+    xtop_output_append_u64(output, output_capacity, output_bytes,
                       g_cpu_record_count);
-    output_append(output, output_capacity, output_bytes, " cpu_total=");
-    output_append_u64(output, output_capacity, output_bytes, cpu_total);
+    xtop_output_append(output, output_capacity, output_bytes, " cpu_total=");
+    xtop_output_append_u64(output, output_capacity, output_bytes, cpu_total);
     if (cpu_start + g_cpu_record_count < cpu_total) {
-      output_append(output, output_capacity, output_bytes, " next_cpu_start=");
-      output_append_u64(output, output_capacity, output_bytes,
+      xtop_output_append(output, output_capacity, output_bytes, " next_cpu_start=");
+      xtop_output_append_u64(output, output_capacity, output_bytes,
                         cpu_start + g_cpu_record_count);
     }
-    output_append(output, output_capacity, output_bytes, "\n");
+    xtop_output_append(output, output_capacity, output_bytes, "\n");
   }
 
-  output_append(output, output_capacity, output_bytes,
+  xtop_output_append(output, output_capacity, output_bytes,
                 "PID PPID S CPU% MEM% TIME_MS RES_KIB CPU SYSCALLS COMMAND\n");
   for (uint32_t i = process_start; i < process_count; ++i) {
     if (*output_bytes + 160U >= output_capacity) break;
     const xtop_process_row_t *row = &rows[i];
-    output_append_u64(output, output_capacity, output_bytes, row->pid);
-    output_append(output, output_capacity, output_bytes, " ");
-    output_append_u64(output, output_capacity, output_bytes, row->parent_pid);
-    output_append(output, output_capacity, output_bytes, " ");
-    output_append(output, output_capacity, output_bytes,
+    xtop_output_append_u64(output, output_capacity, output_bytes, row->pid);
+    xtop_output_append(output, output_capacity, output_bytes, " ");
+    xtop_output_append_u64(output, output_capacity, output_bytes, row->parent_pid);
+    xtop_output_append(output, output_capacity, output_bytes, " ");
+    xtop_output_append(output, output_capacity, output_bytes,
                   xtop_state_name(row->state));
-    output_append(output, output_capacity, output_bytes, " ");
+    xtop_output_append(output, output_capacity, output_bytes, " ");
     xtop_append_percent(output, output_capacity, output_bytes, row->cpu_tenths);
-    output_append(output, output_capacity, output_bytes, " ");
+    xtop_output_append(output, output_capacity, output_bytes, " ");
     xtop_append_percent(output, output_capacity, output_bytes,
                         row->memory_tenths);
-    output_append(output, output_capacity, output_bytes, " ");
-    output_append_u64(output, output_capacity, output_bytes,
+    xtop_output_append(output, output_capacity, output_bytes, " ");
+    xtop_output_append_u64(output, output_capacity, output_bytes,
                       row->runtime_ns / UINT64_C(1000000));
-    output_append(output, output_capacity, output_bytes, " ");
-    output_append_u64(output, output_capacity, output_bytes,
+    xtop_output_append(output, output_capacity, output_bytes, " ");
+    xtop_output_append_u64(output, output_capacity, output_bytes,
                       row->resident_pages * 4U);
-    output_append(output, output_capacity, output_bytes, " ");
+    xtop_output_append(output, output_capacity, output_bytes, " ");
     if (row->cpu_id == UINT32_MAX)
-      output_append(output, output_capacity, output_bytes, "-");
+      xtop_output_append(output, output_capacity, output_bytes, "-");
     else
-      output_append_u64(output, output_capacity, output_bytes, row->cpu_id);
-    output_append(output, output_capacity, output_bytes, " ");
-    output_append_u64(output, output_capacity, output_bytes,
+      xtop_output_append_u64(output, output_capacity, output_bytes, row->cpu_id);
+    xtop_output_append(output, output_capacity, output_bytes, " ");
+    xtop_output_append_u64(output, output_capacity, output_bytes,
                       row->syscall_count);
-    output_append(output, output_capacity, output_bytes, " ");
-    output_append(output, output_capacity, output_bytes, row->name);
-    output_append(output, output_capacity, output_bytes, "\n");
+    xtop_output_append(output, output_capacity, output_bytes, " ");
+    xtop_output_append(output, output_capacity, output_bytes, row->name);
+    xtop_output_append(output, output_capacity, output_bytes, "\n");
     ++process_shown;
   }
-  output_append(output, output_capacity, output_bytes, "process_shown=");
-  output_append_u64(output, output_capacity, output_bytes, process_shown);
-  output_append(output, output_capacity, output_bytes, " process_total=");
-  output_append_u64(output, output_capacity, output_bytes, process_count);
-  output_append(output, output_capacity, output_bytes, " process_start=");
-  output_append_u64(output, output_capacity, output_bytes, process_start);
+  xtop_output_append(output, output_capacity, output_bytes, "process_shown=");
+  xtop_output_append_u64(output, output_capacity, output_bytes, process_shown);
+  xtop_output_append(output, output_capacity, output_bytes, " process_total=");
+  xtop_output_append_u64(output, output_capacity, output_bytes, process_count);
+  xtop_output_append(output, output_capacity, output_bytes, " process_start=");
+  xtop_output_append_u64(output, output_capacity, output_bytes, process_start);
   if (process_start + process_shown < process_count)
-    output_append(output, output_capacity, output_bytes, " truncated=1");
-  output_append(output, output_capacity, output_bytes, "\n");
+    xtop_output_append(output, output_capacity, output_bytes, " truncated=1");
+  xtop_output_append(output, output_capacity, output_bytes, "\n");
   return XAIOS_OK;
-}
-
-/* ---- A serving session: one process, frames for as long as it lasts.
- *
- * sshd used to launch this program once per frame and keep the session's
- * state -- sort key, filter, selection -- on its own side. That put a
- * process launch under every frame, which caps a monitor at a few frames a
- * second whatever the terminal could show. Here the process is started once
- * as a child of the session, keeps its own state, reads keys from the child
- * channel, and writes frames into it at up to sixty a second; the kernel
- * snapshots it draws from are cheap, and the load figures come from the
- * retained-sample ring above rather than from the previous frame. */
-static u64 g_child_channel_id;
-static uint8_t g_ipc_write[SSH_CHILD_IPC_HEADER_SIZE + SSH_CHILD_IPC_PAYLOAD_MAX];
-static uint8_t g_ipc_read[SSH_CHILD_IPC_HEADER_SIZE + SSH_CHILD_IPC_PAYLOAD_MAX];
-static uint32_t g_ipc_read_used;
-static char g_serve_frame[XAIOS_XTOP_OUTPUT_BYTES];
-static char g_serve_args[512];
-
-typedef struct xtop_serve_state {
-  uint32_t columns, rows, refresh_ms, sample_ms;
-  uint32_t cpu_start, cpu_count, process_start, selected, layout;
-  uint32_t filter_length;
-  xtop_sort_key_t sort_key;
-  int reverse, show_all, show_cpus, help, filter_mode;
-  char filter[32];
-} xtop_serve_state_t;
-
-static void serve_pause_ms(uint32_t ms) {
-  if (ms == 0U) ms = 1U;
-  (void)xaios_sleep_ns((u64)ms * UINT64_C(1000000));
-}
-
-/* Written whole, however many channel frames that takes; a full channel is
-   waited out rather than treated as an error, because sshd drains it as
-   fast as it can and a frame is worth a millisecond. */
-static const char k_invalid_sort[] = "xtop: invalid --sort key\r\n";
-
-static int serve_write(const void *data, uint64_t length) {
-  const uint8_t *bytes = (const uint8_t *)data;
-  uint64_t offset = 0U;
-  while (offset < length) {
-    uint32_t chunk = (uint32_t)(length - offset);
-    if (chunk > SSH_CHILD_IPC_PAYLOAD_MAX) chunk = SSH_CHILD_IPC_PAYLOAD_MAX;
-    ssh_child_ipc_header(g_ipc_write, SSH_CHILD_IPC_OUTPUT, chunk);
-    xaios_memcpy(g_ipc_write + SSH_CHILD_IPC_HEADER_SIZE, bytes + offset, chunk);
-    /* A full channel is flow control, not failure: the link drains it as
-       fast as it can, and on a slow one that is slower than frames are
-       made. So this waits, backing off to twenty milliseconds, for as long
-       as the channel is alive -- giving up after a fixed count exited the
-       monitor on the slower machines with a dropped connection to show for
-       it. Only a channel that is no longer running ends the wait. */
-    uint32_t pause_ms = 1U;
-    uint32_t attempts = 0U;
-    (void)attempts;
-    for (;;) {
-      int rc = xaios_remote_login_child_write(
-          g_child_channel_id, g_ipc_write, SSH_CHILD_IPC_HEADER_SIZE + chunk);
-      if (rc == 0) break;
-      /* Anything but a full ring means the channel is gone. */
-      if (rc != XTOP_ERR_BUSY) return -1;
-      ++attempts;
-      serve_pause_ms(pause_ms);
-      if (pause_ms < 20U) pause_ms *= 2U;
-    }
-    offset += chunk;
-  }
-  return 0;
-}
-
-static int serve_receive(void) {
-  if (g_ipc_read_used == sizeof(g_ipc_read)) return -1;
-  u64 size = 0U;
-  if (xaios_remote_login_child_read(
-          g_child_channel_id, g_ipc_read + g_ipc_read_used,
-          sizeof(g_ipc_read) - g_ipc_read_used, &size) != 0 ||
-      size > sizeof(g_ipc_read) - g_ipc_read_used)
-    return -1;
-  g_ipc_read_used += (uint32_t)size;
-  return 0;
-}
-
-static int serve_next(uint32_t *type, uint8_t *output, uint32_t capacity,
-                      uint32_t *length) {
-  if (g_ipc_read_used < SSH_CHILD_IPC_HEADER_SIZE) return 1;
-  if (ssh_child_ipc_read_u32(g_ipc_read) != SSH_CHILD_IPC_MAGIC) return -1;
-  uint32_t payload_length = ssh_child_ipc_read_u32(g_ipc_read + 8U);
-  if (payload_length > SSH_CHILD_IPC_PAYLOAD_MAX || payload_length > capacity)
-    return -1;
-  uint32_t frame_length = SSH_CHILD_IPC_HEADER_SIZE + payload_length;
-  if (g_ipc_read_used < frame_length) return 1;
-  *type = ssh_child_ipc_read_u32(g_ipc_read + 4U);
-  *length = payload_length;
-  if (payload_length != 0U)
-    xaios_memcpy(output, g_ipc_read + SSH_CHILD_IPC_HEADER_SIZE, payload_length);
-  uint32_t remaining = g_ipc_read_used - frame_length;
-  for (uint32_t i = 0U; i < remaining; ++i)
-    g_ipc_read[i] = g_ipc_read[frame_length + i];
-  g_ipc_read_used = remaining;
-  return 0;
-}
-
-static void serve_append(char *buffer, uint64_t capacity, uint64_t *used,
-                         const char *text) {
-  output_append(buffer, capacity, used, text);
-}
-
-static void serve_append_u32(char *buffer, uint64_t capacity, uint64_t *used,
-                             uint32_t value) {
-  output_append_u64(buffer, capacity, used, value);
-}
-
-/* The options handle_xtop reads, from the state this session keeps. */
-static void serve_build_args(const xtop_serve_state_t *st) {
-  uint64_t used = 0U;
-  g_serve_args[0] = '\0';
-  serve_append(g_serve_args, sizeof(g_serve_args), &used,
-               "--serve-frame --color --interactive --sample-ms ");
-  serve_append_u32(g_serve_args, sizeof(g_serve_args), &used, st->sample_ms);
-  serve_append(g_serve_args, sizeof(g_serve_args), &used, " --refresh-ms ");
-  serve_append_u32(g_serve_args, sizeof(g_serve_args), &used, st->sample_ms);
-  serve_append(g_serve_args, sizeof(g_serve_args), &used, " --columns ");
-  serve_append_u32(g_serve_args, sizeof(g_serve_args), &used, st->columns);
-  serve_append(g_serve_args, sizeof(g_serve_args), &used, " --rows ");
-  serve_append_u32(g_serve_args, sizeof(g_serve_args), &used, st->rows);
-  serve_append(g_serve_args, sizeof(g_serve_args), &used, " --layout ");
-  serve_append_u32(g_serve_args, sizeof(g_serve_args), &used, st->layout);
-  serve_append(g_serve_args, sizeof(g_serve_args), &used, " --sort ");
-  serve_append(g_serve_args, sizeof(g_serve_args), &used, xtop_sort_name(st->sort_key));
-  serve_append(g_serve_args, sizeof(g_serve_args), &used, " --cpu-start ");
-  serve_append_u32(g_serve_args, sizeof(g_serve_args), &used, st->cpu_start);
-  if (st->cpu_count != UINT32_MAX) {
-    serve_append(g_serve_args, sizeof(g_serve_args), &used, " --cpu-count ");
-    serve_append_u32(g_serve_args, sizeof(g_serve_args), &used, st->cpu_count);
-  }
-  serve_append(g_serve_args, sizeof(g_serve_args), &used, " --process-start ");
-  serve_append_u32(g_serve_args, sizeof(g_serve_args), &used, st->process_start);
-  serve_append(g_serve_args, sizeof(g_serve_args), &used, " --selected ");
-  serve_append_u32(g_serve_args, sizeof(g_serve_args), &used, st->selected);
-  serve_append(g_serve_args, sizeof(g_serve_args), &used,
-               st->show_all != 0 ? " --all" : " --active");
-  if (st->show_cpus == 0) serve_append(g_serve_args, sizeof(g_serve_args), &used, " --no-cpus");
-  if (st->reverse != 0) serve_append(g_serve_args, sizeof(g_serve_args), &used, " --reverse");
-  if (st->filter[0] != '\0') {
-    serve_append(g_serve_args, sizeof(g_serve_args), &used, " --filter ");
-    serve_append(g_serve_args, sizeof(g_serve_args), &used, st->filter);
-  }
-}
-
-/* The process rows a frame of this size shows: the same arithmetic the
-   renderer does, so paging moves by exactly one screen. */
-static uint32_t serve_process_page(const xtop_serve_state_t *st) {
-  uint32_t gauge_rows = st->rows >= 30U ? 4U : 2U;
-  uint32_t detail_rows = st->rows >= 20U ? 6U : 0U;
-  uint32_t used = 1U + gauge_rows + 2U + detail_rows + 3U + 1U;
-  return st->rows > used ? st->rows - used : 1U;
 }
 
 /* Every few frames, the figures the frame carries besides the process
    table; rates need a previous sample, so the first frame has none. */
-static void serve_update_extras(uint64_t now_ns, uint64_t *last_ns,
-                                xaios_control_metrics_payload_user_t *last,
-                                int *have_last, uint32_t window_ms) {
+void xtop_serve_update_extras(uint64_t now_ns, uint64_t *last_ns,
+                              xaios_control_metrics_payload_user_t *last,
+                              int *have_last, uint32_t window_ms) {
   if (g_extras.have_hardware == 0) {
     g_extras.have_hardware =
         control_simple_query(XAIOS_CONTROL_OP_HARDWARE,
@@ -2684,359 +2493,10 @@ static void serve_update_extras(uint64_t now_ns, uint64_t *last_ns,
   *have_last = 1;
 }
 
-static void serve_push_load_history(uint16_t cpu_tenths, uint16_t mem_tenths) {
+void xtop_serve_push_load_history(uint16_t cpu_tenths, uint16_t mem_tenths) {
   history_push16(g_extras.cpu_history, cpu_tenths);
   history_push16(g_extras.mem_history, mem_tenths);
   if (g_extras.history_count < XTOP_HISTORY) ++g_extras.history_count;
-}
-
-/* ---- Sending only what changed.
- *
- * A frame is rendered whole into a buffer, as before, and then read back
- * into a grid of cells -- glyph and attributes -- and compared with the
- * grid the terminal is known to show. What goes down the channel is the
- * cells that differ, each run positioned with a cursor move and preceded by
- * its attributes only when they change. A frame that changed nothing sends
- * nothing; a tick of the clock sends the clock. Sixty frames a second is
- * then a promise about latency, not a stream of screens: sshd encrypts a
- * few hundred bytes a frame instead of twenty-four kilobytes, and the
- * console draws a few cells instead of six thousand. */
-static char g_diff[XAIOS_XTOP_OUTPUT_BYTES];
-
-static int serve_render(xtop_serve_state_t *st) {
-  uint64_t frame_bytes = 0U;
-  g_serve_frame[0] = '\0';
-  serve_build_args(st);
-  if (handle_xtop(g_serve_args, g_serve_frame, sizeof(g_serve_frame),
-                  &frame_bytes) != XAIOS_OK) {
-    return -1;
-  }
-  /* The frame was drawn into the screen's cells; present what changed. A
-     present that did not fit the buffer is finished by the next. */
-  (void)frame_bytes;
-  for (;;) {
-    uint64_t diff_bytes = xaios_screen_present(&g_screen, g_diff, sizeof(g_diff));
-    if (diff_bytes == 0U) return 0;
-    if (serve_write(g_diff, diff_bytes) != 0) return -1;
-    if (g_screen.incomplete == 0U) return 0;
-  }
-}
-
-static int serve_send_help(const xtop_serve_state_t *st) {
-  static const char *const lines[] = {
-      "Up/Down, j/k   select process        PgUp/PgDn  move one page",
-      "P/M/T/N/S/C    sort CPU/memory/time/PID/syscalls/command",
-      "F6             cycle sort key        I          reverse order",
-      "F3 or /        enter name filter     F4 or x    clear filter",
-      "F5 or t        process-tree view     L          next layout",
-      "a              active/all tasks      1          toggle CPU meters",
-      "[ and ]        previous/next CPU page",
-      "- and +        slower/faster refresh (16..5000 ms; 60 frames/s at 16)",
-      "r              refresh now           F10/q/Ctrl-C  quit",
-      "",
-      "Layouts: 1 gauges and cores, 2 platform and AI runtime, 3 history.",
-      "XAIOS exposes read-only process telemetry: there is no kill or nice,",
-      "because no safe process-control ABI exists yet.",
-      "",
-      "Press F1, h, Escape or q to return.",
-  };
-  uint64_t used = 0U;
-  char *out = g_serve_frame;
-  uint32_t width = st->columns;
-  xtop_canvas_t cv;
-  canvas_text_init(&cv, out, sizeof(g_serve_frame), &used);
-  canvas_begin(&cv, 1);
-  xtop_draw_rule(&cv, XTOP_BOX_TL, XTOP_BOX_TR, "XAIOS xtop help", 0, width);
-  canvas_newline(&cv);
-  uint32_t body = st->rows > 3U ? st->rows - 3U : 1U;
-  for (uint32_t row = 0U; row < body; ++row) {
-    xtop_draw_edge(&cv);
-    const char *text = row < sizeof(lines) / sizeof(lines[0]) ? lines[row] : "";
-    canvas_text(&cv, " ");
-    xtop_draw_padded(&cv, XTOP_STYLE_FG, text, width >= 3U ? width - 3U : 0U);
-    xtop_draw_edge(&cv);
-    canvas_newline(&cv);
-  }
-  xtop_draw_rule(&cv, XTOP_BOX_BL, XTOP_BOX_BR, 0, 0, width);
-  xaios_screen_invalidate(&g_screen);
-  return serve_write(out, used);
-}
-
-static int serve_send_filter_prompt(const xtop_serve_state_t *st) {
-  uint64_t used = 0U;
-  char *out = g_serve_frame;
-  char line[96];
-  uint64_t line_used = 0U;
-  uint32_t width = st->columns;
-  xtop_canvas_t cv;
-  canvas_text_init(&cv, out, sizeof(g_serve_frame), &used);
-  canvas_begin(&cv, 0);
-  xtop_draw_rule(&cv, XTOP_BOX_TL, XTOP_BOX_TR, "Process name filter", 0, width);
-  canvas_newline(&cv);
-  line[0] = '\0';
-  output_append(line, sizeof(line), &line_used, " Filter: ");
-  output_append(line, sizeof(line), &line_used, st->filter);
-  xtop_draw_edge(&cv);
-  xtop_draw_padded(&cv, XTOP_STYLE_TITLE, line, width >= 2U ? width - 2U : 0U);
-  xtop_draw_edge(&cv);
-  canvas_newline(&cv);
-  xtop_draw_edge(&cv);
-  xtop_draw_padded(&cv, XTOP_STYLE_FG,
-                   " Type one token. Enter applies, Backspace edits, Escape cancels.",
-                   width >= 2U ? width - 2U : 0U);
-  xtop_draw_edge(&cv);
-  canvas_newline(&cv);
-  xtop_draw_rule(&cv, XTOP_BOX_BL, XTOP_BOX_BR, 0, 0, width);
-  xaios_screen_invalidate(&g_screen);
-  return serve_write(out, used);
-}
-
-/* One key, already stripped of its escape prefix by the caller. Returns 1
-   when the frame should be redrawn, 2 to quit, 0 otherwise. */
-static int serve_key(xtop_serve_state_t *st, uint8_t key, int *screen_changed) {
-  if (st->filter_mode != 0) {
-    if (key == 27U) {
-      st->filter_mode = 0;
-      return 1;
-    }
-    if (key == '\r' || key == '\n') {
-      st->filter_mode = 0;
-      st->process_start = 0U;
-      st->selected = 0U;
-      return 1;
-    }
-    if (key == 8U || key == 127U) {
-      if (st->filter_length != 0U) st->filter[--st->filter_length] = '\0';
-      *screen_changed = 1;
-      return 0;
-    }
-    if (st->filter_length + 1U < sizeof(st->filter) &&
-        ((key >= 'a' && key <= 'z') || (key >= 'A' && key <= 'Z') ||
-         (key >= '0' && key <= '9') || key == '_' || key == '-' ||
-         key == '.' || key == '/')) {
-      st->filter[st->filter_length++] = (char)key;
-      st->filter[st->filter_length] = '\0';
-      *screen_changed = 1;
-    }
-    return 0;
-  }
-  if (st->help != 0) {
-    if (key == 'h' || key == 'q' || key == 27U) {
-      st->help = 0;
-      return 1;
-    }
-    return 0;
-  }
-  if (key == 'q' || key == 3U) return 2;
-  switch (key) {
-  case 'h': st->help = 1; *screen_changed = 1; return 0;
-  case '/': st->filter_mode = 1; st->filter_length = 0U; st->filter[0] = '\0';
-            *screen_changed = 1; return 0;
-  case 'x': st->filter_length = 0U; st->filter[0] = '\0'; st->process_start = 0U;
-            st->selected = 0U; return 1;
-  case 'j': ++st->selected;
-            if (st->selected >= st->process_start + serve_process_page(st)) ++st->process_start;
-            return 1;
-  case 'k': if (st->selected != 0U) --st->selected;
-            if (st->selected < st->process_start) st->process_start = st->selected;
-            return 1;
-  case 'D': { uint32_t page = serve_process_page(st); st->selected += page; st->process_start += page; return 1; }
-  case 'U': { uint32_t page = serve_process_page(st);
-              st->selected = st->selected > page ? st->selected - page : 0U;
-              st->process_start = st->process_start > page ? st->process_start - page : 0U; return 1; }
-  case 'P': st->sort_key = XTOP_SORT_CPU; return 1;
-  case 'M': st->sort_key = XTOP_SORT_MEMORY; return 1;
-  case 'T': st->sort_key = XTOP_SORT_TIME; return 1;
-  case 'N': st->sort_key = XTOP_SORT_PID; return 1;
-  case 'S': st->sort_key = XTOP_SORT_SYSCALLS; return 1;
-  case 'C': st->sort_key = XTOP_SORT_COMMAND; return 1;
-  case 'F': st->sort_key = (xtop_sort_key_t)(((uint32_t)st->sort_key + 1U) % 7U); return 1;
-  case 'I': st->reverse ^= 1; return 1;
-  case 't': st->sort_key = st->sort_key == XTOP_SORT_PARENT ? XTOP_SORT_CPU : XTOP_SORT_PARENT; return 1;
-  case 'a': st->show_all ^= 1; return 1;
-  case '1': st->show_cpus ^= 1; return 1;
-  case 'l': case 'L': st->layout = st->layout % XTOP_LAYOUT_COUNT + 1U; return 1;
-  case '[': { uint32_t page = st->cpu_count == UINT32_MAX ? 8U : st->cpu_count;
-              st->cpu_start = st->cpu_start > page ? st->cpu_start - page : 0U; return 1; }
-  case ']': { uint32_t page = st->cpu_count == UINT32_MAX ? 8U : st->cpu_count;
-              if (UINT32_MAX - st->cpu_start >= page) st->cpu_start += page; return 1; }
-  case '+': case '=': if (st->sample_ms > 16U) { st->sample_ms /= 2U; if (st->sample_ms < 16U) st->sample_ms = 16U; } return 1;
-  case '-': if (st->sample_ms < 5000U) { st->sample_ms *= 2U; if (st->sample_ms > 5000U) st->sample_ms = 5000U; } return 1;
-  case 'r': return 1;
-  default: return 0;
-  }
-}
-
-/* Keys as the terminal sends them: bare bytes, or escape sequences for the
-   arrows, paging and function keys. A sequence split across two channel
-   frames is kept until the rest arrives. */
-static int serve_handle_input(xtop_serve_state_t *st, const uint8_t *data,
-                              uint32_t length, int *redraw, int *screen_changed) {
-  uint32_t offset = 0U;
-  while (offset < length) {
-    xaios_key_t decoded = XAIOS_KEY_NONE;
-    uint32_t code = 0U;
-    uint32_t consumed = xaios_screen_read_key(data + offset, length - offset,
-                                              &decoded, &code);
-    uint8_t key = 0U;
-    if (consumed == 0U) return 0; /* a sequence cut by the read: wait */
-    offset += consumed;
-    switch (decoded) {
-    case XAIOS_KEY_CHAR: key = code < 0x80U ? (uint8_t)code : 0U; break;
-    case XAIOS_KEY_ENTER: key = '\r'; break;
-    case XAIOS_KEY_BACKSPACE: key = 127U; break;
-    case XAIOS_KEY_ESCAPE: key = 27U; break;
-    case XAIOS_KEY_UP: key = 'k'; break;
-    case XAIOS_KEY_DOWN: key = 'j'; break;
-    case XAIOS_KEY_PAGE_UP: key = 'U'; break;
-    case XAIOS_KEY_PAGE_DOWN: key = 'D'; break;
-    case XAIOS_KEY_FUNCTION:
-      if (code == 1U) key = 'h';
-      else if (code == 3U) key = '/';
-      else if (code == 4U) key = 'x';
-      else if (code == 5U) key = 't';
-      else if (code == 6U) key = 'F';
-      else if (code == 10U) return 2;
-      break;
-    default: break;
-    }
-    if (key == 0U) continue;
-    int result = serve_key(st, key, screen_changed);
-    if (result == 2) return 2;
-    if (result == 1) *redraw = 1;
-  }
-  return 0;
-}
-
-static int xtop_serve(u64 channel_id, const char *command) {
-  static uint8_t input[SSH_CHILD_IPC_PAYLOAD_MAX];
-  xtop_serve_state_t st;
-  xaios_control_metrics_payload_user_t last_metrics;
-  uint64_t last_metrics_ns = 0U;
-  int have_last_metrics = 0;
-  uint64_t next_frame_ns = 0U;
-  uint64_t last_history_ns = 0U;
-  char option[24];
-  char sort[24];
-  uint64_t index = 0U;
-  g_child_channel_id = channel_id;
-  bytes_zero(&st, sizeof(st));
-  bytes_zero(&last_metrics, sizeof(last_metrics));
-  st.columns = 80U; st.rows = 24U; st.refresh_ms = 250U; st.sample_ms = 250U;
-  st.cpu_count = UINT32_MAX; st.layout = 1U; st.sort_key = XTOP_SORT_CPU;
-  st.show_all = 1; st.show_cpus = 1;
-  /* The command the session built: the same options a one-shot run takes,
-     read once into the state this session keeps. The first token is the
-     program's own name. */
-  (void)token_next(command, &index, option, sizeof(option));
-  while (token_next(command, &index, option, sizeof(option)) == XAIOS_OK) {
-    uint32_t value = 0U;
-    if (string_equal(option, "--columns")) { if (xtop_parse_u32_option(command, &index, &value) == XAIOS_OK && value >= 40U && value <= 240U) st.columns = value; }
-    else if (string_equal(option, "--rows")) { if (xtop_parse_u32_option(command, &index, &value) == XAIOS_OK && value >= 12U && value <= 100U) st.rows = value; }
-    else if (string_equal(option, "--refresh-ms")) { if (xtop_parse_u32_option(command, &index, &value) == XAIOS_OK && value >= 16U && value <= 5000U) { st.refresh_ms = value; st.sample_ms = value; } }
-    else if (string_equal(option, "--sample-ms")) { if (xtop_parse_u32_option(command, &index, &value) == XAIOS_OK && value >= 1U && value <= 1000U) st.sample_ms = value; }
-    else if (string_equal(option, "--layout")) { if (xtop_parse_u32_option(command, &index, &value) == XAIOS_OK && value >= 1U && value <= XTOP_LAYOUT_COUNT) st.layout = value; }
-    else if (string_equal(option, "--cpu-start")) { if (xtop_parse_u32_option(command, &index, &value) == XAIOS_OK) st.cpu_start = value; }
-    else if (string_equal(option, "--cpu-count")) { if (xtop_parse_u32_option(command, &index, &value) == XAIOS_OK && value != 0U) st.cpu_count = value; }
-    else if (string_equal(option, "--sort")) {
-      /* Refused, not quietly ignored.
-       *
-       * This was tolerant -- a key it did not recognise left the sort on CPU
-       * -- so `xtop --sort invalid` opened the monitor instead of saying
-       * anything, and the person who mistyped it watched a screen sorted by
-       * something they had not asked for. The one-shot path has always
-       * refused the same input with the same words; a session is not a
-       * reason to accept it. Refused here, before the alternate screen is
-       * entered, so there is nothing to hand back. */
-      xtop_sort_key_t key = XTOP_SORT_CPU;
-      uint64_t dummy = 0U;
-      char text[48];
-      uint64_t tu = 0U;
-      text[0] = '\0';
-      if (token_next(command, &index, sort, sizeof(sort)) != XAIOS_OK) {
-        (void)serve_write(k_invalid_sort, sizeof(k_invalid_sort) - 1U);
-        return 1;
-      }
-      output_append(text, sizeof(text), &tu, "--sort ");
-      output_append(text, sizeof(text), &tu, sort);
-      if (xtop_parse_sort_option(text, &dummy, &key) != XAIOS_OK) {
-        (void)serve_write(k_invalid_sort, sizeof(k_invalid_sort) - 1U);
-        return 1;
-      }
-      st.sort_key = key;
-    }
-    else if (string_equal(option, "--reverse")) st.reverse = 1;
-    else if (string_equal(option, "--tree")) st.sort_key = XTOP_SORT_PARENT;
-    else if (string_equal(option, "--active")) st.show_all = 0;
-    else if (string_equal(option, "--all")) st.show_all = 1;
-    else if (string_equal(option, "--no-cpus")) st.show_cpus = 0;
-    else if (string_equal(option, "--filter")) { if (token_next(command, &index, st.filter, sizeof(st.filter)) == XAIOS_OK) st.filter_length = (uint32_t)cstr_len(st.filter); }
-  }
-  g_arena_used = 0U;
-  xaios_screen_init(&g_screen, g_screen_next, g_screen_shown,
-                    XAIOS_SCREEN_MAX_CELLS, st.rows, st.columns);
-  g_screen.cursor_hidden = 1U;
-  static const char enter[] = "\033[?1049h\033[?25l";
-  if (serve_write(enter, sizeof(enter) - 1U) != 0) return 1;
-  for (;;) {
-    uint64_t now_ns = xaios_clock_nanos();
-    int redraw = 0;
-    int screen_changed = 0;
-    int quit = 0;
-    /* Keys first, so a keystroke is never a frame late. */
-    if (serve_receive() != 0) { quit = 1; }
-    for (;;) {
-      uint32_t type = 0U;
-      uint32_t length = 0U;
-      int next = serve_next(&type, input, sizeof(input), &length);
-      if (next != 0) { if (next < 0) quit = 1; break; }
-      if (type != SSH_CHILD_IPC_INPUT) continue;
-      if (serve_handle_input(&st, input, length, &redraw, &screen_changed) == 2) { quit = 1; break; }
-    }
-    if (quit != 0) break;
-    /* A screen that changes only on a key waits for one. */
-    if (st.help != 0) {
-      if (screen_changed != 0 && serve_send_help(&st) != 0) break;
-      if (xaios_wait_events(UINT64_C(1000000000)) < 0) serve_pause_ms(20U);
-      continue;
-    }
-    if (st.filter_mode != 0) {
-      if (screen_changed != 0 && serve_send_filter_prompt(&st) != 0) break;
-      if (xaios_wait_events(UINT64_C(1000000000)) < 0) serve_pause_ms(20U);
-      continue;
-    }
-    /* A new sample when the sampling interval has passed, or at once when
-       a key changed what is shown; between samples the process sleeps, and
-       a frame that changed nothing was not sent. Sixty frames a second is
-       how soon a change is on the screen, not how often the screen is
-       written. */
-    if (redraw != 0 || now_ns >= next_frame_ns) {
-      serve_update_extras(now_ns, &last_metrics_ns, &last_metrics,
-                          &have_last_metrics, st.sample_ms);
-      if (serve_render(&st) != 0) break;
-      if (now_ns - last_history_ns >= (uint64_t)st.sample_ms * 1000000U) {
-        serve_push_load_history(g_last_cpu_tenths, g_last_mem_tenths);
-        last_history_ns = now_ns;
-      }
-      next_frame_ns = xaios_clock_nanos() + (uint64_t)st.sample_ms * 1000000U;
-      continue;
-    }
-    /* Until the next sample is due, or a key arrives on the channel --
-       whichever is first. Polling the channel every sixteen milliseconds
-       was most of what this process cost between samples. */
-    if (xaios_wait_events(next_frame_ns - now_ns) < 0) serve_pause_ms(16U);
-  }
-  /* Length from the string, not written out beside it.
-   *
-   * It said 24 for a string of 29 bytes, so the last five never left -- the
-   * client saw the restore stop mid-escape at "\033[?1049l\033[0m\033[" and
-   * the belt-and-braces second copy was lost. The terminal came back anyway,
-   * because the cursor is shown before the alternate screen is left, which is
-   * why nothing noticed. A constant beside a literal is a constant that
-   * drifts when the literal changes. */
-  static const char restore[] = "\033[0m\033[?25h\033[?1049l\033[0m\033[?25h\r";
-  (void)serve_write(restore, sizeof(restore) - 1U);
-  return 0;
 }
 
 int main(int argc, char **argv) {
@@ -3058,7 +2518,7 @@ int main(int argc, char **argv) {
   output[0] = '\0';
   if (argc > 2) return 2;
   if (argc == 2) args = argv[1];
-  int status = handle_xtop(args, output, sizeof(output), &output_size);
+  int status = xtop_handle(args, output, sizeof(output), &output_size);
   if (output_size != 0U)
     (void)xaios_console_write(output, output_size);
   return status == XAIOS_OK ? 0 : 1;

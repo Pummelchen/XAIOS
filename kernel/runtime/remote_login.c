@@ -20,6 +20,7 @@
 #include <xaios/vfs.h>
 
 #include "remote_login_internal.h"
+#include "remote_login_archive_internal.h"
 
 /*
  * Picard — “They invade our space and we fall back. They assimilate entire
@@ -60,11 +61,9 @@ static char *g_remote_login_cwd = g_remote_login_default_cwd;
 const char *remote_login_cwd(void) { return g_remote_login_cwd; }
 
 #if XAIOS_BOOT_TEST_APPS
-/* handle_cpio writes this header and the archive module reads it, so it has
+/* remote_login_handle_cpio writes this header and the archive module reads it, so it has
    one home here and an extern declaration in the private header. */
 const char g_remote_login_archive_magic[] = "XAIOSARCHIVE\n";
-static xaios_status_t path_basename(const char *path, char *basename,
-                                  uint64_t basename_capacity);
 #endif
 
 #if XAIOS_BOOT_TEST_APPS
@@ -368,7 +367,7 @@ static xaios_status_t buffer_append_u64(char *buffer, uint64_t capacity,
   return XAIOS_OK;
 }
 
-static xaios_status_t buffer_append_text(char *buffer, uint64_t capacity,
+xaios_status_t remote_login_buffer_append_text(char *buffer, uint64_t capacity,
                                        uint64_t *offset, const char *text) {
   if (buffer == 0 || text == 0 || offset == 0 || capacity == 0U) {
     return XAIOS_ERR_INVALID;
@@ -490,7 +489,7 @@ xaios_status_t archive_append_entry(char *archive, uint64_t archive_capacity,
   if (buffer_append_char(archive, archive_capacity, archive_size, ' ') != XAIOS_OK) {
     return XAIOS_ERR_NO_MEMORY;
   }
-  if (buffer_append_text(archive, archive_capacity, archive_size, path) != XAIOS_OK) {
+  if (remote_login_buffer_append_text(archive, archive_capacity, archive_size, path) != XAIOS_OK) {
     return XAIOS_ERR_NO_MEMORY;
   }
   if (buffer_append_char(archive, archive_capacity, archive_size, '\n') != XAIOS_OK) {
@@ -807,7 +806,7 @@ static xaios_status_t handle_cp(const char *args, char *output,
     }
     if (destination_is_dir != 0) {
       char basename[XAIOS_XBFS_PATH_MAX];
-      if (path_basename(source, basename, sizeof(basename)) != XAIOS_OK ||
+      if (remote_login_path_basename(source, basename, sizeof(basename)) != XAIOS_OK ||
           path_join(target, sizeof(target), destination, basename) != XAIOS_OK) {
         return command_fail(output, output_capacity, output_bytes,
                             "cp: destination path too long");
@@ -1134,7 +1133,7 @@ static xaios_status_t handle_write(const char *path_arg, const char *payload,
   return XAIOS_OK;
 }
 
-static xaios_status_t path_basename(const char *path, char *basename,
+xaios_status_t remote_login_path_basename(const char *path, char *basename,
                                   uint64_t basename_capacity) {
   uint64_t len = 0;
   if (path == 0 || basename == 0 || basename_capacity == 0U) {
@@ -1157,25 +1156,6 @@ static xaios_status_t path_basename(const char *path, char *basename,
   return copy_cstr_range(basename, basename_capacity, path + start, len - start);
 }
 
-static void bytes_zero(void *data, uint64_t size) {
-  uint8_t *bytes = (uint8_t *)data;
-  for (uint64_t i = 0U; i < size; ++i) bytes[i] = 0U;
-}
-
-static xaios_status_t ustar_put_octal(char *field, uint64_t width,
-                                    uint64_t value) {
-  if (field == 0 || width < 2U) return XAIOS_ERR_INVALID;
-  for (uint64_t i = 0U; i + 1U < width; ++i) field[i] = '0';
-  field[width - 1U] = '\0';
-  uint64_t cursor = width - 1U;
-  do {
-    if (cursor == 0U) return XAIOS_ERR_INVALID;
-    field[--cursor] = (char)('0' + (value & 7U));
-    value >>= 3U;
-  } while (value != 0U);
-  return XAIOS_OK;
-}
-
 xaios_status_t ustar_parse_octal(const char *field, uint64_t width,
                                  uint64_t *value) {
   uint64_t result = 0U;
@@ -1191,113 +1171,6 @@ xaios_status_t ustar_parse_octal(const char *field, uint64_t width,
     ++digits;
   }
   *value = result;
-  return XAIOS_OK;
-}
-
-static xaios_status_t ustar_set_path(char *header, const char *path) {
-  uint64_t length = cstr_len(path);
-  if (header == 0 || path == 0 || length == 0U || length > 255U)
-    return XAIOS_ERR_INVALID;
-  if (length <= 100U) {
-    for (uint64_t i = 0U; i < length; ++i) header[i] = path[i];
-    return XAIOS_OK;
-  }
-  uint64_t split = length;
-  while (split > 0U) {
-    --split;
-    if (path[split] == '/' && split <= 155U && length - split - 1U <= 100U) {
-      for (uint64_t i = 0U; i < split; ++i) header[345U + i] = path[i];
-      for (uint64_t i = 0U; i < length - split - 1U; ++i)
-        header[i] = path[split + 1U + i];
-      return XAIOS_OK;
-    }
-  }
-  return XAIOS_ERR_INVALID;
-}
-
-static xaios_status_t ustar_append_header(char *archive, uint64_t capacity,
-                                         uint64_t *size, const char *path,
-                                         uint64_t data_size, char type) {
-  if (archive == 0 || size == 0 || *size > capacity ||
-      capacity - *size < XAIOS_USTAR_BLOCK_SIZE)
-    return XAIOS_ERR_NO_MEMORY;
-  char *header = archive + *size;
-  bytes_zero(header, XAIOS_USTAR_BLOCK_SIZE);
-  if (ustar_set_path(header, path) != XAIOS_OK ||
-      ustar_put_octal(header + 100U, 8U, type == '5' ? 0755U : 0644U) !=
-          XAIOS_OK ||
-      ustar_put_octal(header + 108U, 8U, 0U) != XAIOS_OK ||
-      ustar_put_octal(header + 116U, 8U, 0U) != XAIOS_OK ||
-      ustar_put_octal(header + 124U, 12U, data_size) != XAIOS_OK ||
-      ustar_put_octal(header + 136U, 12U, 0U) != XAIOS_OK)
-    return XAIOS_ERR_INVALID;
-  for (uint64_t i = 148U; i < 156U; ++i) header[i] = ' ';
-  header[156U] = type;
-  header[257U] = 'u'; header[258U] = 's'; header[259U] = 't';
-  header[260U] = 'a'; header[261U] = 'r';
-  header[263U] = '0'; header[264U] = '0';
-  (void)copy_cstr(header + 265U, 32U, "admin");
-  (void)copy_cstr(header + 297U, 32U, "admin");
-  uint64_t checksum = 0U;
-  for (uint64_t i = 0U; i < XAIOS_USTAR_BLOCK_SIZE; ++i)
-    checksum += (uint8_t)header[i];
-  if (ustar_put_octal(header + 148U, 7U, checksum) != XAIOS_OK)
-    return XAIOS_ERR_INVALID;
-  header[154U] = '\0';
-  header[155U] = ' ';
-  *size += XAIOS_USTAR_BLOCK_SIZE;
-  return XAIOS_OK;
-}
-
-static xaios_status_t ustar_build_path(const char *source, const char *name,
-                                      char *archive, uint64_t capacity,
-                                      uint64_t *archive_size) {
-  xaios_xbfs_stat_t stat;
-  if (xaiboot_fs_stat(source, &stat) != XAIOS_OK) return XAIOS_ERR_NOT_FOUND;
-  if (stat.type == 1U) {
-    if (ustar_append_header(archive, capacity, archive_size, name, 0U, '5') !=
-        XAIOS_OK)
-      return XAIOS_ERR_NO_MEMORY;
-    char listing[XAIOS_REMOTE_LOGIN_LIST_BYTES];
-    uint64_t listing_size = 0U;
-    if (xaiboot_fs_list(source, listing, sizeof(listing), &listing_size) !=
-        XAIOS_OK)
-      return XAIOS_ERR_IO;
-    for (uint64_t start = 0U; start < listing_size;) {
-      uint64_t end = start;
-      while (end < listing_size && listing[end] != '\n') ++end;
-      if (end != start) {
-        char child[XAIOS_XBFS_PATH_MAX];
-        char child_source[XAIOS_XBFS_PATH_MAX];
-        char child_name[XAIOS_XBFS_PATH_MAX];
-        if (copy_cstr_range(child, sizeof(child), listing + start, end - start) !=
-                XAIOS_OK ||
-            path_join(child_source, sizeof(child_source), source, child) !=
-                XAIOS_OK ||
-            path_join(child_name, sizeof(child_name), name, child) != XAIOS_OK ||
-            ustar_build_path(child_source, child_name, archive, capacity,
-                             archive_size) != XAIOS_OK)
-          return XAIOS_ERR_INVALID;
-      }
-      start = end + 1U;
-    }
-    return XAIOS_OK;
-  }
-  if (stat.type != 2U || stat.size > XAIOS_XBFS_MAX_FILE_BYTES_V5)
-    return XAIOS_ERR_INVALID;
-  if (stat.size > UINT64_MAX - 511U) return XAIOS_ERR_INVALID;
-  uint64_t padded = (stat.size + 511U) & ~UINT64_C(511);
-  if (capacity - *archive_size < XAIOS_USTAR_BLOCK_SIZE + padded ||
-      ustar_append_header(archive, capacity, archive_size, name, stat.size,
-                          '0') != XAIOS_OK)
-    return XAIOS_ERR_NO_MEMORY;
-  uint64_t read_size = 0U;
-  if (xaiboot_fs_read(source, archive + *archive_size, stat.size, &read_size) !=
-          XAIOS_OK ||
-      read_size != stat.size)
-    return XAIOS_ERR_IO;
-  bytes_zero(archive + *archive_size + stat.size, padded - stat.size);
-  *archive_size += padded;
   return XAIOS_OK;
 }
 
@@ -1434,281 +1307,28 @@ xaios_status_t gzip_decode(const uint8_t *input, uint64_t input_size,
   return XAIOS_OK;
 }
 
-static xaios_status_t handle_tar(const char *args, char *output,
-                               uint64_t output_capacity,
-                               uint64_t *output_bytes) {
-  uint64_t arg_index = 0U;
-  char mode[32];
-  char token[XAIOS_XBFS_PATH_MAX];
-  char archive_token[XAIOS_XBFS_PATH_MAX];
-  char archive_path[XAIOS_XBFS_PATH_MAX];
-  char destination_path[XAIOS_XBFS_PATH_MAX];
-  int operation = 0;
-  int has_file = 0;
-  int verbose = 0;
-  int gzip = 0;
-
-  if (token_next(args, &arg_index, mode, sizeof(mode)) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                       "tar: missing options");
-  }
-  uint64_t option_start = mode[0] == '-' ? 1U : 0U;
-  for (uint64_t i = option_start; mode[i] != '\0'; ++i) {
-    if (mode[i] == 'c' || mode[i] == 'x' || mode[i] == 't') {
-      if (operation != 0) return command_fail(output, output_capacity,
-                                               output_bytes,
-                                               "tar: conflicting operation");
-      operation = mode[i];
-    } else if (mode[i] == 'f') {
-      has_file = 1;
-    } else if (mode[i] == 'v') {
-      verbose = 1;
-    } else if (mode[i] == 'z') {
-      gzip = 1;
-    } else {
-      return command_fail(output, output_capacity, output_bytes,
-                          "tar: unsupported option");
-    }
-  }
-  if (operation == 0)
-    return command_fail(output, output_capacity, output_bytes,
-                        "tar: missing operation");
-  if (operation == 'c' && gzip != 0)
-    return command_fail(output, output_capacity, output_bytes,
-                        "tar: gzip creation is not supported; use zip -r");
-  if (has_file == 0) {
-    if (token_next(args, &arg_index, token, sizeof(token)) != XAIOS_OK ||
-        string_equal(token, "-f") == 0)
-      return command_fail(output, output_capacity, output_bytes,
-                          "tar: archive must be specified with -f");
-  }
-  if (token_next(args, &arg_index, archive_token, sizeof(archive_token)) !=
-      XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "tar: missing archive");
-  }
-  if (remote_path_resolve(g_remote_login_cwd, archive_token, archive_path,
-                          sizeof(archive_path)) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "tar: cannot resolve archive");
-  }
-
-  if (operation == 't') {
-    if (token_next(args, &arg_index, token, sizeof(token)) == XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "tar: too many arguments");
-    }
-    if (ustar_walk(archive_path, g_remote_login_cwd, 0, output,
-                   output_capacity, output_bytes) !=
-        XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "tar: cannot list archive");
-    }
-    return XAIOS_OK;
-  }
-
-  if (operation == 'x') {
-    int saw_destination = 0;
-    while (token_next(args, &arg_index, token, sizeof(token)) == XAIOS_OK) {
-      if (string_equal(token, "-C") == 1U) {
-        if (saw_destination != 0U) {
-          return command_fail(output, output_capacity, output_bytes,
-                              "tar: duplicate destination");
-        }
-        if (token_next(args, &arg_index, token, sizeof(token)) != XAIOS_OK) {
-          return command_fail(output, output_capacity, output_bytes,
-                              "tar: missing destination");
-        }
-        if (copy_cstr(destination_path, sizeof(destination_path), token) != XAIOS_OK) {
-          return XAIOS_ERR_NO_MEMORY;
-        }
-        saw_destination = 1;
-        continue;
-      }
-      return command_fail(output, output_capacity, output_bytes,
-                         "tar: unsupported option");
-    }
-    if (saw_destination == 0U) {
-      if (copy_cstr(destination_path, sizeof(destination_path),
-                   g_remote_login_cwd) != XAIOS_OK) {
-        return command_fail(output, output_capacity, output_bytes,
-                            "tar: destination state error");
-      }
-    }
-    if (remote_path_resolve(g_remote_login_cwd, destination_path,
-                            destination_path, sizeof(destination_path)) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "tar: invalid destination");
-    }
-    xaios_xbfs_stat_t destination_stat;
-    if (xaiboot_fs_stat(destination_path, &destination_stat) != XAIOS_OK ||
-        destination_stat.type != 1U ||
-        ustar_walk(archive_path, destination_path, 1,
-                   verbose != 0 ? output : 0, output_capacity,
-                   output_bytes) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                         "tar: extract failed");
-    }
-    output[0] = '\0';
-    return XAIOS_OK;
-  }
-
-  char *archive = (char *)kheap_alloc(XAIOS_XBFS_MAX_FILE_BYTES_V5, 16U);
-  if (archive == 0)
-    return command_fail(output, output_capacity, output_bytes,
-                        "tar: memory unavailable");
-  uint64_t archive_size = 0U;
-  uint32_t sources = 0U;
-  xaios_status_t status = XAIOS_OK;
-  while (token_next(args, &arg_index, token, sizeof(token)) == XAIOS_OK) {
-    char source_path[XAIOS_XBFS_PATH_MAX];
-    char source_name[XAIOS_XBFS_PATH_MAX];
-    if (remote_path_resolve(g_remote_login_cwd, token, source_path,
-                            sizeof(source_path)) != XAIOS_OK ||
-        path_basename(source_path, source_name, sizeof(source_name)) !=
-            XAIOS_OK ||
-        ustar_build_path(source_path, source_name, archive,
-                         XAIOS_XBFS_MAX_FILE_BYTES_V5 - 1024U,
-                         &archive_size) != XAIOS_OK) {
-      status = XAIOS_ERR_INVALID;
-      break;
-    }
-    if (verbose != 0) {
-      output_append(output, output_capacity, output_bytes, source_name);
-      output_append_char(output, output_capacity, output_bytes, '\n');
-    }
-    ++sources;
-  }
-  if (status == XAIOS_OK && sources != 0U) {
-    bytes_zero(archive + archive_size, 1024U);
-    archive_size += 1024U;
-    status = write_buffer_to_path(archive_path, archive, archive_size);
-  }
-  kheap_free(archive);
-  if (sources == 0U)
-    return command_fail(output, output_capacity, output_bytes,
-                        "tar: missing files");
-  if (status != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "tar: cannot create archive");
-  }
-  return XAIOS_OK;
-}
-
-#define XAIOS_ZIP_MAX_ENTRIES 128U
-
-typedef struct xaios_zip_entry {
-  char name[XAIOS_XBFS_PATH_MAX];
-  uint32_t crc32;
-  uint32_t size;
-  uint32_t local_offset;
-  uint8_t directory;
-} xaios_zip_entry_t;
-
-static uint16_t read_le16(const uint8_t *data) {
+uint16_t remote_login_read_le16(const uint8_t *data) {
   return (uint16_t)((uint16_t)data[0] | ((uint16_t)data[1] << 8U));
 }
 
-static uint32_t read_le32(const uint8_t *data) {
+uint32_t remote_login_read_le32(const uint8_t *data) {
   return (uint32_t)data[0] | ((uint32_t)data[1] << 8U) |
          ((uint32_t)data[2] << 16U) | ((uint32_t)data[3] << 24U);
 }
 
-static void write_le16(uint8_t *data, uint16_t value) {
+void remote_login_write_le16(uint8_t *data, uint16_t value) {
   data[0] = (uint8_t)value;
   data[1] = (uint8_t)(value >> 8U);
 }
 
-static void write_le32(uint8_t *data, uint32_t value) {
+void remote_login_write_le32(uint8_t *data, uint32_t value) {
   data[0] = (uint8_t)value;
   data[1] = (uint8_t)(value >> 8U);
   data[2] = (uint8_t)(value >> 16U);
   data[3] = (uint8_t)(value >> 24U);
 }
 
-static xaios_status_t zip_append_path(
-    const char *source, const char *name, int recursive, uint8_t *archive,
-    uint64_t capacity, uint64_t *archive_size, xaios_zip_entry_t *entries,
-    uint32_t *entry_count) {
-  xaios_xbfs_stat_t stat;
-  if (*entry_count >= XAIOS_ZIP_MAX_ENTRIES ||
-      xaiboot_fs_stat(source, &stat) != XAIOS_OK)
-    return XAIOS_ERR_INVALID;
-  uint64_t name_len = cstr_len(name);
-  if (name_len == 0U || name_len > UINT16_MAX) return XAIOS_ERR_INVALID;
-  if (stat.type == 1U && recursive == 0) return XAIOS_ERR_INVALID;
-
-  char entry_name[XAIOS_XBFS_PATH_MAX];
-  if (copy_cstr(entry_name, sizeof(entry_name), name) != XAIOS_OK)
-    return XAIOS_ERR_INVALID;
-  if (stat.type == 1U && entry_name[name_len - 1U] != '/') {
-    if (name_len + 2U > sizeof(entry_name)) return XAIOS_ERR_INVALID;
-    entry_name[name_len++] = '/';
-    entry_name[name_len] = '\0';
-  }
-  uint64_t data_size = stat.type == 2U ? stat.size : 0U;
-  if (data_size > UINT32_MAX ||
-      capacity - *archive_size < 30U + name_len + data_size)
-    return XAIOS_ERR_NO_MEMORY;
-  xaios_zip_entry_t *entry = &entries[*entry_count];
-  bytes_zero(entry, sizeof(*entry));
-  if (copy_cstr(entry->name, sizeof(entry->name), entry_name) != XAIOS_OK)
-    return XAIOS_ERR_INVALID;
-  entry->size = (uint32_t)data_size;
-  entry->local_offset = (uint32_t)*archive_size;
-  entry->directory = stat.type == 1U ? 1U : 0U;
-
-  uint8_t *header = archive + *archive_size;
-  bytes_zero(header, 30U);
-  write_le32(header, UINT32_C(0x04034b50));
-  write_le16(header + 4U, 20U);
-  write_le16(header + 8U, 0U);
-  write_le16(header + 26U, (uint16_t)name_len);
-  for (uint64_t i = 0U; i < name_len; ++i) header[30U + i] = entry_name[i];
-  *archive_size += 30U + name_len;
-  if (data_size != 0U) {
-    uint64_t got = 0U;
-    if (xaiboot_fs_read(source, archive + *archive_size, data_size, &got) !=
-            XAIOS_OK ||
-        got != data_size)
-      return XAIOS_ERR_IO;
-    entry->crc32 = xaios_crc32(archive + *archive_size, data_size);
-    *archive_size += data_size;
-  }
-  write_le32(header + 14U, entry->crc32);
-  write_le32(header + 18U, entry->size);
-  write_le32(header + 22U, entry->size);
-  ++(*entry_count);
-
-  if (stat.type != 1U) return XAIOS_OK;
-  char listing[XAIOS_REMOTE_LOGIN_LIST_BYTES];
-  uint64_t listing_size = 0U;
-  if (xaiboot_fs_list(source, listing, sizeof(listing), &listing_size) !=
-      XAIOS_OK)
-    return XAIOS_ERR_IO;
-  for (uint64_t start = 0U; start < listing_size;) {
-    uint64_t end = start;
-    while (end < listing_size && listing[end] != '\n') ++end;
-    if (end != start) {
-      char child[XAIOS_XBFS_PATH_MAX];
-      char child_source[XAIOS_XBFS_PATH_MAX];
-      char child_name[XAIOS_XBFS_PATH_MAX];
-      if (copy_cstr_range(child, sizeof(child), listing + start, end - start) !=
-              XAIOS_OK ||
-          path_join(child_source, sizeof(child_source), source, child) !=
-              XAIOS_OK ||
-          path_join(child_name, sizeof(child_name), name, child) != XAIOS_OK ||
-          zip_append_path(child_source, child_name, recursive, archive,
-                          capacity, archive_size, entries, entry_count) !=
-              XAIOS_OK)
-        return XAIOS_ERR_INVALID;
-    }
-    start = end + 1U;
-  }
-  return XAIOS_OK;
-}
-
-static xaios_status_t zip_finish(uint8_t *archive, uint64_t capacity,
+xaios_status_t remote_login_zip_finish(uint8_t *archive, uint64_t capacity,
                                 uint64_t *archive_size,
                                 const xaios_zip_entry_t *entries,
                                 uint32_t entry_count) {
@@ -1717,18 +1337,18 @@ static xaios_status_t zip_finish(uint8_t *archive, uint64_t capacity,
     uint64_t name_len = cstr_len(entries[i].name);
     if (capacity - *archive_size < 46U + name_len) return XAIOS_ERR_NO_MEMORY;
     uint8_t *header = archive + *archive_size;
-    bytes_zero(header, 46U);
-    write_le32(header, UINT32_C(0x02014b50));
-    write_le16(header + 4U, UINT16_C(0x031e));
-    write_le16(header + 6U, 20U);
-    write_le32(header + 16U, entries[i].crc32);
-    write_le32(header + 20U, entries[i].size);
-    write_le32(header + 24U, entries[i].size);
-    write_le16(header + 28U, (uint16_t)name_len);
-    write_le32(header + 38U,
+    remote_login_bytes_zero(header, 46U);
+    remote_login_write_le32(header, UINT32_C(0x02014b50));
+    remote_login_write_le16(header + 4U, UINT16_C(0x031e));
+    remote_login_write_le16(header + 6U, 20U);
+    remote_login_write_le32(header + 16U, entries[i].crc32);
+    remote_login_write_le32(header + 20U, entries[i].size);
+    remote_login_write_le32(header + 24U, entries[i].size);
+    remote_login_write_le16(header + 28U, (uint16_t)name_len);
+    remote_login_write_le32(header + 38U,
                entries[i].directory != 0U ? UINT32_C(0040755) << 16U
                                           : UINT32_C(0100644) << 16U);
-    write_le32(header + 42U, entries[i].local_offset);
+    remote_login_write_le32(header + 42U, entries[i].local_offset);
     for (uint64_t j = 0U; j < name_len; ++j) header[46U + j] = entries[i].name[j];
     *archive_size += 46U + name_len;
   }
@@ -1737,393 +1357,13 @@ static xaios_status_t zip_finish(uint8_t *archive, uint64_t capacity,
       central_size > UINT32_MAX || capacity - *archive_size < 22U)
     return XAIOS_ERR_NO_MEMORY;
   uint8_t *end = archive + *archive_size;
-  bytes_zero(end, 22U);
-  write_le32(end, UINT32_C(0x06054b50));
-  write_le16(end + 8U, (uint16_t)entry_count);
-  write_le16(end + 10U, (uint16_t)entry_count);
-  write_le32(end + 12U, (uint32_t)central_size);
-  write_le32(end + 16U, (uint32_t)central_offset);
+  remote_login_bytes_zero(end, 22U);
+  remote_login_write_le32(end, UINT32_C(0x06054b50));
+  remote_login_write_le16(end + 8U, (uint16_t)entry_count);
+  remote_login_write_le16(end + 10U, (uint16_t)entry_count);
+  remote_login_write_le32(end + 12U, (uint32_t)central_size);
+  remote_login_write_le32(end + 16U, (uint32_t)central_offset);
   *archive_size += 22U;
-  return XAIOS_OK;
-}
-
-static xaios_status_t handle_zip(const char *args, char *output,
-                                uint64_t output_capacity,
-                                uint64_t *output_bytes) {
-  uint64_t index = 0U;
-  int recursive = 0;
-  char token[XAIOS_XBFS_PATH_MAX];
-  char archive_token[XAIOS_XBFS_PATH_MAX];
-  if (token_next(args, &index, token, sizeof(token)) != XAIOS_OK)
-    return command_fail(output, output_capacity, output_bytes,
-                        "zip: missing archive");
-  if (string_equal(token, "-r")) {
-    recursive = 1;
-    if (token_next(args, &index, archive_token, sizeof(archive_token)) !=
-        XAIOS_OK)
-      return command_fail(output, output_capacity, output_bytes,
-                          "zip: missing archive");
-  } else if (copy_cstr(archive_token, sizeof(archive_token), token) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "zip: invalid archive");
-  }
-  char archive_path[XAIOS_XBFS_PATH_MAX];
-  if (remote_path_resolve(g_remote_login_cwd, archive_token, archive_path,
-                          sizeof(archive_path)) != XAIOS_OK)
-    return command_fail(output, output_capacity, output_bytes,
-                        "zip: invalid archive");
-  uint8_t *archive = (uint8_t *)kheap_alloc(XAIOS_XBFS_MAX_FILE_BYTES_V5, 16U);
-  xaios_zip_entry_t *entries = (xaios_zip_entry_t *)kheap_calloc(
-      sizeof(xaios_zip_entry_t) * XAIOS_ZIP_MAX_ENTRIES, 16U);
-  if (archive == 0 || entries == 0) {
-    kheap_free(archive);
-    kheap_free(entries);
-    return command_fail(output, output_capacity, output_bytes,
-                        "zip: memory unavailable");
-  }
-  uint64_t archive_size = 0U;
-  uint32_t entry_count = 0U;
-  xaios_status_t status = XAIOS_OK;
-  while (token_next(args, &index, token, sizeof(token)) == XAIOS_OK) {
-    char source[XAIOS_XBFS_PATH_MAX];
-    char name[XAIOS_XBFS_PATH_MAX];
-    if (remote_path_resolve(g_remote_login_cwd, token, source,
-                            sizeof(source)) != XAIOS_OK ||
-        path_basename(source, name, sizeof(name)) != XAIOS_OK ||
-        zip_append_path(source, name, recursive, archive,
-                        XAIOS_XBFS_MAX_FILE_BYTES_V5, &archive_size, entries,
-                        &entry_count) != XAIOS_OK) {
-      status = XAIOS_ERR_INVALID;
-      break;
-    }
-    output_append(output, output_capacity, output_bytes, "  adding: ");
-    output_append(output, output_capacity, output_bytes, name);
-    output_append_char(output, output_capacity, output_bytes, '\n');
-  }
-  if (entry_count == 0U) status = XAIOS_ERR_INVALID;
-  if (status == XAIOS_OK)
-    status = zip_finish(archive, XAIOS_XBFS_MAX_FILE_BYTES_V5, &archive_size,
-                        entries, entry_count);
-  if (status == XAIOS_OK)
-    status = write_buffer_to_path(archive_path, (const char *)archive,
-                                  archive_size);
-  kheap_free(entries);
-  kheap_free(archive);
-  if (status != XAIOS_OK)
-    return command_fail(output, output_capacity, output_bytes,
-                        "zip: cannot create archive");
-  return XAIOS_OK;
-}
-
-static xaios_status_t unzip_archive(const char *archive_path,
-                                    const char *destination, int list_only,
-                                    char *output, uint64_t output_capacity,
-                                    uint64_t *output_bytes) {
-  uint8_t *archive = (uint8_t *)kheap_alloc(XAIOS_XBFS_MAX_FILE_BYTES_V5, 16U);
-  uint64_t archive_size = 0U;
-  xaios_status_t status = XAIOS_ERR_INVALID;
-  if (archive == 0) return XAIOS_ERR_NO_MEMORY;
-  if (xaiboot_fs_read(archive_path, archive, XAIOS_XBFS_MAX_FILE_BYTES_V5,
-                      &archive_size) != XAIOS_OK ||
-      archive_size < 22U)
-    goto done;
-  uint64_t end_offset = archive_size - 22U;
-  uint64_t search_floor = archive_size > 65557U ? archive_size - 65557U : 0U;
-  while (read_le32(archive + end_offset) != UINT32_C(0x06054b50)) {
-    if (end_offset == search_floor) goto done;
-    --end_offset;
-  }
-  uint16_t entries = read_le16(archive + end_offset + 10U);
-  uint32_t central_size = read_le32(archive + end_offset + 12U);
-  uint32_t central_offset = read_le32(archive + end_offset + 16U);
-  if (read_le16(archive + end_offset + 4U) != 0U ||
-      read_le16(archive + end_offset + 6U) != 0U ||
-      entries != read_le16(archive + end_offset + 8U) ||
-      (uint64_t)central_offset + central_size > end_offset)
-    goto done;
-  uint64_t cursor = central_offset;
-  for (uint16_t entry_index = 0U; entry_index < entries; ++entry_index) {
-    if (cursor + 46U > archive_size ||
-        read_le32(archive + cursor) != UINT32_C(0x02014b50))
-      goto done;
-    uint16_t flags = read_le16(archive + cursor + 8U);
-    uint16_t method = read_le16(archive + cursor + 10U);
-    uint32_t crc = read_le32(archive + cursor + 16U);
-    uint32_t compressed = read_le32(archive + cursor + 20U);
-    uint32_t uncompressed = read_le32(archive + cursor + 24U);
-    uint16_t name_len = read_le16(archive + cursor + 28U);
-    uint16_t extra_len = read_le16(archive + cursor + 30U);
-    uint16_t comment_len = read_le16(archive + cursor + 32U);
-    uint32_t local_offset = read_le32(archive + cursor + 42U);
-    uint64_t next = cursor + 46U + name_len + extra_len + comment_len;
-    if (name_len == 0U || name_len >= XAIOS_XBFS_PATH_MAX ||
-        next > archive_size || (flags & 1U) != 0U ||
-        (method != 0U && method != 8U))
-      goto done;
-    char name[XAIOS_XBFS_PATH_MAX];
-    if (copy_cstr_range(name, sizeof(name),
-                        (const char *)archive + cursor + 46U, name_len) !=
-            XAIOS_OK ||
-        archive_path_is_safe(name) == 0)
-      goto done;
-    output_append(output, output_capacity, output_bytes, name);
-    output_append_char(output, output_capacity, output_bytes, '\n');
-    int directory = name[name_len - 1U] == '/';
-    if (list_only == 0) {
-      char target[XAIOS_XBFS_PATH_MAX];
-      if (path_join(target, sizeof(target), destination, name) != XAIOS_OK)
-        goto done;
-      if (directory != 0) {
-        if (mkdir_resolved(target, 1) != XAIOS_OK) goto done;
-      } else {
-        if ((uint64_t)local_offset + 30U > archive_size ||
-            read_le32(archive + local_offset) != UINT32_C(0x04034b50))
-          goto done;
-        uint16_t local_name = read_le16(archive + local_offset + 26U);
-        uint16_t local_extra = read_le16(archive + local_offset + 28U);
-        uint64_t data_offset = (uint64_t)local_offset + 30U + local_name +
-                               local_extra;
-        if (data_offset > archive_size || compressed > archive_size - data_offset ||
-            uncompressed > XAIOS_XBFS_MAX_FILE_BYTES_V5)
-          goto done;
-        uint8_t *decoded = archive + data_offset;
-        uint8_t *allocated = 0;
-        uint64_t decoded_size = compressed;
-        if (method == 8U) {
-          allocated = (uint8_t *)kheap_alloc(uncompressed == 0U ? 1U : uncompressed,
-                                             16U);
-          if (allocated == 0 ||
-              xaios_inflate_raw(archive + data_offset, compressed, allocated,
-                                uncompressed, &decoded_size) != XAIOS_OK) {
-            kheap_free(allocated);
-            goto done;
-          }
-          decoded = allocated;
-        }
-        if (decoded_size != uncompressed ||
-            xaios_crc32(decoded, decoded_size) != crc ||
-            remote_ensure_parent(target) != XAIOS_OK ||
-            write_buffer_to_path(target, (const char *)decoded, decoded_size) !=
-                XAIOS_OK) {
-          kheap_free(allocated);
-          goto done;
-        }
-        kheap_free(allocated);
-      }
-    }
-    cursor = next;
-  }
-  status = XAIOS_OK;
-done:
-  kheap_free(archive);
-  return status;
-}
-
-static xaios_status_t handle_unzip(const char *args, char *output,
-                                  uint64_t output_capacity,
-                                  uint64_t *output_bytes) {
-  uint64_t index = 0U;
-  int list_only = 0;
-  char token[XAIOS_XBFS_PATH_MAX];
-  char archive_token[XAIOS_XBFS_PATH_MAX];
-  if (token_next(args, &index, token, sizeof(token)) != XAIOS_OK)
-    return command_fail(output, output_capacity, output_bytes,
-                        "unzip: missing archive");
-  if (string_equal(token, "-l")) {
-    list_only = 1;
-    if (token_next(args, &index, archive_token, sizeof(archive_token)) !=
-        XAIOS_OK)
-      return command_fail(output, output_capacity, output_bytes,
-                          "unzip: missing archive");
-  } else if (copy_cstr(archive_token, sizeof(archive_token), token) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "unzip: invalid archive");
-  }
-  char destination[XAIOS_XBFS_PATH_MAX];
-  if (copy_cstr(destination, sizeof(destination), g_remote_login_cwd) != XAIOS_OK)
-    return XAIOS_ERR_INVALID;
-  if (token_next(args, &index, token, sizeof(token)) == XAIOS_OK) {
-    if (list_only != 0 || string_equal(token, "-d") == 0 ||
-        token_next(args, &index, token, sizeof(token)) != XAIOS_OK ||
-        remote_path_resolve(g_remote_login_cwd, token, destination,
-                            sizeof(destination)) != XAIOS_OK ||
-        has_more_args(args, index) != 0)
-      return command_fail(output, output_capacity, output_bytes,
-                          "unzip: invalid destination");
-  }
-  char archive_path[XAIOS_XBFS_PATH_MAX];
-  xaios_xbfs_stat_t stat;
-  if (remote_path_resolve(g_remote_login_cwd, archive_token, archive_path,
-                          sizeof(archive_path)) != XAIOS_OK ||
-      (list_only == 0 &&
-       (xaiboot_fs_stat(destination, &stat) != XAIOS_OK || stat.type != 1U)) ||
-      unzip_archive(archive_path, destination, list_only, output,
-                    output_capacity, output_bytes) != XAIOS_OK)
-    return command_fail(output, output_capacity, output_bytes,
-                        "unzip: invalid or unsupported archive");
-  return XAIOS_OK;
-}
-
-static xaios_status_t handle_cpio(const char *args, char *output,
-                                uint64_t output_capacity,
-                                uint64_t *output_bytes) {
-  uint64_t arg_index = 0;
-  char mode[32];
-  char token[XAIOS_XBFS_PATH_MAX];
-  char archive_token[XAIOS_XBFS_PATH_MAX];
-  char archive_path[XAIOS_XBFS_PATH_MAX];
-  char source_token[XAIOS_XBFS_PATH_MAX];
-  char source_path[XAIOS_XBFS_PATH_MAX];
-  char source_archive_name[XAIOS_XBFS_PATH_MAX];
-  char archive[XAIOS_XBFS_MAX_FILE_BYTES];
-  uint64_t archive_size = 0;
-  uint64_t source_count = 0;
-  int can_create = 0;
-  int can_extract = 0;
-  int can_list = 0;
-  int has_archive = 0;
-
-  if (token_next(args, &arg_index, mode, sizeof(mode)) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                       "cpio: missing options");
-  }
-  if (mode[0] != '-') {
-    return command_fail(output, output_capacity, output_bytes,
-                        "cpio: unsupported option");
-  }
-  for (uint64_t i = 1U; mode[i] != '\0'; ++i) {
-    if (mode[i] == 'o') {
-      can_create = 1;
-      continue;
-    }
-    if (mode[i] == 'i') {
-      can_extract = 1;
-      continue;
-    }
-    if (mode[i] == 't') {
-      can_list = 1;
-      continue;
-    }
-    return command_fail(output, output_capacity, output_bytes,
-                        "cpio: unsupported option");
-  }
-  if ((can_create + can_extract + can_list) != 1) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "cpio: unsupported option");
-  }
-
-  if (can_create != 0U) {
-    if (buffer_append_text(archive, sizeof(archive), &archive_size,
-                          g_remote_login_archive_magic) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "cpio: archive too large");
-    }
-    if (token_next(args, &arg_index, token, sizeof(token)) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "cpio: missing source");
-    }
-    while (1) {
-      if (string_equal(token, "-O") == 1U) {
-        if (token_next(args, &arg_index, archive_token, sizeof(archive_token)) !=
-            XAIOS_OK) {
-          return command_fail(output, output_capacity, output_bytes,
-                              "cpio: missing archive");
-        }
-        if (copy_cstr(archive_path, sizeof(archive_path), archive_token) != XAIOS_OK) {
-          return command_fail(output, output_capacity, output_bytes,
-                              "cpio: invalid archive");
-        }
-        if (remote_path_resolve(g_remote_login_cwd, archive_path, archive_path,
-                                sizeof(archive_path)) != XAIOS_OK) {
-          return command_fail(output, output_capacity, output_bytes,
-                              "cpio: invalid archive");
-        }
-        has_archive = 1;
-      } else if (token[0] == '-') {
-        return command_fail(output, output_capacity, output_bytes,
-                            "cpio: unsupported option");
-      } else {
-        if (copy_cstr(source_token, sizeof(source_token), token) != XAIOS_OK) {
-          return command_fail(output, output_capacity, output_bytes,
-                              "cpio: invalid source");
-        }
-        if (remote_path_resolve(g_remote_login_cwd, source_token, source_path,
-                                sizeof(source_path)) != XAIOS_OK) {
-          return command_fail(output, output_capacity, output_bytes,
-                              "cpio: invalid source");
-        }
-        if (path_basename(source_path, source_archive_name,
-                          sizeof(source_archive_name)) != XAIOS_OK) {
-          return command_fail(output, output_capacity, output_bytes,
-                              "cpio: invalid source");
-        }
-        if (archive_build_from_path(source_path, source_archive_name, archive,
-                                   sizeof(archive), &archive_size) != XAIOS_OK) {
-          return command_fail(output, output_capacity, output_bytes,
-                              "cpio: cannot add source");
-        }
-        ++source_count;
-      }
-      if (token_next(args, &arg_index, token, sizeof(token)) != XAIOS_OK) {
-        break;
-      }
-    }
-    if (has_archive == 0U) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "cpio: missing archive");
-    }
-    if (source_count == 0U) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "cpio: missing source");
-    }
-    if (write_buffer_to_path(archive_path, archive, archive_size) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "cpio: cannot write archive");
-    }
-    output[0] = '\0';
-    return XAIOS_OK;
-  }
-
-  if (token_next(args, &arg_index, token, sizeof(token)) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "cpio: missing archive");
-  }
-  if (string_equal(token, "-I") != 1U) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "cpio: expected -I");
-  }
-  if (token_next(args, &arg_index, archive_token, sizeof(archive_token)) !=
-      XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "cpio: missing archive");
-  }
-  if (copy_cstr(archive_path, sizeof(archive_path), archive_token) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes, "cpio: invalid archive");
-  }
-  if (remote_path_resolve(g_remote_login_cwd, archive_path, archive_path,
-                          sizeof(archive_path)) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "cpio: invalid archive");
-  }
-  if (has_archive == 0U) {
-    has_archive = 1;
-  }
-  if (token_next(args, &arg_index, token, sizeof(token)) == XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "cpio: too many arguments");
-  }
-  if (can_list != 0) {
-    if (archive_list(archive_path, output, output_capacity, output_bytes) !=
-        XAIOS_OK)
-      return command_fail(output, output_capacity, output_bytes,
-                          "cpio: list failed");
-    return XAIOS_OK;
-  }
-  if (archive_extract_to(archive_path, g_remote_login_cwd) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "cpio: extract failed");
-  }
-  output[0] = '\0';
   return XAIOS_OK;
 }
 
@@ -2142,7 +1382,7 @@ static xaios_status_t move_path(const char *src, const char *dst) {
       destination.type == 1U) {
     char basename[XAIOS_XBFS_PATH_MAX];
     char target[XAIOS_XBFS_PATH_MAX];
-    if (path_basename(resolved_src, basename, sizeof(basename)) != XAIOS_OK ||
+    if (remote_login_path_basename(resolved_src, basename, sizeof(basename)) != XAIOS_OK ||
         path_join(target, sizeof(target), resolved_dst, basename) != XAIOS_OK ||
         copy_cstr(resolved_dst, sizeof(resolved_dst), target) != XAIOS_OK)
       return XAIOS_ERR_INVALID;
@@ -2302,7 +1542,7 @@ static xaios_status_t handle_less(const char *args, char *output,
           buffer_append_char(files, sizeof(files), &files_used, ' ') != XAIOS_OK) {
         return XAIOS_ERR_NO_MEMORY;
       }
-      if (buffer_append_text(files, sizeof(files), &files_used, token) != XAIOS_OK) {
+      if (remote_login_buffer_append_text(files, sizeof(files), &files_used, token) != XAIOS_OK) {
         return XAIOS_ERR_NO_MEMORY;
       }
       ++file_count;
@@ -2316,9 +1556,9 @@ static xaios_status_t handle_less(const char *args, char *output,
   uint64_t cat_used = 0U;
   cat_args[0] = '\0';
   if (number_lines != 0) {
-    (void)buffer_append_text(cat_args, sizeof(cat_args), &cat_used, "-n ");
+    (void)remote_login_buffer_append_text(cat_args, sizeof(cat_args), &cat_used, "-n ");
   }
-  (void)buffer_append_text(cat_args, sizeof(cat_args), &cat_used, files);
+  (void)remote_login_buffer_append_text(cat_args, sizeof(cat_args), &cat_used, files);
   return handle_cat(cat_args, output, output_capacity, output_bytes);
 }
 #endif
@@ -2777,16 +2017,16 @@ static xaios_status_t parse_and_execute(const char *command, char *output,
   }
 #if XAIOS_BOOT_TEST_APPS
   if (string_equal(cmd, "cpio") == 1U) {
-    return handle_cpio(args, output, output_capacity, output_bytes);
+    return remote_login_handle_cpio(args, output, output_capacity, output_bytes);
   }
   if (string_equal(cmd, "tar") == 1U) {
-    return handle_tar(args, output, output_capacity, output_bytes);
+    return remote_login_handle_tar(args, output, output_capacity, output_bytes);
   }
   if (string_equal(cmd, "zip") == 1U) {
-    return handle_zip(args, output, output_capacity, output_bytes);
+    return remote_login_handle_zip(args, output, output_capacity, output_bytes);
   }
   if (string_equal(cmd, "unzip") == 1U) {
-    return handle_unzip(args, output, output_capacity, output_bytes);
+    return remote_login_handle_unzip(args, output, output_capacity, output_bytes);
   }
   if (string_equal(cmd, "mkdir") == 1U) {
     return handle_mkdir(args, output, output_capacity, output_bytes);
