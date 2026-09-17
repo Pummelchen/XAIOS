@@ -217,7 +217,7 @@ by `scripts/build-wt-peer.sh` is the server, and it is this repository's own
 code on this repository's own BearSSL, which is also why the same binary serves
 both the interop test and the gate. Guest side: QEMU user networking already
 reaches the host at `10.0.2.2` under the existing scripts
-(`platform/qemu/run-qemu-aarch64.sh:455-456`), so no port forwarding is
+(`platform/qemu/run-qemu-aarch64-args.sh:105-106`), so no port forwarding is
 needed; the gate adds `-device virtio-rng-pci` so the entropy claim above is
 honest.
 

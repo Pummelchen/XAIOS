@@ -105,6 +105,8 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   # dispatcher picks between them. x86_64 only ever sees PCI.
   compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport.c" \
     "$KERNEL_BUILD_DIR/virtio_transport_mmio.o" "-DXAIOS_VIRTIO_MMIO_BACKEND=1"
+  compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport_status.c" \
+    "$KERNEL_BUILD_DIR/virtio_transport_status.o" "-DXAIOS_VIRTIO_MMIO_BACKEND=1"
   compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport_pci.c" \
     "$KERNEL_BUILD_DIR/virtio_transport_pci.o" "-DXAIOS_VIRTIO_PCI_BACKEND=1"
   compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport_pci_probe.c" \
@@ -139,6 +141,7 @@ compile_kernel "$ROOT_DIR/kernel/runtime/arch_random.c" "$KERNEL_BUILD_DIR/arch_
 compile_kernel "$ROOT_DIR/kernel/runtime/entropy.c" "$KERNEL_BUILD_DIR/entropy.o"
 compile_kernel "$ROOT_DIR/kernel/sched/smp_task_set.c" "$KERNEL_BUILD_DIR/smp_task_set.o"
 compile_kernel "$ROOT_DIR/kernel/fs/initramfs.c" "$KERNEL_BUILD_DIR/initramfs.o"
+compile_kernel "$ROOT_DIR/kernel/fs/initramfs_config.c" "$KERNEL_BUILD_DIR/initramfs_config.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xaiboot_fs.c" "$KERNEL_BUILD_DIR/xaiboot_fs.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_state.c" "$KERNEL_BUILD_DIR/xbfs_state.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_node_codec.c" "$KERNEL_BUILD_DIR/xbfs_node_codec.o"

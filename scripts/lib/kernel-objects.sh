@@ -59,6 +59,7 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   $KERNEL_BUILD_DIR/sve.o
   $KERNEL_BUILD_DIR/sve_canary.o
   $KERNEL_BUILD_DIR/virtio_transport_mmio.o
+  $KERNEL_BUILD_DIR/virtio_transport_status.o
   $KERNEL_BUILD_DIR/virtio_transport_pci.o
   $KERNEL_BUILD_DIR/virtio_transport_pci_probe.o
   $KERNEL_BUILD_DIR/virtio_transport_pci_queue.o
@@ -152,6 +153,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/entropy.o
   $KERNEL_BUILD_DIR/smp_task_set.o
   $KERNEL_BUILD_DIR/initramfs.o
+  $KERNEL_BUILD_DIR/initramfs_config.o
   $KERNEL_BUILD_DIR/xaiboot_fs.o
   $KERNEL_BUILD_DIR/xbfs_state.o
   $KERNEL_BUILD_DIR/xbfs_node_codec.o

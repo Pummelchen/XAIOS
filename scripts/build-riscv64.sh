@@ -268,6 +268,7 @@ compile "$ROOT_DIR/kernel/arch/riscv64/boot.c"
 for source in $(find "$ROOT_DIR/kernel" -name '*.c' ! -path '*/arch/*' \
     ! -name 'virtio_transport.c' ! -name 'virtio_transport_pci.c' \
     ! -name 'virtio_transport_pci_probe.c' \
+    ! -name 'virtio_transport_status.c' \
     ! -name 'virtio_transport_pci_queue.c' | sort); do
   compile_shared "$source"
 done
@@ -277,6 +278,9 @@ done
 $CC $BASE_CFLAGS -DXAIOS_VIRTIO_MMIO_BACKEND=1 \
   -c "$ROOT_DIR/kernel/dev/virtio/virtio_transport.c" \
   -o "$BUILD_DIR/virtio_transport_mmio.o"
+$CC $BASE_CFLAGS -DXAIOS_VIRTIO_MMIO_BACKEND=1 \
+  -c "$ROOT_DIR/kernel/dev/virtio/virtio_transport_status.c" \
+  -o "$BUILD_DIR/virtio_transport_status.o"
 $CC $BASE_CFLAGS -DXAIOS_VIRTIO_PCI_BACKEND=1 \
   -c "$ROOT_DIR/kernel/dev/virtio/virtio_transport_pci.c" \
   -o "$BUILD_DIR/virtio_transport_pci.o"
@@ -287,6 +291,7 @@ $CC $BASE_CFLAGS -DXAIOS_VIRTIO_PCI_BACKEND=1 \
   -c "$ROOT_DIR/kernel/dev/virtio/virtio_transport_pci_queue.c" \
   -o "$BUILD_DIR/virtio_transport_pci_queue.o"
 OBJECTS="$OBJECTS $BUILD_DIR/virtio_transport_mmio.o \
+  $BUILD_DIR/virtio_transport_status.o \
   $BUILD_DIR/virtio_transport_pci.o $BUILD_DIR/virtio_transport_pci_probe.o \
   $BUILD_DIR/virtio_transport_pci_queue.o"
 # Only the engine sources the kernel actually needs symbols from. sha256 and

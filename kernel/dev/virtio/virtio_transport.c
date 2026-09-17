@@ -1,41 +1,4 @@
-#ifdef XAIOS_VIRTIO_MMIO_BACKEND
-/* Built as one of two backends behind virtio_transport_dispatch.c.
-   The public names belong to the dispatcher, so take private ones. */
-#define virtio_mmio_read32 virtio_mmio_backend_mmio_read32
-#define virtio_mmio_read8 virtio_mmio_backend_mmio_read8
-#define virtio_mmio_write32 virtio_mmio_backend_mmio_write32
-#define virtio_mmio_barrier virtio_mmio_backend_mmio_barrier
-#define virtio_transport_find virtio_mmio_backend_transport_find
-#define virtio_transport_find_from virtio_mmio_backend_transport_find_from
-#define virtio_transport_find_at virtio_mmio_backend_transport_find_at
-#define virtio_transport_find_nth virtio_mmio_backend_transport_find_nth
-#define virtio_transport_setup_queue_vectored virtio_mmio_backend_transport_setup_queue_vectored
-#define virtio_transport_queue_has_vector virtio_mmio_backend_transport_queue_has_vector
-#define virtio_transport_register_queue_interrupt virtio_mmio_backend_transport_register_queue_interrupt
-#define virtio_transport_reset virtio_mmio_backend_transport_reset
-#define virtio_transport_reset_checked virtio_mmio_backend_transport_reset_checked
-#define virtio_transport_negotiate_no_features virtio_mmio_backend_transport_negotiate_no_features
-#define virtio_transport_negotiate_features virtio_mmio_backend_transport_negotiate_features
-#define virtio_transport_setup_queue virtio_mmio_backend_transport_setup_queue
-#define virtio_transport_set_driver_ok virtio_mmio_backend_transport_set_driver_ok
-#define virtio_transport_set_driver_ok_checked virtio_mmio_backend_transport_set_driver_ok_checked
-#define virtio_transport_notify virtio_mmio_backend_transport_notify
-#define virtio_transport_wait_used virtio_mmio_backend_transport_wait_used
-#define virtio_transport_device_status virtio_mmio_backend_transport_device_status
-#define virtio_transport_ack_interrupts virtio_mmio_backend_transport_ack_interrupts
-#define virtio_transport_interrupt_id virtio_mmio_backend_transport_interrupt_id
-#define virtio_transport_register_interrupt virtio_mmio_backend_transport_register_interrupt
-#define virtio_transport_unregister_interrupt virtio_mmio_backend_transport_unregister_interrupt
-#define virtio_transport_slot virtio_mmio_backend_transport_slot
-#endif
-
-#include <xaios/arch_cpu.h>
-#include <xaios/assert.h>
-#include <xaios/gic.h>
-#include <xaios/klog.h>
-#include <xaios/timer.h>
-#include <xaios/virtio_transport.h>
-#include <xaios/vmm.h>
+#include "virtio_transport_internal.h"
 
 /* Where the virtio-mmio slots are, and how far apart.
  *
@@ -99,40 +62,6 @@ void virtio_transport_set_mmio_interrupt_base(uint32_t first_intid) {
 }
 
 #define VIRTIO_MMIO_FIRST_INTID g_virtio_mmio_first_intid
-#define VIRTIO_WAIT_TIMEOUT_NS UINT64_C(5000000000)
-#define VIRTIO_WAIT_FALLBACK_SPINS UINT64_C(100000000)
-#define VIRTIO_RESET_TIMEOUT_NS UINT64_C(1000000000)
-
-#define VIRTIO_MMIO_MAGIC 0x000U
-#define VIRTIO_MMIO_VERSION 0x004U
-#define VIRTIO_MMIO_DEVICE_ID 0x008U
-#define VIRTIO_MMIO_VENDOR_ID 0x00cU
-#define VIRTIO_MMIO_DEVICE_FEATURES 0x010U
-#define VIRTIO_MMIO_DEVICE_FEATURES_SEL 0x014U
-#define VIRTIO_MMIO_DRIVER_FEATURES 0x020U
-#define VIRTIO_MMIO_DRIVER_FEATURES_SEL 0x024U
-#define VIRTIO_MMIO_QUEUE_SEL 0x030U
-#define VIRTIO_MMIO_QUEUE_NUM_MAX 0x034U
-#define VIRTIO_MMIO_QUEUE_NUM 0x038U
-#define VIRTIO_MMIO_QUEUE_READY 0x044U
-#define VIRTIO_MMIO_QUEUE_NOTIFY 0x050U
-#define VIRTIO_MMIO_INTERRUPT_STATUS 0x060U
-#define VIRTIO_MMIO_INTERRUPT_ACK 0x064U
-#define VIRTIO_MMIO_STATUS 0x070U
-#define VIRTIO_MMIO_QUEUE_DESC_LOW 0x080U
-#define VIRTIO_MMIO_QUEUE_DESC_HIGH 0x084U
-#define VIRTIO_MMIO_QUEUE_DRIVER_LOW 0x090U
-#define VIRTIO_MMIO_QUEUE_DRIVER_HIGH 0x094U
-#define VIRTIO_MMIO_QUEUE_DEVICE_LOW 0x0a0U
-#define VIRTIO_MMIO_QUEUE_DEVICE_HIGH 0x0a4U
-
-#define VIRTIO_MAGIC UINT32_C(0x74726976)
-
-#define VIRTIO_STATUS_ACKNOWLEDGE UINT32_C(1)
-#define VIRTIO_STATUS_DRIVER UINT32_C(2)
-#define VIRTIO_STATUS_DRIVER_OK UINT32_C(4)
-#define VIRTIO_STATUS_FEATURES_OK UINT32_C(8)
-#define VIRTIO_STATUS_FAILED UINT32_C(128)
 
 uint32_t virtio_mmio_read32(uint64_t base, uint32_t offset) {
   volatile uint32_t *reg = (volatile uint32_t *)(uintptr_t)(base + offset);
@@ -166,11 +95,6 @@ static uint64_t dma_address(const void *ptr) {
   kassert(vmm_translate((uint64_t)(uintptr_t)ptr, &physical, &flags) == XAIOS_OK);
   kassert((flags & XAIOS_VMM_PRESENT) != 0);
   return physical;
-}
-
-static void set_status(const virtio_mmio_device_t *device, uint32_t status) {
-  virtio_mmio_write32(device->base, VIRTIO_MMIO_STATUS, status);
-  virtio_mmio_barrier();
 }
 
 xaios_status_t virtio_transport_find(uint32_t device_id, const char *name,
@@ -278,86 +202,6 @@ xaios_status_t virtio_transport_find_at(uint32_t device_id, const char *name,
   return XAIOS_OK;
 }
 
-void virtio_transport_reset(const virtio_mmio_device_t *device) {
-  (void)virtio_transport_reset_checked(device);
-}
-
-xaios_status_t virtio_transport_reset_checked(
-    const virtio_mmio_device_t *device) {
-  if (device == 0 || device->base == 0U) return XAIOS_ERR_INVALID;
-  set_status(device, 0U);
-  uint64_t started = timer_now_ns();
-  for (uint64_t spins = 0U;; ++spins) {
-    if (virtio_mmio_read32(device->base, VIRTIO_MMIO_STATUS) == 0U) {
-      return XAIOS_OK;
-    }
-    if ((spins & UINT64_C(0x3ff)) == 0U &&
-        ((started != 0U && timer_now_ns() - started >= VIRTIO_RESET_TIMEOUT_NS) ||
-         (started == 0U && spins >= VIRTIO_WAIT_FALLBACK_SPINS))) {
-      return XAIOS_ERR_IO;
-    }
-    xaios_cpu_relax();
-  }
-}
-
-xaios_status_t virtio_transport_negotiate_no_features(
-    const virtio_mmio_device_t *device) {
-  if (virtio_transport_reset_checked(device) != XAIOS_OK) {
-    return XAIOS_ERR_IO;
-  }
-  set_status(device, VIRTIO_STATUS_ACKNOWLEDGE);
-  set_status(device, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
-
-  virtio_mmio_write32(device->base, VIRTIO_MMIO_DEVICE_FEATURES_SEL, 0);
-  virtio_mmio_write32(device->base, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0);
-  virtio_mmio_write32(device->base, VIRTIO_MMIO_DRIVER_FEATURES, 0);
-  set_status(device, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER |
-                         VIRTIO_STATUS_FEATURES_OK);
-  uint32_t status = virtio_mmio_read32(device->base, VIRTIO_MMIO_STATUS);
-  if ((status & VIRTIO_STATUS_FEATURES_OK) == 0) {
-    set_status(device, status | VIRTIO_STATUS_FAILED);
-    return XAIOS_ERR_IO;
-  }
-
-  return XAIOS_OK;
-}
-
-xaios_status_t virtio_transport_negotiate_features(
-    const virtio_mmio_device_t *device, uint32_t requested_low,
-    uint32_t requested_high, uint32_t *accepted_low,
-    uint32_t *accepted_high) {
-  if (device == 0 || accepted_low == 0 || accepted_high == 0) {
-    return XAIOS_ERR_INVALID;
-  }
-  if (virtio_transport_reset_checked(device) != XAIOS_OK) {
-    return XAIOS_ERR_IO;
-  }
-  set_status(device, VIRTIO_STATUS_ACKNOWLEDGE);
-  set_status(device, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
-  virtio_mmio_write32(device->base, VIRTIO_MMIO_DEVICE_FEATURES_SEL, 0U);
-  uint32_t available_low =
-      virtio_mmio_read32(device->base, VIRTIO_MMIO_DEVICE_FEATURES);
-  virtio_mmio_write32(device->base, VIRTIO_MMIO_DEVICE_FEATURES_SEL, 1U);
-  uint32_t available_high =
-      virtio_mmio_read32(device->base, VIRTIO_MMIO_DEVICE_FEATURES);
-  *accepted_low = available_low & requested_low;
-  *accepted_high = available_high & requested_high;
-  virtio_mmio_write32(device->base, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 0U);
-  virtio_mmio_write32(device->base, VIRTIO_MMIO_DRIVER_FEATURES,
-                      *accepted_low);
-  virtio_mmio_write32(device->base, VIRTIO_MMIO_DRIVER_FEATURES_SEL, 1U);
-  virtio_mmio_write32(device->base, VIRTIO_MMIO_DRIVER_FEATURES,
-                      *accepted_high);
-  set_status(device, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER |
-                         VIRTIO_STATUS_FEATURES_OK);
-  uint32_t status = virtio_mmio_read32(device->base, VIRTIO_MMIO_STATUS);
-  if ((status & VIRTIO_STATUS_FEATURES_OK) == 0U) {
-    set_status(device, status | VIRTIO_STATUS_FAILED);
-    return XAIOS_ERR_IO;
-  }
-  return XAIOS_OK;
-}
-
 xaios_status_t virtio_transport_setup_queue(virtio_mmio_device_t *device,
                                            uint32_t queue_index,
                                            uint32_t queue_size,
@@ -388,22 +232,6 @@ xaios_status_t virtio_transport_setup_queue(virtio_mmio_device_t *device,
   virtio_mmio_write32(device->base, VIRTIO_MMIO_QUEUE_READY, 1);
   virtio_mmio_barrier();
   return virtio_mmio_read32(device->base, VIRTIO_MMIO_QUEUE_READY) == 1U
-             ? XAIOS_OK
-             : XAIOS_ERR_IO;
-}
-
-void virtio_transport_set_driver_ok(const virtio_mmio_device_t *device) {
-  (void)virtio_transport_set_driver_ok_checked(device);
-}
-
-xaios_status_t virtio_transport_set_driver_ok_checked(
-    const virtio_mmio_device_t *device) {
-  if (device == 0) return XAIOS_ERR_INVALID;
-  set_status(device, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER |
-                         VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK);
-  uint32_t status = virtio_mmio_read32(device->base, VIRTIO_MMIO_STATUS);
-  return (status & (VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK)) ==
-                 (VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK)
              ? XAIOS_OK
              : XAIOS_ERR_IO;
 }

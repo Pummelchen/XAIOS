@@ -26,6 +26,7 @@ COPY tests/network/debian13-phase2-client-suite.sh /usr/local/bin/xaios-phase2-c
 COPY tests/network/debian13-client-suite-checks.sh /usr/local/bin/debian13-client-suite-checks.sh
 COPY tests/network/debian13-client-suite-transport.sh /usr/local/bin/debian13-client-suite-transport.sh
 COPY tests/network/parallel-client-load.py /usr/local/bin/xaios-parallel-network-client
+COPY tests/network/parallel_client_load_lib.py /usr/local/bin/parallel_client_load_lib.py
 COPY tests/network/qemu-ipv6-tcp-client.py /usr/local/bin/xaios-ipv6-tcp-client
 COPY tests/network/qemu_ipv6_tcp_client_wire.py /usr/local/bin/qemu_ipv6_tcp_client_wire.py
 COPY tests/network/qemu_ipv6_tcp_client_proto.py /usr/local/bin/qemu_ipv6_tcp_client_proto.py
