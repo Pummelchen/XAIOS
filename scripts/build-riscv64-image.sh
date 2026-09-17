@@ -335,7 +335,19 @@ for app in $USER_APPS; do
       -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/sshd" \
       -I"$ROOT_DIR/engine/include" \
       -c "$ROOT_DIR/userspace/apps/xtop_draw.c" -o "$BUILD_DIR/xtop-draw.o"
-    EXTRA_OBJS="$EXTRA_OBJS $BUILD_DIR/xtop-serve.o $BUILD_DIR/xtop-render.o $BUILD_DIR/xtop-glyph.o $BUILD_DIR/xtop-draw.o"
+    "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
+      -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \
+      -fno-pie -Os -Wall -Wextra -Werror \
+      -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/sshd" \
+      -I"$ROOT_DIR/engine/include" \
+      -c "$ROOT_DIR/userspace/apps/xtop_snapshot.c" -o "$BUILD_DIR/xtop-snapshot.o"
+    "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
+      -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \
+      -fno-pie -Os -Wall -Wextra -Werror \
+      -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/sshd" \
+      -I"$ROOT_DIR/engine/include" \
+      -c "$ROOT_DIR/userspace/apps/xtop_report.c" -o "$BUILD_DIR/xtop-report.o"
+    EXTRA_OBJS="$EXTRA_OBJS $BUILD_DIR/xtop-serve.o $BUILD_DIR/xtop-render.o $BUILD_DIR/xtop-glyph.o $BUILD_DIR/xtop-draw.o $BUILD_DIR/xtop-snapshot.o $BUILD_DIR/xtop-report.o"
   fi
   # shellcheck disable=SC2086
   "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \

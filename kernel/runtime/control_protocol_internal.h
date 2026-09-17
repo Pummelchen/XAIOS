@@ -36,7 +36,7 @@ xaios_status_t control_protocol_write_admin_error(
     uint64_t response_capacity, uint64_t *response_bytes);
 
 /* Log helpers and operation handlers that control_ops.c and the self-test
-   share, defined in control_protocol.c and control_ops.c. */
+   share, defined in control_report_ops.c and control_ops.c. */
 int control_protocol_line_contains_case_insensitive(const char *line,
                                                     uint64_t line_size,
                                                     const char *needle);
@@ -90,6 +90,30 @@ xaios_status_t control_protocol_handle_storage_trim_operation(
 xaios_status_t control_protocol_handle_observability_operation(
     const xaios_control_request_header_t *request, void *response,
     uint64_t response_capacity, uint64_t *response_bytes);
+
+/* Model, package and system-update operations, defined in
+   control_model_ops.c. */
+xaios_status_t control_protocol_handle_model_operation(
+    const xaios_control_request_header_t *request, const uint8_t *payload,
+    void *response, uint64_t response_capacity, uint64_t *response_bytes,
+    xaios_control_role_t authenticated_role);
+xaios_status_t control_protocol_handle_package_operation(
+    const xaios_control_request_header_t *request, const uint8_t *payload,
+    void *response, uint64_t response_capacity, uint64_t *response_bytes,
+    xaios_control_role_t authenticated_role);
+xaios_status_t control_protocol_handle_system_update_operation(
+    const xaios_control_request_header_t *request, const uint8_t *payload,
+    void *response, uint64_t response_capacity, uint64_t *response_bytes,
+    xaios_control_role_t authenticated_role);
+
+/* Block-device list/show and the runtime-snapshot filler, defined in
+   control_report_ops.c. */
+xaios_status_t control_protocol_handle_storage_devices(
+    const xaios_control_request_header_t *request, const uint8_t *payload,
+    void *response, uint64_t response_capacity, uint64_t *response_bytes);
+xaios_status_t control_protocol_fill_runtime_snapshot(
+    const xaios_control_runtime_snapshot_request_t *request,
+    xaios_control_runtime_snapshot_payload_t *payload);
 
 /* Filesystem and partition operations, defined in
    control_storage_layout_ops.c. */

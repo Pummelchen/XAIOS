@@ -1,0 +1,294 @@
+# Sourced by scripts/build-image.sh; not a standalone script.
+#
+# compile_kernel/compile_kernel_simd and the two object lists they fill:
+# ARCH_KERNEL_OBJECTS for the selected architecture and KERNEL_OBJECTS for
+# the whole kernel. Runs in the caller's shell, so the functions and the
+# lists are still defined when the kernel is compiled.
+
+# Files that use FP/SIMD on purpose opt back in; everything else is built
+# without it. See KERNEL_NO_SIMD_CFLAGS below for why.
+compile_kernel_simd() {
+  KERNEL_ALLOW_SIMD=1 compile_kernel "$1" "$2"
+}
+compile_kernel() {
+  source_path="$1"
+  object_path="$2"
+  extra_cflags="${3:-}"
+  simd_cflags="$KERNEL_NO_SIMD_CFLAGS"
+  if [ "${KERNEL_ALLOW_SIMD:-0}" = 1 ]; then
+    simd_cflags=""
+  fi
+  "$CLANG" $KERNEL_CFLAGS $simd_cflags $extra_cflags \
+    "-DXAIOS_BUILD_IDENTIFIER=\"$BUILD_IDENTIFIER\"" \
+    "-DXAIOS_BUILD_REVISION=\"$BUILD_REVISION\"" \
+    "-DXAIOS_BUILD_MODE=\"$BUILD_MODE\"" \
+    -I"$ROOT_DIR/kernel/include" \
+    -I"$ROOT_DIR/engine/include" \
+    -I"$ROOT_DIR/engine/src" \
+    -I"$ROOT_DIR/userspace/include" \
+    -I"$ROOT_DIR/userspace/sshd" \
+    -I"$ROOT_DIR/third_party/bearssl/inc" \
+    -c "$source_path" -o "$object_path"
+}
+if [ "$TARGET_ARCH" = aarch64 ]; then
+  ARCH_KERNEL_OBJECTS="
+  $KERNEL_BUILD_DIR/entry.o
+  $KERNEL_BUILD_DIR/secondary.o
+  $KERNEL_BUILD_DIR/vectors.o
+  $KERNEL_BUILD_DIR/acpi.o
+  $KERNEL_BUILD_DIR/cpu_features.o
+  $KERNEL_BUILD_DIR/context.o
+  $KERNEL_BUILD_DIR/exception.o
+  $KERNEL_BUILD_DIR/timer.o
+  $KERNEL_BUILD_DIR/rtc.o
+  $KERNEL_BUILD_DIR/power.o
+  $KERNEL_BUILD_DIR/watchdog.o
+  $KERNEL_BUILD_DIR/smmu.o
+  $KERNEL_BUILD_DIR/pci.o
+  $KERNEL_BUILD_DIR/gic.o
+  $KERNEL_BUILD_DIR/gic_its.o
+  $KERNEL_BUILD_DIR/smp.o
+  $KERNEL_BUILD_DIR/engine_packed.o
+  $KERNEL_BUILD_DIR/sve.o
+  $KERNEL_BUILD_DIR/sve_canary.o
+  $KERNEL_BUILD_DIR/virtio_transport_mmio.o
+  $KERNEL_BUILD_DIR/virtio_transport_pci.o
+  "
+else
+  ARCH_KERNEL_OBJECTS="
+  $KERNEL_BUILD_DIR/entry.o
+  $KERNEL_BUILD_DIR/acpi.o
+  $KERNEL_BUILD_DIR/cpu_features.o
+  $KERNEL_BUILD_DIR/early.o
+  $KERNEL_BUILD_DIR/early_tlb.o
+  $KERNEL_BUILD_DIR/early_cpu.o
+  $KERNEL_BUILD_DIR/early_mem.o
+  $KERNEL_BUILD_DIR/early_pci.o
+  $KERNEL_BUILD_DIR/early_serial.o
+  $KERNEL_BUILD_DIR/early_acpi.o
+  $KERNEL_BUILD_DIR/early_fpu.o
+  $KERNEL_BUILD_DIR/early_irq.o
+  $KERNEL_BUILD_DIR/early_gdt.o
+  $KERNEL_BUILD_DIR/early_platform.o
+  $KERNEL_BUILD_DIR/engine_packed.o
+  $KERNEL_BUILD_DIR/timer.o
+  $KERNEL_BUILD_DIR/platform.o
+  $KERNEL_BUILD_DIR/power.o
+  $KERNEL_BUILD_DIR/watchdog.o
+  $KERNEL_BUILD_DIR/pci.o
+  $KERNEL_BUILD_DIR/smp.o
+  "
+fi
+KERNEL_OBJECTS="
+  $ARCH_KERNEL_OBJECTS
+  $KERNEL_BUILD_DIR/kmain.o
+  $KERNEL_BUILD_DIR/boot_storage.o
+  $KERNEL_BUILD_DIR/boot_apps.o
+  $KERNEL_BUILD_DIR/boot_ui.o
+  $KERNEL_BUILD_DIR/boot_ui_render.o
+  $KERNEL_BUILD_DIR/boot_ui_term.o
+  $KERNEL_BUILD_DIR/klog.o
+  $KERNEL_BUILD_DIR/idle_wake.o
+  $KERNEL_BUILD_DIR/input.o
+  $KERNEL_BUILD_DIR/klog_ring.o
+  $KERNEL_BUILD_DIR/telemetry.o
+  $KERNEL_BUILD_DIR/panic.o
+  $KERNEL_BUILD_DIR/assert.o
+  $KERNEL_BUILD_DIR/stack_canary.o
+  $KERNEL_BUILD_DIR/nvme.o
+  $KERNEL_BUILD_DIR/nvme_queue.o
+  $KERNEL_BUILD_DIR/nvme_completion.o
+  $KERNEL_BUILD_DIR/nvme_admin.o
+  $KERNEL_BUILD_DIR/nvme_selftest.o
+  $KERNEL_BUILD_DIR/ahci.o
+  $KERNEL_BUILD_DIR/virtio_transport.o
+  $KERNEL_BUILD_DIR/block_device.o
+  $KERNEL_BUILD_DIR/virtio_blk.o
+  $KERNEL_BUILD_DIR/virtio_blk_handles.o
+  $KERNEL_BUILD_DIR/virtio_blk_request.o
+  $KERNEL_BUILD_DIR/virtio_blk_backend.o
+  $KERNEL_BUILD_DIR/virtio_net.o
+  $KERNEL_BUILD_DIR/virtio_net_selftest.o
+  $KERNEL_BUILD_DIR/virtio_net_tx.o
+  $KERNEL_BUILD_DIR/virtio_net_setup.o
+  $KERNEL_BUILD_DIR/e1000e.o
+  $KERNEL_BUILD_DIR/vmxnet3.o
+  $KERNEL_BUILD_DIR/net_device.o
+  $KERNEL_BUILD_DIR/virtio_rng.o
+  $KERNEL_BUILD_DIR/virtio_gpu.o
+  $KERNEL_BUILD_DIR/virtio_console.o
+  $KERNEL_BUILD_DIR/arch_random.o
+  $KERNEL_BUILD_DIR/entropy.o
+  $KERNEL_BUILD_DIR/smp_task_set.o
+  $KERNEL_BUILD_DIR/initramfs.o
+  $KERNEL_BUILD_DIR/xaiboot_fs.o
+  $KERNEL_BUILD_DIR/xbfs_state.o
+  $KERNEL_BUILD_DIR/xbfs_node_codec.o
+  $KERNEL_BUILD_DIR/xbfs_util.o
+  $KERNEL_BUILD_DIR/xbfs_record.o
+  $KERNEL_BUILD_DIR/xbfs_metadata.o
+  $KERNEL_BUILD_DIR/xbfs_dir.o
+  $KERNEL_BUILD_DIR/xbfs_alloc.o
+  $KERNEL_BUILD_DIR/xbfs_file_io.o
+  $KERNEL_BUILD_DIR/xbfs_fd.o
+  $KERNEL_BUILD_DIR/xbfs_mount.o
+  $KERNEL_BUILD_DIR/xbfs_snapshot.o
+  $KERNEL_BUILD_DIR/xbfs_format.o
+  $KERNEL_BUILD_DIR/xbfs_selfcheck.o
+  $KERNEL_BUILD_DIR/fat.o
+  $KERNEL_BUILD_DIR/fat_codec.o
+  $KERNEL_BUILD_DIR/fat_dir.o
+  $KERNEL_BUILD_DIR/fat_file_io.o
+  $KERNEL_BUILD_DIR/vfs.o
+  $KERNEL_BUILD_DIR/vfs_xaiboot.o
+  $KERNEL_BUILD_DIR/vfs_initramfs.o
+  $KERNEL_BUILD_DIR/vfs_xaifs.o
+  $KERNEL_BUILD_DIR/vfs_xaifs_trim.o
+  $KERNEL_BUILD_DIR/vfs_xaifs_scrub.o
+  $KERNEL_BUILD_DIR/vfs_xaifs_io.o
+  $KERNEL_BUILD_DIR/vfs_xaifs_catalog.o
+  $KERNEL_BUILD_DIR/model_cache.o
+  $KERNEL_BUILD_DIR/ram_residency.o
+  $KERNEL_BUILD_DIR/ram_block.o
+  $KERNEL_BUILD_DIR/setup_apply.o
+  $KERNEL_BUILD_DIR/xai_fs_admin.o
+  $KERNEL_BUILD_DIR/service.o
+  $KERNEL_BUILD_DIR/service_registry.o
+  $KERNEL_BUILD_DIR/service_lifecycle.o
+  $KERNEL_BUILD_DIR/syscall.o
+  $KERNEL_BUILD_DIR/syscall_table.o
+  $KERNEL_BUILD_DIR/syscall_socket.o
+  $KERNEL_BUILD_DIR/syscall_file.o
+  $KERNEL_BUILD_DIR/syscall_process.o
+  $KERNEL_BUILD_DIR/syscall_compute.o
+  $KERNEL_BUILD_DIR/syscall_time.o
+  $KERNEL_BUILD_DIR/syscall_net.o
+  $KERNEL_BUILD_DIR/syscall_netio.o
+  $KERNEL_BUILD_DIR/syscall_control.o
+  $KERNEL_BUILD_DIR/core_lease.o
+  $KERNEL_BUILD_DIR/security.o
+  $KERNEL_BUILD_DIR/child_channel.o
+  $KERNEL_BUILD_DIR/remote_login.o
+  $KERNEL_BUILD_DIR/remote_login_archive.o
+  $KERNEL_BUILD_DIR/remote_login_text.o
+  $KERNEL_BUILD_DIR/remote_login_path.o
+  $KERNEL_BUILD_DIR/remote_login_sysinfo.o
+  $KERNEL_BUILD_DIR/remote_login_tar.o
+  $KERNEL_BUILD_DIR/remote_login_zip.o
+  $KERNEL_BUILD_DIR/remote_login_exec.o
+  $KERNEL_BUILD_DIR/remote_login_copy.o
+  $KERNEL_BUILD_DIR/remote_login_apps.o
+  $KERNEL_BUILD_DIR/remote_login_session.o
+  $KERNEL_BUILD_DIR/remote_login_archive_format.o
+  $KERNEL_BUILD_DIR/remote_login_meta.o
+  $KERNEL_BUILD_DIR/remote_login_parse.o
+  $KERNEL_BUILD_DIR/operations.o
+  $KERNEL_BUILD_DIR/admin_control.o
+  $KERNEL_BUILD_DIR/admin_control_config.o
+  $KERNEL_BUILD_DIR/admin_control_auth.o
+  $KERNEL_BUILD_DIR/control_protocol.o
+  $KERNEL_BUILD_DIR/control_model_ops.o
+  $KERNEL_BUILD_DIR/control_report_ops.o
+  $KERNEL_BUILD_DIR/control_storage_ops.o
+  $KERNEL_BUILD_DIR/control_ops.o
+  $KERNEL_BUILD_DIR/control_observability_ops.o
+  $KERNEL_BUILD_DIR/control_storage_layout_ops.o
+  $KERNEL_BUILD_DIR/app_store.o
+  $KERNEL_BUILD_DIR/cpu_ai_runtime.o
+  $KERNEL_BUILD_DIR/ai_kernels.o
+  $KERNEL_BUILD_DIR/paged_kv_cache.o
+  $KERNEL_BUILD_DIR/inference_batcher.o
+  $KERNEL_BUILD_DIR/inference_preempt.o
+  $KERNEL_BUILD_DIR/model_parallel.o
+  $KERNEL_BUILD_DIR/speculative_decoding.o
+  $KERNEL_BUILD_DIR/flash_attention.o
+  $KERNEL_BUILD_DIR/model_compilation.o
+  $KERNEL_BUILD_DIR/math_intrinsics.o
+  $KERNEL_BUILD_DIR/user.o
+  $KERNEL_BUILD_DIR/user_process.o
+  $KERNEL_BUILD_DIR/user_runtime.o
+  $KERNEL_BUILD_DIR/model_arena.o
+  $KERNEL_BUILD_DIR/ai_cell.o
+  $KERNEL_BUILD_DIR/sandbox.o
+  $KERNEL_BUILD_DIR/persistence.o
+  $KERNEL_BUILD_DIR/update.o
+  $KERNEL_BUILD_DIR/system_slot.o
+  $KERNEL_BUILD_DIR/sha256.o
+  $KERNEL_BUILD_DIR/crc32.o
+  $KERNEL_BUILD_DIR/inflate.o
+  $KERNEL_BUILD_DIR/gpt.o
+  $KERNEL_BUILD_DIR/partition_device.o
+  $KERNEL_BUILD_DIR/storage_admin.o
+  $KERNEL_BUILD_DIR/storage_admin_table.o
+  $KERNEL_BUILD_DIR/storage_admin_self_test.o
+  $KERNEL_BUILD_DIR/install.o
+  $KERNEL_BUILD_DIR/storage_bench.o
+  $KERNEL_BUILD_DIR/crash_writer.o
+  $KERNEL_BUILD_DIR/rate_limit.o
+  $KERNEL_BUILD_DIR/source_index.o
+  $KERNEL_BUILD_DIR/network_stack.o
+  $KERNEL_BUILD_DIR/network_stack_wire.o
+  $KERNEL_BUILD_DIR/network_stack_listener.o
+  $KERNEL_BUILD_DIR/network_stack_v6.o
+  $KERNEL_BUILD_DIR/network_stack_tcp_flow.o
+  $KERNEL_BUILD_DIR/network_stack_tcp_segment.o
+  $KERNEL_BUILD_DIR/network_stack_packet.o
+  $KERNEL_BUILD_DIR/network_stack_udp.o
+  $KERNEL_BUILD_DIR/network_stack_udp_rx.o
+  $KERNEL_BUILD_DIR/network_stack_icmp.o
+  $KERNEL_BUILD_DIR/network_stack_poll.o
+  $KERNEL_BUILD_DIR/network_stack_local.o
+  $KERNEL_BUILD_DIR/network_stack_app.o
+  $KERNEL_BUILD_DIR/network_stack_selftest.o
+  $KERNEL_BUILD_DIR/network_stack_tcp_stats.o
+  $KERNEL_BUILD_DIR/network_stack_lifecycle.o
+  $KERNEL_BUILD_DIR/network_stack_tcp_table.o
+  $KERNEL_BUILD_DIR/network_stack_tcp_timers.o
+  $KERNEL_BUILD_DIR/network_stack_tcp_drain.o
+  $KERNEL_BUILD_DIR/network_stack_tcp_api.o
+  $KERNEL_BUILD_DIR/network_stack_tcp_frame.o
+  $KERNEL_BUILD_DIR/network_stack_tcp_frame_v6.o
+  $KERNEL_BUILD_DIR/network_config.o
+  $KERNEL_BUILD_DIR/git_workspace.o
+  $KERNEL_BUILD_DIR/agent_protocol.o
+  $KERNEL_BUILD_DIR/pmm.o
+  $KERNEL_BUILD_DIR/numa.o
+  $KERNEL_BUILD_DIR/arena.o
+  $KERNEL_BUILD_DIR/kheap.o
+  $KERNEL_BUILD_DIR/device_window.o
+  $KERNEL_BUILD_DIR/mmu.o
+  $KERNEL_BUILD_DIR/scheduler.o
+  $KERNEL_BUILD_DIR/sched_runqueue.o
+  $KERNEL_BUILD_DIR/sched_stats.o
+  $KERNEL_BUILD_DIR/thread.o
+  $KERNEL_BUILD_DIR/topology.o
+  $KERNEL_BUILD_DIR/arp.o
+  $KERNEL_BUILD_DIR/ipv4.o
+  $KERNEL_BUILD_DIR/icmp.o
+  $KERNEL_BUILD_DIR/ipv6.o
+  $KERNEL_BUILD_DIR/icmpv6.o
+  $KERNEL_BUILD_DIR/ndp.o
+  $KERNEL_BUILD_DIR/dhcpv6.o
+  $KERNEL_BUILD_DIR/socket_buffer.o
+  $KERNEL_BUILD_DIR/routing.o
+  $KERNEL_BUILD_DIR/dns.o
+  $KERNEL_BUILD_DIR/dns_resolver.o
+  $KERNEL_BUILD_DIR/dns_selftest.o
+  $KERNEL_BUILD_DIR/dnssec.o
+  $KERNEL_BUILD_DIR/ntp.o
+  $KERNEL_BUILD_DIR/elf_loader.o
+  $KERNEL_BUILD_DIR/string.o
+  $KERNEL_BUILD_DIR/bpe_tokenizer.o
+  $KERNEL_BUILD_DIR/engine_xai_fs.o
+  $KERNEL_BUILD_DIR/engine_xai_fs_writer.o
+  $KERNEL_BUILD_DIR/engine_xai_fs_writer_staging.o
+  $KERNEL_BUILD_DIR/engine_xai_fs_writer_rewrite.o
+  $KERNEL_BUILD_DIR/engine_xai_fs_writer_util.o
+  $KERNEL_BUILD_DIR/engine_sha256.o
+  $KERNEL_BUILD_DIR/engine_sha256_accel.o
+  $KERNEL_BUILD_DIR/engine_sha256_dispatch.o
+  $KERNEL_BUILD_DIR/kernel_ssh_crypto.o
+  $KERNEL_BUILD_DIR/kernel_ssh_crypto_symmetric.o
+  $KERNEL_BUILD_DIR/kernel_ssh_crypto_curve25519.o
+  $KERNEL_BUILD_DIR/kernel_tweetnacl_subset.o
+"

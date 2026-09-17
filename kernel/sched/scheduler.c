@@ -12,6 +12,7 @@
 #if defined(__aarch64__)
 #include <xaios/aarch64_sve.h>
 #endif
+#include "scheduler_internal.h"
 
 /* Admiral Janeway — “Just enough to bring chaos to order.” */
 
@@ -26,81 +27,25 @@
  * - Per-CPU statistics for telemetry
  */
 
-static xaios_cpu_task_table_t *g_cpu_tasks;
-static xaios_runqueue_t *g_runqueues;
-static xaios_sched_stats_t *g_sched_stats;
-static uint32_t g_cpu_capacity;
+xaios_cpu_task_table_t *g_cpu_tasks;
+xaios_runqueue_t *g_runqueues;
+xaios_sched_stats_t *g_sched_stats;
+uint32_t g_cpu_capacity;
 
-static uint64_t g_tick_count;
-static uint64_t g_context_switch_count;
-static uint64_t g_yield_count;
-static uint64_t g_steal_count;
-static uint64_t g_load_average_q16[3];
-static uint64_t g_load_average_last_ns;
-static uint32_t g_load_average_guard;
-static uint32_t g_initialized;
+uint64_t g_tick_count;
+uint64_t g_context_switch_count;
+uint64_t g_yield_count;
+uint64_t g_steal_count;
+uint64_t g_load_average_q16[3];
+uint64_t g_load_average_last_ns;
+uint32_t g_load_average_guard;
+uint32_t g_initialized;
 static uint32_t *g_lock_depth_per_cpu;
 
 /* Periodic load balancing counter */
-static uint32_t g_balance_counter;
+uint32_t g_balance_counter;
 
-#define XAIOS_LOAD_FIXED_ONE UINT64_C(65536)
-
-static void scheduler_load_average_step(uint32_t active_tasks) {
-  static const uint32_t decay_q16[3] = {64453U, 65318U, 65463U};
-  uint64_t active_q16 = (uint64_t)active_tasks * XAIOS_LOAD_FIXED_ONE;
-  for (uint32_t i = 0U; i < 3U; ++i) {
-    uint64_t retained = g_load_average_q16[i] * decay_q16[i];
-    uint64_t added = active_q16 * (XAIOS_LOAD_FIXED_ONE - decay_q16[i]);
-    g_load_average_q16[i] =
-        (retained + added + XAIOS_LOAD_FIXED_ONE / 2U) / XAIOS_LOAD_FIXED_ONE;
-  }
-}
-
-static uint64_t scheduler_load_decay_power(uint32_t decay_q16,
-                                           uint64_t seconds) {
-  uint64_t result = XAIOS_LOAD_FIXED_ONE;
-  uint64_t factor = decay_q16;
-  while (seconds != 0U) {
-    if ((seconds & 1U) != 0U) {
-      result = (result * factor + XAIOS_LOAD_FIXED_ONE / 2U) /
-               XAIOS_LOAD_FIXED_ONE;
-    }
-    seconds >>= 1U;
-    if (seconds != 0U) {
-      factor = (factor * factor + XAIOS_LOAD_FIXED_ONE / 2U) /
-               XAIOS_LOAD_FIXED_ONE;
-    }
-  }
-  return result;
-}
-
-static void scheduler_load_average_update(uint64_t now_ns) {
-  static const uint32_t decay_q16[3] = {64453U, 65318U, 65463U};
-  if (__sync_lock_test_and_set(&g_load_average_guard, 1U) != 0U) return;
-  if (g_load_average_last_ns == 0U) g_load_average_last_ns = now_ns;
-  uint64_t elapsed_ns = now_ns >= g_load_average_last_ns
-                            ? now_ns - g_load_average_last_ns
-                            : 0U;
-  uint64_t seconds = elapsed_ns / UINT64_C(1000000000);
-  if (seconds != 0U) {
-    uint64_t active = user_process_active_count();
-    if (active > UINT32_MAX) active = UINT32_MAX;
-    uint64_t target = active * XAIOS_LOAD_FIXED_ONE;
-    for (uint32_t i = 0U; i < 3U; ++i) {
-      uint64_t decay = scheduler_load_decay_power(decay_q16[i], seconds);
-      g_load_average_q16[i] =
-          (g_load_average_q16[i] * decay +
-           target * (XAIOS_LOAD_FIXED_ONE - decay) +
-           XAIOS_LOAD_FIXED_ONE / 2U) /
-          XAIOS_LOAD_FIXED_ONE;
-    }
-    g_load_average_last_ns += seconds * UINT64_C(1000000000);
-  }
-  __sync_lock_release(&g_load_average_guard);
-}
-
-static void bytes_zero(void *buffer, uint64_t size) {
+void sched_bytes_zero(void *buffer, uint64_t size) {
   uint8_t *bytes = (uint8_t *)buffer;
   for (uint64_t i = 0; i < size; ++i) {
     bytes[i] = 0;
@@ -121,388 +66,6 @@ static uint64_t architecture_state_size(void) {
 #endif
 }
 
-/* Find task in local CPU's task table (O(128) max, not O(32K)) */
-static xaios_sched_task_t *find_task_local(uint32_t cpu_id, uint32_t pid) {
-  if (cpu_id >= g_cpu_capacity) {
-    return 0;
-  }
-
-  xaios_cpu_task_table_t *table = &g_cpu_tasks[cpu_id];
-  for (uint32_t i = 0; i < XAIOS_TASK_SLOTS_PER_CPU; ++i) {
-    if ((table->slot_bitmap[i >> 6U] & (UINT64_C(1) << (i & 63U))) != 0 &&
-        table->tasks[i].active != 0 && table->tasks[i].pid == pid) {
-      return &table->tasks[i];
-    }
-  }
-  return 0;
-}
-
-static xaios_sched_task_t *find_task_global(uint32_t pid, uint32_t *cpu_out) {
-  uint32_t online = smp_online_count();
-  for (uint32_t cpu = 0; cpu < online; ++cpu) {
-    xaios_sched_task_t *task = find_task_local(cpu, pid);
-    if (task != 0) {
-      if (cpu_out != 0) {
-        *cpu_out = cpu;
-      }
-      return task;
-    }
-  }
-  return 0;
-}
-
-/* Allocate task slot from local CPU's table using atomic bitmap */
-static xaios_sched_task_t *alloc_task_slot(uint32_t cpu_id) {
-  if (cpu_id >= g_cpu_capacity) {
-    return 0;
-  }
-
-  xaios_cpu_task_table_t *table = &g_cpu_tasks[cpu_id];
-  for (uint32_t word = 0; word < 2; ++word) {
-    uint64_t bitmap = table->slot_bitmap[word];
-    if (bitmap != UINT64_C(0xffffffffffffffff)) {
-      /* Find first free slot */
-      for (uint32_t bit = 0; bit < 64; ++bit) {
-        uint32_t slot = word * 64 + bit;
-        if (slot >= XAIOS_TASK_SLOTS_PER_CPU) {
-          break;
-        }
-        uint64_t mask = UINT64_C(1) << bit;
-        if ((bitmap & mask) == 0) {
-          /* Atomically claim slot */
-          uint64_t old = __sync_val_compare_and_swap(&table->slot_bitmap[word],
-                                                      bitmap, bitmap | mask);
-          if (old == bitmap) {
-            /* Successfully claimed */
-            bytes_zero(&table->tasks[slot], sizeof(xaios_sched_task_t));
-            return &table->tasks[slot];
-          }
-          /* Race, retry */
-          bitmap = table->slot_bitmap[word];
-        }
-      }
-    }
-  }
-  return 0; /* table full */
-}
-
-/* Free task slot */
-static void free_task_slot(uint32_t cpu_id, xaios_sched_task_t *task) {
-  if (cpu_id >= g_cpu_capacity || task == 0) {
-    return;
-  }
-
-  xaios_cpu_task_table_t *table = &g_cpu_tasks[cpu_id];
-  uint32_t index = (uint32_t)(task - table->tasks);
-  if (index >= XAIOS_TASK_SLOTS_PER_CPU) {
-    return;
-  }
-
-  kheap_free(task->architecture_state);
-  task->architecture_state = 0;
-  task->architecture_state_size = 0U;
-
-  uint32_t word = index >> 6U;
-  uint32_t bit = index & 63U;
-  __sync_fetch_and_and(&table->slot_bitmap[word], ~(UINT64_C(1) << bit));
-}
-
-static uint32_t priority_slice(xaios_task_priority_t prio) {
-  switch (prio) {
-    case XAIOS_PRIORITY_HIGH:   return XAIOS_PRIORITY_HIGH_SLICE;
-    case XAIOS_PRIORITY_NORMAL: return XAIOS_PRIORITY_NORMAL_SLICE;
-    case XAIOS_PRIORITY_LOW:    return XAIOS_PRIORITY_LOW_SLICE;
-  }
-  return XAIOS_PRIORITY_NORMAL_SLICE;
-}
-
-static uint32_t rq_index(const xaios_runqueue_t *rq, uint32_t pid) {
-  for (uint32_t i = 0; i < rq->count; ++i) {
-    if (rq->tasks[i] == pid) {
-      return i;
-    }
-  }
-  return UINT32_C(0xffffffff);
-}
-
-static void rq_add(xaios_runqueue_t *rq, uint32_t pid) {
-  if (rq->count < XAIOS_SCHEDULER_PER_CPU_RUNQUEUE &&
-      rq_index(rq, pid) == UINT32_C(0xffffffff)) {
-    rq->tasks[rq->count++] = pid;
-  }
-}
-
-static void rq_remove(xaios_runqueue_t *rq, uint32_t pid) {
-  uint32_t idx = rq_index(rq, pid);
-  if (idx == UINT32_C(0xffffffff)) {
-    return;
-  }
-  for (uint32_t i = idx; i + 1U < rq->count; ++i) {
-    rq->tasks[i] = rq->tasks[i + 1U];
-  }
-  --rq->count;
-}
-
-static uint32_t rq_pick_best(xaios_runqueue_t *rq, uint32_t cpu_id) {
-  if (rq->count == 0) {
-    return 0;
-  }
-
-  uint32_t best_pid = rq->tasks[0];
-  xaios_task_priority_t best_prio = XAIOS_PRIORITY_LOW;
-
-  for (uint32_t i = 0; i < rq->count; ++i) {
-    xaios_sched_task_t *t = find_task_local(cpu_id, rq->tasks[i]);
-    if (t != 0 && t->priority < best_prio) {
-      best_prio = t->priority;
-      best_pid = t->pid;
-    }
-    if (best_prio == XAIOS_PRIORITY_HIGH) {
-      break;
-    }
-  }
-
-  rq_remove(rq, best_pid);
-  return best_pid;
-}
-
-static uint32_t rq_pick_stealable(xaios_runqueue_t *victim, uint32_t victim_cpu) {
-  if (victim->count == 0) {
-    return 0;
-  }
-
-  uint32_t best_pid = 0;
-  xaios_task_priority_t best_prio = XAIOS_PRIORITY_LOW;
-
-  for (uint32_t i = 0; i < victim->count; ++i) {
-    uint32_t pid = victim->tasks[i];
-    if (pid == victim->current_pid) {
-      continue;
-    }
-    xaios_sched_task_t *t = find_task_local(victim_cpu, pid);
-    if (t != 0 && t->priority <= best_prio) {
-      if (t->priority < best_prio || best_pid == 0) {
-        best_prio = t->priority;
-        best_pid = pid;
-      }
-    }
-  }
-
-  if (best_pid != 0) {
-    rq_remove(victim, best_pid);
-  }
-  return best_pid;
-}
-
-/* Hierarchical work-stealing: core → socket → NUMA → stop.
- *
- * Only a level-0 domain lists CPUs. Every other level lists child domains, so
- * this walks down to the leaves rather than reading a domain id as a CPU id,
- * which is what it did before: on a machine with more than one core domain,
- * "steal from the same socket" inspected the runqueue of whatever CPU number
- * a domain id collided with. It looked harmless because on a small
- * single-node machine the ids overlap the CPU ids and the extra levels find
- * nothing to steal anyway. */
-static uint32_t try_steal_from_cpu(uint32_t this_cpu, uint32_t victim);
-
-/* `budget` is the number of victims this walk may still look at, kept from
-   the original: a steal happens on the path of a CPU that has just run out of
-   work, so scanning a whole domain to find nothing costs more than the steal
-   was worth. It is spent across the recursion rather than per domain, so a
-   deep hierarchy cannot multiply it. */
-static uint32_t try_steal_domain_recursive(uint32_t this_cpu,
-                                           uint32_t domain_id, uint32_t depth,
-                                           uint32_t *budget) {
-  if (domain_id == UINT32_MAX || depth > XAIOS_SCHED_DOMAIN_MAX_LEVELS ||
-      *budget == 0U) {
-    return 0;
-  }
-  const xaios_sched_domain_t *dom = topology_get_domain(domain_id);
-  if (dom == 0 || dom->member_count == 0) {
-    return 0;
-  }
-  for (uint32_t i = 0; i < dom->member_count && *budget != 0U; ++i) {
-    uint32_t stolen = 0;
-    if (dom->level == 0) {
-      --(*budget);
-      stolen = try_steal_from_cpu(this_cpu, dom->members[i]);
-    } else {
-      stolen = try_steal_domain_recursive(this_cpu, dom->members[i], depth + 1,
-                                          budget);
-    }
-    if (stolen != 0) {
-      return stolen;
-    }
-  }
-  return 0;
-}
-
-static uint32_t try_steal_domain(uint32_t this_cpu, uint32_t domain_id) {
-  uint32_t budget = 8U;
-  return try_steal_domain_recursive(this_cpu, domain_id, 0, &budget);
-}
-
-/* One victim. Returns the pid moved onto this_cpu, or 0 for every reason a
-   CPU is not worth stealing from -- it is itself, it is not scheduling, it is
-   not overloaded, or another CPU holds its runqueue lock. */
-static uint32_t try_steal_from_cpu(uint32_t this_cpu, uint32_t victim) {
-  if (victim == this_cpu || victim >= g_cpu_capacity) {
-    return 0;
-  }
-
-  const xaios_cpu_state_t *state = smp_cpu_state(victim);
-  if (state == 0 || state->online == 0 || state->scheduling_enabled == 0) {
-    return 0;
-  }
-
-  /* Only steal from overloaded CPUs (count > 2) */
-  if (g_runqueues[victim].count <= 2) {
-    return 0;
-  }
-
-  if (!xaios_spin_trylock(&g_runqueues[victim].lock)) {
-    return 0;
-  }
-  uint32_t stolen_pid = rq_pick_stealable(&g_runqueues[victim], victim);
-  xaios_spin_unlock(&g_runqueues[victim].lock);
-  if (stolen_pid == 0) {
-    __sync_fetch_and_add(&g_sched_stats[this_cpu].steal_fail_count, 1);
-    return 0;
-  }
-
-  xaios_sched_task_t *task = find_task_local(victim, stolen_pid);
-  if (task != 0) {
-    task->assigned_cpu = this_cpu;
-    task->remaining_ticks = priority_slice(task->priority);
-  }
-
-  xaios_spin_lock(&g_runqueues[this_cpu].lock);
-  rq_add(&g_runqueues[this_cpu], stolen_pid);
-  xaios_spin_unlock(&g_runqueues[this_cpu].lock);
-
-  __sync_fetch_and_add(&g_sched_stats[this_cpu].steal_success_count, 1);
-  __sync_fetch_and_add(&g_steal_count, 1);
-  return stolen_pid;
-}
-
-static uint32_t try_steal_hierarchical(uint32_t this_cpu) {
-  /* Level 0: steal from sibling CPUs in same core domain */
-  uint32_t core_domain = topology_get_core_domain(this_cpu);
-  uint32_t stolen = try_steal_domain(this_cpu, core_domain);
-  if (stolen != 0) {
-    return stolen;
-  }
-
-  /* Level 1: steal from same socket */
-  uint32_t socket_domain = topology_get_socket_domain(this_cpu);
-  stolen = try_steal_domain(this_cpu, socket_domain);
-  if (stolen != 0) {
-    return stolen;
-  }
-
-  /* Level 2: steal from same NUMA node */
-  uint32_t numa_domain = topology_get_numa_domain(this_cpu);
-  if (numa_domain != socket_domain) {
-    stolen = try_steal_domain(this_cpu, numa_domain);
-    if (stolen != 0) {
-      return stolen;
-    }
-  }
-
-  return 0; /* system-wide steal not worth it */
-}
-
-/* O(1) random placement with NUMA awareness */
-static uint32_t find_least_loaded_cpu(void) {
-  uint32_t online = smp_online_count();
-  if (online == 0) {
-    return 0;
-  }
-
-  /* Prefer local NUMA node */
-  uint32_t this_cpu = smp_cpu_id();
-  uint32_t local_node = topology_get_numa_node_for_cpu(this_cpu);
-
-  /* Use timer counter as simple PRNG */
-  uint32_t seed = (uint32_t)timer_counter();
-  uint32_t start = seed % online;
-
-  /* Find first scheduling-enabled CPU from random start */
-  for (uint32_t i = 0; i < online; ++i) {
-    uint32_t cpu = (start + i) % online;
-    const xaios_cpu_state_t *state = smp_cpu_state(cpu);
-    if (state == 0 || state->online == 0) {
-      continue;
-    }
-    if (state->role != XAIOS_CPU_ROLE_SCHEDULING &&
-        state->role != XAIOS_CPU_ROLE_HOUSEKEEPING) {
-      continue;
-    }
-
-    /* Prefer local NUMA node */
-    if (local_node != UINT32_MAX) {
-      uint32_t cpu_node = topology_get_numa_node_for_cpu(cpu);
-      if (cpu_node == local_node) {
-        return cpu;
-      }
-    } else {
-      return cpu; /* no NUMA info, use first available */
-    }
-  }
-
-  /* Fallback: any online scheduling CPU */
-  for (uint32_t i = 0; i < online; ++i) {
-    uint32_t cpu = (start + i) % online;
-    const xaios_cpu_state_t *state = smp_cpu_state(cpu);
-    if (state != 0 && state->online != 0 &&
-        (state->role == XAIOS_CPU_ROLE_SCHEDULING ||
-         state->role == XAIOS_CPU_ROLE_HOUSEKEEPING)) {
-      return cpu;
-    }
-  }
-
-  return 0;
-}
-
-/* Periodic load balancing (every 1000 ticks = 10s at 100 Hz) */
-static void periodic_load_balance(uint32_t this_cpu) {
-  /* Only one CPU does load balancing per cycle */
-  if ((__sync_fetch_and_add(&g_balance_counter, 1) % 1000) != 0) {
-    return;
-  }
-
-  /* Find busiest CPU in local domain */
-  uint32_t core_domain = topology_get_core_domain(this_cpu);
-  if (core_domain == UINT32_MAX) {
-    return;
-  }
-
-  const xaios_sched_domain_t *dom = topology_get_domain(core_domain);
-  if (dom == 0 || dom->member_count == 0) {
-    return;
-  }
-
-  uint32_t busiest_cpu = UINT32_MAX;
-  uint32_t busiest_count = 0;
-
-  for (uint32_t i = 0; i < dom->member_count; ++i) {
-    uint32_t cpu = dom->members[i];
-    if (g_runqueues[cpu].count > busiest_count) {
-      busiest_count = g_runqueues[cpu].count;
-      busiest_cpu = cpu;
-    }
-  }
-
-  /* If busiest has >2× local count and >4 tasks, log imbalance */
-  uint32_t local_count = g_runqueues[this_cpu].count;
-  if (busiest_count > local_count * 2 && busiest_count > 4 &&
-      busiest_cpu != UINT32_MAX && busiest_cpu != this_cpu) {
-    klog("scheduler: load imbalance detected cpu%u(%u) vs cpu%u(%u)\n",
-         this_cpu, local_count, busiest_cpu, busiest_count);
-    __sync_fetch_and_add(&g_sched_stats[this_cpu].load_balance_count, 1);
-  }
-}
-
 void scheduler_init(void) {
   kassert(sizeof(xaios_context_frame_t) == XAIOS_CONTEXT_FRAME_SIZE);
   /* Initialize per-CPU task tables */
@@ -519,14 +82,14 @@ void scheduler_init(void) {
   kassert(g_cpu_tasks != 0 && g_runqueues != 0 && g_sched_stats != 0 &&
           g_lock_depth_per_cpu != 0);
   for (uint32_t cpu = 0; cpu < online; ++cpu) {
-    bytes_zero(&g_cpu_tasks[cpu], sizeof(xaios_cpu_task_table_t));
+    sched_bytes_zero(&g_cpu_tasks[cpu], sizeof(xaios_cpu_task_table_t));
     xaios_spin_init(&g_runqueues[cpu].lock);
     g_runqueues[cpu].count = 0;
     g_runqueues[cpu].current_pid = 0;
     g_runqueues[cpu].cpu_id = cpu;
     g_runqueues[cpu].idle_ticks = 0;
     g_runqueues[cpu].busy_ticks = 0;
-    bytes_zero(&g_sched_stats[cpu], sizeof(xaios_sched_stats_t));
+    sched_bytes_zero(&g_sched_stats[cpu], sizeof(xaios_sched_stats_t));
   }
 
   g_tick_count = 0;
@@ -548,15 +111,15 @@ void scheduler_init(void) {
        g_cpu_capacity);
 }
 
-static xaios_status_t scheduler_register_on_cpu(
+xaios_status_t sched_register_on_cpu(
     uint32_t pid, xaios_task_priority_t priority, uint32_t cpu) {
   if (pid == 0 || pid > XAIOS_SCHEDULER_MAX_TASKS) {
     return XAIOS_ERR_INVALID;
   }
-  if (cpu >= smp_online_count() || find_task_global(pid, 0) != 0) {
+  if (cpu >= smp_online_count() || sched_find_task_global(pid, 0) != 0) {
     return XAIOS_ERR_BUSY;
   }
-  xaios_sched_task_t *slot = alloc_task_slot(cpu);
+  xaios_sched_task_t *slot = sched_alloc_task_slot(cpu);
   if (slot == 0) {
     klog("scheduler: task table full on cpu%u, pid=%u\n", cpu, pid);
     return XAIOS_ERR_NO_MEMORY;
@@ -566,14 +129,14 @@ static xaios_status_t scheduler_register_on_cpu(
   slot->active = 1;
   slot->priority = priority;
   slot->state = XAIOS_TASK_STATE_REGISTERED;
-  slot->remaining_ticks = priority_slice(priority);
+  slot->remaining_ticks = sched_priority_slice(priority);
   slot->assigned_cpu = cpu;
   slot->architecture_state_size = architecture_state_size();
   if (slot->architecture_state_size != 0U) {
     slot->architecture_state =
         kheap_calloc(slot->architecture_state_size, 64U);
     if (slot->architecture_state == 0) {
-      free_task_slot(cpu, slot);
+      sched_free_task_slot(cpu, slot);
       return XAIOS_ERR_NO_MEMORY;
     }
   }
@@ -589,12 +152,12 @@ xaios_status_t scheduler_register(uint32_t pid) {
 
 xaios_status_t scheduler_register_with_priority(uint32_t pid,
                                                 xaios_task_priority_t priority) {
-  return scheduler_register_on_cpu(pid, priority, find_least_loaded_cpu());
+  return sched_register_on_cpu(pid, priority, sched_find_least_loaded_cpu());
 }
 
 void scheduler_unregister(uint32_t pid) {
   uint32_t cpu = 0;
-  xaios_sched_task_t *task = find_task_global(pid, &cpu);
+  xaios_sched_task_t *task = sched_find_task_global(pid, &cpu);
   if (task == 0) {
     return;
   }
@@ -602,11 +165,11 @@ void scheduler_unregister(uint32_t pid) {
   uint32_t assigned = task->assigned_cpu;
   task->active = 0;
   task->state = XAIOS_TASK_STATE_UNUSED;
-  free_task_slot(cpu, task);
+  sched_free_task_slot(cpu, task);
 
   if (assigned < g_cpu_capacity) {
     xaios_spin_lock(&g_runqueues[assigned].lock);
-    rq_remove(&g_runqueues[assigned], pid);
+    sched_rq_remove(&g_runqueues[assigned], pid);
     if (g_runqueues[assigned].current_pid == pid) {
       user_process_runtime_stop(pid, assigned, timer_now_ns());
       g_runqueues[assigned].current_pid = 0;
@@ -618,18 +181,18 @@ void scheduler_unregister(uint32_t pid) {
 
 xaios_status_t scheduler_set_runnable(uint32_t pid) {
   uint32_t cpu = 0;
-  xaios_sched_task_t *task = find_task_global(pid, &cpu);
+  xaios_sched_task_t *task = sched_find_task_global(pid, &cpu);
   if (task == 0) {
     return XAIOS_ERR_INVALID;
   }
 
   task->state = XAIOS_TASK_STATE_RUNNABLE;
-  task->remaining_ticks = priority_slice(task->priority);
+  task->remaining_ticks = sched_priority_slice(task->priority);
   uint32_t assigned = task->assigned_cpu;
 
   if (assigned < g_cpu_capacity) {
     xaios_spin_lock(&g_runqueues[assigned].lock);
-    rq_add(&g_runqueues[assigned], pid);
+    sched_rq_add(&g_runqueues[assigned], pid);
     xaios_spin_unlock(&g_runqueues[assigned].lock);
   }
   return XAIOS_OK;
@@ -637,7 +200,7 @@ xaios_status_t scheduler_set_runnable(uint32_t pid) {
 
 xaios_status_t scheduler_set_blocked(uint32_t pid) {
   uint32_t cpu = 0;
-  xaios_sched_task_t *task = find_task_global(pid, &cpu);
+  xaios_sched_task_t *task = sched_find_task_global(pid, &cpu);
   if (task == 0) {
     return XAIOS_ERR_INVALID;
   }
@@ -647,14 +210,14 @@ xaios_status_t scheduler_set_blocked(uint32_t pid) {
 
   if (assigned < g_cpu_capacity) {
     xaios_spin_lock(&g_runqueues[assigned].lock);
-    rq_remove(&g_runqueues[assigned], pid);
+    sched_rq_remove(&g_runqueues[assigned], pid);
     xaios_spin_unlock(&g_runqueues[assigned].lock);
   }
   return XAIOS_OK;
 }
 
 xaios_context_frame_t *scheduler_task_frame(uint32_t pid) {
-  xaios_sched_task_t *task = find_task_global(pid, 0);
+  xaios_sched_task_t *task = sched_find_task_global(pid, 0);
   if (task == 0) {
     return 0;
   }
@@ -694,7 +257,7 @@ void scheduler_tick(xaios_context_frame_t *irq_frame, void *architecture_state) 
   uint64_t load_interval =
       (uint64_t)(online == 0U ? 1U : online) * XAIOS_SCHEDULER_DEFAULT_TICK_HZ;
   if (tick % load_interval == 0U) {
-    scheduler_load_average_update(timer_now_ns());
+    sched_load_average_update(timer_now_ns());
   }
 
   xaios_runqueue_t *rq = &g_runqueues[cpu];
@@ -703,7 +266,7 @@ void scheduler_tick(xaios_context_frame_t *irq_frame, void *architecture_state) 
   uint32_t current_pid = rq->current_pid;
 
   if (current_pid != 0) {
-    xaios_sched_task_t *current = find_task_local(cpu, current_pid);
+    xaios_sched_task_t *current = sched_find_task_local(cpu, current_pid);
     if (current != 0) {
       current->frame = *irq_frame;
       if (architecture_state != 0 && current->architecture_state != 0) {
@@ -722,7 +285,7 @@ void scheduler_tick(xaios_context_frame_t *irq_frame, void *architecture_state) 
   if (current_pid == 0) {
     need_reschedule = 1;
   } else {
-    xaios_sched_task_t *current = find_task_local(cpu, current_pid);
+    xaios_sched_task_t *current = sched_find_task_local(cpu, current_pid);
     if (current == 0) {
       need_reschedule = 1;
     } else if (current->state == XAIOS_TASK_STATE_BLOCKED) {
@@ -731,11 +294,11 @@ void scheduler_tick(xaios_context_frame_t *irq_frame, void *architecture_state) 
       need_reschedule = 1;
     } else if (current->remaining_ticks == 0) {
       current->state = XAIOS_TASK_STATE_RUNNABLE;
-      current->remaining_ticks = priority_slice(current->priority);
-      rq_add(rq, current_pid);
+      current->remaining_ticks = sched_priority_slice(current->priority);
+      sched_rq_add(rq, current_pid);
       need_reschedule = 1;
     } else if (current->state == XAIOS_TASK_STATE_RUNNING) {
-      /* The task that is running is in *no* run queue: `rq_pick_best` removed
+      /* The task that is running is in *no* run queue: `sched_rq_pick_best` removed
          it when it was picked, and RUNNING is the state it was left in. So it
          has to be put back into the queue before the pick, or a switch away
          from it before its slice expires drops it from every queue and it can
@@ -753,7 +316,7 @@ void scheduler_tick(xaios_context_frame_t *irq_frame, void *architecture_state) 
        * used it up, and resetting it on every tick would make the slice
        * meaningless for a task that is switched to often. */
       current->state = XAIOS_TASK_STATE_RUNNABLE;
-      rq_add(rq, current_pid);
+      sched_rq_add(rq, current_pid);
       need_reschedule = 1;
     }
   }
@@ -765,11 +328,11 @@ void scheduler_tick(xaios_context_frame_t *irq_frame, void *architecture_state) 
     return;
   }
 
-  uint32_t next_pid = rq_pick_best(rq, cpu);
+  uint32_t next_pid = sched_rq_pick_best(rq, cpu);
 
   if (next_pid == 0) {
     xaios_spin_unlock(&rq->lock);
-    next_pid = try_steal_hierarchical(cpu);
+    next_pid = sched_try_steal_hierarchical(cpu);
     xaios_spin_lock(&rq->lock);
   }
 
@@ -783,7 +346,7 @@ void scheduler_tick(xaios_context_frame_t *irq_frame, void *architecture_state) 
     xaios_spin_unlock(&rq->lock);
 
     /* Periodic load balancing (lightweight, once per second) */
-    periodic_load_balance(cpu);
+    sched_periodic_load_balance(cpu);
     return;
   }
 
@@ -794,7 +357,7 @@ void scheduler_tick(xaios_context_frame_t *irq_frame, void *architecture_state) 
     return;
   }
 
-  xaios_sched_task_t *next_task = find_task_local(cpu, next_pid);
+  xaios_sched_task_t *next_task = sched_find_task_local(cpu, next_pid);
   if (next_task == 0) {
     xaios_spin_unlock(&rq->lock);
     return;
@@ -850,18 +413,18 @@ void scheduler_yield(void) {
   uint32_t current_pid = rq->current_pid;
 
   if (current_pid != 0) {
-    xaios_sched_task_t *current = find_task_local(cpu, current_pid);
+    xaios_sched_task_t *current = sched_find_task_local(cpu, current_pid);
     if (current != 0) {
       current->remaining_ticks = 0;
       current->state = XAIOS_TASK_STATE_RUNNABLE;
-      rq_add(rq, current_pid);
+      sched_rq_add(rq, current_pid);
     }
   }
 
-  uint32_t next_pid = rq_pick_best(rq, cpu);
+  uint32_t next_pid = sched_rq_pick_best(rq, cpu);
 
   if (next_pid != 0 && next_pid != current_pid) {
-    xaios_sched_task_t *next_task = find_task_local(cpu, next_pid);
+    xaios_sched_task_t *next_task = sched_find_task_local(cpu, next_pid);
     if (next_task != 0) {
       next_task->state = XAIOS_TASK_STATE_RUNNING;
       ++next_task->switch_count;
@@ -879,150 +442,13 @@ void scheduler_yield(void) {
   xaios_spin_unlock(&rq->lock);
 }
 
-uint64_t scheduler_tick_count(void) { return g_tick_count; }
-uint64_t scheduler_context_switch_count(void) { return g_context_switch_count; }
-uint64_t scheduler_yield_count(void) { return g_yield_count; }
-
-/* "No task" and "no scheduler yet" answer the same thing, and the second is not
- * a corner case: this port's timer is armed at 100 Hz for the exception
- * self-test long before `scheduler_init()` allocates the run queues, and an
- * architecture whose tick asks who is running before it ticks -- RISC-V's does,
- * to tell a tick that switched from one that did not (B-129) -- dereferenced a
- * null `g_runqueues` and took the machine down with
- * `class=load-access-fault stval=0x210`, which is `current_pid`'s offset in that
- * array. The guard is the difference between a tick that arrives early being
- * ignored and being fatal. */
-uint32_t scheduler_current_pid(void) {
-  uint32_t cpu = smp_cpu_id();
-  if (g_runqueues == 0 || cpu >= g_cpu_capacity) {
-    return 0;
-  }
-  return g_runqueues[cpu].current_pid;
-}
-
-uint32_t scheduler_current_pid_on_cpu(uint32_t cpu_id) {
-  if (g_runqueues == 0 || cpu_id >= g_cpu_capacity) {
-    return 0;
-  }
-  return g_runqueues[cpu_id].current_pid;
-}
-
-uint32_t scheduler_runnable_count(void) {
-  uint32_t total = 0;
-  uint32_t online = smp_online_count();
-  for (uint32_t cpu = 0; cpu < online; ++cpu) {
-    total += g_runqueues[cpu].count;
-  }
-  return total;
-}
-
-void scheduler_load_average_hundredths(uint32_t averages[3]) {
-  if (averages == 0) {
-    return;
-  }
-  scheduler_load_average_update(timer_now_ns());
-  for (uint32_t i = 0U; i < 3U; ++i) {
-    uint64_t value = __atomic_load_n(&g_load_average_q16[i], __ATOMIC_RELAXED);
-    averages[i] = (uint32_t)((value * 100U + XAIOS_LOAD_FIXED_ONE / 2U) /
-                             XAIOS_LOAD_FIXED_ONE);
-  }
-}
-
-void scheduler_get_stats(uint32_t cpu_id, xaios_sched_stats_t *stats) {
-  if (cpu_id >= g_cpu_capacity || stats == 0) {
-    return;
-  }
-  *stats = g_sched_stats[cpu_id];
-}
-
-void scheduler_dump_stats(void) {
-  uint32_t online = smp_online_count();
-
-  klog("scheduler: statistics dump (%u online CPUs)\n", online);
-  for (uint32_t cpu = 0; cpu < online; ++cpu) {
-    const xaios_sched_stats_t *s = &g_sched_stats[cpu];
-    if (s->tick_count > 0) {
-      klog("scheduler: cpu%u ticks=%lu switches=%lu yields=%lu "
-           "steals=%lu/%lu idle=%lu busy=%lu\n",
-           cpu, s->tick_count, s->context_switch_count, s->yield_count,
-           s->steal_success_count, s->steal_fail_count,
-           s->idle_ticks, s->busy_ticks);
-    }
-  }
-}
-
-/* Load `victim` with three runnable tasks and try to steal one onto
-   `this_cpu` through the hierarchy. Returns the pid stolen, or 0. Three is
-   the smallest number the steal path accepts, since it refuses a victim whose
-   runqueue holds two or fewer. */
-static uint32_t steal_probe(uint32_t this_cpu, uint32_t victim,
-                            const uint32_t *pids) {
-  const xaios_cpu_state_t *state = smp_cpu_state(victim);
-  if (state == 0 || state->online == 0U) return UINT32_MAX;
-  uint32_t restore = state->scheduling_enabled;
-  kassert(smp_set_scheduling_enabled(victim, 1U) == XAIOS_OK);
-  for (uint32_t index = 0U; index < 3U; ++index) {
-    kassert(scheduler_register_on_cpu(pids[index], XAIOS_PRIORITY_NORMAL,
-                                      victim) == XAIOS_OK);
-    kassert(scheduler_set_runnable(pids[index]) == XAIOS_OK);
-  }
-  kassert(g_runqueues[victim].count == 3U);
-  uint32_t stolen = try_steal_hierarchical(this_cpu);
-  for (uint32_t index = 0U; index < 3U; ++index) {
-    scheduler_unregister(pids[index]);
-  }
-  kassert(smp_set_scheduling_enabled(victim, restore) == XAIOS_OK);
-  return stolen;
-}
-
-/* What the scheduler's NUMA awareness is worth, measured rather than
-   asserted in a comment. Work is taken from a CPU on this CPU's own node and
-   left alone on a CPU that is not, which is the whole of the policy: the
-   hierarchy stops at the NUMA level and deliberately does not go system-wide,
-   so a task keeps the memory it was placed near.
-   
-   Both halves are needed. The "does steal" half alone passes on a topology
-   that puts every CPU in one domain; the "does not steal" half alone passes
-   on a topology so broken that nothing is stealable at all. */
-static void scheduler_numa_steal_self_test(uint32_t this_cpu) {
-  if (numa_node_count() < 2U || smp_online_count() < 2U) {
-    klog("scheduler: numa steal self-test skipped nodes=%u online=%u\n",
-         numa_node_count(), smp_online_count());
-    return;
-  }
-  uint32_t local_node = topology_get_numa_node_for_cpu(this_cpu);
-  uint32_t local_victim = UINT32_MAX;
-  uint32_t remote_victim = UINT32_MAX;
-  for (uint32_t cpu = 0U; cpu < g_cpu_capacity; ++cpu) {
-    const xaios_cpu_state_t *state = smp_cpu_state(cpu);
-    if (cpu == this_cpu || state == 0 || state->online == 0U) continue;
-    uint32_t node = topology_get_numa_node_for_cpu(cpu);
-    if (node == local_node && local_victim == UINT32_MAX) local_victim = cpu;
-    if (node != local_node && remote_victim == UINT32_MAX) remote_victim = cpu;
-  }
-  if (local_victim == UINT32_MAX || remote_victim == UINT32_MAX) {
-    klog("scheduler: numa steal self-test skipped local_victim=%u remote_victim=%u\n",
-         local_victim, remote_victim);
-    return;
-  }
-
-  const uint32_t remote_pids[3] = {9001U, 9002U, 9003U};
-  const uint32_t local_pids[3] = {9004U, 9005U, 9006U};
-  uint32_t stolen_remote = steal_probe(this_cpu, remote_victim, remote_pids);
-  kassert(stolen_remote == 0U);
-  uint32_t stolen_local = steal_probe(this_cpu, local_victim, local_pids);
-  kassert(stolen_local != 0U && stolen_local != UINT32_MAX);
-  klog("scheduler: numa steal self-test passed cpu=%u node=%u local_victim=%u stole=%u remote_victim=%u stole=0\n",
-       this_cpu, local_node, local_victim, stolen_local, remote_victim);
-}
-
 xaios_status_t scheduler_register_kernel_task(uint32_t pid, void (*entry)(void),
                                               uint64_t stack_top,
                                               xaios_task_priority_t priority) {
   if (entry == 0 || stack_top == 0U) {
     return XAIOS_ERR_INVALID;
   }
-  xaios_status_t status = scheduler_register_on_cpu(pid, priority, smp_cpu_id());
+  xaios_status_t status = sched_register_on_cpu(pid, priority, smp_cpu_id());
   if (status != XAIOS_OK) {
     return status;
   }
@@ -1046,7 +472,7 @@ xaios_status_t scheduler_register_kernel_task(uint32_t pid, void (*entry)(void),
 xaios_status_t scheduler_adopt_this_context(uint32_t pid,
                                             xaios_task_priority_t priority) {
   uint32_t cpu = smp_cpu_id();
-  xaios_status_t status = scheduler_register_on_cpu(pid, priority, cpu);
+  xaios_status_t status = sched_register_on_cpu(pid, priority, cpu);
   if (status != XAIOS_OK) {
     return status;
   }
@@ -1063,140 +489,4 @@ xaios_status_t scheduler_adopt_this_context(uint32_t pid,
   g_runqueues[cpu].current_pid = pid;
   xaios_spin_unlock(&g_runqueues[cpu].lock);
   return XAIOS_OK;
-}
-
-void scheduler_self_test(void) {
-  kassert(g_initialized != 0);
-  uint32_t cpu = smp_cpu_id();
-  const xaios_cpu_state_t *cpu_state = smp_cpu_state(cpu);
-  kassert(cpu_state != 0);
-  uint32_t scheduling_was_enabled = cpu_state->scheduling_enabled;
-  kassert(smp_set_scheduling_enabled(cpu, 1U) == XAIOS_OK);
-
-  uint32_t load_average[3];
-  scheduler_load_average_step(4U);
-  scheduler_load_average_hundredths(load_average);
-  kassert(g_load_average_q16[0] == 4332U);
-  kassert(g_load_average_q16[1] == 872U);
-  kassert(g_load_average_q16[2] == 292U);
-  kassert(load_average[0] == 7U && load_average[1] == 1U &&
-          load_average[2] == 0U);
-  for (uint32_t i = 0U; i < 3U; ++i) {
-    g_load_average_q16[i] = 0U;
-  }
-
-  /* Interrupts off while fake tasks are registered.
-   *
-   * Everything below registers three tasks whose frames are the scheduler's
-   * zeroed dummy -- every register zero and `elr_el1` 0x1000 -- because what is
-   * under test is the pick and the write-back into the caller's frame, not the
-   * tasks. A real timer interrupt taken in this window therefore ticks the
-   * scheduler for real and picks one of them, and an architecture that applies
-   * the frame it is handed resumes at that task's program counter. RISC-V's now
-   * does, and this was measured there: `scheduler[cpu0]: switch 0 -> 1 ... switch
-   * 1 -> 2` and then `user exception: cause=12 sepc=0x0` inside this function,
-   * on a boot that differed from a passing one only in timing. The mask makes
-   * the window atomic with respect to the mechanism under test; it is restored
-   * before the steal self-test below, which needs a live timer. */
-  xaios_interrupt_state_t interrupts = xaios_interrupts_disable();
-  kassert(scheduler_register_on_cpu(1, XAIOS_PRIORITY_HIGH, cpu) == XAIOS_OK);
-  kassert(scheduler_register_on_cpu(2, XAIOS_PRIORITY_NORMAL, cpu) == XAIOS_OK);
-  kassert(scheduler_register_on_cpu(3, XAIOS_PRIORITY_LOW, cpu) == XAIOS_OK);
-  kassert(scheduler_set_runnable(1) == XAIOS_OK);
-  kassert(scheduler_set_runnable(2) == XAIOS_OK);
-  kassert(scheduler_set_runnable(3) == XAIOS_OK);
-  kassert(scheduler_runnable_count() == 3);
-
-  xaios_sched_task_t *t1 = find_task_local(cpu, 1);
-  xaios_sched_task_t *t2 = find_task_local(cpu, 2);
-  xaios_sched_task_t *t3 = find_task_local(cpu, 3);
-  kassert(t1 != 0 && t1->priority == XAIOS_PRIORITY_HIGH);
-  kassert(t2 != 0 && t2->priority == XAIOS_PRIORITY_NORMAL);
-  kassert(t3 != 0 && t3->priority == XAIOS_PRIORITY_LOW);
-
-  g_runqueues[cpu].current_pid = 0;
-  xaios_context_frame_t dummy_frame;
-  bytes_zero(&dummy_frame, sizeof(dummy_frame));
-  dummy_frame.elr_el1 = 0x1000;
-
-  scheduler_tick(&dummy_frame, 0);
-  uint32_t picked = g_runqueues[cpu].current_pid;
-  kassert(picked == 1 || picked == 2 || picked == 3);
-  /* And the decision reaches the frame the caller passed, which is what an
-     architecture's trap return resumes: the frame it supplied (elr 0x1000, all
-     registers zero) is now the chosen task's. An architecture whose tick fills
-     and applies its own frame -- and RISC-V's now does -- is checked by this
-     line, and one that cannot yet apply a decision says so in its own port
-     (B-129). */
-  kassert(dummy_frame.elr_el1 != UINT64_C(0x1000));
-
-  scheduler_lock();
-  uint32_t before = g_runqueues[cpu].current_pid;
-  scheduler_tick(&dummy_frame, 0);
-  kassert(g_runqueues[cpu].current_pid == before);
-  scheduler_unlock();
-
-  kassert(scheduler_set_blocked(2) == XAIOS_OK);
-  kassert(scheduler_set_runnable(2) == XAIOS_OK);
-
-  scheduler_unregister(1);
-  scheduler_unregister(2);
-  scheduler_unregister(3);
-  kassert(find_task_local(cpu, 1) == 0);
-  kassert(find_task_local(cpu, 2) == 0);
-  kassert(find_task_local(cpu, 3) == 0);
-
-  /* A task that is switched away from before its slice expires must stay
-     pickable.
-   *
-   * The pick removes the running task from the queue, so a tick that chooses
-   * another task has to put the outgoing one back first. Without that, the
-   * second tick below finds an empty queue and leaves this CPU with no current
-   * task while the task it abandoned keeps running on a frame the scheduler
-   * has stopped saving -- the shape a dispatching context and the process it
-   * dispatched had the first time both were runnable (B-132).
-   *
-   * The two tasks are equal on purpose: queue order is then the only thing
-   * deciding, which is what that design rests on. A task of any other
-   * priority from the block above would be picked first and hide the
-   * mechanism. Interrupts are off across this window (see above), so these
-   * are the only ticks. */
-  kassert(scheduler_register_on_cpu(10, XAIOS_PRIORITY_NORMAL, cpu) == XAIOS_OK);
-  kassert(scheduler_register_on_cpu(11, XAIOS_PRIORITY_NORMAL, cpu) == XAIOS_OK);
-  kassert(scheduler_set_runnable(10) == XAIOS_OK);
-  kassert(scheduler_set_runnable(11) == XAIOS_OK);
-  xaios_spin_lock(&g_runqueues[cpu].lock);
-  /* Emulate the state a pick leaves behind: running, and in no queue. */
-  rq_remove(&g_runqueues[cpu], 10);
-  g_runqueues[cpu].current_pid = 10;
-  xaios_spin_unlock(&g_runqueues[cpu].lock);
-  xaios_sched_task_t *ten = find_task_local(cpu, 10);
-  kassert(ten != 0);
-  ten->state = XAIOS_TASK_STATE_RUNNING;
-  ten->remaining_ticks = XAIOS_PRIORITY_NORMAL_SLICE;
-
-  xaios_context_frame_t alternate_frame;
-  bytes_zero(&alternate_frame, sizeof(alternate_frame));
-  alternate_frame.elr_el1 = UINT64_C(0x2000);
-  scheduler_tick(&alternate_frame, 0);
-  scheduler_tick(&alternate_frame, 0);
-
-  uint32_t alternate_current = g_runqueues[cpu].current_pid;
-  kassert(alternate_current == 10 || alternate_current == 11);
-  uint32_t alternate_waiting = alternate_current == 10U ? 11U : 10U;
-  kassert(rq_index(&g_runqueues[cpu], alternate_waiting) !=
-          UINT32_C(0xffffffff));
-  scheduler_unregister(10);
-  scheduler_unregister(11);
-  kassert(find_task_local(cpu, 10) == 0);
-  kassert(find_task_local(cpu, 11) == 0);
-
-  xaios_interrupts_restore(interrupts);
-  kassert(smp_set_scheduling_enabled(cpu, scheduling_was_enabled) == XAIOS_OK);
-
-  scheduler_numa_steal_self_test(cpu);
-
-  klog("scheduler: hierarchical SMP self-test passed ticks=%lu switches=%lu "
-       "yields=%lu steals=%lu\n",
-       g_tick_count, g_context_switch_count, g_yield_count, g_steal_count);
 }

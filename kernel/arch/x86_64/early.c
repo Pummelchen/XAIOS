@@ -203,14 +203,9 @@ static uint64_t g_lapic_frequency;
  * may use RDTSCP. Set by whichever CPU prepares first; it is a property of the
  * CPU model, not of one CPU. */
 static uint32_t g_tsc_aux_ready;
-/* Set only by the idle-wakeup self-test: widen the window between the idle
- * loop's queue check and its halt, and optionally halt the way this kernel did
- * before the re-check, so the lost wakeup behind B-120 can be built on purpose
- * instead of waited for. Zero in production. The TLB shootdown's own state and
- * lock live in early_tlb.c; this pair stays here because the idle loop below
- * reads it, and early_tlb.c reaches it through xaios_x86_early_idle_probe_get. */
-static volatile uint64_t g_idle_halt_probe_gap_cycles;
-static volatile uint32_t g_idle_halt_probe_legacy;
+/* The idle-wakeup self-test's probe pair moved to early_platform.c with its
+ * setter and getter; the idle loop below still reads it through
+ * xaios_x86_early_idle_probe_get. */
 
 #if XAIOS_X86_COMMON_RUNTIME
 extern void kmain(const xaios_boot_info_t *boot);
@@ -243,221 +238,28 @@ uint32_t smp_locking_active(void) { return smp_online_count() > 1U ? 1U : 0U; }
 
 #endif
 
-uint64_t x86_64_platform_tsc(void) { return rdtsc(); }
-
-uint64_t x86_64_platform_tsc_hz(void) { return g_tsc_frequency; }
-
-void x86_64_platform_set_tsc_hz(uint64_t frequency) {
-  g_tsc_frequency = frequency;
-}
-
-uint64_t x86_64_platform_lapic_hz(void) { return g_lapic_frequency; }
-
-uint32_t x86_64_platform_cpu_count(void) { return g_cpu_record_count; }
-
-uint32_t x86_64_platform_cpu_apic_id(uint32_t ordinal) {
-  return ordinal < g_cpu_record_count ? g_cpu_records[ordinal].apic_id
-                                      : UINT32_MAX;
-}
-
-uint32_t x86_64_platform_cpu_online(uint32_t ordinal) {
-  return ordinal < g_cpu_record_count
-             ? __atomic_load_n(&g_cpu_records[ordinal].online,
-                               __ATOMIC_ACQUIRE)
-             : 0U;
-}
-
-/* What this CPU is waiting for, published where another CPU can read it. The
- * reader of this note is the TLB shootdown's refusal, which until now could
- * name only the CPU that had not acknowledged: "cpu 1 is silent" is a question
- * and this is the half that answers it (B-123). */
-void xaios_cpu_note_wait(const char *reason) {
-  if (g_cpu_records == 0) return;
-  uint32_t ordinal = current_ordinal_fast();
-  if (ordinal < g_cpu_record_count) {
-    __atomic_store_n(&g_cpu_records[ordinal].state.waiting_for, reason,
-                     __ATOMIC_RELEASE);
-  }
-}
-
-uint32_t x86_64_platform_workers_ready(void) {
-  uint32_t ready = g_bsp_ordinal < g_cpu_record_count ? 1U : 0U;
-  for (uint32_t ordinal = 0U; ordinal < g_cpu_record_count; ++ordinal) {
-    if (ordinal == g_bsp_ordinal ||
-        __atomic_load_n(&g_cpu_records[ordinal].online, __ATOMIC_ACQUIRE) ==
-            0U) {
-      continue;
-    }
-    if (__atomic_load_n(&g_cpu_records[ordinal].worker_ready,
-                        __ATOMIC_ACQUIRE) != 0U) {
-      ++ready;
-    }
-  }
-  return ready;
-}
-
-struct xaios_cpu_state *x86_64_platform_cpu_state(uint32_t ordinal) {
-  return ordinal < g_cpu_record_count ? &g_cpu_records[ordinal].state : 0;
-}
-
-void x86_64_platform_set_page_tables(uint32_t ordinal, uint64_t *root,
-                                      uint64_t *user_directory) {
-  if (ordinal >= g_cpu_record_count) return;
-  g_cpu_records[ordinal].page_table_root = root;
-  g_cpu_records[ordinal].user_page_directory = user_directory;
-}
-
-uint64_t *x86_64_platform_page_table_root(uint32_t ordinal) {
-  return ordinal < g_cpu_record_count
-             ? g_cpu_records[ordinal].page_table_root
-             : 0;
-}
-
-uint64_t *x86_64_platform_user_page_directory(uint32_t ordinal) {
-  return ordinal < g_cpu_record_count
-             ? g_cpu_records[ordinal].user_page_directory
-             : 0;
-}
-
-uint32_t x86_64_platform_current_ordinal(void) {
-  uint32_t id = lapic_id();
-  for (uint32_t ordinal = 0U; ordinal < g_cpu_record_count; ++ordinal) {
-    if (g_cpu_records[ordinal].apic_id == id) return ordinal;
-  }
-  return UINT32_MAX;
-}
-
-void x86_64_platform_wake(uint32_t ordinal) {
-  if (ordinal < g_cpu_record_count && g_cpu_records[ordinal].online != 0U) {
-    lapic_send(g_cpu_records[ordinal].apic_id, 33U);
-  }
-}
-
-void x86_64_platform_release_workers(void) {
-  __atomic_store_n(&g_common_worker_release, 1U, __ATOMIC_RELEASE);
-  for (uint32_t ordinal = 0U; ordinal < g_cpu_record_count; ++ordinal) {
-    if (ordinal != x86_64_platform_current_ordinal()) {
-      x86_64_platform_wake(ordinal);
-    }
-  }
-}
-
-uint64_t x86_64_platform_bootstrap_start(void) {
-  return xaios_x86_mem_bootstrap_start();
-}
-
-uint64_t x86_64_platform_bootstrap_end(void) {
-  return xaios_x86_mem_bootstrap_end();
-}
-
-void x86_64_platform_timer_start(uint32_t initial_count, uint32_t periodic) {
-  if (g_lapic_ready == 0U) return;
-  lapic_write(APIC_LVT_TIMER,
-              32U | (periodic != 0U ? UINT32_C(1 << 17) : 0U));
-  lapic_write(APIC_TIMER_DIVIDE, UINT32_C(0x0b));
-  lapic_write(APIC_TIMER_INITIAL, initial_count);
-}
-
-void x86_64_platform_timer_stop(void) {
-  if (g_lapic_ready != 0U) {
-    lapic_write(APIC_LVT_TIMER, UINT32_C(1 << 16) | 32U);
-    lapic_write(APIC_TIMER_INITIAL, 0U);
-  }
-}
-
-uint64_t x86_64_platform_timer_interrupts(void) {
-  return g_x86_lapic_timer_interrupts;
-}
-
-void x86_64_platform_eoi(void) {
-  if (g_lapic_ready != 0U) lapic_write(APIC_EOI, 0U);
-}
-
-void x86_64_platform_set_idle_halt_probe(uint64_t gap_cycles, uint32_t legacy) {
-  __atomic_store_n(&g_idle_halt_probe_legacy, legacy != 0U ? 1U : 0U,
-                   __ATOMIC_RELEASE);
-  __atomic_store_n(&g_idle_halt_probe_gap_cycles, gap_cycles,
-                   __ATOMIC_RELEASE);
-}
-
-/* The seam early_tlb.c reaches through: the CPU table this file owns, and the
- * idle-loop probe pair it still reads below. The per-CPU getters for both live
- * in early_tlb.c with the rest of the shootdown; this file keeps only the
- * storage and these reads. */
+/* The seam early_tlb.c and early_platform.c reach through: the CPU table this
+ * file owns. The per-CPU getters for it live in early_tlb.c with the rest of
+ * the shootdown; this file keeps only the storage and these reads. */
 x86_64_cpu_record_t *xaios_x86_early_cpu_records(void) { return g_cpu_records; }
 
 uint32_t xaios_x86_early_cpu_record_count(void) { return g_cpu_record_count; }
 
-void xaios_x86_early_idle_probe_get(x86_64_idle_probe_state_t *state) {
-  if (state == 0) return;
-  state->legacy =
-      __atomic_load_n(&g_idle_halt_probe_legacy, __ATOMIC_ACQUIRE);
-  state->gap_cycles =
-      __atomic_load_n(&g_idle_halt_probe_gap_cycles, __ATOMIC_ACQUIRE);
+/* The scalars early_platform.c's platform hooks read or write. Each is a
+ * scalar read or write of this file's storage, never a pointer into it; the
+ * storage stays here because the timer and AP bring-up paths own it. */
+uint64_t xaios_x86_early_tsc_hz(void) { return g_tsc_frequency; }
+
+void xaios_x86_early_set_tsc_hz(uint64_t frequency) {
+  g_tsc_frequency = frequency;
 }
 
-void x86_64_platform_set_user_resume(uint64_t stack) {
-  uint32_t ordinal = x86_64_platform_current_ordinal();
-  if (ordinal >= g_cpu_record_count) panic_halt(COM1_PORT, "user CPU ordinal");
-  x86_64_cpu_record_t *record = &g_cpu_records[ordinal];
-  uint32_t depth = record->user_nesting_depth;
-  if (depth >= X86_USER_NESTING_MAX) {
-    panic_halt(COM1_PORT, "user nesting depth");
-  }
-  /* The BSP's TSS lives in early_gdt.c now, so its rsp0 is read and written
-   * through the scalar accessors rather than a pointer into that state. The
-   * two stores and the increment keep the order they had before the split. */
-  int bsp = ordinal == g_bsp_ordinal;
-  record->user_resume_rsp[depth] = stack;
-  record->user_previous_rsp0[depth] =
-      bsp ? xaios_x86_gdt_bsp_rsp0() : record->tss.rsp0;
-  ++record->user_nesting_depth;
+uint64_t xaios_x86_early_lapic_hz(void) { return g_lapic_frequency; }
 
-  uint64_t syscall_stack_low =
-      record->syscall_stack_top - X86_KERNEL_STACK_SIZE;
-  if (stack > syscall_stack_low && stack < record->syscall_stack_top) {
-    uint64_t rsp0 = stack & ~UINT64_C(0xf);
-    if (bsp) {
-      xaios_x86_gdt_set_bsp_rsp0(rsp0);
-    } else {
-      record->tss.rsp0 = rsp0;
-    }
-  }
-}
+uint32_t xaios_x86_early_bsp_ordinal(void) { return g_bsp_ordinal; }
 
-uint64_t x86_64_platform_user_resume(void) {
-  uint32_t ordinal = x86_64_platform_current_ordinal();
-  if (ordinal >= g_cpu_record_count) {
-    panic_halt(COM1_PORT, "user resume stack");
-  }
-  x86_64_cpu_record_t *record = &g_cpu_records[ordinal];
-  uint32_t depth = record->user_nesting_depth;
-  if (depth == 0U || record->user_resume_rsp[depth - 1U] == 0U) {
-    panic_halt(COM1_PORT, "user resume stack");
-  }
-  --depth;
-  uint64_t stack = record->user_resume_rsp[depth];
-  if (ordinal == g_bsp_ordinal) {
-    xaios_x86_gdt_set_bsp_rsp0(record->user_previous_rsp0[depth]);
-  } else {
-    record->tss.rsp0 = record->user_previous_rsp0[depth];
-  }
-  record->user_resume_rsp[depth] = 0U;
-  record->user_previous_rsp0[depth] = 0U;
-  record->user_nesting_depth = depth;
-  return stack;
-}
-
-void x86_64_platform_set_user_return(uint64_t value) {
-  uint32_t ordinal = x86_64_platform_current_ordinal();
-  if (ordinal >= g_cpu_record_count) panic_halt(COM1_PORT, "user return CPU");
-  g_cpu_records[ordinal].user_return_value = value;
-}
-
-uint64_t x86_64_platform_user_return(void) {
-  uint32_t ordinal = x86_64_platform_current_ordinal();
-  if (ordinal >= g_cpu_record_count) panic_halt(COM1_PORT, "user result CPU");
-  return g_cpu_records[ordinal].user_return_value;
+void xaios_x86_early_set_worker_release(uint32_t value) {
+  __atomic_store_n(&g_common_worker_release, value, __ATOMIC_RELEASE);
 }
 
 static inline uint64_t read_cr2(void) {

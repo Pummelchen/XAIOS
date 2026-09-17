@@ -3,8 +3,9 @@
 
 /* The private seam between kernel/arch/x86_64/early.c and the modules split
  * out of it (early_tlb.c, early_cpu.c, early_serial.c, early_mem.c,
- * early_pci.c, early_acpi.c, early_fpu.c, early_gdt.c and early_irq.c). Every
- * one of those files includes this header and nothing in it is visible outside
+ * early_pci.c, early_acpi.c, early_fpu.c, early_gdt.c, early_irq.c and
+ * early_platform.c). Every one of those files includes this header and nothing
+ * in it is visible outside
  * them: the x86_64 CPU record, the per-CPU TLB bookkeeping, the trap frame and
  * the early.c primitives the moved code calls are shared here, while the
  * globals stay file-scope in whichever file owns them.
@@ -131,15 +132,24 @@ void xaios_x86_early_panic_halt(uint16_t serial_base, const char *message);
 uint32_t xaios_x86_early_lapic_ready(void);
 void xaios_x86_early_lapic_write(uint32_t offset, uint32_t value);
 
-/* The idle-loop probe globals stay in early.c, which also reads them on the
- * idle path; the self-test's getters live with the rest of the shootdown, so
- * this is the whole of that knob across the seam. */
+/* The idle-loop probe pair now lives in early_platform.c with its setter and
+ * getter; early.c's idle loop reads it through the getter, so this is the whole
+ * of that knob across the seam. */
 typedef struct x86_64_idle_probe_state {
   uint64_t gap_cycles;
   uint32_t legacy;
 } x86_64_idle_probe_state_t;
 
 void xaios_x86_early_idle_probe_get(x86_64_idle_probe_state_t *state);
+
+/* The scalars early.c owns and the platform hooks in early_platform.c read or
+ * write across the seam. Each hands over a value, never a pointer into
+ * early.c's storage. */
+uint64_t xaios_x86_early_tsc_hz(void);
+void xaios_x86_early_set_tsc_hz(uint64_t frequency);
+uint64_t xaios_x86_early_lapic_hz(void);
+uint32_t xaios_x86_early_bsp_ordinal(void);
+void xaios_x86_early_set_worker_release(uint32_t value);
 
 /* Defined in early_tlb.c. */
 void xaios_x86_early_tlb_note_interrupt(void);

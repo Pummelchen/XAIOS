@@ -1,12 +1,15 @@
 /* Private interface shared by the model VFS sources.
  *
- * vfs_xaifs.c keeps the mount, the block and engine glue, the model context
- * and the maintenance predicate; vfs_xaifs_scrub.c owns the scrub/verify job
- * and its persisted record; vfs_xaifs_trim.c owns the trim job and its
- * persisted record. All three need the model context layout, so the type lives
- * here. The context itself stays in vfs_xaifs.c and is reached through
- * vfs_xaifs_model(); the scrub and trim code call that under the model lock
- * exactly where they used the variable.
+ * vfs_xaifs.c keeps the mount, the model context, the maintenance predicate,
+ * the open/stat/statfs/list operations and the backend ops table;
+ * vfs_xaifs_io.c owns the block and engine glue and the handle read/write
+ * path; vfs_xaifs_catalog.c owns the catalog lookup, the staging lifecycle
+ * and the signed self-test; vfs_xaifs_scrub.c owns the scrub/verify job and
+ * its persisted record; vfs_xaifs_trim.c owns the trim job and its persisted
+ * record. All of them need the model context layout, so the type lives here.
+ * The context itself stays in vfs_xaifs.c and is reached through
+ * vfs_xaifs_model(); every other source calls that under the model lock
+ * exactly where it used the variable.
  */
 #ifndef XAIOS_FS_VFS_XAIFS_INTERNAL_H
 #define XAIOS_FS_VFS_XAIFS_INTERNAL_H
@@ -23,6 +26,7 @@
 #define MODEL_READER_SCRATCH_SIZE UINT64_C(65536)
 #define MODEL_READER_MAX_SECTOR_SIZE UINT64_C(4096)
 #define MODEL_VFS_MAX_HANDLES 64U
+#define MODEL_PACKAGE_NAME_LENGTH 64U
 
 typedef struct model_vfs_handle {
   uint32_t active;
@@ -61,15 +65,38 @@ typedef struct model_vfs_context {
    that is not read before the lock is taken. */
 model_vfs_context_t *vfs_xaifs_model(void);
 
-/* Defined in vfs_xaifs.c and shared with the trim half. */
+/* Defined in vfs_xaifs.c and shared with the trim, catalog and scrub halves. */
 int catalog_maintenance_active(void);
+
+/* Defined in vfs_xaifs_io.c and shared with the trim and catalog halves. */
 xaios_status_t map_engine_status(xaios_engine_status_t status);
 
-/* Defined in vfs_xaifs.c and shared with the scrub half, which builds the same
-   writer for the quarantine path. */
+/* Defined in vfs_xaifs_io.c and shared with the scrub half, which builds the
+   same writer for the quarantine path. */
 xaios_engine_status_t vfs_xaifs_write_at(void *context, uint64_t offset,
                                          const void *source, size_t length);
 xaios_engine_status_t vfs_xaifs_flush(void *context);
+
+/* Defined in vfs_xaifs_io.c. The mount opens the engine with the reader and
+   signature callbacks, and the backend ops table in vfs_xaifs.c names the
+   handle operations. */
+xaios_engine_status_t vfs_xaifs_read_at(void *context, uint64_t offset,
+                                        void *destination, size_t length);
+xaios_engine_status_t vfs_xaifs_verify_signature(
+    void *context, const uint8_t public_key[32], const uint8_t signature[64],
+    const uint8_t message[32]);
+xaios_status_t vfs_xaifs_close(void *context, uint64_t handle);
+int64_t vfs_xaifs_pread(void *context, uint64_t handle, void *buffer,
+                        uint64_t length, uint64_t offset);
+int64_t vfs_xaifs_pwrite(void *context, uint64_t handle, const void *buffer,
+                         uint64_t length, uint64_t offset);
+xaios_status_t vfs_xaifs_fsync(void *context, uint64_t handle);
+
+/* Defined in vfs_xaifs_catalog.c; the open and stat paths look packages up
+   through it. */
+xaios_status_t vfs_xaifs_find_package(model_vfs_context_t *model,
+                                      const char *path, uint64_t *index,
+                                      xaios_xai_fs_package_t *package);
 
 /* Defined in vfs_xaifs_trim.c and used by the maintenance predicate in
    vfs_xaifs.c and by the scrub half: scrub and trim exclude each other, and a
