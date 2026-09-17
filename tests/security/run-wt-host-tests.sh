@@ -225,6 +225,9 @@ for name in "$@"; do
     tls_cert)
       extra_sources="$ROOT/tests/security/test_wt_tls_cert_parse.c $ROOT/tests/security/test_wt_tls_cert_signature.c"
       ;;
+    tls)
+      extra_sources="$ROOT/tests/security/test_wt_tls_schedule.c $ROOT/tests/security/test_wt_tls_quic_keys.c"
+      ;;
   esac
   # shellcheck disable=SC2086 -- extra_sources is a list of paths or empty.
   "$CC" -std=c99 -O1 -g -Wall -Wextra -Werror $SAN_FLAGS \

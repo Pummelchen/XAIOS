@@ -19,6 +19,7 @@
 #include "early_serial.h"
 #include "early_exception.h"
 #include "early_contract.h"
+#include "early_post_smp.h"
 #include "early_fpu.h"
 #include "platform.h"
 
@@ -37,15 +38,14 @@
 #define serial_dec xaios_x86_early_serial_dec
 #define panic_halt xaios_x86_early_panic_halt
 
-/* The paging/PM and PCI halves moved to early_mem.c and early_pci.c; these
- * aliases keep every call site in this file spelling them the way it did. */
+/* The paging/PM half moved to early_mem.c and the PCI half to early_pci.c;
+ * these aliases keep the call sites that remain in this file -- early_alloc,
+ * parse_memory_map and install_page_tables -- spelling them the way they did.
+ * The PCI probes and validate_ring3_syscall moved on with the milestone 48-51
+ * stage to early_post_smp.c, which declares its own aliases. */
 #define early_alloc xaios_x86_mem_alloc
 #define parse_memory_map xaios_x86_mem_parse_map
 #define install_page_tables xaios_x86_mem_install_page_tables
-#define validate_ring3_syscall xaios_x86_mem_validate_ring3
-#define discover_pci xaios_x86_pci_discover
-#define validate_virtio_block_operation xaios_x86_pci_validate_virtio_block
-#define validate_virtio_network_operation xaios_x86_pci_validate_virtio_network
 
 /* The GDT/TSS construction moved to early_gdt.c; these aliases keep its two
  * call sites -- x86_64_kmain and x86_64_ap_entry -- spelling it the way they
@@ -59,12 +59,9 @@
  * did. The entry itself keeps its name because entry.S calls it by that name. */
 #define validate_exception_round_trip xaios_x86_early_exception_round_trip
 
-/* The OS-contract and hardware-gate reports moved to early_contract.c; these
- * aliases keep their two call sites at the end of x86_64_kmain spelling them
- * the way they did. Their report state moved with them, and neither report
- * starts an AP, sends an IPI or programs a timer. */
-#define validate_x86_os_contract xaios_x86_early_validate_os_contract
-#define validate_hardware_gate xaios_x86_early_validate_hardware_gate
+/* The OS-contract and hardware-gate reports moved to early_contract.c, and
+ * their two call sites moved on with the milestone 48-51 stage to
+ * early_post_smp.c, which declares its own aliases. */
 
 /* The LAPIC register accessors and the CPU-identity pair moved to
  * early_lapic.c; these aliases keep every call site in this file -- including
@@ -204,9 +201,8 @@ uint32_t g_tsc_aux_ready;
  * setter and getter; the idle loop below still reads it through
  * xaios_x86_early_idle_probe_get. */
 
-#if XAIOS_X86_COMMON_RUNTIME
-extern void kmain(const xaios_boot_info_t *boot);
-#endif
+/* The common kernel's entry is reached from the post-SMP stage in
+ * early_post_smp.c, which calls it under this same guard. */
 
 /* The five forward declarations that stood here -- rdtsc, lapic_id,
  * current_ordinal_fast, lapic_send and lapic_write -- are gone: rdtsc is a
@@ -707,11 +703,9 @@ static void start_application_processors(uint16_t serial_base,
 }
 
 /* validate_x86_os_contract and validate_hardware_gate moved to
- * early_contract.c as xaios_x86_early_validate_os_contract and
- * xaios_x86_early_validate_hardware_gate, together with the report structs and
- * the g_contract/g_hardware_gate state they wrote. The aliases at the top of
- * this file keep their two call sites at the end of x86_64_kmain spelling them
- * as before, at the same point in the sequence. */
+ * early_contract.c; the milestone 48-51 stage that called them, and the rest
+ * of the post-AP platform bring-up around it, now lives in early_post_smp.c
+ * and runs at the same point in the sequence. */
 
 void x86_64_kmain(const xaios_boot_info_t *boot) {
   uint16_t serial_base = COM1_PORT;
@@ -782,31 +776,5 @@ void x86_64_kmain(const xaios_boot_info_t *boot) {
   validate_lapic_timer_interrupt(serial_base);
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 47 timers APIC passed\n");
   start_application_processors(serial_base, boot);
-#if XAIOS_X86_COMMON_RUNTIME
-  kmain(boot);
-  panic_halt(serial_base, "common kernel returned");
-#else
-  validate_ring3_syscall(serial_base);
-  klog_init(boot);
-  security_self_test();
-  serial_puts(serial_base,
-              "x86_64: common security policy self-test passed\n");
-  ai_kernel_self_test();
-  serial_puts(serial_base,
-              "x86_64: scalar AI kernel self-test passed\n");
-  discover_pci(serial_base);
-  serial_puts(serial_base, "x86_64: Intel Desktop milestone 48 PCI discovery passed\n");
-  validate_virtio_block_operation(serial_base);
-  validate_virtio_network_operation(serial_base);
-  x86_64_early_cpu_build_placement_policy(serial_base);
-  serial_puts(serial_base, "x86_64: Intel Desktop milestone 49 placement policy passed\n");
-  validate_x86_os_contract(serial_base);
-  serial_puts(serial_base, "x86_64: Intel Desktop milestone 50 portable common runtime passed platform services pending\n");
-  validate_hardware_gate(serial_base);
-  serial_puts(serial_base, "x86_64: Intel Desktop milestone 51 hardware gate blocked\n");
-#endif
-
-  for (;;) {
-    __asm__ volatile("hlt");
-  }
+  xaios_x86_early_post_smp_bringup(serial_base, boot);
 }

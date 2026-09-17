@@ -11,75 +11,27 @@
 #include <xaios/vmm.h>
 
 #include "platform.h"
+#include "smp_internal.h"
 
-#define PSCI_0_2_FN64_CPU_ON UINT64_C(0xc4000003)
 #define WORKER_SGI_INTID UINT64_C(1)
 #define SECONDARY_STACK_SIZE 16384U
 #define SECONDARY_BOOT_BASE_TIMEOUT_MS UINT64_C(5000)
 #define SECONDARY_WORKER_READY_TIMEOUT_MS UINT64_C(30000)
 
-/* QEMU virt GICv3 redistributor region used for early CPU discovery. */
-/* The layout the ARM virtual-machine convention places a GICv3 at. It is a
-   last resort, used only when firmware describes no interrupt controller, and
-   the choice is reported: the boot line reads "built-in-fallback" rather than
-   "ACPI" whenever these apply. They were named for the hypervisor they were
-   taken from, which made one vendor's memory map look like the definition of
-   normal -- the same habit that had the loader advertise a serial port to a
-   machine with none, and cost this port a boot. See
-   docs/PLATFORM-NEUTRALITY.md. */
-#define GIC_ARM_VIRT_REDISTRIBUTOR_BASE UINT64_C(0x080A0000)
-#define GICR_STRIDE UINT64_C(0x20000)
-#define GICR_TYPER 0x0008U
-#define GICR_TYPER_LAST (UINT64_C(1) << 4U)
-#define GIC_ARM_VIRT_REDISTRIBUTOR_END UINT64_C(0x09000000)
-#define GIC_ARM_VIRT_REDISTRIBUTOR_HIGH_BASE UINT64_C(0x4000000000)
-#define GIC_ARM_VIRT_REDISTRIBUTOR_HIGH_FRAMES UINT32_C(512)
 #define PAGE_SIZE UINT64_C(4096)
 #define EARLY_IDENTITY_LIMIT UINT64_C(0x100000000)
 
 extern char aarch64_secondary_entry[];
 
 uint8_t *g_secondary_stacks;
-static xaios_cpu_state_t *g_cpu_states;
-static uint32_t g_cpu_capacity;
-static uint64_t g_bootstrap_start;
-static uint64_t g_bootstrap_end;
-static xaios_spinlock_t g_smp_lock = XAIOS_SPINLOCK_INIT;
-
-static uint64_t read_mpidr_el1(void) {
-  uint64_t value = 0;
-  __asm__ volatile("mrs %[value], mpidr_el1" : [value] "=r"(value));
-  return value;
-}
-
-static uint64_t mmio_read64(uint64_t base, uint32_t offset) {
-  volatile uint64_t *reg = (volatile uint64_t *)(uintptr_t)(base + offset);
-  return *reg;
-}
-
-static uint64_t psci_cpu_on(uint64_t mpidr, uint64_t entry, uint64_t context,
-                            uint32_t use_hvc) {
-  register uint64_t x0 __asm__("x0") = PSCI_0_2_FN64_CPU_ON;
-  register uint64_t x1 __asm__("x1") = mpidr;
-  register uint64_t x2 __asm__("x2") = entry;
-  register uint64_t x3 __asm__("x3") = context;
-
-  if (use_hvc != 0U) {
-    __asm__ volatile("hvc #0"
-                     : "+r"(x0)
-                     : "r"(x1), "r"(x2), "r"(x3)
-                     : "memory");
-  } else {
-    __asm__ volatile("smc #0"
-                     : "+r"(x0)
-                     : "r"(x1), "r"(x2), "r"(x3)
-                     : "memory");
-  }
-  return x0;
-}
+xaios_cpu_state_t *a64smp_cpu_states;
+uint32_t a64smp_cpu_capacity;
+uint64_t a64smp_bootstrap_start;
+uint64_t a64smp_bootstrap_end;
+xaios_spinlock_t a64smp_lock = XAIOS_SPINLOCK_INIT;
 
 static uint32_t g_online_count; /* cached for O(1) reads */
-static uint32_t g_secondary_scheduler_release;
+uint32_t a64smp_secondary_release;
 
 /* Whether more than one CPU is running kernel code under the kernel's own
  * translation tables -- which is a different question from how many CPUs are
@@ -99,13 +51,13 @@ static uint32_t g_secondary_scheduler_release;
  * Set before the release store, so the switch to real atomics happens while
  * the boot CPU is still the only one running: no CPU can be part-way through
  * the cheap path when another starts using the expensive one. */
-static uint32_t g_smp_locking_active;
+static uint32_t a64smp_locking_active;
 
 uint32_t smp_locking_active(void) {
-  return __atomic_load_n(&g_smp_locking_active, __ATOMIC_ACQUIRE);
+  return __atomic_load_n(&a64smp_locking_active, __ATOMIC_ACQUIRE);
 }
 
-static uint32_t count_online(void) {
+uint32_t a64smp_count_online(void) {
   return g_online_count;
 }
 
@@ -142,12 +94,12 @@ static void bump_online(void) {
  * loads g_secondary_stacks with translation still off, and gets whatever
  * memory holds rather than what this CPU last wrote. */
 static void bootstrap_to_memory(void) {
-  if (g_bootstrap_start == 0U || g_bootstrap_end <= g_bootstrap_start) return;
-  vmm_clean_to_memory((const void *)(uintptr_t)g_bootstrap_start,
-                      g_bootstrap_end - g_bootstrap_start);
+  if (a64smp_bootstrap_start == 0U || a64smp_bootstrap_end <= a64smp_bootstrap_start) return;
+  vmm_clean_to_memory((const void *)(uintptr_t)a64smp_bootstrap_start,
+                      a64smp_bootstrap_end - a64smp_bootstrap_start);
   vmm_clean_to_memory(&g_secondary_stacks, sizeof(g_secondary_stacks));
-  vmm_clean_to_memory(&g_cpu_states, sizeof(g_cpu_states));
-  vmm_clean_to_memory(&g_cpu_capacity, sizeof(g_cpu_capacity));
+  vmm_clean_to_memory(&a64smp_cpu_states, sizeof(a64smp_cpu_states));
+  vmm_clean_to_memory(&a64smp_cpu_capacity, sizeof(a64smp_cpu_capacity));
   /* A secondary reads this to decide whether to enable SVE on itself, while
    * the context switcher reads it later with translation on. Left stale, the
    * two would disagree and a CPU would save state it had trapped. */
@@ -155,96 +107,15 @@ static void bootstrap_to_memory(void) {
 }
 
 static uint32_t observe_online(void) {
-  if (g_cpu_states == 0 || g_cpu_capacity == 0U) return count_online();
+  if (a64smp_cpu_states == 0 || a64smp_cpu_capacity == 0U) return a64smp_count_online();
   vmm_invalidate_from_memory(
-      g_cpu_states, (uint64_t)g_cpu_capacity * sizeof(xaios_cpu_state_t));
+      a64smp_cpu_states, (uint64_t)a64smp_cpu_capacity * sizeof(xaios_cpu_state_t));
   uint32_t online = 0U;
-  for (uint32_t cpu = 0U; cpu < g_cpu_capacity; ++cpu) {
-    if (g_cpu_states[cpu].online != 0U) ++online;
+  for (uint32_t cpu = 0U; cpu < a64smp_cpu_capacity; ++cpu) {
+    if (a64smp_cpu_states[cpu].online != 0U) ++online;
   }
   g_online_count = online;
   return online;
-}
-
-/* QEMU virt exposes one contiguous GICv3 redistributor frame per vCPU. */
-static uint32_t detect_cpu_count(void) {
-  uint64_t frames = (GIC_ARM_VIRT_REDISTRIBUTOR_END - GIC_ARM_VIRT_REDISTRIBUTOR_BASE) / GICR_STRIDE;
-  for (uint32_t cpu = 0; cpu < frames; ++cpu) {
-    uint64_t base = GIC_ARM_VIRT_REDISTRIBUTOR_BASE + (uint64_t)cpu * GICR_STRIDE;
-    if ((mmio_read64(base, GICR_TYPER) & GICR_TYPER_LAST) != 0) {
-      if ((uint64_t)cpu + 1U < frames) return cpu + 1U;
-      /* UEFI does not map QEMU's high redistributor window. Admit the
-       * architectural window here and let PSCI determine populated CPUs. */
-      return (uint32_t)frames + GIC_ARM_VIRT_REDISTRIBUTOR_HIGH_FRAMES;
-    }
-  }
-  return 1U;
-}
-
-static uint64_t mpidr_for_ordinal(uint32_t ordinal) {
-  return (uint64_t)(ordinal % 16U) |
-         ((uint64_t)((ordinal / 16U) % 256U) << 8U) |
-         ((uint64_t)(ordinal / 4096U) << 16U);
-}
-
-static int acpi_is_qemu_virt(const aarch64_acpi_info_t *info) {
-  return info->gic_distributor_base == UINT64_C(0x08000000) &&
-         info->gic_redistributor_base == UINT64_C(0x080A0000) &&
-         info->pci_ecam_base == UINT64_C(0x4010000000);
-}
-
-/* PSCI_VERSION over HVC. Firmware that implements PSCI answers with a version;
-   firmware that does not returns NOT_SUPPORTED. HVC is the conduit this tree
-   already uses for SYSTEM_OFF on every AArch64 target. */
-static uint32_t psci_probe_version(void) {
-  register uint64_t x0 __asm__("x0") = UINT64_C(0x84000000);
-  __asm__ volatile("hvc #0" : "+r"(x0) : : "x1", "x2", "x3", "memory");
-  return (uint32_t)x0;
-}
-
-static uint32_t platform_cpu_capacity(const xaios_boot_info_t *boot,
-                                      aarch64_acpi_info_t *acpi_info) {
-  if (aarch64_acpi_parse(boot->acpi_rsdp, acpi_info) != 0 &&
-      acpi_info->enabled_cpus != 0U) {
-    if (acpi_info->psci_compliant != 0U || acpi_is_qemu_virt(acpi_info)) {
-      return acpi_info->enabled_cpus;
-    }
-    /* Firmware may implement PSCI and still leave the FADT's boot-architecture
-       flags clear; Virtualization.framework reports four enabled CPUs that way
-       while answering PSCI perfectly well. Refusing every secondary on the
-       strength of an unset flag costs the whole machine, so ask PSCI itself
-       before giving up on it. */
-    if (acpi_info->enabled_cpus > 1U) {
-      uint32_t version = psci_probe_version();
-      if (version != UINT32_MAX && (version >> 16U) <= 1U) {
-        klog("smp: firmware answers PSCI %u.%u without advertising it\n",
-             version >> 16U, version & UINT32_C(0xffff));
-        acpi_info->psci_compliant = 1U;
-        acpi_info->psci_use_hvc = 1U;
-        return acpi_info->enabled_cpus;
-      }
-    }
-    return 1U;
-  }
-  *acpi_info = (aarch64_acpi_info_t){0};
-  return detect_cpu_count();
-}
-
-static uint64_t platform_mpidr(const aarch64_acpi_info_t *acpi_info,
-                               uint64_t boot_mpidr, uint32_t ordinal) {
-  if (acpi_info->madt == 0U) return mpidr_for_ordinal(ordinal);
-  if (ordinal == 0U) return boot_mpidr;
-  uint32_t selected = 1U;
-  for (uint32_t index = 0U; index < acpi_info->enabled_cpus; ++index) {
-    uint64_t candidate = 0U;
-    if (aarch64_acpi_cpu_mpidr(acpi_info, index, &candidate) == 0) break;
-    if ((candidate & UINT64_C(0x00ffffff)) ==
-        (boot_mpidr & UINT64_C(0x00ffffff))) {
-      continue;
-    }
-    if (selected++ == ordinal) return candidate;
-  }
-  return 0U;
 }
 
 /* What this CPU is waiting for, published for another CPU to read. AArch64
@@ -255,16 +126,16 @@ static uint64_t platform_mpidr(const aarch64_acpi_info_t *acpi_info,
  * mechanism that reads it (B-123). */
 void xaios_cpu_note_wait(const char *reason) {
   uint32_t cpu = smp_cpu_id();
-  if (cpu < g_cpu_capacity) {
-    g_cpu_states[cpu].waiting_for = reason;
+  if (cpu < a64smp_cpu_capacity) {
+    a64smp_cpu_states[cpu].waiting_for = reason;
   }
 }
 
 uint32_t smp_cpu_id(void) {
-  uint64_t mpidr = read_mpidr_el1() & UINT64_C(0x00ffffff);
-  for (uint32_t cpu = 0U; cpu < g_cpu_capacity; ++cpu) {
-    if (g_cpu_states[cpu].online != 0U &&
-        (g_cpu_states[cpu].mpidr & UINT64_C(0x00ffffff)) == mpidr) {
+  uint64_t mpidr = a64smp_read_mpidr_el1() & UINT64_C(0x00ffffff);
+  for (uint32_t cpu = 0U; cpu < a64smp_cpu_capacity; ++cpu) {
+    if (a64smp_cpu_states[cpu].online != 0U &&
+        (a64smp_cpu_states[cpu].mpidr & UINT64_C(0x00ffffff)) == mpidr) {
       return cpu;
     }
   }
@@ -273,29 +144,29 @@ uint32_t smp_cpu_id(void) {
 
 void aarch64_platform_set_page_tables(uint32_t ordinal, uint64_t *root,
                                       uint64_t *user_directory) {
-  if (ordinal >= g_cpu_capacity) return;
-  g_cpu_states[ordinal].page_table_root = root;
-  g_cpu_states[ordinal].user_page_directory = user_directory;
+  if (ordinal >= a64smp_cpu_capacity) return;
+  a64smp_cpu_states[ordinal].page_table_root = root;
+  a64smp_cpu_states[ordinal].user_page_directory = user_directory;
 }
 
 uint64_t *aarch64_platform_page_table_root(uint32_t ordinal) {
-  return ordinal < g_cpu_capacity ? g_cpu_states[ordinal].page_table_root : 0;
+  return ordinal < a64smp_cpu_capacity ? a64smp_cpu_states[ordinal].page_table_root : 0;
 }
 
 uint64_t *aarch64_platform_user_page_directory(uint32_t ordinal) {
-  return ordinal < g_cpu_capacity ? g_cpu_states[ordinal].user_page_directory
+  return ordinal < a64smp_cpu_capacity ? a64smp_cpu_states[ordinal].user_page_directory
                                   : 0;
 }
 
 uint32_t aarch64_platform_current_ordinal(void) { return smp_cpu_id(); }
 
 xaios_status_t smp_wake_cpu(uint32_t cpu_id) {
-  if (cpu_id >= g_cpu_capacity || g_cpu_states[cpu_id].online == 0U ||
-      __atomic_load_n(&g_cpu_states[cpu_id].scheduling_enabled,
+  if (cpu_id >= a64smp_cpu_capacity || a64smp_cpu_states[cpu_id].online == 0U ||
+      __atomic_load_n(&a64smp_cpu_states[cpu_id].scheduling_enabled,
                       __ATOMIC_ACQUIRE) == 0U) {
     return XAIOS_ERR_INVALID;
   }
-  uint64_t mpidr = g_cpu_states[cpu_id].mpidr;
+  uint64_t mpidr = a64smp_cpu_states[cpu_id].mpidr;
   uint32_t aff0 = (uint32_t)(mpidr & UINT64_C(0xff));
   if (aff0 >= 16U) return XAIOS_ERR_UNSUPPORTED;
   uint64_t sgi = UINT64_C(1) << aff0;
@@ -376,24 +247,24 @@ void smp_secondary_main(uint64_t cpu_id) {
                      : "r"(cpacr), "r"(UINT64_C(0xf))
                      : "memory");
   }
-  if (cpu_id < g_cpu_capacity) {
-    g_cpu_states[cpu_id].cpu_id = (uint32_t)cpu_id;
-    g_cpu_states[cpu_id].mpidr = read_mpidr_el1();
-    g_cpu_states[cpu_id].role = XAIOS_CPU_ROLE_SCHEDULING;
-    g_cpu_states[cpu_id].lease_owner_id = 0;
-    g_cpu_states[cpu_id].irq_routed_away = 0;
-    g_cpu_states[cpu_id].tick_suppressed = 0;
-    g_cpu_states[cpu_id].scheduling_enabled = 0;
-    g_cpu_states[cpu_id].steal_count = 0;
+  if (cpu_id < a64smp_cpu_capacity) {
+    a64smp_cpu_states[cpu_id].cpu_id = (uint32_t)cpu_id;
+    a64smp_cpu_states[cpu_id].mpidr = a64smp_read_mpidr_el1();
+    a64smp_cpu_states[cpu_id].role = XAIOS_CPU_ROLE_SCHEDULING;
+    a64smp_cpu_states[cpu_id].lease_owner_id = 0;
+    a64smp_cpu_states[cpu_id].irq_routed_away = 0;
+    a64smp_cpu_states[cpu_id].tick_suppressed = 0;
+    a64smp_cpu_states[cpu_id].scheduling_enabled = 0;
+    a64smp_cpu_states[cpu_id].steal_count = 0;
     /* Online last, and only once everything it describes has landed: it is
      * what the boot CPU waits on, and an entry seen half-written is worse
      * than one not seen at all. */
     __asm__ volatile("dsb sy" : : : "memory");
-    g_cpu_states[cpu_id].online = 1;
+    a64smp_cpu_states[cpu_id].online = 1;
     __asm__ volatile("dsb sy\nsev" : : : "memory");
   }
 
-  while (__atomic_load_n(&g_secondary_scheduler_release, __ATOMIC_ACQUIRE) ==
+  while (__atomic_load_n(&a64smp_secondary_release, __ATOMIC_ACQUIRE) ==
          0U) {
     /* QEMU 8.2 can lose a long-lived pre-GIC WFE event. This startup-only
      * rendezvous must observe release without depending on an event latch. */
@@ -411,8 +282,8 @@ void smp_secondary_main(uint64_t cpu_id) {
    * until this CPU owns a preemptible userspace run queue. */
   timer_mask_local();
 
-  if (cpu_id < g_cpu_capacity) {
-    __atomic_store_n(&g_cpu_states[cpu_id].scheduling_enabled, 1U,
+  if (cpu_id < a64smp_cpu_capacity) {
+    __atomic_store_n(&a64smp_cpu_states[cpu_id].scheduling_enabled, 1U,
                      __ATOMIC_RELEASE);
   }
 
@@ -448,51 +319,51 @@ void smp_secondary_main(uint64_t cpu_id) {
 
 void smp_init_platform(const xaios_boot_info_t *boot) {
   aarch64_acpi_info_t acpi_info;
-  uint32_t candidate_capacity = platform_cpu_capacity(boot, &acpi_info);
-  uint32_t qemu_virt = acpi_info.madt != 0U && acpi_is_qemu_virt(&acpi_info);
+  uint32_t candidate_capacity = a64smp_platform_cpu_capacity(boot, &acpi_info);
+  uint32_t qemu_virt = acpi_info.madt != 0U && a64smp_acpi_is_qemu_virt(&acpi_info);
   uint32_t psci_use_hvc =
       acpi_info.madt != 0U ? (qemu_virt != 0U ? 1U : acpi_info.psci_use_hvc)
                           : 1U;
-  uint64_t boot_mpidr = read_mpidr_el1();
+  uint64_t boot_mpidr = a64smp_read_mpidr_el1();
   uint64_t state_bytes = align_up(
       (uint64_t)candidate_capacity * sizeof(xaios_cpu_state_t), PAGE_SIZE);
   uint64_t stack_bytes =
       (uint64_t)candidate_capacity * SECONDARY_STACK_SIZE;
   uint64_t bootstrap_bytes = state_bytes + stack_bytes;
-  g_bootstrap_start = allocate_bootstrap(boot, bootstrap_bytes);
-  kassert(g_bootstrap_start != 0U);
-  g_bootstrap_end = g_bootstrap_start + bootstrap_bytes;
-  g_cpu_states = (xaios_cpu_state_t *)(uintptr_t)g_bootstrap_start;
-  g_secondary_stacks = (uint8_t *)(uintptr_t)(g_bootstrap_start + state_bytes);
-  g_cpu_capacity = candidate_capacity;
-  bytes_zero((void *)(uintptr_t)g_bootstrap_start, bootstrap_bytes);
-  for (uint32_t i = 0; i < g_cpu_capacity; ++i) {
-    g_cpu_states[i].cpu_id = i;
-    g_cpu_states[i].online = 0;
-    g_cpu_states[i].mpidr = platform_mpidr(&acpi_info, boot_mpidr, i);
-    g_cpu_states[i].role = XAIOS_CPU_ROLE_OFFLINE;
-    g_cpu_states[i].lease_owner_id = 0;
-    g_cpu_states[i].irq_routed_away = 0;
-    g_cpu_states[i].tick_suppressed = 0;
-    g_cpu_states[i].migration_count = 0;
-    g_cpu_states[i].involuntary_context_switch_count = 0;
-    g_cpu_states[i].scheduling_enabled = 0;
-    g_cpu_states[i].steal_count = 0;
+  a64smp_bootstrap_start = allocate_bootstrap(boot, bootstrap_bytes);
+  kassert(a64smp_bootstrap_start != 0U);
+  a64smp_bootstrap_end = a64smp_bootstrap_start + bootstrap_bytes;
+  a64smp_cpu_states = (xaios_cpu_state_t *)(uintptr_t)a64smp_bootstrap_start;
+  g_secondary_stacks = (uint8_t *)(uintptr_t)(a64smp_bootstrap_start + state_bytes);
+  a64smp_cpu_capacity = candidate_capacity;
+  bytes_zero((void *)(uintptr_t)a64smp_bootstrap_start, bootstrap_bytes);
+  for (uint32_t i = 0; i < a64smp_cpu_capacity; ++i) {
+    a64smp_cpu_states[i].cpu_id = i;
+    a64smp_cpu_states[i].online = 0;
+    a64smp_cpu_states[i].mpidr = a64smp_platform_mpidr(&acpi_info, boot_mpidr, i);
+    a64smp_cpu_states[i].role = XAIOS_CPU_ROLE_OFFLINE;
+    a64smp_cpu_states[i].lease_owner_id = 0;
+    a64smp_cpu_states[i].irq_routed_away = 0;
+    a64smp_cpu_states[i].tick_suppressed = 0;
+    a64smp_cpu_states[i].migration_count = 0;
+    a64smp_cpu_states[i].involuntary_context_switch_count = 0;
+    a64smp_cpu_states[i].scheduling_enabled = 0;
+    a64smp_cpu_states[i].steal_count = 0;
   }
-  xaios_spin_init(&g_smp_lock);
+  xaios_spin_init(&a64smp_lock);
   g_online_count = 0;
-  g_secondary_scheduler_release = 0;
-  g_smp_locking_active = 0U;
+  a64smp_secondary_release = 0;
+  a64smp_locking_active = 0U;
 
-  g_cpu_states[0].online = 1;
-  g_cpu_states[0].mpidr = boot_mpidr;
-  g_cpu_states[0].role = XAIOS_CPU_ROLE_HOUSEKEEPING;
-  g_cpu_states[0].irq_routed_away = 0;
-  g_cpu_states[0].tick_suppressed = 0;
+  a64smp_cpu_states[0].online = 1;
+  a64smp_cpu_states[0].mpidr = boot_mpidr;
+  a64smp_cpu_states[0].role = XAIOS_CPU_ROLE_HOUSEKEEPING;
+  a64smp_cpu_states[0].irq_routed_away = 0;
+  a64smp_cpu_states[0].tick_suppressed = 0;
   bump_online();
 
   klog("smp: boot cpu mpidr=0x%lx role=housekeeping\n",
-       g_cpu_states[0].mpidr);
+       a64smp_cpu_states[0].mpidr);
 
   klog("smp: source=%s candidate_capacity=%u psci=%s dynamic_registry_bytes=%lu stack_bytes=%lu\n",
        acpi_info.madt != 0U ? (acpi_info.psci_compliant != 0U ? "ACPI-PSCI" :
@@ -506,12 +377,12 @@ void smp_init_platform(const xaios_boot_info_t *boot) {
   uint32_t admitted_count = 1U;
   uint32_t rejected_count = 0U;
   for (uint32_t cpu = 1; cpu < candidate_capacity; ++cpu) {
-    uint64_t mpidr = g_cpu_states[cpu].mpidr;
+    uint64_t mpidr = a64smp_cpu_states[cpu].mpidr;
     if (mpidr == 0U) {
       ++rejected_count;
       continue;
     }
-    uint64_t status = psci_cpu_on(mpidr,
+    uint64_t status = a64smp_psci_cpu_on(mpidr,
                                   (uint64_t)(uintptr_t)aarch64_secondary_entry,
                                   cpu, psci_use_hvc);
     if (status == 0U) ++admitted_count;
@@ -528,20 +399,20 @@ void smp_init_platform(const xaios_boot_info_t *boot) {
   while (observe_online() < admitted_count) {
     if (timer_counter() - start_time > timeout) {
       klog("smp: boot timeout — %u/%u CPUs online\n",
-           count_online(), admitted_count);
+           a64smp_count_online(), admitted_count);
       break;
     }
     __asm__ volatile("wfe");
   }
 
-  g_cpu_capacity = admitted_count;
+  a64smp_cpu_capacity = admitted_count;
   klog("smp: online cpus=%u/%u dynamic_capacity=%u\n",
-       count_online(), admitted_count, g_cpu_capacity);
-  for (uint32_t cpu = 0; cpu < g_cpu_capacity; ++cpu) {
-    if (g_cpu_states[cpu].online != 0) {
+       a64smp_count_online(), admitted_count, a64smp_cpu_capacity);
+  for (uint32_t cpu = 0; cpu < a64smp_cpu_capacity; ++cpu) {
+    if (a64smp_cpu_states[cpu].online != 0) {
       klog("smp: cpu%u online=%u mpidr=0x%lx role=%u\n",
-           cpu, g_cpu_states[cpu].online, g_cpu_states[cpu].mpidr,
-           (unsigned)g_cpu_states[cpu].role);
+           cpu, a64smp_cpu_states[cpu].online, a64smp_cpu_states[cpu].mpidr,
+           (unsigned)a64smp_cpu_states[cpu].role);
     }
   }
 }
@@ -558,240 +429,36 @@ xaios_status_t smp_release_secondary_schedulers(void) {
   /* Locks become real atomics from here, before anything else can run: past
    * this point every CPU that reaches kernel code activates the kernel's
    * translation first, so all of them agree the memory is Normal cacheable. */
-  __atomic_store_n(&g_smp_locking_active, 1U, __ATOMIC_RELEASE);
-  __atomic_store_n(&g_secondary_scheduler_release, 1U, __ATOMIC_RELEASE);
+  __atomic_store_n(&a64smp_locking_active, 1U, __ATOMIC_RELEASE);
+  __atomic_store_n(&a64smp_secondary_release, 1U, __ATOMIC_RELEASE);
   /* The secondaries waiting on this still have translation off, so they read
    * it from memory and never from the caches this store lands in. They spin
    * rather than sleep, so a late arrival costs nothing, but nothing else would
    * ever push this out -- and the caller asserts on the barrier it gates. */
-  vmm_clean_to_memory(&g_secondary_scheduler_release,
-                  sizeof(g_secondary_scheduler_release));
+  vmm_clean_to_memory(&a64smp_secondary_release,
+                  sizeof(a64smp_secondary_release));
   __asm__ volatile("sev" ::: "memory");
   uint64_t started = timer_counter();
   uint64_t timeout = timer_frequency_hz() *
                      SECONDARY_WORKER_READY_TIMEOUT_MS / UINT64_C(1000);
   for (;;) {
     uint32_t ready = 1U;
-    for (uint32_t cpu = 1U; cpu < g_cpu_capacity; ++cpu) {
-      if (g_cpu_states[cpu].online != 0U &&
-          __atomic_load_n(&g_cpu_states[cpu].scheduling_enabled,
+    for (uint32_t cpu = 1U; cpu < a64smp_cpu_capacity; ++cpu) {
+      if (a64smp_cpu_states[cpu].online != 0U &&
+          __atomic_load_n(&a64smp_cpu_states[cpu].scheduling_enabled,
                           __ATOMIC_ACQUIRE) != 0U) {
         ++ready;
       }
     }
-    if (ready == count_online()) {
+    if (ready == a64smp_count_online()) {
       klog("smp: secondary worker barrier passed ready=%u\n", ready);
       return XAIOS_OK;
     }
     __asm__ volatile("sev\n\tyield" ::: "memory");
     if (timer_counter() - started >= timeout) {
       klog("smp: secondary worker barrier timed out ready=%u online=%u\n",
-           ready, count_online());
+           ready, a64smp_count_online());
       return XAIOS_ERR_BUSY;
     }
   }
-}
-
-const xaios_cpu_state_t *smp_cpu_state(uint32_t cpu_id) {
-  if (cpu_id >= g_cpu_capacity) {
-    return 0;
-  }
-  return &g_cpu_states[cpu_id];
-}
-
-xaios_status_t smp_set_scheduling_enabled(uint32_t cpu_id, uint32_t enabled) {
-  if (cpu_id >= g_cpu_capacity || enabled > 1U) {
-    return XAIOS_ERR_INVALID;
-  }
-
-  xaios_spin_lock(&g_smp_lock);
-  if (g_cpu_states[cpu_id].online == 0 ||
-      (g_cpu_states[cpu_id].role != XAIOS_CPU_ROLE_HOUSEKEEPING &&
-       g_cpu_states[cpu_id].role != XAIOS_CPU_ROLE_SCHEDULING)) {
-    xaios_spin_unlock(&g_smp_lock);
-    return XAIOS_ERR_INVALID;
-  }
-  g_cpu_states[cpu_id].scheduling_enabled = enabled;
-  xaios_spin_unlock(&g_smp_lock);
-  return XAIOS_OK;
-}
-
-xaios_status_t smp_mark_core_leased(uint32_t cpu_id, uint32_t owner_id) {
-  xaios_spin_lock(&g_smp_lock);
-
-  if (cpu_id == 0 || cpu_id >= g_cpu_capacity || owner_id == UINT32_MAX ||
-      g_cpu_states[cpu_id].online == 0 ||
-      g_cpu_states[cpu_id].role != XAIOS_CPU_ROLE_SCHEDULING) {
-    xaios_spin_unlock(&g_smp_lock);
-    return XAIOS_ERR_INVALID;
-  }
-
-  if (g_cpu_states[cpu_id].lease_owner_id != 0 &&
-      g_cpu_states[cpu_id].lease_owner_id != owner_id + 1U) {
-    ++g_cpu_states[cpu_id].migration_count;
-    xaios_spin_unlock(&g_smp_lock);
-    return XAIOS_ERR_BUSY;
-  }
-
-  g_cpu_states[cpu_id].role = XAIOS_CPU_ROLE_AI_HOT;
-  g_cpu_states[cpu_id].lease_owner_id = owner_id + 1U;
-  g_cpu_states[cpu_id].irq_routed_away = 1;
-  g_cpu_states[cpu_id].tick_suppressed = 1;
-  g_cpu_states[cpu_id].scheduling_enabled = 0;
-
-  xaios_spin_unlock(&g_smp_lock);
-  klog("smp: cpu%u leased owner=%u role=ai-hot\n", cpu_id, owner_id);
-  return XAIOS_OK;
-}
-
-xaios_status_t smp_release_core_lease(uint32_t cpu_id, uint32_t owner_id) {
-  xaios_spin_lock(&g_smp_lock);
-
-  if (cpu_id == 0 || cpu_id >= g_cpu_capacity ||
-      g_cpu_states[cpu_id].online == 0 ||
-      g_cpu_states[cpu_id].role != XAIOS_CPU_ROLE_AI_HOT ||
-      g_cpu_states[cpu_id].lease_owner_id != owner_id + 1U) {
-    xaios_spin_unlock(&g_smp_lock);
-    return XAIOS_ERR_INVALID;
-  }
-
-  g_cpu_states[cpu_id].role = XAIOS_CPU_ROLE_SCHEDULING;
-  g_cpu_states[cpu_id].lease_owner_id = 0;
-  g_cpu_states[cpu_id].irq_routed_away = 0;
-  g_cpu_states[cpu_id].tick_suppressed = 0;
-  g_cpu_states[cpu_id].scheduling_enabled = g_secondary_scheduler_release;
-
-  xaios_spin_unlock(&g_smp_lock);
-  klog("smp: cpu%u released owner=%u role=scheduling\n", cpu_id, owner_id);
-  return XAIOS_OK;
-}
-
-uint32_t smp_hot_core_mask(void) {
-  uint32_t mask = 0;
-  /* uint32_t mask only covers CPUs 0-31 */
-  uint32_t limit = g_cpu_capacity < 32U ? g_cpu_capacity : 32U;
-  for (uint32_t cpu = 0; cpu < limit; ++cpu) {
-    if (g_cpu_states[cpu].role == XAIOS_CPU_ROLE_AI_HOT) {
-      mask |= UINT32_C(1) << cpu;
-    }
-  }
-  return mask;
-}
-
-uint32_t smp_irq_isolated_mask(void) {
-  uint32_t mask = 0;
-  /* uint32_t mask only covers CPUs 0-31 */
-  uint32_t limit = g_cpu_capacity < 32U ? g_cpu_capacity : 32U;
-  for (uint32_t cpu = 0; cpu < limit; ++cpu) {
-    if (g_cpu_states[cpu].irq_routed_away != 0) {
-      mask |= UINT32_C(1) << cpu;
-    }
-  }
-  return mask;
-}
-
-uint64_t smp_total_migration_count(void) {
-  uint64_t total = 0;
-  uint32_t limit = count_online();
-  for (uint32_t cpu = 0; cpu < limit; ++cpu) {
-    total += g_cpu_states[cpu].migration_count;
-  }
-  return total;
-}
-
-uint64_t smp_total_involuntary_context_switch_count(void) {
-  uint64_t total = 0;
-  uint32_t limit = count_online();
-  for (uint32_t cpu = 0; cpu < limit; ++cpu) {
-    total += g_cpu_states[cpu].involuntary_context_switch_count;
-  }
-  return total;
-}
-
-uint32_t smp_online_count(void) {
-  return count_online();
-}
-
-uint32_t smp_capacity(void) { return g_cpu_capacity; }
-
-xaios_status_t smp_bootstrap_reserved_range(uint64_t *start, uint64_t *end) {
-  if (start == 0 || end == 0 || g_bootstrap_start == 0U ||
-      g_bootstrap_start >= g_bootstrap_end) {
-    return XAIOS_ERR_INVALID;
-  }
-  *start = g_bootstrap_start;
-  *end = g_bootstrap_end;
-  return XAIOS_OK;
-}
-
-xaios_status_t smp_cpu_id_at(uint32_t ordinal, uint32_t *cpu_id) {
-  if (cpu_id == 0 || ordinal >= count_online()) {
-    return XAIOS_ERR_INVALID;
-  }
-  uint32_t found = 0;
-  for (uint32_t cpu = 0; cpu < g_cpu_capacity; ++cpu) {
-    if (g_cpu_states[cpu].online == 0) {
-      continue;
-    }
-    if (found == ordinal) {
-      *cpu_id = cpu;
-      return XAIOS_OK;
-    }
-    ++found;
-  }
-  return XAIOS_ERR_INVALID;
-}
-
-
-xaios_status_t smp_run_user_thread_group(uint64_t requested_threads,
-                                        uint64_t iterations,
-                                        uint64_t *ran_threads,
-                                        uint64_t *checksum) {
-  return xaios_thread_run_group(requested_threads, iterations, ran_threads,
-                                checksum);
-}
-
-/* The shootdown acknowledgement check is x86-64's, and saying so is the point:
- * an absent check that looks like a passed one is the failure mode this
- * project keeps having to fix (B-123).
- *
- * AArch64 does not have the problem at all: `tlbi vaae1is` is broadcast by the
- * hardware across the inner shareable domain, so no CPU waits for another
- * CPU's acknowledgement and there is no answer an interrupt could carry. */
-void smp_shootdown_ack_self_test(void) {
-  klog("smp: shootdown acknowledgement self-test not applicable on aarch64 "
-       "-- tlbi is broadcast, nothing waits for an acknowledgement\n");
-}
-
-/* The idle-wakeup check is x86-64's, and saying so is the point: an absent
- * check that looks like a passed one is the failure mode this project keeps
- * having to fix (B-120).
- *
- * AArch64 has no such window. `sev` -- which `xaios_cpu_notify()` issues after
- * publishing a thread -- sets the wait-for-event latch that a `wfe` reaching it
- * later returns on, so a wakeup consumed before the `wfe` still leaves the
- * event that wakes it. */
-void smp_idle_wakeup_self_test(void) {
-  klog("smp: idle wakeup self-test not applicable on aarch64 -- sev sets the "
-       "wait-for-event latch the wfe waits on\n");
-}
-
-/* Whether this CPU is inside a trap handler.
- *
- * This port answers with the interrupt mask rather than a trap depth, which is
- * what every caller asked before the question was separated: it is
- * conservative, shortening the console lock's wait in a thread context that
- * happens to hold a spinlock. x86-64 answers exactly because the observed drop
- * was there (B-119). */
-uint32_t xaios_cpu_in_interrupt(void) {
-  return xaios_interrupts_enabled() != 0 ? 0U : 1U;
-}
-
-void smp_self_test(void) {
-  kassert(g_cpu_states[0].online != 0);
-  kassert(g_cpu_states[0].role == XAIOS_CPU_ROLE_HOUSEKEEPING);
-  kassert(g_cpu_states[0].tick_suppressed == 0);
-  kassert(smp_online_count() >= 1);
-  klog("smp: per-core registry self-test passed online=%u\n",
-       smp_online_count());
 }

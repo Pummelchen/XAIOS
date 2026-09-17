@@ -50,6 +50,8 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   $KERNEL_BUILD_DIR/gic.o
   $KERNEL_BUILD_DIR/gic_its.o
   $KERNEL_BUILD_DIR/smp.o
+  $KERNEL_BUILD_DIR/smp_platform.o
+  $KERNEL_BUILD_DIR/smp_registry.o
   $KERNEL_BUILD_DIR/engine_packed.o
   $KERNEL_BUILD_DIR/sve.o
   $KERNEL_BUILD_DIR/sve_canary.o
@@ -78,6 +80,7 @@ else
   $KERNEL_BUILD_DIR/early_timer_discover.o
   $KERNEL_BUILD_DIR/early_exception.o
   $KERNEL_BUILD_DIR/early_contract.o
+  $KERNEL_BUILD_DIR/early_post_smp.o
   $KERNEL_BUILD_DIR/engine_packed.o
   $KERNEL_BUILD_DIR/timer.o
   $KERNEL_BUILD_DIR/platform.o
@@ -154,6 +157,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/fat_dir.o
   $KERNEL_BUILD_DIR/fat_file_io.o
   $KERNEL_BUILD_DIR/vfs.o
+  $KERNEL_BUILD_DIR/vfs_namespace.o
+  $KERNEL_BUILD_DIR/vfs_handle.o
   $KERNEL_BUILD_DIR/vfs_xaiboot.o
   $KERNEL_BUILD_DIR/vfs_initramfs.o
   $KERNEL_BUILD_DIR/vfs_xaifs.o
@@ -181,6 +186,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/syscall_control.o
   $KERNEL_BUILD_DIR/core_lease.o
   $KERNEL_BUILD_DIR/security.o
+  $KERNEL_BUILD_DIR/security_update.o
+  $KERNEL_BUILD_DIR/security_credential.o
   $KERNEL_BUILD_DIR/child_channel.o
   $KERNEL_BUILD_DIR/remote_login.o
   $KERNEL_BUILD_DIR/remote_login_archive.o
@@ -231,9 +238,12 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/user_runtime.o
   $KERNEL_BUILD_DIR/model_arena.o
   $KERNEL_BUILD_DIR/ai_cell.o
+  $KERNEL_BUILD_DIR/ai_cell_descriptor.o
+  $KERNEL_BUILD_DIR/ai_cell_self_test.o
   $KERNEL_BUILD_DIR/sandbox.o
   $KERNEL_BUILD_DIR/persistence.o
   $KERNEL_BUILD_DIR/update.o
+  $KERNEL_BUILD_DIR/update_delivery.o
   $KERNEL_BUILD_DIR/system_slot.o
   $KERNEL_BUILD_DIR/sha256.o
   $KERNEL_BUILD_DIR/crc32.o

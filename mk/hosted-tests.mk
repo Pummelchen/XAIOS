@@ -236,7 +236,7 @@ hosted-test: engine-cli
 	  -o build/hosted/test-xaifs-admin
 	./build/hosted/test-xaifs-admin
 	$(HOST_CC) $(HOST_CFLAGS) \
-	  -Ikernel/include kernel/fs/vfs.c tests/storage/test_vfs.c \
+	  -Ikernel/include kernel/fs/vfs.c kernel/fs/vfs_namespace.c kernel/fs/vfs_handle.c tests/storage/test_vfs.c \
 	  -o build/hosted/test-vfs
 	./build/hosted/test-vfs
 	$(HOST_CC) $(HOST_CFLAGS) \

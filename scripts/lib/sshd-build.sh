@@ -17,11 +17,11 @@ if [ -n "$SSHD_CFLAGS_EXTRA" ]; then
 fi
 SSHD_RESPONSE_FILE="$INIT_BUILD_DIR/sshd-objects.rsp"
 : > "$SSHD_RESPONSE_FILE"
-for sshd_src in sshd.c sshd_audit.c sshd_rate_limit.c sshd_kex.c sshd_console_screen.c sshd_console_programs.c sshd_auth.c sshd_keys.c sshd_diagnostics.c sshd_console_ui.c sshd_config.c sshd_console_session.c sshd_connection_support.c sshd_service.c ssh_crypto.c ssh_crypto_symmetric.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_alt_screen.c ssh_channel_shell.c ssh_channel_stream.c ssh_channel_table.c ssh_channel_request.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c sftp_server_file.c sftp_server_dir.c less_pager.c; do
+for sshd_src in sshd.c sshd_audit.c sshd_rate_limit.c sshd_kex.c sshd_console_screen.c sshd_console_programs.c sshd_auth.c sshd_keys.c sshd_diagnostics.c sshd_console_ui.c sshd_config.c sshd_console_session.c sshd_connection_support.c sshd_service.c sshd_connection.c ssh_crypto.c ssh_crypto_symmetric.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_alt_screen.c ssh_channel_shell.c ssh_channel_stream.c ssh_channel_table.c ssh_channel_request.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c sftp_server_file.c sftp_server_dir.c less_pager.c; do
   sshd_obj="$INIT_BUILD_DIR/sshd-${sshd_src%.c}.o"
   sshd_opt=""
   if [ "$sshd_src" = "sshd.c" ] || [ "$sshd_src" = "sshd_audit.c" ] ||
-      [ "$sshd_src" = "sshd_rate_limit.c" ] || [ "$sshd_src" = "sshd_kex.c" ] || [ "$sshd_src" = "sshd_console_screen.c" ] || [ "$sshd_src" = "sshd_console_programs.c" ] || [ "$sshd_src" = "sshd_auth.c" ] || [ "$sshd_src" = "sshd_keys.c" ] || [ "$sshd_src" = "sshd_diagnostics.c" ] || [ "$sshd_src" = "sshd_console_ui.c" ] || [ "$sshd_src" = "sshd_config.c" ] || [ "$sshd_src" = "sshd_console_session.c" ] || [ "$sshd_src" = "sshd_connection_support.c" ] || [ "$sshd_src" = "sshd_service.c" ]; then
+      [ "$sshd_src" = "sshd_rate_limit.c" ] || [ "$sshd_src" = "sshd_kex.c" ] || [ "$sshd_src" = "sshd_console_screen.c" ] || [ "$sshd_src" = "sshd_console_programs.c" ] || [ "$sshd_src" = "sshd_auth.c" ] || [ "$sshd_src" = "sshd_keys.c" ] || [ "$sshd_src" = "sshd_diagnostics.c" ] || [ "$sshd_src" = "sshd_console_ui.c" ] || [ "$sshd_src" = "sshd_config.c" ] || [ "$sshd_src" = "sshd_console_session.c" ] || [ "$sshd_src" = "sshd_connection_support.c" ] || [ "$sshd_src" = "sshd_service.c" ] || [ "$sshd_src" = "sshd_connection.c" ]; then
     sshd_opt="-Os"
   fi
   "$CLANG" \
