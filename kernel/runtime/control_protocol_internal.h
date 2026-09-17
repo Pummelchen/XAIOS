@@ -84,4 +84,28 @@ xaios_status_t control_protocol_handle_storage_trim_operation(
     void *response, uint64_t response_capacity, uint64_t *response_bytes,
     xaios_control_role_t authenticated_role);
 
+/* Version, status, health, capability, hardware and metric operations, defined
+   in control_observability_ops.c. These take no request payload, so unlike the
+   other handlers they need neither the payload nor the authenticated role. */
+xaios_status_t control_protocol_handle_observability_operation(
+    const xaios_control_request_header_t *request, void *response,
+    uint64_t response_capacity, uint64_t *response_bytes);
+
+/* Filesystem and partition operations, defined in
+   control_storage_layout_ops.c. */
+xaios_status_t control_protocol_handle_storage_filesystems(
+    const xaios_control_request_header_t *request, const uint8_t *payload,
+    void *response, uint64_t response_capacity, uint64_t *response_bytes);
+xaios_status_t control_protocol_handle_storage_partition_read(
+    const xaios_control_request_header_t *request, const uint8_t *payload,
+    void *response, uint64_t response_capacity, uint64_t *response_bytes);
+xaios_status_t control_protocol_handle_storage_install(
+    const xaios_control_request_header_t *request, const uint8_t *payload,
+    void *response, uint64_t response_capacity, uint64_t *response_bytes,
+    xaios_control_role_t authenticated_role);
+xaios_status_t control_protocol_handle_storage_partition_operation(
+    const xaios_control_request_header_t *request, const uint8_t *payload,
+    void *response, uint64_t response_capacity, uint64_t *response_bytes,
+    xaios_control_role_t authenticated_role);
+
 #endif /* XAIOS_RUNTIME_CONTROL_PROTOCOL_INTERNAL_H */

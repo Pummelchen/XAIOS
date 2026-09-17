@@ -1,5 +1,7 @@
 #include "ssh_channel.h"
 #include "ssh_alt_screen.h"
+#include "ssh_channel_shell.h"
+#include "ssh_channel_stream.h"
 #include "ssh_connection.h"
 #include "ssh_protocol.h"
 #include "ssh_utils.h"
@@ -12,10 +14,6 @@
 #include <xaios_user.h>
 #include <xaios_screen.h>
 
-#define SSH_SCREEN_POOL 4U
-static uint32_t g_screen_used[SSH_SCREEN_POOL];
-static void screen_release(struct ssh_channel *ch);
-
 #define SFTP_REQUEST_READ 5U
 #define SFTP_REQUEST_WRITE 6U
 #define SSH_PTY_DEFAULT_COLUMNS 120U
@@ -24,8 +22,6 @@ static void screen_release(struct ssh_channel *ch);
 #define SSH_PTY_MAX_COLUMNS 240U
 #define SSH_PTY_MIN_ROWS 12U
 #define SSH_PTY_MAX_ROWS 100U
-
-#define SSH_XTOP_DEFAULT_REFRESH_MS 250U
 
 enum {
   SSH_XTOP_SORT_CPU = 0U,
@@ -89,29 +85,6 @@ static int open_agent_channel(ssh_channel_t *session) {
   return 0;
 }
 
-static int shell_send_output(ssh_channel_t *ch, const uint8_t *data,
-                             uint32_t length) {
-  uint32_t segment_start = 0U;
-  if (ch == 0 || (data == 0 && length != 0U)) return -1;
-  for (uint32_t i = 0U; i < length; ++i) {
-    if (data[i] != '\n' || (i != 0U && data[i - 1U] == '\r')) continue;
-    if (i != segment_start &&
-        ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
-                              data + segment_start, i - segment_start) != 0) {
-      return -1;
-    }
-    if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
-                              (const uint8_t *)"\r\n", 2U) != 0) {
-      return -1;
-    }
-    segment_start = i + 1U;
-  }
-  if (segment_start == length) return 0;
-  return ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
-                               data + segment_start,
-                               length - segment_start);
-}
-
 int nano_command_argument(const char *command, char *argument,
                                  uint32_t capacity) {
   uint32_t i = 0U;
@@ -133,7 +106,7 @@ int nano_command_argument(const char *command, char *argument,
 }
 
 void ssh_channel_init(void) {
-  for (uint32_t i = 0U; i < SSH_SCREEN_POOL; ++i) g_screen_used[i] = 0U;
+  ssh_stream_screen_reset();
   ssh_mem_zero(g_channels, sizeof(g_channels));
   g_next_local_id = 1;
 }
@@ -181,8 +154,8 @@ static ssh_channel_t *find_channel_by_local(int sockfd, uint32_t local_id) {
   return (ssh_channel_t *)0;
 }
 
-static int packet_string_equal(const uint8_t *value, uint32_t value_len,
-                               const char *expected) {
+int ssh_channel_packet_string_equal(const uint8_t *value, uint32_t value_len,
+                                    const char *expected) {
   uint32_t expected_len = ssh_str_len(expected);
   if (value_len != expected_len) return 0;
   for (uint32_t i = 0; i < value_len; ++i) {
@@ -297,24 +270,6 @@ static int parse_window_change(ssh_channel_t *ch, const ssh_packet_t *pkt,
   return 0;
 }
 
-static int command_token_equal(const char *command, const char *expected) {
-  uint32_t index = 0U;
-  uint32_t command_len = ssh_str_len(command);
-  uint32_t expected_len = ssh_str_len(expected);
-  while (command[index] == ' ' || command[index] == '\t' ||
-         command[index] == '\r' || command[index] == '\n') {
-    ++index;
-  }
-  if (index > command_len || expected_len > command_len - index) return 0;
-  for (uint32_t i = 0U; i < expected_len; ++i) {
-    if (command[index + i] != expected[i]) return 0;
-  }
-  index += expected_len;
-  return command[index] == '\0' || command[index] == ' ' ||
-         command[index] == '\t' || command[index] == '\r' ||
-         command[index] == '\n';
-}
-
 int pong_command_exact(const char *command) {
   uint32_t index = 0U;
   static const char name[] = "pong";
@@ -327,154 +282,6 @@ int pong_command_exact(const char *command) {
   return command[index] == '\0';
 }
 
-static int command_has_option(const char *command, const char *option) {
-  uint32_t option_len = ssh_str_len(option);
-  for (uint32_t i = 0U; command[i] != '\0';) {
-    while (command[i] == ' ' || command[i] == '\t' ||
-           command[i] == '\r' || command[i] == '\n') {
-      ++i;
-    }
-    uint32_t start = i;
-    while (command[i] != '\0' && command[i] != ' ' &&
-           command[i] != '\t' && command[i] != '\r' &&
-           command[i] != '\n') {
-      ++i;
-    }
-    if (i - start == option_len &&
-        packet_string_equal((const uint8_t *)command + start, option_len,
-                            option)) {
-      return 1;
-    }
-  }
-  return 0;
-}
-
-static int append_command_text(char *command, uint32_t capacity,
-                               const char *text) {
-  uint32_t used = ssh_str_len(command);
-  uint32_t length = ssh_str_len(text);
-  if (used + length + 1U > capacity) return -1;
-  ssh_mem_copy(command + used, text, length + 1U);
-  return 0;
-}
-
-static int append_command_u32(char *command, uint32_t capacity,
-                              uint32_t value) {
-  char digits[11];
-  uint32_t count = 0U;
-  do {
-    digits[count++] = (char)('0' + value % 10U);
-    value /= 10U;
-  } while (value != 0U);
-  uint32_t used = ssh_str_len(command);
-  if (used + count + 1U > capacity) return -1;
-  for (uint32_t i = 0U; i < count; ++i) {
-    command[used + i] = digits[count - i - 1U];
-  }
-  command[used + count] = '\0';
-  return 0;
-}
-
-
-
-
-
-
-
-/* Shared by the SSH channel and the local console so an application is
-   launched with the same options on both, and therefore renders the same.
-   The two surfaces still differ in what happens after the first frame: the
-   channel keeps an interactive session alive, the console does not yet. */
-int ssh_terminal_promote_command(char *command, uint32_t capacity,
-                                 uint32_t columns, uint32_t rows) {
-  if (command == 0 || command_token_equal(command, "xtop") == 0 ||
-      command_has_option(command, "--plain") != 0) {
-    return 0;
-  }
-  if (command_has_option(command, "--color") == 0 &&
-      append_command_text(command, capacity, " --color") != 0) {
-    return -1;
-  }
-  if (command_has_option(command, "--interactive") == 0 &&
-      append_command_text(command, capacity, " --interactive") != 0) {
-    return -1;
-  }
-  if (command_has_option(command, "--columns") == 0 &&
-      (append_command_text(command, capacity, " --columns ") != 0 ||
-       append_command_u32(command, capacity, columns) != 0)) {
-    return -1;
-  }
-  if (command_has_option(command, "--rows") == 0 &&
-      (append_command_text(command, capacity, " --rows ") != 0 ||
-       append_command_u32(command, capacity, rows) != 0)) {
-    return -1;
-  }
-  if (command_has_option(command, "--refresh-ms") == 0 &&
-      (append_command_text(command, capacity, " --refresh-ms ") != 0 ||
-       append_command_u32(command, capacity, SSH_XTOP_DEFAULT_REFRESH_MS) != 0)) {
-    return -1;
-  }
-  return 0;
-}
-
-static int prepare_terminal_command(const ssh_channel_t *ch, char *command,
-                                    uint32_t capacity) {
-  if (ch == 0 || ch->pty_requested == 0U) return 0;
-  return ssh_terminal_promote_command(command, capacity, ch->terminal_columns,
-                                      ch->terminal_rows);
-}
-
-
-static int command_rate_allowed(ssh_connection_t *connection) {
-  static const u64 window_ns = 60000000000ULL;
-  u64 now;
-  if (connection == 0) return 0;
-  now = xaios_clock_nanos();
-  if (connection->command_window_start == 0ULL ||
-      now - connection->command_window_start >= window_ns) {
-    connection->command_window_start = now;
-    connection->command_count = 0U;
-  }
-  if (connection->command_count >= sshd_command_rate_per_minute()) return 0;
-  ++connection->command_count;
-  return 1;
-}
-
-static int write_command_denial(char *output, u64 output_capacity,
-                                u64 *out_size, const char *message) {
-  u64 length = xaios_strlen(message);
-  if (length + 1ULL > output_capacity) return -1;
-  ssh_mem_copy(output, message, (uint32_t)length + 1U);
-  *out_size = length;
-  return -1;
-}
-
-static int execute_admin_command(int sockfd, const char *command, char *output,
-                                 u64 output_capacity, u64 *out_size) {
-  ssh_connection_t *connection = ssh_conn_find((u64)(uint32_t)sockfd);
-  if (connection == 0 || command_rate_allowed(connection) == 0) {
-    return write_command_denial(output, output_capacity, out_size,
-                                "Command rate limit exceeded\n");
-  }
-  if (xaios_control_is_command(command)) {
-    int result = xaios_control_run_as(
-        command, connection->principal_role, connection->principal, output,
-        output_capacity, out_size);
-    if (result == 0 && sshd_reload_control_state(command) != 0) {
-      return write_command_denial(output, output_capacity, out_size,
-                                  "Control state reload failed\n");
-    }
-    return result;
-  }
-  if (connection->principal_role != XAIOS_CONTROL_ROLE_ADMIN) {
-    return write_command_denial(output, output_capacity, out_size,
-                                "Permission denied\n");
-  }
-  int result = xaios_remote_login_session(
-      connection->sockfd, "admin", command, output, output_capacity, out_size);
-  return result < 0 ? -1 : 0;
-}
-
 void ssh_channel_close_connection(int sockfd) {
   for (uint32_t i = 0; i < SSH_CHANNEL_MAX; ++i) {
     if (g_channels[i].active &&
@@ -485,7 +292,7 @@ void ssh_channel_close_connection(int sockfd) {
         (void)xaios_net_close(g_channels[i].forward_fd);
       if (g_channels[i].less.active != 0U)
         less_pager_close(&g_channels[i].less);
-      screen_release(&g_channels[i]);
+      ssh_stream_screen_release(&g_channels[i]);
       ssh_mem_zero(&g_channels[i], sizeof(g_channels[i]));
     }
   }
@@ -516,269 +323,11 @@ void ssh_channel_close_connection(int sockfd) {
   (void)xaios_remote_login_session_close((u64)(uint32_t)sockfd);
 }
 
-/* Send window adjust: type 93, recipient_channel, bytes_to_add */
-static int send_window_adjust(int sockfd, uint32_t remote_id, uint32_t bytes) {
-  uint8_t adjust[9];
-  adjust[0] = SSH_MSG_CHANNEL_WINDOW_ADJUST;
-  ssh_write_u32_be(adjust + 1, remote_id);
-  ssh_write_u32_be(adjust + 5, bytes);
-  return ssh_packet_write_encrypted(sockfd, adjust, sizeof(adjust));
-}
-
-/* Send channel success/failure */
-static int send_channel_reply(int sockfd, uint32_t remote_id, int success) {
-  uint8_t reply[5];
-  reply[0] = success ? SSH_MSG_CHANNEL_SUCCESS : SSH_MSG_CHANNEL_FAILURE;
-  ssh_write_u32_be(reply + 1, remote_id);
-  return ssh_packet_write_encrypted(sockfd, reply, sizeof(reply));
-}
-
-/* Send CHANNEL_DATA with output */
-static int write_channel_data(int sockfd, uint32_t remote_id,
-                              const uint8_t *data, uint32_t len) {
-  uint8_t reply[SSH_MAX_PACKET_SIZE];
-  if (len > SSH_MAX_PACKET_SIZE - 9U) return -1;
-  reply[0] = SSH_MSG_CHANNEL_DATA;
-  ssh_write_u32_be(reply + 1, remote_id);
-  ssh_write_u32_be(reply + 5, len);
-  ssh_mem_copy(reply + 9, data, len);
-  return ssh_packet_write_encrypted(sockfd, reply, 9 + len);
-}
-
-/* Send CHANNEL_EOF */
-static int send_channel_eof(int sockfd, uint32_t remote_id) {
-  uint8_t eof_msg[5];
-  eof_msg[0] = SSH_MSG_CHANNEL_EOF;
-  ssh_write_u32_be(eof_msg + 1, remote_id);
-  return ssh_packet_write_encrypted(sockfd, eof_msg, sizeof(eof_msg));
-}
-
-static int send_channel_exit_status(int sockfd, uint32_t remote_id,
-                                    uint32_t status) {
-  uint8_t message[25];
-  static const char request[] = "exit-status";
-  message[0] = SSH_MSG_CHANNEL_REQUEST;
-  ssh_write_u32_be(message + 1U, remote_id);
-  ssh_write_u32_be(message + 5U, sizeof(request) - 1U);
-  ssh_mem_copy(message + 9U, request, sizeof(request) - 1U);
-  message[20] = 0;
-  ssh_write_u32_be(message + 21U, status);
-  return ssh_packet_write_encrypted(sockfd, message, sizeof(message));
-}
-
-static int finish_channel(ssh_channel_t *ch) {
-  if (ch->close_sent != 0U) return 0;
-  if (send_channel_exit_status((int)ch->owner_sockfd, ch->remote_id,
-                               ch->exit_status) != 0 ||
-      send_channel_eof((int)ch->owner_sockfd, ch->remote_id) != 0) {
-    return -1;
-  }
-  uint8_t close_msg[5];
-  close_msg[0] = SSH_MSG_CHANNEL_CLOSE;
-  ssh_write_u32_be(close_msg + 1, ch->remote_id);
-  if (ssh_packet_write_encrypted((int)ch->owner_sockfd, close_msg,
-                                 sizeof(close_msg)) != 0) return -1;
-  sftp_close_channel((int)ch->owner_sockfd, ch->remote_id);
-  ch->close_sent = 1U;
-  return 0;
-}
-
-int flush_channel(ssh_channel_t *ch) {
-  while (ch->pending_used != 0U && ch->remote_window != 0U) {
-    uint32_t chunk = ch->pending_used;
-    if (chunk > ch->remote_window) chunk = ch->remote_window;
-    if (chunk > ch->remote_max_packet) chunk = ch->remote_max_packet;
-    if (chunk > SSH_CHANNEL_MAX_PACKET) chunk = SSH_CHANNEL_MAX_PACKET;
-    if (chunk > SSH_WIRE_MAX_CHUNK) chunk = SSH_WIRE_MAX_CHUNK;
-    if (write_channel_data((int)ch->owner_sockfd, ch->remote_id,
-                           ch->pending + ch->pending_offset, chunk) != 0) {
-      return -1;
-    }
-    ch->remote_window -= chunk;
-    ch->pending_offset += chunk;
-    ch->pending_used -= chunk;
-  }
-  if (ch->pending_used == 0U) {
-    ch->pending_offset = 0U;
-    if (ch->close_after_flush != 0U) return finish_channel(ch);
-  }
-  return 0;
-}
-
-/* The session filter of the screen framework: a program that enters the
-   alternate screen is run through a screen the session holds, and only
-   the cells that changed reach the client -- whether the program writes
-   whole frames or knows the framework. Four screens are kept; a fifth
-   full-screen session at once passes through as before. */
-static xaios_screen_cell_t g_screen_cells[SSH_SCREEN_POOL][2][XAIOS_SCREEN_MAX_CELLS];
-static xaios_screen_t g_screens[SSH_SCREEN_POOL];
-static char g_screen_out[SSH_CHANNEL_PENDING_SIZE];
-static uint8_t g_screen_in[SSH_CHANNEL_PENDING_SIZE + 8U];
-static const uint8_t k_alternate_enter[8] = {0x1b, '[', '?', '1', '0', '4', '9', 'h'};
-static const uint8_t k_alternate_leave[8] = {0x1b, '[', '?', '1', '0', '4', '9', 'l'};
-
-static void screen_release(ssh_channel_t *ch) {
-  if (ch->screen == 0) return;
-  g_screen_used[ch->screen_slot] = 0U;
-  ch->screen = 0;
-  ch->screen_slot = 0U;
-  ch->screen_carry_used = 0U;
-}
-
-static void screen_acquire(ssh_channel_t *ch) {
-  if (ch->screen != 0) return;
-  for (uint32_t i = 0U; i < SSH_SCREEN_POOL; ++i) {
-    if (g_screen_used[i] != 0U) continue;
-    g_screen_used[i] = 1U;
-    ch->screen = &g_screens[i];
-    ch->screen_slot = i;
-    ch->screen_carry_used = 0U;
-    xaios_screen_init(ch->screen, g_screen_cells[i][0], g_screen_cells[i][1],
-                      XAIOS_SCREEN_MAX_CELLS,
-                      ch->terminal_rows != 0U ? ch->terminal_rows : 24U,
-                      ch->terminal_columns != 0U ? ch->terminal_columns : 80U);
-    return;
-  }
-}
-
-static int queue_raw(ssh_channel_t *ch, const uint8_t *data, uint32_t len) {
-  if (len == 0U) return 0;
-  if (len > SSH_CHANNEL_PENDING_SIZE - ch->pending_used) return -1;
-  if (ch->pending_used != 0U && ch->pending_offset != 0U) {
-    for (uint32_t i = 0; i < ch->pending_used; ++i) {
-      ch->pending[i] = ch->pending[ch->pending_offset + i];
-    }
-    ch->pending_offset = 0U;
-  }
-  ssh_mem_copy(ch->pending + ch->pending_used, data, len);
-  ch->pending_used += len;
-  return flush_channel(ch);
-}
-
-/* Present into the room the pending buffer has; what does not fit now is
-   presented from the tick once the buffer drains. */
-static int screen_flush(ssh_channel_t *ch) {
-  for (;;) {
-    uint32_t room = SSH_CHANNEL_PENDING_SIZE - ch->pending_used;
-    if (room < 64U) return 0;
-    if (room > sizeof(g_screen_out)) room = sizeof(g_screen_out);
-    uint64_t n = xaios_screen_present(ch->screen, g_screen_out, room);
-    if (n == 0U) return 0;
-    if (queue_raw(ch, (const uint8_t *)g_screen_out, (uint32_t)n) != 0) return -1;
-    if (ch->screen->incomplete == 0U) return 0;
-  }
-}
-
-static int64_t find_bytes(const uint8_t *data, uint32_t len,
-                          const uint8_t *needle, uint32_t n) {
-  for (uint32_t i = 0U; i + n <= len; ++i) {
-    uint32_t k = 0U;
-    while (k < n && data[i + k] == needle[k]) ++k;
-    if (k == n) return (int64_t)i;
-  }
-  return -1;
-}
-
-/* Bytes at the end that begin an escape sequence the paint cannot finish
-   are kept for the next write, so a leave sequence split across two
-   writes is still seen. */
-static uint32_t trailing_partial_escape(const uint8_t *data, uint32_t len) {
-  uint32_t back = len < 8U ? len : 8U;
-  for (uint32_t i = 0U; i < back; ++i) {
-    uint32_t at = len - 1U - i;
-    if (data[at] == 0x1bU) {
-      /* Complete if a final byte (0x40..0x7e) follows ESC [ ... */
-      if (at + 1U < len && data[at + 1U] == '[') {
-        for (uint32_t j = at + 2U; j < len; ++j) {
-          if (data[j] >= 0x40U && data[j] <= 0x7eU) return 0U;
-        }
-        return len - at;
-      }
-      return at + 1U == len ? 1U : 0U;
-    }
-  }
-  return 0U;
-}
-
-/* Whether this channel's outgoing bytes are a terminal's output.
- *
- * The screen framework's session filter reads every byte a channel sends,
- * looking for the sequence a program uses to enter the alternate screen; from
- * then on it paints the bytes into a screen and sends changed cells instead of
- * the bytes themselves. That is right for a terminal and wrong for everything
- * else, and this is B-38.
- *
- * Three kinds of channel carry bytes that are not a terminal's output at all:
- * the SFTP subsystem carries file contents, a direct-tcpip forward carries
- * whatever the forwarded connection carries, and an agent channel carries the
- * agent protocol. All three are arbitrary binary, so all three can contain
- * those eight bytes -- and file contents are the case that needs no
- * coincidence at all, because any file that holds captured terminal output
- * holds them on purpose. When one does, the filter eats the payload. The
- * client receives a byte stream that is no longer the file: SFTP's
- * length-prefixed framing then either desynchronises into a bogus length
- * ("Received message too long") or, if the mangled stream happens to promise
- * more bytes than follow, leaves the client waiting for a response the server
- * has already decided it sent.
- *
- * A client waiting on that response sends nothing more, so the server sees an
- * authenticated connection that has gone quiet: no error, nothing to close,
- * and the session sits in the table until the 300-second idle timeout reaps
- * it. That is the observation this was filed as -- a session accepted and
- * authenticated with no matching close, while the machine went on serving
- * everyone else.
- *
- * Gated on what the channel is rather than on the bytes, because no byte test
- * can work: the payload is arbitrary, so any sequence the filter reacts to can
- * occur in it.
- */
-static int channel_carries_terminal_output(const ssh_channel_t *ch) {
-  return ch->is_sftp == 0U && ch->is_forward == 0U && ch->is_agent == 0U;
-}
-
 int ssh_channel_send_data(int sockfd, uint32_t remote_id,
                           const uint8_t *data, uint32_t len) {
   ssh_channel_t *ch = find_channel_by_remote(sockfd, remote_id);
   if (ch == 0 || data == 0 || len == 0U) return -1;
-  if (channel_carries_terminal_output(ch) == 0) {
-    return queue_raw(ch, data, len);
-  }
-  while (len != 0U) {
-    if (ch->screen == 0) {
-      int64_t at = find_bytes(data, len, k_alternate_enter, 8U);
-      if (at < 0) return queue_raw(ch, data, len);
-      uint32_t head = (uint32_t)at + 8U;
-      if (queue_raw(ch, data, head) != 0) return -1;
-      data += head;
-      len -= head;
-      screen_acquire(ch);
-      if (ch->screen == 0) return queue_raw(ch, data, len);
-      continue;
-    }
-    /* Carried bytes first, then this write. */
-    uint32_t total = ch->screen_carry_used + len;
-    if (total > sizeof(g_screen_in)) return -1;
-    for (uint32_t i = 0U; i < ch->screen_carry_used; ++i) g_screen_in[i] = ch->screen_carry[i];
-    ssh_mem_copy(g_screen_in + ch->screen_carry_used, data, len);
-    ch->screen_carry_used = 0U;
-    data = g_screen_in;
-    len = total;
-    int64_t at = find_bytes(data, len, k_alternate_leave, 8U);
-    if (at < 0) {
-      uint32_t keep = trailing_partial_escape(data, len);
-      xaios_screen_paint(ch->screen, (const char *)data, len - keep);
-      for (uint32_t i = 0U; i < keep; ++i) ch->screen_carry[i] = data[len - keep + i];
-      ch->screen_carry_used = keep;
-      return screen_flush(ch);
-    }
-    xaios_screen_paint(ch->screen, (const char *)data, (uint32_t)at);
-    if (screen_flush(ch) != 0) return -1;
-    screen_release(ch);
-    if (queue_raw(ch, data + at, 8U) != 0) return -1;
-    data += (uint32_t)at + 8U;
-    len -= (uint32_t)at + 8U;
-  }
-  return 0;
+  return ssh_stream_write(ch, data, len);
 }
 
 int ssh_channel_agent_send(const ssh_channel_t *session, const uint8_t *data,
@@ -788,156 +337,6 @@ int ssh_channel_agent_send(const ssh_channel_t *session, const uint8_t *data,
       agent->remote_max_packet == 0U) return -1;
   return ssh_channel_send_data((int)agent->owner_sockfd, agent->remote_id,
                                data, len);
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-static int shell_execute_line(ssh_channel_t *ch) {
-  char output[8192];
-  u64 out_size = 0U;
-  ch->shell_line[ch->shell_line_length] = '\0';
-  if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
-                            (const uint8_t *)"\r\n", 2U) != 0) {
-    return -1;
-  }
-  if (ch->shell_line_length == 0U) return shell_send_prompt(ch);
-  if (ssh_str_eq(ch->shell_line, "exit") ||
-      ssh_str_eq(ch->shell_line, "logout") ||
-      ssh_str_eq(ch->shell_line, "quit")) {
-    (void)xaios_remote_login_session_close(ch->owner_sockfd);
-    ch->shell_active = 0U;
-    ch->exit_status = 0U;
-    ch->close_after_flush = 1U;
-    return flush_channel(ch);
-  }
-  if (command_token_equal(ch->shell_line, "xtop") != 0 &&
-      prepare_terminal_command(ch, ch->shell_line,
-                               SSH_CHANNEL_SHELL_LINE_SIZE) != 0) {
-    ch->shell_line_length = 0U;
-    return shell_send_prompt(ch);
-  }
-  if (command_token_equal(ch->shell_line, "nano") != 0 &&
-      nano_command_argument(ch->shell_line, output, sizeof(output)) == 0) {
-    ch->shell_line_length = 0U;
-    return nano_start(ch, ch->shell_line, 1U);
-  }
-  if (command_token_equal(ch->shell_line, "less") != 0) {
-    ch->shell_line_length = 0U;
-    return less_start(ch, ch->shell_line, 1U);
-  }
-  if (command_token_equal(ch->shell_line, "pong") != 0) {
-    ch->shell_line_length = 0U;
-    return pong_start(ch, ch->shell_line, 1U);
-  }
-  {
-    int client_result = ssh_client_prepare(ch, ch->shell_line);
-    if (client_result != 0) {
-      ch->shell_line_length = 0U;
-      return client_result < 0 ? shell_send_prompt(ch) : 0;
-    }
-  }
-  int result = execute_admin_command((int)ch->owner_sockfd, ch->shell_line,
-                                     output, sizeof(output), &out_size);
-  if (out_size != 0U &&
-      shell_send_output(ch, (const uint8_t *)output,
-                        (uint32_t)out_size) != 0) {
-    return -1;
-  }
-  if (result < 0 && out_size == 0U) {
-    static const char failed[] = "xaios: command execution failed\r\n";
-    if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
-                              (const uint8_t *)failed,
-                              (uint32_t)(sizeof(failed) - 1U)) != 0) {
-      return -1;
-    }
-  }
-  ch->shell_line_length = 0U;
-  return shell_send_prompt(ch);
-}
-
-static int shell_handle_input(ssh_channel_t *ch, const uint8_t *data,
-                              uint32_t length) {
-  if (ssh_client_is_prompting(ch)) {
-    int result = ssh_client_password_input(ch, data, length);
-    return result > 0 ? shell_send_prompt(ch) : result;
-  }
-  if (ssh_client_is_active(ch)) {
-    return ssh_client_forward_input(ch, data, length);
-  }
-  for (uint32_t i = 0U; i < length; ++i) {
-    uint8_t value = data[i];
-    if (value == '\n' && ch->shell_ignore_lf != 0U) {
-      ch->shell_ignore_lf = 0U;
-      continue;
-    }
-    ch->shell_ignore_lf = 0U;
-    if (value == '\r' || value == '\n') {
-      ch->shell_ignore_lf = value == '\r' ? 1U : 0U;
-      if (shell_execute_line(ch) != 0) return -1;
-      if (ch->shell_active == 0U) return 0;
-      if (ch->nano.active != 0U) {
-        return i + 1U < length
-                   ? nano_handle_input(ch, data + i + 1U, length - i - 1U)
-                   : 0;
-      }
-      if (ch->less.active != 0U) {
-        return i + 1U < length
-                   ? less_handle_input(ch, data + i + 1U, length - i - 1U)
-                   : 0;
-      }
-      if (ch->pong.active != 0U) {
-        return i + 1U < length
-                   ? pong_handle_input(ch, data + i + 1U, length - i - 1U)
-                   : 0;
-      }
-    } else if (value == 8U || value == 127U) {
-      if (ch->shell_line_length != 0U) {
-        --ch->shell_line_length;
-        if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
-                                  (const uint8_t *)"\b \b", 3U) != 0) {
-          return -1;
-        }
-      }
-    } else if (value == 3U) {
-      ch->shell_line_length = 0U;
-      if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
-                                (const uint8_t *)"^C\r\n", 4U) != 0 ||
-          shell_send_prompt(ch) != 0) {
-        return -1;
-      }
-    } else if (value >= 32U && value <= 126U &&
-               ch->shell_line_length + 1U < sizeof(ch->shell_line)) {
-      ch->shell_line[ch->shell_line_length++] = (char)value;
-      if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
-                                &value, 1U) != 0) {
-        return -1;
-      }
-    } else if (value >= 32U && value <= 126U) {
-      static const char bell[] = "\a";
-      if (ssh_channel_send_data((int)ch->owner_sockfd, ch->remote_id,
-                                (const uint8_t *)bell, 1U) != 0) {
-        return -1;
-      }
-    }
-  }
-  return 0;
 }
 
 /* What one channel's turn came to.
@@ -957,7 +356,7 @@ static int shell_handle_input(ssh_channel_t *ch, const uint8_t *data,
 
 static int channel_tick_one(ssh_channel_t *ch, uint64_t now_ns) {
   if (ch->active != 0U && ch->screen != 0 && ch->pending_used == 0U &&
-      ch->screen->incomplete != 0U && screen_flush(ch) != 0)
+      ch->screen->incomplete != 0U && ssh_stream_screen_flush(ch) != 0)
     return SSH_CHANNEL_TICK_TRANSPORT_FAILED;
   if (ch->active != 0U && ch->is_forward != 0U &&
       ch->pending_used == 0U && ch->remote_window != 0U) {
@@ -1006,7 +405,7 @@ static void channel_abandon(ssh_channel_t *ch, int transport_failed) {
 
   if (transport_failed == 0 && ch->close_sent == 0U) {
     uint8_t close_msg[5];
-    (void)send_channel_eof(sockfd, remote_id);
+    (void)ssh_stream_send_eof(sockfd, remote_id);
     close_msg[0] = SSH_MSG_CHANNEL_CLOSE;
     ssh_write_u32_be(close_msg + 1, remote_id);
     (void)ssh_packet_write_encrypted(sockfd, close_msg, sizeof(close_msg));
@@ -1015,7 +414,7 @@ static void channel_abandon(ssh_channel_t *ch, int transport_failed) {
   ssh_client_close(ch);
   if (ch->forward_fd != 0U) (void)xaios_net_close(ch->forward_fd);
   if (ch->less.active != 0U) less_pager_close(&ch->less);
-  screen_release(ch);
+  ssh_stream_screen_release(ch);
   ssh_mem_zero(ch, sizeof(*ch));
 
   if (transport_failed != 0) {
@@ -1093,7 +492,7 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
   if (ssh_str_eq(request_type, "pty-req")) {
     int valid = parse_pty_request(ch, pkt, data_start) == 0;
     if (want_reply) {
-      if (send_channel_reply(sockfd, ch->remote_id, valid) != 0) return -1;
+      if (ssh_stream_send_reply(sockfd, ch->remote_id, valid) != 0) return -1;
     }
     return valid ? 0 : -1;
   }
@@ -1116,7 +515,7 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
       if (pong_render_frame(ch, xaios_clock_nanos()) != 0) return -1;
     }
     if (want_reply) {
-      if (send_channel_reply(sockfd, ch->remote_id, valid) != 0) return -1;
+      if (ssh_stream_send_reply(sockfd, ch->remote_id, valid) != 0) return -1;
     }
     return valid ? 0 : -1;
   }
@@ -1124,7 +523,7 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
   if (ssh_str_eq(request_type, "env")) {
     /* Accept and ignore */
     if (want_reply) {
-      if (send_channel_reply(sockfd, ch->remote_id, 1) != 0) return -1;
+      if (ssh_stream_send_reply(sockfd, ch->remote_id, 1) != 0) return -1;
     }
     return 0;
   }
@@ -1134,7 +533,7 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
     int valid = data_start == pkt->len && connection != 0 &&
                 connection->principal_role == XAIOS_CONTROL_ROLE_ADMIN &&
                 open_agent_channel(ch) == 0;
-    if (want_reply && send_channel_reply(sockfd, ch->remote_id, valid) != 0)
+    if (want_reply && ssh_stream_send_reply(sockfd, ch->remote_id, valid) != 0)
       return -1;
     return valid ? 0 : -1;
   }
@@ -1142,7 +541,7 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
   if (ssh_str_eq(request_type, "shell")) {
     int valid = ch->pty_requested != 0U && ch->shell_active == 0U;
     if (want_reply) {
-      if (send_channel_reply(sockfd, ch->remote_id, valid) != 0) return -1;
+      if (ssh_stream_send_reply(sockfd, ch->remote_id, valid) != 0) return -1;
     }
     if (!valid) return -1;
     ch->shell_active = 1U;
@@ -1154,7 +553,7 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
   if (ssh_str_eq(request_type, "exec")) {
     /* Parse command string */
     if (data_start > pkt->len || pkt->len - data_start < 4U) {
-      if (want_reply && send_channel_reply(sockfd, ch->remote_id, 0) != 0) {
+      if (want_reply && ssh_stream_send_reply(sockfd, ch->remote_id, 0) != 0) {
         return -1;
       }
       return -1;
@@ -1162,7 +561,7 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
     uint32_t cmd_len = ssh_read_string_len(pkt->data + data_start);
     if (cmd_len >= 4096U || cmd_len > pkt->len - data_start - 4U ||
         packet_has_zero(pkt->data + data_start + 4U, cmd_len)) {
-      if (want_reply && send_channel_reply(sockfd, ch->remote_id, 0) != 0) {
+      if (want_reply && ssh_stream_send_reply(sockfd, ch->remote_id, 0) != 0) {
         return -1;
       }
       return -1;
@@ -1172,22 +571,22 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
     ssh_mem_copy(command, pkt->data + data_start + 4, cmd_len);
     command[cmd_len] = '\0';
     int interactive_nano =
-        ch->pty_requested != 0U && command_token_equal(command, "nano") != 0 &&
+        ch->pty_requested != 0U && ssh_shell_token_equal(command, "nano") != 0 &&
         nano_command_argument(command, nano_argument,
                               sizeof(nano_argument)) == 0;
     int interactive_less = ch->pty_requested != 0U &&
-                           command_token_equal(command, "less") != 0;
+                           ssh_shell_token_equal(command, "less") != 0;
     int interactive_pong = ch->pty_requested != 0U &&
                            pong_command_exact(command) != 0;
-    if (prepare_terminal_command(ch, command, sizeof(command)) != 0) {
-      if (want_reply && send_channel_reply(sockfd, ch->remote_id, 0) != 0) {
+    if (ssh_shell_prepare_command(ch, command, sizeof(command)) != 0) {
+      if (want_reply && ssh_stream_send_reply(sockfd, ch->remote_id, 0) != 0) {
         return -1;
       }
       return -1;
     }
 
     if (want_reply) {
-      if (send_channel_reply(sockfd, ch->remote_id, 1) != 0) return -1;
+      if (ssh_stream_send_reply(sockfd, ch->remote_id, 1) != 0) return -1;
     }
 
     if (interactive_nano != 0) {
@@ -1206,8 +605,8 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
     /* Execute command */
     char output[8192];
     u64 out_size = 0;
-    int result = execute_admin_command(sockfd, command, output, sizeof(output),
-                                       &out_size);
+    int result = ssh_shell_execute_admin(sockfd, command, output, sizeof(output),
+                                        &out_size);
 
     if (result < 0 && out_size == 0U) {
       const char *err = "Command execution failed\n";
@@ -1232,7 +631,7 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
   if (ssh_str_eq(request_type, "subsystem")) {
     /* Parse subsystem name */
     if (data_start > pkt->len || pkt->len - data_start < 4U) {
-      if (want_reply && send_channel_reply(sockfd, ch->remote_id, 0) != 0) {
+      if (want_reply && ssh_stream_send_reply(sockfd, ch->remote_id, 0) != 0) {
         return -1;
       }
       return -1;
@@ -1241,7 +640,7 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
     if (name_len == 0U || name_len >= 64U ||
         name_len > pkt->len - data_start - 4U ||
         packet_has_zero(pkt->data + data_start + 4U, name_len)) {
-      if (want_reply && send_channel_reply(sockfd, ch->remote_id, 0) != 0) {
+      if (want_reply && ssh_stream_send_reply(sockfd, ch->remote_id, 0) != 0) {
         return -1;
       }
       return -1;
@@ -1256,11 +655,11 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
       if (connection == 0 ||
           connection->principal_role != XAIOS_CONTROL_ROLE_ADMIN) {
         if (want_reply &&
-            send_channel_reply(sockfd, ch->remote_id, 0) != 0) return -1;
+            ssh_stream_send_reply(sockfd, ch->remote_id, 0) != 0) return -1;
         return 0;
       }
       if (want_reply) {
-        if (send_channel_reply(sockfd, ch->remote_id, 1) != 0) return -1;
+        if (ssh_stream_send_reply(sockfd, ch->remote_id, 1) != 0) return -1;
       }
       ch->is_sftp = 1;
       ch->sftp_rx_used = 0;
@@ -1269,14 +668,14 @@ static int handle_channel_request(int sockfd, const ssh_packet_t *pkt) {
 
     /* Unknown subsystem */
     if (want_reply) {
-      if (send_channel_reply(sockfd, ch->remote_id, 0) != 0) return -1;
+      if (ssh_stream_send_reply(sockfd, ch->remote_id, 0) != 0) return -1;
     }
     return 0;
   }
 
   /* Unknown request type */
   if (want_reply) {
-    if (send_channel_reply(sockfd, ch->remote_id, 0) != 0) return -1;
+    if (ssh_stream_send_reply(sockfd, ch->remote_id, 0) != 0) return -1;
   }
   return 0;
 }
@@ -1326,9 +725,9 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
     if (off + 12U > pkt->len) return -1;
     uint32_t remote_id = ssh_read_u32_be(pkt->data + off);
     uint32_t is_session =
-        packet_string_equal(pkt->data + 5U, type_len, "session");
+        ssh_channel_packet_string_equal(pkt->data + 5U, type_len, "session");
     uint32_t is_forward =
-        packet_string_equal(pkt->data + 5U, type_len, "direct-tcpip");
+        ssh_channel_packet_string_equal(pkt->data + 5U, type_len, "direct-tcpip");
     if (is_session == 0U && is_forward == 0U) {
       uint8_t failure[17];
       failure[0] = SSH_MSG_CHANNEL_OPEN_FAILURE;
@@ -1389,7 +788,7 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
         ssh_write_u32_be(failure + 5U, 2U);
         ssh_write_u32_be(failure + 9U, 0U);
         ssh_write_u32_be(failure + 13U, 0U);
-        screen_release(ch);
+        ssh_stream_screen_release(ch);
         ssh_mem_zero(ch, sizeof(*ch));
         return ssh_packet_write_encrypted(sockfd, failure, sizeof(failure));
       }
@@ -1420,7 +819,7 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
     ch->window_size -= data_len;
     if (ch->window_size <= SSH_CHANNEL_INITIAL_WINDOW / 2U) {
       uint32_t added = SSH_CHANNEL_INITIAL_WINDOW - ch->window_size;
-      if (send_window_adjust(sockfd, ch->remote_id, added) != 0) return -1;
+      if (ssh_stream_send_window_adjust(sockfd, ch->remote_id, added) != 0) return -1;
       ch->window_size += added;
     }
 
@@ -1498,7 +897,7 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
     }
 
     if (ch->shell_active != 0U) {
-      return shell_handle_input(ch, pkt->data + 9U, data_len);
+      return ssh_shell_handle_input(ch, pkt->data + 9U, data_len);
     }
 
     /* Execute command via remote_login */
@@ -1507,12 +906,12 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
         packet_has_zero(pkt->data + 9U, data_len)) return -1;
     ssh_mem_copy(command, pkt->data + 9, data_len);
     command[data_len] = '\0';
-    if (prepare_terminal_command(ch, command, sizeof(command)) != 0) return -1;
+    if (ssh_shell_prepare_command(ch, command, sizeof(command)) != 0) return -1;
 
     char output[8192];
     u64 out_size = 0;
-    int result = execute_admin_command(sockfd, command, output, sizeof(output),
-                                       &out_size);
+    int result = ssh_shell_execute_admin(sockfd, command, output, sizeof(output),
+                                        &out_size);
 
     if (result < 0 && out_size == 0U) {
       const char *error_msg = "Command execution failed\n";
@@ -1602,7 +1001,7 @@ int ssh_channel_handle_packet(int sockfd, const ssh_packet_t *pkt) {
           if (ssh_packet_write_encrypted(sockfd, close_msg,
                                          sizeof(close_msg)) != 0) return -1;
         }
-        screen_release(ch);
+        ssh_stream_screen_release(ch);
         ssh_mem_zero(ch, sizeof(*ch));
       }
     }

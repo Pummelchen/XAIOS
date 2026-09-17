@@ -21,6 +21,8 @@
 
 #include "remote_login_internal.h"
 #include "remote_login_archive_internal.h"
+#include "remote_login_meta_internal.h"
+#include "remote_login_parse_internal.h"
 
 /*
  * Picard — “They invade our space and we fall back. They assimilate entire
@@ -74,151 +76,6 @@ static uint64_t u64_digits(uint64_t value) {
 }
 #endif
 
-uint64_t cstr_len(const char *text) {
-  uint64_t len = 0;
-  if (text == 0) {
-    return 0;
-  }
-  while (text[len] != '\0') {
-    ++len;
-  }
-  return len;
-}
-
-int string_equal(const char *lhs, const char *rhs) {
-  if (lhs == 0 || rhs == 0) {
-    return 0;
-  }
-  for (uint64_t i = 0;; ++i) {
-    if (lhs[i] != rhs[i]) {
-      return 0;
-    }
-    if (lhs[i] == '\0') {
-      return 1;
-    }
-  }
-}
-
-void output_append(char *output, uint64_t capacity, uint64_t *offset,
-                   const char *text) {
-  if (output == 0 || offset == 0 || text == 0 || capacity == 0) {
-    return;
-  }
-  for (uint64_t i = 0; text[i] != '\0' && *offset + 1U < capacity; ++i) {
-    output[*offset] = text[i];
-    ++(*offset);
-  }
-  output[*offset] = '\0';
-}
-
-xaios_status_t copy_cstr_range(char *dst, uint64_t dst_capacity,
-                               const char *src, uint64_t src_len) {
-  if (dst == 0 || src == 0 || dst_capacity == 0U) {
-    return XAIOS_ERR_INVALID;
-  }
-  if (src_len + 1U > dst_capacity) {
-    return XAIOS_ERR_NO_MEMORY;
-  }
-  for (uint64_t i = 0; i < src_len; ++i) {
-    dst[i] = src[i];
-  }
-  dst[src_len] = '\0';
-  return XAIOS_OK;
-}
-
-xaios_status_t copy_cstr(char *dst, uint64_t dst_capacity, const char *src) {
-  if (src == 0) {
-    if (dst_capacity > 0U) {
-      dst[0] = '\0';
-    }
-    return XAIOS_ERR_INVALID;
-  }
-  return copy_cstr_range(dst, dst_capacity, src, cstr_len(src));
-}
-
-void output_append_u64(char *output, uint64_t capacity, uint64_t *offset,
-                             uint64_t value) {
-  char digits[24];
-  uint64_t count = 0;
-  if (value == 0U) {
-    output_append(output, capacity, offset, "0");
-    return;
-  }
-  while (value != 0U && count < sizeof(digits)) {
-    digits[count] = (char)('0' + (value % 10U));
-    value /= 10U;
-    ++count;
-  }
-  while (count != 0U) {
-    char one[2];
-    --count;
-    one[0] = digits[count];
-    one[1] = '\0';
-    output_append(output, capacity, offset, one);
-  }
-}
-
-static uint64_t skip_ws(const char *text, uint64_t index) {
-  if (text == 0) {
-    return 0;
-  }
-  while (text[index] == ' ' || text[index] == '\t' || text[index] == '\n' ||
-         text[index] == '\r') {
-    ++index;
-  }
-  return index;
-}
-
-xaios_status_t token_next(const char *text, uint64_t *index, char *token,
-                               uint64_t capacity) {
-  if (text == 0 || index == 0 || token == 0 || capacity == 0) {
-    return XAIOS_ERR_INVALID;
-  }
-  uint64_t i = skip_ws(text, *index);
-  if (text[i] == '\0') {
-    token[0] = '\0';
-    *index = i;
-    return XAIOS_ERR_NOT_FOUND;
-  }
-  uint64_t length = 0U;
-  char quote = '\0';
-  while (text[i] != '\0') {
-    char value = text[i];
-    if (quote == '\0' &&
-        (value == ' ' || value == '\t' || value == '\n' || value == '\r')) {
-      break;
-    }
-    if (value == '\\' && quote != '\'') {
-      if (text[i + 1U] == '\0') {
-        token[0] = '\0';
-        *index = i;
-        return XAIOS_ERR_INVALID;
-      }
-      value = text[++i];
-    } else if ((value == '\'' || value == '"') &&
-               (quote == '\0' || quote == value)) {
-      quote = quote == '\0' ? value : '\0';
-      ++i;
-      continue;
-    }
-    if (length + 1U >= capacity) {
-      token[0] = '\0';
-      *index = i;
-      return XAIOS_ERR_NO_MEMORY;
-    }
-    token[length++] = value;
-    ++i;
-  }
-  if (quote != '\0') {
-    token[0] = '\0';
-    *index = i;
-    return XAIOS_ERR_INVALID;
-  }
-  token[length] = '\0';
-  *index = i;
-  return XAIOS_OK;
-}
-
 xaios_status_t remote_ensure_parent(const char *path) {
   uint64_t len = cstr_len(path);
   if (len == 0U) {
@@ -255,47 +112,6 @@ xaios_status_t remote_ensure_parent(const char *path) {
              : XAIOS_ERR_INVALID;
 }
 
-xaios_status_t command_fail(char *output, uint64_t output_capacity,
-                                 uint64_t *output_bytes,
-                                 const char *message) {
-  output_append(output, output_capacity, output_bytes, message);
-  output_append(output, output_capacity, output_bytes, "\n");
-  return XAIOS_ERR_INVALID;
-}
-
-xaios_status_t output_append_char(char *output, uint64_t capacity,
-                                  uint64_t *offset, char value) {
-  if (output == 0 || offset == 0 || capacity == 0U) {
-    return XAIOS_ERR_INVALID;
-  }
-  if (*offset + 1U >= capacity) {
-    return XAIOS_ERR_NO_MEMORY;
-  }
-  output[*offset] = value;
-  ++(*offset);
-  output[*offset] = '\0';
-  return XAIOS_OK;
-}
-
-static void copy_remainder(const char *text, uint64_t index, char *out,
-                          uint64_t out_capacity) {
-  uint64_t i = 0;
-  if (out == 0 || out_capacity == 0U) {
-    return;
-  }
-  if (text == 0) {
-    out[0] = '\0';
-    return;
-  }
-  index = skip_ws(text, index);
-  while (text[index] != '\0' && i + 1U < out_capacity) {
-    out[i] = text[index];
-    ++i;
-    ++index;
-  }
-  out[i] = '\0';
-}
-
 void remote_login_log_failure(const char *operation, const char *reason,
                                    xaios_status_t status) {
   if (operation == 0) {
@@ -303,10 +119,6 @@ void remote_login_log_failure(const char *operation, const char *reason,
   }
   klog("remote-login: operation=%s failed reason=%s rc=%d\n", operation,
        reason == 0 ? "unknown" : reason, status);
-}
-
-int has_more_args(const char *text, uint64_t index) {
-  return text != 0 && text[skip_ws(text, index)] != '\0';
 }
 
 #if XAIOS_BOOT_TEST_APPS
@@ -700,145 +512,6 @@ static xaios_status_t handle_cd(const char *arg, char *output,
 }
 
 #if XAIOS_BOOT_TEST_APPS
-static xaios_status_t handle_stat(const char *arg, char *output,
-                                uint64_t output_capacity,
-                                uint64_t *output_bytes) {
-  char resolved[XAIOS_XBFS_PATH_MAX];
-  xaios_xbfs_stat_t stat;
-  if (arg == 0 || arg[0] == '\0') {
-    return command_fail(output, output_capacity, output_bytes, "stat: missing path");
-  }
-  if (remote_path_resolve(g_remote_login_cwd, arg, resolved, sizeof(resolved)) !=
-          XAIOS_OK ||
-      xaiboot_fs_stat(resolved, &stat) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes, "stat: no such file");
-  }
-  output_append(output, output_capacity, output_bytes, "path=");
-  output_append(output, output_capacity, output_bytes, resolved);
-  output_append(output, output_capacity, output_bytes, "\n");
-  output_append(output, output_capacity, output_bytes, "type=");
-  output_append(output, output_capacity, output_bytes,
-                stat.type == 1U ? "dir\n" : "file\n");
-  output_append(output, output_capacity, output_bytes, "size=");
-  output_append_u64(output, output_capacity, output_bytes, stat.size);
-  output_append(output, output_capacity, output_bytes, "\n");
-  output_append(output, output_capacity, output_bytes, "block_count=");
-  output_append_u64(output, output_capacity, output_bytes, stat.block_count);
-  output_append(output, output_capacity, output_bytes, "\n");
-  output_append(output, output_capacity, output_bytes, "generation=");
-  output_append_u64(output, output_capacity, output_bytes, stat.generation);
-  output_append(output, output_capacity, output_bytes, "\n");
-  output_append(output, output_capacity, output_bytes, "content_hash=");
-  output_append_u64(output, output_capacity, output_bytes, stat.content_hash);
-  output_append(output, output_capacity, output_bytes, "\n");
-  return XAIOS_OK;
-}
-
-xaios_status_t mkdir_resolved(const char *path, int parents) {
-  xaios_xbfs_stat_t stat;
-  if (xaiboot_fs_stat(path, &stat) == XAIOS_OK) {
-    return parents != 0 && stat.type == 1U ? XAIOS_OK : XAIOS_ERR_BUSY;
-  }
-  if (parents == 0) {
-    return remote_ensure_parent(path) == XAIOS_OK ? xaiboot_fs_mkdir(path)
-                                                  : XAIOS_ERR_NOT_FOUND;
-  }
-  char current[XAIOS_XBFS_PATH_MAX];
-  uint64_t used = 1U;
-  current[0] = '/';
-  current[1] = '\0';
-  for (uint64_t i = 1U;; ++i) {
-    if (path[i] != '/' && path[i] != '\0') continue;
-    uint64_t component_start = i;
-    while (component_start > 0U && path[component_start - 1U] != '/') {
-      --component_start;
-    }
-    uint64_t component_len = i - component_start;
-    if (component_len != 0U) {
-      if (used > 1U) current[used++] = '/';
-      if (used + component_len >= sizeof(current)) return XAIOS_ERR_NO_MEMORY;
-      for (uint64_t j = 0U; j < component_len; ++j) {
-        current[used++] = path[component_start + j];
-      }
-      current[used] = '\0';
-      if (xaiboot_fs_stat(current, &stat) == XAIOS_OK) {
-        if (stat.type != 1U) return XAIOS_ERR_INVALID;
-      } else if (xaiboot_fs_mkdir(current) != XAIOS_OK) {
-        return XAIOS_ERR_IO;
-      }
-    }
-    if (path[i] == '\0') break;
-  }
-  return XAIOS_OK;
-}
-
-static xaios_status_t handle_mkdir(const char *args, char *output,
-                                 uint64_t output_capacity,
-                                 uint64_t *output_bytes) {
-  uint64_t index = 0U;
-  uint32_t paths = 0U;
-  int parents = 0;
-  int end_options = 0;
-  char token[XAIOS_XBFS_PATH_MAX];
-  while (token_next(args, &index, token, sizeof(token)) == XAIOS_OK) {
-    if (end_options == 0 && string_equal(token, "--")) {
-      end_options = 1;
-      continue;
-    }
-    if (end_options == 0 && string_equal(token, "-p")) {
-      parents = 1;
-      continue;
-    }
-    if (end_options == 0 && token[0] == '-') {
-      return command_fail(output, output_capacity, output_bytes,
-                          "mkdir: unsupported option");
-    }
-    char resolved[XAIOS_XBFS_PATH_MAX];
-    if (remote_path_resolve(g_remote_login_cwd, token, resolved,
-                            sizeof(resolved)) != XAIOS_OK ||
-        mkdir_resolved(resolved, parents) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "mkdir: cannot create directory");
-    }
-    ++paths;
-  }
-  if (paths == 0U) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "mkdir: missing operand");
-  }
-  output[0] = '\0';
-  return XAIOS_OK;
-}
-
-static xaios_status_t handle_touch(const char *arg, char *output,
-                                 uint64_t output_capacity, uint64_t *output_bytes) {
-  char resolved[XAIOS_XBFS_PATH_MAX];
-  int64_t fd = -1;
-  if (arg == 0 || arg[0] == '\0') {
-    return command_fail(output, output_capacity, output_bytes,
-                       "touch: missing path");
-  }
-  if (remote_path_resolve(g_remote_login_cwd, arg, resolved, sizeof(resolved)) !=
-          XAIOS_OK ||
-      remote_ensure_parent(resolved) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "touch: failed");
-  }
-  fd = xaiboot_fs_open(resolved,
-                       XAIOS_XBFS_OPEN_WRITE | XAIOS_XBFS_OPEN_CREATE |
-                           XAIOS_XBFS_OPEN_TRUNCATE);
-  if (fd < 0) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "touch: failed");
-  }
-  if (xaiboot_fs_close((uint32_t)fd) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "touch: close failed");
-  }
-  output[0] = '\0';
-  return XAIOS_OK;
-}
-
 static xaios_status_t cat_file(const char *resolved, int number_lines,
                               uint64_t *line_number, int *line_start,
                               char *output, uint64_t output_capacity,
@@ -911,45 +584,6 @@ xaios_status_t remote_login_handle_cat(const char *args, char *output,
     return command_fail(output, output_capacity, output_bytes,
                         "cat: missing file operand");
   }
-  return XAIOS_OK;
-}
-
-static xaios_status_t handle_write(const char *path_arg, const char *payload,
-                                 char *output, uint64_t output_capacity,
-                                 uint64_t *output_bytes) {
-  char resolved[XAIOS_XBFS_PATH_MAX];
-  uint64_t payload_len = payload == 0 ? 0U : cstr_len(payload);
-  int64_t fd = -1;
-
-  if (path_arg == 0 || path_arg[0] == '\0') {
-    return command_fail(output, output_capacity, output_bytes,
-                        "write: missing path");
-  }
-  if (remote_path_resolve(g_remote_login_cwd, path_arg, resolved,
-                         sizeof(resolved)) != XAIOS_OK ||
-      remote_ensure_parent(resolved) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "write: invalid path");
-  }
-  fd = xaiboot_fs_open(resolved, XAIOS_XBFS_OPEN_WRITE | XAIOS_XBFS_OPEN_CREATE |
-                                  XAIOS_XBFS_OPEN_TRUNCATE);
-  if (fd < 0) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "write: failed to open");
-  }
-  if (payload_len != 0U) {
-    int64_t written = xaiboot_fs_write_fd((uint32_t)fd, payload, payload_len);
-    if (written < 0 || ((uint64_t)written) != payload_len) {
-      (void)xaiboot_fs_close((uint32_t)fd);
-      return command_fail(output, output_capacity, output_bytes,
-                          "write: write failed");
-    }
-  }
-  if (xaiboot_fs_close((uint32_t)fd) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "write: close failed");
-  }
-  output[0] = '\0';
   return XAIOS_OK;
 }
 
@@ -1204,7 +838,7 @@ xaios_status_t remote_login_exec(const char *command, char *output,
     remote_login_log_failure("parse", "missing-command", XAIOS_ERR_INVALID);
     return XAIOS_ERR_INVALID;
   }
-  copy_remainder(command, index, args, sizeof(args));
+  remote_login_remainder(command, index, args, sizeof(args));
   arg1[0] = '\0';
   arg2[0] = '\0';
   payload[0] = '\0';
@@ -1395,7 +1029,7 @@ xaios_status_t remote_login_exec(const char *command, char *output,
       return command_fail(output, output_capacity, output_bytes,
                           "write: missing path");
     }
-    copy_remainder(args, payload_index, payload, sizeof(payload));
+    remote_login_remainder(args, payload_index, payload, sizeof(payload));
     return handle_write(arg1, payload[0] == '\0' ? 0 : payload, output,
                         output_capacity, output_bytes);
   }

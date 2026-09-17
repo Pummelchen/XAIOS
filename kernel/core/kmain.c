@@ -93,22 +93,8 @@
 #include <xaios/aarch64_sve.h>
 #endif
 
-#ifndef XAIOS_BOOT_TEST_APPS
-#define XAIOS_BOOT_TEST_APPS 0
-#endif
-
-#ifndef XAIOS_LIBC_TEST
-#define XAIOS_LIBC_TEST 0
-#endif
-
-/* The WebTransport handshake gate (B-131). Off in every ordinary boot,
- * including the ordinary boot-test profile: the application waits for a host
- * peer that most boots do not have, and a twenty-second stall in every gate
- * that boots the profile is not a cost the others should pay for one gate's
- * evidence. `make qemu-quic-handshake-gate` builds with this set. */
-#ifndef XAIOS_WT_HANDSHAKE_TEST
-#define XAIOS_WT_HANDSHAKE_TEST 0
-#endif
+#include "boot_apps_internal.h"
+#include "boot_storage_internal.h"
 
 /* Two NTP retransmits plus margin, well inside the client's own 10s
    timeout, so a filtered UDP/123 costs a bounded pause and nothing more. */
@@ -117,7 +103,6 @@
 static const char g_vmm_rodata_probe[] = "vmm-rodata";
 static uint64_t g_vmm_data_probe;
 static virtio_block_handle_t *g_storage_admin_handle;
-static virtio_block_handle_t *g_persistent_handle;
 
 static void provision_read_only_config(const char *path) {
   const xaios_initramfs_file_t *file = 0;
@@ -169,37 +154,6 @@ static void early_spinlock_self_test(void) {
   klog("spinlock: early single-core try-lock self-test passed\n");
 }
 
-/* Run an application to completion and return its exit code. `expected` is
-   the code that means it did its job -- zero for nearly everything, and
-   something else for a probe whose job is to exit that way -- and is what
-   the process table judges it by. */
-static int run_user_app_expecting(const char *path, uint32_t pid,
-                                  uint64_t capabilities, int expected) {
-  const xaios_initramfs_file_t *file = 0;
-  xaios_user_process_t process;
-  if (initramfs_lookup(path, &file) != XAIOS_OK) {
-    /* Named, because the assertion alone says only that some application is
-       missing from an image holding twenty of them. */
-    klog("kernel: %s is not in the initial filesystem\n", path);
-  }
-  kassert(initramfs_lookup(path, &file) == XAIOS_OK);
-  kassert(user_load_process(file, pid, capabilities, &process) == XAIOS_OK);
-  kassert(user_process_expect_exit_code(pid, expected) == XAIOS_OK);
-  int exit_code = user_process_run(&process);
-  if (exit_code != expected) {
-    klog("kernel: WARNING %s exited with status=%d, expected %d\n",
-         path, exit_code, expected);
-  }
-  klog("kernel: %s returned to kernel exit_code=%d\n",
-       path, exit_code);
-  user_process_reclaim_address_space(&process);
-  return exit_code;
-}
-
-static int run_user_app(const char *path, uint32_t pid, uint64_t capabilities) {
-  return run_user_app_expecting(path, pid, capabilities, 0);
-}
-
 /* Set the wall clock from NTP before any service starts.
 
    The clock is otherwise whatever the RTC reports, and QEMU's PL031 commonly
@@ -210,269 +164,9 @@ static int run_user_app(const char *path, uint32_t pid, uint64_t capabilities) {
    Bounded and non-fatal. The default server is a bare address, so this needs
    no DNS, but UDP/123 is filtered on some networks and a boot must not stall
    waiting for a reply that will never arrive. */
-/* Mount xaibootFS from a partition of a disk the machine already booted from.
- *
- * Until now durable state had to arrive on a separate device: the boot medium
- * carried the kernel and something else carried the writable volume, which is
- * how every hypervisor here is configured and is not how an installed machine
- * works. A disk that has been partitioned holds both, and nothing looked --
- * gpt_read and partition_device_register were both written and neither was
- * ever called on the boot path.
- *
- * Returns XAIOS_OK once a partition typed as xaibootFS storage has been
- * registered and mounted. Anything else leaves the caller to go on probing
- * the separate devices it always did, because a disk without a partition
- * table is the normal case here and not an error.
- */
-static xaios_partition_device_t g_boot_partitions[XAIOS_GPT_MAX_PARTITIONS];
-static uint8_t g_gpt_scratch[4096] __attribute__((aligned(64)));
-static xaios_gpt_table_t g_boot_gpt;
-/* The EFI System Partition this machine started from, once one has been
-   found. It is the source an install copies from, and there is exactly one. */
-static char g_boot_esp[XAIOS_BLOCK_DEVICE_ID_MAX];
-#if XAIOS_INSTALL_SELF_TEST
-/* What the loader handed over. Kept because the install path runs long after
-   kmain's argument has gone out of scope, and it needs to know whether this
-   machine booted from a self-contained loader. Nothing else reads it, so it
-   lives and dies with the self-test that does. */
-static const xaios_boot_info_t *g_boot;
-#endif
 
-/* Read the boot files out of the EFI System Partition this machine started
-   from, and say what is there.
-
-   This is the source half of installing XAIOS onto another disk. The target
-   half already works: the system can create a partition of the right type,
-   format FAT16 onto it and write files at the paths firmware opens. What it
-   could not do was find the bytes to write, because the loader and the kernel
-   live on the ESP the machine booted from and nothing had ever opened it.
-
-   Reporting sizes rather than copying anything keeps this a check rather than
-   an install: an install needs a target disk and an operator who chose it. */
-static void report_boot_esp(const char *identifier) {
-  xaios_block_device_t *device = 0;
-  if (block_device_open(identifier, &device) != XAIOS_OK || device == 0) {
-    klog("boot-esp: %s cannot be opened\n", identifier);
-    return;
-  }
-  xaios_fat_volume_t volume;
-  if (fat_mount(device, &volume) != XAIOS_OK) {
-    /* An ESP that is not FAT16 is legal -- firmware also accepts FAT32 -- and
-       this reader does not handle it. Say so rather than imply the partition
-       is broken. */
-    klog("boot-esp: %s is not a FAT16 volume this kernel can read\n",
-         identifier);
-    (void)block_device_close(device);
-    return;
-  }
-  /* All three removable-media names, because a volume is read the same way
-     whichever machine is reading it and a reader that knew only its own would
-     report four files on a disk with five. Absence is not an error: a volume
-     carries the loader for the machines it is meant to boot. */
-  static const char *const k_boot_files[] = {
-      "/EFI/BOOT/BOOTAA64.EFI",
-      "/EFI/BOOT/BOOTX64.EFI",
-      "/EFI/BOOT/BOOTRISCV64.EFI",
-      "/EFI/XAIOS/XAIOS.EFI",
-      "/EFI/XAIOS/KERNEL.ELF",
-      "/EFI/XAIOS/INITFS.IMG",
-      "/EFI/XAIOS/ENTROPY.SED",
-  };
-  uint32_t found = 0U;
-  uint64_t total = 0U;
-  for (uint64_t index = 0U;
-       index < sizeof(k_boot_files) / sizeof(k_boot_files[0]); ++index) {
-    uint64_t size = 0U;
-    if (fat_stat(&volume, k_boot_files[index], &size, 0) != XAIOS_OK) continue;
-    ++found;
-    total += size;
-    klog("boot-esp: %s size=%lu\n", k_boot_files[index], size);
-  }
-  klog("boot-esp: readable volume=%s files=%u bytes=%lu clusters=%lu\n",
-       identifier, found, total, volume.cluster_count);
-  (void)block_device_close(device);
-}
-
-static xaios_status_t mount_xaibootfs_from_disk(const char *disk) {
-  xaios_block_device_t *device = 0;
-  if (block_device_open(disk, &device) != XAIOS_OK || device == 0) {
-    return XAIOS_ERR_NOT_FOUND;
-  }
-  xaios_status_t status =
-      gpt_read(device, &g_boot_gpt, g_gpt_scratch, sizeof(g_gpt_scratch));
-  if (status != XAIOS_OK ||
-      (g_boot_gpt.primary_valid == 0U && g_boot_gpt.backup_valid == 0U)) {
-    (void)block_device_close(device);
-    return XAIOS_ERR_NOT_FOUND;
-  }
-
-  uint32_t mounted = 0U;
-  for (uint32_t index = 0U; index < XAIOS_GPT_MAX_PARTITIONS; ++index) {
-    const xaios_gpt_partition_t *entry = &g_boot_gpt.partitions[index];
-    if (gpt_guid_is_zero(&entry->type_guid)) continue;
-    uint32_t is_state =
-        gpt_guid_equal(&entry->type_guid, &XAIOS_GPT_TYPE_STATEFS) ? 1U : 0U;
-    /* The EFI System Partition is registered too, not only the state
-       partition. It holds the loader, the kernel and the initial filesystem
-       this machine booted from, which is precisely what installing XAIOS onto
-       another disk has to copy. Registering it is what lets the running system
-       read its own boot files rather than depending on a host tool to have
-       kept a copy. */
-    uint32_t is_esp =
-        gpt_guid_equal(&entry->type_guid, &XAIOS_GPT_TYPE_ESP) ? 1U : 0U;
-    if (is_state == 0U && is_esp == 0U) continue;
-    if (is_state != 0U && mounted != 0U) continue;
-
-    char identifier[XAIOS_BLOCK_DEVICE_ID_MAX];
-    uint64_t used = 0U;
-    for (const char *cursor = disk; *cursor != '\0'; ++cursor) {
-      if (used + 4U >= sizeof(identifier)) break;
-      identifier[used++] = *cursor;
-    }
-    identifier[used++] = 'p';
-    identifier[used++] = (char)('0' + (char)(index % 10U));
-    identifier[used] = '\0';
-
-    if (partition_device_register(&g_boot_partitions[index], device, identifier,
-                                  entry, 0U) != XAIOS_OK) {
-      continue;
-    }
-    if (is_esp != 0U) {
-      klog("boot-esp: registered %s, the partition this machine booted from\n",
-           identifier);
-      if (g_boot_esp[0] == '\0') {
-        uint64_t copy = 0U;
-        while (copy + 1U < sizeof(g_boot_esp) && identifier[copy] != '\0') {
-          g_boot_esp[copy] = identifier[copy];
-          ++copy;
-        }
-        g_boot_esp[copy] = '\0';
-      }
-      report_boot_esp(identifier);
-      continue;
-    }
-    if (xaiboot_fs_mount_device(identifier) == XAIOS_OK) {
-      klog("xaibootfs: mounted from %s, a partition of the disk this machine "
-           "booted from\n", identifier);
-      mounted = 1U;
-    }
-  }
-  return mounted != 0U ? XAIOS_OK : XAIOS_ERR_NOT_FOUND;
-}
-
-/* Try every block device the machine has registered, rather than naming one.
- *
- * Which device holds the system depends on how the machine was configured:
- * /dev/vblk0 is the loader's in-memory initial filesystem when there is one
- * and the first physical disk when there is not, so a probe that names it
- * reads a GPT out of an initfs image on exactly the configuration this is for.
- * A partition typed as xaibootFS storage is unambiguous wherever it is found,
- * so look for that instead of guessing where to look. */
-/* How far to count disks before concluding there is more than one, and what
-   to name the disk of a machine that has exactly one. The slot map in the PCI
-   transport runs to 6; naming well above it keeps an installed disk's name
-   distinct from an attached volume's. */
-#define BOOT_DISK_SCAN_LIMIT 4U
-#define BOOT_DISK_SLOT_BASE 16U
 /* The scratch disk the boot path attaches for storage administration. */
 #define XAIOS_INSTALL_TARGET "/dev/vblk5"
-/* Off unless a gate asks for it. See the call site. */
-#ifndef XAIOS_INSTALL_SELF_TEST
-#define XAIOS_INSTALL_SELF_TEST 0
-#endif
-
-static xaios_status_t mount_xaibootfs_from_any_disk(void) {
-  xaios_block_device_info_t devices[8];
-  uint64_t count = 0U;
-  if (block_device_list(devices, 8U, &count) != XAIOS_OK) {
-    return XAIOS_ERR_NOT_FOUND;
-  }
-  for (uint64_t index = 0U; index < count; ++index) {
-    if (mount_xaibootfs_from_disk(devices[index].identifier) == XAIOS_OK) {
-      return XAIOS_OK;
-    }
-  }
-  return XAIOS_ERR_NOT_FOUND;
-}
-
-/* Install XAIOS onto the scratch disk, when the machine has both an EFI System
-   Partition to copy from and a disk to copy onto.
-
-   This is the one operation the whole partition and filesystem effort exists
-   for, and the only way to know it works is to do it. It runs when both halves
-   are present -- an installed machine has a boot ESP, and the gate attaches a
-   spare disk -- and says why it is skipping when they are not, rather than
-   passing silently on a machine where it never ran.
-
-   What it does not do is verify by booting the result. That needs firmware and
-   a second machine, so the installed-disk gate does it from outside. */
-#if XAIOS_INSTALL_SELF_TEST
-static void install_self_test(void) {
-  /* A machine that arrived over the network has no EFI System Partition to
-     copy from, and does not need one: the loader that booted it carries the
-     kernel and the initial filesystem inside itself, so writing that one
-     binary to a new EFI System Partition is the whole install. This is the
-     case network boot exists for -- a blank machine, brought up with no disk,
-     putting XAIOS on the disk it has. */
-  if (g_boot != 0 && g_boot->payload_loader_base != 0U &&
-      g_boot->payload_kernel_base != 0U && g_boot->payload_initfs_base != 0U) {
-    char confirmation[XAIOS_STORAGE_GUID_TEXT_MAX];
-    xaios_status_t status = install_target_confirmation(
-        XAIOS_INSTALL_TARGET, confirmation, sizeof(confirmation));
-    if (status != XAIOS_OK) {
-      klog("install: cannot determine what to confirm for %s status=%d\n",
-           XAIOS_INSTALL_TARGET, (int)status);
-      return;
-    }
-    xaios_install_payload_t payload;
-    payload.loader = (const void *)(uintptr_t)g_boot->payload_loader_base;
-    payload.loader_bytes = g_boot->payload_loader_size;
-    payload.kernel = (const void *)(uintptr_t)g_boot->payload_kernel_base;
-    payload.kernel_bytes = g_boot->payload_kernel_size;
-    payload.initfs = (const void *)(uintptr_t)g_boot->payload_initfs_base;
-    payload.initfs_bytes = g_boot->payload_initfs_size;
-    payload.seed = g_boot->entropy_seed_size != 0U ? g_boot->entropy_seed : 0;
-    payload.seed_bytes = g_boot->entropy_seed_size;
-    xaios_install_report_t netboot_report;
-    status = install_to_disk_from_payload(XAIOS_INSTALL_TARGET, &payload,
-                                          confirmation, 24U, &netboot_report);
-    if (status != XAIOS_OK) {
-      klog("install: netboot self-test failed status=%d target=%s\n",
-           (int)status, XAIOS_INSTALL_TARGET);
-      return;
-    }
-    klog("install: netboot self-test passed target=%s files=%lu bytes=%lu "
-         "esp=%s\n",
-         XAIOS_INSTALL_TARGET, netboot_report.file_count,
-         netboot_report.bytes_copied, netboot_report.esp_identifier);
-    return;
-  }
-  if (g_boot_esp[0] == '\0') {
-    klog("install: self-test skipped, this machine has no EFI System "
-         "Partition to copy from and did not arrive over the network\n");
-    return;
-  }
-  char confirmation[XAIOS_STORAGE_GUID_TEXT_MAX];
-  xaios_status_t status = install_target_confirmation(
-      XAIOS_INSTALL_TARGET, confirmation, sizeof(confirmation));
-  if (status != XAIOS_OK) {
-    klog("install: cannot determine what to confirm for %s status=%d\n",
-         XAIOS_INSTALL_TARGET, (int)status);
-    return;
-  }
-  xaios_install_report_t report;
-  status = install_to_disk(XAIOS_INSTALL_TARGET, g_boot_esp, confirmation, 16U,
-                           &report);
-  if (status != XAIOS_OK) {
-    klog("install: self-test failed status=%d target=%s source=%s\n",
-         (int)status, XAIOS_INSTALL_TARGET, g_boot_esp);
-    return;
-  }
-  klog("install: self-test passed target=%s files=%lu bytes=%lu esp=%s\n",
-       XAIOS_INSTALL_TARGET, report.file_count, report.bytes_copied,
-       report.esp_identifier);
-}
-#endif
 
 static void boot_sync_wall_clock(void) {
   if (ntp_sync(0U) != XAIOS_ERR_BUSY) {
@@ -507,9 +201,6 @@ static void map_mmio_range(uint64_t start, uint64_t size) {
 extern char __kernel_start[];
 
 void kmain(const xaios_boot_info_t *boot) {
-#if XAIOS_INSTALL_SELF_TEST
-  g_boot = boot;
-#endif
   uint32_t persistent_network_ready = 0U;
   klog_init(boot);
   /* Start capturing before any subsystem can fail. A normal boot redraws the
@@ -769,163 +460,14 @@ void kmain(const xaios_boot_info_t *boot) {
   gic_self_test();
   boot_ui_update(48U, "platform devices", "storage discovery", 3U);
 
-  xaios_nvme_self_test_result_t nvme_result;
-  xaios_status_t nvme_status = nvme_self_test(&nvme_result);
-  if (nvme_status != XAIOS_OK && nvme_status != XAIOS_ERR_NOT_FOUND) {
-    klog("nvme: self-test failed status=%d\n", (int)nvme_status);
-  }
-  /* F-02: say whether this platform has a VMXNET3, and what it reports if so.
-     Nothing selects it -- the driver cannot carry a frame yet -- so this is a
-     statement about the platform rather than a device coming into service. */
-  vmxnet3_self_test();
-
-  xaios_status_t ahci_status = ahci_init();
-  if (ahci_status != XAIOS_OK && ahci_status != XAIOS_ERR_NOT_FOUND) {
-    klog("ahci: initialization failed status=%d\n", (int)ahci_status);
-  }
-
-  /* V-06: claim a virtio-GPU if the platform has one. A machine whose firmware
-     published a usable framebuffer already has a console and needs nothing
-     here; one that did not -- Apple's hypervisor reports PixelBltOnly with a
-     zero base -- can still have a display, because the device is on the bus
-     even when the protocol to use it died at ExitBootServices. No device, or a
-     disabled scanout, leaves the console exactly where it was. */
-  if (boot_ui_has_framebuffer() == 0U) {
-    xaios_status_t gpu_status = virtio_gpu_init();
-    if (gpu_status == XAIOS_OK) {
-      uint32_t gpu_width = 0U;
-      uint32_t gpu_height = 0U;
-      uint32_t *gpu_pixels = virtio_gpu_framebuffer(&gpu_width, &gpu_height);
-      if (gpu_pixels != 0) {
-        boot_ui_adopt_framebuffer(gpu_pixels, gpu_width, gpu_height,
-                                  virtio_gpu_present);
-      }
-    }
-  }
-
-  boot_ui_update(49U, "storage discovery", "entropy and boot storage", 3U);
-  virtio_rng_self_test();
-  entropy_init(boot);
-  entropy_self_test();
-  if (boot->boot_image_size != 0U) {
-    kassert(virtio_block_set_boot_memory(
-                (void *)(uintptr_t)boot->boot_image_base,
-                boot->boot_image_size) == XAIOS_OK);
-  }
-  boot_ui_update(50U, "entropy and boot storage", "boot storage validation", 3U);
-  virtio_block_self_test();
-  boot_ui_update(51U, "boot storage validation", "initial filesystem", 3U);
-  initramfs_self_test();
-  /* Snapshot state must land on the durable volume, not on vblk0: that device
-     carries the initramfs/test image and the QEMU launcher attaches it with
-     snapshot=on, so its writes are thrown away when the machine stops. Bind
-     the dedicated persistent slot before the self-test runs, and reuse the
-     same handle for xaibootFS below. */
-  if (virtio_block_open_slot(1U, &g_persistent_handle) == XAIOS_OK) {
-    persistence_bind_block_device(g_persistent_handle);
-  }
-  if (virtio_block_is_read_only() != 0U && g_persistent_handle == 0) {
-    persistence_runtime_init();
-    klog("persistence: writable self-test skipped boot device is read-only\n");
-    klog("xaibootfs: writable self-test deferred no persistent block device\n");
-  } else {
-    persistence_self_test();
-    /* The xaibootFS self-test formats whichever block device is currently
-       selected, and until a volume is bound that is the boot device. Under
-       QEMU that device is attached with snapshot=on, so formatting it costs
-       nothing; on firmware that boots from read-only removable media there is
-       no such scratch device, and the durable volume must not be formatted
-       merely to exercise the filesystem. Run it only where a throwaway write
-       is safe. */
-    if (virtio_block_is_read_only() == 0U) {
-      xaiboot_fs_self_test();
-    } else {
-      klog("xaibootfs: self-test skipped no disposable writable device\n");
-    }
-  }
-  boot_ui_update(52U, "boot storage", "persistent filesystem", 3U);
-  /* Prefer a standards-enumerated NVMe namespace when one has completed its
-   * controller canary; QEMU retains its explicit VirtIO compatibility slot. */
-  xaios_status_t persistent_status = nvme_status == XAIOS_OK
-                                         ? xaiboot_fs_mount_device("/dev/nvme0n1")
-                                         : XAIOS_ERR_NOT_FOUND;
-  /* An enumerated NVMe namespace may be a test or xaiFS volume rather than
-   * xaibootFS storage. Preserve its contents and continue probing the
-   * explicitly provisioned persistence devices instead of suppressing SSH. */
-  if (persistent_status != XAIOS_OK && ahci_status == XAIOS_OK) {
-    persistent_status = xaiboot_fs_mount_device("/dev/ahci0p0");
-    if (persistent_status == XAIOS_OK) {
-      klog("xaibootfs: using registered AHCI persistent data disk\n");
-    }
-  }
-  /* A disk the machine booted from may carry its own state in a partition,
-     which is what an installed system looks like as opposed to an image with
-     volumes attached beside it. Tried before the separate devices below, so a
-     machine that has been installed uses its own disk rather than whatever
-     else happens to be plugged in. */
-  if (persistent_status != XAIOS_OK) {
-    /* Enumerate the physical disks first. When the loader supplied the initial
-       filesystem in memory, virtio_block_init returns before probing the
-       transport at all, so the machine's own disk is not registered and there
-       is nothing to search. Enumerating by ordinal rather than by slot is what
-       makes this work on an installed machine: the slot map exists to describe
-       the test bench, and its first rule is that the firmware's boot disk is
-       ordinal zero and belongs to nobody -- which on a machine with one disk
-       excludes the only disk there is. Names start above the slot map so that
-       a disk found here can never take the name of one attached beside it. */
-    /* The first PCI block device, and only that one.
-
-       Firmware boots from a PCI disk, so that is where an installed machine's
-       partitions are. Restricting the scan to it replaces an earlier rule --
-       "only when the machine has exactly one disk" -- which was wrong twice
-       over. It stopped an installed machine recognising its own disk the
-       moment a second was attached, which is precisely the install case. And
-       counting ordinals across both transports could not address the boot disk
-       at all once an MMIO device existed, because every MMIO device is counted
-       first; a machine with one of each opened the spare and never saw the disk
-       it had booted from.
-
-       On the test bench this opens the firmware's own boot volume, which is
-       safe because nothing else does: the PCI slot map reserves ordinal zero
-       and hands it to no driver. It carries no XAIOS partition table, so the
-       search below simply finds nothing there. */
-    virtio_block_handle_t *installed = 0;
-    (void)virtio_block_open_pci_ordinal(0U, BOOT_DISK_SLOT_BASE, &installed);
-    persistent_status = mount_xaibootfs_from_any_disk();
-  }
-  if (persistent_status != XAIOS_OK) {
-    /* vblk0 remains the immutable initramfs/test image. Open the dedicated
-     * second VirtIO block device for durable xaibootFS state. */
-    xaios_status_t virtio_status =
-        g_persistent_handle != 0
-            ? XAIOS_OK
-            : virtio_block_open_slot(1U, &g_persistent_handle);
-    persistent_status = virtio_status == XAIOS_OK
-                            ? xaiboot_fs_mount_device("/dev/vblk1")
-                            : virtio_status;
-    if (persistent_status == XAIOS_OK) {
-      klog("xaibootfs: using registered persistent data disk\n");
-    }
-  }
-  /* No disk to keep state on. Give the machine one made of memory rather than
-     letting everything above the block layer fail in its own way: without it
-     admin_control_init never runs, sshd rejects its runtime configuration and
-     the console locks, and a live boot has no way in at all. What is lost is
-     that none of it survives the power going off, which is what a live boot
-     means and is now the only thing it means. */
-  /* Whether what got mounted above outlives the power going off. Everything
-     up to here mounts a disk; the fallback below mounts memory, and the
-     operations layer has to say which, because a lifecycle record written to
-     memory is not a lifecycle record the next boot can read. */
+  /* Storage is discovered and the persistent volume mounted in one stage;
+     the mount status and the durability of what was mounted come back for
+     the filesystem and lifecycle work that follows. */
+  xaios_status_t nvme_status = XAIOS_ERR_NOT_FOUND;
   uint32_t durable_state = 1U;
-  if (persistent_status != XAIOS_OK) {
-    if (ram_block_create("/dev/ram0") == XAIOS_OK) {
-      persistent_status = xaiboot_fs_mount_device("/dev/ram0");
-      durable_state = 0U;
-      klog("kernel: no durable volume; state kept in memory status=%d\n",
-           (int)persistent_status);
-    }
-  }
+  xaios_status_t persistent_status =
+      boot_storage_bring_up(boot, &nvme_status, &durable_state);
+
   if (persistent_status == XAIOS_OK) {
     xaios_xbfs_fsck_result_t fsck = xaiboot_fs_fsck();
     klog("kernel: persistent fsck valid=%u v%u files=%lu dirs=%lu\n",
@@ -1032,7 +574,7 @@ void kmain(const xaios_boot_info_t *boot) {
        operator-driven install is the control-protocol path, which requires
        the target's own GUID as confirmation; this one confirms nothing
        because there is nobody to confirm with. */
-    install_self_test();
+    boot_storage_install_self_test(XAIOS_INSTALL_TARGET, boot);
 #endif
 #if XAIOS_STORAGE_BENCH
     storage_bench_run(XAIOS_INSTALL_TARGET);
@@ -1161,8 +703,6 @@ void kmain(const xaios_boot_info_t *boot) {
 #if XAIOS_BOOT_TEST_APPS
   const xaios_initramfs_file_t *worker_file = 0;
 #endif
-  xaios_user_process_t init_process;
-  xaios_user_process_t manager_process;
   const xaios_initramfs_config_t *init_config = initramfs_config();
   kassert(init_config != 0);
   kassert(initramfs_lookup(init_config->service_path, &init_file) == XAIOS_OK);
@@ -1171,80 +711,8 @@ void kmain(const xaios_boot_info_t *boot) {
 #if XAIOS_BOOT_TEST_APPS
   kassert(initramfs_lookup("/bin/xaios-worker", &worker_file) == XAIOS_OK);
 #endif
-  kassert(user_load_init(init_file, &init_process) == XAIOS_OK);
-  int init_exit_code = user_process_run(&init_process);
-  kassert(init_exit_code == 0);
-  klog("kernel: /init returned to kernel exit_code=%u\n",
-       (unsigned)init_exit_code);
-  user_process_reclaim_address_space(&init_process);
-
-  kassert(user_load_process(manager_file, 2,
-                            XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_OSCTL |
-                                XAIOS_CAP_FS_READ | XAIOS_CAP_SERVICE_CONTROL |
-                                XAIOS_CAP_ADMIN | XAIOS_CAP_FS_WRITE,
-                            &manager_process) == XAIOS_OK);
-  kassert(service_start(init_config->service_manager_path) == XAIOS_OK);
-  int manager_exit_code = user_process_run(&manager_process);
-  if (manager_exit_code != 0 && persistent_status != XAIOS_OK) {
-    klog("kernel: service-manager deferred exit_code=%u no writable persistent storage status=%d\n",
-         (unsigned)manager_exit_code, (int)persistent_status);
-  } else {
-    kassert(manager_exit_code == 0);
-    klog("kernel: /bin/service-manager returned to kernel exit_code=%u\n",
-         (unsigned)manager_exit_code);
-  }
-  user_process_reclaim_address_space(&manager_process);
-
-  /* Initialize persistent network for real TX/RX */
-  if (network_device_init_persistent() == XAIOS_OK) {
-    /* Ask the network for an address before falling back to the compiled-in
-       one. That default is QEMU user-mode networking's, and a guest that
-       assumes it is simply off-net anywhere else: Virtualization.framework
-       hands out a different subnet entirely. QEMU answers DHCP with the same
-       address it always did, so nothing changes there. */
-    /* Six seconds left room for barely two attempts once retransmission
-       backs off, and a server that is slow rather than absent was being
-       written off as absent. Fifteen costs nothing when a lease arrives on
-       the first try, and is only ever paid in full where there is no DHCP
-       server at all. */
-    if (network_config_dhcp(UINT64_C(30000000000)) != XAIOS_OK) {
-      if (network_device_kind() == XAIOS_NETWORK_DEVICE_E1000E) {
-        klog("kernel: DHCP configuration failed for e1000e\n");
-        boot_ui_error("network DHCP", XAIOS_ERR_IO);
-        goto persistent_network_done;
-      }
-      klog("kernel: DHCP unanswered; keeping the compiled-in address\n");
-    }
-    network_init_persistent();
-    (void)network_wait_for_ipv6_slaac(UINT64_C(3000000000));
-    /* Ask for a lease as well. SLAAC and DHCPv6 answer different questions --
-       one derives an address from an announced prefix, the other has a server
-       assign and record one -- and a guest does not get to choose which its
-       network offers. A network with no DHCPv6 server simply never answers,
-       which is why this is not allowed to fail the boot: the budget is short
-       and the outcome is logged either way. */
-    {
-      xaios_dhcpv6_lease_t lease;
-      if (dhcpv6_acquire(UINT64_C(4000000000), &lease) == XAIOS_OK &&
-          lease.have_address != 0U) {
-        (void)network_stack_adopt_dhcpv6(&lease.address,
-                                         lease.valid_lifetime_s);
-      } else {
-        klog("kernel: no DHCPv6 lease; IPv6 stays as router advertisement "
-             "configured it\n");
-      }
-    }
-    dns_init();
-    dns_configure(network_config_dns_server());
-    klog("kernel: persistent network stack enabled device=%s\n",
-         network_device_name());
-    persistent_network_ready = 1U;
-    boot_ui_update(80U, "network stack", "scheduler", 2U);
-  } else {
-    klog("kernel: persistent network init skipped\n");
-    boot_ui_error("network-stack", XAIOS_ERR_IO);
-  }
-persistent_network_done:
+  boot_apps_launch_init(init_file, manager_file, init_config, persistent_status,
+                        &persistent_network_ready);
 
   /* Initialize preemptive scheduler infrastructure */
   scheduler_lock();
@@ -1330,105 +798,7 @@ persistent_network_done:
   operations_mark_boot_ready();
 
 #if XAIOS_BOOT_TEST_APPS
-  /* One process dispatched as a *task* rather than as a call, which is
-     what makes an EL0 process preemptible: it owns its kernel stack, the
-     timer can take the CPU away from it, and the switch count across the
-     window says whether that happened. The three workers below keep the
-     sequential path, so a failure here is isolated to this dispatch. */
-  {
-    const xaios_initramfs_file_t *scheduled_file = 0;
-    xaios_user_process_t scheduled_process;
-    xaios_user_dispatch_result_t scheduled;
-    kassert(initramfs_lookup("/bin/hello", &scheduled_file) == XAIOS_OK);
-    kassert(user_load_process(scheduled_file, 6U,
-                              XAIOS_CAP_LOG | XAIOS_CAP_EXIT,
-                              &scheduled_process) == XAIOS_OK);
-    int scheduled_exit =
-        user_process_run_scheduled(&scheduled_process, 0, &scheduled);
-    kassert(scheduled_exit == 0);
-    klog("kernel: /bin/hello scheduled dispatch pid=6 switches=%lu "
-         "exit_code=%d\n",
-         (unsigned long)scheduled.switches, scheduled_exit);
-    user_process_reclaim_address_space(&scheduled_process);
-  }
-  /* The EL0 preemption proof and its control, in one boot.
-   *
-   * `/bin/spin` never blocks: it loops in EL0 for a fixed wall-clock span, so
-   * the only thing that can take the CPU away from it is the timer. With the
-   * dispatching context left runnable at the same priority and moved behind
-   * the process, the two alternate and the switch count *is* the preemption.
-   * With the dispatcher blocked the process is the only runnable task, so the
-   * count stops at the dispatch and the hand-back -- which is exactly what an
-   * earlier measurement misread as EL0 not being preemptible. Running both is
-   * what makes the positive number mean something: same process, same span,
-   * one difference. A port that cannot start a task in kernel mode never
-   * reaches either run and says so rather than passing a test it cannot
-   * take (B-132). */
-  if (user_process_scheduled_dispatch_supported() != 0) {
-    const xaios_initramfs_file_t *spin_file = 0;
-    const uint64_t spin_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_TIME;
-    kassert(initramfs_lookup("/bin/spin", &spin_file) == XAIOS_OK);
-
-    xaios_user_process_t preempted_process;
-    xaios_user_dispatch_result_t preempted;
-    kassert(user_load_process(spin_file, 7U, spin_caps,
-                              &preempted_process) == XAIOS_OK);
-    int preempted_exit =
-        user_process_run_scheduled(&preempted_process, 0, &preempted);
-    kassert(preempted_exit == 0);
-    kassert(preempted.as_task != 0);
-    klog("kernel: /bin/spin preempted pid=7 switches=%lu exit_code=%d "
-         "as_task=%d\n",
-         (unsigned long)preempted.switches, preempted_exit, preempted.as_task);
-    /* Two switches are the dispatch and the hand-back. Four or more can only
-       be the timer taking the CPU from EL0 and giving it back more than once,
-       because nothing else in this window can switch this CPU. */
-    kassert(preempted.switches >= 4U);
-    user_process_reclaim_address_space(&preempted_process);
-
-    xaios_user_process_t blocked_process;
-    xaios_user_dispatch_result_t blocked;
-    kassert(user_load_process(spin_file, 8U, spin_caps,
-                              &blocked_process) == XAIOS_OK);
-    int blocked_exit =
-        user_process_run_scheduled(&blocked_process, 1, &blocked);
-    kassert(blocked_exit == 0);
-    kassert(blocked.as_task != 0);
-    klog("kernel: /bin/spin blocked dispatcher pid=8 switches=%lu "
-         "exit_code=%d as_task=%d\n",
-         (unsigned long)blocked.switches, blocked_exit, blocked.as_task);
-    /* The control: the same process over the same span, strictly fewer
-       switches because the dispatcher gave the CPU up instead of competing
-       for it. */
-    kassert(blocked.switches < preempted.switches);
-    user_process_reclaim_address_space(&blocked_process);
-  } else {
-    klog("kernel: /bin/spin preemption proof not applicable -- this port "
-         "cannot start a task in kernel mode\n");
-  }
-  for (uint32_t pid = 3; pid <= 5; ++pid) {
-    xaios_user_process_t worker_process;
-    kassert(user_load_process(worker_file, pid, XAIOS_CAP_LOG | XAIOS_CAP_EXIT,
-                              &worker_process) == XAIOS_OK);
-    kassert(user_process_make_runnable(pid, 2) == XAIOS_OK);
-    kassert(user_process_snapshot(pid, &worker_process) == XAIOS_OK);
-    kassert(service_start("/bin/xaios-worker") == XAIOS_OK);
-    int worker_exit_code = user_process_run(&worker_process);
-    kassert(worker_exit_code == 0);
-    /* A user exit leaves through the port's own return path, and what it
-       restores is part of its contract: this kernel called `xaios_enter_user`
-       with interrupts on and gets them back on. RISC-V returned with them off
-       until this check existed, which is invisible until the kernel has to wait
-       for a tick -- a scheduled task handing the CPU back, for one. */
-    uint32_t resumed_interrupts = (uint32_t)xaios_interrupts_enabled();
-    klog("kernel: /bin/xaios-worker pid=%u returned to kernel exit_code=%u "
-         "interrupts=%u\n",
-         pid, (unsigned)worker_exit_code, (unsigned)resumed_interrupts);
-#if defined(__riscv)
-    kassert(resumed_interrupts != 0U);
-#endif
-    user_process_reclaim_address_space(&worker_process);
-  }
+  boot_apps_run_test_dispatch(worker_file);
 #endif
 
   /* Stop preemption after the concurrent worker gate. Keep interrupt delivery
@@ -1437,145 +807,7 @@ persistent_network_done:
   timer_disable();
   klog("kernel: preemption disabled; interrupt-backed idle waits retained\n");
 
-  const uint64_t sshd_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_FS_READ |
-      XAIOS_CAP_FS_WRITE | XAIOS_CAP_NET_SOCKET | XAIOS_CAP_REMOTE_LOGIN |
-      XAIOS_CAP_NET | XAIOS_CAP_TIME | XAIOS_CAP_RANDOM |
-      XAIOS_CAP_CONSOLE | XAIOS_CAP_CONTROL_QUERY |
-      XAIOS_CAP_CONTROL_ADMIN | XAIOS_CAP_STORAGE_READ |
-      XAIOS_CAP_STORAGE_MOUNT | XAIOS_CAP_STORAGE_FORMAT |
-      XAIOS_CAP_STORAGE_PARTITION | XAIOS_CAP_STORAGE_REPAIR |
-      XAIOS_CAP_STORAGE_RESIZE | XAIOS_CAP_STORAGE_TRIM |
-      XAIOS_CAP_MODEL_STAGE | XAIOS_CAP_MODEL_ACTIVATE |
-      XAIOS_CAP_OSCTL | XAIOS_CAP_SERVICE_CONTROL | XAIOS_CAP_UPDATE |
-      XAIOS_CAP_ADMIN;
-
-#if XAIOS_BOOT_TEST_APPS
-  /* Deterministic QEMU gate profile: execute diagnostic applications once. */
-  const uint64_t shell_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_FS_READ |
-      XAIOS_CAP_FS_WRITE | XAIOS_CAP_OSCTL | XAIOS_CAP_TIME |
-      XAIOS_CAP_NET | XAIOS_CAP_NET_SOCKET | XAIOS_CAP_REMOTE_LOGIN;
-  const uint64_t hello_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT;
-  const uint64_t c99_demo_caps = XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT;
-  const uint64_t xaiosctl_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT |
-      XAIOS_CAP_TIME | XAIOS_CAP_CONTROL_QUERY | XAIOS_CAP_STORAGE_READ;
-  const uint64_t sysinfo_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_TIME;
-  const uint64_t systest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT |
-      XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE;
-  const uint64_t smptest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT |
-      XAIOS_CAP_OSCTL | XAIOS_CAP_SMP | XAIOS_CAP_THREADS;
-  const uint64_t nettest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT |
-      XAIOS_CAP_OSCTL | XAIOS_CAP_NET | XAIOS_CAP_TIME;
-  const uint64_t lstm_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_CPU_AI |
-      XAIOS_CAP_ML;
-  const uint64_t sshtest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_NET |
-      XAIOS_CAP_NET_SOCKET | XAIOS_CAP_REMOTE_LOGIN;
-  const uint64_t mltest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_CPU_AI |
-      XAIOS_CAP_ML;
-  const uint64_t posix_shell_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT |
-      XAIOS_CAP_REMOTE_LOGIN;
-  const uint64_t agenttest_caps = XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_AGENT |
-      XAIOS_CAP_CPU_AI | XAIOS_CAP_ML;
-  run_user_app("/bin/xaios-shell", 6, shell_caps);
-  run_user_app("/bin/xaiosctl", 7, xaiosctl_caps);
-  run_user_app("/bin/hello", 8, hello_caps);
-  run_user_app("/bin/sysinfo", 9, sysinfo_caps);
-  run_user_app("/bin/systest", 10, systest_caps);
-  run_user_app("/bin/smptest", 11, smptest_caps);
-  /* B-02's window, entered on purpose: a user process waiting in
-     xaios_thread_join with a thread pending on its own CPU, so the join has
-     to run that thread nested inside its own syscall. Needs the same
-     capabilities as smptest and nothing else -- it checks that the CPU it
-     borrowed came back by using two of them after the nested run. It costs
-     one boot two threads and no soak time, so it runs wherever the test apps
-     run rather than behind the stress flag. */
-  run_user_app("/bin/joinnest", 11, smptest_caps | XAIOS_CAP_TIME);
-#if XAIOS_STRESS_TEST
-  run_user_app("/bin/smpstress", 11, smptest_caps | XAIOS_CAP_TIME);
-  /* Measurement rather than a check: it reports cost and asserts nothing, so
-     it runs where the stress app runs and nowhere else. */
-  /* NET as well as NET_SOCKET. The socket measurement needs only the socket
-     capability, but the poll-path arm calls net_udp_echo, which the syscall
-     table guards with XAIOS_CAP_NET -- without it every poll worker is
-     refused and the mixed measurement silently has nothing on one side. */
-  run_user_app("/bin/perfbench", 11,
-               smptest_caps | XAIOS_CAP_TIME | XAIOS_CAP_NET_SOCKET |
-               XAIOS_CAP_NET);
-#endif
-  run_user_app("/bin/nettest", 12, nettest_caps);
-  /* Two pinned senders on separate CPUs, which is the only way the
-     per-CPU transmit-pair selector is exercised at all: a boot sends
-     from one CPU, so every frame correctly lands on pair zero and the
-     selector is never asked a second question. Needs THREADS on top of
-     the network capabilities, and SMP to place threads by CPU. */
-  /* NET_SOCKET as well: the sender binds a UDP socket and sends through it,
-     which is the only path that reaches network_device_tx. Without it every
-     bind is refused, no frame is transmitted, and the fan-out this exists to
-     show cannot happen -- which is exactly what the first run on a four-queue
-     tap did. The app counts its own failures and says so, but the driver's
-     frames_by_pair line is what the claim rests on. */
-  run_user_app("/bin/netmqtest", 12,
-               nettest_caps | XAIOS_CAP_THREADS | XAIOS_CAP_SMP |
-               XAIOS_CAP_NET_SOCKET);
-  /* WT-35: a datagram socket the kernel names, which is what a QUIC client
-     has before its first packet. Only NET_SOCKET is needed -- the whole
-     surface is open_udp, sendto and close, none of which reads a socket
-     option or a network-wide setting that CAP_NET guards, and the app asserts
-     nothing, so it cannot fail a boot on a number it disagrees with. */
-  run_user_app("/bin/netsocktest", 12, XAIOS_CAP_LOG | XAIOS_CAP_EXIT |
-                                           XAIOS_CAP_NET_SOCKET);
-  run_user_app("/bin/lstm-xor", 13, lstm_caps);
-  run_user_app("/bin/sshtest", 14, sshtest_caps);
-  run_user_app("/bin/mltest", 15, mltest_caps);
-  run_user_app("/bin/posix-shell", 16, posix_shell_caps);
-  run_user_app("/bin/agenttest", 17, agenttest_caps);
-#if XAIOS_CLUSTER_TEST
-  /* The cluster data plane, which needs a socket rather than a simulated one.
-     
-     Behind a flag rather than in every boot, because it dials a peer, and a
-     machine that is not in a cluster should not open a connection to one on
-     every start. It did briefly, and the cost was not the connection: the
-     network suite pins exact telemetry counters -- resets, closes, queue
-     enqueues -- and an extra dial moved all of them, so a test of the TCP
-     state machine failed because something unrelated had used the network.
-     make qemu-cluster-gate builds with this set. */
-  run_user_app("/bin/clustertest", 18, nettest_caps | XAIOS_CAP_NET_SOCKET);
-#endif
-  kassert(run_user_app("/bin/helloworldc99", 23U, c99_demo_caps) == 0);
-#if XAIOS_WT_HANDSHAKE_TEST
-  /* The port's own client, on a booted guest: the vendored library driven by
-     this repository's BearSSL backend, its XAIOS socket seam, and a pinned
-     certificate (B-131). It prints `wtqtest: WT-HANDSHAKE-OK` itself, which is
-     what the gate reads -- the kernel's own line says only that it exited. */
-  kassert(run_user_app("/bin/wtqtest", 25U,
-                       XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT | XAIOS_CAP_TIME |
-                           XAIOS_CAP_NET_SOCKET | XAIOS_CAP_RANDOM) == 0);
-#endif
-#else
-  klog("kernel: boot diagnostics disabled; utilities are SSH on-demand\n");
-#endif
-
-#if XAIOS_LIBC_TEST
-  const uint64_t libc_test_caps =
-      XAIOS_CAP_EXIT | XAIOS_CAP_CONSOLE | XAIOS_CAP_TIME |
-      XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE | XAIOS_CAP_THREADS;
-  kassert(run_user_app("/bin/c99-runtime-smoke", 19U, libc_test_caps) == 0);
-  kassert(run_user_app("/bin/c99-main-void", 20U, libc_test_caps) == 0);
-  kassert(run_user_app_expecting("/bin/c99-exit-probe", 21U, libc_test_caps,
-                                 23) == 23);
-  kassert(run_user_app_expecting("/bin/c99-abort-probe", 22U, libc_test_caps,
-                                 134) == 134);
-  /* The thread-context probe places a thread on a CPU other than the one it
-     is running on, and there is no such CPU on a uniprocessor machine: the
-     scheduler refuses, correctly, and the probe cannot test what it exists to
-     test. Run where it means something and say so where it does not, rather
-     than asserting a result the machine cannot produce. */
-  if (smp_online_count() > 1U) {
-    kassert(run_user_app("/bin/c99-thread-context", 24U, libc_test_caps) == 0);
-  } else {
-    klog("C99-THREAD-CONTEXT-SKIPPED: one CPU, nowhere to place a thread\n");
-  }
-  klog("C99-TERMINATION-PROBES-PASS\n");
-#endif
+  boot_apps_run_profile();
 
   boot_ui_update(90U, "runtime services", "IPv4 network readiness", 2U);
 
@@ -1596,98 +828,5 @@ persistent_network_done:
      covers a bounded, comparable amount of work. */
   virtio_gpu_report_transfer_cost();
 
-  /* A machine with no user database has no account, so nobody can log into
-     it -- the login prompt would ask for a username that does not exist. Run
-     setup first and let the person make one.
-
-     Before sshd, not beside it: the console is a single shared ring and
-     whoever reads it takes the keystroke, so two programs on it would race
-     for every character. Setup runs to completion and exits.
-
-     An image that packages credentials never gets here, which is every gate
-     image and every development build. */
-  /* Only when there is no way in at all.
-
-     "No password account" is not the same question. An image that ships
-     authorized keys and no password database is a configured machine -- it is
-     how a fleet is built, and how the interoperability gates build theirs --
-     and running setup on it stops the boot at a prompt nobody is standing in
-     front of, so its SSH server never starts and the machine hangs. That is
-     what happened to three CI jobs.
-
-     A machine with either credential can be reached by whoever has it, and is
-     not this program's business. */
-  xaios_xbfs_stat_t credential;
-  int has_password_account =
-      xaiboot_fs_stat("/etc/xaios_sshd_users", &credential) == XAIOS_OK;
-  int has_authorized_keys =
-      xaiboot_fs_stat("/etc/xaios_authorized_keys", &credential) == XAIOS_OK;
-  if (has_password_account == 0 && has_authorized_keys == 0) {
-    /* Setup offers to install, and an install copies from the partition this
-       machine booted. Only the kernel knows which that is -- it is found
-       while walking the boot disk's partition table -- so record it where
-       setup can read it rather than asking a person to work it out from a
-       device list. A machine booted from something with no EFI System
-       Partition records nothing, and setup then has to ask. */
-    if (g_boot_esp[0] != '\0') {
-      char line[XAIOS_BLOCK_DEVICE_ID_MAX + 2U];
-      uint64_t used = 0U;
-      while (g_boot_esp[used] != '\0' && used + 2U < sizeof(line)) {
-        line[used] = g_boot_esp[used];
-        ++used;
-      }
-      line[used++] = '\n';
-      if (xaiboot_fs_write("/state/boot-esp", line, used) != XAIOS_OK) {
-        klog("kernel: could not record the boot ESP for setup\n");
-      }
-    }
-    klog("kernel: no account on this machine; starting /bin/xaios-setup\n");
-    const uint64_t setup_caps =
-        XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_CONSOLE |
-        XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE | XAIOS_CAP_RANDOM |
-        XAIOS_CAP_TIME | XAIOS_CAP_NET | XAIOS_CAP_CONTROL_QUERY |
-        XAIOS_CAP_CONTROL_ADMIN | XAIOS_CAP_STORAGE_READ |
-        XAIOS_CAP_STORAGE_MOUNT | XAIOS_CAP_STORAGE_FORMAT |
-        XAIOS_CAP_STORAGE_PARTITION | XAIOS_CAP_ADMIN;
-    (void)run_user_app("/bin/xaios-setup", 2U, setup_caps);
-    /* Setup cannot write /etc -- no userspace process can -- so it leaves
-       what it collected under /state and this installs it. */
-    setup_apply_pending();
-  }
-
-  /* OD-011 needs a way to save the interrupt mask and put it back, and a
-     primitive nothing exercises is a primitive nobody has tested.
-     It reports three verdicts rather than one, because on the machines this has
-     run on it cannot test what it was written to test: interrupts are masked
-     here, so `before` is 0, the disable masks nothing that was not already
-     masked, and a "passed" would be a claim about a round trip that did not
-     happen. The first version of this asserted `before == 1` and halted the
-     machine, which is how the masked state was found. What that state means is
-     recorded in OD-011 rather than worked around here. */
-  {
-    int before = xaios_interrupts_enabled();
-    xaios_interrupt_state_t saved = xaios_interrupts_disable();
-    int masked = xaios_interrupts_enabled();
-    xaios_interrupts_restore(saved);
-    int after = xaios_interrupts_enabled();
-    kassert(masked == 0);
-    kassert(after == before);
-    if (before == 0) {
-      klog("interrupts: save/restore self-test inconclusive before=0 masked=0 "
-           "after=0; the enabling direction was never exercised\n");
-    } else {
-      klog("interrupts: save/restore self-test passed before=%d masked=%d "
-           "after=%d\n",
-           before, masked, after);
-    }
-  }
-
-  klog("kernel: starting persistent /bin/sshd service\n");
-  int sshd_exit =
-      run_user_app("/bin/sshd", XAIOS_BOOT_TEST_APPS ? 18U : 3U, sshd_caps);
-  boot_ui_error("sshd", sshd_exit);
-
-  for (;;) {
-    xaios_cpu_wait();
-  }
+  boot_apps_run_tail();
 }

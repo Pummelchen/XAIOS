@@ -441,12 +441,12 @@ fi
 # stops at a setup prompt and there is nothing to log into.
 printf '%s\n' "Building /bin/sshd..."
 SSHD_OBJS=""
-for sshd_src in sshd sshd_audit sshd_rate_limit sshd_kex sshd_console_screen sshd_console_programs sshd_auth sshd_keys ssh_crypto ssh_mlkem tweetnacl_subset ssh_protocol \
-    ssh_channel ssh_alt_screen ssh_client_proxy ssh_host_key ssh_connection sftp_server \
+for sshd_src in sshd sshd_audit sshd_rate_limit sshd_kex sshd_console_screen sshd_console_programs sshd_auth sshd_keys sshd_diagnostics sshd_console_ui ssh_crypto ssh_mlkem tweetnacl_subset ssh_protocol \
+    ssh_channel ssh_alt_screen ssh_channel_shell ssh_channel_stream ssh_client_proxy ssh_host_key ssh_connection sftp_server \
     less_pager; do
   sshd_opt=""
   case "$sshd_src" in
-    sshd|sshd_audit|sshd_rate_limit|sshd_kex|sshd_console_screen|sshd_console_programs|sshd_auth|sshd_keys) sshd_opt="-Os" ;;
+    sshd|sshd_audit|sshd_rate_limit|sshd_kex|sshd_console_screen|sshd_console_programs|sshd_auth|sshd_keys|sshd_diagnostics|sshd_console_ui) sshd_opt="-Os" ;;
     *) sshd_opt="" ;;
   esac
   # shellcheck disable=SC2086
