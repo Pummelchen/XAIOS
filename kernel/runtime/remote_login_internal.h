@@ -134,6 +134,16 @@ xaios_status_t handle_head_tail(const char *args, int is_head, char *output,
 xaios_status_t handle_sed(const char *args, char *output,
                           uint64_t output_capacity, uint64_t *output_bytes);
 
+/* The process and filesystem reporters of remote_login_sysinfo.c. Like the
+   listing entry points above they come from a boot-test-only arm of
+   remote_login.c, so they carry the same guard. */
+xaios_status_t handle_ps(const char *args, char *output,
+                         uint64_t output_capacity, uint64_t *output_bytes);
+xaios_status_t handle_df(const char *args, char *output,
+                         uint64_t output_capacity, uint64_t *output_bytes);
+xaios_status_t handle_du(const char *args, char *output,
+                         uint64_t output_capacity, uint64_t *output_bytes);
+
 #endif /* XAIOS_BOOT_TEST_APPS */
 
 #endif /* XAIOS_KERNEL_RUNTIME_REMOTE_LOGIN_INTERNAL_H */

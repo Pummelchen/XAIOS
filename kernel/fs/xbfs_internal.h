@@ -287,4 +287,48 @@ void xbfs_stat_bump(xbfs_stat_t id);
 void xbfs_stat_add(xbfs_stat_t id, uint64_t delta);
 void xbfs_stat_reset_all(void);
 
+/* The record family, in xbfs_record.c.
+ *
+ * These are the builders for the small text records the commit path writes
+ * under /state, and the canonical `k_*` descriptions the boot self-test
+ * writes and compares those records against. The serialised entry points stay
+ * in xaiboot_fs.c and still take the volume lock around each builder, so the
+ * builders keep their `_locked` names and must be called with the lock held.
+ *
+ * They own no state. `write_file` was the one function they called back into,
+ * so its linkage changed and it crosses as xbfs_write_file_locked; everything
+ * else they need is an accessor above. Each description is declared with the
+ * size of the literal it is defined from rather than as an incomplete array,
+ * because the self-test still sizes them with `sizeof`. */
+#define XBFS_RECORD_CONFIG_V1 "mode=full-os\nmutable=true\n"
+#define XBFS_RECORD_SERVICE_RUNNING "service=/svc/source-index\nstate=running\n"
+#define XBFS_RECORD_SERVICE_RESTARTING \
+  "service=/svc/source-index\nstate=restarting\n"
+#define XBFS_RECORD_UPDATE_STATE \
+  "policy=signed-update-required\nrollback=enabled\n"
+#define XBFS_RECORD_BOOT_LOG "boot=ok\n"
+#define XBFS_RECORD_REPLAYED_STATE "service=/svc/replayed\nstate=recovered\n"
+
+extern const char k_config_v1[sizeof(XBFS_RECORD_CONFIG_V1)];
+extern const char k_service_running[sizeof(XBFS_RECORD_SERVICE_RUNNING)];
+extern const char k_service_restarting[sizeof(XBFS_RECORD_SERVICE_RESTARTING)];
+extern const char k_update_state[sizeof(XBFS_RECORD_UPDATE_STATE)];
+extern const char k_boot_log[sizeof(XBFS_RECORD_BOOT_LOG)];
+extern const char k_replayed_state[sizeof(XBFS_RECORD_REPLAYED_STATE)];
+
+xaios_status_t xbfs_write_file_locked(const char *path, const void *data,
+                                      uint64_t size);
+
+xaios_status_t xaiboot_fs_record_service_state_locked(const char *name,
+                                                      const char *state);
+xaios_status_t xaiboot_fs_record_workspace_state_locked(uint32_t workspace_id,
+                                                        const char *revision);
+xaios_status_t xaiboot_fs_record_update_state_locked(const char *policy);
+xaios_status_t xaiboot_fs_record_update_transaction_locked(
+    uint32_t generation, const char *state, const char *target,
+    const char *rollback_label);
+xaios_status_t xaiboot_fs_record_admin_status_locked(
+    const char *service, const char *state, uint32_t starts, uint32_t restarts,
+    uint32_t logs);
+
 #endif /* XAIOS_KERNEL_FS_XBFS_INTERNAL_H */

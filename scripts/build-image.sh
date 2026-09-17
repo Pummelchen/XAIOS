@@ -43,7 +43,6 @@ esac
 EFI_BUILD_DIR="$BUILD_DIR/uefi$ARCH_BUILD_SUFFIX"
 KERNEL_BUILD_DIR="$BUILD_DIR/kernel$ARCH_BUILD_SUFFIX"
 INIT_BUILD_DIR="$BUILD_DIR/init$ARCH_BUILD_SUFFIX"
-
 XAI_FS_IMAGE_CONFIGURED="${XAIOS_XAI_FS_IMAGE:-}"
 if [ "$TARGET_ARCH" = x86_64 ]; then
   XAI_FS_IMAGE="${XAI_FS_IMAGE_CONFIGURED:-$BUILD_DIR/xaios-x86-xaifs.img}"
@@ -80,7 +79,6 @@ USER_CONTROL_SYS_OBJ="$INIT_BUILD_DIR/xaios-control-system.o"
 USER_CONTROL_STORAGE_OBJ="$INIT_BUILD_DIR/xaios-control-storage.o"
 USER_CONTROL_OPS_OBJ="$INIT_BUILD_DIR/xaios-control-ops.o"
 USER_APPS="xaios-shell xaiosctl xapt nano xtop pong hello spin sysinfo systest smptest joinnest smpstress perfbench nettest netmqtest netsocktest lstm-xor sshtest mltest posix-shell agenttest clustertest xaios-setup"
-
 # Which end of a cluster this image is, and where its peer is.
 #
 # The two ends are mirror images: one listens, the other dials, and each is the
@@ -501,7 +499,6 @@ fi
 if [ "$TARGET_ARCH" = x86_64 ]; then
   KERNEL_CFLAGS="$KERNEL_CFLAGS -mno-red-zone -DXAIOS_X86_COMMON_RUNTIME=1"
 fi
-
 # The stress app soaks for fifteen seconds by default, so it runs only when
 # asked for rather than in every test-apps boot.
 case "${XAIOS_STRESS_TEST:-0}" in
@@ -654,7 +651,6 @@ if [ -n "${XAIOS_KERNEL_CFLAGS_EXTRA:-}" ]; then
   KERNEL_CFLAGS="$KERNEL_CFLAGS $XAIOS_KERNEL_CFLAGS_EXTRA"
   printf '%s\n' "Kernel built with extra flags: $XAIOS_KERNEL_CFLAGS_EXTRA"
 fi
-
 # Files that use FP/SIMD on purpose opt back in; everything else is built
 # without it. See KERNEL_NO_SIMD_CFLAGS below for why.
 compile_kernel_simd() {
@@ -752,6 +748,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/xbfs_state.o
   $KERNEL_BUILD_DIR/xbfs_node_codec.o
   $KERNEL_BUILD_DIR/xbfs_util.o
+  $KERNEL_BUILD_DIR/xbfs_record.o
   $KERNEL_BUILD_DIR/fat.o
   $KERNEL_BUILD_DIR/fat_codec.o
   $KERNEL_BUILD_DIR/vfs.o
@@ -773,6 +770,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/remote_login_archive.o
   $KERNEL_BUILD_DIR/remote_login_text.o
   $KERNEL_BUILD_DIR/remote_login_path.o
+  $KERNEL_BUILD_DIR/remote_login_sysinfo.o
   $KERNEL_BUILD_DIR/operations.o
   $KERNEL_BUILD_DIR/admin_control.o
   $KERNEL_BUILD_DIR/control_protocol.o
@@ -925,6 +923,7 @@ compile_kernel "$ROOT_DIR/kernel/fs/xaiboot_fs.c" "$KERNEL_BUILD_DIR/xaiboot_fs.
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_state.c" "$KERNEL_BUILD_DIR/xbfs_state.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_node_codec.c" "$KERNEL_BUILD_DIR/xbfs_node_codec.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_util.c" "$KERNEL_BUILD_DIR/xbfs_util.o"
+compile_kernel "$ROOT_DIR/kernel/fs/xbfs_record.c" "$KERNEL_BUILD_DIR/xbfs_record.o"
 compile_kernel "$ROOT_DIR/kernel/fs/fat.c" "$KERNEL_BUILD_DIR/fat.o"
 compile_kernel "$ROOT_DIR/kernel/fs/fat_codec.c" "$KERNEL_BUILD_DIR/fat_codec.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs.c" "$KERNEL_BUILD_DIR/vfs.o"
@@ -946,6 +945,7 @@ compile_kernel "$ROOT_DIR/kernel/runtime/remote_login.c" "$KERNEL_BUILD_DIR/remo
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_archive.c" "$KERNEL_BUILD_DIR/remote_login_archive.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_text.c" "$KERNEL_BUILD_DIR/remote_login_text.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_path.c" "$KERNEL_BUILD_DIR/remote_login_path.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_sysinfo.c" "$KERNEL_BUILD_DIR/remote_login_sysinfo.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/operations.c" "$KERNEL_BUILD_DIR/operations.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/admin_control.c" "$KERNEL_BUILD_DIR/admin_control.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/control_protocol.c" "$KERNEL_BUILD_DIR/control_protocol.o"

@@ -253,17 +253,6 @@ typedef char xbfs_path_transaction_fits
 static xaios_block_device_t *g_persistent_device;
 static uint64_t g_persistent_mount_count;
 
-static const char k_config_v1[] = "mode=full-os\nmutable=true\n";
-static const char k_service_running[] =
-    "service=/svc/source-index\nstate=running\n";
-static const char k_service_restarting[] =
-    "service=/svc/source-index\nstate=restarting\n";
-static const char k_update_state[] =
-    "policy=signed-update-required\nrollback=enabled\n";
-static const char k_boot_log[] = "boot=ok\n";
-static const char k_replayed_state[] =
-    "service=/svc/replayed\nstate=recovered\n";
-
 static xaios_status_t restore_snapshot_node(xaios_xbfs_node_t *node);
 
 
@@ -1257,8 +1246,6 @@ static xaios_status_t migrate_volume_to_v5(void) {
   return XAIOS_OK;
 }
 
-static xaios_status_t write_file(const char *path, const void *data,
-                                uint64_t size);
 static xaios_status_t create_dir(const char *path);
 
 static xaios_status_t replay_journal(void) {
@@ -1294,7 +1281,7 @@ static xaios_status_t replay_journal(void) {
     xbfs_stat_bump(XBFS_STAT_REJECT);
     return clear_journal();
   }
-  if (write_file(journal.path, sector, journal.size) != XAIOS_OK) {
+  if (xbfs_write_file_locked(journal.path, sector, journal.size) != XAIOS_OK) {
     return XAIOS_ERR_IO;
   }
   if (clear_journal() != XAIOS_OK) {
@@ -1500,7 +1487,7 @@ static xaios_status_t clone_extents(const xaios_xbfs_extent_t *source,
   return XAIOS_OK;
 }
 
-static xaios_status_t write_file(const char *path, const void *data,
+xaios_status_t xbfs_write_file_locked(const char *path, const void *data,
                                 uint64_t size) {
   if (g_mounted == 0 || (g_mount_flags & XBFS_MOUNT_READ_WRITE) == 0 ||
       validate_path(path) != XAIOS_OK || !parent_exists_for(path) ||
@@ -1987,157 +1974,6 @@ static xaios_status_t write_pending_journal_file(const char *path,
   return write_journal(&journal);
 }
 
-static xaios_status_t xaiboot_fs_record_service_state_locked(const char *name, const char *state) {
-  char path[XBFS_PATH_MAX];
-  char record[256];
-  uint64_t path_offset = 0;
-  uint64_t record_offset = 0;
-  const char *base = xbfs_basename_of(name);
-  xbfs_bytes_zero(path, sizeof(path));
-  xbfs_bytes_zero(record, sizeof(record));
-  if (base == 0 || *base == '\0' || state == 0 ||
-      xbfs_append_cstr(path, sizeof(path), &path_offset, "/state/services/") !=
-          XAIOS_OK ||
-      xbfs_append_cstr(path, sizeof(path), &path_offset, base) != XAIOS_OK ||
-      xbfs_append_cstr(path, sizeof(path), &path_offset, ".state") != XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, "service=") !=
-          XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, name) != XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, "\nstate=") !=
-          XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, state) != XAIOS_OK ||
-      xbfs_append_char(record, sizeof(record), &record_offset, '\n') != XAIOS_OK) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_INVALID;
-  }
-  xaios_status_t status = write_file(path, record, record_offset + 1U);
-  if (status == XAIOS_OK) {
-    xbfs_stat_bump(XBFS_STAT_STATE_RECORD);
-  }
-  return status;
-}
-
-static xaios_status_t xaiboot_fs_record_workspace_state_locked(uint32_t workspace_id, const char *revision) {
-  char path[XBFS_PATH_MAX];
-  char record[256];
-  uint64_t path_offset = 0;
-  uint64_t record_offset = 0;
-  xbfs_bytes_zero(path, sizeof(path));
-  xbfs_bytes_zero(record, sizeof(record));
-  if (revision == 0 ||
-      xbfs_append_cstr(path, sizeof(path), &path_offset, "/state/workspaces/workspace-") !=
-          XAIOS_OK ||
-      xbfs_append_u32(path, sizeof(path), &path_offset, workspace_id) != XAIOS_OK ||
-      xbfs_append_cstr(path, sizeof(path), &path_offset, ".state") != XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, "workspace=") !=
-          XAIOS_OK ||
-      xbfs_append_u32(record, sizeof(record), &record_offset, workspace_id) !=
-          XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset,
-                  "\npath=/repo/workspaces/source-index\nrevision=") !=
-          XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, revision) !=
-          XAIOS_OK ||
-      xbfs_append_char(record, sizeof(record), &record_offset, '\n') != XAIOS_OK) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_INVALID;
-  }
-  xaios_status_t status = write_file(path, record, record_offset + 1U);
-  if (status == XAIOS_OK) {
-    xbfs_stat_bump(XBFS_STAT_STATE_RECORD);
-  }
-  return status;
-}
-
-static xaios_status_t xaiboot_fs_record_update_state_locked(const char *policy) {
-  char record[256];
-  uint64_t record_offset = 0;
-  xbfs_bytes_zero(record, sizeof(record));
-  if (policy == 0 ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, "policy=") !=
-          XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, policy) != XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset,
-                  "\nrollback=enabled\n") != XAIOS_OK) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_INVALID;
-  }
-  xaios_status_t status = write_file("/state/updates/update.state",
-                                    record, record_offset + 1U);
-  if (status == XAIOS_OK) {
-    xbfs_stat_bump(XBFS_STAT_STATE_RECORD);
-  }
-  return status;
-}
-
-static xaios_status_t xaiboot_fs_record_update_transaction_locked(uint32_t generation, const char *state, const char *target, const char *rollback_label) {
-  char record[256];
-  uint64_t record_offset = 0;
-  xbfs_bytes_zero(record, sizeof(record));
-  if (state == 0 || target == 0 || rollback_label == 0 ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset,
-                  "policy=signed-update-required\n") != XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset,
-                  "transaction_generation=") != XAIOS_OK ||
-      xbfs_append_u32(record, sizeof(record), &record_offset, generation) !=
-          XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, "\nstate=") !=
-          XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, state) != XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, "\ntarget=") !=
-          XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, target) != XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, "\nrollback=") !=
-          XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, rollback_label) !=
-          XAIOS_OK ||
-      xbfs_append_char(record, sizeof(record), &record_offset, '\n') != XAIOS_OK) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_INVALID;
-  }
-  xaios_status_t status = write_file("/state/updates/update.state",
-                                    record, record_offset + 1U);
-  if (status == XAIOS_OK) {
-    xbfs_stat_bump(XBFS_STAT_STATE_RECORD);
-  }
-  return status;
-}
-
-static xaios_status_t xaiboot_fs_record_admin_status_locked(const char *service, const char *state, uint32_t starts, uint32_t restarts, uint32_t logs) {
-  char record[256];
-  uint64_t record_offset = 0;
-  xbfs_bytes_zero(record, sizeof(record));
-  if (service == 0 || state == 0 ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset,
-                  "admin=ssh-only\nservice=") != XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, service) !=
-          XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, "\nstate=") !=
-          XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, state) != XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, "\nstarts=") !=
-          XAIOS_OK ||
-      xbfs_append_u32(record, sizeof(record), &record_offset, starts) != XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, "\nrestarts=") !=
-          XAIOS_OK ||
-      xbfs_append_u32(record, sizeof(record), &record_offset, restarts) !=
-          XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset, "\nlogs=") !=
-          XAIOS_OK ||
-      xbfs_append_u32(record, sizeof(record), &record_offset, logs) != XAIOS_OK ||
-      xbfs_append_cstr(record, sizeof(record), &record_offset,
-                  "\nremote_safe=allowlist\n") != XAIOS_OK) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_INVALID;
-  }
-  xaios_status_t status =
-      write_file("/state/services/admin.state", record, record_offset + 1U);
-  if (status == XAIOS_OK) {
-    xbfs_stat_bump(XBFS_STAT_STATE_RECORD);
-  }
-  return status;
-}
-
 static xaios_status_t xaiboot_fs_commit_locked(const char *label) {
   return commit_snapshot(label);
 }
@@ -2151,7 +1987,7 @@ static xaios_status_t xaiboot_fs_mkdir_locked(const char *path) {
 }
 
 static xaios_status_t xaiboot_fs_write_locked(const char *path, const void *data, uint64_t size) {
-  return write_file(path, data, size);
+  return xbfs_write_file_locked(path, data, size);
 }
 
 static xaios_status_t xaiboot_fs_read_locked(const char *path, void *buffer, uint64_t buffer_size, uint64_t *out_size) {
@@ -2212,14 +2048,14 @@ static int64_t xaiboot_fs_open_locked(const char *path, uint32_t flags) {
   }
 
   if ((flags & XAIOS_XBFS_OPEN_CREATE) != 0 && node == 0) {
-    if (write_file(normalized, 0, 0) != XAIOS_OK) {
+    if (xbfs_write_file_locked(normalized, 0, 0) != XAIOS_OK) {
       return (int64_t)XAIOS_ERR_IO;
     }
     node = find_node(normalized, 0);
   }
   if ((flags & XAIOS_XBFS_OPEN_TRUNCATE) != 0 && node != 0 &&
       node->active != 0) {
-    if (write_file(normalized, 0, 0) != XAIOS_OK) {
+    if (xbfs_write_file_locked(normalized, 0, 0) != XAIOS_OK) {
       return (int64_t)XAIOS_ERR_IO;
     }
   }
@@ -2502,7 +2338,7 @@ static int64_t xaiboot_fs_write_fd_locked(uint32_t fd, const void *buffer, uint6
     xbfs_bytes_zero(g_file_buffer + file_size, handle->cursor - file_size);
   }
   xbfs_bytes_copy(g_file_buffer + handle->cursor, buffer, size);
-  if (write_file(handle->path, g_file_buffer, new_size) != XAIOS_OK) {
+  if (xbfs_write_file_locked(handle->path, g_file_buffer, new_size) != XAIOS_OK) {
     return (int64_t)XAIOS_ERR_IO;
   }
   handle->cursor += size;
@@ -2995,14 +2831,14 @@ void xaiboot_fs_self_test(void) {
   kassert(xaiboot_fs_record_update_state("signed-update-required") == XAIOS_OK);
   kassert(xaiboot_fs_record_admin_status("/svc/source-index", "running", 1, 0,
                                          0) == XAIOS_OK);
-  kassert(write_file("/config/xaios.conf", k_config_v1,
+  kassert(xbfs_write_file_locked("/config/xaios.conf", k_config_v1,
                      sizeof(k_config_v1)) == XAIOS_OK);
 
   uint8_t large[XBFS_SECTOR_SIZE * 3U];
   for (uint64_t i = 0; i < sizeof(large); ++i) {
     large[i] = (uint8_t)('A' + (i % 23U));
   }
-  kassert(write_file("/state/services/large.state", large, sizeof(large)) ==
+  kassert(xbfs_write_file_locked("/state/services/large.state", large, sizeof(large)) ==
           XAIOS_OK);
 
   uint8_t buffer[XBFS_MAX_FILE_BYTES];
@@ -3054,11 +2890,11 @@ void xaiboot_fs_self_test(void) {
           (int64_t)XAIOS_ERR_NOT_FOUND);
   kassert(commit_snapshot("mfs-snapshot-v2") == XAIOS_OK);
 
-  kassert(write_file("/state/services/source-index.state",
+  kassert(xbfs_write_file_locked("/state/services/source-index.state",
                      k_service_restarting,
                      sizeof(k_service_restarting)) == XAIOS_OK);
   kassert(delete_node("/state/updates/update.state") == XAIOS_OK);
-  kassert(write_file("/logs/boot.log", k_boot_log, sizeof(k_boot_log)) ==
+  kassert(xbfs_write_file_locked("/logs/boot.log", k_boot_log, sizeof(k_boot_log)) ==
           XAIOS_OK);
   kassert(write_pending_journal_file("/state/services/replayed.state",
                                      k_replayed_state,
@@ -3086,12 +2922,12 @@ void xaiboot_fs_self_test(void) {
   kassert(read_file("/state/services/replayed.state", buffer, sizeof(buffer),
                     &size) == XAIOS_ERR_NOT_FOUND);
 
-  kassert(write_file("/bad/missing-parent", k_config_v1,
+  kassert(xbfs_write_file_locked("/bad/missing-parent", k_config_v1,
                      sizeof(k_config_v1)) == XAIOS_ERR_INVALID);
   kassert(create_dir("/state/services/bad") == XAIOS_OK);
   kassert(delete_node("/state/services") == XAIOS_ERR_BUSY);
   uint8_t too_large[XBFS_MAX_FILE_BYTES + 1U];
-  kassert(write_file("/state/services/too-large", too_large,
+  kassert(xbfs_write_file_locked("/state/services/too-large", too_large,
                      sizeof(too_large)) == XAIOS_ERR_INVALID);
   kassert(read_file("/state/missing.state", buffer, sizeof(buffer), &size) ==
           XAIOS_ERR_NOT_FOUND);
@@ -3281,7 +3117,7 @@ void xaiboot_fs_self_test(void) {
                           "/state/fill-") == XAIOS_OK);
       kassert(xbfs_append_u32(fill_path, sizeof(fill_path), &offset, filled) ==
               XAIOS_OK);
-      if (write_file(fill_path, buffer, chunk) != XAIOS_OK) break;
+      if (xbfs_write_file_locked(fill_path, buffer, chunk) != XAIOS_OK) break;
       ++filled;
     }
     kassert(block_count_used() == (uint64_t)xbfs_geometry_data_sectors());
