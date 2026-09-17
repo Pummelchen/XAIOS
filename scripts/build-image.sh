@@ -710,6 +710,7 @@ else
   $KERNEL_BUILD_DIR/early.o
   $KERNEL_BUILD_DIR/early_tlb.o
   $KERNEL_BUILD_DIR/early_cpu.o
+  $KERNEL_BUILD_DIR/early_serial.o
   $KERNEL_BUILD_DIR/engine_packed.o
   $KERNEL_BUILD_DIR/timer.o
   $KERNEL_BUILD_DIR/platform.o
@@ -756,6 +757,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/xbfs_node_codec.o
   $KERNEL_BUILD_DIR/xbfs_util.o
   $KERNEL_BUILD_DIR/xbfs_record.o
+  $KERNEL_BUILD_DIR/xbfs_metadata.o
   $KERNEL_BUILD_DIR/fat.o
   $KERNEL_BUILD_DIR/fat_codec.o
   $KERNEL_BUILD_DIR/vfs.o
@@ -783,6 +785,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/remote_login_sysinfo.o
   $KERNEL_BUILD_DIR/remote_login_tar.o
   $KERNEL_BUILD_DIR/remote_login_zip.o
+  $KERNEL_BUILD_DIR/remote_login_exec.o
   $KERNEL_BUILD_DIR/operations.o
   $KERNEL_BUILD_DIR/admin_control.o
   $KERNEL_BUILD_DIR/control_protocol.o
@@ -820,6 +823,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/network_stack.o
   $KERNEL_BUILD_DIR/network_stack_wire.o
   $KERNEL_BUILD_DIR/network_stack_listener.o
+  $KERNEL_BUILD_DIR/network_stack_v6.o
   $KERNEL_BUILD_DIR/network_config.o
   $KERNEL_BUILD_DIR/git_workspace.o
   $KERNEL_BUILD_DIR/agent_protocol.o
@@ -899,6 +903,7 @@ else
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early.c" "$KERNEL_BUILD_DIR/early.o"
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_tlb.c" "$KERNEL_BUILD_DIR/early_tlb.o"
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_cpu.c" "$KERNEL_BUILD_DIR/early_cpu.o"
+compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_serial.c" "$KERNEL_BUILD_DIR/early_serial.o"
   compile_kernel_simd "$ROOT_DIR/engine/src/packed.c" "$KERNEL_BUILD_DIR/engine_packed.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/timer.c" "$KERNEL_BUILD_DIR/timer.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/platform.c" "$KERNEL_BUILD_DIR/platform.o"
@@ -944,6 +949,7 @@ compile_kernel "$ROOT_DIR/kernel/fs/xbfs_state.c" "$KERNEL_BUILD_DIR/xbfs_state.
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_node_codec.c" "$KERNEL_BUILD_DIR/xbfs_node_codec.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_util.c" "$KERNEL_BUILD_DIR/xbfs_util.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_record.c" "$KERNEL_BUILD_DIR/xbfs_record.o"
+compile_kernel "$ROOT_DIR/kernel/fs/xbfs_metadata.c" "$KERNEL_BUILD_DIR/xbfs_metadata.o"
 compile_kernel "$ROOT_DIR/kernel/fs/fat.c" "$KERNEL_BUILD_DIR/fat.o"
 compile_kernel "$ROOT_DIR/kernel/fs/fat_codec.c" "$KERNEL_BUILD_DIR/fat_codec.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs.c" "$KERNEL_BUILD_DIR/vfs.o"
@@ -971,6 +977,7 @@ compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_path.c" "$KERNEL_BUILD_DIR
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_sysinfo.c" "$KERNEL_BUILD_DIR/remote_login_sysinfo.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_tar.c" "$KERNEL_BUILD_DIR/remote_login_tar.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_zip.c" "$KERNEL_BUILD_DIR/remote_login_zip.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_exec.c" "$KERNEL_BUILD_DIR/remote_login_exec.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/operations.c" "$KERNEL_BUILD_DIR/operations.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/admin_control.c" "$KERNEL_BUILD_DIR/admin_control.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/control_protocol.c" "$KERNEL_BUILD_DIR/control_protocol.o"
@@ -1008,6 +1015,7 @@ compile_kernel "$ROOT_DIR/kernel/runtime/source_index.c" "$KERNEL_BUILD_DIR/sour
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack.c" "$KERNEL_BUILD_DIR/network_stack.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_wire.c" "$KERNEL_BUILD_DIR/network_stack_wire.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_listener.c" "$KERNEL_BUILD_DIR/network_stack_listener.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_v6.c" "$KERNEL_BUILD_DIR/network_stack_v6.o"
 compile_kernel "$ROOT_DIR/kernel/net/network_config.c" "$KERNEL_BUILD_DIR/network_config.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/git_workspace.c" "$KERNEL_BUILD_DIR/git_workspace.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/agent_protocol.c" "$KERNEL_BUILD_DIR/agent_protocol.o"
@@ -1311,8 +1319,10 @@ for app in $USER_APPS; do
   app_obj="$INIT_BUILD_DIR/$app.o"
   app_elf="$INIT_BUILD_DIR/$app.elf"
   xtop_serve_obj=""
+  xtop_render_obj=""
   if [ "$app" = "xtop" ]; then
     xtop_serve_obj="$INIT_BUILD_DIR/xtop-serve.o"
+    xtop_render_obj="$INIT_BUILD_DIR/xtop-render.o"
     "$CLANG" \
       --target="$TARGET_TRIPLE" \
       $USER_ARCH_CFLAGS \
@@ -1331,6 +1341,24 @@ for app in $USER_APPS; do
       -I"$ROOT_DIR/engine/include" \
       -c "$ROOT_DIR/userspace/apps/xtop_serve.c" \
       -o "$xtop_serve_obj"
+    "$CLANG" \
+      --target="$TARGET_TRIPLE" \
+      $USER_ARCH_CFLAGS \
+      -std=c99 \
+      -ffreestanding \
+      -fno-stack-protector \
+      -fno-builtin \
+      -fno-pic \
+      -fno-pie \
+      -Os \
+      -Wall \
+      -Wextra \
+      -Werror \
+      -I"$ROOT_DIR/userspace/include" \
+      -I"$ROOT_DIR/userspace/sshd" \
+      -I"$ROOT_DIR/engine/include" \
+      -c "$ROOT_DIR/userspace/apps/xtop_render.c" \
+      -o "$xtop_render_obj"
   fi
   printf '%s\n' "Building userspace /bin/$app ELF..."
   "$CLANG" \
@@ -1436,6 +1464,7 @@ for app in $USER_APPS; do
       "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$USER_CONTROL_STORAGE_OBJ" "$USER_CONTROL_OPS_OBJ" "$USER_CONTROL_CONFIG_OBJ" "$USER_CONTROL_REQUEST_OBJ" \
       "$USER_SCREEN_OBJ" \
       $xtop_serve_obj \
+      $xtop_render_obj \
       "$app_obj"
   elif [ "$app" = "clustertest" ]; then
     "$LD_LLD" \
@@ -1602,11 +1631,11 @@ if [ -n "$SSHD_CFLAGS_EXTRA" ]; then
 fi
 SSHD_RESPONSE_FILE="$INIT_BUILD_DIR/sshd-objects.rsp"
 : > "$SSHD_RESPONSE_FILE"
-for sshd_src in sshd.c sshd_audit.c sshd_rate_limit.c sshd_kex.c sshd_console_screen.c ssh_crypto.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_alt_screen.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
+for sshd_src in sshd.c sshd_audit.c sshd_rate_limit.c sshd_kex.c sshd_console_screen.c sshd_console_programs.c ssh_crypto.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_alt_screen.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
   sshd_obj="$INIT_BUILD_DIR/sshd-${sshd_src%.c}.o"
   sshd_opt=""
   if [ "$sshd_src" = "sshd.c" ] || [ "$sshd_src" = "sshd_audit.c" ] ||
-      [ "$sshd_src" = "sshd_rate_limit.c" ] || [ "$sshd_src" = "sshd_kex.c" ] || [ "$sshd_src" = "sshd_console_screen.c" ]; then
+      [ "$sshd_src" = "sshd_rate_limit.c" ] || [ "$sshd_src" = "sshd_kex.c" ] || [ "$sshd_src" = "sshd_console_screen.c" ] || [ "$sshd_src" = "sshd_console_programs.c" ]; then
     sshd_opt="-Os"
   fi
   "$CLANG" \

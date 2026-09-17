@@ -1,11 +1,11 @@
 #include "sshd.h"
 #include "sshd_audit.h"
 #include "sshd_console_screen.h"
+#include "sshd_console_programs.h"
 #include "ssh_connection.h"
 #include "ssh_crypto.h"
 #include "ssh_protocol.h"
 #include "ssh_channel.h"
-#include "ssh_child_ipc.h"
 #include "ssh_host_key.h"
 #include "ssh_mlkem.h"
 #include "ssh_utils.h"
@@ -28,7 +28,6 @@ static sshd_stats_t g_server_stats;
 static xaios_admin_config_user_t g_runtime_config;
 static uint32_t g_password_auth_enabled;
 
-#define SSHD_CONSOLE_SESSION_ID UINT64_C(0xfffffffffffffffe)
 #define SSHD_CONSOLE_COMMAND_MAX UINT32_C(256)
 
 static char g_console_command[SSHD_CONSOLE_COMMAND_MAX];
@@ -517,6 +516,14 @@ static void console_prompt(void) {
   console_write("\x1b[0m$ ");
 }
 
+/* Reached from sshd_console_programs.c: the console's text writer and the
+   shell prompt. Both stay here with the rest of the console UI the tick loop
+   drives; the program-launch module calls them by name rather than being
+   handed the console state behind them. */
+void sshd_console_text(const char *text) { console_write(text); }
+
+void sshd_console_prompt(void) { console_prompt(); }
+
 /* The login prompt carries the machine's name, so a person in front of a rack
    can tell which machine they are typing at. Setup writes the name; a machine
    nobody has renamed keeps the default, which is what every image did before
@@ -783,128 +790,6 @@ static int console_start_pong(void) {
   return 0;
 }
 
-/* The local console runs xtop the way an SSH session does: as one child
-   process streaming frames over a child channel, driven by the keys typed
-   here. The two surfaces therefore run the same program the same way, and
-   there is no second copy of its behaviour to drift. */
-static u64 g_console_child;
-static uint8_t g_console_child_rx[SSH_CHILD_IPC_HEADER_SIZE +
-                                  SSH_CHILD_IPC_PAYLOAD_MAX];
-static uint32_t g_console_child_used;
-
-/* "xtop" with or without options, but not "xtop --plain": that form asks for
-   the snapshot output on purpose, on either surface. */
-static int console_command_is_xtop(const char *command) {
-  static const char name[] = "xtop";
-  uint32_t i = 0U;
-  if (command == 0) return 0;
-  for (; i < sizeof(name) - 1U; ++i) {
-    if (command[i] != name[i]) return 0;
-  }
-  if (command[i] != '\0' && command[i] != ' ') return 0;
-  for (uint32_t j = i; command[j] != '\0'; ++j) {
-    if (command[j] == '-' && command[j + 1U] == '-' &&
-        command[j + 2U] == 'p' && command[j + 3U] == 'l' &&
-        command[j + 4U] == 'a' && command[j + 5U] == 'i' &&
-        command[j + 6U] == 'n') {
-      return 0;
-    }
-  }
-  return 1;
-}
-
-static void console_child_release(int cancel) {
-  if (g_console_child == 0U) return;
-  if (cancel != 0) (void)xaios_remote_login_child_cancel(g_console_child);
-  (void)xaios_remote_login_child_release(g_console_child);
-  g_console_child = 0U;
-  g_console_child_used = 0U;
-}
-
-static int console_start_child(char *command, uint32_t capacity) {
-  char cwd[256];
-  u64 cwd_size = 0U;
-  (void)ssh_terminal_promote_command(command, capacity, sshd_console_columns(),
-                                     sshd_console_rows());
-  if (xaios_remote_login_session(SSHD_CONSOLE_SESSION_ID, console_username(),
-                                 "pwd", cwd, sizeof(cwd), &cwd_size) != 0 ||
-      cwd_size == 0U || cwd_size >= sizeof(cwd)) {
-    cwd[0] = '/';
-    cwd[1] = '\0';
-    cwd_size = 1U;
-  }
-  while (cwd_size != 0U &&
-         (cwd[cwd_size - 1U] == '\n' || cwd[cwd_size - 1U] == '\r')) {
-    cwd[--cwd_size] = '\0';
-  }
-  if (xaios_remote_login_child_open(SSHD_CONSOLE_SESSION_ID, command, cwd,
-                                    &g_console_child) != 0) {
-    g_console_child = 0U;
-    console_write("xtop: launch failed\n");
-    return -1;
-  }
-  g_console_child_used = 0U;
-  return 0;
-}
-
-static void console_child_input(char value) {
-  uint8_t frame[SSH_CHILD_IPC_HEADER_SIZE + 1U];
-  ssh_child_ipc_header(frame, SSH_CHILD_IPC_INPUT, 1U);
-  frame[SSH_CHILD_IPC_HEADER_SIZE] = (uint8_t)value;
-  (void)xaios_remote_login_child_write(g_console_child, frame, sizeof(frame));
-}
-
-static void console_child_finish(int cancel) {
-  console_child_release(cancel);
-  console_prompt();
-}
-
-static void console_service_child(void) {
-  if (g_console_child == 0U) return;
-  for (uint32_t iteration = 0U; iteration < 8U; ++iteration) {
-    u64 size = 0U;
-    if (g_console_child_used == sizeof(g_console_child_rx) ||
-        xaios_remote_login_child_read(
-            g_console_child, g_console_child_rx + g_console_child_used,
-            sizeof(g_console_child_rx) - g_console_child_used, &size) != 0 ||
-        size > sizeof(g_console_child_rx) - g_console_child_used) {
-      console_child_finish(1);
-      return;
-    }
-    if (size == 0U) break;
-    g_console_child_used += (uint32_t)size;
-    while (g_console_child_used >= SSH_CHILD_IPC_HEADER_SIZE) {
-      if (ssh_child_ipc_read_u32(g_console_child_rx) != SSH_CHILD_IPC_MAGIC) {
-        console_child_finish(1);
-        return;
-      }
-      uint32_t type = ssh_child_ipc_read_u32(g_console_child_rx + 4U);
-      uint32_t length = ssh_child_ipc_read_u32(g_console_child_rx + 8U);
-      if (length > SSH_CHILD_IPC_PAYLOAD_MAX) {
-        console_child_finish(1);
-        return;
-      }
-      uint32_t frame_length = SSH_CHILD_IPC_HEADER_SIZE + length;
-      if (g_console_child_used < frame_length) break;
-      if (type == SSH_CHILD_IPC_OUTPUT) {
-        (void)sshd_console_write_bytes(
-            (const char *)g_console_child_rx + SSH_CHILD_IPC_HEADER_SIZE,
-            length);
-      }
-      uint32_t remaining = g_console_child_used - frame_length;
-      for (uint32_t i = 0U; i < remaining; ++i) {
-        g_console_child_rx[i] = g_console_child_rx[frame_length + i];
-      }
-      g_console_child_used = remaining;
-    }
-  }
-  u64 status = 0U;
-  if (xaios_remote_login_child_status(g_console_child, &status) != 0 ||
-      (u32)status != 1U) {
-    console_child_finish(0);
-  }
-}
-
 static void console_finish_pong(void) {
   g_console_pong.active = 0U;
   console_write("\033[0m\033[?25h\033[?1049l\033[0m\033[?25h\r");
@@ -977,8 +862,10 @@ static void console_execute_command(void) {
              g_console_command[2] == 's' && g_console_command[3] == 's' &&
              (g_console_command[4] == '\0' || g_console_command[4] == ' ')) {
     (void)console_start_less(g_console_command);
-  } else if (console_command_is_xtop(g_console_command)) {
-    (void)console_start_child(g_console_command, sizeof(g_console_command));
+  } else if (sshd_console_command_is_xtop(g_console_command)) {
+    (void)sshd_console_program_start(g_console_command,
+                                     sizeof(g_console_command),
+                                     console_username());
   } else if (ssh_str_eq(g_console_command, "clear")) {
     console_write("\x1b[2J\x1b[H");
   } else if (ssh_str_eq(g_console_command, "exit") ||
@@ -1016,7 +903,7 @@ static void console_execute_command(void) {
   }
   g_console_command_length = 0U;
   if (g_console_nano.active == 0U && g_console_pong.active == 0U &&
-      g_console_child == 0U && g_console_less.active == 0U)
+      sshd_console_program_active() == 0 && g_console_less.active == 0U)
     console_prompt();
 }
 
@@ -1149,8 +1036,8 @@ static void console_tick(void) {
       }
       continue;
     }
-    if (g_console_child != 0U) {
-      console_child_input(value);
+    if (sshd_console_program_active() != 0) {
+      sshd_console_program_input(value);
       continue;
     }
     if (g_console_pong.active != 0U) {
@@ -2587,7 +2474,7 @@ service_loop:
     uint64_t now = pass_started;
     console_refresh_boot_ui(now);
     console_service_pong(now);
-    console_service_child();
+    sshd_console_program_service();
     console_tick();
     uint64_t after_console = timer_now();
     for (uint32_t i = 0; g_console_ssh_ready != 0U && i < 4U; ++i) {

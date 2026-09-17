@@ -16,6 +16,7 @@
 
 #include "acpi.h"
 #include "early_module.h"
+#include "early_serial.h"
 #include "platform.h"
 
 #ifndef XAIOS_X86_COMMON_RUNTIME
@@ -28,14 +29,18 @@
 #define X86_BRINGUP_ONLY
 #endif
 
+/* The COM1 UART, the port-I/O primitives beneath it and the panic halt now
+ * live in early_serial.c. These keep every call site in this file -- and the
+ * panic_at() below -- spelling them the way they did. The port primitives
+ * themselves come from early_serial.h, defined there once and inlined here. */
+#define serial_init xaios_x86_early_serial_init
+#define serial_putc xaios_x86_early_serial_putc
+#define serial_puts xaios_x86_early_serial_puts
+#define serial_hex64 xaios_x86_early_serial_hex64
+#define serial_dec xaios_x86_early_serial_dec
+#define panic_halt xaios_x86_early_panic_halt
+
 #define COM1_PORT UINT16_C(0x3f8)
-#define UART_DATA 0U
-#define UART_INTERRUPT_ENABLE 1U
-#define UART_FIFO_CONTROL 2U
-#define UART_LINE_CONTROL 3U
-#define UART_MODEM_CONTROL 4U
-#define UART_LINE_STATUS 5U
-#define UART_TRANSMIT_EMPTY 0x20U
 #define PAGE_SIZE UINT64_C(4096)
 #define LARGE_PAGE_SIZE UINT64_C(0x200000)
 #define EARLY_IDENTITY_LIMIT UINT64_C(0x100000000)
@@ -310,9 +315,6 @@ static uint32_t lapic_id(void);
 static uint32_t current_ordinal_fast(void);
 static void lapic_send(uint32_t destination, uint32_t command);
 static void lapic_write(uint32_t offset, uint32_t value);
-static void serial_puts(uint16_t base, const char *message);
-static void serial_dec(uint16_t base, uint64_t value);
-static void panic_halt(uint16_t serial_base, const char *message);
 
 #if !XAIOS_X86_COMMON_RUNTIME
 uint32_t smp_online_count(void) {
@@ -540,26 +542,6 @@ uint64_t x86_64_platform_user_return(void) {
 
 static uint8_t mmio_read8(uint64_t address);
 
-static inline void outb(uint16_t port, uint8_t value) {
-  __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port) : "memory");
-}
-
-static inline void outl(uint16_t port, uint32_t value) {
-  __asm__ volatile("outl %0, %1" : : "a"(value), "Nd"(port) : "memory");
-}
-
-static inline uint8_t inb(uint16_t port) {
-  uint8_t value = 0;
-  __asm__ volatile("inb %1, %0" : "=a"(value) : "Nd"(port) : "memory");
-  return value;
-}
-
-static inline uint32_t inl(uint16_t port) {
-  uint32_t value = 0;
-  __asm__ volatile("inl %1, %0" : "=a"(value) : "Nd"(port) : "memory");
-  return value;
-}
-
 static inline uint64_t read_cr2(void) {
   uint64_t value = 0;
   __asm__ volatile("mov %%cr2, %0" : "=r"(value));
@@ -682,58 +664,6 @@ static inline void cpuid(uint32_t leaf, uint32_t subleaf, uint32_t *eax,
                    : "a"(leaf), "c"(subleaf));
 }
 
-static void serial_init(uint16_t base) {
-  outb((uint16_t)(base + UART_INTERRUPT_ENABLE), 0x00);
-  outb((uint16_t)(base + UART_LINE_CONTROL), 0x80);
-  outb((uint16_t)(base + UART_DATA), 0x03);
-  outb((uint16_t)(base + UART_INTERRUPT_ENABLE), 0x00);
-  outb((uint16_t)(base + UART_LINE_CONTROL), 0x03);
-  outb((uint16_t)(base + UART_FIFO_CONTROL), 0xc7);
-  outb((uint16_t)(base + UART_MODEM_CONTROL), 0x0b);
-}
-
-static void serial_putc(uint16_t base, char c) {
-  for (uint32_t spin = 0; spin < 100000U; ++spin) {
-    if ((inb((uint16_t)(base + UART_LINE_STATUS)) & UART_TRANSMIT_EMPTY) != 0U) {
-      break;
-    }
-  }
-  outb((uint16_t)(base + UART_DATA), (uint8_t)c);
-}
-
-static void serial_puts(uint16_t base, const char *message) {
-  while (*message != '\0') {
-    if (*message == '\n') {
-      serial_putc(base, '\r');
-    }
-    serial_putc(base, *message++);
-  }
-}
-
-static void serial_hex64(uint16_t base, uint64_t value) {
-  static const char digits[] = "0123456789abcdef";
-  serial_puts(base, "0x");
-  for (int shift = 60; shift >= 0; shift -= 4) {
-    serial_putc(base, digits[(value >> (uint32_t)shift) & UINT64_C(0xf)]);
-  }
-}
-
-static void serial_dec(uint16_t base, uint64_t value) {
-  char buffer[21];
-  uint32_t index = 0;
-  if (value == 0) {
-    serial_putc(base, '0');
-    return;
-  }
-  while (value != 0 && index < sizeof(buffer)) {
-    buffer[index++] = (char)('0' + (value % 10));
-    value /= 10;
-  }
-  while (index != 0) {
-    serial_putc(base, buffer[--index]);
-  }
-}
-
 static uint64_t memory_descriptor_count(const xaios_boot_info_t *boot) {
   if (boot == 0 || boot->memory_descriptor_size == 0) {
     return 0;
@@ -768,15 +698,6 @@ static void *early_alloc(uint64_t bytes, uint64_t alignment) {
   }
   g_early_alloc_cursor = start + bytes;
   return (void *)(uintptr_t)start;
-}
-
-static void panic_halt(uint16_t serial_base, const char *message) {
-  serial_puts(serial_base, "x86_64: panic: ");
-  serial_puts(serial_base, message);
-  serial_puts(serial_base, "\n");
-  for (;;) {
-    __asm__ volatile("hlt");
-  }
 }
 
 #if !XAIOS_X86_COMMON_RUNTIME
@@ -1015,24 +936,12 @@ uint32_t xaios_x86_early_current_ordinal_fast(void) {
   return current_ordinal_fast();
 }
 
-void xaios_x86_early_serial_puts(uint16_t base, const char *message) {
-  serial_puts(base, message);
-}
+/* The serial and panic primitives this block used to define now live in
+ * early_serial.c, which defines them once under the exported names
+ * early_module.h and early_serial.h declare. */
 
-void xaios_x86_early_serial_dec(uint16_t base, uint64_t value) {
-  serial_dec(base, value);
-}
-
-void xaios_x86_early_panic_halt(uint16_t serial_base, const char *message) {
-  panic_halt(serial_base, message);
-}
-
-/* The two more primitives early_cpu.c's placement report calls; declared in
- * the same early_module.h seam and defined here, not copied. */
-void xaios_x86_early_serial_hex64(uint16_t base, uint64_t value) {
-  serial_hex64(base, value);
-}
-
+/* The primitive early_cpu.c's placement report calls; declared in the same
+ * early_module.h seam and defined here, not copied. */
 void xaios_x86_early_cpuid(uint32_t leaf, uint32_t subleaf, uint32_t *eax,
                            uint32_t *ebx, uint32_t *ecx, uint32_t *edx) {
   cpuid(leaf, subleaf, eax, ebx, ecx, edx);

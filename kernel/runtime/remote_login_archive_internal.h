@@ -45,12 +45,11 @@ xaios_status_t remote_login_handle_cpio(const char *args, char *output,
                                         uint64_t *output_bytes);
 
 /* Primitives that stay in remote_login.c because the whole shell uses them;
-   the split-out modules call them across the translation-unit boundary. */
+   the split-out modules call them across the translation-unit boundary. The
+   text-append helper those modules also use is declared in
+   remote_login_internal.h, which this header includes. */
 xaios_status_t remote_login_path_basename(const char *path, char *basename,
                                           uint64_t basename_capacity);
-xaios_status_t remote_login_buffer_append_text(char *buffer, uint64_t capacity,
-                                               uint64_t *offset,
-                                               const char *text);
 
 /* The zeroing helper the tar and zip writers share; defined in
    remote_login_tar.c. */

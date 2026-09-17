@@ -3,6 +3,7 @@
 #include <xaios/types.h>
 #include "ssh_child_ipc.h"
 #include "xtop_serve.h"
+#include "xtop_render.h"
 
 #define XAIOS_ERR_INVALID (-1)
 #define XAIOS_ERR_NOT_FOUND (-2)
@@ -311,28 +312,6 @@ static int control_simple_query(uint32_t operation, uint32_t payload_type,
   return 0;
 }
 
-/* What the frame shows beyond the process table: the machine, the AI
-   runtime, the network and disk rates, and a short history. Filled by the
-   serving loop before each frame; a one-shot run fills what it can and has
-   no rates, because a rate needs two samples. */
-#define XTOP_HISTORY 96U
-typedef struct xtop_extras {
-  int have_hardware;
-  xaios_control_hardware_payload_user_t hardware;
-  int have_metrics;
-  xaios_control_metrics_payload_user_t metrics;
-  int have_rates;
-  uint64_t rx_bytes_per_s;
-  uint64_t tx_bytes_per_s;
-  uint64_t reads_per_s;
-  uint64_t writes_per_s;
-  uint64_t inferences_per_s;
-  uint32_t layout;
-  uint16_t cpu_history[XTOP_HISTORY];
-  uint16_t mem_history[XTOP_HISTORY];
-  uint32_t net_history[XTOP_HISTORY]; /* KB/s, rx + tx */
-  uint32_t history_count;
-} xtop_extras_t;
 static xtop_extras_t g_extras;
 static uint16_t g_last_cpu_tenths;
 static uint16_t g_last_mem_tenths;
@@ -616,7 +595,7 @@ static void xtop_append_u64_width(char *output, uint64_t output_capacity,
    sequence starts one glyph, and every glyph this program prints is one
    column wide. Measuring in bytes instead padded the title two columns short,
    because the em dash in it is three bytes. */
-static uint32_t xtop_columns(const char *text) {
+uint32_t xtop_columns(const char *text) {
   uint32_t columns = 0U;
   for (uint64_t i = 0U; text[i] != '\0'; ++i) {
     if (((uint8_t)text[i] & 0xc0U) != 0x80U) ++columns;
@@ -643,11 +622,6 @@ static uint32_t xtop_columns(const char *text) {
 #define XTOP_FILL_BG "\033[48;5;70m"
 #define XTOP_HEADER "\033[48;5;70;30m"
 #define XTOP_SELECTED "\033[48;5;70;30m"
-#define XTOP_BAR_FULL "\xe2\x96\x88"  /* U+2588 FULL BLOCK */
-#define XTOP_BAR_EMPTY "\xe2\x96\x91" /* U+2591 LIGHT SHADE */
-/* Columns a meter uses around its bar: a space after the label, two before
-   the percentage, the six-column percentage, and a gutter after it. */
-#define XTOP_METER_OVERHEAD 10U
 
 #define XTOP_COLOR_FIELD UINT16_C(68)
 #define XTOP_COLOR_TEXT UINT16_C(120)
@@ -708,7 +682,7 @@ static void canvas_cells_init(xtop_canvas_t *cv, xaios_screen_t *screen) {
   cv->column = 0U;
 }
 
-static void canvas_style(xtop_canvas_t *cv, xtop_style_t style) {
+void xtop_canvas_style(xtop_canvas_t *cv, xtop_style_t style) {
   const char *escape = "";
   switch (style) {
   case XTOP_STYLE_RESET:
@@ -751,7 +725,7 @@ void xtop_canvas_text(xtop_canvas_t *cv, const char *text) {
   xtop_output_append(cv->text, cv->capacity, cv->used, text);
 }
 
-static void canvas_char(xtop_canvas_t *cv, char value) {
+void xtop_canvas_char(xtop_canvas_t *cv, char value) {
   char one[2];
   one[0] = value;
   one[1] = '\0';
@@ -766,13 +740,13 @@ static void canvas_u64(xtop_canvas_t *cv, uint64_t value) {
   xtop_canvas_text(cv, digits);
 }
 
-static void canvas_repeat(xtop_canvas_t *cv, char value, uint32_t count) {
-  for (uint32_t i = 0U; i < count; ++i) canvas_char(cv, value);
+void xtop_canvas_repeat(xtop_canvas_t *cv, char value, uint32_t count) {
+  for (uint32_t i = 0U; i < count; ++i) xtop_canvas_char(cv, value);
 }
 
 /* Repeat a string rather than a byte: a glyph here is three bytes wide and
    one column wide, and the layout arithmetic counts columns. */
-static void canvas_repeat_str(xtop_canvas_t *cv, const char *glyph,
+void xtop_canvas_repeat_str(xtop_canvas_t *cv, const char *glyph,
                               uint32_t count) {
   for (uint32_t i = 0U; i < count; ++i) xtop_canvas_text(cv, glyph);
 }
@@ -789,7 +763,7 @@ void xtop_canvas_newline(xtop_canvas_t *cv) {
 /* Start a frame: the field colour everywhere, the cursor home and shown or
    hidden as asked. */
 void xtop_canvas_begin(xtop_canvas_t *cv, int cursor_hidden) {
-  canvas_style(cv, XTOP_STYLE_RESET);
+  xtop_canvas_style(cv, XTOP_STYLE_RESET);
   if (cv->screen != 0) {
     xaios_screen_clear(cv->screen, XTOP_COLOR_FIELD);
     cv->screen->cursor_hidden = cursor_hidden != 0 ? 1U : 0U;
@@ -820,14 +794,14 @@ static int canvas_room(const xtop_canvas_t *cv, uint64_t bytes) {
 static void canvas_u64_width(xtop_canvas_t *cv, uint64_t value,
                              uint32_t width) {
   uint64_t digits = u64_digits(value);
-  if (digits < width) canvas_repeat(cv, ' ', width - (uint32_t)digits);
+  if (digits < width) xtop_canvas_repeat(cv, ' ', width - (uint32_t)digits);
   canvas_u64(cv, value);
 }
 
-static void canvas_percent_width(xtop_canvas_t *cv, uint64_t tenths) {
+void xtop_canvas_percent_width(xtop_canvas_t *cv, uint64_t tenths) {
   uint64_t whole = tenths / 10U;
   uint64_t digits = u64_digits(whole);
-  if (digits < 3U) canvas_repeat(cv, ' ', 3U - (uint32_t)digits);
+  if (digits < 3U) xtop_canvas_repeat(cv, ' ', 3U - (uint32_t)digits);
   canvas_u64(cv, whole);
   xtop_canvas_text(cv, ".");
   canvas_u64(cv, tenths % 10U);
@@ -904,23 +878,23 @@ void xtop_draw_rule(xtop_canvas_t *cv, const char *left_corner,
   uint32_t note_columns = note != 0 ? xtop_columns(note) + 3U : 0U;
   if (title_columns + note_columns > inner) note_columns = 0U;
   if (title_columns > inner) title_columns = 0U;
-  canvas_style(cv, XTOP_STYLE_RESET);
+  xtop_canvas_style(cv, XTOP_STYLE_RESET);
   xtop_canvas_text(cv, left_corner);
   if (title_columns != 0U) {
     xtop_canvas_text(cv, XTOP_BOX_H " ");
-    canvas_style(cv, XTOP_STYLE_TITLE);
+    xtop_canvas_style(cv, XTOP_STYLE_TITLE);
     xtop_canvas_text(cv, title);
-    canvas_style(cv, XTOP_STYLE_RESET);
+    xtop_canvas_style(cv, XTOP_STYLE_RESET);
     xtop_canvas_text(cv, " ");
   }
   if (inner > title_columns + note_columns) {
-    canvas_repeat_str(cv, XTOP_BOX_H, inner - title_columns - note_columns);
+    xtop_canvas_repeat_str(cv, XTOP_BOX_H, inner - title_columns - note_columns);
   }
   if (note_columns != 0U) {
     xtop_canvas_text(cv, " ");
-    canvas_style(cv, XTOP_STYLE_TITLE);
+    xtop_canvas_style(cv, XTOP_STYLE_TITLE);
     xtop_canvas_text(cv, note);
-    canvas_style(cv, XTOP_STYLE_RESET);
+    xtop_canvas_style(cv, XTOP_STYLE_RESET);
     xtop_canvas_text(cv, " " XTOP_BOX_H);
   }
   xtop_canvas_text(cv, right_corner);
@@ -940,329 +914,19 @@ void xtop_draw_padded(xtop_canvas_t *cv, xtop_style_t style,
                       const char *text, uint32_t width) {
   uint32_t visible = xtop_columns(text);
   if (visible > width) visible = width;
-  canvas_style(cv, style);
+  xtop_canvas_style(cv, style);
   canvas_bounded(cv, text, width);
-  if (visible < width) canvas_repeat(cv, ' ', width - visible);
-  canvas_style(cv, XTOP_STYLE_RESET);
-}
-
-/* One row of a solid gauge: the filled part in the fill colour, the rest the
-   field, and on the row that carries it the figure centred, drawn over
-   whichever of the two it lands on. That is mactop's gauge. */
-static void xtop_draw_gauge_row(xtop_canvas_t *cv, uint32_t width,
-                                uint64_t tenths, const char *figure) {
-  uint64_t fill64 = ((uint64_t)width * tenths + 999U) / 1000U;
-  uint32_t fill = fill64 > width ? width : (uint32_t)fill64;
-  uint32_t figure_columns = figure != 0 ? xtop_columns(figure) : 0U;
-  uint32_t figure_start =
-      figure_columns < width ? (width - figure_columns) / 2U : 0U;
-  int filled = -1;
-  uint64_t figure_index = 0U;
-  for (uint32_t column = 0U; column < width; ++column) {
-    int here = column < fill ? 1 : 0;
-    if (here != filled) {
-      if (here != 0) {
-        canvas_style(cv, XTOP_STYLE_FILL_BG);
-      } else {
-        canvas_style(cv, XTOP_STYLE_RESET);
-      }
-      canvas_style(cv, XTOP_STYLE_TITLE);
-      filled = here;
-    }
-    if (figure != 0 && column >= figure_start &&
-        column < figure_start + figure_columns &&
-        figure[figure_index] != '\0') {
-      /* One glyph, however many bytes it is. */
-      char glyph[8];
-      uint32_t n = 0U;
-      do {
-        if (n < 7U) glyph[n++] = figure[figure_index];
-        ++figure_index;
-      } while (((uint8_t)figure[figure_index] & 0xc0U) == 0x80U);
-      glyph[n] = '\0';
-      xtop_canvas_text(cv, glyph);
-    } else {
-      canvas_char(cv, ' ');
-    }
-  }
-  canvas_style(cv, XTOP_STYLE_RESET);
-}
-
-/* A bar chart row: `rows` rows tall, newest sample at the right, each
-   column a value in tenths of a percent. Whole rows are full blocks and the
-   top of each bar is one of the eighth blocks, which is what makes a chart
-   this small readable. */
-static void xtop_draw_chart_row(xtop_canvas_t *cv, uint32_t width,
-                                const uint16_t *history, uint32_t count,
-                                uint32_t row, uint32_t rows, uint16_t scale) {
-  static const char *const eighths[8] = {
-      " ", "\xe2\x96\x81", "\xe2\x96\x82", "\xe2\x96\x83", "\xe2\x96\x84",
-      "\xe2\x96\x85", "\xe2\x96\x86", "\xe2\x96\x87"};
-  canvas_style(cv, XTOP_STYLE_RESET);
-  canvas_style(cv, XTOP_STYLE_CHART);
-  for (uint32_t column = 0U; column < width; ++column) {
-    /* The last `width` samples, right-aligned. */
-    uint32_t index = count + column >= width ? count + column - width : 0U;
-    int have = count + column >= width && index < count;
-    uint32_t value = have ? history[index] : 0U;
-    if (scale == 0U) scale = 1U;
-    uint32_t total_eighths = (uint32_t)(((uint64_t)value * rows * 8U + scale - 1U) / scale);
-    if (total_eighths > rows * 8U) total_eighths = rows * 8U;
-    /* Rows are numbered from the top; the bar fills from the bottom. */
-    uint32_t below = (rows - 1U - row) * 8U;
-    if (total_eighths >= below + 8U) {
-      xtop_canvas_text(cv, XTOP_BAR_FULL);
-    } else if (total_eighths > below) {
-      xtop_canvas_text(cv, eighths[total_eighths - below]);
-    } else {
-      canvas_char(cv, ' ');
-    }
-  }
-  canvas_style(cv, XTOP_STYLE_RESET);
-}
-
-/* A figure in bytes per second, four significant characters at most. */
-static void xtop_append_rate(char *output, uint64_t output_capacity,
-                             uint64_t *output_bytes, uint64_t bytes_per_s) {
-  const char *unit = "B/s";
-  uint64_t whole = bytes_per_s;
-  uint64_t tenths = 0U;
-  if (bytes_per_s >= UINT64_C(1073741824)) {
-    unit = "GB/s"; whole = bytes_per_s / UINT64_C(1073741824);
-    tenths = (bytes_per_s % UINT64_C(1073741824)) * 10U / UINT64_C(1073741824);
-  } else if (bytes_per_s >= 1048576U) {
-    unit = "MB/s"; whole = bytes_per_s / 1048576U;
-    tenths = (bytes_per_s % 1048576U) * 10U / 1048576U;
-  } else if (bytes_per_s >= 1024U) {
-    unit = "KB/s"; whole = bytes_per_s / 1024U;
-    tenths = (bytes_per_s % 1024U) * 10U / 1024U;
-  }
-  xtop_output_append_u64(output, output_capacity, output_bytes, whole);
-  if (whole < 100U && unit[0] != 'B') {
-    xtop_output_append(output, output_capacity, output_bytes, ".");
-    xtop_output_append_u64(output, output_capacity, output_bytes, tenths);
-  }
-  xtop_output_append(output, output_capacity, output_bytes, " ");
-  xtop_output_append(output, output_capacity, output_bytes, unit);
-}
-
-static const char *xtop_yes_no(uint32_t value) {
-  return value == 1U ? "yes" : (value == 0U ? "no" : "?");
-}
-
-/* The Platform panel: what the machine is, said as capabilities. Each
-   architecture has its own line of them, because the flags that matter
-   differ; the rest is common. */
-static void xtop_platform_line(char *line, uint64_t capacity, uint32_t row,
-                               uint32_t cpu_total) {
-  uint64_t used = 0U;
-  const xaios_control_hardware_payload_user_t *hw = &g_extras.hardware;
-  line[0] = '\0';
-  if (g_extras.have_hardware == 0) {
-    if (row == 0U) xtop_output_append(line, capacity, &used, "hardware query unavailable");
-    return;
-  }
-  int arm = hw->architecture[0] == 'a';
-  int x86 = hw->architecture[0] == 'x';
-  int riscv = hw->architecture[0] == 'r';
-  switch (row) {
-  case 0U:
-    xtop_output_append(line, capacity, &used, "Architecture: ");
-    xtop_output_append(line, capacity, &used, hw->architecture);
-    xtop_output_append(line, capacity, &used, "  Backend: ");
-    xtop_output_append(line, capacity, &used, hw->selected_backend);
-    break;
-  case 1U:
-    xtop_output_append(line, capacity, &used, "CPUs: ");
-    xtop_output_append_u64(line, capacity, &used, cpu_total);
-    xtop_output_append(line, capacity, &used, "  NUMA nodes: ");
-    xtop_output_append_u64(line, capacity, &used, hw->numa_nodes);
-    xtop_output_append(line, capacity, &used, "  Page: ");
-    xtop_output_append_u64(line, capacity, &used, hw->page_size / 1024U);
-    xtop_output_append(line, capacity, &used, " KiB");
-    break;
-  case 2U:
-    if (arm) {
-      xtop_output_append(line, capacity, &used, "SIMD: NEON ");
-      xtop_output_append(line, capacity, &used, xtop_yes_no(hw->neon));
-      xtop_output_append(line, capacity, &used, "  SVE ");
-      xtop_output_append(line, capacity, &used, xtop_yes_no(hw->sve));
-    } else if (x86) {
-      xtop_output_append(line, capacity, &used, "AVX2 ");
-      xtop_output_append(line, capacity, &used, xtop_yes_no(hw->avx2));
-      xtop_output_append(line, capacity, &used, "  AVX-512 ");
-      xtop_output_append(line, capacity, &used, xtop_yes_no(hw->avx512));
-      xtop_output_append(line, capacity, &used, "  VNNI ");
-      xtop_output_append(line, capacity, &used, xtop_yes_no(hw->vnni));
-      xtop_output_append(line, capacity, &used, "  AMX ");
-      xtop_output_append(line, capacity, &used, xtop_yes_no(hw->amx));
-    } else if (riscv) {
-      xtop_output_append(line, capacity, &used, "Vector (V) ");
-      xtop_output_append(line, capacity, &used, xtop_yes_no(hw->rvv));
-      xtop_output_append(line, capacity, &used, "  Sstc timer ");
-      xtop_output_append(line, capacity, &used, xtop_yes_no(hw->sstc));
-    } else {
-      xtop_output_append(line, capacity, &used, "Features: unknown");
-    }
-    break;
-  case 3U:
-    xtop_output_append(line, capacity, &used, "Timer: ");
-    xtop_output_append_u64(line, capacity, &used, hw->timer_frequency_hz / 1000000U);
-    xtop_output_append(line, capacity, &used, " MHz  Memory: ");
-    xtop_output_append_u64(line, capacity, &used, hw->physical_pages / 256U);
-    xtop_output_append(line, capacity, &used, "M physical, ");
-    xtop_output_append_u64(line, capacity, &used, hw->managed_pages / 256U);
-    xtop_output_append(line, capacity, &used, "M managed");
-    break;
-  default:
-    break;
-  }
-}
-
-/* The AI runtime panel: what this machine accelerates is inference, and
-   its figures stand where mactop shows the neural engine. */
-static void xtop_ai_line(char *line, uint64_t capacity, uint32_t row) {
-  uint64_t used = 0U;
-  const xaios_control_metrics_payload_user_t *m = &g_extras.metrics;
-  line[0] = '\0';
-  if (g_extras.have_metrics == 0) {
-    if (row == 0U) xtop_output_append(line, capacity, &used, "metrics query unavailable");
-    return;
-  }
-  switch (row) {
-  case 0U:
-    xtop_output_append(line, capacity, &used, "Inferences/s: ");
-    xtop_output_append_u64(line, capacity, &used, g_extras.inferences_per_s);
-    xtop_output_append(line, capacity, &used, "  Active: ");
-    xtop_output_append_u64(line, capacity, &used, m->active_sessions);
-    xtop_output_append(line, capacity, &used, "  Queue: ");
-    xtop_output_append_u64(line, capacity, &used, m->queue_depth);
-    break;
-  case 1U:
-    xtop_output_append(line, capacity, &used, "Tokens/s: prefill ");
-    xtop_output_append_u64(line, capacity, &used, m->prefill_tokens_per_second);
-    xtop_output_append(line, capacity, &used, "  decode ");
-    xtop_output_append_u64(line, capacity, &used, m->decode_tokens_per_second);
-    break;
-  case 2U:
-    xtop_output_append(line, capacity, &used, "First token: ");
-    xtop_output_append_u64(line, capacity, &used, m->time_to_first_token_ns / 1000000U);
-    xtop_output_append(line, capacity, &used, " ms  Completed: ");
-    xtop_output_append_u64(line, capacity, &used, m->requests_completed);
-    xtop_output_append(line, capacity, &used, "  Failed: ");
-    xtop_output_append_u64(line, capacity, &used, m->requests_failed);
-    break;
-  case 3U:
-    xtop_output_append(line, capacity, &used, "Model resident: ");
-    xtop_output_append_u64(line, capacity, &used, m->model_resident_bytes / 1048576U);
-    xtop_output_append(line, capacity, &used, "M  KV cache: ");
-    xtop_output_append_u64(line, capacity, &used, m->kv_cache_bytes / 1048576U);
-    xtop_output_append(line, capacity, &used, "M  Workers: ");
-    xtop_output_append_u64(line, capacity, &used, m->worker_count);
-    break;
-  default:
-    break;
-  }
-}
-
-static void xtop_netdisk_line(char *line, uint64_t capacity, uint32_t row) {
-  uint64_t used = 0U;
-  const xaios_control_metrics_payload_user_t *m = &g_extras.metrics;
-  line[0] = '\0';
-  if (g_extras.have_metrics == 0) {
-    if (row == 0U) xtop_output_append(line, capacity, &used, "metrics query unavailable");
-    return;
-  }
-  switch (row) {
-  case 0U:
-    xtop_output_append(line, capacity, &used, "Net: \xe2\x86\x91 ");
-    xtop_append_rate(line, capacity, &used, g_extras.tx_bytes_per_s);
-    xtop_output_append(line, capacity, &used, "  \xe2\x86\x93 ");
-    xtop_append_rate(line, capacity, &used, g_extras.rx_bytes_per_s);
-    break;
-  case 1U:
-    xtop_output_append(line, capacity, &used, "Packets: rx ");
-    xtop_output_append_u64(line, capacity, &used, m->network_rx_packets);
-    xtop_output_append(line, capacity, &used, "  tx ");
-    xtop_output_append_u64(line, capacity, &used, m->network_tx_packets);
-    xtop_output_append(line, capacity, &used, "  errors ");
-    xtop_output_append_u64(line, capacity, &used, m->network_errors);
-    break;
-  case 2U:
-    xtop_output_append(line, capacity, &used, "Disk I/O: R ");
-    xtop_output_append_u64(line, capacity, &used, g_extras.reads_per_s);
-    xtop_output_append(line, capacity, &used, "/s  W ");
-    xtop_output_append_u64(line, capacity, &used, g_extras.writes_per_s);
-    xtop_output_append(line, capacity, &used, "/s  (");
-    xtop_output_append_u64(line, capacity, &used, m->storage_reads);
-    xtop_output_append(line, capacity, &used, " reads, ");
-    xtop_output_append_u64(line, capacity, &used, m->storage_writes);
-    xtop_output_append(line, capacity, &used, " writes)");
-    break;
-  case 3U:
-    xtop_output_append(line, capacity, &used, "Log buffer: ");
-    xtop_output_append_u64(line, capacity, &used, m->log_buffer_bytes / 1024U);
-    xtop_output_append(line, capacity, &used, "K  overflows ");
-    xtop_output_append_u64(line, capacity, &used, m->log_overflows);
-    break;
-  default:
-    break;
-  }
-}
-
-/* A panel\'s vertical edge. */
-void xtop_draw_edge(xtop_canvas_t *cv) {
-  canvas_style(cv, XTOP_STYLE_RESET);
-  xtop_canvas_text(cv, XTOP_BOX_V);
-}
-
-static xtop_style_t xtop_meter_style(uint64_t tenths) {
-  if (tenths >= 850U) return XTOP_STYLE_HOT;
-  if (tenths >= 600U) return XTOP_STYLE_WARM;
-  return XTOP_STYLE_COOL;
-}
-
-static void xtop_draw_meter(xtop_canvas_t *cv, const char *label,
-                            uint32_t label_columns, uint64_t tenths,
-                            uint32_t bar_width, uint32_t cell_width) {
-  /* Columns, not bytes. The block and shade glyphs are three bytes each and
-     one column each, and every width below is a column count. The total is
-     label + 1 + bar + 2 + 6 + 1: the percentage is six columns because
-     "100.0%" is six characters, and it was budgeted as five, which made every
-     meter row one column wider than the terminal. A row that is one column too
-     wide wraps -- on a real terminal that is a blank line under every meter,
-     and the same picture on the framebuffer console, which the local console
-     comparison caught. */
-  uint32_t label_width = (uint32_t)xtop_cstr_len(label);
-  uint32_t visible = label_columns + bar_width + XTOP_METER_OVERHEAD;
-  uint64_t filled64 = (tenths * bar_width + 999U) / 1000U;
-  uint32_t filled = filled64 > bar_width ? bar_width : (uint32_t)filled64;
-  canvas_style(cv, XTOP_STYLE_FG);
-  if (label_width < label_columns) {
-    canvas_repeat(cv, ' ', label_columns - label_width);
-  }
-  xtop_canvas_text(cv, label);
-  xtop_canvas_text(cv, " ");
-  canvas_style(cv, xtop_meter_style(tenths));
-  canvas_repeat_str(cv, XTOP_BAR_FULL, filled);
-  canvas_style(cv, XTOP_STYLE_EMPTY);
-  canvas_repeat_str(cv, XTOP_BAR_EMPTY, bar_width - filled);
-  canvas_style(cv, XTOP_STYLE_RESET);
-  xtop_canvas_text(cv, "  ");
-  canvas_style(cv, XTOP_STYLE_TITLE);
-  canvas_percent_width(cv, tenths);
-  canvas_style(cv, XTOP_STYLE_RESET);
-  xtop_canvas_text(cv, " ");
-  if (visible < cell_width) canvas_repeat(cv, ' ', cell_width - visible);
+  if (visible < width) xtop_canvas_repeat(cv, ' ', width - visible);
+  xtop_canvas_style(cv, XTOP_STYLE_RESET);
 }
 
 static void xtop_draw_key(xtop_canvas_t *cv, uint32_t *visible,
                           const char *key, const char *label) {
-  canvas_style(cv, XTOP_STYLE_TITLE);
+  xtop_canvas_style(cv, XTOP_STYLE_TITLE);
   xtop_canvas_text(cv, key);
-  canvas_style(cv, XTOP_STYLE_RESET);
+  xtop_canvas_style(cv, XTOP_STYLE_RESET);
   xtop_canvas_text(cv, label);
-  canvas_char(cv, ' ');
+  xtop_canvas_char(cv, ' ');
   *visible += (uint32_t)xtop_cstr_len(key) + (uint32_t)xtop_cstr_len(label) + 1U;
 }
 
@@ -1283,15 +947,15 @@ static void xtop_draw_key_bar(xtop_canvas_t *cv, uint32_t columns,
     xtop_output_append(cadence, sizeof(cadence), &cadence_used, "ms");
   }
   uint32_t cadence_columns = cadence[0] != '\0' ? xtop_columns(cadence) + 3U : 0U;
-  canvas_style(cv, XTOP_STYLE_RESET);
+  xtop_canvas_style(cv, XTOP_STYLE_RESET);
   xtop_canvas_text(cv, XTOP_BOX_BL XTOP_BOX_H " ");
   if (interactive != 0) {
     /* "1/3 layout" by the left corner, as mactop counts its own. */
-    canvas_style(cv, XTOP_STYLE_TITLE);
+    xtop_canvas_style(cv, XTOP_STYLE_TITLE);
     canvas_u64(cv, layout);
     xtop_canvas_text(cv, "/");
     canvas_u64(cv, XTOP_LAYOUT_COUNT);
-    canvas_style(cv, XTOP_STYLE_RESET);
+    xtop_canvas_style(cv, XTOP_STYLE_RESET);
     xtop_canvas_text(cv, " layout  ");
     visible += 2U + (uint32_t)u64_digits(layout) + (uint32_t)u64_digits(XTOP_LAYOUT_COUNT) + 8U;
     xtop_draw_key(cv, &visible, "L", "Layout");
@@ -1314,17 +978,17 @@ static void xtop_draw_key_bar(xtop_canvas_t *cv, uint32_t columns,
   }
   if (columns < visible + cadence_columns + 1U) cadence_columns = 0U;
   if (columns > visible + cadence_columns + 1U) {
-    canvas_repeat_str(cv, XTOP_BOX_H, columns - visible - cadence_columns - 1U);
+    xtop_canvas_repeat_str(cv, XTOP_BOX_H, columns - visible - cadence_columns - 1U);
   }
   if (cadence_columns != 0U) {
     xtop_canvas_text(cv, " ");
-    canvas_style(cv, XTOP_STYLE_TITLE);
+    xtop_canvas_style(cv, XTOP_STYLE_TITLE);
     xtop_canvas_text(cv, cadence);
-    canvas_style(cv, XTOP_STYLE_RESET);
+    xtop_canvas_style(cv, XTOP_STYLE_RESET);
     xtop_canvas_text(cv, " " XTOP_BOX_H);
   }
   xtop_canvas_text(cv, XTOP_BOX_BR);
-  canvas_style(cv, XTOP_STYLE_RESET);
+  xtop_canvas_style(cv, XTOP_STYLE_RESET);
 }
 
 static char xtop_state_character(uint32_t state) {
@@ -1391,36 +1055,36 @@ static void xtop_draw_info_cell(xtop_canvas_t *cv, uint32_t row,
                                 uint64_t now_ns) {
   uint32_t visible = 0U;
   if (row == 0U) {
-    canvas_style(cv, XTOP_STYLE_FG);
+    xtop_canvas_style(cv, XTOP_STYLE_FG);
     xtop_canvas_text(cv, "Tasks: ");
-    canvas_style(cv, XTOP_STYLE_TITLE);
+    xtop_canvas_style(cv, XTOP_STYLE_TITLE);
     canvas_u64(cv, active_tasks);
     visible = 7U + (uint32_t)u64_digits(active_tasks);
     if (width >= 40U) {
-      canvas_style(cv, XTOP_STYLE_FG);
+      xtop_canvas_style(cv, XTOP_STYLE_FG);
       xtop_canvas_text(cv, " active, ");
       /* Failures are the one figure that should shout, and only when there
          are any. */
-      canvas_style(cv, failed_tasks != 0U ? XTOP_STYLE_ALERT : XTOP_STYLE_TITLE);
+      xtop_canvas_style(cv, failed_tasks != 0U ? XTOP_STYLE_ALERT : XTOP_STYLE_TITLE);
       canvas_u64(cv, failed_tasks);
-      canvas_style(cv, XTOP_STYLE_FG);
+      xtop_canvas_style(cv, XTOP_STYLE_FG);
       xtop_canvas_text(cv, " failed; CPUs: ");
-      canvas_style(cv, XTOP_STYLE_TITLE);
+      xtop_canvas_style(cv, XTOP_STYLE_TITLE);
       canvas_u64(cv, cpu_total);
       visible += 24U + (uint32_t)u64_digits(failed_tasks) +
                  (uint32_t)u64_digits(cpu_total);
     } else {
-      canvas_style(cv, XTOP_STYLE_FG);
+      xtop_canvas_style(cv, XTOP_STYLE_FG);
       xtop_canvas_text(cv, "  Fail: ");
-      canvas_style(cv, failed_tasks != 0U ? XTOP_STYLE_ALERT : XTOP_STYLE_TITLE);
+      xtop_canvas_style(cv, failed_tasks != 0U ? XTOP_STYLE_ALERT : XTOP_STYLE_TITLE);
       canvas_u64(cv, failed_tasks);
       visible += 8U + (uint32_t)u64_digits(failed_tasks);
     }
   } else if (row == 1U) {
     const char *caption = width >= 32U ? "Load average: " : "Load: ";
-    canvas_style(cv, XTOP_STYLE_FG);
+    xtop_canvas_style(cv, XTOP_STYLE_FG);
     xtop_canvas_text(cv, caption);
-    canvas_style(cv, XTOP_STYLE_TITLE);
+    xtop_canvas_style(cv, XTOP_STYLE_TITLE);
     visible = (uint32_t)xtop_cstr_len(caption);
     uint32_t values = width >= 24U ? 3U : 2U;
     for (uint32_t i = 0U; i < values; ++i) {
@@ -1434,18 +1098,18 @@ static void xtop_draw_info_cell(xtop_canvas_t *cv, uint32_t row,
   } else {
     uint64_t seconds = now_ns / UINT64_C(1000000000);
     if (width >= 24U) {
-      canvas_style(cv, XTOP_STYLE_FG);
+      xtop_canvas_style(cv, XTOP_STYLE_FG);
       xtop_canvas_text(cv, "Uptime: ");
-      canvas_style(cv, XTOP_STYLE_TITLE);
+      xtop_canvas_style(cv, XTOP_STYLE_TITLE);
       visible = 8U + canvas_uptime(cv, now_ns);
     } else {
       uint64_t days = seconds / 86400U;
       uint64_t hours = (seconds / 3600U) % 24U;
       uint64_t minutes = (seconds / 60U) % 60U;
       seconds %= 60U;
-      canvas_style(cv, XTOP_STYLE_FG);
+      xtop_canvas_style(cv, XTOP_STYLE_FG);
       xtop_canvas_text(cv, "Uptime: ");
-      canvas_style(cv, XTOP_STYLE_TITLE);
+      xtop_canvas_style(cv, XTOP_STYLE_TITLE);
       canvas_u64(cv, days);
       xtop_canvas_text(cv, "d ");
       if (hours < 10U) xtop_canvas_text(cv, "0");
@@ -1459,8 +1123,8 @@ static void xtop_draw_info_cell(xtop_canvas_t *cv, uint32_t row,
       visible = 18U + (uint32_t)u64_digits(days);
     }
   }
-  canvas_style(cv, XTOP_STYLE_RESET);
-  if (visible < width) canvas_repeat(cv, ' ', width - visible);
+  xtop_canvas_style(cv, XTOP_STYLE_RESET);
+  if (visible < width) xtop_canvas_repeat(cv, ' ', width - visible);
 }
 
 static const char *xtop_cpu_role_name(uint32_t cpu_id) {
@@ -1751,12 +1415,12 @@ static uint32_t xtop_render_color(
     if (layout == 1U) {
       used = 0U; figure[0] = '\0';
       xtop_append_percent(figure, sizeof(figure), &used, cpu_all_tenths);
-      xtop_draw_gauge_row(cv, left_in, cpu_all_tenths, carries ? figure : 0);
+      xtop_render_gauge_row(cv, left_in, cpu_all_tenths, carries ? figure : 0);
     } else if (layout == 2U) {
-      xtop_platform_line(line, sizeof(line), row, cpu_total);
+      xtop_render_platform_line(&g_extras, line, sizeof(line), row, cpu_total);
       xtop_draw_padded(cv, XTOP_STYLE_FG, line, left_in);
     } else {
-      xtop_draw_chart_row(cv, left_in, g_extras.cpu_history,
+      xtop_render_chart_row(cv, left_in, g_extras.cpu_history,
                           g_extras.history_count, row, gauge_rows, 1000U);
     }
     xtop_draw_edge(cv);
@@ -1764,12 +1428,12 @@ static uint32_t xtop_render_color(
     if (layout == 1U) {
       used = 0U; figure[0] = '\0';
       xtop_append_percent(figure, sizeof(figure), &used, memory_tenths);
-      xtop_draw_gauge_row(cv, right_in, memory_tenths, carries ? figure : 0);
+      xtop_render_gauge_row(cv, right_in, memory_tenths, carries ? figure : 0);
     } else if (layout == 2U) {
-      xtop_ai_line(line, sizeof(line), row);
+      xtop_render_ai_line(&g_extras, line, sizeof(line), row);
       xtop_draw_padded(cv, XTOP_STYLE_FG, line, right_in);
     } else {
-      xtop_draw_chart_row(cv, right_in, g_extras.mem_history,
+      xtop_render_chart_row(cv, right_in, g_extras.mem_history,
                           g_extras.history_count, row, gauge_rows, 1000U);
     }
     xtop_draw_edge(cv);
@@ -1805,7 +1469,7 @@ static uint32_t xtop_render_color(
       xtop_draw_edge(cv);
       if (layout == 2U) {
         char text[192];
-        xtop_netdisk_line(text, sizeof(text), line);
+        xtop_render_netdisk_line(&g_extras, text, sizeof(text), line);
         xtop_draw_padded(cv, XTOP_STYLE_FG, text, left_in);
       } else if (layout == 3U) {
         uint16_t scaled[XTOP_HISTORY];
@@ -1813,7 +1477,7 @@ static uint32_t xtop_render_color(
           uint64_t v = (uint64_t)g_extras.net_history[i] * 1000U / net_scale;
           scaled[i] = (uint16_t)(v > 1000U ? 1000U : v);
         }
-        xtop_draw_chart_row(cv, left_in, scaled, g_extras.history_count,
+        xtop_render_chart_row(cv, left_in, scaled, g_extras.history_count,
                             line, detail_rows, 1000U);
       } else if (line < cpu_line_count) {
         uint32_t base_width = left_in / grid_columns;
@@ -1823,7 +1487,7 @@ static uint32_t xtop_render_color(
                                     : base_width;
           uint32_t offset = column * cpu_line_count + line;
           if (offset >= cpu_counted) {
-            canvas_repeat(cv, ' ', cell_width);
+            xtop_canvas_repeat(cv, ' ', cell_width);
             continue;
           }
           char label[12];
@@ -1835,11 +1499,11 @@ static uint32_t xtop_render_color(
               cell_width > label_columns + XTOP_METER_OVERHEAD
                   ? cell_width - label_columns - XTOP_METER_OVERHEAD
                   : 1U;
-          xtop_draw_meter(cv, label, label_columns, cpu_tenths[offset],
+          xtop_render_meter(cv, label, label_columns, cpu_tenths[offset],
                           bar_width, cell_width);
         }
       } else {
-        canvas_repeat(cv, ' ', left_in);
+        xtop_canvas_repeat(cv, ' ', left_in);
       }
       xtop_draw_edge(cv);
       xtop_draw_edge(cv);
@@ -1852,7 +1516,7 @@ static uint32_t xtop_render_color(
                                       : base_width;
             uint32_t offset = column * cpu_line_count + line;
             if (offset >= cpu_counted) {
-              canvas_repeat(cv, ' ', cell_width);
+              xtop_canvas_repeat(cv, ' ', cell_width);
               continue;
             }
             char label[12];
@@ -1864,11 +1528,11 @@ static uint32_t xtop_render_color(
                 cell_width > label_columns + XTOP_METER_OVERHEAD
                     ? cell_width - label_columns - XTOP_METER_OVERHEAD
                     : 1U;
-            xtop_draw_meter(cv, label, label_columns, cpu_tenths[offset],
+            xtop_render_meter(cv, label, label_columns, cpu_tenths[offset],
                             bar_width, cell_width);
           }
         } else {
-          canvas_repeat(cv, ' ', right_in);
+          xtop_canvas_repeat(cv, ' ', right_in);
         }
       } else if (line < 3U) {
         xtop_draw_info_cell(cv, line, right_in, active_tasks, failed_tasks,
@@ -1898,7 +1562,7 @@ static uint32_t xtop_render_color(
         }
         xtop_draw_padded(cv, XTOP_STYLE_FG, view, right_in);
       } else {
-        canvas_repeat(cv, ' ', right_in);
+        xtop_canvas_repeat(cv, ' ', right_in);
       }
       xtop_draw_edge(cv);
       xtop_draw_edge(cv);
@@ -1943,16 +1607,16 @@ static uint32_t xtop_render_color(
     const xtop_process_row_t *row = &process_rows[i];
     xtop_draw_edge(cv);
     xtop_draw_edge(cv);
-    canvas_style(cv, i == selected ? XTOP_STYLE_HEADER : XTOP_STYLE_FG);
+    xtop_canvas_style(cv, i == selected ? XTOP_STYLE_HEADER : XTOP_STYLE_FG);
     uint32_t fixed_visible;
     if (list_in < 60U) {
       canvas_u64_width(cv, row->pid, 4U);
       xtop_canvas_text(cv, " ");
-      canvas_char(cv, xtop_state_character(row->state));
+      xtop_canvas_char(cv, xtop_state_character(row->state));
       xtop_canvas_text(cv, " ");
-      canvas_percent_width(cv, row->cpu_tenths);
+      xtop_canvas_percent_width(cv, row->cpu_tenths);
       xtop_canvas_text(cv, " ");
-      canvas_percent_width(cv, row->memory_tenths);
+      xtop_canvas_percent_width(cv, row->memory_tenths);
       xtop_canvas_text(cv, " ");
       fixed_visible = 21U;
     } else {
@@ -1960,11 +1624,11 @@ static uint32_t xtop_render_color(
       xtop_canvas_text(cv, " ");
       canvas_u64_width(cv, row->parent_pid, 5U);
       xtop_canvas_text(cv, " ");
-      canvas_char(cv, xtop_state_character(row->state));
+      xtop_canvas_char(cv, xtop_state_character(row->state));
       xtop_canvas_text(cv, " ");
-      canvas_percent_width(cv, row->cpu_tenths);
+      xtop_canvas_percent_width(cv, row->cpu_tenths);
       xtop_canvas_text(cv, " ");
-      canvas_percent_width(cv, row->memory_tenths);
+      xtop_canvas_percent_width(cv, row->memory_tenths);
       xtop_canvas_text(cv, " ");
       canvas_runtime(cv, row->runtime_ns);
       xtop_canvas_text(cv, " ");
@@ -1992,7 +1656,7 @@ static uint32_t xtop_render_color(
                                              : (row->tree_depth - 1U) * 2U;
       prefix_length = indent + 3U;
       if (prefix_length <= command_width) {
-        canvas_repeat(cv, ' ', indent);
+        xtop_canvas_repeat(cv, ' ', indent);
       } else {
         prefix_length = 0U;
       }
@@ -2005,7 +1669,7 @@ static uint32_t xtop_render_color(
     canvas_bounded(cv, row->name, name_width);
     uint32_t command_length = (uint32_t)xtop_cstr_len(row->name);
     if (command_length < name_width) {
-      canvas_repeat(cv, ' ', name_width - command_length);
+      xtop_canvas_repeat(cv, ' ', name_width - command_length);
     }
     xtop_draw_edge(cv);
     xtop_draw_edge(cv);
@@ -2017,7 +1681,7 @@ static uint32_t xtop_render_color(
   for (; list_rows < process_budget; ++list_rows) {
     xtop_draw_edge(cv);
     xtop_draw_edge(cv);
-    canvas_repeat(cv, ' ', list_in);
+    xtop_canvas_repeat(cv, ' ', list_in);
     xtop_draw_edge(cv);
     xtop_draw_edge(cv);
     xtop_canvas_newline(cv);

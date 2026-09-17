@@ -305,7 +305,13 @@ for app in $USER_APPS; do
       -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/sshd" \
       -I"$ROOT_DIR/engine/include" \
       -c "$ROOT_DIR/userspace/apps/xtop_serve.c" -o "$BUILD_DIR/xtop-serve.o"
-    EXTRA_OBJS="$EXTRA_OBJS $BUILD_DIR/xtop-serve.o"
+    "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
+      -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \
+      -fno-pie -Os -Wall -Wextra -Werror \
+      -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/sshd" \
+      -I"$ROOT_DIR/engine/include" \
+      -c "$ROOT_DIR/userspace/apps/xtop_render.c" -o "$BUILD_DIR/xtop-render.o"
+    EXTRA_OBJS="$EXTRA_OBJS $BUILD_DIR/xtop-serve.o $BUILD_DIR/xtop-render.o"
   fi
   # shellcheck disable=SC2086
   "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
@@ -423,12 +429,12 @@ fi
 # stops at a setup prompt and there is nothing to log into.
 printf '%s\n' "Building /bin/sshd..."
 SSHD_OBJS=""
-for sshd_src in sshd sshd_audit sshd_rate_limit sshd_kex sshd_console_screen ssh_crypto ssh_mlkem tweetnacl_subset ssh_protocol \
+for sshd_src in sshd sshd_audit sshd_rate_limit sshd_kex sshd_console_screen sshd_console_programs ssh_crypto ssh_mlkem tweetnacl_subset ssh_protocol \
     ssh_channel ssh_alt_screen ssh_client_proxy ssh_host_key ssh_connection sftp_server \
     less_pager; do
   sshd_opt=""
   case "$sshd_src" in
-    sshd|sshd_audit|sshd_rate_limit|sshd_kex|sshd_console_screen) sshd_opt="-Os" ;;
+    sshd|sshd_audit|sshd_rate_limit|sshd_kex|sshd_console_screen|sshd_console_programs) sshd_opt="-Os" ;;
     *) sshd_opt="" ;;
   esac
   # shellcheck disable=SC2086
