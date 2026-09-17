@@ -76,6 +76,18 @@ clothes.
   L3 table array if a kernel span ever exceeds the 32 MiB the early tables
   cover.
 
+- **The WebTransport host tests link, and CI is no longer red because of them.**
+  The runner compiles its own small BearSSL subset, and it carried only the
+  *verify* half of the signature primitives: from the day the port started
+  signing with a loaded key, `wt_xaios_x509.c` wanted four more sources
+  (`x509/skey_decoder`, `rsa/rsa_i31_pss_sign`, `rand/hmac_drbg`,
+  `ec/ecdsa_i31_sign_asn1`) and the link failed on five symbols. `make
+  wt-host-test` is a CI job, so CI had been red ever since -- and a red gate
+  hid a second defect behind it: the QUIC packet suite's split module used
+  counter names that no longer existed, which nothing compiled until the link
+  started working. Both are fixed; the eight suites report 1,572 checks, and
+  `make wt-host-sanitize` and `make wt-vectors-check` pass with them.
+
 **The VMware Fusion image builds again, and a stuck build now says so.**
 
 - **`make vmware-fusion-image` no longer hangs.** The chainloader step ran

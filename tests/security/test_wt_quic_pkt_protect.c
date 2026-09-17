@@ -241,14 +241,14 @@ void wtqpkt_test_client_initial_end_to_end(void) {
            is what the earlier version of this check tripped over). */
         for (size_t i = 0; i < 1162U; i++) {
           if (sink[i] != 0U) {
-            g_checks++; g_failures++;
+            wtqpkt_checks++; wtqpkt_failures++;
             printf("FAIL a failed tag check left plaintext at byte %zu\n", i);
             return;
           }
         }
         for (size_t i = 1162U; i < sizeof(sink); i++) {
           if (sink[i] != 0xAAU) {
-            g_checks++; g_failures++;
+            wtqpkt_checks++; wtqpkt_failures++;
             printf("FAIL a failed tag check wrote past the payload at %zu\n", i);
             return;
           }

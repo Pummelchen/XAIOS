@@ -47,6 +47,13 @@ mkdir -p "$BUILD/bearssl" "$BUILD/objects"
 # AES, and the small codec helpers they call. Compiling the whole tree would
 # work but would link a TLS 1.2 state machine into a test that must not use
 # one.
+# The list carries both halves of the signature primitives. The host tests
+# verify signatures and, since the port signs with a loaded key, they also have
+# to *make* one: wt_xaios_x509.c loads a DER private key (x509/skey_decoder),
+# signs RSA-PSS with a fresh salt from an HMAC-DRBG (rsa/rsa_i31_pss_sign,
+# rand/hmac_drbg) and signs ECDSA (ec/ecdsa_i31_sign_asn1). Only the verify half
+# was here, so the link failed on those symbols from the day the port started
+# signing -- and `make wt-host-test` is a CI job, so CI was red from that day.
 BEARSSL_SOURCES="
   hash/sha2small
   hash/sha2big
@@ -107,6 +114,16 @@ BEARSSL_SOURCES="
   ec/ecdsa_i31_vrfy_asn1
   ec/ecdsa_i31_vrfy_raw
   ec/ecdsa_i31_bits
+  rand/hmac_drbg
+  rsa/rsa_i31_pss_sign
+  rsa/rsa_pss_sig_pad
+  rsa/rsa_i31_priv
+  rsa/rsa_pkcs1_sig_pad
+  ec/ecdsa_i31_sign_asn1
+  ec/ecdsa_rta
+  int/i31_decred
+  ec/ecdsa_i31_sign_raw
+  x509/skey_decoder
   x509/x509_decoder
   x509/x509_knownkey
   codec/dec32be
